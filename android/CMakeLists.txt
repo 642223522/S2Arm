@@ -114,6 +114,18 @@ if(ANDROID)
     add_dependencies(s2arm_android s2a_jni_abi)
     target_include_directories(s2arm_android PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     if(S2A_ANDROID_NATIVE_MODE STREQUAL "game")
+        # 编解码静态库（libs2a_avc.a / libs2a_opus.a / libs2a_vpx.a）由
+        # android/codecs/build.sh 产出；此前 Android 侧没有任何地方链接它们，
+        # game 模式恒定缺 18 个编解码符号。传参：
+        # -DS2A_ANDROID_CODEC_LIBS="libs2a_avc.a;libs2a_opus.a;libs2a_vpx.a"
+        if(NOT S2A_ANDROID_CODEC_LIBS)
+            message(FATAL_ERROR "Android game mode needs the codec archives: run android/codecs/build.sh first, then pass -DS2A_ANDROID_CODEC_LIBS=\"<libs2a_avc.a>;<libs2a_opus.a>;<libs2a_vpx.a>\"")
+        endif()
+        foreach(codec_lib IN LISTS S2A_ANDROID_CODEC_LIBS)
+            if(NOT EXISTS "${codec_lib}")
+                message(FATAL_ERROR "S2A_ANDROID_CODEC_LIBS entry does not exist: ${codec_lib}")
+            endif()
+        endforeach()
         s2a_android_game_sources(game_sources)
         target_sources(s2arm_android PRIVATE ${game_sources})
         # Bionic exposes process_vm_readv (used by crash.c's safe frame read)
@@ -139,6 +151,9 @@ if(ANDROID)
     target_compile_options(s2arm_android PRIVATE
         "$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-designated-field-initializers>")
     target_link_libraries(s2arm_android PRIVATE s2arm_android_memory android log vulkan aaudio)
+    if(S2A_ANDROID_NATIVE_MODE STREQUAL "game")
+        target_link_libraries(s2arm_android PRIVATE ${S2A_ANDROID_CODEC_LIBS})
+    endif()
     if(S2A_ANDROID_EXPERIMENTAL_TOUCH)
         target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_EXPERIMENTAL_TOUCH=1)
     endif()
