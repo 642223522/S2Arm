@@ -58,7 +58,7 @@ print(next((d['version'].strip('[]').split(',')[0] for fw in j['project']['frame
     # Brotli：System.IO.Compression.Native 要它。微软官方运行时包同目录自带 libbrotli{enc,dec,common}.a；
     # 源码构建版 .NET（如 Homebrew，包里有 nonportable.txt）自带的 NativeAOT 包不带，下面按「有就链」会静默漏掉，最后链接才报 _Brotli* 未定义（10-24 #100 D01 实撞）。链接前查、直接说怎么办
     if [ -f "$RP/libSystem.IO.Compression.Native.a" ] && ! { [ -f "$RP/libbrotlienc.a" ] && [ -f "$RP/libbrotlidec.a" ] && [ -f "$RP/libbrotlicommon.a" ]; }; then
-      say "🔴 nxaot：${DN} 用的 NativeAOT 运行时包（${RP}）没有 Brotli 静态库：这是源码构建版 .NET（如 Homebrew）的包，${RID} 版 C# 库链接会缺 _Brotli* 符号。改用微软官方 SDK：curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0（装到 ~/.dotnet，不要管理员密码），再 export DOTNET=~/.dotnet/dotnet DOTNET_ROOT=~/.dotnet；Homebrew 版可以留着"; exit 1
+      say "🔴 nxaot：${DN} 用的 NativeAOT 运行时包（${RP}）没有 Brotli 静态库：这是源码构建版 .NET（如 Homebrew）的包，${RID} 版 C# 库链接会缺 _Brotli* 符号。改用微软官方 SDK：python3 pack/jobs/applenv.py --install dotnet（装到 ~/.dotnet，不要管理员密码），再 export DOTNET=~/.dotnet/dotnet DOTNET_ROOT=~/.dotnet；Homebrew 版可以留着"; exit 1
     fi
     (cd "$O.tmp" && ar x publish/S2A.Aot.a && xcrun ld -r -keep_private_externs -arch arm64 S2A.Aot.o "$RP/libbootstrapperdll.o" -o all.o \
         && libtool -static -o libs2a_cs.a all.o 2>/dev/null && rm -f S2A.Aot.o all.o) || { say "🔴 nxaot：合成 libs2a_cs.a 失败"; exit 1; }

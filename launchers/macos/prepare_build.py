@@ -67,7 +67,7 @@ def find_dotnet():
 
 def check_dotnet():
     want = (ROOT / "compat/tree/global.json").read_text(encoding="utf-8")
-    fix = ("按 compat/tree/global.json 装官方 SDK：curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --jsonfile compat/tree/global.json，"
+    fix = ("按 compat/tree/global.json 装官方 SDK：python3 pack/jobs/applenv.py --install dotnet，"
            "再把 ~/.dotnet 放进 PATH（或 python3 pack/jobs/applenv.py --install dotnet）")
     d = find_dotnet()
     if not d:

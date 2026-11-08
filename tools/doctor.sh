@@ -64,11 +64,11 @@ PY
   DROOT=$([ -n "$hit" ] && "$DN" --list-sdks 2> /dev/null | sed -n "s/^${hit} \[\(.*\)\]$/\1/p" | head -1); DROOT=${DROOT%/sdk}
   NOBR=; for p in "$DROOT"/packs/Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64/*/runtimes/osx-arm64/native; do
     [ -f "$p/libSystem.IO.Compression.Native.a" ] && [ ! -f "$p/libbrotlienc.a" ] && NOBR=$p; done
-  if [ -n "$hit" ] && [ -n "$NOBR" ]; then bad ".NET 10 SDK" "dotnet SDK ${hit} 在 ${DROOT}，是源码构建版（如 Homebrew）：自带的 NativeAOT 运行时包没有 Brotli 静态库，编 Mac 版 C# 库会报 _Brotli* 未定义" "改用微软官方 SDK：curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --version ${WV}（装到 ~/.dotnet），再 export DOTNET=~/.dotnet/dotnet DOTNET_ROOT=~/.dotnet PATH=~/.dotnet:\${PATH}（Homebrew 版可以留着）"
+  if [ -n "$hit" ] && [ -n "$NOBR" ]; then bad ".NET 10 SDK" "dotnet SDK ${hit} 在 ${DROOT}，是源码构建版（如 Homebrew）：自带的 NativeAOT 运行时包没有 Brotli 静态库，编 Mac 版 C# 库会报 _Brotli* 未定义" "改用微软官方 SDK：python3 pack/jobs/applenv.py --install dotnet（装到 ~/.dotnet），再 export DOTNET=~/.dotnet/dotnet DOTNET_ROOT=~/.dotnet PATH=~/.dotnet:\${PATH}（Homebrew 版可以留着）"
   elif [ -n "$hit" ]; then ok ".NET 10 SDK" "dotnet SDK ${hit}（${DN}；要求 ${WV}、rollForward ${RF}，${GJ}）"
     # 读取器等 .NET 程序的启动壳（apphost）只认 DOTNET_ROOT 或微软默认位置 /usr/local/share/dotnet；仓库脚本自己会补，直接跑这些工具前要 export（10-24 #100 D01）
     [ -n "${DOTNET_ROOT:-}" ] || [ "$DROOT" = /usr/local/share/dotnet ] || echo "ℹ️ DOTNET_ROOT 没设：一键出包 / 门禁会自己补；直接跑读取器等 .NET 工具前先 export DOTNET_ROOT=${DROOT}（写进 shell 的启动配置一劳永逸）"
-  else bad ".NET 10 SDK" "已装 SDK：$(echo $SDKS | tr ' ' ',' | sed 's/^$/没有/')（要求 ${WV}、rollForward ${RF}，${GJ}）" "curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --version ${WV}，再把 ~/.dotnet 加进 PATH"; fi
+  else bad ".NET 10 SDK" "已装 SDK：$(echo $SDKS | tr ' ' ',' | sed 's/^$/没有/')（要求 ${WV}、rollForward ${RF}，${GJ}）" "python3 pack/jobs/applenv.py --install dotnet，再把 ~/.dotnet 加进 PATH"; fi
 fi
 
 # C 改写器固定依赖（钉版 Capstone / LZ4 源码，runtime/rewriter/prepare_deps.py 生成；构建不自动下载）：
