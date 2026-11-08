@@ -3665,7 +3665,8 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b) 
     return 1;
 }
 NVN(nvnBufferFinalize, void, NVNbuffer *buf) {
-    if (BF(buf)->pool && BF(buf)->pool->mem && BF(buf)->magic == MAGIC('B', 'U', 'F', 0))
+    // 先核魔数：游戏可能 Finalize 没 Initialize 过的对象，那时 pool 字段是垃圾，不能解引用
+    if (BF(buf)->magic == MAGIC('B', 'U', 'F', 0) && BF(buf)->pool && BF(buf)->pool->mem)
         buf_reg_del((uint64_t)(uintptr_t)(BF(buf)->pool->mem) + (uint64_t)BF(buf)->off);
     ((buf_t *)buf)->magic = 0;
 }

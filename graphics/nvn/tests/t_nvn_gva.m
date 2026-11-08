@@ -59,6 +59,8 @@ int main(void) {
         API(nvnBufferBuilderSetStorage)(&bb, &b.pool, SRC, N); NVNbuffer buf; REQUIRE(API(nvnBufferInitialize)(&buf, &bb));
         REQUIRE(API(nvnBufferGetAddress)(&buf) == pb + SRC);
         API(nvnBufferFinalize)(&buf);
+        phase = "Finalize 没建过的缓冲对象：不读对象里的垃圾池指针（密特罗德 生存恐惧 启动崩溃）";
+        NVNbuffer junk; memset(&junk, 0x62, sizeof junk); API(nvnBufferFinalize)(&junk); checks++;
         API(nvnMemoryPoolFinalize)(&b.pool); make_pool(&c);
         copy_check(&a, &c, "池 B 释放后新建池 C：照常");
         printf("✓ t_nvn_gva：全部通过（%u 项检查）\n", checks);
