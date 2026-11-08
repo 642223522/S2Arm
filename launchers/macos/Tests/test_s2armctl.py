@@ -139,7 +139,10 @@ class NextStepTests(unittest.TestCase):
         self.assertEqual((n["step"], n["who"]), ("环境", "human")); self.assertIn("没装 Xcode", n["do"])
 
     def test_keys_then_import_then_pack(self):
+        # 空库先问游戏（解包好的游戏不要密钥），NSP / XCI 要密钥时才问
         n = ctl.next_step(full_state(hasImportedKeys=False))
+        self.assertEqual((n["step"], n["who"]), ("导入", "ask"))
+        n = ctl.next_step(full_state(hasImportedKeys=False, games=[game("g", "G", 1)]))
         self.assertEqual((n["step"], n["who"]), ("密钥", "ask"))
         self.assertIn("s2armctl keys", n["do"])
         n = ctl.next_step(full_state())

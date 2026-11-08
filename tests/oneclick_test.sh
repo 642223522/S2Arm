@@ -158,6 +158,7 @@ ck "⑩ oneclick 日志里的 refresh.log 末行（含 ⏱ 分阶段用时）不
 #   缺省覆盖不到的机型装箱后才在 link_glue 报「no stub archive」。这里验它与 pack/jobs/ipa.py 同口径认设备，
 #   且只在设备架构**不在**我方真机集合（pack/our_devices.tsv）内时才 export 单架构；S2A_PSO_ARCHS_ALL=1 不被降级。
 #   夹具全离线：假 CoreDevice（devicectl 输出 JSON）+ 假 Xcode 设备特征库（真库同一套 JOIN：iPhone16,1 → applegpu_g16p）
+printf 'A1\t甲\tapplegpu_g18p\tios\t27\t是\t-\nA2\t乙\tapplegpu_g19p\tios\t27\t是\t-\n' > "$T/our_devices.tsv"; export S2A_OUR_DEVICES=$T/our_devices.tsv   # 真清单是维护方私有文件
 D=$T/devdb; mkdir -p "$D/cd/Resources/bin" "$D/xc/Platforms/iPhoneOS.platform/usr/standalone"
 cat > "$D/cd/Resources/bin/devicectl" <<'X'
 #!/bin/bash

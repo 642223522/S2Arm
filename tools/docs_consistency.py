@@ -4,7 +4,7 @@
 """Read-only checks for knowledge headings and generated collaboration policy.
 
 Policy values come from train.sh / contrib_check.sh, never from a second table.
-Use --render to print the block used in CONTRIBUTING and docs/协作循环.md.
+Use --render to print the block used in CONTRIBUTING.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import unicodedata
 
 BEGIN = '<!-- S2ARM_POLICY:BEGIN -->'
 END = '<!-- S2ARM_POLICY:END -->'
-DOCUMENTS = ('CONTRIBUTING.md', 'docs/协作循环.md')
+DOCUMENTS = ('CONTRIBUTING.md',)
 
 
 class PolicyError(ValueError):

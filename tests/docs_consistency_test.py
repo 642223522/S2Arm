@@ -102,8 +102,7 @@ class RepositoryTests(unittest.TestCase):
         self.repo = Path(self.tmp.name)
         for name, value in {'tools/train.sh': TRAIN, 'tools/contrib_check.sh': CONTRIB,
                             'docs/坑记录.md': '# 记录\n## 唯一\n原创正文\n',
-                            'CONTRIBUTING.md': '# 贡献\n' + BLOCK + '\n',
-                            'docs/协作循环.md': '# 协作\n' + BLOCK + '\n'}.items():
+                            'CONTRIBUTING.md': '# 贡献\n' + BLOCK + '\n'}.items():
             self.write(name, value)
 
     def write(self, name, value):

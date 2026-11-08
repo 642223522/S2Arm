@@ -92,7 +92,7 @@ tk_memo_key() {
 tool_keys_memo() {
   if [ -n "${S2A_PREBUILT_TOOLS:-}" ] || [ "${S2A_TOOLKEYS_MEMO:-1}" = 0 ]; then TK_HOW=现算; tool_keys; return; fi
   local d mk f
-  d=$(git -C "$R" status --porcelain --untracked-files=normal -- compat/tree gfx tools 2> /dev/null) || { TK_HOW="现算（读不到工作树状态）"; tool_keys; return; }
+  d=$(git -C "$R" status --porcelain --untracked-files=normal -- compat/tree graphics translator tools 2> /dev/null) || { TK_HOW="现算（读不到工作树状态）"; tool_keys; return; }
   [ -z "$d" ] || { TK_HOW="现算（工作树有未提交改动，不记忆）"; tool_keys; return; }
   mk=$(tk_memo_key) || { TK_HOW=现算; tool_keys; return; }
   f=${S2A_TOOLKEYS_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/toolkeys}/$mk

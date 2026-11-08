@@ -6,7 +6,7 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); X=$H/graphics/.toolkeys_memo_test_$$; trap 'rm -rf "$T" "$X"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 SP=$H/graphics/tools/shader_pack.sh
-if [ -n "$(git -C "$H" status --porcelain --untracked-files=normal -- compat/tree gfx tools)" ]; then
+if [ -n "$(git -C "$H" status --porcelain --untracked-files=normal -- compat/tree graphics translator tools)" ]; then
   echo "跳过 ①–③：本树 compat/tree · gfx · tools 有未提交改动（记忆按设计不生效）；只测 ④"; dirty=1; else dirty=0; fi
 ref=$(S2A_TOOLKEYS_MEMO=0 bash "$SP" --tool-keys 2> /dev/null)
 run() { env "$@" S2A_TOOLKEYS_CACHE=$T/c bash "$SP" --tool-keys 2> $T/how; }
