@@ -238,13 +238,13 @@ android {
     // nativeLibraryDir 方案要全包 extractNativeLibs=true，owner 否决）。
     packaging { jniLibs { useLegacyPackaging false } }
     def capprobeAssetTask = tasks.register('capprobeAssets', CapProbeAssetsTask) {
-        knownBadList.set(layout.file(provider { file("${rootDir}/runtime/capprobe/known-bad.txt") }))
+        knownBadList.set(layout.file(provider { file("${rootDir}/native/capprobe/known-bad.txt") }))
         outputDirectory.set(layout.buildDirectory.dir('generated/capprobe-assets'))
     }
     def capprobeJniTask = tasks.register('capprobeJniLibs', CapProbeJniLibsTask) {
-        packageScript.set(layout.file(provider { file("${rootDir}/runtime/capprobe/package.sh") }))
-        probeSource.set(layout.file(provider { file("${rootDir}/runtime/capprobe/capprobe.c") }))
-        spvHeader.set(layout.file(provider { file("${rootDir}/runtime/capprobe/capprobe_spv.h") }))
+        packageScript.set(layout.file(provider { file("${rootDir}/native/capprobe/package.sh") }))
+        probeSource.set(layout.file(provider { file("${rootDir}/native/capprobe/capprobe.c") }))
+        spvHeader.set(layout.file(provider { file("${rootDir}/native/capprobe/capprobe_spv.h") }))
         ndkToolchain.set(layout.file(provider { file("${rootDir}/tools/ndk_toolchain.sh") }))
         outputDirectory.set(layout.buildDirectory.dir('generated/capprobe-jnilibs'))
     }
