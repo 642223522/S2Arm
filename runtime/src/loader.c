@@ -921,6 +921,7 @@ static void finish_modules(void) {
 }
 static char g_moddir[1024];
 const char *s2a_module_dir(void) { return g_moddir; }
+void s2a_module_dir_set(const char *dir) { strlcpy(g_moddir, dir, sizeof g_moddir); }   // 起局早期就定下目录：图形模式判定（gfxmode.c decide）在装模块之前读 main.npdm 取程序号
 // 直连模式不装的 GPU 驱动模块（NVIDIA OpenGL / Vulkan 驱动：经 NvRm 编程 GPU，宿主没有；游戏对它们的调用由直连图形层答，装了反而先被它们接走）。
 //   名单 gpu_drivers.tsv 由出包按模块自身的 NintendoSDK 组件判（graphics/nvn/games/profile_guess.py gpu_driver_modules，与推导器同一判法），不读手写档；
 //   通用模式（Ryujinx GPU 模拟）照装：游戏靠它们往 nvdrv 发 GPU 命令。其余模块与 Horizon 一样全装
