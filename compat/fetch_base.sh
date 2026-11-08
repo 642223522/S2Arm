@@ -17,5 +17,5 @@ for u in $URLS; do
         echo "上游基线已就绪：${COMMIT:0:12}"; exit 0
     fi
 done
-echo "取不到上游提交 $COMMIT（试过：$URLS）。可设 S2A_UPSTREAM_URL 指向含该提交的镜像。" >&2
+echo "取不到上游提交 ${COMMIT}（试过：${URLS}）。可设 S2A_UPSTREAM_URL 指向含该提交的镜像。" >&2
 exit 2

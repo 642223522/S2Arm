@@ -277,9 +277,8 @@ def discover_files(argv, variables, here):
         a = path_word(argv[i], variables, here)
         if a in ('-s', '--start-directory', '-p', '--pattern', '-t', '--top-level-directory'):
             v = path_word(argv[i + 1], variables, here) if i + 1 < len(argv) else None
-            if v is None:
-                if a in ('-s', '--start-directory', '-t', '--top-level-directory'): return set()
-            elif a in ('-s', '--start-directory'): start = v
+            if v is None: return set()
+            if a in ('-s', '--start-directory'): start = v
             elif a in ('-p', '--pattern'): pat = v
             i += 2; continue
         if a is None: return set()
