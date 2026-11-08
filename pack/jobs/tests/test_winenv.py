@@ -145,7 +145,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_impactor_uses_the_bundled_copy_when_launcher_says_where(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sys.path.insert(0, str(Path(self.mod.__file__).resolve().parents[2] / "pack/orch"))
+            sys.path.insert(0, str(Path(self.mod.__file__).resolve().parents[2] / "pack/jobs"))
             import impactor
             folder = Path(tmp) / impactor.BUNDLE_DIR; folder.mkdir(parents=True)
             native = self.mod.NativeProbe()
