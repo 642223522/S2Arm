@@ -100,7 +100,9 @@ else TAG=$(root_tag "$G" "pkg-$C"); W=$(root_begin "$G" "$TAG") || exit 1; fi
 bash "$R/graphics/widen/scan/auto_pkg.sh" copy "$G" "$W" || { echo "【红】$G 宽屏表拷不进出包根"; exit 1; }   # 本次刚出的自动表直接进包（改写产物不依赖它，不重改写）
 # 失败时 build.log 随临时版本一起被 root_abort 清掉（10-23 用户体验线：Spare-host 上缺 platform/plat.h，只看到「1 error generated」，复跑 make 才找到原因）：
 #   清之前拷进 $S2A_ROOTS/.failed/<款>_ipa_build.log（同改写 / 着色器阶段的做法），报错行带上路径；只出程序的临时工作根不在这里删，由上面的 EXIT 陷阱删（所有出口）
-fail() { local L=$W/pkg/build.log K=; if [ -s "$L" ]; then mkdir -p "$S2A_ROOTS/.failed" && cp "$L" "$S2A_ROOTS/.failed/${G}_ipa_build.log" && K="；日志 $S2A_ROOTS/.failed/${G}_ipa_build.log"; fi
+#   同样带走 pkg/archive.log（「打 ipa」这一步的输出，ipa_tail.py 写）：打包失败时哪条超了上限 / 哪个 errno 才有地方看
+fail() { local L=$W/pkg/build.log A=$W/pkg/archive.log K=; if [ -s "$L" ]; then mkdir -p "$S2A_ROOTS/.failed" && cp "$L" "$S2A_ROOTS/.failed/${G}_ipa_build.log" && K="；日志 $S2A_ROOTS/.failed/${G}_ipa_build.log"; fi
+  if [ -s "$A" ]; then mkdir -p "$S2A_ROOTS/.failed" && cp "$A" "$S2A_ROOTS/.failed/${G}_ipa_archive.log" && K="${K}；日志 $S2A_ROOTS/.failed/${G}_ipa_archive.log"; fi
   echo "【红】$G 出包：$*$K"; [ -n "$AO" ] || root_abort "$G" "$TAG"; exit 1; }
 # 编译失败的头一条错误行（clang「error:」/「fatal error」、make「Error N」之前那条），找不到退回最后两行
 errline() { LC_ALL=C /usr/bin/grep -a -m1 -E 'error:|fatal error' "$1" 2> /dev/null | cut -c1-200 || true; }

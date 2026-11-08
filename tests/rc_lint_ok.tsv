@@ -1,6 +1,7 @@
 # 路径<TAB>规整命令<TAB>逐项原因；这些是存量例外，不是安全证明。
 # 修复、删除或改命令后须同步删除条目；不绑定行号；拿不准的交出包运维线确认。
 pack/ipa.sh	cp "$L" "$S2A_ROOTS/.failed/${G}_ipa_build.log"	原始失败路径复制构建日志，失败后仍退出但可能丢诊断副本；待出包运维线确认是否需单独报错。
+pack/ipa.sh	cp "$A" "$S2A_ROOTS/.failed/${G}_ipa_archive.log"	与上一行同形状：失败路径复制「打 ipa」日志（pkg/archive.log），失败后仍退出但可能丢诊断副本；待出包运维线确认是否需单独报错。
 pack/ipa.sh	cp "$SA/$k" "$W/pkg/"	存档附带的时间/语言/地区/时区文件在存在性条件后复制，失败未阻止后续登记；待出包运维线确认。
 pack/ipa.sh	cp "$SA/user" "$W/pkg/save/"	建档用户号存在时复制，cp 失败未判；待出包运维线确认。
 pack/ipa.sh	cp -cR "$SA/$d" "$W/pkg/save/"	device/account 存档目录存在时克隆，cp 失败未判；待出包运维线确认。

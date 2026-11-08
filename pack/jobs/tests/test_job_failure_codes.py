@@ -106,6 +106,8 @@ class PackageFailures(JobCase):
                              ("预编壳组装失败（写外置镜像包失败）", "compilation_failed"),
                              ("组装没产出 fixture.app", "compilation_failed"),
                              ("资源包失败（缺文件）", "resource_preparation_failed"),
+                             # #11：PERSONA4 The GOLDEN 的真实失败行（原先落成 package_failed「原因没认出来」）
+                             ("直连库不全：有 b-0be3f28548fd/，缺 keys.tsv 或 shader_map.tsv（直连库阶段重出）", "resource_preparation_failed"),
                              ("未知失败（detail内含签名失败）", "package_failed")):
             with self.subTest(detail=detail):
                 self.c.job["diagnostics"].clear()

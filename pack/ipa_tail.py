@@ -95,6 +95,14 @@ def last(log, red=False):
     return lines[-1] if lines else ''
 
 
+def archive_reason(log):
+    """「打 ipa」失败时要带出去的那一行：write_ipa 自己的红行优先，没有就取日志最后一行（python traceback 的最后一行 = 异常本身）。
+    11-08 反馈（9.78 GB 的 PERSONA4 The GOLDEN 停在出包 2/5、错误码 package_failed「原因没认出来」）：这一步原先不带日志、
+    失败只说一句「打 ipa 失败」，真正的原因（体积账 / errno / zipfile 异常）既没进红行也没进摘要，归因只能落到 package_failed。"""
+    red = last(log, True)
+    return red if '【红】' in red else last(log)
+
+
 def build_id(key):   # = pack/build_id.sh s2a_build_id：<提交号>-<整串包键（含末尾换行）的 sha256 前 8 位>
     return f"{key.split(' ', 1)[0]}-{hashlib.sha256((key + chr(10)).encode()).hexdigest()[:8]}"
 
@@ -127,6 +135,7 @@ def assemble(a):
     w, g = a.work, a.game
     pkg = os.path.join(w, 'pkg'); os.makedirs(pkg, exist_ok=True)
     tl, bl, sl = os.path.join(pkg, 'timing.tsv'), os.path.join(pkg, 'build.log'), os.path.join(pkg, 'sign.log')
+    al = os.path.join(pkg, 'archive.log')   # 打 ipa 自己的输出（原先直接落进调用方的 tail.out，失败时随临时产物根一起删掉）
     app = os.path.join(w, 'build', 'ios', 'S2Arm.app')
     if os.path.lexists(os.path.join(w, 'build')): shutil.rmtree(os.path.join(w, 'build'), onerror=_writable)   # 上次组装的临时 App（重跑 / 失败残留）
     icon = os.path.join(R, 'launchers/macos/Branding/AppIcon-1024.png')   # 宿主 App 永远用 S2Arm 自己的图标；游戏图标只给库里的入局入口（11-08 维护者）
@@ -162,7 +171,9 @@ def assemble(a):
         raise Red(last(sl, True) if '【红】' in last(sl, True) else f'签名核实失败：提高内存上限权限缺失或含私有 JIT 键，见 {sl}')
     ipa = os.path.join(pkg, f'{g}.ipa')
     if os.path.lexists(ipa): os.remove(ipa)   # 上次的 ipa（write_ipa 不覆盖已有目标）
-    if step(tl, '打ipa', [PY, os.path.join(H, 'app_bundle.py'), 'write_ipa', app, ipa]): raise Red('打 ipa 失败')
+    if step(tl, '打ipa', [PY, os.path.join(H, 'app_bundle.py'), 'write_ipa', app, ipa], al, 'w'):
+        reason = archive_reason(al).removeprefix('【红】').strip()   # 红标记去掉：外层 fail 会再加一个，摘要里不叠
+        raise Red(f'打 ipa 失败（{reason or "没有输出"}）')
     # 进包核对：ipa 里 gal_helpers/m3/ 的库文件名集合 = 壳的 m3/（Metal 3 兼容辅助库漏拷时预热静默现编）
     hl = os.path.join(a.shell, 'root', 'gal_helpers', 'm3')
     want = sorted((n for n in os.listdir(hl) if n.endswith('.metallib')), key=lambda s: s.encode()) if os.path.isdir(hl) else []
@@ -179,19 +190,34 @@ def assemble(a):
     return ipa
 
 
+def runtime_only_lib(d):
+    """抽取缺口出的空直连库（graphics/tools/direct/runtime_only_lib.sh 出，pack/stage_direct.sh 落进产物根）：
+    runtime_only.txt + 空的 shader_map.tsv + 每个 b-<链>/ 的 lib.idx / inputs.tsv。这是一份合法的库——离线 0 支，宿主首遇现编
+    （运行时判定看 b-<链> + shader_map.tsv + lib.idx，见 runtime_only_lib.sh 头注）；空 keys.tsv / shader_map.tsv 是它的正常形态，
+    不能按「直连库不全」判红（#11：9.78 GB 的 PERSONA4 The GOLDEN 抽取缺口走这条路，出包被这一步挡死）。"""
+    if not os.path.isfile(os.path.join(d, 'runtime_only.txt')): return False
+    if not os.path.isfile(os.path.join(d, 'shader_map.tsv')): return False   # 宿主判直连起手要的三样之一（另外两样在 b-<链>/ 里）
+    chains = sorted(glob.glob(os.path.join(glob.escape(d), 'b-*')))
+    return bool(chains) and all(os.path.isfile(os.path.join(c, n)) for c in chains for n in ('lib.idx', 'inputs.tsv'))
+
+
 def check_pack_inputs(w, g):
     """资源包要件（资源包根 = 游戏数据目录：exefs/main.npdm、romfs/、ctl/control.nacp；起局把 S2A_GAME_DATA 指到 Documents/资源包）"""
     if not os.path.isfile(os.path.join(w, 'exefs', 'main.npdm')): raise Red('产物根没有 exefs/main.npdm')
     if not os.path.isfile(os.path.join(w, 'ctl', 'control.nacp')): print(f'【黄】{g} 产物根没有 ctl/control.nacp（游戏标题 / 存档参数读不到，服务层会报红）')
     if not os.path.isdir(os.path.join(w, 'systemdata', 'fonts')): raise Red(f'产物根没有 systemdata/fonts（先 pack/stage_sysdata.sh {g}）')
     d = os.path.join(w, 'shaders', 'direct')
-    if not pkg_srcs.nonempty(os.path.join(d, 'keys.tsv')) and not pkg_srcs.nonempty(os.path.join(d, 'gl', 'gl_shaders.tsv')):
+    runtime_only = runtime_only_lib(d)
+    if not pkg_srcs.nonempty(os.path.join(d, 'keys.tsv')) and not pkg_srcs.nonempty(os.path.join(d, 'gl', 'gl_shaders.tsv')) and not runtime_only:
         try: dl = [l for l in open(os.path.join(w, 'direct_lib.log'), encoding='utf-8', errors='replace').read().splitlines() if '直连库]' in l]
         except OSError: dl = []
         print(f'🟡 {g} 资源包没带直连库（产物根没有 shaders/direct/keys.tsv：{dl[-1][:160] if dl else "早装件或直连库阶段未产出"}）；装上起局会报「游戏文件缺失」，要装带直连库的正式包')
-    if glob.glob(os.path.join(glob.escape(d), 'b-*')):   # 带 b-<链>/ 就必须同时有 keys.tsv 与 shader_map.tsv（App 判直连起手看 b-<链>/）
+    elif runtime_only:   # 空库照常进包：宿主按直连起，没编过的着色器首遇现编（新场景第一次会卡一下）
+        print(f'🟡 {g} 本款离线直连库为空（抽取缺口，见产物根 shaders/direct/runtime_only.txt）：着色器运行时现编，新场景首次遇到会卡一下')
+    chains = sorted(glob.glob(os.path.join(glob.escape(d), 'b-*')))
+    if chains and not runtime_only:   # 带 b-<链>/ 就必须同时有 keys.tsv 与 shader_map.tsv（App 判直连起手看 b-<链>/）；空库由 runtime_only_lib 那一支认
         if not (pkg_srcs.nonempty(os.path.join(d, 'keys.tsv')) and pkg_srcs.nonempty(os.path.join(d, 'shader_map.tsv'))):
-            raise Red(f'直连库不全：有 {os.path.basename(sorted(glob.glob(os.path.join(glob.escape(d), "b-*")))[0])}/，缺 keys.tsv 或 shader_map.tsv（直连库阶段重出）')
+            raise Red(f'直连库不全：有 {os.path.basename(chains[0])}/，缺 keys.tsv 或 shader_map.tsv（直连库阶段重出）')
 
 
 def main():

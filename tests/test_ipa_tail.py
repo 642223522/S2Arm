@@ -8,8 +8,12 @@
 ④ 实跑 Info.plist 写入（app_bundle.py update_metadata，同 ipa_tail 用的调用）：包号与着色器目标读回一致、未知布尔键保留；空着色器目标 → 删掉旧键
 ⑥ 开发设施开关（S2ADevFacilities）：S2A_PACK_PURPOSE=user → "0"（玩家包关）；没设 / 别的用途 → 空串（删键 = 开发设施开）
 ⑤ 签名方式：非 Mac 上 adhoc / dev → 退 1 报红；dev 没给团队 → 退 1
+⑦ 「打 ipa」失败要带出真正的原因（11-08 反馈：出包 2/5、错误码 package_failed「原因没认出来」）：archive_reason 红行优先、否则日志最后一行
+   （python traceback 的末行 = 异常本身），日志缺失给空串——调用方据此把原因写进红行与错误摘要
+⑧ 资源包要件（check_pack_inputs）认「抽取缺口的空直连库」（runtime_only.txt + b-<链>/{lib.idx,inputs.tsv,shader_map.tsv}）：
+   空 keys.tsv / shader_map.tsv 是它的正常形态，不判「直连库不全」；真残缺（无 runtime_only.txt，或 b-<链>/ 缺件）照旧判红
 """
-import hashlib, os, plistlib, subprocess, sys, tempfile, unittest
+import contextlib, hashlib, io, os, plistlib, subprocess, sys, tempfile, unittest
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pack"))
@@ -49,6 +53,48 @@ class Tail(unittest.TestCase):
         self.assertEqual(ipa_tail.pso_target(self.mk("e", {})), "")
         pk = "8cf4073a1 cur=/x/roots/botw@sh-1 vamm=alias sign=adhoc"
         self.assertEqual(ipa_tail.build_id(pk), "8cf4073a1-" + hashlib.sha256((pk + "\n").encode()).hexdigest()[:8])
+
+    def test_archive_reason_prefers_red_line_then_last_line(self):
+        red = self.t / "archive.log"
+        red.write_text("起步\n【红】App 组装：非 zip64 的 IPA 装不下这份 App：9 个条目、文件合计 123456 字节\n", encoding="utf-8")
+        self.assertEqual(ipa_tail.archive_reason(str(red)),
+                         "【红】App 组装：非 zip64 的 IPA 装不下这份 App：9 个条目、文件合计 123456 字节")
+        trace = self.t / "trace.log"
+        trace.write_text("Traceback (most recent call last):\n  File \"app_bundle.py\", line 1, in write_ipa\nOSError: [Errno 28] No space left on device\n",
+                         encoding="utf-8")
+        self.assertEqual(ipa_tail.archive_reason(str(trace)), "OSError: [Errno 28] No space left on device")
+        empty = self.t / "empty.log"
+        empty.write_text("", encoding="utf-8")
+        self.assertEqual((ipa_tail.archive_reason(str(empty)), ipa_tail.archive_reason(str(self.t / "missing.log"))), ("", ""))
+
+    def test_check_pack_inputs_accepts_runtime_only_lib(self):
+        # #11：9.78 GB 的 PERSONA4 The GOLDEN 抽取缺口 → 空直连库（runtime_only_lib.sh），出包被「直连库不全」挡死
+        chain = "b-0be3f28548fd"
+        root = self.mk("runonly", {"exefs/main.npdm": b"npdm", "ctl/control.nacp": b"nacp", "systemdata/fonts/x.ttf": b"font",
+                                   "shaders/direct/keys.tsv": b"", "shaders/direct/shader_map.tsv": b"",
+                                   "shaders/direct/runtime_only.txt": "本款离线直连库为空（离线 0 支），运行时首遇现编\n".encode(),
+                                   f"shaders/direct/{chain}/lib.idx": b"S2ALIB\0\0\1\0\0\0\0\0\0\0\0\0\u0000be3f28548fd\0\0\0\0\0\0",
+                                   f"shaders/direct/{chain}/inputs.tsv": b"game\t010062B01525C000\ninputs\truntime-only-1e76a11a42b5\n"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ipa_tail.check_pack_inputs(root, "t010062b01525c000")
+        self.assertIn("离线直连库为空", out.getvalue())
+        self.assertNotIn("没带直连库", out.getvalue())   # 空库不是「没带库」：包里带着 b-<链>，宿主按直连起
+
+        # 真残缺：b-<链>/ 在、keys.tsv 有内容、shader_map.tsv 空，又没有 runtime_only.txt → 照旧判红
+        broken = self.mk("broken", {"exefs/main.npdm": b"npdm", "ctl/control.nacp": b"nacp", "systemdata/fonts/x.ttf": b"font",
+                                    "shaders/direct/keys.tsv": b"k\tvert\n", "shaders/direct/shader_map.tsv": b"",
+                                    f"shaders/direct/{chain}/lib.idx": b"S2ALIB"})
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ipa_tail.Red) as got:
+            ipa_tail.check_pack_inputs(broken, "t010062b01525c000")
+        self.assertIn("直连库不全", str(got.exception))
+
+        # runtime_only.txt 在但 b-<链>/ 缺 lib.idx（阶段写了一半）→ 不算空库，照旧判红
+        half = self.mk("half", {"exefs/main.npdm": b"npdm", "ctl/control.nacp": b"nacp", "systemdata/fonts/x.ttf": b"font",
+                                "shaders/direct/keys.tsv": b"", "shaders/direct/shader_map.tsv": b"",
+                                "shaders/direct/runtime_only.txt": b"gap\n", f"shaders/direct/{chain}/inputs.tsv": b"game\tx\n"})
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ipa_tail.Red):
+            ipa_tail.check_pack_inputs(half, "t010062b01525c000")
 
     def test_plist_write(self):
         app = self.t / "S2Arm.app"; app.mkdir(); (app / "S2Arm").write_bytes(b"x")

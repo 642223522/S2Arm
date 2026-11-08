@@ -398,6 +398,47 @@ class BundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bundle.write_ipa(self.app, self.app / 'inside.ipa')
 
+    def test_ipa_over_zip32_budget_is_a_readable_red_line(self):
+        """11-08 反馈：9.78 GB 的 PERSONA4 The GOLDEN 出包停在「出包 2/5」、错误码 package_failed「原因没认出来」。
+        不写 zip64（侧载工具读不了）时超过 32 位上限，zipfile 收尾才抛 LargeZipFile——它不是 OSError，父进程只看到「打 ipa 失败」。
+        这里三层都按规则手写预期：条目数预先判死、单文件预先判死、收尾的 LargeZipFile 转成带体积账的 BundleError；三种都不留临时件"""
+        entries = sum(1 for _ in bundle._tree(self.app)[1])
+        with patch.object(bundle, 'ZIP32_ENTRIES', entries - 1):
+            with self.assertRaises(ValueError) as got:
+                bundle.write_ipa(self.app, self.root / 'entries.ipa')
+        self.assertIn(f'{entries} 个条目', str(got.exception))
+        self.assertFalse((self.root / 'entries.ipa').exists())
+        with patch.object(bundle, 'ZIP32_MAX', 8):
+            with self.assertRaises(ValueError) as got:
+                bundle.write_ipa(self.app, self.root / 'single.ipa')
+        self.assertIn('单个文件超过 zip 32 位上限', str(got.exception))
+        self.assertFalse((self.root / 'single.ipa').exists())
+
+        class _FullZip(bundle.zipfile.ZipFile):   # 压缩后装不下：zipfile 在收尾时抛 LargeZipFile（真实行为，见 zipfile._write_end_record）
+            def close(self):
+                raise zipfile.LargeZipFile('Filesize would require ZIP64 extensions')
+            def __del__(self):   # 桩：不让 GC 里再抛一次、把噪音写进被测进程的标准错误
+                pass
+
+        with patch.object(bundle.zipfile, 'ZipFile', _FullZip):
+            with self.assertRaises(ValueError) as got:
+                bundle.write_ipa(self.app, self.root / 'full.ipa')
+        message = str(got.exception)
+        self.assertIn('非 zip64 的 IPA 装不下这份 App', message)
+        self.assertIn(f'{entries} 个条目', message)
+        self.assertIn('文件合计', message)
+        self.assertIn('Filesize would require ZIP64 extensions', message)
+        self.assertFalse((self.root / 'full.ipa').exists())
+        self.assertFalse(list(self.root.glob('.ipa-*')))
+
+    def test_main_turns_large_zipfile_into_one_red_line(self):
+        """write_ipa 之外的口子也要兜住：LargeZipFile 不是 OSError，落成裸 traceback 时调用方只拿到退出码，原因就断了"""
+        with patch.object(bundle, 'write_ipa', side_effect=zipfile.LargeZipFile('Filesize would require ZIP64 extensions')):
+            with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(bundle.main(['write_ipa', str(self.app), str(self.root / 'cli.ipa')]), 1)
+        self.assertIn('【红】App 组装：Filesize would require ZIP64 extensions', err.getvalue())
+        self.assertNotIn('Traceback', err.getvalue())
+
     def test_archive_failure_cleans_temporary_output(self):
         output = self.root / 'failed.ipa'
         with patch.object(bundle.zipfile.ZipFile, 'open', side_effect=OSError('synthetic failure')):

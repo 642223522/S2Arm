@@ -258,33 +258,63 @@ def _zip_entry(name, directory, executable=False):
     return entry
 
 
+# 非 zip64 归档的物理上限（条目数 / 字节数）：侧载工具不认 zip64（见下面的注释），超了 zipfile 在写条目 / 收尾时才抛
+#   LargeZipFile——它不是 OSError，调用方（pack/ipa_tail.py 的「打 ipa」步）原先把整段原因丢掉，玩家的错误码只能落到
+#   package_failed「原因没认出来」（#11：9.78 GB 的 PERSONA4 The GOLDEN 停在出包 2/5）。那单的具体原因是哪一条以红行原文为准，
+#   这里只负责：真撞到上限时给一条读得懂的红行，不落成裸 traceback。
+ZIP32_MAX = zipfile.ZIP64_LIMIT              # 单条 / 整份字节上限（2 GiB − 1）
+ZIP32_ENTRIES = zipfile.ZIP_FILECOUNT_LIMIT  # 条目数上限（65535）
+
+
+def _zip32_budget(entries):
+    """归档前的体积账（只 lstat，不读内容）：→ (条目数, 文件总字节, 最大的那个文件 (相对路径, 字节))。
+    条目数与单文件上限能提前判死；整份的字节上限取决于压缩后大小，写的时候才知道（见 write_ipa 的 LargeZipFile 分支）。"""
+    count, total, biggest = 0, 0, ('', 0)
+    for path, rel, directory in entries:
+        count += 1
+        if directory:
+            continue
+        size = _plain(path).st_size
+        total += size
+        if size > biggest[1]:
+            biggest = (rel, size)
+    return count, total, biggest
+
+
 def write_ipa(signed_app, output_ipa):
     """Archive only: never mutate signed bytes. Permissions derive from bundle metadata."""
     app, entries = _tree(signed_app)
     executable = _executable_paths(app, entries)
+    count, total, (biggest, biggest_size) = _zip32_budget(entries)
+    if count > ZIP32_ENTRIES:
+        raise BundleError(f'App 有 {count} 个条目，超过非 zip64 归档的 {ZIP32_ENTRIES} 个上限（侧载工具读不了 zip64）')
     dest = _destination(output_ipa, app)
     fd, name = tempfile.mkstemp(prefix='.ipa-', dir=dest.parent)
     temp = Path(name)
     try:
-        with os.fdopen(fd, 'w+b') as stream, zipfile.ZipFile(stream, 'w', allowZip64=False) as archive:
-            prefix = 'Payload/S2Arm.app/'
-            archive.writestr(_zip_entry('Payload/', True), b'')
-            archive.writestr(_zip_entry(prefix, True), b'')
-            for path, rel, directory in entries:
-                entry = _zip_entry(prefix + rel + ('/' if directory else ''), directory, rel in executable)
-                if directory:
-                    archive.writestr(entry, b'')
-                else:
-                    before = _plain(path)
-                    # 不写 zip64（11-04 S0-5）：AltServer for Windows 1.8.1 自带 minizip 1.01e 不认 zip64，强制 zip64 时本地头写占位大小、与中央目录不一致，
-                    #   打开条目即 UNZ_BADZIPFILE，侧载报「An unknown error occured while reading the file」。单个文件到 zip 32 位上限就报红，不静默改写格式
-                    if before.st_size > zipfile.ZIP64_LIMIT:
-                        raise BundleError(f'单个文件超过 zip 32 位上限、侧载工具读不了：{rel}（{before.st_size} 字节）')
-                    with path.open('rb') as source, archive.open(entry, 'w', force_zip64=False) as target:
-                        shutil.copyfileobj(source, target, length=1024 * 1024)
-                    after = _plain(path)
-                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                        raise BundleError(f'归档期间文件变了：{rel}')
+        try:
+            with os.fdopen(fd, 'w+b') as stream, zipfile.ZipFile(stream, 'w', allowZip64=False) as archive:
+                prefix = 'Payload/S2Arm.app/'
+                archive.writestr(_zip_entry('Payload/', True), b'')
+                archive.writestr(_zip_entry(prefix, True), b'')
+                for path, rel, directory in entries:
+                    entry = _zip_entry(prefix + rel + ('/' if directory else ''), directory, rel in executable)
+                    if directory:
+                        archive.writestr(entry, b'')
+                    else:
+                        before = _plain(path)
+                        # 不写 zip64（11-04 S0-5）：AltServer for Windows 1.8.1 自带 minizip 1.01e 不认 zip64，强制 zip64 时本地头写占位大小、与中央目录不一致，
+                        #   打开条目即 UNZ_BADZIPFILE，侧载报「An unknown error occured while reading the file」。单个文件到 zip 32 位上限就报红，不静默改写格式
+                        if before.st_size > ZIP32_MAX:
+                            raise BundleError(f'单个文件超过 zip 32 位上限、侧载工具读不了：{rel}（{before.st_size} 字节）')
+                        with path.open('rb') as source, archive.open(entry, 'w', force_zip64=False) as target:
+                            shutil.copyfileobj(source, target, length=1024 * 1024)
+                        after = _plain(path)
+                        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                            raise BundleError(f'归档期间文件变了：{rel}')
+        except zipfile.LargeZipFile as error:   # 压缩后装不下：给一条带体积账的红行，别让它变成裸 traceback（父进程只看得到退出码）
+            raise BundleError(f'非 zip64 的 IPA 装不下这份 App：{count} 个条目、文件合计 {total} 字节、最大 {biggest} {biggest_size} 字节；'
+                              f'zipfile 报「{error}」') from error
         # Atomic no-replace publication on both hosts; no fallback that overwrites an existing IPA.
         os.link(temp, dest)
         return dest
@@ -332,7 +362,9 @@ def main(argv=None):
                            display_name=args.display_name, icon=args.icon, metadata=_values(args.set)))
         else:
             print(write_ipa(args.app, args.output))
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError, zipfile.LargeZipFile) as error:
+        # LargeZipFile 不是 OSError（zipfile 自己的异常类型）：write_ipa 里已转成带体积账的 BundleError，
+        #   这里再兜一层，任何一条路都不许落成裸 traceback——父进程只拿得到退出码，原因就断了。
         print(f'【红】App 组装：{error}', file=sys.stderr)
         return 1
     return 0
