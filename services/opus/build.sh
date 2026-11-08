@@ -39,7 +39,7 @@ if [ ! -s "$OUT/libopus.a" ]; then
   # 浮点版（缺省）、不带深度学习 / 扩展（DRED / 深度 PLC / OSCE / QEXT 缺省关）；arm64 苹果平台 NEON 恒在，免运行时探测
   # 缓存在带空格目录（启动器：~/Library/Application Support）时 autoconf 报「unsafe srcdir」、make 拆路径：configure / make 走无空格别名（tools/nospace.sh）
   source "$ROOT/tools/nospace.sh"; WN=$(s2a_nospace "$W")
-  ( cd "$WN/obj" && CC="$CC" CFLAGS="-O2 -fPIC -ffile-prefix-map=$WN/src=opus" "$WN/src/configure" --host="$HOST" "${EXTRA[@]}" --enable-static --disable-shared \
+  ( cd "$WN/obj" && CC="$CC" CFLAGS="-O2 -fPIC -ffile-prefix-map=$WN/src=opus" "$WN/src/configure" --host="$HOST" ${EXTRA[@]+"${EXTRA[@]}"} --enable-static --disable-shared \
       --disable-doc --disable-extra-programs --disable-rtcd --disable-dependency-tracking \
       > "$W/configure.log" 2>&1 && make -j8 > "$W/make.log" 2>&1 ) || { echo "🔴 opus：$RID 构建失败（$W/*.log）" >&2; tail -5 "$W"/*.log >&2; exit 1; }
   mkdir -p "$W/out/include"; cp "$W/obj/.libs/libopus.a" "$W/out/"; cp "$W/src/include/"*.h "$W/out/include/"
