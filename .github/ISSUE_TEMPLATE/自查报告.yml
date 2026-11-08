@@ -1,0 +1,45 @@
+name: 自查报告（贡献者）
+description: 用自己的游戏和设备跑完 tools/quality_check.py 后，贴报告。报告由工具生成、自动脱敏，可作为能力卡的验证证据。
+title: "[自查] 游戏名 · 机型：一句话结论"
+labels: ["自查报告"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        怎么生成报告见 [贡献者开发测试套件 · 第 1 步](../blob/main/docs/贡献者开发测试套件.md)。提交前请先跑 `python3 tools/caps_ledger.py verify <报告目录>`，确认证据和指纹都能复算。
+        **不要上传游戏文件、密钥、存档、资源包，也不要上传游戏截图。** 打包 `evidence/` 时去掉 `shots_ap/`、`shots/` 两个截图目录（公开仓不收游戏画面；截图的指纹已在 report.json 里，维护方需要抽查时会单独找你）。
+  - type: textarea
+    id: report
+    attributes:
+      label: report.md（整段粘贴）
+      description: 报告目录里的 report.md，原样粘贴，不要改结论或读数。
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: report.json 与 evidence/
+      description: 把 report.json 和去掉截图目录后的 evidence/ 压成一个 zip 拖进来。维护方用它复算指纹、抽查 frames.tsv / 功耗 / host.log。
+      placeholder: 把 zip 拖到这里
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备型号与系统版本
+      description: 和你跑命令时 --device 填的一致，例如 iPhone 17 Pro Max · iOS 27.0.1 或 MacBook Pro M3 · macOS 27.0。
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: 用的仓库提交号
+      description: 跑出包和快检时本地仓库的 `git rev-parse --short HEAD`。
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 补充（可选）
+      description: 报告里「没数据」的项为什么没数据、你看到但工具没判出来的现象（例如闪烁），写在这里。

@@ -1,0 +1,25 @@
+<!-- SPDX-License-Identifier: Apache-2.0; Copyright 2026 S2Arm contributors -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>S2Arm</AssemblyName>
+    <ApplicationIcon>Assets/S2Arm.ico</ApplicationIcon>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.5" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.5" />
+    <ProjectReference Include="../Protocol/Protocol.csproj" />
+    <EmbeddedResource Include="../../../shared/experience.v1.json" LogicalName="S2Arm.experience.v1.json" />
+    <AvaloniaResource Include="Assets/Fonts/*.ttf" />
+    <AvaloniaResource Include="Assets/S2Arm.ico" />
+    <AvaloniaResource Include="../../../macos/Branding/AppIcon-1024.png" Link="Assets/AppIcon.png" />
+    <None Update="Assets/Fonts/OFL.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" TargetPath="licenses/Manrope-OFL.txt" />
+  </ItemGroup>
+</Project>

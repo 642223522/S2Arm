@@ -1,0 +1,16 @@
+S2Arm.app 把 GNU bash 作为独立程序放在 Runtime/bin/bash。
+它由作业用 PATH 单独拉起，不与 S2Arm 的代码静态链接，也不作为 S2Arm 的动态库加载。
+
+许可：GPL-3.0-or-later。
+许可全文：同目录 bash-COPYING.txt（构建 Runtime 时从 Homebrew bash 的 COPYING 复制）。
+对应版本：Runtime/versions.json 里的 bash 字段（Homebrew 报的版本）。
+对应源码：https://ftp.gnu.org/gnu/bash/ 下与该版本一致的 bash-<版本>.tar.gz。
+Homebrew 配方：https://github.com/Homebrew/homebrew-core/blob/master/Formula/b/bash.rb
+
+书面提供：自收到书面请求起，按 GPL-3.0 第 6 节提供上述对应版本的源码。
+请求请发到 https://github.com/jhaizhou-ops/S2Arm/issues （面向维护者）。
+
+Runtime/bin/timeout 不是 GNU coreutils。它是本仓库 tools/bin/timeout（perl 脚本）
+在构建 Runtime 时的拷贝，许可 Apache-2.0，源码在本仓库。
+
+本说明只覆盖上述独立程序，不把 S2Arm 其余代码改为 GPL。

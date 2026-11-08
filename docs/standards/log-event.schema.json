@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "S2Arm acceptance log design, schema version 1",
+  "description": "目标自动化验收记录协议；本 schema 不表示生产者已接入。普通诊断日志不必登记 event，也不属于此验收记录 schema。验证本结构后，仍须按 log-events.json 检查 event/event_version 和对应 data_schema。timestamp 是生产者采样时刻；seq 仅是同一 run_id/source_id 下 writer 的递增序号，不保证跨线程或跨来源因果关系。64 位整数使用合法 JSON 整数，消费者不得经 JavaScript Number 丢失精度。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "source_id", "seq", "timestamp", "elapsed_us", "level", "component", "event", "event_version", "message", "data"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1, "description": "同一局所有来源共享的身份；不得把旧局记录归入本局。"},
+    "source_id": {"type": "string", "minLength": 1, "description": "本局内一个 writer 序列的稳定身份；重启或重置序号须使用新来源身份。"},
+    "seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "同来源 writer 序号，单位：条。递增性由流验证器检查；不是全局因果时钟。"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$", "description": "生产者采样时的 UTC 墙钟，RFC 3339，必须以 Z 结尾；不是落盘时刻。"},
+    "elapsed_us": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "自本局约定单调时钟零点起的采样时间，单位：微秒；不得由可能回拨的墙钟差分代替。"},
+    "level": {"enum": ["DEBUG", "INFO", "WARNING", "ERROR", "FATAL"], "description": "诊断严重程度；判格必须读取 event/data 及证据完整性，不能只按 level。"},
+    "component": {"type": "string", "minLength": 1},
+    "event": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$", "description": "log-events.json 中登记的稳定事件名。"},
+    "event_version": {"type": "integer", "minimum": 1, "description": "登记项的载荷语义版本；与 schema_version 分开演进。"},
+    "message": {"type": "string", "minLength": 1, "description": "供人阅读的说明；自动化不得重新依赖其中的字面匹配。"},
+    "data": {"type": "object", "description": "由对应 catalog 项 data_schema 进一步校验；frame、窗口和业务字段均放在此处。"},
+    "pid": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "可获得时记录的生产进程号。"},
+    "tid": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "可获得时记录的生产线程号；不表示因果顺序。"},
+    "source_file": {"type": "string", "minLength": 1, "description": "可获得时记录的源码路径。"},
+    "source_line": {"type": "integer", "minimum": 1, "description": "可获得时记录的一起算源码行号。"}
+  }
+}

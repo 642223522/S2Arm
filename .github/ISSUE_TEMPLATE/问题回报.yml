@@ -1,0 +1,94 @@
+name: 问题回报
+description: 游戏打不开、画面不对、卡顿发热、出包失败……都用这个模板。填得越全，修得越快。
+title: "[问题] 游戏名：一句话现象"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请注意：**不要上传 prod.keys、游戏文件（NSP / XCI）或资源包**，它们涉及版权和你的个人密钥。上传日志和截图前，请检查并遮盖个人信息。
+  - type: input
+    id: game
+    attributes:
+      label: 游戏名与版本
+      description: 游戏名 + 版本号（Mac 前端游戏详情里能看到，例如「1.0.34.0」）。知道 Title ID（16 位，例如 0100726014352000）也请填上。
+      placeholder: 暗黑破坏神 2 重制版 1.0.34.0（0100726014352000）
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 在哪台设备上出的问题
+      options:
+        - iPhone
+        - iPad
+        - Mac（前端里打包或启动）
+        - 出包的电脑（一键出包命令）
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 诊断包（最重要，工具自动脱敏）
+      description: |
+        **先导出诊断包再填别的。** 诊断包由工具生成、自动去掉本机路径 / 设备号 / 账号等私有信息，里面已带设备型号、系统版本、包号和日志，下面这几项诊断包有的就不用手填。
+        **iPhone / iPad**：游戏中四指同时长按屏幕 1.5 秒 →「导出诊断包」（或在 iPhone「设置 → 这款游戏」里打开「打开 App 时导出诊断包」），把得到的 `s2a_diag_….zip` 拖进这里。导不出来时，打开「文件」App →「我的 iPhone」→ 这款游戏的 App 文件夹，把 `host.log`、`host.prev.log`、`unpack.log` 拖进来。
+        **Mac 前端**：菜单栏「S2Arm → 导出诊断包…」，把导出的文件拖进这里；或在出错的提示里点「复制错误摘要」粘贴进来。
+        **一键出包命令**：输出目录里的 `logs` 文件夹打包上传。
+      placeholder: 把日志文件拖到这里，或粘贴错误摘要
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备型号与系统版本
+      description: 诊断包里已带，导不出诊断包时再填。iPhone / iPad 在「设置 → 通用 → 关于本机」查看；Mac 在「 → 关于本机」查看。
+      placeholder: iPhone 17 Pro Max，iOS 27.0.1
+  - type: dropdown
+    id: install
+    attributes:
+      label: iPhone / iPad 用什么装的包（Mac 问题可不填）
+      options:
+        - AltStore Classic
+        - Xcode（个人团队）
+        - PlumeImpactor
+        - SideStore
+        - 其他（写在下面「现象」里）
+  - type: input
+    id: package
+    attributes:
+      label: 包号
+      description: 诊断包里已带，导不出诊断包时再填。一键出包结束时最后一行会打印「包号」；也可以填 IPA 的文件名和出包日期。
+      placeholder: 包号 8cf4073a1-1337665b
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 发生了什么、你期望是什么样。画面问题请说清在游戏的哪个地方（哪一关 / 哪个菜单）。
+      placeholder: 进入第一章战斗后画面有一半是黑的，期望正常显示。
+    validations:
+      required: true
+  - type: dropdown
+    id: repro
+    attributes:
+      label: 能复现吗
+      options:
+        - 每次都会
+        - 有时会（大概几次里出一次，写在下面）
+        - 只遇到过一次
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎么复现
+      description: 从打开 App 开始，一步一步写。
+      placeholder: |
+        1. 打开 App，进入游戏
+        2. 选择继续游戏
+        3. 走到第一个路口就闪退
+  - type: textarea
+    id: media
+    attributes:
+      label: 截图 / 录屏
+      description: 画面问题、卡顿请尽量录一段屏（iPhone 控制中心里的「屏幕录制」）。文件太大可以只截出问题那几秒。

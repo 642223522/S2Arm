@@ -1,0 +1,19 @@
+name: 社区联系
+description: 联系维护者、请求私下沟通，或报告可公开的社区行为。
+title: "[社区联系] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **这是公开的 GitHub Issue，不是私密举报渠道。**
+        如需私下沟通，只写“请求私下联系”，等待维护者提供非公开联系方式。
+        不要填写骚扰细节、涉事者、私人证据、联系方式、密钥、游戏文件或存档。
+        社区规则见 [行为准则](https://github.com/jhaizhou-ops/S2Arm/blob/main/CODE_OF_CONDUCT.md)。
+  - type: textarea
+    id: message
+    attributes:
+      label: 联系事项（公开）
+      description: 只填写你愿意公开的内容；需要非公开沟通时无需说明事件经过。
+      placeholder: 请求私下联系
+    validations:
+      required: true

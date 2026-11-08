@@ -1,0 +1,192 @@
+// Derived from NX2Apple frontend/Sources/NX2Apple/LauncherView.swift (908e4e84, MIT; see ../../UPSTREAM.md).
+// S2Arm changes: one page, the Library (the Builds and Settings pages, engine sync banner, artwork editor, Manage menu, console mode
+// and gamepad driver are not taken); the state is S2ArmLauncherModel (adapter services) instead of LauncherStores; while a game runs
+// the library gives way to JobSessionView (the launch job's events and Stop), and Back returns to the library. Second cut: the top bar
+// adds Add games (open panel, or drop files on the window → import job) and the environment check (EnvironmentView); the options
+// sheet is joined by the install-to-iPhone sheet (InstallView); any job (prepare, install, import) runs in JobSessionView. Export
+// (11-07): a game's Export opens ExportView in place of the library (platforms, options, start), and an export runs in
+// ExportSessionView (platform queue, steps, time left, per-platform results); the free-up-space sheet (FreeSpaceView) and
+// change library (JobSessionView, setup job) sit beside them.
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+import NXCore
+import NXModel
+import NXLauncher
+import S2ArmAppleAdapter
+
+struct LauncherView: View {
+    @ObservedObject var model: S2ArmLauncherModel
+    @EnvironmentObject var loc: Localizer
+    @StateObject var padFocus = PadFocus()
+    @StateObject var row = RowScroller()
+    @StateObject var covers = CoverCache()
+    @State var installFor: String?
+    @State var spaceFor: String?
+    @State var moreFor: String?
+    @State var saveFor: String?
+    @State var inputFor: String?
+    @State var deleteFor: GameSummary?
+    @State private var dropTargeted = false
+    @State var collectionHeight: CGFloat = 300
+    let brand: String
+
+    /// Room for the controller's focus ring, which sits 4 pt outside a card.
+    static let ringRoom: CGFloat = 6
+
+    /// What the host's own messages use: the launch job takes zh-Hans or en.
+    var uiLanguage: String { loc.lang == .zh ? "zh-Hans" : "en" }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            topBar
+            Divider().opacity(0.3)
+            if let result = model.viewingResult, let run = result.export {
+                ExportSessionView(model: model, covers: covers, session: result, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
+            } else if let session = model.session, let run = session.export, !model.sessionHidden {
+                ExportSessionView(model: model, covers: covers, session: session, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
+            } else if let session = model.session, session.export == nil, !model.isInline(session) {
+                JobSessionView(model: model, session: session)
+            } else if let id = model.exportFor, let game = model.games.first(where: { $0.id == id }) {
+                ExportView(model: model, covers: covers, game: game) { installFor = game.id }
+            } else {
+                libraryPage
+                    .overlay {
+                        if dropTargeted {
+                            RoundedRectangle(cornerRadius: 18).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                                .padding(16).allowsHitTesting(false)
+                        }
+                    }
+                    .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
+                        Self.fileURLs(providers) { urls in
+                            // 拖进来的是 prod.keys 就当密钥放，别当游戏报错
+                            if urls.count == 1, urls[0].pathExtension.lowercased() == "keys" { model.importKeys(urls[0]) } else { model.importGames(urls) }
+                        }
+                        return true
+                    }
+            }
+        }
+        .padScope("main", padFocus)
+        .environmentObject(padFocus)
+        .launcherDropdownHost()
+        .background(LauncherPalette.background)
+        .background(LauncherWindowChrome())
+        .ignoresSafeArea(.container, edges: .top)
+        .preferredColorScheme(.dark)
+        .tint(LauncherPalette.cream)
+        .font(.manrope(13))
+        .frame(minWidth: 900, idealWidth: 1280, minHeight: 680, idealHeight: 900)
+        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl() }
+        .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
+            InstallView(model: model, gameID: target.id).environmentObject(loc)
+        }
+        .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: { spaceFor = $0?.id })) { target in
+            FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
+        }
+        .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
+            SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)
+        }
+        .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: { inputFor = $0?.id })) { target in
+            InputSettingsSheet(model: model, gameID: target.id).environmentObject(loc)
+        }
+        .alert(txt("game.delete.title").replacingOccurrences(of: "{0}", with: deleteFor?.name ?? ""), isPresented: Binding(get: { deleteFor != nil }, set: { if !$0 { deleteFor = nil } })) {
+            Button(txt("game.cancel"), role: .cancel) { deleteFor = nil }
+            Button(txt("game.delete.confirm"), role: .destructive) { if let g = deleteFor { model.deleteGame(g) }; deleteFor = nil }
+        } message: { Text(txt("game.delete.body")) }
+        .sheet(isPresented: $model.showAddGames) { ImportSheet(model: model, kind: .games).environmentObject(loc) }
+        .sheet(isPresented: $model.showKeys) { ImportSheet(model: model, kind: .keys).environmentObject(loc) }
+        .sheet(isPresented: $model.showEnvironment) {
+            EnvironmentView(model: model).environmentObject(loc)
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Text(brand).font(.manrope(22, .bold)).tracking(-0.6).lineLimit(1).fixedSize()
+            Spacer()
+            if model.loading { ProgressView().controlSize(.small) }
+            exportPill
+            // 界面语言：一键切到另一种（同旧启动器 LanguageSwitch，维护者 10-23「不让玩家先选」）；当场生效、记住选择，不用重启（11-07 维护者 验收）
+            Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
+                Label(loc.lang == .zh ? "English" : "简体中文", systemImage: "globe").font(.manrope(12.5, .semibold))
+            }
+            .buttonStyle(LauncherSecondaryButtonStyle())
+            .accessibilityIdentifier("top.language")
+            Button { model.showAddGames = true } label: {
+                Label(loc.t("s2arm.action.import"), systemImage: "plus").font(.manrope(12.5, .semibold))
+            }
+            .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+            Button { model.showEnvironment = true } label: {
+                HStack(spacing: 7) {
+                    Circle().fill(environmentColor).frame(width: 7, height: 7)
+                    Text(loc.t("s2arm.env.title")).font(.manrope(12.5, .semibold))
+                }
+            }
+            .buttonStyle(LauncherSecondaryButtonStyle())
+        }
+        .padding(.leading, 90).padding(.trailing, 24)   // the window's traffic lights sit in the transparent title bar
+        .frame(height: 52)   // = a unified toolbar's title bar: the system centres the traffic lights in it, so they share this bar's midline
+        .background(TitlebarDoubleClick())
+        .background(UnifiedTitlebar())
+    }
+
+    /// An empty unified toolbar makes the (transparent) title bar as tall as the top bar, and macOS then centres the
+    /// close / minimise / zoom buttons vertically in it: the brand line and the three buttons share one midline
+    /// without placing the buttons by hand (AppKit would move hand-placed buttons back on resize and full screen).
+    private struct UnifiedTitlebar: NSViewRepresentable {
+        final class Host: NSView {
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                guard let window, window.toolbar == nil else { return }
+                window.toolbar = NSToolbar(identifier: "s2arm.titlebar")
+                window.toolbarStyle = .unified
+                window.titlebarSeparatorStyle = .none
+            }
+        }
+        func makeNSView(context: Context) -> NSView { Host() }
+        func updateNSView(_ nsView: NSView, context: Context) {}
+    }
+
+    private struct OptionsTarget: Identifiable { let id: String }
+
+    private var environmentColor: Color {
+        switch model.environmentState {
+        case .unknown: return LauncherPalette.unbuilt
+        case .ready, .readyMac: return LauncherPalette.ready   // readyMac：Mac 上能玩，只差打 iPhone 包的项（环境检查页里单列）
+        case .missing: return LauncherPalette.danger
+        }
+    }
+
+    func txt(_ id: String) -> String { BackendText.launcherText(id, language: uiLanguage) }
+
+    /// 收起运行页、或还有排队时：顶部这颗胶囊回到出包页。
+    @ViewBuilder private var exportPill: some View {
+        if let session = model.session, session.export != nil, model.sessionHidden {
+            Button { model.sessionHidden = false } label: {
+                HStack(spacing: 7) {
+                    if model.busy { ProgressView().controlSize(.mini) } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(LauncherPalette.ready) }
+                    Text(txt(model.busy ? "export.pill.running" : "export.pill.done").replacingOccurrences(of: "{0}", with: session.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                    if !model.exportQueue.isEmpty {
+                        Text(txt("export.pill.queue").replacingOccurrences(of: "{0}", with: "\(model.exportQueue.count)")).font(.manrope(12)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+            .buttonStyle(LauncherSecondaryButtonStyle())
+        }
+    }
+
+    /// The file URLs of a drop, delivered together on the main queue.
+    static func fileURLs(_ providers: [NSItemProvider], _ done: @escaping ([URL]) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [URL] = []
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url { lock.lock(); urls.append(url); lock.unlock() }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { done(urls) }
+    }
+}

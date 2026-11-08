@@ -1,0 +1,6534 @@
+[
+ {
+  "source": "开发中",
+  "en": "In development"
+ },
+ {
+  "source": "更多工具",
+  "en": "More tools"
+ },
+ {
+  "source": "导入版本",
+  "en": "Imported version"
+ },
+ {
+  "source": "诊断详情",
+  "en": "Diagnostic details"
+ },
+ {
+  "source": "已出好的 iPhone 包",
+  "en": "Ready iPhone builds"
+ },
+ {
+  "source": "IPA 会移到废纸篓，可从废纸篓找回。删的是这款最后一个包时，资源包也一起移走。",
+  "en": "The IPA goes to the Trash and can be recovered from there. If it is this game's last build, its resource pack is moved too."
+ },
+ {
+  "source": "产物已清理",
+  "en": "Build files removed"
+ },
+ {
+  "source": "删除失败：",
+  "en": "Delete failed: "
+ },
+ {
+  "source": "删除这个 iPhone 包？",
+  "en": "Delete this iPhone build?"
+ },
+ {
+  "source": "已移到废纸篓。",
+  "en": "Moved to the Trash."
+ },
+ {
+  "source": "旧版本 ",
+  "en": "Older builds: "
+ },
+ {
+  "source": "这款游戏不在当前游戏库里，没法装",
+  "en": "This game is not in the current library, so it cannot be installed"
+ },
+ {
+  "source": "重新出包",
+  "en": "Build again"
+ },
+ {
+  "source": "（最后一次出包 ",
+  "en": " (last built "
+ },
+ {
+  "source": "没找到这款的资源包目录：重新「打 iPhone 包」后再装到 iPhone。",
+  "en": "Resource pack folder not found for this game: build the iPhone app again, then install it on the iPhone."
+ },
+ {
+  "source": "仍要启动（可能丢掉没做完的导入 / 恢复）",
+  "en": "Launch anyway (may lose the unfinished import / restore)"
+ },
+ {
+  "source": "先去备份存档",
+  "en": "Back up saves first"
+ },
+ {
+  "source": "上次的存档导入或恢复没做完，自动回退失败。可以先备份当前存档；启动游戏时会再确认是否仍要启动。记录不会删除，下次启动会再试恢复。",
+  "en": "The last save import or restore did not finish and could not be rolled back automatically. You can back up the current saves first; launching the game will ask again whether to launch anyway. The record is kept and recovery is retried on the next launch."
+ },
+ {
+  "source": "在访达中显示事务记录",
+  "en": "Show transaction record in Finder"
+ },
+ {
+  "source": "，资源包推了",
+  "en": ", resource pack: pushed"
+ },
+ {
+  "source": "，资源包已是最新（没有要推的文件）",
+  "en": ", resource pack already up to date (nothing to push)"
+ },
+ {
+  "source": "已自动安装 .NET SDK，但复查仍未通过。请在「设置 → 环境检查」查看 .NET 一项的说明。",
+  "en": ".NET SDK was installed automatically, but the recheck still fails. See the .NET item in Settings → Environment check."
+ },
+ {
+  "source": "已下载 Metal 编译组件，但复查仍未通过。请在「设置 → 环境检查」查看 Metal 一项的说明。",
+  "en": "The Metal compiler components were downloaded, but the recheck still fails. See the Metal item in Settings → Environment check."
+ },
+ {
+  "source": "宽屏",
+  "en": "Widescreen"
+ },
+ {
+  "source": "60 帧",
+  "en": "60 FPS"
+ },
+ {
+  "source": "这款没有 60 帧表",
+  "en": "No 60 FPS table for this game"
+ },
+ {
+  "source": "宽屏和 60 帧会提高系统负载和耗电，换取更好的游玩体验，低配设备请谨慎选择。",
+  "en": "Widescreen and 60 FPS improve the experience but increase system load and power use. Use with care on less powerful devices."
+ },
+ {
+  "source": "改完下次启动生效，不用重新打包。",
+  "en": "Changes take effect on the next launch. No rebuild needed."
+ },
+ {
+  "source": "打包时命中社区或你导入的着色器缓存会自动并入，首次进游戏更顺。",
+  "en": "Matching community or imported shader caches are included automatically when building, for a smoother first launch."
+ },
+ {
+  "source": "导入自己的 yuzu / Ryujinx 着色器缓存…",
+  "en": "Import your yuzu / Ryujinx shader cache…"
+ },
+ {
+  "source": "缓存要和你的游戏版本一致才有用。",
+  "en": "The cache must match your game version to be useful."
+ },
+ {
+  "source": "选 yuzu / Eden / suyu / sudachi 的 vulkan.bin、opengl.bin，或 Ryujinx 的着色器缓存目录（含 shared.toc / guest.toc）",
+  "en": "Choose vulkan.bin or opengl.bin from yuzu / Eden / suyu / sudachi, or a Ryujinx shader cache folder containing shared.toc / guest.toc."
+ },
+ {
+  "source": "已导入：",
+  "en": "Imported: "
+ },
+ {
+  "source": "，下次打包时并入",
+  "en": "; will be included in the next build"
+ },
+ {
+  "source": "没导入 ",
+  "en": "Not imported: "
+ },
+ {
+  "source": "S2Arm 已验证",
+  "en": "Verified by S2Arm"
+ },
+ {
+  "source": "社区：",
+  "en": "Community: "
+ },
+ {
+  "source": " 等",
+  "en": " and others"
+ },
+ {
+  "source": "版本与你的游戏不同，打包时按特征跨版本定位",
+  "en": "The version differs from your game. Matching across versions is performed during the build."
+ },
+ {
+  "source": "画面",
+  "en": "Graphics"
+ },
+ {
+  "source": "没有可用补丁",
+  "en": "No patches available"
+ },
+ {
+  "source": "已验证",
+  "en": "Verified"
+ },
+ {
+  "source": "社区未验证",
+  "en": "Not verified by the community"
+ },
+ {
+  "source": "补丁一律打进包里，宽屏和 60 帧在这里（或 iPhone 的 App 设置）开关，下次启动生效，不用重新打包。",
+  "en": "All patches are included in the build. Toggle widescreen and 60 FPS here (or in the iPhone app settings). Changes take effect on the next launch without rebuilding."
+ },
+ {
+  "source": "社区资源",
+  "en": "Community resources"
+ },
+ {
+  "source": "社区资源说明",
+  "en": "About community resources"
+ },
+ {
+  "source": "这款没有宽屏表",
+  "en": "No widescreen table for this game"
+ },
+ {
+  "source": "这款游戏的内存配置已损坏，请重新打包后再启动。",
+  "en": "This game's memory configuration is damaged. Rebuild the game before launching it."
+ },
+ {
+  "source": "启动器版本过旧，请更新后重新打包这款游戏。",
+  "en": "This launcher is out of date. Update it, then rebuild this game."
+ },
+ {
+  "source": "这款游戏需要重新打包，完成后即可启动。",
+  "en": "Rebuild this game before launching it."
+ },
+ {
+  "source": "请更新 S2Arm，再重新打包这款游戏。",
+  "en": "Update S2Arm, then rebuild this game."
+ },
+ {
+  "source": "未测",
+  "en": "Not measured"
+ },
+ {
+  "source": "本机历史 · {0} 次记录",
+  "en": "Local history · {0} records"
+ },
+ {
+  "source": "默认参考值",
+  "en": "Default reference"
+ },
+ {
+  "source": "估时来源未知",
+  "en": "Estimate source unknown"
+ },
+ {
+  "source": "复用缓存，本机还没有复用记录，按 0 秒计",
+  "en": "Reuses the cache; no local reuse records yet, counted as 0 s"
+ },
+ {
+  "source": "游戏库与产物",
+  "en": "Library and output"
+ },
+ {
+  "source": "临时复制",
+  "en": "Temporary copy"
+ },
+ {
+  "source": "数据卷",
+  "en": "Data volume"
+ },
+ {
+  "source": "经验预算",
+  "en": "Rule-based budget"
+ },
+ {
+  "source": "按实际复制量计算",
+  "en": "Based on actual copy size"
+ },
+ {
+  "source": "按实测",
+  "en": "Based on measured usage"
+ },
+ {
+  "source": "仍然继续",
+  "en": "Continue anyway"
+ },
+ {
+  "source": "预算依据未知",
+  "en": "Budget basis unknown"
+ },
+ {
+  "source": "达到预检门槛",
+  "en": "Preflight threshold met"
+ },
+ {
+  "source": "空间不足",
+  "en": "Insufficient space"
+ },
+ {
+  "source": "空间状态未知",
+  "en": "Space status unknown"
+ },
+ {
+  "source": "源文件大小",
+  "en": "Source file size"
+ },
+ {
+  "source": "未量化，不计入门槛",
+  "en": "Unquantified; excluded from the threshold"
+ },
+ {
+  "source": "这是预检时的空间快照，重试时会重新检查；达到门槛不代表后续不会用满磁盘。",
+  "en": "Space snapshot at preflight; checked again on retry. Meeting the threshold does not guarantee the disk will not fill up later."
+ },
+ {
+  "source": "耗时估算依据",
+  "en": "Time estimate sources"
+ },
+ {
+  "source": "预计时间会按实际进度校准，不是完成时限。",
+  "en": "Estimates adjust to actual progress and are not completion deadlines."
+ },
+ {
+  "source": "需要：",
+  "en": "Required: "
+ },
+ {
+  "source": "可用：",
+  "en": "Available: "
+ },
+ {
+  "source": "空间预检",
+  "en": "Space preflight"
+ },
+ {
+  "source": "系统盘",
+  "en": "System disk"
+ },
+ {
+  "source": "着色器缓存",
+  "en": "Shader cache"
+ },
+ {
+  "source": "游戏大小 × 2 + 10 GB 经验门槛（10-23 Spare-host 实测，偏保守）",
+  "en": "Game size × 2 + 10 GB rule-based threshold (conservative, measured on a MacBook Air on Oct 23)"
+ },
+ {
+  "source": "游戏库在另一块磁盘上，跨卷临时复制，按源文件实际字节",
+  "en": "Temporary copy from a library on another volume, using actual source bytes"
+ },
+ {
+  "source": "着色器缓存另占若干 GB，随游戏与设备而变，未量化，不计入门槛。",
+  "en": "Shader caches use additional space that varies by game and device; unquantified and excluded from the threshold."
+ },
+ {
+  "source": "本机最近准备记录的中位数",
+  "en": "Median of recent preparation records on this Mac"
+ },
+ {
+  "source": "本机最近准备记录的中位数，按游戏体积换算",
+  "en": "Median of recent preparation records on this Mac, scaled by game size"
+ },
+ {
+  "source": "缺省值来自 10-23 奥德赛实测（{0} GB），按游戏体积换算",
+  "en": "Default from the Oct 23 Odyssey measurement ({0} GB), scaled by game size"
+ },
+ {
+  "source": "缺省值来自 10-23 奥德赛实测（{0} GB），不随体积变",
+  "en": "Default from the Oct 23 Odyssey measurement ({0} GB), independent of game size"
+ },
+ {
+  "source": "S2Arm 工具退出，当前阶段未完成。",
+  "en": "The S2Arm tool exited before completing this stage."
+ },
+ {
+  "source": "检查环境和输入文件，查看对应日志后重试。",
+  "en": "Check the environment and input files, review the task log, then retry."
+ },
+ {
+  "source": "源码入口已结束，但未找到输出，请查看日志。",
+  "en": "The source script finished, but its output is missing. Check the log."
+ },
+ {
+  "source": "跨平台编译",
+  "en": "Cross-platform builds"
+ },
+ {
+  "source": "安卓",
+  "en": "Android"
+ },
+ {
+  "source": "APK、游戏资源包与账本",
+  "en": "APK, game resource pack and manifest"
+ },
+ {
+  "source": "使用游戏库中的游戏生成 Android APK 和与之绑定的资源包。",
+  "en": "Build an Android APK and its bound resource pack from a game in your library."
+ },
+ {
+  "source": "安装到已连接设备（可选，填写设备序列号）",
+  "en": "Install on a connected device (optional serial number)"
+ },
+ {
+  "source": "安卓游戏运行时",
+  "en": "Android game runtime"
+ },
+ {
+  "source": "游戏运行时已接入。",
+  "en": "The game runtime is available."
+ },
+ {
+  "source": "安卓游戏运行时尚未接入。",
+  "en": "The Android game runtime is not yet available."
+ },
+ {
+  "source": "鸿蒙",
+  "en": "HarmonyOS"
+ },
+ {
+  "source": "检查环境",
+  "en": "Check environment"
+ },
+ {
+  "source": "编译",
+  "en": "Build"
+ },
+ {
+  "source": "准备工具链",
+  "en": "Prepare toolchain"
+ },
+ {
+  "source": "IPA 与游戏资源包",
+  "en": "IPA and game resource pack"
+ },
+ {
+  "source": "调试 APK",
+  "en": "Debug APK"
+ },
+ {
+  "source": "原生目标文件（.o）",
+  "en": "Native object files (.o)"
+ },
+ {
+  "source": "跨平台界面组件缺失，请重新安装完整应用。",
+  "en": "Cross-platform UI components are missing. Reinstall the complete application."
+ },
+ {
+  "source": "已启用",
+  "en": "Enabled"
+ },
+ {
+  "source": "可选 · 未启用",
+  "en": "Optional · Disabled"
+ },
+ {
+  "source": "启用",
+  "en": "Enable"
+ },
+ {
+  "source": "源码目录",
+  "en": "Source directory"
+ },
+ {
+  "source": "输出内容",
+  "en": "Build output"
+ },
+ {
+  "source": "源码编译入口",
+  "en": "Source build entry point"
+ },
+ {
+  "source": "游戏包文件夹",
+  "en": "Game package folder"
+ },
+ {
+  "source": "本体、更新与 DLC 所在文件夹",
+  "en": "Folder containing the base game, updates and DLC"
+ },
+ {
+  "source": "由源码执行 adhoc 签名；IPA 的安装要求由目标设备与源码方案决定。",
+  "en": "The source script uses ad-hoc signing. IPA installation requirements depend on the device and source implementation."
+ },
+ {
+  "source": "下载并准备 Docker 工具链",
+  "en": "Download and prepare Docker tools"
+ },
+ {
+  "source": "需要先安装并启动 Docker。点击后由源码的 Dockerfile 下载工具链，不会连接或安装到设备。",
+  "en": "Install and start Docker first. The source Dockerfile downloads the tools when requested. No device connection or installation is performed."
+ },
+ {
+  "source": "OpenHarmony NDK",
+  "en": "OpenHarmony NDK"
+ },
+ {
+  "source": "HAP 导出：等待源码提供打包入口",
+  "en": "HAP export: awaiting a source packaging entry point"
+ },
+ {
+  "source": "编译环境",
+  "en": "Build prerequisites"
+ },
+ {
+  "source": "开始编译",
+  "en": "Start build"
+ },
+ {
+  "source": "请等待当前构建、游戏运行或准备队列结束。",
+  "en": "Wait for the current build, game session or preparation queue to finish."
+ },
+ {
+  "source": "跨平台编译…",
+  "en": "Cross-platform builds…"
+ },
+ {
+  "source": "检查配置并重试",
+  "en": "Review settings and retry"
+ },
+ {
+  "source": "iOS、安卓与鸿蒙均为可选项，在独立页面中启用与配置。",
+  "en": "iOS, Android and HarmonyOS are optional. Enable and configure them on the build page."
+ },
+ {
+  "source": "管理跨平台编译",
+  "en": "Manage cross-platform builds"
+ },
+ {
+  "source": "同一款游戏的本体、更新与 DLC 所在文件夹",
+  "en": "Folder containing one game and its updates and DLC"
+ },
+ {
+  "source": "prod.keys 仅按路径传给源码入口",
+  "en": "Only the prod.keys path is passed to the source script"
+ },
+ {
+  "source": "需要玩家提供的 .bfttf 字体",
+  "en": "Player-provided .bfttf fonts are required"
+ },
+ {
+  "source": "iOS SDK",
+  "en": "iOS SDK"
+ },
+ {
+  "source": "使用设置中的完整 Xcode 与 iPhoneOS SDK",
+  "en": "Use the full Xcode and iPhoneOS SDK selected in Settings"
+ },
+ {
+  "source": ".NET SDK",
+  "en": ".NET SDK"
+ },
+ {
+  "source": "源码出包需要外部 .NET 10 SDK",
+  "en": "The source build requires an external .NET 10 SDK"
+ },
+ {
+  "source": "Docker 工具链",
+  "en": "Docker tools"
+ },
+ {
+  "source": "Docker 需运行，镜像 s2arm-android-build:1 需准备完成",
+  "en": "Docker must be running with the s2arm-android-build:1 image available"
+ },
+ {
+  "source": "检查编译配置",
+  "en": "Check build configuration"
+ },
+ {
+  "source": "执行源码编译入口",
+  "en": "Run source build entry point"
+ },
+ {
+  "source": "下载所选平台源码",
+  "en": "Download selected platform source"
+ },
+ {
+  "source": "由源码 Dockerfile 准备工具链",
+  "en": "Prepare tools using the source Dockerfile"
+ },
+ {
+  "source": "任务已取消。",
+  "en": "Task cancelled."
+ },
+ {
+  "source": "不支持的界面任务。",
+  "en": "Unsupported UI task."
+ },
+ {
+  "source": "选择游戏包后，直接使用 S2Arm 已有的 iOS 出包功能生成 IPA 与资源包。",
+  "en": "Select game packages to use the existing S2Arm iOS build feature and produce an IPA and resource pack."
+ },
+ {
+  "source": "直接使用 S2Arm 已有的 Android 构建功能生成调试 APK。当前提供 Android 壳，游戏加载与渲染仍在开发。",
+  "en": "Use the existing S2Arm Android build feature to produce a debug APK. It currently provides the Android shell; game loading and rendering are still in development."
+ },
+ {
+  "source": "直接使用 S2Arm 已有的鸿蒙原生层构建功能。当前仅生成目标文件，尚未提供 HAP 打包功能。",
+  "en": "Use the existing S2Arm HarmonyOS native build feature. It currently produces object files; HAP packaging is not yet available."
+ },
+ {
+  "source": "选择目标平台，直接使用 S2Arm 已有的编译功能。其他平台支持按需添加。",
+  "en": "Choose a platform and use the existing S2Arm build features. Add support for other platforms as needed."
+ },
+ {
+  "source": "平台支持已就绪",
+  "en": "Platform support is ready"
+ },
+ {
+  "source": "尚未添加此平台支持",
+  "en": "Platform support has not been added"
+ },
+ {
+  "source": "添加平台支持",
+  "en": "Add platform support"
+ },
+ {
+  "source": "已有功能自动复用；缺少的平台组件仅在添加时下载。",
+  "en": "Existing features are reused automatically. Missing platform components are downloaded only when added."
+ },
+ {
+  "source": "编译完成后可在任务中打开产物。",
+  "en": "Open the output from the task when the build finishes."
+ },
+ {
+  "source": "启用后可检查环境并开始编译。",
+  "en": "Enable this platform to check prerequisites and build."
+ },
+ {
+  "source": "选择游戏包…",
+  "en": "Choose game packages…"
+ },
+ {
+  "source": "密钥、共享字体和 Xcode 自动复用现有设置。",
+  "en": "Keys, shared fonts and Xcode use the existing settings automatically."
+ },
+ {
+  "source": "管理玩家数据与环境",
+  "en": "Manage player data and tools"
+ },
+ {
+  "source": "自动检测已安装的 DevEco Studio 与 OpenHarmony 工具链。",
+  "en": "Automatically detects installed DevEco Studio and OpenHarmony tools."
+ },
+ {
+  "source": "检查所需组件与玩家数据，满足条件后即可编译。",
+  "en": "Check the required components and player data before building."
+ },
+ {
+  "source": "平台支持",
+  "en": "Platform support"
+ },
+ {
+  "source": "已复用 S2Arm 提供的平台功能。",
+  "en": "Using the existing S2Arm platform feature."
+ },
+ {
+  "source": "请先添加此平台支持。",
+  "en": "Add support for this platform first."
+ },
+ {
+  "source": "已自动识别 OpenHarmony NDK。",
+  "en": "OpenHarmony NDK detected automatically."
+ },
+ {
+  "source": "请安装 DevEco Studio 与 OpenHarmony NDK 后重新检查。",
+  "en": "Install DevEco Studio and OpenHarmony NDK, then check again."
+ },
+ {
+  "source": "平台组件不完整，请检查任务日志或重新安装应用。",
+  "en": "Platform components are incomplete. Check the task log or reinstall the application."
+ },
+ {
+  "source": "请先添加安卓平台支持。",
+  "en": "Add Android platform support first."
+ },
+ {
+  "source": "使用游戏库中的游戏与现有的 iPhone 出包功能，按目标设备生成 IPA 与资源包。",
+  "en": "Use a game from your library and the existing iPhone packaging feature to build an IPA and resource pack for the target device."
+ },
+ {
+  "source": "选择游戏",
+  "en": "Choose a game"
+ },
+ {
+  "source": "复用游戏库、目标设备、应用字体与一键安装 .NET SDK。",
+  "en": "Reuses your library, target device, bundled fonts and one-click .NET SDK installation."
+ },
+ {
+  "source": "未连接手柄",
+  "en": "No controller connected"
+ },
+ {
+  "source": "已连接手柄",
+  "en": "Controller connected"
+ },
+ {
+  "source": "全局输入映射",
+  "en": "Global input mapping"
+ },
+ {
+  "source": "{0} · 输入映射",
+  "en": "{0} · Input mapping"
+ },
+ {
+  "source": "保存后在下次启动游戏时生效，无需重新编译。",
+  "en": "Changes apply the next time you launch a game. No rebuild needed."
+ },
+ {
+  "source": "关闭",
+  "en": "Close"
+ },
+ {
+  "source": "配置",
+  "en": "Configuration"
+ },
+ {
+  "source": "按键映射",
+  "en": "Button mapping"
+ },
+ {
+  "source": "鼠标与摇杆",
+  "en": "Mouse & sticks"
+ },
+ {
+  "source": "恢复默认",
+  "en": "Restore defaults"
+ },
+ {
+  "source": "复制全局配置",
+  "en": "Copy global settings"
+ },
+ {
+  "source": "保存配置",
+  "en": "Save mapping"
+ },
+ {
+  "source": "Switch 输入",
+  "en": "Switch input"
+ },
+ {
+  "source": "键盘（点击录入）",
+  "en": "Keyboard (click to record)"
+ },
+ {
+  "source": "鼠标",
+  "en": "Mouse"
+ },
+ {
+  "source": "手柄物理位置",
+  "en": "Controller position"
+ },
+ {
+  "source": "请按键…（Esc 取消）",
+  "en": "Press a key… (Esc cancels)"
+ },
+ {
+  "source": "未绑定",
+  "en": "Unbound"
+ },
+ {
+  "source": "左键",
+  "en": "Left button"
+ },
+ {
+  "source": "右键",
+  "en": "Right button"
+ },
+ {
+  "source": "中键",
+  "en": "Middle button"
+ },
+ {
+  "source": "侧键 1",
+  "en": "Side button 1"
+ },
+ {
+  "source": "侧键 2",
+  "en": "Side button 2"
+ },
+ {
+  "source": "模式",
+  "en": "Mode"
+ },
+ {
+  "source": "转动视角（Esc 切换捕获）",
+  "en": "Camera (Esc toggles capture)"
+ },
+ {
+  "source": "触屏指针",
+  "en": "Touch pointer"
+ },
+ {
+  "source": "横向灵敏度",
+  "en": "Horizontal sensitivity"
+ },
+ {
+  "source": "纵向灵敏度",
+  "en": "Vertical sensitivity"
+ },
+ {
+  "source": "横向反转",
+  "en": "Invert horizontal"
+ },
+ {
+  "source": "纵向反转",
+  "en": "Invert vertical"
+ },
+ {
+  "source": "停止移动后摇杆回中",
+  "en": "Center stick when mouse stops"
+ },
+ {
+  "source": "失焦、最小化或系统输入框出现时会释放鼠标并清空输入。",
+  "en": "The mouse is released and inputs are cleared when focus is lost, the window is minimized, or a system text field appears."
+ },
+ {
+  "source": "手柄",
+  "en": "Controller"
+ },
+ {
+  "source": "摇杆死区",
+  "en": "Stick dead zone"
+ },
+ {
+  "source": "来源",
+  "en": "Source"
+ },
+ {
+  "source": "反转",
+  "en": "Invert"
+ },
+ {
+  "source": "默认按 Switch 物理位置映射；单玩家。断开手柄立即清空该设备输入。",
+  "en": "Defaults follow the Switch physical layout. One player supported. Disconnecting a controller clears its inputs immediately."
+ },
+ {
+  "source": "本体",
+  "en": "Base game"
+ },
+ {
+  "source": "更新",
+  "en": "Update"
+ },
+ {
+  "source": "未知内容",
+  "en": "Unknown content"
+ },
+ {
+  "source": "仅验证启动",
+  "en": "Startup tested"
+ },
+ {
+  "source": "Mac 已验证",
+  "en": "Mac tested"
+ },
+ {
+  "source": "实验性",
+  "en": "Experimental"
+ },
+ {
+  "source": "暂不支持",
+  "en": "Unsupported"
+ },
+ {
+  "source": "排队",
+  "en": "Queued"
+ },
+ {
+  "source": "取消中",
+  "en": "Cancelling"
+ },
+ {
+  "source": "中断",
+  "en": "Interrupted"
+ },
+ {
+  "source": "导入游戏",
+  "en": "Import games"
+ },
+ {
+  "source": "准备游戏",
+  "en": "Prepare game"
+ },
+ {
+  "source": "迁移构建",
+  "en": "Migrate build"
+ },
+ {
+  "source": "运行游戏",
+  "en": "Run game"
+ },
+ {
+  "source": "导入密钥",
+  "en": "Import keys"
+ },
+ {
+  "source": "环境检查",
+  "en": "Environment check"
+ },
+ {
+  "source": "安装 Metal 编译组件",
+  "en": "Install Metal compiler"
+ },
+ {
+  "source": "卸载 Metal 编译组件",
+  "en": "Uninstall Metal compiler"
+ },
+ {
+  "source": "键盘：{0} 与 {1} 重复",
+  "en": "Keyboard: {0} and {1} share a binding"
+ },
+ {
+  "source": "鼠标：{0} 与 {1} 重复",
+  "en": "Mouse: {0} and {1} share a binding"
+ },
+ {
+  "source": "手柄：{0} 与 {1} 重复",
+  "en": "Controller: {0} and {1} share a binding"
+ },
+ {
+  "source": "手柄轴：{0} 与 {1} 重复",
+  "en": "Controller axis: {0} and {1} share a binding"
+ },
+ {
+  "source": "空格",
+  "en": "Space"
+ },
+ {
+  "source": "删除",
+  "en": "Delete"
+ },
+ {
+  "source": "键码 {0}",
+  "en": "Key code {0}"
+ },
+ {
+  "source": "左摇杆按下",
+  "en": "Left stick click"
+ },
+ {
+  "source": "右摇杆按下",
+  "en": "Right stick click"
+ },
+ {
+  "source": "十字键左",
+  "en": "D-pad left"
+ },
+ {
+  "source": "十字键上",
+  "en": "D-pad up"
+ },
+ {
+  "source": "十字键右",
+  "en": "D-pad right"
+ },
+ {
+  "source": "十字键下",
+  "en": "D-pad down"
+ },
+ {
+  "source": "左摇杆上",
+  "en": "Left stick up"
+ },
+ {
+  "source": "左摇杆下",
+  "en": "Left stick down"
+ },
+ {
+  "source": "左摇杆左",
+  "en": "Left stick left"
+ },
+ {
+  "source": "左摇杆右",
+  "en": "Left stick right"
+ },
+ {
+  "source": "右摇杆上",
+  "en": "Right stick up"
+ },
+ {
+  "source": "右摇杆下",
+  "en": "Right stick down"
+ },
+ {
+  "source": "右摇杆左",
+  "en": "Right stick left"
+ },
+ {
+  "source": "右摇杆右",
+  "en": "Right stick right"
+ },
+ {
+  "source": "右侧按钮",
+  "en": "East button"
+ },
+ {
+  "source": "下侧按钮",
+  "en": "South button"
+ },
+ {
+  "source": "上侧按钮",
+  "en": "North button"
+ },
+ {
+  "source": "左侧按钮",
+  "en": "West button"
+ },
+ {
+  "source": "左肩键",
+  "en": "Left shoulder"
+ },
+ {
+  "source": "右肩键",
+  "en": "Right shoulder"
+ },
+ {
+  "source": "左扳机",
+  "en": "Left trigger"
+ },
+ {
+  "source": "右扳机",
+  "en": "Right trigger"
+ },
+ {
+  "source": "菜单（＋）",
+  "en": "Menu (+)"
+ },
+ {
+  "source": "选项（－）",
+  "en": "Options (−)"
+ },
+ {
+  "source": "方向键左",
+  "en": "D-pad left"
+ },
+ {
+  "source": "方向键上",
+  "en": "D-pad up"
+ },
+ {
+  "source": "方向键右",
+  "en": "D-pad right"
+ },
+ {
+  "source": "方向键下",
+  "en": "D-pad down"
+ },
+ {
+  "source": "左摇杆横向",
+  "en": "Left stick horizontal"
+ },
+ {
+  "source": "左摇杆纵向",
+  "en": "Left stick vertical"
+ },
+ {
+  "source": "右摇杆横向",
+  "en": "Right stick horizontal"
+ },
+ {
+  "source": "右摇杆纵向",
+  "en": "Right stick vertical"
+ },
+ {
+  "source": "尚未导入密钥",
+  "en": "No keys imported"
+ },
+ {
+  "source": "Metal 编译组件",
+  "en": "Metal Compiler"
+ },
+ {
+  "source": "准备环境",
+  "en": "Set up environment"
+ },
+ {
+  "source": "添加游戏",
+  "en": "Add games"
+ },
+ {
+  "source": "开始导入",
+  "en": "Get started"
+ },
+ {
+  "source": "上次运行被中断，可验证已有阶段后重试。",
+  "en": "The previous run was interrupted. Retry to validate and reuse completed stages."
+ },
+ {
+  "source": "选择游戏库（首次请选择空文件夹）",
+  "en": "Choose a game library (use an empty folder for a new library)"
+ },
+ {
+  "source": "请等待游戏、准备队列和工具链任务结束后再管理组件。",
+  "en": "Wait for the game, preparation queue, and toolchain tasks to finish before managing components."
+ },
+ {
+  "source": "请先安装完整 Xcode 并通过环境检查。",
+  "en": "Install the full Xcode app and pass the environment check first."
+ },
+ {
+  "source": "未检测到可卸载的 Metal 组件，或当前 Xcode 不支持卸载。",
+  "en": "No removable Metal component was found, or this Xcode version does not support removal."
+ },
+ {
+  "source": "Metal 编译组件已卸载，可随时重新安装。",
+  "en": "Metal compiler uninstalled. You can reinstall it at any time."
+ },
+ {
+  "source": "Metal 编译组件已安装。",
+  "en": "Metal compiler installed."
+ },
+ {
+  "source": "请先导入 prod.keys，再添加游戏",
+  "en": "Import prod.keys before adding games"
+ },
+ {
+  "source": "导入玩家自己的 prod.keys",
+  "en": "Import your own prod.keys"
+ },
+ {
+  "source": "已导入",
+  "en": "Imported"
+ },
+ {
+  "source": "添加 NSP 文件或扫描文件夹",
+  "en": "Add NSP files or scan folders"
+ },
+ {
+  "source": "导入完成，源文件保持原样。",
+  "en": "Import completed. Original files are unchanged."
+ },
+ {
+  "source": "游戏已导入，请完成工具链检查后准备运行文件。",
+  "en": "Games imported. Finish the toolchain check before preparing them."
+ },
+ {
+  "source": "导入完成，文件齐全的游戏已加入准备队列；完成后可启动。",
+  "en": "Import completed. Games with all required files are queued for preparation; launch them when ready."
+ },
+ {
+  "source": "尚未导入 prod.keys",
+  "en": "No prod.keys imported"
+ },
+ {
+  "source": "工作进程已退出。可重试并验证完成阶段。",
+  "en": "The worker exited. Retry to validate completed stages."
+ },
+ {
+  "source": "无法启动本地组件：{0}",
+  "en": "Unable to start a local component: {0}"
+ },
+ {
+  "source": "操作失败，请查看任务日志。",
+  "en": "The operation failed. Check the task log."
+ },
+ {
+  "source": "已从队列移除",
+  "en": "Removed from queue"
+ },
+ {
+  "source": "游戏已准备完成，可以启动。",
+  "en": "Game preparation completed. Ready to launch."
+ },
+ {
+  "source": "构建与游戏运行互斥，请等待当前任务结束。",
+  "en": "Preparation and gameplay cannot run together. Wait for the current task to finish."
+ },
+ {
+  "source": "选择原 BreathOfTheWild 构建文件夹",
+  "en": "Choose the original BreathOfTheWild build folder"
+ },
+ {
+  "source": "S2Arm-诊断.zip",
+  "en": "S2Arm-Diagnostics.zip"
+ },
+ {
+  "source": "映射已保存，下次启动游戏时生效，无需重新编译。",
+  "en": "Mapping saved. Changes apply on the next game launch without rebuilding."
+ },
+ {
+  "source": "游戏库",
+  "en": "Library"
+ },
+ {
+  "source": "准备任务",
+  "en": "Tasks"
+ },
+ {
+  "source": "设置",
+  "en": "Settings"
+ },
+ {
+  "source": "任务进行中",
+  "en": "Task in progress"
+ },
+ {
+  "source": "本地运行",
+  "en": "Runs locally"
+ },
+ {
+  "source": "游戏与密钥由玩家自行导入",
+  "en": "Import your own games and keys"
+ },
+ {
+  "source": "先检查环境、选择游戏库并导入 prod.keys，再添加 NSP（⌘O）",
+  "en": "Set up the environment, choose a library, and import prod.keys before adding NSP files (⌘O)"
+ },
+ {
+  "source": "输入映射",
+  "en": "Input mapping"
+ },
+ {
+  "source": "设置全局键鼠与手柄映射",
+  "en": "Configure global keyboard, mouse, and controller mappings"
+ },
+ {
+  "source": "操作未完成",
+  "en": "Operation incomplete"
+ },
+ {
+  "source": "知道了",
+  "en": "OK"
+ },
+ {
+  "source": "打开日志",
+  "en": "Open logs"
+ },
+ {
+  "source": "关闭提示",
+  "en": "Dismiss notification"
+ },
+ {
+  "source": "随时，开启下一段旅程。",
+  "en": "Your next adventure awaits."
+ },
+ {
+  "source": "让喜爱的游戏，在 Mac 上继续。",
+  "en": "Keep your favorite games going on Mac."
+ },
+ {
+  "source": "款游戏",
+  "en": "Games"
+ },
+ {
+  "source": "可启动",
+  "en": "Ready to play"
+ },
+ {
+  "source": "搜索游戏或 Title ID",
+  "en": "Search games or Title ID"
+ },
+ {
+  "source": "搜索游戏",
+  "en": "Search games"
+ },
+ {
+  "source": "收藏你的第一段旅程",
+  "en": "Add your first adventure"
+ },
+ {
+  "source": "先检查系统、Xcode 与 Metal 组件，\n再选择游戏库、导入密钥和游戏。",
+  "en": "Check macOS, Xcode, and Metal first.\nThen choose a library and import keys and games."
+ },
+ {
+  "source": "密钥已就绪，添加支持版本的 NSP。\n文件齐全后自动准备，完成后点击启动。",
+  "en": "Keys are ready. Add supported NSP versions.\nGames prepare automatically; launch them when ready."
+ },
+ {
+  "source": "先选择游戏库并导入 prod.keys，\n再添加游戏、准备运行文件。",
+  "en": "Choose a library and import prod.keys first.\nThen add games and prepare their runtime files."
+ },
+ {
+  "source": "游戏、密钥与固件均需自行提供",
+  "en": "Provide your own games, keys, and firmware"
+ },
+ {
+  "source": "版本待识别",
+  "en": "Version not identified"
+ },
+ {
+  "source": "环境",
+  "en": "Environment"
+ },
+ {
+  "source": "密钥",
+  "en": "Keys"
+ },
+ {
+  "source": "游戏",
+  "en": "Games"
+ },
+ {
+  "source": "准备",
+  "en": "Prepare"
+ },
+ {
+  "source": "启动",
+  "en": "Launch"
+ },
+ {
+  "source": "先导入 prod.keys，才能读取和添加游戏。",
+  "en": "Import prod.keys before reading and adding games."
+ },
+ {
+  "source": "先完成环境检查和安装，再导入玩家内容。",
+  "en": "Check and install the environment before importing player content."
+ },
+ {
+  "source": "继续设置",
+  "en": "Continue setup"
+ },
+ {
+  "source": "已验证启动；完整游戏流程仍需玩家验证。",
+  "en": "Startup tested. Full gameplay still needs player testing."
+ },
+ {
+  "source": "已有引擎配置，尚未完成 Mac 实机验收。",
+  "en": "An engine profile exists; Mac hardware testing is still pending."
+ },
+ {
+  "source": "新增内容或引擎更新尚未准备；启动将使用上次成功版本。",
+  "en": "New content or engine updates are not prepared yet. Launch uses the last successful version."
+ },
+ {
+  "source": "启动游戏",
+  "en": "Launch game"
+ },
+ {
+  "source": "重新检查并准备",
+  "en": "Check & prepare again"
+ },
+ {
+  "source": "准备运行文件",
+  "en": "Prepare game"
+ },
+ {
+  "source": "键鼠与手柄映射",
+  "en": "Keyboard, mouse & controller"
+ },
+ {
+  "source": "准备条件未满足",
+  "en": "Requirements not met"
+ },
+ {
+  "source": "导入内容",
+  "en": "Imported content"
+ },
+ {
+  "source": "在访达中查看存档",
+  "en": "Show saves in Finder"
+ },
+ {
+  "source": "管理游戏",
+  "en": "Manage game"
+ },
+ {
+  "source": "迁移已有旷野之息构建…",
+  "en": "Migrate existing Breath of the Wild build…"
+ },
+ {
+  "source": "移出游戏库（保留文件与存档）",
+  "en": "Remove from library (keep files & saves)"
+ },
+ {
+  "source": "清理构建缓存…",
+  "en": "Clear build cache…"
+ },
+ {
+  "source": "删除托管 NSP 副本…",
+  "en": "Delete managed NSP copies…"
+ },
+ {
+  "source": "删除托管 NSP 副本？",
+  "en": "Delete managed NSP copies?"
+ },
+ {
+  "source": "清理构建缓存？",
+  "en": "Clear build cache?"
+ },
+ {
+  "source": "取消",
+  "en": "Cancel"
+ },
+ {
+  "source": "确认清理",
+  "en": "Confirm cleanup"
+ },
+ {
+  "source": "仅处理托管副本；原始文件、存档和上次成功的运行版本保留。",
+  "en": "Only managed copies are affected. Original files, saves, and the last successful runtime version are kept."
+ },
+ {
+  "source": "准备队列串行执行；准备游戏时可以继续导入文件和修改映射。",
+  "en": "Preparation tasks run one at a time. You can still import files and edit mappings during preparation."
+ },
+ {
+  "source": "暂无任务",
+  "en": "No tasks yet"
+ },
+ {
+  "source": "导入后，文件齐全的游戏会自动加入准备队列；也可在详情中手动准备。",
+  "en": "Imported games with all required files are queued automatically. You can also prepare them from game details."
+ },
+ {
+  "source": "排队 {0}：{1}",
+  "en": "Queue {0}: {1}"
+ },
+ {
+  "source": "移出队列",
+  "en": "Remove from queue"
+ },
+ {
+  "source": "整体阶段 {0}/{1}",
+  "en": "Overall stage {0}/{1}"
+ },
+ {
+  "source": "预计剩余 {0} 秒",
+  "en": "About {0} seconds remaining"
+ },
+ {
+  "source": "处理中，总量暂不可确定",
+  "en": "Working; total is not available yet"
+ },
+ {
+  "source": "{0} 秒",
+  "en": "{0} seconds"
+ },
+ {
+  "source": "结束游戏",
+  "en": "End game"
+ },
+ {
+  "source": "取消任务",
+  "en": "Cancel task"
+ },
+ {
+  "source": "重试",
+  "en": "Retry"
+ },
+ {
+  "source": "游戏库与玩家数据",
+  "en": "Library & player data"
+ },
+ {
+  "source": "存储位置",
+  "en": "Storage location"
+ },
+ {
+  "source": "未选择",
+  "en": "Not selected"
+ },
+ {
+  "source": "选择或切换游戏库…",
+  "en": "Choose or switch library…"
+ },
+ {
+  "source": "玩家密钥",
+  "en": "Player keys"
+ },
+ {
+  "source": "导入 prod.keys…",
+  "en": "Import prod.keys…"
+ },
+ {
+  "source": "先准备环境，再选择游戏库、导入密钥和游戏。密钥通常只需导入一次，可供多款游戏共用；仅保存在本机私有目录，不随诊断包导出。",
+  "en": "Set up the environment, choose a library, then import keys and games. Usually one key import serves multiple games. Keys stay in private local storage and are excluded from diagnostics."
+ },
+ {
+  "source": "导入后自动准备支持的游戏",
+  "en": "Automatically prepare supported games after import"
+ },
+ {
+  "source": "仅将本体、所需更新及构建标识均匹配的游戏加入队列。准备完成后由你点击启动。",
+  "en": "Only games with matching base files, required updates, and build IDs are queued. Click Launch when preparation finishes."
+ },
+ {
+  "source": "Apple 工具链",
+  "en": "Apple toolchain"
+ },
+ {
+  "source": "Xcode Developer 目录",
+  "en": "Xcode Developer directory"
+ },
+ {
+  "source": "首次安装需完整 Xcode。打开 Xcode 并完成许可及初始组件安装，再安装 Metal 编译组件。",
+  "en": "The full Xcode app is required. Open it and complete license acceptance and initial component setup, then install the Metal compiler."
+ },
+ {
+  "source": "控制与诊断",
+  "en": "Controls & diagnostics"
+ },
+ {
+  "source": "导出诊断包…",
+  "en": "Export diagnostics…"
+ },
+ {
+  "source": "重新打开首次运行向导",
+  "en": "Reopen setup assistant"
+ },
+ {
+  "source": "关于S2Arm",
+  "en": "About S2Arm"
+ },
+ {
+  "source": "S2Arm S2Arm",
+  "en": "S2Arm"
+ },
+ {
+  "source": "开发版本",
+  "en": "Development build"
+ },
+ {
+  "source": "包号",
+  "en": "Build ID"
+ },
+ {
+  "source": "独立的社区启动器。基于 S2Arm；与 Nintendo 无隶属或认可关系。",
+  "en": "An independent community launcher powered by S2Arm. Not affiliated with or endorsed by Nintendo."
+ },
+ {
+  "source": "上游 S2Arm",
+  "en": "Upstream S2Arm"
+ },
+ {
+  "source": "开源许可与版权说明",
+  "en": "Open-source licenses & copyright"
+ },
+ {
+  "source": "在 App Store 获取 Xcode",
+  "en": "Get Xcode on the App Store"
+ },
+ {
+  "source": "重新检查",
+  "en": "Check again"
+ },
+ {
+  "source": "卸载 Metal 编译组件…",
+  "en": "Uninstall Metal compiler…"
+ },
+ {
+  "source": "卸载 Apple 管理的共享组件，可重新安装",
+  "en": "Remove the shared Apple-managed component; you can reinstall it"
+ },
+ {
+  "source": "当前 Xcode 不支持命令行卸载组件",
+  "en": "This Xcode version does not support command-line component removal"
+ },
+ {
+  "source": "卸载 Metal 编译组件？",
+  "en": "Uninstall Metal compiler?"
+ },
+ {
+  "source": "卸载组件",
+  "en": "Uninstall component"
+ },
+ {
+  "source": "这是 Xcode 管理的共享组件，卸载也会影响其他使用它的项目。卸载后无法准备或重新编译游戏，可随时重新安装。游戏文件、密钥和存档会保留。",
+  "en": "This shared component is managed by Xcode. Removing it also affects other projects that use it. You will need to reinstall it to prepare or rebuild games. Games, keys, and saves are kept."
+ },
+ {
+  "source": "先准备 Mac 运行环境。需要 Apple Silicon、macOS 15 或更新系统、完整 Xcode 和 Metal 编译组件。检查通过后再导入玩家内容。",
+  "en": "Set up your Mac first: Apple Silicon, macOS 15 or later, the full Xcode app, and the Metal compiler are required. Import player content after the checks pass."
+ },
+ {
+  "source": "正在检查运行环境…",
+  "en": "Checking the environment…"
+ },
+ {
+  "source": "缺少环境时，按以下顺序安装：",
+  "en": "If components are missing, install them in this order:"
+ },
+ {
+  "source": "1. 获取完整 Xcode，打开一次，完成许可与初始组件安装。\n2. 在下方填写 Xcode 的 Developer 目录并重新检查。\n3. 缺少 Metal 时点击安装；其余构建依赖已随应用提供。",
+  "en": "1. Get the full Xcode app, open it, and complete license acceptance and initial setup.\n2. Enter its Developer directory below and check again.\n3. Install Metal if missing. Other build dependencies are bundled with this app."
+ },
+ {
+  "source": "环境已就绪，可以继续选择游戏库。",
+  "en": "Environment ready. Continue to choose a game library."
+ },
+ {
+  "source": "检查并安装环境",
+  "en": "Check & install environment"
+ },
+ {
+  "source": "选择游戏库",
+  "en": "Choose a library"
+ },
+ {
+  "source": "导入 prod.keys",
+  "en": "Import prod.keys"
+ },
+ {
+  "source": "欢迎使用S2Arm",
+  "en": "Welcome to S2Arm"
+ },
+ {
+  "source": "先准备环境，再导入密钥和游戏。",
+  "en": "Set up the environment, then import keys and games."
+ },
+ {
+  "source": "游戏文件会复制到此位置，支持外置硬盘。请为大型游戏预留充足空间。S2Arm不附带游戏、密钥或固件，所有内容均由玩家自行导入。",
+  "en": "Game files are copied here. External drives are supported; allow enough space for large games. S2Arm includes no games, keys, or firmware. Import your own content."
+ },
+ {
+  "source": "选择游戏库文件夹…",
+  "en": "Choose library folder…"
+ },
+ {
+  "source": "尚未选择",
+  "en": "Nothing selected yet"
+ },
+ {
+  "source": "先导入 prod.keys，应用才能读取游戏内容。通常只需导入一次，多款游戏可共用这份密钥集合。",
+  "en": "Import prod.keys so the app can read your games. Usually one import provides a key set shared by multiple games."
+ },
+ {
+  "source": "正在检查并导入密钥…",
+  "en": "Checking and importing keys…"
+ },
+ {
+  "source": "导入时检查格式，首次读取游戏时验证解密能力。密钥仅保存在本机私有目录，源文件保持原样。",
+  "en": "The format is checked on import; decryption is verified when reading a game. Keys stay in private local storage. Your original file is unchanged."
+ },
+ {
+  "source": "密钥已就绪，可以添加游戏",
+  "en": "Keys ready. You can add games."
+ },
+ {
+  "source": "选择支持版本的 NSP 本体、更新及可选 DLC，或扫描所在文件夹。导入时会验证密钥和文件内容，缺少版本会明确提示。",
+  "en": "Choose a supported base NSP, required updates, and optional DLC, or scan their folder. Keys and file contents are verified on import. Missing versions are listed explicitly."
+ },
+ {
+  "source": "文件齐全后加入准备队列；完成后由你点击“启动游戏”。可在设置中关闭自动准备。",
+  "en": "Games with complete files enter the preparation queue. Click “Launch game” when ready. You can disable automatic preparation in Settings."
+ },
+ {
+  "source": "环境检查已通过，导入后会再次检查准备条件。",
+  "en": "Environment checks passed. Preparation requirements are checked again after import."
+ },
+ {
+  "source": "上一步",
+  "en": "Back"
+ },
+ {
+  "source": "稍后添加",
+  "en": "Add later"
+ },
+ {
+  "source": "添加游戏…",
+  "en": "Add games…"
+ },
+ {
+  "source": "继续",
+  "en": "Continue"
+ },
+ {
+  "source": "导入密钥…",
+  "en": "Import keys…"
+ },
+ {
+  "source": "S2Arm",
+  "en": "S2Arm"
+ },
+ {
+  "source": "编译并验证 Metal 库",
+  "en": "Compile and verify Metal libraries"
+ },
+ {
+  "source": "阶段没有生成完整产物，未记录成功缓存。",
+  "en": "The stage did not produce complete output. No successful cache was recorded."
+ },
+ {
+  "source": "已验证并复用完成阶段",
+  "en": "Validated and reused a completed stage"
+ },
+ {
+  "source": "阶段完成",
+  "en": "Stage completed"
+ },
+ {
+  "source": "Apple 工具链不完整，请在设置中安装 Xcode 和 Metal 编译组件。",
+  "en": "The Apple toolchain is incomplete. Install Xcode and the Metal compiler in Settings."
+ },
+ {
+  "source": "着色器转换组件缺失，请重新安装完整应用。",
+  "en": "The shader converter is missing. Reinstall the full app."
+ },
+ {
+  "source": "编译 Mac 主程序",
+  "en": "Build Mac host"
+ },
+ {
+  "source": "检测到仅输入前端更新，迁移已有阶段后逐项验证；主程序重新编译。",
+  "en": "Only the input frontend changed. Existing stages will be migrated and validated; the host will be rebuilt."
+ },
+ {
+  "source": "Metal 工具链不可用，无法创建一致的着色器链。",
+  "en": "The Metal toolchain is unavailable. A consistent shader chain cannot be created."
+ },
+ {
+  "source": "着色器常量表版本不一致。",
+  "en": "Shader constant table version mismatch."
+ },
+ {
+  "source": "找不到本机系统字体。",
+  "en": "No system font found on this Mac."
+ },
+ {
+  "source": "运行目录不完整。",
+  "en": "The runtime directory is incomplete."
+ },
+ {
+  "source": "运行目录缺少代码模块。",
+  "en": "The runtime directory is missing code modules."
+ },
+ {
+  "source": "重写代码模块不完整。",
+  "en": "Rewritten code modules are incomplete."
+ },
+ {
+  "source": "游戏资源缺少配置指定的文件。",
+  "en": "Game resources are missing a file required by the profile."
+ },
+ {
+  "source": "Vulkan 着色器库缺失。",
+  "en": "The Vulkan shader library is missing."
+ },
+ {
+  "source": "Metal 着色器缓存缺失。",
+  "en": "The Metal shader cache is missing."
+ },
+ {
+  "source": "Metal 着色器缓存不完整或版本不一致。",
+  "en": "The Metal shader cache is incomplete or its version does not match."
+ },
+ {
+  "source": "验证游戏、工具链与缓存",
+  "en": "Validate game, toolchain, and cache"
+ },
+ {
+  "source": "托管源文件已丢失或内容发生改变，请重新导入。",
+  "en": "Managed source files are missing or have changed. Import them again."
+ },
+ {
+  "source": "准备游戏需要约 {0} GB 可用空间。",
+  "en": "Game preparation requires about {0} GB of free space."
+ },
+ {
+  "source": "处理 DLC",
+  "en": "Process DLC"
+ },
+ {
+  "source": "重写原生代码",
+  "en": "Rewrite native code"
+ },
+ {
+  "source": "采集运行时 GLSLC 着色器",
+  "en": "Capture runtime GLSLC shaders"
+ },
+ {
+  "source": "采集运行时 Vulkan 着色器",
+  "en": "Capture runtime Vulkan shaders"
+ },
+ {
+  "source": "转换并编译 Vulkan 着色器",
+  "en": "Convert and compile Vulkan shaders"
+ },
+ {
+  "source": "提取并核对着色器",
+  "en": "Extract and verify shaders"
+ },
+ {
+  "source": "转换并编译 Metal 着色器",
+  "en": "Convert and compile Metal shaders"
+ },
+ {
+  "source": "检查并安装运行版本",
+  "en": "Validate and install runtime version"
+ },
+ {
+  "source": "首版迁移仅支持已有《旷野之息》Mac 构建目录。",
+  "en": "Migration currently supports existing Breath of the Wild Mac builds only."
+ },
+ {
+  "source": "验证迁移来源",
+  "en": "Validate migration source"
+ },
+ {
+  "source": "迁移来源没有有效的游戏与着色器构建记录。",
+  "en": "The migration source has no valid game and shader build record."
+ },
+ {
+  "source": "迁移目录缺少完整 Mac 游戏资源。",
+  "en": "The migration folder is missing complete Mac game resources."
+ },
+ {
+  "source": "迁移代码模块构建标识不匹配。",
+  "en": "Migration code module build IDs do not match."
+ },
+ {
+  "source": "迁移来源的着色器映射表与当前配置不同。",
+  "en": "The migration shader mapping table differs from the current profile."
+ },
+ {
+  "source": "为当前工具链更新着色器缓存",
+  "en": "Update shader cache for this toolchain"
+ },
+ {
+  "source": "工具链已变化且迁移目录没有着色器包，请执行正常准备流程。",
+  "en": "The toolchain changed and the migration folder contains no shader package. Use normal preparation instead."
+ },
+ {
+  "source": "复用已验证资源",
+  "en": "Reuse validated resources"
+ },
+ {
+  "source": "源目录保持原样；运行版本使用克隆副本。",
+  "en": "The source folder is unchanged. The runtime version uses cloned copies."
+ },
+ {
+  "source": "重新编译配置化 Mac 主程序",
+  "en": "Rebuild Mac host with configurable input"
+ },
+ {
+  "source": "安装独立运行版本",
+  "en": "Install standalone runtime version"
+ },
+ {
+  "source": "游戏运行中",
+  "en": "Game running"
+ },
+ {
+  "source": "游戏进程异常退出，启动器仍可使用。请查看日志或重试。",
+  "en": "The game process exited unexpectedly. The launcher is still available. Check the log or retry."
+ },
+ {
+  "source": "系统未提供可用的 Metal 设备。请确认使用 Apple Silicon 并在本机图形会话中启动。",
+  "en": "No Metal device is available. Use an Apple Silicon Mac and launch from a local graphical session."
+ },
+ {
+  "source": "运行时着色器链不一致，请重新准备游戏。",
+  "en": "Runtime shader chain mismatch. Prepare the game again."
+ },
+ {
+  "source": "游戏运行遇到引擎兼容问题。请查看日志；实验性配置可能尚不能正常运行。",
+  "en": "The game encountered an engine compatibility issue. Check the log; experimental profiles may not run correctly yet."
+ },
+ {
+  "source": "不支持的输入配置版本。",
+  "en": "Unsupported input configuration version."
+ },
+ {
+  "source": "输入配置包含未知目标。",
+  "en": "The input configuration contains an unknown target."
+ },
+ {
+  "source": "无效的键盘绑定（Esc 保留给鼠标捕获）。",
+  "en": "Invalid keyboard binding (Esc is reserved for mouse capture)."
+ },
+ {
+  "source": "Command 保留给系统快捷键。",
+  "en": "Command is reserved for system shortcuts."
+ },
+ {
+  "source": "不支持的鼠标按钮。",
+  "en": "Unsupported mouse button."
+ },
+ {
+  "source": "不支持的手柄按钮。",
+  "en": "Unsupported controller button."
+ },
+ {
+  "source": "{0} 存在重复绑定，请先解除冲突。",
+  "en": "Duplicate bindings on {0}. Resolve conflicts first."
+ },
+ {
+  "source": "手柄摇杆配置无效。",
+  "en": "Invalid controller stick configuration."
+ },
+ {
+  "source": "手柄轴存在重复绑定。",
+  "en": "Duplicate controller axis bindings."
+ },
+ {
+  "source": "鼠标灵敏度应在 0.1–10 之间。",
+  "en": "Mouse sensitivity must be between 0.1 and 10."
+ },
+ {
+  "source": "鼠标模式无效。",
+  "en": "Invalid mouse mode."
+ },
+ {
+  "source": "手柄死区无效。",
+  "en": "Invalid controller dead zone."
+ },
+ {
+  "source": "创建游戏库",
+  "en": "Create game library"
+ },
+ {
+  "source": "请选择空文件夹或已有S2Arm（NS Mac）游戏库，避免混入其他文件。",
+  "en": "Choose an empty folder or an existing S2Arm (NS Mac) library to avoid mixing unrelated files."
+ },
+ {
+  "source": "检查系统与工具链",
+  "en": "Check system and toolchain"
+ },
+ {
+  "source": "缺失",
+  "en": "Missing"
+ },
+ {
+  "source": "需要完整 Xcode，请检查 Developer 目录，不能仅使用 Command Line Tools",
+  "en": "The full Xcode app is required. Check the Developer directory; Command Line Tools alone are insufficient."
+ },
+ {
+  "source": "可用空间",
+  "en": "Free space"
+ },
+ {
+  "source": "{0} GB（大型游戏通常需要 40–80 GB）",
+  "en": "{0} GB (large games usually need 40–80 GB)"
+ },
+ {
+  "source": "构建组件",
+  "en": "Build components"
+ },
+ {
+  "source": "NSP 读取、Python、着色器转换组件由应用管理",
+  "en": "NSP reader, Python, and shader converters are managed by the app"
+ },
+ {
+  "source": "导入玩家密钥",
+  "en": "Import player keys"
+ },
+ {
+  "source": "已验证解密能力",
+  "en": "Decryption verified"
+ },
+ {
+  "source": "格式检查通过；首次读取 NSP 时验证解密能力",
+  "en": "Format verified; decryption will be checked when reading the first NSP"
+ },
+ {
+  "source": "无法解密或验证 NSP 元数据，请检查密钥是否正确、文件是否完整。",
+  "en": "Unable to decrypt or validate NSP metadata. Check the keys and file integrity."
+ },
+ {
+  "source": "无法识别 NSP 元数据，请检查密钥、文件完整性和文件类型。",
+  "en": "Unable to identify NSP metadata. Check the keys, file integrity, and file type."
+ },
+ {
+  "source": "此游戏尚无原生适配配置",
+  "en": "This game has no native adaptation profile yet"
+ },
+ {
+  "source": "缺少本体 v0",
+  "en": "Missing base game v0"
+ },
+ {
+  "source": "缺少更新 {0}（{1}）",
+  "en": "Missing update {0} ({1})"
+ },
+ {
+  "source": "{0} 的 {1} 构建标识与已适配版本不同",
+  "en": "The {1} build ID in {0} differs from the supported version"
+ },
+ {
+  "source": "请先导入玩家自己的 prod.keys。",
+  "en": "Import your own prod.keys first."
+ },
+ {
+  "source": "首版只接受 NSP 文件或包含 NSP 的文件夹。",
+  "en": "Only NSP files or folders containing NSPs are supported."
+ },
+ {
+  "source": "所选位置没有 NSP 文件。",
+  "en": "No NSP files were found at the selected location."
+ },
+ {
+  "source": "读取 NSP 元数据（{0}/{1}）",
+  "en": "Read NSP metadata ({0}/{1})"
+ },
+ {
+  "source": "无效的游戏标识。",
+  "en": "Invalid game ID."
+ },
+ {
+  "source": "正在校验源文件内容",
+  "en": "Verifying source file contents"
+ },
+ {
+  "source": "游戏库可用空间不足，复制尚未开始。",
+  "en": "Not enough free space in the library. Copying has not started."
+ },
+ {
+  "source": "复制后校验失败，原始文件未改动。",
+  "en": "Verification failed after copying. Original files are unchanged."
+ },
+ {
+  "source": "密钥文件不可用，请重新导入 prod.keys",
+  "en": "The key file is unavailable. Import prod.keys again."
+ },
+ {
+  "source": "格式通过，首次导入游戏时验证解密能力",
+  "en": "Format verified; decryption will be checked on the first game import"
+ },
+ {
+  "source": "读取游戏库",
+  "en": "Read game library"
+ },
+ {
+  "source": "无效的清理范围。",
+  "en": "Invalid cleanup scope."
+ },
+ {
+  "source": "导出诊断",
+  "en": "Export diagnostics"
+ },
+ {
+  "source": "不接受指向游戏库之外的符号链接。",
+  "en": "Symbolic links pointing outside the game library are not accepted."
+ },
+ {
+  "source": "操作路径不属于托管游戏库。",
+  "en": "The operation path is outside the managed game library."
+ },
+ {
+  "source": "游戏库磁盘已断开或位置发生变化，请重新连接后重试。",
+  "en": "The library drive is disconnected or its location changed. Reconnect it and retry."
+ },
+ {
+  "source": "应用缺少 NSP 读取组件，请重新安装完整版本。",
+  "en": "The NSP reader is missing. Reinstall the full app."
+ },
+ {
+  "source": "组件 {0} 运行失败（{1}）。详细信息见任务日志。",
+  "en": "Component {0} failed ({1}). See the task log for details."
+ },
+ {
+  "source": "工具链正在使用中，请等待游戏运行、准备或组件管理任务结束后重试。",
+  "en": "The toolchain is in use. Wait for gameplay, preparation, or component management to finish and retry."
+ },
+ {
+  "source": "另一个任务正在使用游戏库，请稍后重试。",
+  "en": "Another task is using the game library. Try again later."
+ },
+ {
+  "source": "游戏未登记在当前游戏库中。",
+  "en": "The game is not registered in the current library."
+ },
+ {
+  "source": "密钥文件过大，请选择 prod.keys 文本文件。",
+  "en": "The key file is too large. Select the prod.keys text file."
+ },
+ {
+  "source": "密钥文件格式无效，请检查是否选择了正确的文本文件。",
+  "en": "Invalid key file format. Check that you selected the correct text file."
+ },
+ {
+  "source": "密钥文件存在冲突条目。",
+  "en": "The key file contains conflicting entries."
+ },
+ {
+  "source": "缺少有效的 header_key，无法读取 NSP。",
+  "en": "No valid header_key found. NSP files cannot be read."
+ },
+ {
+  "source": "安装 Apple Metal 编译组件",
+  "en": "Install Apple Metal compiler"
+ },
+ {
+  "source": "请先确认卸载共享 Metal 编译组件。",
+  "en": "Confirm removal of the shared Metal compiler first."
+ },
+ {
+  "source": "当前 Xcode 不支持命令行卸载组件，请在 Xcode 的组件设置中管理。",
+  "en": "This Xcode version does not support command-line removal. Manage components in Xcode Settings instead."
+ },
+ {
+  "source": "卸载 Apple Metal 编译组件",
+  "en": "Uninstall Apple Metal compiler"
+ },
+ {
+  "source": "不支持的任务类型。",
+  "en": "Unsupported task type."
+ },
+ {
+  "source": "操作完成",
+  "en": "Operation completed"
+ },
+ {
+  "source": "游戏已停止。",
+  "en": "Game stopped."
+ },
+ {
+  "source": "任务已取消；上次成功的运行版本和存档已保留。",
+  "en": "Task cancelled. The last successful runtime version and saves are kept."
+ },
+ {
+  "source": "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。",
+  "en": "Stopped waiting. Xcode's download may still be running (see Xcode → Settings → Components)."
+ },
+ {
+  "source": "操作失败，请检查磁盘连接、权限和任务日志后重试。",
+  "en": "The operation failed. Check the drive connection, permissions, and task log, then retry."
+ },
+ {
+  "source": "解包与合并 {0}",
+  "en": "Extract and merge {0}"
+ },
+ {
+  "source": "配置指定版本",
+  "en": "version required by profile"
+ },
+ {
+  "source": "语言",
+  "en": "Language"
+ },
+ {
+  "source": "跟随系统",
+  "en": "System default"
+ },
+ {
+  "source": "简体中文",
+  "en": "Simplified Chinese"
+ },
+ {
+  "source": "界面语言立即生效；系统文件对话框的内置按钮跟随 macOS 语言。",
+  "en": "Interface changes apply immediately. Built-in buttons in system file dialogs follow the macOS language."
+ },
+ {
+  "source": "Mac 游戏启动器",
+  "en": "Mac game launcher"
+ },
+ {
+  "source": "选择",
+  "en": "Choose"
+ },
+ {
+  "source": "保存",
+  "en": "Save"
+ },
+ {
+  "source": "；",
+  "en": "; "
+ },
+ {
+  "source": "解除绑定",
+  "en": "Clear binding"
+ },
+ {
+  "source": "语言与外观",
+  "en": "Language & appearance"
+ },
+ {
+  "source": "外观",
+  "en": "Appearance"
+ },
+ {
+  "source": "浅色",
+  "en": "Light"
+ },
+ {
+  "source": "深色",
+  "en": "Dark"
+ },
+ {
+  "source": ".NET 10 运行时",
+  "en": ".NET 10 runtime"
+ },
+ {
+  "source": "Metal 图形设备",
+  "en": "Metal graphics device"
+ },
+ {
+  "source": "NSP 读取组件",
+  "en": "NSP reader"
+ },
+ {
+  "source": "Python 扩展",
+  "en": "Python extensions"
+ },
+ {
+  "source": "Xcode 初始设置",
+  "en": "Xcode initial setup"
+ },
+ {
+  "source": "capstone / lz4 / fontTools：加载、版本及基本功能检查",
+  "en": "capstone / lz4 / fontTools: load, version and basic functionality checks"
+ },
+ {
+  "source": "macOS SDK 不完整",
+  "en": "The macOS SDK is incomplete"
+ },
+ {
+  "source": "从 App Store 安装完整 Xcode，打开一次并完成许可及初始组件安装。选择实际 Xcode.app；仅安装 Command Line Tools 不够。",
+  "en": "Install the full Xcode app from the App Store, open it once, accept its license and finish initial component installation. Select the actual Xcode.app; Command Line Tools alone are insufficient."
+ },
+ {
+  "source": "先完成 Xcode 初始设置，再点击“安装 Metal 编译组件”。下载由 Apple 管理；完成后重新检查。",
+  "en": "Finish Xcode initial setup, then click Install Metal compiler. Apple manages the download; check again when it finishes."
+ },
+ {
+  "source": "内置 .NET 10 运行时不可用",
+  "en": "The bundled .NET 10 runtime is unavailable"
+ },
+ {
+  "source": "内置 Python",
+  "en": "Bundled Python"
+ },
+ {
+  "source": "内置 Python 无法运行或版本不匹配",
+  "en": "Bundled Python cannot run or its version does not match"
+ },
+ {
+  "source": "内置组件清单",
+  "en": "Bundled component manifest"
+ },
+ {
+  "source": "压缩组件不可用",
+  "en": "The compression tool is unavailable"
+ },
+ {
+  "source": "原生编译与本地签名",
+  "en": "Native compilation and local signing"
+ },
+ {
+  "source": "启动需要 Apple Silicon、macOS 15+ 和可用的系统 Metal 图形设备，请在设置中重新检查环境。",
+  "en": "Launching requires Apple Silicon, macOS 15+ and an available system Metal graphics device. Check the environment again in Settings."
+ },
+ {
+  "source": "在 Xcode 中完成初始组件安装，或重新安装完整 Xcode；无需下载其他设备的运行环境。",
+  "en": "Complete initial component installation in Xcode, or reinstall the full Xcode app. Runtimes for other devices are not required."
+ },
+ {
+  "source": "在“系统设置 → 通用 → 软件更新”升级至 macOS 15 或更新版本。",
+  "en": "Upgrade to macOS 15 or later in System Settings → General → Software Update."
+ },
+ {
+  "source": "实际编译并链接 arm64 测试程序，验证 make、ar 和 codesign",
+  "en": "Compile and link an arm64 test program; verify make, ar and codesign"
+ },
+ {
+  "source": "实际编译测试着色器并生成 macOS Metal 库",
+  "en": "Compile a test shader and generate a macOS Metal library"
+ },
+ {
+  "source": "工具检查超时，请重新检查或修复对应组件。",
+  "en": "The tool check timed out. Check again or repair the affected component."
+ },
+ {
+  "source": "检查系统是否能创建 Metal 设备",
+  "en": "Check whether the system can create a Metal device"
+ },
+ {
+  "source": "检查翻译器能否启动，且与固定引擎源码一致",
+  "en": "Check that the translator starts and matches the pinned engine source"
+ },
+ {
+  "source": "检查许可及首次启动组件是否就绪",
+  "en": "Check that the license and first-launch components are ready"
+ },
+ {
+  "source": "检查读取程序与 LibHac 能否加载（不读取游戏或密钥）",
+  "en": "Check that the reader and LibHac load, without reading games or keys"
+ },
+ {
+  "source": "游戏库存储权限",
+  "en": "Library storage permissions"
+ },
+ {
+  "source": "环境检查未通过，请在设置中修复：",
+  "en": "Environment checks failed. Repair these items in Settings:"
+ },
+ {
+  "source": "着色器翻译组件",
+  "en": "Shader translator"
+ },
+ {
+  "source": "着色器转换组件不可用",
+  "en": "The shader conversion tool is unavailable"
+ },
+ {
+  "source": "至少预留 5 GB；实际准备前会按所选游戏文件大小再次检查空间，可选择空间更大的游戏库磁盘。",
+  "en": "Keep at least 5 GB free. Before preparation, space is checked again against the selected game files. Choose a library disk with more space if needed."
+ },
+ {
+  "source": "请在 Apple Silicon Mac 的本机桌面会话中运行；系统图形驱动随 macOS 更新提供。",
+  "en": "Run in a local desktop session on an Apple Silicon Mac. System graphics drivers are provided by macOS updates."
+ },
+ {
+  "source": "这些组件随完整应用提供，无需另装 Python、Homebrew 或 .NET。请从官方 Release 重新下载 DMG，将完整应用复制到“应用程序”后重新检查；不要只复制可执行文件。",
+  "en": "These components are included in the full app; separate Python, Homebrew or .NET installations are not required. Download the DMG again from the official release, copy the complete app into Applications, then check again. Copying only the executable is insufficient."
+ },
+ {
+  "source": "选择可读写且允许执行程序的本地或外置磁盘，保持磁盘连接；在设置中重新选择游戏库。",
+  "en": "Choose a writable local or external disk that allows program execution, keep it connected, and select the library again in Settings."
+ },
+ {
+  "source": "需要 Apple Silicon Mac，Intel Mac 或 Rosetta 下运行不受支持。",
+  "en": "An Apple Silicon Mac is required. Intel Macs and running under Rosetta are unsupported."
+ },
+ {
+  "source": "验证随应用提供的组件版本清单",
+  "en": "Validate the component version manifest included with the app"
+ },
+ {
+  "source": "运行与构建环境",
+  "en": "Runtime and build environment"
+ },
+ {
+  "source": "准备游戏需要完整工具链；启动已准备好的游戏只需要标有“启动”的项目。首次安装请先完成全部检查。",
+  "en": "Preparing games requires the full toolchain. Prepared games only need items marked for launching. Complete all checks during initial setup."
+ },
+ {
+  "source": "Mac 与图形",
+  "en": "Mac and graphics"
+ },
+ {
+  "source": "应用内置组件",
+  "en": "Bundled app components"
+ },
+ {
+  "source": "游戏库存储",
+  "en": "Library storage"
+ },
+ {
+  "source": "获取 Xcode",
+  "en": "Get Xcode"
+ },
+ {
+  "source": "打开 Xcode 完成设置",
+  "en": "Open Xcode to finish setup"
+ },
+ {
+  "source": "下载完整应用",
+  "en": "Download the full app"
+ },
+ {
+  "source": "打开软件更新",
+  "en": "Open Software Update"
+ },
+ {
+  "source": "准备与启动",
+  "en": "Prepare and launch"
+ },
+ {
+  "source": "准备时需要",
+  "en": "Preparation only"
+ },
+ {
+  "source": "安装与修复方法",
+  "en": "Installation and repair"
+ },
+ {
+  "source": "正在逐项验证环境，请稍候…",
+  "en": "Verifying each environment component…"
+ },
+ {
+  "source": "构建与启动环境均已就绪",
+  "en": "Build and runtime environments are ready"
+ },
+ {
+  "source": "可启动已准备的游戏，构建环境仍需修复",
+  "en": "Prepared games can launch; build tools still need attention"
+ },
+ {
+  "source": "完成环境检查后再导入游戏",
+  "en": "Complete environment checks before importing games"
+ },
+ {
+  "source": "选择 Xcode.app…",
+  "en": "Select Xcode.app…"
+ },
+ {
+  "source": "选择完整 Xcode.app",
+  "en": "Select the full Xcode.app"
+ },
+ {
+  "source": "1. 获取完整 Xcode，打开一次，完成许可与初始组件安装。\n2. 选择 Xcode.app 并重新检查，缺少 Metal 时点击安装。\n3. 展开每项“安装与修复方法”查看具体步骤，全部通过后继续。",
+  "en": "1. Install the full Xcode app, open it once, accept its license and finish initial component installation.\n2. Select Xcode.app and check again. Install Metal if it is missing.\n3. Expand Installation and repair for each item. Continue after all checks pass."
+ },
+ {
+  "source": "Python、Python 扩展、.NET、NSP 读取器和着色器转换工具均随应用提供，并检查实际运行能力。无需另装系统 Python 或 Homebrew；内置组件缺失或损坏时请重装完整应用。",
+  "en": "Python, Python extensions, .NET, the NSP reader and shader tools are bundled and tested for actual operation. Separate system Python or Homebrew installations are not required. Reinstall the full app if a bundled component is missing or damaged."
+ },
+ {
+  "source": "内置 Python 缺失或不可执行，请重新安装完整应用。",
+  "en": "Bundled Python is missing or not executable. Reinstall the complete app."
+ },
+ {
+  "source": "内置 Python 无法启动环境检查",
+  "en": "Bundled Python could not start environment checks"
+ },
+ {
+  "source": "Python 随完整应用提供，无需另装系统 Python。请从官方 Release 重新下载 DMG，将完整应用复制到“应用程序”后重新检查。",
+  "en": "Python is included with the complete app; a separate system Python installation is not required. Download the DMG from the official release, copy the full app into Applications, and check again."
+ },
+ {
+  "source": "请先安装完整 Xcode 并完成初始设置。",
+  "en": "Install the full Xcode app and complete its initial setup first."
+ },
+ {
+  "source": "环境安装说明",
+  "en": "Environment installation guide"
+ },
+ {
+  "source": "应用内置",
+  "en": "Bundled with the app"
+ },
+ {
+  "source": "组件位置",
+  "en": "Component location"
+ },
+ {
+  "source": "随应用安装位置动态解析，以下是当前完整路径。",
+  "en": "Resolved from the current app location. The full path below is for this installation."
+ },
+ {
+  "source": "随应用提供，可离线阅读",
+  "en": "Included with the app for offline reading"
+ },
+ {
+  "source": "在 Finder 中显示",
+  "en": "Show in Finder"
+ },
+ {
+  "source": "无法读取说明文件",
+  "en": "Unable to read the guide"
+ },
+ {
+  "source": "说明文件缺失或损坏，请重新安装完整应用。",
+  "en": "The guide is missing or damaged. Reinstall the complete app."
+ },
+ {
+  "source": "Python {0} · 应用内置",
+  "en": "Python {0} · Bundled with the app"
+ },
+ {
+  "source": "Microsoft.NETCore.App {0} · 应用内置",
+  "en": "Microsoft.NETCore.App {0} · Bundled with the app"
+ },
+ {
+  "source": "打开所选 Xcode，完成许可及必需系统组件设置。若已完成，可先退出并重新打开S2Arm，或点击“重新检查”。仍未通过时查看下方诊断；确需手动初始化时，先阅读并同意 Xcode 许可再执行修复命令，它会安装系统组件并接受许可。",
+  "en": "Open the selected Xcode and finish its license and required system component setup. If setup is already complete, quit and reopen S2Arm or click Check again first. If it still fails, review the diagnostics below. When manual initialization is needed, read and agree to Xcode's license before running the repair command; it installs system components and accepts the license."
+ },
+ {
+  "source": "请先安装并选择完整 Xcode，再检查初始设置。",
+  "en": "Install and select the full Xcode app before checking initial setup."
+ },
+ {
+  "source": "Xcode 首次启动组件已就绪",
+  "en": "Xcode first-launch components are ready"
+ },
+ {
+  "source": "Xcode 初始设置检查超时，请稍后重新检查。",
+  "en": "The Xcode initial setup check timed out. Check again later."
+ },
+ {
+  "source": "Xcode 许可尚未完成，请打开所选 Xcode 阅读并同意许可。",
+  "en": "Xcode license acceptance is pending. Open the selected Xcode to read and agree to its license."
+ },
+ {
+  "source": "Xcode 首次启动任务未完成，或状态检查命令执行失败。",
+  "en": "Xcode first-launch tasks are incomplete, or its status check command failed."
+ },
+ {
+  "source": "复制修复命令",
+  "en": "Copy repair command"
+ },
+ {
+  "source": "已复制修复命令，请在终端中手动执行。",
+  "en": "Repair command copied. Run it manually in Terminal."
+ },
+ {
+  "source": "退出S2Arm",
+  "en": "Quit S2Arm"
+ },
+ {
+  "source": "稍后设置",
+  "en": "Set up later"
+ },
+ {
+  "source": "可稍后在设置中继续。环境检查通过后才能导入和准备游戏。",
+  "en": "Resume setup in Settings at any time. Environment checks must pass before importing or preparing games."
+ },
+ {
+  "source": "Python、Python 扩展、.NET 运行时、SPIRV-Cross 和 Zstandard 随应用提供。S2Arm 及其读取器、翻译器不内置；首次准备引擎工具还需要 .NET 10 SDK，安装方法见环境说明。",
+  "en": "Python, its extensions, the .NET runtime, SPIRV-Cross and Zstandard are bundled. S2Arm, its reader and translator are external. Preparing engine tools for the first time also requires the .NET 10 SDK; see the environment guide."
+ },
+ {
+  "source": "S2Arm 目录",
+  "en": "S2Arm directory"
+ },
+ {
+  "source": "S2Arm 目录不可用，请连接磁盘或重新选择目录。",
+  "en": "The S2Arm directory is unavailable. Reconnect its drive or select it again."
+ },
+ {
+  "source": "S2Arm 目录不完整，缺少：",
+  "en": "The S2Arm directory is incomplete. Missing: "
+ },
+ {
+  "source": "准备引擎工具",
+  "en": "Prepare engine tools"
+ },
+ {
+  "source": "复制引擎到私有工作目录",
+  "en": "Copy engine to private workspace"
+ },
+ {
+  "source": "复制期间引擎源码发生变化，请重新准备。",
+  "en": "Engine sources changed while copying. Prepare the tools again."
+ },
+ {
+  "source": "外部 S2Arm",
+  "en": "External S2Arm"
+ },
+ {
+  "source": "外部 S2Arm 引擎",
+  "en": "External S2Arm engine"
+ },
+ {
+  "source": "外部引擎",
+  "en": "External engine"
+ },
+ {
+  "source": "外部引擎工具尚未准备或源码已变化，请点击“准备引擎工具”。",
+  "en": "External engine tools are not ready or the sources changed. Click Prepare engine tools."
+ },
+ {
+  "source": "外部引擎工具已就绪。",
+  "en": "External engine tools are ready."
+ },
+ {
+  "source": "外部引擎工具缓存不完整，请重新准备引擎工具。",
+  "en": "The external engine tool cache is incomplete. Prepare engine tools again."
+ },
+ {
+  "source": "外部引擎或其私有工具缓存的当前位置。",
+  "en": "Current location of the external engine or its private tool cache."
+ },
+ {
+  "source": "外部引擎读取工具已就绪",
+  "en": "External engine reader is ready"
+ },
+ {
+  "source": "尚未检测到 .NET 10 SDK",
+  "en": "The .NET 10 SDK was not detected"
+ },
+ {
+  "source": "尚未选择 S2Arm 目录，请先在环境设置中指定。",
+  "en": "No S2Arm directory is selected. Choose it in environment settings first."
+ },
+ {
+  "source": "已验证外部 S2Arm 目录及构建接口",
+  "en": "External S2Arm directory and build interfaces verified"
+ },
+ {
+  "source": "应用不附带或下载 S2Arm。请自行下载并解压完整源码，再选择包含 dm 和 scripts 的根目录。原目录保持不变，构建使用私有副本。",
+  "en": "S2Arm does not bundle or download S2Arm. Obtain and extract its complete sources yourself, then select the root containing dm and scripts. Builds use private copies and leave your directory unchanged."
+ },
+ {
+  "source": "引擎目录包含指向外部的符号链接，请选择完整的本地源码副本。",
+  "en": "The engine contains a symlink outside its directory. Select a complete local source copy."
+ },
+ {
+  "source": "引擎读取工具编译后无法启动，请查看日志。",
+  "en": "The compiled engine reader could not start. Review the task log."
+ },
+ {
+  "source": "引擎读取工具编译后缺少必需产物。",
+  "en": "Required engine reader build outputs are missing."
+ },
+ {
+  "source": "当前引擎未声明 S2A_INPUT_CONFIG 支持。映射可保存，但游戏将使用引擎自己的默认操作；选择支持该接口的引擎并重新打包后才会应用。",
+  "en": "This engine does not declare S2A_INPUT_CONFIG support. Mappings can be saved, but games use the engine defaults. Select an engine with this interface and packe the game again to apply mappings."
+ },
+ {
+  "source": "所选 S2Arm 的 Metal 工具链接口不兼容。",
+  "en": "The selected S2Arm Metal toolchain interface is incompatible."
+ },
+ {
+  "source": "所选 S2Arm 的 NSP 读取器入口不兼容。",
+  "en": "The selected S2Arm NSP reader entry point is incompatible."
+ },
+ {
+  "source": "所选 S2Arm 的构建接口或配置不兼容，请查看环境说明并选择完整的兼容源码。",
+  "en": "The selected S2Arm build interfaces or profiles are incompatible. See the environment guide and select complete compatible sources."
+ },
+ {
+  "source": "检查外部引擎翻译器与所选源码是否一致",
+  "en": "Check that the external engine translator matches the selected sources"
+ },
+ {
+  "source": "编译外部引擎读取工具",
+  "en": "Compile external engine reader"
+ },
+ {
+  "source": "请先准备外部引擎工具",
+  "en": "Prepare external engine tools first"
+ },
+ {
+  "source": "请自行获取并解压完整 S2Arm 源码，然后选择包含 dm 和 scripts 的根目录。S2Arm不附带、不下载引擎，也不修改所选源码。",
+  "en": "Obtain and extract complete S2Arm sources yourself, then select the root containing dm and scripts. S2Arm neither bundles nor downloads the engine and leaves your sources unchanged."
+ },
+ {
+  "source": "运行引擎由玩家自行提供。",
+  "en": "Players provide their own runtime engine."
+ },
+ {
+  "source": "选择 S2Arm 源码根目录",
+  "en": "Choose the S2Arm source root"
+ },
+ {
+  "source": "选择 S2Arm 目录…",
+  "en": "Choose S2Arm directory…"
+ },
+ {
+  "source": "选择有效的 S2Arm 目录后，点击“准备引擎工具”。首次需要 .NET 10 SDK，并可能从 NuGet 恢复项目依赖。编译产物保存在应用私有缓存，原目录保持不变。",
+  "en": "Choose a valid S2Arm directory, then click Prepare engine tools. The first build needs the .NET 10 SDK and may restore project dependencies from NuGet. Outputs stay in the private app cache; your directory is unchanged."
+ },
+ {
+  "source": "首次准备工具时需要",
+  "en": "Initial tool preparation only"
+ },
+ {
+  "source": "首次准备引擎读取工具需要 Microsoft .NET 10 SDK（macOS Arm64），只有运行时不够。安装官方 SDK 后重新检查；已有完整工具缓存时不再需要 SDK。安装方法见环境安装说明。",
+  "en": "Preparing the engine reader for the first time requires the Microsoft .NET 10 SDK for macOS Arm64, not just a runtime. Install the official SDK and check again. A complete cached reader no longer needs the SDK. See the environment installation guide."
+ },
+ {
+  "source": "验证外部 S2Arm",
+  "en": "Validate external S2Arm"
+ },
+ {
+  "source": "安装其他环境",
+  "en": "Install other requirements"
+ },
+ {
+  "source": "繁體中文",
+  "en": "Traditional Chinese"
+ },
+ {
+  "source": "英语（美国）",
+  "en": "English (US)"
+ },
+ {
+  "source": "英语（英国）",
+  "en": "English (UK)"
+ },
+ {
+  "source": "日语",
+  "en": "Japanese"
+ },
+ {
+  "source": "韩语",
+  "en": "Korean"
+ },
+ {
+  "source": "法语",
+  "en": "French"
+ },
+ {
+  "source": "法语（加拿大）",
+  "en": "French (Canada)"
+ },
+ {
+  "source": "德语",
+  "en": "German"
+ },
+ {
+  "source": "意大利语",
+  "en": "Italian"
+ },
+ {
+  "source": "西班牙语",
+  "en": "Spanish"
+ },
+ {
+  "source": "西班牙语（拉丁美洲）",
+  "en": "Spanish (Latin America)"
+ },
+ {
+  "source": "荷兰语",
+  "en": "Dutch"
+ },
+ {
+  "source": "葡萄牙语",
+  "en": "Portuguese"
+ },
+ {
+  "source": "葡萄牙语（巴西）",
+  "en": "Portuguese (Brazil)"
+ },
+ {
+  "source": "俄语",
+  "en": "Russian"
+ },
+ {
+  "source": "中文（中国，旧版代码）",
+  "en": "Chinese (China, legacy code)"
+ },
+ {
+  "source": "中文（台湾，旧版代码）",
+  "en": "Chinese (Taiwan, legacy code)"
+ },
+ {
+  "source": "游戏语言",
+  "en": "Game language"
+ },
+ {
+  "source": "默认游戏语言",
+  "en": "Default game language"
+ },
+ {
+  "source": "启动语言",
+  "en": "Launch language"
+ },
+ {
+  "source": "跟随默认（{0}）",
+  "en": "Use default ({0})"
+ },
+ {
+  "source": "下次启动生效，无需重新准备。所选语言需游戏自身支持。",
+  "en": "Applies on the next launch without preparing again. The game must support the selected language."
+ },
+ {
+  "source": "与界面语言独立；可在游戏详情中单独设置启动语言。下次启动生效，无需重新准备或导入固件。所选语言需游戏自身支持。",
+  "en": "Independent of the interface language. Override it in game details. Applies on the next launch without preparing again or importing firmware. The game must support the selected language."
+ },
+ {
+  "source": "游戏语言代码无效，请在游戏详情中重新选择启动语言。",
+  "en": "Invalid game language code. Choose a launch language again in game details."
+ },
+ {
+  "source": "生成 IPA",
+  "en": "Generate IPA"
+ },
+ {
+  "source": "生成 IPA…",
+  "en": "Generate IPA…"
+ },
+ {
+  "source": "生成用于 iPhone / iPad 的未签名游戏包；安装时需自行签名。",
+  "en": "Generate an unsigned game package for iPhone / iPad. Sign it with your installation tool."
+ },
+ {
+  "source": "IPA 已生成；安装到 iPhone / iPad 前需自行签名。",
+  "en": "IPA generated. Sign it before installing on iPhone / iPad."
+ },
+ {
+  "source": "导出 iPhone / iPad 未签名包；需 Xcode iOS 平台及 XcodeGen。",
+  "en": "Export an unsigned iPhone / iPad package. Requires the Xcode iOS platform and XcodeGen."
+ },
+ {
+  "source": "在访达中查看 IPA",
+  "en": "Show IPA in Finder"
+ },
+ {
+  "source": "编译 iOS 应用并生成 IPA",
+  "en": "Build iOS app and generate IPA"
+ },
+ {
+  "source": "验证 IPA 完整性",
+  "en": "Verify IPA integrity"
+ },
+ {
+  "source": "导出 IPA",
+  "en": "Export IPA"
+ },
+ {
+  "source": "请选择 IPA 保存位置。",
+  "en": "Choose where to save the IPA."
+ },
+ {
+  "source": "IPA 保存位置无效，请选择以 .ipa 结尾的文件。",
+  "en": "Invalid IPA destination. Choose a file ending in .ipa."
+ },
+ {
+  "source": "请将 IPA 保存到游戏库、引擎及应用私有目录以外的位置。",
+  "en": "Save the IPA outside the library, engine and private app directories."
+ },
+ {
+  "source": "所选 S2Arm 缺少 iOS 打包组件，请选择包含 dm/ios 的完整源码。",
+  "en": "The selected S2Arm lacks iOS packaging components. Choose complete sources containing dm/ios."
+ },
+ {
+  "source": "生成 IPA 需要 XcodeGen，请先运行 brew install xcodegen，再重试。",
+  "en": "IPA generation requires XcodeGen. Run brew install xcodegen, then retry."
+ },
+ {
+  "source": "iOS 构建环境不完整，请在所选 Xcode 中安装 iOS 平台和 Metal 编译组件，再重试。",
+  "en": "The iOS build environment is incomplete. Install the iOS platform and Metal compiler in the selected Xcode, then retry."
+ },
+ {
+  "source": "生成的 IPA 结构或完整性检查失败，请查看任务日志后重试。",
+  "en": "IPA structure or integrity validation failed. Review the task log, then retry."
+ },
+ {
+  "source": "IPA 保存磁盘空间不足，请释放空间后重试。",
+  "en": "The IPA destination has insufficient free space. Free space and retry."
+ },
+ {
+  "source": "iOS 着色器产物缺失或编译平台不匹配，请重试。",
+  "en": "iOS shader outputs are missing or compiled for the wrong platform. Retry the export."
+ },
+ {
+  "source": "Metal 着色器编译失败。",
+  "en": "Metal shader compilation failed."
+ },
+ {
+  "source": "Metal 编译组件不可用。",
+  "en": "The Metal compiler component is unavailable."
+ },
+ {
+  "source": "先重新检查 Xcode 和 Metal 组件；若环境通过仍失败，请核对引擎与游戏版本，并查看失败着色器的编译信息。",
+  "en": "Recheck Xcode and the Metal component. If checks pass but compilation still fails, verify engine/game versions and review the failed shader diagnostics."
+ },
+ {
+  "source": "关闭占用大量内存的应用后重试；若仍失败，请保留日志检查系统终止原因。",
+  "en": "Close memory-intensive apps and retry. If it still fails, keep the log and check why the system terminated the process."
+ },
+ {
+  "source": "在设置中安装 Metal 编译组件，完成后重新检查环境并重试。",
+  "en": "Install the Metal compiler component in Settings, then recheck the environment and retry."
+ },
+ {
+  "source": "所需的 Apple 平台 SDK 不可用。",
+  "en": "The required Apple platform SDK is unavailable."
+ },
+ {
+  "source": "操作完成，但有警告，请查看任务详情。",
+  "en": "Completed with warnings. Review the task details."
+ },
+ {
+  "source": "文件或构建工具访问被拒绝。",
+  "en": "Access to files or build tools was denied."
+ },
+ {
+  "source": "本地组件运行失败。",
+  "en": "A local component failed."
+ },
+ {
+  "source": "构建组件或输入文件缺失。",
+  "en": "A build component or input file is missing."
+ },
+ {
+  "source": "构建进程被终止，可能内存不足。",
+  "en": "The build process was terminated, possibly due to insufficient memory."
+ },
+ {
+  "source": "查看失败着色器日志，核对游戏和引擎版本后重试；构建完成不代表所有场景的图形效果正常。",
+  "en": "Review the failed shader log and verify game/engine versions before retrying. A completed build does not guarantee correct graphics in every scene."
+ },
+ {
+  "source": "查看本任务日志和失败阶段，按提示修复后重试；反馈时复制错误摘要。",
+  "en": "Review this task's log and failed stage, follow the repair instructions and retry. Copy the error summary when reporting the problem."
+ },
+ {
+  "source": "查看本任务的具体日志，修复提示的问题后重试；反馈时复制已脱敏的错误摘要。",
+  "en": "Open this task's log, fix the reported problem and retry. Copy the redacted error summary when reporting it."
+ },
+ {
+  "source": "核对游戏版本与引擎配置，并确认使用完整的兼容引擎源码；保留日志中的失败着色器信息反馈上游。",
+  "en": "Verify the game version and engine profile, using complete compatible engine sources. Keep the failed shader details for an upstream report."
+ },
+ {
+  "source": "检查所选 Xcode；生成 IPA 还需在 Xcode 中安装 iOS 平台，然后重新检查环境。",
+  "en": "Check the selected Xcode. IPA generation also requires its iOS platform; install it and recheck the environment."
+ },
+ {
+  "source": "检查游戏库磁盘的读写权限、所选 Xcode 和系统隐私设置，再重试。",
+  "en": "Check library disk permissions, the selected Xcode and system privacy settings, then retry."
+ },
+ {
+  "source": "检查磁盘连接、游戏源文件和外部引擎完整性，再重新检查环境；应用内置组件缺失时重新安装完整应用。",
+  "en": "Check the disk connection, game source files and external engine integrity, then recheck the environment. Reinstall the complete app if bundled components are missing."
+ },
+ {
+  "source": "没有生成可用的着色器，构建已停止。",
+  "en": "No usable shaders were generated. The build has stopped."
+ },
+ {
+  "source": "着色器缓存与当前工具链不一致。",
+  "en": "The shader cache does not match the current toolchain."
+ },
+ {
+  "source": "着色器转换失败。",
+  "en": "Shader translation failed."
+ },
+ {
+  "source": "磁盘空间不足，任务已停止。",
+  "en": "Insufficient disk space. The task has stopped."
+ },
+ {
+  "source": "部分着色器构建失败：成功 {0}/{1}。",
+  "en": "Some shaders failed to build: {0}/{1} succeeded."
+ },
+ {
+  "source": "释放游戏库和导出磁盘的空间后重试；已完成阶段会重新校验。",
+  "en": "Free space on the library and export disks, then retry. Completed stages will be revalidated."
+ },
+ {
+  "source": "重新准备引擎工具，再重新准备游戏；不要混用 Mac 与 iOS 的着色器产物。",
+  "en": "Prepare engine tools again, then prepare the game. Keep Mac and iOS shader outputs separate."
+ },
+ {
+  "source": "检查完整应用、磁盘连接和权限后重试；查看对应日志了解工作进程退出原因。",
+  "en": "Check the complete app, disk connection and permissions, then retry. Review the corresponding log for the worker exit reason."
+ },
+ {
+  "source": "错误代码：",
+  "en": "Error code: "
+ },
+ {
+  "source": "失败阶段：",
+  "en": "Failed stage: "
+ },
+ {
+  "source": "组件：",
+  "en": "Component: "
+ },
+ {
+  "source": "退出码：",
+  "en": "Exit status: "
+ },
+ {
+  "source": "建议处理：",
+  "en": "Suggested action: "
+ },
+ {
+  "source": "完成（有警告）",
+  "en": "Completed with warnings"
+ },
+ {
+  "source": "复制错误摘要",
+  "en": "Copy error summary"
+ },
+ {
+  "source": "查看失败任务",
+  "en": "View failed task"
+ },
+ {
+  "source": "编译器输出（已脱敏）",
+  "en": "Compiler output (redacted)"
+ },
+ {
+  "source": "打开对应日志",
+  "en": "Open task log"
+ },
+ {
+  "source": "验证阶段产物",
+  "en": "Verify stage outputs"
+ },
+ {
+  "source": "校验游戏源文件",
+  "en": "Verify game source files"
+ },
+ {
+  "source": "扫描 NSP 文件",
+  "en": "Scan NSP files"
+ },
+ {
+  "source": "跳过重复内容",
+  "en": "Skip duplicate content"
+ },
+ {
+  "source": "复制 NSP 到游戏库",
+  "en": "Copy NSP to library"
+ },
+ {
+  "source": "校验托管副本",
+  "en": "Verify managed copy"
+ },
+ {
+  "source": "登记游戏内容",
+  "en": "Register game content"
+ },
+ {
+  "source": "移出游戏库",
+  "en": "Remove from library"
+ },
+ {
+  "source": "清理构建缓存",
+  "en": "Clean build cache"
+ },
+ {
+  "source": "删除托管 NSP 副本",
+  "en": "Delete managed NSP copies"
+ },
+ {
+  "source": "收集诊断日志",
+  "en": "Collect diagnostic logs"
+ },
+ {
+  "source": "打包 IPA",
+  "en": "Pack IPA"
+ },
+ {
+  "source": "校验导出 IPA",
+  "en": "Verify exported IPA"
+ },
+ {
+  "source": "清理游戏文件",
+  "en": "Clean game files"
+ },
+ {
+  "source": "当前阶段进度",
+  "en": "Current stage progress"
+ },
+ {
+  "source": "个文件",
+  "en": "files"
+ },
+ {
+  "source": "个着色器",
+  "en": "shaders"
+ },
+ {
+  "source": "项检查",
+  "en": "checks"
+ },
+ {
+  "source": "已处理：",
+  "en": "Processed: "
+ },
+ {
+  "source": "已用 {0} 秒",
+  "en": "Elapsed: {0} s"
+ },
+ {
+  "source": "正在处理 {0} 个任务",
+  "en": "{0} tasks in progress"
+ },
+ {
+  "source": "查看全部任务",
+  "en": "View all tasks"
+ },
+ {
+  "source": "正在读取游戏库…",
+  "en": "Loading library…"
+ },
+ {
+  "source": "保存映射",
+  "en": "Save mapping"
+ },
+ {
+  "source": "本地任务",
+  "en": "Local task"
+ },
+ {
+  "source": "Python 可执行文件",
+  "en": "Python executable"
+ },
+ {
+  "source": "S2Arm 引擎与工具",
+  "en": "S2Arm engine and tools"
+ },
+ {
+  "source": "S2Arm 源码",
+  "en": "S2Arm source"
+ },
+ {
+  "source": "主机模式",
+  "en": "Docked mode"
+ },
+ {
+  "source": "共享字体目录（含 .bfttf）",
+  "en": "Shared font folder (containing .bfttf)"
+ },
+ {
+  "source": "默认掌机模式。模式和游戏语言在下次启动时生效。",
+  "en": "Handheld mode is the default. Mode and game language apply on the next launch."
+ },
+ {
+  "source": "使用所选 S2Arm 源码与工具链。",
+  "en": "Uses the selected S2Arm source and toolchain."
+ },
+ {
+  "source": "S2Arm 原生 Mac 启动器，界面移植自 LumaDock。与 Nintendo 无隶属或认可关系。",
+  "en": "Native S2Arm Mac launcher with an interface ported from LumaDock. Not affiliated with or endorsed by Nintendo."
+ },
+ {
+  "source": "S2Arm 将尝试通用构建；准备成功不代表游戏已通过兼容性验证。",
+  "en": "S2Arm will attempt a generic build. Preparation does not certify game compatibility."
+ },
+ {
+  "source": "找不到 Python，请在设置中指定 Python 3.11 或更新版本。",
+  "en": "Python was not found. Select Python 3.11 or later in Settings."
+ },
+ {
+  "source": "请选择包含 pack/jobs 的 S2Arm 源码目录。",
+  "en": "Select an S2Arm source checkout containing pack/jobs."
+ },
+ {
+  "source": "本体齐全后加入串行准备队列，更新和 DLC 按内容版本选择。准备完成后由你点击启动。",
+  "en": "Complete base games enter the serial preparation queue. Updates and DLC are selected by content version. Launch explicitly after preparation."
+ },
+ {
+  "source": "选择支持版本的 NSP / XCI 本体、更新及可选 DLC，或扫描所在文件夹。导入时会验证密钥和文件内容，缺少版本会明确提示。",
+  "en": "Select NSP/XCI base games, updates and optional DLC, or scan their folder. Imports verify keys and contents and report missing inputs."
+ },
+ {
+  "source": "选择本项目的源码根目录；使用 pack、native、services 和 gfx 的现有工具。构建产物与玩家数据独立保存。",
+  "en": "Select this repository root. The launcher uses the existing pack, native, services and gfx tools and keeps products separate from player data."
+ },
+ {
+  "source": "需要 Apple Silicon、macOS 15 或更新系统、完整 Xcode、Metal 编译组件、Python 和 .NET 10 SDK。",
+  "en": "Requires Apple Silicon, macOS 15 or later, full Xcode, Metal compiler components, Python and the .NET 10 SDK."
+ },
+ {
+  "source": "选择 S2Arm 源码、完整 Xcode 和 Python 3.11+，安装 .NET 10 SDK。Python 需要 capstone、lz4、numpy；着色器工具需要 zstd、SPIRV-Tools 和 Metal 编译组件。共享字体由玩家提供，设置为包含 .bfttf 的目录。点击准备引擎工具编译 NSP/XCI 读取器，再重新检查。原始游戏、更新、DLC 和 prod.keys 均由玩家自行导入。",
+  "en": "Select the S2Arm checkout, full Xcode and Python 3.11+, and install the .NET 10 SDK. Python needs capstone, lz4 and numpy; shader tools need zstd, SPIRV-Tools and Metal compiler components. Select a folder containing your own .bfttf shared fonts. Prepare the engine tools to compile the NSP/XCI reader, then recheck. Supply your own games, updates, DLC and prod.keys."
+ },
+ {
+  "source": "界面与部分任务管理代码移植自 LumaDock，采用 MIT License，保留原版权声明。S2Arm 使用 Ryujinx、LibHac、SPIRV-Cross 等组件，各自许可证保持有效。详见应用内 README.md 中的版权声明及各组件的第三方许可文件。项目不附带游戏、密钥、固件或存档，与 Nintendo 无隶属关系。",
+  "en": "The interface and some task-management helpers are ported from LumaDock under the MIT License with original notices preserved. S2Arm uses Ryujinx, LibHac, SPIRV-Cross and other components under their respective licenses. See the copyright notices in the bundled README.md and the third-party license files for each component. No games, keys, firmware or saves are included. This project is not affiliated with Nintendo."
+ },
+ {
+  "source": "S2Arm 引擎随应用内置，包含 Mac 宿主、NSP/XCI 读取器和游戏准备工具。玩家数据与构建缓存独立保存。",
+  "en": "S2Arm is built into the app, including the Mac host, NSP/XCI reader and preparation tools. Player data and build caches are stored separately."
+ },
+ {
+  "source": "引擎来源",
+  "en": "Engine"
+ },
+ {
+  "source": "开发目录（打包后内置）",
+  "en": "Development checkout (embedded when packaged)"
+ },
+ {
+  "source": "准备开发工具",
+  "en": "Prepare development tools"
+ },
+ {
+  "source": "在访达中查看产物",
+  "en": "Show output in Finder"
+ },
+ {
+  "source": "设置中的 Python 不可执行，请重新选择。",
+  "en": "The selected Python is not executable. Choose another interpreter."
+ },
+ {
+  "source": "转动视角",
+  "en": "Move camera"
+ },
+ {
+  "source": "仅使用鼠标按键",
+  "en": "Mouse buttons only"
+ },
+ {
+  "source": "在「转动视角」模式下，点击游戏画面锁定鼠标视角；鼠标锁定时 Esc 只释放，不触发映射的游戏按键。释放后再次按 Esc 才触发映射；窗口失焦时释放鼠标并清空输入。",
+  "en": "In Camera mode, click the game view to capture mouse look. While captured, Esc only releases the mouse and does not send its mapped game button. Press Esc again after release to use that binding. Losing focus releases the mouse and clears input."
+ },
+ {
+  "source": "S2Arm 引擎、Mac 宿主和 NSP/XCI 读取器随应用内置。游戏准备仍需要完整 Xcode、Metal 编译组件、Python 3.11+ 和 .NET 10 SDK。Python 需要 capstone、lz4、numpy；着色器工具需要 zstd、SPIRV-Tools，timeout 随应用提供。共享字体由玩家提供，设置为包含 .bfttf 的目录后重新检查。原始游戏、更新、DLC 和 prod.keys 均由玩家自行导入。",
+  "en": "S2Arm, the Mac host and NSP/XCI reader are included. Preparing games still requires full Xcode, Metal compiler components, Python 3.11+ and the .NET 10 SDK. Python needs capstone, lz4 and numpy; shader tools need zstd and SPIRV-Tools, and timeout is included with the app. Select a player-provided folder of .bfttf shared fonts, then recheck. Import your own original games, updates, DLC and prod.keys."
+ },
+ {
+  "source": "初始化内置 S2Arm 引擎",
+  "en": "Initialize the built-in S2Arm engine"
+ },
+ {
+  "source": "S2Arm 内置引擎",
+  "en": "Built-in S2Arm Engine"
+ },
+ {
+  "source": "S2Arm 内容读取工具",
+  "en": "S2Arm Content Reader"
+ },
+ {
+  "source": "检查 S2Arm 环境",
+  "en": "Check S2Arm environment"
+ },
+ {
+  "source": "冻结并校验构建输入",
+  "en": "Freeze and verify build inputs"
+ },
+ {
+  "source": "解包并合并更新与 DLC",
+  "en": "Extract and merge updates and DLC"
+ },
+ {
+  "source": "改写原生代码",
+  "en": "Rewrite native code"
+ },
+ {
+  "source": "准备系统数据",
+  "en": "Prepare system data"
+ },
+ {
+  "source": "生成资源索引",
+  "en": "Generate resource index"
+ },
+ {
+  "source": "转换并编译 Mac 着色器",
+  "en": "Translate and compile Mac shaders"
+ },
+ {
+  "source": "编译 S2Arm Mac 宿主",
+  "en": "Compile S2Arm Mac host"
+ },
+ {
+  "source": "安装并校验独立运行版本",
+  "en": "Install and verify runtime release"
+ },
+ {
+  "source": "验证运行文件",
+  "en": "Verify runtime files"
+ },
+ {
+  "source": "读取游戏内容元数据",
+  "en": "Read game metadata"
+ },
+ {
+  "source": "校验原始游戏文件",
+  "en": "Verify original game files"
+ },
+ {
+  "source": "复制并校验托管副本",
+  "en": "Copy and verify managed files"
+ },
+ {
+  "source": "S2Arm 开发工具已就绪。",
+  "en": "S2Arm development tools are ready."
+ },
+ {
+  "source": "Python 与依赖",
+  "en": "Python and packages"
+ },
+ {
+  "source": "应用内置，无需单独安装",
+  "en": "Included; no separate installation"
+ },
+ {
+  "source": "应用内置 Python 缺失，请重新安装完整应用。",
+  "en": "Bundled Python is missing. Reinstall the complete application."
+ },
+ {
+  "source": "需要 Apple Silicon、macOS 15 或更新系统、完整 Xcode、Metal 编译组件和 .NET 10 SDK。Python 与依赖随应用内置。",
+  "en": "Requires Apple Silicon, macOS 15+, full Xcode, Metal compiler components and the .NET 10 SDK. Python and its packages are included."
+ },
+ {
+  "source": "S2Arm 引擎、Mac 宿主、NSP/XCI 读取器、Python 和所需 Python 包随应用内置。游戏准备仍需要完整 Xcode、Metal 编译组件和 .NET 10 SDK。共享字体由玩家提供，设置为包含 .bfttf 的目录后重新检查。原始游戏、更新、DLC 和 prod.keys 均由玩家自行导入。",
+  "en": "S2Arm, the Mac host, NSP/XCI reader, Python and required Python packages are included. Preparing games still requires full Xcode, Metal compiler components and the .NET 10 SDK. Choose a player-provided .bfttf shared-font folder and recheck. Import your own original games, updates, DLC and prod.keys."
+ },
+ {
+  "source": "运行环境随应用内置。只需选择游戏库，导入玩家自备的密钥、共享字体和游戏。",
+  "en": "All runtime components are included. Choose a library and import your own keys, shared fonts and games."
+ },
+ {
+  "source": "S2Arm 引擎、Python 及其依赖、.NET 运行时、Metal 编译器和游戏准备工具均随应用内置，无需安装额外运行环境。请选择玩家自备的共享字体目录（含 .bfttf），并导入 prod.keys、原始游戏、更新和 DLC。",
+  "en": "S2Arm, Python and its packages, the .NET runtime, Metal compilers and preparation tools are included. No additional runtime installation is required. Choose your own .bfttf shared-font folder, and import prod.keys, original games, updates and DLC."
+ },
+ {
+  "source": "先检查应用内置组件，\n再选择游戏库、导入密钥和游戏。",
+  "en": "Check the included components first,\nthen choose a library and import keys and games."
+ },
+ {
+  "source": "使用应用内置 S2Arm 引擎与工具。",
+  "en": "Uses the included S2Arm engine and tools."
+ },
+ {
+  "source": "检查内置组件",
+  "en": "Check included components"
+ },
+ {
+  "source": "环境与数据说明",
+  "en": "Runtime and data guide"
+ },
+ {
+  "source": "先完成内置组件检查，再导入玩家内容。",
+  "en": "Check the included components before importing your content."
+ },
+ {
+  "source": "准备游戏会检查应用内置组件与共享字体；启动已准备的游戏只检查运行所需组件。",
+  "en": "Preparation checks the included tools and shared fonts. Launching prepared games checks only runtime components."
+ },
+ {
+  "source": "S2Arm、Python 与 .NET 随应用内置。准备游戏还需要 Xcode 与 Metal 编译组件；玩家自行导入密钥、字体和游戏。",
+  "en": "S2Arm, Python and .NET are included. Preparing games also needs Xcode and Metal compiler components. Import your own keys, fonts and games."
+ },
+ {
+  "source": "Xcode（准备游戏时需要）",
+  "en": "Xcode (for preparation)"
+ },
+ {
+  "source": "S2Arm 引擎、Python 及其依赖、.NET 运行时和通用准备工具随应用内置。准备游戏需要完整 Xcode 与 Metal 编译组件，启动已准备好的游戏无需 Xcode。请选择玩家自备的共享字体目录（含 .bfttf），并导入 prod.keys、原始游戏、更新和 DLC。",
+  "en": "S2Arm, Python and its packages, the .NET runtime and preparation tools are included. Preparation requires full Xcode and Metal compiler components; launching prepared games does not. Choose your own .bfttf shared-font folder and import prod.keys, original games, updates and DLC."
+ },
+ {
+  "source": "需要 Apple Silicon Mac。",
+  "en": "Requires an Apple Silicon Mac."
+ },
+ {
+  "source": "启动器需要 macOS 15 或更新版本。",
+  "en": "Requires macOS 15 or later."
+ },
+ {
+  "source": "应用内置 .NET 10 运行时。",
+  "en": "The .NET 10 runtime is included."
+ },
+ {
+  "source": "准备游戏需要 Xcode 的完整 Metal 编译组件。",
+  "en": "Preparation requires the complete Metal compiler components in Xcode."
+ },
+ {
+  "source": "选择完整 Xcode.app；只在准备游戏时需要。",
+  "en": "Select full Xcode.app; needed only for preparation."
+ },
+ {
+  "source": "共享字体",
+  "en": "Shared fonts"
+ },
+ {
+  "source": "选择玩家提供的 .bfttf 共享字体目录。",
+  "en": "Choose your own .bfttf shared-font folder."
+ },
+ {
+  "source": "需要 Python 3.11 或更新版本。",
+  "en": "Requires Python 3.11 or later."
+ },
+ {
+  "source": "应用内置 S2Arm 宿主和准备工具。",
+  "en": "The S2Arm host and preparation tools are included."
+ },
+ {
+  "source": "S2Arm 游戏准备工具",
+  "en": "S2Arm Preparation Tools"
+ },
+ {
+  "source": "应用内置着色器翻译器、资源索引器和 GAL 工具。",
+  "en": "Shader translation, resource indexing and GAL tools are included."
+ },
+ {
+  "source": "应用内置 NSP/XCI 读取器；开发模式可重新编译。",
+  "en": "The NSP/XCI reader is included; developer builds can recompile it."
+ },
+ {
+  "source": "应用内置 {0}。",
+  "en": "Includes {0}."
+ },
+ {
+  "source": "应用内置 {0}；组件损坏时请重新安装完整应用。",
+  "en": "Includes {0}; reinstall the complete app if the component is damaged."
+ },
+ {
+  "source": "与上一项在同一个文件里",
+  "en": "Same file as the item above"
+ },
+ {
+  "source": "先放入密钥。",
+  "en": "Add your keys first."
+ },
+ {
+  "source": "原版共享字体（可选）",
+  "en": "Original shared fonts (optional)"
+ },
+ {
+  "source": "把你的 prod.keys 拖到这里，或点击选择文件。只保存在本机，不上传。",
+  "en": "Drag your prod.keys here, or click to choose it. It stays on this Mac and is never uploaded."
+ },
+ {
+  "source": "把游戏文件夹，或本体 / 更新 / DLC 的 NSP、XCI 拖到这里，或点击选择。放进来后自动准备。",
+  "en": "Drag a game folder, or the base / update / DLC NSP and XCI files here, or click to choose. Preparation starts automatically."
+ },
+ {
+  "source": "放入 prod.keys",
+  "en": "Add prod.keys"
+ },
+ {
+  "source": "放入你的密钥和游戏，就可以开始。",
+  "en": "Add your keys and games to get started."
+ },
+ {
+  "source": "放入游戏",
+  "en": "Add games"
+ },
+ {
+  "source": "本机环境就绪：游戏引擎、Python、.NET 均随应用内置，无需另装。",
+  "en": "This Mac is ready: the game engine, Python and .NET are built in. Nothing else to install."
+ },
+ {
+  "source": "本机环境还差以下几项：",
+  "en": "This Mac still needs:"
+ },
+ {
+  "source": "本机环境还没就绪，见下方。",
+  "en": "This Mac is not ready yet; see below."
+ },
+ {
+  "source": "清除",
+  "en": "Clear"
+ },
+ {
+  "source": "稍后再说",
+  "en": "Later"
+ },
+ {
+  "source": "选择你的 prod.keys",
+  "en": "Choose your prod.keys"
+ },
+ {
+  "source": "选择原版字体文件夹…",
+  "en": "Choose original font folder…"
+ },
+ {
+  "source": "选择含 .bfttf 的原版共享字体文件夹",
+  "en": "Choose the folder with the original .bfttf shared fonts"
+ },
+ {
+  "source": "选择字体文件夹…",
+  "en": "Choose font folder…"
+ },
+ {
+  "source": "校验游戏文件",
+  "en": "Verify game files"
+ },
+ {
+  "source": "确认导入的游戏文件完整、没有被改动。",
+  "en": "Confirms the imported game files are complete and unchanged."
+ },
+ {
+  "source": "用你的密钥解出游戏程序和资源，合并更新与 DLC。",
+  "en": "Uses your keys to unpack the game program and assets, merging updates and DLC."
+ },
+ {
+  "source": "改写游戏代码",
+  "en": "Rewrite game code"
+ },
+ {
+  "source": "把 Switch 的 ARM 程序改写成能在 Mac 上直接运行的形式。",
+  "en": "Rewrites the Switch ARM program so it runs directly on the Mac."
+ },
+ {
+  "source": "准备字体、时区等 Switch 系统数据。",
+  "en": "Prepares Switch system data such as fonts and time zones."
+ },
+ {
+  "source": "给游戏资源建索引，运行时读取更快。",
+  "en": "Indexes the game assets so they load faster."
+ },
+ {
+  "source": "准备游戏程序",
+  "en": "Prepare game program"
+ },
+ {
+  "source": "准备在 Mac 上运行这款游戏的主程序。",
+  "en": "Prepares the program that runs this game on the Mac."
+ },
+ {
+  "source": "安装并校验",
+  "en": "Install and verify"
+ },
+ {
+  "source": "把准备好的文件装进游戏库，并逐个校验。",
+  "en": "Installs the prepared files into the game library and verifies each one."
+ },
+ {
+  "source": "预计还需 ",
+  "en": "About "
+ },
+ {
+  "source": "已用 ",
+  "en": "Elapsed "
+ },
+ {
+  "source": "（本步 ",
+  "en": " (this step "
+ },
+ {
+  "source": "）",
+  "en": ")"
+ },
+ {
+  "source": "预计 ",
+  "en": "Done around "
+ },
+ {
+  "source": " 完成",
+  "en": ""
+ },
+ {
+  "source": "准备计划",
+  "en": "Preparation plan"
+ },
+ {
+  "source": "开始打包",
+  "en": "Start Packing"
+ },
+ {
+  "source": "已放入：",
+  "en": "Added: "
+ },
+ {
+  "source": "。可继续放入，好了点右下角「开始打包」。",
+  "en": ". Add more, then click “Start Packing” at the bottom right."
+ },
+ {
+  "source": "把游戏文件夹，或本体 / 更新 / DLC 的 NSP、XCI 拖到这里，或点击选择。",
+  "en": "Drag a game folder, or base / update / DLC NSP and XCI files here, or click to choose."
+ },
+ {
+  "source": "应用自带的共享字体缺失，请重新安装完整应用。",
+  "en": "The bundled shared fonts are missing. Please reinstall the full app."
+ },
+ {
+  "source": "去 App Store 安装",
+  "en": "Get from App Store"
+ },
+ {
+  "source": "打开 Xcode",
+  "en": "Open Xcode"
+ },
+ {
+  "source": "一键下载",
+  "en": "Download"
+ },
+ {
+  "source": "下载 Metal 编译组件",
+  "en": "Download Metal Toolchain"
+ },
+ {
+  "source": "Xcode 还没完成首次设置：点「打开 Xcode」，同意许可后回来点重新检查。",
+  "en": "Xcode hasn’t finished first launch. Click “Open Xcode”, accept the license, then click Check Again."
+ },
+ {
+  "source": "缺 Xcode 的 Metal 编译组件：点「一键下载」自动安装（约 1 GB），下完自动重新检查。",
+  "en": "Xcode’s Metal Toolchain is missing. Click “Download” to install it (about 1 GB); checks rerun automatically."
+ },
+ {
+  "source": "准备游戏需要 Xcode 的 Metal 编译组件；先安装 Xcode。",
+  "en": "Preparing games needs Xcode’s Metal Toolchain. Install Xcode first."
+ },
+ {
+  "source": "没找到完整的 Xcode：点「去 App Store 安装」，装好打开一次后回来点重新检查；S2Arm 会自动找到它。",
+  "en": "Full Xcode not found. Click “Get from App Store”, open it once after installing, then click Check Again; S2Arm finds it automatically."
+ },
+ {
+  "source": "打包任务",
+  "en": "Packing"
+ },
+ {
+  "source": "打包游戏",
+  "en": "Pack game"
+ },
+ {
+  "source": "打包完成，可以启动了。",
+  "en": "Packing finished. Ready to launch."
+ },
+ {
+  "source": "添加游戏文件夹或 NSP / XCI，放进来自动打包（⌘O）",
+  "en": "Add a game folder or NSP / XCI files; they pack automatically (⌘O)"
+ },
+ {
+  "source": "把游戏拖到这里，或点下面的按钮。\n放进来就自动打包，好了点启动。",
+  "en": "Drag games here or click the button below.\nThey pack automatically; launch when ready."
+ },
+ {
+  "source": "先放入你的 prod.keys 和游戏。",
+  "en": "Start by adding your prod.keys and games."
+ },
+ {
+  "source": "开始",
+  "en": "Start"
+ },
+ {
+  "source": "S2Arm 将尝试通用构建；打包成功不代表游戏已通过兼容性验证。",
+  "en": "S2Arm will try a generic build; packing successfully does not mean the game passed compatibility checks."
+ },
+ {
+  "source": "新增内容或引擎更新还没重新打包；启动将使用上次成功版本。",
+  "en": "New content or engine updates aren’t packed yet; launching uses the last successful build."
+ },
+ {
+  "source": "下次启动生效，无需重新打包。所选语言需游戏自身支持。",
+  "en": "Takes effect next launch; no repacking needed. The game must support the language."
+ },
+ {
+  "source": "重新打包",
+  "en": "Pack again"
+ },
+ {
+  "source": "打包条件未满足",
+  "en": "Packing requirements not met"
+ },
+ {
+  "source": "游戏一款一款依次打包；打包时可以继续添加游戏、改按键。",
+  "en": "Games pack one at a time; you can keep adding games and editing controls meanwhile."
+ },
+ {
+  "source": "放进来的游戏会自动打包，进度在这里看。",
+  "en": "Games you add pack automatically; follow progress here."
+ },
+ {
+  "source": "密钥只需导入一次，所有游戏共用；只保存在本机，不随诊断包导出。添加的游戏放进来就自动打包，更新和 DLC 自动按版本合并。",
+  "en": "Keys are imported once and shared by all games; they stay on this Mac and are never included in diagnostics. Added games pack automatically; updates and DLC merge by version."
+ },
+ {
+  "source": "打包前检查应用内置组件和 Xcode；启动已打包的游戏只检查运行所需组件。",
+  "en": "Packing checks bundled components and Xcode; launching packed games only checks what running needs."
+ },
+ {
+  "source": "S2Arm 引擎、Python 及其依赖、.NET 运行时、打包工具和共享字体都随应用内置。打包游戏需要完整 Xcode 与 Metal 编译组件（缺了在检测项旁一键处理），启动已打包的游戏不需要 Xcode。玩家只需放入 prod.keys 和游戏（本体、更新、DLC）。",
+  "en": "The S2Arm engine, Python and its dependencies, the .NET runtime, packing tools and shared fonts are all bundled. Packing games needs full Xcode and its Metal Toolchain (fix with one click next to the check); launching packed games does not. Just add your prod.keys and games (base, updates, DLC)."
+ },
+ {
+  "source": "与界面语言独立；可在游戏详情中单独设置启动语言。下次启动生效，无需重新打包或导入固件。所选语言需游戏自身支持。",
+  "en": "Independent of the interface language; set a per-game launch language in game details. Takes effect next launch; no repacking or firmware import needed. The game must support the language."
+ },
+ {
+  "source": "已打包的游戏可以启动，打包环境还需修复",
+  "en": "Packed games can launch; the packing environment still needs fixing"
+ },
+ {
+  "source": "S2Arm、Python、.NET 和共享字体随应用内置。打包还需要 Xcode 与 Metal 编译组件，缺了在检测项旁一键处理；玩家只需放入密钥和游戏。",
+  "en": "S2Arm, Python, .NET and shared fonts are bundled. Packing also needs Xcode and its Metal Toolchain; fix with one click next to the check. Just add your keys and games."
+ },
+ {
+  "source": "S2Arm 引擎随应用内置，包含 Mac 宿主、NSP/XCI 读取器和游戏打包工具。玩家数据与构建缓存独立保存。",
+  "en": "The S2Arm engine is bundled: the Mac host, NSP/XCI reader and game packing tools. Player data and build caches are stored separately."
+ },
+ {
+  "source": "Xcode（打包时需要，自动找到）",
+  "en": "Xcode (needed for packing, found automatically)"
+ },
+ {
+  "source": "没找到：装 Xcode 后重开本应用",
+  "en": "Not found: install Xcode, then reopen this app"
+ },
+ {
+  "source": "应用自带（开源字体）",
+  "en": "Bundled (open-source fonts)"
+ },
+ {
+  "source": "换成原版字体…",
+  "en": "Use original fonts…"
+ },
+ {
+  "source": "改回应用自带",
+  "en": "Use bundled fonts"
+ },
+ {
+  "source": "打包与启动都要",
+  "en": "Needed to pack and launch"
+ },
+ {
+  "source": "打包时需要",
+  "en": "Needed to pack"
+ },
+ {
+  "source": "先放入密钥",
+  "en": "Add your keys first"
+ },
+ {
+  "source": "本机环境还没就绪",
+  "en": "This Mac isn’t ready yet"
+ },
+ {
+  "source": "正在读取游戏…",
+  "en": "Reading games…"
+ },
+ {
+  "source": "再放入游戏",
+  "en": "Now add games"
+ },
+ {
+  "source": "已放入，只保存在本机。",
+  "en": "Added. Stays on this Mac."
+ },
+ {
+  "source": "读取游戏信息",
+  "en": "Reading game info"
+ },
+ {
+  "source": "放进游戏库并校验",
+  "en": "Adding to library and verifying"
+ },
+ {
+  "source": "第 {0}/{1} 步",
+  "en": "Step {0} of {1}"
+ },
+ {
+  "source": "读不了「{0}」：S2Arm 没有读取这个文件夹的权限。到「系统设置 → 隐私与安全性 → 文件与文件夹」里给 S2Arm 打开，再放一次。",
+  "en": "Can’t read “{0}”: S2Arm doesn’t have permission for this folder. Allow S2Arm in System Settings → Privacy & Security → Files and Folders, then add it again."
+ },
+ {
+  "source": "已结束（{0}）",
+  "en": "Finished ({0})"
+ },
+ {
+  "source": "打包中",
+  "en": "Packing"
+ },
+ {
+  "source": "未打包",
+  "en": "Not packed"
+ },
+ {
+  "source": "读不出这个游戏：你的 prod.keys 解不开它。多半是密钥太旧（导出密钥的 Switch 系统版本比游戏要求的低），请把 Switch 更新到最新系统后重新导出 prod.keys，到「设置 → 玩家密钥」重新导入，再放一次游戏。如果密钥是新的，可能是游戏文件不完整，请重新复制或下载后再试。",
+  "en": "Can’t read this game: your prod.keys can’t decrypt it. Most likely the keys are too old (dumped from a Switch on a lower system version than the game needs). Update your Switch to the latest system, dump prod.keys again, re-import them in Settings → Player keys, then add the game again. If your keys are new, the game file may be incomplete; copy or download it again."
+ },
+ {
+  "source": "缺游戏本体：只放了更新或 DLC，把本体的 NSP / XCI 也放进来",
+  "en": "Base game missing: only an update or DLC was added. Add the base game’s NSP / XCI too."
+ },
+ {
+  "source": "这款游戏是 32 位程序，S2Arm 暂时只支持 64 位游戏，打不了包",
+  "en": "This game is a 32-bit program. S2Arm only supports 64-bit games for now, so it can’t be packed."
+ },
+ {
+  "source": "拉回 iPhone 诊断",
+  "en": "Pull iPhone diagnostics"
+ },
+ {
+  "source": "拉回 iPhone 诊断…",
+  "en": "Pull iPhone Diagnostics…"
+ },
+ {
+  "source": "用数据线连上 iPhone / iPad 并解锁，S2Arm 会把手机上各游戏的诊断包和运行日志拉回这台 Mac（不拉存档和游戏文件）。",
+  "en": "Connect your iPhone / iPad with a cable and unlock it. S2Arm pulls each game’s diagnostics and run logs to this Mac (never saves or game files)."
+ },
+ {
+  "source": "已拉回 {0} 个游戏的诊断，在访达里打开了。",
+  "en": "Pulled diagnostics for {0} game(s) and opened them in Finder."
+ },
+ {
+  "source": "没找到已连接的 iPhone / iPad：用数据线连上并解锁，在手机上点「信任这台电脑」，再试一次。",
+  "en": "No connected iPhone / iPad found. Connect it with a cable, unlock it, tap “Trust This Computer”, then try again."
+ },
+ {
+  "source": "连着的设备上没找到 S2Arm 打的游戏 App，或者这些 App 还没运行过、没有日志。",
+  "en": "No S2Arm game apps found on the connected device, or they haven’t run yet and have no logs."
+ },
+ {
+  "source": "打 iPhone 包",
+  "en": "Pack for iPhone"
+ },
+ {
+  "source": "安装 .NET SDK",
+  "en": "Install .NET SDK"
+ },
+ {
+  "source": "一键安装",
+  "en": "Install"
+ },
+ {
+  "source": "打 iPhone 包时需要",
+  "en": "Needed to pack for iPhone"
+ },
+ {
+  "source": "打包和运行互斥，请等当前任务结束。",
+  "en": "Packing and running can’t happen at the same time. Wait for the current task to finish."
+ },
+ {
+  "source": "iPhone 包已出好，在访达里打开了。按装机步骤用 AltStore 装到手机，再把「资源包」文件夹拷进去。",
+  "en": "The iPhone package is ready and open in Finder. Follow the install steps to install it with AltStore, then copy the resource pack folder into the app."
+ },
+ {
+  "source": ".NET SDK 已安装。",
+  "en": ".NET SDK installed."
+ },
+ {
+  "source": "打 iPhone 包需要 .NET 10 SDK：点「一键安装」，从微软官方下载装到你的用户目录（约 300 MB，不要管理员密码）。只在 Mac 上玩不需要它。",
+  "en": "Packing for iPhone needs the .NET 10 SDK. Click “Install” to download it from Microsoft into your user folder (about 300 MB, no admin password). Not needed to play on Mac."
+ },
+ {
+  "source": "打 iPhone 包需要 .NET SDK：到「设置」的环境检查里点「一键安装」，装好后再点「打 iPhone 包」。",
+  "en": "Packing for iPhone needs the .NET SDK. Click “Install” in Settings’ environment checks, then click “Pack for iPhone” again."
+ },
+ {
+  "source": "应用内置引擎太旧，没有打 iPhone 包的工具，请安装最新版 S2Arm。",
+  "en": "The bundled engine is too old to pack for iPhone. Install the latest S2Arm."
+ },
+ {
+  "source": "一键出包结束了，但没找到 IPA，请查看日志。",
+  "en": "Packing finished but no IPA was found. Check the logs."
+ },
+ {
+  "source": "认出游戏",
+  "en": "Identifying game"
+ },
+ {
+  "source": "改写、系统数据、着色器全量预编",
+  "en": "Rewriting, system data and precompiling all shaders"
+ },
+ {
+  "source": "编 App、签名、打资源包",
+  "en": "Building app, signing and packing resources"
+ },
+ {
+  "source": "准备游戏文件",
+  "en": "Preparing game files"
+ },
+ {
+  "source": "下载 .NET 安装脚本",
+  "en": "Downloading .NET installer"
+ },
+ {
+  "source": "下载并安装 .NET 10 SDK（约 300 MB）",
+  "en": "Downloading and installing .NET 10 SDK (about 300 MB)"
+ },
+ {
+  "source": "把 Switch 的 ARM 程序改写成能在苹果设备上直接运行的形式。",
+  "en": "Rewrite the Switch ARM program so it runs natively on Apple devices."
+ },
+ {
+  "source": "目标设备：",
+  "en": "Target device: "
+ },
+ {
+  "source": "（已连接）",
+  "en": " (connected)"
+ },
+ {
+  "source": "没连设备：出包不需要；装到 iPhone 时再用数据线连上",
+  "en": "No device connected: not needed to build; connect the iPhone with a cable when installing"
+ },
+ {
+  "source": "选机型",
+  "en": "Choose model"
+ },
+ {
+  "source": "更换",
+  "en": "Change"
+ },
+ {
+  "source": "已连接",
+  "en": "Connected"
+ },
+ {
+  "source": "重新检测连接的设备",
+  "en": "Detect connected devices again"
+ },
+ {
+  "source": "包与机型无关：iOS 18 以上的 iPhone / iPad 都能装，第一次进游戏在设备上编一遍着色器。这里的设备只用来提示内存窗口。",
+  "en": "The package is not tied to a model: it installs on any iPhone / iPad with iOS 18 or later, and shaders are compiled once on the device the first time you play. The device here is only used for the memory-window hint."
+ },
+ {
+  "source": "用 AI 操作",
+  "en": "Use with AI"
+ },
+ {
+  "source": "允许 AI 操作 S2Arm",
+  "en": "Allow AI to operate S2Arm"
+ },
+ {
+  "source": "打开后，这台 Mac 上的 AI 助手（比如 Claude Code）可以替你放密钥、放游戏、打包、打 iPhone 包、看失败原因并重试。只在本机，别的设备连不进来。",
+  "en": "When on, an AI assistant on this Mac (such as Claude Code) can add keys and games, pack, build iPhone packages, read why something failed and retry for you. Local only; other devices cannot connect."
+ },
+ {
+  "source": "复制给 AI 的说明",
+  "en": "Copy instructions for AI"
+ },
+ {
+  "source": "已复制。粘贴给你的 AI 助手就行。",
+  "en": "Copied. Paste it to your AI assistant."
+ },
+ {
+  "source": "请用 S2Arm 帮我把 Switch 游戏移植到 Mac / iPhone。先读说明：",
+  "en": "Please use S2Arm to port my Switch games to Mac / iPhone. Read the guide first: "
+ },
+ {
+  "source": "命令行工具：",
+  "en": "Command-line tool: "
+ },
+ {
+  "source": "（先运行 help）",
+  "en": " (run help first)"
+ },
+ {
+  "source": "每条命令都加参数：",
+  "en": "Add this to every command: "
+ },
+ {
+  "source": "规则：只在这台 Mac 上操作；不要上传、复制或打印 prod.keys 和游戏文件；遇到失败先看任务里的错误码和恢复建议再重试。",
+  "en": "Rules: work only on this Mac; never upload, copy or print prod.keys or game files; when something fails, read the task's error code and recovery suggestion before retrying."
+ },
+ {
+  "source": "无法解密或校验这个游戏；可能是密钥不匹配，也可能是游戏文件不完整。",
+  "en": "The game could not be decrypted or verified. The keys may not match, or the game files may be incomplete."
+ },
+ {
+  "source": "任务所在磁盘空间不足。",
+  "en": "The task disk has insufficient space."
+ },
+ {
+  "source": "文件或目录不可访问或不可写。",
+  "en": "A file or folder cannot be accessed or written."
+ },
+ {
+  "source": "任务所需的文件或目录不存在。",
+  "en": "A file or folder required by the task does not exist."
+ },
+ {
+  "source": "任务所需的工具无法启动：{0}",
+  "en": "A tool required by the task could not start: {0}"
+ },
+ {
+  "source": "所选游戏文件或文件夹不存在。",
+  "en": "The selected game file or folder does not exist."
+ },
+ {
+  "source": "在「设置 → 玩家密钥」导入自行导出的 prod.keys，然后重新导入游戏。",
+  "en": "Import your own prod.keys in Settings → Player keys, then import the game again."
+ },
+ {
+  "source": "重新选择完整的 prod.keys 文本文件，不要手工补写密钥值；原有密钥保持不变。",
+  "en": "Select a complete prod.keys text file again. Do not fill in key values by hand; your existing keys are kept."
+ },
+ {
+  "source": "核对自行导出的密钥是否匹配游戏所需版本，并检查游戏文件完整性，然后重新导入；此错误不能单独确定是密钥还是文件问题。",
+  "en": "Check that your exported keys match the game requirements and verify the game files, then import again. This error alone cannot distinguish a key mismatch from damaged files."
+ },
+ {
+  "source": "选择 NSP、XCI 文件或包含它们的文件夹，然后重新导入。",
+  "en": "Select an NSP or XCI file, or a folder containing them, then import again."
+ },
+ {
+  "source": "确认所选文件夹包含 NSP 或 XCI 文件，再重新导入。",
+  "en": "Check that the selected folder contains NSP or XCI files, then import again."
+ },
+ {
+  "source": "重新连接存储磁盘，确认文件仍在原位置且可读取；托管游戏文件缺失时，请从原始文件重新导入。",
+  "en": "Reconnect the storage drive and check that the files are still readable at their original locations. Import missing managed game files again from your originals."
+ },
+ {
+  "source": "将对应的游戏本体 NSP 或 XCI 一并导入；仅更新或 DLC 不能单独打包。",
+  "en": "Import the matching base-game NSP or XCI as well. An update or DLC alone cannot be packaged."
+ },
+ {
+  "source": "这款游戏的 32 位 ARM 程序暂不支持，重试无法解决；请选择 64 位 ARM 游戏。",
+  "en": "32-bit ARM game programs are not supported. Retrying will not fix this; choose a 64-bit ARM game."
+ },
+ {
+  "source": "检查原始游戏文件是否完整，重新导入后再试；仍失败时复制错误摘要并保留对应日志。",
+  "en": "Check that the original game files are complete, then import and retry. If it still fails, copy the error summary and keep the task log."
+ },
+ {
+  "source": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
+  "en": "Free space on the task disk. Check both the game-library and app-data disks before retrying; keep your saves and last working release."
+ },
+ {
+  "source": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
+  "en": "Check file and folder permissions. For Desktop, Documents, Downloads or external drives, allow S2Arm access in System Settings → Privacy & Security → Files and Folders, then retry."
+ },
+ {
+  "source": "当前路径需要 Apple Silicon Mac，请换用支持的设备；重试不会改变硬件兼容性。",
+  "en": "This path requires an Apple Silicon Mac. Use a supported device; retrying cannot change hardware compatibility."
+ },
+ {
+  "source": "当前游戏路径需要 macOS 15 或更新版本；在支持的系统上重新检查环境后再试。",
+  "en": "The current game path requires macOS 15 or later. Recheck the environment on a supported system, then retry."
+ },
+ {
+  "source": "在设置中检查所选 Xcode 是否完整且包含所需平台 SDK，打开 Xcode 完成设置后重新检查环境。",
+  "en": "In Settings, check that the selected Xcode is complete and includes the required platform SDK. Open Xcode to finish setup, then recheck the environment."
+ },
+ {
+  "source": "打开所选 Xcode，同意许可并完成首次设置，返回 S2Arm 重新检查环境。",
+  "en": "Open the selected Xcode, accept its license and finish initial setup, then return to S2Arm and recheck the environment."
+ },
+ {
+  "source": "开发模式需要 .NET 10 SDK；完整应用请重新安装以恢复内置运行时，然后重新检查环境。",
+  "en": "Development mode needs the .NET 10 SDK. For the complete app, reinstall it to restore the bundled runtime, then recheck the environment."
+ },
+ {
+  "source": "在「设置」的环境检查中安装 .NET 10 SDK，完成后重新检查，再打 iPhone 包。",
+  "en": "Install the .NET 10 SDK from the environment checks in Settings, recheck, then generate the iPhone package again."
+ },
+ {
+  "source": "开发模式请在设置中重新准备引擎工具；完整应用请重新安装，然后重新导入游戏。",
+  "en": "In development mode, prepare the engine tools again in Settings. For the complete app, reinstall it, then import the game again."
+ },
+ {
+  "source": "重新选择完整的 S2Arm 源码目录；使用完整应用时，请重新安装应用后检查环境。",
+  "en": "Select a complete S2Arm source directory. For the complete app, reinstall it and recheck the environment."
+ },
+ {
+  "source": "检查本任务日志中缺少的工具；开发模式补齐构建依赖，完整应用则重新安装，然后重试。",
+  "en": "Check the task log for the missing tool. Install the build dependency in development mode, or reinstall the complete app, then retry."
+ },
+ {
+  "source": "重新打包这款游戏以恢复完整运行文件；保留原有存档，打包成功后再启动。",
+  "en": "Package this game again to restore complete runtime files. Keep your saves, then launch after packaging succeeds."
+ },
+ {
+  "source": "检查游戏输入",
+  "en": "Check game inputs"
+ },
+ {
+  "source": "检查导入文件",
+  "en": "Check import files"
+ },
+ {
+  "source": "先把 Switch 更新到最新系统，重新导出 prod.keys，到「设置 → 玩家密钥」重新导入，再放一次游戏；如果密钥已是新的，请检查游戏文件是否完整，重新复制后再试。",
+  "en": "Update your Switch to the latest system, export prod.keys again, import it in Settings → Player keys, then add the game again. If your keys are already current, check that the game files are complete and copy them again before retrying."
+ },
+ {
+  "source": "去 App Store 安装 Xcode，装好打开一次并完成必要组件安装，回来点「重新检查」。",
+  "en": "Install Xcode from the App Store, open it once and finish installing its required components, then return and click Check again."
+ },
+ {
+  "source": "打开 Xcode，同意许可并完成首次设置，回来点「重新检查」。",
+  "en": "Open Xcode, accept the license and finish initial setup, then return and click Check again."
+ },
+ {
+  "source": "重新安装完整的 S2Arm，恢复内置运行时后点「重新检查」。",
+  "en": "Reinstall the complete S2Arm app to restore its bundled runtime, then click Check again."
+ },
+ {
+  "source": "重新安装完整的 S2Arm，然后重新导入游戏。",
+  "en": "Reinstall the complete S2Arm app, then import the game again."
+ },
+ {
+  "source": "重新安装完整的 S2Arm，然后点「重新检查」。",
+  "en": "Reinstall the complete S2Arm app, then click Check again."
+ },
+ {
+  "source": "重新安装完整的 S2Arm，点「重新检查」后重试。",
+  "en": "Reinstall the complete S2Arm app, click Check again, then retry."
+ },
+ {
+  "source": "用数据线连上 iPhone / iPad，或在「跨平台编译 → iOS」中选机型和系统版本；连着多台不同目标时，请先选一台。",
+  "en": "Connect your iPhone or iPad with a cable, or select its model and system version in Cross-platform builds → iOS. If multiple different targets are connected, select one first."
+ },
+ {
+  "source": "这台设备的 GPU 或系统不在当前支持范围内，重试无法解决；需要 A14 / M1 或更新芯片及 iOS / iPadOS 18 或更新系统。",
+  "en": "This device GPU or system is outside the supported range, so retrying will not help. An A14 / M1 or newer chip and iOS / iPadOS 18 or later are required."
+ },
+ {
+  "source": "把 Xcode 更新到最新版，装好打开一次，回来点「重新检查」，再打 iPhone 包。",
+  "en": "Update Xcode to the latest version and open it once, then return, click Check again and generate the iPhone package again."
+ },
+ {
+  "source": "安装 .NET 10 SDK，然后点「重新检查」。",
+  "en": "Install the .NET 10 SDK, then click Check again."
+ },
+ {
+  "source": "在设置中重新准备引擎工具，然后重新导入游戏。",
+  "en": "Prepare the engine tools again in Settings, then import the game again."
+ },
+ {
+  "source": "重新选择完整的 S2Arm 源码目录，然后点「重新检查」。",
+  "en": "Select a complete S2Arm source directory, then click Check again."
+ },
+ {
+  "source": "查看任务日志中缺少的工具，补齐构建依赖后重试。",
+  "en": "Check the task log for the missing tool, install the build dependency, then retry."
+ },
+ {
+  "source": "存档恢复已完成。",
+  "en": "Save restoration completed."
+ },
+ {
+  "source": "存档已恢复，事务清理尚未完成。原副本已保留，请重新检查。",
+  "en": "The save was restored, but transaction cleanup is unfinished. The original copy was retained. Check again."
+ },
+ {
+  "source": "保留恢复前副本",
+  "en": "Preserving the previous save"
+ },
+ {
+  "source": "先检查备份，再确认恢复。错误游戏、用户、版本或损坏的备份会被拒绝。",
+  "en": "Check a backup before confirming restoration. Backups for another game, user or version, and damaged backups, are rejected."
+ },
+ {
+  "source": "同名备份已存在，请选择新的文件名。",
+  "en": "A backup with this name already exists. Choose a new filename."
+ },
+ {
+  "source": "备份与当前游戏版本或更新、DLC 组合不符，已拒绝恢复。",
+  "en": "The backup does not match the current game version, update or DLC selection. Restoration was refused."
+ },
+ {
+  "source": "备份失败，原存档未修改。请检查目录、权限和存档完整性。",
+  "en": "Backup failed without changing the original save. Check the folder, permissions and save integrity."
+ },
+ {
+  "source": "备份存档",
+  "en": "Back up saves"
+ },
+ {
+  "source": "备份存档…",
+  "en": "Back up saves…"
+ },
+ {
+  "source": "备份属于另一款游戏，已拒绝恢复。",
+  "en": "This backup belongs to another game. Restoration was refused."
+ },
+ {
+  "source": "备份已变化，请重新检查。",
+  "en": "The backup changed. Check it again."
+ },
+ {
+  "source": "备份或当前存档已变化，请重新检查备份后再确认恢复。",
+  "en": "The backup or current save changed. Check the backup again before confirming restoration."
+ },
+ {
+  "source": "备份损坏、格式不支持或包含不安全路径，已拒绝恢复。",
+  "en": "The backup is damaged, unsupported or contains unsafe paths. Restoration was refused."
+ },
+ {
+  "source": "备份时间",
+  "en": "Backup time"
+ },
+ {
+  "source": "备份游戏",
+  "en": "Backup game"
+ },
+ {
+  "source": "备份游戏存档",
+  "en": "Backing up game saves"
+ },
+ {
+  "source": "备份用户与当前存档用户不符，已拒绝恢复。",
+  "en": "The backup user does not match the current save user. Restoration was refused."
+ },
+ {
+  "source": "备份目标磁盘空间不足，请清理空间后重试。",
+  "en": "The backup disk is full. Free some space and retry."
+ },
+ {
+  "source": "存档备份与恢复",
+  "en": "Save backup and restoration"
+ },
+ {
+  "source": "存档备份与恢复…",
+  "en": "Save backup and restoration…"
+ },
+ {
+  "source": "存档备份已完成。",
+  "en": "Save backup completed."
+ },
+ {
+  "source": "存档大小",
+  "en": "Save size"
+ },
+ {
+  "source": "存档恢复事务尚未完成，自动回退失败。请保留原副本并查看日志。",
+  "en": "Save restoration is unfinished and automatic rollback failed. Keep the original copy and check the log."
+ },
+ {
+  "source": "存档恢复已完成，恢复前副本已保留。",
+  "en": "Save restoration completed. The previous save copy was retained."
+ },
+ {
+  "source": "存档用户资料缺失或无效，已停止操作。",
+  "en": "Save user profiles are missing or invalid. The operation was stopped."
+ },
+ {
+  "source": "存档目录包含链接，已停止操作。",
+  "en": "The save folder contains links. The operation was stopped."
+ },
+ {
+  "source": "存档组件返回的信息不完整，请重新检查。",
+  "en": "The save component returned incomplete information. Check again."
+ },
+ {
+  "source": "完整性、游戏版本和用户校验通过。",
+  "en": "Integrity, game version and user checks passed."
+ },
+ {
+  "source": "这份存档的目录结构不常见，导入时会按原样照搬。如果游戏读不到进度，请换一份存档。",
+  "en": "This save's folder structure is unusual; it is imported exactly as packed. If the game does not see your progress, try a different save."
+ },
+ {
+  "source": "已将未完成的恢复回退到原存档。",
+  "en": "An unfinished restoration was rolled back to the original save."
+ },
+ {
+  "source": "当前存档",
+  "en": "Current save"
+ },
+ {
+  "source": "当前存档已变化，请停止游戏并重新检查备份。",
+  "en": "The current save changed. Stop the game and check the backup again."
+ },
+ {
+  "source": "当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；游戏、用户或版本不符时不会恢复。",
+  "en": "The current save will be replaced with the checked backup. The previous save is retained automatically. A game, user or version mismatch prevents restoration."
+ },
+ {
+  "source": "恢复存档",
+  "en": "Restore saves"
+ },
+ {
+  "source": "恢复并保留原副本",
+  "en": "Restore and retain the original"
+ },
+ {
+  "source": "恢复此备份…",
+  "en": "Restore this backup…"
+ },
+ {
+  "source": "恢复该备份？",
+  "en": "Restore this backup?"
+ },
+ {
+  "source": "提交存档恢复",
+  "en": "Committing save restoration"
+ },
+ {
+  "source": "文件数量",
+  "en": "File count"
+ },
+ {
+  "source": "查看恢复前备份",
+  "en": "Show the previous save backup"
+ },
+ {
+  "source": "校验存档备份",
+  "en": "Validating save backup"
+ },
+ {
+  "source": "检查存档备份",
+  "en": "Check save backup"
+ },
+ {
+  "source": "检查存档状态",
+  "en": "Checking save status"
+ },
+ {
+  "source": "检查游戏存档与可恢复的原副本。",
+  "en": "Check the game save and retained original copies."
+ },
+ {
+  "source": "此游戏尚无可备份的存档，请先在游戏中保存。",
+  "en": "This game has no save to back up yet. Save in the game first."
+ },
+ {
+  "source": "游戏库磁盘空间不足，无法暂存并保留恢复前副本。",
+  "en": "The library disk lacks space for staging and retaining the previous save."
+ },
+ {
+  "source": "游戏标识无效，无法管理存档。",
+  "en": "The game identifier is invalid. Saves cannot be managed."
+ },
+ {
+  "source": "游戏版本编号",
+  "en": "Game version number"
+ },
+ {
+  "source": "生成独立的存档备份文件，包含用户和文件校验信息。原存档保持不变。",
+  "en": "Create an independent backup with user and file integrity information. The original save is preserved."
+ },
+ {
+  "source": "用户标识",
+  "en": "User identifier"
+ },
+ {
+  "source": "请先停止游戏。恢复前会校验备份并保留当前存档的原副本。",
+  "en": "Stop the game first. The backup is checked before restoration, and the previous save is retained."
+ },
+ {
+  "source": "请等待当前任务结束，或先结束正在运行的游戏。",
+  "en": "Wait for the current task to finish, or stop the running game first."
+ },
+ {
+  "source": "请选择游戏库和应用数据目录以外的备份位置。",
+  "en": "Choose a backup location outside the library and application data folders."
+ },
+ {
+  "source": "选择存档备份",
+  "en": "Choose a save backup"
+ },
+ {
+  "source": "选择并检查备份…",
+  "en": "Choose and check a backup…"
+ },
+ {
+  "source": "验证恢复条件",
+  "en": "Verifying restoration conditions"
+ },
+ {
+  "source": "存档所属用户",
+  "en": "Save owners"
+ },
+ {
+  "source": "仅含设备存档，不属于单个用户。",
+  "en": "Device saves only; not tied to an individual user."
+ },
+ {
+  "source": "图形模式",
+  "en": "Graphics mode"
+ },
+ {
+  "source": "上次运行",
+  "en": "Last run"
+ },
+ {
+  "source": "本次运行",
+  "en": "Current run"
+ },
+ {
+  "source": "下次启动",
+  "en": "Next launch"
+ },
+ {
+  "source": "已准备 {0}/{1} 个直连着色器",
+  "en": "{0}/{1} direct shaders prepared"
+ },
+ {
+  "source": "已覆盖 {0}/{1} 个已见着色器",
+  "en": "{0}/{1} encountered shaders covered"
+ },
+ {
+  "source": "开始前，先认识这款游戏的操作。",
+  "en": "Get to know this game's controls before you start."
+ },
+ {
+  "source": "游戏画面的手柄图标对应下表。具体功能以游戏提示为准，鼠标按键不是按位置直接点击菜单。",
+  "en": "Match the game's controller prompts to this table. Actions depend on the game; mouse buttons do not point and click menus."
+ },
+ {
+  "source": "鼠标移动控制右摇杆，停止移动后回中。",
+  "en": "Mouse movement controls the right stick and returns to centre when movement stops."
+ },
+ {
+  "source": "鼠标移动不驱动摇杆。",
+  "en": "Mouse movement does not control a stick."
+ },
+ {
+  "source": "当前游戏宿主未确认支持输入映射，不能将已保存配置当作实际生效键位。请重新准备支持映射的运行版本。",
+  "en": "This game's host has not confirmed mapping support. Saved bindings cannot be presented as active controls. Prepare a runtime with mapping support."
+ },
+ {
+  "source": "运行中可从游戏菜单或菜单栏手柄图标查看本局实际键位。改键在下次启动生效。",
+  "en": "During play, use the game menu or menu-bar controller icon to view this run's controls. Binding changes apply next launch."
+ },
+ {
+  "source": "下次启动仍显示",
+  "en": "Show on next launch"
+ },
+ {
+  "source": "修改键位",
+  "en": "Edit bindings"
+ },
+ {
+  "source": "开始游戏",
+  "en": "Start game"
+ },
+ {
+  "source": "当前任务或运行环境已变化，请重新启动游戏。",
+  "en": "The task or runtime environment changed. Please start the game again."
+ },
+ {
+  "source": "输入映射存在冲突，请先修改键位。",
+  "en": "Input bindings conflict. Edit them before starting."
+ },
+ {
+  "source": "无法保存键位引导偏好：{0}",
+  "en": "Could not save the controls-guide preference: {0}"
+ },
+ {
+  "source": "新版 Mac 宿主可从游戏菜单或菜单栏手柄图标查看本局键位。旧包需重新打包，改键下次启动生效。",
+  "en": "New Mac hosts show this run's controls from the game menu or menu-bar controller icon. Rebuild old packages; binding changes apply next launch."
+ },
+ {
+  "source": "此游戏的输入映射无法读取，请先修复或重新保存键位。",
+  "en": "This game's input mapping could not be read. Repair or save its bindings again before starting."
+ },
+ {
+  "source": "键盘",
+  "en": "Keyboard"
+ },
+ {
+  "source": "Switch 按键位置",
+  "en": "Switch button layout"
+ },
+ {
+  "source": "点击一个按键",
+  "en": "Select a button"
+ },
+ {
+  "source": "动作按键",
+  "en": "Face buttons"
+ },
+ {
+  "source": "按键下的小字是当前键鼠绑定；完整输入在右侧查看。",
+  "en": "Small labels show keyboard or mouse bindings. See all inputs on the right."
+ },
+ {
+  "source": "选择按键 {0}",
+  "en": "Select button {0}"
+ },
+ {
+  "source": "游戏中的提示",
+  "en": "In-game prompt"
+ },
+ {
+  "source": "具体功能以游戏提示为准",
+  "en": "Actions depend on the game"
+ },
+ {
+  "source": "可视化改键",
+  "en": "Visual mapping"
+ },
+ {
+  "source": "完整列表",
+  "en": "All bindings"
+ },
+ {
+  "source": "有未保存的更改",
+  "en": "Unsaved changes"
+ },
+ {
+  "source": "正在设置",
+  "en": "Editing button"
+ },
+ {
+  "source": "请按新键，Esc 取消",
+  "en": "Press a key; Esc cancels"
+ },
+ {
+  "source": "录入键盘按键",
+  "en": "Record keyboard binding"
+ },
+ {
+  "source": "解除键盘绑定",
+  "en": "Unbind keyboard input"
+ },
+ {
+  "source": "点击上方按钮后按键",
+  "en": "Click above, then press a key"
+ },
+ {
+  "source": "常用键",
+  "en": "Common keys"
+ },
+ {
+  "source": "鼠标按键",
+  "en": "Mouse button"
+ },
+ {
+  "source": "此按键存在重复绑定，请调整后保存。",
+  "en": "This button has a duplicate binding. Resolve it before saving."
+ },
+ {
+  "source": "恢复此键",
+  "en": "Revert this button"
+ },
+ {
+  "source": "修改的是本机输入，游戏内的手柄图标不会变化。",
+  "en": "You are changing local inputs. In-game controller prompts will not change."
+ },
+ {
+  "source": "摇杆外侧箭头表示推杆方向。HOME / 截图键仅作示意。",
+  "en": "Arrows around a stick indicate tilt directions. HOME / Capture are illustrative only."
+ },
+ {
+  "source": "点选手柄上的按键，在右侧查看本次启动使用的输入。具体功能以游戏提示为准。",
+  "en": "Select a controller button to see the inputs used for this launch. Actions depend on the game."
+ },
+ {
+  "source": "等待输入",
+  "en": "Waiting for input"
+ },
+ {
+  "source": "所有输入已清空",
+  "en": "All inputs cleared"
+ },
+ {
+  "source": "左摇杆 %.2f, %.2f · 右摇杆 %.2f, %.2f · L2 %.2f · R2 %.2f",
+  "en": "Left stick %.2f, %.2f · Right stick %.2f, %.2f · L2 %.2f · R2 %.2f"
+ },
+ {
+  "source": "点击“开始输入测试”后按键或移动鼠标",
+  "en": "Enable “Start input test”, then press a key or move the mouse"
+ },
+ {
+  "source": "输入测试",
+  "en": "Input test"
+ },
+ {
+  "source": "输入测试已结束",
+  "en": "Input test ended"
+ },
+ {
+  "source": "键盘：{0}",
+  "en": "Keyboard: {0}"
+ },
+ {
+  "source": "开始输入测试",
+  "en": "Start input test"
+ },
+ {
+  "source": "测试只在此窗口接收输入，不会启动游戏。Esc 结束键盘测试。",
+  "en": "This window only tests input; it does not launch a game. Press Esc to end the keyboard test."
+ },
+ {
+  "source": "鼠标位移：%.1f, %.1f",
+  "en": "Mouse movement: %.1f, %.1f"
+ },
+ {
+  "source": "鼠标按钮：{0}",
+  "en": "Mouse button: {0}"
+ },
+ {
+  "source": "键盘已松开：{0}",
+  "en": "Key released: {0}"
+ },
+ {
+  "source": "修饰键已松开",
+  "en": "Modifier key released"
+ },
+ {
+  "source": "左摇杆 {0}, {1} · 右摇杆 {2}, {3} · L2 {4} · R2 {5}",
+  "en": "Left stick {0}, {1} · Right stick {2}, {3} · L2 {4} · R2 {5}"
+ },
+ {
+  "source": "鼠标位移：{0}, {1}",
+  "en": "Mouse movement: {0}, {1}"
+ },
+ {
+  "source": "出包进度",
+  "en": "Pack progress"
+ },
+ {
+  "source": "推导配置",
+  "en": "Derive config"
+ },
+ {
+  "source": "直连库",
+  "en": "Direct library"
+ },
+ {
+  "source": "通用兜底",
+  "en": "Generic fallback"
+ },
+ {
+  "source": "签名",
+  "en": "Signing"
+ },
+ {
+  "source": "进行中",
+  "en": "In progress"
+ },
+ {
+  "source": "等待",
+  "en": "Waiting"
+ },
+ {
+  "source": "未出",
+  "en": "Not built"
+ },
+ {
+  "source": "画面模式",
+  "en": "Graphics mode"
+ },
+ {
+  "source": "这一包带直连库，通用着色器仍作兜底：直连崩溃或画面异常时退回通用。",
+  "en": "This package carries a direct library; generic shaders remain as fallback when direct crashes or draws abnormally."
+ },
+ {
+  "source": "推导配置 / 直连库",
+  "en": "Configuration / direct library"
+ },
+ {
+  "source": "iOS / iPad",
+  "en": "iOS / iPad"
+ },
+ {
+  "source": "开发中：现有构建只出调试 APK，游戏加载与渲染还在开发",
+  "en": "In development: the current build only produces a debug APK; game loading and rendering are still in development"
+ },
+ {
+  "source": "开发中：现有构建只出原生目标文件，还没有 HAP 打包",
+  "en": "In development: the current build only produces native object files; HAP packaging is not available yet"
+ },
+ {
+  "source": "可在本机游戏库直接游玩的 Mac 版本",
+  "en": "A Mac version you can play directly from this Mac's game library"
+ },
+ {
+  "source": "使用游戏库中的游戏与现有的 iPhone 出包功能，按目标设备生成 IPA 与资源包。iPhone 和 iPad 用同一个 IPA，按所连设备或所选机型出包。",
+  "en": "Uses games from the library and the existing iPhone packaging to build an IPA and resource pack for the target device. iPhone and iPad use the same IPA, built for the connected device or the selected model."
+ },
+ {
+  "source": "使用游戏库中的游戏，在这台 Mac 上准备好即可在游戏库直接开始游戏，与游戏库里的「准备」是同一功能。",
+  "en": "Uses games from the library. Once prepared on this Mac you can start the game directly from the library; this is the same as “Prepare” in the library."
+ },
+ {
+  "source": "S2Arm 诊断浮层",
+  "en": "S2Arm diagnostics overlay"
+ },
+ {
+  "source": "显示目标帧率、慢帧比例、图形路径、首遇编译、音频和包号。下次启动游戏时生效。",
+  "en": "Shows the target frame rate, slow-frame percentage, graphics path, first-use compilation, audio and build ID. Takes effect the next time a game starts."
+ },
+ {
+  "source": "Metal HUD",
+  "en": "Metal HUD"
+ },
+ {
+  "source": "显示帧率、GPU 时间和帧间隔曲线，仅供手动观察；开启时截图、存帧、自动玩家和满屏判据不可用。下次启动游戏时生效。",
+  "en": "Shows frame rate, GPU time and a frame interval chart, for manual observation only. Screenshots, frame captures, automated play and full-screen checks are unavailable while enabled. Takes effect the next time a game starts."
+ },
+ {
+  "source": "选择目标平台，用游戏库里的游戏出包。",
+  "en": "Choose a target platform and build from the games in your library."
+ },
+ {
+  "source": "iPhone 和 iPad 共用一个 IPA，着色器按所连设备或所选机型预编。",
+  "en": "iPhone and iPad share one IPA; shaders are precompiled for the connected device or the selected model."
+ },
+ {
+  "source": "密钥、字体、Xcode 与 .NET SDK 沿用「设置」里的配置。",
+  "en": "Keys, fonts, Xcode and the .NET SDK come from Settings."
+ },
+ {
+  "source": "改写与准备",
+  "en": "Rewrite & prepare"
+ },
+ {
+  "source": "编 App 与签名",
+  "en": "Build app & sign"
+ },
+ {
+  "source": "空间预检通过",
+  "en": "Space check passed"
+ },
+ {
+  "source": "可用 ",
+  "en": "free "
+ },
+ {
+  "source": "，约 ",
+  "en": ", done around "
+ },
+ {
+  "source": "（按本机最近 {0} 次记录）",
+  "en": " (based on the last {0} records on this Mac)"
+ },
+ {
+  "source": "本步还需约 ",
+  "en": "This step: about "
+ },
+ {
+  "source": "（按本步当前速度）",
+  "en": " left at the current rate"
+ },
+ {
+  "source": "改写与准备资源",
+  "en": "Rewrite and prepare resources"
+ },
+ {
+  "source": "改写游戏代码，准备系统数据、宽屏布局、追加内容和资源索引；出直连包时还会推导直连配置、抽出着色器。",
+  "en": "Rewrites the game code and prepares system data, widescreen layout, add-on content and the resource index; direct packs also derive the direct profile and extract shaders."
+ },
+ {
+  "source": "直连着色器库",
+  "en": "Direct shader library"
+ },
+ {
+  "source": "按游戏文件出直连着色器库。",
+  "en": "Builds the direct shader library from the game files."
+ },
+ {
+  "source": "本机还没有这一步的记录",
+  "en": "No record of this step on this Mac yet"
+ },
+ {
+  "source": "本机最近记录的中位数",
+  "en": "Median of recent records on this Mac"
+ },
+ {
+  "source": "本机最近记录的中位数，按游戏体积换算",
+  "en": "Median of recent records on this Mac, scaled by game size"
+ },
+ {
+  "source": "查看装机步骤",
+  "en": "Install steps"
+ },
+ {
+  "source": "iPhone 装机步骤",
+  "en": "iPhone install steps"
+ },
+ {
+  "source": "把 iPhone 包装到手机",
+  "en": "Install the iPhone package on your phone"
+ },
+ {
+  "source": "启动器出的包是自签的，iPhone 不认，要用你自己的 Apple ID 重新签一次。按下面五步做：",
+  "en": "The launcher's package is self-signed and iPhone won't accept it as is. Re-sign it once with your own Apple ID in these five steps:"
+ },
+ {
+  "source": "在 Mac 上装 AltServer，再用它把 AltStore 装到 iPhone（按 altstore.io 官网说明）。推荐 AltStore Classic 2.2 或更新；不要用 SideStore 0.7.0，它会丢掉「提高内存上限」权限，大型游戏会打不开。",
+  "en": "Install AltServer on your Mac and use it to put AltStore on your iPhone (see altstore.io). AltStore Classic 2.2 or later is recommended. Don't use SideStore 0.7.0: it drops the Increased Memory Limit entitlement and large games won't open."
+ },
+ {
+  "source": "iPhone 上打开「设置 → 隐私与安全性 → 开发者模式」，打开后按提示重启。",
+  "en": "On your iPhone, turn on Settings → Privacy & Security → Developer Mode, then restart when asked."
+ },
+ {
+  "source": "把出好的 .ipa 用隔空投送或「文件」App 传到 iPhone，在 AltStore「我的 App」里点左上角「+」选它，按提示登录 Apple ID 完成安装。免费账号就可以。",
+  "en": "Send the .ipa to your iPhone with AirDrop or the Files app. In AltStore, open My Apps, tap + at the top left, choose it and sign in with your Apple ID to install. A free account works."
+ },
+ {
+  "source": "用数据线连上 iPhone，打开访达，左边选你的 iPhone →「文件」→ 找到这款游戏的 App，把同一文件夹里的整个「资源包」文件夹拖到它上面。",
+  "en": "Connect your iPhone with a cable, open Finder, select your iPhone on the left → Files, find this game's app and drag the whole resource pack folder from the same folder onto it."
+ },
+ {
+  "source": "打开游戏：第一次会先导入游戏资源，保持前台、不要锁屏，几分钟；导入完会自动进入游戏。",
+  "en": "Open the game. The first launch imports the game resources: keep it in the foreground and don't lock the screen for a few minutes. The game starts by itself when the import finishes."
+ },
+ {
+  "source": "免费 Apple ID 签的 App 7 天过期：Mac 上开着 AltServer、和 iPhone 在同一个 Wi-Fi 下会自动续签；过期了在 AltStore 点「刷新全部」，不用重新拷资源包。",
+  "en": "Apps signed with a free Apple ID expire after 7 days. With AltServer running on your Mac and both on the same Wi-Fi, AltStore renews them automatically; if one expires, tap Refresh All in AltStore. You don't need to copy the resource pack again."
+ },
+ {
+  "source": "在访达中显示 iPhone 包",
+  "en": "Show iPhone package in Finder"
+ },
+ {
+  "source": "Claude 可直接用这个 skill：",
+  "en": "Claude can use this skill directly: "
+ },
+ {
+  "source": "（反复运行 next，按它说的下一步做）",
+  "en": " (run next repeatedly and do the step it gives)"
+ },
+ {
+  "source": "规则：只在这台 Mac 上操作；不要上传、复制或打印 prod.keys 和游戏文件；只有我本人能做的（系统授权、密码、Apple ID 登录）停下来告诉我；删除东西先问我。",
+  "en": "Rules: work only on this Mac; never upload, copy or print prod.keys or game files; stop and tell me for anything only I can do (system permissions, passwords, Apple ID sign-in); ask me before deleting anything."
+ },
+ {
+  "source": "已结束",
+  "en": "Finished"
+ },
+ {
+  "source": "详情",
+  "en": "Details"
+ },
+ {
+  "source": "查看产物",
+  "en": "Show output"
+ },
+ {
+  "source": "实时日志",
+  "en": "Live log"
+ },
+ {
+  "source": "约 ",
+  "en": "About "
+ },
+ {
+  "source": "还要约 ",
+  "en": "About "
+ },
+ {
+  "source": "刚开始，速度稍后出来",
+  "en": "Just started; speed coming soon"
+ },
+ {
+  "source": " 个 / 分钟",
+  "en": " / min"
+ },
+ {
+  "source": "直连库·翻译 + 编库",
+  "en": "Direct library · translate + build"
+ },
+ {
+  "source": "直连库·翻译着色器",
+  "en": "Direct library · translate shaders"
+ },
+ {
+  "source": "直连库·已生成库文件",
+  "en": "Direct library · available library files"
+ },
+ {
+  "source": "直连库·整份出库与收尾",
+  "en": "Direct library · full build and finalization"
+ },
+ {
+  "source": "通用兜底·编 metallib",
+  "en": "Generic fallback · build metallib"
+ },
+ {
+  "source": "直连库·链接版 改写入口",
+  "en": "Direct library · linked entry rewrite"
+ },
+ {
+  "source": "直连库·常量读范围表",
+  "en": "Direct library · constant read ranges"
+ },
+ {
+  "source": "直连库·越界核查",
+  "en": "Direct library · bounds check"
+ },
+ {
+  "source": "出包",
+  "en": "Packaging"
+ },
+ {
+  "source": " 个文件 · ",
+  "en": " files · "
+ },
+ {
+  "source": "iPhone 包已出好",
+  "en": "iPhone package ready"
+ },
+ {
+  "source": "包号已复制。回报问题时请填上它。",
+  "en": "Build ID copied. Include it when you report a problem."
+ },
+ {
+  "source": "在访达中显示",
+  "en": "Show in Finder"
+ },
+ {
+  "source": "复制包号",
+  "en": "Copy build ID"
+ },
+ {
+  "source": "打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏",
+  "en": "Open the game: the first launch imports the game resources (a few minutes). Keep it in the foreground and the screen unlocked; the game starts by itself when the import finishes"
+ },
+ {
+  "source": "把「资源包」文件夹拷进 iPhone 上的这款游戏",
+  "en": "Copy the “resource pack” folder into this game on your iPhone"
+ },
+ {
+  "source": "接下来三步",
+  "en": "Three steps to go"
+ },
+ {
+  "source": "收起",
+  "en": "Dismiss"
+ },
+ {
+  "source": "收起出包结果",
+  "en": "Dismiss package result"
+ },
+ {
+  "source": "更新 ",
+  "en": "Update "
+ },
+ {
+  "source": "本体 ",
+  "en": "Base "
+ },
+ {
+  "source": "用 AltStore 把 IPA 装到 iPhone（要登录你自己的 Apple ID）",
+  "en": "Install the IPA on your iPhone with AltStore (sign in with your own Apple ID)"
+ },
+ {
+  "source": "用时 ",
+  "en": "Took "
+ },
+ {
+  "source": "目标设备",
+  "en": "Target device"
+ },
+ {
+  "source": "资源包",
+  "en": "Resource pack"
+ },
+ {
+  "source": "这款游戏",
+  "en": "This game"
+ },
+ {
+  "source": "iPhone 包已出好。用数据线连上 iPhone，在打包任务页点「装到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。",
+  "en": "iPhone package ready. Connect your iPhone with a cable and click “Install on iPhone” on the Packing page (or use AltStore — see the install steps)."
+ },
+ {
+  "source": "不想在 Xcode 里登录 Apple ID，或想让 App 在 Wi-Fi 下自动续签，就用 AltStore：",
+  "en": "If you'd rather not sign in to Xcode, or want the app to refresh automatically over Wi‑Fi, use AltStore:"
+ },
+ {
+  "source": "免费 Apple ID 签的 App 7 天过期，到时连上 iPhone 再点一次「装到 iPhone」；同时最多 3 个自签 App。",
+  "en": "Apps signed with a free Apple ID expire after 7 days — connect your iPhone and click “Install on iPhone” again. Up to 3 self-signed apps at a time."
+ },
+ {
+  "source": "免费 Apple ID 签的 App 7 天过期：到时连上 iPhone 再点一次「装到 iPhone」，已经在机上的资源包不用重拷。",
+  "en": "Apps signed with a free Apple ID expire after 7 days: connect your iPhone and click “Install on iPhone” again; resources already on the phone are not copied again."
+ },
+ {
+  "source": "启动器出的包是自签的，iPhone 不认，要用你自己的 Apple ID 重新签一次。打包本来就要装 Xcode，用它最省事：",
+  "en": "The package is self-signed, so iPhone won't accept it until it's signed with your own Apple ID. You already have Xcode for packing — that's the easiest way:"
+ },
+ {
+  "source": "回到 S2Arm，在打包任务页点「装到 iPhone」：自动签名、安装，并把资源包拷进去、逐个文件核对。",
+  "en": "Back in S2Arm, click “Install on iPhone” on the Packing page: it signs, installs, and copies the resource pack, checking every file."
+ },
+ {
+  "source": "已装到 iPhone",
+  "en": "Installed on iPhone"
+ },
+ {
+  "source": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID。免费的就可以，只要登录一次。",
+  "en": "Open Xcode → Settings → Accounts, click “+” and sign in with your Apple ID. A free one works; you only do this once."
+ },
+ {
+  "source": "接下来两步",
+  "en": "Two steps to go"
+ },
+ {
+  "source": "改用 AltStore",
+  "en": "Use AltStore instead"
+ },
+ {
+  "source": "用 Xcode 一键装（推荐）",
+  "en": "Install with Xcode in one click (recommended)"
+ },
+ {
+  "source": "验证中",
+  "en": "Being verified"
+ },
+ {
+  "source": "完成（有报错）",
+  "en": "Done (with errors)"
+ },
+ {
+  "source": "这条路还在真机验证，装不上或打不开时请改用下面的 AltStore。",
+  "en": "This path is still being verified on real devices. If it fails to install or the game won't open, use AltStore below."
+ },
+ {
+  "source": "用数据线连上 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，按提示重启。",
+  "en": "Connect your iPhone with a cable, unlock it and tap “Trust”; the first time, also turn on Settings → Privacy & Security → Developer Mode and restart when asked."
+ },
+ {
+  "source": "用数据线连上 iPhone，一键装好：用你在 Xcode 里登录的 Apple ID 签名，资源包一起拷进去",
+  "en": "Connect your iPhone and install in one click: signed with the Apple ID you use in Xcode, resource pack included"
+ },
+ {
+  "source": "装到 iPhone",
+  "en": "Install on iPhone"
+ },
+ {
+  "source": "。打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再点一次「装到 iPhone」。",
+  "en": ". Open the game: the first launch imports the game resources (a few minutes). Keep it in the foreground and the screen unlocked; the game starts by itself when the import finishes. Apps signed with a free Apple ID expire after 7 days — connect and click “Install on iPhone” again."
+ },
+ {
+  "source": "删除这款游戏…",
+  "en": "Delete This Game…"
+ },
+ {
+  "source": "删除这款游戏？",
+  "en": "Delete this game?"
+ },
+ {
+  "source": "删除游戏",
+  "en": "Delete game"
+ },
+ {
+  "source": "已展开",
+  "en": "Expanded"
+ },
+ {
+  "source": "已收起",
+  "en": "Collapsed"
+ },
+ {
+  "source": "会删除这款游戏的 iPhone 包（IPA）、资源包、出包中间产物和缓存，并从游戏库移除；存档和原始游戏文件保留。",
+  "en": "This deletes the game's iPhone package (IPA), resource pack, build intermediates and caches, and removes it from the library. Saves and original game files are kept."
+ },
+ {
+  "source": "检查当前阶段的配置推导错误，保留原始游戏输入；更新完整引擎后重新准备，仍失败时反馈错误摘要。",
+  "en": "Check the configuration inference error and keep the original input. Update the complete engine and prepare again; report the error summary if it persists."
+ },
+ {
+  "source": "检查着色器抽取的具体错误；确认游戏输入完整且版本一致，重新准备后仍失败时反馈摘要。",
+  "en": "Check the shader extraction error. Confirm complete, matching game inputs, prepare again, and report the summary if it persists."
+ },
+ {
+  "source": "保留着色器翻译错误摘要并更新完整引擎后重试；翻译未支持的输入不能通过重新签名解决。",
+  "en": "Keep the shader translation error summary and update the complete engine before retrying. Re-signing cannot fix unsupported shader input."
+ },
+ {
+  "source": "按编译错误检查 Xcode、Metal 组件和 .NET SDK；完成环境检查后重试，保留原有成功版本与存档。",
+  "en": "Check Xcode, Metal components, and the .NET SDK against the compiler error. Recheck the environment and retry; keep the previous working version and saves."
+ },
+ {
+  "source": "检查程序改写的首个错误；保留原始游戏文件，更新完整引擎后重试，仍失败时反馈摘要。",
+  "en": "Check the first program rewriting error. Keep the original game files, update the complete engine, and report the summary if retrying fails."
+ },
+ {
+  "source": "检查资源准备错误和输入目录权限，确认资源完整后重新准备；不要删除存档或上次成功的包。",
+  "en": "Check resource preparation errors and input permissions, then prepare complete resources again. Do not delete saves or the last successful package."
+ },
+ {
+  "source": "原因没认出来：点「复制错误摘要」发给我们。",
+  "en": "We couldn't recognize the cause. Click “Copy error summary” and send it to us."
+ },
+ {
+  "source": "磁盘空间不够：准备这个游戏需要更多空余空间。",
+  "en": "Not enough disk space. Preparing this game needs more free space."
+ },
+ {
+  "source": "改写失败：这款游戏有一处程序代码暂不支持。",
+  "en": "Rewriting failed. This game has a code pattern that is not yet supported."
+ },
+ {
+  "source": "着色器编译暂不支持：这款游戏的着色器编译目前只能在 Mac 上完成。",
+  "en": "Shader compilation not available. Shader compilation for this game is currently only available on Mac."
+ },
+ {
+  "source": "缺少 Metal 组件：编着色器要用的 Metal 组件没装上。",
+  "en": "Metal not available. The Metal component needed for shader compilation is not installed."
+ },
+ {
+  "source": "在设置里点「iOS 平台组件」的「一键下载」（苹果官方，约 8 GB），下完自动重新检查后重试；也可以打开 Xcode → 设置 → Components 装上与 Xcode 配套的 iOS 平台。",
+  "en": "In Settings, click Download next to “iOS Platform Components” (from Apple, about 8 GB); it rechecks automatically when done, then try again. You can also open Xcode → Settings → Components and install the iOS platform that matches your Xcode."
+ },
+ {
+  "source": "缺少 iOS 平台组件：Xcode 的 iOS 平台还没装，打不了 iPhone 包。",
+  "en": "iOS Platform Components not installed: Xcode's iOS platform is not installed, so iPhone packages cannot be built."
+ },
+ {
+  "source": "iOS 平台组件",
+  "en": "iOS Platform Components"
+ },
+ {
+  "source": "下载 iOS 平台组件",
+  "en": "Download iOS Platform Components"
+ },
+ {
+  "source": "iOS 平台组件已安装。",
+  "en": "iOS Platform Components installed."
+ },
+ {
+  "source": "下载 Xcode 的 iOS 平台组件（约 8 GB）",
+  "en": "Downloading Xcode's iOS Platform Components (about 8 GB)"
+ },
+ {
+  "source": "已装 Xcode 的 iOS {0} 平台组件。",
+  "en": "Xcode's iOS {0} Platform Components are installed."
+ },
+ {
+  "source": "Xcode 的 iOS {0} 平台组件已经下载，但还没注册就绪：点「重新检查」再看一遍；不用重复下载（约 8 GB）。只在 Mac 上玩不需要它。",
+  "en": "Xcode's iOS {0} Platform Components are downloaded but not registered yet: click Check again. There is no need to download the ~8 GB package again. Not needed if you only play on this Mac."
+ },
+ {
+  "source": "Xcode 的 iOS {0} 平台组件还没装（新装或刚升级的 Xcode 要另下）：打 iPhone 包、装到 iPhone 都要用它。点「一键下载」自动安装（苹果官方，约 8 GB，要些时间），下完自动重新检查。只在 Mac 上玩不需要它。",
+  "en": "Xcode's iOS {0} Platform Components are not installed (a new or newly upgraded Xcode installs them separately): building iPhone packages and installing to iPhone need them. Click Download to install them automatically (from Apple, about 8 GB; it takes a while); the check runs again when it finishes. Not needed if you only play on this Mac."
+ },
+ {
+  "source": "已下载 iOS 平台组件，但复查仍未通过。请在「设置 → 环境检查」查看 iOS 平台一项的说明。",
+  "en": "The iOS platform was downloaded, but the recheck still failed. See the iOS platform item in Settings → Environment Check."
+ },
+ {
+  "source": "iOS 平台组件已经下载，只是还没注册到模拟器：点「重新检查」再试；不用重复下载（约 8 GB）。还不行就在 Xcode → 设置 → Components 里确认这一项，或重启这台 Mac 后再点「重新检查」。",
+  "en": "The iOS platform is downloaded but not registered with the simulator yet: click Check again; there is no need to download the ~8 GB package again. If that does not help, check this item in Xcode → Settings → Components, or restart this Mac and check again."
+ },
+ {
+  "source": "一键下载（约 8 GB）",
+  "en": "Download (about 8 GB)"
+ },
+ {
+  "source": "缺少工具：这条链上有个工具没装。",
+  "en": "Tool missing. A tool in this pipeline is not installed."
+ },
+ {
+  "source": "文件内容不对：文件结构校验没通过，可能没下完整。",
+  "en": "Content rejected. The file structure did not validate; the copy may be incomplete."
+ },
+ {
+  "source": "签名没成：用你的 Apple ID 给这台 iPhone 签名没成功。",
+  "en": "Signing failed. Signing for this iPhone with your Apple ID did not succeed."
+ },
+ {
+  "source": "配置推导失败。",
+  "en": "Configuration inference failed."
+ },
+ {
+  "source": "着色器抽取失败。",
+  "en": "Shader extraction failed."
+ },
+ {
+  "source": "编译失败。",
+  "en": "Compilation failed."
+ },
+ {
+  "source": "程序改写失败。",
+  "en": "Program rewriting failed."
+ },
+ {
+  "source": "资源准备失败。",
+  "en": "Resource preparation failed."
+ },
+ {
+  "source": "设备安装失败。",
+  "en": "Device installation failed."
+ },
+ {
+  "source": "出包未完成。",
+  "en": "Packaging incomplete."
+ },
+ {
+  "source": "按安装错误检查设备连接与包的有效性；保持手机解锁后重试，保留原 App 和存档。",
+  "en": "Check the device connection and package validity against the install error. Retry with the phone unlocked; keep the original app and saves."
+ },
+ {
+  "source": "解锁手机并检查数据线及剩余空间后重试资源传输；保留已有 App、存档和电脑上的资源包。",
+  "en": "Unlock the phone and check the cable and free space, then retry the resource transfer. Keep the app, saves, and local resource package."
+ },
+ {
+  "source": "在 iPhone「设置 → 隐私与安全性 → 开发者模式」按系统提示开启开发者模式，再重新安装。",
+  "en": "Enable Developer Mode in iPhone Settings → Privacy & Security following the system instructions, then retry installation."
+ },
+ {
+  "source": "重新用数据线连接并解锁 iPhone，在手机上确认「信任此电脑」，然后重新检查设备并安装。",
+  "en": "Reconnect the iPhone by cable, unlock it, and confirm Trust This Computer. Recheck the device and install again."
+ },
+ {
+  "source": "开发描述文件已过期；在 Xcode 重新登录签名账号、重新申请描述文件并签名安装，保留原 App 存档。",
+  "en": "The provisioning profile expired. Sign in to the signing account in Xcode, renew the profile, and re-sign and install while keeping existing saves."
+ },
+ {
+  "source": "已完成的安装包可以保留；检查磁盘余量与缓存目录权限后再清理缓存，不要删除游戏或存档。",
+  "en": "Keep the completed package. Check free disk space and cache directory permissions before retrying cache cleanup; do not delete games or saves."
+ },
+ {
+  "source": "当前阶段已超时；检查该阶段日志和设备连接，确认原因后重试，不要同时重复启动同一任务。",
+  "en": "This stage timed out. Check its log and device connection before retrying; do not start duplicate tasks."
+ },
+ {
+  "source": "重新选择可识别的目标机型与系统版本，或连接并解锁目标设备后重新检查。",
+  "en": "Select a recognized target model and OS version, or connect and unlock the target device and recheck."
+ },
+ {
+  "source": "任务缺少请求记录，无法安全接续；返回游戏库重新发起操作，不要手工修改任务记录。",
+  "en": "The request record is missing, so this task cannot be safely resumed. Start again from the library without editing job records."
+ },
+ {
+  "source": "此进程不属于当前任务，未发送停止信号；返回任务列表检查目标任务，不要强行结束其他进程。",
+  "en": "This process does not belong to the task, so no stop signal was sent. Check the task list rather than terminating another process."
+ },
+ {
+  "source": "原任务进程已经结束，当前进程号属于另一进程；刷新任务列表，不要按旧进程号停止任务。",
+  "en": "The original task ended and its process ID was reused. Refresh the task list; do not stop a task using the old process ID."
+ },
+ {
+  "source": "当前私有目录里没有这条任务；刷新任务列表并确认使用原游戏库，必要时重新发起操作。",
+  "en": "This task is not in the current private directory. Refresh the task list and check the original library, or start a new operation."
+ },
+ {
+  "source": "任务记录写入失败；检查磁盘空间和目录权限，保留产物与日志，恢复可写后重新检查任务。",
+  "en": "The job record could not be written. Check disk space and directory permissions; keep artifacts and logs and recheck once writable."
+ },
+ {
+  "source": "存档备份未完成，原存档保持不动；检查备份目录权限与空间后重新备份。",
+  "en": "The save backup did not complete; the original save is unchanged. Check backup permissions and space and retry."
+ },
+ {
+  "source": "备份期间存档发生变化；先正常退出游戏，再重新检查并备份存档。",
+  "en": "The save changed during backup. Exit the game normally, then check and back up again."
+ },
+ {
+  "source": "存档恢复已完成但事务清理未完成；保留备份和事务记录，检查目录权限后再检查恢复状态。",
+  "en": "The save was restored but transaction cleanup is incomplete. Keep backups and transaction records, check permissions, and recheck recovery status."
+ },
+ {
+  "source": "选择游戏库和应用私有目录之外、可写且有足够空间的备份目的地。",
+  "en": "Choose a writable backup destination outside the game library and private app directory with sufficient space."
+ },
+ {
+  "source": "当前没有可备份的存档；先在游戏中正常保存并退出，再重新检查。",
+  "en": "There is no save to back up. Save in the game, exit normally, and check again."
+ },
+ {
+  "source": "目标备份已经存在；选择新文件名或新目录，不要覆盖已有备份。",
+  "en": "The backup destination already exists. Choose a new file name or directory instead of overwriting it."
+ },
+ {
+  "source": "存档缺少有效的游戏程序号；重新选择原始备份，不要手工改写存档元数据。",
+  "en": "The save has no valid game title ID. Select the original backup without manually editing its metadata."
+ },
+ {
+  "source": "这份文件不是可识别的存档备份；重新选择由 S2Arm 导出的完整备份。",
+  "en": "This file is not a recognized save backup. Select a complete backup exported by S2Arm."
+ },
+ {
+  "source": "这款游戏尚未建立存档目录；先启动游戏并正常保存退出，再恢复备份。",
+  "en": "This game has no save directory yet. Start it, save and exit normally, then restore the backup."
+ },
+ {
+  "source": "存档回退没完成：事务记录与副本都保留着。可以先在存档页备份当前存档；确认可能丢掉没做完的导入 / 恢复后，可选「仍要启动」。不要删除事务目录。",
+  "en": "The save rollback did not finish: the transaction record and copies are kept. You can back up the current saves on the Saves page first; after confirming you may lose the unfinished import / restore, you can choose “Launch anyway”. Do not delete the transaction folder."
+ },
+ {
+  "source": "已按你的确认跳过存档回退启动游戏；事务记录保留，下次启动会再试恢复。",
+  "en": "Launched the game skipping the save rollback as you confirmed; the record is kept and recovery is retried on the next launch."
+ },
+ {
+  "source": "释放备份目的地的磁盘空间后重试；不要删除原存档或唯一的备份。",
+  "en": "Free space at the backup destination and retry. Do not delete the original save or the only backup."
+ },
+ {
+  "source": "存档路径含符号链接或不安全目录；选择普通目录中的完整备份，不要绕过路径保护。",
+  "en": "The save path contains a symbolic link or unsafe directory. Select a complete backup in a regular directory without bypassing path protection."
+ },
+ {
+  "source": "存档用户信息缺失或无效；重新选择游戏用户与原始备份，不要修改用户标识兜底。",
+  "en": "The save user information is missing or invalid. Select the game user and original backup without substituting user IDs."
+ },
+ {
+  "source": "备份与当前游戏版本或 DLC 不一致；使用匹配版本的游戏和备份后重试。",
+  "en": "The backup does not match the game version or DLC. Retry with matching game inputs and backup."
+ },
+ {
+  "source": "这份备份属于另一款游戏；回到对应游戏恢复，或选择当前游戏的备份。",
+  "en": "This backup belongs to another game. Restore it in the matching game or select a backup for this game."
+ },
+ {
+  "source": "这份备份属于另一用户；选择对应用户或该用户自己的备份后重试。",
+  "en": "This backup belongs to another user. Select the matching user or their own backup and retry."
+ },
+ {
+  "source": "免费 Apple ID 每台设备最多同时装 3 个自签 App、每 7 天最多注册 10 个包名：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；包名额度用完则等 7 天恢复；或改用付费 Apple 开发者账号（没有这两个上限）。",
+  "en": "A free Apple ID allows 3 self-signed apps per device and 10 App IDs per 7 days. Delete a self-signed app you no longer play from the iPhone home screen and retry; if the App ID quota is used up, wait 7 days for it to reset; or use a paid Apple Developer account, which has neither limit."
+ },
+ {
+  "source": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID（免费的就可以），再点一次「装到 iPhone」；不想登录 Xcode 也可以改用 AltStore 安装。",
+  "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
+ },
+ {
+  "source": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+  "en": "Connect the target iPhone by cable, unlock it, and tap Trust. First enable Developer Mode under Settings → Privacy & Security, then retry."
+ },
+ {
+  "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
+  "en": "Check the signing error in the job log. Confirm that Xcode can sign for this iPhone with your account, or install with AltStore."
+ },
+ {
+  "source": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
+  "en": "Unlock the iPhone and keep it awake on the Home Screen, then retry installation. Do not lock it during installation."
+ },
+ {
+  "source": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
+  "en": "The base game was packaged and can be installed as usual; the add-on content that could not be extracted is not in the package, so that content is unavailable in game. Please export a diagnostic report; repackage once decoding is supported to include it."
+ },
+ {
+  "source": "已改从解包目录准备，本次照常完成，只是多花一些时间；游戏库放在 APFS 格式的磁盘上（Mac 内置盘或格式化为 APFS 的外接盘）时，各平台导出可以共用已准备好的游戏数据。",
+  "en": "Preparation continued from the unpacked game data, so this export still finishes, only a little slower. When the game library is on an APFS disk (the Mac's internal disk or an external disk formatted as APFS), exports for different platforms can share the prepared game data."
+ },
+ {
+  "source": "用 Xcode（免费 Apple ID 即可）或 AltStore Classic v2.3 重新签名安装这款游戏；SideStore 0.7.0 免费账号重签会丢这项权限。已装的也可以用 GetMoreRam 给 App ID 补上权限后重装。",
+  "en": "Re-sign with Xcode (a free Apple ID works) or AltStore Classic v2.3. SideStore 0.7.0 free signing loses this entitlement; GetMoreRam can repair the App ID before reinstalling."
+ },
+ {
+  "source": "换一根支持 USB 3 的 USB-C 数据线，直接插 Mac 上的 USB-C / 雷雳口（不经扩展坞、集线器、显示器上的口），再装下一款；iPhone 15 Pro 及更新的 Pro 机型才支持 USB 3，其它机型只能 USB 2.0。",
+  "en": "Use a USB 3 data cable directly in a Mac USB-C or Thunderbolt port without a hub or display. Only iPhone 15 Pro and newer Pro models support USB 3; other models use USB 2.0."
+ },
+ {
+  "source": "装好的包能用；要在 iPhone Duo 等新机型上铺满全屏，把 Xcode 更新到不低于这台 iPhone 系统大版本的版本（如 iOS 27 用 Xcode 27），在启动器里选它后重新打 iPhone 包再装。",
+  "en": "The installed app works. To fill the screen on newer models such as iPhone Duo, update Xcode to at least the iPhone's iOS major version (for iOS 27, Xcode 27), select it in the launcher, then rebuild and reinstall the iPhone package."
+ },
+ {
+  "source": "合并",
+  "en": "Merge"
+ },
+ {
+  "source": "刷新",
+  "en": "Refresh"
+ },
+ {
+  "source": "存档备份",
+  "en": "Save backups"
+ },
+ {
+  "source": "运行版本",
+  "en": "Runtime versions"
+ },
+ {
+  "source": "内置引擎",
+  "en": "Bundled engine"
+ },
+ {
+  "source": "等待队列",
+  "en": "Queue"
+ },
+ {
+  "source": "历史任务",
+  "en": "Task history"
+ },
+ {
+  "source": "按你的习惯，准备下一次启动。",
+  "en": "Make your next launch feel at home."
+ },
+ {
+  "source": "语言说明",
+  "en": "Language details"
+ },
+ {
+  "source": "存储与导入说明",
+  "en": "Storage and import details"
+ },
+ {
+  "source": "环境详情与工具",
+  "en": "Environment details and tools"
+ },
+ {
+  "source": "刷新游戏库",
+  "en": "Refresh library"
+ },
+ {
+  "source": "已折叠",
+  "en": "Collapsed"
+ },
+ {
+  "source": "清理与移除",
+  "en": "Cleanup and removal"
+ },
+ {
+  "source": "游戏详情",
+  "en": "Game details"
+ },
+ {
+  "source": "兼容性",
+  "en": "Compatibility"
+ },
+ {
+  "source": "有更新待准备",
+  "en": "Updates awaiting preparation"
+ },
+ {
+  "source": "添加 NSP 或 XCI 游戏文件。\n文件齐全后自动准备。",
+  "en": "Add NSP or XCI game files.\nPreparation starts automatically when the files are complete."
+ },
+ {
+  "source": "先检查系统、Xcode 与 Metal 组件，\n再导入密钥和游戏。",
+  "en": "Check macOS, Xcode and Metal components,\nthen import your keys and games."
+ },
+ {
+  "source": "先导入 prod.keys，\n再添加游戏、准备运行文件。",
+  "en": "Import prod.keys,\nthen add games and prepare runtime files."
+ },
+ {
+  "source": "游戏库默认自动创建，也可切换位置。导入密钥后添加游戏。密钥通常只需导入一次，可供多款游戏共用；仅保存在本机私有目录，不随诊断包导出。",
+  "en": "A default library is created automatically; you can change its location. Import your keys, then add games. Keys are shared across games, stored privately on this Mac and excluded from diagnostics."
+ },
+ {
+  "source": "添加的游戏放进来就自动打包，更新和 DLC 自动按版本合并。准备完成后由你点击启动。",
+  "en": "Added games are prepared automatically; updates and DLC are merged by version. Launch a game when preparation finishes."
+ },
+ {
+  "source": "选择目标平台并使用 S2Arm 现有工具出包。",
+  "en": "Choose a target platform and build with S2Arm’s existing tools."
+ },
+ {
+  "source": "S2Arm 原生 Mac 启动器，界面同步自 LumaNX。与 Nintendo 无隶属或认可关系。",
+  "en": "S2Arm native Mac launcher with UI synchronized from LumaNX. Not affiliated with or endorsed by Nintendo."
+ },
+ {
+  "source": "用数据线连接并解锁 iPhone / iPad，仅拉回诊断包与日志，不拉存档和游戏文件。",
+  "en": "Connect and unlock your iPhone or iPad. Only diagnostics and logs are retrieved; saves and game files stay on the device."
+ },
+ {
+  "source": "导航",
+  "en": "Navigation"
+ },
+ {
+  "source": "Xcode · Metal · S2Arm",
+  "en": "Xcode · Metal · S2Arm"
+ },
+ {
+  "source": "已通过的检查（{0} 项）",
+  "en": "Passed checks ({0})"
+ },
+ {
+  "source": "添加 NSP、XCI、NSZ 或 XCZ 游戏文件。\n压缩文件自动解压，文件齐全后自动准备。",
+  "en": "Add NSP, XCI, NSZ or XCZ game files.\nDecompress archives and prepare automatically when all files are available."
+ },
+ {
+  "source": "等待中 {0}",
+  "en": "Queued {0}"
+ },
+ {
+  "source": "{0} 项检查待处理",
+  "en": "Checks needing attention: {0}"
+ },
+ {
+  "source": "进行中 {0}",
+  "en": "In progress {0}"
+ },
+ {
+  "source": "来源与说明",
+  "en": "Sources and details"
+ },
+ {
+  "source": "导入着色器缓存…",
+  "en": "Import shader cache…"
+ },
+ {
+  "source": "缓存需匹配游戏版本，下次准备时自动使用。",
+  "en": "Caches must match the game version and will be used on the next preparation."
+ },
+ {
+  "source": "打包成功不代表游戏已通过兼容性验证。",
+  "en": "Successful preparation does not confirm game compatibility."
+ },
+ {
+  "source": "编译任务",
+  "en": "Compilation tasks"
+ },
+ {
+  "source": "编译游戏",
+  "en": "Compile game"
+ },
+ {
+  "source": "编译 iPhone 应用",
+  "en": "Compile iPhone app"
+ },
+ {
+  "source": "删除日志…",
+  "en": "Delete logs…"
+ },
+ {
+  "source": "暂无可删除的日志",
+  "en": "No logs to delete"
+ },
+ {
+  "source": "将这项任务的日志移到废纸篓？",
+  "en": "Move this task’s logs to the Trash?"
+ },
+ {
+  "source": "任务记录、编译产物和存档保留。可从废纸篓恢复日志。",
+  "en": "Task history, compiled outputs and saves are kept. Logs can be restored from the Trash."
+ },
+ {
+  "source": "移到废纸篓",
+  "en": "Move to Trash"
+ },
+ {
+  "source": "日志已移到废纸篓",
+  "en": "Logs moved to Trash"
+ },
+ {
+  "source": "运行中的任务不能删除日志。",
+  "en": "Logs cannot be deleted while a task is running."
+ },
+ {
+  "source": "无法安全定位这项任务的日志。",
+  "en": "This task’s logs could not be located safely."
+ },
+ {
+  "source": "删除日志未完成，请检查权限后重试。",
+  "en": "Log deletion did not finish. Check permissions and retry."
+ },
+ {
+  "source": "这款游戏的内存配置已损坏，请重新编译后再启动。",
+  "en": "This game's memory configuration is damaged. Rebuild the game before launching it."
+ },
+ {
+  "source": "启动器版本过旧，请更新后重新编译这款游戏。",
+  "en": "This launcher is out of date. Update it, then rebuild this game."
+ },
+ {
+  "source": "这款游戏需要重新编译，完成后即可启动。",
+  "en": "Rebuild this game before launching it."
+ },
+ {
+  "source": "请更新 S2Arm，再重新编译这款游戏。",
+  "en": "Update S2Arm, then rebuild this game."
+ },
+ {
+  "source": "HAP 导出：等待源码提供编译入口",
+  "en": "HAP export: awaiting a source packaging entry point"
+ },
+ {
+  "source": "直接使用 S2Arm 已有的鸿蒙原生层构建功能。当前仅生成目标文件，尚未提供 HAP 编译功能。",
+  "en": "Use the existing S2Arm HarmonyOS native build feature. It currently produces object files; HAP packaging is not yet available."
+ },
+ {
+  "source": "当前引擎未声明 S2A_INPUT_CONFIG 支持。映射可保存，但游戏将使用引擎自己的默认操作；选择支持该接口的引擎并重新编译后才会应用。",
+  "en": "This engine does not declare S2A_INPUT_CONFIG support. Mappings can be saved, but games use the engine defaults. Select an engine with this interface and packe the game again to apply mappings."
+ },
+ {
+  "source": "所选 S2Arm 缺少 iOS 编译组件，请选择包含 dm/ios 的完整源码。",
+  "en": "The selected S2Arm lacks iOS packaging components. Choose complete sources containing dm/ios."
+ },
+ {
+  "source": "编译 IPA",
+  "en": "Pack IPA"
+ },
+ {
+  "source": "开发目录（编译后内置）",
+  "en": "Development checkout (embedded when packaged)"
+ },
+ {
+  "source": "。可继续放入，好了点右下角「开始编译」。",
+  "en": ". Add more, then click “Start Compiling” at the bottom right."
+ },
+ {
+  "source": "编译完成，可以启动了。",
+  "en": "Compiling finished. Ready to launch."
+ },
+ {
+  "source": "添加游戏文件夹或 NSP / XCI，放进来自动编译（⌘O）",
+  "en": "Add a game folder or NSP / XCI files; they pack automatically (⌘O)"
+ },
+ {
+  "source": "把游戏拖到这里，或点下面的按钮。\n放进来就自动编译，好了点启动。",
+  "en": "Drag games here or click the button below.\nThey pack automatically; launch when ready."
+ },
+ {
+  "source": "S2Arm 将尝试通用构建；编译成功不代表游戏已通过兼容性验证。",
+  "en": "S2Arm will try a generic build; compiling successfully does not mean the game passed compatibility checks."
+ },
+ {
+  "source": "新增内容或引擎更新还没重新编译；启动将使用上次成功版本。",
+  "en": "New content or engine updates aren’t compiled yet; launching uses the last successful build."
+ },
+ {
+  "source": "下次启动生效，无需重新编译。所选语言需游戏自身支持。",
+  "en": "Takes effect next launch; no repacking needed. The game must support the language."
+ },
+ {
+  "source": "重新编译",
+  "en": "Pack again"
+ },
+ {
+  "source": "编译条件未满足",
+  "en": "Compiling requirements not met"
+ },
+ {
+  "source": "游戏一款一款依次编译；编译时可以继续添加游戏、改按键。",
+  "en": "Games pack one at a time; you can keep adding games and editing controls meanwhile."
+ },
+ {
+  "source": "放进来的游戏会自动编译，进度在这里看。",
+  "en": "Games you add pack automatically; follow progress here."
+ },
+ {
+  "source": "密钥只需导入一次，所有游戏共用；只保存在本机，不随诊断包导出。添加的游戏放进来就自动编译，更新和 DLC 自动按版本合并。",
+  "en": "Keys are imported once and shared by all games; they stay on this Mac and are never included in diagnostics. Added games pack automatically; updates and DLC merge by version."
+ },
+ {
+  "source": "编译前检查应用内置组件和 Xcode；启动已编译的游戏只检查运行所需组件。",
+  "en": "Compiling checks bundled components and Xcode; launching compiled games only checks what running needs."
+ },
+ {
+  "source": "S2Arm 引擎、Python 及其依赖、.NET 运行时、编译工具和共享字体都随应用内置。编译游戏需要完整 Xcode 与 Metal 编译组件（缺了在检测项旁一键处理），启动已编译的游戏不需要 Xcode。玩家只需放入 prod.keys 和游戏（本体、更新、DLC）。",
+  "en": "The S2Arm engine, Python and its dependencies, the .NET runtime, compiling tools and shared fonts are all bundled. Compiling games needs full Xcode and its Metal Toolchain (fix with one click next to the check); launching compiled games does not. Just add your prod.keys and games (base, updates, DLC)."
+ },
+ {
+  "source": "与界面语言独立；可在游戏详情中单独设置启动语言。下次启动生效，无需重新编译或导入固件。所选语言需游戏自身支持。",
+  "en": "Independent of the interface language; set a per-game launch language in game details. Takes effect next launch; no repacking or firmware import needed. The game must support the language."
+ },
+ {
+  "source": "已编译的游戏可以启动，编译环境还需修复",
+  "en": "Packed games can launch; the compiling environment still needs fixing"
+ },
+ {
+  "source": "S2Arm、Python、.NET 和共享字体随应用内置。编译还需要 Xcode 与 Metal 编译组件，缺了在检测项旁一键处理；玩家只需放入密钥和游戏。",
+  "en": "S2Arm, Python, .NET and shared fonts are bundled. Compiling also needs Xcode and its Metal Toolchain; fix with one click next to the check. Just add your keys and games."
+ },
+ {
+  "source": "S2Arm 引擎随应用内置，包含 Mac 宿主、NSP/XCI 读取器和游戏编译工具。玩家数据与构建缓存独立保存。",
+  "en": "The S2Arm engine is bundled: the Mac host, NSP/XCI reader and game compiling tools. Player data and build caches are stored separately."
+ },
+ {
+  "source": "Xcode（编译时需要，自动找到）",
+  "en": "Xcode (needed for compiling, found automatically)"
+ },
+ {
+  "source": "编译与启动都要",
+  "en": "Needed to pack and launch"
+ },
+ {
+  "source": "编译时需要",
+  "en": "Needed to pack"
+ },
+ {
+  "source": "编译中",
+  "en": "Compiling"
+ },
+ {
+  "source": "未编译",
+  "en": "Not compiled"
+ },
+ {
+  "source": "编译和运行互斥，请等当前任务结束。",
+  "en": "Compiling and running can’t happen at the same time. Wait for the current task to finish."
+ },
+ {
+  "source": "打开后，这台 Mac 上的 AI 助手（比如 Claude Code）可以替你放密钥、放游戏、编译、打 iPhone 包、看失败原因并重试。只在本机，别的设备连不进来。",
+  "en": "When on, an AI assistant on this Mac (such as Claude Code) can add keys and games, pack, build iPhone packages, read why something failed and retry for you. Local only; other devices cannot connect."
+ },
+ {
+  "source": "将对应的游戏本体 NSP 或 XCI 一并导入；仅更新或 DLC 不能单独编译。",
+  "en": "Import the matching base-game NSP or XCI as well. An update or DLC alone cannot be packaged."
+ },
+ {
+  "source": "重新编译这款游戏以恢复完整运行文件；保留原有存档，编译成功后再启动。",
+  "en": "Package this game again to restore complete runtime files. Keep your saves, then launch after packaging succeeds."
+ },
+ {
+  "source": "游戏运行版本链接已失效，请重新编译。",
+  "en": "The installed game release link is broken. Pack the game again."
+ },
+ {
+  "source": "运行版本的 NPDM 无效，请重新编译。",
+  "en": "The installed game has an invalid NPDM. Pack it again."
+ },
+ {
+  "source": "新版 Mac 宿主可从游戏菜单或菜单栏手柄图标查看本局键位。旧包需重新编译，改键下次启动生效。",
+  "en": "New Mac hosts show this run's controls from the game menu or menu-bar controller icon. Rebuild old packages; binding changes apply next launch."
+ },
+ {
+  "source": "开发中：现有构建只出原生目标文件，还没有 HAP 编译",
+  "en": "In development: the current build only produces native object files; HAP packaging is not available yet"
+ },
+ {
+  "source": "iPhone 包已出好。用数据线连上 iPhone，在编译任务页点「装到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。",
+  "en": "iPhone package ready. Connect your iPhone with a cable and click “Install on iPhone” on the Compiling page (or use AltStore — see the install steps)."
+ },
+ {
+  "source": "启动器出的包是自签的，iPhone 不认，要用你自己的 Apple ID 重新签一次。编译本来就要装 Xcode，用它最省事：",
+  "en": "The package is self-signed, so iPhone won't accept it until it's signed with your own Apple ID. You already have Xcode for compiling — that's the easiest way:"
+ },
+ {
+  "source": "回到 S2Arm，在编译任务页点「装到 iPhone」：自动签名、安装，并把资源包拷进去、逐个文件核对。",
+  "en": "Back in S2Arm, click “Install on iPhone” on the Compiling page: it signs, installs, and copies the resource pack, checking every file."
+ },
+ {
+  "source": "添加的游戏放进来就自动编译，更新和 DLC 自动按版本合并。准备完成后由你点击启动。",
+  "en": "Added games are prepared automatically; updates and DLC are merged by version. Launch a game when preparation finishes."
+ },
+ {
+  "source": "编译成功不代表游戏已通过兼容性验证。",
+  "en": "Successful preparation does not confirm game compatibility."
+ },
+ {
+  "source": "改完下次启动生效，不用重新编译。",
+  "en": "Changes take effect on the next launch. No rebuild needed."
+ },
+ {
+  "source": "版本与你的游戏不同，编译时按特征跨版本定位",
+  "en": "The version differs from your game. Matching across versions is performed during the build."
+ },
+ {
+  "source": "宽屏和 60 帧是 S2Arm 自己的能力（从开源社区的补丁里学成的通用规律），按你的游戏版本匹配；匹配不到就自动不用。",
+  "en": "Widescreen and 60 FPS are S2Arm's own capabilities (general rules learned from open-source community patches), matched to your game version. If no match is found, they are not used."
+ },
+ {
+  "source": "包里不带社区补丁的原始数据。宽屏和 60 帧在这里（或 iPhone 的 App 设置）开关，下次启动生效，不用重新编译。",
+  "en": "The build does not include raw community patch data. Toggle widescreen and 60 FPS here (or in the iPhone app settings). Changes take effect on the next launch without rebuilding."
+ },
+ {
+  "source": "，下次编译时并入",
+  "en": "; will be included in the next build"
+ },
+ {
+  "source": "输入映射页面",
+  "en": "Input mapping pages"
+ },
+ {
+  "source": "打开「系统设置 › 隐私与安全性 › 文件与文件夹」（外接盘看「可移除的宗卷」），允许本应用读取游戏文件所在位置，或把游戏文件拷到「下载」之外的本机文件夹，然后重试。",
+  "en": "Open System Settings › Privacy & Security › Files and Folders (Removable Volumes for external drives) and allow this app to read the game file's location, or copy the game file to a local folder other than Downloads, then try again."
+ },
+ {
+  "source": "确认游戏文件所在磁盘已连接、文件没有损坏（换一个位置拷一份再放），然后重试；反馈时复制错误摘要。",
+  "en": "Make sure the drive holding the game file is connected and the file isn't damaged (copy it to another location and add it again), then try again. Copy the error summary when reporting."
+ },
+ {
+  "source": "已自动安装 .NET SDK，但复查仍未通过，iPhone 包没有开始出。请在「设置 → 环境检查」查看 .NET 一项的说明，处理后再点「打 iPhone 包」。",
+  "en": ".NET SDK was installed automatically, but the recheck still fails, so the iPhone package was not started. Open Settings → Environment check, follow the .NET item's instructions, then click “Pack for iPhone” again."
+ },
+ {
+  "source": "iPhone 包已出好。可以用数据线连上 iPhone，在打包任务页点「装到 iPhone」（这条路还在真机验证，装不上请按装机步骤改用 AltStore）。",
+  "en": "iPhone package ready. You can connect your iPhone with a cable and click “Install on iPhone” on the Packing page (this path is still being verified on real devices; if it fails, use AltStore — see the install steps)."
+ },
+ {
+  "source": "鼠标移动控制右摇杆，停手后保持在原处，不回中。",
+  "en": "Mouse movement drives the right stick and stays where you leave it; it does not recenter."
+ },
+ {
+  "source": "没清干净：",
+  "en": "Not fully cleared: "
+ },
+ {
+  "source": "AI 操作没有打开：",
+  "en": "AI control was not turned on: "
+ },
+ {
+  "source": "写不了 ",
+  "en": "Cannot write "
+ },
+ {
+  "source": "系统随机数生成失败",
+  "en": "The system random number generator failed"
+ },
+ {
+  "source": "可选 S2Arm 备份文件，也认得 JKSV、Checkpoint、yuzu、Ryujinx 的存档文件夹或 zip。选好后先显示预览，确认后才恢复；恢复会覆盖当前存档，覆盖前自动备份一份。",
+  "en": "Choose an S2Arm backup file, or a JKSV, Checkpoint, yuzu or Ryujinx save folder or zip. A preview appears first, and nothing is restored until you confirm. Restoring replaces the current save, and a backup is made first."
+ },
+ {
+  "source": "下面几项齐了就能装，这里每隔几秒自动检查一次。",
+  "en": "You can install once everything below is ticked. This list checks itself every few seconds."
+ },
+ {
+  "source": "齐了会自动开始装",
+  "en": "Installation starts automatically when everything is ready"
+ },
+ {
+  "source": "开始装",
+  "en": "Install"
+ },
+ {
+  "source": "即将上线，敬请期待",
+  "en": "Coming soon"
+ },
+ {
+  "source": "iPhone / iPad",
+  "en": "iPhone / iPad"
+ },
+ {
+  "source": "其他安装方式：AltStore",
+  "en": "Another way to install: AltStore"
+ },
+ {
+  "source": "免费 Apple ID 签的 App 7 天过期，到时连上 iPhone 再装一次；已经在手机上的游戏资源不用重拷。同时最多 3 个自签 App。",
+  "en": "Apps signed with a free Apple ID expire after 7 days. When that happens, connect your iPhone and install again; game files already on the phone aren't copied again. You can have up to 3 self-signed apps at a time."
+ },
+ {
+  "source": "这款游戏的 iPhone 版已经做好",
+  "en": "The iPhone version of this game is ready"
+ },
+ {
+  "source": "还没做好：先做 iPhone 版，做好后这里自动打勾。",
+  "en": "Not ready yet: make the iPhone version first. This will tick itself when it's done."
+ },
+ {
+  "source": "Xcode 里已登录 Apple ID",
+  "en": "Signed in to an Apple ID in Xcode"
+ },
+ {
+  "source": "打开 Xcode →「设置」→「账户」，点左下角「+」，登录你的 Apple ID（免费的就可以）。",
+  "en": "Open Xcode → Settings → Accounts, click “+” at the bottom left, and sign in with your Apple ID (a free one works)."
+ },
+ {
+  "source": "iPhone 已用数据线连上",
+  "en": "iPhone connected with a cable"
+ },
+ {
+  "source": "连着不止一台 iPhone / iPad：只留要装的那一台。",
+  "en": "More than one iPhone / iPad is connected. Leave only the one you want to install on."
+ },
+ {
+  "source": "用数据线把 iPhone 连到这台 Mac，并解锁手机。",
+  "en": "Connect your iPhone to this Mac with a cable and unlock it."
+ },
+ {
+  "source": "iPhone 已信任这台 Mac",
+  "en": "iPhone trusts this Mac"
+ },
+ {
+  "source": "在 iPhone 上点「信任」，再输入手机的锁屏密码。",
+  "en": "On your iPhone, tap Trust and enter your passcode."
+ },
+ {
+  "source": "iPhone 已打开开发者模式",
+  "en": "Developer Mode is on"
+ },
+ {
+  "source": "在 iPhone 上打开「设置 → 隐私与安全性 → 开发者模式」，按提示重启手机；重启后解锁，这里会自动打勾。",
+  "en": "On your iPhone, turn on Settings → Privacy & Security → Developer Mode and restart when asked. After it restarts, unlock it and this will tick itself."
+ },
+ {
+  "source": "先做 iPhone 版",
+  "en": "Make the iPhone version first"
+ },
+ {
+  "source": "导出",
+  "en": "Export"
+ },
+ {
+  "source": "导出到哪些设备",
+  "en": "Export to"
+ },
+ {
+  "source": "游戏库里还没有游戏",
+  "en": "Your library is empty"
+ },
+ {
+  "source": "先勾选要导出的平台",
+  "en": "Choose at least one device to export to"
+ },
+ {
+  "source": "这款游戏暂不支持导出",
+  "en": "This game can't be exported yet"
+ },
+ {
+  "source": "先在「设置」里放入 prod.keys",
+  "en": "Add your prod.keys in Settings first"
+ },
+ {
+  "source": "这台 Mac 还缺导出要用的组件",
+  "en": "This Mac is missing components needed for export"
+ },
+ {
+  "source": "正在做别的任务，做完再导出",
+  "en": "Another task is running. Export when it finishes."
+ },
+ {
+  "source": "去设置处理",
+  "en": "Open Settings"
+ },
+ {
+  "source": "大游戏第一次导出要几十分钟，请插上电源、别让 Mac 睡眠。",
+  "en": "Large games can take tens of minutes the first time. Keep your Mac plugged in and awake."
+ },
+ {
+  "source": "开始导出",
+  "en": "Export"
+ },
+ {
+  "source": "个平台",
+  "en": "devices"
+ },
+ {
+  "source": "版本",
+  "en": "Version"
+ },
+ {
+  "source": "无 DLC",
+  "en": "No DLC"
+ },
+ {
+  "source": "换一款",
+  "en": "Switch game"
+ },
+ {
+  "source": "已导出过，可再导出",
+  "en": "Exported before; you can export again"
+ },
+ {
+  "source": "一个包，iPhone 和 iPad 都能装",
+  "en": "One package for both iPhone and iPad"
+ },
+ {
+  "source": "已做好，可在游戏库直接玩",
+  "en": "Ready to play from your library"
+ },
+ {
+  "source": "在这台 Mac 上直接玩",
+  "en": "Play on this Mac"
+ },
+ {
+  "source": "已勾选",
+  "en": "Selected"
+ },
+ {
+  "source": "未勾选",
+  "en": "Not selected"
+ },
+ {
+  "source": "打开导出页",
+  "en": "Open Export"
+ },
+ {
+  "source": "导出到 iPhone / Mac…",
+  "en": "Export to iPhone / Mac…"
+ },
+ {
+  "source": "让 AI 帮你操作",
+  "en": "Let AI operate S2Arm"
+ },
+ {
+  "source": "复制给 AI 的提示词",
+  "en": "Copy prompt for AI"
+ },
+ {
+  "source": "把提示词粘贴给你常用的 AI，它会按 S2Arm 内置的操作手册替你放密钥、放游戏、导出、装到 iPhone，出问题也会自己排查。你能在这个窗口里看到它的每一步。只在本机，别的设备连不进来。",
+  "en": "Paste the prompt into the AI assistant you use. Following the operator manual built into S2Arm, it adds your keys and games, exports, installs on your iPhone and troubleshoots problems. You can watch every step in this window. It works only on this Mac; other devices can't connect."
+ },
+ {
+  "source": "已复制。粘贴给你常用的 AI（Claude、ChatGPT、Codex 等）就行：它会一步步替你操作 S2Arm，遇到只能你本人做的事会停下来告诉你。",
+  "en": "Copied. Paste it into the AI you use (Claude, ChatGPT, Codex and so on). It operates S2Arm step by step and stops to tell you when something needs you."
+ },
+ {
+  "source": "把提示词粘贴给你常用的 AI，它会替你做完后面的步骤，你在这个窗口里看着就行。",
+  "en": "Paste the prompt into the AI you use. It does the remaining steps while you watch this window."
+ },
+ {
+  "source": "游戏库所在磁盘",
+  "en": "Library Drive"
+ },
+ {
+  "source": "游戏库在 APFS 格式的磁盘上。",
+  "en": "The library is on an APFS drive."
+ },
+ {
+  "source": "重新选一个文件夹",
+  "en": "Choose another folder"
+ },
+ {
+  "source": "选择游戏库位置：放导出时的工作数据和存档，游戏原件不用挪（首次请选择空文件夹）",
+  "en": "Choose the library location: it holds export working data and saves. Your game files stay where they are (choose an empty folder the first time)"
+ },
+ {
+  "source": "导入完成：游戏原件留在原处，S2Arm 只读、不复制。",
+  "en": "Import finished. Your game files stay where they are; S2Arm only reads them and makes no copies."
+ },
+ {
+  "source": "工作数据放到这台 Mac 上",
+  "en": "Keep working data on this Mac"
+ },
+ {
+  "source": "好，用这台 Mac 上的默认位置",
+  "en": "OK, use the default location on this Mac"
+ },
+ {
+  "source": "这个文件夹在 ",
+  "en": "This folder is on a drive formatted as "
+ },
+ {
+  "source": " 格式的磁盘上。游戏原件放在这里没问题：放游戏时直接选它们，S2Arm 只读、不复制也不改。导出时的工作数据（游戏库）要放在 APFS 格式的磁盘上，会放到这台 Mac 上的默认位置。想把工作数据也放外接盘，可以在「磁盘工具」里给它另分出一个 APFS 分区（盘上要有空闲空间，原有数据不动），再选那个分区。",
+  "en": ". Your game files can stay here: pick them when adding games, and S2Arm only reads them without copying or changing them. The working data for exporting (the game library) must be on an APFS drive, so it goes to the default location on this Mac. To keep working data on the external drive too, add an APFS partition to it in Disk Utility (the drive needs free space; existing data stays), then choose that partition."
+ },
+ {
+  "source": "游戏库放导出时的工作数据和存档，要在 APFS 格式的磁盘上；游戏原件留在原处（哪块盘都行），S2Arm 只读、不复制。",
+  "en": "The library holds export working data and saves and must be on an APFS drive. Game files stay where they are (any drive); S2Arm only reads them and makes no copies."
+ },
+ {
+  "source": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 APFS 格式的磁盘上：在「设置 → 游戏库与玩家数据」改用这台 Mac 上的默认位置（内置盘），或选一块 APFS 格式的外接盘（可在「磁盘工具」里另分出一个 APFS 分区，盘上要有空闲空间、原有数据不动），再重试；游戏原件不用挪。",
+  "en": "Game files can be on any drive, but the working data for exporting (the game library) must be on an APFS drive. In Settings → Library & Player Data, switch to the default location on this Mac (built-in drive), or choose an APFS external drive (in Disk Utility you can add an APFS partition if the drive has free space; existing data stays), then try again. Your game files don't need to move."
+ },
+ {
+  "source": "接上游戏原件所在的磁盘，确认文件仍在原位置且可读取；原件挪了位置就把它重新放进来一次。",
+  "en": "Connect the drive that holds the game file and make sure the file is still in place and readable. If you moved it, add it again from its new location."
+ },
+ {
+  "source": "S2Arm 只读游戏原件、不改不删；同一块盘或文件夹在这台 Mac 上只需允许一次，以后升级 S2Arm 也不用再点。",
+  "en": "S2Arm only reads your game files and never changes or deletes them. You allow each drive or folder once on this Mac; later S2Arm updates won't ask again."
+ },
+ {
+  "source": "请改用64位Windows主机运行S2Arm，确认后点「重新检查」。",
+  "en": "Run S2Arm on a 64-bit Windows computer, then click Recheck."
+ },
+ {
+  "source": "这款游戏有一处程序代码暂不支持，建议反馈让我们补上：点「复制错误摘要」并发给我们。",
+  "en": "This game has a code pattern that is not yet supported. We recommend reporting this: click Copy error summary and send it to us."
+ },
+ {
+  "source": "这款游戏的着色器编译目前只能在 Mac 上完成，Windows 版暂不支持；请改用 Mac 版 S2Arm 出包。",
+  "en": "Shader compilation for this game is currently only available on Mac, not yet on Windows. Use S2Arm for Mac to build the package."
+ },
+ {
+  "source": "从微软官网下载并安装环境清单要求的.NET SDK（https://dotnet.microsoft.com/download/dotnet），装好后点「重新检查」。",
+  "en": "Download and install the .NET SDK required by the environment checklist from Microsoft (https://dotnet.microsoft.com/download/dotnet), then click Recheck."
+ },
+ {
+  "source": "用自己的Apple ID登录苹果开发者下载页（https://developer.apple.com/download/），下载安装官方Metal Developer Tools for Windows，装好后点「重新检查」。",
+  "en": "Sign in to Apple's developer downloads page with your own Apple ID (https://developer.apple.com/download/), download and install the official Metal Developer Tools for Windows, then click Recheck."
+ },
+ {
+  "source": "从Microsoft Store安装Apple Devices或iTunes（https://support.apple.com/118290），装好后点「重新检查」。",
+  "en": "Install Apple Devices or iTunes from the Microsoft Store (https://support.apple.com/118290), then click Recheck."
+ },
+ {
+  "source": "在Windows「服务」中启动Apple Mobile Device Service；若没有该服务，从Microsoft Store安装Apple Devices或iTunes，完成后点「重新检查」。",
+  "en": "Start Apple Mobile Device Service in Windows Services. If the service is missing, install Apple Devices or iTunes from the Microsoft Store, then click Recheck."
+ },
+ {
+  "source": "从Microsoft Store安装官方iCloud for Windows（https://support.apple.com/103232），装好后点「重新检查」。",
+  "en": "Install the official iCloud for Windows from the Microsoft Store (https://support.apple.com/103232), then click Recheck."
+ },
+ {
+  "source": "选择本机官方iCloud或我方自建来源；公共服务器仅可手动作为备选，选中仍不判就绪，配置后点「重新检查」。",
+  "en": "Choose the official iCloud installed on this computer or an S2Arm-hosted source. A public server is a manual fallback only and does not make the environment ready. After configuring the source, click Recheck."
+ },
+ {
+  "source": "Windows版组件尚未发布，请等待S2Arm更新；更新完整S2Arm后点「重新检查」。",
+  "en": "The Windows component has not been released yet. Wait for an S2Arm update, update the complete S2Arm package, then click Recheck."
+ },
+ {
+  "source": "先在游戏库选择游戏并生成出包计划，再点「重新检查」。",
+  "en": "Select a game in the library and generate a packaging plan, then click Recheck."
+ },
+ {
+  "source": "本次环境探测失败；按诊断检查工具安装和权限，处理后点「重新检查」。",
+  "en": "The environment check failed. Follow the diagnostics to check tool installation and permissions, resolve the problem, then click Recheck."
+ },
+ {
+  "source": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.2），下载免安装版放到桌面，再点「重新检查」。",
+  "en": "Install Impactor first: click Open the official page in S2Arm to open the official release page (https://github.com/claration/impactor/releases/tag/v2.7.2), save the portable build to the desktop, then click Recheck."
+ },
+ {
+  "source": "S2Arm Windows 版自带的签名工具 Impactor 不在了（安装包不完整）：重新下载并完整解压 S2Arm Windows 版，用里面的 S2Arm.exe 打开后再试。",
+  "en": "The Impactor signing tool that ships with S2Arm for Windows is missing (incomplete package): download S2Arm for Windows again, extract it fully, and open the S2Arm.exe inside."
+ },
+ {
+  "source": "换成实测过的 Impactor 2.7.2（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.2）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",
+  "en": "Switch to the tested Impactor 2.7.2 (official release page https://github.com/claration/impactor/releases/tag/v2.7.2); other versions may drop the increased-memory-limit entitlement and large games may crash."
+ },
+ {
+  "source": "Apple ID 或密码不对：把输入法切到英文后重新登录（全角字符会被判错）；密码只发给 Apple。",
+  "en": "The Apple ID or password is incorrect. Switch the keyboard to English and sign in again (full-width characters are rejected); the password is sent only to Apple."
+ },
+ {
+  "source": "两步验证码不对或已过期：重新获取验证码后输入；短信收码目前常失败，用受信任设备上弹出的验证码。",
+  "en": "The two-factor code is wrong or expired. Request a new code and enter it; SMS codes often fail at the moment, use the code shown on a trusted device."
+ },
+ {
+  "source": "密码已通过，但苹果拒绝了这台电脑的登录身份：在 Impactor「设置」里点「Reset Anisette Data」后重新添加账号；仍不行就换一台电脑或稍后再试。",
+  "en": "The password was accepted, but Apple rejected this computer’s sign-in identity. In Impactor Settings click Reset Anisette Data and add the account again; if it still fails, try later or on another computer."
+ },
+ {
+  "source": "这个包是旧版 S2Arm 出的（zip64 或中文显示名），侧载工具读不了：更新 S2Arm 后重新出包再装。",
+  "en": "This package was built by an older S2Arm (zip64 or non-ASCII display name) and sideload tools cannot read it. Update S2Arm, rebuild the package and install again."
+ },
+ {
+  "source": "这版 S2Arm 不认识你的 Xcode：你的 Xcode 比这版 S2Arm 新。",
+  "en": "This S2Arm version does not recognize your Xcode. Your Xcode is newer than this S2Arm version."
+ },
+ {
+  "source": "把 S2Arm 更新到最新版（新版认得你的 Xcode），然后再点一次。",
+  "en": "Update S2Arm to the latest version (it recognizes your Xcode), then try again."
+ },
+ {
+  "source": "这款还缺文件：{0}",
+  "en": "This game is missing files: {0}"
+ },
+ {
+  "source": "这款游戏暂不支持。",
+  "en": "This game is not supported yet."
+ },
+ {
+  "source": "无法写入任务请求：{0}",
+  "en": "Could not write the task request: {0}"
+ },
+ {
+  "source": "已有一局在运行，请先停止。",
+  "en": "A game is already running. Stop it first."
+ },
+ {
+  "source": "这一项不能在这里一键处理。",
+  "en": "This item cannot be fixed with one click here."
+ },
+ {
+  "source": "还没有游戏库：请先在 S2Arm 启动器里选择游戏库并导入游戏。",
+  "en": "No game library yet: choose a library in the S2Arm launcher and import games first."
+ },
+ {
+  "source": "没有读到游戏：放进来的文件里没有可导入的 NSP / XCI。",
+  "en": "No games found: the dropped files contain no NSP / XCI to import."
+ },
+ {
+  "source": ".NET SDK 装完复查仍不通过：打开环境检查看缺什么，处理后再打 iPhone 包。",
+  "en": "The .NET SDK was installed but the recheck still fails. Open the environment check to see what is missing, fix it, then build for iPhone again."
+ },
+ {
+  "source": "托管游戏文件缺失，请重新导入：{0}",
+  "en": "Managed game file is missing, import it again: {0}"
+ },
+ {
+  "source": "找不到游戏文件「{0}」：它所在的磁盘没接上，或文件被挪走了。接上磁盘，或重新添加这款游戏",
+  "en": "Can't find the game file “{0}”. Its drive may be disconnected or the file moved. Reconnect the drive or add the game again."
+ },
+ {
+  "source": "游戏库所在的磁盘「{0}」没连上：插上这块盘后再试一次。",
+  "en": "The library drive “{0}” is not connected. Plug it in and try again."
+ },
+ {
+  "source": "游戏库未连接或标识不符，请重新选择游戏库。",
+  "en": "The game library is not connected or its ID does not match. Choose the game library again."
+ },
+ {
+  "source": "游戏库里没有这款游戏。",
+  "en": "This game is not in the game library."
+ },
+ {
+  "source": "当前游戏没有完整的 S2Arm Mac 运行版本。",
+  "en": "This game has no complete S2Arm Mac build."
+ },
+ {
+  "source": "运行包缺少独立的 RomFS 游戏资源目录，请重新准备。",
+  "en": "The build is missing its RomFS game data folder. Prepare it again."
+ },
+ {
+  "source": "S2Arm Mac 宿主不可执行。",
+  "en": "The S2Arm Mac host is not executable."
+ },
+ {
+  "source": "运行资源与所选游戏不匹配。",
+  "en": "The game files do not match the selected game."
+ },
+ {
+  "source": "准备产物缺失或大小不符，请重新准备：{0}",
+  "en": "Prepared files are missing or the wrong size, prepare again: {0}"
+ },
+ {
+  "source": "准备产物校验失败，请重新准备：{0}",
+  "en": "Prepared files failed verification, prepare again: {0}"
+ },
+ {
+  "source": "已校验内置 S2Arm Mac 宿主",
+  "en": "Verified the bundled S2Arm Mac host"
+ },
+ {
+  "source": "已校验并复用 S2Arm Mac 宿主（含地址窗口护栏库）",
+  "en": "Verified and reused the S2Arm Mac host (with the address-window guard library)"
+ },
+ {
+  "source": "已验证并复用解包产物",
+  "en": "Verified and reused the unpacked game files"
+ },
+ {
+  "source": "保留现行与上一次成功版本，清掉 {0} 个旧版本",
+  "en": "Kept the current and last successful builds, removed {0} older builds"
+ },
+ {
+  "source": "着色器准备存在缺口，请查看构建日志；未替换上次成功版本。",
+  "en": "Shader preparation has gaps; see the build log. The last successful build was kept."
+ },
+ {
+  "source": "Mac 着色器产物不完整。",
+  "en": "Mac shader output is incomplete."
+ },
+ {
+  "source": "构建工具不可用：{0}",
+  "en": "Build tool unavailable: {0}"
+ },
+ {
+  "source": "游戏原件内容变了（{0} 被改动或换成了别的文件），请把原件重新放进来一次。",
+  "en": "The original game files changed ({0} was modified or replaced). Add the original files again."
+ },
+ {
+  "source": "构建期间 S2Arm 源码发生变化，请重试；旧运行版本已保留。",
+  "en": "The S2Arm source changed during the build. Try again; the previous build was kept."
+ },
+ {
+  "source": "请先导入 prod.keys。",
+  "en": "Import prod.keys first."
+ },
+ {
+  "source": "所选位置没有 NSP、XCI 文件或解包好的游戏文件夹。",
+  "en": "No NSP or XCI files or extracted game folders were found there."
+ },
+ {
+  "source": "请选择 NSP、XCI 文件、解包好的游戏文件夹或包含它们的文件夹。",
+  "en": "Choose NSP or XCI files, extracted game folders, or a folder containing them."
+ },
+ {
+  "source": "读不了游戏文件 {0}：{1}",
+  "en": "Cannot read game file {0}: {1}"
+ },
+ {
+  "source": "另一个任务正在使用游戏库",
+  "en": "Another task is using the game library"
+ },
+ {
+  "source": "任务记录写不进磁盘（{0}）：这次的记录没有落盘，不当作完成。",
+  "en": "The task record could not be written to disk ({0}). This run was not recorded, so it does not count as finished."
+ },
+ {
+  "source": "阶段「{0}」超过 {1} 秒未完成，已停止该阶段的进程组。",
+  "en": "Stage “{0}” did not finish within {1} seconds; its processes were stopped."
+ },
+ {
+  "source": "子进程输出未关闭，任务未确认完成。",
+  "en": "A child process kept its output open; the task was not confirmed as finished."
+ },
+ {
+  "source": "应用内置引擎不完整，请重新安装完整应用。",
+  "en": "The bundled engine is incomplete. Reinstall the full app."
+ },
+ {
+  "source": "应用内置引擎产物缺失，请重新安装完整应用。",
+  "en": "Files of the bundled engine are missing. Reinstall the full app."
+ },
+ {
+  "source": "应用内置引擎的版本快照无效，请重新安装完整应用。",
+  "en": "The bundled engine's version snapshot is invalid. Reinstall the full app."
+ },
+ {
+  "source": "本地任务失败，请检查日志和输入。",
+  "en": "The local task failed. Check the log and the input."
+ },
+ {
+  "source": "工具未提供错误详情，请保留本阶段日志。",
+  "en": "The tool gave no error details. Keep this stage's log."
+ },
+ {
+  "source": "S2Arm 读取工具缺失或与引擎版本不符，请重新安装完整的 S2Arm。",
+  "en": "The S2Arm reader tool is missing or does not match the engine version. Reinstall the full S2Arm."
+ },
+ {
+  "source": ".NET SDK 装完了但没找到，请查看日志。",
+  "en": "The .NET SDK was installed but cannot be found. See the log."
+ },
+ {
+  "source": "编译 S2Arm 内容读取工具",
+  "en": "Build the S2Arm content reader"
+ },
+ {
+  "source": "读取社区资源",
+  "en": "Read community resources"
+ },
+ {
+  "source": "删除游戏与出包产物",
+  "en": "Delete the game and its build output"
+ },
+ {
+  "source": "等这款游戏在跑的任务结束",
+  "en": "Wait for this game's running tasks to finish"
+ },
+ {
+  "source": "导出脱敏诊断",
+  "en": "Export redacted diagnostics"
+ },
+ {
+  "source": "清理出包中间产物",
+  "en": "Clean up intermediate build files"
+ },
+ {
+  "source": "找已连接的 iPhone / iPad",
+  "en": "Find the connected iPhone / iPad"
+ },
+ {
+  "source": "找 S2Arm 打的游戏 App",
+  "en": "Find game apps built by S2Arm"
+ },
+ {
+  "source": "找 Xcode 账号与 iPhone",
+  "en": "Find the Xcode account and iPhone"
+ },
+ {
+  "source": "申请开发描述文件（第一次要几十秒）",
+  "en": "Request a development provisioning profile (the first time takes tens of seconds)"
+ },
+ {
+  "source": "用你的 Apple ID 签名",
+  "en": "Sign with your Apple ID"
+ },
+ {
+  "source": "把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）",
+  "en": "Push the resource pack to the iPhone and unpack it (only changed files; a big game takes a few minutes the first time)"
+ },
+ {
+  "source": "签名并装到 iPhone、推资源包（Impactor 官方命令行 plumesign；第一次大游戏要几分钟）",
+  "en": "Sign, install on the iPhone and push the resource pack (Impactor's official plumesign CLI; a big game takes a few minutes the first time)"
+ },
+ {
+  "source": "本机开发签名团队可用",
+  "en": "A development signing team is available on this Mac"
+ },
+ {
+  "source": "打开 Xcode →「设置」→「账户」检查账号、团队和开发证书；若已登录，不必重复登录。",
+  "en": "Open Xcode → Settings → Accounts and check the account, team and development certificate; if you are signed in, no need to sign in again."
+ },
+ {
+  "source": "用数据线把 iPhone 连到这台电脑，解锁手机并点「信任」。",
+  "en": "Connect the iPhone to this computer with a cable, unlock it and tap Trust."
+ },
+ {
+  "source": "没找到可用的开发签名团队：请在 Xcode「设置 → 账户」确认 Apple ID、团队和开发证书，再点一次「装到 iPhone」。",
+  "en": "No usable development signing team: check the Apple ID, team and development certificate in Xcode Settings → Accounts, then click Install on iPhone again."
+ },
+ {
+  "source": "连着不止一台 iPhone / iPad：只留要装的那一台再试。",
+  "en": "More than one iPhone / iPad is connected: leave only the one to install on and try again."
+ },
+ {
+  "source": "这款游戏还没出 iPhone 包：先点「打 iPhone 包」。",
+  "en": "This game has no iPhone package yet: click Build for iPhone first."
+ },
+ {
+  "source": "没找到要装的那台 iPhone：插上数据线并解锁，在手机上点「信任」。",
+  "en": "The iPhone to install on was not found: connect the cable, unlock it and tap Trust on the phone."
+ },
+ {
+  "source": "没找到 iPhone：插上数据线并解锁，在手机上点「信任」。",
+  "en": "No iPhone found: connect the cable, unlock it and tap Trust on the phone."
+ },
+ {
+  "source": "资源包推不进 iPhone：{0}",
+  "en": "Could not push the resource pack to the iPhone: {0}"
+ },
+ {
+  "source": "装不上 iPhone：{0}",
+  "en": "Could not install on the iPhone: {0}"
+ },
+ {
+  "source": "签名没成：{0}",
+  "en": "Signing failed: {0}"
+ },
+ {
+  "source": "解不开 iPhone 包：{0}",
+  "en": "Could not open the iPhone package: {0}"
+ },
+ {
+  "source": "资源包推进去了，但机上解包没在规定时间内完成：请打开这款游戏，保持在前台等它导入完，会自动进入游戏。",
+  "en": "The resource pack was pushed, but unpacking on the phone did not finish in time. Open the game and keep it in front until the import finishes; it will then start the game."
+ },
+ {
+  "source": "应用自带的预编壳缺失，请重新安装完整的 S2Arm。",
+  "en": "The app's prebuilt shell is missing. Reinstall the full S2Arm."
+ },
+ {
+  "source": "一键出包结束了，但没报告本轮交付的 IPA（或文件不在输出目录），请查看日志。",
+  "en": "The build finished but did not report the IPA it produced (or the file is not in the output folder). See the log."
+ },
+ {
+  "source": "连着多台设备，请在「跨平台编译 → iOS」中选一台。",
+  "en": "Several devices are connected. Choose one under Cross-platform builds → iOS."
+ },
+ {
+  "source": "请用数据线连上 iPhone / iPad，或者在「跨平台编译 → iOS」中选机型。",
+  "en": "Connect the iPhone / iPad with a cable, or choose a model under Cross-platform builds → iOS."
+ },
+ {
+  "source": "出包失败：{0}",
+  "en": "Build failed: {0}"
+ },
+ {
+  "source": "所用 Xcode 里没有设备特征库（device_traits.db），认不出机型的 GPU：请装完整的 Xcode。",
+  "en": "The Xcode in use has no device traits database (device_traits.db) and cannot identify the device GPU. Install the full Xcode."
+ },
+ {
+  "source": "认不出 {0} 的 GPU：请把 Xcode 更新到最新版。",
+  "en": "Cannot identify the GPU of {0}: update Xcode to the latest version."
+ },
+ {
+  "source": "{0} 的芯片太老，S2Arm 暂时打不了这台设备的包（需要 A14 / M1 及更新的芯片）。",
+  "en": "The chip in {0} is too old; S2Arm cannot build for this device yet (A14 / M1 or newer is required)."
+ },
+ {
+  "source": "{0} 的系统是 iOS {1}，S2Arm 需要 iOS {2} 或更新：请先升级系统。",
+  "en": "{0} runs iOS {1}; S2Arm needs iOS {2} or later. Update the system first."
+ },
+ {
+  "source": "解包与构建缓存",
+  "en": "Unpacked files and build cache"
+ },
+ {
+  "source": "下次出包会重新解包（多花几分钟）",
+  "en": "The next build unpacks the game again (a few more minutes)"
+ },
+ {
+  "source": "出包中间产物",
+  "en": "Intermediate build files"
+ },
+ {
+  "source": "下次出包会重新生成（多花几分钟到几十分钟）",
+  "en": "The next build regenerates them (a few to several tens of minutes more)"
+ },
+ {
+  "source": "着色器与出包缓存",
+  "en": "Shaders and build cache"
+ },
+ {
+  "source": "下次出包会重新翻译着色器（大游戏要多花较长时间）",
+  "en": "The next build translates the shaders again (a big game takes much longer)"
+ },
+ {
+  "source": "Mac 运行版本",
+  "en": "Mac build"
+ },
+ {
+  "source": "下次在 Mac 上玩之前会重新准备",
+  "en": "It is prepared again before you next play on the Mac"
+ },
+ {
+  "source": "删了要重新出包才能再装到 iPhone；已装好的游戏不受影响",
+  "en": "You will need to build again before installing on an iPhone; games already installed are not affected"
+ },
+ {
+  "source": "统计各游戏占用的空间",
+  "en": "Measure the space each game uses"
+ },
+ {
+  "source": "释放空间",
+  "en": "Free up space"
+ },
+ {
+  "source": "要删除的部件不对：只能选{0}。",
+  "en": "Invalid items to delete: only {0} can be chosen."
+ },
+ {
+  "source": "复用兄弟平台的产物根 {0}（提交 {1}；{2}）：平台无关阶段按键核对，键相同跳过、不同照常重做",
+  "en": "Reused the sibling platform's build root {0} (commit {1}; {2}): platform-independent stages are checked by key, skipped when equal and redone when different"
+ },
+ {
+  "source": "兄弟平台的产物根 {0} 克隆不过来（{1}），改从解包目录准备，平台无关阶段这次要重做",
+  "en": "Could not clone the sibling platform's build root {0} ({1}); preparing from the unpacked files instead, so platform-independent stages are redone this time"
+ },
+ {
+  "source": "克隆路线：APFS 克隆 {0} 项",
+  "en": "clone route: APFS clone, {0} items"
+ },
+ {
+  "source": "刷新各阶段 {0}",
+  "en": "Refresh stages {0}"
+ },
+ {
+  "source": "直连库 {0}",
+  "en": "Direct library {0}"
+ },
+ {
+  "source": "直连库·翻译 {0}",
+  "en": "Direct library · translate {0}"
+ },
+ {
+  "source": "直连库·翻译着色器 {0}",
+  "en": "Direct library · translate shaders {0}"
+ },
+ {
+  "source": "直连库·已生成库文件 {0}",
+  "en": "Direct library · libraries generated {0}"
+ },
+ {
+  "source": "直连库·整份出库与收尾 {0}",
+  "en": "Direct library · full library build and finish {0}"
+ },
+ {
+  "source": "直连库·编批库（MB） {0}",
+  "en": "Direct library · batch libraries (MB) {0}"
+ },
+ {
+  "source": "直连库·翻译与收尾 {0}",
+  "en": "Direct library · translate and finish {0}"
+ },
+ {
+  "source": "直连库·直连抽取 {0}",
+  "en": "Direct library · direct extract {0}"
+ },
+ {
+  "source": "抽取 {0}",
+  "en": "Extract {0}"
+ },
+ {
+  "source": "出包 {0}",
+  "en": "Build {0}"
+ },
+ {
+  "source": "游戏库在云盘同步目录里（iCloud 云盘、OneDrive、Dropbox 等）：出包时会写几十 GB 中间文件，云盘会上传它们、换成占位文件，出包中途会读不到。在「设置 → 游戏库与玩家数据」把游戏库改到本机磁盘上不同步的位置（例如默认位置），再重试；游戏原件放在哪都行。",
+  "en": "The game library is inside a cloud-synced folder (iCloud Drive, OneDrive, Dropbox and similar). Exporting writes tens of GB of intermediate files, which the cloud client uploads and replaces with placeholders, so the export cannot read them. In Settings → Library and player data, move the library to a local, non-synced location (such as the default one), then try again. Game files can stay anywhere."
+ },
+ {
+  "source": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 NTFS 格式的磁盘上（FAT32 单个文件不能超过 4 GB，exFAT 没有可靠的原子替换）：在「设置 → 游戏库与玩家数据」改用这台电脑上的默认位置，或选一块 NTFS 格式的盘，再重试。",
+  "en": "Game files can stay on any drive; the working data for exporting (the game library) must be on an NTFS drive (FAT32 cannot hold files over 4 GB, and exFAT has no reliable atomic replace). In Settings → Library and player data, use this PC's default location or choose an NTFS drive, then try again."
+ },
+ {
+  "source": "游戏库不在云盘同步目录里。",
+  "en": "The library is not in a cloud-synced folder."
+ },
+ {
+  "source": "游戏库所在磁盘格式可用。",
+  "en": "The library drive format is supported."
+ },
+ {
+  "source": "读出游戏程序和资源，合并更新与 DLC。",
+  "en": "Reads the game's program and resources, merging updates and DLC."
+ },
+ {
+  "source": "准备资源",
+  "en": "Prepare resources"
+ },
+ {
+  "source": "整理 DLC 和宽屏界面布局，同时在后台把游戏代码改写成苹果设备能直接运行的形式。",
+  "en": "Arranges DLC and widescreen layouts while rewriting the game's code in the background to run directly on Apple devices."
+ },
+ {
+  "source": "分析画面",
+  "en": "Analyze graphics"
+ },
+ {
+  "source": "读懂这款游戏的图形用法，抽出它用到的全部着色器。",
+  "en": "Works out how this game draws and extracts every shader it uses."
+ },
+ {
+  "source": "编译着色器库",
+  "en": "Compile shader library"
+ },
+ {
+  "source": "把着色器编译成苹果显卡的格式，进游戏时不用现编，减少卡顿。",
+  "en": "Compiles shaders for Apple GPUs ahead of time, so the game stutters less."
+ },
+ {
+  "source": "编出 iPhone / iPad 版程序、签名，并打好要拷进手机的资源包。",
+  "en": "Builds and signs the iPhone and iPad app and packages the resources to copy over."
+ },
+ {
+  "source": "已登录 Apple ID",
+  "en": "Signed in with an Apple ID"
+ },
+ {
+  "source": "签名要用一个 Apple ID，免费的就行：打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，再点 + 登录。登录好这里会自动打勾。",
+  "en": "Signing needs an Apple ID, and a free one is fine. Open Xcode, choose Xcode › Settings › Apple Accounts, then click + to sign in. This ticks itself once you're signed in."
+ },
+ {
+  "source": "这款游戏的文件找不到了，请重新添加游戏文件。",
+  "en": "This game's files are missing. Add them again."
+ },
+ {
+  "source": "Apple ID 团队",
+  "en": "Apple ID team"
+ },
+ {
+  "source": "还没有登录 Apple ID：打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，点 + 添加你的 Apple ID（免费的就行），选中账号，等团队列表显示出来，再回来重新检查。装了多个 Xcode 也只要登一个，账号是共用的。",
+  "en": "You're not signed in to an Apple ID. Open Xcode, choose Xcode › Settings › Apple Accounts, click + and add your Apple ID (a free one is fine), select it, wait for the team list to appear, then check again. With several Xcode versions, signing in to one is enough."
+ },
+ {
+  "source": "Apple ID 已经登录，团队还没同步下来：打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中你的账号，等团队列表显示出来，再回来重新检查。",
+  "en": "Your Apple ID is signed in but its team hasn't synced. Open Xcode, choose Xcode › Settings › Apple Accounts, select your account, wait for the team list to appear, then check again."
+ },
+ {
+  "source": "打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中你的账号，等团队列表显示出来，再点一次「装到 iPhone」。",
+  "en": "Open Xcode, choose Xcode › Settings › Apple Accounts, select your account, wait for the team list to appear, then install again."
+ },
+ {
+  "source": "打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中账号后点 Manage Certificates，点 + 选 Apple Development，再点一次「装到 iPhone」。",
+  "en": "Open Xcode, choose Xcode › Settings › Apple Accounts, select your account, click Manage Certificates, click + and choose Apple Development, then install again."
+ },
+ {
+  "source": "找不到游戏原件：{0}。原件所在的磁盘没接上，或文件被挪走 / 改名了；接上磁盘，或把原件重新放进来一次",
+  "en": "Original game file not found: {0}. Its drive is not connected, or the file was moved or renamed. Connect the drive, or add the original file again"
+ },
+ {
+  "source": "找签名账号与 iPhone",
+  "en": "Finding signing account and iPhone"
+ },
+ {
+  "source": "备份这款的存档",
+  "en": "Backing up saves for this game"
+ },
+ {
+  "source": "更新手机上的 S2Arm",
+  "en": "Updating S2Arm on iPhone"
+ },
+ {
+  "source": "删除手机上这款的数据",
+  "en": "Removing this game's data from iPhone"
+ },
+ {
+  "source": "手机上的 S2Arm 里没有这款。",
+  "en": "This game is not in S2Arm on your iPhone."
+ },
+ {
+  "source": "这是手机上最后一款：在 iPhone 桌面长按 S2Arm 删除 App 即可。",
+  "en": "This is the last game on iPhone: long-press S2Arm on the home screen and delete the app instead."
+ },
+ {
+  "source": "这台电脑没记录手机上的 S2Arm：先装一次再删。",
+  "en": "No S2Arm install record on this computer: install once before removing a game."
+ },
+ {
+  "source": "App 里这款已经删了，但手机上它的数据没删掉：",
+  "en": "The game was removed from the app, but its data on iPhone could not be deleted: "
+ },
+ {
+  "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。",
+  "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone; the games already on your phone are not affected."
+ },
+ {
+  "source": "这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。",
+  "en": "This game cannot share one app with the games already on your phone: remove the incompatible game from iPhone first."
+ },
+ {
+  "source": "在 iPhone 桌面长按 S2Arm 删除 App 即可。",
+  "en": "Touch and hold S2Arm on the iPhone Home Screen and remove the app."
+ },
+ {
+  "source": "手机解锁、数据线插稳后再删一次；不影响其他游戏。",
+  "en": "Unlock the phone, check the cable, and remove it again; other games are not affected."
+ },
+ {
+  "source": "在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「装到 iPhone」。",
+  "en": "In the keychain prompt on this Mac's screen, click \"Always Allow\" (enter your Mac login password if asked), then install on iPhone again."
+ }
+]

@@ -1,0 +1,31 @@
+# Code ownership for S2Arm.
+# Paths follow .gitignore glob rules; last matching rule wins.
+
+# Default reviewers for all files
+*                                   @jhaizhou-ops/maintainers
+
+# Runtime and translation layer
+runtime/                            @jhaizhou-ops/runtime
+translator/                         @jhaizhou-ops/runtime
+
+# Graphics
+graphics/                           @jhaizhou-ops/graphics
+
+# Platform launchers and packaging
+launchers/                          @jhaizhou-ops/platform
+pack/                               @jhaizhou-ops/platform
+android/                            @jhaizhou-ops/platform
+
+# Services and system emulation
+services/                           @jhaizhou-ops/runtime
+
+# Compat / upstream tree: require explicit maintainer sign-off
+compat/                             @jhaizhou-ops/maintainers
+
+# Docs
+docs/                               @jhaizhou-ops/maintainers
+*.md                                @jhaizhou-ops/maintainers
+
+# Security-sensitive
+SECURITY.md                         @jhaizhou-ops/maintainers
+.github/                            @jhaizhou-ops/maintainers

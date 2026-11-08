@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Collect a relocatable runtime on an Apple Silicon release builder.
+
+Adapted from LumaDock (MIT; README.md).
+Requires Homebrew python@3.12, spirv-tools, spirv-cross, glslang, zstd and bash on the builder.
+bash 5 ships in Runtime/bin and comes first on the jobs' PATH: engine scripts are written and gated on bash 5; macOS /bin/bash 3.2 lacks BASHPID etc.
+(10-25 launcher Hades run: EXIT traps failed with 'BASHPID: unbound variable').
+bash is an aggregated GPL-3.0 program (separate process, not linked). Its COPYING and the source offer are copied into Runtime/licenses.
+timeout is the repository's own perl tools/bin/timeout (Apache-2.0; macOS ships perl), not GNU coreutils — the same one tools/toolchain.sh puts first on PATH.
+spirv-cross / glslangValidator build the direct shader library of Vulkan / OpenGL games (graphics/tools/direct/direct_lib.sh; Hades is Vulkan).
+The bundled C rewriter (Runtime/bin/s2a-rewrite) also needs CMake 3.18+, a C compiler and
+the pinned sources from `python3 runtime/rewriter/prepare_deps.py build/rewriter-deps`
+(or S2A_REWRITER_DEPS pointing at a prepared directory); the build never downloads.
+Players do not install these dependencies. Paths are discovered automatically.
+"""
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+from runtime_audit import SYSTEM_PATHS, rpaths, verify_portable_runtime
+import sys
+sys.path.insert(0, str(ROOT))   # 按包导入：不把 pack/ 放进模块路径（pack/pack.py 会顶替 pack 包，build_app → bundle_engine 取壳编号 from pack.shell 即红）
+from pack import rewriter
+# Runtime/bin 自带的命令行工具（Homebrew 包名, 命令名）：作业 PATH 只有 Runtime + 系统目录；build_app.py 缺哪个就重打运行环境，tests/userenv_test.sh 按这张表核出包链要的命令
+TOOLS = [('spirv-tools','spirv-as'),('spirv-tools','spirv-val'),('s2a-timeout','timeout'),('zstd','zstd'),('bash','bash'),('spirv-cross','spirv-cross'),('glslang','glslangValidator')]
+
+
+def runtime_deps_fingerprint():
+    """What this tree puts in Runtime. build_app refuses to reuse a directory whose copy differs.
+
+    this file itself (what is copied and how), requirements-runtime.txt (no oead), the TOOLS providers (timeout is tools/bin/timeout, not coreutils),
+    the timeout source, and the bash source-offer text.
+    """
+    h = hashlib.sha256()
+    h.update(b'runtime-deps-v1\n')
+    h.update((ROOT / 'launchers/macos/bundle_runtime.py').read_bytes())   # 收什么、怎么收也算：11-02 只改拷贝规则补 Pillow，旧 Runtime 指纹不变照旧复用、玩家仍缺
+    h.update((ROOT / 'launchers/macos/requirements-runtime.txt').read_bytes())
+    h.update(b'\n')
+    for formula, name in TOOLS:
+        h.update(f'{formula}/{name}\n'.encode())
+    h.update((ROOT / 'tools/bin/timeout').read_bytes())
+    h.update(b'\n')
+    h.update((ROOT / 'launchers/macos/runtime_source_offer.txt').read_bytes())
+    return h.hexdigest()
+
+
+def run(args, **kw):
+    return subprocess.run([str(a) for a in args], check=True, **kw)
+
+
+def output(args):
+    return subprocess.check_output([str(a) for a in args], text=True).strip()
+
+
+def cp(src, dst):
+    src, dst = pathlib.Path(src), pathlib.Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns(
+            '__pycache__', 'test', 'tests', 'idlelib', 'tkinter', 'ensurepip', 'site-packages'))
+    else:
+        shutil.copy2(src, dst)
+
+
+def build_timeout(dest):
+    """Ship the repository's perl timeout (tools/bin/timeout). coreutils is GPL-3.0 and is not bundled; one implementation repo-wide."""
+    shutil.copy2(ROOT / 'tools/bin/timeout', dest)
+    os.chmod(dest, 0o755)
+
+
+def macho(p):
+    try:
+        with p.open('rb') as f:
+            return f.read(4) in (b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf')
+    except OSError:
+        return False
+
+
+def build(out):
+    brew = shutil.which('brew')
+    if not brew:
+        raise RuntimeError('Release builder requires Homebrew.')
+    prefixes = {name:pathlib.Path(output([brew, '--prefix', name])).resolve()
+                for name in ('python@3.12', 'spirv-tools', 'spirv-cross', 'glslang', 'zstd', 'bash')}
+    python_bin = prefixes['python@3.12']/'bin/python3.12'
+    python = pathlib.Path(output([python_bin, '-I', '-c', 'import sys; print(sys.base_prefix)']))
+    venv = ROOT/'build/macos/python'
+    if not (venv/'bin/python').is_file():
+        run([python_bin, '-m', 'venv', venv])
+    run([venv/'bin/python', '-m', 'pip', 'install', '--disable-pip-version-check', '-r', ROOT/'launchers/macos/requirements-runtime.txt'])
+    installed = venv/'lib/python3.12/site-packages'
+    if not (python/'Python').is_file() or not installed.is_dir():
+        raise RuntimeError('Expected Homebrew framework Python and build/macos/python; see README.')
+    cp(python, out/'python')
+    site = out/'python/lib/python3.12/site-packages'
+    site.mkdir(parents=True, exist_ok=True)
+    # 拷贝名单从钉版清单推（11-07：手写名单漏过 Pillow（11-02）、又差点漏 zstandard（.nup 导入要）；清单加一行即随包）。
+    #   包名小写当前缀，导入名与包名不同的补上：Pillow → PIL/
+    names = [l.split('==')[0].strip().lower() for l in (ROOT/'launchers/macos/requirements-runtime.txt').read_text().splitlines() if '==' in l and not l.startswith('#')]
+    keep = tuple(names) + (('pil',) if 'pillow' in names else ())
+    for p in installed.iterdir():
+        if p.name.lower().startswith(keep):
+            cp(p, site/p.name)
+    (out/'python/bin/python3').unlink(missing_ok=True)
+    (out/'python/bin/python3').symlink_to('python3.12')
+    (out/'bin').mkdir()
+    for formula, name in TOOLS:
+        if formula == 's2a-timeout':
+            continue
+        cp(prefixes[formula]/'bin'/name, out/'bin'/name)
+    build_timeout(out/'bin'/'timeout')
+    # C 改写器（runtime/rewriter）在出包机编好随 App 带：玩家机器不装 CMake / 依赖；下面的 Mach-O 循环照常瘦身、去 rpath、签名
+    for name in ('S2A_REWRITER', 'S2A_REWRITER_C', 'S2A_REWRITER_BUNDLED'):
+        os.environ.pop(name, None)   # 一律按本树源码编，不拿外部指定的二进制
+    cp(rewriter.c_path(), out/'bin/s2a-rewrite')
+    (out/'bin/s2a-rewrite.source').write_text(rewriter.source_digest()+'\n')
+    dotnet = pathlib.Path(shutil.which('dotnet')).resolve().parent
+    versions_dotnet = sorted((dotnet/'shared/Microsoft.NETCore.App').glob('10.*'), key=lambda p:tuple(map(int,p.name.split('.'))))
+    version_dotnet = versions_dotnet[-1]
+    cp(version_dotnet, out/'dotnet/shared/Microsoft.NETCore.App'/version_dotnet.name)
+    cp(dotnet/'host', out/'dotnet/host')
+    cp(dotnet/'dotnet', out/'dotnet/dotnet')
+    (out/'bin/dotnet').symlink_to('../dotnet/dotnet')
+    libs = out/'lib'
+    libs.mkdir()
+    todo = [p for p in out.rglob('*')
+            if p.is_file() and not p.is_symlink() and macho(p)]
+    seen = set()
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        # The product targets Apple Silicon only. Remove Intel slices from the
+        # compiler/framework closure before relocation and signing.
+        with p.open('rb') as header:
+            fat = header.read(4) in (b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf')
+        if fat:
+            archs = output(['lipo','-archs',p]).split()
+            selected = 'arm64' if 'arm64' in archs else 'arm64e' if 'arm64e' in archs else None
+            if selected and len(archs) > 1:
+                temporary = p.with_name(p.name+'.thin')
+                run(['lipo',p,'-thin',selected,'-output',temporary],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                temporary.replace(p)
+        for line in output(['otool', '-L', p]).splitlines()[1:]:
+            dep = line.strip().split(' (')[0]
+            target = None
+            if dep.startswith(('/opt/homebrew/', '/usr/local/')):
+                if dep.endswith('/Python'):
+                    target = out/'python/Python'
+                else:
+                    source = pathlib.Path(dep).resolve()
+                    target = libs/source.name
+                    if not target.exists():
+                        shutil.copy2(source, target)
+                        todo.append(target)
+            elif dep.startswith('@rpath/'):
+                source = next((prefix/'lib'/pathlib.Path(dep).name for prefix in prefixes.values()
+                               if (prefix/'lib'/pathlib.Path(dep).name).is_file()), None)
+                if source:
+                    target = libs/source.name
+                    if not target.exists():
+                        shutil.copy2(source.resolve(), target)
+                        todo.append(target)
+            if target:
+                run(['install_name_tool', '-change', dep, '@loader_path/'+os.path.relpath(target, p.parent), p],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if p.suffix == '.dylib' or p.name == 'Python':
+            run(['install_name_tool', '-id', '@loader_path/'+p.name, p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for search in dict.fromkeys(rpaths(output(['otool','-l',p]))):
+            if search.startswith('/') and not search.startswith(SYSTEM_PATHS):
+                run(['install_name_tool','-delete_rpath',search,p],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        run(['codesign', '--force', '--sign', '-', p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for app in sorted([*out.rglob('*.framework'), *out.rglob('*.app')], key=lambda p:len(p.parts), reverse=True):
+        run(['codesign', '--force', '--sign', '-', app], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shutil.rmtree(out/'python/include', ignore_errors=True)
+    (out/'python/Headers').unlink(missing_ok=True)
+    for p in (out/'python/bin').iterdir():
+        if p.name not in ('python3', 'python3.12'):
+            p.unlink()
+    # Resources/Python.app is required by the framework launcher.
+    env = dict(os.environ, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
+    run([out/'python/bin/python3', '-B', '-I', '-c', 'import capstone,lz4.block,numpy,PIL.Image,zstandard,ctypes,zlib,hashlib; print("Portable Python dependencies OK")'], env=env)
+    # zstd 解压要用 Runtime/bin/zstd 旁边的 ../lib/libzstd.1.dylib（App 的 Python 3.12 没有 compression.zstd；Python 侧入口 graphics/tools/shbake/zstd_lib.py 随 pack/uepak-v8 入）
+    run([out/'python/bin/python3', '-B', '-I', '-c', f'import ctypes; ctypes.CDLL({str(out / "lib/libzstd.1.dylib")!r}).ZSTD_versionNumber; print("Runtime libzstd OK")'], env=env)
+    licenses = out/'licenses'
+    licenses.mkdir()
+    for src, name in [(prefixes['python@3.12']/'LICENSE', 'Python-LICENSE.txt'),
+                      (dotnet/'LICENSE.txt', 'dotnet-LICENSE.txt'), (dotnet/'ThirdPartyNotices.txt', 'dotnet-ThirdPartyNotices.txt'),
+                      (prefixes['spirv-tools']/'LICENSE', 'SPIRV-Tools-LICENSE.txt'),
+                      (prefixes['zstd']/'LICENSE', 'Zstandard-LICENSE.txt'),
+                      (prefixes['bash']/'COPYING', 'bash-COPYING.txt'),
+                      (ROOT/'launchers/macos/runtime_source_offer.txt', 'S2Arm-runtime-source-offer.txt'),
+                      (prefixes['spirv-cross']/'LICENSE', 'SPIRV-Cross-LICENSE.txt'),
+                      (prefixes['glslang']/'LICENSE.txt', 'glslang-LICENSE.txt'),
+                      (ROOT/'runtime/rewriter/LICENSES/capstone.txt', 'capstone-LICENSE.txt'),
+                      (ROOT/'runtime/rewriter/LICENSES/lz4.txt', 'lz4-LICENSE.txt')]:
+        shutil.copy2(src, licenses/name)
+    dependencies = output([brew, 'deps', '--installed', 'python@3.12', 'spirv-tools', 'spirv-cross', 'glslang', 'zstd', 'bash']).splitlines()
+    for name in set(dependencies):
+        prefix = pathlib.Path(output([brew, '--prefix', name]))
+        for p in prefix.glob('*'):
+            if p.is_file() and any(x in p.name.upper() for x in ('LICENSE', 'COPYING', 'NOTICE')):
+                shutil.copy2(p, licenses/(name+'-'+p.name))
+    versions = json.loads(output([out/'python/bin/python3', '-B', '-I', '-c',
+        'import json,sys,importlib.metadata as m; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in ["capstone","lz4","numpy"]})))']))
+    versions.update(runtimeSchema=4, runtimeDeps=runtime_deps_fingerprint(), dotnet=version_dotnet.name, timeout='tools/bin/timeout',
+                    spirvTools=output([brew, 'list', '--versions', 'spirv-tools']), zstd=output([brew, 'list', '--versions', 'zstd']), bash=output([brew, 'list', '--versions', 'bash']),
+                    spirvCross=output([brew, 'list', '--versions', 'spirv-cross']), glslang=output([brew, 'list', '--versions', 'glslang']),
+                    rewriter=rewriter.source_digest())
+    (out/'versions.json').write_text(json.dumps(versions, indent=2))
+    for tool, arguments in [('spirv-as',['--version']), ('spirv-val',['--version']), ('zstd',['--version']),
+                            ('timeout',['5','true']), ('bash',['-c','[ "${BASH_VERSINFO[0]}" -ge 5 ]']), ('spirv-cross',['--help']), ('glslangValidator',['--version']), ('s2a-rewrite',['--version'])]:
+        run([out/'bin'/tool,*arguments],stdout=subprocess.DEVNULL,env=env)
+    print('Portable native runtime files:',verify_portable_runtime(out))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=pathlib.Path, default=ROOT/'build/macos/Runtime')
+    args = parser.parse_args()
+    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
+        raise RuntimeError('An Apple Silicon Mac is required for the release runtime.')
+    destination = args.output.resolve()
+    if not destination.is_relative_to(ROOT/'build/macos'):
+        raise RuntimeError('Runtime output must be inside the ignored build/macos directory.')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = pathlib.Path(tempfile.mkdtemp(prefix='runtime-', dir=destination.parent))
+    try:
+        build(staging)
+        backup = destination.with_name(destination.name+'.previous')
+        if backup.exists():
+            shutil.rmtree(backup)
+        if destination.exists():
+            destination.rename(backup)
+        staging.rename(destination)
+        shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    print('Runtime ready:', destination)
+
+
+if __name__ == '__main__':
+    main()

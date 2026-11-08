@@ -1,0 +1,26 @@
+# 共用模块接入矩阵例外登记：模块 <制表符> 理由 <制表符> 登记人 <制表符> 日期
+# 只登记「安卓明确不适用」的模块（苹果后端、宿主工具、安卓路由明确关闭的阶段）；能接没接的不是例外，进基线缺口。
+graphics/metal/cs/NxGal.csproj	Metal GAL 后端工程，安卓走 Vulkan 不接	dev-dari	2026-11-06
+graphics/metal/cs/caps/NxGalCaps.csproj	Metal 后端能力查询，苹果专用	dev-dari	2026-11-06
+graphics/metal/tools/gal_spvgen/gal_spvgen.csproj	Metal 管线 SPIR-V 宿主工具，苹果专用	dev-dari	2026-11-06
+graphics/metal/tools/gal_xc.c	Metal 管线宿主工具（main），苹果专用	dev-dari	2026-11-06
+graphics/metal/gal_colorround.c	Metal 后端实现（gal_*.m #include 进 libnxgal），安卓无此后端	dev-dari	2026-11-06
+graphics/metal/gal_spill.c	同上：Metal 后端实现，安卓无此后端	dev-dari	2026-11-06
+graphics/metal/gal_spvx.c	同上：Metal 后端实现，安卓无此后端	dev-dari	2026-11-06
+runtime/src/host_main.c	宿主辅助进程入口（出库 / 抽取宿主侧），安卓侧由 App 承担	dev-dari	2026-11-06
+graphics/widen/scan/yaz0enc.c	stage_uilayout 专用宿主编码器，该阶段只在苹果路线跑	dev-dari	2026-11-06
+pack/stage_direct.sh	安卓 target.json direct.enabled=false（运行时现编，#1434 接上才开）	dev-dari	2026-11-06
+pack/stage_extract.sh	抽取只喂直连 LibPack，direct.enabled=false 时随 direct 跳过（refresh.sh 注释）	dev-dari	2026-11-06
+pack/stage_direct_gk.sh	直连出库辅助段，安卓 direct 未启用不适用	dev-dari	2026-11-06
+pack/stage_direct_profile.sh	同上	dev-dari	2026-11-06
+pack/stage_direct_seed.sh	同上	dev-dari	2026-11-06
+graphics/tools/direct/compiler/cli/S2A.DirectCompiler.Cli.csproj	宿主 CLI 入口工程，不进平台 AOT 闭包	dev-dari	2026-11-06
+services/S2A.Services/AssemblyInfo.cs	程序集元数据文件，无对外入口	dev-dari	2026-11-06
+runtime/src/qladder.c	档位梯子判定：依附 runtime/src/qprompt_host.c 的直连上屏每帧钩子 s2a_qp_frame，安卓该钩子未链接（基线缺口 qprompt*）；随安卓接入帧率提示 / 满屏自检时一起接	满屏补丁线	2026-11-06
+runtime/src/qladder_host.c	档位梯子宿主接线：同上，挂在 qprompt_host.c 每帧钩子上，安卓未链接该钩子；安卓档位切换另有平台入口 setConsoleMode	满屏补丁线	2026-11-06
+runtime/src/widen_remember.c	满屏自检「两次启动才记住」计数：依附 runtime/src/qprompt_host.c 每帧钩子（安卓未链接，基线缺口 qprompt*），随安卓接入满屏自检一起接	满屏补丁线	2026-11-07
+runtime/src/launchctx.c	苹果 iOS 多款容器的启动上下文（选哪款、镜像包 / 模块 / 数据根）；安卓走自己的 BootContract，host_main.c 不进安卓构建，loader.c 里引用只在 TARGET_OS_IPHONE 分支	启动器线	2026-11-07
+runtime/src/input_config.c	C03 键鼠配置 schema1，本卡范围只到 Mac / iOS；安卓键鼠消费入口未立项。清零条件：安卓侧有键位配置消费方时接线并同笔删本行	wwmogu	2026-11-07
+runtime/src/mac_slot_hold.c	macOS 宿主自拿本机 Mac 局槽（开发机显卡并发账，文件内只在 TARGET_OS_OSX 编译）；安卓无此账	合入运维线	2026-11-07
+runtime/src/sesdiag.c	iOS 会话标记 + 有界日志摘要（Switch2线 84）：调用方只在 ios/app.m / diag.m；安卓诊断导出走自己的 runtime 私有目录与 BootContract，无「上次异常退出」弹窗。安卓 NDK 编译已过。清零条件：安卓加上次异常退出提示时接线并同笔删本行	Switch2线	2026-11-07
+runtime/src/logcap.c	日志落盘唯一出口 s2a_log_out（强定义）：安卓单库已链（Runtime.cmake core 名单），调用方是 native.h 里的 s2a_log_line / LOG 宏（每个 TU 内联），矩阵按平台源码找调用方的文本扫描看不到；不是缺口	Switch2线	2026-11-07

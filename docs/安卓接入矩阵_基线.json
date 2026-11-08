@@ -1,0 +1,653 @@
+{
+ "schema": "s2a.shared_matrix_baseline.v1",
+ "modules": {
+  "graphics/dsx/dsx_xc.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/dsx/gal_colorround.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/dsx/gal_spill.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/dsx/gal_spvx.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/dsx/gal_tessxc.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/dsx/gal_vpullc.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/loop/S2A.Gfx.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/metal/cs/NxGal.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/metal/cs/caps/NxGalCaps.csproj": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/metal/tools/gal_spvgen/gal_spvgen.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/metal/tools/gal_xc.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/nvn/gfx/gl/gl_glsl_es.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/nvn/gfx/gl/gl_xlate.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/nvn/gfx/nvn/hle_nvn.c": {
+   "gaps": []
+  },
+  "graphics/nvn/gfx/nvn/nvn2.c": {
+   "gaps": []
+  },
+  "graphics/nvn/gfx/nvn/nvn2_codec.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/nvn/gfx/nvn/nvn_dirty.c": {
+   "gaps": []
+  },
+  "graphics/nvn/gfx/nvn/nvn_fmt_expand.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/nvn/gfx/nvn/nvn_fps.c": {
+   "gaps": []
+  },
+  "graphics/nvn/gfx/nvn/nvn_tex.c": {
+   "gaps": []
+  },
+  "graphics/nvn/gfx/tex/nvn_bcdec.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/nvn/gfx/tex/nvn_deswizzle.c": {
+   "gaps": []
+  },
+  "graphics/nvn/gfx/tex/nvn_fmt_mtl.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "translator/dmsh_xlate/dmsh_xlate.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/nvn/graphics_session.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/tools/direct/compiler/S2A.DirectCompiler.csproj": {
+   "gaps": []
+  },
+  "graphics/tools/direct/compiler/cli/S2A.DirectCompiler.Cli.csproj": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/tools/direct/dsh/S2A.Dsh.csproj": {
+   "gaps": []
+  },
+  "graphics/tools/direct/dsh/batch/dsh_batch.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/tools/direct/vklib/S2A.DshVkLib.csproj": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/tools/macrogen/S2A.MacroGen.csproj": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/tools/shbake/S2A.ShBake.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/tools/shbake/crilayla.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/tools/yaz0dec.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/track/glue.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/track/track.c": {
+   "gaps": []
+  },
+  "graphics/widen/S2Arm.Gfx.Widen.csproj": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "graphics/widen/gal/S2Arm.Gfx.Widen.Gal.csproj": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/widen/scan/yaz0enc.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "graphics/widen/shader/S2Arm.Gfx.Widen.Shader.csproj": {
+   "gaps": []
+  },
+  "runtime/src/alias.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/alt.c": {
+   "gaps": []
+  },
+  "runtime/src/ap_host.c": {
+   "gaps": []
+  },
+  "runtime/src/boot.c": {
+   "gaps": []
+  },
+  "runtime/src/boot_defer.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/caps.c": {
+   "gaps": []
+  },
+  "runtime/src/cpatch.c": {
+   "gaps": []
+  },
+  "runtime/src/cpuprof.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/crash.c": {
+   "gaps": []
+  },
+  "runtime/src/det.c": {
+   "gaps": []
+  },
+  "runtime/src/dguard.c": {
+   "gaps": []
+  },
+  "runtime/src/diag_brk.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/direct_host.c": {
+   "gaps": []
+  },
+  "runtime/src/direct_prompt.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/emul_ld.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/emul_st.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/energy.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/envfile.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/far.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "runtime/src/fps.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "runtime/src/gate.c": {
+   "gaps": []
+  },
+  "runtime/src/gclimit.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/gfxmode.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "runtime/src/glslc_tool.c": {
+   "gaps": []
+  },
+  "runtime/src/guest_main.c": {
+   "gaps": []
+  },
+  "runtime/src/hud.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/imgpack.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/imlent.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/init_fail.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/lan_elect.c": {
+   "gaps": []
+  },
+  "runtime/src/layout.c": {
+   "gaps": []
+  },
+  "runtime/src/libc.c": {
+   "gaps": []
+  },
+  "runtime/src/lifecycle.c": {
+   "gaps": []
+  },
+  "runtime/src/loader.c": {
+   "gaps": []
+  },
+  "runtime/src/loadprog.c": {
+   "gaps": []
+  },
+  "runtime/src/logcon.c": {
+   "gaps": []
+  },
+  "runtime/src/lowva.c": {
+   "gaps": []
+  },
+  "runtime/src/msample.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/nrodefer.c": {
+   "gaps": []
+  },
+  "runtime/src/oodle_tool.c": {
+   "gaps": []
+  },
+  "runtime/src/os.c": {
+   "gaps": []
+  },
+  "runtime/src/pack_apply.c": {
+   "gaps": []
+  },
+  "runtime/src/pad.c": {
+   "gaps": [
+    "未接线"
+   ]
+  },
+  "runtime/src/patch.c": {
+   "gaps": []
+  },
+  "runtime/src/patch_data.c": {
+   "gaps": []
+  },
+  "runtime/src/phone_axes.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/phone_rumble_mailbox.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/programs.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/qprompt.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/qprompt_host.c": {
+   "gaps": [
+    "未链接"
+   ]
+  },
+  "runtime/src/selfcheck.c": {
+   "gaps": []
+  },
+  "runtime/src/session.c": {
+   "gaps": []
+  },
+  "runtime/src/svc_mem.c": {
+   "gaps": []
+  },
+  "runtime/src/tdump.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/thread.c": {
+   "gaps": []
+  },
+  "runtime/src/touch.c": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "runtime/src/traps.c": {
+   "gaps": []
+  },
+  "runtime/src/vawin.c": {
+   "gaps": []
+  },
+  "runtime/src/widen.c": {
+   "gaps": []
+  },
+  "runtime/src/xstack.c": {
+   "gaps": []
+  },
+  "pack/stage_aoc.sh": {
+   "gaps": []
+  },
+  "pack/stage_caps.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_direct.sh": {
+   "gaps": [
+    "未接线"
+   ]
+  },
+  "pack/stage_direct_gk.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_direct_profile.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_direct_seed.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_extract.sh": {
+   "gaps": [
+    "未接线"
+   ]
+  },
+  "pack/stage_keyfiles.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_keys.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_nacp.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_rewrite.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_romfsidx.sh": {
+   "gaps": []
+  },
+  "pack/stage_shaders.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "pack/stage_sysdata.sh": {
+   "gaps": []
+  },
+  "pack/stage_uilayout.sh": {
+   "gaps": [
+    "未接线",
+    "未链接"
+   ]
+  },
+  "services/S2A.Services/Aoc.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Application.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/AssemblyInfo.cs": {
+   "gaps": [
+    "未接线"
+   ]
+  },
+  "services/S2A.Services/AudioPeak.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/ControllerFeedback.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Dispatcher.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Exports.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/GalStubs.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/GraphicsSettings.cs": {
+   "gaps": [
+    "未接线"
+   ]
+  },
+  "services/S2A.Services/GuestMemory.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/HleTarget.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/HorizonAudioLifetime.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/HorizonHost.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Host.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/HostConfiguration.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/InputPump.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/LdnRelay.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Lifecycle.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/MemDiag.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Native.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/NativeSyscall.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/NativeTickSource.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/NpdmCompat.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/PrimaryController.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/ProcessContext.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Red.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/RomFsIndex.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SaveTransfer.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SaveTransferArchive.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SaveTransferExports.cs": {
+   "gaps": [
+    "未接线"
+   ]
+  },
+  "services/S2A.Services/SaveTransferIndex.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SaveTransferTransaction.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SaveTransferZipBounds.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/Saves.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SmDirect.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/StubRenderer.cs": {
+   "gaps": []
+  },
+  "services/S2A.Services/SystemLocale.cs": {
+   "gaps": []
+  }
+ },
+ "from": "7de833601070a98975a4c20719253a89e7bf49fb"
+}

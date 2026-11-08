@@ -1,0 +1,278 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 S2Arm contributors
+using Avalonia;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
+using S2Arm.Launcher.Protocol;
+
+namespace S2Arm.Launcher;
+
+// 给玩家的 AI 用的本机控制口命令表（协议同 Mac S2ArmControl.swift，客户端同一份 s2armctl）：每个命令调界面按钮背后的同一个方法，屏幕上照常显示；
+// 选文件的对话框改成直接给路径。Windows 只出 iPhone / iPad 包，Mac 专属命令（prepare、launch、选机型）明确回 409。
+public sealed partial class EnvironmentWindow
+{
+    private ControlPort? control;
+    private DispatcherTimer? controlTimer;
+    private bool aiControl;
+    private string aiControlError = "";
+
+    private static readonly bool ControlForced = Environment.GetCommandLineArgs().Contains("--control") ||
+        Environment.GetEnvironmentVariable("S2ARM_CONTROL") == "1";
+    private string ControlSwitchFile => Path.Combine(privateRoot, "ai-control.on");
+
+    private static string ResolvePrivateRoot()
+    {
+        const string prefix = "--data-root=";
+        return Environment.GetCommandLineArgs().FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal)) is { } argument
+            ? Path.GetFullPath(argument[prefix.Length..])
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "S2Arm", "WindowsLauncher");
+    }
+
+    private void StartControl()
+    {
+        aiControl = ControlForced || File.Exists(ControlSwitchFile);
+        if (aiControl) OpenControl();
+    }
+
+    private void SetAiControl(bool on)
+    {
+        aiControlError = "";
+        try
+        {
+            PrivateJobRequest.EnsurePrivateRoot(privateRoot);
+            if (on) File.WriteAllBytes(ControlSwitchFile, []); else File.Delete(ControlSwitchFile);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { aiControlError = error.Message; }
+        aiControl = on || ControlForced;
+        if (aiControl) OpenControl(); else CloseControl();
+        Render();
+    }
+
+    private void OpenControl()
+    {
+        if (control is not null) return;
+        try { control = new ControlPort(privateRoot, r => Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            var reply = await HandleControl(r);
+            control?.UpdateState(ControlReply.Json(ControlState()).Body);   // 命令做完立刻更新快照：客户端接着读 /state，不能读到命令之前的错误
+            return reply;
+        })); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException)
+        { aiControl = false; aiControlError = error.Message; return; }
+        control.UpdateState(ControlReply.Json(ControlState()).Body);
+        controlTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        controlTimer.Tick += (_, _) => control?.UpdateState(ControlReply.Json(ControlState()).Body);
+        controlTimer.Start();
+        // AI 接手时游戏库要已连上，它才看得到游戏
+        if (!libraryBusy) EnsureLibrary(() => { });
+    }
+
+    private void CloseControl()
+    {
+        controlTimer?.Stop(); controlTimer = null;
+        control?.Dispose(); control = null;
+    }
+
+    private bool ControlBusy => PackBusy || libraryBusy || importBusy || busy;
+    private static ControlReply Busy() => ControlReply.Bad("有作业在跑：等它结束或 cancel 再来", 409);
+    private static ControlReply MacOnly(string what) => ControlReply.Bad($"Windows 版没有{what}：Windows 只出 iPhone / iPad 包", 409);
+    private LibraryGame? ControlGame(ControlRequest r) =>
+        r.Text("gameId") is { } id ? catalog?.Games.FirstOrDefault(g => !g.Hidden && g.Id.Equals(id, StringComparison.OrdinalIgnoreCase)) : null;
+    private static readonly ControlReply NoGame = ControlReply.Bad("没有这个 gameId");
+
+    private async Task<bool> ControlConnected()
+    {
+        if (connectedFolder is null || libraryId is null)
+        {
+            if (!libraryBusy) EnsureLibrary(() => { });
+            if (libraryOperation is { } operation) await operation;
+        }
+        return connectedFolder is not null && libraryId is not null;
+    }
+
+    private ControlReply ControlExport(LibraryGame game)
+    {
+        selectedGame = game.Id;
+        if (ExportBlocker(game) is { } why) return ControlReply.Bad(why, 409);
+        StartPack(game);
+        return ControlReply.Ok();
+    }
+
+    private ControlReply ControlInstall(LibraryGame game)
+    {
+        if (ControlBusy) return Busy();
+        if (readinessFor != game.Id || readiness?.Ready != true) return ControlReply.Bad($"装机前清单还没齐：先 install-check {game.Id}，全齐了再装");
+        selectedGame = game.Id;
+        Navigate("install");
+        _ = InstallAsync(game);
+        return ControlReply.Ok();
+    }
+
+    private async Task<ControlReply> HandleControl(ControlRequest r)
+    {
+        switch (r.Method, r.Path)
+        {
+            case ("GET", "/help"):
+                return ControlReply.Json(new Dictionary<string, object?>
+                {
+                    ["version"] = typeof(EnvironmentWindow).Assembly.GetName().Version?.ToString() ?? "", ["frontend"] = "S2Arm Windows",
+                    ["endpoints"] = Endpoints.Select(e => new Dictionary<string, string> { ["call"] = e.Call, ["what"] = e.What }).ToList()
+                });
+            case ("GET", "/targets"): case ("POST", "/target"):
+                return MacOnly("选机型（iPhone 包通用，不用选）");
+            case ("GET", "/snapshot"):
+            {
+                var size = new PixelSize(Math.Max(1, (int)Bounds.Width), Math.Max(1, (int)Bounds.Height));
+                using var bitmap = new RenderTargetBitmap(size);
+                bitmap.Render(this);
+                using var stream = new MemoryStream();
+                bitmap.Save(stream, new PngBitmapEncoderOptions());
+                return new ControlReply(200, "image/png", stream.ToArray());
+            }
+            case ("POST", "/keys"):
+            {
+                if (r.Text("path") is not { Length: > 0 } path) return ControlReply.Bad("缺 path");
+                if (ControlBusy) return Busy();
+                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                importDialog = new ImportDialogState(ImportKind.Keys);
+                _ = RunImportKeysAsync(path);
+                return ControlReply.Ok();
+            }
+            case ("POST", "/games"):
+            {
+                if (r.Strings("paths") is not { Length: > 0 } selected) return ControlReply.Bad("缺 paths");
+                if (ControlBusy) return Busy();
+                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                importDialog = new ImportDialogState(ImportKind.Games);
+                _ = RunImportGamesAsync(selected);
+                return ControlReply.Ok();
+            }
+            case ("POST", "/ipa"):
+                return ControlGame(r) is { } ipaGame ? ControlExport(ipaGame) : NoGame;
+            case ("POST", "/build"):
+                switch (r.Text("target") ?? "ios")
+                {
+                    case "ios" or "iphone" or "ipad": return ControlGame(r) is { } buildGame ? ControlExport(buildGame) : NoGame;
+                    case "mac" or "macos": return MacOnly("Mac 版导出");
+                    case "android" or "harmony" or "ohos": return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
+                    default: return ControlReply.Bad("target 只认 ios / android / harmony");
+                }
+            case ("POST", "/prepare"): return MacOnly("Mac 编译");
+            case ("POST", "/launch"): return MacOnly("在电脑上启动游戏");
+            case ("POST", "/fonts"): return ControlReply.Bad("Windows 版用应用自带的开源字体，不能换", 409);
+            case ("POST", "/delete"): return ControlReply.Bad("Windows 启动器还不能删除游戏", 409);
+            case ("POST", "/diagnostics"): return ControlReply.Bad("Windows 启动器还不能导出诊断包：用 s2armctl logs 读日志", 409);
+            case ("POST", "/installCheck"):
+            {
+                if (ControlGame(r) is not { } game) return NoGame;
+                selectedGame = game.Id; readinessFor = game.Id; readiness = null;
+                Navigate("install");
+                _ = CheckInstallAsync();
+                return ControlReply.Ok();
+            }
+            case ("POST", "/install"):
+                return ControlGame(r) is { } installGame ? ControlInstall(installGame) : NoGame;
+            case ("POST", "/uninstall"):
+            {
+                if (ControlGame(r) is not { } game) return NoGame;
+                if (ControlBusy) return Busy();
+                selectedGame = game.Id;
+                Navigate("install");
+                _ = RemoveAsync(game);
+                return ControlReply.Ok();
+            }
+            case ("POST", "/cancel"):
+            {
+                if (r.Text("taskId") is null) return ControlReply.Bad("缺 taskId");
+                var running = packCancellation ?? importCancellation ?? libraryCancellation;
+                if (running is null) return ControlReply.Bad("没有能取消的作业");
+                running.Cancel();
+                return ControlReply.Ok();
+            }
+            case ("POST", "/retry"):
+            {
+                var task = ControlJournal.Tasks(privateRoot, 500).FirstOrDefault(t => t.GetProperty("id").GetString() == r.Text("taskId"));
+                if (task.ValueKind == System.Text.Json.JsonValueKind.Undefined) return ControlReply.Bad("没有这个 taskId");
+                var id = task.TryGetProperty("gameId", out var value) ? value.GetString() : null;
+                var game = catalog?.Games.FirstOrDefault(g => g.Id == id && !g.Hidden);
+                return (task.GetProperty("operation").GetString(), game) switch
+                {
+                    ("ipa", { } g) => ControlExport(g),
+                    ("install", { } g) => ControlInstall(g),
+                    _ => ControlReply.Bad("这条任务不能直接重试：照原样再发一次命令（keys / games 带路径）")
+                };
+            }
+            case ("POST", "/select"):
+                if (r.Text("gameId") is { } selection) selectedGame = selection;
+                return ControlReply.Ok();
+            case ("POST", "/onboarding"): return ControlReply.Ok("Windows 版没有引导页，已忽略");
+            case ("POST", "/environment"):
+                if (!busy) _ = CheckAsync();
+                return ControlReply.Ok();
+            case ("POST", "/refresh"):
+                if (ControlBusy) return Busy();
+                libraryFolder = connectedFolder ?? libraryFolder;
+                libraryOperation = RunLibraryAsync("catalog", null);
+                return ControlReply.Ok();
+            case ("POST", "/dismiss"):
+                importError = ""; keysRejected = false; Render();
+                return ControlReply.Ok();
+            default:
+                return ControlReply.Bad($"不认识 {r.Method} {r.Path}", 404);
+        }
+    }
+
+    private static readonly (string Call, string What)[] Endpoints =
+    [
+        ("GET /state", "当前界面状态：环境检查（checks）、密钥、游戏列表、作业记录（tasks）"),
+        ("GET /snapshot", "主窗口截图（PNG）"),
+        ("POST /keys {path}", "导入 prod.keys"),
+        ("POST /games {paths:[…]}", "放入游戏（NSP / XCI 文件、游戏文件夹或解包好的游戏文件夹）"),
+        ("POST /build {gameId, target}", "出包：target = ios（iPhone / iPad，缺省）；android / harmony 回 409「即将上线」"),
+        ("POST /ipa {gameId}", "打 iPhone 包（出 IPA + 资源包）"),
+        ("POST /installCheck {gameId}", "装机前清单：几秒后看 GET /state 的 installReadiness"),
+        ("POST /install {gameId}", "用 Impactor 装到 iPhone（清单全齐才能装；Apple ID 由玩家本人在 Impactor 里登录）"),
+        ("POST /uninstall {gameId}", "从 iPhone 上的 S2Arm 删一款"),
+        ("POST /cancel {taskId} | /retry {taskId}", "停掉在跑的作业 / 重试出包、装机任务"),
+        ("POST /environment", "重新检查环境"), ("POST /refresh", "刷新游戏库"),
+        ("POST /dismiss", "关掉提示"), ("POST /select {gameId}", "选中一款"),
+    ];
+
+    private Dictionary<string, object?> ControlState()
+    {
+        var keysReady = catalog?.KeysReady;
+        var games = (catalog?.Games ?? []).Where(g => !g.Hidden).Select(g => new Dictionary<string, object?>
+        {
+            ["id"] = g.Id, ["name"] = g.Name, ["display"] = g.Version, ["compatibility"] = "", ["ready"] = g.IphoneReady, ["iphoneReady"] = g.IphoneReady,
+            ["needsPreparation"] = false, ["needsKeys"] = g.NeedsKeys, ["buildable"] = g.Missing.Count == 0, ["missing"] = g.Missing,
+            ["baseBytes"] = (g.Packages ?? []).Where(p => p.Type == "base").Sum(p => p.Size), ["bytes"] = g.TotalBytes
+        }).ToList();
+        object? session = null;
+        if (packRunning) session = new Dictionary<string, object?> { ["kind"] = "ipa", ["gameId"] = packGame?.Id, ["name"] = packGame?.Name, ["phase"] = "running" };
+        else if (importBusy) session = new Dictionary<string, object?> { ["kind"] = "import", ["gameId"] = null, ["name"] = importJobName, ["phase"] = "running" };
+        else if (installBusy) session = new Dictionary<string, object?> { ["kind"] = "install", ["gameId"] = SelectedGame?.Id, ["name"] = SelectedGame?.Name, ["phase"] = "running" };
+        object? install = null;
+        if (readiness is { } ready && readinessFor is { } readyFor)
+            install = new Dictionary<string, object?>
+            {
+                ["gameId"] = readyFor, ["ready"] = ready.Ready, ["device"] = ready.Device, ["account"] = ready.Account,
+                ["items"] = ready.Items.Select(i => new Dictionary<string, object?>
+                    { ["id"] = i.Id, ["ok"] = i.Ok, ["waiting"] = i.Waiting, ["title"] = i.Title, ["detail"] = i.Detail, ["who"] = i.Who }).ToList()
+            };
+        return new()
+        {
+            ["frontend"] = "S2Arm Windows", ["platform"] = "windows",
+            ["selection"] = page, ["selectedGame"] = selectedGame, ["showOnboarding"] = false, ["onboardingStep"] = 0,
+            ["keyStatus"] = keysReady == true ? "已导入" : keysReady == false ? "没有密钥" : "还没读到", ["hasImportedKeys"] = keysReady == true,
+            ["waitingForAccess"] = null, ["environmentReady"] = report?.Ready == true, ["runtimeReady"] = report?.Ready == true,
+            ["checkingEnvironment"] = busy,
+            ["checks"] = (report?.Checks ?? []).Select(c => new Dictionary<string, object?>
+                { ["name"] = c.Name, ["ok"] = c.Status == "ok", ["message"] = c.Message, ["group"] = "", ["action"] = c.Action }).ToList(),
+            ["library"] = connectedFolder, ["games"] = games, ["session"] = session,
+            ["tasks"] = ControlJournal.Tasks(privateRoot), ["queue"] = Array.Empty<string>(), ["notice"] = null,
+            ["error"] = importError.Length > 0 ? importError : aiControlError.Length > 0 ? aiControlError : null,
+            ["installReadiness"] = install, ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            ["lastSnapshotPath"] = "", ["windows"] = Array.Empty<object>(),
+        };
+    }
+}

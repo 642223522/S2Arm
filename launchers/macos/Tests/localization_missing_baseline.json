@@ -1,0 +1,52 @@
+[
+  {
+    "path": "Sources/S2ArmLauncher/InputEditor.swift",
+    "source": "套用预设",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/Models.swift",
+    "source": "WASD 走位、鼠标转视角、左右键分担攻击与闪避，适合动作 / 开放世界",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/Models.swift",
+    "source": "WASD 转向与油门刹车、鼠标视角灵敏度调低并关闭回中，适合赛车 / 飞行",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/Models.swift",
+    "source": "动作",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/Models.swift",
+    "source": "回合制",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/Models.swift",
+    "source": "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/Models.swift",
+    "source": "赛车",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/ShaderCacheImport.swift",
+    "source": "：拷贝失败（",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/ShaderCacheImport.swift",
+    "source": "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）",
+    "count": 1
+  },
+  {
+    "path": "Sources/S2ArmLauncher/ShaderCacheImport.swift",
+    "source": "：这是显卡驱动的管线缓存，不需要",
+    "count": 1
+  }
+]

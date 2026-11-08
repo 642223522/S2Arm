@@ -1,0 +1,3713 @@
+{
+ "schema": "s2a.shared_matrix.v1",
+ "modules": [
+  {
+   "id": "graphics/metal/gal_colorround.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/SpvCross.cs:101 graphics/tools/direct/dsh/SpvCross.cs:114 graphics/tools/direct/dsh/SpvCross.cs:53 等"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/gal_spill.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/SpvCross.cs:56 graphics/tools/direct/dsh/SpvCross.cs:97"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/gal_spvx.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/SpvCross.cs:57 graphics/tools/direct/dsh/SpvCross.cs:58 graphics/tools/direct/dsh/SpvCross.cs:67 等"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/gal_tessxc.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/SpvCross.cs:55 graphics/tools/direct/dsh/SpvCross.cs:88"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/gal_vpullc.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/tools/gal_xc.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "自身是入口（main），本平台不编"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/gl/gl_glsl_es.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/gl/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "自身是入口（main），本平台不编"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/gl/gl_xlate.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/gl/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/hle_nvn.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/CMakeLists.txt:75（S2A_ANDROID_VK_ENGINE）",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/nvn2.c:317 graphics/nvn/gfx/nvn/nvn2.c:318 android/native/direct/record_flat.c:25 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn2.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/CMakeLists.txt:76（S2A_ANDROID_VK_ENGINE）",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:1227 graphics/nvn/gfx/nvn/hle_nvn.c:1230 graphics/nvn/gfx/nvn/hle_nvn.c:1320 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn2_codec.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn_dirty.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/LinkSources.cmake:103",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3516 graphics/nvn/gfx/nvn/hle_nvn.c:3518 graphics/nvn/gfx/nvn/hle_nvn.c:365 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn_fmt_expand.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn_fps.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/CMakeLists.txt:78（S2A_ANDROID_VK_ENGINE）",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:2990 graphics/nvn/gfx/nvn/hle_nvn.c:3325"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn_tex.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/LinkSources.cmake:100",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:4818 graphics/nvn/gfx/nvn/hle_nvn.c:4829 graphics/nvn/gfx/nvn/hle_nvn.c:517 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/tex/nvn_bcdec.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/tex/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "仅测试引用 android/tests/vk/t_bc_decode.c"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/tex/nvn_deswizzle.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/tex/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/LinkSources.cmake:100",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:4814 graphics/nvn/gfx/nvn/hle_nvn.c:4822 graphics/nvn/gfx/nvn/hle_nvn.c:4851 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/tex/nvn_fmt_mtl.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/tex/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/graphics_session.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "Metal档",
+    "prefix": "graphics/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/shbake/crilayla.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/yaz0dec.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/track/glue.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "写跟踪",
+    "follow": "共用层",
+    "prefix": "graphics/track/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/track/track.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "写跟踪",
+    "follow": "共用层",
+    "prefix": "graphics/track/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/CMakeLists.txt:316",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:186 runtime/src/direct_host.c:23 runtime/src/direct_host.c:34 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/runtime/tracking/runtime.c"
+   ]
+  },
+  {
+   "id": "graphics/widen/scan/yaz0enc.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "宽屏",
+    "follow": "共用层",
+    "prefix": "graphics/widen/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "自身是入口（main），本平台不编"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/loop/S2A.Gfx.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "核心",
+    "module": "通用模式帧循环",
+    "follow": "共用层",
+    "prefix": "graphics/loop/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/MeshStage.cs:185 graphics/tools/direct/dsh/MeshStage.cs:203"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/cs/NxGal.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/compiler/DirectComputeSupportReads.cs:81 graphics/tools/direct/dsh/Dsh.cs:1744 graphics/tools/direct/dsh/Dsh.cs:402 等"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/cs/caps/NxGalCaps.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/metal/tools/gal_spvgen/gal_spvgen.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "Metal",
+    "follow": "Metal档",
+    "prefix": "graphics/metal/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/DshVk.cs:162 graphics/tools/direct/dsh/DshVk.cs:169 graphics/tools/direct/dsh/DshVk.cs:183 等"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "translator/dmsh_xlate/dmsh_xlate.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "translator/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/Dsh.cs:106 graphics/tools/direct/dsh/Dsh.cs:158 graphics/tools/direct/dsh/Dsh.cs:199 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/direct/compiler/S2A.DirectCompiler.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/Dsh.cs:67 android/core-runtime/DirectCompileNative.cs:17 android/core-runtime/DirectCompileNative.cs:28 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/direct/compiler/cli/S2A.DirectCompiler.Cli.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/direct/dsh/S2A.Dsh.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/compiler/DirectShaderCompiler.cs:221 graphics/tools/direct/compiler/DirectShaderCompiler.cs:305 services/S2A.Services/LdnRelay.cs:316 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/direct/dsh/batch/dsh_batch.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/compiler/DirectBundle.cs:34 graphics/tools/direct/compiler/DirectProgram.cs:112 graphics/tools/direct/compiler/DirectProgram.cs:119 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/direct/vklib/S2A.DshVkLib.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/macrogen/S2A.MacroGen.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/tools/shbake/S2A.ShBake.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "离线着色器",
+    "follow": "共用层",
+    "prefix": "graphics/tools/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/compiler/DirectProgram.cs:112 graphics/tools/direct/compiler/DirectProgram.cs:119 services/S2A.Services/Host.cs:489"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/widen/S2Arm.Gfx.Widen.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "核心",
+    "module": "宽屏",
+    "follow": "共用层",
+    "prefix": "graphics/widen/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/Fetch.cs:58 services/S2A.Services/HorizonHost.cs:187 services/S2A.Services/NativeSyscall.cs:498 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/widen/gal/S2Arm.Gfx.Widen.Gal.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "核心",
+    "module": "宽屏",
+    "follow": "共用层",
+    "prefix": "graphics/widen/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓 AOT 闭包外",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/widen/shader/S2Arm.Gfx.Widen.Shader.csproj",
+   "kind": "gfx-csproj",
+   "layer_map": {
+    "layer": "核心",
+    "module": "宽屏",
+    "follow": "共用层",
+    "prefix": "graphics/widen/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/compiler/DirectComputeC0Reads.cs:23 graphics/tools/direct/compiler/DirectProgram.cs:112 graphics/tools/direct/compiler/DirectProgram.cs:119 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/alias.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/alt.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/track/track.c:1228 graphics/track/track.c:1241 runtime/src/ap_host.c:204"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/ap_host.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/lifecycle.c:83 runtime/src/session.c:186"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/boot.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/guest_main.c:24 runtime/src/guest_main.c:33 runtime/src/guest_main.c:35 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/boot_defer.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/caps.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3293 android/native/runtime/runtime.c:204"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/cpatch.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:963 runtime/src/session.c:14 runtime/src/session.c:35"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/cpuprof.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "无可查入口符号"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/crash.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/det.c:125 runtime/src/det.c:127 runtime/src/det.c:491 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/det.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/gate.c:231 runtime/src/gate.c:248 runtime/src/gate.c:249 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/dguard.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:129 runtime/src/ap_host.c:146 runtime/src/ap_host.c:54 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/diag_brk.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/direct_host.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/crash.c:100 runtime/src/lifecycle.c:169 runtime/src/lifecycle.c:85 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/direct_prompt.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/emul_ld.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/emul_st.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/energy.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/envfile.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/far.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:1260 runtime/src/svc_mem.c:1321 runtime/src/svc_mem.c:357 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/fps.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3228 graphics/nvn/gfx/nvn/hle_nvn.c:3230 graphics/nvn/gfx/nvn/hle_nvn.c:3232 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/gate.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/lifecycle.c:118 runtime/src/lifecycle.c:147 runtime/src/lifecycle.c:166 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
+  },
+  {
+   "id": "runtime/src/gclimit.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/gfxmode.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:419 runtime/src/loader.c:471 runtime/src/loader.c:474 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/direct_session.c",
+    "android/native/plat_android.c"
+   ]
+  },
+  {
+   "id": "runtime/src/glslc_tool.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/guest_main.c:37"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/guest_main.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake:14",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/thread.c:841 android/native/runtime/runtime.c:96"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/hud.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/imgpack.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/imlent.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/init_fail.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/lan_elect.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/LinkSources.cmake:16",
+    "wired_evidence": "文本候选（未证运行路径） android/native/lan_discovery.cpp:177 android/native/lan_discovery.cpp:188 android/native/lan_discovery.cpp:193"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/layout.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:292 runtime/src/svc_mem.c:344 runtime/src/svc_mem.c:346 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/libc.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:476 runtime/src/loader.c:850"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/lifecycle.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:78 runtime/src/guest_main.c:59 runtime/src/svc_mem.c:1749 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/loader.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:1924 runtime/src/crash.c:103 runtime/src/crash.c:21 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/loadprog.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:58"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/logcon.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/lifecycle.c:171 runtime/src/os.c:97"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/lowva.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/lifecycle.c:104"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/msample.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "无可查入口符号"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/nrodefer.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:1116 runtime/src/loader.c:360 runtime/src/loader.c:479 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/oodle_tool.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/guest_main.c:26 runtime/src/guest_main.c:36"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/os.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:2670 graphics/nvn/gfx/nvn/hle_nvn.c:2683 graphics/nvn/gfx/nvn/hle_nvn.c:2912 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/pack_apply.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:1776"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/pad.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": false,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/patch.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/caps.c:77 runtime/src/patch_data.c:26 runtime/src/patch_data.c:28 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/patch_data.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:961"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/phone_axes.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/phone_rumble_mailbox.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/programs.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/qladder.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/qladder_host.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/qprompt.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/qprompt_host.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": true,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3294 graphics/nvn/gfx/nvn/hle_nvn.c:3551"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/selfcheck.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:127"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/session.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） android/native/s2a_native_stub.c:27 android/native/s2a_native_stub.c:28 android/native/s2a_native_stub.c:29 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
+  },
+  {
+   "id": "runtime/src/svc_mem.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3762 graphics/nvn/gfx/nvn/hle_nvn.c:3976 graphics/nvn/gfx/nvn/hle_nvn.c:3993 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
+  },
+  {
+   "id": "runtime/src/tdump.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/text_input.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） android/native/s2a_native_stub.c:98 android/native/s2a_native_stub.c:99 services/S2A.Services/Native.cs:391 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
+  },
+  {
+   "id": "runtime/src/thread.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:56 runtime/src/det.c:203 runtime/src/det.c:214 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
+  },
+  {
+   "id": "runtime/src/touch.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "安卓构建清单无此源",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/traps.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/crash.c:19 runtime/src/crash.c:94 runtime/src/lifecycle.c:24 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "runtime/src/vawin.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:1602 graphics/nvn/gfx/nvn/hle_nvn.c:1606 graphics/nvn/gfx/nvn/hle_nvn.c:3787 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/plat_android.c"
+   ]
+  },
+  {
+   "id": "runtime/src/widen.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/gate.c:265 runtime/src/lifecycle.c:165 runtime/src/loader.c:962 等"
+   },
+   "exception": false,
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
+  },
+  {
+   "id": "runtime/src/xstack.c",
+   "kind": "native-c",
+   "layer_map": {
+    "layer": "核心",
+    "module": "原生",
+    "follow": "共用层",
+    "prefix": "runtime/src/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/glslc_tool.c:43 runtime/src/guest_main.c:86 runtime/src/loader.c:424 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_aoc.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "refresh.sh refresh.sh 循环 $android_stage",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_caps.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "refresh.sh refresh.sh",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_direct.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": false,
+    "evidence": "refresh.sh refresh.sh；target.json；enabled=false",
+    "wired_evidence": ""
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_direct_gk.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_direct_profile.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_direct_seed.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_extract.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": false,
+    "evidence": "refresh.sh refresh.sh；enabled=false",
+    "wired_evidence": ""
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_keyfiles.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_keys.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_nacp.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": false,
+    "wired": false
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_rewrite.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_romfsidx.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "refresh.sh refresh.sh",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_shaders.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_sysdata.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "refresh.sh refresh.sh 循环 $android_stage",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "pack/stage_uilayout.sh",
+   "kind": "pack-stage",
+   "layer_map": {
+    "layer": "核心",
+    "module": "公共出包",
+    "follow": "共用层",
+    "prefix": "pack/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": false,
+    "wired": false,
+    "evidence": "",
+    "wired_evidence": ""
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Aoc.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:131 services/S2A.Services/Host.cs:334"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Application.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Aoc.cs:91 services/S2A.Services/Exports.cs:311 services/S2A.Services/Host.cs:333 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/AssemblyInfo.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": false
+   },
+   "android": {
+    "linked": true,
+    "wired": false,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "无可查入口符号"
+   },
+   "exception": true,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/AudioPeak.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:288 services/S2A.Services/LdnRelay.cs:156 services/S2A.Services/LdnRelay.cs:171 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/ControllerFeedback.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/InputPump.cs:294"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Dispatcher.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:144 services/S2A.Services/Exports.cs:325 services/S2A.Services/Exports.cs:364 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Exports.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:226 android/core-runtime/AndroidGameRuntime.cs:299 android/core-runtime/AndroidGameRuntime.cs:307 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/GalStubs.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/StubRenderer.cs:354 services/S2A.Services/StubRenderer.cs:359 services/S2A.Services/StubRenderer.cs:365 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/GraphicsSettings.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": false,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/GuestMemory.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:386 services/S2A.Services/Application.cs:417 services/S2A.Services/Application.cs:419 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/HleTarget.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Dispatcher.cs:883 services/S2A.Services/SmDirect.cs:217"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/HorizonAudioLifetime.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/HorizonHost.cs:35"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/HorizonHost.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:91 services/S2A.Services/Exports.cs:156 services/S2A.Services/Exports.cs:420 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Host.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:49 android/core-runtime/AndroidGameRuntime.cs:616 android/core-runtime/AndroidGameRuntime.cs:617 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/HostConfiguration.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:255 services/S2A.Services/Exports.cs:229 services/S2A.Services/Host.cs:526"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/InputPump.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:346 android/core-runtime/AndroidGameRuntime.cs:478 android/core-runtime/AndroidGameRuntime.cs:607 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/LdnRelay.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/AudioPeak.cs:201 services/S2A.Services/AudioPeak.cs:236 services/S2A.Services/Host.cs:265"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Lifecycle.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:729 services/S2A.Services/InputPump.cs:503"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/MemDiag.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:258 services/S2A.Services/Exports.cs:493 services/S2A.Services/Exports.cs:526 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Native.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:217 android/core-runtime/AndroidGameRuntime.cs:265 android/core-runtime/AndroidGameRuntime.cs:269 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/NativeSyscall.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/HorizonHost.cs:116 services/S2A.Services/HorizonHost.cs:156 services/S2A.Services/HorizonHost.cs:171 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/NativeTickSource.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:612 services/S2A.Services/Host.cs:316 services/S2A.Services/Host.cs:711 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/NpdmCompat.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:64"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/ProcessContext.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Dispatcher.cs:136 services/S2A.Services/Dispatcher.cs:138"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Red.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/DshCApi.cs:107 graphics/tools/direct/dsh/DshCApi.cs:108 graphics/tools/direct/dsh/DshCApi.cs:123 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/RomFsIndex.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:110 services/S2A.Services/Application.cs:115"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveTransfer.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:359 android/core-runtime/AndroidGameRuntime.cs:370 android/core-runtime/AndroidGameRuntime.cs:378 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveTransferArchive.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:344 services/S2A.Services/Host.cs:529 services/S2A.Services/Host.cs:531 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveTransferExports.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": false
+   },
+   "android": {
+    "linked": true,
+    "wired": false,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "平台代码里找不到调用方"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveTransferIndex.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:344 services/S2A.Services/Host.cs:529 services/S2A.Services/Host.cs:531 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveTransferTransaction.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:344 services/S2A.Services/Host.cs:529 services/S2A.Services/Host.cs:531 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveTransferZipBounds.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:344 services/S2A.Services/Host.cs:529 services/S2A.Services/Host.cs:531 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Saves.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:133 services/S2A.Services/Application.cs:136 services/S2A.Services/InputPump.cs:308"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SmDirect.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Dispatcher.cs:142"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/StubRenderer.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:274"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SystemLocale.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） android/core-runtime/AndroidGameRuntime.cs:256 android/core-runtime/AndroidGameRuntime.cs:276 services/S2A.Services/Host.cs:287 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/TextInput.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:496 services/S2A.Services/Exports.cs:611 services/S2A.Services/Host.cs:750 等"
+   },
+   "exception": false,
+   "parallel": []
+  }
+ ],
+ "parallel_impls": [
+  {
+   "android": "android/native/direct_session.c",
+   "shared": "runtime/src/gfxmode.c",
+   "interface": [
+    "s2a_direct_lookup",
+    "s2a_gfx_mode"
+   ]
+  },
+  {
+   "android": "android/native/nvn/mtl_vk_shim.c",
+   "shared": "graphics/nvn/gfx/nvn/nvn_mtl.m",
+   "interface": [
+    "bf_want_note",
+    "dm_gfx_shot_at",
+    "mtl_counter_stats",
+    "mtl_device",
+    "mtl_ext_tex",
+    "mtl_init",
+    "mtl_present_count",
+    "mtl_present_ext",
+    "mtl_present_flush",
+    "mtl_present_test_stall",
+    "mtl_res_counts",
+    "mtl_res_snapshot",
+    "mtl_sub_copy",
+    "mtl_sub_counter",
+    "mtl_sub_event",
+    "mtl_sub_fill",
+    "mtl_warm_wait"
+   ]
+  },
+  {
+   "android": "android/native/nvn/nvn_be_android.c",
+   "shared": "graphics/nvn/gfx/nvn/nvn_mtl.m",
+   "interface": [
+    "nvn_be_event_gpu_recorded",
+    "nvn_be_event_written",
+    "nvn_be_mem_stat",
+    "nvn_be_multi_draw_range",
+    "nvn_be_pool_addressed",
+    "nvn_be_pool_gpu_written",
+    "nvn_be_shader_prefetch",
+    "nvn_be_tex_from_gl",
+    "nvn_be_tex_gpu_owned_since",
+    "nvn_be_tex_tick",
+    "nvn_diag_path"
+   ]
+  },
+  {
+   "android": "android/native/nvn/nvn_host_hooks.c",
+   "shared": "graphics/nvn/host_adapt.m",
+   "interface": [
+    "dm_fault_hook_register",
+    "dm_guest_write_prep_register",
+    "dm_guest_write_prepare"
+   ]
+  },
+  {
+   "android": "android/native/nvn/vk_engine_host_shim.c",
+   "shared": "graphics/nvn/host_adapt.m",
+   "interface": [
+    "dm_backtrace",
+    "dm_fault_hook_register",
+    "dm_guest_frame_tick",
+    "dm_guest_write_prep_register",
+    "dm_guest_write_prepare",
+    "s2a_direct_fail",
+    "s2a_nvn_prof"
+   ]
+  },
+  {
+   "android": "android/native/nvn/vk_nvn_adapter.c",
+   "shared": "graphics/nvn/gfx/nvn/nvn_mtl.m",
+   "interface": [
+    "bf_want_note",
+    "mtl_device",
+    "mtl_ext_tex",
+    "mtl_init",
+    "mtl_present_ext",
+    "mtl_present_flush",
+    "mtl_present_test_stall",
+    "mtl_res_counts",
+    "mtl_res_snapshot",
+    "mtl_sub_copy",
+    "mtl_sub_counter",
+    "mtl_sub_event",
+    "mtl_sub_fill",
+    "mtl_warm_wait"
+   ]
+  },
+  {
+   "android": "android/native/plat_android.c",
+   "shared": "runtime/src/gfxmode.c",
+   "interface": [
+    "s2a_direct_lookup",
+    "s2a_gfx_mode"
+   ]
+  },
+  {
+   "android": "android/native/plat_android.c",
+   "shared": "runtime/src/vawin.c",
+   "interface": [
+    "s2a_tail_map",
+    "s2a_tail_unmap"
+   ]
+  },
+  {
+   "android": "android/native/runtime/tracking/runtime.c",
+   "shared": "graphics/track/track.c",
+   "interface": [
+    "s2a_track_backing_begin",
+    "s2a_track_backing_end"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/gate.c",
+   "interface": [
+    "s2a_gate_inflight",
+    "s2a_register_cs"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/session.c",
+   "interface": [
+    "s2a_host_session_state",
+    "s2a_session_generation",
+    "s2a_session_prepare",
+    "s2a_session_process_exit",
+    "s2a_session_rebuild_supported",
+    "s2a_session_service_failed"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/svc_mem.c",
+   "interface": [
+    "s2a_mem_backing_alias_ref",
+    "s2a_mem_backing_alias_unref",
+    "s2a_mem_lockorder_vp_enter",
+    "s2a_mem_mapped",
+    "s2a_mem_query",
+    "s2a_mem_readable",
+    "s2a_program_id"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/text_input.c",
+   "interface": [
+    "s2a_host_text_input",
+    "s2a_host_text_input_cancel"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/thread.c",
+   "interface": [
+    "s2a_event_clear",
+    "s2a_event_create",
+    "s2a_event_dup_read",
+    "s2a_event_release",
+    "s2a_event_retain",
+    "s2a_event_signal",
+    "s2a_guest_frozen",
+    "s2a_handle_close",
+    "s2a_handle_get",
+    "s2a_handle_new",
+    "s2a_process_id",
+    "s2a_shmem_wrap",
+    "s2a_thread_session_joined",
+    "s2a_tmem_get"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/widen.c",
+   "interface": [
+    "s2a_screen_h",
+    "s2a_screen_w",
+    "s2a_widen_full",
+    "s2a_widen_game",
+    "s2a_widen_layout"
+   ]
+  },
+  {
+   "android": "DirectRenderer（android/core-runtime/DirectRenderer.cs）",
+   "shared": "StubRenderer（services/S2A.Services/StubRenderer.cs）",
+   "interface": [
+    ": IRenderer"
+   ]
+  },
+  {
+   "android": "DirectServiceRenderer（android/core-runtime/DirectServiceRenderer.cs）",
+   "shared": "StubRenderer（services/S2A.Services/StubRenderer.cs）",
+   "interface": [
+    ": IRenderer"
+   ]
+  },
+  {
+   "android": "AAudioHardwareDeviceDriver（android/cs/audio/AAudioHardwareDeviceDriver.cs）",
+   "shared": "AudioPeakDriver（services/S2A.Services/AudioPeak.cs）",
+   "interface": [
+    ": IHardwareDeviceDriver"
+   ]
+  }
+ ],
+ "exceptions": {
+  "graphics/metal/cs/NxGal.csproj": {
+   "理由": "Metal GAL 后端工程，安卓走 Vulkan 不接",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/metal/cs/caps/NxGalCaps.csproj": {
+   "理由": "Metal 后端能力查询，苹果专用",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/metal/tools/gal_spvgen/gal_spvgen.csproj": {
+   "理由": "Metal 管线 SPIR-V 宿主工具，苹果专用",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/metal/tools/gal_xc.c": {
+   "理由": "Metal 管线宿主工具（main），苹果专用",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/metal/gal_colorround.c": {
+   "理由": "Metal 后端实现（gal_*.m #include 进 libnxgal），安卓无此后端",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/metal/gal_spill.c": {
+   "理由": "同上：Metal 后端实现，安卓无此后端",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/metal/gal_spvx.c": {
+   "理由": "同上：Metal 后端实现，安卓无此后端",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "runtime/src/host_main.c": {
+   "理由": "宿主辅助进程入口（出库 / 抽取宿主侧），安卓侧由 App 承担",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/widen/scan/yaz0enc.c": {
+   "理由": "stage_uilayout 专用宿主编码器，该阶段只在苹果路线跑",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "pack/stage_direct.sh": {
+   "理由": "安卓 target.json direct.enabled=false（运行时现编，#1434 接上才开）",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "pack/stage_extract.sh": {
+   "理由": "抽取只喂直连 LibPack，direct.enabled=false 时随 direct 跳过（refresh.sh 注释）",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "pack/stage_direct_gk.sh": {
+   "理由": "直连出库辅助段，安卓 direct 未启用不适用",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "pack/stage_direct_profile.sh": {
+   "理由": "同上",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "pack/stage_direct_seed.sh": {
+   "理由": "同上",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "graphics/tools/direct/compiler/cli/S2A.DirectCompiler.Cli.csproj": {
+   "理由": "宿主 CLI 入口工程，不进平台 AOT 闭包",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "services/S2A.Services/AssemblyInfo.cs": {
+   "理由": "程序集元数据文件，无对外入口",
+   "登记人": "dev-dari",
+   "日期": "2026-11-06"
+  },
+  "runtime/src/qladder.c": {
+   "理由": "档位梯子判定：依附 runtime/src/qprompt_host.c 的直连上屏每帧钩子 s2a_qp_frame，安卓该钩子未链接（基线缺口 qprompt*）；随安卓接入帧率提示 / 满屏自检时一起接",
+   "登记人": "满屏补丁线",
+   "日期": "2026-11-06"
+  },
+  "runtime/src/qladder_host.c": {
+   "理由": "档位梯子宿主接线：同上，挂在 qprompt_host.c 每帧钩子上，安卓未链接该钩子；安卓档位切换另有平台入口 setConsoleMode",
+   "登记人": "满屏补丁线",
+   "日期": "2026-11-06"
+  }
+ }
+}

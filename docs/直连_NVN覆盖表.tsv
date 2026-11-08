@@ -1,0 +1,537 @@
+函数	直连层	S2Arm	动森用到	丝之歌用到	与直连层差异（10-24 逐函数对照，未改；括号内为把握）
+nvnDeviceBuilderSetDefaults	语义	已做	是	是	
+nvnDeviceBuilderSetFlags	语义	已做	是	是	
+nvnDeviceBuilderGetFlags	红	已做	是	是	
+nvnDeviceInitialize	语义	已做	是	是	
+nvnDeviceFinalize	语义	已做	是	是	
+nvnDeviceSetDebugLabel	空	已做	是	是	10-25 补：记指针（magic 保护），只供查询/日志
+nvnDeviceGetProcAddress	语义	原生	是	是	
+nvnDeviceGetInteger	语义	已做	是	是	表 0..0x5F 与直连层逐项相同（脚本比对 96 项无差）。差：0x67（SDK 19+ 游戏读来当着色器控制段 / 代码拷贝的对齐）nx 给 256，我方越界报红给 0；nx 对 0x2E/0x30 报不低于游戏自带 GLSLC 的版本（动森不现编，无关）（中（动森是否读 0x67 未查日志））
+nvnDeviceGetCurrentTimestampInNanoseconds	语义	已做	是	是	
+nvnDeviceSetIntermediateShaderCache	语义	已做	是	是	
+nvnDeviceGetTextureHandle	语义	已做	是	是	
+nvnDeviceGetTexelFetchHandle	语义	已做	是	是	
+nvnDeviceGetImageHandle	语义	已做	是	是	
+nvnDeviceInstallDebugCallback	语义	已做	是	是	
+nvnDeviceGenerateDebugDomainId	空	已做	是	是	10-25 补：单调唯一域号（宿主不分区）
+nvnDeviceSetWindowOriginMode	语义	已做	是	是	存值一致；对绕序 / 视口的作用口径不同，见「PolygonStateSetFrontFace / DeviceSetWindowOriginMode」行（高）
+nvnDeviceSetDepthMode	语义	已做	是	是	
+nvnDeviceRegisterFastClearColor	语义	已做	是	是	
+nvnDeviceRegisterFastClearColori	空	已做	是	是	10-25 补：整数版 fast clear 提示，与浮点版同规则
+nvnDeviceRegisterFastClearColorui	红	已做	是	是	
+nvnDeviceRegisterFastClearDepth	语义	已做	是	是	
+nvnDeviceGetWindowOriginMode	红	已做	是	是	
+nvnDeviceGetDepthMode	红	已做	是	是	
+nvnDeviceGetTimestampInNanoseconds	语义	已做	是	是	
+nvnDeviceApplyDeferredFinalizes	空	已做			10-25 补：宿主一直立即 finalize，这里无待办（空实现+点名）
+nvnDeviceFinalizeCommandHandle	语义	已做	是	是	
+nvnDeviceWalkDebugDatabase	空	已做	是	是	10-25 补：本层无对象注册表，遍历零回调
+nvnDeviceGetSeparateTextureHandle	语义	已做	是	是	
+nvnDeviceGetSeparateSamplerHandle	语义	已做	是	是	
+nvnDeviceIsExternalDebuggerAttached	空	已做	是	是	10-25 补：无 attach 通道，恒 0
+nvnQueueGetError	语义	已做	是	是	
+nvnQueueGetTotalCommandMemoryUsed	语义	已做	是	是	10-25 补：Initialize 记 builder 的三项内存，Reset 归零
+nvnQueueGetTotalControlMemoryUsed	语义	已做	是	是	10-25 补：Initialize 记 builder 的三项内存，Reset 归零
+nvnQueueGetTotalComputeMemoryUsed	语义	已做	是	是	10-25 补：Initialize 记 builder 的三项内存，Reset 归零
+nvnQueueResetMemoryUsageCounts	语义	已做	是	是	10-25 补：Initialize 记 builder 的三项内存，Reset 归零
+nvnQueueBuilderSetDevice	语义	已做	是	是	
+nvnQueueBuilderSetDefaults	语义	已做	是	是	我方清零三块大小；直连层设缺省 命令 64K / 计算 256K / 控制 16K（真驱动缺省值的近似）（中（影响小））
+nvnQueueBuilderSetFlags	语义	已做	是	是	
+nvnQueueBuilderSetCommandMemorySize	语义	已做	是	是	
+nvnQueueBuilderSetComputeMemorySize	语义	已做	是	是	
+nvnQueueBuilderSetControlMemorySize	语义	已做	是	是	
+nvnQueueBuilderGetQueueMemorySize	语义	已做	是	是	
+nvnQueueBuilderSetQueueMemory	语义	已做	是	是	
+nvnQueueBuilderSetCommandFlushThreshold	语义	已做	是	是	
+nvnQueueBuilderSetQueuePriority	语义	已做	是	是	
+nvnQueueBuilderGetQueuePriority	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetDevice	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetFlags	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetCommandMemorySize	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetComputeMemorySize	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetControlMemorySize	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetCommandFlushThreshold	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetMemorySize	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueBuilderGetMemory	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnQueueInitialize	语义	已做	是	是	
+nvnQueueFinalize	语义	已做	是	是	
+nvnQueueSetDebugLabel	语义	已做	是	是	
+nvnQueueSubmitCommands	语义	已做	是	是	我方提交只把句柄入作业队列，渲染线程稍后回放（命令内存、绑定的描述符表、事件 / 报告值都在回放时读）；直连层在提交调用里同步编码（mtl_exec），提交返回时 CPU 侧该读的已读完（另有 tex_snap 等录制时快照）（中（差异确定；是否导致黑物体未验证，诊断开关一局可判））
+nvnQueueFlush	语义	已做	是	是	
+nvnQueueFinish	语义	已做	是	是	
+nvnQueuePresentTexture	语义	已做	是	是	
+nvnQueueAcquireTexture	语义	已做			10-25 核对：代码早已实现、表里误标未做
+nvnWindowBuilderSetDevice	语义	已做	是	是	
+nvnWindowBuilderSetDefaults	语义	已做	是	是	
+nvnWindowBuilderSetNativeWindow	语义	已做	是	是	
+nvnWindowBuilderSetTextures	语义	已做	是	是	
+nvnWindowBuilderSetPresentInterval	语义	已做	是	是	
+nvnWindowBuilderSetNumActiveTextures	语义	已做	是	是	
+nvnWindowBuilderGetDevice	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowBuilderGetNumTextures	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowBuilderGetTexture	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowBuilderGetNativeWindow	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowBuilderGetPresentInterval	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowBuilderGetNumActiveTextures	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowInitialize	语义	已做	是	是	
+nvnWindowFinalize	空	已做	是	是	
+nvnWindowSetDebugLabel	语义	已做	是	是	
+nvnWindowAcquireTexture	语义	已做	是	是	① 我方把出参同步对象直接置「已发出」（Seq=0，SyncWait 立返 ALREADY_SIGNALED）；直连层挂在此前最后一次提交的栅栏上（mtl_last_fence），并等该图上次出图被呈现线程取走（ticket）。② 窗口无效时我方返回 1（NATIVE_ERROR），nx 返回 SUCCESS + 序号 0。序号轮换 next++ % N 两边一致（中）
+nvnWindowGetNativeWindow	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnWindowGetPresentInterval	语义	已做	是	是	
+nvnWindowSetPresentInterval	语义	已做	是	是	
+nvnWindowSetCrop	语义	已做	是	是	
+nvnWindowGetCrop	红	已做	是	是	
+nvnWindowSetNumActiveTextures	语义	已做	是	是	
+nvnWindowGetNumActiveTextures	语义	已做	是	是	10-25 补：活跃纹理数 = SetNumActiveTextures 生效值，未设时等于纹理数，夹到 [0, 纹理数]
+nvnWindowGetNumTextures	语义	已做	是	是	10-25 补：窗口纹理数 = SetTextures 个数
+nvnProgramInitialize	语义	已做	是	是	
+nvnProgramFinalize	语义	已做	是	是	
+nvnProgramSetDebugLabel	语义	已做	是	是	
+nvnProgramSetShaders	语义	已做	是	是	（回放选特化：WireShaders.Pick）：同一组客体代码有多份 Ryujinx 特化时，我方只按「透明测试开关」一个字段选（Pick 遇到第一份 alpha 相符的就返回），贴图目标 / 格式、深度比较、属性类型、早期深度等特化字段一概不比；注释自己写明只在丝之歌验证过「组内其余字段全同」，别款要补判据。直连层没有特化问题：一个控制段+代码一个 Metal 函数，格式差异在建管线时按当次状态现配（vfmt_for_ct / 影子输入）（中（差异本身确定；动森组内是否真有别的字段不同没量过，跑 DescribeVariants 才知道））；（回放首绘透明测试）：程序首次绘制时用当时的透明测试开关 at 调 GetOrCreate；若缓存里这组没有 at 那份特化，FromGroup 返回 null，pg.W=null 且 pg.Tried=true —— 之后透明测试关掉的绘制也永远跳过（不会再试另一份）。直连层不实现透明测试（只记录），不存在此问题（高（代码路径确定；动森是否触发未查日志））；（阶段识别时机）：我方在 SetShaders 当场读代码首字与 SPH 判阶段（StageKind），日志还解引用代码；直连层不在此读代码，代码区未映射时延后到首绘再算键（游戏特例：马力欧先给未映射地址、首绘前才填）（低）；（控制段长度 / 阶段数）：我方控制段固定拷 0x880；nx 取控制段 +0x20 自报长度（0x760..0x880 时用自报，SDK 10 的 3D 世界是 0x850）。阶段数 >6 我方截断并返回 1，nx 报红返回 0（低）
+nvnProgramSetShadersExt	语义	已做	是	是	
+nvnProgramSetSampleShading	红	已做	是	是	10-25 补：空实现 + 点名（仍按每像素一次着色）
+nvnMemoryPoolBuilderSetDevice	语义	已做	是	是	
+nvnMemoryPoolBuilderSetDefaults	语义	已做	是	是	
+nvnMemoryPoolBuilderSetStorage	语义	已做	是	是	
+nvnMemoryPoolBuilderSetFlags	语义	已做	是	是	
+nvnMemoryPoolBuilderGetDevice	红	已做	是	是	
+nvnMemoryPoolBuilderGetMemory	红	已做	是	是	
+nvnMemoryPoolBuilderGetSize	红	已做	是	是	
+nvnMemoryPoolBuilderGetFlags	红	已做	是	是	
+nvnMemoryPoolInitialize	语义	已做	是	是	
+nvnMemoryPoolSetDebugLabel	语义	已做	是	是	
+nvnMemoryPoolFinalize	语义	已做	是	是	
+nvnMemoryPoolMap	语义	已做	是	是	
+nvnMemoryPoolFlushMappedRange	语义	已做	是	是	
+nvnMemoryPoolInvalidateMappedRange	语义	已做	是	是	
+nvnMemoryPoolGetBufferAddress	语义	已做	是	是	
+nvnMemoryPoolMapVirtual	语义	已做	是	是	
+nvnMemoryPoolGetSize	语义	已做	是	是	
+nvnMemoryPoolGetFlags	语义	已做	是	是	
+nvnTexturePoolInitialize	语义	已做	是	是	同上（贴图池）：再次 Initialize 新建空表（低）
+nvnTexturePoolSetDebugLabel	语义	已做	是	是	
+nvnTexturePoolFinalize	语义	已做	是	是	
+nvnTexturePoolRegisterTexture	语义	已做	是	是	回放取贴图时不核对着色器声明的贴图类型：我方 PoolTex/View 按贴图自身目标（或视图目标）建的 GAL 贴图原样 SetTextureAndSampler，WireTexture.Type（着色器声明的 SamplerType）在回放里完全没用；graphics/metal 写参数表也不核类型。直连层每次绑定比 shader 声明类型 b->dtt 与贴图 textureType，不同就走 tex_fit：2D↔一层 2D 数组、2D 数组(≥6 层)→立方体 / 立方体数组、立方体数组→立方体建兼容视图；立方体槽里放 2D 的绑零立方体；其余报红（高（差异确定；是否就是动森纯黑的根因需跑「类型不符」统计确认））
+nvnTexturePoolRegisterImage	语义	已做	是	是	
+nvnTexturePoolGetMemoryPool	语义	已做	是	是	
+nvnTexturePoolGetMemoryOffset	语义	已做	是	是	
+nvnTexturePoolGetSize	语义	已做	是	是	
+nvnSamplerPoolInitialize	语义	已做	是	是	对同一个池对象再次 Initialize：我方新建一张空表（旧注册全丢）；直连层按对象地址找回原基址、注册保留（低）
+nvnSamplerPoolSetDebugLabel	语义	已做	是	是	
+nvnSamplerPoolFinalize	语义	已做	是	是	
+nvnSamplerPoolRegisterSampler	语义	已做	是	是	组合句柄采样器号位宽：我方回放取 (int)(sh >> 20)（64 位句柄高位全进）；直连层单个 BindTexture 取 (uint32_t)h >> 20（12 位），批量取 v >> 20。句柄低 20 位 = 贴图号两边一致（低）；注册语义（注册时快照参数；之后对象重 Initialize 不影响已注册项）两边等价（高（一致））
+nvnSamplerPoolRegisterSamplerBuilder	语义	已做	是	是	
+nvnSamplerPoolGetMemoryPool	语义	已做	是	是	
+nvnSamplerPoolGetMemoryOffset	语义	已做	是	是	
+nvnSamplerPoolGetSize	语义	已做	是	是	
+nvnBufferBuilderSetDevice	语义	已做	是	是	
+nvnBufferBuilderSetDefaults	语义	已做	是	是	
+nvnBufferBuilderSetStorage	语义	已做	是	是	
+nvnBufferBuilderGetDevice	红	已做	是	是	
+nvnBufferBuilderGetMemoryPool	红	已做	是	是	
+nvnBufferBuilderGetMemoryOffset	语义	已做	是	是	
+nvnBufferBuilderGetSize	语义	已做	是	是	
+nvnBufferInitialize	语义	已做	是	是	池无存储时 nx 报红返回 0、越过池尾报红；我方一律返回 1（地址现读，可能为 0）（低）
+nvnBufferSetDebugLabel	语义	已做	是	是	
+nvnBufferFinalize	语义	已做	是	是	
+nvnBufferMap	语义	已做	是	是	
+nvnBufferGetAddress	语义	已做	是	是	
+nvnBufferFlushMappedRange	语义	已做	是	是	
+nvnBufferInvalidateMappedRange	语义	已做	是	是	
+nvnBufferGetMemoryPool	语义	已做	是	是	
+nvnBufferGetMemoryOffset	语义	已做	是	是	
+nvnBufferGetSize	语义	已做	是	是	
+nvnBufferGetDebugID	语义	已做	是	是	10-25 补：同上（缓冲区无初始化序号，用对象地址）
+nvnTextureBuilderSetDevice	语义	已做	是	是	
+nvnTextureBuilderSetDefaults	语义	已做	是	是	
+nvnTextureBuilderSetFlags	语义	已做	是	是	
+nvnTextureBuilderSetTarget	语义	已做	是	是	1D / 1D 数组建法不同：我方 GAL Texture1D / 1DArray → Metal MTLTextureType1D / 1DArray；直连层一律建成一行的 2D / 2D 数组（理由：翻译出的着色器从不声明 texture1d，Maxwell 上 2D 采样 1D 贴图读那一行；3D World 的 64×1 R32F 查找表）。立方体：我方建 MTLTextureTypeCube，直连层建 6 层 2D 数组再按需建 cube / cube array 视图（Metal 不许从 cube 基础贴图建 cube array 视图）（中）
+nvnTextureBuilderSetWidth	语义	已做	是	是	
+nvnTextureBuilderSetHeight	语义	已做	是	是	
+nvnTextureBuilderSetDepth	语义	已做	是	是	
+nvnTextureBuilderSetSize1D	语义	已做	是	是	
+nvnTextureBuilderSetSize2D	语义	已做	是	是	我方只写宽高；直连层（及 Size1D）同时把 depth 置 1（Size1D 还把 height 置 1）（中（差异确定，影响取决于游戏是否复用 builder））
+nvnTextureBuilderSetSize3D	语义	已做	是	是	
+nvnTextureBuilderSetLevels	语义	已做	是	是	
+nvnTextureBuilderSetFormat	语义	已做	是	是	一批 NVN 格式在我方映射到 graphics/metal 没有 Metal 对应的 GAL 格式：0x19–0x24（RGB8/RGB16/RGB32 三分量）、0x51–0x68（*_UI2F / *_I2F → GAL Uscaled/Sscaled）、0x69/0x6A/0x6B/0x6C（RGB10A2 Snorm/Sint/UI2F/I2F）。graphics/metal k_fmt 注释写明这些靠 Gpu 层转换、后端不映射，而直连绕过了 Gpu 层 → nxgal_tex_create 报红返回 0。直连层：UI2F/I2F 换同宽 Uint/Sint（S()），RGB10A2_UI2F→RGB10A2Uint，三分量与其余返回 0（高（差异确定）；动森是否用到 低（不知道，跑建贴图失败统计才知道））；0x39 RGBA4 与 0x98 A1BGR5 分量顺序两边不同：我方 GAL R4G4B4A4Unorm / A1B5G5R5Unorm → Metal ABGR4Unorm / A1BGR5Unorm 并在采样视图做 (A,B,G,R) 旋转（fmt_perm）；直连层同一 Metal 格式、恒等交换（S()，注明位序未实测）（中（差异确定，谁对不知道））；RGB 系 16 位格式（0x3A RGB5 / 0x3B RGB5A1 / 0x3C RGB565）R↔B 交换的适用范围不同：graphics/metal fmt_perm 对所有贴图都换；直连层只对从客户内存上传 / 原地读的贴图换，GPU 画进去或清过的不换（Echoes of Wisdom 心形遮罩 PR #66）（中）；0x33 DEPTH24：我方 X8UintD24Unorm → Metal Depth32Float_Stencil8（多一个模板平面，CPU 上传按 d24 = v>>8 解）；直连层 → Depth32Float。0x35 两边同为 D32FS8。DEPTH24 / D24S8 的 24 位深度在字里的位置两边都未实测（低）；其余格式（R/RG/RGBA 8-16-32 各类、sRGB 0x37/0x38 及无 alpha 处理、BGRA/BGRX 0x99–0x9C、BC1–7 含 RGB_DXT1 无 alpha、ASTC 28 种、S8/D16/D32F/D32FS8、RGB10A2/RG11B10/RGB9E5、BGR565/BGR5/BGR5A1）映射与直连层等价（无 alpha 一律 A→One）（高（一致））
+nvnTextureBuilderSetSamples	语义	已做	是	是	
+nvnTextureBuilderSetSwizzle	语义	已做	是	是	同存储别名贴图丢掉自己的建造交换 / 深度模板模式：GalTex 认别名只比 存储 / 格式 / 宽高 / 目标 / 级数，然后 t.Gal = prim.Gal、t.Info = prim.Info，交换（SwizzleR..A）与 DepthStencilMode 是建 GAL 贴图时烤进 prim 的；无视图（或视图没设交换）注册时 View() 直接返回 prim 的 GAL 贴图。直连层共享的是底层 MTLTexture，交换在 tex_by_id 里按每个注册项自己的 t.swz / v.swz 现建视图，模板模式按自己的 stencil 位（高（差异确定）；对动森纯黑的贡献 中）
+nvnTextureBuilderSetDepthStencilMode	语义	已做	是	是	API 一致；回放问题见 SetSwizzle 行（别名贴图丢失自己的模板模式）（高（一致，回放差异另列））
+nvnTextureBuilderGetStorageSize	语义	已做	是	是	自动块高公式不同：我方 PickTile((ah + ah/2 + 7) / 8)（向上取整，旧小菠萝 nvn_tex.c 的写法）；直连层改为 PickTile(ah * 3 / 16)（向下取整，MacNativeGames 发现、节奏天国 16 例实测），在块行数 6–10、17–21、38–42、81–85 时我方块高多一级（高（差异确定）；对纯黑贡献 低）
+nvnTextureBuilderGetStorageAlignment	语义	已做	是	是	稀疏贴图（标志 0x20 SPARSE、非线性非缓冲）直连层按 64 KB 瓦片布局：每级宽补到整瓦片、存储取整 64 KB、对齐 64 KB；我方无稀疏布局分支（中（差异确定；动森是否触发 低））
+nvnTextureBuilderSetStorage	语义	已做	是	是	
+nvnTextureBuilderSetPackagedTextureData	语义	已做	是	是	Initialize 时整份拷进存储两边一致；拷后的重传时机差异见 TextureInitialize 行（高（一致））
+nvnTextureBuilderSetPackagedTextureLayout	语义	已做	是	是	块高 = 布局第 0 字节 + 1、只用于 2D 维，两边一致（高（一致））
+nvnTextureBuilderSetStride	语义	已做	是	是	
+nvnTextureBuilderSetGLTextureName	语义	已做	是	是	10-25 补：GL 互操作名字只保往返（Metal 不消费）
+nvnTextureBuilderGetStorageClass	语义	已做	是	是	已按真驱动实测改（不再比）（—）
+nvnTextureBuilderGetDevice	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetFlags	语义	已做	是	是	
+nvnTextureBuilderGetTarget	语义	已做	是	是	
+nvnTextureBuilderGetWidth	语义	已做	是	是	
+nvnTextureBuilderGetHeight	语义	已做	是	是	
+nvnTextureBuilderGetDepth	语义	已做	是	是	
+nvnTextureBuilderGetLevels	语义	已做	是	是	
+nvnTextureBuilderGetFormat	语义	已做	是	是	
+nvnTextureBuilderGetSamples	语义	已做	是	是	
+nvnTextureBuilderGetSwizzle	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetDepthStencilMode	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetPackagedTextureData	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetPackagedTextureLayout	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetStride	语义	已做	是	是	
+nvnTextureBuilderGetSparseTileLayout	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetGLTextureName	语义	已做	是	是	10-25 补：同上
+nvnTextureBuilderGetZCullStorageSize	语义	已做	是	是	
+nvnTextureBuilderGetMemoryPool	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetMemoryOffset	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureBuilderGetRawStorageClass	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureViewSetDefaults	语义	已做	是	是	
+nvnTextureViewSetLevels	语义	已做	是	是	视图级数越界处理不同：我方 TryViewCreateInfo 遇 baseLevel+nLevels > 级数 直接 false，View() 报红后返回整张基础贴图（从第 0 级起、全部级）；直连层把级数截到贴图实有级数（Echoes of Wisdom：7 级贴图要 1+7 级），起始级越界才给空槽。层同理：我方 minLayer+nLayers 越界也退回基础贴图（高（差异确定）；画面影响 中）
+nvnTextureViewSetLayers	语义	已做	是	是	设值一致；越界回放处理差异见 ViewSetLevels 行（高）
+nvnTextureViewSetFormat	语义	已做	是	是	视图换格式：压缩↔非压缩两边都给空（我方 graphics/metal 拒建 → 占位，直连层给空槽）；sRGB↔UNORM 两边都可；深度相关换格式我方退回基础贴图（高（一致））
+nvnTextureViewSetSwizzle	语义	已做	是	是	视图交换替换（不组合）建造交换、再经格式分量修正，两边一致；差在非法值：直连层 >5 当恒等，我方 TrySwizzle 失败 → 视图建不了退回基础贴图（建造交换非法则整张贴图建不出 → 占位黑）（低）
+nvnTextureViewSetDepthStencilMode	语义	已做	是	是	模板模式视图：两边都对 D32FS8 建 X32_Stencil8 视图，其余格式读深度（高（一致））
+nvnTextureViewSetTarget	语义	已做	是	是	视图目标：2D 目标取 1 层（我方 gd=1 等价）、RECTANGLE→2D、立方体层数非 6 倍按 2D / 2D 数组（已修）；其余一致（高（一致））
+nvnTextureViewGetLevels	语义	已做	是	是	
+nvnTextureViewGetLayers	语义	已做	是	是	
+nvnTextureViewGetFormat	语义	已做	是	是	
+nvnTextureViewGetSwizzle	语义	已做	是	是	
+nvnTextureViewGetDepthStencilMode	语义	已做	是	是	
+nvnTextureViewGetTarget	语义	已做	是	是	
+nvnTextureViewCompare	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做
+nvnTextureInitialize	语义	已做	是	是	内容上传时机不同：我方非 GPU 写过的贴图首次被采样时从池整张上传一次，此后只在 MemoryPoolFlushMappedRange（Dirty）或 FlushTexels 时重传；直连层对预排布 / CPU 写过 / 稀疏池贴图做写保护脏页跟踪，任何一次客户写页（不需要冲刷）下次取用即换新贴图重传（中（差异确定；S2A_WIRE_REUPLOAD 一跑即可判定是否相关））；对仍存活的贴图对象重复 Initialize（未 Finalize）：直连层先释放旧序号的宿主贴图；我方直接新建表项，旧 Tex 的 GAL 贴图、s_poolTex / s_byMem 登记都不释放，且旧 Tex 仍在 Texs 表里，同存储新贴图会被认成旧贴图的别名（中）；COMPRESSIBLE 贴图（及深度 / 多重采样）首次被采样且未被 GPU 写过时，我方仍从池上传内容；直连层对这些不从存储填（内存无压缩标签无意义），只零填（低）
+nvnTextureGetZCullStorageSize	语义	已做	是	是	
+nvnTextureFinalize	语义	已做	是	是	
+nvnTextureSetDebugLabel	语义	已做	是	是	
+nvnTextureGetStorageClass	语义	已做	是	是	
+nvnTextureGetViewOffset	语义	已做	是	是	
+nvnTextureGetFlags	语义	已做	是	是	
+nvnTextureGetTarget	语义	已做	是	是	
+nvnTextureGetWidth	语义	已做	是	是	
+nvnTextureGetHeight	语义	已做	是	是	
+nvnTextureGetDepth	语义	已做	是	是	
+nvnTextureGetLevels	语义	已做	是	是	
+nvnTextureGetFormat	语义	已做	是	是	
+nvnTextureGetSamples	语义	已做	是	是	
+nvnTextureGetSwizzle	语义	已做	是	是	
+nvnTextureGetDepthStencilMode	语义	已做	是	是	
+nvnTextureGetStride	语义	已做	是	是	
+nvnTextureGetTextureAddress	语义	已做	是	是	
+nvnTextureGetSparseTileLayout	语义	已做	是	是	10-25 补：不支持 sparse tiling，查询清零并点名一次
+nvnTextureWriteTexels	语义	已做	是	是	WriteTexels 后我方把贴图标 GpuWritten = true；直连层写回客户内存并标 cpu_written（之后按脏页重传）（中）；区域 depth>1（3D 多切片或数组多层）时，我方 GAL SetData 只按一个 (layer, level) + 2D 矩形写，copy 里后面的切片 / 层没写进 GAL；直连层逐层写回内存后整体重传（中）
+nvnTextureWriteTexelsStrided	语义	已做	是	是	
+nvnTextureReadTexels	语义	已做	是	是	
+nvnTextureReadTexelsStrided	语义	已做	是	是	
+nvnTextureFlushTexels	语义	已做	是	是	我方按区域从池重传；直连层空操作（靠脏页跟踪）。语义等价且我方更直接（高（一致））
+nvnTextureInvalidateTexels	语义	已做	是	是	
+nvnTextureGetMemoryPool	语义	已做	是	是	
+nvnTextureGetMemoryOffset	语义	已做	是	是	
+nvnTextureGetStorageSize	语义	已做	是	是	
+nvnTextureCompare	语义	已做	是	是	
+nvnTextureGetDebugID	语义	已做	是	是	10-25 补：用对象初始化序号当调试 ID（NVN 无 SetDebugID）
+nvnTextureGetRawStorageClass	语义	已做	是	是	
+nvnSamplerBuilderSetDevice	语义	已做	是	是	
+nvnSamplerBuilderSetDefaults	语义	已做	是	是	缺省 LOD 下限：我方 LodMin = 0；直连层 −1000（GL 缺省）。回放时直连层把负值夹到 0，采样效果相同；差在 SamplerBuilderGetLodClamp / SamplerGetLodClamp 读回值与 SamplerCompare 去重（低）
+nvnSamplerBuilderSetMinMagFilter	语义	已做	是	是	缩小 / 放大过滤与 mip 模式映射等价（NVN 0..5 → GAL 1..6 → Metal min/mip 组合；mag 0/1）（高（一致））
+nvnSamplerBuilderSetWrapMode	语义	已做	是	是	8 种寻址映射逐个比对等价：CLAMP / CLAMP_TO_EDGE→ClampToEdge、REPEAT、MIRRORED_REPEAT、MIRROR_CLAMP / MIRROR_CLAMP_TO_EDGE→MirrorClampToEdge、CLAMP_TO_BORDER / MIRROR_CLAMP_TO_BORDER→ClampToBorder（高（一致））
+nvnSamplerBuilderSetLodClamp	语义	已做	是	是	负 LOD 下限：直连层建 Metal 采样器时 lodMinClamp = max(0, lod_min)；graphics/metal 原样传负值（低）
+nvnSamplerBuilderSetLodBias	语义	已做	是	是	LOD 偏置（10-28 #800）：本机 GPU 实测采样器 lodBias 生效（graphics/metal/gal_samp_caps.h s2a_lodbias_native：M5 / M4 Pro 生效、M3 不生效）就设在 Metal 采样器上，不生效时 graphics/metal 由采样辅助（gal_border.m）、直连层由设备上现出的模拟变体 <键>_se（translator/dmsh_red.py fs_red / S2A.Dsh FsRed，function constant 特化，表 [1].z；离线库不带）把偏置加到每次采样的 LOD 上；直连层此前从不设偏置。11-01（缺口族 31）直连层深度比较采样 sample_compare 同样由主体 main0 加偏置（S2A.Dsh FsLb）。未覆盖：深度比较采样（通用）、顶点 / 外壳 / 域 / 几何着色器（直连）、整数输出管线与读帧缓冲合并（直连）、采样器数组 / 入口外采样（通用），各报红一次（中）
+nvnSamplerBuilderSetCompare	语义	已做	是	是	比较模式与函数映射等价（mode 1 时 NVN 1..8 → Never..Always）（高（一致））
+nvnSamplerBuilderSetBorderColor	语义	已做	是	是	边框色：两边都只在用边框寻址时有意义；graphics/metal 三种标准色直给、其余由着色器模拟（更准）；直连层三种标准色直给（nvn_red.h nvn_samp_border，唯一分档），其余（夹边框寻址时）11-01 起由模拟变体 <键>_se 用透明黑 / 不透明白两个采样器各采一次按边界色混合（s2a_bs，任何 GPU，精确）；比较采样器、本机原生归约的采样器仍取最近的三种之一并报红一次（低）
+nvnSamplerBuilderSetBorderColori	语义	已做	是	是	10-25 补：整数边界色写入共用 samp_par.border（负数按 0）
+nvnSamplerBuilderSetBorderColorui	语义	已做	是	是	10-25 补：无符号整数边界色，同上
+nvnSamplerBuilderSetMaxAnisotropy	语义	已做	是	是	取整：graphics/metal 四舍五入（1.5→2）；直连层截断（1.5→1），都夹 1–16（低）
+nvnSamplerBuilderSetReductionFilter	语义	已做	是	是	归约（MIN / MAX）只存进对象、不进 GAL：SamplerCreateInfo 无此字段，MakeSamp 丢弃；直连层在 Apple10 GPU（A19 / M5）且系统 26 时映射到 Metal reductionMode，过滤照采样器自己的（11-01 M5 Max 实测十二种过滤组合含最近点都按足迹定义归约；旧做法把 mip 过滤改线性、无 mip 时 LOD 夹 0，mip 近邻小数 LOD 读成两级）；其余 GPU / 系统（10-28 实测 M4 Pro、M3 静默忽略 reductionMode，#800）及 S2A_SAMP_EMU=1 由设备上现出的模拟变体 <键>_se 在显式 LOD 的 2D / 2D 数组采样上按过滤足迹（最近点 / 双线性、mip 无 / 近邻 / 线性，11-01 起含最近点与混合过滤）取 min / max（S2A.Dsh FsRd s2a_rs，表 nvn_mtl.m se_bind），无显式 LOD 的仍取平均（中）
+nvnSamplerBuilderSetLodSnap	语义	已做	是	是	
+nvnSamplerBuilderGetDevice	红	已做	是	是	
+nvnSamplerBuilderGetMinMagFilter	语义	已做	是	是	
+nvnSamplerBuilderGetWrapMode	语义	已做	是	是	
+nvnSamplerBuilderGetLodClamp	红	已做	是	是	
+nvnSamplerBuilderGetLodBias	红	已做	是	是	
+nvnSamplerBuilderGetCompare	红	已做	是	是	
+nvnSamplerBuilderGetBorderColor	红	已做	是	是	
+nvnSamplerBuilderGetBorderColori	红	已做	是	是	
+nvnSamplerBuilderGetBorderColorui	红	已做	是	是	
+nvnSamplerBuilderGetMaxAnisotropy	红	已做	是	是	
+nvnSamplerBuilderGetReductionFilter	红	已做	是	是	
+nvnSamplerBuilderGetLodSnap	红	已做	是	是	
+nvnSamplerInitialize	语义	已做	是	是	
+nvnSamplerFinalize	语义	已做	是	是	
+nvnSamplerSetDebugLabel	语义	已做	是	是	
+nvnSamplerGetMinMagFilter	语义	已做	是	是	
+nvnSamplerGetWrapMode	语义	已做	是	是	
+nvnSamplerGetLodClamp	语义	已做	是	是	读回一致（缺省值差异见 SetDefaults 行）（高）
+nvnSamplerGetLodBias	语义	已做	是	是	
+nvnSamplerGetCompare	语义	已做	是	是	
+nvnSamplerGetBorderColor	语义	已做	是	是	
+nvnSamplerGetBorderColori	红	已做	是	是	
+nvnSamplerGetBorderColorui	语义	已做	是	是	10-25 补：从 samp_par.border 读回（四舍五入、负数按 0）
+nvnSamplerGetMaxAnisotropy	语义	已做	是	是	
+nvnSamplerGetReductionFilter	语义	已做	是	是	读回一致（回放不生效见 SetReductionFilter 行）（高）
+nvnSamplerCompare	语义	已做	是	是	
+nvnSamplerGetDebugID	语义	已做	是	是	10-25 补：用对象地址当调试 ID（NVN 无 SetDebugID）
+nvnBlendStateSetDefaults	语义	已做	是	是	10-25 缺省按 SDK 机器码（SetDefaults 写 0x0102_0102_110c_0000，7 份游戏 SDK 一致）：premul TRUE、normdst TRUE、overlap UNCORRELATED、mode NONE；只影响读回，渲染器不模拟、管线键已清
+nvnBlendStateSetBlendTarget	语义	已做	是	是	
+nvnBlendStateSetBlendFunc	语义	已做	是	是	
+nvnBlendStateSetBlendEquation	语义	已做	是	是	
+nvnBlendStateSetAdvancedMode	语义	已做	是	是	
+nvnBlendStateSetAdvancedOverlap	语义	已做	是	是	10-25 补：状态位保真 + 查询可读回；渲染器不模拟高级混合，非零 mode 时仍打【红】点名
+nvnBlendStateSetAdvancedPremultipliedSrc	语义	已做	是	是	10-25 补：状态位保真 + 查询可读回；渲染器不模拟高级混合，非零 mode 时仍打【红】点名
+nvnBlendStateSetAdvancedNormalizedDst	语义	已做	是	是	10-25 补：状态位保真 + 查询可读回；渲染器不模拟高级混合，非零 mode 时仍打【红】点名
+nvnBlendStateGetBlendTarget	语义	已做	是	是	
+nvnBlendStateGetBlendFunc	语义	已做	是	是	
+nvnBlendStateGetBlendEquation	语义	已做	是	是	
+nvnBlendStateGetAdvancedMode	语义	已做	是	是	10-25 补：状态位保真 + 查询可读回；渲染器不模拟高级混合，非零 mode 时仍打【红】点名
+nvnBlendStateGetAdvancedOverlap	语义	已做	是	是	10-25 补：状态位保真 + 查询可读回；渲染器不模拟高级混合，非零 mode 时仍打【红】点名
+nvnBlendStateGetAdvancedPremultipliedSrc	语义	已做	是	是	10-25 缺省按 SDK 机器码（SetDefaults 写 0x0102_0102_110c_0000，7 份游戏 SDK 一致）：premul TRUE、normdst TRUE、overlap UNCORRELATED、mode NONE；只影响读回，渲染器不模拟、管线键已清
+nvnBlendStateGetAdvancedNormalizedDst	语义	已做	是	是	10-25 缺省按 SDK 机器码（SetDefaults 写 0x0102_0102_110c_0000，7 份游戏 SDK 一致）：premul TRUE、normdst TRUE、overlap UNCORRELATED、mode NONE；只影响读回，渲染器不模拟、管线键已清
+nvnColorStateSetDefaults	语义	已做	是	是	
+nvnColorStateSetBlendEnable	语义	已做	是	是	
+nvnColorStateSetLogicOp	语义	已做	是	是	
+nvnColorStateSetAlphaTest	语义	已做	是	是	（附：颜色状态透明测试）：我方实现透明测试（按 ColorState 字节 2 ≠ ALWAYS 选 alpha 特化 + 支持缓冲 FragmentAlphaTest 写比较方式 / 参考值，编码 1..8 与 AlphaTestOp 一致）；直连层完全不做透明测试（ColorStateSetAlphaTest 只存，SetAlphaRef 只打一次日志）（高）
+nvnColorStateGetBlendEnable	语义	已做	是	是	
+nvnColorStateGetLogicOp	语义	已做	是	是	
+nvnColorStateGetAlphaTest	语义	已做	是	是	
+nvnChannelMaskStateSetDefaults	语义	已做	是	是	
+nvnChannelMaskStateSetChannelMask	语义	已做	是	是	（回放：片元不写的输出）：位序与直连层一致（r1 g2 b4 a8，每目标 4 位）。差在回放：直连层对片元着色器不写的颜色输出把写掩码置 0、不混合（游戏特例：超级马力欧 3D 世界 G-buffer 后的体积绘制只写 0/2 号输出，1/3 号带 SRC_ALPHA 混合）；我方原样下发掩码，graphics/metal pso_desc_colors 也只用 k->mask，不看 fs_outputs（低（通用路径走同一后端，若通用路径动森这些物体正常则不是本因））
+nvnChannelMaskStateGetChannelMask	语义	已做	是	是	
+nvnMultisampleStateSetDefaults	语义	已做	是	是	
+nvnMultisampleStateSetMultisampleEnable	语义	已做	是	是	
+nvnMultisampleStateSetSamples	语义	已做	是	是	
+nvnMultisampleStateSetAlphaToCoverageEnable	语义	已做	是	是	我方只把 a2c 存进状态字节 [2]，回放 Op.Ms 只对字节 4/5/6/8 报红，全工程没有调 IPipeline.SetMultisampleState → a2c 永远关（后端 nxgal_set_multisample 存在、管线键里有 a2c）。直连层把 S.ms.a2c 放进管线键并设 alphaToCoverageEnabled（高（差异确定）；动森是否开 a2c 未实测）
+nvnMultisampleStateSetAlphaToCoverageDither	语义	已做	是	是	
+nvnMultisampleStateGetMultisampleEnable	语义	已做	是	是	
+nvnMultisampleStateGetSamples	语义	已做	是	是	
+nvnMultisampleStateGetAlphaToCoverageEnable	语义	已做	是	是	
+nvnMultisampleStateGetAlphaToCoverageDither	语义	已做	是	是	
+nvnMultisampleStateSetRasterSamples	语义	已做	是	是	
+nvnMultisampleStateGetRasterSamples	语义	已做	是	是	
+nvnMultisampleStateSetCoverageModulationMode	语义	已做	是	是	
+nvnMultisampleStateGetCoverageModulationMode	语义	已做	是	是	
+nvnMultisampleStateSetCoverageToColorEnable	语义	已做	是	是	
+nvnMultisampleStateGetCoverageToColorEnable	语义	已做	是	是	
+nvnMultisampleStateSetCoverageToColorOutput	语义	已做	是	是	
+nvnMultisampleStateGetCoverageToColorOutput	语义	已做	是	是	
+nvnMultisampleStateSetSampleLocationsEnable	语义	已做	是	是	
+nvnMultisampleStateGetSampleLocationsEnable	语义	已做	是	是	
+nvnMultisampleStateGetSampleLocationsGrid	红	未做	是	是	10-25 留未做：网格宽高是硬件常量，nvn.h 无对应设备信息项、直连层也没有，不编值
+nvnMultisampleStateSetSampleLocationsGridEnable	语义	已做	是	是	
+nvnMultisampleStateGetSampleLocationsGridEnable	语义	已做	是	是	
+nvnMultisampleStateSetSampleLocations	语义	已做	是	是	
+nvnPolygonStateSetDefaults	语义	已做	是	是	
+nvnPolygonStateSetCullFace	语义	已做	是	是	（FRONT_AND_BACK）：映射一致（0 不剔 / 1 前 / 2 后 / 3 前后）。FRONT_AND_BACK：直连层直接跳过绘制；我方交 GAL Face.FrontAndBack，后端（Metal 无此剔除模式）怎么处理没核（低（后端行为未读））
+nvnPolygonStateSetFrontFace	语义	已做	是	是	/ DeviceSetWindowOriginMode（绕序与原点）：口径不同：直连层左上原点 = 视口正高、CCW 原样；左下原点 = 视口负高 + 绕序反 + 上屏翻转。我方不论原点一律给 GAL 负高视口（MakeVp），左上原点时把 CW/CCW 对调，左下原点不调；上屏不翻（低（推导自通用路径对齐，未逐项核后端 GAL 视口 / 绕序约定））
+nvnPolygonStateSetPolygonMode	语义	已做	是	是	我方只存字节 [2]，PrepDraw 从不调 SetPolygonMode；直连层 LINE → MTLTriangleFillModeLines（POINT 按填充）（高（差异确定，影响小））
+nvnPolygonStateSetPolygonOffsetEnables	语义	已做	是	是	
+nvnPolygonStateGetCullFace	语义	已做	是	是	
+nvnPolygonStateGetFrontFace	语义	已做	是	是	
+nvnPolygonStateGetPolygonMode	语义	已做	是	是	
+nvnPolygonStateGetPolygonOffsetEnables	语义	已做	是	是	
+nvnDepthStencilStateSetDefaults	语义	已做	是	是	
+nvnDepthStencilStateSetDepthTestEnable	语义	已做	是	是	
+nvnDepthStencilStateSetDepthWriteEnable	语义	已做	是	是	
+nvnDepthStencilStateSetDepthFunc	语义	已做	是	是	
+nvnDepthStencilStateSetStencilTestEnable	语义	已做	是	是	
+nvnDepthStencilStateSetStencilFunc	语义	已做	是	是	
+nvnDepthStencilStateSetStencilOp	语义	已做	是	是	
+nvnDepthStencilStateGetDepthTestEnable	语义	已做	是	是	
+nvnDepthStencilStateGetDepthWriteEnable	语义	已做	是	是	
+nvnDepthStencilStateGetDepthFunc	语义	已做	是	是	
+nvnDepthStencilStateGetStencilTestEnable	语义	已做	是	是	
+nvnDepthStencilStateGetStencilFunc	语义	已做	是	是	
+nvnDepthStencilStateGetStencilOp	语义	已做	是	是	
+nvnVertexAttribStateSetDefaults	语义	已做	是	是	
+nvnVertexAttribStateSetFormat	语义	已做	是	是	（格式 0 / 未给属性）：格式 0：我方 IsZero + R32G32B32A32Float；通用路径 IsZero + R32Float；直连层零缓冲 + Float4/UInt4/Int4（按着色器输入类型）。三者在顶点自取（vs_pulled）下都走零项 uint4(0) = (0,0,0,0)，格式不参与；只有不走自取的程序走描述符，R32Float 零会补成 (0,0,0,1)（中（自取下一致是读代码得出；动森有无不走自取的顶点程序没查））
+nvnVertexAttribStateSetStreamIndex	语义	已做	是	是	
+nvnVertexAttribStateGetFormat	语义	已做	是	是	
+nvnVertexAttribStateGetStreamIndex	语义	已做	是	是	
+nvnVertexStreamStateSetDefaults	语义	已做	是	是	
+nvnVertexStreamStateSetStride	语义	已做	是	是	
+nvnVertexStreamStateSetDivisor	语义	已做	是	是	
+nvnVertexStreamStateGetStride	语义	已做	是	是	
+nvnVertexStreamStateGetDivisor	语义	已做	是	是	
+nvnCommandBufferInitialize	语义	已做	是	是	命令缓冲对象布局：我方 CmdS = Head(8) + Cur(+8) + End(+0x10) …，直连层特意把 +0x10 留给游戏（nvn_flag10）：游戏内联的 NVN 头文件代码在 AddCommandMemory 之后、BeginRecording / CallCommands 之前往 +0x10 写字节 1（SMBW main+0x4da5c 等实测），直连层早先在这里放 end，被改成 01 后段尾被截掉最多 254 字节（中（直连层在 SMBW 实测；动森未验证））
+nvnCommandBufferFinalize	语义	已做	是	是	
+nvnCommandBufferSetDebugLabel	语义	已做	是	是	
+nvnCommandBufferSetMemoryCallback	语义	已做	是	是	
+nvnCommandBufferSetMemoryCallbackData	语义	已做	是	是	
+nvnCommandBufferSetCommandMemoryCallbackEnabled	语义	已做	是	是	
+nvnCommandBufferAddCommandMemory	语义	已做	是	是	
+nvnCommandBufferAddControlMemory	语义	已做	是	是	
+nvnCommandBufferGetCommandMemorySize	语义	已做	是	是	
+nvnCommandBufferGetCommandMemoryUsed	语义	已做	是	是	返回式与直连层相同（begin ? used : 0），但因 BeginRecording 清 Begin，开录后第一条命令前返回 0（见 BeginRecording 行）（中）
+nvnCommandBufferGetCommandMemoryFree	语义	已做	是	是	
+nvnCommandBufferGetControlMemorySize	红	已做	是	是	
+nvnCommandBufferGetControlMemoryUsed	语义	已做	是	是	
+nvnCommandBufferGetControlMemoryFree	红	已做	是	是	
+nvnCommandBufferBeginRecording	语义	已做	是	是	BeginRecording 把 Begin 清 0；直连层只置 recording=2、不动 begin。因 GetCommandMemoryUsed 以 Begin!=0 为门（返回 Begin!=0 ? Used : 0），从 BeginRecording 到第一条命令之间我方返回 0，直连层返回自上次 AddCommandMemory 起的累计 Used（中）
+nvnCommandBufferEndRecording	语义	已做	是	是	
+nvnCommandBufferCallCommands	语义	已做	是	是	
+nvnCommandBufferCopyCommands	语义	已做	是	是	
+nvnCommandBufferBindBlendState	语义	已做	是	是	目标号读法不同：我方回放取 a[0] 整字节，≥8 整条忽略；直连层按 3 位位段取 target（≥8 会回绕到 &7）。我方 BlendStateSetBlendTarget 存整字节，正常 0–7 时两者等价（低）
+nvnCommandBufferBindChannelMaskState	语义	已做	是	是	
+nvnCommandBufferBindColorState	语义	已做	是	是	
+nvnCommandBufferBindMultisampleState	语义	已做	是	是	alpha-to-coverage（字节 [2]）及抖动（[3]）被静默丢弃：回放只对 [4][5][6][8] 报红，从不调 GAL SetMultisampleState；直连层把 S.ms.a2c 进管线键并设 alphaToCoverageEnabled（中（差异本身高；动森是否用 a2c 未查，跑一局数 Ms 记录 a[2]!=0 的次数即可定））
+nvnCommandBufferBindPolygonState	语义	已做	是	是	①填充模式（字节 [2]，LINE）被忽略，直连层设 MTLTriangleFillModeLines；②剔除 FRONT_AND_BACK：直连层整个绘制跳过，我方映射成 GAL Face.FrontAndBack 交后端（Metal 没有双面剔除，后端多半照画）（低）
+nvnCommandBufferBindDepthStencilState	语义	已做	是	是	
+nvnCommandBufferBindVertexAttribState	语义	已做	是	是	①n>16：直连层报红并丢弃整条，我方录时钳 32、回放截到 16 照用；②属性格式与着色器输入类型不符时直连层改格式 / CPU 转换（vfmt_for_ct、vconv：整数输入喂 half/unorm 等），我方原样把 NVN 格式交 GAL，正确性全靠缓存里那份特化的属性类型与本次绑定一致（WireShaders.Pick 只按透明测试选特化）（中（机制差异高；是否命中动森需日志 / 对拍验证））
+nvnCommandBufferBindVertexStreamState	语义	已做	是	是	n>16：直连层报红丢弃整条；我方录时钳 32、回放截 16 照用；其余（步长 / 除数按值，回放 VertexBufferDescriptor(步长, 除数)）一致（低）
+nvnCommandBufferBindProgram	语义	已做	是	是	按阶段绑定的合成不同：①各阶段来自不同程序（分离程序）时我方报红 mixprog 后整套用顶点阶段那个程序（含它自己的片元着色器），直连层 bind_stages 按阶段拼合成程序；②BindProgram(P, 顶点|片元) 后 BindProgram(空, 片元)：直连层只剩顶点着色器（纯深度预通道），我方 s_progG 仍是 P，片元照跑；③顶点阶段为空、其他阶段有程序：直连层返回空（不画），我方用第一个非空阶段的程序画（中（逻辑差异高；动森是否触发未验证））
+nvnCommandBufferBindVertexBuffer	语义	已做	是	是	
+nvnCommandBufferBindVertexBuffers	语义	已做	是	是	
+nvnCommandBufferBindUniformBuffer	语义	已做	是	是	槽上限与越界处理：回放 s_ubo 每阶段 18 槽（直连层 16），Bind() 对着色器槽 Math.Min(NvnSlot,17) 静默钳到 17；直连层 reg≥16 给全 0 常量块并报红（低）
+nvnCommandBufferBindUniformBuffers	语义	已做	是	是	
+nvnCommandBufferBindTransformFeedbackBuffer	语义	已做	是	是	
+nvnCommandBufferBindTransformFeedbackBuffers	语义	已做	是	是	
+nvnCommandBufferBindStorageBuffer	语义	已做	是	是	
+nvnCommandBufferBindStorageBuffers	语义	已做	是	是	
+nvnCommandBufferBindTexture	语义	已做	是	是	组合贴图槽上限：我方回放 s_ctex 只有 41 槽（Tex1 slot≥41 静默丢弃），直连层组合槽 0–127（NTEX=256 的前半）。绘制取用时我方又 Math.Min(NvnTexture,40) 把越界槽钳到 40（读错槽而非报红）（低）；组合槽 32–40 与图像槽别名：直连层 tex_slot_h 规定组合槽 r≥32 若图像槽 r−32 绑了图像就读图像（硬件 c2 0x120+8r 同一个字），我方 s_ctex 与 s_img 分开存、互不覆盖（低）；紧凑记录里句柄的字节位置与硬件 / 直连层不同：我方 4 字节头 + 4 字节(stage|slot<<8) → 句柄在记录 +8；直连层按硬件命令布局把句柄放在记录 +16（有 _Static_assert），因为 LM3 会在录完后按「基址 + Used + 0x10」原地改写句柄（低）；采样器号取法：我方用完整 64 位句柄 >>20（PoolSamp((int)(sh>>20))），直连层单个 BindTexture 先截成 32 位再 >>20（sid=(uint32_t)h>>20，12 位）（低）
+nvnCommandBufferBindTextures	语义	已做	是	是	
+nvnCommandBufferBindImage	语义	已做	是	是	
+nvnCommandBufferBindImages	语义	已做	是	是	
+nvnCommandBufferSetPatchSize	空	已做	是	是	
+nvnCommandBufferSetInnerTessellationLevels	红	已做	是	是	
+nvnCommandBufferSetOuterTessellationLevels	红	已做	是	是	
+nvnCommandBufferSetPrimitiveRestart	语义	已做	是	是	
+nvnCommandBufferBeginTransformFeedback	语义	已做	是	是	
+nvnCommandBufferEndTransformFeedback	语义	已做	是	是	
+nvnCommandBufferPauseTransformFeedback	语义	已做	是	是	
+nvnCommandBufferResumeTransformFeedback	语义	已做	是	是	
+nvnCommandBufferDrawTransformFeedback	语义	已做	是	是	10-26 前表里记「已做」但代码只报红、不画（直连线核出）；10-26 改为按捕获字节数 ÷ 顶点流 0 步长间接绘制（nvn_geometry.inc tfd_args），控制缓冲「每缓冲 8 字节」是推测，首局日志核
+nvnCommandBufferDrawArrays	语义	已做	是	是	
+nvnCommandBufferDrawElements	语义	已做	是	是	
+nvnCommandBufferDrawElementsBaseVertex	语义	已做	是	是	
+nvnCommandBufferDrawArraysInstanced	语义	已做	是	是	实例数 0：直连层回放按 1 画（instances>0 ? instances : 1），我方原样传 0，graphics/metal 后端 instance_count<=0 直接不画（中（真机 0 实例是否画未查证，直连层选择按 1））
+nvnCommandBufferDrawElementsInstanced	语义	已做	是	是	实例数 0：同 DrawArraysInstanced（直连层 `di->instances ? di->instances : 1`，我方传 0 → 后端不画）（中）
+nvnCommandBufferDrawArraysIndirect	语义	已做	是	是	
+nvnCommandBufferDrawElementsIndirect	语义	已做	是	是	
+nvnCommandBufferMultiDrawArraysIndirectCount	语义	已做	是	是	
+nvnCommandBufferMultiDrawElementsIndirectCount	语义	已做	是	是	
+nvnCommandBufferClearColor	语义	已做	是	是	①只清 1 层（ClearRenderTargetColor(idx, 0, 1, …)）；直连层用渲染遍载入动作清附着的那一层，非分层遍也只清 1 层，等价；②下标越界 / 目标空：直连层报红，我方静默跳过；③直连层对 mask!=0xf 或局部剪裁画三角形清，我方交后端（后端按剪裁 / 掩码清，见注释）（低）
+nvnCommandBufferClearColori	语义	已做	是	是	
+nvnCommandBufferClearColorui	语义	已做	是	是	
+nvnCommandBufferClearDepthStencil	语义	已做	是	是	①深度值不夹到 [0,1]（直连层 clear_ds 三角路径夹到 [0,1]，NaN→0）；②只清 1 层，同 ClearColor（低）
+nvnCommandBufferDispatchCompute	语义	已做	是	是	
+nvnCommandBufferDispatchComputeIndirect	语义	已做	是	是	
+nvnCommandBufferSetViewport	语义	已做	是	是	①没设过视口时：直连层用整张目标 (0,0,tw,th)，我方 s_vp 是全 0（宽高 0）；②我方 MakeVp 总是取负高（y+h, −h），正面绕序只在左上原点时对调；直连层视口原样、只在左下原点时反绕序。两者坐标系约定不同（我方注释称已在丝之歌实测对齐），这里不判对错（低）
+nvnCommandBufferSetViewports	语义	已做	是	是	
+nvnCommandBufferSetViewportSwizzles	语义	已做	是	是	
+nvnCommandBufferSetScissor	语义	已做	是	是	
+nvnCommandBufferSetScissors	语义	已做	是	是	
+nvnCommandBufferSetDepthRange	语义	已做	是	是	
+nvnCommandBufferSetDepthBounds	空	已做	是	是	
+nvnCommandBufferSetDepthRanges	语义	已做	是	是	
+nvnCommandBufferSetTiledCacheAction	语义	已做	是	是	
+nvnCommandBufferSetTiledCacheTileSize	语义	已做	是	是	
+nvnCommandBufferBindSeparateTexture	语义	已做	是	是	
+nvnCommandBufferBindSeparateSampler	语义	已做	是	是	
+nvnCommandBufferBindSeparateTextures	语义	已做	是	是	
+nvnCommandBufferBindSeparateSamplers	语义	已做	是	是	
+nvnCommandBufferSetStencilValueMask	语义	已做	是	是	
+nvnCommandBufferSetStencilMask	语义	已做	是	是	
+nvnCommandBufferSetStencilRef	语义	已做	是	是	
+nvnCommandBufferSetBlendColor	语义	已做	是	是	
+nvnCommandBufferSetPointSize	语义	已做	是	是	
+nvnCommandBufferSetLineWidth	语义	已做	是	是	
+nvnCommandBufferSetPolygonOffsetClamp	语义	已做	是	是	
+nvnCommandBufferSetAlphaRef	语义	已做	是	是	
+nvnCommandBufferSetSampleMask	语义	已做	是	是	
+nvnCommandBufferSetRasterizerDiscard	语义	已做	是	是	回放丢弃：Op.RasterDiscard 落在 `case PointSize/LineWidth/RasterDiscard: break`，从不调 GAL SetRasterizerDiscard；直连层开启时该绘制不光栅化（只跑顶点 / 变换反馈）（高（差异）/ 低（动森是否调用未查））
+nvnCommandBufferSetDepthClamp	语义	已做	是	是	
+nvnCommandBufferSetConservativeRasterEnable	语义	已做	是	是	
+nvnCommandBufferSetConservativeRasterDilate	红	已做	是	是	
+nvnCommandBufferSetSubpixelPrecisionBias	红	已做	是	是	
+nvnCommandBufferCopyBufferToTexture	语义	已做	是	是	
+nvnCommandBufferCopyTextureToBuffer	语义	已做	是	是	
+nvnCommandBufferCopyTextureToTexture	语义	已做	是	是	
+nvnCommandBufferCopyBufferToBuffer	语义	已做	是	是	
+nvnCommandBufferClearBuffer	语义	已做	是	是	
+nvnCommandBufferClearTexture	语义	已做	是	是	
+nvnCommandBufferClearTexturei	红	已做	是	是	
+nvnCommandBufferClearTextureui	语义	已做	是	是	
+nvnCommandBufferUpdateUniformBuffer	语义	已做	是	是	
+nvnCommandBufferReportCounter	语义	已做	是	是	①SAMPLES_PASSED（遮挡查询）恒写 0；直连层用 Metal 可见性缓冲真计数、GPU 完成后写回（注释：以前写 0 = 「全被挡」，篝火 / 光源被剔掉）；②我方在回放时由 CPU 立即写，直连层在 GPU 完成后写（post）；③时间戳以外的计数器我方都记「未知」并写 0（中）
+nvnCommandBufferResetCounter	语义	已做	是	是	
+nvnCommandBufferReportValue	语义	已做	是	是	
+nvnCommandBufferSetRenderEnable	语义	已做	是	是	
+nvnCommandBufferSetRenderEnableConditional	语义	已做	是	是	求值一致（模式 0 相等才画 / 1 不等才画，读 addr 与 addr+16）。小差别：「未知」地址集合直连层一旦被非时间戳报告写过就永远未知，我方遇到后来的时间戳报告会移出（低）
+nvnCommandBufferSetRenderTargets	语义	已做	是	是	①录的是贴图对象号（IdOf），直连层录 0x80 字节贴图对象快照（Unity 在录制与提交之间 Finalize 再 Initialize 同一渲染目标对象）；对象被重建时我方回放解析到已释放 / 被复用的号；②n>8 直连层报红后钳 8，我方静默钳；③游戏有意传空的颜色槽我方也计 s_badIds 并报红 rt0（误报）（低）
+nvnCommandBufferDiscardColor	语义	已做	是	是	
+nvnCommandBufferDiscardDepthStencil	语义	已做	是	是	
+nvnCommandBufferDownsample	语义	已做	是	是	
+nvnCommandBufferTiledDownsample	红	已做	是	是	
+nvnCommandBufferDownsampleTextureView	语义	已做	是	是	
+nvnCommandBufferTiledDownsampleTextureView	红	已做	是	是	
+nvnCommandBufferBarrier	语义	已做	是	是	位掩码被丢弃：回放无论 bits 是什么都调 pl.Barrier()（GAL 内存屏障），bits=0 也下发；直连层只在 bits 含 ORDER_FRAGMENTS(_TILED) 且本遍有着色器写时切开渲染遍，其余只置 g_game_barrier。我方也从不按 INVALIDATE_TEXTURE 类位调 TextureBarrier()（低）
+nvnCommandBufferWaitSync	空	已做	是	是	
+nvnCommandBufferFenceSync	语义	已做	是	是	
+nvnCommandBufferSetTexturePool	语义	已做	是	是	同 SetSamplerPool：绘制时池解析，单池等价；池号为 0 时 PoolTex 全返回空 → 所有贴图采样为 0（低）
+nvnCommandBufferSetSamplerPool	语义	已做	是	是	
+nvnCommandBufferSetShaderScratchMemory	空	已做	是	是	
+nvnCommandBufferSaveZCullData	语义	已做	是	是	
+nvnCommandBufferRestoreZCullData	语义	已做	是	是	
+nvnCommandBufferSetCopyRowStride	语义	已做	是	是	
+nvnCommandBufferSetCopyImageStride	语义	已做	是	是	
+nvnCommandBufferGetCopyRowStride	红	已做	是	是	
+nvnCommandBufferGetCopyImageStride	红	已做	是	是	
+nvnCommandBufferDrawTexture	红	未做	是	是	10-25 留未做：NVNdrawTextureRegion 在 nvn.h 里是 char dummy[1]（待逆向），读不出矩形
+nvnProgramSetSubroutineLinkage	红	已做	是	是	10-25 补：不支持（离线整支翻译，无运行时子程序表）→ 显式返回 0 + 点名
+nvnCommandBufferSetProgramSubroutines	红	未做	是	是	10-25 留未做：GLSL 子程序，Metal 无对应物（ProgramSetSubroutineLinkage 已按 #356 显式失败）
+nvnCommandBufferBindCoverageModulationTable	红	已做	是	是	
+nvnCommandBufferResolveDepthBuffer	红	已做	是	是	
+nvnCommandBufferSetColorReductionEnable	语义	已做	是	是	
+nvnCommandBufferSetColorReductionThresholds	语义	已做	是	是	
+nvnCommandBufferPushDebugGroupStatic	空	已做	是	是	
+nvnCommandBufferPushDebugGroupDynamic	空	已做	是	是	
+nvnCommandBufferPushDebugGroup	空	已做	是	是	
+nvnCommandBufferPopDebugGroup	空	已做	是	是	
+nvnCommandBufferPopDebugGroupId	空	已做	是	是	
+nvnCommandBufferInsertDebugMarkerStatic	空	已做	是	是	
+nvnCommandBufferInsertDebugMarkerDynamic	空	已做	是	是	
+nvnCommandBufferInsertDebugMarker	空	已做	是	是	
+nvnCommandBufferGetMemoryCallback	红	已做	是	是	
+nvnCommandBufferGetMemoryCallbackData	红	已做	是	是	
+nvnCommandBufferIsRecording	语义	已做	是	是	
+nvnSyncInitialize	语义	已做	是	是	
+nvnSyncFinalize	语义	已做	是	是	
+nvnSyncSetDebugLabel	语义	已做	是	是	
+nvnQueueFenceSync	语义	已做	是	是	
+nvnSyncWait	语义	已做	是	是	从未被栅栏过的同步对象（Seq=-1）：我方返回 0（ALREADY_SIGNALED）；直连层返回 TIMEOUT_EXPIRED(2)。已栅栏的两边一致（先判已到返回 0，否则等，到 1 / 超时 2）（高（差异确定，影响小））
+nvnQueueWaitSync	语义	已做	是	是	
+nvnSyncInitializeFromFencedGLSync	红	已做	是	是	11-01 补：GL 栅栏（GL 层共享事件 + 提交序号）转 NVN 同步对象，nvnQueueWaitSync 在 GPU 上跨队列等、nvnSyncWait 在 CPU 上等（t_nvn_glsync）
+nvnSyncCreateGLSync	红	已做	是	是	11-01 补：NVN 栅栏（NVN 提交共享事件 + 栅栏号）转 GL 同步对象，glWaitSync 在 GPU 上跨队列等、glClientWaitSync 在 CPU 上等（t_nvn_glsync）
+nvnEventBuilderSetDefaults	语义	已做	是	是	
+nvnEventBuilderSetStorage	语义	已做	是	是	
+nvnEventBuilderGetStorage	红	已做	是	是	
+nvnEventBuilderGetMemoryPool	红	已做	是	是	
+nvnEventBuilderGetMemoryOffset	红	已做	是	是	
+nvnEventInitialize	语义	已做	是	是	
+nvnEventFinalize	语义	已做	是	是	
+nvnEventGetValue	语义	已做	是	是	
+nvnEventSignal	语义	已做	是	是	
+nvnEventGetMemoryPool	红	已做	是	是	
+nvnEventGetMemoryOffset	红	已做	是	是	
+nvnCommandBufferWaitEvent	空	已做	是	是	
+nvnCommandBufferSignalEvent	语义	已做	是	是	
+nvnCommandBufferSetStencilCullCriteria	红	已做	是	是	
+nvnCommandBufferInsertCheckpointStatic	红	已做	是	是	
+nvnCommandBufferInsertCheckpointDynamic	红	已做	是	是	
+nvnDeviceSetAutomaticCheckpointsEnable	空	已做	是	是	10-25 补：仅调试器抓现场，空实现+点名
+nvnDeviceSetAutomaticCheckpointsSamplingInterval	空	已做	是	是	10-25 补：同上
+nvnDeviceSetAutomaticCheckpointsByDebugGroup	空	已做	是	是	10-25 补：同上
+nvnDeviceSetCheckpointCallStacksEnable	空	已做	是	是	10-25 补：同上
+nvnDeviceSetCheckpointMaxCallStacksDepth	空	已做	是	是	10-25 补：同上
+nvnCommandBufferBindImagesDeferred	红	已做	是	是	
+nvnCommandBufferBindSeparateSamplersDeferred	红	已做	是	是	
+nvnCommandBufferBindSeparateTexturesDeferred	红	已做	是	是	
+nvnCommandBufferBindStorageBuffersDeferred	红	已做	是	是	
+nvnCommandBufferBindTexturesDeferred	语义	已做	是	是	
+nvnCommandBufferBindUniformBuffersDeferred	红	已做	是	是	
+nvnCommandBufferOverrideSubtileSize	红	已做	是	是	
+nvnCommandBufferSetControlMemoryCallbackEnabled	红	已做	是	是	
+nvnCommandBufferSetProvokingVertexMode	红	未做	是	是	10-25 留未做：nvn.h 无原型、枚举值未知；Metal 平面插值固定取首顶点
+nvnCommandBufferSetZCullZF32CompressionEnable	红	已做	是	是	
+nvnDeviceSetAutomaticCheckpointsMask	空	已做	是	是	10-25 补：同上
+nvnProgramGetSubtileSize	红	已做	是	是	10-25 补：本层不用 tiled 存储 → 报 0 + 点名
+nvnTextureBuilderGetViewOffset	红	已做	是	是	10-25 核对：代码早已实现、表里误标未做

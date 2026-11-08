@@ -1,0 +1,6 @@
+# Built into the Mac application, never installed by a player job.
+capstone==5.0.7
+lz4==4.4.5
+numpy==2.4.2
+Pillow==12.3.0
+zstandard==0.25.0

@@ -1,0 +1,25 @@
+# old_prefix	new_prefix	# old-tree directory prefix -> new-tree directory prefix
+ryujinx/	compat/
+native/	runtime/
+platforms/apple/cs/	platform/apple/cs/
+services/	services/
+gfx/nvn/gfx/tools/	translator/
+gfx/dsx/	graphics/dsx/
+gfx/	graphics/
+backends/vulkan/	graphics/vulkan/
+native/ios/	ios/
+platforms/apple/frontend-ios/	shell/
+platforms/macos/native/	macos/
+platforms/android/	android/
+pack/	pack/
+platforms/macos/	launchers/macos/
+platforms/apple/frontend/	launchers/macos/frontend/
+platforms/apple/frontend-adapter/	launchers/macos/adapter/
+platforms/windows/	launchers/windows/
+platforms/linux/launcher/	launchers/linux/
+platforms/shared/	launchers/shared/
+tests/	tests/
+tools/	tools/
+skills/	skills/
+docs/	docs/
+.github/	.github/

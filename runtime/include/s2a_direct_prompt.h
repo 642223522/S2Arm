@@ -1,0 +1,34 @@
+// 游戏内提示条（iOS 壳 ios/dprompt.m、Mac 游戏窗口 macos/front_mac.m）的共用文案与存档原子提交判定。
+//   11-07 拆通用模式：原「通用 → 直连就绪提示重启」状态机与「切到高性能模式 / 切回通用模式」设置入口一并删掉。
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+// 两端共用的文案（中文、短）
+#define S2A_DPROMPT_OK             "知道了"
+// 存档不能原子提交（审计 P2-13 / P2-45）的提示：标题两端相同；正文前半句同一口径，建议按平台给（Mac 能挪游戏库，iPhone 只能等存完再退）
+#define S2A_DPROMPT_SAVE_ATOMIC_TITLE "存档提醒"
+#define S2A_DPROMPT_SAVE_ATOMIC_MAC   "当前磁盘不能安全保存：请把游戏库挪到本机磁盘。保存过程中强退，可能留下写了一半的存档。"
+#define S2A_DPROMPT_SAVE_ATOMIC_IOS   "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。"
+// 「键 / 触」切换（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏）：游戏启用触屏后屏幕上方常驻小切换钮；首次提示条带「切到触屏」一点就切
+#define S2A_DPROMPT_VPAD_TOUCH_TITLE   "这款游戏能用触屏"
+#define S2A_DPROMPT_VPAD_TOUCH_BODY    "要点游戏自己的菜单，就切到触屏。屏幕上方的「键 / 触」随时可以切回按键。"
+#define S2A_DPROMPT_VPAD_TOUCH_ACCEPT  "切到触屏"
+#define S2A_DPROMPT_VPAD_TOUCH_DECLINE "先不用"
+#define S2A_DPROMPT_VPAD_SEG_KEYS      "键"
+#define S2A_DPROMPT_VPAD_SEG_TOUCH     "触"
+// 游戏声明触屏配置时自动切到仅触屏（ios/touch_config.m，只改本次运行）：提示一条，指屏幕上方常驻的「键 / 触」钮
+#define S2A_DPROMPT_VPAD_TOUCH_AUTO    "已切到触屏操作：这款游戏用触屏点菜单。屏幕上方「键 / 触」可切回按键。"
+// 多款容器换游戏（ios/app_settings.m 设置页「换一款游戏」一栏，只在多款容器里出现；11-07 启动器线）：一个进程只跑一款、换游戏只能冷启动（不调 exit()），
+//   放在玩家找「回游戏库」时会去的设置页。中英两行同屏显示；英文宏 <名>_EN 与规格的 en 逐字一致（launchers/shared/check_experience.py）
+#define S2A_DPROMPT_SWITCH_GAME_TITLE    "换一款游戏"
+#define S2A_DPROMPT_SWITCH_GAME_TITLE_EN "Switch games"
+#define S2A_DPROMPT_SWITCH_GAME_BODY     "换一款游戏需要重新打开 S2Arm：先在游戏里存档，然后从屏幕底部上滑，把 S2Arm 划掉，再点开就回到游戏库。"
+#define S2A_DPROMPT_SWITCH_GAME_BODY_EN  "To switch games, reopen S2Arm: save in the game first, then swipe up from the bottom of the screen, swipe S2Arm away, and tap it again to return to the game library."
+// 存档不能原子提交（审计 P2-13 界面半边、P2-45 iPhone 半边；Mac 与 iOS 共用这一个判定）：服务层导出 S2A_SaveAtomicState（services SaveTransferExports.cs，
+//   可写存档退回逐字节复制的原因位：1 没登记原语 / 2 卷不能克隆或原子交换 / 4 工作目录准备失败）。前端主线程每秒调一次；
+//   游戏会话跑起来之前不问服务层（iOS 的提示定时器早于宿主线程起）；第一次读到非 0 返回原因位，只返回一次，之后恒 0。没链服务层恒 0
+int s2a_save_atomic_poll(void);
+#ifdef __cplusplus
+}
+#endif

@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "description": "首批目标验收事件 catalog。所有项均为 planned，本阶段未迁移生产者或现有 host.log 消费者。普通诊断日志无需登记。source 指现有文本证据的生产位置或将来接入边界，consumers 指现有语义消费者或目标用途；不能据此宣称结构化事件已经输出。判格依 event/data 与证据完整性，不能按 level 一刀切。",
+  "events": [
+    {
+      "event": "runtime.ready",
+      "event_version": 1,
+      "status": "planned",
+      "description": "原生层和 C# 运行时初始化完成；对应当前 S2A 就绪文本，不能证明已进游戏或可玩。",
+      "source": ["runtime/src/host_main.c", "tests/真机契约.md"],
+      "consumers": ["tools/dev_run.sh"],
+      "acceptance": {
+        "cells": ["能玩"],
+        "rule": "起局 60 秒未就绪由执行器判红；出现就绪只满足初始化条件，不能单独判能玩绿。",
+        "evidence": ["tools/dev_run.sh: 起局 60 秒没有 S2A 就绪 分支", "tests/真机契约.md: 第 4 节"]
+      },
+      "selection": "first",
+      "data_schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "properties": {}}
+    },
+    {
+      "event": "autoplay.scene_mark",
+      "event_version": 1,
+      "status": "planned",
+      "description": "路线或通用自动玩家到达代表场景的 MARK；上屏帧号用于对齐帧表窗口。",
+      "source": ["tests/autoplay/autoplay.c", "runtime/src/ap_host.c#s2a_ap_log", "tests/真机契约.md"],
+      "consumers": ["tools/dev_run.sh", "tools/score_cells.py#cells", "tools/score_cells.py#mark_draws", "tools/frame_gate.py#judge"],
+      "acceptance": {
+        "cells": ["能玩", "帧率", "能耗", "首局", "分配"],
+        "rule": "取首个 MARK；帧率与分配窗口取 frame > MARK 的帧。没有 MARK 不能判能玩绿；帧率及能耗窗口不足 55 秒为未测。MARK 本身不证明场景有效，仍受现行流程、菜单、回放和诊断口径检查约束。",
+        "evidence": ["tools/score_cells.py: cells、test_unready、scene_menu、fps_basis", "tools/dev_run.sh: MK 首条匹配", "tests/真机契约.md: 第 5 节"]
+      },
+      "selection": "first",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["frame"],
+        "properties": {"frame": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "MARK 所在上屏序号，单位：帧，从 1 起；与 frames.tsv 的 frame 对齐。"}}
+      }
+    },
+    {
+      "event": "gpu.present_interval_changed",
+      "event_version": 1,
+      "status": "planned",
+      "description": "生效交换间隔及验收目标帧率。为保留当前最后一条口径，也承载收局时本局占时最多的间隔归并；不是每帧遥测。",
+      "source": ["graphics/loop/RenderLoop.cs#FrameLine", "graphics/loop/RenderLoop.cs#FrameIntervalSummary", "tests/真机契约.md"],
+      "consumers": ["tools/game_fps.py#target", "tools/score_cells.py#fps_basis", "tools/score_cells.py#cells", "tools/frame_gate.py#judge"],
+      "acceptance": {
+        "cells": ["帧率", "能耗", "分配"],
+        "rule": "取最后一条；当前正常收局会补写本局占时最多间隔，不能误认为总取最后一次变化。swap_interval=0 按 60 帧/秒且口径有效。间隔大于 0 时须有可信 target_fps，不能凭间隔自行假定显示刷新率。缺失有效帧节拍属于无效口径；game_fps 虽返回数值 60，ok=False，score_cells.fps_basis 会将该局判无效、不写格。",
+        "evidence": ["tools/game_fps.py: target", "tools/score_cells.py: fps_basis、cells", "graphics/loop/RenderLoop.cs: FrameIntervalSummary"]
+      },
+      "selection": "last",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["swap_interval"],
+        "allOf": [
+          {
+            "if": {"properties": {"swap_interval": {"minimum": 1}}},
+            "then": {"required": ["target_fps"]}
+          }
+        ],
+        "properties": {
+          "swap_interval": {"type": "integer", "minimum": 0, "description": "游戏生效的交换间隔，单位：显示刷新周期；0 表示关闭垂直同步，不代表目标 0 帧/秒。"},
+          "target_fps": {"type": "number", "exclusiveMinimum": 0, "description": "正交换间隔对应的目标帧率，单位：帧/秒；0 间隔验收固定按 60，不能填目标 0。"},
+          "frame": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "能够确定时记录的上屏序号，单位：帧；不为收局归并伪造帧号。"},
+          "basis": {"enum": ["change", "run_dominant_summary"], "description": "可获得时区分间隔变化与收局占时最多间隔归并。"}
+        }
+      }
+    },
+    {
+      "event": "service.unimplemented",
+      "event_version": 1,
+      "status": "planned",
+      "description": "确实未实现的服务或命令及累计调用次数；Red.Report 还承载其他自检失败，不能全部映射成此事件。",
+      "source": ["services/S2A.Services/Red.cs#Report", "services/S2A.Services/HleTarget.cs", "services/S2A.Services/SmDirect.cs", "tests/真机契约.md"],
+      "consumers": ["tools/redline.py#red_lines", "tools/dev_run.sh", "tools/score_cells.py#cells"],
+      "acceptance": {
+        "cells": ["能玩", "M0"],
+        "rule": "任一确实未实现的调用是失败证据，不回成功或伪造 0；同一身份 count 为累计调用次数，不能把限频日志行数当调用次数。现有 Red.Report 按 what 在第 1、2、4、8…次输出，严格模式首次中止。service 可用，command 只有可观测时才填；服务不存在时不能补 0 命令。",
+        "evidence": ["services/S2A.Services/Red.cs: Report、Strict", "tools/redline.py: is_red", "tools/score_cells.py: cells", "tests/真机契约.md: 第 4 节 M0 报红 0"]
+      },
+      "selection": "all",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["service", "count"],
+        "properties": {
+          "service": {"type": "string", "minLength": 1, "description": "可观测的服务名或服务类型名；不得猜测缺失身份。"},
+          "command": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "仅在已知时记录的命令号，单位：命令标识；未知时省略。"},
+          "count": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "本局同一未实现身份累计调用次数，单位：次；不是新增次数或输出行数。"},
+          "identity": {"type": "string", "minLength": 1, "description": "需要区分同服务其他未实现路径时保留当前 Red.Report 的 what 身份。"},
+          "detail": {"type": "string", "description": "可获得的诊断详情，不代替 service/command 身份。"}
+        }
+      }
+    },
+    {
+      "event": "service.unimplemented_summary",
+      "event_version": 1,
+      "status": "planned",
+      "description": "本局确实未实现项的累计汇总；目标结构化汇总须与其他 Red.Report 失败分类区分。当前 Red.Summary 实际汇总所有 Report 的 what。",
+      "source": ["services/S2A.Services/Red.cs#Summary", "services/S2A.Services/Red.cs#Total", "services/S2A.Services/Exports.cs", "tools/redline.py#RED_EMPTY_SUMMARY"],
+      "consumers": ["tools/redline.py#is_red", "tools/dev_run.sh#RED_EMPTY", "tools/score_cells.py#cells"],
+      "acceptance": {
+        "cells": ["能玩", "M0"],
+        "rule": "count=0 不报红，不因 ERROR 等级或事件出现而失败。count>0 是未实现证据，不能与单次事件再次累加成调用总量。当前空汇总是未实现服务：无且不带红；旧格式只有红前缀、冒号后为空的汇总也被 redline/dev_run 排除。缺少汇总不等于 0，严格中止/崩溃不保证有汇总。",
+        "evidence": ["services/S2A.Services/Red.cs: Summary", "tools/redline.py: RED_EMPTY_SUMMARY、is_red", "tools/dev_run.sh: RED_EMPTY", "tests/真机契约.md: 第 4 节"]
+      },
+      "selection": "last",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["count"],
+        "properties": {"count": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "本局未实现调用累计总数，单位：次；0 是空汇总，不能报红。"}}
+      }
+    },
+    {
+      "event": "visual.fullscreen_failed",
+      "event_version": 1,
+      "status": "planned",
+      "description": "渲染器满屏判据失败；保留几何和内容失败的现有分类。",
+      "source": ["graphics/metal/gal_present.m#fit_note", "graphics/metal/gal_present.m#fit_geom", "tests/真机契约.md"],
+      "consumers": ["tools/redline.py#is_red", "tools/dev_run.sh#FS_STOP", "tools/score_cells.py#cells"],
+      "acceptance": {
+        "cells": ["画面"],
+        "rule": "任一失败只使画面满屏子项红；普通配置不进入能玩格宿主报红数，FS_STOP=1 是执行器显式即停策略。无失败还不足以判绿：必须另有满屏自检已开启证据，且画幅真值全过，才可判画面绿。首批 catalog 尚未登记自检开启事件，不能用失败事件缺席代替它。",
+        "evidence": ["tools/redline.py: is_red", "tools/dev_run.sh: FS_STOP、uf", "tools/score_cells.py: cells 的 fs_on、fs_red、tr、pic", "tests/真机契约.md: 第 4 节"]
+      },
+      "selection": "all",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["kind", "reason"],
+        "properties": {
+          "kind": {"enum": ["geometry", "content"], "description": "当前满屏判据的几何或内容分类。"},
+          "reason": {"type": "string", "minLength": 1, "description": "生产者实际观测的失败原因。"},
+          "present_count": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "可获得的 g_n_present 出图提交序号，单位：次；不是 frames.tsv 上屏序号。"},
+          "frame": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "确实可关联时记录的 frames.tsv 上屏序号，单位：帧；不得拿出图提交次数冒充。"},
+          "count": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "可获得时记录的失败状态切换累计次数，单位：次；现有 fit_note 限频后日志行数不等于次数。"}
+        }
+      }
+    },
+    {
+      "event": "audio.window_peak",
+      "event_version": 1,
+      "status": "planned",
+      "description": "真实声音输出缓冲在采样窗口内的峰值；正式口径是 MARK 起 60 秒。诊断定时开窗不自动成为正式场景证据。",
+      "source": ["services/S2A.Services/AudioPeak.cs#AudioPeakDriver", "tests/autoplay/autoplay_host.h#s2a_ap_audio_mark", "tests/真机契约.md"],
+      "consumers": ["tools/score_cells.py#cells"],
+      "acceptance": {
+        "cells": ["能玩"],
+        "rule": "取最后条符合正式窗口的峰值；peak>0 满足有声子项，peak=0 为红，没有峰值为未测；有声不能独立判能玩绿。当前文本消费者取最后条，并不核对窗口来源；结构化目标必须保留窗口来源，不能将 S2A_AUDIO_WINDOW_AT 诊断窗冒充 MARK 正式窗。",
+        "evidence": ["tools/score_cells.py: cells 的 peaks、snd、play", "services/S2A.Services/AudioPeak.cs: WindowSeconds、S2A_AUDIO_WINDOW_AT", "tests/真机契约.md: 第 4 节"]
+      },
+      "selection": "window:last",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["peak", "window_us", "window_origin"],
+        "properties": {
+          "peak": {"type": "number", "minimum": 0, "description": "输出样本绝对值峰值，单位：归一化振幅；现有 PCM 整数格式按满幅归一，浮点样本按实际绝对值。不可强行截断到 1。"},
+          "window_us": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "实际采样窗口长度，单位：微秒；正式窗口为 60000000。"},
+          "window_origin": {"enum": ["scene_mark", "diagnostic_timer"], "description": "区分正式 MARK 开窗与定时诊断开窗。"},
+          "window_start_elapsed_us": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "可获得的开窗单调时刻，单位：自本局零点起微秒。"},
+          "frame": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "开窗 MARK 的上屏帧号，单位：帧；仅 scene_mark 来源且可获得时填写。"}
+        }
+      }
+    },
+    {
+      "event": "runtime.crash",
+      "event_version": 1,
+      "status": "planned",
+      "description": "由外部正常上下文根据 crash-safe raw 安全记录或系统崩溃证据派生的事件；目标协议不要求在信号处理器里构造完整 JSON。当前 crash.c 的 LOG 路径仅是现有文本来源，不代表已具备 crash-safe JSON 生产者。",
+      "source": ["runtime/src/crash.c#on_crash", "tools/dev_run.sh#texit", "tests/真机契约.md"],
+      "consumers": ["tools/dev_run.sh", "tools/score_cells.py#cells"],
+      "acceptance": {
+        "cells": ["能玩"],
+        "rule": "任一可信崩溃证据使能玩红；派生器使用自己的 source_id/seq，保留原证据引用，不伪造原 writer 顺序或采样时刻。缺少 runtime.end 不能单独证明崩溃；FATAL、FailFast、信号退出、强杀不保证写出结束或汇总事件。",
+        "evidence": ["tools/dev_run.sh: cr、texit 与 App 提前退出分支", "tools/score_cells.py: cells 的 crash/play", "runtime/src/crash.c: on_crash、_exit"]
+      },
+      "selection": "all",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["evidence_path", "evidence_kind"],
+        "properties": {
+          "evidence_path": {"type": "string", "minLength": 1, "description": "局目录内 raw 安全记录或系统崩溃证据的路径，供复核，不能凭文本占位伪造。"},
+          "evidence_kind": {"enum": ["crash_safe_raw", "system_crash_report"], "description": "派生事件的实际原始证据类型。"},
+          "signal": {"type": "integer", "minimum": 1, "description": "证据确实提供时记录的 POSIX 信号号。"},
+          "fault_address": {"type": "string", "pattern": "^0x[0-9a-fA-F]+$", "description": "可获得的故障地址，十六进制字符串避免地址精度丢失。"},
+          "pc": {"type": "string", "minLength": 1, "description": "证据提供的 PC 地址或模块加偏移，不猜测符号。"},
+          "origin_elapsed_us": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "原始安全记录确实提供时的崩溃单调时刻，单位：微秒；外部派生采样时刻仍放 envelope。"}
+        }
+      }
+    },
+    {
+      "event": "runtime.end",
+      "event_version": 1,
+      "status": "planned",
+      "description": "正常上下文能够观测并记录的运行结束；须区分运行时收局请求完成与执行器观测进程退出。不能承诺所有 FATAL 中止均有结束事件。",
+      "source": ["runtime/src/lifecycle.c#s2a_host_shutdown", "tools/dev_run.sh#texit", "tools/score_cells.py#test_unready"],
+      "consumers": ["tools/dev_run.sh#CEND", "tools/score_cells.py#test_unready"],
+      "acceptance": {
+        "cells": ["能玩", "局有效性"],
+        "rule": "正常结束不等于能玩绿；缺 MARK、帧窗口不足、崩溃与报红各自判定。当前执行器将采样期控制台流提前结束判红；score_cells.test_unready 对未 MARK 但优雅收局且末 600 帧持续有效出图的局可判测试未到位。缺此事件应视证据不完整，不能推断正常退出或必定崩溃。",
+        "evidence": ["tools/dev_run.sh: CEND、texit、fin", "tools/score_cells.py: test_unready、cells", "tests/真机契约.md: 第 6 节正常收局退出码"]
+      },
+      "selection": "last",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["reason", "observation"],
+        "properties": {
+          "reason": {"type": "string", "minLength": 1, "description": "实际收局或退出原因，不把自动玩家放弃统一记成成功。"},
+          "observation": {"enum": ["runtime_shutdown", "process_exit"], "description": "运行时完成收尾，或执行器确实观测进程退出；两者不混用。"},
+          "exit_code": {"type": "integer", "description": "仅观察到进程退出码时填写；不能在 runtime_shutdown 阶段预报退出码。"},
+          "frame": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "可获得的最后上屏序号，单位：帧；0 表示尚未出帧。"}
+        }
+      }
+    },
+    {
+      "event": "logging.dropped",
+      "event_version": 1,
+      "status": "planned",
+      "description": "目标日志 writer 显式报告丢弃记录；当前没有与此目标协议对应的生产者或判格实现。不能把有意限频输出直接当作队列丢失。",
+      "source": ["runtime/src/logcon.c#s2a_logcon_push", "services/S2A.Services/Red.cs#Report", "docs/standards/log-event.schema.json"],
+      "consumers": ["tools/score_cells.py#cells", "tools/check_log_schema.py"],
+      "acceptance": {
+        "cells": ["证据完整性"],
+        "rule": "count>0 表明对应来源和范围内证据可能不完整；受影响验收项不得以未出现失败事件为由判绿，须说明未测或局无效原因。该目标规则尚未接入现有记分板；不能只因级别为 WARNING 就忽略，也不能假定丢失了具体业务失败。",
+        "evidence": ["docs/standards/log-event.schema.json: seq/source_id 目标协议", "services/S2A.Services/Red.cs: Report 有意限频与累计 count 的区别"]
+      },
+      "selection": "all",
+      "data_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+        "required": ["count", "reason", "affected_source_id"],
+        "properties": {
+          "count": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807, "description": "本次报告新增丢失的记录条数，单位：条；不是累计调用数。"},
+          "reason": {"type": "string", "minLength": 1, "description": "writer 实际观测的丢弃原因。"},
+          "affected_source_id": {"type": "string", "minLength": 1, "description": "发生丢失的来源身份，可与报告者来源不同。"},
+          "first_seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "确实可知时记录首个丢失 writer 序号，单位：条；不凭缺口猜测。"},
+          "last_seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807, "description": "确实可知时记录最后丢失 writer 序号，单位：条；范围顺序由流验收器核对。"}
+        }
+      }
+    }
+  ]
+}
