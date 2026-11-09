@@ -80,8 +80,8 @@ def _alive(pid):
     k.CloseHandle.argtypes = [C.c_void_p]
     k.GetExitCodeProcess.argtypes = [C.c_void_p, C.c_void_p]
     h = k.OpenProcess(0x1000, False, pid)
-    if not h:
-        return False
+    if not h:   # 打不开不等于不在：拒绝访问（5）= 进程在、只是查不了，入口照留；只有「没有这个进程」（87）才算死（审计 P2-217）
+        return C.get_last_error() == 5
     code = C.c_ulong()
     ok = k.GetExitCodeProcess(h, C.byref(code))
     k.CloseHandle(h)
@@ -114,7 +114,7 @@ def _owner(link):
 
 
 def sweep(root=None, alive=_alive):
-    """拆掉崩溃残留：记录的进程已不在的入口；没有 .pid 的联接也算残留。→ 拆了几个"""
+    """拆掉崩溃残留：记录的进程已不在的入口；没有 .pid 的联接也算残留；写了 .pid、联接还没建成就被杀的，进程不在就删 .pid（审计 P2-217）。→ 拆了几个"""
     root = root or entry_dir()
     n = 0
     try:
@@ -123,8 +123,13 @@ def sweep(root=None, alive=_alive):
         return 0
     for name in names:
         if name.endswith(".pid"):
+            link = os.path.join(root, name[:-4])
+            pid = _owner(link)
+            if os.path.exists(link + ".pid") and not os.path.lexists(link) and (pid is None or not alive(pid)):   # 联接那一支已连 .pid 一起拆的不重复算
+                remove_entry(link)
+                n += 1
             continue
-        link = ntpath.join(root, name)
+        link = os.path.join(root, name)
         pid = _owner(link)
         if _is_junction(link) and (pid is None or not alive(pid)):
             remove_entry(link)
@@ -155,8 +160,11 @@ def enter(*paths):
                 link = ntpath.join(root, code)
                 if os.path.lexists(link):
                     continue   # 被另一个任务占用，顺延
-                with open(link + ".pid", "x", encoding="ascii") as f:
-                    f.write(str(os.getpid()))
+                try:
+                    with open(link + ".pid", "x", encoding="ascii") as f:
+                        f.write(str(os.getpid()))
+                except FileExistsError:
+                    continue   # 另一个任务刚占了这个短号（或残留还活着），顺延；不让整次退回长路径（审计 P2-217）
                 made.append(link)
                 _winapi.CreateJunction(target, link)
                 rows.append(f"{target}\t{link}")

@@ -62,11 +62,11 @@ On a 16 GB MacBook Air (M3), from importing a game to a finished iPhone build, c
 
 | Game | Game files | Shaders | Build time |
 |---|---|---|---|
-| Diablo III | 23.5 GB | 1,222 | **6.4 min** |
-| Animal Crossing: New Horizons | 12.0 GB | 9,315 | **8.6 min** |
-| The Legend of Zelda: Tears of the Kingdom | 17.5 GB | 26,999 | **34 min** |
+| A 23.5 GB action RPG | 23.5 GB | 1,222 | **6.4 min** |
+| A 12.0 GB life-sim game | 12.0 GB | 9,315 | **8.6 min** |
+| A 17.5 GB open-world game | 17.5 GB | 26,999 | **34 min** |
 
-The Nintendo Switch 2 edition of *The Legend of Zelda: Ocarina of Time*, measured on an iPhone 17 Pro Max: a **full 60 fps** while the phone is cool, **37–43 fps** once sustained load has heated it up, at about **0.15 J per frame**. [Evidence](docs/validation/EVIDENCE.md#speed-and-efficiency)
+A Switch 2 game, measured on an iPhone 17 Pro Max: a **full 60 fps** while the phone is cool, **37–43 fps** once sustained load has heated it up, at about **0.15 J per frame**. [Evidence](docs/validation/EVIDENCE.md#speed-and-efficiency)
 
 ## Platforms
 
@@ -90,7 +90,7 @@ Back up your saves before updating the app. The release uses the new app identif
 
 ## Honest boundaries
 
-S2Arm runs 64-bit (AArch64) games. Apple silicon cannot execute 32-bit ARM code, so 32-bit games are outside what S2Arm supports. Confirmed so far: Ni no Kuni: Wrath of the White Witch, Goat Simulator, New Super Mario Bros. U Deluxe and Monster Hunter XX. Minecraft: Story Mode, which needs a 36-bit address space, is outside it as well. The full list with versions is on the [evidence page](docs/validation/EVIDENCE.md#unsupported-games).
+S2Arm runs 64-bit (AArch64) games. Apple silicon cannot execute 32-bit ARM code, so 32-bit games are outside what S2Arm supports, as are games that need a 36-bit address space.
 
 ## Development
 
@@ -107,7 +107,7 @@ S2Arm stands on the shoulders of its community.
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT): pioneered this technical path, bringing your own Switch game natively to iPhone, iPad, Mac, Android and HarmonyOS for the first time.
 - **Impactor** (Samara M, MIT) and **apple-codesign** (MPL-2.0): signing and installing from Windows.
 - **LNPANDY** and the original authors and contributors of the iOS library shell: the shell and its RomFS archive subsystem.
-- **ns2pro-bridge** (DanielZhangyc, MIT), **MacNativeGames** (MIT), **LumaDock** (MIT), **deko3d** (fincs, zlib), **nvn.h** (h1k421, MIT), **bcdec** (Sergii Kudlai, MIT / Unlicense), **LibHac** (Alex Barney, MIT) and **hactool** (SciresM, ISC), **SPIRV-Cross** and **Vulkan-Headers** (The Khronos Group), **SMAA** (Jorge Jimenez et al., MIT), the **Mesa** tessellator (Microsoft, MIT), **Capstone**, **LZ4**, **.NET**, **libvpx**, **libopus**, **dav1d**, and the **Noto** fonts.
+- **ns2pro-bridge** (DanielZhangyc, MIT), **MacNativeGames** (MIT), **LumaDock** (MIT), **deko3d** (fincs, zlib), **nvn.h** (h1k421, MIT), **bcdec** (Sergii Kudlai, MIT / Unlicense), **SPIRV-Cross** and **Vulkan-Headers** (The Khronos Group), **SMAA** (Jorge Jimenez et al., MIT), the **Mesa** tessellator (Microsoft, MIT), **Capstone**, **LZ4**, **.NET**, **libvpx**, **libopus**, **dav1d**, and the **Noto** fonts.
 
 Versions, full license texts and what each component does are in [NOTICE](NOTICE) and the [third-party license list](THIRD_PARTY_LICENSES.md).
 

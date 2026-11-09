@@ -24,6 +24,8 @@ int dm_nvn2_driver_item(unsigned item, int *out) {   // 装作本游戏 sdk 的�
 void *nvn2_vi_entry(const char *name);
 // 红桩被调到：子进程里调，期望非正常退出（die 中止），父进程不受影响
 static int dies(void *f) { fflush(stdout); fflush(stderr); pid_t p = fork(); if (!p) { ((uint64_t (*)(void))f)(); _exit(0); } int st = 0; waitpid(p, &st, 0); return !(WIFEXITED(st) && WEXITSTATUS(st) == 0); }
+// 子进程里按客人约定调别名建池（句柄值 1、个数 4）：信号 / 非 0 退出 = 「死了」（P1-145：句柄被当地址写）
+static int dies_alias(uint64_t (*f)(uint16_t, uint32_t)) { fflush(stdout); fflush(stderr); pid_t p = fork(); if (!p) { f(1, 4); _exit(0); } int st = 0; waitpid(p, &st, 0); return !(WIFEXITED(st) && WEXITSTATUS(st) == 0); }
 int dm_opmode(void) { const char *d = getenv("S2A_DOCKED"); return d && !strcmp(d, "1"); }   // 替身：同 graphics/nvn/host_adapt.m（宿主不链进本单测）
 
 static uint8_t img[0x4000];
@@ -147,6 +149,9 @@ int main(void) {
         // camera Destroy：空操作（不中止）
         void (*cam_del)(uint16_t) = (void (*)(uint16_t))s2a_nv_entry("_ZN2nn6camera3sdk23DestroyOutputBufferPoolENS_3gsv15UserImageHandleE");
         CHECK(cam_del && !nvn2_red_of(cam_del)); cam_del(0);
+        // camera CreateAliasOutputBufferPool(UserImageHandle, unsigned)：句柄按值。按客人约定传句柄 1：不当地址写（原先写地址 1 → 信号 11，审计 P1-145），回 0
+        uint64_t (*cam_alias)(uint16_t, uint32_t) = (uint64_t (*)(uint16_t, uint32_t))s2a_nv_entry("_ZN2nn6camera3sdk27CreateAliasOutputBufferPoolENS_3gsv15UserImageHandleEj");
+        CHECK(cam_alias && !nvn2_red_of(cam_alias)); CHECK(!dies_alias(cam_alias)); CHECK(cam_alias(1, 4) == 0);
         // camera CreateCameraContext：输出参数写 NULL
         void (*cam_ctx)(void **) = (void (*)(void **))s2a_nv_entry("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE");
         CHECK(cam_ctx && !nvn2_red_of(cam_ctx));

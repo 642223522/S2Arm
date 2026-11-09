@@ -102,12 +102,13 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     exported = snapshot(source, exported=True)
 
     def csharp_call(operation, path=None, *, root=source, game_identity=identity,
-                    expected_code=None, **extra):
+                    expected_code=None, env=None, **extra):
         request = dict(operation=operation, dataRoot=str(root), workRoot=str(scratch / "csharp-work"),
                        game=game_identity, path=str(path) if path else None) | extra
         write_json(request_path, request)
         process = subprocess.run([DOTNET, DRIVER, "--request", str(request_path)],
-                                 capture_output=True, text=True, check=True, timeout=60)
+                                 capture_output=True, text=True, check=True, timeout=60,
+                                 env=None if env is None else os.environ | env)
         response = json.loads(process.stdout)
         if expected_code:
             assert not response["ok"] and response["error"]["code"] == expected_code, response
@@ -282,4 +283,33 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
         print(f"PASS 恢复复制数据根：跳过存档三处、512 MiB 非存档文件走 APFS 克隆（首块物理偏移同 {src_at}，{ms} ms）")
     else:
         print(f"PASS 恢复复制数据根：跳过存档三处、512 MiB 非存档文件内容一致（{ms} ms；非 macOS 不核克隆）")
+    # 审计 P2-175：目标指纹只算存档三处。期望手算：数据根里加一份非存档文件（着色器缓存）→ 指纹不变；改一个存档文件 → 指纹变
+    fp_root = scratch / "fingerprint-root"
+    shutil.copytree(source, fp_root)
+    fp0 = csharp_call("inspect", python_archive, root=fp_root)["targetFingerprint"]
+    (fp_root / "games/shader").mkdir(parents=True)
+    (fp_root / "games/shader/cache.bin").write_bytes(os.urandom(4096))
+    fp1 = csharp_call("inspect", python_archive, root=fp_root)["targetFingerprint"]
+    save_file = next(fp_root.glob("bis/user/save/*/0/contributing.md"))
+    save_file.write_bytes(save_file.read_bytes() + b"x")
+    fp2 = csharp_call("inspect", python_archive, root=fp_root)["targetFingerprint"]
+    assert fp1 == fp0 and fp2 != fp0, (fp0, fp1, fp2)
+    print("PASS 目标指纹：加着色器缓存不变、改存档文件变（审计 P2-175）")
+
+    # 审计 P2-177：恢复在事务 / 备份目录建好、恢复记录写出之前失败。期望手算：报错；save-transactions 与 save-backups/<游戏号>
+    #   下的子目录与调用前相同（本次建的都删了，前面用例正常恢复留下的备份不算）；活存档根逐文件不变
+    tx_root = scratch / "abandon-root"
+    shutil.copytree(source, tx_root)
+    before = snapshot(tx_root)
+    work = scratch / "csharp-work"
+    def subdirs():
+        return sorted(p for d in (work / "save-transactions", work / "save-backups" / GAME_ID) if d.exists() for p in d.iterdir() if p.is_dir())
+    dirs_before = subdirs()
+    preview = csharp_call("inspect", python_archive, root=tx_root)
+    csharp_call("restore", python_archive, root=tx_root, archiveSha256=preview["archiveSha256"],
+                targetFingerprint=preview["targetFingerprint"], expected_code="save_invalid",
+                env=dict(SAVE_TRANSFER_FAIL_AT="dirsCreated"))
+    left = subdirs()
+    assert left == dirs_before and snapshot(tx_root) == before, (dirs_before, left, snapshot(tx_root) == before)
+    print("PASS 恢复记录写出前失败：事务 / 备份目录不残留、活存档根不变（审计 P2-177）")
     print("Public-file G05/G06 interoperability passed; no game or player progress was tested.")
