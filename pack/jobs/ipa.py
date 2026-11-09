@@ -327,6 +327,8 @@ def _build(c):
         done = inst.put_game(c, gid, inst.MacPhone(c, early.team, early.dev, early.udid), steps=False)
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(out), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
+    import sizes
+    sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
 
 

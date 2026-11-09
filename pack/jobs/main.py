@@ -34,6 +34,7 @@ import layout
 import library
 import winproc
 import saves
+import sizes
 import target
 import toolchain
 from core import (Cancelled, Context, Failure, TERMINAL_STATES, cancel, describe, journal, pid_alive, prune_jobs,
@@ -75,7 +76,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     operations = {"preflight": toolchain.preflight, "prepareEngine": toolchain.prepare, "downloadMetal": toolchain.download_metal, "downloadIosPlatform": toolchain.download_ios_platform,
                   "setup": library.setup, "keys": library.keys, "import": library.import_games,
                   "catalog": library.catalog, "customize": library.customize, "remove": library.remove, "delete": library.delete, "clean": library.clean,
-                  "spaceSurvey": library.space_survey, "spaceFree": library.space_free,
+                  "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
                   "diagnostics": library.diagnostics, "saveInput": library.save_input,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
                   "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,

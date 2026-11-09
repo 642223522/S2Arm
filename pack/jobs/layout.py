@@ -300,6 +300,21 @@ def update_info(c, gid, **fields):
     atomic(d / GAME_JSON, dict(read(d / GAME_JSON, {}), **fields))
 
 
+def read_sizes(c, gid):
+    """game.json 里记的各部分大小（sizes.py 量、写）；没量过 / 没有文件夹 → None"""
+    s = game_info(c, gid).get("sizes")
+    return s if isinstance(s, dict) else None
+
+
+def write_sizes(c, gid, sizes):
+    """把量好的大小写回这款的 game.json；没有文件夹（删光了 / 位置没连上）不建、返回 False"""
+    d = find_game(c, gid)
+    if d is None:
+        return False
+    atomic(d / GAME_JSON, dict(read(d / GAME_JSON, {}), sizes=sizes))
+    return True
+
+
 def launch_json(c, gid, create=True):
     """启动设置（新功能线）：每款文件夹里的 launch.json"""
     return path(c, gid, "launch.json", create=create)
