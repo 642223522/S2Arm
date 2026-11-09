@@ -1239,6 +1239,29 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
 
+    def test_delete_also_drops_game_from_library_container(self):
+        # 期望（#227）：游戏库容器里有 A、B，删 A → 容器清单只剩 B、A 的随行目录和镜像包没了、B 原样；容器里没有的款删除不动容器。真跑 ship_ext container-drop
+        a, b = "0100000000010000", "0100000000020000"
+        app = self.c.library / "iPhone/container/S2Arm.app"
+        for gid in (a, b):
+            (app / "Games" / gid).mkdir(parents=True); (app / "Games" / gid / "main.npdm").write_bytes(b"META" + gid.encode())
+            (app / "Frameworks").mkdir(exist_ok=True); (app / "Frameworks" / f"S2AImages-{gid}.dylib").write_bytes(gid.encode())
+        (app / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "S", "games": [{"title_id": a}, {"title_id": b}]}))
+        import plistlib; (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games", "CFBundleExecutable": "S2Arm"})); (app / "S2Arm").write_bytes(b"bin")
+        (self.c.library / "iPhone/container/S2Arm.ipa").write_bytes(b"old")
+        self.catalogue([self.game(tid=a, packages=[self.package(tid=a)]), self.game(tid=b, packages=[self.package(tid=b, sha="b" * 64)])])
+        self.c.r["gameId"] = a
+        library.delete(self.c)
+        self.assertEqual([e["title_id"] for e in json.loads((app / "s2a_catalogue.json").read_text())["games"]], [b])
+        self.assertEqual(sorted(p.name for p in (app / "Games").iterdir()), [b])
+        self.assertEqual(sorted(p.name for p in (app / "Frameworks").iterdir()), [f"S2AImages-{b}.dylib"])
+        self.assertNotEqual((self.c.library / "iPhone/container/S2Arm.ipa").read_bytes(), b"old")
+        before = (app / "s2a_catalogue.json").read_text()
+        self.c.r["gameId"] = b
+        library.delete(self.c)   # 最后一款也摘（摘空）
+        self.assertEqual(json.loads((app / "s2a_catalogue.json").read_text())["games"], [])
+        self.assertNotEqual(before, (app / "s2a_catalogue.json").read_text())
+
     def test_delete_waits_for_execution_lock_held_by_cancelled_task(self):
         # 期望：执行锁被（刚被取消、还没退出的）任务占着 3 秒 → 删除不立刻失败，等锁放开后照样删掉（10-26 Spare-host：导入后自动排的 Mac 准备占锁，删除直接报「另一个任务正在使用游戏库」）
         import subprocess, sys, time
