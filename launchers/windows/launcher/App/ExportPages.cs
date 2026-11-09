@@ -39,6 +39,11 @@ public sealed partial class EnvironmentWindow
 
     private const string PlatformIos = "ios";
     private bool exportIos = true;
+    // 存放位置（游戏库结构 v3）：locations 作业读回的各位置、为哪款读的、出包页选中的文件夹（"" = 还没定，不传，后端按这款现在的位置）
+    private StorageLocations? locations;
+    private string? locationsFor;
+    private string exportLocation = "";
+    private const string OtherFolder = "__other__";
     // pack job
     private LibraryGame? packGame;
     private bool packRunning;
@@ -51,6 +56,7 @@ public sealed partial class EnvironmentWindow
     private string packSummary = "", packDiagnostics = "";
     private string? packFailureCode;
     private string? packIpa;
+    private string? packLocation;
     private long? packIpaBytes, packPackBytes;
     private PackSpace? packSpace;
     // in-progress capsule (shown while session is hidden)
@@ -167,6 +173,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>The build tab opens the progress page while a pack is running or its result is on screen.</summary>
     private void OpenBuild()
     {
+        locationsFor = null;   // 出包页每次打开都重读存放位置（剩余空间是当时的）
         if (packRunning || (packState == "succeeded" && packGame?.Id == selectedGame)) { Navigate("progress"); return; }
         Navigate("build");
     }
@@ -266,6 +273,7 @@ public sealed partial class EnvironmentWindow
             tiles.Children.Add(card);
         }
         body.Children.Add(tiles);
+        body.Children.Add(LocationRow(game));
 
         // action bar
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
@@ -279,6 +287,75 @@ public sealed partial class EnvironmentWindow
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
     }
+
+    /// <summary>存放位置（游戏库结构 v3，照 Mac ExportView.locationRow）：这款游戏的文件夹放在哪；换了位置，出包前先整个搬过去（存档跟着走）。
+    /// 缺省：这款现在的位置（ok / offline）→ 上次用的位置 → 默认位置（StorageLocations.DefaultFor）。</summary>
+    private Control LocationRow(LibraryGame game)
+    {
+        if (locationsFor != game.Id)
+        {
+            locationsFor = game.Id; locations = null;
+            exportLocation = game.Location is { State: "ok" or "offline" } here ? here.Path : "";
+            _ = LoadLocationsAsync(game);
+        }
+        var rows = locations?.Rows ?? [];
+        var options = new List<(string path, string label)>();
+        foreach (var r in rows)
+        {
+            // 卷名重名（几个位置在同一块盘上）时用路径，免得几项分不清
+            var name = r.Volume.Length == 0 || rows.Count(o => o.Volume == r.Volume) > 1 ? r.Path : r.Volume;
+            options.Add((r.Path, r.Connected
+                ? T("export.location.free").Replace("{0}", name).Replace("{1}", r.FreeBytes is { } free ? FormatBytes(free) : "?")
+                : T("export.location.offline").Replace("{0}", name)));
+        }
+        // 「选择其他文件夹…」选的、或位置表还没读回时这款现在的位置
+        if (exportLocation.Length > 0 && !options.Any(o => SameFolder(o.path, exportLocation))) options.Add((exportLocation, exportLocation));
+        var box = new ComboBox { MinWidth = 300, IsEnabled = !PackBusy, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var (path, label) in options) box.Items.Add(new ComboBoxItem { Content = label, Tag = path });
+        box.Items.Add(new ComboBoxItem { Content = T("export.location.other"), Tag = OtherFolder });
+        box.SelectedIndex = options.FindIndex(o => SameFolder(o.path, exportLocation));
+        box.SelectionChanged += (_, _) =>
+        {
+            if (box.SelectedItem is not ComboBoxItem { Tag: string value }) return;
+            if (value == OtherFolder) _ = ChooseLocationAsync(); else exportLocation = value;
+        };
+        AutomationId(box, "export.location");
+        var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
+        var title = Label(T("export.location.title"), 16); title.VerticalAlignment = VerticalAlignment.Center;
+        line.Children.Add(title);
+        Grid.SetColumn(box, 1); line.Children.Add(box);
+        return Card(line, 14);
+    }
+
+    private async Task LoadLocationsAsync(LibraryGame game)
+    {
+        if (connectedFolder is null || libraryId is null) return;
+        try
+        {
+            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "locations", null, CancellationToken.None);
+            if (!job.Report.Succeeded || locationsFor != game.Id) return;
+            locations = StorageLocations.Parse(job.Report.Result);
+            if (exportLocation.Length == 0) exportLocation = locations.DefaultFor(game.Location);
+        }
+        // 读不回位置表同 Mac：下拉框只剩这款现在的位置和「选择其他文件夹…」，不选就不传，后端按这款现在的位置出包
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException) { return; }
+        if (page == "build") Render();
+    }
+
+    private async Task ChooseLocationAsync()
+    {
+        try
+        {
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("export.location.title") });
+            if (folders.Count > 0) exportLocation = LocalPath(folders[0]);
+        }
+        catch (IOException) { }   // 不是本地文件夹：不换
+        Render();   // 取消时下拉框退回原来选的那项
+    }
+
+    private static bool SameFolder(string a, string b) =>
+        string.Equals(a.TrimEnd('\\', '/'), b.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
 
     private static void AutomationId(Control control, string id) => Avalonia.Automation.AutomationProperties.SetAutomationId(control, id);
 
@@ -300,6 +377,8 @@ public sealed partial class EnvironmentWindow
     private void StartPack(LibraryGame game, bool spaceOverride = false)
     {
         if (ExportBlocker(game) is not null) return;
+        // 「仍然出包」重试沿用这一款上次选的位置；出包页没读到这款时不传，后端按这款现在的位置
+        if (!spaceOverride || packGame?.Id != game.Id) packLocation = locationsFor == game.Id && exportLocation.Length > 0 ? exportLocation : null;
         packGame = game; packRunning = true; packState = "running"; packTrack = new(); packStarted = DateTime.UtcNow;
         packSeconds = null; packSummary = ""; packDiagnostics = ""; packIpa = null;
         packIpaBytes = null; packPackBytes = null; packSpace = null; sessionHidden = false; packFailureCode = null;
@@ -313,7 +392,10 @@ public sealed partial class EnvironmentWindow
         packCancellation = cancellation;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("ipa", game.Id, spaceOverride ? new Dictionary<string, object?> { ["spaceOverride"] = true } : null),
+            var extra = new Dictionary<string, object?>();
+            if (spaceOverride) extra["spaceOverride"] = true;
+            if (packLocation is not null) extra["location"] = packLocation;   // pack/jobs/library.py apply_location：在别的位置就先整个搬过去
+            var job = await PackJobClient.RunAsync(PackRequest("ipa", game.Id, extra),
                 e => Dispatcher.UIThread.Post(() =>
                 {
                     packTrack.Ingest(e, Clock);
@@ -348,6 +430,8 @@ public sealed partial class EnvironmentWindow
             {
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packCancellation = null; packRunning = false;
+                // 换了存放位置 / 第一次建文件夹：游戏库里这款的位置变了（搬到一半失败也可能已经动了），重读游戏库，出包页下次重读位置表
+                if (packLocation is not null && !SameFolder(packLocation, game.Location?.Path ?? "") && !libraryBusy) { locationsFor = null; libraryOperation = RunLibraryAsync("catalog", null); }
                 if (packState == "succeeded")
                 {
                     readinessFor = null;

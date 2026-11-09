@@ -28,6 +28,8 @@ struct LauncherView: View {
     @State var displayFor: String?
     @State var inputFor: String?
     @State var deleteFor: GameSummary?
+    /// 「找不到游戏文件」的那款（点了卡片）：重新指定文件夹 / 从游戏库移除
+    @State var missingFor: GameSummary?
     @State private var dropTargeted = false
     @State var collectionHeight: CGFloat = 300
     let brand: String
@@ -97,6 +99,11 @@ struct LauncherView: View {
             Button(txt("game.cancel"), role: .cancel) { deleteFor = nil }
             Button(txt("game.delete.confirm"), role: .destructive) { if let g = deleteFor { model.deleteGame(g) }; deleteFor = nil }
         } message: { Text(txt("game.delete.body")) }
+        .alert(txt("library.missing.title").replacingOccurrences(of: "{0}", with: missingFor?.name ?? ""), isPresented: Binding(get: { missingFor != nil }, set: { if !$0 { missingFor = nil } })) {
+            Button(txt("library.missing.relink")) { if let g = missingFor { relinkGame(g) }; missingFor = nil }
+            Button(txt("library.missing.forget"), role: .destructive) { if let g = missingFor { model.forgetGame(g) }; missingFor = nil }
+            Button(txt("game.cancel"), role: .cancel) { missingFor = nil }
+        } message: { Text(txt("library.missing.body")) }
         .sheet(isPresented: $model.showAddGames) { ImportSheet(model: model, kind: .games).environmentObject(loc) }
         .sheet(isPresented: $model.showKeys) { ImportSheet(model: model, kind: .keys).environmentObject(loc) }
         .sheet(isPresented: $model.showEnvironment) {

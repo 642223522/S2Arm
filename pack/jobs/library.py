@@ -24,6 +24,7 @@ from core import Failure, atomic, contained, digest, prune_jobs, read
 import toolchain
 import winproc
 import filelock
+import layout
 
 DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
@@ -369,6 +370,27 @@ def _verify_copy(src, dst, strict):
             raise Failure(f"拷到新位置后校验不一致：{rel}", code="library_move_failed")
 
 
+def copy_tree_links(src, dst):
+    """跨盘拷一棵目录，链接拷链接本身、不钻进去：软链照拷；Windows 的 junction（Python 里不算软链，shutil.copytree 会钻进去展开成普通目录，
+    产物根的「现行」随之失效、出包报「现行必须是目录链接」——#214 整库搬家与 v3 移动游戏同一处）重建成指向同一目标的 junction。
+    目标仍指旧位置；放到新位置后由 _retarget_links 改指"""
+    src, dst = Path(src), Path(dst)
+    isjunction = getattr(os.path, "isjunction", lambda _: False)
+    def copy(a, b):
+        if isjunction(a):
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(b), os.readlink(a).removeprefix("\\\\?\\")], check=True, capture_output=True)
+        elif a.is_symlink():
+            os.symlink(os.readlink(a), b, target_is_directory=a.is_dir())
+        elif a.is_dir():
+            b.mkdir()
+            for child in a.iterdir():
+                copy(child, b / child.name)
+            shutil.copystat(a, b)
+        else:
+            shutil.copy2(a, b)
+    copy(src, dst)
+
+
 def _retarget_links(root, old, new):
     """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置"""
     if not root.is_dir():
@@ -456,8 +478,8 @@ def move_library(c, source):
                 c.check()
                 target = stage / str(n)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if a.is_dir() and not a.is_symlink():
-                    shutil.copytree(a, target, symlinks=True)
+                if a.is_dir() and not _is_link(a):
+                    copy_tree_links(a, target)
                 else:
                     shutil.copy2(a, target, follow_symlinks=False)
                 _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
@@ -537,6 +559,7 @@ def setup(c):
         return dict(library=str(c.library), libraryId=info["id"], outcome="moved")
     info = dict(schema=1, id=str(uuid.uuid4()))
     atomic(c.library / "catalog.json", dict(schema=1, games=[]))
+    atomic(c.library / ".s2arm-layout.json", dict(version=layout.VERSION, games=[]))
     atomic(marker, info)
     return dict(library=str(c.library), libraryId=info["id"], outcome="created")
 
@@ -656,9 +679,30 @@ def input_identity(game):
 
 
 def _volume(path):
-    # 给提示用的磁盘名：/Volumes/<名> 下就是那块外接盘，否则是系统盘
+    # 给提示用的磁盘名。Mac：/Volumes/<名> 下就是那块外接盘，否则是系统盘。
+    #   Windows：按盘符，系统盘（%SystemDrive%）叫系统盘，别的盘用卷标「卷标（D:）」，取不到卷标叫「D 盘」（11-09：原先只认 /Volumes，Windows 每个盘都显示系统盘）
+    if os.name == "nt":
+        from pathlib import PureWindowsPath
+        drive = PureWindowsPath(str(path)).drive
+        if not drive or drive.upper() == os.environ.get("SystemDrive", "C:").upper():
+            return "系统盘"
+        if drive.startswith("\\\\"):
+            return drive
+        label = _win_volume_label(drive + "\\")
+        return f"{label}（{drive.upper()}）" if label else f"{drive[0].upper()} 盘"
     parts = Path(path).resolve().parts
     return parts[2] if len(parts) > 2 and parts[1] == "Volumes" else "系统盘"
+
+
+def _win_volume_label(root):
+    """Windows 卷标（GetVolumeInformationW）；取不到返回空串"""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(261)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(ctypes.c_wchar_p(root), buf, 261, None, None, None, None, 0)
+        return buf.value.strip() if ok else ""
+    except (AttributeError, OSError):
+        return ""
 
 
 # 预检里没算进门槛、也量不准的开销（只列出来给玩家看，不编常数）
@@ -738,10 +782,13 @@ def pack_footprint(c, gid):
     Mac 运行版本（games/<程序号>），再加私有目录里本款的出包缓存（直连 / 翻译…，game_caches）——后者只在和游戏库同一卷时才算进来。
     不含各款共用的编库缓存（air / pso / gal_dl_cache）、存档、运行时着色器缓存（runtime-cache，玩的时候才长）"""
     shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}
-    roots = [c.library / "iPhone" / gid, c.library / "cache" / gid, c.library / "games" / gid]
+    gdir = layout.find_game(c, gid)
+    roots = [c.library / "iPhone" / gid]
+    if gdir and gdir.exists():
+        roots.append(gdir)
     roots += [p for p in game_caches(c, gid) if p not in shared]
     # APFS 上产物根、资源包、Mac 运行版本里的这两种目录都是解包结果的克隆，不占新空间，只算解包那一份（stat 看不出共享块）；Windows（NTFS 无克隆）照实算
-    clones = [] if os.name == "nt" else [str(c.library / "iPhone" / gid), str(c.library / "games" / gid)]
+    clones = [] if os.name == "nt" else [str(c.library / "iPhone" / gid)] + ([str(gdir)] if gdir and gdir.exists() else [])
     return disk_bytes(roots, c.library.stat().st_dev, skip_names=CLONED_DIRS, skip_under=clones)
 
 
@@ -1013,14 +1060,21 @@ def import_games(c):
                             p["path"] = str(source)
                     if not duplicate:
                         icon = Path(icons) / (metadata["titleId"] + ".jpg")
+                        nacp = (Path(icons).parent / (metadata["titleId"] + ".nacp")) if (Path(icons).parent / (metadata["titleId"] + ".nacp")).is_file() else None
+                        english_name = ""
+                        if nacp:
+                            dump = engine_tool(c, "ns2_dump")
+                            english_name = dump.nacp_title(nacp, 0) or dump.nacp_title(nacp, 1) or ""
                         if icon.is_file():
-                            target = contained(c.library, c.library / "games" / tid / "cover.jpg")
+                            target = layout.path(c, tid, "cover.jpg")
                             target.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copyfile(icon, target)
                         metadata.pop("icon", None)
                         game["packages"].append(metadata | dict(path=str(source), sha256=sha, size=size))
                         if metadata["name"]:
                             game["name"] = metadata["name"]
+                        if english_name and "englishName" not in game:
+                            game["englishName"] = english_name
                     results.append(dict(id=tid, name=source.name, duplicate=duplicate))
                 idx += 1
                 c.check()
@@ -1046,8 +1100,13 @@ def import_games(c):
                             p["path"] = str(source)
                     if not duplicate:
                         icon = Path(icons) / (metadata["titleId"] + ".jpg")
+                        nacp = (Path(icons).parent / (metadata["titleId"] + ".nacp")) if (Path(icons).parent / (metadata["titleId"] + ".nacp")).is_file() else None
+                        english_name = ""
+                        if nacp:
+                            dump = engine_tool(c, "ns2_dump")
+                            english_name = dump.nacp_title(nacp, 0) or dump.nacp_title(nacp, 1) or ""
                         if icon.is_file():
-                            target = contained(c.library, c.library / "games" / tid / "cover.jpg")
+                            target = layout.path(c, tid, "cover.jpg")
                             target.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copyfile(icon, target)
                         metadata.pop("icon", None)
@@ -1055,6 +1114,8 @@ def import_games(c):
                         game["packages"].append(metadata | dict(path=str(source), sha256=sha, size=metadata.get("contentBytes", 0)))
                         if metadata["name"]:
                             game["name"] = metadata["name"]
+                        if english_name and "englishName" not in game:
+                            game["englishName"] = english_name
                     results.append(dict(id=tid, name=source.name, duplicate=duplicate))
                 idx += 1
                 c.check()
@@ -1081,7 +1142,7 @@ _CUSTOM_COVER = re.compile(r"cover\.custom\.[0-9a-f]{8}\.jpg")
 
 def game_custom(c, gid):
     """玩家改过的显示名和封面（games/<程序号>/custom.json）。只影响显示，不改 catalog.json，不让已出的包失效；重新导入也不会覆盖。"""
-    folder = contained(c.library, c.library / "games" / gid)
+    folder = layout.path(c, gid, create=False)
     try:
         data = read(folder / "custom.json", {})
     except (OSError, ValueError):
@@ -1114,7 +1175,7 @@ def customize(c):
     with c.lock():
         gid = c.game()["id"]
         c.begin("保存游戏名字和封面")
-        folder = contained(c.library, c.library / "games" / gid)
+        folder = layout.path(c, gid)
         current = game_custom(c, gid)
         name, cover = current["name"], current["cover"].name if current["cover"] else ""
         data = None
@@ -1147,6 +1208,7 @@ def customize(c):
 def catalog(c):
     from build import validate_runtime
     import toolchain
+    import host_update
     c.begin("读取游戏库")
     sweep_residue(c)
     cat = c.catalog()
@@ -1155,9 +1217,9 @@ def catalog(c):
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
         game["compatibility"] = "unsupported" if guest_isa(selected_packages(game)) == "aarch32" else "experimental"
-        current = c.library / "games" / game["id"] / "current"
+        image = layout.image_mac(c, game["id"], create=False)
         try:
-            manifest = validate_runtime(c, current, full=False, files=False)
+            manifest = validate_runtime(c, image, full=False, files=False)
             game["ready"] = manifest.get("memoryRequirementsVersion") == 2
         except (Failure, OSError, ValueError):
             manifest = {}
@@ -1166,10 +1228,18 @@ def catalog(c):
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
         iphone = c.library / "iPhone" / game["id"]
         game["iphoneReady"] = iphone.is_dir() and any(iphone.glob("*.ipa")) and any(p.is_dir() and p.name.endswith("资源包") for p in iphone.iterdir())
-        game["iphoneInstall"] = read(c.library / "games" / game["id"] / "ios-install.json", None)
+        game["iphoneInstall"] = read(layout.path(c, game["id"], "ios-install.json", create=False), None)
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
-        game["inputConfig"] = toolchain.input_interface(c, current / "S2ArmGame.app/Contents/MacOS/s2arm-host")[0] if game["ready"] else input_supported
-        cover = c.library / "games" / game["id"] / "cover.jpg"
+        game_info = layout.game_info(c, game["id"])
+        host_mac = game_info.get("hostMac")
+        game["inputConfig"] = toolchain.input_interface(c, host_update.host_exe(c, host_mac))[0] if host_mac and game["ready"] else input_supported
+        game["hostUpdate"] = host_update.status(c, game["id"], image, manifest) if game["ready"] else "none"
+        # 存放位置（游戏库结构 v3）：ok / offline（位置没连上，如移动硬盘没插）/ missing（位置在、文件夹没了）/ none（还没出过包）
+        where, place = layout.state(c, game["id"])
+        root = place.parent.parent if where == "ok" else place
+        game["location"] = dict(state=where, path=str(root) if root else "", folder=str(place) if where == "ok" else "",
+                                volume=_volume(root) if root else "", default=root == c.library if root else True)
+        cover = layout.path(c, game["id"], "cover.jpg", create=False)
         custom = game_custom(c, game["id"])
         game["customName"], game["customCover"] = bool(custom["name"]), custom["cover"] is not None
         game["name"] = custom["name"] or game["name"]
@@ -1409,9 +1479,9 @@ def _residue_disposable(c, gid):
 
 def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
-    roots = [*(c.library / "iPhone" / gid).glob("roots/*@现行"), *(c.library / "iPhone" / gid).glob("work/pkg/product"), *(c.library / "cache" / gid).glob("*/roots/*@现行"),
+    roots = [*(c.library / "iPhone" / gid).glob("roots/*@现行"), *(c.library / "iPhone" / gid).glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
-             *(c.library / "iPhone" / gid).glob("roots/.failed"), *(c.library / "cache" / gid).glob("*/roots/.failed")]
+             *(c.library / "iPhone" / gid).glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
     dest = c.private / "logs" / (c.task + "-stages")
     count = 0
     for root in roots:
@@ -1443,9 +1513,9 @@ def _residue(c):
     for game in c.catalog()["games"]:
         gid = game["id"]
         out = c.library / "iPhone" / gid
-        stale = (c.library / "cache" / gid).exists() or (out.is_dir() and any(p.name not in (CONTAINER_KIT, SHELL_STAMP_NAME, "logs") and p.suffix != ".ipa" and not p.name.endswith("资源包") for p in out.iterdir()))
+        stale = layout.build_dir(c, gid, create=False).exists() or (out.is_dir() and any(p.name not in (CONTAINER_KIT, SHELL_STAMP_NAME, "logs") and p.suffix != ".ipa" and not p.name.endswith("资源包") for p in out.iterdir()))
         stale = stale and _residue_disposable(c, gid)
-        partials = list((c.library / "games" / gid / "releases").glob("*.partial"))
+        partials = list(layout.path(c, gid, "image", "mac.partial", create=False).parent.glob("mac.partial")) + list(layout.path(c, gid, "image", "mac.old", create=False).parent.glob("mac.old"))
         if stale or partials:
             found.append((gid, stale, partials))
     return found
@@ -1465,7 +1535,7 @@ def sweep_residue(c):
                 if stale:
                     prune_build(c, gid, record=False)
                 for partial in partials:
-                    _rm(c, c.library, partial)
+                    _rm(c, layout.root_of(c, gid), partial)
     except (Failure, OSError, ValueError):
         pass   # 清不掉不影响读游戏库，下次再扫
 
@@ -1482,9 +1552,9 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
     n = 0
     kit_ready = _residue_disposable(c, gid)
     if retain_compiler and kit_ready:
-        unpacked = c.library / "cache" / gid
+        unpacked = layout.build_dir(c, gid, create=False)
         if unpacked.exists():
-            _rm(c, c.library, unpacked); n += 1
+            _rm(c, layout.root_of(c, gid), unpacked); n += 1
     if out.is_dir():
         for p in out.iterdir():
             if p.name == "logs" or p.name.endswith("资源包") or (p.is_file() and p.suffix == ".ipa"):
@@ -1548,9 +1618,21 @@ def delete(c):
             with c.lock("execution"), c.lock():
                 gid = c.game()["id"]
                 c.begin("删除游戏与出包产物")
-                for p in (c.library / "iPhone" / gid, c.library / "cache" / gid):
+                for p in [c.library / "iPhone" / gid]:
                     if p.exists():
                         _rm(c, c.library, p)
+                gdir = layout.find_game(c, gid)
+                if gdir and gdir.exists():
+                    # 存档有内容就保留
+                    saves = gdir / "saves"
+                    backups = gdir / "save-backups"
+                    has_saves = (saves.exists() and any(saves.iterdir())) or (backups.exists() and any(backups.iterdir()))
+                    if has_saves:
+                        for item in gdir.iterdir():
+                            if item.name not in ("saves", "save-backups"):
+                                _rm(c, layout.root_of(c, gid), item)
+                    else:
+                        _rm(c, layout.root_of(c, gid), gdir)
                 for p in game_caches(c, gid):
                     _rm(c, c.work_root, p)
                 drop_from_container(c, gid)
@@ -1580,9 +1662,12 @@ def clean(c):
         kind = c.r.get("kind")
         if kind == "cache":
             c.begin("清理构建缓存")
-            target = contained(c.library / "cache", c.library / "cache" / game["id"])
+            target = layout.build_dir(c, game["id"], create=False)
             if target.is_dir():
-                _rmtree(target)
+                _rm(c, layout.root_of(c, game["id"]), target)
+            shader = layout.path(c, game["id"], "shader-cache", create=False)   # 清缓存 = 本款出包缓存 + 运行时着色器缓存（游戏库结构双端统一「清缓存」）
+            if shader.is_dir():
+                _rm(c, layout.root_of(c, game["id"]), shader)
             prune_build(c, game["id"], retain_compiler=False)   # 用户显式清缓存保留原有全清语义，不套用 Q15 自动保留策略
         elif kind == "sources":
             # 只删 0.1.0-beta.3 及以前复制进游戏库的托管副本；原地导入的原件是玩家的文件，只读、不删
@@ -1617,12 +1702,13 @@ def space_parts(c, gid):
     shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}   # 各款共用的编库缓存：不归任何一款
     ipa = _ipa_outputs(out)
     inter = [p for p in out.iterdir() if p.name != "logs" and p not in ipa] if out.is_dir() else []
+    gdir = layout.find_game(c, gid)
     parts = {
-        "legacy": [c.library / "cache" / gid, *inter],
+        "legacy": [layout.build_dir(c, gid, create=False), *inter],
         "shaders": [p for p in game_caches(c, gid) if p not in shared],
-        "mac": [c.library / "games" / gid],
+        "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,
-        "saves": [c.library / "saves" / gid],
+        "saves": [layout.path(c, gid, "saves", create=False)],
         "logs": [out / "logs"],
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}
@@ -1737,7 +1823,7 @@ def save_input(c):
     config = validate_input(c.r["config"])
     if c.r.get("gameId"):
         c.game()
-        target = contained(c.library, c.library / "mappings" / (c.r["gameId"] + ".json"))
+        target = layout.path(c, c.r["gameId"], "input.json")
     else:
         target = c.private / "default-input.json"
     atomic(target, config)
@@ -1908,3 +1994,61 @@ def diagnostics(c):
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return dict(outputPath=str(destination))
+
+
+# ---- 存放位置（游戏库结构 v3）----
+
+def location_rows(c):
+    """出包页「存放位置」下拉框：各位置的路径、卷名、剩余空间、连没连上；last = 上次用的位置"""
+    rows = []
+    for lid, root, ok in layout.locations(c):
+        free = shutil.disk_usage(root).free if ok else None
+        rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library))
+    return dict(locations=rows, last=layout.load_index(c).get("last") or layout.default_id(c))
+
+
+def list_locations(c):
+    return location_rows(c)
+
+
+def apply_location(c, game):
+    """出包前按请求的 location（路径）放这款：已在别的位置就整个搬过去（存档跟着走），还没有就建在那里；记成「上次用的位置」"""
+    want = c.r.get("location")
+    if not want:
+        return
+    want = Path(want).expanduser()
+    if want == Path(want.anchor) or want == Path.home():
+        raise Failure("请选一个单独的文件夹作存放位置。", code="job_failed")
+    where, place = layout.state(c, game["id"])
+    if where == "ok" and place.parent.parent != want:
+        c.begin("把这款游戏搬到新的存放位置")
+        layout.move_game(c, game["id"], want)
+    elif where != "ok":
+        layout.game_dir(c, game["id"], location=want)
+    layout.use_location(c, want)
+
+
+def move_game(c):
+    with c.lock("execution"), c.lock():
+        game = c.game()
+        if not c.r.get("location"):
+            raise Failure("没有选新的存放位置。", code="job_failed")
+        apply_location(c, game)
+        return dict(gameId=game["id"], folder=str(layout.find_game(c, game["id"])))
+
+
+def relink_game(c):
+    with c.lock():
+        game = c.game()
+        return dict(gameId=game["id"], folder=str(layout.relink(c, game["id"], Path(c.r.get("folder") or ""))))
+
+
+def forget_game(c):
+    """「从游戏库移除」（找不到 / 不要了）：清单和索引里去掉，磁盘上的文件不动"""
+    with c.lock():
+        gid = c.game()["id"]
+        layout.forget(c, gid)
+        cat = c.catalog()
+        cat["games"] = [g for g in cat["games"] if g["id"] != gid]
+        atomic(c.library / "catalog.json", cat)
+    return {}

@@ -85,8 +85,13 @@ public sealed record GamePackage(string Type, string TitleId, int Version, strin
 
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
-    bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false)
+    bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
+    GameLocation? Location = null)
 {
+    /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
+    public string LocationState => Location?.State ?? "none";
+    /// <summary>Offline or missing games cannot be exported, moved or cleaned (mirrors the Mac card menu).</summary>
+    public bool Reachable => LocationState is not ("offline" or "missing");
     /// <summary>NSP / XCI need prod.keys; extracted folders and NUP containers do not (mirrors GameSummary.needsKeys).</summary>
     public bool NeedsKeys => (Packages ?? []).Any(p => p.Format is not ("nup" or "dump" or "extract" or "loose"));
     /// <summary>DLC count deduplicated by title id (mirrors GameSummary.dlcCount).</summary>
@@ -143,7 +148,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     LibraryJobResult.Text(game, "display", true), LibraryJobResult.Text(game, "cover", true),
                     game.GetProperty("hidden").GetBoolean(), missing, iphoneReady, iphoneAt, iphoneFree, packages.AsReadOnly(),
                     game.TryGetProperty("customName", out var customName) && customName.ValueKind == JsonValueKind.True,
-                    game.TryGetProperty("customCover", out var customCover) && customCover.ValueKind == JsonValueKind.True));
+                    game.TryGetProperty("customCover", out var customCover) && customCover.ValueKind == JsonValueKind.True,
+                    game.TryGetProperty("location", out var location) && location.ValueKind == JsonValueKind.Object ? GameLocation.Parse(location) : null));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),
@@ -153,6 +159,50 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
         {
             throw new LibraryProtocolException("Invalid library catalogue.", error);
         }
+    }
+}
+
+/// <summary>Where one game is stored (library layout v3; catalog game.location, pack/jobs/library.py catalog).
+/// Path = the storage location, Folder = the game's own folder (only when State is ok).</summary>
+public sealed record GameLocation(string State, string Path, string Folder, string Volume, bool IsDefault)
+{
+    public static GameLocation Parse(JsonElement value)
+    {
+        var state = LibraryJobResult.Text(value, "state");
+        if (state is not ("ok" or "offline" or "missing" or "none")) throw new LibraryProtocolException("Unknown game location state.");
+        return new(state, LibraryJobResult.Text(value, "path", true), LibraryJobResult.Text(value, "folder", true),
+            LibraryJobResult.Text(value, "volume", true), value.TryGetProperty("default", out var d) && d.ValueKind == JsonValueKind.True);
+    }
+}
+
+/// <summary>One storage location (locations job, pack/jobs/library.py location_rows): one entry of the export page dropdown.</summary>
+public sealed record StorageLocation(string Id, string Path, string Volume, bool Connected, long? FreeBytes, bool IsDefault);
+
+/// <summary>Result of the locations job: every storage location and the id of the one used last.</summary>
+public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, string Last)
+{
+    public static StorageLocations Parse(JsonElement result)
+    {
+        try
+        {
+            LibraryJobResult.UniqueFields(result);
+            var rows = result.GetProperty("locations").EnumerateArray().Select(r => new StorageLocation(
+                LibraryJobResult.Text(r, "id"), LibraryJobResult.Text(r, "path"), LibraryJobResult.Text(r, "volume", true),
+                r.GetProperty("connected").GetBoolean(),
+                r.TryGetProperty("freeBytes", out var free) && free.ValueKind == JsonValueKind.Number ? free.GetInt64() : null,
+                r.TryGetProperty("default", out var d) && d.ValueKind == JsonValueKind.True)).ToArray();
+            return new(rows, result.TryGetProperty("last", out var last) && last.ValueKind == JsonValueKind.String ? last.GetString()! : "");
+        }
+        catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException or FormatException)
+        { throw new LibraryProtocolException("Invalid storage locations.", error); }
+    }
+
+    /// <summary>Export page default (same order as the Mac ExportView): where this game is now (ok / offline) → the location used last
+    /// (when connected) → the default location; "" when none is known.</summary>
+    public string DefaultFor(GameLocation? game)
+    {
+        if (game is { State: "ok" or "offline", Path.Length: > 0 }) return game.Path;
+        return Rows.FirstOrDefault(r => r.Id == Last && r.Connected)?.Path ?? Rows.FirstOrDefault(r => r.IsDefault)?.Path ?? "";
     }
 }
 

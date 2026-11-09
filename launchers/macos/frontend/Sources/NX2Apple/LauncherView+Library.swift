@@ -95,6 +95,14 @@ extension LauncherView {
                     heroCircle("ellipsis", label: txt("game.more"), id: "hero.more") { moreFor = game.id }
                         .popover(isPresented: Binding(get: { moreFor == game.id }, set: { if !$0 { moreFor = nil } }), arrowEdge: .bottom) { moreMenu(game) }
                 }
+                if game.playable, game.hostUpdate == "incompatible" {
+                    // 新版改了宿主读产物的约定，换不了宿主：旧版本照常能玩，重新出一次 Mac 版才能用上新版修复（host_update.py）
+                    HStack(spacing: 10) {
+                        Text(txt("library.hostUpdate.incompatible")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Button(txt("library.hostUpdate.prepare")) { model.exportFor = game.id }
+                            .buttonStyle(.link).disabled(model.busy).accessibilityIdentifier("hero.hostUpdate")
+                    }
+                }
                 if let error = model.actionError(for: game.id) {
                     Text(loc.backend(error)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                 }
@@ -138,7 +146,7 @@ extension LauncherView {
                     HStack(alignment: .top, spacing: 14) {
                         ForEach(model.games) { game in
                             let _ = LauncherWork.count(.card)
-                            Button { model.selectedID = game.id } label: {
+                            Button { if game.location.state == "missing" { missingFor = game } else { model.selectedID = game.id } } label: {
                                 VStack(alignment: .leading, spacing: 8) {
                                     GameArtwork(covers: covers, cover: game.cover)
                                     .frame(width: cardWidth, height: cardWidth / 1.8).clipped()
@@ -158,6 +166,7 @@ extension LauncherView {
                             .accessibilityAddTraits(game.id == heroID ? .isSelected : [])
                             .accessibilityIdentifier("card." + game.id)
                             .padTarget("card." + game.id, scope: "main", radius: 7) { model.selectedID = game.id }
+                            .contextMenu { cardMenu(game) }
                         }
                     }
                     .padding(.horizontal, Self.ringRoom).padding(.top, Self.ringRoom).padding(.bottom, 5 + Self.ringRoom)
@@ -246,6 +255,36 @@ extension LauncherView {
         .buttonStyle(.plain)
     }
 
+    /// 游戏卡片右键菜单（游戏库结构 v3）：开始游戏、出包、启动设置、在访达中显示、移动到其他位置、清除缓存、删除
+    @ViewBuilder func cardMenu(_ game: GameSummary) -> some View {
+        let reachable = game.location.state != "offline" && game.location.state != "missing"
+        if game.playable && reachable {
+            Button { model.play(game, uiLanguage: uiLanguage) } label: { Label(loc.t("library.play"), systemImage: "play.fill") }
+        }
+        Button { model.exportFor = game.id } label: { Label(loc.t("s2arm.export.action"), systemImage: "shippingbox") }.disabled(!reachable)
+        Button { displayFor = game.id } label: { Label(txt("library.menu.launchSettings"), systemImage: "gearshape") }.disabled(!reachable)
+        Divider()
+        Button { model.reveal(game) } label: { Label(txt("library.menu.reveal"), systemImage: "folder") }.disabled(game.location.path.isEmpty)
+        Button { moveGame(game) } label: { Label(txt("library.menu.move"), systemImage: "arrow.right.doc.on.clipboard") }.disabled(!reachable || game.location.state == "none" || model.busy)
+        Button { model.clearCache(game) } label: { Label(txt("library.menu.clearCache"), systemImage: "sparkles") }.disabled(!reachable || model.busy)
+        Divider()
+        Button(role: .destructive) { deleteFor = game } label: { Label(txt("game.delete"), systemImage: "trash") }
+    }
+
+    func moveGame(_ game: GameSummary) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.prompt = BackendText.launcherText("export.location.choose", language: uiLanguage)
+        if panel.runModal() == .OK, let url = panel.url { model.moveGame(game, to: url) }
+    }
+
+    func relinkGame(_ game: GameSummary) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.message = txt("library.missing.pick")
+        if panel.runModal() == .OK, let url = panel.url { model.relinkGame(game, folder: url) }
+    }
+
     private func exportDiagnostics() {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "S2Arm-diagnostics.zip"
@@ -258,6 +297,9 @@ extension LauncherView {
             return (loc.t(model.session?.kind == .play ? "s2arm.library.running" : "s2arm.job.running"), LauncherPalette.building)
         }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
+        // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来自动恢复；文件夹没了 → 红字，点卡片重新指定或移除
+        if game.location.state == "offline" { return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: game.location.volume), LauncherPalette.unbuilt) }
+        if game.location.state == "missing" { return (txt("library.location.missing"), LauncherPalette.danger) }
         var parts: [String] = []
         var expired = false
         if game.iphoneInstalledAt != nil {

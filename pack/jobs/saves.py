@@ -24,6 +24,8 @@ from pathlib import Path, PurePosixPath
 from core import Failure, atomic, contained
 from library import input_identity, selected_packages
 import save_formats
+import layout
+import layout as _lay   # external_archive 里有同名局部变量 layout（存档结构），那里用这个别名
 
 OPERATIONS = {"saveStatus", "saveBackup", "saveInspect", "saveRestore"}
 TREES = ("bis/user/save", "bis/system/save")
@@ -108,9 +110,9 @@ def locations(c, game):
     if not re.fullmatch(r"[0-9a-fA-F]{16}", gid):
         fail(c, "游戏标识无效，无法管理存档。", "game_id")
     try:
-        root = safe_path(c.library, c.library / "saves" / gid)
-        transactions = safe_path(c.library, c.library / "save-transactions")
-        backups = safe_path(c.library, c.library / "save-backups" / gid)
+        root = safe_path(layout.root_of(c, gid), layout.path(c, gid, "saves", create=False))
+        transactions = safe_path(layout.root_of(c, gid), layout.root_of(c, gid) / "save-transactions")   # 事务只涉及本位置的游戏（游戏库结构 v3）
+        backups = safe_path(layout.root_of(c, gid), layout.path(c, gid, "save-backups", create=False))
     except ValueError:
         fail(c, "存档目录包含链接，已停止操作。", "unsafe_path")
     return root, transactions, backups
@@ -579,9 +581,9 @@ def journal_paths(c, game, record):
         or record.get("phase") not in ("prepared", "committed")
     ):
         raise ValueError("invalid recovery record")
-    transaction = safe_path(c.library, transactions / token)
-    previous = safe_path(c.library, backups / token)
-    owner = safe_path(c.library, transaction / "owner.json")
+    transaction = safe_path(layout.root_of(c, game["id"]), transactions / token)
+    previous = safe_path(layout.root_of(c, game["id"]), backups / token)
+    owner = safe_path(layout.root_of(c, game["id"]), transaction / "owner.json")
     if json_object(owner.read_bytes()) != dict(schema=1, gameId=game["id"], transaction=token):
         raise ValueError("transaction owner mismatch")
     return root, transaction, previous
@@ -609,7 +611,7 @@ def recover_once(c, game):
     """Caller MUST hold the library execution lock, including build.launch.
     返回 True = 回退了一次没做完的事务；False = 没有事务或已提交；失败抛 RecoveryFailed（不删记录）。"""
     root, transactions, _ = locations(c, game)
-    journal = safe_path(c.library, transactions / (game["id"] + ".json"))
+    journal = safe_path(layout.root_of(c, game["id"]), transactions / (game["id"] + ".json"))
     if not journal.exists():
         return False
     seen = ""   # 认出的事务目录（失败时写进说明）
@@ -620,8 +622,8 @@ def recover_once(c, game):
         root, transaction, previous = journal_paths(c, game, record)
         seen = str(transaction)
         old, new = previous / "data", transaction / "new"
-        safe_path(c.library, old)
-        safe_path(c.library, new)
+        safe_path(layout.root_of(c, game["id"]), old)
+        safe_path(layout.root_of(c, game["id"]), new)
         if old.exists() and not old.is_dir():
             raise ValueError("invalid original save copy")
         if record["phase"] == "committed":
@@ -823,7 +825,7 @@ def external_archive(c, game, root, source):
     """
     try:
         key = hashlib.sha256((source_digest(c, source) + fingerprint(c, root)).encode()).hexdigest()[:32]
-        cache = safe_path(c.library, c.library / "save-imports" / game["id"])
+        cache = safe_path(_lay.root_of(c, game["id"]), _lay.root_of(c, game["id"]) / "save-imports" / game["id"])
     except ValueError:
         fail(c, "存档目录包含链接，已停止操作。", "unsafe_path")
     destination = cache / (key + ".s2asave")
@@ -974,7 +976,7 @@ def seed_kind(c, game, kind):
     """来源说明了类型就用；否则看游戏的 control.nacp：只有设备存档的按设备，其余按账户"""
     if kind:
         return kind
-    nacp = next((c.library / "games" / game["id"] / "current").rglob("control.nacp"), None)
+    nacp = next(_lay.image_mac(c, game["id"], create=False).rglob("control.nacp"), None)
     with contextlib.suppress(OSError, struct.error, AttributeError):
         data = nacp.read_bytes()[:0x30A0]
         account, device = struct.unpack_from("<q", data, 0x3080)[0], struct.unpack_from("<q", data, 0x3090)[0]
@@ -1103,7 +1105,7 @@ def restore(c):
         atomic(transaction / "owner.json", dict(schema=1, gameId=game["id"], transaction=token))
         previous = backups / token
         previous.mkdir(parents=True, mode=0o700)
-        sync_parents(transaction, c.library)
+        sync_parents(transaction, layout.root_of(c, game["id"]))
         sync_parents(previous, c.library)
         new, old = transaction / "new", previous / "data"
         journal = transactions / (game["id"] + ".json")

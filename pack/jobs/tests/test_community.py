@@ -4,6 +4,7 @@ import json, os, sys, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import community
+import layout
 from core import Failure
 
 GID = "0100C2500FC20000"
@@ -78,7 +79,7 @@ class MacDisplayTests(unittest.TestCase):
         write(self.c.library / "catalog.json", json.dumps({"games": [{"id": GID, "packages": []}]}))
 
     def caps(self, text="widen\t0\t# 缺省关\nfps60\t1\t# 开\ndirect\t1\t# 直连\n"):
-        write(self.c.library / "games" / GID / "current/s2a_caps.tsv", "# 注释\n" + text)
+        write(layout.image_mac(self.c, GID) / "s2a_caps.tsv", "# 注释\n" + text)
 
     def save(self, **change):
         self.c.r = {"gameId": GID, **change}
@@ -146,7 +147,7 @@ class MacDisplayTests(unittest.TestCase):
 
     def test_old_file_written_by_the_previous_panel_is_not_a_manual_choice(self):
         self.caps("fps60\t0\t# 判红\ndirect\t1\n")
-        write(self.c.library / "games" / GID / "community.json", json.dumps({"schema": 2, "widescreen": True, "fps60": True, "enabled": {}}))
+        write(layout.path(self.c, GID, "community.json"), json.dumps({"schema": 2, "widescreen": True, "fps60": True, "enabled": {}}))
         self.assertFalse(self.mac()["fps60"]["enabled"])
         self.assertEqual(community.launch_env(self.c, GID), {})
 

@@ -21,6 +21,7 @@ import zipfile
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "pack/jobs"))
+import layout
 import saves
 
 DOTNET, DRIVER = sys.argv[1:]
@@ -92,7 +93,11 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
              path=str(REPO / "README.md"))])
     write_json(library / "catalog.json", dict(schema=1, games=[game]))
     identity = saves.identity(game)
-    source = library / "saves" / GAME_ID
+    # 游戏库结构 v3：存档在这款的文件夹 games/<英文名>/saves 下，game.json 记游戏号（pack/jobs/layout.py）
+    folder = library / "games" / layout.folder_name(game["name"], GAME_ID)
+    folder.mkdir(parents=True)
+    write_json(folder / layout.GAME_JSON, dict(id=GAME_ID))
+    source = folder / "saves"
     subprocess.run([DOTNET, DRIVER, "--create", str(source), str(REPO), USER], check=True, timeout=60)
     assert next(source.glob("bis/user/save/*/0/nested/readme.md")).read_bytes() == (REPO / "README.md").read_bytes()
     payloads = list(source.glob("bis/user/save/*/0/contributing.md"))
