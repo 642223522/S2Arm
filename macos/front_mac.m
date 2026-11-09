@@ -315,8 +315,13 @@ static pthread_mutex_t g_motion_mu = PTHREAD_MUTEX_INITIALIZER;
 static s2a_pad_motion g_motion;
 static int g_motion_known;
 static GCMotion *g_motion_source;
+// 换了六轴源（两只带六轴的手柄按「最近有输入」切换，审计 P2-215）：读的一方下一次先拿到一次 known = 0，
+//   服务层 ControllerFeedback.TickMotion 走已有的「没有六轴 → 清姿态」，新手柄从头积分，不接着上一只的姿态。
+//   标记由读取方消费（主线程采样、HID 线程读，只改一帧样本可能被下一帧盖掉、读不到）；单只拔掉本来就是 known = 0，不另标
+static int g_motion_switched;   // 持 g_motion_mu
 static void set_motion_source(GCMotion *source) {
     if (source == g_motion_source) return;
+    if (source && g_motion_source) { pthread_mutex_lock(&g_motion_mu); g_motion_switched = 1; pthread_mutex_unlock(&g_motion_mu); }
     if (g_motion_source.sensorsRequireManualActivation) g_motion_source.sensorsActive = NO;
     g_motion_source = source;
     if (source.sensorsRequireManualActivation) source.sensorsActive = YES;
@@ -340,8 +345,8 @@ static void sample_motion(GCExtendedGamepad *pad) {
 __attribute__((visibility("default"), used)) void s2a_pad_set_motion_enabled(int enabled) { atomic_store(&g_motion_wanted, enabled != 0); }
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_motion *out) {
     pthread_mutex_lock(&g_motion_mu);
-    int known = g_motion_known;
-    *out = g_motion;
+    int known = g_motion_switched ? 0 : g_motion_known;
+    *out = g_motion; g_motion_switched = 0;
     pthread_mutex_unlock(&g_motion_mu);
     return known;
 }
@@ -368,9 +373,10 @@ static void sample_input(void) {
     GCExtendedGamepad *pad = active_pad(GCController.controllers);
     if (pad) {
         // GameController 通常按物理方位上报（buttonA 在南侧）；Switch Pro 手柄在 macOS 上按键面字母上报（A 在东侧、X 在北侧）
-        BOOL labelled = s2a_pad_labels_abxy(pad.controller.productCategory.UTF8String, pad.controller.vendorName.UTF8String);
-        NSDictionary *pad_buttons = @{@"east": labelled ? pad.buttonA : pad.buttonB, @"south": labelled ? pad.buttonB : pad.buttonA,
-            @"north": labelled ? pad.buttonX : pad.buttonY, @"west": labelled ? pad.buttonY : pad.buttonX,
+        //   位序调共用的 s2a_pad_abxy_order（同 iOS controller.m publishSystem；审计 P2-213：两端各写一套，以后只改一处就会一端错）。order 按任天堂 A / B / X / Y = 东 / 南 / 北 / 西
+        GCControllerButtonInput *face[4] = {pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY};
+        int order[4]; s2a_pad_abxy_order(s2a_pad_labels_abxy(pad.controller.productCategory.UTF8String, pad.controller.vendorName.UTF8String), order);
+        NSDictionary *pad_buttons = @{@"east": face[order[0]], @"south": face[order[1]], @"north": face[order[2]], @"west": face[order[3]],
             @"leftShoulder": pad.leftShoulder, @"rightShoulder": pad.rightShoulder,
             @"leftTrigger": pad.leftTrigger, @"rightTrigger": pad.rightTrigger, @"menu": pad.buttonMenu,
             @"dpadLeft": pad.dpad.left, @"dpadRight": pad.dpad.right, @"dpadUp": pad.dpad.up, @"dpadDown": pad.dpad.down};
