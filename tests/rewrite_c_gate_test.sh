@@ -12,6 +12,7 @@ C=$("$PY" "$H/pack/rewriter.py" c-path 2>/dev/null | tail -1); [ -x "$C" ] || { 
 rc=0
 REW=$C "$PY" "$H/tests/rewrite_c_test.py" || { echo "🔴 rewrite_c_test 没过（上面一行写明是产物差、退出码差还是超时）"; rc=1; }
 REW=$C "$PY" "$H/tests/rewrite_data_in_text_test.py" || { echo "🔴 rewrite_data_in_text_test：代码段内嵌数据判定不符"; rc=1; }
+REW=$C "$PY" "$H/tests/rewrite_scale_test.py" || { echo "🔴 rewrite_scale_test：一个函数里大量 br x18 / 大量函数时改写超时或计数不符（#251）"; rc=1; }
 REW=$C "$PY" "$H/tests/rewrite_front_synth_test.py" || { echo "🔴 rewrite_front_synth_test：C 的 FAR 容量重选与金样不符"; rc=1; }
 DEPS=$("$PY" "$H/pack/rewriter.py" deps-path) || { echo "🔴 取不到 C 改写器固定依赖（pack/rewriter.py deps-path）"; exit 1; }
 AB="$H/build/rewriter-api-test"
