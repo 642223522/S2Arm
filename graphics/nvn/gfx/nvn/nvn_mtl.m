@@ -570,9 +570,12 @@ void mtl_init(void) {
     g_dev = MTLCreateSystemDefaultDevice();
     if (!g_dev) MDIE("no Metal device");
     if (!g_dev.hasUnifiedMemory) MDIE("needs a unified-memory device (zero-copy memory pools)");
-    int os26 = 0, family4 = 0; const char *be_why;
+    int os26 = 0, family4 = 0, ios26x = 0; const char *be_why;
     if (@available(macOS 26.0, iOS 26.0, *)) { os26 = 1; family4 = [g_dev supportsFamily:MTLGPUFamilyMetal4]; }
-    g_m3 = nvn_be_pick(getenv("NXGAL_BE"), os26, family4, &be_why) == NVN_BE_MTL3;
+#if TARGET_OS_IPHONE
+    if (os26) { if (@available(iOS 27.0, *)) {} else ios26x = 1; }   // iOS 26.x：见 nvn_be.h（#311）
+#endif
+    g_m3 = nvn_be_pick(getenv("NXGAL_BE"), os26, family4, ios26x, &be_why) == NVN_BE_MTL3;
     MLOG("direct backend: Metal %d (%s)", g_m3 ? 3 : 4, be_why);
     g_mesh_ok = [g_dev supportsFamily:MTLGPUFamilyMetal3];   // object / mesh functions (NVN2 DrawMeshTasks): Apple7+ / Mac2, every Metal 4 GPU; an older GPU on the Metal 3 path has none
     g_red_emu = !s2a_reduce_native(g_dev); g_lb_emu = !s2a_lodbias_native(g_dev);
