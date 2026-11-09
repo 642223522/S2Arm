@@ -468,12 +468,10 @@
       {"id": "save_atomic_mac", "macro": "S2A_DPROMPT_SAVE_ATOMIC_MAC", "zh-Hans": "当前磁盘不能安全保存：请把游戏库挪到本机磁盘。保存过程中强退，可能留下写了一半的存档。"},
       {"id": "save_atomic_ios", "macro": "S2A_DPROMPT_SAVE_ATOMIC_IOS", "zh-Hans": "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。"},
       {"id": "vpad_touch_title", "macro": "S2A_DPROMPT_VPAD_TOUCH_TITLE", "zh-Hans": "这款游戏能用触屏"},
-      {"id": "vpad_touch_body", "macro": "S2A_DPROMPT_VPAD_TOUCH_BODY", "zh-Hans": "要点游戏自己的菜单，就切到触屏。屏幕上方的「键 / 触」随时可以切回按键。"},
+      {"id": "vpad_touch_body", "macro": "S2A_DPROMPT_VPAD_TOUCH_BODY", "zh-Hans": "要点游戏自己的菜单，就切到触屏。左上角齿轮 → 按键布局，随时可以切回按键。"},
       {"id": "vpad_touch_accept", "macro": "S2A_DPROMPT_VPAD_TOUCH_ACCEPT", "zh-Hans": "切到触屏"},
       {"id": "vpad_touch_decline", "macro": "S2A_DPROMPT_VPAD_TOUCH_DECLINE", "zh-Hans": "先不用"},
-      {"id": "vpad_seg_keys", "macro": "S2A_DPROMPT_VPAD_SEG_KEYS", "zh-Hans": "键"},
-      {"id": "vpad_seg_touch", "macro": "S2A_DPROMPT_VPAD_SEG_TOUCH", "zh-Hans": "触"},
-      {"id": "vpad_touch_auto", "macro": "S2A_DPROMPT_VPAD_TOUCH_AUTO", "zh-Hans": "已切到触屏操作：这款游戏用触屏点菜单。屏幕上方「键 / 触」可切回按键。"},
+      {"id": "vpad_touch_auto", "macro": "S2A_DPROMPT_VPAD_TOUCH_AUTO", "zh-Hans": "已切到触屏操作：这款游戏用触屏点菜单。左上角齿轮 → 按键布局，可以切回按键。"},
       {"id": "switch_game_title", "macro": "S2A_DPROMPT_SWITCH_GAME_TITLE", "zh-Hans": "换一款游戏", "en": "Switch games"},
       {"id": "switch_game_body", "macro": "S2A_DPROMPT_SWITCH_GAME_BODY", "zh-Hans": "换一款游戏需要重新打开 S2Arm：先在游戏里存档，然后从屏幕底部上滑，把 S2Arm 划掉，再点开就回到游戏库。", "en": "To switch games, reopen S2Arm: save in the game first, then swipe up from the bottom of the screen, swipe S2Arm away, and tap it again to return to the game library."}
     ]

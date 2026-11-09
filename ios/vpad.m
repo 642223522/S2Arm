@@ -28,7 +28,7 @@
 #import "app_settings.h"   // 齿轮菜单：存档管理 / 更多设置（s2a_settings_runtime / s2a_settings_present）
 #include "s2a_docs.h"   // iOS 进程级容器 Documents（s2a_container_docs）
 #include "s2a_pad.h"
-#include "s2a_direct_prompt.h"   // 「键 / 触」切换钮与触屏提示的文案（与 launchers/shared/experience.v1.json prompts 逐字一致）
+#include "s2a_direct_prompt.h"   // 触屏提示的文案（与 launchers/shared/experience.v1.json prompts 逐字一致）
 #include <stdatomic.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -152,7 +152,6 @@ __attribute__((visibility("default"), used)) void s2a_vpad_read_ex(s2a_pad_snaps
 - (void)offerTouchHint;
 - (int)setTouchOnly:(BOOL)on manual:(BOOL)manual why:(NSString *)why;
 - (BOOL)touchOnly;
-- (void)refreshMode;
 @end
 static __weak S2AVPadView *g_vpad;
 static _Atomic int g_touch_only = -1;   // 当前方案（reloadLayout 写）：1 仅触屏、0 按键、-1 没挂
@@ -186,7 +185,6 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     NSMapTable<UITouch *, NSNumber *> *_slot;
     UILabel *_hud;                          // 触屏真值那一行（见 g_hud_on）
     UIButton *_gear; NSTimer *_gearFade;    // 游戏内设置入口：屏幕左上角常驻，闲置时淡到看得见但不抢画面
-    UISegmentedControl *_mode;              // 「键 / 触」切换钮：游戏启用触屏后常驻屏幕上方正中（两种方案下都显示），一点就切
     BOOL _touchWanted;                      // 游戏启用过触屏（s2a_vpad_touch_wanted）
     int _autoTouch;                         // 自动切（游戏声明触屏配置，manual=0）的本次运行覆盖：1 = 本次按仅触屏跑、不改持久化选择；0 = 没有覆盖
     // 拖动编辑按键位置（11-07 维护者）：编辑期间不向游戏发输入，手指拖哪个键挪哪个键；完成存成本款游戏的「我的布局」并选中
@@ -197,7 +195,7 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     NSDictionary *_scales;                      // 取键用的每键倍率
     UITouch *_ringDrag[2];                      // 固定摇杆：编辑时拖位置
     UILabel *_selected; UIView *_keyPanel; UILabel *_keyTitle; UISlider *_sizeSlider, *_alphaSlider; UISwitch *_hideSwitch;
-    NSArray *_menuGroups;   // 齿轮菜单里的单选组：视图持有到下次打开菜单，选项回调只拿弱引用（不成环）
+    NSMutableDictionary<NSString *, NSArray *> *_menuLive;   // 齿轮菜单改值条目：标识 → @[该不该打勾, 该不该变灰]（查询块不持有条目，不成环）
     UIView *_card; BOOL _panelHidden; UISlider *_gSize, *_gAlpha, *_gIdle; UILabel *_gSizeValue, *_gAlphaValue, *_gIdleValue, *_sizeValue, *_alphaValue; NSArray<UIButton *> *_swatches;   // B 方案编辑卡片
 }
 static const CGFloat kHit = 10;
@@ -259,13 +257,6 @@ static NSString *button_label(NSString *identifier) {
     _layoutStore = [[S2AVPadLayoutStore alloc] initWithDirectory:[gameDocs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]
                                                 settingsDirectory:[docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]];
     [self reloadLayout];
-    _mode = [[UISegmentedControl alloc] initWithItems:@[@S2A_DPROMPT_VPAD_SEG_KEYS, @S2A_DPROMPT_VPAD_SEG_TOUCH]];
-    _mode.accessibilityIdentifier = @"vpad.mode"; _mode.hidden = YES; _mode.alpha = 0.7;
-    _mode.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35]; _mode.selectedSegmentTintColor = [UIColor colorWithWhite:1 alpha:0.85];
-    [_mode setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.9], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]} forState:UIControlStateNormal];
-    [_mode setTitleTextAttributes:@{NSForegroundColorAttributeName: UIColor.blackColor} forState:UIControlStateSelected];
-    [_mode addTarget:self action:@selector(modeTapped:) forControlEvents:UIControlEventValueChanged];
-    [self addSubview:_mode];
     _gear = [UIButton buttonWithType:UIButtonTypeSystem]; _gear.accessibilityIdentifier = @"vpad.settings"; _gear.accessibilityLabel = @"设置";
     [_gear setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal]; _gear.tintColor = UIColor.whiteColor;
     _gear.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; _gear.layer.cornerRadius = 18;
@@ -324,61 +315,81 @@ void s2a_rumble_preview(void);          // controller.m：按当前档位试震 
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]]; [c presentViewController:a animated:YES completion:nil];
 }
-// 改值类条目点完不收起菜单（11-09 jhz：「每次点击一个不同档级，这个小标签页就缩没了……这种体验很差」）：开关 / 档位 / 灵敏度 / 布局都带
-//   KeepsMenuPresented，点下时读当前值（菜单开着可以连点，不能用打开那一刻记下的旧值），同组勾选当场刷新；去别的页面的条目照旧收起
-static UIAction *vp_keep(UIAction *a) { a.attributes |= UIMenuElementAttributesKeepsMenuPresented; return a; }
-static UIAction *vp_toggle(NSString *title, NSString *note, BOOL (^get)(void), BOOL (^set)(BOOL on)) {   // set 回 NO = 没存上，勾不变
-    UIAction *a = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *x) {
-        BOOL on = !get(); if (set(on)) x.state = on ? UIMenuElementStateOn : UIMenuElementStateOff; }];
-    a.state = get() ? UIMenuElementStateOn : UIMenuElementStateOff; a.subtitle = note; return vp_keep(a);
+// 改值类条目点完不收起菜单（11-09 jhz：「每次点击一个不同档级，这个小标签页就缩没了……这种体验很差」）：开关 / 档位 / 灵敏度 / 布局带 KeepsMenuPresented。
+//   菜单开着时直接改选项的 state 界面不会刷新（11-09 第一版这么做，jhz：「所有的勾选功能都失效了」）——要经 UIContextMenuInteraction
+//   updateVisibleMenuWithBlock 把正在显示的那层菜单按新状态换一份。所以每个改值条目带固定标识、登记「该不该打勾 / 该不该变灰」的查询（_menuLive），
+//   点下只做两件事：改设置，刷新正在显示的菜单。去别的页面的条目（编辑、手感细调、画面…、存档管理、更多设置）照旧点完收起
+typedef BOOL (^VPFlag)(void);
+- (UIAction *)live:(NSString *)ident title:(NSString *)title note:(NSString *)note on:(VPFlag)on disabled:(VPFlag)disabled run:(void (^)(void))run {
+    __weak S2AVPadView *ws = self;
+    UIAction *a = [UIAction actionWithTitle:title image:nil identifier:ident handler:^(__unused UIAction *x) { run(); [ws refreshMenu]; }];
+    a.subtitle = note; _menuLive[ident] = @[on, disabled ?: ^BOOL{ return NO; }]; [self applyLive:a]; return a;
 }
-static void vp_pick(NSArray<UIAction *> *group, UIAction *chosen) { for (UIAction *g in group) g.state = g == chosen ? UIMenuElementStateOn : UIMenuElementStateOff; }
+- (void)applyLive:(UIAction *)a {
+    NSArray *f = _menuLive[a.identifier]; if (!f) return;
+    a.state = ((VPFlag)f[0])() ? UIMenuElementStateOn : UIMenuElementStateOff;
+    a.attributes = UIMenuElementAttributesKeepsMenuPresented | (((VPFlag)f[1])() ? UIMenuElementAttributesDisabled : 0);
+}
+- (UIMenu *)refreshedMenu:(UIMenu *)m {
+    NSMutableArray<UIMenuElement *> *kids = [NSMutableArray arrayWithCapacity:m.children.count];
+    for (UIMenuElement *e in m.children) {
+        if ([e isKindOfClass:UIMenu.class]) [kids addObject:[self refreshedMenu:(UIMenu *)e]];
+        else if ([e isKindOfClass:UIAction.class] && _menuLive[((UIAction *)e).identifier]) { UIAction *c = [e copy]; [self applyLive:c]; [kids addObject:c]; }
+        else [kids addObject:e];
+    }
+    return [m menuByReplacingChildren:kids];
+}
+- (void)refreshMenu {
+    __weak S2AVPadView *ws = self;
+    [_gear.contextMenuInteraction updateVisibleMenuWithBlock:^UIMenu *(UIMenu *visible) { S2AVPadView *v = ws; return v ? [v refreshedMenu:visible] : visible; }];
+}
 - (NSArray<UIMenuElement *> *)gearItems {
     __weak S2AVPadView *ws = self; S2AVPadLayoutStore *st = _layoutStore; NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    _menuLive = [NSMutableDictionary dictionary];
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray array];
     UIAction *edit = vp_act(@"编辑虚拟按键", @"gamecontroller", NO, ^{ [ws afterMenu:^{ [ws beginEditing]; }]; });
     if (_touchOnly) { edit.attributes = UIMenuElementAttributesDisabled; edit.subtitle = @"仅触屏操作时没有按键可编辑"; }
     [items addObject:edit];
-    // 按键布局（选方案：菜单不收，选中的打勾；编辑入口在切到仅触屏后变灰要等下次打开菜单）
-    NSString *sel = st.selectedIdentifier; NSMutableArray<UIAction *> *lay = [NSMutableArray array], *sens = [NSMutableArray array], *levels = [NSMutableArray array];
-    _menuGroups = @[lay, sens, levels]; __weak NSMutableArray<UIAction *> *wlay = lay, *wsens = sens, *wlevels = levels;
+    // 按键布局（选方案：菜单不收，选中的打勾；「编辑虚拟按键」在切到仅触屏后变灰要等下次打开菜单）
+    NSMutableArray<UIMenuElement *> *lay = [NSMutableArray array];
     void (^addLayout)(NSString *, NSString *, NSString *) = ^(NSString *lid, NSString *name, NSString *note) {
-        UIAction *x = vp_keep([UIAction actionWithTitle:name image:nil identifier:nil handler:^(UIAction *me) { S2AVPadView *v = ws; if (![v menuChoseLayout:lid]) return; vp_pick(wlay, me); }]);
-        x.state = [sel isEqualToString:lid] ? UIMenuElementStateOn : UIMenuElementStateOff; x.subtitle = note; [lay addObject:x]; };
+        [lay addObject:[self live:[@"vp.layout." stringByAppendingString:lid] title:name note:note on:^BOOL{ return [st.selectedIdentifier isEqualToString:lid]; } disabled:nil
+                              run:^{ [ws menuChoseLayout:lid]; }]]; };
     addLayout(S2AVPadLayoutDefaultIdentifier, @"默认布局", nil);
     addLayout(S2AVPadLayoutTouchIdentifier, @"仅触屏操作", @"不显示虚拟按键");
     for (S2AVPadLayout *l in st.layouts) if (![S2AVPadLayout isBuiltinIdentifier:l.identifier]) addLayout(l.identifier, l.name, nil);
-    [items addObject:vp_sub(@"按键布局", @"square.grid.2x2", [(NSArray *)lay arrayByAddingObject:vp_inline(@[vp_act(@"导入 / 导出 / 另存布局…", @"folder", NO, ^{ [ws afterMenu:^{ [ws openLayouts]; }]; })])])];
+    [lay addObject:vp_inline(@[vp_act(@"导入 / 导出 / 另存布局…", @"folder", NO, ^{ [ws afterMenu:^{ [ws openLayouts]; }]; })])];
+    [items addObject:vp_sub(@"按键布局", @"square.grid.2x2", lay)];
     // 摇杆
-    UIAction *fixed = vp_toggle(@"固定摇杆", @"关掉 = 手指落点当中心", ^BOOL{ return st.stickFixed; }, ^BOOL(BOOL on) { S2AVPadView *v = ws; NSError *e;
-        if (![st setStickFixed:on sensitivity:st.stickSensitivity error:&e]) { [v menuError:@"摇杆设置没保存" error:e]; return NO; } [v stickModeChanged]; return YES; });
+    UIAction *fixed = [self live:@"vp.stick.fixed" title:@"固定摇杆" note:@"关掉 = 手指落点当中心" on:^BOOL{ return st.stickFixed; } disabled:nil run:^{ NSError *e;
+        if (![st setStickFixed:!st.stickFixed sensitivity:st.stickSensitivity error:&e]) [ws menuError:@"摇杆设置没保存" error:e]; else [ws stickModeChanged]; }];
+    NSMutableArray<UIMenuElement *> *sens = [NSMutableArray array];
     for (NSNumber *n in @[@0.6, @0.8, @1.0, @1.2, @1.5, @2.0]) { CGFloat x = n.doubleValue;
-        UIAction *a = vp_keep([UIAction actionWithTitle:[NSString stringWithFormat:@"%.1f 倍", x] image:nil identifier:nil handler:^(UIAction *me) { S2AVPadView *v = ws; NSError *e;
-            if (![st setStickFixed:st.stickFixed sensitivity:x error:&e]) { [v menuError:@"摇杆设置没保存" error:e]; return; } [v stickModeChanged]; vp_pick(wsens, me); }]);
-        a.state = fabs(st.stickSensitivity - x) < 0.05 ? UIMenuElementStateOn : UIMenuElementStateOff; [sens addObject:a]; }
-    UIAction *lock = vp_toggle(@"按住锁定 ZL / ZR", @"按住 2 秒锁定，只对这款游戏", ^BOOL{ return st.holdLockEnabled; }, ^BOOL(BOOL on) { NSError *e;
-        if (![st setHoldLockEnabled:on error:&e]) { [ws menuError:@"锁定设置没保存" error:e]; return NO; } return YES; });
+        [sens addObject:[self live:[NSString stringWithFormat:@"vp.stick.sens.%.1f", x] title:[NSString stringWithFormat:@"%.1f 倍", x] note:nil
+                                on:^BOOL{ return fabs(st.stickSensitivity - x) < 0.05; } disabled:nil run:^{ NSError *e;
+            if (![st setStickFixed:st.stickFixed sensitivity:x error:&e]) [ws menuError:@"摇杆设置没保存" error:e]; else [ws stickModeChanged]; }]]; }
+    UIAction *lock = [self live:@"vp.stick.holdlock" title:@"按住锁定 ZL / ZR" note:@"按住 2 秒锁定，只对这款游戏" on:^BOOL{ return st.holdLockEnabled; } disabled:nil run:^{ NSError *e;
+        if (![st setHoldLockEnabled:!st.holdLockEnabled error:&e]) [ws menuError:@"锁定设置没保存" error:e]; }];
     UIAction *fine = vp_act(@"手感细调…", nil, NO, ^{ [ws afterMenu:^{ [ws openLayouts]; }]; }); fine.subtitle = @"死区 / 外圈 / 响应指数";
     [items addObject:vp_sub(@"摇杆", @"circle.circle", @[fixed, vp_sub(@"灵敏度", nil, sens), fine, lock])];
-    // 震动：档位单选、选了就按那一档试震；关掉游戏震动时档位当场变灰
-    BOOL (^rumbleOn)(void) = ^BOOL{ id o = [d objectForKey:@"S2ARumbleOn"]; return o ? [o boolValue] : YES; };
+    // 震动：档位单选、选了就按那一档试震；关掉游戏震动时档位变灰
+    VPFlag rumbleOn = ^BOOL{ id o = [d objectForKey:@"S2ARumbleOn"]; return o ? [o boolValue] : YES; };
     NSInteger (^level)(void) = ^NSInteger{ id o = [d objectForKey:@"S2ARumbleLevel"]; return o ? MAX(0, MIN(4, [o integerValue])) : 2; };
-    NSArray *names = @[@"弱", @"较弱", @"标准", @"较强", @"强"];
-    for (NSInteger i = 0; i < 5; i++) {
-        UIAction *a = vp_keep([UIAction actionWithTitle:names[i] image:nil identifier:nil handler:^(UIAction *me) {
-            [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); vp_pick(wlevels, me); }]);
-        a.state = level() == i ? UIMenuElementStateOn : UIMenuElementStateOff; if (!rumbleOn()) a.attributes |= UIMenuElementAttributesDisabled; [levels addObject:a]; }
-    UIAction *game = vp_toggle(@"游戏震动", @"手机马达和手柄共用；选档位时会按那一档震一下", rumbleOn, ^BOOL(BOOL on) {
-        [d setBool:on forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview();
-        for (UIAction *a in wlevels) { if (on) a.attributes &= ~UIMenuElementAttributesDisabled; else a.attributes |= UIMenuElementAttributesDisabled; }
-        return YES; });
-    UIAction *tap = vp_toggle(@"按键触感", @"按下时轻震一下", ^BOOL{ return st.hapticFeedbackEnabled; }, ^BOOL(BOOL on) { NSError *e;
-        if (![st setHapticFeedbackEnabled:on error:&e]) { [ws menuError:@"触感设置没保存" error:e]; return NO; } return YES; });
+    UIAction *game = [self live:@"vp.rumble.on" title:@"游戏震动" note:@"手机马达和手柄共用；选档位时会按那一档震一下" on:rumbleOn disabled:nil run:^{
+        [d setBool:!rumbleOn() forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }];
+    NSMutableArray<UIMenuElement *> *levels = [NSMutableArray array]; NSArray *names = @[@"弱", @"较弱", @"标准", @"较强", @"强"];
+    for (NSInteger i = 0; i < 5; i++)
+        [levels addObject:[self live:[NSString stringWithFormat:@"vp.rumble.level.%ld", (long)i] title:names[i] note:nil on:^BOOL{ return rumbleOn() && level() == i; }
+                            disabled:^BOOL{ return !rumbleOn(); } run:^{ [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }]];
+    UIAction *tap = [self live:@"vp.haptic.keys" title:@"按键触感" note:@"按下时轻震一下" on:^BOOL{ return st.hapticFeedbackEnabled; } disabled:nil run:^{ NSError *e;
+        if (![st setHapticFeedbackEnabled:!st.hapticFeedbackEnabled error:&e]) [ws menuError:@"触感设置没保存" error:e]; }];
     [items addObject:vp_sub(@"震动", @"iphone.radiowaves.left.and.right", @[game, vp_inline(levels), tap])];
     // 手柄与体感（controller.m / phone_motion.m 监听偏好变化，改完即生效）
+    VPFlag gyro = ^BOOL{ id o = [d objectForKey:@"S2APhoneGyro"]; return o ? [o boolValue] : YES; };
     [items addObject:vp_sub(@"手柄与体感", @"scope", @[
-        vp_toggle(@"启用 Switch 2 Pro 手柄", nil, ^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; }, ^BOOL(BOOL on) { [d setBool:on forKey:@"S2ANS2ProAdapterEnabled"]; return YES; }),
-        vp_toggle(@"手机陀螺仪", nil, ^BOOL{ id o = [d objectForKey:@"S2APhoneGyro"]; return o ? [o boolValue] : YES; }, ^BOOL(BOOL on) { [d setBool:on forKey:@"S2APhoneGyro"]; return YES; })])];
+        [self live:@"vp.pad.ns2pro" title:@"启用 Switch 2 Pro 手柄" note:nil on:^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; } disabled:nil
+               run:^{ [d setBool:![d boolForKey:@"S2ANS2ProAdapterEnabled"] forKey:@"S2ANS2ProAdapterEnabled"]; }],
+        [self live:@"vp.pad.gyro" title:@"手机陀螺仪" note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }]])];
     // 画面：宽屏 / 60 帧 / 主机模式 / 补丁要按本款能力判可不可开、改完要重启，逻辑全在整页设置（app_settings.m），这里直接去那一页，不另抄一份
     UIAction *pic = vp_act(@"画面…", @"rectangle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); pic.subtitle = @"宽屏、60 帧、主机模式、画面补丁";
     [items addObject:pic];
@@ -454,7 +465,7 @@ static void vp_pick(NSArray<UIAction *> *group, UIAction *chosen) { for (UIActio
     _layoutProblem = error.localizedDescription;
     if (error) LOG("触屏布局：选定方案加载失败，暂用默认布局：%s", error.localizedDescription.UTF8String);
     [self rebuildKeys]; [self setNeedsLayout]; [self wake];
-    atomic_store(&g_touch_only, _touchOnly ? 1 : 0); atomic_store(&g_user_chose, _layoutStore.manualChosen ? 1 : 0); [self refreshMode];
+    atomic_store(&g_touch_only, _touchOnly ? 1 : 0); atomic_store(&g_user_chose, _layoutStore.manualChosen ? 1 : 0);
     if (_touchOnly) { LOG("触屏布局：纯触屏（不显示虚拟按键，手指直接交给游戏）"); return; }
     LOG("触屏布局：应用 %s（schema 1）", _layout.identifier.UTF8String);
 }
@@ -718,13 +729,12 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 // 审计 P1-3：游戏启用了触屏（C# InputPump 读 Hid.Touchscreen.Active 后经 s2a_vpad_touch_wanted 转告）而当前是按键方案时，提示一次怎么切到「仅触屏操作」（本 App 只提示一次）。
 //   两套方案保持互斥、不做「又有按键又透传」：默认布局左右半屏空白处都是浮动摇杆的激活区，按键以外没有空地可透传，透传就等于推摇杆时游戏也收到点按；
 //   很多游戏开机就启用触屏、分不出真用不用，所以只提示、不自动切。自动化局不提示
-//   11-04 维护者（脑锻炼标题页只认触屏，四指长按 1.5 秒进设置太深）：游戏启用触屏后屏幕上方常驻「键 / 触」切换钮（两种方案下都显示，自动化局不显示）；
+//   11-04 维护者（脑锻炼标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 jhz 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
 //   提示条（本 App 只提示一次）带「切到触屏」按钮，一点就切。切换与持久化在 vpad_layout.m setTouchOnly:（单测 t_vpad_toggle）
 - (void)offerTouchHint {
     _touchWanted = YES;
     if (s2a_unattended()) return;
-    [self refreshMode]; _mode.hidden = NO; [self setNeedsLayout];
-    LOG("触屏布局：游戏启用了触屏，显示「键 / 触」切换钮（当前 %s）", _touchOnly ? "触屏" : "按键");
+    LOG("触屏布局：游戏启用了触屏（当前 %s）", _touchOnly ? "触屏" : "按键");
     NSUserDefaults *u = NSUserDefaults.standardUserDefaults;
     if (_touchOnly || [u boolForKey:kTouchHintKey]) return;
     // 等 3 秒再定弹不弹：游戏常先启用触屏（ActivateTouchScreen）、再声明触屏配置（SetTouchScreenConfiguration → 一次成功线的自动切，
@@ -741,8 +751,6 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     });
 }
 - (BOOL)touchOnly { return _touchOnly; }
-- (void)refreshMode { _mode.selectedSegmentIndex = _touchOnly ? 1 : 0; }
-- (void)modeTapped:(UISegmentedControl *)control { [self setTouchOnly:control.selectedSegmentIndex == 1 manual:YES why:@"切换钮"]; }
 // 切换方案（切换钮 / 提示条 / s2a_vpad_set_touch_only 共用；主线程）：返回 1 真切了、0 本来就是（或自动切遇到玩家手动选过）、-1 写盘失败（保持原方案）
 //   manual：切换钮 / 提示条 / 设置 = 玩家手动，持久化选择 + 记「手动选过」、清掉自动切的本次覆盖；
 //   自动（游戏声明触屏配置，一次成功线）：玩家手动选过就不切；否则只改本次运行（_autoTouch），不动持久化选择、不记手动
@@ -776,8 +784,6 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 }
 - (void)layoutSubviews {
     [super layoutSubviews]; CGRect safe = [self layoutSafeRect];
-    // 「键 / 触」切换钮：安全区上沿正中（默认布局四角是 L / ZL / R / ZR，正中上方没有按键）；提示条也在上方正中、压在它上面
-    _mode.frame = CGRectMake(CGRectGetMidX(safe) - 44, CGRectGetMinY(self.safeAreaLayoutGuide.layoutFrame) + 4, 88, 28); [self bringSubviewToFront:_mode];
     {   // 设置入口放安全区左上角；折叠屏内屏圆角比安全区报的大、又有开孔，四周再让 20 点（短边 ≥ 500 点才算大屏）
         CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat inset = MIN(self.bounds.size.width, self.bounds.size.height) >= 500 ? 20 : 4;
         _gear.frame = CGRectMake(CGRectGetMinX(g) + inset, CGRectGetMinY(g) + inset, 36, 36); _gear.hidden = _editing; [self bringSubviewToFront:_gear]; }

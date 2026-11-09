@@ -10,15 +10,13 @@ extern "C" {
 #define S2A_DPROMPT_SAVE_ATOMIC_TITLE "存档提醒"
 #define S2A_DPROMPT_SAVE_ATOMIC_MAC   "当前磁盘不能安全保存：请把游戏库挪到本机磁盘。保存过程中强退，可能留下写了一半的存档。"
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS   "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。"
-// 「键 / 触」切换（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏）：游戏启用触屏后屏幕上方常驻小切换钮；首次提示条带「切到触屏」一点就切
+// 触屏提示（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏；11-09 jhz 删掉屏幕上方的「键 / 触」切换钮，切换在齿轮菜单「按键布局」）：首次提示条带「切到触屏」一点就切
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE   "这款游戏能用触屏"
-#define S2A_DPROMPT_VPAD_TOUCH_BODY    "要点游戏自己的菜单，就切到触屏。屏幕上方的「键 / 触」随时可以切回按键。"
+#define S2A_DPROMPT_VPAD_TOUCH_BODY    "要点游戏自己的菜单，就切到触屏。左上角齿轮 → 按键布局，随时可以切回按键。"
 #define S2A_DPROMPT_VPAD_TOUCH_ACCEPT  "切到触屏"
 #define S2A_DPROMPT_VPAD_TOUCH_DECLINE "先不用"
-#define S2A_DPROMPT_VPAD_SEG_KEYS      "键"
-#define S2A_DPROMPT_VPAD_SEG_TOUCH     "触"
-// 游戏声明触屏配置时自动切到仅触屏（ios/touch_config.m，只改本次运行）：提示一条，指屏幕上方常驻的「键 / 触」钮
-#define S2A_DPROMPT_VPAD_TOUCH_AUTO    "已切到触屏操作：这款游戏用触屏点菜单。屏幕上方「键 / 触」可切回按键。"
+// 游戏声明触屏配置时自动切到仅触屏（ios/touch_config.m，只改本次运行）：提示一条，指齿轮菜单「按键布局」
+#define S2A_DPROMPT_VPAD_TOUCH_AUTO    "已切到触屏操作：这款游戏用触屏点菜单。左上角齿轮 → 按键布局，可以切回按键。"
 // 多款容器换游戏（ios/app_settings.m 设置页「换一款游戏」一栏，只在多款容器里出现；11-07 启动器线）：一个进程只跑一款、换游戏只能冷启动（不调 exit()），
 //   放在玩家找「回游戏库」时会去的设置页。中英两行同屏显示；英文宏 <名>_EN 与规格的 en 逐字一致（launchers/shared/check_experience.py）
 #define S2A_DPROMPT_SWITCH_GAME_TITLE    "换一款游戏"
