@@ -567,6 +567,7 @@ class Context:
         runtime = Path(self.r.get("resources") or self.private) / "Runtime"
         if os.name == "nt" and (runtime / "s2arm_env.cmd").is_file():   # Windows 随包运行时（launchers/windows/bundle_runtime_win.py）
             env.update(win_runtime_env(runtime, self.engine, env.get("SystemRoot") or r"C:\Windows"))
+            env["S2A_METAL_BIN"] = win_metal_dir(os.environ)
             return env
         # 3 和 4 都是「作业 PATH 只有 Runtime + 系统目录」的便携运行环境。4 起不再带 oead / GNU timeout；
         # 旧 schema 3 仍走这条 PATH（构建侧 build_app 会因 schema / runtimeDeps 不符而重打，不在这里改 PATH）。
@@ -835,6 +836,15 @@ def pid_start(pid):
 
 
 WIN_RUNTIME_PATH = ["python", r"python\Scripts", "dotnet", r"mingit\cmd", r"git\usr\bin", "zstd"]   # 同 bundle_runtime_win.env_cmd 的 PATH（tests 核两处一致）
+
+
+def win_metal_dir(environ):
+    """Windows 出包用的 Metal 工具目录：在作业进程（还带着玩家的 S2A_METAL_BIN 与 s2arm_env.cmd 存下的 S2A_USER_PATH）按 oneclick_win.metal_exe
+    选一次，显式交给子进程——env() 剥掉 S2A_*、PATH 换成只含随包工具，子进程自己选只会落到官方默认目录（11-09 Windows 出包机实测 #137：
+    S2A_METAL_BIN 指自定义目录 / 只设 PATH / 指不存在的目录，三种都悄悄用了 C:\\Program Files 那份）。显式配置无效时原样传下去，由出包预检报缺"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from pack.orch.oneclick_win import metal_exe
+    return str(metal_exe(environ).parent)
 
 
 def win_runtime_env(runtime, engine, system_root):
