@@ -120,12 +120,16 @@ void s2a_guest_mem_note(uint64_t footprint) {
     if (!rename(t, p)) rec = total;
 }
 static uint64_t env_mb(const char *k, uint64_t def) { const char *v = getenv(k); return (v && *v ? strtoull(v, NULL, 10) : def) << 20; }
+static int g_ctr;
+static uint64_t g_ctr_pool;   // 多款容器：包内各款应用池的最大值（构造期还没选游戏，文件后备按最大的判）
+uint64_t s2a_window_container_pool(void) { return g_ctr_pool; }
 static void guest_file_attach(void) {
     // 池：s2a_app_pool（layout.c；Switch 3285 MiB、Switch 2 9 GiB）。此刻已定：上一步 need_from_npdm → s2a_npdm_window_need → npdm_read 认出 Switch 2 时就设了 9 GiB。
     //   它是游戏能向系统要的内存总量（SetHeapSize 上限 = 池 − 映像），客体脏页最多涨到这么多；窗口跨度（几十 GB 地址）不是内存，堆区随池定，game.tsv 的 app_pool 是图形层的、要到图形初始化才读。
     //   按名字取（dlsym）：单测只链 vawin.c、不链 layout.c；取不到记 0（自动判定按装得下 = 关）
     const char *e = getenv("S2A_GUEST_FILE");
     uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0, room = 0;
+    if (g_ctr && g_ctr_pool > pool) pool = g_ctr_pool;   // 多款容器：不按缺省池判，否则 Switch 2 款进局后内存超单进程上限被杀（#103）
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
     room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
 #else
@@ -330,7 +334,7 @@ static uint64_t need_dir(const char *dir) {
 //   ACI0 0x38（svc_mem.c npdm_read 不写本局状态的读法）+ 各模块 <名>.fixups.tsv（只有表头几行，实测约 240 字节）+ 镜像包头与偏移表（32 + load commands + 16 + 88 × 模块数）。
 //   应用池（Switch 2 9 GiB）在每款算完后放回读之前的值：别款的池不带进下一款的算法，也不带进玩家选的那款（起局时 layout_prepare 按本款 NPDM 重新设）
 uint64_t s2a_window_container_need(const char *bundle) {
-    g_ctr_astype = -1;
+    g_ctr_astype = -1; g_ctr_pool = 0;
     char gd[1100]; snprintf(gd, sizeof gd, "%s/Games", bundle);
     DIR *d = opendir(gd);
     if (!d) { LOG("【红】地址窗口：多款容器读不了 %s（errno %d），不知道要多大，不占窗口", gd, errno); return 0; }
@@ -355,6 +359,7 @@ uint64_t s2a_window_container_need(const char *bundle) {
         if (span && span(img, why, sizeof why)) { LOG("【红】地址窗口：多款容器里 %s 的镜像包读不了偏移表：%s，不占窗口", e->d_name, why); ok = 0; break; }
         uint64_t ni = need_dir(dir);
         if (span) span(NULL, NULL, 0);
+        { uint64_t pg = poolf ? poolf() : 0; if (pg > g_ctr_pool) g_ctr_pool = pg; }
         if (pools && pool0) pools(pool0);
         if (!ni) { LOG("【红】地址窗口：多款容器里 %s 的跨度算不出（类型 %d（%s）；%s 读不到、模块段读不到或类型不支持），不占窗口", e->d_name, t, s2a_as_type_bits((uint32_t)t), g_npdm); ok = 0; break; }
         LOG("地址窗口：多款容器 %s 要 %llu MB（地址空间类型 %d）", e->d_name, (unsigned long long)(ni >> 20), t);
