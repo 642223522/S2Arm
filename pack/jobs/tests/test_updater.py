@@ -148,6 +148,93 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class FlakyHandler(http.server.BaseHTTPRequestHandler):
+    """按脚本回应：每项是一次请求给多少字节（None = 全给）、支不支持续传"""
+    body = b""
+    plan = []
+    ranges = []
+
+    def do_GET(self):
+        header = self.headers.get("Range")
+        start = int(header[6:-1]) if header else 0
+        type(self).ranges.append(start)
+        limit, resume = type(self).plan.pop(0) if type(self).plan else (None, True)
+        if not resume:
+            start = 0
+        data = self.body[start:]
+        self.send_response(206 if start else 200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data if limit is None else data[:limit])
+        self.wfile.flush()
+        self.connection.close()
+
+    def log_message(self, *a):
+        pass
+
+
+class DownloadTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FlakyHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        FlakyHandler.body = bytes(range(256)) * 4096
+        FlakyHandler.ranges = []
+        self.target = self.root / "package"
+        for name, value in (("trusted", lambda url: True), ("emit", lambda **k: None)):
+            p = patch.object(updater, name, value); p.start(); self.addCleanup(p.stop)
+        p = patch.object(updater, "RETRY_SECONDS", 0); p.start(); self.addCleanup(p.stop)
+
+    def get(self):
+        updater.download(f"http://127.0.0.1:{self.server.server_port}/p", self.target, len(FlakyHandler.body))
+
+    def test_dropped_connection_resumes_where_it_stopped(self):
+        FlakyHandler.plan = [(1 << 18, True), (1 << 18, True), (None, True)]
+        self.get()
+        self.assertEqual(self.target.read_bytes(), FlakyHandler.body)
+        self.assertEqual(FlakyHandler.ranges, [0, 1 << 18, 1 << 19])
+
+    def test_server_without_resume_starts_over(self):
+        FlakyHandler.plan = [(1 << 18, True), (None, False)]
+        self.get()
+        self.assertEqual(self.target.read_bytes(), FlakyHandler.body)
+
+    def test_gives_up_when_nothing_arrives(self):
+        FlakyHandler.plan = [(0, True)] * updater.DOWNLOAD_ATTEMPTS
+        with self.assertRaises(updater.UpdateError) as caught:
+            self.get()
+        self.assertEqual(caught.exception.code, "update_download_failed")
+        self.assertFalse(self.target.exists())
+
+    def test_slow_progress_keeps_going_past_the_attempt_limit(self):
+        FlakyHandler.plan = [(1 << 16, True)] * (updater.DOWNLOAD_ATTEMPTS + 3) + [(None, True)]
+        self.get()
+        self.assertEqual(self.target.read_bytes(), FlakyHandler.body)
+
+
+class MacUnpackTests(Base):
+    def test_failed_attach_reports_why_and_mounts_outside_the_data_folder(self):
+        calls = []
+        def run(cmd, **k):
+            calls.append(cmd)
+            return type("R", (), {"returncode": 1, "stderr": b"hdiutil: attach failed - Permission denied"})
+        dest = self.root / "unpack"; dest.mkdir()
+        with patch.object(updater.subprocess, "run", run), self.assertRaises(updater.UpdateError) as caught:
+            updater.extract_mac(self.root / "x.dmg", dest)
+        self.assertEqual(caught.exception.code, "update_unpack_failed")
+        self.assertIn("Permission denied", caught.exception.detail)
+        mount = Path(calls[0][calls[0].index("-mountpoint") + 1])
+        self.assertFalse(mount.is_relative_to(self.root)); self.assertFalse(mount.exists())
+
+    def test_failure_reason_reaches_the_log(self):
+        args = type("A", (), {"private_root": str(self.root / "p")})
+        updater.record_failure(args, "update_unpack_failed", "打不开", "hdiutil: attach failed")
+        text = (self.root / "p/logs/update.log").read_text(encoding="utf-8")
+        self.assertIn("update_unpack_failed", text); self.assertIn("hdiutil: attach failed", text)
+
+
 class PrepareTests(Base):
     def setUp(self):
         super().setUp()
