@@ -18,6 +18,9 @@ void s2a_wg_frame(int fps);   // thread.c 帧间隔工作组（缺省关，S2A_W
 static _Atomic int g_hud_on = -1;
 int s2a_hud_on(void) { int v = atomic_load(&g_hud_on); if (v < 0) { const char *e = getenv("S2A_HUD"); v = e && !strcmp(e, "1"); atomic_store(&g_hud_on, v); } return v; }
 _Atomic uint64_t g_s2a_hud_ft[2048], g_s2a_hud_fn;
+// 简版性能浮层（11-09 B 方案，齿轮菜单「性能浮层」，玩家随时开关）：开着时同样记上屏时间戳，跨局保留（界面按偏好设）
+static _Atomic int g_hud_brief;
+void s2a_hud_brief_set(int on) { atomic_store(&g_hud_brief, on ? 1 : 0); }
 void s2a_hud_frame(void) {
     uint64_t n = atomic_load_explicit(&g_s2a_hud_fn, memory_order_relaxed);
     atomic_store_explicit(&g_s2a_hud_ft[n % 2048], now_ns(), memory_order_relaxed);
@@ -54,7 +57,7 @@ static void resume_frame(uint64_t f) {
 }
 void s2a_dguard_frame(uint64_t now); void s2a_dguard_evidence(const char *why, int stall);
 void s2a_load_first_frame(uint64_t now);   // loadprog.c：首帧上屏 → 加载页收起、全部编完的记下已完整预热   // dguard.c：直连安全网（首帧后前台满 60 秒清零连续失败）；没 arm 时一次原子读
-void s2a_frame_presented(void) { s2a_wg_frame(atomic_load_explicit(&g_nominal_fps, memory_order_relaxed)); s2a_dguard_frame(now_ns()); if (s2a_hud_on()) s2a_hud_frame(); uint64_t f = atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
+void s2a_frame_presented(void) { s2a_wg_frame(atomic_load_explicit(&g_nominal_fps, memory_order_relaxed)); s2a_dguard_frame(now_ns()); if (s2a_hud_on() || atomic_load_explicit(&g_hud_brief, memory_order_relaxed)) s2a_hud_frame(); uint64_t f = atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     resume_frame(f);
     if (!f) { BOOT_MARK("nnMain → 首帧上屏（游戏自身加载 + 渲染器首帧）"); s2a_load_first_frame(now_ns()); }
     if (!f && stall_s() > 0 && !g_stall_started && s2a_dev_on()) { atomic_store(&g_stall_stop, 0); if (!pthread_create(&g_stall_thread, NULL, stall_watch, NULL)) g_stall_started = 1; }
