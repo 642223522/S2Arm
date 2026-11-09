@@ -148,6 +148,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var keysRejected = false
     /// 刚装好的那款（装机弹窗显示完成页）。
     @Published var installDone: String?
+    /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
+    /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
+    @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
+    static let phoneKinds: Set<JobSession.Kind> = [.install, .installRemove, .installRestore]
     /// 连着的手机、可选机型（出包页用）；玩家选的机型（productType）。
     @Published private(set) var connectedDevices: [[String: Any]] = []
     @Published private(set) var targetModels: [[String: Any]] = []
@@ -803,6 +807,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     private func start(_ fresh: JobSession, _ body: @escaping @MainActor (EventSink) async throws -> String?) {
         session = fresh
+        if Self.phoneKinds.contains(fresh.kind) { phoneResult = nil }
         let sink = EventSink { [weak self] event in self?.ingest(event) }
         work = Task { [weak self] in
             do {
@@ -858,6 +863,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             inlineFailure = (state == .failed || state == .interrupted) ? (session.kind, session.message) : nil
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
+        if Self.phoneKinds.contains(session.kind), let id = session.gameID { phoneResult = (id, session.name, state == .completed) }
         // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
         if session.kind == .play, let id = session.gameID, cloudFolder != nil {
             cloudSyncing = true
