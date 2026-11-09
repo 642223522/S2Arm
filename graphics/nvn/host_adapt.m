@@ -233,6 +233,7 @@ void s2a_direct_out_size(int *w, int *h) { *w = g_out_w; *h = g_out_h; }
 static int fb_readback(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_FB_READBACK"); v = e && !strcmp(e, "1"); } return v; }
 #if TARGET_OS_IPHONE
 UIView *s2a_ios_root_view(void) __attribute__((weak_import));
+CGRect s2a_ios_game_area(void) __attribute__((weak_import));
 int s2a_screen_w(void); int s2a_screen_h(void); int s2a_widen_game(void); int s2a_widen_full(void); int s2a_screen_reaspect(void);   // runtime/src/widen.c
 int s2a_nvn_reaspect_ok(void);   // graphics/nvn/widen_glue.inc：NVN 直连的宽屏核心在跑（能运行中换屏；Vulkan / GL 层的贴图建时定宽，换不了）
 static int out_wide(void) {   // 出的是宽图：第二层，或直连第三层整套放宽（屏幕比 16:9 宽时核心才放宽，s2a_widen_init 回 OFF 时出的仍是 16:9）
@@ -252,19 +253,21 @@ static CAMetalLayer *g_layer;
 static double g_out_a;   // 出图宽高比（起局定，游戏内部按它渲染；NVN 直连换屏时跟着换，见 s2a_direct_relayout）
 // 触屏（ios/vpad.m gameRect）按这同一个比例算画面矩形（审计 P1-79：原先触点一律按屏幕宽 : 1080，宽屏没生效 / 窄屏加高时出图是 16:9 / 1920:屏高，手指落点偏）。0 = 还没挂层
 double s2a_direct_out_aspect(void) { return g_out_a; }
+CGRect s2a_direct_out_rect(void) { return g_layer ? g_layer.frame : CGRectZero; }
 // 按根视图当前尺寸摆出图层：出图比例 g_out_a 等比放进视图、居中，可画尺寸跟着变（主线程）。挂层时调一次；之后屏幕尺寸变了
 //   （10-27 Duo 合上切外屏：层仍按内屏尺寸挂，外屏只露出左上一块）由 App 壳视图控制器布局回调经 s2a_direct_relayout 再调——
 //   NVN 直连按新屏重算屏幕宽 / 高（s2a_screen_reaspect），出图比例跟着换，宽屏核心在下一个渲染遍前按新比例出图（widen_glue.inc wd_reaspect；10-27 维护者：坚持原生满屏）；
 //   Vulkan / GL 直连（贴图建时定宽）照旧：游戏仍按起局比例出图，新视图比例差 > 1% 时按出图比例居中留黑、记一行
 static void layout_layer(UIView *v, CAMetalLayer *l) {
     CGFloat s = v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale; l.contentsScale = s;
-    CGRect b = v.bounds; double a = g_out_a;
+    CGRect b = s2a_ios_game_area ? s2a_ios_game_area() : v.bounds; double a = g_out_a;
+    if (CGRectIsEmpty(b)) b = v.bounds;
     if (b.size.width <= 0 || b.size.height <= 0 || !(a > 0)) return;
     // 等比居中；出图比例与视图比例差 < 1% 时铺满视图（10-29：宽屏开着时出图比例来自取整后的屏幕宽，如 2346 / 1080 = 2.1722 对屏幕 2.1727，
     //   旧写法层比视图窄零点几个点，右侧露一条 ≤ 1 像素的黑缝；同 the reference port present_viewport 的 1% 容差）
     pf_vp f = pf_viewport(b.size.width, b.size.height, a, 1); CGFloat w = f.w, h = f.h;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    l.frame = CGRectMake(f.x, f.y, w, h);
+    l.frame = CGRectMake(b.origin.x + f.x, b.origin.y + f.y, w, h);
     // 出图层像素倍数（S2A_OUT_SCALE，缺省 1 = 屏幕原生；帧率能耗线 10-26 维护者要量）：最后上屏这一层按原生全分辨率画，每帧多一次整屏读写；
     //   设 0.75 时可画尺寸按 0.75 倍、图层框不变，交系统合成器放大。代价可能反过来（尺寸不符时合成器要自己缩放），真机 A/B 定生死前缺省不动；换屏重摆沿用同一倍数
     static double k = -1; if (k < 0) { const char *e = getenv("S2A_OUT_SCALE"); k = e ? atof(e) : 1.0; if (!(k >= 0.5 && k <= 1.0)) k = 1.0;
@@ -278,14 +281,16 @@ void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubvie
     // 在后台不认布局变化（11-02 维护者 Duo 丝之歌：进后台后 iOS 截多任务快照，临时把视图摆成 466×678 点的竖条，宿主当成运行中换屏 1350 → 1318 → 1350、
     //   宽屏核心按新比例重建加高目标；回前台那一刻多一次重建）：后台不出图也不提交，快照尺寸不是玩家的屏幕。回前台视图恢复原尺寸，出图层本来没动
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
-    CGSize z = v.bounds.size; if (z.width <= 0 || z.height <= 0) return;
+    CGRect area = s2a_ios_game_area ? s2a_ios_game_area() : v.bounds;
+    if (CGRectIsEmpty(area)) area = v.bounds;
+    CGSize z = area.size; if (z.width <= 0 || z.height <= 0) return;
     double a0 = g_out_a; int re = s2a_nvn_reaspect_ok() && s2a_screen_reaspect(); if (re) g_out_a = out_aspect();   // 先换出图比例再摆层
     CGSize d0 = g_layer.drawableSize; layout_layer(v, g_layer); CGSize d1 = g_layer.drawableSize;
     if (d0.width == d1.width && d0.height == d1.height && !re) return;
     double va = z.width / z.height;
     LOG("直连：屏幕尺寸变了，出图层重摆为 %.0fx%.0f 像素（视图 %.0fx%.0f 点，比例 %.3f；出图比例 %.3f → %.3f%s）", d1.width, d1.height, z.width, z.height, va, a0, g_out_a,
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
-    if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：新屏幕比例 %.3f 与出图比例 %.3f 差超过 1%%，按比例居中留黑（Vulkan / GL 直连运行中不改游戏比例）", va, g_out_a);
+    if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：可用区域比例 %.3f 与出图比例 %.3f 不同，按实际出图比例居中；固定尺寸的路径须重新启动游戏后应用新比例", va, g_out_a);
 }
 void *front_metal_layer(void) {
     static dispatch_once_t once;

@@ -235,6 +235,7 @@ int s2a_screen_fit(int pw, int ph) {
 }
 int s2a_screen_reaspect(void) {
     if (g_force_native) return 0;   // 玩家选了退回原生 16:9：App 壳布局回调不许把屏宽改回真屏
+    if (g_on > 0) return 0;   // 分屏 / 转屏：装载期补丁的尺寸或投影已定，保持整条链同一比例，重启后才按新区域装载
 #if TARGET_OS_IPHONE
     if (getenv("S2A_SCREEN_W") || getenv("S2A_SCREEN_H") || !s2a_ios_screen_known()) return 0;   // 环境变量给定的（Mac 模拟 / 判定局）不跟屏
     return s2a_screen_switch(s2a_ios_screen_w(), s2a_ios_screen_h());   // 运行中换到窄屏（Duo 合上 / 展开）按新屏加高

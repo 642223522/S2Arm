@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/mman.h>
 #include "../src/native.h"
 S2A_TEST_MOD_TABLE(64); int g_nmod;
 static char g_tmd[600];   // 模块目录（loader.c s2a_module_dir 的桩）：宽屏已验证名单的标记 widen_verified.tsv 在这里找
@@ -69,6 +70,26 @@ static void c12(void) { char path[] = "/tmp/s2a_t_wis_log_XXXXXX"; int fd = mkst
 static void c11(void) { char d[600]; snprintf(d, sizeof d, "%s", g_tmd); g_tmd[0] = 0; g_known = 1; g_ios_w = 2346; g_ios_h = 1080; unsetenv("S2A_WIDEN_NARROW");
     int a = s2a_screen_w_after_load(); int narrow = getenv("S2A_WIDEN_NARROW") != NULL; snprintf(g_tmd, sizeof g_tmd, "%s", d); int b = s2a_screen_w_after_load(), c = s2a_screen_w();
     _exit((a == 0 && !narrow ? 0 : 1) | (b == 2346 && c == 2346 ? 0 : 2)); }
+// 分屏改变目标区域时，装载期已写入宽屏点的游戏仍使用原始画布/投影，不能只热切第三层。
+void s2a_widen_load(module_t *m, const char *dir);
+static void fixed_patch(int aspect_only) {
+    g_known=1; g_ios_w=2346; g_ios_h=1080; s2a_screen_w(); s2a_screen_h();
+    char p[700]; snprintf(p,sizeof p,"%s/main.widen.tsv",g_tmd); FILE *f=fopen(p,"w"); if (!f) _exit(8);
+    fprintf(f,"0\t0x10\t%s\t%x\n",aspect_only?"aspdiv":"movz",aspect_only?0x1e201820u:0x52800000u|(1280u<<5)); fclose(f);
+    snprintf(p,sizeof p,"%s/widen_enable.handheld.tsv",g_tmd); f=fopen(p,"w"); if (!f) _exit(8);
+    fprintf(f,"main\t0x10\t%s\t1\n",aspect_only?"aspdiv":"movz"); fclose(f);
+    module_t *m=&g_mod[0]; snprintf(m->name,sizeof m->name,"main"); m->key_page_size=16384;
+    m->base=mmap(NULL,16384,PROT_READ,MAP_ANON|MAP_PRIVATE,-1,0); s2a_widen_load(m,g_tmd);
+    g_ios_w=2880;
+    _exit(s2a_screen_reaspect()==0 && s2a_screen_w()==2346 ? 0 : 1);
+}
+static void c13(void) { fixed_patch(0); }
+static void c14(void) { fixed_patch(1); }
+static void c15(void) {
+    g_known=1; g_ios_w=2346; g_ios_h=1080; s2a_screen_w(); s2a_screen_h();
+    g_ios_w=1920; g_ios_h=1280;
+    _exit(s2a_screen_reaspect()==1 && s2a_screen_w()==1920 && s2a_screen_h()==1280 ? 0 : 1);
+}
 int main(void) {
     char T[] = "/tmp/s2a_t_widen_ios_screen_XXXXXX"; if (!mkdtemp(T)) return 1;
     snprintf(g_tmd, sizeof g_tmd, "%s", T);
@@ -94,8 +115,11 @@ int main(void) {
     e = run_child(c8); CHECK(e == 0, "⑧ 预热期先读屏幕宽、之后设置关才进环境：期望预热 1920、装载后仍 1920（修前 2346；退出位 %d：1 预热 / 2 装载后）", e);
     e = run_child(c12); CHECK(e == 0, "⑫ 装载前问游戏画布：期望 1280×720、不出宽图、不打装载前红行（退出位 %d：1 取值 / 2 读了屏幕）", e);
     e = run_child(c11); CHECK(e == 0, "⑪ 装载后的屏幕宽：期望装载前 0 且不过名单门、装载后 2346（退出位 %d：1 装载前 / 2 装载后）", e);
+    e = run_child(c13); CHECK(e == 0, "⑬ 已改渲染尺寸的补丁不随分屏单独热切比例（退出 %d）", e);
+    e = run_child(c14); CHECK(e == 0, "⑭ 只改投影比例的补丁也不单独热切第三层（退出 %d）", e);
+    e = run_child(c15); CHECK(e == 0, "⑮ 没有装载期补丁的路径仍能从宽屏切到上区 3:2（退出 %d）", e);
     char c[700]; snprintf(c, sizeof c, "rm -rf %s", T); (void)!system(c);
     if (bad) { printf("✗ t_widen_ios_screen：%d 项红\n", bad); return 1; }
-    printf("✓ t_widen_ios_screen：15 条断言全过——装载前问画布不读屏幕 1 条（⑫）+ 装载后的屏幕宽装载前不读 1 条（⑪）+ 按窗口像素跟屏 2 条（⑨⑩）+ 预热期读屏幕宽不吞设置关 1 条（⑧）+ 运行中退回原生 16:9 钉住与撤钉 2 条（⑥⑦）+ 屏幕宽 unknown 时只读不缓存 3 条（首次 2340 照常返回、连上后 1920、unknown 时读 1920 随后仍得 2340）+ 已知时照旧缓存 1 条 + 窄屏暂不加高 2 条 + 模拟窄屏照旧加高 1 条\n");
+    printf("✓ t_widen_ios_screen：18 条断言全过（缓存、原生比例、窗口变化、固定补丁不热切、无补丁仍可热切）\n");
     return 0;
 }
