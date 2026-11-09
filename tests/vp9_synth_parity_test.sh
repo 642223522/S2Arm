@@ -15,16 +15,35 @@ export MSBUILDDISABLENODEREUSE=1
 RID=osx-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64 )
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 
-# 1. 作业生成器：不打 S2Arm 补丁的 libvpx（版本与 sha256 取 services/vpx/build.sh 那一行）+ 钩子，只解码、单线程（几秒）
+# 1. 作业生成器：不打 S2Arm 补丁的 libvpx（版本与 sha256 取 services/vpx/build.sh 那一行）+ 钩子，只解码、单线程。
+#   libvpx.a 与编生成器要的头文件（源码树的 *.h + configure 生成的 vpx_config.h / *_rtcd.h）按「版本 + sha256 + 钩子补丁 + configure 参数」缓存，
+#   目录名另带本机 clang 版本行的哈希（同 services/vpx/build.sh：两套 Xcode 不互删）；命中就不解包、不 configure、不 make（#313 维护者复审）
 eval "$(grep -m1 '^VER=' "$H/services/vpx/build.sh")"
-source "$H/android/tools/fetch_source.sh"
-TGZ=$(s2a_source_fetch "libvpx-$VER.tar.gz" "https://github.com/webmproject/libvpx/archive/refs/tags/v$VER.tar.gz" "$SHA")
-mkdir -p "$W/src" "$W/obj"; tar xzf "$TGZ" -C "$W/src" --strip-components 1
-patch -p1 -s -d "$W/src" < "$H/tests/vp9_synth_parity/jobgen_hook.patch"
-( cd "$W/obj" && CC="xcrun clang" "$W/src/configure" --disable-vp8 --disable-vp9-encoder --enable-vp9-decoder --disable-examples --disable-tools \
-    --disable-docs --disable-unit-tests --disable-webm-io --disable-libyuv --enable-static --disable-shared > "$W/configure.log" 2>&1 &&
-  make -j8 > "$W/make.log" 2>&1 ) || { echo "🔴 vp9_synth_parity：生成器用的 libvpx 构建失败" >&2; tail -5 "$W"/*.log >&2; exit 1; }
-xcrun clang -std=c11 -O2 -I"$W/src" -I"$W/obj" "$H/tests/vp9_synth_parity/jobgen.c" "$W/obj/libvpx.a" -o "$W/jobgen"
+CFG=(--disable-vp8 --disable-vp9-encoder --enable-vp9-decoder --disable-examples --disable-tools --disable-docs --disable-unit-tests
+     --disable-webm-io --disable-libyuv --enable-static --disable-shared)
+TCV=$(xcrun clang --version 2> /dev/null | sed -n 1p) || TCV=
+[ -n "$TCV" ] || { echo "🔴 vp9_synth_parity：取不到 clang 的版本行（xcrun 失败）" >&2; exit 1; }
+KEY=$( { echo "$VER $SHA ${CFG[*]}"; cat "$H/tests/vp9_synth_parity/jobgen_hook.patch"; } | shasum -a 256 | cut -c1-12)
+C=${S2A_VPX_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/vpx}; mkdir -p "$C"
+G=$C/jobgen-$VER-$KEY-$(printf '%s' "$TCV" | shasum -a 256 | cut -c1-8)
+if [ ! -s "$G/libvpx.a" ]; then
+    until mkdir "$C/.lock-jobgen" 2> /dev/null; do p=$(cat "$C/.lock-jobgen/pid" 2> /dev/null || true); [ -n "$p" ] && ! kill -0 "$p" 2> /dev/null && rm -rf "$C/.lock-jobgen"; sleep 0.5; done
+    echo $$ > "$C/.lock-jobgen/pid"; trap 'rm -rf "$W" "$C/.lock-jobgen"' EXIT   # 几棵树同时跑时排队
+    if [ ! -s "$G/libvpx.a" ]; then
+        source "$H/android/tools/fetch_source.sh"
+        TGZ=$(s2a_source_fetch "libvpx-$VER.tar.gz" "https://github.com/webmproject/libvpx/archive/refs/tags/v$VER.tar.gz" "$SHA")
+        mkdir -p "$W/src" "$W/obj"; tar xzf "$TGZ" -C "$W/src" --strip-components 1
+        patch -p1 -s -d "$W/src" < "$H/tests/vp9_synth_parity/jobgen_hook.patch"
+        ( cd "$W/obj" && CC="xcrun clang" "$W/src/configure" "${CFG[@]}" > "$W/configure.log" 2>&1 && make -j8 > "$W/make.log" 2>&1 ) ||
+            { echo "🔴 vp9_synth_parity：生成器用的 libvpx 构建失败" >&2; tail -5 "$W"/*.log >&2; exit 1; }
+        T=$G.tmp.$$; rm -rf "$T"; mkdir -p "$T/include"
+        ( cd "$W/src" && find . -name '*.h' -print0 | cpio -0pdm --quiet "$T/include" )
+        cp "$W/obj"/*.h "$T/include/"; cp "$W/obj/libvpx.a" "$T/"; printf '%s\n' "$TCV" > "$T/toolchain.txt"
+        rm -rf "$G"; mv "$T" "$G"   # 整个目录一次落位：中途失败不会留下半套缓存
+    fi
+    rm -rf "$C/.lock-jobgen"; trap 'rm -rf "$W"' EXIT
+fi
+xcrun clang -std=c11 -O2 -I"$G/include" "$H/tests/vp9_synth_parity/jobgen.c" "$G/libvpx.a" -o "$W/jobgen"
 
 # 2. 被测的原生库（产品配方）与对拍程序
 lib=$(bash "$H/services/vpx/build.sh" "$RID" | tail -1)
