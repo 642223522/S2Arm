@@ -50,7 +50,8 @@ uint64_t s2a_process_id(void);
 const s2a_layout *s2a_layout_get(void);
 uint64_t s2a_main_base(void);          // 主程序模块装载基址（未装载 = 0）：金手指 main 区
 const char *s2a_main_build_id(void);   // 主程序构建号（十六进制串，没有 = 空串）
-const char *s2a_docs_dir(void);        // 文档根（s2a_docs.h：S2A_DOCS，没有则 $HOME/Documents）
+void s2a_cheats_host_enable(void);     // 宿主有金手指界面（ios/vpad_cheats.m）时装载期登记
+const char *s2a_cheats_dir(void);      // 金手指目录 <文档根>/cheats；宿主没登记 = 空串（C# 不起金手指线程）
 
 // ---------- §4.2 句柄表 ----------
 enum { S2A_OBJ_NONE, S2A_OBJ_THREAD, S2A_OBJ_EVENT_R, S2A_OBJ_EVENT_W, S2A_OBJ_SESSION,

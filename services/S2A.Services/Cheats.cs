@@ -74,11 +74,12 @@ namespace S2A.Services
 
         public static void Start()
         {
-            // 文档根只经原生层 s2a_docs_dir（runtime/include/s2a_docs.h 唯一取法，与面板 ios/vpad_cheats.m 同一口径）；Mac 上没有界面入口，不起线程（不碰用户文稿夹）
-            if (_thread != null || !OperatingSystem.IsIOS()) return;
-            string docs = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_docs_dir());
-            if (string.IsNullOrEmpty(docs)) return;
-            _thread = new Thread(() => Run(Path.Combine(docs, "cheats"))) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
+            // 目录只经原生层 s2a_cheats_dir：有金手指界面的宿主（ios/vpad_cheats.m）装载时登记才回目录（文档根按 s2a_docs.h 唯一取法，与面板同一口径），
+            //   没登记（Mac / 安卓）回空串 → 不起线程、不碰用户文稿夹。平台差异在平台层登记，这里不判平台
+            if (_thread != null) return;
+            string dir = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_cheats_dir());
+            if (string.IsNullOrEmpty(dir)) return;
+            _thread = new Thread(() => Run(dir)) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
         }
 
@@ -266,7 +267,7 @@ namespace S2A.Services
             [DllImport(Lib)] public static extern Layout* s2a_layout_get();
             [DllImport(Lib)] public static extern ulong s2a_main_base();
             [DllImport(Lib)] public static extern byte* s2a_main_build_id();
-            [DllImport(Lib)] public static extern byte* s2a_docs_dir();
+            [DllImport(Lib)] public static extern byte* s2a_cheats_dir();
         }
     }
 }

@@ -27,7 +27,11 @@ NSArray<NSDictionary *> *s2a_cheats_parse(NSString *text) {
     return out;
 }
 
-static NSURL *cheats_dir(void) {   // 文档根唯一取法（s2a_docs.h），与服务层 Cheats.cs 同一目录
+// 本宿主有金手指界面：装载期向原生层登记，服务层（Cheats.cs）才起金手指线程（Mac / 安卓没有这个文件，不登记、不起）
+// 弱链接[lab]：s2a_cheats_host_enable（runtime/src/loader.c；输入工作台不链原生核，取不到就不登记）
+void s2a_cheats_host_enable(void) __attribute__((weak_import));
+__attribute__((constructor)) static void cheats_register_host(void) { if (s2a_cheats_host_enable) s2a_cheats_host_enable(); }
+static NSURL *cheats_dir(void) {   // 文档根唯一取法（s2a_docs.h），与服务层 Cheats.cs（经 s2a_cheats_dir）同一目录
     char d[1024]; s2a_docs_path(d, sizeof d, "cheats");
     return [NSURL fileURLWithPath:@(d) isDirectory:YES];
 }
