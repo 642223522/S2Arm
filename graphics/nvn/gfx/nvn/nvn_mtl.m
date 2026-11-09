@@ -11496,16 +11496,14 @@ void ms_after(void) {
 // levels 0-1 while drawing level 1; on the iPhone the moon's glow flared for one frame now and then and magenta squares showed — the third game of this kind): every draw, all games.
 // A hit is handled by the cheapest step that gives the Switch's result (the content from before this draw), stepping up only when needed:
 //   ① the view holds levels below the one being drawn: narrow the view to them (no copy, the pass stays open)
-//   ② nothing in the open pass has changed the slot since it was loaded (g_fb_dirty: a clear / don't-care load or a draw writing it sets it): read memory as it is. This holds
-//      for a draw that writes the slot it samples as well - the Switch reads the tile before that draw's own writes land, so memory is exactly what it would read
-//      (until 10-27 every such draw went to ④: Breath of the Wild copied a 1024x576 attachment and ended its render pass 462 times a frame, 16.3 -> 22.1 ms)
-//   ③ the pass changed it: end the pass before this draw (the slot lands in memory, the next pass loads it); no copy. For a self-writing draw, this is as correct as ④ but far cheaper
-//      (Breath of the Wild frame time 20.4 -> 16.4 ms when self-write went from ④ to ③); for a non-self-writing draw, this was always the path
-//   ④ this draw writes the slot it samples, the pass changed it, and DM_NVN_FB_SELFREAD=0: copy the whole sampled view into a same-shaped snapshot and sample that
-//      (the old cost: Breath of the Wild 16.6 -> 36.6 ms when every self-write was copied; now only used with the =0 override or a listed shader)
+//   ② this draw does not write the sampled slot, and the open pass has not changed it: read memory as it is
+//   ③ this draw does not write the sampled slot, but the pass changed it: end the pass before sampling, so the slot lands in memory; no copy
+//   ⑤ a proven same-pixel read can use the on-chip variant, keeping the pass open (fb_tile_try below)
+//   ④ this draw writes the slot it samples and cannot use ⑤: copy the whole sampled view into a same-shaped snapshot and sample that.
+//      Ending the preceding pass alone does not isolate the read: this draw would still sample and write the same resource in its new pass (#296).
 // A view only counts as feedback when it holds the level AND the layer being drawn; one that does not is skipped silently (the slot is attached, not sampled)
 // Shaders listed in the game profile's feedback_snap (key prefixes, space-separated) or DM_NVN_FB_SNAP=all / <keys,...> go straight to ④ (after ①); DM_NVN_FB_SNAP=0 turns the check off.
-// DM_NVN_FB_SELFREAD=0 makes a self-writing draw with dirty=1 go to ④ (copy) instead of ③ (end pass); the default (=1) ends the pass (no copy), which is as correct and far cheaper.
+// DM_NVN_FB_SELFREAD=1 restores the old unisolated self-read for diagnosis; the default (=0) uses ④ when ⑤ cannot handle the read.
 // fb_report logs the hits of each step every 300 frames
 static char g_fb_keys[16][20]; static int g_fb_nk = -1, g_fb_all, g_fb_off, g_fb_selfread = -1;
 static int fb_want(const char *key) {   // 1 = copy on every hit (listed); 0 = automatic (copy only when needed, see above)
@@ -11514,8 +11512,8 @@ static int fb_want(const char *key) {   // 1 = copy on every hit (listed); 0 = a
         if (!strcmp(src, "all")) g_fb_all = 1;
         else if (strcmp(src, "0")) for (const char *q = src; *q && g_fb_nk < 16;) { size_t n = strcspn(q, ", "); if (n) { if (n > 16) n = 16; memcpy(g_fb_keys[g_fb_nk], q, n); g_fb_keys[g_fb_nk++][n] = 0; } q += n; q += strspn(q, ", "); }
         if (g_fb_all || g_fb_nk) MLOG("same-pass feedback sampling snapshot: %s%s", g_fb_all ? "all fragment shaders" : src, e && *e ? " (DM_NVN_FB_SNAP)" : " (profile key feedback_snap)"); }
-    if (g_fb_selfread < 0) { const char *e = getenv("DM_NVN_FB_SELFREAD"); g_fb_selfread = !(e && !strcmp(e, "0"));
-        if (!g_fb_selfread) MLOG("same-pass feedback sampling: a draw that writes the slot it samples with dirty=1 copies it instead of ending the pass (DM_NVN_FB_SELFREAD=0)"); }
+    if (g_fb_selfread < 0) { const char *e = getenv("DM_NVN_FB_SELFREAD"); g_fb_selfread = e && !strcmp(e, "1");
+        if (g_fb_selfread) MLOG("same-pass feedback sampling: unisolated self-read enabled for diagnosis (DM_NVN_FB_SELFREAD=1)"); }
     if (g_fb_all) return 1;
     for (int i = 0; i < g_fb_nk; i++) if (!strncmp(key, g_fb_keys[i], strlen(g_fb_keys[i]))) return 1;
     return 0;
@@ -11559,10 +11557,10 @@ static id<MTLTexture> fb_snap_shape(MTLTextureType tt, MTLPixelFormat pf, NSUInt
 // ⑤ 遍内自采样改片上读取（10-30 帧率能耗线；DM_NVN_FB_TILE=0 关）：第 ③ 步结束遍之前先试——这一笔采样本遍已改过的附件 k，且只在本像素读它：
 //   就用片元着色器的可读瓦片版（_bf，FX_i = k）直接读瓦片里的颜色，遍不结束。瓦片里正是「这一笔之前」的内容（同 Switch：先前的笔已写进，本笔的写还没落），
 //   和第 ③ 步结束遍后重新载入读到的一样，却省了整片写回 + 读入（塞尔达每帧 250 处切遍、附件读写约 10 GB）。
-//   证明不成立（槽混用、坐标不是投影本像素、视图不是附件本身、没有 _bf、特化失败……）一律回到第 ③ 步，画面不会比原来差。
+//   证明不成立（槽混用、坐标不是投影本像素、视图不是附件本身、没有 _bf、特化失败……）回到 ③（本笔不写采样槽）或 ④（自写槽快照）。
 //   已知差别：同一笔里重叠的片元，后者读到前者刚写的值（Switch 两者都读本笔之前）；DM_NVN_FB_TILE_CHECK 双画比对量它
 static uint64_t g_fb_l5, g_fb_l5_unpush;   // ⑤ 的次数；其中外推参数非零、这一笔不外推的次数（fb_report）
-// DM_NVN_FB_TILE_CHECK=1（诊断，同局双画逐字节比对；每帧最多 DM_NVN_FB_TILE_CHECK 次，=1 时每帧 8 次）：命中 ⑤ 的笔先按老路（③：结束遍、从内存采样）画、
+// DM_NVN_FB_TILE_CHECK=1（诊断，同局双画逐字节比对；每帧最多 DM_NVN_FB_TILE_CHECK 次，=1 时每帧 8 次）：命中 ⑤ 的笔先按常规路径（③ / ④）画、
 //   结果拷出；附件恢复成这一笔之前的底，再按 ⑤（读瓦片）画同一笔；两份逐字节比。同一帧、同一笔、同一组输入，不依赖两局能否复现。只比单命中的笔
 static struct { int pending, forcing, fx[32], n; uint8_t fbmask, lmap[8]; __strong id<MTLFunction> fn; __strong id<MTLTexture> att[8], s0[8]; uint64_t ser[8], frame, quota; } g_fbc;
 static _Atomic uint64_t g_fbc_same, g_fbc_diff;
@@ -11745,19 +11743,15 @@ static void fb_prepare(NvProg *pr) {
             if (!settled) { int pend = g_nlc || R.clear_d || R.clear_s; for (int c = 0; c < 8; c++) pend |= R.clear_c[c];
                 settled = 1; if (pend) { lc_land(); rp_flush(); memset(g_fb_dirty, 0, sizeof g_fb_dirty); } }
             int self_write = listed || ((fs->rf.color_mask >> k & 1) && ((S.chmask.mask >> (4 * k)) & 0xf));
-            // ② nothing in the open pass has changed the slot since it was loaded: memory holds exactly the content from before this draw, so it is read as it is.
-            //   That holds for a draw that writes the slot it samples as well - the Switch reads the tile before its own writes land, which is what was loaded.
-            //   (Until 10-27 this only applied when the draw did not write: Breath of the Wild then copied a 1024x576 attachment and ended its render pass 462 times
-            //   a frame, 16.3 -> 22.1 ms. A listed shader keeps its copy.)
+            // ② unchanged memory is safe to sample only if this draw does not also write that slot (the diagnostic override restores the old self-read).
             if (!g_fb_dirty[k] && !listed && (g_fb_selfread || !self_write)) { g_fb_l2++; continue; }
-            // ③ the pass changed the slot (dirty=1) and this draw samples it: end the pass, let the changed content land in memory, and let this draw open the next one with a load.
-            //   For a draw that writes the slot it samples (self_write=true), this is as correct as ④ (both make the shader read the content before its own writes: the tile content that
-            //   a prior draw in the open pass wrote, now in memory after the pass ends), but ③ has no copy cost — Breath of the Wild frame time 20.4 -> 16.4 ms when ④ became ③ here
-            if (!listed && (!self_write || g_fb_selfread)) {   // g_fb_selfread=1 (default): a self-writing draw ends the pass when dirty; g_fb_selfread=0: it goes to ④ (the 10-27 behaviour); a listed shader keeps its copy
-                if (g_enc && fb_tile_try(pr, fs, k, b->reg, t)) { PD("N %llu same-pass feedback sampling: attachment %d ser=%llu was drawn in this pass; this draw reads it on-chip (slot %d), the pass stays open", g_stat_pass, k, (unsigned long long)ser, b->reg); continue; }   // ⑤
+            // ⑤ preserve the existing proven on-chip path before falling back to an isolated snapshot for self-write.
+            if (!listed && g_fb_dirty[k] && g_enc && fb_tile_try(pr, fs, k, b->reg, t)) { PD("N %llu same-pass feedback sampling: attachment %d ser=%llu was drawn in this pass; this draw reads it on-chip (slot %d), the pass stays open", g_stat_pass, k, (unsigned long long)ser, b->reg); continue; }
+            // ③ ending the pass makes prior writes visible, but does not isolate a self-writing draw in the next pass.
+            if (!listed && (!self_write || g_fb_selfread)) {
                 if (g_enc) { rp_end(); PD("N %llu same-pass feedback sampling: attachment %d ser=%llu was drawn in this pass%s; the pass ends before this draw samples it", g_stat_pass, k, (unsigned long long)ser, self_write ? " (self-write)" : ""); }
                 memset(g_fb_dirty, 0, sizeof g_fb_dirty); g_fb_l3++; continue; }
-            // ④ this draw writes the slot it samples and the pass already changed it: copy the whole sampled view (every level and layer of it) into a snapshot of the same
+            // ④ this draw writes the slot it samples: copy the whole sampled view (every level and layer of it) into a snapshot of the same
             //   shape and sample that. Any 2D / 2D array view works, including one the shader declares as a cube / cube array and one that holds several mip levels
             //   (Breath of the Wild 9a08f70c2775ebe7: a 4-level 2D array sampled while drawing layer 6 of it): the levels the pass does not write are copied unchanged,
             //   so a LOD read means the same in the snapshot. Non-root views (a view of a view), multisample and 3D are reported once and left as they are
