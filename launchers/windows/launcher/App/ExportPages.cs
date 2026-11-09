@@ -151,6 +151,8 @@ public sealed partial class EnvironmentWindow
     private string packScrollerPage = "";
 
     private bool PackBusy => packRunning || installBusy;
+    /// 这款现在能不能动（选、出包、移动、清缓存、删除）：游戏库作业或出包在跑时都不能；装机在跑时只锁正在装的那款（玩家装一款大游戏的十几分钟里别的照常用）
+    private bool BusyFor(LibraryGame game) => libraryBusy || packRunning || (installBusy && installGameId == game.Id);
     private LibraryGame? SelectedGame => catalog?.Games.FirstOrDefault(g => g.Id == selectedGame && !g.Hidden);
     private static double Clock => DateTime.UtcNow.Subtract(DateTime.UnixEpoch).TotalSeconds;
 
@@ -172,6 +174,12 @@ public sealed partial class EnvironmentWindow
         var bottomBar = RenderBottomBar();
 
         var dock = new DockPanel { LastChildFill = true };
+        if (PhonePill() is { } pill)   // 出包 / 进度 / 装机页没有游戏库页那条顶栏：胶囊放在这些页顶部，在哪页都找得回装机（#308）
+        {
+            var top = new Border { Padding = new Thickness(32, 14, 32, 0), Child = pill, HorizontalAlignment = HorizontalAlignment.Right };
+            DockPanel.SetDock(top, Dock.Top);
+            dock.Children.Add(top);
+        }
         DockPanel.SetDock(bottomBar, Dock.Bottom);
         dock.Children.Add(bottomBar);
 
@@ -1016,7 +1024,7 @@ public sealed partial class EnvironmentWindow
     private void RenderInstall(StackPanel body)
     {
         var game = SelectedGame ?? packGame;
-        body.Children.Add(Action("export.back", () => Navigate("build")));   // 装机在后台照跑，离开后顶栏胶囊能回来（#308）
+        body.Children.Add(Action("export.back", () => Navigate("library")));   // 回游戏库首页（原先回「出包到」页）；装机在后台照跑，顶栏胶囊能回来（#308）
         if (game is null || connectedFolder is null || libraryId is null) { body.Children.Add(Label(T("export.no_game"), 18)); return; }
         if (readinessFor != game.Id && !installChecking) { readinessFor = game.Id; readiness = null; installCheckFailed = false; _ = CheckInstallAsync(); }
         body.Children.Add(GameHeader(game));

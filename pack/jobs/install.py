@@ -884,7 +884,13 @@ class WinPhone:
         try:
             self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
         except self.W.Fail as e:
-            raise Failure(str(e), code=e.err or "device_install_failed") from e
+            # 有对应处理建议的码（free_appid_limit = Apple 9120 等）：上屏说人话的原因与办法，plumesign 英文原文只进诊断（Windows 实机：
+            #   原先整句英文「Developer API error 9120 …」直接上屏，玩家只看到签名失败）；没有专门建议的照旧上屏原文
+            code = e.err or "device_install_failed"
+            from errors import RECOVERY
+            if code in RECOVERY and code not in ("device_install_failed", "job_failed"):
+                raise Failure("签名装机没成：" + RECOVERY[code], code=code, internal=str(e)) from e
+            raise Failure(str(e), code=code) from e
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 

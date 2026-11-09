@@ -219,7 +219,8 @@ public sealed partial class EnvironmentWindow
                 ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; Navigate("install"); })
                 : game.LocationState == "missing" ? () => _ = MissingAsync(game)
                 : () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); };
-            var select = Action(primaryKey, primaryAction, !libraryBusy && !PackBusy && (game.IphoneReady || game.LocationState != "offline"));
+            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「装到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
+            var select = Action(primaryKey, primaryAction, !BusyFor(game) && (game.IphoneReady || game.LocationState != "offline"));
             select.VerticalAlignment = VerticalAlignment.Center;
             // secondary: show past result if one exists and game is not currently running
             if (finishedPacks.TryGetValue(game.Id, out _) && !(packRunning && packGame?.Id == game.Id))
@@ -227,7 +228,7 @@ public sealed partial class EnvironmentWindow
                 var actionCol = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
                 actionCol.Children.Add(select);
                 var results = Action("library.hero.results", () =>
-                { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("progress"); }, !libraryBusy && !PackBusy);
+                { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("progress"); }, !BusyFor(game));
                 actionCol.Children.Add(results);
                 Grid.SetColumn(actionCol, 2); line.Children.Add(actionCol);
             }
@@ -320,7 +321,7 @@ public sealed partial class EnvironmentWindow
     /// 位置未连接 / 找不到时出包、移动、清缓存不可用。</summary>
     private ContextMenu CardMenu(LibraryGame game)
     {
-        var idle = !libraryBusy && !PackBusy;
+        var idle = !BusyFor(game);
         var menu = new ContextMenu();
         void Add(string text, string id, Action action, bool enabled)
         {
@@ -376,7 +377,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>「删除这款游戏」确认（同 Mac 的 game.delete 弹窗）：确认后跑 delete 作业。</summary>
     private async Task ConfirmDeleteAsync(LibraryGame game)
     {
-        if (deleteOpen || libraryBusy || PackBusy) return;
+        if (deleteOpen || BusyFor(game)) return;
         deleteOpen = true;
         var confirmed = false;
         try
@@ -414,7 +415,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>「找不到游戏文件」（照 Mac missingFor 弹窗）：重新指定文件夹… / 从游戏库移除（磁盘上的文件不动）/ 取消。</summary>
     private async Task MissingAsync(LibraryGame game)
     {
-        if (missingOpen || libraryBusy || PackBusy) return;
+        if (missingOpen || BusyFor(game)) return;
         missingOpen = true;
         string? answer = null;
         try
@@ -460,7 +461,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>一款游戏的游戏库作业（游戏库结构 v3：moveGame / relinkGame / forgetGame / clean kind=cache / delete）：忙碌、结果与诊断同 RunLibraryAsync，成功后重读游戏库。</summary>
     private async Task RunGameJobAsync(string operation, LibraryGame game, Dictionary<string, object?>? extra = null)
     {
-        if (libraryBusy || PackBusy || connectedFolder is null || libraryId is null) return;
+        if (BusyFor(game) || connectedFolder is null || libraryId is null) return;
         libraryBusy = true; librarySummary = "library.working"; libraryDiagnostics = ""; Render();
         using var cancellation = new CancellationTokenSource();
         libraryCancellation = cancellation;
