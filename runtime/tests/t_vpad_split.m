@@ -32,6 +32,20 @@ int main(void) { @autoreleasepool {
     CK(([[l buttonAt:CGPointMake(CGRectGetMaxX(scaled)-1,center.y) safeRect:safe slop:0 avoiding:gap nearest:YES scales:@{@"*":@0,@"A":@1.6}] isEqual:@"A"]),"放大后超出原框的可见部分也能命中");
     CK(![[l buttonAt:center safeRect:safe slop:0 avoiding:gap nearest:YES scales:@{@"A":@0}] isEqual:@"A"],"分屏隐藏键不能被最邻近命中重新启用");
     CK([l buttonAt:CGPointMake(300,600) safeRect:safe slop:10 avoiding:gap nearest:YES scales:@{@"*":@1.6}]==nil,"整体放大后折痕仍不响应");
+    // 手算几何：200×200 区域内，40 点键跨过 x=100..120 的竖折痕后须整键移到一侧。
+    CGRect compact=CGRectMake(10,400,200,200), crease=CGRectMake(100,0,20,1000);
+    NSDictionary *probe=@{@"x":@.5,@"y":@.5,@"width":@.2,@"height":@.2};
+    CK(CGRectEqualToRect([l frameForButton:probe safeRect:compact avoiding:crease],CGRectMake(120,480,40,40)),"折痕右侧避让与手算坐标一致");
+    CK(CGRectEqualToRect([l frameForButton:probe safeRect:compact avoiding:crease scale:1.5],CGRectMake(120,470,60,60)),"缩放后先算完整键框再避让");
+    probe=@{@"x":@.4,@"y":@.5,@"width":@.2,@"height":@.2};
+    CK(CGRectEqualToRect([l frameForButton:probe safeRect:compact avoiding:crease],CGRectMake(60,480,40,40)),"折痕左侧避让与手算坐标一致");
+    S2AVPadLayout *close=[S2AVPadLayout defaultForSafeRect:compact split:YES];
+    close=[close layoutWithButtonCenters:@{@"A":@[@100,@500],@"B":@[@125,@500]} safeRect:compact identifier:@"mine" name:@"重叠热区" error:nil];
+    NSDictionary *onlyAB=@{@"*":@0,@"A":@1,@"B":@1};
+    CK(([[close buttonAt:CGPointMake(116,500) safeRect:compact slop:10 avoiding:CGRectNull nearest:NO scales:onlyAB] isEqual:@"A"]),"普通布局保留热区重叠时的按键顺序");
+    CK(([[close buttonAt:CGPointMake(116,500) safeRect:compact slop:10 avoiding:CGRectNull nearest:YES scales:onlyAB] isEqual:@"B"]),"分屏重叠热区取较近的 B 键");
+    CK(([[close buttonAt:CGPointMake(146,500) safeRect:compact slop:0 avoiding:CGRectNull nearest:YES scales:onlyAB] isEqual:@"B"]),"较小按键仍有至少 44 点命中区域");
+    CK([close buttonAt:CGPointMake(148,500) safeRect:compact slop:0 avoiding:CGRectNull nearest:YES scales:onlyAB]==nil,"最邻近选择不扩展到全部空白区域");
     NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:[@"vpad_split_" stringByAppendingString:NSUUID.UUID.UUIDString]];
     NSURL *game=[root URLByAppendingPathComponent:@"game"], *app=[root URLByAppendingPathComponent:@"app"];
     S2AVPadLayoutStore *normal=[[S2AVPadLayoutStore alloc] initWithDirectory:game settingsDirectory:app];
