@@ -233,6 +233,7 @@ public sealed partial class EnvironmentWindow
             case ("POST", "/library"):
                 if (r.Text("path") is not { Length: > 0 } library) return ControlReply.Bad("缺 path");
                 if (ControlBusy) return Busy();
+                libraryMoveFrom = r.Flag("move") ? connectedFolder : null;
                 ConnectLibrary(Path.GetFullPath(library));
                 return ControlReply.Ok();
             case ("POST", "/select"):
