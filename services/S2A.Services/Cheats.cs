@@ -74,7 +74,9 @@ namespace S2A.Services
 
         public static void Start()
         {
+            // 文档根：同界面（ios/vpad_cheats.m cheats_dir）——$S2A_DOCS，没有时 iOS 取 App 的 Documents；Mac 没给 S2A_DOCS 不碰用户文稿夹
             string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
+            if (string.IsNullOrEmpty(docs) && OperatingSystem.IsIOS()) docs = Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "", "Documents");
             if (string.IsNullOrEmpty(docs) || _thread != null) return;
             _thread = new Thread(() => Run(Path.Combine(docs, "cheats"))) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
