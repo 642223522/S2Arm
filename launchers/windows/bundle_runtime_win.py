@@ -152,7 +152,7 @@ def smoke(rt):   # 每件跑一下：Python 带四个库、dotnet 只有运行�
               ([str(rt / "dotnet/dotnet.exe"), "--list-runtimes"], "Microsoft.NETCore.App 10."),
               ([str(rt / "git/usr/bin/bash.exe"), "-c", "printf 'b\\na\\n' | sort | head -1 | awk '{print \"bash \" $1}'"], "bash a"),
               ([str(rt / "zstd/zstd.exe"), "--version"], "v1.5.7"),
-              ([str(rt / "python/python.exe"), "-B", "-c", f"import ctypes; [ctypes.WinDLL(r'{rt / 'vcrt'}\\' + n) for n in {sorted(VC_RUNTIME)!r}]; print('vcrt ok')"], "vcrt ok"),
+              ([str(rt / "python/python.exe"), "-B", "-c", "import ctypes, os, sys; [ctypes.WinDLL(os.path.join(sys.argv[1], n)) for n in sys.argv[2:]]; print('vcrt ok')", str(rt / "vcrt"), *sorted(VC_RUNTIME)], "vcrt ok"),
               ([str(rt / "mingit/cmd/git.exe"), "--version"], "git version")]
     env.update(PYTHONHOME=str(rt / "python"), PYTHONNOUSERSITE="1"); env.pop("PYTHONPATH", None)
     with tempfile.TemporaryDirectory() as t:   # 脚本能导入同目录兄弟模块；模块路径只含随包 python 目录（不混机器上另装的 Python / 用户 site-packages）
