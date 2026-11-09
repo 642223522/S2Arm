@@ -193,13 +193,20 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     UIView *_editBar;
     NSMapTable<UITouch *, UILabel *> *_drag;
     NSMapTable<UITouch *, NSValue *> *_dragOffset;
+    NSDictionary *_styleSnapshot, *_scales;     // 进编辑时的外观（取消时还原）；取键用的每键倍率
+    UILabel *_selected; UIView *_keyPanel; UILabel *_keyTitle; UISlider *_sizeSlider, *_alphaSlider; UISwitch *_hideSwitch;
 }
 static const CGFloat kHit = 10;
 static const uint32_t kHoldLockKeys = (1u << B_ZL) | (1u << B_ZR);
 // 方案三「描线」（11-07 维护者 选定）：无底色只描线 + 细投影，ABXY 字淡青，按下淡白填充；不扎眼、亮暗场景都看得清
-static UIColor *vp_line(void) { return [UIColor colorWithWhite:1 alpha:0.78]; }
-static UIColor *vp_text(void) { return [UIColor colorWithWhite:1 alpha:0.86]; }
-static UIColor *vp_face(void) { return [UIColor colorWithRed:150 / 255.0 green:215 / 255.0 blue:230 / 255.0 alpha:0.9]; }
+static NSInteger g_theme;   // 按键配色（store.keyTheme）：0 = 默认描线
+static UIColor *vp_theme(CGFloat alpha) {
+    static const CGFloat c[][3] = {{0, 0, 0}, {.35, .7, 1}, {1, .62, .25}, {.4, .9, .5}, {1, .55, .75}};
+    return [UIColor colorWithRed:c[g_theme][0] green:c[g_theme][1] blue:c[g_theme][2] alpha:alpha];
+}
+static UIColor *vp_line(void) { return g_theme ? vp_theme(0.85) : [UIColor colorWithWhite:1 alpha:0.78]; }
+static UIColor *vp_text(void) { return g_theme ? vp_theme(0.92) : [UIColor colorWithWhite:1 alpha:0.86]; }
+static UIColor *vp_face(void) { return g_theme ? vp_theme(0.95) : [UIColor colorWithRed:150 / 255.0 green:215 / 255.0 blue:230 / 255.0 alpha:0.9]; }
 // 按下高亮与按键同形（11-07 维护者：圆钮按下出方框）：按键是 UILabel，UILabel 的 backgroundColor 画进自身内容、不受 cornerRadius 约束，
 //   而投影要画在框外不能开 masksToBounds → 填充色只设到 layer.backgroundColor（图层背景按 cornerRadius 自带圆角）
 static void vp_fill(UIView *key, BOOL pressed) { key.layer.backgroundColor = pressed ? [UIColor colorWithWhite:1 alpha:0.3].CGColor : NULL; }
@@ -306,7 +313,11 @@ static NSString *button_label(NSString *identifier) {
     CGRect rect = UIEdgeInsetsInsetRect(self.bounds, insets);
     return CGRectMake(rect.origin.x, rect.origin.y, MAX(1, rect.size.width), MAX(1, rect.size.height));
 }
+- (S2AVPadKeyStyle)styleOf:(UILabel *)key { return [_layoutStore keyStyle:key.accessibilityLabel]; }
+- (void)refreshScales { _scales = [_layoutStore keyScalesIncludingHidden:_editing]; }
+- (CGFloat)keyAlpha:(UILabel *)key active:(BOOL)active { return S2AVPadKeyOpacity(_layoutStore.idleKeyOpacity, active) * vp_opacity() * [self styleOf:key].opacity; }
 - (void)rebuildKeys {
+    g_theme = _layoutStore.keyTheme; [self refreshScales];
     for (UILabel *key in _keys) [key removeFromSuperview];
     if (_touchOnly) { _keys = @[]; return; }   // 纯触屏：一个按键都不建，也就没有热点、没有长按能「呼出」的东西
     NSMutableArray *keys = [NSMutableArray array]; NSArray *ids = button_ids();
@@ -319,6 +330,7 @@ static NSString *button_label(NSString *identifier) {
         key.backgroundColor = UIColor.clearColor; vp_fill(key, NO); key.layer.borderWidth = 1.6; key.layer.borderColor = vp_line().CGColor;
         key.layer.masksToBounds = NO; vp_shadow(key.layer);   // 投影要画在框外：不裁边
         if (kHoldLockKeys >> key.tag & 1) { vp_add_lock_badge(key); vp_lock(key, _layoutStore.holdLockEnabled, NO); }
+        key.hidden = [_layoutStore keyStyle:identifier].hidden;
         [self addSubview:key]; [keys addObject:key];
     }
     _keys = keys;
@@ -375,24 +387,67 @@ static NSString *button_label(NSString *identifier) {
     _editing = YES; [self clearTouches]; [_fade invalidate]; _fade = nil;
     s2a_pad_update(S2A_PAD_TOUCH, 0, 0, NULL);   // 编辑期间触屏源不可用：游戏收不到半截按键
     _drag = [NSMapTable strongToStrongObjectsMapTable]; _dragOffset = [NSMapTable strongToStrongObjectsMapTable];
-    for (UILabel *l in _keys) { [l.layer removeAllAnimations]; l.alpha = 1; l.layer.borderColor = vp_face().CGColor; }
+    _styleSnapshot = [_layoutStore keyStyleSnapshot]; [self refreshScales];
+    for (UILabel *l in _keys) { [l.layer removeAllAnimations]; l.hidden = NO; l.alpha = [self styleOf:l].hidden ? 0.35 : 1; l.layer.borderColor = vp_face().CGColor; }
     _editBar = [UIView new]; _editBar.accessibilityIdentifier = @"vpad.edit";
-    UILabel *tip = [UILabel new]; tip.text = @"拖动按键调整位置（只对这款游戏生效）"; tip.textColor = UIColor.whiteColor; tip.font = [UIFont systemFontOfSize:13];
+    UILabel *tip = [UILabel new]; tip.text = @"拖动调位置，点一下调大小 / 透明度（只对这款游戏生效）"; tip.textColor = UIColor.whiteColor; tip.font = [UIFont systemFontOfSize:13];
     tip.textAlignment = NSTextAlignmentCenter; tip.tag = 1;
     UIButton *reset = [self editButton:@"恢复默认" action:@selector(editReset)], *cancel = [self editButton:@"取消" action:@selector(editCancel)],
              *done = [self editButton:@"完成" action:@selector(editDone)];
     reset.tag = 2; cancel.tag = 3; done.tag = 4;
-    for (UIView *v in @[tip, reset, cancel, done]) [_editBar addSubview:v];
-    [self addSubview:_editBar]; [self setNeedsLayout];
+    UISegmentedControl *theme = [[UISegmentedControl alloc] initWithItems:@[@"默认", @"蓝", @"橙", @"绿", @"粉"]];
+    theme.tag = 5; theme.selectedSegmentIndex = _layoutStore.keyTheme; theme.accessibilityIdentifier = @"vpad.edit.theme";
+    theme.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; [theme addTarget:self action:@selector(themeChanged:) forControlEvents:UIControlEventValueChanged];
+    for (UIView *v in @[tip, reset, cancel, done, theme]) [_editBar addSubview:v];
+    [self addSubview:_editBar]; [self buildKeyPanel]; [self setNeedsLayout];
     LOG("触屏布局：进入按键位置编辑（%s）", _layout.identifier.UTF8String);
 }
+- (UISlider *)panelSlider:(float)low high:(float)high id:(NSString *)identifier {
+    UISlider *s = [UISlider new]; s.minimumValue = low; s.maximumValue = high; s.accessibilityIdentifier = identifier;
+    [s addTarget:self action:@selector(panelChanged:) forControlEvents:UIControlEventValueChanged];
+    [s addTarget:self action:@selector(panelCommit) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+    return s;
+}
+- (void)buildKeyPanel {
+    _keyPanel = [UIView new]; _keyPanel.hidden = YES; _keyPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72]; _keyPanel.layer.cornerRadius = 12; _keyPanel.accessibilityIdentifier = @"vpad.edit.key";
+    _keyTitle = [UILabel new]; _keyTitle.textColor = UIColor.whiteColor; _keyTitle.font = [UIFont boldSystemFontOfSize:14]; _keyTitle.tag = 1;
+    _sizeSlider = [self panelSlider:0.6 high:1.6 id:@"vpad.edit.size"]; _sizeSlider.tag = 2;
+    _alphaSlider = [self panelSlider:0.2 high:1 id:@"vpad.edit.alpha"]; _alphaSlider.tag = 3;
+    _hideSwitch = [UISwitch new]; _hideSwitch.tag = 4; _hideSwitch.accessibilityIdentifier = @"vpad.edit.hide";
+    [_hideSwitch addTarget:self action:@selector(hideChanged) forControlEvents:UIControlEventValueChanged];
+    NSArray *names = @[@"大小", @"透明度", @"隐藏"];
+    for (int i = 0; i < 3; i++) { UILabel *l = [UILabel new]; l.text = names[i]; l.textColor = UIColor.whiteColor; l.font = [UIFont systemFontOfSize:13]; l.tag = 10 + i; [_keyPanel addSubview:l]; }
+    for (UIView *v in @[_keyTitle, _sizeSlider, _alphaSlider, _hideSwitch]) [_keyPanel addSubview:v];
+    [self addSubview:_keyPanel];
+}
+- (void)selectKey:(UILabel *)key {
+    _selected = key; _keyPanel.hidden = !key; if (!key) return;
+    S2AVPadKeyStyle s = [self styleOf:key];
+    _keyTitle.text = [@"按键 " stringByAppendingString:key.text]; _sizeSlider.value = s.scale; _alphaSlider.value = s.opacity; _hideSwitch.on = s.hidden;
+}
+- (void)applySelected:(BOOL)persist {   // 改完当场生效：绕键中心缩放，不动位置；游戏继续跑
+    if (!_selected) return;
+    S2AVPadKeyStyle s = {_sizeSlider.value, _alphaSlider.value, _hideSwitch.on}; NSError *error;
+    if (![_layoutStore setKeyStyle:s forKey:_selected.accessibilityLabel persist:persist error:&error]) { LOG("【红】按键外观保存失败：%s", error.localizedDescription.UTF8String); return; }
+    NSUInteger i = [_keys indexOfObject:_selected]; CGRect f = [_layout frameForButton:_layout.buttons[i] safeRect:_safeRect]; CGPoint c = _selected.center;
+    _selected.bounds = CGRectMake(0, 0, f.size.width * s.scale, f.size.height * s.scale); _selected.center = c;
+    _selected.alpha = s.hidden ? 0.35 : s.opacity; [self refreshScales];
+}
+- (void)panelChanged:(UISlider *)slider { (void)slider; [self applySelected:NO]; }
+- (void)panelCommit { [self applySelected:YES]; }
+- (void)hideChanged { [self applySelected:YES]; }
+- (void)themeChanged:(UISegmentedControl *)control {
+    NSError *error; if (![_layoutStore setKeyTheme:control.selectedSegmentIndex error:&error]) { LOG("【红】按键配色保存失败：%s", error.localizedDescription.UTF8String); return; }
+    g_theme = control.selectedSegmentIndex;
+    for (UILabel *l in _keys) { BOOL face = l.tag >= B_A && l.tag <= B_Y; l.textColor = face ? vp_face() : vp_text(); l.layer.borderColor = vp_face().CGColor; }
+}
 - (void)endEditing {
-    _editing = NO; [_editBar removeFromSuperview]; _editBar = nil; _drag = nil; _dragOffset = nil;
+    _editing = NO; [_editBar removeFromSuperview]; _editBar = nil; _drag = nil; _dragOffset = nil; [_keyPanel removeFromSuperview]; _keyPanel = nil; _selected = nil; [self refreshScales];
     for (UILabel *l in _keys) l.layer.borderColor = vp_line().CGColor;
 }
-- (void)editCancel { [self endEditing]; [self reloadLayout]; LOG("触屏布局：取消编辑，按键位置不变"); }
+- (void)editCancel { NSError *e; if (_styleSnapshot) [_layoutStore restoreKeyStyleSnapshot:_styleSnapshot error:&e]; [self endEditing]; [self reloadLayout]; LOG("触屏布局：取消编辑，按键位置不变"); }
 - (void)editReset {   // 恢复默认：只切回内置默认布局，本款「我的布局」文件保留（同管理页的恢复默认）
-    NSError *error; [self endEditing];
+    NSError *error; [_layoutStore resetKeyStyles:&error]; [self endEditing];
     if (![_layoutStore selectIdentifier:S2AVPadLayoutDefaultIdentifier error:&error]) LOG("【红】触屏布局：恢复默认失败：%s", error.localizedDescription.UTF8String);
     else { [_layoutStore markManual:nil]; LOG("触屏布局：本款游戏恢复默认按键位置"); }
     [self reloadLayout];
@@ -418,8 +473,13 @@ static NSString *button_label(NSString *identifier) {
 }
 - (void)layoutEditBar {
     if (!_editBar) return;
-    CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat w = MIN(520, g.size.width - 32), h = 76;
-    _editBar.frame = CGRectMake(CGRectGetMidX(g) - w / 2, CGRectGetMidY(g) - h / 2, w, h); [self bringSubviewToFront:_editBar];   // 屏幕正中（默认布局正中没有键；放顶上会压住 − / +）
+    CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat w = MIN(520, g.size.width - 32), h = 112;
+    _editBar.frame = CGRectMake(CGRectGetMidX(g) - w / 2, CGRectGetMidY(g) - h, w, h); [self bringSubviewToFront:_editBar];
+    [_editBar viewWithTag:5].frame = CGRectMake(0, 76, w, 32);
+    CGFloat pw = MIN(360, g.size.width - 32); _keyPanel.frame = CGRectMake(CGRectGetMidX(g) - pw / 2, CGRectGetMidY(g) + 6, pw, 132); [self bringSubviewToFront:_keyPanel];
+    _keyTitle.frame = CGRectMake(12, 6, pw - 24, 20);
+    for (int i = 0; i < 3; i++) [_keyPanel viewWithTag:10 + i].frame = CGRectMake(12, 30 + i * 33, 56, 30);
+    _sizeSlider.frame = CGRectMake(72, 30, pw - 84, 30); _alphaSlider.frame = CGRectMake(72, 63, pw - 84, 30); _hideSwitch.frame = CGRectMake(pw - 63, 97, 51, 31);   // 屏幕正中（默认布局正中没有键；放顶上会压住 − / +）
     [_editBar viewWithTag:1].frame = CGRectMake(0, 0, w, 24);
     CGFloat bw = (w - 2 * 12) / 3;
     for (int i = 0; i < 3; i++) [_editBar viewWithTag:2 + i].frame = CGRectMake(i * (bw + 12), 32, bw, 36);
@@ -498,6 +558,7 @@ static NSString *button_label(NSString *identifier) {
         [weakSelf reloadLayout];
     } closed:nil];
     settings.embeddedInSettings = YES;
+    settings.editRequested = ^{ [weakSelf beginEditing]; };
     settings.currentLayout = ^S2AVPadLayout *{ S2AVPadView *view = weakSelf; return view ? view->_layout : nil; };
     return settings;
 }
@@ -519,7 +580,8 @@ static NSString *button_label(NSString *identifier) {
     CGFloat unit = MIN(safe.size.width, safe.size.height);
     for (NSUInteger i = 0; i < _keys.count; i++) {
         NSDictionary *button = _layout.buttons[i]; UILabel *key = _keys[i];
-        key.frame = [_layout frameForButton:button safeRect:safe];
+        CGRect f = [_layout frameForButton:button safeRect:safe]; CGFloat s = [self styleOf:key].scale;
+        key.frame = CGRectInset(f, f.size.width * (1 - s) / 2, f.size.height * (1 - s) / 2);
         key.layer.cornerRadius = MIN([button[@"cornerRadius"] doubleValue] * unit, MIN(key.bounds.size.width, key.bounds.size.height) / 2);
     }
     // 截图测试开关（按下态不经 XCTest 也能在真机截到）：S2A_VPAD_TEST_PRESSED=A,X,ZR,UP… 把这些键画成按下态，下一次真触屏即恢复
@@ -536,7 +598,7 @@ static NSString *button_label(NSString *identifier) {
 // 与 layoutSubviews 摆键同一份几何（frameForButton + _safeRect），取键逻辑在 vpad_layout.m buttonAt:（单测 t_vpad_stick_press）
 - (int)keyAt:(CGPoint)p {
     if (!_keys.count) return -1;
-    NSString *identifier = [_layout buttonAt:p safeRect:_safeRect slop:kHit];
+    NSString *identifier = [_layout buttonAt:p safeRect:_safeRect slop:kHit scales:_scales];
     return identifier ? (int)[button_ids() indexOfObject:identifier] : -1;
 }
 // 手指不动时没有触屏事件：到期时间变了才重排定时器，推摇杆的连续事件不反复建
@@ -574,11 +636,11 @@ static NSString *button_label(NSString *identifier) {
     if (self.hidden || _touchOnly || _editing) return;   // 纯触屏没有要显示 / 淡出的按键；编辑中按键常亮
     [_fade invalidate]; for (UILabel *l in _keys) {
         [l.layer removeAnimationForKey:@"opacity"];
-        l.alpha = _holdLock.locked >> l.tag & 1 ? 1 : S2AVPadKeyOpacity(_layoutStore.idleKeyOpacity, YES) * vp_opacity();   // 锁定的键不淡出，闭锁标记始终看得清
+        l.alpha = _holdLock.locked >> l.tag & 1 ? 1 : [self keyAlpha:l active:YES];   // 锁定的键不淡出，闭锁标记始终看得清
     }
     _fade = [NSTimer scheduledTimerWithTimeInterval:3 repeats:NO block:^(NSTimer *t) { (void)t;
         if (self->_held.count) { [self wake]; return; }
-        [UIView animateWithDuration:0.4 animations:^{ for (UILabel *l in self->_keys) if (!(self->_holdLock.locked >> l.tag & 1)) l.alpha = S2AVPadKeyOpacity(self->_layoutStore.idleKeyOpacity, NO) * vp_opacity(); }]; }];
+        [UIView animateWithDuration:0.4 animations:^{ for (UILabel *l in self->_keys) if (!(self->_holdLock.locked >> l.tag & 1)) l.alpha = [self keyAlpha:l active:NO]; }]; }];
 }
 - (void)setInputEnabled:(BOOL)enabled {
     BOOL hide = !enabled && !_touchOnly;   // 纯触屏模式下接了实体手柄也留着这一层：手指和手柄是两条独立输入
@@ -732,8 +794,8 @@ static NSString *button_label(NSString *identifier) {
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     if (_editing) {
         for (UITouch *t in ts) {
-            CGPoint p = [t locationInView:self]; int k = [self keyAt:p]; if (k < 0) continue;
-            for (UILabel *l in _keys) if (l.tag == k) { [_drag setObject:l forKey:t];
+            CGPoint p = [t locationInView:self]; int k = [self keyAt:p]; if (k < 0) { [self selectKey:nil]; continue; }
+            for (UILabel *l in _keys) if (l.tag == k) { [self selectKey:l]; [_drag setObject:l forKey:t];
                 [_dragOffset setObject:[NSValue valueWithCGPoint:CGPointMake(l.center.x - p.x, l.center.y - p.y)] forKey:t]; vp_fill(l, YES); break; }
         }
         return;
