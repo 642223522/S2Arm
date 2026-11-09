@@ -161,8 +161,10 @@ public final class LibraryProvider {
     /// 换游戏库（同旧启动器 chooseLibrary → setupLibrary）：setup 作业建好 / 认出这个文件夹（作业层拦非 APFS、云盘同步目录、非空的生文件夹），
     /// 成了把 library / libraryId 写回 preferences.json，本进程之后的作业都用新库。没成抛错、什么都不改。
     @discardableResult
-    public func change(to folder: URL, events: EventSink = .discard) async throws -> String {
-        let r = try await client.perform("setup", extra: ["library": folder.path, "libraryId": ""], events: events).result
+    public func change(to folder: URL, moveFrom: String? = nil, events: EventSink = .discard) async throws -> String {
+        var extra: [String: Any] = ["library": folder.path, "libraryId": ""]
+        if let moveFrom { extra["moveFrom"] = moveFrom }
+        let r = try await client.perform("setup", extra: extra, events: events).result
         let library = r["library"] as? String ?? folder.path
         let libraryId = r["libraryId"] as? String ?? ""
         try JobEnvironment.saveLibrary(privateRoot: client.environment.privateRoot, library: library, libraryId: libraryId)

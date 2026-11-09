@@ -160,7 +160,7 @@ import S2ArmAppleAdapter
         case ("POST", "/library"):
             guard let p = str("path") else { return .bad("缺 path") }
             if let b = busy() { return b }
-            model.changeLibrary(to: URL(fileURLWithPath: p)); return .ok()
+            model.changeLibrary(to: URL(fileURLWithPath: p), move: a["move"] as? Bool ?? false); return .ok()
         case ("POST", "/select"):
             if let id = str("gameId") { model.selectedID = id }
             return .ok()

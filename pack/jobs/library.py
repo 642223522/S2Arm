@@ -4,6 +4,7 @@ Storage/interaction helpers adapted from LumaDock under MIT.
 """
 from __future__ import annotations
 import collections
+import contextlib
 import errno
 import hashlib
 import json
@@ -21,6 +22,7 @@ import zipfile
 from core import Failure, atomic, contained, digest, prune_jobs, read
 import toolchain
 import winproc
+import filelock
 
 DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
@@ -310,7 +312,205 @@ def require_local(path):
         raise Failure(libloc.CLOUD_MESSAGE.format(cloud=cloud), code="library_in_cloud")
 
 
+MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
+
+
+def _looks_like_library(root):
+    """没有 marker 但装着 S2Arm 旧产物的文件夹：玩家手工拷过来的，或标识丢了的旧游戏库"""
+    phones = root / "iPhone"
+    return (root / "catalog.json").is_file() or (phones.is_dir() and any(_is_game_dir(p) for p in phones.iterdir()))
+
+
+def _is_game_dir(p):
+    return p.is_dir() and re.fullmatch(r"[0-9A-Fa-f]{16}", p.name) is not None
+
+
+def _adopt_catalog(root):
+    """认领旧产物：catalog.json 能读就用；否则按 iPhone/<游戏号> 和 games/<游戏号> 重建。名字先用游戏号，玩家可以改"""
+    existing = read(root / "catalog.json", None)
+    if isinstance(existing, dict) and isinstance(existing.get("games"), list):
+        return existing
+    ids = sorted({p.name.upper() for sub in ("iPhone", "games") if (root / sub).is_dir() for p in (root / sub).iterdir() if _is_game_dir(p)})
+    return dict(schema=1, games=[dict(id=i, name=i, display="", packages=[], hidden=False) for i in ids])
+
+
+def _same_volume(a, b):
+    return os.stat(a).st_dev == os.stat(b).st_dev
+
+
+def _size_of(path):
+    if path.is_symlink() or path.is_file():
+        return path.lstat().st_size
+    return sum((Path(d) / f).lstat().st_size for d, _, files in os.walk(path) for f in files)
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _files_under(root):
+    if root.is_symlink() or root.is_file():
+        return [Path(".")]
+    return [(Path(d) / f).relative_to(root) for d, dirs, files in os.walk(root) for f in files + [x for x in dirs if (Path(d) / x).is_symlink()]]
+
+
+def _verify_copy(src, dst, strict):
+    """拷完逐个对文件数和大小；存档和清单（strict）再对内容，大文件只对大小，免得搬家多花一倍时间"""
+    for rel in _files_under(src):
+        a, b = src / rel, dst / rel
+        if not (b.exists() or b.is_symlink()) or a.lstat().st_size != b.lstat().st_size and not a.is_symlink():
+            raise Failure(f"拷到新位置后校验不一致：{rel}", code="library_move_failed")
+        if strict and a.is_file() and not a.is_symlink() and _sha256(a) != _sha256(b):
+            raise Failure(f"拷到新位置后校验不一致：{rel}", code="library_move_failed")
+
+
+def _retarget_links(root, old, new):
+    """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置"""
+    if not root.is_dir():
+        return
+    from_text, to_text = os.path.normcase(str(old)), str(new)
+    for d, dirs, files in os.walk(root):
+        for name in dirs + files:
+            p = Path(d) / name
+            if not _is_link(p):
+                continue
+            target = os.readlink(p).removeprefix("\\\\?\\")
+            if not os.path.isabs(target) or not os.path.normcase(target).startswith(from_text):
+                continue
+            fresh = to_text + target[len(from_text):]
+            junction = getattr(os.path, "isjunction", lambda _: False)(p)
+            _unlink_link(p)
+            if junction:
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(p), fresh], check=True, capture_output=True)
+            else:
+                os.symlink(fresh, p)
+
+
+def _unlink_link(p):
+    if getattr(os.path, "isjunction", lambda _: False)(p):
+        os.rmdir(p)
+    else:
+        p.unlink()
+
+
+def _work_root_of(c, library):
+    return c.private if library.is_relative_to(c.private) else library / ".s2arm-work"
+
+
+def _move_pairs(c, source):
+    """要搬的 (旧, 新)：游戏库里的每一项，加上放在库外的工作目录（缺省游戏库在私有目录里时，着色器缓存在私有目录的 cache / run 下）。marker 排最后：有它才算搬完"""
+    old_work, new_work = _work_root_of(c, source), _work_root_of(c, c.library)
+    to_private = new_work == c.private and old_work != c.private   # 工作目录要回到私有目录：按子目录搬，别盖掉已有的；随库走的情况整个目录当普通项搬
+    pairs = [(p, c.library / p.name) for p in sorted(source.iterdir(), key=lambda x: x.name == ".s2arm-library.json")
+             if p.name not in MOVE_SKIP and not (to_private and p.name == ".s2arm-work")]
+    if old_work == c.private and new_work != c.private or to_private:
+        pairs[:0] = [(old_work / n, new_work / n) for n in ("cache", "run") if (old_work / n).exists() and not (new_work / n).exists()]
+    return pairs
+
+
+@contextlib.contextmanager
+def _source_locked(source):
+    """搬家期间旧游戏库不能有任务在跑"""
+    handles = []
+    try:
+        for name in (".execution.lock", ".catalog.lock"):
+            f = (source / name).open("a")
+            handles.append(f)
+            try:
+                filelock.try_lock(f)
+            except BlockingIOError:
+                raise Failure("旧游戏库还有任务在跑，等它结束再搬。", code="library_move_failed") from None
+        yield
+    finally:
+        for f in handles:
+            f.close()
+
+
+def move_library(c, source):
+    """把现有游戏库搬到 c.library（空文件夹）：同盘改名、跨盘拷完校验再换，任何一步失败都回到搬之前。旧位置的内容在新位置就位之后才删"""
+    source = Path(source).resolve()
+    info = read(source / ".s2arm-library.json", None)
+    if not isinstance(info, dict) or not info.get("id"):
+        raise Failure("原来的位置不是可搬的游戏库。", code="library_move_failed")
+    if c.library == source or c.library.is_relative_to(source) or source.is_relative_to(c.library):
+        raise Failure("新位置不能在原来的游戏库里面，也不能包含它。", code="library_move_failed")
+    with _source_locked(source):
+        pairs = _move_pairs(c, source)
+        c.library.mkdir(parents=True, exist_ok=True)
+        cross = [(a, b) for a, b in pairs if not _same_volume(a, c.library)]
+        need = sum(_size_of(a) for a, _ in cross)
+        if need and shutil.disk_usage(c.library).free < need:
+            raise Failure("新位置空间不够，游戏库没有搬。", code="disk_full")
+        stage = c.library / ".s2arm-moving"
+        done, staged = [], {}
+        try:
+            total, copied = max(need, 1), 0
+            if cross:
+                c.begin("把游戏库拷到新位置")
+            for n, (a, b) in enumerate(cross):
+                c.check()
+                target = stage / str(n)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if a.is_dir() and not a.is_symlink():
+                    shutil.copytree(a, target, symlinks=True)
+                else:
+                    shutil.copy2(a, target, follow_symlinks=False)
+                _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
+                copied += _size_of(a)
+                c.progress(copied, total)
+            c.begin("把游戏库放到新位置")
+            staged = {a: stage / str(n) for n, (a, _) in enumerate(cross)}
+            for a, b in pairs:
+                b.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(staged.get(a, a), b)
+                done.append((a, b))
+            for root in (c.library, _work_root_of(c, c.library)):
+                _retarget_links(root, source, c.library)
+        except BaseException:
+            if done:
+                _retarget_links(c.library, c.library, source)
+            for a, b in reversed(done):
+                if a in staged:
+                    _discard(b)
+                else:
+                    os.rename(b, a)
+            _discard(stage)
+            with contextlib.suppress(OSError):
+                (c.library / ".s2arm-work").rmdir()   # 回滚后别留下搬的时候建的空目录
+            raise
+        _discard(stage)
+        for a, _ in cross:
+            try:
+                _discard(a)
+            except OSError as error:
+                c.diagnostic("游戏库已经搬好，旧位置有文件没删掉，可以手动删除：" + c.redact(str(error)), code="job_failed", severity="warning")
+    for name in (".execution.lock", ".catalog.lock", ".DS_Store"):
+        (source / name).unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        _discard(source / ".s2arm-work")   # 工作目录回私有目录后剩的，都是能重新生成的
+    with contextlib.suppress(OSError):
+        source.rmdir()
+    return info
+
+
+def _discard(p):
+    if p.is_symlink() or p.is_file():
+        p.unlink(missing_ok=True)
+    elif p.exists():
+        for d, dirs, files in os.walk(p):
+            os.chmod(d, 0o755)
+            for f in files:
+                with contextlib.suppress(OSError):
+                    os.chmod(Path(d) / f, 0o644)
+        shutil.rmtree(p)
+
+
 def setup(c):
+    """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建"""
     c.begin("创建游戏库")
     if c.library == Path(c.library.anchor) or c.library == Path.home() or c.library == c.engine:
         raise Failure("请选择独立的游戏库文件夹。")
@@ -322,13 +522,22 @@ def setup(c):
         info = read(marker)
         if info.get("schema") != 1 or not info.get("id"):
             raise Failure("游戏库标识不完整。")
-    else:
-        if any(p.name != ".DS_Store" for p in c.library.iterdir()):
-            raise Failure("首次设置请选择空文件夹，已有文件保持原样。")
+        return dict(library=str(c.library), libraryId=info["id"], outcome="opened")
+    if any(p.name != ".DS_Store" for p in c.library.iterdir()):
+        if not _looks_like_library(c.library):
+            raise Failure("这个文件夹里已有别的文件：请选空文件夹，或者已有的 S2Arm 游戏库。文件都没动。")
         info = dict(schema=1, id=str(uuid.uuid4()))
+        atomic(c.library / "catalog.json", _adopt_catalog(c.library))
         atomic(marker, info)
-        atomic(c.library / "catalog.json", dict(schema=1, games=[]))
-    return dict(library=str(c.library), libraryId=info["id"])
+        return dict(library=str(c.library), libraryId=info["id"], outcome="adopted")
+    source = c.r.get("moveFrom")
+    if source:
+        info = move_library(c, source)
+        return dict(library=str(c.library), libraryId=info["id"], outcome="moved")
+    info = dict(schema=1, id=str(uuid.uuid4()))
+    atomic(c.library / "catalog.json", dict(schema=1, games=[]))
+    atomic(marker, info)
+    return dict(library=str(c.library), libraryId=info["id"], outcome="created")
 
 
 def validate_keys(path):
