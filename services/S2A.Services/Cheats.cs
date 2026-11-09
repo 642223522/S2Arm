@@ -222,28 +222,31 @@ namespace S2A.Services
             public ProcessState State => ProcessState.Started;
             public bool TamperedCodeMemory { get; set; }
 
-            private static void Check(ulong va, ulong size, bool write, ref bool code)
+            // 写到不可写页（苹果上的代码页是签名只读页）：先置 TamperedCodeMemory 再抛——Run 里按它的异常过滤在 finally 之前求值，
+            //   放在 finally 里置位，过滤看到的还是 false，会误判成「地址未就绪」（11-09 测试机1 实测）
+            private void Check(ulong va, ulong size, bool write)
             {
                 if (Native.MemMapped == null || Native.MemMapped(va, size) != 1)
                     throw new TamperExecutionException($"Unmapped memory access of {size} bytes at 0x{va:X16}");
                 if (!write) return;
                 MemInfo a, b;
                 Native.MemQuery(va, &a); Native.MemQuery(va + size - 1, &b);
-                if ((a.Perm & 2) == 0 || (b.Perm & 2) == 0) { code = true; throw new TamperExecutionException($"Write to non-writable memory at 0x{va:X16}"); }
+                if ((a.Perm & 2) == 0 || (b.Perm & 2) == 0)
+                {
+                    TamperedCodeMemory = true;
+                    throw new TamperExecutionException($"Write to non-writable memory at 0x{va:X16}");
+                }
             }
 
             public T ReadMemory<T>(ulong va) where T : unmanaged
             {
-                bool code = false;
-                Check(va, (ulong)Unsafe.SizeOf<T>(), false, ref code);
+                Check(va, (ulong)Unsafe.SizeOf<T>(), false);
                 return Dispatcher.Instance.Memory.Read<T>(va);
             }
 
             public void WriteMemory<T>(ulong va, T value) where T : unmanaged
             {
-                bool code = false;
-                try { Check(va, (ulong)Unsafe.SizeOf<T>(), true, ref code); }
-                finally { if (code) TamperedCodeMemory = true; }
+                Check(va, (ulong)Unsafe.SizeOf<T>(), true);
                 Dispatcher.Instance.Memory.Write(va, value);
             }
 

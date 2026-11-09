@@ -7,8 +7,11 @@ using Ryujinx.HLE.HOS.Tamper;
 namespace S2A.Services.Tests
 {
     // 金手指（Cheats.cs）：期望按 Atmosphere 金手指格式手写，不跑被测实现推期望
-    public static class CheatsTest
+    public static unsafe class CheatsTest
     {
+        private static int Mapped(ulong va, ulong size) => 1;
+        private static int QueryReadExec(ulong va, MemInfo* info) { info->Base = va & ~0xFFFUL; info->Size = 0x1000; info->Perm = 5; return 0; }   // 读 + 执行、不可写（代码页）
+
         private sealed class Fake : ITamperedProcess
         {
             public readonly List<(ulong va, ulong v)> Writes = new();
@@ -61,6 +64,17 @@ namespace S2A.Services.Tests
                 check($"金手指 条件：+0x10 = {v} 时 > 3 {(writes == 1 ? "成立、写 +0x20" : "不成立、不写")}", writes == 1 ? "8000000020=1" : "不写",
                     f.Writes.Count == 1 ? $"{f.Writes[0].va:X}={f.Writes[0].v}" : f.Writes.Count == 0 ? "不写" : $"写了 {f.Writes.Count} 次");
             }
+            // 游戏内存适配：写到不可写页 → 异常过滤（Run 里 when (!TamperedCodeMemory)）求值时标志已置上，才判得出「改代码，不支持」而不是「地址未就绪」
+            {
+                var oldMapped = Native.MemMapped; var oldQuery = Native.MemQuery;
+                Native.MemMapped = &Mapped; Native.MemQuery = &QueryReadExec;
+                var gp = new Cheats.GameProcess(); bool seen = false, threw = false;
+                try { gp.WriteMemory<uint>(0x10000, 1); }
+                catch (Ryujinx.HLE.Exceptions.TamperExecutionException) when (Observe(gp, ref seen)) { }
+                catch (Ryujinx.HLE.Exceptions.TamperExecutionException) { threw = true; }
+                Native.MemMapped = oldMapped; Native.MemQuery = oldQuery;
+                check("金手指 写代码页：抛执行异常、过滤求值时已标记改代码", (true, true), (seen || threw, seen));
+            }
             // NativeAOT 运行时指令（services/aot/rd.xml）要覆盖 Ryujinx Tamper 里全部泛型操作 / 条件 × 4 种宽度：期望 = 反射枚举出来的那一组，少一个就是真机「missing native code」
             var want = new List<string>();
             foreach (Type t in typeof(AtmosphereCompiler).Assembly.GetTypes())
@@ -84,5 +98,7 @@ namespace S2A.Services.Tests
             check("金手指 编译：坏指令回 null（界面显示「指令有误」）", true,
                 new AtmosphereCompiler(exe, 0, 0, 0, fake).Compile("bad", new[] { "ZZZZ" }) == null);
         }
+
+        private static bool Observe(Cheats.GameProcess p, ref bool seen) { seen = p.TamperedCodeMemory; return true; }
     }
 }
