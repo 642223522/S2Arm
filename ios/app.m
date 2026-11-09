@@ -28,6 +28,8 @@ void *s2a_shell_library_vc(const char *catalogue_json_path) __attribute__((weak_
 void s2a_shell_set_play_handler(void (*fn)(const char *game_id, void *ctx), void *ctx) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_refresh
 void s2a_shell_refresh(void) __attribute__((weak_import));
+// 弱链接[ios]：s2a_shell_cloud_sync_vc
+void *s2a_shell_cloud_sync_vc(const char *game_id, void (*done)(void *ctx), void *ctx) __attribute__((weak_import));
 void s2a_boot_rebase(const char *why);   // boot.c：起局计时起点改为此刻（多款容器点 Play；不进 native.h——它在抽取阶段键里，改它冷全库）
 const char *s2a_host_pre_ui_checks(void);   // host_main.c：起 UIKit 前读游戏相关值的检查（多款容器在选游戏之后调）
 #include <stdatomic.h>
@@ -560,6 +562,9 @@ int s2a_ios_screen_h(void) { double r = screen_ratio(); return r * 9 < 16 ? ((in
 @interface S2ASceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property BOOL managingSaves;
+@property BOOL cloudSynced;                         // 本进程已跑过起局前的 iCloud 存档同步
+@property BOOL cloudSyncing;                        // 同步页正盖着：期间切走再回来不起宿主（11-09 审查：曾在同步页底下直接起局）
+@property(strong) UIViewController *previousRoot;   // 同步页盖住之前的根（游戏界面），同步完换回
 @end
 // 亮度保持（10-30 维护者）：只在起局设一次留不住——测试设备开着自动亮度，0.5 设下去随后被系统拉回 0.20–0.33（10-30 暗黑3 测试设备2 一局），
 //   那局整机瓦数就不是 0.5 口径。设了 S2A_BRIGHTNESS 时每 2 秒、以及亮度变化通知时重设回目标；整局实际亮度的最小 / 最大值在每次检查时
@@ -658,6 +663,14 @@ void s2a_shell_pick_game_data(const char *gid) {   // 主线程（s2a_shell.h �
     if (!gid || !*gid) return;
     library_pack_help(@(gid), NO);
 }
+// 同步页完了（同步成 / 失败玩家点开始 / 冲突先不处理）：换回游戏界面，接着走存档管理 → 起宿主（主线程）
+static void cloud_sync_done(void *ctx) {
+    S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
+    sd.cloudSyncing = NO;
+    if (sd.previousRoot) { sd.window.rootViewController = sd.previousRoot; sd.previousRoot = nil; }
+    // App 正在后台：不起宿主，等系统下次真激活时调 sceneDidBecomeActive
+    if (sd.window.windowScene.activationState == UISceneActivationStateForegroundActive) [sd sceneDidBecomeActive:sd.window.windowScene];
+}
 @implementation S2ASceneDelegate
 // 多款容器：根控制器先是游戏库；壳没链库界面（缺省 make ios）时给提示页，不起游戏
 - (void)showLibrary {
@@ -733,7 +746,21 @@ void s2a_shell_pick_game_data(const char *gid) {   // 主线程（s2a_shell.h �
     (void)scene;
     if (!s2a_host_boot_pending()) return;
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) return;   // 多款容器：等游戏库 Play（预热进程同样只显示库）
-    if (self.managingSaves) return;
+    if (self.managingSaves || self.cloudSyncing) return;
+    // iCloud 存档同步（玩家在库设置里开了云存档才有页）：起宿主前、存档管理之前跑一次；有没做完的存档事务时先交存档管理页恢复，这次不同步
+    if (!self.cloudSynced && s2a_shell_cloud_sync_vc && !s2a_ios_save_management_requested()) {
+        self.cloudSynced = YES;
+        const s2a_launch_ctx *lc = s2a_launch_ctx_get();
+        void *vc = s2a_shell_cloud_sync_vc(lc && lc->game_id[0] ? lc->game_id : "", cloud_sync_done, (__bridge void *)self);
+        if (!vc) LOG("云存档：不同步（没开云存档，或原因见上面「S2Arm 云存档」行）");
+        if (vc) {
+            LOG("云存档：起宿主前同步");
+            self.cloudSyncing = YES;
+            self.previousRoot = self.window.rootViewController;
+            self.window.rootViewController = (__bridge_transfer UIViewController *)vc;
+            return;
+        }
+    }
     if (s2a_ios_save_management_requested()) {
         self.managingSaves = YES;
         __weak S2ASceneDelegate *weakSelf = self;

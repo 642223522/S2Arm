@@ -21,7 +21,7 @@ import toolchain
 INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pack", "tools", "Makefile",
           "platform/build.mk", "launchers/macos/build.mk", "macos", "tests/visual/galrec",
           # 打 iPhone 包（make ios）要编 platform/apple/plat_apple.c（10-23 Spare-host 前端打 iPhone 包撞「no such file」）
-          "platform/apple", "shell", "launchers/macos/frontend", "launchers/macos/adapter", "platform/plat.h", "platform/plat_asm.h",
+          "platform/apple", "shell", "launchers/shared/SaveSync", "launchers/macos/frontend", "launchers/macos/adapter", "platform/plat.h", "platform/plat_asm.h",
           # Android target uses the same immutable engine snapshot as its pack stages.
           "android", "LICENSE", "README.md",
           # 随包 Python 的钉版依赖清单：Windows 环境检查（pack/jobs/winenv.py）按它核随包 Python 的库版本（11-07 发版产物端到端：快照缺它、整份清单报错误码合同无法核实）

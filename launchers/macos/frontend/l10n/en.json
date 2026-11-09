@@ -1721,5 +1721,19 @@
   "update.pill": "Update %@",
   "update.pillHelp": "See what changed in this release and download it.",
   "update.readOnlyHint": "This copy cannot update where it is. Move NX2Apple.app into Applications first.",
-  "update.title": "A new version is out"
+  "update.title": "A new version is out",
+  "s2arm.env.cloud.group": "iCloud saves",
+  "s2arm.env.cloud.title": "iCloud save sync",
+  "s2arm.env.cloud.off": "Off. Choose a folder in iCloud Drive, and the same folder in the game library settings on your iPhone or iPad, to share saves between them.",
+  "s2arm.env.cloud.on": "Saves come down before a game starts and go up after it quits. Choose the same folder on your iPhone or iPad.",
+  "s2arm.env.cloud.choose": "Choose folder…",
+  "s2arm.env.cloud.turnOff": "Turn off",
+  "s2arm.cloud.conflict.title": "The saves don't match",
+  "s2arm.cloud.conflict.body": "The save on this Mac and the one in iCloud both changed. Pick one to keep playing; the other stays in a backup.",
+  "s2arm.cloud.conflict.local": "Use this Mac's save ({0})",
+  "s2arm.cloud.conflict.remote": "Use the save from {0} ({1}, {2})",
+  "s2arm.cloud.conflict.later": "Not now",
+  "s2arm.cloud.failed": "iCloud saves didn't sync: {0}",
+  "s2arm.cloud.syncing": "Syncing iCloud saves…",
+  "s2arm.cloud.busyAfterSync": "Another task started during the sync, so the game didn't start. Click Play again when it finishes"
 }

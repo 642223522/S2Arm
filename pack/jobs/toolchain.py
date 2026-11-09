@@ -319,12 +319,16 @@ def preflight(c):
         action="appStoreXcode")
     if packaged:
         from embedded import artifact
+        why = ""
         try:
             tools = artifact(c, "Prepare")
             ready_tools = tools is not None
-        except (Failure, OSError):
-            ready_tools = False
-        add("S2Arm 游戏准备工具", ready_tools, "应用内置着色器翻译器、资源索引器和 GAL 工具。")
+            if not ready_tools:
+                why = "内置引擎里没有准备工具清单"
+        except (Failure, OSError) as e:   # 原因写进检查项和日志，不再只剩一个 FAIL（v0.2.0 前回归时查不到为什么）
+            ready_tools, why = False, str(e)
+            c.emit("message", "S2Arm 游戏准备工具不可用：" + why)
+        add("S2Arm 游戏准备工具", ready_tools, "应用内置着色器翻译器、资源索引器和 GAL 工具。" + ("（" + why + "）" if why else ""))
     for module in ("capstone", "lz4", "numpy", "zstandard"):   # zstandard：读 zstd 存储的 Switch 2 .nup（pack/ns2_nup.py；内置 Python 3.12 没有 compression.zstd）
         ok, _ = probe(c, [sys.executable, "-c", "import " + module])
         add("Python / " + module, ok, "应用内置 " + module + "；组件损坏时请重新安装完整应用。")

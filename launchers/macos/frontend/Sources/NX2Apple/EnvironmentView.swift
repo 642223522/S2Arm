@@ -56,6 +56,19 @@ struct EnvironmentView: View {
                             }
                         }
                     }
+                    // iCloud 存档同步（S2ArmLauncherModel+CloudSaves）：选 iCloud 云盘里的文件夹，iPhone / iPad 上选同一个
+                    CardGroup(loc.t("s2arm.env.cloud.group")) {
+                        CardRow(loc.t("s2arm.env.cloud.title"), detail: model.cloudFolder.map { $0.path + "\n" + loc.t("s2arm.env.cloud.on") } ?? loc.t("s2arm.env.cloud.off")) {
+                            HStack(spacing: 8) {
+                                if model.cloudFolder != nil {
+                                    Button(loc.t("s2arm.env.cloud.turnOff")) { try? model.setCloudFolder(nil) }
+                                        .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.off")
+                                }
+                                Button(loc.t("s2arm.env.cloud.choose")) { chooseCloudFolder() }
+                                    .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.choose")
+                            }
+                        }
+                    }
                     // 允许 AI 操作 S2Arm（本机控制口，S2ArmControl）：玩家用自己的 AI 照 App 自带的操作手册做导入 → 出包 → 装机（维护者 10-23）
                     CardGroup(loc.t("s2arm.env.ai.group")) {
                         CardRow(loc.t("s2arm.env.ai.title"), detail: model.aiControlError.map(loc.backend) ?? loc.t("s2arm.env.ai.detail")) {
@@ -119,6 +132,16 @@ struct EnvironmentView: View {
     private func groupName(_ group: String) -> String { loc.t("s2arm.env.group." + group) }
 
     /// 换游戏库：选一个本机、不同步的文件夹（作业层 setup 再拦一遍云盘 / 非 APFS），交给 model.changeLibrary。
+    private func chooseCloudFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        let drive = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
+        if FileManager.default.fileExists(atPath: drive.path) { panel.directoryURL = drive }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? model.setCloudFolder(url)
+    }
+
     private func chooseLibrary() {
         let panel = NSOpenPanel()
         panel.title = loc.t("s2arm.library.choosePanel")

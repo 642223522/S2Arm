@@ -187,6 +187,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     let provider: S2ArmEngineProvider
     private var running: RunningGame?
+    /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
+    @Published var cloudSyncing = false
     private var work: Task<Void, Never>?
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
@@ -608,10 +610,27 @@ public final class S2ArmLauncherModel: ObservableObject {
     // ---- play ----
 
     func play(_ game: GameSummary, uiLanguage: String?) {
-        guard !busy else { return }
+        guard !busy, !cloudSyncing else { return }
         failAction(nil, game: nil)
         // 查过且启动前提没齐才拦；还没查完不拦（launch 作业自己校验运行文件）
         if !checks.isEmpty, !environmentAllows(["launch"]) { return }
+        // 开了 iCloud 存档：先取回 / 处理冲突再开局（S2ArmLauncherModel+CloudSaves）；同步失败本地存档没动，照常开局、错误行写原因
+        if cloudFolder != nil {
+            cloudSyncing = true
+            Task {
+                let why = await cloudSync(game.id)
+                cloudSyncing = false
+                // 同步期间别的作业（导出 / 导入）可能已经开始：这时不开局，免得盖掉它的会话（11-09 审查）
+                if busy { failAction(Self.cloudBusyAfterSync, game: game.id); return }
+                startPlay(game, uiLanguage: uiLanguage)
+                if let why { failAction(Self.cloudFailure(why), game: game.id) }
+            }
+            return
+        }
+        startPlay(game, uiLanguage: uiLanguage)
+    }
+
+    private func startPlay(_ game: GameSummary, uiLanguage: String?) {
         do {
             let sink = EventSink { [weak self] event in self?.ingest(event) }
             running = try provider.run(InstalledGame(gameId: game.id, name: game.name),
@@ -839,6 +858,15 @@ public final class S2ArmLauncherModel: ObservableObject {
             inlineFailure = (state == .failed || state == .interrupted) ? (session.kind, session.message) : nil
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
+        // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
+        if session.kind == .play, let id = session.gameID, cloudFolder != nil {
+            cloudSyncing = true
+            Task {
+                let why = await cloudSync(id)
+                cloudSyncing = false
+                if let why { failAction(Self.cloudFailure(why), game: id) }
+            }
+        }
         if state == .completed && session.kind == .diagnostics, let reveal { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: reveal)]) }
         if session.kind == .export, let id = session.gameID {
             finishedExports[id] = session

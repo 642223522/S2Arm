@@ -52,6 +52,15 @@ int s2a_shell_vpad_select(const char *game_id, const char *layout_id);
 // ZL / ZR 按住锁定开关（按游戏，与游戏内设置同一份数据），返回 1 成功 / 0 失败
 int s2a_shell_vpad_set_hold_lock(const char *game_id, int enabled);
 
+// iCloud 存档同步（新功能线 11-09；方案见 launchers/shared/SaveSync）：
+//   s2a_shell_save_context：本款存档作业的公共字段 {"game":<存档身份>,"dataRoot":…,"workRoot":…}，malloc 出的 UTF-8、调用方 free；
+//     没选游戏 / 没有存档身份 / 没链服务层回 NULL（不同步）。实现在宿主 ios/save_transfer.m；本包弱定义缺省 NULL
+//   s2a_shell_save_request：转给服务层 S2A_SaveTransfer（请求 / 回应 JSON 同 ios/save_transfer.m），回 malloc 出的 UTF-8、调用方 free；没链服务层回 NULL
+//   s2a_shell_cloud_sync_vc：实现在 S2ArmShellHost（Swift）。玩家开了云存档就返回 +1 的同步页（同步完 / 玩家放弃后主线程调 done(ctx)），没开回 NULL
+char *s2a_shell_save_context(void);
+char *s2a_shell_save_request(const char *json);
+void *s2a_shell_cloud_sync_vc(const char *game_id, void (*done)(void *ctx), void *ctx);
+
 #ifdef __cplusplus
 }
 #endif
