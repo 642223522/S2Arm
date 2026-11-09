@@ -757,11 +757,51 @@ def _space_target(c):
     return "ipa" if getattr(c, "operation", "") == "ipa" else "mac"
 
 
+class _CloneInfo:
+    """APFS 克隆感知（#303）：getattrlist 取每个文件的独占字节 ATTR_CMNEXT_PRIVATESIZE、克隆族 ATTR_CMNEXT_CLONEID、族里份数 ATTR_CMNEXT_CLONE_REFCNT。
+    stat 看不出克隆共享块（clonefile / cp -c 出的每份各有 inode、st_blocks 满额），原先照份数累加：宝可梦 Z-A 6.45 GB 的游戏记成 49.9 GB。
+    实测（macOS 27，APFS）：没改过的克隆同族同 CLONEID、独占 0；整目录克隆里每个文件也同族；克隆后改过的文件换新 CLONEID、族里份数 1、
+    独占 = 改过的块——它和原族共享的块查不出归属，按整份算（偏大、但只出现在改过的克隆上）。取不到（非 macOS / 非 APFS / 老系统）→ None，照旧按 st_blocks"""
+    _fn = None
+
+    @classmethod
+    def get(cls, path):
+        if sys.platform != "darwin":
+            return None
+        if cls._fn is None:
+            import ctypes, ctypes.util, struct
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+            class attrlist(ctypes.Structure):
+                _fields_ = [("bitmapcount", ctypes.c_ushort), ("reserved", ctypes.c_ushort), ("commonattr", ctypes.c_uint32),
+                            ("volattr", ctypes.c_uint32), ("dirattr", ctypes.c_uint32), ("fileattr", ctypes.c_uint32), ("forkattr", ctypes.c_uint32)]
+            # sys/attr.h：ATTR_CMN_RETURNED_ATTRS；扩展通用属性走 forkattr 位并要 FSOPT_ATTR_CMN_EXTENDED
+            want = 0x8 | 0x100 | 0x1000   # PRIVATESIZE | CLONEID | CLONE_REFCNT
+            req = attrlist(5, 0, 0x80000000, 0, 0, 0, want)
+            buf = ctypes.create_string_buffer(64)
+
+            def fn(p):
+                if libc.getattrlist(os.fsencode(p), ctypes.byref(req), buf, 64, 0x20 | 0x1):   # FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW
+                    return None
+                got = struct.unpack_from("5I", buf, 4)[4]
+                if got & want != want:
+                    return None
+                priv, cid, refs = struct.unpack_from("<qQI", buf, 24)
+                return priv, cid, refs
+            cls._fn = fn
+        try:
+            return cls._fn(path)
+        except (OSError, ValueError):
+            return None
+
+
 def disk_bytes(roots, device, skip_names=(), skip_under=()):
     """这些目录在 device 卷上实际分配的字节：按 (卷, inode) 去重（硬链接只算一次；多个根互相包含也只算一次），
     不跟软链（原件软链、@现行 指向）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
-    APFS 克隆（clonefile / cp -c）两份各有 inode、stat 看不出共享块，这里照两份算——量出来偏大、预算偏保守"""
+    APFS 克隆（#303）：同一克隆族（_CloneInfo）的共享块只算一次——每份记独占字节，族的共享部分取最大一份加一次；
+    取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账（sizes.py：解包还在时 romfs 克隆归 cache）"""
     seen, total, stack = set(), 0, [os.fspath(r) for r in roots]
+    shared = {}   # 克隆族号 → 族里共享块字节（取各份最大）
     while stack:
         path = stack.pop()
         try:
@@ -774,29 +814,32 @@ def disk_bytes(roots, device, skip_names=(), skip_under=()):
             continue
         seen.add((st.st_dev, st.st_ino))
         blocks = getattr(st, "st_blocks", None)
-        total += blocks * 512 if blocks is not None else st.st_size
+        alloc = blocks * 512 if blocks is not None else st.st_size
+        clone = _CloneInfo.get(path) if stat.S_ISREG(st.st_mode) and alloc else None
+        if clone and clone[2] >= 2 and 0 <= clone[0] <= alloc:
+            total += clone[0]
+            shared[clone[1]] = max(shared.get(clone[1], 0), alloc - clone[0])
+        else:
+            total += alloc
         if stat.S_ISDIR(st.st_mode):
             try:
                 with os.scandir(path) as it:
                     stack.extend(e.path for e in it)
             except OSError:
                 pass
-    return total
+    return total + sum(shared.values())
 
 
 def pack_footprint(c, gid):
-    """这一款出包在游戏库所在卷上的整套占用：iPhone 输出（产物根 / IPA / 资源包）、共用解包与 Mac 构建缓存（cache/<程序号>）、
-    Mac 运行版本（games/<程序号>），再加私有目录里本款的出包缓存（直连 / 翻译…，game_caches）——后者只在和游戏库同一卷时才算进来。
-    不含各款共用的编库缓存（air / pso / gal_dl_cache）、存档、运行时着色器缓存（runtime-cache，玩的时候才长）"""
+    """这一款出包在所在卷上的整套占用：这款文件夹里出包产生的（出包缓存 build/：共用解包、Mac 各层产物根、iPhone 出包工作目录；
+    镜像 image/：Mac 运行版本、iPhone 容器件与资源包），再加私有目录 / 工具缓存里本款的出包缓存（直连 / 翻译…，game_caches）——后者只在同一卷时才算进来。
+    不含各款共用的编库缓存（air / pso / gal_dl_cache）、存档、运行时着色器缓存（shader-cache，玩的时候才长）"""
     shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}
     gdir = layout.find_game(c, gid)
-    roots = []
-    if gdir and gdir.exists():
-        roots.append(gdir)   # iPhone 输出（build/ios、image/ios）都在这款文件夹里
+    roots = [gdir / "build", gdir / "image"] if gdir else []
     roots += [p for p in game_caches(c, gid) if p not in shared]
-    # APFS 上产物根、资源包、Mac 运行版本里的这两种目录都是解包结果的克隆，不占新空间，只算解包那一份（stat 看不出共享块）；Windows（NTFS 无克隆）照实算
-    clones = [] if os.name == "nt" else ([str(gdir)] if gdir and gdir.exists() else [])
-    return disk_bytes(roots, c.library.stat().st_dev, skip_names=CLONED_DIRS, skip_under=clones)
+    # APFS 上解包、各层产物根、.romfs_store、Mac 运行版本里的 RomFS 都是同一份的克隆：disk_bytes 按克隆族只算一次（#303）；Windows（NTFS 无克隆）照实算
+    return disk_bytes(roots, layout.root_of(c, gid).stat().st_dev)   # 这款可能在别的存放位置（别的卷）
 
 
 def record_pack_usage(c, game):

@@ -65,6 +65,46 @@ class SpaceMeasured(JobCase):
         self.assertGreaterEqual(both - one, MIB)       # 克隆那份不算
         self.assertGreaterEqual(one, MIB)              # 解包那份还算
 
+    @unittest.skipUnless(sys.platform == "darwin", "APFS 克隆只在 macOS")
+    def test_apfs_clones_count_shared_blocks_once(self):
+        """#303：同一份 RomFS 的克隆（解包 / 各层产物根 / .romfs_store / Mac 运行版本，cp -c）只算一份共享块。
+        8 MiB 随机文件克隆成 4 份 → 约 8 MiB（不是 32 MiB）；其中一份改 1 字节（换新克隆族、份数 1）→ 它按整份再算一遍：约 16 MiB（偏大、保守）"""
+        import subprocess
+        root = Path(tempfile.mkdtemp(dir=self.c.library))
+        src = write(root / "build" / "extract" / "romfs" / "data.arc", 8 * MIB)
+        if library._CloneInfo.get(src) is None:
+            self.skipTest("这台机器取不到 APFS 克隆信息（非 APFS 卷）")
+        for rel in ("build/k/roots/a@1/romfs", "build/k/roots/.romfs_store/x", "image/mac/romfs"):
+            (root / rel).mkdir(parents=True)
+            subprocess.run(["cp", "-c", str(src), str(root / rel / "data.arc")], check=True)
+        dev = root.stat().st_dev
+        got = library.disk_bytes([root], dev)
+        self.assertGreaterEqual(got, 8 * MIB); self.assertLess(got, 8 * MIB + 2 * MIB, got)   # 余量 = 目录元数据
+        with open(root / "image/mac/romfs/data.arc", "r+b") as f:
+            f.seek(100); f.write(b"\x00" if f.read(1) != b"\x00" else b"\x01")
+        got = library.disk_bytes([root], dev)
+        self.assertGreaterEqual(got, 16 * MIB); self.assertLess(got, 16 * MIB + 2 * MIB, got)
+        # 负对照：stat 口径（不认克隆）是 4 份满额
+        stat_sum = sum(p.stat().st_blocks * 512 for p in root.rglob("data.arc"))
+        self.assertGreaterEqual(stat_sum, 32 * MIB)
+
+    @unittest.skipUnless(sys.platform == "darwin", "APFS 克隆只在 macOS")
+    def test_pack_footprint_counts_romfs_clones_once_and_skips_saves(self):
+        """#303 记账：宝可梦 Z-A 一类，解包 + 多层产物根 + Mac 运行版本都是同一份 RomFS 的克隆 → 记一份；存档 / 运行时着色器缓存不算出包占用"""
+        import subprocess
+        c = self.context("build")
+        library.atomic(self.c.library / "catalog.json", dict(schema=1, games=[self.game(8 * MIB)]))
+        d = layout.game_dir(c, GID, english="Zelda")
+        src = write(d / "build" / "extract" / "romfs" / "data.arc", 8 * MIB)
+        if library._CloneInfo.get(src) is None:
+            self.skipTest("这台机器取不到 APFS 克隆信息（非 APFS 卷）")
+        for rel in ("build/k/roots/a@1/romfs", "build/k/roots/b@1/romfs", "build/k/roots/.romfs_store/x", "image/mac/romfs"):
+            (d / rel).mkdir(parents=True)
+            subprocess.run(["cp", "-c", str(src), str(d / rel / "data.arc")], check=True)
+        write(d / "saves" / "s.bin", 4 * MIB); write(d / "shader-cache" / "p.bin", 4 * MIB)
+        got = library.pack_footprint(c, GID)
+        self.assertGreaterEqual(got, 8 * MIB); self.assertLess(got, 8 * MIB + 2 * MIB, got)
+
     def test_disk_bytes_counts_hardlink_once_skips_symlink_and_other_volume(self):
         root = self.root / "measure"
         a = write(root / "a.bin", MIB)
