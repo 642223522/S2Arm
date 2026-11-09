@@ -470,6 +470,26 @@ static void test_event_input(void) {
     puts("Mac input: event-driven snapshot, wait wake, idle-hold persistence and latency recording passed");
 }
 
+// 维护方评审 11-09：手柄断开时前端切到 TOUCH 源，但 pad.c 里 SYSTEM 源一直 connected，selected() 仍选 SYSTEM
+//   并丢掉 TOUCH 更新，断开瞬间按住的键卡住、键盘失灵。期望手算：SYSTEM 按 A（0x1）→ 断开后键盘按 B（0x2）→
+//   快照 source = TOUCH、buttons = 0x2。负对照：去掉 publish_pad_state 里的 SYSTEM 断开 → 快照仍是 SYSTEM / 0x1。
+static void test_pad_disconnect(void) {
+    typedef void (*read_ex_fn)(s2a_pad_snapshot *);
+    read_ex_fn read_ex = (read_ex_fn)dlsym(RTLD_DEFAULT, "s2a_vpad_read_ex");
+    expect(read_ex != NULL, "Mac exports s2a_vpad_read_ex");
+    int32_t sticks[4] = {0};
+    focused = YES; s2a_pad_set_active(0); s2a_pad_set_active(1);
+    publish_pad_state(1, 1u, sticks);
+    s2a_pad_snapshot snap; read_ex(&snap);
+    expect(snap.source == S2A_PAD_SYSTEM && snap.buttons == 1u, "gamepad press is selected on SYSTEM source");
+    publish_pad_state(0, 1u << 1, sticks);
+    read_ex(&snap);
+    expect(snap.source == S2A_PAD_TOUCH && snap.buttons == (1u << 1), "keyboard still works after gamepad disconnect");
+    expect(!s2a_pad_has_controller(), "disconnected gamepad is no longer the selected controller");
+    s2a_pad_set_active(0); reset_input();
+    puts("Mac pad: disconnect returns to touch source and keeps keyboard input passed");
+}
+
 // 11-04 维护者定：鼠标左键点画面 = 触屏（对齐 Ryujinx TouchScreenManager）。期望手写：窗口 1600×720 点、无窗口缩放 1；
 //   出图 16:9 → 画面在 x 160..1440（左右各 160 黑边），触点空间 1280×720，所以视图 (480, 360) → 触点 (320, 360)。
 //   ① 左键映射成 Y（缺省映射）、模式「仅按键」：不写触点、照发 Y；② 左键没映射、模式「仅按键」：按下 Start (320,360)、拖到 (800,200) 跟点 (640,200)、抬起 End、之后 0 个；
@@ -709,6 +729,7 @@ int main(int argc, const char **argv) {
         config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
         test_key_repeat();
         test_event_input();
+        test_pad_disconnect();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();

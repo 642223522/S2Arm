@@ -119,8 +119,15 @@ static GCExtendedGamepad *active_pad(NSArray *controllers);
 // 事件驱动输入（A2）：同一份前端状态同时写进 runtime/src/pad.c，InputPump 找到 s2a_vpad_read_ex 后就等
 //   s2a_pad_wait 的序号通知，不再 Thread.Sleep(16)。有扩展手柄时按系统手柄源发布（键盘 / 鼠标仍并进同一份状态），
 //   没有手柄时按触屏源发布；两个源互斥的语义由 pad.c 管，Mac 不另造第三份选源状态。
+static void publish_pad_state(int has_pad, uint32_t buttons, const int32_t sticks[4]) {
+    if (has_pad) { s2a_pad_update(S2A_PAD_SYSTEM, focused ? 1 : 0, buttons, sticks); return; }
+    // 没手柄时必须先补一次 SYSTEM 断开：pad.c 的 selected() 只看 connected，不发就仍选 SYSTEM 并丢掉 TOUCH 更新，
+    //   手柄断开瞬间按住的键会卡住、键盘也失灵（维护方 11-09 用 pad.c 最小程序复现：0x1，期望 0x2）。
+    s2a_pad_update(S2A_PAD_SYSTEM, 0, 0, sticks);
+    s2a_pad_update(S2A_PAD_TOUCH, focused ? 1 : 0, buttons, sticks);
+}
 static void publish_pad(uint32_t buttons, const int32_t sticks[4]) {
-    s2a_pad_update(active_pad(GCController.controllers) ? S2A_PAD_SYSTEM : S2A_PAD_TOUCH, focused ? 1 : 0, buttons, sticks);
+    publish_pad_state(active_pad(GCController.controllers) != nil, buttons, sticks);
 }
 static void publish_input(uint32_t buttons, const int32_t sticks[4]) {
     publish(buttons, sticks);
