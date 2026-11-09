@@ -518,6 +518,8 @@ class Context:
         cache = self.work_root / "cache"
         cache.mkdir(parents=True, exist_ok=True)
         env.pop("DEVELOPER_DIR", None)
+        if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
+            env["S2A_SPACE_OVERRIDE"] = "1"
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)

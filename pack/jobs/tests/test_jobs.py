@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import uuid
 import zipfile
 from unittest.mock import patch
@@ -729,6 +730,39 @@ class JobsTests(unittest.TestCase):
                     lib = library.space_budget(self.c, game)["volumes"][0]
                 self.assertEqual(lib["needBytes"], 2 * ((6 << 30) * 11 // 10) + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
+
+    def test_space_budget_uses_extract_size_when_known(self):
+        # #265：产物根里已有着色器抽取时，直连按抽取量估（缓存 9× + 库 3×），不再用固定 15 GB；期望按 space_rule 文件头的系数手算
+        import collections
+        import unittest.mock as um
+        du = collections.namedtuple("du", "total used free")
+        tid = "0100559011740000"
+        game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
+        ex = self.c.library / "cache" / tid / "k" / "roots" / "m@现行" / "extract"; ex.mkdir(parents=True)
+        with um.patch("space_rule.tree_bytes", return_value=2 << 30), um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
+            lib = library.space_budget(self.c, game)["volumes"][0]
+        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 * 2 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包 + 单文件镜像各一份原包 × 1.1，再加直连
+        self.assertIn("按抽取", lib["note"])
+
+    def test_direct_check_counts_existing_cache_and_volume(self):
+        # #265 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）：抽取 1 GB、同盘 → 要 12 GB；已有 4 GB 缓存 → 只要 8 GB
+        import collections
+        import space_rule
+        du = collections.namedtuple("du", "total used free")
+        d = self.root / "dc"; ex, cache, out = d / "ex", d / "cache", d / "out"
+        for x in (ex, cache, out): x.mkdir(parents=True)
+        sizes = {str(ex): 1 << 30, str(cache): 0}
+        with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
+            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 12 << 30)))
+            why = space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, (12 << 30) - 1))
+            self.assertIn("磁盘空间不足", why)   # pack/jobs/errors.py 据此归 disk_full
+            sizes[str(cache)] = 4 << 30
+            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 8 << 30)))
+            # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="7.9"):
+                self.assertIn("这块盘只剩 7.9 GB", space_rule.direct_check(ex, cache, out))
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
+                self.assertIsNone(space_rule.direct_check(ex, cache, out))
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
