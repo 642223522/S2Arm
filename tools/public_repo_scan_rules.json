@@ -82,6 +82,17 @@
       "id": "private_host_air",
       "category": "internal_name",
       "regex": "(?<![A-Za-z0-9_./-])(?<!iPad )(?<!MacBook )(?<!Kirby )Air(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_])mac[-_]air(?![A-Za-z0-9_])"
+    },
+    {
+      "id": "compliance_readme_decrypt_tools",
+      "category": "compliance_copy",
+      "regex": "(?i)libhac|hactool",
+      "paths": [
+        "README.md",
+        "README.*.md",
+        "docs/site/index.html"
+      ],
+      "reason_note": "11-09 维护者批合规文案：README / 下载页不单列解密相关组件；许可声明留在 NOTICE / THIRD_PARTY_LICENSES"
     }
   ],
   "metadata_rules": [
