@@ -897,7 +897,7 @@ def catalog(c):
         game["compatibility"] = "unsupported" if guest_isa(selected_packages(game)) == "aarch32" else "experimental"
         current = c.library / "games" / game["id"] / "current"
         try:
-            manifest = validate_runtime(c, current, full=False)
+            manifest = validate_runtime(c, current, full=False, files=False)
             game["ready"] = manifest.get("memoryRequirementsVersion") == 2
         except (Failure, OSError, ValueError):
             manifest = {}
