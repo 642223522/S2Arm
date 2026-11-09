@@ -3472,7 +3472,9 @@ static void gpw_mark(const tex_t *t, unsigned level, unsigned layer0, unsigned n
 }
 static void gpw_mark_view(const tex_t *t, const view_t *v, int hv, int all_layers) {   // an attachment / image through its view: its base level, its first layer (all_layers: every layer it has)
     unsigned lv = hv && v->set_levels ? v->base_level : 0, l0 = hv && v->set_layers ? v->min_layer : 0, n = all_layers ? (hv && v->set_layers && v->nlayers ? v->nlayers : tex_layers(t) - MIN(l0, tex_layers(t))) : 1;
-    gpw_mark(t, lv, l0, n, 0, 0, 0, 0);
+    // Render / image writes must also protect an existing NvPkg's GPU pages from a later partial CPU update.
+    // The global stale-byte ledger alone is only consulted when storage first becomes packaged (carry_gpu).
+    pkg_gpu_wrote(t, lv, l0, n, 0, 0, 0, 0);
 }
 static void gpw_forget(uint64_t serial) {   // the texture is gone: its bytes stay as they are (a later texture over that memory checks the GOBs, not the serial)
     bcal_forget(serial);
