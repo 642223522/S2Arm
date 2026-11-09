@@ -270,8 +270,8 @@ def _build(c):
             raise oneclick_failure(events, getattr(c, "milestone", None) if getattr(c, "milestone", None) != before_milestone else None, ipa_log, refresh_log=refresh_log, refresh_before=refresh_before) from error
         state["result"] = oneclick_result(events)
     except BaseException:
-        if early:
-            early.stop.set()   # 出包失败：旁路还没写信号的不再早装；已在装 / 推的由守护线程随任务结束
+        if early:   # 出包失败：旁路还没写信号的不再早装；已在装 / 推的等它退出再交回——main 接着清理中间产物，会删它正在读的 roots/ 与 .early（审计 P1-146）
+            early.core.finish()
         raise
     finally:
         if watcher:
@@ -288,6 +288,8 @@ def _build(c):
     missing = [m for m in (res.get("aoc_missing") or []) if m]
     if missing:
         c.diagnostic("追加内容 %d 份没解出，包里不含（%s）" % (len(missing), "、".join(missing[:5]) + (" 等" if len(missing) > 5 else "")), code="aoc_missing", severity="warning")
+    # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
+    pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
     from library import prune_build, save_container_kit
     c.begin("清理出包中间产物")
@@ -310,7 +312,6 @@ def _build(c):
     result = dict(compilerCache=cache_result, outputPath=str(out), ipa=str(ipa), ipaBytes=ipa.stat().st_size, packBytes=_part_bytes([pack_dir]), buildId=res.get("build_id") or "", target=tgt, graphicsMode=res.get("graphics_mode") or "unknown")
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
-        pre = early.finish()
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))
         done = inst.put_game(c, gid, inst.MacPhone(c, early.team, early.dev, early.udid), steps=False)
         shutil.rmtree(early.dir, ignore_errors=True)

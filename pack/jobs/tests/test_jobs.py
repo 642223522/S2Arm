@@ -1618,6 +1618,15 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(save.read_bytes(), b"save")
         self.assertEqual((c.private / "logs" / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
 
+    def test_clean_after_stop_keeps_failed_stage_logs(self):   # #251：改写失败的 .failed/<款>_main.log 在游戏库缓存里，清理前要拷进私有日志目录，诊断包才带得上
+        gid, out, _ = self.stopped_game()
+        failed = self.c.library / "cache" / gid / "x" / "roots" / ".failed"; failed.mkdir(parents=True)
+        (failed / f"{gid}_main.log").write_text("改写超时前最后一行")
+        c = self.stop_context(gid)
+        library.clean_after_stop(c)
+        self.assertFalse(failed.exists())
+        self.assertEqual((c.private / "logs" / (c.task + "-stages") / f"{gid}_main.log").read_text(), "改写超时前最后一行")
+
     def test_clean_after_stop_removes_first_failed_export(self):
         gid, out, _ = self.stopped_game(kit=False, ipa=False)
         library.clean_after_stop(self.stop_context(gid))
