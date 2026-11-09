@@ -24,10 +24,7 @@ ck "普通「主线 / 线程 / 线性」→ 退 0、命中 0（rc=${r}）" '[ $r
 echo e > "$T/r/e"; g add e; g commit -qm "fix: 收尾" -m "${W3}：已入车" -m "交 ${W4} 复核"
 o=$(S HEAD "$plain"); r=$?
 ck "内部线名 → 退 1、两处命中（第 3、5 行）（rc=${r}）" '[ $r = 1 ] && grep -q "信息第 3 行.*internal_line_name" <<< "$o" && grep -q "信息第 5 行.*internal_line_name" <<< "$o"'
-printf '主线剧情、线程、线性\n' > "$T/r/f.md"; g add f.md; g commit -qm "docs: 普通用词"
-o=$(python3 "$H/tools/public_repo_scan.py" --repo "$T/r" --ref HEAD --path f.md --base HEAD~1 --format gate); r=$?
-ck "文件扫描：普通「主线」不误伤（rc=${r}）" '[ $r = 0 ] && [[ "$o" == *"增量命中 0"* ]]'
 printf '交 %s 复核\n' "$W4" > "$T/r/g.md"; g add g.md; g commit -qm "docs: x"
 o=$(python3 "$H/tools/public_repo_scan.py" --repo "$T/r" --ref HEAD --path g.md --base HEAD~1 --format gate); r=$?
-ck "文件扫描：内部线名命中（正对照）（rc=${r}）" '[ $r = 1 ] && [[ "$o" == *"g.md"*internal_name* ]]'
+ck "文件扫描暂不启用线名规则（messages_only；存量清完再开）→ 退 0（rc=${r}）" '[ $r = 0 ] && [[ "$o" == *"增量命中 0"* ]]'
 [ $bad = 0 ] && echo "提交信息扫描单测全过" || { echo "提交信息扫描单测有不通"; exit 1; }
