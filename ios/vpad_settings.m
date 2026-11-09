@@ -51,7 +51,7 @@
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return _store.diagnostics.count ? 5 : 4; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? _layouts.count + 2 : section == 1 ? 4 : section == 2 ? 3 : section == 3 ? 3 : _store.diagnostics.count;
+    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 3 : section == 3 ? 3 : _store.diagnostics.count;
 }
 // 0 = 默认布局，1 = 触屏直通，之后是用户布局（内置两项没有对应文件，所以固定占前两行）
 - (NSString *)identifierAtRow:(NSInteger)row {
@@ -79,8 +79,8 @@
         cell.accessoryType = [_store.selectedIdentifier isEqualToString:identifier] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
         cell.accessibilityIdentifier = [@"vpad.layout." stringByAppendingString:identifier];
     } else if (indexPath.section == 1) {
-        cell.textLabel.text = @[@"导入布局", @"另存当前布局", @"导出当前布局", @"恢复按键布局"][indexPath.row];
-        cell.accessibilityIdentifier = @[@"vpad.layouts.import", @"vpad.layouts.save", @"vpad.layouts.export", @"vpad.layouts.reset"][indexPath.row];
+        cell.textLabel.text = @[@"编辑按键（位置、大小、透明度、配色）", @"导入布局", @"另存当前布局", @"导出当前布局", @"恢复按键布局"][indexPath.row];
+        cell.accessibilityIdentifier = @[@"vpad.layouts.edit", @"vpad.layouts.import", @"vpad.layouts.save", @"vpad.layouts.export", @"vpad.layouts.reset"][indexPath.row];
         cell.textLabel.textColor = self.view.tintColor;
     } else if (indexPath.section == 2 && indexPath.row == 2) {
         cell.textLabel.text = @"按住锁定 ZL / ZR"; cell.detailTextLabel.text = @"按住 2 秒锁定，再点一下解锁；只对这款游戏生效";
@@ -171,12 +171,17 @@
         if ([self chooseLayout:[self identifierAtRow:indexPath.row]] && !self.embeddedInSettings) [self close];
     } else if (indexPath.section == 1) {
         switch (indexPath.row) {
-            case 0: [self importLayout]; break;
-            case 1: [self saveCurrent]; break;
-            case 2: [self exportCurrent]; break;
-            case 3: [self confirmReset]; break;
+            case 0: [self requestEdit]; break;
+            case 1: [self importLayout]; break;
+            case 2: [self saveCurrent]; break;
+            case 3: [self exportCurrent]; break;
+            case 4: [self confirmReset]; break;
         }
     }
+}
+- (void)requestEdit {
+    void (^edit)(void) = self.editRequested; void s2a_vpad_set_settings_open(BOOL open);
+    [self.navigationController dismissViewControllerAnimated:YES completion:^{ s2a_vpad_set_settings_open(NO); if (edit) edit(); }];
 }
 - (void)confirmReset {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"恢复按键布局？" message:@"已保存的自定义布局会保留。" preferredStyle:UIAlertControllerStyleAlert];
