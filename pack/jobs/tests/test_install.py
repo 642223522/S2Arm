@@ -790,6 +790,12 @@ class AssembleTests(unittest.TestCase):
         rec = layout.load_device(self.c, "dev1")
         self.assertEqual((rec["shellId"], rec["failedShells"], rec["games"]), ("SID1", ["SID0", "SID2"], {A: dict(pack="pa")}))
         self.assertEqual((r["restoredShell"], r["games"]), ("SID1", [A]))
+        # 再点一次 = 换回 SID2：SID2 从 failedShells 去掉（装回的这一版不算不好用），换下的 SID1 记进去
+        with um.patch.object(install, "phone_for", return_value=ph):
+            install.restore_previous(self.c)
+        rec = layout.load_device(self.c, "dev1")
+        self.assertEqual((rec["shellId"], rec["failedShells"]), ("SID2", ["SID0", "SID1"]))
+        self.assertEqual(install_ipa_games(self.c.library / "S2Arm.ipa"), ([A, B], "SID2"))
         # 没有上一版：不找设备、不装
         (self.c.library / "S2Arm.previous.ipa").unlink()
         with um.patch.object(install, "phone_for", side_effect=AssertionError("不该找设备")):

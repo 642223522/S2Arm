@@ -930,7 +930,7 @@ def restore_previous(c):
     if tmp.is_file():
         os.replace(tmp, previous)
     rec = layout.load_device(c, ph.key)
-    failed = sorted(set(rec.get("failedShells", [])) | ({dropped} if dropped else set()))
+    failed = sorted((set(rec.get("failedShells", [])) | ({dropped} if dropped else set())) - {old_sid})   # 装回的这一版不算「不好用」：连点两次 = 换回来，那一版照常能只换宿主
     layout.save_device(c, ph.key, dict(rec, games={g: rec["games"].get(g) or {} for g in games}, shellId=old_sid, failedShells=failed, bundleId=ph.bid or rec.get("bundleId", "")))
     return dict(games=games, bundleId=ph.bid, restoredShell=old_sid, **ph.info)
 
