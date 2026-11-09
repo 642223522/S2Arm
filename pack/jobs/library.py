@@ -21,6 +21,7 @@ import time
 import uuid
 import zipfile
 from core import Failure, atomic, contained, digest, prune_jobs, read
+import space_rule
 import toolchain
 import winproc
 import filelock
@@ -684,12 +685,21 @@ def _pack_direct_bytes(size):
     return DIRECT_SMALL_BYTES if size < PACK_SMALL_BYTES else DIRECT_LARGE_BYTES
 
 
-def pack_need_bytes(packages, unpacked=False, windows=None):
-    """这次出包要多少盘；packages 已按 selected_packages 选定。unpacked：解包目录已完整在盘上。windows 不给就按当前系统。"""
+def pack_need_bytes(packages, unpacked=False, windows=None, extract_bytes=None):
+    """这次出包要多少盘；packages 已按 selected_packages 选定。unpacked：解包目录已完整在盘上。windows 不给就按当前系统。
+    extract_bytes：着色器抽取量已知（产物根 extract/ 在盘上）时直连按 space_rule 估（#265：固定 15 GB 对大游戏不够、对小游戏偏多），不知道才用经验值"""
     size = _pack_input_bytes(packages)
     copy = size * 11 // 10
     windows = os.name == "nt" if windows is None else windows
-    return (0 if unpacked else copy) + (copy if windows else 0) + copy + _pack_direct_bytes(size)   # 再加一份 copy：单文件镜像 romfs.img 是真实占盘的一份（pack/romfs_image.py）
+    direct = sum(space_rule.direct_need(extract_bytes)) if extract_bytes else _pack_direct_bytes(size)
+    return (0 if unpacked else copy) + (copy if windows else 0) + copy + direct   # 再加一份 copy：单文件镜像 romfs.img 是真实占盘的一份（pack/romfs_image.py）
+
+
+def _extract_bytes(c, gid):
+    """这款现行产物根里的着色器抽取量（Mac 打包 cache/<款>/<键>/roots、打 iPhone 包 iPhone/<款>/roots；取大的）；还没抽过 → None"""
+    dirs = [*(c.library / "iPhone" / gid).glob("roots/*@现行/extract"), *(c.library / "cache" / gid).glob("*/roots/*@现行/extract")]
+    sizes = [space_rule.tree_bytes(d) for d in dirs if d.is_dir()]
+    return max(sizes) if sizes and max(sizes) > 0 else None
 
 
 # 出包实测账（11-07 联合开发者旷野之息：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
@@ -780,8 +790,10 @@ def space_budget(c, game):
     packages = selected_packages(game)
     size = _pack_input_bytes(packages)
     unpacked = _unpacked_on_disk(c, game)
-    need, free = pack_need_bytes(packages, unpacked=unpacked), _sh.disk_usage(c.library).free
-    note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}，直连着色器上限 {_gb(_pack_direct_bytes(size))}"
+    extract = _extract_bytes(c, game["id"]) if "id" in game else None
+    need, free = pack_need_bytes(packages, unpacked=unpacked, extract_bytes=extract), _sh.disk_usage(c.library).free
+    direct = f"直连着色器 {_gb(sum(space_rule.direct_need(extract)))}（按抽取 {_gb(extract)} 估）" if extract else f"直连着色器上限 {_gb(_pack_direct_bytes(size))}"
+    note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}，{direct}"
     volumes = [dict(role="library", volume=_volume(c.library), needBytes=need, freeBytes=free, enough=free >= need,
                     note=note, unknown=["shader_cache"], basis="rule")]
     return dict(gameBytes=size, volumes=volumes, unknown=[dict(u) for u in SPACE_UNKNOWN])
