@@ -309,6 +309,20 @@ static GCExtendedGamepad *active_pad(NSArray *controllers) {
     }
     return best;
 }
+// 手柄事件驱动（A2）：valueChangedHandler 走 GameController 的回调队列，切到主队列后与 AppKit 键盘 / 鼠标事件串行，
+//   sample_input 可以直接读 keys / mouse / config。120Hz 定时器仍保留给键盘 / 鼠标的粘键核对，并顺手补装新连接的手柄。
+static void install_pad_handler(GCController *controller) {
+    GCExtendedGamepad *pad = controller.extendedGamepad;
+    if (!pad || pad.valueChangedHandler) return;
+    controller.handlerQueue = dispatch_get_main_queue();
+    pad.valueChangedHandler = ^(GCExtendedGamepad *profile, GCControllerElement *element) {
+        (void)profile; (void)element;
+        sample_input();
+    };
+}
+static void install_pad_handlers(void) {
+    for (GCController *controller in GCController.controllers) install_pad_handler(controller);
+}
 // 手柄六轴（同 iOS 的 s2a_pad_read_motion 约定）：游戏要六轴时才开传感器。主线程跟着输入采样读 GCMotion，游戏线程取最新一份
 static _Atomic int g_motion_wanted;
 static pthread_mutex_t g_motion_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -433,6 +447,7 @@ static void release_stale_mouse(void) {
     reconcile_held(mouse, stale_mouse, mouse_up_polls, ^BOOL(unsigned b) { return b < 64 && ((pressed >> b) & 1); }, nil);
 }
 static void poll_input(void) {
+    install_pad_handlers();
     release_stale_keys();
     release_stale_mouse();
     sample_input();
@@ -715,6 +730,7 @@ void s2a_front_run(void (*guest_main)(void)) {
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
         [app activateIgnoringOtherApps:YES]; focused = YES;
+        install_pad_handlers();
         display_focus_publish(app.isActive && window.isKeyWindow);
         delegate.inputGuide = [[S2AMacInputGuide alloc] initWithName:window.title gameID:gameIdentity[@"gameId"] mapping:config gameWindow:window];
         controls.target = delegate.inputGuide;

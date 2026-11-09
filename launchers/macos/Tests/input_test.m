@@ -390,11 +390,13 @@ static void test_capture_key_order(void) {
 // 审计 P2-63：多个控制器时取最近有输入的扩展手柄；没有扩展手柄档的（遥控器等）跳过。假对象只答 active_pad 用到的两个方法
 @interface FakePad : NSObject
 @property double lastEventTimestamp;
+@property(copy) void (^valueChangedHandler)(GCExtendedGamepad *, GCControllerElement *);
 @end
 @implementation FakePad
 @end
 @interface FakeController : NSObject
 @property(strong) FakePad *extendedGamepad;
+@property(strong) dispatch_queue_t handlerQueue;
 @end
 @implementation FakeController
 @end
@@ -406,6 +408,27 @@ static void test_active_pad(void) {
     old.lastEventTimestamp = 30;
     expect((id)active_pad(list) == old, "switches when the other pad gets newer input");
     expect(active_pad(@[fake_controller(nil)]) == nil && active_pad(@[]) == nil, "no extended gamepad: none");
+}
+
+// 手柄事件回调（A2）：handlerQueue 必须切到主队列（与 AppKit 事件串行），回调直接发布整份当前状态；
+//   没有新事件时 120Hz 定时器仍是回退采样，长按不会因为「只发变化」而丢。
+static void test_pad_handler_install(void) {
+    FakePad *pad = [FakePad new];
+    FakeController *controller = fake_controller(pad);
+    install_pad_handler((GCController *)controller);
+    expect(controller.handlerQueue == dispatch_get_main_queue(), "pad handler runs on the main queue");
+    expect(pad.valueChangedHandler != nil, "gamepad valueChangedHandler installed");
+    config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
+    read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys); physical_keys[14] = YES;
+    [keys addObject:@14]; sample_input();   // 缺省映射 E = Switch A（位 0）
+    pad.valueChangedHandler((GCExtendedGamepad *)pad, nil);
+    int32_t sticks[4];
+    expect(s2a_vpad_read(sticks) == 1, "callback publishes the full current state, not only the changed element");
+    for (int i = 0; i < 120; i++) { poll_input(); pad.valueChangedHandler((GCExtendedGamepad *)pad, nil); }
+    expect(s2a_vpad_read(sticks) == 1, "held state persists across callbacks and the 120Hz fallback");
+    physical_keys[14] = NO;
+    reset_input();
+    puts("Mac pad: handler installs on main queue and publishes held state passed");
 }
 
 // 11-04 维护者定：鼠标左键点画面 = 触屏（对齐 Ryujinx TouchScreenManager）。期望手写：窗口 1600×720 点、无窗口缩放 1；
@@ -646,6 +669,7 @@ int main(int argc, const char **argv) {
         gfx_mode = S2A_GFX_GENERIC;
         config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
         test_key_repeat();
+        test_pad_handler_install();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();
