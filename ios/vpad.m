@@ -206,6 +206,7 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     // 拖动编辑按键位置（11-07 维护者）：编辑期间不向游戏发输入，手指拖哪个键挪哪个键；完成存成本款游戏的「我的布局」并选中
     BOOL _editing;
     UIView *_editBar;
+    UIScrollView *_editScroll;   // 分屏编辑：卡片留上区，单键面板贴键；矮区域可滚动
     NSMapTable<UITouch *, UILabel *> *_drag;
     NSMapTable<UITouch *, NSValue *> *_dragOffset;
     NSDictionary *_scales;                      // 取键用的每键倍率
@@ -618,7 +619,13 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
         [self swatchRow],
         [self switchRow:S2AL(@"vpad.edit.slide") note:S2AL(@"vpad.edit.slide.note") on:[NSUserDefaults.standardUserDefaults boolForKey:kSlideSwitchKey] id:@"vpad.edit.slide" action:@selector(slideChanged:) control:NULL]]);
     _gAlphaValue = v0; _gSizeValue = v1; _gIdleValue = v2; vp_fill_glass(card, rows);
-    [self addSubview:bar]; [self addSubview:card]; [self buildKeyPanel]; [self refreshPanelValues]; [self setNeedsLayout];
+    [self addSubview:bar]; [self addSubview:card]; [self buildKeyPanel];
+    if (_split) {
+        _editScroll = [UIScrollView new]; _editScroll.accessibilityIdentifier = @"vpad.edit.scroll";
+        _editScroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        [self addSubview:_editScroll]; [_editScroll addSubview:card]; [_editScroll addSubview:_keyPanel];
+    }
+    [self refreshPanelValues]; [self setNeedsLayout];
     LOG("触屏布局：进入按键位置编辑（%s）", _layout.identifier.UTF8String);
 }
 - (UIStackView *)swatchRow {
@@ -657,8 +664,10 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     vp_fill_glass(g, vp_column(@[_keyTitle, size, alpha, hide, buttons])); [self addSubview:g];
 }
 - (void)selectKey:(UILabel *)key {
+    if (_selected != key) _editScroll.contentOffset = CGPointZero;
     _selected = key; _keyPanel.hidden = !key || _panelHidden; _card.hidden = key != nil || _panelHidden;
     for (UILabel *l in _keys) l.layer.borderWidth = l == key ? 3 : 1.5;   // 点中的键描粗边
+    [self setNeedsLayout];
     if (!key) return;
     S2AVPadKeyStyle s = [self styleOf:key];
     _keyTitle.text = [NSString stringWithFormat:S2AL(@"vpad.edit.keyTitle"), key.text]; _sizeSlider.value = s.scale; _alphaSlider.value = s.opacity; _hideSwitch.on = s.hidden;
@@ -707,6 +716,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     [self refreshPanelValues];
 }
 - (void)endEditing {
+    [_editScroll removeFromSuperview]; _editScroll = nil;
     _editing = NO; [_editBar removeFromSuperview]; _editBar = nil; [_card removeFromSuperview]; _card = nil; _drag = nil; _dragOffset = nil;
     [_keyPanel removeFromSuperview]; _keyPanel = nil; _selected = nil; _swatches = nil; [self refreshScales];
     for (UILabel *l in _keys) { l.layer.borderColor = vp_line().CGColor; l.layer.borderWidth = 1.5; }
@@ -740,13 +750,38 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 }
 - (void)layoutEditBar {
     if (!_editBar) return;
-    CGRect g = self.safeAreaLayoutGuide.layoutFrame, B = self.bounds; CGFloat barH = 44;
+    CGRect g = self.safeAreaLayoutGuide.layoutFrame, B = self.bounds;
+    BOOL compact = g.size.width < 520; CGFloat barH = compact ? 88 : 44;
     _editBar.frame = CGRectMake(0, 0, B.size.width, CGRectGetMinY(g) + barH); [self bringSubviewToFront:_editBar];
     CGFloat y = CGRectGetMinY(g), x0 = CGRectGetMinX(g) + 16, x1 = CGRectGetMaxX(g) - 16;
     UIView *panel = [_editBar viewWithTag:2], *reset = [_editBar viewWithTag:3], *done = [_editBar viewWithTag:4], *title = [_editBar viewWithTag:1];
     [panel sizeToFit]; [reset sizeToFit]; [done sizeToFit];
     panel.frame = CGRectMake(x0, y, MAX(panel.bounds.size.width, 72), barH); reset.frame = CGRectMake(CGRectGetMaxX(panel.frame) + 18, y, MAX(reset.bounds.size.width, 72), barH);
     done.frame = CGRectMake(x1 - MAX(done.bounds.size.width, 56), y, MAX(done.bounds.size.width, 56), barH); title.frame = CGRectMake(CGRectGetMidX(g) - 90, y, 180, barH);
+    if (compact) {
+        title.frame = CGRectMake(x0, y, x1 - x0, 44);
+        CGFloat w = (x1 - x0) / 3;
+        panel.frame = CGRectMake(x0, y + 44, w, 44); reset.frame = CGRectMake(x0 + w, y + 44, w, 44); done.frame = CGRectMake(x0 + 2 * w, y + 44, w, 44);
+    }
+    if (_editScroll) {
+        UIView *panelView = _selected ? _keyPanel : _card;
+        CGRect area = _selected ? _safeRect : CGRectIntersection(g, s2a_ios_game_area());
+        CGFloat top = _selected ? CGRectGetMinY(area) + 8 : MAX(CGRectGetMinY(area), y + barH) + 10;
+        CGFloat width = MAX(0, MIN(_selected ? 300 : 340, area.size.width - 32));
+        CGSize size = [panelView systemLayoutSizeFittingSize:CGSizeMake(width, 0) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+        CGFloat height = MAX(0, MIN(size.height, CGRectGetMaxY(area) - top - 8));
+        CGFloat x = CGRectGetMidX(area) - width / 2, py = top;
+        if (_selected) {
+            CGRect key = [_controls convertRect:_selected.frame toView:self];
+            x = CGRectGetMidX(key) > CGRectGetMidX(area) ? CGRectGetMinX(key) - 14 - width : CGRectGetMaxX(key) + 14;
+            x = MAX(CGRectGetMinX(area) + 8, MIN(CGRectGetMaxX(area) - 8 - width, x));
+            py = MAX(top, MIN(CGRectGetMaxY(area) - 8 - height, CGRectGetMidY(key) - height / 2));
+        }
+        _editScroll.frame = CGRectMake(x, py, width, height); _editScroll.hidden = _panelHidden;
+        panelView.frame = CGRectMake(0, 0, width, size.height); _editScroll.contentSize = panelView.bounds.size;
+        [self bringSubviewToFront:_editScroll]; [self bringSubviewToFront:_editBar];
+        return;
+    }
     // 整体卡片：屏幕中上，顶栏下方
     CGFloat cw = MIN(340, g.size.width - 32); CGSize cs = [_card systemLayoutSizeFittingSize:CGSizeMake(cw, 0) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
     _card.frame = CGRectMake(CGRectGetMidX(g) - cw / 2, y + barH + 10, cw, MIN(cs.height, CGRectGetMaxY(g) - y - barH - 20)); [self bringSubviewToFront:_card];
