@@ -87,7 +87,9 @@ extension LauncherView {
                         .padTarget("hero.export", scope: "main", radius: 30) { model.exportFor = game.id }
                     }
                     if game.playable {
-                        heroCapsule(loc.t("library.play"), symbol: "play.fill", id: "hero.play", enabled: !model.busy) { model.play(game, uiLanguage: uiLanguage) }
+                        // 开局前在同步 iCloud 存档：按钮写明在做什么（11-09 审查：原来点了几分钟没反应）
+                        heroCapsule(loc.t(model.cloudSyncing ? "s2arm.cloud.syncing" : "library.play"), symbol: model.cloudSyncing ? "icloud" : "play.fill", id: "hero.play",
+                                    enabled: !model.busy && !model.cloudSyncing) { model.play(game, uiLanguage: uiLanguage) }
                         // 启动设置（11-09 维护者）：开局前设这一款的画面 / 模式 / 震动 / 体感 / 浮层，按款记住
                         heroCircle("gearshape", label: txt("game.display"), id: "hero.launchSettings", enabled: true) { displayFor = game.id }
                     }

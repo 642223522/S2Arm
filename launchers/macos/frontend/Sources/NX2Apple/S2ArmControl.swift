@@ -176,6 +176,18 @@ import S2ArmAppleAdapter
                 let (options, _) = try await model.launchSettings(id, change: change.isEmpty ? nil : change)
                 return .object(options.mapValues { ["available": $0.available, "value": $0.value ?? NSNull(), "reason": $0.reason] })
             } catch { return .bad(error.localizedDescription) }
+        case ("POST", "/cloudFolder"):
+            // iCloud 存档同步的云盘文件夹（同环境页「选择文件夹…」）：path 为空 = 关闭
+            let path = str("path") ?? ""
+            do { try model.setCloudFolder(path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)) } catch { return .bad(error.localizedDescription) }
+            return .ok(["folder": model.cloudFolder?.path ?? ""])
+        case ("POST", "/cloudSync"):
+            // 对一款立即同步一次（开局前 / 退出后自动做的同一件事）；冲突时弹窗等人选
+            guard let id = str("gameId") else { return .bad("缺 gameId") }
+            guard model.cloudFolder != nil else { return .bad("还没开 iCloud 存档：先 cloud-folder <iCloud 云盘里的文件夹>") }
+            if let b = busy() { return b }
+            if let why = await model.cloudSyncNow(id) { return .bad(why) }
+            return .ok()
         case ("POST", "/select"):
             if let id = str("gameId") { model.selectedID = id }
             return .ok()

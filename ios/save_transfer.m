@@ -2,6 +2,7 @@
 // 弱链接[ios]：S2A_SaveTransferFree（释放 C# 存档迁移返回的字符串）
 #import "save_transfer.h"
 #include "save_gate.h"
+#include "s2a_launch_ctx.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,32 @@ static NSString *data_root(void) {
 }
 static NSString *work_root(void) {
     return [[data_root() stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"save-transfer"];
+}
+// 这款的存档身份：多款容器在本款随行目录 games/<游戏号>/save-identity.json（pack/ship_ext.py 放的），单款包在 App 包根。
+//   原先一律读包根：容器里读不到，存档管理页报「缺少游戏身份」，容器玩家没有存档入口（审计 P2-170 壳那一半）
+static NSDictionary *game_identity(void) {
+    const s2a_launch_ctx *c = s2a_launch_ctx_container() ? s2a_launch_ctx_get() : NULL;
+    NSURL *url = c && c->module_dir[0] ? [NSURL fileURLWithPath:[@(c->module_dir) stringByAppendingPathComponent:@"save-identity.json"]]
+                                       : [NSBundle.mainBundle URLForResource:@"save-identity" withExtension:@"json"];
+    NSData *data = url ? [NSData dataWithContentsOfURL:url] : nil;
+    id game = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [game isKindOfClass:NSDictionary.class] ? game : nil;
+}
+// iCloud 存档同步（shell/Sources/S2ArmShellHost/CloudSaves.swift 经 s2a_shell.h 调）：本款作业公共字段 / 转发一次作业。强定义盖过 S2ArmShellBridge 的弱缺省
+char *s2a_shell_save_context(void) {
+    @autoreleasepool {
+        NSString *root = data_root(); NSDictionary *game = game_identity();
+        if (!root || !game || !S2A_SaveTransfer || !S2A_SaveTransferFree) return NULL;
+        NSData *json = [NSJSONSerialization dataWithJSONObject:@{ @"game": game, @"dataRoot": root, @"workRoot": work_root() } options:0 error:nil];
+        return json ? strndup(json.bytes, json.length) : NULL;
+    }
+}
+char *s2a_shell_save_request(const char *json) {
+    if (!json || !S2A_SaveTransfer || !S2A_SaveTransferFree) return NULL;
+    char *raw = S2A_SaveTransfer(json);
+    char *copy = raw ? strdup(raw) : NULL;
+    if (raw) S2A_SaveTransferFree(raw);
+    return copy;
 }
 // 列不出事务目录时记下原因（审计 P2-9：原先读不到也当「有未完成事务」，恢复再失败时提示说的是事务，玩家无从下手）。
 //   仍进存档页、仍先试恢复（服务层能读到就照常恢复）；恢复失败时提示写明是「读不到操作记录目录」及系统原因
@@ -126,11 +153,8 @@ int s2a_ios_save_management_requested(void) {
         [self updateButtons]; return;
     }
     self.workRoot = [[self.dataRoot stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"save-transfer"];
-    NSError *error = nil;
-    NSURL *url = [NSBundle.mainBundle URLForResource:@"save-identity" withExtension:@"json"];
-    NSData *data = url ? [NSData dataWithContentsOfURL:url options:0 error:&error] : nil;
-    id game = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&error] : nil;
-    if (![game isKindOfClass:NSDictionary.class] || !S2A_SaveTransfer || !S2A_SaveTransferFree) {
+    NSDictionary *game = game_identity();
+    if (!game || !S2A_SaveTransfer || !S2A_SaveTransferFree) {
         if (self.phase == S2A_SAVE_CHECKING) { [self blockRecovery:S2A_SAVE_EV_NO_SERVICE reason:@"此安装包缺少存档迁移所需的游戏身份或服务，无法恢复上次中断的存档操作。"]; return; }
         self.status.text = @"此安装包缺少存档迁移所需的游戏身份或服务。请从新版 Mac 启动器重新打包安装。当前存档仍可照常使用。";
         [self updateButtons]; return;

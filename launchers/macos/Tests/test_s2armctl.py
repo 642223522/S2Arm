@@ -194,6 +194,15 @@ class WaitTests(unittest.TestCase):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)
 
+    def test_cloud_commands_reach_the_app(self):
+        # iCloud 存档：cloud-folder 给绝对路径、不给 = 关闭（空串）；cloud-sync 带游戏号
+        for argv, path, body in [(["cloud-folder", "/tmp/云盘"], "/cloudFolder", {"path": "/tmp/云盘"}),
+                                 (["cloud-folder"], "/cloudFolder", {"path": ""}),
+                                 (["cloud-sync", "G"], "/cloudSync", {"gameId": "G"})]:
+            with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
+                ctl.main()
+            call.assert_called_once_with("POST", path, body)
+
     def test_customize_sends_only_what_was_given(self):
         for argv, body in [(["customize", "G", "--name", "新名"], {"gameId": "G", "name": "新名"}),
                            (["customize", "G", "--reset-cover"], {"gameId": "G", "coverPath": ""}),

@@ -141,7 +141,7 @@ S2A_SHELLUI ?= 0
 ifeq ($(S2A_SHELLUI),1)
 SHELLUI_DD = $(abspath $(BUILD))/ios/shellui
 SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-iphoneos
-IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o) \
+IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o SaveSync.o) \
   -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/iphoneos -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
 .PHONY: ios-shellui
 ios-shellui:

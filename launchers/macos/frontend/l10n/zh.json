@@ -1722,5 +1722,19 @@
   "update.pill": "更新 %@",
   "update.pillHelp": "查看这个版本更新了什么，并下载。",
   "update.readOnlyHint": "这个副本所在的位置无法自我更新。把 NX2Apple.app 移到「应用程序」文件夹后再更新。",
-  "update.title": "有新版本可用"
+  "update.title": "有新版本可用",
+  "s2arm.env.cloud.group": "iCloud 存档",
+  "s2arm.env.cloud.title": "iCloud 存档同步",
+  "s2arm.env.cloud.off": "关闭。选 iCloud 云盘里的一个文件夹，iPhone / iPad 上的游戏库设置里选同一个，两边的存档自动互通。",
+  "s2arm.env.cloud.on": "开始游戏前取回、退出游戏后上传。iPhone / iPad 上选同一个文件夹。",
+  "s2arm.env.cloud.choose": "选择文件夹…",
+  "s2arm.env.cloud.turnOff": "关闭",
+  "s2arm.cloud.conflict.title": "两边的存档不一样",
+  "s2arm.cloud.conflict.body": "这台 Mac 和 iCloud 里的存档都改过。选一份继续玩；没选的那份会保留在备份里。",
+  "s2arm.cloud.conflict.local": "用这台 Mac 的存档（{0}）",
+  "s2arm.cloud.conflict.remote": "用 {0} 的存档（{1}，{2}）",
+  "s2arm.cloud.conflict.later": "先不处理",
+  "s2arm.cloud.failed": "iCloud 存档没有同步：{0}",
+  "s2arm.cloud.syncing": "正在同步 iCloud 存档…",
+  "s2arm.cloud.busyAfterSync": "同步期间开始了别的任务，这次没开局，等它做完再点「开始游戏」"
 }

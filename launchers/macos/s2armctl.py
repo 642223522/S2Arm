@@ -45,6 +45,8 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   target probe | target <机型号> <系统大版本>   重新检测连着的设备 / 没连时选机型
   update [restart|retry]            新版后台下载的状态；restart = 重启并换上已下载好的新版，retry = 重试下载（出包中不能重启）
   library <目录> [--move]            换游戏库位置（外接盘也行）；--move 把现有游戏、成品、缓存和存档一起搬到这个空文件夹
+  cloud-folder [<iCloud 云盘里的文件夹>]   开 iCloud 存档同步（不给路径 = 关闭）；iPhone / iPad 上选同一个文件夹
+  cloud-sync <游戏号>   这款立即同步一次（开局前 / 退出后会自动做）
   display <游戏号> [--<设置项> on|off|default|<选项>]…   看 / 改这款的启动设置（设置项见 game_settings.v1.json，如 --enhance on --docked handheld），下次启动生效
   errors [游戏号]                    最近失败任务的错误码、原因、建议、日志位置和日志末尾
   retry <任务号> | cancel <任务号>    重试 / 取消任务
@@ -615,6 +617,10 @@ def main():
         if rest: print(json.dumps(call('POST', '/update', {'action': rest[0]}), ensure_ascii=False))
         else: print(json.dumps(call('GET', '/state').get('update'), ensure_ascii=False))
         return
+    if cmd == 'cloud-folder':
+        print(json.dumps(call('POST', '/cloudFolder', {'path': os.path.abspath(os.path.expanduser(rest[0])) if rest else ''}), ensure_ascii=False)); return
+    if cmd == 'cloud-sync':
+        print(json.dumps(call('POST', '/cloudSync', {'gameId': rest[0]}), ensure_ascii=False)); return
     if cmd == 'display':
         # 启动设置：--<设置项> <值>，设置项 = launchers/shared/game_settings.v1.json 的 id；on / off 是开关，default 回缺省，其余原样当选项值
         settings = {}
