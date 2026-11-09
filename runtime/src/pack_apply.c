@@ -369,7 +369,9 @@ int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
         char mf[2200], ap[2200], want[200], got[200] = ""; snprintf(mf, sizeof mf, "%s/games/%s/资源包/manifest.json", proc_docs, gid); snprintf(ap, sizeof ap, "%s/games/%s/资源包/.applied", proc_docs, gid);
         FILE *f = fopen(ap, "r");
         if (f) { size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; }
-        if (got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want)) return S2A_IMPORT_READY;
+        // 快判也核程序描述 exefs/main.npdm 在、是普通文件（审计 P2-212：只认 .applied 时删掉它库里仍显示可玩，点开始才报缺）；只 stat 一个文件，不逐文件核
+        char np[2200]; struct stat ns; snprintf(np, sizeof np, "%s/games/%s/资源包/exefs/main.npdm", proc_docs, gid);
+        if (got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0) return S2A_IMPORT_READY;
     }
     return s2a_import_state_game(proc_docs, gid);
 }

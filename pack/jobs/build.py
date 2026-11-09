@@ -69,8 +69,12 @@ def validate_files(c, root, files, full=True):
             raise Failure("准备产物校验失败，请重新准备：" + name, code="runtime_invalid")
 
 
+QUICK_FILES = ("main", "main.npdm")   # 游戏库列表快判也核的几个文件（主程序与程序描述）：在、是普通文件、大小同清单
+
+
 def validate_runtime(c, runtime, full=True, files=True):
-    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态；真正启动时还会完整校验"""
+    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
+    原先清单没变、主程序被删也报就绪，点开始才报错）；真正启动时还会完整校验"""
     root = runtime.resolve()
     layout.require_in_location(c, root)
     manifest = read(root / "manifest.json", {})
@@ -80,6 +84,10 @@ def validate_runtime(c, runtime, full=True, files=True):
         raise Failure("运行包缺少独立的 RomFS 游戏资源目录，请重新准备。", code="runtime_invalid")
     if files:
         validate_files(c, root, manifest.get("files"), full)
+    elif isinstance(manifest.get("files"), dict):
+        quick = {k: manifest["files"][k] for k in QUICK_FILES if k in manifest["files"]}
+        if quick:
+            validate_files(c, root, quick, full=False)
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
@@ -435,9 +443,9 @@ def oneclick_kuan(c, gid):
 
 
 def sibling_roots(c, game):
-    """同一款在别的平台已有的现行产物根（新的在前）：iPhone 游戏库/iPhone/<程序号>/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行"""
+    """同一款在别的平台已有的现行产物根（新的在前）：iPhone games/<英文名>/build/ios/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行"""
     found = []
-    for link in [*(c.library / "iPhone" / game["id"] / "roots").glob("*@现行"), *layout.build_dir(c, game["id"], create=False).glob("*/roots/*@现行")]:
+    for link in [*layout.ios_work(c, game["id"], create=False).glob("roots/*@现行"), *(p for p in layout.build_dir(c, game["id"], create=False).glob("*/roots/*@现行") if p.parent.parent.name != "ios")]:
         try:
             cur = contained(c.library, link.resolve())
         except (Failure, OSError):

@@ -1,10 +1,12 @@
 """游戏库布局（11-09 维护者拍板「游戏库结构双端统一」，v3 起支持多个存放位置）：库里每一样东西的路径只在这里算。
 
   <库>/games/<英文名>/   一款一个文件夹；程序只认里面 game.json 的游戏号，不认文件夹名（玩家改名、挪动不影响）
-      game.json  cover.jpg  custom.json  community.json  input.json  ios-install.json
+      game.json  cover.jpg  custom.json  community.json  input.json
       image/mac/          Mac 镜像（不含宿主）          saves/  save-backups/  shader-cache/
-      build/              出包缓存（原 cache/<号>：两平台共用的解包 + Mac 各产物根）  seen/  save_backup/（iPhone 存档备份）
+      image/ios/          iPhone 镜像：kit/（组容器的文件）+ pack/（资源包）
+      build/              出包缓存（原 cache/<号>：两平台共用的解包 + Mac 各产物根；ios/ = iPhone 一键出包工作目录）  seen/  save_backup/（iPhone 存档备份）
   <库>/hosts/mac/<宿主摘要前 12 位>/S2ArmGame.app      Mac 宿主，多款共用（只换宿主见 host_update.py）
+  <默认位置>/S2Arm.ipa  S2Arm.previous.ipa  devices/<设备>.json   iPhone 装机产物与每台手机的记录（只放默认位置）
 Windows 与 Mac 同一套（共用后端）。旧布局（按类型分：games/<号>/releases、cache/<号>、saves/<号>…）由 migrate() 一次性同盘改名过来，
 .s2arm-layout.json 记已迁完的款，中途被杀下次接着做。
 """
@@ -383,6 +385,13 @@ def save_device(c, ident, rec):
     atomic(p, dict(rec, schema=1))
 
 
+def install_record(c, gid):
+    """这款最近一次装机签名的记录 {at, free, device}（游戏库页「还有几天到期 / 续签」）：各台手机记录里带这款的取最新一次；没装过 → None"""
+    gid = gid.upper()
+    recs = [r.get("signed") for _, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
+    return max(recs, key=lambda r: r.get("at") or 0) if recs else None
+
+
 def devices(c):
     """[(设备键, 记录)…]"""
     d = c.library / DEVICES
@@ -575,8 +584,14 @@ def _upgrade_3(c, marker):
         cat = read(box / "S2Arm.app" / "s2a_catalogue.json", {})
         if cat.get("games") and not device_path(c, LEGACY_DEVICE).is_file():
             bid = (box / "bundle.txt").read_text(encoding="utf-8").strip() if (box / "bundle.txt").is_file() else ""
+            signed = [r for r in (read(path(c, e["title_id"], "ios-install.json", create=False), None) for e in cat["games"] if e.get("title_id")) if isinstance(r, dict)]
             save_device(c, LEGACY_DEVICE, dict(games={e["title_id"].upper(): {} for e in cat["games"] if e.get("title_id")},
-                                               shellId=cat.get("shell_id") or "", bundleId=bid, failedShells=[]))
+                                               shellId=cat.get("shell_id") or "", bundleId=bid, failedShells=[],
+                                               **({"signed": max(signed, key=lambda r: r.get("at") or 0)} if signed else {})))
+    for gid in sorted(done | {g.get("id", "").upper() for g in read(c.library / "catalog.json", {}).get("games", []) if _GID.fullmatch(g.get("id", "").upper())}):   # 每款的已装记录 ios-install.json 已并进 devices/（上面）：删掉
+        old = path(c, gid, "ios-install.json", create=False)
+        if old.is_file():
+            old.unlink()
     if phones.is_dir():
         _rm(c, c.library, phones)
     atomic(marker, dict(state, version=3, iphone=sorted(done)))

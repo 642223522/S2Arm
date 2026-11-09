@@ -1205,7 +1205,7 @@ def catalog(c):
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
         game["iphoneReady"] = iphone_ready(c, game["id"])
         game["iphoneRestorable"] = layout.phone_ipa(c, previous=True).is_file()   # 换壳后可装回上一版（install.restore_previous）
-        game["iphoneInstall"] = read(layout.path(c, game["id"], "ios-install.json", create=False), None)
+        game["iphoneInstall"] = layout.install_record(c, game["id"])
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
         game_info = layout.game_info(c, game["id"])
         host_mac = game_info.get("hostMac")
