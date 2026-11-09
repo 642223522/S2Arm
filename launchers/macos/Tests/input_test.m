@@ -408,6 +408,68 @@ static void test_active_pad(void) {
     expect(active_pad(@[fake_controller(nil)]) == nil && active_pad(@[]) == nil, "no extended gamepad: none");
 }
 
+// A2 事件驱动输入：Mac 导出 s2a_vpad_read_ex，sample_input 同步写 runtime/src/pad.c，InputPump 才能从 Sleep(16)
+//   换成 s2a_pad_wait。期望手算：keyDown 后 read_ex 立即看到 A 位并带 host 时间戳；keyUp 在 50ms deadline 前唤醒等待线程
+//   （旧实现没有 pad 通知，等待只能跑满 deadline）。
+static void test_event_input(void) {
+    typedef void (*read_ex_fn)(s2a_pad_snapshot *);
+    read_ex_fn read_ex = (read_ex_fn)dlsym(RTLD_DEFAULT, "s2a_vpad_read_ex");
+    expect(read_ex != NULL, "Mac exports s2a_vpad_read_ex");
+    config = default_config(); reset_input(); focused = YES;
+    s2a_pad_set_active(1);
+    S2AMetalView *view = [S2AMetalView new];
+    [view keyDown:key_event(NSEventTypeKeyDown, 14, NO)];   // 缺省映射 E = Switch A（位 0）
+    s2a_pad_snapshot down; read_ex(&down);
+    expect((down.buttons & 1u) != 0 && down.host_timestamp_us != 0, "event snapshot carries the key and its host timestamp");
+    s2a_pad_record_commit(&down);
+
+    uint64_t observed;
+    { s2a_pad_snapshot snap; read_ex(&snap); observed = snap.notification_seq; }
+    __block uint64_t waited = 0;
+    dispatch_semaphore_t started = dispatch_semaphore_create(0), done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        dispatch_semaphore_wait(started, DISPATCH_TIME_FOREVER);
+        uint64_t t0 = s2a_pad_now_us();
+        s2a_pad_wait(observed, t0 + 50000);
+        waited = s2a_pad_now_us() - t0;
+        dispatch_semaphore_signal(done);
+    });
+    dispatch_semaphore_signal(started);
+    [NSThread sleepForTimeInterval:0.02];   // 让等待线程先进入条件变量；即使没进，序号变化也会让它立即返回
+    [view keyUp:key_event(NSEventTypeKeyUp, 14, NO)];
+    expect(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 1000000000)) == 0, "pad wait completes after key up");
+    expect(waited < 50000, "key up wakes pad wait before the deadline");
+
+    s2a_pad_latency latency; s2a_pad_get_latency(&latency, 1);
+    expect(latency.samples >= 1 && latency.host_max_us < 50000, "committed event latency is recorded");
+
+    // 负对照（维护者要求）：事件驱动只发变化；长按 / 摇杆持续推时，没有新事件的那几拍 read_ex 仍必须返回完整的按住状态。
+    [keys addObject:@14]; [keys addObject:@13]; sample_input();   // E = A，W = LS_UP
+    uint64_t held_seq;
+    { s2a_pad_snapshot snap; read_ex(&snap); held_seq = snap.notification_seq; }
+    expect(s2a_pad_wait(held_seq, s2a_pad_now_us() + 20000) == 0, "idle wait times out without new events");
+    for (int i = 0; i < 5; i++) {
+        s2a_pad_snapshot held; read_ex(&held);
+        expect((held.buttons & 1u) != 0 && held.axes[1] == 32767, "held key and stick persist across idle reads");
+    }
+    [keys removeObject:@14]; [keys removeObject:@13]; sample_input();
+
+    // 鼠标位移仍由 HID 读取侧消费一次（旧 s2a_vpad_read 与 read_ex 共用）
+    config = @{@"keyboard": @{}, @"mouse": @{}, @"gamepad": @{}, @"axes": @{}, @"deadzone": @0.15,
+               @"mouseOptions": @{@"mode": @"camera", @"sensitivityX": @1, @"sensitivityY": @1}};
+    apply_mouse_options(); mouse_captured = YES; focused = YES;
+    TestMotion *motion = [TestMotion new]; motion.deltaX = 2;
+    S2AMetalView *motionView = [S2AMetalView new];
+    [motionView mouseMoved:(NSEvent *)motion];
+    s2a_pad_snapshot moved; read_ex(&moved);
+    expect(moved.axes[2] == 3000, "read_ex applies pending mouse delta once");
+    read_ex(&moved);
+    expect(moved.axes[2] == 0, "read_ex consumes the mouse delta");
+    mouse_captured = NO;
+    config = default_config(); focused = YES; s2a_pad_set_active(0); reset_input();
+    puts("Mac input: event-driven snapshot, wait wake, idle-hold persistence and latency recording passed");
+}
+
 // 11-04 维护者定：鼠标左键点画面 = 触屏（对齐 Ryujinx TouchScreenManager）。期望手写：窗口 1600×720 点、无窗口缩放 1；
 //   出图 16:9 → 画面在 x 160..1440（左右各 160 黑边），触点空间 1280×720，所以视图 (480, 360) → 触点 (320, 360)。
 //   ① 左键映射成 Y（缺省映射）、模式「仅按键」：不写触点、照发 Y；② 左键没映射、模式「仅按键」：按下 Start (320,360)、拖到 (800,200) 跟点 (640,200)、抬起 End、之后 0 个；
@@ -646,6 +708,7 @@ int main(int argc, const char **argv) {
         gfx_mode = S2A_GFX_GENERIC;
         config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
         test_key_repeat();
+        test_event_input();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();
