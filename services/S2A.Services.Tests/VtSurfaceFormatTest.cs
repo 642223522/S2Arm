@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
-using Ryujinx.Graphics.Nvdec.Apple;
+using Ryujinx.Graphics.Nvdec.Apple;   // 平台例外：本用例只验苹果 VideoToolbox 解码器的出帧面（platform/apple/cs/video，审计 P2-198）；服务层单测只在 macOS 上跑
 using System.Runtime.InteropServices;
 
 namespace S2A.Services.Tests
@@ -11,7 +11,7 @@ namespace S2A.Services.Tests
     //   同尺寸 y420 三平面缓冲 → 回 true、宽高 = 64x32、Y 面地址非 0
     public static unsafe partial class Program
     {
-        [DllImport("/System/Library/Frameworks/CoreVideo.framework/CoreVideo")]
+        [DllImport("/System/Library/Frameworks/CoreVideo.framework/CoreVideo")]   // 平台例外：本用例只验苹果 VideoToolbox 解码器的出帧面（platform/apple/cs/video，审计 P2-198）；服务层单测只在 macOS 上跑
         private static extern int CVPixelBufferCreate(nint alloc, nint width, nint height, uint format, nint attrs, out nint buffer);
 
         [SvcCase]
@@ -24,7 +24,7 @@ namespace S2A.Services.Tests
             Red.Strict = false;   // 格式不符那条是预期的红
             try
             {
-                var s = new VideoToolboxSurface(0, 0);
+                var s = new VideoToolboxSurface(0, 0);   // 平台例外：本用例只验苹果 VideoToolbox 解码器的出帧面（platform/apple/cs/video，审计 P2-198）；服务层单测只在 macOS 上跑
                 Check("非 y420：Attach 回 false", false, s.Attach(bgra));
                 Check("非 y420：面保持空（宽、Y 面地址）", "0/0", $"{s.Width}/{(long)s.YPlane.Pointer}");
                 Check("y420 三平面：Attach 回 true", true, s.Attach(y420));
