@@ -1,4 +1,4 @@
-"""游戏库布局（11-09 jhz 拍板「游戏库结构双端统一」，设计见 run/s2arm/cmdr/游戏库结构_双端统一_设计_1109_修订.md）：库里每一样东西的路径只在这里算。
+"""游戏库布局（11-09 维护者拍板「游戏库结构双端统一」，v3 起支持多个存放位置）：库里每一样东西的路径只在这里算。
 
   <库>/games/<英文名>/   一款一个文件夹；程序只认里面 game.json 的游戏号，不认文件夹名（玩家改名、挪动不影响）
       game.json  cover.jpg  custom.json  community.json  input.json  ios-install.json

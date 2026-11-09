@@ -1630,7 +1630,7 @@ class JobsTests(unittest.TestCase):
 
     def test_clean_after_stop_keeps_failed_stage_logs(self):   # #251：改写失败的 .failed/<款>_main.log 在游戏库缓存里，清理前要拷进私有日志目录，诊断包才带得上
         gid, out, _ = self.stopped_game()
-        failed = self.c.library / "cache" / gid / "x" / "roots" / ".failed"; failed.mkdir(parents=True)
+        failed = layout.build_dir(self.c, gid) / "x" / "roots" / ".failed"; failed.mkdir(parents=True)
         (failed / f"{gid}_main.log").write_text("改写超时前最后一行")
         c = self.stop_context(gid)
         library.clean_after_stop(c)

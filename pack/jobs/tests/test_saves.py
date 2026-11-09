@@ -21,6 +21,7 @@ sys.path.insert(0, str(JOBS))
 # Standalone unittest discovery uses this checkout's job modules.
 import library  # noqa: E402
 import saves  # noqa: E402
+import layout  # noqa: E402
 from core import Cancelled, Context, Failure, atomic  # noqa: E402
 
 import build  # noqa: E402
@@ -863,7 +864,7 @@ class ExternalImportTests(unittest.TestCase):
 
         shutil.rmtree(self.root / "bis")
         c = self.context(operation="saveInspect", path="x")
-        nacp = c.library / "games" / GID / "current" / "ctl" / "control.nacp"
+        nacp = layout.image_mac(c, GID) / "ctl" / "control.nacp"
         nacp.parent.mkdir(parents=True, exist_ok=True)
         data = bytearray(0x30A0); struct.pack_into("<q", data, 0x3090, 1 << 20); nacp.write_bytes(data)
         src = self.community("raw", {"progress.bin": b"island"})

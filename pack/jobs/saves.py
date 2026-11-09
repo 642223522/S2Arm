@@ -976,7 +976,7 @@ def seed_kind(c, game, kind):
     """来源说明了类型就用；否则看游戏的 control.nacp：只有设备存档的按设备，其余按账户"""
     if kind:
         return kind
-    nacp = next((c.library / "games" / game["id"] / "current").rglob("control.nacp"), None)
+    nacp = next(_lay.image_mac(c, game["id"], create=False).rglob("control.nacp"), None)
     with contextlib.suppress(OSError, struct.error, AttributeError):
         data = nacp.read_bytes()[:0x30A0]
         account, device = struct.unpack_from("<q", data, 0x3080)[0], struct.unpack_from("<q", data, 0x3090)[0]
