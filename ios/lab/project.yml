@@ -11,6 +11,7 @@ targets:
       - ios/vpad.m
       - ios/vpad_layout.m
       - ios/vpad_settings.m
+      - ios/vpad_cheats.m
       - ios/app_settings.m
       - ios/cpatch_settings.m
       - ios/cpatch_model.m

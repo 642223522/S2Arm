@@ -48,6 +48,8 @@ typedef struct s2a_layout {
 uint64_t s2a_program_id(void);
 uint64_t s2a_process_id(void);
 const s2a_layout *s2a_layout_get(void);
+uint64_t s2a_main_base(void);          // 主程序模块装载基址（未装载 = 0）：金手指 main 区
+const char *s2a_main_build_id(void);   // 主程序构建号（十六进制串，没有 = 空串）
 
 // ---------- §4.2 句柄表 ----------
 enum { S2A_OBJ_NONE, S2A_OBJ_THREAD, S2A_OBJ_EVENT_R, S2A_OBJ_EVENT_W, S2A_OBJ_SESSION,

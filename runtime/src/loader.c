@@ -146,6 +146,7 @@ module_t *module_of(const void *p) {
 // ---------- 改写器随行表 ----------
 static char g_main_build_id[40];
 const char *s2a_main_build_id(void) { return g_main_build_id; }
+uint64_t s2a_main_base(void) { return g_nmod ? (uint64_t)(uintptr_t)g_mod[0].base : 0; }   // 主程序（Horizon 序第一个模块）装载基址：金手指 Atmosphere「main」区（services Cheats.cs）
 // 同一表解析器读取目录流或已验证 APK 的借用字节；后者不落地、也不二次打开。
 struct loader_text {
     FILE *file;

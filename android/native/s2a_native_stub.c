@@ -93,6 +93,9 @@ int s2a_nro_map(const uint8_t sha[32], uint64_t size, uint64_t bss, uint64_t *ba
     (void)sha; (void)size; (void)bss; if (base) *base = 0; unbacked(__func__); return 1;
 }
 int s2a_nro_unmap(uint64_t base) { (void)base; unbacked(__func__); return 1; }
+// 金手指（services Cheats.cs）取主程序基址 / 构建号（runtime/src/loader.c）：诊断目标没有装载器，回「未装载」
+uint64_t s2a_main_base(void) { unbacked(__func__); return 0; }
+const char *s2a_main_build_id(void) { unbacked(__func__); return ""; }
 
 // 系统键盘桥接：诊断目标没有输入框，回 0 = 不交互（服务层退回自动应答，不算失败）
 int s2a_host_text_input(int64_t id, const char *json, s2a_text_input_cb cb) { (void)id; (void)json; (void)cb; return 0; }

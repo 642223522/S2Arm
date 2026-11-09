@@ -25,6 +25,9 @@
 #import "vpad.h"
 #import "vpad_settings.h"
 #import "settings.h"
+#import "vpad_cheats.h"   // 齿轮菜单：金手指面板
+// 弱链接[lab]：s2a_hud_brief_show（ios/hud.m 简版性能浮层；输入工作台不链 hud.m / 原生核，取不到就不显示）
+void s2a_hud_brief_show(UIView *root, BOOL on) __attribute__((weak_import));
 #import "app_settings.h"   // 齿轮菜单：存档管理 / 更多设置（s2a_settings_runtime / s2a_settings_present）
 #include "s2a_docs.h"   // iOS 进程级容器 Documents（s2a_container_docs）
 #include "s2a_pad.h"
@@ -393,6 +396,13 @@ typedef BOOL (^VPFlag)(void);
     // 画面：宽屏 / 60 帧 / 主机模式 / 补丁要按本款能力判可不可开、改完要重启，逻辑全在整页设置（app_settings.m），这里直接去那一页，不另抄一份
     UIAction *pic = vp_act(@"画面…", @"rectangle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); pic.subtitle = @"宽屏、60 帧、主机模式、画面补丁";
     [items addObject:pic];
+    // 性能浮层（hud.m 简版：右上角「帧率 · 内存」），改完立即显示 / 收起
+    [items addObject:[self live:@"vp.hud.brief" title:@"性能浮层" note:@"右上角显示帧率和内存" on:^BOOL{ return [d boolForKey:@"S2APerfHUD"]; } disabled:nil
+                            run:^{ BOOL on = ![d boolForKey:@"S2APerfHUD"]; [d setBool:on forKey:@"S2APerfHUD"]; if (s2a_hud_brief_show) s2a_hud_brief_show(ws.superview, on); }]];
+    // 金手指（vpad_cheats.m）：导入 txt、逐条开关，执行在服务层 Cheats.cs；面板开着时虚拟手柄不收触控
+    [items addObject:vp_act(@"金手指", @"wand.and.stars", NO, ^{ [ws afterMenu:^{
+        UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
+        [ws setSettingsOpen:YES]; s2a_cheats_present(c, ^{ [ws setSettingsOpen:NO]; }); }]; })];
     S2ASettingsRuntime *rt = s2a_settings_runtime();
     if (rt.manageSaves) [items addObject:vp_act(@"存档管理", @"tray.full", NO, ^{ [ws afterMenu:^{ UIViewController *c = ws.window.rootViewController; if (c && !c.presentedViewController) rt.manageSaves(c); }]; })];
     [items addObject:vp_act(@"更多设置（诊断等）", @"ellipsis.circle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; })];
@@ -1119,6 +1129,7 @@ void s2a_vpad_attach(UIView *root) {
     S2AVPadView *v = [[S2AVPadView alloc] initWithFrame:root.bounds];
     g_vpad = v;
     v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; [root addSubview:v];
+    if (s2a_hud_brief_show && [NSUserDefaults.standardUserDefaults boolForKey:@"S2APerfHUD"]) s2a_hud_brief_show(root, YES);   // 简版性能浮层（齿轮菜单「性能浮层」）跨局记住
     s2a_controller_attach(root, ^(BOOL enabled) { [v setInputEnabled:enabled]; });
     { int cw0 = 1280, ch0 = 720; if (s2a_game_canvas) s2a_game_canvas(&cw0, &ch0);
     LOG("虚拟手柄：已挂到根视图（布局方案：完整 Switch 按键 + 左右浮动摇杆；触点空间取渲染层出图尺寸，未出图时按游戏画布 %d×%d）", cw0, ch0); }
