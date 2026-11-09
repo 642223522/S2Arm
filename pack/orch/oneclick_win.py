@@ -366,7 +366,10 @@ def stages(run, game, x, src_dir, own=False):
     roots = run.out / 'roots'
     # S2A_SEED_AOC=1：同 Mac 一键出包（pack/oneclick/oneclick.sh 私有产物根）——解包目录里的追加内容播进产物根。Switch 2 导出（ns2_dump）的 DLC 只在解包目录里、
     #   没有原件 NSP 给 aoc 阶段解，不播就整份丢（11-05 Windows 出包机金刚：导出 DLC 1 个 7270 文件 958 MB，产物根 / 资源包里都没有，直连库并集 15150 对 Mac 包 21036）
-    env = dict(os.environ, PYTHONUTF8='1', S2A_GAME_SRC=str(src_dir), S2A_SEED_AOC='1')
+    # 轻阶段里的追加内容解包（pack/orch/stages.py _nxu）用本单选定的同一份 nx_unpack：原先它自己去 <S2A_RUN_ROOT>/s2arm/bin 找、找不到又只肯 --no-restore 现编，
+    #   而本单解包步编在 run.out/bin（11-09 Windows 出包机 GRID 两单：nx_unpack 源码改了、身份变了，解包步现编成功、轻阶段退 75「离线还原资产未就绪」）。
+    #   选一次（预编件 → 已编的 → 现编），显式交下去，两处不再各认各的目录
+    env = dict(os.environ, PYTHONUTF8='1', S2A_GAME_SRC=str(src_dir), S2A_SEED_AOC='1', S2A_NX_UNPACK=str(nx_unpack(run)))
     run.step('播种', lambda: run.sh([PY, '-X', 'utf8', '-m', 'pack.orch.refresh', game, '--roots', str(roots), '--from-extract', str(x), *(['--move-romfs'] if own else []), '--stages', ''], 'seed.log', env=env))
     # RomFS 索引阶段按合同 --no-restore 编（不在阶段里悄悄下载）：新检出的代码树（Windows 出包机道按提交新建，11-05 海贼无双4 联调退 75）先在这里还原一次；
     #   包都在本机 NuGet 全局缓存里时不联网，缺包才会去源取
