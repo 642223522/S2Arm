@@ -67,7 +67,9 @@ class PickTests(unittest.TestCase):
         self.assertEqual(install.game_ctx("0100c2500fc20000"), "@bundle/Games/0100C2500FC20000/launch.ctx")
 
     def test_classify_signing_errors(self):
-        self.assertEqual(install.classify("error: Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days."), "free_app_limit")
+        # Apple 9120（7 天 10 个包名，删 App 不退）与设备同时 3 个自签 App 是两件事，各报各的码
+        self.assertEqual(install.classify("error: Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days."), "free_appid_limit")
+        self.assertEqual(install.classify("The maximum number of apps for free development profiles has been reached."), "free_app_limit")   # 较早 iOS 的装机原文：说的是装上的 apps
         self.assertEqual(install.classify("This device has reached the maximum number of installed apps using a free developer profile"), "free_app_limit")   # 11-06 iOS 27 原文
         self.assertEqual(install.classify('error: No Account for Team "TEAM1".'), "xcode_account_missing")
         self.assertEqual(install.classify("error: something else"), "signing_failed")
@@ -560,8 +562,9 @@ class FlowTests(unittest.TestCase):
              um.patch.object(packer, "assemble", side_effect=fake_assemble), \
              um.patch.object(self.c, "run", run):
             with self.assertRaises(Failure) as e: install.install(self.c)
-        self.assertEqual(e.exception.code, "free_app_limit")
-        self.assertIn("3 个自签 App", str(e.exception))
+        self.assertEqual(e.exception.code, "free_appid_limit")   # 签名前注册包名被拒 = 包名额度，不是设备上装满
+        self.assertIn("10 个包名", str(e.exception))
+        self.assertNotIn("删掉", str(e.exception))
 
 
 class PullSeenTests(unittest.TestCase):

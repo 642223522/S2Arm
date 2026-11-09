@@ -277,6 +277,17 @@ class WinInstall(unittest.TestCase):
             self.go(FakeW([("U1", "USB", 3)], fail="login_identity_rejected"))
         self.assertEqual(e.exception.code, "login_identity_rejected")
 
+    def test_appid_limit_shows_plain_reason_not_plumesign_english(self):
+        """Apple 9120（Windows 实机原文：Developer API error 9120 … maximum App ID limit）：上屏是 free_appid_limit 的人话原因与办法，英文原文只进诊断"""
+        w = FakeW([("U1", "USB", 3)], fail="free_appid_limit")
+        with self.assertRaises(core.Failure) as e:
+            self.go(w)
+        import errors
+        self.assertEqual(e.exception.code, "free_appid_limit")
+        self.assertIn(errors.RECOVERY["free_appid_limit"], str(e.exception))
+        self.assertNotIn("plumesign 退 1", str(e.exception))   # FakeW 的原文
+        self.assertIn("plumesign 退 1", e.exception.internal)
+
     def test_gui_install_runs_the_11_06_backend(self):
         # 11-07 闸门接线核对：启动器「开始装机」发 install 作业 → install_windows → 真的 pack/orch/install_win.py（不用 FakeW），
         #   外部只换掉 plumesign / 设备服务 / 推包。期望照 11-06 金刚真机通过那次手写（状态文件里程碑节、evidence/winline_e2e_1106/kong_c3.log）：

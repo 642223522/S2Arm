@@ -318,7 +318,7 @@ class InstallFailures(JobCase):
             with zipfile.ZipFile(archive) as z: z.extractall(args[-1])
             import subprocess
             return subprocess.CompletedProcess(args, 0, "", "")
-        cases = (("The maximum number of apps for free development profiles has been reached", "free_app_limit"),
+        cases = (("The maximum number of apps for free development profiles has been reached", "free_app_limit"),   # 装机时设备拒收 = 同时 3 个自签 App
                  ("Developer Mode is disabled on this device", "developer_mode_required"),
                  ("The pairing record is invalid. Please pair the device again", "device_pairing_required"),
                  ("The provisioning profile has expired", "provisioning_expired"),
@@ -357,7 +357,70 @@ class InstallFailures(JobCase):
                               ("provisioning profile has a valid expiration date", "signing_failed")):
             with self.subTest(raw=raw): self.assertEqual(install.classify(raw), expected)
         self.assertNotIn("AltStore", RECOVERY["free_app_limit"])
-        self.assertIn("7", RECOVERY["free_app_limit"])
+
+
+class FreeAccountLimits(unittest.TestCase):
+    """免费 Apple ID 两个上限拆成两个码：free_app_limit = 设备上同时 3 个自签 App（删一个就能装）；
+    free_appid_limit = Apple 9120，7 天最多注册 10 个包名（删 App 不退额度）。期望手写。"""
+    DEVICE = ("This device has reached the maximum number of installed apps using a free developer profile",   # iOS 27 装机原文
+              "The maximum number of apps for free development profiles has been reached",                    # 较早 iOS / Xcode 装机原文
+              "You have reached the maximum number of apps")
+    APPID = ("error: Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days.",   # Xcode 原文
+             "Developer services error 9120: Your maximum App ID limit has been reached.",
+             "You have reached the maximum number of App IDs")
+
+    def test_each_wording_maps_to_its_own_code(self):
+        import impactor
+        for raw in self.DEVICE:
+            with self.subTest(raw=raw):
+                self.assertEqual(install.classify(raw), "free_app_limit")
+                self.assertEqual(impactor.explain(raw), "free_app_limit")
+        for raw in self.APPID:
+            with self.subTest(raw=raw):
+                self.assertEqual(install.classify(raw), "free_appid_limit")
+                self.assertEqual(impactor.explain(raw), "free_appid_limit")
+        # 9120 只在带 error / code 前缀时认，日志里别处的数字不算
+        self.assertEqual(install.classify("copied 9120 bytes"), "signing_failed")
+        self.assertEqual(impactor.explain("copied 9120 bytes"), "device_install_failed")
+
+    def test_patterns_do_not_overlap(self):
+        # 两条正则互不相交：任一原文只被一条吃到，不靠排序兜底
+        import impactor
+        for table in (install.SIGN_ERRORS, impactor.EXPLAIN):
+            pats = {c: p for p, c in table if c in ("free_app_limit", "free_appid_limit")}
+            for raw in self.DEVICE + self.APPID:
+                with self.subTest(raw=raw):
+                    hits = [c for c, p in pats.items() if re.search(p, raw if table is install.SIGN_ERRORS else raw.lower(), re.I)]
+                    self.assertEqual(len(hits), 1, hits)
+
+    def test_recovery_says_the_right_thing(self):
+        dev, appid = RECOVERY["free_app_limit"], RECOVERY["free_appid_limit"]
+        self.assertIn("3 个自签 App", dev)
+        self.assertIn("删掉", dev)
+        for word in ("7 天", "10 个包名", "9120"):
+            self.assertNotIn(word, dev)
+        for word in ("7 天", "10 个包名", "不会退还", "换一个 Apple ID", "付费 Apple 开发者账号"):
+            self.assertIn(word, appid)
+        for word in ("删掉", "长按"):   # 删 App 对包名额度无效，不能建议玩家去删
+            self.assertNotIn(word, appid)
+
+    def test_registered_everywhere(self):
+        loc = {i["source"]: i.get("en") for i in json.loads((ROOT / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json").read_text())}
+        spec = {i["code"]: i for i in json.loads((ROOT / "launchers/shared/experience.v1.json").read_text())["errors"]["items"]}
+        guide = {e["code"] for e in json.loads((JOBS / "impactor_guide.json").read_text())["errors"]}
+        ctl_spec = importlib.util.spec_from_file_location("s2armctl_fal", ROOT / "launchers/macos/s2armctl.py")
+        ctl = importlib.util.module_from_spec(ctl_spec); ctl_spec.loader.exec_module(ctl)
+        for code in ("free_app_limit", "free_appid_limit"):
+            with self.subTest(code=code):
+                self.assertTrue(loc.get(RECOVERY[code]))
+                self.assertTrue(spec[code]["title"]["en"] and spec[code]["detail"]["en"])
+                self.assertIn(code, guide)
+                self.assertEqual(ctl.AI_NEXT[code][0], "human")
+        en = loc[RECOVERY["free_appid_limit"]]
+        self.assertIn("10 App IDs", en)
+        self.assertNotRegex(en, r"(?i)\b(?:delete|remove) (?:a|an|one)\b")
+        self.assertNotRegex(loc[RECOVERY["free_app_limit"]], r"10 App IDs|7 days")
+        self.assertIn("9120", spec["free_appid_limit"]["detail"]["zh-Hans"])
 
 
 class LogCauses(JobCase):
@@ -526,8 +589,9 @@ class RecoveryCoverage(unittest.TestCase):
 
     def test_free_quota_translation_matches_chinese(self):
         loc = json.loads((ROOT / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json").read_text())
-        text = next(i["en"] for i in loc if i["source"] == RECOVERY["free_app_limit"])
-        self.assertNotIn("AltStore", text)
+        for code in ("free_app_limit", "free_appid_limit"):
+            text = next(i["en"] for i in loc if i["source"] == RECOVERY[code])
+            self.assertNotIn("AltStore", text)
 
     def test_all_literal_player_codes_have_recovery(self):
         found = set()

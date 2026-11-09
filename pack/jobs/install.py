@@ -455,7 +455,18 @@ def usb_mbps(udid, env=None):
 SIGN_ERRORS = (
     (r"等钥匙串授权超时", "keychain_prompt"),   # pack/ensure_profile.sh：第一次签名的钥匙串框没人点（11-08 Spare-host 实测）
     (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
-    (r"maximum number of (?:installed )?(?:apps|App IDs)|App ID limit|(?:maximum|limit)[^\n]{0,100}free development profiles", "free_app_limit"),
+    # 免费 Apple ID 有两个不同的上限，原文措辞能分开，办法也不同：
+    #   ① 包名（App ID）额度：签名前向 Apple 注册包名时被拒，Apple 错误 9120，Xcode 原文
+    #      「Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days.」——
+    #      说的是「App ID」，按 7 天窗口计，删 App 不退额度 → free_appid_limit；
+    #   ② 设备同时装 3 个自签 App：签名已过、装机（devicectl / 系统安装服务）时设备拒收，原文
+    #      「This device has reached the maximum number of installed apps using a free developer profile」（iOS 27）、
+    #      「The maximum number of apps for free development profiles has been reached」（较早 iOS / Xcode）——
+    #      说的是「apps」装在这台设备上，删一个就能装 → free_app_limit。
+    # 两条正则互不相交：①只认「App ID(s)」字样或带 error / code 前缀的 9120，②的「apps」后面不跟「ID」；
+    # ①仍排在前面，万一一行里两种字样都有，按删 App 无效的那件事报，免得玩家白删。
+    (r"App ID limit|\b10 App IDs\b|maximum number of App IDs|(?:error|code)\D{0,20}\b9120\b", "free_appid_limit"),
+    (r"maximum number of (?:installed )?apps\b|(?:maximum|limit)[^\n]{0,100}free development profiles", "free_app_limit"),
     (r"Developer\s*Mode\s*(?:is\s*)?(?:disabled|not enabled|required)|DeveloperModeDisabled", "developer_mode_required"),
     (r"pairing (?:record|relationship)[^\n]{0,80}(?:invalid|missing|expired)|not paired|pair (?:the )?device again|InvalidHostID", "device_pairing_required"),
     (r"provisioning profile[^\n]{0,100}(?:has expired|is expired|expired on)|expired provisioning profile", "provisioning_expired"),
@@ -873,7 +884,13 @@ class WinPhone:
         try:
             self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
         except self.W.Fail as e:
-            raise Failure(str(e), code=e.err or "device_install_failed") from e
+            # 有对应处理建议的码（free_appid_limit = Apple 9120 等）：上屏说人话的原因与办法，plumesign 英文原文只进诊断（Windows 实机：
+            #   原先整句英文「Developer API error 9120 …」直接上屏，玩家只看到签名失败）；没有专门建议的照旧上屏原文
+            code = e.err or "device_install_failed"
+            from errors import RECOVERY
+            if code in RECOVERY and code not in ("device_install_failed", "job_failed"):
+                raise Failure("签名装机没成：" + RECOVERY[code], code=code, internal=str(e)) from e
+            raise Failure(str(e), code=code) from e
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 
