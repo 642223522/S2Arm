@@ -2,7 +2,7 @@
 # 门禁覆盖：tools/public_repo_scan.py tools/public_repo_scan_rules.json
 # 提交信息扫描（tools/public_repo_scan.py --messages，列车入队预检用；11-09）：bash tests/public_repo_scan_messages_test.sh
 #   期望按词表手写：提交信息里有内部线名 / 设备代号 → 退 1、报提交号 + 行号 + 规则、不回显那个词；通用说法 → 退 0；只扫 BASE..REF，BASE 之前的不管
-#   内部称呼在本文件里用 Unicode 转义运行时拼出（本文件也受公开仓扫描）
+#   内部称呼在本文件里按码位运行时拼出（扫描器会还原转义，转义写法也会被拦）（本文件也受公开仓扫描）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 W1=$(python3 -c 'print("天眼")'); W2=$(python3 -c 'print("测试机")')
