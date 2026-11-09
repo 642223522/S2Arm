@@ -418,6 +418,14 @@ class LogCauses(JobCase):
         self.assertEqual(d["summary"], "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。")
         self.assertEqual(d["suggestion"], RECOVERY["graphics_api_unsupported"])
 
+    def test_font_copy_denied_says_grant_access(self):
+        # 11-09 玩家现场：只见「拷字体失败」、原因被脱敏吃掉。sysdata.sh 红行现带 cp 原文（脱敏只换路径）→ 归到没权限，提示去系统设置授权
+        from errors import RECOVERY
+        error, d = self.mac_refresh(["【红】拷字体失败：cp: [PRIVATE_PATH]: Operation not permitted / 普通复制：cp: [PRIVATE_PATH]: Operation not permitted",
+                                     "【红】01007EF00011E000 刷新停在 sysdata 阶段（rc=1），现行 = 01007EF00011E000@ex-b3eed688"])
+        self.assertEqual(error.code, "permission_denied")
+        self.assertEqual(d["suggestion"], RECOVERY["permission_denied"])
+
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
         # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，
         #   报「链号前后不一（c7a4970bffe5 / note:）」→ 刷新停在 direct 阶段。上屏：这版 S2Arm 不认识你的 Xcode；下一步：更新 S2Arm
