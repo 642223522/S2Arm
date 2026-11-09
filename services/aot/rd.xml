@@ -1,6 +1,6 @@
 <!-- NativeAOT 运行时指令：金手指（services/S2A.Services/Cheats.cs）复用 Ryujinx AtmosphereCompiler，InstructionHelper.Create 按宽度
      MakeGenericType(byte/ushort/uint/ulong) 再 Activator.CreateInstance 造操作与条件；AOT 只生成编译期见过的泛型实例，不在这里点名，
-     真机编译就报「CondGT`1[UInt32] is missing native code」（11-09 测试机1 实测；JIT 单测测不到）。
+     真机编译就报「CondGT`1[UInt32] is missing native code」（11-09 真机实测；JIT 单测测不到）。
      名单 = Ryujinx.HLE.HOS.Tamper.Operations / Conditions 里全部泛型类 × 4 种宽度；服务层单测 CheatsTest 反射核对没有漏的 -->
 <Directives xmlns="http://schemas.microsoft.com/netfx/2013/01/metadata">
   <Application>

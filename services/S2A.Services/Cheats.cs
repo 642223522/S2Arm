@@ -143,7 +143,7 @@ namespace S2A.Services
         }
 
         // 玩家可改的文件（*.txt，不含本线程自己写的 status.txt）的名字 + 改动时间签名：增删改任一份都变；目录不在 = 空串。
-        //   不看目录自身的改动时间——写 status.txt（临时文件改名）会动目录时间，看它就会每秒自己触发一次重载（11-09 测试机1 实测）
+        //   不看目录自身的改动时间——写 status.txt（临时文件改名）会动目录时间，看它就会每秒自己触发一次重载（11-09 真机实测）
         private static string Stamp(string dir)
         {
             if (!Directory.Exists(dir)) return "";
@@ -223,7 +223,7 @@ namespace S2A.Services
             public bool TamperedCodeMemory { get; set; }
 
             // 写到不可写页（苹果上的代码页是签名只读页）：先置 TamperedCodeMemory 再抛——Run 里按它的异常过滤在 finally 之前求值，
-            //   放在 finally 里置位，过滤看到的还是 false，会误判成「地址未就绪」（11-09 测试机1 实测）
+            //   放在 finally 里置位，过滤看到的还是 false，会误判成「地址未就绪」（11-09 真机实测）
             private void Check(ulong va, ulong size, bool write)
             {
                 if (Native.MemMapped == null || Native.MemMapped(va, size) != 1)
