@@ -504,12 +504,18 @@ def sub_programs(run, a, x, w, src_dir):
         run.say(f'🟢 多程序合集序号 {i}（{tid_i}）→ {w / "programs" / str(i)}')
 
 
+def save_identity_args():
+    """存档游戏身份（作业层 pack/jobs/ipa.py 按游戏库目录写好、经 S2A_SAVE_IDENTITY 交来）：带进包，iPhone 的存档管理 / iCloud 同步靠它认游戏（#298 同批根修）"""
+    si = os.environ.get('S2A_SAVE_IDENTITY')
+    return ['--save-identity', si] if si else []
+
+
 def ipa(run, w, game, shell, bundle_id, suffix=''):
     title = subprocess.run([PY, '-X', 'utf8', str(R / 'pack/display_name.py'), str(w), '--title'], capture_output=True, text=True, encoding='utf-8').stdout.strip()
     env = dict(os.environ, PYTHONUTF8='1')
     run.step('ipa 收尾', lambda: run.sh([PY, '-X', 'utf8', str(R / 'pack/ipa_tail.py'), '--work', str(w), '--game', game, '--shell', str(shell),
                                         '--bundle-id', bundle_id or f'io.github.s2arm.{game}', '--suffix', suffix, '--key', f'tianyan {game}',
-                                        '--title', title, '--sign', 'none'], 'ipa_tail.log', env=env))
+                                        '--title', title, '--sign', 'none', *save_identity_args()], 'ipa_tail.log', env=env))
     return w / 'pkg' / f'{game}.ipa', title
 
 
@@ -530,7 +536,7 @@ def Early(run, a, cur, game):
         with open(log, 'w', encoding='utf-8', newline='\n') as f:
             p = subprocess.run([PY, '-X', 'utf8', str(R / 'pack/ipa_tail.py'), '--work', str(w), '--game', game, '--shell', str(a.shell),
                                 '--bundle-id', a.bundle_id or f'io.github.s2arm.{game}', '--suffix', suffix, '--key', f'tianyan {game} early',
-                                '--title', title, '--sign', 'none'], stdout=f, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUTF8='1'), cwd=R)
+                                '--title', title, '--sign', 'none', *save_identity_args()], stdout=f, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUTF8='1'), cwd=R)
         if p.returncode or not (w / 'pkg' / f'{game}.ipa').is_file(): raise RuntimeError(f'早期包没出成（ipa_tail 退 {p.returncode}，见 {log}）')
         return w
 

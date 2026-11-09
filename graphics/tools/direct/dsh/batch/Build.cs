@@ -34,9 +34,9 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     static readonly UTF8Encoding U8 = new(false);
 
     // 编译约定（与原 dmsh_build.py MAC_METAL / ios_metal.py 逐字相同：记录写进每个反射 chain_metal）
-    static readonly string[] MacMetal = { "xcrun", "-sdk", "macosx", "metal", "-c", "-w", "-fmetal-math-mode=relaxed", "-fpreserve-invariance", "-mmacosx-version-min=15.0" };
+    internal static readonly string[] MacMetal = { "xcrun", "-sdk", "macosx", "metal", "-c", "-w", "-fmetal-math-mode=relaxed", "-fpreserve-invariance", "-mmacosx-version-min=15.0" };
     static readonly string[] IosMetal = { "xcrun", "-sdk", "iphoneos", "metal", "-c", "-w", "-mios-version-min=18.0", "-fmetal-math-mode=relaxed", "-fpreserve-invariance" };
-    static readonly string MacRecord = string.Join(' ', MacMetal) + "; xcrun -sdk macosx metallib";
+    internal static readonly string MacRecord = string.Join(' ', MacMetal) + "; xcrun -sdk macosx metallib";
     static readonly string IosRecord = string.Join(' ', IosMetal) + "; xcrun -sdk iphoneos metallib";
 
     static Dictionary<string, (string Pkg, int Idx)> Loc = new();
@@ -877,7 +877,10 @@ static class Metal
     //   Spare-host 30 支 4.13 → 1.67 秒，产物 .air 逐字节相同（本机另核 600 支）——所以缓存键（Ident）不带它，换不换预编头都命中同一份库。
     //   预编头绑定模块缓存目录（clang 按编译选项哈希定缓存路径，建与用必须同一个 -fmodules-cache-path）。建不出（如编译器不认）就不带、照旧编；
     //   带预编头编不过的那支第二次不带重编（同原「编不过重试一次」），不把预编头的问题算成着色器编不过。S2A_METAL_PCH=0 关掉（对照用）
-    static readonly Dictionary<string, string[]> Pch = new();
+    static readonly ConcurrentDictionary<string, string[]> Pch = new();
+    // 熔断：同一次出库里某个目标带预编头编不过（去掉预编头重编成了）已有 PchTrip 支、带预编头编成的一支都没有 = 这台机器的预编头整体用不了，
+    //   本次出库对这个目标关掉预编头，不再每支编两遍（11-09 外部分析报「Windows 上预编头完全失效」：Windows 出包机实测 430 支 0 支重编、未复现，熔断作安全阀）
+    const int PchTrip = 8;
     const string PchPrelude = "#include <metal_stdlib>\n#include <simd/simd.h>\nusing namespace metal;\n"
         + "struct s2a_pch_force {\n"   // 类型取自出库 MSL 实际出现的拼法（马车8 / 旷野之息 1.4 万份统计），多放的只在建预编头时花时间
         + "  texture2d<float> a; texture2d_array<float> b; texturecube<float> c; texturecube_array<float> d; texture3d<float> e;\n"
@@ -959,15 +962,24 @@ static class Metal
         File.WriteAllBytes(m, src);
         Gate.Wait();
         var sw = Stopwatch.StartNew();
+        bool withPch = false;
         try
         {
             for (int attempt = 1; ; attempt++)
             {
                 var pre = attempt == 1 && Pch.TryGetValue(target, out var p) ? p : Array.Empty<string>();   // 第二次不带预编头（见 BuildPch 注）
+                if (attempt == 1) withPch = pre.Length > 0;
                 var (rc, err) = Exec(Native(cmd).Concat(pre).Concat(new[] { m, "-o", air }).ToArray());
                 if (rc == 0) (rc, err) = Exec(Tool(sdk, "metallib", air, "-o", lib));
-                if (rc == 0) { if (attempt == 2) St.AddOrUpdate(target + " retried", 1, (_, v) => v + 1); break; }
-                var bad = EnvProblem();
+                if (rc == 0)
+                {
+                    if (attempt == 1 && withPch) St.AddOrUpdate(target + " pch ok", 1, (_, v) => v + 1);
+                    if (attempt == 2) St.AddOrUpdate(target + " retried", 1, (_, v) => v + 1);
+                    if (attempt == 2 && withPch && St.AddOrUpdate(target + " pch failed", 1, (_, v) => v + 1) >= PchTrip && St.GetValueOrDefault(target + " pch ok") == 0 && Pch.TryRemove(target, out _))
+                        Note($"🟡 {target} 预编头连续 {PchTrip} 支带着编不过、去掉才编成，一支带着编成的都没有：本次出库不再带预编头（免得每支编两遍）");
+                    break;
+                }
+                var bad = EnvProblem() ?? DiskFull(err);
                 if (bad != null) throw new InvalidOperationException($"Metal 编译环境坏了（{bad}），不是这支着色器编不过");
                 if (attempt == 2) throw new CompileError(CompilerWhy(err) ?? $"exit status {rc}: {err.Trim()} (Command '{string.Join(' ', cmd)} {m} -o {air}')");   // 原话放前面：汇总只留前 160 字符，命令回显占满就看不到原因（#165）
             }
@@ -1016,11 +1028,27 @@ static class Metal
             throw new InvalidOperationException($"Metal 编译器（Windows 版）不认带空格的路径，而 {path} 不在出库工作区 {cwd} 下，没法改成相对路径");
         return head + rel;
     }).ToArray();
+    // 盘写满（#265）：编译器写 .air / .metallib 时报 ENOSPC。原先按「这一支编不过、其余照出」记，写满后每支都失败、出一份残缺的库还退 0（失败当成功）；
+    //   归进上面「编译环境坏了」整次停，原话带上 No space left on device，出包作业的错误分类（pack/jobs/errors.py）据此报 disk_full
+    static readonly System.Text.RegularExpressions.Regex NoSpace = new(@"No space left on device|\bENOSPC\b|There is not enough space on the disk|\bDisk full\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+    internal static string DiskFull(string err) => err != null && NoSpace.IsMatch(err) ? "磁盘写满：No space left on device" : null;
+    /// <summary>单测入口（dsh_batch --metal-compile &lt;工作目录&gt; &lt;源文件&gt;）：按 Mac 编译约定走一次真实的 Init + Compile → 0 编成 / 1 这一支编不过 / 2 整次停（编译环境坏了）</summary>
+    internal static int CompileCli(string[] a)
+    {
+        Store.Open(Path.Combine(a[0], "store")); Init((Build.MacMetal, Build.MacRecord, "macosx"), null, a[0], 1);
+        try
+        {
+            foreach (var src in a[1..]) Compile("mac", File.ReadAllText(src), Path.GetFileNameWithoutExtension(src));
+            Console.WriteLine("ok"); Console.WriteLine(Summary()); return 0;
+        }
+        catch (CompileError e) { Console.WriteLine("compile error: " + e.Message); return 1; }
+        catch (InvalidOperationException e) { Console.WriteLine("stop: " + e.Message); return 2; }
+    }
     static string EnvProblem()
     {
         try { _ = Directory.GetCurrentDirectory(); } catch (Exception e) { return $"当前工作目录已不存在（{e.Message}）"; }
         // 不按整卷剩余判「环境坏了」（审计 #1417 P1-78）：同一卷上别的出库把剩余压到 1 GB 以下时，本款任意一支编不过就整单停；
-        //   盘真写满时编译器自己报写失败，按这一支 CompileError 记（其余照出），出库清单里看得见
+        //   盘真写满时编译器自己报写失败，由 Compile 里的 DiskFull 认出、整次停（#265）
         return Directory.Exists(Work) ? null : $"工作区 {Work} 不在";
     }
     public static string Summary()

@@ -42,8 +42,14 @@ void s2a_hud_audio(int session, int64_t gap_ms_total, int64_t skipped) {
 
 // 帧率：近 1 秒的上屏帧数与近 10 秒的慢帧占比。目标帧率能读到（直连的游戏节拍与 S2A_FPS 上限合成的实际生效帧率，见 hud_target）时慢帧 = 间隔 > 1.5 × 目标间隔；
 //   读不到时按近 10 秒间隔的中位数算，行里写明口径
-// 帧率上限：与 graphics/nvn nvn_fps.c、通用层 FramePacingPolicy 同口径，只认整串 0/30/60/120（别的值那两处起局就报红退出），不用 atoi（"30abc" 不能只进浮层）
-static int cap_fps(void) { const char *e = getenv("S2A_FPS"); return !e ? 0 : !strcmp(e, "30") ? 30 : !strcmp(e, "60") ? 60 : !strcmp(e, "120") ? 120 : 0; }
+// 帧率上限：与 graphics/nvn nvn_fps.c nvn_fps_parse、通用层 FramePacingPolicy 同口径，只认整串 0 或 24–1000 的十进制整数（别的值那两处起局就报红退出），
+//   不用 atoi（"30abc" 不能只进浮层）；浮层不链图形层，这里照抄一份
+static int cap_fps(void) {
+    const char *e = getenv("S2A_FPS"); int v = 0;
+    if (!e || !*e) return 0;
+    for (const char *p = e; *p; p++) { if (*p < '0' || *p > '9' || p - e >= 4) return 0; v = v * 10 + (*p - '0'); }
+    return v >= 24 && v <= 1000 ? v : 0;
+}
 // 目标 = 实际生效周期 max(游戏间隔周期, 1/上限) 对应的帧率，即 min(游戏帧率, 上限)（#619 审计 F-hud-cap-above-game）。
 //   游戏帧率：GL 前端回报它自己的（nvn_gl_game_fps，graphics/nvn/gfx/gl/egl.m：交换间隔折成帧率，0 = 交换间隔 0、游戏不锁垂直同步；-1 = 本局没走 GL），
 //   其余直连前端取 nvn_game_fps；通用模式读不到游戏帧率。没有原生锁 / 读不到时目标就是上限（GL 交换间隔 0 + 上限 120 = 120，不是缺省 60）；上限也没有 = 0「未取得」

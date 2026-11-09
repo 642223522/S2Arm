@@ -156,6 +156,9 @@ typedef struct {
   size_t fwrites[128];   /* 当前函数里写寄存器 n 的指令条数（writes(x, n) 计数） */
   VEC(Pair) jidx;   /* (地址, 下标) 按地址再按下标排序：jump_at 二分 */
   VEC(Pair) cov;
+  /* 动态段 RELA 表里的 R_AARCH64_RELATIVE（槽位, 加数），按槽位排序；.eh_frame 用绝对指针编码（absptr）时取加数（ehabs） */
+  VEC(Pair) rela;
+  int rela_loaded;
   uint8_t* codemap;   /* 非空 = 代码段混有内嵌数据，按字（4 字节）记真实代码范围（data_in_text） */
   size_t fixrefs;
   Alloc* allocs;
@@ -929,16 +932,36 @@ static void plain(const Ins* x) {
   if (noredzone())
     fail("RuntimeError: %" PRIx64 " %s %s：x18 改写点 sp 形态不可平移",
          (uint64_t)x->at, x->m, x->op);
-  int save = d ? -112 : -16;
-  /* save-d must fit signed imm7 scaled by 8; pair() must not round or wrap it. */
+  /* 保留苹果路径的 sp 写回准入边界。 */
   REQUIRE(d >= -96 && d <= 400 && d % 8 == 0);
-  emit(STP(S, T, 31, save));
+  /* 帧顶留出原 sp 下方的 128 字节。访存或运算读 sp 时，借 T 提供原 sp，
+   * 把 K18 槽地址放在帧内第三个槽，原指令的立即数和索引方式都保留。 */
+  F = 128 + (x->sp ? 32 : 16);
+  if (x->sp) {
+    REQUIRE(!x->d.post_index || x->d.operands[x->d.op_count - 1].type == ARM64_OP_IMM);
+    REQUIRE(((w >> 5) & 31) == 31);
+    w = (w & ~(31u << 5)) | ((uint32_t)T << 5);
+    REQUIRE(!dis(w, x->at).sp);
+  }
+  emit(STPRE(S, T, 31, -F));
   tp(T, S);
   slot(T, S, 0);
   emit(LDR(S, T, 0));
+  if (x->sp) {
+    emit(STR(T, 31, 2));
+    emit(ADDI(T, 31, F, 0));
+  }
   emit(w);
+  if (x->sp)
+    emit(LDR(T, 31, 2));
   emit(STR(S, T, 0));
-  emit(LDP(S, T, 31, save - d));
+  if (F + d <= 504)
+    emit(LDPOST(S, T, 31, F + d));
+  else {
+    /* 帧长加原写回超过 LDP 的 imm7 射程时，分开恢复寄存器和 sp。 */
+    emit(LDP(S, T, 31, 0));
+    emit(ADDI(31, 31, F + d, 0));
+  }
   emit(branch(here(), x->at + 4));
 }
 static void spfrom18(const Ins* x) {
@@ -1385,18 +1408,57 @@ static void window_emit(Window* w) {
   for (size_t k = 0; k < w->seg.n; k++)
     put(w->seg.v[k].ins.v[0].at, branch(w->seg.v[k].ins.v[0].at, entry.v[k]));
 }
+/* absptr 槽位的真值（#286：程序号 01E6… 的 .eh_frame CIE 没写 R 增强，FDE 指针按缺省编码 0 = 8 字节绝对地址存）。
+ * 位置无关映像里这个槽由装载器按 R_AARCH64_RELATIVE 填：lld 缺省不在原位写加数（原位是 0），GNU ld 写。
+ * 所以先查动态段 RELA 表（MOD0 + 4 → 动态段，DT_RELA / DT_RELASZ，映像按 vaddr 0 摊开、地址即偏移），有就取加数，没有用原位值。
+ * RELR 本来就要求原位写加数，不用查 */
+static int cmppair(const void* a, const void* b);
+static A ehabs(A o, A v) {
+  if (!g->rela_loaded) {
+    g->rela_loaded = 1;
+    A m0 = iw(4), dyn = m0 + si(m0 + 4), rela = -1, relasz = 0;
+    for (A d = dyn; d >= 0 && (uint64_t)d + 16 <= g->len; d += 16) {
+      uint64_t tag = iu64(d), val = iu64(d + 8);
+      if (!tag)
+        break;
+      if (tag == 7)
+        rela = (A)val;
+      else if (tag == 8)
+        relasz = (A)val;
+    }
+    if (rela >= 0 && relasz > 0 && (uint64_t)rela + (uint64_t)relasz <= g->len)
+      for (A r = rela; r + 24 <= rela + relasz; r += 24)
+        if ((iu64(r + 8) & 0xffffffffu) == 1027) {   /* R_AARCH64_RELATIVE */
+          Pair p = {(A)iu64(r), (A)iu64(r + 16)};
+          PUSH(g->rela, p);
+        }
+    if (g->rela.n > 1)
+      qsort(g->rela.v, g->rela.n, sizeof(Pair), cmppair);
+  }
+  size_t lo = 0, hi = g->rela.n;
+  while (lo < hi) {
+    size_t m = (lo + hi) / 2;
+    if (g->rela.v[m].a < o)
+      lo = m + 1;
+    else
+      hi = m;
+  }
+  return lo < g->rela.n && g->rela.v[lo].a == o ? g->rela.v[lo].b : v;
+}
 static A rd(A o, int enc, int* sz) {
   int fmt = enc & 15;
   A v;
-  if (fmt == 3) {
+  if (fmt == 0 || fmt == 4 || fmt == 12) {   /* absptr（AArch64 指针 8 字节）/ udata8 / sdata8 */
+    v = (A)iu64(o);
+    *sz = 8;
+    if (fmt == 0 && !(enc & 0x70))
+      v = ehabs(o, v);
+  } else if (fmt == 3) {
     v = iw(o);
     *sz = 4;
   } else if (fmt == 11) {
     v = si(o);
     *sz = 4;
-  } else if (fmt == 4 || fmt == 12) {
-    v = (A)iu64(o);
-    *sz = 8;
   } else {
     fail("不支持 EH 编码 %x", enc);
     return 0;
