@@ -133,8 +133,10 @@ static NSURL *cheats_dir(void) {   // 文档根唯一取法（s2a_docs.h），�
     (void)t; if (s != 0) return nil;
     const char *b = s2a_main_build_id ? s2a_main_build_id() : NULL;
     NSString *bid = b && strlen(b) >= 16 ? [@(b) substringToIndex:16].uppercaseString : nil;
-    NSMutableString *m = [NSMutableString stringWithString:@"导入 Atmosphere 格式的金手指（txt）。每条缺省关，打开后约 1 秒内生效，不用重启；"
-                          "要改游戏代码的条目在本机不支持，会自动停用。金手指可能让存档出问题，请先备份存档。"];
+    NSMutableString *m = [NSMutableString stringWithString:@"导入 Atmosphere 格式的金手指（txt）。每条缺省关，打开后约 1 秒生效，不用重启。\n\n"
+                          "能用：改游戏里的数值，比如锁血、金钱、道具数量、体力，打开后数值一直保持。\n"
+                          "不能用：直接改游戏代码的条目。系统不允许改写游戏代码，这类条目会自动停用并标「改代码，不支持」，不影响游戏运行。\n\n"
+                          "金手指可能让存档出问题，请先备份存档。"];
     if (bid) [m appendFormat:@"\n\n本游戏版本号（构建号前 16 位）：%@。金手指文件名通常就是它，名字对不上的文件不会生效。", bid];
     if (!_files.count) [m appendString:@"\n\n还没有金手指文件，点右上角「导入 txt」。"];
     return m;
