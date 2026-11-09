@@ -169,6 +169,24 @@ class LocationTests(JobCase):
         self.assertEqual(layout.game_dir(self.fresh(), B).parent.parent, self.disk)
 
 
+class HostPruneTests(JobCase):
+    """公共宿主清理（host_update.prune）：别的存放位置里的游戏在用的宿主不能删；有位置没连上就不清"""
+    def test_hosts_used_in_other_locations_survive_and_offline_skips(self):
+        import host_update
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha"), dict(id=B, name="Beta")]))
+        disk = self.root / "盘2" / "S2Arm"
+        layout.game_dir(self.c, A); layout.game_dir(self.c, B, location=disk)
+        for sha in ("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"):
+            (layout.hosts_mac(self.c) / sha / "S2ArmGame.app").mkdir(parents=True)
+        layout.update_info(self.c, A, hostMac="aaaaaaaaaaaa"); layout.update_info(self.c, B, hostMac="bbbbbbbbbbbb")
+        os.rename(disk, disk.with_name("拔掉"))
+        host_update.prune(self.c)                                                   # 盘 2 没连上：一个都不删
+        self.assertEqual(sorted(p.name for p in layout.hosts_mac(self.c).iterdir()), ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"])
+        os.rename(disk.with_name("拔掉"), disk)
+        host_update.prune(self.c)                                                   # 都连上：只删没人用的 c
+        self.assertEqual(sorted(p.name for p in layout.hosts_mac(self.c).iterdir()), ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+
+
 class VolumeNameTests(unittest.TestCase):
     """存放位置下拉框 / 「未连接」里的盘名：Windows 按盘符（原先只认 Mac 的 /Volumes，Windows 每个盘都叫系统盘）"""
     def test_windows_and_mac_names(self):
