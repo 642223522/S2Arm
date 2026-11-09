@@ -4680,8 +4680,14 @@ static const char *tex_widen_why(const tex_t *t) {
 static int tex_swap_storage(id<MTLTexture> base, id<MTLTexture> w) {
     pthread_mutex_lock(&g_smu);
     nvn_hmap *ms[] = {&g_by_serial, &g_ghost, &g_ghost_active, &g_alias}; int n = 0;
+    // 打包贴图（NvPkg）表里存的是 NvPkg 对象，贴图在它的 tex 里：同样换掉。原先只有 tex_widen 自己换，内部分辨率（rs_rescale）换不到——新存储没人持有，
+    //   打包颜色目标仍是原尺寸、同遍深度缩到一半（11-09 #312 暗黑地牢2，S2A_RES_SCALE=0.5：同遍附件尺寸不一，iPhone 上闪粉色块）
     for (int m = 0; m < 4; m++)
-        for (uint32_t i = 0; i < ms[m]->cap; i++) if (ms[m]->vals[i] == (__bridge void *)base) { CFRelease(ms[m]->vals[i]); ms[m]->vals[i] = (void *)CFBridgingRetain(w); n++; }
+        for (uint32_t i = 0; i < ms[m]->cap; i++) {
+            void *v = ms[m]->vals[i]; if (!v) continue;
+            if (v == (__bridge void *)base) { CFRelease(v); ms[m]->vals[i] = (void *)CFBridgingRetain(w); n++; }
+            else if (m == 0) { __unsafe_unretained id o = (__bridge id)v; if ([o isKindOfClass:[NvPkg class]] && ((NvPkg *)o)->tex == base) { ((NvPkg *)o)->tex = w; n++; } }
+        }
     if (g_alias_set && CFSetContainsValue(g_alias_set, (__bridge const void *)base)) { CFSetRemoveValue(g_alias_set, (__bridge const void *)base); CFSetAddValue(g_alias_set, (__bridge const void *)w); }
     g_ser_gen++;
     pthread_mutex_unlock(&g_smu);
@@ -4717,9 +4723,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
     for (NSUInteger l = 0; l < base.mipmapLevelCount; l++)
         for (NSUInteger sl = 0; sl < slices; sl++)
             enc_b_copy_texture(b, base, sl, l, MTLOriginMake(0, 0, 0), MTLSizeMake(MAX(base.width >> l, 1u), MAX(base.height >> l, 1u), 1), w, sl, l, MTLOriginMake(0, 0, 0));
-    int n;
-    if (pk) { pthread_mutex_lock(&g_smu); n = pk->tex == base; if (n) { pk->tex = w; g_ser_gen++; } pthread_mutex_unlock(&g_smu); if (n) defer_obj_release(base); }   // 旧的那张等用过它的提交做完再放（同 tex_swap_storage：放锁后再交）
-    else n = tex_swap_storage(base, w);
+    int n = tex_swap_storage(base, w);   // 打包贴图换的是 NvPkg 自己的 tex（tex_swap_storage 里）
     if (g_wd_widened++ < 8) MLOG("widen: render target storage ser=%llu %lux%lu format %lu widened to %lux%lu (%d table entries moved)", (unsigned long long)t->serial, (unsigned long)base.width,
                                  (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)r, (unsigned long)rh, n);
     return 1;
@@ -6094,6 +6098,31 @@ static void vc_drop_pool(const void *pool) {   // caller holds g_rmu
 static uint64_t g_tb2_binds, g_tb2_made, g_tb2_fail, g_tb2_tail;
 // exact (nvn_refl f1d 2, Ampere's wrapped fetch): rows sized to the element count (nvn_tbuf_rows_exact: W * H = n), the shader takes W and H from this form and reads 0 past W * H, as the
 //   hardware's fetch past a buffer; no such form (an element count with too few factors of two) → the fixed rows, the tail past the buffer readable (counted, first case red)
+// 不对齐池偏移的缓冲纹理：对齐副本上的 2D 行视图（见 tbuf_as_2d）。取不到副本（GPU 本次提交里写过这段、超出影子上限、内存不可读）照旧回 nil（这一槽读 0）并点名
+static uint64_t g_tb2_shadow, g_tb2_shadow_fail;
+static id<MTLBuffer> arena_find(const uint8_t *p, NSUInteger *off, NSUInteger *len);   // 帧暂存块里 p 所在的缓冲（定义在 NvArena 之后）
+static id<MTLTexture> tbuf_rows_shadow(int tid, id<MTLTexture> t, const tex_t *tt, uint32_t w, uint32_t h, uint32_t row, uint64_t *rid) {
+    id<MTLBuffer> buf = t.buffer; uint64_t avail = buf.length > t.bufferOffset ? buf.length - t.bufferOffset : 0, want = (uint64_t)row * h;
+    uint64_t len = want < avail ? want : avail;   // 末行越过池缓冲的部分本来就是未定义读，副本只取池里有的
+    uint64_t lo = (uint64_t)(uintptr_t)tt->mem, g = 0; const uint8_t *c = NULL;
+    if (!len || !tt->mem || !ubp_get(lo, lo + len, &g, &c)) {
+        if (!g_tb2_shadow_fail++) MLOG("【红】 texture buffer (texture ID %d, %lu elements at pool offset %lu) is not aligned for a 2D-row view and its bytes cannot be read at this point (GPU writes in this submission / too large): the slot reads 0", tid, (unsigned long)t.width, (unsigned long)t.bufferOffset);
+        return nil;
+    }
+    ubq_gpu(g_ubp_q);   // 副本的拷贝在 GPU 读之前做完
+    NSUInteger off = 0, alen = 0; id<MTLBuffer> ab = arena_find(c, &off, &alen);
+    if (!ab) { if (!g_tb2_shadow_fail++) MLOG("【红】 texture buffer shadow (texture ID %d) is not in a frame arena: the slot reads 0", tid); return nil; }
+    if (off % linear_align(t.pixelFormat)) { if (!g_tb2_shadow_fail++) MLOG("【红】 texture buffer shadow (texture ID %d) at scratch offset %lu is not aligned: the slot reads 0", tid, (unsigned long)off); return nil; }   // 暂存块按 256 字节分配，不该发生
+    while (h > 1 && (uint64_t)row * h > alen - off) h--;   // 末行越过暂存块：同池缓冲的末行，越界读本来就是未定义
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.pixelFormat width:w height:h mipmapped:NO];
+    d.resourceOptions = ab.resourceOptions; d.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> v = [ab newTextureWithDescriptor:d offset:off bytesPerRow:row];
+    if (!v) { if (!g_tb2_shadow_fail++) MLOG("【红】 cannot create the 2D-row view of a texture buffer shadow: %ux%u format %lu row %u at scratch offset %lu", w, h, (unsigned long)t.pixelFormat, row, (unsigned long)off); return nil; }
+    if (!g_tb2_shadow++) MLOG("texture buffer at an unaligned pool offset (%lu, alignment %lu) read by wrapped 1D fetches: bound as %ux%u rows of an aligned copy (texture ID %d; first case)", (unsigned long)t.bufferOffset, (unsigned long)linear_align(t.pixelFormat), w, h, tid);
+    defer_obj_release(v);   // 视图随本次提交释放（副本本身在帧暂存里）
+    *rid = v.gpuResourceID._impl; g_tb2_binds++;
+    return v;
+}
 static id<MTLTexture> tbuf_as_2d(int tid, id<MTLTexture> t, int exact, uint64_t *rid) {
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) return nil;
     const tex_t *tt = &g_treg[tid].t; uint64_t ser = tt->serial;
@@ -6103,14 +6132,18 @@ static id<MTLTexture> tbuf_as_2d(int tid, id<MTLTexture> t, int exact, uint64_t 
         if (rv.buffer == t.buffer && rv.bufferOffset == t.bufferOffset && rv.pixelFormat == t.pixelFormat && s->rows_n == t.width && s->rows_exact == exact) { g_tb2_binds++; *rid = s->rows_rid; return rv; }
     }
     id<MTLBuffer> buf = t.buffer; int bw, bh; uint32_t bpb = (uint32_t)nvn_fmt_bpb(tt->d.format, &bw, &bh), w, h, row;
-    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:t.pixelFormat];
+    NSUInteger al = linear_align(t.pixelFormat);   // DM_NVN_LINEAR_ALIGN 可抬高（Mac 上按 iPhone 的 64 字节复现）
     int ex = exact && bw == 1 && bh == 1 && nvn_tbuf_rows_exact(t.width, bpb, (uint32_t)al, &w, &h, &row);
     if (exact && !ex && bw == 1 && bh == 1 && !g_tb2_inexact++)
         MLOG("【红】 texture buffer of %lu elements (texture ID %d) has no exact 2D-row form for a wrapped 1D fetch (too few factors of two): bound as fixed rows, the tail past the buffer reads what follows it", (unsigned long)t.width, tid);
-    if (!buf || bw != 1 || bh != 1 || t.bufferOffset % al || (!ex && !nvn_tbuf_rows(t.width, bpb, (uint32_t)al, &w, &h, &row))) {
+    if (!buf || bw != 1 || bh != 1 || (!ex && !nvn_tbuf_rows(t.width, bpb, (uint32_t)al, &w, &h, &row))) {
         if (!g_tb2_fail++) MLOG("【红】 texture buffer (texture ID %d, %lu elements of format %#x at pool offset %lu) has no 2D-row form for a wrapped 1D fetch: the slot reads 0", tid, (unsigned long)t.width, tt->d.format, (unsigned long)t.bufferOffset);
         return nil;
     }
+    // 池内偏移不满足线性贴图对齐（iPhone 64 字节、Mac 16）：不能在池缓冲上原地建 2D 视图。11-09 #309 火焰纹章 风花雪月：光照列表两份副本相距 32 字节，
+    //   一份落在不对齐的偏移上，原先回 nil、这一槽读 0，iPhone 上光照逐帧亮暗交替（Mac 对齐只要 16，没事）。改为取「提交的这个位置上 GPU 会读到的字节」
+    //   （ubp_get：内存 + 本遍推迟的统一缓冲更新，GPU 自己的拷贝 / 填充认不出就拒绝）的对齐副本（帧暂存，256 字节对齐），在副本上建视图；副本随本次提交释放
+    if (t.bufferOffset % al) return tbuf_rows_shadow(tid, t, tt, w, h, row, rid);
     while (h > 1 && t.bufferOffset + (uint64_t)row * h > buf.length) h--;   // a last row running past the pool buffer: reads beyond it are undefined anyway
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.pixelFormat width:w height:h mipmapped:NO];
     d.resourceOptions = buf.resourceOptions; d.usage = MTLTextureUsageShaderRead;
@@ -6716,6 +6749,10 @@ static inline __attribute__((always_inline)) void *samp_fast(int sid) {
 @interface NvArena : NSObject { @public id<MTLBuffer> buf; uint8_t *cpu; uint64_t gpu, fence, sfence; size_t used, len; } @end   // cpu: buf.contents, len: buf.length, kept so an allocation and its writes send no message (upstream (MIT) #1070)
 @implementation NvArena @end
 static NSMutableArray<NvArena *> *g_arenas; static NvArena *g_cur_arena; static NSMutableArray<NvArena *> *g_sub_arenas;
+static id<MTLBuffer> arena_find(const uint8_t *p, NSUInteger *off, NSUInteger *len) {   // 本次提交的块，再找已分段交出的块（影子按 g_arena_gen 复用，可能在后者里）
+    for (NSArray<NvArena *> *list in @[g_sub_arenas ?: @[], g_arenas ?: @[]]) for (NvArena *a in list) if (p >= a->cpu && p < a->cpu + a->len) { *off = (NSUInteger)(p - a->cpu); *len = a->len; return a->buf; }
+    return nil;
+}
 // Scratch bounds: a segment is handed to the GPU at the next safe point once ARENA_CUT bytes went into it (sub_cut), and above ARENA_CAP bytes of blocks in all
 //   a new block waits for the oldest block the GPU still holds (at most ARENA_WAIT_S: a segment the GPU cannot finish before the host goes on, a wait on a sync
 //   the host signals later, must not hang the host; the block is then made anyway and the wait reported)
