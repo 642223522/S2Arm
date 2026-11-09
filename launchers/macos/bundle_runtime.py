@@ -26,6 +26,8 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 from runtime_audit import SYSTEM_PATHS, rpaths, verify_portable_runtime
 import sys
+sys.path.insert(0, str(ROOT/'launchers/shared'))
+import runtime_cache
 sys.path.insert(0, str(ROOT))   # 按包导入：不把 pack/ 放进模块路径（pack/pack.py 会顶替 pack 包，build_app → bundle_engine 取壳编号 from pack.shell 即红）
 from pack import rewriter
 # Runtime/bin 自带的命令行工具（Homebrew 包名, 命令名）：作业 PATH 只有 Runtime + 系统目录；build_app.py 缺哪个就重打运行环境，tests/userenv_test.sh 按这张表核出包链要的命令
@@ -94,7 +96,11 @@ def build(out):
     venv = ROOT/'build/macos/python'
     if not (venv/'bin/python').is_file():
         run([python_bin, '-m', 'venv', venv])
-    run([venv/'bin/python', '-m', 'pip', 'install', '--disable-pip-version-check', '-r', ROOT/'launchers/macos/requirements-runtime.txt'])
+    # 轮子先进缓存核哈希，再离线装（launchers/shared/runtime_cache.py）
+    pins = [l.strip() for l in (ROOT/'launchers/macos/requirements-runtime.txt').read_text().splitlines() if '==' in l and not l.startswith('#')]
+    wheels = runtime_cache.wheelhouse(pins, 'macos_arm64', lambda folder, missing: run(
+        [venv/'bin/python', '-m', 'pip', 'download', '--disable-pip-version-check', '--no-deps', '--only-binary=:all:', '-d', folder, *missing]))
+    run([venv/'bin/python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-index', '--find-links', wheels, '--no-deps', *pins])
     installed = venv/'lib/python3.12/site-packages'
     if not (python/'Python').is_file() or not installed.is_dir():
         raise RuntimeError('Expected Homebrew framework Python and build/macos/python; see README.')
