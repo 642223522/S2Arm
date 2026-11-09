@@ -166,7 +166,10 @@ if [ -d "$SA" ]; then mkdir -p "$W/pkg/save"; for d in device account; do [ -d "
 [ -d "$SA/padrec" ] && ls "$SA"/padrec/*.tsv > /dev/null 2>&1 && cp -cR "$SA/padrec" "$W/pkg/"   # 录 维护者 手柄（tools/padrec_pull.sh 拉回的 tsv + 存档画面）：正式局 MARK 后按它回放
 rm -rf "$W/build"; echo "$PK" > "$W/.stage_pkg"
 [ $ALLCAPS = 1 ] || [ $NATIVE = 1 ] && { mv -f "$W/.s2a_caps.release.tsv" "$W/s2a_caps.tsv" || fail "换回发布口径能力清单失败"; }
-ROOT_REPLAY="pkg .stage_pkg${SIKEY:+ save-identity.json}" root_commit "$G" "$TAG" || exit 1
+# 壳编号戳（启动器 pack/jobs/ipa.py 成功时写 <输出>/shell.id）：命令行一键出包也写一份进产物根，调用方转交 <输出>/shell.id。
+#   缺了它，启动器判「这款不是本壳出的」，装机 / 组装容器报 container_stale（11-08 玩家用命令行出完包，Mac 前端认不到、推不了）
+"$S2A_PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["details"]["shellId"], end="")' "$SHELL_DIR/manifest.json" > "$W/.shell_id" || fail "记不下壳编号（$SHELL_DIR/manifest.json）"
+ROOT_REPLAY="pkg .stage_pkg .shell_id${SIKEY:+ save-identity.json}" root_commit "$G" "$TAG" || exit 1
 P=$(root_cur "$G")/pkg
 echo "出包拆账（步 墙钟 / user / sys 秒）：$(tail -n +2 "$P/timing.tsv" | awk -F'\t' '{printf "%s %s/%s/%s；", $1, $2, $3, $4}')"
 echo "🟢 $G 出包 ${TAG}（$((SECONDS - t0)) 秒）：ipa $(du -h "$P/$G.ipa" | cut -f1)，资源包 $(tail -1 "$P/pack.log")$([ -s "$(root_cur "$G")/shaders/red.txt" ] && echo "；【红】着色器部分包：$(cat "$(root_cur "$G")/shaders/red.txt" 2>/dev/null)")$(root_aoc_note "$(root_cur "$G")")"
