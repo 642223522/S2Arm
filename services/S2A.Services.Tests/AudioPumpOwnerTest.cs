@@ -194,5 +194,47 @@ namespace S2A.Services.Tests
 
             return bad == 0 ? 0 : 1;
         }
+
+        // S2Arm (11-09): Apple renderer output (audren) starts on its first 5 ms block instead of the audout 64 ms pre-roll.
+        // The session lowers the pump floor before the first submit; the audout path keeps the construction floor.
+        [SoloTest("--audio-renderer-preroll")]
+        private static int RunRendererPreRoll()
+        {
+            var rows = new List<(string Name, string Expect, string Actual)>();
+
+            {
+                var p = new DevicePump();
+                p.Queue(1);
+                p.Pump();
+                rows.Add(("① audout 未改预充：首块 4096 B 后 primed", "False", p.PrimedForStart.ToString()));
+            }
+
+            {
+                var p = new DevicePump();
+                p.SetPrimeFloor(0);
+                p.Queue(1);
+                p.Pump();
+                rows.Add(("② 渲染器在首块前把预充下限改 0：primed / 设备里的块数", "True / 1", $"{p.PrimedForStart} / {p.Device.Count}"));
+            }
+
+            {
+                var p = new DevicePump();
+                p.Queue(1);
+                p.Pump();
+                p.SetPrimeFloor(0);
+                for (int k = 2; k <= 3; k++) { p.Queue(k); p.Pump(); }
+                rows.Add(("③ 起播前已按 64 ms 门槛走过 Pump 但未达下限：改 0 仍生效（第二块起 primed）", "True", p.PrimedForStart.ToString()));
+            }
+
+            int bad = 0;
+            foreach (var (name, expect, actual) in rows)
+            {
+                bool ok = expect == actual;
+                if (!ok) bad++;
+                Console.WriteLine($"{(ok ? "✓" : "✗")} 渲染器预充 {name}：{expect} → {actual}");
+            }
+
+            return bad == 0 ? 0 : 1;
+        }
     }
 }

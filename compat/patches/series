@@ -484,6 +484,7 @@
 20261106-0022-ctl-applet-handheld-reject.patch
 20261106-0104-audio-aux-diag.patch
 20261106-0225-audio-timeline-reanchor.patch
+20261109-1805-audio-renderer-preroll.patch
 20261106-0308-hid-atrest-handheld.patch
 20261106-0357-acc-user-creator.patch
 20261106-0358-ampere-c0-groupcount.patch

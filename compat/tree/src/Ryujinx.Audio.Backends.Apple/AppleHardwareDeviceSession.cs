@@ -24,6 +24,13 @@ namespace Ryujinx.Audio.Backends.Apple
         // 安静游戏凑不够时 StartFallbackMilliseconds 后照常开播。
         private const int PrimeMilliseconds = 64;
         private const long StartFallbackMilliseconds = 100;
+        // S2Arm (11-09): renderer output (audren; AudioBuffer.Data holds the samples, see AudioBuffer.cs) is a steady 5 ms
+        // producer and does not have audout's small-queue start underruns, which the 64 ms pre-roll was added for. A renderer
+        // session lowers the start gate to 0 on its first buffer: with the push pump the 64 ms pre-roll otherwise becomes
+        // permanent in-flight depth (Mac built-in speakers, synthetic audren producer: 115 ms with 64 ms pre-roll vs 55 ms with 0). The cushion
+        // depth and the push / anti-GC behavior are unchanged. S2A_AUDIO_RENDERER_PRIME_MS=<ms> for A/B (default 0; 64 = old).
+        private const int RendererPrimeMilliseconds = 0;
+        private static readonly int _rendererPrimeMilliseconds = ParsePrime(Environment.GetEnvironmentVariable("S2A_AUDIO_RENDERER_PRIME_MS"));
 
         private readonly AppleHardwareDeviceDriver _driver;
         // S2Arm: queued buffers as (identifier, sample count) in a ring under _queueLock, instead of ConcurrentQueue<AppleAudioBuffer>:
@@ -66,6 +73,7 @@ namespace Ryujinx.Audio.Backends.Apple
 
         private ulong _playedSampleCount;
         private bool _started;
+        private bool _primeConfigured;   // S2Arm (11-09): the first queued buffer decided the renderer/audout start gate (see ConfigurePrimeFloor)
         // S2Arm (10-22 杂音): AudioQueue 是否已 AudioQueueStart（预充满足或兜底后才启播）；_startTicks = Start 时刻
         private bool _queueRunning;
         private long _startTicks;
@@ -98,6 +106,11 @@ namespace Ryujinx.Audio.Backends.Apple
             if (string.IsNullOrEmpty(v)) return (0, 0);
             string[] p = v.Split(':');
             return p.Length == 2 && int.TryParse(p[0], out int a) && int.TryParse(p[1], out int m) ? (a, m) : (0, 0);
+        }
+
+        private static int ParsePrime(string v)
+        {
+            return int.TryParse(v, out int ms) && ms >= 0 ? ms : RendererPrimeMilliseconds;
         }
         private static readonly int _testNoteAtS = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_NOTE_AT"), out int n) ? n : 0;
         private static readonly int _testResetAtS = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_RESET_AT"), out int r) ? r : 0;
@@ -615,8 +628,30 @@ namespace Ryujinx.Audio.Backends.Apple
             }
         }
 
+        // S2Arm (11-09): the first buffer tells the producer apart. Renderer output (audren) carries its samples in Data;
+        // an AudioOut guest buffer keeps them in guest memory (Data == null, SampleReader set by RegisterBuffer). The latter
+        // keeps the 64 ms pre-roll that fixed audout's start underruns; the former starts on its first 5 ms block.
+        private void ConfigurePrimeFloor(AudioBuffer buffer)
+        {
+            if (_primeConfigured)
+            {
+                return;
+            }
+
+            _primeConfigured = true;
+
+            if (buffer.Data == null || _rendererPrimeMilliseconds == PrimeMilliseconds)
+            {
+                return;
+            }
+
+            _pump.SetPrimeFloor((long)_bytesPerFrame * RequestedSampleRate * _rendererPrimeMilliseconds / 1000);
+        }
+
         public override void QueueBuffer(AudioBuffer buffer)
         {
+            ConfigurePrimeFloor(buffer);
+
             if (_testProdStall.AtS > 0 && !_testProdStallDone && _started && Stopwatch.GetTimestamp() - _startTicks >= (long)_testProdStall.AtS * Stopwatch.Frequency)
             {
                 _testProdStallDone = true;
