@@ -438,3 +438,12 @@
 "textinput.min" = "At least %ld characters";
 "textinput.ok" = "OK";
 "textinput.range" = "%ld–%ld characters";
+"play.group" = "Screen layout";
+"play.footer" = "Applies to all games and adjusts layout immediately. Automatic split screen enables only when partially folded; it stays off if fold state is unavailable. Automatic orientation uses portrait for split screen and landscape otherwise.\nSome games need a restart to apply widescreen for the new area.";
+"play.split" = "Split screen";
+"play.orientation" = "Screen orientation";
+"play.auto" = "Automatic";
+"play.on" = "On";
+"play.off" = "Off";
+"play.landscape" = "Landscape";
+"play.portrait" = "Portrait";

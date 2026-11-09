@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
             } else {
                 groupItems++;
                 if (spec[@"Key"] && footers[spec[@"Key"]]) gfxGroup = YES;
-                if ([spec[@"Type"] isEqual:@"PSMultiValueSpecifier"]) {
+                if ([spec[@"Type"] isEqual:@"PSMultiValueSpecifier"] && footers[spec[@"Key"]]) {
                     specs[spec[@"Key"]] = spec;
                     check([group[@"FooterText"] hasPrefix:footers[spec[@"Key"]]], [spec[@"Key"] stringByAppendingString:@" 的组说明对应当前选项"]);
                     if ([spec[@"Key"] isEqual:keys[0]]) {

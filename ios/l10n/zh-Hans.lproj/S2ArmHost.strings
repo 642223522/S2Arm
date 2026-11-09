@@ -438,3 +438,12 @@
 "textinput.min" = "至少 %ld 个字";
 "textinput.ok" = "确定";
 "textinput.range" = "%ld–%ld 个字";
+"play.group" = "屏幕布局";
+"play.footer" = "所有游戏共用，立即调整布局。自动分屏仅在设备半折叠时开启；无法读取折叠状态时保持关闭。自动方向在分屏时使用竖屏，否则使用横屏。\n部分游戏需重新启动后才能按新区域应用宽屏比例。";
+"play.split" = "上下分屏";
+"play.orientation" = "屏幕方向";
+"play.auto" = "自动";
+"play.on" = "开启";
+"play.off" = "关闭";
+"play.landscape" = "横屏";
+"play.portrait" = "竖屏";

@@ -30,6 +30,7 @@
 // 弱链接[lab]：s2a_hud_brief_show（ios/hud.m 简版性能浮层；输入工作台不链 hud.m / 原生核，取不到就不显示）
 void s2a_hud_brief_show(UIView *root, BOOL on) __attribute__((weak_import));
 #import "app_settings.h"   // 齿轮菜单：存档管理 / 更多设置（s2a_settings_runtime / s2a_settings_present）
+#import "play_layout.h"
 #include "s2a_docs.h"   // iOS 进程级容器 Documents（s2a_container_docs）
 #include "s2a_pad.h"
 #include "s2a_direct_prompt.h"   // 触屏提示的文案（与 launchers/shared/experience.v1.json prompts 逐字一致）
@@ -47,6 +48,8 @@ int s2a_widen_game(void) __attribute__((weak_import));
 void s2a_game_canvas(int *w, int *h) __attribute__((weak_import));   // 同上（runtime/src/widen.c，审计 P1-92 触点画布）
 int s2a_screen_w_after_load(void) __attribute__((weak_import));
 double s2a_direct_out_aspect(void) __attribute__((weak_import));
+// 弱链接[lab,touchtest]：s2a_direct_out_rect（直连层实际摆放矩形；无游戏的工作台回退到区域计算）
+CGRect s2a_direct_out_rect(void) __attribute__((weak_import));
 
 // ---- 录手柄（10-21 维护者 拍板：录 维护者 实机玩的虚拟手柄按键，正式局 MARK 后回放）----
 // 人玩时缺省就录：按键 / 摇杆状态每变一次写一行「上屏帧号 \t 按键位 \t 左 x \t 左 y \t 右 x \t 右 y \t 录制起毫秒」到 Documents/padrec/<款>_<时刻>.tsv；
@@ -182,6 +185,10 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     S2AVPadHoldLockState _holdLock; NSTimer *_holdLockTimer; double _holdLockDue;   // ZL / ZR 按住锁定
     CGFloat _stickTravel[2];
     S2AVPadLayoutStore *_layoutStore;
+    NSURL *_layoutDirectory, *_settingsDirectory;
+    UIView *_controls;
+    BOOL _split;
+    CGRect _division;
     S2AVPadLayout *_layout;
     CGRect _safeRect, _lastBounds;
     CGFloat _radius[2]; CGRect _activation[2];
@@ -258,13 +265,16 @@ static NSString *button_label(NSString *identifier) {
     _held = [NSMapTable strongToStrongObjectsMapTable];
     _slot = [NSMapTable strongToStrongObjectsMapTable];
     _inputEnabled = YES;
+    _division=CGRectNull; _split=s2a_ios_play_layout().split;
+    _controls=[[UIView alloc] initWithFrame:self.bounds]; _controls.userInteractionEnabled=NO; [self addSubview:_controls];
     g_hud_on = [NSUserDefaults.standardUserDefaults boolForKey:kHudKey];
     NSURL *docs = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     // 布局与选择按游戏存（11-07 维护者：按游戏单独记住、不套用到其他游戏）：多款容器壳选游戏后 S2A_DOCS = Documents/games/<游戏号>（launchctx.c），
     //   单款壳 = Documents，与原先同一目录；闲置透明度 / 触感 / 摇杆手感仍按 App 存（全部游戏共用）
     const char *gd = getenv("S2A_DOCS"); NSURL *gameDocs = gd && *gd ? [NSURL fileURLWithPath:@(gd) isDirectory:YES] : docs;
-    _layoutStore = [[S2AVPadLayoutStore alloc] initWithDirectory:[gameDocs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]
-                                                settingsDirectory:[docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]];
+    _layoutDirectory=[gameDocs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES];
+    _settingsDirectory=[docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES];
+    _layoutStore = [[S2AVPadLayoutStore alloc] initWithDirectory:_layoutDirectory settingsDirectory:_settingsDirectory split:_split];
     [self reloadLayout];
     _gear = [UIButton buttonWithType:UIButtonTypeSystem]; _gear.accessibilityIdentifier = @"vpad.settings"; _gear.accessibilityLabel = S2AL(@"common.settings");
     [_gear setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal]; _gear.tintColor = UIColor.whiteColor;
@@ -280,10 +290,11 @@ static NSString *button_label(NSString *identifier) {
         _knob[i] = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 52, 52)]; _knob[i].layer.cornerRadius = 26;
         _knob[i].backgroundColor = [UIColor colorWithRed:210 / 255.0 green:214 / 255.0 blue:220 / 255.0 alpha:0.59];
         _ring[i].alpha = _knob[i].alpha = vp_opacity();
-        _ring[i].hidden = _knob[i].hidden = YES; _ring[i].userInteractionEnabled = _knob[i].userInteractionEnabled = NO; [self addSubview:_ring[i]]; [self addSubview:_knob[i]];
+        _ring[i].hidden = _knob[i].hidden = YES; _ring[i].userInteractionEnabled = _knob[i].userInteractionEnabled = NO; [_controls addSubview:_ring[i]]; [_controls addSubview:_knob[i]];
     }
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lostFocus:) name:UIApplicationWillResignActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lostFocus:) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(playLayoutChanged:) name:S2APlayLayoutChanged object:nil];
     [self wake];
     return self;
 }
@@ -437,6 +448,7 @@ typedef BOOL (^VPFlag)(void);
     _hapticState = (S2AVPadHapticState){0}; memset(_stickTravel, 0, sizeof _stickTravel); _impactFeedback = nil;
     _holdLock = (S2AVPadHoldLockState){0}; [_holdLockTimer invalidate]; _holdLockTimer = nil; _holdLockDue = 0;   // 失焦 / 接手柄 / 开设置都放开：不留看不见的按住
     memset(_ax, 0, sizeof _ax); memset(_lastUp, 0, sizeof _lastUp);
+    memset(_ringDrag, 0, sizeof _ringDrag);
     for (int i = 0; i < 2; i++) { _stick[i] = nil; [self restStick:i]; }
     [_slot removeAllObjects];
     @synchronized(self) {
@@ -459,10 +471,14 @@ typedef BOOL (^VPFlag)(void);
 }
 - (void)stickModeChanged { [self clearTouches]; [self setNeedsLayout]; }
 - (void)lostFocus:(NSNotification *)notification { [self clearTouches]; }
+- (void)playLayoutChanged:(NSNotification *)notification { [self clearTouches]; [self setNeedsLayout]; }
 - (CGRect)layoutSafeRect {
+    S2APlayLayout l=s2a_ios_play_layout();
+    if (!CGRectIsEmpty(l.game)) return S2APlayControlsRect(l,self.bounds);
     UIEdgeInsets insets = self.safeAreaInsets;
     insets.left = MAX(insets.left, 16); insets.right = MAX(insets.right, 16); insets.bottom = MAX(insets.bottom, 8);
     CGRect rect = UIEdgeInsetsInsetRect(self.bounds, insets);
+    if (CGRectIsNull(rect)) return CGRectZero;
     return CGRectMake(rect.origin.x, rect.origin.y, MAX(1, rect.size.width), MAX(1, rect.size.height));
 }
 - (S2AVPadKeyStyle)styleOf:(UILabel *)key { return [_layoutStore keyStyle:key.accessibilityLabel]; }
@@ -483,16 +499,17 @@ typedef BOOL (^VPFlag)(void);
         key.layer.masksToBounds = NO; vp_shadow(key.layer);   // 投影要画在框外：不裁边
         if (kHoldLockKeys >> key.tag & 1) { vp_add_lock_badge(key); vp_lock(key, _layoutStore.holdLockEnabled, NO); }
         key.hidden = [_layoutStore keyStyle:identifier].hidden;
-        [self addSubview:key]; [keys addObject:key];
+        [_controls addSubview:key]; [keys addObject:key];
     }
     _keys = keys;
 }
 // 内置的按键布局按当前安全区现算：选了 2D 就是 2D（#268），其余（default / 选中的文件读不出）是默认布局
 - (S2AVPadLayout *)builtinLayout:(CGRect)safe {
-    return [_layoutStore.selectedIdentifier isEqualToString:S2AVPadLayout2DIdentifier] ? [S2AVPadLayout twoDForSafeRect:safe] : [S2AVPadLayout defaultForSafeRect:safe];
+    return [_layoutStore.selectedIdentifier isEqualToString:S2AVPadLayout2DIdentifier] ? [S2AVPadLayout twoDForSafeRect:safe] : [S2AVPadLayout defaultForSafeRect:safe split:_split];
 }
 - (void)reloadLayout {
     [self clearTouches];
+    _layoutStore=[[S2AVPadLayoutStore alloc] initWithDirectory:_layoutDirectory settingsDirectory:_settingsDirectory split:_split];
     NSError *error; S2AVPadLayout *selected = [_layoutStore selectedLayout:&error];
     _touchOnly = _autoTouch || [_layoutStore.selectedIdentifier isEqualToString:S2AVPadLayoutTouchIdentifier];   // 自动切只覆盖本次运行
     _usingDefault = !selected && !_touchOnly;
@@ -810,23 +827,45 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 }
 - (UIViewController *)layoutController {
     __weak S2AVPadView *weakSelf = self;
+    S2AVPadLayoutStore *store=_layoutStore; CGRect safe=[self layoutSafeRect]; BOOL split=_split;
     S2AVPadSettings *settings = [[S2AVPadSettings alloc] initWithStore:_layoutStore current:_layout changed:^{
         [weakSelf reloadLayout];
     } closed:nil];
     settings.embeddedInSettings = YES;
     settings.editRequested = ^{ [weakSelf beginEditing]; };
     settings.stickModeChanged = ^{ [weakSelf stickModeChanged]; };
-    settings.currentLayout = ^S2AVPadLayout *{ S2AVPadView *view = weakSelf; return view ? view->_layout : nil; };
+    settings.currentLayout = ^S2AVPadLayout *{
+        S2AVPadView *view=weakSelf;
+        if (view && view->_split==split) return view->_layout;
+        return [store selectedLayout:nil] ?: ([store.selectedIdentifier isEqualToString:S2AVPadLayout2DIdentifier] ? [S2AVPadLayout twoDForSafeRect:safe] : [S2AVPadLayout defaultForSafeRect:safe split:split]);
+    };
     return settings;
 }
 - (void)layoutSubviews {
-    [super layoutSubviews]; CGRect safe = [self layoutSafeRect];
+    [super layoutSubviews];
+    S2APlayLayout l=s2a_ios_play_layout();
+    BOOL modeChanged=l.split!=_split;
+    if (modeChanged) {
+        if (_editing) [self endEditing];
+        _split=l.split;
+        _layoutStore=[[S2AVPadLayoutStore alloc] initWithDirectory:_layoutDirectory settingsDirectory:_settingsDirectory split:_split];
+        [self reloadLayout];
+    }
+    CGRect safe = [self layoutSafeRect];
+    _controls.frame=_split?safe:self.bounds; _controls.bounds=_controls.frame; _controls.clipsToBounds=_split;
+    if (_split) {
+        CGRect gap=CGRectIntersection(safe,l.division);
+        if (!CGRectIsNull(gap) && !CGRectIsEmpty(gap)) {
+            UIBezierPath *path=[UIBezierPath bezierPathWithRect:safe]; [path appendPath:[UIBezierPath bezierPathWithRect:gap]];
+            CAShapeLayer *mask=[CAShapeLayer layer]; mask.path=path.CGPath; mask.fillRule=kCAFillRuleEvenOdd; _controls.layer.mask=mask;
+        } else _controls.layer.mask=nil;
+    } else _controls.layer.mask=nil;
     {   // 设置入口放安全区左上角；折叠屏内屏圆角比安全区报的大、又有开孔，四周再让 20 点（短边 ≥ 500 点才算大屏）
         CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat inset = MIN(self.bounds.size.width, self.bounds.size.height) >= 500 ? 20 : 4;
         _gear.frame = CGRectMake(CGRectGetMinX(g) + inset, CGRectGetMinY(g) + inset, 36, 36); _gear.hidden = _editing; [self bringSubviewToFront:_gear]; }
-    if (!CGRectEqualToRect(_safeRect, safe) || !CGRectEqualToRect(_lastBounds, self.bounds)) {
+    if (!CGRectEqualToRect(_safeRect, safe) || !CGRectEqualToRect(_lastBounds, self.bounds) || !CGRectEqualToRect(_division,l.division)) {
         if (_editing) [self endEditing];   // 转屏 / 安全区变了：拖到一半的位置按旧几何算，放弃
-        [self clearTouches]; _safeRect = safe; _lastBounds = self.bounds;
+        [self clearTouches]; _safeRect = safe; _lastBounds = self.bounds; _division=l.division;
         if (_usingDefault) { _layout = [self builtinLayout:safe]; [self rebuildKeys]; }
         [self wake];
     }
@@ -835,8 +874,8 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     CGFloat unit = MIN(safe.size.width, safe.size.height);
     for (NSUInteger i = 0; i < _keys.count; i++) {
         NSDictionary *button = _layout.buttons[i]; UILabel *key = _keys[i];
-        CGRect f = [_layout frameForButton:button safeRect:safe]; CGFloat s = [self styleOf:key].scale * _layoutStore.globalScale;
-        key.frame = CGRectInset(f, f.size.width * (1 - s) / 2, f.size.height * (1 - s) / 2);
+        CGFloat scale = [self styleOf:key].scale * _layoutStore.globalScale;
+        key.frame = [_layout frameForButton:button safeRect:safe avoiding:_split?_division:CGRectNull scale:scale];
         key.layer.cornerRadius = MIN([button[@"cornerRadius"] doubleValue] * unit, MIN(key.bounds.size.width, key.bounds.size.height) / 2);
     }
     // 截图测试开关（按下态不经 XCTest 也能在真机截到）：S2A_VPAD_TEST_PRESSED=A,X,ZR,UP… 把这些键画成按下态，下一次真触屏即恢复
@@ -857,7 +896,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 // 与 layoutSubviews 摆键同一份几何（frameForButton + _safeRect），取键逻辑在 vpad_layout.m buttonAt:（单测 t_vpad_stick_press）
 - (int)keyAt:(CGPoint)p {
     if (!_keys.count) return -1;
-    NSString *identifier = [_layout buttonAt:p safeRect:_safeRect slop:kHit scales:_scales];
+    NSString *identifier = [_layout buttonAt:p safeRect:_safeRect slop:kHit avoiding:_split?_division:CGRectNull nearest:_split scales:_scales];
     return identifier ? (int)[button_ids() indexOfObject:identifier] : -1;
 }
 // 手指不动时没有触屏事件：到期时间变了才重排定时器，推摇杆的连续事件不反复建
@@ -919,7 +958,8 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 //   2556×1179 出图 1560×720：上屏 2554 宽两侧各 1 px，点域算成整宽）——差 2 px，换设备不必赌这一下。
 // 顺手记下这一帧的真实出图尺寸（g_src_w/g_src_h）：触点坐标空间就是它，见 switchPoint。
 - (CGRect)gameRect {
-    CGRect b = self.bounds;
+    if (s2a_direct_out_rect) { CGRect r=s2a_direct_out_rect(); if (!CGRectIsEmpty(r)) return r; }
+    CGRect b = s2a_ios_game_area(); if (CGRectIsEmpty(b)) b=self.bounds;
     if (b.size.width <= 0 || b.size.height <= 0) return CGRectZero;
     int32_t iw = 0, ih = 0; float ax = 0, ay = 0; int32_t st = 0;
     BOOL have = nxgal_present_frame && nxgal_present_frame(&iw, &ih, &ax, &ay, &st);
@@ -1068,6 +1108,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     for (UITouch *t in ts) {
         CGPoint p = [t locationInView:self];
         if (_touchOnly) { [self beginSlot:t at:p]; continue; }   // 纯触屏：没有按键也没有摇杆，这一下直接进游戏
+        if (_split && (!CGRectContainsPoint(_safeRect,p) || CGRectContainsPoint(_division,p))) continue;
         int dirs = [_layout dpadDirectionsAt:p safeRect:_safeRect];   // 2D：十字键圆区内按方向记（含斜角），优先于单个方向键
         if (dirs >= 0) { [_held setObject:@(kDpadHeld + dirs) forKey:t]; continue; }
         int k = [self keyAt:p];

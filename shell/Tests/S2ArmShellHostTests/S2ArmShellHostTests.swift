@@ -224,6 +224,13 @@ nonisolated(unsafe) private var lastPlayed = ""
     var s = S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false))
     #expect(row(s, "fps60")?.value == "on" && row(s, "widenForce")?.value == "off" && row(s, "vpadOpacity")?.value == "100")
     #expect(row(s, "vpadHoldLock")?.value == "on")
+    #expect(row(s, "splitScreen")?.value == "auto" && row(s, "screenOrientation")?.value == "auto")
+    S2ArmGameSettings.apply(id: "G1", setting: "splitScreen", value: "on", stores: stores)
+    S2ArmGameSettings.apply(id: "G1", setting: "screenOrientation", value: "portrait", stores: stores)
+    let sharedScreen = S2ArmGameSettings.sections(for: "G2", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(row(sharedScreen, "splitScreen")?.value == "on" && row(sharedScreen, "screenOrientation")?.value == "portrait")
+    S2ArmGameSettings.apply(id: "G1", setting: "splitScreen", value: "invalid", stores: stores)
+    #expect(app.string(forKey: "S2ASplitScreen") == "on")
     #expect(row(S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false, holdLock: false)), "vpadHoldLock")?.value == "off")
     if case .choice(let o) = row(s, "vpadLayout")?.kind { #expect(o.map(\.id) == ["default", "edit"]) } else { Issue.record("布局行应是多选") }
     // 改：G1 关 60 帧、开宽屏强制、透明度 40 → G1 两项变了、G2 不变；透明度全局 0.4
