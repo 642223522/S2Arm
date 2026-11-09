@@ -110,6 +110,7 @@ static int enabled(const char *mod, uint32_t off, const char *dir) {
 int s2a_ios_screen_w(void);   // app.m：1080 × 横屏宽 ÷ 高（取偶）
 int s2a_ios_screen_h(void);   // app.m：1920 × 横屏高 ÷ 宽（取偶）；屏幕不比 16:9 窄时 1080
 int s2a_ios_screen_known(void);   // app.m：窗口场景已连上、比例取自实际所在的屏
+// 弱链接[host]：s2a_ios_split_active（ios/play_layout.m；旧宿主未提供时仍按普通整屏模式）
 int s2a_ios_split_active(void) __attribute__((weak_import));   // play_layout.m；旧宿主无入口时为普通整屏模式
 static int g_split_at_load;
 static int split_active(void) { return s2a_ios_split_active && s2a_ios_split_active(); }
