@@ -664,7 +664,7 @@ int s2a_vk_adapter_attach_window_budget(ANativeWindow *window, uint64_t generati
     return rc;
 }
 
-// B3：debug.s2a.buffer_geometry=1 时交换链 extent=游戏输出尺寸；Java 读它把 SurfaceView
+// B3：debug.s2a.buffer_geometry=1 时交换链 extent=渲染目标尺寸；Java 读它把 SurfaceView
 // 的 frame 布成同比例居中（合成器拉伸保持宽高比）。未开/无窗口/交换链未就绪时返回 0。
 int s2a_vk_adapter_buffer_geometry(uint32_t *w, uint32_t *h) {
     pthread_mutex_lock(&g_mu);

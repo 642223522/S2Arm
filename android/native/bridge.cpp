@@ -144,7 +144,7 @@ Java_org_s2arm_android_NativeBridge_gamePresentCount(JNIEnv *, jclass) {
 #endif
 }
 
-// B3：直连交换链按游戏输出尺寸出图时的缓冲尺寸；只在游戏运行时（mtl_vk_adapter）里存在。
+// B3：直连交换链按渲染目标尺寸出图时的缓冲尺寸；只在游戏运行时（mtl_vk_adapter）里存在。
 extern "C" int s2a_vk_adapter_buffer_geometry(uint32_t *, uint32_t *) __attribute__((weak));
 
 extern "C" JNIEXPORT jint JNICALL

@@ -29,13 +29,15 @@ static int32_t g_window_w = 100, g_window_h = 50;
 int32_t ANativeWindow_getWidth(ANativeWindow *window) { (void)window; return g_window_w; }
 int32_t ANativeWindow_getHeight(ANativeWindow *window) { (void)window; return g_window_h; }
 // B3：记录每次缓冲尺寸请求；真实语义——之后 getWidth/getHeight 报告缓冲尺寸。
-// g_geo_apply=0 模拟平台不兑现：调用返回 0 但缓冲尺寸不变。
+// g_geo_apply=0 模拟平台不兑现：调用返回 0 但缓冲尺寸不变；g_geo_rc 非零模拟调用直接失败。
 static int g_geo_calls;
 static int g_geo_apply = 1;
+static int g_geo_rc;
 static int32_t g_geo_w, g_geo_h, g_geo_fmt;
 int32_t ANativeWindow_setBuffersGeometry(ANativeWindow *window, int32_t w, int32_t h, int32_t format) {
     (void)window;
     g_geo_calls++; g_geo_w = w; g_geo_h = h; g_geo_fmt = format;
+    if (g_geo_rc) return g_geo_rc;
     if (g_geo_apply) { g_window_w = w; g_window_h = h; }
     return 0;
 }
@@ -120,7 +122,7 @@ static void fake_reset(void) {
     g_revoke_on_present = 0;
     memset(&g_last_blit, 0, sizeof g_last_blit);
     g_window_w = 100; g_window_h = 50;
-    g_geo_calls = 0; g_geo_apply = 1; g_geo_w = g_geo_h = g_geo_fmt = 0;
+    g_geo_calls = 0; g_geo_apply = 1; g_geo_rc = 0; g_geo_w = g_geo_h = g_geo_fmt = 0;
     g_prop_count = 0;
 }
 
@@ -672,8 +674,9 @@ int main(void) {
         CHECK(g_destroyed_swapchains == 0, "swapchain kept when retirement is unproven");
     }
 
-    // B3：debug.s2a.buffer_geometry=1 → 首个 present 按游戏输出尺寸改缓冲并退休旧交换链重建；
-    //     之后 blit 退化成 1:1 拷贝；触摸按 view frame 像素发布整帧；同尺寸不重建；crop 变再重建。
+    // B3（#203 复审后语义）：缓冲按渲染目标尺寸出图，crop 只走等比 blit——crop 逐帧变不再
+    //     销毁重建交换链（动态分辨率安全）；渲染目标尺寸变化也要连续两帧相同才付重建的代价
+    //     （防抖），逐帧换尺寸的游戏永远稳不下来、留在旧缓冲上等比 blit。
     s2a_android_game_touch_revoke();
     fake_reset();
     fake_set_property("debug.s2a.buffer_geometry", "1");
@@ -683,30 +686,73 @@ int main(void) {
         g_sc.touch_generation = 60; s2a_android_game_touch_offer(60);
         g_present_fence_signal_on_present = 1;
         int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == 0 && g_destroyed_swapchains == 0,
+              "first sight of a new target size does not rebuild (debounce)");
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
         CHECK(rc == 0, "geometry present rc=%d (%s)", rc, why);
         CHECK(g_geo_calls == 1 && g_geo_w == 160 && g_geo_h == 90,
-              "first present resizes the buffer to the game output 160x90");
+              "stable target resizes the buffer to the render target 160x90");
         CHECK(g_destroyed_swapchains == 1 && g_destroyed_surfaces == 1,
               "previous swapchain retired for the resize");
-        CHECK(g_sc.extent.width == 160 && g_sc.extent.height == 90, "new extent = game output size");
+        CHECK(g_sc.extent.width == 160 && g_sc.extent.height == 90, "new extent = render target size");
         CHECK(g_sc.touch_generation == 60, "WSI generation kept across the rebuild");
         CHECK(g_last_blit.dstOffsets[0].x == 0 && g_last_blit.dstOffsets[0].y == 0 &&
               g_last_blit.dstOffsets[1].x == 160 && g_last_blit.dstOffsets[1].y == 90,
-              "blit degenerates to a 1:1 copy filling the whole game-size buffer");
+              "full-target present degenerates to a 1:1 copy filling the buffer");
         int64_t vp[8] = {0};
         CHECK(s2a_android_game_touch_viewport_read(vp) == 0 && vp[0] == 60 &&
               vp[2] == 0 && vp[3] == 0 && vp[4] == 100 && vp[5] == 50 && vp[6] == 100 && vp[7] == 50,
               "touch viewport publishes the whole view in frame pixels");
+        // crop 变化不重建：crop 是渲染目标的子矩形，等比适配进目标尺寸缓冲。
         int before_destroy = g_destroyed_swapchains, before_geo = g_geo_calls;
-        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
-        CHECK(rc == 0 && g_destroyed_swapchains == before_destroy && g_geo_calls == before_geo,
-              "same output size does not rebuild");
-        int crop4[4] = {0, 0, 80, 45};
+        int crop4[4] = {0, 0, 160, 45};
         rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, crop4, why, sizeof why);
-        CHECK(rc == 0 && g_geo_calls == before_geo + 1 && g_geo_w == 80 && g_geo_h == 45,
-              "a different crop rebuilds the buffer to the new output size");
-        CHECK(g_sc.extent.width == 80 && g_sc.extent.height == 45, "extent follows the crop");
+        CHECK(rc == 0 && g_geo_calls == before_geo && g_destroyed_swapchains == before_destroy,
+              "crop change stays on the blit, no rebuild");
+        CHECK(g_last_blit.srcOffsets[1].x == 160 && g_last_blit.srcOffsets[1].y == 45 &&
+              g_last_blit.dstOffsets[0].x == 0 && g_last_blit.dstOffsets[0].y == 22 &&
+              g_last_blit.dstOffsets[1].x == 160 && g_last_blit.dstOffsets[1].y == 67,
+              "letterboxed crop aspect-fits inside the target-size buffer");
+        // 渲染目标换尺寸同样防抖：逐帧交替 → 永不重建；连续两帧相同 → 才重建。
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 80, 45, NULL, why, sizeof why);
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 80, 45, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == before_geo && g_destroyed_swapchains == before_destroy,
+              "oscillating target sizes never stabilize, never rebuild");
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 80, 45, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == before_geo + 1 && g_geo_w == 80 && g_geo_h == 45 &&
+              g_sc.extent.width == 80 && g_sc.extent.height == 45,
+              "second consecutive stable frame resizes to the new render target");
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 80, 45, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == before_geo + 1,
+              "settled target does not rebuild again");
         CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "geometry fixture cleanly retires");
+    }
+    s2a_android_game_touch_revoke();
+
+    // B3 触摸视口：16:9 内容放进更宽的渲染目标——crop 在目标尺寸缓冲里等比居中，
+    //     发布的画面矩形按 frame/extent 放大回 view 像素，不再是整幅 view。
+    s2a_android_game_touch_revoke();
+    fake_reset();
+    fake_set_property("debug.s2a.buffer_geometry", "1");
+    if (create_swapchain_keep(1) == 0) {
+        g_present_fence_signal_on_present = 1;
+        g_sc.touch_generation = 62; s2a_android_game_touch_offer(62);
+        int wide[4] = {40, 0, 256, 144};
+        int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 344, 144, wide, why, sizeof why);
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 344, 144, wide, why, sizeof why);
+        CHECK(rc == 0 && g_geo_w == 344 && g_geo_h == 144 &&
+              g_sc.extent.width == 344 && g_sc.extent.height == 144,
+              "stable wide render target resizes the buffer");
+        CHECK(g_last_blit.srcOffsets[0].x == 40 && g_last_blit.srcOffsets[1].x == 296 &&
+              g_last_blit.dstOffsets[0].x == 44 && g_last_blit.dstOffsets[0].y == 0 &&
+              g_last_blit.dstOffsets[1].x == 300 && g_last_blit.dstOffsets[1].y == 144,
+              "16:9 crop centers inside the 344x144 buffer");
+        int64_t vp[8] = {0};
+        CHECK(s2a_android_game_touch_viewport_read(vp) == 0 && vp[0] == 62 &&
+              vp[2] == 12 && vp[3] == 0 && vp[4] == 74 && vp[5] == 50 && vp[6] == 100 && vp[7] == 50,
+              "touch viewport scales the blit dst rect into frame pixels");
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "wide-target fixture cleanly retires");
     }
     s2a_android_game_touch_revoke();
 
@@ -718,8 +764,10 @@ int main(void) {
     if (create_swapchain_keep(1) == 0) {
         g_present_fence_signal_on_present = 1;
         g_geo_apply = 0;
-        g_sc.touch_generation = 61; s2a_android_game_touch_offer(61);
+        g_sc.touch_generation = 63; s2a_android_game_touch_offer(63);
         int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == 0, "unhonored: first sight does not call yet (debounce)");
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
         CHECK(rc == 0, "unhonored geometry still presents rc=%d (%s)", rc, why);
         CHECK(g_geo_calls == 1 && g_destroyed_swapchains == 0,
               "unhonored geometry: one request, no swapchain churn");
@@ -733,10 +781,36 @@ int main(void) {
               g_last_blit.dstOffsets[1].x == 94 && g_last_blit.dstOffsets[1].y == 50,
               "unhonored geometry falls back to the aspect-fit blit");
         int64_t vp[8] = {0};
-        CHECK(s2a_android_game_touch_viewport_read(vp) == 0 && vp[0] == 61 &&
+        CHECK(s2a_android_game_touch_viewport_read(vp) == 0 && vp[0] == 63 &&
               vp[2] == 5 && vp[3] == 0 && vp[4] == 89 && vp[5] == 50 && vp[6] == 100 && vp[7] == 50,
               "degraded touch viewport publishes the blit rect in buffer pixels");
         CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "degraded fixture cleanly retires");
+    }
+    s2a_android_game_touch_revoke();
+
+    // B3 降级 2：setBuffersGeometry 直接返回失败 → 记 geometry_failed，本帧照常等比出图，
+    //     不重建、不重试（#203：调用失败不能整帧失败）。
+    s2a_android_game_touch_revoke();
+    fake_reset();
+    fake_set_property("debug.s2a.buffer_geometry", "1");
+    if (create_swapchain_keep(1) == 0) {
+        g_present_fence_signal_on_present = 1;
+        g_geo_rc = -1;
+        int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == 0, "failed geometry: first sight does not call yet");
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == 1 && g_destroyed_swapchains == 0,
+              "setBuffersGeometry failure: frame still presents, no swapchain churn");
+        CHECK(g_sc.geometry_failed, "failed setBuffersGeometry marks geometry_failed");
+        CHECK(g_sc.extent.width == 100 && g_sc.extent.height == 50,
+              "failed geometry keeps the frame-size extent");
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 160, 90, NULL, why, sizeof why);
+        CHECK(rc == 0 && g_geo_calls == 1 && g_destroyed_swapchains == 0,
+              "failed geometry does not retry per frame");
+        CHECK(g_last_blit.dstOffsets[0].x == 5 && g_last_blit.dstOffsets[0].y == 0 &&
+              g_last_blit.dstOffsets[1].x == 94 && g_last_blit.dstOffsets[1].y == 50,
+              "failed geometry falls back to the aspect-fit blit");
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "failed-geometry fixture cleanly retires");
     }
     s2a_android_game_touch_revoke();
 

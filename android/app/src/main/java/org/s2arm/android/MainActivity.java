@@ -72,9 +72,10 @@ public class MainActivity extends Activity
     private final android.os.Handler lifecycleProbe = new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastLifecyclePresent;
     private final Runnable lifecycleSample = this::sampleLifecyclePresent;
-    // B3（debug.s2a.buffer_geometry）：交换链缓冲按游戏输出尺寸出图时，native 把
-    // 缓冲尺寸报上来；这里按它把 surface/touchPad 的 frame 布成同比例居中矩形，
+    // B3（debug.s2a.buffer_geometry）：交换链缓冲按渲染目标尺寸出图时，native 把
+    // 缓冲尺寸报上来；这里按它把 surface 的 frame 布成同比例居中矩形，
     // 合成器的 SCALE_TO_WINDOW 拉伸才不变形（native_window 没有 SCALE_FIT）。
+    // touchPad 不跟画面矩形：虚拟键要留在两侧黑边上，始终铺满整个窗口。
     private final Runnable geometrySample = this::sampleBufferGeometry;
     private int bufferGeomW, bufferGeomH;
     private android.window.OnBackInvokedCallback gameBackCallback;
@@ -601,7 +602,8 @@ public class MainActivity extends Activity
         }
         lifecycleProbe.postDelayed(lifecycleSample, 100);
     }
-    // B3：500 ms 轮询交换链输出尺寸；未开/未出图时持续按 MATCH_PARENT 收尾，旋转后重排也走这里。
+    // B3：500 ms 轮询交换链缓冲尺寸；未开/未出图时持续按 MATCH_PARENT 收尾，旋转后重排也走这里。
+    // 轮询无条件跑，但只在算出的尺寸真变时才动 LayoutParams——开关关着不触发重布局。
     private void sampleBufferGeometry() {
         if (!resumed || !gameMode || !runtimeLoaded) return;
         int[] dims = new int[2];
@@ -614,13 +616,17 @@ public class MainActivity extends Activity
     }
     private void layoutForBufferGeometry() {
         int w = FrameLayout.LayoutParams.MATCH_PARENT, h = FrameLayout.LayoutParams.MATCH_PARENT;
-        int gravity = android.view.Gravity.CENTER;
         if (bufferGeomW > 0 && bufferGeomH > 0 && root != null && root.getWidth() > 0 && root.getHeight() > 0) {
             int[] fit = BufferGeometry.fit(bufferGeomW, bufferGeomH, root.getWidth(), root.getHeight());
             w = fit[0]; h = fit[1];
         }
-        surface.setLayoutParams(new FrameLayout.LayoutParams(w, h, gravity));
-        if (touchPad != null) touchPad.setLayoutParams(new FrameLayout.LayoutParams(w, h, gravity));
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) surface.getLayoutParams();
+        if (lp == null) {
+            surface.setLayoutParams(new FrameLayout.LayoutParams(w, h, android.view.Gravity.CENTER));
+        } else if (lp.width != w || lp.height != h || lp.gravity != android.view.Gravity.CENTER) {
+            lp.width = w; lp.height = h; lp.gravity = android.view.Gravity.CENTER;
+            surface.setLayoutParams(lp);
+        }
     }
     @Override protected void onPause() {
         resumed = false;

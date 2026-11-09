@@ -290,7 +290,7 @@ static int sync_window_locked(struct provider_context *ctx, int64_t attach_budge
 
     int32_t win_w, win_h, attached_w = 0, attached_h = 0;
     if (session && session->swapchain.buf_geometry) {
-        // B3：缓冲已被改成游戏输出尺寸，getWidth/getHeight 只报告缓冲尺寸，窗口像素
+        // B3：缓冲已被改成渲染目标尺寸，getWidth/getHeight 只报告缓冲尺寸，窗口像素
         // 从租约的 surfaceChanged frame 读；还没有 surfaceChanged 时回落 getWidth
         // （几何覆盖没发生前 getWidth 仍是 frame 像素）。对比的是建链时记下的 frame。
         win_w = st.width > 0 ? st.width
@@ -329,7 +329,7 @@ static int sync_window_locked(struct provider_context *ctx, int64_t attach_budge
     }
     if (action == NVK_WINDOW_REBUILD) {
         if (session && session->swapchain.buf_geometry) {
-            // B3：交换链 extent=缓冲尺寸（游戏输出），view frame 变化不碰交换链；
+            // B3：交换链 extent=缓冲尺寸（渲染目标），view frame 变化不碰交换链；
             // 只刷新窗口像素，触摸/日志继续按新 frame 记。
             session->swapchain.frame_width = (uint32_t)st.width;
             session->swapchain.frame_height = (uint32_t)st.height;
