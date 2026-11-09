@@ -936,6 +936,19 @@ def describe(private, task):
                 lastEvent=events[-1] if events else None, canResume=not terminal)
 
 
+def _scan_job_record(path):
+    """A bad journal must not hide healthy jobs or make its own files disposable."""
+    try:
+        if path.is_symlink():
+            return None, "linked_record"
+        record = read(path)
+    except (OSError, ValueError) as error:
+        return None, type(error).__name__
+    if not isinstance(record, dict) or record.get("id") != path.stem:
+        return None, "invalid_record_identity"
+    return record, None
+
+
 # 任务记录保留（游戏库结构 P3 收紧；原规则「结束超过 14 天的清掉、最新 50 条总留着」让一台维护者机器 14 天攒到 45207 条——前端每次刷新都起
 # catalog / 空间统计等短作业，一天上千条，启动器启动时整目录读一遍、诊断包整目录打包都被拖慢）：
 #   - 总量上限 KEEP_TOTAL 条 + 时间上限 keep_days 天，取更严的：超出任一条就清。2000 条约是正常玩家半年的量、高频刷新下也够看最近一两天，
@@ -955,7 +968,7 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
     directory is left alone. `jobs` names the directory directly (layout.adopt_private_logs prunes the private fallback before moving it)."""
     jobs = Path(jobs) if jobs is not None else jobs_dir(private, library)
     if not jobs.is_dir():
-        return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
+        return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     by_task = {}
     for path in jobs.iterdir():
         if path.is_symlink() or not path.is_file():
@@ -969,16 +982,16 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
         by_task.setdefault(task, []).append(path)
     cutoff = time.time() - float(keep_days) * 86400 if keep_days else None
 
-    def record(task):
-        try:
-            value = read(jobs / (task + ".json")) or {}
-        except (OSError, ValueError):
-            value = {}
-        return value if isinstance(value, dict) else {}
+    records, invalid = {}, []
+    for task in by_task:
+        record, reason = _scan_job_record(jobs / (task + ".json"))
+        if reason:
+            invalid.append(dict(taskId=task, reason=reason))
+        else:
+            records[task] = record
 
-    records = {t: record(t) for t in by_task}
     finished = {t for t, r in records.items() if r.get("state") in TERMINAL_STATES or bool(r.get("ended"))}
-    running = [t for t in by_task if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
+    running = [t for t in records if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
     newest = {t: max(p.stat().st_mtime for p in by_task[t]) for t in finished}
     finished_tasks = sorted(finished, key=lambda t: newest[t], reverse=True)
     floor, seen = set(), {}
@@ -1002,14 +1015,15 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
                 p.unlink(missing_ok=True)
         removed.append(task)
         freed += size
-    return dict(removed=removed, kept=kept + len(running), skippedRunning=len(running), bytes=freed)
+    return dict(removed=removed, kept=kept + len(running) + len(invalid), skippedRunning=len(running),
+                bytes=freed, invalidRecords=invalid)
 
 
 def status(private, library=None):
     """One look at the whole job store: how many are running vs finished, how big it is, and which task last moved.
     The store is every directory a record can be read from (_job_dirs: the current one plus the private fallbacks not yet adopted)."""
     dirs = [d for d in dict.fromkeys([jobs_dir(private, library), *_job_dirs(private)]) if d.is_dir()]
-    result = dict(running=0, finished=0, interrupted=0, bytes=0, newest=None, oldest=None)
+    result = dict(running=0, finished=0, interrupted=0, bytes=0, newest=None, oldest=None, invalidRecords=[])
     newest = oldest = None
     for path in (p for d in dirs for p in d.iterdir()):
         if path.is_symlink() or not path.is_file():
@@ -1023,8 +1037,9 @@ def status(private, library=None):
     for record_path in (p for d in dirs for p in d.glob("*.json")):
         if record_path.name.endswith(".request.json") or record_path.is_symlink():
             continue
-        record = read(record_path) or {}
-        if not isinstance(record, dict) or record.get("id") != record_path.stem:
+        record, reason = _scan_job_record(record_path)
+        if reason:
+            result["invalidRecords"].append(dict(taskId=record_path.stem, reason=reason))
             continue
         if record.get("state") in TERMINAL_STATES or record.get("ended"):
             result["finished"] += 1

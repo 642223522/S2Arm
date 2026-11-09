@@ -354,6 +354,46 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertTrue((jobs / "linked.json").is_symlink())
         self.assertTrue(outside.is_file())
 
+    def test_status_reports_bad_journals_and_still_counts_healthy_jobs(self):
+        self.finish_task("healthy")
+        jobs = self.private / "jobs"
+        broken = {"truncated": b"{", "encoding": b"\xff", "array": b"[]", "null": b"null",
+                  "foreign": b'{"id":"another-task","state":"completed"}'}
+        for name, content in broken.items():
+            (jobs / (name + ".json")).write_bytes(content)
+        result = self.cli("status", "--private-root", self.private)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["finished"], 1)
+        self.assertEqual({row["taskId"] for row in report["invalidRecords"]}, set(broken))
+        self.assertTrue(all(row["reason"] for row in report["invalidRecords"]))
+
+    def test_prune_preserves_bad_journals_and_their_companions(self):
+        self.finish_task("healthy", age=30 * 86400)
+        broken = {"truncated": b"{", "encoding": b"\xff", "array": b"[]", "null": b"null",
+                  "foreign": b'{"id":"another-task","state":"completed"}'}
+        snapshots = {}
+        for name, content in broken.items():
+            path = self.finish_task(name, age=30 * 86400)
+            path.write_bytes(content)
+            for file in path.parent.glob(name + ".*"):
+                snapshots[file] = file.read_bytes()
+        result = self.cli("prune", "--private-root", self.private, "--keep-count", 0, "--keep-days", 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["removed"], ["healthy"])
+        self.assertEqual(report["kept"], len(broken))
+        self.assertEqual({row["taskId"] for row in report["invalidRecords"]}, set(broken))
+        for path, content in snapshots.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_generic_json_read_still_rejects_corruption(self):
+        from core import read
+        path = self.root / "essential.json"
+        path.write_text("{")
+        with self.assertRaises(json.JSONDecodeError):
+            read(path, {})
+
     # ---- 记录写不进磁盘时不能假装成功 ----
     def stub_request(self, task=None):
         body = dict(schema=1, taskId=task or self.task, operation="stub", engineDir=str(ROOT),
