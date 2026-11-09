@@ -799,7 +799,7 @@ def disk_bytes(roots, device, skip_names=(), skip_under=()):
     """这些目录在 device 卷上实际分配的字节：按 (卷, inode) 去重（硬链接只算一次；多个根互相包含也只算一次），
     不跟软链（原件软链、@现行 指向）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
     APFS 克隆（#303）：同一克隆族（_CloneInfo）的共享块只算一次——每份记独占字节，族的共享部分取最大一份加一次；
-    取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账（sizes.py：解包还在时 romfs 克隆归 cache）"""
+    取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账（sizes.py：解包还在时游戏资源目录的克隆归 cache）"""
     seen, total, stack = set(), 0, [os.fspath(r) for r in roots]
     shared = {}   # 克隆族号 → 族里共享块字节（取各份最大）
     while stack:
