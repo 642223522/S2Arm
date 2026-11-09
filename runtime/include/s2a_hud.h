@@ -12,6 +12,9 @@ int s2a_hud_on(void);
 void s2a_hud_frame(void);                                              // 每上屏一帧（ap_host.c s2a_frame_presented）
 void s2a_hud_audio(int session, int64_t gap_ms_total, int64_t skipped);   // 声音诊断 10 秒汇报（S2AOutputDiag.cs）
 int s2a_hud_text(char *out, size_t n, const s2a_hud_host *h);
+// 简版性能浮层（齿轮菜单「性能浮层」）：s2a_hud_brief_set 开关上屏计时（ap_host.c），s2a_hud_brief 出一行「NN 帧 · X.X GB」
+void s2a_hud_brief_set(int on);
+int s2a_hud_brief(char *out, size_t n);
 #ifdef __cplusplus
 }
 #endif

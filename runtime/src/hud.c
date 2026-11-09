@@ -205,6 +205,20 @@ static void line_mem(char *o, size_t n) {
     snprintf(o, n, "内存 %s / 上限 %s", a, b);
 }
 
+// 简版一行：近 1 秒上屏帧数 + 本进程物理内存占用（与开发浮层同源：上屏时间戳环、phys_footprint）
+int s2a_hud_brief(char *out, size_t n) {
+    uint64_t end = atomic_load_explicit(&g_fn, memory_order_acquire), now = mono_ns(), f1 = 0;
+    for (uint64_t i = end; i > 0 && end - i < HR - 1; i--) {
+        uint64_t t = atomic_load_explicit(&g_ft[(i - 1) % HR], memory_order_relaxed);
+        if (!t || now - t > 1000000000ull) break;
+        f1++;
+    }
+    task_vm_info_data_t vi; mach_msg_type_number_t c = TASK_VM_INFO_COUNT;
+    double gb = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) == KERN_SUCCESS ? vi.phys_footprint / 1073741824.0 : -1;
+    char m[24] = "内存读取失败"; if (gb >= 0) snprintf(m, sizeof m, "%.1f GB", gb);
+    return snprintf(out, n, "%llu 帧 · %s", (unsigned long long)f1, m);
+}
+
 int s2a_hud_text(char *out, size_t n, const s2a_hud_host *h) {
     char l[8][512];
     int metal = h && h->metal_hud_requested;
