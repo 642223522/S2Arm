@@ -66,11 +66,14 @@ def mixed(p):   # Windows 原生 Python 与 Git Bash 都认的写法（R:/a/b）
     return str(p).replace('\\', '/')
 
 
-def metal_exe():
-    """Windows Metal：显式目录优先，再查 PATH，最后用官方安装目录；显式配置无效时不另选一份。"""
-    configured = os.environ.get('S2A_METAL_BIN')
+def metal_exe(environ=None):
+    """Windows Metal：显式目录优先，再查玩家的 PATH，最后用官方安装目录；显式配置无效时不另选一份。
+    玩家的 PATH：随包 s2arm_env.cmd 把作业 PATH 换成只含随包工具，换之前存进 S2A_USER_PATH（11-09 Windows 出包机实测 #137 合入后：
+    只设 PATH 的自定义安装在启动器里照样用默认目录），有它就查它。作业层（core.env）在父进程按这里选一次，显式写成子进程的 S2A_METAL_BIN"""
+    e = os.environ if environ is None else environ
+    configured = e.get('S2A_METAL_BIN')
     if configured: return Path(configured) / 'metal.exe'
-    found = shutil.which('metal.exe')
+    found = shutil.which('metal.exe', path=e.get('S2A_USER_PATH') or e.get('PATH'))
     # PATH 可以含相对目录；后续编译在仓库目录运行，传给子进程前固定为绝对路径。
     return Path(found).absolute() if found else Path(r'C:\Program Files\Metal Developer Tools\bin') / 'metal.exe'
 

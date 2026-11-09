@@ -426,6 +426,12 @@ class LogCauses(JobCase):
         self.assertEqual(error.code, "permission_denied")
         self.assertEqual(d["suggestion"], RECOVERY["permission_denied"])
 
+    def test_windows_precheck_missing_metal_says_metal_unavailable(self):
+        # 11-09 Windows 出包机：S2A_METAL_BIN 指到不存在的目录，预检打「环境缺件 metal」、退 75。原先落成笼统的 package_failed（出包未完成）
+        error, d = self.mac_refresh(["【红】环境缺件 metal：Metal Developer Tools（D:\\no_such_metal\\bin；S2A_METAL_BIN 可指定，否则查 PATH / 官方安装目录）",
+                                     self.STOP])
+        self.assertEqual(error.code, "metal_unavailable")
+
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
         # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，
         #   报「链号前后不一（c7a4970bffe5 / note:）」→ 刷新停在 direct 阶段。上屏：这版 S2Arm 不认识你的 Xcode；下一步：更新 S2Arm
