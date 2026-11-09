@@ -25,8 +25,9 @@ o=$(r tests compat/tree/src/Ryujinx.Graphics.Gpu/Engine/Threed/StateUpdater.cs);
 o=$(r tests compat/tree/src/Ryujinx.Graphics.Gpu/Shader/S2AShaderFaultCache.cs); ck "C# 负缓存自身改动 → 对应纯逻辑测试" '[[ "$o" == *tests/shader_fault_cache_test.sh* ]]'
 o=$(r tests docs/坑记录.md); ck "普通文档负对照 → 不跑三个C#目标测试" '[[ "$o" != *drain_readflush/build_run.sh* ]] && [[ "$o" != *shader_garbage_guard_test.sh* ]] && [[ "$o" != *shader_fault_cache_test.sh* ]]'
 o=$(r tests graphics/metal/cs/NxTrack.cs.bak); ck "仅文件名近似 → 不选排空测试" '[[ "$o" != *drain_readflush/build_run.sh* ]]'
-EV=$(grep -l '^# 门禁：每次' tests/*_test.sh | tr '\n' ' ')   # 头部声明「每次」的单测（共享位置扫描等）
-ck "改文档 → 只有「每次」单测、钩子不跑、iOS 不跑" '[ "$(r tests docs/a.md)" = "$EV" ] && [ -z "$(r hooks docs/a.md | tr -d " ")" ] && [ "$(r ios docs/a.md)" = "no " ]'
+# 改文档要跑的 = 「每次」单测 + 头部「门禁覆盖」点名 *.md 的单测（如 no_remote_exec_pipe：用户照抄的文档里不许「下载 + 执行」一步走；11-09 它加了 *.md 覆盖后本断言没跟上，main 已知红）
+MD=$( { grep -l '^# 门禁：每次' tests/*_test.sh; grep -lE '^# 门禁覆盖：.*[*][.]md( |$)' tests/*_test.sh; } | sort -u | tr '\n' ' ')
+ck "改文档 → 只有「每次」与点名覆盖 *.md 的单测、钩子不跑、iOS 不跑（实得：$(r tests docs/a.md)）" '[ "$(r tests docs/a.md)" = "$MD" ] && [ -z "$(r hooks docs/a.md | tr -d " ")" ] && [ "$(r ios docs/a.md)" = "no " ]'
 o=$(r hooks graphics/tools/shbake/x.py); ck "改出包期着色器工具 graphics/tools → 跑 gfx 钩子、不跑画幅回放（10-24 门禁整改：回放器不编 graphics/tools；实得：${o}）" '[[ "$o" == *graphics/gate.sh* ]] && [[ "$o" != *tests/visual/gate.sh* ]]'
 o=$(r hooks graphics/metal/x.m); ck "改渲染器 graphics/metal → 画幅回放照跑（实得：${o}）" '[[ "$o" == *tests/visual/gate.sh* ]]'
 o=$(r hooks services/S2A.Services/A.cs); ck "改服务 → 服务钩子，不跑原生钩子（原生门禁 make host 不带 S2A_CS、不链 C#，99 组 C 单测不碰服务层；10-28 梳理）、不跑 gfx 钩子、不跑画幅回放；iOS 跑（实得：${o}）" '[[ "$o" != *runtime/gate.sh* ]] && [[ "$o" == *services/gate.sh* ]] && [[ "$o" != *tests/visual/gate.sh* ]] && [[ "$o" != *graphics/gate.sh* ]] && [ "$(r ios services/S2A.Services/A.cs)" = "yes " ]'
