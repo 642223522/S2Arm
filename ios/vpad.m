@@ -260,7 +260,7 @@ static NSString *button_label(NSString *identifier) {
     _gear = [UIButton buttonWithType:UIButtonTypeSystem]; _gear.accessibilityIdentifier = @"vpad.settings"; _gear.accessibilityLabel = @"设置";
     [_gear setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal]; _gear.tintColor = UIColor.whiteColor;
     _gear.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; _gear.layer.cornerRadius = 18;
-    // 齿轮 = 系统菜单（11-09 ç»´æ¤è 定 B 方案）：点开弹 UIMenu，只盖左侧一条、游戏画面看得见；开关类直接打勾，不进新页面。条目每次打开现算（uncached）
+    // 齿轮 = 系统菜单（11-09 维护者 定 B 方案）：点开弹 UIMenu，只盖左侧一条、游戏画面看得见；开关类直接打勾，不进新页面。条目每次打开现算（uncached）
     _gear.showsMenuAsPrimaryAction = YES; _gear.menu = [self gearMenu];
     [_gear addTarget:self action:@selector(wakeGear) forControlEvents:UIControlEventMenuActionTriggered];
     [self addSubview:_gear]; [self wakeGear];
@@ -315,8 +315,8 @@ void s2a_rumble_preview(void);          // controller.m：按当前档位试震 
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]]; [c presentViewController:a animated:YES completion:nil];
 }
-// 改值类条目点完不收起菜单（11-09 ç»´æ¤è：「每次点击一个不同档级，这个小标签页就缩没了……这种体验很差」）：开关 / 档位 / 灵敏度 / 布局带 KeepsMenuPresented。
-//   菜单开着时直接改选项的 state 界面不会刷新（11-09 第一版这么做，ç»´æ¤è：「所有的勾选功能都失效了」）——要经 UIContextMenuInteraction
+// 改值类条目点完不收起菜单（11-09 维护者：「每次点击一个不同档级，这个小标签页就缩没了……这种体验很差」）：开关 / 档位 / 灵敏度 / 布局带 KeepsMenuPresented。
+//   菜单开着时直接改选项的 state 界面不会刷新（11-09 第一版这么做，维护者：「所有的勾选功能都失效了」）——要经 UIContextMenuInteraction
 //   updateVisibleMenuWithBlock 把正在显示的那层菜单按新状态换一份。所以每个改值条目带固定标识、登记「该不该打勾 / 该不该变灰」的查询（_menuLive），
 //   点下只做两件事：改设置，刷新正在显示的菜单。去别的页面的条目（编辑、手感细调、画面…、存档管理、更多设置）照旧点完收起
 typedef BOOL (^VPFlag)(void);
@@ -497,7 +497,7 @@ typedef BOOL (^VPFlag)(void);
     }]];
 }
 // ---------- 拖动编辑按键位置 ----------
-// ---------- 原地编辑（B 方案，11-09 ç»´æ¤è 过稿）----------
+// ---------- 原地编辑（B 方案，11-09 维护者 过稿）----------
 // 顶上一条半透明工具栏（隐藏面板 / 全部重置 / 完成，没有取消：拖动、拉杆都当场生效，「全部重置」回默认）；
 //   没选键时屏幕中上一张半透明卡片调整体（不透明度 / 大小 / 闲置透明度 / 配色 / 滑动切换按键）；点中一个键，卡片换成贴着它的单键面板。
 static UIVisualEffectView *vp_glass(CGFloat radius) {
@@ -729,7 +729,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 // 审计 P1-3：游戏启用了触屏（C# InputPump 读 Hid.Touchscreen.Active 后经 s2a_vpad_touch_wanted 转告）而当前是按键方案时，提示一次怎么切到「仅触屏操作」（本 App 只提示一次）。
 //   两套方案保持互斥、不做「又有按键又透传」：默认布局左右半屏空白处都是浮动摇杆的激活区，按键以外没有空地可透传，透传就等于推摇杆时游戏也收到点按；
 //   很多游戏开机就启用触屏、分不出真用不用，所以只提示、不自动切。自动化局不提示
-//   11-04 维护者（脑锻炼标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 ç»´æ¤è 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
+//   11-04 维护者（脑锻炼标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 维护者 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
 //   提示条（本 App 只提示一次）带「切到触屏」按钮，一点就切。切换与持久化在 vpad_layout.m setTouchOnly:（单测 t_vpad_toggle）
 - (void)offerTouchHint {
     _touchWanted = YES;

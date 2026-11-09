@@ -196,7 +196,7 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0) {
-        [self chooseLayout:[self identifierAtRow:indexPath.row]];   // 选完留在本页（11-09 ç»´æ¤è：改设置没有退出意图时不自己退掉），打勾跟着换；关页面用右上角「完成」
+        [self chooseLayout:[self identifierAtRow:indexPath.row]];   // 选完留在本页（11-09 维护者：改设置没有退出意图时不自己退掉），打勾跟着换；关页面用右上角「完成」
     } else if (indexPath.section == 1) {
         switch (indexPath.row) {
             case 0: [self requestEdit]; break;
