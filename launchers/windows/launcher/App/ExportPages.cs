@@ -283,20 +283,20 @@ public sealed partial class EnvironmentWindow
     private Control GameHeader(LibraryGame game)
     {
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), ColumnSpacing = 24 };
-        var coverButton = new Button { Content = GameCover(game, 120), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !PackBusy && !customizing };
+        var coverButton = new Button { Content = GameCover(game, 120), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !BusyFor(game) && !customizing };
         coverButton.Click += (_, _) => _ = ChooseCoverAsync(game);
         ToolTip.SetTip(coverButton, T("custom.cover.help"));
         AutomationId(coverButton, "export.cover");
         header.Children.Add(coverButton);
         var title = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        var nameButton = new Button { Content = Label(game.Name, 30), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !PackBusy && !customizing };
+        var nameButton = new Button { Content = Label(game.Name, 30), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !BusyFor(game) && !customizing };
         nameButton.Click += (_, _) => _ = RenameGameAsync(game);
         ToolTip.SetTip(nameButton, T("custom.name.help"));
         AutomationId(nameButton, "export.name");
         title.Children.Add(nameButton);
         if (game.CustomCover)
         {
-            var reset = new Button { Content = T("custom.cover.reset"), Background = Brushes.Transparent, Foreground = Brush.Parse("#9A9AA0"), Padding = new Thickness(0), FontSize = 13, IsEnabled = !PackBusy && !customizing };
+            var reset = new Button { Content = T("custom.cover.reset"), Background = Brushes.Transparent, Foreground = Brush.Parse("#9A9AA0"), Padding = new Thickness(0), FontSize = 13, IsEnabled = !BusyFor(game) && !customizing };
             reset.Click += (_, _) => _ = CustomizeAsync(game, null, "");
             AutomationId(reset, "export.cover.reset");
             title.Children.Add(reset);
@@ -325,7 +325,7 @@ public sealed partial class EnvironmentWindow
         // platforms
         var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         heading.Children.Add(Label(T("export.platforms"), 16));
-        var existing = Action("export.install_existing", () => { readinessFor = null; Navigate("install"); }, !PackBusy);
+        var existing = Action("export.install_existing", () => { readinessFor = null; Navigate("install"); }, !BusyFor(game) || installBusy);   // 装机中也能进装机页：看别的游戏时提示「另一款正在装 · 查看那一款」
         Grid.SetColumn(existing, 1); heading.Children.Add(existing);
         body.Children.Add(heading);
         var tiles = new UniformGrid { Columns = 4 };
@@ -345,7 +345,7 @@ public sealed partial class EnvironmentWindow
             })));
             var card = new Button
             {
-                Content = tile, IsEnabled = open && !PackBusy, Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(18),
+                Content = tile, IsEnabled = open && !BusyFor(game), Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(18),
                 HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch, MinHeight = 120, CornerRadius = new CornerRadius(14),
                 Background = on ? Brush.Parse("#2A2722") : Surface, Foreground = Ink, Opacity = open ? 1 : 0.5,
@@ -393,7 +393,7 @@ public sealed partial class EnvironmentWindow
         }
         // 「选择其他文件夹…」选的、或位置表还没读回时这款现在的位置
         if (exportLocation.Length > 0 && !options.Any(o => SameFolder(o.path, exportLocation))) options.Add((exportLocation, exportLocation));
-        var box = new ComboBox { MinWidth = 300, IsEnabled = !PackBusy, VerticalAlignment = VerticalAlignment.Center };
+        var box = new ComboBox { MinWidth = 300, IsEnabled = !BusyFor(game), VerticalAlignment = VerticalAlignment.Center };
         foreach (var (path, label) in options) box.Items.Add(new ComboBoxItem { Content = label, Tag = path });
         box.Items.Add(new ComboBoxItem { Content = T("export.location.other"), Tag = OtherFolder });
         box.SelectedIndex = options.FindIndex(o => SameFolder(o.path, exportLocation));
@@ -448,7 +448,7 @@ public sealed partial class EnvironmentWindow
         if (!exportIos) return T("export.block.no_platform");
         if (game.Missing.Count > 0) return T("library.requirements") + " · " + string.Join(" / ", game.Missing);
         if (game.NeedsKeys && catalog?.KeysReady != true) return T("export.block.keys");
-        if (PackBusy || libraryBusy || busy) return T("export.block.busy");
+        if (BusyFor(game) || busy) return T("export.block.busy");   // 只锁正在装的那款：别的游戏装机期间照常出包（后端安装不占出包执行锁）
         return null;
     }
 
@@ -526,22 +526,27 @@ public sealed partial class EnvironmentWindow
         }
     }
 
+    /// 「本次操作与处理建议」折叠区：给玩家看的原因与建议，同一句只出现一次（9120 时原先同一段中文重复三遍）。
+    /// 作业层的失败事实（failureSummary：阶段、末行原文，常是英文）不放这里，只在「复制错误摘要」里带走
     private string JobDiagnostics(LibraryJobOutput job)
     {
-        var text = job.Report.Message + "\n" + T("diagnostics.exit_code") + ": " + job.Output.ExitCode;
+        var lines = new List<string> { job.Report.Message, T("diagnostics.exit_code") + ": " + job.Output.ExitCode };
+        void Add(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            line = line.Trim();
+            if (!lines.Any(l => l == line || l.Contains(line))) lines.Add(line);   // 已有（或被更长的一句包含）就不重复
+        }
         if (job.Report.Diagnostics.ValueKind == JsonValueKind.Array)
             foreach (var diagnostic in job.Report.Diagnostics.EnumerateArray())
             {
                 if (diagnostic.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String)
-                    text += "\n" + T("errors." + code.GetString() + ".title") + "\n" + T("errors." + code.GetString() + ".detail");
+                { Add(T("errors." + code.GetString() + ".title")); Add(T("errors." + code.GetString() + ".detail")); }
                 foreach (var key in new[] { "summary", "suggestion" })
-                    if (diagnostic.TryGetProperty(key, out var message) && message.ValueKind == JsonValueKind.String)
-                        text += "\n" + message.GetString();
-                if (diagnostic.TryGetProperty("failureSummary", out var failureSummary) && failureSummary.ValueKind == JsonValueKind.String)
-                    text += "\n" + failureSummary.GetString();
+                    if (diagnostic.TryGetProperty(key, out var message) && message.ValueKind == JsonValueKind.String) Add(message.GetString());
             }
-        if (!string.IsNullOrWhiteSpace(job.Output.StandardError)) text += "\n" + job.Output.StandardError;
-        return text;
+        if (!string.IsNullOrWhiteSpace(job.Output.StandardError)) Add(job.Output.StandardError);
+        return string.Join("\n", lines);
     }
 
     private void RenderProgress(StackPanel body)
@@ -928,7 +933,7 @@ public sealed partial class EnvironmentWindow
             retry.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(retry);
             if (packFailureCode == "disk_full")   // 磁盘预算偏保守：和 Mac 一样允许玩家自己决定继续
             {
-                var proceed = Action("export.fix.continue", () => StartPack(game, spaceOverride: true), !PackBusy);
+                var proceed = Action("export.fix.continue", () => StartPack(game, spaceOverride: true), !BusyFor(game));
                 proceed.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(proceed);
             }
             if (packState == "failed")
@@ -1218,7 +1223,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>name / coverPath: null leaves it alone, empty restores the default.</summary>
     private async Task CustomizeAsync(LibraryGame game, string? name, string? coverPath)
     {
-        if (customizing || PackBusy) return;
+        if (customizing || BusyFor(game)) return;
         customizing = true; customizeError = ""; Render();
         var extra = new Dictionary<string, object?>();
         if (name is not null) extra["name"] = name;
