@@ -1388,19 +1388,34 @@ def clean_after_stop(c):
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")
 
 
+def _residue(c):
+    """崩溃、断电、进程被杀留下的解包和中间产物 → [(游戏号, 有可删的中间产物, [半成品运行版本…])]，只列有东西的款。只读，不拿锁"""
+    found = []
+    for game in c.catalog()["games"]:
+        gid = game["id"]
+        out = c.library / "iPhone" / gid
+        stale = (c.library / "cache" / gid).exists() or (out.is_dir() and any(p.name not in (CONTAINER_KIT, SHELL_STAMP_NAME, "logs") and p.suffix != ".ipa" and not p.name.endswith("资源包") for p in out.iterdir()))
+        stale = stale and _residue_disposable(c, gid)
+        partials = list((c.library / "games" / gid / "releases").glob("*.partial"))
+        if stale or partials:
+            found.append((gid, stale, partials))
+    return found
+
+
 def sweep_residue(c):
-    """启动器空闲时扫掉崩溃、断电、进程被杀留下的解包和中间产物；有出包在跑时不动。"""
+    """启动器空闲时扫掉崩溃、断电、进程被杀留下的解包和中间产物；有出包在跑时不动。
+    先不拿锁扫一遍，真有残留才拿执行锁、锁内再扫一遍再删：catalog 每次读游戏库都调它，扫描期间占着执行锁的话，
+    紧接着开始的任务（起局、存档、出包）拿不到锁当场报「另一个任务正在使用游戏库」（11-09 main 守望红：SaveManagementTests 备份完刷新游戏库、查看存档撞锁）"""
     try:
+        if not _residue(c):
+            return
         with _execution_idle(c) as idle:
             if not idle:
                 return
-            for game in c.catalog()["games"]:
-                gid = game["id"]
-                out = c.library / "iPhone" / gid
-                stale = (c.library / "cache" / gid).exists() or (out.is_dir() and any(p.name not in (CONTAINER_KIT, SHELL_STAMP_NAME, "logs") and p.suffix != ".ipa" and not p.name.endswith("资源包") for p in out.iterdir()))
-                if stale and _residue_disposable(c, gid):
+            for gid, stale, partials in _residue(c):
+                if stale:
                     prune_build(c, gid, record=False)
-                for partial in (c.library / "games" / gid / "releases").glob("*.partial"):
+                for partial in partials:
                     _rm(c, c.library, partial)
     except (Failure, OSError, ValueError):
         pass   # 清不掉不影响读游戏库，下次再扫

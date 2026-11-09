@@ -1616,6 +1616,16 @@ class JobsTests(unittest.TestCase):
         release = self.c.library / "games" / gid / "releases"
         self.assertEqual([p.name for p in release.iterdir()], ["good"])
 
+    def test_sweep_without_residue_never_takes_execution_lock(self):
+        """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""
+        import unittest.mock as um
+        gid, out, _ = self.stopped_game()
+        c = self.stop_context(gid)
+        library.sweep_residue(c)            # 先把残留清干净
+        with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
+            library.sweep_residue(c)
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games" / gid / "releases").iterdir()), ["good"])
+
     def test_diagnostic_bounded_reads_and_atomic_publication(self):
         import unittest.mock as um
         logs = self.c.private / "logs"; logs.mkdir()
