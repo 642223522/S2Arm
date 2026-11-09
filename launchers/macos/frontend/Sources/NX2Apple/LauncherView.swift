@@ -25,6 +25,7 @@ struct LauncherView: View {
     @State var spaceFor: String?
     @State var moreFor: String?
     @State var saveFor: String?
+    @State var displayFor: String?
     @State var inputFor: String?
     @State var deleteFor: GameSummary?
     @State private var dropTargeted = false
@@ -82,6 +83,9 @@ struct LauncherView: View {
         }
         .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: { spaceFor = $0?.id })) { target in
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
+        }
+        .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
+            GameDisplaySheet(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
             SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)

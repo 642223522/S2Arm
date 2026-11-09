@@ -6674,5 +6674,17 @@
  {
   "source": "这款游戏在这台电脑上还没玩过：存档会在下次启动游戏时放进去。",
   "en": "You haven't played this game on this Mac yet. The save will be added the next time you start the game."
+ },
+ {
+  "source": "这款还没有做好 Mac 版，或者是旧版本做的：重新准备后可用。",
+  "en": "This game has no Mac build yet, or it was built by an older version. Available after you prepare it again."
+ },
+ {
+  "source": "这款游戏没有可用的 60 帧方案。",
+  "en": "No 60 FPS option is available for this game."
+ },
+ {
+  "source": "这款游戏没有走直连渲染，用不了 MetalFX 放大。",
+  "en": "This game doesn't use direct rendering, so MetalFX upscaling isn't available."
  }
 ]
