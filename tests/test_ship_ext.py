@@ -270,7 +270,7 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual((app / "Games" / self.B / "icon.jpg").read_bytes(), b"JPGb")
         cat = json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))
         self.assertEqual(cat, {"schema": 1, "shell_id": shell_manifest.current_id(), "games": [
-            {"title_id": self.A, "name": "甲游戏", "display_version": "1.2.0", "icon": f"Games/{self.A}/icon.jpg", "state": "playable"},
+            {"title_id": self.A, "name": "甲游戏", "display_version": "1.2.0", "icon": f"Games/{self.A}/icon.jpg", "banner": f"Games/{self.A}/banner.jpg", "state": "playable"},
             {"title_id": self.B, "name": "乙游戏", "icon": f"Games/{self.B}/icon.jpg", "state": "playable"}]})
         self.assertEqual((app / "Games" / self.A / "launch.ctx").read_text(encoding="utf-8"),
                          f"version\t1\ngame_id\t{self.A}\nimages\t@bundle/Frameworks/S2AImages-{self.A}.dylib\nmodule_dir\t@bundle/Games/{self.A}\n"
