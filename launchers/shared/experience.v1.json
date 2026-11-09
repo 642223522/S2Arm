@@ -920,6 +920,7 @@
       {"id": "library.hostUpdate.prepare", "zh-Hans": "重新准备", "en": "Prepare again"},
       {"id": "library.menu.launchSettings", "zh-Hans": "启动设置", "en": "Launch settings"},
       {"id": "library.menu.reveal", "zh-Hans": "在访达中显示", "en": "Show in Finder"},
+      {"id": "library.menu.revealWindows", "zh-Hans": "在资源管理器中显示", "en": "Show in File Explorer"},
       {"id": "library.menu.move", "zh-Hans": "移动到其他位置…", "en": "Move to another location…"},
       {"id": "library.menu.clearCache", "zh-Hans": "清除缓存", "en": "Clear cache"},
       {"id": "library.location.offline", "zh-Hans": "存放位置未连接：{0}", "en": "Storage not connected: {0}"},
