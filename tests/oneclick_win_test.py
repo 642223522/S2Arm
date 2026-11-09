@@ -126,6 +126,19 @@ class MetalPath(unittest.TestCase):
         with patch.dict(os.environ, {'S2A_METAL_BIN': str(explicit)}):
             self.assertEqual(oneclick_win.metal_bin(), explicit)
 
+    def test_player_path_wins_bundled_job_path(self):
+        # 随包 s2arm_env.cmd 把作业 PATH 换成只含随包工具、换前存进 S2A_USER_PATH（11-09 Windows 出包机：只设 PATH 的自定义安装在启动器里被忽略）
+        bundled = self.root / '随包运行时'; bundled.mkdir()
+        with patch.dict(os.environ, {'PATH': str(bundled), 'S2A_USER_PATH': str(self.tools)}):
+            self.assertEqual(oneclick_win.metal_bin(), self.tools)
+
+    def test_given_environ_is_used_instead_of_process_env(self):
+        # 作业层在父进程按玩家环境选（core.win_metal_dir），不读当前进程环境
+        explicit = self.root / '玩家显式目录'
+        with patch.dict(os.environ, {'S2A_METAL_BIN': str(self.root / '进程里的')}):
+            self.assertEqual(oneclick_win.metal_exe({'S2A_METAL_BIN': str(explicit)}).parent, explicit)
+            self.assertEqual(oneclick_win.metal_exe({'PATH': '', 'S2A_USER_PATH': str(self.tools)}).parent, self.tools)
+
     def test_no_tools_uses_official_default(self):
         with patch.dict(os.environ, {'PATH': ''}):
             self.assertEqual(oneclick_win.metal_bin(), Path(r'C:\Program Files\Metal Developer Tools\bin'))
