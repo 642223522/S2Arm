@@ -180,6 +180,7 @@ static CGRect game_rect(UIView *v) {
     if (s2a_ios_game_area && s2a_ios_root_view && v == s2a_ios_root_view()) { CGRect r = s2a_ios_game_area(); if (!CGRectIsEmpty(r)) return r; }
     return v.bounds;
 }
+void s2a_ios_attach_game_layer(UIView *root, CALayer *game) __attribute__((weak_import));
 int s2a_screen_w(void); int s2a_screen_h(void); int s2a_widen_game(void); int s2a_widen_full(void); int s2a_screen_reaspect(void);   // runtime/src/widen.c
 int s2a_nvn_reaspect_ok(void);   // graphics/nvn/widen_glue.inc：NVN 直连的宽屏核心在跑（能运行中换屏；Vulkan / GL 层的贴图建时定宽，换不了）
 static int out_wide(void) {   // 出的是宽图：第二层，或直连第三层整套放宽（屏幕比 16:9 宽时核心才放宽，s2a_widen_init 回 OFF 时出的仍是 16:9）
@@ -262,7 +263,8 @@ void *front_metal_layer(void) {
             layout_layer(v, l);
             // 挂在最底层（11-02）：原先 addSublayer 压在根视图所有子视图之上，加载页 / 提示页（没设 zPosition）全被黑色出图层盖住——
             //   怪猎测试设备1 冷首启预热 64 秒，屏上只有手柄（手柄与开发浮层靠 zPosition 压过它），玩家对着黑屏点中了看不见的「先开始玩」
-            [v.layer insertSublayer:l atIndex:0];
+            if (s2a_ios_attach_game_layer) s2a_ios_attach_game_layer(v,l);
+            else [v.layer insertSublayer:l atIndex:0];
             g_layer = l;
             // Metal 性能浮层（#153）：MTL_HUD_ENABLED 只在进程启动、系统建 Metal 设备时读一次；App 设置里的开关是进程起来后才落成环境变量（ios/settings.m），
             //   已经晚了，只有启动前从外面传入才显示。iOS 16 起可按层在运行中打开：开关开着（环境变量来自设置或外面传入都算）就对出图层打开
