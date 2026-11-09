@@ -993,6 +993,17 @@ public sealed partial class EnvironmentWindow
         AutomationId(remove, "install.remove_game");
         remove.Click += (_, _) => _ = ConfirmRemoveAsync(game);
         buttons.Children.Add(remove);
+        if (game.IphoneRestorable)
+        {
+            // 手机上的 S2Arm 换了新版运行层（只换宿主）后不好用：装回上一版（installRestore，同 Mac 装机页）
+            var restore = new Button { Content = T("install.restore"), IsEnabled = !installBusy && !packRunning,
+                Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+                Background = Brush.Parse("#29292D"), Foreground = Ink, Margin = new Thickness(12, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center };
+            AutomationId(restore, "install.restore");
+            restore.Click += (_, _) => _ = ConfirmRestoreAsync(game);
+            buttons.Children.Add(restore);
+        }
         if (readiness is { IpaPath.Length: > 0 } located)
         {
             var reveal = Action("progress.reveal_ipa", () => Reveal(located.IpaPath));
@@ -1014,7 +1025,7 @@ public sealed partial class EnvironmentWindow
             if (installBusy) state.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4 });
             if (installMessage.Length > 0) state.Children.Add(Muted(installMessage));
             if (installState is "failed" or "invalid")
-                state.Children.Add(CopyReportButton(game.Id, ["install", "installRemove"], () => installMessage + "\n" + installDiagnostics));
+                state.Children.Add(CopyReportButton(game.Id, ["install", "installRemove", "installRestore"], () => installMessage + "\n" + installDiagnostics));
             body.Children.Add(Card(state));
         }
         if (installDiagnostics.Length > 0)
@@ -1132,54 +1143,66 @@ public sealed partial class EnvironmentWindow
 
     private async Task ConfirmRemoveAsync(LibraryGame game)
     {
-        if (installBusy || packRunning) return;
+        if (await ConfirmInstallActionAsync("install.remove")) await RunPhoneJobAsync(game, "installRemove", "install.remove");
+    }
+
+    private async Task ConfirmRestoreAsync(LibraryGame game)
+    {
+        if (await ConfirmInstallActionAsync("install.restore")) await RunPhoneJobAsync(game, "installRestore", "install.restore");
+    }
+
+    /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
+    private async Task<bool> ConfirmInstallActionAsync(string prefix)
+    {
+        if (installBusy || packRunning) return false;
         var dialog = new Window
         {
-            Title = T("install.remove_title"), Width = 420, SizeToContent = SizeToContent.Height,
+            Title = T(prefix + "_title"), Width = 420, SizeToContent = SizeToContent.Height,
             CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Canvas, Foreground = Ink,
             FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope")
         };
         var confirmed = false;
         var body = new StackPanel { Spacing = 16, Margin = new Thickness(28) };
-        body.Children.Add(Label(T("install.remove_title"), 20));
-        body.Children.Add(Muted(T("install.remove_body"), 14));
+        body.Children.Add(Label(T(prefix + "_title"), 20));
+        body.Children.Add(Muted(T(prefix + "_body"), 14));
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = T("action.cancel"), Padding = new Thickness(16, 9),
             Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8),
             Margin = new Thickness(0, 0, 12, 0) };
         cancel.Click += (_, _) => dialog.Close();
         buttons.Children.Add(cancel);
-        var confirm = new Button { Content = T("install.remove_confirm"), Padding = new Thickness(16, 9),
+        var confirm = new Button { Content = T(prefix + "_confirm"), Padding = new Thickness(16, 9),
             Background = Accent, Foreground = Canvas, CornerRadius = new CornerRadius(8) };
-        AutomationId(confirm, "install.remove_confirm");
+        AutomationId(confirm, prefix + "_confirm");
         confirm.Click += (_, _) => { confirmed = true; dialog.Close(); };
         buttons.Children.Add(confirm);
         body.Children.Add(buttons);
         dialog.Content = body;
         await dialog.ShowDialog(this);
-        if (confirmed) await RemoveAsync(game);
+        return confirmed;
     }
 
-    private async Task RemoveAsync(LibraryGame game)
+    /// <summary>installRemove / installRestore; texts are &lt;prefix&gt;_running / _done / _failed.</summary>
+    private async Task RunPhoneJobAsync(LibraryGame game, string operation, string prefix)
     {
         if (installBusy || packRunning) return;
-        installBusy = true; installState = "running"; installMessage = T("install.remove_running"); installDiagnostics = ""; Render();
+        installBusy = true; installState = "running"; installMessage = T(prefix + "_running"); installDiagnostics = ""; Render();
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("installRemove", game.Id), e => Dispatcher.UIThread.Post(() =>
+            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id), e => Dispatcher.UIThread.Post(() =>
             {
                 if (e.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String && m.GetString() is { Length: > 0 } text)
                 { installMessage = text; Render(); }
             }), CancellationToken.None);
             installState = job.Report.State;
-            installMessage = job.Report.Succeeded ? T("install.remove_done") : job.Report.Message;
+            installMessage = job.Report.Succeeded ? T(prefix + "_done") : job.Report.Message;
             installDiagnostics = JobDiagnostics(job);
         }
         catch (LibraryProtocolException error) { installState = "invalid"; installDiagnostics = error.Message; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
-        { installState = "failed"; installMessage = T("install.remove_failed"); installDiagnostics = error.Message; }
+        { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
         finally { installBusy = false; Render(); }
     }
 

@@ -113,6 +113,100 @@ class MigrateTests(JobCase):
         self.assertEqual(d.name, "Other")
 
 
+class Upgrade3Tests(JobCase):
+    """2 → 3（_upgrade_3）：旧 iPhone/<号>/ 与 iPhone/container/ 迁进每款 image/ios、默认位置根 S2Arm.ipa、devices/legacy.json；中途被杀能续。期望按 layout 头注与迁移说明手写"""
+
+    def v2_library(self):
+        """v2 库：A 有容器件 + 资源包 + 壳号 + 单款 ipa；B 只有 ipa + 现行产物根 + 资源包（老玩家，没存过容器件）；
+        C 已从游戏库删掉（清单里没有、也没有游戏文件夹），iPhone/C/ 还留着；旧容器 iPhone/container 装着 A、B"""
+        L = self.c.library
+        atomic(L / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha"), dict(id=B, name="Beta")]))
+        atomic(L / ".s2arm-layout.json", dict(version=2, games=[A, B]))
+        for gid in (A, B):
+            layout.game_dir(self.c, gid)
+        a = L / "iPhone" / A
+        (a / "container-kit").mkdir(parents=True); (a / "container-kit/main.npdm").write_bytes(b"META-A"); (a / "container-kit/main.fixups.tsv").write_text("")
+        (a / "ta资源包").mkdir(); (a / "ta资源包/manifest.json").write_text('{"index_sha256": "pa"}')
+        (a / "shell.id").write_text("SIDA\n"); (a / "ta.ipa").write_bytes(b"ipa")
+        (a / "logs").mkdir(); (a / "logs/ipa.log").write_text("old ipa log")   # 出包日志：释放空间的保留项，迁移要留着
+        b = L / "iPhone" / B; root = b / "roots/tb@pkg-1"
+        (root / "romfs").mkdir(parents=True); (root / "romfs/huge.bin").write_bytes(b"x" * 100)
+        (root / "main.npdm").write_bytes(b"META-B"); (root / "main.fixups.tsv").write_text(""); (root / "build.log").write_text("log")
+        (b / "roots/tb@现行").symlink_to("tb@pkg-1")
+        (b / "tb资源包").mkdir(); (b / "tb资源包/manifest.json").write_text('{"index_sha256": "pb"}')
+        (b / "shell.id").write_text("SIDB"); (b / "tb.ipa").write_bytes(b"ipa")
+        (L / "iPhone" / C / "tc资源包").mkdir(parents=True); (L / "iPhone" / C / "tc.ipa").write_bytes(b"ipa")
+        box = L / "iPhone/container"; (box / "S2Arm.app").mkdir(parents=True)
+        (box / "S2Arm.app/s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "SIDA", "games": [{"title_id": A}, {"title_id": B}]}))
+        (box / "S2Arm.ipa").write_bytes(b"phone ipa"); (box / "bundle.txt").write_text("io.s2arm.games.team1\n")
+        atomic(layout.path(self.c, A, "ios-install.json"), dict(at=100, free=True, device="甲机"))
+        atomic(layout.path(self.c, B, "ios-install.json"), dict(at=200, free=False, device="乙机"))
+        return L
+
+    def check_migrated(self, L):
+        import library
+        ga, gb = layout.find_game(self.c, A), layout.find_game(self.c, B)
+        self.assertEqual((ga / "image/ios/kit/main.npdm").read_bytes(), b"META-A")
+        self.assertEqual((ga / "build/ios/logs/ipa.log").read_text(), "old ipa log")   # 旧出包日志搬到新的出包工作目录，没随 iPhone/ 删掉
+        self.assertEqual(json.loads((ga / "image/ios/pack/manifest.json").read_text())["index_sha256"], "pa")
+        self.assertEqual(json.loads((ga / "game.json").read_text())["ios"], dict(shellId="SIDA", pack="pa"))
+        # B 没有容器件：先从现行产物根存一份（只要组装读的文件，不带 RomFS / 日志），再随 iPhone/ 删掉产物根
+        kit = gb / "image/ios/kit"
+        self.assertEqual(sorted(str(q.relative_to(kit)) for q in kit.rglob("*")), ["main.fixups.tsv", "main.npdm"])
+        self.assertEqual(json.loads((gb / "game.json").read_text())["ios"], dict(shellId="SIDB", pack="pb"))
+        self.assertTrue(library.iphone_ready(self.c, A)); self.assertTrue(library.iphone_ready(self.c, B))
+        self.assertIsNone(layout.find_game(self.c, C)); self.assertFalse(any((L / "games").glob("*" + C + "*")))   # 已删的款不新建文件夹
+        self.assertEqual((L / "S2Arm.ipa").read_bytes(), b"phone ipa")
+        self.assertEqual(json.loads((L / "devices/legacy.json").read_text()),
+                         dict(schema=1, games={A: {}, B: {}}, shellId="SIDA", bundleId="io.s2arm.games.team1", failedShells=[],
+                              signed=dict(at=200, free=False, device="乙机")))   # 各款已装记录取最新一次并进来
+        self.assertFalse(layout.path(self.c, A, "ios-install.json", create=False).exists())
+        self.assertFalse(layout.path(self.c, B, "ios-install.json", create=False).exists())
+        self.assertFalse((L / "iPhone").exists())   # 单款 ipa、产物根、底包都能重建：随 iPhone/ 删掉
+        self.assertEqual(json.loads((L / ".s2arm-layout.json").read_text()), dict(version=layout.VERSION, games=[A, B], iphone=[A, B, C]))   # 3 之后接着迁到当前版本（_upgrade_4）
+        # 第一台装机的设备认领迁移来的记录
+        self.assertEqual(layout.load_device(self.c, "phone-1")["games"], {A: {}, B: {}})
+        self.assertFalse((L / "devices/legacy.json").exists()); self.assertTrue((L / "devices/phone-1.json").is_file())
+        self.assertEqual(layout.install_record(self.c, B), dict(at=200, free=False, device="乙机"))
+
+    def test_upgrade_moves_iphone_outputs_into_each_game(self):
+        L = self.v2_library()
+        self.assertTrue(layout.migrate(self.c))
+        self.check_migrated(L)
+        self.assertFalse(layout.migrate(self.c))   # 再跑：已迁完
+
+    def test_upgrade_interrupted_resumes(self):
+        """B 写 game.json 时被杀：标记里只记了 A（version 仍是 2），iPhone/ 与旧容器都还在；再跑接着做完，结果与一次做完相同"""
+        L = self.v2_library()
+        real = layout.update_info
+        def boom(c, gid, **fields):
+            if gid.upper() == B and "ios" in fields:
+                raise OSError("断电")
+            return real(c, gid, **fields)
+        with patch.object(layout, "update_info", side_effect=boom), self.assertRaises(OSError):
+            layout.migrate(self.c)
+        self.assertEqual(json.loads((L / ".s2arm-layout.json").read_text()), dict(version=2, games=[A, B], iphone=[A]))
+        self.assertTrue((L / "iPhone/container/S2Arm.ipa").is_file()); self.assertFalse((L / "devices").exists())
+        self.c._layout_idx = None
+        self.assertTrue(layout.migrate(self.c))
+        self.check_migrated(L)
+
+    def test_iphone_ready_needs_kit_npdm_and_pack_manifest(self):
+        """⑥ iphone_ready：容器件 main.npdm 在且非空、有改写产物表、资源包清单在才是 True；缺任一项 False"""
+        import library
+        from jobcase import ios_fixture
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha")]))
+        self.assertFalse(library.iphone_ready(self.c, A))   # 没出过 iPhone 版（连文件夹都没有）
+        kit, pack = ios_fixture(self.c, A)
+        self.assertTrue(library.iphone_ready(self.c, A))
+        cases = (("缺 main.npdm", lambda: (kit / "main.npdm").unlink()), ("main.npdm 是空的", lambda: (kit / "main.npdm").write_bytes(b"")),
+                 ("缺资源包清单", lambda: (pack / "manifest.json").unlink()), ("缺改写产物表", lambda: (kit / "main.fixups.tsv").unlink()))
+        for name, breaks in cases:
+            with self.subTest(name):
+                ios_fixture(self.c, A); breaks()
+                self.assertFalse(library.iphone_ready(self.c, A))
+
+
 class LocationTests(JobCase):
     """游戏库结构 v3：多个存放位置 + 索引表。期望按设计文档的规则手写"""
     def setUp(self):

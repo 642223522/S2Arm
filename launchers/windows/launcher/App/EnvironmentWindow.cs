@@ -139,6 +139,12 @@ public sealed partial class EnvironmentWindow : Window
             Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
             return;
         }
+        if (page == "storage")
+        {
+            RenderStorage(body);
+            Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+            return;
+        }
         if (page == "library")
         {
             RenderLibrary(body);

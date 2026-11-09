@@ -47,7 +47,7 @@ public static class ControlPortCases
             check(!File.Exists(file), "control: stop removes control.json");
         }
         // 作业记录：看不见的作业不进；running 且进程还在照报；running 但进程没了按中断报
-        var jobs = Path.Combine(root, "jobs");
+        var jobs = Path.Combine(root, "logs", "jobs");   // 没设置库：作业记录在 私有目录\logs\jobs（LibraryPaths.JobsDir）
         Directory.CreateDirectory(jobs);
         File.WriteAllText(Path.Combine(jobs, "a.json"), "{\"id\":\"a\",\"operation\":\"catalog\",\"state\":\"completed\",\"started\":1}");
         File.WriteAllText(Path.Combine(jobs, "b.json"), $"{{\"id\":\"b\",\"operation\":\"ipa\",\"state\":\"running\",\"started\":2,\"pid\":{Environment.ProcessId}}}");
@@ -56,6 +56,19 @@ public static class ControlPortCases
         var tasks = ControlJournal.Tasks(root);
         check(tasks.Count == 2 && tasks[0].GetProperty("id").GetString() == "b" && tasks[0].GetProperty("state").GetString() == "running", "journal: live job stays running, hidden and request files skipped");
         check(tasks[1].GetProperty("state").GetString() == "interrupted", "journal: running job with a dead process reads interrupted");
+        // 游戏库结构 P3：库建好（有 .s2arm-library.json）后日志与作业记录在 库\logs；只有文件夹没标识仍在私有目录
+        var lib = Path.Combine(root, "lib");
+        Directory.CreateDirectory(lib);
+        File.WriteAllText(LibraryPaths.PreferenceFile(root), lib);
+        check(LibraryPaths.JobsDir(root) == Path.Combine(root, "logs", "jobs"), "paths: unbuilt library keeps logs in the private root");
+        File.WriteAllText(Path.Combine(lib, ".s2arm-library.json"), "{\"schema\":1,\"id\":\"x\"}");
+        check(LibraryPaths.JobsDir(root) == Path.Combine(lib, "logs", "jobs") && LibraryPaths.LogsRoot(root, lib) == Path.Combine(lib, "logs"), "paths: built library holds logs and jobs");
+        check(LibraryPaths.DefaultLibrary(root) == Path.Combine(root, "DefaultLibrary"), "paths: custom data root keeps its own default library");
+        // 搬库标记：设置里是旧路径、新位置有库、旧位置没库 → 用新位置；别的路径不动
+        var old = Path.Combine(root, "DefaultLibrary");
+        File.WriteAllText(Path.Combine(root, "library-relocate.json"), JsonSerializer.Serialize(new Dictionary<string, string> { ["from"] = old, ["to"] = lib, ["state"] = "done" }));
+        check(LibraryPaths.Library(root, old) == lib, "paths: relocated default library follows the marker");
+        check(LibraryPaths.Library(root, Path.Combine(root, "other")) == Path.Combine(root, "other"), "paths: a player-chosen library is untouched");
         Directory.Delete(root, true);
     }
 }

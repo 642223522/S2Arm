@@ -22,6 +22,7 @@ extension LauncherView {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        staleBanner
                         renewBanner
                         if let game = model.selected {
                             hero(game, width: geometry.size.width, height: max(240, geometry.size.height - collectionHeight))
@@ -219,6 +220,27 @@ extension LauncherView {
         .buttonStyle(.plain).disabled(!enabled).accessibilityLabel(title).accessibilityIdentifier(id)
     }
 
+    /// 显示的是上次的列表（启动先显示的快照 / 刷新失败）：标明是上次的；失败时说原因、给重试。
+    @ViewBuilder var staleBanner: some View {
+        if model.showingSnapshot && !model.games.isEmpty && (model.loading || model.libraryError != nil) {
+            HStack(spacing: 12) {
+                if model.loading {
+                    ProgressView().controlSize(.small)
+                    Text(txt("library.stale.loading")).font(.manrope(13.5, .semibold))
+                } else {
+                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").foregroundStyle(LauncherPalette.danger)
+                    Text(txt("library.stale.failed").replacingOccurrences(of: "{0}", with: loc.backend(model.staleLibraryError ?? ""))).font(.manrope(13.5, .semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                if !model.loading {
+                    Button(txt("library.stale.retry")) { model.refresh() }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("library.stale.retry")
+                }
+            }
+            .padding(.horizontal, 34).padding(.vertical, 10).background((model.loading ? LauncherPalette.building : LauncherPalette.danger).opacity(0.10))
+        }
+    }
+
     /// 免费签名快到期 / 已到期的提醒（只提最急的一款）。
     @ViewBuilder var renewBanner: some View {
         if let game = model.games.filter({ ($0.iphoneDaysLeft() ?? 9) <= 1 }).min(by: { ($0.iphoneDaysLeft() ?? 9) < ($1.iphoneDaysLeft() ?? 9) }), let days = game.iphoneDaysLeft() {
@@ -234,6 +256,12 @@ extension LauncherView {
 
     private func moreMenu(_ game: GameSummary) -> some View {
         VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(txt("library.sizes.title")).font(.manrope(11, .semibold)).foregroundStyle(.secondary)
+                GameSizesList(sizes: game.sizes, compact: true)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            Divider().opacity(0.3).padding(.vertical, 4)
             moreRow(txt("game.display"), "slider.horizontal.3") { displayFor = game.id }
             moreRow(txt("game.saves"), "tray.full") { saveFor = game.id }
             moreRow(txt("game.input"), "gamecontroller") { inputFor = game.id }

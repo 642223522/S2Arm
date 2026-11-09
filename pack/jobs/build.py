@@ -69,8 +69,12 @@ def validate_files(c, root, files, full=True):
             raise Failure("准备产物校验失败，请重新准备：" + name, code="runtime_invalid")
 
 
+QUICK_FILES = ("main", "main.npdm")   # 游戏库列表快判也核的几个文件（主程序与程序描述）：在、是普通文件、大小同清单
+
+
 def validate_runtime(c, runtime, full=True, files=True):
-    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态；真正启动时还会完整校验"""
+    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
+    原先清单没变、主程序被删也报就绪，点开始才报错）；真正启动时还会完整校验"""
     root = runtime.resolve()
     layout.require_in_location(c, root)
     manifest = read(root / "manifest.json", {})
@@ -80,6 +84,10 @@ def validate_runtime(c, runtime, full=True, files=True):
         raise Failure("运行包缺少独立的 RomFS 游戏资源目录，请重新准备。", code="runtime_invalid")
     if files:
         validate_files(c, root, manifest.get("files"), full)
+    elif isinstance(manifest.get("files"), dict):
+        quick = {k: manifest["files"][k] for k in QUICK_FILES if k in manifest["files"]}
+        if quick:
+            validate_files(c, root, quick, full=False)
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
@@ -169,7 +177,7 @@ def launch(c):
         env.update(community.launch_env(c, game["id"]))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
         try:
             c.begin("游戏运行中")
-            log = c.private / "logs" / (c.task + "-game.log")
+            log = c.logs / (c.task + "-game.log")
             started = time.monotonic()
             try:
                 c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"])
@@ -435,9 +443,9 @@ def oneclick_kuan(c, gid):
 
 
 def sibling_roots(c, game):
-    """同一款在别的平台已有的现行产物根（新的在前）：iPhone 游戏库/iPhone/<程序号>/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行"""
+    """同一款在别的平台已有的现行产物根（新的在前）：iPhone games/<英文名>/build/ios/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行"""
     found = []
-    for link in [*(c.library / "iPhone" / game["id"] / "roots").glob("*@现行"), *layout.build_dir(c, game["id"], create=False).glob("*/roots/*@现行")]:
+    for link in [*layout.ios_work(c, game["id"], create=False).glob("roots/*@现行"), *(p for p in layout.build_dir(c, game["id"], create=False).glob("*/roots/*@现行") if p.parent.parent.name != "ios")]:
         try:
             cur = contained(c.library, link.resolve())
         except (Failure, OSError):
@@ -459,7 +467,7 @@ def seed_from_sibling(c, game, roots, kuan):
         dst = roots / (kuan + "@sib-" + cur.name.split("@", 1)[-1])
         if dst.exists():
             shutil.rmtree(dst)
-        log = c.private / "logs" / (c.task + "-sibling.log")
+        log = c.logs / (c.task + "-sibling.log")
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
             c.run([sys.executable, c.engine / "tools/clonedir.py", "--report", cur, dst], log, c.env())
@@ -523,7 +531,7 @@ def prepare(c):
         unpack_ok = extract_valid(c, game)
         warm = layout.game_info(c, game["id"]).get("imageKey") == key and (root / "roots" / (game["id"] + "@现行")).exists()
         ms.plan(c, size_gb, "build_dual", reused=(["unpack"] if unpack_ok else []) + (["refresh", "analyze", "direct"] if warm else []))
-        logs = c.private / "logs" / c.task
+        logs = c.logs / c.task
         logs.mkdir(parents=True, exist_ok=True)
         env.update(S2A_ROOTS=str(root / "roots"), S2A_ROOTS_SHARED=str(root / "never-shared"),
                    S2A_ROOTS_PRIV=str(root / "roots-private"), S2A_FONTS=str(fonts))
@@ -610,4 +618,6 @@ def prepare(c):
         unpacked = layout.build_dir(c, game["id"], create=False)   # 运行版本已是独立副本（clone_tree 含 RomFS）：解包和中间目录不再保留
         if unpacked.exists():
             _rm(c, layout.root_of(c, game["id"]), unpacked)
+        import sizes
+        sizes.refresh(c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
         return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified")

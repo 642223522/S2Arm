@@ -14,6 +14,7 @@ struct InstallView: View {
     @Environment(\.dismiss) private var dismiss
     let gameID: String
     @State private var showRemoveConfirm = false
+    @State private var showRestoreConfirm = false
 
     private var game: GameSummary? { model.games.first { $0.id == gameID } }
     private static let pollSeconds: UInt64 = 5
@@ -48,7 +49,7 @@ struct InstallView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     if let failed = model.inlineFailure, failed.kind == .install {
                         Text(loc.backend(failed.message)).font(.manrope(13)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
-                        CopyReportButton(model: model, gameID: gameID, operations: ["install", "installRemove"], fallback: failed.message)
+                        CopyReportButton(model: model, gameID: gameID, operations: ["install", "installRemove", "installRestore"], fallback: failed.message)
                     }
                     if showManualTeam, let game {
                         VStack(alignment: .leading, spacing: 8) {
@@ -87,6 +88,18 @@ struct InstallView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(text("install.container_note")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Text(text("install.legacy_note")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let game, game.iphoneRestorable {
+                        // 只换宿主后（手机上的 S2Arm 换了新版运行层）新版不好用：装回上一版
+                        Button(text("install.restore")) { showRestoreConfirm = true }
+                            .buttonStyle(LauncherSecondaryButtonStyle())
+                            .disabled(model.busy)
+                            .confirmationDialog(text("install.restore_title"), isPresented: $showRestoreConfirm, titleVisibility: .visible) {
+                                Button(text("install.restore_confirm")) { model.restorePhone(game) }
+                                Button(loc.t("launch.done"), role: .cancel) {}
+                            } message: {
+                                Text(text("install.restore_body"))
+                            }
                     }
                     if let game {
                         Button(text("install.remove")) { showRemoveConfirm = true }
@@ -147,7 +160,7 @@ struct InstallView: View {
         .tint(LauncherPalette.cream)
     }
 
-    private var installJob: JobSession? { (model.session?.kind == .install || model.session?.kind == .installRemove) ? model.session : nil }
+    private var installJob: JobSession? { (model.session?.kind == .install || model.session?.kind == .installRemove || model.session?.kind == .installRestore) ? model.session : nil }
     private func text(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang == .zh ? "zh-Hans" : "en") }
 
     private var doneContent: some View {

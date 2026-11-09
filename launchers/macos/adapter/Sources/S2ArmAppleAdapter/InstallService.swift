@@ -103,6 +103,11 @@ public final class InstallService {
         try await client.perform("signingProject", extra: [:], events: .discard).result["path"] as? String ?? ""
     }
 
+    /// 装回只换宿主前的那一版手机 S2Arm（installRestore 作业，pack/jobs/install.py restore_previous）。
+    public func restorePrevious(events: EventSink = .discard) async throws {
+        _ = try await client.perform("installRestore", extra: [:], events: events)
+    }
+
     /// 从手机容器删一款（installRemove 作业）。
     public func remove(gameId: String, events: EventSink = .discard) async throws -> RemoveResult {
         let r = try await client.perform("installRemove", extra: ["gameId": gameId], events: events).result
