@@ -96,6 +96,7 @@ int s2a_nro_unmap(uint64_t base) { (void)base; unbacked(__func__); return 1; }
 // 金手指（services Cheats.cs）取主程序基址 / 构建号（runtime/src/loader.c）：诊断目标没有装载器，回「未装载」
 uint64_t s2a_main_base(void) { unbacked(__func__); return 0; }
 const char *s2a_main_build_id(void) { unbacked(__func__); return ""; }
+const s2a_layout *s2a_layout_get(void) { return NULL; }   // 诊断目标不跑原生核心、没有区域表（svc_mem.c 是游戏目标的强定义）；金手指等读者拿到空就当没装载
 const char *s2a_cheats_dir(void) { return ""; }   // 安卓没有金手指界面：空串 = 不起线程（不是缺口，不报 unbacked）
 
 // 系统键盘桥接：诊断目标没有输入框，回 0 = 不交互（服务层退回自动应答，不算失败）
