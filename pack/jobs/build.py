@@ -72,7 +72,7 @@ def validate_files(c, root, files, full=True):
 def validate_runtime(c, runtime, full=True, files=True):
     """files=False：只看清单和入口（游戏库列表用），不逐文件读状态；真正启动时还会完整校验"""
     root = runtime.resolve()
-    contained(c.library / "games", root)
+    layout.require_in_location(c, root)
     manifest = read(root / "manifest.json", {})
     if manifest.get("schema") != 1 or manifest.get("engine") != "S2Arm" or manifest.get("target") != "macos-arm64":
         raise Failure("当前游戏没有完整的 S2Arm Mac 运行版本。", code="runtime_invalid")
@@ -103,8 +103,8 @@ def runtime_env(c, game, runtime):
     env["S2A_IPHONE_VA"] = "0"   # 玩家起局不用 iPhone 地址模拟；开发 / 普查保留原生缺省（#1530）。
     env.pop("S2A_VAMM_LAYOUT", None)
     env.pop("S2A_PATCH_DIR", None)   # 补丁只在出包时读（随包 patch.tsv 在游戏数据目录里，宿主自己找）；玩家导入的在 <S2A_DOCS>/S2A/patches
-    save = contained(c.library, layout.path(c, game["id"], "saves"))
-    cache = contained(c.library, layout.path(c, game["id"], "shader-cache"))
+    save = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "saves"))
+    cache = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "shader-cache"))
     docs = contained(c.library, c.library / "temp" / game["id"])
     for p in (save, cache, docs):
         p.mkdir(parents=True, exist_ok=True)
@@ -318,7 +318,7 @@ def clone_tree(c, source, destination, *, materialize_romfs=False):
 
 def shared_dir(c, game):
     """一款游戏各平台共用的准备目录 games/<英文名>/build/：解包（extract/ + extract-checkpoint.json）只此一份，Mac / iPhone 都从这里取（11-02 维护者：多平台导出平台无关阶段只做一次）"""
-    return contained(c.library, layout.build_dir(c, game["id"]))
+    return contained(layout.root_of(c, game["id"]), layout.build_dir(c, game["id"]))
 
 
 def extract_valid(c, game):
@@ -487,7 +487,8 @@ def prepare(c):
         if not __import__("re").fullmatch(r"[0-9A-F]{16}", game["id"]):
             raise Failure("无效的游戏标识。")
         require_game(c, game)
-        from library import check_pack_space
+        from library import apply_location, check_pack_space
+        apply_location(c, game)   # 出包页选的存放位置（游戏库结构 v3）：在别处就先搬过去
         check_pack_space(c, game)
         packages = selected_packages(game)
         size_gb = sum(p.get("size", 0) for p in {p["sha256"]: p for p in packages}.values()) / 1e9
@@ -515,7 +516,7 @@ def prepare(c):
                         inputIdentity=input_identity(game), fonts=tree_hash(fonts, ["."]),
                         engineBundleId=read(c.engine / "engine.json", {}).get("id"))
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
-        root = contained(c.library, layout.build_dir(c, game["id"]) / key)
+        root = contained(layout.root_of(c, game["id"]), layout.build_dir(c, game["id"]) / key)
         root.mkdir(parents=True, exist_ok=True)
         # 会复用缓存的步：共用解包快照对得上 → 解包；现行镜像就是从这一份产物根（同样的代码、工具、输入）出的（game.json imageKey）→ 改写与准备资源、
         #   直连库（各阶段按键跳过）。直连库若其实要重出（跑局知识等变了，DirectWatcher 看到直连临时版本），当场改回冷步
@@ -563,7 +564,7 @@ def prepare(c):
         host = compile_host(c, fingerprint, env, logs)
         ms.enter(c, "install")
         # 镜像只留一份（游戏库结构双端统一）：新镜像先出到 image/mac.partial，校验过再换进来；出成功前旧镜像不动。宿主进 hosts/mac 多款共用
-        image = contained(c.library, layout.image_mac(c, game["id"]))
+        image = contained(layout.root_of(c, game["id"]), layout.image_mac(c, game["id"]))
         temporary = image.with_name("mac.partial")
         if temporary.exists():
             shutil.rmtree(temporary)
@@ -608,5 +609,5 @@ def prepare(c):
         from library import _part_bytes, _rm
         unpacked = layout.build_dir(c, game["id"], create=False)   # 运行版本已是独立副本（clone_tree 含 RomFS）：解包和中间目录不再保留
         if unpacked.exists():
-            _rm(c, c.library, unpacked)
+            _rm(c, layout.root_of(c, game["id"]), unpacked)
         return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified")

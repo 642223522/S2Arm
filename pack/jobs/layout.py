@@ -40,54 +40,240 @@ def folder_name(english, gid, taken=()):
     return name
 
 
-def games_root(c):
-    return c.library / "games"
+LOCATION_JSON = ".s2arm-location.json"
+
+
+def games_root(c, root=None):
+    return Path(root or c.library) / "games"
 
 
 def hosts_mac(c):
-    return c.library / "hosts" / "mac"
+    return c.library / "hosts" / "mac"   # 公共件只在默认位置（游戏库结构 v3）
 
 
-def _index(c):
-    """游戏号 → 文件夹（扫 games/*/game.json；每个作业进程扫一次，建 / 迁文件夹时更新）"""
-    idx = getattr(c, "_layout_index", None)
+# ---- 存放位置 + 索引表（游戏库结构 v3：像 Steam 的库文件夹）----
+# 默认位置 = 请求里的 library（c.library），公共件（hosts/、catalog.json、iPhone 产物、全局执行锁）都在这里；玩家可以再加别的位置（别的分区、移动硬盘）。
+# 索引表 <私有目录>/library-index.json：{schema, locations: [{id, path}], games: {游戏号: {location, folder}}, last}。它只是缓存，
+# 真相是每个位置下 games/*/game.json；索引丢了按位置扫描重建。
+
+def _index_path(c):
+    return (getattr(c, "private", None) or c.library) / "library-index.json"
+
+
+def load_index(c):
+    idx = getattr(c, "_layout_idx", None)
     if idx is None:
-        idx = {}
-        root = games_root(c)
-        for d in (sorted(root.iterdir()) if root.is_dir() else []):
-            if d.is_symlink() or not d.is_dir():
-                continue
-            gid = str(read(d / GAME_JSON, {}).get("id", "")).upper()
-            if _GID.fullmatch(gid) and gid not in idx:
-                idx[gid] = d
-        c._layout_index = idx
+        idx = read(_index_path(c), {}) or {}
+        idx.setdefault("schema", 1); idx.setdefault("locations", []); idx.setdefault("games", {})
+        c._layout_idx = idx
+    want = default_id(c)   # 默认位置总在表里、排第一；它的号以库里的标识文件为准（迁移写标识后，旧的 "default" 引用跟着改）
+    old = next((l for l in idx["locations"] if l.get("path") == str(c.library)), None)
+    if old is None or old.get("id") != want:
+        if old is not None:
+            idx["locations"].remove(old)
+            for e in idx["games"].values():
+                if e.get("location") == old.get("id"):
+                    e["location"] = want
+        idx["locations"].insert(0, dict(id=want, path=str(c.library)))
     return idx
 
 
+def default_id(c):
+    return location_id(c.library) or "default"
+
+
+def save_index(c):
+    atomic(_index_path(c), load_index(c))
+
+
+def location_id(root):
+    return read(Path(root) / LOCATION_JSON, {}).get("id")
+
+
+def register_location(c, root):
+    """把一个文件夹登记成存放位置（写 .s2arm-location.json，进索引表）→ 位置号"""
+    import uuid
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    lid = location_id(root)
+    if not lid:
+        lid = uuid.uuid4().hex
+        atomic(root / LOCATION_JSON, dict(schema=1, id=lid, version=VERSION))
+    idx = load_index(c)
+    idx["locations"] = [l for l in idx["locations"] if l.get("path") != str(root) and l.get("id") != lid] + [dict(id=lid, path=str(root))]
+    save_index(c)
+    return lid
+
+
+def locations(c):
+    """[(位置号, 路径, 在不在)]，默认位置排第一"""
+    return [(l["id"], Path(l["path"]), Path(l["path"]).is_dir()) for l in load_index(c)["locations"]]
+
+
+def _location_path(c, lid):
+    return next((Path(l["path"]) for l in load_index(c)["locations"] if l.get("id") == lid), None)
+
+
+def _scan(root):
+    out = {}
+    g = games_root(None, root)
+    for d in (sorted(g.iterdir()) if g.is_dir() else []):
+        if d.is_symlink() or not d.is_dir():
+            continue
+        gid = str(read(d / GAME_JSON, {}).get("id", "")).upper()
+        if _GID.fullmatch(gid) and gid not in out:
+            out[gid] = d
+    return out
+
+
+def _remember(c, gid, d):
+    idx = load_index(c)
+    root = d.parent.parent
+    lid = default_id(c) if root == c.library else (location_id(root) or register_location(c, root))
+    if idx["games"].get(gid) != dict(location=lid, folder=d.name):
+        idx["games"][gid] = dict(location=lid, folder=d.name)
+        save_index(c)
+
+
+def state(c, gid):
+    """这款在哪 → ("ok", 文件夹) | ("offline", 位置路径)（位置没连上，如移动硬盘没插）| ("missing", 位置路径)（位置在、文件夹没了）| ("none", None)（还没建）。
+    索引对不上时（玩家改了文件夹名）扫一遍这个位置再认"""
+    gid = gid.upper()
+    entry = load_index(c)["games"].get(gid)
+    if entry:
+        root = _location_path(c, entry.get("location"))
+        if root is None:
+            return "none", None
+        if not root.is_dir():
+            return "offline", root
+        d = games_root(c, root) / entry.get("folder", "")
+        if entry.get("folder") and str(read(d / GAME_JSON, {}).get("id", "")).upper() == gid:
+            return "ok", d
+        found = _scan(root).get(gid)
+        if found:
+            _remember(c, gid, found)
+            return "ok", found
+        return "missing", root
+    for _, root, ok in locations(c):   # 索引里没有：各位置扫一遍（旧库刚迁完 / 索引丢了）
+        found = _scan(root).get(gid) if ok else None
+        if found:
+            _remember(c, gid, found)
+            return "ok", found
+    return "none", None
+
+
 def find_game(c, gid):
-    """这款的文件夹；还没有 → None"""
-    return _index(c).get(gid.upper())
+    """这款的文件夹；还没有、位置没连上或找不到 → None"""
+    st, d = state(c, gid)
+    return d if st == "ok" else None
 
 
-def game_dir(c, gid, english=None):
-    """这款的文件夹，没有就按英文名新建（写 game.json）。english 缺省取 catalog 里这款的名字"""
+def require_in_location(c, p):
+    """路径必须在某个已登记存放位置的 games/ 下（运行镜像校验用，挡住指到库外的路径）"""
+    p = Path(p).resolve()
+    for _, root, ok in locations(c):
+        if ok and p.is_relative_to(games_root(c, root).resolve()):
+            return p
+    raise Failure("运行文件不在任何存放位置里。", code="runtime_invalid")
+
+
+def root_of(c, gid):
+    """这款所在存放位置的根（托管路径校验、同盘临时目录用）；还没有就是默认位置"""
+    d = find_game(c, gid)
+    return d.parent.parent if d else c.library
+
+
+def game_dir(c, gid, english=None, location=None):
+    """这款的文件夹，没有就新建（写 game.json）：建在 location（路径），缺省上次用的位置，再缺省默认位置。english 缺省取 catalog 里这款的名字"""
     gid = gid.upper()
     if not _GID.fullmatch(gid):
         raise Failure("游戏标识无效。", code="job_failed")
-    d = find_game(c, gid)
-    if d is not None:
+    st, d = state(c, gid)
+    if st == "ok":
         return d
+    if st == "offline":
+        raise Failure(f"这款游戏所在的存放位置没连上（{d}）：插上那块盘再试。", code="job_failed")
     if english is None:
         english = next((g.get("englishName") or g.get("name") for g in read(c.library / "catalog.json", {}).get("games", []) if g.get("id", "").upper() == gid), "")
-    root = games_root(c)
-    root.mkdir(parents=True, exist_ok=True)
-    taken = [p.name for p in root.iterdir()]
-    d = root / folder_name(english, gid, taken)   # 返回原样路径（不解析软链）：调用方按 c.library 前缀比对（library._rm）
-    contained(c.library, d)
+    idx = load_index(c)
+    if location:   # 玩家指定的位置：没有就建
+        root = Path(location)
+    else:          # 上次用的位置；没连上就退回默认位置
+        root = _location_path(c, idx.get("last")) or c.library
+        if not root.is_dir():
+            root = c.library
+    if root != c.library:
+        register_location(c, root)
+    g = games_root(c, root)
+    g.mkdir(parents=True, exist_ok=True)
+    taken = [p.name for p in g.iterdir()]
+    d = g / folder_name(english, gid, taken)   # 返回原样路径（不解析软链）：调用方按位置根前缀比对（library._rm）
+    contained(root, d)
     d.mkdir()
     atomic(d / GAME_JSON, dict(schema=1, id=gid))
-    _index(c)[gid] = d
+    _remember(c, gid, d)
     return d
+
+
+def use_location(c, root):
+    """记下「上次用的位置」（出包页新游戏缺省选它）"""
+    lid = default_id(c) if Path(root) == c.library else (location_id(root) or register_location(c, root))
+    idx = load_index(c)
+    idx["last"] = lid
+    save_index(c)
+
+
+def move_game(c, gid, dest_root, progress=None):
+    """把这款整个文件夹挪到另一个存放位置：同一卷直接改名；跨卷先拷到 <目标>/games/<名>.partial，逐文件核对大小与摘要，再换名、删旧的。存档跟着走"""
+    from core import digest
+    src = find_game(c, gid)
+    if src is None:
+        raise Failure("找不到这款游戏的文件夹，没法移动。", code="job_failed")
+    dest_root = Path(dest_root)
+    if src.parent.parent == dest_root:
+        return src
+    if dest_root != c.library:
+        register_location(c, dest_root)
+    g = games_root(c, dest_root); g.mkdir(parents=True, exist_ok=True)
+    dest = g / folder_name(read(src / GAME_JSON, {}).get("name") or src.name, gid, [p.name for p in g.iterdir()]) if (g / src.name).exists() else g / src.name
+    if _same_volume(src, g):
+        os.replace(src, dest)
+    else:
+        temporary = dest.with_name(dest.name + ".partial")
+        shutil.rmtree(temporary, ignore_errors=True)
+        shutil.copytree(src, temporary, symlinks=True)
+        for f in src.rglob("*"):
+            if f.is_file() and not f.is_symlink():
+                t = temporary / f.relative_to(src)
+                if not t.is_file() or t.stat().st_size != f.stat().st_size or digest(t) != digest(f):
+                    shutil.rmtree(temporary, ignore_errors=True)
+                    raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）：" + str(f.relative_to(src)), code="job_failed")
+        os.replace(temporary, dest)
+        shutil.rmtree(src)
+    _remember(c, gid, dest)
+    return dest
+
+
+def _same_volume(a, b):
+    return os.stat(a).st_dev == os.stat(b).st_dev
+
+
+def relink(c, gid, folder):
+    """「重新指定文件夹」：选到的文件夹 game.json 游戏号对得上才接受，更新索引"""
+    folder = Path(folder)
+    if str(read(folder / GAME_JSON, {}).get("id", "")).upper() != gid.upper():
+        raise Failure("选的文件夹不是这款游戏（里面的 game.json 游戏号对不上）。", code="job_failed")
+    if folder.parent.name != "games":
+        raise Failure("请选游戏文件夹本身（在存放位置的 games 文件夹里）。", code="job_failed")
+    _remember(c, gid.upper(), folder)
+    return folder
+
+
+def forget(c, gid):
+    """「从游戏库移除」：只从索引去掉（文件不动）"""
+    idx = load_index(c)
+    if idx["games"].pop(gid.upper(), None) is not None:
+        save_index(c)
 
 
 def game_info(c, gid):
@@ -98,6 +284,16 @@ def game_info(c, gid):
 def update_info(c, gid, **fields):
     d = game_dir(c, gid)
     atomic(d / GAME_JSON, dict(read(d / GAME_JSON, {}), **fields))
+
+
+def launch_json(c, gid, create=True):
+    """启动设置（新功能线）：每款文件夹里的 launch.json"""
+    return path(c, gid, "launch.json", create=create)
+
+
+def job_tmp(c, gid, task):
+    """作业临时目录 <这款所在位置>/temp/<任务号>（与游戏数据同卷，改名快；出包修复线约定的 S2A_JOB_TMP）"""
+    return root_of(c, gid) / "temp" / task
 
 
 def path(c, gid, *parts, create=True):
@@ -189,7 +385,7 @@ def migrate(c):
                 os.replace(src, dest)
             dest.mkdir(parents=True, exist_ok=True)
             atomic(dest / GAME_JSON, dict(read(dest / GAME_JSON, {}), schema=1, id=gid))
-            _index(c)[gid] = d = dest
+            _remember(c, gid, dest); d = dest
         for spec, rel in MOVES:
             _move(c.library / spec.format(gid=gid), d / rel)
         _split_release(c, gid, d)
@@ -199,6 +395,9 @@ def migrate(c):
         top = c.library / spec.split("/")[0]
         if top.is_dir() and not any(top.iterdir()):
             top.rmdir()
+    if not location_id(c.library):   # 旧库原地变成第一个存放位置（游戏库结构 v3）
+        import uuid
+        atomic(c.library / LOCATION_JSON, dict(schema=1, id=uuid.uuid4().hex, version=VERSION))
     atomic(marker, dict(version=VERSION, games=sorted(done)))
     return True
 

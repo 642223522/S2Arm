@@ -89,7 +89,7 @@ class MigrateTests(JobCase):
         with patch.object(layout, "_split_release", side_effect=boom), self.assertRaises(OSError):
             layout.migrate(self.c)
         self.assertEqual(json.loads((L / ".s2arm-layout.json").read_text()), dict(version=1, games=[A]))
-        self.c._layout_index = None
+        self.c._layout_idx = None
         layout.migrate(self.c)
         self.assertEqual((L / "games/Other/saves/s").read_text(), "saveB")
         self.assertEqual((L / "games/Super Game Deluxe/saves/bis/s.dat").read_text(), "saveA")
@@ -98,10 +98,66 @@ class MigrateTests(JobCase):
     def test_game_dir_found_by_game_json_not_folder_name(self):
         L = self.old_library(); layout.migrate(self.c)
         os.rename(L / "games/Other", L / "games/玩家改的名字")
-        self.c._layout_index = None
+        self.c._layout_idx = None
         self.assertEqual(layout.game_dir(self.c, B), L / "games/玩家改的名字")
         d = layout.game_dir(self.c, "0100000000040000", english="Other")   # 新款撞了别人原来的名字也行（按现存文件夹判重）
         self.assertEqual(d.name, "Other")
+
+
+class LocationTests(JobCase):
+    """游戏库结构 v3：多个存放位置 + 索引表。期望按设计文档的规则手写"""
+    def setUp(self):
+        super().setUp()
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha"), dict(id=B, name="Beta")]))
+        self.disk = self.root / "移动硬盘" / "S2Arm"
+
+    def fresh(self):
+        self.c._layout_idx = None   # 新作业进程：索引从磁盘读
+        return self.c
+
+    def test_game_in_second_location_found_through_index(self):
+        d = layout.game_dir(self.c, A, location=self.disk)
+        self.assertEqual(d, self.disk / "games" / "Alpha")
+        self.assertEqual(json.loads((self.disk / ".s2arm-location.json").read_text())["schema"], 1)
+        self.assertEqual(layout.state(self.fresh(), A), ("ok", d))
+        self.assertEqual(layout.root_of(self.c, A), self.disk)
+        layout.game_dir(self.c, B)   # 没指定位置、没用过别的位置 → 默认位置
+        self.assertEqual(layout.find_game(self.fresh(), B), self.c.library / "games" / "Beta")
+
+    def test_renamed_folder_offline_location_and_missing_folder(self):
+        d = layout.game_dir(self.c, A, location=self.disk)
+        os.rename(d, d.with_name("改过的名字"))
+        self.assertEqual(layout.state(self.fresh(), A), ("ok", self.disk / "games" / "改过的名字"))   # 扫这个位置认回来
+        os.rename(self.disk, self.disk.with_name("拔掉了"))
+        self.assertEqual(layout.state(self.fresh(), A), ("offline", self.disk))
+        with self.assertRaises(Exception):
+            layout.game_dir(self.c, A)                                                             # 位置没连上不新建
+        os.rename(self.disk.with_name("拔掉了"), self.disk)
+        os.rename(self.disk / "games" / "改过的名字", self.root / "挪走了")
+        self.assertEqual(layout.state(self.fresh(), A), ("missing", self.disk))
+        with self.assertRaises(Exception):
+            layout.relink(self.c, A, self.root / "挪走了")                                         # 不在某个位置的 games 下：拒
+        (self.c.library / "games").mkdir(exist_ok=True)
+        os.rename(self.root / "挪走了", self.c.library / "games" / "Alpha 副本")
+        with self.assertRaises(Exception):
+            layout.relink(self.c, B, self.c.library / "games" / "Alpha 副本")                     # 游戏号对不上：拒
+        layout.relink(self.c, A, self.c.library / "games" / "Alpha 副本")
+        self.assertEqual(layout.state(self.fresh(), A), ("ok", self.c.library / "games" / "Alpha 副本"))
+
+    def test_move_same_volume_and_cross_volume_with_check(self):
+        d = layout.game_dir(self.c, A)
+        (d / "saves").mkdir(); (d / "saves" / "s.dat").write_text("存档")
+        moved = layout.move_game(self.c, A, self.disk)                                            # 同卷：改名
+        self.assertEqual((moved / "saves" / "s.dat").read_text(), "存档"); self.assertFalse(d.exists())
+        self.assertEqual(layout.find_game(self.fresh(), A), moved)
+        with patch.object(layout, "_same_volume", return_value=False):                            # 跨卷：拷、核对、删旧
+            back = layout.move_game(self.c, A, self.c.library)
+        self.assertEqual((back / "saves" / "s.dat").read_text(), "存档"); self.assertFalse(moved.exists())
+        self.assertEqual(layout.find_game(self.fresh(), A), back)
+
+    def test_last_used_location_is_default_for_new_games(self):
+        layout.use_location(self.c, self.disk)
+        self.assertEqual(layout.game_dir(self.fresh(), B).parent.parent, self.disk)
 
 
 if __name__ == "__main__":

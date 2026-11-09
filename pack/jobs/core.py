@@ -544,6 +544,16 @@ class Context:
                    S2A_MACHINE_NO_LOCAL="1", S2A_CPU_LEDGER="0",
                    # 玩家导入的客体着色器缓存（启动器社区资源面板拷进 <数据目录>/着色器缓存/<程序号>/，出包时自动并入；着色器线 docs/客体着色器缓存导入.md）
                    S2A_USER_SHCACHE=str(self.private / "着色器缓存"))
+        # 作业临时目录（游戏库结构 v3，出包修复线约定）：这款所在存放位置的 temp/<任务号>，与游戏数据同卷；作业结束由 main.run_request 删
+        gid = self.r.get("gameId")
+        if gid and self.r.get("library") and (self.library / ".s2arm-library.json").is_file():
+            try:
+                import layout
+                tmp = layout.job_tmp(self, gid, self.task)
+                tmp.mkdir(parents=True, exist_ok=True)
+                env["S2A_JOB_TMP"] = str(tmp)
+            except (Failure, OSError):
+                pass
         # Git 只许在引擎目录里找仓库（出包各阶段用 git -C 引擎 取源码对象号）：不许往上认到外层仓库（10-23 走查：认到用户主目录的仓库）
         env["GIT_CEILING_DIRECTORIES"] = str(Path(self.engine).resolve().parent)
         env["S2A_PYTHON"] = os.sys.executable

@@ -77,6 +77,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "catalog": library.catalog, "customize": library.customize, "remove": library.remove, "delete": library.delete, "clean": library.clean,
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free,
                   "diagnostics": library.diagnostics, "saveInput": library.save_input,
+                  "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
                   "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
                   "community": community.listing, "communitySave": community.save}
@@ -125,6 +126,18 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         return 1
     finally:
         ended.set()
+        _drop_job_tmp(c)
+
+
+def _drop_job_tmp(c):
+    """作业临时目录（Context.env 设的 S2A_JOB_TMP）随作业结束删掉；删不掉留给下次清 temp/"""
+    gid = c.r.get("gameId")
+    if gid and c.r.get("library"):
+        try:
+            import shutil
+            shutil.rmtree(layout.job_tmp(c, gid, c.task), ignore_errors=True)
+        except Exception:   # noqa: BLE001 —— 收尾不影响作业结果
+            pass
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")

@@ -1167,8 +1167,13 @@ def catalog(c):
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
         game_info = layout.game_info(c, game["id"])
         host_mac = game_info.get("hostMac")
-        game["inputConfig"] = host_update.host_exe(c, host_mac) if host_mac and game["ready"] else input_supported
+        game["inputConfig"] = toolchain.input_interface(c, host_update.host_exe(c, host_mac))[0] if host_mac and game["ready"] else input_supported
         game["hostUpdate"] = host_update.status(c, game["id"], image, manifest) if game["ready"] else "none"
+        # 存放位置（游戏库结构 v3）：ok / offline（位置没连上，如移动硬盘没插）/ missing（位置在、文件夹没了）/ none（还没出过包）
+        where, place = layout.state(c, game["id"])
+        root = place.parent.parent if where == "ok" else place
+        game["location"] = dict(state=where, path=str(root) if root else "", folder=str(place) if where == "ok" else "",
+                                volume=_volume(root) if root else "", default=root == c.library if root else True)
         cover = layout.path(c, game["id"], "cover.jpg", create=False)
         custom = game_custom(c, game["id"])
         game["customName"], game["customCover"] = bool(custom["name"]), custom["cover"] is not None
@@ -1465,7 +1470,7 @@ def sweep_residue(c):
                 if stale:
                     prune_build(c, gid, record=False)
                 for partial in partials:
-                    _rm(c, c.library, partial)
+                    _rm(c, layout.root_of(c, gid), partial)
     except (Failure, OSError, ValueError):
         pass   # 清不掉不影响读游戏库，下次再扫
 
@@ -1484,7 +1489,7 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
     if retain_compiler and kit_ready:
         unpacked = layout.build_dir(c, gid, create=False)
         if unpacked.exists():
-            _rm(c, c.library, unpacked); n += 1
+            _rm(c, layout.root_of(c, gid), unpacked); n += 1
     if out.is_dir():
         for p in out.iterdir():
             if p.name == "logs" or p.name.endswith("资源包") or (p.is_file() and p.suffix == ".ipa"):
@@ -1560,9 +1565,9 @@ def delete(c):
                     if has_saves:
                         for item in gdir.iterdir():
                             if item.name not in ("saves", "save-backups"):
-                                _rm(c, c.library, item)
+                                _rm(c, layout.root_of(c, gid), item)
                     else:
-                        _rm(c, c.library, gdir)
+                        _rm(c, layout.root_of(c, gid), gdir)
                 for p in game_caches(c, gid):
                     _rm(c, c.work_root, p)
                 drop_from_container(c, gid)
@@ -1594,10 +1599,10 @@ def clean(c):
             c.begin("清理构建缓存")
             target = layout.build_dir(c, game["id"], create=False)
             if target.is_dir():
-                _rm(c, c.library, target)
+                _rm(c, layout.root_of(c, game["id"]), target)
             shader = layout.path(c, game["id"], "shader-cache", create=False)   # 清缓存 = 本款出包缓存 + 运行时着色器缓存（游戏库结构双端统一「清缓存」）
             if shader.is_dir():
-                _rm(c, c.library, shader)
+                _rm(c, layout.root_of(c, game["id"]), shader)
             prune_build(c, game["id"], retain_compiler=False)   # 用户显式清缓存保留原有全清语义，不套用 Q15 自动保留策略
         elif kind == "sources":
             # 只删 0.1.0-beta.3 及以前复制进游戏库的托管副本；原地导入的原件是玩家的文件，只读、不删
@@ -1924,3 +1929,61 @@ def diagnostics(c):
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return dict(outputPath=str(destination))
+
+
+# ---- 存放位置（游戏库结构 v3）----
+
+def location_rows(c):
+    """出包页「存放位置」下拉框：各位置的路径、卷名、剩余空间、连没连上；last = 上次用的位置"""
+    rows = []
+    for lid, root, ok in layout.locations(c):
+        free = shutil.disk_usage(root).free if ok else None
+        rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library))
+    return dict(locations=rows, last=layout.load_index(c).get("last") or layout.default_id(c))
+
+
+def list_locations(c):
+    return location_rows(c)
+
+
+def apply_location(c, game):
+    """出包前按请求的 location（路径）放这款：已在别的位置就整个搬过去（存档跟着走），还没有就建在那里；记成「上次用的位置」"""
+    want = c.r.get("location")
+    if not want:
+        return
+    want = Path(want).expanduser()
+    if want == Path(want.anchor) or want == Path.home():
+        raise Failure("请选一个单独的文件夹作存放位置。", code="job_failed")
+    where, place = layout.state(c, game["id"])
+    if where == "ok" and place.parent.parent != want:
+        c.begin("把这款游戏搬到新的存放位置")
+        layout.move_game(c, game["id"], want)
+    elif where != "ok":
+        layout.game_dir(c, game["id"], location=want)
+    layout.use_location(c, want)
+
+
+def move_game(c):
+    with c.lock("execution"), c.lock():
+        game = c.game()
+        if not c.r.get("location"):
+            raise Failure("没有选新的存放位置。", code="job_failed")
+        apply_location(c, game)
+        return dict(gameId=game["id"], folder=str(layout.find_game(c, game["id"])))
+
+
+def relink_game(c):
+    with c.lock():
+        game = c.game()
+        return dict(gameId=game["id"], folder=str(layout.relink(c, game["id"], Path(c.r.get("folder") or ""))))
+
+
+def forget_game(c):
+    """「从游戏库移除」（找不到 / 不要了）：清单和索引里去掉，磁盘上的文件不动"""
+    with c.lock():
+        gid = c.game()["id"]
+        layout.forget(c, gid)
+        cat = c.catalog()
+        cat["games"] = [g for g in cat["games"] if g["id"] != gid]
+        atomic(c.library / "catalog.json", cat)
+    return {}
