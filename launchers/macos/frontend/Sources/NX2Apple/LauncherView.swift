@@ -111,7 +111,7 @@ struct LauncherView: View {
         .background(UnifiedTitlebar(actions: topActions))
     }
 
-    /// 顶栏右侧的按钮放进系统工具栏本身：工具栏盖在窗口内容上，内容里的按钮收不到真实点击（11-08 维护者）。
+    /// 顶栏右侧的按钮放进标题栏本身：工具栏盖在窗口内容上，内容里的按钮收不到真实点击（11-08 维护者）。
     private var topActions: some View {
         HStack(spacing: 12) {
                 if model.loading { ProgressView().controlSize(.small) }
@@ -141,6 +141,7 @@ struct LauncherView: View {
                 .buttonStyle(LauncherSecondaryButtonStyle())
         }
         .padding(.trailing, 8)
+        .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
         .labelStyle(.titleAndIcon)   // 工具栏里 Label 缺省只显示图标
         .tint(LauncherPalette.cream)
         .environment(\.colorScheme, .dark)
@@ -152,17 +153,11 @@ struct LauncherView: View {
         let actions: Actions
 
         final class Coordinator: NSObject, NSToolbarDelegate {
-            static var item: NSToolbarItem.Identifier { NSToolbarItem.Identifier("s2arm.actions") }
             let host: NSHostingView<Actions>
             init(_ actions: Actions) { host = NSHostingView(rootView: actions) }
-            func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Self.item] }
-            func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Self.item] }
-            func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-                guard id == Self.item else { return nil }
-                let item = NSToolbarItem(itemIdentifier: id)
-                item.view = host
-                return item
-            }
+            func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace] }
+            func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace] }
+            func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { nil }
         }
 
         final class Host: NSView {
@@ -177,6 +172,11 @@ struct LauncherView: View {
                 window.toolbar = toolbar
                 window.toolbarStyle = .unified
                 window.titlebarSeparatorStyle = .none
+                // 工具栏只负责标题栏高度。按钮直接放进标题栏：放进工具栏项时 macOS 26 会在整组下面再垫一层玻璃胶囊，和按钮自己的胶囊叠在一起
+                guard let close = window.standardWindowButton(.closeButton), let bar = close.superview, let host = coordinator?.host else { return }
+                host.translatesAutoresizingMaskIntoConstraints = false
+                bar.addSubview(host)
+                NSLayoutConstraint.activate([host.trailingAnchor.constraint(equalTo: bar.trailingAnchor), host.centerYAnchor.constraint(equalTo: close.centerYAnchor)])
             }
         }
 

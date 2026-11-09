@@ -194,6 +194,7 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     NSMapTable<UITouch *, UILabel *> *_drag;
     NSMapTable<UITouch *, NSValue *> *_dragOffset;
     NSDictionary *_styleSnapshot, *_scales;     // 进编辑时的外观（取消时还原）；取键用的每键倍率
+    UITouch *_ringDrag[2];                      // 固定摇杆：编辑时拖位置
     UILabel *_selected; UIView *_keyPanel; UILabel *_keyTitle; UISlider *_sizeSlider, *_alphaSlider; UISwitch *_hideSwitch;
 }
 static const CGFloat kHit = 10;
@@ -294,7 +295,7 @@ static NSString *button_label(NSString *identifier) {
     _hapticState = (S2AVPadHapticState){0}; memset(_stickTravel, 0, sizeof _stickTravel); _impactFeedback = nil;
     _holdLock = (S2AVPadHoldLockState){0}; [_holdLockTimer invalidate]; _holdLockTimer = nil; _holdLockDue = 0;   // 失焦 / 接手柄 / 开设置都放开：不留看不见的按住
     memset(_ax, 0, sizeof _ax); memset(_lastUp, 0, sizeof _lastUp);
-    for (int i = 0; i < 2; i++) { _stick[i] = nil; _ring[i].hidden = _knob[i].hidden = YES; }
+    for (int i = 0; i < 2; i++) { _stick[i] = nil; [self restStick:i]; }
     [_slot removeAllObjects];
     @synchronized(self) {
         for (int i = 0; i < 16; i++) if (_slotState[i] == 1) _slotState[i] = 2;   // 按住的手指补一帧 End 再释放
@@ -306,6 +307,15 @@ static NSString *button_label(NSString *identifier) {
     s2a_pad_update(S2A_PAD_TOUCH, 0, 0, NULL);
     if (_inputEnabled && !_settingsOpen && !_editing) s2a_pad_update(S2A_PAD_TOUCH, 1, 0, axes);
 }
+- (CGPoint)fixedCenter:(int)side {
+    CGPoint c = [_layoutStore stickCenter:side]; return CGPointMake(CGRectGetMinX(_safeRect) + c.x * _safeRect.size.width, CGRectGetMinY(_safeRect) + c.y * _safeRect.size.height);
+}
+- (void)restStick:(int)side {   // 松手 / 清触点后的样子：浮动隐藏，固定回到自己的位置（常驻）
+    BOOL show = _layoutStore.stickFixed && !_touchOnly && !CGRectIsEmpty(_safeRect);
+    _ring[side].hidden = _knob[side].hidden = !show;
+    if (show) _ring[side].center = _knob[side].center = [self fixedCenter:side];
+}
+- (void)stickModeChanged { [self clearTouches]; [self setNeedsLayout]; }
 - (void)lostFocus:(NSNotification *)notification { [self clearTouches]; }
 - (CGRect)layoutSafeRect {
     UIEdgeInsets insets = self.safeAreaInsets;
@@ -575,6 +585,7 @@ static NSString *button_label(NSString *identifier) {
     } closed:nil];
     settings.embeddedInSettings = YES;
     settings.editRequested = ^{ [weakSelf beginEditing]; };
+    settings.stickModeChanged = ^{ [weakSelf stickModeChanged]; };
     settings.currentLayout = ^S2AVPadLayout *{ S2AVPadView *view = weakSelf; return view ? view->_layout : nil; };
     return settings;
 }
@@ -608,6 +619,7 @@ static NSString *button_label(NSString *identifier) {
         int side = [stick[@"id"] isEqualToString:@"left"] ? 0 : 1;
         _activation[side] = [_layout activationForStick:stick safeRect:safe]; _radius[side] = [_layout radiusForStick:stick safeRect:safe] * _layoutStore.globalScale;
         _ring[side].alpha = _knob[side].alpha = vp_opacity() * _layoutStore.globalOpacity;
+        if (!_stick[side] && !_ringDrag[side]) [self restStick:side];
         _ring[side].bounds = CGRectMake(0, 0, 2 * _radius[side] + 4, 2 * _radius[side] + 4); _ring[side].layer.cornerRadius = _radius[side] + 2;
         CGFloat knob = _radius[side] * 52 / 60; _knob[side].bounds = CGRectMake(0, 0, knob, knob); _knob[side].layer.cornerRadius = knob / 2;
     }
@@ -801,17 +813,20 @@ static NSString *button_label(NSString *identifier) {
 - (void)moveStick:(int)k to:(CGPoint)p {
     CGFloat radius = MAX(_radius[k], 1);
     CGFloat dx = (p.x - _c[k].x) / radius, dy = (p.y - _c[k].y) / radius, m = hypot(dx, dy); if (m > 1) { dx /= m; dy /= m; }
+    CGPoint sens = S2AVPadStickSensitivity(CGPointMake((p.x - _c[k].x) / radius, (p.y - _c[k].y) / radius), _layoutStore.stickSensitivity);
     _stickTravel[k] = m;
     _maxMove[k] = MAX(_maxMove[k], hypot(p.x - _c[k].x, p.y - _c[k].y));
     // 触屏源直接写 pad_update，不经过实体手柄的 s2a_pad_stick；死区只应用一次。
-    CGPoint output = S2AVPadStickResponse(CGPointMake(dx, dy), _layoutStore.stickDeadzone, _layoutStore.stickSaturation, _layoutStore.stickExponent);
+    CGPoint output = S2AVPadStickResponse(sens, _layoutStore.stickDeadzone, _layoutStore.stickSaturation, _layoutStore.stickExponent);
     _ax[2 * k] = (int16_t)lround(output.x * 32767); _ax[2 * k + 1] = (int16_t)lround(-output.y * 32767);
     _knob[k].center = CGPointMake(_c[k].x + dx * radius, _c[k].y + dy * radius);
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     if (_editing) {
         for (UITouch *t in ts) {
-            CGPoint p = [t locationInView:self]; int k = [self keyAt:p]; if (k < 0) { [self selectKey:nil]; continue; }
+            CGPoint p = [t locationInView:self]; int k = [self keyAt:p];
+            if (_layoutStore.stickFixed && k < 0) { BOOL grabbed = NO; for (int i = 0; i < 2 && !grabbed; i++) if (!_ringDrag[i] && hypot(p.x - _ring[i].center.x, p.y - _ring[i].center.y) <= _radius[i]) { _ringDrag[i] = t; grabbed = YES; } if (grabbed) continue; }
+            if (k < 0) { [self selectKey:nil]; continue; }
             for (UILabel *l in _keys) if (l.tag == k) { [self selectKey:l]; [_drag setObject:l forKey:t];
                 [_dragOffset setObject:[NSValue valueWithCGPoint:CGPointMake(l.center.x - p.x, l.center.y - p.y)] forKey:t]; vp_fill(l, YES); break; }
         }
@@ -824,17 +839,20 @@ static NSString *button_label(NSString *identifier) {
         if (_touchOnly) { [self beginSlot:t at:p]; continue; }   // 纯触屏：没有按键也没有摇杆，这一下直接进游戏
         int k = [self keyAt:p];
         if (k >= 0) { [_held setObject:@(k) forKey:t]; continue; }
-        int side = CGRectContainsPoint(_activation[0], p) ? 0 : CGRectContainsPoint(_activation[1], p) ? 1 : -1;
+        int side = -1;
+        if (_layoutStore.stickFixed) { for (int i = 0; i < 2; i++) { CGPoint c = [self fixedCenter:i]; if (hypot(p.x - c.x, p.y - c.y) <= _radius[i] * 1.3) { side = i; break; } } }   // 固定：只认摇杆圈附近
+        else side = CGRectContainsPoint(_activation[0], p) ? 0 : CGRectContainsPoint(_activation[1], p) ? 1 : -1;
         if (side < 0 || _stick[side]) continue;
-        _stick[side] = t; _c[side] = p; _downAt[side] = t.timestamp; _maxMove[side] = 0; [_held setObject:@(-1 - side) forKey:t];
+        _stick[side] = t; _c[side] = _layoutStore.stickFixed ? [self fixedCenter:side] : p; _downAt[side] = t.timestamp; _maxMove[side] = 0; [_held setObject:@(-1 - side) forKey:t];
         if (t.timestamp - _lastUp[side] < 0.3 && hypot(p.x - _lastUpAt[side].x, p.y - _lastUpAt[side].y) < 40) _stickPress |= 1u << (side ? B_RS : B_LS);   // 双击：第二下按住 = 摇杆按下
-        _ring[side].center = p; _knob[side].center = p; _ring[side].hidden = _knob[side].hidden = NO;
+        _ring[side].center = _c[side]; _knob[side].center = _c[side]; _ring[side].hidden = _knob[side].hidden = NO;
         [self moveStick:side to:p];
     }
     [self publish];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     if (_editing) {
+        for (int i = 0; i < 2; i++) if (_ringDrag[i] && [ts containsObject:_ringDrag[i]]) { CGPoint p = [_ringDrag[i] locationInView:self]; _ring[i].center = _knob[i].center = p; }
         for (UITouch *t in ts) { UILabel *l = [_drag objectForKey:t]; if (!l) continue;
             CGPoint p = [t locationInView:self], o = [_dragOffset objectForKey:t].CGPointValue;
             CGFloat hw = l.bounds.size.width / 2, hh = l.bounds.size.height / 2;   // 中心钳在安全区内：整个键不出界
@@ -860,13 +878,17 @@ static NSString *button_label(NSString *identifier) {
             // 点按不拖 = 按一下摇杆（双击第二下按住时已经按着，不再补一下）
             if (!(_stickPress & bit) && S2AVPadStickTapIsPress(t.timestamp - _downAt[side], _maxMove[side])) tap |= bit;
             _stick[side] = nil; _ax[2 * side] = _ax[2 * side + 1] = 0; _stickPress &= ~bit;
-            _ring[side].hidden = _knob[side].hidden = YES; _lastUp[side] = t.timestamp; _lastUpAt[side] = [t locationInView:self]; }
+            [self restStick:side]; _lastUp[side] = t.timestamp; _lastUpAt[side] = [t locationInView:self]; }
     }
     // 先发一拍「按着」再发松开：pad.c 的短按锁存把这次按下留到 HID 下一次读取，和按键短按同一条路
     if (tap) { _stickPress |= tap; [self publish]; _stickPress &= ~tap; }
     [self publish]; [self wake];
 }
-- (void)editRelease:(NSSet<UITouch *> *)ts { for (UITouch *t in ts) { vp_fill([_drag objectForKey:t], NO); [_drag removeObjectForKey:t]; [_dragOffset removeObjectForKey:t]; } }
+- (void)editRelease:(NSSet<UITouch *> *)ts {
+    for (int i = 0; i < 2; i++) if (_ringDrag[i] && [ts containsObject:_ringDrag[i]]) { CGPoint c = _ring[i].center; NSError *e; _ringDrag[i] = nil;
+        CGPoint n = CGPointMake(MAX(0, MIN(1, (c.x - CGRectGetMinX(_safeRect)) / _safeRect.size.width)), MAX(0, MIN(1, (c.y - CGRectGetMinY(_safeRect)) / _safeRect.size.height)));
+        if (![_layoutStore setStickCenter:n side:i error:&e]) LOG("【红】摇杆位置保存失败：%s", e.localizedDescription.UTF8String); }
+    for (UITouch *t in ts) { vp_fill([_drag objectForKey:t], NO); [_drag removeObjectForKey:t]; [_dragOffset removeObjectForKey:t]; } }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { if (_editing) { [self editRelease:ts]; return; } [self end:ts]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { if (_editing) { [self editRelease:ts]; return; } [self clearTouches]; [self wake]; }
 @end

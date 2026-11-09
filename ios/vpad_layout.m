@@ -205,6 +205,10 @@ static BOOL stick_values(CGFloat deadzone, CGFloat saturation, CGFloat exponent)
         isfinite(saturation) && saturation >= .5 && saturation <= 1 &&
         isfinite(exponent) && exponent >= .5 && exponent <= 3;
 }
+CGPoint S2AVPadStickSensitivity(CGPoint input, CGFloat sensitivity) {
+    CGFloat x = input.x * sensitivity, y = input.y * sensitivity, m = hypot(x, y);
+    return m > 1 ? CGPointMake(x / m, y / m) : CGPointMake(x, y);
+}
 CGPoint S2AVPadStickResponse(CGPoint input, CGFloat deadzone, CGFloat saturation, CGFloat exponent) {
     CGFloat radius = hypot(input.x, input.y);
     if (!isfinite(radius) || radius <= deadzone || !stick_values(deadzone, saturation, exponent)) return CGPointZero;
@@ -231,6 +235,8 @@ static int read_enabled(NSURL *file, BOOL *enabled) {
     NSString *_hapticProblem;
     NSString *_holdLockProblem;
     NSString *_keyStyleProblem;
+    NSString *_stickModeProblem;
+    CGPoint _stickCenters[2];
     NSMutableDictionary<NSString *, NSDictionary *> *_keyStyles;
 
     NSString *_stickProblem;
@@ -246,7 +252,7 @@ static int read_enabled(NSURL *file, BOOL *enabled) {
     _holdLockEnabled = YES;
     if (read_enabled([_directory URLByAppendingPathComponent:@".hold_lock.json"], &_holdLockEnabled) < 0)
         _holdLockProblem = @"F01.holdLock：按住锁定设置损坏，暂用默认开启；原记录保留至重新设置成功";
-    [self loadKeyStyles];
+    [self loadKeyStyles]; [self loadStickMode];
     _idleKeyOpacity = 0.25;
     NSURL *visibility = [_settingsDirectory URLByAppendingPathComponent:@".visibility.json"];
     if ([NSFileManager.defaultManager fileExistsAtPath:visibility.path]) {
@@ -311,6 +317,7 @@ static int read_enabled(NSURL *file, BOOL *enabled) {
     if (_hapticProblem) [problems addObject:_hapticProblem];
     if (_holdLockProblem) [problems addObject:_holdLockProblem];
     if (_keyStyleProblem) [problems addObject:_keyStyleProblem];
+    if (_stickModeProblem) [problems addObject:_stickModeProblem];
     if (_stickProblem) [problems addObject:_stickProblem];
     if (_visibilityProblem) [problems addObject:_visibilityProblem];
     NSError *error; NSArray *urls = [NSFileManager.defaultManager contentsOfDirectoryAtURL:_directory includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:&error];
@@ -355,6 +362,36 @@ static int read_enabled(NSURL *file, BOOL *enabled) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"schemaVersion": @1, @"enabled": (enabled ? @YES : @NO)} options:0 error:error];
     if (!data || ![data writeToURL:[_directory URLByAppendingPathComponent:@".hold_lock.json"] options:NSDataWritingAtomic error:error]) return NO;
     _holdLockEnabled = enabled; _holdLockProblem = nil; return YES;
+}
+- (NSURL *)stickModeFile { return [_directory URLByAppendingPathComponent:@".stick_mode.json"]; }
+- (void)loadStickMode {
+    _stickFixed = NO; _stickSensitivity = 1; _stickCenters[0] = CGPointMake(0.12, 0.66); _stickCenters[1] = CGPointMake(0.63, 0.66);
+    NSData *data = [NSData dataWithContentsOfURL:self.stickModeFile];
+    if (!data) return;
+    id doc = data.length <= 4096 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (!fields(doc, @[@"schemaVersion", @"fixed", @"sensitivity", @"left", @"right"]) || !number(doc[@"schemaVersion"], 1, 1) || !number(doc[@"sensitivity"], 0.5, 2) || ![doc[@"fixed"] isKindOfClass:NSNumber.class]) {
+        _stickModeProblem = @"F01.stickMode：摇杆模式设置损坏，暂用默认；原记录保留至重新设置成功"; return; }
+    NSArray *names = @[@"left", @"right"];
+    for (int i = 0; i < 2; i++) { NSArray *p = doc[names[i]];
+        if (![p isKindOfClass:NSArray.class] || p.count != 2 || !number(p[0], 0, 1) || !number(p[1], 0, 1)) { _stickModeProblem = @"F01.stickMode：摇杆模式设置损坏，暂用默认；原记录保留至重新设置成功"; return; } }
+    _stickFixed = [doc[@"fixed"] boolValue]; _stickSensitivity = [doc[@"sensitivity"] doubleValue];
+    for (int i = 0; i < 2; i++) { NSArray *p = doc[names[i]]; _stickCenters[i] = CGPointMake([p[0] doubleValue], [p[1] doubleValue]); }
+}
+- (BOOL)saveStickMode:(NSError **)error {
+    if (![self prepareDirectory:error]) return NO;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"schemaVersion": @1, @"fixed": @(_stickFixed), @"sensitivity": @(_stickSensitivity),
+        @"left": @[@(_stickCenters[0].x), @(_stickCenters[0].y)], @"right": @[@(_stickCenters[1].x), @(_stickCenters[1].y)]} options:0 error:error];
+    if (!data || ![data writeToURL:self.stickModeFile options:NSDataWritingAtomic error:error]) return NO;
+    _stickModeProblem = nil; return YES;
+}
+- (CGPoint)stickCenter:(int)side { return _stickCenters[side ? 1 : 0]; }
+- (BOOL)setStickFixed:(BOOL)fixed sensitivity:(CGFloat)sensitivity error:(NSError **)error {
+    if (!isfinite(sensitivity) || sensitivity < 0.5 || sensitivity > 2) return fail(error, @"F01.stickMode", @"灵敏度须为 0.5–2");
+    _stickFixed = fixed; _stickSensitivity = sensitivity; return [self saveStickMode:error];
+}
+- (BOOL)setStickCenter:(CGPoint)center side:(int)side error:(NSError **)error {
+    if (!isfinite(center.x) || !isfinite(center.y) || center.x < 0 || center.x > 1 || center.y < 0 || center.y > 1) return fail(error, @"F01.stickMode", @"摇杆位置超出屏幕");
+    _stickCenters[side ? 1 : 0] = center; return [self saveStickMode:error];
 }
 static BOOL key_style_valid(S2AVPadKeyStyle s) {
     return isfinite(s.scale) && isfinite(s.opacity) && s.scale >= 0.6 && s.scale <= 1.6 && s.opacity >= 0.2 && s.opacity <= 1;

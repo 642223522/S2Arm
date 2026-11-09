@@ -6300,20 +6300,12 @@
   "en": "{0} runs iOS {1}; S2Arm needs iOS {2} or later. Update the system first."
  },
  {
-  "source": "解包与构建缓存",
-  "en": "Unpacked files and build cache"
+  "source": "旧版残留",
+  "en": "Leftovers from older versions"
  },
  {
-  "source": "下次出包会重新解包（多花几分钟）",
-  "en": "The next build unpacks the game again (a few more minutes)"
- },
- {
-  "source": "出包中间产物",
-  "en": "Intermediate build files"
- },
- {
-  "source": "下次出包会重新生成（多花几分钟到几十分钟）",
-  "en": "The next build regenerates them (a few to several tens of minutes more)"
+  "source": "旧版本留下的解包和中间文件，出包成功后不再保留；删了不影响已出好的包和 Mac 版本",
+  "en": "Unpacked and intermediate files left by older versions, which are no longer kept after a successful export. Deleting them does not affect finished packages or the Mac version."
  },
  {
   "source": "着色器与出包缓存",
@@ -6630,5 +6622,49 @@
  {
   "source": "按上面的提示做完，再点一次安装。",
   "en": "Follow the steps above, then tap Install again."
+ },
+ {
+  "source": "原来的位置不是可搬的游戏库。",
+  "en": "The current location isn't a library that can be moved."
+ },
+ {
+  "source": "新位置不能在原来的游戏库里面，也不能包含它。",
+  "en": "The new location can't be inside the current library or contain it."
+ },
+ {
+  "source": "旧游戏库还有任务在跑，等它结束再搬。",
+  "en": "A task is still running in the current library. Wait for it to finish, then move."
+ },
+ {
+  "source": "新位置空间不够，游戏库没有搬。",
+  "en": "Not enough space at the new location. The library wasn't moved."
+ },
+ {
+  "source": "拷到新位置后校验不一致：{0}",
+  "en": "Verification failed after copying to the new location: {0}"
+ },
+ {
+  "source": "把游戏库拷到新位置",
+  "en": "Copying the library to the new location"
+ },
+ {
+  "source": "把游戏库放到新位置",
+  "en": "Placing the library at the new location"
+ },
+ {
+  "source": "游戏库已经搬好，旧位置有文件没删掉，可以手动删除：{0}",
+  "en": "The library has moved, but some files at the old location couldn't be deleted. You can delete them yourself: {0}"
+ },
+ {
+  "source": "这个文件夹里已有别的文件：请选空文件夹，或者已有的 S2Arm 游戏库。文件都没动。",
+  "en": "This folder already has other files. Choose an empty folder or an existing S2Arm library. Nothing was changed."
+ },
+ {
+  "source": "游戏库还在原来的位置，什么都没有丢：按上面的原因处理后再搬一次。",
+  "en": "The library is still where it was and nothing was lost. Fix the problem above and move it again."
+ },
+ {
+  "source": "游戏库没有搬成",
+  "en": "Library wasn't moved"
  }
 ]
