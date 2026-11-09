@@ -105,6 +105,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 游戏库读回来过（成功或失败）：之前库是空的只说明还没读完，不能显示「还没有游戏」。
     @Published private(set) var libraryLoaded = false
     @Published private(set) var libraryError: String?
+    /// 库页上的列表是上次读到的快照（启动时先显示的，或这次刷新没成）：库页要标明，并在刷新失败时给重试（审计 P1-148）。
+    @Published private(set) var showingSnapshot = false
+    /// 刷新没成、库页仍显示上次的列表：这时的失败原因（没能刷新提示用；第一次就没读成、列表是空的走欢迎页的报错）。
+    var staleLibraryError: String? { showingSnapshot && !games.isEmpty ? libraryError : nil }
     @Published var selectedID: String?
     /// 出包平台的勾选没能写盘。
     @Published private(set) var choiceError: String?
@@ -171,6 +175,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 上一次释放了多少（字节）；换一款或重新打开时清掉。
     @Published private(set) var spaceFreed: Int64?
     private var spaceGameID: String?
+    // 存储总览（storageOverview，FreeSpaceView 的「总览」）
+    @Published private(set) var overview: StorageOverview?
+    @Published private(set) var overviewLoading = false
+    @Published private(set) var overviewError: String?
 
     let provider: S2ArmEngineProvider
     private var running: RunningGame?
@@ -194,6 +202,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             games = known
             selectedID = known.first?.id
             libraryLoaded = true
+            showingSnapshot = true
         }
         loading = true
         provider.library.load { [weak self] result in
@@ -202,10 +211,11 @@ public final class S2ArmLauncherModel: ObservableObject {
             self.libraryLoaded = true
             switch result {
             case .success(let games):
-                self.games = games; self.libraryError = nil
+                self.games = games; self.libraryError = nil; self.showingSnapshot = false
                 if self.selectedID == nil || !games.contains(where: { $0.id == self.selectedID }) { self.selectedID = games.first?.id }
             case .failure(let error):
                 self.libraryError = error.message
+                self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
             }
         }
     }
@@ -274,6 +284,16 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 读这款的占用（spaceSurvey）。换了一款先清掉上一款的。
     func clearSpaceFreed() { spaceFreed = nil }
 
+    func loadOverview() {
+        guard !overviewLoading else { return }
+        overviewLoading = true; overviewError = nil
+        Task {
+            do { overview = try await provider.space.overview() }
+            catch { overviewError = error.localizedDescription }
+            overviewLoading = false
+        }
+    }
+
     func loadSpace(_ gameID: String) {
         if spaceGameID != gameID { spaceGameID = gameID; space = nil; spaceFreed = nil }
         spaceError = nil
@@ -306,6 +326,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             spaceFreeing = false
             loadSpace(gameID)
             refresh()   // 删了 Mac 运行版本，这款要重新准备
+            if overview != nil { loadOverview() }
         }
     }
 

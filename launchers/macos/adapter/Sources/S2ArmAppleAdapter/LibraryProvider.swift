@@ -52,11 +52,13 @@ public struct GameSummary: Identifiable, Equatable {
     public let hostUpdate: String
     /// 存放位置（游戏库结构 v3）：state = ok / offline（位置没连上）/ missing（文件夹找不到）/ none（还没出过包）
     public let location: GameLocation
+    /// 各部分大小（catalog 的 sizes；pack/jobs/sizes.py 在出包 / 清缓存等之后量好记下）
+    public let sizes: GameSizes
 
     public init(id: String, name: String, display: String = "", cover: String? = nil, ready: Bool = false,
                 needsPreparation: Bool = false, compatibility: String = "experimental", missing: [String] = [], packages: [GamePackage] = [],
-                iphoneReady: Bool = false, iphoneInstalledAt: Double? = nil, iphoneFree: Bool = false, customName: Bool = false, customCover: Bool = false, hostUpdate: String = "none", location: GameLocation = GameLocation()) {
-        self.customName = customName; self.customCover = customCover; self.hostUpdate = hostUpdate; self.location = location
+                iphoneReady: Bool = false, iphoneInstalledAt: Double? = nil, iphoneFree: Bool = false, customName: Bool = false, customCover: Bool = false, hostUpdate: String = "none", location: GameLocation = GameLocation(), sizes: GameSizes = GameSizes()) {
+        self.customName = customName; self.customCover = customCover; self.hostUpdate = hostUpdate; self.location = location; self.sizes = sizes
         self.iphoneReady = iphoneReady; self.iphoneInstalledAt = iphoneInstalledAt; self.iphoneFree = iphoneFree
         self.id = id; self.name = name; self.display = display; self.cover = cover; self.ready = ready
         self.needsPreparation = needsPreparation; self.compatibility = compatibility; self.missing = missing; self.packages = packages
@@ -74,7 +76,8 @@ public struct GameSummary: Identifiable, Equatable {
                   iphoneInstalledAt: ((g["iphoneInstall"] as? [String: Any])?["at"] as? NSNumber)?.doubleValue,
                   iphoneFree: (g["iphoneInstall"] as? [String: Any])?["free"] as? Bool ?? false,
                   customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false,
-                  hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]))
+                  hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]),
+                  sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
     }
 
     /// 某类原件里版本最新的那个的显示版本（base / update）；没有这类为 nil。
@@ -214,6 +217,26 @@ public struct GameLocation: Equatable {
     public init() {}
     public init(catalog l: [String: Any]) {
         state = l["state"] as? String ?? "none"; path = l["path"] as? String ?? ""; folder = l["folder"] as? String ?? ""; volume = l["volume"] as? String ?? ""
+    }
+}
+
+/// 一款的各部分大小（字节，catalog 的 sizes）：Mac 镜像、iPhone 镜像、存档、缓存（出包缓存 + 着色器缓存）、原件（多款共用的按款数均摊）。
+/// measured = 量过（没量过时前四项是 0，界面显示「未统计」）。
+public struct GameSizes: Equatable {
+    public var imageMac: Int64 = 0
+    public var imageIos: Int64 = 0
+    public var saves: Int64 = 0
+    public var cache: Int64 = 0
+    public var sources: Int64 = 0
+    public var measured = false
+    public init() {}
+    public init(imageMac: Int64, imageIos: Int64, saves: Int64, cache: Int64, sources: Int64, measured: Bool) {
+        self.imageMac = imageMac; self.imageIos = imageIos; self.saves = saves; self.cache = cache; self.sources = sources; self.measured = measured
+    }
+    public init(catalog s: [String: Any]) {
+        func n(_ k: String) -> Int64 { (s[k] as? NSNumber)?.int64Value ?? 0 }
+        imageMac = n("imageMac"); imageIos = n("imageIos"); saves = n("saves"); cache = n("cache"); sources = n("sources")
+        measured = s["measured"] as? Bool ?? false
     }
 }
 
