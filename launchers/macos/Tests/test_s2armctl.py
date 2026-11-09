@@ -350,7 +350,7 @@ class NextStepTests(unittest.TestCase):
         self.assertEqual((n["step"], n["who"], n["ipa"]), ("装机", "ai", "/lib/iPhone/g/tg.ipa"))
         self.assertIn("s2armctl install g", n["do"])
         # 装机失败按错误码：Xcode 没登录 → 玩家本人登录；没连设备 → 问玩家连上
-        for code, who in (("xcode_account_missing", "human"), ("device_not_connected", "ask"), ("free_app_limit", "human"), ("signing_failed", "ai")):
+        for code, who in (("xcode_account_missing", "human"), ("device_not_connected", "ask"), ("free_app_limit", "human"), ("free_appid_limit", "human"), ("signing_failed", "ai")):
             inst = {"id": "t4", "gameId": "g", "operation": "install", "state": "failed", "started": 5, "diagnostics": [{"code": code, "summary": "x"}]}
             n = ctl.next_step(full_state(games=[game("g", "G", 1e9)], tasks=[done, inst]))
             self.assertEqual((n["step"], n["who"], n["code"]), ("装机失败", who, code))
