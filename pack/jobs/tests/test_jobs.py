@@ -757,6 +757,11 @@ class JobsTests(unittest.TestCase):
             self.assertIn("磁盘空间不足", why)   # pack/jobs/errors.py 据此归 disk_full
             sizes[str(cache)] = 4 << 30
             self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 8 << 30)))
+            # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="7.9"):
+                self.assertIn("这块盘只剩 7.9 GB", space_rule.direct_check(ex, cache, out))
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
+                self.assertIsNone(space_rule.direct_check(ex, cache, out))
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节

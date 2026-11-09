@@ -38,7 +38,14 @@ def _existing(path):
     return path or "/"
 
 
-def direct_check(extract_dir, cache_dir, out_dir, free=shutil.disk_usage):
+def _free(vol):
+    """盘余量；S2A_DISK_FREE_G（GB，单测注入，与 ipa.sh / refresh 同名口径）给了就用它，单测结果不随本机磁盘余量变（11-09 门禁机余量紧时
+    直接真跑 direct_lib.sh 的单测被复核拦下、桩工具没调起）"""
+    g = os.environ.get("S2A_DISK_FREE_G")
+    return shutil.disk_usage(vol) if not g else shutil._ntuple_diskusage(0, 0, int(float(g) * 1e9))
+
+
+def direct_check(extract_dir, cache_dir, out_dir, free=_free):
     """→ None（够）或给玩家看的一句（不够）。cache_dir / out_dir 在同一块盘时两份加起来核"""
     e = tree_bytes(extract_dir)
     cache_need, out_need = direct_need(e, tree_bytes(cache_dir))

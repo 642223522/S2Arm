@@ -15,6 +15,7 @@ import unittest
 import unittest.mock
 
 REPO = Path(__file__).resolve().parents[1]
+os.environ["S2A_DISK_FREE_G"] = "999"   # 盘判定不看本机实况：出库开工前的空间复核（pack/jobs/space_rule.py）与刷新磁盘闸都按注入余量判（11-09 门禁机余量紧时假红）
 sys.path.insert(0, str(REPO / "graphics/nvn/tools"))
 import direct_profile as dp
 
