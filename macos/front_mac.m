@@ -357,7 +357,11 @@ static void sample_motion(GCExtendedGamepad *pad) {
     g_motion = sample; g_motion_known = known;
     pthread_mutex_unlock(&g_motion_mu);
 }
-__attribute__((visibility("default"), used)) void s2a_pad_set_motion_enabled(int enabled) { atomic_store(&g_motion_wanted, enabled != 0); }
+// 启动设置「体感」关（S2A_MOTION=0，pack/jobs/community.py launch_env）：游戏要六轴也不开手柄传感器
+__attribute__((visibility("default"), used)) void s2a_pad_set_motion_enabled(int enabled) {
+    const char *off = getenv("S2A_MOTION");
+    atomic_store(&g_motion_wanted, enabled != 0 && !(off && !strcmp(off, "0")));
+}
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_motion *out) {
     pthread_mutex_lock(&g_motion_mu);
     int known = g_motion_switched ? 0 : g_motion_known;
@@ -382,7 +386,8 @@ static void sample_home_quit(GCExtendedGamepad *pad) {
 }
 static void sample_input(void) {
     int32_t sticks[4] = {0}; uint32_t buttons = 0;
-    sample_motion(focused ? active_pad(GCController.controllers) : nil);
+    GCExtendedGamepad *active = focused ? active_pad(GCController.controllers) : nil;
+    sample_motion(active);
     if (!focused) { publish(0, sticks); return; }
     sample_home_quit(active_pad(GCController.controllers));
     if (g_hq.open) { publish(0, sticks); return; }
