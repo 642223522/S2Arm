@@ -29,9 +29,9 @@
 set -u
 R=$(git rev-parse --show-toplevel) || exit 1; cd "$R"
 # 停门禁只停本树（11-09：一条线 pkill -f "tools/gate.sh" 停自己的预跑，连别的会话的门禁和列车本机步骤一起杀了）：
-#   本份门禁的 pid 写 <工作树>/build/gate.pid，退出删掉；要停用 tools/gate_stop.sh <工作树>（核对 pid 确是这棵树的门禁、只收它的后代）。
-#   不许按进程名 pkill / killall 门禁（规矩：关进程按完整路径，别按进程名）
-GPF=$R/build/gate.pid; mkdir -p "$R/build" && echo $$ > "$GPF"
+#   本份门禁的 pid 写本工作树自己的 git 目录（git rev-parse --git-dir，每棵工作树一份、不算改动不进提交），退出删掉；
+#   要停用 tools/gate_stop.sh <工作树>（核对 pid 确是这棵树的门禁、只收它的后代）。不许按进程名 pkill / killall 门禁（规矩：关进程按完整路径，别按进程名）
+GPF=$(git rev-parse --absolute-git-dir 2> /dev/null)/s2a_gate.pid; echo $$ > "$GPF" 2> /dev/null || GPF=/dev/null
 # 统一工具链（tools/toolchain.env）：各步编译 / 单测都用这一套。只有带这份文件的仓库才引入（列车 / 门禁单测的假仓库只拷了 gate.sh，没有工具链，也不编东西）
 # 多宿主（10-30 维护者 / 维护者：自检要证明的是「这台宿主能证明的那部分」，剩下的交列车在 gate-host 上证）：
 #   没有苹果工具链的宿主（Linux、WSL 等非 macOS）照样跑门禁——平台无关的步和本宿主平台的钩子（android、launchers/linux …）本机跑、照判红绿；
