@@ -175,6 +175,10 @@ if source.read_bytes() == b"unreadable fixture":
 if source.read_bytes() == b"unknown exit fixture":
     print("Unrecognized fixture error")
     raise SystemExit(17)
+if source.read_bytes().startswith(b"content id fixture"):   # 新读取器：带各 NCA 的 content ID（导入按它定原件身份，不读全文件）
+    print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{},
+        "contentIds":["000000000000000000000000000000bb","000000000000000000000000000000aa"]}]}))
+    raise SystemExit(0)
 if source.read_bytes() == b"disappear fixture":
     source.unlink()
 print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
