@@ -524,3 +524,4 @@
 20261109-0349-vp9-loop-filter-init.patch
 20261109-0327-bsd-cmd36-config-log.patch
 20261109-0458-nvdec-vp9-native.patch
+20261109-0618-tamper-no-dynamic.patch

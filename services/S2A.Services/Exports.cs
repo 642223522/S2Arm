@@ -323,6 +323,7 @@ namespace S2A.Services
             }
             else Register();
             InputPump.Start(Host.Device);
+            Cheats.Start();   // 金手指：$S2A_DOCS/cheats 有开着的条目才执行（缺省全关）
             AfterBoot?.Invoke(Host.Device, Dispatcher.Instance.Memory.Tracking);
             Native.Mark("服务：输入泵与渲染循环起\0"u8);
         }

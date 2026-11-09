@@ -72,6 +72,28 @@ class RuntimeEnv(unittest.TestCase):
         self.assertEqual(env["LC_ALL"], "C.UTF-8", "机器上 LANG=C / en_US 时 cygpath 在中文处截断路径（#85）")
 
 
+    def test_env_cmd_saves_player_path_before_replacing_it(self):
+        # Metal 工具装在自定义目录、只加进 PATH：s2arm_env.cmd 换 PATH 之前存进 S2A_USER_PATH，作业层按它找（11-09 Windows 出包机实测 #137）
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("brw", ROOT / "launchers/windows/bundle_runtime_win.py")
+        brw = importlib.util.module_from_spec(spec); spec.loader.exec_module(brw)
+        with tempfile.TemporaryDirectory() as d:
+            brw.env_cmd(Path(d)); lines = Path(d, "s2arm_env.cmd").read_text(encoding="utf-8").splitlines()
+        save = lines.index('if not defined S2A_USER_PATH set "S2A_USER_PATH=%PATH%"')
+        reset = next(i for i, l in enumerate(lines) if l.startswith('set "PATH='))
+        self.assertLess(save, reset)
+
+    def test_metal_dir_is_chosen_in_parent_and_passed_explicitly(self):
+        # 作业进程按玩家环境选一次 Metal 目录（显式 → 玩家 PATH → 官方默认）；显式目录无效也原样传下去，由出包预检报缺
+        with tempfile.TemporaryDirectory(prefix="metal 中文 ") as d:
+            tools = Path(d, "自定义 安装"); tools.mkdir()
+            exe = tools / "metal.exe"; exe.write_text("#!/bin/sh\n", encoding="utf-8"); exe.chmod(0o755)
+            with patch.dict(os.environ, {"PATHEXT": ".EXE"}):
+                self.assertEqual(core.win_metal_dir({"PATH": str(Path(d, "随包")), "S2A_USER_PATH": str(tools)}), str(tools))
+            self.assertEqual(core.win_metal_dir({"S2A_METAL_BIN": str(tools)}), str(tools))
+            self.assertEqual(core.win_metal_dir({"S2A_METAL_BIN": str(Path(d, "没有这个目录"))}), str(Path(d, "没有这个目录")))
+            self.assertEqual(core.win_metal_dir({"PATH": "", "S2A_USER_PATH": ""}), str(Path(r"C:\Program Files\Metal Developer Tools\bin")))
+
     def test_same_path_as_bundled_env_cmd(self):
         # 作业环境与随包 s2arm_env.cmd（启动器 / 手工起出包用）同一份 PATH：两处各写一遍，这里核一致
         import importlib.util, ntpath

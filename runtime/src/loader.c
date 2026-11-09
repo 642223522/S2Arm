@@ -3,6 +3,8 @@
 // 代码区一拷进来就设成只读+执行，此后装载器只写 data：iOS 上代码区是签进 App 的节，原样 remap 过来。
 // 随包表：gpu_drivers.tsv（出包组装 pack/ship_ext.py 从产物根拷进 App，runtime/build.mk 按这行自动收清单）
 // 随包表：nro_modules.tsv（出包组装 pack/ship_ext.py 从产物根拷进 App，runtime/build.mk 按这行自动收清单；ro LoadNro 按 NRO 哈希查改写映像，11-02 前 iOS 漏拷：马力欧派对第一次装 NRO 即中止）
+#include "../include/s2a_docs.h"
+#include <stdatomic.h>
 #include "native.h"
 #include "loader.h"
 #include "s2a_gfx_mode.h"
@@ -146,6 +148,12 @@ module_t *module_of(const void *p) {
 // ---------- 改写器随行表 ----------
 static char g_main_build_id[40];
 const char *s2a_main_build_id(void) { return g_main_build_id; }
+// 金手指目录给 C#（services Cheats.cs）：有界面入口的宿主（ios/vpad_cheats.m 装载时）先登记，才回 <文档根>/cheats（s2a_docs.h 唯一取法）；
+//   没登记（Mac / 安卓，没有金手指界面）回空串，C# 就不起线程、不碰用户文稿夹。平台差异落在平台层登记这一步，共享代码不判平台
+static _Atomic int g_cheats_host;
+void s2a_cheats_host_enable(void) { atomic_store(&g_cheats_host, 1); }
+const char *s2a_cheats_dir(void) { static char d[1024]; if (!atomic_load(&g_cheats_host)) return ""; s2a_docs_path(d, sizeof d, "cheats"); return d; }
+uint64_t s2a_main_base(void) { return g_nmod ? (uint64_t)(uintptr_t)g_mod[0].base : 0; }   // 主程序（Horizon 序第一个模块）装载基址：金手指 Atmosphere「main」区（services Cheats.cs）
 // 同一表解析器读取目录流或已验证 APK 的借用字节；后者不落地、也不二次打开。
 struct loader_text {
     FILE *file;
