@@ -308,6 +308,43 @@ class ControlPlaneTests(unittest.TestCase):
             child.kill()
             child.wait(timeout=10)
 
+    def test_prune_keeps_request_only_task_as_running(self):
+        jobs = self.private / "jobs"
+        jobs.mkdir()
+        request = jobs / "queued.request.json"
+        request.write_text('{"schema":1,"operation":"setup"}')
+        before = request.read_bytes()
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                options = ["--dry-run"] if dry_run else []
+                result = self.cli("prune", "--private-root", self.private,
+                                  "--keep-count", 0, "--keep-days", 0, *options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["skippedRunning"], 1)
+                self.assertEqual(report["invalidRecords"], [])
+                self.assertEqual(report["kept"], 1)
+                self.assertEqual(report["removed"], [])
+                self.assertEqual(request.read_bytes(), before)
+
+    def test_status_ignores_a_record_removed_during_the_scan(self):
+        from unittest.mock import patch
+        import core
+        self.finish_task("healthy")
+        vanished = self.finish_task("vanished").resolve()
+        original_read = core.read
+
+        def remove_before_read(path, default=None):
+            if path == vanished:
+                vanished.unlink(missing_ok=True)
+            return original_read(path, default)
+
+        with patch.object(core, "read", side_effect=remove_before_read):
+            report = core.status(self.private)
+        self.assertEqual(report["finished"], 1)
+        self.assertEqual(report["interrupted"], 0)
+        self.assertEqual(report["invalidRecords"], [])
+
     def test_prune_leaves_a_job_that_is_finishing_right_now_alone(self):
         """一个刚写完终态、worker 还没退出的任务不能被清掉：它在 journal 里已经是终态，但文件还在被追加。"""
         import main as worker

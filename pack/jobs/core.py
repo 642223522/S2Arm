@@ -937,13 +937,16 @@ def describe(private, task):
 
 
 def _scan_job_record(path):
-    """A bad journal must not hide healthy jobs or make its own files disposable."""
+    """Missing journals are normal while queued; bad journals stay isolated."""
+    missing = object()
     try:
         if path.is_symlink():
             return None, "linked_record"
-        record = read(path)
+        record = read(path, missing)
     except (OSError, ValueError) as error:
         return None, type(error).__name__
+    if record is missing:
+        return None, None
     if not isinstance(record, dict) or record.get("id") != path.stem:
         return None, "invalid_record_identity"
     return record, None
@@ -988,7 +991,7 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
         if reason:
             invalid.append(dict(taskId=task, reason=reason))
         else:
-            records[task] = record
+            records[task] = record or {}  # No journal yet: retain the running/request-only task.
 
     finished = {t for t, r in records.items() if r.get("state") in TERMINAL_STATES or bool(r.get("ended"))}
     running = [t for t in records if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
@@ -1041,6 +1044,8 @@ def status(private, library=None):
         if reason:
             result["invalidRecords"].append(dict(taskId=record_path.stem, reason=reason))
             continue
+        if record is None:
+            continue  # Another process removed the record after directory enumeration.
         if record.get("state") in TERMINAL_STATES or record.get("ended"):
             result["finished"] += 1
         elif pid_alive(record.get("pid")):
