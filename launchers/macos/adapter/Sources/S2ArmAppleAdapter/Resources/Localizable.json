@@ -6666,5 +6666,9 @@
  {
   "source": "游戏库没有搬成",
   "en": "Library wasn't moved"
+ },
+ {
+  "source": "「{0}」已从游戏库删除，新版 S2Arm 里不再包含它们；手机上的存档还在。",
+  "en": "\"{0}\" was removed from the library, so the new S2Arm no longer includes it. Its saves stay on the phone."
  }
 ]
