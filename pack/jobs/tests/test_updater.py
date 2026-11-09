@@ -133,6 +133,41 @@ class ApplyTests(Base):
         self.assertFalse((self.install / "incomplete").exists())
         self.assertFalse(partial.exists())
 
+    def unconfirmed_previous_update(self):
+        """上一次 apply 已把安装目录换成新版、旧版留在副本，没等到 health.ok 就中断（审计 P1-147）"""
+        backup = self.install.with_name("S2Arm.s2arm-old")
+        os.rename(self.install, backup)
+        (self.install / "Engine").mkdir(parents=True)
+        (self.install / "S2Arm.exe").write_text("unconfirmed")
+        return backup
+
+    def test_failed_retry_after_unconfirmed_update_keeps_the_known_good_install(self):
+        self.unconfirmed_previous_update()
+        self.staged = self.root / "missing-staged"   # 这次替换必然失败
+        launches = []
+        self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
+        failure = json.loads((self.private / "updates/last_failure.json").read_text())
+        self.assertEqual(failure["code"], "update_swap_failed")
+        # 失败句说「已保留旧版」：盘上必须真有确认过能用的那一版
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
+        self.assertEqual(launches, ["old"])
+
+    def test_new_version_failing_after_unconfirmed_update_rolls_back_to_the_known_good_install(self):
+        backup = self.unconfirmed_previous_update()
+        launches = []
+        self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
+        self.assertEqual(launches, ["new", "old"])
+        self.assertFalse(backup.exists())
+
+    def test_confirmed_previous_update_becomes_the_rollback_target(self):
+        self.unconfirmed_previous_update()
+        (self.private / "updates/health.ok").write_text("ok")   # 上次换上的版本后来起来过
+        launches = []
+        self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "unconfirmed")
+        self.assertEqual(launches, ["new", "unconfirmed"])
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     routes = {}
@@ -208,6 +243,21 @@ class DownloadTests(Base):
         self.assertEqual(caught.exception.code, "update_download_failed")
         self.assertFalse(self.target.exists())
 
+    def test_retry_in_a_new_process_resumes_from_the_saved_part(self):
+        """跨进程重试（审计 P2-220）：上次进程留下的 .part 接着下，不从头来"""
+        Path(str(self.target) + ".part").write_bytes(FlakyHandler.body[:1 << 18])
+        FlakyHandler.plan = [(None, True)]
+        self.get()
+        self.assertEqual(self.target.read_bytes(), FlakyHandler.body)
+        self.assertEqual(FlakyHandler.ranges, [1 << 18])
+
+    def test_part_longer_than_the_manifest_is_discarded(self):
+        Path(str(self.target) + ".part").write_bytes(b"x" * (len(FlakyHandler.body) + 1))
+        FlakyHandler.plan = [(None, True)]
+        self.get()
+        self.assertEqual(self.target.read_bytes(), FlakyHandler.body)
+        self.assertEqual(FlakyHandler.ranges, [0])
+
     def test_slow_progress_keeps_going_past_the_attempt_limit(self):
         FlakyHandler.plan = [(1 << 16, True)] * (updater.DOWNLOAD_ATTEMPTS + 3) + [(None, True)]
         self.get()
@@ -274,6 +324,19 @@ class PrepareTests(Base):
         self.assertEqual((Path(ready["staged"]) / "S2Arm.exe").read_text(), "new")
         self.assertTrue(Path(ready["python"]).is_file())
         self.assertFalse(list(Path(ready["python"]).parent.rglob("site-packages")))
+
+    def test_retry_keeps_the_partial_download_of_the_same_version(self):
+        work = self.private / "updates/9.9.9"
+        (work / "unpack").mkdir(parents=True)
+        (work / "unpack/stale").write_text("x")
+        part = work / "S2Arm-windows-x64.zip.part"
+        part.write_bytes(self.zip[:100])
+        seen = []
+        with patch.object(updater, "download", side_effect=lambda url, target, size: seen.append(Path(str(target) + ".part").read_bytes()) or Path(target).write_bytes(self.zip)):
+            ready = self.prepare()
+        self.assertEqual(ready["state"], "ready")
+        self.assertEqual(seen, [self.zip[:100]])   # prepare 没删已下的字节，交给 download 续传
+        self.assertFalse((work / "unpack/stale").exists())
 
     def test_checksum_mismatch_deletes_download_and_keeps_old(self):
         self.publish("0" * 64); before = tree(self.install)

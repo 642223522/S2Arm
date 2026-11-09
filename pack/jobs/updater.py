@@ -165,8 +165,11 @@ def download(url, target, size):
     """断了接着下（Range），服务器不支持续传就从头来；下够清单写的长度才算完"""
     import http.client
     part = Path(str(target) + ".part")
-    part.unlink(missing_ok=True)
-    done, stalled = 0, 0
+    # 上次（含上一个进程）没下完的 .part 接着下：长度超过清单的不是这份文件，扔掉重下；内容不对由下完后的 SHA-256 兜住
+    done, stalled = (part.stat().st_size if part.is_file() else 0), 0
+    if done > size:
+        part.unlink()
+        done = 0
     while done < size:
         before, failure = done, None
         try:
@@ -353,7 +356,11 @@ def prepare(platform, current, private, install, protect):
         raise UpdateError("update_none", "已经是最新版本。")
     work = updates / info["version"]
     if work.exists():
-        remove_tree(work)
+        # 同一版本重试：只留整包没下完的 .part 接着下（download 续传），其余（解包、增量）清掉重来
+        keep = work / (info["assetName"] + ".part")
+        for item in list(work.iterdir()):
+            if item != keep:
+                remove_tree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
     work.mkdir(exist_ok=True)
     staged = None
     if info.get("delta"):
@@ -388,7 +395,6 @@ def prepare(platform, current, private, install, protect):
     if check.returncode:
         raise UpdateError("update_bad_package", "更新程序在这台电脑上起不来，已停止，旧版没有变化。")
     (updates / "pending.json").write_text(json.dumps({"version": info["version"], "time": time.time()}))
-    (updates / "health.ok").unlink(missing_ok=True)
     emit(state="ready", via=via, version=info["version"], staged=str(staged), python=str(python), updater=str(runner / "updater.py"))
 
 
@@ -480,19 +486,29 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
         if time.monotonic() >= deadline:
             return fail("update_app_busy", "S2Arm 没有退出，这次没有更新。", restart=False)
         time.sleep(0.5)
+    health = updates / "health.ok"
     try:
         # A previous apply may have stopped between swap()'s two renames.
         # Restore the only old copy before treating any backup as disposable.
         if backup.exists() and not install.exists():
             retry_rename(backup, install)
         if backup.exists():
-            remove_tree(backup)
+            if health.exists():
+                # 上次换上的版本后来起来过（写了 health.ok）：它已被确认，副本可以删
+                remove_tree(backup)
+            else:
+                # 上次换上的版本没被确认就中断了：副本才是最后一份确认能用的，先装回去再换，回滚目标始终是它
+                bad = install.with_name(install.name + ".s2arm-bad")
+                remove_tree(bad) if bad.exists() else None
+                retry_rename(install, bad)
+                retry_rename(backup, install)
+                remove_tree(bad)
+        # 换目录之前清掉确认标记：此后出现的 health.ok 只能来自换上去的这一版
+        health.unlink(missing_ok=True)
         swap(staged, install, backup, new)
     except (OSError, shutil.Error):
         remove_tree(new) if new.exists() else None
         return fail("update_swap_failed", "替换安装目录失败，已保留旧版。")
-    health = updates / "health.ok"
-    health.unlink(missing_ok=True)
     try:
         launch(install, list(args))
         deadline = time.monotonic() + health_seconds
