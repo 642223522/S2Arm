@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from jobcase import JobCase, ROOT
+from jobcase import JobCase, ROOT, as_windows
 from core import Context, Failure
 import filelock
 import libloc
@@ -101,7 +101,7 @@ class LibraryGate(JobCase):
         self.assertFalse(lib.exists())   # 拦在建目录之前
 
     def test_require_apfs_windows_wants_ntfs(self):
-        with patch.object(library.os, "name", "nt"):
+        with as_windows(library):
             for fmt in ("exfat", "fat32"):
                 with self.subTest(fmt=fmt), patch.object(library, "volume_format", return_value=fmt), self.assertRaises(Failure) as e:
                     library.require_apfs("E:\\库")
