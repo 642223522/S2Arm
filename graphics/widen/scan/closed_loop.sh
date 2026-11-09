@@ -106,7 +106,7 @@ row "③b上屏满屏" "${hl%%	*}" "${hl#*	}"
 bc=$("$PYA" - "$R/tools" "$D" <<'BCEOF'
 import os, sys; sys.path.insert(0, sys.argv[1]); import widen_accept as wa; wa.ensure_deps()
 from PIL import Image
-bad, rd = [], []
+bad, rd, wide = [], [], 0
 for f in ('ap_mark.png', 'ap_end.png'):
     p = os.path.join(sys.argv[2], f)
     if not os.path.exists(p): continue
@@ -118,8 +118,9 @@ for f in ('ap_mark.png', 'ap_end.png'):
             keep = [s for s, n in (('left', '左'), ('right', '右')) if h[s] is not None and h[s] >= wa.HOLE_EXCESS and h[s] >= (1.0 if hb[s] is None else hb[s])]   # 对照局这侧量不出（纯黑，按 16:9 剔除的典型样子）按最坏 1.0 算
             b = [x for x in b if '扩展带空洞' not in x or any(x.startswith(n) for s, n in (('left', '左'), ('right', '右')) if s in keep)]
             r += '，对照局空洞 ' + ' / '.join('—' if hb[k] is None else f'{hb[k]:+.2f}' for k in ('left', 'right'))
-    bad += [f'{f}：{x}' for x in b]; rd.append(f'{f} {r}')
-print(('不过\t' + '；'.join(bad)) if bad else ('过\t' + '；'.join(rd)) if rd else '未验\t没有 ap_mark / ap_end 截图')
+    bad += [f'{f}：{x}' for x in b]; rd.append(f'{f} {r}'); wide += not r.startswith('不是加宽图')
+# 截图不是加宽图（11-09 哈迪斯 II：Mac 窗口 16:9、2.17:1 画面上下加黑边塞进截图，band_checks 不量）原先记「过」，量都没量 → 未验
+print(('不过\t' + '；'.join(bad)) if bad else ('过\t' + '；'.join(rd)) if wide else ('未验\t截图都不是加宽图，两侧没量：' + '；'.join(rd)) if rd else '未验\t没有 ap_mark / ap_end 截图')
 BCEOF
 )
 row "③c截图两侧画面" "${bc%%	*}" "${bc#*	}"

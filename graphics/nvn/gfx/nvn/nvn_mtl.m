@@ -14447,15 +14447,17 @@ static fj_state g_fj; static int g_fj_geo; static char g_fj_geo_why[160]; static
 //   ran inside grab_present and cost d2r 2.4% slow frames. The present thread only picks which grab is checked and keeps the geometry state of that moment (g_fj_due, a token per pick);
 //   the consumer hands its own copy of those bytes back with the token (mtl_fit_judge_shot). fj_judge's own buffers (S->buf, fj_dark_band / fj_seam statics) are guarded by g_fj_run_mu
 static pthread_mutex_t g_fj_mu = PTHREAD_MUTEX_INITIALIZER, g_fj_run_mu = PTHREAD_MUTEX_INITIALIZER;
-static struct { uint64_t tok, n; int geo, kind; char why[160]; } g_fj_due;   // under g_fj_mu (held for a copy only: the present thread takes it)
+static struct { uint64_t tok, n; int geo, kind, cw, ch; char why[160]; } g_fj_due;   // under g_fj_mu (held for a copy only: the present thread takes it); cw / ch: the picture's size at that present (fit_geom)
 static _Thread_local uint64_t g_fj_tok_now;   // set only around the grab callback, on the thread that calls it: token of the grab being handed over (0 = not picked for the check)
 int mtl_fit_bad(int kind) { return atomic_load(&g_fj.st[kind & 1]); }   // tests: 1 = the geometry (0) / content (1) check last said not full screen
 static void fit_on(void) { static int once; if (!once++) MLOG("[画] 满屏判据 已开（直连上屏：几何每次出图判，内容在自动玩家截图上判、至少隔 30 次出图一次；免判 1 = 16:9 原比例页、4 = 游戏自己出宽图的纯 2D 帧）"); }   // the run executors read this line (ops-line receiving end)
 // S2Arm: native widen.c refreshes this for each session. Match gal_present.m and do not retain the previous session's setting.
 static int fit_narrow(void) { const char *e = getenv("S2A_WIDEN_NARROW"); return e && !strcmp(e, "1"); }
+static int g_fj_cw, g_fj_ch;   // present thread: the picture's size at the last fit_geom (mtl_fit_judge_shot judges only the part of the grab it was drawn into)
 static void fit_geom(double dw, double dh, NSUInteger cw, NSUInteger ch) {
     fit_on();
     if (dw <= 0 || dh <= 0 || !cw || !ch) return;
+    g_fj_cw = (int)cw; g_fj_ch = (int)ch;
     double s = fmin(dw / cw, dh / ch), vw = fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 ? dw : round(cw * s);
     g_fj_geo = vw < dw - 2 && atomic_load(&g_fit_pillar) != 1 && atomic_load(&g_fit_pillar) != 5 && !fit_narrow();   // 5 = 原比例回退（3D 镜头帧回退上屏收进中间 16:9，留边是有意的）
     if (g_fj_geo) snprintf(g_fj_geo_why, sizeof g_fj_geo_why, "画面 %lux%lu 上屏只占 %.0f / %.0f 像素宽（左右留边）", (unsigned long)cw, (unsigned long)ch, vw, dw);
@@ -14468,7 +14470,7 @@ static uint64_t fit_pick(void) {   // present thread, at each grab: pick it for 
     if (g_present_n - g_fj_last < 30 && !(g_fj_geo && !atomic_load(&g_fj.st[0]))) return 0;
     g_fj_last = g_present_n; fit_on(); static uint64_t seq;
     pthread_mutex_lock(&g_fj_mu);
-    uint64_t tok = g_fj_due.tok = ++seq; g_fj_due.n = g_present_n; g_fj_due.geo = g_fj_geo; memcpy(g_fj_due.why, g_fj_geo_why, sizeof g_fj_due.why);
+    uint64_t tok = g_fj_due.tok = ++seq; g_fj_due.n = g_present_n; g_fj_due.geo = g_fj_geo; g_fj_due.cw = g_fj_cw; g_fj_due.ch = g_fj_ch; memcpy(g_fj_due.why, g_fj_geo_why, sizeof g_fj_due.why);
     g_fj_due.kind = fit_narrow() ? 1 : atomic_load(&g_fit_pillar);   // not on the widen verified list: 16:9 page by design (kind 1)
     pthread_mutex_unlock(&g_fj_mu);
     return tok;
@@ -14513,11 +14515,18 @@ int mtl_fit_last(uint64_t *seq, uint64_t *present_n) {
 uint64_t mtl_grab_fit_token(void) { return g_fj_tok_now; }   // call inside the grab callback: nonzero = these bytes are picked; pass it to mtl_fit_judge_shot with a copy of them
 int mtl_fit_judge_shot(uint64_t tok, const uint8_t *p, size_t w, size_t h, size_t row) {   // any thread but the present one; 1 = judged (a newer pick replaces an unjudged one)
     pthread_mutex_lock(&g_fj_mu);
-    int ok = tok && tok == g_fj_due.tok && p && w >= 8 && h >= 8; uint64_t n = g_fj_due.n; int geo = g_fj_due.geo, kind = g_fj_due.kind; char why[160]; memcpy(why, g_fj_due.why, sizeof why);
+    int ok = tok && tok == g_fj_due.tok && p && w >= 8 && h >= 8; uint64_t n = g_fj_due.n; int geo = g_fj_due.geo, kind = g_fj_due.kind, cw = g_fj_due.cw, ch = g_fj_due.ch; char why[160]; memcpy(why, g_fj_due.why, sizeof why);
     if (ok) g_fj_due.tok = 0;
     pthread_mutex_unlock(&g_fj_mu);
     if (!ok) return 0;
-    fit_px f = {p, row, (int)w, (int)h}; fj_src s = {(int)w, (int)h, &f, fit_col, fit_row};
+    // 只判画面画进去的那块（11-09 质量线，哈迪斯 II Mac 验证局）：上屏按比例把画面放进窗口（present_encode 同一规则，宽高比差 1% 内算铺满），窗口比例 ≠ 画面比例时
+    //   多出来的边是上屏自己留的。Mac 窗口 16:9、模拟手机屏 2.17:1 时整窗不比 16:9 宽，横向内容判据整段不跑，画面中间露空也报满屏 0 红；手机上画面就是整屏，裁不裁一样
+    int vx = 0, vy = 0, vw = (int)w, vh = (int)h;
+    if (cw > 0 && ch > 0 && fabs(((double)w / h) / ((double)cw / ch) - 1) >= 0.01) {
+        double sc = fmin((double)w / cw, (double)h / ch); vw = (int)lround(cw * sc); vh = (int)lround(ch * sc);
+        if (vw < 8 || vh < 8 || vw > (int)w || vh > (int)h) { vw = (int)w; vh = (int)h; } else { vx = ((int)w - vw) / 2; vy = ((int)h - vh) / 2; }
+    }
+    fit_px f = {p + (size_t)vy * row + (size_t)vx * 4, row, vw, vh}; fj_src s = {vw, vh, &f, fit_col, fit_row};
     static int npil;
     pthread_mutex_lock(&g_fj_run_mu); int r0 = atomic_load(&g_fj.nred), p0 = g_fj.pst; fj_judge(&g_fj, &s, geo, why, kind, n); int r1 = atomic_load(&g_fj.nred), p1 = g_fj.pst;
     int pil = p1 != p0 && (p1 == 1 || p1 == 3 || p1 == 5) && npil < 8 ? ++npil : 0; pthread_mutex_unlock(&g_fj_run_mu);
