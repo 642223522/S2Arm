@@ -517,6 +517,7 @@
       "tests/fixtures/iml_signed/*",
       "android/tests/replay_fixture/samples/*.rfx",
       "services/S2A.Services.Tests/data/*.ivf",
+      "tests/data/vp9_synth/*.ivf",
       "translator/dmsh_xlate_bin/*.dll",
       "translator/dmsh_xlate_bin/*.pdb",
       "translator/dmsh_xlate_bin/dmsh_xlate",
