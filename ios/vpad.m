@@ -663,7 +663,9 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     NSError *error; [_layoutStore resetKeyStyles:&error]; g_theme = 0; [self endEditing];
     if (![_layoutStore selectIdentifier:S2AVPadLayoutDefaultIdentifier error:&error]) LOG("【红】触屏布局：全部重置失败：%s", error.localizedDescription.UTF8String);
     else { [_layoutStore markManual:nil]; LOG("触屏布局：本款游戏全部重置为默认按键位置与外观"); }
-    [self reloadLayout]; [self beginEditing];
+    // 重建的按键视图尺寸是 0，要经 layoutSubviews 按布局摆位；编辑中 layoutSubviews 不摆键（位置归手指），
+    //   所以先在非编辑状态下当场排一次版再进编辑（11-09 维护者手测：原先直接进编辑，全部按键缩在左上角叠成一团）
+    [self reloadLayout]; [self setNeedsLayout]; [self layoutIfNeeded]; [self beginEditing];
 }
 - (void)editDone {
     NSMutableDictionary *centers = [NSMutableDictionary dictionary];
