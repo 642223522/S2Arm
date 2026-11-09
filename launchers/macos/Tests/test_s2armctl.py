@@ -46,6 +46,30 @@ class WaitTests(unittest.TestCase):
             ctl.wait("game", operation, limit)
         return result.exception.code, call.call_count, output.getvalue()
 
+    def test_space_override_flag_reaches_the_app(self):
+        for argv, path, body in [
+                (["build", "G", "mac", "--space-override"], "/build", {"gameId": "G", "target": "mac", "spaceOverride": True}),
+                (["build", "G", "--space-override"], "/build", {"gameId": "G", "target": "ios", "spaceOverride": True}),
+                (["build", "G", "ios"], "/build", {"gameId": "G", "target": "ios"}),
+                (["ipa", "G", "--space-override"], "/ipa", {"gameId": "G", "spaceOverride": True}),
+                (["ipa", "G"], "/ipa", {"gameId": "G"})]:
+            with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \
+                    mock.patch("builtins.print"):
+                ctl.main()
+            call.assert_called_once_with("POST", path, body)
+
+    def test_customize_sends_only_what_was_given(self):
+        for argv, body in [(["customize", "G", "--name", "新名"], {"gameId": "G", "name": "新名"}),
+                           (["customize", "G", "--reset-cover"], {"gameId": "G", "coverPath": ""}),
+                           (["customize", "G", "--reset-name"], {"gameId": "G", "name": ""})]:
+            with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
+                ctl.main()
+            call.assert_called_once_with("POST", "/customize", body)
+        with mock.patch.object(ctl, "call") as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", "customize", "G"]):
+            with self.assertRaises(SystemExit):
+                ctl.main()
+        call.assert_not_called()
+
     def test_queued_then_running_then_completed(self):
         old = task("old", "completed", 1)
         states = [state(old, task("queued-game", "queued", 2), queue=["game"]),
@@ -219,6 +243,42 @@ class LaunchArgsTests(unittest.TestCase):
              mock.patch.object(sys, "argv", ["s2armctl", "uninstall", "0100535012974000"]):
             ctl.main()
         self.assertEqual(posted, {"method": "POST", "path": "/uninstall", "body": {"gameId": "0100535012974000"}})
+
+class DiagCommandTests(unittest.TestCase):
+    """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""
+
+    def _main(self, *argv):
+        posted = []
+        err = io.StringIO()
+        with mock.patch.object(ctl, "call", side_effect=lambda m, p, b=None, **kw: posted.append((m, p, b)) or {"ok": True}), \
+             mock.patch.object(sys, "argv", ["s2armctl", "diag", *argv]), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            try:
+                ctl.main(); code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, posted, err.getvalue()
+
+    def test_bare_diag_exports_with_a_default_path(self):
+        code, posted, _ = self._main()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(posted), 1)
+        method, path, body = posted[0]
+        self.assertEqual((method, path, body["action"]), ("POST", "/diagnostics", "export"))
+        self.assertTrue(os.path.isabs(body["path"]) and body["path"].endswith(".zip"), body["path"])
+
+    def test_export_without_path_uses_the_same_default(self):
+        self.assertEqual(ctl.diag_body(["export"], now=0), ctl.diag_body([], now=0))
+
+    def test_explicit_forms_unchanged(self):
+        self.assertEqual(ctl.diag_body(["pull"]), {"action": "pull"})
+        self.assertEqual(ctl.diag_body(["export", "/tmp/x.zip"]), {"action": "export", "path": "/tmp/x.zip"})
+
+    def test_unknown_form_prints_usage_and_exits_2(self):
+        code, posted, err = self._main("bogus")
+        self.assertEqual((code, posted), (2, []))
+        self.assertIn("用法", err)
+
 
 class ErrorsCommandTests(unittest.TestCase):
     """errors 命令输出里含 failureSummary（阶段、退出码、原文）。"""

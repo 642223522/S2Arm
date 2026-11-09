@@ -61,6 +61,7 @@ s2armctl next --json    # 同上，给程序读：{step, who, do, why, game, tas
 s2armctl keys <prod.keys 路径>              # 放密钥，等导入完成才返回
 s2armctl games <游戏文件夹>                  # 放游戏：本体、更新、DLC 放同一个文件夹；等导入完成才返回
 s2armctl build <游戏号> ios                  # 导出 iPhone / iPad 版（同一个包）；mac = 这台 Mac；android / harmony 即将上线
+s2armctl customize <游戏号> --name 名字 --cover 图片  # 改游戏显示名 / 封面；--reset-name、--reset-cover 恢复默认；下次装到 iPhone 时带上
 s2armctl wait <游戏号> --op ipa --timeout 7200   # 等导出结束：逐段打进度，结尾打每段耗时；失败退出码 1
 s2armctl install-check <游戏号>              # 装机前清单：iPhone 版、Xcode 登录 Apple ID、数据线连上、信任、开发者模式
 s2armctl install <游戏号>                    # 装到 iPhone：签名 → 数据线安装 → 拷游戏资源、逐文件核对
@@ -94,7 +95,10 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | 现象 / 错误码 | 谁 | 怎么办 |
 |---|---|---|
 | `keys_missing` / `keys_invalid` | ask | 问玩家自己从 Switch 导出的 prod.keys 在哪，`keys <路径>`；文件不完整就请他重新导出一份 |
-| `content_unreadable` 解不开 | human | 密钥比游戏旧：请玩家把 Switch 更新到最新系统、重新导出 prod.keys，再 `keys <路径>` |
+| `content_unreadable` 无法读取 | human | 核对源文件和票据是否完整 |
+| `ticket_missing` 缺少票据 | human | 核对源文件是否含有所需票据 |
+| `content_truncated` 文件不完整 | human | 从原始位置重新复制完整的游戏文件 |
+| `keys_outdated` 密钥版本不足 | human | 请玩家用系统版本更新的 Switch 重新导出 prod.keys，再 `keys <路径>` |
 | `input_base_missing` | ask | 只放了更新或 DLC：问玩家游戏本体在哪，`games <本体所在文件夹>` |
 | `input_empty` / `input_type_unsupported` | ask | 文件夹里没有 NSP / XCI / NSZ / XCZ：问玩家游戏文件到底在哪 |
 | `input_missing` / `content_invalid` | ask | 文件找不到（外接盘没接）或损坏：请玩家接上磁盘或换一份完整的原版文件 |
@@ -110,7 +114,7 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | 错误码 | 谁 | 怎么办 |
 |---|---|---|
 | `library_not_apfs` 游戏库所在磁盘格式不支持 | confirm | 游戏原件放哪块盘都行（S2Arm 原地只读、不复制）；导出时的工作数据（游戏库）要放在 APFS 格式的磁盘上（Mac 内置盘就是）：问玩家同意后，请他在「设置 → 游戏库与玩家数据」改用这台 Mac 上的默认位置，或选一块 APFS 外接盘（「磁盘工具」里另分一个 APFS 分区，盘上要有空闲空间、原有数据不动），然后 `s2armctl env`；游戏原件不用挪 |
-| `disk_full` | confirm | 磁盘不够：`state --json` 看各游戏 `bytes`，征得同意后 `delete <不要的游戏号>`，或请玩家清理磁盘；然后 `retry <任务号>` |
+| `disk_full` | confirm | 磁盘不够：`state --json` 看各游戏 `bytes`，征得同意后 `delete <不要的游戏号>`，或请玩家清理磁盘；然后 `retry <任务号>`。磁盘预检偏保守时，玩家同意后可以 `build <游戏号> <平台> --space-override`（同界面「仍然继续」，真写满会停下报错） |
 | `stage_timeout` | ai | `logs` 看卡在哪；`retry <任务号>` 一次 |
 | `configuration_failed` / `shader_extract_failed` / `rewrite_failed` / `compilation_failed` | ai | 不是玩家的问题：`retry` 一次；还失败就 `s2armctl diag export ~/Desktop/S2Arm-诊断.zip` 导出诊断包、帮玩家反馈（见「反馈问题」） |
 | `aoc_missing`（警告） | ai | 本体照常装；告诉玩家有追加内容没进包，生成诊断包反馈 |
@@ -157,6 +161,6 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 
 解决不了时帮玩家整理反馈：
 
-- `s2armctl diag export ~/Desktop/S2Arm-诊断.zip`：导出 Mac 端诊断包；
+- `s2armctl diag export ~/Desktop/S2Arm-诊断.zip`：导出 Mac 端诊断包（只写 `s2armctl diag` 也行，默认放桌面、文件名带时刻）；
 - `s2armctl diag pull`：手机用数据线连着时，拉回手机上的诊断；
 - 请玩家在 https://github.com/jhaizhou-ops/S2Arm/issues 选「问题回报（内测）」模板提交，附上错误码、包号（导出完成页可复制）和诊断包。诊断包里不含密钥、游戏文件和存档。

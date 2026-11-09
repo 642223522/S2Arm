@@ -4,7 +4,7 @@
 
 Platforms: iPhone / iPad (iOS / iPadOS 18 and later) · Mac (Apple silicon, macOS 15 and later) · Build on Mac or Windows · Android / HarmonyOS coming soon · License: Apache-2.0 · **Bring your own games**
 
-[简体中文](README.zh-CN.md) · [Download the launcher](https://github.com/jhaizhou-ops/S2Arm/releases) · [Evidence](docs/validation/EVIDENCE.md)
+[简体中文](README.zh-CN.md) · [Download the launcher](https://jhaizhou-ops.github.io/S2Arm/) · [All releases](https://github.com/jhaizhou-ops/S2Arm/releases) · [Evidence](docs/validation/EVIDENCE.md)
 
 <p align="center"><img src="docs/images/launcher-welcome-en.png" width="760" alt="S2Arm launcher welcome page"></p>
 
@@ -81,7 +81,7 @@ The Nintendo Switch 2 edition of *The Legend of Zelda: Ocarina of Time*, measure
 
 ## Getting started
 
-1. Download the Mac or Windows launcher from [Releases](https://github.com/jhaizhou-ops/S2Arm/releases) and open it. Building for iPhone on a Mac needs the free Xcode from the App Store, signed in with your Apple ID; the launcher walks you through it.
+1. Download the Mac or Windows launcher from the [download page](https://jhaizhou-ops.github.io/S2Arm/) and open it. Building for iPhone on a Mac needs the free Xcode from the App Store, signed in with your Apple ID; the launcher walks you through it.
 2. Import your own keys and games. Put the base game, updates and DLC in one folder and import them together.
 3. Choose iPhone / iPad or this Mac, then click Build.
 4. Follow the launcher to sign and install with your own Apple ID (the Windows launcher ships with the Impactor signing tool), open S2Arm, and pick a game from the library.
@@ -110,6 +110,10 @@ S2Arm stands on the shoulders of its community.
 - **ns2pro-bridge** (DanielZhangyc, MIT), **MacNativeGames** (MIT), **LumaDock** (MIT), **deko3d** (fincs, zlib), **nvn.h** (h1k421, MIT), **bcdec** (Sergii Kudlai, MIT / Unlicense), **LibHac** (Alex Barney, MIT) and **hactool** (SciresM, ISC), **SPIRV-Cross** and **Vulkan-Headers** (The Khronos Group), **SMAA** (Jorge Jimenez et al., MIT), the **Mesa** tessellator (Microsoft, MIT), **Capstone**, **LZ4**, **.NET**, **libvpx**, **libopus**, **dav1d**, and the **Noto** fonts.
 
 Versions, full license texts and what each component does are in [NOTICE](NOTICE) and the [third-party license list](THIRD_PARTY_LICENSES.md).
+
+## Star History
+
+<a href="https://star-history.com/#jhaizhou-ops/S2Arm&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jhaizhou-ops/S2Arm&type=Date&theme=dark" /><img alt="Star History" src="https://api.star-history.com/svg?repos=jhaizhou-ops/S2Arm&type=Date" /></picture></a>
 
 ## License and legal
 

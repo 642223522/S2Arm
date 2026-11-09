@@ -62,10 +62,12 @@ public sealed partial class EnvironmentWindow
             if (connectedFolder is not null && game.Cover.Length > 0)
             {
                 var root = Path.GetFullPath(Path.Combine(connectedFolder, "games")) + Path.DirectorySeparatorChar;
-                var expected = Path.GetFullPath(Path.Combine(root, game.Id, "cover.jpg"));
+                var folder = Path.GetFullPath(Path.Combine(root, game.Id)) + Path.DirectorySeparatorChar;
                 var path = Path.GetFullPath(game.Cover);
-                if (expected.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(path, expected, StringComparison.OrdinalIgnoreCase) && new FileInfo(path).Length <= 8 * 1024 * 1024)
+                // 只认这款游戏目录下的 cover.jpg 或玩家换的 cover.custom.<8 位十六进制>.jpg（后端 _CUSTOM_COVER）
+                if (folder.StartsWith(root, StringComparison.OrdinalIgnoreCase) && path.StartsWith(folder, StringComparison.OrdinalIgnoreCase) &&
+                    System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path), @"^cover(\.custom\.[0-9a-f]{8})?\.jpg$") &&
+                    Path.GetDirectoryName(path) + Path.DirectorySeparatorChar == folder && new FileInfo(path).Length <= 16 * 1024 * 1024)
                 {
                     if (!covers.TryGetValue(path, out var image))
                     {
@@ -79,20 +81,20 @@ public sealed partial class EnvironmentWindow
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
         return new Border { Width = size, Height = size, CornerRadius = new CornerRadius(8),
-            Background = Brush.Parse("#303035"), Padding = new Thickness(size / 6),
+            Background = Brush.Parse("#303035"), Padding = new Thickness(size / 8),
             Child = new Image
             {
-                Source = LoadAppIcon(),
+                Source = LoadWordmark(),
                 Stretch = Stretch.Uniform
             } };
     }
 
-    private Bitmap? appIconBitmap;
-    private Bitmap LoadAppIcon()
+    private Bitmap? wordmarkBitmap;
+    private Bitmap LoadWordmark()
     {
-        if (appIconBitmap is not null) return appIconBitmap;
-        using var stream = Avalonia.Platform.AssetLoader.Open(new Uri("avares://S2Arm/Assets/AppIcon.png"));
-        return appIconBitmap = Bitmap.DecodeToWidth(stream, 480);
+        if (wordmarkBitmap is not null) return wordmarkBitmap;
+        using var stream = Avalonia.Platform.AssetLoader.Open(new Uri("avares://S2Arm/Assets/Wordmark.png"));
+        return wordmarkBitmap = Bitmap.DecodeToWidth(stream, 480);
     }
 
     private void RenderLibrary(StackPanel body)

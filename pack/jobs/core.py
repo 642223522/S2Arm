@@ -55,6 +55,20 @@ def read(path, default=None):
         return default
 
 
+# Windows：目标被别的进程打开且没带共享删除时，替换报 PermissionError（#130：Python 读方 open() 不带 FILE_SHARE_DELETE，杀毒 / 索引也会短暂占用）
+WIN_REPLACE_RETRIES = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def replace_retrying(tmp, path):
+    for delay in (*WIN_REPLACE_RETRIES, None) if os.name == "nt" else (None,):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
+
+
 def atomic(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +78,7 @@ def atomic(path, value):
             json.dump(value, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        replace_retrying(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -778,6 +792,7 @@ def win_runtime_env(runtime, engine, system_root):
                                                                ntpath.join(system_root, r"System32\WindowsPowerShell\v1.0")]
     return dict(PATH=";".join(paths), DOTNET_ROOT=ntpath.join(rt, "dotnet"), DOTNET_MULTILEVEL_LOOKUP="0",
                 S2A_BASH=ntpath.join(rt, r"git\usr\bin\bash.exe"), PYTHONHOME=ntpath.join(rt, "python"), PYTHONUTF8="1",
+                LC_ALL="C.UTF-8",   # 机器上设了 LANG=C / en_US 时 cygpath -m 在第一个中文字符处截断路径（#85：D:/浏览器下载/… → D:/）；与 MSYS 无语言变量时的缺省相同
                 S2A_PREBUILT_TOOLS=ntpath.join(str(engine), r"Binaries\Prepare"),
                 PYTHONPATH=ntpath.join(str(engine), r"pack\orch\site"))   # 子 Python 进程的长路径处理（pack/orch/winlong.py）
 

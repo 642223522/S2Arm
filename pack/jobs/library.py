@@ -3,6 +3,7 @@
 Storage/interaction helpers adapted from LumaDock under MIT.
 """
 from __future__ import annotations
+import collections
 import errno
 import hashlib
 import json
@@ -20,6 +21,42 @@ import zipfile
 from core import Failure, atomic, contained, digest, prune_jobs, read
 import toolchain
 import winproc
+
+DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
+DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
+DIAGNOSTIC_LOG_SCAN = 64 << 20       # 只在结尾前这么大的范围里找心跳行
+DIAGNOSTIC_LOG_CHUNK = 1 << 20
+
+
+def diagnostic_log_excerpt(source, size):
+    """诊断包里的日志：短的整份；长的留开头（起局配置）+ 中间的心跳行（卡顿、内存走势）+ 结尾。总量有界。"""
+    edge = DIAGNOSTIC_LOG_EDGE
+    if size <= 2 * edge:
+        return source.read(2 * edge)
+    head = source.read(edge)
+    start = max(edge, size - edge - DIAGNOSTIC_LOG_SCAN)
+    source.seek(start)
+    beats, used, partial, left = collections.deque(), 0, b"", size - edge - start
+    while left > 0:
+        chunk = source.read(min(DIAGNOSTIC_LOG_CHUNK, left))
+        if not chunk:
+            break
+        left -= len(chunk)
+        lines = (partial + chunk).split(b"\n")
+        partial = lines.pop()
+        if len(partial) > DIAGNOSTIC_LOG_CHUNK:   # 没有换行的超长段不是心跳行，也别让它占内存
+            partial = b""
+        for line in lines:
+            if "[心跳]".encode() in line and len(line) < 4096:
+                beats.append(line)
+                used += len(line) + 1
+                while used > DIAGNOSTIC_LOG_BEATS:
+                    used -= len(beats.popleft()) + 1
+    source.seek(size - edge)
+    tail = source.read(edge)
+    gap = lambda text: f"\n…（{text}）…\n".encode()
+    return head + gap(f"日志共 {size} 字节，中间只保留 {len(beats)} 行心跳") + b"\n".join(beats) + gap("以下是日志结尾") + tail
+
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20
 
@@ -332,8 +369,15 @@ def keys(c):
                               if p["type"] == "base" and p.get("format") not in ("nup", "dump", "extract", "loose") and source_path(c, p).is_file()), None)   # NUP 与解包目录不加密，验不了密钥
             if candidate:
                 with tempfile.TemporaryDirectory(dir=c.private) as icons:
-                    inspect(c, candidate, icons, keyfile=temporary)
-                verified = True
+                    diagnostics_before = len(c.job["diagnostics"])
+                    try:
+                        inspect(c, candidate, icons, keyfile=temporary)
+                    except Failure as error:
+                        if error.code != "content_truncated":
+                            raise
+                        del c.job["diagnostics"][diagnostics_before:]
+                    else:
+                        verified = True
             c.check()
             os.replace(temporary, c.keys)
     finally:
@@ -342,9 +386,8 @@ def keys(c):
     return dict(entries=count, verified=verified, message="已验证解密能力" if verified else "格式通过，首次读取游戏时验证解密能力")
 
 
-KEYS_CANNOT_DECRYPT = ("读不出这个游戏：你的 prod.keys 解不开它。多半是密钥太旧（导出密钥的 Switch 系统版本比游戏要求的低），"
-                       "请把 Switch 更新到最新系统后重新导出 prod.keys，到「设置 → 玩家密钥」重新导入，再放一次游戏。"
-                       "如果密钥是新的，可能是游戏文件不完整，请重新复制或下载后再试。")
+KEYS_CANNOT_DECRYPT = ("无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；"
+                       "若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。")
 
 
 def inspect(c, source, icon_dir, keyfile=None):
@@ -354,11 +397,20 @@ def inspect(c, source, icon_dir, keyfile=None):
     try:
         c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir],
               c.private / "logs" / (c.task + "-inspect.log"), on_line=lines.append)
-    except Failure:
-        # 读取器解不开（退出码 3，「could not be decrypted or verified. Check keys…」）：说成玩家能照做的话（10-23 内测前失败提示走查）
+    except Failure as error:
+        if error.code not in ("tool_exit", "job_failed"):
+            raise
+        if "【内容截断】" in lines:
+            raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated") from None
+        if any(line.startswith("【原因 ticket_missing】") for line in lines):
+            raise Failure("缺少内容对应的票据或标题密钥，请检查源文件是否完整。", code="ticket_missing") from None
+        if any(line.startswith("【原因 keys_missing】") for line in lines):
+            raise Failure("现有 prod.keys 缺少读取此文件所需的密钥。", code="keys_outdated") from None
         if any("could not be decrypted" in line or "Check keys" in line for line in lines):
             raise Failure(KEYS_CANNOT_DECRYPT, code="content_unreadable") from None
         raise
+    if "【内容截断】" in lines:
+        raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated")
     try:
         output = json.loads(next(line for line in reversed(lines) if line.startswith("{")))
         if output.get("schema") != 1 or not output["packages"]:
@@ -763,6 +815,76 @@ def _mtime(path):
         return 0
 
 
+CUSTOM_NAME_LIMIT = 64
+CUSTOM_COVER_LIMIT = 16 << 20
+_CUSTOM_COVER = re.compile(r"cover\.custom\.[0-9a-f]{8}\.jpg")
+
+
+def game_custom(c, gid):
+    """玩家改过的显示名和封面（games/<程序号>/custom.json）。只影响显示，不改 catalog.json，不让已出的包失效；重新导入也不会覆盖。"""
+    folder = contained(c.library, c.library / "games" / gid)
+    try:
+        data = read(folder / "custom.json", {})
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    name = data.get("name") if isinstance(data.get("name"), str) else ""
+    cover = data.get("cover") if isinstance(data.get("cover"), str) and _CUSTOM_COVER.fullmatch(data["cover"]) else ""
+    return dict(name=name, cover=folder / cover if cover and (folder / cover).is_file() else None)
+
+
+def _custom_cover_bytes(path):
+    try:
+        with open(path, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise Failure("封面要选一张图片文件。")
+            if info.st_size > CUSTOM_COVER_LIMIT:
+                raise Failure("封面图片太大了：请选 16 MB 以内的图片。")
+            data = source.read(CUSTOM_COVER_LIMIT + 1)
+    except OSError as error:
+        raise Failure("读不了这张图片，请换一张试试。") from error
+    if not data.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")):
+        raise Failure("封面只支持 JPG 或 PNG 图片。")
+    return data
+
+
+def customize(c):
+    """改游戏显示名 / 封面：name、coverPath 没给就不动，给空字符串恢复默认。"""
+    with c.lock():
+        gid = c.game()["id"]
+        c.begin("保存游戏名字和封面")
+        folder = contained(c.library, c.library / "games" / gid)
+        current = game_custom(c, gid)
+        name, cover = current["name"], current["cover"].name if current["cover"] else ""
+        data = None
+        if "name" in c.r:
+            name = c.r["name"].strip() if isinstance(c.r["name"], str) else None
+            if name is None or len(name) > CUSTOM_NAME_LIMIT or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+                raise Failure(f"游戏名字要在 {CUSTOM_NAME_LIMIT} 个字以内，不能有换行。")
+        if "coverPath" in c.r:
+            if not isinstance(c.r["coverPath"], str):
+                raise Failure("封面路径不对。")
+            cover = ""
+            if c.r["coverPath"]:
+                data = _custom_cover_bytes(c.r["coverPath"])
+                cover = f"cover.custom.{hashlib.sha256(data).hexdigest()[:8]}.jpg"   # 换文件名：两端按路径缓存封面，同名会显示旧图
+        folder.mkdir(parents=True, exist_ok=True)
+        if data is not None:
+            temporary = folder / (cover + ".partial")
+            temporary.write_bytes(data)
+            os.replace(temporary, folder / cover)
+        if name or cover:
+            atomic(folder / "custom.json", dict(schema=1, name=name, cover=cover))
+        else:
+            (folder / "custom.json").unlink(missing_ok=True)
+        for old in folder.glob("cover.custom.*.jpg"):
+            if old.name != cover:
+                old.unlink(missing_ok=True)
+    return dict(gameId=gid, name=name, cover=str(folder / cover) if cover else "")
+
+
 def catalog(c):
     from build import validate_runtime
     import toolchain
@@ -788,7 +910,10 @@ def catalog(c):
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
         game["inputConfig"] = toolchain.input_interface(c, current / "S2ArmGame.app/Contents/MacOS/s2arm-host")[0] if game["ready"] else input_supported
         cover = c.library / "games" / game["id"] / "cover.jpg"
-        game["cover"] = str(cover) if cover.is_file() else ""
+        custom = game_custom(c, game["id"])
+        game["customName"], game["customCover"] = bool(custom["name"]), custom["cover"] is not None
+        game["name"] = custom["name"] or game["name"]
+        game["cover"] = str(custom["cover"] or cover) if custom["cover"] or cover.is_file() else ""
         choices = [p for p in selected_packages(game) if p["type"] in ("base", "update")]
         if choices:
             game["display"] = max(choices, key=lambda p: p["version"])["display"]
@@ -846,7 +971,7 @@ def direct_transients(c, direct):
             out.append(path)
         except (PermissionError, OverflowError):
             pass  # unknown/live process: retain its in-progress stage
-    # Never pass a transient symlink to _rm: its contained() resolves links.
+    # Retain links: only real, producer-owned transient directories are eligible.
     safe = []
     for path in out:
         try:
@@ -916,8 +1041,26 @@ def _rmtree(p):
 
 
 def _rm(c, root, p):
-    p = contained(root, p)
-    if p.is_dir() and not p.is_symlink():
+    # Check the entry before resolving it: a link into saves/ is not disposable.
+    root, p = Path(os.path.abspath(root)), Path(os.path.abspath(p))
+    try:
+        relative = p.relative_to(root)
+    except ValueError:
+        raise Failure("操作路径不属于托管目录。") from None
+    if not relative.parts:
+        raise Failure("操作路径不属于托管目录。")
+    parent = root
+    for part in relative.parts[:-1]:
+        parent = parent / part
+        if _is_link(parent):
+            raise Failure("清理路径包含目录链接，已停止操作。")
+    if _is_link(p):
+        # A Windows junction is removed with rmdir, a symlink with unlink.
+        if p.is_symlink():
+            p.unlink()
+        else:
+            p.rmdir()
+    elif p.is_dir():
         _rmtree(p)
     else:
         p.unlink(missing_ok=True)
@@ -930,11 +1073,7 @@ def _is_link(p):
 
 def _rm_entry(c, p):
     """链接只删链接本身、不进指向；其余同 _rm"""
-    if _is_link(p):
-        contained(c.library, p.parent)   # contained 会顺着链接解析到指向处：核链接所在目录，删的是链接本身
-        os.unlink(p)
-    else:
-        _rm(c, c.library, p)
+    _rm(c, c.library, p)
 
 
 def _prune_roots(c, d):
@@ -1111,7 +1250,7 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
-        rows.append(dict(gameId=g["id"], name=g.get("name") or g["id"],
+        rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
                          parts=[dict(id=k, title=t, rebuild=r, bytes=_part_bytes(parts[k])) for k, t, r in SPACE_PARTS],
                          kept=[dict(id=k, bytes=_part_bytes(parts[k])) for k in SPACE_KEPT]))
     return dict(games=rows)
@@ -1299,8 +1438,7 @@ def diagnostics(c):
                             if len(data) > limit:
                                 raise Failure("诊断任务文件超过 4 MiB 上限，未生成诊断包。")
                         else:
-                            source.seek(max(0, opened.st_size - 16000))
-                            data = source.read(16000)
+                            data = diagnostic_log_excerpt(source, opened.st_size)
                     stem, suffix = os.path.splitext(member)
                     # Archive separators are known structure, not email local-part characters.
                     public_member = "/".join(redact_member_component(part) for part in stem.split("/")) + suffix

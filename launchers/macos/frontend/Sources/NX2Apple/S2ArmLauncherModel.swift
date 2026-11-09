@@ -153,6 +153,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
+    @Published private(set) var customizing = false
+    @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
     @Published private(set) var installError: String?
     private(set) var installGameID: String?
@@ -298,6 +300,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 这件事的前提没齐：打开环境检查页（还没查过就查一遍），返回 false。
     private func environmentAllows(_ scopes: [String], ignoring: Set<String> = []) -> Bool {
+        if checks.isEmpty, environmentError != nil { return true }   // 环境检查本身失败不挡：作业自己校验并给真实原因
         if scopes.allSatisfy({ provider.environment.ready(for: $0, ignoring: ignoring) }) { return true }
         showEnvironment = true
         if checks.isEmpty { checkEnvironment() }
@@ -317,7 +320,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             let infos: [GameInfo]
             do {
                 infos = try await self.provider.importGames(GameInputs(paths: urls), events: sink)
-            } catch let failure as JobFailure where failure.code == "content_unreadable" && self.provider.library.keysReady == true {
+            } catch let failure as JobFailure where failure.code == "keys_outdated" && self.provider.library.keysReady == true {
                 // 密钥在，但读不了这款：选好的游戏留着，提示换一份，换好自动接着导入
                 self.pendingImport = urls; self.keysRejected = true; self.showKeys = true
                 return nil
@@ -359,7 +362,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         if !game.buildable { return .game(Self.requirementsText(game)) }
         if game.needsKeys, provider.library.keysReady == false { return .keys }
         if busy, session?.export == nil { return .busy }   // 别的出包在跑可以排队
-        if checks.isEmpty { return checking ? .checking : .environment }
+        if checks.isEmpty {
+            if checking { return .checking }
+            return environmentError != nil ? nil : .environment   // 环境检查本身失败不挡：作业自己校验并给真实原因
+        }
         if !Self.scopes(platforms).allSatisfy({ provider.environment.ready(for: $0, ignoring: ["installDotnet"]) }) { return .environment }
         return nil
     }
@@ -507,9 +513,13 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 装到 iPhone（清单全齐才让点）。
+    /// 能不能开始装：清单说可以，或这次清单读失败（不因探测失败把玩家关在外面，install 作业会给真实原因）。
+    func installAllowed(_ gameID: String) -> Bool {
+        installGameID == gameID && (installReadiness?.ready == true || (installReadiness == nil && installError != nil))
+    }
+
     func install(_ game: GameSummary) {
-        guard !busy, installGameID == game.id, installReadiness?.ready == true else { return }
+        guard !busy, installAllowed(game.id) else { return }
         failAction(nil, game: nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
             _ = try await self?.provider.install(gameId: game.id, events: sink)
@@ -570,6 +580,17 @@ public final class S2ArmLauncherModel: ObservableObject {
             try await self?.provider.deleteGame(game.id, events: sink)
             if self?.selectedID == game.id { self?.selectedID = nil }
             return nil
+        }
+    }
+
+    /// 改名字 / 换封面（nil 不动，空字符串恢复默认）：很快，不进作业页，失败写在出包页上。
+    func customize(_ game: GameSummary, name: String? = nil, coverPath: String? = nil) {
+        guard !busy, !customizing else { return }
+        customizing = true; customizeError = nil
+        Task {
+            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath); refresh() }
+            catch { customizeError = error.localizedDescription }
+            customizing = false
         }
     }
 
@@ -744,6 +765,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 回库：只有作业结束了才能关掉作业页。
+    /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
+    func goToLibrary() {
+        exportFor = nil; viewingResult = nil; showEnvironment = false
+        guard let current = session else { return }
+        if isFinished(current) { session = nil } else { sessionHidden = true }
+    }
+
     func backToLibrary() {
         if viewingResult != nil { viewingResult = nil; return }
         sessionHidden = false

@@ -22,7 +22,7 @@ public struct InstallItem: Identifiable, Equatable {
     }
 }
 
-/// 装机前清单：全齐了才让点「开始装」。
+/// 装机前清单：ready 由作业层判定（只有 iPhone 版没做好才挡），其余项只提示。
 public struct InstallReadiness: Equatable {
     public let items: [InstallItem]
     public let ready: Bool
@@ -30,16 +30,17 @@ public struct InstallReadiness: Equatable {
     public let device: String
     /// 本机签名团队名。
     public let account: String
+    /// 这款最新的 .ipa；还没做好 iPhone 版时为空。
+    public let ipaPath: String
 
-    public init(items: [InstallItem], ready: Bool, device: String = "", account: String = "") {
-        self.items = items; self.ready = ready; self.device = device; self.account = account
+    public init(items: [InstallItem], ready: Bool, device: String = "", account: String = "", ipaPath: String = "") {
+        self.items = items; self.ready = ready; self.device = device; self.account = account; self.ipaPath = ipaPath
     }
 
     public init(result r: [String: Any]) {
         let items = (r["items"] as? [[String: Any]] ?? []).compactMap(InstallItem.init(json:))
-        // 作业层的 ready 与逐项都要齐：两边不一致时按没齐算
-        self.init(items: items, ready: (r["ready"] as? Bool ?? false) && !items.isEmpty && items.allSatisfy(\.ok),
-                  device: r["device"] as? String ?? "", account: r["account"] as? String ?? "")
+        self.init(items: items, ready: r["ready"] as? Bool ?? false,
+                  device: r["device"] as? String ?? "", account: r["account"] as? String ?? "", ipaPath: r["ipaPath"] as? String ?? "")
     }
 }
 

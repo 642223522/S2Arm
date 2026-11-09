@@ -7,6 +7,7 @@ import re
 
 RECOVERY = {
     "rewrite_gap": "这款游戏有一处程序代码暂不支持，建议反馈让我们补上：点「复制错误摘要」并发给我们。",
+    "update_failed": "检查网络后重试；还是不行就到下载页下载新版覆盖安装，当前版本和存档不受影响。",
     "glslc_windows_unavailable": "这款游戏的着色器编译目前只能在 Mac 上完成，Windows 版暂不支持；请改用 Mac 版 S2Arm 出包。",
     "win_host_unsupported": "请改用64位Windows主机运行S2Arm，确认后点「重新检查」。",
     "win_metal_missing": "用自己的Apple ID登录苹果开发者下载页（https://developer.apple.com/download/），下载安装官方Metal Developer Tools for Windows，装好后点「重新检查」。",
@@ -26,7 +27,10 @@ RECOVERY = {
     "tool_exit": "查看本任务日志和失败阶段，按提示修复后重试；反馈时复制错误摘要。",
     "keys_missing": "在「设置 → 玩家密钥」导入自行导出的 prod.keys，然后重新导入游戏。",
     "keys_invalid": "重新选择完整的 prod.keys 文本文件，不要手工补写密钥值；原有密钥保持不变。",
-    "content_unreadable": "先把 Switch 更新到最新系统，重新导出 prod.keys，到「设置 → 玩家密钥」重新导入，再放一次游戏；如果密钥已是新的，请检查游戏文件是否完整，重新复制后再试。",
+    "content_unreadable": "检查文件和票据是否完整；若另行确认 Switch 密钥版本不足，可重新导出并到「设置 → 玩家密钥」重新导入。",
+    "ticket_missing": "核对源文件是否含有所需票据。",
+    "content_truncated": "从原始位置重新复制完整的游戏文件，再重新导入。",
+    "keys_outdated": "用系统版本更新的 Switch 重新导出 prod.keys，再到「设置 → 玩家密钥」重新导入。",
     "input_type_unsupported": "选择 NSP、XCI 文件或包含它们的文件夹，然后重新导入。",
     "input_empty": "确认所选文件夹包含 NSP 或 XCI 文件，再重新导入。",
     "input_permission": "打开「系统设置 › 隐私与安全性 › 文件与文件夹」（外接盘看「可移除的宗卷」），允许本应用读取游戏文件所在位置，或把游戏文件拷到「下载」之外的本机文件夹，然后重试。",

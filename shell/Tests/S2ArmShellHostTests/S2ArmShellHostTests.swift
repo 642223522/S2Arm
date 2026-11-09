@@ -93,6 +93,8 @@ nonisolated(unsafe) private var lastPlayed = ""
     // 缺省：60 帧开、宽屏强制关、透明度 100、布局默认，没有「我的布局」时选项 = 默认 + 调整位置
     var s = S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false))
     #expect(row(s, "fps60")?.value == "on" && row(s, "widenForce")?.value == "off" && row(s, "vpadOpacity")?.value == "100")
+    #expect(row(s, "vpadHoldLock")?.value == "on")
+    #expect(row(S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false, holdLock: false)), "vpadHoldLock")?.value == "off")
     if case .choice(let o) = row(s, "vpadLayout")?.kind { #expect(o.map(\.id) == ["default", "edit"]) } else { Issue.record("布局行应是多选") }
     // 改：G1 关 60 帧、开宽屏强制、透明度 40 → G1 两项变了、G2 不变；透明度全局 0.4
     #expect(!S2ArmGameSettings.apply(id: "G1", setting: "fps60", value: "off", stores: stores))
@@ -111,4 +113,29 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(abs((app.object(forKey: "S2AVPadOpacity") as? Double ?? 0) - 0.1) < 1e-9)
     // 选「调整位置…」= 打开编辑页，不存值
     #expect(S2ArmGameSettings.apply(id: "G1", setting: "vpadLayout", value: "edit", stores: stores))
+}
+
+// 这台 iPhone 上的名字和封面：叠在清单上、可恢复默认，不影响别的款。期望值手写
+@MainActor @Test func gameIdentityOverridesCatalogue() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let json = #"{"schema":1,"games":[{"title_id":"0100000000000001","name":"原名一"},{"title_id":"0100000000000002","name":"原名二"}]}"#
+    let catalogue = Catalogue.parse(Data(json.utf8), baseDirectory: root)
+    let store = GameIdentityStore(root: root)
+    let model = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    let a = "0100000000000001", b = "0100000000000002"
+    #expect(model.games.map(\.game.title) == ["原名一", "原名二"] && !model.hasCustomIdentity(a))
+    model.change(a, S2ArmGameSettings.identity, S2ArmGameSettings.editIdentity)
+    #expect(model.editingIdentity == a)
+    model.saveIdentity(a, name: "  我的游戏  ", cover: nil)
+    #expect(model.editingIdentity == nil && model.games[0].game.title == "我的游戏" && model.games[1].game.title == "原名二")
+    #expect(store.load(a)?.name == "我的游戏" && store.load(b) == nil)
+    // 下次启动：从磁盘读回
+    let again = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    #expect(again.games[0].game.title == "我的游戏")
+    // 名字没改：不算自定义
+    model.saveIdentity(b, name: "原名二", cover: nil)
+    #expect(store.load(b) == nil && !model.hasCustomIdentity(b))
+    model.resetIdentity(a)
+    #expect(model.games[0].game.title == "原名一" && store.load(a) == nil)
 }
