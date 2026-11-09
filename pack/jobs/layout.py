@@ -9,6 +9,7 @@ Windows 与 Mac 同一套（共用后端）。旧布局（按类型分：games/<
 .s2arm-layout.json 记已迁完的款，中途被杀下次接着做。
 """
 from __future__ import annotations
+import contextlib
 import json
 import os
 import re
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from core import Failure, atomic, contained, read
 
-VERSION = 2
+VERSION = 4   # 2 = P1 每款文件夹；3 = iPhone 一侧（_upgrade_3）；4 = 库外的工具缓存 / 日志搬进默认位置（_upgrade_4）
 GAME_JSON = "game.json"
 NAME_MAX = 48   # Windows 深路径预算：库根 + games\<名> + 镜像 / 出包缓存的深层目录要留在 260 以内（玩家路径见 pack/jobs/winenv.py 长路径检查）
 _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -443,6 +444,7 @@ def migrate(c):
     if not location_id(c.library):   # 旧库原地变成第一个存放位置（游戏库结构 v3）
         import uuid
         atomic(c.library / LOCATION_JSON, dict(schema=1, id=uuid.uuid4().hex, version=VERSION))
+    _upgrade_4(c)   # 当前版本 < 4 才走到这里：3→4，可重入
     atomic(marker, dict(version=VERSION, games=sorted(done)))
     return True
 
@@ -455,7 +457,14 @@ def _legacy_ids(c, spec):
 
 
 def ensure(c):
-    """作业开始前：库还是旧布局就拿执行锁迁移（拿不到每 2 秒再试，最多 120 秒：别的作业在跑时它已经迁过了，再看一眼标记）"""
+    """作业开始前：库还是旧布局就拿执行锁迁移；之后把库建好前退回私有目录写的日志 / 任务记录收进默认位置（每个作业都看一眼，没有就只读一次索引表）"""
+    _ensure_layout(c)
+    if (c.library / ".s2arm-library.json").is_file():
+        adopt_private_logs(c)
+
+
+def _ensure_layout(c):
+    """库还是旧布局就拿执行锁迁移（拿不到每 2 秒再试，最多 120 秒：别的作业在跑时它已经迁过了，再看一眼标记）"""
     import time
     import filelock
     if read(c.library / ".s2arm-layout.json", {}).get("version") == VERSION or not (c.library / ".s2arm-library.json").is_file():
@@ -478,3 +487,248 @@ def ensure(c):
         if read(c.library / ".s2arm-layout.json", {}).get("version") == VERSION:
             return
         time.sleep(2)
+
+
+# ---- 3→4（游戏库结构 P3）：库外的东西搬进默认位置 ----
+# 目标：玩家指定的库是入口，私有目录（Mac ~/Library/Application Support/S2Arm，Windows %LOCALAPPDATA%\S2Arm\WindowsLauncher）只留设置、密钥和控制口文件。
+#   工具缓存：原 work_root（库在私有目录里时 = 私有目录，否则 = 库/.s2arm-work）下的 cache/、run/ → <默认位置>/tool-cache/{cache,run}（core.Context.work_root）。
+#     都能重建：同一卷改名（逐个子项，目标已有的不盖），跨卷直接删、不拷。
+#   日志、任务记录：<私有目录>/logs、jobs → <默认位置>/logs/（任务记录 logs/jobs/，core.logs_root），见 adopt_private_logs。
+#   引擎副本在 embedded.install 里搬（它在 ensure 之前跑）。
+# 每步都是逐项改名 / 删，中途被杀下次接着做；布局标记最后才写 4。
+
+def _upgrade_4(c):
+    new = c.library / "tool-cache"
+    for old in (c.private, c.library / ".s2arm-work"):
+        for name in ("cache", "run"):
+            _absorb_rebuildable(c, old / name, new / name)
+    with contextlib.suppress(OSError):
+        (c.library / ".s2arm-work").rmdir()
+    adopt_private_logs(c)
+
+
+def _absorb_rebuildable(c, src, dst):
+    """能重建的目录 src 并进 dst：同一卷逐个子项改名（dst 已有的同名项留 dst 的），剩下的删；跨卷整个删"""
+    from library import _discard
+    if not os.path.lexists(src):
+        return
+    if os.path.islink(src) or not src.is_dir():
+        src.unlink()
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if _same_volume(src, dst.parent):
+        if not os.path.lexists(dst):
+            os.replace(src, dst)
+            return
+        for child in sorted(src.iterdir()):
+            if not os.path.lexists(dst / child.name):
+                os.replace(child, dst / child.name)
+    try:
+        _discard(src)
+    except OSError:
+        pass   # 删不掉的（Windows 上被占用）留着，不影响新位置
+
+
+def _moved(src, dst):
+    """单个文件 / 目录搬到 dst：同一卷改名；跨卷拷到 dst 旁的临时名再换名、删原件。dst 已有就不动（不丢任何一边）"""
+    if os.path.lexists(dst) or not os.path.lexists(src):
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if _same_volume(src, dst.parent):
+        os.replace(src, dst)
+        return
+    import uuid
+    temporary = dst.with_name(dst.name + "." + uuid.uuid4().hex + ".partial")
+    try:
+        if src.is_dir() and not src.is_symlink():
+            shutil.copytree(src, temporary, symlinks=True)
+        else:
+            shutil.copy2(src, temporary, follow_symlinks=False)
+        os.replace(temporary, dst)
+    finally:
+        if os.path.lexists(temporary):
+            shutil.rmtree(temporary, ignore_errors=True) if temporary.is_dir() else temporary.unlink()
+    shutil.rmtree(src) if src.is_dir() and not src.is_symlink() else src.unlink()
+
+
+def follow_task(c):
+    """Context 建任务时调（任务记录在默认位置时）：索引表第一项核成这个默认位置（core.default_home 只拿私有目录时靠它找日志）；
+    这个任务号上次的记录还在私有目录（库建好前跑的、resume 续跑）就先搬过来，attemptNo 等接得上"""
+    if c.logs.parent == c.private:
+        return
+    try:
+        disk = (read(_index_path(c), {}) or {}).get("locations") or []
+    except (OSError, ValueError):
+        disk = []
+    if not disk or not isinstance(disk[0], dict) or disk[0].get("path") != str(c.library):
+        save_index(c)
+    if c.jobpath.exists():
+        return
+    for old in (c.private / "logs" / "jobs", c.private / "jobs"):
+        if (old / c.jobpath.name).is_file():
+            for suffix in (".json", ".events.jsonl", ".request.json"):
+                try:
+                    _moved(old / (c.task + suffix), c.jobpath.parent / (c.task + suffix))
+                except OSError:
+                    pass
+            return
+
+
+def adopt_private_logs(c):
+    """<私有目录>/logs、jobs（P3 之前的位置，以及库建好前 core.logs_root 退回私有目录写下的）收进默认位置的 logs/。
+    先按保留规则清一遍（core.prune_jobs）再搬，跨卷时少拷；还没写终态、进程还在的任务（日志名以任务号开头）不动，等它结束后的下一个作业再收。
+    顺手核索引表第一项是这个默认位置（core.default_home 只拿私有目录时靠它找日志）"""
+    from core import TERMINAL_STATES, pid_alive, prune_jobs
+    target = c.logs
+    if target.parent == c.private:
+        return
+    sources = [(c.private / "jobs", target / "jobs"), (c.private / "logs" / "jobs", target / "jobs"), (c.private / "logs", target)]
+    if not any(s.is_dir() for s, _ in sources):
+        return
+    running = set()
+    for src, _ in sources[:2]:
+        if not src.is_dir():
+            continue
+        prune_jobs(c.private, jobs=src)
+        for p in src.glob("*.json"):
+            if p.name.endswith(".request.json"):
+                continue
+            try:
+                r = read(p, {}) or {}
+            except (OSError, ValueError):
+                continue
+            if isinstance(r, dict) and r.get("state") not in TERMINAL_STATES and not r.get("ended") and pid_alive(r.get("pid")):
+                running.add(p.stem)
+    for src, dst in sources:
+        if not src.is_dir() or src.is_symlink():
+            continue
+        for child in sorted(src.iterdir()):
+            if src == c.private / "logs" and child.name == "jobs":
+                continue
+            if any(child.name.startswith(t) for t in running):
+                continue
+            try:
+                _moved(child, dst / child.name)
+            except OSError:
+                continue   # 这一项这次搬不动，留着下次再试；读的一方（core._job_dirs）照样找得到
+    for d in (c.private / "logs" / "jobs", c.private / "logs", c.private / "jobs"):
+        with contextlib.suppress(OSError):
+            d.rmdir()
+
+
+# ---- 默认库位置（游戏库结构 P3）：新装 ~/S2Arm（Windows %USERPROFILE%\S2Arm），访达 / 资源管理器里看得见 ----
+# 老玩家的库若还在旧默认位置（私有目录下的「游戏库」= Mac 启动器、「DefaultLibrary」= Windows 启动器）：同一卷改名到新默认位置；
+# 目标已存在、跨卷、库里有任务在跑或改名失败就原地不动照常用。动之前在私有目录写 library-relocate.json，改完更新索引表与前端设置文件
+# （Mac preferences.json 的 library、Windows library-location.txt），中途被杀下次接着收尾。绝不删数据。玩家自己选过的位置不动。
+OLD_DEFAULTS = ("游戏库", "DefaultLibrary")
+RELOCATE_JSON = "library-relocate.json"
+
+
+def new_default_library():
+    return Path.home() / "S2Arm"
+
+
+def standard_private():
+    """前端缺省的私有目录（s2armctl root() 同一规则）；用 --data-root 等自定义数据目录时不搬库（测试、多开不会写到玩家主目录）"""
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "S2Arm" / "WindowsLauncher"
+    return Path.home() / "Library" / "Application Support" / "S2Arm"
+
+
+def relocate_default(private, library):
+    """请求里的库是旧默认位置时 → 该用的库路径（已搬 / 这次搬成 → 新位置；否则原样）。Context 建任务时调，别的情况一次比较就返回"""
+    private, library = Path(private), Path(library)
+    if library.parent != private or library.name not in OLD_DEFAULTS:
+        return library
+    marker = private / RELOCATE_JSON
+    try:
+        note = read(marker, {}) or {}
+    except (OSError, ValueError):
+        note = {}
+    if note.get("from") == str(library) and note.get("to"):
+        target = Path(note["to"])
+        if (target / ".s2arm-library.json").is_file() and not (library / ".s2arm-library.json").is_file():
+            _finish_relocate(private, library, target)   # 搬过了（或改完名被杀）：收尾后照新位置用
+            return target
+    target = new_default_library()
+    if (private.resolve() != standard_private().resolve() or not (library / ".s2arm-library.json").is_file()
+            or os.path.lexists(target)):
+        return library
+    try:
+        if not _same_volume(library, target.parent):
+            return library
+        if not _idle(library):
+            return library
+        atomic(marker, {"schema": 1, "from": str(library), "to": str(target), "state": "moving"})
+        os.replace(library, target)
+    except OSError:
+        return library
+    _finish_relocate(private, library, target)
+    return target
+
+
+def _idle(library):
+    """库里没有任务在跑（同整库搬家：执行锁、目录锁都拿得到）才搬。拿到就放：Windows 上库里有打开的文件时目录改不了名"""
+    import filelock
+    handles = []
+    try:
+        for name in (".execution.lock", ".catalog.lock"):
+            f = (library / name).open("a")
+            handles.append(f)
+            filelock.try_lock(f)
+        return True
+    except BlockingIOError:
+        return False
+    finally:
+        for f in handles:
+            f.close()
+
+
+def _finish_relocate(private, old, new):
+    """搬完收尾（可重复做）：库里指向旧位置的绝对链接改指新位置；索引表里旧路径换新；前端设置文件里记的是旧路径就换新；标记记 done"""
+    from library import _retarget_links
+    marker = private / RELOCATE_JSON
+    try:
+        note = read(marker, {}) or {}
+    except (OSError, ValueError):
+        note = {}
+    if note.get("state") == "done" and note.get("from") == str(old):
+        _update_settings(private, old, new)   # 前端可能把旧路径又写回了设置（内存里还是旧值）：每次都核
+        return
+    _retarget_links(new, old, new)
+    index = private / "library-index.json"
+    try:
+        idx = read(index, None)
+    except (OSError, ValueError):
+        idx = None
+    if isinstance(idx, dict):
+        for loc in idx.get("locations") or []:
+            if isinstance(loc, dict) and loc.get("path") == str(old):
+                loc["path"] = str(new)
+        atomic(index, idx)
+    _update_settings(private, old, new)
+    atomic(marker, {"schema": 1, "from": str(old), "to": str(new), "state": "done"})
+
+
+def _same_path(text, path):
+    try:
+        return Path(str(text)).expanduser().resolve() == Path(path).resolve() or str(text) == str(path)
+    except (OSError, ValueError):
+        return False
+
+
+def _update_settings(private, old, new):
+    prefs = private / "preferences.json"
+    try:
+        p = read(prefs, None)
+    except (OSError, ValueError):
+        p = None
+    if isinstance(p, dict) and p.get("library") and _same_path(p["library"], old):
+        p["library"] = str(new)
+        atomic(prefs, p)
+    txt = private / "library-location.txt"
+    try:
+        if txt.is_file() and _same_path(txt.read_text(encoding="utf-8").strip(), old):
+            txt.write_text(str(new), encoding="utf-8")
+    except OSError:
+        pass

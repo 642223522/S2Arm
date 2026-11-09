@@ -532,16 +532,18 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
 
 
 def record_failure(args, code, message, detail=""):
-    """失败原因写进诊断包会收的日志（私有目录/logs）：界面只有一句话，玩家反馈时靠这里定位"""
+    """失败原因写进诊断包会收的日志（core.logs_root：默认位置的 logs/，库没建好时私有目录/logs）：界面只有一句话，玩家反馈时靠这里定位"""
     root = getattr(args, "private_root", None)
     if not root:
         return
     try:
-        log = Path(root) / "logs" / "update.log"
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from core import logs_root
+        log = logs_root(root) / "update.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as out:
             out.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {code} {message}\n{str(detail or '').strip()[-2000:]}\n")
-    except OSError:
+    except (OSError, ImportError):
         pass
 
 

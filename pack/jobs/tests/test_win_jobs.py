@@ -197,7 +197,7 @@ class WinInstall(unittest.TestCase):
         out = self.t / "lib/iPhone/G"; (out / "tg资源包").mkdir(parents=True); (out / "tg.ipa").write_bytes(b"i"); (out / "tg资源包/a").write_bytes(b"ab")
         (self.t / "lib/iPhone/container").mkdir(parents=True)   # WinPhone.record 所在目录
         (self.t / "logs").mkdir()
-        self.c = types.SimpleNamespace(r={"gameId": "G"}, library=self.t / "lib", private=self.t, task="k", engine=self.t, emit=lambda *a, **k: None,
+        self.c = types.SimpleNamespace(r={"gameId": "G"}, library=self.t / "lib", private=self.t, logs=self.t / "logs", task="k", engine=self.t, emit=lambda *a, **k: None,
                                        begin=lambda *a, **k: None, last_log=None)
 
     def go(self, w, **r):

@@ -305,7 +305,9 @@ class JobsTests(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, OUT=str(out)), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "True 乙 3 0")   # 发现断管、没抛；三条事件都进了记录；子进程照常跑完
-        events = (self.root / "private/jobs/gone.events.jsonl").read_text().splitlines()
+        built = Path(self.request["library"]) / ".s2arm-library.json"   # 库建好了任务记录在 <库>/logs/jobs，否则 <私有目录>/logs/jobs
+        jobs = Path(self.request["library"]) / "logs/jobs" if built.is_file() else self.root / "private/logs/jobs"
+        events = (jobs / "gone.events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(l)["stage"] for l in events], ["甲", "甲", "乙"])
 
     def test_pull_diagnostics_only_s2arm_apps_on_connected_ios(self):
@@ -881,16 +883,21 @@ class JobsTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_caches_follow_a_library_outside_the_private_root(self):
-        """外接盘上的游戏库：出包缓存和运行目录要跟着走，不写系统盘；缺省游戏库（在数据目录里）位置不变。"""
+        """外接盘上的游戏库：工具缓存和运行目录跟着库走（默认位置的 tool-cache/，游戏库结构 P3），不写系统盘；库在数据目录里也一样；
+        库还没建好（没有库标识）时退回 <私有目录>/tool-cache。"""
         outside = self.root / "external" / "lib"
         c = Context(self.request | dict(taskId="outside", library=str(outside)))
-        self.assertEqual(c.work_root, outside.resolve() / ".s2arm-work")
+        self.assertEqual(c.work_root, c.private / "tool-cache")
+        atomic(outside / ".s2arm-library.json", dict(schema=1, id="x"))
+        self.assertEqual(c.work_root, outside.resolve() / "tool-cache")
         env = c.env()
-        self.assertEqual(env["S2A_RUN_ROOT"], str(outside.resolve() / ".s2arm-work/run"))
+        self.assertEqual(env["S2A_RUN_ROOT"], str(outside.resolve() / "tool-cache/run"))
         self.assertTrue(env["GAL_PSO_CACHE"].startswith(str(outside.resolve())))
-        inside = Context(self.request | dict(taskId="inside", library=str(Path(self.request["privateRoot"]) / "lib")))
-        self.assertEqual(inside.work_root, inside.private)
-        self.assertEqual(inside.env()["S2A_RUN_ROOT"], str(inside.private / "run"))
+        lib = Path(self.request["privateRoot"]) / "lib"
+        atomic(lib / ".s2arm-library.json", dict(schema=1, id="y"))
+        inside = Context(self.request | dict(taskId="inside", library=str(lib)))
+        self.assertEqual(inside.work_root, lib.resolve() / "tool-cache")
+        self.assertEqual(inside.env()["S2A_RUN_ROOT"], str(lib.resolve() / "tool-cache" / "run"))
 
     def test_refuses_nonempty_or_legacy_library(self):
         other = self.root / "legacy"
@@ -935,7 +942,7 @@ class JobsTests(unittest.TestCase):
         # 任务目录里同一任务有记录 <id>.json 和留存的请求 <id>.request.json（J10 resume）；catalog 只该返回记录。
         #   请求混进来时启动器把整个任务列表解码失败（10-25 main 上 BudgetTests 重开读回 space 为 nil）
         self.catalogue([self.game(packages=[self.package()])])
-        jobs = self.c.private / "jobs"
+        jobs = self.c.jobpath.parent   # 这个作业自己的任务记录目录（core.logs_root）
         jobs.mkdir(parents=True, exist_ok=True)
         (jobs / "older.json").write_text(json.dumps({"id": "older", "operation": "build", "state": "failed"}), encoding="utf-8")
         (jobs / "older.request.json").write_text(json.dumps({"schema": 1, "taskId": "older", "operation": "build"}), encoding="utf-8")
@@ -946,7 +953,7 @@ class JobsTests(unittest.TestCase):
     def test_catalogue_returns_only_newest_job_records(self):
         # 11-07：任务目录 1.5 万条记录时 catalog 整份读 + 回传 7 MB；只回最新 JOB_LIST_LIMIT 条（按修改时间）
         self.catalogue([self.game(packages=[self.package()])])
-        jobs = self.c.private / "jobs"
+        jobs = self.c.jobpath.parent   # 这个作业自己的任务记录目录（core.logs_root）
         jobs.mkdir(parents=True, exist_ok=True)
         now = time.time()
         for i in range(library.JOB_LIST_LIMIT + 5):
@@ -1371,7 +1378,7 @@ class JobsTests(unittest.TestCase):
 
     def test_diagnostic_manifest_and_every_member_are_redacted_without_truncation(self):
         import platform
-        logs = self.c.private / "logs"; logs.mkdir(exist_ok=True)
+        logs = self.c.logs; logs.mkdir(exist_ok=True)
         sensitive = ('contact=synth@example.invalid; DEVELOPMENT_TEAM = ABCDE12345; '
                      's2arm.abcde12345.0100aabbccdd0000; 0000abcd-0123456789abcdef; '
                      'device 0123456789abcdef0123456789abcdef01234567; '
@@ -1404,11 +1411,11 @@ class JobsTests(unittest.TestCase):
     def test_diagnostic_uuid_task_members_are_unique_and_manifest_matches(self):
         tasks = ("11111111-2222-4333-8444-555555555555",
                  "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
-        logs = self.c.private / "logs"
+        logs = self.c.logs
         logs.mkdir(exist_ok=True)
         expected = set()
         for task in tasks:
-            (self.c.private / "jobs" / (task + ".json")).write_text('{"state":"done"}')
+            (self.c.logs / "jobs" / (task + ".json")).write_text('{"state":"done"}')
             (logs / (task + "-game.log")).write_text("serial=" + task)
             folder = logs / task
             folder.mkdir()
@@ -1445,7 +1452,7 @@ class JobsTests(unittest.TestCase):
                 for key in ("macos_version", "xcode_version", "mac_model"):
                     self.assertIn("error", manifest[key])
         previous = destination.read_bytes()
-        logs = self.c.private / "logs"; logs.mkdir(exist_ok=True)
+        logs = self.c.logs; logs.mkdir(exist_ok=True)
         for name in ("one@example.invalid.log", "two@example.invalid.log"):
             (logs / name).write_text("synthetic log")
         with self.assertRaisesRegex(Failure, "文件名重复"):
@@ -1455,7 +1462,7 @@ class JobsTests(unittest.TestCase):
     def test_diagnostic_export_never_contains_keys_or_player_files(self):
         self.c.keys.parent.mkdir(parents=True)
         self.c.keys.write_text("header_key = " + "a" * 64)
-        log = self.c.private / "logs" / "tool.log"
+        log = self.c.logs / "tool.log"
         log.parent.mkdir(exist_ok=True)
         log.write_text("token=verysecret " + str(self.c.private) + " " + "a" * 64)
         destination = self.root / "diagnostics.zip"
@@ -1475,10 +1482,10 @@ class JobsTests(unittest.TestCase):
         external = self.root / "external"; external.mkdir()
         (external / "outside.log").write_text("OUTSIDE_BOUNDARY_SENTINEL")
         (external / "outside.json").write_text("OUTSIDE_BOUNDARY_SENTINEL")
-        (self.c.private / "logs").mkdir()
+        self.c.logs.mkdir(exist_ok=True)
         # Static root links are rejected before begin can persist a job through them.
-        for name in ("jobs", "logs"):
-            root = self.c.private / name; saved = self.c.private / (name + "-saved")
+        for root in (self.c.logs / "jobs", self.c.logs):
+            saved = root.with_name(root.name + "-saved")
             root.rename(saved); root.symlink_to(external, target_is_directory=True)
             with um.patch.object(self.c, "begin") as begin, self.assertRaises(Failure):
                 library.diagnostics(self.c)
@@ -1486,7 +1493,7 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in external.iterdir()), ["outside.json", "outside.log"])
             root.unlink(); saved.rename(root)
             self.assertEqual(destination.read_bytes(), b"old target")
-        jobs, logs = self.c.private / "jobs", self.c.private / "logs"
+        jobs, logs = self.c.logs / "jobs", self.c.logs
         (jobs / "original.json").write_text('{"detail":"ORIGINAL_JOB"}')
         (logs / "nested").mkdir(); (logs / "nested/original.log").write_text("ORIGINAL_LOG")
         (jobs / "link.json").symlink_to(external / "outside.json")
@@ -1626,7 +1633,7 @@ class JobsTests(unittest.TestCase):
         self.assertFalse((layout.build_dir(self.c, gid)).exists())
         self.assertEqual((out / library.CONTAINER_KIT / "main.npdm").read_bytes(), b"old")
         self.assertEqual(save.read_bytes(), b"save")
-        self.assertEqual((c.private / "logs" / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
+        self.assertEqual((c.logs / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
 
     def test_clean_after_stop_keeps_failed_stage_logs(self):   # #251：改写失败的 .failed/<款>_main.log 在游戏库缓存里，清理前要拷进私有日志目录，诊断包才带得上
         gid, out, _ = self.stopped_game()
@@ -1635,7 +1642,7 @@ class JobsTests(unittest.TestCase):
         c = self.stop_context(gid)
         library.clean_after_stop(c)
         self.assertFalse(failed.exists())
-        self.assertEqual((c.private / "logs" / (c.task + "-stages") / f"{gid}_main.log").read_text(), "改写超时前最后一行")
+        self.assertEqual((c.logs / (c.task + "-stages") / f"{gid}_main.log").read_text(), "改写超时前最后一行")
 
     def test_clean_after_stop_removes_first_failed_export(self):
         gid, out, _ = self.stopped_game(kit=False, ipa=False)
@@ -1669,7 +1676,7 @@ class JobsTests(unittest.TestCase):
 
     def test_diagnostic_bounded_reads_and_atomic_publication(self):
         import unittest.mock as um
-        logs = self.c.private / "logs"; logs.mkdir()
+        logs = self.c.logs; logs.mkdir(exist_ok=True)
         log = logs / "tail.log"; log.write_bytes(b"x" * 40000 + b"tail")
         destination = self.root / "diagnostics.zip"; destination.write_bytes(b"old target")
         self.c.r["path"] = str(destination)
@@ -1700,7 +1707,7 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(marker.read_bytes(), b"unchanged marker")
         self.assertTrue(predictable.is_symlink()); self.assertFalse(destination.is_symlink())
         previous = destination.read_bytes()
-        oversized = self.c.private / "jobs/oversized.json"
+        oversized = self.c.logs / "jobs/oversized.json"
         with oversized.open("wb") as stream: stream.truncate((4 << 20) + 1)
         with self.assertRaisesRegex(Failure, "4 MiB"):
             library.diagnostics(self.c)

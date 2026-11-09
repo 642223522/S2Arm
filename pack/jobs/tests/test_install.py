@@ -453,7 +453,7 @@ class FlowTests(unittest.TestCase):
         with um.patch.object(diag, "devicectl", devicectl), um.patch.object(target, "usb_idevices", return_value=[]), self.assertRaises(Failure) as e:
             install.phone(self.c)
         self.assertEqual(e.exception.code, "device_not_ready"); self.assertNotIn(udid, str(e.exception))
-        report = (self.c.private / "logs" / f"{self.c.task}-device.log").read_text(encoding="utf-8")
+        report = (self.c.logs / f"{self.c.task}-device.log").read_text(encoding="utf-8")
         self.assertNotIn(udid, report); self.assertNotIn("张三", report)
         for field in ("rc=1", "transport=wired", "pairing=paired", "tunnel=disconnected", "developerMode=enabled", "ddi=False", "boot="): self.assertIn(field, report)
 
