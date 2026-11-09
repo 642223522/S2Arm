@@ -302,11 +302,14 @@ class SeedAoc(unittest.TestCase):   # ④ 播种与轻阶段带 S2A_SEED_AOC=1�
     def test_seed_env(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t); run = oneclick_win.Run(t / 'out'); seen = {}
-            def sh(args, log, env=None, ok=(0,), cwd=None): seen[log] = (env or {}).get('S2A_SEED_AOC'); return 0
+            def sh(args, log, env=None, ok=(0,), cwd=None): seen[log] = ((env or {}).get('S2A_SEED_AOC'), (env or {}).get('S2A_NX_UNPACK')); return 0
             run.sh = sh
             (t / 'out/roots').mkdir(parents=True); (t / 'ver').mkdir(); os.symlink(t / 'ver', t / 'out/roots/tx@现行')
-            oneclick_win.stages(run, 'tx', t / 'x', t / 'src')
-            self.assertEqual(seen.get('seed.log'), '1'); self.assertEqual(seen.get('light.log'), '1')
+            tool = t / 'out/bin/nx_unpack_abc/nx_unpack.exe'
+            with patch.object(oneclick_win, "nx_unpack", lambda r: tool):
+                oneclick_win.stages(run, 'tx', t / 'x', t / 'src')
+            # ⑤ 轻阶段（追加内容解包 stages._nxu）拿本单选定的同一份 nx_unpack（11-09 Windows 出包机：两处各认各的 bin 目录，身份一变轻阶段退 75）
+            self.assertEqual(seen.get('seed.log'), ('1', str(tool))); self.assertEqual(seen.get('light.log'), ('1', str(tool)))
 
 
 class Events(unittest.TestCase):   # ⑥ ⑦ ⑧ 机器读事件流与 --from-extract（满屏补丁线启动器后端 pack/jobs/ipa.py 直接读 result）
