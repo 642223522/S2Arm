@@ -48,7 +48,7 @@ apple_step() {
 # 固定 Python 解释器（11-07 维护者：android_widen_disabled_test 用 ${S2A_PY:-python3}，gate-host 门禁没设 S2A_PY 就落到 homebrew 裸 python3，缺 lz4 红；
 #   固定解释器 ~/.s2arm/venv 里按 tools/rewriter-requirements.txt 钉了版本、doctor.sh 预检核它）：没给 S2A_PY 且固定解释器在 → 各步统一用它
 [ -z "${S2A_PY:-}" ] && [ -x "$HOME/.s2arm/venv/bin/python3" ] && export S2A_PY=$HOME/.s2arm/venv/bin/python3
-TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}
+TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_NO_LOADQ:-}   # 列车起的门禁（下文 unset 前先记下：本机预跑令牌豁免它）
 # 与列车/自检共用 gate_tier。普通文档才降 doc；敏感文档不降档。
 # 改动集为空不改档；只允许降为 doc，保留调用者显式给的其他档位。
 CHG=${GATE_CHANGED:-$(git -c core.quotepath=off diff --name-only "origin/main...${GATE_REV:-HEAD}" 2> /dev/null)}
@@ -293,6 +293,12 @@ tcw() {   # tcw <步号> <命令>：有键就包一层：命中 → 不跑、记
   printf 'if python3 tools/test_cache.py hit %q %q; then : > %q; echo "输入与工具链没变，沿用上次的绿"; exit 0; fi; ( %s ); _tr=$?; [ $_tr = 0 ] && python3 tools/test_cache.py put %q %q; exit $_tr' \
     "$TCD" "$k" "$L/$1.hit" "$2" "$TCD" "$k"; }
 LI=(); for i in $(seq 1 $N); do [ "${WH[$i]}" = 本机 ] && LI+=("$i"); done; tc_keys ${LI[@]+"${LI[@]}"}
+# 本机预跑整份令牌（tools/run_token.sh，11-09）：有本机步才领，同机同时不超过 GATE_RUN_PAR 份（缺省 2）；领不到排队。
+#   列车（GATE_NO_LOADQ=1）/ 门禁步里嵌套的门禁 / 远端那份（GATE_PLAN）/ 单测假仓库（没有路由器；专测的 run_token_test 给 S2A_GATE_RUNTOK_TEST）不领
+if [ ${#LI[@]} -gt 0 ] && [ -z "$PLANM" ] && [ -z "$NOLQ" ] && [ -z "${GATE_IN_STEP:-}" ] && [ -f tools/run_token.sh ] \
+   && { [ -f tools/gate_route.py ] || [ -n "${S2A_GATE_RUNTOK_TEST:-}" ]; }; then
+  source tools/run_token.sh; runtok_take $$ || { echo "门禁 环境未就绪：拿不到本机预跑令牌（tools/run_token.sh）"; exit 75; }
+fi
 # 本机那份：整步本机的 + 拆出来的子项；gate-host 那份一次 维护方工具 跑完（带 @gate 共享数据，结果目录拉回 $L/r），两边同时跑
 for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; job "$i" "$(tcw "$i" "${r1%	*}")" "${s##*	}"; }; done
 { j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
