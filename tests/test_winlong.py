@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Windows 长路径（pack/orch/winlong.py）。纯函数在所有平台测；真实文件操作只在 Windows 上跑"""
+import ntpath
 import os
 import shutil
 import sys
@@ -80,6 +81,14 @@ class LongPathTest(unittest.TestCase):
         self.assertEqual(sr.group_targets(["R:\\lib\\iPhone\\g\\work", "R:\\lib\\cache\\g\\extract"]), ["R:\\lib"])
         self.assertEqual(sorted(sr.group_targets(["R:\\lib\\w", "D:\\x"])), ["D:\\x", "R:\\lib\\w"])
 
+    def test_sweep_removes_orphan_pid_without_junction(self):   # 审计 P2-217：写了 .pid、联接没建成就被杀，残留 .pid 要被扫掉；进程还活着的不动
+        from pack.orch import shortroot as sr
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "ab12.pid").write_text("111")
+            Path(root, "cd34.pid").write_text("222")
+            self.assertEqual(sr.sweep(root, alive=lambda pid: pid == 222), 1)
+            self.assertEqual(sorted(os.listdir(root)), ["cd34.pid"])
+
     @unittest.skipUnless(os.name == "nt", "只在 Windows 上有目录联接")
     def test_junction_to_long_target_is_usable(self):   # 目标超过 240 字符：不能加 \\\\?\\，否则联接非法
         import _winapi
@@ -113,6 +122,32 @@ class LongPathTest(unittest.TestCase):
                 self.assertEqual(sr.sweep(root, alive=lambda pid: True), 0); self.assertTrue(os.path.lexists(live)); sr.remove_entry(live)
             finally:
                 os.environ["LOCALAPPDATA"] = old or ""
+
+    @unittest.skipUnless(os.name == "nt", "只在 Windows 上有目录联接")
+    def test_enter_skips_code_held_by_pid_file(self):   # 审计 P2-217：首选短号只剩 .pid（另一任务刚占 / 活着的残留）时顺延到下一个，不整次退回长路径
+        from pack.orch import shortroot as sr
+        with tempfile.TemporaryDirectory() as t:
+            target = os.path.join(t, "target"); os.makedirs(target)
+            os.environ["LOCALAPPDATA"], old = t, os.environ.get("LOCALAPPDATA")
+            try:
+                root = sr.entry_dir(); os.makedirs(root, exist_ok=True)
+                first, second = list(sr.codes(ntpath.abspath(target)))[:2]
+                Path(root, first + ".pid").write_text(str(os.getpid()))   # 本进程活着：sweep 不扫
+                got = sr.enter(target)
+                self.assertEqual(ntpath.basename(next(iter(got.values()))), second)
+                sr.remove_entry(ntpath.join(root, second)); os.remove(ntpath.join(root, first + ".pid"))
+            finally:
+                os.environ["LOCALAPPDATA"] = old or ""
+
+    @unittest.skipUnless(os.name == "nt", "只在 Windows 上有 OpenProcess")
+    def test_alive_treats_access_denied_as_alive(self):   # 审计 P2-217：打不开的系统进程（拒绝访问）算活着，不存在的进程号算死
+        from pack.orch import shortroot as sr
+        import subprocess
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq csrss.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True).stdout
+        pid = int(out.split(",")[1].strip('"'))
+        self.assertTrue(sr._alive(pid))
+        self.assertTrue(sr._alive(os.getpid()))
+        self.assertFalse(sr._alive(0x7FFFFFF0))
 
     def test_redact_keeps_windows_path_length(self):
         out = redact.redact_text(r"[WinError 206] : 'C:\Users\example\a\b.txt'")
