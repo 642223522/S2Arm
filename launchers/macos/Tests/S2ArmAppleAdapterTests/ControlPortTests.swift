@@ -68,7 +68,7 @@ import XCTest
 
     func testJournalTasksAreVisibleJobsOldestFirst() throws {
         let r = root(); defer { try? FileManager.default.removeItem(at: r) }
-        let jobs = r.appendingPathComponent("jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        let jobs = r.appendingPathComponent("logs/jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
         func put(_ name: String, _ o: [String: Any]) throws { try JSONSerialization.data(withJSONObject: o).write(to: jobs.appendingPathComponent(name)) }
         try put("b.json", ["id": "b", "operation": "ipa", "state": "running", "started": 20.0])
         try put("a.json", ["id": "a", "operation": "import", "state": "completed", "started": 10.0])
