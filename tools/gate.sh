@@ -394,6 +394,9 @@ where=; if [ "$HOST" = gate-host ]; then
   if [ -n "$WHY" ]; then where="（GATE_HOST=${RHN}，整份本机跑：${WHY}）"; else where="（${RHN} $nm 步，其中 $ns 步的子项本机另跑；本机 $nl 步$([ $FBN -gt 0 ] && echo "，其中 $FBN 步是 ${RHN} 不可用退回本机补跑")）"; fi
   [ -f "$L/remote.log" ] && grep -m1 '^remote：rc=' "$L/remote.log" | cut -c1-300 | sed "s/^/${RHN} 执行：/"
 fi
+# 远端同步阶段的黄字（11-09：remote.sh 同步门禁数据时本机缺了离线包等，原先静默跳过，门禁机那份一旧就没人发现）：原样抄进门禁日志，
+#   总结行在「应跑 N 步」后面点一句（列车回执、守望都只读末行，守望还截前 120 字，所以点在前面、写短）
+RWARN=; if [ -f "$L/remote.log" ]; then RW=$(grep '^【黄】remote：' "$L/remote.log" | sort -u | cut -c1-300); [ -n "$RW" ] && { printf '%s\n' "$RW"; RWARN="；⚠ ${RHN} 同步缺 $(grep -c . <<< "$RW") 项（见黄字行）"; }; fi
 CCS=; [ -s "$L/ccache.log" ] && CCS="本机 $(s2a_ccache_sum "$L/ccache.log")"; [ -s "$L/r/ccache.log" ] && CCS="${CCS:+${CCS}；}${RHN:-gate-host} $(s2a_ccache_sum "$L/r/ccache.log")"
 [ -n "$CCS" ] && echo "编译缓存（ccache）：$CCS"
 # 红步清单（机读，tab 分隔）：列车据此判假红、只重跑这几步（GATE_RERUN）；末行仍是总结
@@ -407,13 +410,13 @@ for f in "$L/stop" "$L/r/stop"; do [ -f "$f" ] && { echo "早停：确定性步�
 # 远端那份：结果齐了的标记（本机凭它认这次的结果，没有 = 远端没跑完）。写在「环境未就绪退 75」之前（11-02：远端有一步自报 75 时整份没写标记，
 #   本机当成 gate-host 不可用、把 gate-host 已绿的 11 步全部退回本机重跑，挤本机显卡与普查）
 [ -n "$PLANM" ] && basename "$L" > "$L/done"
-if { [ -n "${QWHY:-}" ] || [ ${#LQ[@]} -gt 0 ]; } && [ $real = 0 ]; then echo "门禁 环境未就绪：$TIER 档，跑了 $ran 步 / 应跑 $N 步$where"; exit 75; fi
+if { [ -n "${QWHY:-}" ] || [ ${#LQ[@]} -gt 0 ]; } && [ $real = 0 ]; then echo "门禁 环境未就绪：$TIER 档，跑了 $ran 步 / 应跑 $N 步${RWARN}$where"; exit 75; fi
 macsum
 # 宿主项汇总：机读行原样（去重）；有待证项 → 末行写「本机绿、待<类别>证」，不许被当成整份门禁绿（列车另核证明）
 HPL=; if [ -s "$L/hostlines" ]; then sort -u "$L/hostlines" > "$L/hostlines.u"; cat "$L/hostlines.u"
   while IFS=$'\t' read -r k c it st; do [ "$k" = 待宿主证 ] && echo "⏭ ${it}（${st}）：本机不是${c}，待${c}证"; done < "$L/hostlines.u"
   HPL=$(awk -F'\t' '$1 == "待宿主证" { n[$2]++ } END { for (c in n) printf "；待%s证 %d 项", c, n[c] }' "$L/hostlines.u"); fi
-if [ -n "$HPL" ] && [ "$MACN" = 0 ]; then echo "门禁 $([ $red = 0 ] && echo "本机绿、待宿主证" || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${HPL}$where"
+if [ -n "$HPL" ] && [ "$MACN" = 0 ]; then echo "门禁 $([ $red = 0 ] && echo "本机绿、待宿主证" || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${RWARN}${HPL}$where"
 elif [ "$MACN" -gt 0 ]; then echo "门禁 $([ $red = 0 ] && echo 本机绿、待 Mac 证 || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${MACL}${HPL}"
-else echo "门禁 $([ $red = 0 ] && echo 绿 || echo 红)：$TIER 档，跑了 $ran 步 / 应跑 $N 步$where"; fi
+else echo "门禁 $([ $red = 0 ] && echo 绿 || echo 红)：$TIER 档，跑了 $ran 步 / 应跑 $N 步${RWARN}$where"; fi
 exit $red
