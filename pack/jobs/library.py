@@ -1362,7 +1362,9 @@ def _residue_disposable(c, gid):
 
 def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
-    roots = [*(c.library / "iPhone" / gid).glob("roots/*@现行"), *(c.library / "iPhone" / gid).glob("work/pkg/product"), *(c.library / "cache" / gid).glob("*/roots/*@现行")]
+    roots = [*(c.library / "iPhone" / gid).glob("roots/*@现行"), *(c.library / "iPhone" / gid).glob("work/pkg/product"), *(c.library / "cache" / gid).glob("*/roots/*@现行"),
+             # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
+             *(c.library / "iPhone" / gid).glob("roots/.failed"), *(c.library / "cache" / gid).glob("*/roots/.failed")]
     dest = c.private / "logs" / (c.task + "-stages")
     count = 0
     for root in roots:
