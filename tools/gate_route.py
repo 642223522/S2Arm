@@ -149,7 +149,7 @@ def test_cover(test, files, by_name, full=False):
     return seen, globs, always
 
 
-# 构建清单（11-09 总指挥：feat/launch-settings 改 macos/front_mac.m，present_settings_test 现算 HOST_SRCS 把它编进来，
+# 构建清单（11-09 维护方：feat/launch-settings 改 macos/front_mac.m，present_settings_test 现算 HOST_SRCS 把它编进来，
 #   头上「门禁只看」手写清单没有它，列车没跑、合入后 main 红；同日 input_config_apple 同因退回一次——靠人手写覆盖面记不住）：
 #   单测本身或它覆盖到的 .sh / .py 里用美元号加括号展开这些构建清单 → 覆盖面并进 make 从仓库根现算的清单（Mac 前端开 / 关两种取并集），「门禁只看」也并
 BUILD_VARS = ('HOST_SRCS', 'IOS_SRCS')
