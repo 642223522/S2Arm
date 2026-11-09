@@ -315,7 +315,7 @@ static NSString *button_label(NSString *identifier) {
 }
 - (S2AVPadKeyStyle)styleOf:(UILabel *)key { return [_layoutStore keyStyle:key.accessibilityLabel]; }
 - (void)refreshScales { _scales = [_layoutStore keyScalesIncludingHidden:_editing]; }
-- (CGFloat)keyAlpha:(UILabel *)key active:(BOOL)active { return S2AVPadKeyOpacity(_layoutStore.idleKeyOpacity, active) * vp_opacity() * [self styleOf:key].opacity; }
+- (CGFloat)keyAlpha:(UILabel *)key active:(BOOL)active { return S2AVPadKeyOpacity(_layoutStore.idleKeyOpacity, active) * vp_opacity() * [self styleOf:key].opacity * _layoutStore.globalOpacity; }
 - (void)rebuildKeys {
     g_theme = _layoutStore.keyTheme; [self refreshScales];
     for (UILabel *key in _keys) [key removeFromSuperview];
@@ -398,6 +398,10 @@ static NSString *button_label(NSString *identifier) {
     UISegmentedControl *theme = [[UISegmentedControl alloc] initWithItems:@[@"默认", @"蓝", @"橙", @"绿", @"粉"]];
     theme.tag = 5; theme.selectedSegmentIndex = _layoutStore.keyTheme; theme.accessibilityIdentifier = @"vpad.edit.theme";
     theme.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; [theme addTarget:self action:@selector(themeChanged:) forControlEvents:UIControlEventValueChanged];
+    NSArray *rowNames = @[@"整体大小", @"整体透明度"];
+    for (int i = 0; i < 2; i++) { UILabel *l = [UILabel new]; l.text = rowNames[i]; l.textColor = UIColor.whiteColor; l.font = [UIFont systemFontOfSize:13]; l.tag = 8 + i; [_editBar addSubview:l];
+        UISlider *s = [UISlider new]; s.tag = 6 + i; s.minimumValue = i ? 0.2 : 0.6; s.maximumValue = i ? 1 : 1.6; s.value = i ? _layoutStore.globalOpacity : _layoutStore.globalScale; s.accessibilityIdentifier = i ? @"vpad.edit.globalAlpha" : @"vpad.edit.globalSize";
+        [s addTarget:self action:@selector(globalChanged:) forControlEvents:UIControlEventValueChanged]; [s addTarget:self action:@selector(globalCommit) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside]; [_editBar addSubview:s]; }
     for (UIView *v in @[tip, reset, cancel, done, theme]) [_editBar addSubview:v];
     [self addSubview:_editBar]; [self buildKeyPanel]; [self setNeedsLayout];
     LOG("触屏布局：进入按键位置编辑（%s）", _layout.identifier.UTF8String);
@@ -430,12 +434,23 @@ static NSString *button_label(NSString *identifier) {
     S2AVPadKeyStyle s = {_sizeSlider.value, _alphaSlider.value, _hideSwitch.on}; NSError *error;
     if (![_layoutStore setKeyStyle:s forKey:_selected.accessibilityLabel persist:persist error:&error]) { LOG("【红】按键外观保存失败：%s", error.localizedDescription.UTF8String); return; }
     NSUInteger i = [_keys indexOfObject:_selected]; CGRect f = [_layout frameForButton:_layout.buttons[i] safeRect:_safeRect]; CGPoint c = _selected.center;
-    _selected.bounds = CGRectMake(0, 0, f.size.width * s.scale, f.size.height * s.scale); _selected.center = c;
-    _selected.alpha = s.hidden ? 0.35 : s.opacity; [self refreshScales];
+    CGFloat g = _layoutStore.globalScale;
+    _selected.bounds = CGRectMake(0, 0, f.size.width * s.scale * g, f.size.height * s.scale * g); _selected.center = c;
+    _selected.alpha = s.hidden ? 0.35 : s.opacity * _layoutStore.globalOpacity; [self refreshScales];
 }
 - (void)panelChanged:(UISlider *)slider { (void)slider; [self applySelected:NO]; }
 - (void)panelCommit { [self applySelected:YES]; }
 - (void)hideChanged { [self applySelected:YES]; }
+- (void)applyGlobal:(BOOL)persist {   // 整体大小 / 透明度：所有键当场跟着变，位置不动
+    NSError *error; UISlider *size = (UISlider *)[_editBar viewWithTag:6], *alpha = (UISlider *)[_editBar viewWithTag:7];
+    if (![_layoutStore setGlobalScale:size.value opacity:alpha.value persist:persist error:&error]) { LOG("【红】按键外观保存失败：%s", error.localizedDescription.UTF8String); return; }
+    for (NSUInteger i = 0; i < _keys.count && i < _layout.buttons.count; i++) { UILabel *l = _keys[i]; CGPoint c = l.center; S2AVPadKeyStyle s = [self styleOf:l];
+        CGRect f = [_layout frameForButton:_layout.buttons[i] safeRect:_safeRect]; l.bounds = CGRectMake(0, 0, f.size.width * s.scale * size.value, f.size.height * s.scale * size.value); l.center = c;
+        l.alpha = s.hidden ? 0.35 : s.opacity * alpha.value; }
+    [self refreshScales];
+}
+- (void)globalChanged:(UISlider *)slider { (void)slider; [self applyGlobal:NO]; }
+- (void)globalCommit { [self applyGlobal:YES]; }
 - (void)themeChanged:(UISegmentedControl *)control {
     NSError *error; if (![_layoutStore setKeyTheme:control.selectedSegmentIndex error:&error]) { LOG("【红】按键配色保存失败：%s", error.localizedDescription.UTF8String); return; }
     g_theme = control.selectedSegmentIndex;
@@ -473,9 +488,10 @@ static NSString *button_label(NSString *identifier) {
 }
 - (void)layoutEditBar {
     if (!_editBar) return;
-    CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat w = MIN(520, g.size.width - 32), h = 112;
+    CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat w = MIN(520, g.size.width - 32), h = 178;
     _editBar.frame = CGRectMake(CGRectGetMidX(g) - w / 2, CGRectGetMidY(g) - h, w, h); [self bringSubviewToFront:_editBar];
-    [_editBar viewWithTag:5].frame = CGRectMake(0, 76, w, 32);
+    for (int i = 0; i < 2; i++) { [_editBar viewWithTag:8 + i].frame = CGRectMake(0, 74 + i * 32, 84, 30); [_editBar viewWithTag:6 + i].frame = CGRectMake(88, 74 + i * 32, w - 88, 30); }
+    CGFloat tw = MIN(230, w); [_editBar viewWithTag:5].frame = CGRectMake((w - tw) / 2, 141, tw, 32);
     CGFloat pw = MIN(360, g.size.width - 32); _keyPanel.frame = CGRectMake(CGRectGetMidX(g) - pw / 2, CGRectGetMidY(g) + 6, pw, 132); [self bringSubviewToFront:_keyPanel];
     _keyTitle.frame = CGRectMake(12, 6, pw - 24, 20);
     for (int i = 0; i < 3; i++) [_keyPanel viewWithTag:10 + i].frame = CGRectMake(12, 30 + i * 33, 56, 30);
@@ -580,7 +596,7 @@ static NSString *button_label(NSString *identifier) {
     CGFloat unit = MIN(safe.size.width, safe.size.height);
     for (NSUInteger i = 0; i < _keys.count; i++) {
         NSDictionary *button = _layout.buttons[i]; UILabel *key = _keys[i];
-        CGRect f = [_layout frameForButton:button safeRect:safe]; CGFloat s = [self styleOf:key].scale;
+        CGRect f = [_layout frameForButton:button safeRect:safe]; CGFloat s = [self styleOf:key].scale * _layoutStore.globalScale;
         key.frame = CGRectInset(f, f.size.width * (1 - s) / 2, f.size.height * (1 - s) / 2);
         key.layer.cornerRadius = MIN([button[@"cornerRadius"] doubleValue] * unit, MIN(key.bounds.size.width, key.bounds.size.height) / 2);
     }
@@ -590,7 +606,8 @@ static NSString *button_label(NSString *identifier) {
         for (UILabel *key in _keys) if ([ids containsObject:key.accessibilityLabel]) vp_fill(key, YES); }
     for (NSDictionary *stick in _layout.sticks) {
         int side = [stick[@"id"] isEqualToString:@"left"] ? 0 : 1;
-        _activation[side] = [_layout activationForStick:stick safeRect:safe]; _radius[side] = [_layout radiusForStick:stick safeRect:safe];
+        _activation[side] = [_layout activationForStick:stick safeRect:safe]; _radius[side] = [_layout radiusForStick:stick safeRect:safe] * _layoutStore.globalScale;
+        _ring[side].alpha = _knob[side].alpha = vp_opacity() * _layoutStore.globalOpacity;
         _ring[side].bounds = CGRectMake(0, 0, 2 * _radius[side] + 4, 2 * _radius[side] + 4); _ring[side].layer.cornerRadius = _radius[side] + 2;
         CGFloat knob = _radius[side] * 52 / 60; _knob[side].bounds = CGRectMake(0, 0, knob, knob); _knob[side].layer.cornerRadius = knob / 2;
     }

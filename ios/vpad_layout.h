@@ -23,7 +23,7 @@ CGFloat S2AVPadKeyOpacity(CGFloat idle, BOOL active);
 - (CGRect)frameForButton:(NSDictionary *)button safeRect:(CGRect)rect;
 // 触点落在哪个按键上（各键框外扩 slop 点，重叠处按 buttons 顺序取第一个）；没有返回 nil。vpad.m keyAt 用它，单测 t_vpad_stick_press 直接调
 - (nullable NSString *)buttonAt:(CGPoint)p safeRect:(CGRect)rect slop:(CGFloat)slop;
-// 同上，按每键缩放算框（绕键中心）；scales 里值为 0 的键不参与（隐藏），没列出的键按 1
+// 同上，按每键缩放算框（绕键中心）；scales 里值为 0 的键不参与（隐藏），没列出的键取 scales[@"*"]，再没有按 1
 - (nullable NSString *)buttonAt:(CGPoint)p safeRect:(CGRect)rect slop:(CGFloat)slop scales:(nullable NSDictionary<NSString *, NSNumber *> *)scales;
 - (CGRect)activationForStick:(NSDictionary *)stick safeRect:(CGRect)rect;
 - (CGFloat)radiusForStick:(NSDictionary *)stick safeRect:(CGRect)rect;
@@ -87,9 +87,12 @@ static const NSInteger kS2AVPadKeyThemeCount = 5;   // 0 = 默认描线，1–4 
 - (S2AVPadKeyStyle)keyStyle:(NSString *)identifier;
 - (BOOL)setKeyStyle:(S2AVPadKeyStyle)style forKey:(NSString *)identifier persist:(BOOL)persist error:(NSError **)error;
 @property(nonatomic, readonly) NSInteger keyTheme;
+// 整体大小 0.6–1.6、整体不透明度 0.2–1：乘在每键值之上，也作用于摇杆；persist 同上
+@property(nonatomic, readonly) CGFloat globalScale, globalOpacity;
+- (BOOL)setGlobalScale:(CGFloat)scale opacity:(CGFloat)opacity persist:(BOOL)persist error:(NSError **)error;
 - (BOOL)setKeyTheme:(NSInteger)theme error:(NSError **)error;
 - (BOOL)resetKeyStyles:(NSError **)error;
-// 取键用：键 id → 倍率，隐藏的键为 0（includeHidden 时按其倍率）
+// 取键用：键 id → 倍率（已乘整体大小），隐藏的键为 0（includeHidden 时按其倍率）；"*" = 没单独设过的键
 - (NSDictionary<NSString *, NSNumber *> *)keyScalesIncludingHidden:(BOOL)includeHidden;
 // 编辑取消时整体还原
 - (NSDictionary *)keyStyleSnapshot;

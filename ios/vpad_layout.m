@@ -153,7 +153,7 @@ static CGRect normalized_rect(NSDictionary *value) {
 - (nullable NSString *)buttonAt:(CGPoint)p safeRect:(CGRect)rect slop:(CGFloat)slop { return [self buttonAt:p safeRect:rect slop:slop scales:nil]; }
 - (nullable NSString *)buttonAt:(CGPoint)p safeRect:(CGRect)rect slop:(CGFloat)slop scales:(NSDictionary<NSString *, NSNumber *> *)scales {
     for (NSDictionary *button in _buttons) {
-        NSNumber *scale = scales[button[@"id"]]; CGFloat s = scale ? scale.doubleValue : 1;
+        NSNumber *scale = scales[button[@"id"]] ?: scales[@"*"]; CGFloat s = scale ? scale.doubleValue : 1;
         if (s <= 0) continue;
         CGRect f = [self frameForButton:button safeRect:rect];
         f = CGRectInset(f, f.size.width * (1 - s) / 2, f.size.height * (1 - s) / 2);
@@ -361,11 +361,11 @@ static BOOL key_style_valid(S2AVPadKeyStyle s) {
 }
 - (NSURL *)keyStyleFile { return [_directory URLByAppendingPathComponent:@".key_style.json"]; }
 - (void)loadKeyStyles {
-    _keyStyles = [NSMutableDictionary dictionary]; _keyTheme = 0;
+    _keyStyles = [NSMutableDictionary dictionary]; _keyTheme = 0; _globalScale = _globalOpacity = 1;
     NSData *data = [NSData dataWithContentsOfURL:self.keyStyleFile];
     id doc = data.length && data.length <= 65536 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if (!doc) return;
-    if (!fields(doc, @[@"schemaVersion", @"theme", @"keys"]) || !number(doc[@"schemaVersion"], 1, 1) || !number(doc[@"theme"], 0, kS2AVPadKeyThemeCount - 1) || ![doc[@"keys"] isKindOfClass:NSDictionary.class]) {
+    if (!fields(doc, @[@"schemaVersion", @"theme", @"keys", @"globalScale", @"globalOpacity"]) || !number(doc[@"schemaVersion"], 1, 1) || !number(doc[@"theme"], 0, kS2AVPadKeyThemeCount - 1) || !number(doc[@"globalScale"], 0.6, 1.6) || !number(doc[@"globalOpacity"], 0.2, 1) || ![doc[@"keys"] isKindOfClass:NSDictionary.class]) {
         _keyStyleProblem = @"F01.keyStyle：按键外观设置损坏，暂用默认；原记录保留至重新设置成功"; return; }
     for (NSString *key in doc[@"keys"]) {
         NSDictionary *v = doc[@"keys"][key];
@@ -373,11 +373,11 @@ static BOOL key_style_valid(S2AVPadKeyStyle s) {
             _keyStyles = [NSMutableDictionary dictionary]; _keyStyleProblem = @"F01.keyStyle：按键外观设置损坏，暂用默认；原记录保留至重新设置成功"; return; }
         _keyStyles[key] = v;
     }
-    _keyTheme = [doc[@"theme"] integerValue];
+    _keyTheme = [doc[@"theme"] integerValue]; _globalScale = [doc[@"globalScale"] doubleValue]; _globalOpacity = [doc[@"globalOpacity"] doubleValue];
 }
 - (BOOL)saveKeyStyles:(NSError **)error {
     if (![self prepareDirectory:error]) return NO;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"schemaVersion": @1, @"theme": @(_keyTheme), @"keys": _keyStyles} options:0 error:error];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"schemaVersion": @1, @"theme": @(_keyTheme), @"keys": _keyStyles, @"globalScale": @(_globalScale), @"globalOpacity": @(_globalOpacity)} options:0 error:error];
     if (!data || ![data writeToURL:self.keyStyleFile options:NSDataWritingAtomic error:error]) return NO;
     _keyStyleProblem = nil; return YES;
 }
@@ -394,15 +394,20 @@ static BOOL key_style_valid(S2AVPadKeyStyle s) {
     if (theme < 0 || theme >= kS2AVPadKeyThemeCount) return fail(error, @"F01.keyStyle", @"没有这个配色");
     _keyTheme = theme; return [self saveKeyStyles:error];
 }
-- (BOOL)resetKeyStyles:(NSError **)error { _keyStyles = [NSMutableDictionary dictionary]; _keyTheme = 0; return [self saveKeyStyles:error]; }
+- (BOOL)setGlobalScale:(CGFloat)scale opacity:(CGFloat)opacity persist:(BOOL)persist error:(NSError **)error {
+    S2AVPadKeyStyle check = {scale, opacity, NO};
+    if (!key_style_valid(check)) return fail(error, @"F01.keyStyle", @"大小须为 0.6–1.6，不透明度须为 0.2–1");
+    _globalScale = scale; _globalOpacity = opacity; return persist ? [self saveKeyStyles:error] : YES;
+}
+- (BOOL)resetKeyStyles:(NSError **)error { _keyStyles = [NSMutableDictionary dictionary]; _keyTheme = 0; _globalScale = _globalOpacity = 1; return [self saveKeyStyles:error]; }
 - (NSDictionary<NSString *, NSNumber *> *)keyScalesIncludingHidden:(BOOL)includeHidden {
-    NSMutableDictionary *out = [NSMutableDictionary dictionary];
-    for (NSString *key in _keyStyles) { S2AVPadKeyStyle s = [self keyStyle:key]; out[key] = @(s.hidden && !includeHidden ? 0 : s.scale); }
+    NSMutableDictionary *out = [NSMutableDictionary dictionaryWithObject:@(_globalScale) forKey:@"*"];
+    for (NSString *key in _keyStyles) { S2AVPadKeyStyle s = [self keyStyle:key]; out[key] = @(s.hidden && !includeHidden ? 0 : s.scale * _globalScale); }
     return out;
 }
-- (NSDictionary *)keyStyleSnapshot { return @{@"theme": @(_keyTheme), @"keys": [[NSDictionary alloc] initWithDictionary:_keyStyles copyItems:YES]}; }
+- (NSDictionary *)keyStyleSnapshot { return @{@"theme": @(_keyTheme), @"globalScale": @(_globalScale), @"globalOpacity": @(_globalOpacity), @"keys": [[NSDictionary alloc] initWithDictionary:_keyStyles copyItems:YES]}; }
 - (BOOL)restoreKeyStyleSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
-    _keyTheme = [snapshot[@"theme"] integerValue]; _keyStyles = [snapshot[@"keys"] mutableCopy]; return [self saveKeyStyles:error];
+    _keyTheme = [snapshot[@"theme"] integerValue]; _globalScale = [snapshot[@"globalScale"] doubleValue]; _globalOpacity = [snapshot[@"globalOpacity"] doubleValue]; _keyStyles = [snapshot[@"keys"] mutableCopy]; return [self saveKeyStyles:error];
 }
 - (BOOL)setStickDeadzone:(CGFloat)deadzone saturation:(CGFloat)saturation exponent:(CGFloat)exponent error:(NSError **)error {
     if (!stick_values(deadzone, saturation, exponent)) return fail(error, @"F01.stick", @"死区须为 0–0.4，外圈饱和须为 0.5–1，响应指数须为 0.5–3");

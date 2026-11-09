@@ -1,5 +1,6 @@
 // 每键外观（ios/vpad_layout.m）：大小 / 透明度 / 隐藏 / 配色的存储，和按倍率取键。期望按规则手写
 #import <Foundation/Foundation.h>
+#include <math.h>
 #import "../../ios/vpad_layout.h"
 static int bad;
 #define CK(c, ...) do { if (c) printf("✓ " __VA_ARGS__); else { printf("✗ " __VA_ARGS__); bad++; } printf("\n"); } while (0)
@@ -17,6 +18,11 @@ int main(void) { @autoreleasepool {
     CK([s keyStyle:@"A"].scale == 0.8 && [r keyStyle:@"A"].scale == 1.5, "⑤ persist=NO 只改内存，盘上还是旧值");
     NSDictionary *snap = [s keyStyleSnapshot]; [s setKeyStyle:ST(1.2, 1, NO) forKey:@"A" persist:YES error:&e]; [s restoreKeyStyleSnapshot:snap error:&e];
     CK([s keyStyle:@"A"].scale == 0.8, "⑥ 快照还原（编辑取消）");
+    CK(s.globalScale == 1 && s.globalOpacity == 1 && ![s setGlobalScale:1.7 opacity:1 persist:YES error:&e] && [s setGlobalScale:1.5 opacity:0.4 persist:YES error:&e], "⑪ 整体值缺省 1，超范围拒绝，合法写入");
+    r = [[S2AVPadLayoutStore alloc] initWithDirectory:d];
+    NSDictionary *gs = [r keyScalesIncludingHidden:NO];
+    CK(r.globalScale == 1.5 && r.globalOpacity == 0.4 && fabs([gs[@"*"] doubleValue] - 1.5) < 1e-9 && fabs([gs[@"A"] doubleValue] - 1.2) < 1e-9, "⑫ 重开仍在；未单设的键 1.5，A 键 0.8×1.5=1.2");
+    [s resetKeyStyles:&e]; CK(s.globalScale == 1 && s.globalOpacity == 1 && [s keyStyle:@"A"].scale == 1, "⑬ 恢复默认清掉整体值和单键值");
     CGRect safe = CGRectMake(0, 0, 800, 400); S2AVPadLayout *l = [S2AVPadLayout defaultForSafeRect:safe]; NSDictionary *b = l.buttons[0]; NSString *bid = b[@"id"];
     CGRect f = [l frameForButton:b safeRect:safe]; CGPoint center = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
     CK([[l buttonAt:center safeRect:safe slop:0 scales:@{bid: @0}] isEqualToString:bid] == NO, "⑦ 倍率 0（隐藏）的键点不到");
@@ -26,6 +32,6 @@ int main(void) { @autoreleasepool {
     CK([[l buttonAt:in2 safeRect:safe slop:0 scales:nil] isEqualToString:bid] && ![[l buttonAt:in2 safeRect:safe slop:0 scales:@{bid: @0.6}] isEqualToString:bid], "⑨ 缩小 0.6 倍：原框边缘点不到了");
     NSURL *bad2 = [d URLByAppendingPathComponent:@".key_style.json"]; [@"{坏" writeToURL:bad2 atomically:YES encoding:NSUTF8StringEncoding error:nil]; r = [[S2AVPadLayoutStore alloc] initWithDirectory:d];
     CK([r keyStyle:@"A"].scale == 1 && r.keyTheme == 0, "⑩ 文件损坏回默认，不崩");
-    if (bad) printf("t_vpad_key_style：%d 项不过\n", bad); else printf("✓ t_vpad_key_style：10 项\n");
+    if (bad) printf("t_vpad_key_style：%d 项不过\n", bad); else printf("✓ t_vpad_key_style：13 项\n");
     return bad != 0;
 } }
