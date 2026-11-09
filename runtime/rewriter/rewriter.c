@@ -2855,7 +2855,7 @@ static int trap_site(Site* s) {
   bump("trap");
   return 1;
 }
-/* 两岛都越射程的 x18 窗口 / 改写点：远跳模式重做一次（见 Far）。只给这两类：它们的块里没有 BL（远跳不带返回地址） */
+/* 两岛都越射程的 x18 窗口 / 改写点 / 尾调用跳转：远跳模式重做一次（见 Far）。只给这几类：它们的块里没有 BL（远跳不带返回地址） */
 static int far_unit(A at, void (*fn)(void*), void* arg) {
   if (!g->dual || !g->range_err)
     return 0;
@@ -2878,7 +2878,9 @@ static void generate(void) {
       Jump* j = g->jumps.v + i;
       if (j->type != type)
         continue;
-      if (!unit_run(j->at, gen_jump, j, NULL))
+      /* 尾调用（type 4）的块以寄存器跳转结束、不回原位、没有 BL：两岛都够不着时同 x18 窗口 / 改写点走远跳（#283 Core Keeper main 约 385 MB，
+       * 两处 br_tail 离两个补丁岛都超 ±128 MB，原先直接记缺口、整款出不了包） */
+      if (!unit_run(j->at, gen_jump, j, NULL) && !(type == 4 && far_unit(j->at, gen_jump, j)))
         gap(j->at, type == 2 ? "br_rel" : type == 3 ? "br_relg" : "br_tail", "AssertionError: %s", g->error);
     }
   for (size_t i = 0; i < g->sites.n; i++) {
