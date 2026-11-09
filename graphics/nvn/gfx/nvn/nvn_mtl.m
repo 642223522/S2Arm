@@ -4860,6 +4860,18 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     wd_widen_rts();   // S2Arm widen: this pass's targets the widen core widens get widened storage before they are attached (same reason: the copy may run here)
     rs_rts();   // S2Arm internal resolution: this pass's targets take their scale (all the same) before they are attached (nvn_rscale_ops.inc; the rescaling copies may run here)
     // The version of the attachment-range candidate is taken before capturing any attachment; if it changes during setup, there is no continuation.
+    // 颜色附件必须带渲染目标用途：打包贴图（NvPkg）建时不带（tex_new：只有放宽存储时才补），游戏却可能把同一存储当渲染目标画（11-09 #296 超级马力欧兄弟 惊奇：
+    //   1920x1080 主画面与 960x540 中间目标都登记成打包贴图，usage 只有 ShaderRead）。往没有 RenderTarget 用途的贴图里渲染是 Metal 的未定义行为（调试层报
+    //   「colorAttachment has usage which doesn't specify MTLTextureUsageRenderTarget」），Apple GPU 上存下的是分块级的不确定内容：画面散落 16×16 黑块、每次不同。
+    //   开遍前就地升级（tex_upgrade 保留全部像素、换掉持有者的贴图）；在关掉 blit 编码器与取附件版本之前做，升级的拷贝排在这一遍之前
+    for (int i = 0; i < R.rt.n && i < 8; i++) {
+        const tex_t *ct = R.rt.color[i]; if (!ct || rt_dup_slot(&R.rt, i)) continue;
+        id<MTLTexture> b = tex_mtl(ct);
+        if (b && !(b.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(b.pixelFormat) && b.sampleCount == 1) {
+            id<MTLTexture> u = tex_upgrade(ct, b, MTLTextureUsageRenderTarget, b.pixelFormat);
+            static uint64_t nup; if (u != b && !nup++) MLOG("render target without render-target usage (packaged storage drawn into): upgraded in place, first ser=%llu %lux%lu", (unsigned long long)ct->serial, (unsigned long)b.width, (unsigned long)b.height);
+        }
+    }
     uint64_t reg0 = 0, ser0 = 0, dirty0 = 0;
     if (rt_range_on()) { reg0 = g_reg_gen; ser0 = g_ser_gen; }
     if (rt_range_on()) dirty0=nvn_dirty_now();
