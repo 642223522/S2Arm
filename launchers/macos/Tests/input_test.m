@@ -420,10 +420,14 @@ static void test_pad_handler_install(void) {
     expect(pad.valueChangedHandler != nil, "gamepad valueChangedHandler installed");
     config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
     read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys); physical_keys[14] = YES;
-    [keys addObject:@14]; sample_input();   // 缺省映射 E = Switch A（位 0）
+    [keys addObject:@14];   // 不先 sample_input：必须由回调把整份状态发出来
     pad.valueChangedHandler((GCExtendedGamepad *)pad, nil);
     int32_t sticks[4];
     expect(s2a_vpad_read(sticks) == 1, "callback publishes the full current state, not only the changed element");
+    [keys removeObject:@14]; sample_input();
+    expect(s2a_vpad_read(sticks) == 0, "release is visible after a sample");
+    [keys addObject:@14]; poll_input();
+    expect(s2a_vpad_read(sticks) == 1, "120Hz fallback publishes a held state without a callback");
     for (int i = 0; i < 120; i++) { poll_input(); pad.valueChangedHandler((GCExtendedGamepad *)pad, nil); }
     expect(s2a_vpad_read(sticks) == 1, "held state persists across callbacks and the 120Hz fallback");
     physical_keys[14] = NO;
