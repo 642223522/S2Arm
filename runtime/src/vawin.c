@@ -195,6 +195,16 @@ int s2a_guest_zero(uint64_t a, uint64_t n) {
     if (mmap((void *)(uintptr_t)a, n, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, (off_t)(a - g_base)) != (void *)(uintptr_t)a) return 0;
     return 1;
 }
+// [a, a + n) 全在文件后备的窗口里返回 1（没开 / 不在 / n 为 0 返回 0）。svc_mem.c 的延后打洞（#258）按它判走不走延后路径
+int s2a_guest_in_file(uint64_t a, uint64_t n) { return g_gfd >= 0 && n && a >= g_base && a + n <= g_base + g_size; }
+// 只打洞、不重映射（#258）：把 [a, a + n) 的文件块还回去，这段现有的 MAP_SHARED 映射留着，之后再读是 0；保护位由调用方管（svc_mem.c 先 mprotect 成不可访问）。
+//   成功 1；不在窗口 / 没开 / 打洞失败 0（调用方自己兜底）
+int s2a_guest_punch(uint64_t a, uint64_t n) {
+    if (!s2a_guest_in_file(a, n)) return 0;
+    fpunchhole_t ph; memset(&ph, 0, sizeof ph); ph.fp_offset = (off_t)(a - g_base); ph.fp_length = (off_t)n;
+    if (fcntl(g_gfd, F_PUNCHHOLE, &ph)) { static int once; if (!once++) LOG("【红】客体内存文件后备：延后打洞失败（errno=%d，%#llx +%#llx），这页再映射时改为清零", errno, (unsigned long long)a, (unsigned long long)n); return 0; }
+    return 1;
+}
 int s2a_window_ok(void) { return g_ok; }
 void s2a_window_get(uint64_t *base, uint64_t *size) { *base = g_base; *size = g_size; }
 int s2a_window_session_reset(void) {

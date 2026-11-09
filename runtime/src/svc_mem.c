@@ -26,6 +26,7 @@
 #else
 #include <mach/mach.h>
 #include <mach/vm_map.h>
+#include <sched.h>
 #endif
 
 #define HPG 0x4000ull                 // 宿主页
@@ -756,13 +757,20 @@ uint64_t s2a_mem_test_probes(void) { return g_amask_probes; }
 // 锁序断言的负控：持 g_mu 再取 g_vp_mu，Debug 构建必须 abort。
 void s2a_mem_test_lockorder_abort(void) { GMU_LOCK(); s2a_mem_lockorder_vp_enter(); GMU_UNLOCK(); }
 #endif
+#ifndef __ANDROID__
+static void punch_reset_locked(void);   // #258 延后打洞状态复位（定义在 pages_release 前）
+#endif
 // 单测：不经 NPDM / 窗口，直接摆出别名区、堆、映射表与子页位
 void s2a_mem_test_setup(uint64_t alias_base, uint64_t alias_size, uint64_t win_base, uint64_t win_size, void *heap, uint64_t heap_cur) {
     memset(&L, 0, sizeof L); L.alias_base = alias_base; L.alias_size = alias_size; L.win_base = win_base; L.win_size = win_size;
 #ifdef __ANDROID__
     s2a_android_mirror_init((uintptr_t)win_base, (size_t)win_size);
 #endif
-    g_heap = heap; g_heap_cur = heap_cur; free(g_amask); g_amask = NULL; g_nmap = 0; g_nspan = 0; g_nmod = 0; g_phys = 0; g_tlr_next = 0; free(g_perm); g_perm = NULL; g_nperm = 0; free(g_attr); g_attr = NULL; g_nattr = 0;
+    g_heap = heap; g_heap_cur = heap_cur; free(g_amask); g_amask = NULL;
+#ifndef __ANDROID__
+    punch_reset_locked();
+#endif
+    g_nmap = 0; g_nspan = 0; g_nmod = 0; g_phys = 0; g_tlr_next = 0; free(g_perm); g_perm = NULL; g_nperm = 0; free(g_attr); g_attr = NULL; g_nattr = 0;
     g_cur_st = g_cur_sh = g_pk_st = g_pk_sh = g_pk_st_end = g_pk_sh_end = g_pk_alias_end = 0;
     g_pk_heap_request = g_pk_heap = heap_cur;
 #ifdef __ANDROID__
@@ -965,7 +973,82 @@ static uint64_t alias_map(uint64_t dst, uint64_t src, uint64_t n, int prot) {
 //   Switch / Ryujinx 新给的堆和物理映射都是填 0 的页（KPageTableBase SetHeapSize / MapPhysicalMemory 带 shouldFillPages、填充值 0）。
 //   原先用 madvise(MADV_FREE) + mprotect(PROT_NONE)：那是懒回收，内核还没收走的页在 mprotect 放出时带着旧内容回到游戏手里。
 //   调用方解锁后要报 backing_changed（渲染器包着游戏内存的零拷贝缓冲要重建）
+// #258 文件后备下的还页改成延后打洞：时之笛 S2（Mac 16 GB，文件后备自动开）每约 30 秒 UnmapPhysicalMemory 约 250 MB，逐 16 KB 打洞 + 重映射每页 60–70 µs、
+//   全程持 g_mu 约 1 s，音频渲染（s2a_mem_mapped）等锁、整帧停住。把连续页攒成一段一次打洞 + 一次重映射（11-09 第一版）微基准 1083 → 14.5 ms，
+//   但真机上开机冻 11–65 s、进场景约 1 分钟 Metal 报 GPU 挂死（4/4 局；关文件后备同一构建全干净；诊断记账：释放段从未落在渲染器在用的零拷贝池里）——
+//   大块 F_PUNCHHOLE / 大块 MAP_SHARED 重映射本身让内核拖住整机。所以锁内只把这段 mprotect 成不可访问（微秒级）、记成「待打洞」，
+//   打洞交给后台线程按原来的粒度（缺省 16 KB，S2A_PUNCH_CHUNK_KB 可调）一块一块做：每块持 g_mu 约 70 µs，内核看到的操作和原来逐页完全一样，只是不再挡住游戏线程。
+//   不重映射：打洞后原映射的那段文件偏移再读就是 0（保护位已是 PROT_NONE）。待打洞页若先被游戏映射回来（0x2C / SetHeapSize 增长）就地清零（punch_zero_locked），
+//   零页语义不变；打洞失败的页记成 2，同样在映射回来时清零。S2A_PUNCH_DEFER=0 关掉延后（回到逐页同步打洞，负对照用）。
+static uint8_t *g_punch_pend;   // 窗口内每宿主页一字节：0 没事、1 待打洞、2 打洞失败（映射回来时清零）；g_mu 保护
+static uint64_t g_punch_lo = UINT64_MAX, g_punch_hi;   // 待打洞页所在范围（扫描提示）
+static uint64_t g_punch_pending_n;   // 待打洞宿主页数
+static uint64_t g_punch_done_n, g_punch_done_ns, g_punch_inline_n, g_punch_fail_n;   // 读数：后台打洞页数 / 耗时、映射回来时就地清零页数、打洞失败页数
+static uint64_t g_punch_chunk = HPG;   // 每次打洞字节数
+static pthread_cond_t g_punch_cv = PTHREAD_COND_INITIALIZER;
+static int g_punch_thread_on;
+static int punch_defer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_PUNCH_DEFER"); v = !(e && *e == '0'); const char *c = getenv("S2A_PUNCH_CHUNK_KB"); uint64_t kb = c && *c ? strtoull(c, NULL, 10) : 0; if (kb) g_punch_chunk = ((kb << 10) + HPG - 1) & ~(HPG - 1); } return v; }
+static uint8_t *punch_at(uint64_t hp) { return g_punch_pend + (hp - L.win_base) / HPG; }
+// 后台线程的一步（持 g_mu）：找下一段连续待打洞页（最多 g_punch_chunk 字节）打洞并清标记；没活返回 0
+static int punch_step_locked(void) {
+    if (!g_punch_pending_n || !g_punch_pend) return 0;
+    uint64_t we = L.win_base + L.win_size, p = g_punch_lo;
+    if (g_punch_hi > we) g_punch_hi = we;
+    while (p < g_punch_hi && *punch_at(p) != 1) p += HPG;
+    if (p >= g_punch_hi) {   // 范围里没有 1 了（剩下的都是 2 或已映射回来）
+        uint64_t left = 0; for (uint64_t q = g_punch_lo < we ? g_punch_lo : we; q < g_punch_hi; q += HPG) left += *punch_at(q) == 1;
+        g_punch_pending_n = left; g_punch_lo = UINT64_MAX; g_punch_hi = 0; return 0;
+    }
+    uint64_t q = p; while (q < g_punch_hi && q - p < g_punch_chunk && *punch_at(q) == 1) q += HPG;
+    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+    int ok = s2a_guest_punch(p, q - p);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    for (uint64_t x = p; x < q; x += HPG) *punch_at(x) = ok ? 0 : 2;
+    g_punch_pending_n -= (q - p) / HPG; g_punch_lo = q;
+    if (ok) { g_punch_done_n += (q - p) / HPG; g_punch_done_ns += (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull + (uint64_t)(t1.tv_nsec - t0.tv_nsec); } else g_punch_fail_n += (q - p) / HPG;
+    return 1;
+}
+__attribute__((unused)) static void *punch_thread(void *arg) {
+    (void)arg; pthread_setname_np("s2a-punch");
+    GMU_LOCK();
+    for (;;) {
+        while (!punch_step_locked()) pthread_cond_wait(&g_punch_cv, &g_mu);
+        GMU_UNLOCK(); sched_yield(); GMU_LOCK();   // 每块之间放一下锁，等锁的游戏 / 音频线程先走
+    }
+    return NULL;
+}
+// 还页走延后路径（持 g_mu）：[a, a + n) 全在文件后备窗口里才接，改成不可访问并记待打洞；接了返回 1
+static int punch_defer_locked(uint64_t a, uint64_t n) {
+    if (!punch_defer_on() || !L.win_size || !s2a_guest_in_file(a, n) || a < L.win_base || a + n > L.win_base + L.win_size || (a | n) & (HPG - 1)) return 0;
+    if (mprotect((void *)a, n, PROT_NONE)) die("延后打洞 mprotect errno=%d", errno);
+    if (!g_punch_pend) g_punch_pend = calloc(L.win_size / HPG, 1);
+    for (uint64_t p = a; p < a + n; p += HPG) { uint8_t *b = punch_at(p); if (*b != 1) { *b = 1; g_punch_pending_n++; } }
+    if (a < g_punch_lo) g_punch_lo = a; if (a + n > g_punch_hi) g_punch_hi = a + n;
+#ifndef S2A_UNIT_TEST
+    if (!g_punch_thread_on) { pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED); if (pthread_create(&t, &at, punch_thread, NULL)) die("延后打洞线程起不来 errno=%d", errno); g_punch_thread_on = 1; pthread_attr_destroy(&at); }
+#endif
+    pthread_cond_signal(&g_punch_cv);
+    return 1;
+}
+// 游戏把 [lo, hi) 映射回来（持 g_mu，调用方已把这段 mprotect 成读写）：其中还没打洞 / 打洞失败的宿主页内容是旧的，就地清零并撤销待打洞
+static void punch_zero_locked(uint64_t lo, uint64_t hi) {
+    if (!g_punch_pend || !L.win_size) return;
+    uint64_t we = L.win_base + L.win_size; if (lo < L.win_base) lo = L.win_base; if (hi > we) hi = we;
+    for (uint64_t p = lo; p < hi; p += HPG) { uint8_t *b = punch_at(p); if (!*b) continue; if (*b == 1) g_punch_pending_n--; *b = 0; memset((void *)p, 0, HPG); g_punch_inline_n++; }
+}
+static void punch_reset_locked(void) {
+    if (g_punch_pend || g_punch_done_n || g_punch_inline_n) LOG("#258 延后打洞读数：后台打洞 %llu 页 %llu ms、映射回来就地清零 %llu 页、打洞失败 %llu 页、收尾待打洞 %llu 页", (unsigned long long)g_punch_done_n, (unsigned long long)(g_punch_done_ns / 1000000), (unsigned long long)g_punch_inline_n, (unsigned long long)g_punch_fail_n, (unsigned long long)g_punch_pending_n);
+    free(g_punch_pend); g_punch_pend = NULL; g_punch_pending_n = 0; g_punch_lo = UINT64_MAX; g_punch_hi = 0;
+    g_punch_done_n = g_punch_done_ns = g_punch_inline_n = g_punch_fail_n = 0;
+}
+#ifdef S2A_UNIT_TEST
+uint64_t s2a_mem_test_punch_pending(void) { return g_punch_pending_n; }
+void s2a_mem_test_punch_drain(void) { GMU_LOCK(); while (punch_step_locked()) {} GMU_UNLOCK(); }
+void s2a_mem_test_punch_chunk(uint64_t bytes) { g_punch_chunk = bytes; }
+void s2a_mem_test_punch_stats(uint64_t *done, uint64_t *inline_zero, uint64_t *fail) { *done = g_punch_done_n; *inline_zero = g_punch_inline_n; *fail = g_punch_fail_n; }
+#endif
 static void pages_release(uint64_t a, uint64_t n) {
+    if (punch_defer_locked(a, n)) return;   // #258：文件后备窗口里的页延后到后台打洞（上面）
     if (s2a_guest_zero(a, n)) return;   // 客体内存文件后备（vawin.c）：打洞 + 原偏移重映射，再给出去同样是零
     if (mmap((void *)a, n, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED) die("还页 mmap errno=%d", errno);
 }
@@ -1300,6 +1383,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         int shrink = size < g_heap_cur;
         if (backing_begin_locked(lo, n, 0)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
         if (size > g_heap_cur && mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE)) die("SetHeapSize mprotect errno=%d", errno);
+        if (size > g_heap_cur) punch_zero_locked((uint64_t)g_heap + g_heap_cur, (uint64_t)g_heap + size);   // #258：增长段里还没打洞的旧页就地清零
         if (shrink) pages_release((uint64_t)g_heap + size, g_heap_cur - size);
 #endif
         vm_mutation_check("堆大小改动"); g_heap_cur = size; if (size > g_pk_heap) g_pk_heap = size;
@@ -1670,6 +1754,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
                 if (f1 > f0 && s2a_far_map(f0, f1 - f0)) { if (wl > lo) backing_end_locked(lo, wl - lo, 0, 0); GMU_UNLOCK(); regs[0] = va_short(num, a, size, "别名区（影子区与堆撞上）"); return 1; }
             }
             if (wl > lo && mprotect((void *)lo, wl - lo, PROT_READ | PROT_WRITE)) die("MapPhysicalMemory mprotect errno=%d", errno);
+            if (wl > lo) punch_zero_locked(lo, wl);   // #258：整宿主页原先全空但还没打洞的，内容是旧的，先清零（下面按「原先全空 = 零」不再清）
             uint64_t run = 0;   // 新映射的连续子页起点：权限账按段清（已映射的子页保留游戏改过的权限）
             uint8_t was = 0;   // 本次调用之前这个宿主页的子页掩码：循环里会给 *m 置位，判「原先全空」必须看进来时的值
             for (uint64_t p = a; p < a + size; p += 0x1000) {   // 新映射的子页清零（真机新页是零页）；整宿主页原先全空的是解除时换上的新占位（pages_release），mprotect 放出来本来就是零
@@ -2094,6 +2179,9 @@ void s2a_mem_session_reset(void) {
     { int be = plat_backing_reset(); if (be) die("会话复位时背板引用未清空 errno=%d（NVN vpool 拆除顺序违约 / 0x4C-0x51 ref 未清）", be); }
 #endif
     GMU_LOCK();
+#ifndef __ANDROID__
+    punch_reset_locked();
+#endif
     free(g_amask); g_amask = NULL;
     L = (s2a_layout){0}; g_npdm_core = g_npdm_prio = 0;
     g_program_id = g_core_mask = g_prio_mask = 0;

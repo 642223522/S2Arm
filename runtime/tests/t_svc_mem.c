@@ -23,6 +23,7 @@ int plat_layout_override(const char *p, uint32_t t, uint64_t r, uint64_t id, uin
 void s2a_vaguard_open(void);
 S2A_TEST_MOD_TABLE(64); int g_nmod;
 void s2a_mem_test_setup(uint64_t, uint64_t, uint64_t, uint64_t, void *, uint64_t);
+uint64_t s2a_mem_test_punch_pending(void); void s2a_mem_test_punch_drain(void); void s2a_mem_test_punch_chunk(uint64_t bytes); void s2a_mem_test_punch_stats(uint64_t *done, uint64_t *inline_zero, uint64_t *fail);   // #258 延后打洞
 void s2a_mem_test_subpage(uint64_t a, int on); void s2a_mem_test_map(uint64_t b, uint64_t n);
 void s2a_mem_test_map_diag_reset(void); void s2a_mem_test_stack(uint64_t base, uint64_t size);
 void s2a_mem_test_astype(uint32_t t);
@@ -46,7 +47,17 @@ int s2a_svc_check_perm(const uint64_t perm[3], char *out, size_t cap) { (void)pe
 uint64_t guest_tick(void) { return 0; }
 static uint64_t g_t_hz = 19200000; void s2a_guest_tick_hz_set(uint64_t hz) { g_t_hz = hz; } uint64_t s2a_guest_tick_hz(void) { return g_t_hz; }   // os.c 替身（本测不链 os.c）
 uint64_t s2a_ns_to_tick(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * g_t_hz / 1000000000u); } module_t *module_of(const void *p) { (void)p; return NULL; }
-void s2a_window_get(uint64_t *b, uint64_t *s) { *b = *s = 0; } void s2a_window_trim(uint64_t s) { (void)s; } int s2a_guest_zero(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }   // 没有文件后备（vawin.c S2A_GUEST_FILE）：还页照旧换匿名占位
+void s2a_window_get(uint64_t *b, uint64_t *s) { *b = *s = 0; } void s2a_window_trim(uint64_t s) { (void)s; } int s2a_guest_zero(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
+// #258 延后打洞的桩：g_gfile=1 时把 [g_gfile_lo, g_gfile_hi) 当成文件后备窗口；打洞记次数与范围，并把那段 memset 成 0 模拟「文件块还回去再读是 0」（页此刻 PROT_NONE，先临时放开再清）
+static int g_gfile; static uint64_t g_gfile_lo, g_gfile_hi; static int g_punch_n; static uint64_t g_punch_a[64], g_punch_len[64]; static int g_punch_fail;
+int s2a_guest_in_file(uint64_t a, uint64_t n) { return g_gfile && n && a >= g_gfile_lo && a + n <= g_gfile_hi; }
+int s2a_guest_punch(uint64_t a, uint64_t n) {
+    if (!s2a_guest_in_file(a, n)) return 0;
+    if (g_punch_n < 64) { g_punch_a[g_punch_n] = a; g_punch_len[g_punch_n] = n; } g_punch_n++;
+    if (g_punch_fail) return 0;
+    if (mprotect((void *)a, n, PROT_READ | PROT_WRITE)) return 0; memset((void *)a, 0xFF, n); memset((void *)a, 0, n); if (mprotect((void *)a, n, PROT_NONE)) return 0;   // 先写花再清零：确保「零」来自打洞而不是没碰过
+    return 1;
+}   // 没有文件后备（vawin.c S2A_GUEST_FILE）：还页照旧换匿名占位
 uint64_t s2a_module_span(const char *d) { (void)d; return 0; }   // 桩：模块跨度（loader.c；本单测不装模块）
 
 static int bad, checks;
@@ -854,5 +865,46 @@ int main(void) {
         CHECK(mi.state == 0x10 && mi.base == W36 + 32 * G && mi.base + mi.size == 1ull << 39, "39 位对照：窗口末之上止于 2^39（实 起 %#llx 止 %#llx）", (unsigned long long)mi.base, (unsigned long long)(mi.base + mi.size));
     }
     printf("%s t_svc_mem：%d / %d 项通过（对拍 %d 区间不一致 %d；64 MB 整段查 8 字节 %d 次 老 %.1f ms → 新 %.2f ms）\n", bad ? "✗" : "✓", checks - bad, checks, N, diff, M, told, tnew);
+    {   // #258 文件后备下还页延后打洞：解除物理映射时锁内只改成不可访问并记「待打洞」，后台按块打洞；打洞前被映射回来的页就地清零。期望按语义手写：
+        //   解除后页立刻不可访问、还没打洞；排空后按块大小分段打洞；映射回来一律读到零（打过洞的靠洞、没打的靠清零）；非文件后备路径行为不变
+        const uint64_t HP = 0x4000, AZ = 4ull << 20;
+        uint8_t *az = mmap(NULL, AZ, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        CHECK(az != MAP_FAILED, "#258 延后打洞单测：预留别名区");
+        uint64_t b = (uint64_t)az, r[8], done, inl, fail;
+        #define PHYS(n, a, sz) (memset(r, 0, sizeof r), r[0] = (uint64_t)(a), r[1] = (sz), svc_mem((n), r, 0), r[0])
+        #define NZ(p, n) ({ uint64_t _z = 0; for (uint64_t _i = 0; _i < (n); _i++) _z += ((uint8_t *)(p))[_i] != 0; _z; })
+        // 0) 非文件后备（桩判不在窗口）：解除即按原路还页，没有待打洞也没有打洞调用
+        g_gfile = 0; g_punch_n = 0;
+        s2a_mem_test_setup(b, AZ, b, AZ, NULL, 0); s2a_mem_test_sysres(0x2000000, 0);
+        uint64_t rc0 = PHYS(0x2C, b, 8 * HP); memset(az, 0xA5, 8 * HP); uint64_t rc1 = PHYS(0x2D, b, 8 * HP);
+        CHECK(!rc0 && !rc1 && kprot(b) == 0 && s2a_mem_test_punch_pending() == 0 && g_punch_n == 0, "#258 非文件后备：解除后不可访问、无待打洞（rc %#llx/%#llx 保护 %d 待 %llu 打洞 %d）", (unsigned long long)rc0, (unsigned long long)rc1, kprot(b), (unsigned long long)s2a_mem_test_punch_pending(), g_punch_n);
+        // 1) 文件后备：解除 8 页 → 立刻不可访问、待打洞 8、还没打洞；排空（块 3 页）→ 3 次打洞 [0,3) [3,6) [6,8)；映射回来全零、没走清零
+        g_gfile = 1; g_gfile_lo = b; g_gfile_hi = b + AZ; g_punch_n = 0; g_punch_fail = 0;
+        s2a_mem_test_setup(b, AZ, b, AZ, NULL, 0); s2a_mem_test_sysres(0x2000000, 0); s2a_mem_test_punch_chunk(3 * HP);
+        rc0 = PHYS(0x2C, b, 8 * HP); memset(az, 0xA5, 8 * HP); rc1 = PHYS(0x2D, b, 8 * HP);
+        CHECK(!rc0 && !rc1 && kprot(b) == 0 && kprot(b + 7 * HP) == 0 && s2a_mem_test_punch_pending() == 8 && g_punch_n == 0, "#258 解除 8 页：立刻不可访问、待打洞 8、还没打洞（rc %#llx/%#llx 保护 %d/%d 待 %llu 打洞 %d）", (unsigned long long)rc0, (unsigned long long)rc1, kprot(b), kprot(b + 7 * HP), (unsigned long long)s2a_mem_test_punch_pending(), g_punch_n);
+        s2a_mem_test_punch_drain();
+        CHECK(s2a_mem_test_punch_pending() == 0 && g_punch_n == 3 && g_punch_a[0] == b && g_punch_len[0] == 3 * HP && g_punch_a[1] == b + 3 * HP && g_punch_len[1] == 3 * HP && g_punch_a[2] == b + 6 * HP && g_punch_len[2] == 2 * HP, "#258 排空（块 3 页）：3 次打洞 [0,3) [3,6) [6,8)（待 %llu 次数 %d：%#llx+%#llx %#llx+%#llx %#llx+%#llx）", (unsigned long long)s2a_mem_test_punch_pending(), g_punch_n, (unsigned long long)(g_punch_a[0] - b), (unsigned long long)g_punch_len[0], (unsigned long long)(g_punch_a[1] - b), (unsigned long long)g_punch_len[1], (unsigned long long)(g_punch_a[2] - b), (unsigned long long)g_punch_len[2]);
+        s2a_mem_test_punch_stats(&done, &inl, &fail);
+        uint64_t rc2 = PHYS(0x2C, b, 8 * HP); uint64_t nz = NZ(az, 8 * HP); uint64_t inl0 = inl; s2a_mem_test_punch_stats(&done, &inl, &fail);
+        CHECK(!rc2 && nz == 0 && done == 8 && inl == inl0 && fail == 0, "#258 打洞后映射回来：128 KB 全零、后台打洞 8 页、没走清零（rc %#llx 非零 %llu 打洞 %llu 清零 %llu 失败 %llu）", (unsigned long long)rc2, (unsigned long long)nz, (unsigned long long)done, (unsigned long long)inl, (unsigned long long)fail);
+        // 2) 解除后还没打洞就映射回来：就地清零 8 页、待打洞清空；再排空不再打洞
+        memset(az, 0xA5, 8 * HP); rc1 = PHYS(0x2D, b, 8 * HP); int pn = g_punch_n;
+        rc2 = PHYS(0x2C, b, 8 * HP); nz = NZ(az, 8 * HP); s2a_mem_test_punch_stats(&done, &inl, &fail); s2a_mem_test_punch_drain();
+        CHECK(!rc1 && !rc2 && nz == 0 && inl == inl0 + 8 && s2a_mem_test_punch_pending() == 0 && g_punch_n == pn, "#258 打洞前映射回来：全零、就地清零 8 页、待打洞 0、排空不再打洞（非零 %llu 清零 %llu 待 %llu 打洞 %d→%d）", (unsigned long long)nz, (unsigned long long)inl, (unsigned long long)s2a_mem_test_punch_pending(), pn, g_punch_n);
+        // 3) 解除前 4 页、映射回第 1 页：待打洞 3，排空打洞 [0,1) [2,4)（块 3 页但第 1 页断开）
+        memset(az, 0xA5, 8 * HP); rc1 = PHYS(0x2D, b, 4 * HP); rc2 = PHYS(0x2C, b + HP, HP); pn = g_punch_n; uint64_t pend3 = s2a_mem_test_punch_pending();
+        s2a_mem_test_punch_drain();
+        CHECK(!rc1 && !rc2 && pend3 == 3 && NZ(az + HP, HP) == 0 && g_punch_n == pn + 2 && g_punch_a[pn] == b && g_punch_len[pn] == HP && g_punch_a[pn + 1] == b + 2 * HP && g_punch_len[pn + 1] == 2 * HP && kprot(b) == 0 && kprot(b + 2 * HP) == 0 && kprot(b + HP) != 0, "#258 中间一页映射回来：待 3、打洞 [0,1) [2,4)、第 1 页读写其余不可访问（待 %llu 次数 %d→%d %#llx+%#llx %#llx+%#llx 保护 %d/%d/%d）", (unsigned long long)pend3, pn, g_punch_n, (unsigned long long)(g_punch_a[pn] - b), (unsigned long long)g_punch_len[pn], (unsigned long long)(g_punch_a[pn + 1] - b), (unsigned long long)g_punch_len[pn + 1], kprot(b), kprot(b + HP), kprot(b + 2 * HP));
+        PHYS(0x2C, b, 8 * HP); s2a_mem_test_punch_drain();
+        // 4) 打洞失败：排空后待打洞 0、失败计数 8、页仍不可访问；映射回来仍全零（走清零）
+        g_punch_fail = 1; memset(az, 0xA5, 8 * HP); rc1 = PHYS(0x2D, b, 8 * HP); s2a_mem_test_punch_drain(); s2a_mem_test_punch_stats(&done, &inl, &fail); inl0 = inl;
+        int kp = kprot(b); rc2 = PHYS(0x2C, b, 8 * HP); nz = NZ(az, 8 * HP); s2a_mem_test_punch_stats(&done, &inl, &fail); g_punch_fail = 0;
+        CHECK(!rc1 && !rc2 && fail == 8 && kp == 0 && nz == 0 && inl == inl0 + 8 && s2a_mem_test_punch_pending() == 0, "#258 打洞失败：失败 8 页、仍不可访问、映射回来靠清零全零（失败 %llu 保护 %d 非零 %llu 清零 %llu→%llu 待 %llu）", (unsigned long long)fail, kp, (unsigned long long)nz, (unsigned long long)inl0, (unsigned long long)inl, (unsigned long long)s2a_mem_test_punch_pending());
+        PHYS(0x2D, b, 8 * HP); s2a_mem_test_punch_drain();
+        #undef NZ
+        #undef PHYS
+        g_gfile = 0; s2a_mem_test_punch_chunk(HP); munmap(az, AZ);
+    }
     return bad ? 1 : 0;
 }
