@@ -985,6 +985,7 @@ static uint64_t g_punch_lo = UINT64_MAX, g_punch_hi;   // 待打洞页所在范�
 static uint64_t g_punch_pending_n;   // 待打洞宿主页数
 static uint64_t g_punch_done_n, g_punch_done_ns, g_punch_inline_n, g_punch_fail_n;   // 读数：后台打洞页数 / 耗时、映射回来时就地清零页数、打洞失败页数
 static uint64_t g_punch_chunk = HPG;   // 每次打洞字节数
+static uint64_t g_unmap_n, g_unmap_ns, g_unmap_max_ns;   // 读数：≥1 MB 的 UnmapPhysicalMemory 持锁次数 / 总时长 / 最长一次（模式 0 与 2 同一份代码量，PR 修前→修后用）
 static pthread_cond_t g_punch_cv = PTHREAD_COND_INITIALIZER;
 static int g_punch_thread_on;
 // S2A_PUNCH_DEFER：0 逐页同步打洞（原路径，负对照）；1 后台线程打洞（11-09 第二版：真机上后台 F_PUNCHHOLE 与 Metal 提交在内核里互卡，GPU 挂死）；
@@ -1040,11 +1041,13 @@ static void punch_zero_locked(uint64_t lo, uint64_t hi) {
     for (uint64_t p = lo; p < hi; p += HPG) { uint8_t *b = punch_at(p); if (!*b) continue; if (*b == 1) g_punch_pending_n--; *b = 0; memset((void *)p, 0, HPG); g_punch_inline_n++; }
 }
 // 收局时（lifecycle.c，_exit 前）打一行读数：取消 / SIGTERM 路径不走会话重置，否则读数永远看不到
-void s2a_punch_summary(void) { if (g_punch_pend || g_punch_done_n || g_punch_inline_n) LOG("#258 延后打洞读数（模式 %d）：后台打洞 %llu 页 %llu ms、映射回来就地清零 %llu 页、打洞失败 %llu 页、待打洞 %llu 页", punch_defer_on(), (unsigned long long)g_punch_done_n, (unsigned long long)(g_punch_done_ns / 1000000), (unsigned long long)g_punch_inline_n, (unsigned long long)g_punch_fail_n, (unsigned long long)g_punch_pending_n); }
+void s2a_punch_summary(void) {
+    if (g_unmap_n) LOG("#258 解除物理映射读数：≥1 MB 的解除 %llu 次、持锁共 %llu ms、最长一次 %llu ms", (unsigned long long)g_unmap_n, (unsigned long long)(g_unmap_ns / 1000000), (unsigned long long)(g_unmap_max_ns / 1000000));
+    if (g_punch_pend || g_punch_done_n || g_punch_inline_n) LOG("#258 延后打洞读数（模式 %d）：后台打洞 %llu 页 %llu ms、映射回来就地清零 %llu 页、打洞失败 %llu 页、待打洞 %llu 页", punch_defer_on(), (unsigned long long)g_punch_done_n, (unsigned long long)(g_punch_done_ns / 1000000), (unsigned long long)g_punch_inline_n, (unsigned long long)g_punch_fail_n, (unsigned long long)g_punch_pending_n); }
 static void punch_reset_locked(void) {
     if (g_punch_pend || g_punch_done_n || g_punch_inline_n) LOG("#258 延后打洞读数：后台打洞 %llu 页 %llu ms、映射回来就地清零 %llu 页、打洞失败 %llu 页、收尾待打洞 %llu 页", (unsigned long long)g_punch_done_n, (unsigned long long)(g_punch_done_ns / 1000000), (unsigned long long)g_punch_inline_n, (unsigned long long)g_punch_fail_n, (unsigned long long)g_punch_pending_n);
     free(g_punch_pend); g_punch_pend = NULL; g_punch_pending_n = 0; g_punch_lo = UINT64_MAX; g_punch_hi = 0;
-    g_punch_done_n = g_punch_done_ns = g_punch_inline_n = g_punch_fail_n = 0;
+    g_punch_done_n = g_punch_done_ns = g_punch_inline_n = g_punch_fail_n = 0; g_unmap_n = g_unmap_ns = g_unmap_max_ns = 0;
 }
 #ifdef S2A_UNIT_TEST
 uint64_t s2a_mem_test_punch_pending(void) { return g_punch_pending_n; }
@@ -1709,6 +1712,8 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         uint64_t rel_lo = UINT64_MAX, rel_hi = 0;
         uint64_t we = L.win_base + L.win_size, wl = hi < we ? hi : lo > we ? lo : we;
         if (num == 0x2C && hi > wl && !s2a_far_has(wl, hi - wl)) { regs[0] = va_short(num, a, size, "别名区"); return 1; }
+        struct timespec t_unmap_ts; uint64_t t_unmap0 = 0;
+        if (num == 0x2D && hi - lo >= (1u << 20) && wl > lo && !clock_gettime(CLOCK_MONOTONIC, &t_unmap_ts)) t_unmap0 = (uint64_t)t_unmap_ts.tv_sec * 1000000000ull + (uint64_t)t_unmap_ts.tv_nsec;
 #endif
         GMU_LOCK();
         if (num == 0x2C) {
@@ -1838,6 +1843,9 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         }
         (void)lo; (void)hi;
         if (mapping && a + size - L.alias_base > g_pk_alias_end) g_pk_alias_end = a + size - L.alias_base;
+#endif
+#ifndef __ANDROID__
+        if (t_unmap0 && !clock_gettime(CLOCK_MONOTONIC, &t_unmap_ts)) { uint64_t dt = (uint64_t)t_unmap_ts.tv_sec * 1000000000ull + (uint64_t)t_unmap_ts.tv_nsec - t_unmap0; g_unmap_n++; g_unmap_ns += dt; if (dt > g_unmap_max_ns) g_unmap_max_ns = dt; static int said; if (dt >= 200000000 && said < 20) { said++; LOG("#258 解除物理映射 %#llx +%llu MB 持锁 %llu ms", (unsigned long long)a, (unsigned long long)(size >> 20), (unsigned long long)(dt / 1000000)); } }
 #endif
         GMU_UNLOCK();
 #ifndef __ANDROID__
