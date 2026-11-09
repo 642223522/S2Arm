@@ -161,6 +161,14 @@ import S2ArmAppleAdapter
             guard let p = str("path") else { return .bad("缺 path") }
             if let b = busy() { return b }
             model.changeLibrary(to: URL(fileURLWithPath: p), move: a["move"] as? Bool ?? false); return .ok()
+        case ("POST", "/display"):
+            guard let id = str("gameId") else { return .bad("缺 gameId") }
+            if let b = busy() { return b }
+            let change = ["fps60", "widenForce", "metalfx"].reduce(into: [String: Any]()) { out, key in if let on = a[key] as? Bool { out[key] = on } }
+            do {
+                let options = try await model.displaySettings(id, change: change.isEmpty ? nil : change)
+                return .object(options.mapValues { ["available": $0.available, "enabled": $0.enabled, "reason": $0.reason] })
+            } catch { return .bad(error.localizedDescription) }
         case ("POST", "/select"):
             if let id = str("gameId") { model.selectedID = id }
             return .ok()

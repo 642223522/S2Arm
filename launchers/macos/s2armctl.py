@@ -43,6 +43,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   target probe | target <机型号> <系统大版本>   重新检测连着的设备 / 没连时选机型
   update [restart|retry]            新版后台下载的状态；restart = 重启并换上已下载好的新版，retry = 重试下载（出包中不能重启）
   library <目录> [--move]            换游戏库位置（外接盘也行）；--move 把现有游戏、成品、缓存和存档一起搬到这个空文件夹
+  display <游戏号> [--fps60 on|off] [--widen on|off] [--metalfx on|off]   看 / 改这款的画面设置，下次启动生效
   errors [游戏号]                    最近失败任务的错误码、原因、建议、日志位置和日志末尾
   retry <任务号> | cancel <任务号>    重试 / 取消任务
   launch <游戏号>                    在 Mac 上启动游戏
@@ -561,6 +562,12 @@ def main():
         if rest: print(json.dumps(call('POST', '/update', {'action': rest[0]}), ensure_ascii=False))
         else: print(json.dumps(call('GET', '/state').get('update'), ensure_ascii=False))
         return
+    if cmd == 'display':
+        names = {'--fps60': 'fps60', '--widen': 'widenForce', '--metalfx': 'metalfx'}
+        body = {'gameId': rest[0]}
+        for flag, key in names.items():
+            if flag in rest: body[key] = rest[rest.index(flag) + 1] == 'on'
+        print(json.dumps(call('POST', '/display', body), ensure_ascii=False, indent=1)); return
     if cmd == 'library':
         before = {t['id'] for t in call('GET', '/state')['tasks']}
         call('POST', '/library', {'path': os.path.abspath(os.path.expanduser(rest[0])), 'move': '--move' in rest}); wait_op('setup', before); return
