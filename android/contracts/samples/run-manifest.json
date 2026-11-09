@@ -13,7 +13,7 @@
     "titleId": "0100000000ABCDEF",
     "contentRoot": "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "artifact": "game-build-artifact.json",
-    "artifactSha256": "d178984337f2b7f7d992a68b89fb9895e6a0cc27814c5f57bcf931a61461ff26",
+    "artifactSha256": "71a25f09893d1c80988f901d40c01c37a3762693470c14b9ce6e4cfab7007d50",
     "rewriteAbi": "android-sp-safe-v1",
     "target": "android",
     "backend": "vulkan"

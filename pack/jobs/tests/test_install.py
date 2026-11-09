@@ -1,5 +1,5 @@
 """装到 iPhone（pack/jobs/install.py，10-26）：选团队、包名、报错分类、整条流程（签名 / 装机 / 拷资源包打桩，IPA 夹具用 ditto 真解）。期望按规则手写"""
-import json, os, plistlib, sys, tempfile, unittest, zipfile
+import json, os, plistlib, shutil, subprocess, sys, tempfile, unittest, zipfile
 import unittest.mock as um
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -44,6 +44,52 @@ class PickTests(unittest.TestCase):
         self.assertEqual(install.classify("This device has reached the maximum number of installed apps using a free developer profile"), "free_app_limit")   # 11-06 iOS 27 原文
         self.assertEqual(install.classify('error: No Account for Team "TEAM1".'), "xcode_account_missing")
         self.assertEqual(install.classify("error: something else"), "signing_failed")
+
+    FAKE_TEAM = "ABCDE" + "12345"
+    FAKE_OU = "TEAM12" + "3456"
+
+    def test_manual_team_id_is_tried_even_when_not_detected(self):
+        self.assertEqual(install.pick_team([], self.FAKE_TEAM), dict(id=self.FAKE_TEAM, name="", free=True))
+        with self.assertRaises(Failure) as e: install.pick_team([], "bad id")
+        self.assertIn("Team ID", str(e.exception))
+
+    @unittest.skipUnless(shutil.which("openssl") and os.path.exists("/usr/bin/openssl"), "需要 /usr/bin/openssl")
+    def test_keychain_certificate_gives_team_without_xcode_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["/usr/bin/openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", f"/CN=Apple Development: X ({self.FAKE_TEAM})/OU={self.FAKE_OU}/O=X/C=US",
+                            "-keyout", d + "/k", "-out", d + "/c"], check=True, capture_output=True)
+            pem = open(d + "/c").read()
+        good, other = "A" * 40, "B" * 40
+        def security(args, env):
+            if args[0] == "find-identity":
+                return f'  1) {good} "Apple Development: X ({self.FAKE_TEAM})"\n  2) {other} "Developer ID Application: X ({self.FAKE_OU})"\n'
+            return f"SHA-1 hash: {good}\n{pem}SHA-1 hash: {other}\n{pem}"
+        with um.patch.object(install, "_security_text", security):
+            self.assertEqual(install.keychain_teams(), [dict(id=self.FAKE_OU, name="", free=True)])   # 同一团队去重，Developer ID 不算
+            with um.patch.object(install, "_xcode_prefs", return_value={}), um.patch.object(install, "profile_teams", return_value=[]):
+                self.assertEqual(install.xcode_account()[1], [dict(id=self.FAKE_OU, name="", free=True)])
+                self.assertEqual(install.pick_team(install.xcode_account()[1])["id"], self.FAKE_OU)
+        with um.patch.object(install, "_security_text", return_value=""), um.patch.object(install, "_xcode_prefs", return_value={}):
+            self.assertEqual(install.xcode_account(), (False, []))
+
+    def test_signing_summary_has_counts_not_names(self):
+        prefs = {"DVTDeveloperAccountManagerAppleIDLists": {"a": [{"identifier": "secret@example.com"}]}, "IDEProvisioningTeamByIdentifier": {"x": [{"teamID": "SECRET" + "1234", "teamName": "秘密团队"}]}}
+        with um.patch.object(install, "_xcode_prefs", return_value=prefs), um.patch.object(install, "development_identities", return_value={"A"}), \
+                um.patch.object(install.subprocess, "run", return_value=um.Mock(stdout="Xcode 27.1\nBuild")):
+            text = install.signing_summary()
+        self.assertEqual(text, "Xcode 27.1；账号 1 个；团队缓存键有；可用团队 1 个；开发证书 1 张")
+        self.assertNotIn("secret", text); self.assertNotIn("秘密", text)
+
+    def test_signing_project_is_stable_and_buildable_shape(self):
+        import types, plistlib as _p
+        with tempfile.TemporaryDirectory() as d:
+            c = types.SimpleNamespace(private=Path(d))
+            path = install.signing_project(c)["path"]
+            text = (Path(path) / "project.pbxproj").read_text(encoding="utf-8")
+            self.assertRegex(text, r'PRODUCT_BUNDLE_IDENTIFIER = "io\.s2arm\.signing\.h[0-9a-f]{10}"')
+            self.assertNotIn("@BUNDLE@", text); self.assertNotIn("DEVELOPMENT_TEAM", text)
+            self.assertEqual(install.signing_project(c)["path"], path)
+            self.assertTrue((Path(d) / "signing-helper/App.swift").is_file())
 
     def test_xcode_teams_reads_prefs(self):
         d = tempfile.mkdtemp(); fake = Path(d) / "defaults"
@@ -249,6 +295,7 @@ class FlowTests(unittest.TestCase):
         r, it = self._ready([self._dev()])
         self.assertTrue(r["ready"]); self.assertEqual(r["device"], "测试设备2")
         self.assertEqual([i["id"] for i in r["items"]], ["package", "appleId", "connected", "trusted", "developerMode"])
+        self.assertTrue(r["ipaPath"].endswith(".ipa"))
         self.assertEqual((r["account"], it["appleId"]["title"]), ("我", "已登录 Apple ID"))
         self.assertTrue(all(i["detail"] == "" for i in r["items"]))   # 好了的项不带说明
 
@@ -256,6 +303,8 @@ class FlowTests(unittest.TestCase):
         gid = "0100535012974000"; self.c.r.update(gameId=gid)   # 没出 iPhone 包
         r, it = self._ready([], teams=())                       # 没登录、没连
         self.assertFalse(r["ready"])
+        self.assertEqual([i["id"] for i in r["items"] if i["blocking"]], ["package"])
+        self.assertEqual(r["ipaPath"], "")
         self.assertEqual((it["package"]["ok"], it["package"]["who"]), (False, "app"))
         self.assertFalse(it["appleId"]["ok"]); self.assertIn("Apple Accounts", it["appleId"]["detail"]); self.assertIn("团队列表", it["appleId"]["detail"])
         self.assertFalse(it["connected"]["ok"])
@@ -269,6 +318,13 @@ class FlowTests(unittest.TestCase):
         r, it = self._ready([self._dev(devmode="disabled")])
         self.assertTrue(it["trusted"]["ok"]); self.assertFalse(it["developerMode"]["ok"]); self.assertFalse(it["developerMode"]["waiting"])
         self.assertIn("开发者模式", it["developerMode"]["detail"])
+
+    def test_readiness_only_package_blocks(self):
+        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)   # 出好了包，但没登录、没连手机
+        r, it = self._ready([], teams=())
+        self.assertTrue(r["ready"])
+        self.assertFalse(it["appleId"]["ok"]); self.assertFalse(it["connected"]["ok"])
+        self.assertEqual([i["id"] for i in r["items"] if i["blocking"]], [])
 
     def test_readiness_device_filtering(self):
         gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)

@@ -9,7 +9,7 @@
   licenses/      各件许可原文 + 源码获取说明（GPL 件）
   s2arm_env.cmd  出包作业的环境（PATH / DOTNET_ROOT / S2A_BASH）：启动器起作业前 call 它，并设 S2A_ENGINE=<引擎目录>（随包 Python 按它找 pack.*）
   versions.json  各件版本与来源
-来源：Python 嵌入版从 python.org 官方地址下载；.NET 运行时、Git、zstd 从本机已装的官方发行版拷（路径见下面常量，可用环境变量改）。
+来源：Python 嵌入版、MinGit、轮子从官方地址下载并缓存（launchers/shared/runtime_cache.py：命中不联网，每个文件核钉死的 SHA-256）；.NET 运行时、Git、zstd 从本机已装的官方发行版拷（路径见下面常量，可用环境变量改）。
 """
 import json
 import os
@@ -18,10 +18,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "launchers/shared"))
+import runtime_cache   # noqa: E402
 PY_VER = "3.12.10"
 PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
 DOTNET = Path(os.environ.get("S2A_RT_DOTNET", r"C:\Program Files\dotnet"))
@@ -51,18 +52,19 @@ def pins():
 
 def python(rt, versions):
     d = rt / "python"; d.mkdir()
-    with tempfile.TemporaryDirectory() as t:
-        z = Path(t, "py.zip"); urllib.request.urlretrieve(PY_URL, z)
-        zipfile.ZipFile(z).extractall(d)
+    zipfile.ZipFile(runtime_cache.fetch_file(f"python-{PY_VER}-embed-amd64.zip")).extractall(d)
     # 去掉嵌入版的 ._pth：它固定模块路径、连「被运行脚本所在目录」都不加（仓库里大量 python <目录>/x.py 导入同目录兄弟模块，11-06 验收
     #   spvc_inproc.py 找不到 xlock）。改由 s2arm_env.cmd 设 PYTHONHOME=<本目录>（不读注册表里机器另装的 Python）+ PYTHONNOUSERSITE=1（不读用户 site-packages）
     for pth in d.glob("python3*._pth"): pth.unlink()
     site = d / "Lib/site-packages"; site.mkdir(parents=True)
     # 按环境变量 S2A_ENGINE（启动器设成引擎目录）把引擎根插到模块路径最前：python -m pack.… 不依赖当前目录
     (site / "s2arm_engine.pth").write_text("import os, sys; p = os.environ.get('S2A_ENGINE'); p and sys.path.insert(0, p)\n", encoding="utf-8")
-    # 本机 pip 按目标平台取官方二进制轮子装进 site-packages（不编译）
-    subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-compile", "--only-binary=:all:",
-                    "--platform", "win_amd64", "--python-version", "3.12", "--implementation", "cp", "--target", str(site), *pins()], check=True)
+    # 本机 pip 按目标平台取官方二进制轮子：先进缓存核哈希，再从缓存离线装进 site-packages（不编译）
+    target = ["--only-binary=:all:", "--platform", "win_amd64", "--python-version", "3.12", "--implementation", "cp", "--no-deps"]
+    wheels = runtime_cache.wheelhouse(pins(), "win_amd64", lambda folder, missing: subprocess.run(
+        [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", *target, "-d", str(folder), *missing], check=True))
+    subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-compile", "--no-index", "--find-links", str(wheels),
+                    *target, "--target", str(site), *pins()], check=True, env=dict(os.environ, SOURCE_DATE_EPOCH="1262304000"))   # pip 生成的 .exe 启动器内含打包时刻，钉住才可复现
     versions["python"] = PY_VER; versions["python_url"] = PY_URL; versions["python_packages"] = pins()
 
 
@@ -83,22 +85,17 @@ def git(rt, versions):
     versions["git"] = out.replace("git version ", "")
 
 
-ZSTD_LICENSE = "https://raw.githubusercontent.com/facebook/zstd/v1.5.7/LICENSE"   # 官方发行包 zstd-v1.5.7-win64 不带 LICENSE，按同一标签取原文
-
-
 def mingit(rt, versions):
     ver = versions["git"]   # 例 2.54.0.windows.1
     url = f"https://github.com/git-for-windows/git/releases/download/v{ver}/MinGit-{ver.split('.windows')[0]}-64-bit.zip"
     d = rt / "mingit"; d.mkdir()
-    with tempfile.TemporaryDirectory() as t:
-        z = Path(t, "mingit.zip"); urllib.request.urlretrieve(url, z)
-        zipfile.ZipFile(z).extractall(d)
+    zipfile.ZipFile(runtime_cache.fetch_file(url.rsplit("/", 1)[1])).extractall(d)
     versions["mingit_url"] = url
 
 
 def zstd(rt, versions):
     shutil.copytree(ZSTD, rt / "zstd")
-    if not (rt / "zstd/LICENSE").is_file(): urllib.request.urlretrieve(ZSTD_LICENSE, rt / "zstd/LICENSE")
+    if not (rt / "zstd/LICENSE").is_file(): runtime_cache.copy_file("zstd-v1.5.7-LICENSE", rt / "zstd/LICENSE")
     versions["zstd"] = subprocess.run([str(rt / "zstd/zstd.exe"), "--version"], capture_output=True, text=True).stdout.strip()
 
 
@@ -124,7 +121,7 @@ def env_cmd(rt):
         'set "S2A_RT=%~dp0"',
         'set "PATH=%S2A_RT%python;%S2A_RT%python\\Scripts;%S2A_RT%dotnet;%S2A_RT%mingit\\cmd;%S2A_RT%git\\usr\\bin;%S2A_RT%zstd;%SystemRoot%\\system32;%SystemRoot%;%SystemRoot%\\System32\\WindowsPowerShell\\v1.0"',
         'set "DOTNET_ROOT=%S2A_RT%dotnet"', 'set "DOTNET_CLI_TELEMETRY_OPTOUT=1"',
-        'set "S2A_BASH=%S2A_RT%git\\usr\\bin\\bash.exe"', 'set "PYTHONUTF8=1"', 'set "PYTHONDONTWRITEBYTECODE=1"',
+        'set "S2A_BASH=%S2A_RT%git\\usr\\bin\\bash.exe"', 'set "PYTHONUTF8=1"', 'set "LC_ALL=C.UTF-8"', 'set "PYTHONDONTWRITEBYTECODE=1"',
         'set "PYTHONHOME=%S2A_RT%python"', 'set "PYTHONNOUSERSITE=1"', 'set "PYTHONPATH="', ""]) ).encode("utf-8"))
 
 

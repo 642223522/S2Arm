@@ -4,7 +4,7 @@
 
 平台：iPhone / iPad（iOS / iPadOS 18 起）· Mac（Apple 芯片，macOS 15 起）· 在 Mac 或 Windows 上出包 · Android / 鸿蒙即将支持 · 许可：Apache-2.0 · **游戏原件自备**
 
-[English](README.md) · [下载启动器](https://github.com/jhaizhou-ops/S2Arm/releases) · [证据页](docs/validation/证据.md)
+[English](README.md) · [下载启动器](https://jhaizhou-ops.github.io/S2Arm/) · [全部版本](https://github.com/jhaizhou-ops/S2Arm/releases) · [证据页](docs/validation/证据.md)
 
 <p align="center"><img src="docs/images/launcher-welcome.png" width="760" alt="S2Arm 启动器欢迎页"></p>
 
@@ -81,7 +81,7 @@ Switch 2 版《塞尔达传说 时之笛》在 iPhone 17 Pro Max 上真机实测
 
 ## 开始使用
 
-1. 从 [Releases](https://github.com/jhaizhou-ops/S2Arm/releases) 下载 Mac 或 Windows 启动器，打开即用。在 Mac 上出 iPhone 包需要 App Store 免费的 Xcode，并在里面登录你的 Apple ID，启动器会一步步带你完成。
+1. 从[下载页](https://jhaizhou-ops.github.io/S2Arm/)下载 Mac 或 Windows 启动器，打开即用。在 Mac 上出 iPhone 包需要 App Store 免费的 Xcode，并在里面登录你的 Apple ID，启动器会一步步带你完成。
 2. 导入你自己的密钥和游戏；本体、更新和 DLC 放在同一个文件夹里一次导入。
 3. 选 iPhone / iPad 或这台 Mac，点「出包」。
 4. 按启动器提示用你自己的 Apple ID 签名装机（Windows 版已附带签名工具 Impactor），打开 S2Arm，在游戏库里选游戏开玩。
@@ -110,6 +110,10 @@ S2Arm 站在社区的肩膀上。
 - **ns2pro-bridge**（DanielZhangyc，MIT）、**MacNativeGames**（MIT）、**LumaDock**（MIT）、**deko3d**（fincs，zlib）、**nvn.h**（h1k421，MIT）、**bcdec**（Sergii Kudlai，MIT / Unlicense）、**LibHac**（Alex Barney，MIT）与 **hactool**（SciresM，ISC）、**SPIRV-Cross** 与 **Vulkan-Headers**（Khronos Group）、**SMAA**（Jorge Jimenez 等，MIT）、**Mesa** 的细分器（Microsoft，MIT）、**Capstone**、**LZ4**、**.NET**、**libvpx**、**libopus**、**dav1d** 和 **Noto** 字体。
 
 每个组件的版本、许可全文和用途见 [NOTICE](NOTICE) 与 [第三方许可清单](THIRD_PARTY_LICENSES.md)。
+
+## Star 走势
+
+<a href="https://star-history.com/#jhaizhou-ops/S2Arm&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jhaizhou-ops/S2Arm&type=Date&theme=dark" /><img alt="Star History" src="https://api.star-history.com/svg?repos=jhaizhou-ops/S2Arm&type=Date" /></picture></a>
 
 ## 许可与声明
 

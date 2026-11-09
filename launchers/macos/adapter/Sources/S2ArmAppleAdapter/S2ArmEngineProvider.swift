@@ -104,6 +104,14 @@ public final class S2ArmEngineProvider: EngineProvider {
         _ = try await client.perform("delete", extra: ["gameId": gameId], events: events)
     }
 
+    /// 改游戏显示名 / 封面：nil 不动，空字符串恢复默认。
+    public func customizeGame(_ gameId: String, name: String?, coverPath: String?) async throws {
+        var extra: [String: Any] = ["gameId": gameId]
+        if let name { extra["name"] = name }
+        if let coverPath { extra["coverPath"] = coverPath }
+        _ = try await client.perform("customize", extra: extra, events: .discard)
+    }
+
     /// Mac 端诊断包写到 path（diagnostics 作业）。
     public func exportDiagnostics(to path: URL, events: EventSink = .discard) async throws {
         _ = try await client.perform("diagnostics", extra: ["path": path.path], events: events)
@@ -144,10 +152,11 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     // MARK: iPhone 安装（设计稿协议之外）
 
+    public func signingProject() async throws -> String { try await installer.signingProject() }
     public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
 
-    public func install(gameId: String, events: EventSink = .discard) async throws -> InstallResult {
-        try await installer.install(gameId: gameId, events: events)
+    public func install(gameId: String, teamId: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
+        try await installer.install(gameId: gameId, teamId: teamId, events: events)
     }
 
     public func removeFromPhone(gameId: String, events: EventSink = .discard) async throws -> RemoveResult {

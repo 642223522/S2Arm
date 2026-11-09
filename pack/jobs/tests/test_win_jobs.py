@@ -17,6 +17,46 @@ import core
 import toolchain
 
 
+class AtomicReplace(unittest.TestCase):
+    # #130：Windows 上目标被占用时 os.replace 抛 PermissionError，一次撞车不能毁掉整局
+    def run_case(self, name, failures, sleeps):
+        from unittest import mock
+        real = os.replace; left = [failures]
+        def replace(a, b):
+            if left[0]:
+                left[0] -= 1
+                raise PermissionError(13, "拒绝访问。")
+            return real(a, b)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(core.os, "name", name), mock.patch.object(core.os, "replace", replace), \
+                mock.patch.object(core.time, "sleep", sleeps.append):
+            target = Path(d, "job.json"); target.write_text("old")
+            try:
+                core.replace_retrying(self.tmp(d), target); error = None
+            except PermissionError as e:
+                error = e
+            return error, target.read_text()
+
+    @staticmethod
+    def tmp(d):
+        p = Path(d, "job.tmp"); p.write_text("new"); return p
+
+    def test_windows_retries_until_target_is_free(self):
+        sleeps = []
+        self.assertEqual(self.run_case("nt", 2, sleeps), (None, "new"))
+        self.assertEqual(sleeps, list(core.WIN_REPLACE_RETRIES[:2]))
+
+    def test_windows_gives_up_after_all_retries(self):
+        sleeps = []
+        error, content = self.run_case("nt", len(core.WIN_REPLACE_RETRIES) + 1, sleeps)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(content, "old")
+        self.assertEqual(sleeps, list(core.WIN_REPLACE_RETRIES))
+
+    def test_other_platforms_do_not_retry(self):
+        sleeps = []
+        error, content = self.run_case("posix", 1, sleeps)
+        self.assertIsInstance(error, PermissionError); self.assertEqual((content, sleeps), ("old", []))
+
+
 class RuntimeEnv(unittest.TestCase):
     def test_paths_are_bundled_only(self):
         env = core.win_runtime_env(r"D:\S2Arm\Runtime", r"D:\S2Arm\Engine", r"C:\Windows")
@@ -27,6 +67,7 @@ class RuntimeEnv(unittest.TestCase):
         self.assertEqual((env["DOTNET_ROOT"], env["S2A_BASH"], env["PYTHONHOME"], env["S2A_PREBUILT_TOOLS"]),
                          (r"D:\S2Arm\Runtime\dotnet", r"D:\S2Arm\Runtime\git\usr\bin\bash.exe",
                           r"D:\S2Arm\Runtime\python", r"D:\S2Arm\Engine\Binaries\Prepare"))
+        self.assertEqual(env["LC_ALL"], "C.UTF-8", "机器上 LANG=C / en_US 时 cygpath 在中文处截断路径（#85）")
 
 
     def test_same_path_as_bundled_env_cmd(self):
@@ -36,6 +77,7 @@ class RuntimeEnv(unittest.TestCase):
         brw = importlib.util.module_from_spec(spec); spec.loader.exec_module(brw)
         with tempfile.TemporaryDirectory() as d:
             brw.env_cmd(Path(d)); text = Path(d, "s2arm_env.cmd").read_text(encoding="utf-8")
+        self.assertIn('set "LC_ALL=C.UTF-8"', text.splitlines())
         line = next(l for l in text.splitlines() if l.startswith('set "PATH='))
         bundled = [x.replace("%S2A_RT%", "") for x in line[len('set "PATH='):-1].split(";") if x.startswith("%S2A_RT%")]
         self.assertEqual(bundled, core.WIN_RUNTIME_PATH)

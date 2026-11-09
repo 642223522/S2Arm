@@ -22,7 +22,7 @@ public struct InstallItem: Identifiable, Equatable {
     }
 }
 
-/// 装机前清单：全齐了才让点「开始装」。
+/// 装机前清单：ready 由作业层判定（只有 iPhone 版没做好才挡），其余项只提示。
 public struct InstallReadiness: Equatable {
     public let items: [InstallItem]
     public let ready: Bool
@@ -30,16 +30,19 @@ public struct InstallReadiness: Equatable {
     public let device: String
     /// 本机签名团队名。
     public let account: String
+    /// 这款最新的 .ipa；还没做好 iPhone 版时为空。
+    public let ipaPath: String
+    /// 诊断用：Xcode 版本和账号、团队、证书的数量，不含账号和团队名。
+    public let signing: String
 
-    public init(items: [InstallItem], ready: Bool, device: String = "", account: String = "") {
-        self.items = items; self.ready = ready; self.device = device; self.account = account
+    public init(items: [InstallItem], ready: Bool, device: String = "", account: String = "", ipaPath: String = "", signing: String = "") {
+        self.items = items; self.ready = ready; self.device = device; self.account = account; self.ipaPath = ipaPath; self.signing = signing
     }
 
     public init(result r: [String: Any]) {
         let items = (r["items"] as? [[String: Any]] ?? []).compactMap(InstallItem.init(json:))
-        // 作业层的 ready 与逐项都要齐：两边不一致时按没齐算
-        self.init(items: items, ready: (r["ready"] as? Bool ?? false) && !items.isEmpty && items.allSatisfy(\.ok),
-                  device: r["device"] as? String ?? "", account: r["account"] as? String ?? "")
+        self.init(items: items, ready: r["ready"] as? Bool ?? false,
+                  device: r["device"] as? String ?? "", account: r["account"] as? String ?? "", ipaPath: r["ipaPath"] as? String ?? "", signing: r["signing"] as? String ?? "")
     }
 }
 
@@ -85,10 +88,17 @@ public final class InstallService {
     }
 
     /// 装。
-    public func install(gameId: String, events: EventSink = .discard) async throws -> InstallResult {
-        let r = try await client.perform("install", extra: ["gameId": gameId], events: events).result
+    public func install(gameId: String, teamId: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
+        var extra: [String: Any] = ["gameId": gameId]
+        if let teamId, !teamId.isEmpty { extra["teamId"] = teamId }
+        let r = try await client.perform("install", extra: extra, events: events).result
         return InstallResult(device: r["device"] as? String ?? "", packFiles: (r["packFiles"] as? NSNumber)?.intValue,
                              outputPath: r["outputPath"] as? String)
+    }
+
+    /// 生成给「没有签名团队」玩家用的 Xcode 引导项目，返回项目路径。
+    public func signingProject() async throws -> String {
+        try await client.perform("signingProject", extra: [:], events: .discard).result["path"] as? String ?? ""
     }
 
     /// 从手机容器删一款（installRemove 作业）。

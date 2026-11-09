@@ -7,6 +7,7 @@ import re
 
 RECOVERY = {
     "rewrite_gap": "这款游戏有一处程序代码暂不支持，建议反馈让我们补上：点「复制错误摘要」并发给我们。",
+    "update_failed": "检查网络后重试；还是不行就到下载页下载新版覆盖安装，当前版本和存档不受影响。",
     "glslc_windows_unavailable": "这款游戏的着色器编译目前只能在 Mac 上完成，Windows 版暂不支持；请改用 Mac 版 S2Arm 出包。",
     "win_host_unsupported": "请改用64位Windows主机运行S2Arm，确认后点「重新检查」。",
     "win_metal_missing": "用自己的Apple ID登录苹果开发者下载页（https://developer.apple.com/download/），下载安装官方Metal Developer Tools for Windows，装好后点「重新检查」。",
@@ -26,7 +27,10 @@ RECOVERY = {
     "tool_exit": "查看本任务日志和失败阶段，按提示修复后重试；反馈时复制错误摘要。",
     "keys_missing": "在「设置 → 玩家密钥」导入自行导出的 prod.keys，然后重新导入游戏。",
     "keys_invalid": "重新选择完整的 prod.keys 文本文件，不要手工补写密钥值；原有密钥保持不变。",
-    "content_unreadable": "先把 Switch 更新到最新系统，重新导出 prod.keys，到「设置 → 玩家密钥」重新导入，再放一次游戏；如果密钥已是新的，请检查游戏文件是否完整，重新复制后再试。",
+    "content_unreadable": "检查文件和票据是否完整；若另行确认 Switch 密钥版本不足，可重新导出并到「设置 → 玩家密钥」重新导入。",
+    "ticket_missing": "核对源文件是否含有所需票据。",
+    "content_truncated": "从原始位置重新复制完整的游戏文件，再重新导入。",
+    "keys_outdated": "用系统版本更新的 Switch 重新导出 prod.keys，再到「设置 → 玩家密钥」重新导入。",
     "input_type_unsupported": "选择 NSP、XCI 文件或包含它们的文件夹，然后重新导入。",
     "input_empty": "确认所选文件夹包含 NSP 或 XCI 文件，再重新导入。",
     "input_permission": "打开「系统设置 › 隐私与安全性 › 文件与文件夹」（外接盘看「可移除的宗卷」），允许本应用读取游戏文件所在位置，或把游戏文件拷到「下载」之外的本机文件夹，然后重试。",
@@ -56,7 +60,7 @@ RECOVERY = {
     "target_unsupported": "这台设备的 GPU 或系统不在当前支持范围内，重试无法解决；需要 A14 / M1 或更新芯片及 iOS / iPadOS 18 或更新系统。",
     "xcode_sdk_too_old": "把 Xcode 更新到最新版，装好打开一次，回来点「重新检查」，再打 iPhone 包。",
     "runtime_invalid": "重新打包这款游戏以恢复完整运行文件；保留原有存档，打包成功后再启动。",
-    "xcode_team_pending": "打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中你的账号，等团队列表显示出来，再点一次「装到 iPhone」。",
+    "xcode_team_pending": "在装机页点「解决办法」打开引导项目，在 Xcode 里选 Personal Team，连上手机点运行一次，再点一次「装到 iPhone」。也可以先到 Xcode › Settings › Apple Accounts 看团队列表有没有显示。",
     "signing_certificate_missing": "打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中账号后点 Manage Certificates，点 + 选 Apple Development，再点一次「装到 iPhone」。",
     "xcode_account_missing": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID（免费的就可以），再点一次「装到 iPhone」；不想登录 Xcode 也可以改用 AltStore 安装。",
     "device_not_connected": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
@@ -102,6 +106,7 @@ RECOVERY = {
     'container_last_game': '在 iPhone 桌面长按 S2Arm 删除 App 即可。',
     'container_purge_failed': '手机解锁、数据线插稳后再删一次；不影响其他游戏。',
     'keychain_prompt': '在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「装到 iPhone」。',
+    'windows_path_too_long': '路径太长：把游戏库搬到盘符根目录附近的短路径（比如 D:\\S2Arm），再打一次包；反馈时请带上错误摘要。',
     'pack_missing': '没找到这款的资源包目录：重新「打 iPhone 包」后再装到 iPhone。',
     'save_recovery_overridden': '已按你的确认跳过存档回退启动游戏；事务记录保留，下次启动会再试恢复。',
     'save_space': '释放备份目的地的磁盘空间后重试；不要删除原存档或唯一的备份。',
@@ -191,6 +196,7 @@ def player_reason(code):
 # 按日志确凿字样归因，先于阶段映射：按本表顺序，证据里第一个命中的码胜出（盘满最先：写盘失败后面常跟一串连带错误）。
 # 只收工具 / 系统原样会打的字样，不从散文猜。
 LOG_CAUSES = (
+    (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
      r"|STATUS_DISK_FULL|磁盘空间不足", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样

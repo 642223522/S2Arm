@@ -68,10 +68,10 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     threading.Thread(target=supervise, daemon=True).start()
     operations = {"preflight": toolchain.preflight, "prepareEngine": toolchain.prepare, "downloadMetal": toolchain.download_metal, "downloadIosPlatform": toolchain.download_ios_platform,
                   "setup": library.setup, "keys": library.keys, "import": library.import_games,
-                  "catalog": library.catalog, "remove": library.remove, "delete": library.delete, "clean": library.clean,
+                  "catalog": library.catalog, "customize": library.customize, "remove": library.remove, "delete": library.delete, "clean": library.clean,
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free,
                   "diagnostics": library.diagnostics, "saveInput": library.save_input,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installCheck": install.readiness, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
                   "community": community.listing, "communitySave": community.save}
     if operation_overrides:
