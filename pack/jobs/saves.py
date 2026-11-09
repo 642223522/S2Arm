@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 from core import Failure, atomic, contained
 from library import input_identity, selected_packages
 import save_formats
+import layout
 
 OPERATIONS = {"saveStatus", "saveBackup", "saveInspect", "saveRestore"}
 TREES = ("bis/user/save", "bis/system/save")
@@ -108,9 +109,9 @@ def locations(c, game):
     if not re.fullmatch(r"[0-9a-fA-F]{16}", gid):
         fail(c, "游戏标识无效，无法管理存档。", "game_id")
     try:
-        root = safe_path(c.library, c.library / "saves" / gid)
+        root = safe_path(c.library, layout.path(c, gid, "saves", create=False))
         transactions = safe_path(c.library, c.library / "save-transactions")
-        backups = safe_path(c.library, c.library / "save-backups" / gid)
+        backups = safe_path(c.library, layout.path(c, gid, "save-backups", create=False))
     except ValueError:
         fail(c, "存档目录包含链接，已停止操作。", "unsafe_path")
     return root, transactions, backups

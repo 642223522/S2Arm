@@ -314,43 +314,6 @@ def clone_tree(c, source, destination, *, materialize_romfs=False):
         clone_tree(c, romfs, destination / "romfs")
 
 
-def retain_releases(game_root, keep=2):
-    """What "current + the previous successful release" means on disk (J10): after a release is switched in, everything older than that pair goes,
-    and so does any `<release>.partial` a crash left behind. Nothing outside `<game>/releases/` is ever touched, symlinks are left alone, and the
-    directory `current` points at is never a candidate."""
-    game_root = Path(game_root).resolve()
-    releases = game_root / "releases"
-    if not releases.is_dir():
-        return dict(kept=[], removed=[], stale=[])
-    contained(game_root, releases)
-    current = None
-    link = game_root / "current"
-    if link.exists():
-        current = link.resolve()
-        if current.parent != releases.resolve():
-            current = None
-    stale, live = [], []
-    for p in sorted(releases.iterdir()):
-        if p.is_symlink() or not p.is_dir():
-            continue
-        (stale if p.name.endswith(".partial") else live).append(p)
-    kept = []
-    if current is not None:
-        kept.append(current)
-    for p in sorted(live, key=lambda q: q.stat().st_mtime, reverse=True):
-        if len(kept) >= keep:
-            break
-        if p.resolve() not in kept:
-            kept.append(p.resolve())
-    removed = []
-    for p in live:
-        if p.resolve() in kept:
-            continue
-        shutil.rmtree(p)
-        removed.append(p.name)
-    for p in stale:
-        shutil.rmtree(p)
-    return dict(kept=[p.name for p in kept], removed=removed, stale=[p.name for p in stale])
 
 
 def shared_dir(c, game):

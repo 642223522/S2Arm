@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from core import Failure, contained
+import layout
 
 
 
@@ -111,7 +112,7 @@ def _iml_device_hint(c, tgt, gid):
     # 产物根里的 addr_need.tsv（stage_rewrite.sh 生成；新款第一次出包可能还没有，用 None）
     tsv = ""
     try:
-        cur = (c.library / "games" / gid / "current").resolve()
+        cur = layout.image_mac(c, gid, create=False)
         if cur.is_dir() and (cur / "addr_need.tsv").is_file():
             tsv = str(cur / "addr_need.tsv")
     except Exception:
@@ -381,7 +382,7 @@ def container_custom(c):
     out = {}
     for game in c.catalog()["games"]:
         custom = game_custom(c, game["id"])
-        original = c.library / "games" / game["id"] / "cover.jpg"
+        original = layout.path(c, game["id"], "cover.jpg", create=False)
         cover = custom["cover"] or (original if original.is_file() else None)
         out[game["id"]] = dict(custom=bool(custom["name"] or custom["cover"]), name=custom["name"] or game.get("name") or "", cover=str(cover) if cover else "")
     return out

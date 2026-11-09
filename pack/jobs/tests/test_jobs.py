@@ -1085,6 +1085,11 @@ class JobsTests(unittest.TestCase):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},
                                    deadzone=.15, mouseOptions=dict(mode="off", sensitivityX=1, sensitivityY=1)))
+        # 创建假的宿主文件
+        fake_host = self.c.library / "games" / game["id"] / "image/mac/S2ArmGame.app/Contents/MacOS/s2arm-host"
+        fake_host.parent.mkdir(parents=True, exist_ok=True)
+        fake_host.write_bytes(b"#!/bin/sh\n")
+        fake_host.chmod(0o755)
         sibling = self.c.private / "runtime-input" / game["id"] / "another-run.json"
         atomic(sibling, {"keep": True})
         for failure in (None, Failure("fixture host failed"), Cancelled()):
@@ -1095,7 +1100,10 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(env["S2A_INPUT_GUIDE_SHOWN"], "1")
                 if failure is not None:
                     raise failure
-            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), patch.object(build.toolchain, "input_interface", return_value=(True, "fixture")), patch.object(self.c, "run", side_effect=run):
+            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                 patch.object(build.toolchain, "input_interface", return_value=(True, "fixture")), \
+                 patch.object(build.host_update, "choose", return_value=((self.c.library / "games" / game["id"] / "image/mac/S2ArmGame.app/Contents/MacOS/s2arm-host"), False)), \
+                 patch.object(self.c, "run", side_effect=run):
                 if failure is None:
                     build.launch(self.c)
                 else:

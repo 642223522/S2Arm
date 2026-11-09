@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 
 from core import Failure, atomic, contained
+import layout
 
 
 def _rows(path):
@@ -66,7 +67,7 @@ def _indexes():
 
 def _saved(c, gid):
     try:
-        data = json.loads(contained(c.library, c.library / "games" / gid / "community.json").read_text())
+        data = json.loads(layout.path(c, gid, "community.json", create=False).read_text())
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -75,7 +76,7 @@ def _saved(c, gid):
 def runtime_caps(c, gid):
     """这款 Mac 运行版本的能力清单 s2a_caps.tsv（出包时生成）：{能力: 值}。没有清单 = 这款还没有 Mac 运行版本或版本太旧"""
     try:
-        text = contained(c.library, c.library / "games" / gid / "current" / "s2a_caps.tsv").read_text(encoding="utf-8")
+        text = (layout.image_mac(c, gid, create=False) / "s2a_caps.tsv").read_text(encoding="utf-8")
     except (OSError, ValueError, UnicodeError):
         return {}
     rows = (line.split("#", 1)[0].split("\t") for line in text.splitlines() if not line.startswith("#"))
@@ -106,7 +107,7 @@ def mac_settings(c, gid):
 def selection(c, gid):
     """玩家选择；读不到 / 旧格式按缺省（宽屏、60 帧开）"""
     try:
-        data = json.loads(contained(c.library, c.library / "games" / gid / "community.json").read_text())
+        data = json.loads(layout.path(c, gid, "community.json", create=False).read_text())
     except (OSError, ValueError):
         data = {}
     data = data if isinstance(data, dict) else {}
@@ -188,7 +189,7 @@ def save(c):
             out[key] = bool(c.r[key])
         elif key in saved and not (key == "fps60" and saved[key] is True and saved.get("schema") != 3):
             out[key] = saved[key]
-    atomic(contained(c.library, c.library / "games" / game["id"] / "community.json"), out)
+    atomic(layout.path(c, game["id"], "community.json"), out)
     return describe_game(c, game)
 
 

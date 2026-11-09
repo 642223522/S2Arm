@@ -34,6 +34,7 @@ class MigrateTests(JobCase):
     def old_library(self):
         """v0.1.7 布局：A 有 Mac 现行 + 上一版运行版本、出包缓存、存档、着色器缓存、键位；B 只有封面和存档；C 名字全中文"""
         L = self.c.library
+        (L / ".s2arm-layout.json").unlink(missing_ok=True)  # 删掉新库标记，模拟旧布局
         atomic(L / "catalog.json", dict(schema=1, games=[dict(id=A, name="Super Game: Deluxe"), dict(id=B, name="Other"), dict(id=C, name="中文游戏")]))
         rel = L / "games" / A / "releases"
         for name, host in (("k1-old", b"old host"), ("k2-cur", b"current host")):
