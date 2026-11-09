@@ -60,6 +60,8 @@ double S2AVPadHoldLockDeadline(const S2AVPadHoldLockState *state);
 // 输入为相对落点 / 摇杆半径的 UIKit 坐标；返回单位圆内的同向值，Y 翻转由调用方处理。
 // t = clamp((length - deadzone) / (saturation - deadzone), 0, 1)，输出长度 t^exponent。
 CGPoint S2AVPadStickResponse(CGPoint input, CGFloat deadzone, CGFloat saturation, CGFloat exponent);
+// 灵敏度：先把手指相对半径的位移乘 sensitivity，再钳到单位圆内。sensitivity = 1 与不调用相同
+CGPoint S2AVPadStickSensitivity(CGPoint input, CGFloat sensitivity);
 
 // 每键外观：大小倍率 0.6–1.6、不透明度 0.2–1、是否隐藏；与布局几何分开存，布局文件格式不变
 typedef struct { CGFloat scale, opacity; BOOL hidden; } S2AVPadKeyStyle;
@@ -74,6 +76,13 @@ static const NSInteger kS2AVPadKeyThemeCount = 5;   // 0 = 默认描线，1–4 
 @property(nonatomic, readonly) CGFloat stickDeadzone, stickSaturation, stickExponent;
 // deadzone 0–0.4，saturation 0.5–1，exponent 0.5–3；失败时保留原内存与磁盘值。
 - (BOOL)setStickDeadzone:(CGFloat)deadzone saturation:(CGFloat)saturation exponent:(CGFloat)exponent error:(NSError **)error;
+// 摇杆模式（按游戏存）：浮动 = 手指落点当中心（缺省）；固定 = 摇杆常驻屏幕固定位置，位置可在按键编辑里拖。灵敏度 0.5–2。
+//   center 是相对安全区的 0–1 坐标，side 0 左 1 右；缺省左 (0.12, 0.66)、右 (0.63, 0.66)，避开默认布局的键
+@property(nonatomic, readonly) BOOL stickFixed;
+@property(nonatomic, readonly) CGFloat stickSensitivity;
+- (CGPoint)stickCenter:(int)side;
+- (BOOL)setStickFixed:(BOOL)fixed sensitivity:(CGFloat)sensitivity error:(NSError **)error;
+- (BOOL)setStickCenter:(CGPoint)center side:(int)side error:(NSError **)error;
 // App-local appearance preference, separate from schema 1 layout geometry.
 @property(nonatomic, readonly) CGFloat idleKeyOpacity;
 - (BOOL)setIdleKeyOpacity:(CGFloat)opacity error:(NSError **)error;

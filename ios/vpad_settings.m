@@ -51,7 +51,7 @@
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return _store.diagnostics.count ? 5 : 4; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 3 : section == 3 ? 3 : _store.diagnostics.count;
+    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 3 : section == 3 ? 5 : _store.diagnostics.count;
 }
 // 0 = 默认布局，1 = 触屏直通，之后是用户布局（内置两项没有对应文件，所以固定占前两行）
 - (NSString *)identifierAtRow:(NSInteger)row {
@@ -107,6 +107,14 @@
         slider.accessibilityValue = cell.detailTextLabel.text;
         [slider addTarget:self action:@selector(opacityChanged:) forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = slider;
+    } else if (indexPath.section == 3 && indexPath.row == 3) {
+        cell.textLabel.text = @"固定摇杆"; cell.detailTextLabel.text = @"摇杆常驻屏幕，位置在「编辑按键」里拖；关掉是手指落点当中心。只对这款游戏生效"; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = _store.stickFixed; toggle.accessibilityIdentifier = @"vpad.stick.fixed"; toggle.accessibilityLabel = @"固定摇杆";
+        [toggle addTarget:self action:@selector(stickModeSwitch:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = toggle;
+    } else if (indexPath.section == 3 && indexPath.row == 4) {
+        cell.textLabel.text = @"灵敏度"; cell.detailTextLabel.text = [NSString stringWithFormat:@"%.1f 倍", _store.stickSensitivity]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 44)]; slider.minimumValue = 0.5; slider.maximumValue = 2; slider.value = _store.stickSensitivity; slider.continuous = NO;
+        slider.accessibilityIdentifier = @"vpad.stick.sensitivity"; slider.accessibilityLabel = @"灵敏度"; [slider addTarget:self action:@selector(stickSensitivityChanged:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = slider;
     } else if (indexPath.section == 3) {
         NSInteger row = indexPath.row;
         CGFloat values[] = {_store.stickDeadzone, _store.stickSaturation, _store.stickExponent};
@@ -146,6 +154,14 @@
     CGFloat value = roundf(slider.value * 100) / 100;
     if (![_store setIdleKeyOpacity:value error:&error]) { slider.value = _store.idleKeyOpacity; [self showError:error]; return; }
     // Appearance alone must not mark a manual layout choice or change touch mode.
+    [self reload];
+}
+- (void)stickModeSwitch:(UISwitch *)toggle {
+    NSError *error; if (![_store setStickFixed:toggle.on sensitivity:_store.stickSensitivity error:&error]) { toggle.on = _store.stickFixed; [self showError:error]; return; }
+    if (self.stickModeChanged) self.stickModeChanged();
+}
+- (void)stickSensitivityChanged:(UISlider *)slider {
+    NSError *error; if (![_store setStickFixed:_store.stickFixed sensitivity:round(slider.value * 10) / 10 error:&error]) [self showError:error];
     [self reload];
 }
 - (void)stickChanged:(UISlider *)slider {
