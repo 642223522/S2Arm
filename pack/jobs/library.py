@@ -583,7 +583,7 @@ def keys(c):
                     try:
                         inspect(c, candidate, icons, keyfile=temporary)
                     except Failure as error:
-                        if error.code != "content_truncated":
+                        if error.code not in KEYS_UNVERIFIABLE:   # 源文件自身的毛病只说明这次验不了，不是密钥坏（#242）
                             raise
                         del c.job["diagnostics"][diagnostics_before:]
                     else:
@@ -596,6 +596,8 @@ def keys(c):
     return dict(entries=count, verified=verified, message="已验证解密能力" if verified else "格式通过，首次读取游戏时验证解密能力")
 
 
+# 候选游戏文件自身有毛病（截断、缺票据）：密钥验不了，但不能据此判密钥无效；导入照常、记 verified=false，源文件错误留到读那款游戏时报
+KEYS_UNVERIFIABLE = ("content_truncated", "ticket_missing")
 KEYS_CANNOT_DECRYPT = ("无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；"
                        "若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。")
 
