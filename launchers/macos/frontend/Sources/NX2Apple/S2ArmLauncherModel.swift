@@ -144,6 +144,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var targetModels: [[String: Any]] = []
     @Published private(set) var targetOS: [Int] = []
     @Published var chosenModel: String?
+    /// 连着多台 iPhone / iPad 时玩家在出包页选的那台（设备号，记住到下次；#272）。按机型优化和装到设备都用它
+    @Published var chosenDevice: String? = UserDefaults.standard.string(forKey: S2ArmLauncherModel.exportDeviceKey) {
+        didSet { UserDefaults.standard.set(chosenDevice, forKey: Self.exportDeviceKey) }
+    }
+    static let exportDeviceKey = "S2AExportDevice"
     /// 排队等着出的；运行页被收起（后台继续）；本次打开以来每款最近一次的出包结果；正在查看的结果。
     @Published private(set) var exportQueue: [QueuedExport] = []
     @Published var sessionHidden = false
@@ -427,9 +432,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 出 iPhone 包的目标：连着的手机优先，其次玩家选的机型；都没有交给作业层按常见机型出。
+    /// 连着的设备里用哪台：玩家选过且还连着 → 它；否则有线连着的第一台；否则第一台（#272）
+    nonisolated static func pickDevice(_ connected: [[String: Any]], chosen: String?) -> [String: Any]? {
+        if let chosen, let d = connected.first(where: { $0["id"] as? String == chosen }) { return d }
+        return connected.first(where: { $0["wired"] as? Bool == true }) ?? connected.first
+    }
+
+    var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
+
+    /// 出 iPhone 包的目标：连着的手机优先（多台时用选中的那台），其次玩家选的机型；都没有交给作业层按常见机型出。
     var currentDeviceTarget: [String: Any]? {
-        if let device = connectedDevices.first { return device }
+        if let device = selectedDevice { return device }
         guard let chosenModel, var model = targetModels.first(where: { $0["productType"] as? String == chosenModel }), let os = targetOS.first else { return nil }
         model["os"] = os
         return model
@@ -535,6 +548,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil) {
         guard !busy, installAllowed(game.id) else { return }
         failAction(nil, game: nil)
+        // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
+        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
             _ = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, events: sink)
             return nil
