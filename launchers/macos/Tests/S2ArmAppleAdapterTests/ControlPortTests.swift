@@ -78,4 +78,28 @@ import XCTest
         XCTAssertEqual(ControlJournal.tasks(privateRoot: r).compactMap { $0["id"] as? String }, ["a", "b"])
         XCTAssertEqual(ControlJournal.tasks(privateRoot: r, limit: 1).compactMap { $0["id"] as? String }, ["b"])
     }
+
+    /// 任务列表有缓存（控制口每秒刷一次，原先每次全量重读）：新增、删除、原子改名更新、正在跑的任务原地改写，都要当场反映出来
+    func testJournalTasksCacheFollowsEveryKindOfChange() throws {
+        let r = root(); defer { try? FileManager.default.removeItem(at: r) }
+        let jobs = r.appendingPathComponent("jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        func put(_ name: String, _ o: [String: Any]) throws {   // 原子写（同 pack/jobs/core.py atomic：临时文件再改名）
+            let tmp = jobs.appendingPathComponent(name + ".tmp")
+            try JSONSerialization.data(withJSONObject: o).write(to: tmp)
+            _ = try FileManager.default.replaceItemAt(jobs.appendingPathComponent(name), withItemAt: tmp)
+        }
+        func states() -> [String] { ControlJournal.tasks(privateRoot: r).map { "\($0["id"]!):\($0["state"]!)" } }
+        try put("a.json", ["id": "a", "operation": "ipa", "state": "running", "started": 1.0])
+        XCTAssertEqual(states(), ["a:running"])
+        XCTAssertEqual(states(), ["a:running"])                                   // 没变：走缓存，结果一样
+        try put("b.json", ["id": "b", "operation": "build", "state": "running", "started": 2.0])
+        XCTAssertEqual(states(), ["a:running", "b:running"])                      // 新增
+        try put("a.json", ["id": "a", "operation": "ipa", "state": "completed", "started": 1.0, "ended": 3.0])
+        XCTAssertEqual(states(), ["a:completed", "b:running"])                    // 原子改名更新
+        try JSONSerialization.data(withJSONObject: ["id": "b", "operation": "build", "state": "failed", "started": 2.0, "message": "x"])
+            .write(to: jobs.appendingPathComponent("b.json"))                     // 正在跑的任务被原地改写（目录修改时间不变）
+        XCTAssertEqual(states(), ["a:completed", "b:failed"])
+        try FileManager.default.removeItem(at: jobs.appendingPathComponent("a.json"))
+        XCTAssertEqual(states(), ["b:failed"])                                    // 删除
+    }
 }
