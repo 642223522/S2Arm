@@ -2104,6 +2104,14 @@ static void gpu_tag_done(uint64_t f, double g0, double g1) {
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
     double d = g1 - g0;
+    // 结束时间不可能晚于现在（GPUStart / GPUEnd 与 CACurrentMediaTime 同一时基）。11-09 M1 Pro 时之笛 S2：切出窗口再切回后，一个命令缓冲回报的跨度算出 6147890790964 ms（约 195 年），
+    //   这道 1 秒门把它当成 GPU 挂死、安全停收局。这样的时间戳只打红行、不计进本帧 GPU 时间；真挂死的跨度结束在过去，照判
+    if (d > 0 && g0 > 0 && g1 > CACurrentMediaTime() + 1.0) {
+        static _Atomic int n; int k = atomic_fetch_add(&n, 1);
+        if (k < 4 || !(k & (k - 1))) MLOG("【红】 GPU 时间戳不可能（结束在现在之后）：帧 %llu GPU %.3f→%.3f，现在 %.3f；不计进本帧 GPU 时间、不判挂死（第 %d 次）",
+            (unsigned long long)f, g0, g1, CACurrentMediaTime(), k + 1);
+        d = 0;
+    }
     if (d > 0 && g0 > 0) {   // a command buffer can complete with no start time (0, while a movie's frames upload each frame in Big Brain Academy: Brain vs. Brain), and its span would be the whole clock
         uint64_t busy = atomic_fetch_add(&g_gpu[k].ns, (uint64_t)(d * 1e9)) + (uint64_t)(d * 1e9);
         if (busy > S2A_GPU_FRAME_MAX_MS * 1000000ull) { char w[120]; snprintf(w, sizeof w, "frame %llu kept the GPU busy %.0f ms (limit %d ms)", (unsigned long long)f, busy / 1e6, S2A_GPU_FRAME_MAX_MS); mtl_gpu_halt(w); }
