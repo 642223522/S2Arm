@@ -3081,8 +3081,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     g_bp_up_bytes += total;
     void *mb; uint64_t mo; id<MTLBuffer> upsrc = nil;
     if ((!unp || gdec) && !sparse && g_nvn_deswz_gpu) { up_begin(); upsrc = up_tex_src((uint64_t)t->mem, t->L.size, &mo); if (upsrc) mb = (__bridge void *)upsrc; }   // a pool that holds only textures stays out of the residency set (up_tex_src)
-    int use_gpu = (!unp || gdec) && !sparse && g_nvn_deswz_gpu && (upsrc || nvn_be_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // a sparse pool's texture is gathered through its page table on the CPU
-    if (g_nvn_deswz_gpu && !use_gpu && !sparse && (!unp || gdec)) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
+    int lin = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;   // 线性排布（tex_linear_needs_upload）只有 CPU 逐行拷，GPU 去混排不认
+    int use_gpu = (!unp || gdec) && !sparse && g_nvn_deswz_gpu && !lin && (upsrc || nvn_be_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // 线性排布（tex_linear_needs_upload）只有 CPU 逐行拷，GPU 去混排不认   // a sparse pool's texture is gathered through its page table on the CPU
+    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !lin && (!unp || gdec)) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
     if (use_gpu) {
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
         // The batch was opened above (up_begin): opening it again here could flush it at UP_KEEP_CAP and retire upsrc before the copies that read it
@@ -3590,6 +3591,30 @@ static int tex_fold_k(const tex_t *t) {
     int k = nvn_fold_k(t->d.width, t->d.height, (uint32_t)(row / (size_t)bpb), 16384); return k > 1 ? k : 0;
 }
 static uint32_t tex_fold_pitch(const tex_t *t) { int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); return bpb ? (uint32_t)((t->d.stride ? t->d.stride : (size_t)t->d.width * bpb) / (size_t)bpb) : 0; }
+// 线性贴图建不了零拷贝视图（11-09 质量线，#255 / #262）：池里偏移或行距不合本机 Metal 的线性贴图对齐（iPhone 64 字节，Mac 宽：哈迪斯 II 一张 8x8 BGRA 行距 32），
+//   或行距放不下一行 Metal 像素（上古卷轴5 A19：bytesPerRow 3840 < 5120，Metal 断言 abort）。原先前者退成私有贴图、只在建时从存储填一次，之后 CPU 写的全看不到；
+//   后者直接建视图触发断言。现在这类只读线性贴图（不是线性渲染目标）在 tex_mtl_ 并进 CPU 写过的贴图那条路（打包上传：从客体内存上传、脏页重传，去混排按行距逐行拷）
+// 线性贴图对齐：本机 Metal 的要求，诊断 DM_NVN_LINEAR_ALIGN=<字节> 抬高（Mac 上模拟 iPhone 的 64 字节做对照，只用于 A/B）
+static NSUInteger linear_align(uint32_t pf) {
+    static long ov = -1; if (ov < 0) { const char *e = getenv("DM_NVN_LINEAR_ALIGN"); ov = e ? atol(e) : 0; }
+    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]; return ov > (long)al ? (NSUInteger)ov : al;
+}
+static int tex_linear_needs_upload(const tex_t *t) {
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_NVN_LINEAR_UPLOAD"); off = e && !strcmp(e, "0"); }   // 诊断：=0 退回旧行为（私有贴图、只填一次），只用于 A/B
+    if (off) return 0;
+    // IMAGE 照走：线性贴图的图像槽本来就绑零（tex_linear / encode_args），实际只被采样（哈迪斯 II 那张 8x8 是 LINEAR | IMAGE）；线性渲染目标有 GPU 写，不走
+    if ((t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != NVN_TEXTURE_FLAGS_LINEAR || !t->mem || !t->pool) return 0;
+    if (t->d.target != NVN_TEXTURE_TARGET_2D || t->d.levels > 1 || t->d.samples > 1 || t->d.width > 16384 || t->d.height > 16384) return 0;   // 折叠 / 超限仍归 tex_linear
+    uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf || !bpb || bw != 1 || bh != 1 || nvn_fmt_expanded((uint32_t)t->d.format, NULL, NULL)) return 0;
+    size_t row = t->d.stride ? t->d.stride : (size_t)t->d.width * bpb; void *mb; uint64_t mo;
+    if (!nvn_be_addr((uint64_t)t->mem, (uint64_t)row * (t->d.height ? t->d.height : 1), &mb, &mo)) return 0;
+    NSUInteger al = linear_align(pf); int pfb = mtl_pf_bytes((MTLPixelFormat)pf);
+    int why = mo % al || row % al ? 1 : pfb && row < (size_t)(t->d.width ? t->d.width : 1) * pfb ? 2 : 0;
+    if (why) { static int n; if (n++ < 8) MLOG("linear texture ser=%llu %ux%u format %#x offset %#llx row pitch %zu: %s, uploaded from guest memory and re-uploaded on CPU writes instead of a zero-copy view",
+                                               (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)mo, row, why == 1 ? [NSString stringWithFormat:@"not aligned to %lu bytes", (unsigned long)al].UTF8String : "row pitch shorter than a row of Metal pixels"); }
+    return why != 0;
+}
 static id<MTLTexture> tex_linear(const tex_t *t) {
     // LINEAR_RENDER_TARGET is a linear layout too (SMBW's sky colour ramps: four 64×1 RGBA16F, written by the CPU every frame). Also in a pool the CPU cannot access, whose buffer holds what
     //   its storage held at creation (see tex_init_fill): Rhythm Heaven Groove's 228 linear R8 textures (sprite masks), read from files into CPU_NO_ACCESS pools, were private textures of zeros
@@ -3614,9 +3639,12 @@ static id<MTLTexture> tex_linear(const tex_t *t) {
     if (!nvn_be_addr((uint64_t)t->mem, (uint64_t)row * (t->d.height ? t->d.height : 1), &mb, &mo)) { RED_ONCE(64, "linear texture storage is not in a memory pool (%ux%u format %#x)", t->d.width, t->d.height, t->d.format); return nil; }
     id<MTLBuffer> b = (__bridge id<MTLBuffer>)mb;
     if (k > 1 && mo + (uint64_t)row * k * (fh - 1) + (uint64_t)row * (k - 1) + (uint64_t)t->d.width * bpb > b.length) { RED_ONCE(139, "folded linear texture ser=%llu %ux%u: its last folded row would run past the pool buffer; not made", (unsigned long long)t->serial, t->d.width, t->d.height); return nil; }
-    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
+    NSUInteger al = linear_align(pf);
     if (mo % al || row % al) { RED_ONCE(65, "linear texture offset %#llx / row pitch %zu not aligned to %lu bytes; created as a private texture (CPU writes invisible)", (unsigned long long)mo, row, (unsigned long)al); return nil; }
-    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:(t->d.width ? t->d.width : 1) + (NSUInteger)(k - 1) * (row / (size_t)bpb) height:fh mipmapped:NO];
+    NSUInteger dw = (t->d.width ? t->d.width : 1) + (NSUInteger)(k - 1) * (row / (size_t)bpb); int pfb = mtl_pf_bytes((MTLPixelFormat)pf);
+    // 行距放不下一行 Metal 像素：建视图会触发 Metal 断言、整进程 abort（#262 上古卷轴5 A19：bytesPerRow 3840 < 5120）。只读的这类已在 tex_mtl_ 改走上传（tex_linear_needs_upload），到这里的是别的（渲染目标 / 图像 / 折叠）
+    if (pfb && row * (NSUInteger)k < dw * (NSUInteger)pfb) { RED_ONCE(65, "linear texture ser=%llu %ux%u format %#x row pitch %zu shorter than %lu Metal pixels of %d bytes: no zero-copy view (would abort on Metal's validation); private texture", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, row, (unsigned long)dw, pfb); return nil; }
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:dw height:fh mipmapped:NO];
     d.resourceOptions = b.resourceOptions;
     d.usage = MTLTextureUsageShaderRead | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0) | (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET ? MTLTextureUsageRenderTarget : 0);
     id<MTLTexture> lt = [b newTextureWithDescriptor:d offset:mo bytesPerRow:row * (NSUInteger)k];
@@ -3960,7 +3988,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     }
     id have = tex_get(t->serial);
     if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
-    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // storage the CPU wrote before its first use (tex_cpu_content)
+    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }
+    if (!packaged && !have && on_sub_thread() && tex_linear_needs_upload(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // 建不了零拷贝视图的只读线性贴图：上传 + CPU 写后重传（#255 / #262）   // storage the CPU wrote before its first use (tex_cpu_content)
     if (packaged && atomic_load(&g_sub_thread_set) && !on_sub_thread()) {
         // S2Arm 10-25：上传批只归提交线程（up_owner_check），上屏线程等别的线程用到 CPU 写过的贴图时不上传：已传过的用现有那份（脏了留给提交线程下次用到时重传），
         //   没传过的按 GPU 贴图走下面的路。马车8 初始化时 CPU 写过交换链贴图的池，tex_flush_upload 开时它算「随包」，上屏线程 present_now → pkg_upload → abort
