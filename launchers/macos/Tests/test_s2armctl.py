@@ -344,6 +344,98 @@ class NextStepTests(unittest.TestCase):
 
 
 
+class NextTargetTests(unittest.TestCase):
+    def run_next(self, snapshot, *args):
+        out = io.StringIO()
+        with mock.patch.object(ctl, "WINDOWS", False), \
+             mock.patch.object(sys, "argv", ["s2armctl", "next", *args, "--json"]), \
+             mock.patch.object(ctl, "call", return_value=snapshot) as call, \
+             contextlib.redirect_stdout(out):
+            ctl.main()
+        call.assert_called_once_with("GET", "/state")
+        return json.loads(out.getvalue())
+
+    def test_ready_mac_game_launches_without_ipa(self):
+        s = full_state(games=[game("g", "G", 1, ready=True)],
+                       tasks=[task("mac", "completed", 1, game="g")])
+        n = self.run_next(s, "g", "--target", "mac")
+        self.assertEqual(n["do"], "s2armctl launch g")
+
+    def test_ready_mac_uses_runtime_environment(self):
+        s = full_state(games=[game("g", "G", 1, ready=True)],
+                       environmentReady=False, runtimeReady=True, hasImportedKeys=False)
+        n = self.run_next(s, "g", "--target", "mac")
+        self.assertEqual(n["do"], "s2armctl launch g")
+
+    def test_ready_mac_waits_if_launcher_is_busy(self):
+        for busy in ({"executionTask": "other-task"}, {"queue": ["other-game"]}):
+            with self.subTest(busy=busy):
+                s = full_state(games=[game("g", "G", 1, ready=True)], **busy)
+                n = self.run_next(s, "g", "--target", "mac")
+                self.assertEqual(n["step"], "等待")
+                self.assertIn("s2armctl next g --target mac", n["do"])
+
+    def test_mac_reprepares_stale_artifact(self):
+        stale = dict(game("g", "G", 1, ready=True), needsPreparation=True)
+        n = self.run_next(full_state(games=[stale]), "g", "--target", "mac")
+        self.assertIn("s2armctl build g mac", n["do"])
+
+    def test_mac_game_needs_preparation_even_with_ipa(self):
+        ipa = dict(task("ipa", "completed", 1, game="g", operation="ipa"),
+                   ipaPath="/lib/iPhone/g/g.ipa")
+        s = full_state(games=[game("g", "G", 1)], tasks=[ipa])
+        n = self.run_next(s, "--target", "mac", "g")
+        self.assertIn("s2armctl build g mac", n["do"])
+        self.assertIn("s2armctl wait g --op build", n["do"])
+
+    def test_mac_waits_for_its_build_or_queue_entry(self):
+        ipa = task("ipa", "running", 2, game="g", operation="ipa")
+        for tasks, queue in (([task("mac", "running", 1, game="g"), ipa], []),
+                             ([ipa], ["g"])):
+            with self.subTest(queue=queue):
+                s = full_state(games=[game("g", "G", 1)], tasks=tasks, queue=queue)
+                n = self.run_next(s, "g", "--target", "mac")
+                self.assertEqual(n["step"], "等待")
+                self.assertIn("s2armctl wait g --op build", n["do"])
+                self.assertIn("s2armctl next g --target mac", n["do"])
+
+    def test_mac_reports_build_failure_with_diagnostics(self):
+        failed = dict(task("mac", "failed", 1, game="g"),
+                      diagnostics=[{"code": "disk_full", "summary": "磁盘空间不足"}])
+        s = full_state(games=[game("g", "G", 1)], tasks=[failed])
+        n = self.run_next(s, "g", "--target", "mac")
+        self.assertEqual((n["step"], n["who"], n["code"]), ("准备失败", "confirm", "disk_full"))
+        self.assertIn("s2armctl retry mac", n["do"])
+
+    def test_explicit_ios_matches_omitted_target(self):
+        s = full_state(games=[game("g", "G", 1, ready=True)])
+        default = self.run_next(s, "g")
+        self.assertIn("s2armctl build g ios", default["do"])
+        self.assertEqual(self.run_next(s, "g", "--target", "ios"), default)
+
+    def test_windows_rejects_mac_before_contacting_launcher(self):
+        err = io.StringIO()
+        with mock.patch.object(ctl, "WINDOWS", True), \
+             mock.patch.object(sys, "argv", ["s2armctl", "next", "g", "--target", "mac"]), \
+             mock.patch.object(ctl, "call") as call, contextlib.redirect_stderr(err), \
+             self.assertRaises(SystemExit) as caught:
+            ctl.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("Windows", err.getvalue())
+        self.assertIn("--target mac", err.getvalue())
+        call.assert_not_called()
+
+    def test_bad_target_fails_before_contacting_launcher(self):
+        for args in (["--target"], ["--target", "android"]):
+            with self.subTest(args=args), \
+                 mock.patch.object(sys, "argv", ["s2armctl", "next", *args]), \
+                 mock.patch.object(ctl, "call") as call, contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit) as caught:
+                ctl.main()
+            self.assertEqual(caught.exception.code, 2)
+            call.assert_not_called()
+
+
 class LaunchArgsTests(unittest.TestCase):
     # 11-02 beta.3 走查：`--control --data-root <目录>` 让 <目录> 落单被 macOS 当成要打开的文件，App 不建窗口。期望：数据目录是一个整体参数，没有落单的路径
     def test_data_root_is_one_token(self):
