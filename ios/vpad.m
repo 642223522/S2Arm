@@ -302,6 +302,7 @@ static UIMenu *vp_sub(NSString *title, NSString *icon, NSArray<UIMenuElement *> 
 }
 static UIMenu *vp_inline(NSArray<UIMenuElement *> *children) { return [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:children]; }
 void s2a_rumble_apply_settings(void);   // controller.m：游戏震动开关 / 强度改完立即生效
+void s2a_rumble_preview(void);          // controller.m：按当前档位试震 0.3 秒
 - (UIMenu *)gearMenu {
     __weak S2AVPadView *ws = self;
     UIDeferredMenuElement *body = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^done)(NSArray<UIMenuElement *> *)) {
@@ -354,9 +355,9 @@ void s2a_rumble_apply_settings(void);   // controller.m：游戏震动开关 / �
     // 震动（游戏震动：controller.m s2a_rumble_apply_settings；按键触感：布局存储）
     id ron = [d objectForKey:@"S2ARumbleOn"], rlv = [d objectForKey:@"S2ARumbleLevel"];
     BOOL rumbleOn = ron ? [ron boolValue] : YES; NSInteger lv = rlv ? MAX(0, MIN(4, [rlv integerValue])) : 2;
-    UIAction *game = vp_act(@"游戏震动", nil, rumbleOn, ^{ [d setBool:!rumbleOn forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); }); game.subtitle = @"手机马达和手柄共用";
+    UIAction *game = vp_act(@"游戏震动", nil, rumbleOn, ^{ [d setBool:!rumbleOn forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }); game.subtitle = @"手机马达和手柄共用；选档位时会按那一档震一下";
     NSMutableArray *levels = [NSMutableArray array]; NSArray *names = @[@"弱", @"较弱", @"标准", @"较强", @"强"];
-    for (NSInteger i = 0; i < 5; i++) { UIAction *a = vp_act(names[i], nil, rumbleOn && lv == i, ^{ [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); });
+    for (NSInteger i = 0; i < 5; i++) { UIAction *a = vp_act(names[i], nil, rumbleOn && lv == i, ^{ [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); });
         if (!rumbleOn) a.attributes = UIMenuElementAttributesDisabled; [levels addObject:a]; }
     UIAction *tap = vp_act(@"按键触感", nil, st.hapticFeedbackEnabled, ^{ S2AVPadView *v = ws; NSError *e;
         if (![v->_layoutStore setHapticFeedbackEnabled:!v->_layoutStore.hapticFeedbackEnabled error:&e]) [v menuError:@"触感设置没保存" error:e]; });

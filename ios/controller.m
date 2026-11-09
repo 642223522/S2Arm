@@ -790,6 +790,16 @@ void s2a_rumble_apply_settings(void) {
     }
     LOG("游戏震动：%s，强度档 %d（倍率 %.2f）", gain > 0 ? "开" : "关", lv, gain);
 }
+// 菜单里切震动档位 / 打开游戏震动时试震一下（11-09 jhz：「点击强弱机器是没有反应的……切换的时候手机震一下让玩家有感知」）：
+//   走游戏震动同一条出口（s2a_pad_rumble_session 选手机马达或手柄，s2a_pad_set_rumble_pair 按当前档位倍率缩放），震 0.3 秒，几档之间摸得出差别。
+//   基准振幅 0.5：弱 0.18、较弱 0.35、标准 0.5、较强 0.7、强 0.9（倍率见 s2a_rumble_apply_settings），强档不被 1.0 截平
+void s2a_rumble_preview(void) {
+    if (atomic_load(&g_rumble_gain) <= 0) return;
+    uint64_t session = s2a_pad_rumble_session(); if (!session) { LOG("游戏震动：试震跳过（现在没有可震的设备）"); return; }
+    const s2a_pad_vibration v[2] = {{0.5f, 160, 0.5f, 320}, {0.5f, 160, 0.5f, 320}};
+    s2a_pad_set_rumble_pair(session, v);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ s2a_pad_stop_rumble(session); });
+}
 __attribute__((visibility("default"), used)) void s2a_pad_stop_rumble(uint64_t session) {
     if ((session & 0xffff000000000000ull) == PHONE_SESSION_BASE) {
         pthread_mutex_lock(&g_feedback_mu);

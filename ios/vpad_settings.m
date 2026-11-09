@@ -166,8 +166,8 @@
     // Appearance alone must not mark a manual layout choice or change touch mode.
     [self reload];
 }
-- (void)rumbleSwitch:(UISwitch *)toggle { void s2a_rumble_apply_settings(void); [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); }
-- (void)rumbleLevel:(UISlider *)slider { void s2a_rumble_apply_settings(void); [NSUserDefaults.standardUserDefaults setInteger:lround(slider.value) forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); [self reload]; }
+- (void)rumbleSwitch:(UISwitch *)toggle { void s2a_rumble_apply_settings(void), s2a_rumble_preview(void); [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }
+- (void)rumbleLevel:(UISlider *)slider { void s2a_rumble_apply_settings(void), s2a_rumble_preview(void); [NSUserDefaults.standardUserDefaults setInteger:lround(slider.value) forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); [self reload]; }
 - (void)stickModeSwitch:(UISwitch *)toggle {
     NSError *error; if (![_store setStickFixed:toggle.on sensitivity:_store.stickSensitivity error:&error]) { toggle.on = _store.stickFixed; [self showError:error]; return; }
     if (self.stickModeChanged) self.stickModeChanged();
