@@ -4028,8 +4028,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                         if (nh[k] != pk->ph[k]) changed = 1; else bits[k >> 6] &= ~(1ull << (k & 63));   // bits now: pages whose bytes changed
                     }
                     if (!changed) { pk->stamp = st; pk->seen = nvn_dirty_now(); clean = 1; g_pkg_same++; }
-                    else if (gpu && ncap >= pk->nph && nvn_dirty_page_gens(pk->span, t->mem, t->L.size, gens, pk->nph) == np) {
+                    else if (gpu && pk->tex.width >= t->d.width && pk->tex.height >= t->d.height && ncap >= pk->nph && nvn_dirty_page_gens(pk->span, t->mem, t->L.size, gens, pk->nph) == np) {
                         // The GPU wrote the texture since this upload: a whole re-upload from guest memory would undo it. Pages the CPU wrote after the GPU go up as their rectangles; the rest stay as the GPU made them
+                        // Rectangles use game coordinates. A reduced storage needs the whole upload below, which rebuilds it at game size before the next pass scales it again.
                         rect_list L = {0}; int up = 0;
                         for (long k = 0; k < np; k++) if (bits[k >> 6] >> (k & 63) & 1) {
                             if (gens[k] > pk->pgpu[k]) { const uint8_t *lo; size_t m; page_span(t, (size_t)k, &lo, &m); tex_bytes_rects(t, (uint64_t)(lo - t->mem), (uint64_t)(lo - t->mem) + m, rect_add, &L); up = 1; }

@@ -12,6 +12,9 @@ $(BUILD)/tests/t_nvn_pkg_gpu_write: graphics/nvn/tests/t_nvn_pkg_gpu_write.m $(N
 	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
 .PHONY: native-test-nvn_pkg_gpu_write
 native-test-nvn_pkg_gpu_write: $(BUILD)/tests/t_nvn_pkg_gpu_write
-	@status=0; for backend in mtl3 mtl4; do NXGAL_BE=$$backend $(BUILD)/tests/t_nvn_pkg_gpu_write || status=1; done; exit $$status
+	@status=0; for backend in mtl3 mtl4; do \
+	  NXGAL_BE=$$backend $(BUILD)/tests/t_nvn_pkg_gpu_write || status=1; \
+	  NXGAL_BE=$$backend $(BUILD)/tests/t_nvn_pkg_gpu_write scaled || status=1; \
+	done; exit $$status
 TEST_TARGETS += native-test-nvn_pkg_gpu_write
 endif

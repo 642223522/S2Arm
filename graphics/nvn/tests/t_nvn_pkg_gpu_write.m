@@ -83,7 +83,45 @@ static void run(id<MTLLibrary> lib, int compute) {
     pixels(kind,"after CPU write / normal binding",tex_mtl(t),1);
     API(nvnTextureFinalize)(&texture);
 }
-int main(void) { @autoreleasepool {
+static void run_scaled(void) {
+    enum { SH=192 };
+    NVNtextureBuilder b; API(nvnTextureBuilderSetDefaults)(&b); API(nvnTextureBuilderSetDevice)(&b,&device);
+    API(nvnTextureBuilderSetTarget)(&b,NVN_TEXTURE_TARGET_2D); API(nvnTextureBuilderSetSize2D)(&b,W,SH);
+    API(nvnTextureBuilderSetFormat)(&b,NVN_FORMAT_RGBA8); API(nvnTextureBuilderSetLevels)(&b,1);
+    API(nvnTextureBuilderSetFlags)(&b,NVN_TEXTURE_FLAGS_COMPRESSIBLE); API(nvnTextureBuilderSetStorage)(&b,&pool,TEX_OFF);
+    NVNtexture texture={0}; REQUIRE(API(nvnTextureInitialize)(&texture,&b)); tex_t *t=(tex_t *)&texture;
+    uint8_t *blue=malloc(W*SH*4); REQUIRE(blue); for (int i=0;i<W*SH;i++) { blue[4*i]=0; blue[4*i+1]=0; blue[4*i+2]=255; blue[4*i+3]=255; }
+    NVNcopyRegion full={0,0,0,W,SH,1}; API(nvnTextureWriteTexels)(&texture,NULL,&full,blue); free(blue);
+    nvn_be_sub_begin(); state_reset(); args_dirty_all(); S.prog=&graphics;
+    rp_flush(); memset(&R.rt,0,sizeof R.rt); R.rt.n=1; R.rt.color[0]=t; R.has_rt=1; R.has_sc=0; g_pso_dirty=1;
+    p_draw d={.prim=NVN_DRAW_PRIMITIVE_TRIANGLES,.count=3,.instances=1}; draw(&d,NULL); finish();
+    REQUIRE([tex_get(t->serial) isKindOfClass:[NvPkg class]]); NvPkg *pk=tex_get(t->serial);
+    REQUIRE(pk->tex.width==W/2 && pk->tex.height==SH/2 && rs_state(pk->tex)==RS_SCALED);
+    REQUIRE(pk->pgpu);   // The production attachment write must reach the partial-upload branch.
+    printf("CASE scaled packed attachment: GPU storage=%lux%lu, game=%dx%d\n",(unsigned long)pk->tex.width,(unsigned long)pk->tex.height,W,SH);
+    const uint8_t green[4]={0,255,0,255}; NVNcopyRegion one={0,0,0,1,1,1}; API(nvnTextureWriteTexels)(&texture,NULL,&one,green);
+    nvn_be_sub_begin(); state_reset(); id<MTLTexture> image=tex_mtl(t); REQUIRE(image); finish();
+    int full_size=image.width==W && image.height==SH;
+    CHECK(full_size,"scaled CPU update rebuilds game-size storage expected=%dx%d actual=%lux%lu",W,SH,(unsigned long)image.width,(unsigned long)image.height);
+    if (full_size) {
+        id<MTLBuffer> buf=[g_dev newBufferWithLength:W*SH*4 options:MTLResourceStorageModeShared]; REQUIRE(buf);
+        id<MTLCommandQueue> q=[g_dev newCommandQueue]; id<MTLCommandBuffer> cb=[q commandBuffer]; id<MTLBlitCommandEncoder> enc=[cb blitCommandEncoder]; REQUIRE(enc);
+        [enc copyFromTexture:image sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(W,SH,1)
+            toBuffer:buf destinationOffset:0 destinationBytesPerRow:W*4 destinationBytesPerImage:W*SH*4];
+        [enc endEncoding]; [cb commit]; [cb waitUntilCompleted]; REQUIRE(cb.status==MTLCommandBufferStatusCompleted);
+        const uint8_t *p=buf.contents, *z=p+(W*SH-1)*4;
+        CHECK(p[0]==0 && p[1]==255 && p[2]==0 && p[3]==255,"scaled CPU-page expected green actual=(%u,%u,%u,%u)",p[0],p[1],p[2],p[3]);
+        CHECK(z[0]==0 && z[1]==0 && z[2]==255 && z[3]==255,"scaled whole re-upload uses guest bytes expected blue actual=(%u,%u,%u,%u)",z[0],z[1],z[2],z[3]);
+    }
+    nvn_be_sub_begin(); state_reset(); args_dirty_all(); S.prog=&graphics;
+    rp_flush(); memset(&R.rt,0,sizeof R.rt); R.rt.n=1; R.rt.color[0]=t; R.has_rt=1; R.has_sc=0; g_pso_dirty=1;
+    draw(&d,NULL); finish(); pk=tex_get(t->serial);
+    CHECK(pk->tex.width==W/2 && pk->tex.height==SH/2,"rebuilt packed attachment scales on next pass expected=%dx%d actual=%lux%lu",W/2,SH/2,(unsigned long)pk->tex.width,(unsigned long)pk->tex.height);
+    API(nvnTextureFinalize)(&texture);
+}
+int main(int argc, char **argv) { @autoreleasepool {
+    REQUIRE(argc==1 || (argc==2 && !strcmp(argv[1],"scaled"))); int scaled=argc==2;
+    setenv("S2A_RES_SCALE",scaled?"0.5":"1",1);
     setvbuf(stdout,NULL,_IOLBF,0); setenv("DM_PSO_ARCHIVE","0",1);
     struct sigaction sa={0}; sa.sa_sigaction=fault; sa.sa_flags=SA_SIGINFO; sigaction(SIGBUS,&sa,NULL); sigaction(SIGSEGV,&sa,NULL);
     NVNdeviceBuilder db; API(nvnDeviceBuilderSetDefaults)(&db); REQUIRE(API(nvnDeviceInitialize)(&device,&db));
@@ -96,5 +134,6 @@ int main(void) { @autoreleasepool {
     NvProg *gp=[NvProg new]; gp->sh[0]=shader(lib,@"tri",0,nil); gp->sh[1]=shader(lib,@"red",1,nil); gp->sh[1]->rf.color_known=1; gp->sh[1]->rf.color_mask=1; program(&graphics,gp);
     NvProg *wp=[NvProg new]; wp->sh[5]=shader(lib,@"wr",5,@{@"route":@"B",@"threadgroup_size":@[@1,@1,@1],@"bindings":@[@{@"kind":@"img",@"reg":@0,@"arg_id":@0,@"rw":@YES,@"msl_type":@"texture2d<float, access::write>"}]}); program(&writer,wp);
     NvProg *rp=[NvProg new]; rp->sh[5]=shader(lib,@"rd",5,@{@"route":@"B",@"threadgroup_size":@[@1,@1,@1],@"bindings":@[@{@"kind":@"tex",@"reg":@0,@"arg_id":@0,@"msl_type":@"texture2d<float>"},@{@"kind":@"sbuf",@"reg":@0,@"arg_id":@1,@"rw":@YES}]}); program(&reader,rp);
-    run(lib,0); run(lib,1); printf("%s t_nvn_pkg_gpu_write: %u checks, %u failures\n",failures?"✗":"✓",checks,failures); return failures?1:0;
+    if (scaled) run_scaled(); else { run(lib,0); run(lib,1); }
+    printf("%s t_nvn_pkg_gpu_write%s: %u checks, %u failures\n",failures?"✗":"✓",scaled?" scaled":"",checks,failures); return failures?1:0;
 } }
