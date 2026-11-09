@@ -157,6 +157,6 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 
 解决不了时帮玩家整理反馈：
 
-- `s2armctl diag export ~/Desktop/S2Arm-诊断.zip`：导出 Mac 端诊断包；
+- `s2armctl diag export ~/Desktop/S2Arm-诊断.zip`：导出 Mac 端诊断包（只写 `s2armctl diag` 也行，默认放桌面、文件名带时刻）；
 - `s2armctl diag pull`：手机用数据线连着时，拉回手机上的诊断；
 - 请玩家在 https://github.com/jhaizhou-ops/S2Arm/issues 选「问题回报（内测）」模板提交，附上错误码、包号（导出完成页可复制）和诊断包。诊断包里不含密钥、游戏文件和存档。

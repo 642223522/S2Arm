@@ -232,6 +232,42 @@ class LaunchArgsTests(unittest.TestCase):
             ctl.main()
         self.assertEqual(posted, {"method": "POST", "path": "/uninstall", "body": {"gameId": "0100535012974000"}})
 
+class DiagCommandTests(unittest.TestCase):
+    """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""
+
+    def _main(self, *argv):
+        posted = []
+        err = io.StringIO()
+        with mock.patch.object(ctl, "call", side_effect=lambda m, p, b=None, **kw: posted.append((m, p, b)) or {"ok": True}), \
+             mock.patch.object(sys, "argv", ["s2armctl", "diag", *argv]), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            try:
+                ctl.main(); code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, posted, err.getvalue()
+
+    def test_bare_diag_exports_with_a_default_path(self):
+        code, posted, _ = self._main()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(posted), 1)
+        method, path, body = posted[0]
+        self.assertEqual((method, path, body["action"]), ("POST", "/diagnostics", "export"))
+        self.assertTrue(os.path.isabs(body["path"]) and body["path"].endswith(".zip"), body["path"])
+
+    def test_export_without_path_uses_the_same_default(self):
+        self.assertEqual(ctl.diag_body(["export"], now=0), ctl.diag_body([], now=0))
+
+    def test_explicit_forms_unchanged(self):
+        self.assertEqual(ctl.diag_body(["pull"]), {"action": "pull"})
+        self.assertEqual(ctl.diag_body(["export", "/tmp/x.zip"]), {"action": "export", "path": "/tmp/x.zip"})
+
+    def test_unknown_form_prints_usage_and_exits_2(self):
+        code, posted, err = self._main("bogus")
+        self.assertEqual((code, posted), (2, []))
+        self.assertIn("用法", err)
+
+
 class ErrorsCommandTests(unittest.TestCase):
     """errors 命令输出里含 failureSummary（阶段、退出码、原文）。"""
 

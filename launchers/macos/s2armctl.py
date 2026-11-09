@@ -8,7 +8,7 @@
 #   s2armctl state [--full|--json]               当前界面状态（缺省摘要；--json 给程序读）
 #   s2armctl targets                             打 iPhone 包的目标设备：当前目标、连着的设备、可选机型和系统
 #   s2armctl errors [游戏号]                     最近失败任务的错误码、原因、恢复建议、日志位置和日志末尾
-#   s2armctl diag pull | diag export <输出.zip>   拉回 iPhone 诊断 / 导出 Mac 诊断包
+#   s2armctl diag [export [输出.zip]] | diag pull   导出 Mac 诊断包（不给路径就放桌面）/ 拉回 iPhone 诊断
 #   s2armctl snapshot <输出.png> [--app]      主窗口截图：缺省系统截图（与屏幕一致，要屏幕录制权限），不行或 --app 时 App 自绘
 #   s2armctl keys <prod.keys>                 导入密钥（等同拖进来）
 #   s2armctl fonts <目录|"">                  原版字体目录（空串 = 清掉）
@@ -45,7 +45,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   errors [游戏号]                    最近失败任务的错误码、原因、建议、日志位置和日志末尾
   retry <任务号> | cancel <任务号>    重试 / 取消任务
   launch <游戏号>                    在 Mac 上启动游戏
-  diag pull | diag export <输出.zip>  拉回 iPhone 诊断 / 导出 Mac 诊断包
+  diag [export [输出.zip]] | diag pull  导出 Mac 诊断包（不给路径就放桌面）/ 拉回 iPhone 诊断
   snapshot <输出.png>                截主窗口
   env | refresh | dismiss           重新检查环境 / 刷新游戏库 / 关掉提示框
   fonts <目录|"">                    换成原版字体（空串 = 用应用自带）
@@ -479,6 +479,16 @@ def install_check(gid, as_json, limit=40):
         time.sleep(1)
     sys.exit(f'{limit} 秒内没查完（读手机信息很慢时会这样），再试一次')
 
+def diag_body(rest, now=None):
+    """diag 的请求体。只写 diag（或 diag export 不给路径）= 导出 Mac 诊断包到桌面（没有桌面就当前目录），文件名带时刻；
+    原先只认 diag pull / diag export <路径>，只敲 diag 直接 IndexError 的 traceback（#94：维护方让玩家跑 s2armctl diag，玩家拿到的是报错）。
+    认不出的写法返回 None，由调用方打用法、退出 2"""
+    if rest[:1] == ['pull'] and len(rest) == 1: return {'action': 'pull'}
+    if rest[:1] == ['export'] and len(rest) == 2: return {'action': 'export', 'path': os.path.abspath(os.path.expanduser(rest[1]))}
+    if rest and rest != ['export']: return None
+    desk = os.path.expanduser('~/Desktop'); base = desk if os.path.isdir(desk) else os.getcwd()
+    return {'action': 'export', 'path': os.path.join(base, time.strftime('S2Arm-诊断-%Y%m%d-%H%M%S.zip', time.localtime(now)))}
+
 def main():
     a = sys.argv[1:]
     if not a or a[0] in ('help', '-h', '--help'):
@@ -530,7 +540,8 @@ def main():
         if target in ('android', 'harmony'): print('即将上线，敬请期待'); sys.exit(2)
         print(json.dumps(call('POST', '/build', {'gameId': args[0], 'target': target, **space_flag(rest)}), ensure_ascii=False)); return
     if cmd == 'diag':
-        body = {'action': 'pull'} if rest[:1] == ['pull'] else {'action': 'export', 'path': os.path.abspath(rest[1])}
+        body = diag_body(rest)
+        if body is None: print('用法：s2armctl diag [export [输出.zip]] | diag pull', file=sys.stderr); sys.exit(2)
         print(json.dumps(call('POST', '/diagnostics', body), ensure_ascii=False)); return
     if cmd == 'snapshot':
         out = rest[0]
