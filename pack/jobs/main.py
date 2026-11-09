@@ -30,6 +30,7 @@ import diag
 import embedded
 import install
 import ipa
+import layout
 import library
 import winproc
 import saves
@@ -86,6 +87,8 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             raise Failure("不支持的任务类型。")
         if c.operation not in saves.OPERATIONS:
             embedded.install(c)
+        if c.operation not in NO_LIBRARY:
+            layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
         result = operations[c.operation](c)
         # A completed save-directory swap is the commit point. A later cancel
         # signal cannot turn a committed restore into a misleading cancelled job.
@@ -125,6 +128,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
+NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject")
 
 
 def parser():
