@@ -77,7 +77,10 @@ namespace S2A.Services
             // 目录只经原生层 s2a_cheats_dir：有金手指界面的宿主（ios/vpad_cheats.m）装载时登记才回目录（文档根按 s2a_docs.h 唯一取法，与面板同一口径），
             //   没登记（Mac / 安卓）回空串 → 不起线程、不碰用户文稿夹。平台差异在平台层登记，这里不判平台
             if (_thread != null) return;
-            string dir = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_cheats_dir());
+            string dir;
+            // 没有原生核心（服务层单测、只带 C# 的工具宿主）= 没有金手指宿主，等同于没登记，不是错误
+            try { dir = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_cheats_dir()); }
+            catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { return; }
             if (string.IsNullOrEmpty(dir)) return;
             _thread = new Thread(() => Run(dir)) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
