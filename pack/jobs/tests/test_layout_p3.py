@@ -287,15 +287,20 @@ class EngineCopyTests(JobCase):
         self.assertEqual(sorted(p.name for p in root.iterdir()), sorted(["c" * 64, "d" * 64, "e" * 64 + ".x.partial"]))
         self.assertTrue(current.is_dir())
 
-    def test_private_copy_is_adopted_on_same_volume_and_rest_wiped(self):
+    def test_private_copies_cleaned_only_when_stale_and_partials_left_alone(self):
+        """库建好后私有 engines/ 的旧副本：24 小时没用过的删；刚用过的（可能有作业正用着）留；别的作业正在解的 .partial 不碰（启动时并发作业把它删掉过）"""
         old = self.c.private / "engines"
-        self.fake(old, "a" * 64, 0)
-        self.fake(old, "b" * 64, 0)
+        day = embedded.PRIVATE_STALE_SECONDS
+        stale = self.fake(old, "a" * 64, time.time() - day - 60)
+        fresh = self.fake(old, "b" * 64, time.time() - 60)
+        partial = old / ("c" * 64 + ".x.partial"); (partial / ".git").mkdir(parents=True); touch(partial / ".git/COMMIT_EDITMSG")
+        os.utime(stale / ".installed.json", (time.time() - day - 60,) * 2); os.utime(stale, (time.time() - day - 60,) * 2)
         root = embedded.engines_root(self.c)
-        embedded._adopt_private_copy(self.c, root, "a" * 64)
-        self.assertTrue((root / ("a" * 64) / ".installed.json").is_file())
-        self.assertFalse(old.exists())
-        self.assertFalse((root / ("b" * 64)).exists())
+        embedded._adopt_private_copy(self.c, root, "b" * 64)
+        self.assertFalse(stale.exists())
+        self.assertTrue((fresh / ".installed.json").is_file())
+        self.assertTrue((partial / ".git/COMMIT_EDITMSG").is_file())
+        self.assertFalse((root / ("b" * 64)).exists())   # 不搬：hosts/engine 那份由 install 从 App 包解
 
 
 class ToolKeyTests(unittest.TestCase):
