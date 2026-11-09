@@ -25,6 +25,7 @@ S2Arm 下载页（GitHub Pages）。由 .github/workflows/pages.yml 发布，说
   --accent-ink: #1a1712;
   --cyan: #2cc8f0;
   --red: #e5484d;
+  --star: #f0c14b;
   --radius: 16px;
 }
 * { box-sizing: border-box; }
@@ -50,6 +51,13 @@ header.top img { height: 36px; width: auto; display: block; }
   border-radius: 999px; padding: 6px 14px; font-size: 14px; cursor: pointer;
 }
 .chip:hover { border-color: #444; text-decoration: none; }
+.chip.star {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-color: #5a5346; background: #2b271f; color: var(--accent); font-weight: 600;
+}
+.chip.star:hover { border-color: var(--star); }
+.chip.star svg { width: 15px; height: 15px; color: var(--star); flex: none; }
+.star-count { margin-left: 2px; padding-left: 8px; border-left: 1px solid #5a5346; font-variant-numeric: tabular-nums; }
 
 .hero { padding: 48px 0 24px; }
 .hero h1 { font-size: clamp(30px, 5.4vw, 52px); line-height: 1.15; margin: 0 0 16px; letter-spacing: -0.01em; }
@@ -110,6 +118,7 @@ footer p { margin: 6px 0; }
   .cards, .shots, .facts { grid-template-columns: minmax(0, 1fr); }
   .hero { padding-top: 24px; }
   header.top img { height: 28px; }
+  .chip-repo { display: none; }
 }
 </style>
 </head>
@@ -119,7 +128,12 @@ footer p { margin: 6px 0; }
 <header class="top">
   <a href="https://github.com/jhaizhou-ops/S2Arm" aria-label="S2Arm"><img src="images/s2arm-wordmark.png" alt="S2Arm" width="122" height="36"></a>
   <nav class="top-links">
-    <a class="chip" href="https://github.com/jhaizhou-ops/S2Arm"><span class="zh">GitHub 仓库</span><span class="en">GitHub</span></a>
+    <a class="chip star" href="https://github.com/jhaizhou-ops/S2Arm">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.6l2.9 5.9 6.5.95-4.7 4.58 1.11 6.47L12 17.45l-5.81 3.05 1.11-6.47-4.7-4.58 6.5-.95z"/></svg>
+      <span class="zh">点个星</span><span class="en">Star</span>
+      <span class="star-count" id="star-count" hidden></span>
+    </a>
+    <a class="chip chip-repo" href="https://github.com/jhaizhou-ops/S2Arm"><span class="zh">GitHub 仓库</span><span class="en">GitHub</span></a>
     <button class="chip" id="lang-toggle" type="button"><span class="zh">English</span><span class="en">中文</span></button>
   </nav>
 </header>
@@ -291,6 +305,18 @@ footer p { margin: 6px 0; }
   function day(s) { return (s || '').slice(0, 10); }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   if (!window.fetch) return;
+
+  // Star 数：同样只做展示，接口不可用时只显示「点个星」。
+  fetch('https://api.github.com/repos/' + REPO, { headers: { Accept: 'application/vnd.github+json' } })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (repo) {
+      if (typeof repo.stargazers_count !== 'number') return;
+      var el = document.getElementById('star-count');
+      el.textContent = repo.stargazers_count.toLocaleString('en-US');
+      el.hidden = false;
+    })
+    .catch(function () { /* 保留「点个星」，链接不受影响 */ });
+
   fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (rel) {
