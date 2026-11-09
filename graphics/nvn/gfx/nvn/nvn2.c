@@ -256,11 +256,12 @@ static uint64_t cam_destroy_pool(uint16_t handle) {
     if (!atomic_exchange(&said, 1)) LOG("nn::camera::sdk::DestroyOutputBufferPool：宿主没有摄像头，空操作");
     return 0;
 }
-static uint64_t cam_create_alias(void *out_handle, uint16_t source, uint32_t count) {
+// CreateAliasOutputBufferPool(nn::gsv::UserImageHandle, unsigned)：两个参数都按值（修饰名里没有出参），同 DestroyOutputBufferPool。
+//   原先第一参当出参地址写 2 字节，客人按值传句柄 1 就往地址 1 写、信号 11（审计 P1-145）。不写任何内存，回 0（返回值按句柄读即无效句柄 0）
+static uint64_t cam_create_alias(uint16_t source, uint32_t count) {
     (void)source; (void)count;
     static _Atomic int said;
-    if (!atomic_exchange(&said, 1)) LOG("nn::camera::sdk::CreateAliasOutputBufferPool：宿主没有摄像头，输出参数写 0");
-    if (out_handle) memset(out_handle, 0, 2);
+    if (!atomic_exchange(&said, 1)) LOG("nn::camera::sdk::CreateAliasOutputBufferPool：宿主没有摄像头，空操作、回 0");
     return 0;
 }
 static uint64_t cam_destroy_alias(uint16_t handle) {
