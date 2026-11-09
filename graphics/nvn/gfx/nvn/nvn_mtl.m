@@ -4678,8 +4678,14 @@ static const char *tex_widen_why(const tex_t *t) {
 static int tex_swap_storage(id<MTLTexture> base, id<MTLTexture> w) {
     pthread_mutex_lock(&g_smu);
     nvn_hmap *ms[] = {&g_by_serial, &g_ghost, &g_ghost_active, &g_alias}; int n = 0;
+    // 打包贴图（NvPkg）表里存的是 NvPkg 对象，贴图在它的 tex 里：同样换掉。原先只有 tex_widen 自己换，内部分辨率（rs_rescale）换不到——新存储没人持有，
+    //   打包颜色目标仍是原尺寸、同遍深度缩到一半（11-09 #312 暗黑地牢2，S2A_RES_SCALE=0.5：同遍附件尺寸不一，iPhone 上闪粉色块）
     for (int m = 0; m < 4; m++)
-        for (uint32_t i = 0; i < ms[m]->cap; i++) if (ms[m]->vals[i] == (__bridge void *)base) { CFRelease(ms[m]->vals[i]); ms[m]->vals[i] = (void *)CFBridgingRetain(w); n++; }
+        for (uint32_t i = 0; i < ms[m]->cap; i++) {
+            void *v = ms[m]->vals[i]; if (!v) continue;
+            if (v == (__bridge void *)base) { CFRelease(v); ms[m]->vals[i] = (void *)CFBridgingRetain(w); n++; }
+            else if (m == 0) { __unsafe_unretained id o = (__bridge id)v; if ([o isKindOfClass:[NvPkg class]] && ((NvPkg *)o)->tex == base) { ((NvPkg *)o)->tex = w; n++; } }
+        }
     if (g_alias_set && CFSetContainsValue(g_alias_set, (__bridge const void *)base)) { CFSetRemoveValue(g_alias_set, (__bridge const void *)base); CFSetAddValue(g_alias_set, (__bridge const void *)w); }
     g_ser_gen++;
     pthread_mutex_unlock(&g_smu);
@@ -4715,9 +4721,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
     for (NSUInteger l = 0; l < base.mipmapLevelCount; l++)
         for (NSUInteger sl = 0; sl < slices; sl++)
             enc_b_copy_texture(b, base, sl, l, MTLOriginMake(0, 0, 0), MTLSizeMake(MAX(base.width >> l, 1u), MAX(base.height >> l, 1u), 1), w, sl, l, MTLOriginMake(0, 0, 0));
-    int n;
-    if (pk) { pthread_mutex_lock(&g_smu); n = pk->tex == base; if (n) { pk->tex = w; g_ser_gen++; } pthread_mutex_unlock(&g_smu); if (n) defer_obj_release(base); }   // 旧的那张等用过它的提交做完再放（同 tex_swap_storage：放锁后再交）
-    else n = tex_swap_storage(base, w);
+    int n = tex_swap_storage(base, w);   // 打包贴图换的是 NvPkg 自己的 tex（tex_swap_storage 里）
     if (g_wd_widened++ < 8) MLOG("widen: render target storage ser=%llu %lux%lu format %lu widened to %lux%lu (%d table entries moved)", (unsigned long long)t->serial, (unsigned long)base.width,
                                  (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)r, (unsigned long)rh, n);
     return 1;
