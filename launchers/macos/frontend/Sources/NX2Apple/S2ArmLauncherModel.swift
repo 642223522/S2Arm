@@ -53,7 +53,7 @@ enum ExportBlocker: Equatable {
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。同一时刻只有一个（同旧启动器「执行位」互斥）。
 struct JobSession: Equatable {
     enum Kind: String { case play, export, prepare, install, installRemove, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
-                        keys, delete, diagnostics }
+                        keys, delete, diagnostics, moveGame, clearCache }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
     let gameID: String?
@@ -79,6 +79,8 @@ struct QueuedExport {
     let platforms: [ExportPlatform]
     let target: [String: Any]?
     let spaceOverride: Bool
+    /// 存放位置（游戏库结构 v3）：nil = 这款现在的位置 / 上次用的位置（后端定）
+    var location: String? = nil
 }
 
 /// 这次出包要占多少、盘上还有多少（只取游戏库所在的卷）。
@@ -109,6 +111,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var session: JobSession?
     /// 出包页开着的那一款（nil = 游戏库）。
     @Published var exportFor: String?
+    /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
+    @Published var locations: [StorageLocation] = []
+    @Published var lastLocation = ""
     /// 出包页记住的平台勾选（平台 id）。
     @Published private(set) var exportChoice: [String] = []
     /// 动作没能开始的原因（缺东西、没选游戏库等），显示在主按钮下面。只属于出错的那一款（导入等不针对某款的为 nil）：
@@ -380,9 +385,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 一个平台没成不挡后面的平台；取消就整次停。
     /// platforms 不给 = 出包页勾的；本机控制口（AI 操作）按命令给一个平台，deviceTarget 只用于 iPhone 出包（提示地址窗口）。
     @discardableResult
-    func export(_ game: GameSummary, platforms chosen: [ExportPlatform]? = nil, deviceTarget: [String: Any]? = nil, spaceOverride: Bool = false) -> ExportBlocker? {
+    func export(_ game: GameSummary, platforms chosen: [ExportPlatform]? = nil, deviceTarget: [String: Any]? = nil, spaceOverride: Bool = false, location: String? = nil) -> ExportBlocker? {
         if let blocker = exportBlocker(game, platforms: chosen) { return blocker }
-        let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride)
+        let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location)
         exportFor = nil
         welcomeGameID = nil
         if busy {   // 正在出别的：排队，出完接着出（11-08 维护者：出好一个接着出下一个）
@@ -405,7 +410,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 try Task.checkCancellation()
                 self.beginPlatform(k)
                 do {
-                    let job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride)
+                    let job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
                     let r = try await self.provider.build(job, events: sink)
                     self.endPlatform(platform, ExportRun.Outcome(state: .completed, output: r.outputPath, ipa: r.ipa,
                                                                  appBytes: ((r.raw["ipaBytes"] ?? r.raw["outputBytes"]) as? NSNumber)?.int64Value,
@@ -584,6 +589,65 @@ public final class S2ArmLauncherModel: ObservableObject {
             _ = try await self?.provider.importKeys(file, events: sink)
             return nil
         }
+    }
+
+    // ---- 存放位置（游戏库结构 v3）----
+
+    /// 重读各存放位置（出包页打开时调；剩余空间是当时的）。
+    func loadLocations() {
+        Task { [weak self] in
+            guard let self, let r = try? await self.provider.locations() else { return }
+            self.locations = r.rows; self.lastLocation = r.last
+        }
+    }
+
+    /// 出包页「存放位置」缺省选哪个：这款现在的位置 → 上次用的位置 → 默认位置。
+    func defaultLocation(for game: GameSummary) -> String {
+        if game.location.state == "ok" || game.location.state == "offline", !game.location.path.isEmpty { return game.location.path }
+        return locations.first(where: { $0.id == lastLocation && $0.connected })?.path ?? locations.first(where: \.isDefault)?.path ?? ""
+    }
+
+    /// 移动到其他位置（整个文件夹，存档跟着走）。
+    func moveGame(_ game: GameSummary, to folder: URL) {
+        guard !busy else { return }
+        failAction(nil, game: nil)
+        start(.moveGame, game: game, name: game.name) { [weak self] sink in
+            try await self?.provider.moveGame(game.id, to: folder.path, events: sink)
+            self?.loadLocations()
+            return nil
+        }
+    }
+
+    /// 清除缓存（出包缓存 + 运行时着色器缓存；镜像、存档不动）。
+    func clearCache(_ game: GameSummary) {
+        guard !busy else { return }
+        failAction(nil, game: nil)
+        start(.clearCache, game: game, name: game.name) { [weak self] sink in
+            try await self?.provider.clearCache(game.id, events: sink)
+            return nil
+        }
+    }
+
+    /// 「找不到游戏文件」→ 重新指定文件夹 / 从游戏库移除：很快，不进作业页，失败写在游戏库页上。
+    func relinkGame(_ game: GameSummary, folder: URL) {
+        Task { [weak self] in
+            do { try await self?.provider.relinkGame(game.id, folder: folder.path); self?.refresh() }
+            catch { self?.failAction(error.localizedDescription, game: game.id) }
+        }
+    }
+
+    func forgetGame(_ game: GameSummary) {
+        Task { [weak self] in
+            do { try await self?.provider.forgetGame(game.id); if self?.selectedID == game.id { self?.selectedID = nil }; self?.refresh() }
+            catch { self?.failAction(error.localizedDescription, game: game.id) }
+        }
+    }
+
+    /// 在访达中显示这款的文件夹（还没有文件夹就显示所在的存放位置）。
+    func reveal(_ game: GameSummary) {
+        let path = game.location.folder.isEmpty ? game.location.path : game.location.folder
+        guard !path.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
     /// 删这款（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留）。
