@@ -228,7 +228,21 @@ CONTAINER_DIR = "container"   # 游戏库 iPhone/container/：S2Arm.app（下次
 
 
 def container_bundle_id(team):
-    return f"io.s2arm.games.{team.lower()}"
+    """S2A_CONTAINER_SUFFIX（开发用：同一台手机上同时装几份测试包）：包名加后缀 io.s2arm.games.<团队>.<后缀>，几份并存互不覆盖；
+    只收小写字母 / 数字 / 连字符，不设时与玩家完全一样。付费团队没有免费账号每周 10 个包名的限制"""
+    suffix = re.sub(r"[^a-z0-9-]", "", os.environ.get("S2A_CONTAINER_SUFFIX", "").lower())[:40]
+    return f"io.s2arm.games.{team.lower()}" + (f".{suffix}" if suffix else "")
+
+
+def container_display_name(app):
+    """S2A_CONTAINER_NAME（开发用，与 S2A_CONTAINER_SUFFIX 配套）：主屏显示名，连各语言 InfoPlist.strings 里的一起换；不设时不动"""
+    name = os.environ.get("S2A_CONTAINER_NAME", "").strip()
+    if not name:
+        return None
+    for strings in Path(app).glob("*.lproj/InfoPlist.strings"):
+        text = strings.read_text(encoding="utf-8", errors="replace")
+        strings.write_text(re.sub(r'"CFBundleDisplayName"\s*=\s*".*?";', '"CFBundleDisplayName" = "%s";' % name.replace('"', ''), text), encoding="utf-8")
+    return name
 
 
 def game_docs(gid):
@@ -665,6 +679,9 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             raise Failure("解不开 iPhone 包：" + (r.stderr.strip()[-200:] or str(ipa)), code="job_failed")
         info = app / "Info.plist"
         pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = bid
+        shown = container_display_name(app)
+        if shown:
+            pl["CFBundleDisplayName"] = shown
         info.write_bytes(plistlib.dumps(pl))
         check_shell_sdk(c, app, dev)
         if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6)
