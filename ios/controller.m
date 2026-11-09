@@ -276,6 +276,7 @@ static BOOL write_record(NSString *identifier, BOOL automatic) {
 //   这里在输入队列 / BLE 回调里发现变化后派回主线程更新虚拟按键显示；没变时只读一个原子量
 static _Atomic int g_shown_external = -1;   // 虚拟按键当前按「实体手柄生效」隐藏着（1）/ 显示着（0）
 static void pad_selection_check(void);
+static void pad_face_sync(void);
 
 // BLE 队列已缓存样本；新运动通知唤醒同一 HID 线程，不另建采样线程。
 static void ble_motion(const ns2_motion *motion, void *context) {
@@ -328,6 +329,7 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(systemChanged:) name:GCControllerDidConnectNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(systemChanged:) name:GCControllerDidDisconnectNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingsChanged:) name:NSUserDefaultsDidChangeNotification object:nil];
+    pad_face_sync();
     return self;
 }
 - (void)createConnectionButton {
@@ -387,7 +389,13 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     s2a_pad_wake();
     LOG("NS2 Pro：本 App 适配%s", enabled ? "开启" : "关闭");
 }
+// 手柄按键对应（定义表 game_settings.v1.json 的 padFace：letter 按字母（缺省）/ position 按位置）：偏好一变就转给 pad.c，下一次按键即按新口径（不用重启）
+static void pad_face_sync(void) {
+    NSString *v = [NSUserDefaults.standardUserDefaults stringForKey:@"padFace"];
+    if (v) s2a_pad_face_set(![v isEqualToString:@"position"]);
+}
 - (void)settingsChanged:(NSNotification *)notification {
+    pad_face_sync();
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self->_foreground) return;
         s2a_phone_motion_enable(atomic_load(&g_phone_motion_wanted) && !atomic_load(&g_ble_ready));
@@ -430,7 +438,8 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     // buttonOptions（「-」）在部分手柄上为 nil；位序不能动，bit11 留给它，nil 时该位恒 0（与 Mac 侧 front_mac.m 一致）。
     GCControllerButtonInput *options = pad.buttonOptions;
     GCControllerButtonInput *face[4] = {pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY};
-    int order[4]; s2a_pad_abxy_order(s2a_pad_labels_abxy(pad.controller.productCategory.UTF8String, pad.controller.vendorName.UTF8String), order);
+    int order[4]; s2a_pad_abxy_order(s2a_pad_kind(pad.controller.productCategory.UTF8String, [pad isKindOfClass:GCXboxGamepad.class],
+        [pad isKindOfClass:GCDualShockGamepad.class] || [pad isKindOfClass:GCDualSenseGamepad.class]), s2a_pad_face_by_letter(), order);   // 按字母 / 按位置（pad.c）
     GCControllerButtonInput *keys[16] = {face[order[0]], face[order[1]], face[order[2]], face[order[3]],
         pad.leftThumbstickButton, pad.rightThumbstickButton, pad.leftShoulder, pad.rightShoulder,
         pad.leftTrigger, pad.rightTrigger, pad.buttonMenu, options,
