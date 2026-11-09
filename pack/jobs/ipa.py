@@ -130,6 +130,14 @@ def _iml_device_hint(c, tgt, gid):
 WIN_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "direct"), ("抽取 + 直连库", "ipa"))
 
 
+def win_milestone(text):
+    """Windows 一键出包（oneclick_win）每步收尾打「[时刻] 步名：N 秒」，成功收尾 = 进下一段 → 下一段名；不是收尾行 / 这步失败（收尾行带「（rc=非 0）」）→ None。
+    失败的步也打收尾行：原先照样进下一段，#244 / #269 的直连库失败被摘要报成「编 App 与签名」，把排查带偏"""
+    if re.search(r"（rc=(?!0）)\d+）", text):
+        return None
+    return next((stage for step, stage in WIN_MILESTONES if f"] {step}：" in text), None)
+
+
 def bundled_shell(c):
     """随包预编壳（Windows --shell / Mac S2A_SHELL）：请求给的 shellDir > 应用资源 Shell/（发版随包，壳号与引擎相同；Mac 上 pack/shell_build.sh 出）"""
     d = Path(c.r.get("shellDir") or Path(c.r.get("resources") or c.private) / "Shell")
@@ -248,9 +256,9 @@ def _build(c):
                 if watcher:
                     watcher.__exit__(None, None, None)
                 ms.enter(c, "ipa")
-            for step, stage in WIN_MILESTONES:   # Windows 一键出包（oneclick_win）每步收尾打「[时刻] 步名：N 秒」：上一步完 = 进下一段
-                if f"] {step}：" in text:
-                    ms.enter(c, stage)
+            stage = win_milestone(text)   # Windows 一键出包：上一步成功收尾 = 进下一段
+            if stage:
+                ms.enter(c, stage)
         # 交付物 / 包号 / 画面模式从一键出包的事件流取（--events，最后一条 result；10-26 照上游 --progress json），不按人读完成行的字面抠
         events = c.private / "logs" / (c.task + "-ipa.events.jsonl")
         events.parent.mkdir(parents=True, exist_ok=True); events.write_text("")   # 先清空：只认本轮写的 result
