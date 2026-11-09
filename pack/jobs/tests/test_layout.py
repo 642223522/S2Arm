@@ -79,6 +79,14 @@ class MigrateTests(JobCase):
         self.assertEqual(json.loads((L / ".s2arm-layout.json").read_text())["version"], layout.VERSION)
         self.assertFalse(layout.migrate(self.c))                                        # 再跑：已迁完，什么都不动
 
+    def test_chinese_only_name_takes_english_from_nacp(self):
+        """旧清单只有中文名（C「中文游戏」）：到 iPhone 资源包里的 control.nacp 读美式英语标题做文件夹名；读不到才用游戏号"""
+        L = self.old_library()
+        nacp = bytearray(0x4000); title = "Chinese Game: Intl".encode(); nacp[:len(title)] = title   # ApplicationTitle[0] 美式英语
+        pack = L / "iPhone" / C / "t资源包" / "ctl"; pack.mkdir(parents=True); (pack / "control.nacp").write_bytes(bytes(nacp))
+        layout.migrate(self.c)
+        self.assertEqual(json.loads((L / "games" / "Chinese Game Intl" / "game.json").read_text())["id"], C)
+
     def test_interrupted_migration_resumes(self):
         L = self.old_library()
         real = layout._split_release

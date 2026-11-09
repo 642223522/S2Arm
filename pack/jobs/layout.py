@@ -369,6 +369,34 @@ def _split_release(c, gid, d):
         _rm(c, c.library, releases)
 
 
+_NACP_GLOBS = ("games/{gid}/current/ctl/control.nacp", "games/{gid}/current/exefs/control.nacp", "iPhone/{gid}/*资源包/ctl/control.nacp",
+               "iPhone/{gid}/roots/*/ctl/control.nacp", "iPhone/{gid}/container-kit/ctl/control.nacp", "cache/{gid}/*/roots/*/ctl/control.nacp")
+
+
+def _english_from_disk(c, gid):
+    """旧清单只有中文名时，到这款已有的产物里找 control.nacp 读英文名（美式 → 英式英语），玩家在文件夹里认得出；找不到返回空串"""
+    try:
+        from library import engine_tool
+        dump = engine_tool(c, "ns2_dump")
+    except Exception:   # noqa: BLE001 —— 引擎工具载不进来就退回游戏号命名
+        return ""
+    for pattern in _NACP_GLOBS:
+        for p in sorted(c.library.glob(pattern.format(gid=gid))):
+            try:
+                n = p.read_bytes()
+            except OSError:
+                continue
+            if len(n) == 0x4000:
+                name = dump.nacp_title(n, 0) or dump.nacp_title(n, 1)
+                if name and re.sub(r"[^A-Za-z0-9]", "", name):
+                    return name
+    return ""
+
+
+def _ascii_name(name):
+    return bool(re.sub(r"[^A-Za-z0-9]", "", name or ""))
+
+
 def migrate(c):
     """旧布局一次性迁到 VERSION 2（调用方持执行锁）；已迁完直接返回。可中断续做"""
     marker = c.library / ".s2arm-layout.json"
@@ -388,7 +416,10 @@ def migrate(c):
         if d is None:
             src = old_root / gid
             taken = [p.name for p in old_root.iterdir()] if old_root.is_dir() else []
-            name = folder_name(names.get(gid, ""), gid, [t for t in taken if t != gid])
+            english = names.get(gid, "")
+            if not _ascii_name(english):
+                english = _english_from_disk(c, gid) or english
+            name = folder_name(english, gid, [t for t in taken if t != gid])
             dest = old_root / name
             contained(c.library, dest)
             if src.is_dir() and not dest.exists():
