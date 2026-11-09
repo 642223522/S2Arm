@@ -513,7 +513,6 @@
       "shell/Sources/ShellUI/Resources/*.ttf",
       "runtime/tests/cpatch_loader/module.nso",
       "tests/fixtures/shader_split_reuse/fixture.nso",
-      "tests/fixtures/merge_reconcile/*.bundle",
       "tests/fixtures/iml_signed/*",
       "android/tests/replay_fixture/samples/*.rfx",
       "services/S2A.Services.Tests/data/*.ivf",
