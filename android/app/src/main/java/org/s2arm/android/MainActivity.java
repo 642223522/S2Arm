@@ -78,6 +78,7 @@ public class MainActivity extends Activity
     // touchPad 不跟画面矩形：虚拟键要留在两侧黑边上，始终铺满整个窗口。
     private final Runnable geometrySample = this::sampleBufferGeometry;
     private int bufferGeomW, bufferGeomH;
+    private SystemPowerSampler powerSampler;   // #48 A5：应用内电池净放电读数（仅游戏局）
     private android.window.OnBackInvokedCallback gameBackCallback;
 
     @Override public void onCreate(Bundle state) {
@@ -126,6 +127,9 @@ public class MainActivity extends Activity
                 getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, gameBackCallback);
             }
+            // A5 读数落 logcat（采集的 logcat.txt）：有效净放电报 W，其余每秒一行 unavailable。
+            powerSampler = new SystemPowerSampler(this, lifecycleProbe, watts -> Log.i("S2Arm",
+                "battery-discharge-watts=" + (Double.isNaN(watts) ? "unavailable" : String.format(java.util.Locale.ROOT, "%.3f", watts))));
         }
         if (!gameMode) {
             String packageTitle;
@@ -584,6 +588,7 @@ public class MainActivity extends Activity
         applyGameWindow();
         library.scanImports();   // report the library; imports require an explicit staging target
         if (host != 0) NativeBridge.setForeground(host, true);   // the window, if any, is still the render thread's
+        if (powerSampler != null) powerSampler.start();
         tryStartGame();
         if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
         if (gameMode && host != 0 && !gameStopping && getIntent().getBooleanExtra(GameActivity.LIFECYCLE_TEST_EXTRA, false)
@@ -641,6 +646,7 @@ public class MainActivity extends Activity
             // Rendering stops; the surface stays with the render thread until surfaceDestroyed.
             if (host != 0) NativeBridge.setForeground(host, false);
         }
+        if (powerSampler != null) powerSampler.stop();
         super.onPause();
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
