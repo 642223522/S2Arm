@@ -427,6 +427,15 @@ class JobsTests(unittest.TestCase):
         # 直连包与机型无关（一包通用 10-30）：不把目标架构 / 系统大版本交给出包
         self.assertNotIn("S2A_PSO_ARCHS", seen["env"]); self.assertNotIn("S2A_PSO_OS", seen["env"])
         self.assertTrue(r["ipa"].endswith("x.ipa")); self.assertEqual(r["buildId"], "abc-123")
+        # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
+        #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
+        import saves
+        si = Path(seen["env"]["S2A_SAVE_IDENTITY"])
+        game = json.loads((self.c.library / "catalog.json").read_text())["games"][0]
+        self.assertEqual(json.loads(si.read_text()), saves.identity(game))
+        self.assertEqual(json.loads(si.read_text())["id"], "0100000000000000")
+        chk = subprocess.run([sys.executable, str(ROOT / "pack/save_identity.py"), "--check", str(si)], capture_output=True, text=True)
+        self.assertEqual(chk.returncode, 0, chk.stderr)
 
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):

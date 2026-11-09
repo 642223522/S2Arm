@@ -229,6 +229,12 @@ def _build(c):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
+        # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
+        #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
+        from saves import identity as save_identity
+        identity_file = logs / "save-identity.json"
+        identity_file.write_text(json.dumps(save_identity(game), ensure_ascii=False), encoding="utf-8")
+        env["S2A_SAVE_IDENTITY"] = str(identity_file)
         if packaged and os.name != "nt":   # Mac 发版应用：随包壳（pack/ipa.sh 见 S2A_SHELL 就不现出壳）+ 应用自带读取器（同 build.py：dotnet 跑 dll 包一层可执行壳）
             from toolchain import reader
             nxu = logs / "nx_unpack"
