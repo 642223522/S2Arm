@@ -39,6 +39,11 @@ public sealed partial class EnvironmentWindow
 
     private const string PlatformIos = "ios";
     private bool exportIos = true;
+    // 存放位置（游戏库结构 v3）：locations 作业读回的各位置、为哪款读的、出包页选中的文件夹（"" = 还没定，不传，后端按这款现在的位置）
+    private StorageLocations? locations;
+    private string? locationsFor;
+    private string exportLocation = "";
+    private const string OtherFolder = "__other__";
     // pack job
     private LibraryGame? packGame;
     private bool packRunning;
@@ -51,6 +56,7 @@ public sealed partial class EnvironmentWindow
     private string packSummary = "", packDiagnostics = "";
     private string? packFailureCode;
     private string? packIpa;
+    private string? packLocation;
     private long? packIpaBytes, packPackBytes;
     private PackSpace? packSpace;
     // in-progress capsule (shown while session is hidden)
@@ -167,6 +173,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>The build tab opens the progress page while a pack is running or its result is on screen.</summary>
     private void OpenBuild()
     {
+        locationsFor = null;   // 出包页每次打开都重读存放位置（剩余空间是当时的）
         if (packRunning || (packState == "succeeded" && packGame?.Id == selectedGame)) { Navigate("progress"); return; }
         Navigate("build");
     }
@@ -266,6 +273,7 @@ public sealed partial class EnvironmentWindow
             tiles.Children.Add(card);
         }
         body.Children.Add(tiles);
+        body.Children.Add(LocationRow(game));
 
         // action bar
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
@@ -279,6 +287,75 @@ public sealed partial class EnvironmentWindow
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
     }
+
+    /// <summary>存放位置（游戏库结构 v3，照 Mac ExportView.locationRow）：这款游戏的文件夹放在哪；换了位置，出包前先整个搬过去（存档跟着走）。
+    /// 缺省：这款现在的位置（ok / offline）→ 上次用的位置 → 默认位置（StorageLocations.DefaultFor）。</summary>
+    private Control LocationRow(LibraryGame game)
+    {
+        if (locationsFor != game.Id)
+        {
+            locationsFor = game.Id; locations = null;
+            exportLocation = game.Location is { State: "ok" or "offline" } here ? here.Path : "";
+            _ = LoadLocationsAsync(game);
+        }
+        var rows = locations?.Rows ?? [];
+        var options = new List<(string path, string label)>();
+        foreach (var r in rows)
+        {
+            // 卷名重名（几个位置在同一块盘上）时用路径，免得几项分不清
+            var name = r.Volume.Length == 0 || rows.Count(o => o.Volume == r.Volume) > 1 ? r.Path : r.Volume;
+            options.Add((r.Path, r.Connected
+                ? T("export.location.free").Replace("{0}", name).Replace("{1}", r.FreeBytes is { } free ? FormatBytes(free) : "?")
+                : T("export.location.offline").Replace("{0}", name)));
+        }
+        // 「选择其他文件夹…」选的、或位置表还没读回时这款现在的位置
+        if (exportLocation.Length > 0 && !options.Any(o => SameFolder(o.path, exportLocation))) options.Add((exportLocation, exportLocation));
+        var box = new ComboBox { MinWidth = 300, IsEnabled = !PackBusy, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var (path, label) in options) box.Items.Add(new ComboBoxItem { Content = label, Tag = path });
+        box.Items.Add(new ComboBoxItem { Content = T("export.location.other"), Tag = OtherFolder });
+        box.SelectedIndex = options.FindIndex(o => SameFolder(o.path, exportLocation));
+        box.SelectionChanged += (_, _) =>
+        {
+            if (box.SelectedItem is not ComboBoxItem { Tag: string value }) return;
+            if (value == OtherFolder) _ = ChooseLocationAsync(); else exportLocation = value;
+        };
+        AutomationId(box, "export.location");
+        var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
+        var title = Label(T("export.location.title"), 16); title.VerticalAlignment = VerticalAlignment.Center;
+        line.Children.Add(title);
+        Grid.SetColumn(box, 1); line.Children.Add(box);
+        return Card(line, 14);
+    }
+
+    private async Task LoadLocationsAsync(LibraryGame game)
+    {
+        if (connectedFolder is null || libraryId is null) return;
+        try
+        {
+            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "locations", null, CancellationToken.None);
+            if (!job.Report.Succeeded || locationsFor != game.Id) return;
+            locations = StorageLocations.Parse(job.Report.Result);
+            if (exportLocation.Length == 0) exportLocation = locations.DefaultFor(game.Location);
+        }
+        // 读不回位置表同 Mac：下拉框只剩这款现在的位置和「选择其他文件夹…」，不选就不传，后端按这款现在的位置出包
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException) { return; }
+        if (page == "build") Render();
+    }
+
+    private async Task ChooseLocationAsync()
+    {
+        try
+        {
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("export.location.title") });
+            if (folders.Count > 0) exportLocation = LocalPath(folders[0]);
+        }
+        catch (IOException) { }   // 不是本地文件夹：不换
+        Render();   // 取消时下拉框退回原来选的那项
+    }
+
+    private static bool SameFolder(string a, string b) =>
+        string.Equals(a.TrimEnd('\\', '/'), b.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
 
     private static void AutomationId(Control control, string id) => Avalonia.Automation.AutomationProperties.SetAutomationId(control, id);
 
@@ -300,6 +377,8 @@ public sealed partial class EnvironmentWindow
     private void StartPack(LibraryGame game, bool spaceOverride = false)
     {
         if (ExportBlocker(game) is not null) return;
+        // 「仍然出包」重试沿用这一款上次选的位置；出包页没读到这款时不传，后端按这款现在的位置
+        if (!spaceOverride || packGame?.Id != game.Id) packLocation = locationsFor == game.Id && exportLocation.Length > 0 ? exportLocation : null;
         packGame = game; packRunning = true; packState = "running"; packTrack = new(); packStarted = DateTime.UtcNow;
         packSeconds = null; packSummary = ""; packDiagnostics = ""; packIpa = null;
         packIpaBytes = null; packPackBytes = null; packSpace = null; sessionHidden = false; packFailureCode = null;
@@ -313,7 +392,10 @@ public sealed partial class EnvironmentWindow
         packCancellation = cancellation;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("ipa", game.Id, spaceOverride ? new Dictionary<string, object?> { ["spaceOverride"] = true } : null),
+            var extra = new Dictionary<string, object?>();
+            if (spaceOverride) extra["spaceOverride"] = true;
+            if (packLocation is not null) extra["location"] = packLocation;   // pack/jobs/library.py apply_location：在别的位置就先整个搬过去
+            var job = await PackJobClient.RunAsync(PackRequest("ipa", game.Id, extra),
                 e => Dispatcher.UIThread.Post(() =>
                 {
                     packTrack.Ingest(e, Clock);
@@ -348,6 +430,8 @@ public sealed partial class EnvironmentWindow
             {
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packCancellation = null; packRunning = false;
+                // 换了存放位置 / 第一次建文件夹：游戏库里这款的位置变了（搬到一半失败也可能已经动了），重读游戏库，出包页下次重读位置表
+                if (packLocation is not null && !SameFolder(packLocation, game.Location?.Path ?? "") && !libraryBusy) { locationsFor = null; libraryOperation = RunLibraryAsync("catalog", null); }
                 if (packState == "succeeded")
                 {
                     readinessFor = null;
@@ -909,6 +993,17 @@ public sealed partial class EnvironmentWindow
         AutomationId(remove, "install.remove_game");
         remove.Click += (_, _) => _ = ConfirmRemoveAsync(game);
         buttons.Children.Add(remove);
+        if (game.IphoneRestorable)
+        {
+            // 手机上的 S2Arm 换了新版运行层（只换宿主）后不好用：装回上一版（installRestore，同 Mac 装机页）
+            var restore = new Button { Content = T("install.restore"), IsEnabled = !installBusy && !packRunning,
+                Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+                Background = Brush.Parse("#29292D"), Foreground = Ink, Margin = new Thickness(12, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center };
+            AutomationId(restore, "install.restore");
+            restore.Click += (_, _) => _ = ConfirmRestoreAsync(game);
+            buttons.Children.Add(restore);
+        }
         if (readiness is { IpaPath.Length: > 0 } located)
         {
             var reveal = Action("progress.reveal_ipa", () => Reveal(located.IpaPath));
@@ -930,7 +1025,7 @@ public sealed partial class EnvironmentWindow
             if (installBusy) state.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4 });
             if (installMessage.Length > 0) state.Children.Add(Muted(installMessage));
             if (installState is "failed" or "invalid")
-                state.Children.Add(CopyReportButton(game.Id, ["install", "installRemove"], () => installMessage + "\n" + installDiagnostics));
+                state.Children.Add(CopyReportButton(game.Id, ["install", "installRemove", "installRestore"], () => installMessage + "\n" + installDiagnostics));
             body.Children.Add(Card(state));
         }
         if (installDiagnostics.Length > 0)
@@ -1048,54 +1143,66 @@ public sealed partial class EnvironmentWindow
 
     private async Task ConfirmRemoveAsync(LibraryGame game)
     {
-        if (installBusy || packRunning) return;
+        if (await ConfirmInstallActionAsync("install.remove")) await RunPhoneJobAsync(game, "installRemove", "install.remove");
+    }
+
+    private async Task ConfirmRestoreAsync(LibraryGame game)
+    {
+        if (await ConfirmInstallActionAsync("install.restore")) await RunPhoneJobAsync(game, "installRestore", "install.restore");
+    }
+
+    /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
+    private async Task<bool> ConfirmInstallActionAsync(string prefix)
+    {
+        if (installBusy || packRunning) return false;
         var dialog = new Window
         {
-            Title = T("install.remove_title"), Width = 420, SizeToContent = SizeToContent.Height,
+            Title = T(prefix + "_title"), Width = 420, SizeToContent = SizeToContent.Height,
             CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Canvas, Foreground = Ink,
             FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope")
         };
         var confirmed = false;
         var body = new StackPanel { Spacing = 16, Margin = new Thickness(28) };
-        body.Children.Add(Label(T("install.remove_title"), 20));
-        body.Children.Add(Muted(T("install.remove_body"), 14));
+        body.Children.Add(Label(T(prefix + "_title"), 20));
+        body.Children.Add(Muted(T(prefix + "_body"), 14));
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = T("action.cancel"), Padding = new Thickness(16, 9),
             Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8),
             Margin = new Thickness(0, 0, 12, 0) };
         cancel.Click += (_, _) => dialog.Close();
         buttons.Children.Add(cancel);
-        var confirm = new Button { Content = T("install.remove_confirm"), Padding = new Thickness(16, 9),
+        var confirm = new Button { Content = T(prefix + "_confirm"), Padding = new Thickness(16, 9),
             Background = Accent, Foreground = Canvas, CornerRadius = new CornerRadius(8) };
-        AutomationId(confirm, "install.remove_confirm");
+        AutomationId(confirm, prefix + "_confirm");
         confirm.Click += (_, _) => { confirmed = true; dialog.Close(); };
         buttons.Children.Add(confirm);
         body.Children.Add(buttons);
         dialog.Content = body;
         await dialog.ShowDialog(this);
-        if (confirmed) await RemoveAsync(game);
+        return confirmed;
     }
 
-    private async Task RemoveAsync(LibraryGame game)
+    /// <summary>installRemove / installRestore; texts are &lt;prefix&gt;_running / _done / _failed.</summary>
+    private async Task RunPhoneJobAsync(LibraryGame game, string operation, string prefix)
     {
         if (installBusy || packRunning) return;
-        installBusy = true; installState = "running"; installMessage = T("install.remove_running"); installDiagnostics = ""; Render();
+        installBusy = true; installState = "running"; installMessage = T(prefix + "_running"); installDiagnostics = ""; Render();
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("installRemove", game.Id), e => Dispatcher.UIThread.Post(() =>
+            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id), e => Dispatcher.UIThread.Post(() =>
             {
                 if (e.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String && m.GetString() is { Length: > 0 } text)
                 { installMessage = text; Render(); }
             }), CancellationToken.None);
             installState = job.Report.State;
-            installMessage = job.Report.Succeeded ? T("install.remove_done") : job.Report.Message;
+            installMessage = job.Report.Succeeded ? T(prefix + "_done") : job.Report.Message;
             installDiagnostics = JobDiagnostics(job);
         }
         catch (LibraryProtocolException error) { installState = "invalid"; installDiagnostics = error.Message; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
-        { installState = "failed"; installMessage = T("install.remove_failed"); installDiagnostics = error.Message; }
+        { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
         finally { installBusy = false; Render(); }
     }
 

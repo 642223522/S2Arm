@@ -68,7 +68,7 @@ import XCTest
 
     func testJournalTasksAreVisibleJobsOldestFirst() throws {
         let r = root(); defer { try? FileManager.default.removeItem(at: r) }
-        let jobs = r.appendingPathComponent("jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        let jobs = r.appendingPathComponent("logs/jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
         func put(_ name: String, _ o: [String: Any]) throws { try JSONSerialization.data(withJSONObject: o).write(to: jobs.appendingPathComponent(name)) }
         try put("b.json", ["id": "b", "operation": "ipa", "state": "running", "started": 20.0])
         try put("a.json", ["id": "a", "operation": "import", "state": "completed", "started": 10.0])
@@ -82,7 +82,7 @@ import XCTest
     /// 任务列表有缓存（控制口每秒刷一次，原先每次全量重读）：新增、删除、原子改名更新、正在跑的任务原地改写，都要当场反映出来
     func testJournalTasksCacheFollowsEveryKindOfChange() throws {
         let r = root(); defer { try? FileManager.default.removeItem(at: r) }
-        let jobs = r.appendingPathComponent("jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        let jobs = r.appendingPathComponent("logs/jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)   // 还没建库：任务记录在 <私有目录>/logs/jobs（S2ArmPaths.jobsDir）
         func put(_ name: String, _ o: [String: Any]) throws {   // 原子写（同 pack/jobs/core.py atomic：临时文件再改名）
             let tmp = jobs.appendingPathComponent(name + ".tmp")
             try JSONSerialization.data(withJSONObject: o).write(to: tmp)

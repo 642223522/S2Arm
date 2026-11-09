@@ -603,6 +603,7 @@ namespace S2A.Services.Tests
         private static void Run()
         {
             TimeZoneBinaryTest.Run(Check);
+            CheatsTest.Run(Check);
             GuestBufferAllocatorTest.Run(Check);
             GuestMemoryFar();
             ShaderCodeTableTest.Run(Check);

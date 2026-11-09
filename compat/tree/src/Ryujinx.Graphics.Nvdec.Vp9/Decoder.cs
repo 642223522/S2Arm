@@ -91,6 +91,7 @@ namespace Ryujinx.Graphics.Nvdec.Vp9
             cm.Lf.ModeRefDeltaEnabled = pictureInfo.ModeRefDeltaEnabled;
             cm.Lf.RefDeltas = pictureInfo.RefDeltas;
             cm.Lf.ModeDeltas = pictureInfo.ModeDeltas;
+            LoopFilter.LoopFilterInit(ref cm);
 
             Span<RefBuffer> frameRefsSpan = cm.FrameRefs.AsSpan();
             frameRefsSpan[0].Buf = (Surface)pictureInfo.LastReference;
@@ -210,6 +211,34 @@ namespace Ryujinx.Graphics.Nvdec.Vp9
             _lastSegmentMapMiRows = cm.MiRows;
             _lastSegmentMapMiCols = cm.MiCols;
             _lastSegmentMap.CopyTo(cm.LastFrameSegMap.AsSpan());
+        }
+
+        // S2Arm: the segment-map bookkeeping LoadSegmentMap does, for a frame decoded elsewhere (native libvpx,
+        // Ryujinx.Graphics.Nvdec Vp9NativePath). Native frames have segmentation off, so this keeps the state equal to an
+        // all-managed run and a later switch to this decoder is exact.
+        public void TrackSegmentMap(bool keyOrIntraOnly, int width, int height)
+        {
+            int miCols = (width + 7) >> 3;
+            int miRows = (height + 7) >> 3;
+            int mapLength = miRows * miCols;
+            if (mapLength == 0)
+            {
+                return;
+            }
+
+            bool reset = keyOrIntraOnly || _lastSegmentMapMiRows != miRows || _lastSegmentMapMiCols != miCols;
+
+            if (_lastSegmentMap.Length != mapLength)
+            {
+                _lastSegmentMap = new byte[mapLength];
+            }
+            else if (reset)
+            {
+                Array.Clear(_lastSegmentMap);
+            }
+
+            _lastSegmentMapMiRows = miRows;
+            _lastSegmentMapMiCols = miCols;
         }
 
         private void SaveSegmentMap(ref Vp9Common cm)

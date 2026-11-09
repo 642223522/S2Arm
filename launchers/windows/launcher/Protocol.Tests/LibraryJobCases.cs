@@ -64,5 +64,74 @@ internal static class LibraryJobCases
             catch (LibraryProtocolException) { check(true, "reject malformed catalogue"); }
         }
 
+        // ---- library layout v3: game.location in catalog, locations job (shapes from pack/jobs/library.py catalog / location_rows) ----
+        const string located = """
+        {"games":[{"id":"A","name":"a","display":"","cover":"","hidden":false,"missing":[],"location":{"state":"offline","path":"E:\\S2Arm","folder":"","volume":"Games","default":false}},
+                  {"id":"B","name":"b","display":"","cover":"","hidden":false,"missing":[]}],"keys":{"ready":true,"message":""}}
+        """;
+        using (var document = System.Text.Json.JsonDocument.Parse(located))
+        {
+            var games = LibraryCatalog.Parse(document.RootElement).Games;
+            check(games[0].LocationState == "offline" && !games[0].Reachable && games[0].Location!.Path == "E:\\S2Arm" && games[0].Location!.Volume == "Games",
+                "catalog: offline location kept with its path and volume, game not reachable");
+            check(games[1].LocationState == "none" && games[1].Reachable && games[1].Location is null, "catalog: no location field reads as none, reachable");
+        }
+        using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"offline\"", "\"lost\"")))
+        {
+            try { LibraryCatalog.Parse(document.RootElement); throw new Exception("accepted unknown location state"); }
+            catch (LibraryProtocolException) { check(true, "catalog: unknown location state rejected"); }
+        }
+        const string rows = """
+        {"locations":[{"id":"a","path":"/lib","volume":"系统盘","connected":true,"freeBytes":5000000000,"default":true},
+                      {"id":"b","path":"/ext","volume":"Ext","connected":false,"freeBytes":null,"default":false},
+                      {"id":"c","path":"/other","volume":"Other","connected":true,"freeBytes":10,"default":false}],"last":"c"}
+        """;
+        StorageLocations Locations(string json)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return StorageLocations.Parse(document.RootElement);
+        }
+        var places = Locations(rows);
+        check(places.Rows.Count == 3 && places.Rows[0].FreeBytes == 5000000000 && places.Rows[0].IsDefault && places.Rows[1].FreeBytes is null &&
+              !places.Rows[1].Connected && places.Last == "c", "locations: rows, free space, connection and last id preserved");
+        check(places.DefaultFor(new("offline", "/ext", "", "Ext", false)) == "/ext", "locations: default = where the game is now, even offline");
+        check(places.DefaultFor(new("ok", "/lib", "/lib/games/A", "系统盘", true)) == "/lib", "locations: default = current location when ok");
+        check(places.DefaultFor(new("missing", "/ext", "", "Ext", false)) == "/other" && places.DefaultFor(null) == "/other",
+            "locations: missing / no location → the location used last");
+        check(Locations(rows.Replace("\"last\":\"c\"", "\"last\":\"b\"")).DefaultFor(null) == "/lib", "locations: last one not connected → default location");
+        try { Locations(rows.Replace("\"connected\":true,", "")); throw new Exception("accepted location without connected"); }
+        catch (LibraryProtocolException) { check(true, "locations: row without connected rejected"); }
+
+        // ---- library layout v3 P4: catalog game.sizes, storageOverview job (shapes from pack/jobs/sizes.py for_catalog / overview) ----
+        using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"missing\":[],\"location\"",
+            "\"missing\":[],\"sizes\":{\"imageMac\":0,\"imageIos\":6000000000,\"saves\":3,\"cache\":4,\"sources\":5,\"measured\":true},\"location\"")))
+        {
+            var games = LibraryCatalog.Parse(document.RootElement).Games;
+            check(games[0].Sizes == new GameSizes(0, 6000000000, 3, 4, 5, true), "catalog: sizes read, iPhone size beyond Int32 kept");
+            check(games[1].Sizes is null, "catalog: no sizes field reads as null (not counted)");
+        }
+        const string overview = """
+        {"locations":[{"id":"a","path":"D:\\S2Arm","volume":"Data","connected":true,"default":true,"totalBytes":9000000000,"freeBytes":4000000000,"usedBytes":3000000000},
+                      {"id":"b","path":"E:\\S2Arm","volume":"Ext","connected":false,"default":false}],
+         "shared":[{"id":"hosts","bytes":10},{"id":"ipa","bytes":20},{"id":"toolCache","bytes":0},{"id":"temp","bytes":0},{"id":"logs","bytes":5}],
+         "games":[{"gameId":"A","name":"Alpha","state":"ok","location":"D:\\S2Arm","sizes":{"imageMac":0,"imageIos":1,"saves":2,"cache":3,"sources":4,"measured":true}},
+                  {"gameId":"B","name":"","state":"offline","location":"E:\\S2Arm","sizes":{"imageMac":0,"imageIos":0,"saves":0,"cache":0,"sources":7,"measured":false}}]}
+        """;
+        StorageOverview Overview(string json)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return StorageOverview.Parse(document.RootElement);
+        }
+        var o = Overview(overview);
+        check(o.Locations.Count == 2 && o.Locations[0].IsDefault && o.Locations[0].UsedBytes == 3000000000 && o.Locations[0].FreeBytes == 4000000000 &&
+              o.Locations[0].TotalBytes == 9000000000, "overview: connected location keeps total / free / used beyond Int32");
+        check(!o.Locations[1].Connected && o.Locations[1].FreeBytes is null && o.Locations[1].UsedBytes is null, "overview: offline location has no fake zero");
+        check(string.Join(",", o.Shared.Select(p => p.Id + "=" + p.Bytes)) == "hosts=10,ipa=20,toolCache=0,temp=0,logs=5", "overview: shared parts in backend order");
+        check(o.Games[0].Sizes == new GameSizes(0, 1, 2, 3, 4, true) && o.Games[1].Name == "B" && o.Games[1].State == "offline" && !o.Games[1].Sizes.Measured,
+            "overview: game sizes; empty name falls back to the game id");
+        try { Overview(overview.Replace("{\"id\":\"hosts\",\"bytes\":10}", "{\"id\":\"hosts\"}")); throw new Exception("accepted shared part without bytes"); }
+        catch (LibraryProtocolException) { check(true, "overview: shared part without bytes rejected"); }
+        try { Overview(overview.Replace("\"connected\":false,", "")); throw new Exception("accepted overview location without connected"); }
+        catch (LibraryProtocolException) { check(true, "overview: location without connected rejected"); }
     }
 }

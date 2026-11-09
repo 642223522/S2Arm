@@ -123,7 +123,7 @@ static pthread_mutex_t g_vm_writer = PTHREAD_MUTEX_INITIALIZER;
 #endif
 static void host_write(uint64_t a, uint64_t n) { if (g_hooks.host_write) g_hooks.host_write(a, n); }
 void s2a_host_write_hook(uint64_t a, uint64_t n) { host_write(a, n); }   // thread.c 等别处写游戏内存前调
-#ifdef __APPLE__
+#ifndef __ANDROID__   // 与本文件其余苹果段同口径（端点核对在 Mac 上加 -D__ANDROID__ 编，__APPLE__ 照样为真）
 // 装载器（宿主扮演 rtld）写游戏内存里的一个 8 字节槽：nn::ro 装 NRO 后把起局没解析的导入补绑过去（loader.c s2a_nro_map）。
 //   11-09 玩家 iPhone 17 Pro Max（01001BA027DD8000，Nmpl 引擎）：游戏 DT_INIT 后用 SetMemoryPermission 把 main 的 RELRO（导入表所在）改只读，
 //   随后装 romfs/nro/NmplDLL.nro，补绑直接写只读页 → SIGBUS（同地址连崩 3 局）。真机 rtld 不受游戏设的页权限约束（这类导入走延迟绑定），宿主也不该受：

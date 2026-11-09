@@ -13,14 +13,14 @@ import AppKit
     override func setUp() async throws {
         _ = NSApplication.shared
         root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-ctl-apple-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent("jobs"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("logs/jobs"), withIntermediateDirectories: true)
         model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path)))
         control = try S2ArmControl(model: model) { XCTFail($0) }
     }
     override func tearDown() async throws { control.stop(); try? FileManager.default.removeItem(at: root) }
 
     func testDisplayNeedsAGame() async {
-        let (code, body) = await post("/display", ["metalfx": true])
+        let (code, body) = await post("/display", ["settings": ["enhance": true]])
         XCTAssertEqual(code, 400); XCTAssertEqual(body["error"] as? String, "缺 gameId")
     }
 
@@ -61,7 +61,7 @@ import AppKit
     func testStateHasTheFieldsS2armctlReadsAndJournalTasks() throws {
         try JSONSerialization.data(withJSONObject: ["id": "t1", "operation": "ipa", "gameId": "g", "state": "failed", "started": 1.0,
                                                      "diagnostics": [["code": "signing_failed", "summary": "s", "suggestion": "x", "logPath": "/tmp/l"]]])
-            .write(to: root.appendingPathComponent("jobs/t1.json"))
+            .write(to: root.appendingPathComponent("logs/jobs/t1.json"))
         let s = control.state()
         for k in ["selection", "showOnboarding", "onboardingStep", "keyStatus", "hasImportedKeys", "environmentReady", "checkingEnvironment",
                   "checks", "games", "tasks", "queue", "notice", "error", "installReadiness", "waitingForAccess", "cachedAt", "windows", "overlays"] {

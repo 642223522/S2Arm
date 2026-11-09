@@ -2,7 +2,7 @@
 //   App 自带的 s2armctl / skill（launchers/macos/skill/s2arm-operator，维护者 10-23：玩家用自己的 AI 完成移植）对缺省 App 全部连不上。
 // 收发、令牌、control.json 用适配层 ControlPort（与旧启动器同一份）；协议同旧启动器（launchers/macos/s2armctl.py 不用改）。
 // 每个命令调界面按钮背后的同一个模型方法（S2ArmLauncherModel），屏幕上的作业页照常显示；选文件的对话框改成直接给路径。
-// GET /state 的 tasks 读作业层自己写的作业记录（<私有目录>/jobs/<任务>.json），新界面没有任务表也照样有据。
+// GET /state 的 tasks 读作业层自己写的作业记录（<游戏库>/logs/jobs/<任务>.json，库没建好时 <私有目录>/logs/jobs；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
 import AppKit
 import Foundation
 import S2ArmAppleAdapter
@@ -110,6 +110,11 @@ import S2ArmAppleAdapter
             model.install(g, teamId: str("teamId"), device: str("device")); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
+        case ("POST", "/restore-iphone"):
+            guard let g = game() else { return .bad("没有这个 gameId") }
+            guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
+            if let b = busy() { return b }
+            model.restorePhone(g); return .ok()
         case ("POST", "/uninstall"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
@@ -144,6 +149,7 @@ import S2ArmAppleAdapter
                 guard model.installAllowed(g.id) else { return .bad("还不能装：先 install-check \(g.id)；这款的 iPhone 版没做好时要先出包") }
                 model.install(g); return .ok()
             case ("installRemove", let g?): model.removeFromPhone(g); return .ok()
+            case ("installRestore", let g?): model.restorePhone(g); return .ok()
             default: return .bad("这条任务（\(t["operation"] as? String ?? "?")）不能直接重试：照原样再发一次命令（keys / games 带路径）")
             }
         case ("POST", "/update"):
@@ -164,10 +170,11 @@ import S2ArmAppleAdapter
         case ("POST", "/display"):
             guard let id = str("gameId") else { return .bad("缺 gameId") }
             if let b = busy() { return b }
-            let change = ["fps60", "widenForce", "metalfx"].reduce(into: [String: Any]()) { out, key in if let on = a[key] as? Bool { out[key] = on } }
+            // 启动设置：settings 的键 = 共享定义表 id（launchers/shared/game_settings.v1.json），值 bool / 选项 / null（回缺省），作业层按表校验
+            let change = a["settings"] as? [String: Any] ?? [:]
             do {
-                let options = try await model.displaySettings(id, change: change.isEmpty ? nil : change)
-                return .object(options.mapValues { ["available": $0.available, "enabled": $0.enabled, "reason": $0.reason] })
+                let (options, _) = try await model.launchSettings(id, change: change.isEmpty ? nil : change)
+                return .object(options.mapValues { ["available": $0.available, "value": $0.value ?? NSNull(), "reason": $0.reason] })
             } catch { return .bad(error.localizedDescription) }
         case ("POST", "/select"):
             if let id = str("gameId") { model.selectedID = id }
@@ -252,7 +259,7 @@ import S2ArmAppleAdapter
             "checks": m.checks.map { ["name": $0.name, "ok": $0.ok, "message": $0.message, "group": $0.group, "action": $0.action ?? NSNull()] as [String: Any] },
             "fontsDir": NSNull(), "library": m.provider.client.environment.library,
             "games": m.games.map { g -> [String: Any] in
-                ["id": g.id, "name": g.name, "customName": g.customName, "customCover": g.customCover, "cover": g.cover ?? "", "display": g.display, "compatibility": g.compatibility, "ready": g.playable,
+                ["id": g.id, "name": g.name, "customName": g.customName, "customCover": g.customCover, "cover": g.cover ?? "", "display": g.display, "compatibility": g.compatibility, "ready": g.playable, "iphoneRestorable": g.iphoneRestorable,
                  "needsPreparation": g.needsPreparation, "needsKeys": g.needsKeys, "buildable": g.buildable, "missing": g.missing,
                  "baseBytes": g.packages.filter { $0.type == "base" }.reduce(Int64(0)) { $0 + $1.size }, "bytes": g.totalBytes] },
             "session": session, "busy": m.busy,

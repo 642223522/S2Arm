@@ -638,6 +638,25 @@ namespace Ryujinx.Graphics.Nvdec.Vp9
             }
         }
 
+        // S2Arm: port of libvpx vp9_loop_filter_init (limits for the current sharpness, HEV thresholds), which the C# port
+        // was missing. The NVDEC path builds a fresh Vp9Common for every frame, so without it HevThr stayed 0 and, at
+        // sharpness 0 (LastSharpnessLevel also 0), Lim / Mblim stayed 0 too: the deblocking filter almost never fired.
+        public static void LoopFilterInit(ref Vp9Common cm)
+        {
+            ref LoopFilterInfoN lfi = ref cm.LfInfo;
+            ref Types.LoopFilter lf = ref cm.Lf;
+
+            UpdateSharpness(ref lfi, lf.SharpnessLevel);
+            lf.LastSharpnessLevel = lf.SharpnessLevel;
+
+            Span<LoopFilterThresh> lfthr = lfi.Lfthr.AsSpan();
+
+            for (int lvl = 0; lvl <= MaxLoopFilter; lvl++)
+            {
+                lfthr[lvl].HevThr.AsSpan().Fill((byte)(lvl >> 4));
+            }
+        }
+
         public static void LoopFilterFrameInit(ref Vp9Common cm, int defaultFiltLvl)
         {
             int segId;

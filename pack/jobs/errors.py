@@ -204,6 +204,8 @@ LOG_CAUSES = (
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
      r"|STATUS_DISK_FULL|磁盘空间不足", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样
+    # cp 被系统拒绝（拷字体等，pack/stages/sysdata.sh 红行带 cp 原文）：macOS 隐私授权没给（桌面 / 文稿 / 下载 / 外接盘）或目录没写权限 → 提示去系统设置授权
+    (r"\bcp: .*: (?:Operation not permitted|Permission denied)", "permission_denied"),
     # 直连库出库前核链号对不上：旧引擎（≤ beta.4，direct_lib.sh 把 dmsh_chain.py --build-env 的 stderr 一起收进链号）遇到 metal 比锁新的 Xcode，
     #   编译器提示「note: …」被当成链号读（eb4b5c964 已修）。玩家能做的就是更新 S2Arm
     (r"链号前后不一", "engine_toolchain_newer"),
@@ -214,7 +216,8 @@ LOG_CAUSES = (
     (r"PFRW\s+mod=\S+\s+need=\d+\s+gaps=[1-9]\d*", "rewrite_gap"),
     # Windows 出包期 GLSLC 工具模式缺失（exitCode 75）
     (r"Windows 还没有 GLSLC 工具模式|要出包期离线编 GLSLC.*Windows", "glslc_windows_unavailable"),
-    (r"unable to find utility \"metal(?:lib)?\"|cannot execute tool '?metal(?:lib)?'?|missing Metal Toolchain", "metal_unavailable"),
+    (r"unable to find utility \"metal(?:lib)?\"|cannot execute tool '?metal(?:lib)?'?|missing Metal Toolchain"
+     r"|【红】环境缺件 metal：", "metal_unavailable"),   # 后者：Windows 出包预检（pack/orch/oneclick_win.py env_items）找不到 Metal Developer Tools
     (r"is not installed\. (?:To use with Xcode, first download and install the platform|Please download and install the platform)", "ios_platform_missing"),   # xcodebuild 原文（11-07 gate-host Xcode 26.6）
     (r"unable to find utility \"|: command not found|is not recognized as an internal or external command", "tool_missing"),
 )

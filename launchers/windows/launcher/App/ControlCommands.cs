@@ -193,7 +193,16 @@ public sealed partial class EnvironmentWindow
                 if (ControlBusy) return Busy();
                 selectedGame = game.Id;
                 Navigate("install");
-                _ = RemoveAsync(game);
+                _ = RunPhoneJobAsync(game, "installRemove", "install.remove");
+                return ControlReply.Ok();
+            }
+            case ("POST", "/restore-iphone"):   // s2armctl restore-iphone：装回上一版手机 S2Arm（同 Mac 控制口）
+            {
+                if (ControlGame(r) is not { } game) return NoGame;
+                if (ControlBusy) return Busy();
+                selectedGame = game.Id;
+                Navigate("install");
+                _ = RunPhoneJobAsync(game, "installRestore", "install.restore");
                 return ControlReply.Ok();
             }
             case ("POST", "/cancel"):

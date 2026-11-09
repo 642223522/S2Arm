@@ -51,7 +51,7 @@
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return _store.diagnostics.count ? 5 : 4; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 3 : section == 3 ? 5 : _store.diagnostics.count;
+    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 5 : section == 3 ? 5 : _store.diagnostics.count;
 }
 // 0 = 默认布局，1 = 触屏直通，之后是用户布局（内置两项没有对应文件，所以固定占前两行）
 - (NSString *)identifierAtRow:(NSInteger)row {
@@ -64,7 +64,7 @@
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     return section == 0 ? @"切换立即保存并生效" :
-        section == 1 ? nil : section == 2 ? @"停止操作 3 秒后保留的按键透明度。0% 会完全隐藏；默认 25%。触感反馈在按键新按下、每根摇杆每次按住期间首次到边时轻震一次；不改变游戏本身的震动。" :
+        section == 1 ? nil : section == 2 ? @"停止操作 3 秒后保留的按键透明度。0% 时停手后完全看不见，手指按下仍有效、按键随即重新显示；默认 25%。触感反馈在按键新按下、每根摇杆每次按住期间首次到边时轻震一次；不改变游戏本身的震动。" :
         section == 3 ? @"左右摇杆共用。死区过滤中心微动；外圈饱和越小，越早推满；响应指数大于 1 时中心更细，小于 1 时更灵敏。松手保存，下次推杆生效；默认 8% / 100% / 1.00。" :
         @"错误文件保留原样；修正后重新导入或从“文件”中的本 App / VPadLayouts 管理。";
 }
@@ -82,6 +82,16 @@
         cell.textLabel.text = @[@"编辑按键（位置、大小、透明度、配色）", @"导入布局", @"另存当前布局", @"导出当前布局", @"恢复按键布局"][indexPath.row];
         cell.accessibilityIdentifier = @[@"vpad.layouts.edit", @"vpad.layouts.import", @"vpad.layouts.save", @"vpad.layouts.export", @"vpad.layouts.reset"][indexPath.row];
         cell.textLabel.textColor = self.view.tintColor;
+    } else if (indexPath.section == 2 && indexPath.row == 3) {
+        cell.textLabel.text = @"游戏震动"; cell.detailTextLabel.text = @"手机马达和手柄共用，全部游戏生效"; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        id on = [NSUserDefaults.standardUserDefaults objectForKey:@"S2ARumbleOn"];
+        UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = on ? [on boolValue] : YES; toggle.accessibilityIdentifier = @"vpad.rumble.on"; toggle.accessibilityLabel = @"游戏震动";
+        [toggle addTarget:self action:@selector(rumbleSwitch:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = toggle;
+    } else if (indexPath.section == 2 && indexPath.row == 4) {
+        id level = [NSUserDefaults.standardUserDefaults objectForKey:@"S2ARumbleLevel"]; NSInteger lv = level ? [level integerValue] : 2;
+        cell.textLabel.text = @"震动强度"; cell.detailTextLabel.text = @[@"弱", @"较弱", @"标准", @"较强", @"强"][MAX(0, MIN(4, lv))]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 44)]; slider.minimumValue = 0; slider.maximumValue = 4; slider.value = lv; slider.continuous = NO;
+        slider.accessibilityIdentifier = @"vpad.rumble.level"; slider.accessibilityLabel = @"震动强度"; [slider addTarget:self action:@selector(rumbleLevel:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = slider;
     } else if (indexPath.section == 2 && indexPath.row == 2) {
         cell.textLabel.text = @"按住锁定 ZL / ZR"; cell.detailTextLabel.text = @"按住 2 秒锁定，再点一下解锁；只对这款游戏生效";
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -156,6 +166,8 @@
     // Appearance alone must not mark a manual layout choice or change touch mode.
     [self reload];
 }
+- (void)rumbleSwitch:(UISwitch *)toggle { void s2a_rumble_apply_settings(void), s2a_rumble_preview(void); [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }
+- (void)rumbleLevel:(UISlider *)slider { void s2a_rumble_apply_settings(void), s2a_rumble_preview(void); [NSUserDefaults.standardUserDefaults setInteger:lround(slider.value) forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); [self reload]; }
 - (void)stickModeSwitch:(UISwitch *)toggle {
     NSError *error; if (![_store setStickFixed:toggle.on sensitivity:_store.stickSensitivity error:&error]) { toggle.on = _store.stickFixed; [self showError:error]; return; }
     if (self.stickModeChanged) self.stickModeChanged();
@@ -184,7 +196,7 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0) {
-        if ([self chooseLayout:[self identifierAtRow:indexPath.row]] && !self.embeddedInSettings) [self close];
+        [self chooseLayout:[self identifierAtRow:indexPath.row]];   // 选完留在本页（11-09 维护者：改设置没有退出意图时不自己退掉），打勾跟着换；关页面用右上角「完成」
     } else if (indexPath.section == 1) {
         switch (indexPath.row) {
             case 0: [self requestEdit]; break;
@@ -203,7 +215,7 @@
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"恢复按键布局？" message:@"已保存的自定义布局会保留。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"恢复按键布局" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        if ([self chooseLayout:S2AVPadLayoutDefaultIdentifier] && !self.embeddedInSettings) [self close];
+        [self chooseLayout:S2AVPadLayoutDefaultIdentifier];   // 恢复后留在本页（同上）
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }

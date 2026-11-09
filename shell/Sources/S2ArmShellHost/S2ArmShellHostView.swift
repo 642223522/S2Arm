@@ -22,7 +22,7 @@ public struct S2ArmShellHostView: View {
                                          close: { model.closeLayoutEditor() })
                 }
                 if let id = model.editingIdentity {
-                    S2ArmGameIdentityView(title: model.identityName(id), initialName: model.identityName(id), hasCustom: model.hasCustomIdentity(id),
+                    S2ArmGameIdentityView(title: model.identityName(id), initialName: model.identityName(id), hasCustom: model.hasCustomIdentity(id), error: model.identityError,
                                           save: { model.saveIdentity(id, name: $0, cover: $1) }, reset: { model.resetIdentity(id) }, close: { model.closeIdentityEditor(id) })
                 }
             }

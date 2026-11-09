@@ -6,7 +6,7 @@ final class LibraryProviderTests: XCTestCase {
     func testCatalogResultBecomesGameSummaries() throws {
         let box = try Sandbox(); defer { box.remove() }
         let runner = FakeRunner()
-        runner.script = { _ in ([eventLine("result", state: "succeeded", message: "操作完成", extra: #","result":{"games":[{"id":"0100A","name":"Alpha","display":"1.2.0","cover":"/L/games/0100A/cover.jpg","ready":true,"needsPreparation":false,"compatibility":"experimental","missing":[]},{"id":"0100B","name":"Beta","cover":"","ready":true,"needsPreparation":true},{"id":"0100C","name":"Hidden","hidden":true},{"name":"no id"}]}"#)], 0, false) }
+        runner.script = { _ in ([eventLine("result", state: "succeeded", message: "操作完成", extra: #","result":{"games":[{"id":"0100A","name":"Alpha","display":"1.2.0","cover":"/L/games/0100A/cover.jpg","ready":true,"needsPreparation":false,"compatibility":"experimental","missing":[],"sizes":{"imageMac":1,"imageIos":2,"saves":3,"cache":4,"sources":5000000000,"measured":true}},{"id":"0100B","name":"Beta","cover":"","ready":true,"needsPreparation":true},{"id":"0100C","name":"Hidden","hidden":true},{"name":"no id"}]}"#)], 0, false) }
         let done = expectation(description: "load")
         var games: [GameSummary] = []
         LibraryProvider(client: client(box, runner)).load { if case .success(let g) = $0 { games = g }; done.fulfill() }
@@ -18,6 +18,8 @@ final class LibraryProviderTests: XCTestCase {
         XCTAssertNil(games[1].cover)
         XCTAssertTrue(games[0].playable)
         XCTAssertFalse(games[1].playable)   // 运行文件要重新准备
+        XCTAssertEqual(games[0].sizes, GameSizes(imageMac: 1, imageIos: 2, saves: 3, cache: 4, sources: 5_000_000_000, measured: true))
+        XCTAssertEqual(games[1].sizes, GameSizes(), "catalog 没给 sizes：四项 0、没量过")
     }
 
     func testLastKnownGamesShowBeforeTheJobAndFollowTheLibrary() throws {

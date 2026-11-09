@@ -202,8 +202,9 @@ static const struct { const char *n; const char *why; } g_ns2_red[] = {
     {"NvRmHost1xOpen", W_NVRM},
     {"NvRmHostModuleCheck", W_NVRM},
     {"_ZN2nn5album28InitializeMovieMakerInternalEONS_2sf13SharedPointerINS_6grcsrv11IMovieMakerEEEm", W_REC},
-    // nn::camera::sdk 和 nn::chat 的其他接口保留红桩（游戏导入了但不在玩家日志的 8 个里）
+    // nn::chat::gsv（GameChat 画面合成）与 detail 内部入口：游戏直接导入就点名（nn::chat 公开接口由下面 chat_entry 整组接管）
     {"_ZN2nn4chat3gsv10InitializeEv", W_CHAT},
+    {"_ZN2nn4chat35CreateAlternativeScreenSharingLayerEPPNS_2vi5LayerEPNS1_7DisplayEPKNS1_21LayerCreationSettingsE", W_CHAT},   // 出参 vi::Layer*：回空图层游戏会接着用，要真聊天才有意义
     {"_ZN2nn4chat3gsv16DestroyImagePoolEPNS1_13ImagePoolTypeE", W_CHAT},
     {"_ZN2nn4chat3gsv29CalculateRequiredBufferMemoryEPmS2_RKNS1_15ImagePreferenceEm", W_CHAT},
     {"_ZN2nn4chat6detail21InitializeUserServiceEv", W_CHAT},
@@ -223,18 +224,79 @@ static const struct { const char *n; const char *why; } g_ns2_red[] = {
     {"_ZN2nn3gsv4shim21CalculateRequirementsEPmS2_RKNS1_30InterModuleUserImagePreferenceEj", W_GSV},
     {"_ZN2nn3gsv4shim6detail33InitializeInterModuleImageContextEv", W_GSV},
 };
-// ---------- nn::chat / nn::camera::sdk「服务不可用」实现 ----------
-// Initialize 类：成功返回；查询 / 创建类：返回「不可用」结果（尺寸 0、句柄无效）；Destroy 类：空操作。真实返回类型无公开文档（void 或 nn::Result），一律回 0
-static uint64_t chat_init(void) {
-    static _Atomic int said;
-    if (!atomic_exchange(&said, 1)) LOG("nn::chat::Initialize：宿主没有 GameChat，成功返回让游戏走「无 GameChat」分支");
-    return 0;
+// ---------- nn::chat（GameChat）「没在聊」实现：公开接口整组接管 ----------
+// 为什么整组：sdk 的 nn::chat::Initialize 经 detail::InitializeUserService 建 chat:u 服务对象存进 sdk 全局（g_UserService），
+//   之后每个公开接口都「锁 → 取全局对象 → 读虚表发命令」；InitializeUserService 末尾还要 nn::chat::gsv::Initialize + 5 次 OpenVirtualDisplay（GPU 服务，直连档没有，失败即 Abort），
+//   这些是 sdk 内部互调、不经导入表，宿主接不住——所以 Initialize 只能在 main 导入层接管、不建对象，那么 main 导入的其余公开接口也必须全在这一层接管，
+//   漏一个就是读空对象的虚表（11-09 #299 塞尔达无双封印战记：Initialize 后第一个 chat 接口 SIGSEGV 地址 0；审计 P1-145 只接 Initialize 不够）。
+// 语义 = 真机「没有 GameChat 会话」：没在聊、没有房间、事件永不触发、设置照收。收发格式取自 Splatoon Raiders（0400380020056000）sdk 的 nn::chat 客户端代理反汇编
+//   （公开接口 → IUserService / 用户对象代理虚表 → 命令号 → 共用代理模板的消息布局）：RoomInfo 固定 0xF0 字节（GetChattingUid 读其 +0x18 的 Uid），
+//   取模式类出参 1 字节，缩放倍率 f32。返回类型 void / nn::Result / bool / 计数都按 w0 = 0 读（成功 / false / 0）
+static uint64_t chat_ret0(void) { return 0; }
+typedef struct { uint64_t lo, hi; } chat_uid;
+static chat_uid chat_uid0(void) { chat_uid u = {0, 0}; return u; }                                     // GetChattingUid：Uid 全 0 = 没在聊
+static uint64_t chat_room0(void *room) { if (room) memset(room, 0, 0xF0); return 0; }                 // GetRoomInfo(ForTest)：没有房间
+static uint64_t chat_mode0(void *mode) { if (mode) *(uint8_t *)mode = 0; return 0; }                  // GetLocalCameraImageProcessingMode(_Deprecated)：没有摄像头
+static float chat_zoom1(void) { return 1.0f; }                                                         // GetLocalCameraZoomMagnification：不缩放
+static uint64_t chat_read0(uint64_t *got, void *buf, uint64_t size, const void *nsa) { (void)buf; (void)size; (void)nsa; if (got) *got = 0; return 0; }   // ReadAudioStream：没有音频流
+static uint64_t chat_sync0(void *sync) { if (sync) memset(sync, 0, 16); return 0; }                   // RequestNext*CameraImage：同步句柄全 0（视为已达到），没有图像
+// Attach*ChangedEvent(SystemEvent*)：挂一个永不触发的宿主事件（游戏照常 Wait / TryWait / 多重等待）。事件工具在 nvn2_codec.c（依赖宿主 guest_sym / s2a_event_*），
+//   由那里的构造函数登记（同 g_vi_vsync：nvn2.c 不对它有链接依赖）；没登记的（图形单测、安卓单库）这一族不接管
+static uint64_t (*g_sev_attach)(void *sev, int autoclear);
+void nvn2_sev_attach_register(uint64_t (*f)(void *, int)) { g_sev_attach = f; }
+static void chat_attach(void *sev) { if (sev && g_sev_attach) g_sev_attach(sev, 0); }
+static void *chat_entry(const char *name) {
+    static const char P[] = "_ZN2nn4chat";
+    if (strncmp(name, P, sizeof P - 1)) return NULL;
+    const char *n = name + sizeof P - 1;
+    static const struct { const char *n; void *f; } t[] = {
+        {"14GetChattingUidEv", (void *)chat_uid0},
+        {"11GetRoomInfoEPNS0_8RoomInfoE", (void *)chat_room0},
+        {"18GetRoomInfoForTestEPNS0_8RoomInfoE", (void *)chat_room0},
+        {"33GetLocalCameraImageProcessingModeEPNS0_25CameraImageProcessingModeE", (void *)chat_mode0},
+        {"54GetLocalCameraImageProcessingMode_Deprecated_OAAA51548EPNS0_25CameraImageProcessingModeE", (void *)chat_mode0},
+        {"31GetLocalCameraZoomMagnificationEv", (void *)chat_zoom1},
+        {"15ReadAudioStreamEPmPvmRKNS_7account23NetworkServiceAccountIdE", (void *)chat_read0},
+        {"27RequestNextLocalCameraImageEPNS_2gs16NativeSyncHandleEPNS0_20LocalCameraVideoTypeEiS2_", (void *)chat_sync0},
+        {"28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEPNS0_21RemoteCameraVideoTypeEiS2_RKNS_7account23NetworkServiceAccountIdE", (void *)chat_sync0},
+    };
+    for (unsigned i = 0; i < sizeof t / sizeof *t; i++) if (!strcmp(n, t[i].n)) return t[i].f;
+    // 8 个 Attach*ChangedEvent（参数都是 nn::os::SystemEvent*）
+    if (strstr(n, "AttachTo") && strstr(n, "EventEPNS_2os11SystemEventE")) return g_sev_attach ? (void *)chat_attach : NULL;
+    // 语义不明、要真聊天才有意义的：屏幕共享替代图层（出参 vi::Layer*，回空图层游戏会接着用）——不在这里接管，交给下面红桩表点名
+    if (!strncmp(n, "35CreateAlternativeScreenSharingLayer", 37)) return NULL;
+    // 内部实现与全局变量：不是游戏该导入的
+    { const char *q = n; while (*q >= '0' && *q <= '9') q++; if (!strncmp(n, "6detail", 7) || !strncmp(n, "3gsv", 4) || !strncmp(q, "g_", 2)) return NULL; }
+    // 其余公开接口：初始化 / 结束、设置 / 动作、查询计数与尺寸、视频存储——都按「没有会话」回 0（无出参，或出参由调用方预置）
+    static const char *const ret0[] = {
+        "10InitializeEv", "8FinalizeEv", "30InitializeWithoutVirtualCameraEv", "28FinalizeWithoutVirtualCameraEv", "10IsChattingEv",
+        "20SetScreenSharingModeENS0_17ScreenSharingModeE", "28SetScreenSharingDisallowListEPKNS_7account23NetworkServiceAccountIdEi", "30ClearScreenSharingDisallowListEv",
+        "22GetRealtimeAudioLevelsEPNS0_10AudioLevelEiPKNS_7account23NetworkServiceAccountIdEi", "42CalculateRequiredAudioStreamWorkBufferSizeEi",
+        "27CreateAudioStreamWorkBufferEPvmi", "28DestroyAudioStreamWorkBufferEv", "32GetAudioStreamCapacityFrameCountEv",
+        "25StartAudioStreamRecordingERKNS_7account23NetworkServiceAccountIdE", "24StopAudioStreamRecordingERKNS_7account23NetworkServiceAccountIdE",
+        "28GetAudioStreamFreeFrameCountERKNS_7account23NetworkServiceAccountIdE", "30GetAudioStreamFilledFrameCountERKNS_7account23NetworkServiceAccountIdE",
+        "31SetLocalCameraZoomMagnificationEf", "13SetSharingKeyERKNS0_10SharingKeyE", "15ClearSharingKeyEv", "13ShowChatStartERKNS_7account3UidE",
+        "22ShowCameraSharingGuideEv", "28ShowLocalCameraConfigurationENS0_25CameraImageProcessingModeE", "36ShowLocalCameraConfigurationVersion0ENS0_25CameraImageProcessingModeE",
+        "46BeginFullScreenWithLocalCameraAvailableSectionEbb", "46BeginFullScreenWithLocalCameraAvailableSectionEb", "44EndFullScreenWithLocalCameraAvailableSectionEv",
+        "25StartLocalCameraStreamingEv", "24StopLocalCameraStreamingEv", "35CalculateLocalCameraVideoBufferSizeEiii",
+        "33InitializeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeEiiiPvm", "31FinalizeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeE",
+        "25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi",
+        "26StartRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", "33StartRemoteCameraStreamingForTestERKNS_7account23NetworkServiceAccountIdE",
+        "25StopRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", "32StopRemoteCameraStreamingForTestERKNS_7account23NetworkServiceAccountIdE",
+        "36CalculateRemoteCameraVideoBufferSizeEiii", "34InitializeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeEiiiPvm",
+        "32FinalizeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeE", "26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi",
+        "39SetAlternativeScreenSharingLayerEnabledEb", "23InitializeVirtualCameraEPNS0_17VirtualCameraTypeE", "21FinalizeVirtualCameraEPNS0_17VirtualCameraTypeE",
+        "34GetVirtualCameraNativeWindowHandleEPKNS0_17VirtualCameraTypeE", "19EnableVirtualCameraEPNS0_17VirtualCameraTypeE",
+        "20DisableVirtualCameraEPNS0_17VirtualCameraTypeE", "43SetVirtualCameraContainPhotographedContentsEPNS0_17VirtualCameraTypeEb",
+        "44GetCameraImageProcessingModeForVirtualCameraEv",
+    };
+    for (unsigned i = 0; i < sizeof ret0 / sizeof *ret0; i++) if (!strcmp(n, ret0[i])) return (void *)chat_ret0;
+    // 认不得的 nn::chat 名字（更新的 sdk 新加的接口）：大声报出来，照原路径（会读空服务对象）——补进上表
+    LOG("【红】直连：Switch 2 游戏导入 nn::chat 接口 %s，宿主「没在聊」实现表里没有：照原路径会读空服务对象，补进 nvn2.c chat_entry", name);
+    return NULL;
 }
-static uint64_t chat_init_novirt(void) {
-    static _Atomic int said;
-    if (!atomic_exchange(&said, 1)) LOG("nn::chat::InitializeWithoutVirtualCamera：宿主没有 GameChat，成功返回");
-    return 0;
-}
+// ---------- nn::camera::sdk「服务不可用」实现 ----------
+// 查询 / 创建类：返回「不可用」结果（尺寸 0、句柄无效）；Destroy 类：空操作。真实返回类型无公开文档（void 或 nn::Result），一律回 0
 static uint64_t cam_calc_size(void *out_size, void *out_align, const void *pref, uint32_t count) {
     (void)pref; (void)count;
     static _Atomic int said;
@@ -308,9 +370,8 @@ void *s2a_nv_entry(const char *name) {
         {"_ZN2nn10streamplay21GetNativeWindowHandleENS0_7GuestIdE", (void *)nv_stpl_window},
     };
     for (unsigned i = 0; i < sizeof t / sizeof *t; i++) if (!strcmp(name, t[i].n)) return t[i].f;
-    // nn::chat / nn::camera::sdk「服务不可用」实现：chat Initialize 让游戏走无 GameChat 分支，其余接口返回「不可用」
-    if (!strcmp(name, "_ZN2nn4chat10InitializeEv")) return (void *)chat_init;
-    if (!strcmp(name, "_ZN2nn4chat30InitializeWithoutVirtualCameraEv")) return (void *)chat_init_novirt;
+    // nn::chat 公开接口整组「没在聊」实现（见 chat_entry）；nn::camera::sdk「服务不可用」
+    { void *c = chat_entry(name); if (c) { static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("nn::chat：宿主没有 GameChat，游戏导入的公开接口整组按「没在聊」接管（首个 %s）", name); return c; } }
     if (!strcmp(name, "_ZN2nn6camera3sdk23CalculateImageArraySizeEPNS_3gsv10MemorySizeES4_RKNS2_25CameraUserImagePreferenceEj")) return (void *)cam_calc_size;
     if (!strcmp(name, "_ZN2nn6camera3sdk23CalculateImageArraySizeEPNS_3gsv10MemorySizeES4_RKNS2_7imgdesc4impl4user5ounce25CameraUserImagePreferenceEj")) return (void *)cam_calc_size;
     if (!strcmp(name, "_ZN2nn6camera3sdk22CreateOutputBufferPoolEPNS_3gsv15UserImageHandleERKNS2_25CameraUserImagePreferenceEjNS2_16UserMemoryHandleE")) return (void *)cam_create_pool;
