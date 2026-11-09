@@ -52,7 +52,7 @@ enum ExportBlocker: Equatable {
 
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。同一时刻只有一个（同旧启动器「执行位」互斥）。
 struct JobSession: Equatable {
-    enum Kind: String { case play, export, prepare, install, installRemove, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
+    enum Kind: String { case play, export, prepare, install, installRemove, installRestore, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
                         keys, delete, diagnostics, moveGame, clearCache }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
@@ -546,6 +546,16 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
+    /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。
+    func restorePhone(_ game: GameSummary) {
+        guard !busy else { return }
+        failAction(nil, game: nil)
+        start(.installRestore, game: game, name: game.name) { [weak self] sink in
+            try await self?.provider.restorePhone(events: sink)
+            return nil
+        }
+    }
+
     func removeFromPhone(_ game: GameSummary) {
         guard !busy else { return }
         failAction(nil, game: nil)
@@ -819,7 +829,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 这个作业的进度留在原页（弹窗 / 欢迎页），不换到作业日志页。
     func isInline(_ s: JobSession) -> Bool {
-        [.keys, .importGames, .install, .installRemove, .delete, .diagnostics].contains(s.kind) || (showsWelcome && Self.repairKinds.contains(s.kind))
+        [.keys, .importGames, .install, .installRemove, .installRestore, .delete, .diagnostics].contains(s.kind) || (showsWelcome && Self.repairKinds.contains(s.kind))
     }
 
     /// 欢迎页的「一键出包」：出 iPhone / iPad。连着手机、环境齐就直接开始；否则进出包页，那里说清缺什么、提醒插手机、可以选机型（不会悄悄换目标）。

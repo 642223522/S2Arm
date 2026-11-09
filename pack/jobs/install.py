@@ -23,7 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from core import Failure, atomic, contained
+from core import Failure, atomic, contained, read
 from errors import recovery
 import layout
 
@@ -225,7 +225,6 @@ def pick_team(teams, want=None):
 #   包名固定 io.s2arm.games.<团队号小写>：本来就按团队分（不会被别的团队占），不用 NX2Apple 那样「缺省包名被占 → 团队变体 → 落盘沿用」；
 #     加款 / 换款都是同一个包名覆盖安装（不卸载，Documents 保留），一个团队只占一个 App ID（免费账号 7 天 10 个的额度）。换团队 = 换包名 = 新沙盒，旧存档要迁
 #   设备侧每款文档根 Documents/games/<游戏号>（资源包 / 存档 / 直连见过的键都在它下面），起这一款的启动上下文 @bundle/Games/<游戏号>/launch.ctx——与 ship_ext 容器布局同口径
-CONTAINER_DIR = "container"   # 游戏库 iPhone/container/：S2Arm.app（下次加款的底子）+ S2Arm.ipa
 
 
 def container_bundle_id(team):
@@ -458,15 +457,18 @@ def classify(text, default="signing_failed"):
     return default
 
 
-def latest_ipa(c, gid):
-    out = c.library / "iPhone" / gid
-    ipas = sorted(out.glob("*.ipa"), key=lambda p: p.stat().st_mtime) if out.is_dir() else []
-    if not ipas:
+def ios_pack(c, gid):
+    """这款的资源包（image/ios/pack）；还没出 iPhone 版 / 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）"""
+    if not (layout.ios_kit(c, gid) / "main.npdm").is_file():
         raise Failure("这款游戏还没出 iPhone 包：先点「打 iPhone 包」。", code="job_failed")
-    pack = next((p for p in sorted(out.iterdir()) if p.is_dir() and p.name.endswith("资源包")), None)
-    if pack is None:   # 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）
-        raise Failure(f"没找到这款的资源包目录（{out} 下以「资源包」结尾的文件夹），没有装。请重新「打 iPhone 包」后再装。", code="pack_missing")
-    return ipas[-1], pack
+    pack = layout.ios_pack(c, gid)
+    if not (pack / "manifest.json").is_file():
+        raise Failure(f"没找到这款的资源包（{pack}），没有装。请重新「打 iPhone 包」后再装。", code="pack_missing")
+    return pack
+
+
+def pack_id(pack):
+    return read(Path(pack) / "manifest.json", {}).get("index_sha256") or ""
 
 
 def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
@@ -595,7 +597,7 @@ def readiness(c):
         wait = waiting and not ok
         items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail="" if ok or wait else detail, who=who))   # 等前一步的不给说明，免得 AI 拿去催玩家
     try:
-        ipa_path = str(latest_ipa(c, gid)[0])
+        ipa_path = str(ios_pack(c, gid).parent)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
         item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
@@ -736,7 +738,7 @@ def readiness_windows(c, gid):
                           url=None if ok else url,   # 玩家自装件的官方下载页（同环境检查 winenv 的 url 字段）：启动器渲染成「打开官方下载页」，不从说明文字里抠链接
                           action=None if ok else action))   # 启动器本地动作（openImpactor：打开随包的 Impactor）；只认枚举，不传路径
     try:
-        ipa_path = str(latest_ipa(c, gid)[0])
+        ipa_path = str(ios_pack(c, gid).parent)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
         item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
@@ -760,19 +762,6 @@ def readiness_windows(c, gid):
     return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=udids[0] if len(udids) == 1 else "", account="", ipaPath=ipa_path)
 
 
-def latest_container(c):
-    """游戏库里组装好的容器 → (ipa, 各款游戏号)（目录清单 s2a_catalogue.json 的顺序）"""
-    out = c.library / "iPhone" / CONTAINER_DIR
-    ipa, cat = out / "S2Arm.ipa", out / "S2Arm.app" / "s2a_catalogue.json"
-    if not ipa.is_file() or not cat.is_file():
-        raise Failure("这台电脑还没往 iPhone 装过游戏。", code="job_failed")
-    try:
-        games = [g["title_id"] for g in json.loads(cat.read_text(encoding="utf-8"))["games"]]
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        raise Failure(f"容器的目录清单读不了（{cat}）：请重新装一次。", code="job_failed") from e
-    return ipa, games
-
-
 def devpush_client(c, udid, bid, work):
     """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它"""
     sys.path.insert(0, str(c.engine / "tools"))
@@ -793,6 +782,7 @@ class MacPhone:
         self.dev = dev or phone(c)
         self.udid = udid if udid is not None else udid_of(c, self.dev["id"])
         self.bid = container_bundle_id(self.team["id"])
+        self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
         self.info = dict(device=self.dev["name"], team=self.team["name"], free=self.team["free"])
 
     def backup(self, g):
@@ -817,13 +807,13 @@ class MacPhone:
 
 
 class WinPhone:
-    """Windows：Impactor 同版 plumesign 签名装机（包名由它按账号定、装完才知道，记在容器目录下 bundle.txt 供下次覆盖前备份）+ s2a-devpush 备份 / 推 / 删"""
+    """Windows：Impactor 同版 plumesign 签名装机（包名由它按账号定、装完才知道，记在这台的设备记录 devices/<设备>.json 的 bundleId，供下次覆盖前备份）+ s2a-devpush 备份 / 推 / 删"""
 
     def __init__(self, c):
         self.c, self.W = c, win_install_mod(c)
         self.udid = win_udid(c, self.W)
-        self.record = c.library / "iPhone" / CONTAINER_DIR / "bundle.txt"
-        self.bid = self.record.read_text(encoding="utf-8").strip() if self.record.is_file() else None
+        self.key = self.udid
+        self.bid = layout.load_device(c, self.key).get("bundleId") or None
         self.devpush = c.engine / "Binaries/Prepare/devpush/s2a-devpush.exe"
         self.info = dict(device=self.udid)
 
@@ -853,7 +843,8 @@ class WinPhone:
             self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
         except self.W.Fail as e:
             raise Failure(str(e), code=e.err or "device_install_failed") from e
-        self.record.write_text(self.bid, encoding="utf-8")
+        rec = layout.load_device(self.c, self.key)
+        layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 
     def before_push(self, packs):
         pass
@@ -878,56 +869,105 @@ def phone_for(c):
 
 
 def put_game(c, gid, ph, steps=True):
-    """把这款放进容器并装到手机：组装（已有各款原样带过来）→ 覆盖装 → 只推本次组装的款的资源包（其余款的数据和存档不动）"""
+    """把这款放进容器并装到手机：现组容器（这款 + 这台手机上已有的各款，ipa.assemble）→ 覆盖装 → 推资源包：这款照推，
+    别的款只推「游戏库里的资源包比手机上记的新」的（重新打过 iPhone 包、还没装到这台的），没变的不推（数据和存档不动）。
+    装上后记进 devices/<设备>.json，装机产物放默认位置根 S2Arm.ipa（换了壳的话原来那份留作 S2Arm.previous.ipa）"""
     import ipa as packer
-    latest_ipa(c, gid)   # 这款没有资源包就不组装、不装
+    gid = gid.upper()
+    ios_pack(c, gid)   # 这款没有资源包就不组装、不装
+    rec = layout.load_device(c, ph.key)
+    others = [g for g in rec.get("games", {}) if g != gid]
     if steps: c.begin("把这款放进手机上的 S2Arm", 2, 6)
-    ipa, games, fresh = packer.assemble(c, gid)
-    packs = {g: latest_ipa(c, g)[1] for g in fresh}   # 本次组装的每款都要有资源包，缺一款就不装（不装半套）
+    ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
+    packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
+    stale = [g for g in games if g == gid or pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack")]
     ph.install(ipa, games, steps=steps)
-    ph.before_push(packs)
+    ph.before_push({g: packs[g] for g in stale})
     if steps: c.begin("把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
     files = size = 0
-    for g in fresh:
-        f, n = ph.push(g, packs[g])
-        files += f; size += n
+    pushed = dict((g, (rec["games"].get(g) or {}).get("pack", "")) for g in games)
+    try:
+        for g in stale:
+            f, n = ph.push(g, packs[g])
+            files += f; size += n
+            pushed[g] = pack_id(packs[g])
+    finally:   # 推到一半失败：已推好的记下，没推的下次照推
+        rec = layout.load_device(c, ph.key)
+        layout.save_device(c, ph.key, dict(rec, games={g: dict(pack=pushed[g]) for g in games}, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time()))
+    packer.commit_phone_ipa(c, ipa, sid)
     if "free" in ph.info:   # 记下这次签名（游戏库页的「还有几天到期 / 续签」读 games/<id>/ios-install.json）：免费账号的描述文件 7 天到期，容器里每款同一次签名
         for g in games:
             record = layout.path(c, g, "ios-install.json")
             record.parent.mkdir(parents=True, exist_ok=True)
             atomic(record, dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"]))
-    return dict(outputPath=str(ipa.parent), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info)
+    return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info)
 
 
 def install(c):
     """默认「装到 iPhone」：这款进容器（一个 App 装下整个游戏库，免费账号也只占 1 个 App 额度）。加款 = 同一个包名覆盖安装，Documents 保留"""
     gid = c.r.get("gameId") or ""
-    latest_ipa(c, gid)
+    ios_pack(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)
     return put_game(c, gid, phone_for(c))
 
 
+def restore_previous(c):
+    """装回换壳前的那一版手机 S2Arm（默认位置根 S2Arm.previous.ipa）：新运行层在手机上不好用时的回滚。
+    装上后现行与上一版对调（再点一次 = 换回来）；被换下的壳号记进这台的 failedShells，之后给这台装机不再把旧款只换宿主带进它（要按新版重出）。
+    手机 Documents 里的资源包和存档不动；换宿主之后才新装的游戏不在上一版里，App 里暂时看不到（数据还在）"""
+    import ipa as packer
+    current, previous = layout.phone_ipa(c), layout.phone_ipa(c, previous=True)
+    games, old_sid = packer.ipa_games(previous)
+    _, dropped = packer.ipa_games(current)
+    if not games:
+        raise Failure("没有可以装回的上一版手机 S2Arm。", code="job_failed")
+    c.begin("找签名账号与 iPhone", 1, 3)
+    ph = phone_for(c)
+    c.begin("装回上一版 S2Arm", 2, 3)
+    ph.install(previous, games, steps=False)
+    c.begin("记下手机上现在的版本", 3, 3)
+    tmp = current.with_name(current.name + ".swap")
+    if current.is_file():
+        os.replace(current, tmp)
+    os.replace(previous, current)
+    if tmp.is_file():
+        os.replace(tmp, previous)
+    rec = layout.load_device(c, ph.key)
+    failed = sorted(set(rec.get("failedShells", [])) | ({dropped} if dropped else set()))
+    layout.save_device(c, ph.key, dict(rec, games={g: rec["games"].get(g) or {} for g in games}, shellId=old_sid, failedShells=failed, bundleId=ph.bid or rec.get("bundleId", "")))
+    return dict(games=games, bundleId=ph.bid, restoredShell=old_sid, **ph.info)
+
+
 def remove_from_phone(c):
-    """从手机上的 S2Arm 里删一款，只动这一款：备份本款存档 → 容器摘掉本款（其余各款逐字节不变、不换壳）→ 覆盖装 → 删机上本款文档根。
-    新容器装上之后才替换游戏库里的那份（装失败时两边还一致）；机上目录没删掉只报黄字（App 里这款已经没了，占的空间下次再清）"""
+    """从手机上的 S2Arm 里删一款：备份本款存档 → 用剩下各款现组容器 → 覆盖装 → 删机上本款文档根。
+    剩下的款有新运行层认不得的（升级后还没重出）：退回从 S2Arm.ipa 里摘掉这款（pack/ship_ext.py container-drop，其余各款逐字节不变、不换壳）。
+    装上之后才改设备记录（装失败时两边还一致）；机上目录没删掉只报黄字（App 里这款已经没了，占的空间下次再清）"""
     import ipa as packer
     gid = (c.r.get("gameId") or "").upper()
-    _, games = latest_container(c)
-    if gid not in games:
-        raise Failure("手机上的 S2Arm 里没有这款。", code="job_failed")
     c.begin("找签名账号与 iPhone", 1, 4)
     ph = phone_for(c)
+    rec = layout.load_device(c, ph.key)
+    if gid not in rec.get("games", {}):
+        raise Failure("手机上的 S2Arm 里没有这款。", code="job_failed")
     if not ph.bid:
         raise Failure("这台电脑没记录手机上的 S2Arm：先装一次再删。", code="job_failed")
     c.begin("备份这款的存档", 2, 4)
     backup = ph.backup(gid)
     c.begin("更新手机上的 S2Arm", 3, 4)
-    with packer.dropped(c, gid) as (ipa, left):
-        # 最后一款（#227）：不装空容器（宿主 0 款的启动路径没在真机验过，vawin.c 报红不占窗口），手机上的 App 原样留着，
-        #   下一步删掉它的数据后库界面按「数据不在」不再显示 = 空库；游戏库这边的容器照样摘空，下次装新游戏时覆盖装把旧程序一起换掉
-        if left:
-            ph.install(ipa, left, steps=False)
-        packer.commit_drop(c, ipa)
+    left = [g for g in rec["games"] if g != gid]
+    # 最后一款（#227）：不装空容器（宿主 0 款的启动路径没在真机验过，vawin.c 报红不占窗口），手机上的 App 原样留着，
+    #   下一步删掉它的数据后库界面按「数据不在」不再显示 = 空库；下次装新游戏时覆盖装把旧程序一起换掉
+    if left:
+        try:
+            ipa, left, sid = packer.assemble(c, None, left, failed=rec.get("failedShells", []))
+        except Failure as e:
+            if e.code != "container_stale":
+                raise
+            ipa, left, sid = packer.drop_from_ipa(c, layout.phone_ipa(c), gid)
+        ph.install(ipa, left, steps=False)
+        packer.commit_phone_ipa(c, ipa, sid)
+    rec = layout.load_device(c, ph.key)
+    layout.save_device(c, ph.key, dict(rec, games={g: rec["games"].get(g) or {} for g in left}))
     c.begin("删除手机上这款的数据", 4, 4)
     ok, out = ph.purge(gid)
     if not ok:

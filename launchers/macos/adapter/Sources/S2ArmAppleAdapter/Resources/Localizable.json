@@ -6686,5 +6686,17 @@
  {
   "source": "这款游戏没有走直连渲染，用不了 MetalFX 放大。",
   "en": "This game doesn't use direct rendering, so MetalFX upscaling isn't available."
+ },
+ {
+  "source": "没有可以装回的上一版手机 S2Arm。",
+  "en": "There's no previous S2Arm to restore on iPhone."
+ },
+ {
+  "source": "装回上一版 S2Arm",
+  "en": "Restoring the previous S2Arm"
+ },
+ {
+  "source": "记下手机上现在的版本",
+  "en": "Recording the version now on iPhone"
  }
 ]

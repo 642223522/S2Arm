@@ -73,7 +73,7 @@ public sealed class JobEventReader(string jobId, string operation)
 public static class PackJobClient
 {
     public static readonly IReadOnlySet<string> Operations =
-        new HashSet<string>(StringComparer.Ordinal) { "ipa", "installCheck", "install", "installRemove", "customize",
+        new HashSet<string>(StringComparer.Ordinal) { "ipa", "installCheck", "install", "installRemove", "installRestore", "customize",
             "moveGame", "relinkGame", "forgetGame", "clean", "delete" };
 
     public sealed record Request(LauncherPaths Paths, string PrivateRoot, string Library, string LibraryId, string Operation,
@@ -97,7 +97,7 @@ public static class PackJobClient
         // Bundled resources next to S2Arm.exe (bundle_win.py layout): ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
         // "shared fonts missing", tianyan 11-07); installCheck / install use the Impactor + plumesign shipped in resources/ThirdParty/Impactor
         // (pack/jobs/impactor.py bundled, 11-07 维护者: no download detour for players).
-        if (request.Operation is "ipa" or "installCheck" or "install" or "installRemove") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
+        if (request.Operation is "ipa" or "installCheck" or "install" or "installRemove" or "installRestore") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
         foreach (var (key, value) in request.Extra ?? new Dictionary<string, object?>())
         {
             if (payload.ContainsKey(key)) throw new ArgumentException("Extra field overrides the request envelope: " + key);

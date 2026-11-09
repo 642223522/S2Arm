@@ -52,11 +52,13 @@ public struct GameSummary: Identifiable, Equatable {
     public let hostUpdate: String
     /// 存放位置（游戏库结构 v3）：state = ok / offline（位置没连上）/ missing（文件夹找不到）/ none（还没出过包）
     public let location: GameLocation
+    /// 手机上的 S2Arm 换过新宿主、游戏库留着上一版：可以「装回上一版」（installRestore 作业）
+    public let iphoneRestorable: Bool
 
     public init(id: String, name: String, display: String = "", cover: String? = nil, ready: Bool = false,
                 needsPreparation: Bool = false, compatibility: String = "experimental", missing: [String] = [], packages: [GamePackage] = [],
-                iphoneReady: Bool = false, iphoneInstalledAt: Double? = nil, iphoneFree: Bool = false, customName: Bool = false, customCover: Bool = false, hostUpdate: String = "none", location: GameLocation = GameLocation()) {
-        self.customName = customName; self.customCover = customCover; self.hostUpdate = hostUpdate; self.location = location
+                iphoneReady: Bool = false, iphoneInstalledAt: Double? = nil, iphoneFree: Bool = false, customName: Bool = false, customCover: Bool = false, hostUpdate: String = "none", location: GameLocation = GameLocation(), iphoneRestorable: Bool = false) {
+        self.customName = customName; self.customCover = customCover; self.hostUpdate = hostUpdate; self.location = location; self.iphoneRestorable = iphoneRestorable
         self.iphoneReady = iphoneReady; self.iphoneInstalledAt = iphoneInstalledAt; self.iphoneFree = iphoneFree
         self.id = id; self.name = name; self.display = display; self.cover = cover; self.ready = ready
         self.needsPreparation = needsPreparation; self.compatibility = compatibility; self.missing = missing; self.packages = packages
@@ -74,7 +76,7 @@ public struct GameSummary: Identifiable, Equatable {
                   iphoneInstalledAt: ((g["iphoneInstall"] as? [String: Any])?["at"] as? NSNumber)?.doubleValue,
                   iphoneFree: (g["iphoneInstall"] as? [String: Any])?["free"] as? Bool ?? false,
                   customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false,
-                  hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]))
+                  hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false)
     }
 
     /// 某类原件里版本最新的那个的显示版本（base / update）；没有这类为 nil。

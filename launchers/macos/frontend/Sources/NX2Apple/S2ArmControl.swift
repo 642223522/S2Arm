@@ -110,6 +110,11 @@ import S2ArmAppleAdapter
             model.install(g, teamId: str("teamId"), device: str("device")); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
+        case ("POST", "/restore-iphone"):
+            guard let g = game() else { return .bad("没有这个 gameId") }
+            guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
+            if let b = busy() { return b }
+            model.restorePhone(g); return .ok()
         case ("POST", "/uninstall"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
@@ -144,6 +149,7 @@ import S2ArmAppleAdapter
                 guard model.installAllowed(g.id) else { return .bad("还不能装：先 install-check \(g.id)；这款的 iPhone 版没做好时要先出包") }
                 model.install(g); return .ok()
             case ("installRemove", let g?): model.removeFromPhone(g); return .ok()
+            case ("installRestore", let g?): model.restorePhone(g); return .ok()
             default: return .bad("这条任务（\(t["operation"] as? String ?? "?")）不能直接重试：照原样再发一次命令（keys / games 带路径）")
             }
         case ("POST", "/update"):
@@ -252,7 +258,7 @@ import S2ArmAppleAdapter
             "checks": m.checks.map { ["name": $0.name, "ok": $0.ok, "message": $0.message, "group": $0.group, "action": $0.action ?? NSNull()] as [String: Any] },
             "fontsDir": NSNull(), "library": m.provider.client.environment.library,
             "games": m.games.map { g -> [String: Any] in
-                ["id": g.id, "name": g.name, "customName": g.customName, "customCover": g.customCover, "cover": g.cover ?? "", "display": g.display, "compatibility": g.compatibility, "ready": g.playable,
+                ["id": g.id, "name": g.name, "customName": g.customName, "customCover": g.customCover, "cover": g.cover ?? "", "display": g.display, "compatibility": g.compatibility, "ready": g.playable, "iphoneRestorable": g.iphoneRestorable,
                  "needsPreparation": g.needsPreparation, "needsKeys": g.needsKeys, "buildable": g.buildable, "missing": g.missing,
                  "baseBytes": g.packages.filter { $0.type == "base" }.reduce(Int64(0)) { $0 + $1.size }, "bytes": g.totalBytes] },
             "session": session, "busy": m.busy,

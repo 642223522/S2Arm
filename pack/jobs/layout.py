@@ -17,7 +17,7 @@ from pathlib import Path
 
 from core import Failure, atomic, contained, read
 
-VERSION = 2
+VERSION = 3   # 2：每款进 games/<英文名>/；3：iPhone 产物进每款 image/ios、装机产物与设备记录进默认位置根（_upgrade_3）
 GAME_JSON = "game.json"
 NAME_MAX = 48   # Windows 深路径预算：库根 + games\<名> + 镜像 / 出包缓存的深层目录要留在 260 以内（玩家路径见 pack/jobs/winenv.py 长路径检查）
 _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -324,6 +324,71 @@ def build_dir(c, gid, create=True):
     return path(c, gid, "build", create=create)
 
 
+# ---- iPhone 一侧（游戏库结构 v3 P2）----
+# 每款 image/ios/：kit/（组容器要读的文件：随行表、main.npdm、模块镜像、随包表，ship_ext.place_game 的输入）+ pack/（资源包，推进手机 Documents）。
+#   game.json 的 ios 记 {shellId 出它的壳, hostAbi, dmshChain（host_update 判兼容）, pack 资源包 index_sha256}。不再保留单款 ipa。
+# 出包工作目录 build/ios（一键出包 --out）；默认位置根：S2Arm.ipa（最近一次装的）、S2Arm.previous.ipa（换壳前那一版，回滚用）；
+# devices/<设备>.json：这台手机装了哪些款（各款资源包号）、壳号、包名（Windows 由 plumesign 定）、装回过上一版的壳号 failedShells。
+IOS_KIT, IOS_PACK = "kit", "pack"
+PHONE_IPA, PHONE_PREVIOUS = "S2Arm.ipa", "S2Arm.previous.ipa"
+DEVICES = "devices"
+LEGACY_DEVICE = "legacy"   # 迁移来的旧容器记录：还不知道是哪台手机，第一台装机的设备认领它
+
+
+def image_ios(c, gid, create=True):
+    return path(c, gid, "image", "ios", create=create)
+
+
+def ios_kit(c, gid):
+    return image_ios(c, gid, create=False) / IOS_KIT
+
+
+def ios_pack(c, gid):
+    return image_ios(c, gid, create=False) / IOS_PACK
+
+
+def ios_work(c, gid, create=True):
+    """一键出包的输出目录（产物根 roots/、Windows 的 work/、交付的 ipa 与资源包先落这里，收尾时搬进 image/ios）"""
+    return build_dir(c, gid, create=create) / "ios"
+
+
+def phone_ipa(c, previous=False):
+    return c.library / (PHONE_PREVIOUS if previous else PHONE_IPA)
+
+
+def device_key(ident):
+    key = re.sub(r"[^0-9A-Za-z-]", "", str(ident or ""))[:64]
+    return key or "unknown"
+
+
+def device_path(c, ident):
+    return c.library / DEVICES / (device_key(ident) + ".json")
+
+
+def load_device(c, ident):
+    """这台手机的记录；还没有、而迁移留下了旧容器记录 → 认领它（改名成这台的），旧版装过的各款这次照常带上"""
+    p = device_path(c, ident)
+    if not p.is_file():
+        legacy = device_path(c, LEGACY_DEVICE)
+        if legacy.is_file() and device_key(ident) != LEGACY_DEVICE:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(legacy, p)
+    rec = read(p, {})
+    return dict(dict(schema=1, games={}, shellId="", bundleId="", failedShells=[]), **rec) if isinstance(rec, dict) else dict(schema=1, games={}, shellId="", bundleId="", failedShells=[])
+
+
+def save_device(c, ident, rec):
+    p = device_path(c, ident)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic(p, dict(rec, schema=1))
+
+
+def devices(c):
+    """[(设备键, 记录)…]"""
+    d = c.library / DEVICES
+    return [(p.stem, read(p, {})) for p in sorted(d.glob("*.json"))] if d.is_dir() else []
+
+
 # ---- 迁移（旧布局 → VERSION 2）----
 # 每款：先把 games/<号>/ 整个改名成 games/<英文名>/ 并写 game.json（之后任何时候中断，都能凭 game.json 认出来），再把散在别处的搬进去。
 # 只做同盘改名；只删能重建的：Mac 旧的上一版运行版本（releases 里不是现行的那几份）。
@@ -405,8 +470,17 @@ def migrate(c):
     """旧布局一次性迁到 VERSION 2（调用方持执行锁）；已迁完直接返回。可中断续做"""
     marker = c.library / ".s2arm-layout.json"
     state = read(marker, {})
-    if state.get("version") == VERSION:
+    if state.get("version", 0) >= VERSION:
         return False
+    if state.get("version", 0) < 2:
+        _upgrade_2(c, marker, state)
+    if read(marker, {}).get("version", 0) < 3:
+        _upgrade_3(c, marker)
+    return True
+
+
+def _upgrade_2(c, marker, state):
+    """旧布局 → 2：每款进 games/<英文名>/"""
     c.begin("整理游戏库结构（一次性，只改名不复制）")
     done = set(state.get("games", []))
     names = {g.get("id", "").upper(): (g.get("englishName") or g.get("name") or "") for g in read(c.library / "catalog.json", {}).get("games", [])}
@@ -443,8 +517,69 @@ def migrate(c):
     if not location_id(c.library):   # 旧库原地变成第一个存放位置（游戏库结构 v3）
         import uuid
         atomic(c.library / LOCATION_JSON, dict(schema=1, id=uuid.uuid4().hex, version=VERSION))
-    atomic(marker, dict(version=VERSION, games=sorted(done)))
-    return True
+    atomic(marker, dict(version=2, games=sorted(done)))
+
+
+def _move_any(src, dst):
+    """同卷改名；跨卷（这款在别的存放位置）退回拷贝后删源"""
+    if not os.path.lexists(src) or os.path.lexists(dst):
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.move(str(src), str(dst))
+
+
+def _upgrade_3(c, marker):
+    """2 → 3：旧的 iPhone/<号>/（产物根 / ipa / 资源包 / 容器件 / shell.id）与 iPhone/container/（底包 S2Arm.app、S2Arm.ipa、bundle.txt）
+    → 每款 image/ios/{kit,pack} + game.json 的 ios、默认位置根 S2Arm.ipa、devices/legacy.json。
+    老玩家有 ipa 没容器件的：先从现行产物根存一份容器件再删产物根（否则装机只能重新出包）。单款 ipa、产物根、底包都能重建，删掉。
+    每款做完记进标记的 iphone 列表，中途被杀下次接着做；容器最后做"""
+    from library import save_container_kit, _rm
+    state = read(marker, {})
+    done = set(state.get("iphone", []))
+    phones = c.library / "iPhone"
+    for d in (sorted(phones.iterdir()) if phones.is_dir() else []):
+        gid = d.name.upper()
+        if not d.is_dir() or not _GID.fullmatch(gid) or gid in done:
+            continue
+        if find_game(c, gid) is None and not any(g.get("id", "").upper() == gid for g in read(c.library / "catalog.json", {}).get("games", [])):
+            done.add(gid); atomic(marker, dict(state, iphone=sorted(done))); continue   # 游戏库里已经没有这款：留着的旧产物下面随 iPhone/ 一起删
+        kit = d / "container-kit"
+        if not (kit / "main.npdm").is_file():
+            root = next((r for r in [*sorted(d.glob("roots/*@现行")), d / "work/pkg/product"] if (r / "main.npdm").is_file()), None)
+            if root is not None and any(p.suffix == ".ipa" for p in d.iterdir()):
+                save_container_kit(c, gid, root, dest=d)
+        image = image_ios(c, gid)
+        _move_any(kit, image / IOS_KIT)
+        pack = next((p for p in sorted(d.iterdir()) if p.is_dir() and p.name.endswith("资源包")), None)
+        if pack is not None:
+            _move_any(pack, image / IOS_PACK)
+        ios = {}
+        try:
+            ios["shellId"] = (d / "shell.id").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        want = read(image / IOS_PACK / "manifest.json", {}).get("index_sha256") if (image / IOS_PACK).is_dir() else None
+        if want:
+            ios["pack"] = want
+        if ios:
+            update_info(c, gid, ios=dict(game_info(c, gid).get("ios") or {}, **ios))
+        done.add(gid)
+        atomic(marker, dict(state, iphone=sorted(done)))
+    box = phones / "container"
+    if box.is_dir():
+        if (box / PHONE_IPA).is_file():
+            _move_any(box / PHONE_IPA, phone_ipa(c))
+        cat = read(box / "S2Arm.app" / "s2a_catalogue.json", {})
+        if cat.get("games") and not device_path(c, LEGACY_DEVICE).is_file():
+            bid = (box / "bundle.txt").read_text(encoding="utf-8").strip() if (box / "bundle.txt").is_file() else ""
+            save_device(c, LEGACY_DEVICE, dict(games={e["title_id"].upper(): {} for e in cat["games"] if e.get("title_id")},
+                                               shellId=cat.get("shell_id") or "", bundleId=bid, failedShells=[]))
+    if phones.is_dir():
+        _rm(c, c.library, phones)
+    atomic(marker, dict(state, version=3, iphone=sorted(done)))
 
 
 def _legacy_ids(c, spec):

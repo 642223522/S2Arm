@@ -86,7 +86,7 @@ public sealed record GamePackage(string Type, string TitleId, int Version, strin
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
     bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
-    GameLocation? Location = null)
+    GameLocation? Location = null, bool IphoneRestorable = false)
 {
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
@@ -149,7 +149,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     game.GetProperty("hidden").GetBoolean(), missing, iphoneReady, iphoneAt, iphoneFree, packages.AsReadOnly(),
                     game.TryGetProperty("customName", out var customName) && customName.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("customCover", out var customCover) && customCover.ValueKind == JsonValueKind.True,
-                    game.TryGetProperty("location", out var location) && location.ValueKind == JsonValueKind.Object ? GameLocation.Parse(location) : null));
+                    game.TryGetProperty("location", out var location) && location.ValueKind == JsonValueKind.Object ? GameLocation.Parse(location) : null,
+                    game.TryGetProperty("iphoneRestorable", out var restorable) && restorable.ValueKind == JsonValueKind.True));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),

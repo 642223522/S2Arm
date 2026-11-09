@@ -112,7 +112,7 @@ public static class PackCases
               (string?)ipa["shellDir"] == Path.GetFullPath(paths.Shell) && (int?)ipa["parentPid"] == Environment.ProcessId &&
               (string?)ipa["resources"] == Path.GetFullPath(AppContext.BaseDirectory),
             "request: ipa carries game, library id, bundled shell, bundled resources (fonts) and launcher pid");
-        foreach (var op in new[] { "installCheck", "install", "installRemove" })
+        foreach (var op in new[] { "installCheck", "install", "installRemove", "installRestore" })
         {
             var r = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, "0100FD70134FA000"), "win-2");
             check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (op == "install") == r.ContainsKey("shellDir"),

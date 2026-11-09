@@ -83,8 +83,11 @@ class EarlyInstall:
             from core import Failure
             raise Failure("早装件没出成：" + _last(self.log), code="job_failed")
         import ipa as packer
-        root = self.c.library / "iPhone" / self.gid / "roots" / (kuan + "@现行")
-        return packer.assemble(self.c, self.gid, root=root.resolve(), dest=self.dir / "container")
+        import layout
+        root = layout.ios_work(self.c, self.gid) / "roots" / (kuan + "@现行")
+        rec = layout.load_device(self.c, self.udid or self.dev["id"])   # 这台手机上已有的各款一起带上（早装覆盖装也不能把它们装没）
+        others = [g for g in rec.get("games", {}) if g != self.gid.upper()]
+        return packer.assemble(self.c, self.gid, others, failed=rec.get("failedShells", []), root=root.resolve(), dest=self.dir / "container")
 
     def _install(self, built):
         ipa, games, _ = built

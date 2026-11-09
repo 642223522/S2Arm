@@ -189,6 +189,10 @@ public final class S2ArmEngineProvider: EngineProvider {
         try await installer.install(gameId: gameId, teamId: teamId, device: device, events: events)
     }
 
+    public func restorePhone(events: EventSink = .discard) async throws {
+        try await installer.restorePrevious(events: events)
+    }
+
     public func removeFromPhone(gameId: String, events: EventSink = .discard) async throws -> RemoveResult {
         try await installer.remove(gameId: gameId, events: events)
     }

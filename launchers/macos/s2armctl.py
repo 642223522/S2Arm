@@ -35,6 +35,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   ipa <游戏号> [--space-override]    打 iPhone 包（出 IPA + 资源包）；--space-override 同界面「仍然继续」，磁盘预检不够也照出（先征得玩家同意）
   build <游戏号> [ios|mac|android|harmony] [--space-override]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；安卓、鸿蒙即将上线
   install-check <游戏号> [--json]    装到 iPhone 前的清单：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
+  restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
   wait <游戏号> [--op build|ipa] [--timeout 秒]
@@ -606,7 +607,7 @@ def main():
         wait(rest[0], op, lim); return
     simple = {
               'fonts': ('/fonts', lambda r: {'path': os.path.abspath(r[0]) if r and r[0] else ''}),
-              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {})}), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
+              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {})}), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0]}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
               'cancel': ('/cancel', lambda r: {'taskId': r[0]}), 'retry': ('/retry', lambda r: {'taskId': r[0]}),
               'select': ('/select', lambda r: {'selection': r[0], **({'gameId': r[1]} if len(r) > 1 else {})}),
               'onboarding': ('/onboarding', lambda r: {'action': r[0], **({'step': int(r[1])} if len(r) > 1 else {})}),
