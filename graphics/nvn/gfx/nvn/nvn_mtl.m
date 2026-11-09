@@ -2135,6 +2135,7 @@ int nvn_be_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
     return *t1 >= *t0 && *t1;
 }
 static void rp_flush(void);
+static void rt_keep_state(void);
 static void ghost_finish_submission(void);
 static void alias_dead_views(void);
 static const char *cctx_snap(void);   // What is in this submission (printed into the failure line on error; defined before nvn_be_exec)
@@ -2164,6 +2165,7 @@ uint64_t nvn_be_sub_commit(void) {
     lc_land();   // clears still waiting (the command list ends with them)
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush(); ubd_land();
+    rt_keep_state();   // bound descriptors outlive the command records consumed by this submission
     g_ts_pend = -1;   // nothing after it: the last segment's end is the command buffer's own (rep_ticks)
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     up_flush();
@@ -4284,10 +4286,26 @@ void nvn_be_tex_release(tex_t *t) {
 // ---------- Render passes: SetRenderTargets opens a new pass; clears before the first command in the pass are folded into the load action ----------
 static struct {
     p_set_rt rt; int has_rt;
+    tex_t kept[9];   // owned target snapshots, included when a parked queue saves/restores R
     uint8_t clear_c[8]; MTLClearColor cc[8];
     uint8_t clear_d, clear_s; double cd; uint32_t cs;
     p_scissor sc; int has_sc;
 } R;
+
+// SetRenderTargets points into command records, including host shadow blocks
+// that can be recycled after completion. Read all sources before updating the
+// retained slots: inherited bindings can already point into R.kept itself.
+static void rt_keep_state(void) {
+    if (!R.has_rt) return;
+    tex_t values[9]; unsigned present = 0;
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) {
+        values[i] = *R.rt.color[i]; present |= 1u << i;
+    }
+    if (R.rt.depth) { values[8] = *R.rt.depth; present |= 1u << 8; }
+    for (int i = 0; i < 9; i++) if (present & (1u << i)) R.kept[i] = values[i];
+    for (int i = 0; i < 8; i++) if (present & (1u << i)) R.rt.color[i] = &R.kept[i];
+    if (present & (1u << 8)) R.rt.depth = &R.kept[8];
+}
 
 // ---------- Zero-source skip ----------
 // Shader fact table (statically proven keys): 'the textures it samples are all 0 and the coefficient is finite ⇒ the output is all 0'. Coefficient = component comp of vector vec of fragment-stage constant buffer register ubo_slot.
