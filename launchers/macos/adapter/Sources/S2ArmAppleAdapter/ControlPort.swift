@@ -185,17 +185,64 @@ public enum ControlJournal {
                                                         "remove", "delete", "diagnostics", "prepareEngine", "pullDiagnostics", "ipa", "installDotnet", "setup", "spaceFree"]
 
     /// 最近的 limit 条，按开始时间从旧到新。
+    /// 控制口每秒刷一次状态快照（ControlPort.refreshCache）都会调这里。原先每次把任务目录里所有记录重读、重解析一遍：
+    ///   任务多了（11-09 维护者机器 45207 条、290 MB）闲置也占 30–90% CPU、风扇狂转。记录都是先写临时文件再改名（pack/jobs/core.py atomic），
+    ///   每次更新都会改目录的修改时间：目录没变就直接用上次结果；变了只重新解析大小或修改时间变过的文件。没结束的任务每次单独再核一遍
     public static func tasks(privateRoot: URL, limit: Int = 60) -> [[String: Any]] {
+        lock.lock(); defer { lock.unlock() }
         let dir = privateRoot.appendingPathComponent("jobs")
+        let stamp = stat(dir.path)
+        if let stamp, cache.dir == dir.path, cache.stamp == stamp, cache.limit == limit, !cache.hasLiveTaskChanged(dir: dir) {
+            return cache.result
+        }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        if cache.dir != dir.path { cache.files = [:] }
+        var files: [String: JournalCache.Entry] = [:]
         var out: [[String: Any]] = []
         for n in names where n.hasSuffix(".json") && !n.hasSuffix(".request.json") {
-            guard let d = try? Data(contentsOf: dir.appendingPathComponent(n)),
-                  let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
-                  j["id"] is String, let op = j["operation"] as? String, visibleOperations.contains(op) else { continue }
-            out.append(j)
+            guard let st = stat(dir.appendingPathComponent(n).path) else { continue }
+            let entry: JournalCache.Entry
+            if let old = cache.files[n], old.stat == st {
+                entry = old
+            } else {
+                var record: [String: Any]?
+                if let d = try? Data(contentsOf: dir.appendingPathComponent(n)),
+                   let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+                   j["id"] is String, let op = j["operation"] as? String, visibleOperations.contains(op) { record = j }
+                entry = JournalCache.Entry(stat: st, record: record)
+            }
+            files[n] = entry
+            if let j = entry.record { out.append(j) }
         }
         out.sort { ($0["started"] as? Double ?? 0) < ($1["started"] as? Double ?? 0) }
-        return Array(out.suffix(limit))
+        let result = Array(out.suffix(limit))
+        cache.dir = dir.path; cache.stamp = stamp; cache.limit = limit; cache.files = files; cache.result = result
+        cache.live = files.filter { _, e in e.record.map { !terminalStates.contains($0["state"] as? String ?? "") } ?? false }.mapValues(\.stat)
+        return result
+    }
+
+    private static let terminalStates: Set<String> = ["completed", "failed", "cancelled"]
+    private static let lock = NSLock()
+    private static let cache = JournalCache()
+
+    /// 修改时间（纳秒）+ 大小：判断一个文件 / 目录变没变
+    fileprivate struct FileStamp: Equatable { let mtime: Int64; let size: Int64 }
+    fileprivate static func stat(_ path: String) -> FileStamp? {
+        var st = Darwin.stat()
+        guard lstat(path, &st) == 0 else { return nil }
+        return FileStamp(mtime: Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec), size: Int64(st.st_size))
+    }
+
+    private final class JournalCache {
+        struct Entry { let stat: FileStamp; let record: [String: Any]? }
+        var dir = ""
+        var stamp: FileStamp?
+        var limit = 0
+        var files: [String: Entry] = [:]
+        var result: [[String: Any]] = []
+        var live: [String: FileStamp] = [:]   // 还没结束的任务：原地改写不会动目录的修改时间，每次单独核
+        func hasLiveTaskChanged(dir: URL) -> Bool {
+            live.contains { n, st in ControlJournal.stat(dir.appendingPathComponent(n).path) != st }
+        }
     }
 }
