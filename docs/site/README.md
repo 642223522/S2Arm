@@ -21,7 +21,7 @@
 ```sh
 mkdir -p build/site/images
 cp docs/site/index.html build/site/
-cp docs/images/s2arm-wordmark.png docs/images/launcher-welcome.png docs/images/launcher-windows.png build/site/images/
+cp docs/images/s2arm-wordmark-transparent.png docs/images/launcher-welcome.png docs/images/launcher-windows.png build/site/images/
 cp launchers/macos/Branding/AppIcon-1024.png build/site/images/icon.png
 python3 -m http.server -d build/site 8000
 ```
