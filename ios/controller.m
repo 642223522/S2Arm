@@ -65,6 +65,7 @@ static void system_reset_on_queue(void) {
     [g_haptic_engine stopWithCompletionHandler:nil];
     g_haptic_player = nil; g_haptic_engine = nil;
 }
+void s2a_rumble_apply_settings(void);
 // 游戏震动的总开关和强度（设置页「按键显示与触感」）：提交前按倍率缩放振幅，手机马达 / 实体手柄 / NS2 Pro 共用
 static _Atomic float g_rumble_gain = 1;
 static float finite_clamp(float x, float lo, float hi);
