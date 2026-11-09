@@ -929,16 +929,36 @@ static void plain(const Ins* x) {
   if (noredzone())
     fail("RuntimeError: %" PRIx64 " %s %s：x18 改写点 sp 形态不可平移",
          (uint64_t)x->at, x->m, x->op);
-  int save = d ? -112 : -16;
-  /* save-d must fit signed imm7 scaled by 8; pair() must not round or wrap it. */
+  /* 保留苹果路径的 sp 写回准入边界。 */
   REQUIRE(d >= -96 && d <= 400 && d % 8 == 0);
-  emit(STP(S, T, 31, save));
+  /* 帧顶留出原 sp 下方的 128 字节。访存或运算读 sp 时，借 T 提供原 sp，
+   * 把 K18 槽地址放在帧内第三个槽，原指令的立即数和索引方式都保留。 */
+  F = 128 + (x->sp ? 32 : 16);
+  if (x->sp) {
+    REQUIRE(!x->d.post_index || x->d.operands[x->d.op_count - 1].type == ARM64_OP_IMM);
+    REQUIRE(((w >> 5) & 31) == 31);
+    w = (w & ~(31u << 5)) | ((uint32_t)T << 5);
+    REQUIRE(!dis(w, x->at).sp);
+  }
+  emit(STPRE(S, T, 31, -F));
   tp(T, S);
   slot(T, S, 0);
   emit(LDR(S, T, 0));
+  if (x->sp) {
+    emit(STR(T, 31, 2));
+    emit(ADDI(T, 31, F, 0));
+  }
   emit(w);
+  if (x->sp)
+    emit(LDR(T, 31, 2));
   emit(STR(S, T, 0));
-  emit(LDP(S, T, 31, save - d));
+  if (F + d <= 504)
+    emit(LDPOST(S, T, 31, F + d));
+  else {
+    /* 帧长加原写回超过 LDP 的 imm7 射程时，分开恢复寄存器和 sp。 */
+    emit(LDP(S, T, 31, 0));
+    emit(ADDI(31, 31, F + d, 0));
+  }
   emit(branch(here(), x->at + 4));
 }
 static void spfrom18(const Ins* x) {
