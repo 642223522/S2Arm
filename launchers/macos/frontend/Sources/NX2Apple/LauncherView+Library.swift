@@ -88,6 +88,8 @@ extension LauncherView {
                     }
                     if game.playable {
                         heroCapsule(loc.t("library.play"), symbol: "play.fill", id: "hero.play", enabled: !model.busy) { model.play(game, uiLanguage: uiLanguage) }
+                        // 启动设置（11-09 维护者）：开局前设这一款的画面 / 模式 / 震动 / 体感 / 浮层，按款记住
+                        heroCircle("gearshape", label: txt("game.display"), id: "hero.launchSettings", enabled: true) { displayFor = game.id }
                     }
                     if model.finishedExports[game.id] != nil, !(model.busy && model.session?.gameID == game.id) {
                         heroCapsule(txt("library.hero.results"), symbol: "checkmark.seal", id: "hero.results", enabled: true) { model.viewingResult = model.finishedExports[game.id] }
