@@ -34,6 +34,8 @@ public final class S2ArmShellHostModel {
     public var editingLayout: String?
     /// 正在改名字和封面的那款（非空时宿主视图盖上编辑页）
     public var editingIdentity: String?
+    /// 编辑页上次点保存没存成的原因（存成 / 关页清掉）
+    public private(set) var identityError: String?
     @ObservationIgnored private let identityStore: GameIdentityStore
     /// 清单里写的条目：恢复默认时回到它
     @ObservationIgnored private var listedTiles: [String: GameTile] = [:]
@@ -137,7 +139,7 @@ public final class S2ArmShellHostModel {
     /// 设置行改了：存下、刷新这一款的设置行；选「调整位置…」打开编辑页
     public func change(_ id: String, _ setting: String, _ value: String) {
         if setting == S2ArmGameSettings.identity {
-            if value == S2ArmGameSettings.editIdentity { editingIdentity = id }
+            if value == S2ArmGameSettings.editIdentity { editingIdentity = id; identityError = nil }
             refresh(id)
             return
         }
@@ -156,15 +158,20 @@ public final class S2ArmShellHostModel {
     public func identityName(_ id: String) -> String { allGames.first(where: { $0.id == id })?.game.title ?? "" }
     public func hasCustomIdentity(_ id: String) -> Bool { identityStore.load(id) != nil }
 
+    /// 名字和封面一次提交（GameIdentityStore.save）。存成了关编辑页；没存成不关页、留着玩家填的，identityError 给编辑页显示原因
     public func saveIdentity(_ id: String, name: String, cover: Data?) {
         // 名字没动时不存成自定义，否则电脑端以后改名就传不到这台手机
         let keep = name == listedTiles[id]?.title ? "" : name
         do { try identityStore.save(id, name: keep, cover: cover) }
-        catch { NSLog("S2Arm 游戏库：保存 %@ 的名字和封面失败：%@", id, error.localizedDescription) }
+        catch {
+            NSLog("S2Arm 游戏库：保存 %@ 的名字和封面失败：%@", id, error.localizedDescription)
+            identityError = error.localizedDescription
+            return
+        }
         closeIdentityEditor(id)
     }
     public func resetIdentity(_ id: String) { identityStore.clear(id); closeIdentityEditor(id) }
-    public func closeIdentityEditor(_ id: String) { editingIdentity = nil; applyIdentity(id); refresh(id) }
+    public func closeIdentityEditor(_ id: String) { editingIdentity = nil; identityError = nil; applyIdentity(id); refresh(id) }
 
     /// 把这台手机上的名字和封面叠到清单条目上；没有就回到清单原样，状态保持不变。
     private func applyIdentity(_ id: String) {

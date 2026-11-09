@@ -943,7 +943,6 @@
       {"id": "library.sizes.sources", "zh-Hans": "原件", "en": "Game files"},
       {"id": "library.sizes.sourcesNote", "zh-Hans": "几款共用的原件按款数平摊", "en": "Game files shared by several games are split between them"},
       {"id": "library.sizes.unmeasured", "zh-Hans": "未统计（出包或清缓存后会统计；打开存储总览也会统计）", "en": "Not counted yet (counted after exporting or clearing the cache, or when you open the storage overview)"},
-      {"id": "library.sizes.open", "zh-Hans": "存储总览…", "en": "Storage overview…"},
       {"id": "storage.title", "zh-Hans": "存储总览", "en": "Storage overview"},
       {"id": "storage.locations", "zh-Hans": "存放位置", "en": "Storage locations"},
       {"id": "storage.location.usage", "zh-Hans": "S2Arm 占用 {0} · 剩余 {1} / 共 {2}", "en": "S2Arm uses {0} · {1} free of {2}"},
