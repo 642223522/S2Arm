@@ -208,13 +208,14 @@ class RelocateDefaultTests(unittest.TestCase):
         self.private = base / "Application Support" / "S2Arm"
         self.old = self.private / "游戏库"
         self.target = base / "home" / "S2Arm"
+        self.ext = base / "external-drive" / "S2Arm"   # 第二个存放位置（没连上）：路径原样不动
         self.target.parent.mkdir(parents=True)
         touch(self.old / ".s2arm-library.json", json.dumps(dict(schema=1, id="lib")))
         touch(self.old / "games" / "G" / "saves" / "s.dat", "save")
         os.symlink(str(self.old / "games" / "G" / "saves"), self.old / "link-to-saves")
         atomic(self.private / "preferences.json", dict(library=str(self.old), language="zh"))
         (self.private / "library-location.txt").write_text(str(self.old))
-        atomic(self.private / "library-index.json", dict(schema=1, locations=[dict(id="lid", path=str(self.old)), dict(id="x", path="/Volumes/Ext/S2Arm")], games={}))
+        atomic(self.private / "library-index.json", dict(schema=1, locations=[dict(id="lid", path=str(self.old)), dict(id="x", path=str(self.ext))], games={}))
         self.patches = [patch.object(layout, "standard_private", lambda: self.private),
                         patch.object(layout, "new_default_library", lambda: self.target)]
         for p in self.patches:
@@ -230,7 +231,7 @@ class RelocateDefaultTests(unittest.TestCase):
         self.assertEqual((prefs["library"], prefs["language"]), (str(self.target), "zh"))
         self.assertEqual((self.private / "library-location.txt").read_text(), str(self.target))
         idx = json.loads((self.private / "library-index.json").read_text())
-        self.assertEqual([l["path"] for l in idx["locations"]], [str(self.target), "/Volumes/Ext/S2Arm"])
+        self.assertEqual([l["path"] for l in idx["locations"]], [str(self.target), str(self.ext)])
         self.assertEqual(json.loads((self.private / "library-relocate.json").read_text())["state"], "done")
         # 之后照旧传旧路径的请求（前端内存里还是旧值）也落到新位置；前端又把旧路径写回设置时再改一次
         atomic(self.private / "preferences.json", dict(library=str(self.old)))
