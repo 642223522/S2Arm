@@ -618,4 +618,6 @@ def prepare(c):
         unpacked = layout.build_dir(c, game["id"], create=False)   # 运行版本已是独立副本（clone_tree 含 RomFS）：解包和中间目录不再保留
         if unpacked.exists():
             _rm(c, layout.root_of(c, game["id"]), unpacked)
+        import sizes
+        sizes.refresh(c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
         return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified")

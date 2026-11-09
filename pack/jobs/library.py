@@ -25,6 +25,7 @@ import toolchain
 import winproc
 import filelock
 import layout
+import sizes
 
 DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
@@ -1224,6 +1225,7 @@ def catalog(c):
         choices = [p for p in selected_packages(game) if p["type"] in ("base", "update")]
         if choices:
             game["display"] = max(choices, key=lambda p: p["version"])["display"]
+        game["sizes"] = sizes.for_catalog(c, game["id"], cat["games"])   # 每款各部分大小（sizes.py：作业收尾量好记在 game.json，这里不量）
     try:
         validate_keys(c.keys)
         status = read(c.private / "keys/status.json", {}) | dict(ready=True)
@@ -1649,6 +1651,7 @@ def clean(c):
                     contained(c.library / "sources", c.library / p["path"]).unlink(missing_ok=True)
         else:
             raise Failure("未知清理类型。")
+        sizes.refresh(c, game["id"])
     return {}
 
 
@@ -1744,6 +1747,7 @@ def space_free(c):
             after = _part_bytes([p for p in parts[k] if p.exists() or p.is_symlink()])
             freed += before - after
             done.append(dict(id=k, bytes=before - after))
+        sizes.refresh(c, gid)
         return dict(gameId=gid, parts=done, freedBytes=freed)
 
 
@@ -2011,6 +2015,7 @@ def move_game(c):
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")
         apply_location(c, game)
+        sizes.refresh(c, game["id"])   # 跨卷拷过去克隆会展开成实占，重量
         return dict(gameId=game["id"], folder=str(layout.find_game(c, game["id"])))
 
 

@@ -170,6 +170,8 @@ public sealed partial class EnvironmentWindow
                 var button = Action(key, () => BeginPicker(handler), !libraryBusy);
                 button.Margin = new Thickness(0, 0, 10, 8); imports.Children.Add(button);
             }
+            var storage = Action("storage.open", OpenStorage, !libraryBusy && libraryId is not null);
+            storage.Margin = new Thickness(0, 0, 10, 8); AutomationId(storage, "library.storage"); imports.Children.Add(storage);
             status.Children.Add(imports);
         }
         body.Children.Add(Card(status));
@@ -185,6 +187,7 @@ public sealed partial class EnvironmentWindow
                 detail.Children.Add(Label(T("library.requirements") + " · " + string.Join(" / ", game.Missing)));
             // iPhone / Mac dual status line
             detail.Children.Add(GameStatusLine(game));
+            detail.Children.Add(GameSizesLine(game.Sizes));   // 这款各部分大小（游戏库结构 v3「查」，StoragePage.cs）
             Grid.SetColumn(detail, 1); line.Children.Add(detail);
             // Primary button: if iPhone pack is ready → install; otherwise export (storage not connected → disabled, game files missing → relink / remove)
             var primaryKey = game.IphoneReady ? "library.hero.install" : "library.select";
