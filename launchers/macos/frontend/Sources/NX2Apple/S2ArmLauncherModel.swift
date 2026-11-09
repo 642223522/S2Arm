@@ -532,11 +532,11 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    func install(_ game: GameSummary, teamId: String? = nil) {
+    func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil) {
         guard !busy, installAllowed(game.id) else { return }
         failAction(nil, game: nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
-            _ = try await self?.provider.install(gameId: game.id, teamId: teamId, events: sink)
+            _ = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, events: sink)
             return nil
         }
     }
