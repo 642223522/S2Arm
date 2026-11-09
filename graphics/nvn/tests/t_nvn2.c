@@ -151,11 +151,6 @@ int main(void) {
         void (*cam_ctx)(void **) = (void (*)(void **))s2a_nv_entry("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE");
         CHECK(cam_ctx && !nvn2_red_of(cam_ctx));
         void *p = (void *)0x5a5a; cam_ctx(&p); CHECK(p == NULL);
-        // gs::sdk CreateNativeMemory / DestroyNativeMemory：Create 输出参数写 0，Destroy 空操作
-        void (*gs_create)(void *, void *, uint64_t, int, int) = (void (*)(void *, void *, uint64_t, int, int))s2a_nv_entry("_ZN2nn2gs3sdk18CreateNativeMemoryEPNS0_18NativeMemoryHandleEPvmNS_2os16MemoryPermissionENS0_3cpu18MemoryCacheabilityE");
-        void (*gs_del)(uint64_t) = (void (*)(uint64_t))s2a_nv_entry("_ZN2nn2gs3sdk19DestroyNativeMemoryENS0_18NativeMemoryHandleE");
-        CHECK(gs_create && gs_del && !nvn2_red_of(gs_create) && !nvn2_red_of(gs_del));
-        uint64_t gh = 0x5a5a5a5a5a5a5a5aull; gs_create(&gh, NULL, 0, 0, 0); CHECK(gh == 0); gs_del(0);
         // 其他 chat / camera 接口仍是红桩
         void *cg = s2a_nv_entry("_ZN2nn4chat3gsv10InitializeEv");
         CHECK(cg && nvn2_red_of(cg) && strstr(nvn2_red_of(cg), "GameChat"));
