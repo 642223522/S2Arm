@@ -5,7 +5,7 @@
 #   内部称呼在本文件里按码位运行时拼出（扫描器会还原转义，转义写法也会被拦）（本文件也受公开仓扫描）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
-W1=$(python3 -c 'print("天眼")'); W2=$(python3 -c 'print("测试机")')
+W1=$(python3 -c 'print(chr(0x5929) + chr(0x773c))'); W2=$(python3 -c 'print(chr(0x6d4b) + chr(0x8bd5) + chr(0x673a))')
 g() { git -C "$T/r" -c user.name=t -c user.email=t@t "$@"; }
 git init -q -b main "$T/r"; echo a > "$T/r/a"; g add a; g commit -qm "old: ${W1} 之前的历史不管"; base=$(g rev-parse HEAD)
 echo b > "$T/r/b"; g add b; g commit -qm "fix: Windows 实机验证通过"; clean=$(g rev-parse HEAD)

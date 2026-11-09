@@ -389,7 +389,7 @@ MESSAGE_CATEGORIES = ('internal_name',)   # 提交信息只查内部称呼（维
 
 
 def scan_messages(repo, ref, base):
-    """提交信息扫描（11-09 总指挥：公开仓扫描只查文件，main 提交信息里漏进内部线名 / 设备代号这类内部称呼）：
+    """提交信息扫描（11-09 维护方：公开仓扫描只查文件，main 提交信息里漏进内部线名 / 设备代号这类内部称呼）：
     base..ref 每条提交信息逐行用同一份 content_rules 里 internal_name 类判；返回 [(短提交号, 行号, 规则 id)]，命中的词本身不外泄"""
     rules = load_rules()
     rows = [r for r in rules['content_rules'] if r['category'] in MESSAGE_CATEGORIES]
