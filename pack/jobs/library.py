@@ -1474,6 +1474,21 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
     return n
 
 
+def drop_from_container(c, gid):
+    """游戏库里删了的款也从游戏库侧的容器（iPhone/container/S2Arm.app，下次装机的底子）摘掉，不装机（#227：原先容器清单留着它，
+    下次装别的游戏把它原样带回来，升级换壳后又因为没有本壳产物挡住出包 container_stale）。手机上的 App 下次装机时随覆盖装去掉它"""
+    import ipa as packer
+    from install import CONTAINER_DIR
+    cat = c.library / "iPhone" / CONTAINER_DIR / "S2Arm.app/s2a_catalogue.json"
+    try:
+        listed = any(e.get("title_id") == gid for e in json.loads(cat.read_text(encoding="utf-8")).get("games", []))
+    except (OSError, ValueError):
+        return
+    if listed:
+        with packer.dropped(c, gid) as (ipa, _):
+            packer.commit_drop(c, ipa)
+
+
 def delete(c):
     """删除这款游戏（连出包产物与缓存）：iPhone 输出整个目录（IPA / 资源包 / 中间产物）、Mac 构建缓存、game_caches，并从游戏库清单里删掉；
     保留存档（library/saves/<程序号>）与游戏原件（原地导入的不碰；旧版复制进 library/sources 的托管副本另有「删除托管 NSP 副本」）。
@@ -1489,6 +1504,7 @@ def delete(c):
                         _rm(c, c.library, p)
                 for p in game_caches(c, gid):
                     _rm(c, c.work_root, p)
+                drop_from_container(c, gid)
                 cat = c.catalog()
                 cat["games"] = [g for g in cat["games"] if g["id"] != gid]
                 atomic(c.library / "catalog.json", cat)

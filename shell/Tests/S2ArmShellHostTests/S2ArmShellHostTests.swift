@@ -33,9 +33,31 @@ import ShellUI
     let data = Data(#"{"games":[]}"#.utf8)
     let a = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/"))).actions
     #expect(a.onUseAppData == nil && a.onPickCloudSaves == nil && a.onDisableCloudSaves == nil && a.onUseShellCloud == nil)
-    #expect(a.onResetDefaults == nil && a.onShowLog == nil && a.onAppUpdate == nil && a.onDeleteGame == nil)
+    #expect(a.onResetDefaults == nil && a.onShowLog == nil && a.onAppUpdate == nil)
     #expect(a.onPickShellData == nil && a.onClearShellData == nil && a.onPickShellCloud == nil && a.onClearShellCloud == nil)
     #expect(a.onGlobalPadMapChange == nil && a.onGlobalPadMapReset == nil)
+}
+
+// 删除游戏（#227 iPad 点了没反应：宿主从没给 onDeleteGame 实现）：不勾存档 → 数据根下只留 S2A/（存档），勾了 → 整个删；删完库里不再显示。期望按目录手写
+@MainActor @Test func deleteGameRemovesDataAndKeepsSavesUnlessAsked() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2a-del-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (a, b) = ("0100000000010000", "0100000000020000")
+    for id in [a, b] {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("\(id)/资源包"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("\(id)/S2A/ryujinx/bis/user/save"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: root.appendingPathComponent("\(id)/identity.json"))
+    }
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    gameDataReady: { FileManager.default.fileExists(atPath: root.appendingPathComponent("\($0)/资源包").path) }, gamesRoot: root)
+    #expect(model.games.map(\.id) == [a, b])
+    let delete = try #require(model.actions.onDeleteGame)
+    delete(a, false)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(a).path) == ["S2A"])
+    delete(b, true)
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(b).path))
+    #expect(model.games.isEmpty)
 }
 
 @MainActor @Test func playOnlyForPlayable() {

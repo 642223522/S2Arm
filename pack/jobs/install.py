@@ -914,8 +914,6 @@ def remove_from_phone(c):
     _, games = latest_container(c)
     if gid not in games:
         raise Failure("手机上的 S2Arm 里没有这款。", code="job_failed")
-    if len(games) == 1:
-        raise Failure("这是手机上最后一款：在 iPhone 桌面长按 S2Arm 删除 App 即可。", code="container_last_game")
     c.begin("找签名账号与 iPhone", 1, 4)
     ph = phone_for(c)
     if not ph.bid:
@@ -924,7 +922,10 @@ def remove_from_phone(c):
     backup = ph.backup(gid)
     c.begin("更新手机上的 S2Arm", 3, 4)
     with packer.dropped(c, gid) as (ipa, left):
-        ph.install(ipa, left, steps=False)
+        # 最后一款（#227）：不装空容器（宿主 0 款的启动路径没在真机验过，vawin.c 报红不占窗口），手机上的 App 原样留着，
+        #   下一步删掉它的数据后库界面按「数据不在」不再显示 = 空库；游戏库这边的容器照样摘空，下次装新游戏时覆盖装把旧程序一起换掉
+        if left:
+            ph.install(ipa, left, steps=False)
         packer.commit_drop(c, ipa)
     c.begin("删除手机上这款的数据", 4, 4)
     ok, out = ph.purge(gid)
