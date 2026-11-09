@@ -171,8 +171,8 @@ class WaitTests(unittest.TestCase):
     def test_install_passes_team_and_device_only_when_given(self):
         for argv, body in [(["install", "G"], {"gameId": "G"}),
                            (["install", "G", "--team", "ABCDE12345"], {"gameId": "G", "teamId": "ABCDE12345"}),
-                           (["install", "G", "--device", "00008160-0000000000000000", "--team", "ABCDE12345"],
-                            {"gameId": "G", "teamId": "ABCDE12345", "device": "00008160-0000000000000000"})]:
+                           (["install", "G", "--device", "测试 iPhone", "--team", "ABCDE12345"],
+                            {"gameId": "G", "teamId": "ABCDE12345", "device": "测试 iPhone"})]:
             with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)
