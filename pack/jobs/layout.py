@@ -73,7 +73,7 @@ def game_dir(c, gid, english=None):
     """这款的文件夹，没有就按英文名新建（写 game.json）。english 缺省取 catalog 里这款的名字"""
     gid = gid.upper()
     if not _GID.fullmatch(gid):
-        raise Failure("游戏标识无效。", code="game_id")
+        raise Failure("游戏标识无效。", code="job_failed")
     d = find_game(c, gid)
     if d is not None:
         return d
@@ -82,7 +82,8 @@ def game_dir(c, gid, english=None):
     root = games_root(c)
     root.mkdir(parents=True, exist_ok=True)
     taken = [p.name for p in root.iterdir()]
-    d = contained(c.library, root / folder_name(english, gid, taken))
+    d = root / folder_name(english, gid, taken)   # 返回原样路径（不解析软链）：调用方按 c.library 前缀比对（library._rm）
+    contained(c.library, d)
     d.mkdir()
     atomic(d / GAME_JSON, dict(schema=1, id=gid))
     _index(c)[gid] = d
@@ -182,7 +183,8 @@ def migrate(c):
             src = old_root / gid
             taken = [p.name for p in old_root.iterdir()] if old_root.is_dir() else []
             name = folder_name(names.get(gid, ""), gid, [t for t in taken if t != gid])
-            dest = contained(c.library, old_root / name)
+            dest = old_root / name
+            contained(c.library, dest)
             if src.is_dir() and not dest.exists():
                 os.replace(src, dest)
             dest.mkdir(parents=True, exist_ok=True)

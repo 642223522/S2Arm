@@ -1592,9 +1592,12 @@ def clean(c):
         kind = c.r.get("kind")
         if kind == "cache":
             c.begin("清理构建缓存")
-            target = contained(c.library / "cache", c.library / "cache" / game["id"])
+            target = layout.build_dir(c, game["id"], create=False)
             if target.is_dir():
-                _rmtree(target)
+                _rm(c, c.library, target)
+            shader = layout.path(c, game["id"], "shader-cache", create=False)   # 清缓存 = 本款出包缓存 + 运行时着色器缓存（游戏库结构双端统一「清缓存」）
+            if shader.is_dir():
+                _rm(c, c.library, shader)
             prune_build(c, game["id"], retain_compiler=False)   # 用户显式清缓存保留原有全清语义，不套用 Q15 自动保留策略
         elif kind == "sources":
             # 只删 0.1.0-beta.3 及以前复制进游戏库的托管副本；原地导入的原件是玩家的文件，只读、不删

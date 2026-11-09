@@ -11,6 +11,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import Failure
+import layout
 import library
 
 
@@ -32,7 +33,7 @@ class CleanupLinkTests(unittest.TestCase):
 
     def test_prune_unlinks_intermediates_without_deleting_their_targets(self):
         for retain in (True, False):
-            for target in (self.c.library / "saves" / self.gid, self.root / "outside"):
+            for target in (layout.path(self.c, self.gid, "saves"), self.root / "outside"):
                 with self.subTest(retain_compiler=retain, target=target.name):
                     payload = self.payload(target)
                     link = self.output / "intermediate"
@@ -61,7 +62,7 @@ class CleanupLinkTests(unittest.TestCase):
         root = self.output / "roots" / "k@pkg"; self.seed_root(root)
         (self.output / "shell.id").write_text("SID"); (self.output / "a.ipa").write_bytes(b"ipa")
         pack = self.output / "t资源包"; pack.mkdir(); (pack / "index.tsv").write_bytes(b"i"); (self.output / "logs").mkdir(); (self.output / "work").mkdir()
-        unpacked = self.c.library / "cache" / self.gid; unpacked.mkdir(parents=True); (unpacked / "x").write_bytes(b"x")
+        unpacked = layout.build_dir(self.c, self.gid); unpacked.mkdir(parents=True); (unpacked / "x").write_bytes(b"x")
         library.save_container_kit(self.c, self.gid, root)
         library.prune_build(self.c, self.gid)
         self.assertEqual(sorted(p.name for p in self.output.iterdir()), sorted(["a.ipa", "t资源包", "logs", library.CONTAINER_KIT, "shell.id"]))
@@ -75,7 +76,7 @@ class CleanupLinkTests(unittest.TestCase):
         self.assertTrue((self.output / "roots" / "k@pkg" / "main.npdm").is_file())
 
     def test_unlinks_file_and_dangling_links_without_following_them(self):
-        payload = self.payload(self.c.library / "saves" / self.gid)
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
         for target in (payload, self.root / "missing"):
             with self.subTest(target=target.name):
                 link = self.output / "scratch"
@@ -87,7 +88,7 @@ class CleanupLinkTests(unittest.TestCase):
                 self.assertEqual(payload.read_bytes(), b"player data must survive")
 
     def test_refuses_a_symlink_in_an_ancestor(self):
-        payload = self.payload(self.c.library / "saves" / self.gid)
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
         link = self.output / "intermediate"
         link.symlink_to(payload.parent, target_is_directory=True)
         with self.assertRaises(Failure):
@@ -106,7 +107,7 @@ class CleanupLinkTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows junction requires Windows")
     def test_junction_is_removed_without_deleting_its_target(self):
-        payload = self.payload(self.c.library / "saves" / self.gid)
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
         junction = self.output / "intermediate"
         subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(payload.parent)],
                        check=True, capture_output=True)
