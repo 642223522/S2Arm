@@ -879,6 +879,25 @@ static int g_rc_skip;   // a render-enable block evaluated false is active
 // forgotten, the conditional depth clears ran 3 more times before the lit materials' EQUAL depth test, and the frame came out white (half the frames while walking).
 // Now only timestamps are kept per submission, the query addresses apart, and both tables grow (upstream reference implementation (MIT), the same fix for Splatoon Raiders)
 static uint64_t *g_rc_pend; static uint32_t g_rc_npend, g_rc_pcap;   // timestamp reports replayed in this submission: their counter is 0, though memory does not show it yet
+// Submitted timestamp reports are still pending until their completion handler
+// writes memory and publishes g_done. A later submission must see their known 0,
+// not the old CPU counter. Only the submit thread owns this table.
+typedef struct { uint64_t addr, fence; } rc_submitted;
+static rc_submitted *g_rc_submitted; static uint32_t g_rc_nsubmitted, g_rc_scap;
+static uint64_t rc_done(void) { pthread_mutex_lock(&g_mu); uint64_t done = g_done; pthread_mutex_unlock(&g_mu); return done; }
+static void rc_retire(void) {
+    if (!g_rc_nsubmitted) return;
+    uint64_t done = rc_done(); uint32_t n = 0;
+    for (uint32_t i = 0; i < g_rc_nsubmitted; i++) if (g_rc_submitted[i].fence > done) g_rc_submitted[n++] = g_rc_submitted[i];
+    g_rc_nsubmitted = n;
+}
+static void rc_commit(uint64_t fence) {
+    rc_retire();
+    uint32_t need = g_rc_nsubmitted + g_rc_npend;
+    if (need > g_rc_scap) { uint32_t cap = g_rc_scap ? g_rc_scap : 256; while (cap < need) cap *= 2;
+        rc_submitted *p = realloc(g_rc_submitted, (size_t)cap * sizeof *p); if (!p) MDIE("no memory for submitted timestamp reports"); g_rc_submitted = p; g_rc_scap = cap; }
+    for (uint32_t i = 0; i < g_rc_npend; i++) g_rc_submitted[g_rc_nsubmitted++] = (rc_submitted){g_rc_pend[i], fence};
+}
 static uint64_t *g_rc_occ; static uint32_t g_rc_ocap, g_rc_on;   // addresses ever written by a non-timestamp report (open addressing, a power of two): conditions on them keep drawing
 static int rc_occ_has(uint64_t a) { if (!g_rc_ocap) return 0; for (uint32_t i = (uint32_t)(a >> 4) & (g_rc_ocap - 1);; i = (i + 1) & (g_rc_ocap - 1)) { if (g_rc_occ[i] == a) return 1; if (!g_rc_occ[i]) return 0; } }
 static void rc_occ_add(uint64_t a) {
@@ -898,6 +917,10 @@ static void rc_note(uint64_t a, int kind) {
 static int rc_value(uint64_t a, uint64_t *v) {   // 0 = unknown at encode time
     if (rc_occ_has(a)) return 0;
     for (uint32_t i = g_rc_npend; i-- > 0;) if (g_rc_pend[i] == a) { *v = 0; return 1; }
+    for (uint32_t i = g_rc_nsubmitted; i-- > 0;) if (g_rc_submitted[i].addr == a) {
+        if (g_rc_submitted[i].fence > rc_done()) { *v = 0; return 1; }
+        break;   // completed: subsequent CPU writes are authoritative again
+    }
     *v = *(const volatile uint64_t *)a; return 1;
 }
 // ---------- Occlusion queries (NVN_COUNTER_TYPE_SAMPLES_PASSED) ----------
@@ -1126,7 +1149,7 @@ static uint64_t g_arena_gen = 1;
 static void ts_sub_begin(void);   // segment boundary timestamps (ts_on, before sub_cut)
 static void sub_cut_begin(void);   // the segment draw count starts with the submission (before sub_cut)
 void nvn_be_sub_begin(void) {
-    mtl_init(); g_sub_serial++; g_pkg_epoch++; wd_sub_begin(); g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
+    mtl_init(); g_sub_serial++; g_pkg_epoch++; wd_sub_begin(); g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; rc_retire(); g_rc_npend = 0; g_rc_skip = 0;
     defer_drain();
     defer_reset();
     void treg_sweep_gone(void); treg_sweep_gone();
@@ -2176,6 +2199,7 @@ uint64_t nvn_be_sub_commit(void) {
     ghost_finish_submission();   // before the fence is taken: what it drops is released behind this submission
     alias_dead_views();   // likewise for the texture-ID views of textures dropped as overwritten
     uint64_t fence = ++g_fence;
+    rc_commit(fence);
     gw_commit(fence);
     if (g_vis_ring_i >= 0) g_vis_ring[g_vis_ring_i].fence = fence;
     // CPU-visible effects after completion: copy the op table into the callback
