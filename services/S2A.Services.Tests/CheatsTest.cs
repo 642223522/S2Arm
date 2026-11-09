@@ -44,15 +44,17 @@ namespace S2A.Services.Tests
             p.IsEnabled = true;
             p.Execute((ControllerKeys)0);
             check("金手指 执行：写到主程序基址 + 0x10、值 42", "8000000010=42", fake.Writes.Count == 1 ? $"{fake.Writes[0].va:X}={fake.Writes[0].v}" : $"写了 {fake.Writes.Count} 次");
-            // NativeAOT 泛型名单（Cheats.TamperGenerics）要覆盖 Ryujinx Tamper 里全部泛型操作 / 条件：期望 = 反射枚举出来的那一组，名单少一个就是真机「No parameterless constructor」
-            var all = new List<string>();
+            // NativeAOT 运行时指令（services/aot/rd.xml）要覆盖 Ryujinx Tamper 里全部泛型操作 / 条件 × 4 种宽度：期望 = 反射枚举出来的那一组，少一个就是真机「missing native code」
+            var want = new List<string>();
             foreach (Type t in typeof(AtmosphereCompiler).Assembly.GetTypes())
-                if (t.IsGenericTypeDefinition && t.Namespace != null && (t.Namespace.EndsWith("Tamper.Operations") || t.Namespace.EndsWith("Tamper.Conditions"))
-                    && (typeof(Ryujinx.HLE.HOS.Tamper.Operations.IOperation).IsAssignableFrom(t) || typeof(Ryujinx.HLE.HOS.Tamper.Conditions.ICondition).IsAssignableFrom(t)))
-                    all.Add(t.Name);
-            var roots = new List<string>(); foreach (Type t in Cheats.TamperGenerics) roots.Add(t.Name);
-            all.Sort(StringComparer.Ordinal); roots.Sort(StringComparer.Ordinal);
-            check("金手指 AOT 泛型名单覆盖全部泛型操作 / 条件", string.Join(",", all), string.Join(",", roots));
+                if (t.IsGenericTypeDefinition && (typeof(Ryujinx.HLE.HOS.Tamper.Operations.IOperation).IsAssignableFrom(t) || typeof(Ryujinx.HLE.HOS.Tamper.Conditions.ICondition).IsAssignableFrom(t)))
+                    foreach (string w in new[] { "Byte", "UInt16", "UInt32", "UInt64" }) want.Add($"{t.FullName}[[System.{w},System.Private.CoreLib]]");
+            string dir = AppContext.BaseDirectory, rdPath = null;   // 从测试程序目录往上找仓库里的 services/aot/rd.xml
+            for (int up = 0; up < 10 && dir != null && rdPath == null; up++, dir = System.IO.Path.GetDirectoryName(dir.TrimEnd('/')))
+                if (System.IO.File.Exists(System.IO.Path.Combine(dir, "services/aot/rd.xml"))) rdPath = System.IO.Path.Combine(dir, "services/aot/rd.xml");
+            string rd = rdPath != null ? System.IO.File.ReadAllText(rdPath) : "";
+            var missing = want.FindAll(x => !rd.Contains($"Name=\"{x}\""));
+            check("金手指 AOT 运行时指令覆盖全部泛型操作 / 条件 × 4 宽度", $"{want.Count} 个、缺 0", $"{want.Count} 个、缺 {missing.Count}{(missing.Count > 0 ? "：" + missing[0] : "")}");
             check("金手指 编译：坏指令回 null（界面显示「指令有误」）", true,
                 new AtmosphereCompiler(exe, 0, 0, 0, fake).Compile("bad", new[] { "ZZZZ" }) == null);
         }
