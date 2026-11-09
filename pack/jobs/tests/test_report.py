@@ -46,6 +46,45 @@ class ReportTests(unittest.TestCase):
         self.assertIn("错误码：无（作业没有写出诊断", text)
         self.assertIn("没有留下日志文件", text)
 
+    def test_shared_source_total_keeps_each_package_detail(self):
+        packages = [
+            {"type": "base", "version": 0, "sha256": "a" * 64, "path": "sources/game.nup", "size": 4096},
+            {"type": "update", "version": 65536, "sha256": "a" * 64, "path": "sources/game.nup", "size": 4096},
+        ]
+        (self.library / "catalog.json").write_text(json.dumps({"games": [{"id": "0100", "packages": packages}]}))
+        self.job("shared", gameId="0100")
+        text = report.build(self.private, "shared")
+        self.assertIn("包：base v0 NSP/XCI 4.00 KB", text)
+        self.assertIn("包：update v65536 NSP/XCI 4.00 KB", text)
+        self.assertIn("原包合计：4.00 KB", text)
+        self.assertFalse((self.library / "sources/game.nup").exists())
+
+    def test_source_total_uses_identity_not_path(self):
+        cases = [
+            ("same_sha_different_paths", [
+                {"sha256": "a" * 64, "path": "first.nup", "size": 2048},
+                {"sha256": "a" * 64, "path": "second.nup", "size": 2048}], "原包合计：2.00 KB"),
+            ("different_sha_same_path", [
+                {"sha256": "a" * 64, "path": "game.nup", "size": 2048},
+                {"sha256": "b" * 64, "path": "game.nup", "size": 1024}], "原包合计：3.00 KB"),
+            ("missing_identity_same_path", [
+                {"path": "game.nup", "size": 2048},
+                {"sha256": "", "path": "game.nup", "size": 1024},
+                {"sha256": None, "path": "game.nup", "size": 1024}], "原包合计：4.00 KB"),
+            ("same_sha_without_path", [
+                {"sha256": "a" * 64, "size": 2048},
+                {"sha256": "a" * 64, "size": 2048}], "原包合计：2.00 KB"),
+            ("same_sha_latest_size", [
+                {"sha256": "a" * 64, "size": 2048},
+                {"sha256": "a" * 64, "size": 1024}], "原包合计：1.00 KB"),
+        ]
+        for name, packages, expected in cases:
+            with self.subTest(name=name):
+                (self.library / "catalog.json").write_text(json.dumps({"games": [{"id": "0100", "packages": packages}]}))
+                lines = report.game_lines({"library": str(self.library)}, "0100")
+                self.assertEqual(lines[-1], expected)
+                self.assertEqual(sum(line.startswith("包：") for line in lines), len(packages))
+
     def test_python_crash_log_is_included(self):
         (self.private / "logs" / "t3-exception.log").write_text("Traceback\nKeyError: 'x'\n")
         self.job("t3", operation="import")
