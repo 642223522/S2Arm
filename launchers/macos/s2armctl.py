@@ -205,8 +205,10 @@ DEFAULT_NEXT = ('ai', 's2armctl logs <任务号> 看原因，按日志末尾的�
 
 def task_log(task_id):
     d = os.path.join(ROOT, 'logs')
-    try: fs = [os.path.join(d, f) for f in os.listdir(d) if f.startswith(task_id) and f.endswith('.log')]
-    except OSError: return None
+    # Mac 构建各阶段写 logs/<任务>/，起游戏等作业写 logs/<任务>-*.log；两种布局都查。
+    prefix = os.path.join(glob.escape(d), glob.escape(task_id))
+    fs = glob.glob(prefix + '*.log') + glob.glob(os.path.join(prefix, '*.log'))
+    fs = [f for f in fs if os.path.isfile(f)]
     return max(fs, key=os.path.getmtime) if fs else None
 
 def logs(ref, n):

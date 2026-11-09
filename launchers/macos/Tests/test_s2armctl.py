@@ -71,6 +71,76 @@ class StartFailureTests(unittest.TestCase):
         self.assertGreaterEqual(waited, 60)
 
 
+class TaskLogTests(unittest.TestCase):
+    def test_build_logs_command_reads_the_nested_stage_log(self):
+        with tempfile.TemporaryDirectory() as root:
+            stage = Path(root) / "logs" / "build-task" / "refresh.log"
+            stage.parent.mkdir(parents=True)
+            stage.write_text("第一行\n第二行\n第三行\n", encoding="utf-8")
+            record = task("build-task", "running", 1)
+            output = io.StringIO()
+            with mock.patch.object(ctl, "ROOT", root), \
+                    mock.patch.object(ctl, "call", return_value=state(record)), \
+                    mock.patch.object(ctl.sys, "argv", ["s2armctl", "logs", "build-task", "--lines", "2"]), \
+                    contextlib.redirect_stdout(output):
+                ctl.main()
+            self.assertIn(str(stage), output.getvalue())
+            self.assertIn("第二行\n第三行", output.getvalue())
+            self.assertNotIn("第一行", output.getvalue())
+
+    def test_game_reference_reads_the_latest_tasks_nested_log(self):
+        with tempfile.TemporaryDirectory() as root:
+            logs = Path(root) / "logs"
+            logs.mkdir()
+            (logs / "old-game.log").write_text("old run", encoding="utf-8")
+            stage = logs / "new" / "extract.log"
+            stage.parent.mkdir()
+            stage.write_text("new build", encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.object(ctl, "ROOT", root), \
+                    mock.patch.object(ctl, "call", return_value=state(
+                        task("old", "completed", 1, operation="launch"),
+                        task("new", "running", 2))), \
+                    contextlib.redirect_stdout(output):
+                ctl.logs("game", 40)
+            self.assertIn("new build", output.getvalue())
+            self.assertNotIn("old run", output.getvalue())
+
+    def test_newest_log_is_selected_across_flat_and_nested_layouts(self):
+        with tempfile.TemporaryDirectory() as root:
+            logs = Path(root) / "logs"
+            nested = logs / "job" / "refresh.log"
+            nested.parent.mkdir(parents=True)
+            flat = logs / "job-failure.log"
+            nested.write_text("stage", encoding="utf-8")
+            flat.write_text("failure", encoding="utf-8")
+            with mock.patch.object(ctl, "ROOT", root):
+                os.utime(nested, (200, 200))
+                os.utime(flat, (100, 100))
+                self.assertEqual(ctl.task_log("job"), str(nested))
+                os.utime(flat, (300, 300))
+                self.assertEqual(ctl.task_log("job"), str(flat))
+
+    def test_flat_game_log_still_works_and_other_tasks_are_ignored(self):
+        with tempfile.TemporaryDirectory() as root:
+            logs = Path(root) / "logs"
+            logs.mkdir()
+            game = logs / "launch-game.log"
+            game.write_text("game", encoding="utf-8")
+            unrelated = logs / "other" / "refresh.log"
+            unrelated.parent.mkdir()
+            unrelated.write_text("other task", encoding="utf-8")
+            with mock.patch.object(ctl, "ROOT", root):
+                self.assertEqual(ctl.task_log("launch"), str(game))
+                self.assertIsNone(ctl.task_log("missing"))
+
+    def test_log_named_directories_are_not_returned_as_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "logs" / "job-empty.log").mkdir(parents=True)
+            with mock.patch.object(ctl, "ROOT", root):
+                self.assertIsNone(ctl.task_log("job"))
+
+
 class WaitTests(unittest.TestCase):
     def run_wait(self, states, operation="build", limit=10):
         now = [0]
