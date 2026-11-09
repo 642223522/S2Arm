@@ -22,6 +22,7 @@
 #   s2armctl wait <游戏号> [--op build] [--timeout 秒]   等该游戏的任务结束，逐条打里程碑和进度，结尾打每个里程碑的耗时；失败退出 1
 # 公共参数：--data-root <目录>（与 App 的 --data-root 一致；缺省 ~/Library/Application Support/S2Arm，Windows 是 %LOCALAPPDATA%\S2Arm\WindowsLauncher）
 # Windows（11-08 启动器线）：协议和命令同一份，启动器自带 s2armctl.cmd；Windows 只出 iPhone / iPad 包，Mac 专属命令由启动器回 409。
+import argparse
 import glob, json, os, subprocess, sys, time, urllib.request, urllib.error
 
 USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点了对应按钮，屏幕上看得到）
@@ -43,7 +44,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   target probe | target <机型号> <系统大版本>   重新检测连着的设备 / 没连时选机型
   update [restart|retry]            新版后台下载的状态；restart = 重启并换上已下载好的新版，retry = 重试下载（出包中不能重启）
   library <目录> [--move]            换游戏库位置（外接盘也行）；--move 把现有游戏、成品、缓存和存档一起搬到这个空文件夹
-  display <游戏号> [--fps60 on|off] [--widen on|off] [--metalfx on|off]   看 / 改这款的画面设置，下次启动生效
+  display <游戏号> [--<设置项> on|off|default|<选项>]…   看 / 改这款的启动设置（设置项见 game_settings.v1.json，如 --enhance on --docked handheld），下次启动生效
   errors [游戏号]                    最近失败任务的错误码、原因、建议、日志位置和日志末尾
   retry <任务号> | cancel <任务号>    重试 / 取消任务
   launch <游戏号>                    在 Mac 上启动游戏
@@ -51,7 +52,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   snapshot <输出.png>                截主窗口
   env | refresh | dismiss           重新检查环境 / 刷新游戏库 / 关掉提示框
   fonts <目录|"">                    换成原版字体（空串 = 用应用自带）
-  next [游戏号] [--json]             AI 代操作入口：现在走到哪一步、下一步做什么（命令）、由谁做（ai 自己做 / ask 问玩家要输入 /
+  next [游戏号] [--target mac|ios] [--json]   AI 代操作入口（缺省 ios）：现在走到哪一步、下一步做什么、由谁做（ai 自己做 / ask 问玩家要输入 /
                                     human 只能玩家本人做 / confirm 先征得玩家同意）、为什么；出错时带错误码、原因和处理办法
   logs <任务号|游戏号> [--lines N]    读这条任务（或这款游戏最近一条任务）的日志末尾（缺省 40 行）
   install <游戏号> [--team 团队号] [--device UDID或设备名]   装到 iPhone（签名 + 装 App + 推资源包）；连着多台时用 --device 指定（同网配对的也行）
@@ -232,40 +233,58 @@ def ipa_of(s, gid):
     ts = [t for t in s['tasks'] if t.get('gameId') == gid and t['operation'] == 'ipa' and t['state'] == 'completed' and t.get('ipaPath')]
     return max(ts, key=lambda t: t.get('ended') or 0)['ipaPath'] if ts else None
 
-def next_step(s, gid=None):
+def next_step(s, gid=None, target='ios'):
     """从 /state 推下一步：{step, who, do, why, game?, task?, code?}"""
+    mac = target == 'mac'
+    target_arg = ' --target mac' if mac else ''
+    next_command = 's2armctl next' + (f' {gid}' if mac and gid else '') + target_arg
     if s.get('waitingForAccess'):
-        return dict(step='授权', who='human', do='请玩家看屏幕，在系统框里点「允许」（S2Arm 要读「%s」），然后 s2armctl next' % s['waitingForAccess'], why='系统隐私授权只能玩家本人点')
+        return dict(step='授权', who='human', do=f'请玩家看屏幕，在系统框里点「允许」（S2Arm 要读「{s["waitingForAccess"]}」），然后 {next_command}', why='系统隐私授权只能玩家本人点')
+    g, others = main_game(s, gid)
+    mac_ready = mac and g and g['ready'] and not g.get('needsPreparation')
+    # 已准备好的 Mac 游戏只需要运行环境，准备阶段仍需完整构建环境。
+    environment_ready = s.get('runtimeReady', s['environmentReady']) if mac_ready else s['environmentReady']
     # 还没有任何检查结果也算在查：刚拉起窗口那一刻检查还没开始，不能报「环境缺东西、玩家去处理」却列不出缺什么（11-02 beta.3 走查）
-    if s['checkingEnvironment'] or (not s['environmentReady'] and not s['checks']):
-        return dict(step='环境检查', who='ai', do='等几秒再 s2armctl next；一分钟后还是这一步，就 s2armctl env 发起一次检查', why='S2Arm 正在检查本机环境')
-    if not s['environmentReady']:
+    if s['checkingEnvironment'] or (not environment_ready and not s['checks']):
+        return dict(step='环境检查', who='ai', do=f'等几秒再 {next_command}；一分钟后还是这一步，就 s2armctl env 发起一次检查', why='S2Arm 正在检查本机环境')
+    if not environment_ready:
         bad = [c for c in s['checks'] if not c['ok']]
         return dict(step='环境', who='human', do='；'.join(f'{c["name"]}：{c["message"]}' for c in bad) + '（按提示装好后 s2armctl env）', why='本机缺组件，要玩家本人按提示安装' if s.get('platform') == 'windows' else '本机缺组件，多数要玩家本人在 App Store / 系统里操作')
     # 解包好的游戏不要密钥：空库先问游戏，NSP / XCI 没密钥时导入会报 keys_missing 再问
-    if not s.get('hasImportedKeys') and any(g.get('needsKeys', True) for g in s['games']):
+    if not mac_ready and not s.get('hasImportedKeys') and any(g.get('needsKeys', True) for g in s['games']):
         return dict(step='密钥', who='ask', do='问玩家自己从 Switch 导出的 prod.keys 放在哪，然后 s2armctl keys <路径>', why='S2Arm 不提供密钥，只能用玩家自己的')
     if not s['games']:
         return dict(step='导入', who='ask', do='问玩家游戏文件（NSP / XCI，本体 + 更新 + DLC 放一个文件夹）在哪，然后 s2armctl games <文件夹>', why='游戏库是空的')
-    g, others = main_game(s, gid)
     if not g: return dict(step='导入', who='ask', do=f'游戏库里没有 {gid}：s2armctl state 看游戏号，或 s2armctl games <文件夹> 导入', why='游戏号不在库里')
     extra = {'game': g['id'], 'name': g['name']}
     if others and not gid:
         extra['others'] = [f'{o["id"]} {o["name"]}（{(o.get("baseBytes") or 0) / 1e9:.2f} GB）' for o in others]
-        extra['note'] = '库里不止一款：按本体大小认 %s 是主游戏，其余多半是同系列小工具；要出别的就 s2armctl next <游戏号>' % g['name']
+        extra['note'] = f'库里不止一款：按本体大小认 {g["name"]} 是主游戏，其余多半是同系列小工具；要出别的就 s2armctl next <游戏号>{target_arg}'
     mine = sorted([t for t in s['tasks'] if t.get('gameId') == g['id']], key=lambda t: t.get('started') or 0)
+    if mac:
+        mine = [t for t in mine if t['operation'] == 'build']
     act = [t for t in mine if t['state'] in ('running', 'queued', 'cancelling')]
     if act:
         t = act[-1]; op = t['operation'] if t['operation'] in ('ipa', 'install') else 'build'
-        return dict(step='等待', who='ai', do=f's2armctl wait {g["id"]} --op {op}（或隔一会儿 s2armctl next）', why=f'{t["operation"]} 正在进行：{t.get("milestone") or t.get("stage") or ""} {t.get("message") or ""}'.strip(), task=t['id'], **extra)
-    ipa = ipa_of(s, g['id'])
+        return dict(step='等待', who='ai', do=f's2armctl wait {g["id"]} --op {op}（或隔一会儿 {next_command}）', why=f'{t["operation"]} 正在进行：{t.get("milestone") or t.get("stage") or ""} {t.get("message") or ""}'.strip(), task=t['id'], **extra)
+    if mac and g['id'] in s.get('queue', []):
+        return dict(step='等待', who='ai', do=f's2armctl wait {g["id"]} --op build（或隔一会儿 {next_command}）', why='这款的 Mac 准备任务正在排队', **extra)
+    if mac_ready:
+        if s.get('executionTask') or s.get('queue'):
+            return dict(step='等待', who='ai', do=f'等当前任务结束后再 {next_command}', why='构建与游戏运行互斥', **extra)
+        return dict(step='启动', who='ai', do=f's2armctl launch {g["id"]}', why='这款游戏的 Mac 版已准备好', **extra)
+
+    ipa = None if mac else ipa_of(s, g['id'])
     last = mine[-1] if mine else None
-    if last and last['operation'] in ('ipa', 'install') and last['state'] in ('failed', 'interrupted') and (last['operation'] == 'install' or not ipa):
+    if last and last['state'] in ('failed', 'interrupted') and (mac or last['operation'] == 'install' or (last['operation'] == 'ipa' and not ipa)):
         d = (last.get('diagnostics') or [{}])[0]; code = d.get('code') or 'job_failed'
         who, do = AI_NEXT.get(code, DEFAULT_NEXT)
-        return dict(step='装机失败' if last['operation'] == 'install' else '出包失败', who=who, do=do.replace('<任务号>', last['id']), why=d.get('summary') or last.get('message') or '', code=code, suggestion=d.get('suggestion'), task=last['id'], log=d.get('logPath'), **extra)
-    if not g['buildable'] and not g['ready']:
+        step = {'build': '准备失败', 'install': '装机失败', 'ipa': '出包失败'}[last['operation']]
+        return dict(step=step, who=who, do=do.replace('<任务号>', last['id']), why=d.get('summary') or last.get('message') or '', code=code, suggestion=d.get('suggestion'), task=last['id'], log=d.get('logPath'), **extra)
+    if not g['buildable'] and (mac or not g['ready']):
         return dict(step='导入', who='ask', do='这款游戏缺：' + '、'.join(g.get('missing') or []) + '；问玩家要缺的文件，s2armctl games <文件夹>', why='游戏文件不全', **extra)
+    if mac:
+        return dict(step='准备', who='ai', do=f's2armctl build {g["id"]} mac，然后 s2armctl wait {g["id"]} --op build', why='还需要准备这款游戏的 Mac 版', **extra)
     if not ipa:
         # 一包通用（10-30）：iPhone 包与机型无关，不用先选目标设备——11-02 beta.3 走查发现这里还在多问一步
         return dict(step='出包', who='ai', do=f's2armctl build {g["id"]} ios，然后 s2armctl wait {g["id"]} --op ipa --timeout 7200', why='还没出 iPhone 版（大游戏第一次要几十分钟到一个多小时，请玩家插上电源、别让%s睡眠）' % ('电脑' if s.get('platform') == 'windows' else ' Mac '), **extra)
@@ -282,8 +301,8 @@ def next_step(s, gid=None):
     return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}，然后 s2armctl wait {g["id"]} --op install --timeout 3600',
                 why='iPhone 包已出好：用玩家在 Xcode 登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）', ipa=ipa, **extra)
 
-def show_next(gid, as_json):
-    n = next_step(call('GET', '/state'), gid)
+def show_next(gid, as_json, target='ios'):
+    n = next_step(call('GET', '/state'), gid, target)
     if as_json: print(json.dumps(n, ensure_ascii=False, indent=1)); return
     who = {'ai': 'AI 自己做', 'ask': '先问玩家要输入', 'human': '只能玩家本人做（AI 停下来提示玩家）', 'confirm': '有破坏性，先征得玩家同意'}[n['who']]
     print(f'下一步：{n["step"]}（{who}）\n  做什么：{n["do"]}\n  为什么：{n["why"]}')
@@ -530,7 +549,16 @@ def main():
         before = {t['id'] for t in call('GET', '/state')['tasks']}
         body = {'path': os.path.abspath(os.path.expanduser(rest[0]))} if cmd == 'keys' else {'paths': [os.path.abspath(os.path.expanduser(x)) for x in rest]}
         call('POST', '/keys' if cmd == 'keys' else '/games', body); wait_op(op, before); return
-    if cmd == 'next': show_next(next((x for x in rest if not x.startswith('--')), None), '--json' in rest); return
+    if cmd == 'next':
+        parser = argparse.ArgumentParser(prog='s2armctl next', allow_abbrev=False)
+        parser.add_argument('game', metavar='游戏号', nargs='?')
+        parser.add_argument('--target', choices=('mac', 'ios'), default='ios', help='默认 ios')
+        parser.add_argument('--json', action='store_true', help='以 JSON 输出')
+        args = parser.parse_args(rest)
+        if WINDOWS and args.target == 'mac':
+            parser.error('Windows 只支持 iOS，不能使用 --target mac')
+        show_next(args.game, args.json, args.target)
+        return
     if cmd == 'logs': logs(rest[0], int(rest[rest.index('--lines') + 1]) if '--lines' in rest else 40); return
     if WINDOWS and cmd in ('device', 'push-pack'):
         sys.exit('Windows 上用 s2armctl install-check <游戏号> 看手机状态；s2armctl install <游戏号> 会装 App 并拷资源包')
@@ -564,11 +592,12 @@ def main():
         else: print(json.dumps(call('GET', '/state').get('update'), ensure_ascii=False))
         return
     if cmd == 'display':
-        names = {'--fps60': 'fps60', '--widen': 'widenForce', '--metalfx': 'metalfx'}
-        body = {'gameId': rest[0]}
-        for flag, key in names.items():
-            if flag in rest: body[key] = rest[rest.index(flag) + 1] == 'on'
-        print(json.dumps(call('POST', '/display', body), ensure_ascii=False, indent=1)); return
+        # 启动设置：--<设置项> <值>，设置项 = launchers/shared/game_settings.v1.json 的 id；on / off 是开关，default 回缺省，其余原样当选项值
+        settings = {}
+        for flag, value in zip(rest[1::2], rest[2::2]):
+            if flag.startswith('--'):
+                settings[flag[2:]] = True if value == 'on' else False if value == 'off' else None if value == 'default' else value
+        print(json.dumps(call('POST', '/display', {'gameId': rest[0], 'settings': settings}), ensure_ascii=False, indent=1)); return
     if cmd == 'library':
         before = {t['id'] for t in call('GET', '/state')['tasks']}
         call('POST', '/library', {'path': os.path.abspath(os.path.expanduser(rest[0])), 'move': '--move' in rest}); wait_op('setup', before); return

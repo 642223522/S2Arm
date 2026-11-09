@@ -333,7 +333,8 @@ def probe(c):
                     models=[], osChoices=[])
     env = c.env()
     try:
-        return dict(connected=[] if c.r.get("quick") else connected(c), models=models(env["DEVELOPER_DIR"]), osChoices=os_choices(env))
+        # 带上连接方式（wired / tunnel）：连着多台时出包页列出来让玩家选（#272），默认有线那台
+        return dict(connected=[] if c.r.get("quick") else connected(c, with_link=True), models=models(env["DEVELOPER_DIR"]), osChoices=os_choices(env))
     except TargetError as e:
         from core import Failure
         raise Failure(str(e), code=e.code) from e

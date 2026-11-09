@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from core import Failure, contained
+import layout
 
 
 
@@ -111,7 +112,7 @@ def _iml_device_hint(c, tgt, gid):
     # 产物根里的 addr_need.tsv（stage_rewrite.sh 生成；新款第一次出包可能还没有，用 None）
     tsv = ""
     try:
-        cur = (c.library / "games" / gid / "current").resolve()
+        cur = layout.image_mac(c, gid, create=False)
         if cur.is_dir() and (cur / "addr_need.tsv").is_file():
             tsv = str(cur / "addr_need.tsv")
     except Exception:
@@ -183,6 +184,8 @@ def _build(c):
     if not game:
         raise Failure("游戏库里没有这款游戏。")
     require_game(c, game)
+    from library import apply_location
+    apply_location(c, game)   # 出包页选的存放位置（游戏库结构 v3）
     from library import check_pack_space
     space = check_pack_space(c, game, compiler_policy=compiler_policy)   # 不再暂存原件（共用解包目录 + --from-extract），没有跨卷暂存
     # 同量级下一次出包沿用现有空间预算，不把单次额外 10GiB 当完整余量。
@@ -229,6 +232,12 @@ def _build(c):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
+        # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
+        #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
+        from saves import identity as save_identity
+        identity_file = logs / "save-identity.json"
+        identity_file.write_text(json.dumps(save_identity(game), ensure_ascii=False), encoding="utf-8")
+        env["S2A_SAVE_IDENTITY"] = str(identity_file)
         if packaged and os.name != "nt":   # Mac 发版应用：随包壳（pack/ipa.sh 见 S2A_SHELL 就不现出壳）+ 应用自带读取器（同 build.py：dotnet 跑 dll 包一层可执行壳）
             from toolchain import reader
             nxu = logs / "nx_unpack"
@@ -381,7 +390,7 @@ def container_custom(c):
     out = {}
     for game in c.catalog()["games"]:
         custom = game_custom(c, game["id"])
-        original = c.library / "games" / game["id"] / "cover.jpg"
+        original = layout.path(c, game["id"], "cover.jpg", create=False)
         cover = custom["cover"] or (original if original.is_file() else None)
         out[game["id"]] = dict(custom=bool(custom["name"] or custom["cover"]), name=custom["name"] or game.get("name") or "", cover=str(cover) if cover else "")
     return out

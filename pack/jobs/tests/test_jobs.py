@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import uuid
 import zipfile
 from unittest.mock import patch
@@ -20,6 +21,7 @@ ROOT = JOBS.parents[1]
 sys.path.insert(0, str(JOBS))
 from core import Context, Failure, Cancelled, atomic, contained, digest
 import build
+import layout
 import library
 
 
@@ -115,7 +117,7 @@ class JobsTests(unittest.TestCase):
         with um.patch.object(toolchain, "reader", return_value="reader.dll"), um.patch.object(self.c, "run", run):
             x1 = build.ensure_extract(self.c, game, [base], {}, logs)
             x2 = build.ensure_extract(self.c, game, [base], {}, logs)
-            self.assertEqual((x1, x2, len(calls)), (self.c.library / "cache/0100000000000000/extract",) * 2 + (1,))
+            self.assertEqual((x1, x2, len(calls)), (layout.build_dir(self.c, "0100000000000000") / "extract",) * 2 + (1,))
             self.assertTrue(any(e.get("message") == "已验证并复用解包产物" for e in self.events_of("cache")))
             dlc = dict(self.package("dlc", tid="0100000000001001", sha="d" * 64))
             build.ensure_extract(self.c, self.game(packages=[base, dlc]), [base, dlc], {}, logs)
@@ -214,7 +216,7 @@ class JobsTests(unittest.TestCase):
         sib = self.c.library / "iPhone/0100000000000000/roots"; v = sib / "party@pkg-abc"
         (v / "romfs").mkdir(parents=True); (v / ".stage_rewrite").write_text("K-rewrite\n"); (v / ".root_src").write_text("abcdef1234567890\n")
         (sib / "party@现行").symlink_to("party@pkg-abc")
-        mac = self.c.library / "cache/0100000000000000/key1/roots"
+        mac = layout.build_dir(self.c, "0100000000000000") / "key1/roots"
         self.assertFalse(build.seed_from_sibling(self.c, self.game(tid="0100000000000001"), mac, "0100000000000001"), "别的款的根不算兄弟")
         self.assertTrue(build.seed_from_sibling(self.c, game, mac, "0100000000000000"))
         cur = (mac / "0100000000000000@现行").resolve()
@@ -222,7 +224,7 @@ class JobsTests(unittest.TestCase):
         ev = [e for e in self.events_of("cache") if "复用兄弟平台" in e.get("message", "")]
         self.assertTrue(ev and "提交 abcdef123" in ev[-1]["message"] and "克隆路线：APFS 克隆" in ev[-1]["message"], ev)
         with um.patch.object(self.c, "run", side_effect=Failure("克隆失败：x：[Errno 45] Operation not supported")):
-            self.assertFalse(build.seed_from_sibling(self.c, game, self.c.library / "cache/0100000000000000/key2/roots", "0100000000000000"))
+            self.assertFalse(build.seed_from_sibling(self.c, game, layout.build_dir(self.c, "0100000000000000") / "key2/roots", "0100000000000000"))
         d = [x for x in self.c.job["diagnostics"] if x["code"] == "sibling_clone_failed"]
         self.assertTrue(d and d[0]["severity"] == "warning", d)
 
@@ -427,6 +429,15 @@ class JobsTests(unittest.TestCase):
         # 直连包与机型无关（一包通用 10-30）：不把目标架构 / 系统大版本交给出包
         self.assertNotIn("S2A_PSO_ARCHS", seen["env"]); self.assertNotIn("S2A_PSO_OS", seen["env"])
         self.assertTrue(r["ipa"].endswith("x.ipa")); self.assertEqual(r["buildId"], "abc-123")
+        # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
+        #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
+        import saves
+        si = Path(seen["env"]["S2A_SAVE_IDENTITY"])
+        game = json.loads((self.c.library / "catalog.json").read_text())["games"][0]
+        self.assertEqual(json.loads(si.read_text()), saves.identity(game))
+        self.assertEqual(json.loads(si.read_text())["id"], "0100000000000000")
+        chk = subprocess.run([sys.executable, str(ROOT / "pack/save_identity.py"), "--check", str(si)], capture_output=True, text=True)
+        self.assertEqual(chk.returncode, 0, chk.stderr)
 
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
@@ -729,6 +740,39 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], 2 * ((6 << 30) * 11 // 10) + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
+    def test_space_budget_uses_extract_size_when_known(self):
+        # #265：产物根里已有着色器抽取时，直连按抽取量估（缓存 9× + 库 3×），不再用固定 15 GB；期望按 space_rule 文件头的系数手算
+        import collections
+        import unittest.mock as um
+        du = collections.namedtuple("du", "total used free")
+        tid = "0100559011740000"
+        game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
+        ex = self.c.library / "cache" / tid / "k" / "roots" / "m@现行" / "extract"; ex.mkdir(parents=True)
+        with um.patch("space_rule.tree_bytes", return_value=2 << 30), um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
+            lib = library.space_budget(self.c, game)["volumes"][0]
+        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 * 2 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包 + 单文件镜像各一份原包 × 1.1，再加直连
+        self.assertIn("按抽取", lib["note"])
+
+    def test_direct_check_counts_existing_cache_and_volume(self):
+        # #265 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）：抽取 1 GB、同盘 → 要 12 GB；已有 4 GB 缓存 → 只要 8 GB
+        import collections
+        import space_rule
+        du = collections.namedtuple("du", "total used free")
+        d = self.root / "dc"; ex, cache, out = d / "ex", d / "cache", d / "out"
+        for x in (ex, cache, out): x.mkdir(parents=True)
+        sizes = {str(ex): 1 << 30, str(cache): 0}
+        with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
+            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 12 << 30)))
+            why = space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, (12 << 30) - 1))
+            self.assertIn("磁盘空间不足", why)   # pack/jobs/errors.py 据此归 disk_full
+            sizes[str(cache)] = 4 << 30
+            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 8 << 30)))
+            # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="7.9"):
+                self.assertIn("这块盘只剩 7.9 GB", space_rule.direct_check(ex, cache, out))
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
+                self.assertIsNone(space_rule.direct_check(ex, cache, out))
+
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
         import collections
@@ -801,10 +845,8 @@ class JobsTests(unittest.TestCase):
         base = dict(self.package("base"), size=1 << 30)
         game = self.game(packages=[base])
         self.catalogue([game])
-        game_root = self.c.library / "games" / game["id"]
-        release = game_root / "releases" / "working"
-        (release / "runtime").parent.mkdir(parents=True); (release / "runtime").write_text("keep")
-        (game_root / "current").symlink_to(release.relative_to(game_root))
+        image = layout.image_mac(self.c, game["id"])
+        image.mkdir(parents=True); (image / "runtime").write_text("keep")
         self.c.r.update(gameId=game["id"])
         du = collections.namedtuple("du", "total used free")
         with um.patch("shutil.disk_usage", return_value=du(0, 0, 1)), um.patch.object(self.c, "run") as run, \
@@ -812,9 +854,8 @@ class JobsTests(unittest.TestCase):
             with self.assertRaises(Failure) as e: build.prepare(self.c)
         self.assertEqual(e.exception.code, "disk_full")
         run.assert_not_called(); dig.assert_not_called()
-        self.assertFalse((self.c.library / "cache" / game["id"]).exists())
-        self.assertEqual((game_root / "current" / "runtime").read_text(), "keep")
-        self.assertEqual(os.readlink(game_root / "current"), "releases/working")
+        self.assertFalse((layout.build_dir(self.c, game["id"])).exists())
+        self.assertEqual((image / "runtime").read_text(), "keep")   # 出包没开始，现有镜像不动
         types = [json.loads(l)["type"] for l in self.c.events.read_text().splitlines()]
         self.assertIn("space", types); self.assertNotIn("plan", types)
 
@@ -973,7 +1014,8 @@ class JobsTests(unittest.TestCase):
         os.environ["S2A_AUTOPLAY"] = "1"
         os.environ["S2A_ROUTE"] = "/do-not-use"
         try:
-            env = build.runtime_env(self.c, self.game(), self.root / "runtime")
+            game = self.game()
+            env = build.runtime_env(self.c, game, self.root / "runtime")
         finally:
             for name in ("S2A_SAVE_DIR", "S2A_AUTOPLAY", "S2A_ROUTE"):
                 os.environ.pop(name)
@@ -982,7 +1024,7 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(env["S2A_AUTOPLAY"], "0")
         self.assertNotIn("S2A_SAVE_DIR", env)
         self.assertNotIn("S2A_ROUTE", env)
-        self.assertTrue(env["S2A_RYU_DATA"].startswith(str(self.c.library / "saves")))
+        self.assertEqual(env["S2A_RYU_DATA"], str(layout.path(self.c, game["id"], "saves")))
 
     def test_runtime_environment_follows_system_language_and_docks_by_default(self):
         # 维护者 11-07：不给玩家选游戏语言 / 主机掌机——请求不带 gameLanguage 就不设 S2A_SYSTEM_LANGUAGE（继承来的也不带，c.env 去掉 S2A_*；宿主跟系统首选语言）；
@@ -1039,7 +1081,7 @@ class JobsTests(unittest.TestCase):
         first = self.game(); second = self.game(tid="0100000000000001"); second["name"] = "Another game"
         defaults, saved, confirmed = mapping(14), mapping(36), mapping(3)
         atomic(self.c.private / "default-input.json", defaults)
-        atomic(self.c.library / "mappings" / (first["id"] + ".json"), saved)
+        atomic(layout.path(self.c, first["id"], "input.json"), saved)
         before = build.runtime_env(self.c, first, self.root / "runtime")
         next_context = Context(dict(self.request, taskId=str(uuid.uuid4()), launchInputConfig=confirmed,
                                     inputGuideHandled=True, uiLanguage="en"))
@@ -1073,18 +1115,27 @@ class JobsTests(unittest.TestCase):
                 build.launch(self.c)
             run.assert_not_called()
 
+    def fake_host(self, gid):
+        """公共宿主夹具：hosts/mac/<摘要>/S2ArmGame.app，game.json 记这款在用它（host_update.choose 开发模式下按 hostMac 取）"""
+        exe = layout.hosts_mac(self.c) / "aaaaaaaaaaaa" / "S2ArmGame.app/Contents/MacOS/s2arm-host"
+        exe.parent.mkdir(parents=True, exist_ok=True); exe.write_bytes(b"#!/bin/sh\n"); exe.chmod(0o755)
+        layout.update_info(self.c, gid, hostMac="aaaaaaaaaaaa")
+        return exe
+
     def test_launch_confirms_mapping_support_on_this_games_host(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], launchInputConfig={"schema": 1})
+        host = self.fake_host(game["id"])
         with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), patch.object(build.toolchain, "input_interface", return_value=(False, "legacy")) as probe, patch.object(self.c, "run") as run:
             with self.assertRaisesRegex(Failure, "重新打包"):
                 build.launch(self.c)
-            probe.assert_called_once_with(self.c, (self.c.library / "games" / game["id"] / "current").resolve() / "S2ArmGame.app/Contents/MacOS/s2arm-host")
+            probe.assert_called_once_with(self.c, host)
             run.assert_not_called()
 
     def test_launch_removes_only_its_snapshot_after_exit_failure_or_cancellation(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},
                                    deadzone=.15, mouseOptions=dict(mode="off", sensitivityX=1, sensitivityY=1)))
+        self.fake_host(game["id"])
         sibling = self.c.private / "runtime-input" / game["id"] / "another-run.json"
         atomic(sibling, {"keep": True})
         for failure in (None, Failure("fixture host failed"), Cancelled()):
@@ -1095,7 +1146,9 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(env["S2A_INPUT_GUIDE_SHOWN"], "1")
                 if failure is not None:
                     raise failure
-            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), patch.object(build.toolchain, "input_interface", return_value=(True, "fixture")), patch.object(self.c, "run", side_effect=run):
+            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                 patch.object(build.toolchain, "input_interface", return_value=(True, "fixture")), \
+                 patch.object(self.c, "run", side_effect=run):
                 if failure is None:
                     build.launch(self.c)
                 else:
@@ -1143,12 +1196,12 @@ class JobsTests(unittest.TestCase):
         game = self.game(packages=[package])
         other = self.game("0100000000000001", [package.copy()])
         self.catalogue([game, other])
-        save = self.c.library / "saves" / game["id"] / "progress"
-        release = self.c.library / "games" / game["id"] / "releases" / "working" / "runtime"
+        save = layout.path(self.c, game["id"], "saves") / "progress"
+        release = layout.image_mac(self.c, game["id"]) / "runtime"
         for f in (save, release):
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("keep")
-        cache = self.c.library / "cache" / game["id"]
+        cache = layout.build_dir(self.c, game["id"])
         cache.mkdir(parents=True)
         (cache / "scratch").write_text("discard")
         self.c.r.update(gameId=game["id"], kind="cache")
@@ -1228,8 +1281,8 @@ class JobsTests(unittest.TestCase):
         # 期望：删除这款游戏 = IPA / 资源包 / 中间产物 / Mac 构建缓存 / 本款缓存全删、清单里没有这一条；存档与托管原始文件保留，别的款不动
         package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
         keep, gone, other = self._build_leftovers(game["id"])
-        save = self.c.library / "saves" / game["id"] / "s.dat"; save.parent.mkdir(parents=True); save.write_text("keep")
-        mac = self.c.library / "cache" / game["id"] / "root"; mac.mkdir(parents=True)
+        save = layout.path(self.c, game["id"], "saves") / "s.dat"; save.parent.mkdir(parents=True); save.write_text("keep")
+        mac = layout.build_dir(self.c, game["id"]) / "root"; mac.mkdir(parents=True)
         self.c.r["gameId"] = game["id"]
         library.delete(self.c)
         self.assertEqual([f for f in keep + gone if f.exists()], [])
@@ -1598,11 +1651,11 @@ class JobsTests(unittest.TestCase):
         atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="x", display="", packages=[], hidden=False)]))
         out = self.c.library / "iPhone" / gid; root = out / "roots" / "k@pkg"; root.mkdir(parents=True)
         (root / "main.npdm").write_bytes(b"n"); (root / "stage.log").write_text("阶段日志")
-        (out / "roots" / "k@现行").symlink_to("k@pkg"); (self.c.library / "cache" / gid / "x").mkdir(parents=True)
+        (out / "roots" / "k@现行").symlink_to("k@pkg"); (layout.build_dir(self.c, gid) / "x").mkdir(parents=True)
         if ipa: (out / "a.ipa").write_bytes(b"ipa"); (out / "t资源包").mkdir()
         if kit: (out / library.CONTAINER_KIT).mkdir(); (out / library.CONTAINER_KIT / "main.npdm").write_bytes(b"old")
-        release = self.c.library / "games" / gid / "releases"; (release / "good").mkdir(parents=True); (release / "bad.partial").mkdir()
-        save = self.c.library / "saves" / gid / "s.bin"; save.parent.mkdir(parents=True); save.write_bytes(b"save")
+        image = layout.path(self.c, gid, "image"); (image / "mac").mkdir(parents=True); (image / "mac.partial").mkdir()   # 出了一半的新镜像
+        save = layout.path(self.c, gid, "saves") / "s.bin"; save.parent.mkdir(parents=True); save.write_bytes(b"save")
         return gid, out, save
 
     def stop_context(self, gid):
@@ -1613,14 +1666,14 @@ class JobsTests(unittest.TestCase):
         c = self.stop_context(gid)
         library.clean_after_stop(c)
         self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["a.ipa", "t资源包", library.CONTAINER_KIT]))
-        self.assertFalse((self.c.library / "cache" / gid).exists())
+        self.assertFalse((layout.build_dir(self.c, gid)).exists())
         self.assertEqual((out / library.CONTAINER_KIT / "main.npdm").read_bytes(), b"old")
         self.assertEqual(save.read_bytes(), b"save")
         self.assertEqual((c.private / "logs" / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
 
     def test_clean_after_stop_keeps_failed_stage_logs(self):   # #251：改写失败的 .failed/<款>_main.log 在游戏库缓存里，清理前要拷进私有日志目录，诊断包才带得上
         gid, out, _ = self.stopped_game()
-        failed = self.c.library / "cache" / gid / "x" / "roots" / ".failed"; failed.mkdir(parents=True)
+        failed = layout.build_dir(self.c, gid) / "x" / "roots" / ".failed"; failed.mkdir(parents=True)
         (failed / f"{gid}_main.log").write_text("改写超时前最后一行")
         c = self.stop_context(gid)
         library.clean_after_stop(c)
@@ -1645,8 +1698,7 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((out / "roots").exists())
         library.sweep_residue(c)
         self.assertFalse((out / "roots").exists())
-        release = self.c.library / "games" / gid / "releases"
-        self.assertEqual([p.name for p in release.iterdir()], ["good"])
+        self.assertEqual([p.name for p in layout.path(self.c, gid, "image").iterdir()], ["mac"])
 
     def test_sweep_without_residue_never_takes_execution_lock(self):
         """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""
@@ -1656,7 +1708,7 @@ class JobsTests(unittest.TestCase):
         library.sweep_residue(c)            # 先把残留清干净
         with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
             library.sweep_residue(c)
-        self.assertEqual(sorted(p.name for p in (self.c.library / "games" / gid / "releases").iterdir()), ["good"])
+        self.assertEqual([p.name for p in layout.path(self.c, gid, "image").iterdir()], ["mac"])
 
     def test_diagnostic_bounded_reads_and_atomic_publication(self):
         import unittest.mock as um
@@ -1806,6 +1858,41 @@ class WaitReadableTests(unittest.TestCase):
             with patch.object(builtins, "open", slow_open): library.wait_readable(c, [p], poll=0.1)
             self.assertTrue(msgs and all("在等系统的文件访问授权：读 base.nsp" in m for m in msgs), msgs)
 
+
+class WaitWritableTests(WaitReadableTests):
+    """开工前往出包工作目录试写（library.wait_writable，11-09 拷字体失败 + 手测推包挂 33 分钟：外接盘第一次写也弹授权框）：
+    写得到不打扰、不留探针；系统拒绝报 permission_denied 并说去哪打开；写卡住时界面上说在等什么"""
+    def test_writable_passes_silently_and_leaves_nothing(self):
+        import library
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "lib" / ".s2arm-work"
+            c, msgs = self.ctx(); library.wait_writable(c, w, poll=0.1)
+            self.assertEqual((msgs, list(w.iterdir())), ([], []))
+
+    def test_write_denied_says_where_to_allow(self):
+        import library
+        from errors import Failure
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "work"; w.mkdir(); w.chmod(0o500)
+            try:
+                c, _ = self.ctx()
+                with self.assertRaises(Failure) as e: library.wait_writable(c, w, poll=0.1)
+                self.assertEqual(e.exception.code, "permission_denied")
+                self.assertIn("可移除的宗卷", str(e.exception))
+            finally: w.chmod(0o700)
+
+    def test_blocked_write_tells_what_it_waits_for(self):
+        import library, time as _t
+        from pathlib import Path as P
+        from unittest.mock import patch
+        real = P.write_bytes
+        def slow(self, *a, **k):   # 写像被授权框挡住一样慢 0.35 秒，之后照常
+            _t.sleep(0.35); return real(self, *a, **k)
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "work"
+            c, msgs = self.ctx()
+            with patch.object(P, "write_bytes", slow): library.wait_writable(c, w, poll=0.1)
+            self.assertTrue(msgs and all("在等系统的文件访问授权：写 work" in m for m in msgs), msgs)
 
 if __name__ == "__main__":
     unittest.main()

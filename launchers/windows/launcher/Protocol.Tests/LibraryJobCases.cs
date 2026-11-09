@@ -64,5 +64,42 @@ internal static class LibraryJobCases
             catch (LibraryProtocolException) { check(true, "reject malformed catalogue"); }
         }
 
+        // ---- library layout v3: game.location in catalog, locations job (shapes from pack/jobs/library.py catalog / location_rows) ----
+        const string located = """
+        {"games":[{"id":"A","name":"a","display":"","cover":"","hidden":false,"missing":[],"location":{"state":"offline","path":"E:\\S2Arm","folder":"","volume":"Games","default":false}},
+                  {"id":"B","name":"b","display":"","cover":"","hidden":false,"missing":[]}],"keys":{"ready":true,"message":""}}
+        """;
+        using (var document = System.Text.Json.JsonDocument.Parse(located))
+        {
+            var games = LibraryCatalog.Parse(document.RootElement).Games;
+            check(games[0].LocationState == "offline" && !games[0].Reachable && games[0].Location!.Path == "E:\\S2Arm" && games[0].Location!.Volume == "Games",
+                "catalog: offline location kept with its path and volume, game not reachable");
+            check(games[1].LocationState == "none" && games[1].Reachable && games[1].Location is null, "catalog: no location field reads as none, reachable");
+        }
+        using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"offline\"", "\"lost\"")))
+        {
+            try { LibraryCatalog.Parse(document.RootElement); throw new Exception("accepted unknown location state"); }
+            catch (LibraryProtocolException) { check(true, "catalog: unknown location state rejected"); }
+        }
+        const string rows = """
+        {"locations":[{"id":"a","path":"/lib","volume":"系统盘","connected":true,"freeBytes":5000000000,"default":true},
+                      {"id":"b","path":"/ext","volume":"Ext","connected":false,"freeBytes":null,"default":false},
+                      {"id":"c","path":"/other","volume":"Other","connected":true,"freeBytes":10,"default":false}],"last":"c"}
+        """;
+        StorageLocations Locations(string json)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return StorageLocations.Parse(document.RootElement);
+        }
+        var places = Locations(rows);
+        check(places.Rows.Count == 3 && places.Rows[0].FreeBytes == 5000000000 && places.Rows[0].IsDefault && places.Rows[1].FreeBytes is null &&
+              !places.Rows[1].Connected && places.Last == "c", "locations: rows, free space, connection and last id preserved");
+        check(places.DefaultFor(new("offline", "/ext", "", "Ext", false)) == "/ext", "locations: default = where the game is now, even offline");
+        check(places.DefaultFor(new("ok", "/lib", "/lib/games/A", "系统盘", true)) == "/lib", "locations: default = current location when ok");
+        check(places.DefaultFor(new("missing", "/ext", "", "Ext", false)) == "/other" && places.DefaultFor(null) == "/other",
+            "locations: missing / no location → the location used last");
+        check(Locations(rows.Replace("\"last\":\"c\"", "\"last\":\"b\"")).DefaultFor(null) == "/lib", "locations: last one not connected → default location");
+        try { Locations(rows.Replace("\"connected\":true,", "")); throw new Exception("accepted location without connected"); }
+        catch (LibraryProtocolException) { check(true, "locations: row without connected rejected"); }
     }
 }

@@ -518,6 +518,8 @@ class Context:
         cache = self.work_root / "cache"
         cache.mkdir(parents=True, exist_ok=True)
         env.pop("DEVELOPER_DIR", None)
+        if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
+            env["S2A_SPACE_OVERRIDE"] = "1"
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -544,6 +546,16 @@ class Context:
                    S2A_MACHINE_NO_LOCAL="1", S2A_CPU_LEDGER="0",
                    # 玩家导入的客体着色器缓存（启动器社区资源面板拷进 <数据目录>/着色器缓存/<程序号>/，出包时自动并入；着色器线 docs/客体着色器缓存导入.md）
                    S2A_USER_SHCACHE=str(self.private / "着色器缓存"))
+        # 作业临时目录（游戏库结构 v3，出包修复线约定）：这款所在存放位置的 temp/<任务号>，与游戏数据同卷；作业结束由 main.run_request 删
+        gid = self.r.get("gameId")
+        if gid and self.r.get("library") and (self.library / ".s2arm-library.json").is_file():
+            try:
+                import layout
+                tmp = layout.job_tmp(self, gid, self.task)
+                tmp.mkdir(parents=True, exist_ok=True)
+                env["S2A_JOB_TMP"] = str(tmp)
+            except (Failure, OSError):
+                pass
         # Git 只许在引擎目录里找仓库（出包各阶段用 git -C 引擎 取源码对象号）：不许往上认到外层仓库（10-23 走查：认到用户主目录的仓库）
         env["GIT_CEILING_DIRECTORIES"] = str(Path(self.engine).resolve().parent)
         env["S2A_PYTHON"] = os.sys.executable
@@ -566,14 +578,15 @@ class Context:
             env["S2A_REWRITER_BUNDLED"] = str(runtime / "bin/s2a-rewrite")
             # 发版 App 自带已编好的 Mac 宿主（含 C#，S2A_CS=1）：RomFS 解码器或运行时 GLSLC 时不再现编（issue #8 根因：Runtime-only dotnet 编不出）
             from embedded import artifact
-            try:
-                bundled_host = artifact(self, "S2ArmGame.app")
-                if bundled_host and (bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file():
-                    env["S2A_BUNDLED_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
-                    env["DM_GLSLC_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
-                    env["DM_OODLE_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")  # LZ5 / OodleLZ 解码器（uepak.oodle_host_find，缺省回退 build/s2arm-host 在发版包里不存在）
-            except Exception:
-                pass   # 源码树开发构建：没有内置宿主
+            # 只有源码树（没有 engine.json，artifact 回 None）才没有内置宿主、按需现编；发版清单里缺它或校验不符，artifact 抛「请重新安装完整应用」照常抛出
+            #   （审计 P2-196：原先 except Exception 一律吞掉、改去现场编，红字指向「编译 Mac 宿主失败」，玩家按缺 SDK 去排查）
+            bundled_host = artifact(self, "S2ArmGame.app")
+            if bundled_host:
+                if not ((bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file()):
+                    raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
+                env["S2A_BUNDLED_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
+                env["DM_GLSLC_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
+                env["DM_OODLE_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")  # LZ5 / OodleLZ 解码器（uepak.oodle_host_find，缺省回退 build/s2arm-host 在发版包里不存在）
         else:
             paths = [str(Path(os.sys.executable).parent), str(runtime / "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", env.get("PATH", "")]
         env["PATH"] = os.pathsep.join(dict.fromkeys(paths))

@@ -48,11 +48,15 @@ public struct GameSummary: Identifiable, Equatable {
     /// 上次装到 iPhone 的时刻（秒）和是不是免费账号签的；没装过为 nil。
     public let iphoneInstalledAt: Double?
     public let iphoneFree: Bool
+    /// 只换宿主（pack/jobs/host_update.py）：none / current / swap / incompatible（要重新准备才能用上新版修复）/ failed
+    public let hostUpdate: String
+    /// 存放位置（游戏库结构 v3）：state = ok / offline（位置没连上）/ missing（文件夹找不到）/ none（还没出过包）
+    public let location: GameLocation
 
     public init(id: String, name: String, display: String = "", cover: String? = nil, ready: Bool = false,
                 needsPreparation: Bool = false, compatibility: String = "experimental", missing: [String] = [], packages: [GamePackage] = [],
-                iphoneReady: Bool = false, iphoneInstalledAt: Double? = nil, iphoneFree: Bool = false, customName: Bool = false, customCover: Bool = false) {
-        self.customName = customName; self.customCover = customCover
+                iphoneReady: Bool = false, iphoneInstalledAt: Double? = nil, iphoneFree: Bool = false, customName: Bool = false, customCover: Bool = false, hostUpdate: String = "none", location: GameLocation = GameLocation()) {
+        self.customName = customName; self.customCover = customCover; self.hostUpdate = hostUpdate; self.location = location
         self.iphoneReady = iphoneReady; self.iphoneInstalledAt = iphoneInstalledAt; self.iphoneFree = iphoneFree
         self.id = id; self.name = name; self.display = display; self.cover = cover; self.ready = ready
         self.needsPreparation = needsPreparation; self.compatibility = compatibility; self.missing = missing; self.packages = packages
@@ -69,7 +73,8 @@ public struct GameSummary: Identifiable, Equatable {
                   iphoneReady: g["iphoneReady"] as? Bool ?? false,
                   iphoneInstalledAt: ((g["iphoneInstall"] as? [String: Any])?["at"] as? NSNumber)?.doubleValue,
                   iphoneFree: (g["iphoneInstall"] as? [String: Any])?["free"] as? Bool ?? false,
-                  customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false)
+                  customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false,
+                  hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]))
     }
 
     /// 某类原件里版本最新的那个的显示版本（base / update）；没有这类为 nil。
@@ -196,5 +201,33 @@ public final class LibraryProvider {
     /// catalog 结果里的游戏（没 id / 名字、标了 hidden 的不要）。
     static func games(in result: [String: Any]) -> [GameSummary] {
         (result["games"] as? [[String: Any]] ?? []).compactMap(GameSummary.init(catalog:))
+    }
+}
+
+
+/// 一款游戏在哪个存放位置（游戏库结构 v3；catalog 的 location 字段）。
+public struct GameLocation: Equatable {
+    public var state = "none"
+    public var path = ""
+    public var folder = ""
+    public var volume = ""
+    public init() {}
+    public init(catalog l: [String: Any]) {
+        state = l["state"] as? String ?? "none"; path = l["path"] as? String ?? ""; folder = l["folder"] as? String ?? ""; volume = l["volume"] as? String ?? ""
+    }
+}
+
+/// 一个存放位置（locations 作业）：出包页下拉框的一项。
+public struct StorageLocation: Identifiable, Equatable {
+    public let id: String
+    public let path: String
+    public let volume: String
+    public let connected: Bool
+    public let freeBytes: Int64?
+    public let isDefault: Bool
+    public init?(_ r: [String: Any]) {
+        guard let id = r["id"] as? String, let path = r["path"] as? String else { return nil }
+        self.id = id; self.path = path; volume = r["volume"] as? String ?? ""; connected = r["connected"] as? Bool ?? false
+        freeBytes = (r["freeBytes"] as? NSNumber)?.int64Value; isDefault = r["default"] as? Bool ?? false
     }
 }

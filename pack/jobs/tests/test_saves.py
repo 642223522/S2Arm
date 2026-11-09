@@ -21,6 +21,7 @@ sys.path.insert(0, str(JOBS))
 # Standalone unittest discovery uses this checkout's job modules.
 import library  # noqa: E402
 import saves  # noqa: E402
+import layout  # noqa: E402
 from core import Cancelled, Context, Failure, atomic  # noqa: E402
 
 import build  # noqa: E402
@@ -93,7 +94,11 @@ class SaveTests(unittest.TestCase):
             hidden=False,
         )
         atomic(self.directory / "library/catalog.json", dict(schema=1, games=[self.game]))
-        self.root = self.directory / "library/saves" / GID
+        # 新布局：先创建单款文件夹和 game.json
+        game_folder = self.directory / "library/games/TestGame"
+        game_folder.mkdir(parents=True, exist_ok=True)
+        atomic(game_folder / "game.json", dict(schema=1, id=GID))
+        self.root = game_folder / "saves"
         self.put(PROGRESS, b"checkpoint-one")
         self.put("bis/user/save/0000000000000001/ExtraData0", b"extra-data")
         self.put(saves.SAVE_INDEX, synthetic_index([(1, GID, 1, USER)]))
@@ -586,9 +591,10 @@ sys.exit(main.main())
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 import saves
+import layout
 from core import Context
 c=Context(json.loads(Path(sys.argv[2]).read_text()))
-root=Path(c.library)/"saves"/c.r["gameId"]
+root=layout.path(c,c.r["gameId"],"saves",create=False)
 rename=os.rename
 def crash(src,dst):
     rename(src,dst)
@@ -858,7 +864,7 @@ class ExternalImportTests(unittest.TestCase):
 
         shutil.rmtree(self.root / "bis")
         c = self.context(operation="saveInspect", path="x")
-        nacp = c.library / "games" / GID / "current" / "ctl" / "control.nacp"
+        nacp = layout.image_mac(c, GID) / "ctl" / "control.nacp"
         nacp.parent.mkdir(parents=True, exist_ok=True)
         data = bytearray(0x30A0); struct.pack_into("<q", data, 0x3090, 1 << 20); nacp.write_bytes(data)
         src = self.community("raw", {"progress.bin": b"island"})

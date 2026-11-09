@@ -25,6 +25,7 @@ from pathlib import Path
 
 from core import Failure, atomic, contained
 from errors import recovery
+import layout
 
 
 def profile_teams(env=None):
@@ -228,7 +229,21 @@ CONTAINER_DIR = "container"   # 游戏库 iPhone/container/：S2Arm.app（下次
 
 
 def container_bundle_id(team):
-    return f"io.s2arm.games.{team.lower()}"
+    """S2A_CONTAINER_SUFFIX（开发用：同一台手机上同时装几份测试包）：包名加后缀 io.s2arm.games.<团队>.<后缀>，几份并存互不覆盖；
+    只收小写字母 / 数字 / 连字符，不设时与玩家完全一样。付费团队没有免费账号每周 10 个包名的限制"""
+    suffix = re.sub(r"[^a-z0-9-]", "", os.environ.get("S2A_CONTAINER_SUFFIX", "").lower())[:40]
+    return f"io.s2arm.games.{team.lower()}" + (f".{suffix}" if suffix else "")
+
+
+def container_display_name(app):
+    """S2A_CONTAINER_NAME（开发用，与 S2A_CONTAINER_SUFFIX 配套）：主屏显示名，连各语言 InfoPlist.strings 里的一起换；不设时不动"""
+    name = os.environ.get("S2A_CONTAINER_NAME", "").strip()
+    if not name:
+        return None
+    for strings in Path(app).glob("*.lproj/InfoPlist.strings"):
+        text = strings.read_text(encoding="utf-8", errors="replace")
+        strings.write_text(re.sub(r'"CFBundleDisplayName"\s*=\s*".*?";', '"CFBundleDisplayName" = "%s";' % name.replace('"', ''), text), encoding="utf-8")
+    return name
 
 
 def game_docs(gid):
@@ -512,7 +527,7 @@ def pull_seen(c, ident, bid, gid, tag, docs="Documents"):
     下次打包按它重算两段式热键（hotset.py）；第一次装 / 没开过直连 / 拉不到都不算错。设备上是追加写：拉回的是已有那份的续写就覆盖，
     否则（换包后机上重新记了）另存一份，多份由 hotset.rank 合并去重"""
     from diag import devicectl
-    dest = c.library / "games" / gid / "seen" / (re.sub(r"[^0-9A-Za-z-]", "", tag) + ".tsv")
+    dest = layout.path(c, gid, "seen", re.sub(r"[^0-9A-Za-z-]", "", tag) + ".tsv")
     with tempfile.TemporaryDirectory(dir=c.private) as d:
         rc, _, _ = devicectl(c, "device", "copy", "from", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                              "--source", f"{docs}/wire/{gid.upper()}/pso_user.tsv", "--destination", f"{d}/s", timeout=120)
@@ -570,7 +585,7 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         return None
     if not files:
         return None
-    dest = c.library / "games" / gid / "save_backup" / time.strftime("%Y%m%d-%H%M%S")
+    dest = layout.path(c, gid, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
     for rel in files:
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         rc, _, err = devicectl(c, "device", "copy", "from", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
@@ -665,6 +680,9 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             raise Failure("解不开 iPhone 包：" + (r.stderr.strip()[-200:] or str(ipa)), code="job_failed")
         info = app / "Info.plist"
         pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = bid
+        shown = container_display_name(app)
+        if shown:
+            pl["CFBundleDisplayName"] = shown
         info.write_bytes(plistlib.dumps(pl))
         check_shell_sdk(c, app, dev)
         if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6)
@@ -833,7 +851,7 @@ class WinPhone:
         """覆盖装前备份本款存档（同 Mac backup_saves 口径：拉失败就停装）。还没装过（没记录包名 / 机上没这个 App）= 没有存档"""
         if not self.bid:
             return None
-        dest = self.c.library / "games" / g / "save_backup" / time.strftime("%Y%m%d-%H%M%S")
+        dest = layout.path(self.c, g, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
             ok, out = self.client(w).get_tree(f"{game_docs(g)}/{SAVE_REL}", dest)
         if not ok and "取不到" not in out:   # 取不到 = 这个包名的 App 不在机上（s2a-devpush vend_container 的报错）
@@ -892,7 +910,7 @@ def put_game(c, gid, ph, steps=True):
         files += f; size += n
     if "free" in ph.info:   # 记下这次签名（游戏库页的「还有几天到期 / 续签」读 games/<id>/ios-install.json）：免费账号的描述文件 7 天到期，容器里每款同一次签名
         for g in games:
-            record = contained(c.library, c.library / "games" / g / "ios-install.json")
+            record = layout.path(c, g, "ios-install.json")
             record.parent.mkdir(parents=True, exist_ok=True)
             atomic(record, dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"]))
     return dict(outputPath=str(ipa.parent), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info)
