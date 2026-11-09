@@ -392,7 +392,12 @@ typedef BOOL (^VPFlag)(void);
     [items addObject:vp_sub(@"手柄与体感", @"scope", @[
         [self live:@"vp.pad.ns2pro" title:@"启用 Switch 2 Pro 手柄" note:nil on:^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; } disabled:nil
                run:^{ [d setBool:![d boolForKey:@"S2ANS2ProAdapterEnabled"] forKey:@"S2ANS2ProAdapterEnabled"]; }],
-        [self live:@"vp.pad.gyro" title:@"手机陀螺仪" note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }]])];
+        [self live:@"vp.pad.gyro" title:@"手机陀螺仪" note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
+        // 手柄按键对应（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新口径
+        vp_inline(@[[self live:@"vp.pad.face.letter" title:@"按键按字母对应" note:@"Xbox 的 A 就是 Switch 的 A" on:^BOOL{ return ![[d stringForKey:@"padFace"] isEqualToString:@"position"]; }
+                         disabled:nil run:^{ [d setObject:@"letter" forKey:@"padFace"]; }],
+                     [self live:@"vp.pad.face.position" title:@"按键按位置对应" note:@"按 Switch 的按键位置" on:^BOOL{ return [[d stringForKey:@"padFace"] isEqualToString:@"position"]; }
+                         disabled:nil run:^{ [d setObject:@"position" forKey:@"padFace"]; }]])])];
     // 画面：宽屏 / 60 帧 / 主机模式 / 补丁要按本款能力判可不可开、改完要重启，逻辑全在整页设置（app_settings.m），这里直接去那一页，不另抄一份
     UIAction *pic = vp_act(@"画面…", @"rectangle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); pic.subtitle = @"宽屏、60 帧、主机模式、画面补丁";
     [items addObject:pic];
