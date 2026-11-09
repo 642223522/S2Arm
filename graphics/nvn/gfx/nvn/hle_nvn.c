@@ -1522,7 +1522,7 @@ static void used_set(cmd_t *o, uint64_t v) { __atomic_store_n(&o->used, v, __ATO
 // command carries (addresses, parameters, inline data such as UpdateUniformBuffer's) and count their own size; the listed ones carry host-only data (texture snapshots, object
 // pointers) and count well under it. The estimate only decides when the game is called back for more memory and how much it reserves by Used; nothing is written there and
 // replay never depends on it, so erring low is the safe side. BindTexture is 0x18: its handle sits 0x10 into the device command (rec_bind_tex1).
-// END: an empty recording takes 8 bytes, so every recording has a device interval to be released by
+// END: an empty recording takes 8 bytes, so every recording has a device interval to be released by (NVN2: END takes none, see dev_bytes and sh_anchor_empty)
 // DEV_CTL: the device writes no command memory for it. 纹理池 / 采样器池绑定在真机驱动里是控制内存的 16 字节令牌（类型 0x13 / 0x14，满了发 OUT_OF_CONTROL_MEMORY），
 //   不进命令内存、不发 OUT_OF_COMMAND_MEMORY（游戏自带驱动反汇编，SDK 4.4.1 与更新一代 sdk 同形）。按记录大小算会在游戏还没给命令内存时回调：
 //   Outlast 2（0100DE70085E8000，UE4）建 RHI 时只给控制内存就 BeginRecording、绑两个池，之后才建回调要用的命令内存环，回调读到未初始化的环指针崩在 main+0xf3a574
@@ -1535,6 +1535,7 @@ static const uint16_t g_dev_bytes[OP_COUNT_] = {
 static __thread uint32_t t_dev_draw_idx;
 static uint32_t dev_bytes(uint32_t op, uint32_t size) {
     if (op == OP_DRAW_IDX && t_dev_draw_idx) return t_dev_draw_idx;
+    if (op == OP_END && nvn2_on()) return 0;   // NVN2 驱动的 EndRecording 只写控制内存，不推进 cmd[0]（sh_anchor_empty 给空录制留释放锚点）
     uint32_t d = op < OP_COUNT_ ? g_dev_bytes[op] : 0; return d == DEV_CTL ? 0 : d ? d : size; }
 #define DEV_LEND (16u << 10)   // device bytes of a host-lent window (the game gave no memory): the callback is asked again only after this many
 
@@ -1800,8 +1801,15 @@ static uint8_t *cmd_alloc_cb(cmd_t *o, uint32_t op, uint32_t size, int cb_ok) {
 }
 static uint8_t *cmd_alloc(cmd_t *o, uint32_t op, uint32_t size) { return cmd_alloc_cb(o, op, size, 1); }
 // The recording's end (or an abandoned one): its last piece noted, indexed by its device intervals; a recording with none (the game never gave memory) can never be released
+// 没占设备字节的录制（NVN2 的 END 不占字节：空录制、只有控制令牌的录制）也要能被释放：挂在一个字节上，随覆盖它的重录或内存池销毁一起死。
+//   取游标前一字节（前一条录制的尾巴，紧接着的下一条录制不会写到它）；段首没有前一字节，取段尾。从没给过内存的录制没有可挂的字节，照旧留到局末
+static void sh_anchor_empty(cmd_t *o, srec *r) {
+    if (r->niv) return;
+    uintptr_t a = o->gvirt ? o->vanc : o->gcur > o->gstart ? o->gcur - 1 : o->gend ? o->gend - 1 : 0;
+    if (a) { r->iv[0] = (siv){a, a + 1}; r->niv = 1; }
+}
 static void sh_end(cmd_t *o) {
-    srec *r = o->rec; sh_piece(o);
+    srec *r = o->rec; sh_piece(o); sh_anchor_empty(o, r);
     uint64_t h = r->rbytes + OP_RESERVE + sizeof(sblk); o->hint = (uint32_t)(h < 256 ? 256 : h > (1u << 20) ? (1u << 20) : h);
     pthread_mutex_lock(&g_sh_mu); r->open = 0;
     uint64_t un = 0; if (r->niv) sh_index(r); else un = ++g_sh_unanchored;

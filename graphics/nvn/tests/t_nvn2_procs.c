@@ -353,8 +353,10 @@ static void draw_device_bytes(void) {
     USED_BY(API(nvnCommandBufferDrawElementsInstanced)(&cmd, tri, u16, 6, ib, 3, 0, 2), 48);
     USED_BY(API(nvnCommandBufferDrawElementsInstanced)(&cmd, tri, u16, 6, ib, 0, 7, 2), 48);
     USED_BY(API(nvnCommandBufferDrawElementsIndirect)(&cmd, tri, u16, ib, 0x234567890ull), 48);   // 入口的字节数不外溢到后面的记录
+    NVNcommandHandle h = 0; USED_BY(h = API(nvnCommandBufferEndRecording)(&cmd), 0); CHECK(h);   // NVN2 的 END 不推进命令游标
+    API(nvnCommandBufferBeginRecording)(&cmd); USED_BY(h = API(nvnCommandBufferEndRecording)(&cmd), 0); CHECK(h);   // 空录制：0 字节，句柄照给
 #undef USED_BY
-    API(nvnCommandBufferEndRecording)(&cmd); API(nvnCommandBufferFinalize)(&cmd);
+    API(nvnCommandBufferFinalize)(&cmd);
 }
 
 static void ounce_on(void) {   // 写一份 Switch 2 布局的 NPDM（ACID 魔数在 ACID +0x300），经原生层读一遍置平台位：nvn2_on() 起
