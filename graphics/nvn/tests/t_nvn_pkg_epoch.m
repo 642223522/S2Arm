@@ -97,6 +97,11 @@ int main(void) { @autoreleasepool {
     nvn_be_sub_begin(); finish(); expect(t,0,0,0,255,0,"before first submission repeated CPU resolution sees green");
     write_pixel(&texture,0,0,255);
     nvn_be_sub_begin(); REQUIRE(tex_mtl(t)); finish(); uint8_t initial[4]; pixel(t,0,0,initial); REQUIRE(initial[0]==0 && initial[1]==0 && initial[2]==255 && initial[3]==255);
+    // A committed submission leaves a nonzero epoch behind. It must not cache
+    // public CPU writes made before the next submission has actually begun.
+    write_pixel(&texture,0,255,0); REQUIRE(tex_mtl(t));
+    nvn_be_sub_begin(); finish(); expect(t,0,0,0,255,0,"between submissions CPU resolution sees green");
+    write_pixel(&texture,0,0,255); nvn_be_sub_begin(); REQUIRE(tex_mtl(t)); finish();
     nvn_be_sub_begin(); state_reset(); draw_red(t,1); finish(); expect(t,0,0,255,0,0,"production GPU writer");
     API(nvnQueueFenceSync)(&queue,&sync_object,NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE,0); API(nvnQueueFinish)(&queue);
     nvn_be_sub_begin(); state_reset(); draw_red(t,1); rp_flush();
