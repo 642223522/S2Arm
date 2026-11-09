@@ -116,6 +116,25 @@ public final class LibraryProvider {
         lock.withLock { keys = ready }
     }
 
+    private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
+
+    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）或没读过时为 nil。
+    public func lastKnownGames() -> [GameSummary]? {
+        guard !client.environment.libraryId.isEmpty, let data = try? Data(contentsOf: snapshotFile),
+              let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              saved["libraryId"] as? String == client.environment.libraryId,
+              let result = saved["result"] as? [String: Any] else { return nil }
+        remember(result)
+        return Self.games(in: result)
+    }
+
+    private func saveSnapshot(_ result: [String: Any]) {
+        let saved: [String: Any] = ["libraryId": client.environment.libraryId,
+                                    "result": ["games": result["games"] ?? [], "keys": result["keys"] ?? [:]]]
+        guard JSONSerialization.isValidJSONObject(saved), let data = try? JSONSerialization.data(withJSONObject: saved) else { return }
+        try? data.write(to: snapshotFile, options: .atomic)
+    }
+
     public static let noLibraryMessage = "还没有游戏库：请先在 S2Arm 启动器里选择游戏库并导入游戏。"
 
     /// 读一遍游戏库。没配游戏库时不起作业，直接回失败。
@@ -132,6 +151,7 @@ public final class LibraryProvider {
                     return
                 }
                 self.remember(outcome.result)
+                self.saveSnapshot(outcome.result)
                 completion(.success(Self.games(in: outcome.result)))
             })
         } catch let error as JobClientError {

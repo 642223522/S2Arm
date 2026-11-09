@@ -184,6 +184,12 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     public func refresh() {
         guard !loading else { return }
+        // 启动时先显示上次的列表，不等作业；能不能玩在真正启动时还会完整校验
+        if !libraryLoaded, games.isEmpty, let known = provider.library.lastKnownGames(), !known.isEmpty {
+            games = known
+            selectedID = known.first?.id
+            libraryLoaded = true
+        }
         loading = true
         provider.library.load { [weak self] result in
             guard let self else { return }

@@ -66,7 +66,8 @@ def validate_files(c, root, files, full=True):
             raise Failure("准备产物校验失败，请重新准备：" + name, code="runtime_invalid")
 
 
-def validate_runtime(c, runtime, full=True):
+def validate_runtime(c, runtime, full=True, files=True):
+    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态；真正启动时还会完整校验"""
     root = runtime.resolve()
     contained(c.library / "games", root)
     manifest = read(root / "manifest.json", {})
@@ -74,7 +75,8 @@ def validate_runtime(c, runtime, full=True):
         raise Failure("当前游戏没有完整的 S2Arm Mac 运行版本。", code="runtime_invalid")
     if not (root / "romfs").is_dir() or (root / "romfs").is_symlink():
         raise Failure("运行包缺少独立的 RomFS 游戏资源目录，请重新准备。", code="runtime_invalid")
-    validate_files(c, root, manifest.get("files"), full)
+    if files:
+        validate_files(c, root, manifest.get("files"), full)
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
