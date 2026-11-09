@@ -161,7 +161,7 @@ class Upgrade3Tests(JobCase):
         self.assertFalse(layout.path(self.c, A, "ios-install.json", create=False).exists())
         self.assertFalse(layout.path(self.c, B, "ios-install.json", create=False).exists())
         self.assertFalse((L / "iPhone").exists())   # 单款 ipa、产物根、底包都能重建：随 iPhone/ 删掉
-        self.assertEqual(json.loads((L / ".s2arm-layout.json").read_text()), dict(version=3, games=[A, B], iphone=[A, B, C]))
+        self.assertEqual(json.loads((L / ".s2arm-layout.json").read_text()), dict(version=layout.VERSION, games=[A, B], iphone=[A, B, C]))   # 3 之后接着迁到当前版本（_upgrade_4）
         # 第一台装机的设备认领迁移来的记录
         self.assertEqual(layout.load_device(self.c, "phone-1")["games"], {A: {}, B: {}})
         self.assertFalse((L / "devices/legacy.json").exists()); self.assertTrue((L / "devices/phone-1.json").is_file())

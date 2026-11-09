@@ -206,8 +206,31 @@ AI_NEXT = {
 }
 DEFAULT_NEXT = ('ai', 's2armctl logs <任务号> 看原因，按日志末尾的提示处理；明确是偶发的就 s2armctl retry <任务号> 重试一次，再失败 s2armctl diag export <输出.zip> 交给玩家反馈')
 
+def saved_library():
+    """前端设置里的游戏库（Mac preferences.json 的 library；Windows library-location.txt，没有就是缺省库），按作业层的搬库标记
+    library-relocate.json（旧默认库同盘改名到 ~/S2Arm 时写）换成现在的位置。同 S2ArmPaths.library（Swift）/ LibraryPaths.Library（C#）"""
+    lib = ''
+    try:
+        if WINDOWS: lib = open(os.path.join(ROOT, 'library-location.txt'), encoding='utf-8').read().strip()
+        else: lib = json.load(open(os.path.join(ROOT, 'preferences.json'), encoding='utf-8')).get('library') or ''
+    except Exception: pass
+    if WINDOWS and not lib:
+        lib = os.path.join(ROOT, 'DefaultLibrary') if CUSTOM_ROOT else os.path.join(os.environ.get('USERPROFILE') or os.path.expanduser('~'), 'S2Arm')
+    built = lambda d: os.path.isfile(os.path.join(d, '.s2arm-library.json'))
+    try:
+        note = json.load(open(os.path.join(ROOT, 'library-relocate.json'), encoding='utf-8'))
+        if lib and os.path.normcase(os.path.abspath(note['from'])) == os.path.normcase(os.path.abspath(lib)) and built(note['to']) and not built(lib):
+            lib = note['to']
+    except Exception: pass
+    return lib
+
+def logs_root():
+    """任务日志 + 任务记录（logs/jobs/）：库建好了（有 .s2arm-library.json）是 <库>/logs，否则 <数据目录>/logs。同作业层 pack/jobs/core.py logs_root"""
+    lib = saved_library()
+    return os.path.join(lib if lib and os.path.isfile(os.path.join(lib, '.s2arm-library.json')) else ROOT, 'logs')
+
 def task_log(task_id):
-    d = os.path.join(ROOT, 'logs')
+    d = logs_root()
     # Mac 构建各阶段写 logs/<任务>/，起游戏等作业写 logs/<任务>-*.log；两种布局都查。
     prefix = os.path.join(glob.escape(d), glob.escape(task_id))
     fs = glob.glob(prefix + '*.log') + glob.glob(os.path.join(prefix, '*.log'))
@@ -354,11 +377,11 @@ def push_pack(gid):
         sys.exit('资源包没推完（上面最后一行【红】是原因）：手机要解锁、保持连接；App 还没装的话请玩家先用 AltStore / Impactor 装好再试')
     print('🟢 资源包已推进 iPhone 并解开。请玩家打开这款游戏：第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏')
 
-# 作业记录（pack/jobs/core.py 写的 <数据目录>/jobs/<任务>.json：state / stage / milestone / done / total / pid / pidStart …）：
+# 作业记录（pack/jobs/core.py 写的 <游戏库>/logs/jobs/<任务>.json，库没建好时 <数据目录>/logs/jobs，见 logs_root：state / stage / milestone / done / total / pid / pidStart …）：
 #   控制口不应答或给的快照太旧时，wait 按它判。作业是独立进程，启动器卡住（内存吃紧、主线程忙）不等于作业停了
 def journal_task(game, op, tid, since):
     best = None
-    for p in glob.glob(os.path.join(ROOT, 'jobs', '*.json')):
+    for p in glob.glob(os.path.join(glob.escape(logs_root()), 'jobs', '*.json')):
         if p.endswith('.request.json'): continue
         try: j = json.load(open(p, encoding='utf-8'))
         except Exception: continue

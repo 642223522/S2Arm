@@ -194,7 +194,7 @@ def prepare(c):
     folder.mkdir(parents=True, exist_ok=True)
     c.run(["dotnet", "build", c.engine / "pack/nx_unpack/nx_unpack.csproj", "-c", "Release",
            "-o", folder, "--nologo", "-p:UseAppHost=false", "-p:BaseIntermediateOutputPath=" + str(folder / "obj") + "/"],
-          c.private / "logs" / (c.task + "-reader.log"))
+          c.logs / (c.task + "-reader.log"))
     (folder / "nx_unpack").unlink(missing_ok=True)
     path = folder / "nx_unpack.dll"
     if not path.is_file():
@@ -232,7 +232,7 @@ def preflight(c):
     if os.name == "nt":   # Windows 走 winenv；本函数体（Mac 清单）里 add("Python", …) 的最低版本 winenv 按源码读（_python_minimum），别把它挪出本函数
         return preflight_windows(c)
     checks = []
-    c.last_log = c.private / "logs" / (c.task + "-preflight.log")
+    c.last_log = c.logs / (c.task + "-preflight.log")
     c.last_log.parent.mkdir(parents=True, exist_ok=True)
     c.last_log.touch(mode=0o600)
     def add(name, ok, message, scopes=("prepare",), action=None, code=None, group=None):

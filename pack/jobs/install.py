@@ -382,7 +382,7 @@ def device_link(c, want="", polling=False):
 
 
 def _write_link_report(c, link):
-    """失败时写进诊断包（私有目录/logs）：每步退出码和原文、每台设备的连接状态；序列号打码，不写设备名"""
+    """失败时写进诊断包（日志目录 core.logs_root）：每步退出码和原文、每台设备的连接状态；序列号打码，不写设备名"""
     lines = ["# 设备连接诊断"]
     lines += [f"{t['step']}: rc={t['rc']} {t['raw']}" for t in link["trace"]]
     for d in link["devices"]:
@@ -390,7 +390,7 @@ def _write_link_report(c, link):
         lines.append(f"device {_mask(h.get('udid') or d.get('identifier') or '')} {h.get('productType')} reality={h.get('reality')} transport={cp.get('transportType')} pairing={cp.get('pairingState')} "
                      f"tunnel={cp.get('tunnelState')} boot={p.get('bootState')} developerMode={p.get('developerModeStatus')} ddi={p.get('ddiServicesAvailable')}")
     lines.append(f"结论: stage={link['stage']} {link['problem']}")
-    target = c.private / "logs" / f"{c.task}-device.log"
+    target = c.logs / f"{c.task}-device.log"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -490,7 +490,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         if m: c.emit(message=f"机上解包 {m.group(1)}/{m.group(2)}", done=int(m.group(1)), total=int(m.group(2)), unit="包")
     env = dict(c.env(), S2A_DEVICECTL=str(diag.COREDEVICE / "Resources/bin/devicectl"))
     if udid: env["S2A_PUSH_UDID"] = udid   # 有 UDID + App 内置 s2a-devpush（S2A_PREBUILT_TOOLS/devpush）→ 每批流式写手机，否则退回 devicectl（11-06）
-    log = c.private / "logs" / (c.task + "-push" + (f"-{docs.rsplit('/', 1)[-1]}" if docs else "") + ".log")
+    log = c.logs / (c.task + "-push" + (f"-{docs.rsplit('/', 1)[-1]}" if docs else "") + ".log")
     extra = (["--docs", docs] if docs else []) + (["--launch-ctx", ctx] if ctx else [])
     try:
         c.run([sys.executable, "-B", c.engine / "tools/push_pack.py", "run", ident, bid, pack, "--via", "devicectl", "--apply", *extra], log, env=env, on_line=line)
@@ -659,7 +659,7 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
     按各款文档根 Documents/games/<游戏号> 拉跑局知识与存档备份 → devicectl 覆盖装（不卸载，Documents 保留）"""
     ents = c.engine / "pack/app.entitlements"
     stage = Path(tempfile.mkdtemp(prefix="s2a-install-", dir=c.private))
-    log = c.private / "logs" / (c.task + "-install.log")
+    log = c.logs / (c.task + "-install.log")
     try:
         # ditto 解：保留可执行位与符号链接（zipfile 会丢，codesign / 安装都要）
         r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(stage)], capture_output=True, text=True)
@@ -836,7 +836,7 @@ class WinPhone:
             self.backup(g)
         if steps: self.c.begin("签名并装到 iPhone（Impactor 官方命令行 plumesign）", 3, 6)
         b = self.W.impactor.bundled(self.c.r.get("resources")) or {}   # 发版启动器随包的 plumesign（11-07）；源码树没有 → install_win 照旧找
-        log = self.c.private / "logs" / (self.c.task + "-install.log")
+        log = self.c.logs / (self.c.task + "-install.log")
         self.c.last_log = log
         ns = argparse.Namespace(ipa=str(ipa), udid=self.udid, name=None, plumesign=b.get("plumesign"), log=str(log))
         try:

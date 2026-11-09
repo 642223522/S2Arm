@@ -176,7 +176,7 @@ final class ControlStateCache: @unchecked Sendable {
     }
 }
 
-/// 作业层自己写的作业记录（pack/jobs/core.py：<私有目录>/jobs/<任务>.json，字段 id / operation / gameId / state / stage / milestone / milestones /
+/// 作业层自己写的作业记录（pack/jobs/core.py：<游戏库>/logs/jobs/<任务>.json，库没建好时 <私有目录>/logs/jobs，见 S2ArmPaths.jobsDir，字段 id / operation / gameId / state / stage / milestone / milestones /
 ///   done / total / unit / message / started / ended / diagnostics / ipaPath / outputPath / pid / pidStart）当 GET /state 的 tasks：
 ///   作业是独立进程，界面没有任务表也照样有据（s2armctl wait / errors / logs 读的就是这些字段；控制口不应答时 s2armctl 本来就读同一份文件）。
 public enum ControlJournal {
@@ -185,8 +185,8 @@ public enum ControlJournal {
                                                         "remove", "delete", "diagnostics", "prepareEngine", "pullDiagnostics", "ipa", "installDotnet", "setup", "spaceFree"]
 
     /// 最近的 limit 条，按开始时间从旧到新。
-    public static func tasks(privateRoot: URL, limit: Int = 60) -> [[String: Any]] {
-        let dir = privateRoot.appendingPathComponent("jobs")
+    public static func tasks(privateRoot: URL, library: String? = nil, limit: Int = 60) -> [[String: Any]] {
+        let dir = S2ArmPaths.jobsDir(privateRoot: privateRoot, library: library)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         var out: [[String: Any]] = []
         for n in names where n.hasSuffix(".json") && !n.hasSuffix(".request.json") {

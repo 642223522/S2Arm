@@ -177,7 +177,7 @@ def launch(c):
         env.update(community.launch_env(c, game["id"]))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
         try:
             c.begin("游戏运行中")
-            log = c.private / "logs" / (c.task + "-game.log")
+            log = c.logs / (c.task + "-game.log")
             started = time.monotonic()
             try:
                 c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"])
@@ -467,7 +467,7 @@ def seed_from_sibling(c, game, roots, kuan):
         dst = roots / (kuan + "@sib-" + cur.name.split("@", 1)[-1])
         if dst.exists():
             shutil.rmtree(dst)
-        log = c.private / "logs" / (c.task + "-sibling.log")
+        log = c.logs / (c.task + "-sibling.log")
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
             c.run([sys.executable, c.engine / "tools/clonedir.py", "--report", cur, dst], log, c.env())
@@ -531,7 +531,7 @@ def prepare(c):
         unpack_ok = extract_valid(c, game)
         warm = layout.game_info(c, game["id"]).get("imageKey") == key and (root / "roots" / (game["id"] + "@现行")).exists()
         ms.plan(c, size_gb, "build_dual", reused=(["unpack"] if unpack_ok else []) + (["refresh", "analyze", "direct"] if warm else []))
-        logs = c.private / "logs" / c.task
+        logs = c.logs / c.task
         logs.mkdir(parents=True, exist_ok=True)
         env.update(S2A_ROOTS=str(root / "roots"), S2A_ROOTS_SHARED=str(root / "never-shared"),
                    S2A_ROOTS_PRIV=str(root / "roots-private"), S2A_FONTS=str(fonts))

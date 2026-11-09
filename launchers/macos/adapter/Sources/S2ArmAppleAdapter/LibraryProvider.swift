@@ -180,10 +180,10 @@ public final class LibraryProvider {
         return Self.games(in: result)
     }
 
-    /// 新玩家还没有游戏库：建在私有目录下的「游戏库」（同旧启动器 defaultLibraryURL），玩家不用选；放密钥、添加游戏前调用。已有游戏库不动。
+    /// 新玩家还没有游戏库：建在 ~/S2Arm（S2ArmPaths.defaultLibrary，同旧启动器 defaultLibraryURL），玩家不用选；放密钥、添加游戏前调用。已有游戏库不动。
     public func ensureLibrary(events: EventSink = .discard) async throws {
         guard client.environment.library.isEmpty else { return }
-        let folder = client.environment.privateRoot.appendingPathComponent("游戏库", isDirectory: true)
+        let folder = S2ArmPaths.defaultLibrary(privateRoot: client.environment.privateRoot)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try await change(to: folder, events: events)
     }

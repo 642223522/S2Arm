@@ -56,9 +56,9 @@ class EarlyInstall:
         self.dev = inst.phone(c)
         self.udid = inst.udid_of(c, self.dev["id"])
         self.bid = inst.container_bundle_id(self.team["id"])
-        self.ready = c.private / "logs" / (c.task + "-early.ready")
+        self.ready = c.logs / (c.task + "-early.ready")
         self.ready.unlink(missing_ok=True)
-        self.log = c.private / "logs" / (c.task + "-early.log")
+        self.log = c.logs / (c.task + "-early.log")
         self.dir = Path(out) / ".early"
         env["S2A_EARLY_READY"] = str(self.ready)
         self.core = Overlap(self._build, self._install, self._wait)

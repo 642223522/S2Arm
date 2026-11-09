@@ -488,15 +488,10 @@ public sealed partial class EnvironmentWindow
         libraryFolder = LocalPath(folders[0]); Render();
     }
 
-    private string LibraryPreference => Path.Combine(privateRoot, "library-location.txt");
+    private string LibraryPreference => LibraryPaths.PreferenceFile(privateRoot);
 
-    private string SavedLibrary()
-    {
-        try { var saved = File.ReadAllText(LibraryPreference).Trim(); return saved.Length > 0 ? saved : DefaultLibrary; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return DefaultLibrary; }
-    }
-
-    private string DefaultLibrary => Path.Combine(privateRoot, "DefaultLibrary");
+    // 旧默认库（私有目录下的 DefaultLibrary）被作业层同盘改名到 %USERPROFILE%\S2Arm 后，设置里的旧路径按搬库标记换成新位置（游戏库结构 P3）
+    private string SavedLibrary() => LibraryPaths.SavedLibrary(privateRoot);
 
     private async Task ChangeLibraryAsync()
     {

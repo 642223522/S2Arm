@@ -216,13 +216,13 @@ def _build(c):
     ms.plan(c, size_gb, "ipa_dual")
     ms.enter(c, "unpack")
     watcher = early = None
-    ipa_log = c.private / "logs" / (c.task + "-ipa.log")   # 失败报告认这份（早装线程也调 Context.run，会改 c.last_log）
+    ipa_log = c.logs / (c.task + "-ipa.log")   # 失败报告认这份（早装线程也调 Context.run，会改 c.last_log）
     try:
         env = c.env()
         # 各平台共用解包（11-02 维护者：多平台导出平台无关阶段只做一次）：与 Mac 打包同一个 游戏库/cache/<程序号>/extract，校验快照对得上就复用，一键出包从这里往下（--from-extract）、不再自己解一遍；
         #   iPhone 还没有现行根、Mac 已有 → 克隆 Mac 的现行根起步（build.seed_from_sibling），平台无关阶段按键跳过、只出 iOS 相关的
         from build import ensure_extract, seed_from_sibling, oneclick_kuan
-        logs = c.private / "logs" / c.task
+        logs = c.logs / c.task
         logs.mkdir(parents=True, exist_ok=True)
         extraction = ensure_extract(c, game, selected_packages(game), env, logs)
         kuan = oneclick_kuan(c, gid)
@@ -264,7 +264,7 @@ def _build(c):
             if stage:
                 ms.enter(c, stage)
         # 交付物 / 包号 / 画面模式从一键出包的事件流取（--events，最后一条 result；10-26 照上游 --progress json），不按人读完成行的字面抠
-        events = c.private / "logs" / (c.task + "-ipa.events.jsonl")
+        events = c.logs / (c.task + "-ipa.events.jsonl")
         events.parent.mkdir(parents=True, exist_ok=True); events.write_text("")   # 先清空：只认本轮写的 result
         before_milestone = getattr(c, "milestone", None)
         refresh_log = out / "logs/refresh.log"
@@ -309,6 +309,8 @@ def _build(c):
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
     prune_build(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, **compiler_policy)
+    from cache_retention import engine_installed_at, prune_tool_keys
+    prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 当前引擎用不到的工具缓存旧键（NativeAOT / libvpx / opus / dav1d）
     if not cache_result['accountingComplete'] or cache_result['evictionErrors'] or cache_result['diskErrors'] or cache_result['pressureRemaining']:
         c.diagnostic("编库缓存清理未完整完成：盘余量未恢复/未知或条目未能删除；扫描错误 %d，删除错误 %d，盘量错误 %d，未扫描根 %d，保护链接 %d，变化条目 %d。已完成的 IPA 保留，详见 compilerCache。" %
                      (cache_result['scanErrors'], cache_result['evictionErrors'], cache_result['diskErrors'],
@@ -455,7 +457,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     out = Path(dest) if dest else Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
     out.mkdir(parents=True, exist_ok=True)
     app, ipa = out / "S2Arm.app", out / "S2Arm.ipa"
-    log = c.private / "logs" / (c.task + "-container.log")
+    log = c.logs / (c.task + "-container.log")
     shutil.rmtree(app, ignore_errors=True)
     (out / "custom.json").write_text(json.dumps(container_custom(c), ensure_ascii=False), encoding="utf-8")
     try:
@@ -489,7 +491,7 @@ def ipa_games(ipa):
 def drop_from_ipa(c, ipa, gid):
     """从装机产物里摘掉一款（其余各款逐字节不变、不换壳：升级后还没重出的款也能删）→ (临时 ipa, 剩下的款, 壳号)"""
     tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
-    log = c.private / "logs" / (c.task + "-container.log")
+    log = c.logs / (c.task + "-container.log")
     r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(tmp / "x")] if os.name != "nt" else
                        [os.sys.executable, "-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", str(ipa), str(tmp / "x")], capture_output=True, text=True)
     base = next((tmp / "x" / "Payload").glob("*.app"), None)

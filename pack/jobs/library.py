@@ -525,9 +525,15 @@ def _discard(p):
     if p.is_symlink() or p.is_file():
         p.unlink(missing_ok=True)
     elif p.exists():
+        # 解封存放开权限（出包产物有只读目录）：只改真目录、真文件，不跟随链接——os.walk 把指向文件的软链列在 files 里，
+        #   os.chmod 会顺着它改到库外（整库搬家收尾删旧位置时，库里链到原件 / 引擎的文件被改成 644）；Windows junction 不进
+        junction = getattr(os.path, "isjunction", lambda _: False)
         for d, dirs, files in os.walk(p):
             os.chmod(d, 0o755)
+            dirs[:] = [x for x in dirs if not junction(os.path.join(d, x))]
             for f in files:
+                if os.path.islink(os.path.join(d, f)):
+                    continue
                 with contextlib.suppress(OSError):
                     os.chmod(Path(d) / f, 0o644)
         shutil.rmtree(p)
@@ -632,7 +638,7 @@ def inspect(c, source, icon_dir, keyfile=None):
     lines = []
     try:
         c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir],
-              c.private / "logs" / (c.task + "-inspect.log"), on_line=lines.append)
+              c.logs / (c.task + "-inspect.log"), on_line=lines.append)
     except Failure as error:
         if error.code not in ("tool_exit", "job_failed"):
             raise
@@ -842,8 +848,8 @@ def check_pack_space(c, game, *, compiler_policy=None):
     cache_result = None
     if compiler_policy is not None:
         from cache_retention import trim
-        # 缓存只释放 private 所在卷；不同卷的 library 不借用这笔 free。
-        device = c.private.stat().st_dev
+        # 缓存只释放工具缓存所在卷（默认位置的 tool-cache，游戏库结构 P3）；不同卷的 library 不借用这笔 free。
+        device = c.work_root.parent.stat().st_dev
         relevant = budget["volumes"] if c.library.stat().st_dev == device else []
         target = max([compiler_policy["min_free_bytes"], *(v["needBytes"] for v in relevant)])
         if any(not v["enough"] for v in budget["volumes"]):
@@ -1233,14 +1239,14 @@ def catalog(c):
         status = dict(ready=False, verified=False)
     status["message"] = "已验证解密能力" if status.get("verified") else "格式通过，首次读取游戏时验证解密能力" if status["ready"] else "尚未导入 prod.keys"
     # 任务目录里还有各任务留存的请求（<任务>.request.json，J10 resume 用）：不是任务记录，没有 id / state；混进来启动器整个任务列表解码失败、一条都读不回
-    # 任务目录有上限（J10 保留规则：结束超过 14 天的清掉、最新 50 条总留着）：catalog 每次启动都跑，在这里顺手清，一天最多一次
+    # 任务目录有上限（保留规则见 core.prune_jobs）：catalog 每次启动都跑，在这里顺手清，一天最多一次
     #   （清理要把每条记录读一遍判结束没有），先清再读。只回最新 JOB_LIST_LIMIT 条：旧启动器的任务列表只看近期；
     #   11-07 实测任务目录 1.5 万条记录时整份读 + 回传 7 MB 占 catalog 数秒。
-    marker = c.private / "jobs-pruned"
+    marker = c.logs / ".jobs-pruned"
     if time.time() - _mtime(marker) > 86400:
-        prune_jobs(c.private)
+        prune_jobs(c.private, jobs=c.jobpath.parent)
         marker.touch()
-    records = sorted((p for p in (c.private / "jobs").glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
+    records = sorted((p for p in c.jobpath.parent.glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
                      key=_mtime, reverse=True)[:JOB_LIST_LIMIT]
     jobs = [r for r in (read(p) for p in records) if isinstance(r, dict)]
     return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs,
@@ -1475,7 +1481,7 @@ def _keep_stage_logs(c, gid):
     roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
              *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
-    dest = c.private / "logs" / (c.task + "-stages")
+    dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
         for log in sorted(root.glob("*.log")):
@@ -1643,6 +1649,8 @@ def clean(c):
             if shader.is_dir():
                 _rm(c, layout.root_of(c, game["id"]), shader)
             prune_build(c, game["id"], retain_compiler=False)   # 用户显式清缓存保留原有全清语义，不套用 Q15 自动保留策略
+            from cache_retention import engine_installed_at, prune_tool_keys
+            prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 顺带清当前引擎用不到的工具缓存旧键
         elif kind == "sources":
             # 只删 0.1.0-beta.3 及以前复制进游戏库的托管副本；原地导入的原件是玩家的文件，只读、不删
             other = {p["path"] for g in c.catalog()["games"] if g["id"] != game["id"] for p in g["packages"]}
@@ -1875,20 +1883,16 @@ def diagnostics(c):
     temporary = None
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
-        private_fd = winproc.open_dir_nofollow(c.private) if os.name == "nt" else os.open(c.private, flags)
-        descriptors.append(private_fd)
+        # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
+        home_fd = winproc.open_dir_nofollow(c.logs.parent) if os.name == "nt" else os.open(c.logs.parent, flags)
+        descriptors.append(home_fd)
         roots = {}
-        # begin persists jobs; reject static root links before that write occurs.
-        for name in ("jobs", "logs"):
-            try:
-                roots[name] = winproc.open_dir_nofollow(name, private_fd) if os.name == "nt" else os.open(name, flags, dir_fd=private_fd)
-                descriptors.append(roots[name])
-            except FileNotFoundError:
-                roots[name] = None
+        # Context 建任务时已写下本任务记录，logs/ 与 logs/jobs/ 都在；不是真目录（链接）照样拒
+        roots["logs"] = winproc.open_dir_nofollow("logs", home_fd) if os.name == "nt" else os.open("logs", flags, dir_fd=home_fd)
+        descriptors.append(roots["logs"])
+        roots["jobs"] = winproc.open_dir_nofollow("jobs", roots["logs"]) if os.name == "nt" else os.open("jobs", flags, dir_fd=roots["logs"])
+        descriptors.append(roots["jobs"])
         c.begin("导出脱敏诊断")
-        if roots["jobs"] is None:
-            roots["jobs"] = winproc.open_dir_nofollow("jobs", private_fd) if os.name == "nt" else os.open("jobs", flags, dir_fd=private_fd)
-            descriptors.append(roots["jobs"])
 
         fd, name = tempfile.mkstemp(prefix="." + destination.name + ".", suffix=".partial", dir=destination.parent)
         temporary = Path(name)
@@ -1939,6 +1943,8 @@ def diagnostics(c):
                         c.check()
                         info = winproc.stat_at(name, directory_fd) if os.name == "nt" else os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                         member = relative + name
+                        if not relative and name == "jobs":
+                            continue   # 任务记录上面已按 jobs/ 收过
                         if stat.S_ISDIR(info.st_mode):
                             child = winproc.open_dir_nofollow(name, directory_fd) if os.name == "nt" else os.open(name, flags, dir_fd=directory_fd)
                             try:

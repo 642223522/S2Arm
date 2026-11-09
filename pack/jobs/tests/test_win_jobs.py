@@ -197,7 +197,7 @@ class WinInstall(unittest.TestCase):
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
         (self.t / "lib").mkdir(); (self.t / "logs").mkdir()
         self.gid = "0100000000000047"
-        self.c = types.SimpleNamespace(r={"gameId": self.gid}, library=self.t / "lib", private=self.t, task="k", engine=self.t, emit=lambda *a, **k: None,
+        self.c = types.SimpleNamespace(r={"gameId": self.gid}, library=self.t / "lib", private=self.t, logs=self.t / "logs", task="k", engine=self.t, emit=lambda *a, **k: None,
                                        begin=lambda *a, **k: None, last_log=None)
         ios_fixture(self.c, self.gid)   # 出好的 iPhone 版：image/ios/kit + image/ios/pack
 
