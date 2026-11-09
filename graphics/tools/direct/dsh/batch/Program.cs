@@ -42,20 +42,8 @@ sealed unsafe class InprocSpvCross : ISpvCross
     }
     public string Msl(byte[] spv, out string err) => Run(spv, true, out err);
     public string Glsl450(byte[] spv, out string err) => Run(spv, false, out err);
-    // spirv-cross 按控制流嵌套递归出码：嵌套深的着色器要的栈超过 .NET 线程池线程的栈（macOS 上 1.5 MB），
-    //   原先直接在 Parallel.ForEach 工作线程上调，整个出库进程 Stack overflow（rc=134，#51 Switch Sports Resort 停在 976 / 10984）。
-    //   合成着色器实测：嵌套 2000 层的 if 在 1.5 MB 栈上 SIGBUS、8 MB 栈上翻得出（tests/spvc_deep_stack_test.sh）。
-    //   每支着色器在自己的大栈线程上翻：64 MB 只是保留的地址空间，用多少才占多少；NJ×2 路并发也只是几百 MB 的虚拟地址
-    const int NativeStack = 64 << 20;
-    string Run(byte[] spv, bool msl, out string err)
-    {
-        string res = null, er = null; Exception ex = null;
-        var t = new System.Threading.Thread(() => { try { res = RunHere(spv, msl, out er); } catch (Exception e) { ex = e; } }, NativeStack) { IsBackground = true, Name = "spvc" };
-        t.Start(); t.Join();
-        if (ex != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
-        err = er; return res;
-    }
-    // 单测入口：在线程池线程上翻（同出库 Translate 的 Parallel.ForEach），打印结果；翻成功返回 0
+    // 单测入口（tests/spvc_deep_stack_test.sh）：在线程池线程上翻一支，同出库 Translate 的 Parallel.ForEach；翻成功返回 0。
+    //   嵌套深的着色器不栈溢出靠的是 dsh_batch.csproj 的 System.Threading.DefaultStackSize = 64 MB（#57），它对线程池线程同样生效
     public static int FileCli(string lib, string spvPath)
     {
         var xc = new InprocSpvCross(lib); var spv = File.ReadAllBytes(spvPath);
@@ -63,7 +51,7 @@ sealed unsafe class InprocSpvCross : ISpvCross
         Console.WriteLine(msl != null ? $"msl {msl.Length} chars" : $"spirv-cross failed: {err}");
         return msl != null ? 0 : 1;
     }
-    string RunHere(byte[] spv, bool msl, out string err)   // 输入输出都在内存（spvc_cli_run_mem：命令行里 "mem:in" / "mem:out"，spvc_cli/shim.h）
+    string Run(byte[] spv, bool msl, out string err)   // 输入输出都在内存（spvc_cli_run_mem：命令行里 "mem:in" / "mem:out"，spvc_cli/shim.h）
     {
         var args = new List<string> { "spirv-cross" };
         if (msl) { args.AddRange(CliSpvCross.XC); args.Add("mem:in"); } else { args.Add("mem:in"); args.Add("--version"); args.Add("450"); }

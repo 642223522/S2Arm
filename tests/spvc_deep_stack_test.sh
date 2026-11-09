@@ -2,7 +2,8 @@
 # 门禁覆盖：graphics/tools/direct/dsh/batch/Program.cs translator/spvc_cli/* tests/spvc_deep_nest.py tests/spvc_deep_stack_test.sh
 # 直连出库翻译线程的栈（约 1 分钟，编 dsh_batch 与 libspvc_cli）：bash tests/spvc_deep_stack_test.sh
 #   #51 Switch Sports Resort：出库进程在 InprocSpvCross.Run 里 Stack overflow（rc=134）。spirv-cross 出 MSL 按控制流嵌套递归，
-#   原先在 Parallel.ForEach 的线程池线程上直接调（macOS 1.5 MB 栈）。现在每支在 64 MB 栈的专用线程上翻（Program.cs InprocSpvCross.Run）。
+#   spirv-cross 在 Parallel.ForEach 的线程池线程上调，macOS 上这类线程缺省只有 1.5 MB 栈。修法是 #57：dsh_batch.csproj 的
+#   System.Threading.DefaultStackSize = 64 MB，对线程池线程同样生效。本单测守住它：哪天 runtimeconfig 里这项被删了，3000 层那项会红。
 #   夹具：tests/spvc_deep_nest.py 合成嵌套 N 层 if 的片元着色器（原创字节）；dsh_batch --spvc-file <lib> <spv> 在线程池线程上翻一支
 #   期望（手写）：嵌套 50 层与 3000 层都退出 0、打印「msl … chars」；
 #   负对照：同一支 3000 层直接在 1.5 MB 栈的线程上调同一份库（tests 里不另编，用 python ctypes 起线程）→ 进程被信号杀（不是一律放过）
