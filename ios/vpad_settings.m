@@ -51,7 +51,7 @@
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return _store.diagnostics.count ? 5 : 4; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 3 : section == 3 ? 5 : _store.diagnostics.count;
+    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 5 : section == 3 ? 5 : _store.diagnostics.count;
 }
 // 0 = 默认布局，1 = 触屏直通，之后是用户布局（内置两项没有对应文件，所以固定占前两行）
 - (NSString *)identifierAtRow:(NSInteger)row {
@@ -82,6 +82,16 @@
         cell.textLabel.text = @[@"编辑按键（位置、大小、透明度、配色）", @"导入布局", @"另存当前布局", @"导出当前布局", @"恢复按键布局"][indexPath.row];
         cell.accessibilityIdentifier = @[@"vpad.layouts.edit", @"vpad.layouts.import", @"vpad.layouts.save", @"vpad.layouts.export", @"vpad.layouts.reset"][indexPath.row];
         cell.textLabel.textColor = self.view.tintColor;
+    } else if (indexPath.section == 2 && indexPath.row == 3) {
+        cell.textLabel.text = @"游戏震动"; cell.detailTextLabel.text = @"手机马达和手柄共用，全部游戏生效"; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        id on = [NSUserDefaults.standardUserDefaults objectForKey:@"S2ARumbleOn"];
+        UISwitch *toggle = [[UISwitch alloc] init]; toggle.on = on ? [on boolValue] : YES; toggle.accessibilityIdentifier = @"vpad.rumble.on"; toggle.accessibilityLabel = @"游戏震动";
+        [toggle addTarget:self action:@selector(rumbleSwitch:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = toggle;
+    } else if (indexPath.section == 2 && indexPath.row == 4) {
+        id level = [NSUserDefaults.standardUserDefaults objectForKey:@"S2ARumbleLevel"]; NSInteger lv = level ? [level integerValue] : 2;
+        cell.textLabel.text = @"震动强度"; cell.detailTextLabel.text = @[@"弱", @"较弱", @"标准", @"较强", @"强"][MAX(0, MIN(4, lv))]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 44)]; slider.minimumValue = 0; slider.maximumValue = 4; slider.value = lv; slider.continuous = NO;
+        slider.accessibilityIdentifier = @"vpad.rumble.level"; slider.accessibilityLabel = @"震动强度"; [slider addTarget:self action:@selector(rumbleLevel:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = slider;
     } else if (indexPath.section == 2 && indexPath.row == 2) {
         cell.textLabel.text = @"按住锁定 ZL / ZR"; cell.detailTextLabel.text = @"按住 2 秒锁定，再点一下解锁；只对这款游戏生效";
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -156,6 +166,8 @@
     // Appearance alone must not mark a manual layout choice or change touch mode.
     [self reload];
 }
+- (void)rumbleSwitch:(UISwitch *)toggle { void s2a_rumble_apply_settings(void); [NSUserDefaults.standardUserDefaults setBool:toggle.on forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); }
+- (void)rumbleLevel:(UISlider *)slider { void s2a_rumble_apply_settings(void); [NSUserDefaults.standardUserDefaults setInteger:lround(slider.value) forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); [self reload]; }
 - (void)stickModeSwitch:(UISwitch *)toggle {
     NSError *error; if (![_store setStickFixed:toggle.on sensitivity:_store.stickSensitivity error:&error]) { toggle.on = _store.stickFixed; [self showError:error]; return; }
     if (self.stickModeChanged) self.stickModeChanged();
