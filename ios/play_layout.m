@@ -4,6 +4,10 @@
 #include <math.h>
 #include <stdatomic.h>
 
+static _Atomic int g_split_active;
+void S2APlayPublishSplit(BOOL split) { atomic_store(&g_split_active,split ? 1 : 0); }
+int s2a_ios_split_active(void) { return atomic_load(&g_split_active); }
+
 NSString *const S2APlaySplitKey=@"S2ASplitScreen", *const S2APlayOrientationKey=@"S2AScreenOrientation", *const S2APlayLayoutChanged=@"S2APlayLayoutChanged";
 S2APlaySplitMode S2APlayReadSplit(NSUserDefaults *d) {
     id v=[d objectForKey:S2APlaySplitKey];

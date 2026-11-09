@@ -110,6 +110,9 @@ static int enabled(const char *mod, uint32_t off, const char *dir) {
 int s2a_ios_screen_w(void);   // app.m：1080 × 横屏宽 ÷ 高（取偶）
 int s2a_ios_screen_h(void);   // app.m：1920 × 横屏高 ÷ 宽（取偶）；屏幕不比 16:9 窄时 1080
 int s2a_ios_screen_known(void);   // app.m：窗口场景已连上、比例取自实际所在的屏
+int s2a_ios_split_active(void) __attribute__((weak_import));   // play_layout.m；旧宿主无入口时为普通整屏模式
+static int g_split_at_load;
+static int split_active(void) { return s2a_ios_split_active && s2a_ios_split_active(); }
 #endif
 // 宽屏已验证名单（10-26 维护者 拍板，覆盖同日上午「直连宽屏缺省开」）：没验证过宽屏的游戏一律 16:9 原比例加黑边，验证过的才开宽屏，不出现半宽半窄。
 //   名单在仓库 graphics/widen/tables/verified.tsv（程序号 + main 构建号，入表条件 = Mac 闭环 + 真机截图量化过）；出包改写阶段（pack/stage_rewrite.sh）命中的款
@@ -235,8 +238,10 @@ int s2a_screen_fit(int pw, int ph) {
 }
 int s2a_screen_reaspect(void) {
     if (g_force_native) return 0;   // 玩家选了退回原生 16:9：App 壳布局回调不许把屏宽改回真屏
-    if (g_on > 0) return 0;   // 分屏 / 转屏：装载期补丁的尺寸或投影已定，保持整条链同一比例，重启后才按新区域装载
 #if TARGET_OS_IPHONE
+    // 只保护跨分屏模式的变化；普通合上 / 展开沿用主线的满屏热切策略。
+    // 对比装载时的模式，重复布局回调不能绕过；切回原模式后自然恢复跟屏。
+    if (g_on > 0 && split_active() != g_split_at_load) return 0;
     if (getenv("S2A_SCREEN_W") || getenv("S2A_SCREEN_H") || !s2a_ios_screen_known()) return 0;   // 环境变量给定的（Mac 模拟 / 判定局）不跟屏
     return s2a_screen_switch(s2a_ios_screen_w(), s2a_ios_screen_h());   // 运行中换到窄屏（Duo 合上 / 展开）按新屏加高
 #else
@@ -398,6 +403,9 @@ static void widen_load_stream(module_t *m, const char *dir, const char *path, FI
     g_H = g_android_widen_active ? s2a_screen_h() : 1080;
 #else
     g_W = s2a_screen_w(); g_H = s2a_screen_h();
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (!g_on) g_split_at_load = split_active();
+#endif
 #endif
     if (g_H < 1080) g_H = 1080;   // 读不到屏高（安卓 0）按 16:9
     if (!g_dir[0]) snprintf(g_dir, sizeof g_dir, "%s", dir);
