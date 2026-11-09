@@ -96,13 +96,24 @@ def for_catalog(c, gid, games):
 SHARED = ("hosts", "ipa", "toolCache", "temp", "logs")
 
 
+def _outermost(paths):
+    """去重并去掉被列表里别的路径包含的（按绝对路径比，不跟链接）"""
+    out = []
+    for p in dict.fromkeys(Path(os.path.abspath(x)) for x in paths):
+        if not any(p.is_relative_to(q) for q in out):
+            out = [q for q in out if not q.is_relative_to(p)] + [p]
+    return out
+
+
 def _shared_paths(c):
     L, P, W = c.library, c.private, c.work_root
     temps = [root / "temp" for _, root, ok in layout.locations(c) if ok]
     return {
         "hosts": [L / "hosts", P / "engines"],
         "ipa": [layout.phone_ipa(c), layout.phone_ipa(c, previous=True)],
-        "toolCache": [L / "tool-cache", W / "cache", W / "run"],
+        # tool-cache 就是现在的工作目录（core.Context.work_root），旧位置（私有目录 / 库内 .s2arm-work 的 cache、run）没迁完时也算；
+        #   去掉落在别项里面的，免得同一份量两遍（天眼实跑：W = L/tool-cache 时总览报成两倍）
+        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
         "temp": temps,
         "logs": [L / "logs", P / "logs", P / "jobs"],
     }

@@ -584,6 +584,8 @@ def _upgrade_3(c, marker):
         pack = next((p for p in sorted(d.iterdir()) if p.is_dir() and p.name.endswith("资源包")), None)
         if pack is not None:
             _move_any(pack, image / IOS_PACK)
+        if (d / "logs").is_dir():   # 出包日志是释放空间的保留项（library._build_entries）：搬到新的出包工作目录，不随 iPhone/ 一起删
+            _move_any(d / "logs", ios_work(c, gid) / "logs")
         ios = {}
         try:
             ios["shellId"] = (d / "shell.id").read_text(encoding="utf-8").strip()

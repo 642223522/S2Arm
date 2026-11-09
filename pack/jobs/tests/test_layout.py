@@ -128,6 +128,7 @@ class Upgrade3Tests(JobCase):
         (a / "container-kit").mkdir(parents=True); (a / "container-kit/main.npdm").write_bytes(b"META-A"); (a / "container-kit/main.fixups.tsv").write_text("")
         (a / "ta资源包").mkdir(); (a / "ta资源包/manifest.json").write_text('{"index_sha256": "pa"}')
         (a / "shell.id").write_text("SIDA\n"); (a / "ta.ipa").write_bytes(b"ipa")
+        (a / "logs").mkdir(); (a / "logs/ipa.log").write_text("old ipa log")   # 出包日志：释放空间的保留项，迁移要留着
         b = L / "iPhone" / B; root = b / "roots/tb@pkg-1"
         (root / "romfs").mkdir(parents=True); (root / "romfs/huge.bin").write_bytes(b"x" * 100)
         (root / "main.npdm").write_bytes(b"META-B"); (root / "main.fixups.tsv").write_text(""); (root / "build.log").write_text("log")
@@ -146,6 +147,7 @@ class Upgrade3Tests(JobCase):
         import library
         ga, gb = layout.find_game(self.c, A), layout.find_game(self.c, B)
         self.assertEqual((ga / "image/ios/kit/main.npdm").read_bytes(), b"META-A")
+        self.assertEqual((ga / "build/ios/logs/ipa.log").read_text(), "old ipa log")   # 旧出包日志搬到新的出包工作目录，没随 iPhone/ 删掉
         self.assertEqual(json.loads((ga / "image/ios/pack/manifest.json").read_text())["index_sha256"], "pa")
         self.assertEqual(json.loads((ga / "game.json").read_text())["ios"], dict(shellId="SIDA", pack="pa"))
         # B 没有容器件：先从现行产物根存一份（只要组装读的文件，不带 RomFS / 日志），再随 iPhone/ 删掉产物根
