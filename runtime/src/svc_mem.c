@@ -987,7 +987,9 @@ static uint64_t g_punch_done_n, g_punch_done_ns, g_punch_inline_n, g_punch_fail_
 static uint64_t g_punch_chunk = HPG;   // 每次打洞字节数
 static pthread_cond_t g_punch_cv = PTHREAD_COND_INITIALIZER;
 static int g_punch_thread_on;
-static int punch_defer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_PUNCH_DEFER"); v = !(e && *e == '0'); const char *c = getenv("S2A_PUNCH_CHUNK_KB"); uint64_t kb = c && *c ? strtoull(c, NULL, 10) : 0; if (kb) g_punch_chunk = ((kb << 10) + HPG - 1) & ~(HPG - 1); } return v; }
+// S2A_PUNCH_DEFER：0 逐页同步打洞（原路径，负对照）；1 后台线程打洞（11-09 第二版：真机上后台 F_PUNCHHOLE 与 Metal 提交在内核里互卡，GPU 挂死）；
+//   缺省 2 懒清零：锁内只 mprotect 成不可访问 + 记待打洞，不打洞也不起线程，页在游戏映射回来时就地清零。文件里这段仍占着脏页，内存紧时由内核按文件后备原设计换出。
+static int punch_defer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_PUNCH_DEFER"); v = e && *e ? (int)strtol(e, NULL, 10) : 2; if (v < 0 || v > 2) v = 2; const char *c = getenv("S2A_PUNCH_CHUNK_KB"); uint64_t kb = c && *c ? strtoull(c, NULL, 10) : 0; if (kb) g_punch_chunk = ((kb << 10) + HPG - 1) & ~(HPG - 1); } return v; }
 static uint8_t *punch_at(uint64_t hp) { return g_punch_pend + (hp - L.win_base) / HPG; }
 // 后台线程的一步（持 g_mu）：找下一段连续待打洞页（最多 g_punch_chunk 字节）打洞并清标记；没活返回 0
 static int punch_step_locked(void) {
@@ -1024,6 +1026,7 @@ static int punch_defer_locked(uint64_t a, uint64_t n) {
     if (!g_punch_pend) g_punch_pend = calloc(L.win_size / HPG, 1);
     for (uint64_t p = a; p < a + n; p += HPG) { uint8_t *b = punch_at(p); if (*b != 1) { *b = 1; g_punch_pending_n++; } }
     if (a < g_punch_lo) g_punch_lo = a; if (a + n > g_punch_hi) g_punch_hi = a + n;
+    if (punch_defer_on() == 2) return 1;   // 懒清零：不打洞
 #ifndef S2A_UNIT_TEST
     if (!g_punch_thread_on) { pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED); if (pthread_create(&t, &at, punch_thread, NULL)) die("延后打洞线程起不来 errno=%d", errno); g_punch_thread_on = 1; pthread_attr_destroy(&at); }
 #endif
@@ -1036,6 +1039,8 @@ static void punch_zero_locked(uint64_t lo, uint64_t hi) {
     uint64_t we = L.win_base + L.win_size; if (lo < L.win_base) lo = L.win_base; if (hi > we) hi = we;
     for (uint64_t p = lo; p < hi; p += HPG) { uint8_t *b = punch_at(p); if (!*b) continue; if (*b == 1) g_punch_pending_n--; *b = 0; memset((void *)p, 0, HPG); g_punch_inline_n++; }
 }
+// 收局时（lifecycle.c，_exit 前）打一行读数：取消 / SIGTERM 路径不走会话重置，否则读数永远看不到
+void s2a_punch_summary(void) { if (g_punch_pend || g_punch_done_n || g_punch_inline_n) LOG("#258 延后打洞读数（模式 %d）：后台打洞 %llu 页 %llu ms、映射回来就地清零 %llu 页、打洞失败 %llu 页、待打洞 %llu 页", punch_defer_on(), (unsigned long long)g_punch_done_n, (unsigned long long)(g_punch_done_ns / 1000000), (unsigned long long)g_punch_inline_n, (unsigned long long)g_punch_fail_n, (unsigned long long)g_punch_pending_n); }
 static void punch_reset_locked(void) {
     if (g_punch_pend || g_punch_done_n || g_punch_inline_n) LOG("#258 延后打洞读数：后台打洞 %llu 页 %llu ms、映射回来就地清零 %llu 页、打洞失败 %llu 页、收尾待打洞 %llu 页", (unsigned long long)g_punch_done_n, (unsigned long long)(g_punch_done_ns / 1000000), (unsigned long long)g_punch_inline_n, (unsigned long long)g_punch_fail_n, (unsigned long long)g_punch_pending_n);
     free(g_punch_pend); g_punch_pend = NULL; g_punch_pending_n = 0; g_punch_lo = UINT64_MAX; g_punch_hi = 0;
