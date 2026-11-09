@@ -196,7 +196,7 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0) {
-        if ([self chooseLayout:[self identifierAtRow:indexPath.row]] && !self.embeddedInSettings) [self close];
+        [self chooseLayout:[self identifierAtRow:indexPath.row]];   // 选完留在本页（11-09 jhz：改设置没有退出意图时不自己退掉），打勾跟着换；关页面用右上角「完成」
     } else if (indexPath.section == 1) {
         switch (indexPath.row) {
             case 0: [self requestEdit]; break;
@@ -215,7 +215,7 @@
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"恢复按键布局？" message:@"已保存的自定义布局会保留。" preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"恢复按键布局" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        if ([self chooseLayout:S2AVPadLayoutDefaultIdentifier] && !self.embeddedInSettings) [self close];
+        [self chooseLayout:S2AVPadLayoutDefaultIdentifier];   // 恢复后留在本页（同上）
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
