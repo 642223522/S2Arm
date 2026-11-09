@@ -26,6 +26,8 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "android", "LICENSE", "README.md",
           # 随包 Python 的钉版依赖清单：Windows 环境检查（pack/jobs/winenv.py）按它核随包 Python 的库版本（11-07 发版产物端到端：快照缺它、整份清单报错误码合同无法核实）
           "launchers/macos/requirements-runtime.txt",
+          # 游戏设置定义表（pack/jobs/community.py 按它读写 launch.json、转宿主开关；11-09 启动设置）
+          "launchers/shared/game_settings.v1.json",
           # iPhone 宿主包的图标（pack/ipa_tail.py、pack/jobs/ipa.py）：引擎快照里没有它，容器就退回用游戏图标（11-08 维护者）
           "launchers/macos/Branding/AppIcon-1024.png",
           # 根 .gitignore（11-02 beta.3 走查）：出包会在快照副本里编出 bin/ obj/，没有忽略规则时 pack/ipa.sh「构建相关目录有未提交改动」

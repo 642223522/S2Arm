@@ -20,7 +20,7 @@ import AppKit
     override func tearDown() async throws { control.stop(); try? FileManager.default.removeItem(at: root) }
 
     func testDisplayNeedsAGame() async {
-        let (code, body) = await post("/display", ["metalfx": true])
+        let (code, body) = await post("/display", ["settings": ["enhance": true]])
         XCTAssertEqual(code, 400); XCTAssertEqual(body["error"] as? String, "缺 gameId")
     }
 
