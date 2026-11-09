@@ -1531,7 +1531,15 @@ static const uint16_t g_dev_bytes[OP_COUNT_] = {
     [OP_END] = 8, [OP_CALL] = 16, [OP_SET_RT] = 96, [OP_BIND_PROGRAM] = 64, [OP_BIND_TEX1] = 24, [OP_DRAW] = 32, [OP_DRAW_IDX] = 48, [OP_DRAW_TEX] = 64,
     [OP_DISPATCH] = 48, [OP_COPY_B2T] = 64, [OP_COPY_T2B] = 64, [OP_COPY_T2T] = 64, [OP_CLEAR_TEX] = 48, [OP_SET_TEX_POOL] = DEV_CTL, [OP_SET_SAMP_POOL] = DEV_CTL,
 };
-static uint32_t dev_bytes(uint32_t op, uint32_t size) { uint32_t d = op < OP_COUNT_ ? g_dev_bytes[op] : 0; return d == DEV_CTL ? 0 : d ? d : size; }
+// NVN2 (Switch 2, Ampere) writes shorter draw commands than the Maxwell estimate above. Sports Resort (04008E001F098000) sizes each shader program's prerecorded MatBlock by recording one
+//   DrawElementsInstanced and reading GetCommandMemoryUsed (main+0x114660, 3-7 measurements per program, + the 8-byte END). With the Maxwell 48 + 8 = 56 the sum overruns the 4 KB
+//   rounding of the MatBlock backing in Car00 / Marinebike00 / Building00 (0x301c > 0x3000, 0x2004 > 0x2000, ...), the local heap sized from the RESTBL is then 56-64 bytes short, the
+//   backing is dropped and the game goes on with a null memory pool. Any NVN2 draw of <= 44 bytes keeps all three under the boundary (budget measured on hardware). 32 is an estimate,
+//   not read from the NVN2 driver; DM_NVN2_DEV_DRAW_IDX overrides it for diagnosis.
+static uint32_t nvn2_dev_draw_idx(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN2_DEV_DRAW_IDX"); v = e ? atoi(e) : 32; } return (uint32_t)v; }
+static uint32_t dev_bytes(uint32_t op, uint32_t size) {
+    if (op == OP_DRAW_IDX && nvn2_on()) return nvn2_dev_draw_idx();
+    uint32_t d = op < OP_COUNT_ ? g_dev_bytes[op] : 0; return d == DEV_CTL ? 0 : d ? d : size; }
 #define DEV_LEND (16u << 10)   // device bytes of a host-lent window (the game gave no memory): the callback is asked again only after this many
 
 NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
