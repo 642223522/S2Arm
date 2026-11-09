@@ -38,8 +38,8 @@ class CompilerRetentionTests(unittest.TestCase):
             with patch.object(library, 'selected_packages', return_value=[{'sha256': 'synthetic', 'size': 4 << 30}]), \
                  patch('shutil.disk_usage', side_effect=usage):
                 budget = library.check_pack_space(c, game, compiler_policy=cache_retention.retention_policy())
-            # 4 GiB × 1.1 + 15 GB，独立手算
-            self.assertEqual(budget['compilerMinFreeBytes'], (4 << 30) * 11 // 10 + 15_000_000_000)
+            # 4 GiB × 1.1 × 2（解包 + 单文件镜像）+ 15 GB，独立手算
+            self.assertEqual(budget['compilerMinFreeBytes'], 2 * ((4 << 30) * 11 // 10) + 15_000_000_000)
             self.assertTrue(all(p.exists() for p in paths[:3]))
             self.assertFalse(paths[3].exists())
 
@@ -134,6 +134,7 @@ class CompilerRetentionTests(unittest.TestCase):
             (roots / 'g@现行').symlink_to('g@new')
             for p in (ident / 'sub/a.bin', ident / 'sub', ident):
                 os.chmod(p, 0o555 if p.is_dir() else 0o444)
+            (roots.parent / 't.ipa').write_bytes(b'ipa')   # 老玩家：有 IPA 没容器件，现行产物根要留着
             library.prune_build(c, gid)
             self.assertFalse((roots / 'g@old').exists())
             self.assertEqual((roots / 'g@现行/romfs/sub/a.bin').read_bytes(), b'original synthetic romfs')

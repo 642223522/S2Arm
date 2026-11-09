@@ -19,6 +19,11 @@ import AppKit
     }
     override func tearDown() async throws { control.stop(); try? FileManager.default.removeItem(at: root) }
 
+    func testDisplayNeedsAGame() async {
+        let (code, body) = await post("/display", ["metalfx": true])
+        XCTAssertEqual(code, 400); XCTAssertEqual(body["error"] as? String, "缺 gameId")
+    }
+
     private func post(_ path: String, _ body: [String: Any] = [:]) async -> (Int, [String: Any]) {
         let r = await control.handle(ControlRequest(method: "POST", path: path, headers: [:], body: body))
         return (r.code, (try? JSONSerialization.jsonObject(with: r.body) as? [String: Any]) ?? [:])
@@ -80,5 +85,18 @@ import AppKit
         XCTAssertFalse(model.aiControl)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("control.json").path), "关了就删 control.json")
         control = try S2ArmControl(model: model) { XCTFail($0) }
+    }
+}
+
+/// #272 连着多台时用哪台：选过且还连着的 → 它；否则有线第一台；否则第一台。期望手写
+final class ExportDevicePickTests: XCTestCase {
+    private let phone = ["id": "A", "name": "我的 iPhone", "wired": false] as [String: Any]
+    private let pad = ["id": "B", "name": "iPad", "wired": true] as [String: Any]
+    func testChosenWiredFirstOrNone() {
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone, pad], chosen: "A")?["id"] as? String, "A")
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone, pad], chosen: nil)?["id"] as? String, "B")
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone, pad], chosen: "gone")?["id"] as? String, "B")
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone], chosen: "gone")?["id"] as? String, "A")
+        XCTAssertNil(S2ArmLauncherModel.pickDevice([], chosen: "A"))
     }
 }

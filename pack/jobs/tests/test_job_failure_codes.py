@@ -409,6 +409,15 @@ class LogCauses(JobCase):
         for evidence in ("刷新停在 direct 阶段（rc=1）", "No space left on device", "build.log", "归因 disk_full"):
             self.assertIn(evidence, d["detail"])
 
+    def test_unknown_graphics_api_says_not_supported(self):
+        # #222 现场（0.1.7，程序号 05F42564C82B0000 同人移植）：配置推导判不出图形接口 → 直连单轨停在配置推导。上屏：这款游戏暂不支持；不是「未归类、请反馈」
+        from errors import RECOVERY
+        error, d = self.mac_refresh(["【黄】直连缺口：配置推导不支持本款：unsupported graphics API: unknown（没有 NVN / Vulkan / OpenGL 任一接口的证据）",
+                                     "【红】05F42564C82B0000 直连单轨停在 直连配置推导：直连缺口：配置推导不支持本款（direct_profile rc=3）"])
+        self.assertEqual(error.code, "graphics_api_unsupported")
+        self.assertEqual(d["summary"], "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。")
+        self.assertEqual(d["suggestion"], RECOVERY["graphics_api_unsupported"])
+
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
         # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，
         #   报「链号前后不一（c7a4970bffe5 / note:）」→ 刷新停在 direct 阶段。上屏：这版 S2Arm 不认识你的 Xcode；下一步：更新 S2Arm

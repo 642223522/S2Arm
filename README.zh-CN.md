@@ -62,11 +62,11 @@ Mac 和 Windows 启动器都开放了控制接口 `s2armctl`：AI 助手可以�
 
 | 游戏 | 原件 | 着色器 | 出包用时 |
 |---|---|---|---|
-| 暗黑破坏神 3 | 23.5 GB | 1,222 | **6.4 分钟** |
-| 集合啦！动物森友会 | 12.0 GB | 9,315 | **8.6 分钟** |
-| 塞尔达传说 王国之泪 | 17.5 GB | 26,999 | **34 分钟** |
+| 一款 23.5 GB 的动作角色扮演游戏 | 23.5 GB | 1,222 | **6.4 分钟** |
+| 一款 12.0 GB 的生活模拟游戏 | 12.0 GB | 9,315 | **8.6 分钟** |
+| 一款 17.5 GB 的开放世界游戏 | 17.5 GB | 26,999 | **34 分钟** |
 
-Switch 2 版《塞尔达传说 时之笛》在 iPhone 17 Pro Max 上真机实测，手机未发热时**满 60 帧**，持续高负载发热后 **37～43 帧**，每帧耗电约 **0.15 焦耳**。[证据](docs/validation/证据.md#速度与能效)
+一款 Switch 2 游戏在 iPhone 17 Pro Max 上真机实测，手机未发热时**满 60 帧**，持续高负载发热后 **37～43 帧**，每帧耗电约 **0.15 焦耳**。[证据](docs/validation/证据.md#速度与能效)
 
 ## 覆盖面
 
@@ -90,7 +90,7 @@ Switch 2 版《塞尔达传说 时之笛》在 iPhone 17 Pro Max 上真机实测
 
 ## 诚实的边界
 
-S2Arm 运行 64 位（AArch64）游戏。Apple 芯片不能执行 32 位 ARM 代码，所以 32 位游戏不在支持范围内，目前确认的有《二之国 白色圣灰的女王》《模拟山羊》《新超级马力欧兄弟U 豪华版》《怪物猎人 XX》；需要 36 位地址空间的《Minecraft：故事模式》同样不在支持范围内。完整名单与版本见[证据](docs/validation/证据.md#不支持的游戏)。
+S2Arm 运行 64 位（AArch64）游戏。Apple 芯片不能执行 32 位 ARM 代码，所以 32 位游戏不在支持范围内；需要 36 位地址空间的游戏同样不在支持范围内。
 
 ## 参与开发
 
@@ -107,7 +107,7 @@ S2Arm 站在社区的肩膀上。
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）：开拓了这条技术路线，第一次把自己的 Switch 游戏原生带到 iPhone、iPad、Mac、安卓和鸿蒙。
 - **Impactor**（Samara M，MIT）与 **apple-codesign**（MPL-2.0）：Windows 端的签名装机。
 - **LNPANDY** 及 iOS 游戏库外壳的原作者与贡献者：外壳与 RomFS 归档子系统。
-- **ns2pro-bridge**（DanielZhangyc，MIT）、**MacNativeGames**（MIT）、**LumaDock**（MIT）、**deko3d**（fincs，zlib）、**nvn.h**（h1k421，MIT）、**bcdec**（Sergii Kudlai，MIT / Unlicense）、**LibHac**（Alex Barney，MIT）与 **hactool**（SciresM，ISC）、**SPIRV-Cross** 与 **Vulkan-Headers**（Khronos Group）、**SMAA**（Jorge Jimenez 等，MIT）、**Mesa** 的细分器（Microsoft，MIT）、**Capstone**、**LZ4**、**.NET**、**libvpx**、**libopus**、**dav1d** 和 **Noto** 字体。
+- **ns2pro-bridge**（DanielZhangyc，MIT）、**MacNativeGames**（MIT）、**LumaDock**（MIT）、**deko3d**（fincs，zlib）、**nvn.h**（h1k421，MIT）、**bcdec**（Sergii Kudlai，MIT / Unlicense）、**SPIRV-Cross** 与 **Vulkan-Headers**（Khronos Group）、**SMAA**（Jorge Jimenez 等，MIT）、**Mesa** 的细分器（Microsoft，MIT）、**Capstone**、**LZ4**、**.NET**、**libvpx**、**libopus**、**dav1d** 和 **Noto** 字体。
 
 每个组件的版本、许可全文和用途见 [NOTICE](NOTICE) 与 [第三方许可清单](THIRD_PARTY_LICENSES.md)。
 

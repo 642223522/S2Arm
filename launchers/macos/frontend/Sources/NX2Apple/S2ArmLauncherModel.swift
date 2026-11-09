@@ -144,6 +144,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var targetModels: [[String: Any]] = []
     @Published private(set) var targetOS: [Int] = []
     @Published var chosenModel: String?
+    /// 连着多台 iPhone / iPad 时玩家在出包页选的那台（设备号，记住到下次；#272）。按机型优化和装到设备都用它
+    @Published var chosenDevice: String? = UserDefaults.standard.string(forKey: S2ArmLauncherModel.exportDeviceKey) {
+        didSet { UserDefaults.standard.set(chosenDevice, forKey: Self.exportDeviceKey) }
+    }
+    static let exportDeviceKey = "S2AExportDevice"
     /// 排队等着出的；运行页被收起（后台继续）；本次打开以来每款最近一次的出包结果；正在查看的结果。
     @Published private(set) var exportQueue: [QueuedExport] = []
     @Published var sessionHidden = false
@@ -184,6 +189,12 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     public func refresh() {
         guard !loading else { return }
+        // 启动时先显示上次的列表，不等作业；能不能玩在真正启动时还会完整校验
+        if !libraryLoaded, games.isEmpty, let known = provider.library.lastKnownGames(), !known.isEmpty {
+            games = known
+            selectedID = known.first?.id
+            libraryLoaded = true
+        }
         loading = true
         provider.library.load { [weak self] result in
             guard let self else { return }
@@ -245,13 +256,13 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 换游戏库：setup 作业（作业层拦非 APFS、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
-    func changeLibrary(to url: URL) {
+    func changeLibrary(to url: URL, move: Bool = false) {
         guard !busy else { return }
         showEnvironment = false
         failAction(nil, game: nil)
         start(.setupLibrary, game: nil, name: url.lastPathComponent) { [weak self] sink in
             guard let self else { return nil }
-            let library = try await self.provider.library.change(to: url, events: sink)
+            let library = try await self.provider.library.change(to: url, moveFrom: move ? self.provider.client.environment.library : nil, events: sink)
             self.games = []; self.selectedID = nil; self.libraryLoaded = false
             self.checks = (try? await self.provider.environment.check()) ?? self.checks
             return library
@@ -421,9 +432,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 出 iPhone 包的目标：连着的手机优先，其次玩家选的机型；都没有交给作业层按常见机型出。
+    /// 连着的设备里用哪台：玩家选过且还连着 → 它；否则有线连着的第一台；否则第一台（#272）
+    nonisolated static func pickDevice(_ connected: [[String: Any]], chosen: String?) -> [String: Any]? {
+        if let chosen, let d = connected.first(where: { $0["id"] as? String == chosen }) { return d }
+        return connected.first(where: { $0["wired"] as? Bool == true }) ?? connected.first
+    }
+
+    var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
+
+    /// 出 iPhone 包的目标：连着的手机优先（多台时用选中的那台），其次玩家选的机型；都没有交给作业层按常见机型出。
     var currentDeviceTarget: [String: Any]? {
-        if let device = connectedDevices.first { return device }
+        if let device = selectedDevice { return device }
         guard let chosenModel, var model = targetModels.first(where: { $0["productType"] as? String == chosenModel }), let os = targetOS.first else { return nil }
         model["os"] = os
         return model
@@ -518,11 +537,21 @@ public final class S2ArmLauncherModel: ObservableObject {
         installGameID == gameID && (installReadiness?.ready == true || (installReadiness == nil && installError != nil))
     }
 
-    func install(_ game: GameSummary) {
+    /// 在 Xcode 打开引导项目；玩家运行一次后，装机页每 5 秒的重查会自动打勾。
+    func openSigningProject() {
+        Task {
+            do { NSWorkspace.shared.open(URL(fileURLWithPath: try await provider.signingProject())) }
+            catch { installError = error.localizedDescription }
+        }
+    }
+
+    func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil) {
         guard !busy, installAllowed(game.id) else { return }
         failAction(nil, game: nil)
+        // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
+        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
-            _ = try await self?.provider.install(gameId: game.id, events: sink)
+            _ = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, events: sink)
             return nil
         }
     }
@@ -635,9 +664,11 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.control = nil
                 if !ControlPort.forced { try? self.provider.settings.setAIControl(false); self.aiControl = false }
                 self.aiControlError = why
+                ControlPort.reportStartFailure(privateRoot: self.provider.client.environment.privateRoot, why: why)
             }
         } catch {
             aiControlError = error.localizedDescription
+            ControlPort.reportStartFailure(privateRoot: provider.client.environment.privateRoot, why: error.localizedDescription)
             if !ControlPort.forced { try? provider.settings.setAIControl(false); aiControl = false }
         }
     }

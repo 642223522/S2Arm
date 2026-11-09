@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 JOBS = Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ ROOT = JOBS.parents[1]
 sys.path.insert(0, str(JOBS))
 import core
 import toolchain
+from jobcase import OsView, as_windows
 
 
 class AtomicReplace(unittest.TestCase):
@@ -27,8 +29,7 @@ class AtomicReplace(unittest.TestCase):
                 left[0] -= 1
                 raise PermissionError(13, "拒绝访问。")
             return real(a, b)
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(core.os, "name", name), mock.patch.object(core.os, "replace", replace), \
-                mock.patch.object(core.time, "sleep", sleeps.append):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(core, "os", OsView(name, replace=replace)), mock.patch.object(core.time, "sleep", sleeps.append):
             target = Path(d, "job.json"); target.write_text("old")
             try:
                 core.replace_retrying(self.tmp(d), target); error = None
@@ -94,13 +95,13 @@ class Reader(unittest.TestCase):
 
     def test_prebuilt_same_identity(self):
         (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / ".src_digest").write_text("abc123abc123\n")
-        with patch.object(toolchain.os, "name", "nt"):
+        with as_windows(toolchain):
             self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.dll")
 
     def test_stale_or_missing_is_named_failure(self):
         (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / ".src_digest").write_text("000000000000\n")
         for case in ("stale", "missing"):
-            with self.subTest(case=case), patch.object(toolchain.os, "name", "nt"):
+            with self.subTest(case=case), as_windows(toolchain):
                 if case == "missing": (self.d / "nx_unpack.dll").unlink()
                 with self.assertRaises(core.Failure) as e:
                     toolchain.reader(self.c)
@@ -181,6 +182,8 @@ class FakeW:
         return self.bid
     def push_pack(self, udid, bid, pack, devpush=None, full=False, say=None, docs=None, ctx=None, apply_after=False):
         """新接口（WinPhone.push 调）→ (文件数, 字节数)"""
+        if getattr(self, "needs_player", None):
+            e = self.Fail(self.needs_player, 0, "manual_unpack_required"); e.transferred = (787, 23_000_000_000); raise e
         return sum(1 for f in Path(pack).rglob("*") if f.is_file()), sum(f.stat().st_size for f in Path(pack).rglob("*") if f.is_file())
 
 
@@ -208,10 +211,9 @@ class WinInstall(unittest.TestCase):
             with __import__("zipfile").ZipFile(ipa_path, "w") as z:
                 z.writestr("Payload/S2Arm.app/Info.plist", __import__("plistlib").dumps({"CFBundleIdentifier": "dev.s2arm.games", "CFBundleExecutable": "S2Arm"}))
             return ipa_path, [gid], [gid]
-        import os as _os
         with patch.object(self.m, "win_install_mod", return_value=w), \
              patch.object(packer, "assemble", side_effect=fake_assemble), \
-             patch.object(_os, "name", "nt"):
+             as_windows(self.m):
             return self.m.install(self.c)
 
     def test_one_phone_two_links(self):
@@ -220,6 +222,13 @@ class WinInstall(unittest.TestCase):
         self.assertEqual((res["bundleId"], res["device"]), ("s2arm.T.0100", "U1"))
         self.assertEqual(w.calls[0].udid, "U1")
         self.assertEqual(Path(w.calls[0].ipa).suffix, ".ipa")
+
+    def test_cant_open_app_is_warning_not_failure(self):   # #192：Windows 同 Mac，传输数从异常带回（替身 787 个文件）
+        w = FakeW([("U1", "USB", 3)]); w.needs_player = "资源包已传完，还差最后一步：打开 App"
+        seen = []; self.c.diagnostic = lambda m, **k: seen.append((m, k))
+        res = self.go(w)
+        self.assertEqual(seen, [("资源包已传完，还差最后一步：打开 App", {"code": "manual_unpack_required", "severity": "warning"})])
+        self.assertEqual(res["packFiles"], 787)
 
     def test_device_choice_errors(self):
         for devs, want in (([("U1", "USB", 3), ("U2", "USB", 4)], None), ([], None), ([("U1", "USB", 3)], "U9")):
@@ -340,7 +349,7 @@ class WinTarget(unittest.TestCase):
     def test_connected_only_no_models(self):
         import target
         c = types.SimpleNamespace(r={}, engine=ROOT)
-        with patch.object(target.os, "name", "nt"), patch("install.win_install_mod", return_value=FakeW([("U1", "Network", 9), ("U1", "USB", 3), ("U2", "Network", 5)])):
+        with as_windows(target), patch("install.win_install_mod", return_value=FakeW([("U1", "Network", 9), ("U1", "USB", 3), ("U2", "Network", 5)])):
             r = target.probe(c)
         self.assertEqual(r, dict(connected=[dict(id="U1", udid="U1", connection="wired"), dict(id="U2", udid="U2", connection="network")], models=[], osChoices=[]))
 
@@ -421,8 +430,8 @@ class EngineSnapshotCoversWinenv(unittest.TestCase):
 
 class PidAlive(unittest.TestCase):
     def test_windows_never_calls_os_kill(self):
-        with patch.object(core.os, "name", "nt"), patch.object(core.winproc, "alive", return_value=False) as alive, \
-             patch.object(core.os, "kill", side_effect=AssertionError("Windows 上 os.kill(pid, 0) = 对进程组发 Ctrl+C")):
+        with as_windows(core, kill=unittest.mock.Mock(side_effect=AssertionError("Windows 上 os.kill(pid, 0) = 对进程组发 Ctrl+C"))), \
+             patch.object(core.winproc, "alive", return_value=False) as alive:
             self.assertFalse(core.pid_alive(4321))
         alive.assert_called_once_with(4321)
 

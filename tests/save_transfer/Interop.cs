@@ -81,3 +81,15 @@ void Write(LibHac.Common.U8Span path, byte[] bytes)
     try { Check(client.Fs.WriteFile(handle, 0, bytes, WriteOption.Flush)); }
     finally { client.Fs.CloseFile(handle); }
 }
+
+namespace S2A.Services
+{
+    public static partial class SaveTransfer
+    {
+        // 审计 P2-177：interop.py 设 SAVE_TRANSFER_FAIL_AT=<阶段> 让恢复在该检查点抛错，核失败后不留目录
+        static partial void Checkpoint(string phase)
+        {
+            if (Environment.GetEnvironmentVariable("SAVE_TRANSFER_FAIL_AT") == phase) throw new IOException("injected failure at " + phase);
+        }
+    }
+}

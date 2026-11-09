@@ -84,6 +84,8 @@ def content_hits(line, path, rules):
     for row in rules['content_rules']:
         if 'context_compiled' in row and not row['context_compiled'].search(line):
             continue
+        if 'paths' in row and not matches(path, row['paths']):   # 只管指定文件的规则（如 README 不写 LibHac / hactool；上游代码里照常有）
+            continue
         for match in row['compiled'].finditer(line):
             value = match[row.get('group', 0)]
             if not allowed(row['category'], value, line, path, rules):

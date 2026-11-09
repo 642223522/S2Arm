@@ -523,3 +523,4 @@
 20261107-1718-raw-pool-range-cache-inline.patch
 20261108-2059-vp9-arm64-simd.patch
 20261108-2100-nvdec-chroma-arm64.patch
+20261109-0327-bsd-cmd36-config-log.patch
