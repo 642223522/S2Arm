@@ -841,6 +841,8 @@
       {"id": "update.error.update_disk_full", "zh-Hans": "磁盘空间不够，当前版本没有变化。清理后再试。", "en": "Not enough disk space. Nothing was changed. Free up space and try again."},
       {"id": "update.error.update_checksum_mismatch", "zh-Hans": "下载的文件校验不符，当前版本没有变化。请稍后重试。", "en": "The download failed verification. Nothing was changed. Try again later."},
       {"id": "update.error.update_bad_package", "zh-Hans": "安装包不完整或签名不对，当前版本没有变化。", "en": "The package was incomplete or badly signed. Nothing was changed."},
+      {"id": "update.error.update_download_failed", "zh-Hans": "下载一直断开，当前版本没有变化。请检查网络后重试，或手动下载新版。", "en": "The download kept dropping. Your current version is unchanged. Check your network and retry, or download the new version yourself."},
+      {"id": "update.error.update_unpack_failed", "zh-Hans": "打不开下载好的安装包，当前版本没有变化。可以手动下载新版。", "en": "Couldn't open the downloaded package. Your current version is unchanged. You can download the new version yourself."},
       {"id": "update.error.update_failed", "zh-Hans": "更新没有完成，当前版本没有变化。请检查网络后重试。", "en": "The update did not finish. Nothing was changed. Check your network and try again."},
       {"id": "update.error.update_swap_failed", "zh-Hans": "替换文件失败，已保留当前版本。", "en": "Replacing the files failed. The current version was kept."},
       {"id": "update.error.update_rolled_back", "zh-Hans": "新版没能启动，已回到原来的版本。", "en": "The new version could not start. S2Arm went back to the previous version."},
