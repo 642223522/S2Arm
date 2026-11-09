@@ -87,3 +87,16 @@ import AppKit
         control = try S2ArmControl(model: model) { XCTFail($0) }
     }
 }
+
+/// #272 连着多台时用哪台：选过且还连着的 → 它；否则有线第一台；否则第一台。期望手写
+final class ExportDevicePickTests: XCTestCase {
+    private let phone = ["id": "A", "name": "我的 iPhone", "wired": false] as [String: Any]
+    private let pad = ["id": "B", "name": "iPad", "wired": true] as [String: Any]
+    func testChosenWiredFirstOrNone() {
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone, pad], chosen: "A")?["id"] as? String, "A")
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone, pad], chosen: nil)?["id"] as? String, "B")
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone, pad], chosen: "gone")?["id"] as? String, "B")
+        XCTAssertEqual(S2ArmLauncherModel.pickDevice([phone], chosen: "gone")?["id"] as? String, "A")
+        XCTAssertNil(S2ArmLauncherModel.pickDevice([], chosen: "A"))
+    }
+}

@@ -65,6 +65,14 @@ static void system_reset_on_queue(void) {
     [g_haptic_engine stopWithCompletionHandler:nil];
     g_haptic_player = nil; g_haptic_engine = nil;
 }
+void s2a_rumble_apply_settings(void);
+// 游戏震动的总开关和强度（设置页「按键显示与触感」）：提交前按倍率缩放振幅，手机马达 / 实体手柄 / NS2 Pro 共用
+static _Atomic float g_rumble_gain = 1;
+static float finite_clamp(float x, float lo, float hi);
+static float rumble_scaled(float amp) { return finite_clamp(amp * atomic_load(&g_rumble_gain), 0, 1); }
+static void rumble_scale_pair(const s2a_pad_vibration in[2], s2a_pad_vibration out[2]) {
+    for (int i = 0; i < 2; i++) { out[i] = in[i]; out[i].low_amp = rumble_scaled(in[i].low_amp); out[i].high_amp = rumble_scaled(in[i].high_amp); }
+}
 static float finite_clamp(float x, float lo, float hi) {
     return isfinite(x) ? fminf(hi, fmaxf(lo, x)) : lo;
 }
@@ -268,6 +276,7 @@ static BOOL write_record(NSString *identifier, BOOL automatic) {
 //   这里在输入队列 / BLE 回调里发现变化后派回主线程更新虚拟按键显示；没变时只读一个原子量
 static _Atomic int g_shown_external = -1;   // 虚拟按键当前按「实体手柄生效」隐藏着（1）/ 显示着（0）
 static void pad_selection_check(void);
+static void pad_face_sync(void);
 
 // BLE 队列已缓存样本；新运动通知唤醒同一 HID 线程，不另建采样线程。
 static void ble_motion(const ns2_motion *motion, void *context) {
@@ -316,9 +325,11 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     _root = root;
     _inputQueue = dispatch_queue_create("s2arm.controller.input", DISPATCH_QUEUE_SERIAL);
     g_system_haptics_queue = dispatch_queue_create("s2arm.controller.haptics", DISPATCH_QUEUE_SERIAL);
+    s2a_rumble_apply_settings();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(systemChanged:) name:GCControllerDidConnectNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(systemChanged:) name:GCControllerDidDisconnectNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingsChanged:) name:NSUserDefaultsDidChangeNotification object:nil];
+    pad_face_sync();
     return self;
 }
 - (void)createConnectionButton {
@@ -378,7 +389,13 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     s2a_pad_wake();
     LOG("NS2 Pro：本 App 适配%s", enabled ? "开启" : "关闭");
 }
+// 手柄按键对应（定义表 game_settings.v1.json 的 padFace：letter 按字母（缺省）/ position 按位置）：偏好一变就转给 pad.c，下一次按键即按新口径（不用重启）
+static void pad_face_sync(void) {
+    NSString *v = [NSUserDefaults.standardUserDefaults stringForKey:@"padFace"];
+    if (v) s2a_pad_face_set(![v isEqualToString:@"position"]);
+}
 - (void)settingsChanged:(NSNotification *)notification {
+    pad_face_sync();
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self->_foreground) return;
         s2a_phone_motion_enable(atomic_load(&g_phone_motion_wanted) && !atomic_load(&g_ble_ready));
@@ -421,7 +438,8 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     // buttonOptions（「-」）在部分手柄上为 nil；位序不能动，bit11 留给它，nil 时该位恒 0（与 Mac 侧 front_mac.m 一致）。
     GCControllerButtonInput *options = pad.buttonOptions;
     GCControllerButtonInput *face[4] = {pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY};
-    int order[4]; s2a_pad_abxy_order(s2a_pad_labels_abxy(pad.controller.productCategory.UTF8String, pad.controller.vendorName.UTF8String), order);
+    int order[4]; s2a_pad_abxy_order(s2a_pad_kind(pad.controller.productCategory.UTF8String, [pad isKindOfClass:GCXboxGamepad.class],
+        [pad isKindOfClass:GCDualShockGamepad.class] || [pad isKindOfClass:GCDualSenseGamepad.class]), s2a_pad_face_by_letter(), order);   // 按字母 / 按位置（pad.c）
     GCControllerButtonInput *keys[16] = {face[order[0]], face[order[1]], face[order[2]], face[order[3]],
         pad.leftThumbstickButton, pad.rightThumbstickButton, pad.leftShoulder, pad.rightShoulder,
         pad.leftTrigger, pad.rightTrigger, pad.buttonMenu, options,
@@ -725,8 +743,9 @@ __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(voi
     if (phone) return PHONE_SESSION_BASE | phone_epoch;
     return foreground ? MOTION_ONLY_SESSION : 0;
 }
-__attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration values[2]) {
-    if (!values) return;
+__attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration raw[2]) {
+    if (!raw) return;
+    s2a_pad_vibration values[2]; rumble_scale_pair(raw, values);
     if ((session & 0xffff000000000000ull) == PHONE_SESSION_BASE) {
         pthread_mutex_lock(&g_feedback_mu);
         if (session == (PHONE_SESSION_BASE | g_phone_epoch)) phone_submit_locked(values, NO);
@@ -745,6 +764,7 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64
     pthread_mutex_unlock(&g_feedback_mu);
 }
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble(uint64_t session, unsigned side, float low_amp, float low_hz, float high_amp, float high_hz) {
+    low_amp = rumble_scaled(low_amp); high_amp = rumble_scaled(high_amp);
     if ((session & 0xffff000000000000ull) == PHONE_SESSION_BASE) {   // 手机马达只有一个，合成两侧
         pthread_mutex_lock(&g_feedback_mu);
         if (side < 2 && session == (PHONE_SESSION_BASE | g_phone_epoch)) {
@@ -764,6 +784,30 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_rumble(uint64_t se
     } else if (!g_system_present && s2a_pad_has_controller() && atomic_load(&g_adapter_enabled) && session && session == atomic_load(&g_feedback_session) && atomic_load(&g_ble_ready))
         atomic_load(&g_ns2)->send_lease(side, low_amp, low_hz, high_amp, high_hz, 1000);
     pthread_mutex_unlock(&g_feedback_mu);
+}
+// 设置页改了开关或强度：立即生效。关掉时三路马上停，不等游戏下一次提交
+void s2a_rumble_apply_settings(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    static const float gains[5] = {0.35f, 0.7f, 1, 1.4f, 1.8f};
+    id on = [d objectForKey:@"S2ARumbleOn"], level = [d objectForKey:@"S2ARumbleLevel"];
+    int lv = level ? (int)[level integerValue] : 2; lv = lv < 0 ? 0 : lv > 4 ? 4 : lv;
+    float gain = (on && ![on boolValue]) ? 0 : gains[lv];
+    float old = atomic_exchange(&g_rumble_gain, gain);
+    if (gain == 0 && old != 0 && g_system_haptics_queue) {
+        dispatch_async(g_system_haptics_queue, ^{ system_stop_on_queue(); s2a_phone_rumble_stop(); });
+        if (atomic_load(&g_adapter_enabled) && atomic_load(&g_ble_ready)) atomic_load(&g_ns2)->stop_rumble();
+    }
+    LOG("游戏震动：%s，强度档 %d（倍率 %.2f）", gain > 0 ? "开" : "关", lv, gain);
+}
+// 菜单里切震动档位 / 打开游戏震动时试震一下（11-09 维护者：「点击强弱机器是没有反应的……切换的时候手机震一下让玩家有感知」）：
+//   走游戏震动同一条出口（s2a_pad_rumble_session 选手机马达或手柄，s2a_pad_set_rumble_pair 按当前档位倍率缩放），震 0.3 秒，几档之间摸得出差别。
+//   基准振幅 0.5：弱 0.18、较弱 0.35、标准 0.5、较强 0.7、强 0.9（倍率见 s2a_rumble_apply_settings），强档不被 1.0 截平
+void s2a_rumble_preview(void) {
+    if (atomic_load(&g_rumble_gain) <= 0) return;
+    uint64_t session = s2a_pad_rumble_session(); if (!session) { LOG("游戏震动：试震跳过（现在没有可震的设备）"); return; }
+    const s2a_pad_vibration v[2] = {{0.5f, 160, 0.5f, 320}, {0.5f, 160, 0.5f, 320}};
+    s2a_pad_set_rumble_pair(session, v);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ s2a_pad_stop_rumble(session); });
 }
 __attribute__((visibility("default"), used)) void s2a_pad_stop_rumble(uint64_t session) {
     if ((session & 0xffff000000000000ull) == PHONE_SESSION_BASE) {

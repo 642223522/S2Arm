@@ -619,14 +619,15 @@ class Context:
             env["S2A_REWRITER_BUNDLED"] = str(runtime / "bin/s2a-rewrite")
             # 发版 App 自带已编好的 Mac 宿主（含 C#，S2A_CS=1）：RomFS 解码器或运行时 GLSLC 时不再现编（issue #8 根因：Runtime-only dotnet 编不出）
             from embedded import artifact
-            try:
-                bundled_host = artifact(self, "S2ArmGame.app")
-                if bundled_host and (bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file():
-                    env["S2A_BUNDLED_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
-                    env["DM_GLSLC_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
-                    env["DM_OODLE_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")  # LZ5 / OodleLZ 解码器（uepak.oodle_host_find，缺省回退 build/s2arm-host 在发版包里不存在）
-            except Exception:
-                pass   # 源码树开发构建：没有内置宿主
+            # 只有源码树（没有 engine.json，artifact 回 None）才没有内置宿主、按需现编；发版清单里缺它或校验不符，artifact 抛「请重新安装完整应用」照常抛出
+            #   （审计 P2-196：原先 except Exception 一律吞掉、改去现场编，红字指向「编译 Mac 宿主失败」，玩家按缺 SDK 去排查）
+            bundled_host = artifact(self, "S2ArmGame.app")
+            if bundled_host:
+                if not ((bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file()):
+                    raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
+                env["S2A_BUNDLED_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
+                env["DM_GLSLC_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
+                env["DM_OODLE_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")  # LZ5 / OodleLZ 解码器（uepak.oodle_host_find，缺省回退 build/s2arm-host 在发版包里不存在）
         else:
             paths = [str(Path(os.sys.executable).parent), str(runtime / "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", env.get("PATH", "")]
         env["PATH"] = os.pathsep.join(dict.fromkeys(paths))

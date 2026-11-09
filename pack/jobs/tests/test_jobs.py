@@ -1842,5 +1842,40 @@ class WaitReadableTests(unittest.TestCase):
             self.assertTrue(msgs and all("在等系统的文件访问授权：读 base.nsp" in m for m in msgs), msgs)
 
 
+class WaitWritableTests(WaitReadableTests):
+    """开工前往出包工作目录试写（library.wait_writable，11-09 拷字体失败 + 手测推包挂 33 分钟：外接盘第一次写也弹授权框）：
+    写得到不打扰、不留探针；系统拒绝报 permission_denied 并说去哪打开；写卡住时界面上说在等什么"""
+    def test_writable_passes_silently_and_leaves_nothing(self):
+        import library
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "lib" / ".s2arm-work"
+            c, msgs = self.ctx(); library.wait_writable(c, w, poll=0.1)
+            self.assertEqual((msgs, list(w.iterdir())), ([], []))
+
+    def test_write_denied_says_where_to_allow(self):
+        import library
+        from errors import Failure
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "work"; w.mkdir(); w.chmod(0o500)
+            try:
+                c, _ = self.ctx()
+                with self.assertRaises(Failure) as e: library.wait_writable(c, w, poll=0.1)
+                self.assertEqual(e.exception.code, "permission_denied")
+                self.assertIn("可移除的宗卷", str(e.exception))
+            finally: w.chmod(0o700)
+
+    def test_blocked_write_tells_what_it_waits_for(self):
+        import library, time as _t
+        from pathlib import Path as P
+        from unittest.mock import patch
+        real = P.write_bytes
+        def slow(self, *a, **k):   # 写像被授权框挡住一样慢 0.35 秒，之后照常
+            _t.sleep(0.35); return real(self, *a, **k)
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "work"
+            c, msgs = self.ctx()
+            with patch.object(P, "write_bytes", slow): library.wait_writable(c, w, poll=0.1)
+            self.assertTrue(msgs and all("在等系统的文件访问授权：写 work" in m for m in msgs), msgs)
+
 if __name__ == "__main__":
     unittest.main()

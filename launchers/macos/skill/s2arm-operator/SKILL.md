@@ -53,7 +53,9 @@ s2armctl next --json    # 同上，给程序读：{step, who, do, why, game, tas
 | `human` | 只能玩家本人做：把 `do` 用大白话告诉玩家，等他说做完再 `next` |
 | `confirm` | 有破坏性：先说明要做什么、问玩家同意，同意了再执行 |
 
-一次完整的流程：环境 → 密钥 → 导入游戏 → 导出 → 装到 iPhone → 玩家打开游戏。每做完一步就再 `next`。库里不止一款时，`next` 按本体大小认主游戏，其余列在 `others`；要出别的那款就 `next <游戏号>`。
+默认目标是 iOS，流程依次是检查环境、导入密钥和游戏、导出、装到 iPhone、请玩家打开游戏。每做完一步就再运行 `next`。库里有多款游戏时，`next` 按本体大小选主游戏，其余列在 `others`。可以用 `next <游戏号>` 指定另一款。
+
+如果玩家要在这台 Mac 上玩，每次运行 `s2armctl next <游戏号> --target mac`（也可加 `--json`）。未准备的游戏会提示 `s2armctl build <游戏号> mac`，用 `s2armctl wait <游戏号> --op build` 等待。准备好后，按提示运行 `s2armctl launch <游戏号>`。Windows 只支持 `--target ios`。
 
 ## 各步命令
 

@@ -176,13 +176,23 @@ struct ExportView: View {
 
     /// 目标设备：连着手机就按它优化；没连提醒插上，也可以选机型（不挡出包）。
     private var deviceRow: some View {
-        let device = model.connectedDevices.first
+        let device = model.selectedDevice
         let name = (device?["model"] as? String) ?? (device?["name"] as? String) ?? ""
+        let many = model.connectedDevices.count > 1
         return HStack(spacing: 12) {
             Image(systemName: "iphone").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
-            Text(device == nil ? x("device.none") : x("device.connected").replacingOccurrences(of: "{0}", with: name))
+            Text(device == nil ? x("device.none") : many ? x("device.many") : x("device.connected").replacingOccurrences(of: "{0}", with: name))
                 .font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
+            // 连着两台以上（#272）：列出每台，选中的那台用于按机型优化和装到设备，记住到下次
+            if many {
+                Picker(x("device.choose"), selection: Binding(get: { device?["id"] as? String }, set: { model.chosenDevice = $0 })) {
+                    ForEach(Array(model.connectedDevices.enumerated()), id: \.offset) { _, d in
+                        Text(deviceLabel(d)).tag(d["id"] as? String)
+                    }
+                }
+                .labelsHidden().frame(width: 300).accessibilityIdentifier("export.device")
+            }
             if device == nil, !model.targetModels.isEmpty {
                 Picker(x("device.pick"), selection: $model.chosenModel) {
                     Text(x("device.default")).tag(String?.none)
@@ -197,6 +207,13 @@ struct ExportView: View {
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
         .padding(.top, 4)
         .task { while !Task.isCancelled { await model.refreshTargets(); try? await Task.sleep(nanoseconds: 5_000_000_000) } }
+    }
+
+    /// 「名字 · 机型 · iOS 版本 · 有线 / 同一网络」
+    private func deviceLabel(_ d: [String: Any]) -> String {
+        let os = (d["os"] as? Int).map { "iOS \($0)" } ?? ""
+        let link = d["wired"] as? Bool == true ? x("device.wired") : x("device.network")
+        return [d["name"] as? String ?? "", d["model"] as? String ?? "", os, link].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private func note(_ platform: ExportPlatform) -> String {

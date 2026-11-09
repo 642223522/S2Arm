@@ -897,6 +897,39 @@ def require_game(c, game):
             c.report_failure(error)
         raise errors[-1]
     wait_readable(c, [source_path(c, p) for p in selected_packages(game)])
+    wait_writable(c, c.work_root)
+
+
+def _wait_probe(c, what, probe, poll):
+    """后台线程跑 probe（读 / 写一下，系统的文件访问授权框由它触发）；每 poll 秒没回来就在界面上说在等什么、等了多久。返回 probe 抛的 OSError，没有返回 None"""
+    import threading
+    box = {}
+    def run():
+        try: probe()
+        except OSError as e: box["err"] = e
+    t = threading.Thread(target=run, daemon=True); t0 = time.monotonic(); t.start()
+    while not t.join(poll) and t.is_alive():
+        c.check()
+        c.emit(message=f"在等系统的文件访问授权：{what}（已等 {int(time.monotonic() - t0)} 秒）。"
+                       "请在系统弹出的「允许访问」对话框里点「允许」；看不到对话框就把它从别的窗口后面切出来")
+    return box.get("err")
+
+
+def wait_writable(c, path, poll=5.0):
+    """开工前往出包工作目录（缓存 / 产物根，跟着游戏库走）试写一次（11-09：外接盘第一次写同样会弹系统的「可移除的宗卷」授权框——
+    框没点，写就停在系统调用里不动（手测推包挂了 33 分钟）；框被拒，后面第一个写库盘的阶段才失败（玩家只见「拷字体失败」）。
+    建目录、写一个探针文件再删；等的时候界面说清在等什么；系统拒绝报 permission_denied 并说去哪里打开，其余错误交给 errors.explain 归类"""
+    def probe():
+        path.mkdir(parents=True, exist_ok=True)
+        f = path / f".s2a-write-probe.{os.getpid()}"
+        try: f.write_bytes(b"s2a")
+        finally: f.unlink(missing_ok=True)
+    e = _wait_probe(c, f"写 {path.name}", probe, poll)
+    if isinstance(e, PermissionError):
+        raise Failure(f"系统不让 S2Arm 往游戏库所在的磁盘写（{path}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"
+                      "（外接盘看「可移除的宗卷」）里打开 S2Arm，再点一次", code="permission_denied")
+    if e is not None:
+        raise e
 
 
 def wait_readable(c, paths, poll=5.0):
@@ -904,9 +937,7 @@ def wait_readable(c, paths, poll=5.0):
     框被别的窗口挡住，读就一直停在系统调用里——零 CPU、零磁盘，界面停在某一步不动；10-31 一位开发者冷出勇者斗恶龙 XI S 停了 15 分钟以上）。
     每个原件在后台线程试读开头 4 KB；每 poll 秒没读到就在界面上说「在等什么、等了多久」；系统拒绝（权限错误）直接报出去哪里打开。
     解包目录（format=dump/extract/loose）：dump 读 base/exefs/main，其余读 exefs/main"""
-    import threading
     for path in paths:
-        box = {}
         # 判断是否解包目录：目录且有 exefs/main 或 base/exefs/main
         probe_path = path
         if path.is_dir():
@@ -915,20 +946,12 @@ def wait_readable(c, paths, poll=5.0):
             elif (path / "exefs" / "main").is_file():
                 probe_path = path / "exefs" / "main"
         def probe(path=probe_path):
-            try:
-                if os.path.isdir(path):
-                    os.listdir(path)   # 普通文件夹（导入时玩家选的）：列一下，系统的文件访问授权框由这一步触发
-                else:
-                    with open(path, "rb") as f: f.read(4096)
-                box["ok"] = True
-            except OSError as e: box["err"] = e
-        t = threading.Thread(target=probe, daemon=True); t0 = time.monotonic(); t.start()
-        while not t.join(poll) and t.is_alive():
-            c.check()
-            c.emit(message=f"在等系统的文件访问授权：读 {path.name}（已等 {int(time.monotonic() - t0)} 秒）。"
-                           "请在系统弹出的「允许访问」对话框里点「允许」；看不到对话框就把它从别的窗口后面切出来")
-        if "err" in box:
-            e = box["err"]
+            if os.path.isdir(path):
+                os.listdir(path)   # 普通文件夹（导入时玩家选的）：列一下，系统的文件访问授权框由这一步触发
+            else:
+                with open(path, "rb") as f: f.read(4096)
+        e = _wait_probe(c, f"读 {path.name}", probe, poll)
+        if e is not None:
             if isinstance(e, PermissionError):
                 raise Failure(f"系统不让 S2Arm 读 {path.name}（{path.parent}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"
                               "或「完全磁盘访问权限」里打开 S2Arm，再点一次", code="input_permission")
