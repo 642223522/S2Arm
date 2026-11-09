@@ -393,6 +393,7 @@ s2a_gate_step "$PY" "$android_dir/tests/native_rewriter_packaging_test.py" --for
 s2a_gate_step "$PY" "$android_dir/contracts/validate.py"
 s2a_gate_step "$PY" "$android_dir/tests/contract_validation_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/device_retirement_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/copy_3d_depth_test.py"
 # A3：记录快照的对象身份复核 + 有界退休墓碑 + 附件解析类型化失败（宿主 mock，--source-ref 红）。
 s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py" --withdraw
