@@ -132,7 +132,7 @@ class Sizes(JobCase):
         shared = {r["id"]: r["bytes"] for r in out["shared"]}
         self.assertEqual(list(shared), ["hosts", "ipa", "toolCache", "temp", "logs"])
         self.assert_mib(shared["hosts"], 3); self.assert_mib(shared["ipa"], 3); self.assert_mib(shared["temp"], 2)
-        self.assert_mib(shared["toolCache"], 1)   # 工作目录就是 <库>/tool-cache 时只算一遍（天眼实跑曾报成两倍）
+        self.assert_mib(shared["toolCache"], 1)   # 工作目录就是 <库>/tool-cache 时只算一遍（Windows 实跑曾报成两倍）
         self.assertGreaterEqual(shared["logs"], 1 * MIB)                # 任务记录（jobs/）也在里面，只下限
         rows = {r["path"]: r for r in out["locations"]}
         self.assertEqual(set(rows), {str(L), str(other)})
