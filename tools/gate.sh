@@ -28,6 +28,10 @@
 #   本机那份与 gate-host 那份（GATE_PLAN）各用各机器上的缓存。GATE_TEST_CACHE=0 关；算键失败 / 读不到一律当没命中照跑（宁可多跑）
 set -u
 R=$(git rev-parse --show-toplevel) || exit 1; cd "$R"
+# 停门禁只停本树（11-09：一条线 pkill -f "tools/gate.sh" 停自己的预跑，连别的会话的门禁和列车本机步骤一起杀了）：
+#   本份门禁的 pid 写 <工作树>/build/gate.pid，退出删掉；要停用 tools/gate_stop.sh <工作树>（核对 pid 确是这棵树的门禁、只收它的后代）。
+#   不许按进程名 pkill / killall 门禁（规矩：关进程按完整路径，别按进程名）
+GPF=$R/build/gate.pid; mkdir -p "$R/build" && echo $$ > "$GPF"
 # 统一工具链（tools/toolchain.env）：各步编译 / 单测都用这一套。只有带这份文件的仓库才引入（列车 / 门禁单测的假仓库只拷了 gate.sh，没有工具链，也不编东西）
 # 多宿主（10-30 维护者 / 维护者：自检要证明的是「这台宿主能证明的那部分」，剩下的交列车在 gate-host 上证）：
 #   没有苹果工具链的宿主（Linux、WSL 等非 macOS）照样跑门禁——平台无关的步和本宿主平台的钩子（android、launchers/linux …）本机跑、照判红绿；
@@ -57,7 +61,8 @@ if [ -n "$CHG" ]; then
   [ "$(gate_tier "$(tr ' ' '\n' < <(printf '%s\n' "$CHG"))")" != doc ] || TIER=doc
 fi
 # 远端那一份（GATE_PLAN 非空）把每步结果写进仓库里的 GATE_OUT（build/ 下、被忽略），本机经 维护方工具 --pull 拉回；本机那份用临时目录
-if [ -n "$PLANM" ]; then L=$R/${GATE_OUT:?远端计划要给 GATE_OUT}; rm -rf "$R/build/gate_out"; mkdir -p "$L"; else L=$(mktemp -d); trap 'rm -rf "$L"' EXIT; fi
+if [ -n "$PLANM" ]; then L=$R/${GATE_OUT:?远端计划要给 GATE_OUT}; rm -rf "$R/build/gate_out"; mkdir -p "$L"; trap '[ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT
+else L=$(mktemp -d); trap 'rm -rf "$L"; [ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT; fi
 # C / ObjC / C++ 按内容编译缓存（tools/cc_cache.sh，10-30 列车线）：本机那份与 gate-host 那份各自打开，每次编译的命中情况记 $L/ccache.log（gate-host 那份随结果目录拉回）
 [ -f tools/cc_cache.sh ] && { source tools/cc_cache.sh; S2A_CCACHE_LOG=$L/ccache.log s2a_ccache_on "$R"; }
 # doc 仍须扫描；只有非 doc 档需要统一 Apple 编译工具链（#665）。
