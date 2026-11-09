@@ -5,7 +5,7 @@
 #   ② 有 git 进程在跑：一个都不删，报「本次不清」
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 TR=${S2A_PRIVATE_TOOLS:+$S2A_PRIVATE_TOOLS/train.sh}; TR=${TR:-$H/tools/train.sh}
-if [ ! -f "$TR" ]; then echo "train_gitlocks 单测跳过：公开检出没有列车脚本"; exit 75; fi
+if [ ! -f "$TR" ]; then echo "train_gitlocks 单测跳过：公开检出没有列车脚本（维护方设施，设 S2A_PRIVATE_TOOLS 才测；同 docs_consistency 口径）"; exit 0; fi
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mk() { rm -rf $T/r; git init -q $T/r; mkdir -p $T/r/.git/refs/remotes/origin $T/r/.git/worktrees/w
   : > $T/r/.git/config.lock; : > $T/r/.git/refs/remotes/origin/x.lock; : > $T/r/.git/worktrees/w/index.lock

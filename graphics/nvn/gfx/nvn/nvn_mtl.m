@@ -10153,7 +10153,7 @@ static void pso_predict_rest_(void) {
     uint32_t cf[8]; memcpy(cf, g_pass.cfmt, sizeof cf); uint32_t df = g_pass.dfmt, sf = g_pass.sfmt, samples = g_pass.samples, dfull = df, sfull = sf; int kicked0 = (int)g_pp_kicked, draws = 0;
     fz_cursor cur = fz_cursor_from_exec();
     // Collect them all first, then dispatch: keys for "attachments attached as-is" go first (most likely to be used), the other attach modes after -- background concurrency is limited, and what is dispatched first is compiled first
-    enum { QN = 160 }; static struct { pso_key k; void *vs, *fs; } qa[QN], qb[QN]; int na = 0, nb = 0;
+    enum { QN = 160 }; static struct { pso_key k; void *vs, *fs; } qa[QN]; int na = 0;
     for (int guard = 0; guard < 200000 && na < QN; guard++) {
         const uint8_t *q; op_hdr hq; const void *aq;
         if (!fz_next(&cur, &q, &hq, &aq)) break;
@@ -10179,10 +10179,9 @@ static void pso_predict_rest_(void) {
                 if (v == 2 && !sfull) continue; if (v == 3 && (!dfull || !sfull)) continue;
                 pso_key k; pso_key_fill(&k, vs, fs, cf, dv[v], sv[v], samples, 0);
                 if (hm_get_id(&g_pso, &k)) continue;
-                int dup = 0; for (int i = 0; i < (v ? nb : na) && !dup; i++) dup = !memcmp(&(v ? qb : qa)[i].k, &k, sizeof k);
+                int dup = 0; for (int i = 0; i < na && !dup; i++) dup = !memcmp(&qa[i].k, &k, sizeof k);
                 if (dup) continue;
-                if (!v && na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++; }
-                else if (v && nb < QN) { qb[nb].k = k; qb[nb].vs = (__bridge void *)vs; qb[nb].fs = (__bridge void *)fs; nb++; }
+                if (na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++; }   // 只预测原样附件（v 恒 0）；原先另填一份不派发的 qb[160]，审计 P2-160 删
             }
             continue;
         }
@@ -10192,7 +10191,6 @@ static void pso_predict_rest_(void) {
     (void)df; (void)sf;
     int busy = 0; pthread_mutex_lock(&g_pp_mu); for (int i = 0; i < PSO_PEND_MAX; i++) busy += g_pp[i].used && !g_pp[i].done; pthread_mutex_unlock(&g_pp_mu);
     for (int i = 0; i < na && busy < PSO_AHEAD; i++) { uint64_t k0 = g_pp_kicked; pso_pend_kick(&qa[i].k, (__bridge NvShader *)qa[i].vs, (__bridge NvShader *)qa[i].fs); busy += g_pp_kicked != k0; }
-    (void)nb; (void)qb;
     memcpy(&S, &Ssave, sizeof S); R = Rsave; args_dirty_all(); g_pso_dirty = pso_dirty; g_dss_dirty = dss_dirty; prog_resolve();
     static uint64_t logged; if (g_pp_kicked > (uint64_t)kicked0 && (++logged <= 20 || !(logged & (logged - 1))))   // the first 20, then every power of two
         MLOG("parallel precompile #%llu: %d draws left in this submission, %d pipelines handed to the background (so far kicked %llu, taken by their draw %llu, dropped untaken %llu); "

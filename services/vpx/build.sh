@@ -60,5 +60,5 @@ if [ ! -s "$L" ]; then
   [[ $RID = osx-* ]] && xcrun clang -arch "$ARCH" $MIN -dynamiclib -o "$OUT/s2a-$K.tmp/libs2a_vpx.dylib" "$OUT/s2a-$K.tmp/s2a_vp8.o" "$OUT/s2a-$K.tmp/s2a_vp9.o" "$OUT/libvpx.a"
   rm -rf "$OUT/s2a-$K"; mv "$OUT/s2a-$K.tmp" "$OUT/s2a-$K"
 fi
-touch "$OUT"   # 取用即更新目录时间：tools/gc.sh 每平台留 2 份、30 分钟内动过的不删，在用的这份不被别的键挤掉
+touch "$OUT"   # 取用即更新目录时间：维护方 gc.sh（$S2A_PRIVATE_TOOLS，公开仓没有）每平台留 2 份、30 分钟内动过的不删；公开检出没有清理方，旧键目录要手动删
 echo "$L"

@@ -9,7 +9,7 @@ set -u
 H=$(cd "$(dirname "$0")/.." && pwd); bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 TR=${S2A_PRIVATE_TOOLS:+$S2A_PRIVATE_TOOLS/train.sh}; TR=${TR:-$H/tools/train.sh}
-if [ ! -f "$TR" ]; then echo "train_log_utf8 单测跳过：公开检出没有列车脚本"; exit 75; fi
+if [ ! -f "$TR" ]; then echo "train_log_utf8 单测跳过：公开检出没有列车脚本（维护方设施，设 S2A_PRIVATE_TOOLS 才测；同 docs_consistency 口径）"; exit 0; fi
 eval "$(/usr/bin/grep -a '^u8() ' "$TR")"
 in=$(printf '门禁 绿 全量清\xe5\x8d；ok')
 o=$(u8 "$in")

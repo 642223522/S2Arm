@@ -22,7 +22,7 @@ slot_run() { local n=$1 c=$2; shift 3; if [ -n "${S2A_PRIVATE_TOOLS:-}" ]; then 
 # 起局按产品条件（包内预编着色器照开）；回放时 galplay 用 S2A_SHADER_PACK=<产物根>/shaders 开同一份离线库（不开则包内程序建不出、绘制不执行，量出来是假的），回放里「离线库未命中」须为 0。
 # 档位（10-20 维护者：缺省主机 1080p，掌机 720p 留作低性能手机可选）：S2A_LOOP_MODE=docked|handheld（必给）。游戏按档位分支写两组尺寸，
 #   每档位各一张表，装载器按 S2A_DOCKED 只读当前档位那张（10-21 起不再合并两档：塞尔达主机档的 main:0xb4e7d8 在掌机档也执行，并集把没验过的点带进掌机档）。
-# --write：全过时把这一档位验过的点集写到本树 ${S2A_WIDEN_DIR:-gfx/widen/tables}/<款>_<main 构建号>/widen_enable.<档位>.tsv（提交进仓库、走列车；候选取产物根 widen_sites.tsv）；
+# --write：全过时把这一档位验过的点集写到本树 ${S2A_WIDEN_DIR:-graphics/widen/tables}/<款>_<main 构建号>/widen_enable.<档位>.tsv（提交进仓库、走列车；候选取产物根 widen_sites.tsv）；
 #   来源.txt 追加一行读数（带档位）；提交合入后 pack/refresh.sh 改写阶段按构建号从仓库拷进产物根（旧表看 git 历史，不再留 .prev 副本）。
 # 单局时限：S2A_LOOP_CAP 秒（缺省 295；10-24 维护者 只给 xc3 放到 600：S2A_LOOP_CAP=595 S2A_LOOP_SEC=560），局长 S2A_LOOP_SEC（缺省 260）。
 # 起局缺省不刷产物根（直接用共享现行）；S2A_LOOP_REFRESH=1 才刷，刷时分支树刷不了共享根，S2A_RUN_TREE=<干净 origin/main 树> 指定起局用的树（缺省本树）。
@@ -54,7 +54,7 @@ $PY "$T/tools/clonedir.py" "$src" "$sn" || { echo "🔴 快照失败"; exit 75; 
 BID=$(xxd -s 0x40 -l 16 -p "$sn/exefs/main")
 SA=$(bash "$H/save_pick.sh" "$G" "$BID" "$sn")   # 同构建号 > 同构建号带后缀 > 同款别的构建号（存档是只读种子）
 # 图形模式（11-01 满屏线：闭环原先写死通用；通用冻结后马车8 卡标题、怒之铁拳4 探测局崩、胡闹宇航员进不了局，主力直连从没被验）：
-#   与 tools/entry_check.sh 同口径：根里没有本链号直连库（NVN b-<链>/lib.idx，或 Vulkan vk/ / OpenGL gl/）就不起局、未判退出（原先退回通用局；11-07 拆通用模式）
+#   与 维护方 entry_check.sh 同口径：根里没有本链号直连库（NVN b-<链>/lib.idx，或 Vulkan vk/ / OpenGL gl/）就不起局、未判退出（原先退回通用局；11-07 拆通用模式）
 CH=$(sed -n 's/^#define DMSH_CHAIN "\([0-9a-f]*\)".*/\1/p' "$T/graphics/nvn/gfx/nvn/dmsh_chain.h" 2> /dev/null)
 GFX=direct
 { { [ -n "$CH" ] && [ -f "$sn/shaders/direct/b-$CH/lib.idx" ]; } || [ -d "$sn/shaders/direct/vk" ] || [ -d "$sn/shaders/direct/gl" ]; } || { echo "🔴 $G 根里没有本链号直连库（${CH:-链号读不到}）：不起局"; exit 75; }
