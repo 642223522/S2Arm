@@ -25,6 +25,11 @@ extern "C" {
 #define S2A_DPROMPT_SWITCH_GAME_TITLE_EN "Switch games"
 #define S2A_DPROMPT_SWITCH_GAME_BODY     "换一款游戏需要重新打开 S2Arm：先在游戏里存档，然后从屏幕底部上滑，把 S2Arm 划掉，再点开就回到游戏库。"
 #define S2A_DPROMPT_SWITCH_GAME_BODY_EN  "To switch games, reopen S2Arm: save in the game first, then swipe up from the bottom of the screen, swipe S2Arm away, and tap it again to return to the game library."
+// 实体手柄退出游戏（#276，macos/front_mac.m；按住 Home 2 秒或「+」「-」同按 2 秒弹出，按 A 退出、按 B 回到游戏）
+#define S2A_DPROMPT_HOME_QUIT_TITLE   "退出游戏？"
+#define S2A_DPROMPT_HOME_QUIT_BODY    "按 A 退出，按 B 回到游戏。退出前会等游戏把存档写完；没在游戏里存的进度会丢。"
+#define S2A_DPROMPT_HOME_QUIT_ACCEPT  "退出"
+#define S2A_DPROMPT_HOME_QUIT_DECLINE "回到游戏"
 // 存档不能原子提交（审计 P2-13 界面半边、P2-45 iPhone 半边；Mac 与 iOS 共用这一个判定）：服务层导出 S2A_SaveAtomicState（services SaveTransferExports.cs，
 //   可写存档退回逐字节复制的原因位：1 没登记原语 / 2 卷不能克隆或原子交换 / 4 工作目录准备失败）。前端主线程每秒调一次；
 //   游戏会话跑起来之前不问服务层（iOS 的提示定时器早于宿主线程起）；第一次读到非 0 返回原因位，只返回一次，之后恒 0。没链服务层恒 0

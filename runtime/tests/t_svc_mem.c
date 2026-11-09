@@ -295,6 +295,25 @@ int main(void) {
         nz = 0; for (uint64_t i = 0; i < 0x1000; i++) nz += ap[i] != 0;
         CHECK(!rp[0] && !rp[1] && !rp[2] && !rp[3] && nz == 0, "物理映射 16 KB → 设只读 → 解除首个 4 KB → 再映射：四次应成功、再映射的 4 KB 非零字节应 0，实 %#llx/%#llx/%#llx/%#llx、%llu",
               (unsigned long long)rp[0], (unsigned long long)rp[1], (unsigned long long)rp[2], (unsigned long long)rp[3], (unsigned long long)nz);
+        // 11-09 玩家 iPhone 17 Pro Max（01001BA027DD8000）：游戏 DT_INIT 后 SetMemoryPermission 把 main 的 RELRO 改只读，nn::ro 装 NRO 时装载器补绑导入槽直接写 → SIGBUS。
+        //   期望（手写）：堆里一个宿主页写好桩值 → 游戏设只读（svc 0x02 读）→ 子进程直接写被信号杀（修前现场）→ s2a_loader_store64 回 0、槽 = 新值 →
+        //   子进程直接写仍被杀（权限恢复成只读）、查询仍报游戏设的「读」；可执行页（模拟签名代码页）回 -1、内容不变
+        {
+            int s2a_loader_store64(uint64_t *where, uint64_t v);
+            uint64_t *slot = (uint64_t *)(hz + 0x8000 + 0x8d0); *slot = 0x1111;
+            memset(r, 0, sizeof r); r[0] = (uint64_t)(hz + 0x8000); r[1] = 0x4000; r[2] = 1; svc_mem(0x02, r, 0); uint64_t prc = r[0];
+            #define DIES_STORE(p) ({ fflush(stdout); pid_t c_ = fork(); if (!c_) { *(volatile uint64_t *)(p) = 0x3333; _exit(0); } int st_ = 0; waitpid(c_, &st_, 0); WIFSIGNALED(st_); })
+            int d0 = DIES_STORE(slot), w = s2a_loader_store64(slot, 0x2222); uint64_t got = *slot; int d1 = DIES_STORE(slot);
+            s2a_meminfo mi; s2a_mem_query((uint64_t)slot, &mi);
+            CHECK(prc == 0 && d0 && w == 0 && got == 0x2222 && d1 && mi.perm == 1,
+                  "装载器补绑只读页：设只读 %#llx、修前直接写被杀 %d、装载器写回 %d、槽 %#llx（应 0x2222）、写后直接写仍被杀 %d、游戏看到的权限 %u（应 1）",
+                  (unsigned long long)prc, d0, w, (unsigned long long)got, d1, mi.perm);
+            uint64_t *xp = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); xp[0] = 0x5555; mprotect(xp, 0x4000, PROT_READ | PROT_EXEC);
+            CHECK(s2a_loader_store64(xp, 0x6666) == -1 && xp[0] == 0x5555, "装载器不写可执行页（签名代码页同类）：回 -1、内容不变");
+            munmap(xp, 0x4000);
+            memset(r, 0, sizeof r); r[0] = (uint64_t)(hz + 0x8000); r[1] = 0x4000; r[2] = 3; svc_mem(0x02, r, 0);
+            #undef DIES_STORE
+        }
         #undef PHYS
         #undef HEAPSZ
     }

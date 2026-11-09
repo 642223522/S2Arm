@@ -155,8 +155,8 @@ public final class S2ArmEngineProvider: EngineProvider {
     public func signingProject() async throws -> String { try await installer.signingProject() }
     public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
 
-    public func install(gameId: String, teamId: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
-        try await installer.install(gameId: gameId, teamId: teamId, events: events)
+    public func install(gameId: String, teamId: String? = nil, device: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
+        try await installer.install(gameId: gameId, teamId: teamId, device: device, events: events)
     }
 
     public func removeFromPhone(gameId: String, events: EventSink = .discard) async throws -> RemoveResult {

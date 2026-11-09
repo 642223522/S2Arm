@@ -8,6 +8,31 @@ from core import Failure
 import tests.test_jobs as tj   # 只借 JobsTests 的夹具；不 from-import 类名，免得 unittest 把它整组再跑一遍
 
 
+class ContainerVariantTest(unittest.TestCase):
+    """S2A_CONTAINER_SUFFIX / S2A_CONTAINER_NAME：开发用的并存安装，不设时与玩家一致"""
+    def test_suffix_changes_bundle_id_only_when_set(self):
+        with um.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("S2A_CONTAINER_SUFFIX", None)
+            self.assertEqual(install.container_bundle_id("TEAM1"), "io.s2arm.games.team1")
+        with um.patch.dict(os.environ, {"S2A_CONTAINER_SUFFIX": "Feat/iCloud_Save Sync"}):
+            self.assertEqual(install.container_bundle_id("TEAM1"), "io.s2arm.games.team1.featicloudsavesync")   # 只留小写字母 / 数字 / 连字符
+
+    def test_display_name_rewrites_plist_strings_only_when_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = Path(d) / "S2Arm.app"; (app / "zh-Hans.lproj").mkdir(parents=True)
+            strings = app / "zh-Hans.lproj/InfoPlist.strings"
+            strings.write_text('"CFBundleDisplayName" = "S2Arm";\n"Other" = "x";\n', encoding="utf-8")
+            with um.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("S2A_CONTAINER_NAME", None)
+                self.assertIsNone(install.container_display_name(app))
+                self.assertIn('"S2Arm"', strings.read_text(encoding="utf-8"))
+            with um.patch.dict(os.environ, {"S2A_CONTAINER_NAME": "S2Arm·iCloud"}):
+                self.assertEqual(install.container_display_name(app), "S2Arm·iCloud")
+            text = strings.read_text(encoding="utf-8")
+            self.assertIn('"CFBundleDisplayName" = "S2Arm·iCloud";', text)
+            self.assertIn('"Other" = "x";', text)
+
+
 class CableFirstTest(unittest.TestCase):
     """线连的优先：插线的一台 + 同网配对的另一台 = 一台（手算：只留 wired=True 的那行）；没有线连的就看网络的"""
     def test_cable_first(self):

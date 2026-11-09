@@ -107,7 +107,7 @@ import S2ArmAppleAdapter
             guard model.installAllowed(g.id) else {
                 return .bad("还不能装：先 install-check \(g.id)；这款的 iPhone 版没做好时要先出包")
             }
-            model.install(g, teamId: str("teamId")); return .ok()
+            model.install(g, teamId: str("teamId"), device: str("device")); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/uninstall"):

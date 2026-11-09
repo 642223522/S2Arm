@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "ios"))
@@ -245,12 +246,14 @@ class ContainerTest(unittest.TestCase):
         if not icon.exists(): Image.new("RGB", (64, 64), (1, 2, 3)).save(icon)
         cmd = [sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell", str(shell), "--out", str(out), "--bundle-id", "dev.example.games", "--icon", str(icon)]
         cmd += [x for r in roots for x in ("--game", str(r))] + (["--base", str(base)] if base else [])
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              env={**os.environ, "S2A_BANNER_FETCH": "0"})   # 单测零联网：抓图关掉，A 的 banner 走产物根自带拷贝路径
 
     def setUp(self):
         self.td = tempfile.TemporaryDirectory(); self.d = Path(self.td.name)
         self.shell = ShipExtTest.shell(None, self.d)
         self.a = self.game(self.d, "a", 3, 0, 0x0100000000010000, "甲游戏")
+        (self.a / "banner.jpg").write_bytes(b"JPGbanner-a")   # A 的产物根自带横版图：组装走拷贝路径，目录期望里的 banner 与联网无关
         self.b = self.game(self.d, "b", 3, 0x1000, 0x0100000000020000, "乙游戏", b"")
 
     def tearDown(self): self.td.cleanup()
@@ -270,7 +273,7 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual((app / "Games" / self.B / "icon.jpg").read_bytes(), b"JPGb")
         cat = json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))
         self.assertEqual(cat, {"schema": 1, "shell_id": shell_manifest.current_id(), "games": [
-            {"title_id": self.A, "name": "甲游戏", "display_version": "1.2.0", "icon": f"Games/{self.A}/icon.jpg", "state": "playable"},
+            {"title_id": self.A, "name": "甲游戏", "display_version": "1.2.0", "icon": f"Games/{self.A}/icon.jpg", "banner": f"Games/{self.A}/banner.jpg", "state": "playable"},
             {"title_id": self.B, "name": "乙游戏", "icon": f"Games/{self.B}/icon.jpg", "state": "playable"}]})
         self.assertEqual((app / "Games" / self.A / "launch.ctx").read_text(encoding="utf-8"),
                          f"version\t1\ngame_id\t{self.A}\nimages\t@bundle/Frameworks/S2AImages-{self.A}.dylib\nmodule_dir\t@bundle/Games/{self.A}\n"
@@ -314,6 +317,49 @@ class ContainerTest(unittest.TestCase):
         (base / "s2a_catalogue.json").write_text(json.dumps(cat))
         r = self.run_c(self.d, self.shell, self.d / "o7/S2Arm.app", [a2], base=base)
         self.assertEqual(r.returncode, 1); self.assertIn("要按本壳重出", r.stderr); self.assertIn(self.B, r.stderr)   # 已有款 B 是别的壳组装的：不混装
+
+
+class BannerPlaceTest(unittest.TestCase):
+    """_place_banner 的联网分支打桩测（进程内直调 ship_ext，mock 掉 banner_fetch.fetch_banner，零真联网；#101 评审 1 项）。
+    子进程组装测（ContainerTest）已用 S2A_BANNER_FETCH=0 + 产物根自带图保证离线确定性，这里补抓图分支本身。"""
+    GID = "0100000000010000"
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); self.d = Path(self.td.name)
+        self.gd = self.d / "Games" / self.GID; self.gd.mkdir(parents=True)
+        self.root = self.d / "root"; self.root.mkdir()   # 无 banner.jpg 的产物根 → 逼出联网分支
+
+    def tearDown(self): self.td.cleanup()
+
+    def test_fetch_success_sets_entry(self):
+        from pack import ship_ext
+        def fake(tid, dest):
+            Path(dest).write_bytes(b"JPGfake"); return True, "1920x1080 jpeg"
+        with mock.patch.dict(os.environ):
+            os.environ.pop("S2A_BANNER_FETCH", None)
+            with mock.patch("pack.banner_fetch.fetch_banner", fake):
+                entry = {}
+                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        self.assertEqual(entry.get("banner"), f"Games/{self.GID}/banner.jpg")
+        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"JPGfake")
+
+    def test_fetch_failure_keeps_icon_only(self):
+        from pack import ship_ext
+        with mock.patch.dict(os.environ):
+            os.environ.pop("S2A_BANNER_FETCH", None)
+            with mock.patch("pack.banner_fetch.fetch_banner", return_value=(False, "连不上")):
+                entry = {}
+                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        self.assertNotIn("banner", entry)
+        self.assertFalse((self.gd / "banner.jpg").exists())
+
+    def test_disabled_env_never_calls_fetch(self):
+        from pack import ship_ext
+        with mock.patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
+            with mock.patch("pack.banner_fetch.fetch_banner", side_effect=AssertionError("关着时不许调抓图")):
+                entry = {}
+                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        self.assertNotIn("banner", entry)
 
 
 if __name__ == "__main__":

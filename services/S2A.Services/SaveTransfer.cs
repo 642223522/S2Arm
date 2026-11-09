@@ -142,13 +142,14 @@ public static partial class SaveTransfer
         dirs.Sort(StringComparer.Ordinal);
         return new(files, dirs);
     }
+    // 只哈希进备份的存档三处（审计 P2-175：原先整个数据根逐文件 SHA-256，着色器缓存一变导出就按「存档变化」失败，大缓存还多两遍哈希）
     private static string Fingerprint(string root)
     {
         var scan = Scan(root);
         var value = new JsonArray(Directory.Exists(root));
-        value.Add((JsonNode)new JsonArray(scan.Directories.Select(d => (JsonNode)JsonValue.Create(d)).ToArray()));
+        value.Add((JsonNode)new JsonArray(scan.Directories.Where(d => Allowed(d, directory: true)).Select(d => (JsonNode)JsonValue.Create(d)).ToArray()));
         var files = new JsonArray();
-        foreach (var file in scan.Files) files.Add((JsonNode)new JsonArray(file.Key, file.Value, HashFile(Path.Combine(root, file.Key))));
+        foreach (var file in scan.Files.Where(f => Allowed(f.Key))) files.Add((JsonNode)new JsonArray(file.Key, file.Value, HashFile(Path.Combine(root, file.Key))));
         value.Add((JsonNode)files);
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToJsonString())));
     }

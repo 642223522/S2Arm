@@ -88,9 +88,11 @@ public final class InstallService {
     }
 
     /// 装。
-    public func install(gameId: String, teamId: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
+    /// device：要装的那台（UDID / 设备名）；不给时作业按「有线优先、只有一台」自己挑（pack/jobs/install.py _pick_device）
+    public func install(gameId: String, teamId: String? = nil, device: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
         if let teamId, !teamId.isEmpty { extra["teamId"] = teamId }
+        if let device, !device.isEmpty { extra["device"] = device }
         let r = try await client.perform("install", extra: extra, events: events).result
         return InstallResult(device: r["device"] as? String ?? "", packFiles: (r["packFiles"] as? NSNumber)?.intValue,
                              outputPath: r["outputPath"] as? String)
