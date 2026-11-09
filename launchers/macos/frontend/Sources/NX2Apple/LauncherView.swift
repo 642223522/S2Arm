@@ -87,7 +87,7 @@ struct LauncherView: View {
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
-            GameDisplaySheet(model: model, gameID: target.id).environmentObject(loc)
+            LaunchSettingsSheet(model: model, gameID: target.id, openInput: { inputFor = target.id }).environmentObject(loc)
         }
         .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
             SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)

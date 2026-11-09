@@ -39,10 +39,10 @@ def run(breaks):
         return r, calls
 
 r, calls = run(True)
-check(r.returncode == 0 and calls == 20 and 'mac 0 reused, 12 compiled, 8 retried' in r.stdout and r.stdout.count('不再带预编头') == 1,
+check(r.returncode == 0 and calls == 20 and 'mac 0 reused, 12 compiled, 0 failed, 8 retried' in r.stdout and r.stdout.count('不再带预编头') == 1,
       f'① 预编头整体用不了：编译调用 20 次、12 compiled / 8 retried、熔断提示一次（实得 rc {r.returncode}、{calls} 次：{r.stdout.strip()[-200:]}）')
 r, calls = run(False)
-check(r.returncode == 0 and calls == 12 and 'mac 0 reused, 12 compiled;' in r.stdout and '不再带预编头' not in r.stdout,
+check(r.returncode == 0 and calls == 12 and 'mac 0 reused, 12 compiled, 0 failed;' in r.stdout and '不再带预编头' not in r.stdout,
       f'② 预编头可用：编译调用 12 次、0 retried、不熔断（实得 rc {r.returncode}、{calls} 次：{r.stdout.strip()[-200:]}）')
 print(f't_pch_breaker：{"全符" if not fails else f"{len(fails)} 例不符"}')
 sys.exit(1 if fails else 0)
