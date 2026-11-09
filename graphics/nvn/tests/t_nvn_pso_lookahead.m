@@ -29,6 +29,7 @@ static NvShader *shader(id<MTLLibrary> lib, NSString *fn, const char *key, int s
 
 int main(void) {
     @autoreleasepool {
+        setenv("DM_NVN_FIRST_SKIP", "0", 1);   // 测的是等管线这条路径，不走首遇跳过
         char user[] = "/tmp/t_pso_lookahead_XXXXXX"; int fd = mkstemp(user); REQUIRE(fd >= 0); close(fd); setenv("DM_PSO_USER", user, 1);
         char map[] = "/tmp/t_pso_lookahead_map_XXXXXX"; fd = mkstemp(map); REQUIRE(fd >= 0); close(fd); setenv("DM_NVN_SHMAP", map, 1);
         setenv("DM_NVN_PSO_FRAME_MS", "0", 1);   // 不让每帧等待预算掺进来：只看先后
