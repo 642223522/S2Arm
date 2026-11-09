@@ -61,6 +61,52 @@ class EngineHealTests(JobCase):
         c2 = self.installed()
         self.assertEqual((c2.engine / ".installed.json").stat().st_ino, stamp)   # 副本没坏：不重解
 
+    def test_git_use_in_installed_copy_is_not_damage(self):
+        """出包流水线在已装副本里跑 git（commit 会改 .git/index、COMMIT_EDITMSG 等，它们也在清单里）：复核不能把它当成被改过、不重解"""
+        c = self.installed()
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        (c.engine / "pack/jobs/stage.txt").write_text("stage\n")
+        for args in (["add", "pack/jobs/stage.txt"], ["commit", "-qm", "a stage key commit with a long message"]):
+            subprocess.run(["git", "-C", str(c.engine), *args], env=env, check=True, stdout=subprocess.DEVNULL)
+        changed = [k for k, v in json.loads((c.engine / "engine.json").read_text())["files"].items()
+                   if k.startswith(".git/") and (not (c.engine / k).is_file() or (c.engine / k).stat().st_size != v[0])]
+        self.assertTrue(changed, "夹具要真的改到清单里的 .git 文件")   # 负对照的前提：确实有 .git 清单项变了
+        stamp = (c.engine / ".installed.json").stat().st_ino
+        c2 = self.installed()
+        self.assertEqual((c2.engine / ".installed.json").stat().st_ino, stamp)   # 没重解
+        self.assertTrue((c2.engine / "pack/jobs/stage.txt").is_file())
+
+    def test_concurrent_jobs_install_same_copy_without_moving_each_other(self):
+        """启动时几个作业同时初始化同一份副本（preflight + setup + catalog）：都成功、只留一份、没有作业把别人的挪走；随后同一份副本连用两次也不重解"""
+        import concurrent.futures, sys
+        script = (
+            "import sys, json; sys.path.insert(0, sys.argv[1]); from core import Context; import embedded\n"
+            "c = Context(json.loads(sys.argv[2])); embedded.install(c); embedded.artifact(c, 'S2ArmGame.app'); print('OK', c.engine)\n")
+        def job(n):
+            self.sequence += 1
+            request = dict(self.request, taskId=f"race-{n}", operation="preflight", engineBundle=str(self.bundle))
+            return subprocess.run([sys.executable, "-B", "-c", script, str(Path(embedded.__file__).parent), json.dumps(request)],
+                                  capture_output=True, text=True, timeout=120)
+        with concurrent.futures.ThreadPoolExecutor(4) as pool:
+            results = list(pool.map(job, range(4)))
+        for r in results:
+            self.assertEqual(r.returncode, 0, r.stdout[-800:] + r.stderr[-1500:])
+        engine = embedded.engines_root(self.context()) / ("e" * 64)
+        self.assertEqual(sorted(p.name for p in engine.parent.iterdir() if p.is_dir()), ["e" * 64])   # 没留 .partial / .broken
+        stamp = (engine / ".installed.json").stat().st_ino
+        for _ in range(2):   # 同一份副本连用两次（连出两次包的前半段）
+            c = self.installed(); embedded.artifact(c, "S2ArmGame.app")
+        self.assertEqual((engine / ".installed.json").stat().st_ino, stamp)
+
+    def test_artifact_relocates_when_copy_vanished_mid_job(self):
+        """本作业在用的副本被收走了（并发建库时发生过）：artifact 重新定位，不当成「没有内置产物」返回 None"""
+        c = self.installed()
+        os.rename(c.engine, c.engine.with_name("moved-away"))
+        got = embedded.artifact(c, "S2ArmGame.app")
+        self.assertIsNotNone(got)
+        self.assertTrue((got / "Contents/Info.plist").is_file())
+
     def test_broken_app_bundle_asks_for_reinstall(self):
         c = self.installed()
         (c.engine / PLIST).write_bytes(b"x")
