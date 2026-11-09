@@ -658,9 +658,30 @@ def input_identity(game):
 
 
 def _volume(path):
-    # 给提示用的磁盘名：/Volumes/<名> 下就是那块外接盘，否则是系统盘
+    # 给提示用的磁盘名。Mac：/Volumes/<名> 下就是那块外接盘，否则是系统盘。
+    #   Windows：按盘符，系统盘（%SystemDrive%）叫系统盘，别的盘用卷标「卷标（D:）」，取不到卷标叫「D 盘」（11-09：原先只认 /Volumes，Windows 每个盘都显示系统盘）
+    if os.name == "nt":
+        from pathlib import PureWindowsPath
+        drive = PureWindowsPath(str(path)).drive
+        if not drive or drive.upper() == os.environ.get("SystemDrive", "C:").upper():
+            return "系统盘"
+        if drive.startswith("\\\\"):
+            return drive
+        label = _win_volume_label(drive + "\\")
+        return f"{label}（{drive.upper()}）" if label else f"{drive[0].upper()} 盘"
     parts = Path(path).resolve().parts
     return parts[2] if len(parts) > 2 and parts[1] == "Volumes" else "系统盘"
+
+
+def _win_volume_label(root):
+    """Windows 卷标（GetVolumeInformationW）；取不到返回空串"""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(261)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(ctypes.c_wchar_p(root), buf, 261, None, None, None, None, 0)
+        return buf.value.strip() if ok else ""
+    except (AttributeError, OSError):
+        return ""
 
 
 # 预检里没算进门槛、也量不准的开销（只列出来给玩家看，不编常数）

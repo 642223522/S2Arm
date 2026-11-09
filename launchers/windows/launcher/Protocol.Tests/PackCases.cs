@@ -118,9 +118,10 @@ public static class PackCases
             check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (op == "install") == r.ContainsKey("shellDir"),
                 $"request: {op} carries the launcher folder (bundled Impactor); only install carries the shell");
         }
+        check(PackJobClient.Operations.Contains("delete"), "request: delete (remove the whole game, saves kept) is a launcher operation since library layout v3");
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]
         {
-            ("delete", null, "request: operations outside export / install / remove refused"),
+            ("launch", null, "request: operations outside export / install / remove / library layout refused (Windows does not run games)"),
             ("communitySave", null, "request: game options are not a launcher operation (维护者 11-07)"),
             ("install", new() { ["gameId"] = "other" }, "request: extra fields cannot replace the envelope")
         })

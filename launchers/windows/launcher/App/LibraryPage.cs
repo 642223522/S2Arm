@@ -289,7 +289,8 @@ public sealed partial class EnvironmentWindow
 
 
     /// <summary>游戏卡片右键菜单（游戏库结构 v3，照 Mac cardMenu；Windows 只出 iPhone 包，没有开始游戏 / 启动设置）：
-    /// 出包、在资源管理器中显示、移动到其他位置、清除缓存、删除（沿用装机页「从 iPhone 删除这款」）。位置未连接 / 找不到时出包、移动、清缓存不可用。</summary>
+    /// 出包、在资源管理器中显示、移动到其他位置、清除缓存、从 iPhone 删除这款、删除这款游戏（delete 作业：删游戏文件夹与出包产物，存档和原件保留，同 Mac）。
+    /// 位置未连接 / 找不到时出包、移动、清缓存不可用。</summary>
     private ContextMenu CardMenu(LibraryGame game)
     {
         var idle = !libraryBusy && !PackBusy;
@@ -309,6 +310,7 @@ public sealed partial class EnvironmentWindow
         menu.Items.Add(new Separator());
         Add(T("install.remove_game"), "remove", () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("install"); _ = ConfirmRemoveAsync(game); },
             !libraryBusy && !installBusy && !packRunning);
+        Add(T("game.delete"), "delete", () => _ = ConfirmDeleteAsync(game), idle);
         return menu;
     }
 
@@ -340,6 +342,44 @@ public sealed partial class EnvironmentWindow
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("library.missing.pick") });
         if (folders.Count == 0) return;
         await RunGameJobAsync("relinkGame", game, new() { ["folder"] = LocalPath(folders[0]) });
+    }
+
+    private bool deleteOpen;
+
+    /// <summary>「删除这款游戏」确认（同 Mac 的 game.delete 弹窗）：确认后跑 delete 作业。</summary>
+    private async Task ConfirmDeleteAsync(LibraryGame game)
+    {
+        if (deleteOpen || libraryBusy || PackBusy) return;
+        deleteOpen = true;
+        var confirmed = false;
+        try
+        {
+            var dialog = new Window
+            {
+                Title = T("game.delete.title").Replace("{0}", game.Name), Width = 460, SizeToContent = SizeToContent.Height,
+                CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = Canvas, Foreground = Ink,
+                FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope")
+            };
+            var body = new StackPanel { Spacing = 16, Margin = new Thickness(28) };
+            body.Children.Add(Label(T("game.delete.title").Replace("{0}", game.Name), 20));
+            body.Children.Add(Muted(T("game.delete.body"), 14));
+            var buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var cancel = new Button { Content = T("action.cancel"), Padding = new Thickness(16, 9), CornerRadius = new CornerRadius(8), Margin = new Thickness(12, 0, 0, 0),
+                Background = Brush.Parse("#29292D"), Foreground = Ink };
+            cancel.Click += (_, _) => dialog.Close();
+            AutomationId(cancel, "library.delete.cancel");
+            var delete = new Button { Content = T("game.delete.confirm"), Padding = new Thickness(16, 9), CornerRadius = new CornerRadius(8), Margin = new Thickness(12, 0, 0, 0),
+                Background = Brush.Parse("#C0392B"), Foreground = Ink };
+            delete.Click += (_, _) => { confirmed = true; dialog.Close(); };
+            AutomationId(delete, "library.delete.confirm");
+            buttons.Children.Add(cancel); buttons.Children.Add(delete);
+            body.Children.Add(buttons);
+            dialog.Content = body;
+            await dialog.ShowDialog(this);
+        }
+        finally { deleteOpen = false; }
+        if (confirmed) BeginGameJob("delete", game);
     }
 
     private bool missingOpen;
@@ -390,7 +430,7 @@ public sealed partial class EnvironmentWindow
         libraryOperation = RunGameJobAsync(operation, game, extra);
     }
 
-    /// <summary>一款游戏的游戏库作业（游戏库结构 v3：moveGame / relinkGame / forgetGame / clean kind=cache）：忙碌、结果与诊断同 RunLibraryAsync，成功后重读游戏库。</summary>
+    /// <summary>一款游戏的游戏库作业（游戏库结构 v3：moveGame / relinkGame / forgetGame / clean kind=cache / delete）：忙碌、结果与诊断同 RunLibraryAsync，成功后重读游戏库。</summary>
     private async Task RunGameJobAsync(string operation, LibraryGame game, Dictionary<string, object?>? extra = null)
     {
         if (libraryBusy || PackBusy || connectedFolder is null || libraryId is null) return;
@@ -415,7 +455,7 @@ public sealed partial class EnvironmentWindow
         finally
         { libraryCancellation = null; libraryBusy = false; Render(); }
         if (!succeeded || closingLibrary) return;
-        if (operation == "forgetGame" && selectedGame == game.Id) selectedGame = null;
+        if ((operation == "forgetGame" || operation == "delete") && selectedGame == game.Id) selectedGame = null;
         locationsFor = null;   // 位置表的剩余空间 / 这款的位置变了：出包页下次重读
         await RunLibraryAsync("catalog", null);
     }

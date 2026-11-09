@@ -232,6 +232,14 @@ def move_game(c, gid, dest_root, progress=None):
     dest_root = Path(dest_root)
     if src.parent.parent == dest_root:
         return src
+    dest = _move_folder(c, gid, src, dest_root)
+    _remember(c, gid, dest)
+    return dest
+
+
+def _move_folder(c, gid, src, dest_root):
+    """把一个游戏文件夹搬进 <dest_root>/games/：同一卷改名；跨卷拷到 .partial、逐文件核对大小与摘要再换名、删旧的"""
+    from core import digest
     if dest_root != c.library:
         register_location(c, dest_root)
     g = games_root(c, dest_root); g.mkdir(parents=True, exist_ok=True)
@@ -250,7 +258,6 @@ def move_game(c, gid, dest_root, progress=None):
                     raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）：" + str(f.relative_to(src)), code="job_failed")
         os.replace(temporary, dest)
         shutil.rmtree(src)
-    _remember(c, gid, dest)
     return dest
 
 
@@ -259,13 +266,16 @@ def _same_volume(a, b):
 
 
 def relink(c, gid, folder):
-    """「重新指定文件夹」：选到的文件夹 game.json 游戏号对得上才接受，更新索引"""
-    folder = Path(folder)
-    if str(read(folder / GAME_JSON, {}).get("id", "")).upper() != gid.upper():
+    """「重新指定文件夹」：选到的文件夹 game.json 游戏号对得上才接受。它在某个存放位置的 games/ 里就原地认；
+    在别处（玩家挪到了桌面等）就搬回这款原来的存放位置（没连上就搬到默认位置），玩家不用懂目录结构"""
+    folder, gid = Path(folder), gid.upper()
+    if str(read(folder / GAME_JSON, {}).get("id", "")).upper() != gid:
         raise Failure("选的文件夹不是这款游戏（里面的 game.json 游戏号对不上）。", code="job_failed")
     if folder.parent.name != "games":
-        raise Failure("请选游戏文件夹本身（在存放位置的 games 文件夹里）。", code="job_failed")
-    _remember(c, gid.upper(), folder)
+        entry = load_index(c)["games"].get(gid) or {}
+        home = _location_path(c, entry.get("location"))
+        folder = _move_folder(c, gid, folder, home if home and home.is_dir() else c.library)
+    _remember(c, gid, folder)
     return folder
 
 

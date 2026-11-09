@@ -136,12 +136,13 @@ class LocationTests(JobCase):
         os.rename(self.disk / "games" / "改过的名字", self.root / "挪走了")
         self.assertEqual(layout.state(self.fresh(), A), ("missing", self.disk))
         with self.assertRaises(Exception):
-            layout.relink(self.c, A, self.root / "挪走了")                                         # 不在某个位置的 games 下：拒
+            layout.relink(self.c, B, self.root / "挪走了")                                         # 游戏号对不上：拒
+        back = layout.relink(self.c, A, self.root / "挪走了")                                      # 在 games 外：搬回原来的位置
+        self.assertEqual(back, self.disk / "games" / "挪走了"); self.assertFalse((self.root / "挪走了").exists())
+        self.assertEqual(layout.state(self.fresh(), A), ("ok", back))
         (self.c.library / "games").mkdir(exist_ok=True)
-        os.rename(self.root / "挪走了", self.c.library / "games" / "Alpha 副本")
-        with self.assertRaises(Exception):
-            layout.relink(self.c, B, self.c.library / "games" / "Alpha 副本")                     # 游戏号对不上：拒
-        layout.relink(self.c, A, self.c.library / "games" / "Alpha 副本")
+        os.rename(back, self.c.library / "games" / "Alpha 副本")
+        layout.relink(self.c, A, self.c.library / "games" / "Alpha 副本")                         # 已在某个位置的 games 下：原地认
         self.assertEqual(layout.state(self.fresh(), A), ("ok", self.c.library / "games" / "Alpha 副本"))
 
     def test_move_same_volume_and_cross_volume_with_check(self):
@@ -158,6 +159,18 @@ class LocationTests(JobCase):
     def test_last_used_location_is_default_for_new_games(self):
         layout.use_location(self.c, self.disk)
         self.assertEqual(layout.game_dir(self.fresh(), B).parent.parent, self.disk)
+
+
+class VolumeNameTests(unittest.TestCase):
+    """存放位置下拉框 / 「未连接」里的盘名：Windows 按盘符（原先只认 Mac 的 /Volumes，Windows 每个盘都叫系统盘）"""
+    def test_windows_and_mac_names(self):
+        import library
+        cases = [("C:\\S2Arm", "", "系统盘"), ("D:\\S2Arm", "Games", "Games（D:）"), ("e:\\x", "", "E 盘"), ("\\\\nas\\share\\S2Arm", "", "\\\\nas\\share")]
+        for path, label, want in cases:
+            with self.subTest(path=path), patch.object(library.os, "name", "nt"), patch.dict(os.environ, {"SystemDrive": "C:"}), \
+                 patch.object(library, "_win_volume_label", return_value=label):
+                self.assertEqual(library._volume(path), want)
+        self.assertEqual(library._volume("/Volumes/移动硬盘/S2Arm"), "移动硬盘")
 
 
 if __name__ == "__main__":
