@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
+import os
 
 JOBS = Path(__file__).resolve().parents[1]
 ROOT = JOBS.parents[1]
@@ -72,6 +74,27 @@ def _windows_private_request(path, value):
         free(descriptor)
         temporary.unlink(missing_ok=True)
 
+
+
+class OsView:
+    """只给被测模块看的 os：name 缺省 "nt"，其余转给真 os（构造时可再覆盖几个属性，如 replace）。
+    不能改全进程的 os.name：Python 3.12 起 Path() 构造时看 os.name，mock 期间新建的路径变成 WindowsPath，
+    「/var/folders/…/job.json」被当成反斜杠相对名写进当前目录（各线工作树根反复冒出「\\var\\folders…」杂文件、两次被 git add -A 带进提交）"""
+    def __init__(self, name="nt", **override):
+        self.name = name
+        self.__dict__.update(override)
+
+    def __getattr__(self, key):
+        return getattr(os, key)
+
+
+def as_windows(*modules, **override):
+    """被测模块按 Windows 分支走：只替换这些模块的 os 属性"""
+    from contextlib import ExitStack
+    stack = ExitStack()
+    for m in modules:
+        stack.enter_context(unittest.mock.patch.object(m, "os", OsView(**override)))
+    return stack
 
 class JobCase(unittest.TestCase):
     def setUp(self):
