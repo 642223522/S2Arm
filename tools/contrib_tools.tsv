@@ -5,6 +5,7 @@
 单测 csproj_closure_test	.NET 10 SDK
 单测 multirange_test	.NET 10 SDK
 单测 save_transfer_interop_test	.NET 10 SDK,Xcode
+单测 vpx_patch_identity_test	Xcode
 iOS 全量编译	Xcode
 钩子 runtime/gate.sh	Xcode
 钩子 graphics/gate.sh	Xcode
