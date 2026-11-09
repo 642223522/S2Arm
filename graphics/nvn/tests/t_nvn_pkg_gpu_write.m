@@ -96,5 +96,5 @@ int main(void) { @autoreleasepool {
     NvProg *gp=[NvProg new]; gp->sh[0]=shader(lib,@"tri",0,nil); gp->sh[1]=shader(lib,@"red",1,nil); gp->sh[1]->rf.color_known=1; gp->sh[1]->rf.color_mask=1; program(&graphics,gp);
     NvProg *wp=[NvProg new]; wp->sh[5]=shader(lib,@"wr",5,@{@"route":@"B",@"threadgroup_size":@[@1,@1,@1],@"bindings":@[@{@"kind":@"img",@"reg":@0,@"arg_id":@0,@"rw":@YES,@"msl_type":@"texture2d<float, access::write>"}]}); program(&writer,wp);
     NvProg *rp=[NvProg new]; rp->sh[5]=shader(lib,@"rd",5,@{@"route":@"B",@"threadgroup_size":@[@1,@1,@1],@"bindings":@[@{@"kind":@"tex",@"reg":@0,@"arg_id":@0,@"msl_type":@"texture2d<float>"},@{@"kind":@"sbuf",@"reg":@0,@"arg_id":@1,@"rw":@YES}]}); program(&reader,rp);
-    run(lib,0); run(lib,1); printf("t_nvn_pkg_gpu_write: %u checks, %u failures\n",checks,failures); return failures?1:0;
+    run(lib,0); run(lib,1); printf("%s t_nvn_pkg_gpu_write: %u checks, %u failures\n",failures?"✗":"✓",checks,failures); return failures?1:0;
 } }
