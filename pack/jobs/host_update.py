@@ -11,8 +11,10 @@
 不兼容时照用原来的宿主，catalog 报 hostUpdate = "incompatible"，游戏库提示重新准备。
 """
 from __future__ import annotations
+import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 import layout
@@ -60,7 +62,7 @@ def install_host(c, app):
     from build import clone_tree
     sha = digest(Path(app) / "Contents/MacOS/s2arm-host")[:12]
     dest = layout.hosts_mac(c) / sha
-    if not (dest / EXE).is_file():
+    if not _same_files(Path(app), dest / APP):   # 已有的一份被外部改过（#304 同类：Info.plist 大小变了）也重放，不只看可执行文件在不在
         temporary = dest.with_name(sha + ".partial")
         shutil.rmtree(temporary, ignore_errors=True)
         temporary.mkdir(parents=True)
@@ -72,6 +74,22 @@ def install_host(c, app):
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
     return sha
+
+
+def _same_files(source, copy):
+    """copy 与 source 的普通文件一一对应、大小相同（逐文件 lstat，宿主几十个文件；摘要已由 embedded.artifact 对 source 核过）"""
+    def files(root):
+        out = {}
+        for d, _, names in os.walk(root):
+            for n in names:
+                p = os.path.join(d, n)
+                st = os.lstat(p)
+                out[os.path.relpath(p, root)] = st.st_size if stat.S_ISREG(st.st_mode) else -1
+        return out
+    try:
+        return copy.is_dir() and files(copy) == files(source)
+    except OSError:
+        return False
 
 
 def bundled_sha(c):
@@ -96,7 +114,7 @@ def choose(c, gid, image, manifest):
     """起局用哪个宿主 → (摘要, 是不是新宿主的试玩)。兼容就换上本版内置宿主（放进 hosts/mac）；否则用这款原来的"""
     info = layout.game_info(c, gid)
     current = info.get("hostMac")
-    if status(c, gid, image, manifest) == "swap":
+    if status(c, gid, image, manifest) in ("swap", "current"):   # current 也过一遍：hosts/mac 那份被外部改过就从内置宿主重放（#304），没变是几十次 lstat
         from embedded import artifact
         sha = install_host(c, artifact(c, APP))
         return sha, sha != current

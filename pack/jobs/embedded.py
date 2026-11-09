@@ -32,12 +32,19 @@ def install(c):
     root = engines_root(c)
     destination = contained(root, root / identity)
     _adopt_private_copy(c, root, identity)
+    # 已装的副本每次用前按大小快速复核（#304：玩家机上已装副本里宿主的 Info.plist 被外部改过，0.1.7 只看安装标记、之后每次出包都报 runtime_invalid、
+    #   重新打包也好不了）；对不上就挪开、从 App 包重解。逐文件 lstat，约 8500 个文件几十毫秒；摘要级核对仍在用到具体产物时（artifact）
+    if read(destination / ".installed.json", {}).get("schema") == 2 and not _intact(c, destination, manifest, full=False):
+        _set_aside(c, root, destination, "已装的内置引擎文件被改过")
     # 安装标记第 2 版：第 1 版的复制丢了空目录、Git 快照无效（10-23），旧安装一律重装
     if read(destination / ".installed.json", {}).get("schema") != 2:
         if destination.exists():
             shutil.rmtree(contained(root, destination))
         c.begin("初始化内置 S2Arm 引擎")
-        validate_files(c, source, manifest.get("files"))
+        try:
+            validate_files(c, source, manifest.get("files"))
+        except Failure as e:   # App 包本身的文件就不对：重解也没用，只能重装 App
+            raise Failure("S2Arm 应用里的内置引擎文件不完整（" + str(e).rsplit("：", 1)[-1] + "），请重新安装完整的 S2Arm。", code="engine_incomplete") from e
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(identity + "." + uuid.uuid4().hex + ".partial")
         temporary.mkdir()
@@ -112,14 +119,45 @@ def _retain(c, root, identity):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _intact(c, root, manifest, files=None, full=True):
+    """副本里这些文件（缺省清单全部）在、是普通文件、大小对（full 再核摘要）"""
+    from build import validate_files
+    try:
+        validate_files(c, root, files if files is not None else manifest.get("files"), full)
+        return True
+    except Failure as e:
+        if e.code != "runtime_invalid":
+            raise
+        c.emit("message", "内置引擎副本校验没过：" + str(e).rsplit("：", 1)[-1])
+        return False
+
+
+def _set_aside(c, root, destination, why):
+    """坏副本改名挪开（同卷改名；正在用它的别的作业照常读完），随后删掉；install 接着从 App 包重解"""
+    c.emit("message", why + "，从 S2Arm 应用里重新解出一份")
+    broken = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".broken")
+    try:
+        os.rename(destination, broken)
+    except OSError:
+        return   # 别的作业刚挪走 / 正在重解
+    shutil.rmtree(broken, ignore_errors=True)
+
+
 def artifact(c, name):
     manifest = read(c.engine / "engine.json", {})
     if not manifest:
         return None
-    from build import validate_files
     prefix = "Binaries/" + name
     files = {p: v for p, v in manifest.get("files", {}).items() if p.startswith(prefix + "/")}
     if not files:
         raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
-    validate_files(c, c.engine, files)
+    if not _intact(c, c.engine, manifest, files):
+        if not c.r.get("engineBundle"):   # 源码树开发：没有 App 包可重解，照原样报
+            from build import validate_files
+            validate_files(c, c.engine, files)
+        # 已装副本里这件产物被改过（#304）：从 App 包重解整份引擎再核一次；App 包本身坏了由 install 报「重新安装 S2Arm」
+        _set_aside(c, c.engine.parent, c.engine, "内置引擎里的 " + name + " 被改过")
+        install(c)
+        from build import validate_files
+        validate_files(c, c.engine, files)
     return c.engine / prefix
