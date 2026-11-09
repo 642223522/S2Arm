@@ -973,13 +973,13 @@ static uint64_t alias_map(uint64_t dst, uint64_t src, uint64_t n, int prot) {
 //   Switch / Ryujinx 新给的堆和物理映射都是填 0 的页（KPageTableBase SetHeapSize / MapPhysicalMemory 带 shouldFillPages、填充值 0）。
 //   原先用 madvise(MADV_FREE) + mprotect(PROT_NONE)：那是懒回收，内核还没收走的页在 mprotect 放出时带着旧内容回到游戏手里。
 //   调用方解锁后要报 backing_changed（渲染器包着游戏内存的零拷贝缓冲要重建）
-// #258 文件后备下的还页改成延后打洞：时之笛 S2（Mac 16 GB，文件后备自动开）每约 30 秒 UnmapPhysicalMemory 约 250 MB，逐 16 KB 打洞 + 重映射每页 60–70 µs、
-//   全程持 g_mu 约 1 s，音频渲染（s2a_mem_mapped）等锁、整帧停住。把连续页攒成一段一次打洞 + 一次重映射（11-09 第一版）微基准 1083 → 14.5 ms，
-//   但真机上开机冻 11–65 s、进场景约 1 分钟 Metal 报 GPU 挂死（4/4 局；关文件后备同一构建全干净；诊断记账：释放段从未落在渲染器在用的零拷贝池里）——
-//   大块 F_PUNCHHOLE / 大块 MAP_SHARED 重映射本身让内核拖住整机。所以锁内只把这段 mprotect 成不可访问（微秒级）、记成「待打洞」，
-//   打洞交给后台线程按原来的粒度（缺省 16 KB，S2A_PUNCH_CHUNK_KB 可调）一块一块做：每块持 g_mu 约 70 µs，内核看到的操作和原来逐页完全一样，只是不再挡住游戏线程。
-//   不重映射：打洞后原映射的那段文件偏移再读就是 0（保护位已是 PROT_NONE）。待打洞页若先被游戏映射回来（0x2C / SetHeapSize 增长）就地清零（punch_zero_locked），
-//   零页语义不变；打洞失败的页记成 2，同样在映射回来时清零。S2A_PUNCH_DEFER=0 关掉延后（回到逐页同步打洞，负对照用）。
+// #258 文件后备下的还页不再在锁内打洞：时之笛 S2（Mac 16 GB，文件后备自动开）每约 30 秒 UnmapPhysicalMemory 约 250 MB，逐 16 KB 打洞 + 重映射每页 60–70 µs、
+//   全程持 g_mu 约 1 s，音频渲染（s2a_mem_mapped）等锁、整帧停住。改法：锁内只把这段 mprotect 成不可访问（微秒级）并记成「待打洞」，不重映射；
+//   待打洞页若被游戏映射回来（0x2C / SetHeapSize 增长）就地清零（punch_zero_locked），零页语义不变。
+//   缺省（模式 2）到此为止：不打洞、不起线程，释放的页留在文件里当脏页，内存紧时由内核按文件后备原设计换出（真机 6 分钟释放 1.19 GB，物理脚印不涨）。
+//   两版「尽快打洞」的修法都在真机上让 Metal 报 GPU 挂死：把连续页攒成一段一次 F_PUNCHHOLE（第一版）、后台线程按 16 KB 逐块打洞（模式 1）——
+//   时序实验：游戏渲染期间对后备文件打洞，Metal 命令提交就在内核里和 F_PUNCHHOLE 互卡；原版不挂只因为那 1 s 卡顿让 GPU 空闲。细节见 docs/坑记录.md。
+//   S2A_PUNCH_DEFER=0 回原路径（逐页同步打洞，负对照）、=1 后台线程（实验用，S2A_PUNCH_CHUNK_KB 调每块大小）；打洞失败的页记成 2，同样在映射回来时清零。
 static uint8_t *g_punch_pend;   // 窗口内每宿主页一字节：0 没事、1 待打洞、2 打洞失败（映射回来时清零）；g_mu 保护
 static uint64_t g_punch_lo = UINT64_MAX, g_punch_hi;   // 待打洞页所在范围（扫描提示）
 static uint64_t g_punch_pending_n;   // 待打洞宿主页数
