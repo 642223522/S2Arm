@@ -35,10 +35,30 @@ public sealed partial class EnvironmentWindow
         page = destination; Render();
     }
 
+    /// <summary>
+    /// 换库 / 刷新时丢掉封面缓存。不能当场 Dispose：这时窗口里还挂着上一次 Render 建的界面，封面 Image 引用着这些位图；
+    /// 一让出界面线程（await 作业）排版就去量已释放的位图，Avalonia 渲染循环里抛 ObjectDisposedException，0.1.7 上整个窗口空掉
+    /// （玩家反馈「点连接或创建游戏库闪退」，Windows 实机按原样复现：库里有一款带封面就必崩，事件 1026 堆栈 Bitmap.get_Size ← Image.MeasureOverride）。
+    /// 先记下它们和当时的窗口内容，等窗口内容换成新界面（旧界面脱离窗口、不再排版）再释放；窗口关掉时一并释放。
+    /// </summary>
     private void ClearCovers()
     {
-        foreach (var cover in covers.Values) cover.Dispose();
+        if (covers.Count == 0) return;
+        retiredCovers.Add((Content, covers.Values.ToList()));
         covers.Clear();
+    }
+
+    private readonly List<(object? Content, List<Bitmap> Covers)> retiredCovers = [];
+
+    /// <summary>窗口内容已经不是退役时那份的封面才释放（Render 末尾、窗口关闭时调）</summary>
+    private void DisposeRetiredCovers(bool all = false)
+    {
+        for (var i = retiredCovers.Count - 1; i >= 0; i--)
+        {
+            if (!all && ReferenceEquals(retiredCovers[i].Content, Content)) continue;
+            foreach (var cover in retiredCovers[i].Covers) cover.Dispose();
+            retiredCovers.RemoveAt(i);
+        }
     }
 
     private async void CloseLibraryAsync(object? sender, WindowClosingEventArgs args)
@@ -147,7 +167,7 @@ public sealed partial class EnvironmentWindow
             buttons.Children.Add(button);
         }
         AddButton("library.choose_folder", () => BeginPicker(ChooseLibraryAsync));
-        AddButton("library.connect", () => BeginLibrary("setup"));
+        AddButton("library.connect", () => ConnectTypedFolder(libraryFolderBox.Text));
         AddButton("library.refresh", () => BeginLibrary("catalog"), libraryId is not null);
         connection.Children.Add(buttons);
         connection.Children.Add(Label(T("library.source_hint")));
@@ -452,9 +472,13 @@ public sealed partial class EnvironmentWindow
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; }
         catch (OperationCanceledException)
         { librarySummary = "library.interrupted"; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
-            InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException)
-        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; }
+        catch (Exception error)
+        {
+            // 游戏库作业由玩家输入驱动（目录填什么都有可能：末尾反斜杠、不存在、不可写、非法字符、在启动器自己的目录里）：
+            //   任何异常都报成「操作未完成」并带原因，不让它逃出去（玩家反馈：点「连接或创建游戏库」闪退）
+            librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.GetType().Name + ": " + error.Message;
+            LauncherCrash.Log(error, "library job");
+        }
         finally
         { libraryCancellation = null; libraryBusy = false; Render(); }
         if (!succeeded || closingLibrary) return;
@@ -540,9 +564,27 @@ public sealed partial class EnvironmentWindow
         return answer;
     }
 
-    /// <summary>换到新位置：连上后记下来，下次启动还用它。</summary>
+    /// <summary>「连接或创建游戏库」：输入框里的路径先规范（LibraryFolderInput），再走和「选择游戏库目录」同一条会记住位置的路径。
+    /// 原先这个按钮走 BeginLibrary("setup")，连上了却不写设置，重开启动器又回到缺省库（玩家反馈「游戏库位置改不了」）。</summary>
+    private void ConnectTypedFolder(string? input)
+    {
+        if (libraryBusy) return;
+        var r = LibraryFolderInput.Normalize(input, AppContext.BaseDirectory);
+        if (r.Folder is null)
+        {
+            libraryFolder = input ?? ""; librarySummary = "library.failed"; libraryDiagnostics = T(r.ErrorKey!); Render();
+            return;
+        }
+        libraryMoveFrom = null;
+        ConnectLibrary(r.Folder);
+    }
+
+    /// <summary>换到新位置：连上后记下来，下次启动还用它。路径同样过一遍规范（选目录 / 控制口来的也一样）。</summary>
     private void ConnectLibrary(string folder)
     {
+        var r = LibraryFolderInput.Normalize(folder, AppContext.BaseDirectory);
+        if (r.Folder is null) { librarySummary = "library.failed"; libraryDiagnostics = T(r.ErrorKey!); Render(); return; }
+        folder = r.Folder;
         connectedFolder = null; libraryId = null;
         libraryFolder = folder;
         libraryOperation = SwitchLibraryAsync(folder);
@@ -629,9 +671,13 @@ public sealed partial class EnvironmentWindow
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; }
         catch (OperationCanceledException)
         { librarySummary = "library.interrupted"; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
-            InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException)
-        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; }
+        catch (Exception error)
+        {
+            // 游戏库作业由玩家输入驱动（目录填什么都有可能：末尾反斜杠、不存在、不可写、非法字符、在启动器自己的目录里）：
+            //   任何异常都报成「操作未完成」并带原因，不让它逃出去（玩家反馈：点「连接或创建游戏库」闪退）
+            librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.GetType().Name + ": " + error.Message;
+            LauncherCrash.Log(error, "library job");
+        }
         finally
         { libraryCancellation = null; libraryBusy = false; Render(); }
     }

@@ -20,6 +20,12 @@ public sealed partial class EnvironmentWindow
         Environment.GetEnvironmentVariable("S2ARM_CONTROL") == "1";
     private string ControlSwitchFile => Path.Combine(privateRoot, "ai-control.on");
 
+    /// <summary>崩溃日志用（LauncherCrash）：同 ResolvePrivateRoot，算不出（参数坏了）退回系统临时目录。</summary>
+    internal static string PrivateRootForLogs()
+    {
+        try { return ResolvePrivateRoot(); } catch (Exception) { return Path.Combine(Path.GetTempPath(), "S2Arm"); }
+    }
+
     private static string ResolvePrivateRoot()
     {
         const string prefix = "--data-root=";
