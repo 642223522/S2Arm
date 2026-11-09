@@ -1451,6 +1451,17 @@ def _execution_idle(c):
             filelock.unlock(f)
 
 
+def _build_entries(c, gid):
+    """这款出包缓存 build/ 里能删的项：除 iPhone 出包日志 build/ios/logs 之外的全部。日志是释放空间的「保留」项（SPACE_KEPT），
+    出包成功清理、清缓存、释放「旧版残留」都不删它（旧布局 iPhone/<号>/logs 同样一直留着）"""
+    build, out = layout.build_dir(c, gid, create=False), layout.ios_work(c, gid, create=False)
+    if not build.is_dir():
+        return []
+    if not os.path.lexists(out / "logs"):
+        return [build]   # 没有要留的：整个删
+    return [q for q in build.iterdir() if q != out] + [q for q in out.iterdir() if q.name != "logs"]
+
+
 def _residue_disposable(c, gid):
     """解包和中间产物能不能删：有容器件，或这款没有已出好的 IPA。老玩家有 IPA 没容器件时，现行产物根是装机的唯一来源，留给「旧版残留」项先存容器件再删。"""
     return (layout.ios_kit(c, gid) / "main.npdm").is_file() or not (layout.ios_pack(c, gid) / "manifest.json").is_file()
@@ -1492,7 +1503,7 @@ def _residue(c):
     found = []
     for game in c.catalog()["games"]:
         gid = game["id"]
-        stale = layout.build_dir(c, gid, create=False).exists()   # 解包、Mac 产物根、iPhone 出包工作目录 build/ios 都在这里
+        stale = bool(_build_entries(c, gid))   # 解包、Mac 产物根、iPhone 出包工作目录 build/ios 都在这里（出包日志不算残留）
         stale = stale and _residue_disposable(c, gid)
         partials = list(layout.path(c, gid, "image", "mac.partial", create=False).parent.glob("mac.partial")) + list(layout.path(c, gid, "image", "mac.old", create=False).parent.glob("mac.old"))
         if stale or partials:
@@ -1531,9 +1542,8 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
     n = 0
     kit_ready = _residue_disposable(c, gid)
     if retain_compiler and kit_ready:
-        unpacked = layout.build_dir(c, gid, create=False)   # 含 iPhone 出包工作目录 build/ios：交付件已搬进 image/ios，阶段日志已拷进私有日志（_keep_stage_logs）
-        if unpacked.exists():
-            _rm(c, layout.root_of(c, gid), unpacked); n += 1
+        for p in _build_entries(c, gid):   # 含 iPhone 出包工作目录 build/ios（交付件已搬进 image/ios），只留出包日志 build/ios/logs
+            _rm(c, layout.root_of(c, gid), p); n += 1
     elif out.is_dir():
         # 有资源包没容器件（只会是出包收尾存容器件前被打断）：现行产物根是装机的唯一来源，留着，其余照清
         for p in out.iterdir():
@@ -1625,8 +1635,7 @@ def clean(c):
         kind = c.r.get("kind")
         if kind == "cache":
             c.begin("清理构建缓存")
-            target = layout.build_dir(c, game["id"], create=False)
-            if target.is_dir():
+            for target in _build_entries(c, game["id"]):   # 出包日志 build/ios/logs 留着
                 _rm(c, layout.root_of(c, game["id"]), target)
             shader = layout.path(c, game["id"], "shader-cache", create=False)   # 清缓存 = 本款出包缓存 + 运行时着色器缓存（游戏库结构双端统一「清缓存」）
             if shader.is_dir():
@@ -1672,7 +1681,7 @@ def space_parts(c, gid):
     ipa = [layout.image_ios(c, gid, create=False)]
     gdir = layout.find_game(c, gid)
     parts = {
-        "legacy": [layout.build_dir(c, gid, create=False)],
+        "legacy": _build_entries(c, gid),   # 不含出包日志（下面 logs 项，只报不删）
         "shaders": [p for p in game_caches(c, gid) if p not in shared],
         "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,

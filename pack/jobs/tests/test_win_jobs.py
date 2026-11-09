@@ -16,7 +16,8 @@ ROOT = JOBS.parents[1]
 sys.path.insert(0, str(JOBS))
 import core
 import toolchain
-from jobcase import OsView, as_windows
+from jobcase import OsView, as_windows, ios_fixture
+import layout
 
 
 class AtomicReplace(unittest.TestCase):
@@ -109,7 +110,7 @@ class Reader(unittest.TestCase):
 
 
 class WinOneclick(unittest.TestCase):
-    # 打 iPhone 包的 Windows 分支：oneclick_win 出完，交付成 <款>.ipa + <款>资源包（与 Mac 同名同处，install.latest_ipa 认），末条 result 改指交付件；
+    # 打 iPhone 包的 Windows 分支：oneclick_win 出完，交付成 <款>.ipa + <款>资源包（与 Mac 同名同处，收尾 deliver 搬进这款的 image/ios），末条 result 改指交付件；
     #   出包红（result ok 假）不交付。期望手写：款名取 oneclick_win 产物 ipa 的文件名（t<程序号小写>）
     def setUp(self):
         import ipa
@@ -194,23 +195,23 @@ class WinInstall(unittest.TestCase):
         import install
         self.m = install
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
-        out = self.t / "lib/iPhone/G"; (out / "tg资源包").mkdir(parents=True); (out / "tg.ipa").write_bytes(b"i"); (out / "tg资源包/a").write_bytes(b"ab")
-        (self.t / "lib/iPhone/container").mkdir(parents=True)   # WinPhone.record 所在目录
-        (self.t / "logs").mkdir()
-        self.c = types.SimpleNamespace(r={"gameId": "G"}, library=self.t / "lib", private=self.t, task="k", engine=self.t, emit=lambda *a, **k: None,
+        (self.t / "lib").mkdir(); (self.t / "logs").mkdir()
+        self.gid = "0100000000000047"
+        self.c = types.SimpleNamespace(r={"gameId": self.gid}, library=self.t / "lib", private=self.t, task="k", engine=self.t, emit=lambda *a, **k: None,
                                        begin=lambda *a, **k: None, last_log=None)
+        ios_fixture(self.c, self.gid)   # 出好的 iPhone 版：image/ios/kit + image/ios/pack
 
     def go(self, w, **r):
         """走新 install.install 的 Windows 分支（phone_for → WinPhone + assemble + put_game）"""
         import ipa as packer
         self.c.r.update(r)
-        gid = self.c.r.get("gameId", "G").upper()
-        # assemble 替身：出一个真 zip ipa（WinPhone.install 不解包，但 put_game 需要 ipa 路径）
-        def fake_assemble(c, g, root=None, dest=None):
-            ipa_path = self.t / "lib" / "iPhone" / gid / f"t{gid.lower()}.ipa"
-            with __import__("zipfile").ZipFile(ipa_path, "w") as z:
+        gid = self.c.r["gameId"].upper()
+        # assemble 替身：在游戏库临时目录出一个真 zip ipa（WinPhone.install 不解包，但 put_game 要把它放到默认位置根 S2Arm.ipa）
+        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None):
+            self.assembled = self.t / "lib" / ".container-t" / "S2Arm.ipa"; self.assembled.parent.mkdir(exist_ok=True)
+            with __import__("zipfile").ZipFile(self.assembled, "w") as z:
                 z.writestr("Payload/S2Arm.app/Info.plist", __import__("plistlib").dumps({"CFBundleIdentifier": "dev.s2arm.games", "CFBundleExecutable": "S2Arm"}))
-            return ipa_path, [gid], [gid]
+            return self.assembled, [gid, *others], "SID1"
         with patch.object(self.m, "win_install_mod", return_value=w), \
              patch.object(packer, "assemble", side_effect=fake_assemble), \
              as_windows(self.m):
@@ -222,6 +223,12 @@ class WinInstall(unittest.TestCase):
         self.assertEqual((res["bundleId"], res["device"]), ("s2arm.T.0100", "U1"))
         self.assertEqual(w.calls[0].udid, "U1")
         self.assertEqual(Path(w.calls[0].ipa).suffix, ".ipa")
+        # plumesign 定的包名记在这台的设备记录里（不再有 bundle.txt），下次 WinPhone 起来就认得、覆盖装前能备份
+        rec = layout.load_device(self.c, "U1")
+        self.assertEqual((rec["bundleId"], rec["games"], rec["shellId"]), ("s2arm.T.0100", {self.gid: dict(pack="cafe01")}, "SID1"))
+        self.assertTrue((self.t / "lib" / "S2Arm.ipa").is_file())
+        with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
+            self.assertEqual(self.m.WinPhone(self.c).bid, "s2arm.T.0100")
 
     def test_cant_open_app_is_warning_not_failure(self):   # #192：Windows 同 Mac，传输数从异常带回（替身 787 个文件）
         w = FakeW([("U1", "USB", 3)]); w.needs_player = "资源包已传完，还差最后一步：打开 App"
@@ -266,10 +273,10 @@ class WinInstall(unittest.TestCase):
              patch.object(W.subprocess, "run", fake_run), patch.object(W, "push_pack", fake_push):
             res = self.go(W)
         cmd = seen["cmd"]
-        self.assertEqual(cmd[:-1], ["C:/Impactor/plumesign.exe", "sign", "--package", str(self.t / "lib/iPhone/G/tg.ipa"),
+        self.assertEqual(cmd[:-1], ["C:/Impactor/plumesign.exe", "sign", "--package", str(self.assembled),
                                     "--apple-id", "--register-and-install", "--udid", "7", "-o"])
         self.assertIn("signed.ipa", cmd[-1])   # 签名输出文件名含 signed.ipa
-        self.assertEqual(seen["push"][1:3], ("s2arm.t.0100.ABCDE12345", "tg资源包"))   # 包名和资源包目录
+        self.assertEqual(seen["push"][1:3], ("s2arm.t.0100.ABCDE12345", "pack"))   # 包名和资源包目录（这款的 image/ios/pack）
         self.assertEqual((res["bundleId"], res["device"]), ("s2arm.t.0100.ABCDE12345", "U1"))
 
     def test_bundled_impactor_zero_jump(self):
@@ -282,18 +289,18 @@ class WinInstall(unittest.TestCase):
         self.c.r["resources"] = str(res)
         w = FakeW([("U1", "USB", 3)], impactor="missing"); w.logged = True
         with patch.object(self.m, "win_install_mod", return_value=w):
-            r = self.m.readiness_windows(self.c, "G")
+            r = self.m.readiness_windows(self.c, self.gid)
         self.assertEqual([(i["id"], i["ok"], i["url"]) for i in r["items"]],
                          [("package", True, None), ("impactor", True, None), ("impactor_login", True, None), ("connected", True, None)])
         self.assertTrue(r["ready"]); self.assertIn("第三方开源工具", r["items"][1]["title"])
         w.logged = False
         with patch.object(self.m, "win_install_mod", return_value=w):
-            r = self.m.readiness_windows(self.c, "G")
+            r = self.m.readiness_windows(self.c, self.gid)
         login = r["items"][2]
         self.assertEqual((login["ok"], login["action"], login["url"]), (False, "openImpactor", None)); self.assertTrue(r["ready"])
         (d / impactor.PLUMESIGN_EXE).unlink()
         with patch.object(self.m, "win_install_mod", return_value=w):
-            r = self.m.readiness_windows(self.c, "G")
+            r = self.m.readiness_windows(self.c, self.gid)
         imp = r["items"][1]
         self.assertFalse(imp["ok"]); self.assertTrue(r["ready"])   # 随包不全就接着认玩家自己装的；认不出也只提示
         (d / impactor.PLUMESIGN_EXE).write_bytes(b"x")
@@ -336,13 +343,13 @@ class WinInstall(unittest.TestCase):
 
     def test_readiness(self):
         with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)], impactor="missing")):
-            r = self.m.readiness_windows(self.c, "G")
+            r = self.m.readiness_windows(self.c, self.gid)
         self.assertEqual([(i["id"], i["ok"]) for i in r["items"]], [("package", True), ("impactor", False), ("connected", True)])
         self.assertEqual((r["ready"], r["device"]), (True, "U1"))   # 缺 Impactor 只提示，直接去签名
         # 缺 Impactor 那一项带官方发布页（启动器按钮），其余项没有链接
         self.assertEqual([i["url"] for i in r["items"]], [None, "https://github.com/claration/impactor/releases/tag/v2.7.2", None])
         with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)])):
-            self.assertIsNone(self.m.readiness_windows(self.c, "G")["items"][1]["url"])
+            self.assertIsNone(self.m.readiness_windows(self.c, self.gid)["items"][1]["url"])
 
 
 class WinTarget(unittest.TestCase):

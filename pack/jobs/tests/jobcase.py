@@ -288,3 +288,20 @@ def synthetic_nacp(title, display):   # 0x4000 字节：ApplicationTitle[0] 名�
     b[:len(title.encode())] = title.encode()
     b[0x3060:0x3060 + len(display)] = display.encode()
     return bytes(b)
+
+
+def ios_fixture(c, gid, *, shell="SID1", pack="cafe01", compat=None, fixups=True):
+    """游戏库结构 v3 里一款出好的 iPhone 版：这款文件夹 image/ios/kit（容器件：main.npdm + 改写产物表）+ image/ios/pack（资源包，清单带 index_sha256），
+    game.json 的 ios 记出它的壳号、资源包号（compat 给了再记 hostAbi / dmshChain）→ (kit, pack)"""
+    import layout
+    image = layout.image_ios(c, gid)
+    kit, pk = image / "kit", image / "pack"
+    kit.mkdir(parents=True, exist_ok=True)
+    (kit / "main.npdm").write_bytes(b"META")
+    if fixups:
+        (kit / "main.fixups.tsv").write_text("")
+    (pk / "romfs").mkdir(parents=True, exist_ok=True)
+    (pk / "romfs/a").write_bytes(b"12345"); (pk / "index.tsv").write_text("romfs/a\t5\th\n")
+    (pk / "manifest.json").write_text(json.dumps({"version": 2, "index_sha256": pack}))
+    layout.update_info(c, gid, ios=dict(shellId=shell, pack=pack, **(compat or {})))
+    return kit, pk

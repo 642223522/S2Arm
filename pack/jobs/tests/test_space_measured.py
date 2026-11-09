@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from jobcase import JobCase, ROOT
 from core import Context, Failure
+import layout
 import library
 
 sys.path.insert(0, str(ROOT))
@@ -84,14 +85,15 @@ class SpaceMeasured(JobCase):
         c = self.context("ipa")
         game = self.game(10 * 10**9)
         library.atomic(self.c.library / "catalog.json", dict(schema=1, games=[game]))
-        extract = write(self.c.library / "cache" / GID / "extract" / "romfs.bin", MIB)
-        write(self.c.library / "iPhone" / GID / "junk.tmp", 2 * MIB)   # 成功后会被清掉的中间产物
-        (self.c.library / "iPhone" / GID / "roots" / "r@1").mkdir(parents=True)
-        os.link(extract, self.c.library / "iPhone" / GID / "roots" / "r@1" / "romfs.bin")   # 产物根硬链解包：不重复算
+        ios = layout.ios_work(self.c, GID)   # iPhone 出包工作目录 build/ios
+        extract = write(layout.build_dir(self.c, GID) / "extract" / "romfs.bin", MIB)
+        write(ios / "junk.tmp", 2 * MIB)   # 成功后会被清掉的中间产物
+        (ios / "roots" / "r@1").mkdir(parents=True)
+        os.link(extract, ios / "roots" / "r@1" / "romfs.bin")   # 产物根硬链解包：不重复算
         write(self.c.library / "runtime-cache" / GID / "play.bin", MIB)   # 玩的时候才长的运行时缓存：不算
-        write(self.c.library / "iPhone" / "0100000000000001" / "other.bin", MIB)   # 别款：不算
+        write(layout.ios_work(self.c, "0100000000000001") / "other.bin", MIB)   # 别款：不算
         library.prune_build(c, GID)
-        self.assertFalse((self.c.library / "iPhone" / GID / "junk.tmp").exists())   # 清理照常
+        self.assertFalse((ios / "junk.tmp").exists())   # 清理照常
         lines = [l.split("\t") for l in (self.c.library / library.SPACE_LEDGER).read_text(encoding="utf-8").splitlines() if not l.startswith("#")]
         self.assertEqual(len(lines), 1)
         r = dict(zip(library.SPACE_LEDGER_FIELDS, lines[0]))
