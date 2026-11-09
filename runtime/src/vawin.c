@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
@@ -127,11 +128,19 @@ static void guest_file_attach(void) {
     uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0, room = 0;
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
     room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
+#else
+    // Mac 没有单进程上限，但物理内存小时匿名内存会压进压缩器抖动：16 GB 机器跑 9 GB 池的款，压缩器占 11 GB、WindowServer 被看门狗杀、游戏约 1 帧 / 秒（#41 / #68）。
+    //   按物理内存减系统与其它 App 的预留当「剩余」：16 GB 跑 Switch 2 款开文件后备，大内存机器判装得下、行为不变
+    { uint64_t ph = 0; size_t phn = sizeof ph; uint64_t reserve = env_mb("S2A_GUEST_FILE_MAC_RESERVE_MB", 6144); if (!sysctlbyname("hw.memsize", &ph, &phn, NULL, 0) && ph > reserve) room = ph - reserve; }
 #endif
     // 宿主开销估计缺省 2560 MB（DOOM Eternal 实测约 2258 MB，往上取整）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     // 宿主开销估计缺省 2048 MB（11-07 真机实测分布，见 s2a_guest_file_wanted3）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     uint64_t host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen();
-    int died = room && s2a_guest_run_died();   // Mac（room 0）不看：Mac 不按内存杀进程
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+    int died = room && s2a_guest_run_died();
+#else
+    int died = 0;   // Mac 不按内存杀进程
+#endif
     int on = s2a_guest_file_wanted4(e, pool, room, seen, host, margin, died);
     const char *why = e && *e ? "按 S2A_GUEST_FILE 显式设定" : !room ? "自动：不知道单进程上限（Mac 会换页），缺省关"
                     : pool > room ? "自动：池本身大于剩余，装不下"
