@@ -129,7 +129,9 @@ def game_lines(request, game_id):
     lines += ["名称：" + str(game.get("name") or "-"), "版本：" + str(game.get("display") or "-")]
     for package in packages:
         lines.append(f"包：{package.get('type') or '?'} v{package.get('version', '?')} {package.get('format') or 'NSP/XCI'} {bytes_text(package.get('size'))}")
-    lines.append("原包合计：" + bytes_text(sum(p.get("size") or 0 for p in packages)))
+    sources = {p["sha256"]: p for p in packages if p.get("sha256")}
+    source_packages = list(sources.values()) + [p for p in packages if not p.get("sha256")]
+    lines.append("原包合计：" + bytes_text(sum(p.get("size") or 0 for p in source_packages)))
     return lines
 
 
