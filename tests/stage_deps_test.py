@@ -99,6 +99,14 @@ class StageDeps(unittest.TestCase):
                            env=dict(os.environ, TMPDIR=str(tmp), S2A_ROOTS=str(roots), S2A_DEPS_EXTERNAL=''))
         self.assertEqual((r.returncode, r.stdout.strip()), (0, 'BASEKEY'), r.stdout + r.stderr)
         self.assertTrue((w / '.stage_t.deps').is_file())
+        # 作业临时目录 S2A_JOB_TMP（游戏库 v3 接口）有就用它：记录在 $S2A_JOB_TMP/stage_deps/<pid>
+        job = b / 'job-tmp'; job.mkdir()
+        script = (f'source {ROOT}/pack/stage_keyfiles.sh; stage_deps_on || exit 9; '
+                  f'case $_SD_DIR in {job}/stage_deps/*) ;; *) echo "记录目录不在作业临时目录：$_SD_DIR"; exit 8;; esac; '
+                  f'rm -rf {tmp}/*; stage_deps_save {w} t BASEKEY {ROOT}/pack/stage_keyfiles.sh')
+        r = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                           env=dict(os.environ, TMPDIR=str(tmp), S2A_ROOTS=str(roots), S2A_JOB_TMP=str(job), S2A_DEPS_EXTERNAL=''))
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, 'BASEKEY'), r.stdout + r.stderr)
 
     def test_hook_off_without_env(self):
         env = {k: v for k, v in os.environ.items() if k != 'S2A_DEPS_OUT'}; env['PYTHONPATH'] = str(ROOT / 'tools/stage_deps_hook')
