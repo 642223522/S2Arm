@@ -2,8 +2,11 @@ using Ryujinx.HLE.Exceptions;
 using Ryujinx.HLE.HOS.Kernel.Process;
 using Ryujinx.HLE.HOS.Services.Hid;
 using Ryujinx.HLE.HOS.Tamper;
+using Ryujinx.HLE.HOS.Tamper.Conditions;
+using Ryujinx.HLE.HOS.Tamper.Operations;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -72,6 +75,80 @@ namespace S2A.Services
             return !string.IsNullOrEmpty(buildId) && buildId.StartsWith(stem, StringComparison.OrdinalIgnoreCase);
         }
 
+        // NativeAOT（iOS / Mac 包）：Ryujinx InstructionHelper.Create 按宽度 MakeGenericType(byte/ushort/uint/ulong) 再 Activator.CreateInstance 造操作与条件，
+        //   AOT 只认编译期见过的泛型实例——不在这里点名，真机编译就报「No parameterless constructor defined for OpMov`1[UInt32]」（11-09 测试机1 实测；JIT 单测测不到）。
+        //   名单与 Ryujinx.HLE.HOS.Tamper 里全部泛型操作 / 条件逐个对齐，服务层单测 CheatsTest 反射核对没有漏的
+        internal static readonly Type[] TamperGenerics = { typeof(OpAdd<>), typeof(OpAnd<>), typeof(OpLog<>), typeof(OpLsh<>), typeof(OpMov<>), typeof(OpMul<>), typeof(OpNot<>), typeof(OpOr<>), typeof(OpRsh<>), typeof(OpSub<>), typeof(OpXor<>), typeof(CondEQ<>), typeof(CondGE<>), typeof(CondGT<>), typeof(CondLE<>), typeof(CondLT<>), typeof(CondNE<>) };
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAdd<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAdd<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAdd<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAdd<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAnd<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAnd<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAnd<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpAnd<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLog<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLog<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLog<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLog<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLsh<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLsh<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLsh<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpLsh<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMov<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMov<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMov<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMov<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMul<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMul<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMul<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpMul<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpNot<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpNot<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpNot<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpNot<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpOr<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpOr<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpOr<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpOr<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpRsh<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpRsh<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpRsh<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpRsh<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpSub<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpSub<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpSub<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpSub<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpXor<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpXor<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpXor<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(OpXor<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondEQ<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondEQ<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondEQ<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondEQ<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGE<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGE<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGE<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGE<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGT<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGT<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGT<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondGT<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLE<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLE<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLE<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLE<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLT<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLT<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLT<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondLT<ulong>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondNE<byte>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondNE<ushort>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondNE<uint>))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors, typeof(CondNE<ulong>))]
+        internal static void KeepTamperGenerics() { }
+
         public static void Start()
         {
             // 文档根：同界面（ios/vpad_cheats.m cheats_dir）——$S2A_DOCS，没有时 iOS 取 App 的 Documents；Mac 没给 S2A_DOCS 不碰用户文稿夹
@@ -90,18 +167,20 @@ namespace S2A.Services
         private static void Run(string dir)
         {
             var programs = new List<Item>();
-            DateTime seen = DateTime.MinValue;
+            string seen = null;
             for (int tick = 0; ; tick++)
             {
                 if (tick % ReloadEveryTicks == 0)
                 {
-                    DateTime now = Stamp(dir);
+                    string now = Stamp(dir);
                     if (now != seen)
                     {
                         seen = now;
                         try { programs = Load(dir); }
                         catch (Exception e) { Console.Error.WriteLine($"【红】金手指：重载失败 {e.GetType().Name}: {e.Message}"); programs = new List<Item>(); }
                         WriteStatus(dir, programs);
+                        // 主程序还没装载（基址 0）：下一轮（约 1 秒后）再重载一次，不等玩家改文件
+                        if (programs.Exists(p => p.Status == "游戏未装载")) seen = null;
                     }
                 }
                 bool any = false, changed = false;
@@ -140,17 +219,20 @@ namespace S2A.Services
             }
         }
 
-        // 目录里所有 txt 与 enabled.txt 的最新改动时间（目录不在 = MinValue）
-        private static DateTime Stamp(string dir)
+        // 玩家可改的文件（*.txt，不含本线程自己写的 status.txt）的名字 + 改动时间签名：增删改任一份都变；目录不在 = 空串。
+        //   不看目录自身的改动时间——写 status.txt（临时文件改名）会动目录时间，看它就会每秒自己触发一次重载（11-09 测试机1 实测）
+        private static string Stamp(string dir)
         {
-            if (!Directory.Exists(dir)) return DateTime.MinValue;
-            DateTime t = Directory.GetLastWriteTimeUtc(dir);
+            if (!Directory.Exists(dir)) return "";
+            var parts = new List<string>();
             foreach (string f in Directory.EnumerateFiles(dir, "*.txt"))
             {
-                DateTime w = File.GetLastWriteTimeUtc(f);
-                if (w > t) t = w;
+                string n = Path.GetFileName(f);
+                if (n == "status.txt") continue;
+                parts.Add(n + "@" + File.GetLastWriteTimeUtc(f).Ticks);
             }
-            return t;
+            parts.Sort(StringComparer.Ordinal);
+            return string.Join("|", parts);
         }
 
         private static List<Item> Load(string dir)
@@ -163,13 +245,16 @@ namespace S2A.Services
             string buildId = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_main_build_id()) ?? "";
             Layout* l = Imports.s2a_layout_get();
             ulong exe = Imports.s2a_main_base();
+            KeepTamperGenerics();
             var process = new GameProcess();
             var files = new List<string>(Directory.EnumerateFiles(dir, "*.txt"));
             files.Sort(StringComparer.Ordinal);
+            int nfiles = 0;
             foreach (string path in files)
             {
                 string name = Path.GetFileName(path);
                 if (name == "enabled.txt" || name == "status.txt") continue;
+                nfiles++;
                 string stem = Path.GetFileNameWithoutExtension(path);
                 List<Entry> entries = Parse(name, File.ReadAllText(path));
                 if (entries == null) { programs.Add(new Item { Entry = new Entry { File = name, Name = "*" }, Status = "格式不对", Off = true }); continue; }
@@ -195,7 +280,7 @@ namespace S2A.Services
                 }
             }
             int n = 0; foreach (Item p in programs) if (p.Code != null) n++;
-            Console.Error.WriteLine($"金手指：{files.Count} 份文件、{programs.Count} 条，开着 {n} 条（主程序构建号 {buildId}）");
+            Console.Error.WriteLine($"金手指：{nfiles} 份文件、{programs.Count} 条，开着 {n} 条（主程序构建号 {buildId}）");
             return programs;
         }
 
