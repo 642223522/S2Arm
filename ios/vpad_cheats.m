@@ -3,6 +3,7 @@
 //   解析规则与 Cheats.cs Parse 一致：[名字] 普通条目，{名字} 主代码（不单独列开关，随同文件任一条开着执行），其余非空行是指令。
 #import "vpad_cheats.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include "s2a_docs.h"
 
 // 弱链接[lab]：s2a_main_build_id（runtime/src/loader.c 主程序构建号；输入工作台不链原生核，取不到就不显示版本号提示）
 const char *s2a_main_build_id(void) __attribute__((weak_import));
@@ -26,10 +27,9 @@ NSArray<NSDictionary *> *s2a_cheats_parse(NSString *text) {
     return out;
 }
 
-static NSURL *cheats_dir(void) {
-    const char *gd = getenv("S2A_DOCS");
-    NSURL *root = gd && *gd ? [NSURL fileURLWithPath:@(gd) isDirectory:YES] : [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-    return [root URLByAppendingPathComponent:@"cheats" isDirectory:YES];
+static NSURL *cheats_dir(void) {   // 文档根唯一取法（s2a_docs.h），与服务层 Cheats.cs 同一目录
+    char d[1024]; s2a_docs_path(d, sizeof d, "cheats");
+    return [NSURL fileURLWithPath:@(d) isDirectory:YES];
 }
 
 @interface S2ACheatFile : NSObject

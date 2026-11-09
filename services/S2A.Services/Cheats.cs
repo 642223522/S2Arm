@@ -74,10 +74,10 @@ namespace S2A.Services
 
         public static void Start()
         {
-            // 文档根：同界面（ios/vpad_cheats.m cheats_dir）——$S2A_DOCS，没有时 iOS 取 App 的 Documents；Mac 没给 S2A_DOCS 不碰用户文稿夹
-            string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
-            if (string.IsNullOrEmpty(docs) && OperatingSystem.IsIOS()) docs = Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "", "Documents");
-            if (string.IsNullOrEmpty(docs) || _thread != null) return;
+            // 文档根只经原生层 s2a_docs_dir（runtime/include/s2a_docs.h 唯一取法，与面板 ios/vpad_cheats.m 同一口径）；Mac 上没有界面入口，不起线程（不碰用户文稿夹）
+            if (_thread != null || !OperatingSystem.IsIOS()) return;
+            string docs = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_docs_dir());
+            if (string.IsNullOrEmpty(docs)) return;
             _thread = new Thread(() => Run(Path.Combine(docs, "cheats"))) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
         }
@@ -266,6 +266,7 @@ namespace S2A.Services
             [DllImport(Lib)] public static extern Layout* s2a_layout_get();
             [DllImport(Lib)] public static extern ulong s2a_main_base();
             [DllImport(Lib)] public static extern byte* s2a_main_build_id();
+            [DllImport(Lib)] public static extern byte* s2a_docs_dir();
         }
     }
 }
