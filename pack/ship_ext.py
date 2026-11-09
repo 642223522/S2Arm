@@ -301,6 +301,31 @@ def sign_app(app, mode, bundle_id, team):
         red(f"签名核实失败：{(r.stdout + r.stderr).strip().splitlines()[-1:]}")
 
 
+def _place_banner(gid, root, gd, entry):
+    """横版封面落位（出包期抓取）：条目已有 banner 且文件在就不动；产物根带 banner.jpg 就拷；
+    都没有才按程序号联网抓一次（pack/banner_fetch.py，GC 已验链）。抓不到只打黄字、该款退回只有 icon，绝不报红。
+    S2A_BANNER_FETCH=0 可关（离线组装）。"""
+    rel = f"{GAMES}/{gid}/banner.jpg"
+    if entry.get("banner") == rel and (gd / "banner.jpg").is_file():
+        return
+    if root is not None and (root / "banner.jpg").is_file():
+        shutil.copyfile(root / "banner.jpg", gd / "banner.jpg")
+        entry["banner"] = rel
+        return
+    if os.environ.get("S2A_BANNER_FETCH", "1") == "0":
+        return
+    try:
+        from pack import banner_fetch
+        ok, why = banner_fetch.fetch_banner(gid, gd / "banner.jpg")
+    except Exception as exc:   # 抓取层任何意外都不许带倒组装
+        ok, why = False, f"抓取异常 {exc}"
+    if ok:
+        entry["banner"] = rel
+        print(f"🟢 {gid} 横版封面：{why}")
+    else:
+        print(f"【黄】{gid} 横版封面没抓到（{why}），该款先用 icon")
+
+
 def cmd_container(a):
     shell, tables, sid = shell_checked(a.shell)
     roots = [Path(r) for r in a.game]
@@ -363,14 +388,16 @@ def cmd_container(a):
         (app / TABLES).unlink()
         for e in games:
             gid = e["title_id"]; gd = app / GAMES / gid
-            if gid not in new:   # 已有款原样带过来（加一款 = 在已有容器上重组装，已有各款逐字节不变）
+            if gid not in new:   # 已有款原样带过来（加一款 = 在已有容器上重组装，已有各款逐字节不变；仅横版封面缺了会补抓）
                 shutil.copytree(base / GAMES / gid, gd, symlinks=True)
                 shutil.copyfile(base / game_images(gid), app / game_images(gid))
+                _place_banner(gid, None, gd, e)
                 continue
             r = new[gid][0]
             place_game(r, gd, app / game_images(gid), tables)
             if (r / "icon.jpg").is_file():
                 shutil.copyfile(r / "icon.jpg", gd / "icon.jpg")
+            _place_banner(gid, r, gd, e)
             si = r / "save-identity.json"
             if si.is_file():
                 c = subprocess.run([sys.executable, str(HERE / "save_identity.py"), "--check", str(si), "--output", str(gd / "save-identity.json")], capture_output=True, text=True)

@@ -3081,8 +3081,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     g_bp_up_bytes += total;
     void *mb; uint64_t mo; id<MTLBuffer> upsrc = nil;
     if ((!unp || gdec) && !sparse && g_nvn_deswz_gpu) { up_begin(); upsrc = up_tex_src((uint64_t)t->mem, t->L.size, &mo); if (upsrc) mb = (__bridge void *)upsrc; }   // a pool that holds only textures stays out of the residency set (up_tex_src)
-    int use_gpu = (!unp || gdec) && !sparse && g_nvn_deswz_gpu && (upsrc || nvn_be_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // a sparse pool's texture is gathered through its page table on the CPU
-    if (g_nvn_deswz_gpu && !use_gpu && !sparse && (!unp || gdec)) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
+    int lin = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;   // 线性排布（tex_linear_needs_upload）只有 CPU 逐行拷，GPU 去混排不认
+    int use_gpu = (!unp || gdec) && !sparse && g_nvn_deswz_gpu && !lin && (upsrc || nvn_be_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // 线性排布（tex_linear_needs_upload）只有 CPU 逐行拷，GPU 去混排不认   // a sparse pool's texture is gathered through its page table on the CPU
+    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !lin && (!unp || gdec)) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
     if (use_gpu) {
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
         // The batch was opened above (up_begin): opening it again here could flush it at UP_KEEP_CAP and retire upsrc before the copies that read it
@@ -3590,6 +3591,30 @@ static int tex_fold_k(const tex_t *t) {
     int k = nvn_fold_k(t->d.width, t->d.height, (uint32_t)(row / (size_t)bpb), 16384); return k > 1 ? k : 0;
 }
 static uint32_t tex_fold_pitch(const tex_t *t) { int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); return bpb ? (uint32_t)((t->d.stride ? t->d.stride : (size_t)t->d.width * bpb) / (size_t)bpb) : 0; }
+// 线性贴图建不了零拷贝视图（11-09 质量线，#255 / #262）：池里偏移或行距不合本机 Metal 的线性贴图对齐（iPhone 64 字节，Mac 宽：哈迪斯 II 一张 8x8 BGRA 行距 32），
+//   或行距放不下一行 Metal 像素（上古卷轴5 A19：bytesPerRow 3840 < 5120，Metal 断言 abort）。原先前者退成私有贴图、只在建时从存储填一次，之后 CPU 写的全看不到；
+//   后者直接建视图触发断言。现在这类只读线性贴图（不是线性渲染目标）在 tex_mtl_ 并进 CPU 写过的贴图那条路（打包上传：从客体内存上传、脏页重传，去混排按行距逐行拷）
+// 线性贴图对齐：本机 Metal 的要求，诊断 DM_NVN_LINEAR_ALIGN=<字节> 抬高（Mac 上模拟 iPhone 的 64 字节做对照，只用于 A/B）
+static NSUInteger linear_align(uint32_t pf) {
+    static long ov = -1; if (ov < 0) { const char *e = getenv("DM_NVN_LINEAR_ALIGN"); ov = e ? atol(e) : 0; }
+    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]; return ov > (long)al ? (NSUInteger)ov : al;
+}
+static int tex_linear_needs_upload(const tex_t *t) {
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_NVN_LINEAR_UPLOAD"); off = e && !strcmp(e, "0"); }   // 诊断：=0 退回旧行为（私有贴图、只填一次），只用于 A/B
+    if (off) return 0;
+    // IMAGE 照走：线性贴图的图像槽本来就绑零（tex_linear / encode_args），实际只被采样（哈迪斯 II 那张 8x8 是 LINEAR | IMAGE）；线性渲染目标有 GPU 写，不走
+    if ((t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != NVN_TEXTURE_FLAGS_LINEAR || !t->mem || !t->pool) return 0;
+    if (t->d.target != NVN_TEXTURE_TARGET_2D || t->d.levels > 1 || t->d.samples > 1 || t->d.width > 16384 || t->d.height > 16384) return 0;   // 折叠 / 超限仍归 tex_linear
+    uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf || !bpb || bw != 1 || bh != 1 || nvn_fmt_expanded((uint32_t)t->d.format, NULL, NULL)) return 0;
+    size_t row = t->d.stride ? t->d.stride : (size_t)t->d.width * bpb; void *mb; uint64_t mo;
+    if (!nvn_be_addr((uint64_t)t->mem, (uint64_t)row * (t->d.height ? t->d.height : 1), &mb, &mo)) return 0;
+    NSUInteger al = linear_align(pf); int pfb = mtl_pf_bytes((MTLPixelFormat)pf);
+    int why = mo % al || row % al ? 1 : pfb && row < (size_t)(t->d.width ? t->d.width : 1) * pfb ? 2 : 0;
+    if (why) { static int n; if (n++ < 8) MLOG("linear texture ser=%llu %ux%u format %#x offset %#llx row pitch %zu: %s, uploaded from guest memory and re-uploaded on CPU writes instead of a zero-copy view",
+                                               (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)mo, row, why == 1 ? [NSString stringWithFormat:@"not aligned to %lu bytes", (unsigned long)al].UTF8String : "row pitch shorter than a row of Metal pixels"); }
+    return why != 0;
+}
 static id<MTLTexture> tex_linear(const tex_t *t) {
     // LINEAR_RENDER_TARGET is a linear layout too (SMBW's sky colour ramps: four 64×1 RGBA16F, written by the CPU every frame). Also in a pool the CPU cannot access, whose buffer holds what
     //   its storage held at creation (see tex_init_fill): Rhythm Heaven Groove's 228 linear R8 textures (sprite masks), read from files into CPU_NO_ACCESS pools, were private textures of zeros
@@ -3614,9 +3639,12 @@ static id<MTLTexture> tex_linear(const tex_t *t) {
     if (!nvn_be_addr((uint64_t)t->mem, (uint64_t)row * (t->d.height ? t->d.height : 1), &mb, &mo)) { RED_ONCE(64, "linear texture storage is not in a memory pool (%ux%u format %#x)", t->d.width, t->d.height, t->d.format); return nil; }
     id<MTLBuffer> b = (__bridge id<MTLBuffer>)mb;
     if (k > 1 && mo + (uint64_t)row * k * (fh - 1) + (uint64_t)row * (k - 1) + (uint64_t)t->d.width * bpb > b.length) { RED_ONCE(139, "folded linear texture ser=%llu %ux%u: its last folded row would run past the pool buffer; not made", (unsigned long long)t->serial, t->d.width, t->d.height); return nil; }
-    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
+    NSUInteger al = linear_align(pf);
     if (mo % al || row % al) { RED_ONCE(65, "linear texture offset %#llx / row pitch %zu not aligned to %lu bytes; created as a private texture (CPU writes invisible)", (unsigned long long)mo, row, (unsigned long)al); return nil; }
-    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:(t->d.width ? t->d.width : 1) + (NSUInteger)(k - 1) * (row / (size_t)bpb) height:fh mipmapped:NO];
+    NSUInteger dw = (t->d.width ? t->d.width : 1) + (NSUInteger)(k - 1) * (row / (size_t)bpb); int pfb = mtl_pf_bytes((MTLPixelFormat)pf);
+    // 行距放不下一行 Metal 像素：建视图会触发 Metal 断言、整进程 abort（#262 上古卷轴5 A19：bytesPerRow 3840 < 5120）。只读的这类已在 tex_mtl_ 改走上传（tex_linear_needs_upload），到这里的是别的（渲染目标 / 图像 / 折叠）
+    if (pfb && row * (NSUInteger)k < dw * (NSUInteger)pfb) { RED_ONCE(65, "linear texture ser=%llu %ux%u format %#x row pitch %zu shorter than %lu Metal pixels of %d bytes: no zero-copy view (would abort on Metal's validation); private texture", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, row, (unsigned long)dw, pfb); return nil; }
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:dw height:fh mipmapped:NO];
     d.resourceOptions = b.resourceOptions;
     d.usage = MTLTextureUsageShaderRead | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0) | (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET ? MTLTextureUsageRenderTarget : 0);
     id<MTLTexture> lt = [b newTextureWithDescriptor:d offset:mo bytesPerRow:row * (NSUInteger)k];
@@ -3960,7 +3988,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     }
     id have = tex_get(t->serial);
     if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
-    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // storage the CPU wrote before its first use (tex_cpu_content)
+    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }
+    if (!packaged && !have && on_sub_thread() && tex_linear_needs_upload(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // 建不了零拷贝视图的只读线性贴图：上传 + CPU 写后重传（#255 / #262）   // storage the CPU wrote before its first use (tex_cpu_content)
     if (packaged && atomic_load(&g_sub_thread_set) && !on_sub_thread()) {
         // S2Arm 10-25：上传批只归提交线程（up_owner_check），上屏线程等别的线程用到 CPU 写过的贴图时不上传：已传过的用现有那份（脏了留给提交线程下次用到时重传），
         //   没传过的按 GPU 贴图走下面的路。马车8 初始化时 CPU 写过交换链贴图的池，tex_flush_upload 开时它算「随包」，上屏线程 present_now → pkg_upload → abort
@@ -10153,7 +10182,7 @@ static void pso_predict_rest_(void) {
     uint32_t cf[8]; memcpy(cf, g_pass.cfmt, sizeof cf); uint32_t df = g_pass.dfmt, sf = g_pass.sfmt, samples = g_pass.samples, dfull = df, sfull = sf; int kicked0 = (int)g_pp_kicked, draws = 0;
     fz_cursor cur = fz_cursor_from_exec();
     // Collect them all first, then dispatch: keys for "attachments attached as-is" go first (most likely to be used), the other attach modes after -- background concurrency is limited, and what is dispatched first is compiled first
-    enum { QN = 160 }; static struct { pso_key k; void *vs, *fs; } qa[QN], qb[QN]; int na = 0, nb = 0;
+    enum { QN = 160 }; static struct { pso_key k; void *vs, *fs; } qa[QN]; int na = 0;
     for (int guard = 0; guard < 200000 && na < QN; guard++) {
         const uint8_t *q; op_hdr hq; const void *aq;
         if (!fz_next(&cur, &q, &hq, &aq)) break;
@@ -10179,10 +10208,9 @@ static void pso_predict_rest_(void) {
                 if (v == 2 && !sfull) continue; if (v == 3 && (!dfull || !sfull)) continue;
                 pso_key k; pso_key_fill(&k, vs, fs, cf, dv[v], sv[v], samples, 0);
                 if (hm_get_id(&g_pso, &k)) continue;
-                int dup = 0; for (int i = 0; i < (v ? nb : na) && !dup; i++) dup = !memcmp(&(v ? qb : qa)[i].k, &k, sizeof k);
+                int dup = 0; for (int i = 0; i < na && !dup; i++) dup = !memcmp(&qa[i].k, &k, sizeof k);
                 if (dup) continue;
-                if (!v && na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++; }
-                else if (v && nb < QN) { qb[nb].k = k; qb[nb].vs = (__bridge void *)vs; qb[nb].fs = (__bridge void *)fs; nb++; }
+                if (na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++; }   // 只预测原样附件（v 恒 0）；原先另填一份不派发的 qb[160]，审计 P2-160 删
             }
             continue;
         }
@@ -10192,7 +10220,6 @@ static void pso_predict_rest_(void) {
     (void)df; (void)sf;
     int busy = 0; pthread_mutex_lock(&g_pp_mu); for (int i = 0; i < PSO_PEND_MAX; i++) busy += g_pp[i].used && !g_pp[i].done; pthread_mutex_unlock(&g_pp_mu);
     for (int i = 0; i < na && busy < PSO_AHEAD; i++) { uint64_t k0 = g_pp_kicked; pso_pend_kick(&qa[i].k, (__bridge NvShader *)qa[i].vs, (__bridge NvShader *)qa[i].fs); busy += g_pp_kicked != k0; }
-    (void)nb; (void)qb;
     memcpy(&S, &Ssave, sizeof S); R = Rsave; args_dirty_all(); g_pso_dirty = pso_dirty; g_dss_dirty = dss_dirty; prog_resolve();
     static uint64_t logged; if (g_pp_kicked > (uint64_t)kicked0 && (++logged <= 20 || !(logged & (logged - 1))))   // the first 20, then every power of two
         MLOG("parallel precompile #%llu: %d draws left in this submission, %d pipelines handed to the background (so far kicked %llu, taken by their draw %llu, dropped untaken %llu); "
@@ -14447,15 +14474,17 @@ static fj_state g_fj; static int g_fj_geo; static char g_fj_geo_why[160]; static
 //   ran inside grab_present and cost d2r 2.4% slow frames. The present thread only picks which grab is checked and keeps the geometry state of that moment (g_fj_due, a token per pick);
 //   the consumer hands its own copy of those bytes back with the token (mtl_fit_judge_shot). fj_judge's own buffers (S->buf, fj_dark_band / fj_seam statics) are guarded by g_fj_run_mu
 static pthread_mutex_t g_fj_mu = PTHREAD_MUTEX_INITIALIZER, g_fj_run_mu = PTHREAD_MUTEX_INITIALIZER;
-static struct { uint64_t tok, n; int geo, kind; char why[160]; } g_fj_due;   // under g_fj_mu (held for a copy only: the present thread takes it)
+static struct { uint64_t tok, n; int geo, kind, cw, ch; char why[160]; } g_fj_due;   // under g_fj_mu (held for a copy only: the present thread takes it); cw / ch: the picture's size at that present (fit_geom)
 static _Thread_local uint64_t g_fj_tok_now;   // set only around the grab callback, on the thread that calls it: token of the grab being handed over (0 = not picked for the check)
 int mtl_fit_bad(int kind) { return atomic_load(&g_fj.st[kind & 1]); }   // tests: 1 = the geometry (0) / content (1) check last said not full screen
 static void fit_on(void) { static int once; if (!once++) MLOG("[画] 满屏判据 已开（直连上屏：几何每次出图判，内容在自动玩家截图上判、至少隔 30 次出图一次；免判 1 = 16:9 原比例页、4 = 游戏自己出宽图的纯 2D 帧）"); }   // the run executors read this line (ops-line receiving end)
 // S2Arm: native widen.c refreshes this for each session. Match gal_present.m and do not retain the previous session's setting.
 static int fit_narrow(void) { const char *e = getenv("S2A_WIDEN_NARROW"); return e && !strcmp(e, "1"); }
+static int g_fj_cw, g_fj_ch;   // present thread: the picture's size at the last fit_geom (mtl_fit_judge_shot judges only the part of the grab it was drawn into)
 static void fit_geom(double dw, double dh, NSUInteger cw, NSUInteger ch) {
     fit_on();
     if (dw <= 0 || dh <= 0 || !cw || !ch) return;
+    g_fj_cw = (int)cw; g_fj_ch = (int)ch;
     double s = fmin(dw / cw, dh / ch), vw = fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 ? dw : round(cw * s);
     g_fj_geo = vw < dw - 2 && atomic_load(&g_fit_pillar) != 1 && atomic_load(&g_fit_pillar) != 5 && !fit_narrow();   // 5 = 原比例回退（3D 镜头帧回退上屏收进中间 16:9，留边是有意的）
     if (g_fj_geo) snprintf(g_fj_geo_why, sizeof g_fj_geo_why, "画面 %lux%lu 上屏只占 %.0f / %.0f 像素宽（左右留边）", (unsigned long)cw, (unsigned long)ch, vw, dw);
@@ -14468,7 +14497,7 @@ static uint64_t fit_pick(void) {   // present thread, at each grab: pick it for 
     if (g_present_n - g_fj_last < 30 && !(g_fj_geo && !atomic_load(&g_fj.st[0]))) return 0;
     g_fj_last = g_present_n; fit_on(); static uint64_t seq;
     pthread_mutex_lock(&g_fj_mu);
-    uint64_t tok = g_fj_due.tok = ++seq; g_fj_due.n = g_present_n; g_fj_due.geo = g_fj_geo; memcpy(g_fj_due.why, g_fj_geo_why, sizeof g_fj_due.why);
+    uint64_t tok = g_fj_due.tok = ++seq; g_fj_due.n = g_present_n; g_fj_due.geo = g_fj_geo; g_fj_due.cw = g_fj_cw; g_fj_due.ch = g_fj_ch; memcpy(g_fj_due.why, g_fj_geo_why, sizeof g_fj_due.why);
     g_fj_due.kind = fit_narrow() ? 1 : atomic_load(&g_fit_pillar);   // not on the widen verified list: 16:9 page by design (kind 1)
     pthread_mutex_unlock(&g_fj_mu);
     return tok;
@@ -14513,11 +14542,18 @@ int mtl_fit_last(uint64_t *seq, uint64_t *present_n) {
 uint64_t mtl_grab_fit_token(void) { return g_fj_tok_now; }   // call inside the grab callback: nonzero = these bytes are picked; pass it to mtl_fit_judge_shot with a copy of them
 int mtl_fit_judge_shot(uint64_t tok, const uint8_t *p, size_t w, size_t h, size_t row) {   // any thread but the present one; 1 = judged (a newer pick replaces an unjudged one)
     pthread_mutex_lock(&g_fj_mu);
-    int ok = tok && tok == g_fj_due.tok && p && w >= 8 && h >= 8; uint64_t n = g_fj_due.n; int geo = g_fj_due.geo, kind = g_fj_due.kind; char why[160]; memcpy(why, g_fj_due.why, sizeof why);
+    int ok = tok && tok == g_fj_due.tok && p && w >= 8 && h >= 8; uint64_t n = g_fj_due.n; int geo = g_fj_due.geo, kind = g_fj_due.kind, cw = g_fj_due.cw, ch = g_fj_due.ch; char why[160]; memcpy(why, g_fj_due.why, sizeof why);
     if (ok) g_fj_due.tok = 0;
     pthread_mutex_unlock(&g_fj_mu);
     if (!ok) return 0;
-    fit_px f = {p, row, (int)w, (int)h}; fj_src s = {(int)w, (int)h, &f, fit_col, fit_row};
+    // 只判画面画进去的那块（11-09 质量线，哈迪斯 II Mac 验证局）：上屏按比例把画面放进窗口（present_encode 同一规则，宽高比差 1% 内算铺满），窗口比例 ≠ 画面比例时
+    //   多出来的边是上屏自己留的。Mac 窗口 16:9、模拟手机屏 2.17:1 时整窗不比 16:9 宽，横向内容判据整段不跑，画面中间露空也报满屏 0 红；手机上画面就是整屏，裁不裁一样
+    int vx = 0, vy = 0, vw = (int)w, vh = (int)h;
+    if (cw > 0 && ch > 0 && fabs(((double)w / h) / ((double)cw / ch) - 1) >= 0.01) {
+        double sc = fmin((double)w / cw, (double)h / ch); vw = (int)lround(cw * sc); vh = (int)lround(ch * sc);
+        if (vw < 8 || vh < 8 || vw > (int)w || vh > (int)h) { vw = (int)w; vh = (int)h; } else { vx = ((int)w - vw) / 2; vy = ((int)h - vh) / 2; }
+    }
+    fit_px f = {p + (size_t)vy * row + (size_t)vx * 4, row, vw, vh}; fj_src s = {vw, vh, &f, fit_col, fit_row};
     static int npil;
     pthread_mutex_lock(&g_fj_run_mu); int r0 = atomic_load(&g_fj.nred), p0 = g_fj.pst; fj_judge(&g_fj, &s, geo, why, kind, n); int r1 = atomic_load(&g_fj.nred), p1 = g_fj.pst;
     int pil = p1 != p0 && (p1 == 1 || p1 == 3 || p1 == 5) && npil < 8 ? ++npil : 0; pthread_mutex_unlock(&g_fj_run_mu);

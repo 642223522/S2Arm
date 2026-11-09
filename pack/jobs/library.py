@@ -689,7 +689,7 @@ def pack_need_bytes(packages, unpacked=False, windows=None):
     size = _pack_input_bytes(packages)
     copy = size * 11 // 10
     windows = os.name == "nt" if windows is None else windows
-    return (0 if unpacked else copy) + (copy if windows else 0) + _pack_direct_bytes(size)
+    return (0 if unpacked else copy) + (copy if windows else 0) + copy + _pack_direct_bytes(size)   # 再加一份 copy：单文件镜像 romfs.img 是真实占盘的一份（pack/romfs_image.py）
 
 
 # 出包实测账（11-07 联合开发者旷野之息：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
@@ -898,6 +898,27 @@ def requirement_errors(c, game):
     return missing
 
 
+def source_identity(packages, size):
+    """原件身份（catalog 里的 sha256，64 位十六进制，判重 / 构建键 / 解包暂存名都用它）：按读取器给的各包 titleId、类型、版本与 NCA content ID
+    （任天堂按内容算的哈希）再加文件大小算，不读全文件——原先整份算 SHA-256，十几 GB 的原件放在机械盘 / U 盘上「只是添加」就要几分钟（11-09 玩家反馈）。
+    一个文件一个身份（同一个 XCI 里的本体与更新共用，下游按它去重）。读取器没给 content ID（NUP 容器、旧读取器）→ None，调用方照旧整份算"""
+    rows = []
+    for m in packages:
+        ids = m.get("contentIds")
+        if not isinstance(ids, list) or not ids or not all(isinstance(x, str) and re.fullmatch(r"[0-9a-f]{32}", x) for x in ids):
+            return None
+        rows.append([m["titleId"], m["type"], m["version"], sorted(ids)])
+    return hashlib.sha256(json.dumps(dict(v=1, packages=sorted(rows), size=size), separators=(",", ":")).encode()).hexdigest()
+
+
+def _same_package(p, metadata, sha, size):
+    """已在库里的同一份：身份相同；或 titleId、类型、版本、文件大小都相同——老记录的 sha256 是整份哈希、新导入按 content ID 算，两种都要认得
+    （老记录不改写：它进构建键，改了老游戏都得冷重出）"""
+    if p["titleId"] != metadata["titleId"]:
+        return False
+    return p["sha256"] == sha or (p.get("type") == metadata["type"] and p.get("version") == metadata["version"] and p.get("size") == size)
+
+
 def import_games(c):
     c.begin("检查导入文件")
     c.require_library()
@@ -948,8 +969,11 @@ def import_games(c):
             for i, source in enumerate(files):
                 c.begin("读取游戏信息", idx * 2 + 1, total * 2)
                 packages = nup_inspect(c, source, icons) if source.suffix.lower() == NUP_SUFFIX else inspect(c, source, icons)
-                c.begin("校验游戏文件", idx * 2 + 2, total * 2)
-                sha = digest(source, c.progress)
+                c.begin("校验游戏文件", idx * 2 + 2, total * 2)   # 读完元数据后文件不见了 / 读不了归在这一步（input_missing），同原先整份算哈希时
+                size = source.stat().st_size
+                sha = source_identity(packages, size)
+                if sha is None:   # 读取器没给 content ID：照旧整份算
+                    sha = digest(source, c.progress)
                 for metadata in packages:
                     tid = metadata["baseId"]
                     game = next((g for g in cat["games"] if g["id"] == tid), None)
@@ -957,7 +981,7 @@ def import_games(c):
                         game = dict(id=tid, name=metadata["name"] or tid, display="", packages=[], hidden=False)
                         cat["games"].append(game)
                     game["hidden"] = False
-                    same = [p for p in game["packages"] if p["sha256"] == sha and p["titleId"] == metadata["titleId"]]
+                    same = [p for p in game["packages"] if _same_package(p, metadata, sha, size)]
                     duplicate = bool(same)
                     for p in same:
                         # 同一份内容换了位置再放一次（挪了盘 / 改了文件夹）：改记新位置；复制进库的旧托管副本还在就照旧用（不改记成引用），
@@ -971,7 +995,7 @@ def import_games(c):
                             target.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copyfile(icon, target)
                         metadata.pop("icon", None)
-                        game["packages"].append(metadata | dict(path=str(source), sha256=sha, size=source.stat().st_size))
+                        game["packages"].append(metadata | dict(path=str(source), sha256=sha, size=size))
                         if metadata["name"]:
                             game["name"] = metadata["name"]
                     results.append(dict(id=tid, name=source.name, duplicate=duplicate))

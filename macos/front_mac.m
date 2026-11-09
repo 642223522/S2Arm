@@ -18,6 +18,7 @@
 #include "../runtime/include/s2a_direct_prompt.h"
 #include "../runtime/include/s2a_gfx_mode.h"
 #include "../runtime/include/s2a_hud.h"
+#include "../runtime/include/s2a_home_quit.h"
 int s2a_screen_fit(int pw, int ph);   // runtime/src/widen.c：按窗口像素跟屏
 
 void s2a_host_shutdown(const char *why);
@@ -309,6 +310,20 @@ static GCExtendedGamepad *active_pad(NSArray *controllers) {
     }
     return best;
 }
+// 手柄事件驱动（A2）：valueChangedHandler 走 GameController 的回调队列，切到主队列后与 AppKit 键盘 / 鼠标事件串行，
+//   sample_input 可以直接读 keys / mouse / config。120Hz 定时器仍保留给键盘 / 鼠标的粘键核对，并顺手补装新连接的手柄。
+static void install_pad_handler(GCController *controller) {
+    GCExtendedGamepad *pad = controller.extendedGamepad;
+    if (!pad || pad.valueChangedHandler) return;
+    controller.handlerQueue = dispatch_get_main_queue();
+    pad.valueChangedHandler = ^(GCExtendedGamepad *profile, GCControllerElement *element) {
+        (void)profile; (void)element;
+        sample_input();
+    };
+}
+static void install_pad_handlers(void) {
+    for (GCController *controller in GCController.controllers) install_pad_handler(controller);
+}
 // 手柄六轴（同 iOS 的 s2a_pad_read_motion 约定）：游戏要六轴时才开传感器。主线程跟着输入采样读 GCMotion，游戏线程取最新一份
 static _Atomic int g_motion_wanted;
 static pthread_mutex_t g_motion_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -350,10 +365,24 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_mot
     pthread_mutex_unlock(&g_motion_mu);
     return known;
 }
+// 实体手柄退出游戏（#276）：决策在 runtime/include/s2a_home_quit.h，界面（提示条、失焦、退出）在 S2AMacDelegate 后面的 home_quit_ui
+static s2a_hq_state g_hq;
+static void home_quit_ui(s2a_hq_action action);
+static void sample_home_quit(GCExtendedGamepad *pad) {
+    if (!pad) return;
+    static __weak GCController *claimed;   // Home 默认归系统（启动台 / 游戏面板）：每个手柄接管一次
+    if (pad.controller != claimed && pad.buttonHome) { pad.buttonHome.preferredSystemGestureState = GCSystemGestureStateDisabled; claimed = pad.controller; }
+    BOOL labelled = s2a_pad_labels_abxy(pad.controller.productCategory.UTF8String, pad.controller.vendorName.UTF8String);
+    BOOL home = pad.buttonHome.isPressed, a = (labelled ? pad.buttonA : pad.buttonB).isPressed, b = (labelled ? pad.buttonB : pad.buttonA).isPressed;
+    s2a_hq_action act = s2a_hq_step(&g_hq, now_ns(), home || (pad.buttonMenu.isPressed && pad.buttonOptions.isPressed), home, a, b);
+    if (act != S2A_HQ_NONE) home_quit_ui(act);
+}
 static void sample_input(void) {
     int32_t sticks[4] = {0}; uint32_t buttons = 0;
     sample_motion(focused ? active_pad(GCController.controllers) : nil);
     if (!focused) { publish(0, sticks); return; }
+    sample_home_quit(active_pad(GCController.controllers));
+    if (g_hq.open) { publish(0, sticks); return; }
     NSDictionary *keyboard = config[@"keyboard"];
     NSUInteger consumed = 0;
     for (NSString *name in keyboard) {
@@ -440,6 +469,7 @@ static void release_stale_mouse(void) {
     reconcile_held(mouse, stale_mouse, mouse_up_polls, ^BOOL(unsigned b) { return b < 64 && ((pressed >> b) & 1); }, nil);
 }
 static void poll_input(void) {
+    install_pad_handlers();
     release_stale_keys();
     release_stale_mouse();
     sample_input();
@@ -608,6 +638,7 @@ static NSString *lan_warning(void) {
 @property(strong) S2APromptBanner *banner;
 @property(strong) S2AMacInputGuide *inputGuide;
 @end
+static __weak S2AMacDelegate *g_delegate;
 @implementation S2AMacDelegate
 - (void)pollPrompt {
     // 存档不能原子提交（审计 P2-13；判定与 iOS 共用 runtime/src/direct_prompt.c s2a_save_atomic_poll）：非 0 提示一次
@@ -628,6 +659,23 @@ static NSString *lan_warning(void) {
 - (void)applicationDidResignActive:(NSNotification *)note { (void)note; display_focus_publish(NO); set_mouse_capture(NO); focused = NO; reset_input(); }
 - (void)applicationDidBecomeActive:(NSNotification *)note { (void)note; display_focus_publish(NSApp.isActive && self.window.isKeyWindow); focused = self.window.isKeyWindow; }
 @end
+
+// 确认条：打开时游戏失焦（同 Switch 的 HOME 菜单）、不收手柄输入；A / 点「退出」走关窗同一条收尾（等存档写完），B / Home / 点「回到游戏」/ 30 秒没理会收起
+static void home_quit_ui(s2a_hq_action action) {
+    S2AMacDelegate *d = g_delegate;
+    if (!d) return;
+    switch (action) {
+        case S2A_HQ_OPEN:
+            fprintf(stderr, "[s2a] 手柄按住 Home：弹出退出确认\n");
+            display_focus_publish(NO);
+            d.banner.onAnswer = ^(BOOL accept) { s2a_hq_close(&g_hq); if (accept) [g_delegate shutdown]; else display_focus_publish(NSApp.isActive && g_delegate.window.isKeyWindow); };
+            [d.banner showTitle:@S2A_DPROMPT_HOME_QUIT_TITLE body:@S2A_DPROMPT_HOME_QUIT_BODY accept:@S2A_DPROMPT_HOME_QUIT_ACCEPT decline:@S2A_DPROMPT_HOME_QUIT_DECLINE seconds:30];
+            break;
+        case S2A_HQ_QUIT: [g_delegate shutdown]; d.banner.onAnswer = nil; d.banner.hidden = YES; fprintf(stderr, "[s2a] 手柄按 A：退出游戏\n"); break;
+        case S2A_HQ_CANCEL: d.banner.onAnswer = nil; d.banner.hidden = YES; display_focus_publish(NSApp.isActive && d.window.isKeyWindow); break;
+        default: break;
+    }
+}
 
 // 整块面板穿透鼠标；refusesFirstResponder 本身并不能避免 NSTextField 截住点击。
 @interface S2AHUDPanel : NSView
@@ -666,7 +714,7 @@ void s2a_front_run(void (*guest_main)(void)) {
         apply_mouse_options();
         NSApplication *app = NSApplication.sharedApplication;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        S2AMacDelegate *delegate = [S2AMacDelegate new]; app.delegate = delegate;
+        S2AMacDelegate *delegate = [S2AMacDelegate new]; app.delegate = delegate; g_delegate = delegate;
         // 游戏日历（#863）：Mac 睡眠时游戏计数器停（同 Switch 睡眠），唤醒后把睡掉的时长补进 Ryujinx 稳态时钟
         [NSWorkspace.sharedWorkspace.notificationCenter addObserverForName:NSWorkspaceDidWakeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; s2a_clock_catchup(); s2a_host_sleep_set(0); }];
         // 系统睡眠报给服务层（接口 v2.15）：psc 向游戏发休眠请求，唤醒时发唤醒请求
@@ -722,6 +770,7 @@ void s2a_front_run(void (*guest_main)(void)) {
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
         [app activateIgnoringOtherApps:YES]; focused = YES;
+        install_pad_handlers();
         display_focus_publish(app.isActive && window.isKeyWindow);
         delegate.inputGuide = [[S2AMacInputGuide alloc] initWithName:window.title gameID:gameIdentity[@"gameId"] mapping:config gameWindow:window];
         controls.target = delegate.inputGuide;

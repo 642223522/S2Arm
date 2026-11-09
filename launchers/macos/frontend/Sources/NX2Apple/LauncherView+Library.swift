@@ -235,8 +235,13 @@ extension LauncherView {
 
     private func moreRow(_ title: String, _ symbol: String, danger: Bool = false, action: @escaping () -> Void) -> some View {
         Button { moreFor = nil; action() } label: {
-            Label(title, systemImage: symbol).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
-                .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
+            // 图标放固定宽度的框里、和文字按中线对齐：Label 的图标宽度跟着符号走，各行文字起点会错开（11-09 维护者截图）
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20, alignment: .center)
+                Text(title).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
+            .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
         }
         .buttonStyle(.plain)
     }
@@ -287,8 +292,10 @@ struct CoverFill: View {
     let image: NSImage
     var body: some View {
         GeometryReader { g in
+            // 填满后溢出的部分 .clipped() 只裁显示、不裁点击区域：不限定的话，接近正方形的封面会把点击区域伸出框外，
+            //   盖住上面的「返回游戏库」、旁边的卡片（11-09 维护者：丝之歌出包页返回点不了；AX 量到封面按钮高 236、看得见的只有 131）
             Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
-                .frame(width: g.size.width, height: g.size.height).clipped()
+                .frame(width: g.size.width, height: g.size.height).clipped().contentShape(Rectangle())
         }
     }
 }

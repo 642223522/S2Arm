@@ -123,6 +123,28 @@ static pthread_mutex_t g_vm_writer = PTHREAD_MUTEX_INITIALIZER;
 #endif
 static void host_write(uint64_t a, uint64_t n) { if (g_hooks.host_write) g_hooks.host_write(a, n); }
 void s2a_host_write_hook(uint64_t a, uint64_t n) { host_write(a, n); }   // thread.c 等别处写游戏内存前调
+#ifdef __APPLE__
+// 装载器（宿主扮演 rtld）写游戏内存里的一个 8 字节槽：nn::ro 装 NRO 后把起局没解析的导入补绑过去（loader.c s2a_nro_map）。
+//   11-09 玩家 iPhone 17 Pro Max（01001BA027DD8000，Nmpl 引擎）：游戏 DT_INIT 后用 SetMemoryPermission 把 main 的 RELRO（导入表所在）改只读，
+//   随后装 romfs/nro/NmplDLL.nro，补绑直接写只读页 → SIGBUS（同地址连崩 3 局）。真机 rtld 不受游戏设的页权限约束（这类导入走延迟绑定），宿主也不该受：
+//   槽所在页可写就直接写；只读的数据页经跟踪器同一钩子（guest_protect，与缺页自愈串行）临时加写、写入、恢复原保护；代码页（可执行）一律不写。返回 0 成功、-1 没写
+int s2a_loader_store64(uint64_t *where, uint64_t v) {
+    uint64_t a = (uint64_t)(uintptr_t)where, page = memory_protection_page(); if (!page || (a & 7)) return -1;
+    uint64_t lo = a & ~(page - 1);
+    vm_address_t ra = (vm_address_t)lo; vm_size_t rs = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+    if (vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS || ra > lo) return -1;
+    if (info.protection & VM_PROT_EXECUTE) return -1;
+    host_write(a, 8);
+    if (info.protection & VM_PROT_WRITE) { __atomic_store_n(where, v, __ATOMIC_RELEASE); return 0; }
+    int cur = (info.protection & VM_PROT_READ) ? PROT_READ : PROT_NONE;
+    int (*prot)(uint64_t, uint64_t, int) = g_hooks.guest_protect;
+    if (prot ? prot(lo, page, cur | PROT_READ | PROT_WRITE) : mprotect((void *)(uintptr_t)lo, page, cur | PROT_READ | PROT_WRITE)) return -1;
+    __atomic_store_n(where, v, __ATOMIC_RELEASE);
+    int e = prot ? prot(lo, page, cur) : mprotect((void *)(uintptr_t)lo, page, cur);
+    prot_changed(lo, page);
+    return e ? -1 : 0;
+}
+#endif
 #ifdef __ANDROID__
 // 启动期间、尚未放行guest时登记同一个shared VM写入/权限通道，不建立第二张映射表。
 int s2a_android_tracking_vm_prepare(void) {
@@ -368,6 +390,12 @@ uint64_t s2a_npdm_window_need(const char *npdm) {
     if (npdm_read(npdm, &t, &sr, &ms, &pid, 0)) return 0;
     uint64_t mod = s2a_module_span(npdm_dir(npdm));
     return mod ? s2a_layout_need(t, sr, mod) : 0;   // 读不到模块 = 不知道要多大
+}
+// 本款程序号（vawin.c 构造函数占窗口时按名字取）：同 s2a_npdm_window_need 的不写本局状态读法（apply = 0）；读不到 / 没有 ACI0 为 0。
+//   审计 P1-139：构造期客体内存文件后备要按程序号找本款实测峰值 / 「上一局前台死掉」标记，那时图形模式还没落定，不能经 s2a_npdm_program_id → s2a_gfx_mode
+uint64_t s2a_npdm_pid(const char *npdm) {
+    uint32_t t, ms; uint64_t sr, pid;
+    return npdm_read(npdm, &t, &sr, &ms, &pid, 0) ? 0 : pid;
 }
 void s2a_thread_set_caps(uint64_t core_mask, uint64_t prio_mask);   // thread.c：CreateThread 按 NPDM 核 / 优先级掩码校验
 void s2a_thread_set_npdm(int def_core, int main_prio);              // thread.c：NPDM 缺省核 / 主线程优先级（S2A_SCHED_HZ 用）
