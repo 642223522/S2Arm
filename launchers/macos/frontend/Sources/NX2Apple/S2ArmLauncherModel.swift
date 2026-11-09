@@ -123,6 +123,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var environmentError: String?
     @Published var showEnvironment = false
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
+    @Published var updateState: UpdateState = .idle
+    var updateReady: [String: Any]?
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
@@ -142,6 +144,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var targetModels: [[String: Any]] = []
     @Published private(set) var targetOS: [Int] = []
     @Published var chosenModel: String?
+    /// 连着多台 iPhone / iPad 时玩家在出包页选的那台（设备号，记住到下次；#272）。按机型优化和装到设备都用它
+    @Published var chosenDevice: String? = UserDefaults.standard.string(forKey: S2ArmLauncherModel.exportDeviceKey) {
+        didSet { UserDefaults.standard.set(chosenDevice, forKey: Self.exportDeviceKey) }
+    }
+    static let exportDeviceKey = "S2AExportDevice"
     /// 排队等着出的；运行页被收起（后台继续）；本次打开以来每款最近一次的出包结果；正在查看的结果。
     @Published private(set) var exportQueue: [QueuedExport] = []
     @Published var sessionHidden = false
@@ -151,6 +158,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
+    @Published private(set) var customizing = false
+    @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
     @Published private(set) var installError: String?
     private(set) var installGameID: String?
@@ -180,6 +189,12 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     public func refresh() {
         guard !loading else { return }
+        // 启动时先显示上次的列表，不等作业；能不能玩在真正启动时还会完整校验
+        if !libraryLoaded, games.isEmpty, let known = provider.library.lastKnownGames(), !known.isEmpty {
+            games = known
+            selectedID = known.first?.id
+            libraryLoaded = true
+        }
         loading = true
         provider.library.load { [weak self] result in
             guard let self else { return }
@@ -241,13 +256,13 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 换游戏库：setup 作业（作业层拦非 APFS、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
-    func changeLibrary(to url: URL) {
+    func changeLibrary(to url: URL, move: Bool = false) {
         guard !busy else { return }
         showEnvironment = false
         failAction(nil, game: nil)
         start(.setupLibrary, game: nil, name: url.lastPathComponent) { [weak self] sink in
             guard let self else { return nil }
-            let library = try await self.provider.library.change(to: url, events: sink)
+            let library = try await self.provider.library.change(to: url, moveFrom: move ? self.provider.client.environment.library : nil, events: sink)
             self.games = []; self.selectedID = nil; self.libraryLoaded = false
             self.checks = (try? await self.provider.environment.check()) ?? self.checks
             return library
@@ -296,6 +311,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 这件事的前提没齐：打开环境检查页（还没查过就查一遍），返回 false。
     private func environmentAllows(_ scopes: [String], ignoring: Set<String> = []) -> Bool {
+        if checks.isEmpty, environmentError != nil { return true }   // 环境检查本身失败不挡：作业自己校验并给真实原因
         if scopes.allSatisfy({ provider.environment.ready(for: $0, ignoring: ignoring) }) { return true }
         showEnvironment = true
         if checks.isEmpty { checkEnvironment() }
@@ -315,7 +331,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             let infos: [GameInfo]
             do {
                 infos = try await self.provider.importGames(GameInputs(paths: urls), events: sink)
-            } catch let failure as JobFailure where failure.code == "content_unreadable" && self.provider.library.keysReady == true {
+            } catch let failure as JobFailure where failure.code == "keys_outdated" && self.provider.library.keysReady == true {
                 // 密钥在，但读不了这款：选好的游戏留着，提示换一份，换好自动接着导入
                 self.pendingImport = urls; self.keysRejected = true; self.showKeys = true
                 return nil
@@ -357,7 +373,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         if !game.buildable { return .game(Self.requirementsText(game)) }
         if game.needsKeys, provider.library.keysReady == false { return .keys }
         if busy, session?.export == nil { return .busy }   // 别的出包在跑可以排队
-        if checks.isEmpty { return checking ? .checking : .environment }
+        if checks.isEmpty {
+            if checking { return .checking }
+            return environmentError != nil ? nil : .environment   // 环境检查本身失败不挡：作业自己校验并给真实原因
+        }
         if !Self.scopes(platforms).allSatisfy({ provider.environment.ready(for: $0, ignoring: ["installDotnet"]) }) { return .environment }
         return nil
     }
@@ -413,9 +432,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 出 iPhone 包的目标：连着的手机优先，其次玩家选的机型；都没有交给作业层按常见机型出。
+    /// 连着的设备里用哪台：玩家选过且还连着 → 它；否则有线连着的第一台；否则第一台（#272）
+    nonisolated static func pickDevice(_ connected: [[String: Any]], chosen: String?) -> [String: Any]? {
+        if let chosen, let d = connected.first(where: { $0["id"] as? String == chosen }) { return d }
+        return connected.first(where: { $0["wired"] as? Bool == true }) ?? connected.first
+    }
+
+    var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
+
+    /// 出 iPhone 包的目标：连着的手机优先（多台时用选中的那台），其次玩家选的机型；都没有交给作业层按常见机型出。
     var currentDeviceTarget: [String: Any]? {
-        if let device = connectedDevices.first { return device }
+        if let device = selectedDevice { return device }
         guard let chosenModel, var model = targetModels.first(where: { $0["productType"] as? String == chosenModel }), let os = targetOS.first else { return nil }
         model["os"] = os
         return model
@@ -505,12 +532,26 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 装到 iPhone（清单全齐才让点）。
-    func install(_ game: GameSummary) {
-        guard !busy, installGameID == game.id, installReadiness?.ready == true else { return }
+    /// 能不能开始装：清单说可以，或这次清单读失败（不因探测失败把玩家关在外面，install 作业会给真实原因）。
+    func installAllowed(_ gameID: String) -> Bool {
+        installGameID == gameID && (installReadiness?.ready == true || (installReadiness == nil && installError != nil))
+    }
+
+    /// 在 Xcode 打开引导项目；玩家运行一次后，装机页每 5 秒的重查会自动打勾。
+    func openSigningProject() {
+        Task {
+            do { NSWorkspace.shared.open(URL(fileURLWithPath: try await provider.signingProject())) }
+            catch { installError = error.localizedDescription }
+        }
+    }
+
+    func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil) {
+        guard !busy, installAllowed(game.id) else { return }
         failAction(nil, game: nil)
+        // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
+        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
-            _ = try await self?.provider.install(gameId: game.id, events: sink)
+            _ = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, events: sink)
             return nil
         }
     }
@@ -571,6 +612,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
+    /// 改名字 / 换封面（nil 不动，空字符串恢复默认）：很快，不进作业页，失败写在出包页上。
+    func customize(_ game: GameSummary, name: String? = nil, coverPath: String? = nil) {
+        guard !busy, !customizing else { return }
+        customizing = true; customizeError = nil
+        Task {
+            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath); refresh() }
+            catch { customizeError = error.localizedDescription }
+            customizing = false
+        }
+    }
+
     /// 导出 Mac 端诊断包（path）或拉回连着的 iPhone 上的诊断（path 为 nil）；做完可在访达里显示。
     func diagnostics(exportTo path: URL?) {
         guard !busy else { return }
@@ -612,9 +664,11 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.control = nil
                 if !ControlPort.forced { try? self.provider.settings.setAIControl(false); self.aiControl = false }
                 self.aiControlError = why
+                ControlPort.reportStartFailure(privateRoot: self.provider.client.environment.privateRoot, why: why)
             }
         } catch {
             aiControlError = error.localizedDescription
+            ControlPort.reportStartFailure(privateRoot: provider.client.environment.privateRoot, why: error.localizedDescription)
             if !ControlPort.forced { try? provider.settings.setAIControl(false); aiControl = false }
         }
     }
@@ -742,6 +796,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 回库：只有作业结束了才能关掉作业页。
+    /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
+    func goToLibrary() {
+        exportFor = nil; viewingResult = nil; showEnvironment = false
+        guard let current = session else { return }
+        if isFinished(current) { session = nil } else { sessionHidden = true }
+    }
+
     func backToLibrary() {
         if viewingResult != nil { viewingResult = nil; return }
         sessionHidden = false

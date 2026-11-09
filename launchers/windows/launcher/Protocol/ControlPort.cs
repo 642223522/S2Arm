@@ -15,6 +15,9 @@ public sealed record ControlRequest(string Method, string Path, IReadOnlyDiction
     public string? Text(string key) =>
         Body.ValueKind == JsonValueKind.Object && Body.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
+    public bool Flag(string key) =>
+        Body.ValueKind == JsonValueKind.Object && Body.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.True;
+
     public string[]? Strings(string key) =>
         Body.ValueKind == JsonValueKind.Object && Body.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array
             ? v.EnumerateArray().Where(i => i.ValueKind == JsonValueKind.String).Select(i => i.GetString()!).ToArray() : null;
@@ -82,7 +85,18 @@ public sealed class ControlPort : IDisposable
         File.WriteAllText(temporary, JsonSerializer.Serialize(new Dictionary<string, object?>
             { ["port"] = Port, ["token"] = Token, ["pid"] = Environment.ProcessId }));
         File.Move(temporary, ControlFile, overwrite: true);
+        try { File.Delete(Path.Combine(privateRoot, ErrorFileName)); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         _ = AcceptAsync();
+    }
+
+    public const string ErrorFileName = "control.error";
+
+    /// <summary>控制口起不来时也就没有 /state：把原因写进数据目录，s2armctl start 读它报给用户。写不上不影响启动器本身。</summary>
+    public static void ReportStartFailure(string privateRoot, string why)
+    {
+        try { File.WriteAllText(Path.Combine(privateRoot, ErrorFileName), why); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 
     public void UpdateState(byte[] json) => Volatile.Write(ref state, json);

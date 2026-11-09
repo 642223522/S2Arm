@@ -13,7 +13,7 @@ class CompilerRetentionTests(unittest.TestCase):
     def _preflight_fixture(self, root):
         import os
         import time
-        c = SimpleNamespace(private=root / 'private', library=root / 'library', emit=lambda *a, **k: None)
+        c = SimpleNamespace(private=root / 'private', work_root=root / 'private', library=root / 'library', emit=lambda *a, **k: None)
         c.library.mkdir()
         paths = []
         for i in range(4):
@@ -38,8 +38,8 @@ class CompilerRetentionTests(unittest.TestCase):
             with patch.object(library, 'selected_packages', return_value=[{'sha256': 'synthetic', 'size': 4 << 30}]), \
                  patch('shutil.disk_usage', side_effect=usage):
                 budget = library.check_pack_space(c, game, compiler_policy=cache_retention.retention_policy())
-            # 4 GiB × 1.1 + 15 GB，独立手算
-            self.assertEqual(budget['compilerMinFreeBytes'], (4 << 30) * 11 // 10 + 15_000_000_000)
+            # 4 GiB × 1.1 × 2（解包 + 单文件镜像）+ 15 GB，独立手算
+            self.assertEqual(budget['compilerMinFreeBytes'], 2 * ((4 << 30) * 11 // 10) + 15_000_000_000)
             self.assertTrue(all(p.exists() for p in paths[:3]))
             self.assertFalse(paths[3].exists())
 
@@ -82,7 +82,7 @@ class CompilerRetentionTests(unittest.TestCase):
     def test_success_cleanup_keeps_compiler_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            c = SimpleNamespace(private=root / 'private', library=root / 'library')
+            c = SimpleNamespace(private=root / 'private', work_root=root / 'private', library=root / 'library')
             files = [c.private / 'cache/air/ios/aa' / ('a' * 64 + '.air'),
                      c.private / 'cache/pso/bb' / ('b' * 64 + '.bin'),
                      c.private / 'run/gal_dl_cache/ios/cc' / ('c' * 64 + '.metallib')]
@@ -100,7 +100,7 @@ class CompilerRetentionTests(unittest.TestCase):
     def test_success_keeps_direct_store_and_removes_only_transients(self):
         # S2Arm 10-31: the direct cache is store/ (shard files) + logs/; the former per-key trees ios/ and mac/ are the old layout, cleared like work/
         with tempfile.TemporaryDirectory() as directory:
-            c = SimpleNamespace(private=Path(directory) / 'private', library=Path(directory) / 'library')
+            c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
             gid = '0100000000000000'
             direct = c.private / 'run/s2arm/cache/direct' / gid
             kept = [direct / 'store/dshb/aa' / ('aa' + '0' * 62 + '.e'), direct / 'logs/build.log', direct / 'future-format/unknown',
@@ -122,7 +122,7 @@ class CompilerRetentionTests(unittest.TestCase):
         import os
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
-            c = SimpleNamespace(private=Path(directory) / 'private', library=Path(directory) / 'library', begin=lambda *a, **k: None)
+            c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library', begin=lambda *a, **k: None)
             gid = '0100000000000000'
             roots = c.library / 'iPhone' / gid / 'roots'
             ident = roots / '.romfs_store/g/s0-1'
@@ -134,6 +134,7 @@ class CompilerRetentionTests(unittest.TestCase):
             (roots / 'g@现行').symlink_to('g@new')
             for p in (ident / 'sub/a.bin', ident / 'sub', ident):
                 os.chmod(p, 0o555 if p.is_dir() else 0o444)
+            (roots.parent / 't.ipa').write_bytes(b'ipa')   # 老玩家：有 IPA 没容器件，现行产物根要留着
             library.prune_build(c, gid)
             self.assertFalse((roots / 'g@old').exists())
             self.assertEqual((roots / 'g@现行/romfs/sub/a.bin').read_bytes(), b'original synthetic romfs')
@@ -146,7 +147,7 @@ class CompilerRetentionTests(unittest.TestCase):
         for name in ('work', 'merged', 'ios.stage.12345'):
             for destination in ('store', 'logs', '../0100000000000001/store'):
                 with self.subTest(name=name, destination=destination), tempfile.TemporaryDirectory() as directory:
-                    c = SimpleNamespace(private=Path(directory) / 'private', library=Path(directory) / 'library')
+                    c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
                     direct = c.private / 'run/s2arm/cache/direct/0100000000000000'
                     direct.mkdir(parents=True)
                     target = direct / destination
@@ -164,7 +165,7 @@ class CompilerRetentionTests(unittest.TestCase):
 
     def test_link_replacement_after_selection_is_rechecked_at_deletion(self):
         with tempfile.TemporaryDirectory() as directory:
-            c = SimpleNamespace(private=Path(directory) / 'private', library=Path(directory) / 'library')
+            c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
             direct = c.private / 'run/s2arm/cache/direct/0100000000000000'
             work = direct / 'work'
             work.mkdir(parents=True)

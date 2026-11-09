@@ -21,7 +21,8 @@
 #   抽取只用产物根里抽取阶段的 extract/（pack/refresh.sh 安卓分支在直连库之前跑 pack/stage_extract.sh：兄弟平台根克隆来的键相同就跳过，没有才抽），这里不另抽，没有就按内容缺口退 3；Vulkan / OpenGL 款安卓运行时自己编，退 0 不出库
 # 配置由 game.py dir 选择，支持既有 DM_GAMES_DIR/DM_GAMES_FIRST；缺档明确失败。
 set -u
-ROOT=$(cd "${1:?产物根}" && pwd -P) || exit 1; OUT=${2:?输出目录}
+PD=-P; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PD=-L;; esac   # Windows 工作区走短根联接，-P 会展开回长路径
+ROOT=$(cd "${1:?产物根}" && pwd $PD) || exit 1; OUT=${2:?输出目录}
 R=$(cd "$(dirname "$0")/../../.." && pwd); NX=$R/graphics/nvn
 # Windows（Git Bash / MSYS）：pwd 给的是 /r/... 写法，只有命令行参数会被自动转成 R:/...，经环境变量或文件交给 Windows 原生 Python 的不会转
 #   （11-04 Windows 出包机旷野之息：shader_split 读 /r/.../exefs/main 报找不到路径）。产物根、输出目录、仓库路径统一换成 R:/... 混合写法（bash 自己也认）
@@ -110,7 +111,9 @@ fi
 #   出包时用 gl_shaders.py（glslang → SPIR-V → spirv-cross）把 RomFS（含 MVGL 归档）、追加内容与 main 里能找到的源码离线翻成一个库：<输出目录>/gl/gl_shaders.metallib + .tsv
 #   （运行时 <DM_MSL_DIR>/gl/）。不要配置档；keys.tsv 列 GLSL 键（GL 层按源码哈希查）；运行时才拼出来的源码：宿主首遇现场翻译（gl_prog.m），DM_GL_CAPTURE 抓的目录可并进下次出包
 if [ "${API%%	*}" = gl ]; then
-  for t in glslangValidator spirv-cross; do command -v $t > /dev/null || { say "🔴 OpenGL 款要 ${t}（brew install glslang spirv-cross）"; exit 1; }; done
+  # 与 gl_shaders.py 的 os.environ.get 一致：只有未设置 GLSLANG 才回退 PATH，空值不能回退。
+  type -P -- "${GLSLANG-glslangValidator}" > /dev/null || { say "🔴 OpenGL 款要 glslangValidator（brew install glslang spirv-cross）"; exit 1; }
+  command -v spirv-cross > /dev/null || { say "🔴 OpenGL 款要 spirv-cross（brew install glslang spirv-cross）"; exit 1; }
   C=${S2A_DIRECT_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/direct/$TID}; mkdir -p "$C" "$OUT"; s=$SECONDS
   : > "$C/gl.stage.$$"; trap 'rm -f "$C/gl.stage.$$"' EXIT   # 同 Vulkan 分支：出库期间的占用标记
   INS=("$ROOT/romfs" "$ROOT/exefs/main"); for a in "$ROOT"/aoc/*/; do [ -d "$a" ] && INS+=("${a%/}"); done
@@ -388,7 +391,7 @@ GLX=$("$PY" "$NX/tools/gfx_api.py" --gl-also "$ROOT/exefs" "$ROOT/romfs") || GLX
 GLMSG=
 if [ "${GLX%%	*}" = 1 ]; then
   rm -rf "$OS/gl"; s=$SECONDS
-  if ! command -v glslangValidator > /dev/null || ! command -v spirv-cross > /dev/null; then GLMSG="🟡 另带 GL 的着色器库没出：缺 glslangValidator / spirv-cross（brew install glslang spirv-cross）"
+  if ! type -P -- "${GLSLANG-glslangValidator}" > /dev/null || ! command -v spirv-cross > /dev/null; then GLMSG="🟡 另带 GL 的着色器库没出：缺 glslangValidator / spirv-cross（brew install glslang spirv-cross）"
   else
     INS=("$ROOT/romfs" "$ROOT/exefs/main"); for a in "$ROOT"/aoc/*/; do [ -d "$a" ] && INS+=("${a%/}"); done
     "$PY" "$R/tools/nostall.py" --watch "$C/glmac" --watch "$OS" "${S2A_NOSTALL_S:-600}" -- "$PY" "$NX/../../translator/gl_shaders.py" "${INS[@]}" "$C/glmac" --ios "$OS" > "$W/gl_shaders.log" 2>&1; grc=$?

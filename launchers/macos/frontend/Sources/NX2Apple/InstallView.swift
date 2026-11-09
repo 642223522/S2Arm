@@ -1,5 +1,5 @@
 // S2Arm（不是上游文件）：装到 iPhone 前的清单（installCheck 作业：iPhone 版做好了没有、签名团队、连上 / 信任 / 开发者模式），
-// 每几秒重查一次（玩家在手机上点信任、开开发者模式后自动打勾），全齐了才让点「开始装」（install 作业，跑在作业页、可停）。
+// 每几秒重查一次（玩家在手机上点信任、开开发者模式后自动打勾），iPhone 版做好就能点「开始装」，其余项只提示（install 作业，跑在作业页、可停）。
 // 卡片同 NXLauncher（CardGroup / CardRow）。
 import AppKit
 import SwiftUI
@@ -17,6 +17,8 @@ struct InstallView: View {
 
     private var game: GameSummary? { model.games.first { $0.id == gameID } }
     private static let pollSeconds: UInt64 = 5
+    @State private var showManualTeam = false
+    @AppStorage("s2arm.enteredTeamCodeId") private var enteredTeamCode = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,6 +50,19 @@ struct InstallView: View {
                         Text(loc.backend(failed.message)).font(.manrope(13)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                         CopyReportButton(model: model, gameID: gameID, operations: ["install", "installRemove"], fallback: failed.message)
                     }
+                    if showManualTeam, let game {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(loc.t("s2arm.install.teamGuide")).font(.manrope(12.5)).fixedSize(horizontal: false, vertical: true)
+                            Button(loc.t("s2arm.install.teamGuideOpen")) { model.openSigningProject() }
+                                .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.teamGuideOpen")
+                            Text(loc.t("s2arm.install.teamManualHelp")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 8) {
+                                TextField(loc.t("s2arm.install.teamManualField"), text: $enteredTeamCode).textFieldStyle(.roundedBorder).font(.mono(12)).frame(width: 180).accessibilityIdentifier("install.teamId")
+                                Button(loc.t("s2arm.install.teamManualUse")) { model.clearInlineFailure(); model.install(game, teamId: enteredTeamCode.trimmingCharacters(in: .whitespaces).uppercased()) }
+                                    .buttonStyle(LauncherSecondaryButtonStyle()).disabled(enteredTeamCode.trimmingCharacters(in: .whitespaces).count != 10 || model.busy)
+                            }
+                        }
+                    }
                     if let r = model.installReadiness {
                         CardGroup(loc.t("s2arm.install.checklist"), footnote: footnote(r)) {
                             ForEach(r.items) { item in
@@ -57,6 +72,8 @@ struct InstallView: View {
                                             .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
                                     }
                                     if !item.ok, item.id == "appleId" {
+                                        Button(loc.t("s2arm.install.teamManual")) { showManualTeam.toggle() }
+                                            .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.teamManual")
                                         Button(text("install.apple.open")) {
                                             if case .open(let url) = model.provider.environment.repairStep(for: "openXcode") { NSWorkspace.shared.open(url) }
                                         }
@@ -97,6 +114,10 @@ struct InstallView: View {
             HStack(spacing: 14) {
                 Text(loc.t("s2arm.install.note")).font(.manrope(12)).foregroundStyle(.secondary).lineLimit(3)
                 Spacer(minLength: 8)
+                if let ipa = model.installReadiness?.ipaPath, !ipa.isEmpty {
+                    Button(loc.t("s2arm.export.revealIpa")) { revealInFinder(ipa) }
+                        .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.revealIpa")
+                }
                 Button(loc.t("launch.done")) { dismiss() }.buttonStyle(LauncherSecondaryButtonStyle())
                 Button {
                     if let game { model.clearInlineFailure(); model.install(game) }
@@ -106,8 +127,8 @@ struct InstallView: View {
                         .background(LauncherPalette.cream, in: Capsule())
                 }
                 .buttonStyle(.plain).keyboardShortcut(.defaultAction)
-                .disabled(model.installReadiness?.ready != true || model.busy)
-                .opacity(model.installReadiness?.ready == true && !model.busy ? 1 : 0.45)
+                .disabled(!model.installAllowed(gameID) || model.busy)
+                .opacity(model.installAllowed(gameID) && !model.busy ? 1 : 0.45)
             }
             .padding(.horizontal, 30).padding(.vertical, 16)
             }

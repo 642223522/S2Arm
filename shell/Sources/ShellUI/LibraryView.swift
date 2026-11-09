@@ -16,13 +16,22 @@ enum ShellLayout: Equatable {
         return regular && !accessibilityText ? .grid : .column
     }
 
-    /// The width of the overlay Settings and Controllers share: a panel from the trailing edge over the dimmed library.
+    /// The widest the overlay Settings and Controllers get: a panel from the trailing edge over the dimmed library.
     static let overlayWidth: CGFloat = 520
+    /// Fork difference (kept across upstream syncs): a landscape panel on a phone is capped well under the 520,
+    /// following the NX2/GameCase rule — at the full width it took three fifths of the screen and its rows
+    /// stretched. `width` here is the safe-area width, so this is min(520, screen width × 0.44 less the safe
+    /// area); tablets and regular windows keep the 520.
+    func overlayWidth(_ width: CGFloat) -> CGFloat {
+        if case .coverFlow(let regular) = self, !regular { return min(Self.overlayWidth, width * 0.44) }
+        return Self.overlayWidth
+    }
     /// Settings drop in as that overlay wherever the library stays in view beside it (at least 120 points of it), and
     /// take the whole screen where it would not: a phone held upright, a folded foldable, a narrow window.
+    /// The float threshold stays on the 520 cap, as before.
     func settingsFloat(_ width: CGFloat) -> Bool { self != .column && width >= Self.overlayWidth + 120 }
     /// The settings' width: the overlay, or the whole width.
-    func paneWidth(_ width: CGFloat) -> CGFloat { settingsFloat(width) ? min(width, Self.overlayWidth) : width }
+    func paneWidth(_ width: CGFloat) -> CGFloat { settingsFloat(width) ? min(width, overlayWidth(width)) : width }
     var isCoverFlow: Bool { if case .coverFlow = self { true } else { false } }
 }
 
@@ -111,6 +120,8 @@ public struct LibraryView: View {
             let layout = ShellLayout.resolve(whole, accessibilityText: typeSize.isAccessibilitySize)
             let width = geometry.size.width
             let pane = layout.paneWidth(width)
+            // The Controllers and shell-settings overlays share the settings pane's width rule.
+            let overlay = min(width, layout.overlayWidth(width))
             // Settings only when asked for. A panel floats over the dimmed library where there is room, otherwise the
             // settings take the whole screen and the library steps out of the way.
             let floating = layout.settingsFloat(width)
@@ -220,11 +231,11 @@ public struct LibraryView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }.zIndex(2) }
                 if controllersOpen { Group {
-                    Color.black.opacity(0.55 * (1 - min(1, edgeDrag / min(width, 520)))).ignoresSafeArea().accessibilityHidden(true)
+                    Color.black.opacity(0.55 * (1 - min(1, edgeDrag / overlay))).ignoresSafeArea().accessibilityHidden(true)
                         .onTapGesture { back() }
-                    ControllersView(controllers: controllers, onBack: back, padMap: globalPadMap)
+                    ControllersView(controllers: controllers, onBack: back, padMap: globalPadMap, showsMapping: actions.onGlobalPadMapChange != nil)
                         .accessibilityHidden(choice != nil || padMapping != nil || buttonTestOpen)
-                        .frame(width: min(width, 520))
+                        .frame(width: overlay)
                         .frame(maxHeight: .infinity)
                         .background { ShellPalette.background.ignoresSafeArea() }
                         .overlay(alignment: .leading) { Rectangle().fill(ShellPalette.hairline).frame(width: 1).ignoresSafeArea() }
@@ -234,10 +245,10 @@ public struct LibraryView: View {
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }.zIndex(3) }
                 if shellSettingsOpen { Group {
-                    Color.black.opacity(0.55 * (1 - min(1, edgeDrag / min(width, 520)))).ignoresSafeArea().accessibilityHidden(true)
+                    Color.black.opacity(0.55 * (1 - min(1, edgeDrag / overlay))).ignoresSafeArea().accessibilityHidden(true)
                         .onTapGesture { back() }
                     ShellSettingsView(actions: guardedActions, onClose: closeShellSettings)
-                        .frame(width: min(width, 520))
+                        .frame(width: overlay)
                         .frame(maxHeight: .infinity)
                         .background { ShellPalette.background.ignoresSafeArea() }
                         .overlay(alignment: .leading) { Rectangle().fill(ShellPalette.hairline).frame(width: 1).ignoresSafeArea() }
@@ -291,7 +302,7 @@ public struct LibraryView: View {
                 EdgeSwipeBack(enabled: (settingsOpen || controllersOpen || shellSettingsOpen) && choice == nil && helpGameID == nil && deleteGameID == nil
                                   && padMapping == nil && !buttonTestOpen && touchLayout == nil,
                               changed: { edgeDrag = $0 },
-                              ended: { finishEdgeSwipe(travel: $0, velocity: $1, span: controllersOpen || shellSettingsOpen ? min(width, 520) : pane) },
+                              ended: { finishEdgeSwipe(travel: $0, velocity: $1, span: controllersOpen || shellSettingsOpen ? overlay : pane) },
                               cancelled: cancelEdgeSwipe)
             }
             // Every target on screen. Which of them the D-pad reaches is decided when it is used (`isLive`), from the
@@ -316,7 +327,7 @@ public struct LibraryView: View {
         .environment(\.shellOpenButtonTest, { openButtonTest() })
         .environment(\.shellIgnoresPress, { [gate] in gate.isSystemEcho })
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
-        .environment(\.shellAskDelete, { game in openDelete(game.id) })
+        .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
         .environment(\.shellFocus, focus)
         .environment(\.shellInputDevice, device)
         .foregroundStyle(.white)
@@ -451,20 +462,20 @@ public struct LibraryView: View {
         a.onPlay = { if !echo() { o.onPlay($0) } }
         a.onChange = { if !echo() { o.onChange($0, $1, $2) } }
         a.onPickGameData = { if !echo() { o.onPickGameData($0) } }
-        a.onUseAppData = { if !echo() { o.onUseAppData($0) } }
-        a.onPickCloudSaves = { if !echo() { o.onPickCloudSaves($0) } }
-        a.onDisableCloudSaves = { if !echo() { o.onDisableCloudSaves($0) } }
-        a.onResetDefaults = { if !echo() { o.onResetDefaults($0) } }
-        a.onShowLog = { if !echo() { o.onShowLog($0) } }
-        a.onAppUpdate = { if !echo() { o.onAppUpdate() } }
-        a.onPickShellData = { if !echo() { o.onPickShellData() } }
-        a.onPickShellCloud = { if !echo() { o.onPickShellCloud() } }
-        a.onUseShellCloud = { if !echo() { o.onUseShellCloud($0) } }
-        a.onClearShellData = { if !echo() { o.onClearShellData() } }
-        a.onClearShellCloud = { if !echo() { o.onClearShellCloud() } }
-        a.onGlobalPadMapChange = { if !echo() { o.onGlobalPadMapChange($0, $1) } }
-        a.onGlobalPadMapReset = { if !echo() { o.onGlobalPadMapReset() } }
-        a.onDeleteGame = { if !echo() { o.onDeleteGame($0, $1) } }
+        a.onUseAppData = o.onUseAppData.map { act in { if !echo() { act($0) } } }
+        a.onPickCloudSaves = o.onPickCloudSaves.map { act in { if !echo() { act($0) } } }
+        a.onDisableCloudSaves = o.onDisableCloudSaves.map { act in { if !echo() { act($0) } } }
+        a.onResetDefaults = o.onResetDefaults.map { act in { if !echo() { act($0) } } }
+        a.onShowLog = o.onShowLog.map { act in { if !echo() { act($0) } } }
+        a.onAppUpdate = o.onAppUpdate.map { act in { if !echo() { act() } } }
+        a.onPickShellData = o.onPickShellData.map { act in { if !echo() { act() } } }
+        a.onPickShellCloud = o.onPickShellCloud.map { act in { if !echo() { act() } } }
+        a.onUseShellCloud = o.onUseShellCloud.map { act in { if !echo() { act($0) } } }
+        a.onClearShellData = o.onClearShellData.map { act in { if !echo() { act() } } }
+        a.onClearShellCloud = o.onClearShellCloud.map { act in { if !echo() { act() } } }
+        a.onGlobalPadMapChange = o.onGlobalPadMapChange.map { act in { if !echo() { act($0, $1) } } }
+        a.onGlobalPadMapReset = o.onGlobalPadMapReset.map { act in { if !echo() { act() } } }
+        a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when
@@ -488,8 +499,8 @@ public struct LibraryView: View {
         switch detail.game.state {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
-        case .needsAppUpdate: actions.onAppUpdate()
-        case .broken: actions.onShowLog(detail.id)
+        case .needsAppUpdate: actions.onAppUpdate?()
+        case .broken: actions.onShowLog?(detail.id)
         }
     }
     private func select(_ id: String) {
@@ -545,7 +556,7 @@ public struct LibraryView: View {
         deleteGameID = nil
         settingsOpen = false
         focus.id = nil
-        actions.onDeleteGame(id, saves)
+        actions.onDeleteGame?(id, saves)
     }
     private func openChoice(_ request: ChoiceRequest) {
         guard noteTouch() else { return }
@@ -602,14 +613,14 @@ public struct LibraryView: View {
     private func pickPadValue(_ row: String, _ value: String) {
         guard noteTouch() else { return }
         guard let id = padMapping?.gameID else { return }
-        if id == ControllersView.mappingID { actions.onGlobalPadMapChange(row, value) } else { actions.onChange(id, row, value) }
+        if id == ControllersView.mappingID { actions.onGlobalPadMapChange?(row, value) } else { actions.onChange(id, row, value) }
         closePadRow()
     }
     private func resetPadMapping() {
         guard noteTouch() else { return }
         guard let id = padMapping?.gameID else { return }
         let global = id == ControllersView.mappingID
-        if global { actions.onGlobalPadMapReset() } else { actions.onChange(id, PadMappingRows.resetID, "") }
+        if global { actions.onGlobalPadMapReset?() } else { actions.onChange(id, PadMappingRows.resetID, "") }
         // Reset is disabled now: the focus goes to the swap, which is back at its default.
         focus.id = "map.swap." + (global ? "0" : PadMappingRows.follow)
     }

@@ -287,6 +287,7 @@ def preflight(c):
     metal_ok = ok and "Apple metal version" in version and "error:" not in version.lower()
     first_launch = has_xcode and not metal_ok and "license" in version.lower()
     add("Metal 编译组件", metal_ok,
+        "Xcode 的 Metal 编译组件已就绪。" if metal_ok else
         "Xcode 还没完成首次设置：点「打开 Xcode」，同意许可后回来点重新检查。" if first_launch else
         "缺 Xcode 的 Metal 编译组件：点「一键下载」自动安装（约 1 GB），下完自动重新检查。" if has_xcode else
         "准备游戏需要 Xcode 的 Metal 编译组件；先安装 Xcode。",
@@ -313,6 +314,7 @@ def preflight(c):
             code="xcode_team_pending" if logged_in else "xcode_account_missing", group="apple")
     ok, _ = probe(c, ["xcrun", "--sdk", "macosx", "--show-sdk-path"])
     add("Xcode", has_xcode and ok,
+        "已找到完整的 Xcode。" if has_xcode and ok else
         "没找到完整的 Xcode：点「去 App Store 安装」，装好打开一次后回来点重新检查；S2Arm 会自动找到它。",
         action="appStoreXcode")
     if packaged:
@@ -459,6 +461,9 @@ def ios_platform(c):
     return False, ver, why, "downloadIosPlatform"
 
 
+XCODEBUILD_USAGE_EXIT = 64
+
+
 def download_ios_platform(c):
     # 一键下载选中 Xcode 的 iOS 平台组件（xcodebuild -downloadPlatform iOS，不要管理员密码）。苹果只发「模拟器运行时」这一种包、没有只含真机的更小包：
     #   通用版约 10.6 GB、arm64 版约 8.5 GB（iOS 26.5；iOS 27.1 约 7.9 GB，11-07 读苹果下载目录 index2.dvtdownloadableindex）——S2Arm 只跑 Apple 芯片，固定要 arm64 版
@@ -476,9 +481,20 @@ def download_ios_platform(c):
         found_pct = re.findall(r"(\d+(?:\.\d+)?)\s*%", text)
         if found_pct:
             c.emit(done=float(found_pct[-1]), total=100.0, unit="%")
+    # 退出码 64 = xcodebuild 不认参数（只打用法）：-architectureVariant 是新版才有的，老版本去掉它重试（下的是通用包，大一点）
+    variants = (["-architectureVariant", "arm64"], [])
     try:
-        c.run(["xcodebuild", "-downloadPlatform", "iOS", "-architectureVariant", "arm64"], on_line=line,
-              until=lambda: _runtime_ready(c, allowed, ver), timeout=IOS_PLATFORM_TIMEOUT)
+        for index, variant in enumerate(variants):
+            try:
+                c.run(["xcodebuild", "-downloadPlatform", "iOS", *variant], on_line=line,
+                      until=lambda: _runtime_ready(c, allowed, ver), timeout=IOS_PLATFORM_TIMEOUT)
+                break
+            except Failure as error:
+                if getattr(c, "last_rc", None) != XCODEBUILD_USAGE_EXIT:
+                    raise
+                if index == len(variants) - 1:
+                    raise Failure("这个版本的 Xcode 不支持一键下载 iOS 平台组件。请到 App Store 把 Xcode 更新到 26 或更新的版本，打开一次，再回来点「重新检查」。",
+                                  code="xcode_sdk_too_old") from error
     except Failure as error:
         # 注册失败（DVTDownloadableErrorDomain Code=29 "Cannot resolve source file"）时运行时往往已经可用：以实际状态为准
         if error.code != "tool_exit" or not _wait_runtime_ready(c, allowed, ver, IOS_PLATFORM_REGISTER_WAIT):

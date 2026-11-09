@@ -330,6 +330,8 @@ t "④ 出包（编 App、${SIGN} 签名、资源包）…"
 [ -z "$BUNDLE" ] || export S2A_BUNDLE_ID=$BUNDLE
 beat 出包 "$OUT/logs/ipa.log"; S2A_SIGN=$SIGN S2A_DISPLAY_SUFFIX= bash "$P/ipa.sh" "$G" > "$OUT/logs/ipa.log" 2>&1 || { unbeat; die "出包失败：$(grep '【红】' "$OUT/logs/ipa.log" | tail -1 | cut -c1-200)（$OUT/logs/ipa.log）"; }; unbeat
 PK=$(root_cur "$G")/pkg; [ -f "$PK/$G.ipa" ] && [ -f "$PK/pack/manifest.json" ] || die "出包没产出 ipa / 资源包（${PK}）"
+# 启动器（pack/jobs/ipa.py）成功时写 <输出>/shell.id：命令行一键出包同样写一份，否则启动器判「这款不是本壳出的」，装机 / 推资源包报 container_stale
+[ ! -s "$(root_cur "$G")/.shell_id" ] || printf '%s' "$(cat "$(root_cur "$G")/.shell_id")" > "$OUT/shell.id"   # 小戳直接写；rc_lint 对 cp 要判返回码，这里不需要
 
 # ⑤ 交付（APFS 克隆，不多占盘）
 lap 交付

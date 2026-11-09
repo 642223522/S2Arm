@@ -35,7 +35,7 @@ public sealed partial class EnvironmentWindow : Window
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
         Closed += (_, _) => { active?.Cancel(); ClearCovers(); CloseControl(); };
-        Opened += (_, _) => StartControl();
+        Opened += (_, _) => { StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); };
         Closing += CloseLibraryAsync;
         Closing += ClosePackAsync;
         // 欢迎页进来自动触发环境检查（回到窗口也会重查）
@@ -88,7 +88,18 @@ public sealed partial class EnvironmentWindow : Window
             if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
             language = languages.SelectedIndex == 0 ? "zh-Hans" : "en"; Render();
         };
+        AddUpdateControls(rightBar);
         rightBar.Children.Add(languages);
+
+        // 游戏库：任何页面都能回去；出包还在跑就留在后台
+        var libraryBtn = new Button
+        {
+            Content = T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+            Background = page == "library" ? Accent : Brush.Parse("#29292D"), Foreground = page == "library" ? Canvas : Ink
+        };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(libraryBtn, "top.library");
+        libraryBtn.Click += (_, _) => { if (packRunning) sessionHidden = true; Navigate("library"); };
+        rightBar.Children.Add(libraryBtn);
 
         // 添加游戏
         var addGameBtn = new Button
@@ -148,6 +159,17 @@ public sealed partial class EnvironmentWindow : Window
         settings.Children.Add(Action("action.save_settings", CapturePaths, !busy));
         body.Children.Add(new Expander { Header = T("settings.title"), Content = settings,
             HorizontalAlignment = HorizontalAlignment.Stretch });
+
+        var libraryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var libraryText = new StackPanel { Spacing = 4 };
+        libraryText.Children.Add(Label(T("environment.library.title"), 16));
+        libraryText.Children.Add(Label(connectedFolder ?? libraryFolder));
+        libraryText.Children.Add(Label(T("environment.library.detail")));
+        libraryRow.Children.Add(libraryText);
+        var libraryChange = Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy);
+        libraryChange.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(libraryChange, 1); libraryRow.Children.Add(libraryChange);
+        body.Children.Add(Card(libraryRow));
 
         var aiRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var aiText = new StackPanel { Spacing = 4 };

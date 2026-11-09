@@ -96,7 +96,7 @@ public sealed partial class EnvironmentWindow
 
     private string EnvironmentSummary()
     {
-        var lines = new List<string> { "S2Arm 环境检查未通过", "", "S2Arm：" + (typeof(EnvironmentWindow).Assembly.GetName().Version?.ToString() ?? "-"),
+        var lines = new List<string> { "S2Arm 环境检查未通过", "", "S2Arm：" + AppVersion,
             "系统：" + System.Runtime.InteropServices.RuntimeInformation.OSDescription, "" };
         lines.AddRange((report?.Checks ?? []).Where(c => c.Status != "ok").Select(c => $"{c.Name}（{c.Status}，{c.Code ?? "-"}）：{c.Message}"));
         lines.Add(""); lines.Add(diagnostics);
@@ -184,7 +184,7 @@ public sealed partial class EnvironmentWindow
     private void EnsureLibrary(Action next)
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
-        var defaultLib = Path.Combine(privateRoot, "DefaultLibrary");
+        var defaultLib = SavedLibrary();
         libraryFolder = defaultLib;
         libraryOperation = EnsureLibraryAsync(defaultLib, next);
     }
@@ -200,7 +200,8 @@ public sealed partial class EnvironmentWindow
             connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
             PrivateJobRequest.EnsurePrivateRoot(privateRoot);
             Directory.CreateDirectory(folder);
-            var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, cancellation.Token);
+            var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, cancellation.Token, libraryMoveFrom);
+            libraryMoveFrom = null;
             DisplayJob(setup);
             if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = setup.Report.Message; return; }
             var conn = LibraryConnection.Parse(setup.Report.Result);

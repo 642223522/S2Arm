@@ -55,6 +55,47 @@ def read(path, default=None):
         return default
 
 
+# Windows：目标被别的进程打开且没带共享删除时，替换报 PermissionError（#130：Python 读方 open() 不带 FILE_SHARE_DELETE，杀毒 / 索引也会短暂占用）
+WIN_REPLACE_RETRIES = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def replace_retrying(tmp, path):
+    for delay in (*WIN_REPLACE_RETRIES, None) if os.name == "nt" else (None,):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
+
+
+REWRITE_FAILED_LOG = re.compile(r"改写 \S+ 失败.*?日志 ([^）\n]+?\.log)")
+REWRITE_DIGEST_LINES = 400
+
+
+def write_rewrite_digest(source, target):
+    """改写日志摘要：缺口按类别计数 + 非缺口行 + 前若干条缺口（地址和指令类型，不含游戏内容）"""
+    counts, other, gaps, total = {}, [], [], 0
+    with open(source, encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            if line.startswith("GAP\t"):
+                total += 1
+                detail = line.split("\t", 3)[-1]
+                kind = re.sub(r"0x[0-9a-fA-F]+|\b[0-9a-f]{8}\b|#-?\w+|S\d_\d_C\d+_C\d+_\d|\b[xw]\d+\b", "_", detail)[:80]
+                counts[kind] = counts.get(kind, 0) + 1
+                if len(gaps) < REWRITE_DIGEST_LINES:
+                    gaps.append(line)
+            elif len(other) < REWRITE_DIGEST_LINES:
+                other.append(line)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="\n") as f:
+        f.write(f"改写缺口共 {total} 条，按类别：\n")
+        f.writelines(f"{n}\t{k}\n" for k, n in sorted(counts.items(), key=lambda kv: -kv[1])[:60])
+        f.write("\n--- 非缺口行 ---\n"); f.writelines(l + "\n" for l in other)
+        f.write("\n--- 前若干条缺口 ---\n"); f.writelines(l + "\n" for l in gaps)
+
+
 def atomic(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +105,7 @@ def atomic(path, value):
             json.dump(value, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        replace_retrying(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -419,8 +460,21 @@ class Context:
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
         return result
 
+    def save_rewrite_digest(self, failure):
+        """改写失败的明细日志在产物根 .failed/ 下（可达几十 MB）：诊断包只收 私有目录/logs，这里存一份摘要进去，否则定不了缺的是哪类指令（#108）"""
+        match = REWRITE_FAILED_LOG.search(str(failure) + "\n" + getattr(failure, "internal", ""))
+        if not match:
+            return
+        target = self.private / "logs" / f"{self.task}-rewrite-gaps.log"
+        try:
+            write_rewrite_digest(Path(match.group(1)), target)
+            target.chmod(0o600)
+        except OSError:
+            pass
+
     def report_failure(self, error):
         failure = explain(error)
+        self.save_rewrite_digest(failure)
         if self.last_log is None:
             self.last_log = self.private / "logs" / (self.task + "-failure.log")
             self.last_log.parent.mkdir(parents=True, exist_ok=True)
@@ -451,13 +505,18 @@ class Context:
                     return d
         return None
 
+    @property
+    def work_root(self):
+        """出包缓存和临时运行目录的根：游戏库放在别处（比如外接盘）时跟着游戏库走，不占系统盘。"""
+        return self.private if self.library.is_relative_to(self.private) else self.library / ".s2arm-work"
+
     def env(self):
         env = dict(os.environ)
         for k in list(env):
             if k.startswith(("S2A_", "NXGAL_", "DM_", "DMSH", "GAL_", "PSO_", "PYTHON")):
                 env.pop(k)
-        cache = self.private / "cache"
-        cache.mkdir(exist_ok=True)
+        cache = self.work_root / "cache"
+        cache.mkdir(parents=True, exist_ok=True)
         env.pop("DEVELOPER_DIR", None)
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
@@ -479,7 +538,7 @@ class Context:
                    S2A_PACK_PURPOSE="user",
                    # 出包链里其余缺省落在 ~/.s2arm/run 的缓存 / 锁 / 编好的小工具（直连缓存 6.5 GB、翻译缓存 5.3 GB…，10-26 Spare-host 斯普拉遁3）一律改到私有目录：
                    #   玩家机上不出现 ~/.s2arm/run，清数据目录 / 删游戏能连它们一起删（守卫 tests/userpath_cache_test.py）
-                   S2A_RUN_ROOT=str(self.private / "run"),
+                   S2A_RUN_ROOT=str(self.work_root / "run"),
                    # 玩家作业不认我方开发机的规矩（10-26 侍魂晓在启动器里被 130 G 磁盘闸 + 独占局让路白卡 43 分钟）：不读 tools/machine.local
                    #   （记账、130 G 总量闸、签名团队、gate-host / 远端派活都是我方共享机器的设定），按用户机器出包（守卫 tests/userpath_cache_test.py ④）
                    S2A_MACHINE_NO_LOCAL="1", S2A_CPU_LEDGER="0",
@@ -507,14 +566,15 @@ class Context:
             env["S2A_REWRITER_BUNDLED"] = str(runtime / "bin/s2a-rewrite")
             # 发版 App 自带已编好的 Mac 宿主（含 C#，S2A_CS=1）：RomFS 解码器或运行时 GLSLC 时不再现编（issue #8 根因：Runtime-only dotnet 编不出）
             from embedded import artifact
-            try:
-                bundled_host = artifact(self, "S2ArmGame.app")
-                if bundled_host and (bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file():
-                    env["S2A_BUNDLED_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
-                    env["DM_GLSLC_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
-                    env["DM_OODLE_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")  # LZ5 / OodleLZ 解码器（uepak.oodle_host_find，缺省回退 build/s2arm-host 在发版包里不存在）
-            except Exception:
-                pass   # 源码树开发构建：没有内置宿主
+            # 只有源码树（没有 engine.json，artifact 回 None）才没有内置宿主、按需现编；发版清单里缺它或校验不符，artifact 抛「请重新安装完整应用」照常抛出
+            #   （审计 P2-196：原先 except Exception 一律吞掉、改去现场编，红字指向「编译 Mac 宿主失败」，玩家按缺 SDK 去排查）
+            bundled_host = artifact(self, "S2ArmGame.app")
+            if bundled_host:
+                if not ((bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file()):
+                    raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
+                env["S2A_BUNDLED_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
+                env["DM_GLSLC_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")
+                env["DM_OODLE_HOST"] = str(bundled_host / "Contents/MacOS/s2arm-host")  # LZ5 / OodleLZ 解码器（uepak.oodle_host_find，缺省回退 build/s2arm-host 在发版包里不存在）
         else:
             paths = [str(Path(os.sys.executable).parent), str(runtime / "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", env.get("PATH", "")]
         env["PATH"] = os.pathsep.join(dict.fromkeys(paths))
@@ -773,7 +833,9 @@ def win_runtime_env(runtime, engine, system_root):
                                                                ntpath.join(system_root, r"System32\WindowsPowerShell\v1.0")]
     return dict(PATH=";".join(paths), DOTNET_ROOT=ntpath.join(rt, "dotnet"), DOTNET_MULTILEVEL_LOOKUP="0",
                 S2A_BASH=ntpath.join(rt, r"git\usr\bin\bash.exe"), PYTHONHOME=ntpath.join(rt, "python"), PYTHONUTF8="1",
-                S2A_PREBUILT_TOOLS=ntpath.join(str(engine), r"Binaries\Prepare"))
+                LC_ALL="C.UTF-8",   # 机器上设了 LANG=C / en_US 时 cygpath -m 在第一个中文字符处截断路径（#85：D:/浏览器下载/… → D:/）；与 MSYS 无语言变量时的缺省相同
+                S2A_PREBUILT_TOOLS=ntpath.join(str(engine), r"Binaries\Prepare"),
+                PYTHONPATH=ntpath.join(str(engine), r"pack\orch\site"))   # 子 Python 进程的长路径处理（pack/orch/winlong.py）
 
 
 def pid_alive(pid):

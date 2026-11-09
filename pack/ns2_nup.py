@@ -417,23 +417,24 @@ def convert(src, out, say=print):
         return app
 
 
-def _clone(s, d):   # 同卷 APFS 克隆（不占新空间），不行就真拷
-    try:
-        import ctypes
-        libc = ctypes.CDLL(None, use_errno=True)
-        if hasattr(libc, 'clonefile') and libc.clonefile(os.fsencode(s), os.fsencode(d), 0) == 0:
-            return d
-    except OSError:
-        pass
+def _clone(s, d):   # macOS 同卷 APFS 克隆（不占新空间），其余平台或克隆不成就真拷（ctypes.CDLL(None) 在 Windows 上抛 TypeError，#128）
+    if sys.platform == 'darwin':
+        try:
+            import ctypes
+            libc = ctypes.CDLL(None, use_errno=True)
+            if hasattr(libc, 'clonefile') and libc.clonefile(os.fsencode(s), os.fsencode(d), 0) == 0:
+                return d
+        except OSError:
+            pass
     return shutil.copy2(s, d)
 
 
 def inspect_row(src):
-    """认包行：路径 字节 修改时间（整数秒，同 pack/srcs.sh 的 stat %Y）程序号（大写 16 位）"""
+    """认包行：路径 字节 修改时间（纳秒精度，同 pack/srcs.sh 的 stat %.9Y）程序号（大写 16 位）"""
     with Nup(src) as n:
         app = scan(n)[0]
     st = os.stat(src)
-    return f'{src}\t{st.st_size}\t{int(st.st_mtime)}\t{app:016X}'
+    return f'{src}\t{st.st_size}\t{st.st_mtime_ns // 10**9}.{st.st_mtime_ns % 10**9:09d}\t{app:016X}'
 
 
 def default_name(src):   # 同 pack/oneclick/oneclick.sh / pack/orch/oneclick_win.py：文件名去掉「 [程序号][版本]」

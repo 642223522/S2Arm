@@ -1110,13 +1110,17 @@ __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[3
         read_layout(m, g_moddir); map_image(m, g_moddir); parse_dynamic(m); register_gates(m, g_moddir);
         e->mod = g_nmod; __atomic_store_n(&g_nmod, g_nmod + 1, __ATOMIC_RELEASE);
         e->loaded = 1; *base = (uint64_t)m->base;
-        size_t nb = 0, left = 0;   // 起局没解析、这个 NRO 定义了的导入：改指过来（符号地址 = 基址 + 值，与 NRO 自己的重定位无关，映射完就定）
+        size_t nb = 0, left = 0, nfail = 0;   // 起局没解析、这个 NRO 定义了的导入：改指过来（符号地址 = 基址 + 值，与 NRO 自己的重定位无关，映射完就定）
+        //   槽可能已被游戏设成只读（DT_INIT 后 SetMemoryPermission 把 RELRO 收紧）：经 svc_mem.c s2a_loader_store64 写（只读数据页临时加写再恢复），写不进就留着报错桩、打红，不崩整个进程
+        int s2a_loader_store64(uint64_t *where, uint64_t v);
         for (size_t i = 0; i < g_npend; i++) if (g_pend[i].where) {
             void *p = module_sym(m, g_pend[i].name); if (!p) { left++; continue; }
-            __atomic_store_n(g_pend[i].where, (uint64_t)p + (g_pend[i].slot && !jump_slot_addend() ? 0 : (uint64_t)g_pend[i].addend), __ATOMIC_RELEASE);
+            if (s2a_loader_store64(g_pend[i].where, (uint64_t)p + (g_pend[i].slot && !jump_slot_addend() ? 0 : (uint64_t)g_pend[i].addend))) {
+                if (!nfail++) LOG("【红】nn::ro 装 NRO %s：导入 %s 的槽 %p 写不进（页不可写且不是可放开的数据页），留着报错桩", e->name, g_pend[i].name, (void *)g_pend[i].where);
+                left++; continue; }
             g_pend[i].where = NULL; nb++;
         }
-        LOG("nn::ro 装 NRO %s：基址 %p 大小 %#zx；起局没解析的导入补绑 %zu 个（还剩 %zu 个待绑）", e->name, m->base, m->size, nb, left);
+        LOG("nn::ro 装 NRO %s：基址 %p 大小 %#zx；起局没解析的导入补绑 %zu 个（还剩 %zu 个待绑，其中写不进 %zu 个）", e->name, m->base, m->size, nb, left, nfail);
     } else {   // 卸了再装：映回原地址（数据段、bss 重新是包里的干净副本；代码页、符号表、门不变；iOS 只换可写部分，见 remap_writable）
         module_t *m = &g_mod[e->mod];
 #if TARGET_OS_IPHONE

@@ -28,6 +28,38 @@ import ShellUI
     #expect(Catalogue.load(path: "/nonexistent/s2a.json").problems.count == 1)
 }
 
+/// 宿主没接的功能必须是 nil：界面据此不显示按钮。接上一项，就把它从这张表挪走，入口自动出现。
+@MainActor @Test func unwiredActionsStayNilSoTheirButtonsAreHidden() throws {
+    let data = Data(#"{"games":[]}"#.utf8)
+    let a = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/"))).actions
+    #expect(a.onUseAppData == nil && a.onPickCloudSaves == nil && a.onDisableCloudSaves == nil && a.onUseShellCloud == nil)
+    #expect(a.onResetDefaults == nil && a.onShowLog == nil && a.onAppUpdate == nil)
+    #expect(a.onPickShellData == nil && a.onClearShellData == nil && a.onPickShellCloud == nil && a.onClearShellCloud == nil)
+    #expect(a.onGlobalPadMapChange == nil && a.onGlobalPadMapReset == nil)
+}
+
+// 删除游戏（#227 iPad 点了没反应：宿主从没给 onDeleteGame 实现）：不勾存档 → 数据根下只留 S2A/（存档），勾了 → 整个删；删完库里不再显示。期望按目录手写
+@MainActor @Test func deleteGameRemovesDataAndKeepsSavesUnlessAsked() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2a-del-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (a, b) = ("0100000000010000", "0100000000020000")
+    for id in [a, b] {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("\(id)/资源包"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("\(id)/S2A/ryujinx/bis/user/save"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: root.appendingPathComponent("\(id)/identity.json"))
+    }
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    gameDataReady: { FileManager.default.fileExists(atPath: root.appendingPathComponent("\($0)/资源包").path) }, gamesRoot: root)
+    #expect(model.games.map(\.id) == [a, b])
+    let delete = try #require(model.actions.onDeleteGame)
+    delete(a, false)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(a).path) == ["S2A"])
+    delete(b, true)
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(b).path))
+    #expect(model.games.isEmpty)
+}
+
 @MainActor @Test func playOnlyForPlayable() {
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B","state":"needs_game_data"}]}"#.utf8)
     var played: [String] = []
@@ -46,18 +78,19 @@ import ShellUI
     var played: [String] = [], picked: [String] = []
     let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
                                     gameDataReady: { ready.contains($0) }, pickGameData: { picked.append($0) })
-    #expect(model.games.map(\.game.state) == [.needsGameData, .needsGameData])
+    #expect(model.games.map(\.id) == ["0100000000020000"])   // 只显示这台设备上资源到位的款
     model.actions.onPlay("0100000000010000")
     #expect(played.isEmpty && picked == ["0100000000010000"])
     model.actions.onPickGameData("0100000000010000")
     #expect(picked == ["0100000000010000", "0100000000010000"])
     ready.insert("0100000000010000"); model.refreshGameData()
-    #expect(model.games.map(\.game.state) == [.playable, .needsGameData])
+    #expect(model.games.map(\.id) == ["0100000000010000", "0100000000020000"] && model.games.map(\.game.state) == [.playable, .needsGameData])   // 再推一款，刷新后多一款
     model.actions.onPlay("0100000000010000")
     #expect(played == ["0100000000010000"])
     ready.remove("0100000000010000")              // 库开着时资源包被拿走：Play 当场重判、不放行
     model.actions.onPlay("0100000000010000")
     #expect(played == ["0100000000010000"] && picked.count == 3)
+    #expect(model.games.map(\.id) == ["0100000000020000"])   // 删掉后不再显示
 }
 
 // 宿主「重新检查」→ s2a_shell_refresh → 登记的处理函数
@@ -93,6 +126,8 @@ nonisolated(unsafe) private var lastPlayed = ""
     // 缺省：60 帧开、宽屏强制关、透明度 100、布局默认，没有「我的布局」时选项 = 默认 + 调整位置
     var s = S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false))
     #expect(row(s, "fps60")?.value == "on" && row(s, "widenForce")?.value == "off" && row(s, "vpadOpacity")?.value == "100")
+    #expect(row(s, "vpadHoldLock")?.value == "on")
+    #expect(row(S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false, holdLock: false)), "vpadHoldLock")?.value == "off")
     if case .choice(let o) = row(s, "vpadLayout")?.kind { #expect(o.map(\.id) == ["default", "edit"]) } else { Issue.record("布局行应是多选") }
     // 改：G1 关 60 帧、开宽屏强制、透明度 40 → G1 两项变了、G2 不变；透明度全局 0.4
     #expect(!S2ArmGameSettings.apply(id: "G1", setting: "fps60", value: "off", stores: stores))
@@ -111,4 +146,29 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(abs((app.object(forKey: "S2AVPadOpacity") as? Double ?? 0) - 0.1) < 1e-9)
     // 选「调整位置…」= 打开编辑页，不存值
     #expect(S2ArmGameSettings.apply(id: "G1", setting: "vpadLayout", value: "edit", stores: stores))
+}
+
+// 这台 iPhone 上的名字和封面：叠在清单上、可恢复默认，不影响别的款。期望值手写
+@MainActor @Test func gameIdentityOverridesCatalogue() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let json = #"{"schema":1,"games":[{"title_id":"0100000000000001","name":"原名一"},{"title_id":"0100000000000002","name":"原名二"}]}"#
+    let catalogue = Catalogue.parse(Data(json.utf8), baseDirectory: root)
+    let store = GameIdentityStore(root: root)
+    let model = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    let a = "0100000000000001", b = "0100000000000002"
+    #expect(model.games.map(\.game.title) == ["原名一", "原名二"] && !model.hasCustomIdentity(a))
+    model.change(a, S2ArmGameSettings.identity, S2ArmGameSettings.editIdentity)
+    #expect(model.editingIdentity == a)
+    model.saveIdentity(a, name: "  我的游戏  ", cover: nil)
+    #expect(model.editingIdentity == nil && model.games[0].game.title == "我的游戏" && model.games[1].game.title == "原名二")
+    #expect(store.load(a)?.name == "我的游戏" && store.load(b) == nil)
+    // 下次启动：从磁盘读回
+    let again = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    #expect(again.games[0].game.title == "我的游戏")
+    // 名字没改：不算自定义
+    model.saveIdentity(b, name: "原名二", cover: nil)
+    #expect(store.load(b) == nil && !model.hasCustomIdentity(b))
+    model.resetIdentity(a)
+    #expect(model.games[0].game.title == "原名一" && store.load(a) == nil)
 }

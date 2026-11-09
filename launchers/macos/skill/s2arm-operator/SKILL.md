@@ -27,6 +27,10 @@ S2Arm 把玩家**自己的** Switch 游戏导出成能在 iPhone / iPad（同一
 - 还没有的功能：`delete`、`diag pull`。`diag export <输出.zip>` 可用。排查用 `errors` 和 `logs`。
 - 下文里的 Xcode、App Store、macOS 授权框只适用于 Mac。
 
+## 更新
+
+启动器发现新版会在后台下载，玩家数据不受影响。`s2armctl update` 看状态，下好后（state = ready）先问玩家，同意了再 `s2armctl update restart`。出包、装机进行中不能重启。
+
 ## 还没装 S2Arm：从 GitHub 开始
 
 1. 从 GitHub Releases 下最新版 `S2Arm-mac-arm64.dmg`：`gh release download --repo jhaizhou-ops/S2Arm --pattern S2Arm-mac-arm64.dmg`（没有 `gh` 就让玩家打开 https://github.com/jhaizhou-ops/S2Arm/releases/latest 下载）。Windows 玩家不走这份手册。
@@ -57,6 +61,7 @@ s2armctl next --json    # 同上，给程序读：{step, who, do, why, game, tas
 s2armctl keys <prod.keys 路径>              # 放密钥，等导入完成才返回
 s2armctl games <游戏文件夹>                  # 放游戏：本体、更新、DLC 放同一个文件夹；等导入完成才返回
 s2armctl build <游戏号> ios                  # 导出 iPhone / iPad 版（同一个包）；mac = 这台 Mac；android / harmony 即将上线
+s2armctl customize <游戏号> --name 名字 --cover 图片  # 改游戏显示名 / 封面；--reset-name、--reset-cover 恢复默认；下次装到 iPhone 时带上
 s2armctl wait <游戏号> --op ipa --timeout 7200   # 等导出结束：逐段打进度，结尾打每段耗时；失败退出码 1
 s2armctl install-check <游戏号>              # 装机前清单：iPhone 版、Xcode 登录 Apple ID、数据线连上、信任、开发者模式
 s2armctl install <游戏号>                    # 装到 iPhone：签名 → 数据线安装 → 拷游戏资源、逐文件核对
@@ -89,8 +94,11 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 
 | 现象 / 错误码 | 谁 | 怎么办 |
 |---|---|---|
-| `keys_missing` / `keys_invalid` | ask | 问玩家自己从 Switch 导出的 prod.keys 在哪，`keys <路径>`；文件不完整就请他重新导出一份 |
-| `content_unreadable` 解不开 | human | 密钥比游戏旧：请玩家把 Switch 更新到最新系统、重新导出 prod.keys，再 `keys <路径>` |
+| `keys_missing` / `keys_invalid` | ask | 问玩家自己的 prod.keys 在哪，`keys <路径>`；文件不完整就请他换一份完整的 |
+| `content_unreadable` 无法读取 | human | 核对源文件和票据是否完整 |
+| `ticket_missing` 缺少票据 | human | 核对源文件是否含有所需票据 |
+| `content_truncated` 文件不完整 | human | 从原始位置重新复制完整的游戏文件 |
+| `keys_outdated` 密钥版本不足 | human | 请玩家换一份版本更新的、自己的 prod.keys，再 `keys <路径>` |
 | `input_base_missing` | ask | 只放了更新或 DLC：问玩家游戏本体在哪，`games <本体所在文件夹>` |
 | `input_empty` / `input_type_unsupported` | ask | 文件夹里没有 NSP / XCI / NSZ / XCZ：问玩家游戏文件到底在哪 |
 | `input_missing` / `content_invalid` | ask | 文件找不到（外接盘没接）或损坏：请玩家接上磁盘或换一份完整的原版文件 |
@@ -106,7 +114,7 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | 错误码 | 谁 | 怎么办 |
 |---|---|---|
 | `library_not_apfs` 游戏库所在磁盘格式不支持 | confirm | 游戏原件放哪块盘都行（S2Arm 原地只读、不复制）；导出时的工作数据（游戏库）要放在 APFS 格式的磁盘上（Mac 内置盘就是）：问玩家同意后，请他在「设置 → 游戏库与玩家数据」改用这台 Mac 上的默认位置，或选一块 APFS 外接盘（「磁盘工具」里另分一个 APFS 分区，盘上要有空闲空间、原有数据不动），然后 `s2armctl env`；游戏原件不用挪 |
-| `disk_full` | confirm | 磁盘不够：`state --json` 看各游戏 `bytes`，征得同意后 `delete <不要的游戏号>`，或请玩家清理磁盘；然后 `retry <任务号>` |
+| `disk_full` | confirm | 磁盘不够：`state --json` 看各游戏 `bytes`，征得同意后 `delete <不要的游戏号>`，或请玩家清理磁盘；然后 `retry <任务号>`。磁盘预检偏保守时，玩家同意后可以 `build <游戏号> <平台> --space-override`（同界面「仍然继续」，真写满会停下报错） |
 | `stage_timeout` | ai | `logs` 看卡在哪；`retry <任务号>` 一次 |
 | `configuration_failed` / `shader_extract_failed` / `rewrite_failed` / `compilation_failed` | ai | 不是玩家的问题：`retry` 一次；还失败就 `s2armctl diag export ~/Desktop/S2Arm-诊断.zip` 导出诊断包、帮玩家反馈（见「反馈问题」） |
 | `aoc_missing`（警告） | ai | 本体照常装；告诉玩家有追加内容没进包，生成诊断包反馈 |
@@ -124,7 +132,7 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | 现象 / 错误码 | 谁 | 怎么办 |
 |---|---|---|
 | 第一次装机卡在签名 | human | Mac 弹了钥匙串授权框：请玩家输入 Mac 登录密码，点「始终允许」（不点会 10 分钟超时）。开发证书和描述文件由 Xcode 自动建，不用手动建 |
-| `xcode_team_pending` | human | Apple ID 登录了但团队没同步：请玩家打开 Xcode → Settings → Apple Accounts，选中账号，等团队列表显示出来 |
+| `xcode_team_pending` | human | Apple ID 登录了但这台 Mac 没有签名团队：`s2armctl signing-project` 打开引导项目，请玩家在 Xcode 选 Personal Team，连手机点运行一次；已知 Team ID 时可用 `install <游戏号> --team <10 位>` |
 | `signing_certificate_missing` | human | 请玩家在 Apple Accounts 里选中账号 → Manage Certificates → + → Apple Development |
 | `xcode_account_missing` | human | 请玩家打开 Xcode →「设置」→「账户」，点「+」登录 Apple ID（要输密码，你不代做） |
 | `device_not_connected` / 连着不止一台 | ask | 请玩家用数据线只连要装的那台、解锁、在手机上点「信任」 |
@@ -133,6 +141,7 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | `device_locked` | human | 请玩家解锁手机、停在主屏幕，装的过程中别锁屏 |
 | `free_app_limit` | human | 免费 Apple ID 同时最多 3 个自签 App、每 7 天最多 10 个新包名：请玩家删掉不玩的自签 App，或过几天再装 |
 | `provisioning_expired` / `signing_failed` | ai | 再 `install` 一次（会重新申请）；还不行 `logs` 看签名哪步报错，必要时改用 AltStore（启动器「装到 iPhone」页底部有步骤，玩家本人登录） |
+| `manual_unpack_required`（警告） | human | 资源包已传完，电脑拉不起手机上的 App：让玩家在 iPhone 上打开这款游戏、保持前台等导入完，不要重推 |
 | `usb_slow`（警告） | human | 数据线是 USB 2：换 USB 3 的 USB-C 线、直插 Mac 会快很多（只有 iPhone 15 Pro 及更新的 Pro 机型支持 USB 3） |
 | `shell_sdk_old`（警告） | human | 包是旧版 Xcode 出的、iPhone 系统更新：iPhone Duo 等新机型上 App 缩小居中。请玩家更新 Xcode（不低于 iPhone 系统大版本）、启动器里选它后重新打 iPhone 包 |
 | `resource_transfer_failed` / `pack_missing` | ai | 资源没拷完：`push-pack <游戏号>`；提示没有资源包就重新导出 iPhone 版 |
@@ -153,6 +162,6 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 
 解决不了时帮玩家整理反馈：
 
-- `s2armctl diag export ~/Desktop/S2Arm-诊断.zip`：导出 Mac 端诊断包；
+- `s2armctl diag export ~/Desktop/S2Arm-诊断.zip`：导出 Mac 端诊断包（只写 `s2armctl diag` 也行，默认放桌面、文件名带时刻）；
 - `s2armctl diag pull`：手机用数据线连着时，拉回手机上的诊断；
 - 请玩家在 https://github.com/jhaizhou-ops/S2Arm/issues 选「问题回报（内测）」模板提交，附上错误码、包号（导出完成页可复制）和诊断包。诊断包里不含密钥、游戏文件和存档。

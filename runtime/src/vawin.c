@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
@@ -92,10 +93,13 @@ void s2a_guest_run_mark(int running) {
     { char d[1100]; snprintf(d, sizeof d, "%s", p); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
     FILE *f = fopen(p, "w"); if (f) { fprintf(f, "%d\n", (int)getpid()); fclose(f); }
 }
+// 构造期（占窗口、判文件后备开不开）用的程序号：need_from_npdm 从本款 main.npdm 直接读（svc_mem.c s2a_npdm_pid），不经图形模式（审计 P1-139：
+//   那时 iOS 的 s2a_gfx_mode 还没放行、程序号恒 0，Mac 上调它会把模式和程序号 0 落定）。多款容器构造期没选游戏，保持 0（按最大池判，#103）
+static uint64_t g_ctor_pid; static int g_attach_phase;
 static int mem_peak_path(char *out, size_t n) {
     uint64_t (*pidf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_npdm_program_id"); const char *ov = getenv("S2A_GUEST_MEM_PEAK");
     if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
-    uint64_t pid = pidf ? pidf() : 0;
+    uint64_t pid = g_attach_phase ? g_ctor_pid : pidf ? pidf() : 0;   // 构造期只认 npdm 直读的；局中（心跳记峰值）照旧按当前程序号
     if (!pid) return 0;
     s2a_docs_path(out, n, "wire/%016llX/mem_peak", (unsigned long long)pid); return 1;
 }
@@ -119,19 +123,33 @@ void s2a_guest_mem_note(uint64_t footprint) {
     if (!rename(t, p)) rec = total;
 }
 static uint64_t env_mb(const char *k, uint64_t def) { const char *v = getenv(k); return (v && *v ? strtoull(v, NULL, 10) : def) << 20; }
-static void guest_file_attach(void) {
+static int g_ctr;
+static uint64_t g_ctr_pool;   // 多款容器：包内各款应用池的最大值（构造期还没选游戏，文件后备按最大的判）
+uint64_t s2a_window_container_pool(void) { return g_ctr_pool; }
+static void guest_file_attach_(void);
+static void guest_file_attach(void) { g_attach_phase = 1; guest_file_attach_(); g_attach_phase = 0; }
+static void guest_file_attach_(void) {
     // 池：s2a_app_pool（layout.c；Switch 3285 MiB、Switch 2 9 GiB）。此刻已定：上一步 need_from_npdm → s2a_npdm_window_need → npdm_read 认出 Switch 2 时就设了 9 GiB。
     //   它是游戏能向系统要的内存总量（SetHeapSize 上限 = 池 − 映像），客体脏页最多涨到这么多；窗口跨度（几十 GB 地址）不是内存，堆区随池定，game.tsv 的 app_pool 是图形层的、要到图形初始化才读。
     //   按名字取（dlsym）：单测只链 vawin.c、不链 layout.c；取不到记 0（自动判定按装得下 = 关）
     const char *e = getenv("S2A_GUEST_FILE");
     uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0, room = 0;
+    if (g_ctr && g_ctr_pool > pool) pool = g_ctr_pool;   // 多款容器：不按缺省池判，否则 Switch 2 款进局后内存超单进程上限被杀（#103）
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
     room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
+#else
+    // Mac 没有单进程上限，但物理内存小时匿名内存会压进压缩器抖动：16 GB 机器跑 9 GB 池的款，压缩器占 11 GB、WindowServer 被看门狗杀、游戏约 1 帧 / 秒（#41 / #68）。
+    //   按物理内存减系统与其它 App 的预留当「剩余」：16 GB 跑 Switch 2 款开文件后备，大内存机器判装得下、行为不变
+    { uint64_t ph = 0; size_t phn = sizeof ph; uint64_t reserve = env_mb("S2A_GUEST_FILE_MAC_RESERVE_MB", 6144); if (!sysctlbyname("hw.memsize", &ph, &phn, NULL, 0) && ph > reserve) room = ph - reserve; }
 #endif
     // 宿主开销估计缺省 2560 MB（DOOM Eternal 实测约 2258 MB，往上取整）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     // 宿主开销估计缺省 2048 MB（11-07 真机实测分布，见 s2a_guest_file_wanted3）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     uint64_t host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen();
-    int died = room && s2a_guest_run_died();   // Mac（room 0）不看：Mac 不按内存杀进程
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+    int died = room && s2a_guest_run_died();
+#else
+    int died = 0;   // Mac 不按内存杀进程
+#endif
     int on = s2a_guest_file_wanted4(e, pool, room, seen, host, margin, died);
     const char *why = e && *e ? "按 S2A_GUEST_FILE 显式设定" : !room ? "自动：不知道单进程上限（Mac 会换页），缺省关"
                     : pool > room ? "自动：池本身大于剩余，装不下"
@@ -321,7 +339,7 @@ static uint64_t need_dir(const char *dir) {
 //   ACI0 0x38（svc_mem.c npdm_read 不写本局状态的读法）+ 各模块 <名>.fixups.tsv（只有表头几行，实测约 240 字节）+ 镜像包头与偏移表（32 + load commands + 16 + 88 × 模块数）。
 //   应用池（Switch 2 9 GiB）在每款算完后放回读之前的值：别款的池不带进下一款的算法，也不带进玩家选的那款（起局时 layout_prepare 按本款 NPDM 重新设）
 uint64_t s2a_window_container_need(const char *bundle) {
-    g_ctr_astype = -1;
+    g_ctr_astype = -1; g_ctr_pool = 0;
     char gd[1100]; snprintf(gd, sizeof gd, "%s/Games", bundle);
     DIR *d = opendir(gd);
     if (!d) { LOG("【红】地址窗口：多款容器读不了 %s（errno %d），不知道要多大，不占窗口", gd, errno); return 0; }
@@ -346,6 +364,7 @@ uint64_t s2a_window_container_need(const char *bundle) {
         if (span && span(img, why, sizeof why)) { LOG("【红】地址窗口：多款容器里 %s 的镜像包读不了偏移表：%s，不占窗口", e->d_name, why); ok = 0; break; }
         uint64_t ni = need_dir(dir);
         if (span) span(NULL, NULL, 0);
+        { uint64_t pg = poolf ? poolf() : 0; if (pg > g_ctr_pool) g_ctr_pool = pg; }
         if (pools && pool0) pools(pool0);
         if (!ni) { LOG("【红】地址窗口：多款容器里 %s 的跨度算不出（类型 %d（%s）；%s 读不到、模块段读不到或类型不支持），不占窗口", e->d_name, t, s2a_as_type_bits((uint32_t)t), g_npdm); ok = 0; break; }
         LOG("地址窗口：多款容器 %s 要 %llu MB（地址空间类型 %d）", e->d_name, (unsigned long long)(ni >> 20), t);
@@ -373,6 +392,8 @@ static uint64_t need_from_npdm(void) {
 #else
     { int ac = *_NSGetArgc(); char **av = *_NSGetArgv(); if (ac < 2) return 0; strlcpy(dir, av[1], sizeof dir); }   // Mac：s2arm-host <模块目录>
 #endif
+    { uint64_t (*pf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_pid"); char np[1100]; snprintf(np, sizeof np, "%s/main.npdm", dir);
+      g_ctor_pid = pf ? pf(np) : 0; }   // 单款：文件后备按它找本款实测峰值 / 死亡标记（mem_peak_path）
     return need_dir(dir);
 }
 // 跨度为 0 的红行按事实分（11-05 Minecraft: Story Mode 的 NPDM 是地址空间类型 1，被报成「读不到 main.npdm」）：

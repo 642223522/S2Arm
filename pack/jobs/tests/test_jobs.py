@@ -438,10 +438,10 @@ class JobsTests(unittest.TestCase):
         out = self.c.library / "iPhone" / "0100000000000000"; out.mkdir(parents=True)
         old = out / "old-title.ipa"; old.write_bytes(b"old"); os.utime(old, (4102444800, 4102444800))
         # Q15: real synthetic cache payload, mocked external packaging only.
-        cache = self.c.private / 'cache/air/ios/aa' / ('a' * 64 + '.air')
+        cache = self.c.work_root / 'cache/air/ios/aa' / ('a' * 64 + '.air')
         cache.parent.mkdir(parents=True)
         cache.write_bytes(b'synthetic reusable AIR')
-        direct = self.c.private / 'run/s2arm/cache/direct/0100000000000000'
+        direct = self.c.work_root / 'run/s2arm/cache/direct/0100000000000000'
         direct_lib = direct / 'store/aa.pack'   # S2Arm 10-31: the direct cache is the store (shard files); the old ios/ / mac/ trees are cleared as transients
         direct_work = direct / 'work/log'
         for path in (direct_lib, direct_work):
@@ -677,10 +677,10 @@ class JobsTests(unittest.TestCase):
 
 
     def test_pack_space_needs_unpack_plus_direct(self):
-        # 预检门槛 = 原包 × 1.1 + 直连上限：恰好够放行，差 1 字节拦下，提示里写需要与剩余
+        # 预检门槛 = 原包 × 1.1 × 2（解包 + 单文件镜像）+ 直连上限：恰好够放行，差 1 字节拦下，提示里写需要与剩余
         import unittest.mock as um, collections
         base = dict(self.package("base"), size=6 << 30)
-        game = self.game(packages=[base]); need = (6 << 30) * 11 // 10 + 15_000_000_000
+        game = self.game(packages=[base]); need = 2 * ((6 << 30) * 11 // 10) + 15_000_000_000
         du = collections.namedtuple("du", "total used free")
         with um.patch("shutil.disk_usage", return_value=du(0, 0, need)):
             library.check_pack_space(self.c, game)
@@ -726,7 +726,7 @@ class JobsTests(unittest.TestCase):
                 game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
                 with um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
                     lib = library.space_budget(self.c, game)["volumes"][0]
-                self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
+                self.assertEqual(lib["needBytes"], 2 * ((6 << 30) * 11 // 10) + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
@@ -741,7 +741,7 @@ class JobsTests(unittest.TestCase):
                 with um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
                     budget = library.space_budget(self.c, game)
                 self.assertEqual(budget["gameBytes"], want)
-                self.assertEqual(budget["volumes"][0]["needBytes"], want * 11 // 10 + 15_000_000_000)
+                self.assertEqual(budget["volumes"][0]["needBytes"], 2 * (want * 11 // 10) + 15_000_000_000)
 
     def test_space_budget_library_volume_only(self):
         # 11-02 起打 iPhone 包不再把原件暂存到数据目录（共用 游戏库/cache/<程序号>/extract），预算只有游戏库一卷：原件跨卷与否都一样
@@ -769,7 +769,7 @@ class JobsTests(unittest.TestCase):
                     library.check_pack_space(self.c, game)
                 lib = budget["volumes"][0]
                 self.assertEqual((lib["role"], lib["basis"], lib["needBytes"], lib["freeBytes"], lib["enough"], lib["volume"]),
-                                 ("library", "rule", (6 << 30) * 11 // 10 + 15_000_000_000, 50 << 30, True, "系统盘"))
+                                 ("library", "rule", 2 * ((6 << 30) * 11 // 10) + 15_000_000_000, 50 << 30, True, "系统盘"))
                 self.assertIn("直连着色器上限", lib["note"]); self.assertEqual(lib["unknown"], ["shader_cache"])
                 self.assertEqual(budget["gameBytes"], 6 << 30)
                 self.assertEqual([u["id"] for u in budget["unknown"]], ["shader_cache"])
@@ -789,7 +789,7 @@ class JobsTests(unittest.TestCase):
         self.assertIn("磁盘空间不够", str(e.exception))
         event = self.space_events()[-1]
         self.assertFalse(event["space"]["volumes"][0]["enough"])
-        self.assertEqual(event["space"]["volumes"][0]["needBytes"], (1 << 30) * 11 // 10 + 5_000_000_000)
+        self.assertEqual(event["space"]["volumes"][0]["needBytes"], 2 * ((1 << 30) * 11 // 10) + 5_000_000_000)
         self.c.begin("下一阶段", 2, 3); self.c.emit(done=1, total=2)
         job = json.loads(self.c.jobpath.read_text())
         self.assertEqual(job["space"], event["space"]); self.assertEqual(job["message"], "下一阶段")
@@ -881,6 +881,18 @@ class JobsTests(unittest.TestCase):
         with self.assertRaises(Failure):
             self.c.catalog()
         self.assertFalse(marker.exists())
+
+    def test_caches_follow_a_library_outside_the_private_root(self):
+        """外接盘上的游戏库：出包缓存和运行目录要跟着走，不写系统盘；缺省游戏库（在数据目录里）位置不变。"""
+        outside = self.root / "external" / "lib"
+        c = Context(self.request | dict(taskId="outside", library=str(outside)))
+        self.assertEqual(c.work_root, outside.resolve() / ".s2arm-work")
+        env = c.env()
+        self.assertEqual(env["S2A_RUN_ROOT"], str(outside.resolve() / ".s2arm-work/run"))
+        self.assertTrue(env["GAL_PSO_CACHE"].startswith(str(outside.resolve())))
+        inside = Context(self.request | dict(taskId="inside", library=str(Path(self.request["privateRoot"]) / "lib")))
+        self.assertEqual(inside.work_root, inside.private)
+        self.assertEqual(inside.env()["S2A_RUN_ROOT"], str(inside.private / "run"))
 
     def test_refuses_nonempty_or_legacy_library(self):
         other = self.root / "legacy"
@@ -1158,13 +1170,13 @@ class JobsTests(unittest.TestCase):
 
     def _build_leftovers(self, gid):
         """造一款出完 iPhone 包的现场：输出目录（IPA / 资源包 / 日志 / 产物根 / 解包）+ 私有目录里按程序号存的缓存 + 别的款的缓存 + 共享 metallib 缓存"""
-        low, run = gid.lower(), self.c.private / "run" / "s2arm"
+        low, run = gid.lower(), self.c.work_root / "run" / "s2arm"
         out = self.c.library / "iPhone" / gid
         keep = [out / f"t{low}.ipa", out / f"t{low}资源包" / "manifest.json", out / "logs" / "a.log"]
         gone = [out / "roots" / f"t{low}@现行" / "x", out / "extract" / "romfs" / "f", run / "cache" / "direct" / gid.upper() / "work" / "cas",
                 run / "cache" / "bake" / f"{low}-abc" / "ok", run / "cache" / "aoc" / f"t{low}-k" / "aoc.tsv", run / "cache" / "srcver" / f"t{low}-k" / "r",
-                run / "widen" / f"t{low}_b" / "ui", run / "widen" / "auto" / f"t{low}_b" / "w", self.c.private / "cache" / "air" / "ios" / "x.air"]
-        other = [run / "cache" / "direct" / "0100AAAAAAAAA000" / "cas", run / "cache" / "bake" / "0100aaaaaaaaa000-abc" / "ok", self.c.private / "cache" / "nxaot" / "host.o"]
+                run / "widen" / f"t{low}_b" / "ui", run / "widen" / "auto" / f"t{low}_b" / "w", self.c.work_root / "cache" / "air" / "ios" / "x.air"]
+        other = [run / "cache" / "direct" / "0100AAAAAAAAA000" / "cas", run / "cache" / "bake" / "0100aaaaaaaaa000-abc" / "ok", self.c.work_root / "cache" / "nxaot" / "host.o"]
         for f in keep + gone + other:
             f.parent.mkdir(parents=True, exist_ok=True); f.write_text("x")
         return keep, gone, other
@@ -1196,6 +1208,7 @@ class JobsTests(unittest.TestCase):
         outside = self.c.library / "outside" / "z"; outside.parent.mkdir(parents=True); outside.write_text("x")
         (work / "pkg/link").symlink_to(outside.parent)   # 指向外部的链接：只删链接，指向的文件在
         with patch.object(library, "_windows_layout", return_value=True):
+            (self.c.library / "iPhone" / game["id"] / "a.ipa").write_bytes(b"ipa")   # 老玩家：有 IPA 没容器件
             library.prune_build(self.c, game["id"])
         self.assertEqual([q for q in keep if not q.exists()], [])
         self.assertEqual([q for q in gone if q.exists()], [])
@@ -1225,6 +1238,29 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(save.read_text(), "keep")
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
+
+    def test_delete_also_drops_game_from_library_container(self):
+        # 期望（#227）：游戏库容器里有 A、B，删 A → 容器清单只剩 B、A 的随行目录和镜像包没了、B 原样；容器里没有的款删除不动容器。真跑 ship_ext container-drop
+        a, b = "0100000000010000", "0100000000020000"
+        app = self.c.library / "iPhone/container/S2Arm.app"
+        for gid in (a, b):
+            (app / "Games" / gid).mkdir(parents=True); (app / "Games" / gid / "main.npdm").write_bytes(b"META" + gid.encode())
+            (app / "Frameworks").mkdir(exist_ok=True); (app / "Frameworks" / f"S2AImages-{gid}.dylib").write_bytes(gid.encode())
+        (app / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "S", "games": [{"title_id": a}, {"title_id": b}]}))
+        import plistlib; (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games", "CFBundleExecutable": "S2Arm"})); (app / "S2Arm").write_bytes(b"bin")
+        (self.c.library / "iPhone/container/S2Arm.ipa").write_bytes(b"old")
+        self.catalogue([self.game(tid=a, packages=[self.package(tid=a)]), self.game(tid=b, packages=[self.package(tid=b, sha="b" * 64)])])
+        self.c.r["gameId"] = a
+        library.delete(self.c)
+        self.assertEqual([e["title_id"] for e in json.loads((app / "s2a_catalogue.json").read_text())["games"]], [b])
+        self.assertEqual(sorted(p.name for p in (app / "Games").iterdir()), [b])
+        self.assertEqual(sorted(p.name for p in (app / "Frameworks").iterdir()), [f"S2AImages-{b}.dylib"])
+        self.assertNotEqual((self.c.library / "iPhone/container/S2Arm.ipa").read_bytes(), b"old")
+        before = (app / "s2a_catalogue.json").read_text()
+        self.c.r["gameId"] = b
+        library.delete(self.c)   # 最后一款也摘（摘空）
+        self.assertEqual(json.loads((app / "s2a_catalogue.json").read_text())["games"], [])
+        self.assertNotEqual(before, (app / "s2a_catalogue.json").read_text())
 
     def test_delete_waits_for_execution_lock_held_by_cancelled_task(self):
         # 期望：执行锁被（刚被取消、还没退出的）任务占着 3 秒 → 删除不立刻失败，等锁放开后照样删掉（10-26 Spare-host：导入后自动排的 Mac 准备占锁，删除直接报「另一个任务正在使用游戏库」）
@@ -1466,10 +1502,166 @@ class JobsTests(unittest.TestCase):
             self.assertFalse(any("link" in name or "pipe" in name or "outside" in name for name in archive.namelist()))
             self.assertNotIn("OUTSIDE_BOUNDARY_SENTINEL", "".join(archive.read(name).decode() for name in archive.namelist()))
 
+    def test_diagnostic_log_keeps_head_heartbeats_and_tail(self):
+        import io
+        short = b"a" * 32000
+        self.assertEqual(library.diagnostic_log_excerpt(io.BytesIO(short), len(short)), short)
+        beat = "[心跳] 帧 {} 热状态 0\n".format
+        head = b"HEAD_MARK\n" + b"h" * 16000
+        noise = b"NOISE_LINE padding padding\n" * 80000   # 约 2.2 MB，心跳行跨 1 MiB 分块
+        body = head + noise + beat(1).encode() + noise + beat(2).encode() + noise + b"t" * 16000 + b"\nTAIL_MARK\n"
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
+        self.assertIn(beat(1).strip().encode(), out); self.assertIn(beat(2).strip().encode(), out)
+        self.assertLess(out.count(b"NOISE_LINE"), 1200)   # 只有开头 / 结尾 16 KB 内可能带到
+        # 心跳太多：只留最新的，总量有界
+        many = b"".join(beat(i).encode() for i in range(20000))
+        body = b"h" * 16000 + many + b"t" * 16000
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        self.assertIn(beat(19999).strip().encode(), out); self.assertNotIn(beat(0).strip().encode(), out)
+        self.assertLessEqual(len(out), 16000 * 2 + 64000 + 200)
+
+    def customize_game(self, **fields):
+        gid = "0100000000010000"
+        cat = self.c.catalog()
+        if not any(g["id"] == gid for g in cat["games"]):
+            atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="原名", display="", packages=[], hidden=False)]))
+        request = dict(self.request, taskId=str(uuid.uuid4()), operation="customize", gameId=gid, **fields)
+        return library.customize(Context(request)), gid
+
+    def test_customize_name_and_cover_are_display_only_and_restorable(self):
+        png = self.root / "my.png"; png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 100)
+        result, gid = self.customize_game(name="  我的游戏  ", coverPath=str(png))
+        self.assertEqual(result["name"], "我的游戏")
+        folder = self.c.library / "games" / gid
+        covers = list(folder.glob("cover.custom.*.jpg"))
+        self.assertEqual(len(covers), 1); self.assertEqual(covers[0].read_bytes(), png.read_bytes())
+        self.assertEqual(self.c.catalog()["games"][0]["name"], "原名")   # 只改显示，不改登记名
+        rendered = library.game_custom(self.c, gid)
+        self.assertEqual((rendered["name"], rendered["cover"]), ("我的游戏", covers[0]))
+        # 只改名字：封面不动
+        self.customize_game(name="第二个名字")
+        self.assertEqual(list(folder.glob("cover.custom.*.jpg")), covers)
+        # 换图：文件名变（两端按路径缓存），旧图删掉
+        jpg = self.root / "my.jpg"; jpg.write_bytes(b"\xff\xd8\xff" + b"y" * 100)
+        self.customize_game(coverPath=str(jpg))
+        after = list(folder.glob("cover.custom.*.jpg"))
+        self.assertEqual(len(after), 1); self.assertNotEqual(after, covers)
+        self.assertEqual(library.game_custom(self.c, gid)["name"], "第二个名字")
+        # 恢复默认
+        self.customize_game(name="", coverPath="")
+        self.assertEqual(list(folder.glob("cover.custom.*.jpg")), [])
+        self.assertFalse((folder / "custom.json").exists())
+        self.assertEqual(library.game_custom(self.c, gid), dict(name="", cover=None))
+
+    def test_customize_rejects_bad_input_and_keeps_previous(self):
+        self.customize_game(name="好名字")
+        bad = self.root / "bad.txt"; bad.write_bytes(b"not an image")
+        huge = self.root / "huge.png"; huge.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * (16 << 20))
+        for fields in (dict(name="x" * 65), dict(name="换\n行"), dict(name=3), dict(coverPath=str(bad)), dict(coverPath=str(huge)), dict(coverPath=str(self.root / "none.png"))):
+            with self.assertRaises(Failure, msg=str(list(fields))):
+                self.customize_game(**fields)
+        custom = library.game_custom(self.c, "0100000000010000")
+        self.assertEqual((custom["name"], custom["cover"]), ("好名字", None))
+
+    def test_container_custom_lists_custom_and_default_entries(self):
+        import ipa
+        png = self.root / "my.png"; png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x")
+        _, gid = self.customize_game(name="新名", coverPath=str(png))
+        item = ipa.container_custom(self.c)[gid]
+        self.assertEqual((item["custom"], item["name"]), (True, "新名"))
+        self.assertIn("cover.custom.", item["cover"])
+        self.customize_game(name="", coverPath="")
+        self.assertEqual(ipa.container_custom(self.c)[gid], dict(custom=False, name="原名", cover=""))
+
+    def test_ship_ext_applies_custom_and_restores_default(self):
+        import importlib.util, json as j
+        spec = importlib.util.spec_from_file_location("container_custom_under_test", ROOT / "pack/container_custom.py")
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        app = self.root / "S2Arm.app"; game = app / "Games" / "A"; game.mkdir(parents=True); (game / "icon.jpg").write_bytes(b"old")
+        cover = self.root / "c.jpg"; cover.write_bytes(b"custom")
+        spec_file = self.root / "custom.json"
+        entries = [dict(title_id="A", name="原名"), dict(title_id="B", name="别的款")]
+        spec_file.write_text(j.dumps(dict(A=dict(custom=True, name="新名", cover=str(cover)))), encoding="utf-8")
+        module.apply_custom(app, entries, str(spec_file), "Games")
+        self.assertEqual(entries, [dict(title_id="A", name="新名", icon="Games/A/icon.jpg", customized=True), dict(title_id="B", name="别的款")])
+        self.assertEqual((game / "icon.jpg").read_bytes(), b"custom")
+        # 恢复默认：带着旧自定义的条目换回原名原图、去掉标记；没自定义过的条目不碰
+        original = self.root / "o.jpg"; original.write_bytes(b"original")
+        spec_file.write_text(j.dumps(dict(A=dict(custom=False, name="原名", cover=str(original)), B=dict(custom=False, name="库里的名字", cover=""))), encoding="utf-8")
+        module.apply_custom(app, entries, str(spec_file), "Games")
+        self.assertEqual(entries, [dict(title_id="A", name="原名", icon="Games/A/icon.jpg"), dict(title_id="B", name="别的款")])
+        self.assertEqual((game / "icon.jpg").read_bytes(), b"original")
+
+    def stopped_game(self, kit=True, ipa=True):
+        gid = "0100000000010000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="x", display="", packages=[], hidden=False)]))
+        out = self.c.library / "iPhone" / gid; root = out / "roots" / "k@pkg"; root.mkdir(parents=True)
+        (root / "main.npdm").write_bytes(b"n"); (root / "stage.log").write_text("阶段日志")
+        (out / "roots" / "k@现行").symlink_to("k@pkg"); (self.c.library / "cache" / gid / "x").mkdir(parents=True)
+        if ipa: (out / "a.ipa").write_bytes(b"ipa"); (out / "t资源包").mkdir()
+        if kit: (out / library.CONTAINER_KIT).mkdir(); (out / library.CONTAINER_KIT / "main.npdm").write_bytes(b"old")
+        release = self.c.library / "games" / gid / "releases"; (release / "good").mkdir(parents=True); (release / "bad.partial").mkdir()
+        save = self.c.library / "saves" / gid / "s.bin"; save.parent.mkdir(parents=True); save.write_bytes(b"save")
+        return gid, out, save
+
+    def stop_context(self, gid):
+        return Context(dict(self.request, taskId=str(uuid.uuid4()), operation="ipa", gameId=gid))
+
+    def test_clean_after_stop_keeps_previous_delivery_and_logs(self):
+        gid, out, save = self.stopped_game()
+        c = self.stop_context(gid)
+        library.clean_after_stop(c)
+        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["a.ipa", "t资源包", library.CONTAINER_KIT]))
+        self.assertFalse((self.c.library / "cache" / gid).exists())
+        self.assertEqual((out / library.CONTAINER_KIT / "main.npdm").read_bytes(), b"old")
+        self.assertEqual(save.read_bytes(), b"save")
+        self.assertEqual((c.private / "logs" / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
+
+    def test_clean_after_stop_keeps_failed_stage_logs(self):   # #251：改写失败的 .failed/<款>_main.log 在游戏库缓存里，清理前要拷进私有日志目录，诊断包才带得上
+        gid, out, _ = self.stopped_game()
+        failed = self.c.library / "cache" / gid / "x" / "roots" / ".failed"; failed.mkdir(parents=True)
+        (failed / f"{gid}_main.log").write_text("改写超时前最后一行")
+        c = self.stop_context(gid)
+        library.clean_after_stop(c)
+        self.assertFalse(failed.exists())
+        self.assertEqual((c.private / "logs" / (c.task + "-stages") / f"{gid}_main.log").read_text(), "改写超时前最后一行")
+
+    def test_clean_after_stop_removes_first_failed_export(self):
+        gid, out, _ = self.stopped_game(kit=False, ipa=False)
+        library.clean_after_stop(self.stop_context(gid))
+        self.assertEqual(list(out.iterdir()), [])
+
+    def test_clean_after_stop_keeps_only_source_of_old_install(self):
+        gid, out, _ = self.stopped_game(kit=False)
+        library.clean_after_stop(self.stop_context(gid))
+        self.assertTrue((out / "roots" / "k@pkg" / "main.npdm").is_file())   # 老玩家：没有容器件时产物根是装机的唯一来源
+
+    def test_sweep_skips_while_export_runs_and_cleans_when_idle(self):
+        gid, out, _ = self.stopped_game()
+        c = self.stop_context(gid)
+        with c.lock("execution"):
+            library.sweep_residue(c)
+        self.assertTrue((out / "roots").exists())
+        library.sweep_residue(c)
+        self.assertFalse((out / "roots").exists())
+        release = self.c.library / "games" / gid / "releases"
+        self.assertEqual([p.name for p in release.iterdir()], ["good"])
+
+    def test_sweep_without_residue_never_takes_execution_lock(self):
+        """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""
+        import unittest.mock as um
+        gid, out, _ = self.stopped_game()
+        c = self.stop_context(gid)
+        library.sweep_residue(c)            # 先把残留清干净
+        with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
+            library.sweep_residue(c)
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games" / gid / "releases").iterdir()), ["good"])
+
     def test_diagnostic_bounded_reads_and_atomic_publication(self):
         import unittest.mock as um
         logs = self.c.private / "logs"; logs.mkdir()
-        log = logs / "tail.log"; log.write_bytes(b"x" * 20000 + b"tail")
+        log = logs / "tail.log"; log.write_bytes(b"x" * 40000 + b"tail")
         destination = self.root / "diagnostics.zip"; destination.write_bytes(b"old target")
         self.c.r["path"] = str(destination)
         marker = self.root / "outside-marker"; marker.write_bytes(b"unchanged marker")
@@ -1495,7 +1687,7 @@ class JobsTests(unittest.TestCase):
             library.diagnostics(self.c)
         self.assertTrue(all(output.closed for output in outputs))
         self.assertIn((log.stat().st_ino, log.stat().st_size - 16000, 16000), reads)
-        self.assertTrue(all(size in (16000, (4 << 20) + 1) for _, _, size in reads))
+        self.assertTrue(all(size <= 1 << 20 or size == (4 << 20) + 1 for _, _, size in reads))
         self.assertEqual(marker.read_bytes(), b"unchanged marker")
         self.assertTrue(predictable.is_symlink()); self.assertFalse(destination.is_symlink())
         previous = destination.read_bytes()

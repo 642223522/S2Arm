@@ -164,13 +164,14 @@ public static partial class SaveTransfer
         string next = Path.Combine(transaction, "new");
         string old = Path.Combine(previous, "data");
         bool hadOriginal = Directory.Exists(c.Root);
-        DurableDirectory(transaction);
-        DurableDirectory(previous);
-        Atomic(Path.Combine(transaction, "owner.json"), new JsonObject { ["schema"] = 1, ["gameId"] = Copy(c.Game["id"]), ["dataRoot"] = c.Root, ["transaction"] = token });
-        SyncParents(transaction, c.Work); SyncParents(previous, c.Work);
         string priorArchive = "";
         try
         {
+            DurableDirectory(transaction);
+            DurableDirectory(previous);
+            Atomic(Path.Combine(transaction, "owner.json"), new JsonObject { ["schema"] = 1, ["gameId"] = Copy(c.Game["id"]), ["dataRoot"] = c.Root, ["transaction"] = token });
+            SyncParents(transaction, c.Work); SyncParents(previous, c.Work);
+            Checkpoint("dirsCreated");
             if (Scan(c.Root).Files.Keys.Any(n => n.StartsWith("bis/user/save/", StringComparison.Ordinal)))
             {
                 priorArchive = Path.Combine(previous, "before-restore.s2asave");
@@ -223,7 +224,18 @@ public static partial class SaveTransfer
         catch
         {
             if (File.Exists(c.Journal)) Recover(c);
+            else Abandon(transaction, previous);
             throw;
+        }
+    }
+    // 审计 P2-177：恢复记录写出之前失败，活存档根还没动，本次新建的事务目录与备份目录（含恢复前备份）一并删掉；
+    //   清理失败不盖住原失败（调用方照抛原异常）
+    private static void Abandon(params string[] paths)
+    {
+        foreach (string path in paths)
+        {
+            try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
     // No implementation is linked into production. The process-exit tests pause

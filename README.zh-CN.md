@@ -4,7 +4,7 @@
 
 平台：iPhone / iPad（iOS / iPadOS 18 起）· Mac（Apple 芯片，macOS 15 起）· 在 Mac 或 Windows 上出包 · Android / 鸿蒙即将支持 · 许可：Apache-2.0 · **游戏原件自备**
 
-[English](README.md) · [下载启动器](https://github.com/jhaizhou-ops/S2Arm/releases) · [证据页](docs/validation/证据.md)
+[English](README.md) · [下载启动器](https://jhaizhou-ops.github.io/S2Arm/) · [全部版本](https://github.com/jhaizhou-ops/S2Arm/releases) · [证据页](docs/validation/证据.md)
 
 <p align="center"><img src="docs/images/launcher-welcome.png" width="760" alt="S2Arm 启动器欢迎页"></p>
 
@@ -62,11 +62,11 @@ Mac 和 Windows 启动器都开放了控制接口 `s2armctl`：AI 助手可以�
 
 | 游戏 | 原件 | 着色器 | 出包用时 |
 |---|---|---|---|
-| 暗黑破坏神 3 | 23.5 GB | 1,222 | **6.4 分钟** |
-| 集合啦！动物森友会 | 12.0 GB | 9,315 | **8.6 分钟** |
-| 塞尔达传说 王国之泪 | 17.5 GB | 26,999 | **34 分钟** |
+| 一款 23.5 GB 的动作角色扮演游戏 | 23.5 GB | 1,222 | **6.4 分钟** |
+| 一款 12.0 GB 的生活模拟游戏 | 12.0 GB | 9,315 | **8.6 分钟** |
+| 一款 17.5 GB 的开放世界游戏 | 17.5 GB | 26,999 | **34 分钟** |
 
-Switch 2 版《塞尔达传说 时之笛》在 iPhone 17 Pro Max 上真机实测，手机未发热时**满 60 帧**，持续高负载发热后 **37～43 帧**，每帧耗电约 **0.15 焦耳**。[证据](docs/validation/证据.md#速度与能效)
+一款 Switch 2 游戏在 iPhone 17 Pro Max 上真机实测，手机未发热时**满 60 帧**，持续高负载发热后 **37～43 帧**，每帧耗电约 **0.15 焦耳**。[证据](docs/validation/证据.md#速度与能效)
 
 ## 覆盖面
 
@@ -81,7 +81,7 @@ Switch 2 版《塞尔达传说 时之笛》在 iPhone 17 Pro Max 上真机实测
 
 ## 开始使用
 
-1. 从 [Releases](https://github.com/jhaizhou-ops/S2Arm/releases) 下载 Mac 或 Windows 启动器，打开即用。在 Mac 上出 iPhone 包需要 App Store 免费的 Xcode，并在里面登录你的 Apple ID，启动器会一步步带你完成。
+1. 从[下载页](https://jhaizhou-ops.github.io/S2Arm/)下载 Mac 或 Windows 启动器，打开即用。在 Mac 上出 iPhone 包需要 App Store 免费的 Xcode，并在里面登录你的 Apple ID，启动器会一步步带你完成。
 2. 导入你自己的密钥和游戏；本体、更新和 DLC 放在同一个文件夹里一次导入。
 3. 选 iPhone / iPad 或这台 Mac，点「出包」。
 4. 按启动器提示用你自己的 Apple ID 签名装机（Windows 版已附带签名工具 Impactor），打开 S2Arm，在游戏库里选游戏开玩。
@@ -90,7 +90,7 @@ Switch 2 版《塞尔达传说 时之笛》在 iPhone 17 Pro Max 上真机实测
 
 ## 诚实的边界
 
-S2Arm 运行 64 位（AArch64）游戏。Apple 芯片不能执行 32 位 ARM 代码，所以 32 位游戏不在支持范围内，目前确认的有《二之国 白色圣灰的女王》《模拟山羊》《新超级马力欧兄弟U 豪华版》《怪物猎人 XX》；需要 36 位地址空间的《Minecraft：故事模式》同样不在支持范围内。完整名单与版本见[证据](docs/validation/证据.md#不支持的游戏)。
+S2Arm 运行 64 位（AArch64）游戏。Apple 芯片不能执行 32 位 ARM 代码，所以 32 位游戏不在支持范围内；需要 36 位地址空间的游戏同样不在支持范围内。
 
 ## 参与开发
 
@@ -100,16 +100,20 @@ S2Arm 运行 64 位（AArch64）游戏。Apple 芯片不能执行 32 位 ARM 代
 
 S2Arm 站在社区的肩膀上。
 
-- **联合开发者**：感谢每一位在本项目提交过 PR 或 Issue 的人，你们的代码、真机测试和问题报告塑造了今天的 S2Arm（按首次贡献时间）：biglawine, yyan160, DanielZhangyc, vickwv, Xc1Ym, fjack, ha7rock, yourmoonlight, qidian99, n06ody, YTwsy, wdjwxh, realskyrin, wwmogu, quancunlau, moongrant, imyinyx, s-leeq, Zhangbu, retX0, zh0ngtian, fengbird, zsakvo, 1500256797, BossaMelon, GayoZhao, sovaly, ruterfu, fyn1320068837-source, InTheManXG。
+- **联合开发者**：感谢每一位在本项目提交过 PR 或 Issue 的人，你们的代码、真机测试和问题报告塑造了今天的 S2Arm（按首次贡献时间）：[@biglawine](https://github.com/biglawine), [@yyan160](https://github.com/yyan160), [@DanielZhangyc](https://github.com/DanielZhangyc), [@vickwv](https://github.com/vickwv), [@Xc1Ym](https://github.com/Xc1Ym), [@fjack](https://github.com/fjack), [@ha7rock](https://github.com/ha7rock), [@yourmoonlight](https://github.com/yourmoonlight), [@qidian99](https://github.com/qidian99), [@n06ody](https://github.com/n06ody), [@YTwsy](https://github.com/YTwsy), [@wdjwxh](https://github.com/wdjwxh), [@realskyrin](https://github.com/realskyrin), [@wwmogu](https://github.com/wwmogu), [@quancunlau](https://github.com/quancunlau), [@moongrant](https://github.com/moongrant), [@imyinyx](https://github.com/imyinyx), [@s-leeq](https://github.com/s-leeq), [@Zhangbu](https://github.com/Zhangbu), [@retX0](https://github.com/retX0), [@zh0ngtian](https://github.com/zh0ngtian), [@fengbird](https://github.com/fengbird), [@zsakvo](https://github.com/zsakvo), [@1500256797](https://github.com/1500256797), [@BossaMelon](https://github.com/BossaMelon), [@GayoZhao](https://github.com/GayoZhao), [@sovaly](https://github.com/sovaly), [@ruterfu](https://github.com/ruterfu), [@fyn1320068837-source](https://github.com/fyn1320068837-source), [@InTheManXG](https://github.com/InTheManXG)。
 - **Ryujinx**（Ryujinx Team and Contributors，MIT）：系统服务与着色器翻译的上游，S2Arm 的兼容层建立在它之上。
 - **[NX2Apple](https://github.com/LNPANDY/NX2Apple)**（LNPANDY，MIT）：启动器界面的上游。
 - **[nxnative](https://github.com/seedds/nxnative)**（seedds，MIT，Copyright (c) 2026 seedds）：直连图形层的原作，S2Arm 把游戏图形直接接到 Metal 的这一层源自这份工作。没有这份慷慨的开源，就没有今天的直连路线。
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）：开拓了这条技术路线，第一次把自己的 Switch 游戏原生带到 iPhone、iPad、Mac、安卓和鸿蒙。
 - **Impactor**（Samara M，MIT）与 **apple-codesign**（MPL-2.0）：Windows 端的签名装机。
 - **LNPANDY** 及 iOS 游戏库外壳的原作者与贡献者：外壳与 RomFS 归档子系统。
-- **ns2pro-bridge**（DanielZhangyc，MIT）、**MacNativeGames**（MIT）、**LumaDock**（MIT）、**deko3d**（fincs，zlib）、**nvn.h**（h1k421，MIT）、**bcdec**（Sergii Kudlai，MIT / Unlicense）、**LibHac**（Alex Barney，MIT）与 **hactool**（SciresM，ISC）、**SPIRV-Cross** 与 **Vulkan-Headers**（Khronos Group）、**SMAA**（Jorge Jimenez 等，MIT）、**Mesa** 的细分器（Microsoft，MIT）、**Capstone**、**LZ4**、**.NET**、**libvpx**、**libopus**、**dav1d** 和 **Noto** 字体。
+- **ns2pro-bridge**（DanielZhangyc，MIT）、**MacNativeGames**（MIT）、**LumaDock**（MIT）、**deko3d**（fincs，zlib）、**nvn.h**（h1k421，MIT）、**bcdec**（Sergii Kudlai，MIT / Unlicense）、**SPIRV-Cross** 与 **Vulkan-Headers**（Khronos Group）、**SMAA**（Jorge Jimenez 等，MIT）、**Mesa** 的细分器（Microsoft，MIT）、**Capstone**、**LZ4**、**.NET**、**libvpx**、**libopus**、**dav1d** 和 **Noto** 字体。
 
 每个组件的版本、许可全文和用途见 [NOTICE](NOTICE) 与 [第三方许可清单](THIRD_PARTY_LICENSES.md)。
+
+## Star 走势
+
+<a href="https://star-history.com/#jhaizhou-ops/S2Arm&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jhaizhou-ops/S2Arm&type=Date&theme=dark" /><img alt="Star History" src="https://api.star-history.com/svg?repos=jhaizhou-ops/S2Arm&type=Date" /></picture></a>
 
 ## 许可与声明
 

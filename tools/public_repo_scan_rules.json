@@ -82,6 +82,32 @@
       "id": "private_host_air",
       "category": "internal_name",
       "regex": "(?<![A-Za-z0-9_./-])(?<!iPad )(?<!MacBook )(?<!Kirby )Air(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_])mac[-_]air(?![A-Za-z0-9_])"
+    },
+    {
+      "id": "compliance_readme_decrypt_tools",
+      "category": "compliance_copy",
+      "regex": "(?i)libhac|hactool",
+      "paths": [
+        "README.md",
+        "README.*.md",
+        "docs/site/index.html"
+      ],
+      "reason_note": "11-09 维护者批合规文案：README / 下载页不单列解密相关组件；许可声明留在 NOTICE / THIRD_PARTY_LICENSES"
+    },
+    {
+      "id": "compliance_first_party_titles",
+      "category": "compliance_copy",
+      "regex": "(?i)(?:塞尔达|旷野之息|王国之泪|时之笛|马力欧|马里奥|马车8|动森|动物森友会|宝可梦|斯普拉遁|喷射战士|异度神剑|火焰纹章|星之卡比|密特罗德|银河战士|皮克敏|大乱斗|大金刚|脑锻炼|健身环|奇诺比奥|奥德赛|Zelda|Mario|Animal Crossing|Pok[eé]mon|Pokopia|Splatoon|Xenoblade|Fire Emblem|Kirby|Metroid|Pikmin|Smash Bros|Donkey Kong|Ring Fit|Captain Toad|Ocarina of Time|Tears of the Kingdom|Breath of the Wild|\\bacnh\\b|\\bbotw\\b|\\btotk\\b|\\bmk8d?\\b|\\bsmg2\\b|\\bxc3\\b)|(?-i:\\bARMS\\b)",
+      "paths": [
+        "README.md",
+        "README.*.md",
+        "docs/site/*",
+        "docs/validation/*",
+        "docs/兼容性清单.md",
+        "docs/名单_*",
+        "docs/名单_*/*"
+      ],
+      "reason_note": "11-09 维护者批统一规则：公开仓不出现任天堂第一方游戏名；第三方只在说明性场合保留。先管给人看的文档与名单，代码注释另议；pack/display_names.tsv 第一列是与 pack/oneclick/titles.tsv 对上的内部键，不在本规则内（显示名已是程序号）"
     }
   ],
   "metadata_rules": [
@@ -138,9 +164,10 @@
         "game_screenshot"
       ],
       "paths": [
-        "launchers/macos/Branding/AppIcon-1024.png"
+        "launchers/macos/Branding/AppIcon-1024.png",
+        "launchers/macos/Branding/wordmark-transparent.png"
       ],
-      "reason": "自家 S2Arm 应用图标（同目录 AppIcon.svg 为源稿）。"
+      "reason": "自家 S2Arm 应用图标（同目录 AppIcon.svg 为源稿）和透明底字标。"
     },
     {
       "id": "own_ui_docs",
@@ -156,6 +183,7 @@
         "docs/images/launcher-oneclick.png",
         "docs/images/launcher-success.png",
         "docs/images/launcher-welcome.png",
+        "docs/images/s2arm-wordmark-transparent.png",
         "docs/images/s2arm-wordmark.png",
         "docs/images/内测教程/01-引导页.jpg",
         "docs/images/内测教程/02-已放密钥.jpg",
@@ -163,9 +191,12 @@
         "docs/images/内测教程/04-都放好了.jpg",
         "docs/images/内测教程/05-打包进度.jpg",
         "docs/images/内测教程/07-iPhone导入中.jpg",
-        "docs/images/内测教程/08-iPhone导入完成.jpg"
+        "docs/images/内测教程/08-iPhone导入完成.jpg",
+        "docs/site/preview/desktop-mac-zh.jpg",
+        "docs/site/preview/desktop-windows-en.jpg",
+        "docs/site/preview/mobile-iphone.jpg"
       ],
-      "reason": "文档用自家界面截图：内测教程 8 张为启动器 / iPhone 导入界面，metal-hud 为无游戏清屏探针窗口加系统 HUD；均无游戏画面。"
+      "reason": "文档用自家界面截图：内测教程 8 张为启动器 / iPhone 导入界面，metal-hud 为无游戏清屏探针窗口加系统 HUD，docs/site/preview 3 张为下载页整页截图；均无游戏画面。"
     },
     {
       "id": "upstream_gommon_pdb_path",

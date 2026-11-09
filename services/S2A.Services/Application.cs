@@ -104,7 +104,14 @@ namespace S2A.Services
 
             string romfs = Path.Combine(programDir, "romfs");
 
-            if (Directory.Exists(romfs))
+            IStorage imageStorage = RomFsIndex.OpenImage(programDir);
+
+            if (imageStorage != null)
+            {
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, imageStorage);
+                Native.Mark("服务：RomFS 单文件镜像\0"u8);
+            }
+            else if (Directory.Exists(romfs))
             {
                 // 出包时预建的索引（RomFsIndex）优先：免去起局枚举十几万文件；没有就按目录现建（慢，打一行提示）
                 string index = Path.Combine(programDir, RomFsIndex.FileName);
@@ -205,6 +212,7 @@ namespace S2A.Services
 
             // 按相对路径序号序加入（与预建索引 RomFsIndex 同序）：LibHac 建出的镜像布局随加入顺序变，同序才逐字节相同
             List<string> files = new(Directory.EnumerateFiles(full, "*", SearchOption.AllDirectories));
+            files.RemoveAll(RomFsIndex.IsHostJunk);
             files.Sort(StringComparer.Ordinal);
 
             foreach (string file in files)

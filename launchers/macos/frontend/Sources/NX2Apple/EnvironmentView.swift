@@ -36,6 +36,12 @@ struct EnvironmentView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    CardGroup(loc.t("s2arm.env.library.group")) {
+                        CardRow(loc.t("s2arm.env.library.title"), detail: model.provider.client.environment.library + "\n" + loc.t("s2arm.env.library.detail")) {
+                            Button(loc.t("s2arm.env.library.change")) { chooseLibrary() }
+                                .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                        }
+                    }
                     let failing = model.checks.filter { !$0.ok }
                     if !failing.isEmpty || model.environmentError != nil {
                         CopyReportButton(model: model, gameID: nil, operations: nil,
@@ -120,7 +126,20 @@ struct EnvironmentView: View {
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.changeLibrary(to: url)
+        // 有游戏、选的是空文件夹才问；已有游戏库或含旧产物的文件夹由作业层直接打开 / 认领
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        guard !model.games.isEmpty, contents.allSatisfy({ $0 == ".DS_Store" }) else { model.changeLibrary(to: url); return }
+        let alert = NSAlert()
+        alert.messageText = loc.t("s2arm.library.moveTitle")
+        alert.informativeText = loc.t("s2arm.library.moveBody")
+        alert.addButton(withTitle: loc.t("s2arm.library.moveConfirm"))
+        alert.addButton(withTitle: loc.t("s2arm.library.moveEmpty"))
+        alert.addButton(withTitle: loc.t("fail.confirm.cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: model.changeLibrary(to: url, move: true)
+        case .alertSecondButtonReturn: model.changeLibrary(to: url)
+        default: break
+        }
     }
 
     /// 检查项的名字与说明是作业层的定句（中文），按界面语言显示（loc.backend）。

@@ -106,6 +106,7 @@ int main(int argc, char **argv) {
     r = ctr(b, tmp); printf("  容器 {B, D} %llu MB，算完应用池 %#llx（算前 %#llx）\n", (unsigned long long)r, (unsigned long long)s2a_app_pool(), (unsigned long long)pool0);
     ck(r == 75876, "③ 容器 {B, D（Switch 2）}：75876 MB");
     ck(pool0 == 0xCD500000ull && s2a_app_pool() == pool0, "③ 算完应用池放回 0xCD500000（D 的 9 GiB 不留下）");
+    { uint64_t s2a_window_container_pool(void); ck(s2a_window_container_pool() == 9216ull << 20, "③ 文件后备按包内最大的池判：{B, D} 记 9 GiB（#103）"); }
     snprintf(b, sizeof b, "%s/b", tmp); bundle(b, (const char *[]){B}, (const int[]){1}, 1);
     ck(ctr(b, tmp) == 69944, "③ 之后容器 {B}：仍 69944 MB");
     // ④

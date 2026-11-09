@@ -39,6 +39,7 @@ if sys.path and Path(sys.path[0]).resolve() == HERE:   # 直接按脚本跑时 p
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / 'tools'))
 from pack import app_bundle  # noqa: E402
+from pack.container_custom import apply_custom  # noqa: E402
 from pack.shell import manifest as shell_manifest  # noqa: E402
 from pack.display_name import NoTitle, ascii_display_name, display_name, localized_names, nacp_path, title  # noqa: E402
 from module_order import load_order  # noqa: E402  Horizon 装载序（main → subsdk0..N → sdk）：排序规则只有这一份
@@ -300,6 +301,31 @@ def sign_app(app, mode, bundle_id, team):
         red(f"签名核实失败：{(r.stdout + r.stderr).strip().splitlines()[-1:]}")
 
 
+def _place_banner(gid, root, gd, entry):
+    """横版封面落位（出包期抓取）：条目已有 banner 且文件在就不动；产物根带 banner.jpg 就拷；
+    都没有才按程序号联网抓一次（pack/banner_fetch.py，GC 已验链）。抓不到只打黄字、该款退回只有 icon，绝不报红。
+    S2A_BANNER_FETCH=0 可关（离线组装）。"""
+    rel = f"{GAMES}/{gid}/banner.jpg"
+    if entry.get("banner") == rel and (gd / "banner.jpg").is_file():
+        return
+    if root is not None and (root / "banner.jpg").is_file():
+        shutil.copyfile(root / "banner.jpg", gd / "banner.jpg")
+        entry["banner"] = rel
+        return
+    if os.environ.get("S2A_BANNER_FETCH", "1") == "0":
+        return
+    try:
+        from pack import banner_fetch
+        ok, why = banner_fetch.fetch_banner(gid, gd / "banner.jpg")
+    except Exception as exc:   # 抓取层任何意外都不许带倒组装
+        ok, why = False, f"抓取异常 {exc}"
+    if ok:
+        entry["banner"] = rel
+        print(f"🟢 {gid} 横版封面：{why}")
+    else:
+        print(f"【黄】{gid} 横版封面没抓到（{why}），该款先用 icon")
+
+
 def cmd_container(a):
     shell, tables, sid = shell_checked(a.shell)
     roots = [Path(r) for r in a.game]
@@ -362,20 +388,23 @@ def cmd_container(a):
         (app / TABLES).unlink()
         for e in games:
             gid = e["title_id"]; gd = app / GAMES / gid
-            if gid not in new:   # 已有款原样带过来（加一款 = 在已有容器上重组装，已有各款逐字节不变）
+            if gid not in new:   # 已有款原样带过来（加一款 = 在已有容器上重组装，已有各款逐字节不变；仅横版封面缺了会补抓）
                 shutil.copytree(base / GAMES / gid, gd, symlinks=True)
                 shutil.copyfile(base / game_images(gid), app / game_images(gid))
+                _place_banner(gid, None, gd, e)
                 continue
             r = new[gid][0]
             place_game(r, gd, app / game_images(gid), tables)
             if (r / "icon.jpg").is_file():
                 shutil.copyfile(r / "icon.jpg", gd / "icon.jpg")
+            _place_banner(gid, r, gd, e)
             si = r / "save-identity.json"
             if si.is_file():
                 c = subprocess.run([sys.executable, str(HERE / "save_identity.py"), "--check", str(si), "--output", str(gd / "save-identity.json")], capture_output=True, text=True)
                 if c.returncode:
                     red(f"{gid} 存档游戏身份校验失败：{(c.stderr or c.stdout).strip()[-200:]}")
             (gd / CTX).write_text(ctx_text(gid), encoding="utf-8", newline="\n")
+        apply_custom(app, games, a.custom, GAMES)
         (app / CATALOGUE).write_text(json.dumps(dict(schema=1, shell_id=sid, games=games), ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
         sign_app(app, a.sign, a.bundle_id, a.team)
         os.replace(app, out)
@@ -395,8 +424,7 @@ def cmd_container_drop(a):
     left = [e for e in cat.get("games", []) if e.get("title_id") != a.game]
     if len(left) == len(cat.get("games", [])):
         red(f"容器里没有 {a.game}")
-    if not left:
-        red("不能摘掉最后一款（宿主没有空库形态）")
+    # 摘到 0 款也行（#227）：空容器只作游戏库里下次加款的底子，装机端不装它（pack/jobs/install.py remove_from_phone）
     work = Path(tempfile.mkdtemp(prefix=".container-", dir=out.parent))
     try:
         app = work / "S2Arm.app"
@@ -417,7 +445,7 @@ def main():
     b = sub.add_parser("build"); b.add_argument("--shell", required=True); b.add_argument("--root", required=True); b.add_argument("--out", required=True)
     b.add_argument("--bundle-id", required=True); b.add_argument("--suffix", default=""); b.add_argument("--icon", required=True)
     b.add_argument("--set", action="append", default=[])
-    c = sub.add_parser("container"); c.add_argument("--shell", required=True); c.add_argument("--out", required=True); c.add_argument("--base")
+    c = sub.add_parser("container"); c.add_argument("--shell", required=True); c.add_argument("--out", required=True); c.add_argument("--base"); c.add_argument("--custom")
     c.add_argument("--game", action="append", default=[]); c.add_argument("--bundle-id", required=True); c.add_argument("--icon", required=True)
     c.add_argument("--display-name", default=PLACEHOLDER_NAME); c.add_argument("--sign", choices=("none", "adhoc", "dev"), default="none"); c.add_argument("--team", default="")
     d = sub.add_parser("container-drop"); d.add_argument("--base", required=True); d.add_argument("--game", required=True); d.add_argument("--out", required=True)

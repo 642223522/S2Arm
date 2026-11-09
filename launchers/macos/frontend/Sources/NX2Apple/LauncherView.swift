@@ -25,6 +25,7 @@ struct LauncherView: View {
     @State var spaceFor: String?
     @State var moreFor: String?
     @State var saveFor: String?
+    @State var displayFor: String?
     @State var inputFor: String?
     @State var deleteFor: GameSummary?
     @State private var dropTargeted = false
@@ -76,12 +77,15 @@ struct LauncherView: View {
         .tint(LauncherPalette.cream)
         .font(.manrope(13))
         .frame(minWidth: 900, idealWidth: 1280, minHeight: 680, idealHeight: 900)
-        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl() }
+        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate() }
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
             InstallView(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: { spaceFor = $0?.id })) { target in
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
+        }
+        .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
+            GameDisplaySheet(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
             SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)
@@ -111,17 +115,23 @@ struct LauncherView: View {
         .background(UnifiedTitlebar(actions: topActions))
     }
 
-    /// 顶栏右侧的按钮放进系统工具栏本身：工具栏盖在窗口内容上，内容里的按钮收不到真实点击（11-08 维护者）。
+    /// 顶栏右侧的按钮放进标题栏本身：工具栏盖在窗口内容上，内容里的按钮收不到真实点击（11-08 维护者）。
     private var topActions: some View {
         HStack(spacing: 12) {
                 if model.loading { ProgressView().controlSize(.small) }
                 exportPill
+                updateButton
                 // 界面语言：一键切到另一种（同旧启动器 LanguageSwitch，维护者 10-23「不让玩家先选」）；当场生效、记住选择，不用重启（11-07 维护者 验收）
                 Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
                     Label(loc.lang == .zh ? "English" : "简体中文", systemImage: "globe").font(.manrope(12.5, .semibold))
                 }
                 .buttonStyle(LauncherSecondaryButtonStyle())
                 .accessibilityIdentifier("top.language")
+                Button { installFor = nil; model.goToLibrary() } label: {
+                    Label(loc.t("s2arm.nav.library"), systemImage: "square.grid.2x2").font(.manrope(12.5, .semibold))
+                }
+                .buttonStyle(LauncherSecondaryButtonStyle())
+                .accessibilityIdentifier("top.library")
                 Button { model.showAddGames = true } label: {
                     Label(loc.t("s2arm.action.import"), systemImage: "plus").font(.manrope(12.5, .semibold))
                 }
@@ -135,6 +145,7 @@ struct LauncherView: View {
                 .buttonStyle(LauncherSecondaryButtonStyle())
         }
         .padding(.trailing, 8)
+        .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
         .labelStyle(.titleAndIcon)   // 工具栏里 Label 缺省只显示图标
         .tint(LauncherPalette.cream)
         .environment(\.colorScheme, .dark)
@@ -146,17 +157,11 @@ struct LauncherView: View {
         let actions: Actions
 
         final class Coordinator: NSObject, NSToolbarDelegate {
-            static var item: NSToolbarItem.Identifier { NSToolbarItem.Identifier("s2arm.actions") }
             let host: NSHostingView<Actions>
             init(_ actions: Actions) { host = NSHostingView(rootView: actions) }
-            func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Self.item] }
-            func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Self.item] }
-            func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-                guard id == Self.item else { return nil }
-                let item = NSToolbarItem(itemIdentifier: id)
-                item.view = host
-                return item
-            }
+            func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace] }
+            func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace] }
+            func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { nil }
         }
 
         final class Host: NSView {
@@ -171,6 +176,11 @@ struct LauncherView: View {
                 window.toolbar = toolbar
                 window.toolbarStyle = .unified
                 window.titlebarSeparatorStyle = .none
+                // 工具栏只负责标题栏高度。按钮直接放进标题栏：放进工具栏项时 macOS 26 会在整组下面再垫一层玻璃胶囊，和按钮自己的胶囊叠在一起
+                guard let close = window.standardWindowButton(.closeButton), let bar = close.superview, let host = coordinator?.host else { return }
+                host.translatesAutoresizingMaskIntoConstraints = false
+                bar.addSubview(host)
+                NSLayoutConstraint.activate([host.trailingAnchor.constraint(equalTo: bar.trailingAnchor), host.centerYAnchor.constraint(equalTo: close.centerYAnchor)])
             }
         }
 
@@ -186,6 +196,26 @@ struct LauncherView: View {
         case .unknown: return LauncherPalette.unbuilt
         case .ready, .readyMac: return LauncherPalette.ready   // readyMac：Mac 上能玩，只差打 iPhone 包的项（环境检查页里单列）
         case .missing: return LauncherPalette.danger
+        }
+    }
+
+    /// 有新版：后台下载时一行小字，下好后一颗「更新并重启」，都在顶栏，不打断玩家。
+    @ViewBuilder private var updateButton: some View {
+        switch model.updateState {
+        case .working(let id, let percent):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(txt(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")).font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary)
+            }
+        case .ready:
+            Button { model.restartToUpdate() } label: {
+                Label(txt(model.busy ? "update.restart.busy" : "update.restart"), systemImage: "arrow.down.circle").font(.manrope(12.5, .semibold))
+            }
+            .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+        case .failed(let code):
+            Button { model.downloadUpdate() } label: { Text(txt("update.retry")).font(.manrope(12.5, .semibold)) }
+                .buttonStyle(LauncherSecondaryButtonStyle()).help(txt("update.error." + code))
+        case .idle: EmptyView()
         }
     }
 
