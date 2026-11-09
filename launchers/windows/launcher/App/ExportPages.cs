@@ -213,6 +213,7 @@ public sealed partial class EnvironmentWindow
         {
             var backLib = new Button { Content = T("nav.library"), Padding = new Thickness(16, 9),
                 Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8) };
+            Avalonia.Automation.AutomationProperties.SetAutomationId(backLib, "top.library");   // 同游戏库页顶栏（自动化按 id 找，不靠文字）
             backLib.Click += (_, _) => Navigate("library");
             inner.Children.Add(backLib);
         }
@@ -220,6 +221,7 @@ public sealed partial class EnvironmentWindow
         {
             var backLib = new Button { Content = T("nav.library"), Padding = new Thickness(16, 9),
                 Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8) };
+            Avalonia.Automation.AutomationProperties.SetAutomationId(backLib, "top.library");   // 同游戏库页顶栏（自动化按 id 找，不靠文字）
             backLib.Click += (_, _) => Navigate("library");
             inner.Children.Add(backLib);
         }
