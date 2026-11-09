@@ -170,6 +170,8 @@ public sealed partial class EnvironmentWindow
                 var button = Action(key, () => BeginPicker(handler), !libraryBusy);
                 button.Margin = new Thickness(0, 0, 10, 8); imports.Children.Add(button);
             }
+            var storage = Action("storage.open", OpenStorage, !libraryBusy && libraryId is not null);
+            storage.Margin = new Thickness(0, 0, 10, 8); AutomationId(storage, "library.storage"); imports.Children.Add(storage);
             status.Children.Add(imports);
         }
         body.Children.Add(Card(status));
@@ -185,6 +187,7 @@ public sealed partial class EnvironmentWindow
                 detail.Children.Add(Label(T("library.requirements") + " · " + string.Join(" / ", game.Missing)));
             // iPhone / Mac dual status line
             detail.Children.Add(GameStatusLine(game));
+            detail.Children.Add(GameSizesLine(game.Sizes));   // 这款各部分大小（游戏库结构 v3「查」，StoragePage.cs）
             Grid.SetColumn(detail, 1); line.Children.Add(detail);
             // Primary button: if iPhone pack is ready → install; otherwise export (storage not connected → disabled, game files missing → relink / remove)
             var primaryKey = game.IphoneReady ? "library.hero.install" : "library.select";
@@ -485,15 +488,10 @@ public sealed partial class EnvironmentWindow
         libraryFolder = LocalPath(folders[0]); Render();
     }
 
-    private string LibraryPreference => Path.Combine(privateRoot, "library-location.txt");
+    private string LibraryPreference => LibraryPaths.PreferenceFile(privateRoot);
 
-    private string SavedLibrary()
-    {
-        try { var saved = File.ReadAllText(LibraryPreference).Trim(); return saved.Length > 0 ? saved : DefaultLibrary; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return DefaultLibrary; }
-    }
-
-    private string DefaultLibrary => Path.Combine(privateRoot, "DefaultLibrary");
+    // 旧默认库（私有目录下的 DefaultLibrary）被作业层同盘改名到 %USERPROFILE%\S2Arm 后，设置里的旧路径按搬库标记换成新位置（游戏库结构 P3）
+    private string SavedLibrary() => LibraryPaths.SavedLibrary(privateRoot);
 
     private async Task ChangeLibraryAsync()
     {

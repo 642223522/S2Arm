@@ -25,8 +25,12 @@ import layout
 import library
 
 
-def oneclick_done(args, ipa, **fields):
-    """假一键出包的交付：照 pack/oneclick/oneclick.sh --events 写最后一条 result 事件（ipa.py 从这里取交付物）"""
+def oneclick_done(args, ipa, gid="0100000000000000", pack_id="pack-" + "0" * 8, **fields):
+    """假一键出包的交付：照 pack/oneclick/oneclick.sh 的输出布局在 --out 下留现行产物根 roots/t<程序号>@现行（含 main.npdm）与 <款>资源包（清单带 index_sha256），
+    再照 --events 写最后一条 result 事件（ipa.py 从这里取交付物，收尾 deliver 搬进这款的 image/ios）"""
+    ipa = Path(ipa)
+    root = ipa.parent / "roots" / ("t" + gid.lower() + "@现行"); root.mkdir(parents=True, exist_ok=True); (root / "main.npdm").write_bytes(b"META")
+    pack = ipa.parent / (ipa.stem + "资源包"); pack.mkdir(exist_ok=True); (pack / "manifest.json").write_text(json.dumps(dict(version=2, index_sha256=pack_id)))
     ev = Path(str(args[args.index("--events") + 1]))
     with ev.open("a", encoding="utf-8") as f:
         f.write(json.dumps(dict(ev="result", t=0, ok=True, ipa=str(ipa), **fields), ensure_ascii=False) + "\n")
@@ -213,7 +217,7 @@ class JobsTests(unittest.TestCase):
         #   克隆不过来（如 exFAT：clonedir 失败关闭）→ 黄字 sibling_clone_failed、False（调用方从解包目录播种）
         import unittest.mock as um, build
         game = self.game()
-        sib = self.c.library / "iPhone/0100000000000000/roots"; v = sib / "party@pkg-abc"
+        sib = layout.ios_work(self.c, "0100000000000000") / "roots"; v = sib / "party@pkg-abc"   # iPhone 出包工作目录 build/ios 的现行根
         (v / "romfs").mkdir(parents=True); (v / ".stage_rewrite").write_text("K-rewrite\n"); (v / ".root_src").write_text("abcdef1234567890\n")
         (sib / "party@现行").symlink_to("party@pkg-abc")
         mac = layout.build_dir(self.c, "0100000000000000") / "key1/roots"
@@ -306,7 +310,9 @@ class JobsTests(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, OUT=str(out)), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "True 乙 3 0")   # 发现断管、没抛；三条事件都进了记录；子进程照常跑完
-        events = (self.root / "private/jobs/gone.events.jsonl").read_text().splitlines()
+        built = Path(self.request["library"]) / ".s2arm-library.json"   # 库建好了任务记录在 <库>/logs/jobs，否则 <私有目录>/logs/jobs
+        jobs = Path(self.request["library"]) / "logs/jobs" if built.is_file() else self.root / "private/logs/jobs"
+        events = (jobs / "gone.events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(l)["stage"] for l in events], ["甲", "甲", "乙"])
 
     def test_pull_diagnostics_only_s2arm_apps_on_connected_ios(self):
@@ -390,7 +396,7 @@ class JobsTests(unittest.TestCase):
 
     @shared_extract
     def test_ipa_calls_oneclick_with_player_keys_fonts_and_ios(self):
-        # 打 iPhone 包：没 SDK → 提示一键安装；有 SDK → 调引擎里的 oneclick.sh，带玩家密钥、应用字体、iOS 平台、出到 <游戏库>/iPhone/<游戏号>
+        # 打 iPhone 包：没 SDK → 提示一键安装；有 SDK → 调引擎里的 oneclick.sh，带应用字体、iOS 平台、出到这款文件夹的 build/ios；交付件搬进 image/ios，单款 ipa 不留
         import unittest.mock as um, ipa
         base = self.package("base")
         self.catalogue([self.game(packages=[base])])
@@ -424,11 +430,17 @@ class JobsTests(unittest.TestCase):
         self.assertNotIn("--keys", a)
         self.assertEqual(self.shared_extract[1].call_args.args[1]["id"], "0100000000000000")
         self.assertEqual(a[a.index("--fonts") + 1], str((res / "Fonts").resolve()))
-        self.assertEqual(Path(a[a.index("--out") + 1]), self.c.library / "iPhone" / "0100000000000000")
+        gdir = layout.find_game(self.c, "0100000000000000")
+        self.assertEqual(Path(a[a.index("--out") + 1]), gdir / "build" / "ios")
         self.assertEqual((seen["env"]["S2A_PACK_PLAT"], seen["env"]["DOTNET_ROOT"]), ("ios", str(home)))
         # 直连包与机型无关（一包通用 10-30）：不把目标架构 / 系统大版本交给出包
         self.assertNotIn("S2A_PSO_ARCHS", seen["env"]); self.assertNotIn("S2A_PSO_OS", seen["env"])
-        self.assertTrue(r["ipa"].endswith("x.ipa")); self.assertEqual(r["buildId"], "abc-123")
+        self.assertEqual(r["buildId"], "abc-123")
+        image = gdir / "image" / "ios"
+        self.assertEqual((r["ipa"], r["outputPath"]), ("", str(image)))   # 不再交付单款 ipa：装机时现组容器
+        self.assertTrue((image / "kit" / "main.npdm").is_file()); self.assertTrue((image / "pack" / "manifest.json").is_file())
+        self.assertFalse((gdir / "build" / "ios" / "x.ipa").exists())
+        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], "pack-" + "0" * 8)
         # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
         #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
         import saves
@@ -441,13 +453,14 @@ class JobsTests(unittest.TestCase):
 
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
-        # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA，本轮交付的是 current-title.ipa → 必须返回本轮的，不按 mtime 挑
+        # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
         import unittest.mock as um, ipa
         base = self.package("base"); self.catalogue([self.game(packages=[base])])
         self.c.r.update(gameId="0100000000000000", target={"gpuArch": "applegpu_g18p", "os": 27})
         res = self.root / "res"; (res / "Fonts").mkdir(parents=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
-        out = self.c.library / "iPhone" / "0100000000000000"; out.mkdir(parents=True)
+        out = layout.ios_work(self.c, "0100000000000000"); out.mkdir(parents=True)
         old = out / "old-title.ipa"; old.write_bytes(b"old"); os.utime(old, (4102444800, 4102444800))
+        old_pack = out / "old-title资源包"; old_pack.mkdir(); (old_pack / "manifest.json").write_text('{"index_sha256": "old-pack"}'); os.utime(old_pack, (4102444800, 4102444800))
         # Q15: real synthetic cache payload, mocked external packaging only.
         cache = self.c.work_root / 'cache/air/ios/aa' / ('a' * 64 + '.air')
         cache.parent.mkdir(parents=True)
@@ -463,7 +476,7 @@ class JobsTests(unittest.TestCase):
         def run(args, log=None, env=None, cwd=None, on_line=None):
             o = Path(args[args.index("--out") + 1]); (o / "current-title.ipa").write_bytes(b"new")
             if lines.get("done", True):
-                oneclick_done(args, o / "current-title.ipa", build_id="current-123", graphics_mode="direct")
+                oneclick_done(args, o / "current-title.ipa", pack_id="current-pack", build_id="current-123", graphics_mode="direct")
         home = self.root / "dn"; (home / "sdk/10.0.403").mkdir(parents=True); (home / "dotnet").write_text("")
         with um.patch.object(ipa, "dotnet_sdk", return_value=(home, home / "dotnet")), um.patch.object(self.c, "run", run), \
              um.patch.object(ipa, "resolve_target", return_value={"gpuArch": "applegpu_g18p", "os": 27}), \
@@ -472,8 +485,10 @@ class JobsTests(unittest.TestCase):
              um.patch.object(cache_retention, "trim", wraps=cache_retention.trim) as trim, \
              um.patch.object(cache_retention.shutil, "disk_usage", return_value=um.Mock(free=100 * 1024**3)) as disk:
             r = ipa.build(self.c)
-            self.assertEqual((Path(r["ipa"]).name, r["buildId"]), ("current-title.ipa", "current-123"))
-            self.assertEqual(old.read_bytes(), b"old")
+            image = layout.image_ios(self.c, "0100000000000000")
+            self.assertEqual(r["buildId"], "current-123")
+            self.assertEqual(json.loads((image / "pack" / "manifest.json").read_text())["index_sha256"], "current-pack")
+            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], "current-pack")
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
             self.assertEqual(direct_lib.read_bytes(), b'synthetic direct')
             self.assertFalse(direct_work.exists())
@@ -492,7 +507,7 @@ class JobsTests(unittest.TestCase):
             with um.patch.dict(os.environ, {'S2A_COMPILER_CACHE_MIN_FREE_BYTES': str(10**15)}), \
                  um.patch.object(Path, 'unlink', refuse_cache_unlink):
                 warned = ipa.build(self.c)
-            self.assertEqual(Path(warned['ipa']).name, 'current-title.ipa')
+            self.assertEqual(warned['buildId'], 'current-123')
             self.assertEqual(warned['compilerCache']['evictionErrors'], 1)
             warnings = [d for d in self.c.job['diagnostics'] if d['code'] == 'compiler_cache_incomplete']
             self.assertEqual(len(warnings), 1)
@@ -534,7 +549,6 @@ class JobsTests(unittest.TestCase):
         base = self.package("base"); self.catalogue([self.game(packages=[base])])
         self.c.r.update(gameId="0100000000000000", target={"gpuArch": "applegpu_g18p", "os": 27})
         res = self.root / "res"; (res / "Fonts").mkdir(parents=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
-        out = self.c.library / "iPhone" / "0100000000000000"; out.mkdir(parents=True)
         miss = {"v": ["DLC 套装 A.nsp", "dlc_b.nsp"]}
         def run(args, log=None, env=None, cwd=None, on_line=None):
             o = Path(args[args.index("--out") + 1]); (o / "g.ipa").write_bytes(b"new")
@@ -924,16 +938,21 @@ class JobsTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_caches_follow_a_library_outside_the_private_root(self):
-        """外接盘上的游戏库：出包缓存和运行目录要跟着走，不写系统盘；缺省游戏库（在数据目录里）位置不变。"""
+        """外接盘上的游戏库：工具缓存和运行目录跟着库走（默认位置的 tool-cache/，游戏库结构 P3），不写系统盘；库在数据目录里也一样；
+        库还没建好（没有库标识）时退回 <私有目录>/tool-cache。"""
         outside = self.root / "external" / "lib"
         c = Context(self.request | dict(taskId="outside", library=str(outside)))
-        self.assertEqual(c.work_root, outside.resolve() / ".s2arm-work")
+        self.assertEqual(c.work_root, c.private / "tool-cache")
+        atomic(outside / ".s2arm-library.json", dict(schema=1, id="x"))
+        self.assertEqual(c.work_root, outside.resolve() / "tool-cache")
         env = c.env()
-        self.assertEqual(env["S2A_RUN_ROOT"], str(outside.resolve() / ".s2arm-work/run"))
+        self.assertEqual(env["S2A_RUN_ROOT"], str(outside.resolve() / "tool-cache/run"))
         self.assertTrue(env["GAL_PSO_CACHE"].startswith(str(outside.resolve())))
-        inside = Context(self.request | dict(taskId="inside", library=str(Path(self.request["privateRoot"]) / "lib")))
-        self.assertEqual(inside.work_root, inside.private)
-        self.assertEqual(inside.env()["S2A_RUN_ROOT"], str(inside.private / "run"))
+        lib = Path(self.request["privateRoot"]) / "lib"
+        atomic(lib / ".s2arm-library.json", dict(schema=1, id="y"))
+        inside = Context(self.request | dict(taskId="inside", library=str(lib)))
+        self.assertEqual(inside.work_root, lib.resolve() / "tool-cache")
+        self.assertEqual(inside.env()["S2A_RUN_ROOT"], str(lib.resolve() / "tool-cache" / "run"))
 
     def test_refuses_nonempty_or_legacy_library(self):
         other = self.root / "legacy"
@@ -978,7 +997,7 @@ class JobsTests(unittest.TestCase):
         # 任务目录里同一任务有记录 <id>.json 和留存的请求 <id>.request.json（J10 resume）；catalog 只该返回记录。
         #   请求混进来时启动器把整个任务列表解码失败（10-25 main 上 BudgetTests 重开读回 space 为 nil）
         self.catalogue([self.game(packages=[self.package()])])
-        jobs = self.c.private / "jobs"
+        jobs = self.c.jobpath.parent   # 这个作业自己的任务记录目录（core.logs_root）
         jobs.mkdir(parents=True, exist_ok=True)
         (jobs / "older.json").write_text(json.dumps({"id": "older", "operation": "build", "state": "failed"}), encoding="utf-8")
         (jobs / "older.request.json").write_text(json.dumps({"schema": 1, "taskId": "older", "operation": "build"}), encoding="utf-8")
@@ -989,7 +1008,7 @@ class JobsTests(unittest.TestCase):
     def test_catalogue_returns_only_newest_job_records(self):
         # 11-07：任务目录 1.5 万条记录时 catalog 整份读 + 回传 7 MB；只回最新 JOB_LIST_LIMIT 条（按修改时间）
         self.catalogue([self.game(packages=[self.package()])])
-        jobs = self.c.private / "jobs"
+        jobs = self.c.jobpath.parent   # 这个作业自己的任务记录目录（core.logs_root）
         jobs.mkdir(parents=True, exist_ok=True)
         now = time.time()
         for i in range(library.JOB_LIST_LIMIT + 5):
@@ -1222,10 +1241,11 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((self.c.library / game["packages"][0]["path"]).exists())
 
     def _build_leftovers(self, gid):
-        """造一款出完 iPhone 包的现场：输出目录（IPA / 资源包 / 日志 / 产物根 / 解包）+ 私有目录里按程序号存的缓存 + 别的款的缓存 + 共享 metallib 缓存"""
+        """造一款出完 iPhone 包的现场（老玩家：有资源包、还没有容器件）：image/ios/pack + 出包工作目录 build/ios（日志 / 产物根 / 解包）
+        + 私有目录里按程序号存的缓存 + 别的款的缓存 + 共享 metallib 缓存"""
         low, run = gid.lower(), self.c.work_root / "run" / "s2arm"
-        out = self.c.library / "iPhone" / gid
-        keep = [out / f"t{low}.ipa", out / f"t{low}资源包" / "manifest.json", out / "logs" / "a.log"]
+        out = layout.ios_work(self.c, gid)
+        keep = [layout.image_ios(self.c, gid) / "pack" / "manifest.json", out / "logs" / "a.log"]
         gone = [out / "roots" / f"t{low}@现行" / "x", out / "extract" / "romfs" / "f", run / "cache" / "direct" / gid.upper() / "work" / "cas",
                 run / "cache" / "bake" / f"{low}-abc" / "ok", run / "cache" / "aoc" / f"t{low}-k" / "aoc.tsv", run / "cache" / "srcver" / f"t{low}-k" / "r",
                 run / "widen" / f"t{low}_b" / "ui", run / "widen" / "auto" / f"t{low}_b" / "w", self.c.work_root / "cache" / "air" / "ios" / "x.air"]
@@ -1240,7 +1260,7 @@ class JobsTests(unittest.TestCase):
         keep, gone, other = self._build_leftovers(game["id"])
         keep.append(gone.pop())  # shared AIR cache is retained only on automatic success cleanup
         # 多平台共用阶段：自动清理保留产物根现行版本（链接与它指向的版本），旧版本照删；显式清缓存 / 删除仍整个删（下两条）
-        roots = self.c.library / "iPhone" / game["id"] / "roots"; low = game["id"].lower()
+        roots = layout.ios_work(self.c, game["id"]) / "roots"; low = game["id"].lower()
         keep.append(gone.pop(0))   # roots/t<程序号>@现行/x
         new = roots / f"t{low}x@gk-new" / "y"; new.parent.mkdir(); new.write_text("x"); keep.append(new)
         (roots / f"t{low}x@现行").symlink_to(new.parent.name)   # 现行是链接：它指向的版本保留
@@ -1248,11 +1268,17 @@ class JobsTests(unittest.TestCase):
         library.prune_build(self.c, game["id"])
         self.assertEqual([f for f in keep + other if not f.exists()], [])
         self.assertEqual([f for f in gone if f.exists()], [])
+        # 有了容器件（image/ios/kit）：现行产物根也不用留，build/ 只剩出包日志 build/ios/logs
+        kit = layout.image_ios(self.c, game["id"]) / "kit" / "main.npdm"; kit.parent.mkdir(parents=True); kit.write_bytes(b"META")
+        library.prune_build(self.c, game["id"])
+        build = layout.build_dir(self.c, game["id"], create=False)
+        self.assertEqual(sorted(str(q.relative_to(build)) for q in build.rglob("*")), ["ios", "ios/logs", "ios/logs/a.log"])
+        self.assertTrue(kit.is_file()); self.assertTrue(keep[0].is_file())
 
     def test_prune_build_keeps_windows_work_root(self):
         # #32：Windows 产物根在 work/ 下。手算期望：现行链接及指向、.romfs_store、direct*、pkg/product/main.npdm 留下；旧版本、其他中间产物、product/pkg（交付件已拷走）删掉；链接只删自身
         game = self.game(packages=[self.package()]); self.catalogue([game])
-        work = self.c.library / "iPhone" / game["id"] / "work"
+        work = layout.ios_work(self.c, game["id"]) / "work"
         def f(rel):
             q = work / rel; q.parent.mkdir(parents=True, exist_ok=True); q.write_text("x"); return q
         keep = [f("roots/k@new/y"), f("roots/.romfs_store/b"), f("direct/lib"), f("direct_p1/lib"), f("pkg/product/main.npdm")]
@@ -1261,7 +1287,7 @@ class JobsTests(unittest.TestCase):
         outside = self.c.library / "outside" / "z"; outside.parent.mkdir(parents=True); outside.write_text("x")
         (work / "pkg/link").symlink_to(outside.parent)   # 指向外部的链接：只删链接，指向的文件在
         with patch.object(library, "_windows_layout", return_value=True):
-            (self.c.library / "iPhone" / game["id"] / "a.ipa").write_bytes(b"ipa")   # 老玩家：有 IPA 没容器件
+            pack = layout.image_ios(self.c, game["id"]) / "pack"; pack.mkdir(parents=True); (pack / "manifest.json").write_text("{}")   # 老玩家：有资源包没容器件
             library.prune_build(self.c, game["id"])
         self.assertEqual([q for q in keep if not q.exists()], [])
         self.assertEqual([q for q in gone if q.exists()], [])
@@ -1293,27 +1319,23 @@ class JobsTests(unittest.TestCase):
         self.assertTrue(all(f.exists() for f in other))
 
     def test_delete_also_drops_game_from_library_container(self):
-        # 期望（#227）：游戏库容器里有 A、B，删 A → 容器清单只剩 B、A 的随行目录和镜像包没了、B 原样；容器里没有的款删除不动容器。真跑 ship_ext container-drop
+        # 期望（#227，游戏库结构 v3）：删 A → 各台手机记录（devices/<设备>.json）里摘掉 A，B 与其余字段原样；没装 A 的那台记录不动；
+        #   不装机、不碰默认位置根的 S2Arm.ipa（下次给那台装机时现组的容器就不再带 A）
         a, b = "0100000000010000", "0100000000020000"
-        app = self.c.library / "iPhone/container/S2Arm.app"
-        for gid in (a, b):
-            (app / "Games" / gid).mkdir(parents=True); (app / "Games" / gid / "main.npdm").write_bytes(b"META" + gid.encode())
-            (app / "Frameworks").mkdir(exist_ok=True); (app / "Frameworks" / f"S2AImages-{gid}.dylib").write_bytes(gid.encode())
-        (app / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "S", "games": [{"title_id": a}, {"title_id": b}]}))
-        import plistlib; (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games", "CFBundleExecutable": "S2Arm"})); (app / "S2Arm").write_bytes(b"bin")
-        (self.c.library / "iPhone/container/S2Arm.ipa").write_bytes(b"old")
+        layout.save_device(self.c, "phone1", dict(games={a: dict(pack="pa"), b: dict(pack="pb")}, shellId="S", bundleId="io.s2arm.games.x"))
+        layout.save_device(self.c, "phone2", dict(games={b: dict(pack="pb")}, shellId="S"))
+        untouched = layout.device_path(self.c, "phone2").read_bytes()
+        layout.phone_ipa(self.c).write_bytes(b"old")
         self.catalogue([self.game(tid=a, packages=[self.package(tid=a)]), self.game(tid=b, packages=[self.package(tid=b, sha="b" * 64)])])
         self.c.r["gameId"] = a
         library.delete(self.c)
-        self.assertEqual([e["title_id"] for e in json.loads((app / "s2a_catalogue.json").read_text())["games"]], [b])
-        self.assertEqual(sorted(p.name for p in (app / "Games").iterdir()), [b])
-        self.assertEqual(sorted(p.name for p in (app / "Frameworks").iterdir()), [f"S2AImages-{b}.dylib"])
-        self.assertNotEqual((self.c.library / "iPhone/container/S2Arm.ipa").read_bytes(), b"old")
-        before = (app / "s2a_catalogue.json").read_text()
+        rec = layout.load_device(self.c, "phone1")
+        self.assertEqual((rec["games"], rec["shellId"], rec["bundleId"]), ({b: dict(pack="pb")}, "S", "io.s2arm.games.x"))
+        self.assertEqual(layout.device_path(self.c, "phone2").read_bytes(), untouched)
+        self.assertEqual(layout.phone_ipa(self.c).read_bytes(), b"old")
         self.c.r["gameId"] = b
         library.delete(self.c)   # 最后一款也摘（摘空）
-        self.assertEqual(json.loads((app / "s2a_catalogue.json").read_text())["games"], [])
-        self.assertNotEqual(before, (app / "s2a_catalogue.json").read_text())
+        self.assertEqual([layout.load_device(self.c, k)["games"] for k in ("phone1", "phone2")], [{}, {}])
 
     def test_delete_waits_for_execution_lock_held_by_cancelled_task(self):
         # 期望：执行锁被（刚被取消、还没退出的）任务占着 3 秒 → 删除不立刻失败，等锁放开后照样删掉（10-26 Spare-host：导入后自动排的 Mac 准备占锁，删除直接报「另一个任务正在使用游戏库」）
@@ -1414,7 +1436,7 @@ class JobsTests(unittest.TestCase):
 
     def test_diagnostic_manifest_and_every_member_are_redacted_without_truncation(self):
         import platform
-        logs = self.c.private / "logs"; logs.mkdir(exist_ok=True)
+        logs = self.c.logs; logs.mkdir(exist_ok=True)
         sensitive = ('contact=synth@example.invalid; DEVELOPMENT_TEAM = ABCDE12345; '
                      's2arm.abcde12345.0100aabbccdd0000; 0000abcd-0123456789abcdef; '
                      'device 0123456789abcdef0123456789abcdef01234567; '
@@ -1447,11 +1469,11 @@ class JobsTests(unittest.TestCase):
     def test_diagnostic_uuid_task_members_are_unique_and_manifest_matches(self):
         tasks = ("11111111-2222-4333-8444-555555555555",
                  "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
-        logs = self.c.private / "logs"
+        logs = self.c.logs
         logs.mkdir(exist_ok=True)
         expected = set()
         for task in tasks:
-            (self.c.private / "jobs" / (task + ".json")).write_text('{"state":"done"}')
+            (self.c.logs / "jobs" / (task + ".json")).write_text('{"state":"done"}')
             (logs / (task + "-game.log")).write_text("serial=" + task)
             folder = logs / task
             folder.mkdir()
@@ -1488,7 +1510,7 @@ class JobsTests(unittest.TestCase):
                 for key in ("macos_version", "xcode_version", "mac_model"):
                     self.assertIn("error", manifest[key])
         previous = destination.read_bytes()
-        logs = self.c.private / "logs"; logs.mkdir(exist_ok=True)
+        logs = self.c.logs; logs.mkdir(exist_ok=True)
         for name in ("one@example.invalid.log", "two@example.invalid.log"):
             (logs / name).write_text("synthetic log")
         with self.assertRaisesRegex(Failure, "文件名重复"):
@@ -1498,7 +1520,7 @@ class JobsTests(unittest.TestCase):
     def test_diagnostic_export_never_contains_keys_or_player_files(self):
         self.c.keys.parent.mkdir(parents=True)
         self.c.keys.write_text("header_key = " + "a" * 64)
-        log = self.c.private / "logs" / "tool.log"
+        log = self.c.logs / "tool.log"
         log.parent.mkdir(exist_ok=True)
         log.write_text("token=verysecret " + str(self.c.private) + " " + "a" * 64)
         destination = self.root / "diagnostics.zip"
@@ -1518,10 +1540,10 @@ class JobsTests(unittest.TestCase):
         external = self.root / "external"; external.mkdir()
         (external / "outside.log").write_text("OUTSIDE_BOUNDARY_SENTINEL")
         (external / "outside.json").write_text("OUTSIDE_BOUNDARY_SENTINEL")
-        (self.c.private / "logs").mkdir()
+        self.c.logs.mkdir(exist_ok=True)
         # Static root links are rejected before begin can persist a job through them.
-        for name in ("jobs", "logs"):
-            root = self.c.private / name; saved = self.c.private / (name + "-saved")
+        for root in (self.c.logs / "jobs", self.c.logs):
+            saved = root.with_name(root.name + "-saved")
             root.rename(saved); root.symlink_to(external, target_is_directory=True)
             with um.patch.object(self.c, "begin") as begin, self.assertRaises(Failure):
                 library.diagnostics(self.c)
@@ -1529,7 +1551,7 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in external.iterdir()), ["outside.json", "outside.log"])
             root.unlink(); saved.rename(root)
             self.assertEqual(destination.read_bytes(), b"old target")
-        jobs, logs = self.c.private / "jobs", self.c.private / "logs"
+        jobs, logs = self.c.logs / "jobs", self.c.logs
         (jobs / "original.json").write_text('{"detail":"ORIGINAL_JOB"}')
         (logs / "nested").mkdir(); (logs / "nested/original.log").write_text("ORIGINAL_LOG")
         (jobs / "link.json").symlink_to(external / "outside.json")
@@ -1649,11 +1671,13 @@ class JobsTests(unittest.TestCase):
     def stopped_game(self, kit=True, ipa=True):
         gid = "0100000000010000"
         atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="x", display="", packages=[], hidden=False)]))
-        out = self.c.library / "iPhone" / gid; root = out / "roots" / "k@pkg"; root.mkdir(parents=True)
+        out = layout.ios_work(self.c, gid); root = out / "roots" / "k@pkg"; root.mkdir(parents=True)   # 出包工作目录 build/ios
         (root / "main.npdm").write_bytes(b"n"); (root / "stage.log").write_text("阶段日志")
         (out / "roots" / "k@现行").symlink_to("k@pkg"); (layout.build_dir(self.c, gid) / "x").mkdir(parents=True)
-        if ipa: (out / "a.ipa").write_bytes(b"ipa"); (out / "t资源包").mkdir()
-        if kit: (out / library.CONTAINER_KIT).mkdir(); (out / library.CONTAINER_KIT / "main.npdm").write_bytes(b"old")
+        (out / "logs").mkdir(); (out / "logs" / "oneclick.log").write_text("出包日志")
+        image = layout.image_ios(self.c, gid)   # 上一次成功出包的交付件
+        if ipa: (image / "pack").mkdir(parents=True); (image / "pack" / "manifest.json").write_text('{"index_sha256": "p"}')
+        if kit: (image / "kit").mkdir(parents=True); (image / "kit" / "main.npdm").write_bytes(b"old")
         image = layout.path(self.c, gid, "image"); (image / "mac").mkdir(parents=True); (image / "mac.partial").mkdir()   # 出了一半的新镜像
         save = layout.path(self.c, gid, "saves") / "s.bin"; save.parent.mkdir(parents=True); save.write_bytes(b"save")
         return gid, out, save
@@ -1665,11 +1689,13 @@ class JobsTests(unittest.TestCase):
         gid, out, save = self.stopped_game()
         c = self.stop_context(gid)
         library.clean_after_stop(c)
-        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["a.ipa", "t资源包", library.CONTAINER_KIT]))
-        self.assertFalse((layout.build_dir(self.c, gid)).exists())
-        self.assertEqual((out / library.CONTAINER_KIT / "main.npdm").read_bytes(), b"old")
+        image = layout.image_ios(self.c, gid)
+        self.assertEqual(sorted(p.name for p in image.iterdir()), ["kit", "pack"])
+        self.assertEqual(sorted(p.name for p in layout.build_dir(self.c, gid).iterdir()), ["ios"])   # 只剩出包日志
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["logs"])
+        self.assertEqual((image / "kit" / "main.npdm").read_bytes(), b"old")
         self.assertEqual(save.read_bytes(), b"save")
-        self.assertEqual((c.private / "logs" / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
+        self.assertEqual((c.logs / (c.task + "-stages") / "stage.log").read_text(), "阶段日志")
 
     def test_clean_after_stop_keeps_failed_stage_logs(self):   # #251：改写失败的 .failed/<款>_main.log 在游戏库缓存里，清理前要拷进私有日志目录，诊断包才带得上
         gid, out, _ = self.stopped_game()
@@ -1678,12 +1704,12 @@ class JobsTests(unittest.TestCase):
         c = self.stop_context(gid)
         library.clean_after_stop(c)
         self.assertFalse(failed.exists())
-        self.assertEqual((c.private / "logs" / (c.task + "-stages") / f"{gid}_main.log").read_text(), "改写超时前最后一行")
+        self.assertEqual((c.logs / (c.task + "-stages") / f"{gid}_main.log").read_text(), "改写超时前最后一行")
 
     def test_clean_after_stop_removes_first_failed_export(self):
         gid, out, _ = self.stopped_game(kit=False, ipa=False)
         library.clean_after_stop(self.stop_context(gid))
-        self.assertEqual(list(out.iterdir()), [])
+        self.assertEqual([p.name for p in out.iterdir()], ["logs"])   # 第一次出包就失败：中间产物全清，出包日志留着
 
     def test_clean_after_stop_keeps_only_source_of_old_install(self):
         gid, out, _ = self.stopped_game(kit=False)
@@ -1698,7 +1724,7 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((out / "roots").exists())
         library.sweep_residue(c)
         self.assertFalse((out / "roots").exists())
-        self.assertEqual([p.name for p in layout.path(self.c, gid, "image").iterdir()], ["mac"])
+        self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
 
     def test_sweep_without_residue_never_takes_execution_lock(self):
         """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""
@@ -1708,11 +1734,11 @@ class JobsTests(unittest.TestCase):
         library.sweep_residue(c)            # 先把残留清干净
         with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
             library.sweep_residue(c)
-        self.assertEqual([p.name for p in layout.path(self.c, gid, "image").iterdir()], ["mac"])
+        self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
 
     def test_diagnostic_bounded_reads_and_atomic_publication(self):
         import unittest.mock as um
-        logs = self.c.private / "logs"; logs.mkdir()
+        logs = self.c.logs; logs.mkdir(exist_ok=True)
         log = logs / "tail.log"; log.write_bytes(b"x" * 40000 + b"tail")
         destination = self.root / "diagnostics.zip"; destination.write_bytes(b"old target")
         self.c.r["path"] = str(destination)
@@ -1743,7 +1769,7 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(marker.read_bytes(), b"unchanged marker")
         self.assertTrue(predictable.is_symlink()); self.assertFalse(destination.is_symlink())
         previous = destination.read_bytes()
-        oversized = self.c.private / "jobs/oversized.json"
+        oversized = self.c.logs / "jobs/oversized.json"
         with oversized.open("wb") as stream: stream.truncate((4 << 20) + 1)
         with self.assertRaisesRegex(Failure, "4 MiB"):
             library.diagnostics(self.c)

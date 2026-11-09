@@ -180,7 +180,7 @@ public sealed partial class EnvironmentWindow
         EnsureLibrary(() => { });
     }
 
-    // 默认库：S2Arm 私有目录下的 DefaultLibrary，如果还没连接就先 setup。
+    // 默认库：%USERPROFILE%\S2Arm（LibraryPaths.DefaultLibrary；玩家选过就用选的），如果还没连接就先 setup。
     private void EnsureLibrary(Action next)
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }

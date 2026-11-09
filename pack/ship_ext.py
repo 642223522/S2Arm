@@ -159,6 +159,11 @@ def shell_checked(shell_dir):
     return shell, [t for t in (shell / TABLES).read_text(encoding="utf-8").split("\n") if t], need
 
 
+def shell_chain(shell_dir):
+    """壳清单里的直连链号（容器清单每款记它，供只换宿主判兼容：pack/jobs/host_update.py）"""
+    return json.loads((Path(shell_dir) / "manifest.json").read_text(encoding="utf-8"))["details"]["chain"]
+
+
 def check_root(root):
     mods = modules(root)
     if not mods:
@@ -329,6 +334,7 @@ def _place_banner(gid, root, gd, entry):
 def cmd_container(a):
     shell, tables, sid = shell_checked(a.shell)
     roots = [Path(r) for r in a.game]
+    compat = dict(host_abi=a.host_abi, chain=shell_chain(a.shell))
     if not roots:
         red("至少给一款 --game <产物根>")
     if a.sign == "dev" and not a.team:
@@ -363,13 +369,13 @@ def cmd_container(a):
                 if not (base / GAMES / gid).is_dir() or not (base / game_images(gid)).is_file():
                     red(f"已有容器里 {gid} 不完整（{GAMES}/{gid}/ 或 {game_images(gid)} 缺）")
                 kinds[gid] = npdm_ident(base / GAMES / gid / "main.npdm")[1]
-                games.append(e)
+                games.append(dict(e, **compat))   # 同壳原样带过来：配本壳的约定号与链号
         for gid, (r, ast) in new.items():
             try:
                 name = title(str(r))
             except NoTitle as e:
                 red(f"{gid} 取不到游戏名：{e}")
-            e = dict(title_id=gid, name=name)
+            e = dict(title_id=gid, name=name, **compat)
             v = display_version(r)
             if v:
                 e["display_version"] = v
@@ -447,6 +453,7 @@ def main():
     b.add_argument("--set", action="append", default=[])
     c = sub.add_parser("container"); c.add_argument("--shell", required=True); c.add_argument("--out", required=True); c.add_argument("--base"); c.add_argument("--custom")
     c.add_argument("--game", action="append", default=[]); c.add_argument("--bundle-id", required=True); c.add_argument("--icon", required=True)
+    c.add_argument("--host-abi", type=int, required=True)    # 宿主读产物约定号（pack/jobs/host_update.py HOST_ABI），写进每款条目
     c.add_argument("--display-name", default=PLACEHOLDER_NAME); c.add_argument("--sign", choices=("none", "adhoc", "dev"), default="none"); c.add_argument("--team", default="")
     d = sub.add_parser("container-drop"); d.add_argument("--base", required=True); d.add_argument("--game", required=True); d.add_argument("--out", required=True)
     a = ap.parse_args()

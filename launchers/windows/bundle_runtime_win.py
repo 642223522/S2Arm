@@ -140,6 +140,8 @@ def env_cmd(rt):
         "@echo off",
         "rem S2Arm 出包作业环境（bundle_runtime_win.py 生成）：只用随包运行时，不依赖玩家机上另装的 Python / Git / .NET",
         'set "S2A_RT=%~dp0"',
+        "rem 玩家原来的 PATH 先存下（Metal 工具装在自定义目录、只加进 PATH 时，pack/orch/oneclick_win.metal_exe 按它找）；嵌套调用保留最外层那份",
+        'if not defined S2A_USER_PATH set "S2A_USER_PATH=%PATH%"',
         'set "PATH=%S2A_RT%python;%S2A_RT%python\\Scripts;%S2A_RT%dotnet;%S2A_RT%mingit\\cmd;%S2A_RT%git\\usr\\bin;%S2A_RT%zstd;%SystemRoot%\\system32;%SystemRoot%;%SystemRoot%\\System32\\WindowsPowerShell\\v1.0"',
         'set "DOTNET_ROOT=%S2A_RT%dotnet"', 'set "DOTNET_CLI_TELEMETRY_OPTOUT=1"',
         'set "S2A_BASH=%S2A_RT%git\\usr\\bin\\bash.exe"', 'set "PYTHONUTF8=1"', 'set "LC_ALL=C.UTF-8"', 'set "PYTHONDONTWRITEBYTECODE=1"',

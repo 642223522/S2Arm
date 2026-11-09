@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import layout
 import library
 
 
@@ -89,7 +90,8 @@ class CompilerRetentionTests(unittest.TestCase):
             for p in files:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(b'original synthetic compiler cache')
-            scratch = c.library / 'iPhone/0100000000000000/extract/synthetic'
+            c.library.mkdir()
+            scratch = layout.ios_work(c, '0100000000000000') / 'extract/synthetic'   # 这款文件夹的出包工作目录 build/ios
             scratch.parent.mkdir(parents=True)
             scratch.write_bytes(b'discard')
             library.prune_build(c, '0100000000000000')
@@ -124,7 +126,8 @@ class CompilerRetentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library', begin=lambda *a, **k: None)
             gid = '0100000000000000'
-            roots = c.library / 'iPhone' / gid / 'roots'
+            c.library.mkdir()
+            roots = layout.ios_work(c, gid) / 'roots'
             ident = roots / '.romfs_store/g/s0-1'
             (ident / 'sub').mkdir(parents=True)
             (ident / 'sub/a.bin').write_bytes(b'original synthetic romfs')
@@ -134,13 +137,13 @@ class CompilerRetentionTests(unittest.TestCase):
             (roots / 'g@现行').symlink_to('g@new')
             for p in (ident / 'sub/a.bin', ident / 'sub', ident):
                 os.chmod(p, 0o555 if p.is_dir() else 0o444)
-            (roots.parent / 't.ipa').write_bytes(b'ipa')   # 老玩家：有 IPA 没容器件，现行产物根要留着
+            pack = layout.image_ios(c, gid) / 'pack'; pack.mkdir(parents=True); (pack / 'manifest.json').write_text('{}')   # 老玩家：有资源包没容器件，现行产物根要留着
             library.prune_build(c, gid)
             self.assertFalse((roots / 'g@old').exists())
             self.assertEqual((roots / 'g@现行/romfs/sub/a.bin').read_bytes(), b'original synthetic romfs')
             with patch.object(library, 'game_caches', return_value=[]):
-                library._rm(c, c.library, c.library / 'iPhone' / gid)
-            self.assertFalse((c.library / 'iPhone' / gid).exists())
+                library._rm(c, c.library, layout.find_game(c, gid))
+            self.assertFalse(roots.exists())
 
     def test_transient_links_cannot_delete_retained_platforms_or_other_title(self):
         from unittest.mock import patch

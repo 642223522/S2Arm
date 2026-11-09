@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from core import Failure, journal, read, request_path, shared_redact
+from core import Failure, _job_dirs, journal, logs_root, read, request_path, shared_redact
 
 FAILED_STATES = ("failed", "interrupted")
 LOG_CHARS = 12000
@@ -37,7 +37,7 @@ def when(stamp):
 def find_task(private, game=None, operations=None):
     """最近一条失败的作业；game / operations 只收窄范围。没有就抛 job_unknown。"""
     best = None
-    for path in (Path(private) / "jobs").glob("*.json"):
+    for path in (p for d in _job_dirs(private) for p in d.glob("*.json")):
         if path.name.endswith(".request.json"):
             continue
         record = read(path)
@@ -55,7 +55,7 @@ def find_task(private, game=None, operations=None):
 
 
 def log_paths(private, record):
-    logs = Path(private) / "logs"
+    logs = logs_root(private)
     found = [Path(d["logPath"]) for d in record.get("diagnostics") or [] if isinstance(d, dict) and d.get("logPath")]
     if logs.is_dir():
         found += sorted(logs.glob(record["id"] + "*"), key=lambda p: p.stat().st_mtime)

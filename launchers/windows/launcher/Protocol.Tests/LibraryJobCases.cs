@@ -101,5 +101,37 @@ internal static class LibraryJobCases
         check(Locations(rows.Replace("\"last\":\"c\"", "\"last\":\"b\"")).DefaultFor(null) == "/lib", "locations: last one not connected → default location");
         try { Locations(rows.Replace("\"connected\":true,", "")); throw new Exception("accepted location without connected"); }
         catch (LibraryProtocolException) { check(true, "locations: row without connected rejected"); }
+
+        // ---- library layout v3 P4: catalog game.sizes, storageOverview job (shapes from pack/jobs/sizes.py for_catalog / overview) ----
+        using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"missing\":[],\"location\"",
+            "\"missing\":[],\"sizes\":{\"imageMac\":0,\"imageIos\":6000000000,\"saves\":3,\"cache\":4,\"sources\":5,\"measured\":true},\"location\"")))
+        {
+            var games = LibraryCatalog.Parse(document.RootElement).Games;
+            check(games[0].Sizes == new GameSizes(0, 6000000000, 3, 4, 5, true), "catalog: sizes read, iPhone size beyond Int32 kept");
+            check(games[1].Sizes is null, "catalog: no sizes field reads as null (not counted)");
+        }
+        const string overview = """
+        {"locations":[{"id":"a","path":"D:\\S2Arm","volume":"Data","connected":true,"default":true,"totalBytes":9000000000,"freeBytes":4000000000,"usedBytes":3000000000},
+                      {"id":"b","path":"E:\\S2Arm","volume":"Ext","connected":false,"default":false}],
+         "shared":[{"id":"hosts","bytes":10},{"id":"ipa","bytes":20},{"id":"toolCache","bytes":0},{"id":"temp","bytes":0},{"id":"logs","bytes":5}],
+         "games":[{"gameId":"A","name":"Alpha","state":"ok","location":"D:\\S2Arm","sizes":{"imageMac":0,"imageIos":1,"saves":2,"cache":3,"sources":4,"measured":true}},
+                  {"gameId":"B","name":"","state":"offline","location":"E:\\S2Arm","sizes":{"imageMac":0,"imageIos":0,"saves":0,"cache":0,"sources":7,"measured":false}}]}
+        """;
+        StorageOverview Overview(string json)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return StorageOverview.Parse(document.RootElement);
+        }
+        var o = Overview(overview);
+        check(o.Locations.Count == 2 && o.Locations[0].IsDefault && o.Locations[0].UsedBytes == 3000000000 && o.Locations[0].FreeBytes == 4000000000 &&
+              o.Locations[0].TotalBytes == 9000000000, "overview: connected location keeps total / free / used beyond Int32");
+        check(!o.Locations[1].Connected && o.Locations[1].FreeBytes is null && o.Locations[1].UsedBytes is null, "overview: offline location has no fake zero");
+        check(string.Join(",", o.Shared.Select(p => p.Id + "=" + p.Bytes)) == "hosts=10,ipa=20,toolCache=0,temp=0,logs=5", "overview: shared parts in backend order");
+        check(o.Games[0].Sizes == new GameSizes(0, 1, 2, 3, 4, true) && o.Games[1].Name == "B" && o.Games[1].State == "offline" && !o.Games[1].Sizes.Measured,
+            "overview: game sizes; empty name falls back to the game id");
+        try { Overview(overview.Replace("{\"id\":\"hosts\",\"bytes\":10}", "{\"id\":\"hosts\"}")); throw new Exception("accepted shared part without bytes"); }
+        catch (LibraryProtocolException) { check(true, "overview: shared part without bytes rejected"); }
+        try { Overview(overview.Replace("\"connected\":false,", "")); throw new Exception("accepted overview location without connected"); }
+        catch (LibraryProtocolException) { check(true, "overview: location without connected rejected"); }
     }
 }

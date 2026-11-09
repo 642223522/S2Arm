@@ -8,7 +8,7 @@ struct TasksView: View {
     var body: some View {
         WorkspacePage {
             WorkspaceHeading(title:"编译任务",subtitle:"",symbol:"checklist") {
-                Button(L("打开日志")) {store.reveal(store.privateRoot.appendingPathComponent("logs"))}.platformButtonStyle()
+                Button(L("打开日志")) {store.reveal(store.logsRoot)}.platformButtonStyle()
             }
             HStack(spacing:8) {
                 StatusPill(title:"进行中 \(store.activeTasks.count)",symbol:"circle.dotted")

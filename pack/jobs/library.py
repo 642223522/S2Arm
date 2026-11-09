@@ -26,6 +26,7 @@ import toolchain
 import winproc
 import filelock
 import layout
+import sizes
 
 DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
@@ -525,9 +526,15 @@ def _discard(p):
     if p.is_symlink() or p.is_file():
         p.unlink(missing_ok=True)
     elif p.exists():
+        # 解封存放开权限（出包产物有只读目录）：只改真目录、真文件，不跟随链接——os.walk 把指向文件的软链列在 files 里，
+        #   os.chmod 会顺着它改到库外（整库搬家收尾删旧位置时，库里链到原件 / 引擎的文件被改成 644）；Windows junction 不进
+        junction = getattr(os.path, "isjunction", lambda _: False)
         for d, dirs, files in os.walk(p):
             os.chmod(d, 0o755)
+            dirs[:] = [x for x in dirs if not junction(os.path.join(d, x))]
             for f in files:
+                if os.path.islink(os.path.join(d, f)):
+                    continue
                 with contextlib.suppress(OSError):
                     os.chmod(Path(d) / f, 0o644)
         shutil.rmtree(p)
@@ -632,7 +639,7 @@ def inspect(c, source, icon_dir, keyfile=None):
     lines = []
     try:
         c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir],
-              c.private / "logs" / (c.task + "-inspect.log"), on_line=lines.append)
+              c.logs / (c.task + "-inspect.log"), on_line=lines.append)
     except Failure as error:
         if error.code not in ("tool_exit", "job_failed"):
             raise
@@ -760,11 +767,51 @@ def _space_target(c):
     return "ipa" if getattr(c, "operation", "") == "ipa" else "mac"
 
 
+class _CloneInfo:
+    """APFS 克隆感知（#303）：getattrlist 取每个文件的独占字节 ATTR_CMNEXT_PRIVATESIZE、克隆族 ATTR_CMNEXT_CLONEID、族里份数 ATTR_CMNEXT_CLONE_REFCNT。
+    stat 看不出克隆共享块（clonefile / cp -c 出的每份各有 inode、st_blocks 满额），原先照份数累加：宝可梦 Z-A 6.45 GB 的游戏记成 49.9 GB。
+    实测（macOS 27，APFS）：没改过的克隆同族同 CLONEID、独占 0；整目录克隆里每个文件也同族；克隆后改过的文件换新 CLONEID、族里份数 1、
+    独占 = 改过的块——它和原族共享的块查不出归属，按整份算（偏大、但只出现在改过的克隆上）。取不到（非 macOS / 非 APFS / 老系统）→ None，照旧按 st_blocks"""
+    _fn = None
+
+    @classmethod
+    def get(cls, path):
+        if sys.platform != "darwin":
+            return None
+        if cls._fn is None:
+            import ctypes, ctypes.util, struct
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+            class attrlist(ctypes.Structure):
+                _fields_ = [("bitmapcount", ctypes.c_ushort), ("reserved", ctypes.c_ushort), ("commonattr", ctypes.c_uint32),
+                            ("volattr", ctypes.c_uint32), ("dirattr", ctypes.c_uint32), ("fileattr", ctypes.c_uint32), ("forkattr", ctypes.c_uint32)]
+            # sys/attr.h：ATTR_CMN_RETURNED_ATTRS；扩展通用属性走 forkattr 位并要 FSOPT_ATTR_CMN_EXTENDED
+            want = 0x8 | 0x100 | 0x1000   # PRIVATESIZE | CLONEID | CLONE_REFCNT
+            req = attrlist(5, 0, 0x80000000, 0, 0, 0, want)
+            buf = ctypes.create_string_buffer(64)
+
+            def fn(p):
+                if libc.getattrlist(os.fsencode(p), ctypes.byref(req), buf, 64, 0x20 | 0x1):   # FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW
+                    return None
+                got = struct.unpack_from("5I", buf, 4)[4]
+                if got & want != want:
+                    return None
+                priv, cid, refs = struct.unpack_from("<qQI", buf, 24)
+                return priv, cid, refs
+            cls._fn = fn
+        try:
+            return cls._fn(path)
+        except (OSError, ValueError):
+            return None
+
+
 def disk_bytes(roots, device, skip_names=(), skip_under=()):
     """这些目录在 device 卷上实际分配的字节：按 (卷, inode) 去重（硬链接只算一次；多个根互相包含也只算一次），
     不跟软链（原件软链、@现行 指向）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
-    APFS 克隆（clonefile / cp -c）两份各有 inode、stat 看不出共享块，这里照两份算——量出来偏大、预算偏保守"""
+    APFS 克隆（#303）：同一克隆族（_CloneInfo）的共享块只算一次——每份记独占字节，族的共享部分取最大一份加一次；
+    取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账（sizes.py：解包还在时游戏资源目录的克隆归 cache）"""
     seen, total, stack = set(), 0, [os.fspath(r) for r in roots]
+    shared = {}   # 克隆族号 → 族里共享块字节（取各份最大）
     while stack:
         path = stack.pop()
         try:
@@ -777,29 +824,32 @@ def disk_bytes(roots, device, skip_names=(), skip_under=()):
             continue
         seen.add((st.st_dev, st.st_ino))
         blocks = getattr(st, "st_blocks", None)
-        total += blocks * 512 if blocks is not None else st.st_size
+        alloc = blocks * 512 if blocks is not None else st.st_size
+        clone = _CloneInfo.get(path) if stat.S_ISREG(st.st_mode) and alloc else None
+        if clone and clone[2] >= 2 and 0 <= clone[0] <= alloc:
+            total += clone[0]
+            shared[clone[1]] = max(shared.get(clone[1], 0), alloc - clone[0])
+        else:
+            total += alloc
         if stat.S_ISDIR(st.st_mode):
             try:
                 with os.scandir(path) as it:
                     stack.extend(e.path for e in it)
             except OSError:
                 pass
-    return total
+    return total + sum(shared.values())
 
 
 def pack_footprint(c, gid):
-    """这一款出包在游戏库所在卷上的整套占用：iPhone 输出（产物根 / IPA / 资源包）、共用解包与 Mac 构建缓存（cache/<程序号>）、
-    Mac 运行版本（games/<程序号>），再加私有目录里本款的出包缓存（直连 / 翻译…，game_caches）——后者只在和游戏库同一卷时才算进来。
-    不含各款共用的编库缓存（air / pso / gal_dl_cache）、存档、运行时着色器缓存（runtime-cache，玩的时候才长）"""
+    """这一款出包在所在卷上的整套占用：这款文件夹里出包产生的（出包缓存 build/：共用解包、Mac 各层产物根、iPhone 出包工作目录；
+    镜像 image/：Mac 运行版本、iPhone 容器件与资源包），再加私有目录 / 工具缓存里本款的出包缓存（直连 / 翻译…，game_caches）——后者只在同一卷时才算进来。
+    不含各款共用的编库缓存（air / pso / gal_dl_cache）、存档、运行时着色器缓存（shader-cache，玩的时候才长）"""
     shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}
     gdir = layout.find_game(c, gid)
-    roots = [c.library / "iPhone" / gid]
-    if gdir and gdir.exists():
-        roots.append(gdir)
+    roots = [gdir / "build", gdir / "image"] if gdir else []
     roots += [p for p in game_caches(c, gid) if p not in shared]
-    # APFS 上产物根、资源包、Mac 运行版本里的这两种目录都是解包结果的克隆，不占新空间，只算解包那一份（stat 看不出共享块）；Windows（NTFS 无克隆）照实算
-    clones = [] if os.name == "nt" else [str(c.library / "iPhone" / gid)] + ([str(gdir)] if gdir and gdir.exists() else [])
-    return disk_bytes(roots, c.library.stat().st_dev, skip_names=CLONED_DIRS, skip_under=clones)
+    # APFS 上解包、各层产物根、.romfs_store、Mac 运行版本里的 RomFS 都是同一份的克隆：disk_bytes 按克隆族只算一次（#303）；Windows（NTFS 无克隆）照实算
+    return disk_bytes(roots, layout.root_of(c, gid).stat().st_dev)   # 这款可能在别的存放位置（别的卷）
 
 
 def record_pack_usage(c, game):
@@ -853,8 +903,8 @@ def check_pack_space(c, game, *, compiler_policy=None):
     cache_result = None
     if compiler_policy is not None:
         from cache_retention import trim
-        # 缓存只释放 private 所在卷；不同卷的 library 不借用这笔 free。
-        device = c.private.stat().st_dev
+        # 缓存只释放工具缓存所在卷（默认位置的 tool-cache，游戏库结构 P3）；不同卷的 library 不借用这笔 free。
+        device = c.work_root.parent.stat().st_dev
         relevant = budget["volumes"] if c.library.stat().st_dev == device else []
         target = max([compiler_policy["min_free_bytes"], *(v["needBytes"] for v in relevant)])
         if any(not v["enough"] for v in budget["volumes"]):
@@ -1238,9 +1288,9 @@ def catalog(c):
             game["ready"] = False
         # 升级启动器不算要重新准备（11-08 维护者：覆盖升级状态要保留）：运行版本自带宿主，旧版照常能玩；输入变了才要重做
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
-        iphone = c.library / "iPhone" / game["id"]
-        game["iphoneReady"] = iphone.is_dir() and any(iphone.glob("*.ipa")) and any(p.is_dir() and p.name.endswith("资源包") for p in iphone.iterdir())
-        game["iphoneInstall"] = read(layout.path(c, game["id"], "ios-install.json", create=False), None)
+        game["iphoneReady"] = iphone_ready(c, game["id"])
+        game["iphoneRestorable"] = layout.phone_ipa(c, previous=True).is_file()   # 换壳后可装回上一版（install.restore_previous）
+        game["iphoneInstall"] = layout.install_record(c, game["id"])
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
         game_info = layout.game_info(c, game["id"])
         host_mac = game_info.get("hostMac")
@@ -1259,6 +1309,7 @@ def catalog(c):
         choices = [p for p in selected_packages(game) if p["type"] in ("base", "update")]
         if choices:
             game["display"] = max(choices, key=lambda p: p["version"])["display"]
+        game["sizes"] = sizes.for_catalog(c, game["id"], cat["games"])   # 每款各部分大小（sizes.py：作业收尾量好记在 game.json，这里不量）
     try:
         validate_keys(c.keys)
         status = read(c.private / "keys/status.json", {}) | dict(ready=True)
@@ -1266,14 +1317,14 @@ def catalog(c):
         status = dict(ready=False, verified=False)
     status["message"] = "已验证解密能力" if status.get("verified") else "格式通过，首次读取游戏时验证解密能力" if status["ready"] else "尚未导入 prod.keys"
     # 任务目录里还有各任务留存的请求（<任务>.request.json，J10 resume 用）：不是任务记录，没有 id / state；混进来启动器整个任务列表解码失败、一条都读不回
-    # 任务目录有上限（J10 保留规则：结束超过 14 天的清掉、最新 50 条总留着）：catalog 每次启动都跑，在这里顺手清，一天最多一次
+    # 任务目录有上限（保留规则见 core.prune_jobs）：catalog 每次启动都跑，在这里顺手清，一天最多一次
     #   （清理要把每条记录读一遍判结束没有），先清再读。只回最新 JOB_LIST_LIMIT 条：旧启动器的任务列表只看近期；
     #   11-07 实测任务目录 1.5 万条记录时整份读 + 回传 7 MB 占 catalog 数秒。
-    marker = c.private / "jobs-pruned"
+    marker = c.logs / ".jobs-pruned"
     if time.time() - _mtime(marker) > 86400:
-        prune_jobs(c.private)
+        prune_jobs(c.private, jobs=c.jobpath.parent)
         marker.touch()
-    records = sorted((p for p in (c.private / "jobs").glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
+    records = sorted((p for p in c.jobpath.parent.glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
                      key=_mtime, reverse=True)[:JOB_LIST_LIMIT]
     jobs = [r for r in (read(p) for p in records) if isinstance(r, dict)]
     return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs,
@@ -1434,20 +1485,23 @@ def _windows_layout():   # 单测可打桩：Windows 的产物根在 work/ 下�
     return os.name == "nt"
 
 
-CONTAINER_KIT = "container-kit"   # iPhone/<游戏号>/container-kit：装机组装容器要用的文件，出包成功后从产物根存一份独立副本
-SHELL_STAMP_NAME = "shell.id"
+CONTAINER_KIT = layout.IOS_KIT   # 每款 image/ios/kit：装机组装容器要用的文件，出包成功后从产物根存一份独立副本（游戏库结构 v3；旧布局是 iPhone/<号>/container-kit）
 
 
-def save_container_kit(c, gid, root):
+def save_container_kit(c, gid, root, dest=None):
     """把组装容器要读的文件（ship_ext.place_game / display_name / 随包表：顶层普通文件、ctl/control.nacp、programs/<n>/）存成不依赖产物根的副本。
-    root 里的链接按内容拷，之后删产物根、RomFS 存储、Windows 的 work/ 都不影响装机、续签和单壳追加。没有 main.npdm 返回 None，不动旧的。"""
+    root 里的链接按内容拷，之后删产物根、RomFS 存储、Windows 的 work/ 都不影响装机、续签和单壳追加。没有 main.npdm 返回 None，不动旧的。
+    dest 给了（迁移旧布局时）就存成 dest/container-kit，否则存到这款的 image/ios/kit。"""
     root = Path(root)
     if not (root / "main.npdm").is_file():
         return None
-    out = c.library / "iPhone" / gid
-    kit, temporary = out / CONTAINER_KIT, out / (CONTAINER_KIT + ".partial")
+    out = Path(dest) if dest else layout.image_ios(c, gid)
+    out.mkdir(parents=True, exist_ok=True)
+    name = "container-kit" if dest else CONTAINER_KIT
+    kit, temporary = out / name, out / (name + ".partial")
+    managed = c.library if dest else layout.root_of(c, gid)
     if temporary.exists():
-        _rm(c, c.library, temporary)
+        _rm(c, managed, temporary)
     def copy_files(source, dest):
         dest.mkdir(parents=True, exist_ok=True)
         for p in source.iterdir():
@@ -1463,7 +1517,7 @@ def save_container_kit(c, gid, root):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
     if kit.exists():
-        _rm(c, c.library, kit)
+        _rm(c, managed, kit)
     os.replace(temporary, kit)
     return kit
 
@@ -1483,18 +1537,29 @@ def _execution_idle(c):
             filelock.unlock(f)
 
 
+def _build_entries(c, gid):
+    """这款出包缓存 build/ 里能删的项：除 iPhone 出包日志 build/ios/logs 之外的全部。日志是释放空间的「保留」项（SPACE_KEPT），
+    出包成功清理、清缓存、释放「旧版残留」都不删它（旧布局 iPhone/<号>/logs 同样一直留着）"""
+    build, out = layout.build_dir(c, gid, create=False), layout.ios_work(c, gid, create=False)
+    if not build.is_dir():
+        return []
+    if not os.path.lexists(out / "logs"):
+        return [build]   # 没有要留的：整个删
+    return [q for q in build.iterdir() if q != out] + [q for q in out.iterdir() if q.name != "logs"]
+
+
 def _residue_disposable(c, gid):
     """解包和中间产物能不能删：有容器件，或这款没有已出好的 IPA。老玩家有 IPA 没容器件时，现行产物根是装机的唯一来源，留给「旧版残留」项先存容器件再删。"""
-    out = c.library / "iPhone" / gid
-    return (out / CONTAINER_KIT / "main.npdm").is_file() or not (out.is_dir() and any(p.is_file() and p.suffix == ".ipa" for p in out.iterdir()))
+    return (layout.ios_kit(c, gid) / "main.npdm").is_file() or not (layout.ios_pack(c, gid) / "manifest.json").is_file()
 
 
 def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
-    roots = [*(c.library / "iPhone" / gid).glob("roots/*@现行"), *(c.library / "iPhone" / gid).glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),
+    work = layout.ios_work(c, gid, create=False)
+    roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
-             *(c.library / "iPhone" / gid).glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
-    dest = c.private / "logs" / (c.task + "-stages")
+             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
+    dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
         for log in sorted(root.glob("*.log")):
@@ -1524,8 +1589,7 @@ def _residue(c):
     found = []
     for game in c.catalog()["games"]:
         gid = game["id"]
-        out = c.library / "iPhone" / gid
-        stale = layout.build_dir(c, gid, create=False).exists() or (out.is_dir() and any(p.name not in (CONTAINER_KIT, SHELL_STAMP_NAME, "logs") and p.suffix != ".ipa" and not p.name.endswith("资源包") for p in out.iterdir()))
+        stale = bool(_build_entries(c, gid))   # 解包、Mac 产物根、iPhone 出包工作目录 build/ios 都在这里（出包日志不算残留）
         stale = stale and _residue_disposable(c, gid)
         partials = list(layout.path(c, gid, "image", "mac.partial", create=False).parent.glob("mac.partial")) + list(layout.path(c, gid, "image", "mac.old", create=False).parent.glob("mac.old"))
         if stale or partials:
@@ -1554,34 +1618,26 @@ def sweep_residue(c):
 
 def prune_build(c, gid, *, retain_compiler=True, record=True):
     """出包结束后清本款解包和中间产物，保留共享编库缓存；显式清缓存用 retain_compiler=False。
-    自动清理只留 IPA、资源包、日志、容器件和 shell.id；老玩家有 IPA 没容器件时保持旧行为，留现行产物根，免得装机报 container_stale。
+    交付件（容器件、资源包）出包收尾已搬进 image/ios，build/ 整个删；有资源包没容器件时留现行产物根，免得装机报 container_stale。
     出包成功后的清理先记一行出包实测（record_pack_usage）：要量清之前的整套占用"""
     if retain_compiler and record:
         game = next((g for g in read(c.library / "catalog.json", {}).get("games", []) if g.get("id") == gid), None)
         if game:
             record_pack_usage(c, game)
-    out = c.library / "iPhone" / gid
+    out = layout.ios_work(c, gid, create=False)
     n = 0
     kit_ready = _residue_disposable(c, gid)
     if retain_compiler and kit_ready:
-        unpacked = layout.build_dir(c, gid, create=False)
-        if unpacked.exists():
-            _rm(c, layout.root_of(c, gid), unpacked); n += 1
-    if out.is_dir():
+        for p in _build_entries(c, gid):   # 含 iPhone 出包工作目录 build/ios（交付件已搬进 image/ios），只留出包日志 build/ios/logs
+            _rm(c, layout.root_of(c, gid), p); n += 1
+    elif out.is_dir():
+        # 有资源包没容器件（只会是出包收尾存容器件前被打断）：现行产物根是装机的唯一来源，留着，其余照清
         for p in out.iterdir():
-            if p.name == "logs" or p.name.endswith("资源包") or (p.is_file() and p.suffix == ".ipa"):
-                continue
-            if retain_compiler and p.name in (CONTAINER_KIT, SHELL_STAMP_NAME):
-                continue
-            if retain_compiler and kit_ready:
-                _rm(c, c.library, p); n += 1
+            if p.name == "logs":
                 continue
             if p.name == "roots" and retain_compiler and p.is_dir() and not _is_link(p):
                 n += _prune_roots(c, p)
                 continue
-            # Windows 的产物根在 work/ 下（ipa.current_root：work/pkg/product = 现行各项联接 + shaders/direct → work/direct），装进容器要用：
-            #   原先整个 work/ 被删，打完 iPhone 包再装必报 container_stale（#26 同一位报告者 #32）。保留 roots 的现行、pkg/product
-            #   （去掉已拷到游戏目录的交付件 product/pkg）与 direct*，其余照清
             if _windows_layout() and p.name == "work" and retain_compiler and p.is_dir() and not _is_link(p):
                 for q in p.iterdir():
                     if q.name == "roots" and q.is_dir() and not _is_link(q):
@@ -1595,7 +1651,7 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
                     elif not re.fullmatch(r"direct(_p\d+)?", q.name):
                         _rm_entry(c, q); n += 1
                 continue
-            _rm(c, c.library, p); n += 1
+            _rm(c, layout.root_of(c, gid), p); n += 1
     direct = c.work_root / 'run/s2arm/cache/direct' / gid.upper()
     for p in game_caches(c, gid, include_compiler=not retain_compiler):
         if retain_compiler and p.parent == direct:
@@ -1606,18 +1662,12 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
 
 
 def drop_from_container(c, gid):
-    """游戏库里删了的款也从游戏库侧的容器（iPhone/container/S2Arm.app，下次装机的底子）摘掉，不装机（#227：原先容器清单留着它，
-    下次装别的游戏把它原样带回来，升级换壳后又因为没有本壳产物挡住出包 container_stale）。手机上的 App 下次装机时随覆盖装去掉它"""
-    import ipa as packer
-    from install import CONTAINER_DIR
-    cat = c.library / "iPhone" / CONTAINER_DIR / "S2Arm.app/s2a_catalogue.json"
-    try:
-        listed = any(e.get("title_id") == gid for e in json.loads(cat.read_text(encoding="utf-8")).get("games", []))
-    except (OSError, ValueError):
-        return
-    if listed:
-        with packer.dropped(c, gid) as (ipa, _):
-            packer.commit_drop(c, ipa)
+    """游戏库里删了的款从各台手机的记录（devices/<设备>.json）摘掉，不装机：下次给那台装机时现组的容器就不再带它（#227）"""
+    gid = gid.upper()
+    for key, rec in layout.devices(c):
+        if gid in (rec.get("games") or {}):
+            rec["games"].pop(gid)
+            layout.save_device(c, key, rec)
 
 
 def delete(c):
@@ -1630,9 +1680,6 @@ def delete(c):
             with c.lock("execution"), c.lock():
                 gid = c.game()["id"]
                 c.begin("删除游戏与出包产物")
-                for p in [c.library / "iPhone" / gid]:
-                    if p.exists():
-                        _rm(c, c.library, p)
                 gdir = layout.find_game(c, gid)
                 if gdir and gdir.exists():
                     # 存档有内容就保留
@@ -1674,13 +1721,14 @@ def clean(c):
         kind = c.r.get("kind")
         if kind == "cache":
             c.begin("清理构建缓存")
-            target = layout.build_dir(c, game["id"], create=False)
-            if target.is_dir():
+            for target in _build_entries(c, game["id"]):   # 出包日志 build/ios/logs 留着
                 _rm(c, layout.root_of(c, game["id"]), target)
             shader = layout.path(c, game["id"], "shader-cache", create=False)   # 清缓存 = 本款出包缓存 + 运行时着色器缓存（游戏库结构双端统一「清缓存」）
             if shader.is_dir():
                 _rm(c, layout.root_of(c, game["id"]), shader)
             prune_build(c, game["id"], retain_compiler=False)   # 用户显式清缓存保留原有全清语义，不套用 Q15 自动保留策略
+            from cache_retention import engine_installed_at, prune_tool_keys
+            prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 顺带清当前引擎用不到的工具缓存旧键
         elif kind == "sources":
             # 只删 0.1.0-beta.3 及以前复制进游戏库的托管副本；原地导入的原件是玩家的文件，只读、不删
             other = {p["path"] for g in c.catalog()["games"] if g["id"] != game["id"] for p in g["packages"]}
@@ -1689,6 +1737,7 @@ def clean(c):
                     contained(c.library / "sources", c.library / p["path"]).unlink(missing_ok=True)
         else:
             raise Failure("未知清理类型。")
+        sizes.refresh(c, game["id"])
     return {}
 
 
@@ -1704,19 +1753,24 @@ SPACE_PARTS = (
 SPACE_KEPT = ("saves", "logs")
 
 
-def _ipa_outputs(out):
-    return [p for p in out.iterdir() if (p.is_file() and p.suffix == ".ipa") or p.name.endswith("资源包") or p.name in (CONTAINER_KIT, SHELL_STAMP_NAME)] if out.is_dir() else []
+def iphone_ready(c, gid):
+    """这款的 iPhone 版能不能装（catalog 每款都问，只看几个文件，不逐文件读）：容器件主程序表 main.npdm 在且非空、有改写产物，资源包清单在。
+    审计 P2-212：原先只看「有 ipa + 有资源包目录」，容器件缺 main.npdm 也报就绪，点装机才报错；逐文件完整核对仍在装机组装时（pack/ship_ext.py check_root / place_game）"""
+    kit, pack = layout.ios_kit(c, gid), layout.ios_pack(c, gid)
+    try:
+        return (kit / "main.npdm").stat().st_size > 0 and any(kit.glob("*.fixups.tsv")) and (pack / "manifest.json").is_file()
+    except OSError:
+        return False
 
 
 def space_parts(c, gid):
     """{部件 id: [路径…]}，外加不给删的 saves / logs。路径都在游戏库或私有目录之内；不存在的不列"""
-    out = c.library / "iPhone" / gid
+    out = layout.ios_work(c, gid, create=False)
     shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}   # 各款共用的编库缓存：不归任何一款
-    ipa = _ipa_outputs(out)
-    inter = [p for p in out.iterdir() if p.name != "logs" and p not in ipa] if out.is_dir() else []
+    ipa = [layout.image_ios(c, gid, create=False)]
     gdir = layout.find_game(c, gid)
     parts = {
-        "legacy": [layout.build_dir(c, gid, create=False), *inter],
+        "legacy": _build_entries(c, gid),   # 不含出包日志（下面 logs 项，只报不删）
         "shaders": [p for p in game_caches(c, gid) if p not in shared],
         "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,
@@ -1767,18 +1821,19 @@ def space_free(c):
         if "legacy" in want:   # 老玩家的现行产物根是装机的唯一来源：删之前先存成容器件，否则装机会报 container_stale
             from ipa import product_root
             root = product_root(c, gid)
-            if root is not None and not (c.library / "iPhone" / gid / CONTAINER_KIT / "main.npdm").is_file():
+            if root is not None and not (layout.ios_kit(c, gid) / "main.npdm").is_file():
                 save_container_kit(c, gid, root)
         parts = space_parts(c, gid)
         freed, done = 0, []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
             before = _part_bytes(parts[k])
             for p in parts[k]:
-                root = c.work_root if p.is_relative_to(c.work_root) else c.library
+                root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
                 _rm(c, root, p)
             after = _part_bytes([p for p in parts[k] if p.exists() or p.is_symlink()])
             freed += before - after
             done.append(dict(id=k, bytes=before - after))
+        sizes.refresh(c, gid)
         return dict(gameId=gid, parts=done, freedBytes=freed)
 
 
@@ -1906,20 +1961,16 @@ def diagnostics(c):
     temporary = None
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
-        private_fd = winproc.open_dir_nofollow(c.private) if os.name == "nt" else os.open(c.private, flags)
-        descriptors.append(private_fd)
+        # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
+        home_fd = winproc.open_dir_nofollow(c.logs.parent) if os.name == "nt" else os.open(c.logs.parent, flags)
+        descriptors.append(home_fd)
         roots = {}
-        # begin persists jobs; reject static root links before that write occurs.
-        for name in ("jobs", "logs"):
-            try:
-                roots[name] = winproc.open_dir_nofollow(name, private_fd) if os.name == "nt" else os.open(name, flags, dir_fd=private_fd)
-                descriptors.append(roots[name])
-            except FileNotFoundError:
-                roots[name] = None
+        # Context 建任务时已写下本任务记录，logs/ 与 logs/jobs/ 都在；不是真目录（链接）照样拒
+        roots["logs"] = winproc.open_dir_nofollow("logs", home_fd) if os.name == "nt" else os.open("logs", flags, dir_fd=home_fd)
+        descriptors.append(roots["logs"])
+        roots["jobs"] = winproc.open_dir_nofollow("jobs", roots["logs"]) if os.name == "nt" else os.open("jobs", flags, dir_fd=roots["logs"])
+        descriptors.append(roots["jobs"])
         c.begin("导出脱敏诊断")
-        if roots["jobs"] is None:
-            roots["jobs"] = winproc.open_dir_nofollow("jobs", private_fd) if os.name == "nt" else os.open("jobs", flags, dir_fd=private_fd)
-            descriptors.append(roots["jobs"])
 
         fd, name = tempfile.mkstemp(prefix="." + destination.name + ".", suffix=".partial", dir=destination.parent)
         temporary = Path(name)
@@ -1970,6 +2021,8 @@ def diagnostics(c):
                         c.check()
                         info = winproc.stat_at(name, directory_fd) if os.name == "nt" else os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                         member = relative + name
+                        if not relative and name == "jobs":
+                            continue   # 任务记录上面已按 jobs/ 收过
                         if stat.S_ISDIR(info.st_mode):
                             child = winproc.open_dir_nofollow(name, directory_fd) if os.name == "nt" else os.open(name, flags, dir_fd=directory_fd)
                             try:
@@ -2046,6 +2099,7 @@ def move_game(c):
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")
         apply_location(c, game)
+        sizes.refresh(c, game["id"])   # 跨卷拷过去克隆会展开成实占，重量
         return dict(gameId=game["id"], folder=str(layout.find_game(c, game["id"])))
 
 

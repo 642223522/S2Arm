@@ -71,6 +71,23 @@ class StartFailureTests(unittest.TestCase):
         self.assertGreaterEqual(waited, 60)
 
 
+class LogsRootTests(unittest.TestCase):
+    """游戏库结构 P3：库建好（有 .s2arm-library.json）→ <库>/logs；没建好 → <数据目录>/logs；旧默认库搬走后按搬库标记跟过去"""
+    def test_rules(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), mock.patch.object(ctl, "WINDOWS", False):
+            lib = Path(root) / "lib"; lib.mkdir()
+            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(lib)}))
+            self.assertEqual(ctl.logs_root(), os.path.join(root, "logs"))
+            (lib / ".s2arm-library.json").write_text("{}")
+            self.assertEqual(ctl.logs_root(), os.path.join(str(lib), "logs"))
+            old = Path(root) / "游戏库"
+            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(old)}))
+            (Path(root) / "library-relocate.json").write_text(json.dumps({"from": str(old), "to": str(lib), "state": "done"}))
+            self.assertEqual(ctl.logs_root(), os.path.join(str(lib), "logs"))
+            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(Path(root) / "other")}))   # 别的路径不跟标记
+            self.assertEqual(ctl.logs_root(), os.path.join(root, "logs"))
+
+
 class TaskLogTests(unittest.TestCase):
     def test_build_logs_command_reads_the_nested_stage_log(self):
         with tempfile.TemporaryDirectory() as root:
@@ -532,10 +549,10 @@ if __name__ == "__main__":
 
 class ControlStuckTests(unittest.TestCase):
     """10-26 Spare-host：内存吃紧时启动器控制口不应答，wait 一次超时就判失败、整个出包作业跟着丢。
-    控制口卡住时 wait 要按作业记录（<数据目录>/jobs/<任务>.json，pack/jobs/core.py 写）判：作业进程活着就接着等。期望按场景手写。"""
+    控制口卡住时 wait 要按作业记录（库没建好时 <数据目录>/logs/jobs/<任务>.json，pack/jobs/core.py 写）判：作业进程活着就接着等。期望按场景手写。"""
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="s2armctl-stuck-")
-        os.makedirs(os.path.join(self.root, "jobs"))
+        os.makedirs(os.path.join(self.root, "logs", "jobs"))
         # 卡死的控制口：接连接、读请求、永远不回
         self.server = socket.socket(); self.server.bind(("127.0.0.1", 0)); self.server.listen(8)
         self.held = []
@@ -557,7 +574,7 @@ class ControlStuckTests(unittest.TestCase):
 
     def job(self, finish_after, final="completed"):
         """假作业进程：按 core.py 的格式写作业记录（running + pid / pidStart），finish_after 秒后写终态退出；final=None = 中途被杀、记录停在 running"""
-        path = os.path.join(self.root, "jobs", "job1.json")
+        path = os.path.join(self.root, "logs", "jobs", "job1.json")
         code = f"""
 import json, os, subprocess, sys, time
 p = {path!r}

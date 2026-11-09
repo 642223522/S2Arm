@@ -15,12 +15,13 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from jobcase import JobCase, JOBS, ROOT
+from jobcase import JobCase, JOBS, ROOT, ios_fixture
 from core import Context, Failure, Cancelled, atomic
 from errors import RECOVERY
 import build
 import ipa
 import install
+import layout
 import library
 
 
@@ -182,7 +183,7 @@ class PackageFailures(JobCase):
                 self.assertIn(red, got.exception.internal)
 
     def test_refresh_log_cannot_reuse_stale_or_nonterminal_red(self):
-        log = self.c.library / "iPhone/0100000000000000/logs/refresh.log"; log.parent.mkdir(parents=True)
+        log = layout.ios_work(self.c, "0100000000000000") / "logs/refresh.log"; log.parent.mkdir(parents=True)   # 出包工作目录 build/ios 里上一轮留下的
         log.write_text("【红】fixture 刷新停在直连配置推导（rc=1）：旧错误\n")
         self.script_result("刷新各阶段", "本轮未知错误")
         with self.assertRaises(Failure) as got: self.build()
@@ -304,16 +305,15 @@ class InstallFailures(JobCase):
     def test_install_rc_four_causes_and_unknown(self):
         import diag
         gid = "0100000000000000"
-        out = self.c.library / "iPhone" / gid; out.mkdir(parents=True)
-        archive = out / "test.ipa"
+        ios_fixture(self.c, gid)   # 出好的 iPhone 版（容器件 + 资源包）：有资源包才装（审计 18:00 P1-58：没有资源包先报 pack_missing、不走到装机）
+        archive = self.root / "test.ipa"
         with zipfile.ZipFile(archive, "w") as z:
             z.writestr("Payload/Test.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test"}))
             z.writestr("Payload/Test.app/S2Arm", b"bin")
-        (out / "test资源包").mkdir()   # 有资源包才装（审计 18:00 P1-58：没有资源包先报 pack_missing、不走到装机）
         self.c.r.update(gameId=gid)
         import ipa as packer
-        def fake_assemble(c, g, root=None, dest=None):
-            return archive, [gid], [gid]
+        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None):
+            return archive, [gid], "SID1"
         def unpack(args, **kw):
             with zipfile.ZipFile(archive) as z: z.extractall(args[-1])
             import subprocess
@@ -425,6 +425,12 @@ class LogCauses(JobCase):
                                      "【红】01007EF00011E000 刷新停在 sysdata 阶段（rc=1），现行 = 01007EF00011E000@ex-b3eed688"])
         self.assertEqual(error.code, "permission_denied")
         self.assertEqual(d["suggestion"], RECOVERY["permission_denied"])
+
+    def test_windows_precheck_missing_metal_says_metal_unavailable(self):
+        # 11-09 Windows 出包机：S2A_METAL_BIN 指到不存在的目录，预检打「环境缺件 metal」、退 75。原先落成笼统的 package_failed（出包未完成）
+        error, d = self.mac_refresh(["【红】环境缺件 metal：Metal Developer Tools（D:\\no_such_metal\\bin；S2A_METAL_BIN 可指定，否则查 PATH / 官方安装目录）",
+                                     self.STOP])
+        self.assertEqual(error.code, "metal_unavailable")
 
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
         # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，

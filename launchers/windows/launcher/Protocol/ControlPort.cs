@@ -158,7 +158,7 @@ public sealed class ControlPort : IDisposable
 public static class ControlJournal
 {
     private static readonly HashSet<string> Visible = new(StringComparer.Ordinal)
-        { "install", "installRemove", "import", "keys", "ipa", "moveGame", "setup" };
+        { "install", "installRemove", "installRestore", "import", "keys", "ipa", "moveGame", "setup" };
 
     // 进程被强制结束时作业层来不及写终态：记录还是 running 而进程已不在，要按中断报，否则 s2armctl 一直等
     private static JsonElement Reconcile(JsonElement task)
@@ -176,11 +176,12 @@ public static class ControlJournal
         catch (Exception error) when (error is ArgumentException or InvalidOperationException) { return false; }
     }
 
-    public static List<JsonElement> Tasks(string privateRoot, int limit = 60)
+    /// <summary>作业记录在 LibraryPaths.JobsDir（库\logs\jobs，库没建好时 私有目录\logs\jobs）；library 不给就读设置。</summary>
+    public static List<JsonElement> Tasks(string privateRoot, int limit = 60, string? library = null)
     {
         var found = new List<(double Started, JsonElement Task)>();
         string[] files;
-        try { files = Directory.GetFiles(Path.Combine(privateRoot, "jobs"), "*.json"); }
+        try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot, library), "*.json"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
         foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase)))
         {

@@ -172,3 +172,43 @@ nonisolated(unsafe) private var lastPlayed = ""
     model.resetIdentity(a)
     #expect(model.games[0].game.title == "原名一" && store.load(a) == nil)
 }
+
+// 名字和封面一次提交（审计 P2-221）：提交点失败时两样都不变、编辑页不关并给原因；存成后旧封面才删。期望值手写
+@MainActor @Test func gameIdentitySaveIsAllOrNothing() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let json = #"{"schema":1,"games":[{"title_id":"0100000000000001","name":"原名一"}]}"#
+    let catalogue = Catalogue.parse(Data(json.utf8), baseDirectory: root)
+    let store = GameIdentityStore(root: root)
+    let a = "0100000000000001"
+    let folder = root.appendingPathComponent("games/\(a)", isDirectory: true)
+    func covers() -> [String] { ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasPrefix("identity-cover") }.sorted() }
+
+    // 早先版本留下的固定名封面照样认；换新封面后它被删、只剩一份
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data([1, 2, 3]).write(to: folder.appendingPathComponent("identity-cover.jpg"))
+    #expect(store.load(a)?.cover?.lastPathComponent == "identity-cover.jpg")
+    try store.save(a, name: "名一", cover: Data([4, 5]))
+    #expect(covers().count == 1 && covers() != ["identity-cover.jpg"])
+    #expect(store.load(a)?.name == "名一" && store.load(a)?.cover.flatMap { try? Data(contentsOf: $0) } == Data([4, 5]))
+    // 只改名字：封面沿用
+    try store.save(a, name: "名二", cover: nil)
+    #expect(store.load(a)?.name == "名二" && store.load(a)?.cover.flatMap { try? Data(contentsOf: $0) } == Data([4, 5]) && covers().count == 1)
+
+    // 提交点失败：identity.json 的位置被一个非空目录占着，原子替换必然失败
+    try FileManager.default.removeItem(at: folder)
+    try FileManager.default.createDirectory(at: folder.appendingPathComponent("identity.json/x", isDirectory: true), withIntermediateDirectories: true)
+    let model = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    model.change(a, S2ArmGameSettings.identity, S2ArmGameSettings.editIdentity)
+    model.saveIdentity(a, name: "新名", cover: Data([9]))
+    #expect(model.editingIdentity == a, "没存成：编辑页不关")
+    #expect(model.identityError?.isEmpty == false, "给编辑页显示原因")
+    #expect(covers().isEmpty, "新封面没留下半套")
+    #expect(store.load(a) == nil && model.games[0].game.title == "原名一", "名字也没变")
+    // 负对照：挡路的东西挪走后同样的保存成功、关页、清掉原因
+    try FileManager.default.removeItem(at: folder.appendingPathComponent("identity.json"))
+    model.saveIdentity(a, name: "新名", cover: Data([9]))
+    #expect(model.editingIdentity == nil && model.identityError == nil && model.games[0].game.title == "新名" && covers().count == 1)
+    model.resetIdentity(a)
+    #expect(covers().isEmpty && store.load(a) == nil)
+}

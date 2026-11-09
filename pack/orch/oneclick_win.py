@@ -66,11 +66,14 @@ def mixed(p):   # Windows 原生 Python 与 Git Bash 都认的写法（R:/a/b）
     return str(p).replace('\\', '/')
 
 
-def metal_exe():
-    """Windows Metal：显式目录优先，再查 PATH，最后用官方安装目录；显式配置无效时不另选一份。"""
-    configured = os.environ.get('S2A_METAL_BIN')
+def metal_exe(environ=None):
+    """Windows Metal：显式目录优先，再查玩家的 PATH，最后用官方安装目录；显式配置无效时不另选一份。
+    玩家的 PATH：随包 s2arm_env.cmd 把作业 PATH 换成只含随包工具，换之前存进 S2A_USER_PATH（11-09 Windows 出包机实测 #137 合入后：
+    只设 PATH 的自定义安装在启动器里照样用默认目录），有它就查它。作业层（core.env）在父进程按这里选一次，显式写成子进程的 S2A_METAL_BIN"""
+    e = os.environ if environ is None else environ
+    configured = e.get('S2A_METAL_BIN')
     if configured: return Path(configured) / 'metal.exe'
-    found = shutil.which('metal.exe')
+    found = shutil.which('metal.exe', path=e.get('S2A_USER_PATH') or e.get('PATH'))
     # PATH 可以含相对目录；后续编译在仓库目录运行，传给子进程前固定为绝对路径。
     return Path(found).absolute() if found else Path(r'C:\Program Files\Metal Developer Tools\bin') / 'metal.exe'
 
@@ -366,7 +369,10 @@ def stages(run, game, x, src_dir, own=False):
     roots = run.out / 'roots'
     # S2A_SEED_AOC=1：同 Mac 一键出包（pack/oneclick/oneclick.sh 私有产物根）——解包目录里的追加内容播进产物根。Switch 2 导出（ns2_dump）的 DLC 只在解包目录里、
     #   没有原件 NSP 给 aoc 阶段解，不播就整份丢（11-05 Windows 出包机金刚：导出 DLC 1 个 7270 文件 958 MB，产物根 / 资源包里都没有，直连库并集 15150 对 Mac 包 21036）
-    env = dict(os.environ, PYTHONUTF8='1', S2A_GAME_SRC=str(src_dir), S2A_SEED_AOC='1')
+    # 轻阶段里的追加内容解包（pack/orch/stages.py _nxu）用本单选定的同一份 nx_unpack：原先它自己去 <S2A_RUN_ROOT>/s2arm/bin 找、找不到又只肯 --no-restore 现编，
+    #   而本单解包步编在 run.out/bin（11-09 Windows 出包机 GRID 两单：nx_unpack 源码改了、身份变了，解包步现编成功、轻阶段退 75「离线还原资产未就绪」）。
+    #   选一次（预编件 → 已编的 → 现编），显式交下去，两处不再各认各的目录
+    env = dict(os.environ, PYTHONUTF8='1', S2A_GAME_SRC=str(src_dir), S2A_SEED_AOC='1', S2A_NX_UNPACK=str(nx_unpack(run)))
     run.step('播种', lambda: run.sh([PY, '-X', 'utf8', '-m', 'pack.orch.refresh', game, '--roots', str(roots), '--from-extract', str(x), *(['--move-romfs'] if own else []), '--stages', ''], 'seed.log', env=env))
     # RomFS 索引阶段按合同 --no-restore 编（不在阶段里悄悄下载）：新检出的代码树（Windows 出包机道按提交新建，11-05 海贼无双4 联调退 75）先在这里还原一次；
     #   包都在本机 NuGet 全局缓存里时不联网，缺包才会去源取
