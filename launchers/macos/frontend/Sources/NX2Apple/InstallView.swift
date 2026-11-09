@@ -45,6 +45,8 @@ struct InstallView: View {
                     if job.kind == .install, [3, 4].contains(job.progress.index ?? 0) {
                         Text(text("install.keychain")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
+                    // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在装到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
+                    HStack { Spacer(); Button(text("install.background")) { dismiss() }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.background") }
                 }
                 .padding(.horizontal, 30).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
