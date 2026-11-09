@@ -565,7 +565,7 @@ uint64_t mtl_sub_commit(void) {
         if (clone_append((const uint8_t *)&end, sizeof end) == 0) {
             struct shim_flat *sh = (struct shim_flat *)malloc(sizeof *sh);
             if (sh) {
-                sh->buf = NULL; sh->len = 0;
+                sh->buf = NULL; sh->len = 0; sh->fence = f;
                 sh->buf = s2a_record_flat_take(&sh->len);   // 定稿：落记录内地址并把所有权交出来
                 if (sh->buf && shim_enqueue(job_flat, sh) == 0) {
                     queued = 1;
