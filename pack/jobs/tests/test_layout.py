@@ -166,7 +166,7 @@ class LocationTests(JobCase):
         self.assertEqual(layout.find_game(self.fresh(), A), back)
 
     def test_cross_volume_move_keeps_links_as_links(self):
-        """跨卷移动不把链接展开（Windows junction 同理，天眼实跑另验）：产物根的「现行」这类相对链接原样；指向文件夹内部的绝对链接改指新位置"""
+        """跨卷移动不把链接展开（Windows junction 同理，Windows 实机另验）：产物根的「现行」这类相对链接原样；指向文件夹内部的绝对链接改指新位置"""
         d = layout.game_dir(self.c, A)
         root = d / "build" / "k" / "roots"; (root / "t@pkg").mkdir(parents=True); (root / "t@pkg" / "main.npdm").write_bytes(b"n")
         (root / "t@现行").symlink_to("t@pkg")                                   # 相对
@@ -210,7 +210,7 @@ class VolumeNameTests(unittest.TestCase):
             with self.subTest(path=path), patch.object(library.os, "name", "nt"), patch.dict(os.environ, {"SystemDrive": "C:"}), \
                  patch.object(library, "_win_volume_label", return_value=label):
                 self.assertEqual(library._volume(path), want)
-        self.assertEqual(library._volume("/Volumes/移动硬盘/S2Arm"), "移动硬盘")
+        self.assertEqual(library._volume(os.path.join(os.sep, "Volumes", "移动硬盘", "S2Arm")), "移动硬盘")
 
 
 if __name__ == "__main__":
