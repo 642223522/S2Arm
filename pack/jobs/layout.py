@@ -238,8 +238,9 @@ def move_game(c, gid, dest_root, progress=None):
 
 
 def _move_folder(c, gid, src, dest_root):
-    """把一个游戏文件夹搬进 <dest_root>/games/：同一卷改名；跨卷拷到 .partial、逐文件核对大小与摘要再换名、删旧的"""
-    from core import digest
+    """把一个游戏文件夹搬进 <dest_root>/games/：同一卷改名；跨卷拷到 .partial（链接拷链接本身，library.copy_tree_links）、
+    核对（存档逐字节、其余文件数与大小，同整库搬家 library._verify_copy）再换名、删旧的，最后把指向旧位置的链接改指新位置"""
+    from library import _retarget_links, _verify_copy, copy_tree_links
     if dest_root != c.library:
         register_location(c, dest_root)
     g = games_root(c, dest_root); g.mkdir(parents=True, exist_ok=True)
@@ -249,15 +250,18 @@ def _move_folder(c, gid, src, dest_root):
     else:
         temporary = dest.with_name(dest.name + ".partial")
         shutil.rmtree(temporary, ignore_errors=True)
-        shutil.copytree(src, temporary, symlinks=True)
-        for f in src.rglob("*"):
-            if f.is_file() and not f.is_symlink():
-                t = temporary / f.relative_to(src)
-                if not t.is_file() or t.stat().st_size != f.stat().st_size or digest(t) != digest(f):
-                    shutil.rmtree(temporary, ignore_errors=True)
-                    raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）：" + str(f.relative_to(src)), code="job_failed")
+        try:
+            copy_tree_links(src, temporary)
+            _verify_copy(src, temporary, strict=False)
+            for sub in ("saves", "save-backups"):
+                if (src / sub).is_dir():
+                    _verify_copy(src / sub, temporary / sub, strict=True)
+        except Failure:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）。", code="job_failed")
         os.replace(temporary, dest)
         shutil.rmtree(src)
+    _retarget_links(dest, src, dest)
     return dest
 
 

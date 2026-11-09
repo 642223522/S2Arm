@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -163,6 +164,19 @@ class LocationTests(JobCase):
             back = layout.move_game(self.c, A, self.c.library)
         self.assertEqual((back / "saves" / "s.dat").read_text(), "存档"); self.assertFalse(moved.exists())
         self.assertEqual(layout.find_game(self.fresh(), A), back)
+
+    def test_cross_volume_move_keeps_links_as_links(self):
+        """跨卷移动不把链接展开（Windows junction 同理，天眼实跑另验）：产物根的「现行」这类相对链接原样；指向文件夹内部的绝对链接改指新位置"""
+        d = layout.game_dir(self.c, A)
+        root = d / "build" / "k" / "roots"; (root / "t@pkg").mkdir(parents=True); (root / "t@pkg" / "main.npdm").write_bytes(b"n")
+        (root / "t@现行").symlink_to("t@pkg")                                   # 相对
+        (d / "abs-link").symlink_to(root / "t@pkg")                            # 绝对、指向文件夹内部
+        with patch.object(layout, "_same_volume", return_value=False):
+            moved = layout.move_game(self.c, A, self.disk)
+        r = moved / "build" / "k" / "roots"
+        self.assertTrue((r / "t@现行").is_symlink()); self.assertEqual(os.readlink(r / "t@现行"), "t@pkg")
+        self.assertTrue((moved / "abs-link").is_symlink()); self.assertEqual(Path(os.readlink(moved / "abs-link")), r / "t@pkg")
+        self.assertEqual((r / "t@现行" / "main.npdm").read_bytes(), b"n")
 
     def test_last_used_location_is_default_for_new_games(self):
         layout.use_location(self.c, self.disk)

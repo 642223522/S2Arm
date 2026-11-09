@@ -370,6 +370,27 @@ def _verify_copy(src, dst, strict):
             raise Failure(f"拷到新位置后校验不一致：{rel}", code="library_move_failed")
 
 
+def copy_tree_links(src, dst):
+    """跨盘拷一棵目录，链接拷链接本身、不钻进去：软链照拷；Windows 的 junction（Python 里不算软链，shutil.copytree 会钻进去展开成普通目录，
+    产物根的「现行」随之失效、出包报「现行必须是目录链接」——#214 整库搬家与 v3 移动游戏同一处）重建成指向同一目标的 junction。
+    目标仍指旧位置；放到新位置后由 _retarget_links 改指"""
+    src, dst = Path(src), Path(dst)
+    isjunction = getattr(os.path, "isjunction", lambda _: False)
+    def copy(a, b):
+        if isjunction(a):
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(b), os.readlink(a).removeprefix("\\\\?\\")], check=True, capture_output=True)
+        elif a.is_symlink():
+            os.symlink(os.readlink(a), b, target_is_directory=a.is_dir())
+        elif a.is_dir():
+            b.mkdir()
+            for child in a.iterdir():
+                copy(child, b / child.name)
+            shutil.copystat(a, b)
+        else:
+            shutil.copy2(a, b)
+    copy(src, dst)
+
+
 def _retarget_links(root, old, new):
     """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置"""
     if not root.is_dir():
@@ -457,8 +478,8 @@ def move_library(c, source):
                 c.check()
                 target = stage / str(n)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if a.is_dir() and not a.is_symlink():
-                    shutil.copytree(a, target, symlinks=True)
+                if a.is_dir() and not _is_link(a):
+                    copy_tree_links(a, target)
                 else:
                     shutil.copy2(a, target, follow_symlinks=False)
                 _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
