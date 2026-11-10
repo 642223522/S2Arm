@@ -30,7 +30,12 @@ import filelock
 import layout
 import sizes
 
-DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
+# 诊断包里的日志整份放（zip 压缩，文本约 10 倍）：一份超过 DIAGNOSTIC_LOG_LIMIT 才截，截时留开头 1/8、结尾 7/8（崩溃、存档前后的读数多在后段），
+#   中间另捞心跳行与最后一次崩溃现场，manifest.json 的 truncated 写明每份原长、留了多少、截掉多少。
+#   原先每份只留头尾各 16 KB + 心跳行，帧读数整段丢，玩家只能再传完整日志（#41）
+DIAGNOSTIC_LOG_LIMIT = 200 << 20     # 单份原文上限（压缩后约 20 MB）
+DIAGNOSTIC_LOG_HEAD = DIAGNOSTIC_LOG_LIMIT // 8
+DIAGNOSTIC_LOG_TAIL = DIAGNOSTIC_LOG_LIMIT - DIAGNOSTIC_LOG_HEAD
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
 DIAGNOSTIC_LOG_SCAN = 64 << 20       # 只在结尾前这么大的范围里找心跳行
 DIAGNOSTIC_LOG_CHUNK = 1 << 20
@@ -85,15 +90,33 @@ def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
     return b"\n".join(keep)
 
 
-def diagnostic_log_excerpt(source, size):
-    """诊断包里的日志：短的整份；长的留开头（起局配置）+ 中间的心跳行（卡顿、内存走势）+ 中间最后一次崩溃摘要与全线程现场 + 结尾。总量有界。"""
-    edge = DIAGNOSTIC_LOG_EDGE
-    if size <= 2 * edge:
-        return source.read(2 * edge)
-    head = source.read(edge)
-    start = max(edge, size - edge - DIAGNOSTIC_LOG_SCAN)
-    source.seek(start)
-    beats, used, partial, left = collections.deque(), 0, b"", size - edge - start
+def _line_head(source, limit):
+    """读开头至多 limit 字节，截在最后一个换行后（不把一行拦腰截断）"""
+    data = source.read(limit)
+    cut = data.rfind(b"\n")
+    return data[:cut + 1] if cut >= 0 else data
+
+
+def diagnostic_log_chunks(source, size, head=None, tail=None):
+    """诊断包里一份日志的内容，按块给出（调用方逐块脱敏、写进 zip，不整份进内存）。不超 head + tail 整份；超了：开头 head（截在行尾）
+    + 中间的心跳行与最后一次崩溃摘要、全线程现场 + 结尾 tail（从行首起）。最后一块之后返回 (留下的字节, 截掉的字节)，经 StopIteration.value 取"""
+    head = DIAGNOSTIC_LOG_HEAD if head is None else head
+    tail = DIAGNOSTIC_LOG_TAIL if tail is None else tail
+    if size <= head + tail:
+        kept = 0
+        while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+            kept += len(chunk); yield chunk
+        return kept, 0
+    first = _line_head(source, head)
+    kept = len(first); yield first
+    tail_start = size - tail
+    source.seek(tail_start - 1)
+    if source.read(1) != b"\n":   # 结尾段从下一行行首起
+        probe = source.read(min(DIAGNOSTIC_LOG_CHUNK, tail))
+        nl = probe.find(b"\n")
+        tail_start += nl + 1 if nl >= 0 else 0
+    source.seek(len(first))
+    beats, used, partial, left = collections.deque(), 0, b"", tail_start - len(first)
     scene = _Scene()
     while left > 0:
         chunk = source.read(min(DIAGNOSTIC_LOG_CHUNK, left))
@@ -111,14 +134,22 @@ def diagnostic_log_excerpt(source, size):
                 used += len(line) + 1
                 while used > DIAGNOSTIC_LOG_BEATS:
                     used -= len(beats.popleft()) + 1
-    source.seek(size - edge)
-    tail = source.read(edge)
+    if partial and len(partial) < 4096: scene.feed(partial)
+    omitted = tail_start - len(first)
     gap = lambda text: f"\n…（{text}）…\n".encode()
-    if partial and len(partial) < 4096: scene.feed(partial)   # 扫描区最后一行没有换行（紧挨着结尾段）
-    mid = b""
+    mid = gap(f"日志共 {size} 字节，超过 {DIAGNOSTIC_LOG_LIMIT >> 20} MB 上限，中间截掉 {omitted} 字节，只保留其中 {len(beats)} 行心跳") + b"\n".join(beats)
     if scene.last:
-        mid = gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)
-    return head + gap(f"日志共 {size} 字节，中间只保留 {len(beats)} 行心跳") + b"\n".join(beats) + mid + gap("以下是日志结尾") + tail
+        mid += gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)
+    yield mid + gap("以下是日志结尾")
+    source.seek(tail_start)
+    while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+        kept += len(chunk); yield chunk
+    return kept, omitted
+
+
+def diagnostic_log_excerpt(source, size, head=None, tail=None):
+    """diagnostic_log_chunks 拼成一份（单测用）"""
+    return b"".join(diagnostic_log_chunks(source, size, head, tail))
 
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20
@@ -2334,6 +2365,11 @@ def diagnostics(c):
                             return
                         if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                             raise Failure("诊断文件在导出期间发生变化，请重试。")
+                        stem, suffix = os.path.splitext(member)
+                        # Archive separators are known structure, not email local-part characters.
+                        public_member = "/".join(redact_member_component(part) for part in stem.split("/")) + suffix
+                        if public_member in archive.namelist() or public_member == "manifest.json":
+                            raise Failure("脱敏后的诊断文件名重复，未生成诊断包。")
                         if job:
                             limit = DIAGNOSTIC_JOB_LIMIT
                             if opened.st_size > limit:
@@ -2341,18 +2377,33 @@ def diagnostics(c):
                             data = source.read(limit + 1)
                             if len(data) > limit:
                                 raise Failure("诊断任务文件超过 4 MiB 上限，未生成诊断包。")
-                        else:
-                            data = diagnostic_log_excerpt(source, opened.st_size)
-                    stem, suffix = os.path.splitext(member)
-                    # Archive separators are known structure, not email local-part characters.
-                    public_member = "/".join(redact_member_component(part) for part in stem.split("/")) + suffix
-                    if public_member in archive.namelist() or public_member == "manifest.json":
-                        raise Failure("脱敏后的诊断文件名重复，未生成诊断包。")
-                    # These allowlisted job/log files are text. Invalid UTF-8 is
-                    # replaced, never copied as raw bytes around redaction.
-                    archive.writestr(public_member, redact(data.decode(errors="replace")))
+                            # These allowlisted job/log files are text. Invalid UTF-8 is
+                            # replaced, never copied as raw bytes around redaction.
+                            archive.writestr(public_member, redact(data.decode(errors="replace")))
+                            return
+                        # 日志：逐块脱敏、流式写进 zip（整份可达上百 MB，不整份进内存）。块在换行处切开，脱敏规则不会碰到半行
+                        chunks = diagnostic_log_chunks(source, opened.st_size)
+                        with archive.open(public_member, "w", force_zip64=True) as out:
+                            carry = b""
+                            while True:
+                                try:
+                                    piece = next(chunks)
+                                except StopIteration as done:
+                                    kept, omitted = done.value
+                                    break
+                                c.check()
+                                piece = carry + piece
+                                cut = piece.rfind(b"\n") + 1
+                                carry, piece = (piece[cut:], piece[:cut]) if cut else (piece, b"")
+                                if piece:
+                                    out.write(redact(piece.decode(errors="replace")).encode())
+                            if carry:
+                                out.write(redact(carry.decode(errors="replace")).encode())
+                        if omitted:
+                            truncated.append(dict(file=public_member, bytes=opened.st_size, kept=kept, omitted=omitted))
 
                 step = "读日志与任务记录"
+                truncated = []
                 if roots["jobs"] is not None:
                     for name in sorted(winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
                         if name.endswith(".json"):
@@ -2387,6 +2438,7 @@ def diagnostics(c):
                 # These names have already been sanitized; redacting them again
                 # would hide task UUIDs and break the archive index.
                 manifest["files"] = sorted(archive.namelist() + ["manifest.json"])
+                manifest["truncated"] = truncated   # 超过单份上限被截的日志：原长、留下、截掉的字节（空 = 全部整份）
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         c.check()
         step = "把诊断包放到所选位置"
