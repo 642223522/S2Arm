@@ -309,8 +309,8 @@ class ControlPlaneTests(unittest.TestCase):
             child.wait(timeout=10)
 
     def test_prune_keeps_request_only_task_as_running(self):
-        jobs = self.private / "jobs"
-        jobs.mkdir()
+        jobs = self.jobs_dir("queued")
+        jobs.mkdir(parents=True)
         request = jobs / "queued.request.json"
         request.write_text('{"schema":1,"operation":"setup"}')
         before = request.read_bytes()
@@ -393,7 +393,7 @@ class ControlPlaneTests(unittest.TestCase):
 
     def test_status_reports_bad_journals_and_still_counts_healthy_jobs(self):
         self.finish_task("healthy")
-        jobs = self.private / "jobs"
+        jobs = self.jobs_dir("healthy")
         broken = {"truncated": b"{", "encoding": b"\xff", "array": b"[]", "null": b"null",
                   "foreign": b'{"id":"another-task","state":"completed"}'}
         for name, content in broken.items():
@@ -415,7 +415,7 @@ class ControlPlaneTests(unittest.TestCase):
             path.write_bytes(content)
             for file in path.parent.glob(name + ".*"):
                 snapshots[file] = file.read_bytes()
-        result = self.cli("prune", "--private-root", self.private, "--keep-count", 0, "--keep-days", 0)
+        result = self.cli("prune", "--private-root", self.private, "--keep-count", 0, "--keep-days", 0, *NO_FLOOR)
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["removed"], ["healthy"])
