@@ -768,6 +768,7 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     if (nvn_vk_format_is_depth(f)) out |= NVN_GPU_FMT_DEPTH;
     if (o & VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT) out |= NVN_GPU_FMT_ATOMIC;
     if (o & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) out |= NVN_GPU_FMT_VERTEX;
+    if (nvn_vk_format_substituted(nvn_format)) out |= NVN_GPU_FMT_SUBST;   // #398：D24 换 D32 存储
     if (expand) {
         out |= NVN_GPU_FMT_SUBST;   // 存储被换成展开目标，逐字节拷贝要核心换算
         VkFormat sf = nvn_vk_format(nvn_format);
@@ -3136,14 +3137,19 @@ void nvn_gpu_samp_release(nvn_gpu_samp sh) {
 }
 
 // 线性内容上传 / 缓冲 ↔ 贴图拷贝。全部在通道外，按 GPU 顺序执行。
-void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
-                          nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r) {
+// depth_f32：#398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面。
+static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
+                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int depth_f32) {
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     struct nvn_gpu_tex_s *t = th;
     struct nvn_gpu_buf_s *b = bh;
-    uint32_t bpp = t ? fmt_bpp(t->format) : 0;
+    if (t && !depth_f32 && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
+        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）的缓冲字节不能直接拷（0x%x），走 nvn_gpu_tex_upload", t->nvn_format);
+        return;
+    }
+    uint32_t bpp = depth_f32 ? 4 : t ? fmt_bpp(t->format) : 0;
     VkOffset3D o;
     VkExtent3D e;
     NVNcopyRegion rr;
@@ -3168,13 +3174,19 @@ void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / bpp);
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? e.height : (uint32_t)(image_bytes / row_bytes);
-    bc.imageSubresource = (VkImageSubresourceLayers){t->aspect, level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
+    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect, level,
+                                                     t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
     bc.imageExtent = e;
     vkCmdCopyBufferToImage(c->cb, b->buffer, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bc);
     image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL);   // 之后按采样 / 存储使用；本段统一用 GENERAL
     cmd_ref(c, b, REF_BUF);
     cmd_ref(c, t, REF_TEX);
+}
+
+void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
+                          nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r) {
+    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, 0);
 }
 
 void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
@@ -3187,6 +3199,10 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     nvn_fmt_info fi;
     if (t && nvn_fmt_info_of(t->nvn_format, &fi) && fi.expand) {
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "展开格式回读未实现（0x%x）", t->nvn_format);
+        return;
+    }
+    if (t && nvn_vk_format_substituted(t->nvn_format)) {
+        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）按字节回读未实现（0x%x）", t->nvn_format);
         return;
     }
     uint32_t bpp = t ? fmt_bpp(t->format) : 0;
@@ -3229,10 +3245,12 @@ void nvn_gpu_copy_tex(nvn_gpu_cmd ch, nvn_gpu_tex sh, uint32_t slevel, uint32_t 
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     struct nvn_gpu_tex_s *s = sh, *d = dh;
-    uint32_t bpp = s ? fmt_bpp(s->format) : 0;
+    // 两边同一 VkFormat 才拷；D32S8 不在 fmt_bpp 表里（每纹素两个面），同格式深度模板整面拷贝合法，
+    // 一并放行（#398：D24S8 换成 D32S8 后贴图间拷贝照旧可用）。
+    const int fmt_ok = s && d && s->format == d->format && (fmt_bpp(s->format) || nvn_vk_format_is_depth(s->format));
     VkOffset3D so, dof;
     VkExtent3D se, de;
-    if (!s || !d || !bpp || bpp != fmt_bpp(d->format) || s->format != d->format || slayer >= s->layers ||
+    if (!fmt_ok || slayer >= s->layers ||
         dlayer >= d->layers || copy_region(s, slevel, sr, &so, &se) || copy_region(d, dlevel, dr, &dof, &de) ||
         se.width != de.width || se.height != de.height || se.depth != de.depth) {
         set_sticky(c, NVN_GPU_E_ARG, "copy_tex 参数非法（格式 / 尺寸 / 范围）");
@@ -3341,6 +3359,12 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
             return;
         }
         nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, out_row, out_bytes, th, level, layer, r);
+    } else if (nvn_vk_format_substituted(t->nvn_format)) {
+        // #398：D24 换成 D32 存储。按原 D24 深度面口径（每纹素 4 字节，低 24 位 UNORM）换成 float 再传深度面。
+        if (row_bytes & 3) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24 行宽未 4 对齐"); return; }
+        memcpy(sl.cpu, src, (size_t)image_bytes);
+        nvn_vk_depth24_to_f32(sl.cpu, (size_t)image_bytes / 4);
+        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, 1);
     } else {
         memcpy(sl.cpu, src, (size_t)image_bytes);
         nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);

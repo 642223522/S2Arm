@@ -278,7 +278,7 @@ public sealed partial class EnvironmentWindow
 
     private TextBlock Muted(string text, double size = 13) => new()
     {
-        Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1")
+        Text = B(text), FontSize = size, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1")
     };
 
     private Control GameHeader(LibraryGame game)
@@ -358,6 +358,7 @@ public sealed partial class EnvironmentWindow
         }
         body.Children.Add(tiles);
         body.Children.Add(LocationRow(game));
+        if (exportIos) body.Children.Add(DevCertRow());   // 签名方式（v0.2.4，DevCertPage.cs）
 
         // action bar
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
@@ -823,7 +824,7 @@ public sealed partial class EnvironmentWindow
             row.Children.Add(markLbl);
 
             var content = new StackPanel { Spacing = 4 };
-            var nameLbl = Label((k + 1) + ". " + m.Label, isRunning ? 16 : 14);
+            var nameLbl = Label((k + 1) + ". " + B(m.Label), isRunning ? 16 : 14);
             if (isRunning) nameLbl.FontWeight = FontWeight.Bold;
             if (!isDone && !isRunning) nameLbl.Foreground = Brush.Parse("#8C8A85");
             content.Children.Add(nameLbl);

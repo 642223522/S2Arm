@@ -1,6 +1,6 @@
 """推资源包（tools/push_pack.py，Mac / Windows 共用，11-06 两端合一）：假设备（内存里的 App 容器）上核口径。期望按文件头规则手写，不跑被测实现推导。
 Mac 的整条 dev_run 推包回归（假 devicectl）在 tests/dev_run_test.sh，本文件只核规则本身与 Windows 那支（原 tests/oneclick_win_test.py 推包几组搬来）"""
-import hashlib, json, struct, sys, tempfile, unittest
+import hashlib, json, os, struct, sys, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import push_pack as push
@@ -207,6 +207,44 @@ class Apply(Base):
     def test_locked_all_along_says_unlock(self):   # 一直锁着：需要玩家操作，原因说锁屏
         r, t, _ = self.locked_then()
         self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
+
+    MAC_LOCKED = """ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x2712))
+       BundleIdentifier = io.s2arm.x
+           The request to open "io.s2arm.x" failed. (FBSOpenApplicationServiceErrorDomain error 1 (0x01))
+           BSErrorCodeDescription = RequestDenied
+           NSLocalizedFailureReason = The request was denied by service delegate (SBMainWorkspace) for reason: Locked ("Unable to launch io.s2arm.x because the device was not, or could not be, unlocked").
+               NSLocalizedFailureReason = Unable to launch io.s2arm.x because the device was not, or could not be, unlocked.
+               BSErrorCodeDescription = Locked
+See 'devicectl device process launch --help' for more information.
+"""
+
+    def test_mac_devicectl_locked_is_recognized(self):   # 11-10 Mac 锁屏实测：devicectl 末行是 --help 提示，锁屏原因在 NSLocalizedFailureReason 行
+        reason = push.launch_reason(self.MAC_LOCKED, 1)
+        self.assertIn("could not be, unlocked", reason)
+        self.assertNotIn("--help", reason)
+        self.assertEqual(push.launch_reason("", 3), "3")
+        self.assertEqual(push.launch_reason("ERROR: boom\nSee 'devicectl --help'\n", 1), "See 'devicectl --help'")   # 没有原因行照旧取末行
+        dev = Fake({}); self.dev = dev; clock = [0.0]
+        def launch(env): raise push.Fail("起 App 失败：" + push.launch_reason(self.MAC_LOCKED, 1))
+        dev.launch = launch
+        def sleep(x): clock[0] += x
+        try: r = push.apply(dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        except push.Fail as e: r = e
+        self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
+        self.assertIn(f"资源包已传完。{push.LOCKED_WAIT}", self.log)
+
+    def test_mac_launch_without_env_omits_flag(self):   # 多款容器拉起到游戏库 env 为空：devicectl 收 '{}' 会拒，得不带这个参数（11-10 测试设备实测）
+        import stat
+        argv = Path(self.w) / "argv.txt"; fake = Path(self.w) / "devicectl"
+        fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + str(argv) + "'\n"
+                        "for a in \"$@\"; do [ \"$a\" = '{}' ] && { echo 'Error: Unable to decode environment variables.' >&2; exit 64; }; done\nexit 0\n")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        d = push.Devicectl("DEV", "io.s2arm.x", self.w, env=dict(os.environ, S2A_DEVICECTL=str(fake)))
+        d.launch({})
+        args = argv.read_text().split("\n")
+        self.assertNotIn("--environment-variables", args); self.assertIn("io.s2arm.x", args)
+        d.launch({"S2A_PACK_APPLY_ONLY": "1"})   # 单款只解包照旧带
+        self.assertIn('{"S2A_PACK_APPLY_ONLY": "1"}', argv.read_text().split("\n"))
 
     def test_no_tunnel_says_developer_mode(self):   # s2a-devpush 建不了隧道（CoreDeviceProxy 连不上）：原因只说开发者模式
         dev = Fake({}); self.dev = dev; clock = [0.0]

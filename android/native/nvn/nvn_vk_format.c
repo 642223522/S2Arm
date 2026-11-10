@@ -8,6 +8,44 @@
 #include <stdio.h>
 #include <string.h>
 
+// #398：设备缺 D24 深度附件时的换格式（参照 Mac 后端「D24 换 D32」）。进程内同时只有一台 Vulkan 设备
+// （vk_device.c 建设备时按格式能力设一次）；默认 0 = 照原样映射。
+static uint32_t g_depth_subst;
+
+uint32_t nvn_vk_depth_subst_pick(VkFormatFeatureFlags d24s8, VkFormatFeatureFlags d32s8,
+                                 VkFormatFeatureFlags x8d24, VkFormatFeatureFlags d32) {
+    const VkFormatFeatureFlags att = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    uint32_t m = 0;
+    if (!(d24s8 & att) && (d32s8 & att)) m |= NVN_VK_DEPTH_SUBST_D24S8;
+    if (!(x8d24 & att) && (d32 & att)) m |= NVN_VK_DEPTH_SUBST_X8D24;
+    return m;
+}
+void nvn_vk_format_set_depth_subst(uint32_t mask) { g_depth_subst = mask; }
+uint32_t nvn_vk_format_depth_subst(void) { return g_depth_subst; }
+int nvn_vk_format_substituted(uint32_t f) {
+    return (f == NVN_FORMAT_DEPTH24_STENCIL8 && (g_depth_subst & NVN_VK_DEPTH_SUBST_D24S8)) ||
+           (f == NVN_FORMAT_DEPTH24 && (g_depth_subst & NVN_VK_DEPTH_SUBST_X8D24));
+}
+
+// 换成 D32 存储后的深度面字节换算，口径与原 D24 深度面拷贝一致（每纹素 4 字节，低 24 位是 UNORM 深度）。
+void nvn_vk_depth24_to_f32(void *texels, size_t n) {
+    uint8_t *p = texels;
+    for (size_t i = 0; i < n; i++, p += 4) {
+        uint32_t v; memcpy(&v, p, 4);
+        float f = (float)((double)(v & 0xffffffu) / 16777215.0);
+        memcpy(p, &f, 4);
+    }
+}
+void nvn_vk_depth_f32_to_24(void *texels, size_t n) {
+    uint8_t *p = texels;
+    for (size_t i = 0; i < n; i++, p += 4) {
+        float f; memcpy(&f, p, 4);
+        double d = f != f ? 0.0 : f < 0.0f ? 0.0 : f > 1.0f ? 1.0 : (double)f;   // NaN 按 0
+        uint32_t v = (uint32_t)(d * 16777215.0 + 0.5);
+        memcpy(p, &v, 4);
+    }
+}
+
 VkFormat nvn_vk_tex_format(uint32_t f) {
     nvn_fmt_info info;
     if (!nvn_fmt_info_of(f, &info)) return VK_FORMAT_UNDEFINED;
@@ -68,9 +106,12 @@ VkFormat nvn_vk_format(uint32_t f) {
     case NVN_FORMAT_RGBA32I: return VK_FORMAT_R32G32B32A32_SINT;
     case NVN_FORMAT_STENCIL8: return VK_FORMAT_S8_UINT;
     case NVN_FORMAT_DEPTH16: return VK_FORMAT_D16_UNORM;
-    case NVN_FORMAT_DEPTH24: return VK_FORMAT_X8_D24_UNORM_PACK32;
+    // #398：设备没有 D24 深度附件（三星 Xclipse 只有 D16S8 / D32S8）时换 D32，见 nvn_vk_format_set_depth_subst。
+    case NVN_FORMAT_DEPTH24:
+        return (g_depth_subst & NVN_VK_DEPTH_SUBST_X8D24) ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_X8_D24_UNORM_PACK32;
     case NVN_FORMAT_DEPTH32F: return VK_FORMAT_D32_SFLOAT;
-    case NVN_FORMAT_DEPTH24_STENCIL8: return VK_FORMAT_D24_UNORM_S8_UINT;
+    case NVN_FORMAT_DEPTH24_STENCIL8:
+        return (g_depth_subst & NVN_VK_DEPTH_SUBST_D24S8) ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D24_UNORM_S8_UINT;
     case NVN_FORMAT_DEPTH32F_STENCIL8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
     case NVN_FORMAT_RGBA8_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
     case NVN_FORMAT_RGBA4: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;

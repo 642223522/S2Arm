@@ -65,6 +65,10 @@ static NSUserDefaults *controllerDefaults(void) {
     });
     return defaults;
 }
+// Joy-Con 2 左 / 右各自的震动特征（nd bluetooth_interface.md GATT 表）；上次就绪的型号跟标识一起记，重连时没有广播可认
+static NSString *const joyconLeftVibrationUUID = @"289326CB-A471-485D-A8F4-240C14F18241";
+static NSString *const joyconRightVibrationUUID = @"FA19B0FB-CD1F-46A7-84A1-BBB09E00C149";
+static NSString *const lastReadyKindKey = @"S2ArmNS2ProLastReadyKind";
 
 // 调用线程只更新固定 mailbox；CB 对象始终局限于串行队列，不逐请求创建 block。
 // Caller threads only update the fixed mailbox; CB objects stay on one serial queue, without a block per request.
@@ -138,6 +142,7 @@ typedef NS_ENUM(unsigned, NS2SoftState) {
     NSMutableDictionary<NSUUID *, NSNumber *> *retryAfter;
     dispatch_source_t timer;
     ns2_calibration calibration[2];
+    ns2_kind kind;   // Pro / Joy-Con 2 左 / 右（广播产品号；重连取上次就绪时记下的）
     NSUInteger step;
     NSData *pendingCommand;
     BOOL awaitingAck, subscribedResponse, streamReady, sessionFailed, preferReport09, imuEnabled, motionCommand;
@@ -199,6 +204,8 @@ static NS2Bridge *bridge;
     // Reuse only a real system identifier that completed initialization; retrieval does not scan, and invalid or absent results start discovery.
     NSString *saved = [controllerDefaults() stringForKey:lastReadyPeripheralKey];
     NSUUID *identifier = saved ? [[NSUUID alloc] initWithUUIDString:saved] : nil;
+    NSInteger savedKind = [controllerDefaults() integerForKey:lastReadyKindKey];
+    kind = savedKind == NS2_KIND_JOYCON_L || savedKind == NS2_KIND_JOYCON_R ? (ns2_kind)savedKind : NS2_KIND_PRO;   // 旧版只记 Pro
     // 其他同团队游戏可能刚释放前台；先接管系统仍持有的同一外设，不凭共同服务 UUID 选其他设备。
     // Match the remembered identifier before attaching to a peripheral already connected to the system.
     if (identifier) {
@@ -261,7 +268,7 @@ static NS2Bridge *bridge;
 - (void)resetLink {
     // 连接级状态必须整体失效；蓝牙断电后的旧 disconnect 回调可能不再匹配 device。
     // Invalidate all link state; after radio power loss the old disconnect callback may no longer match device.
-    reset_state(); device = nil; input = power = vibration = command = response = nil;
+    reset_state(); device = nil; input = power = vibration = command = response = nil; kind = NS2_KIND_NONE;
     pthread_mutex_lock(&stateMu); memset(&deviceInfo, 0, sizeof deviceInfo); pthread_mutex_unlock(&stateMu);
     pendingCommand = nil; awaitingAck = subscribedResponse = streamReady = sessionFailed = preferReport09 = NO;
     imuEnabled = motionCommand = NO;
@@ -390,12 +397,13 @@ static NS2Bridge *bridge;
     if (self != bridge || !scanRequested || !manager.isScanning || device || retryAfter[peripheral.identifier].unsignedLongLongValue > now_ns()) return;
     NSData *manufacturer = advertisement[CBAdvertisementDataManufacturerDataKey];
     const uint8_t *m = manufacturer.bytes;
-    BOOL pro = manufacturer.length >= 9 && m[0] == 0x53 && m[1] == 0x05 &&
-        m[5] == 0x7e && m[6] == 0x05 && m[7] == 0x69 && m[8] == 0x20;
-    // 无名称模糊匹配；若广播显式携带 Pro 专属 UUID，也可作为身份依据。
-    // Never match names heuristically; an explicitly advertised Pro-only UUID is also identity evidence.
-    for (CBUUID *uuid in advertisement[CBAdvertisementDataServiceUUIDsKey]) pro |= uuid_is(uuid, vibrationUUID);
-    if (!pro) return;
+    ns2_kind found = ns2_kind_from_manufacturer(m, manufacturer.length);   // Pro 0x2069、Joy-Con 2 左 0x2067 / 右 0x2066
+    // 无名称模糊匹配；若广播显式携带某型号专属的震动 UUID，也可作为身份依据。
+    // Never match names heuristically; an explicitly advertised model-specific rumble UUID is also identity evidence.
+    for (CBUUID *uuid in advertisement[CBAdvertisementDataServiceUUIDsKey]) if (found == NS2_KIND_NONE)
+        found = uuid_is(uuid, vibrationUUID) ? NS2_KIND_PRO : uuid_is(uuid, joyconLeftVibrationUUID) ? NS2_KIND_JOYCON_L : uuid_is(uuid, joyconRightVibrationUUID) ? NS2_KIND_JOYCON_R : NS2_KIND_NONE;
+    if (found == NS2_KIND_NONE) return;
+    kind = found;
     NSNumber *connectable = advertisement[CBAdvertisementDataIsConnectable];
     if (connectable && !connectable.boolValue) return;
     [retryAfter removeObjectForKey:peripheral.identifier];
@@ -460,7 +468,7 @@ static NS2Bridge *bridge;
     for (CBService *service in peripheral.services) if (uuid_is(service.UUID, serviceUUID)) {
         deadline = now_ns() + 10ull * NSEC_PER_SEC; waitingFor = "characteristic discovery";
         [peripheral discoverCharacteristics:@[[CBUUID UUIDWithString:inputUUID], [CBUUID UUIDWithString:powerUUID],
-            [CBUUID UUIDWithString:vibrationUUID], [CBUUID UUIDWithString:commandUUID], [CBUUID UUIDWithString:responseUUID]] forService:service]; [self scheduleTimer]; return;
+            [CBUUID UUIDWithString:[self vibrationUUIDForKind]], [CBUUID UUIDWithString:commandUUID], [CBUUID UUIDWithString:responseUUID]] forService:service]; [self scheduleTimer]; return;
     }
     [self fail:NS2Localized(@"Nintendo service not found")];
 }
@@ -470,7 +478,7 @@ static NS2Bridge *bridge;
     for (CBCharacteristic *ch in service.characteristics) {
         if (uuid_is(ch.UUID, inputUUID)) input = ch;
         if (uuid_is(ch.UUID, powerUUID)) power = ch;
-        if (uuid_is(ch.UUID, vibrationUUID)) vibration = ch;
+        if (uuid_is(ch.UUID, [self vibrationUUIDForKind])) vibration = ch;   // Joy-Con 没有 Pro 的 report09 通道是正常的（power 可为空）
         if (uuid_is(ch.UUID, commandUUID)) command = ch;
         if (uuid_is(ch.UUID, responseUUID)) response = ch;
     }
@@ -487,6 +495,8 @@ static NS2Bridge *bridge;
     deadline = now_ns() + 15ull * NSEC_PER_SEC; waitingFor = "response subscription";
     [peripheral setNotifyValue:YES forCharacteristic:response]; [self scheduleTimer];
 }
+- (NSString *)vibrationUUIDForKind { return kind == NS2_KIND_JOYCON_L ? joyconLeftVibrationUUID : kind == NS2_KIND_JOYCON_R ? joyconRightVibrationUUID : vibrationUUID; }
+- (BOOL)joycon { return kind == NS2_KIND_JOYCON_L || kind == NS2_KIND_JOYCON_R; }
 - (NSUInteger)initializationSteps { return 9u; }
 - (NSData *)commandForStep {
     uint8_t bytes[28] = {0, 0x91, 1, 0, 0, 0, 0, 0}; size_t length = 8;
@@ -496,14 +506,15 @@ static NS2Bridge *bridge;
             bytes[0] = 2; bytes[3] = 4; bytes[5] = 8; length = 16;
             bytes[8] = 0x40; bytes[9] = 0x7e; bytes[12] = step == 1 ? 0x80 : 0xc0; bytes[13] = 0x30; bytes[14] = 1; break;
         case 3: bytes[0] = 3; bytes[3] = 0x0a; bytes[5] = 4; bytes[8] = 5; length = 12; break;
-        case 4: bytes[0] = 0x0c; bytes[3] = 2; bytes[5] = 4; bytes[8] = motionCallback ? 0x2f : 0x2b; length = 12; break;
+        // 功能位：Pro 0x2b / 0x2f；Joy-Con 2 去掉 Pro 才有的 0x08（官方 Joy-Con 序列是 0x37，其中 0x10 光学鼠标不开）= 0x23 / 0x27
+        case 4: bytes[0] = 0x0c; bytes[3] = 2; bytes[5] = 4; bytes[8] = (motionCallback ? 0x2f : 0x2b) & ([self joycon] ? ~0x08 : 0xff); length = 12; break;
         case 5: {
             bytes[0] = 0x0a; bytes[3] = 8; bytes[5] = 20; length = 28;
             bytes[8] = 1; memset(bytes + 9, 0xff, 8); bytes[17] = 0x35; bytes[19] = 0x46; break;
         }
         case 6:
             bytes[0] = 0x0c; bytes[3] = 4; bytes[5] = 4; length = 12;
-            pthread_mutex_lock(&stateMu); bytes[8] = motionCallback && motionRequested ? 0x2f : 0x2b; pthread_mutex_unlock(&stateMu);
+            pthread_mutex_lock(&stateMu); bytes[8] = (motionCallback && motionRequested ? 0x2f : 0x2b) & ([self joycon] ? ~0x08 : 0xff); pthread_mutex_unlock(&stateMu);
             break;
         // 玩家1常亮；采用已公开且在冷启动有效的 09/07 bitmask 命令。
         // Player1 steady light, using the documented 09/07 bitmask command that works on cold start.
@@ -555,6 +566,7 @@ static NS2Bridge *bridge;
         // 仅在校准、命令 ACK 和输入订阅均成功后记住设备，发现或连接事件不写入。
         // Remember the device only after calibration, command ACKs and input subscription succeed, never on discovery or connection alone.
         [controllerDefaults() setObject:peripheral.identifier.UUIDString forKey:lastReadyPeripheralKey];
+        [controllerDefaults() setInteger:kind forKey:lastReadyKindKey];
         LOG("NS2 Pro BLE ready：工厂摇杆校准；report05%s；玩家1灯与固件反馈命令ACK；双侧双频42-byte震动，仅活动时调度；gain=%.3g（命令ACK不代表电机动作）", motionCallback ? " IMU" : "", rumbleGain);
         emit_status(NS2_STATUS_READY, NS2Localized(@"Connected: factory calibration and player 1 light initialization complete"));
         if (self != bridge) return;
@@ -595,6 +607,7 @@ static NS2Bridge *bridge;
     LOG("NS2 Pro BLE ACK step=%lu cmd=%02x/%02x len=%lu", (unsigned long)step, p[0], p[3], (unsigned long)data.length);
     if (step == 6) imuEnabled = (request[8] & 4) != 0;
     step++; awaitingAck = NO; pendingCommand = nil; deadline = 0;
+    if (step == 2 && [self joycon]) { calibration[1] = calibration[0]; step = 3; }   // Joy-Con 2 左右都只有主校准（0x13080），不读 0x130C0（右只读它会校验失败）
     if (step == [self initializationSteps]) {
         deadline = now_ns() + 5ull * NSEC_PER_SEC; waitingFor = "input subscription";
         [device setNotifyValue:YES forCharacteristic:input]; [self scheduleTimer];
@@ -661,6 +674,7 @@ static NS2Bridge *bridge;
         // 部分固件的设备时钟不可靠；对外用接收时的单调时钟，设备值保留用于诊断。
         // Some firmware has unreliable device timestamps; export monotonic arrival time and retain the device value for diagnostics.
         motion.host_timestamp_us = now_ns() / 1000;
+        ns2_joycon_sideways_motion(kind, &motion);   // 单只 Joy-Con 2：换成横握视角；Pro 不动
         latestMotion = motion;
     }
     pthread_mutex_unlock(&stateMu);
@@ -691,9 +705,13 @@ static NS2Bridge *bridge;
     pthread_mutex_lock(&stateMu);
     BOOL publish = active && ready && !terminal;
     pthread_mutex_unlock(&stateMu);
-    if (publish) emit_state((ns2_state){decoded.buttons,
+    if (!publish) return;
+    ns2_state state = {decoded.buttons,
         calibrated_axis(decoded.lx, calibration[0], 0), calibrated_axis(decoded.ly, calibration[0], 1),
-        calibrated_axis(decoded.rx, calibration[1], 0), calibrated_axis(decoded.ry, calibration[1], 1)});
+        calibrated_axis(decoded.rx, calibration[1], 0), calibrated_axis(decoded.ry, calibration[1], 1)};
+    // 单只 Joy-Con 2（只走 report05）：右只的摇杆在第二个摇杆字段、用主校准（握手时已把 calibration[1] 设成主校准）；换成横握视角
+    if ([self joycon]) ns2_joycon_sideways(kind, ns2_decode_side_buttons(data.bytes, data.length), &state);
+    emit_state(state);
 }
 - (void)tick {
     [self processEvents];
@@ -784,7 +802,7 @@ static NS2Bridge *bridge;
     ns2_vibration values[2]; memcpy(values, wanted, sizeof values);
     unsigned stopping = stopMask;
     for (unsigned side = 0; side < 2; side++) if ((stopping & (1u << side)) || !active || terminal) values[side] = (ns2_vibration){0};
-    uint8_t packet[42]; ns2_encode_rumble(values, sequence, rumbleGain, packet);
+    uint8_t packet[42]; ns2_encode_rumble_for(kind, values, sequence, rumbleGain, packet);
     [device writeValue:[NSData dataWithBytes:packet length:sizeof packet] forCharacteristic:vibration type:CBCharacteristicWriteWithoutResponse];
     ns2_rumble_amplitudes left = ns2_rumble_amplitude_codes(values[0], rumbleGain);
     ns2_rumble_amplitudes right = ns2_rumble_amplitude_codes(values[1], rumbleGain);

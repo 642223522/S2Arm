@@ -1,0 +1,20 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Am/AppletAE/AllSystemAppletProxiesService/SystemAppletProxy/ICommonStateGetter.cs b/src/Ryujinx.HLE/HOS/Services/Am/AppletAE/AllSystemAppletProxiesService/SystemAppletProxy/ICommonStateGetter.cs
+index 75f91b0af9227f968b5fccdc0b89a6b5b1653c31..e588a04122a71974a4e63fca7ce8ebc0dcc005c9 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Am/AppletAE/AllSystemAppletProxiesService/SystemAppletProxy/ICommonStateGetter.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Am/AppletAE/AllSystemAppletProxiesService/SystemAppletProxy/ICommonStateGetter.cs
+@@ -309,6 +309,15 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletAE.AllSystemAppletProxiesService.Sys
+             return ResultCode.Success;
+         }
+ 
++        [CommandCmif(130)] // 21.0.0+
++        // EnableStartupLogoDisappearedMessage()：固件 21+ / 新 SDK 起局会调；未实现回 2010-0221 即 Break（Fit Boxing 3）
++        public ResultCode EnableStartupLogoDisappearedMessage(ServiceCtx context)
++        {
++            Logger.Stub?.PrintStub(LogClass.ServiceAm);
++
++            return ResultCode.Success;
++        }
++
+         [CommandCmif(300)] // 9.0.0+
+         // GetSettingsPlatformRegion() -> u8
+         public ResultCode GetSettingsPlatformRegion(ServiceCtx context)

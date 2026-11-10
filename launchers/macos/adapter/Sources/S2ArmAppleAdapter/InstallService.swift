@@ -46,6 +46,39 @@ public struct InstallReadiness: Equatable {
     }
 }
 
+/// 开发者证书体检（devCert 作业，pack/jobs/devcert.py inspect）：问题只提示、不挡；blocking 非空 = 根本签不了。
+public struct DevCertInfo: Equatable {
+    public let teamName, teamId, certName, certExpires, profileName, profileExpires, bundleId: String
+    public let wildcard, allDevices: Bool
+    public let deviceCount: Int
+    /// 连着的手机在不在设备列表：nil = 没连手机 / 不知道。
+    public let deviceListed: Bool?
+    public let blocking: [String]
+    public let warnings: [String]
+
+    public init(result r: [String: Any]) {
+        func s(_ k: String) -> String { r[k] as? String ?? "" }
+        teamName = s("teamName"); teamId = s("teamId"); certName = s("certName"); certExpires = s("certExpires")
+        profileName = s("profileName"); profileExpires = s("profileExpires"); bundleId = s("bundleId")
+        wildcard = r["wildcard"] as? Bool ?? false; allDevices = r["allDevices"] as? Bool ?? false
+        deviceCount = (r["deviceCount"] as? NSNumber)?.intValue ?? 0
+        deviceListed = r["deviceListed"] as? Bool
+        blocking = (r["blocking"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+        warnings = (r["warnings"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+    }
+}
+
+/// 开发者证书现况：导入过没有、出包装机用不用它、体检结果。
+public struct DevCertStatus: Equatable {
+    public let imported: Bool
+    public let active: Bool
+    public let cert: DevCertInfo?
+    public init(imported: Bool, active: Bool, cert: DevCertInfo?) { self.imported = imported; self.active = active; self.cert = cert }
+    public init(result r: [String: Any]) {
+        self.init(imported: r["imported"] as? Bool ?? false, active: r["active"] as? Bool ?? false, cert: (r["cert"] as? [String: Any]).map(DevCertInfo.init(result:)))
+    }
+}
+
 /// 装好的结果。
 public struct InstallResult: Equatable {
     public let device: String
@@ -98,6 +131,32 @@ public final class InstallService {
         let r = try await client.perform("install", extra: extra, events: events).result
         return InstallResult(device: r["device"] as? String ?? "", packFiles: (r["packFiles"] as? NSNumber)?.intValue,
                              outputPath: r["outputPath"] as? String)
+    }
+
+    // ---- 开发者证书（v0.2.4，pack/jobs/devcert.py）----
+
+    /// 现况 + 体检；device = 连着的手机 UDID（判在不在设备列表），不给就不判。
+    public func devCertStatus(device: String? = nil) async throws -> DevCertStatus {
+        var extra: [String: Any] = ["action": "status"]
+        if let device, !device.isEmpty { extra["device"] = device }
+        return DevCertStatus(result: try await client.perform("devCert", extra: extra).result)
+    }
+
+    /// 导入 .p12 + .mobileprovision；密码只经环境变量给这一次作业（S2A_DEVCERT_PASSWORD），不写进请求文件。导入成功即切到证书签名。
+    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
+        var extra: [String: Any] = ["action": "import", "p12Path": p12, "profilePath": profile]
+        if let device, !device.isEmpty { extra["device"] = device }
+        return DevCertInfo(result: try await client.perform("devCert", extra: extra, secrets: ["S2A_DEVCERT_PASSWORD": password]).result)
+    }
+
+    /// 出包装机用开发者证书（true）还是 Apple ID（false）。
+    public func devCertUse(_ active: Bool) async throws {
+        _ = try await client.perform("devCert", extra: ["action": "use", "active": active])
+    }
+
+    /// 删掉本机存的证书、描述文件和钥匙串里的密码（回到 Apple ID 签名）。
+    public func devCertDelete() async throws {
+        _ = try await client.perform("devCert", extra: ["action": "delete"])
     }
 
     /// 生成给「没有签名团队」玩家用的 Xcode 引导项目，返回项目路径。

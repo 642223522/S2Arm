@@ -5698,7 +5698,10 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
     }
     if (stage == 5 && j[@"spill"]) { o->spill = [j[@"spill"] unsignedIntValue]; o->spill_slot = [j[@"spill_slot"] unsignedIntValue]; }   // shared-memory spill (dispatch)
     if (stage == 1 && j[@"entry_u"]) { o->u_mask = (uint8_t)[j[@"u_mask"] unsignedIntValue]; o->fn_u = [lib newFunctionWithName:fnn(o, j[@"entry_u"])]; if (!o->fn_u) MLOG("【红】 shader %s: no integer-output entry point %s in its library", pc.UTF8String, [j[@"entry_u"] UTF8String]); }
-    if ((stage == 3 || stage == 4) && [j[@"msl_entry_kind"] isKindOfClass:[NSString class]]) {   // NVN2 task / mesh shader (interface contract item 6; nvn_geometry.inc mesh_tasks_draw)
+    // Stages 3 / 4 are the tessellation control / evaluation shaders on Switch 1 and task / mesh on NVN2. A tessellation shader's json carries tess (handled below) and its
+    //   msl_entry_kind is vertex / kernel, which is right for it: the task / mesh contract (object / mesh functions, workgroup limits) is not its contract. Applied to it, the
+    //   kind check printed a false red line and the workgroup check found no threads, called the shader not usable and skipped its draws (#418: 19 red lines on a Switch 1 game)
+    if ((stage == 3 || stage == 4) && [j[@"msl_entry_kind"] isKindOfClass:[NSString class]] && !j[@"tess"]) {   // NVN2 task / mesh shader (interface contract item 6; nvn_geometry.inc mesh_tasks_draw)
         int kind = [j[@"msl_entry_kind"] isEqual:@"object"] ? 1 : [j[@"msl_entry_kind"] isEqual:@"mesh"] ? 2 : 0;
         if (kind != stage - 2) { MLOG("【红】 shader %s at stage %d has msl_entry_kind %s (task shaders are object functions at stage 3, mesh shaders mesh functions at stage 4)", pc.UTF8String, stage, [j[@"msl_entry_kind"] UTF8String]); return nil; }
         o->mesh_kind = (uint8_t)kind; o->mesh_task = [j[@"mesh_task"] boolValue];
