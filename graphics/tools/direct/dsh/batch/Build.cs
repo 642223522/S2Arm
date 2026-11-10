@@ -531,7 +531,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var failed = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
         void Put(List<string> ks, string name)
         {
-            foreach (var (_, sd) in tg) { var lib = sd.Get(name + ".metallib"); foreach (var k in ks) foreach (var m in Group(k)) sd.Put(m + "_b.metallib", lib); }
+            foreach (var (_, sd) in tg) foreach (var k in ks) foreach (var m in Group(k)) sd.Alias(name + ".metallib", m + "_b.metallib");   // 指向批库那份字节，不另写
             foreach (var sd in dirs) foreach (var k in ks) foreach (var m in Group(k))
             {
                 bool wl = Text(k).Contains("render_target_array_index", StringComparison.Ordinal);   // 宿主原先读库字节判它；批库里还有别的键（nvn_mtl.m shader_load）
@@ -822,6 +822,9 @@ sealed class Side
         f[n] = box.Value;
     }
     public void Drop(string n) => f.TryRemove(n, out _);
+    /// <summary>to 指向 from 已有的那份字节（不再写一遍）；from 不在 → false。批库给同批各键（Build.UnityFlush Put）：原先 Get 出新数组再 Put，
+    /// 同一份批库在数据文件里多写一遍（v0.2.6：0400A3A01EE4C000 冷出到编批库 11.5 GB 时盘涨约 3 倍于批库量，这是其中一倍）</summary>
+    public bool Alias(string from, string to) { if (!f.TryGetValue(from, out var e) || IsText(from) != IsText(to)) return false; f[to] = e; return true; }
     public void DropText() { txGone = true; tx.Close(); }
     public (long Bin, long Text) Usage() => (bf.Length, tx.Length);
     public List<string> Names() => f.Keys.ToList();
