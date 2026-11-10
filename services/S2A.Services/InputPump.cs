@@ -53,6 +53,7 @@ namespace S2A.Services
 
         public static PlayerIndex Player => _player;
         public static PlayerIndex SecondPlayer => _second;
+        public static ControllerType Type => _type;
         public static int Pads => _pads;
         public static bool ExternalController => _externalController;
 
@@ -79,6 +80,42 @@ namespace S2A.Services
                 Console.Error.WriteLine("S2A 虚拟手柄：游戏又收掌机格，挪回掌机格");
                 SetPrimary(device, PlayerIndex.Handheld, ControllerType.Handheld);
             }
+        }
+
+        // 游戏声明的样式不收主手柄现在的样式时换一个它收的（#359：开局「用你要用的手柄按 A」那一屏只收 掌机 / 单只 Joy-Con / 精灵球手柄，
+        //   主机档下虚拟手柄是 Player1 的 Pro 手柄、接了外接手柄也会改成 Pro 手柄；Ryujinx 的 Remap 只会 Pro ↔ 双 Joy-Con 互换，其余直接断开，按什么都没反应）。
+        //   挑的顺序：掌机格（不在主机档、游戏收掌机格、只有一个手柄）→ 双 Joy-Con → Pro → 单只右 → 单只左（单只按横握换键，RotateSideways）；
+        //   游戏又收回原来的样式就换回去。跟 FollowSupportedPlayers 同一个 250 ms 节拍，只读游戏的声明、不改它
+        private static ControllerType _styleBefore = ControllerType.None;
+        private static PlayerIndex _playerBefore;
+        private static bool Accepts(Switch device, ControllerType styles, ControllerType type) =>
+            type == ControllerType.Handheld ? (styles & type) != 0 && !device.System.State.DockedMode
+            : (styles & type) != 0 || (type == ControllerType.ProController && (styles & ControllerType.JoyconPair) != 0)
+                                   || (type == ControllerType.JoyconPair && (styles & ControllerType.ProController) != 0);   // 这一对 Remap 自己会换
+        internal static void FollowSupportedStyles(Switch device)
+        {
+            ControllerType styles = device.Hid.Npads.SupportedStyleSets;
+            if (styles == ControllerType.None) return;
+            if (_styleBefore != ControllerType.None && _type != _styleBefore && Accepts(device, styles, _styleBefore))
+            {
+                Console.Error.WriteLine($"S2A 虚拟手柄：游戏又收 {_styleBefore}，换回去");
+                ControllerType back = _styleBefore; _styleBefore = ControllerType.None;
+                SetPrimary(device, _playerBefore, back);
+                return;
+            }
+            if (Accepts(device, styles, _type)) return;
+            var npads = device.Hid.Npads;
+            (PlayerIndex player, ControllerType type) pick =
+                _pads == 1 && Accepts(device, styles, ControllerType.Handheld) && npads.IsSupportedPlayer(PlayerIndex.Handheld) ? (PlayerIndex.Handheld, ControllerType.Handheld)
+                : (styles & ControllerType.JoyconPair) != 0 ? (PlayerIndex.Player1, ControllerType.JoyconPair)
+                : (styles & ControllerType.ProController) != 0 ? (PlayerIndex.Player1, ControllerType.ProController)
+                : (styles & ControllerType.JoyconRight) != 0 ? (PlayerIndex.Player1, ControllerType.JoyconRight)
+                : (styles & ControllerType.JoyconLeft) != 0 ? (PlayerIndex.Player1, ControllerType.JoyconLeft)
+                : (PlayerIndex.Unknown, ControllerType.None);
+            if (pick.type == ControllerType.None) return;   // 只收精灵球之类的：没有能扮的，不动
+            if (_styleBefore == ControllerType.None) { _styleBefore = _type; _playerBefore = _player; }
+            Console.Error.WriteLine($"S2A 虚拟手柄：游戏只收 {styles}，不收 {_type}，改成 {pick.player} 的 {pick.type}");
+            SetPrimary(device, pick.player, pick.type);
         }
 
         // 开到 n 个虚拟手柄（最多 2，只增不减；收局 Stop 回到 S2A_AP_PADS 给的个数），按当前主手柄重配
@@ -215,6 +252,7 @@ namespace S2A.Services
             _second = PlayerIndex.Unknown;
             _lastSticks = default;
             _movedOffHandheld = false;   // 审计 P1-94：上一局「挪出掌机格」不带进下一局（同进程重启）
+            _styleBefore = ControllerType.None;   // 同上：上一局「按样式换过」不带进下一局
         }
 
         private static delegate* unmanaged<int*, uint> _vpadRead;
@@ -501,7 +539,7 @@ namespace S2A.Services
                 Ryujinx.Common.S2AThreadAlloc.Tick("输入");
                 Lifecycle.Tick(Host.Device?.System);   // 焦点 / 底座变化转给游戏（接口 v2.15）
                 if (AutoplayPads != null && AutoplayPads() > _pads) SetPads(device, AutoplayPads());   // 先改配再取主手柄号：两人时主手柄离开掌机格
-                if (Environment.TickCount64 >= nextFollow) { FollowSupportedPlayers(device); nextFollow = Environment.TickCount64 + 250; }
+                if (Environment.TickCount64 >= nextFollow) { FollowSupportedPlayers(device); FollowSupportedStyles(device); nextFollow = Environment.TickCount64 + 250; }
 
                 GamepadInput input = new() { PlayerId = _player };
                 PadSnapshot snapshot = default;

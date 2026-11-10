@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import os
+import shutil
 import stat
 import struct
 import subprocess
@@ -737,6 +738,32 @@ class ExternalImportTests(unittest.TestCase):
         self.assertTrue(self.import_(src / "save_device")[0]["committed"])
         self.assertEqual((self.root / "bis/user/save/0000000000000002/0/device.bin").read_bytes(), b"device-new")
         self.assertEqual((self.root / PROGRESS).read_bytes(), b"account-new")
+
+    def test_nx2apple_folder_zip_and_save_folder_all_import(self):
+        # 11-09 实测：NX2Apple 存档拖 <游戏号>/ 能认，压缩包（外面多套一层）和直接拖 save/ 认不出——
+        #   save/ 顶层只有子文件夹时被当 JKSV 往下钻进第一个子文件夹；三种都要把整棵存档放进账户存档槽
+        self.put(saves.SAVE_INDEX, synthetic_index([(1, GID, 1, USER)]))
+        tree = {"save/Saved Games/Hades/Profile1.sav": b"nx-profile", "save/Data Records/.keep": b"", "save/Temp/t.bin": b"tmp"}
+        folder = self.community(GID.lower(), tree)
+        archive = self.directory / "nx2apple.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            for rel, data in tree.items():
+                z.writestr(GID.lower() + "/" + rel, data)
+        for i, src in enumerate((folder, archive, folder / "save")):
+            self.put("bis/user/save/0000000000000001/0/Saved Games/Hades/Profile1.sav", b"old-%d" % i)
+            self.assertTrue(self.import_(src)[0]["committed"], src)
+            slot = self.root / "bis/user/save/0000000000000001/0"
+            self.assertEqual((slot / "Saved Games/Hades/Profile1.sav").read_bytes(), b"nx-profile", src)
+            self.assertEqual((slot / "Temp/t.bin").read_bytes(), b"tmp", src)
+
+    def test_nx2apple_save_folder_goes_to_device_save_when_the_game_has_only_that(self):
+        # NX2Apple 引擎：游戏只有设备存档（如动森）时设备存档就放在 save/；按「只有设备存档就进设备存档」导入，不报没有存档位置
+        shutil.rmtree(self.root / "bis/user/save/0000000000000001", ignore_errors=True)
+        self.put(saves.SAVE_INDEX, synthetic_index([(2, GID, 3, "0" * 32)]))
+        self.put("bis/user/save/0000000000000002/0/device.bin", b"old-device")
+        src = self.community(GID.lower(), {"save/device.bin": b"device-new"})
+        self.assertTrue(self.import_(src)[0]["committed"])
+        self.assertEqual((self.root / "bis/user/save/0000000000000002/0/device.bin").read_bytes(), b"device-new")
 
     def test_zero_directory_judged_against_this_games_own_slot(self):
         # 10-27：社区存档唯一子目录 0/ —— 游戏自己的槽 0 顶层是 progress.bin → 0/ 是提交目录，剥掉；

@@ -288,6 +288,29 @@ def remove_patterns(directory, patterns):
             remove_owned(p)
 
 
+# 目录改名（Windows 等占用）：刚写完几十万个新文件的目录（播种 / 收纳 RomFS / 提交事务），杀软或索引程序扫描时开着里面文件的句柄，
+#   Windows 上目录改名就报 WinError 5（拒绝访问）/ 32（被占用）；扫完会放开。原先一次失败整单失败（#361：Switch 2 大款 20.6 万个文件、
+#   拷了 30 分钟后在 ….tmp 改名处报 Access is denied）。按退避重试约 1 分钟；仍不行报红写明哪个目录、建议把游戏库加进杀软排除。其它系统不重试
+DIR_RENAME_RETRIES = (0.1, 0.2, 0.5, 1, 2, 4, 8, 15, 30)
+
+
+def rename_dir(src, dst, *, sleep=time.sleep):
+    src, dst = Path(src), Path(dst)
+    delays = DIR_RENAME_RETRIES if os.name == 'nt' else ()
+    for i, delay in enumerate((*delays, None)):
+        try:
+            return src.rename(dst)
+        except PermissionError as e:
+            if delay is None:
+                if os.name != 'nt':
+                    raise
+                raise PermissionError(e.errno, f'目录改名 {i} 次都被拒（{e}）：{src} 里有文件被别的程序开着（多半是杀毒软件或索引程序在扫刚写完的文件）。'
+                                               f'等扫描结束重试，或把游戏库文件夹加进杀毒软件的排除列表', str(src)) from e
+            if getattr(e, 'winerror', 5) not in (5, 32):
+                raise
+            sleep(delay)
+
+
 def plain_entries(path):
     """Repository's sole directory inventory; validate before any mutation."""
     listing = romfs_list.scan(path)
@@ -378,8 +401,7 @@ class Roots:
                 continue  # The immutable store was validated and sealed on intern.
             if is_link(p):
                 raise UnsafeRoot(f'版本中有非法链接：{p}')
-            if p.is_dir():
-                plain_entries(p)
+            # v0.2.3 清理：不再递归扫每个子目录查链接 / 特殊文件——版本根全是本流水线自己生成的，每个阶段都整棵扫一遍防的是不现实的情况
 
     def cur(self, game, *, pin=True):
         component(game)
@@ -469,7 +491,7 @@ class Roots:
         self._resource('--root-clone', source, dest, env=env)
         self._shards(dest, '克隆现行(root_begin)', env=env)
 
-    def _copy_tree(self, source, dest):
+    def _copy_tree(self, source, dest, tick=None):
         if is_link(source):
             raise UnsafeRoot('克隆拒绝未批准的链接')
         dest.mkdir(parents=True)
@@ -479,6 +501,8 @@ class Roots:
                 output.mkdir(parents=True, exist_ok=True)
             else:
                 copy_file(p, output)
+                if tick:
+                    tick()
 
     def _resource(self, mode, *paths, env=None):
         helper = self.repo / 'pack/resource_input_key.py'
@@ -532,16 +556,16 @@ class Roots:
             _win_acl(p, False)
         else:
             p.chmod(stat.S_IMODE(p.stat().st_mode) | 0o200)
-        p.rename(temp)
+        rename_dir(p, temp)
         try:
             directory_link(store / identity, p, relative=f'../.romfs_store/{game}/{identity}')
-            temp.rename(store / identity)
+            rename_dir(temp, store / identity)
             seal(store / identity)
         except BaseException:
             if is_link(p):
                 remove_owned(p)
             if temp.exists():
-                temp.rename(p)
+                rename_dir(temp, p)
             raise
 
     def _pinned(self, version):
@@ -610,7 +634,7 @@ class Transaction:
             text(r / '.root_base', current.name + '\n')
             self.roots._shards(r, 'replay·换完路径后', env=self.env)
             remove_owned(self.path)
-            r.rename(self.path)
+            rename_dir(r, self.path)
         except BaseException:
             remove_owned(r)
             raise
@@ -638,7 +662,7 @@ class Transaction:
                     self._replay(current, tuple(replay))
                 roots._validate(self.path, self.game)
                 roots._intern(self.path, self.game)
-                self.path.rename(final)
+                rename_dir(self.path, final)
                 directory_link(final, activation, relative=final.name)
                 replace_link(activation, roots.path / f'{self.game}@现行')
                 self.closed = True

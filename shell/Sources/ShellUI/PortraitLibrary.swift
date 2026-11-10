@@ -164,6 +164,7 @@ struct PortraitLibrary: View, Equatable {
         .accessibilityLabel(detail.game.title + ", " + detail.game.state.title)
         .accessibilityAddTraits(chosen ? .isSelected : [])
         .accessibilityIdentifier("tile.\(detail.id)")
+        .modifier(GameTileMenu(detail: detail, select: select, openSettings: openSettings))
         .id(detail.id)
     }
 

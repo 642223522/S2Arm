@@ -4,9 +4,10 @@
 // Export (11-07 维护者: the launcher is built around exporting, Mac and iPhone / iPad alike; it opens ExportView), and a game whose Mac
 // version is ready also gets Play (launch job) beside it, then the launch options button and Free up space (FreeSpaceView: spaceSurvey / spaceFree jobs); the cards and the hero's buttons carry
 // their own accessibility labels (a card read as an image before); the empty library offers Add games; the rebuild, iPhone
-// re-sign, Manage menu, Switch 2 badge and library filter are left out.
+// re-sign, Manage menu, Switch 2 badge and library filter are left out; a save dropped on a card opens that game's save window on it (11-09).
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import NXCore
 import NXModel
 import NXLauncher
@@ -172,6 +173,9 @@ extension LauncherView {
                             .accessibilityIdentifier("card." + game.id)
                             .padTarget("card." + game.id, scope: "main", radius: 7) { model.selectedID = game.id }
                             .contextMenu { cardMenu(game) }
+                            // 存档拖到这款卡片上 = 给这款导入存档：打开存档窗口并先检查（同拖进存档窗口，确认后才覆盖）；
+                            //   游戏文件 / 密钥仍走整页那条（添加游戏、放密钥），别当存档
+                            .modifier(CardDrop(targeted: cardTargeted(game.id), artwork: cardWidth / 1.8) { urls in dropOnCard(urls, game: game) })
                         }
                     }
                     .padding(.horizontal, Self.ringRoom).padding(.top, Self.ringRoom).padding(.bottom, 5 + Self.ringRoom)
@@ -191,6 +195,18 @@ extension LauncherView {
             }
         }
         .padding(.horizontal, 34).padding(.top, 8).padding(.bottom, 22)
+    }
+
+    func cardTargeted(_ id: String) -> Binding<Bool> {
+        Binding(get: { dropCard == id }, set: { dropCard = $0 ? id : (dropCard == id ? nil : dropCard) })
+    }
+    static let gameFileTypes: Set<String> = ["nsp", "xci", "nsz", "xcz"]
+    func dropOnCard(_ urls: [URL], game: GameSummary) {
+        guard let first = urls.first else { return }
+        let ext = first.pathExtension.lowercased()
+        if urls.count == 1, ext == "keys" { model.importKeys(first); return }
+        if urls.contains(where: { Self.gameFileTypes.contains($0.pathExtension.lowercased()) }) { model.importGames(urls, partialResults: true); return }
+        saveDrop = first; saveFor = game.id
     }
 
     /// A round button floating over the row's edge, centred on the artwork, shown while the row scrolls that way.
@@ -386,5 +402,25 @@ struct CoverFill: View {
         guard let image = NSImage(contentsOfFile: path) else { missing.insert(path); return nil }
         images[path] = image
         return image
+    }
+}
+
+/// 游戏卡片的拖放落点：拖着文件经过时封面描虚线，放下交给 perform（LauncherView.dropOnCard）。
+struct CardDrop: ViewModifier {
+    let targeted: Binding<Bool>
+    let artwork: CGFloat
+    let perform: ([URL]) -> Void
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if targeted.wrappedValue {
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                        .frame(height: artwork).allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [UTType.fileURL], isTargeted: targeted) { providers in
+                LauncherView.fileURLs(providers, perform)
+                return true
+            }
     }
 }

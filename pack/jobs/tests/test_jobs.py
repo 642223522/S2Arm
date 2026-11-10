@@ -1198,6 +1198,7 @@ class JobsTests(unittest.TestCase):
             self.assertTrue(sibling.is_file())
 
     def test_hash_validation_rejects_same_size_corruption_and_traversal(self):
+        # v0.2.3 清理：缺省只核大小（同大小改写不再逐字节查，#304 被改的文件是靠大小查出来的）；调用方明确要 full=True 时照旧按摘要拒；越界照旧拒
         root = self.root / "products"
         root.mkdir()
         f = root / "module"
@@ -1205,8 +1206,12 @@ class JobsTests(unittest.TestCase):
         record = {"module": [5, digest(f)]}
         build.validate_files(self.c, root, record)
         f.write_bytes(b"wrong")
+        build.validate_files(self.c, root, record)   # 缺省只核大小：同大小改写放行
         with self.assertRaises(Failure):
-            build.validate_files(self.c, root, record)
+            build.validate_files(self.c, root, record, full=True)
+        f.write_bytes(b"longer!")
+        with self.assertRaises(Failure):
+            build.validate_files(self.c, root, record)   # 大小变了照旧拒
         with self.assertRaises(Failure):
             build.validate_files(self.c, root, {"../outside": [0, ""]})
 
@@ -1358,18 +1363,45 @@ class JobsTests(unittest.TestCase):
         self.assertEqual([layout.load_device(self.c, k)["games"] for k in ("phone1", "phone2")], [{}, {}])
 
     def test_delete_waits_for_execution_lock_held_by_cancelled_task(self):
-        # 期望：执行锁被（刚被取消、还没退出的）任务占着 3 秒 → 删除不立刻失败，等锁放开后照样删掉（10-26 Spare-host：导入后自动排的 Mac 准备占锁，删除直接报「另一个任务正在使用游戏库」）
-        import subprocess, sys, time
+        # 真实持锁进程直到显式释放才退出；先观测生产删除的等待事件，
+        # 确认没有提前删除，再释放锁并验证完成，不依赖父进程及时抢到 CPU。
         game = self.game(packages=[self.package()]); self.catalogue([game])
         self.c.require_library()
         lockf = self.c.library / ".execution.lock"
-        holder = subprocess.Popen([sys.executable, "-c", "import sys,time; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); print('ok',flush=True); time.sleep(3)", str(lockf), str(JOBS)], stdout=subprocess.PIPE, text=True)
-        self.assertEqual(holder.stdout.readline().strip(), "ok")
-        t0 = time.time(); self.c.r["gameId"] = game["id"]
-        library.delete(self.c)
-        holder.wait()
-        self.assertGreaterEqual(time.time() - t0, 2.5)
-        self.assertEqual(self.c.catalog()["games"], [])
+        holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); print('ok',flush=True); sys.stdin.readline(); filelock.unlock(f)", str(lockf), str(JOBS)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        finished = threading.Event()
+        errors = []
+        def delete():
+            try:
+                library.delete(self.c)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                finished.set()
+        worker = threading.Thread(target=delete)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            self.c.r["gameId"] = game["id"]
+            worker.start()
+            deadline = time.monotonic() + 10
+            while "等这款游戏在跑的任务结束" not in self.output.getvalue():
+                self.assertFalse(finished.wait(0.01), "delete returned before reporting the held execution lock")
+                self.assertLess(time.monotonic(), deadline, "delete did not report waiting for the held execution lock")
+            self.assertFalse(finished.is_set(), "delete finished while another process still held the lock")
+            self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [game["id"]])
+            holder.stdin.write("release\n"); holder.stdin.flush()
+            self.assertEqual(holder.wait(timeout=5), 0)
+            self.assertTrue(finished.wait(10), "delete did not finish after the execution lock was released")
+            worker.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(self.c.catalog()["games"], [])
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+            holder.communicate(timeout=5)
+            if worker.ident is not None:
+                worker.join(5)
+            self.assertFalse(worker.is_alive(), "delete worker remained after lock-holder cleanup")
 
     def test_direct_small_batch_progress_replaces_finished_translation(self):
         progress = self.root / "progress.tsv"

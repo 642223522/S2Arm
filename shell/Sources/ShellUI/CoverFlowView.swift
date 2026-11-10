@@ -29,8 +29,6 @@ struct CoverFlowView: View, Equatable {
     @State private var gestureStart = 0
     /// False while the carousel scrolls, decelerates or snaps: a tap on the centre card then does nothing.
     @State private var settled = true
-    /// A long press on the centre card opened settings: the touch that ends it must not also play.
-    @State private var longPressed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Re-render only for what is drawn: the games' tiles, the selection and the hints. Settings changes elsewhere do
@@ -197,7 +195,6 @@ struct CoverFlowView: View, Equatable {
         return Button {
             // The centred card acts like the game's primary action, once the carousel has settled. A side card only
             // comes to the middle and never starts anything.
-            if longPressed { longPressed = false; return }
             if chosen {
                 if settled { primary(detail) }
                 return
@@ -210,13 +207,8 @@ struct CoverFlowView: View, Equatable {
                 .shadow(color: .black.opacity(0.5), radius: cover * 0.05, y: cover * 0.03)
         }
         .buttonStyle(.plain)
-        // A long press on the centred card opens its settings, a shortcut for the button at the top.
-        .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-            guard chosen, settled else { return }
-            longPressed = true
-            openSettings()
-        })
-        .sensoryFeedback(.impact(weight: .medium), trigger: longPressed) { _, new in new }
+        // A long press on a card: its settings and Delete game… (GameTileMenu).
+        .modifier(GameTileMenu(detail: detail, select: select, openSettings: openSettings))
         .shellTarget("lib.tile.\(detail.id)", radius: cover * 0.03) { primary(detail) }
         .accessibilityLabel(detail.game.title + ", " + detail.game.state.title)
         .accessibilityAddTraits(chosen ? .isSelected : [])

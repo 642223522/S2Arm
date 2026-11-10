@@ -19,6 +19,56 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pack.orch import roots
 
 
+class _Os:
+    """只给 roots 模块看的 os：name 换成 nt，其余转给真 os（不改全进程 os.name，见 pack/jobs/tests/jobcase.py OsView）"""
+    def __init__(self, name): self.name = name
+    def __getattr__(self, key): return getattr(os, key)
+
+
+class RenameDirTest(unittest.TestCase):
+    # #361：刚写完大量文件的目录，Windows 上杀软 / 索引扫描时开着句柄，目录改名报 WinError 5 / 32；扫完放开。期望手写：
+    #   ① nt：前两次被拒、第三次成 → 改名成功，睡了 DIR_RENAME_RETRIES 前两档；② nt：一直被拒 → 重试满后报 PermissionError，原文点名目录并建议加杀软排除；
+    #   ③ 非 nt：被拒一次就原样抛、不睡；④ nt：别的 WinError（如 3 路径不存在）不重试
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='s2a-rename-'); self.home = Path(self.temp.name)
+        (self.home / 'a.tmp').mkdir()
+
+    def tearDown(self): self.temp.cleanup()
+
+    def run_case(self, name, refusals, winerror=5):
+        real = Path.rename; left = [refusals]; sleeps = []
+        def rename(path, target):
+            if left[0]:
+                left[0] -= 1
+                e = PermissionError(13, '拒绝访问。'); e.winerror = winerror; raise e
+            return real(path, target)
+        with patch.object(roots, 'os', _Os(name)), patch.object(Path, 'rename', rename):
+            try:
+                roots.rename_dir(self.home / 'a.tmp', self.home / 'a', sleep=sleeps.append); error = None
+            except PermissionError as e:
+                error = e
+        return error, sleeps
+
+    def test_windows_retries_until_scanner_lets_go(self):
+        error, sleeps = self.run_case('nt', 2)
+        self.assertIsNone(error); self.assertTrue((self.home / 'a').is_dir())
+        self.assertEqual(sleeps, list(roots.DIR_RENAME_RETRIES[:2]))
+
+    def test_windows_gives_up_with_actionable_message(self):
+        error, sleeps = self.run_case('nt', len(roots.DIR_RENAME_RETRIES) + 1)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(sleeps, list(roots.DIR_RENAME_RETRIES))
+        self.assertIn(str(self.home / 'a.tmp'), str(error)); self.assertIn('排除', str(error))
+        self.assertTrue((self.home / 'a.tmp').is_dir())
+
+    def test_other_platforms_do_not_retry(self):
+        error, sleeps = self.run_case('posix', 1)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(sleeps, [])
+
+    def test_windows_other_errors_not_retried(self):
+        error, sleeps = self.run_case('nt', 1, winerror=3)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(sleeps, [])
+
+
 class RootsTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='s2a-orch-')

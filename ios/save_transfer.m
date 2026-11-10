@@ -13,6 +13,30 @@ extern void S2A_SaveTransferFree(char *response) __attribute__((weak_import));
 void s2a_host_shutdown(const char *why);
 static NSString *const ManageKey = @"S2ASaveManageOnOpen";
 
+// 存档文件放在哪（给手里有别处存档的玩家，如 NX2Apple 导出的存档目录，不另做导入入口）：按这款真实的存档根现算「文件」App 里的路径。
+//   Ryujinx 层级 <存档根>/bis/user/save/<16 位编号>/0 是已提交的存档内容（游戏没在跑时放进去，下次开局读到）；
+//   存档根在 Documents 下：单款包 S2A/ryujinx，多款容器 games/<游戏号>/S2A/ryujinx（runtime/src/launchctx.c）。还没存过档就没有编号文件夹
+static NSString *save_location(NSString *root) {
+    if (!root) return @"";
+    char *docs = realpath(NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject.fileSystemRepresentation, NULL);
+    NSString *base = docs ? [NSFileManager.defaultManager stringWithFileSystemRepresentation:docs length:strlen(docs)] : nil; free(docs);
+    if (!base || ![root hasPrefix:[base stringByAppendingString:@"/"]]) return @"";
+    NSString *saves = [root stringByAppendingPathComponent:@"bis/user/save"];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSArray *rel = [[root substringFromIndex:base.length + 1] pathComponents];
+    NSRegularExpression *hex = [NSRegularExpression regularExpressionWithPattern:@"^[0-9a-fA-F]{16}$" options:0 error:nil];
+    for (NSString *n in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:saves error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+        BOOL dir = NO;
+        if (![hex firstMatchInString:n options:0 range:NSMakeRange(0, n.length)]) continue;
+        if (![NSFileManager.defaultManager fileExistsAtPath:[[saves stringByAppendingPathComponent:n] stringByAppendingPathComponent:@"0"] isDirectory:&dir] || !dir) continue;
+        [paths addObject:[[rel arrayByAddingObjectsFromArray:@[@"bis", @"user", @"save", n, @"0"]] componentsJoinedByString:@" → "]];
+    }
+    if (!paths.count) return S2AL(@"save.location.none");
+    NSString *name = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"S2Arm";
+    NSString *path = paths.count == 1 ? paths[0] : [S2AL(@"save.location.or") stringByAppendingFormat:@"\n%@", [paths componentsJoinedByString:@"\n"]];
+    return [NSString stringWithFormat:S2AL(@"save.location"), name, path, name];
+}
+
 static NSString *data_root(void) {
     const char *configured = getenv("S2A_RYU_DATA");
     NSString *root = configured ? [NSString stringWithUTF8String:configured] :
@@ -139,6 +163,7 @@ int s2a_ios_save_management_requested(void) {
     UILabel *title = [self label:S2AL(@"save.title") style:UIFontTextStyleTitle1];
     title.accessibilityTraits |= UIAccessibilityTraitHeader; [stack addArrangedSubview:title];
     [stack addArrangedSubview:[self label:S2AL(@"save.intro") style:UIFontTextStyleBody]];
+    UILabel *where = [self label:@"" style:UIFontTextStyleFootnote]; where.textColor = UIColor.secondaryLabelColor; where.accessibilityIdentifier = @"save.location";
     self.status = [self label:S2AL(@"save.checking") style:UIFontTextStyleBody]; [stack addArrangedSubview:self.status];
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.hidesWhenStopped = YES; [stack addArrangedSubview:self.spinner];
@@ -149,7 +174,9 @@ int s2a_ios_save_management_requested(void) {
     // 恢复失败时才出现：单独确认后放开「开始游戏」（审计 P0-1：失败分支不放开，玩家这次安装就再也进不了游戏）
     self.overrideButton = [self button:S2AL(@"save.override") action:@selector(confirmOverride)];
     for (UIButton *button in @[self.exportButton, self.importButton, self.backupButton, self.startButton, self.overrideButton]) [stack addArrangedSubview:button];
+    [stack addArrangedSubview:where];
     self.dataRoot = data_root();
+    where.text = save_location(self.dataRoot);
     if (!self.dataRoot) {
         self.phase = s2a_save_next(self.phase, S2A_SAVE_EV_NO_ROOT);
         self.status.text = S2AL(@"save.noRoot");
