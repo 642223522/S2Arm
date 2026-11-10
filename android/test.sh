@@ -88,6 +88,9 @@ s2a_gate_step bash "$android_dir/tools/vk_poolahb_alias_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_timeline_test.sh"
 # 直连逐帧帧时间（宿主，确定性）：环形语义、丢弃/计数可见、分片转储字节级核回。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
+# B2 VK_GOOGLE_display_timing（宿主，确定性）：挂 id/回读、乱序对号、丢帧 UNKNOWN、
+# 迟到补账、门关闭、ring 环覆、detach 复位、last_gap 最新确认对。
+s2a_gate_step bash "$android_dir/tools/nvn_vk_dt_test.sh"
 s2a_gate_step bash "$android_dir/tools/generic_frame_trace_test.sh"
 # #48 A5（宿主，确定性）：BatteryManager 净放电换算与不可用状态、采样器停采/迟到回调/读数开关。
 s2a_gate_step bash "$android_dir/tools/system_power_test.sh"
