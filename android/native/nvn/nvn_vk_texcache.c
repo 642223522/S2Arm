@@ -557,6 +557,20 @@ static int tex_upload_or_decode(struct nvn_vk_texcache *c, VkImage img, uint32_t
                                 uint32_t w, uint32_t h, uint32_t depth_slices, const void *lin, size_t bytes,
                                 uint32_t row_bytes, uint32_t mip, uint32_t layer, VkImageAspectFlags aspect,
                                 char *why, size_t why_size) {
+    if (nvn_vk_format_substituted(nvn_format) && (aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
+        // #398：D24 换成 D32 存储。upload() 只传深度面，每纹素 4 字节，原 D24 口径是低 24 位 UNORM；
+        // D32 深度面要 float，按纹素换算后再传（字节数不变）。
+        void *conv = malloc(bytes ? bytes : 1);
+        if (!conv) {
+            if (why && why_size) snprintf(why, why_size, "D24->D32 depth upload: staging alloc failed");
+            return -1;
+        }
+        memcpy(conv, lin, bytes);
+        nvn_vk_depth24_to_f32(conv, bytes / 4);
+        int rc = upload(c->d, img, w, h, depth_slices, conv, bytes, row_bytes, mip, layer, aspect);
+        free(conv);
+        return rc;
+    }
     if (!bc_needs_decode(c->d, nvn_format))
         return upload(c->d, img, w, h, depth_slices, lin, bytes, row_bytes, mip, layer, aspect);
     if (depth_slices != 1) {

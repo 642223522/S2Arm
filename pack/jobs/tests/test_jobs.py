@@ -369,6 +369,32 @@ class JobsTests(unittest.TestCase):
             self.assertFalse(any(p.is_file() for root in failed for p in root.rglob("*")))
             self.assertEqual({p: p.read_bytes() for p in snapshot}, snapshot)
 
+    def test_pull_diagnostics_brings_each_games_unpack_log(self):
+        # #457：多款容器每款的解包日志在 Documents/games/<游戏号>/unpack.log（手机 host.log 写「见 unpack.log」），原先没拉回。
+        #   期望（手写）：游戏库里两款，机上只有 A 有这份日志 → 拉回 games/A/unpack.log，B 不留空目录；不碰资源包、存档
+        import unittest.mock as um, diag
+        A, B = "01008DB008C2C000", "0100000000010000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="A"), dict(id=B, name="B")]))
+        devices = {"result": {"devices": [{"identifier": "D1", "hardwareProperties": {"platform": "iOS", "udid": "U1"}, "connectionProperties": {"tunnelState": "connected"}}]}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "io.s2arm.games.abcde12345", "name": "S2Arm"}]}}
+        sources = []
+        def fake(c, *args, timeout=120):
+            if args[:2] == ("list", "devices"): return 0, devices, ""
+            if args[:3] == ("device", "info", "apps"): return 0, apps, ""
+            source = args[args.index("--source") + 1]; sources.append(source)
+            if source in ("Documents/host.log", f"Documents/games/{A}/unpack.log"):
+                Path(args[args.index("--destination") + 1]).write_text("资源包收推送：失败 " + source)
+                return 0, {}, ""
+            return 1, {}, "not found"
+        with um.patch.object(diag, "devicectl", fake):
+            out = diag.pull(self.c)
+        app = Path(out["apps"][0]["path"])
+        self.assertEqual((app / "games" / A / "unpack.log").read_text(), f"资源包收推送：失败 Documents/games/{A}/unpack.log")
+        self.assertFalse((app / "games" / B).exists())
+        self.assertEqual(out["apps"][0]["files"], 2)
+        self.assertIn(f"Documents/games/{B}/unpack.log", sources)
+        self.assertFalse(any("资源包" in s or "save" in s for s in sources))
+
     def test_pull_diagnostics_hints_resign_when_probe_says_iml_lost(self):
         # 拉回的 diag/iml_probe.json（App 首启复核写）has_iml_ent=false → 一行黄字提示重签；true / null / 没文件 / 坏文件 → 不提示、不报错
         import unittest.mock as um, diag
@@ -521,7 +547,7 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
 
     def test_run_reaps_leftover_session_processes(self):
-        # 10-26 斯普拉遁3 Spare-host：工具退出后，留在它会话里的孙进程（dl_gen 超时只杀 metal-tt，air-tt 过继给 launchd 继续编）要收掉；
+        # 10-26 0100C2500FC20000 Spare-host：工具退出后，留在它会话里的孙进程（dl_gen 超时只杀 metal-tt，air-tt 过继给 launchd 继续编）要收掉；
         #   有意活得比任务久、自立会话的（宽屏自动出表，perl setsid）不收
         import shlex
         d = self.root / "reap"; d.mkdir(); q = shlex.quote(str(d))
@@ -742,7 +768,7 @@ class JobsTests(unittest.TestCase):
         return [json.loads(l) for l in self.c.events.read_text().splitlines() if json.loads(l)["type"] == "space"]
 
     def test_space_budget_adds_direct_library_for_every_game(self):
-        # 直连优先、零配置（10-25）：每款都另加直连库预算（按动森实测 × 体积换算），不看有没有手写配置档；只有直连（11-07），没有不加的分支
+        # 直连优先、零配置（10-25）：每款都另加直连库预算（按01006F8002326000实测 × 体积换算），不看有没有手写配置档；只有直连（11-07），没有不加的分支
         import collections
         import unittest.mock as um
         du = collections.namedtuple("du", "total used free")
@@ -754,38 +780,63 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
-    def test_space_budget_uses_extract_size_when_known(self):
-        # #265：产物根里已有着色器抽取时，直连按抽取量估（缓存 9× + 库 3×），不再用固定 15 GB；期望按 space_rule 文件头的系数手算
+    def test_space_budget_covers_measured_peaks(self):
+        # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
+        #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
+        #   #265 按抽取量的那支已删：0100559011740000 抽取 0.48 GiB 估 17.30 GiB < 峰值 17.77 GiB
         import collections
         import unittest.mock as um
         du = collections.namedtuple("du", "total used free")
-        tid = "0100559011740000"
-        game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
-        ex = self.c.library / "cache" / tid / "k" / "roots" / "m@现行" / "extract"; ex.mkdir(parents=True)
-        with um.patch("space_rule.tree_bytes", return_value=2 << 30), um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
-            lib = library.space_budget(self.c, game)["volumes"][0]
-        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包一份原包 × 1.1，再加直连（单文件镜像不再存进库，#329）
-        self.assertIn("按抽取", lib["note"])
+        GIB = 1 << 30
+        cases = (("010024B00F9D0000", 433397760, 1.03), ("01008FC00D964000", 10776169984, 18.61), ("0100559011740000", 11299842048, 17.77))
+        for tid, size, peak in cases:
+            with self.subTest(tid=tid):
+                game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=size)])
+                with um.patch("shutil.disk_usage", return_value=du(0, 0, 500 * GIB)):
+                    need = library.space_budget(self.c, game)["volumes"][0]["needBytes"]
+                self.assertGreaterEqual(need, int(peak * GIB), f"{tid}：估算 {need / GIB:.2f} GiB < 实测峰值 {peak} GiB")
+                self.assertIn("直连着色器上限", library.space_budget(self.c, game)["volumes"][0]["note"])
+
+    def test_offline_empty_warns(self):
+        # #470：直连库只能运行时现编（shaders/direct/runtime_only.txt，首行原因）→ 完成页一条黄字 direct_offline_empty、文案带原因；没有这个文件 → 不出诊断
+        import build
+        root = self.root / "r470"; (root / "shaders/direct").mkdir(parents=True)
+        build.warn_offline_empty(self.c, root)
+        self.assertEqual(self.c.job["diagnostics"], [])
+        (root / "shaders/direct/runtime_only.txt").write_text("直连库失败：直连抽取失败（没有改写模块目录）\n第二行不要\n", encoding="utf-8")
+        build.warn_offline_empty(self.c, root)
+        d = self.c.job["diagnostics"]
+        self.assertEqual([x["code"] for x in d], ["direct_offline_empty"])
+        self.assertIn("离线预编 0 支", d[0]["summary"] + d[0].get("detail", "") + str(d[0]))
+        self.assertIn("没有改写模块目录", str(d[0])); self.assertNotIn("第二行不要", str(d[0]))
 
     def test_direct_check_counts_existing_cache_and_volume(self):
-        # #265 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）：抽取 1 GB、同盘 → 要 12 GB；已有 4 GB 缓存 → 只要 8 GB
+        # 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）与出包预检同一规则：游戏内容（romfs + exefs + aoc）≥ 3e9 → 15e9、小于 → 5e9；
+        #   已有的同款直连缓存扣掉；期望按 library.py 的两档常量手算
         import collections
         import space_rule
         du = collections.namedtuple("du", "total used free")
-        d = self.root / "dc"; ex, cache, out = d / "ex", d / "cache", d / "out"
-        for x in (ex, cache, out): x.mkdir(parents=True)
-        sizes = {str(ex): 1 << 30, str(cache): 0}
+        d = self.root / "dc"; root, cache, out = d / "root", d / "cache", d / "out"
+        for x in (root / "romfs", root / "exefs", root / "aoc", cache, out): x.mkdir(parents=True)
+        sizes = {str(root / "romfs"): int(2.5e9), str(root / "exefs"): int(0.4e9), str(root / "aoc"): int(0.2e9), str(cache): 0}   # 内容 3.1e9 → 大档
         with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
-            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 12 << 30)))
-            why = space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, (12 << 30) - 1))
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(15e9))))
+            why = space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(15e9) - 1))
             self.assertIn("磁盘空间不足", why)   # pack/jobs/errors.py 据此归 disk_full
-            sizes[str(cache)] = 4 << 30
-            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 8 << 30)))
+            self.assertIn("游戏内容 3.10 GB", why)
+            sizes[str(cache)] = int(4e9)
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(11e9))))
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(11e9) - 1)))
+            sizes[str(root / "aoc")] = 0; sizes[str(cache)] = 0   # 内容 2.9e9 → 小档 5e9
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9))))
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9) - 1)))
             # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
-            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="7.9"):
-                self.assertIn("这块盘只剩 7.9 GB", space_rule.direct_check(ex, cache, out))
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="4.9"):
+                self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
-                self.assertIsNone(space_rule.direct_check(ex, cache, out))
+                self.assertIsNone(space_rule.direct_check(root, cache, out))
+        self.assertEqual(space_rule.direct_bytes(int(3e9)), library._pack_direct_bytes(int(3e9)))   # 取的就是预检那一份
+        self.assertEqual(space_rule.direct_bytes(int(3e9) - 1), library._pack_direct_bytes(int(3e9) - 1))
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
@@ -969,7 +1020,7 @@ class JobsTests(unittest.TestCase):
         base = self.package()
         base["guestIsa"] = "aarch32"
         self.assertTrue(any("32 位" in x for x in library.requirements(self.c, self.game(packages=[base]))))
-        # 本体 32 位、最新更新 64 位（马车8 1.0 → 4.0.1）：按更新判 → 能打包；更新读不出指令集（unknown）→ 退回本体 → 不能打包
+        # 本体 32 位、最新更新 64 位（0100152000022000 1.0 → 4.0.1）：按更新判 → 能打包；更新读不出指令集（unknown）→ 退回本体 → 不能打包
         update64 = dict(self.package("update", 2), guestIsa="aarch64")
         self.assertFalse(any("32 位" in x for x in library.requirements(self.c, self.game(packages=[base, update64]))))
         update_unknown = dict(self.package("update", 2), guestIsa="unknown")
@@ -1361,6 +1412,19 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
 
+    def test_delete_retry_after_half_done_delete_removes_the_leftover_folder(self):
+        # #433：上次删到一半（目录删不空、Errno 66）时 game.json 已被删掉，文件夹和出包中止留下的临时目录还在、索引还指着它。
+        #   期望（手写）：再点删除按索引找回同一个文件夹删干净、清单里去掉；原先认不出这个文件夹，只去掉条目、残留目录留在盘上
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        gdir = layout.game_dir(self.c, game["id"])
+        tmp = gdir / "build" / "extract.ns2_dump.tmp"; tmp.mkdir(parents=True); (tmp / "part.bin").write_bytes(b"x" * 4096)
+        (gdir / layout.GAME_JSON).unlink()
+        self.assertIsNone(layout.find_game(self.c, game["id"]))   # 认不出（没有 game.json）
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertFalse(gdir.exists())
+        self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+
     def test_delete_also_drops_game_from_library_container(self):
         # 期望（#227，游戏库结构 v3）：删 A → 各台手机记录（devices/<设备>.json）里摘掉 A，B 与其余字段原样；没装 A 的那台记录不动；
         #   不装机、不碰默认位置根的 S2Arm.ipa（下次给那台装机时现组的容器就不再带 A）
@@ -1593,9 +1657,24 @@ class JobsTests(unittest.TestCase):
         logs = self.c.logs; logs.mkdir(exist_ok=True)
         for name in ("one@example.invalid.log", "two@example.invalid.log"):
             (logs / name).write_text("synthetic log")
-        with self.assertRaisesRegex(Failure, "文件名重复"):
+        # #457：两个文件脱敏后同名，原先整包不生成；现在后一个加序号照样收进去，内容都在
+        library.diagnostics(self.c)
+        self.assertNotEqual(destination.read_bytes(), previous)
+        with zipfile.ZipFile(destination) as archive:
+            same = sorted(n for n in archive.namelist() if n.startswith("logs/") and n.endswith(".log") and "example.invalid" not in n)
+            self.assertEqual(len(same), 2, archive.namelist())
+            self.assertTrue(same[0].endswith(" (2).log") or same[1].endswith(" (2).log"), same)
+            self.assertEqual({archive.read(n).decode() for n in same}, {"synthetic log"})
+
+    def test_diagnostic_export_failure_names_the_step_and_reason_but_no_path(self):
+        # #427：游戏库在 SMB 共享盘上导不出，原先只有一句「无法安全读取或写入」，看不出卡在哪一步。期望手写：所选位置的文件夹不在 → 建临时文件那一步失败
+        destination = self.root / "不存在的文件夹" / "诊断.zip"; self.c.r["path"] = str(destination)
+        with self.assertRaises(Failure) as caught:
             library.diagnostics(self.c)
-        self.assertEqual(destination.read_bytes(), previous)
+        message = str(caught.exception)
+        self.assertIn("无法安全读取或写入诊断文件，未更新诊断包（在所选位置建临时文件：", message)
+        self.assertIn("错误码", message)
+        self.assertNotIn(str(self.root), message)   # 不带路径（路径里可能有用户名，摘要会贴到公开帖子）
 
     def test_diagnostic_export_never_contains_keys_or_player_files(self):
         self.c.keys.parent.mkdir(parents=True)
@@ -1612,6 +1691,42 @@ class JobsTests(unittest.TestCase):
             self.assertNotIn("verysecret", text)
             self.assertNotIn("a" * 64, text)
             self.assertNotIn(str(self.c.private), text)
+
+    def test_diagnostic_export_keeps_whole_game_log_and_reports_clipping(self):
+        # #41：游戏日志整份进诊断包（原先只留头尾各 16 KB + 心跳行，存档前后的帧读数整段丢）；只有超过单份上限才截，截时尾多头少，manifest 写明截了多少
+        import unittest.mock as um
+        rows = [f"[帧] 第 {i} 帧 18.2 ms 热状态 0\n" for i in range(120000)]   # 约 4 MB，跨好几个 1 MiB 读块
+        mid = len(rows) // 2
+        rows[mid] = "存档：写入 slot0 完成 token=verysecret\n"
+        log = self.c.logs / "0100-game.log"; log.parent.mkdir(exist_ok=True)
+        body = "".join(rows).encode()
+        # 一行敏感信息正好跨 1 MiB 读块边界：逐块脱敏不能把它拦腰切开
+        at = library.DIAGNOSTIC_LOG_CHUNK - 10
+        body = body[:at] + b"\ntoken=boundarysecret\n" + body[at:]
+        log.write_bytes(body)
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            text = z.read("logs/0100-game.log").decode()
+            manifest = json.loads(z.read("manifest.json"))
+        for i in (0, mid - 1, mid + 1, len(rows) - 1):
+            self.assertIn(f"[帧] 第 {i} 帧 ", text)
+        self.assertIn("存档：写入 slot0 完成", text)
+        self.assertNotIn("verysecret", text); self.assertNotIn("boundarysecret", text)
+        self.assertEqual(manifest["truncated"], [])
+        # 超过上限（这里调成 1 MB）：开头 1/8、结尾 7/8，manifest 记原长、留下、截掉
+        with um.patch.object(library, "DIAGNOSTIC_LOG_HEAD", 128 << 10), um.patch.object(library, "DIAGNOSTIC_LOG_TAIL", 896 << 10):
+            destination.unlink(); library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            text = z.read("logs/0100-game.log").decode()
+            cut = json.loads(z.read("manifest.json"))["truncated"]
+        self.assertEqual([x["file"] for x in cut], ["logs/0100-game.log"])
+        self.assertEqual(cut[0]["bytes"], len(body)); self.assertEqual(cut[0]["kept"] + cut[0]["omitted"], len(body))
+        self.assertTrue((1 << 20) - 200 <= cut[0]["kept"] <= 1 << 20, cut[0])
+        self.assertIn("[帧] 第 0 帧 ", text); self.assertIn(f"[帧] 第 {len(rows) - 1} 帧 ", text)
+        self.assertIn(f"中间截掉 {cut[0]['omitted']} 字节", text)
+        tail_part = text[text.index("以下是日志结尾"):]
+        self.assertGreater(len(tail_part.encode()), 6 * len(text[:text.index("中间截掉")].encode()))   # 尾部留得比头部多
 
     def test_diagnostic_fd_boundaries_and_directory_replacement(self):
         import unittest.mock as um
@@ -1660,19 +1775,19 @@ class JobsTests(unittest.TestCase):
     def test_diagnostic_log_keeps_head_heartbeats_and_tail(self):
         import io
         short = b"a" * 32000
-        self.assertEqual(library.diagnostic_log_excerpt(io.BytesIO(short), len(short)), short)
+        self.assertEqual(library.diagnostic_log_excerpt(io.BytesIO(short), len(short), 16000, 16000), short)
         beat = "[心跳] 帧 {} 热状态 0\n".format
         head = b"HEAD_MARK\n" + b"h" * 16000
         noise = b"NOISE_LINE padding padding\n" * 80000   # 约 2.2 MB，心跳行跨 1 MiB 分块
         body = head + noise + beat(1).encode() + noise + beat(2).encode() + noise + b"t" * 16000 + b"\nTAIL_MARK\n"
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
         self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
         self.assertIn(beat(1).strip().encode(), out); self.assertIn(beat(2).strip().encode(), out)
         self.assertLess(out.count(b"NOISE_LINE"), 1200)   # 只有开头 / 结尾 16 KB 内可能带到
         # 心跳太多：只留最新的，总量有界
         many = b"".join(beat(i).encode() for i in range(20000))
         body = b"h" * 16000 + many + b"t" * 16000
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
         self.assertIn(beat(19999).strip().encode(), out); self.assertNotIn(beat(0).strip().encode(), out)
         self.assertLessEqual(len(out), 16000 * 2 + 64000 + 200)
 
@@ -1695,14 +1810,14 @@ class JobsTests(unittest.TestCase):
         noise = "".join(f"[log] 第 {i} 行普通日志 padding padding padding\n" for i in range(2200)).encode()
         body = b"HEAD_MARK\n" + noise + "\n".join(scene(30, 17)).encode() + b"\n" + noise + b"\nTAIL_MARK\n"
         self.assertTrue(250000 < len(body) < 330000, len(body))
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
         for want in ("【红】CRASH 信号 11", "全线程现场：崩溃 信号 11", "线程 17/30 tid 9017「worker-17」在跑", "#11 CRASHFRAME+0xb11", "===== 现场完 ====="):
             self.assertIn(want.encode(), out, want)
         self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
         # 现场块超出保留上限：总量有界；崩溃摘要、第一个非等待线程（崩溃线程）的整段栈、其余线程头一行、现场完都在
         body = b"h" * 16000 + noise + "\n".join(scene(600, 333)).encode() + b"\n" + b"t" * 16000
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
-        self.assertLessEqual(len(out), 16000 * 2 + 64000 + library.DIAGNOSTIC_LOG_SCENE + 400)
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
+        self.assertLessEqual(len(out), 16000 * 2 + 64000 + library.DIAGNOSTIC_LOG_SCENE + 600)
         for want in ("【红】CRASH 信号 11", "线程 333/600 tid 9333「worker-333」在跑", f"#11 CRASHFRAME+{0x100 * 11 + 333:#x}", "线程 1/600 tid 9001", "===== 现场完 ====="):
             self.assertIn(want.encode(), out, want)
         self.assertNotIn(b"#11 idle+0xb01", out)   # 等待线程的栈让位给崩溃线程
@@ -1875,7 +1990,7 @@ class JobsTests(unittest.TestCase):
         with um.patch.object(os, "fdopen", tracked_open), um.patch.object(zipfile, "ZipFile", side_effect=archive):
             library.diagnostics(self.c)
         self.assertTrue(all(output.closed for output in outputs))
-        self.assertIn((log.stat().st_ino, log.stat().st_size - 16000, 16000), reads)
+        self.assertIn((log.stat().st_ino, 0, library.DIAGNOSTIC_LOG_CHUNK), reads)   # #41：日志整份读（按块），不再只读头尾
         self.assertTrue(all(size <= 1 << 20 or size == (4 << 20) + 1 for _, _, size in reads))
         self.assertEqual(marker.read_bytes(), b"unchanged marker")
         self.assertTrue(predictable.is_symlink()); self.assertFalse(destination.is_symlink())

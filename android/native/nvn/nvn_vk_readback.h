@@ -2,7 +2,7 @@
 //
 // 两个事实来源，按“当前内容归谁”选：
 //   · 内容归 CPU（guest 内存里的纹理存储就是事实来源）：按 NVN 块线性布局 deswizzle 后拷贝，
-//     不解析/不为此上传图像。刚被 CPU 填写、还没被任何 draw 用过的纹理正是这一类（王国之泪
+//     不解析/不为此上传图像。刚被 CPU 填写、还没被任何 draw 用过的纹理正是这一类（0100F2C0115B6000
 //     启动期把 1024x1024 BC4 材质贴图逐块填好再 ReadTexels 拼 atlas）。
 //   · 内容归 GPU（图像是事实来源）：先拿帧队列的完成证明（pass_break(1)），再把图像按区域
 //     VkBufferImageCopy 到 host-visible staging，fence 等到完成后打包进 dst。

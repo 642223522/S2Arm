@@ -143,7 +143,7 @@ class SpaceMeasured(JobCase):
         self.assertTrue((self.c.library / library.SPACE_LEDGER).read_text(encoding="utf-8").startswith("# time\tgameId"))
 
     # —— 预算三档依据 ——
-    # 期望值手算：29.13 GB × 1.1 + 15 GB；验收数 火纹 ≈ 47、王国之泪 ≈ 34、小游戏 ≈ 8（维护者 11-08）。单文件镜像不再存进库（#329），不另加一份
+    # 期望值手算：29.13 GB × 1.1 + 15 GB；验收数 火纹 ≈ 47、0100F2C0115B6000 ≈ 34、小游戏 ≈ 8（维护者 11-08）。单文件镜像不再存进库（#329），不另加一份
     def need(self, size, **kw):
         return library.pack_need_bytes([dict(size=size, sha256="a" * 64)], **kw)
 
@@ -151,6 +151,17 @@ class SpaceMeasured(JobCase):
         self.assertEqual(self.need(29_130_000_000, windows=False), 32_043_000_000 + 15_000_000_000)
         self.assertEqual(self.need(17_480_000_000, windows=False), 19_228_000_000 + 15_000_000_000)
         self.assertEqual(self.need(2_700_000_000, windows=False), 2_970_000_000 + 5_000_000_000)
+
+    def test_shared_original_sums_item_contents(self):
+        # #444：一个压缩合集（XCZ）装本体 + 更新，原件 10 GB，两项解开各 8 GB、6 GB → 要按 14 GB 算；原先只留最后一项 → max(10, 6) = 10 GB
+        shared = [dict(size=10_000_000_000, contentBytes=8_000_000_000, sha256="b" * 64),
+                  dict(size=10_000_000_000, contentBytes=6_000_000_000, sha256="b" * 64)]
+        self.assertEqual(library._pack_input_bytes(shared), 14_000_000_000)
+        # 不压缩的合集 / NUP：各项之和不超过原件 → 仍按原件；另一个原件照加
+        nup = [dict(size=10_000_000_000, contentBytes=7_000_000_000, sha256="c" * 64),
+               dict(size=10_000_000_000, contentBytes=2_000_000_000, sha256="c" * 64),
+               dict(size=3_000_000_000, sha256="d" * 64)]
+        self.assertEqual(library._pack_input_bytes(nup), 13_000_000_000)
 
     def test_unpacked_counts_zero_and_windows_adds_a_copy(self):
         self.assertEqual(self.need(10_000_000_000, unpacked=True, windows=False), 15_000_000_000)

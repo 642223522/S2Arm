@@ -95,6 +95,11 @@ public static class PackCases
         using (var doc = JsonDocument.Parse(checklist.Replace("\"ready\":false", "\"ready\":true")))
             check(InstallReadiness.Parse(doc.RootElement) is { Ready: true } r && r.Items.Any(i => !i.Ok), "checklist: backend ready with advisory open items is accepted");
         RejectChecklist("{}", "checklist: malformed");
+        // #487：deviceKind（后端按 USB 产品号认 iPad）；旧后端没有这个字段读成 ""
+        using (var doc = JsonDocument.Parse(checklist.Replace("\"account\":\"\"", "\"account\":\"\",\"deviceKind\":\"ipad\"")))
+            check(InstallReadiness.Parse(doc.RootElement).DeviceKind == "ipad", "checklist: deviceKind ipad kept");
+        using (var doc = JsonDocument.Parse(checklist))
+            check(InstallReadiness.Parse(doc.RootElement).DeviceKind == "", "checklist: no deviceKind reads as empty");
         // 11-07 bundled Impactor: the backend asks for a launcher-local step by name only (openImpactor), never a path or an unknown verb
         const string bundledChecklist = """
 {"gameId":"G","items":[{"id":"impactor","ok":true,"waiting":false,"title":"t","detail":"","who":"human","url":null,"action":null},
@@ -121,6 +126,13 @@ public static class PackCases
             check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (op == "install") == r.ContainsKey("shellDir"),
                 $"request: {op} carries the launcher folder (bundled Impactor); only install carries the shell");
         }
+        // 开发者证书（v0.2.4）：属于这台电脑、不属于某款游戏 → 不带 gameId；密码只走 Secrets（作业进程环境），请求体里没有
+        var cert = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "devCert", "",
+            new Dictionary<string, object?> { ["action"] = "import", ["p12Path"] = "C:/c.p12", ["profilePath"] = "C:/p.mobileprovision" },
+            new Dictionary<string, string> { ["S2A_DEVCERT_PASSWORD"] = "pw-secret" }), "win-3");
+        check((string?)cert["operation"] == "devCert" && !cert.ContainsKey("gameId") && (string?)cert["action"] == "import" &&
+              !JsonSerializer.Serialize(cert).Contains("pw-secret"),
+            "request: devCert needs no game and never carries the password");
         check(PackJobClient.Operations.Contains("delete"), "request: delete (remove the whole game, saves kept) is a launcher operation since library layout v3");
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]
         {

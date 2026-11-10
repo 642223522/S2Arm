@@ -66,7 +66,7 @@ static void settings_restart_result(int result, const char *detail, void *contex
     dispatch_async(dispatch_get_main_queue(), ^{ completion(error); });
 }
 // 切换游戏（多款容器）：一个进程只跑一款，换游戏 = 照退出流程收尾（等存档写完）、结束进程，再点开 App 就是游戏库（willConnect 容器分支）。
-//   确认框同「退出游戏后管理存档」（save_transfer.m s2a_ios_save_present）：先提醒在游戏里存档；收尾放后台队列，主线程不等
+//   确认框同游戏内「存档管理」的退出确认（save_transfer.m s2a_ios_save_present）：先提醒在游戏里存档；收尾放后台队列，主线程不等
 static void switch_game_present(UIViewController *presenter) {
     if (!presenter || presenter.presentedViewController) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:S2APICK(S2A_DPROMPT_SWITCH_GAME_TITLE) message:S2APICK(S2A_DPROMPT_SWITCH_GAME_BODY)
@@ -113,7 +113,7 @@ uint64_t s2a_ap_frames(void);   // ap_host.c：上屏帧数
 void s2a_guest_run_mark(int running);   // vawin.c：「本局在跑」标记（前台写、后台 / 将终止删；下一局见标记还在 = 上局在前台死掉，强制开客体内存文件后备）
 static unsigned long long s2a_footprint_mb(void) { task_vm_info_data_t v; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
     return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&v, &n) == KERN_SUCCESS ? v.phys_footprint >> 20 : 0; }
-// 客体内存分区账（S2A_MEM_SPLIT=1，缺省关；11-05 时之笛读档进场景被系统杀）：
+// 客体内存分区账（S2A_MEM_SPLIT=1，缺省关；11-05 0400486024DEC000读档进场景被系统杀）：
 //   堆区当前段、别名区（MapPhysicalMemory）各扫一次常驻 / 压缩，窗口其余（代码、栈、线程局部、共享 / 传输内存等）= 窗口合计 − 两者，窗口外 ≈ 我方。
 //   kinds：再带我方细分（图形层 nvn_be_mem_kinds：驻留集里的私有贴图 / 私有缓冲（上传暂存块为主）/ 游戏池零拷贝缓冲虚拟长度与其中常驻页 / 其它共享缓冲），
 //   以及实占的内核分项（task_vm_info：匿名 internal、已压缩、图形账 graphics）。注意 mincore「常驻」≠ 计进实占：M5 Pro 实测把没写过的 1 GB
@@ -251,6 +251,7 @@ static const char *host_text(const char *s) {
         {S2A_INIT_FAIL_MSG_SERVICE, S2A_INIT_FAIL_MSG_SERVICE_EN}, {S2A_INIT_FAIL_MSG_RUNTIME, S2A_INIT_FAIL_MSG_RUNTIME_EN},
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
         {S2A_INIT_FAIL_MSG_FILES, S2A_INIT_FAIL_MSG_FILES_EN}, {S2A_INIT_FAIL_NEXT, S2A_INIT_FAIL_NEXT_EN},
+        {S2A_INIT_FAIL_MSG_DEVICE, S2A_INIT_FAIL_MSG_DEVICE_EN},   // #446 设备地址空间 / 内存不够
     };
     if (!s || s2a_l10n_zh()) return s;
     for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) if (!strcmp(s, k[i][0])) return k[i][1];
@@ -534,9 +535,9 @@ int s2a_ios_screen_h(void) { double r = screen_ratio(); return r * 9 < 16 ? ((in
     void (^battery)(NSTimer *) = ^(NSTimer *t) { (void)t; UIDevice *d = UIDevice.currentDevice; UIDeviceBatteryState st = d.batteryState;
         LOG("[电] 电量 %d%%，%s", (int)lroundf(d.batteryLevel * 100), st == UIDeviceBatteryStateCharging ? "充电中" : st == UIDeviceBatteryStateFull ? "已充满" : "未充电"); };
     battery(nil); [NSTimer scheduledTimerWithTimeInterval:60 repeats:YES block:battery];
-    // 前后台（10-20 测试设备1 塞尔达切桌面后 GPU 拒收后台提交、渲染器按出错退出）：iOS 只禁后台提交 GPU，进后台 = 游戏线程在系统调用出入口冻结 + GPU 闸门关
+    // 前后台（10-20 测试设备1 一款第一方动作冒险游戏切桌面后 GPU 拒收后台提交、渲染器按出错退出）：iOS 只禁后台提交 GPU，进后台 = 游戏线程在系统调用出入口冻结 + GPU 闸门关
     // （不放新提交、已提交的做完才返回；queue:nil 在发通知的主线程上同步跑完，满足「进后台回调返回前停提交」）；回前台 = 放开，游戏接着跑，不重开
-    // 只失去焦点（系统弹框 / 控制中心 / 来电横幅，仍在前台）不冻结：10-21 测试设备2 塞尔达起局 3 秒系统浮层失焦，旧做法冻到收局 54 秒没出首帧；
+    // 只失去焦点（系统弹框 / 控制中心 / 来电横幅，仍在前台）不冻结：10-21 测试设备2 一款第一方动作冒险游戏起局 3 秒系统浮层失焦，旧做法冻到收局 54 秒没出首帧；
     // 同一浮层下随后起的暗黑3 从没「回前台」过、一直出帧——失焦期间画面照常可提交，冻结只该跟后台走
     // 用通知不用委托方法：场景式 / 旧式生命周期都发这几条
     s2a_session_on_restart_done(restart_done);   // 任何发起方的进程内重启完成都由壳放重启首帧屏障（见 restart_done）
@@ -552,12 +553,12 @@ int s2a_ios_screen_h(void) { double r = screen_ratio(); return r * 9 < 16 ? ((in
         // 回前台时可能停在失焦（浮层还在），等不到「获得焦点」：主线程下一拍状态已离开后台就放开
         dispatch_async(dispatch_get_main_queue(), ^{ if (UIApplication.sharedApplication.applicationState != UIApplicationStateBackground) s2a_ios_suspend(0, "回前台"); }); }];
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(UIApplication.sharedApplication.applicationState == UIApplicationStateActive); { void s2a_diag_session_fg(int); s2a_diag_session_fg(1); } s2a_ios_suspend(0, "获得焦点"); s2a_guest_run_mark(1); }];
-    // 心跳：每 10 秒一行，被系统直接杀（SIGKILL 不进崩溃处理）时也能看到死前最后的帧号 / 热状态 / 内存（10-20 维护者 塞尔达闪退，日志 12 秒后无一行）
+    // 心跳：每 10 秒一行，被系统直接杀（SIGKILL 不进崩溃处理）时也能看到死前最后的帧号 / 热状态 / 内存（10-20 维护者 一款第一方动作冒险游戏闪退，日志 12 秒后无一行）
     // 低区余量（10-21 巫师3 玩约 2 分钟低区耗尽、Metal 申请失败崩溃）：每行带上，局中能看到往下掉的过程
     [NSTimer scheduledTimerWithTimeInterval:10 repeats:YES block:^(NSTimer *t) { (void)t;
         g_brightness = UIScreen.mainScreen.brightness;   // 自动亮度 / 手动调过也跟上（主线程）
         s2a_brightness_hold_log();
-        // 前后台状态只能在主线程读；其余（整窗 mincore 扫描、分区账、能耗、输入延迟）放后台串行队列：11-05 时之笛客体内存文件后备后，
+        // 前后台状态只能在主线程读；其余（整窗 mincore 扫描、分区账、能耗、输入延迟）放后台串行队列：11-05 0400486024DEC000客体内存文件后备后，
         //   整窗 64 GB 的 mincore 一次要数秒，在主线程上跑让系统卡顿检测连报 2–6 秒（MetricKit 卡顿诊断栈：startMonitoring 心跳块 → s2a_window_resident / mem_split_line）
         int app_state = MIN((int)UIApplication.sharedApplication.applicationState, 2);
         static dispatch_queue_t hb_q; static dispatch_once_t hb_once; dispatch_once(&hb_once, ^{ hb_q = dispatch_queue_create("s2a.heartbeat", DISPATCH_QUEUE_SERIAL); });
@@ -703,8 +704,34 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
     if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
     *done = atomic_load(&g_inst_done); *total = atomic_load(&g_inst_total); return 1;
 }
-static void library_pack_help(NSString *gid, BOOL again) {
-    int st = game_pack_state(gid.UTF8String);
+// 「需要游戏数据 / 重新检查」：快判（.applied 等于清单）不成立时 game_pack_state 退回逐文件核对，一款约 10 万文件要几秒，放主线程会被 iOS 看门狗强杀
+//   （#438 0x8BADF00D：0.2.1 回前台主线程核对 > 2.5 秒，系统结束请求 5 秒到点）。核对挪到后台队列，核完回主线程刷新 / 给说明；
+//   超过 0.3 秒还没核完就先弹「正在检查…」（快判成立时几毫秒就回来，不闪这一下）。同时只核一款，核着时再点不重复起
+static atomic_int g_pack_checking;
+static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
+static void library_pack_help_show(NSString *gid, BOOL again, int st);
+static void library_pack_help(NSString *gid, BOOL again) {   // 主线程
+    if (atomic_exchange(&g_pack_checking, 1)) { LOG("游戏库：%s 正在核对资源包，这次点击不重复起", gid.UTF8String); return; }
+    __block BOOL done = NO; __block UIAlertController *wait = nil;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (done) return;
+        UIViewController *top = lib_top(); if (!top) return;
+        wait = [UIAlertController alertControllerWithTitle:S2AL(@"app.packHelp.checking") message:nil preferredStyle:UIAlertControllerStyleAlert];
+        [top presentViewController:wait animated:YES completion:nil];
+    });
+    CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int st = game_pack_state(gid.UTF8String);
+        double ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            done = YES; atomic_store(&g_pack_checking, 0);
+            LOG("游戏库：%s 后台核对资源包 %.0f 毫秒，结果 %d（主线程没有等）", gid.UTF8String, ms, st);
+            if (wait && wait.presentingViewController) [wait dismissViewControllerAnimated:NO completion:^{ library_pack_help_show(gid, again, st); }];
+            else library_pack_help_show(gid, again, st);
+        });
+    });
+}
+static void library_pack_help_show(NSString *gid, BOOL again, int st) {   // 主线程
     if (st == 0 || st == 1) { LOG("游戏库：%s 资源包已就绪，刷新库界面", gid.UTF8String); if (s2a_shell_refresh) s2a_shell_refresh(); return; }
     BOOL broken = st == 3;   // S2A_IMPORT_BROKEN
     LOG("游戏库：%s 资源包%s，给导入说明%s", gid.UTF8String, broken ? "不完整" : "不在机上", again ? "（重新检查后仍不行）" : "");
@@ -712,7 +739,7 @@ static void library_pack_help(NSString *gid, BOOL again) {
         ? S2AL(@"app.library.packBroken")
         : [NSString stringWithFormat:S2AL(@"app.library.packMissing"), gid];
     if (again) body = [S2AL(@"app.library.stillMissing") stringByAppendingString:body];
-    UIWindow *w = g_lib_window; UIViewController *top = w.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
+    UIViewController *top = lib_top();
     if (!top) { LOG("【红】游戏库：没有窗口，导入说明画不出来"); return; }
     UIAlertController *a = [UIAlertController alertControllerWithTitle:broken ? S2AL(@"app.library.broken.title") : S2AL(@"app.library.missing.title") message:body preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.later") style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; if (s2a_shell_refresh) s2a_shell_refresh(); }]];

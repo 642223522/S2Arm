@@ -53,6 +53,10 @@
 // svc_mem.c 的锁序断言与背板引用入口（只在 Android 有定义）。
 int s2a_mem_g_mu_held(void);
 void s2a_mem_lockorder_vp_enter(void);
+// #48 A3/A4（android/native/system_tuning.c，只在 Android 有定义）：省电档对最终周期取
+//   max(原周期, 33.3 ms)；登记最终周期给 Surface.setFrameRate 刷新率投票。
+uint64_t s2a_android_limit_frame_period(uint64_t period_ns);
+void s2a_android_present_note(uint64_t period_ns);
 #endif
 
 // ---------- Slot table, thunks, unimplemented stubs ----------
@@ -499,7 +503,8 @@ NVN(nvnTextureBuilderSetStride, void, NVNtextureBuilder *b, ptrdiff_t s) { TB(b)
 NVN(nvnTextureBuilderSetStorage, void, NVNtextureBuilder *b, NVNmemoryPool *p, ptrdiff_t off) { TB(b)->pool = (pool_t *)p; TB(b)->off = off; }
 NVN(nvnTextureBuilderSetPackagedTextureLayout, void, NVNtextureBuilder *b, const NVNpackagedTextureLayout *l) {
     TB(b)->has_layout = l != NULL; if (l) memcpy(TB(b)->layout, l->layout, 8);
-    TB(b)->d.pkg_block_h = l ? l->layout[0] + 1 : 0;
+    // byte 0 = block height (log2 GOBs) + 1 in bits 0-7; byte 1 = row-width alignment (log2 GOBs) + 1 in bits 8-15 (kept in the same int: tex_t must stay <= 0x80)
+    TB(b)->d.pkg_block_h = l ? (l->layout[0] + 1) | (l->layout[1] + 1) << 8 : 0;
 }
 NVN(nvnTextureBuilderGetFlags, NVNtextureFlags, const NVNtextureBuilder *b) { return (NVNtextureFlags)((const tex_builder_t *)b)->d.flags; }
 NVN(nvnTextureBuilderGetDevice, const NVNdevice *, const NVNtextureBuilder *b) { return ((const tex_builder_t *)b)->dev; }
@@ -3367,7 +3372,13 @@ static uint64_t present_period(const win_t *o) {
     }
     int itv = present_itv(o), hz = g_hz;
     // 上限作用于最终周期，不能把基准 60 Hz 降到 30 后再乘 interval（interval 2 会误成 15 帧）。
-    return nvn_fps_period_ns(hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0);
+    uint64_t period = nvn_fps_period_ns(hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0);
+#if defined(__ANDROID__)
+    // #48 A4：系统省电档对最终周期取 max(原周期, 33.3 ms)；A3：登记最终周期给刷新率投票。
+    period = s2a_android_limit_frame_period(period);
+    s2a_android_present_note(period);
+#endif
+    return period;
 }
 // The period the acquire thread declares to the scheduler (set_time_constraint): the present period, except that a hold the frame step raised for late frames keeps the cap's deadline.
 // Declaring the longer hold let the performance controller move the game to the efficiency cores at half the clock (TOTK on an iPhone: 3.4 → 1.5 GHz and 65% → 5% on performance

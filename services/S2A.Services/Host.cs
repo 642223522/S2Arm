@@ -340,7 +340,7 @@ namespace S2A.Services
             MemDiag.FootprintProvider = null;
             ReloadSessionEnvironment();
             // 启动闸随会话退休放开：进程内重启（设置页切 60 帧「立刻重启」）的新会话还要 Boot 一次。原先只在 Boot 失败时放开，
-            //   11-02 测试设备1 塞尔达自动复现：窗口重建过了，新会话 Boot 抛「S2A 服务层已开始启动」、会话 2 FAILED
+            //   11-02 测试设备1 一款第一方动作冒险游戏自动复现：窗口重建过了，新会话 Boot 抛「S2A 服务层已开始启动」、会话 2 FAILED
             lock (SaveTransfer.HostGate) SaveTransfer.HostStarted = false;
         }
 
@@ -667,13 +667,13 @@ namespace S2A.Services
             UserChannelPersistence channel = Channel;   // 进程级，跨重启存活（见 Channel）
 
             if (LdnServer == "lan") StartLanDiscovery();
-            // 游戏不支持系统语言时的退路：系统首选（带配置的会话用平台给的标签；显式 S2A_SYSTEM_LANGUAGE 时就是它）→ 简中 → 繁中 → 英语
-            string[] langTags = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_SYSTEM_LANGUAGE")) ? Array.Empty<string>()
-                : configuration?.SystemLanguageTag is Func<string> lt ? new[] { lt() } : configuration == null ? SystemLocale.Preferred() : Array.Empty<string>();
-            Ryujinx.HLE.S2AHooks.TitleLanguageFallback = SystemLocale.TitleFallback(langTags);
+            // 游戏不支持系统语言时的退路：只从宿主主语言出发（Host.Language：显式指定 → 平台标签 → 宿主首选第一项），见 SystemLocale.TitleFallback
+            Ryujinx.HLE.S2AHooks.TitleLanguageFallback = SystemLocale.TitleFallback(Language);
+            // 显式指定的系统语言（env.txt 也算）：游戏的控制数据没声明支持语言时仍按它回（IApplicationFunctions.GetDesiredLanguage）
+            Ryujinx.HLE.S2AHooks.ExplicitSystemLanguage = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_SYSTEM_LANGUAGE"));
             HleConfiguration config = new HleConfiguration(
                 MemoryConfiguration.MemoryConfiguration4GiB,
-                Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如动森存档 Japanese）
+                Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如01006F8002326000存档 Japanese）
                 configuration?.Region ?? EnvEnum("S2A_REGION", RegionCode.USA),
                 VSyncMode.Switch,
                 enableDockedMode: Docked,         // 缺省掌机档（维护者 10-20 晚）；S2A_DOCKED=1 切主机（以后做成玩家设置）

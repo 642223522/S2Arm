@@ -12,12 +12,12 @@ public struct JobFailure: Error, LocalizedError {
 extension JobClient {
     /// 交一个作业并等它结束。事件按作业输出顺序进 events（作业层的结果行不转，结局由适配层统一补一条 result，每个作业恰好一条、在最后）。
     /// 外层 Task 取消 = 请作业停（SIGTERM，同 JobHandle.cancel）；completed 回结局，其余抛 JobFailure；起不来抛 JobClientError。
-    public func perform(_ operation: String, extra: [String: Any] = [:], events: EventSink = .discard) async throws -> JobOutcome {
+    public func perform(_ operation: String, extra: [String: Any] = [:], secrets: [String: String] = [:], events: EventSink = .discard) async throws -> JobOutcome {
         let box = HandleBox()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JobOutcome, Error>) in
                 do {
-                    let handle = try start(operation: operation, extra: extra,
+                    let handle = try start(operation: operation, extra: extra, secrets: secrets,
                         onEvent: { event in if !event.isFinal { events.emit(EngineEvent(job: event)) } },
                         onFinish: { outcome in
                             events.emit(EngineEvent(outcome: outcome))

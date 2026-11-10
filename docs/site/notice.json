@@ -1,0 +1,9 @@
+{
+ "schema": 1,
+ "id": "2026-11-10-official-site",
+ "text": {
+  "zh-Hans": "好消息：s2arm.com 已正式成为 S2Arm 官方网站。S2Arm 免费开源，从不接受捐赠；请只从 s2arm.com 或 GitHub 仓库获取 S2Arm。",
+  "en": "Good news: s2arm.com is now the official S2Arm website. S2Arm is free and open source and never accepts donations; get S2Arm only from s2arm.com or the GitHub repository."
+ },
+ "url": "https://github.com/jhaizhou-ops/S2Arm#readme"
+}

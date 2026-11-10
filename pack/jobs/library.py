@@ -23,14 +23,18 @@ import uuid
 import zipfile
 from errors import explain
 from core import Failure, atomic, contained, digest, prune_jobs, read
-import space_rule
 import toolchain
 import winproc
 import filelock
 import layout
 import sizes
 
-DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节数
+# 诊断包里的日志整份放（zip 压缩，文本约 10 倍）：一份超过 DIAGNOSTIC_LOG_LIMIT 才截，截时留开头 1/8、结尾 7/8（崩溃、存档前后的读数多在后段），
+#   中间另捞心跳行与最后一次崩溃现场，manifest.json 的 truncated 写明每份原长、留了多少、截掉多少。
+#   原先每份只留头尾各 16 KB + 心跳行，帧读数整段丢，玩家只能再传完整日志（#41）
+DIAGNOSTIC_LOG_LIMIT = 200 << 20     # 单份原文上限（压缩后约 20 MB）
+DIAGNOSTIC_LOG_HEAD = DIAGNOSTIC_LOG_LIMIT // 8
+DIAGNOSTIC_LOG_TAIL = DIAGNOSTIC_LOG_LIMIT - DIAGNOSTIC_LOG_HEAD
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
 DIAGNOSTIC_LOG_SCAN = 64 << 20       # 只在结尾前这么大的范围里找心跳行
 DIAGNOSTIC_LOG_CHUNK = 1 << 20
@@ -85,15 +89,33 @@ def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
     return b"\n".join(keep)
 
 
-def diagnostic_log_excerpt(source, size):
-    """诊断包里的日志：短的整份；长的留开头（起局配置）+ 中间的心跳行（卡顿、内存走势）+ 中间最后一次崩溃摘要与全线程现场 + 结尾。总量有界。"""
-    edge = DIAGNOSTIC_LOG_EDGE
-    if size <= 2 * edge:
-        return source.read(2 * edge)
-    head = source.read(edge)
-    start = max(edge, size - edge - DIAGNOSTIC_LOG_SCAN)
-    source.seek(start)
-    beats, used, partial, left = collections.deque(), 0, b"", size - edge - start
+def _line_head(source, limit):
+    """读开头至多 limit 字节，截在最后一个换行后（不把一行拦腰截断）"""
+    data = source.read(limit)
+    cut = data.rfind(b"\n")
+    return data[:cut + 1] if cut >= 0 else data
+
+
+def diagnostic_log_chunks(source, size, head=None, tail=None):
+    """诊断包里一份日志的内容，按块给出（调用方逐块脱敏、写进 zip，不整份进内存）。不超 head + tail 整份；超了：开头 head（截在行尾）
+    + 中间的心跳行与最后一次崩溃摘要、全线程现场 + 结尾 tail（从行首起）。最后一块之后返回 (留下的字节, 截掉的字节)，经 StopIteration.value 取"""
+    head = DIAGNOSTIC_LOG_HEAD if head is None else head
+    tail = DIAGNOSTIC_LOG_TAIL if tail is None else tail
+    if size <= head + tail:
+        kept = 0
+        while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+            kept += len(chunk); yield chunk
+        return kept, 0
+    first = _line_head(source, head)
+    kept = len(first); yield first
+    tail_start = size - tail
+    source.seek(tail_start - 1)
+    if source.read(1) != b"\n":   # 结尾段从下一行行首起
+        probe = source.read(min(DIAGNOSTIC_LOG_CHUNK, tail))
+        nl = probe.find(b"\n")
+        tail_start += nl + 1 if nl >= 0 else 0
+    source.seek(len(first))
+    beats, used, partial, left = collections.deque(), 0, b"", tail_start - len(first)
     scene = _Scene()
     while left > 0:
         chunk = source.read(min(DIAGNOSTIC_LOG_CHUNK, left))
@@ -111,14 +133,22 @@ def diagnostic_log_excerpt(source, size):
                 used += len(line) + 1
                 while used > DIAGNOSTIC_LOG_BEATS:
                     used -= len(beats.popleft()) + 1
-    source.seek(size - edge)
-    tail = source.read(edge)
+    if partial and len(partial) < 4096: scene.feed(partial)
+    omitted = tail_start - len(first)
     gap = lambda text: f"\n…（{text}）…\n".encode()
-    if partial and len(partial) < 4096: scene.feed(partial)   # 扫描区最后一行没有换行（紧挨着结尾段）
-    mid = b""
+    mid = gap(f"日志共 {size} 字节，超过 {DIAGNOSTIC_LOG_LIMIT >> 20} MB 上限，中间截掉 {omitted} 字节，只保留其中 {len(beats)} 行心跳") + b"\n".join(beats)
     if scene.last:
-        mid = gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)
-    return head + gap(f"日志共 {size} 字节，中间只保留 {len(beats)} 行心跳") + b"\n".join(beats) + mid + gap("以下是日志结尾") + tail
+        mid += gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)
+    yield mid + gap("以下是日志结尾")
+    source.seek(tail_start)
+    while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+        kept += len(chunk); yield chunk
+    return kept, omitted
+
+
+def diagnostic_log_excerpt(source, size, head=None, tail=None):
+    """diagnostic_log_chunks 拼成一份（单测用）"""
+    return b"".join(diagnostic_log_chunks(source, size, head, tail))
 
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20
@@ -185,6 +215,35 @@ def store_todo(c, ids=None):
             continue
         todo.append(gid)
     return todo
+
+
+STORE_QUIET_WAIT = 30.0   # 删除 / 移动 / 搬家前等后台商店查询结束的上限（秒）：它一轮联网最多 STORE_BUDGET 10 秒，加改文件夹名
+
+
+@contextlib.contextmanager
+def store_meta_quiet(library):
+    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock。
+    它正在查就等它查完（最多 STORE_QUIET_WAIT 秒，超了照常继续：它写横图在目录锁里、只写清单里还在的款并重新找文件夹，改名在执行锁里，
+    这里等是为了连它的任务记录也不写进正被删 / 搬的位置）；拿到后它再起来见锁被占就这次不查"""
+    path = Path(library) / ".store-meta.lock"
+    if not path.parent.is_dir():
+        yield
+        return
+    with path.open("a") as f:
+        held, deadline = False, time.monotonic() + STORE_QUIET_WAIT
+        while True:
+            try:
+                filelock.try_lock(f); held = True
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.5)
+        try:
+            yield
+        finally:
+            if held:
+                filelock.unlock(f)
 
 
 def store_meta_background(c, ids=None):
@@ -460,6 +519,39 @@ def _win_volume_format(path):
         return ""
 
 
+
+def volume_cluster(path):
+    """路径所在卷的分配单元（簇）字节数；读不到给 0。Mac：statvfs 的 f_frsize（文件系统基本块；f_bsize 在 macOS 上是建议的读写大小，APFS 读出 1 MB，不能用）；
+    Windows：GetDiskFreeSpaceW 的「每簇扇区数 × 每扇区字节数」。路径还不存在时看最近一级已存在的上级目录"""
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    if os.name == "nt":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            root = ctypes.create_unicode_buffer(1024)
+            if not k32.GetVolumePathNameW(ctypes.c_wchar_p(winproc.win_path(str(p))), root, 1024):
+                return 0
+            spc, bps, free, total = (ctypes.c_ulong() for _ in range(4))
+            if not k32.GetDiskFreeSpaceW(root, ctypes.byref(spc), ctypes.byref(bps), ctypes.byref(free), ctypes.byref(total)):
+                return 0
+            return spc.value * bps.value
+        except (OSError, AttributeError, ValueError):
+            return 0
+    try:
+        return os.statvfs(p).f_frsize
+    except OSError:
+        return 0
+
+
+def location_slack(path):
+    """存放位置的卷格式、分配单元，以及要不要提示出包会多占空间、为什么（libloc.slack_reason：cluster 大簇 / format 不能克隆或硬链接；只提示不拦）"""
+    import libloc
+    fmt, cluster = volume_format(path), volume_cluster(path)
+    reason = libloc.slack_reason(fmt, cluster, system="Windows" if os.name == "nt" else "Darwin")
+    return dict(format=fmt, clusterBytes=cluster, slackWarning=reason is not None, slackReason=reason)
+
 def require_apfs(path):
     """游戏库所在卷的格式：Mac 要 APFS（原错误码 library_not_apfs），Windows 要 NTFS / ReFS（library_bad_format，libloc.format_ok）；读不到格式不拦"""
     import libloc
@@ -483,7 +575,7 @@ def require_local(path):
         raise Failure(libloc.CLOUD_MESSAGE.format(cloud=cloud), code="library_in_cloud")
 
 
-MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
+MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".store-meta.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
 
 
 def _looks_like_library(root):
@@ -630,7 +722,7 @@ def move_library(c, source):
         raise Failure("原来的位置不是可搬的游戏库。", code="library_move_failed")
     if c.library == source or c.library.is_relative_to(source) or source.is_relative_to(c.library):
         raise Failure("新位置不能在原来的游戏库里面，也不能包含它。", code="library_move_failed")
-    with _source_locked(source):
+    with store_meta_quiet(source), _source_locked(source):
         pairs = _move_pairs(c, source)
         c.library.mkdir(parents=True, exist_ok=True)
         cross = [(a, b) for a, b in pairs if not _same_volume(a, c.library)]
@@ -680,7 +772,7 @@ def move_library(c, source):
                 _discard(a)
             except OSError as error:
                 c.diagnostic("游戏库已经搬好，旧位置有文件没删掉，可以手动删除：" + c.redact(str(error)), code="job_failed", severity="warning")
-    for name in (".execution.lock", ".catalog.lock", ".DS_Store"):
+    for name in (".execution.lock", ".catalog.lock", ".store-meta.lock", ".DS_Store"):
         (source / name).unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         _discard(source / ".s2arm-work")   # 工作目录回私有目录后剩的，都是能重新生成的
@@ -889,7 +981,7 @@ SPACE_UNKNOWN = [
 ]
 
 
-# 双轨包多占的空间（10-24 动森实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
+# 双轨包多占的空间（10-24 01006F8002326000实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
 # 出包要多少盘（11-08 维护者）：不看这款做没做过，第一次出包也算得准，只有一个数。
 #   解包 = 原包 × 1.1（解包目录已完整在盘上时算 0）；Mac 的资源包是 APFS 克隆不另算，Windows（NTFS 无克隆）再加一份原包 × 1.1；
 #   直连（翻译缓存 + 着色器库 + 收尾临时，取上限）：原包 < 3 GB 记 5 GB，其余 15 GB（最坏样本巫师3 缓存 7.5 + 库 1.5 × 2 份 + 收尾临时约 4）
@@ -897,39 +989,39 @@ PACK_SMALL_BYTES, DIRECT_SMALL_BYTES, DIRECT_LARGE_BYTES = int(3e9), int(5e9), i
 
 
 def _pack_input_bytes(packages):
-    # NSZ/XCZ按解包内容与原文件取大值；同一sha的原件只计一次。
-    return sum(max(p.get("size", 0), p.get("contentBytes", 0))
-               for p in {p["sha256"]: p for p in packages}.values())
+    # 同一 sha 的原件只计一次：取原件大小与所选各项内容字节之和的大值（NSZ/XCZ 解开比原件大）。
+    # 合集 / NUP 一个原件装多项，每项各记自己那份 contentBytes，要相加；原先按 sha 去重只留最后一项，压缩合集解开后的量少算（#444）
+    by_sha = {}
+    for p in packages:
+        size, content = by_sha.get(p["sha256"], (0, 0))
+        by_sha[p["sha256"]] = (max(size, p.get("size", 0)), content + p.get("contentBytes", 0))
+    return sum(max(size, content) for size, content in by_sha.values())
 
 
 def _pack_direct_bytes(size):
     return DIRECT_SMALL_BYTES if size < PACK_SMALL_BYTES else DIRECT_LARGE_BYTES
 
 
-def pack_need_bytes(packages, unpacked=False, windows=None, extract_bytes=None):
+def pack_need_bytes(packages, unpacked=False, windows=None):
     """这次出包要多少盘；packages 已按 selected_packages 选定。unpacked：解包目录已完整在盘上。windows 不给就按当前系统。
-    extract_bytes：着色器抽取量已知（产物根 extract/ 在盘上）时直连按 space_rule 估（#265：固定 15 GB 对大游戏不够、对小游戏偏多），不知道才用经验值"""
+    直连段按原件大小分两档（_pack_direct_bytes）。11-10 删掉 #265 的「按着色器抽取量 × 系数」：抽取字节数不是直连占用的驱动量——
+    抽取产物有的是压缩过的着色器档案（0100559011740000 只有 23 个、0.48 GiB），有的是原文（01008FC00D964000 1.66 GiB），两者直连编译缓存峰值
+    却差不多（6.3 / 7.0 GiB），乘系数注定一款多一款少；那条分支从 #265 起读的是 v2 旧路径、从没生效过。按原件的规则在克隆感知、只量出包作业目录的
+    峰值上三款都够（单测 test_space_budget_covers_measured_peaks）"""
     size = _pack_input_bytes(packages)
     copy = size * 11 // 10
     windows = os.name == "nt" if windows is None else windows
-    direct = sum(space_rule.direct_need(extract_bytes)) if extract_bytes else _pack_direct_bytes(size)
+    direct = _pack_direct_bytes(size)
     return (0 if unpacked else copy) + (copy if windows else 0) + direct   # 单文件镜像 romfs.img 不再存进库（#329：存 romfs.files 硬链接，装机时现拼，push_pack 另核本机空间）
 
 
-def _extract_bytes(c, gid):
-    """这款现行产物根里的着色器抽取量（Mac 打包 cache/<款>/<键>/roots、打 iPhone 包 iPhone/<款>/roots；取大的）；还没抽过 → None"""
-    dirs = [*(c.library / "iPhone" / gid).glob("roots/*@现行/extract"), *(c.library / "cache" / gid).glob("*/roots/*@现行/extract")]
-    sizes = [space_rule.tree_bytes(d) for d in dirs if d.is_dir()]
-    return max(sizes) if sizes and max(sizes) > 0 else None
-
-
-# 出包实测账（11-07 联合开发者旷野之息：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
+# 出包实测账（11-07 联合开发者01007EF00011E000：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
 #   量这一款在游戏库所在卷上的整套占用，追加一行到 游戏库/space-usage.tsv（取最后一行，同 tools/disk_admit.py 的 est.tsv）；
 #   预检先用同款实测、再用同大小档实测比例 × 本款大小，都没有才退回经验规则。余量 × 1.1 同 维护方工具 need_bytes
 SPACE_LEDGER = "space-usage.tsv"
 CLONED_DIRS = ("romfs", ".romfs_store")
 SPACE_LEDGER_FIELDS = ("time", "gameId", "target", "direct", "inputBytes", "footprintBytes", "name", "format")
-SPACE_LEDGER_FORMAT = "2"   # 2 起 RomFS 只算一份、直连缓存是压缩后的（DSZ1）；旧行偏大约 5 倍（火焰纹章记 152 GB，实占约 32 GB），不用
+SPACE_LEDGER_FORMAT = "2"   # 2 起 RomFS 只算一份、直连缓存是压缩后的（DSZ1）；旧行偏大约 5 倍（一款第一方策略 RPG记 152 GB，实占约 32 GB），不用
 
 
 def _space_target(c):
@@ -1064,9 +1156,8 @@ def space_budget(c, game):
     packages = selected_packages(game)
     size = _pack_input_bytes(packages)
     unpacked = _unpacked_on_disk(c, game)
-    extract = _extract_bytes(c, game["id"]) if "id" in game else None
-    need, free = pack_need_bytes(packages, unpacked=unpacked, extract_bytes=extract), _sh.disk_usage(c.library).free
-    direct = f"直连着色器 {_gb(sum(space_rule.direct_need(extract)))}（按抽取 {_gb(extract)} 估）" if extract else f"直连着色器上限 {_gb(_pack_direct_bytes(size))}"
+    need, free = pack_need_bytes(packages, unpacked=unpacked), _sh.disk_usage(c.library).free
+    direct = f"直连着色器上限 {_gb(_pack_direct_bytes(size))}"
     note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}，{direct}"
     volumes = [dict(role="library", volume=_volume(c.library), needBytes=need, freeBytes=free, enough=free >= need,
                     note=note, unknown=["shader_cache"], basis="rule")]
@@ -1111,7 +1202,7 @@ def check_pack_space(c, game, *, compiler_policy=None):
 
 def guest_isa(selected):
     # 真正跑的程序的指令集：最新更新的 ExeFS 是完整的，读得出就以它为准；读不出（unknown）才看本体。
-    # 有的游戏本体 32 位、更新后 64 位（马车8 1.0 AArch32 → 4.0.1 AArch64，10-23 一键出包曾按本体误拒）
+    # 有的游戏本体 32 位、更新后 64 位（0100152000022000 1.0 AArch32 → 4.0.1 AArch64，10-23 一键出包曾按本体误拒）
     upd = [p for p in selected if p["type"] == "update" and p.get("guestIsa") in ("aarch64", "aarch32")]
     if upd:
         return upd[0]["guestIsa"]
@@ -1981,21 +2072,24 @@ def delete(c):
     t0 = time.time()
     while True:
         try:
-            with c.lock("execution"), c.lock():
+            with store_meta_quiet(c.library), c.lock("execution"), c.lock():
                 gid = c.game()["id"]
                 c.begin("删除游戏与出包产物")
-                gdir = layout.find_game(c, gid)
+                # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
+                #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
+                gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
                 if gdir and gdir.exists():
                     # 存档有内容就保留
                     saves = gdir / "saves"
                     backups = gdir / "save-backups"
                     has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+                    root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
                     if has_saves:
                         for item in gdir.iterdir():
                             if item.name not in ("saves", "save-backups"):
-                                _rm(c, layout.root_of(c, gid), item)
+                                _rm(c, root, item)
                     else:
-                        _rm(c, layout.root_of(c, gid), gdir)
+                        _rm(c, root, gdir)
                 for p in game_caches(c, gid):
                     _rm(c, c.work_root, p)
                 drop_from_container(c, gid)
@@ -2266,6 +2360,7 @@ def diagnostics(c):
         raise Failure("诊断包请选择应用数据和游戏库以外的位置。")
     descriptors = []
     temporary = None
+    step = "打开日志目录"   # 失败时写进报错：哪一步、什么错误（#427：SMB 共享盘上导不出，原先只有一句笼统的话，看不出卡在哪）
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
         # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
@@ -2279,6 +2374,7 @@ def diagnostics(c):
         descriptors.append(roots["jobs"])
         c.begin("导出脱敏诊断")
 
+        step = "在所选位置建临时文件"
         fd, name = tempfile.mkstemp(prefix="." + destination.name + ".", suffix=".partial", dir=destination.parent)
         temporary = Path(name)
         with os.fdopen(fd, "w+b") as output:
@@ -2300,6 +2396,15 @@ def diagnostics(c):
                             return
                         if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                             raise Failure("诊断文件在导出期间发生变化，请重试。")
+                        stem, suffix = os.path.splitext(member)
+                        # Archive separators are known structure, not email local-part characters.
+                        public_stem = "/".join(redact_member_component(part) for part in stem.split("/"))
+                        public_member, n = public_stem + suffix, 1
+                        # 两个文件脱敏后同名（文件名里的设备号、邮箱之类被换成同一个标签）：后一个加序号照样收进去。
+                        #   原先整包报「文件名重复」不生成，玩家交不出诊断包（#457）
+                        while public_member in archive.namelist() or public_member == "manifest.json":
+                            n += 1
+                            public_member = f"{public_stem} ({n}){suffix}"
                         if job:
                             limit = DIAGNOSTIC_JOB_LIMIT
                             if opened.st_size > limit:
@@ -2307,17 +2412,33 @@ def diagnostics(c):
                             data = source.read(limit + 1)
                             if len(data) > limit:
                                 raise Failure("诊断任务文件超过 4 MiB 上限，未生成诊断包。")
-                        else:
-                            data = diagnostic_log_excerpt(source, opened.st_size)
-                    stem, suffix = os.path.splitext(member)
-                    # Archive separators are known structure, not email local-part characters.
-                    public_member = "/".join(redact_member_component(part) for part in stem.split("/")) + suffix
-                    if public_member in archive.namelist() or public_member == "manifest.json":
-                        raise Failure("脱敏后的诊断文件名重复，未生成诊断包。")
-                    # These allowlisted job/log files are text. Invalid UTF-8 is
-                    # replaced, never copied as raw bytes around redaction.
-                    archive.writestr(public_member, redact(data.decode(errors="replace")))
+                            # These allowlisted job/log files are text. Invalid UTF-8 is
+                            # replaced, never copied as raw bytes around redaction.
+                            archive.writestr(public_member, redact(data.decode(errors="replace")))
+                            return
+                        # 日志：逐块脱敏、流式写进 zip（整份可达上百 MB，不整份进内存）。块在换行处切开，脱敏规则不会碰到半行
+                        chunks = diagnostic_log_chunks(source, opened.st_size)
+                        with archive.open(public_member, "w", force_zip64=True) as out:
+                            carry = b""
+                            while True:
+                                try:
+                                    piece = next(chunks)
+                                except StopIteration as done:
+                                    kept, omitted = done.value
+                                    break
+                                c.check()
+                                piece = carry + piece
+                                cut = piece.rfind(b"\n") + 1
+                                carry, piece = (piece[cut:], piece[:cut]) if cut else (piece, b"")
+                                if piece:
+                                    out.write(redact(piece.decode(errors="replace")).encode())
+                            if carry:
+                                out.write(redact(carry.decode(errors="replace")).encode())
+                        if omitted:
+                            truncated.append(dict(file=public_member, bytes=opened.st_size, kept=kept, omitted=omitted))
 
+                step = "读日志与任务记录"
+                truncated = []
                 if roots["jobs"] is not None:
                     for name in sorted(winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
                         if name.endswith(".json"):
@@ -2352,14 +2473,19 @@ def diagnostics(c):
                 # These names have already been sanitized; redacting them again
                 # would hide task UUIDs and break the archive index.
                 manifest["files"] = sorted(archive.namelist() + ["manifest.json"])
+                manifest["truncated"] = truncated   # 超过单份上限被截的日志：原长、留下、截掉的字节（空 = 全部整份）
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         c.check()
+        step = "把诊断包放到所选位置"
         current = temporary.stat(follow_symlinks=False)
         if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
             raise Failure("诊断临时文件在导出期间发生变化，请重试。")
         os.replace(temporary, destination)
-    except OSError:
-        raise Failure("无法安全读取或写入诊断文件，未更新诊断包。") from None
+    except OSError as error:
+        # 只带步骤、错误码与系统给的原因，不带路径（路径里可能有用户名，诊断摘要会被贴到公开帖子里）
+        code = getattr(error, "winerror", None) or error.errno
+        reason = (error.strerror or type(error).__name__) + (f"，错误码 {code}" if code else "")
+        raise Failure(f"无法安全读取或写入诊断文件，未更新诊断包（{step}：{reason}）。") from None
     finally:
         for descriptor in reversed(descriptors):
             winproc.close(descriptor) if os.name == "nt" else os.close(descriptor)
@@ -2375,12 +2501,18 @@ def location_rows(c):
     rows = []
     for lid, root, ok in layout.locations(c):
         free = shutil.disk_usage(root).free if ok else None
-        rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library))
+        rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library,
+                         **(location_slack(root) if ok else {})))
     return dict(locations=rows, last=layout.load_index(c).get("last") or layout.default_id(c))
 
 
 def list_locations(c):
-    return location_rows(c)
+    """出包页存放位置下拉框；请求带 probe（刚在「选择其他文件夹…」里选的路径）时另给这个路径的卷格式与提示（#444）"""
+    out = location_rows(c)
+    if c.r.get("probe"):
+        probe = Path(c.r["probe"]).expanduser()
+        out["probe"] = dict(path=str(probe), **location_slack(probe))
+    return out
 
 
 def apply_location(c, game):
@@ -2392,6 +2524,13 @@ def apply_location(c, game):
     if want == Path(want.anchor) or want == Path.home():
         raise Failure("请选一个单独的文件夹作存放位置。", code="job_failed")
     where, place = layout.state(c, game["id"])
+    if where == "offline" and place != want:
+        # 原来的位置没连上（盘没插 / 文件夹已删），玩家在出包页另选了位置（#453）：原先照样先查原位置、报「没连上」，玩家的选择不起作用。
+        #   改在新位置重新建：解包、产物重新做；原位置上的文件（含 Mac 存档）不动，盘插回来可用「重新找到」认回
+        c.diagnostic(f"这款原来的存放位置没连上（{place}），这次改在新选的位置重新准备；原位置上的文件（包括 Mac 上的存档）没有动。",
+                     code="job_failed", severity="warning")
+        layout.forget(c, game["id"])
+        where = "none"
     if where == "ok" and place.parent.parent != want:
         c.begin("把这款游戏搬到新的存放位置")
         layout.move_game(c, game["id"], want)
@@ -2401,7 +2540,7 @@ def apply_location(c, game):
 
 
 def move_game(c):
-    with c.lock("execution"), c.lock():
+    with store_meta_quiet(c.library), c.lock("execution"), c.lock():
         game = c.game()
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")

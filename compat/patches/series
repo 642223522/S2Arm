@@ -531,3 +531,14 @@
 20261110-1010-hid-npad-imu.patch
 20261109-2337-am-app-functions-330.patch
 20261110-1645-hid-214-vibration.patch
+20261110-0134-am-startup-logo-msg.patch
+20261110-0057-am-zero-language-fallback.patch
+20261110-0439-swkbd-negative-words.patch
+20261110-2146-am-zero-language-explicit.patch
+20261110-0646-am-language-host-primary.patch
+20261110-0654-am-language-zh-tail.patch
+20261110-0823-am-language-switch2-unknown.patch
+20261110-1011-hwopus-decoder-limit.patch
+20261111-0102-shader-sr84-vrs-size.patch
+20261110-1335-arm-zero-mask-quirk-flag.patch
+20261110-1349-arm-zero-mask-attachments.patch

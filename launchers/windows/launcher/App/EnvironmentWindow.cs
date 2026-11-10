@@ -39,14 +39,21 @@ public sealed partial class EnvironmentWindow : Window
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.experience.v1.json")
             ?? throw new FileNotFoundException("Shared experience resource is missing.");
         using var reader = new StreamReader(stream);
-        text = new SharedText(reader.ReadToEnd());
+        var experience = reader.ReadToEnd();
+        text = new SharedText(experience);
+        using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
+            ?? throw new FileNotFoundException("Localization table resource is missing.");
+        using var tableReader = new StreamReader(table);
+        backend = new BackendText(tableReader.ReadToEnd(), experience);
+        MetalFolder.Load(privateRoot);   // 上次手动指定的 Metal 文件夹：设进本进程环境，环境检查 / 出包子进程继承
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
         Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
         Opened += (_, _) =>
         {
-            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync();
+            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
+            _ = RecoverBatchAsync();   // 上次没出完的批量出包读回来（BatchPage.cs）
             // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
             //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
             if (File.Exists(LibraryPreference) || File.Exists(Path.Combine(SavedLibrary(), ".s2arm-library.json"))) EnsureLibrary(() => { });
@@ -59,9 +66,12 @@ public sealed partial class EnvironmentWindow : Window
     }
 
     private string T(string key) => text.Get(key, language);
-    private static TextBlock Label(string value, double size = 14) => new()
+    private readonly BackendText backend;
+    /// <summary>作业层来的中文原句（报错、阶段、检查项、进度说明）在英文界面下的显示；T() 的文案本来就是英文，原样通过。#361</summary>
+    private string B(string value) => language == "en" ? backend.English(value) : value;
+    private TextBlock Label(string value, double size = 14) => new()
     {
-        Text = value, FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
+        Text = B(value), FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
         TextWrapping = TextWrapping.Wrap
     };
     private Button Action(string key, Action handler, bool enabled = true)
@@ -111,6 +121,7 @@ public sealed partial class EnvironmentWindow : Window
             language = languages.SelectedIndex == 0 ? "zh-Hans" : "en"; Render();
         };
         if (PhonePill() is { } phonePill) rightBar.Children.Add(phonePill);
+        if (BatchPill() is { } batchPill) rightBar.Children.Add(batchPill);
         AddUpdateControls(rightBar);
         rightBar.Children.Add(languages);
 
@@ -155,6 +166,7 @@ public sealed partial class EnvironmentWindow : Window
 
         Grid.SetColumn(rightBar, 1); header.Children.Add(rightBar);
         body.Children.Add(header);
+        AddNoticeBar(body);
         if (unexpectedError.Length > 0)
         {
             // 全局兜底接住的意外错误（Program.cs）：启动器不退出，在顶部说清楚、给日志位置，玩家可以关掉提示继续用
@@ -168,7 +180,7 @@ public sealed partial class EnvironmentWindow : Window
             panel.Children.Add(dismiss);
             body.Children.Add(Card(panel));
         }
-        if (RenderPackPages(body)) return;
+        if (RenderPackPages(body) || RenderBatchPage()) return;
         if (importDialog is not null)
         {
             RenderImportDialog(body);

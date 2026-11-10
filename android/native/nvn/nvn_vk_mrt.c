@@ -263,7 +263,7 @@ uint64_t nvn_vk_guest_buffer_extent(uint64_t guest_addr, uint64_t cap, int *exac
     }
     // 退路：所在池的池尾（可证明“已映射”，但不是分配边界）。
     // 弱引用：宿主单测没有前端时返回 0 → 调用方准确失败。必须用单点查询，不能用快照：
-    // 快照有 cap 截断（TOTK/BotW 活跃池可达上千），命中池排在 cap 之后会被误判成“不可证明”。
+    // 快照有 cap 截断（0100F2C0115B6000/01007EF00011E000 活跃池可达上千），命中池排在 cap 之后会被误判成“不可证明”。
     extern int nvn_gva_pool_of(uint64_t cpu_addr, uint64_t *cpu_base, uint64_t *bytes) __attribute__((weak));
     if (!nvn_gva_pool_of || !nvn_gva_pool_of(guest_addr, &base, &bytes) || !bytes || guest_addr < base) return 0;
     uint64_t room = bytes - (guest_addr - base);

@@ -63,11 +63,11 @@ s2armctl next --json    # 同上，给程序读：{step, who, do, why, game, tas
 s2armctl keys <prod.keys 路径>              # 放密钥，等导入完成才返回
 s2armctl games <游戏文件夹>                  # 放游戏：本体、更新、DLC 放同一个文件夹；等导入完成才返回
 s2armctl build <游戏号> ios                  # 导出 iPhone / iPad 版（同一个包）；mac = 这台 Mac；android / harmony 即将上线
+s2armctl batch <游戏号>[:mac,iphone] …      # 批量出包：几款一起、每款可同时出 Mac 和 iPhone（缺省 iphone），一款接一款，出完打印每款结果；Windows 暂不支持
 s2armctl customize <游戏号> --name 名字 --cover 图片  # 改游戏显示名 / 封面；--reset-name、--reset-cover 恢复默认；下次装到 iPhone 时带上
 s2armctl wait <游戏号> --op ipa --timeout 7200   # 等导出结束：逐段打进度，结尾打每段耗时；失败退出码 1
 s2armctl install-check <游戏号>              # 装机前清单：iPhone 版、Xcode 登录 Apple ID、数据线连上、信任、开发者模式
-s2armctl install <游戏号>                    # 装到 iPhone：签名 → 数据线安装 → 拷游戏资源、逐文件核对
-s2armctl wait <游戏号> --op install --timeout 3600
+s2armctl install <游戏号>                    # 装到 iPhone：签名 → 数据线安装 → 拷游戏资源、逐文件核对；等到装完，失败打错误码、退 1
 s2armctl device <游戏号>                     # iPhone 连没连、这款游戏装没装
 s2armctl push-pack <游戏号>                  # 只拷游戏资源（App 已装好、资源不全时）
 s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
@@ -143,6 +143,7 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | `device_locked` | human | 请玩家解锁手机、停在主屏幕，装的过程中别锁屏 |
 | `container_would_drop` | ask | 手机上有几款是在别的电脑装的，这次会暂时不能玩（存档和资源包还在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名告诉玩家，同意了再 `install <游戏号> --accept-dropped`（删除用 `uninstall <游戏号> --accept-dropped`） |
 | `free_app_limit` | human | 这台 iPhone 上免费签名的自签 App 已满 3 个：请玩家删掉一个不玩的自签 App 再装 |
+| `app_id_taken` | human | 包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认登录的是当初装 S2Arm 的 Apple ID，或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名 |
 | `free_appid_limit` | human | 免费 Apple ID 7 天内最多注册 10 个包名，已用满（Apple 错误 9120）；删 App 不退额度，别让玩家删：请玩家等几天（最早那批满 7 天恢复），或在 Xcode 换一个 Apple ID 登录（你不代做），或用付费开发者账号 |
 | `provisioning_expired` / `signing_failed` | ai | 再 `install` 一次（会重新申请）；还不行 `logs` 看签名哪步报错，必要时改用 AltStore（启动器「装到 iPhone」页底部有步骤，玩家本人登录） |
 | `manual_unpack_required`（警告） | human | 资源包已传完，电脑拉不起手机上的 App：让玩家在 iPhone 上打开这款游戏、保持前台等导入完，不要重推 |

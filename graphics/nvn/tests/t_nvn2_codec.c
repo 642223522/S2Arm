@@ -573,6 +573,31 @@ int main(int argc, char **argv) {
         pfin(poolB); free(memA); free(memB);
     }
 
+    {   // #116 GameChat 摄像头视频存储（nvn2_chat_video_*，nvn2.c chat_entry 经登记取）。期望按 Splatoon Raiders sdk 反汇编的语义手写：
+        //   Calculate(宽, 高, 张数) 范围 宽 32–1920 / 高 32–1080 / 1–4 张，超了回 0；大小按 4 KB 对齐、放得下 张数 × 宽 × 高 × 4 字节；
+        //   Initialize 要缓冲与大小 4 KB 对齐，建成后 Get(i) 给出各不相同、非 0 的宿主句柄，越界序号回 0；这些句柄能建原生图像（nvnNativeImageInitialize 认）；
+        //   Finalize 后句柄失效（nvnNativeImageInitialize 不认）；登记把这四个实现交给了 nvn2.c（马车世界原先拿到 0 → 中止）
+        uint64_t nvn2_chat_video_size(int, int, int); uint32_t nvn2_chat_video_init(void *, int, int, int, void *, uint64_t);
+        void nvn2_chat_video_fini(void *); uint32_t nvn2_chat_video_handle(const void *, int);
+        CHECK(nvn2_chat_video_size(384, 216, 0) == 0 && nvn2_chat_video_size(16, 216, 4) == 0 && nvn2_chat_video_size(384, 2000, 4) == 0 && nvn2_chat_video_size(384, 216, 5) == 0);
+        uint64_t sz = nvn2_chat_video_size(384, 216, 4);
+        CHECK(sz && !(sz & 0xfff) && sz >= 4ull * 384 * 216 * 4);
+        uint8_t *buf = NULL; CHECK(!posix_memalign((void **)&buf, 0x1000, (size_t)sz)); memset(buf, 0, (size_t)sz);
+        _Alignas(16) uint8_t type[224], bad[224];
+        CHECK(nvn2_chat_video_init(bad, 384, 216, 4, buf + 0x10, sz) != 0);   // 缓冲没 4 KB 对齐：失败
+        CHECK(nvn2_chat_video_init(type, 384, 216, 4, buf, sz) == 0);
+        uint32_t h[4]; for (int i = 0; i < 4; i++) h[i] = nvn2_chat_video_handle(type, i);
+        CHECK(h[0] && h[1] && h[2] && h[3] && h[0] != h[1] && h[1] != h[2] && h[2] != h[3] && h[0] != h[3]);
+        CHECK(nvn2_chat_video_handle(type, 4) == 0 && nvn2_chat_video_handle(type, -1) == 0);
+        void (*setdef)(void *) = E("_Z32nvnNativeImageBuilderSetDefaultsP21NVNnativeImageBuilder");
+        void (*seth)(void *, uint32_t) = E("_Z41nvnNativeImageBuilderSetNativeImageHandleP21NVNnativeImageBuilderN2nn2gs17NativeImageHandleE");
+        int (*niinit)(void *, const void *) = E("_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder");
+        _Alignas(16) uint8_t b[0x100], ni[0x200];
+        memset(b, 0, sizeof b); setdef(b); seth(b, h[3]); CHECK(niinit(ni, b) == 1);   // 宿主发的句柄：原生图像建得出（马车世界原先拿 0，这里中止）
+        nvn2_chat_video_fini(type);
+        seth(b, h[0]); CHECK(niinit(ni, b) == 0);   // 放掉后句柄失效
+        free(buf);
+    }
     ((f_spv)E(SP_DESTROY))(&spev);
     printf("✓ t_nvn2_codec：%u 项检查全过\n", checks);
     return 0;

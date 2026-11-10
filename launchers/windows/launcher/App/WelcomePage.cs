@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using S2Arm.Launcher.Protocol;
 
 namespace S2Arm.Launcher;
@@ -92,6 +93,24 @@ public sealed partial class EnvironmentWindow
             oneclick.Click += (_, _) => StartOneClick(WelcomeGame!);
             body.Children.Add(oneclick);
         }
+    }
+
+    private string? metalPickError;
+
+    /// <summary>「已经装了但没识别到？手动指定安装文件夹」：在选的文件夹里找 metal.exe，找到就记住并重新检查，找不到写明找过哪几处。</summary>
+    private async Task PickMetalFolderAsync()
+    {
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("welcome.win.metal.pick_title") });
+        if (folders.Count == 0 || LocalPath(folders[0]) is not { Length: > 0 } folder) return;
+        if (MetalFolder.Resolve(folder) is { } bin)
+        {
+            MetalFolder.Save(privateRoot, bin);
+            metalPickError = null;
+            await CheckAsync();
+            return;
+        }
+        metalPickError = T("welcome.win.metal.pick_missing").Replace("{0}", folder).Replace("{1}", string.Join("、", MetalFolder.Candidates(folder)));
+        Render();
     }
 
     private string EnvironmentSummary()
@@ -309,7 +328,10 @@ public sealed partial class EnvironmentWindow
                 var official = Action("action.open_official", async () => await OpenOfficialAsync(url), !busy);
                 btns.Children.Add(official);
             }
+            if (item.Id == "metal") btns.Children.Add(Action("welcome.win.metal.pick", () => _ = PickMetalFolderAsync(), !busy));
             if (btns.Children.Count > 0) row.Children.Add(btns);
+            if (item.Id == "metal" && metalPickError is { } pickError)
+                row.Children.Add(new TextBlock { Text = pickError, FontSize = 13, Foreground = Brush.Parse("#E0A458"), TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(row);
         }
         var pcButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };

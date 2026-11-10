@@ -123,6 +123,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
     @Published var locations: [StorageLocation] = []
     @Published var lastLocation = ""
+    /// 「选择其他文件夹…」选的路径所在盘会不会让解包多占数倍空间（#444；已登记的位置看 StorageLocation.slackWarning）
+    @Published var probedSlack: [String: LocationSlack?] = [:]
     /// 出包页记住的平台勾选（平台 id）。
     @Published private(set) var exportChoice: [String] = []
     /// 动作没能开始的原因（缺东西、没选游戏库等），显示在主按钮下面。只属于出错的那一款（导入等不针对某款的为 nil）：
@@ -138,6 +140,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var showEnvironment = false
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
     @Published var updateState: UpdateState = .idle
+    @Published var notice: [String: Any]?   // 顶部公告条（S2ArmLauncherModel+Update.swift loadNotice）；nil = 不显示
     var updateReady: [String: Any]?
     @Published var showAddGames = false
     @Published var showKeys = false
@@ -169,6 +172,16 @@ public final class S2ArmLauncherModel: ObservableObject {
     static let exportDeviceKey = "S2AExportDevice"
     /// 排队等着出的；运行页被收起（后台继续）；本次打开以来每款最近一次的出包结果；正在查看的结果。
     @Published private(set) var exportQueue: [QueuedExport] = []
+    /// 批量出包（v0.2.4，S2ArmLauncherModel+Batch.swift）：清单页开着；出包前每款的勾选行；一批共用的存放位置；
+    ///   后端批次（pack/jobs/batch.py show 的结果，出包中途关掉启动器也在）；这批是不是正在一款接一款地出；放进来但认不出的
+    @Published var batchShown = false
+    @Published var batchDraft: [BatchRow] = []
+    @Published var batchLocation = ""
+    @Published var batchState: [String: Any]?
+    @Published var batchRunning = false
+    @Published var batchUnrecognized: [ImportSource] = []
+    /// 在单款出包页又放进游戏：导入完列清单时这款排第一
+    var batchSeed: String?
     @Published var sessionHidden = false
     @Published private(set) var finishedExports: [String: JobSession] = [:]
     @Published var viewingResult: JobSession?
@@ -176,6 +189,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
+    /// 开发者证书（v0.2.4，S2ArmLauncherModel+DevCert.swift）：现况与体检；导入弹窗开着没有
+    @Published var devCert: DevCertStatus?
+    @Published var showDevCertImport = false
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
@@ -395,6 +411,10 @@ public final class S2ArmLauncherModel: ObservableObject {
                 try Task.checkCancellation()
                 if partialResults { self.mergeImportSources(result.sources, submitted: urls) }
                 self.selectImportedGame(result.games.first, forWelcome: wasEmpty)
+                // 批量出包（v0.2.4）：一次放进多款、或在出包页又放进游戏 → 识别完列成清单（出包页那款排第一）；认不出的也列上、写原因
+                let seed = self.batchSeed; self.batchSeed = nil
+                let ids = (seed.map { [$0] } ?? []) + result.games.map(\.titleId).filter { $0 != seed }
+                if ids.count > 1 { self.openBatch(ids, unrecognized: self.pendingSources) }
             } catch let failure as JobFailure where partialResults {
                 try Task.checkCancellation()
                 let rows = ImportSource.rows(in: failure.outcome.result)
@@ -535,15 +555,18 @@ public final class S2ArmLauncherModel: ObservableObject {
         return nil
     }
 
-    private func runExport(_ item: QueuedExport) {
+    func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
-        let game = item.game, platforms = item.platforms
+        // 同一款先出 Mac、再出 iPhone：iPhone 出包收尾会清掉这款的解包和中间产物（pack/jobs/library.prune_build），Mac 打包成功不清；
+        //   iPhone 在前时第二个平台只能重新解包（端到端实测全部重写）。iPhone 还能从 Mac 的产物根接着做。页面上平台卡片的排列不变
+        let game = item.game, platforms = item.platforms.filter { $0 == .mac } + item.platforms.filter { $0 != .mac }
         var session = JobSession(kind: .export, gameID: game.id, name: game.name)
         session.export = ExportRun(platforms: platforms)
         start(session) { [weak self] sink in
             for (k, platform) in platforms.enumerated() {
                 guard let self, let target = platform.target else { return nil }
                 try Task.checkCancellation()
+                await self.batchMark(game.id, platform, state: "running")
                 self.beginPlatform(k)
                 do {
                     let job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
@@ -562,6 +585,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 } catch {
                     self.endPlatform(platform, ExportRun.Outcome(state: .failed, message: error.localizedDescription))
                 }
+                await self.batchRecord(game.id, platform)   // 批量出包：这个平台出完记进批次（取消走 batchSessionEnded）
             }
             if self?.session?.export?.failed.isEmpty == false { throw ExportIncomplete() }
             return nil
@@ -575,6 +599,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
+
+    /// 选中的设备是 iPad 时，「装到 iPhone」这几处入口文字换成「装到 iPad」（#487）；没连设备照旧写 iPhone
+    var installTargetIsPad: Bool { (selectedDevice?["productType"] as? String)?.hasPrefix("iPad") == true }
+    /// 入口文字的键：iPad 版键名 = 原键 + "Pad"（zh / en 两份 l10n 同步）
+    func installKey(_ key: String) -> String { installTargetIsPad ? key + "Pad" : key }
 
     /// 出 iPhone 包的目标：连着的手机优先（多台时用选中的那台），其次玩家选的机型；都没有交给作业层按常见机型出。
     var currentDeviceTarget: [String: Any]? {
@@ -724,7 +753,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    private static func requirementsText(_ game: GameSummary) -> String {
+    static func requirementsText(_ game: GameSummary) -> String {
         game.compatibility == "unsupported" ? "这款游戏暂不支持。" : "这款还缺文件：" + game.missing.joined(separator: "；")
     }
 
@@ -791,11 +820,23 @@ public final class S2ArmLauncherModel: ObservableObject {
     // ---- 存放位置（游戏库结构 v3）----
 
     /// 重读各存放位置（出包页打开时调；剩余空间是当时的）。
-    func loadLocations() {
+    func loadLocations(probe: String? = nil) {
         Task { [weak self] in
-            guard let self, let r = try? await self.provider.locations() else { return }
+            guard let self, let r = try? await self.provider.locations(probe: probe) else { return }
             self.locations = r.rows; self.lastLocation = r.last
+            if let probe, let slack = r.probeSlack { self.probedSlack[probe] = slack }
         }
+    }
+
+    /// 存放位置下面那行提示（#444），只提示不拦；按原因说对：大分配单元「每个小文件至少占 N、多占数倍」/ 不是 APFS「不能克隆、多占一份」。没问题给 nil
+    func locationSlackText(_ path: String, language: String) -> String? {
+        let row = locations.first(where: { $0.path == path })
+        guard let slack = row != nil ? row?.slack : probedSlack[path] ?? nil else { return nil }
+        if slack.reason == "cluster" {
+            let size = ByteCountFormatter.string(fromByteCount: slack.clusterBytes, countStyle: .binary)
+            return BackendText.launcherText("export.location.slack_cluster", language: language).replacingOccurrences(of: "{0}", with: size)
+        }
+        return BackendText.launcherText("export.location.slack_format", language: language)
     }
 
     /// 出包页「存放位置」缺省选哪个：这款现在的位置 → 上次用的位置 → 默认位置。
@@ -847,6 +888,22 @@ public final class S2ArmLauncherModel: ObservableObject {
             explainMissing("s2arm.reveal.folderMissing"); return
         }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    /// 存档位置（services/S2A.Services/SaveFolder.cs）：这款游戏文件夹里的 SaveData/，没有就建出来再在访达里打开（打开的是文件夹里面，玩家直接往里放）
+    func openSaveFolder(_ game: GameSummary) {
+        guard !game.location.folder.isEmpty, FileManager.default.fileExists(atPath: game.location.folder) else { explainMissing("s2arm.reveal.folderMissing"); return }
+        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent("SaveData", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+    /// 存档位置里放的存档上次起局没读进来的原因（服务层写在数据根 saves/savedata-problem.txt，读进来后删掉）；没有 = nil
+    func saveFolderProblem(_ game: GameSummary) -> String? {
+        guard !game.location.folder.isEmpty else { return nil }
+        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent("saves/savedata-problem.txt")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        let why = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return why.isEmpty ? nil : why
     }
 
     /// 「在访达中显示 .ipa」：装机时组装、整个游戏库共用的那份（默认位置根 S2Arm.ipa）；不在 → 提示框说明，不打开空窗口
@@ -1035,7 +1092,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         if state == .completed && session.kind == .diagnostics, let reveal { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: reveal)]) }
         if session.kind == .export, let id = session.gameID {
             finishedExports[id] = session
-            if state == .cancelled {
+            if batchRunning {   // 批量出包：下一款听批次的（失败不挡后面、磁盘满暂停、取消整批停）
+                batchSessionEnded(cancelled: state == .cancelled)
+            } else if state == .cancelled {
                 exportQueue = []
             } else if !exportQueue.isEmpty {
                 let next = exportQueue.removeFirst()

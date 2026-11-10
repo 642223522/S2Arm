@@ -12,7 +12,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import errno
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import stat
 import struct
@@ -521,14 +521,21 @@ def _relative(parent, name, directory=None, delete=False):
     return Opened(handle.value, directory)
 
 
+def pinnable_path(text):
+    """逐级钉句柄打开的起点：盘符根（C:\\）或网络共享根（\\\\服务器\\共享\\，游戏库放在 SMB 共享盘上，#427 诊断包导不出）。
+    设备路径（\\\\?\\、\\\\.\\）照旧拒绝：它们绕过正常的路径解析。传进来的是绝对路径字符串"""
+    absolute = PureWindowsPath(text)
+    if not absolute.anchor or str(absolute).startswith(('\\\\?\\', '\\\\.\\')):
+        raise OSError(errno.EINVAL, 'only drive or network share paths are accepted (no device paths)')
+    return absolute
+
+
 def open_dir_nofollow(path, parent=None, *, directory=True, security=False):
     if parent is not None:
         return _relative(parent, str(path), directory)
-    # Open and pin every lexical ancestor from the volume root. No resolve(),
+    # Open and pin every lexical ancestor from the volume / share root. No resolve(),
     # which could hide reparse points, and no path-based child read/delete.
-    absolute = Path(os.path.abspath(path))
-    if not absolute.anchor or str(absolute).startswith('\\\\'):
-        raise OSError(errno.EINVAL, 'UNC/device paths not accepted by this adapter')
+    absolute = pinnable_path(os.path.abspath(path))
     handle = _api('kernel32', 'CreateFileW', W.HANDLE, W.LPCWSTR, W.DWORD,   # lp-exempt: 只传卷根（absolute.anchor），其下逐级用相对句柄打开
                   W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE)(
                       absolute.anchor, 0x100081, 3, None, 3, 0x02200000, None)

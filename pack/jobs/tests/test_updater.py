@@ -76,7 +76,7 @@ class ApplyTests(Base):
         self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
         self.assertEqual(launches, ["new", "old"])
-        self.assertEqual(json.loads((self.private / "updates/last_failure.json").read_text())["code"], "update_rolled_back")
+        self.assertEqual(json.loads((self.private / "updates/last_failure.json").read_text(encoding="utf-8"))["code"], "update_rolled_back")
         self.assertEqual(self.data(), before)
 
     def test_swap_failure_keeps_old_version(self):
@@ -139,6 +139,33 @@ class ApplyTests(Base):
         self.assertFalse(backup.exists())
         self.assertEqual(self.data(), before)
 
+    def test_retry_when_restore_leaves_an_empty_backup_keeps_the_old_copy(self):
+        # 审计 P1-157：上次中断在「安装目录已改名为 .s2arm-old、新版还没换上」。这次先把副本搬回：整段改名被拒（目录被占用）→ 逐项搬，
+        #   搬空的 .s2arm-old 删不掉留成空目录。期望（手写）：空目录不当成「还有一份旧版」，旧版留在安装目录；新版起不来就回到它，
+        #   失败句「已回到旧版」与盘上一致（原先把刚搬回的旧版当坏的删掉，安装目录没有 S2Arm.exe，失败句仍写「已回到旧版」）
+        backup = self.install.with_name("S2Arm.s2arm-old")
+        os.rename(self.install, backup)
+        real_rename, real_rmdir = updater.retry_rename, Path.rmdir
+        def rename(src, dst, *a, **kw):
+            if Path(src) == backup and Path(dst) == self.install:
+                raise PermissionError(13, "held open")
+            return real_rename(src, dst, *a, **kw)
+        def rmdir(path, *a, **kw):
+            if Path(path) == backup:
+                raise OSError(16, "busy")
+            return real_rmdir(path, *a, **kw)
+        with patch.object(updater, "retry_rename", rename), patch.object(Path, "rmdir", rmdir):
+            self.assertEqual(self.run_apply(lambda install, args: None, health=0, exit_seconds=0), 1)
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
+        failure = json.loads((self.private / "updates/last_failure.json").read_text(encoding="utf-8"))
+        self.assertEqual((failure["code"], failure["message"]), ("update_rolled_back", "新版没能启动，已回到旧版。"))
+
+    def test_holds_copy_ignores_empty_leftovers(self):
+        empty = self.root / "empty"; empty.mkdir()
+        self.assertTrue(updater.holds_copy(self.install))
+        self.assertFalse(updater.holds_copy(empty))
+        self.assertFalse(updater.holds_copy(self.root / "missing"))
+
     def test_retry_with_missing_staged_files_restores_the_old_install(self):
         before = self.data()
         backup = self.install.with_name("S2Arm.s2arm-old")
@@ -181,7 +208,7 @@ class ApplyTests(Base):
         self.staged = self.root / "missing-staged"   # 这次替换必然失败
         launches = []
         self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
-        failure = json.loads((self.private / "updates/last_failure.json").read_text())
+        failure = json.loads((self.private / "updates/last_failure.json").read_text(encoding="utf-8"))
         self.assertEqual(failure["code"], "update_swap_failed")
         # 失败句说「已保留旧版」：盘上必须真有确认过能用的那一版
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
@@ -815,6 +842,60 @@ class VersionTests(Base):
             self.assertFalse(updater.trusted("https://evil.example/x"))
             self.assertFalse(updater.trusted("http://github.com/x"))
             self.assertTrue(updater.trusted("https://github.com/x"))
+
+
+class NoticeTests(unittest.TestCase):
+    """启动器公告条（v0.2.3）：官方下载页优先、取不到用随包那份、关掉的同一条不再给、换号再出现、已撤 / 无效不显示。期望手写"""
+    ITEM = {"schema": 1, "id": "n1", "text": {"zh-Hans": "中文公告", "en": "English notice"}, "url": "https://github.com/jhaizhou-ops/S2Arm#readme"}
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.bundled = self.root / "notice.json"; self.bundled.write_text(json.dumps(dict(self.ITEM, id="bundled")), encoding="utf-8")
+        self.private = self.root / "private"
+
+    def show(self, remote):
+        return updater.notice(self.private, remote=lambda: remote, bundled=self.bundled)
+
+    def test_remote_first_then_bundled(self):
+        self.assertEqual(self.show((True, updater.notice_valid(self.ITEM)))["id"], "n1")
+        self.assertEqual(self.show((False, None))["id"], "bundled")   # 没网 / 页面不通
+        self.assertEqual(self.show((False, None))["text"], {"zh-Hans": "中文公告", "en": "English notice"})
+
+    def test_retracted_remote_wins_over_bundled(self):   # 页面取到了、但已撤（只剩 schema）：不显示，不退回随包那份
+        self.assertIsNone(self.show((True, updater.notice_valid({"schema": 1}))))
+
+    def test_dismissed_stays_hidden_until_a_new_id(self):
+        updater.notice_dismiss(self.private, "n1")
+        self.assertIsNone(self.show((True, updater.notice_valid(self.ITEM))))
+        self.assertEqual(self.show((True, updater.notice_valid(dict(self.ITEM, id="n2"))))["id"], "n2")
+
+    def test_invalid_shapes_are_not_shown(self):
+        for bad in ({"schema": 2, "id": "a", "text": self.ITEM["text"]}, {"schema": 1, "text": self.ITEM["text"]},
+                    {"schema": 1, "id": "a b", "text": self.ITEM["text"]}, {"schema": 1, "id": "a", "text": {"zh-Hans": "只有中文"}},
+                    {"schema": 1, "id": "a", "text": {"zh-Hans": " ", "en": "x"}}, [], "x"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(updater.notice_valid(bad))
+
+    def test_link_only_official_https(self):
+        for url, kept in (("https://github.com/jhaizhou-ops/S2Arm", True), ("https://jhaizhou-ops.github.io/S2Arm/", True),
+                          ("http://github.com/x", False), ("https://s2arm.com/", True), ("https://evil.s2arm.com.example/", False), ("http://s2arm.com/", False), ("javascript:alert(1)", False)):
+            with self.subTest(url=url):
+                self.assertEqual("url" in updater.notice_valid(dict(self.ITEM, url=url)), kept)
+
+    def test_cli_prints_empty_object_when_nothing_to_show(self):
+        import io, contextlib
+        self.bundled.unlink()
+        with patch.object(updater, "notice_file", return_value=self.bundled), patch.object(updater, "notice_remote", return_value=(False, None)):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(updater.main(["notice", "--private-root", str(self.private)]), 0)
+        self.assertEqual(json.loads(out.getvalue()), {})
+        self.assertFalse((self.private / "logs").exists())   # 公告与更新无关：不写 update.log
+
+    def test_shipped_notice_is_valid(self):   # 仓库里那份（Pages 发布 + 随包兜底）要能显示，带官方链接
+        item = updater.notice_valid(json.loads(updater.notice_file().read_text(encoding="utf-8")))
+        self.assertIsNotNone(item); self.assertIn("url", item)
+        self.assertIn("s2arm.com", item["text"]["zh-Hans"]); self.assertIn("s2arm.com", item["text"]["en"])
 
 
 if __name__ == "__main__":

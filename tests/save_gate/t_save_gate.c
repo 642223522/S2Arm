@@ -1,9 +1,40 @@
 // iOS 存档页状态（ios/save_gate.h）单测：期望按审计 P0-1 的要求手推，不跑被测实现得出
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "save_gate.h"
 static int fails;
 #define CK(c, what) do { if (c) printf("过 %s\n", what); else { printf("红 %s\n", what); fails++; } } while (0)
-int main(void) {
+// 截出 save_transfer.m 里某个确认动作的处理块（从动作文案键到下一个 addAction / 函数尾），看里面写不写「下次先进存档管理」开关
+static char *block(const char *src, const char *key) {
+    const char *a = strstr(src, key); if (!a) return NULL;
+    const char *b = strstr(a + 1, "addAction:"), *e = strstr(a + 1, "presentViewController:alert");
+    if (!b || (e && e < b)) b = e; if (!b) return NULL;
+    size_t n = (size_t)(b - a); char *out = malloc(n + 1); memcpy(out, a, n); out[n] = 0; return out;
+}
+static int main_gate(void);
+int main(int argc, char **argv) {
+    int rc = main_gate();
+    // ⑥ 游戏内「存档管理」退出确认：「退出游戏」只退出、不置开关；「退出并管理存档」才置，且只记这一款（多款容器按游戏号）。
+    //   旧确认框只有「已保存，退出游戏」且必置 App 级开关：玩家拿它当退出，之后每次打开都先进存档页（11-10 玩家反馈）
+    if (argc > 1) {
+        FILE *f = fopen(argv[1], "rb"); char *src = NULL; long len = 0;
+        if (f && !fseek(f, 0, SEEK_END) && (len = ftell(f)) > 0 && !fseek(f, 0, SEEK_SET) && (src = malloc((size_t)len + 1)) && fread(src, 1, (size_t)len, f) == (size_t)len) src[len] = 0; else { free(src); src = NULL; }
+        if (f) fclose(f);
+        CK(src != NULL, "读到 ios/save_transfer.m");
+        if (src) {
+            char *only = block(src, "S2AL(@\"save.quit.only\")"), *manage = block(src, "S2AL(@\"save.quit.manage\")");
+            CK(only && strstr(only, "s2a_host_shutdown") && !strstr(only, "setBool:YES"), "「退出游戏」只收尾退出，不置下次进存档管理");
+            CK(manage && strstr(manage, "setBool:YES forKey:game_manage_key()"), "「退出并管理存档」置这一款的开关");
+            CK(!strstr(src, "setBool:YES forKey:ManageKey"), "游戏内不再置 App 级开关（那是 iOS 设置 / 主屏快捷操作的）");
+            CK(strstr(src, "boolForKey:game_manage_key()") && strstr(src, "setBool:NO forKey:game_manage_key()"), "开局判定读这一款的开关、开始游戏后复位");
+            free(only); free(manage); free(src);
+        }
+        if (fails) rc = 1;
+    }
+    return rc;
+}
+static int main_gate(void) {
     struct s2a_save_buttons b; enum s2a_save_phase p;
     // ① 无事务：打开即可开始、导入；有存档才可导出；没有「仍要开始」
     p = s2a_save_next(S2A_SAVE_CHECKING, S2A_SAVE_EV_OPEN_NO_TX); b = s2a_save_buttons(p, 0, 1, 1, 0);

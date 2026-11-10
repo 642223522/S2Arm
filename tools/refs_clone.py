@@ -35,11 +35,11 @@ def clone_file(src, dst):
     k.GetDiskFreeSpaceW.argtypes = [w.LPCWSTR, ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD), ctypes.POINTER(w.DWORD)]
     INVALID = w.HANDLE(-1).value
     # 先解开目录联接 / 软链再比盘符（11-06 出包速度线：Windows 出包机作业目录 R:\…\lane\<单号> 是指到 T: 的联接，按字面盘符比，联接里外的文件判错跨卷 / 同卷，
-    #   该克隆的退回整份拷贝——王国之泪「ipa 收尾」1830 秒）。目标还不存在：realpath 解开已存在的上级
+    #   该克隆的退回整份拷贝——0100F2C0115B6000「ipa 收尾」1830 秒）。目标还不存在：realpath 解开已存在的上级
     src, dst = getattr(os.path.realpath, 'long', os.path.realpath)(src), getattr(os.path.realpath, 'long', os.path.realpath)(dst)
     if os.path.splitdrive(src)[0].upper() != os.path.splitdrive(dst)[0].upper(): return False   # 跨卷不能克隆
     # 不是 ReFS 的卷（玩家 NTFS）每卷只问一次文件系统名就回 False：原先每个文件都建空目标、发 FSCTL 失败、再删目标
-    #   （11-06 出包速度线：Windows 出包机 C 盘 NTFS 王国之泪资源包，每个文件白耗约 1 毫秒，30.5 万个）
+    #   （11-06 出包速度线：Windows 出包机 C 盘 NTFS 0100F2C0115B6000资源包，每个文件白耗约 1 毫秒，30.5 万个）
     if _volume_fs(os.path.splitdrive(dst)[0].upper()).upper() != 'REFS': return False
     spc, bps, a, b = w.DWORD(), w.DWORD(), w.DWORD(), w.DWORD()
     if not k.GetDiskFreeSpaceW(os.path.splitdrive(dst)[0] + '\\', ctypes.byref(spc), ctypes.byref(bps), ctypes.byref(a), ctypes.byref(b)): return False

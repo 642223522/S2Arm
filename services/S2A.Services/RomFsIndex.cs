@@ -13,7 +13,7 @@ using Path = System.IO.Path;
 namespace S2A.Services
 {
     // 预建 RomFS 索引（出包时生成，起局直接读）：解开的 romfs/ 目录要现建 RomFS 镜像，就得枚举十几万个文件、逐个取长度、再由 LibHac 建目录表——
-    // 动森 Mac 暖局 450 ms、iPhone 约 2.7 秒，占 S2A_Init 八成。索引记下 LibHac 建出的镜像布局：每个文件在镜像里的偏移 / 长度 / 相对路径，
+    // 01006F8002326000 Mac 暖局 450 ms、iPhone 约 2.7 秒，占 S2A_Init 八成。索引记下 LibHac 建出的镜像布局：每个文件在镜像里的偏移 / 长度 / 相对路径，
     // 以及文件数据以外的全部字节（头、目录 / 文件哈希与元数据表；全零的对齐填充不存）。起局读这一个文件即可拼出同一镜像，文件读到时才打开。
     //
     // 格式（小端）："S2ARFS01" | i64 镜像长 | i32 文件数 | 文件数 × {i64 偏移, i64 长度, i32 路径偏移, i32 路径长} | i32 路径区长 | 路径区（UTF-8，相对 romfs/，/ 分隔）
@@ -200,6 +200,18 @@ namespace S2A.Services
             Buffer.BlockCopy(raw, 20, offsets, 0, count * 8);
             return new IndexedStorage(Path.GetFullPath(Path.Combine(programDir, "romfs")), File.ReadAllBytes(index), index,
                 OverlayFiles(Path.Combine(programDir, ImageOverlayDir)), handle, offsets);
+        }
+
+        public enum Source { Image, Directory, Missing }
+
+        // 起局读哪份 RomFS（审计 P1-151）：镜像可用 → 镜像；镜像文件在却用不了（长度与对照表不符 = 推到一半，或对照表 / 索引缺）且没有 romfs/ 可退 →
+        //   起局失败（与对照表魔数不对同一条：抛 InvalidDataException，会话回失败），不再只报红后带着空的游戏数据开局；有 romfs/ → 退回目录（调用方报红说明没用这份镜像）
+        public static Source Decide(bool imageOpened, bool imageFileExists, bool romfsDirExists, string programDir)
+        {
+            if (imageOpened) return Source.Image;
+            if (imageFileExists && !romfsDirExists)
+                throw new InvalidDataException($"RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退：{programDir}；请重新装到 iPhone");
+            return romfsDirExists ? Source.Directory : Source.Missing;
         }
 
         // macOS 垃圾（同 pack/pack.py、graphics/nvn/tools/romfs_list.py）：不进资源包，也就不能进镜像，否则游戏枚举到就读不到
