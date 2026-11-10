@@ -721,7 +721,7 @@ def setup(c):
         if info.get("schema") != 1 or not info.get("id"):
             raise Failure("游戏库标识不完整。")
         return dict(library=str(c.library), libraryId=info["id"], outcome="opened")
-    if any(p.name != ".DS_Store" for p in c.library.iterdir()):
+    if layout.has_content(c.library):   # 只有系统自动生成的文件（.DS_Store / desktop.ini / Thumbs.db）照样算空文件夹
         if not _looks_like_library(c.library):
             raise Failure("这个文件夹里已有别的文件：请选空文件夹，或者已有的 S2Arm 游戏库。文件都没动。")
         info = dict(schema=1, id=str(uuid.uuid4()))
@@ -1946,7 +1946,7 @@ def delete(c):
                     # 存档有内容就保留
                     saves = gdir / "saves"
                     backups = gdir / "save-backups"
-                    has_saves = (saves.exists() and any(saves.iterdir())) or (backups.exists() and any(backups.iterdir()))
+                    has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
                     if has_saves:
                         for item in gdir.iterdir():
                             if item.name not in ("saves", "save-backups"):
