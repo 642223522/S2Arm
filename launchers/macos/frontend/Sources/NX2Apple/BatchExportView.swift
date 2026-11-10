@@ -102,17 +102,24 @@ struct BatchExportView: View {
             options.append((model.batchLocation, (model.batchLocation as NSString).abbreviatingWithTildeInPath))
         }
         options.append(("__other__", BackendText.launcherText("export.location.other", language: uiLanguage)))
-        return HStack(spacing: 12) {
-            Image(systemName: "externaldrive").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
-            Text(t("location")).font(.manrope(13)).foregroundStyle(.secondary)
-            Spacer(minLength: 12)
-            LauncherDropdown(options: options, selection: model.batchLocation, label: t("location"), style: .button) { value in
-                if value == "__other__" {
-                    let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-                    if panel.runModal() == .OK, let url = panel.url { model.batchLocation = url.path }
-                } else { model.batchLocation = value }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: "externaldrive").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
+                Text(t("location")).font(.manrope(13)).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                LauncherDropdown(options: options, selection: model.batchLocation, label: t("location"), style: .button) { value in
+                    if value == "__other__" {
+                        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+                        if panel.runModal() == .OK, let url = panel.url { model.batchLocation = url.path; model.loadLocations(probe: url.path) }
+                    } else { model.batchLocation = value }
+                }
+                .accessibilityIdentifier("batch.location")
             }
-            .accessibilityIdentifier("batch.location")
+            if let slack = model.locationSlackText(model.batchLocation, language: uiLanguage) {   // #444 同单款出包页
+                Label(slack, systemImage: "exclamationmark.triangle")
+                    .font(.manrope(12)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("batch.location.slack")
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))

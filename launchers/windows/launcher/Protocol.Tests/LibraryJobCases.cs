@@ -124,6 +124,14 @@ internal static class LibraryJobCases
         check(Locations(rows.Replace("\"last\":\"c\"", "\"last\":\"b\"")).DefaultFor(null) == "/lib", "locations: last one not connected → default location");
         try { Locations(rows.Replace("\"connected\":true,", "")); throw new Exception("accepted location without connected"); }
         catch (LibraryProtocolException) { check(true, "locations: row without connected rejected"); }
+        // #444：存放位置所在盘会让出包多占空间 / 可能失败（后端 libloc.slack_reason）；probe = 刚选的文件夹
+        check(places.Rows.All(r => r.Slack is null) && !places.Probed && places.ProbeSlack is null, "locations: no slack / probe fields read as none");
+        var slack = Locations(rows.Replace("\"freeBytes\":10,", "\"freeBytes\":10,\"format\":\"exfat\",\"clusterBytes\":524288,\"slackWarning\":true,\"slackReason\":\"cluster\",")
+            .Replace(",\"last\":\"c\"", ",\"last\":\"c\",\"probe\":{\"path\":\"E:\\\\games\",\"format\":\"fat32\",\"clusterBytes\":32768,\"slackWarning\":true,\"slackReason\":\"format\"}"));
+        check(slack.Rows[2].Slack == new LocationSlack("cluster", 524288) && slack.Rows[0].Slack is null, "locations: slack reason and cluster size per row");
+        check(slack.Probed && slack.ProbeSlack == new LocationSlack("format", 32768), "locations: probed folder's slack reason");
+        var fine = Locations(rows.Replace(",\"last\":\"c\"", ",\"last\":\"c\",\"probe\":{\"path\":\"C:\\\\S2Arm\",\"format\":\"ntfs\",\"clusterBytes\":4096,\"slackWarning\":false,\"slackReason\":null}"));
+        check(fine.Probed && fine.ProbeSlack is null, "locations: probed folder without a problem reads as probed, no slack");
 
         // ---- library layout v3 P4: catalog game.sizes, storageOverview job (shapes from pack/jobs/sizes.py for_catalog / overview) ----
         using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"missing\":[],\"location\"",

@@ -519,6 +519,39 @@ def _win_volume_format(path):
         return ""
 
 
+
+def volume_cluster(path):
+    """路径所在卷的分配单元（簇）字节数；读不到给 0。Mac：statvfs 的 f_frsize（文件系统基本块；f_bsize 在 macOS 上是建议的读写大小，APFS 读出 1 MB，不能用）；
+    Windows：GetDiskFreeSpaceW 的「每簇扇区数 × 每扇区字节数」。路径还不存在时看最近一级已存在的上级目录"""
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    if os.name == "nt":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            root = ctypes.create_unicode_buffer(1024)
+            if not k32.GetVolumePathNameW(ctypes.c_wchar_p(winproc.win_path(str(p))), root, 1024):
+                return 0
+            spc, bps, free, total = (ctypes.c_ulong() for _ in range(4))
+            if not k32.GetDiskFreeSpaceW(root, ctypes.byref(spc), ctypes.byref(bps), ctypes.byref(free), ctypes.byref(total)):
+                return 0
+            return spc.value * bps.value
+        except (OSError, AttributeError, ValueError):
+            return 0
+    try:
+        return os.statvfs(p).f_frsize
+    except OSError:
+        return 0
+
+
+def location_slack(path):
+    """存放位置的卷格式、分配单元，以及要不要提示出包会多占空间、为什么（libloc.slack_reason：cluster 大簇 / format 不能克隆或硬链接；只提示不拦）"""
+    import libloc
+    fmt, cluster = volume_format(path), volume_cluster(path)
+    reason = libloc.slack_reason(fmt, cluster, system="Windows" if os.name == "nt" else "Darwin")
+    return dict(format=fmt, clusterBytes=cluster, slackWarning=reason is not None, slackReason=reason)
+
 def require_apfs(path):
     """游戏库所在卷的格式：Mac 要 APFS（原错误码 library_not_apfs），Windows 要 NTFS / ReFS（library_bad_format，libloc.format_ok）；读不到格式不拦"""
     import libloc
@@ -2460,12 +2493,18 @@ def location_rows(c):
     rows = []
     for lid, root, ok in layout.locations(c):
         free = shutil.disk_usage(root).free if ok else None
-        rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library))
+        rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library,
+                         **(location_slack(root) if ok else {})))
     return dict(locations=rows, last=layout.load_index(c).get("last") or layout.default_id(c))
 
 
 def list_locations(c):
-    return location_rows(c)
+    """出包页存放位置下拉框；请求带 probe（刚在「选择其他文件夹…」里选的路径）时另给这个路径的卷格式与提示（#444）"""
+    out = location_rows(c)
+    if c.r.get("probe"):
+        probe = Path(c.r["probe"]).expanduser()
+        out["probe"] = dict(path=str(probe), **location_slack(probe))
+    return out
 
 
 def apply_location(c, game):

@@ -252,10 +252,20 @@ public sealed record StorageOverview(IReadOnlyList<StorageOverview.Location> Loc
 }
 
 /// <summary>One storage location (locations job, pack/jobs/library.py location_rows): one entry of the export page dropdown.</summary>
-public sealed record StorageLocation(string Id, string Path, string Volume, bool Connected, long? FreeBytes, bool IsDefault);
+/// <summary>Slack：这块盘会让出包多占空间 / 可能失败的原因（#444，后端 libloc.slack_reason；只提示不拦）；null 没问题。</summary>
+public sealed record StorageLocation(string Id, string Path, string Volume, bool Connected, long? FreeBytes, bool IsDefault, LocationSlack? Slack = null);
+
+/// <summary>Reason：cluster（分配单元 ≥ 64 KB，小文件每个占满一簇）/ format（不是 NTFS、ReFS）；ClusterBytes 提示里写「每个小文件至少占 N」。</summary>
+public sealed record LocationSlack(string Reason, long ClusterBytes)
+{
+    public static LocationSlack? Parse(JsonElement e) =>
+        e.TryGetProperty("slackWarning", out var w) && w.ValueKind == JsonValueKind.True && e.TryGetProperty("slackReason", out var r) && r.ValueKind == JsonValueKind.String
+            ? new(r.GetString()!, e.TryGetProperty("clusterBytes", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt64() : 0) : null;
+}
 
 /// <summary>Result of the locations job: every storage location and the id of the one used last.</summary>
-public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, string Last)
+/// <summary>Probed / ProbeSlack：请求带 probe（「选择其他文件夹…」选的路径）时为 true，ProbeSlack 是这个路径的提示原因（null = 没问题）。</summary>
+public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, string Last, bool Probed = false, LocationSlack? ProbeSlack = null)
 {
     public static StorageLocations Parse(JsonElement result)
     {
@@ -266,8 +276,11 @@ public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, strin
                 LibraryJobResult.Text(r, "id"), LibraryJobResult.Text(r, "path"), LibraryJobResult.Text(r, "volume", true),
                 r.GetProperty("connected").GetBoolean(),
                 r.TryGetProperty("freeBytes", out var free) && free.ValueKind == JsonValueKind.Number ? free.GetInt64() : null,
-                r.TryGetProperty("default", out var d) && d.ValueKind == JsonValueKind.True)).ToArray();
-            return new(rows, result.TryGetProperty("last", out var last) && last.ValueKind == JsonValueKind.String ? last.GetString()! : "");
+                r.TryGetProperty("default", out var d) && d.ValueKind == JsonValueKind.True,
+                LocationSlack.Parse(r))).ToArray();
+            var probed = result.TryGetProperty("probe", out var p) && p.ValueKind == JsonValueKind.Object;
+            return new(rows, result.TryGetProperty("last", out var last) && last.ValueKind == JsonValueKind.String ? last.GetString()! : "",
+                probed, probed ? LocationSlack.Parse(p) : null);
         }
         catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException or FormatException)
         { throw new LibraryProtocolException("Invalid storage locations.", error); }

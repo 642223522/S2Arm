@@ -156,14 +156,20 @@ struct ExportView: View {
             options.append((picked, (picked as NSString).abbreviatingWithTildeInPath))
         }
         options.append((Self.otherFolder, x("location.other")))
-        return HStack(spacing: 12) {
-            Image(systemName: "externaldrive").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
-            Text(x("location.title")).font(.manrope(13)).foregroundStyle(.secondary)
-            Spacer(minLength: 12)
-            LauncherDropdown(options: options, selection: location, label: x("location.title"), style: .button) { value in
-                if value == Self.otherFolder { chooseLocation() } else { location = value }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: "externaldrive").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
+                Text(x("location.title")).font(.manrope(13)).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                LauncherDropdown(options: options, selection: location, label: x("location.title"), style: .button) { value in
+                    if value == Self.otherFolder { chooseLocation() } else { location = value }
+                }
+                .accessibilityIdentifier("export.location")
             }
-            .accessibilityIdentifier("export.location")
+            if let slack = model.locationSlackText(location, language: loc.lang == .zh ? "zh-Hans" : "en") {   // #444：大分配单元 / 不是 APFS
+                Label(slack, systemImage: "exclamationmark.triangle").font(.manrope(12)).foregroundStyle(LauncherPalette.building)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("export.location.slack")
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
@@ -178,7 +184,7 @@ struct ExportView: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         panel.prompt = x("location.choose")
-        if panel.runModal() == .OK, let url = panel.url { pickedLocation = url.path; location = url.path }
+        if panel.runModal() == .OK, let url = panel.url { pickedLocation = url.path; location = url.path; model.loadLocations(probe: url.path) }
     }
 
     /// 目标设备：连着手机就按它优化；没连提醒插上，也可以选机型（不挡出包）。
