@@ -279,7 +279,7 @@ else()
     endif()
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     # macOS ld64 不接受未定义弱引用（ELF 语义是「缺定义即空指针」）：androiddraw 场合
-    # 登记的弱符号按 tools/weak_link_decl.py 唯一来源生成 -Wl,-U,_<sym> 放行
+    # 登记的弱符号由 tools/weak_link_decl.py（唯一来源）生成 Darwin 未定义弱符号放行参数
     # （与 android/tests/host_link.py 给 Python 侧宿主单测补链的是同一机制）。
     set(s2a_weak_u "")
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
