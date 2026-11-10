@@ -101,6 +101,14 @@ def is_extracted_game(d):
             or ((d / "exefs" / "main").is_file() and (d / "exefs" / "main.npdm").is_file() and (d / "romfs").is_dir()))
 
 
+def _copy_cover(c, tid, game, metadata, icon):
+    """导入时放封面：这款还没有文件夹就按英文名建（此刻它还没写进磁盘上的 catalog，layout.game_dir 自己去 catalog 取名会取到空、落成游戏号）。
+    英文名没有时用读出的标题（纯中文标题清洗后为空，folder_name 退回游戏号）"""
+    english = game.get("englishName") or metadata.get("name") or game.get("name") or ""
+    target = layout.game_dir(c, tid, english=english) / "cover.jpg"
+    shutil.copyfile(icon, target)
+
+
 def extract_inspect(c, source, icon_dir):
     """解包目录 → 与 inspect / nup_inspect 同形的包元数据。三种 format（已在 import_games 按判据分开）：
     a. dump（Switch 2 导出）: 有 base/exefs/main.npdm
@@ -147,7 +155,8 @@ def extract_inspect(c, source, icon_dir):
         main_path = source / "exefs" / "main"
         npdm_path = source / "exefs" / "main.npdm"
 
-    # 读名称与显示版本
+    # 读名称与显示版本；english = 文件夹取名用的英文名（unpack.tsv 的 name / NACP 美式 → 英式英语），没有就空
+    english = ""
     if fmt == "extract" and (source / "unpack.tsv").is_file():
         try:
             tsv = (source / "unpack.tsv").read_text(encoding="utf-8")
@@ -161,6 +170,7 @@ def extract_inspect(c, source, icon_dir):
                         name_zh = parts[1]
                     elif parts[0] == "display_version":
                         display = parts[1]
+            english = name
             name = name_zh or name or source.name
         except (OSError, UnicodeDecodeError):
             name, display = source.name, ""
@@ -171,6 +181,7 @@ def extract_inspect(c, source, icon_dir):
             try:
                 nacp = nacp_path.read_bytes()
                 if len(nacp) == 0x4000:
+                    english = dump.nacp_title(nacp, 0) or dump.nacp_title(nacp, 1) or ""
                     name = dump.nacp_title(nacp, 0) or dump.nacp_title(nacp, 14) or dump.nacp_title(nacp, 13) or source.name
                     display = nacp[0x3060:0x3070].split(b"\0")[0].decode("ascii", "replace")
                 else:
@@ -201,7 +212,7 @@ def extract_inspect(c, source, icon_dir):
     if fmt == "extract":   # 解包目录 unpack.tsv 的 update 列是合并进来的更新版本号；没有显示版本时界面用它
         cells = dict(l.split("\t", 1) for l in (source / "unpack.tsv").read_text(encoding="utf-8").splitlines() if "\t" in l)
         version = int(cells.get("update") or 0) if (cells.get("update") or "0").isdigit() else 0
-    return [dict(titleId=f"{tid:016X}", baseId=f"{tid:016X}", type="base", version=version, name=name,
+    return [dict(titleId=f"{tid:016X}", baseId=f"{tid:016X}", type="base", version=version, name=name, englishName=english,
                  display=display, guestIsa="unknown", builds={}, contentBytes=total, format=fmt, sha256=sha)]
 
 
@@ -1122,21 +1133,15 @@ def import_games(c):
                             p["path"] = str(source)
                     if not duplicate:
                         icon = Path(icons) / (metadata["titleId"] + ".jpg")
-                        nacp = (Path(icons).parent / (metadata["titleId"] + ".nacp")) if (Path(icons).parent / (metadata["titleId"] + ".nacp")).is_file() else None
-                        english_name = ""
-                        if nacp:
-                            dump = engine_tool(c, "ns2_dump")
-                            english_name = dump.nacp_title(nacp, 0) or dump.nacp_title(nacp, 1) or ""
+                        english_name = metadata.pop("englishName", "") or ""
+                        if english_name and "englishName" not in game:
+                            game["englishName"] = english_name
                         if icon.is_file():
-                            target = layout.path(c, tid, "cover.jpg")
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(icon, target)
+                            _copy_cover(c, tid, game, metadata, icon)
                         metadata.pop("icon", None)
                         game["packages"].append(metadata | dict(path=str(source), sha256=sha, size=size))
                         if metadata["name"]:
                             game["name"] = metadata["name"]
-                        if english_name and "englishName" not in game:
-                            game["englishName"] = english_name
                     results.append(dict(id=tid, name=source.name, duplicate=duplicate))
                 idx += 1
                 c.check()
@@ -1162,22 +1167,16 @@ def import_games(c):
                             p["path"] = str(source)
                     if not duplicate:
                         icon = Path(icons) / (metadata["titleId"] + ".jpg")
-                        nacp = (Path(icons).parent / (metadata["titleId"] + ".nacp")) if (Path(icons).parent / (metadata["titleId"] + ".nacp")).is_file() else None
-                        english_name = ""
-                        if nacp:
-                            dump = engine_tool(c, "ns2_dump")
-                            english_name = dump.nacp_title(nacp, 0) or dump.nacp_title(nacp, 1) or ""
+                        english_name = metadata.pop("englishName", "") or ""
+                        if english_name and "englishName" not in game:
+                            game["englishName"] = english_name
                         if icon.is_file():
-                            target = layout.path(c, tid, "cover.jpg")
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(icon, target)
+                            _copy_cover(c, tid, game, metadata, icon)
                         metadata.pop("icon", None)
                         # 目录：size = 内文件总字节（extract_inspect 已算在 contentBytes）
                         game["packages"].append(metadata | dict(path=str(source), sha256=sha, size=metadata.get("contentBytes", 0)))
                         if metadata["name"]:
                             game["name"] = metadata["name"]
-                        if english_name and "englishName" not in game:
-                            game["englishName"] = english_name
                     results.append(dict(id=tid, name=source.name, duplicate=duplicate))
                 idx += 1
                 c.check()

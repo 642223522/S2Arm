@@ -193,7 +193,7 @@ class NupImportTests(JobCase):
                                        ("update", "0400486024DEC800", 131072, str(src.resolve()), "nup", "1.2.0"),
                                        ("dlc", "0400486024DED001", 0, str(src.resolve()), "nup", "1.2.0")]))
         self.assertEqual((game["id"], game["name"]), ("0400486024DEC000", "Ocarina T"))
-        self.assertEqual((self.c.library / "games/0400486024DEC000/cover.jpg").read_bytes(), b"JPGICON")
+        self.assertEqual((self.c.library / "games/Ocarina T/cover.jpg").read_bytes(), b"JPGICON")   # 文件夹按标题（英文）
         self.assertFalse((self.c.private / "keys/status.json").exists())
         # 没带控制分区：标题取文件名去掉「 [程序号][版本]」（同一键出包）
         bare = self.nup(self.root / "drive2" / "Bare Name [0400486024dec000].nup", nacp=False)
@@ -227,6 +227,18 @@ class NupImportTests(JobCase):
                          ("0100000000000000", "base", str(nsp.resolve()), False, "aarch64"))
         self.assertTrue(json.loads((self.c.private / "keys/status.json").read_text())["verified"])
 
+
+    def test_chinese_title_folder_uses_english_name(self):
+        # 读取器给的界面名是中文、英文名另给：catalog 名字照中文、记 englishName；这款的文件夹按英文名建，封面在里面（不是游戏号文件夹）
+        nsp = self.root / "drive" / "silksong.nsp"; nsp.parent.mkdir(); nsp.write_bytes(b"chinese title fixture")
+        self.import_keys(); self.install_reader_fixture()
+        result, done = self.worker("import", paths=[str(nsp)])
+        self.assertEqual(done["state"], "succeeded", result.stderr)
+        [game] = self.c.catalog()["games"]
+        self.assertEqual((game["name"], game["englishName"]), ("空洞骑士：丝之歌", "Hollow Knight: Silksong"))
+        self.assertEqual("englishName" in game["packages"][0], False)
+        self.assertEqual((self.c.library / "games" / "Hollow Knight Silksong" / "cover.jpg").read_bytes(), b"ICON")
+        self.assertFalse((self.c.library / "games" / "0100000000000000").exists())
 
 if __name__ == "__main__":
     unittest.main()

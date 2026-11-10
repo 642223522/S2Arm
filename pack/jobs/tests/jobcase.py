@@ -179,6 +179,12 @@ if source.read_bytes().startswith(b"content id fixture"):   # 新读取器：带
     print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{},
         "contentIds":["000000000000000000000000000000bb","000000000000000000000000000000aa"]}]}))
     raise SystemExit(0)
+if source.read_bytes() == b"chinese title fixture":   # 标题简体中文优先、另给英文名（文件夹取名用），封面写进 argv[5]
+    pathlib.Path(sys.argv[5]).mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(sys.argv[5]) / "0100000000000000.jpg").write_bytes(b"ICON")
+    print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"空洞骑士：丝之歌",
+        "englishName":"Hollow Knight: Silksong","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
+    raise SystemExit(0)
 if source.read_bytes() == b"disappear fixture":
     source.unlink()
 print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
