@@ -263,7 +263,8 @@ class RealTools(unittest.TestCase):
     """真 openssl 自造 PBES2 p12 + 自签描述文件 → 规整 → 体检 → 签一个最小 App，核签名里的包名 / 团队号 / 权限"""
 
     def test_end_to_end(self):
-        t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, t, True)
+        # 目录名带冒号：rcodesign -e 按第一个冒号拆「作用范围:值」，绝对路径带冒号（Windows 盘符同理）权限会挂错地方、主程序没权限
+        t = Path(tempfile.mkdtemp(prefix="dev:cert-")); self.addCleanup(shutil.rmtree, t, True)
         osl = "/usr/bin/openssl"
         env = dict(os.environ, P="test1234")
         subprocess.run([osl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", t / "k.pem", "-out", t / "c.pem", "-days", "365",
@@ -281,8 +282,8 @@ class RealTools(unittest.TestCase):
         (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.template", "CFBundleExecutable": "S2Arm", "CFBundlePackageType": "APPL"}))
         sec = Secrets()
         log = t / "sign.log"
-        def run(args, logp):
-            r = subprocess.run(list(map(str, args)), capture_output=True, text=True)
+        def run(args, logp, cwd=None):
+            r = subprocess.run(list(map(str, args)), capture_output=True, text=True, cwd=cwd)
             Path(logp).write_text(r.stdout + r.stderr)
             self.assertEqual(r.returncode, 0, r.stderr[-500:])
         c = types.SimpleNamespace(r=dict(action="import", p12Path=str(t / "in.p12"), profilePath=str(t / "in.mobileprovision")), private=t / "private",
