@@ -680,7 +680,10 @@ def ensure(c):
     _ensure_layout(c)
     if (c.library / ".s2arm-library.json").is_file():
         adopt_private_logs(c)
-        heal_folder_names(c)
+        heal_folder_names(c)             # 已有英文名、文件夹还叫游戏号的改名（不联网）
+        if c.operation != "launch":      # 起局时玩家在等：连后台也不起
+            from library import store_meta_background
+            store_meta_background(c)     # 缺横图 / 英文名、7 天内没查过的款：后台查，查到英文名在那里接着改名
 
 
 def _ensure_layout(c):
