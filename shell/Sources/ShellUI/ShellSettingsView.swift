@@ -104,16 +104,8 @@ struct ShellSettingsView: View {
                                 }
                             }
                         }
-                        SettingsGroup(title: ShellStrings.text("Touch controls")) {
-                            TouchControlsPreview(size: store.touchSize, stick: store.touchStick, layout: store.touchLayout)
-                            TouchControlsNote()
-                            ForEach([ShellSettingsRows.touchSizeRow(store), ShellSettingsRows.touchStickRow(store)]) { row in
-                                SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
-                                    ShellSettingsRows.apply(row.id, value: $0, to: store)
-                                }.equatable()
-                            }
-                            TouchArrangeRow(arranged: !store.touchLayout.isEmpty)
-                        }
+                        // S2Arm: the upstream Touch controls group (size, stick, arrangement) is left out. The game reads its own
+                        // per-game layout (each game's settings → button positions), never these shell settings (#372).
                         SettingsGroup(title: ShellStrings.text("Interface")) {
                             let hud = ShellSettingsRows.hudRow(store)
                             SettingControl(gameID: ShellSettingsRows.gameID, row: hud, targetPrefix: ShellSettingsRows.targetPrefix) {

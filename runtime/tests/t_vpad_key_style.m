@@ -22,6 +22,9 @@ int main(void) { @autoreleasepool {
     r = [[S2AVPadLayoutStore alloc] initWithDirectory:d];
     NSDictionary *gs = [r keyScalesIncludingHidden:NO];
     CK(r.globalScale == 1.5 && r.globalOpacity == 0.4 && fabs([gs[@"*"] doubleValue] - 1.5) < 1e-9 && fabs([gs[@"A"] doubleValue] - 1.2) < 1e-9, "⑫ 重开仍在；未单设的键 1.5，A 键 0.8×1.5=1.2");
+    // #372：滑杆单精度，拉到头的 1.6f / 0.2f 换成双精度越过范围一点点 → 原先拒收；按界面精度取整后收下，存的就是 1.6 / 0.2
+    CK([s setKeyStyle:ST((float)1.6, (float)0.2, NO) forKey:@"C" persist:YES error:&e] && [s keyStyle:@"C"].scale == 1.6 && [s keyStyle:@"C"].opacity == 0.2, "⑭ 滑杆拉到头（1.6f / 0.2f）收下，存 1.6 / 0.2（%s）", e.localizedDescription.UTF8String ?: "");
+    CK([s setGlobalScale:(float)1.6 opacity:(float)0.2 persist:YES error:&e] && s.globalScale == 1.6 && [[[S2AVPadLayoutStore alloc] initWithDirectory:d] keyStyle:@"C"].scale == 1.6, "⑮ 整体大小拉到头同样收下；重开读回 1.6");
     [s resetKeyStyles:&e]; CK(s.globalScale == 1 && s.globalOpacity == 1 && [s keyStyle:@"A"].scale == 1, "⑬ 恢复默认清掉整体值和单键值");
     CGRect safe = CGRectMake(0, 0, 800, 400); S2AVPadLayout *l = [S2AVPadLayout defaultForSafeRect:safe]; NSDictionary *b = l.buttons[0]; NSString *bid = b[@"id"];
     CGRect f = [l frameForButton:b safeRect:safe]; CGPoint center = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
@@ -32,6 +35,6 @@ int main(void) { @autoreleasepool {
     CK([[l buttonAt:in2 safeRect:safe slop:0 scales:nil] isEqualToString:bid] && ![[l buttonAt:in2 safeRect:safe slop:0 scales:@{bid: @0.6}] isEqualToString:bid], "⑨ 缩小 0.6 倍：原框边缘点不到了");
     NSURL *bad2 = [d URLByAppendingPathComponent:@".key_style.json"]; [@"{坏" writeToURL:bad2 atomically:YES encoding:NSUTF8StringEncoding error:nil]; r = [[S2AVPadLayoutStore alloc] initWithDirectory:d];
     CK([r keyStyle:@"A"].scale == 1 && r.keyTheme == 0, "⑩ 文件损坏回默认，不崩");
-    if (bad) printf("t_vpad_key_style：%d 项不过\n", bad); else printf("✓ t_vpad_key_style：13 项\n");
+    if (bad) printf("t_vpad_key_style：%d 项不过\n", bad); else printf("✓ t_vpad_key_style：15 项\n");
     return bad != 0;
 } }
