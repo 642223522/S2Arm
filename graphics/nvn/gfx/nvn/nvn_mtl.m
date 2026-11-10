@@ -64,6 +64,7 @@ static inline uint64_t tex_slot_h(const uint64_t *tex, const uint64_t *img, unsi
 static uint64_t c2_handle(int stage, unsigned b);   // the handle c2 holds at byte b (defined with the draw state, TEXA / SAMPA)
 #include "nvn_hmap.h"
 #include "../../host/dm.h"
+#include "../../../../runtime/include/s2a_lowva.h"   // #357: unreferenced shared textures give memory back to the low-region ledger (alias_orph_evict)
 #import <CommonCrypto/CommonDigest.h>
 #include <stdarg.h>
 #include <mach-o/dyld.h>
@@ -2476,6 +2477,92 @@ static void alias_take_over(const alias_key *nk) {
     }
     if (n) { g_ser_gen++; g_alias_taken += n; }
 }
+// #357 unreferenced shared textures: no live object, finalized serial or texture ID resolves to them; the game has finalized every texture over that storage. NVN keeps the storage's
+//   bytes, so an object rebuilt there with the same description must still find them (why the table keeps such textures at all); each goes once that no longer holds:
+//   - never GPU-written: its content is what the storage holds (uploaded from it, or filled from it at creation), and a rebuilt texture takes it from there again: it goes at once;
+//   - GPU-written: its content exists only here, so it stays while any of the GOBs the GPU wrote still holds the bytes it had then (the write ledger, gpw_stale: anything that writes
+//     guest memory, the CPU, the host, a shader's storage buffer, a buffer copy, changes them). Pool Finalize and another texture over the storage end it too (nvn_be_alias_drop_pool /
+//     alias_take_over); once every such GOB is rewritten its content is gone on the Switch as well;
+//   - under address pressure (the low-region ledger asks its users to give memory back, s2a_lowva) the GPU-written ones go too, least recently used first: a texture rebuilt over that
+//     storage then reads the GPU-written GOBs as zero, as any other texture over GPU-written storage already does (tex_init_fill / gpw_zero_rect) - running out of the low region ends
+//     the game (#357 iPad, v0.2.2, 7.5 GB: 393 of 463 shared textures unreferenced when it ran out; a Mac run of the same game: 3.9 MB each, 91% GPU-written, their storage never rewritten).
+//   Entries looked up in the last ALIAS_IDLE submissions are spared (an object rebuilt every frame finds its texture: Breath of the Wild's transient render targets), and so are display /
+//   video-decode textures. alias_orphan_pass runs on the frame hook (nvn_be_mem_stat, every 300 frames)
+static uint64_t g_alias_orph_cache, g_alias_orph_rw, g_alias_orph_valve, g_alias_orph_cache_b, g_alias_orph_rw_b, g_alias_orph_valve_b;   // released: never GPU-written / GPU-written storage rewritten since / under address pressure (count, bytes)
+static uint64_t res_bytes(id o);
+static int gpw_stale(const uint8_t *mem, uint64_t size, uint64_t **runs, uint64_t *bytes);
+static const s2a_lowva_api *g_orph_lv; static int g_orph_lv_me; static int64_t g_orph_noted;   // the low-region ledger (NULL: unit tests / replay), our user number, the bytes noted to it
+static int alias_orph_cand(uint32_t i, CFSetRef held, alias_key *k) {   // caller holds g_smu: entry i is unreferenced, idle, not display / video
+    if (!g_alias.vals[i] || CFSetContainsValue(held, g_alias.vals[i])) return 0;
+    memcpy(k, g_alias.keys + (size_t)i * g_alias.klen, sizeof *k);
+    uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, k);
+    return !(seen && g_fence + 1 - seen < ALIAS_IDLE) && !(k->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE));
+}
+static CFMutableSetRef alias_held(void) {   // caller holds g_smu: what live objects and finalized serials still resolve to
+    CFMutableSetRef held = CFSetCreateMutable(NULL, 0, NULL);
+    nvn_hmap *hm[] = {&g_by_serial, &g_ghost, &g_ghost_active};
+    for (int t = 0; t < 3; t++) for (uint32_t i = 0; i < hm[t]->cap; i++) if (hm[t]->vals[i]) CFSetAddValue(held, hm[t]->vals[i]);
+    return held;
+}
+static uint64_t alias_orph_drop(const alias_key *k, int why) {   // caller holds g_smu; why 0 never GPU-written, 1 rewritten, 2 pressure; returns the bytes let go
+    void *old = nvn_hm_del(&g_alias, k);
+    if (!old) return 0;
+    nvn_hm_del(&g_alias_seen, k); nvn_hm_del(&g_alias_wrote, k);
+    id o = CFBridgingRelease(old); uint64_t b = res_bytes(o);
+    if (why == 0) { g_alias_orph_cache++; g_alias_orph_cache_b += b; } else if (why == 1) { g_alias_orph_rw++; g_alias_orph_rw_b += b; } else { g_alias_orph_valve++; g_alias_orph_valve_b += b; }
+    if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
+    defer_obj_release(o); g_ser_gen++;
+    return b;
+}
+static uint64_t alias_orph_evict(void *ctx, uint64_t want) {   // the low-region ledger's give-back callback (it holds its own lock; g_smu may be held by the thread that asked: then nothing this time)
+    (void)ctx; if (pthread_mutex_trylock(&g_smu)) return 0;
+    CFMutableSetRef held = alias_held();
+    uint32_t n = 0; alias_key *ks = g_alias.n ? malloc(g_alias.n * sizeof *ks) : NULL; uint64_t *seen = g_alias.n ? malloc(g_alias.n * sizeof *seen) : NULL;
+    for (uint32_t i = 0; ks && seen && i < g_alias.cap; i++) { alias_key k;
+        if (!alias_orph_cand(i, held, &k) || !nvn_hm_get(&g_alias_wrote, &k)) continue;
+        ks[n] = k; seen[n++] = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k); }
+    CFRelease(held);
+    uint64_t freed = 0;
+    while (freed < want && n) { uint32_t m = 0; for (uint32_t j = 1; j < n; j++) if (seen[j] < seen[m]) m = j;   // least recently looked up first
+        freed += alias_orph_drop(&ks[m], 2); ks[m] = ks[n - 1]; seen[m] = seen[n - 1]; n--; }
+    if (freed && g_orph_lv) { g_orph_lv->note(g_orph_lv_me, -(int64_t)freed); g_orph_noted -= (int64_t)freed; }
+    pthread_mutex_unlock(&g_smu);
+    free(ks); free(seen);
+    if (freed) MLOG("unreferenced shared textures: %llu MB of GPU-written ones let go for the low-region ledger (asked for %llu MB; %llu in total)", (unsigned long long)(freed >> 20), (unsigned long long)(want >> 20), (unsigned long long)g_alias_orph_valve);
+    return freed;
+}
+static void alias_orphan_pass(void) {
+    if (!g_orph_lv) { static int looked; if (!looked) { looked = 1;
+        const s2a_lowva_api *(*get)(void) = (const s2a_lowva_api *(*)(void))dlsym(RTLD_DEFAULT, "s2a_lowva"); const s2a_lowva_api *lv = get ? get() : NULL;
+        if (lv && lv->size >= sizeof(s2a_lowva_api) && lv->version == S2A_LOWVA_VERSION) { g_orph_lv = lv; g_orph_lv_me = lv->user("unreferenced shared textures", alias_orph_evict, NULL); } } }
+    typedef struct { alias_key k; const uint8_t *mem; uint64_t size; } cand_t;
+    pthread_mutex_lock(&g_smu);
+    CFMutableSetRef held = alias_held();
+    uint32_t nc = 0, nw = 0; alias_key *cache = g_alias.n ? malloc(g_alias.n * sizeof *cache) : NULL; cand_t *wr = g_alias.n ? malloc(g_alias.n * sizeof *wr) : NULL;
+    int64_t wbytes = 0;
+    for (uint32_t i = 0; cache && wr && i < g_alias.cap; i++) { alias_key k;
+        if (!alias_orph_cand(i, held, &k)) continue;
+        if (!nvn_hm_get(&g_alias_wrote, &k)) { cache[nc++] = k; continue; }
+        const pool_t *p = (const pool_t *)(uintptr_t)k.pool; nvn_texlayout L; nvn_tex_layout(&k.d, &L);
+        wbytes += (int64_t)res_bytes((__bridge id)g_alias.vals[i]);
+        if (p && p->mem && L.size) wr[nw++] = (cand_t){k, p->mem + k.off, L.size};
+    }
+    CFRelease(held);
+    for (uint32_t j = 0; j < nc; j++) alias_orph_drop(&cache[j], 0);
+    pthread_mutex_unlock(&g_smu);
+    uint32_t nr = 0;
+    for (uint32_t j = 0; j < nw; j++) {   // outside g_smu: the write ledger has its own lock
+        uint64_t *runs = NULL, b = 0; int n = gpw_stale(wr[j].mem, wr[j].size, &runs, &b); free(runs);
+        if (n == 0) wr[nr++] = wr[j];
+    }
+    if (nr) { pthread_mutex_lock(&g_smu); CFMutableSetRef h2 = alias_held();
+        for (uint32_t j = 0; j < nr; j++) { void *v = nvn_hm_get(&g_alias, &wr[j].k); uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &wr[j].k);
+            if (!v || CFSetContainsValue(h2, v) || (seen && g_fence + 1 - seen < ALIAS_IDLE)) continue;   // taken up again meanwhile
+            wbytes -= (int64_t)alias_orph_drop(&wr[j].k, 1); }
+        CFRelease(h2); pthread_mutex_unlock(&g_smu); }
+    if (g_orph_lv) { pthread_mutex_lock(&g_smu); int64_t d = wbytes - g_orph_noted; g_orph_noted = wbytes; pthread_mutex_unlock(&g_smu); if (d) g_orph_lv->note(g_orph_lv_me, d); }   // attribution: the ledger asks the largest holders first
+    free(cache); free(wr);
+}
 static __unsafe_unretained id serial_get(uint64_t k) { pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
 static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); g_ser_gen++; pthread_mutex_unlock(&g_smu); }
 static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); hm_del_id(&g_by_serial, &k); g_ser_gen++; } pthread_mutex_unlock(&g_smu); }   // nothing to drop: the texture ID caches stay valid
@@ -4238,6 +4325,7 @@ void nvn_be_mem_kinds(uint64_t *priv_tex, uint64_t *priv_buf, uint64_t *pool_len
     }
 }
 void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
+    alias_orphan_pass();   // #357: before the line cap below, which only limits the readout
     nvn_mem_detail(frame);   // before the line cap below: the detailed accounting has its own interval and must not be starved by the 400-line budget
     fb_report(frame); samp_report(frame); audit_probe_report(frame);
     static unsigned long long last_rss, last_gpu, last_frame; static int lines; unsigned long long gpu = (unsigned long long)(g_dev.currentAllocatedSize >> 20);
@@ -4265,7 +4353,7 @@ void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #if TARGET_OS_IPHONE
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
-    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u, %llu MB (%u of them unreferenced, %llu MB, GPU-written %llu MB; textures by serial %llu MB; evicted with pools %llu, on storage takeover %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total (%llu MB; segments cut for scratch %llu, waits for a block %llu), finalized textures still referenced %u (small table, %llu put in total, %llu held to the end of their submission past it, %llu resolved to shared textures without it); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, (unsigned long long)(ash_b >> 20), aorph, (unsigned long long)(aorph_b >> 20), (unsigned long long)(aorph_w >> 20), (unsigned long long)(ser_b >> 20), (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, (unsigned long long)(arena_bytes() >> 20), (unsigned long long)g_arena_cuts, (unsigned long long)arena_waits(), nghost, (unsigned long long)ghost_puts, (unsigned long long)ghost_kept, (unsigned long long)ghost_shared, avail);
+    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u, %llu MB (%u of them unreferenced, %llu MB, GPU-written %llu MB; textures by serial %llu MB; evicted with pools %llu, on storage takeover %llu, unreferenced released %llu, %llu MB (never GPU-written %llu, storage rewritten since %llu, for the low-region ledger %llu) in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total (%llu MB; segments cut for scratch %llu, waits for a block %llu), finalized textures still referenced %u (small table, %llu put in total, %llu held to the end of their submission past it, %llu resolved to shared textures without it); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, (unsigned long long)(ash_b >> 20), aorph, (unsigned long long)(aorph_b >> 20), (unsigned long long)(aorph_w >> 20), (unsigned long long)(ser_b >> 20), (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)(g_alias_orph_cache + g_alias_orph_rw + g_alias_orph_valve), (unsigned long long)((g_alias_orph_cache_b + g_alias_orph_rw_b + g_alias_orph_valve_b) >> 20), (unsigned long long)g_alias_orph_cache, (unsigned long long)g_alias_orph_rw, (unsigned long long)g_alias_orph_valve, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, (unsigned long long)(arena_bytes() >> 20), (unsigned long long)g_arena_cuts, (unsigned long long)arena_waits(), nghost, (unsigned long long)ghost_puts, (unsigned long long)ghost_kept, (unsigned long long)ghost_shared, avail);
     {   // What the memory pools put in the residency set (on a phone: wired), and the uploads read from pools that hold only textures without putting them there (up_tex_src)
         uint64_t pall = 0, pres_b = 0; int pn = 0;
         pthread_mutex_lock(&g_mu); for (int i = 0; i < g_npool; i++) { uint64_t sz = g_pools[i].hi - g_pools[i].lo; pall += sz; if (g_pools[i].res) pres_b += sz; } pn = g_npool; pthread_mutex_unlock(&g_mu);
