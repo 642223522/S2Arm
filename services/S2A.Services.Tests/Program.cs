@@ -2913,6 +2913,9 @@ namespace S2A.Services.Tests
                 Check("语言退路：亚洲版（韩 / 繁 / 简）→ 简中；日 / 韩 + 首选含日语 → 日语；只有德语 → 德语；不给退路 = 上游取第一个（韩）",
                     "SimplifiedChinese / Japanese / German / Korean",
                     $"{Enum.GetName(TL, pick(asia, list))} / {Enum.GetName(TL, pick(jpKo, SystemLocale.TitleFallback(new[] { "en-US", "ja-JP" })))} / {Enum.GetName(TL, pick(deOnly, list))} / {Enum.GetName(TL, pick(asia, null))}");
+                // 支持语言位为 0（合成的 control.nacp）：缺省回美式英语（#401）；玩家显式指定系统语言时回它。语言码 = ASCII 小端："ja" = 0x616A、"en-US" = 0x53552D6E65
+                var zero = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.ZeroSupportedLanguageCode;
+                Check("支持语言位为 0：系统日语、没显式指定 → en-US；显式指定日语 → ja", "0x53552D6E65 / 0x616A", $"0x{zero(0x616A, false):X} / 0x{zero(0x616A, true):X}");
             }
 
             // ---- 主机 / 掌机档（维护者 10-20 晚改回缺省掌机）：apm GetPerformanceMode 由 Ryujinx 按 DockedMode 回答，掌机档 = 0（Normal）、主机档 = 1（Boost）----

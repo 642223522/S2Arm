@@ -149,9 +149,12 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
             {
                 // 支持语言位为 0（旧版导入合成的 control.nacp 没写这一项，#401）：原样回系统语言（如 zh-Hans）时游戏判为无效语言、去读不存在的语言资源，一直黑屏。
                 // 退到美式英语，与出包合成件的缺省（只声明美式英语）同一口径，已导入的旧库不用重新导入
-                Logger.Warning?.Print(LogClass.ServiceAm, "Application has zero supported languages, using AmericanEnglish");
+                // 玩家显式指定了系统语言（S2A_SYSTEM_LANGUAGE，S2AHooks.ExplicitSystemLanguage）时听玩家的：支持位为 0 只说明不知道游戏支持什么，
+                // 游戏本身支持该语言的（11-10 程序号 0400486024DEC000：此前系统日语下显示日语）不该被改成英语
+                bool chosen = S2AHooks.ExplicitSystemLanguage;
+                Logger.Warning?.Print(LogClass.ServiceAm, chosen ? "Application has zero supported languages, using the explicitly chosen system language" : "Application has zero supported languages, using AmericanEnglish");
 
-                context.ResponseData.Write(SystemStateMgr.GetLanguageCode((int)SystemLanguage.AmericanEnglish));
+                context.ResponseData.Write(ZeroSupportedLanguageCode(desiredLanguageCode, chosen));
 
                 return ResultCode.Success;
             }
@@ -170,6 +173,10 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
 
             return ResultCode.Success;
         }
+
+        // S2Arm: 支持语言位为 0 时回给游戏的语言码：缺省美式英语（#401）；玩家显式指定了系统语言就回它
+        internal static long ZeroSupportedLanguageCode(long systemLanguageCode, bool explicitSystemLanguage) =>
+            explicitSystemLanguage ? systemLanguageCode : SystemStateMgr.GetLanguageCode((int)SystemLanguage.AmericanEnglish);
 
         // S2Arm: the first of the host's fallback languages the game supports, else the game's first supported language (upstream)
         internal static int PickFallbackLanguage(int supportedLanguages, TitleLanguage[] fallback)

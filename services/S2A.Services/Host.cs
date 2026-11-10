@@ -671,6 +671,8 @@ namespace S2A.Services
             string[] langTags = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_SYSTEM_LANGUAGE")) ? Array.Empty<string>()
                 : configuration?.SystemLanguageTag is Func<string> lt ? new[] { lt() } : configuration == null ? SystemLocale.Preferred() : Array.Empty<string>();
             Ryujinx.HLE.S2AHooks.TitleLanguageFallback = SystemLocale.TitleFallback(langTags);
+            // 显式指定的系统语言（env.txt 也算）：游戏的控制数据没声明支持语言时仍按它回（IApplicationFunctions.GetDesiredLanguage）
+            Ryujinx.HLE.S2AHooks.ExplicitSystemLanguage = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_SYSTEM_LANGUAGE"));
             HleConfiguration config = new HleConfiguration(
                 MemoryConfiguration.MemoryConfiguration4GiB,
                 Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如01006F8002326000存档 Japanese）
