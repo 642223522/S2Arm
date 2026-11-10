@@ -1,4 +1,4 @@
-// S2Arm modification: enable drag-and-drop reordering on library cards.
+// S2Arm modification: add an entry to the dedicated game sorting grid.
 import SwiftUI
 
 /// A Recently played row starts its game, or opens the same fix as Play (game data, an app update).
@@ -110,18 +110,21 @@ struct PortraitLibrary: View, Equatable {
 
     private var collection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)").padding(.horizontal, 24)
+            HStack {
+                SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)")
+                GameOrderButton()
+            }.padding(.horizontal, 24)
             if wide {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 22, alignment: .top)],
                           alignment: .leading, spacing: 24) {
-                    ForEach(games) { tile($0) }.shellReorderable()
-                }.modifier(GameReorderContainer()).padding(.horizontal, 24)
+                    ForEach(games) { tile($0) }
+                }.padding(.horizontal, 24)
             } else {
                 ScrollView(.horizontal) {
                     // Not lazy: every cover is a focus target, so the D-pad can reach the ones still off screen.
                     HStack(alignment: .top, spacing: 24) {
-                        ForEach(games) { tile($0).frame(width: coverSize) }.shellReorderable()
-                    }.scrollTargetLayout().modifier(GameReorderContainer()).padding(.vertical, 6)
+                        ForEach(games) { tile($0).frame(width: coverSize) }
+                    }.scrollTargetLayout().padding(.vertical, 6)
                 }
                 .contentMargins(.horizontal, 24, for: .scrollContent)
                 .scrollIndicators(.hidden)
@@ -169,7 +172,6 @@ struct PortraitLibrary: View, Equatable {
         .accessibilityAddTraits(chosen ? .isSelected : [])
         .accessibilityIdentifier("tile.\(detail.id)")
         .modifier(GameTileMenu(detail: detail, select: select, openSettings: openSettings))
-        .modifier(GameReorderCard(id: detail.id))
         .id(detail.id)
     }
 
