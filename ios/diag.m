@@ -5,7 +5,8 @@
 //   包：s2a_diag_<款>_<机型>_<iOS>_<提交前 9 位>_<MMDDHHMMSS>.zip，压缩后 ≤ 30 MB：
 //       manifest.json、logs/host.log + logs/host-<起局时刻>.log（本局 + 机上归档的最近 9 局；单份超 8 MB 只留头 2 MB + 尾 6 MB）、
 //       logs/frames.tsv、logs/threads.txt、logs/unpack.log（有就放）、metrickit/*.json（MetricKit 崩溃 / 卡顿诊断原样 JSON）、
-//       shaders/*（现编着色器的输入：编到一半进程没了留下的 .inflight.*、翻译器报错留下的 .fail.*，有就放）。
+//       shaders/*（现编着色器的输入：编到一半进程没了留下的 .inflight.*、翻译器报错留下的 .fail.*，有就放）、
+//       diagrun/*.png（诊断局的出图与颜色目标，总量 ≤ 20 MB）。
 //   脱敏：App 数据目录 / 安装目录换成 <APP> / <BUNDLE>，设备名、UDID 去掉；存档（bis/user/save）、资源包、密钥都不放。
 //   交出：系统分享面板（AirDrop / 存到文件 / 微信）；包同时留在 Documents/diag/（只留最近 3 个，Mac 前端「拉回诊断」能拉到）。
 #import <UIKit/UIKit.h>
@@ -196,6 +197,22 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
                 [fm createDirectoryAtPath:[W stringByAppendingPathComponent:@"shaders"] withIntermediateDirectories:YES attributes:nil error:nil];
                 if ([d writeToFile:[W stringByAppendingPathComponent:rel] atomically:NO]) { [files addObject:@{@"path": rel, @"bytes": @(d.length), @"truncated": @NO}]; ns++; }
             } } }
+    // 诊断局（#438，settings.m s2a_ios_apply_diag_run）的读数：单款包 Documents/diagrun/、多款容器各款 games/<游戏号>/diagrun/ 里的 PNG
+    //   （出图画面与颜色目标，渲染出来的图、不含游戏数据和个人信息，原样带走）。单张超过 4 MB 跳过、总量至多 20 MB（整包 ≤ 30 MB，给日志留地方），放 diagrun/<游戏号>_<原名>
+    {   NSMutableArray *dirs = [NSMutableArray arrayWithObject:@[@"app", [D stringByAppendingPathComponent:@"diagrun"]]];
+        NSString *G = [D stringByAppendingPathComponent:@"games"];
+        for (NSString *gid in [[fm contentsOfDirectoryAtPath:G error:nil] sortedArrayUsingSelector:@selector(compare:)])
+            [dirs addObject:@[gid, [[G stringByAppendingPathComponent:gid] stringByAppendingPathComponent:@"diagrun"]]];
+        unsigned long long used = 0;
+        for (NSArray *e in dirs) for (NSString *f in [[fm contentsOfDirectoryAtPath:e[1] error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+            if (![f.lowercaseString hasSuffix:@".png"]) continue;
+            NSString *src = [e[1] stringByAppendingPathComponent:f];
+            unsigned long long n = [[fm attributesOfItemAtPath:src error:nil] fileSize];
+            if (!n || n > (4ull << 20) || used + n > (20ull << 20)) continue;
+            NSString *rel = [NSString stringWithFormat:@"diagrun/%@_%@", file_safe(e[0]), f];
+            [fm createDirectoryAtPath:[W stringByAppendingPathComponent:@"diagrun"] withIntermediateDirectories:YES attributes:nil error:nil];
+            if ([fm copyItemAtPath:src toPath:[W stringByAppendingPathComponent:rel] error:nil]) { [files addObject:@{@"path": rel, @"bytes": @(n), @"truncated": @NO}]; used += n; }
+        } }
     if (copyFailed) {
         [fm removeItemAtPath:W error:nil];
         if (err) *err = S2AL(@"diag.error.redact");

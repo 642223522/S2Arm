@@ -1728,6 +1728,23 @@ class JobsTests(unittest.TestCase):
         tail_part = text[text.index("以下是日志结尾"):]
         self.assertGreater(len(tail_part.encode()), 6 * len(text[:text.index("中间截掉")].encode()))   # 尾部留得比头部多
 
+    def test_diagnostic_export_brings_diag_run_pictures(self):
+        # #438 诊断局：游戏文件夹 diagrun/ 里的 PNG 原样进诊断包 diagrun/<游戏号>_<原名>；单张超过上限的跳过、别的文件不带。期望（手写）
+        import unittest.mock as um
+        gid = "0100000000010000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="Alpha", packages=[])]))
+        run = layout.game_dir(self.c, gid, english="Alpha") / "diagrun"; run.mkdir()
+        (run / "shot_3600.png").write_bytes(b"\x89PNG small")
+        (run / "td_100.png").write_bytes(b"\x89PNG" + b"x" * 2000)
+        (run / "notes.txt").write_text("不带")
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        with um.patch.object(library, "DIAG_RUN_FILE_LIMIT", 1024):
+            library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            names = [n for n in z.namelist() if n.startswith("diagrun/")]
+            self.assertEqual(names, [f"diagrun/{gid}_shot_3600.png"])
+            self.assertEqual(z.read(names[0]), b"\x89PNG small")
+
     def test_diagnostic_fd_boundaries_and_directory_replacement(self):
         import unittest.mock as um
         destination = self.root / "diagnostics.zip"; destination.write_bytes(b"old target")
