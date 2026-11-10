@@ -47,6 +47,6 @@ int main(void) { @autoreleasepool {
     }
     g_libpack.idx=NULL; g_libpack_ok=0; nvn_be_drain();
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-    printf("tensor native dispatch: %u checks, 0 failures; Metal%d, encoder=%s, disabled=%d\n",checks,g_m3?3:4,getenv("DM_NVN_ENC_THREAD")?:"default",disabled);
+    printf("✓ t_nvn_tensor_native: %u checks, 0 failures; Metal%d, encoder=%s, disabled=%d\n",checks,g_m3?3:4,getenv("DM_NVN_ENC_THREAD")?:"default",disabled);
     return 0;
 } }
