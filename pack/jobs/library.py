@@ -2013,18 +2013,21 @@ def delete(c):
             with store_meta_quiet(c.library), c.lock("execution"), c.lock():
                 gid = c.game()["id"]
                 c.begin("删除游戏与出包产物")
-                gdir = layout.find_game(c, gid)
+                # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
+                #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
+                gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
                 if gdir and gdir.exists():
                     # 存档有内容就保留
                     saves = gdir / "saves"
                     backups = gdir / "save-backups"
                     has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+                    root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
                     if has_saves:
                         for item in gdir.iterdir():
                             if item.name not in ("saves", "save-backups"):
-                                _rm(c, layout.root_of(c, gid), item)
+                                _rm(c, root, item)
                     else:
-                        _rm(c, layout.root_of(c, gid), gdir)
+                        _rm(c, root, gdir)
                 for p in game_caches(c, gid):
                     _rm(c, c.work_root, p)
                 drop_from_container(c, gid)

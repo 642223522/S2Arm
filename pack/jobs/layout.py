@@ -171,6 +171,17 @@ def find_game(c, gid):
     return d if st == "ok" else None
 
 
+def indexed_dir(c, gid):
+    """索引里记的这款文件夹，不管里面还有没有 game.json；位置没连上、没记、文件夹不在 → None。
+    删游戏删到一半（某个文件删不掉）时 game.json 可能已经没了，find_game 认不出它；重试删除靠这里找回同一个文件夹（#433）"""
+    entry = load_index(c)["games"].get(gid.upper())
+    root = _location_path(c, entry.get("location")) if entry else None
+    if not entry or not entry.get("folder") or root is None or not root.is_dir():
+        return None
+    d = games_root(c, root) / entry["folder"]
+    return d if d.is_dir() else None
+
+
 def require_in_location(c, p):
     """路径必须在某个已登记存放位置的 games/ 下（运行镜像校验用，挡住指到库外的路径）"""
     p = Path(p).resolve()

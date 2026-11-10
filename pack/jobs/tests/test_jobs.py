@@ -1361,6 +1361,19 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
 
+    def test_delete_retry_after_half_done_delete_removes_the_leftover_folder(self):
+        # #433：上次删到一半（目录删不空、Errno 66）时 game.json 已被删掉，文件夹和出包中止留下的临时目录还在、索引还指着它。
+        #   期望（手写）：再点删除按索引找回同一个文件夹删干净、清单里去掉；原先认不出这个文件夹，只去掉条目、残留目录留在盘上
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        gdir = layout.game_dir(self.c, game["id"])
+        tmp = gdir / "build" / "extract.ns2_dump.tmp"; tmp.mkdir(parents=True); (tmp / "part.bin").write_bytes(b"x" * 4096)
+        (gdir / layout.GAME_JSON).unlink()
+        self.assertIsNone(layout.find_game(self.c, game["id"]))   # 认不出（没有 game.json）
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertFalse(gdir.exists())
+        self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+
     def test_delete_also_drops_game_from_library_container(self):
         # 期望（#227，游戏库结构 v3）：删 A → 各台手机记录（devices/<设备>.json）里摘掉 A，B 与其余字段原样；没装 A 的那台记录不动；
         #   不装机、不碰默认位置根的 S2Arm.ipa（下次给那台装机时现组的容器就不再带 A）
