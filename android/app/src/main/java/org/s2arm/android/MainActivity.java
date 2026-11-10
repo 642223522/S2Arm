@@ -78,6 +78,7 @@ public class MainActivity extends Activity
     // touchPad 不跟画面矩形：虚拟键要留在两侧黑边上，始终铺满整个窗口。
     private final Runnable geometrySample = this::sampleBufferGeometry;
     private int bufferGeomW, bufferGeomH;
+    private SystemPowerSampler powerSampler;   // #48 A5：应用内电池净放电读数（仅游戏局）
     private android.window.OnBackInvokedCallback gameBackCallback;
 
     @Override public void onCreate(Bundle state) {
@@ -126,6 +127,29 @@ public class MainActivity extends Activity
                 getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, gameBackCallback);
             }
+            // A5/#163 读数落 logcat（采集的 logcat.txt）：数值变化才写一行，插电时
+            // unavailable 只在状态变化时报一次；rails 是 Android 15+ 的 CPU/GPU 轨功耗
+            //（插电也可读），event 是低频原始值行（保留电流原号，供真机对账）。
+            powerSampler = new SystemPowerSampler(this, lifecycleProbe, new SystemPowerSampler.Sink() {
+                private String lastBattery = "", lastRails = "";
+                @Override public void battery(double watts) {
+                    String text = Double.isNaN(watts)
+                        ? "unavailable" : String.format(java.util.Locale.ROOT, "%.3f", watts);
+                    if (!text.equals(lastBattery)) {
+                        lastBattery = text;
+                        Log.i("S2Arm", "battery-discharge-watts=" + text);
+                    }
+                }
+                @Override public void rails(double watts) {
+                    String text = Double.isNaN(watts)
+                        ? "unavailable" : String.format(java.util.Locale.ROOT, "%.3f", watts);
+                    if (!text.equals(lastRails)) {
+                        lastRails = text;
+                        Log.i("S2Arm", "power-rails-watts=" + text);
+                    }
+                }
+                @Override public void event(String line) { Log.i("S2Arm", line); }
+            });
         }
         if (!gameMode) {
             String packageTitle;
@@ -584,6 +608,7 @@ public class MainActivity extends Activity
         applyGameWindow();
         library.scanImports();   // report the library; imports require an explicit staging target
         if (host != 0) NativeBridge.setForeground(host, true);   // the window, if any, is still the render thread's
+        if (powerSampler != null) powerSampler.start();
         tryStartGame();
         if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
         if (gameMode && host != 0 && !gameStopping && getIntent().getBooleanExtra(GameActivity.LIFECYCLE_TEST_EXTRA, false)
@@ -641,6 +666,7 @@ public class MainActivity extends Activity
             // Rendering stops; the surface stays with the render thread until surfaceDestroyed.
             if (host != 0) NativeBridge.setForeground(host, false);
         }
+        if (powerSampler != null) powerSampler.stop();
         super.onPause();
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
