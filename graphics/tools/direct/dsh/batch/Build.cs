@@ -262,17 +262,23 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
               + $"{failed.Count} keys still failing; {N("unity same MSL keys")} keys with the MSL of another key took its library; {N("unity main0_u shared")} main0_u entry points compiled on main0's body (dmsh_ushare.py)");
         }
         SeFinish(); Phase("采样模拟变体");
+        // 待编源码（Defer / VinSrc，spill.dat）只在编批库里读，到这里已没人用：就地放掉，不叠在后面「两张表收尾 / 发布打包」的盘峰值上（v0.2.4 出包空间：怪猎崛起 827 MB）
+        Say(WorkUsage()); Spill.Close();
         Summaries(res);
         var bj = new StringBuilder("[");
         for (int i = 0; i < res.Count; i++) { if (i > 0) bj.Append(", "); bj.Append("{\"key\": ").Append(JStr(res[i].Key)).Append(", \"st\": ").Append(JStr(res[i].St)).Append(", \"err\": ").Append(JStr(res[i].Why)).Append('}'); }
         File.WriteAllText(Path.Combine(Out, "_b_build.json"), bj.Append(']').ToString(), U8);
         foreach (var d in new[] { Out, IosOut }.Where(x => x != null)) WriteStamp(d, Game, Inputs);
         Say($"library stamp: game {Game}, inputs {Inputs}");
-        Phase("汇总 / 印章"); int rc = PublishAll(); Phase("发布打包");
-        if (rc != 0) return rc;
-        if (A.TryGetValue("--export-mac", out var ex)) { MAC.Export(ex); Phase("导出 Mac 逐键产物（只考卷 / 对拍）"); }   // 考卷冻结 / 全量对拍用（direct_lib.sh S2A_DIRECT_KEEP）
+        Phase("汇总 / 印章");
+        // 两张表收尾放在发布之前（v0.2.4 出包空间）：它和发布里的 ps_inputs 表是 Mac 侧源码（*.metal）最后的读者，读完源码那份就地放掉，
+        //   容器打包写盘时不再和它叠在一起（怪猎崛起 Mac 侧 3.4 GB 里多半是源码）。要导出逐键产物（--export-mac，考卷 / 对拍）时源码留着
         c1cb.Wait(); Phase("等两张表");
         C1CbFinal(); Phase("两张表收尾");
+        bool export = A.TryGetValue("--export-mac", out var ex);
+        int rc = PublishAll(export ? null : MAC.DropText); Phase("发布打包");
+        if (rc != 0) return rc;
+        if (export) { MAC.Export(ex); Phase("导出 Mac 逐键产物（只考卷 / 对拍）"); }   // 考卷冻结 / 全量对拍用（direct_lib.sh S2A_DIRECT_KEEP）
         var (kept, dropped) = Store.Compact(); Say($"store: {kept} entries kept, {dropped} dropped"); Phase("整理缓存仓");
         return 0;
     }
@@ -633,11 +639,12 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     //   工作内存与大对象随子进程退出整块归还；主进程只留每支的签名（MSL 字节摘要 + span + 绑定）与结果行。原先在主进程里算，快照签名带整段 MSL 文本（UTF-16）留到收尾
     static string C1CbJson(string n) => C1Cb.KeyOf(n) + "_b.json";
     // 分批（11-08 巫师3 Windows 出包机三次盘满，rc=127 死在收尾）：这一步把每支 MSL 明文写进临时目录再交子进程，巫师3 约 3 万键、明文近百 GB。子进程逐支独立分析（C1Cb.Cli 每支一个任务），
-    //   按累计字节切批（缺省 4 GB，S2A_C1CB_CHUNK_MB，0 = 每支一批），一批跑完删目录，临时盘峰值 = 一批
+    //   按累计字节切批（缺省 256 MB，S2A_C1CB_CHUNK_MB，0 = 每支一批），一批跑完删目录，临时盘峰值 = 一批。原缺省 4 GB 对玩家等于不切：怪猎崛起后台遍
+    //   整份 2.08 GB 一次落盘、正叠在编批库的盘峰值上（v0.2.4 出包空间）；后台遍与编批库并发，多起几次子进程不进墙钟
     static Dictionary<string, (string C1, string Row)> C1CbChild(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs)
     {
         var res = new Dictionary<string, (string C1, string Row)>(StringComparer.Ordinal);
-        long limit = long.TryParse(Environment.GetEnvironmentVariable("S2A_C1CB_CHUNK_MB"), out var mb) && mb >= 0 ? mb * 1000000 : 4000000000L;
+        long limit = long.TryParse(Environment.GetEnvironmentVariable("S2A_C1CB_CHUNK_MB"), out var mb) && mb >= 0 ? mb * 1000000 : 256000000L;
         var cur = new List<string>(); long bytes = 0; int part = 0;
         void Flush() { if (cur.Count == 0) return; foreach (var kv in C1CbChunk(cur, tag + part++, sigs)) res[kv.Key] = kv.Value; cur = new List<string>(); bytes = 0; }
         foreach (var n in names) { var m = MAC.Get(n); if (m == null) continue; if (cur.Count > 0 && bytes + m.Length > limit) Flush(); cur.Add(n); bytes += m.Length; }
@@ -695,12 +702,19 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var lines = C1Cb.WriteTables(res, TableHead(Out), Table("c1_full.tsv"), Table("cb_extent.tsv"));
         Say($"c1_full.tsv: {lines[0]}"); Say($"cb_extent.tsv: {lines[1]}"); Count("c1cb recomputed", redo.Count);
     }
-    static int PublishAll()   // 发布那一侧核验、打包成 lib.NNN.pak + lib.idx、ps_inputs / keys.tsv（LibPack.Publish）；没给发布侧（手工出库、单测）就两侧按键导出到各自输出目录
+    static string WorkUsage()
+    {
+        static string M(long b) => $"{b / 1048576.0:F0} MB";
+        string S(string n, Side sd) { if (sd == null) return ""; var (b, t) = sd.Usage(); return $"；{n} 侧 库与反射 {M(b)}、源码 {M(t)}"; }
+        return $"临时数据：待编源码 {M(Spill.Length)}" + S("Mac", MAC) + S("iOS", IOS);
+    }
+
+    static int PublishAll(Action sourcesDone)   // 发布那一侧核验、打包成 lib.NNN.pak + lib.idx、ps_inputs / keys.tsv（LibPack.Publish）；没给发布侧（手工出库、单测）就两侧按键导出到各自输出目录
     {
         if (IosOut != null && Publish != null)
         {
             var w = new StringWriter();
-            var err = LibPack.Publish(MAC.All, IOS?.All, NoMac, Publish, IosOut, Chain, w);
+            var err = LibPack.Publish(MAC.All, IOS?.All, NoMac, Publish, IosOut, Chain, w, sourcesDone);
             foreach (var l in w.ToString().Split('\n').Where(l => l.Length > 0)) Say(l);
             if (err != null) { Say(err); return 1; }
         }
@@ -777,6 +791,8 @@ sealed class BlobFile
 {
     readonly Microsoft.Win32.SafeHandles.SafeFileHandle h; long tail;
     public BlobFile(string path) { h = File.OpenHandle(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, FileOptions.DeleteOnClose); }
+    public long Length => Interlocked.Read(ref tail);
+    public void Close() => h.Dispose();   // DeleteOnClose：文件随之删掉，之后再读抛 ObjectDisposedException
     public (long Off, int Len) Write(ReadOnlySpan<byte> b) { long off = Interlocked.Add(ref tail, b.Length) - b.Length; RandomAccess.Write(h, b, off); return (off, b.Length); }
     public byte[] Read((long Off, int Len) e)
     {
@@ -787,17 +803,27 @@ sealed class BlobFile
 }
 
 /// <summary>一侧（Mac / iOS）的出库产物：文件名 → 字节，字节在 BlobFile 里、内存只留索引；同一个字节数组放进多个名字（批库给同批各键）只写一份。
-/// Get 每次读回新数组（调用方自己的）</summary>
+/// 源码（*.metal）与库 / 反射分两个文件存：源码最后的读者（两张表收尾、发布里的 ps_inputs）读完即 DropText 整份放掉，不等进程退出（v0.2.4 出包空间）。
+/// Get 每次读回新数组（调用方自己的）；DropText 之后再取源码抛错（名字照旧在，核齐全只看名字）</summary>
 sealed class Side
 {
-    readonly BlobFile bf; readonly ConcurrentDictionary<string, (long, int)> f = new(StringComparer.Ordinal);
-    readonly System.Runtime.CompilerServices.ConditionalWeakTable<byte[], System.Runtime.CompilerServices.StrongBox<(long, int)>> seen = new();
-    public Side(string dir) { bf = new BlobFile(Path.Combine(dir, $"side_{Guid.NewGuid():N}.dat")); }
-    public byte[] Get(string n) => f.TryGetValue(n, out var e) ? bf.Read(e) : null;
+    readonly BlobFile bf, tx; volatile bool txGone; readonly ConcurrentDictionary<string, (long, int)> f = new(StringComparer.Ordinal);
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<byte[], System.Runtime.CompilerServices.StrongBox<(long, int)>> seen = new(), seenTx = new();
+    public Side(string dir) { bf = new BlobFile(Path.Combine(dir, $"side_{Guid.NewGuid():N}.dat")); tx = new BlobFile(Path.Combine(dir, $"side_{Guid.NewGuid():N}.src.dat")); }
+    static bool IsText(string n) => n.EndsWith(".metal", StringComparison.Ordinal);
+    BlobFile Of(string n) { if (!IsText(n)) return bf; if (txGone) throw new InvalidOperationException($"源码已放（DropText 之后）还在取 {n}"); return tx; }
+    public byte[] Get(string n) => f.TryGetValue(n, out var e) ? Of(n).Read(e) : null;
     public string Text(string n) { var b = Get(n); return b == null ? null : Encoding.UTF8.GetString(b); }
     public bool Has(string n) => f.ContainsKey(n);
-    public void Put(string n, byte[] b) { if (!seen.TryGetValue(b, out var box)) { box = new(bf.Write(b)); seen.AddOrUpdate(b, box); } f[n] = box.Value; }
+    public void Put(string n, byte[] b)
+    {
+        var (file, sn) = IsText(n) ? (Of(n), seenTx) : (bf, seen);
+        if (!sn.TryGetValue(b, out var box)) { box = new(file.Write(b)); sn.AddOrUpdate(b, box); }
+        f[n] = box.Value;
+    }
     public void Drop(string n) => f.TryRemove(n, out _);
+    public void DropText() { txGone = true; tx.Close(); }
+    public (long Bin, long Text) Usage() => (bf.Length, tx.Length);
     public List<string> Names() => f.Keys.ToList();
     public IReadOnlyDictionary<string, byte[]> All => new View(this);
     public void Export(string dir)

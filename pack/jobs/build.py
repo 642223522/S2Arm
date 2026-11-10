@@ -386,6 +386,16 @@ def reader_program(c, where):
     return shim
 
 
+def warn_offline_empty(c, root):
+    """直连库只能运行时现编（runtime_only_lib.sh 写 shaders/direct/runtime_only.txt，首行是原因）：出包照常算成功，但完成页要说（#470：
+    抽取红、离线 0 支，完成页却是纯绿的「出包完成」、diagnostics 为空）。Mac 包（build.prepare）与 iPhone 包（ipa.build）共用"""
+    p = Path(root) / "shaders/direct/runtime_only.txt"
+    if not p.is_file():
+        return
+    why = (p.read_text(encoding="utf-8", errors="replace").strip().splitlines() or [""])[0][:300]
+    c.diagnostic("这款的着色器离线预编 0 支，游戏能玩，但首次遇到的画面要现编、开头会卡顿" + (f"（{why}）" if why else ""), code="direct_offline_empty", severity="warning")
+
+
 def extract_nup(c, game, packages, extraction, env, logs):
     """Switch 2 NUP 容器（导入时 library.nup_inspect 记 format=nup）→ 共用解包目录：pack/ns2_nup.py --to-extract（展开 + pack/ns2_dump.py 整理，
     与一键出包 pack/oneclick/oneclick.sh / pack/orch/oneclick_win.py 同两步、同目录布局，共享解包阶段 pack/stages/unpack.sh 也走它）。
@@ -600,6 +610,7 @@ def prepare(c):
             raise Failure("着色器准备存在缺口，请查看构建日志；未替换上次成功版本。")
         if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
+        warn_offline_empty(c, current)
         ms.enter(c, "host")
         host = compile_host(c, fingerprint, env, logs)
         ms.enter(c, "install")

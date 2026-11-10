@@ -180,7 +180,7 @@
 "vpad.layouts.touch.note" = "游戏自己的触屏操作用这项；虚拟按键会关掉，四指长按 1.5 秒可切回";
 "vpad.menu.editDisabled" = "仅触屏操作时没有按键可编辑";
 "vpad.menu.face.letter" = "按键按字母对应";
-"vpad.menu.face.letter.note" = "Xbox 的 A 就是 Switch 的 A";
+"vpad.menu.face.letter.note" = "Xbox 的 A、PlayStation 的 × 就是 Switch 的 A";
 "vpad.menu.face.position" = "按键按位置对应";
 "vpad.menu.face.position.note" = "按 Switch 的按键位置";
 "vpad.menu.gyro" = "手机陀螺仪";

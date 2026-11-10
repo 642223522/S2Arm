@@ -1,9 +1,7 @@
-<p align="center"><img src="docs/images/s2arm-wordmark.png" width="420" alt="S2Arm"></p>
+<p align="center"><a href="https://s2arm.com"><img src="docs/images/s2arm-wordmark.png" width="420" alt="S2Arm"></a><br><a href="https://s2arm.com">s2arm.com</a></p>
 
-> [!WARNING]
-> **重要声明：s2arm.com 不是 S2Arm 的官方网站。** 该站与本项目和维护者没有任何关系，擅自使用 S2Arm 的名称，并挂出了捐款链接。
-> S2Arm 免费开源，从不接受任何捐赠，也不做任何商业化；凡是以 S2Arm 名义收款的，都与我们无关。我们无法鉴别第三方网站提供的任何下载内容是否经过改动、是否植入后门，请只从官方渠道获取：[GitHub 仓库](https://github.com/jhaizhou-ops/S2Arm) 与 [官方下载页](https://jhaizhou-ops.github.io/S2Arm/)。
-> 我们强烈谴责这种冒用开源项目名义牟利的行为。
+> [!NOTE]
+> **好消息：[s2arm.com](https://s2arm.com) 已正式成为 S2Arm 官方网站。** S2Arm 免费开源，从不接受任何捐赠；请只从 [s2arm.com](https://s2arm.com) 或本 GitHub 仓库获取 S2Arm。
 
 **把你自己的 Switch 游戏，原生带到 iPhone、iPad 和 Mac。** 游戏代码改写成原生 ARM64，直接在设备的处理器上执行；图形直连 Metal。整座游戏库装进一个 App，在 Mac 或 Windows 的图形启动器里点几下就能出包、装机、开玩。
 
