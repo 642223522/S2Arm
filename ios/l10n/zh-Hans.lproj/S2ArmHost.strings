@@ -115,6 +115,8 @@
 "vpad.idleOpacity.a11y" = "闲置按键透明度";
 "vpad.layout.buttons" = "按键布局";
 "vpad.layout.default" = "默认布局";
+"vpad.layout.2d" = "2D 布局";
+"vpad.layout.2d.note" = "十字键放大、可按斜角，没有摇杆，适合横版和像素游戏";
 "vpad.layout.err.builtin" = "default / touch 是内置方案，请另存为新方案";
 "vpad.layout.err.buttonCount" = "需要完整的 14 个按键，可额外提供 LS/RS";
 "vpad.layout.err.buttonFields" = "按键字段、范围或编号无效，不允许重复编号";

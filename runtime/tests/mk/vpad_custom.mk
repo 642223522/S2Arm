@@ -19,3 +19,12 @@ native-test-vpad_shell:
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -framework Foundation -framework CoreGraphics -o $(BUILD)/tests/t_vpad_shell runtime/tests/t_vpad_shell.m ios/vpad_shell.m ios/vpad_layout.m
 	$(BUILD)/tests/t_vpad_shell
 TEST_TARGETS += native-test-vpad_shell
+
+# 2D 布局（#268）：内置方案几何、0 根摇杆可存、八方向十字键判定
+NATIVE_TEST_OWN += vpad_2d
+.PHONY: native-test-vpad_2d
+native-test-vpad_2d:
+	@mkdir -p $(BUILD)/tests
+	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -framework Foundation -framework CoreGraphics -o $(BUILD)/tests/t_vpad_2d runtime/tests/t_vpad_2d.m ios/vpad_layout.m
+	$(BUILD)/tests/t_vpad_2d
+TEST_TARGETS += native-test-vpad_2d

@@ -103,6 +103,11 @@ __attribute__((visibility("default"), used)) const char *s2a_padrec_mark(void) {
 
 // 按键位 = HidNpadButton 位序（Ryujinx ControllerKeys 同序）
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
+// 八方向十字键的触点记成 kDpadHeld + 方向位（vpad_layout.h dpadDirectionsAt：上 1 / 下 2 / 左 4 / 右 8），publish 时换成按键位
+enum { kDpadHeld = 1000 };
+static uint32_t dpad_bits(int dirs) {
+    return (dirs & 1 ? 1u << B_UP : 0) | (dirs & 2 ? 1u << B_DOWN : 0) | (dirs & 4 ? 1u << B_LEFT : 0) | (dirs & 8 ? 1u << B_RIGHT : 0);
+}
 static _Atomic int g_reads;
 
 // ---- 触点坐标空间（10-25 定案：直接取渲染层真值，不猜、不标定）----
@@ -166,7 +171,7 @@ void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double se
 void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString *decline, double delay, double seconds, void (^cb)(BOOL)) __attribute__((weak_import));
 @implementation S2AVPadView {
     NSArray<UILabel *> *_keys;                         // 可见按键（tag = 位号）
-    NSMapTable<UITouch *, NSNumber *> *_held;          // 触点 → 位号（按键）/ -1 左摇杆 / -2 右摇杆
+    NSMapTable<UITouch *, NSNumber *> *_held;          // 触点 → 位号（按键）/ -1 左摇杆 / -2 右摇杆 / kDpadHeld + 方向位（八方向十字键，#268）
     CGPoint _c[2]; UITouch *_stick[2]; UIView *_ring[2], *_knob[2];
     int16_t _ax[4]; uint32_t _stickPress;              // 摇杆量；双击按下的 LS / RS 位
     NSTimeInterval _lastUp[2]; CGPoint _lastUpAt[2];
@@ -360,6 +365,7 @@ typedef BOOL (^VPFlag)(void);
         [lay addObject:[self live:[@"vp.layout." stringByAppendingString:lid] title:name note:note on:^BOOL{ return [st.selectedIdentifier isEqualToString:lid]; } disabled:nil
                               run:^{ [ws menuChoseLayout:lid]; }]]; };
     addLayout(S2AVPadLayoutDefaultIdentifier, S2AL(@"vpad.layout.default"), nil);
+    addLayout(S2AVPadLayout2DIdentifier, S2AL(@"vpad.layout.2d"), S2AL(@"vpad.layout.2d.note"));   // #268：一键切 2D，切回点「默认布局」
     addLayout(S2AVPadLayoutTouchIdentifier, S2AL(@"vpad.layout.touch"), S2AL(@"vpad.layout.touch.note"));
     for (S2AVPadLayout *l in st.layouts) if (![S2AVPadLayout isBuiltinIdentifier:l.identifier]) addLayout(l.identifier, l.displayName, nil);
     [lay addObject:vp_inline(@[vp_act(S2AL(@"vpad.menu.manageLayouts"), @"folder", NO, ^{ [ws afterMenu:^{ [ws openLayouts]; }]; })])];
@@ -440,7 +446,7 @@ typedef BOOL (^VPFlag)(void);
     CGPoint c = [_layoutStore stickCenter:side]; return CGPointMake(CGRectGetMinX(_safeRect) + c.x * _safeRect.size.width, CGRectGetMinY(_safeRect) + c.y * _safeRect.size.height);
 }
 - (void)restStick:(int)side {   // 松手 / 清触点后的样子：浮动隐藏，固定回到自己的位置（常驻）
-    BOOL show = _layoutStore.stickFixed && !_touchOnly && !CGRectIsEmpty(_safeRect);
+    BOOL show = _layoutStore.stickFixed && !_touchOnly && !CGRectIsEmpty(_safeRect) && _layout.sticks.count;   // 2D 布局没有摇杆：固定摇杆也不画
     _ring[side].hidden = _knob[side].hidden = !show;
     if (show) _ring[side].center = _knob[side].center = [self fixedCenter:side];
 }
@@ -474,12 +480,16 @@ typedef BOOL (^VPFlag)(void);
     }
     _keys = keys;
 }
+// 内置的按键布局按当前安全区现算：选了 2D 就是 2D（#268），其余（default / 选中的文件读不出）是默认布局
+- (S2AVPadLayout *)builtinLayout:(CGRect)safe {
+    return [_layoutStore.selectedIdentifier isEqualToString:S2AVPadLayout2DIdentifier] ? [S2AVPadLayout twoDForSafeRect:safe] : [S2AVPadLayout defaultForSafeRect:safe];
+}
 - (void)reloadLayout {
     [self clearTouches];
     NSError *error; S2AVPadLayout *selected = [_layoutStore selectedLayout:&error];
     _touchOnly = _autoTouch || [_layoutStore.selectedIdentifier isEqualToString:S2AVPadLayoutTouchIdentifier];   // 自动切只覆盖本次运行
     _usingDefault = !selected && !_touchOnly;
-    _layout = selected ?: [S2AVPadLayout defaultForSafeRect:[self layoutSafeRect]];
+    _layout = selected ?: [self builtinLayout:[self layoutSafeRect]];
     _layoutProblem = error.localizedDescription;
     if (error) LOG("触屏布局：选定方案加载失败，暂用默认布局：%s", error.localizedDescription.UTF8String);
     [self rebuildKeys]; [self setNeedsLayout]; [self wake];
@@ -789,7 +799,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     return r;
 }
 - (NSString *)layoutName {
-    return _touchOnly ? S2AL(@"vpad.layout.touch") : _usingDefault ? S2AL(@"vpad.layout.buttons") : _layout.displayName;
+    return _touchOnly ? S2AL(@"vpad.layout.touch") : _usingDefault && ![_layout.identifier isEqualToString:S2AVPadLayout2DIdentifier] ? S2AL(@"vpad.layout.buttons") : _layout.displayName;
 }
 - (UIViewController *)layoutController {
     __weak S2AVPadView *weakSelf = self;
@@ -810,7 +820,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     if (!CGRectEqualToRect(_safeRect, safe) || !CGRectEqualToRect(_lastBounds, self.bounds)) {
         if (_editing) [self endEditing];   // 转屏 / 安全区变了：拖到一半的位置按旧几何算，放弃
         [self clearTouches]; _safeRect = safe; _lastBounds = self.bounds;
-        if (_usingDefault) { _layout = [S2AVPadLayout defaultForSafeRect:safe]; [self rebuildKeys]; }
+        if (_usingDefault) { _layout = [self builtinLayout:safe]; [self rebuildKeys]; }
         [self wake];
     }
     [self layoutEditBar];
@@ -826,6 +836,8 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     const char *testPressed = getenv("S2A_VPAD_TEST_PRESSED");
     if (testPressed && *testPressed) { NSArray *ids = [@(testPressed) componentsSeparatedByString:@","];
         for (UILabel *key in _keys) if ([ids containsObject:key.accessibilityLabel]) vp_fill(key, YES); }
+    // 没有摇杆的布局（2D）：两边激活区清空、圈收起，左右半屏都不再起摇杆
+    for (int i = 0; i < 2; i++) { _activation[i] = CGRectNull; _radius[i] = 0; if (!_stick[i] && !_ringDrag[i]) [self restStick:i]; }
     for (NSDictionary *stick in _layout.sticks) {
         int side = [stick[@"id"] isEqualToString:@"left"] ? 0 : 1;
         _activation[side] = [_layout activationForStick:stick safeRect:safe]; _radius[side] = [_layout radiusForStick:stick safeRect:safe] * _layoutStore.globalScale;
@@ -854,7 +866,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 }
 - (void)publish {
     if (self.hidden || !_inputEnabled || _settingsOpen || _editing) return;
-    uint32_t held = 0; for (NSNumber *n in _held.objectEnumerator) if (n.intValue >= 0) held |= 1u << n.intValue;
+    uint32_t held = 0; for (NSNumber *n in _held.objectEnumerator) if (n.intValue >= kDpadHeld) held |= dpad_bits(n.intValue - kDpadHeld); else if (n.intValue >= 0) held |= 1u << n.intValue;
     uint32_t lockChanged = S2AVPadHoldLockStep(&_holdLock, held, kHoldLockKeys, CACurrentMediaTime(), _layoutStore.holdLockEnabled && !_touchOnly);
     uint32_t b = _stickPress | held | _holdLock.locked;
     int32_t axes[4]; for (int i = 0; i < 4; i++) axes[i] = _ax[i];
@@ -1048,6 +1060,8 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     for (UITouch *t in ts) {
         CGPoint p = [t locationInView:self];
         if (_touchOnly) { [self beginSlot:t at:p]; continue; }   // 纯触屏：没有按键也没有摇杆，这一下直接进游戏
+        int dirs = [_layout dpadDirectionsAt:p safeRect:_safeRect];   // 2D：十字键圆区内按方向记（含斜角），优先于单个方向键
+        if (dirs >= 0) { [_held setObject:@(kDpadHeld + dirs) forKey:t]; continue; }
         int k = [self keyAt:p];
         if (k >= 0) { [_held setObject:@(k) forKey:t]; continue; }
         int side = -1;
@@ -1076,6 +1090,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
         if (_touchOnly) { [self moveSlot:t at:p]; continue; }
         NSNumber *n = [_held objectForKey:t]; if (!n) continue;
         if (n.intValue < 0) { [self moveStick:-1 - n.intValue to:p]; continue; }
+        if (n.intValue >= kDpadHeld) { int dirs = [_layout dpadDirectionsAt:p safeRect:_safeRect]; if (dirs >= 0) [_held setObject:@(kDpadHeld + dirs) forKey:t]; continue; }   // 滑出圆区保持最后的方向（同实体十字键按着滑）
         if (n.intValue >= 0) { int k = [self keyAt:p];   // 十字键一直可以滑着换方向；开了「滑动切换按键」（编辑卡片，App 级）所有按键都能滑着换
             if (k >= 0 && k != n.intValue && ((n.intValue >= B_LEFT && k >= B_LEFT) || [NSUserDefaults.standardUserDefaults boolForKey:kSlideSwitchKey])) [_held setObject:@(k) forKey:t]; }
     }

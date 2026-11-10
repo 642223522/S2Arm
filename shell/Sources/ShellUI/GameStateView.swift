@@ -23,6 +23,7 @@ public struct GameStateView: View {
             }
             Button(action: perform) { Label(game.state.actionTitle, systemImage: game.state.actionSymbol) }
                 .buttonStyle(PrimaryPillStyle())
+                .disabled(game.state.isArriving)   // 传着 / 解着：开始键在、按不动，能玩了才亮
                 .accessibilityIdentifier("state.action")
                 .accessibilityLabel(game.state.actionTitle + ", " + game.title)
                 .shellTarget("set.play", radius: 25, action: perform)
@@ -43,6 +44,7 @@ public struct GameStateView: View {
         case .needsGameData: actions.onPickGameData(game.id)
         case .needsAppUpdate: actions.onAppUpdate?()
         case .broken: actions.onShowLog?(game.id)
+        case .installing(let stage): if stage.phase == .failed { actions.onPlay(game.id) }   // 重试解开；传着 / 解着按钮按不动
         }
     }
 }

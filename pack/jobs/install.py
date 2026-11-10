@@ -520,12 +520,20 @@ def push_progress(c, done, total, step, steps):
         c.emit(message=PUSHING, done=done, total=total, unit="B")
 
 
+def push_stage(c, name, done=None, total=None):
+    """推资源包之前的准备子阶段（Mac 解析 push_pack 的 S2A_PUSH_STAGE 行、Windows 直接回调，同一出口）：名字原样上屏，有字节就带计数"""
+    if total:
+        c.emit(message=name, done=done or 0, total=total, unit="B")
+    else:
+        c.emit("message", name)
+
+
 def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     """资源包推进 App 并在机上解开：调 Mac / Windows 共用的 tools/push_pack.py run --apply（同 dev_run、Windows 一键装机、s2armctl push-pack，
     #206 / PR #470、11-06 两端合一）——按 sha256 只推机上没有 / 变了的文件（免费账号 7 天到期重装、改一点重出一版时只推几个文件），
-    残留推送包按完整性处理、推前抽查机上实况，一批 ≤1 GB 流式写进 Documents/资源包/.incoming/；推完起一次 App 只解包（S2A_PACK_APPLY_ONLY=1），
+    残留推送包按完整性处理、推前抽查机上实况，一批 ≤1 GB 流式写进 Documents/资源包/.incoming/；推完起一次 App 解开（单款只解包模式；多款容器拉起到游戏库、由库解开并画进度），
     等机上 .applied 对上本包 index_sha256、且解包日志本次新增完成行才算装好（没推东西且 .applied 已是本包就不起 App），玩家打开就能进游戏。
-    多款容器：docs = 本款设备侧文档根 Documents/games/<游戏号>、ctx = 本款启动上下文（起 App 解包时带 S2A_LAUNCH_CTX）。
+    多款容器：docs = 本款设备侧文档根 Documents/games/<游戏号>、ctx = 本款启动上下文（有它即按多款容器拉起到游戏库）。
     返回（推的文件数, 字节数）"""
     import diag
     got = {}
@@ -533,6 +541,10 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         m = re.match(r"S2A_PUSH_PROGRESS (\d+) (\d+) (\d+) (\d+)$", text.strip())   # tools/push_pack.py --progress-lines：每推完一批的已传 / 本次待传总字节（#266）
         if m:
             push_progress(c, *map(int, m.groups()))
+            return
+        m = re.match(r"S2A_PUSH_STAGE (.+?)\t(\d*)\t(\d*)$", text.strip("\r\n"))   # 推之前的准备子阶段（核对手机上的文件 / 检查手机空间 / 准备资源（拼镜像）按字节）
+        if m:
+            push_stage(c, m.group(1), int(m.group(2)) if m.group(2) else None, int(m.group(3)) if m.group(3) else None)
             return
         m = re.search(r"推 (\d+) 个文件 (\d+) MB", text)
         if m: got.update(files=int(m.group(1)), mb=int(m.group(2)))
@@ -1029,7 +1041,8 @@ class WinPhone:
         try:
             return self.W.push_pack(self.udid, self.bid, str(pack), str(self.devpush) if self.devpush.is_file() else None,
                                     say=lambda m: self.c.emit("message", m), docs=game_docs(g), ctx=game_ctx(g), apply_after=True,
-                                    progress=lambda d, t, k, n: push_progress(self.c, d, t, k, n))
+                                    progress=lambda d, t, k, n: push_progress(self.c, d, t, k, n),
+                                    stage=lambda name, d=None, t=None: push_stage(self.c, name, d, t))
         except self.W.Fail as e:
             if e.err == "manual_unpack_required":
                 self.c.diagnostic(str(e), code=e.err, severity="warning")

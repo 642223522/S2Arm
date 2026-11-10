@@ -1,6 +1,6 @@
 """推资源包（tools/push_pack.py，Mac / Windows 共用，11-06 两端合一）：假设备（内存里的 App 容器）上核口径。期望按文件头规则手写，不跑被测实现推导。
 Mac 的整条 dev_run 推包回归（假 devicectl）在 tests/dev_run_test.sh，本文件只核规则本身与 Windows 那支（原 tests/oneclick_win_test.py 推包几组搬来）"""
-import hashlib, struct, sys, tempfile, unittest
+import hashlib, json, struct, sys, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import push_pack as push
@@ -82,8 +82,8 @@ class PlanRules(Base):
         self.assertEqual(self.dev.files[f"{RP}/.pushed"].decode(), f"a\t{sha(b'A')}\nb\t{sha(b'BB')}\n")   # 推完这批即记账
         self.assertEqual(self.dev.puts[-2:], [f"{RP}/index.tsv", f"{RP}/manifest.json"])                   # 最后推索引与清单
         # 开推第一件事把机上清单置空（11-09 根修：「清单读得出」= 推送完整，App 据此分清「传完只等解开」和「传断了」）；
-        #   在它之前只有推前探针（#333，几字节，不动清单）
-        self.assertEqual(self.dev.puts[:2], [f"{RP}/{push.PROBE}", f"{RP}/manifest.json"])
+        #   在它之前只有推前探针（#333，几字节，不动清单）和给手机游戏库画蒙版的传输清单
+        self.assertEqual(self.dev.puts[:3], [f"{RP}/{push.PROBE}", f"{RP}/.transfer", f"{RP}/manifest.json"])
         self.assertEqual(self.dev.files[f"{RP}/manifest.json"], (self.pk / "manifest.json").read_bytes())       # 最后写回的是本包清单
 
     def test_nothing_to_push_keeps_manifest(self):   # 机上已有全部文件（已应用）、没东西推：不把机上清单置空
@@ -261,15 +261,15 @@ class ContainerDocs(Base):
         nb, nt, _ = push.run(self.dev, self.pk, self.w, False, say=self.log.append)
         self.assertEqual((nb, nt), (1, 2))
         self.assertEqual(self.dev.puts[0], f"{self.D}/资源包/{push.PROBE}")   # 先写探针（#333），也在本款资源包目录
-        self.assertEqual(self.dev.puts[1], f"{self.D}/资源包/manifest.json")   # 开推先置空本款清单（同一份文档根）
-        self.assertTrue(self.dev.puts[2].startswith(f"{self.D}/资源包/.incoming/") and self.dev.puts[2].endswith("_000.tar"), self.dev.puts[2])
-        self.assertEqual(self.dev.puts[3:], [f"{self.D}/资源包/.pushed", f"{self.D}/资源包/index.tsv", f"{self.D}/资源包/manifest.json"])
+        self.assertEqual(self.dev.puts[1:3], [f"{self.D}/资源包/.transfer", f"{self.D}/资源包/manifest.json"])   # 传输清单 → 置空本款清单（同一份文档根）
+        self.assertTrue(self.dev.puts[3].startswith(f"{self.D}/资源包/.incoming/") and self.dev.puts[3].endswith("_000.tar"), self.dev.puts[3])
+        self.assertEqual(self.dev.puts[4:], [f"{self.D}/资源包/.pushed", f"{self.D}/资源包/index.tsv", f"{self.D}/资源包/manifest.json"])
         def done(d):
             d.files[f"{self.D}/资源包/.applied"] = "x"; d.files[f"{self.D}/unpack.log"] = "11-07 解开 1 个包 2 个文件 0 MB，.applied = x（0.1 秒）\n"
         self.dev.on_launch = done; clock = [0.0]
         def sleep(x): clock[0] += x
         self.assertTrue(push.apply(self.dev, self.pk, self.w, nb, say=self.log.append, sleep=sleep, now=lambda: clock[0]))
-        self.assertEqual(self.dev.launches, [{"S2A_PACK_APPLY_ONLY": "1", "S2A_LAUNCH_CTX": self.CTX}])
+        self.assertEqual(self.dev.launches, [{}])   # 多款容器：正常拉起到游戏库，由库解开（不用只解包模式、不直接起某一款）
 
     def test_device_factory_carries_docs(self):
         d = push.device("C891", "s2arm.z.games", self.w, via="devicectl", env={}, docs=self.D, ctx=self.CTX)
@@ -393,6 +393,43 @@ class SendProgress(Base):
         with self.assertRaises(push.Fail):
             push.run(self.dev, self.pk, self.w, False, say=self.log.append, progress=lambda *a: self.calls.append(a))
         self.assertEqual([c for c in self.calls if c[0] > 0], [])
+
+    def test_transfer_list_written_once_before_any_batch(self):
+        # 手机游戏库画装机蒙版用的传输清单：开推前写一次（之后不再写），列本次每个包的机上路径与字节数（期望按 3 批手算：a+b 60 | c 50 | e 90）
+        self.run_push({})
+        tr = f"{RP}/.transfer"
+        self.assertEqual(self.dev.puts.count(tr), 1)
+        self.assertLess(self.dev.puts.index(tr), min(i for i, r in enumerate(self.dev.puts) if "/.incoming/" in r))
+        t = json.loads(self.dev.files[tr])
+        self.assertEqual((t["total"], t["base"]), (200, 0))   # 新手机：整包 200 都要传
+        self.assertEqual([n for _, n in t["files"]], [60, 50, 90])
+        self.assertEqual([p for p, _ in t["files"]], [r[len(RP) + 1:] for r in self.dev.puts if "/.incoming/" in r])
+
+    def test_resume_counts_what_is_already_on_phone(self):   # 机上已有 a、b（60）：这次传 c、e（140），base = 整包 200 − 140
+        self.run_push(self.on_phone("a", "b"))
+        t = json.loads(self.dev.files[f"{RP}/.transfer"])
+        self.assertEqual((t["total"], t["base"]), (140, 60))
+
+    def test_nothing_to_push_writes_no_transfer_list(self):
+        self.run_push(self.on_phone("a", "b", "c", "e"))
+        self.assertNotIn(f"{RP}/.transfer", self.dev.puts)
+
+    def test_stages_before_pushing(self):
+        # ⑫ 推之前的准备子阶段按序报：核对手机上的文件 → 检查手机空间（有东西要推才查）
+        stages = []
+        self.dev = Fake({})
+        push.run(self.dev, self.pk, self.w, False, say=self.log.append, stage=lambda name, d=None, t=None: stages.append(name))
+        self.assertEqual(stages, [push.STAGE_CHECK, push.STAGE_SPACE])
+        stages.clear(); self.dev = Fake(self.on_phone("a", "b", "c", "e"))
+        push.run(self.dev, self.pk, self.w, False, say=self.log.append, stage=lambda name, d=None, t=None: stages.append(name))
+        self.assertEqual(stages, [push.STAGE_CHECK])   # 机上全有：不查空间
+
+    def test_stage_line_matches_job_parser(self):   # Mac 装机作业（pack/jobs/install.py push_pack）按这个格式解析准备子阶段
+        import re
+        line = f"{push.STAGE_PREFIX} {push.STAGE_IMAGE}\t{5}\t{17}"
+        m = re.match(r"S2A_PUSH_STAGE (.+?)\t(\d*)\t(\d*)$", line)
+        self.assertEqual(m.groups(), (push.STAGE_IMAGE, "5", "17"))
+        self.assertEqual(re.match(r"S2A_PUSH_STAGE (.+?)\t(\d*)\t(\d*)$", f"{push.STAGE_PREFIX} {push.STAGE_CHECK}\t\t").groups(), (push.STAGE_CHECK, "", ""))
 
     def test_cli_progress_lines(self):   # Mac 装机作业读的机器行
         line = push.PROGRESS_PREFIX + " 60 200 1 3"

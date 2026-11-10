@@ -155,21 +155,29 @@ namespace S2A.Services.Tests
             //   后续调用同回，不放行 -1 本地通信号解析 / 权限检查 / SetGameVersion 当成功
             svc = Call(ldnu, Msg.Cmif(0)).Move[0];
             service = (Dispatcher.Instance.GetSession(FakeNative.CookieOf(svc)) as HleTarget)?.Service as IUserLocalCommunicationService;
-            Host.Device.Processes.ClearProcess(FakeNative.GamePid);
-            cfg.MultiplayerMode = Ryujinx.Common.Configuration.Multiplayer.MultiplayerMode.LdnRyu;
-            cfg.MultiplayerLdnServer = "127.0.0.1";
-            red0 = Red.Total;
-            Reply im = Call(svc, Init());
-            Reply oap1 = Call(svc, Msg.Cmif(200));   // OpenAccessPoint：初始化失败后的后续调用
-            Check("联机：进程元数据缺失（调用方没登记进程项）→ Initialize 回失败码、后续调用同回、只报红一次（不放行成功）",
-                "0x40CB、+1、0x40CB",
-                $"0x{im.Result:X}、+{Red.Total - red0}、0x{oap1.Result:X}");
-            Check("联机：进程元数据缺失 → 不建客户端，NetworkClient 与客户端目标都为空（不留半截客户端）",
-                "NetworkClient 空、目标 null",
-                $"NetworkClient {(service?.NetworkClient == null ? "空" : $"残留 {service.NetworkClient.GetType().Name}")}、目标 {(service?.S2ANetworkClientServer == null ? "null" : service.S2ANetworkClientServer)}");
-            Call(svc, Msg.Cmif(401));   // Finalize
-            cfg.MultiplayerMode = Ryujinx.Common.Configuration.Multiplayer.MultiplayerMode.Disabled;
-            EnsureLdnProcessMetadata();
+            if (!Host.Device.Processes.TryGetProcess(FakeNative.GamePid, out var savedProcess))
+                throw new InvalidOperationException("LDN negative control requires registered process metadata");
+            try
+            {
+                Host.Device.Processes.ClearProcess(FakeNative.GamePid);
+                cfg.MultiplayerMode = Ryujinx.Common.Configuration.Multiplayer.MultiplayerMode.LdnRyu;
+                cfg.MultiplayerLdnServer = "127.0.0.1";
+                red0 = Red.Total;
+                Reply im = Call(svc, Init());
+                Reply oap1 = Call(svc, Msg.Cmif(200));   // OpenAccessPoint：初始化失败后的后续调用
+                Check("联机：进程元数据缺失（调用方没登记进程项）→ Initialize 回失败码、后续调用同回、只报红一次（不放行成功）",
+                    "0x40CB、+1、0x40CB",
+                    $"0x{im.Result:X}、+{Red.Total - red0}、0x{oap1.Result:X}");
+                Check("联机：进程元数据缺失 → 不建客户端，NetworkClient 与客户端目标都为空（不留半截客户端）",
+                    "NetworkClient 空、目标 null",
+                    $"NetworkClient {(service?.NetworkClient == null ? "空" : $"残留 {service.NetworkClient.GetType().Name}")}、目标 {(service?.S2ANetworkClientServer == null ? "null" : service.S2ANetworkClientServer)}");
+                Call(svc, Msg.Cmif(401));   // Finalize
+            }
+            finally
+            {
+                cfg.MultiplayerMode = Ryujinx.Common.Configuration.Multiplayer.MultiplayerMode.Disabled;
+                Host.Device.Processes.S2ARegisterApplication(savedProcess);
+            }
 
             // ② iOS：有局域网发现（新开一个服务会话：上面 ① 的会话 Finalize 后状态未必回到 None，再 Initialize 不会重走「首次初始化」）
             svc = Call(ldnu, Msg.Cmif(0)).Move[0];

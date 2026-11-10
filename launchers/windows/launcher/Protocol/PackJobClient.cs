@@ -74,7 +74,7 @@ public static class PackJobClient
 {
     public static readonly IReadOnlySet<string> Operations =
         new HashSet<string>(StringComparer.Ordinal) { "ipa", "installCheck", "install", "installRemove", "installRestore", "customize",
-            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "devCert" };
+            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree", "devCert" };
 
     /// <param name="Secrets">Environment variables for this one job process only (the developer certificate password,
     /// pack/jobs/devcert.py); never written into the request file, and main.run_request drops them from its environment first.</param>
