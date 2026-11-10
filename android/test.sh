@@ -100,6 +100,8 @@ s2a_gate_step bash "$android_dir/tools/system_power_test.sh"
 # 轮询接线（周期→票、省电档→cap、开关、停后迟到回调不采）、生产 present_period 的封顶与登记。
 s2a_gate_step bash "$android_dir/tools/frame_rate_vote_test.sh"
 s2a_gate_step bash "$android_dir/tools/system_tuning_test.sh"
+# #48 P8（宿主，确定性）：热状态映射与 dm_thermal_now / dm_low_power_now 强定义、采样器起停 / 只在变化时推。
+s2a_gate_step bash "$android_dir/tools/power_state_test.sh"
 # 转储解析器（宿主，确定性）：分片拼回/完整性拒绝、全窗统计、与 16 帧聚合行对拍、C→python 对拍。
 s2a_gate_step "$PY" "$android_dir/tests/direct_framelog_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_game_mode_test.py"

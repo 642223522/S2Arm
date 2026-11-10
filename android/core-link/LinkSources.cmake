@@ -16,6 +16,8 @@ function(s2a_android_host_sources output)
         native/bridge.cpp native/lan_discovery.cpp ../runtime/src/lan_elect.c native/capture_jpeg.cpp native/touch_jni.cpp native/game_touch.c native/window.cpp native/presenter.cpp
         native/wsi_lease.c native/input.c native/tsd.c native/module.c native/selftest.c native/selftest_gate.S
         native/guest_signal.c native/redlog.c native/redzone.S native/pcm_ring.c native/aaudio_sink.c native/hostapi.c native/screen_metrics.c
+        # #48 P8：dm_thermal_now / dm_low_power_now 的安卓强定义（盖过 fps.c / hle_nvn.c 的弱缺省）
+        native/power_state.c
         native/host_android.c native/host_ui.c native/host_ui_android.c native/host_ui_jni.cpp native/plat_android.c
         # 直连安全网安卓接线（共用 runtime/src/dguard.c 的武装 / 生命周期出口；游戏目标由
         # Runtime.cmake 提供 dguard.c，诊断目标见 s2a_android_diagnostic_sources）
