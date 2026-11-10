@@ -6910,5 +6910,25 @@
  {
   "source": "用你的开发者证书签名",
   "en": "Signing with your developer certificate"
+ },
+ {
+  "source": "无法安全读取或写入诊断文件，未更新诊断包（{0}：{1}）。",
+  "en": "Couldn't safely read or write the diagnostics files, so the diagnostics package was not updated ({0}: {1})."
+ },
+ {
+  "source": "打开日志目录",
+  "en": "opening the log folder"
+ },
+ {
+  "source": "在所选位置建临时文件",
+  "en": "creating a temporary file in the chosen location"
+ },
+ {
+  "source": "读日志与任务记录",
+  "en": "reading logs and task records"
+ },
+ {
+  "source": "把诊断包放到所选位置",
+  "en": "moving the package to the chosen location"
  }
 ]

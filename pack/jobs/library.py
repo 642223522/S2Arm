@@ -2266,6 +2266,7 @@ def diagnostics(c):
         raise Failure("诊断包请选择应用数据和游戏库以外的位置。")
     descriptors = []
     temporary = None
+    step = "打开日志目录"   # 失败时写进报错：哪一步、什么错误（#427：SMB 共享盘上导不出，原先只有一句笼统的话，看不出卡在哪）
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
         # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
@@ -2279,6 +2280,7 @@ def diagnostics(c):
         descriptors.append(roots["jobs"])
         c.begin("导出脱敏诊断")
 
+        step = "在所选位置建临时文件"
         fd, name = tempfile.mkstemp(prefix="." + destination.name + ".", suffix=".partial", dir=destination.parent)
         temporary = Path(name)
         with os.fdopen(fd, "w+b") as output:
@@ -2318,6 +2320,7 @@ def diagnostics(c):
                     # replaced, never copied as raw bytes around redaction.
                     archive.writestr(public_member, redact(data.decode(errors="replace")))
 
+                step = "读日志与任务记录"
                 if roots["jobs"] is not None:
                     for name in sorted(winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
                         if name.endswith(".json"):
@@ -2354,12 +2357,16 @@ def diagnostics(c):
                 manifest["files"] = sorted(archive.namelist() + ["manifest.json"])
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         c.check()
+        step = "把诊断包放到所选位置"
         current = temporary.stat(follow_symlinks=False)
         if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
             raise Failure("诊断临时文件在导出期间发生变化，请重试。")
         os.replace(temporary, destination)
-    except OSError:
-        raise Failure("无法安全读取或写入诊断文件，未更新诊断包。") from None
+    except OSError as error:
+        # 只带步骤、错误码与系统给的原因，不带路径（路径里可能有用户名，诊断摘要会被贴到公开帖子里）
+        code = getattr(error, "winerror", None) or error.errno
+        reason = (error.strerror or type(error).__name__) + (f"，错误码 {code}" if code else "")
+        raise Failure(f"无法安全读取或写入诊断文件，未更新诊断包（{step}：{reason}）。") from None
     finally:
         for descriptor in reversed(descriptors):
             winproc.close(descriptor) if os.name == "nt" else os.close(descriptor)
