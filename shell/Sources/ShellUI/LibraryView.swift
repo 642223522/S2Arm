@@ -501,6 +501,7 @@ public struct LibraryView: View {
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
         case .broken: actions.onShowLog?(detail.id)
+        case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }
     }
     private func select(_ id: String) {

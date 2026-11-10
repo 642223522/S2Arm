@@ -266,8 +266,10 @@ struct StateAction: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Text(game.state.actionTitle).shellType(ShellType.button)
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
+                // Arriving: what is happening and how far, nothing to press. A stopped or failed install: what happened, then the way out.
+                Text(game.state.isArriving ? game.state.title : game.state.installPhase != nil ? game.state.title + " · " + game.state.actionTitle : game.state.actionTitle)
+                    .shellType(ShellType.button).monospacedDigit()
+                if !game.state.isArriving { Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)) }
             }
             .foregroundStyle(game.state.color)
             .lineLimit(1)
@@ -275,6 +277,7 @@ struct StateAction: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(game.state.isArriving)
         .accessibilityLabel(game.state.title + ", " + game.state.actionTitle)
         .accessibilityIdentifier("state.chip")
         .shellTarget("lib.chip", radius: 17, action: action)
