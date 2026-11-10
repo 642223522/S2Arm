@@ -162,6 +162,9 @@ class ShellSdkTests(unittest.TestCase):
                 self.assertIn("iOS 26.5", c.diagnostic.call_args.args[0]); self.assertIn("iOS 27.1", c.diagnostic.call_args.args[0])
 
 
+_phone_games = install.phone_games   # 真的那份：下面的夹具把 install.phone_games 换成「手机上没有别的游戏」，要走真读法的用例再换回来
+
+
 def _jobs_setup_no_phone_games(self):
     """JobsTests 的夹具 + 手机上没有别的游戏（install.phone_games 替身：这些用例不测「读手机游戏清单」，那条另有用例）"""
     tj.JobsTests.setUp(self)
@@ -925,6 +928,31 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual(install_ipa_games(layout.phone_ipa(self.c)), ([A, B, C], "SID1"))
         self.assertEqual((r["outputPath"], r["games"], r["packFiles"]), (str(layout.phone_ipa(self.c)), [A, B, C], 2))
 
+    def _app_gone(self, ph):
+        """玩家在手机上删了整个 S2Arm：进不了容器、平台确认这个包名没装（走真的 install.phone_games，不用夹具里的替身）"""
+        class Cl:
+            def call(self, op, rel): return 1, "取不到 x 的容器（App 没装或不是开发签名）：device socket io failed"
+        ph.udid = "U1"; ph.app_missing.return_value = True
+        for p in (um.patch.object(install, "phone_games", _phone_games), um.patch.object(install, "devpush_client", lambda c, udid, bid, work: Cl())):
+            p.start(); self.addCleanup(p.stop)
+
+    def test_put_game_after_app_deleted_on_phone_installs_this_game_only(self):
+        """玩家在手机上删了整个 S2Arm 再装甲：本机记录里的乙不在手机上了，不带；乙是旧壳出的、新宿主认不得，也不再报 container_stale 挡住甲。
+        装上后设备记录只剩甲"""
+        A, B = self.A, self.B
+        self._library((A, "甲"), (B, "乙"))
+        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, shell="SID0", pack="pb", compat=dict(hostAbi=1, dmshChain="bbbb"))
+        layout.save_device(self.c, "dev1", dict(games={B: dict(pack="pb")}, shellId="SID0"))
+        ph, pushed, signed = self._phone(); self._app_gone(ph)
+        import ipa as packer, host_update
+        self.sid = "SID1"
+        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
+        with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
+             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])):
+            r = install.put_game(self.c, A, ph)
+        self.assertEqual((pushed, signed, r["games"]), ([A], [([A], ([A], "SID1"))], [A]))
+        self.assertEqual(layout.load_device(self.c, "dev1")["games"], {A: dict(pack="pa")})
+
     def test_commit_phone_ipa_keeps_previous_only_when_shell_changes(self):
         """③ 同壳覆盖 S2Arm.ipa（不动上一版）；换壳时原来的 S2Arm.ipa 留作 S2Arm.previous.ipa；组装用的临时目录删掉"""
         import ipa as packer
@@ -986,6 +1014,23 @@ class AssembleTests(unittest.TestCase):
             r = install.remove_from_phone(self.c)
         ph.install.assert_not_called()
         ph.backup.assert_called_once_with(self.A); ph.purge.assert_called_once_with(self.A)
+        self.assertEqual((r["games"], layout.load_device(self.c, "dev1")["games"]), ([], {}))
+
+    def test_remove_from_phone_after_app_deleted_does_not_reinstall(self):
+        """玩家在手机上删了整个 S2Arm，再在电脑上「从 iPhone 删除」甲：记录里的乙也不在手机上，不现组容器、不把 App 装回去；设备记录摘空"""
+        A, B = self.A, self.B
+        self._library((A, "甲"), (B, "乙")); ios_fixture(self.c, B)
+        layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="cafe01")}, shellId="SID1"))
+        ph, _, _ = self._phone(); ph.backup.return_value = None; ph.purge.return_value = (False, "取不到容器"); self._app_gone(ph)
+        self.c.r.update(gameId=A)
+        import ipa as packer, host_update
+        self.sid = "SID1"
+        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
+        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(packer, "current_shell_id", return_value="SID1"), \
+             um.patch.object(packer, "container_shell", return_value=shell), um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), \
+             um.patch.object(self.c, "run", self._run([])):
+            r = install.remove_from_phone(self.c)
+        ph.install.assert_not_called()
         self.assertEqual((r["games"], layout.load_device(self.c, "dev1")["games"]), ([], {}))
 
     def test_remove_from_phone_reassembles_rest_and_purge_failure_warns(self):
@@ -1128,10 +1173,10 @@ class PhoneGamesTruthTests(unittest.TestCase):
         with um.patch.object(install, "devpush_client", self.client([self.A + "/", "notes", self.B, "0100000000099999x", self.C], {self.A, self.C})):
             self.assertEqual(install.phone_games(self.c, self.ph()), {self.A, self.C})   # B 没解开、别的名字跳过
 
-    def test_app_not_installed_is_empty_other_errors_stop(self):
+    def test_app_not_installed_is_none_other_errors_stop(self):
         err = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
         with um.patch.object(install, "devpush_client", err):
-            self.assertEqual(install.phone_games(self.c, self.ph(missing=True)), set())   # 平台确认没装
+            self.assertIsNone(install.phone_games(self.c, self.ph(missing=True)))            # 平台确认没装：None，不是「装着、一款都没有」的空集
             with self.assertRaises(Failure) as e:
                 install.phone_games(self.c, self.ph(missing=False))                    # 装着却进不去 = 锁屏 / 断开
         self.assertEqual(e.exception.code, "device_locked")
@@ -1173,4 +1218,16 @@ class PhoneGamesTruthTests(unittest.TestCase):
             self.assertIn("1 款", str(e.exception)); self.assertIn("乙游戏", str(e.exception))
             self.c.r["acceptDropped"] = True
             self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.C])
+
+    def test_app_gone_stops_carrying_this_computers_record(self):
+        # 本机记录 A、B。玩家在手机上删了整个 S2Arm（平台确认这个包名没装）→ A、B 也不在手机上，一款都不带。
+        # App 还在的两种照旧按本机记录带：还没有 games 目录；只有 A 解开了（B 可能在 App 里、资源包还没解开）
+        rec = dict(games={self.A: {}, self.B: {}})
+        gone = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
+        with um.patch.object(install, "devpush_client", gone):
+            self.assertEqual(install.container_others(self.c, self.ph(missing=True), rec, leave=self.D), [])
+        with um.patch.object(install, "devpush_client", self.client([], set(), ls_error="No such file or directory")):
+            self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.B])
+        with um.patch.object(install, "devpush_client", self.client([self.A, self.B], {self.A})):
+            self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.B])
 

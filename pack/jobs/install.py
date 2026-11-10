@@ -1079,7 +1079,8 @@ def phone_bid(ph):
 def phone_games(c, ph):
     """这台手机上的 S2Arm 里有哪些游戏——真相在手机上，不在某一台电脑的设备记录里（同一台手机 Mac 装几款、Windows 再装一款时，
     各自的记录只有自己装的）。列这个包名的 Documents/games/：只认目录名是 16 位游戏号、资源包已解开（资源包/.applied）的，别的跳过。
-    进不了容器时问平台这个包名装没装（ph.app_missing）：确实没装 → 空；装着却列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
+    进不了容器时问平台这个包名装没装（ph.app_missing）：确实没装 → None（和「装着、一款都没有」的空集分开：没装时本机记录的各款也不在手机上了，
+    container_others 据此不再带）；装着却列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
     bid = phone_bid(ph)
     if not bid or not ph.udid:
         return set()
@@ -1090,7 +1091,7 @@ def phone_games(c, ph):
             if "No such file" in out or "ObjectNotFound" in out:   # App 在、还没装过任何一款
                 return set()
             if ph.app_missing(bid, out):
-                return set()
+                return None
             raise Failure("读不出 iPhone 上已经装了哪些游戏：" + out[-200:] + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         found = set()
         for name in out.splitlines():
@@ -1120,9 +1121,13 @@ def phone_game_name(c, ph, gid, names):
 def container_others(c, ph, rec, leave=None):
     """现组容器要带的别的款：这台电脑记录的 + 手机上实际有的（phone_games）。手机上有、这台电脑没记录、游戏库里也没有的，带不进去
     （App 里的游戏程序读不回电脑）：没带 acceptDropped 就停下报 container_would_drop，列出这几款，玩家确认后再装；确认了就不带它们——
-    它们的存档和资源包还在手机上，在原来那台电脑上再装一次就回来"""
+    它们的存档和资源包还在手机上，在原来那台电脑上再装一次就回来。
+    手机上这个 App 已经不在（玩家在手机上删了，phone_games → None）：这台电脑记录的各款也跟着没了，一款都不带——原先照带，
+    其中换壳后重出不了的报 container_stale 挡住这次装机，能带的也只进程序、资源包按记录不重推"""
     known = set(rec.get("games", {}))
     on_phone = phone_games(c, ph)
+    if on_phone is None:
+        known = on_phone = set()
     names = {g["id"].upper(): g.get("name") or "" for g in c.catalog()["games"]}
     candidates = sorted((known | on_phone) - {leave})
     lost = [g for g in candidates if g in on_phone and g not in known and g not in names]
