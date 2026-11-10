@@ -79,6 +79,15 @@ static void scenario(int n) {
     check(registered != NULL);
     if (n == 1) call();
     if (n == 2) { compile_rc = 7; call(); }
+    if (n == 43) {   // #442：翻译器报错时，控制段 / 代码区自动存进兜底目录 <键>.fail.ctl / .fail.code（不开 DM_NVN_SHDUMP），内容逐字节等于交给翻译器的那份
+        char d[] = "/tmp/t_dsh_failXXXXXX", p[256]; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1); unsetenv("DM_NVN_SHDUMP");
+        for (int i = 0x40; i < 0x80; i++) ctl[i] = (uint8_t)i; for (int i = 0x40; i < 0x80; i++) code[i] = (uint8_t)(0xff - i);
+        compile_rc = 7; call();
+        uint8_t got[sizeof ctl]; FILE *f;
+        snprintf(p, sizeof p, "%s/0000000000000000.fail.ctl", d); f = fopen(p, "rb"); check(f != NULL); check(fread(got, 1, sizeof got, f) == sizeof ctl); fclose(f); check(!memcmp(got, ctl, sizeof ctl)); unlink(p);
+        snprintf(p, sizeof p, "%s/0000000000000000.fail.code", d); f = fopen(p, "rb"); check(f != NULL); check(fread(got, 1, sizeof got, f) == sizeof code); fclose(f); check(!memcmp(got, code, sizeof code)); unlink(p);
+        rmdir(d);
+    }
     if (n == 3) {
         dm_shader_miss(key, 0, NULL);
         const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4);
@@ -239,10 +248,11 @@ int main(void) {
         "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）", "成功 0、失败 0、跳过 0、复用上局 1、输出类型变体 0（正常收局）",    // 37 外壳不现编；37 网格按兜底目录复用
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）", "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 39 后台编好首遇复用 / 40 后台失败首遇同步再编
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 41 排在慢键后面的键：首遇取消后台、同步编
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 1（正常收局）"    // 42 后台在编同键时来输出类型变体：同锁、不并发、不重编（后台编好、没有首遇来取：不计成功）
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 1（正常收局）",   // 42 原注释见下行
+        "成功 0、失败 1、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 43 翻译器报错：输入自动存进兜底目录；42 后台在编同键时来输出类型变体：同锁、不并发、不重编（后台编好、没有首遇来取：不计成功）
     };
     int bad = 0;
-    for (int n = 0; n < 43; n++) {
+    for (int n = 0; n < 44; n++) {
         int fd[2]; pipe(fd); pid_t p = fork();
         if (!p) { close(fd[0]); dup2(fd[1], 1); close(fd[1]); scenario(n); }
         close(fd[1]); char buf[1024]; size_t at = 0; ssize_t got;
@@ -253,5 +263,5 @@ int main(void) {
         printf("%s 现编汇总场景 %d\n", ok ? "✓" : "✗", n);
         if (!ok) { bad++; puts(buf); }
     }
-    printf("%s t_dsh_stats：43 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
+    printf("%s t_dsh_stats：44 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

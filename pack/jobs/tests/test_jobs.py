@@ -1636,6 +1636,42 @@ class JobsTests(unittest.TestCase):
             self.assertNotIn("a" * 64, text)
             self.assertNotIn(str(self.c.private), text)
 
+    def test_diagnostic_export_keeps_whole_game_log_and_reports_clipping(self):
+        # #41：游戏日志整份进诊断包（原先只留头尾各 16 KB + 心跳行，存档前后的帧读数整段丢）；只有超过单份上限才截，截时尾多头少，manifest 写明截了多少
+        import unittest.mock as um
+        rows = [f"[帧] 第 {i} 帧 18.2 ms 热状态 0\n" for i in range(120000)]   # 约 4 MB，跨好几个 1 MiB 读块
+        mid = len(rows) // 2
+        rows[mid] = "存档：写入 slot0 完成 token=verysecret\n"
+        log = self.c.logs / "0100-game.log"; log.parent.mkdir(exist_ok=True)
+        body = "".join(rows).encode()
+        # 一行敏感信息正好跨 1 MiB 读块边界：逐块脱敏不能把它拦腰切开
+        at = library.DIAGNOSTIC_LOG_CHUNK - 10
+        body = body[:at] + b"\ntoken=boundarysecret\n" + body[at:]
+        log.write_bytes(body)
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            text = z.read("logs/0100-game.log").decode()
+            manifest = json.loads(z.read("manifest.json"))
+        for i in (0, mid - 1, mid + 1, len(rows) - 1):
+            self.assertIn(f"[帧] 第 {i} 帧 ", text)
+        self.assertIn("存档：写入 slot0 完成", text)
+        self.assertNotIn("verysecret", text); self.assertNotIn("boundarysecret", text)
+        self.assertEqual(manifest["truncated"], [])
+        # 超过上限（这里调成 1 MB）：开头 1/8、结尾 7/8，manifest 记原长、留下、截掉
+        with um.patch.object(library, "DIAGNOSTIC_LOG_HEAD", 128 << 10), um.patch.object(library, "DIAGNOSTIC_LOG_TAIL", 896 << 10):
+            destination.unlink(); library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            text = z.read("logs/0100-game.log").decode()
+            cut = json.loads(z.read("manifest.json"))["truncated"]
+        self.assertEqual([x["file"] for x in cut], ["logs/0100-game.log"])
+        self.assertEqual(cut[0]["bytes"], len(body)); self.assertEqual(cut[0]["kept"] + cut[0]["omitted"], len(body))
+        self.assertTrue((1 << 20) - 200 <= cut[0]["kept"] <= 1 << 20, cut[0])
+        self.assertIn("[帧] 第 0 帧 ", text); self.assertIn(f"[帧] 第 {len(rows) - 1} 帧 ", text)
+        self.assertIn(f"中间截掉 {cut[0]['omitted']} 字节", text)
+        tail_part = text[text.index("以下是日志结尾"):]
+        self.assertGreater(len(tail_part.encode()), 6 * len(text[:text.index("中间截掉")].encode()))   # 尾部留得比头部多
+
     def test_diagnostic_fd_boundaries_and_directory_replacement(self):
         import unittest.mock as um
         destination = self.root / "diagnostics.zip"; destination.write_bytes(b"old target")
@@ -1683,19 +1719,19 @@ class JobsTests(unittest.TestCase):
     def test_diagnostic_log_keeps_head_heartbeats_and_tail(self):
         import io
         short = b"a" * 32000
-        self.assertEqual(library.diagnostic_log_excerpt(io.BytesIO(short), len(short)), short)
+        self.assertEqual(library.diagnostic_log_excerpt(io.BytesIO(short), len(short), 16000, 16000), short)
         beat = "[心跳] 帧 {} 热状态 0\n".format
         head = b"HEAD_MARK\n" + b"h" * 16000
         noise = b"NOISE_LINE padding padding\n" * 80000   # 约 2.2 MB，心跳行跨 1 MiB 分块
         body = head + noise + beat(1).encode() + noise + beat(2).encode() + noise + b"t" * 16000 + b"\nTAIL_MARK\n"
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
         self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
         self.assertIn(beat(1).strip().encode(), out); self.assertIn(beat(2).strip().encode(), out)
         self.assertLess(out.count(b"NOISE_LINE"), 1200)   # 只有开头 / 结尾 16 KB 内可能带到
         # 心跳太多：只留最新的，总量有界
         many = b"".join(beat(i).encode() for i in range(20000))
         body = b"h" * 16000 + many + b"t" * 16000
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
         self.assertIn(beat(19999).strip().encode(), out); self.assertNotIn(beat(0).strip().encode(), out)
         self.assertLessEqual(len(out), 16000 * 2 + 64000 + 200)
 
@@ -1718,14 +1754,14 @@ class JobsTests(unittest.TestCase):
         noise = "".join(f"[log] 第 {i} 行普通日志 padding padding padding\n" for i in range(2200)).encode()
         body = b"HEAD_MARK\n" + noise + "\n".join(scene(30, 17)).encode() + b"\n" + noise + b"\nTAIL_MARK\n"
         self.assertTrue(250000 < len(body) < 330000, len(body))
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
         for want in ("【红】CRASH 信号 11", "全线程现场：崩溃 信号 11", "线程 17/30 tid 9017「worker-17」在跑", "#11 CRASHFRAME+0xb11", "===== 现场完 ====="):
             self.assertIn(want.encode(), out, want)
         self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
         # 现场块超出保留上限：总量有界；崩溃摘要、第一个非等待线程（崩溃线程）的整段栈、其余线程头一行、现场完都在
         body = b"h" * 16000 + noise + "\n".join(scene(600, 333)).encode() + b"\n" + b"t" * 16000
-        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
-        self.assertLessEqual(len(out), 16000 * 2 + 64000 + library.DIAGNOSTIC_LOG_SCENE + 400)
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body), 16000, 16000)
+        self.assertLessEqual(len(out), 16000 * 2 + 64000 + library.DIAGNOSTIC_LOG_SCENE + 600)
         for want in ("【红】CRASH 信号 11", "线程 333/600 tid 9333「worker-333」在跑", f"#11 CRASHFRAME+{0x100 * 11 + 333:#x}", "线程 1/600 tid 9001", "===== 现场完 ====="):
             self.assertIn(want.encode(), out, want)
         self.assertNotIn(b"#11 idle+0xb01", out)   # 等待线程的栈让位给崩溃线程
@@ -1898,7 +1934,7 @@ class JobsTests(unittest.TestCase):
         with um.patch.object(os, "fdopen", tracked_open), um.patch.object(zipfile, "ZipFile", side_effect=archive):
             library.diagnostics(self.c)
         self.assertTrue(all(output.closed for output in outputs))
-        self.assertIn((log.stat().st_ino, log.stat().st_size - 16000, 16000), reads)
+        self.assertIn((log.stat().st_ino, 0, library.DIAGNOSTIC_LOG_CHUNK), reads)   # #41：日志整份读（按块），不再只读头尾
         self.assertTrue(all(size <= 1 << 20 or size == (4 << 20) + 1 for _, _, size in reads))
         self.assertEqual(marker.read_bytes(), b"unchanged marker")
         self.assertTrue(predictable.is_symlink()); self.assertFalse(destination.is_symlink())

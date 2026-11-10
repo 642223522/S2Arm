@@ -236,6 +236,14 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
     const uint8_t *cd = (const uint8_t *)(uintptr_t)code; dsh_comp_fn comp = dsh_comp();
     int rc = !code || !out || !*out || !comp ? -1 : 0;
     uint64_t t0 = now_ns(); if (!rc) rc = dsh_comp_locked(comp, k, e->st, cd, ncode, e->ctl, e->nctl, out);
+    // 翻译器报错（rc > 0：编了、没编出来）：不管开没开 DM_NVN_SHDUMP，都把这支的控制段 / 代码区存进兜底目录 <键>.fail.ctl / .fail.code。翻译器的确定性 bug 修前要能在本机复现，
+    //   而这类着色器多是运行时才遇到的（不在离线着色器表里），没有输入就只能请玩家开开关重走（#442 夜之仪式：切场景后 4 支计算着色器越界，帧率跌到 6 帧）。只在失败时写，每键一次
+    if (rc > 0 && out && *out && strcmp(out, "/dev/null")) {
+        char fp[1200]; FILE *f;
+        snprintf(fp, sizeof fp, "%s/%s.fail.ctl", out, k); if ((f = fopen(fp, "wb"))) { fwrite(e->ctl, 1, e->nctl, f); fclose(f); }
+        snprintf(fp, sizeof fp, "%s/%s.fail.code", out, k); if ((f = fopen(fp, "wb"))) { fwrite(cd, 1, ncode, f); fclose(f); }
+        LOG("直连着色器现编失败的输入已存：%s/%s.fail.ctl / .fail.code（控制段 %u 字节、代码区 %u 字节；反馈问题时请附上）", out, k, e->nctl, ncode);
+    }
     int st = e->st; free(e);
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); atomic_fetch_add(&g_dsh_bad, 1); LOG("【红】直连着色器现编失败：%s（%s）rc=%d", k, dsh_nm[st], rc); return 0; }
     mtl_shmap_rt_add(k, dsh_nm[st]);
