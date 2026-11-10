@@ -386,7 +386,13 @@ def plan(dev, pack, work, full=False, say=print):
         if have: have = spot_check(dev, pack, work, have, say)
         cut_img = [r for r in have if IMG.fullmatch(r)]   # 账上有镜像才去机上核：没有镜像的包不多一次设备往返
         if cut_img and not (read(dev, f"{rp(dev)}/.applied", work, "r.applied.pre") or "").strip():   # send 写镜像前把 .applied 清空：空 = 上次传镜像被打断，机上那份不完整，账不能信
-            say(f"上次传 {cut_img[0]} 被打断，这次重传"); have = {r: h for r, h in have.items() if r not in cut_img}
+            # 例外：.pushed 里记着这份镜像 = 上次已整份传完（put_big 成功后才记账），.applied 空只是后面解包没成（#457：原先照样打「被打断，这次重传」，
+            #   实际按 .pushed 不重传、推送 0 个文件，日志自相矛盾，把排查带偏）。这时如实说镜像已传完、问题在解包
+            done = [r for r in cut_img if pushed.get(r) == have[r]]
+            if done: say(f"{done[0]} 上次已整份传完（推送账上有），不重传；上次是机上解包没成，见手机上的 unpack.log")
+            redo = [r for r in cut_img if r not in done]
+            if redo: say(f"上次传 {redo[0]} 被打断，这次重传")
+            have = {r: h for r, h in have.items() if r not in redo}
     want = [w for w in (l.split("\t") for l in (pack / "index.tsv").read_text(encoding="utf-8").splitlines()) if len(w) == 3]
     acct = {**have, **pushed}
     todo = [w for w in want if acct.get(w[0]) != w[2]]
