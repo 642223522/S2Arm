@@ -72,7 +72,11 @@ class DirectPackTest(unittest.TestCase):
         (self.root / 'systemdata/fonts/fixture.bfttf').write_bytes(b'not a real font')
         # make_pack 只消费产品根里已由 refresh sysdata 阶段准备好的系统数据；
         # 这里把共用合成器列出的每个号都造一份带载荷的目录（内容不参与断言）。
-        for sid in ('0100000000000802', '0100000000000823'):
+        # 号表与被测件同一个来源（sysdata_synth --ids）：82fd8111 加 0400000000000849
+        # 时硬编码清单漏跟、全部用例炸缺号——照抄同一份清单才不会过时。
+        ids = subprocess.run([sys.executable, str(Path(pack.REPO) / 'pack' / 'sysdata_synth.py'), '--ids'],
+                             capture_output=True, text=True, check=True).stdout.split()
+        for sid in ids:
             (self.root / 'systemdata' / sid).mkdir(parents=True)
             (self.root / 'systemdata' / sid / 'fixture.bin').write_bytes(b'fixture')
         # 安卓打包前置的能力清单：与共用合成根同一个生成入口（refresh 的 gen_caps.sh 安卓口径）。
