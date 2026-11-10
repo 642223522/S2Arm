@@ -60,7 +60,8 @@ static void restart_done(unsigned generation) {
 // 设置页「立刻重启」的请求回调：只回设置页结果；屏障由 restart_done 放（控制线程先调它，两者都派主线程，先放屏障后回设置页）
 static void settings_restart_result(int result, const char *detail, void *context) {
     void (^completion)(NSString *) = CFBridgingRelease(context);
-    NSString *error = result ? (detail ? [NSString stringWithUTF8String:detail] : S2AL(@"app.restart.failed")) : nil;
+    // detail 是 session.c 的内部原因（已进 host.log）：中文 App 照旧显示原文；英文 App 显示通用一句，内部原因不翻（#316）
+    NSString *error = result ? (detail && s2a_l10n_zh() ? [NSString stringWithUTF8String:detail] : S2AL(@"app.restart.failed")) : nil;
     dispatch_async(dispatch_get_main_queue(), ^{ completion(error); });
 }
 static void settings_attach_runtime(void) {
@@ -649,7 +650,8 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
         top_alert(sd.window, S2AL(@"app.library.reopen.title"), S2AL(@"app.library.reopen.message")); return;
     }
     const char *why = s2a_launch_ctx_select(gid);
-    if (why) { top_alert(sd.window, S2AL(@"app.library.cantOpen"), @(why)); return; }
+    // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：中文 App 照旧显示原文；英文 App 显示通用一句（#316）
+    if (why) { top_alert(sd.window, S2AL(@"app.library.cantOpen"), s2a_l10n_zh() ? @(why) : S2AL(@"app.library.cantOpen.message")); return; }
     atomic_store(&g_game_picked, 1);
     s2a_boot_rebase("点 Play（多款容器选了游戏、启动上下文已冻结）");   // 起局计时从这里算，库界面停留不计
     LOG("游戏库：选了 %s，%s", gid, s2a_host_pre_ui_checks());
@@ -834,4 +836,6 @@ void s2a_front_run(void (*start_host)(void)) {
 //   NSProcessInfo 的这两个属性可在任意线程读
 double dm_brightness_now(void) { return g_brightness; }
 int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
+// 界面语言（runtime/include/s2a_ui_text.h，#316）：C 层递上来的提示 / 横幅按它取中文原宏或 _EN；判据同 S2AL 字符串表（ios/s2a_l10n.h）。盖过各 .c 的弱缺省
+int s2a_ui_zh(void) { return s2a_l10n_zh(); }
 int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0; }

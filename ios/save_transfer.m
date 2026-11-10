@@ -45,12 +45,14 @@ static NSDictionary *game_identity(void) {
     id game = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     return [game isKindOfClass:NSDictionary.class] ? game : nil;
 }
+// 服务层错误说明的语言（#316）：请求带上 App 语言，服务层（services/S2A.Services/SaveTransfer.cs T）按它出中文或英文；判据同 S2AL 字符串表
+static NSString *save_language(void) { return s2a_l10n_zh() ? @"zh-Hans" : @"en"; }
 // iCloud 存档同步（shell/Sources/S2ArmShellHost/CloudSaves.swift 经 s2a_shell.h 调）：本款作业公共字段 / 转发一次作业。强定义盖过 S2ArmShellBridge 的弱缺省
 char *s2a_shell_save_context(void) {
     @autoreleasepool {
         NSString *root = data_root(); NSDictionary *game = game_identity();
         if (!root || !game || !S2A_SaveTransfer || !S2A_SaveTransferFree) return NULL;
-        NSData *json = [NSJSONSerialization dataWithJSONObject:@{ @"game": game, @"dataRoot": root, @"workRoot": work_root() } options:0 error:nil];
+        NSData *json = [NSJSONSerialization dataWithJSONObject:@{ @"game": game, @"dataRoot": root, @"workRoot": work_root(), @"language": save_language() } options:0 error:nil];
         return json ? strndup(json.bytes, json.length) : NULL;
     }
 }
@@ -224,7 +226,7 @@ int s2a_ios_save_management_requested(void) {
     if (self.busy) { [self showStatus:S2AL(@"save.busy")]; return; }
     self.busy = YES; self.status.text = S2AL(@"save.processing"); [self updateButtons];
     NSMutableDictionary *request = [operation mutableCopy];
-    request[@"game"] = self.game; request[@"dataRoot"] = self.dataRoot; request[@"workRoot"] = self.workRoot;
+    request[@"game"] = self.game; request[@"dataRoot"] = self.dataRoot; request[@"workRoot"] = self.workRoot; request[@"language"] = save_language();
     dispatch_async(self.worker, ^{
         @autoreleasepool {
             NSError *error = nil;

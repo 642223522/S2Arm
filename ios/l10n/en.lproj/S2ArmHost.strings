@@ -229,6 +229,7 @@
 "app.ladder.title" = "Graphics level";
 "app.library.broken.title" = "Game files are incomplete";
 "app.library.cantOpen" = "This game can’t be opened";
+"app.library.cantOpen.message" = "This game couldn’t be prepared to start. Swipe the app away in the app switcher and open it again; if it still fails, export diagnostics and send them to us.";
 "app.library.missing.title" = "Game resources are missing";
 "app.library.packBroken" = "Only part of this game’s resources were copied — the copy was probably interrupted. In S2Arm on your Mac, click “Install on iPhone” for this game again to add what’s missing. When it’s done, tap “Check again”.";
 "app.library.packMissing" = "This game’s resources aren’t on the phone yet. In S2Arm on your Mac, click “Install on iPhone” for this game and the resources are copied over automatically. You can also use Finder to copy its “…资源包” folder into the games/%@ folder in this app’s Files. Then tap “Check again”.";

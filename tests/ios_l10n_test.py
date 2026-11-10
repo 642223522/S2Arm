@@ -15,6 +15,11 @@ iOS「设置」App 的 S2Arm 页 Root.plist 原文英文、zh-Hans.lproj/Root.st
      或 app.m host_text 的 {宏, 宏_EN} 对照表；C 层递字符串上来的那几组（自检提示页全部、初启失败页的原因句与下一步）必须都在对照表里
   ⑧ en 表的值不含中文，除了 EN_CJK 登记的键（照写真实的「<游戏名>资源包」文件夹名）
   ⑨ InfoPlist.strings 两表键集合相同、都非空，且每个键都是 runtime/build.mk 写进 Info.plist 的键（主值英文、不含中文）
+  ⑩ 跨平台 C 层递给宿主显示的文字（runtime/include/s2a_ui_text.h）：每个 S2A_UI_* 文案宏都有 _EN、_EN 不含中文（照写的「资源包」除外）、
+     都被用到；用到的地方只许经 S2A_UI(…)；用 S2A_UI 的 .c 各带一份 s2a_ui_zh 弱缺省，iOS / Mac 各有一份强定义；
+     显示路径（DISPLAY_CALLS 的调用参数、DISPLAY_FUNCS 的函数体）里不许再有中文 C 字面量
+  ⑪ 存档服务层（services/S2A.Services/SaveTransfer*.cs）玩家看得到的说明：除 stderr 日志外，每个中文字面量都是 T("中文", "English") 的第一参，
+     英文非空、不含中文；同一句中文全仓只对应一句英文
 """
 import os, pathlib, plistlib, re, shutil, subprocess, sys
 
@@ -55,6 +60,12 @@ IDENT_C = {
     'ios/hud.m': {s: '开发浮层（S2A_HUD，设置页「开发」组）的发热档名，拼进 runtime/src/hud.c 整份中文诊断文字，开发者看的诊断' for s in ('正常', '偏热', '热', '过热', '无')},
     'ios/iml_probe.m': {s: '地址档名，只拼进 [IML] 首启复核日志行' for s in ('地址上限读不到', '大地址档', '小地址档')},
 }
+UI_TEXT_H = 'runtime/include/s2a_ui_text.h'
+UI_USERS = ['runtime/src/pack_apply.c', 'runtime/src/qladder_host.c', 'runtime/src/ap_host.c', 'runtime/src/hud.c']
+UI_STRONG = {'ios/app.m': 's2a_l10n_zh()', 'macos/front_mac.m': 'preferredLocalizations'}
+DISPLAY_CALLS = {'runtime/src/pack_apply.c': {'s2a_ios_show_notice', 's2a_ios_show_pack_help'}, 'runtime/src/qladder_host.c': {'s2a_ios_ladder_note'}}
+DISPLAY_FUNCS = {'runtime/src/pack_apply.c': ['s2a_pack_help_detail', 'help_title', 'gate_show'], 'runtime/src/ap_host.c': ['stall_note'], 'runtime/src/hud.c': ['s2a_hud_brief']}
+SAVE_CS = 'services/S2A.Services'
 EN_CJK = {k: '照写真实的「<游戏名>资源包」文件夹名（Mac 启动器交付的目录就叫这个，pack/jobs/ipa.py），译掉玩家就找不到' for k in ('notice.packFolder', 'notice.step.drag', 'app.library.packMissing')}
 CJK = re.compile('[㐀-䶿一-鿿　-〿！（），：；？]')
 PH = re.compile(r"%%|%(?:(\d+)\$)?([-+ #0']*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|q|L|z|j|t)?[@dDuUxXoOfeEgGcCsSpaAF])")
@@ -252,6 +263,66 @@ ck('⑨ Info.plist 权限说明主值英文、与 en 表逐字一致', all(not C
    '；'.join(f'{k}={v[:30]}' for k, v in main.items() if CJK.search(v) or ip['en'].get(k) != v))
 cjk_ip = sorted(k for k, v in ip['zh-Hans'].items() if not CJK.search(v))
 ck('⑨ zh-Hans InfoPlist.strings 每条都是中文译文', not cjk_ip, ' '.join(cjk_ip))
+
+# ⑩ C 层显示文字：s2a_ui_text.h 中英配对、只经 S2A_UI 取、显示路径无中文字面量
+uih = (H / UI_TEXT_H).read_text(encoding='utf-8')
+ui = dict((n, re.sub(r'\\(.)', r'\1', v)) for n, v in re.findall(r'#define\s+(S2A_UI_[A-Z0-9_]+)\s+"((?:[^"\\]|\\.)*)"', uih))
+ui_text = sorted(n for n in ui if not n.endswith('_EN'))
+ck(f'⑩ s2a_ui_text.h 的 {len(ui_text)} 个文案宏都有 _EN', bool(ui_text) and all(n + '_EN' in ui for n in ui_text), ' '.join(n for n in ui_text if n + '_EN' not in ui))
+ck('⑩ _EN 不含中文（照写的「资源包」除外）、中文原宏含中文', all(not CJK.search(ui[n + '_EN'].replace('资源包', '')) and CJK.search(ui[n]) for n in ui_text if n + '_EN' in ui),
+   ' '.join(n for n in ui_text if n + '_EN' in ui and (CJK.search(ui[n + '_EN'].replace('资源包', '')) or not CJK.search(ui[n]))))
+ck('⑩ 中英两份格式占位符一致', all(placeholders(ui[n]) == placeholders(ui[n + '_EN']) for n in ui_text if n + '_EN' in ui),
+   ' '.join(n for n in ui_text if n + '_EN' in ui and placeholders(ui[n]) != placeholders(ui[n + '_EN'])))
+strip_c = lambda s: re.sub(r'//[^\n]*|/\*.*?\*/', '', s, flags=re.S)
+uses, ubad = {}, []
+for rel in UI_USERS + [f for f in SRCS]:
+    src = strip_c((H / rel).read_text(encoding='utf-8'))
+    for m in re.finditer(r'\b(S2A_UI_[A-Z0-9_]+?)(_EN)?\b', src):
+        if m.group(2): continue
+        uses[m.group(1)] = uses.get(m.group(1), 0) + 1
+        if not re.search(r'S2A_UI\($', src[max(0, m.start() - 7):m.start()]): ubad.append(f'{rel}:{src.count(chr(10), 0, m.start()) + 1} {m.group(1)}')
+ck(f'⑩ 文案宏 {len(ui_text)} 个都被用到', set(ui_text) <= set(uses), ' '.join(sorted(set(ui_text) - set(uses))))
+ck(f'⑩ 用到的 {sum(uses.values())} 处都经 S2A_UI(…)', not ubad and bool(uses), '；'.join(ubad[:8]))
+weak = r'__attribute__\(\(weak\)\)\s*int\s+s2a_ui_zh\(void\)\s*\{\s*return 1;\s*\}'
+nweak = [rel for rel in UI_USERS if 'S2A_UI(' in (H / rel).read_text(encoding='utf-8') and not re.search(weak, (H / rel).read_text(encoding='utf-8'))]
+ck(f'⑩ 用 S2A_UI 的 {len(UI_USERS)} 个 .c 各带 s2a_ui_zh 弱缺省（返回 1 = 中文）', not nweak, ' '.join(nweak))
+nstrong = [rel for rel, how in UI_STRONG.items() if not re.search(r'^int s2a_ui_zh\(void\) \{[^\n]*' + re.escape(how), (H / rel).read_text(encoding='utf-8'), re.M)]
+ck('⑩ iOS（ios/app.m）与 Mac（macos/front_mac.m）各有 s2a_ui_zh 强定义、按 App 语言判', not nstrong, ' '.join(nstrong))
+dbad = []
+for rel, calls in DISPLAY_CALLS.items():
+    for lit, line, cs in objc_literals((H / rel).read_text(encoding='utf-8'), objc=False):
+        if CJK.search(lit) and cs & calls: dbad.append(f'{rel}:{line} "{lit[:24]}"')
+for rel, funcs in DISPLAY_FUNCS.items():
+    src = (H / rel).read_text(encoding='utf-8')
+    for fn in funcs:
+        m = re.search(r'^[^\n;]*\b' + fn + r'\([^)]*\)\s*\{', src, re.M)
+        if not m: dbad.append(f'{rel} 找不到函数 {fn}'); continue
+        depth, i = 0, m.end() - 1
+        while True:
+            depth += {'{': 1, '}': -1}.get(src[i], 0); i += 1
+            if depth == 0: break
+        for lit, line, cs in objc_literals(src[m.start():i], objc=False):
+            if CJK.search(lit) and not cs & LOG_CALLS: dbad.append(f'{rel} {fn}() "{lit[:24]}"')
+ck(f'⑩ 显示路径（{sum(map(len, DISPLAY_CALLS.values()))} 个调用、{sum(map(len, DISPLAY_FUNCS.values()))} 个函数）没有中文 C 字面量', not dbad, '；'.join(dbad[:8]))
+
+# ⑪ 服务层存档说明：中文都在 T("中文", "English") 里
+cs_bad, cs_pairs = [], {}
+for f in sorted((H / SAVE_CS).glob('SaveTransfer*.cs')):
+    for i, line in enumerate(f.read_text(encoding='utf-8').split('\n'), 1):
+        if line.lstrip().startswith('//') or 'Console.' in line: continue
+        for zh_s, en_s in re.findall(r'\bT\("((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\)', line):
+            cs_pairs.setdefault(zh_s, set()).add(en_s)
+            if not CJK.search(zh_s) or not en_s.strip() or CJK.search(en_s): cs_bad.append(f'{f.name}:{i} T("{zh_s[:16]}", "{en_s[:16]}")')
+        code = re.sub(r'\bT\("(?:[^"\\]|\\.)*", "(?:[^"\\]|\\.)*"\)', 'T()', line)
+        cm = re.search(r'\s//', code)
+        if cm and code[:cm.start()].count('"') % 2 == 0: code = code[:cm.start()]
+        if '\\"ok\\"' in code and 'save_internal' in code: continue   # 桥接失败的整段 JSON 字面量：按 SaveTransfer.English 二选一，下面单独核
+        if CJK.search(code): cs_bad.append(f'{f.name}:{i} {code.strip()[:40]}')
+exp = (H / SAVE_CS / 'SaveTransferExports.cs').read_text(encoding='utf-8')
+bridge = re.findall(r'save_internal\\",\\"message\\":\\"((?:[^"\\]|\\.)*?)\\"', exp)
+ck(f'⑪ 存档服务层 {sum(len(v) for v in cs_pairs.values())} 句说明都经 T(中文, 英文)、英文无中文（stderr 日志除外）', not cs_bad and len(cs_pairs) > 50, '；'.join(cs_bad[:6]))
+ck('⑪ 同一句中文只对应一句英文', all(len(v) == 1 for v in cs_pairs.values()), '；'.join(k[:16] for k, v in cs_pairs.items() if len(v) > 1))
+ck('⑪ 桥接失败兜底 JSON 中英各一份（按 SaveTransfer.English 选）', len(bridge) == 2 and CJK.search(bridge[1]) and not CJK.search(bridge[0]) and 'SaveTransfer.English ?' in exp, str(bridge))
 
 fails = results.count(False)
 print(f'{"✓" if not fails else "✗"} ios_l10n：{len(results)} 项断言，{fails} 项不通（扫 {len(SRCS)} 个 .m、代码用 {len(used)} 个键、设置页 {len(texts)} 条文字）')
