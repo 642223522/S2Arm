@@ -334,9 +334,31 @@ def _build(c):
         done = inst.put_game(c, gid, inst.MacPhone(c, early.team, early.dev, early.udid), steps=False)
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(image), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
+    lib_ipa = refresh_library_ipa(c)
+    if lib_ipa:   # 完成页的「显示 .ipa」（两端都读结果里的 ipa）：指向刚组好的库根 S2Arm.ipa
+        result.update(ipa=str(lib_ipa), ipaBytes=lib_ipa.stat().st_size)
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
+
+
+def refresh_library_ipa(c):
+    """出 iPhone 包成功就把默认位置根 S2Arm.ipa 换成含游戏库里本版能用的全部各款的容器（#360）：原先它只在「装到 iPhone」成功后才更新，
+    只出包、自己用 SideStore / LiveContainer 侧载的玩家拿到的是旧包（或 0.1.x 迁移留下的单款包），出包完成页的「显示 .ipa」也不出现。
+    组装同装机（assemble，Mac ad-hoc / Windows 不签，侧载工具重签）、放置同装机（commit_phone_ipa：换了壳把旧的留作上一版）。
+    组装失败只警告：这款的 iPhone 版已经出好，不因为别的款连带判出包失败。→ 库根 S2Arm.ipa 路径 | None（没组）"""
+    sid = current_shell_id(c)
+    ready = [g["id"].upper() for g in c.catalog()["games"] if usable_kit(c, g["id"].upper(), sid)]
+    if not ready:
+        return None
+    c.begin("组装可直接侧载的 S2Arm.ipa（含 %d 款）" % len(ready))
+    try:
+        ipa, _, _ = assemble(c, None, ready)
+        commit_phone_ipa(c, ipa, sid)
+    except (Failure, OSError) as e:   # 组装出错（盘满、权限、容器件坏）都只警告
+        c.diagnostic("游戏库根目录的 S2Arm.ipa 这次没更新（" + str(e) + "）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。", code="job_failed", severity="warning")
+        return None
+    return layout.phone_ipa(c)
 
 
 CONTAINER_BUNDLE = "io.s2arm.games"   # 组装时的占位包名：Mac 装机换成团队专属的 io.s2arm.games.<团队>（install.container_bundle_id）；Windows 由 plumesign 按账号定
