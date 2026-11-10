@@ -206,7 +206,8 @@ int s2a_pack_apply(const char *docs) {
     if (!rc) { char mp[2100]; snprintf(mp, sizeof mp, "%s/manifest.json", root);
         if (manifest_sha(mp, sha, sizeof sha)) { rc = -6; snprintf(what, sizeof what, "读 manifest.json 的 index_sha256"); }
         else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
-        else if (write_atomic(root, ".applied", sha)) { rc = -4; snprintf(what, sizeof what, "写 .applied"); } }
+        else if (write_atomic(root, ".applied", sha)) { rc = -4; snprintf(what, sizeof what, "写 .applied"); }
+        else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
     FILE *lf = fopen(logp, "a");
     if (lf) {
@@ -356,7 +357,7 @@ int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char 
     if (game_data_env) return 0;
     snprintf(out, n, "%s", proc_docs ? proc_docs : ""); return 1;
 }
-// 多款容器的游戏库（app.m s2a_shell_game_data_ready / 选游戏前）：本款资源包状态，按同一个判据（s2a_import_state）查 Documents/games/<游戏号>
+// 多款容器的游戏库（app.m s2a_shell_game_install_state / 选游戏前）：本款资源包状态，按同一个判据（s2a_import_state）查 Documents/games/<游戏号>
 //   proc_docs = 进程级 Documents（iOS 调用方取 s2a_container_docs），本款文档根 = <proc_docs>/games/<游戏号>（同 launchctx.c s2a_launch_ctx_resolve_game）
 int s2a_import_state_game(const char *proc_docs, const char *gid) {
     char docs[1024]; if (!proc_docs || !*proc_docs || !gid || !*gid || strchr(gid, '/') || gid[0] == '.') return S2A_IMPORT_NONE;
@@ -366,26 +367,35 @@ int s2a_import_state_game(const char *proc_docs, const char *gid) {
 // 游戏库快判：解包成功时写的 .applied 等于当前清单 = 这份已核对过每个文件，直接算就绪。
 //   库界面在主线程、每次回前台都判，逐文件 stat 一款 10 万文件的游戏要 2.5 秒以上（冷缓存更久，玩家「每次打开都要等」）；
 //   完整核对仍在点 Play 后的导入闸门（s2a_import_state）做
+static int applied_ready(const char *root) {   // 资源包目录 root：.applied 等于清单的 index_sha256、程序描述在
+    char mf[2300], ap[2300], np[2300], want[200], got[200] = ""; struct stat ns;
+    snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(ap, sizeof ap, "%s/.applied", root); snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
+    FILE *f = fopen(ap, "r");
+    if (f) { size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; }
+    // 快判也核程序描述 exefs/main.npdm 在、是普通文件（审计 P2-212：只认 .applied 时删掉它库里仍显示可玩，点开始才报缺）；只 stat 一个文件，不逐文件核
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
+}
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
     if (proc_docs && *proc_docs && gid && *gid && !strchr(gid, '/') && gid[0] != '.') {
-        char mf[2200], ap[2200], want[200], got[200] = ""; snprintf(mf, sizeof mf, "%s/games/%s/资源包/manifest.json", proc_docs, gid); snprintf(ap, sizeof ap, "%s/games/%s/资源包/.applied", proc_docs, gid);
-        FILE *f = fopen(ap, "r");
-        if (f) { size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; }
-        // 快判也核程序描述 exefs/main.npdm 在、是普通文件（审计 P2-212：只认 .applied 时删掉它库里仍显示可玩，点开始才报缺）；只 stat 一个文件，不逐文件核
-        char np[2200]; struct stat ns; snprintf(np, sizeof np, "%s/games/%s/资源包/exefs/main.npdm", proc_docs, gid);
-        if (got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0) return S2A_IMPORT_READY;
+        char root[2200]; snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid);
+        if (applied_ready(root)) return S2A_IMPORT_READY;
     }
     return s2a_import_state_game(proc_docs, gid);
 }
-// 游戏库只列这台设备上真能玩的款：已应用；或推送包齐了、不在传（同起局前导入闸门的「还在传」判据）只等点 Play 解开。
-//   11-09 根修（Windows 装完游戏库空）：原先「.applied 为空」一律当传镜像被打断、不列——推送开头会清空 .applied，Windows 推完起 App 解包没成时
-//   包已齐、清单已到、.applied 仍空，这款被藏掉，玩家看到空库、又无从点它解包。现在推送开头把清单置空、最后才写，「清单读得出 + 包都写完」= 推送完整
-int s2a_game_on_device(const char *proc_docs, const char *gid) {
-    int st = s2a_import_state_game_quick(proc_docs, gid);
-    if (st == S2A_IMPORT_READY) return 1;
-    if (st != S2A_IMPORT_PENDING) return 0;
-    char root[2200], why[256]; snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid);
-    return !s2a_import_transferring(root, why, sizeof why);
+// 游戏库按款的装机阶段（库界面画图块与蒙版用，ios/app.m s2a_shell_game_install_state）。库界面每秒刷新，只做便宜的判断、不逐文件核对：
+//   1 就绪——.applied 等于清单、程序描述在（同快判）；
+//   2 传完了、只等解开——清单读得出、不在传（11-09 根修 Windows 装完游戏库空：推送开头把清单置空、最后才写，「清单读得出 + 包都写完」= 推送完整）。
+//     库在后台跑 s2a_pack_apply 解开（没有待解包时它只核对、写 .applied：只直写了镜像的推送、访达拷进来的也一样），显示「安装中」；核对不过报「安装没完成」；
+//   3 传输中——推包端开推时写的 资源包/.transfer 在、这次推送没完（清单还没写回，或还有包没写完），库按它画进度；
+//   0 没有（不显示：没装过、玩家删了这款的数据、或清单读不出又没在传）
+int s2a_game_install_state(const char *proc_docs, const char *gid) {
+    if (!proc_docs || !*proc_docs || !gid || !*gid || strchr(gid, '/') || gid[0] == '.') return 0;
+    char root[2200], mf[2300], tp[2300], want[200], why[256]; struct stat ts;
+    snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid); snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s/.transfer", root);
+    if (applied_ready(root)) return 1;
+    int tr = !stat(tp, &ts) && S_ISREG(ts.st_mode);
+    if (manifest_sha(mf, want, sizeof want) || s2a_import_transferring(root, why, sizeof why)) return tr ? 3 : 0;
+    return 2;
 }
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #include <CoreFoundation/CoreFoundation.h>
