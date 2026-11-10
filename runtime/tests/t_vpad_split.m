@@ -5,6 +5,10 @@
 #include <stdio.h>
 static int bad, checks;
 #define CK(c,msg) do { checks++; if (!(c)) { bad++; printf("✗ %s\n",msg); } } while (0)
+static CGRect key_frame(S2AVPadLayout *layout, NSString *key, CGRect safe) {
+    for (NSDictionary *button in layout.buttons) if ([button[@"id"] isEqual:key]) return [layout frameForButton:button safeRect:safe];
+    return CGRectNull;
+}
 int main(void) { @autoreleasepool {
     CGRect areas[]={CGRectMake(16,495.5,637,421.5),CGRectMake(16,220,924,198),CGRectMake(16,400,358,350),CGRectMake(16,300,650,450),CGRectMake(0,700,1032,640)};
     for (unsigned i=0;i<sizeof areas/sizeof *areas;i++) {
@@ -15,8 +19,18 @@ int main(void) { @autoreleasepool {
             NSString *hit=[l buttonAt:c safeRect:areas[i] slop:10 avoiding:CGRectNull nearest:YES];
             CK(CGRectContainsRect(areas[i],f) && [hit isEqualToString:button[@"id"]],"每个默认键都在下区内且中心可点，不被其他键热区抢走");
         }
+        NSArray *top=@[@"ZL",@"L",@"MINUS",@"PLUS",@"R",@"ZR"];
+        for (NSUInteger j=0;j+1<top.count;j++) {
+            CGRect a=key_frame(l,top[j],areas[i]), b=key_frame(l,top[j+1],areas[i]);
+            CK(CGRectGetMinX(b)>CGRectGetMaxX(a),"窄竖屏与矮横屏的默认顶排相邻键框留有间距");
+        }
         CK([l buttonAt:CGPointMake(areas[i].origin.x+10,areas[i].origin.y-1) safeRect:areas[i] slop:10 avoiding:CGRectNull nearest:YES]==nil,"上区触摸不能触发下区按键");
     }
+    // 388 点可用宽：58 点肩键按 .97 缩放为 56.26，左右各对间距须为 8×.97=7.76 点。
+    CGRect phone=CGRectMake(16,460,388,402);
+    S2AVPadLayout *phoneLayout=[S2AVPadLayout defaultForSafeRect:phone split:YES];
+    CK(fabs(CGRectGetMinX(key_frame(phoneLayout,@"L",phone))-CGRectGetMaxX(key_frame(phoneLayout,@"ZL",phone))-7.76)<1e-9,"388 点手机左肩键间距与手算 7.76 点一致");
+    CK(fabs(CGRectGetMinX(key_frame(phoneLayout,@"ZR",phone))-CGRectGetMaxX(key_frame(phoneLayout,@"R",phone))-7.76)<1e-9,"388 点手机右肩键间距与手算 7.76 点一致");
     CGRect safe=CGRectMake(0,400,600,350), gap=CGRectMake(290,0,20,800);
     S2AVPadLayout *l=[S2AVPadLayout defaultForSafeRect:safe split:YES];
     l=[l layoutWithButtonCenters:@{@"A":@[@300,@600]} safeRect:safe identifier:@"mine" name:@"分屏位置" error:nil];
@@ -75,6 +89,6 @@ int main(void) { @autoreleasepool {
     normal=[[S2AVPadLayoutStore alloc] initWithDirectory:game settingsDirectory:app];
     CK(![normal.selectedIdentifier isEqual:@"touch"],"已打开的分屏管理页也能退出另一份 store 刚设的触屏模式");
     [NSFileManager.defaultManager removeItemAtURL:root error:nil];
-    printf("%s t_vpad_split：%d/%d 项符合（5 种区域 × 16 键、折痕、存储与模式）\n",bad?"✗":"✓",checks-bad,checks);
+    printf("%s t_vpad_split：%d/%d 项符合（5 种区域 × 16 键、顶排间距、折痕、存储与模式）\n",bad?"✗":"✓",checks-bad,checks);
     return bad?1:0;
 } }

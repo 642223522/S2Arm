@@ -130,8 +130,10 @@ static CGRect normalized_rect(NSDictionary *value) {
         @[@"LS", @(0.205 * w), @(0.489 * h)], @[@"RS", @(0.795 * w), @(0.489 * h)]];
     if (split) {
         ax=.84*w; ay=.68*h; ad=47*scale; px=.35*w; py=.72*h; pd=32*scale;
+        // 外肩键会被安全区边界钳住；内肩键至少隔开一个键宽和 8 点（均随布局缩放）。
+        CGFloat outer=MAX(.06*w,29*scale), inner=MAX(.20*w,outer+66*scale);
         spec=@[@[@"A",@(ax+ad),@(ay)],@[@"B",@(ax),@(ay+ad)],@[@"X",@(ax),@(ay-ad)],@[@"Y",@(ax-ad),@(ay)],
-            @[@"ZL",@(.06*w),@(.13*h)],@[@"L",@(.20*w),@(.13*h)],@[@"R",@(.80*w),@(.13*h)],@[@"ZR",@(.94*w),@(.13*h)],
+            @[@"ZL",@(outer),@(.13*h)],@[@"L",@(inner),@(.13*h)],@[@"R",@(w-inner),@(.13*h)],@[@"ZR",@(w-outer),@(.13*h)],
             @[@"MINUS",@(w/2-52*scale),@(.13*h)],@[@"PLUS",@(w/2+52*scale),@(.13*h)],
             @[@"UP",@(px),@(py-pd)],@[@"DOWN",@(px),@(py+pd)],@[@"LEFT",@(px-pd),@(py)],@[@"RIGHT",@(px+pd),@(py)],
             @[@"LS",@(.13*w),@(.36*h)],@[@"RS",@(.65*w),@(.43*h)]];
