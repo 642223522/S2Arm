@@ -64,6 +64,16 @@ public static class ControlPortCases
         File.WriteAllText(Path.Combine(lib, ".s2arm-library.json"), "{\"schema\":1,\"id\":\"x\"}");
         check(LibraryPaths.JobsDir(root) == Path.Combine(lib, "logs", "jobs") && LibraryPaths.LogsRoot(root, lib) == Path.Combine(lib, "logs"), "paths: built library holds logs and jobs");
         check(LibraryPaths.DefaultLibrary(root) == Path.Combine(root, "DefaultLibrary"), "paths: custom data root keeps its own default library");
+        // 私有目录 / 新缺省库和作业层同一取法：先读 LOCALAPPDATA / USERPROFILE 环境变量（作业层 layout.standard_private、Path.home()）
+        var savedLocal = Environment.GetEnvironmentVariable("LOCALAPPDATA"); var savedProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+        try
+        {
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", Path.Combine(root, "AppData", "Local"));
+            Environment.SetEnvironmentVariable("USERPROFILE", Path.Combine(root, "home"));
+            check(LibraryPaths.StandardPrivateRoot == Path.Combine(root, "AppData", "Local", "S2Arm", "WindowsLauncher"), "paths: private root follows LOCALAPPDATA like the job layer");
+            check(LibraryPaths.DefaultLibrary(LibraryPaths.StandardPrivateRoot) == Path.Combine(root, "home", "S2Arm"), "paths: new default library follows USERPROFILE like the job layer");
+        }
+        finally { Environment.SetEnvironmentVariable("LOCALAPPDATA", savedLocal); Environment.SetEnvironmentVariable("USERPROFILE", savedProfile); }
         // 搬库标记：设置里是旧路径、新位置有库、旧位置没库 → 用新位置；别的路径不动
         var old = Path.Combine(root, "DefaultLibrary");
         File.WriteAllText(Path.Combine(root, "library-relocate.json"), JsonSerializer.Serialize(new Dictionary<string, string> { ["from"] = old, ["to"] = lib, ["state"] = "done" }));
