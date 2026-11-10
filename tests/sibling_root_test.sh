@@ -4,7 +4,7 @@
 #   bash tests/sibling_root_test.sh。期望按规则手写：
 #   ① 同一 APFS 卷克隆：最后一行「克隆路线：APFS 克隆 N 项」，内容与阶段戳原样
 #   ② 克隆来的根阶段戳 = 本树算出的键 → root_stage_done 判已完成（跳过）；戳是旧提交的键 → 判没完成（照常重做），不因克隆就跳过
-#   ③ 目标在 exFAT 卷（hdiutil 临时盘）：clonedir 失败关闭（不支持原子不覆盖发布）、退出非 0、报出哪一项为什么——调用方据此黄字退回播种，不静默
+#   ③ 目标在 exFAT 卷（hdiutil 临时盘）：普通拷贝成功、退出 0、内容与阶段戳原样（renamex_np ENOTSUP 时退回「目标不存在才改名」）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; M=
 trap '[ -n "$M" ] && hdiutil detach -quiet "$M" 2> /dev/null; rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -19,6 +19,6 @@ ck "② 戳 = 本树键 → 跳过（romfsidx ${a}）；戳是旧提交的键 �
 hdiutil create -quiet -size 40m -fs ExFAT -volname S2ASIBT "$T/x.dmg" && M=$(hdiutil attach -nobrowse -noverify "$T/x.dmg" | tail -1 | awk -F'\t' '{print $NF}')
 if [ -n "$M" ] && [ -d "$M" ]; then
   o=$(python3 "$H/tools/clonedir.py" --report "$S/party@pkg-a" "$M/G@sib-pkg-a" 2>&1); r=$?
-  ck "③ exFAT：失败关闭、退出非 0（${r}）、报出哪一项为什么（$(head -1 <<< "$o" | cut -c1-80)）" '[ $r != 0 ] && grep -q "克隆失败：" <<< "$o"'
+  ck "③ exFAT：退出 0、「${o##*$'\n'}」、内容与阶段戳原样" '[ $r = 0 ] && [[ "$o" == *"普通拷贝"* ]] && [ "$(cat "$M/G@sib-pkg-a/romfs/x")" = a ] && [ "$(cat "$M/G@sib-pkg-a/.stage_romfsidx")" = K-new ]'
 else echo "不通 ③ hdiutil 建不了 exFAT 临时盘"; bad=1; fi
 [ $bad = 0 ] && echo "sibling_root 单测全过" || { echo "sibling_root 单测有不通"; exit 1; }

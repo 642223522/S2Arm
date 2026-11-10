@@ -256,8 +256,14 @@ def preflight(c):
         from library import LIBRARY_FORMAT_MESSAGE, volume_format
         import libloc
         fmt = volume_format(library)
-        add("游戏库所在磁盘", fmt in ("", "apfs"),
-            LIBRARY_FORMAT_MESSAGE.format(fmt=fmt.upper()) if fmt not in ("", "apfs") else "游戏库在 APFS 格式的磁盘上。",
+        ok_fmt = libloc.format_ok(fmt, system="Darwin")
+        if not ok_fmt:
+            disk_msg = LIBRARY_FORMAT_MESSAGE.format(fmt=fmt.upper())
+        elif (fmt or "apfs") == "apfs":
+            disk_msg = "游戏库在 APFS 格式的磁盘上。"
+        else:
+            disk_msg = f"游戏库在 {fmt.upper()} 格式的磁盘上（支持出包）。"
+        add("游戏库所在磁盘", ok_fmt, disk_msg,
             action="library", code="library_not_apfs", group="storage")
         # 云盘同步目录（11-07 启动器）：iCloud Drive / OneDrive / Dropbox 等同步目录里放游戏库，中间产物会被上传、换占位，拦下给「换游戏库」
         cloud = libloc.cloud_folder(library, system="Darwin", home=str(Path.home()), exists=os.path.exists)

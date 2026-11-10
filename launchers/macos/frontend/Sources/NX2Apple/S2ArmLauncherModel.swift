@@ -280,7 +280,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 换游戏库：setup 作业（作业层拦非 APFS、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
+    /// 换游戏库：setup 作业（作业层拦不支持的盘格式、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
     func changeLibrary(to url: URL, move: Bool = false) {
         guard !busy else { return }

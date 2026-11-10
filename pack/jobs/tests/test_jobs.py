@@ -214,7 +214,7 @@ class JobsTests(unittest.TestCase):
 
     def test_seed_from_sibling_clones_current_root_and_names_commit(self):
         # 11-02：本平台还没现行根、别的平台有 → 克隆它的现行根起步（不从解包目录重新播种），复用行带被复用根的提交号；没有兄弟根 → False；
-        #   克隆不过来（如 exFAT：clonedir 失败关闭）→ 黄字 sibling_clone_failed、False（调用方从解包目录播种）
+        #   克隆失败（盘满 / 权限等）→ 黄字 sibling_clone_failed、False（调用方从解包目录播种）；exFAT 上 clonedir 走普通拷贝应成功
         import unittest.mock as um, build
         game = self.game()
         sib = layout.ios_work(self.c, "0100000000000000") / "roots"; v = sib / "party@pkg-abc"   # iPhone 出包工作目录 build/ios 的现行根
