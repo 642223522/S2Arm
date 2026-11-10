@@ -188,7 +188,8 @@ class FakeW:
             st = real.status(resources=resources) if resources else None
             return st if st else {"verdict": impactor, "code": None if impactor == "ok" else "impactor_missing",
                                   "download": "https://github.com/claration/impactor/releases/tag/v2.7.2"}
-        self.impactor = types.SimpleNamespace(status=status, bundled=real.bundled, logged_in=lambda: self.logged)
+        self.team = None
+        self.impactor = types.SimpleNamespace(status=status, bundled=real.bundled, logged_in=lambda: self.logged, selected_team=lambda: self.team)
         self.logged = False
         self.plumesign_path = lambda given=None: "C:/plumesign.exe" if plume else None
     def mux_devices(self):
@@ -255,6 +256,20 @@ class WinInstall(unittest.TestCase):
         self.assertTrue((self.t / "lib" / "S2Arm.ipa").is_file())
         with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
             self.assertEqual(self.m.WinPhone(self.c).bid, "s2arm.T.0100")
+
+    def test_bundle_matches_mac_lowercase_team(self):
+        # 9401：交给 plumesign 的包名和 Mac 一致（io.s2arm.games.<小写团队号>）；这台记录过只差大小写的包名就沿用（不在手机上多出一个 S2Arm）；
+        #   读不到团队号 → 不传（照旧由 plumesign 定）
+        w = FakeW([("U1", "USB", 3)], bid="io.s2arm.games.abcde12345"); w.team = "ABCDE12345"
+        p = patch.object(self.m.WinPhone, "backup", lambda self, g: None); p.start(); self.addCleanup(p.stop)   # 只看包名：覆盖装前的存档备份另有用例
+        self.go(w)
+        self.assertEqual(w.calls[-1].bundle, "io.s2arm.games.abcde12345")
+        layout.save_device(self.c, "U1", dict(layout.load_device(self.c, "U1"), bundleId="io.s2arm.games.ABCDE12345"))
+        self.go(w)
+        self.assertEqual(w.calls[-1].bundle, "io.s2arm.games.ABCDE12345")
+        w.team = None
+        self.go(w)
+        self.assertIsNone(w.calls[-1].bundle)
 
     def test_cant_open_app_is_warning_not_failure(self):   # #192：Windows 同 Mac，传输数从异常带回（替身 787 个文件）
         w = FakeW([("U1", "USB", 3)]); w.needs_player = "资源包已传完，还差最后一步：打开 App"
