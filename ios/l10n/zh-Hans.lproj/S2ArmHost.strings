@@ -415,6 +415,8 @@
 "settings.toggle.devHud" = "显示 S2Arm 诊断浮层";
 "settings.toggle.diagOnOpen" = "下次打开时导出诊断包";
 "settings.toggle.docked" = "主机模式";
+"settings.toggle.diagRun" = "诊断局（下一局）";
+"settings.diagRun.note" = "打开后从后台划掉、重新进这款游戏，到出问题的地方待 3 分钟以上，再导出诊断包。只管下一局，这一局画面会变慢。";
 "settings.docked.note" = "画质更高，但更耗电、更容易发热；手机上不建议开";
 "settings.toggle.metalHud" = "显示 Metal 性能浮层";
 "settings.toggle.phoneHaptics" = "手机震动";
