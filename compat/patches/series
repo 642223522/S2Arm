@@ -545,3 +545,4 @@
 20261110-0631-vp9-fallback-ledger-mcbytes.patch
 20261110-0653-vp9-midfallback-metadata-gate.patch
 20261110-0733-vp9-interp-literal-verbatim.patch
+20261111-0102-shader-sr84-vrs-size.patch
