@@ -6,13 +6,13 @@
 // 没签「提高内存上限」权限 → 重装
 #define S2A_SELFCHECK_ENT_TITLE    "安装少了一项必要权限"
 #define S2A_SELFCHECK_ENT_TITLE_EN "A required permission is missing"
-#define S2A_SELFCHECK_ENT_BODY     "这款游戏要用「提高内存上限」权限。请用 Mac 上的 S2Arm 对这款游戏点「装到 iPhone」重新装一次，会自动带上它。"
-#define S2A_SELFCHECK_ENT_BODY_EN  "This game needs the \"Increased Memory Limit\" permission. In S2Arm on your Mac, click \"Install on iPhone\" for this game again; it will be included automatically."
+#define S2A_SELFCHECK_ENT_BODY     "这款游戏要用「提高内存上限」权限。请用 电脑上的 S2Arm 对这款游戏点「装到 iPhone」重新装一次，会自动带上它。"
+#define S2A_SELFCHECK_ENT_BODY_EN  "This game needs the \"Increased Memory Limit\" permission. In S2Arm on your computer, click \"Install on iPhone\" for this game again; it will be included automatically."
 // 读不到本款要多大地址（包不完整）→ 重装补资源
 #define S2A_SELFCHECK_PKG_TITLE    "游戏资源不完整"
 #define S2A_SELFCHECK_PKG_TITLE_EN "Game files are incomplete"
-#define S2A_SELFCHECK_PKG_BODY     "请在 Mac 上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上。"
-#define S2A_SELFCHECK_PKG_BODY_EN  "In S2Arm on your Mac, click \"Install on iPhone\" for this game again to add what's missing."
+#define S2A_SELFCHECK_PKG_BODY     "请在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上。"
+#define S2A_SELFCHECK_PKG_BODY_EN  "In S2Arm on your computer, click \"Install on iPhone\" for this game again to add what's missing."
 // 签了仍不够 → 本机型系统上限
 #define S2A_SELFCHECK_DEVICE_TITLE "这台手机暂时玩不了这款游戏"
 #define S2A_SELFCHECK_DEVICE_TITLE_EN "This iPhone can't run this game yet"

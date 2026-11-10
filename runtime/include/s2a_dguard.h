@@ -17,8 +17,8 @@ extern "C" {
 #define S2A_DGUARD_OK_NS 60000000000ull    // 首帧后前台累计多久算成功玩过
 #define S2A_DGUARD_TITLE "这款游戏最近几次都没能启动"
 #define S2A_DGUARD_TITLE_EN "This game hasn't started the last few times"
-#define S2A_DGUARD_MSG "请先把 Mac 上的 S2Arm 更新到最新版，再对这款游戏点「装到 iPhone」重新装一次；还是不行，请点「导出诊断包」把诊断包发给我们反馈。"
-#define S2A_DGUARD_MSG_EN "Update S2Arm on your Mac to the latest version, then choose \"Install on iPhone\" for this game to reinstall it. If it still doesn't work, tap \"Export diagnostics\" and send us the diagnostics bundle."
+#define S2A_DGUARD_MSG "请先把 电脑上的 S2Arm 更新到最新版，再对这款游戏点「装到 iPhone」重新装一次；还是不行，请点「导出诊断包」把诊断包发给我们反馈。"
+#define S2A_DGUARD_MSG_EN "Update S2Arm on your computer to the latest version, then choose \"Install on iPhone\" for this game to reinstall it. If it still doesn't work, tap \"Export diagnostics\" and send us the diagnostics bundle."
 #define S2A_DGUARD_DIAG "导出诊断包"
 #define S2A_DGUARD_DIAG_EN "Export diagnostics"
 #define S2A_DGUARD_GO "仍然启动"
