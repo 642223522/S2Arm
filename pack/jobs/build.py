@@ -419,7 +419,8 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
     ms.enter(c, "unpack")
     if not valid:
         if extraction.exists():
-            shutil.rmtree(extraction)
+            from library import _rmtree
+            _rmtree(extraction)   # 走统一删除：只读 / Windows 封存 / 删的同时有程序往里写系统文件（#369 外置盘 Errno 66）都在这一处处理
         paths = list(dict.fromkeys(source_path(c, p) for p in packages))
         if any(p.get("format") == "nup" for p in packages):
             extract_nup(c, game, packages, extraction, env, logs)

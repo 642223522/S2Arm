@@ -92,7 +92,16 @@ _root_tree_ok() {   # 本树能不能改共享现行（$1 = 款）：HEAD 是 or
 }
 # 克隆会带上源目录的只读权限（d2r romfs/data），先给自己写权限再删。
 # 软链本身只删链接：GNU chmod -R 会顺着命令行上的软链改到 RomFS 共享存储，把只读保护打开
-_root_rm() { [ -L "$1" ] && { rm -f "$1"; return; }; [ -e "$1" ] || return 0; chmod -R u+w "$1" 2>/dev/null; rm -rf "$1"; }
+# 删的同时有程序往里写系统文件（#369：游戏库在外置盘，访达往正在删的目录写 .DS_Store，rm 报 Directory not empty；同样的文件放内置盘就成功）：
+#   rm 没删干净就只清系统自动生成的文件（名单同 pack/jobs/layout.py OS_JUNK / ._ 前缀，tests/os_junk_sync_test.sh 核一致）再删，最多 5 次；
+#   最后一次 rm 的报错照常输出（_root_rm_red 按它报原因）
+_ROOT_OS_JUNK=(".DS_Store" "desktop.ini" "Thumbs.db")
+_root_rm() {
+  [ -L "$1" ] && { rm -f "$1"; return; }; [ -e "$1" ] || return 0; chmod -R u+w "$1" 2>/dev/null
+  local i n a=(); for n in "${_ROOT_OS_JUNK[@]}"; do a+=(-name "$n" -o); done; a+=(-name '._*')
+  for i in 1 2 3 4; do rm -rf "$1" 2>/dev/null; [ -e "$1" ] || return 0; find "$1" -type f \( "${a[@]}" \) -delete 2>/dev/null; sleep 0.2; done
+  rm -rf "$1"
+}
 # _root_rm_red <路径> [谁]：同 _root_rm；删不掉只打一行【红】（路径 + rm 报错条数 + 首条原因），rm 的逐文件报错不外漏，返回 1。
 #   删产物根 / 它的克隆 / 临时副本的收尾点都走它（11-04 只出程序 pack/ipa.sh 的临时克隆 romfs 只读、裸 rm -rf 删不掉，逐文件报 Permission denied）
 # 被取代的整根 / 重放后丢弃的工作根：同卷改名挪进 $S2A_ROOTS/.trash/（瞬间完成），再由脱离本进程的后台删（不占出包时间、不在提交锁里删）。
@@ -238,12 +247,12 @@ _root_replay() {   # _root_replay <W.tmp> <新现行> <路径…>：新现行克
   _root_shards "$r" "replay·克隆新现行"
   for p in "$@"; do case $p in '!'*) continue;; esac
     case " $mvp " in *" $p "*) [ -e "$w/$p" ] || [ -L "$w/$p" ] || continue; mv "$w/$p" "$r/$p" || { _root_rm "$r"; return 1; }; continue;; esac   # 上面克隆时跳过的：整个挪过来
-    ( cd "$r" && shopt -s nullglob dotglob && for m in $p; do [ -L "$m" ] || chmod -R u+w "$m" 2> /dev/null; rm -rf -- "$m"; done ) || return 1
+    ( cd "$r" && shopt -s nullglob dotglob && for m in $p; do _root_rm "$m"; done ) || return 1   # 走 _root_rm：删的同时被写进系统文件也删得掉（#369）
     # 不带通配的字面路径 W 里没有 = 本阶段删了它；复制失败必须中止，不能提交缺失的产物。
     ( cd "$w" && shopt -s nullglob dotglob && for m in $p; do [ -e "$m" ] || continue; mkdir -p "$r/$(dirname "$m")" && _root_cp -R "$m" "$r/$m" || exit 1; done ) || { _root_rm "$r"; return 1; }
   done
   for p in "$@"; do case $p in '!'*) p=${p#!};; *) continue;; esac
-    ( cd "$r" && { [ -L "$p" ] || chmod -R u+w "$p" 2> /dev/null; }; rm -rf -- "$p"; [ -e "$now/$p" ] || exit 0; mkdir -p "$(dirname "$p")" && _root_cp -R "$now/$p" "$p" ) || { _root_rm "$r"; return 1; }
+    ( cd "$r" && _root_rm "$p"; [ -e "$now/$p" ] || exit 0; mkdir -p "$(dirname "$p")" && _root_cp -R "$now/$p" "$p" ) || { _root_rm "$r"; return 1; }
   done
   # 来源提交取两边较新的：新现行来自更新的 main 时留它的（旧树重放一个没被动过的阶段，不把共享现行的来源退回旧提交）
   local ns ms; ns=$(cat "$r/.root_src" 2> /dev/null); ms=$(cat "$w/.root_src" 2> /dev/null)
