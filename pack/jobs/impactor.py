@@ -66,6 +66,7 @@ EXPLAIN = (
     #   删 App 不退；说「apps」装满的是设备同时 3 个自签 App，删一个就行。前者先判，后者的「apps」不吃「app id(s)」。
     (r'app id limit|\b10 app ids\b|maximum number of app ids|(?:error|code)\D{0,20}\b9120\b', 'free_appid_limit'),
     (r'maximum number of (installed )?apps\b|\b3 apps\b', 'free_app_limit'),   # 11-06 plumesign 原文是「maximum number of installed apps」
+    (r'(?:error|code)\D{0,20}\b9401\b|app id with identifier[^\n]{0,120}is not available', 'app_id_taken'),
     (r'developer mode', 'developer_mode_required'),
     (r'device is locked|passcode|unlock', 'device_locked'),
     (r'pairing|not paired|invalidhostid|trust', 'device_pairing_required'),

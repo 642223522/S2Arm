@@ -206,6 +206,7 @@ AI_NEXT = {
     'container_would_drop': ('ask', '手机上有几款是在别的电脑上装的，这次装会让它们暂时不能玩（存档和资源包留在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名念给玩家，玩家同意了再 s2armctl install <游戏号> --accept-dropped（删除用 uninstall <游戏号> --accept-dropped）'),
     'free_app_limit': ('human', '这台 iPhone 上免费签名的自签 App 已满 3 个：请玩家在 iPhone 上删掉一个不玩的自签 App 再试，或改用付费 Apple 开发者账号（AltStore 同样受这个上限）'),
     'free_appid_limit': ('human', '免费 Apple ID 7 天内最多注册 10 个包名，已用满（Apple 错误 9120），删 App 不会退额度、别让玩家删：请玩家等几天（最早那批满 7 天就恢复），或在 Xcode 里换一个 Apple ID 登录（要输密码，AI 不代做）后 s2armctl install <游戏号>，或改用付费 Apple 开发者账号'),
+    'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
     'stage_timeout': ('ai', 's2armctl logs <任务号> 看卡在哪；s2armctl retry <任务号> 重试一次，还超时就 s2armctl diag export <输出.zip> 交给玩家反馈'),
 }

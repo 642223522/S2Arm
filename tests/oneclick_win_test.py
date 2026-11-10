@@ -503,6 +503,39 @@ class InstallWin(unittest.TestCase):
         self.assertEqual(bid, 'io.s2arm.games.abcde12345')
         self.assertIn("'--custom-identifier', 'io.s2arm.games.abcde12345'", log)
 
+    def test_9401_retries_once_with_the_old_uppercase_spelling(self):
+        # #408：Apple 包名不分大小写。这个 Apple ID 早先（0.2.1 及以前 Windows）注册过 io.s2arm.games.<大写团队号>，本机却没记录 →
+        #   小写的被拒 9401 → 换大写重试一次，成功就返回大写包名；两次输出都在日志里。假 plumesign：只收大写那个
+        body = ("ident = a[a.index('--custom-identifier') + 1]\nprint('try', ident)\n"
+                "if ident != 'io.s2arm.games.ABCDE12345':\n"
+                "    print(\"Error: Developer API error 9401 (HTTP Some(200)): An App ID with Identifier '\" + ident + \"' is not available.\"); sys.exit(1)\n"
+                "print('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', ('<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>' + ident + '</string></dict></plist>').encode())\nz.close()\n")
+        old_ns = self.ns
+        self.ns = lambda d, exe: __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), bundle="io.s2arm.games.abcde12345"))
+        try:
+            bid, got, log = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertEqual(bid, 'io.s2arm.games.ABCDE12345')
+        self.assertEqual(got['push'][1], 'io.s2arm.games.ABCDE12345')
+        self.assertIn('try io.s2arm.games.abcde12345', log); self.assertIn('try io.s2arm.games.ABCDE12345', log)
+
+    def test_9401_on_both_spellings_reports_app_id_taken(self):
+        body = "print(\"Error: Developer API error 9401: An App ID with Identifier 'x' is not available.\")\nsys.exit(1)\n"
+        old_ns = self.ns
+        self.ns = lambda d, exe: __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), bundle="io.s2arm.games.abcde12345"))
+        try:
+            e, got, _ = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'app_id_taken'); self.assertNotIn('push', got)
+
+    def test_legacy_case_bundle(self):
+        self.assertEqual(install_win.legacy_case_bundle('io.s2arm.games.abcde12345'), 'io.s2arm.games.ABCDE12345')
+        for other in (None, 'io.s2arm.games.ABCDE12345', 'io.s2arm.games.0123456789', 'io.s2arm.games.abcde12345.dev', 'a.b.c'):
+            self.assertIsNone(install_win.legacy_case_bundle(other))   # 已是大写 / 纯数字没有大小写之分 / 开发后缀 / 不是容器包名：不重试
+
     def test_login_rejected(self):
         e, got, _ = self.run_fake("print('Error: Apple rejected -80046')\nsys.exit(1)\n")
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'login_identity_rejected'); self.assertNotIn('push', got)
