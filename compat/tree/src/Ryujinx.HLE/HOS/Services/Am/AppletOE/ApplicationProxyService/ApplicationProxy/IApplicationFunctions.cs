@@ -147,9 +147,11 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
 
             if (firstSupported > (int)TitleLanguage.BrazilianPortuguese)
             {
-                Logger.Warning?.Print(LogClass.ServiceAm, "Application has zero supported languages");
+                // 支持语言位为 0（旧版导入合成的 control.nacp 没写这一项，#401）：原样回系统语言（如 zh-Hans）时游戏判为无效语言、去读不存在的语言资源，一直黑屏。
+                // 退到美式英语，与出包合成件的缺省（只声明美式英语）同一口径，已导入的旧库不用重新导入
+                Logger.Warning?.Print(LogClass.ServiceAm, "Application has zero supported languages, using AmericanEnglish");
 
-                context.ResponseData.Write(desiredLanguageCode);
+                context.ResponseData.Write(SystemStateMgr.GetLanguageCode((int)SystemLanguage.AmericanEnglish));
 
                 return ResultCode.Success;
             }
