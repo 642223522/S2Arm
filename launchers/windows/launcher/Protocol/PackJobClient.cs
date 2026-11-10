@@ -155,8 +155,9 @@ public static class PackJobClient
             if (await Task.WhenAny(finished, interrupted) != finished)
             {
                 await CancelAsync(request.Paths, file.FilePath, privateRoot, jobId);
-                await Task.WhenAny(finished, Task.Delay(TimeSpan.FromSeconds(3)));
-                throw new OperationCanceledException(cancellationToken);
+                // 点取消时作业恰好已经跑完：照它的真实结局走（产物已生成就是已出好），不一律报已取消（社区贡献者补丁 #7）
+                if (await Task.WhenAny(finished, Task.Delay(TimeSpan.FromSeconds(3))) != finished)
+                    throw new OperationCanceledException(cancellationToken);
             }
             await finished;
         }
