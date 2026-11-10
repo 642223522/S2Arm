@@ -245,7 +245,7 @@ public sealed partial class EnvironmentWindow
         ticker = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         ticker.Tick += (_, _) =>
         {
-            if (page == "progress" && packRunning) Render();
+            if (page is "progress" or "batch" && packRunning) Render();   // 清单页也画正在出的阶段
             // The checklist changes when the player plugs a phone in or installs Impactor: re-ask every 5 s while visible and idle.
             if (page == "install" && !installBusy && !installChecking && DateTime.UtcNow - lastCheck > TimeSpan.FromSeconds(5))
                 _ = CheckInstallAsync();
@@ -322,6 +322,7 @@ public sealed partial class EnvironmentWindow
             return;
         }
         body.Children.Add(GameHeader(game));
+        body.Children.Add(Muted(T("batch.hint")));   // 批量出包（v0.2.4）：添加游戏一次放进多款，导入完列成清单连续出包
 
         // platforms
         var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -374,8 +375,9 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>存放位置（游戏库结构 v3，照 Mac ExportView.locationRow）：这款游戏的文件夹放在哪；换了位置，出包前先整个搬过去（存档跟着走）。
-    /// 缺省：这款现在的位置（ok / offline）→ 上次用的位置 → 默认位置（StorageLocations.DefaultFor）。</summary>
-    private Control LocationRow(LibraryGame game)
+    /// 缺省：这款现在的位置（ok / offline）→ 上次用的位置 → 默认位置（StorageLocations.DefaultFor）。
+    /// 批量出包清单页也用这一行（一批共用一个存放位置，按第一款读位置表），标题换成 batch.location。</summary>
+    private Control LocationRow(LibraryGame game, string titleKey = "export.location.title")
     {
         if (locationsFor != game.Id)
         {
@@ -406,7 +408,7 @@ public sealed partial class EnvironmentWindow
         };
         AutomationId(box, "export.location");
         var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
-        var title = Label(T("export.location.title"), 16); title.VerticalAlignment = VerticalAlignment.Center;
+        var title = Label(T(titleKey), 16); title.VerticalAlignment = VerticalAlignment.Center;
         line.Children.Add(title);
         Grid.SetColumn(box, 1); line.Children.Add(box);
         return Card(line, 14);
@@ -425,7 +427,7 @@ public sealed partial class EnvironmentWindow
         // 读不回位置表同 Mac：下拉框只剩这款现在的位置和「选择其他文件夹…」，不选就不传，后端按这款现在的位置出包
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException) { return; }
-        if (page == "build") Render();
+        if (page is "build" or "batch") Render();
     }
 
     private async Task ChooseLocationAsync()
@@ -450,7 +452,7 @@ public sealed partial class EnvironmentWindow
         if (!exportIos) return T("export.block.no_platform");
         if (game.Missing.Count > 0) return T("library.requirements") + " · " + string.Join(" / ", game.Missing);
         if (game.NeedsKeys && catalog?.KeysReady != true) return T("export.block.keys");
-        if (BusyFor(game) || busy) return T("export.block.busy");   // 只锁正在装的那款：别的游戏装机期间照常出包（后端安装不占出包执行锁）
+        if (BusyFor(game) || busy || batchRunning) return T("export.block.busy");   // 只锁正在装的那款（后端安装不占出包执行锁）；批量出包进行中两款之间也不插单款
         return null;
     }
 
@@ -464,11 +466,17 @@ public sealed partial class EnvironmentWindow
         if (ExportBlocker(game) is not null) return;
         // 「仍然出包」重试沿用这一款上次选的位置；出包页没读到这款时不传，后端按这款现在的位置
         if (!spaceOverride || packGame?.Id != game.Id) packLocation = locationsFor == game.Id && exportLocation.Length > 0 ? exportLocation : null;
+        ResetPack(game);
+        Navigate("progress");
+        packOperation = RunPackAsync(game, spaceOverride);
+    }
+
+    /// 开始出一款前清掉上一款的出包状态（出包页「开始出包」与批量出包 StartBatchPack 共用）
+    private void ResetPack(LibraryGame game)
+    {
         packGame = game; packRunning = true; packState = "running"; packTrack = new(); packStarted = DateTime.UtcNow;
         packSeconds = null; packSummary = ""; packDiagnostics = ""; packIpa = null;
         packIpaBytes = null; packPackBytes = null; packSpace = null; sessionHidden = false; packFailureCode = null;
-        Navigate("progress");
-        packOperation = RunPackAsync(game, spaceOverride);
     }
 
     private async Task RunPackAsync(LibraryGame game, bool spaceOverride)
@@ -525,6 +533,7 @@ public sealed partial class EnvironmentWindow
                         finishedPacks[packGame.Id] = (packState, packIpa ?? "", packIpaBytes, packPackBytes, packSeconds ?? 0);
                 }
                 Render();
+                if (batchRunning) _ = BatchPackEndedAsync(game);   // 批量出包：记这款的结果、接着出下一款（BatchPage.cs）
             });
         }
     }
@@ -1347,6 +1356,7 @@ public sealed partial class EnvironmentWindow
     {
         if (!packRunning) return;
         args.Cancel = true;
+        batchRunning = false;   // 关窗口不算取消整批：批次里这款留着「正在出」，下次打开 recover 记成被打断、重新排队（同 Mac）
         packCancellation?.Cancel();
         if (packOperation is { } operation) await operation;
         await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);

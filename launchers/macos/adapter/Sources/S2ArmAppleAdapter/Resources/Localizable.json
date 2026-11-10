@@ -6934,5 +6934,9 @@
  {
   "source": "游戏库里已经没有这款游戏",
   "en": "This game is no longer in your library"
+ },
+ {
+  "source": "这台电脑出不了这个平台的包",
+  "en": "This computer cannot build for this platform"
  }
 ]
