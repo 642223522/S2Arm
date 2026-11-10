@@ -361,7 +361,7 @@ class ImagePush(Base):
 
 
 class SendProgress(Base):
-    """#266：推送进度计数。3 批不同大小（上限 60 字节：a30+b30 | c50 | e90）；分母 = 本次待传量，不是整包"""
+    """#266：推送进度计数。3 批不同大小（上限 60 字节：a30+b30 | c50 | e90）；口径同手机蒙版：已在机上的 + 本次已到 / 整款"""
     def setUp(self):
         super().setUp()
         self.data = {"a": b"A" * 30, "b": b"B" * 30, "c": b"C" * 50, "e": b"E" * 90}
@@ -380,9 +380,9 @@ class SendProgress(Base):
         self.run_push({})
         self.assertEqual(self.calls, [(0, 200, 0, 3), (60, 200, 1, 3), (110, 200, 2, 3), (200, 200, 3, 3)])
 
-    def test_denominator_is_this_push_not_whole_pack(self):   # 机上已有 a、b：只推 c、e（两批 50 | 90），总量 140
+    def test_resume_counts_what_is_already_on_the_phone(self):   # 机上已有 a、b（60）：只推 c、e（两批 50 | 90），计数从 60 起、分母整款 200，和手机蒙版同一个百分比
         self.run_push(self.on_phone("a", "b"))
-        self.assertEqual(self.calls, [(0, 140, 0, 2), (50, 140, 1, 2), (140, 140, 2, 2)])
+        self.assertEqual(self.calls, [(60, 200, 0, 2), (110, 200, 1, 2), (200, 200, 2, 2)])
 
     def test_nothing_to_push_reports_zero_total(self):   # 机上全有：只报一次 0/0，作业层见 total=0 不发计数（不画 0/0）
         self.run_push(self.on_phone("a", "b", "c", "e"))

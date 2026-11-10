@@ -434,7 +434,7 @@ PROGRESS_PREFIX = "S2A_PUSH_PROGRESS"   # --progress-lines 打的机器读行：
 def send(dev, pack, work, say=print, progress=None):
     """推 plan 写好的批次 → 推了几批；每批写完才把它的文件记进 .pushed 并推上机；最后推索引与清单。
     progress(已传字节, 本次待传总字节, 已完成批次, 总批次)：流式工具按秒报文件 / 批内进度，旧工具与 devicectl 退路仍按批报（#266）。
-    分母是本次实际待传量（plan 算好的差量），不是整个游戏的大小；批内最多报到 size-1，成功记账后才报满。"""
+    计数和手机蒙版同一口径：分母 = 已在手机上的 + 本次待传（plan 算好的差量），首装就是本次待传量；批内最多报到 size-1，成功记账后才报满。"""
     pack, work = Path(pack), Path(work)
     files = sorted(work.glob("push_*.tsv"))
     led = work / "pushed"; ledger = led.read_text(encoding="utf-8") if led.is_file() else ""
@@ -455,13 +455,18 @@ def send(dev, pack, work, say=print, progress=None):
         stream.progress = report if progress else None
         try: return method(*args)
         finally: stream.progress = old
+    # base = 这款已在手机上的字节（整包 index.tsv 合计 − 本次要传）：电脑端计数和手机蒙版同一口径（已有 + 本次已到 / 整款），
+    #   续传 / 重装时两边显示同一个百分比，也不因这次只传剩下的而从 0 涨起
+    whole = sum(int(r.split("\t")[1]) for r in (pack / "index.tsv").read_text(encoding="utf-8").splitlines() if r.count("\t") >= 2 and r.split("\t")[1].isdigit()) if total else 0
+    base = max(0, whole - total)
+    if progress and base:
+        report_raw = progress
+        progress = lambda d, t, k, n: report_raw(base + d, base + t, k, n)
     if progress: progress(0, total, 0, steps)
     if direct or batches:   # 传输清单：手机上的游戏库按它画装机蒙版（各文件已到多少字节 / 本次总字节，S2ArmShellHostModel），只写这一次——
         #   手机自己看正在写的文件，不依赖电脑端上报，也不跟推包抢 USB
-        #   base = 这款已在手机上的字节（整包 index.tsv 合计 − 本次要传）：续传 / 重装时进度从已有的接着涨，不因这次只传剩下的而往回掉
         tr = work / "transfer.json"
-        whole = sum(int(r.split("\t")[1]) for r in (pack / "index.tsv").read_text(encoding="utf-8").splitlines() if r.count("\t") >= 2 and r.split("\t")[1].isdigit())
-        tr.write_text(json.dumps(dict(schema=1, total=total, base=max(0, whole - total), started=ts, files=[[w[0], int(w[1])] for w in direct] +
+        tr.write_text(json.dumps(dict(schema=1, total=total, base=base, started=ts, files=[[w[0], int(w[1])] for w in direct] +
                                       [[f".incoming/{ts}_{k:03d}.tar", sum(int(w[1]) for w in b)] for k, b in enumerate(batches)])), encoding="utf-8")
         try: dev.put(tr, f"{rp(dev)}/.transfer")
         finally: tr.unlink(missing_ok=True)
