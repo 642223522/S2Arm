@@ -466,10 +466,13 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     log = c.logs / (c.task + "-container.log")
     shutil.rmtree(app, ignore_errors=True)
     (out / "custom.json").write_text(json.dumps(container_custom(c), ensure_ascii=False), encoding="utf-8")
+    # 横图取游戏库那份（导入时作业层抓好，library.store_meta）：组装不联网，Mac / iPhone / Windows 读同一份
+    banners = {g: layout.path(c, g, "banner.jpg", create=False) for g in roots}
+    banner_args = [x for g, b in banners.items() if b.is_file() for x in ("--banner", f"{g}={b}")]
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
-               *[x for r in roots.values() for x in ("--game", r)]], log, c.env())
+               *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
         if e.code == "tool_exit" and "地址空间类型不一致" in text:

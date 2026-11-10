@@ -364,3 +364,103 @@ class HealFolderNamesTests(JobCase):
         self.assertEqual(layout.find_game(self.fresh(), A), L / "games" / A)
         names = {g["id"]: g.get("englishName") for g in json.loads((L / "catalog.json").read_text())["games"]}
         self.assertEqual(names, {A: None, B: None, C: "Hades"})
+
+
+class StoreMetaTests(JobCase):
+    """游戏库的商店元数据（library.store_meta）：商品页一次请求取横图 + 英文标题，存进游戏库，各平台出包只读这一份。打桩替掉 banner_fetch，零联网。
+    期望按规则手写：B「泰拉瑞亚」（NACP 没有英文标题、文件夹是游戏号）拿到 Terraria + 横图 → catalog 记 englishName、横图进文件夹、
+    接着 heal_folder_names 改名为「Terraria」且横图跟着走；C 的商店标题是日文 → 不记；A 已有英文名和横图 → 不查；断网（D）只记 storeChecked；
+    7 天内再跑不再查；S2A_BANNER_FETCH=0 不查"""
+    D = "0100000000040000"
+
+    def setUp(self):
+        super().setUp()
+        L = self.c.library
+        atomic(L / "catalog.json", dict(schema=1, games=[dict(id=A, name="空洞骑士：丝之歌", englishName="Hollow Knight Silksong"),
+                                                       dict(id=B, name="泰拉瑞亚"), dict(id=C, name="ハデス"), dict(id=self.D, name="离线游戏")]))
+        for gid in (A, B, C, self.D):
+            (L / "games" / gid).mkdir(parents=True)
+            atomic(L / "games" / gid / "game.json", dict(schema=1, id=gid))
+        (L / "games" / A / "banner.jpg").write_bytes(b"old")
+        self.calls = []
+        names = {B: "Terraria", C: "ハデス"}
+        test = self
+
+        class Fake:
+            @staticmethod
+            def fetch_banner(gid, dest):
+                test.calls.append(gid)
+                if gid == test.D:
+                    return False, "商品页拉取失败：timed out"
+                Path(dest).write_bytes(b"JPG-" + gid.encode()); return True, "1920x1080"
+
+            @staticmethod
+            def store_name(gid):
+                return names.get(gid, "")
+        for p in (patch.dict(os.environ, {"S2A_BANNER_FETCH": "1"}), patch("library.engine_tool", lambda c, name: Fake)):
+            p.start(); self.addCleanup(p.stop)
+
+    def fresh(self):
+        self.c._layout_idx = None
+        return self.c
+
+    def catalog(self):
+        return {g["id"]: g for g in json.loads((self.c.library / "catalog.json").read_text())["games"]}
+
+    def test_fetch_records_and_rename_follows(self):
+        import library
+        L = self.c.library
+        self.assertEqual(library.store_meta(self.fresh()), 3)
+        self.assertEqual(sorted(self.calls), sorted([B, C, self.D]))                 # A 都有了：不查
+        cat = self.catalog()
+        self.assertEqual({g: cat[g].get("englishName") for g in cat}, {A: "Hollow Knight Silksong", B: "Terraria", C: None, self.D: None})
+        self.assertTrue(all(cat[g].get("storeChecked") for g in (B, C, self.D)))
+        self.assertEqual((L / "games" / B / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
+        self.assertFalse((L / "games" / self.D / "banner.jpg").exists())              # 断网：只记查过
+        self.assertEqual((L / "games" / A / "banner.jpg").read_bytes(), b"old")
+        layout.heal_folder_names(self.fresh())
+        self.assertEqual(layout.find_game(self.fresh(), B), L / "games" / "Terraria")
+        self.assertEqual((L / "games" / "Terraria" / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
+        self.calls.clear()
+        self.assertEqual(library.store_meta(self.fresh()), 0)                          # 7 天内查过：不再查
+        self.assertEqual(self.calls, [])
+
+    def test_import_ids_only_and_switch_off(self):
+        import library
+        self.assertEqual(library.store_meta(self.fresh(), {B}), 1)                     # 导入刚加的款：只查它
+        self.assertEqual(self.calls, [B])
+        self.calls.clear()
+        with patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
+            self.assertEqual(library.store_meta(self.fresh(), {C}), 0)
+        self.assertEqual(self.calls, [])
+
+    def test_job_start_spawns_background_but_not_for_launch(self):
+        # 作业开始：改名同步做（不联网），查商店交后台；起局连后台也不起
+        import library
+        spawned = []
+        with patch("library.store_meta_background", lambda c, ids=None: spawned.append(c.operation)):
+            self.c.operation = "launch"; layout.ensure(self.fresh())
+            self.c.operation = "build"; layout.ensure(self.fresh())
+        self.assertEqual(spawned, ["build"])
+        self.assertEqual(self.calls, [])   # 作业本身没联网
+
+    def test_background_entry_fetches_then_renames(self):
+        # 后台子进程入口（store_meta_bg.main）：查到英文名和横图记进游戏库，接着把文件夹改名
+        import store_meta_bg
+        L = self.c.library
+        rc = store_meta_bg.main([str(self.c.private), str(L), self.c.r.get("libraryId") or "", str(self.c.engine)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(self.calls), sorted([B, C, self.D]))
+        self.assertEqual((L / "games" / "Terraria" / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
+
+    def test_spawn_args_and_skips(self):
+        import library
+        popen = []
+        with patch("subprocess.Popen", lambda args, **kw: popen.append(args)):
+            self.assertTrue(library.store_meta_background(self.fresh(), {B}))
+            self.assertEqual(popen[-1][3:5], [str(Path(library.__file__).with_name("store_meta_bg.py")), str(self.c.private)])
+            self.assertEqual(popen[-1][-1], B)                                          # 只查导入刚加的款
+            self.assertFalse(library.store_meta_background(self.fresh(), {A}))          # A 都有了：不起
+            with patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
+                self.assertFalse(library.store_meta_background(self.fresh(), {B}))
+        self.assertEqual(len(popen), 1)

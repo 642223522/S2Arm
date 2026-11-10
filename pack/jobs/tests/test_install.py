@@ -719,6 +719,17 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual((got, games, sid), ([self.A], [self.A], "SID1"))
         self.assertEqual(install_ipa_games(ipa), ([self.A], "SID1"))
 
+    def test_assemble_passes_library_banner(self):
+        """横图是游戏库的元数据（导入时抓好放在这款文件夹）：组装命令带 --banner 游戏号=那份；没有横图的款不带"""
+        import layout
+        self._library((self.A, "甲"), (self.B, "乙"))
+        ios_fixture(self.c, self.A); ios_fixture(self.c, self.B)
+        banner = layout.path(self.c, self.A, "banner.jpg"); banner.write_bytes(b"BANNER")
+        runs = []
+        self._assemble(self.A, others=(self.B,), runs=runs)
+        _, cmd = self._games_arg(runs)
+        self.assertEqual([cmd[i + 1] for i, x in enumerate(cmd) if x == "--banner"], [f"{self.A}={banner}"])
+
     def test_assemble_carries_phone_games_of_same_shell(self):
         """这台手机已有的款（同壳出的）现组时一起带上，容器件取各自的 image/ios/kit"""
         self._library((self.A, "甲"), (self.B, "乙"))
