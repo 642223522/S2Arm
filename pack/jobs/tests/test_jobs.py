@@ -1,4 +1,5 @@
 import contextlib
+import collections
 import io
 import json
 import os
@@ -1500,6 +1501,29 @@ class JobsTests(unittest.TestCase):
         event = emit.call_args.kwargs
         self.assertEqual((event["done"], event["total"]), (0, 2))
         self.assertEqual([c["name"] for c in event["counters"]], ["直连库·整份出库与收尾"])
+
+    def test_direct_batch_space_recheck(self):
+        # 11-10（0400A3A01EE4C000 预检 22.3 GB、实际编到 11491 / 64529 MB 时 73 GB 写满系统盘）：编批库计数器一出现就按剩余量复核。
+        #   期望手算：剩 64529 − 11491 = 53038 MB × 3（每 MB 批库占盘倍数）× 1.1 = 175025 MiB ≈ 184 GB
+        import core
+        from errors import Failure
+        progress = self.root / "progress.tsv"
+        progress.write_text("1\t直连库·编批库（MB）\t11491\t64529\n", encoding="utf-8")
+        self.c.operation = "build"
+        DU = collections.namedtuple("DU", "total used free")
+        with patch.object(self.c, "emit"), patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, 48 * 10**9)), \
+                self.assertRaises(Failure) as stop:
+            self.c.stage_progress(progress, 0)
+        self.assertEqual(stop.exception.code, "disk_full")
+        self.assertIn("要编出约 63 GB", str(stop.exception)); self.assertIn("再占约 184 GB", str(stop.exception)); self.assertIn("只剩 48 GB", str(stop.exception))
+        with patch.object(self.c, "emit"), patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, 200 * 10**9)):
+            self.c.stage_progress(progress, 0)   # 盘够：照常
+        self.c.r["spaceOverride"] = True
+        with patch.object(self.c, "emit"), patch.object(self.c, "diagnostic") as diag, \
+                patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, 48 * 10**9)):
+            self.c.stage_progress(progress, 0)
+            self.c.stage_progress(progress, 0)   # 点过「仍然继续」：不停，只打一次黄
+        self.assertEqual([call.kwargs.get("severity") for call in diag.call_args_list], ["warning"])
 
     def test_protocol_has_ordered_events_and_measured_counters(self):
         self.c.begin("phase", 2, 5)
