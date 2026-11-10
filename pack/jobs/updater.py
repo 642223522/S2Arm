@@ -628,6 +628,15 @@ def move_dir(source, target):
         pass
 
 
+def holds_copy(path):
+    """这里真有一份安装：目录在且不空。move_dir 逐项搬空后删不掉的空目录（句柄还在）不算——把它当成「还有一份旧版」，
+    恢复时会把刚搬回安装目录的那份当坏的换掉删掉（审计 P1-157）"""
+    try:
+        return path.is_dir() and any(path.iterdir())
+    except OSError:
+        return False
+
+
 def swap(staged, install, backup, new):
     """staged → install；失败时安装目录保持或恢复旧版，异常往外抛。"""
     if new.exists():
@@ -675,9 +684,9 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
     try:
         # A previous apply may have stopped between swap()'s two renames.
         # Restore the only old copy before treating any backup as disposable.
-        if backup.exists() and not install.exists():
+        if holds_copy(backup) and not holds_copy(install):
             move_dir(backup, install)
-        if backup.exists():
+        if holds_copy(backup):
             if health.exists():
                 # 上次换上的版本后来起来过（写了 health.ok）：它已被确认，副本可以删
                 remove_tree(backup)
@@ -693,6 +702,8 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
         swap(staged, install, backup, new)
     except (OSError, shutil.Error):
         remove_tree(new) if new.exists() else None
+        if not holds_copy(install):   # 失败句和盘上一致：安装目录里读不到旧版就不说「已保留」（审计 P1-157）
+            return fail("update_rollback_failed", "替换安装目录失败，旧版也没能恢复。请重新下载 S2Arm。", restart=False)
         return fail("update_swap_failed", "替换安装目录失败，已保留旧版。")
     try:
         launch(install, list(args))
@@ -712,6 +723,8 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
         move_dir(backup, install)
         remove_tree(install.with_name(install.name + ".s2arm-bad"))
     except OSError:
+        return fail("update_rollback_failed", "新版没能启动，旧版也没能恢复。请重新下载 S2Arm。", restart=False)
+    if not holds_copy(install):
         return fail("update_rollback_failed", "新版没能启动，旧版也没能恢复。请重新下载 S2Arm。", restart=False)
     return fail("update_rolled_back", "新版没能启动，已回到旧版。")
 
