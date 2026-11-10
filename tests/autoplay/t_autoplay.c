@@ -71,7 +71,9 @@ uint64_t s2a_ap_game_ns(void) { return atomic_load(&g_gns); }
 uint64_t s2a_ap_shot_ns(void) { return t_shot_ns; }
 uint32_t s2a_ap_draws(void) { int st = atomic_load(&g_state); return st == GAME ? (!strcmp(g_scn, "lowdraw") ? 30 : 600) : 20; }
 int s2a_ap_nominal_fps(void) { return 30; }
+static _Atomic int g_cut_waited;   // cut：自动玩家已做出「+ 是开关、现在没开着，这次不按、等」的决定（⑲ 要看的那一步）
 void s2a_ap_log(const char *fmt, ...) {
+    if (strstr(fmt, "这次不按")) atomic_store(&g_cut_waited, 1);
     va_list a; va_start(a, fmt); pthread_mutex_lock(&g_lm); vfprintf(g_log, fmt, a); fputc('\n', g_log); fflush(g_log); pthread_mutex_unlock(&g_lm); va_end(a);
 }
 static _Atomic int g_marked;   // 自动玩家打了 MARK（声音层稳态窗口钩子就在 MARK 那一刻调）：之后的局内帧记 S2A_AP_HOLD 用例的按键事件
@@ -182,7 +184,9 @@ static void *game(void *a) {
         if (!strcmp(g_scn, "cut") && (st == TITLE || st == PAUSE)) { static int played;
             if (down & S2A_AP_PLUS) { set_state(st == TITLE ? PAUSE : TITLE); continue; }
             if (st == TITLE && ++played % 10 == 0) atomic_fetch_add(&g_cam, 7);
-            if (played >= 900) set_state(MENU);
+            // 过场播满 900 帧且自动玩家已经走过一次「这次不按、等」才进菜单（#383：原先只按帧数，机器忙时自动玩家问到第二次之前过场已播完，
+            //   ⑲ 看不到等待那一步、偶发不通）；按事件同步，不按墙钟。自动玩家始终没走到那一步时 20 倍帧数兜底进菜单，⑲ 照实判不通、不卡死
+            if ((played >= 900 && atomic_load(&g_cut_waited)) || played >= 900 * 20) set_state(MENU);
             continue; }
         if (st == TITLE && !strcmp(g_scn, "lang")) { int hl = atomic_load(&g_hl);
             if (hl == 0) { if (down & S2A_AP_A) set_sub(1); else if (down & S2A_AP_DOWN) set_sub(2); }
