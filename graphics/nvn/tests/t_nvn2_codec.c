@@ -5,6 +5,7 @@
 //     AV1 用 libsvtav1 -crf 10（有损，只比大致颜色）。BT.601 视频范围（片子没声明矩阵、64 行 < 720）手算：
 //     R = 1.1644·(81−16) + 1.5960·(240−128) = 75.7 + 178.8 → 254；G = 75.7 − 0.3918·(90−128) − 0.8130·112 = 75.7 + 14.9 − 91.1 → 0（钳）；
 //     B = 75.7 + 2.0172·(90−128) = 75.7 − 76.7 → 0（钳）。即 RGBA (254, 0, 0, 255)，容差 ±1。
+//   - S2A_VP9_SYSTEM=1（macOS VideoToolbox）时同一对帧再走一遍系统后端，像素同样是 (254,0,0,255)；本机没有 VT VP9 时跳过并打印。
 //   - av1C：ffmpeg 把同一条 AV1 流封进 WebM 时写的 CodecPrivate（ffprobe -show_data 读出）= 81 00 0c 00 + 序列头 OBU（0a 0b …）。
 //   - AV1 软件解码（dav1d，S2A_AV1_SOFT=1 强制）：解出的 YUV 逐帧 MD5 对 ffmpeg 9 + libdav1d 解同一条流的 framemd5（AV1 解码按标准逐位确定，参考与被测是两个程序）：
 //     ts_av1 = ffmpeg -f lavfi -i testsrc2=size=96x64:rate=30 -frames:v 6 -pix_fmt yuv420p -c:v libsvtav1 -crf 30 -preset 8 -g 6 -f ivf，
@@ -89,6 +90,8 @@ size_t nvn2_av1c_from_tu(const uint8_t *tu, size_t n, uint8_t *out, size_t cap);
 void *s2a_av1_open(int threads);
 int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info);
 void s2a_av1_close(void *h);
+int nvn2_vp9_vt_probe(void);
+unsigned long long nvn2_vp9_vt_frames(void);
 // 4:2:0 三平面按 ffmpeg framemd5 的字节序（行连续，Y 后 U 后 V；>8 位为 16 位小端）算 MD5，十六进制
 static void md5_420(uint8_t **pl, const int32_t *st, int w, int h, int bps, char out[33]) {
     CC_MD5_CTX x; CC_MD5_Init(&x);
@@ -312,6 +315,25 @@ int main(int argc, char **argv) {
         CHECK(i3 == i1 && h3.value == h2.value + 1);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i3) == 0 && eos == 1 && w == 64);
         rig_down(&r, &VP9);
+    }
+
+    // ---------- VP9 系统后端（S2A_VP9_SYSTEM=1，VideoToolbox）：同样的两帧红走整条接管路径 ----------
+    if (nvn2_vp9_vt_probe()) {
+        setenv("S2A_VP9_SYSTEM", "1", 1);
+        unsigned long long base = nvn2_vp9_vt_frames();
+        rig r; rig_up(&r, &VP9, 64, 64);
+        uint64_t id = 0;
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0 && id == 2);
+        sync_h h1, h2; uint32_t i1 = take(&r, &VP9, &spev, &h1), i2 = take(&r, &VP9, &spev, &h2);
+        for (uint32_t k = 0; k < 2; k++) { uint8_t p[4]; px(&r, k, p); printf("VP9 系统后端 第 %u 帧像素 (%u,%u,%u,%u)\n", k, p[0], p[1], p[2], p[3]); CHECK(p[0] >= 253 && p[1] <= 1 && p[2] <= 1 && p[3] == 255); }
+        printf("VP9 系统后端：VideoToolbox 出帧 %llu（期望 2）\n", nvn2_vp9_vt_frames() - base);
+        CHECK(nvn2_vp9_vt_frames() >= base + 2);
+        ((f_rel)E(VP9.rel))(r.obj, i1, 0, 0); ((f_rel)E(VP9.rel))(r.obj, i2, 0, 0);
+        rig_down(&r, &VP9);
+        unsetenv("S2A_VP9_SYSTEM");
+    } else {
+        printf("VP9 系统后端：本机 VideoToolbox 没有可用的 VP9 解码器，跳过（libvpx 路径仍全绿）\n");
     }
 
     // ---------- 11-04 接口面全量：BGRA 读法（SDK 20）、退登记、宿主句柄的阻塞 / 限时等待（gs 与 syncpt 同一实现）----------
