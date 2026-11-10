@@ -102,27 +102,13 @@ enum { DSH_JOB_QUEUED, DSH_JOB_RUNNING, DSH_JOB_OK, DSH_JOB_FAILED, DSH_JOB_CANC
 static dsh_job *g_dsh_job[DSH_PEND_BUCKETS]; static pthread_mutex_t g_dsh_job_mu = PTHREAD_MUTEX_INITIALIZER, g_dsh_comp_mu = PTHREAD_MUTEX_INITIALIZER;
 static void dsh_job_put(dsh_job *j) { if (atomic_fetch_sub(&j->ref, 1) == 1) { free(j->code); free(j); } }
 static int dsh_eager_max(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_DSH_EAGER_MAX"); v = e && *e ? atoi(e) : 256; if (v < 0) v = 0; } return v; }
-// 在编的输入落盘（#467 植物大战僵尸 和睦小镇：手机上现编时翻译器在某支着色器上 SIGSEGV，整个 App 闪退，崩的是哪支、输入是什么都没留下）：
-//   开编前把这支的控制段 / 代码区写成兜底目录里的 <键>.inflight.ctl / .inflight.code，翻译器返回后删掉。正常返回（成功或报错）都不留，
-//   只有编到一半进程没了才剩下，诊断包（ios/diag.m）把它们一起带走，就能在我们机器上复现。set 1 = 写，0 = 删
-static void dsh_inflight(const char *out, const char *k, const void *ctl, size_t nctl, const void *cd, size_t ncode, int set) {
-    if (!out || !*out || !strcmp(out, "/dev/null")) return;
-    char fc[1200], fd[1200]; snprintf(fc, sizeof fc, "%s/%s.inflight.ctl", out, k); snprintf(fd, sizeof fd, "%s/%s.inflight.code", out, k);
-    if (!set) { unlink(fc); unlink(fd); return; }
-    FILE *f; if ((f = fopen(fc, "wb"))) { fwrite(ctl, 1, nctl, f); fclose(f); }
-    if ((f = fopen(fd, "wb"))) { fwrite(cd, 1, ncode, f); fclose(f); }
-}
 static int dsh_comp_locked(dsh_comp_fn comp, const char *k, int st, const void *cd, size_t ncode, const void *ctl, size_t nctl, const char *out) {
-    pthread_mutex_lock(&g_dsh_comp_mu); dsh_inflight(out, k, ctl, nctl, cd, ncode, 1);
-    int rc = comp(k, st, cd, ncode, ctl, nctl, out);
-    dsh_inflight(out, k, NULL, 0, NULL, 0, 0); pthread_mutex_unlock(&g_dsh_comp_mu); return rc;
+    pthread_mutex_lock(&g_dsh_comp_mu); int rc = comp(k, st, cd, ncode, ctl, nctl, out); pthread_mutex_unlock(&g_dsh_comp_mu); return rc;
 }
 // 变体要的那份源码（审计 #1646 P1-123：输出类型 / 采样器归约 / 顶点补齐三处原先直接调 comp，不拿 g_dsh_comp_mu，后台预编在编时会并发进 C# 现编入口）：
 //   锁里再查一次「兜底目录里已有本键源码」——锁外查过没有、等锁期间后台预编刚编完同一个键的，直接用，不重编。返回同 comp（0 = 成功）
 static int dsh_comp_src_locked(dsh_comp_fn comp, const char *k, int st, const void *cd, size_t ncode, const void *ctl, size_t nctl, const char *out) {
-    pthread_mutex_lock(&g_dsh_comp_mu); int rc = 0;
-    if (!dsh_have(out, k)) { dsh_inflight(out, k, ctl, nctl, cd, ncode, 1); rc = comp(k, st, cd, ncode, ctl, nctl, out); dsh_inflight(out, k, NULL, 0, NULL, 0, 0); }
-    pthread_mutex_unlock(&g_dsh_comp_mu); return rc;
+    pthread_mutex_lock(&g_dsh_comp_mu); int rc = dsh_have(out, k) ? 0 : comp(k, st, cd, ncode, ctl, nctl, out); pthread_mutex_unlock(&g_dsh_comp_mu); return rc;
 }
 static void dsh_eager_start(const uint8_t key[8], int st, const uint8_t *cd, uint32_t ncode, const uint8_t *ctl, uint32_t nctl, const char *out) {
     if (atomic_fetch_add(&g_dsh_eager_n, 1) >= (uint64_t)dsh_eager_max()) { atomic_fetch_sub(&g_dsh_eager_n, 1); return; }
