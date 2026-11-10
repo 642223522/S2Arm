@@ -131,6 +131,13 @@ GL(glLineWidth, void, GLfloat w) {
     if (w != 1) GLRED1("glLineWidth(%g)：Metal 没有宽线，线照 1 像素宽画（宽度只记作查询值）", w);
     gl_cur->line_width = w;
 }
+// 点大小（桌面 GL）：记作上下文状态供查询；点的实际大小由顶点着色器的 gl_PointSize 决定（core 配置开 PROGRAM_POINT_SIZE 的情形）
+GL(glPointSize, void, GLfloat s) { CTX(); if (!(s > 0)) { gl_set_error(GL_INVALID_VALUE); return; } gl_cur->point_size = s; }
+// 实现提示：只核枚举，不改行为（规范允许实现忽略提示）
+GL(glHint, void, GLenum target, GLenum mode) {
+    CTX(); (void)target;
+    if (mode != 0x1100 && mode != 0x1101 && mode != 0x1102) { gl_set_error(GL_INVALID_ENUM); return; }   // DONT_CARE / FASTEST / NICEST
+}
 // 多边形模式（桌面 GL，Slay the Spire）：GL_LINE → Metal 线框填充（setTriangleFillMode，gl_draw.m setup）；GL_POINT Metal 没有，报红后按填充画。
 //   Metal 只能两面同设：只收 GL_FRONT_AND_BACK（core 配置的规定；兼容配置的单面设置报红）
 GL(glPolygonMode, void, GLenum face, GLenum mode) {
@@ -165,6 +172,28 @@ GLB(glClear, void, GLbitfield mask) { @autoreleasepool {
     if (!mask) return;
     gl_clear(mask);
 }}
+// 按缓冲清除（GL 3.0 / ES 3.0 §17.4.3.1）：GL_COLOR 只清第 i 路 draw buffer，GL_DEPTH 只清深度；同 glClear 受写掩码和裁剪约束，不改上下文的清除值。
+//   做法：临时只留第 i 路的颜色写掩码、换上这次的值，走 glClear 的同一条路，再还原（LÖVE 引擎在 GL 3.0 以上用它清画布）
+GLB(glClearBufferfv, void, GLenum buffer, GLint i, const GLfloat *value) { @autoreleasepool {
+    CTX();
+    if (buffer == 0x1800) {   // GL_COLOR
+        if (i < 0 || i >= GL_COLOR_TARGETS) { gl_set_error(GL_INVALID_VALUE); return; }
+        GLuint mask[GL_COLOR_TARGETS][4]; GLfloat cc[4]; memcpy(cc, gl_cur->clear_color, sizeof cc); int any = 0;
+        for (int k = 0; k < GL_COLOR_TARGETS; k++) for (int c = 0; c < 4; c++) { mask[k][c] = gl_cur->color[k].mask[c]; if (k != i) gl_cur->color[k].mask[c] = 0; else any |= mask[k][c]; }
+        memcpy(gl_cur->clear_color, value, sizeof cc);
+        if (any) gl_clear(GL_COLOR_BUFFER_BIT);
+        for (int k = 0; k < GL_COLOR_TARGETS; k++) for (int c = 0; c < 4; c++) gl_cur->color[k].mask[c] = mask[k][c];
+        memcpy(gl_cur->clear_color, cc, sizeof cc);
+        return;
+    }
+    if (buffer == 0x1801) {   // GL_DEPTH：drawbuffer 必须是 0
+        if (i != 0) { gl_set_error(GL_INVALID_VALUE); return; }
+        if (!gl_cur->depth_mask) return;
+        GLfloat d = gl_cur->clear_depth; gl_cur->clear_depth = depth_clamp(value[0]); gl_clear(GL_DEPTH_BUFFER_BIT); gl_cur->clear_depth = d;
+        return;
+    }
+    gl_set_error(GL_INVALID_ENUM);
+}}
 // ---------- 帧缓冲对象与渲染缓冲 ----------
 // 附件存「对象 + 级 / 面」不存 Metal 贴图：纹理重定义某级（TexImage2D 换存储）后，绘制时重新解析就画进新存储，同 GL 的附件语义
 enum { ATT_COL = 0, ATT_DEPTH = GL_COLOR_TARGETS, ATT_STEN, ATT_N };
@@ -183,6 +212,12 @@ static void renderbuffer_destroy(void *object) {
 }
 void gl_fb_session_reset(void) {
     gl_names_clear(&framebuffers, framebuffer_destroy); gl_names_clear(&renderbuffers, renderbuffer_destroy);
+}
+// 作废附件内容（GL 4.3 / ES 3.0 §17.4.4）：只是告诉实现这些附件的内容以后不再需要，实现可以不做任何事。只核参数（LÖVE 切画布时对深度 / 模板调它）
+GL(glInvalidateFramebuffer, void, GLenum target, GLsizei n, const GLenum *attachments) {
+    CTX(); (void)attachments;
+    if (target != 0x8D40 && target != 0x8CA9 && target != 0x8CA8) { gl_set_error(GL_INVALID_ENUM); return; }   // FRAMEBUFFER / DRAW_ / READ_FRAMEBUFFER
+    if (n < 0) { gl_set_error(GL_INVALID_VALUE); return; }
 }
 GL(glGenFramebuffers, void, GLsizei n, GLuint *out) {
     CTX(); if (n < 0) { gl_set_error(GL_INVALID_VALUE); return; }
@@ -637,6 +672,13 @@ static int color_query(GLenum p, GLuint i, double v[4]) {
     }
     return 0;
 }
+// 当前绘制帧缓冲的采样数（SAMPLE_BUFFERS / SAMPLES）：0 号帧缓冲是单采样窗口表面；帧缓冲对象取第一个有存储的附件（同一帧缓冲的附件采样数必须一致，否则不完整）
+static int draw_samples(void) {
+    if (!gl_cur->fb_draw) return 1;
+    struct gl_framebuffer *f = gl_name_get(&framebuffers, gl_cur->fb_draw); if (!f) return 1;
+    for (int k = 0; k < ATT_N; k++) if (f->att[k].kind == 2) { gl_renderbuffer *r = gl_name_get(&renderbuffers, f->att[k].name); if (r && r->tex) return (int)r->tex.sampleCount; }
+    return 1;   // 纹理附件：本层没有多采样纹理
+}
 // 整数与浮点查询共用一张表：返回分量个数（0 = 没实现），值写进 v（double 不丢 uint32 掩码精度）
 static int query(GLenum p, double v[4]) {
     int n = color_query(p, 0, v); if (n) return n;
@@ -695,7 +737,15 @@ static int query(GLenum p, double v[4]) {
         case 0x82DA: v[0] = 16; return 1;                                       // MAX_VERTEX_ATTRIB_BINDINGS
         case 0x8A34: v[0] = 256; return 1;                                      // UNIFORM_BUFFER_OFFSET_ALIGNMENT（Metal 常量缓冲偏移按 256 对齐；NVIDIA 同值）
         case 0x8DFA: v[0] = 1; return 1;                                        // SHADER_COMPILER（ES：支持 glCompileShader，源码按离线库取）
+        // 以下 Balatro（LÖVE 引擎）建上下文时逐个查，原先没实现回 0 并置 GL_INVALID_ENUM
+        case 0x80A8: { int s = draw_samples(); v[0] = s > 1; return 1; }       // SAMPLE_BUFFERS
+        case 0x80A9: { int s = draw_samples(); v[0] = s > 1 ? s : 0; return 1; }   // SAMPLES（单采样报 0）
+        case 0x8073: v[0] = 2048; return 1;                                     // MAX_3D_TEXTURE_SIZE（Metal 3D 纹理每维上限 2048）
+        case 0x88FF: v[0] = 2048; return 1;                                     // MAX_ARRAY_TEXTURE_LAYERS（Metal 纹理数组上限 2048 层）
+        case 0x0B11: v[0] = gl_cur->point_size; return 1;                       // POINT_SIZE
+        case 0x0B12: case 0x846D: v[0] = 1; v[1] = 511; return 2;               // POINT_SIZE_RANGE（桌面）/ ALIASED_POINT_SIZE_RANGE：Metal [[point_size]] 上限 511
     }
+    if (p == 0x9126 && !gl_es()) { v[0] = 1; return 1; }                        // CONTEXT_PROFILE_MASK：core（本层没有固定管线 / 显示列表这些兼容配置的入口）；ES 没有这个查询
     return 0;
 }
 static void query_red(const char *fn, GLenum p) {
