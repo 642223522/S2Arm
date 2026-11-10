@@ -6,7 +6,7 @@
 查（只读，不替你装系统级东西）：Apple 芯片 macOS；Xcode（同出包的 tools/toolchain.sh 解析：S2A_DEVELOPER_DIR / tools/machine.local → xcode-select）
   与 iOS SDK、Metal 编译器——编译器版本与 translator/dmsh_chain.lock 不同只出 note（出包时直连库按本机编译器重编，不报错）；
   .NET SDK——在 compat/tree 里跑 dotnet --version，由 dotnet 按 compat/tree/global.json（版本 + rollForward）判定，不另抄版本号；
-  Homebrew 公式（运行环境打包 bundle_runtime.py 收的工具 + C 改写器的 CMake + dav1d 的 meson / ninja）；Rust（pack/devpush）。
+  Homebrew 公式（运行环境打包 bundle_runtime.py 收的工具 + C 改写器的 CMake + dav1d 的 meson / ninja；S2A_DAV1D=0 的本地构建不需要 meson / ninja）；Rust（pack/devpush）。
 准备（可逆、只写在你给的目录或本树 build/ 下；--check 时跳过）：
   构建用 Python 虚拟环境（缺省本树 build/venv，Homebrew python@3.12 建）装齐三份钉版清单：tools/rewriter-requirements.txt、
   pack/fonts/requirements.txt（字体生成器 fonttools / skia-pathops）、launchers/macos/requirements-runtime.txt；
@@ -24,8 +24,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 REQS = ["tools/rewriter-requirements.txt", "pack/fonts/requirements.txt", "launchers/macos/requirements-runtime.txt"]
 # 公式 → 谁要：bundle_runtime.py 的 prefixes 全部 + C 改写器（runtime/rewriter，CMake 3.18+）+ services/dav1d/build.sh（meson + ninja）
+# S2A_DAV1D=0：不链 dav1d 软件兜底（仅适合所有目标机都有 AV1 硬件解码的本地构建），meson / ninja 不再是必需项
 FORMULAS = {"python@3.12": "构建 venv",
-            "bash": "运行环境（bash 5）", "cmake": "C 改写器", "meson": "dav1d 静态库", "ninja": "dav1d 静态库"}
+            "bash": "运行环境（bash 5）", "cmake": "C 改写器"}
+if os.environ.get("S2A_DAV1D", "1") != "0":
+    FORMULAS.update({"meson": "dav1d 静态库", "ninja": "dav1d 静态库"})
 IMPORTS = "import capstone, lz4, numpy, PIL, fontTools, pathops"
 rows = []
 

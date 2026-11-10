@@ -126,10 +126,12 @@ python3 launchers/macos/prepare_build.py            # add --check to only inspec
 | Apple Silicon Mac | The runtime keeps arm64 slices only | Checked |
 | Full Xcode with iOS platform and Metal Toolchain | Resolved like packaging (`tools/toolchain.sh`): `S2A_DEVELOPER_DIR` or `tools/machine.local`, then `xcode-select`. A Metal compiler version different from `translator/dmsh_chain.lock` prints a `note` only (`dmsh_chain.py --build-env` lets it through; the shader cache is keyed by compiler, so a different Xcode just recompiles) | Checked |
 | .NET SDK | Whatever `compat/tree/global.json` accepts: `version` plus `rollForward: latestFeature` (currently 10.0.403 or a later 10.0 feature band / patch). The command runs `dotnet --version` inside `compat/tree`, so .NET itself applies the rule. Install with `python3 pack/jobs/applenv.py --install dotnet` (the same path the launcher uses) | Checked |
-| Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja) | Checked; prints the `brew install` line |
+| Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja; skipped with `S2A_DAV1D=0`) | Checked; prints the `brew install` line |
 | Rust (`cargo`) | `pack/devpush` | Checked |
 | Build Python venv (default `build/venv`) | Pinned `tools/rewriter-requirements.txt`, `pack/fonts/requirements.txt` (fonttools / skia-pathops for the bundled fonts) and `launchers/macos/requirements-runtime.txt` | Created and installed |
 | C rewriter sources | Pinned Capstone / LZ4 from `runtime/rewriter/prepare_deps.py`; looked up in `S2A_REWRITER_DEPS`, then `build/rewriter-deps`, then `<S2A_RUN_ROOT>/s2arm/deps/rewriter-deps` | Downloaded to `build/rewriter-deps` when none is complete |
+
+Set `S2A_DAV1D=0` when every target Mac/iPhone has hardware AV1 decode. It skips the dav1d static library, the meson / ninja check, and the prebuilt dav1d bundle; default builds keep the software fallback for M1/M2, A16, and older devices. Do not use it for packages that may run on those devices.
 
 Then build with the interpreter the command printed:
 
