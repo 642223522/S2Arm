@@ -625,7 +625,7 @@ class Context:
                    # 出包用途 = 用户包（10-29 维护者定口径，pack/jobs/archs.py）：管线归档 / 函数体只出这个包要装的设备那几对——
                    #   Mac 包 = 出包的这台 Mac；iPhone 包由 ipa.py 按目标设备传 S2A_PSO_ARCHS / S2A_PSO_OS，没传就报红、不猜（不按我方跑局机清单出）
                    S2A_PACK_PURPOSE="user",
-                   # 出包链里其余缺省落在 ~/.s2arm/run 的缓存 / 锁 / 编好的小工具（直连缓存 6.5 GB、翻译缓存 5.3 GB…，10-26 Spare-host 斯普拉遁3）一律改到私有目录：
+                   # 出包链里其余缺省落在 ~/.s2arm/run 的缓存 / 锁 / 编好的小工具（直连缓存 6.5 GB、翻译缓存 5.3 GB…，10-26 Spare-host 0100C2500FC20000）一律改到私有目录：
                    #   玩家机上不出现 ~/.s2arm/run，清数据目录 / 删游戏能连它们一起删（守卫 tests/userpath_cache_test.py）
                    S2A_RUN_ROOT=str(self.work_root / "run"),
                    # 玩家作业不认我方开发机的规矩（10-26 侍魂晓在启动器里被 130 G 磁盘闸 + 独占局让路白卡 43 分钟）：不读 tools/machine.local

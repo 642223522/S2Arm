@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace S2A.Services.Tests
 {
-    // 账号异步任务（nn::account IAsyncContext）的「完成了没」按任务本身回答，不看事件（11-05 时之笛开局 Break 2162-0001）：
+    // 账号异步任务（nn::account IAsyncContext）的「完成了没」按任务本身回答，不看事件（11-05 0400486024DEC000开局 Break 2162-0001）：
     //   SDK 把完成事件当自动清除的 nn::os::SystemEvent 用，先 HasDone 为假就去等事件、等到即复位；之后 nn::account::AsyncContext 析构再问 HasDone，
     //   假就 AbortImpl。期望按 HOS 语义手写：任务完成 → 事件亮；事件被复位后，完成状态仍为真、事件为灭（旧实现以事件状态作答，这里会是假）
     static class AccAsyncHasDoneTest

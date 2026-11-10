@@ -313,7 +313,7 @@ static void test_feedback_src_plan(void) {
           "multi-mip/multi-layer RT with a single-slice view accepted");
     CHECK(src.level == 3 && src.layer == 5 && src.layers == 1 && !src.is_3d,
           "feedback source keeps the view subresource");
-    // 真实失败形态 2（TOTK 卡点）：3D 底图 depth=4，cview 选第 3 级、深度切片 1。
+    // 真实失败形态 2（0100F2C0115B6000 卡点）：3D 底图 depth=4，cview 选第 3 级、深度切片 1。
     // 旧规则用 arrayLayers（3D 恒为 1）判越界 → “layer 1 outside 0..0”。
     memset(why, 0, sizeof why);
     CHECK(nvn_vk_feedback_src_plan(NVN_TEXTURE_TARGET_3D, 4, 8, 1, 3, 1, 1, 64, 64,
@@ -398,7 +398,7 @@ static void test_feedback_bind_plan(void) {
     b.tex_levels = 1; b.tex_layers = 12; b.tex_depth = 1;
     CHECK(nvn_vk_feedback_bind_plan(&b, why, sizeof why) == NVN_VK_FB_BIND_LEAVE,
           "multi-layer default view is left as is");
-    // 注册视图恰好是附件那个子资源（2D 单级单层）→ 换快照（TOTK 的 3D 切片采样形态）。
+    // 注册视图恰好是附件那个子资源（2D 单级单层）→ 换快照（0100F2C0115B6000 的 3D 切片采样形态）。
     memset(&b, 0, sizeof b); memset(why, 0, sizeof why);
     b.view_override = 1; b.view_ok = 1; b.override_ok = 1;
     b.view_type = VK_IMAGE_VIEW_TYPE_2D; b.view_base_level = 2; b.view_nlevels = 1;
@@ -432,7 +432,7 @@ static void test_bcrt_plan(void) {
     char why[224];
     memset(&p, 0, sizeof p);
     memset(why, 0, sizeof why);
-    // TOTK 的真实形态：BC4(8B/块) + RGBA16UI(8B/像素)，32x32 的 mip → 8x8 块。
+    // 0100F2C0115B6000 的真实形态：BC4(8B/块) + RGBA16UI(8B/像素)，32x32 的 mip → 8x8 块。
     CHECK(nvn_vk_bcrt_plan_make(VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_R16G16B16A16_UINT, 32, 32, 0, 2, 1,
                                 &p, why, sizeof why) == 0, "BC4 + 8-byte UI view accepted");
     CHECK(p.block_bytes == 8 && p.side == 4 && p.bw == 8 && p.bh == 8,

@@ -31,7 +31,7 @@ namespace S2A.Services.Tests
                 }
                 catch (Exception e) { Console.WriteLine($"重试抛出 {e.GetType().Name}: {e.Message}"); }
                 Console.WriteLine($"真实 Host.Boot：无时区报错 / 同进程重试成功 = {failed} / {retried} {(failed && retried ? "✓" : "✗")}");
-                // 进程内重启（11-02 测试设备1 塞尔达：会话退休后第二次 Boot 抛「S2A 服务层已开始启动」）：会话退休走完，同进程再 Boot 一局要成功
+                // 进程内重启（11-02 测试设备1 一款第一方动作冒险游戏：会话退休后第二次 Boot 抛「S2A 服务层已开始启动」）：会话退休走完，同进程再 Boot 一局要成功
                 bool rebooted = false;
                 if (retried)
                 {

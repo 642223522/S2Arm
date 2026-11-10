@@ -5,7 +5,7 @@ using LibHac.Loader;
 
 namespace S2A.Services.Tests
 {
-    // Switch 2 的 npdm 布局（NpdmCompat.cs，11-02 Pokopia）：把 Switch 1 夹具 Homebrew.npdm 按 Switch 2 的写法手工展开——
+    // Switch 2 的 npdm 布局（NpdmCompat.cs，11-02 0400A3A01EE4C000）：把 Switch 1 夹具 Homebrew.npdm 按 Switch 2 的写法手工展开——
     //   ACID 段开头插入 0x100 字节（签名区多出的部分）、段内 FAC / SAC / KC 偏移各加 0x100、「签名数据长」改成段长 − 0x180、
     //   META 里 ACID 长度加 0x100、排在 ACID 之后的 ACI0 偏移加 0x100。期望（不跑被测实现推得出）：
     //   ① 展开后的字节交 LibHac 直接解析失败（复现 2009-0004）；② Normalize 后与原夹具逐字节相同；③ Normalize 后 LibHac 解析成功、程序号与原夹具相同；

@@ -3,11 +3,11 @@
 # 改写器 = 本树 C 改写器（runtime/rewriter，pack/rewriter.py c-path 编出；10-31 删 Python 改写器 patch_nso.py，正确性靠金样字节 + 进局验证）。
 # 把现行产物根里 exefs/ 的每个模块（rtld 与 *.npdm 除外）离线改写，
 # 产物（<模块>.patched.bin / .fixups.tsv / .gates.tsv / .sites.tsv / .gaps.tsv）与 main.npdm 放进新版本产物根顶层并原子切现行；
-# Mac 入口 runtime/run_mac.sh 见到 *.patched.bin 就直接用，不再每局现改写（动森现改写约 30 秒，10-19 实测）。
+# Mac 入口 runtime/run_mac.sh 见到 *.patched.bin 就直接用，不再每局现改写（01006F8002326000现改写约 30 秒，10-19 实测）。
 # 宽屏第二层：改写前 graphics/widen/scan/wide_scan.py 出 widen_sites.tsv（零配置），作改写器第 4 参；启用表按 main 构建号从
 #   仓库 graphics/widen/tables/<款>_<构建号>/widen_enable.<档位>.tsv（handheld / docked，各档位闭环全过才有）拷进产物根，装载器按 S2A_DOCKED 读当前档位那张
 #   （画幅线闭环产出、提交进仓库走列车，和代码一样有版本；没有这一档位的表 = 这一档位不加宽）。
-#   10-20 前放仓库外 ~/.s2arm/run/s2arm/widen/，表一变，产物根 / 包和提交对不上（动森主机档表写进根之前出的包仍是旧表），故迁进仓库。
+#   10-20 前放仓库外 ~/.s2arm/run/s2arm/widen/，表一变，产物根 / 包和提交对不上（01006F8002326000主机档表写进根之前出的包仍是旧表），故迁进仓库。
 # 缓存键 = 改写器 + 扫描器源码树对象号 + 启用表 sha（+ 非苹果目标平台 S2A_TARGET）+ 本阶段脚本 + 实际读过的生成器与表（.stage_rewrite.deps，tools/stage_deps.py）：
 #   版本标签 rw-<不含实际读入部分的键前 10 位>（非苹果再带 -<平台>），现行根记的键相同就跳过。
 #   S2A_TARGET 决定改写器出的补丁代码（如鸿蒙线程槽取法），不进键会让一个平台的产物被当成另一个平台的现行产物复用；缺省 apple 时键与原先相同。
@@ -34,7 +34,7 @@ EN=(); while read -r f; do [ -n "$f" ] && EN+=("$f"); done < <(S2A_WIDEN_DIR="${
 PID=$("$PY" -c 'import struct,sys; d=open(sys.argv[1],"rb").read(); a=struct.unpack_from("<I",d,0x70)[0]; assert d[a:a+4]==b"ACI0"; print("%016X" % struct.unpack_from("<Q",d,a+0x10)[0])' "$CUR/exefs/main.npdm") || { echo "【红】$G 读不出 main.npdm 的程序号"; exit 1; }
 VT="${S2A_WIDEN_DIR:-$R/graphics/widen/tables}/verified.tsv"; VR=$([ -f "$VT" ] && awk -F'\t' -v p="$PID" -v b="$BID" '!/^#/ && toupper($1) == p && tolower($2) == b && tolower($4) == "apple" { print; exit }' "$VT")   # F7：表加平台列，苹果路线只取 apple 行——安卓行不进苹果产物根，apple 行也放不开安卓（安卓标记由 pack/stage_caps.sh 写）
 # 名单与依赖一致（11-05 维护者）：已验证名单里的款必须在仓库里有它依赖的宽屏表（第二层启用表 / 第三层整套表，repo_table_dir 按构建号找）；
-#   缺了就不算已验证、按满屏关出包，写一行【黄】（旷野之息：表按款名起、包名对不上，启用 0 点退整套放宽 → SIGBUS）
+#   缺了就不算已验证、按满屏关出包，写一行【黄】（01007EF00011E000：表按款名起、包名对不上，启用 0 点退整套放宽 → SIGBUS）
 [ -n "$VR" ] && [ ${#EN[@]} -eq 0 ] && { echo "【黄】$G 在宽屏已验证名单（${PID} ${BID}）但仓库没有它依赖的宽屏表（graphics/widen/tables/*_${BID}），不算已验证、按满屏关出包"; VR=; }
 # 同身份的仓库表和最近 30 局真实日志只提高已知下限（不读现行根上一次出的表：采集结果回灌自己会让旧值永不退场）。先采集再判缓存；坏表不可退成无表。
 # 帧率表（10-26，体系提升方案 D）：仓库 runtime/fps/<main 构建号前 16 位>.tsv 有就拷进产物根作 fps.tsv（runtime/src/fps.c 装载后读），按「文件名 + 内容」进键；没有 = 原生帧率
@@ -93,7 +93,7 @@ K=$(printf '%s backend=%s%s%s%s%s' "$K" "$RK" "$CK" "$PK" "$([ -n "${FT}" ] && p
 # 仓库输入清单不含产物根：main 构建号相同也可能换了 subsdk 或 NRO，按相对路径 + 完整内容进键。
 # NRO 枚举同 nro_to_nso.py：任意深度（含点目录）、后缀不分大小写；分块读取只限内存，不抽样内容。
 # RomFS 遍历经 graphics/nvn/tools/romfs_list.py（仓库里唯一的 RomFS 遍历，walk 同 os.walk）
-# NRR 登记表（*.nrr）同样按内容进键：nro_to_nso.py 按它到 romfs 其余文件（大乱斗 data.arc）里找藏着的 NRO。那些大文件本身不进键（17.6 GB 每次判跳过都重算不可取）：
+# NRR 登记表（*.nrr）同样按内容进键：nro_to_nso.py 按它到 romfs 其余文件（一款第一方格斗游戏 data.arc）里找藏着的 NRO。那些大文件本身不进键（17.6 GB 每次判跳过都重算不可取）：
 #   收进的 NRO 只认 NRR 登记的 SHA-256，内容由登记表定死；只有「NRR 不变、归档里换了位置 / 删了」才会让表里来源列或有无变而键不变。
 IK=$("$PY" - "$CUR" "$R" <<'INPUT_KEY'
 import hashlib, os, sys
@@ -136,7 +136,7 @@ rm -f "$W"/*.code_patch.tsv "$W"/*.patched.bin "$W"/*.fixups.tsv "$W"/*.gates.ts
 t0=$SECONDS; n=0
 # romfs 里的 NRO（10-29 普查 c1029c：大航海4 HD / 魔界战记6 / 忍者龟用 nn::ro 装，我方 LoadNro 映射未支持 → 游戏 Break）：
 #   转成 NSO 放 nroexe/、与 exefs 模块一样改写（模块名 nro0…），运行时 ro LoadNro 按 NRO 文件 SHA-256 查 nro_modules.tsv 映射改写好的映像（runtime/src/loader.c s2a_nro_map）。
-#   零配置：romfs 任意深度的 *.nro；有 .nrr 登记表时还收藏在 romfs 其余文件里（原样 / zstd 帧）、哈希登记过的 NRO（11-03 大乱斗 data.arc）；没有 NRO 不出表。nroexe/ 是中间产物，改写完删
+#   零配置：romfs 任意深度的 *.nro；有 .nrr 登记表时还收藏在 romfs 其余文件里（原样 / zstd 帧）、哈希登记过的 NRO（11-03 一款第一方格斗游戏 data.arc）；没有 NRO 不出表。nroexe/ 是中间产物，改写完删
 rm -f "$W/nro_modules.tsv"; rm -rf "$W/nroexe"
 "$PY" "$R/runtime/rewriter/nro_to_nso.py" "$W/romfs" "$W/nroexe" > "$W/nro_to_nso.log" 2>&1 || { echo "【红】$G 转 romfs 里的 NRO 失败（$(tail -1 "$W/nro_to_nso.log")）"; root_abort "$G" "$TAG"; exit 1; }
 [ ! -f "$W/nroexe/nro_modules.tsv" ] || mv "$W/nroexe/nro_modules.tsv" "$W/nro_modules.tsv" || { root_abort "$G" "$TAG"; exit 1; }
@@ -206,7 +206,7 @@ K=$(stage_deps_save "$W" rewrite "$KB" "$H/stage_rewrite.sh") || { root_abort "$
 echo "$K" > "$W/.stage_rewrite"
 ROOT_REPLAY='*.code_patch.tsv *.patched.bin *.fixups.tsv *.gates.tsv *.sites.tsv *.gaps.tsv *.npdm *.widen.tsv widen_sites.tsv cpatch.tsv cpatch_rows.tsv cpatch_plan.log cpatch_excluded.tsv widen_enable*.tsv widen_verified.tsv fps.tsv nro_modules.tsv nro_to_nso.log widen_full*.tsv patch.tsv addr_need.tsv addr_need.log nro_exports.tsv nro_exports.log gpu_drivers.tsv widen_scan.log fps_generic.log *.rewrite.log .stage_rewrite .stage_rewrite.deps' root_commit "$G" "$TAG" || exit 1   # 与系统数据 / 界面布局并行（pack/refresh.sh）：本阶段只写这些
 # 帧率表命中（情报 10-28：构建号对不上时增强静默失效）：没有本构建号的表要响亮；本款别的构建号有表（docs/名单_60帧/ 有登记、runtime/fps/ 有文件）就列出来——
-#   换了版本一眼看出。原生就 60 帧的款（马车8）没有表、也不列
+#   换了版本一眼看出。原生就 60 帧的款（0100152000022000）没有表、也不列
 FV=$(awk -F'\t' -v p="$PID" '!/^#/ && toupper($1) == p { print substr($2, 1, 16) }' "$R/docs/名单_60帧/"*.tsv 2> /dev/null | while read -r b; do [ -f "$R/runtime/fps/$b.tsv" ] && printf '%s ' "$b"; done)
 FS=$([ -n "${FT}" ] && echo "帧率表 ${BID:0:16}" || { [ -f "$W/fps.tsv" ] && echo "通用帧率表（UE4 控制台变量按名定位）"; } || echo "无帧率表${FV:+（本构建号 ${BID:0:16} 没有表，本款有表的构建号 ${FV% }）}")
 echo "🟢 $G 改写 $n 个模块（$((SECONDS - t0)) 秒；宽屏候选 $(grep -c . "$(root_cur "$G")/widen_sites.tsv") 行，启用表 $([ ${#EN[@]} -gt 0 ] && echo "$(for t in "${EN[@]}"; do t=${t##*/widen_enable.}; printf '%s ' "${t%.tsv}"; done)" || echo 无＝不加宽)；$([ -n "$VR" ] && echo 宽屏已验证 || echo 不在宽屏已验证名单)；${FS}；包内能力清单 $(awk -F'\t' '$1 == "widen" {w = $2} $1 == "fps60" {f = $2} END {printf "满屏 %s / 60 帧 %s", (w == 1 ? "开" : "关"), (f == 1 ? "开" : "关")}' "$(root_cur "$G")/s2a_caps.tsv")（实际开关以清单为准，原因见 s2a_caps.tsv）），现行 → $(basename "$(root_cur "$G")")"

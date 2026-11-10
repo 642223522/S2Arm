@@ -7,7 +7,7 @@ using Ryujinx.HLE.HOS.Services.Am.AppletAE;
 
 namespace S2A.Services.Tests
 {
-    // 游戏「增加新用户」（nn::account::ShowUserCreator）。11-05 测试设备1 脑锻炼在「请选择用户」页点「增加新用户」稳定 Break：
+    // 游戏「增加新用户」（nn::account::ShowUserCreator）。11-05 测试设备1 一款第一方益智游戏在「请选择用户」页点「增加新用户」稳定 Break：
     //   零售 SDK 的 ShowUserCreator 先调 IsUserRegistrationRequestPermitted（acc:u0 命令 50），回 false 就 Abort（sdk ShowUserCreator+0x90）；
     //   游戏本身不先查这个值、直接调 ShowUserCreator，说明零售机对应用回 true。上游对 acc:u0 回 false。
     //   放行后 SDK 拉起选用户小程序（psel），UiSettings 模式 1 = UserCreator，读回 0x18 字节：头 4 字节就是 ShowUserCreator 的返回结果；

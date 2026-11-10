@@ -209,7 +209,7 @@ def nacp_kind(root):
     p = os.path.join(root, "ctl", "control.nacp")
     if not os.path.isfile(p):
         return None
-    # NACP：0x3080 账户存档大小、0x3088 账户日志、0x3090 设备存档大小、0x3098 设备日志（10-27 前误把 0x3088 当设备，动森这类只用设备存档的款判不出类型）
+    # NACP：0x3080 账户存档大小、0x3088 账户日志、0x3090 设备存档大小、0x3098 设备日志（10-27 前误把 0x3088 当设备，01006F8002326000这类只用设备存档的款判不出类型）
     d = open(p, "rb").read(0x30A0)
     acc, dev = struct.unpack_from("<q", d, 0x3080)[0], struct.unpack_from("<q", d, 0x3090)[0]
     return "account" if acc > 0 else "device" if dev > 0 else None

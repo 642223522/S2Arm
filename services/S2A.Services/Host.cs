@@ -340,7 +340,7 @@ namespace S2A.Services
             MemDiag.FootprintProvider = null;
             ReloadSessionEnvironment();
             // 启动闸随会话退休放开：进程内重启（设置页切 60 帧「立刻重启」）的新会话还要 Boot 一次。原先只在 Boot 失败时放开，
-            //   11-02 测试设备1 塞尔达自动复现：窗口重建过了，新会话 Boot 抛「S2A 服务层已开始启动」、会话 2 FAILED
+            //   11-02 测试设备1 一款第一方动作冒险游戏自动复现：窗口重建过了，新会话 Boot 抛「S2A 服务层已开始启动」、会话 2 FAILED
             lock (SaveTransfer.HostGate) SaveTransfer.HostStarted = false;
         }
 
@@ -673,7 +673,7 @@ namespace S2A.Services
             Ryujinx.HLE.S2AHooks.TitleLanguageFallback = SystemLocale.TitleFallback(langTags);
             HleConfiguration config = new HleConfiguration(
                 MemoryConfiguration.MemoryConfiguration4GiB,
-                Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如动森存档 Japanese）
+                Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如01006F8002326000存档 Japanese）
                 configuration?.Region ?? EnvEnum("S2A_REGION", RegionCode.USA),
                 VSyncMode.Switch,
                 enableDockedMode: Docked,         // 缺省掌机档（维护者 10-20 晚）；S2A_DOCKED=1 切主机（以后做成玩家设置）

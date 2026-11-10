@@ -160,7 +160,7 @@ namespace S2A.Services
         }
 
         // 返回值约定自检（对拍真原生层）：C# 判成败的每个导出各取一个结果确定的调用，与本文件的用法比；不符逐条报红，回不符条数。
-        // 起因：s2a_handle_close 约定两边反向各改一次，关句柄必判失败、动森起局 3 秒中止
+        // 起因：s2a_handle_close 约定两边反向各改一次，关句柄必判失败、01006F8002326000起局 3 秒中止
         public static int SelfCheck()
         {
             int bad = 0;
