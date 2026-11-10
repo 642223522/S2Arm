@@ -239,6 +239,15 @@ void *s2a_guest_map_any(uint64_t len) {
     if (!ok) return MAP_FAILED;
     return mmap(NULL, len, PROT_NONE, MAP_SHARED, g_gfd, (off_t)off);
 }
+// 线性远端影子（far.c，#419）的一块也要文件后备：文件往后接长，按新偏移映射到 far.c 自己预留的线性影子区里的固定地址（那段是 far.c 占的不可访问预留，
+//   MAP_FIXED 只盖它自己的地址）。没开文件后备回 1（调用方用预留里的匿名页）；成功回 0，失败回 -1
+int s2a_guest_map_fixed(uint64_t a, uint64_t len) {
+    if (g_gfd < 0) return 1;
+    if (!len) return 0;
+    pthread_mutex_lock(&g_gextra_mu); uint64_t off = g_size + g_gextra; int ok = !ftruncate(g_gfd, (off_t)(off + len)); if (ok) g_gextra += len; pthread_mutex_unlock(&g_gextra_mu);
+    if (!ok) return -1;
+    return mmap((void *)(uintptr_t)a, len, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, (off_t)off) == (void *)(uintptr_t)a ? 0 : -1;
+}
 // [a, a + n) 在文件后备的窗口里：打洞（还文件块，再读是 0）并按原偏移重新映射成不可访问，返回 1；不在 / 没开文件后备返回 0（调用方照旧换匿名占位）
 int s2a_guest_zero(uint64_t a, uint64_t n) {
     if (g_gfd < 0 || a < g_base || a + n > g_base + g_size || !n) return 0;
