@@ -300,6 +300,29 @@ def game(identifier, name, base_bytes, buildable=True, ready=False, missing=()):
 class NextStepTests(unittest.TestCase):
     """AI 代操作入口 next（10-26）：期望按规则手写——每种状态推出的 step / who / 命令"""
 
+    def test_windows_iphone_ready_without_task_ipa_path_goes_to_install(self):
+        # 共享 S2Arm.ipa 不会记录为这款任务的 ipaPath；iphoneReady 才是已出包信号。
+        ready = dict(game("g", "G", 1e9), iphoneReady=True)
+        completed = {"id": "done-ipa", "gameId": "g", "operation": "ipa", "state": "completed", "started": 1, "ended": 2}
+        n = ctl.next_step(full_state(platform="windows", games=[ready], tasks=[completed]))
+        self.assertEqual((n["step"], n["who"]), ("装机", "ai"))
+        self.assertNotIn("出包", n["why"])
+
+    def test_windows_not_iphone_ready_without_ipa_path_still_builds(self):
+        # 反例：没有 ipaPath 且从未出好包，Windows 仍应建议出包。
+        not_ready = dict(game("g", "G", 1e9), iphoneReady=False)
+        n = ctl.next_step(full_state(platform="windows", games=[not_ready]))
+        self.assertEqual((n["step"], n["who"]), ("出包", "ai"))
+
+    def test_failed_ipa_does_not_override_previous_iphone_ready_package(self):
+        # 最近一次失败不抹掉早先已成功的 iPhone 包。
+        ready = dict(game("g", "G", 1e9), iphoneReady=True)
+        failed = {"id": "failed-ipa", "gameId": "g", "operation": "ipa", "state": "failed", "started": 1,
+                  "diagnostics": [{"code": "job_failed", "summary": "本次出包失败"}]}
+        n = ctl.next_step(full_state(platform="windows", games=[ready], tasks=[failed]))
+        self.assertEqual((n["step"], n["who"]), ("装机", "ai"))
+        self.assertNotIn("code", n)
+
     def test_no_check_result_yet_means_checking(self):
         # 刚拉起：环境检查还没开始（没有结果、也不在查）→ 让 AI 等，不能报「玩家去处理」却列不出缺什么
         n = ctl.next_step(full_state(environmentReady=False, checks=[], checkingEnvironment=False))
