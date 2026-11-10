@@ -141,6 +141,22 @@ if (File.Exists(bannerSrc))
     SaveP("win_09_library_banner_fallback", () => Navigate(pack, "library"));
 }
 
+// 出包页「签名方式」（v0.2.3 开发者证书签名，DevCertPage.cs）：Apple ID 模式；证书模式（团队、到期、包名、设备核对、缺权限黄字）。
+//   devCert 直接放作业结果（不跑 devCert 作业）；窗口加高，免得签名一栏落在首屏外
+pack.Height = 1300;
+InjectMockGame(pack, ready: true);
+SetW(pack, "exportIos", true);
+SetW(pack, "devCert", JsonDocument.Parse("{\"imported\":false,\"active\":false,\"cert\":null}").RootElement.Clone());
+SaveP("win_10_export_sign_appleid", () => Navigate(pack, "build"));
+SetW(pack, "devCert", JsonDocument.Parse("""
+{"imported":true,"active":true,"cert":{"blocking":[],"warnings":[
+ {"id":"devcert_entitlements","text":"描述文件没开「扩展寻址」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。"},
+ {"id":"devcert_expiring","text":"证书将于 2026-11-30 到期（还剩 20 天）：到期后 App 打不开，记得提前换新。"}],
+ "teamName":"S2Arm Test Co","teamId":"ABCDE12345","certExpires":"2026-11-30","profileExpires":"2027-05-29",
+ "bundleId":"io.s2arm.games.abcde12345","wildcard":true,"allDevices":false,"deviceCount":1,"deviceListed":null}}
+""").RootElement.Clone());
+SaveP("win_11_export_sign_devcert", () => Navigate(pack, "build"));
+
 pack.Close();
 Dispatcher.UIThread.RunJobs();
 Console.WriteLine("done.");

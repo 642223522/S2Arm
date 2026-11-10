@@ -26,7 +26,7 @@ NOW = datetime.datetime(2026, 11, 9, tzinfo=datetime.timezone.utc)
 IML, EVA = devcert.WANT
 
 
-def profile(appid=f"{TEAM}.*", ents=None, devices=("00008150-000A1B2C3D4E5F60",), all_devices=False, expires=NOW + datetime.timedelta(days=200), certs=(DER,)):
+def profile(appid=f"{TEAM}.*", ents=None, devices=("00000000-000A1B2C3D4E5F60",), all_devices=False, expires=NOW + datetime.timedelta(days=200), certs=(DER,)):
     e = {"application-identifier": appid, "com.apple.developer.team-identifier": TEAM, "get-task-allow": True, IML: True, EVA: True,
          "keychain-access-groups": [f"{TEAM}.*"]}
     e.update(ents or {})
@@ -91,7 +91,7 @@ class Inspect(unittest.TestCase):
         return [w["id"] for w in r["blocking"]], [w["id"] for w in r["warnings"]]
 
     def test_all_good(self):
-        r = self.check(profile(), udid="00008150-000a1b2c3d4e5f60")   # UDID 大小写不同也算在列
+        r = self.check(profile(), udid="00000000-000a1b2c3d4e5f60")   # UDID 大小写不同也算在列
         self.assertEqual(self.codes(r), ([], []))
         self.assertEqual((r["bundleId"], r["teamName"], r["deviceListed"], r["certExpires"], r["profileExpires"], r["entitlements"]),
                          ("io.s2arm.games.abcde12345", "S2Arm Test Co", True, "2027-09-05", "2027-05-28", sorted([IML, EVA])))
@@ -101,8 +101,8 @@ class Inspect(unittest.TestCase):
         self.assertEqual(self.codes(r), (["devcert_mismatch"], []))
 
     def test_device_listing(self):
-        self.assertEqual(self.codes(self.check(profile(), udid="00008150-FFFF")), ([], ["devcert_device"]))
-        r = self.check(profile(all_devices=True), udid="00008150-FFFF")   # 企业描述文件：没有列表，不报不在列
+        self.assertEqual(self.codes(self.check(profile(), udid="00000000-FFFFFFFFFFFFFFFF")), ([], ["devcert_device"]))
+        r = self.check(profile(all_devices=True), udid="00000000-FFFFFFFFFFFFFFFF")   # 企业描述文件：没有列表，不报不在列
         self.assertEqual((self.codes(r), r["deviceListed"], r["allDevices"]), (([], []), True, True))
         self.assertIsNone(self.check(profile())["deviceListed"])            # 没连手机：不知道，不瞎报
 
@@ -217,7 +217,7 @@ class InstallWiring(unittest.TestCase):
         from jobcase import as_windows
         import layout
         w = FakeW([("U1", "USB", 3)])
-        w.team = "OTHERTEAM1"   # Impactor 里登的账号：证书模式不该用它算包名
+        w.team = "FGHIJ67890"   # Impactor 里登的账号：证书模式不该用它算包名
         w.installed = []
         w.install_signed = lambda exe, app, udid, log: w.installed.append((exe, Path(app).name, udid))
         ipa = self.t / "S2Arm.ipa"
