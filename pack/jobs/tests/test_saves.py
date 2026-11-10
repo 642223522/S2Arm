@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import os
+os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 同 jobcase.py：作业开始时 layout.ensure 会起脱离作业的商店查询子进程，往 library/ 写；测试收尾删临时目录时它还在写 → Directory not empty（11-10 负载下偶发）
 import shutil
 import stat
 import struct
@@ -826,7 +827,7 @@ class ExternalImportTests(unittest.TestCase):
             self.assertEqual((slot / "Temp/t.bin").read_bytes(), b"tmp", src)
 
     def test_nx2apple_save_folder_goes_to_device_save_when_the_game_has_only_that(self):
-        # NX2Apple 引擎：游戏只有设备存档（如动森）时设备存档就放在 save/；按「只有设备存档就进设备存档」导入，不报没有存档位置
+        # NX2Apple 引擎：游戏只有设备存档（如01006F8002326000）时设备存档就放在 save/；按「只有设备存档就进设备存档」导入，不报没有存档位置
         shutil.rmtree(self.root / "bis/user/save/0000000000000001", ignore_errors=True)
         self.put(saves.SAVE_INDEX, synthetic_index([(2, GID, 3, "0" * 32)]))
         self.put("bis/user/save/0000000000000002/0/device.bin", b"old-device")
@@ -836,7 +837,7 @@ class ExternalImportTests(unittest.TestCase):
 
     def test_zero_directory_judged_against_this_games_own_slot(self):
         # 10-27：社区存档唯一子目录 0/ —— 游戏自己的槽 0 顶层是 progress.bin → 0/ 是提交目录，剥掉；
-        # 游戏自己的槽 0 顶层有 0/ 目录（塞尔达式槽位）→ 不剥，原样放进槽 0
+        # 游戏自己的槽 0 顶层有 0/ 目录（一款第一方动作冒险游戏式槽位）→ 不剥，原样放进槽 0
         src = self.community("Ryujinx zero", {"0/progress.bin": b"stripped"})
         with patch.object(saves.save_formats, "detect", return_value=[]):
             self.assertTrue(self.import_(src)[0]["committed"])

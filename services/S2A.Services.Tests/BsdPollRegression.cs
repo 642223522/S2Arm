@@ -32,7 +32,7 @@ namespace S2A.Services.Tests
         }
 
         // Switch 2 SDK 按并发数开多条 bsd:u 会话（nn::socket::detail::SetClientSessionCount / CreateClientServiceByHipc），只在一条上 RegisterClient：
-        //   其余会话先发命令 36（带 pid）再建套接字，要用本进程那份登记（11-05 时之笛：第二条会话 Socket 空引用 → 游戏 Break 2010-0221）。期望按 HOS 语义手写：
+        //   其余会话先发命令 36（带 pid）再建套接字，要用本进程那份登记（11-05 0400486024DEC000：第二条会话 Socket 空引用 → 游戏 Break 2010-0221）。期望按 HOS 语义手写：
         //   ① 只发过命令 36 的会话 Socket(AF_INET, DGRAM, 0) 回描述符 ≥ 0、errno 0；② 同一描述符在登记会话上 Close 回 0（同一张描述符表）；
         //   ③ 关掉未登记会话后，登记会话照样能建套接字（未登记会话不释放进程的登记）
         private static void BsdMultiSession(uint sm, uint bsd)

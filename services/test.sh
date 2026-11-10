@@ -42,7 +42,7 @@ for mode in $s2a_modes; do
   fi
 done
 bash "$HERE/tests/t_native_provider.sh"
-# 运行墙钟 150 秒：着色器代码表新旧对拍（动森 + 塞尔达真实语料约 44 万样本，上游旧表平方级建表）约 40 秒
+# 运行墙钟 150 秒：着色器代码表新旧对拍（01006F8002326000 + 一款第一方动作冒险游戏真实语料约 44 万样本，上游旧表平方级建表）约 40 秒
 # 标准错误落本工作树的构建目录（10-21 原生层线：原先是全机固定名 $TMPDIR/s2a_svc_test.err，多棵工作树同时跑互相覆盖，查现场拿到的是别的树那份）；
 #   红了把路径和末 20 行打出来（门禁日志里直接能看到崩溃栈）
 ERR=$HERE/S2A.Services.Tests/bin/test.stderr; mkdir -p "${ERR%/*}"

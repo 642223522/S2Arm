@@ -10,7 +10,7 @@ using Path = System.IO.Path;
 namespace S2A.Services.Tests
 {
     // 界面布局覆盖层（Windows 编排 uilayout 写 <产物根>/ui_overlay/romfs/，索引按覆盖层大小建，pack/orch/stages.py _romfsidx）：
-    //   宿主读方必须覆盖层优先。11-07 回归批动森 / 王国之泪：Windows 出包机出的产物根在 Mac 宿主局读 romfs/ 原件，索引 871 实际 839 → 2002-4703 中止。
+    //   宿主读方必须覆盖层优先。11-07 回归批01006F8002326000 / 0100F2C0115B6000：Windows 出包机出的产物根在 Mac 宿主局读 romfs/ 原件，索引 871 实际 839 → 2002-4703 中止。
     // 期望值不跑被测实现：两份文件是本测写下的固定字节（原件 1000×0x11、覆盖层 1200×0x22），索引清单照 stages.py 的「大小\t路径」写。
     static class RomFsOverlayTest
     {

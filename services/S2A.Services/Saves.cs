@@ -19,7 +19,7 @@ namespace S2A.Services
     // 每个子目录的内容 = 游戏挂载存档后看到的根目录。起局时（游戏跑之前）经 LibHac 挂上对应存档、清空、整棵拷入、提交——
     // Ryujinx 数据根跨局复用，不清空会读到上一局的自动存档。没给 S2A_SAVE_DIR 时不动存档（沿用数据根里已有的）。
     // 不认识的子目录、该游戏没有的存档类型、拷入失败一律报红。
-    //   user      → 文件：建档时的用户号（32 位十六进制，同 Ryujinx Profiles.json 的 user_id）。游戏把用户号记在存档里（动森岛民按它认人），
+    //   user      → 文件：建档时的用户号（32 位十六进制，同 Ryujinx Profiles.json 的 user_id）。游戏把用户号记在存档里（01006F8002326000岛民按它认人），
     //               对不上会当新玩家走开场；有这个文件就以它为当前用户（EnsureSaveData 之前，账号存档也按它建）
     public static class Saves
     {
@@ -102,7 +102,7 @@ namespace S2A.Services
                         break;
                     case "account":
                         // 走 Shim 里有实现的重载（Ncm.ApplicationId + Fs.UserId → MountSaveDataImpl，类型 Account，同 Ryujinx IFileSystemProxy.OpenSaveDataFileSystem 的路子）；
-                        //   LibHac.Fs.SaveData 里收 Account.Uid 的两个重载是 throw NotImplementedException（0.21.0-alpha.133），10-20 塞尔达带账号存档起局 S2A_Init 当场失败
+                        //   LibHac.Fs.SaveData 里收 Account.Uid 的两个重载是 throw NotImplementedException（0.21.0-alpha.133），10-20 一款第一方动作冒险游戏带账号存档起局 S2A_Init 当场失败
                         var u = device.System.AccountManager.LastOpenedUser.UserId;
                         r = LibHac.Fs.Shim.SaveData.MountSaveData(hc.Fs, "s2asave"u8, new LibHac.Ncm.ApplicationId(programId), new LibHac.Fs.UserId((ulong)u.High, (ulong)u.Low));
                         break;

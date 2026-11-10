@@ -19,7 +19,7 @@
 #   ipa.sh 只出程序、rsync 推远端）跟随这条软链拿到真目录，内容与原先逐字节相同。要改 RomFS 的阶段用 ROOT_OWN_ROMFS=1 root_begin 拿一份自己的真目录。
 # 禁止原地覆盖：已提交的版本目录不许再写（root_begin 对已存在的 <款>@<提交> 报红）。
 # 共享根只代表 origin/main（10-20 维护者拍板）：往共享根开新版本前核本树 HEAD 在 origin/main 上（不是分支）、阶段相关目录（runtime ios graphics translator services compat pack）干净、
-#   且不比现行的来源提交（.root_src）旧，否则拒绝——分支树按各自代码算阶段键，会和别的树轮流刷共享现行（10-20 动森现行被三棵树乒乓，在途出包反复被并发保护作废），分支版本还会冒充现行。
+#   且不比现行的来源提交（.root_src）旧，否则拒绝——分支树按各自代码算阶段键，会和别的树轮流刷共享现行（10-20 01006F8002326000现行被三棵树乒乓，在途出包反复被并发保护作废），分支版本还会冒充现行。
 #   分支树用私有根：S2A_ROOTS=~/.s2arm/run/s2arm/roots_priv/<名>（约定放这里，gc 24 小时没动就清）；某款在私有根里还没有现行时，从共享现行 clonefile 起步，只重做键变了的阶段。
 S2A_ROOTS_SHARED=${S2A_ROOTS_SHARED:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/roots}; S2A_ROOTS_PRIV=${S2A_ROOTS_PRIV:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/roots_priv}   # 单测可覆盖
 S2A_ROOTS=${S2A_ROOTS:-$S2A_ROOTS_SHARED}
@@ -105,7 +105,7 @@ _root_rm() {
 # _root_rm_red <路径> [谁]：同 _root_rm；删不掉只打一行【红】（路径 + rm 报错条数 + 首条原因），rm 的逐文件报错不外漏，返回 1。
 #   删产物根 / 它的克隆 / 临时副本的收尾点都走它（11-04 只出程序 pack/ipa.sh 的临时克隆 romfs 只读、裸 rm -rf 删不掉，逐文件报 Permission denied）
 # 被取代的整根 / 重放后丢弃的工作根：同卷改名挪进 $S2A_ROOTS/.trash/（瞬间完成），再由脱离本进程的后台删（不占出包时间、不在提交锁里删）。
-#   11-05 一次成功线：时之笛资源包 18.7 万文件，出包收尾「重放 + 修剪」在提交锁里把整根逐文件删 / 拷了 2–3 遍，出包 331 秒里约 234 秒没计时。
+#   11-05 一次成功线：0400486024DEC000资源包 18.7 万文件，出包收尾「重放 + 修剪」在提交锁里把整根逐文件删 / 拷了 2–3 遍，出包 331 秒里约 234 秒没计时。
 #   后台删被打断（进程被杀）留下的残余由 tools/gc.sh 按名字里的 pid 已不在清掉。挪不动（跨卷等）退回当场删
 _root_trash() {
   [ -L "$1" ] && { rm -f "$1"; return; }; [ -e "$1" ] || return 0
@@ -241,14 +241,14 @@ _root_lock() {   # 同一款的提交串行：内核文件锁（tools/plock.sh�
 _root_unlock() { plock_release "$_ROOT_LOCK_PID"; _ROOT_LOCK_PID=; _ROOT_LOCK_GAME=; }
 _root_replay() {   # _root_replay <W.tmp> <新现行> <路径…>：新现行克隆一份，按本阶段声明的路径换成 W 里的，结果放回 W.tmp
   #   !<路径>：声明路径里套着的、别的阶段的产物（着色器阶段的 shaders/ 里有直连阶段的 shaders/direct）——换完之后这一块恢复成新现行的。
-  #   10-25 测试设备1 马车8：着色器阶段提交时把整个 shaders/ 换成开工时克隆的那份，烘的几分钟里直连阶段刚提交的新库被退回旧版
+  #   10-25 测试设备1 0100152000022000：着色器阶段提交时把整个 shaders/ 换成开工时克隆的那份，烘的几分钟里直连阶段刚提交的新库被退回旧版
   #   （旧版顶层表少、b-<链>/ 同名还在，.stage_direct 戳却是新的、没人再出库），推包时机上 9 个顶层表被当旧文件清掉，直连起手即 abort
   local w=$1 now=$2 r=$1.rb p m rl sk= own=; shift 2; _root_rm "$r"
   # 本阶段声明的产物在 RomFS 里（romfs 或 romfs/<路径>）：新现行的 RomFS 克隆成自己的真目录再换（同 ROOT_OWN_ROMFS=1），提交时收成新身份；否则照抄存储软链
   for p in "$@"; do case ${p#!} in romfs|romfs/*) own=1;; esac; done
   rl=$(_root_romfs_link "$now") || return 1; [ -z "$rl" ] || [ -n "$own" ] || sk=romfs
   # 顶层的字面声明路径（不带 / 与通配，如 pkg）：克隆新现行时直接跳过，后面从 W 整个挪过去（W 随后就删）——原先先克隆新现行的那份、
-  #   再逐文件删掉、再从 W 逐文件拷一份（时之笛 pkg/pack 18.7 万文件，各走一遍）
+  #   再逐文件删掉、再从 W 逐文件拷一份（0400486024DEC000 pkg/pack 18.7 万文件，各走一遍）
   local mvp=; for p in "$@"; do case $p in '!'*|*/*|*'*'*|*'?'*|*'['*|romfs) ;; *) mvp="$mvp $p";; esac; done
   python3 "$(dirname "${BASH_SOURCE[0]}")/../tools/clonedir.py" "$now" "$r" $sk $mvp > /dev/null || { _root_rm "$r"; return 1; }
   [ -z "$sk" ] || ln -s "$rl" "$r/romfs" || { _root_rm "$r"; return 1; }
@@ -277,7 +277,7 @@ root_commit() {
   _root_lock "$g" || return 1
   local base now; base=$(cat "$w.tmp/.root_base" 2>/dev/null); now=$(basename "$(root_cur "$g")" 2>/dev/null); [ -n "$now" ] || now=无
   if [ "$base" != "$now" ]; then
-    # 共享根只许往前（10-24 宽屏线报：各线工作树停在不同 main，轮流刷 xc3 等共享现行，改写 / 着色器键来回变、反复重烘、烘焙槽长期满）：
+    # 共享根只许往前（10-24 宽屏线报：各线工作树停在不同 main，轮流刷 010074F013262000 等共享现行，改写 / 着色器键来回变、反复重烘、烘焙槽长期满）：
     #   开工后现行已被别的树按更新的 main 刷过（新现行的来源提交不是本树来源的祖先）→ 本阶段作废、不重放——原先照样把旧树产物连同旧 .root_src
     #   重放到新现行上，等于把共享现行退回旧版本，下一个新树按键不符又重烘。旧树要用自己的产物走私有根（S2A_ROOTS=…/roots_priv/<名>）
     #   只在新树动过「本阶段」时作废（本阶段声明的 .stage_* 键与开工时不同）：新树只刷了别的阶段（如改写）就照常重放本阶段、来源提交留新的——
@@ -327,7 +327,7 @@ root_stage_done() {   # S2A_STAGE_KEYS=<文件>：只算键模式——记「阶
 #   root_pso0 <产物根或其 shaders 的上一级>：有管线分片（shader_pack.json 的 pso.chunks > 0）而归档 0 KB → 打印分片数、返回 0（= 是坏的）；
 #   没有分片（程序 0）、没有 shader_pack.json、旧版没有这两个字段 → 返回 1（不算 0 KB）
 #   直连款（包里有直连库，root_has_direct）→ 返回 1：双轨口径下通用段本来就不出管线归档（pack/refresh.sh S2A_SHADER_NO_PSO=1），
-#   shader_pack.json 照记计划分片数、归档 0 KB 是有意的（10-25 动森 3.0.3 正式包「4000 片全部失败」误红、没登记）；直连库没出成时通用走全量、照判
+#   shader_pack.json 照记计划分片数、归档 0 KB 是有意的（10-25 01006F8002326000 3.0.3 正式包「4000 片全部失败」误红、没登记）；直连库没出成时通用走全量、照判
 # root_has_direct <产物根>：现行有直连库——keys.tsv 非空，或离线 0 支的三种形态：OpenGL 只有 gl/gl_shaders.tsv 表头、Vulkan 只有 vk/vk_shaders.tsv 表头
 #   （运行时生成 SPIR-V、出包不起局，11-05）、抽取缺口的运行时现编空库 runtime_only.txt。与 pack/stage_direct.sh「算出了库」同一口径
 #   （11-05：原先只认 keys.tsv 非空，这三种都会被当成通用款去查管线归档 0 KB、登记闸门误红）

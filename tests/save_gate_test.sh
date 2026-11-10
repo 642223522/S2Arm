@@ -6,4 +6,4 @@
 set -euo pipefail
 R=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d "${TMPDIR:-/tmp}/save_gate.XXXXXX"); trap 'rm -rf "$T"' EXIT
 "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -I"$R/ios" "$R/tests/save_gate/t_save_gate.c" -o "$T/t"
-"$T/t"
+"$T/t" "$R/ios/save_transfer.m"

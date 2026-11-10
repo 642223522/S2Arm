@@ -164,6 +164,17 @@ class MacDisplayTests(unittest.TestCase):
         self.save(docked="handheld", hud=True, rumble=False, rumbleLevel="4", motion=False)
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_DOCKED": "0", "S2A_HUD": "1", "S2A_RUMBLE": "0", "S2A_RUMBLE_SCALE": "1.8", "S2A_MOTION": "0"})
 
+    def test_max_blast_rumble_level(self):
+        # 「震爆我」(5) → 倍率 5.0；iOS ios/controller.m 的六档倍率表与定义表一致
+        self.caps()
+        self.save(rumbleLevel="5")
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_RUMBLE_SCALE"], "5.0")
+        import re
+        table = json.loads((REPO / community.SETTINGS_TABLE).read_text(encoding="utf-8"))
+        scale = next(i for i in table["items"] if i["id"] == "rumbleLevel")["scale"]
+        ios = re.search(r"gains\[6\] = \{([^}]*)\}", (REPO / "ios" / "controller.m").read_text(encoding="utf-8")).group(1)
+        self.assertEqual([float(x.strip().rstrip("f")) for x in ios.split(",")], [scale[str(i)] for i in range(6)])
+
     def test_pad_face_is_shared_by_every_game(self):
         # 全游戏共用：存数据目录 game-settings.json、不进这款 launch.json；另一款（没有 Mac 版）也读到「按位置」；起局转 S2A_PAD_FACE=position
         self.caps()

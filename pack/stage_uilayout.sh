@@ -30,7 +30,7 @@ BID=$(xxd -s 0x40 -l 16 -p "$CUR/exefs/main"); OV=${S2A_WIDEN_DIR:-${S2A_RUN_ROO
 has=0; for d in Layout UI Pack; do [ -d "$ORIG/$d" ] && has=1; done
 if [ ! -d "$OV" ] && [ $has = 1 ] && [ -f "$GEN" ]; then
   T=$OV.tmp.$$; rm -rf "$T"; mkdir -p "$T"
-  # 生成有报错（解不开 / 改坏的包）只打黄：报错的包不覆盖、其余照常（宽屏是画质项，不挡出包；10-28 王国之泪带字典 zstd 全报错，整款出不了包）
+  # 生成有报错（解不开 / 改坏的包）只打黄：报错的包不覆盖、其余照常（宽屏是画质项，不挡出包；10-28 0100F2C0115B6000带字典 zstd 全报错，整款出不了包）
   failed=0
   /usr/bin/python3 "$GEN" "$ORIG" "$T/romfs" "$WD" > "$T/gen.log" 2>&1 || failed=1
   if [ "$failed" = 1 ] && [ -z "$(find "$T/romfs" -type f ! -name '.DS_Store' -print -quit 2>/dev/null)" ]; then
@@ -51,7 +51,7 @@ root_stage_done "$CUR" uilayout "$K" && { echo "🟢 $G 现行已是布局覆盖
 TAG=$(root_tag "$G" "ui-w$WD-${K:0:8}"); W=$(ROOT_OWN_ROMFS=1 root_begin "$G" "$TAG") || exit 1
 # 只许替换、上一版清单都对着这次要提交的工作树 W 核（root_begin 从此刻的现行克隆）：开头记下的 $CUR 只是起跑时的现行，生成覆盖包要几分钟，
 #   期间并行的改写 / 追加内容等阶段提交，旧版本按「只留现行 + 上一版」被删（pack/roots.sh root_commit），$CUR/romfs 整个不在。
-#   10-26 斯普拉遁3 普查：28 个覆盖文件全判成「原版没有」（报的正是排序后的前三个），现行已换成改写阶段的 rw-…-spin
+#   10-26 0100C2500FC20000 普查：28 个覆盖文件全判成「原版没有」（报的正是排序后的前三个），现行已换成改写阶段的 rw-…-spin
 PREV=$(grep -v '^$' "$W/ui_overlay.tsv" 2>/dev/null)
 miss=$(printf '%s\n%s\n' "$FL" "$PREV" | grep -v '^$' | while read -r f; do [ -f "$ORIG/$f" ] && [ -f "$W/romfs/$f" ] || echo "$f"; done)
 # 宽屏是画质项，不挡出包（10-26 维护者）：原版 / 这次的产物根里没有的文件打黄、不覆盖也不恢复（只许替换），其余照做

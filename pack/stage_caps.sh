@@ -26,7 +26,7 @@ fi
 #   验证账（实测退回，caps_policy fps60_measured）只取本款程序号的行：别的款入账不让本款重出清单（S2A_DEPS_KEYED：清单里不整份记它）
 #   判定代码与登记表（caps_policy / caps_ledger / profile_guess 及其导入、名单_*.tsv）按实际读入进键，不再手工列（10-30 根修：名单永远落后于代码）
 #   能力的宿主实现文件（caps_policy SIGNAL_IMPL：caps.c / widen.c / nvn_mtl.m …）同理：caps_policy 只按去注释、去日志文本的判定文本读它们，
-#   那份判定文本已由下面的强信号失效键（signal-hash）进键；按原始字节再整份记，改一行注释就整段重出清单（10-31 出包线：马车8 只改 caps.c 一行注释，清单重出 46 秒）
+#   那份判定文本已由下面的强信号失效键（signal-hash）进键；按原始字节再整份记，改一行注释就整段重出清单（10-31 出包线：0100152000022000 只改 caps.c 一行注释，清单重出 46 秒）
 SIF=$("$PY" "$R/tools/caps_policy.py" signal-files --target "$TGT") && [ -n "$SIF" ] || { echo "【红】$G 取不到能力实现文件清单（tools/caps_policy.py signal-files --target ${TGT}）"; exit 1; }
 export S2A_DEPS_KEYED=docs/名单_验证账.tsv:$SIF
 K=$({ grep -i "^$PID	" "$R/docs/名单_验证账.tsv" 2> /dev/null; echo "rewrite=$RWK"

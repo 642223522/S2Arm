@@ -4,7 +4,7 @@ using System;
 namespace S2A.Services
 {
     // Ryujinx 的计数器改用游戏读到的同一个（原生层 s2a_guest_tick，Switch 19.2 MHz / Switch 2 31.25 MHz，频率 s2a_guest_tick_hz）：时间服务把稳态时钟基准按它写进共享内存，
-    // 游戏用自己的计数器减基准算当前时间——两者零点不同（宿主开机 vs 进程启动）就差出整段宿主开机时长（对拍查出动森时间晚 10 小时）。
+    // 游戏用自己的计数器减基准算当前时间——两者零点不同（宿主开机 vs 进程启动）就差出整段宿主开机时长（对拍查出01006F8002326000时间晚 10 小时）。
     // 计数器从宿主开机起算，所以「自创建起」的耗时也按它算；不支持变速与暂停（S2Arm 不暂停游戏），被调到报红。
     sealed unsafe class NativeTickSource : ITickSource
     {

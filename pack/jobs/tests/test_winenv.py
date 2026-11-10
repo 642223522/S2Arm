@@ -42,6 +42,7 @@ class FakeProbe:
             "usbmux_port": {"connected": True},
             "usb_devices": {"USB": 0, "Network": 0},
             "icloud": {"packages": [], "legacy": []},
+            "apple_devices": {"packages": []},
         }
 
     def __call__(self, kind, **options):
@@ -203,21 +204,42 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("ABC", json.dumps(report))
         self.assertIn("disk", [c["id"] for c in report["checks"]])
 
-    def test_service_access_denied_is_not_absent(self):
+    def test_service_access_denied_is_not_absent(self):   # 端口不通时才查服务；读不到服务照实写「读不到」，不漏私密原文
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = PermissionError("device_id=PRIVATE")
         report = self.report()
-        self.assertEqual(self.item(report, "apple_driver")["status"], "error")
+        c = self.item(report, "apple_driver")
+        self.assertEqual(c["status"], "missing"); self.assertIn("服务 Apple Mobile Device Service：读不到", c["message"])
         self.assertNotIn("PRIVATE", json.dumps(report))
 
     def test_service_stopped_is_not_ready(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = {"state": 1}
-        self.probe.values["usbmux_port"] = {"connected": False}   # 端口通就算就绪（#424）：这里测的是服务有问题且端口不通
-        self.assertEqual(self.item(self.report(), "apple_driver")["status"], "mismatch")
+        c = self.item(self.report(), "apple_driver")
+        self.assertEqual(c["status"], "mismatch"); self.assertIn("服务 Apple Mobile Device Service：已停止", c["message"])
 
     def test_service_absent_is_named(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = FileNotFoundError()
-        self.probe.values["usbmux_port"] = {"connected": False}   # 端口通就算就绪（#424）：这里测的是服务有问题且端口不通
-        self.assertEqual(self.item(self.report(), "apple_driver")["status"], "missing")
+        c = self.item(self.report(), "apple_driver")
+        self.assertEqual(c["status"], "missing")
+        for place in ("本机usbmux端口 127.0.0.1:27015：连不上", "服务 Apple Mobile Device Service：没装", "商店版 Apple Devices：没装"):
+            self.assertIn(place, c["message"])   # 「复制错误摘要」带上查过的三处
+
+    def test_store_apple_devices_without_legacy_service_is_ready(self):   # #424：商店版不注册老式服务名，端口通即就绪
+        self.probe.values["service"] = FileNotFoundError()
+        self.probe.values["apple_devices"] = {"packages": [{"Name": "AppleInc.AppleDevices", "Status": "Ok", "Version": "1.0.0.0"}]}
+        report = self.report()
+        self.assertTrue(self.item(report, "apple_driver")["ok"])
+        self.assertFalse(any(k == "service" for k, _ in self.probe.calls))   # 端口通就不再看服务名
+
+    def test_store_apple_devices_port_closed_says_open_app(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
+        self.probe.values["service"] = FileNotFoundError()
+        self.probe.values["apple_devices"] = {"packages": [{"Name": "AppleInc.AppleDevices", "Status": "Ok", "Version": "1.0.0.0"}]}
+        c = self.item(self.report(), "apple_driver")
+        self.assertEqual(c["status"], "missing")
+        self.assertIn("打开一次Apple Devices", c["message"]); self.assertIn("商店版 Apple Devices：已装（1.0.0.0 Ok）", c["message"])
 
     def test_missing_binary_has_manual_hint(self):
         self.probe.values["file"] = {"exists": False, "regular": False}
@@ -283,11 +305,11 @@ class EnvironmentTests(unittest.TestCase):
         for kind, bad in (("python", {"version": "3.13", "packages": {}}),
                           ("impactor", {"verdict": "ok"}),
                           ("disk", {"free": True}),
-                          ("service", {"state": True})):
+                          ("usbmux_port", {"connected": 1})):
             with self.subTest(kind=kind):
                 self.probe.values[kind] = bad
                 ident = {"python": "python", "impactor": "impactor",
-                         "disk": "disk", "service": "apple_driver"}[kind]
+                         "disk": "disk", "usbmux_port": "apple_driver"}[kind]
                 self.assertEqual(self.item(self.report(), ident)["status"], "error")
                 self.probe = FakeProbe()
 
@@ -1012,23 +1034,14 @@ class RecoveryMappingTests(unittest.TestCase):
         self.assert_recovery(self.report(), "metal", "missing", "win_metal_missing")
 
     def test_recovery_apple_driver_missing(self):
-        self.probe.values["service"] = FileNotFoundError()
         self.probe.values["usbmux_port"] = {"connected": False}
+        self.probe.values["service"] = FileNotFoundError()
         self.assert_recovery(self.report(), "apple_driver", "missing", "win_apple_devices_missing")
 
     def test_recovery_apple_service_stopped(self):
-        self.probe.values["service"] = {"state": 1}
         self.probe.values["usbmux_port"] = {"connected": False}
+        self.probe.values["service"] = {"state": 1}
         self.assert_recovery(self.report(), "apple_driver", "mismatch", "win_apple_service_stopped")
-
-    def test_usbmux_port_decides_even_without_the_service_name(self):
-        # #424：微软商店版 Apple Devices 能识别设备，系统服务里查不到「Apple Mobile Device Service」；端口能连上就是就绪（装机真正用的是端口）。
-        #   服务在但没运行、端口却通（别的方式起的 usbmux）同样算就绪
-        for service in (FileNotFoundError(), {"state": 1}):
-            with self.subTest(service=service):
-                self.probe.values["service"] = service
-                self.probe.values["usbmux_port"] = {"connected": True}
-                self.assertEqual(self.item(self.report(), "apple_driver")["status"], "ok")
 
     def test_recovery_usb_unverified(self):
         self.assert_recovery(self.report(), "apple_usb", "unverified", "device_not_connected")
@@ -1053,7 +1066,7 @@ class RecoveryMappingTests(unittest.TestCase):
 
     def test_recovery_probe_failure_is_not_component_pending(self):
         for kind, ident in (("host", "host"), ("python", "python"), ("impactor", "impactor"), ("pack", "pack.items"),
-                            ("metal", "metal"), ("service", "apple_driver"),
+                            ("metal", "metal"), ("usbmux_port", "apple_driver"),
                             ("usb_devices", "apple_usb"), ("icloud", "anisette"), ("disk", "disk")):
             with self.subTest(ident=ident):
                 self.probe = FakeProbe()

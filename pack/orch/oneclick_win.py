@@ -247,7 +247,7 @@ def env_items(target, shell):
             f'预编 spirv-cross 进程内库 + 命令行（{pre}\\spvc，源码身份与本引擎相同才用）')
     else:
         add('clang++', shutil.which('clang++'), '直连库现编 spirv-cross 命令行（spvc_inproc.py cli）')
-    from pack.orch.stages import LAYOUT_ZSTD   # 布局阶段钉的 zstd 命令行版本（11-05 一次成功线 ty4 ARMS：Windows 出包机 1.5.6，轻阶段才报「布局需要钉版zstd 1.5.7」）
+    from pack.orch.stages import LAYOUT_ZSTD   # 布局阶段钉的 zstd 命令行版本（11-05 一次成功线 ty4 01009B500007C000：Windows 出包机 1.5.6，轻阶段才报「布局需要钉版zstd 1.5.7」）
     zc = shutil.which('zstd'); zv = subprocess.run([zc, '--version'], capture_output=True, text=True).stdout.strip() if zc else ''
     add('zstd-cli', re.search(rf'\bv{re.escape(LAYOUT_ZSTD)}\b', zv), f'布局阶段要 zstd 命令行 {LAYOUT_ZSTD}（现有：{zv or "PATH 上没有"}；官方发行包 zstd-v{LAYOUT_ZSTD}-win64 放进机器环境 PATH）', found=bool(zv))
     if target == 'ios':

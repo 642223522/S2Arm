@@ -1,6 +1,6 @@
 #!/bin/bash
 # 出包时生成 RomFS 预建索引：bash services/romfs_index.sh <游戏数据根>（含 romfs/），写 <根>/romfs.s2aidx。
-# 起局（Application.Register）见到它就不再枚举 romfs/ 现建镜像（动森 Mac 暖 450 ms → 见单测读数）。romfs/ 内容一变就要重出。
+# 起局（Application.Register）见到它就不再枚举 romfs/ 现建镜像（01006F8002326000 Mac 暖 450 ms → 见单测读数）。romfs/ 内容一变就要重出。
 # 构建失败 = 红，不许拿上一次留下的旧 romfs_index.dll 顶上（T141 #937：旧写法 `dotnet build … | grep … | sort -u || true` 把失败吞成 rc=0，
 #   接着 exec 旧 DLL 写旧逻辑的索引；上层 stage_romfsidx.sh 只看退出码与产物非空，看不出「没换成新的」）。
 # 区分两件事：增量构建「没有变化」= build rc=0（照常跑已有 DLL）；「构建失败」= rc≠0（非 0 退出、不跑任何 DLL）。

@@ -47,7 +47,7 @@ VS = P.rstrip('/') + '.verify.tsv'; prev = {}
 try:
     for l in open(VS, encoding='utf-8'): r = l.rstrip('\n').split('\t'); prev[r[0]] = tuple(r[1:])
 except (OSError, ValueError): prev = {}
-def sig(p, q, sha, a=None, b=None):   # a / b：调用方已取的 os.stat（Windows 上每次 stat 都要开文件，11-06 出包速度线：王国之泪 30.5 万个文件核对 236 秒）
+def sig(p, q, sha, a=None, b=None):   # a / b：调用方已取的 os.stat（Windows 上每次 stat 都要开文件，11-06 出包速度线：0100F2C0115B6000 30.5 万个文件核对 236 秒）
     a, b = a or os.stat(p), b or os.stat(q); return (str(a.st_size), str(a.st_mtime_ns), str(b.st_size), str(b.st_mtime_ns), sha)
 bad = []; rec = {}; todo = []
 for rel, p in src.items():
@@ -77,7 +77,7 @@ def check(t):   # 一个文件：字节数 → 逐字节比源 → SHA 对 index
                 h.update(b)
     if h.hexdigest() != sha: return rel, f'{rel}（SHA 与 index 不符）'
     return rel, sig(p, q, sha, sp, sq)
-# 逐文件互不依赖：按本机核数并行（S2A_JOBS，tools/cores.sh；10-25 维护者「要适配机器的核心数」——原先串行，动森 11 万个文件核对 33 秒只用 0.47 核）；
+# 逐文件互不依赖：按本机核数并行（S2A_JOBS，tools/cores.sh；10-25 维护者「要适配机器的核心数」——原先串行，01006F8002326000 11 万个文件核对 33 秒只用 0.47 核）；
 #   读文件、算哈希期间释放 GIL，线程即可。进度写 S2A_PROGRESS（tools/progress.py）
 tk = Ticker('资源包核对', len(todo))
 def block(b):

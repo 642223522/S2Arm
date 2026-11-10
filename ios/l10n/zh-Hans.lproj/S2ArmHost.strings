@@ -208,6 +208,7 @@
 "vpad.rumble.level.2" = "标准";
 "vpad.rumble.level.3" = "较强";
 "vpad.rumble.level.4" = "强";
+"vpad.rumble.level.5" = "震爆我";
 "vpad.rumble.strength" = "震动强度";
 "vpad.stick.deadzone" = "径向死区";
 "vpad.stick.exponent" = "响应指数";
@@ -371,9 +372,10 @@
 "save.pickCancelled" = "已取消选择备份。";
 "save.processing" = "正在处理存档，请稍候…";
 "save.quit.back" = "返回游戏";
-"save.quit.confirm" = "已保存，退出游戏";
-"save.quit.message" = "请先在游戏内保存进度。确认后将退出 App；下次打开时进入存档管理。尚未保存的进度会丢失。";
-"save.quit.title" = "退出游戏后管理存档";
+"save.quit.manage" = "退出并管理存档";
+"save.quit.message" = "请先在游戏内保存进度，尚未保存的进度会丢失。选「退出并管理存档」，下次打开这款游戏时先进存档管理。";
+"save.quit.only" = "退出游戏";
+"save.quit.title" = "退出游戏";
 "save.readFailed" = "无法读取备份，请确认文件已下载且设备空间充足。";
 "save.readFailed.detail" = "无法读取备份，请确认文件已下载且设备空间充足。\n%@";
 "save.reading" = "正在读取所选备份…";

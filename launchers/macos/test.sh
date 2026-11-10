@@ -19,8 +19,8 @@ python3 launchers/macos/check_xctest.py build/macos/tests/swift-discovery.log bu
 [ "$swift_rc" = 0 ] || exit "$swift_rc"
 xcrun clang -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter -Iruntime/include -Iios \
   launchers/macos/Tests/input_test.m runtime/src/input_config.c runtime/src/pad.c ios/input_config.m -o build/macos/tests/input \
-  macos/ns2_controller.c runtime/ns2pro/*.c runtime/ns2pro/NS2Transport.m -Iruntime/ns2pro/include \
-  -framework AppKit -framework CoreGraphics -framework GameController -framework CoreHaptics -framework QuartzCore -framework CoreBluetooth
+  macos/ns2_controller.c macos/joycon_imu.m runtime/ns2pro/*.c runtime/ns2pro/NS2Transport.m -Iruntime/ns2pro/include \
+  -framework AppKit -framework CoreGraphics -framework GameController -framework CoreHaptics -framework QuartzCore -framework CoreBluetooth -framework IOKit
 build/macos/tests/input
 # 系统键盘桥接 Mac 端（textinput_mac.m + runtime/src/text_input.c）：真起 AppKit 表单，程序代填字 / 点按钮核回调
 xcrun clang -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter -Iruntime/include -Iios \

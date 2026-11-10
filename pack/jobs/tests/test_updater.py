@@ -139,6 +139,33 @@ class ApplyTests(Base):
         self.assertFalse(backup.exists())
         self.assertEqual(self.data(), before)
 
+    def test_retry_when_restore_leaves_an_empty_backup_keeps_the_old_copy(self):
+        # 审计 P1-157：上次中断在「安装目录已改名为 .s2arm-old、新版还没换上」。这次先把副本搬回：整段改名被拒（目录被占用）→ 逐项搬，
+        #   搬空的 .s2arm-old 删不掉留成空目录。期望（手写）：空目录不当成「还有一份旧版」，旧版留在安装目录；新版起不来就回到它，
+        #   失败句「已回到旧版」与盘上一致（原先把刚搬回的旧版当坏的删掉，安装目录没有 S2Arm.exe，失败句仍写「已回到旧版」）
+        backup = self.install.with_name("S2Arm.s2arm-old")
+        os.rename(self.install, backup)
+        real_rename, real_rmdir = updater.retry_rename, Path.rmdir
+        def rename(src, dst, *a, **kw):
+            if Path(src) == backup and Path(dst) == self.install:
+                raise PermissionError(13, "held open")
+            return real_rename(src, dst, *a, **kw)
+        def rmdir(path, *a, **kw):
+            if Path(path) == backup:
+                raise OSError(16, "busy")
+            return real_rmdir(path, *a, **kw)
+        with patch.object(updater, "retry_rename", rename), patch.object(Path, "rmdir", rmdir):
+            self.assertEqual(self.run_apply(lambda install, args: None, health=0, exit_seconds=0), 1)
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
+        failure = json.loads((self.private / "updates/last_failure.json").read_text())
+        self.assertEqual((failure["code"], failure["message"]), ("update_rolled_back", "新版没能启动，已回到旧版。"))
+
+    def test_holds_copy_ignores_empty_leftovers(self):
+        empty = self.root / "empty"; empty.mkdir()
+        self.assertTrue(updater.holds_copy(self.install))
+        self.assertFalse(updater.holds_copy(empty))
+        self.assertFalse(updater.holds_copy(self.root / "missing"))
+
     def test_retry_with_missing_staged_files_restores_the_old_install(self):
         before = self.data()
         backup = self.install.with_name("S2Arm.s2arm-old")

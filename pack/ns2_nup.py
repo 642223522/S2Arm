@@ -185,7 +185,7 @@ class Nup:
         return self
 
     def __exit__(self, et, ev, tb):
-        # with 块里已经出错时，关映射失败不能盖掉原异常（11-06 Windows 出包机时之笛：并发出包把 T 盘写满，原样文件写到一半抛 OSError 28，
+        # with 块里已经出错时，关映射失败不能盖掉原异常（11-06 Windows 出包机0400486024DEC000：并发出包把 T 盘写满，原样文件写到一半抛 OSError 28，
         #   退出时 mm.close() 因还有导出的视图抛 BufferError，日志只剩 BufferError）：原异常照抛，附一句关映射失败的说明
         try:
             self.close()

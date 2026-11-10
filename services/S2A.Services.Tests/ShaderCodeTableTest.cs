@@ -96,7 +96,7 @@ namespace S2A.Services.Tests
     //   同时灌进新表（Ryujinx 树内）与上游原版副本（UpstreamHashTable/），逐样本比 TryFindItem：是否命中、命中哪一项、命中数据长度。
     //   另用暴力判据（按前 64 字节分组后逐条比字节，不经两张表）算「内存里能匹配的已存代码集合」，三方比：真实语料轮新表 = 上游 = 暴力；
     //   造前缀对轮（A 是 B 的前缀）新表 = 暴力且取最长，上游在这类样本上会漏报（二分落到 B 的部分条目后找不回 A），只报数。
-    //   语料目录：S2A_SHCODE_CORPUS（冒号分隔的 shcache/<程序号> 目录），缺省动森 + 塞尔达现行产物根；目录不在就报「无语料」（行里看得见，不会静默变绿）。
+    //   语料目录：S2A_SHCODE_CORPUS（冒号分隔的 shcache/<程序号> 目录），缺省01006F8002326000 + 一款第一方动作冒险游戏现行产物根；目录不在就报「无语料」（行里看得见，不会静默变绿）。
     public static class ShaderCodeTableDiffTest
     {
         private sealed class MemAccessor : Ryujinx.Graphics.Gpu.Shader.HashTable.IDataAccessor
