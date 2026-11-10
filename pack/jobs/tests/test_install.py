@@ -4,7 +4,7 @@ import unittest.mock as um
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import install
-from core import Failure
+from core import Failure, atomic
 import tests.test_jobs as tj   # 只借 JobsTests 的夹具；不 from-import 类名，免得 unittest 把它整组再跑一遍
 from tests.jobcase import ios_fixture
 import layout
@@ -162,8 +162,14 @@ class ShellSdkTests(unittest.TestCase):
                 self.assertIn("iOS 26.5", c.diagnostic.call_args.args[0]); self.assertIn("iOS 27.1", c.diagnostic.call_args.args[0])
 
 
+def _jobs_setup_no_phone_games(self):
+    """JobsTests 的夹具 + 手机上没有别的游戏（install.phone_games 替身：这些用例不测「读手机游戏清单」，那条另有用例）"""
+    tj.JobsTests.setUp(self)
+    p = um.patch.object(install, "phone_games", lambda c, ph: set()); p.start(); self.addCleanup(p.stop)
+
+
 class FlowTests(unittest.TestCase):
-    setUp = tj.JobsTests.setUp; tearDown = tj.JobsTests.tearDown   # 只借夹具（临时游戏库 / 私有目录 / 任务上下文），不继承它的用例
+    setUp = _jobs_setup_no_phone_games; tearDown = tj.JobsTests.tearDown   # 只借夹具（临时游戏库 / 私有目录 / 任务上下文），不继承它的用例
 
     def _fixture(self, gid):
         """这款出好的 iPhone 版（本壳 SHELL1 出的容器件 + 资源包 cafe01）→ (image/ios, 资源包)"""
@@ -687,7 +693,7 @@ class SaveBackupTests(unittest.TestCase):
 
 class AssembleTests(unittest.TestCase):
     """现组容器（assemble）/ put_game / 手机侧 S2Arm.ipa 与上一版（commit_phone_ipa、restore_previous）/ remove_from_phone 的细粒度测试（游戏库结构 v3）"""
-    setUp = tj.JobsTests.setUp; tearDown = tj.JobsTests.tearDown
+    setUp = _jobs_setup_no_phone_games; tearDown = tj.JobsTests.tearDown
     A, B, C = "0100000000010000", "0100000000020000", "0100000000030000"
     COMPAT = dict(hostAbi=1, dmshChain="aaaa")   # 替身：本版引擎（新宿主）的兼容判据
 
@@ -1015,3 +1021,49 @@ class DevicectlTimeoutTests(unittest.TestCase):
                 rc, data, err = diag.devicectl(c, "device", "info", "files", timeout=120)
         self.assertEqual((rc, data), (124, {}))
         self.assertIn("锁屏", err)
+
+
+class PhoneGamesTruthTests(unittest.TestCase):
+    """两端混装（同一台手机 Mac 装几款、Windows 再装一款）：手机上有哪些游戏以手机为准（期望按规则手写）"""
+    A, B, C, D = "0100000000010000", "0100000000020000", "0100000000030000", "0100000000040000"
+    setUp = tj.JobsTests.setUp; tearDown = tj.JobsTests.tearDown
+
+    def client(self, games_ls, applied, ls_error=None):
+        test = self
+        class Cl:
+            def call(self, op, rel):
+                if ls_error: return 1, ls_error
+                return 0, "\n".join(games_ls)
+            def ls(self, rel):
+                g = rel.split("/")[2]
+                return [".applied", "index.tsv"] if g in applied else ["index.tsv"]
+            def get(self, rel, dst): return False
+        return lambda c, udid, bid, work: Cl()
+
+    def ph(self):
+        return types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345")
+
+    def test_only_game_ids_with_applied_pack_count(self):
+        with um.patch.object(install, "devpush_client", self.client([self.A + "/", "notes", self.B, "0100000000099999x", self.C], {self.A, self.C})):
+            self.assertEqual(install.phone_games(self.c, self.ph()), {self.A, self.C})   # B 没解开、别的名字跳过
+
+    def test_app_not_installed_is_empty_other_errors_stop(self):
+        with um.patch.object(install, "devpush_client", self.client([], set(), ls_error="取不到 x 的容器：unknown error `ApplicationLookupFailed` returned from device")):
+            self.assertEqual(install.phone_games(self.c, self.ph()), set())
+        with um.patch.object(install, "devpush_client", self.client([], set(), ls_error="connection reset")), self.assertRaises(Failure) as e:
+            install.phone_games(self.c, self.ph())
+        self.assertEqual(e.exception.code, "device_locked")
+
+    def test_include_what_we_can_ask_before_dropping_the_rest(self):
+        # 本机记录 A；手机上 A、B、C；本机游戏库有 C（另一台电脑装的、这台也导入过）→ 带 A、C；B 只在手机上 → 先问
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲"), dict(id=self.C, name="丙")]))
+        rec = dict(games={self.A: {}})
+        with um.patch.object(install, "phone_games", lambda c, ph: {self.A, self.B, self.C}), \
+             um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "乙游戏"):
+            with self.assertRaises(Failure) as e:
+                install.container_others(self.c, self.ph(), rec, leave=self.D)
+            self.assertEqual(e.exception.code, "container_would_drop")
+            self.assertIn("1 款", str(e.exception)); self.assertIn("乙游戏", str(e.exception))
+            self.c.r["acceptDropped"] = True
+            self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.C])
+

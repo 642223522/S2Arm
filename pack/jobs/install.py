@@ -946,6 +946,67 @@ def phone_for(c):
     return WinPhone(c) if os.name == "nt" else MacPhone(c)
 
 
+GID_RE = re.compile(r"[0-9A-F]{16}")
+
+
+def phone_games(c, ph):
+    """这台手机上的 S2Arm 里有哪些游戏——真相在手机上，不在某一台电脑的设备记录里（同一台手机 Mac 装几款、Windows 再装一款时，
+    各自的记录只有自己装的）。列这个包名的 Documents/games/：只认目录名是 16 位游戏号、资源包已解开（资源包/.applied）的，别的跳过。
+    手机明确答没装这个 App（ApplicationLookupFailed）→ 空；别的列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
+    bid = ph.bid or (ph.bundle_for_signing() if hasattr(ph, "bundle_for_signing") else None)
+    if not bid or not ph.udid:
+        return set()
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = devpush_client(c, ph.udid, bid, w)
+        rc, out = cl.call("ls", "Documents/games")
+        if rc:
+            if "ApplicationLookupFailed" in out:
+                return set()
+            if "No such file" in out or "ObjectNotFound" in out:   # App 在、还没装过任何一款
+                return set()
+            raise Failure("读不出 iPhone 上已经装了哪些游戏：" + out[-200:] + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
+        found = set()
+        for name in out.splitlines():
+            g = name.strip().rstrip("/").upper()
+            if GID_RE.fullmatch(g) and ".applied" in (cl.ls(f"{game_docs(g)}/资源包") or []):
+                found.add(g)
+        return found
+
+
+def phone_game_name(c, ph, gid, names):
+    """确认框里的名字：本机游戏库有就用库里的，否则读手机上这款资源包自带的 control.nacp，再不行用游戏号"""
+    if names.get(gid):
+        return names[gid]
+    try:
+        import library
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            dst = Path(w) / "control.nacp"
+            if devpush_client(c, ph.udid, ph.bid, w).get(f"{game_docs(gid)}/资源包/ctl/control.nacp", dst):
+                dump = library.engine_tool(c, "ns2_dump")
+                n = dst.read_bytes()
+                return dump.nacp_title(n, 14) or dump.nacp_title(n, 0) or gid
+    except Exception:   # noqa: BLE001 —— 名字读不到就用游戏号
+        pass
+    return gid
+
+
+def container_others(c, ph, rec, leave=None):
+    """现组容器要带的别的款：这台电脑记录的 + 手机上实际有的（phone_games）。手机上有、这台电脑没记录、游戏库里也没有的，带不进去
+    （App 里的游戏程序读不回电脑）：没带 acceptDropped 就停下报 container_would_drop，列出这几款，玩家确认后再装；确认了就不带它们——
+    它们的存档和资源包还在手机上，在原来那台电脑上再装一次就回来"""
+    known = set(rec.get("games", {}))
+    on_phone = phone_games(c, ph)
+    names = {g["id"].upper(): g.get("name") or "" for g in c.catalog()["games"]}
+    candidates = sorted((known | on_phone) - {leave})
+    lost = [g for g in candidates if g in on_phone and g not in known and g not in names]
+    if lost and c.r.get("acceptDropped") is not True:
+        shown = [phone_game_name(c, ph, g, names) for g in lost]
+        raise Failure(f"这次会让手机上的 {len(lost)} 款游戏暂时不能玩：" + "、".join(shown)
+                      + "。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「装到 iPhone」就能回来。确认继续再点一次。",
+                      code="container_would_drop", internal=" ".join(lost))
+    return [g for g in candidates if g not in lost]
+
+
 def put_game(c, gid, ph, steps=True):
     """把这款放进容器并装到手机：现组容器（这款 + 这台手机上已有的各款，ipa.assemble）→ 覆盖装 → 推资源包：这款照推，
     别的款只推「游戏库里的资源包比手机上记的新」的（重新打过 iPhone 包、还没装到这台的），没变的不推（数据和存档不动）。
@@ -954,7 +1015,7 @@ def put_game(c, gid, ph, steps=True):
     gid = gid.upper()
     ios_pack(c, gid)   # 这款没有资源包就不组装、不装
     rec = layout.load_device(c, ph.key)
-    others = [g for g in rec.get("games", {}) if g != gid]
+    others = container_others(c, ph, rec, leave=gid)   # 手机上实际有的款也带上（另一台电脑装的），带不了的先问玩家
     if steps: c.begin("把这款放进手机上的 S2Arm", 2, 6)
     ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
     packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
@@ -1029,7 +1090,7 @@ def remove_from_phone(c):
     c.begin("备份这款的存档", 2, 4)
     backup = ph.backup(gid)
     c.begin("更新手机上的 S2Arm", 3, 4)
-    left = [g for g in rec["games"] if g != gid]
+    left = container_others(c, ph, rec, leave=gid)   # 同装机：手机上另一台电脑装的款也带上，带不了的先问
     # 最后一款（#227）：不装空容器（宿主 0 款的启动路径没在真机验过，vawin.c 报红不占窗口），手机上的 App 原样留着，
     #   下一步删掉它的数据后库界面按「数据不在」不再显示 = 空库；下次装新游戏时覆盖装把旧程序一起换掉
     if left:
