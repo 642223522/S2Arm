@@ -201,6 +201,9 @@ static void failed_session(int code) {
     _exit(EXIT_FAILURE);
 }
 
+// 宿主别处（svc_mem.c 布局判出设备放不下，#446）走同一个初启失败出口：iOS 人手局停提示页，Mac / 自动化局失败退出
+void s2a_init_failed(int code) { failed_session(code); }
+
 // 只由 session.c 在上一局 guest / 服务 / GPU 完整退休后调用。
 int s2a_host_rebuild(void) {
 #if TARGET_OS_IPHONE

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 45,
+  "revision": 46,
   "languages": ["zh-Hans", "en"],
   "source_language": "zh-Hans",
   "note": "四端（Mac / iOS / Android / 鸿蒙）启动器的「一套体验」规格。状态、文案、错误码、任务事件到界面的映射只在这里定义一次；各端只负责画，不另写一套措辞。错误码的「下一步」不在本文件里写第二份：一律指向 pack/jobs/errors.py 的 RECOVERY（口径见 README.md）。口径号 revision 改动规则见 README.md。",
@@ -528,6 +528,7 @@
       {"id": "msg_game", "macro": "S2A_INIT_FAIL_MSG_GAME", "zh-Hans": "游戏程序没能开始运行。", "en": "The game program couldn't start running."},
       {"id": "msg_generic", "macro": "S2A_INIT_FAIL_MSG_GENERIC", "zh-Hans": "启动过程中出了问题。", "en": "Something went wrong during startup."},
       {"id": "msg_files", "macro": "S2A_INIT_FAIL_MSG_FILES", "zh-Hans": "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。", "en": "Game files are missing. Import them again: in S2Arm on your computer, choose \"Install on iPhone\" for this game again."},
+      {"id": "msg_device", "macro": "S2A_INIT_FAIL_MSG_DEVICE", "zh-Hans": "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。", "en": "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."},
       {"id": "copy", "macro": "S2A_INIT_FAIL_COPY", "zh-Hans": "复制诊断", "en": "Copy diagnostics"},
       {"id": "copied", "macro": "S2A_INIT_FAIL_COPIED", "zh-Hans": "已复制", "en": "Copied"}
     ],
@@ -539,7 +540,8 @@
       {"id": "service_early", "enum": "S2A_INIT_FAIL_E_SERVICE_EARLY", "message": "msg_service"},
       {"id": "dguard_limit", "enum": "S2A_INIT_FAIL_E_DGUARD_LIMIT", "message": "msg_generic"},
       {"id": "game_files_missing", "enum": "S2A_INIT_FAIL_E_GAME_FILES", "message": "msg_files"},
-      {"id": "direct_lib_missing", "enum": "S2A_INIT_FAIL_E_DIRECT_LIB", "message": "msg_files"}
+      {"id": "direct_lib_missing", "enum": "S2A_INIT_FAIL_E_DIRECT_LIB", "message": "msg_files"},
+      {"id": "device_address_space", "enum": "S2A_INIT_FAIL_E_DEVICE_ADDRESS", "message": "msg_device"}
     ]
   },
 
