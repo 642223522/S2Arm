@@ -518,13 +518,19 @@ static void rumble_select(GCController *device) {
     atomic_store(&g_rumble_epoch, device.haptics && !rumble_off() ? ++g_rumble_counter : 0);
     dispatch_async(g_rumble_q, ^{ rumble_reset_on_queue(); g_rumble_device = device; g_rumble_retry = (s2a_hp_state){0}; g_rumble_plain_only = NO; });
 }
+// 会话号高 16 位是 MAC_RUMBLE_BASE 的走系统手柄（CoreHaptics），其余是 Switch 2 Pro（macos/ns2_controller.c，#277）的
+static BOOL rumble_is_mac(uint64_t session) { return (session & 0xffff000000000000ull) == MAC_RUMBLE_BASE; }
 static void rumble_submit(uint64_t session, const s2a_pad_vibration pair[2]) {
+    if (session && !rumble_is_mac(session)) { s2a_mac_ns2_set_rumble_pair(session, pair); return; }
     uint64_t epoch = atomic_load(&g_rumble_epoch);
     if (!epoch || session != (MAC_RUMBLE_BASE | epoch) || !g_rumble_q) return;
     s2a_pad_vibration left = pair[0], right = pair[1];   // 块里不能捕获数组：拆成两个值
     dispatch_async(g_rumble_q, ^{ s2a_pad_vibration p[2] = {left, right}; rumble_play_on_queue(p); });
 }
 __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(void) {
+    if (rumble_off()) return 0;   // 启动设置「手柄震动」关：两路都不震
+    uint64_t ns2 = s2a_mac_ns2_rumble_session();   // Switch 2 Pro 连着且在前台：震动交给它（它是输入来源时系统手柄那路不读）
+    if (ns2) return ns2;
     uint64_t epoch = atomic_load(&g_rumble_epoch);
     return epoch ? (MAC_RUMBLE_BASE | epoch) : 0;
 }
@@ -542,6 +548,7 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_rumble(uint64_t se
     rumble_submit(session, pair);
 }
 __attribute__((visibility("default"), used)) void s2a_pad_stop_rumble(uint64_t session) {
+    if (session && !rumble_is_mac(session)) { s2a_mac_ns2_stop_rumble(session); return; }
     pthread_mutex_lock(&g_rumble_mu); memset(g_rumble_pair, 0, sizeof g_rumble_pair); pthread_mutex_unlock(&g_rumble_mu);
     s2a_pad_vibration zero[2] = {{0}};
     rumble_submit(session, zero);

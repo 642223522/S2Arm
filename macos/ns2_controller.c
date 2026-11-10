@@ -275,14 +275,14 @@ ns2_status s2a_mac_ns2_status(void) {
 }
 
 #define EXPORT __attribute__((visibility("default"), used))
-EXPORT uint64_t s2a_pad_rumble_session(void) {
+uint64_t s2a_mac_ns2_rumble_session(void) {
     pthread_mutex_lock(&lock);
     uint64_t session = ready && foreground ? epoch : 0;
     pthread_mutex_unlock(&lock);
     return session;
 }
 
-EXPORT void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration values[2]) {
+void s2a_mac_ns2_set_rumble_pair(uint64_t session, const s2a_pad_vibration values[2]) {
     ns2_vibration pair[2] = {
         {values[0].low_amp, values[0].low_hz, values[0].high_amp, values[0].high_hz},
         {values[1].low_amp, values[1].low_hz, values[1].high_amp, values[1].high_hz}
@@ -305,7 +305,7 @@ EXPORT void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration va
     }
 }
 
-EXPORT void s2a_pad_stop_rumble(uint64_t session) {
+void s2a_mac_ns2_stop_rumble(uint64_t session) {
     pthread_mutex_lock(&lock);
     int accepted = session == epoch;
     int relay = relayFD >= 0;

@@ -66,7 +66,7 @@ int main(void) {
     assert(s2a_mac_ns2_connect() && starts == 1 && imu);
     s2a_mac_ns2_focus(1);
     status_callback(NS2_STATUS_READY, "test connected", NULL);
-    uint64_t session = s2a_pad_rumble_session();
+    uint64_t session = s2a_mac_ns2_rumble_session();
     assert(session);
     // Physical Nintendo A, left stick up, and full independent right stick.
     ns2_state physical = {.buttons=1, .lx=-32767, .ly=32767, .rx=12345, .ry=-23456};
@@ -94,23 +94,23 @@ int main(void) {
     assert(motion.host_timestamp_us == 123456 && motion.gyro_x == 90 && motion.gyro_y == -45);
     assert(motion.gyro_z == 180 && motion.acceleration_z == 1);
     const s2a_pad_vibration pair[2] = {{.2f, 160, .3f, 320}, {.4f, 80, .5f, 640}};
-    s2a_pad_set_rumble_pair(session, pair);
+    s2a_mac_ns2_set_rumble_pair(session, pair);
     assert(sends == 1 && sent[0].low_amp == .2f && sent[1].high_freq == 640);
     s2a_mac_ns2_focus(0);
-    assert(stops && !imu && !s2a_pad_rumble_session() && !s2a_mac_ns2_read(&input));
+    assert(stops && !imu && !s2a_mac_ns2_rumble_session() && !s2a_mac_ns2_read(&input));
     assert(!s2a_mac_ns2_read_motion(&motion));
-    s2a_pad_set_rumble_pair(session, pair); assert(sends == 1);
+    s2a_mac_ns2_set_rumble_pair(session, pair); assert(sends == 1);
     s2a_mac_ns2_focus(1);
     assert(imu);
-    assert(s2a_pad_rumble_session() != session);
-    s2a_pad_set_rumble_pair(session, pair); assert(sends == 1);
+    assert(s2a_mac_ns2_rumble_session() != session);
+    s2a_mac_ns2_set_rumble_pair(session, pair); assert(sends == 1);
     status_callback(NS2_STATUS_DISCONNECTED, "test disconnect", NULL);
-    assert(!s2a_mac_ns2_read(&input) && !s2a_pad_rumble_session());
+    assert(!s2a_mac_ns2_read(&input) && !s2a_mac_ns2_rumble_session());
     assert(s2a_mac_ns2_connect() && scans == 1 && starts == 1);
     status_callback(NS2_STATUS_READY, "test reconnect", NULL);
-    assert(s2a_pad_rumble_session() != session);
+    assert(s2a_mac_ns2_rumble_session() != session);
     s2a_mac_ns2_set_motion_enabled(0); assert(!imu && !s2a_mac_ns2_read_motion(&motion));
-    s2a_mac_ns2_disconnect(); assert(shutdowns == 1 && !s2a_pad_rumble_session());
+    s2a_mac_ns2_disconnect(); assert(shutdowns == 1 && !s2a_mac_ns2_rumble_session());
     assert(s2a_mac_ns2_connect() && starts == 2);
     s2a_mac_ns2_disconnect(); assert(shutdowns == 2);
 
@@ -151,9 +151,9 @@ int main(void) {
     }
     assert(motion.host_timestamp_us == 888 && motion.gyro_y == 56);
 
-    uint64_t relay_session = s2a_pad_rumble_session();
+    uint64_t relay_session = s2a_mac_ns2_rumble_session();
     assert(relay_session);
-    s2a_pad_set_rumble_pair(relay_session, pair);
+    s2a_mac_ns2_set_rumble_pair(relay_session, pair);
     memset(&packet, 0, sizeof packet);
     assert(receive_all(relay, &packet, sizeof packet));
     assert(packet.type == NS2_RELAY_RUMBLE && packet.duration_ms == 1000);
