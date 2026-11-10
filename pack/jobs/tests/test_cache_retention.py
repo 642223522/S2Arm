@@ -1,4 +1,6 @@
 """Q15: production cleanup on original, non-game directory fixtures."""
+import os
+os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 同 jobcase.py：作业开始时 layout.ensure 会起脱离作业的商店查询子进程，往 library/ 写；测试收尾删临时目录时它还在写 → Directory not empty（11-10 负载下偶发）
 import sys
 import tempfile
 import unittest
