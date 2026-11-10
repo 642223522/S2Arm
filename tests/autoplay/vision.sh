@@ -12,7 +12,7 @@ set -u
 # 解释器 / timeout 与出包、runtime/run_mac.sh 同口径：python3 = S2A_PY（环境 → tools/machine.local → PATH 上的 python3），timeout 用仓库 perl 版 tools/bin/timeout。
 #   原先直接调 PATH 上的 python3 / timeout：外部贡献者照套件第 1 步起 Mac 局，PATH 上是没装钉版包的系统 / Homebrew Python、又没有 tools/bin 时，
 #   驾驶员每一问 rc 1 / 127，自动玩家判「导航卡住」收局（11-10 M1 Pro 实走）。单测：bash tests/vision_env_test.sh
-_VD=$(CDPATH= cd "$(dirname "$0")" && pwd); . "$_VD/../../tools/_timeout.sh"
+_VD=$(CDPATH= cd "$(dirname "$0")" && pwd); [ -f "$_VD/../../tools/_timeout.sh" ] && . "$_VD/../../tools/_timeout.sh"
 _VPY=${S2A_PY:-$(bash "$_VD/../../tools/machine.sh" get S2A_PY 2> /dev/null)}; _VPY=${_VPY:-$(command -v python3)}
 python3() { "$_VPY" "$@"; }
 PNG=${1:?截图}; OUT=${2:?回答}; MODEL=${S2A_VISION_MODEL:-claude-sonnet-5-5}
