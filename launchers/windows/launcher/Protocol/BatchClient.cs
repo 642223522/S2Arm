@@ -92,6 +92,26 @@ public static class BatchClient
     /// <summary>出包前清单里勾好的一款（没勾平台的款不进批次）。</summary>
     public sealed record Entry(string GameId, string Name, IReadOnlyList<string> Platforms);
 
+    /// <summary>控制口 POST /batch 的 games（同 Mac S2ArmControl）：[{gameId, platforms:[mac|iphone]}]，platforms 缺省 iphone、ios 认作 iphone；
+    /// 同一款给两次按第一次。形状不对给错误句（控制口回 400）。</summary>
+    public static (IReadOnlyList<(string GameId, string[] Platforms)> Games, string? Error) ControlGames(JsonElement body)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("games", out var games) || games.ValueKind != JsonValueKind.Array || games.GetArrayLength() == 0)
+            return ([], "games 要给 [{gameId, platforms:[mac|iphone]}]");
+        var list = new List<(string, string[])>();
+        foreach (var g in games.EnumerateArray())
+        {
+            if (g.ValueKind != JsonValueKind.Object || !g.TryGetProperty("gameId", out var id) || id.ValueKind != JsonValueKind.String || id.GetString() is not { Length: > 0 } gid)
+                return ([], "games 里每项要有 gameId");
+            string[] ps = g.TryGetProperty("platforms", out var p) && p.ValueKind == JsonValueKind.Array
+                ? p.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString()! : "").Select(x => x == "ios" ? "iphone" : x).Distinct().ToArray()
+                : ["iphone"];
+            if (ps.Length == 0 || ps.Any(x => x is not ("iphone" or "mac"))) return ([], "platforms 只认 mac / iphone");
+            if (!list.Any(x => string.Equals(x.Item1, gid, StringComparison.OrdinalIgnoreCase))) list.Add((gid, ps));
+        }
+        return (list, null);
+    }
+
     /// <summary>create --json 的内容：{items:[{gameId,name,platforms}], location}；location 空 = 不传，后端按每款现在的位置。</summary>
     public static string CreateJson(IEnumerable<Entry> entries, string? location) => JsonSerializer.Serialize(new Dictionary<string, object?>
     {

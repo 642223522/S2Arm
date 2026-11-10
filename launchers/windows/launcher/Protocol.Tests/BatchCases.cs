@@ -11,6 +11,14 @@ public static class BatchCases
 
     public static void Run(Action<bool, string> check)
     {
+        // ---- 控制口 POST /batch 的 games（同 Mac S2ArmControl）----
+        var (ctl, ctlError) = BatchClient.ControlGames(Json("""{"games":[{"gameId":"0100AAAA00000000","platforms":["mac","ios"]},{"gameId":"0100BBBB00000000"},{"gameId":"0100aaaa00000000","platforms":["iphone"]}]}"""));
+        check(ctlError is null && ctl.Count == 2 && ctl[0].Platforms.SequenceEqual(["mac", "iphone"]) && ctl[1].Platforms.SequenceEqual(["iphone"]),
+            "batch control: ios = iphone, platforms default iphone, same game twice keeps the first");
+        foreach (var (body, why) in new[] { ("{}", "games"), ("""{"games":[]}""", "games"), ("""{"games":[{"platforms":["iphone"]}]}""", "gameId"),
+                                            ("""{"games":[{"gameId":"X","platforms":["android"]}]}""", "platforms"), ("""{"games":[{"gameId":"X","platforms":[]}]}""", "platforms") })
+            check(BatchClient.ControlGames(Json(body)).Error?.Contains(why) == true, "batch control: rejects " + body);
+
         // ---- 读批次 ----
         check(BatchClient.Read(Json("{}")) is { State: null, Error: null }, "batch: {} = no batch, no error");
         var gone = BatchClient.Read(Json("""{"error":"没有进行中的批次"}"""));
