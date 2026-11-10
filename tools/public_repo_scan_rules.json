@@ -111,9 +111,9 @@
         "docs/validation/*",
         "docs/兼容性清单.md",
         "docs/名单_*",
-        "docs/名单_*/*"
+        "docs/名单_*/*", "docs/*.md"
       ],
-      "reason_note": "11-09 维护者批统一规则：公开仓不出现任天堂第一方游戏名；第三方只在说明性场合保留。先管给人看的文档与名单，代码注释另议；pack/display_names.tsv 第一列是与 pack/oneclick/titles.tsv 对上的内部键，不在本规则内（显示名已是程序号）"
+      "messages": true, "reason_note": "11-09 维护者批统一规则：公开仓不出现任天堂第一方游戏名；第三方只在说明性场合保留。先管给人看的文档与名单（11-09 晚起含 docs/ 下全部 Markdown，坑记录也算）与提交信息（messages: true），代码注释另议；pack/display_names.tsv 第一列是与 pack/oneclick/titles.tsv 对上的内部键，不在本规则内（显示名已是程序号）"
     }
   ],
   "metadata_rules": [

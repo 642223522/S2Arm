@@ -1681,11 +1681,44 @@ def _rm_direct_transient(c, direct, path):
         os.close(fd)
 
 
+# 删目录时「目录非空」（#369：游戏库在外置盘，出包清理报 Errno 66 / rm 报 Directory not empty，同样的文件放内置盘就成功）：
+#   删的过程中有别的程序往这个目录里写东西——访达在打开的目录里写 .DS_Store（玩家关了 DSDontWriteUSBStores 仍出现）、非 APFS 盘的 ._ 附属文件。
+#   本机复现：rmtree 期间另一个线程往目录写 .DS_Store → Errno 66。只清系统自动生成的文件（layout.os_junk，三端同一份名单）再删，最多 5 次；
+#   清完还剩别的文件 = 真有人在往里写，报红并点名剩下的前几项，不硬删
+def _rmdir_past_os_junk(path, error, tries=5, wait=0.2):
+    import layout
+    left = []
+    for i in range(tries):
+        try:
+            left = os.listdir(path)
+        except FileNotFoundError:
+            return
+        for name in left:
+            q = os.path.join(path, name)
+            if layout.os_junk(name) and not os.path.isdir(q) and not os.path.islink(q):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(q)
+        try:
+            os.rmdir(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as again:
+            if again.errno != errno.ENOTEMPTY:
+                raise
+        time.sleep(wait)
+    others = [n for n in left if not layout.os_junk(n)]
+    raise OSError(errno.ENOTEMPTY, f"目录删不空：删的同时有程序往里写（剩 {', '.join(others[:5]) or '系统文件'}）", path) from error
+
+
 def _rmtree(p):
     """删整棵目录；遇到只读目录（产物根的 RomFS 共享存储 roots/.romfs_store/ 整棵只读，pack/roots.sh）先给它加回写权限再删。
     Windows 上封存不是只读位，是 ACL 里给当前用户的拒写项（pack/orch/roots.py seal → _win_acl），chmod 解不开：
     按 roots 同一个函数把出错的项和它的父目录解封再删（11-07 Windows 出包机：启动器出包成功后清中间产物卡在 .romfs_store，WinError 5）"""
-    def unlock(func, path, _):
+    def unlock(func, path, err):
+        error = err[1] if isinstance(err, tuple) else err   # onerror 给 exc_info、onexc 给异常本身
+        if func in (os.rmdir, os.unlink) and getattr(error, "errno", None) == errno.ENOTEMPTY:
+            return _rmdir_past_os_junk(path, error)
         parent = os.path.dirname(path)
         if os.name == "nt":
             engine = str(Path(__file__).resolve().parents[2])
