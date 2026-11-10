@@ -44,7 +44,7 @@ Python 接口：`check(request, *, probe=None)`。默认 `NativeProbe` 获取真
 - 签名装机 `impactor`：玩家自装的官方 Impactor 实测版本 + 同版本命令行 plumesign（`pack/jobs/impactor.py`、`pack/orch/install_win.py`）。
 - 作废（随包运行时 + 预编件之后）：`dotnet_sdk`（玩家只要随包的 .NET 运行时）、`rewriter` / `sidecar` 的「待发布」项。
 
-Metal 的默认目录选择与 `oneclick_win --check` 共用 `oneclick_win.metal_exe()`：`S2A_METAL_BIN` 优先；未配置时找 PATH 上 `metal.exe` 的所在目录，最后用 `C:\Program Files\Metal Developer Tools\bin`。显式目录无效时照实报缺，不偷偷换成 PATH 上另一份。出直连库时把选中目录作为 `S2A_METAL_BIN` 传给子进程，Python / C# 的 `metal.exe` 与 `metallib.exe` 都从同一目录取；不会从 PATH 混用另一份链接器。相对 PATH 条目会先转成绝对路径。请求 `metal` 与 `S2A_METAL_EXE` 仍只覆盖本次只读版本探测；要配置实际出包目录用 `S2A_METAL_BIN`。
+Metal 的默认目录选择与 `oneclick_win --check` 共用 `oneclick_win.metal_exe()`（逐处列表 `metal_search()`）：`S2A_METAL_BIN` 优先；未配置时依次找启动器启动时的 PATH、注册表里现在的 PATH（启动器开着时才装的）、官方安装器卸载登记的安装目录（安装器不写 PATH，改过安装目录只有这里记着）、`%ProgramW6432%` / `%ProgramFiles%` / `C:\Program Files` 下的 `Metal Developer Tools`；每个安装目录认 `bin\metal.exe` 与早期版本的 `ios\bin\metal.exe`。都没找到时，环境检查的 metal 一项 message 带「找过：来源：路径 → 有 / 没有」，玩家「复制错误摘要」即带上。显式目录无效时照实报缺，不偷偷换成 PATH 上另一份。出直连库时把选中目录作为 `S2A_METAL_BIN` 传给子进程，Python / C# 的 `metal.exe` 与 `metallib.exe` 都从同一目录取；不会从 PATH 混用另一份链接器。相对 PATH 条目会先转成绝对路径。请求 `metal` 与 `S2A_METAL_EXE` 仍只覆盖本次只读版本探测；要配置实际出包目录用 `S2A_METAL_BIN`。
 
 只有 Impactor、anisette、Apple 设备服务和 USB 设备属于签名装机（`requiredFor` 为 `install`），不挡导入和出包。其余各项属于 `prepare/ipa`，`blocking` 为真（确实缺或确实不符）才挡；认不出、探测失败只提示。状态为 `ok/missing/mismatch/unverified/error/user-selected`；
 只有所有必需项 `ok` 才能 `ready=true`。一个探测失败仍列出其余项；解释器失败时逐项列依赖未核实。

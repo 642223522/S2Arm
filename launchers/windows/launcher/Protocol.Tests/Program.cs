@@ -110,6 +110,7 @@ Check(advisory.Ready && !advisory.Checks[0].Blocking, "signing tool is advisory 
 Check(report.Checks[1].Blocking, "reports without the field still block on anything not ok");
 LibraryJobCases.Run(Check);
 LibraryFolderCases.Run(Check);
+MetalFolderCases.Run(Check);
 PackCases.Run(Check);
 BackendTextCases.Run(Check);
 await WindowsLibraryCases.Run(Check);
