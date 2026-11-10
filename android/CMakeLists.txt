@@ -309,6 +309,13 @@ else()
     target_compile_options(fps_provider_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     target_link_libraries(fps_provider_test PRIVATE Threads::Threads)
     add_test(NAME android_fps_provider COMMAND fps_provider_test)
+    # #48 D2：真 fps.c + 真 fps_provider.c，VM 边界按安卓模块布局（键页私有、数据段共享）做替身
+    add_executable(fps_table_android_test tests/fps_table_android_test.c ../runtime/src/fps.c native/fps_provider.c)
+    target_compile_definitions(fps_table_android_test PRIVATE S2A_UNIT_TEST _GNU_SOURCE)
+    target_include_directories(fps_table_android_test PRIVATE native ../runtime/include)
+    target_compile_options(fps_table_android_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    target_link_libraries(fps_table_android_test PRIVATE Threads::Threads m)
+    add_test(NAME android_fps_table COMMAND fps_table_android_test)
     # Linux host regression: real production SVC + real page protections; the
     # thread/tracker boundaries are explicit test providers, not GPU evidence.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
