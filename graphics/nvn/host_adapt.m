@@ -233,6 +233,9 @@ void s2a_direct_out_size(int *w, int *h) { *w = g_out_w; *h = g_out_h; }
 static int fb_readback(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_FB_READBACK"); v = e && !strcmp(e, "1"); } return v; }
 #if TARGET_OS_IPHONE
 UIView *s2a_ios_root_view(void) __attribute__((weak_import));
+// 出图层该挂的视图（ios/extdisplay.m，主线程）：外接显示器接着 = 外接屏窗口的视图，否则根视图。没有这个符号的壳一律根视图
+UIView *s2a_ios_present_view(void) __attribute__((weak_import));
+static UIView *present_view(void) { return s2a_ios_present_view ? s2a_ios_present_view() : s2a_ios_root_view ? s2a_ios_root_view() : nil; }
 int s2a_screen_w(void); int s2a_screen_h(void); int s2a_widen_game(void); int s2a_widen_full(void); int s2a_screen_reaspect(void);   // runtime/src/widen.c
 int s2a_nvn_reaspect_ok(void);   // graphics/nvn/widen_glue.inc：NVN 直连的宽屏核心在跑（能运行中换屏；Vulkan / GL 层的贴图建时定宽，换不了）
 static int out_wide(void) {   // 出的是宽图：第二层，或直连第三层整套放宽（屏幕比 16:9 宽时核心才放宽，s2a_widen_init 回 OFF 时出的仍是 16:9）
@@ -273,15 +276,30 @@ static void layout_layer(UIView *v, CAMetalLayer *l) {
     [CATransaction commit];
     g_out_w = (int)l.drawableSize.width; g_out_h = (int)l.drawableSize.height;
 }
-void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubviews 调（主线程）；没挂出图层（通用模式 / 还没起）不做
-    UIView *v = g_layer && s2a_ios_root_view ? s2a_ios_root_view() : nil; if (!v) return;
+static int g_relayout_due;   // 主线程：后台期间出图层挪回了根视图，欠一次重摆（回前台补，见 front_metal_layer 登记的通知）
+void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubviews、外接屏接上 / 断开（ios/extdisplay.m）调（主线程）；没挂出图层（通用模式 / 还没起）不做
+    UIView *v = g_layer ? present_view() : nil; if (!v) return;
+    // 外接显示器接上 / 断开：出图层跟着换到外接屏窗口的视图 / 回根视图，照旧垫在最底层；比例与可画尺寸由下面同一条重摆路按新视图算
+    int ext = s2a_ios_root_view && v != s2a_ios_root_view(), moved = g_layer.superlayer != v.layer;
+    if (moved) {
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        [g_layer removeFromSuperlayer]; [v.layer insertSublayer:g_layer atIndex:0];
+        [CATransaction commit];
+        LOG("直连：出图层挪到%s（App 状态 %ld，视图所在场景状态 %ld）", ext ? "外接屏" : "手机屏",
+            (long)UIApplication.sharedApplication.applicationState, (long)v.window.windowScene.activationState);
+    }
     // 在后台不认布局变化（11-02 维护者 Duo 丝之歌：进后台后 iOS 截多任务快照，临时把视图摆成 466×678 点的竖条，宿主当成运行中换屏 1350 → 1318 → 1350、
     //   宽屏核心按新比例重建加高目标；回前台那一刻多一次重建）：后台不出图也不提交，快照尺寸不是玩家的屏幕。回前台视图恢复原尺寸，出图层本来没动
-    if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
+    //   只管根视图：外接屏窗口的视图不被快照改尺寸。刚挪回根视图的层还按外接屏摆着：根视图所在场景在前台就当场重摆，否则记欠一次、回前台补
+    //   （pf_relayout_wait，11-10 iPhone 18 Pro 局中拔显示器：外接屏场景断开回调里 App 状态读到 2 = 后台，根视图所在场景状态 0 = 前台活跃、没有进后台通知）
+    UIWindowScene *vs = v.window.windowScene;
+    int app_bg = UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
+    int scene_fg = vs && (vs.activationState == UISceneActivationStateForegroundActive || vs.activationState == UISceneActivationStateForegroundInactive);
+    if (pf_relayout_wait(ext, app_bg, moved, scene_fg)) { if (moved) g_relayout_due = 1; return; }
     CGSize z = v.bounds.size; if (z.width <= 0 || z.height <= 0) return;
     double a0 = g_out_a; int re = s2a_nvn_reaspect_ok() && s2a_screen_reaspect(); if (re) g_out_a = out_aspect();   // 先换出图比例再摆层
     CGSize d0 = g_layer.drawableSize; layout_layer(v, g_layer); CGSize d1 = g_layer.drawableSize;
-    if (d0.width == d1.width && d0.height == d1.height && !re) return;
+    if (d0.width == d1.width && d0.height == d1.height && !re && !moved) return;
     double va = z.width / z.height;
     LOG("直连：屏幕尺寸变了，出图层重摆为 %.0fx%.0f 像素（视图 %.0fx%.0f 点，比例 %.3f；出图比例 %.3f → %.3f%s）", d1.width, d1.height, z.width, z.height, va, a0, g_out_a,
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
@@ -292,7 +310,7 @@ void *front_metal_layer(void) {
     dispatch_once(&once, ^{
         if (!s2a_ios_root_view) { LOG("【红】直连：没有 App 壳根视图（s2a_ios_root_view），无出图层"); return; }
         void (^mk)(void) = ^{
-            UIView *v = s2a_ios_root_view(); if (!v) return;
+            UIView *v = present_view(); if (!v) return;
             CAMetalLayer *l = [CAMetalLayer layer];
             l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm; l.framebufferOnly = !fb_readback(); l.opaque = YES;
             g_out_a = out_aspect();   // 10-24 真机：宽屏开着仍按 16:9 挂，2.17 的画面被塞进 16:9 区域、左右露黑；窄屏同理按 1920:屏高
@@ -301,6 +319,9 @@ void *front_metal_layer(void) {
             //   怪猎测试设备1 冷首启预热 64 秒，屏上只有手柄（手柄与开发浮层靠 zPosition 压过它），玩家对着黑屏点中了看不见的「先开始玩」
             [v.layer insertSublayer:l atIndex:0];
             g_layer = l;
+            if (v != s2a_ios_root_view()) LOG("直连：出图层挂在外接屏（下一行的「根视图」尺寸是外接屏窗口的视图）");
+            [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *n) { (void)n; if (g_relayout_due) { g_relayout_due = 0; s2a_direct_relayout(); } }];   // 补后台期间欠的重摆
         };
         if (NSThread.isMainThread) mk(); else dispatch_sync(dispatch_get_main_queue(), mk);
         if (g_layer) LOG("直连：出图层已挂到根视图 %.0fx%.0f 像素（宽高比 %.3f，居中；宽屏第二层%s）", g_layer.drawableSize.width, g_layer.drawableSize.height,
