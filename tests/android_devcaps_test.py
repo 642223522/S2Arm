@@ -90,7 +90,26 @@ with tempfile.TemporaryDirectory() as t:
 
     f = dict(ALL_FEATURES, swapchainMaintenance1=False)
     v, rows = verdict(write("VP_VULKANINFO_sm1off", profile("VP_VULKANINFO_sm1off", f, ALL_EXTS, formats=ALL_BC)))
-    ck(f"③ 扩展在但 swapchainMaintenance1 特性位关也判「起不来」（{v}）", v == "起不来")
+    ck(f"③ 扩展在但 swapchainMaintenance1 特性位关、又不知道系统版本，判「数据不全」（{v}）", v == "数据不全")
+
+    # 安卓 14 起平台层在核心 vkGetPhysicalDeviceFeatures2 里把 swapchainMaintenance1 补成 true，
+    # gpuinfo 记的是驱动原值：档名带 _android_14 以上就按平台补上算；13 及以下照旧算缺
+    n = "VP_GPUINFO_x_android_16_0"
+    v, rows = verdict(write(n, profile(n, f, ALL_EXTS, formats=ALL_BC)))
+    ck(f"③ 安卓 16 的 swapchainMaintenance1=false 按平台补上算（{v}）",
+       v == "全满足" and "平台层" in rows["ext:VK_EXT_swapchain_maintenance1"]["note"])
+    n = "VP_GPUINFO_x_android_13_0"
+    v, _ = verdict(write(n, profile(n, f, ALL_EXTS, formats=ALL_BC)))
+    ck(f"③ 安卓 13 的 swapchainMaintenance1=false 仍判「起不来」（{v}）", v == "起不来")
+
+    # 1.1 设备的 gpuinfo 档不采 shaderDrawParameters 特性结构：有 VK_KHR_shader_draw_parameters 就按有算
+    f = {k: val for k, val in ALL_FEATURES.items() if k != "shaderDrawParameters"}
+    n = "VP_GPUINFO_sdp_android_14_0"
+    v, rows = verdict(write(n, profile(n, f, ALL_EXTS + ["VK_KHR_shader_draw_parameters"], api="1.1.0", formats=ALL_BC)))
+    ck(f"③ 没有 shaderDrawParameters 特性项但有扩展，按扩展计（{v}）",
+       rows["feature:shaderDrawParameters"]["status"] == dc.OK)
+    v, rows = verdict(write("VP_VULKANINFO_nosdp", profile("VP_VULKANINFO_nosdp", f, ALL_EXTS, api="1.1.0", formats=ALL_BC)))
+    ck(f"③ 特性项和扩展都没有，shaderDrawParameters 判缺（{v}）", v == "起不来")
 
     f = dict(ALL_FEATURES, dualSrcBlend=False)
     v, _ = verdict(write("VP_VULKANINFO_nodsb", profile("VP_VULKANINFO_nodsb", f, ALL_EXTS, formats=ALL_BC)))

@@ -168,6 +168,9 @@ class Caps:
         self.queue_flags = None  # None = 数据里没有
         self.device_name = None
         self.have_features = self.have_formats = False
+        # gpuinfo 的档名带系统版本（..._android_16_0）；别的来源没有就是 None
+        m = re.search(r"_android_(\d+)", name)
+        self.android_major = int(m.group(1)) if m else None
 
     def merge_capability(self, cap):
         for struct in (cap.get("features") or {}).values():
@@ -256,6 +259,10 @@ def evaluate_rule(caps, chk):
     if t == "feature":
         if chk[1] in caps.features:
             return (OK if caps.features[chk[1]] else MISSING), ""
+        if chk[1] == "shaderDrawParameters" and "VK_KHR_shader_draw_parameters" in caps.extensions:
+            # 1.1 规范的特性要求：支持 VK_KHR_shader_draw_parameters 就必须支持 shaderDrawParameters。
+            # gpuinfo 对 1.1 设备不采这个特性结构，只能按扩展推。
+            return OK, "按扩展计（有 VK_KHR_shader_draw_parameters 必有此特性）"
         if caps.kind == "guarantee" or caps.have_features:
             # 设备数据：vulkaninfo / gpuinfo 列全了特性；扩展特性结构不在说明扩展不支持
             return MISSING, "数据里没有这一项"
@@ -266,7 +273,17 @@ def evaluate_rule(caps, chk):
         if chk[1] not in caps.extensions:
             return MISSING, ""
         if chk[2] in caps.features:
-            return (OK if caps.features[chk[2]] else MISSING), "" if caps.features[chk[2]] else "扩展在但特性位没开"
+            if caps.features[chk[2]]:
+                return OK, ""
+            if chk[2] == "swapchainMaintenance1" and caps.kind == "device":
+                # 安卓 14 起平台 libvulkan 自己实现这个扩展，并在核心入口 vkGetPhysicalDeviceFeatures2 里
+                # 把 swapchainMaintenance1 强制置 true（frameworks/native vulkan/libvulkan/driver.cpp）；
+                # KHR 入口不经过这层，直接是驱动原值。S2Arm 走核心入口，gpuinfo 记的 false 多半是驱动原值。
+                if caps.android_major is None:
+                    return UNKNOWN, "扩展在、特性位记为 false，但不知道系统版本，判断不了平台会不会补上"
+                if caps.android_major >= 14:
+                    return OK, f"安卓 {caps.android_major} 平台层补为 true（数据里是驱动原值 false）"
+            return MISSING, "扩展在但特性位没开"
         return OK, f"按扩展计（数据里没有 {chk[2]} 特性位）"
     if t == "ext_any":
         hit = [e for e in chk[1] if e in caps.extensions]
