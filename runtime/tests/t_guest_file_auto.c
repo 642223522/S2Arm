@@ -11,7 +11,7 @@ int s2a_guest_file_wanted2(const char *e, uint64_t pool, uint64_t room, uint64_t
 int s2a_guest_file_wanted3(const char *e, uint64_t pool, uint64_t room, uint64_t seen, uint64_t host, uint64_t margin);
 uint64_t s2a_guest_mem_seen(void); void s2a_guest_mem_note(uint64_t footprint);
 int s2a_guest_file_wanted4(const char *e, uint64_t pool, uint64_t room, uint64_t seen, uint64_t host, uint64_t margin, int died); int s2a_guest_run_died(void); void s2a_guest_run_mark(int running);
-int s2a_guest_file_wanted_mac(const char *e, int pressed); int s2a_guest_pressure_seen(void); void s2a_guest_pressure_note(void);   // #306 Mac 判定与压力记录
+int s2a_guest_file_wanted_mac(const char *e, uint64_t pool, uint64_t room, int pressed); int s2a_guest_pressure_seen(void); void s2a_guest_pressure_note(void);   // #306 Mac 判定与压力记录
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -72,16 +72,23 @@ int main(void) {
         CHECK(b0 == UINT64_MAX && on0 == 1 && b1 == UINT64_MAX && b2 == 0, "㉙ 坏记录（乱码 / 0）读出 UINT64_MAX、判开；没有记录读出 0（得 %d %d %d %d）", b0 == UINT64_MAX, on0, b1 == UINT64_MAX, (int)b2);
         unsetenv("S2A_GUEST_MEM_PEAK");
     }
-    // #306 Mac（s2a_guest_file_wanted_mac）：期望按规则手写——设了按设的（"0" 关、其余开）；没设 → 上一局到过系统内存压力「严重」档才开（16 GB 也缺省关：脏文件页上限）
-    CHECK(s2a_guest_file_wanted_mac(NULL, 0) == 0 && s2a_guest_file_wanted_mac("", 0) == 0, "㉚ Mac 没设 / 空串、没到过「严重」：关（匿名内存，原先 16 GB 跑 Switch 2 款判开）");
-    CHECK(s2a_guest_file_wanted_mac(NULL, 1) == 1, "㉛ Mac 没设、上一局到过「严重」：开（#68 那种真不够）");
-    CHECK(s2a_guest_file_wanted_mac("0", 1) == 0 && s2a_guest_file_wanted_mac("1", 0) == 1, "㉜ 显式设定优先：0 照关、1 照开");
-    {   // ㉝ 压力记录：没有 → 读 0；记一次 → 读 1；再记不重写（只写一次）
+    // #306 / #353 Mac（s2a_guest_file_wanted_mac）：期望按规则手写——设了按设的（"0" 关、其余开、空串同没设）；没设 → 池 > 剩余（物理内存 − 预留 6144 MB，0 = 读不到）开，
+    //   否则上一局到过系统内存压力「严重」档才开；不加宿主估计、不看实测（㉚–㊱ 取自 PR #353，wwmogu）
+    const uint64_t M16 = (16384 - 6144) * MB, M8 = (8192 - 6144) * MB, M24 = (24576 - 6144) * MB;
+    CHECK(s2a_guest_file_wanted_mac(NULL, S2, M16, 0) == 0, "㉚ 16 GB Mac、池 9216 MB ≤ 剩余 10240 MB、没到过「严重」：关（旧判据加宿主估计 2048 + 余量 512 判开，撞脏文件页上限长停顿 #306）");
+    CHECK(s2a_guest_file_wanted4(NULL, S2, M16, 0, H2, G, 0) == 1, "㉛ 对照：同参数旧判据（wanted4）判开");
+    CHECK(s2a_guest_file_wanted_mac(NULL, S2, M8, 0) == 1 && s2a_guest_file_wanted_mac(NULL, S1, M8, 0) == 1, "㉜ 8 GB Mac、剩余 2048 MB：池 9216 / 3285 MB 都装不下：第一局就开");
+    CHECK(s2a_guest_file_wanted_mac(NULL, S2, M24, 0) == 0 && s2a_guest_file_wanted_mac(NULL, S1, M16, 0) == 0, "㉝ 24 GB 跑 Switch 2 款、16 GB 跑 Switch 款：关");
+    CHECK(s2a_guest_file_wanted_mac(NULL, S2, S2, 0) == 0 && s2a_guest_file_wanted_mac(NULL, S2, S2 - 1, 0) == 1, "㉞ 边界：池 = 剩余 关，剩余少 1 字节 开");
+    CHECK(s2a_guest_file_wanted_mac("1", S1, M24, 0) == 1 && s2a_guest_file_wanted_mac("0", S2, M8, 1) == 0 && s2a_guest_file_wanted_mac("", S2, M16, 0) == 0, "㉟ 显式 1 / 0 照设（0 压过装不下和压力记录），空串同没设");
+    CHECK(s2a_guest_file_wanted_mac(NULL, S2, 0, 0) == 0, "㊱ 读不到物理内存（room 0）、没到过「严重」：关");
+    CHECK(s2a_guest_file_wanted_mac(NULL, S2, M16, 1) == 1 && s2a_guest_file_wanted_mac(NULL, S2, 0, 1) == 1, "㊲ 池装得下（或读不到物理内存）但上一局到过「严重」：开");
+    {   // ㊳ 压力记录：没有 → 读 0；记一次 → 读 1；再记不重写（只写一次）
         char path[] = "/tmp/t_gpress_XXXXXX"; int fd = mkstemp(path); close(fd); unlink(path); setenv("S2A_GUEST_PRESSURE_MARK", path, 1);
         int p0 = s2a_guest_pressure_seen(); s2a_guest_pressure_note(); int p1 = s2a_guest_pressure_seen();
         char buf[64] = {0}; FILE *f = fopen(path, "r"); if (f) { fgets(buf, sizeof buf, f); fclose(f); }
         unlink(path); s2a_guest_pressure_note(); int p2 = s2a_guest_pressure_seen();
-        CHECK(p0 == 0 && p1 == 1 && !strncmp(buf, "critical ", 9) && p2 == 0, "㉝ 压力记录：没有 0 → 记一次 1（内容「critical 时间」）→ 删掉后再记不重写 0（得 %d %d「%.9s」%d）", p0, p1, buf, p2);
+        CHECK(p0 == 0 && p1 == 1 && !strncmp(buf, "critical ", 9) && p2 == 0, "㊳ 压力记录：没有 0 → 记一次 1（内容「critical 时间」）→ 删掉后再记不重写 0（得 %d %d「%.9s」%d）", p0, p1, buf, p2);
         unlink(path); unsetenv("S2A_GUEST_PRESSURE_MARK");
     }
     printf("%s t_guest_file_auto：%d 项不符\n", bad ? "✗" : "✓", bad);
