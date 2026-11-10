@@ -703,8 +703,34 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
     if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
     *done = atomic_load(&g_inst_done); *total = atomic_load(&g_inst_total); return 1;
 }
-static void library_pack_help(NSString *gid, BOOL again) {
-    int st = game_pack_state(gid.UTF8String);
+// 「需要游戏数据 / 重新检查」：快判（.applied 等于清单）不成立时 game_pack_state 退回逐文件核对，一款约 10 万文件要几秒，放主线程会被 iOS 看门狗强杀
+//   （#438 0x8BADF00D：0.2.1 回前台主线程核对 > 2.5 秒，系统结束请求 5 秒到点）。核对挪到后台队列，核完回主线程刷新 / 给说明；
+//   超过 0.3 秒还没核完就先弹「正在检查…」（快判成立时几毫秒就回来，不闪这一下）。同时只核一款，核着时再点不重复起
+static atomic_int g_pack_checking;
+static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
+static void library_pack_help_show(NSString *gid, BOOL again, int st);
+static void library_pack_help(NSString *gid, BOOL again) {   // 主线程
+    if (atomic_exchange(&g_pack_checking, 1)) { LOG("游戏库：%s 正在核对资源包，这次点击不重复起", gid.UTF8String); return; }
+    __block BOOL done = NO; __block UIAlertController *wait = nil;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (done) return;
+        UIViewController *top = lib_top(); if (!top) return;
+        wait = [UIAlertController alertControllerWithTitle:S2AL(@"app.packHelp.checking") message:nil preferredStyle:UIAlertControllerStyleAlert];
+        [top presentViewController:wait animated:YES completion:nil];
+    });
+    CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int st = game_pack_state(gid.UTF8String);
+        double ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            done = YES; atomic_store(&g_pack_checking, 0);
+            LOG("游戏库：%s 后台核对资源包 %.0f 毫秒，结果 %d（主线程没有等）", gid.UTF8String, ms, st);
+            if (wait && wait.presentingViewController) [wait dismissViewControllerAnimated:NO completion:^{ library_pack_help_show(gid, again, st); }];
+            else library_pack_help_show(gid, again, st);
+        });
+    });
+}
+static void library_pack_help_show(NSString *gid, BOOL again, int st) {   // 主线程
     if (st == 0 || st == 1) { LOG("游戏库：%s 资源包已就绪，刷新库界面", gid.UTF8String); if (s2a_shell_refresh) s2a_shell_refresh(); return; }
     BOOL broken = st == 3;   // S2A_IMPORT_BROKEN
     LOG("游戏库：%s 资源包%s，给导入说明%s", gid.UTF8String, broken ? "不完整" : "不在机上", again ? "（重新检查后仍不行）" : "");
@@ -712,7 +738,7 @@ static void library_pack_help(NSString *gid, BOOL again) {
         ? S2AL(@"app.library.packBroken")
         : [NSString stringWithFormat:S2AL(@"app.library.packMissing"), gid];
     if (again) body = [S2AL(@"app.library.stillMissing") stringByAppendingString:body];
-    UIWindow *w = g_lib_window; UIViewController *top = w.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
+    UIViewController *top = lib_top();
     if (!top) { LOG("【红】游戏库：没有窗口，导入说明画不出来"); return; }
     UIAlertController *a = [UIAlertController alertControllerWithTitle:broken ? S2AL(@"app.library.broken.title") : S2AL(@"app.library.missing.title") message:body preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.later") style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; if (s2a_shell_refresh) s2a_shell_refresh(); }]];
