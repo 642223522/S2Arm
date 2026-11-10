@@ -28,7 +28,7 @@ s2a_mem_gb() {   # 本机物理内存（GB，取整），不经 Python：macOS s
   local b k
   b=$(sysctl -n hw.memsize 2> /dev/null)
   [ "$b" -gt 0 ] 2> /dev/null && { echo $(( b >> 30 )); return; }
-  k=$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2> /dev/null)
+  k=$(awk '/^MemTotal:/ { print $2; exit }' "${S2A_PROC_MEMINFO:-/proc/meminfo}" 2> /dev/null)   # S2A_PROC_MEMINFO：单测在 Mac 上模拟 Linux 用
   [ "$k" -gt 0 ] 2> /dev/null && echo $(( k >> 20 ))
 }
 s2a_cores() {
