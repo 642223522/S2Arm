@@ -721,10 +721,13 @@ def backup(c):
         root, _, _ = locations(c, game)
         destination = Path(c.r["path"]).expanduser()
         destination = destination.parent.resolve() / destination.name
+        home = layout.root_of(c, game["id"]).resolve()   # 这款所在存放位置（可以不是默认游戏库）也不许放
         if (
             not destination.parent.is_dir()
             or destination == c.library
             or c.library in destination.parents
+            or destination == home
+            or home in destination.parents
             or destination == c.private
             or c.private in destination.parents
         ):
@@ -1119,7 +1122,7 @@ def restore(c):
             total = sum(info[2] for info in scan(c, root)[0].values()) + sum(
                 f["size"] for f in manifest["files"]
             )
-            if shutil.disk_usage(c.library).free < 2 * total + (64 << 20):
+            if shutil.disk_usage(layout.root_of(c, game["id"])).free < 2 * total + (64 << 20):   # 暂存与恢复前副本都在这款的存放位置上，查那块盘
                 fail(c, "游戏库磁盘空间不足，无法暂存并保留恢复前副本。", "space")
             if had_original and any(n.startswith("bis/user/save/") for n in scan(c, root)[0]):
                 c.begin("保留恢复前副本", 2, 3)

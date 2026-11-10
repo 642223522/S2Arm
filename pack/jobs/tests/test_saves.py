@@ -270,6 +270,24 @@ class SaveTests(unittest.TestCase):
         self.assertTrue(Path(result["previousBackup"]).is_relative_to(disk))
         self.assertFalse((self.directory / "library/save-transactions").exists())
 
+    def test_backup_of_game_in_second_location_finishes_and_stays_out_of_that_location(self):
+        # 第二存放位置的款：备份照常写出；备份文件不许落进这款自己的存放位置（同默认游戏库那条，免得被当游戏数据一起搬 / 删）
+        disk = self.move_game_to_second_location()
+        self.assertTrue(Path(self.backup()["outputPath"]).is_file())
+        with self.assertRaises(Failure):
+            saves.backup(self.context(operation="saveBackup", path=str(disk / "inside.s2asave")))
+        self.assertFalse((disk / "inside.s2asave").exists())
+
+    def test_restore_checks_free_space_on_the_games_own_location(self):
+        # 暂存与恢复前副本写在这款的存放位置上：剩余空间要量那块盘，不是默认游戏库那块
+        disk = self.move_game_to_second_location()
+        c = self.prepare_restore()
+        seen, real = [], shutil.disk_usage
+        with patch.object(saves.shutil, "disk_usage", lambda p: (seen.append(Path(p)), real(p))[1]):
+            self.assertTrue(saves.restore(c)["committed"])
+        self.assertEqual(seen[0], disk)   # 恢复前预检；之后写恢复前副本时量的是副本目录，也在这个位置下
+        self.assertTrue(all(p == disk or disk in p.parents for p in seen), seen)
+
     def test_sync_parents_refuses_a_root_that_is_not_an_ancestor(self):
         # 终点不是起点的祖先：期望报错，不是在文件系统根上一直同步下去。同步次数上限手算 = 起点自己 + 它的全部祖先
         start, calls = self.directory / "a/b", []
