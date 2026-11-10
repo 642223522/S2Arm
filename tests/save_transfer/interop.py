@@ -264,6 +264,28 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     for g, (t, code, word) in zip(got, want):
         assert (g["type"], g["code"]) == (t, code) and word in g["message"] and t not in g["message"], (g, t, code, word)
         print(f"PASS 失败原因人话 {t} → {code}：{g['message']}")
+    # #316：请求带 language 时说明按它出。期望手写：zh-Hans / 不带 = 上面同一组中文原句（逐字相同）；en = 同码、同条数、一句中文都没有、
+    #   且与中文一一对应（8 条里相同中文句对应相同英文句，不同中文句对应不同英文句）；英文也不带异常类型名
+    cjk = lambda s: any("\u4e00" <= ch <= "\u9fff" for ch in s)
+    run = lambda *a: [json.loads(l) for l in subprocess.run([DOTNET, DRIVER, "--describe", *a], check=True, timeout=60, capture_output=True, text=True).stdout.splitlines()]
+    zh_named, en_got = run("zh-Hans"), run("en")
+    assert [g["message"] for g in zh_named] == [g["message"] for g in got], (zh_named, got)
+    assert [g["code"] for g in en_got] == [g["code"] for g in got], en_got
+    assert all(not cjk(g["message"]) and g["type"] not in g["message"] and g["message"].strip() for g in en_got), en_got
+    pairs = {(z["message"], e["message"]) for z, e in zip(got, en_got)}
+    assert len({z for z, _ in pairs}) == len({e for _, e in pairs}) == len(pairs), pairs
+    print(f"PASS 失败原因按 language 出英文：{len(en_got)} 条同码、无中文、与中文 {len(pairs)} 句一一对应")
+    # 整个请求走一遍：同一份坏备份，不带 language 回中文、带 en 回英文，码相同
+    bad = scratch / "language-probe.s2asave"; bad.write_bytes(b"not a zip")
+    def reject(**extra):
+        request = dict(operation="inspect", dataRoot=str(source), workRoot=str(scratch / "csharp-work"), game=identity, path=str(bad)) | extra
+        write_json(request_path, request)
+        r = json.loads(subprocess.run([DOTNET, DRIVER, "--request", str(request_path)], capture_output=True, text=True, check=True, timeout=60).stdout)
+        assert not r["ok"], r
+        return r["error"]
+    plain, english = reject(), reject(language="en")
+    assert plain["code"] == english["code"] and cjk(plain["message"]) and not cjk(english["message"]), (plain, english)
+    print(f"PASS 请求带 language=en：{english['code']} 回英文「{english['message']}」，不带回中文「{plain['message']}」")
     # 审计 P2-24：恢复复制数据根时跳过存档三处、其余文件走 APFS 克隆。期望手算：512 MiB 非存档文件原样出现在目标、内容一致；
     #   存档文件（bis/user/save 下）不出现；走的是 APFS 克隆：克隆出的文件写入前与源共用物理块，首块物理设备偏移（fcntl F_LOG2PHYS）
     #   与源相同，流式拷贝则不同。11-02 起按这个事实判，不按耗时判（原判据 < 200 ms，gate-host 负载高时克隆调用本身 385 ms 误红）

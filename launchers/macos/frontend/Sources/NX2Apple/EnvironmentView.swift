@@ -89,6 +89,10 @@ struct EnvironmentView: View {
                             }
                         }
                     }
+                    // 版本号（三端同号：Windows 启动器、iPhone 上的 S2Arm 显示同一个，装机时写进 iPhone 那份）
+                    Text(verbatim: "S2Arm " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"))
+                        .font(.manrope(12)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .center)
+                        .accessibilityIdentifier("env.version")
                 }
                 .padding(.horizontal, 30).padding(.bottom, 24)
             }
@@ -151,7 +155,9 @@ struct EnvironmentView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         // 有游戏、选的是空文件夹才问；已有游戏库或含旧产物的文件夹由作业层直接打开 / 认领
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
-        guard !model.games.isEmpty, contents.allSatisfy({ $0 == ".DS_Store" }) else { model.changeLibrary(to: url); return }
+        // 系统自动生成的文件不算数：同作业层 layout.OS_JUNK / OS_JUNK_PREFIX（三端一份，tests/os_junk_sync_test.sh 核一致）
+        let osJunk: Set<String> = [".DS_Store", "desktop.ini", "Thumbs.db"]
+        guard !model.games.isEmpty, contents.allSatisfy({ osJunk.contains($0) || $0.hasPrefix("._") }) else { model.changeLibrary(to: url); return }
         let alert = NSAlert()
         alert.messageText = loc.t("s2arm.library.moveTitle")
         alert.informativeText = loc.t("s2arm.library.moveBody")

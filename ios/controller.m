@@ -1,5 +1,6 @@
 // iOS 直接消费系统手柄和 NS2 Pro BLE，不建立虚拟 HID 或本地网络服务。
 #import <GameController/GameController.h>
+#import "s2a_l10n.h"
 #import <CoreHaptics/CoreHaptics.h>
 #import "controller.h"
 #import <UIKit/UIGestureRecognizerSubclass.h>   // S2ATouchWatch 要改 state
@@ -339,10 +340,10 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     UIButtonConfiguration *configuration = UIButtonConfiguration.filledButtonConfiguration;
     configuration.baseBackgroundColor = [UIColor colorWithWhite:0 alpha:.7];
     configuration.baseForegroundColor = UIColor.whiteColor;
-    configuration.title = @"连接 Switch 2 Pro";
+    configuration.title = S2AL(@"controller.connect");
     _connect.configuration = configuration;
     _connect.titleLabel.adjustsFontForContentSizeCategory = YES;
-    _connect.accessibilityHint = @"长按手柄顶部 SYNC 键，直到玩家灯循环闪烁";
+    _connect.accessibilityHint = S2AL(@"controller.connect.hint");
     [_connect addTarget:self action:@selector(connectTapped) forControlEvents:UIControlEventTouchUpInside];
     _connect.layer.zPosition = 1001;
     [root addSubview:_connect];
@@ -446,6 +447,7 @@ static void pad_face_sync(void) {
         pad.dpad.left, pad.dpad.up, pad.dpad.right, pad.dpad.down};
     uint32_t buttons = 0;
     for (int i = 0; i < 16; i++) if (keys[i].isPressed) buttons |= 1u << i;
+    if (pad.buttonHome.isPressed) buttons |= 1u << 16;   // Home 放扩展位 bit16（同 NS2 手柄）：只用于长按开局内菜单（#276），pad.c 判完就截掉、不进游戏
     int32_t axes[4];
     s2a_pad_stick(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value, axes);
     s2a_pad_stick(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value, axes + 2);
@@ -472,6 +474,8 @@ static void pad_face_sync(void) {
     GCExtendedGamepad *pad = next.extendedGamepad;
     if (@available(iOS 14.0, *)) {
         if (pad.buttonOptions) pad.buttonOptions.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        // Home 同理（#276）：系统默认拿去开游戏面板 / 回主屏，关掉手势后输入给 App，长按 1.5 秒开局内设置（同长按「+」、四指长按）
+        if (pad.buttonHome) pad.buttonHome.preferredSystemGestureState = GCSystemGestureStateDisabled;
     }
     __weak S2AController *weakSelf = self;
     next.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *pad, GCControllerElement *element) {
@@ -577,11 +581,11 @@ static void pad_face_sync(void) {
     atomic_load(&g_ns2)->shutdown(reason, 0); // 不在主线程等待电机或连接完成。
     s2a_pad_wake();
     _bleStarted = _bleBusy = NO;
-    [self setTitle:@"连接 Switch 2 Pro" hint:@"长按手柄顶部 SYNC 键，直到玩家灯循环闪烁"];
+    [self setTitle:S2AL(@"controller.connect") hint:S2AL(@"controller.connect.hint")];
 }
 - (void)startBLE {
     if (!_adapterEnabled || !_foreground || _hasSystem) return;
-    if (![self loadModule]) { [self setTitle:@"适配模块加载失败" hint:@"请重新安装 App 后重试"]; return; }
+    if (![self loadModule]) { [self setTitle:S2AL(@"controller.moduleFailed") hint:S2AL(@"controller.moduleFailed.hint")]; return; }
     const ns2_api *api = atomic_load(&g_ns2);
     if (_bleStarted) { if (api->rescan()) _bleBusy = YES; return; }
     pthread_mutex_lock(&g_feedback_mu);
@@ -594,7 +598,7 @@ static void pad_face_sync(void) {
         pthread_mutex_unlock(&g_motion_mu);
     }
     _bleBusy = _bleStarted;
-    if (!_bleStarted) [self setTitle:@"连接失败，轻点重试" hint:@"再次查找 Switch 2 Pro"];
+    if (!_bleStarted) [self setTitle:S2AL(@"controller.connectFailed") hint:S2AL(@"controller.connectFailed.hint")];
 }
 - (void)resumeBLE {
     if (!_adapterEnabled || !_foreground || _hasSystem) return;
@@ -602,7 +606,7 @@ static void pad_face_sync(void) {
         if (_blePaused && atomic_load(&g_ns2)->resume()) {
             _bleResuming = YES;
             _bleBusy = YES;
-            [self setTitle:@"正在恢复手柄，轻点取消" hint:@"正在恢复已连接手柄的输入；轻点可停止连接"];
+            [self setTitle:S2AL(@"controller.resuming") hint:S2AL(@"controller.resuming.hint")];
             return;
         }
         // A retained link may have disconnected while iOS suspended the app. Start one bounded known-device attempt.
@@ -612,7 +616,7 @@ static void pad_face_sync(void) {
 }
 - (void)connectTapped {
     if (!_adapterEnabled || !_foreground) return;
-    if (![self loadModule]) { [self setTitle:@"适配模块加载失败" hint:@"请重新安装 App 后重试"]; return; }
+    if (![self loadModule]) { [self setTitle:S2AL(@"controller.moduleFailed") hint:S2AL(@"controller.moduleFailed.hint")]; return; }
     if (atomic_load(&g_ns2)->authorization_denied()) {
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString] options:@{} completionHandler:nil];
         return;
@@ -648,10 +652,10 @@ static void pad_face_sync(void) {
     }
     _bleBusy = _bleResuming || status == NS2_STATUS_SCANNING || status == NS2_STATUS_CONNECTING || status == NS2_STATUS_INITIALIZING ||
         status == NS2_STATUS_SUSPENDING || status == NS2_STATUS_RESUMING;
-    if (_bleBusy) [self setTitle:status == NS2_STATUS_SCANNING ? @"正在查找，轻点取消" : @"正在连接，轻点取消" hint:@"长按手柄顶部 SYNC 键，直到玩家灯循环闪烁。轻点可停止连接"];
+    if (_bleBusy) [self setTitle:status == NS2_STATUS_SCANNING ? S2AL(@"controller.scanning") : S2AL(@"controller.connecting") hint:S2AL(@"controller.connecting.hint")];
     else if (status != NS2_STATUS_READY) {
         BOOL denied = atomic_load(&g_ns2)->authorization_denied();
-        [self setTitle:denied ? @"在设置中允许蓝牙" : status == NS2_STATUS_UNAVAILABLE ? @"打开蓝牙后重试" : @"重新连接 Switch 2 Pro" hint:message];
+        [self setTitle:denied ? S2AL(@"controller.allowBluetooth") : status == NS2_STATUS_UNAVAILABLE ? S2AL(@"controller.turnOnBluetooth") : S2AL(@"controller.reconnect") hint:message];
     }
     [self updateVisibility];
 }
@@ -686,7 +690,7 @@ static void pad_face_sync(void) {
 }
 @end
 
-// 长按「+」开快捷菜单（外接手柄时四指长按够不着屏幕）：每个新按下的序号交给 diag.m 计时复查（s2a_diag_menu_hold）
+// 长按「+」或 Home 开快捷菜单（外接手柄时四指长按够不着屏幕）：每个新按下的序号交给 diag.m 计时复查（s2a_diag_menu_hold）
 static void menu_hold_check(void) {
     static _Atomic uint64_t armed;
     uint64_t press = s2a_pad_plus_press();
