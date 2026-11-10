@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 46,
+  "revision": 47,
   "languages": ["zh-Hans", "en"],
   "source_language": "zh-Hans",
   "note": "四端（Mac / iOS / Android / 鸿蒙）启动器的「一套体验」规格。状态、文案、错误码、任务事件到界面的映射只在这里定义一次；各端只负责画，不另写一套措辞。错误码的「下一步」不在本文件里写第二份：一律指向 pack/jobs/errors.py 的 RECOVERY（口径见 README.md）。口径号 revision 改动规则见 README.md。",
@@ -921,6 +921,7 @@
       {"id": "batch.hint", "zh-Hans": "可以一次放进多款游戏，连续出包", "en": "You can drop in several games at once and export them one after another"},
       {"id": "batch.game", "zh-Hans": "游戏", "en": "Game"},
       {"id": "batch.all", "zh-Hans": "全选", "en": "All"},
+      {"id": "batch.mac_only", "zh-Hans": "Mac 包需要在 Mac 上出", "en": "Mac builds need a Mac"},
       {"id": "batch.location", "zh-Hans": "出好的包放在", "en": "Save builds to"},
       {"id": "batch.start", "zh-Hans": "出包（{0} 款）", "en": "Export ({0} games)"},
       {"id": "batch.keys", "zh-Hans": "缺密钥：先在游戏库放入密钥", "en": "Keys missing: add your keys in the library first"},
