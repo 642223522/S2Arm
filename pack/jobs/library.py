@@ -2516,6 +2516,13 @@ def apply_location(c, game):
     if want == Path(want.anchor) or want == Path.home():
         raise Failure("请选一个单独的文件夹作存放位置。", code="job_failed")
     where, place = layout.state(c, game["id"])
+    if where == "offline" and place != want:
+        # 原来的位置没连上（盘没插 / 文件夹已删），玩家在出包页另选了位置（#453）：原先照样先查原位置、报「没连上」，玩家的选择不起作用。
+        #   改在新位置重新建：解包、产物重新做；原位置上的文件（含 Mac 存档）不动，盘插回来可用「重新找到」认回
+        c.diagnostic(f"这款原来的存放位置没连上（{place}），这次改在新选的位置重新准备；原位置上的文件（包括 Mac 上的存档）没有动。",
+                     code="job_failed", severity="warning")
+        layout.forget(c, game["id"])
+        where = "none"
     if where == "ok" and place.parent.parent != want:
         c.begin("把这款游戏搬到新的存放位置")
         layout.move_game(c, game["id"], want)
