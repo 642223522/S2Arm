@@ -99,7 +99,7 @@ char *s2a_shell_vpad_preview(const char *game_id, void *view, int split) {
         CGRect gap=layout.division;
         id division=CGRectIsNull(gap)?NSNull.null:@[@(gap.origin.x),@(gap.origin.y),@(gap.size.width),@(gap.size.height)];
         NSDictionary *doc=@{@"split":@(split!=0),@"division":division,@"area":@[@(safe.origin.x),@(safe.origin.y),@(safe.size.width),@(safe.size.height)],@"game":@[@(g.origin.x),@(g.origin.y),@(g.size.width),@(g.size.height)],
-                            @"buttons":buttons,@"stickRadius":@([l radiusForStick:l.sticks[0] safeRect:safe])};
+                            @"buttons":buttons,@"stickRadius":@(l.sticks.count ? [l radiusForStick:l.sticks[0] safeRect:safe] : 0)};
         NSData *data=[NSJSONSerialization dataWithJSONObject:doc options:NSJSONWritingSortedKeys error:nil]; if (!data) return NULL;
         char *out=malloc(data.length+1); if (!out) return NULL;
         memcpy(out,data.bytes,data.length); out[data.length]=0; return out;

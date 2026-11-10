@@ -38,7 +38,7 @@ struct S2ArmTouchEditorView: View {
                         .position(x: full.width / 2, y: (full.height + area.minY) / 2)
                 }
                 TouchEditorSurface(split: split, changed: load).allowsHitTesting(false)
-                sticks
+                if stickRadius > 0 { sticks }
                 ForEach($keys) { $k in keyView(k).position(k.center).gesture(drag($k)) }
                 bar(full)
             }
