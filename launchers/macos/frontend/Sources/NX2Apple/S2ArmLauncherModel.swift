@@ -3,6 +3,7 @@
 import AppKit
 import Foundation
 import Combine
+import NXModel
 import S2ArmAppleAdapter
 
 /// 一次出包（勾了几个平台就几个作业，按页面顺序排队，ExportPlatform.picked）：现在做到第几个、每个平台的结局。
@@ -811,11 +812,25 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 在访达中显示这款的文件夹（还没有文件夹就显示所在的存放位置）。
+    /// 在访达中选中这款的文件夹（catalog 给的 location.folder：按索引解析、可能在玩家另选的存放位置，不按游戏号拼）；文件夹不在就显示所在的存放位置；
+    /// 两个都不在 → 系统提示框说明原因，不在访达里打开空窗口。
     func reveal(_ game: GameSummary) {
-        let path = game.location.folder.isEmpty ? game.location.path : game.location.folder
-        guard !path.isEmpty else { return }
+        guard let path = [game.location.folder, game.location.path].first(where: { !$0.isEmpty && FileManager.default.fileExists(atPath: $0) }) else {
+            explainMissing("s2arm.reveal.folderMissing"); return
+        }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    /// 「在访达中显示 .ipa」：装机时组装、整个游戏库共用的那份（默认位置根 S2Arm.ipa）；不在 → 提示框说明，不打开空窗口
+    func revealIpa(_ path: String) {
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { explainMissing("s2arm.reveal.ipaMissing"); return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    private func explainMissing(_ key: String) {
+        let alert = NSAlert()
+        alert.messageText = Localizer().t(key)
+        alert.runModal()
     }
 
     /// 删这款（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留）。

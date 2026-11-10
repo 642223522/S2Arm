@@ -337,17 +337,32 @@ public sealed partial class EnvironmentWindow
     /// <summary>在资源管理器中显示这款的文件夹（选中它）；还没有文件夹（找不到 / 没出过包）就打开所在的存放位置。</summary>
     private void RevealGame(LibraryGame game)
     {
+        if (!ShowGameFolder(game)) { librarySummary = "library.failed"; libraryDiagnostics = T("reveal.folder_missing"); Render(); }
+    }
+
+    /// <summary>出包完成页 / 装机页的「打开游戏文件夹」：找不到时在按钮下方提示（revealProblem），不打开空窗口</summary>
+    private void OpenGameFolder(LibraryGame game)
+    {
+        revealProblem = ShowGameFolder(game) ? "" : T("reveal.folder_missing");
+        Render();
+    }
+
+    /// <summary>在资源管理器里选中这款游戏的文件夹（catalog 给的 location.folder：按索引解析、可能在玩家另选的存放位置，不按游戏号拼）。
+    /// 文件夹不在时打开它所在的存放位置；两个都不在 → false（调用方提示）</summary>
+    private bool ShowGameFolder(LibraryGame game)
+    {
         var folder = game.Location?.Folder ?? "";
         var select = folder.Length > 0 && Directory.Exists(folder);
         var target = select ? folder : game.Location?.Path ?? "";
         // 路径来自后端目录：只认存在的绝对路径；Windows 路径不会带引号，带了就不拼进命令行
-        if (!Path.IsPathFullyQualified(target) || target.Contains('"') || !Directory.Exists(target)) return;
+        if (target.Length == 0 || !Path.IsPathFullyQualified(target) || target.Contains('"') || !Directory.Exists(target)) return false;
         try
         {
             using var process = Process.Start(new ProcessStartInfo("explorer.exe", select ? "/select,\"" + target + "\"" : "\"" + target + "\"") { UseShellExecute = false });
         }
         catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         { librarySummary = "library.failed"; libraryDiagnostics = T("process.start_failed") + " " + error.Message; Render(); }
+        return true;
     }
 
     private async Task MoveGameAsync(LibraryGame game)
