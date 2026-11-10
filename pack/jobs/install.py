@@ -962,7 +962,9 @@ class WinPhone:
         不当成没装过——当成没装会跳过备份直接覆盖（#333）"""
         bid = self.bid or self.bundle_for_signing()
         if not bid:
-            return None
+            # 这台没记过包名、又读不到 Impactor 当前账号的团队号：定不了包名就查不了手机上有没有这款的存档。原先直接放行、交给 plumesign 自己定包名
+            #   装上去，等于不备份就覆盖（审计 P2-253）。真实 accounts.json 每个账号都带十位 team_id（Windows 实机核过），读不到 = 存档坏了或没选账号，停装
+            raise Failure("读不到 Impactor 当前账号的团队号，定不了要装的包名，也就没法先备份 iPhone 上的存档。为免覆盖丢档，这次没装：打开 Impactor 确认已登录并选中账号后再试一次。", code="signing_failed")
         dest = layout.path(self.c, g, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
             ok, out = devpush_client(self.c, self.udid, bid, w).get_tree(f"{game_docs(g)}/{SAVE_REL}", dest)

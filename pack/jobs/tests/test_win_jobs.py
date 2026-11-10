@@ -217,7 +217,7 @@ class FakeW:
             st = real.status(resources=resources) if resources else None
             return st if st else {"verdict": impactor, "code": None if impactor == "ok" else "impactor_missing",
                                   "download": "https://github.com/claration/impactor/releases/tag/v2.7.2"}
-        self.team = None
+        self.team = "ABCDE12345"   # 真实 accounts.json 每个账号都带十位团队号（审计 P2-253 Windows 实机核过）
         self.impactor = types.SimpleNamespace(status=status, bundled=real.bundled, logged_in=lambda: self.logged, selected_team=lambda: self.team)
         self.logged = False
         self.plumesign_path = lambda given=None: "C:/plumesign.exe" if plume else None
@@ -271,7 +271,8 @@ class WinInstall(unittest.TestCase):
             return self.assembled, [gid, *others], "SID1"
         with patch.object(self.m, "win_install_mod", return_value=w), \
              patch.object(packer, "assemble", side_effect=fake_assemble), \
-             as_windows(self.m):
+             patch.object(self.m.WinPhone, "backup", lambda ph, g: None), \
+             as_windows(self.m):   # 覆盖装前的存档备份另有用例（test_overwrite_backup_* / test_no_record_and_no_team_*）
             return self.m.install(self.c)
 
     def test_one_phone_two_links(self):
@@ -328,6 +329,16 @@ class WinInstall(unittest.TestCase):
             self.assertEqual(e.exception.code, "device_locked")
             with patch.object(self.m, "devpush_client", client(True)):
                 self.assertTrue((ph.backup(self.gid) / "s.dat").is_file())
+
+    def test_no_record_and_no_team_stops_instead_of_overwriting(self):
+        # 审计 P2-253：这台没记过包名、又读不到团队号 → 查不了手机上有没有存档 → 停装，不交给 plumesign 自己定包名直接覆盖；记过包名的照常按记录备份
+        w = FakeW([("U1", "USB", 3)]); w.team = None
+        with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
+            ph = self.m.WinPhone(self.c)
+            self.assertIsNone(ph.bid)
+            with patch.object(self.m, "devpush_client", side_effect=AssertionError("不该去手机上查")), self.assertRaises(self.m.Failure) as e:
+                ph.backup(self.gid)
+            self.assertEqual(e.exception.code, "signing_failed"); self.assertIn("没装", str(e.exception))
 
     def test_cant_open_app_is_warning_not_failure(self):   # #192：Windows 同 Mac，传输数从异常带回（替身 787 个文件）
         w = FakeW([("U1", "USB", 3)]); w.needs_player = "资源包已传完，还差最后一步：打开 App"
