@@ -91,6 +91,39 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print):
     return out
 
 
+SKIP = ('romfs/', 'romfs.', 'romfs_overlay/', 'shaders/')   # 资源包里不进 IMG 的：RomFS（另建标准段）、旧镜像件、界面覆盖层、直连库（派生产物）
+
+
+def write(root, pack_dir, out_path, progress=None, romfs_index=None):
+    """出包最后一步（启动器线调）：产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建），
+    资源包 pack_dir 清单（index.tsv）里的其余原始资源进其余文件段；游戏号取 root/unpack.tsv，资源包号取 pack_dir/manifest.json 的 index_sha256（必须有：
+    启动器推送续传按它认是不是同一份）。多程序合集（programs/）这一版不出 IMG（报红，调用方照旧出旧形态）。原子写（先 .part 再改名）"""
+    import json
+    say = progress or (lambda *_: None)
+    gid = next((l.rstrip('\n').split('\t', 1)[1] for l in open(os.path.join(root, 'unpack.tsv'), encoding='utf-8') if l.startswith('title_id\t')), '')
+    try: pack_id = json.load(open(os.path.join(pack_dir, 'manifest.json'), encoding='utf-8')).get('index_sha256') or ''
+    except (OSError, ValueError): pack_id = ''
+    if not pack_id: raise Red(f'{pack_dir}/manifest.json 没有 index_sha256：IMG 头必须带资源包号')
+    others = []
+    for line in open(os.path.join(pack_dir, 'index.tsv'), encoding='utf-8'):
+        rel = line.split('\t', 1)[0]
+        if not rel or rel in ('index.tsv', 'manifest.json') or rel.startswith(SKIP): continue
+        if rel.startswith('programs/'): raise Red('多程序合集（programs/）这一版不出 IMG')
+        src = os.path.join(pack_dir, rel)
+        if not os.path.isfile(src): raise Red(f'资源包清单里的 {rel} 不在 {pack_dir}')
+        others.append((rel, src))
+    romfs = os.path.join(root, 'romfs')
+    cmd = romfs_index or f'bash {shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "services", "romfs_index.sh"))}'
+    return build(romfs if os.path.isdir(romfs) else None, others, out_path, gid, pack_id, cmd, say=say)
+
+
+def is_img(path):
+    try:
+        with open(path, 'rb') as f: return f.read(8) == MAGIC
+    except OSError:
+        return False
+
+
 def header(path):
     with open(path, 'rb') as f: b = f.read(HDR.size)
     m, fmt, _, gid, pid, ro, rl, to, tl, total = HDR.unpack(b)

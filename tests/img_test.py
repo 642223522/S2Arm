@@ -3,6 +3,8 @@
   ① 头：魔数 / 格式号 1 / 游戏号大写 / 资源包号 / 文件长 = 实际长度
   ② 其余文件：按路径 O(1) 查得到、起点页对齐、字节与源文件相同；查不在的路径 → None；路径重复 → 报红
   ③ RomFS 段：按 Switch 标准 RomFS 公开格式独立解析（本文件 std_romfs，不用 LibHac）——文件集合与夹具目录相同、逐文件字节相同
+  ④ write（出包最后一步）：游戏号取产物根 unpack.tsv、资源包号取资源包 manifest；exefs / ctl / aoc 进其余文件段，romfs*、覆盖层、直连库、清单不进；
+     RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；manifest 没有 index_sha256 → 报红；有 programs/ → 报红；is_img 认魔数
      （要 dotnet 编 services/romfs_index；没有 dotnet 时 ③ 跳过并打印原因，①② 照测）"""
 import os, shlex, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
@@ -67,4 +69,25 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         ck(got == files, f'③ 标准 RomFS 段：独立解析 {len(got)} 个文件，集合与字节同夹具')
     else:
         print(f'跳过 ③：{why}')
+    if cmd:
+        root, pk = T / 'root', T / 'pack'
+        (root / 'romfs/ui').mkdir(parents=True); (root / 'romfs/ui/layout.bin').write_bytes(b'ORIG'); (root / 'romfs/data.bin').write_bytes(b'DATA')
+        (root / 'unpack.tsv').write_text('title_id\t0100ABCD00000001\n')
+        rows = {'exefs/main.npdm': b'NPDM', 'ctl/control.nacp': b'NACP', 'aoc/1/x.bin': b'AOC', 'romfs_overlay/ui/layout.bin': b'OVER',
+                'shaders/direct/keys.tsv': b'k', 'romfs.files/data.bin': b'DATA', 'romfs.imgmap': b'm'}
+        for k, v in rows.items(): (pk / k).parent.mkdir(parents=True, exist_ok=True); (pk / k).write_bytes(v)
+        (pk / 'index.tsv').write_text(''.join(f'{k}\t{len(v)}\tx\n' for k, v in rows.items()))
+        (pk / 'manifest.json').write_text('{"version": 2, "index_sha256": "feedbeef"}')
+        w = str(T / 'w.img'); img.write(str(root), str(pk), w, romfs_index=cmd)
+        hw = img.header(w); names = [e[0] for e in img.entries(w)]
+        ck((hw['gid'], hw['pack_id'], img.is_img(w), img.is_img(str(pk / 'index.tsv'))) == ('0100ABCD00000001', 'feedbeef', True, False), f'④ 头 {hw["gid"]} / {hw["pack_id"]}、is_img')
+        ck(names == ['aoc/1/x.bin', 'ctl/control.nacp', 'exefs/main.npdm', 'romfs.list'], f'④ 其余文件段只收原始资源：{names}')
+        ck(std_romfs(w, hw['romfs'][0]) == {'ui/layout.bin': b'ORIG', 'data.bin': b'DATA'}, '④ RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件 ORIG）')
+        (pk / 'manifest.json').write_text('{"version": 2}')
+        try: img.write(str(root), str(pk), w, romfs_index=cmd); ck(False, '④ 没有资源包号应报红')
+        except img.Red: ck(True, '④ manifest 没有 index_sha256 → 报红')
+        (pk / 'manifest.json').write_text('{"version": 2, "index_sha256": "feedbeef"}'); (pk / 'programs/1').mkdir(parents=True); (pk / 'programs/1/a').write_bytes(b'p')
+        (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\n')
+        try: img.write(str(root), str(pk), w, romfs_index=cmd); ck(False, '④ 多程序合集应报红')
+        except img.Red: ck(True, '④ 有 programs/ → 报红（这一版不出 IMG）')
 print(f'img 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)
