@@ -665,7 +665,7 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
     backup, new = install.with_name(install.name + ".s2arm-old"), install.with_name(install.name + ".s2arm-new")
 
     def fail(code, message, restart=True):
-        (updates / "last_failure.json").write_text(json.dumps({"code": code, "message": message, "time": time.time()}, ensure_ascii=False))
+        (updates / "last_failure.json").write_text(json.dumps({"code": code, "message": message, "time": time.time()}, ensure_ascii=False), encoding="utf-8")   # 不写 encoding 时 Windows 按系统代码页（中文机 GBK）写，两端启动器按 UTF-8 读
         # 同时记进 update.log（诊断包会收）：last_failure.json 启动器下次启动读完就删，原先换版失败事后什么记录都没有（#379）
         record_failure(types.SimpleNamespace(private_root=str(private)), code, message, traceback.format_exc() if sys.exc_info()[0] else "")
         (updates / "pending.json").unlink(missing_ok=True)

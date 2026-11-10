@@ -23,6 +23,8 @@ for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direc
 echo "$s 起 \$(python3 -c 'import time;print(time.time())') \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0}" >> $T/log
 [ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-1}
 [ "$s" = rewrite ] && sleep \${FAKE_RW_SLEEP:-0}
+# FAKE_RW_UNTIL=<阶段>：改写等那个阶段在日志里记下「起」才结束（最多 30 秒）——按事件判并行，不靠墙钟窗口（⑬a：满载时直连库可能晚于固定的 2 秒才起）
+if [ "$s" = rewrite ] && [ -n "\${FAKE_RW_UNTIL:-}" ]; then for i in \$(seq 600); do grep -q "^\$FAKE_RW_UNTIL 起 " $T/log && break; sleep 0.05; done; fi
 if [ "$s" = direct ]; then d=\$(cd -P $T/roots/acnh@现行 && pwd)/shaders/direct; rm -rf "\$d"; if [ -n "\${FAKE_RTONLY:-}" ]; then mkdir -p "\$d" && : > "\$d/keys.tsv" && echo 缺口 > "\$d/runtime_only.txt"; elif [ -n "\${FAKE_VKHDR:-}" ]; then mkdir -p "\$d/vk" && : > "\$d/keys.tsv" && printf "# key\tfile\n" > "\$d/vk/vk_shaders.tsv"; else [ -n "\${FAKE_NODIRECT:-}" ] || { mkdir -p "\$d" && echo k > "\$d/keys.tsv"; }; fi; fi
 echo "$s 止 \$(python3 -c 'import time;print(time.time())')" >> $T/log
 [ "\${FAKE_FAIL:-}" = "$s" ] && { echo "🔴 $s 桩失败"; exit 1; }
@@ -119,8 +121,8 @@ o=$(S2A_PACK_PLAT=android FAKE_DFAIL=extract R); r=$?
 ck "⑪ Android 抽取只坏直连那两份（退 3）→ 打黄带原因、不跑直连库（rc=${r}）" '[ $r = 0 ] && [[ "$(ar)" == *"；🟡 1 项：安卓直连库没出（extract rc=3：acnh 直连库失败：直连抽取失败（桩：Unity 无类型树）；运行时现编）" ]] && ! grep -q "^direct 起" $T/log'
 # ⑬ 依赖重排（11-06 出包速度线，快路）：直连链不等改写那一组；期望按依赖手写（桩记起 / 止时刻）
 lt() { python3 -c "import sys; a,b=map(float,sys.argv[1:]); sys.exit(0 if a < b else 1)" "$1" "$2"; }
-o=$(FAKE_RW_SLEEP=2 R); r=$?
-ck "⑬a 改写睡 2 秒：直连库在改写结束前已开工（rc=${r}）" '[ $r = 0 ] && lt $(t direct 起) $(t rewrite 止)'
+o=$(FAKE_RW_UNTIL=direct R); r=$?
+ck "⑬a 改写等直连库开工才结束：直连库在改写结束前已开工（rc=${r}；直连库若排在改写之后，改写等满 30 秒才止，这条红）" '[ $r = 0 ] && lt $(t direct 起) $(t rewrite 止)'
 ck "⑬a 能力表在改写之后；抽取 / RomFS 索引在界面布局之后；抽取在追加内容与配置推导之后" '! lt $(t caps 起) $(t rewrite 止) && ! lt $(t extract 起) $(t uilayout 止) && ! lt $(t romfsidx 起) $(t uilayout 止) && ! lt $(t extract 起) $(t aoc 止) && ! lt $(t extract 起) $(t direct_profile 止)'
 # ⑬e（见下）解码器款同样等改写
 # ⑬d 运行时 GLSLC 款（11-07 gridfix 新私有根）：抽取要改写后的模块 → 改写睡 2 秒时抽取在改写结束之后才开工；改写红 → 退 1、不跑抽取 / 直连库
