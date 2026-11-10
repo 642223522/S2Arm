@@ -2981,10 +2981,10 @@ namespace S2A.Services.Tests
                 Check("系统语言：跳过认不出的取下一个 / 列表空回美式英语", "TraditionalChinese / AmericanEnglish", $"{a} / {b}");
                 string env = Environment.GetEnvironmentVariable("S2A_SYSTEM_LANGUAGE");
                 Check("系统语言：显式 S2A_SYSTEM_LANGUAGE 优先，否则跟本机首选", string.IsNullOrEmpty(env) ? SystemLocale.FromPreferred(SystemLocale.Preferred(), out _).ToString() : env, Host.Language.ToString());
-                // 游戏不支持系统语言时的退路（维护者 11-10「根据咱们宿主来识别语言种类」）：只看宿主主语言，① 主语言 → ② 同族变体 → ③ 美式 / 英式英语 → ④ 支持表第一项
+                // 游戏不支持系统语言时的退路（维护者 11-10「根据咱们宿主来识别语言种类」）：只看宿主主语言，① 主语言 → ② 同族变体 → ③ 美式 / 英式英语 → ④ 简中 / 繁中 → ⑤ 支持表第一项
                 var TL = typeof(Ryujinx.HLE.HOS.SystemState.TitleLanguage);
                 var SL = Ryujinx.HLE.HOS.SystemState.SystemLanguage.SimplifiedChinese;
-                Check("语言退路列表：宿主简中 / 美式英语 / 日语 / 德语", "SimplifiedChinese,TraditionalChinese,AmericanEnglish,BritishEnglish / AmericanEnglish,BritishEnglish / Japanese,AmericanEnglish,BritishEnglish / German,AmericanEnglish,BritishEnglish",
+                Check("语言退路列表：宿主简中 / 美式英语 / 日语 / 德语", "SimplifiedChinese,TraditionalChinese,AmericanEnglish,BritishEnglish / AmericanEnglish,BritishEnglish,SimplifiedChinese,TraditionalChinese / Japanese,AmericanEnglish,BritishEnglish,SimplifiedChinese,TraditionalChinese / German,AmericanEnglish,BritishEnglish,SimplifiedChinese,TraditionalChinese",
                     string.Join(" / ", Array.ConvertAll(new[] { SL, Ryujinx.HLE.HOS.SystemState.SystemLanguage.AmericanEnglish, Ryujinx.HLE.HOS.SystemState.SystemLanguage.Japanese, Ryujinx.HLE.HOS.SystemState.SystemLanguage.German },
                         l => string.Join(",", SystemLocale.TitleFallback(l)))));
                 // 支持位按 TitleLanguage：美式英语 0、日 2、德 4、韩 12、繁 13、简 14。#445 那款声明 0x3005 = 美 / 日 / 韩 / 繁
@@ -2997,10 +2997,10 @@ namespace S2A.Services.Tests
                     int p = pick(hostT, supported, fb);
                     return $"{Enum.GetName(TL, p)}（{step(hostT, p, fb)}）";
                 }
-                int g445 = 0x3005, jaEn = (1 << 2) | (1 << 0), enHant = (1 << 0) | (1 << 13), koOnly = (1 << 12) | (1 << 2);
-                Check("语言选择：宿主简中 + 美 / 日 / 韩 / 繁 → 繁中；宿主简中 + 日 / 英 → 英语；宿主日语 + 英 / 繁 → 英语；宿主简中 + 简 → 简中；宿主德语 + 日 / 韩 → 日语（支持表第一项）",
-                    "TraditionalChinese（第 2 步：同族变体） / AmericanEnglish（第 3 步：英语） / AmericanEnglish（第 3 步：英语） / SimplifiedChinese（第 1 步：宿主主语言） / Japanese（第 4 步：游戏支持表第一项）",
-                    $"{Sel(SL, g445)} / {Sel(SL, jaEn)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.Japanese, enHant)} / {Sel(SL, 1 << 14)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.German, koOnly)}");
+                int g445 = 0x3005, jaEn = (1 << 2) | (1 << 0), enHant = (1 << 0) | (1 << 13), koOnly = (1 << 12) | (1 << 2), asia = (1 << 12) | (1 << 13) | (1 << 14);
+                Check("语言选择：宿主简中 + 美 / 日 / 韩 / 繁 → 繁中；宿主简中 + 日 / 英 → 英语；宿主日语 + 英 / 繁 → 英语；宿主简中 + 简 → 简中；宿主德语 + 日 / 韩 → 日语（支持表第一项）；宿主美式英语 + 韩 / 繁 / 简 → 简中（11-03 亚洲版不回退韩语）",
+                    "TraditionalChinese（第 2 步：同族变体） / AmericanEnglish（第 3 步：英语） / AmericanEnglish（第 3 步：英语） / SimplifiedChinese（第 1 步：宿主主语言） / Japanese（第 5 步：游戏支持表第一项） / SimplifiedChinese（第 4 步：中文）",
+                    $"{Sel(SL, g445)} / {Sel(SL, jaEn)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.Japanese, enHant)} / {Sel(SL, 1 << 14)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.German, koOnly)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.AmericanEnglish, asia)}");
                 // 支持语言位为 0（合成的 control.nacp）：缺省回美式英语（#401）；玩家显式指定系统语言时回它。语言码 = ASCII 小端："ja" = 0x616A、"en-US" = 0x53552D6E65
                 var zero = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.ZeroSupportedLanguageCode;
                 Check("支持语言位为 0：系统日语、没显式指定 → en-US；显式指定日语 → ja", "0x53552D6E65 / 0x616A", $"0x{zero(0x616A, false):X} / 0x{zero(0x616A, true):X}");

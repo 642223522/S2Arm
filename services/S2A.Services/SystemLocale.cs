@@ -65,7 +65,8 @@ namespace S2A.Services
 
         // 游戏不支持系统语言时依次试的语言（交 Ryujinx GetDesiredLanguage，S2AHooks.TitleLanguageFallback）。只看宿主主语言 primary
         //   （Host.Language：玩家显式指定的语言优先，否则宿主首选列表第一项；维护者 11-10「导出终端根据咱们宿主来识别语言种类」），不逐个走首选列表：
-        //   ① 主语言 → ② 它的同族变体（简中 ↔ 繁中、美式 ↔ 英式英语、法语 ↔ 加拿大法语、西班牙语 ↔ 拉美西语、葡语 ↔ 巴西葡语）→ ③ 美式 / 英式英语 → ④ 游戏支持表第一项（上游）。
+        //   ① 主语言 → ② 它的同族变体（简中 ↔ 繁中、美式 ↔ 英式英语、法语 ↔ 加拿大法语、西班牙语 ↔ 拉美西语、葡语 ↔ 巴西葡语）→ ③ 美式 / 英式英语 → ④ 简中 / 繁中 → ⑤ 游戏支持表第一项（上游）。
+        //   ④ 留住 11-03 的修法（亚洲版只收韩 / 繁 / 简，上游取第一个 = 韩语）：玩家绝大多数是中文用户，宿主英语也多半是中文玩家设的英文系统，简 / 繁比韩语更可能看得懂。
         //   同族紧跟是真机 ns 服务语言优先表的口径（逆向资料：简中表 = 简中、繁中、美式英语、英式英语、日语…）。
         //   #445：游戏只声明美 / 日 / 韩 / 繁（0x3005），旧拼法「首选列表逐个 → 简中 → 繁中」让首选列表后面的日语 / 英语先于繁中命中，中文玩家看到日文 / 英文
         public static TitleLanguage[] TitleFallback(SystemLanguage primary)
@@ -78,6 +79,7 @@ namespace S2A.Services
                 if (Sibling(p) is TitleLanguage s) Add(s);
             }
             Add(TitleLanguage.AmericanEnglish); Add(TitleLanguage.BritishEnglish);
+            Add(TitleLanguage.SimplifiedChinese); Add(TitleLanguage.TraditionalChinese);
             return r.ToArray();
         }
 
