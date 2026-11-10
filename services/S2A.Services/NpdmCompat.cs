@@ -5,7 +5,7 @@ namespace S2A.Services
 {
     // Switch 2 的 npdm：ACID 段开头的签名区比 Switch 1 多 0x100 字节（ACID 魔数在段内 +0x300，Switch 1 是 +0x200），
     //   段内 FAC / SAC / KC 偏移跟着大 0x100，「签名数据长」字段是段长 − 0x180（Switch 1 是段长 − 0x100）；META 与 ACI0 布局没变
-    //   （11-02 出包线 Pokopia 0400A3A01EE4C000：LibHac MetaLoader 按 +0x200 找魔数，回 ResultLoaderInvalidMeta 2009-0004，服务会话起不来）。
+    //   （11-02 出包线 0400A3A01EE4C000 0400A3A01EE4C000：LibHac MetaLoader 按 +0x200 找魔数，回 ResultLoaderInvalidMeta 2009-0004，服务会话起不来）。
     // LibHac 是钉版 NuGet 包，改不了解析器：交给它之前把 ACID 换成 Switch 1 的布局——去掉签名区多出的前 0x100 字节、段内偏移与长度字段减 0x100，
     //   META 里 ACID 长度减 0x100、排在 ACID 之后的 ACI0 偏移减 0x100。签名不校验（宿主不验证 ACID 签名），其余字段原样。
     static class NpdmCompat

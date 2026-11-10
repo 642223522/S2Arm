@@ -1026,7 +1026,7 @@ static uint64_t fd_pipe_key(const struct nvk_pipe_recipe *r) { return nvk_pipe_r
 #define FD_FRAME_PASSES 2048
 #define FD_FRAME_PEND 2048
 // 已提交前缀的完成证明表：每批一个 fence。加载期（barrier/查询报告把一帧切出成百上千个批次，
-// present 又被延迟）一帧内会积累远多于 136 个前缀；真机上 TOTK 加载期在 OP_BARRIER 处撞到
+// present 又被延迟）一帧内会积累远多于 136 个前缀；真机上 0100F2C0115B6000 加载期在 OP_BARRIER 处撞到
 // “frame queue batch-fence table is full”（2026-11-06 22:25）。表项只是一个 VkFence 句柄（8 B），
 // 放大到 512 后仍满才是真资源上限，那时明确失败。
 #define FD_FRAME_BATCH_FENCES 512
@@ -4912,13 +4912,13 @@ void nvn_vk_first_draw_preheat_stats(uint64_t *n, uint64_t *ns, uint64_t *skip) 
 }
 
 // ---- 块编码渲染目标（压缩底图 + “块=像素”的无压缩视图）-----------------------------
-// TOTK 把 32x32x32 的 RGTC1(BC4) 3D 纹理每个深度切片当渲染目标，附件视图用 RGBA16UI 之类
+// 0100F2C0115B6000 把 32x32x32 的 RGTC1(BC4) 3D 纹理每个深度切片当渲染目标，附件视图用 RGBA16UI 之类
 // 无压缩格式覆盖：一个像素 = 一个 8 字节压缩块，也就是在 GPU 上直接编码 BC4。Vulkan 既不能
 // 把压缩格式当颜色附件，也不能建压缩↔无压缩视图，所以渲染到等尺寸影子（bw×bh 像素）+ 一个
 // buffer，pass 前 底图→buffer→影子，pass 后 影子→buffer→底图，字节原样往返：压缩格式没有
 // COLOR_ATTACHMENT 特性、不能建无压缩视图，image→image 拷贝又要求格式兼容，buffer 往返是
 // Vulkan 上唯一可行的通路。影子按 (格式, bw, bh) 复用，等所属提交完成才换内容。
-// 每个“底图+子资源”的渲染各要一个影子；同一形状的连续切片（TOTK 是 32 个深度切片）在所属帧
+// 每个“底图+子资源”的渲染各要一个影子；同一形状的连续切片（0100F2C0115B6000 是 32 个深度切片）在所属帧
 // 提交完成前不能复用，所以池按需增长。内存很小（32x32 BC4 的 8x8 影子约 1 KiB/片），但按字节
 // 预算硬上限 fail-closed，不无限增长。
 #define FD_BCRT_POOL 1024
@@ -4950,7 +4950,7 @@ struct fd_bcrt_pend_slot {
 };
 static struct fd_bcrt_pend_slot g_bcrt_pend[NVN_VK_MRT_MAX_COLOR];
 static int g_bcrt_n;
-// 块编码影子每笔独占 pass；启动期这类 pass 可能上百笔（TOTK 的 BC4 LUT 逐深度切片生成），
+// 块编码影子每笔独占 pass；启动期这类 pass 可能上百笔（0100F2C0115B6000 的 BC4 LUT 逐深度切片生成），
 // 一个帧内全堆着会撞帧队列的完成证明批次表。每攒 32 笔做一次等待式 flush：拿到完成证明后
 // 影子可以按帧完成语义安全复用，批次表也不会溢出。
 static int g_bcrt_since_flush;
@@ -5280,7 +5280,7 @@ int nvn_vk_first_draw(struct s2a_vk_device *d, const struct s2a_record_draw_stat
             return fail(why, why_size, "frame queue flush failed while making room for this draw");
     }
     if (state->count == 0) return fail(why, why_size, "first draw has zero vertices");
-    // 零附件 draw（既没有颜色槽也没有深度）是合法的：TOTK 的“编码”pass 只往可写 storage buffer
+    // 零附件 draw（既没有颜色槽也没有深度）是合法的：0100F2C0115B6000 的“编码”pass 只往可写 storage buffer
     // 里写结果。Vulkan 允许零附件 render pass + 零附件 framebuffer，光栅化仍会执行片元着色器。
     // 注意：rt_count==0 但绑了深度是合法的 **depth-only pass**，不能当零附件把深度静默丢掉。
     int no_attach = 0;
@@ -5445,7 +5445,7 @@ int nvn_vk_first_draw(struct s2a_vk_device *d, const struct s2a_record_draw_stat
         uint32_t bcrt_layer = (rv && rv->set_layers) ? rv->min_layer : 0;
         if (t->vk_format && !nvn_vk_format_is_depth(t->vk_format) &&
             nvn_vk_format_is_compressed(t->vk_format) && rv && rv->set_format) {
-            // 压缩纹理作为渲染目标：附件视图用“块=像素”的无压缩格式覆盖（TOTK 的 BC4 3D LUT）。
+            // 压缩纹理作为渲染目标：附件视图用“块=像素”的无压缩格式覆盖（0100F2C0115B6000 的 BC4 3D LUT）。
             struct nvn_vk_bcrt_plan bp;
             char bwhy[192] = "";
             const VkFormat vf = nvn_vk_format(rv->format);
@@ -5536,7 +5536,7 @@ int nvn_vk_first_draw(struct s2a_vk_device *d, const struct s2a_record_draw_stat
         mrt_slots[i].bound = 1;
         mrt_slots[i].format = f;
         // 块编码影子的”像素“是压缩块：mip 的纹素尺寸除以块边长 = 影子尺寸。NVN 的视口/scissor
-        // 也在这个视图像素（块）空间里（TOTK：64x64 的 BC4 用 16x16 视口）。framebuffer/renderArea
+        // 也在这个视图像素（块）空间里（0100F2C0115B6000：64x64 的 BC4 用 16x16 视口）。framebuffer/renderArea
         // 必须按影子尺寸建，按纹素尺寸建会让附件视图小于 framebuffer（非法 framebuffer）。
         mrt_slots[i].width = bcrt_slot ? g_bcrt_pend[g_bcrt_n - 1].plan.bw : fd_mipdim(t->width, level);
         mrt_slots[i].height = bcrt_slot ? g_bcrt_pend[g_bcrt_n - 1].plan.bh : fd_mipdim(t->height, level);

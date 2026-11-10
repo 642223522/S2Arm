@@ -22,8 +22,8 @@ Ryujinx 侧所需改动见 `compat/改动清单.md`（0002 内部可见、0003 �
 - 零分配（逐命令每请求 / 整进程每 5 ms，判据 0 B）：nvdrv Ioctl、fs 读、Horizon 命令、空闲底噪、声音渲染全部 0 B（补丁 0015–0023）。
   未覆盖：vi TransactParcel、audren RequestUpdate（有活动声部）、nvdrv SubmitGpfifo（显卡核心段归帧率能耗线）、hid 宿主侧更新。
 - 链进宿主：S2A_CS=1 make host（services/build.mk + nxaot.sh），s2a_* 缺口 0；渲染器库 libnxgal 待帧率能耗线挂 HOST_LIBS。
-- 待定：Ryujinx GPU 渲染循环（Switch.ProcessFrame / PresentFrame）由谁驱动（已问帧率能耗线）；M0 动森 Mac 局等原生层用新 main 重跑出报红清单。
-- 后续项：RomFS 目录表出包预生成（动森 10.3 万文件现建 0.9 秒）；不启动 Ryujinx 旧服务线程（直调下闲置）；按服务类缓存反射表。
+- 待定：Ryujinx GPU 渲染循环（Switch.ProcessFrame / PresentFrame）由谁驱动（已问帧率能耗线）；M0 01006F8002326000 Mac 局等原生层用新 main 重跑出报红清单。
+- 后续项：RomFS 目录表出包预生成（01006F8002326000 10.3 万文件现建 0.9 秒）；不启动 Ryujinx 旧服务线程（直调下闲置）；按服务类缓存反射表。
 
 ## 正常关闭的资源所有权
 

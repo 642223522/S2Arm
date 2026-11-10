@@ -473,6 +473,37 @@ class StoreMetaTests(JobCase):
         self.assertEqual(sorted(self.calls), sorted([B, C, self.D]))
         self.assertEqual((L / "games" / "Terraria" / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
 
+    def test_background_entry_writes_nothing_when_the_library_moved(self):
+        # 起进程到拿到锁之间库搬走了 / 换了（标识对不上）：不查、不建任务上下文，库里一个字节都不写（任务记录不进已搬走的位置）
+        import store_meta_bg
+        L = self.c.library
+        before = sorted(str(p.relative_to(L)) for p in L.rglob("*") if p.name != ".store-meta.lock")
+        self.assertEqual(store_meta_bg.main([str(self.c.private), str(L), "另一个库的标识", str(self.c.engine)]), 0)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(sorted(str(p.relative_to(L)) for p in L.rglob("*") if p.name != ".store-meta.lock"), before)
+
+    @unittest.skipIf(os.name == "nt", "占锁的子进程用 fcntl.flock")
+    def test_delete_and_move_wait_for_a_running_background_query(self):
+        # 删游戏 / 移动 / 搬家前等后台商店查询放锁（library.store_meta_quiet）：另一个进程占着 .store-meta.lock 1.5 秒，这里应等到它放开才进去
+        import subprocess, sys, time, library
+        L = self.c.library
+        holder = subprocess.Popen([sys.executable, "-c", "import fcntl,sys,time; f=open(sys.argv[1],'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                                   "print('held', flush=True); time.sleep(1.5)", str(L / ".store-meta.lock")], stdout=subprocess.PIPE, text=True)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        t0 = time.monotonic()
+        with library.store_meta_quiet(L):
+            waited = time.monotonic() - t0
+        holder.wait(timeout=10)
+        self.assertGreater(waited, 0.8)
+        with patch.object(library, "STORE_QUIET_WAIT", 0.2):   # 超过上限照常继续，不把删除卡死
+            holder = subprocess.Popen([sys.executable, "-c", "import fcntl,sys,time; f=open(sys.argv[1],'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                                       "print('held', flush=True); time.sleep(3)", str(L / ".store-meta.lock")], stdout=subprocess.PIPE, text=True)
+            holder.stdout.readline()
+            t0 = time.monotonic()
+            with library.store_meta_quiet(L):
+                self.assertLess(time.monotonic() - t0, 2)
+            holder.kill(); holder.wait()
+
     def test_spawn_args_and_skips(self):
         import library
         popen = []

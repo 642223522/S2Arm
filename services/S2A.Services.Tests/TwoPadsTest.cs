@@ -121,7 +121,7 @@ namespace S2A.Services.Tests
             Check("手柄小程序：只收单只 Joy-Con 左 → Player1 配左只", $"True / {(uint)ControllerType.JoyconLeft}",
                 $"{ui.DisplayMessageDialog(joyLeft)} / {Style((int)PlayerIndex.Player1)}");
 
-            // 选用户：只有一个用户 = AccountManager.LastOpenedUser（动森岛民按建档用户号认人）
+            // 选用户：只有一个用户 = AccountManager.LastOpenedUser（01006F8002326000岛民按建档用户号认人）
             Check("选用户小程序：回 LastOpenedUser",
                 Host.Device.System.AccountManager.LastOpenedUser.UserId.ToString(),
                 ui.ShowPlayerSelectDialog().UserId.ToString());

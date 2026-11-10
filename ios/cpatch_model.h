@@ -23,7 +23,7 @@ extern NSString *const S2ACPatchDefaultsKey;   // @"S2ACommunityPatches"
 @end
 
 // 显示分组：先看补丁名关键词（60 帧 → 宽屏 → 画面），都没有再看「类别」列（出包按补丁目录填：ultrawide / 60fps / other-gfx），再没有看编号前缀。
-//   「类别」是目录不是内容（mk8d 的 ultrawide 目录里有「Force 60FPS split screen」「Removed depth of field」），所以名字优先。
+//   「类别」是目录不是内容（0100152000022000 的 ultrawide 目录里有「Force 60FPS split screen」「Removed depth of field」），所以名字优先。
 //   分组只管显示；运行时跟 60 帧开关的是编号前缀 fps: 那一类（followsFps60），与显示在哪组无关
 NSString *S2ACPatchClassify(NSString *name, NSString *category, NSString *ident);
 // 中文显示名：常见写法对照表（分辨率 / 帧率 / 景深 / 动态分辨率 / LOD / 模糊 / 描边 / 阴影 …），按顺序第一条命中的为准

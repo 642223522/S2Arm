@@ -143,7 +143,7 @@ class SpaceMeasured(JobCase):
         self.assertTrue((self.c.library / library.SPACE_LEDGER).read_text(encoding="utf-8").startswith("# time\tgameId"))
 
     # —— 预算三档依据 ——
-    # 期望值手算：29.13 GB × 1.1 + 15 GB；验收数 火纹 ≈ 47、王国之泪 ≈ 34、小游戏 ≈ 8（维护者 11-08）。单文件镜像不再存进库（#329），不另加一份
+    # 期望值手算：29.13 GB × 1.1 + 15 GB；验收数 火纹 ≈ 47、0100F2C0115B6000 ≈ 34、小游戏 ≈ 8（维护者 11-08）。单文件镜像不再存进库（#329），不另加一份
     def need(self, size, **kw):
         return library.pack_need_bytes([dict(size=size, sha256="a" * 64)], **kw)
 

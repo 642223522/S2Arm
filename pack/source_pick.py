@@ -10,7 +10,7 @@ for i, f in files.items():
     if os.path.exists(p):
         for x in json.load(open(p))['packages']: pk.append((f, x))
 bases = {x['baseId'] for _, x in pk if x['type'] == 'base'}
-# 不止一个本体（10-26 #456：动森文件夹里还带同系列独立小程序「小岛转移工具」，另一个本体程序号，原先整个拒掉）：
+# 不止一个本体（10-26 #456：01006F8002326000文件夹里还带同系列独立小程序「小岛转移工具」，另一个本体程序号，原先整个拒掉）：
 #   --title-id 指定就用它；没指定时主游戏的内容远大于同系列小工具——最大的本体内容至少是第二大的 4 倍才自动挑它、打一行黄字点名跳过的；
 #   两款差不多大（两个不同游戏放一起）判不出，报红列出候选、请用 --title-id 指定（启动器按游戏号总会给）
 want = os.environ.get('S2A_WANT_TID', '').upper()
@@ -35,7 +35,7 @@ else:
 mine = [(f, x) for f, x in pk if x['baseId'] == tid]
 base = next(x for _, x in mine if x['type'] == 'base')
 upd = max((x['version'] for _, x in mine if x['type'] == 'update'), default=None)
-# 真正跑的是最新更新里的程序（更新的 ExeFS 是完整的）：有的游戏本体 32 位、更新后 64 位（马车8 1.0 AArch32 → 4.0.1 AArch64）；更新读不出（unknown）才看本体
+# 真正跑的是最新更新里的程序（更新的 ExeFS 是完整的）：有的游戏本体 32 位、更新后 64 位（0100152000022000 1.0 AArch32 → 4.0.1 AArch64）；更新读不出（unknown）才看本体
 isa = next((x['guestIsa'] for _, x in mine if x['type'] == 'update' and x['version'] == upd and x['guestIsa'] != 'unknown'), base['guestIsa'])
 if isa != 'aarch64':
     print(f'🔴 {base["name"]} 是 {isa} 程序，S2Arm 只跑 AArch64', file=sys.stderr); sys.exit(1)

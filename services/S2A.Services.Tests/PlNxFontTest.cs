@@ -7,8 +7,8 @@ using System.Text;
 
 namespace S2A.Services.Tests
 {
-    // pl:u 2100 RequestLoadNxFont + IFontService 0 / 1（Switch 2，时之笛 0400486024DEC000 开局前置；sdk 失败即 AbortImpl）。
-    //   线上格式取自时之笛 sdk：2100 非域、复制句柄 1 个（传输内存）、数据 u8 @0 + u32 长度 @4、回出对象；IFontService 0 与 pl:u 2010 同格式。
+    // pl:u 2100 RequestLoadNxFont + IFontService 0 / 1（Switch 2，0400486024DEC000 0400486024DEC000 开局前置；sdk 失败即 AbortImpl）。
+    //   线上格式取自0400486024DEC000 sdk：2100 非域、复制句柄 1 个（传输内存）、数据 u8 @0 + u32 长度 @4、回出对象；IFontService 0 与 pl:u 2010 同格式。
     //   期望值不跑被测实现：偏移 / 长度按本机 .bfttf 文件长度手算（每个字体占「8 字节头 + 正文」，正文长 = 文件长 − 8，依次排），
     //   正文按 BFTTF 公开格式独立解密（每 4 字节异或 0x06186249）后逐字节比；推不出的分支（首字节非 0、类型 6、命令 1、放不下）期望报红 + 未知命令
     public static unsafe partial class Program
@@ -41,7 +41,7 @@ namespace S2A.Services.Tests
                 return Call(pl, m);
             }
 
-            // ---- 正路：时之笛同款请求（首字节 0、长 0x1300000）----
+            // ---- 正路：0400486024DEC000同款请求（首字节 0、长 0x1300000）----
             byte* buf = FakeNative.Alloc((int)NxSize);
             new Span<byte>(buf, (int)NxSize).Fill(0xCC);
             long red0 = Red.Total;

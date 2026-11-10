@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from frame_gate import judge as gate_judge
 from game_fps import target as game_fps   # 目标帧率 = 游戏自己要的（host.log「帧节拍」行；10-21 维护者，不查表）
 from redline import red_lines   # 「未实现服务：」空汇总行不计红
-GAMES = 'acnh mk8d d2r botw d3 witcher3 silksong mhrise octopath2 xc3'.split()   # Mac 健康表：暗黑3 留作金样回归防退步，异度神剑 3 加入（10-23）
+GAMES = 'acnh mk8d d2r botw d3 witcher3 silksong mhrise octopath2 xc3'.split()   # Mac 健康表：暗黑3 留作金样回归防退步，010074F013262000 加入（10-23）
 COLS = {'pass': ('pass_n', 1), 'up': ('upload_n', 1), 'rw': ('rw_kb', 1 / 1024)}   # 列名, 换算（rw → MB/帧）
 NM = {'pass': '渲染遍', 'up': '切遍上传', 'rw': '附件读写'}
 FLOOR = {'pass': (0.1, 2), 'up': (0.1, 2), 'rw': (0.1, 5)}

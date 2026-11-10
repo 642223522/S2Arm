@@ -25,7 +25,7 @@ LINKED = [0]   # Windows 上没克隆成、改用同卷硬链接的文件数
 NJ = int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 并行路数（tools/cores.sh S2A_JOBS）
 if sys.platform == 'darwin':
     libc = ctypes.CDLL('libc.dylib', use_errno=True); libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
-def copy_sha(src, dst):   # 整份拷贝、边拷边算 SHA-256（11-06 出包速度线：拷完再回头读一遍源算 SHA，王国之泪 16 GB 多读一遍）→ SHA
+def copy_sha(src, dst):   # 整份拷贝、边拷边算 SHA-256（11-06 出包速度线：拷完再回头读一遍源算 SHA，0100F2C0115B6000 16 GB 多读一遍）→ SHA
     h = sha256_fast.new()
     with open(src, 'rb') as f, open(dst, 'xb') as g:
         for b in iter(lambda: f.read(1 << 22), b''): h.update(b); g.write(b)
@@ -42,7 +42,7 @@ def clone(src, dst):   # → 拷贝时顺手算出的 SHA；块克隆（不读�
             import refs_clone as rc
             OUT_REFS[0] = rc._volume_fs(os.path.splitdrive(os.path.realpath(os.path.dirname(dst)))[0].upper()).upper() == 'REFS'
         if OUT_REFS[0] and refs_clone(src, dst): return None
-        # 不是 ReFS / 开发驱动器（玩家 NTFS）：同卷硬链接，不写数据（11-06 出包速度线：Windows 出包机 C 盘 NTFS 王国之泪 30.5 万个文件
+        # 不是 ReFS / 开发驱动器（玩家 NTFS）：同卷硬链接，不写数据（11-06 出包速度线：Windows 出包机 C 盘 NTFS 0100F2C0115B6000 30.5 万个文件
         #   整份拷贝 2547 秒；封存存储文件实测可建硬链接、每个 0.17 毫秒，删链接只靠父目录「删除子项」权限、原件封存不变）。
         #   资源包的源是不可变的产物根版本与封存存储，流程里不原地改，所以共用文件对象不会让包里内容跟着变；核对 verify.py 见同一文件只算一遍 SHA
         try:

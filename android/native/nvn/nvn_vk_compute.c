@@ -464,7 +464,7 @@ int nvn_vk_compute_pipeline_build(struct s2a_vk_device *d,
         uniforms + storage + sampled > props.limits.maxPerStageResources) {
         failure = "compute descriptors exceed device limits"; goto bad;
     }
-    // size=0（长度未声明）的 storage 绑定：TOTK 相邻缓冲的精确长度可互相覆盖（实测 4 MiB 缓冲只差
+    // size=0（长度未声明）的 storage 绑定：0100F2C0115B6000 相邻缓冲的精确长度可互相覆盖（实测 4 MiB 缓冲只差
     // 0x200），若各建一份影子，GPU 写会分叉、回写互相覆盖。这里按“本次 dispatch 所有无界 storage 的
     // 并集”建一份影子，所有无界绑定按偏移绑进同一份字节，帧尾只回写一次。
     {

@@ -103,7 +103,7 @@ class ComputeProgram(unittest.TestCase):
         bad('duplicate_binding',lambda c:c['bindings'][1].update(set=0))
         # FD_MAX_BINDINGS 按 producer 合同推导：1 + 2×(18 uniform + 16 storage + 64 texture + 16 image)
         # = 229（图形程序固定 vs+fs 两阶段，再加 1 条全程序共享 support；compute 只 cs 一阶段
-        # 1+18+16=35，被同一上限覆盖）。17 条是 TOTK 实测的下限证据，不是上限；65/229 必须接受，
+        # 1+18+16=35，被同一上限覆盖）。17 条是 0100F2C0115B6000 实测的下限证据，不是上限；65/229 必须接受，
         # 230 越过合同才准确失败——与 nvn_vk_program_binding_cap_test.c 的 cap=229 断言同源。
         obj=fixture();obj['content']['bindings']=[{'stage':'program','kind':'support','set':0,'binding':i,'count':1} for i in range(17)];cases.append(('seventeen_bindings',obj,0))
         obj=fixture();obj['content']['bindings']=[{'stage':'program','kind':'support','set':0,'binding':i,'count':1} for i in range(65)];cases.append(('sixty_five_bindings',obj,0))

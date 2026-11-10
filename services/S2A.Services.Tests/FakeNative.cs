@@ -271,7 +271,7 @@ namespace S2A.Services.Tests
 
         public static ulong ProcessId() => GamePid;
 
-        public static ulong ProgramId() => 0x01006F8002326000; // 动森
+        public static ulong ProgramId() => 0x01006F8002326000; // 01006F8002326000
 
         public static int RegisterCs(CsApi* api)
         {

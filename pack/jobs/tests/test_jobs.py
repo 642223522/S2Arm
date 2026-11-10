@@ -521,7 +521,7 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
 
     def test_run_reaps_leftover_session_processes(self):
-        # 10-26 斯普拉遁3 Spare-host：工具退出后，留在它会话里的孙进程（dl_gen 超时只杀 metal-tt，air-tt 过继给 launchd 继续编）要收掉；
+        # 10-26 0100C2500FC20000 Spare-host：工具退出后，留在它会话里的孙进程（dl_gen 超时只杀 metal-tt，air-tt 过继给 launchd 继续编）要收掉；
         #   有意活得比任务久、自立会话的（宽屏自动出表，perl setsid）不收
         import shlex
         d = self.root / "reap"; d.mkdir(); q = shlex.quote(str(d))
@@ -742,7 +742,7 @@ class JobsTests(unittest.TestCase):
         return [json.loads(l) for l in self.c.events.read_text().splitlines() if json.loads(l)["type"] == "space"]
 
     def test_space_budget_adds_direct_library_for_every_game(self):
-        # 直连优先、零配置（10-25）：每款都另加直连库预算（按动森实测 × 体积换算），不看有没有手写配置档；只有直连（11-07），没有不加的分支
+        # 直连优先、零配置（10-25）：每款都另加直连库预算（按01006F8002326000实测 × 体积换算），不看有没有手写配置档；只有直连（11-07），没有不加的分支
         import collections
         import unittest.mock as um
         du = collections.namedtuple("du", "total used free")
@@ -969,7 +969,7 @@ class JobsTests(unittest.TestCase):
         base = self.package()
         base["guestIsa"] = "aarch32"
         self.assertTrue(any("32 位" in x for x in library.requirements(self.c, self.game(packages=[base]))))
-        # 本体 32 位、最新更新 64 位（马车8 1.0 → 4.0.1）：按更新判 → 能打包；更新读不出指令集（unknown）→ 退回本体 → 不能打包
+        # 本体 32 位、最新更新 64 位（0100152000022000 1.0 → 4.0.1）：按更新判 → 能打包；更新读不出指令集（unknown）→ 退回本体 → 不能打包
         update64 = dict(self.package("update", 2), guestIsa="aarch64")
         self.assertFalse(any("32 位" in x for x in library.requirements(self.c, self.game(packages=[base, update64]))))
         update_unknown = dict(self.package("update", 2), guestIsa="unknown")
@@ -1596,6 +1596,16 @@ class JobsTests(unittest.TestCase):
         with self.assertRaisesRegex(Failure, "文件名重复"):
             library.diagnostics(self.c)
         self.assertEqual(destination.read_bytes(), previous)
+
+    def test_diagnostic_export_failure_names_the_step_and_reason_but_no_path(self):
+        # #427：游戏库在 SMB 共享盘上导不出，原先只有一句「无法安全读取或写入」，看不出卡在哪一步。期望手写：所选位置的文件夹不在 → 建临时文件那一步失败
+        destination = self.root / "不存在的文件夹" / "诊断.zip"; self.c.r["path"] = str(destination)
+        with self.assertRaises(Failure) as caught:
+            library.diagnostics(self.c)
+        message = str(caught.exception)
+        self.assertIn("无法安全读取或写入诊断文件，未更新诊断包（在所选位置建临时文件：", message)
+        self.assertIn("错误码", message)
+        self.assertNotIn(str(self.root), message)   # 不带路径（路径里可能有用户名，摘要会贴到公开帖子）
 
     def test_diagnostic_export_never_contains_keys_or_player_files(self):
         self.c.keys.parent.mkdir(parents=True)

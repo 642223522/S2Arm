@@ -12,6 +12,12 @@ extern char *S2A_SaveTransfer(const char *request) __attribute__((weak_import));
 extern void S2A_SaveTransferFree(char *response) __attribute__((weak_import));
 void s2a_host_shutdown(const char *why);
 static NSString *const ManageKey = @"S2ASaveManageOnOpen";
+// 「下次打开先进存档管理」分两级：ManageKey 是 App 级（iOS 设置开关、主屏快捷操作冷启动置，下次开哪款都进）；
+//   游戏内「退出并管理存档」只记这一款：多款容器按游戏号另起一个键，开别的游戏不弹；单款包一个进程只一款，就是 ManageKey 本身
+static NSString *game_manage_key(void) {
+    const s2a_launch_ctx *c = s2a_launch_ctx_container() ? s2a_launch_ctx_get() : NULL;
+    return c && c->game_id[0] ? [ManageKey stringByAppendingFormat:@".%s", c->game_id] : ManageKey;
+}
 
 // 存档文件放在哪（给手里有别处存档的玩家，如 NX2Apple 导出的存档目录，不另做导入入口）：按这款真实的存档根现算「文件」App 里的路径。
 //   Ryujinx 层级 <存档根>/bis/user/save/<16 位编号>/0 是已提交的存档内容（游戏没在跑时放进去，下次开局读到）；
@@ -104,7 +110,8 @@ static BOOL recovery_pending(void) {
 }
 int s2a_ios_save_management_requested(void) {
     @autoreleasepool {
-        return [NSUserDefaults.standardUserDefaults boolForKey:ManageKey] || recovery_pending();
+        NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+        return [d boolForKey:ManageKey] || [d boolForKey:game_manage_key()] || recovery_pending();
     }
 }
 
@@ -306,6 +313,7 @@ int s2a_ios_save_management_requested(void) {
 }
 - (void)finishManagement {
     [NSUserDefaults.standardUserDefaults setBool:NO forKey:ManageKey];
+    [NSUserDefaults.standardUserDefaults setBool:NO forKey:game_manage_key()];
     [NSUserDefaults.standardUserDefaults synchronize];
     self.startGame();
 }
@@ -406,12 +414,18 @@ int s2a_ios_save_management_requested(void) {
 UIViewController *s2a_ios_save_manager(void (^start_game)(void)) {
     S2ASaveManager *manager = [S2ASaveManager new]; manager.startGame = start_game; return manager;
 }
+// 游戏内「存档管理」确认框：「退出游戏」只收尾退出；「退出并管理存档」才记下次先进存档管理（只记这一款）。
+//   原先只有一个「已保存，退出游戏」且必置开关：v0.2.2 起游戏里只有它写着「退出游戏」，玩家拿它当退出，之后每次打开都先进存档页
 void s2a_ios_save_present(UIViewController *presenter) {
     if (!presenter || presenter.presentedViewController) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:S2AL(@"save.quit.title") message:S2AL(@"save.quit.message") preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"save.quit.back") style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"save.quit.confirm") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *item) {
-        (void)item; [NSUserDefaults.standardUserDefaults setBool:YES forKey:ManageKey];
+    [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"save.quit.only") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *item) {
+        (void)item;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("退出游戏"); });
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"save.quit.manage") style:UIAlertActionStyleDefault handler:^(UIAlertAction *item) {
+        (void)item; [NSUserDefaults.standardUserDefaults setBool:YES forKey:game_manage_key()];
         [NSUserDefaults.standardUserDefaults synchronize];
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("打开存档管理"); });
     }]];

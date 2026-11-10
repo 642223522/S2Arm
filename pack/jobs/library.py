@@ -187,6 +187,35 @@ def store_todo(c, ids=None):
     return todo
 
 
+STORE_QUIET_WAIT = 30.0   # 删除 / 移动 / 搬家前等后台商店查询结束的上限（秒）：它一轮联网最多 STORE_BUDGET 10 秒，加改文件夹名
+
+
+@contextlib.contextmanager
+def store_meta_quiet(library):
+    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock。
+    它正在查就等它查完（最多 STORE_QUIET_WAIT 秒，超了照常继续：它写横图在目录锁里、只写清单里还在的款并重新找文件夹，改名在执行锁里，
+    这里等是为了连它的任务记录也不写进正被删 / 搬的位置）；拿到后它再起来见锁被占就这次不查"""
+    path = Path(library) / ".store-meta.lock"
+    if not path.parent.is_dir():
+        yield
+        return
+    with path.open("a") as f:
+        held, deadline = False, time.monotonic() + STORE_QUIET_WAIT
+        while True:
+            try:
+                filelock.try_lock(f); held = True
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.5)
+        try:
+            yield
+        finally:
+            if held:
+                filelock.unlock(f)
+
+
 def store_meta_background(c, ids=None):
     """在后台查商店（pack/jobs/store_meta_bg.py：store_meta 然后 heal_folder_names）：作业本身不等联网（商品页单页要几秒）。
     有要查的款才起；起不来（系统拒绝）就算了，下个作业再试。子进程脱离本作业：作业结束、取消都不带走它（Windows 前端不把作业放进杀子进程的作业对象）。
@@ -483,7 +512,7 @@ def require_local(path):
         raise Failure(libloc.CLOUD_MESSAGE.format(cloud=cloud), code="library_in_cloud")
 
 
-MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
+MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".store-meta.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
 
 
 def _looks_like_library(root):
@@ -630,7 +659,7 @@ def move_library(c, source):
         raise Failure("原来的位置不是可搬的游戏库。", code="library_move_failed")
     if c.library == source or c.library.is_relative_to(source) or source.is_relative_to(c.library):
         raise Failure("新位置不能在原来的游戏库里面，也不能包含它。", code="library_move_failed")
-    with _source_locked(source):
+    with store_meta_quiet(source), _source_locked(source):
         pairs = _move_pairs(c, source)
         c.library.mkdir(parents=True, exist_ok=True)
         cross = [(a, b) for a, b in pairs if not _same_volume(a, c.library)]
@@ -680,7 +709,7 @@ def move_library(c, source):
                 _discard(a)
             except OSError as error:
                 c.diagnostic("游戏库已经搬好，旧位置有文件没删掉，可以手动删除：" + c.redact(str(error)), code="job_failed", severity="warning")
-    for name in (".execution.lock", ".catalog.lock", ".DS_Store"):
+    for name in (".execution.lock", ".catalog.lock", ".store-meta.lock", ".DS_Store"):
         (source / name).unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         _discard(source / ".s2arm-work")   # 工作目录回私有目录后剩的，都是能重新生成的
@@ -889,7 +918,7 @@ SPACE_UNKNOWN = [
 ]
 
 
-# 双轨包多占的空间（10-24 动森实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
+# 双轨包多占的空间（10-24 01006F8002326000实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
 # 出包要多少盘（11-08 维护者）：不看这款做没做过，第一次出包也算得准，只有一个数。
 #   解包 = 原包 × 1.1（解包目录已完整在盘上时算 0）；Mac 的资源包是 APFS 克隆不另算，Windows（NTFS 无克隆）再加一份原包 × 1.1；
 #   直连（翻译缓存 + 着色器库 + 收尾临时，取上限）：原包 < 3 GB 记 5 GB，其余 15 GB（最坏样本巫师3 缓存 7.5 + 库 1.5 × 2 份 + 收尾临时约 4）
@@ -923,13 +952,13 @@ def _extract_bytes(c, gid):
     return max(sizes) if sizes and max(sizes) > 0 else None
 
 
-# 出包实测账（11-07 联合开发者旷野之息：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
+# 出包实测账（11-07 联合开发者01007EF00011E000：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
 #   量这一款在游戏库所在卷上的整套占用，追加一行到 游戏库/space-usage.tsv（取最后一行，同 tools/disk_admit.py 的 est.tsv）；
 #   预检先用同款实测、再用同大小档实测比例 × 本款大小，都没有才退回经验规则。余量 × 1.1 同 维护方工具 need_bytes
 SPACE_LEDGER = "space-usage.tsv"
 CLONED_DIRS = ("romfs", ".romfs_store")
 SPACE_LEDGER_FIELDS = ("time", "gameId", "target", "direct", "inputBytes", "footprintBytes", "name", "format")
-SPACE_LEDGER_FORMAT = "2"   # 2 起 RomFS 只算一份、直连缓存是压缩后的（DSZ1）；旧行偏大约 5 倍（火焰纹章记 152 GB，实占约 32 GB），不用
+SPACE_LEDGER_FORMAT = "2"   # 2 起 RomFS 只算一份、直连缓存是压缩后的（DSZ1）；旧行偏大约 5 倍（一款第一方策略 RPG记 152 GB，实占约 32 GB），不用
 
 
 def _space_target(c):
@@ -1111,7 +1140,7 @@ def check_pack_space(c, game, *, compiler_policy=None):
 
 def guest_isa(selected):
     # 真正跑的程序的指令集：最新更新的 ExeFS 是完整的，读得出就以它为准；读不出（unknown）才看本体。
-    # 有的游戏本体 32 位、更新后 64 位（马车8 1.0 AArch32 → 4.0.1 AArch64，10-23 一键出包曾按本体误拒）
+    # 有的游戏本体 32 位、更新后 64 位（0100152000022000 1.0 AArch32 → 4.0.1 AArch64，10-23 一键出包曾按本体误拒）
     upd = [p for p in selected if p["type"] == "update" and p.get("guestIsa") in ("aarch64", "aarch32")]
     if upd:
         return upd[0]["guestIsa"]
@@ -1981,7 +2010,7 @@ def delete(c):
     t0 = time.time()
     while True:
         try:
-            with c.lock("execution"), c.lock():
+            with store_meta_quiet(c.library), c.lock("execution"), c.lock():
                 gid = c.game()["id"]
                 c.begin("删除游戏与出包产物")
                 gdir = layout.find_game(c, gid)
@@ -2266,6 +2295,7 @@ def diagnostics(c):
         raise Failure("诊断包请选择应用数据和游戏库以外的位置。")
     descriptors = []
     temporary = None
+    step = "打开日志目录"   # 失败时写进报错：哪一步、什么错误（#427：SMB 共享盘上导不出，原先只有一句笼统的话，看不出卡在哪）
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
         # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
@@ -2279,6 +2309,7 @@ def diagnostics(c):
         descriptors.append(roots["jobs"])
         c.begin("导出脱敏诊断")
 
+        step = "在所选位置建临时文件"
         fd, name = tempfile.mkstemp(prefix="." + destination.name + ".", suffix=".partial", dir=destination.parent)
         temporary = Path(name)
         with os.fdopen(fd, "w+b") as output:
@@ -2318,6 +2349,7 @@ def diagnostics(c):
                     # replaced, never copied as raw bytes around redaction.
                     archive.writestr(public_member, redact(data.decode(errors="replace")))
 
+                step = "读日志与任务记录"
                 if roots["jobs"] is not None:
                     for name in sorted(winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
                         if name.endswith(".json"):
@@ -2354,12 +2386,16 @@ def diagnostics(c):
                 manifest["files"] = sorted(archive.namelist() + ["manifest.json"])
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         c.check()
+        step = "把诊断包放到所选位置"
         current = temporary.stat(follow_symlinks=False)
         if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
             raise Failure("诊断临时文件在导出期间发生变化，请重试。")
         os.replace(temporary, destination)
-    except OSError:
-        raise Failure("无法安全读取或写入诊断文件，未更新诊断包。") from None
+    except OSError as error:
+        # 只带步骤、错误码与系统给的原因，不带路径（路径里可能有用户名，诊断摘要会被贴到公开帖子里）
+        code = getattr(error, "winerror", None) or error.errno
+        reason = (error.strerror or type(error).__name__) + (f"，错误码 {code}" if code else "")
+        raise Failure(f"无法安全读取或写入诊断文件，未更新诊断包（{step}：{reason}）。") from None
     finally:
         for descriptor in reversed(descriptors):
             winproc.close(descriptor) if os.name == "nt" else os.close(descriptor)
@@ -2401,7 +2437,7 @@ def apply_location(c, game):
 
 
 def move_game(c):
-    with c.lock("execution"), c.lock():
+    with store_meta_quiet(c.library), c.lock("execution"), c.lock():
         game = c.game()
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")
