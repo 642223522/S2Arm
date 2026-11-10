@@ -65,6 +65,9 @@ public static class PackCases
             track.Ingest(progress.RootElement, 15);
         check(track.Plan.Count == 1 && track.Current == "unpack" && track.Started["unpack"] == 10, "track: plan and step start");
         check(track.Fraction == 0.25 && track.Message == "解包 25/100", "track: real fraction and message");
+        using (var message = JsonDocument.Parse("""{"type":"message","milestone":"unpack","message":"解包已完成，正在校验"}"""))
+            track.Ingest(message.RootElement, 16);
+        check(track.Fraction is null && track.Message.Contains("校验"), "track: finalization message clears stale 100% fraction");   // 社区贡献者补丁 #8 附带的用例
         check(track.Plan[0].Measured is null, "track: no local record means no expected time");
         track.Finish(40);
         check(track.Duration("unpack") == 30, "track: last step ends at the job end");

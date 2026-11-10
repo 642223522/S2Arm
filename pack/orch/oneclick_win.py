@@ -187,6 +187,7 @@ class Run:
 
     def step(self, name, fn):
         t = time.time(); rc = 0; self.k += 1; self.ev('stage', k=self.k, n=None, name=name)
+        print(f'[{time.strftime("%H:%M:%S")}] 开始：{name}', flush=True)   # 装机作业按开头行就进这一段（pack/jobs/ipa.py win_milestone），不再等上一步收尾才切
         try: return fn()
         except Fail as e: rc = e.code; raise
         except Exception: rc = 1; raise

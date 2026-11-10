@@ -661,19 +661,9 @@ public sealed partial class EnvironmentWindow
     private async Task RunLibraryAsync(string operation, string[]? selectedPaths)
     {
         if (libraryBusy) return;
-        if (operation != "setup")
-        {
-            if (connectedFolder is null || libraryId is null) return;
-            string pending;
-            try { pending = Path.GetFullPath(libraryFolder); }
-            catch (ArgumentException) { pending = ""; }
-            if (!string.Equals(pending, connectedFolder, StringComparison.OrdinalIgnoreCase))
-            {
-                // A changed output field must never send an import to the previous library.
-                connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
-                librarySummary = "library.disconnected"; Render(); return;
-            }
-        }
+        // 作业一律发给已连上的库（connectedFolder）；输入框里的路径只给「连接」按钮用（ConnectTypedFolder）。原先这里拿输入框草稿和已连的库比、
+        //   不一样就断开：输入框只在游戏库页重建，别的页上读到的是空框，导入密钥 / 一键出包后游戏库被误断开（社区贡献者补丁 #6）
+        if (operation != "setup" && (connectedFolder is null || libraryId is null)) return;
         libraryBusy = true; librarySummary = operation == "catalog" ? "library.loading" : "library.working";
         libraryDiagnostics = ""; Render();
         using var cancellation = new CancellationTokenSource();

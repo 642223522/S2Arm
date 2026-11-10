@@ -6512,8 +6512,8 @@
   "en": "The game was removed from the app, but its data on iPhone could not be deleted: "
  },
  {
-   "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
-   "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
+  "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
+  "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
  },
  {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。",
@@ -6846,5 +6846,9 @@
  {
   "source": "用你的开发者证书签名",
   "en": "Signing with your developer certificate"
+ },
+ {
+  "source": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",
+  "en": "Apple refused to register this App ID (Apple error 9401: the identifier is already taken on Apple's side). In Impactor (Xcode on a Mac), make sure you are signed in with the Apple ID you first installed S2Arm with, then install again. With a paid developer account you can also delete the old identifier starting with io.s2arm.games under \"Certificates, Identifiers & Profiles > Identifiers\" on developer.apple.com and try again. If it still fails, export a diagnostics package and report it."
  }
 ]

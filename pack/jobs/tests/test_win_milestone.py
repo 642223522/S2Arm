@@ -15,6 +15,12 @@ class WinMilestoneTests(unittest.TestCase):
         self.assertEqual(ipa.win_milestone("[17:37:39] 抽取 + 直连库：900.2 秒"), "ipa")
         self.assertEqual(ipa.win_milestone("[17:37:39] 抽取 + 直连库：900.2 秒（rc=0）"), "ipa")
 
+    def test_start_lines_enter_running_stage_immediately(self):   # 社区贡献者补丁 #8 附带的用例
+        self.assertEqual(ipa.win_milestone("[19:54:32] 开始：播种"), "refresh")
+        self.assertEqual(ipa.win_milestone("[19:54:43] 开始：八个轻阶段"), "refresh")
+        self.assertEqual(ipa.win_milestone("[19:56:14] 开始：抽取 + 直连库（0100A）"), "direct")
+        self.assertEqual(ipa.win_milestone("[20:00:00] 开始：ipa 收尾"), "ipa")
+
     def test_failed_step_does_not_advance(self):   # #269 原文：失败停在「抽取 + 直连库」所属的 direct 段（编译着色器库），不进 ipa
         self.assertIsNone(ipa.win_milestone("[19:56:15] 抽取 + 直连库：1.7 秒（rc=1）"))
         self.assertIsNone(ipa.win_milestone("[03:09:42] 抽取 + 直连库：39.3 秒（rc=12）"))

@@ -140,6 +140,16 @@ def runtime_env(c, game, runtime):
             env["S2A_BUILD_ID"] = c.r["buildId"]   # 浮层「包」一行：启动器 Info.plist 的 S2ABuildID
     if c.r.get("metalHud"):
         env.setdefault("MTL_HUD_ENABLED", "1")
+    controller_auto_connect = c.r.get("switch2ProAutoConnect")
+    if controller_auto_connect is not None:
+        if not isinstance(controller_auto_connect, bool):
+            raise Failure("Switch 2 Pro 自动连接设置无效。")
+        env["S2A_NS2_AUTOCONNECT"] = "1" if controller_auto_connect else "0"
+    controller_relay = c.r.get("switch2ProRelaySocket")
+    if controller_relay is not None:
+        if not isinstance(controller_relay, str) or not controller_relay or "\0" in controller_relay:
+            raise Failure("Switch 2 Pro 本机通道设置无效。")
+        env["S2A_NS2_SOCKET"] = controller_relay
     # Freeze exactly what the pre-launch card showed. Never rewrite another run's snapshot.
     config = c.r.get("launchInputConfig")
     if config is None:
@@ -268,6 +278,7 @@ def compile_host(c, fingerprint, env, log_root):
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
     plist = dict(CFBundleIdentifier="org.s2arm.macos.game", CFBundleName="S2Arm Game",
                  CFBundleExecutable="s2arm-host", CFBundlePackageType="APPL", LSMinimumSystemVersion="15.0",
+                 NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",
                  NSHighResolutionCapable=True, LSSupportsGameMode=True,
                  LSApplicationCategoryType="public.app-category.games")   # 游戏模式要系统靠类别认出是游戏（11-01 调研：Mac 全屏才进游戏模式）
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
@@ -430,6 +441,7 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
             extract_folder(c, game, packages, extraction, env, logs)
         else:
             c.run(["dotnet", toolchain.reader(c), c.keys, extraction, "--aoc-index", "--title-id=" + game["id"], *paths], logs / "extract.log", env)
+        c.emit("message", "解包已完成，正在校验合并结果并写入缓存")   # 解包读满 100% 后还要校验、写缓存：说明在做什么，进度不停在「解包 100%」（社区贡献者补丁 #8）
         if not (extraction / "exefs/main.npdm").is_file() or not (extraction / "ctl/control.nacp").is_file():
             raise Failure("解包结果缺少 NPDM 或 NACP。")
         # 程序位数只走 nx_unpack --npdm-isa（全仓唯一判法，pack/nx_unpack/Inspect.cs NpdmIsa）：读不了 / unknown 退 3，同样拒
