@@ -1,5 +1,10 @@
 <p align="center"><img src="docs/images/s2arm-wordmark.png" width="420" alt="S2Arm"></p>
 
+> [!WARNING]
+> **Important: s2arm.com is NOT the official S2Arm website.** It has no connection to this project or its maintainers. It uses the S2Arm name without permission and solicits donations.
+> S2Arm is free and open source. We never accept donations and have no commercial offering; anyone collecting money in the name of S2Arm has nothing to do with us. We cannot verify whether anything downloaded from third-party sites has been modified or contains a backdoor. Get S2Arm only from the official channels: the [GitHub repository](https://github.com/jhaizhou-ops/S2Arm) and the [official download page](https://jhaizhou-ops.github.io/S2Arm/).
+> We strongly condemn using the name of an open-source project for profit.
+
 **Your own Switch games, running natively on iPhone, iPad and Mac.** Game code is rewritten to native ARM64 and runs directly on the device's processor, with graphics going straight to Metal. Your whole library lives in one app, and a few clicks in the Mac or Windows launcher take a game from import to play.
 
 Platforms: iPhone / iPad (iOS / iPadOS 18 and later) · Mac (Apple silicon, macOS 15 and later) · Build on Mac or Windows · Android / HarmonyOS coming soon · License: Apache-2.0 · **Bring your own games**

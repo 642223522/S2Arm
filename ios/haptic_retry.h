@@ -14,6 +14,7 @@
 #ifndef S2A_HAPTIC_RETRY_H
 #define S2A_HAPTIC_RETRY_H
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -65,6 +66,16 @@ static inline void s2a_hp_rearm(s2a_hp_state *state) {
     state->fails = 0;
     state->retry_at_ns = 0;
     state->disabled = false;
+}
+
+// 游戏振幅 → 系统手柄震动强度（Mac 宿主 macos/front_mac.m 用）。游戏给的是线性马达（HD 震动）的振幅，常见值很小；
+//   系统手柄多是转子马达，按原值当强度几乎感觉不到（11-10 M1 Max / DualSense / 程序号 0400486024DEC000：游戏每秒给 0.002–0.191，
+//   0.19 按 0.19 播没感觉，同一只手柄强度 1 明显）。小振幅抬高、单调不减、封顶 1：1.25·sqrt(a)·(3 − 2·a^0.15)，
+//   0.064 → 0.53、0.191 → 0.79，a ≥ 0.45 起为 1。系数 1.25 是同一玩家同一场景试 0.63 / 0.79 两档后取的。
+static inline float s2a_hp_feel(float amplitude) {
+    if (!(amplitude > 0)) return 0;
+    float v = 1.25f * sqrtf(amplitude) * (3 - 2 * powf(amplitude, 0.15f));
+    return v < 1 ? v : 1;
 }
 
 #endif

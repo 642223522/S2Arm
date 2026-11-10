@@ -115,6 +115,8 @@
 "vpad.idleOpacity.a11y" = "Idle button opacity";
 "vpad.layout.buttons" = "Button layout";
 "vpad.layout.default" = "Default layout";
+"vpad.layout.2d" = "2D layout";
+"vpad.layout.2d.note" = "Bigger D-pad with diagonals, no sticks; for side-scrollers and pixel games";
 "vpad.layout.err.builtin" = "default / touch are built-in layouts; save as a new layout instead";
 "vpad.layout.err.buttonCount" = "All 14 buttons are required; LS/RS may be added";
 "vpad.layout.err.buttonFields" = "Invalid button fields, ranges or IDs; IDs must be unique";

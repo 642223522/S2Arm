@@ -7,6 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 // 所有手指直接写进 Hid.Touchscreen（游戏自带的触屏 UI），两者在列表里并列。
 extern NSString *const S2AVPadLayoutDefaultIdentifier;
 extern NSString *const S2AVPadLayoutTouchIdentifier;
+// "2d"（#268，11-09 维护者定稿 cmdr/assets/268_vpad_2d_对比_1109.png）：横版 / 像素游戏用。十字键放大到左拇指落点、可按斜角，ABXY 放大，
+//   没有摇杆和 L3 / R3（左半屏不再抢触点）；同 default 按安全区现算，不对应磁盘文件
+extern NSString *const S2AVPadLayout2DIdentifier;
 // Rendering targets shared by UIKit and host tests; idle must be in [0, 1].
 CGFloat S2AVPadKeyOpacity(CGFloat idle, BOOL active);
 
@@ -21,6 +24,10 @@ CGFloat S2AVPadKeyOpacity(CGFloat idle, BOOL active);
 + (nullable instancetype)readData:(NSData *)data error:(NSError **)error;
 // The built-in layout keeps the historical point geometry at each viewport size.
 + (instancetype)defaultForSafeRect:(CGRect)rect;
++ (instancetype)twoDForSafeRect:(CGRect)rect;
+// 八方向十字键（没有摇杆的布局，即 2D 和从它改出来的）：触点落在十字键圆区内 → 方向位（上 1 / 下 2 / 左 4 / 右 8，斜角两位），
+//   圆区外或有摇杆的布局 → -1。圆心 = 四个方向键中心的平均，半径 = 最远方向键中心 + 半个键宽；正中心一小圈（半径 0.2）不算方向
+- (int)dpadDirectionsAt:(CGPoint)p safeRect:(CGRect)rect;
 + (BOOL)isBuiltinIdentifier:(NSString *)identifier;
 - (CGRect)frameForButton:(NSDictionary *)button safeRect:(CGRect)rect;
 // 触点落在哪个按键上（各键框外扩 slop 点，重叠处按 buttons 顺序取第一个）；没有返回 nil。vpad.m keyAt 用它，单测 t_vpad_stick_press 直接调

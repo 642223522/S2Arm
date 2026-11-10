@@ -32,6 +32,8 @@ class PackagedNoSdk(unittest.TestCase):
     def run_build(self, sdk=AssertionError("发版应用不许查外部 SDK")):
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if not any("oneclick" in str(a) for a in args):   # 出包收尾组库根 S2Arm.ipa（refresh_library_ipa）：这条不测它，组装失败按设计只警告
+                raise Failure("这条测试不组装容器")
             seen.update(args=[str(a) for a in args], env=env)
             out = Path(args[args.index("--out") + 1]); (out / "x.ipa").write_bytes(b"ipa")
             oneclick_done(args, out / "x.ipa", build_id="b", graphics_mode="direct")

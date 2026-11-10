@@ -51,7 +51,7 @@ import ShellUI
     }
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B"}]}"#.utf8)
     let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
-                                    gameDataReady: { FileManager.default.fileExists(atPath: root.appendingPathComponent("\($0)/资源包").path) }, gamesRoot: root)
+                                    installState: { FileManager.default.fileExists(atPath: root.appendingPathComponent("\($0)/资源包").path) ? 1 : 0 }, gamesRoot: root)
     #expect(model.games.map(\.id) == [a, b])
     let delete = try #require(model.actions.onDeleteGame)
     delete(a, false)
@@ -78,7 +78,7 @@ import ShellUI
     var ready: Set<String> = ["0100000000020000"]
     var played: [String] = [], picked: [String] = []
     let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
-                                    gameDataReady: { ready.contains($0) }, pickGameData: { picked.append($0) })
+                                    installState: { ready.contains($0) ? 1 : 0 }, pickGameData: { picked.append($0) })
     #expect(model.games.map(\.id) == ["0100000000020000"])   // 只显示这台设备上资源到位的款
     model.actions.onPlay("0100000000010000")
     #expect(played.isEmpty && picked == ["0100000000010000"])
@@ -100,7 +100,9 @@ nonisolated(unsafe) private var refreshed = 0
     s2a_shell_set_refresh_handler(nil, nil); s2a_shell_refresh(); #expect(refreshed == 0)
     s2a_shell_set_refresh_handler({ _ in refreshed += 1 }, nil); s2a_shell_refresh(); #expect(refreshed == 1)
     s2a_shell_set_refresh_handler(nil, nil)
-    #expect(s2a_shell_game_data_ready("0100000000010000") == 1)   // 不链宿主时弱定义缺省：按就绪
+    #expect(s2a_shell_game_install_state("0100000000010000") == 1)   // 不链宿主时弱定义缺省：按就绪
+    var d: Int32 = 0, t: Int32 = 0
+    #expect(s2a_shell_install_game("0100000000010000") == 0 && s2a_shell_install_progress("0100000000010000", &d, &t) == 0)   // 不链宿主：不解、没进度
 }
 
 // C 出口：没登记 → 0；登记后 → 1 且处理函数拿到同一个 id
@@ -156,7 +158,7 @@ nonisolated(unsafe) private var lastPlayed = ""
     let json = #"{"schema":1,"games":[{"title_id":"0100000000000001","name":"原名一"},{"title_id":"0100000000000002","name":"原名二"}]}"#
     let catalogue = Catalogue.parse(Data(json.utf8), baseDirectory: root)
     let store = GameIdentityStore(root: root)
-    let model = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    let model = S2ArmShellHostModel(catalogue: catalogue, installState: { _ in 1 }, pickGameData: { _ in }, identityStore: store)
     let a = "0100000000000001", b = "0100000000000002"
     #expect(model.games.map(\.game.title) == ["原名一", "原名二"] && !model.hasCustomIdentity(a))
     model.change(a, S2ArmGameSettings.identity, S2ArmGameSettings.editIdentity)
@@ -165,7 +167,7 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.editingIdentity == nil && model.games[0].game.title == "我的游戏" && model.games[1].game.title == "原名二")
     #expect(store.load(a)?.name == "我的游戏" && store.load(b) == nil)
     // 下次启动：从磁盘读回
-    let again = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    let again = S2ArmShellHostModel(catalogue: catalogue, installState: { _ in 1 }, pickGameData: { _ in }, identityStore: store)
     #expect(again.games[0].game.title == "我的游戏")
     // 名字没改：不算自定义
     model.saveIdentity(b, name: "原名二", cover: nil)
@@ -199,7 +201,7 @@ nonisolated(unsafe) private var lastPlayed = ""
     // 提交点失败：identity.json 的位置被一个非空目录占着，原子替换必然失败
     try FileManager.default.removeItem(at: folder)
     try FileManager.default.createDirectory(at: folder.appendingPathComponent("identity.json/x", isDirectory: true), withIntermediateDirectories: true)
-    let model = S2ArmShellHostModel(catalogue: catalogue, gameDataReady: { _ in true }, pickGameData: { _ in }, identityStore: store)
+    let model = S2ArmShellHostModel(catalogue: catalogue, installState: { _ in 1 }, pickGameData: { _ in }, identityStore: store)
     model.change(a, S2ArmGameSettings.identity, S2ArmGameSettings.editIdentity)
     model.saveIdentity(a, name: "新名", cover: Data([9]))
     #expect(model.editingIdentity == a, "没存成：编辑页不关")
@@ -231,7 +233,7 @@ nonisolated(unsafe) private var lastPlayed = ""
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
     var played: [String] = []
     let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
-                                    gameDataReady: { _ in true }, gamesRoot: root)
+                                    installState: { _ in 1 }, gamesRoot: root)
     #expect(model.games.map(\.id) == [a, c])
     let stray = try #require(model.games.last?.game)
     #expect(["丙游戏", "Gamma"].contains(stray.title))
@@ -240,3 +242,88 @@ nonisolated(unsafe) private var lastPlayed = ""
     model.actions.onPlay(c)
     #expect(played.isEmpty)
 }
+
+// 装机蒙版（v0.2.3）：传着按电脑写的传输清单画进度、久不动报传输中断；传完后台解开、画解包进度；没解成点重试；装好了可玩。
+//   期望按手写夹具算：清单 total 300，romfs.img 要 200 已到 120、第 0 包要 100 已到 30 → 150/300 = 0.5
+@MainActor @Test func arrivingGameShowsProgressThenBecomesPlayable() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-arrive-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let id = "0100000000010000", pack = root.appendingPathComponent("\(id)/资源包")
+    try fm.createDirectory(at: pack.appendingPathComponent(".incoming"), withIntermediateDirectories: true)
+    try Data(#"{"schema":1,"total":300,"started":1,"files":[["romfs.img",200],[".incoming/1_000.tar",100],["../escape",50]]}"#.utf8).write(to: pack.appendingPathComponent(".transfer"))
+    try Data(count: 120).write(to: pack.appendingPathComponent("romfs.img"))
+    try Data(count: 30).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    var stage: Int32 = 3, clock = Date(), installs: [String] = [], progress: (Int, Int)? = nil, played: [String] = []
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
+                                    installState: { _ in stage }, installGame: { installs.append($0); return true }, installProgress: { _ in progress },
+                                    now: { clock }, gamesRoot: root)
+    #expect(model.games.first?.game.state == .installing(InstallStage(.transferring, fraction: 0.5)))
+    model.actions.onPlay(id); #expect(played.isEmpty)                                    // 传着不给开始
+    clock = clock.addingTimeInterval(S2ArmShellHostModel.transferStall + 5); model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .interrupted)                  // 文件都没动过了 90 秒 → 传断了
+    try Data(count: 200).write(to: pack.appendingPathComponent("romfs.img")); try Data(count: 100).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    clock = Date(); model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.transferring, fraction: 1)))   // 重新插上续传：接着涨
+    stage = 2; model.refreshGameData()
+    #expect(installs == [id] && model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)))   // 传完：起后台解开
+    progress = (3, 4); model.refreshGameData()
+    #expect(installs == [id] && model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0.75)))   // 不重复起
+    progress = nil; model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .failed && installs == [id])   // 宿主说不在解了、还是阶段 2 → 没解成，不自动再解
+    model.actions.onPlay(id)
+    #expect(installs == [id, id] && played.isEmpty)                                      // 点重试：再解一次
+    stage = 1; model.refreshGameData()
+    #expect(model.games.first?.game.state == .playable)
+    model.actions.onPlay(id); #expect(played == [id])
+    // 续传：电脑写的 base = 已在手机上的 600 字节，这次 total 300 已到 150 → (600 + 150) / 900
+    try Data(#"{"schema":1,"total":300,"base":600,"files":[["romfs.img",200],[".incoming/1_000.tar",100]]}"#.utf8).write(to: pack.appendingPathComponent(".transfer"))
+    try Data(count: 120).write(to: pack.appendingPathComponent("romfs.img")); try Data(count: 30).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    stage = 3; clock = Date(); model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.transferring, fraction: 750.0 / 900)))
+}
+
+// 正在解别的款（宿主拒绝起第二个）：这款排着显示「安装中」，不算没解成，下一次刷新再试
+@MainActor @Test func secondUnpackWaitsItsTurn() {
+    var accept = false, installs = 0
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return accept }, installProgress: { _ in nil })
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing)) && installs == 1)
+    accept = true; model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)) && installs == 2)
+}
+
+// 开着库时电脑才开始推（真机实测：库里一直看不到这款）：清单里有款没显示就每秒重判，它一开始传就出现；全都能玩了才停
+@MainActor @Test func libraryKeepsWatchingForGamesThatStartArriving() {
+    var stage: Int32 = 0
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), installState: { _ in stage },
+                                    gamesRoot: URL(fileURLWithPath: "/nonexistent"))
+    #expect(model.games.isEmpty && model.watching)
+    stage = 3; model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .transferring && model.watching)
+    stage = 1; model.refreshGameData()
+    #expect(model.games.first?.game.state == .playable && !model.watching)
+}
+
+// 装好后第一次点开之前名字前亮蓝点（同 iOS 新装 App）：期望按文件时间手写——.applied 比 .played 新 = 新装；点开始写 .played → 灭；
+//   再装一版（.applied 更新）→ 又亮；升级前就玩过的款（有存档目录 S2A/、没有 .played）不亮
+@MainActor @Test func newlyInstalledGameShowsBlueDotUntilFirstPlay() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-new-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let (a, b) = ("0100000000010000", "0100000000020000")
+    for id in [a, b] { try fm.createDirectory(at: root.appendingPathComponent("\(id)/资源包"), withIntermediateDirectories: true); try Data("x".utf8).write(to: root.appendingPathComponent("\(id)/资源包/.applied")) }
+    try fm.createDirectory(at: root.appendingPathComponent("\(b)/S2A"), withIntermediateDirectories: true)
+    var played: [String] = []
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
+                                    installState: { _ in 1 }, gamesRoot: root)
+    #expect(model.games.map(\.game.isNew) == [true, false])
+    model.actions.onPlay(a)
+    #expect(played == [a] && model.games.map(\.game.isNew) == [false, false])
+    model.refreshGameData(); #expect(model.games.first?.game.isNew == false)
+    try fm.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: root.appendingPathComponent("\(a)/资源包/.applied").path)
+    model.refreshGameData(); #expect(model.games.first?.game.isNew == true)   // 再装一版
+}
+
