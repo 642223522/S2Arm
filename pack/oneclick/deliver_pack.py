@@ -10,7 +10,7 @@
 （逐文件克隆，同一克隆族不另占盘），镜像行没变且目标那棵在就不动；目标里旧格式留下的 romfs.img 删掉（库里只留一份）。
 输出一行：<文件数>\t<总字节>\t<克隆数>\t<删除数>\t<模式>
 """
-import ctypes, os, shutil, sys
+import ctypes, os, shutil, struct, sys
 # 不 import pack/pack.py：一键出包在启动器作业 / 用户机布局里只带 pack/oneclick 这几样（tests/userenv_test.sh ③），交付不该多依赖出包模块
 if sys.platform == 'darwin':
     libc = ctypes.CDLL('libc.dylib', use_errno=True); libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
@@ -23,6 +23,18 @@ def clone(src, dst):   # macOS APFS 克隆（不占新空间）；跨卷 / 不�
     if sys.platform == 'darwin' and ctypes.get_errno() not in (18, 45, 1):
         e = ctypes.get_errno(); raise OSError(e, os.strerror(e), dst)
     shutil.copy2(src, dst)
+
+
+def image_files(d, prefix):
+    """镜像里的文件（相对 romfs.files/）：<前缀>romfs.s2aidx 的文件表里，<前缀>romfs.imgmap 偏移 ≥ 0 的那些（-1 = 界面覆盖层，不在镜像里）。
+    格式同 pack/romfs_image.py（本模块不 import 出包模块）"""
+    b = open(os.path.join(d, prefix + 'romfs.s2aidx'), 'rb').read()
+    if b[:8] != b'S2ARFS01': sys.exit(f'【红】{prefix}romfs.s2aidx 格式不对')
+    nf = struct.unpack_from('<i', b, 16)[0]; rows = [struct.unpack_from('<qqii', b, 20 + 24 * i) for i in range(nf)]; base = 20 + 24 * nf + 4
+    m = open(os.path.join(d, prefix + 'romfs.imgmap'), 'rb').read()
+    if m[:8] != b'S2ARIM01' or struct.unpack_from('<i', m, 16)[0] != nf: sys.exit(f'【红】{prefix}romfs.imgmap 与索引对不上')
+    offs = struct.unpack_from(f'<{nf}q', m, 20)
+    return [b[base + po:base + po + pl].decode('utf-8') for (_, _, po, pl), o in zip(rows, offs) if o >= 0]
 
 
 def read_index(d):
@@ -58,9 +70,8 @@ def main():
             if os.path.lexists(q): os.remove(q); removed += 1   # 旧格式交付的真镜像
             if old.get(p) == (size, sha) and os.path.isdir(qf): continue
             if os.path.lexists(qf): shutil.rmtree(qf)
-            for r, _, fs in os.walk(files):
-                for f in fs:
-                    a = os.path.join(r, f); clone(a, os.path.join(qf, os.path.relpath(a, files))); cloned += 1
+            for rel in image_files(src, p[:-len('romfs.img')]):   # 清单来自索引 + 偏移表，不遍历 RomFS 目录（tools/romfs_walk_lint.py）
+                clone(os.path.join(files, rel), os.path.join(qf, rel)); cloned += 1
             continue
         if old.get(p) == (size, sha):
             try:

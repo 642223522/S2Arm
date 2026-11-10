@@ -31,10 +31,18 @@ rm $T/d/manifest.json; o4=$(DP $T/s $T/d); r4=$?
 ck "④ 目标缺清单 → 整份：rc=${r4}、输出「${o4}」" '[ $r4 = 0 ] && [ "$(cut -f3,5 <<< "$o4")" = "3	整份" ] && same $T/s $T/d'
 rm $T/s/manifest.json; DP $T/s $T/d > /dev/null 2>&1; r5=$?
 ck "⑤ 源不完整 → 退出非 0：rc=${r5}" '[ $r5 != 0 ]'
-mk $T/s6 x.bin:XX; printf 'romfs.img\t5\tfeed\n' >> $T/s6/index.tsv; mkdir -p $T/s6/romfs.files/sub; printf 'IMA' > $T/s6/romfs.files/a; printf 'GE' > $T/s6/romfs.files/sub/b
+mk $T/s6 x.bin:XX; printf 'romfs.img\t5\tfeed\n' >> $T/s6/index.tsv; mkdir -p $T/s6/romfs.files/sub; printf 'IMA' > $T/s6/romfs.files/a; printf 'GE' > $T/s6/romfs.files/sub/b; printf 'X' > $T/s6/romfs.files/stray   # stray 不在索引里：不交付
+"$PY" - "$T/s6" <<'P'
+import struct, sys
+d = sys.argv[1]; names = [b'a', b'sub/b', b'ui/o']; sizes = [3, 2, 1]; offs = [0, 3, -1]   # ui/o 是覆盖层（偏移 -1），不在镜像里
+idx = b'S2ARFS01' + struct.pack('<qi', 6, 3); po = 0
+for n, z in zip(names, sizes): idx += struct.pack('<qqii', 0, z, po, len(n)); po += len(n)
+open(d + '/romfs.s2aidx', 'wb').write(idx + struct.pack('<i', po) + b''.join(names) + struct.pack('<i', 0))
+open(d + '/romfs.imgmap', 'wb').write(b'S2ARIM01' + struct.pack('<qi', 5, 3) + struct.pack('<3q', *offs))
+P
 mk $T/d6 x.bin:XX; printf 'IMAGE' > $T/d6/romfs.img; cp $T/s6/index.tsv $T/d6/index.tsv
 o6=$(DP $T/s6 $T/d6); r6=$?
-ck "⑥ 库内形态：rc=${r6}、输出「${o6}」、旧 romfs.img $([ -e $T/d6/romfs.img ] && echo 还在 || echo 删了)" '[ $r6 = 0 ] && [ ! -e $T/d6/romfs.img ] && [ "$(cat $T/d6/romfs.files/a)$(cat $T/d6/romfs.files/sub/b)" = IMAGE ]'
+ck "⑥ 库内形态：rc=${r6}、输出「${o6}」、旧 romfs.img $([ -e $T/d6/romfs.img ] && echo 还在 || echo 删了)" '[ $r6 = 0 ] && [ ! -e $T/d6/romfs.img ] && [ "$(cat $T/d6/romfs.files/a)$(cat $T/d6/romfs.files/sub/b)" = IMAGE ] && [ ! -e $T/d6/romfs.files/stray ]'
 o7=$(DP $T/s6 $T/d6); r7=$?
 ck "⑥ 再交付一次镜像行没变：rc=${r7}、输出「${o7}」（克隆 0）" '[ $r7 = 0 ] && [ "$(cut -f3 <<< "$o7")" = 0 ]'
 [ $bad = 0 ] && echo "deliver_pack 单测全过" || { echo "deliver_pack 单测有不通"; exit 1; }
