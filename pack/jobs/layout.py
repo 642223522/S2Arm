@@ -590,7 +590,9 @@ def _upgrade_2(c, marker, state):
         atomic(marker, dict(version=1, games=sorted(done)))
     for spec, _ in MOVES:   # 搬空的旧类型目录
         top = c.library / spec.split("/")[0]
-        if top.is_dir() and not any(top.iterdir()):
+        if top.is_dir() and not has_content(top):
+            for junk in OS_JUNK:   # 只剩系统自动生成的文件也算搬空了
+                (top / junk).unlink(missing_ok=True)
             top.rmdir()
     if not location_id(c.library):   # 旧库原地变成第一个存放位置（游戏库结构 v3）
         import uuid
@@ -849,6 +851,18 @@ def adopt_private_logs(c):
 # 老玩家的库若还在旧默认位置（私有目录下的「游戏库」= Mac 启动器、「DefaultLibrary」= Windows 启动器）：同一卷改名到新默认位置；
 # 目标已存在、跨卷、库里有任务在跑或改名失败就原地不动照常用。动之前在私有目录写 library-relocate.json，改完更新索引表与前端设置文件
 # （Mac preferences.json 的 library、Windows library-location.txt），中途被杀下次接着收尾。绝不删数据。玩家自己选过的位置不动。
+# 系统自动生成的文件（访达 .DS_Store、Windows 资源管理器 desktop.ini / Thumbs.db）：判「文件夹空不空」「里面有没有东西」时不算数（11-09 #343 同类扫描）
+OS_JUNK = frozenset({".DS_Store", "desktop.ini", "Thumbs.db"})
+
+
+def has_content(d):
+    """d 里除了系统自动生成的文件还有没有别的东西（d 不存在 / 不是目录 → False）"""
+    try:
+        return any(p.name not in OS_JUNK for p in Path(d).iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 OLD_DEFAULTS = ("游戏库", "DefaultLibrary")
 RELOCATE_JSON = "library-relocate.json"
 
