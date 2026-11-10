@@ -797,6 +797,19 @@ class JobsTests(unittest.TestCase):
                 self.assertGreaterEqual(need, int(peak * GIB), f"{tid}：估算 {need / GIB:.2f} GiB < 实测峰值 {peak} GiB")
                 self.assertIn("直连着色器上限", library.space_budget(self.c, game)["volumes"][0]["note"])
 
+    def test_offline_empty_warns(self):
+        # #470：直连库只能运行时现编（shaders/direct/runtime_only.txt，首行原因）→ 完成页一条黄字 direct_offline_empty、文案带原因；没有这个文件 → 不出诊断
+        import build
+        root = self.root / "r470"; (root / "shaders/direct").mkdir(parents=True)
+        build.warn_offline_empty(self.c, root)
+        self.assertEqual(self.c.job["diagnostics"], [])
+        (root / "shaders/direct/runtime_only.txt").write_text("直连库失败：直连抽取失败（没有改写模块目录）\n第二行不要\n", encoding="utf-8")
+        build.warn_offline_empty(self.c, root)
+        d = self.c.job["diagnostics"]
+        self.assertEqual([x["code"] for x in d], ["direct_offline_empty"])
+        self.assertIn("离线预编 0 支", d[0]["summary"] + d[0].get("detail", "") + str(d[0]))
+        self.assertIn("没有改写模块目录", str(d[0])); self.assertNotIn("第二行不要", str(d[0]))
+
     def test_direct_check_counts_existing_cache_and_volume(self):
         # 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）与出包预检同一规则：游戏内容（romfs + exefs + aoc）≥ 3e9 → 15e9、小于 → 5e9；
         #   已有的同款直连缓存扣掉；期望按 library.py 的两档常量手算
