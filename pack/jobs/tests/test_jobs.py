@@ -1198,6 +1198,7 @@ class JobsTests(unittest.TestCase):
             self.assertTrue(sibling.is_file())
 
     def test_hash_validation_rejects_same_size_corruption_and_traversal(self):
+        # v0.2.3 清理：缺省只核大小（同大小改写不再逐字节查，#304 被改的文件是靠大小查出来的）；调用方明确要 full=True 时照旧按摘要拒；越界照旧拒
         root = self.root / "products"
         root.mkdir()
         f = root / "module"
@@ -1205,8 +1206,12 @@ class JobsTests(unittest.TestCase):
         record = {"module": [5, digest(f)]}
         build.validate_files(self.c, root, record)
         f.write_bytes(b"wrong")
+        build.validate_files(self.c, root, record)   # 缺省只核大小：同大小改写放行
         with self.assertRaises(Failure):
-            build.validate_files(self.c, root, record)
+            build.validate_files(self.c, root, record, full=True)
+        f.write_bytes(b"longer!")
+        with self.assertRaises(Failure):
+            build.validate_files(self.c, root, record)   # 大小变了照旧拒
         with self.assertRaises(Failure):
             build.validate_files(self.c, root, {"../outside": [0, ""]})
 

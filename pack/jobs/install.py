@@ -489,6 +489,8 @@ def ios_pack(c, gid):
     pack = layout.ios_pack(c, gid)
     if not (pack / "manifest.json").is_file():
         raise Failure(f"没找到这款的资源包（{pack}），没有装。请重新「打 iPhone 包」后再装。", code="pack_missing")
+    if not pack_id(pack):   # 清单没有 index_sha256（只在这里核一次，push_pack 不再重读，v0.2.3 清理）
+        raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack}）：请重新打 iPhone 包。", code="job_failed")
     return pack
 
 
@@ -514,9 +516,6 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     多款容器：docs = 本款设备侧文档根 Documents/games/<游戏号>、ctx = 本款启动上下文（起 App 解包时带 S2A_LAUNCH_CTX）。
     返回（推的文件数, 字节数）"""
     import diag
-    want = (json.loads((pack / "manifest.json").read_text()) or {}).get("index_sha256")
-    if not want:
-        raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack}）：请重新打 iPhone 包。", code="job_failed")
     got = {}
     def line(text):
         m = re.match(r"S2A_PUSH_PROGRESS (\d+) (\d+) (\d+) (\d+)$", text.strip())   # tools/push_pack.py --progress-lines：每推完一批的已传 / 本次待传总字节（#266）
