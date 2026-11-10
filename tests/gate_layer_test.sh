@@ -6,7 +6,7 @@
 # 期望（按规则手写）：
 #   ① 不设 GATE_LAYER：5 步全跑、无「另一层」行；② pre：a、y 不跑，3 / 3 绿，结论前「另一层：单测 y_test 钩子 a/gate.sh」
 #   ③ post：只跑 a、y，2 / 2 绿，「另一层」列语法、单测 x_test、钩子 b/gate.sh；④ GATE_LIST=1 三种同样按层过滤；⑤ GATE_LAYER 写错 → 退出 1
-#   ⑥ 本仓库声明：合入后 = graphics、tests/visual、android、launchers/macos 四个钩子 + iOS 全量编译，其余不在
+#   ⑥ 本仓库声明：合入后 = graphics、tests/visual、android（改到 android/ 时合入前也跑）、launchers/macos 四个钩子 + iOS 全量编译，其余不在
 # 反证：S2A_GATE_SH=<旧版 gate.sh> 跑本单测应红（旧版不认 GATE_LAYER：② a 照跑）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); bad=0; GS=${S2A_GATE_SH:-$H/tools/gate.sh}
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -35,11 +35,20 @@ ck "④ GATE_LIST 按层过滤（不设 ${l0} / pre ${l1} / post ${l2}）" '[ "$
 r=$(GATE_LAYER=later g o5)
 ck "⑤ GATE_LAYER 写错 → 退出 1（rc=${r}）" '[ $r = 1 ]'
 d=$(cd "$H" && python3 tools/gate_decl.py layer | tr '\n' '|')
-ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 android/gate.sh	合入后|钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后|" ]'
+ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 android/gate.sh	合入后	android/|钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后|" ]'
 # ⑦ 显卡独占：单测文件头「# 门禁显卡：独占」→ 经 维护方工具 prio 跑（桩记 prio 名），普通单测不经（11-06 present_settings 被并行窗口抢焦点）
 printf '#!/bin/bash\n# 门禁显卡：独占\necho z >> %s/trace\n' "$T" > tests/z_test.sh
 mkdir -p $T/priv; printf '#!/bin/bash\n[ "$1" = prio ] && echo "prio $2" >> %s/prio; shift 4; exec "$@"\n' "$T" > $T/priv/mac_slot_frozen.sh; chmod +x $T/priv/mac_slot_frozen.sh; export S2A_PRIVATE_TOOLS=$T/priv
 git add -A; git commit -qm 2; : > $T/prio; r=$(g o7); t=$(tr1); pr=$(tr '\n' '|' < $T/prio)
 ck "⑦ 显卡独占单测经 prio 锁跑、普通单测不经（trace ${t}，prio ${pr}，rc=${r}）" '[ $r = 0 ] && [ "$t" = "a b x y z " ] && [ "$pr" = "prio 单测 z_test|" ]'
 ck "⑧ 本仓库声明显卡独占的单测含 present_settings_test" 'head -6 $H/tests/present_settings_test.sh | grep -q "^# 门禁显卡：独占"'
+# ⑨ 「合入后（改到 <前缀> 时合入前也跑）」（11-10：安卓支合入前不跑安卓门禁，一天叠 4 处 main 红）：钩子 c 这样声明。
+#   期望（按规则手写）：pre + 改动集命中 c/ → c 跑；pre + 只改 b/ → c 不跑、列在「另一层」；post → c 照跑
+cp $H/tools/gate_plan.sh tools/   # 给了 GATE_CHANGED 时门禁按改动集定档位，要 gate_plan.sh
+mkdir -p c; printf '#!/bin/bash\n# 门禁层：合入后（改到 c/ 时合入前也跑）\necho c >> %s/trace; echo c 过\n' "$T" > c/gate.sh
+git add -A; git commit -qm 3
+r=$(GATE_LAYER=pre GATE_CHANGED="c/x.c" g o9a); ck "⑨a pre + 改到 c/：c 跑（trace $(tr1)，rc=${r}）" '[ $r = 0 ] && grep -qx c $T/trace && ! grep -qx a $T/trace'
+r=$(GATE_LAYER=pre GATE_CHANGED="b/x.c" g o9b); ck "⑨b pre + 只改 b/：c 不跑、列在另一层（trace $(tr1)，rc=${r}）" '[ $r = 0 ] && ! grep -qx c $T/trace && grep -q "^另一层：.*钩子 c/gate.sh" $T/o9b'
+r=$(GATE_LAYER=post GATE_CHANGED="b/x.c" g o9c); ck "⑨c post：c 照跑（trace $(tr1)，rc=${r}）" '[ $r = 0 ] && grep -qx c $T/trace'
+d9=$(cd $T/repo && python3 tools/gate_decl.py layer | grep "c/gate.sh" | tr '\t' '|'); ck "⑨d 声明收成第 3 列前缀（${d9}）" '[ "$d9" = "钩子 c/gate.sh|合入后|c/" ]'
 [ $bad = 0 ] && echo "gate_layer 单测全过" || { echo "gate_layer 单测有不通"; exit 1; }
