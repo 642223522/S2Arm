@@ -227,6 +227,20 @@ class LocationTests(JobCase):
         layout.game_dir(self.c, B)   # 没指定位置、没用过别的位置 → 默认位置
         self.assertEqual(layout.find_game(self.fresh(), B), self.c.library / "games" / "Beta")
 
+    def test_stale_entry_from_a_previous_library_does_not_block_import(self):
+        # #432：索引在私有目录，换过游戏库后上一个库的记录还在。期望（手写）：那个位置不在了、这款也不在当前库清单里 → 不算「没连上」，
+        #   在当前库里照常建文件夹；清单里有的款（放在拔掉的移动硬盘上）仍是 offline
+        old = self.root / "旧游戏库"
+        layout.game_dir(self.c, A, location=old)
+        os.rename(old, old.with_name("已经删了"))
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=B, name="Beta")]))   # 当前库里没有 A
+        self.assertEqual(layout.state(self.fresh(), A), ("none", None))
+        self.assertEqual(layout.game_dir(self.c, A, english="Alpha"), self.c.library / "games" / "Alpha")
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha"), dict(id=B, name="Beta")]))
+        d = layout.game_dir(self.c, B, location=self.disk)
+        os.rename(self.disk, self.disk.with_name("拔掉了"))
+        self.assertEqual(layout.state(self.fresh(), B), ("offline", self.disk))
+
     def test_renamed_folder_offline_location_and_missing_folder(self):
         d = layout.game_dir(self.c, A, location=self.disk)
         os.rename(d, d.with_name("改过的名字"))

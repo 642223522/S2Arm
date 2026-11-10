@@ -148,7 +148,10 @@ def state(c, gid):
         if root is None:
             return "none", None
         if not root.is_dir():
-            return "offline", root
+            # 只有这个库清单里的款才算「位置没连上」：索引在私有目录、换过游戏库后还留着上一个库的记录（#432：0.2.1 建的库在 ~\S2Arm，
+            #   后来换到别的盘），那个库不在了，不能拿它挡住在新库里导入同一款
+            listed = {str(g.get("id", "")).upper() for g in read(c.library / "catalog.json", {}).get("games", [])}
+            return ("offline", root) if gid in listed else ("none", None)
         d = games_root(c, root) / entry.get("folder", "")
         if entry.get("folder") and str(read(d / GAME_JSON, {}).get("id", "")).upper() == gid:
             return "ok", d
