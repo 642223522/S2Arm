@@ -1,4 +1,4 @@
-// S2Arm modification: add an entry to the dedicated game sorting grid.
+// S2Arm modification: add an entry to the dedicated game sorting list.
 import SwiftUI
 
 /// A Recently played row starts its game, or opens the same fix as Play (game data, an app update).
@@ -112,7 +112,7 @@ struct PortraitLibrary: View, Equatable {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)")
-                GameOrderButton()
+                GameOrderButton(gameCount: games.count)
             }.padding(.horizontal, 24)
             if wide {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 22, alignment: .top)],

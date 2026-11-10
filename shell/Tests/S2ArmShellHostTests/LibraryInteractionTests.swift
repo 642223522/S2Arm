@@ -2,6 +2,10 @@
 // Copyright 2026 S2Arm contributors
 import Foundation
 import Testing
+#if os(macOS)
+import AppKit
+import SwiftUI
+#endif
 @testable import ShellUI
 @testable import S2ArmShellHost
 
@@ -115,3 +119,55 @@ import Testing
     #expect(GameOrderMove(ids: ids, offsets: IndexSet(integer: 5), destination: 0) == nil)
     #expect(GameOrderMove(ids: ids, offsets: IndexSet(integer: 0), destination: 6) == nil)
 }
+
+@Test func carouselWindowKeepsTransformedNeighboursAndBoundsMountedCards() {
+    // 678-point viewport, 160-point covers. Far centres are 78.4 points apart with a 43.2-point offset.
+    // At centre 15, cards 11 through 19 intersect the viewport; 9 through 21 include edge preload.
+    #expect(CoverFlowWindow.indices(count: 30, offset: 15 * 166.4, width: 678, cover: 160) == 9..<22)
+    #expect(CoverFlowWindow.indices(count: 30, offset: 0, width: 678, cover: 160) == 0..<7)
+    #expect(CoverFlowWindow.indices(count: 30, offset: 29 * 166.4, width: 678, cover: 160) == 23..<30)
+    #expect(CoverFlowWindow.indices(count: 300, offset: 150 * 166.4, width: 678, cover: 160) == 144..<157)
+    #expect(CoverFlowWindow.indices(count: 30, offset: 15.5 * 166.4, width: 678, cover: 160) == 9..<23)
+    #expect(CoverFlowWindow.indices(count: 0, offset: 0, width: 678, cover: 160).isEmpty)
+    #expect(CoverFlowWindow.indices(count: 30, offset: .infinity, width: 678, cover: 160).isEmpty)
+}
+
+#if os(macOS)
+@MainActor @Test func carouselControlsFitNarrowLandscapeAndSingleGameHidesReorder() async throws {
+    for count in [1, 30] {
+        for showsHints in [false, true] {
+            let games = (1...count).map { GameDetail(game: GameTile(id: "\($0)", title: "Game \($0)")) }
+            let targets = FocusTargetBuffer()
+            let view = CoverFlowView(games: games, selected: games[0], controllers: 1, showsHints: showsHints,
+                                     select: { _ in }, primary: { _ in }, openSettings: {},
+                                     openControllers: {}, openShellSettings: {})
+                .environment(\.shellOpenGameOrder, {})
+                .frame(width: 678, height: 320)
+                .coordinateSpace(name: "shell")
+                .onPreferenceChange(FocusTargets.self) { targets.values = $0 }
+            let host = NSHostingView(rootView: view)
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 678, height: 320),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.close() }
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            let controls = targets.values.filter { ["lib.reorder", "lib.settings", "lib.controllers", "lib.shellSettings"].contains($0.id) }
+            #expect(controls.contains { $0.id == "lib.reorder" } == (count > 1))
+            for id in ["lib.settings", "lib.controllers", "lib.shellSettings"] {
+                let control = try #require(controls.first { $0.id == id })
+                #expect(control.frame.minX >= 0 && control.frame.maxX <= 678)
+                #expect(control.frame.width >= 40)
+                #expect(control.frame.minY >= 0 && control.frame.maxY <= 64)
+            }
+            if count == 30 {
+                let mounted = targets.values.filter { $0.id.hasPrefix("lib.tile.") }
+                #expect(!mounted.isEmpty)
+                #expect(mounted.count < 15)
+                #expect(mounted.contains { $0.id == "lib.tile.2" })
+            }
+        }
+    }
+}
+#endif

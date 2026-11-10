@@ -14,14 +14,21 @@ extension EnvironmentValues {
 }
 
 struct GameOrderButton: View {
+    let gameCount: Int
+    var iconOnly = false
     @Environment(\.shellOpenGameOrder) private var open
 
     var body: some View {
-        if let open {
+        if gameCount > 1, let open {
             Button(action: open) {
-                Label(ShellStrings.text("Reorder"), systemImage: "arrow.up.arrow.down")
+                if iconOnly {
+                    Image(systemName: "arrow.up.arrow.down").frame(minWidth: 18)
+                } else {
+                    Label(ShellStrings.text("Reorder"), systemImage: "arrow.up.arrow.down")
+                }
             }
             .buttonStyle(ChipButtonStyle())
+            .accessibilityLabel(ShellStrings.text("Reorder"))
             .accessibilityIdentifier("library.reorder")
             .shellTarget("lib.reorder", radius: 22, action: open)
         }
