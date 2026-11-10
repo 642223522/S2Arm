@@ -403,12 +403,16 @@ static uint64_t g_rumble_counter;                // 主线程：换一次手柄�
 static GCController *g_rumble_main;              // 主线程：当前手柄
 static GCController *g_rumble_device;            // 以下只在 g_rumble_q 上碰
 static CHHapticEngine *g_rumble_engine;
-static id<CHHapticAdvancedPatternPlayer> g_rumble_player;
+static id<CHHapticPatternPlayer> g_rumble_player;   // 能建循环播放器就用循环的；建不了（见 rumble_play_on_queue）用普通播放器，快到事件末尾时重起
+static BOOL g_rumble_loops;
+static BOOL g_rumble_plain_only;                 // 这只手柄建循环播放器失败过：之后只建普通播放器
+static uint64_t g_rumble_started_ns;             // 普通播放器这一轮的起播时刻
 static BOOL g_rumble_playing;
 static dispatch_source_t g_rumble_timer;
 static s2a_hp_state g_rumble_retry;
 static pthread_mutex_t g_rumble_mu = PTHREAD_MUTEX_INITIALIZER;
 static s2a_pad_vibration g_rumble_pair[2];       // g_rumble_mu：单侧提交时拼成整对
+#define MAC_RUMBLE_RESTART_NS (20ull * NSEC_PER_SEC)
 static float rumble_scale(void) {
     static float scale = -1;
     if (scale < 0) { const char *e = getenv("S2A_RUMBLE_SCALE"); float v = e ? strtof(e, NULL) : 1; scale = isfinite(v) && v > 0 ? v : 1; }
@@ -442,7 +446,7 @@ static void rumble_play_on_queue(s2a_pad_vibration pair[2]) {
         weighted += lo * rumble_clamp(pair[i].low_hz, 0, 1250) + hi * rumble_clamp(pair[i].high_hz, 0, 1250);
         weights += lo + hi;
     }
-    amplitude = fminf(1, amplitude * rumble_scale());
+    amplitude = fminf(1, s2a_hp_feel(amplitude) * rumble_scale());
     if (amplitude <= 0.001f || !g_rumble_device.haptics) { rumble_stop_on_queue(); return; }
     if (s2a_hp_should_try(&g_rumble_retry, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) == S2A_HP_SKIP) return;
     float hz = weights > 0 ? weighted / weights : 160;
@@ -466,11 +470,25 @@ static void rumble_play_on_queue(s2a_pad_vibration pair[2]) {
             [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1],
             [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5]] relativeTime:0 duration:30];
         CHHapticPattern *pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
-        g_rumble_player = pattern ? [g_rumble_engine createAdvancedPlayerWithPattern:pattern error:&error] : nil;
+        // 循环播放器在有的系统 / 手柄上建不出来（11-10 M1 Max / macOS 27.0.1 / DualSense：NSCocoaErrorDomain 4097，同一引擎上普通播放器能建能播）：
+        //   退到普通播放器，它不能循环，靠下面的重起接上
+        //   循环播放器建失败后这个引擎也废了（接着在它上面建普通播放器报 GameControllerHaptics/0 Client not registred），所以记下来、丢掉引擎、从头再来一次
+        if (pattern && !g_rumble_plain_only) {
+            id<CHHapticAdvancedPatternPlayer> advanced = [g_rumble_engine createAdvancedPlayerWithPattern:pattern error:&error];
+            if (advanced) { advanced.loopEnabled = YES; g_rumble_player = advanced; g_rumble_loops = YES; }
+            else {
+                fprintf(stderr, "手柄震动：循环播放器建不了（%s/%ld），改用普通播放器\n", error.domain.UTF8String ?: "-", error ? (long)error.code : 0L);
+                g_rumble_plain_only = YES; rumble_reset_on_queue(); rumble_play_on_queue(pair); return;
+            }
+        } else if (pattern) { g_rumble_player = [g_rumble_engine createPlayerWithPattern:pattern error:&error]; g_rumble_loops = NO; }
         if (!g_rumble_player) { rumble_fail_on_queue("创建播放器失败", error); rumble_reset_on_queue(); return; }
-        g_rumble_player.loopEnabled = YES;
+    }
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (g_rumble_playing && !g_rumble_loops && now - g_rumble_started_ns > MAC_RUMBLE_RESTART_NS) {   // 普通播放器：事件 30 秒，连着震到 20 秒就重起一轮
+        [g_rumble_player stopAtTime:CHHapticTimeImmediate error:nil]; g_rumble_playing = NO;
     }
     if (!g_rumble_playing && ![g_rumble_player startAtTime:CHHapticTimeImmediate error:&error]) { rumble_fail_on_queue("播放失败", error); rumble_reset_on_queue(); return; }
+    if (!g_rumble_playing) g_rumble_started_ns = now;
     g_rumble_playing = YES;
     if (![g_rumble_player sendParameters:@[
         [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:amplitude relativeTime:0],
@@ -492,7 +510,7 @@ static void rumble_select(GCController *device) {
     g_rumble_main = device;
     if (!g_rumble_q) g_rumble_q = dispatch_queue_create("dev.s2arm.mac-rumble", DISPATCH_QUEUE_SERIAL);
     atomic_store(&g_rumble_epoch, device.haptics && !rumble_off() ? ++g_rumble_counter : 0);
-    dispatch_async(g_rumble_q, ^{ rumble_reset_on_queue(); g_rumble_device = device; g_rumble_retry = (s2a_hp_state){0}; });
+    dispatch_async(g_rumble_q, ^{ rumble_reset_on_queue(); g_rumble_device = device; g_rumble_retry = (s2a_hp_state){0}; g_rumble_plain_only = NO; });
 }
 static void rumble_submit(uint64_t session, const s2a_pad_vibration pair[2]) {
     uint64_t epoch = atomic_load(&g_rumble_epoch);
