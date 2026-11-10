@@ -12,9 +12,35 @@
 //     经 lockdown 的 CoreDeviceProxy 建用户态隧道（不要管理员、不装驱动）→ RSD → CoreDevice app_service（同 Xcode / devicectl 的起 App 服务；iOS 17+，要开发者模式与已挂开发者镜像）
 // 退出码：0 成功；1 连不上 / 读写失败（错误打到标准错误）
 // S2A_DEVPUSH_PROGRESS=1：put / put-tar（及本地 tar 对照）约每秒输出 S2A_DEVPUSH_PROGRESS <已刷出有效载荷字节>，不含 tar 头与补齐。
+// 和手机读写文件的操作连续 STALL_SECONDS 秒没有任何进展（一块都没写进去）就报错退 1：连接中途断了（拔线、Wi-Fi 断开、推送中途 App 被重装），
+//   AFC 会一直阻塞不返回，原先整个装机就停在那里没有任何输出（真机实测进度停在 86%、20 分钟不动）。S2A_DEVPUSH_STALL_SECONDS 可改（单测用）
 use idevice::{IdeviceService, afc::opcode::AfcFopenMode, core_device::CoreDeviceServiceClient, core_device_proxy::CoreDeviceProxy, house_arrest::HouseArrestClient, rsd::RsdHandshake, usbmuxd::{UsbmuxdAddr, UsbmuxdConnection}};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use std::time::{Duration, Instant};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+
+/// 最近一次有进展的时刻（相对进程起点的毫秒）：每写进一块数据就更新；看门狗线程据此判「卡住」
+static ALIVE: std::sync::LazyLock<Arc<AtomicU64>> = std::sync::LazyLock::new(|| Arc::new(AtomicU64::new(0)));
+static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+const STALL_SECONDS: u64 = 90;   // 同手机游戏库判「传输中断」的 90 秒（S2ArmShellHostModel.transferStall）：电脑经 devicectl 写 ≤1 GB 一批落盘实测约 33 秒，留余量
+
+fn now_ms() -> u64 { START.elapsed().as_millis() as u64 }
+
+/// 卡住了吗：最近一次进展到现在超过 limit
+fn stalled(alive_ms: u64, now_ms: u64, limit: Duration) -> bool { now_ms.saturating_sub(alive_ms) > limit.as_millis() as u64 }
+
+/// 看门狗线程：AFC 在 idevice 里用 block_in_place 同步阻塞，异步超时打断不了，只能另起线程判、到点结束进程
+fn arm_watchdog() {
+    let limit = Duration::from_secs(std::env::var("S2A_DEVPUSH_STALL_SECONDS").ok().and_then(|v| v.parse().ok()).filter(|v: &u64| *v > 0).unwrap_or(STALL_SECONDS));
+    ALIVE.store(now_ms(), Ordering::Relaxed);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if stalled(ALIVE.load(Ordering::Relaxed), now_ms(), limit) {
+            eprintln!("{} 秒没有任何进展：和手机的连接可能断了（拔线、Wi-Fi 断开或推送中途 App 被重装），这次中止；重新装机会接着传", limit.as_secs());
+            std::process::exit(1);
+        }
+    });
+}
 
 // 仅显式请求时输出机器行；有效载荷不含 tar 头 / 补齐，只有 flush 成功才上报。
 struct Progress<F> {
@@ -22,10 +48,12 @@ struct Progress<F> {
     last: Instant,
     interval: Duration,
     emit: F,
+    alive: Arc<AtomicU64>,   // 每写进一块就记一下（不管上不上报进度）：看门狗按它判卡住
 }
 
 impl<F: FnMut(u64)> Progress<F> {
     async fn report<W: AsyncWrite + Unpin>(&mut self, w: &mut W, payload: u64) -> Result<(), String> {
+        self.alive.store(now_ms(), Ordering::Relaxed);
         if self.enabled && self.last.elapsed() >= self.interval {
             w.flush().await.map_err(|e| format!("写入刷新失败：{e}"))?;
             (self.emit)(payload);
@@ -40,6 +68,7 @@ fn progress() -> Progress<impl FnMut(u64)> {
         enabled: std::env::var("S2A_DEVPUSH_PROGRESS").as_deref() == Ok("1"),
         last: Instant::now(), interval: Duration::from_secs(1),
         emit: |n| println!("S2A_DEVPUSH_PROGRESS {n}"),
+        alive: ALIVE.clone(),
     }
 }
 
@@ -49,7 +78,27 @@ mod progress_tests {
     use std::{pin::Pin, task::{Context, Poll}};
 
     fn recorder<'a>(seen: &'a mut Vec<u64>) -> Progress<impl FnMut(u64) + 'a> {
-        Progress { enabled: true, last: Instant::now(), interval: Duration::ZERO, emit: |n| seen.push(n) }
+        Progress { enabled: true, last: Instant::now(), interval: Duration::ZERO, emit: |n| seen.push(n), alive: Arc::new(AtomicU64::new(0)) }
+    }
+
+    #[test]
+    fn stall_is_strictly_longer_than_the_limit() {   // 期望手写：90 秒上限，最近进展在 1000 ms
+        let limit = Duration::from_secs(90);
+        assert!(!stalled(1_000, 91_000, limit));   // 正好 90 秒：还不算
+        assert!(stalled(1_000, 91_001, limit));
+        assert!(!stalled(5_000, 1_000, limit));    // 进展时刻比「现在」还新（并发写入）：不算
+    }
+
+    #[tokio::test]
+    async fn every_written_chunk_marks_progress_even_when_not_reporting() {
+        // 不开字节进度上报（S2A_DEVPUSH_PROGRESS 没设）也要每写进一块就更新进展时刻，否则看门狗会把正常的长传输判成卡住
+        let alive = Arc::new(AtomicU64::new(0));
+        let mut p = Progress { enabled: false, last: Instant::now(), interval: Duration::ZERO, emit: |_| {}, alive: alive.clone() };
+        std::thread::sleep(Duration::from_millis(20));
+        let input = vec![7u8; (1 << 20) + 1]; let mut output = Vec::new();
+        write_file(&mut input.as_slice(), &mut output, &mut p).await.unwrap();
+        assert!(alive.load(Ordering::Relaxed) >= 20, "写入后进展时刻没更新：{}", alive.load(Ordering::Relaxed));
+        assert_eq!(output, input);
     }
 
     #[tokio::test]
@@ -201,6 +250,8 @@ async fn run(a: &[String]) -> Result<(), String> {
     }
     // 找设备与连设备走同一个设备服务地址（USBMUXD_SOCKET_ADDRESS，缺省本机）：原先找设备固定连本机、连设备才看环境变量，
     //   设了地址时两边设备编号对不上（11-06 Windows 端到端线：手机插在别的机器上、经它的设备服务推包）
+    // 和手机读写文件的操作：从连设备服务起，连不上 / 写不进去超过上限就报错退出（装 ipa、起 App 另有自己的等待，不在内）
+    if !matches!(op, "launch" | "install" | "uninstall") { arm_watchdog(); }
     let addr = UsbmuxdAddr::from_env_var().map_err(|e| e.to_string())?;
     let sock = addr.to_socket().await.map_err(|e| format!("连不上 Apple 设备服务：{e}"))?;
     let mut mux = UsbmuxdConnection::new(sock, 0);
@@ -295,7 +346,7 @@ async fn run(a: &[String]) -> Result<(), String> {
                     let data = f.read_entire().await.map_err(|e| format!("读 {path} 失败：{e}"))?;
                     drop(f);
                     tokio::fs::write(&dest, &data).await.map_err(|e| e.to_string())?;
-                    n += 1;
+                    n += 1; ALIVE.store(now_ms(), Ordering::Relaxed);   // 存档多：每拉完一个文件算一次进展
                 }
             }
             println!("get-tree {n} 个文件 ← {root}");
