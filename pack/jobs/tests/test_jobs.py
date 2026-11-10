@@ -705,7 +705,7 @@ class JobsTests(unittest.TestCase):
         # 预检门槛 = 原包 × 1.1 × 2（解包 + 单文件镜像）+ 直连上限：恰好够放行，差 1 字节拦下，提示里写需要与剩余
         import unittest.mock as um, collections
         base = dict(self.package("base"), size=6 << 30)
-        game = self.game(packages=[base]); need = 2 * ((6 << 30) * 11 // 10) + 15_000_000_000
+        game = self.game(packages=[base]); need = (6 << 30) * 11 // 10 + 15_000_000_000
         du = collections.namedtuple("du", "total used free")
         with um.patch("shutil.disk_usage", return_value=du(0, 0, need)):
             library.check_pack_space(self.c, game)
@@ -751,7 +751,7 @@ class JobsTests(unittest.TestCase):
                 game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
                 with um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
                     lib = library.space_budget(self.c, game)["volumes"][0]
-                self.assertEqual(lib["needBytes"], 2 * ((6 << 30) * 11 // 10) + 15_000_000_000)
+                self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
     def test_space_budget_uses_extract_size_when_known(self):
@@ -764,7 +764,7 @@ class JobsTests(unittest.TestCase):
         ex = self.c.library / "cache" / tid / "k" / "roots" / "m@现行" / "extract"; ex.mkdir(parents=True)
         with um.patch("space_rule.tree_bytes", return_value=2 << 30), um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
             lib = library.space_budget(self.c, game)["volumes"][0]
-        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 * 2 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包 + 单文件镜像各一份原包 × 1.1，再加直连
+        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包一份原包 × 1.1，再加直连（单文件镜像不再存进库，#329）
         self.assertIn("按抽取", lib["note"])
 
     def test_direct_check_counts_existing_cache_and_volume(self):
@@ -799,7 +799,7 @@ class JobsTests(unittest.TestCase):
                 with um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
                     budget = library.space_budget(self.c, game)
                 self.assertEqual(budget["gameBytes"], want)
-                self.assertEqual(budget["volumes"][0]["needBytes"], 2 * (want * 11 // 10) + 15_000_000_000)
+                self.assertEqual(budget["volumes"][0]["needBytes"], want * 11 // 10 + 15_000_000_000)
 
     def test_space_budget_library_volume_only(self):
         # 11-02 起打 iPhone 包不再把原件暂存到数据目录（共用 游戏库/cache/<程序号>/extract），预算只有游戏库一卷：原件跨卷与否都一样
@@ -827,7 +827,7 @@ class JobsTests(unittest.TestCase):
                     library.check_pack_space(self.c, game)
                 lib = budget["volumes"][0]
                 self.assertEqual((lib["role"], lib["basis"], lib["needBytes"], lib["freeBytes"], lib["enough"], lib["volume"]),
-                                 ("library", "rule", 2 * ((6 << 30) * 11 // 10) + 15_000_000_000, 50 << 30, True, "系统盘"))
+                                 ("library", "rule", (6 << 30) * 11 // 10 + 15_000_000_000, 50 << 30, True, "系统盘"))
                 self.assertIn("直连着色器上限", lib["note"]); self.assertEqual(lib["unknown"], ["shader_cache"])
                 self.assertEqual(budget["gameBytes"], 6 << 30)
                 self.assertEqual([u["id"] for u in budget["unknown"]], ["shader_cache"])
@@ -847,7 +847,7 @@ class JobsTests(unittest.TestCase):
         self.assertIn("磁盘空间不够", str(e.exception))
         event = self.space_events()[-1]
         self.assertFalse(event["space"]["volumes"][0]["enough"])
-        self.assertEqual(event["space"]["volumes"][0]["needBytes"], 2 * ((1 << 30) * 11 // 10) + 5_000_000_000)
+        self.assertEqual(event["space"]["volumes"][0]["needBytes"], (1 << 30) * 11 // 10 + 5_000_000_000)
         self.c.begin("下一阶段", 2, 3); self.c.emit(done=1, total=2)
         job = json.loads(self.c.jobpath.read_text())
         self.assertEqual(job["space"], event["space"]); self.assertEqual(job["message"], "下一阶段")
@@ -1063,6 +1063,24 @@ class JobsTests(unittest.TestCase):
         with self.assertRaises(Failure):
             build.runtime_env(self.c, self.game(), self.root)
 
+    def test_launcher_decides_whether_the_game_may_auto_connect(self):
+        self.c.r["switch2ProAutoConnect"] = True
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_NS2_AUTOCONNECT"], "1")
+        self.c.r["switch2ProAutoConnect"] = False
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_NS2_AUTOCONNECT"], "0")
+        self.c.r["switch2ProAutoConnect"] = "yes"
+        with self.assertRaises(Failure):
+            build.runtime_env(self.c, self.game(), self.root)
+        self.c.r["switch2ProAutoConnect"] = True
+        self.c.r["switch2ProRelaySocket"] = "/tmp/s2a-ns2-relay.sock"
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_NS2_SOCKET"],
+                         "/tmp/s2a-ns2-relay.sock")
+        self.c.r.pop("switch2ProRelaySocket")
+        self.assertNotIn("S2A_NS2_SOCKET", build.runtime_env(self.c, self.game(), self.root / "runtime"))
+        self.c.r["switch2ProRelaySocket"] = 1
+        with self.assertRaises(Failure):
+            build.runtime_env(self.c, self.game(), self.root)
+
     def test_metal_hud_switch_and_explicit_environment_reach_real_child(self):
         names = ("MTL_HUD_ENABLED", "MTL_HUD_LOG_ENABLED", "MTL_HUD_LOG_SHADER_ENABLED")
         previous = {name: os.environ.get(name) for name in names}
@@ -1150,6 +1168,26 @@ class JobsTests(unittest.TestCase):
             probe.assert_called_once_with(self.c, host)
             run.assert_not_called()
 
+    def test_launch_returns_to_library_only_when_the_host_left_the_switch_game_marker(self):
+        # 宿主菜单栏「切换游戏」写 S2A_RETURN_MARKER 再退出：结果带 returnToLibrary；正常退出不带；上一局残留的标记不算
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
+        self.fake_host(game["id"])
+        stale = self.c.private / "runtime-return" / (self.c.task + ".flag")
+        for switch in (True, False):
+            stale.parent.mkdir(parents=True, exist_ok=True); stale.write_text("")
+            seen = []
+            def run(command, log, env, **kwargs):
+                marker = Path(env["S2A_RETURN_MARKER"]); seen.append(marker)
+                self.assertFalse(marker.exists())
+                if switch:
+                    marker.write_text("")
+            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                 patch.object(self.c, "run", side_effect=run):
+                result = build.launch(self.c)
+            self.assertEqual(result.get("returnToLibrary", False), switch)
+            self.assertEqual(seen, [stale])
+            self.assertFalse(stale.exists())
+
     def test_launch_removes_only_its_snapshot_after_exit_failure_or_cancellation(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},
@@ -1178,6 +1216,7 @@ class JobsTests(unittest.TestCase):
             self.assertTrue(sibling.is_file())
 
     def test_hash_validation_rejects_same_size_corruption_and_traversal(self):
+        # v0.2.3 清理：缺省只核大小（同大小改写不再逐字节查，#304 被改的文件是靠大小查出来的）；调用方明确要 full=True 时照旧按摘要拒；越界照旧拒
         root = self.root / "products"
         root.mkdir()
         f = root / "module"
@@ -1185,8 +1224,12 @@ class JobsTests(unittest.TestCase):
         record = {"module": [5, digest(f)]}
         build.validate_files(self.c, root, record)
         f.write_bytes(b"wrong")
+        build.validate_files(self.c, root, record)   # 缺省只核大小：同大小改写放行
         with self.assertRaises(Failure):
-            build.validate_files(self.c, root, record)
+            build.validate_files(self.c, root, record, full=True)
+        f.write_bytes(b"longer!")
+        with self.assertRaises(Failure):
+            build.validate_files(self.c, root, record)   # 大小变了照旧拒
         with self.assertRaises(Failure):
             build.validate_files(self.c, root, {"../outside": [0, ""]})
 
@@ -1338,18 +1381,45 @@ class JobsTests(unittest.TestCase):
         self.assertEqual([layout.load_device(self.c, k)["games"] for k in ("phone1", "phone2")], [{}, {}])
 
     def test_delete_waits_for_execution_lock_held_by_cancelled_task(self):
-        # 期望：执行锁被（刚被取消、还没退出的）任务占着 3 秒 → 删除不立刻失败，等锁放开后照样删掉（10-26 Spare-host：导入后自动排的 Mac 准备占锁，删除直接报「另一个任务正在使用游戏库」）
-        import subprocess, sys, time
+        # 真实持锁进程直到显式释放才退出；先观测生产删除的等待事件，
+        # 确认没有提前删除，再释放锁并验证完成，不依赖父进程及时抢到 CPU。
         game = self.game(packages=[self.package()]); self.catalogue([game])
         self.c.require_library()
         lockf = self.c.library / ".execution.lock"
-        holder = subprocess.Popen([sys.executable, "-c", "import sys,time; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); print('ok',flush=True); time.sleep(3)", str(lockf), str(JOBS)], stdout=subprocess.PIPE, text=True)
-        self.assertEqual(holder.stdout.readline().strip(), "ok")
-        t0 = time.time(); self.c.r["gameId"] = game["id"]
-        library.delete(self.c)
-        holder.wait()
-        self.assertGreaterEqual(time.time() - t0, 2.5)
-        self.assertEqual(self.c.catalog()["games"], [])
+        holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); print('ok',flush=True); sys.stdin.readline(); filelock.unlock(f)", str(lockf), str(JOBS)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        finished = threading.Event()
+        errors = []
+        def delete():
+            try:
+                library.delete(self.c)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                finished.set()
+        worker = threading.Thread(target=delete)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            self.c.r["gameId"] = game["id"]
+            worker.start()
+            deadline = time.monotonic() + 10
+            while "等这款游戏在跑的任务结束" not in self.output.getvalue():
+                self.assertFalse(finished.wait(0.01), "delete returned before reporting the held execution lock")
+                self.assertLess(time.monotonic(), deadline, "delete did not report waiting for the held execution lock")
+            self.assertFalse(finished.is_set(), "delete finished while another process still held the lock")
+            self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [game["id"]])
+            holder.stdin.write("release\n"); holder.stdin.flush()
+            self.assertEqual(holder.wait(timeout=5), 0)
+            self.assertTrue(finished.wait(10), "delete did not finish after the execution lock was released")
+            worker.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(self.c.catalog()["games"], [])
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+            holder.communicate(timeout=5)
+            if worker.ident is not None:
+                worker.join(5)
+            self.assertFalse(worker.is_alive(), "delete worker remained after lock-holder cleanup")
 
     def test_direct_small_batch_progress_replaces_finished_translation(self):
         progress = self.root / "progress.tsv"

@@ -120,6 +120,12 @@ struct InstallView: View {
                 }
                 .padding(.horizontal, 30).padding(.bottom, 24)
             }
+            .alert(text("install.drop_title"), isPresented: Binding(get: { model.dropConfirm != nil }, set: { if !$0 { model.dropConfirm = nil } }), presenting: model.dropConfirm) { d in
+                Button(text("install.drop_confirm"), role: .destructive) { model.confirmDrop(d) }
+                Button(loc.t("launch.done"), role: .cancel) {}
+            } message: { d in
+                Text(loc.backend(d.message))
+            }
             }
             Divider().opacity(0.3)
             if model.installDone == gameID {
@@ -133,7 +139,7 @@ struct InstallView: View {
                 Text(loc.t("s2arm.install.note")).font(.manrope(12)).foregroundStyle(.secondary).lineLimit(3)
                 Spacer(minLength: 8)
                 if let ipa = model.installReadiness?.ipaPath, !ipa.isEmpty {
-                    Button(loc.t("s2arm.export.revealIpa")) { revealInFinder(ipa) }
+                    Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }
                         .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.revealIpa")
                 }
                 Button(loc.t("launch.done")) { dismiss() }.buttonStyle(LauncherSecondaryButtonStyle())

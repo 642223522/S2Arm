@@ -65,6 +65,9 @@ public static class PackCases
             track.Ingest(progress.RootElement, 15);
         check(track.Plan.Count == 1 && track.Current == "unpack" && track.Started["unpack"] == 10, "track: plan and step start");
         check(track.Fraction == 0.25 && track.Message == "解包 25/100", "track: real fraction and message");
+        using (var message = JsonDocument.Parse("""{"type":"message","milestone":"unpack","message":"解包已完成，正在校验"}"""))
+            track.Ingest(message.RootElement, 16);
+        check(track.Fraction is null && track.Message.Contains("校验"), "track: finalization message clears stale 100% fraction");   // 社区贡献者补丁 #8 附带的用例
         check(track.Plan[0].Measured is null, "track: no local record means no expected time");
         track.Finish(40);
         check(track.Duration("unpack") == 30, "track: last step ends at the job end");
@@ -141,6 +144,10 @@ public static class PackCases
         check((string?)V3("relinkGame", new() { ["folder"] = where })["folder"] == where, "request: relinkGame carries the chosen folder");
         check(V3("forgetGame", null).Count == move.Count - 1, "request: forgetGame is the bare envelope");
         check((string?)V3("clean", new() { ["kind"] = "cache" })["kind"] == "cache", "request: clean kind=cache accepted");
+        // 释放空间（同 Mac FreeSpaceView）：spaceFree 带这款和勾选的部件列表，原样交给 pack/jobs/library.py space_free
+        var free = V3("spaceFree", new() { ["parts"] = new[] { "shaders", "ipa" } });
+        check((string?)free["operation"] == "spaceFree" && (string?)free["gameId"] == "0100FD70134FA000" && free["parts"] is string[] { Length: 2 } ps && ps[0] == "shaders" && ps[1] == "ipa",
+              "request: spaceFree carries the game and the chosen parts");
         check((string?)V3("ipa", new() { ["location"] = where })["location"] == where && !V3("ipa", null).ContainsKey("location"),
             "request: ipa location optional, passed through when chosen");
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]

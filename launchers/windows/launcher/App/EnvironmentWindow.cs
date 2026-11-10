@@ -44,7 +44,13 @@ public sealed partial class EnvironmentWindow : Window
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
         Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
-        Opened += (_, _) => { StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); };
+        Opened += (_, _) =>
+        {
+            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync();
+            // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
+            //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
+            if (File.Exists(LibraryPreference) || File.Exists(Path.Combine(SavedLibrary(), ".s2arm-library.json"))) EnsureLibrary(() => { });
+        };
         Closing += CloseLibraryAsync;
         Closing += ClosePackAsync;
         // 欢迎页进来自动触发环境检查（回到窗口也会重查）
@@ -115,17 +121,23 @@ public sealed partial class EnvironmentWindow : Window
             Background = page == "library" ? Accent : Brush.Parse("#29292D"), Foreground = page == "library" ? Canvas : Ink
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(libraryBtn, "top.library");
-        libraryBtn.Click += (_, _) => { if (packRunning) sessionHidden = true; Navigate("library"); };
+        libraryBtn.Click += (_, _) =>
+        {
+            if (packRunning) sessionHidden = true;
+            welcomeGameId = null;   // 点「游戏库」就是要看游戏库：欢迎页记的那一款不再把它盖住（社区贡献者补丁 #1）
+            if (!libraryBusy) importDialog = null;   // 添加游戏弹窗开着也能直接从导航离开（同上 #3；正在导入时不关）
+            Navigate("library");
+        };
         rightBar.Children.Add(libraryBtn);
 
         // 添加游戏
         var addGameBtn = new Button
         {
-            Content = T("action.add_game"), IsEnabled = connectedFolder is not null && !libraryBusy && !busy,
+            Content = T("action.add_game"), IsEnabled = !libraryBusy && !busy,   // 没连上库也能点：OpenWelcomeGames 先连默认库（社区贡献者补丁 #4）
             Padding = new Thickness(14, 8), Background = Brush.Parse("#29292D"), Foreground = Ink,
             CornerRadius = new CornerRadius(8)
         };
-        addGameBtn.Click += (_, _) => { if (!libraryBusy) { importDialog = new ImportDialogState(ImportKind.Games); Render(); } };
+        addGameBtn.Click += (_, _) => OpenWelcomeGames();
         rightBar.Children.Add(addGameBtn);
 
         // 环境检查（弹窗入口：切到 settings 页）
@@ -138,7 +150,7 @@ public sealed partial class EnvironmentWindow : Window
             Foreground = page == "settings" ? Canvas : Ink,
             CornerRadius = new CornerRadius(8)
         };
-        envCheckBtn.Click += (_, _) => Navigate(page == "settings" ? "library" : "settings");
+        envCheckBtn.Click += (_, _) => { if (!libraryBusy) importDialog = null; Navigate(page == "settings" ? "library" : "settings"); };
         rightBar.Children.Add(envCheckBtn);
 
         Grid.SetColumn(rightBar, 1); header.Children.Add(rightBar);
@@ -271,6 +283,10 @@ public sealed partial class EnvironmentWindow : Window
                 Content = new TextBox { Text = diagnostics, IsReadOnly = true, AcceptsReturn = true,
                     TextWrapping = TextWrapping.Wrap, MaxHeight = 260 } });
         }
+        // Version: the same number the Mac launcher and the S2Arm on the iPhone show (written into the iPhone app at install).
+        var version = Muted("S2Arm " + AppVersion, 12); version.HorizontalAlignment = HorizontalAlignment.Center;
+        Avalonia.Automation.AutomationProperties.SetAutomationId(version, "env.version");
+        body.Children.Add(version);
         Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
     }
 

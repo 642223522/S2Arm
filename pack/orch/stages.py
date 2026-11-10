@@ -817,8 +817,7 @@ class Stages:
         if selected is not None:
             if is_link(selected) or not selected.is_dir() or not list(selected.glob('*.bfttf')):
                 raise StageError('共享字体目录缺失/非法；配置S2A_FONTS', 75)
-            plain_entries(selected)
-            return selected
+            return selected   # v0.2.3 清理：玩家选的字体目录只认 *.bfttf，里面别的条目（软链、.DS_Store）不管、不拒
         run_root = Path(os.environ.get('S2A_RUN_ROOT', Path.home() / '.s2arm/run'))
         dest = Path(os.environ.get('S2A_OPENFONTS_DIR', run_root / 's2arm/openfonts'))
         generator = REPO / 'pack/fonts/make_open_fonts.py'
@@ -827,8 +826,7 @@ class Stages:
             return (dest.is_dir() and not is_link(dest)
                     and read(dest / '.generator.sha256') == stamp and len(list(dest.glob('*.bfttf'))) == 7)
         if ready():
-            plain_entries(dest)
-            return dest
+            return dest   # 自家生成的缓存：ready() 已核生成器指纹与 7 份字体，不再递归扫链接（v0.2.3 清理）
         if is_link(dest) or is_link(dest.parent):
             raise StageError('开源字体缓存路径不能是链接')
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1038,7 +1036,11 @@ class Stages:
 
     @staticmethod
     def _source_files():
-        directory = Path(os.environ.get('S2A_GAME_SRC', Path.home() / 'Downloads'))
+        # 只认调用方给的原件目录（Mac 出包与一键出包都设 S2A_GAME_SRC）。v0.2.3 清理：去掉没设时退回扫 ~/Downloads 的兜底——
+        #   10-26 扫 Downloads 弹出访问授权框（build.py 注释），玩家流程用不上它
+        if not os.environ.get('S2A_GAME_SRC'):
+            return []
+        directory = Path(os.environ['S2A_GAME_SRC'])
         if not directory.is_dir():
             return []
         found = []
@@ -1049,7 +1051,7 @@ class Stages:
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in ('$RECYCLE.BIN', 'System Volume Information')) if depth < 3 else []
             for name in names:
                 p = Path(parent) / name
-                if p.suffix.lower() in ('.xci', '.nsp', '.nsz', '.xcz') and p.is_file():
+                if p.suffix.lower() in ('.xci', '.nsp', '.nsz', '.xcz') and not name.startswith('._') and p.is_file():   # ._ = exFAT 上的访达附属文件
                     if '\n' in str(p) or '\t' in str(p):
                         raise StageError('原件路径不能含TAB/换行', 3)
                     found.append(p.absolute())

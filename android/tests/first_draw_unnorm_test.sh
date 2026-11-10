@@ -29,6 +29,7 @@ cat > "$E/include/android/native_window.h" <<'HEADER'
 typedef struct ANativeWindow ANativeWindow;
 static inline int32_t ANativeWindow_getWidth(ANativeWindow*w){(void)w;return 0;}
 static inline int32_t ANativeWindow_getHeight(ANativeWindow*w){(void)w;return 0;}
+static inline int32_t ANativeWindow_setBuffersGeometry(ANativeWindow*w,int32_t wd,int32_t h,int32_t f){(void)w;(void)wd;(void)h;(void)f;return 0;}
 HEADER
 cat > "$E/include/sys/system_properties.h" <<'HEADER'
 #pragma once
@@ -44,7 +45,7 @@ graphics/nvn/gfx/nvn/nvn_tex.c graphics/nvn/gfx/nvn/nvn_dirty.c graphics/nvn/gfx
 objects=()
 for src in "${sources[@]}"; do
   obj="$E/obj/$(basename "$src" .c).o"
-  "${CC:-cc}" -std=c11 -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -O0 -ffunction-sections -fdata-sections \
+  "${CC:-cc}" -std=c11 -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 -O0 -ffunction-sections -fdata-sections \
     -I"$E/include" -Iandroid/tests/vkhost -I"$VULKAN_INCLUDE" -Iandroid/native \
     -Iandroid/native/direct -Iandroid/native/nvn -Iruntime/include \
     -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/gfx/tex -c "$src" -o "$obj"

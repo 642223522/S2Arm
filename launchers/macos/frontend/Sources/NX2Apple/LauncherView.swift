@@ -7,6 +7,8 @@
 // (11-07): a game's Export opens ExportView in place of the library (platforms, options, start), and an export runs in
 // ExportSessionView (platform queue, steps, time left, per-platform results); the free-up-space sheet (FreeSpaceView) and
 // change library (JobSessionView, setup job) sit beside them.
+// Switch 2 Pro: the top bar adds the controller button and popover (Switch2ProConnectionPopover), and the library starts the
+//   controller connection on appear when the user enabled it (NS2LauncherController).
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -25,11 +27,16 @@ struct LauncherView: View {
     @State var spaceFor: String?
     @State var moreFor: String?
     @State var saveFor: String?
+    /// 拖到卡片上的存档：随存档窗口一起打开、先检查（SaveManageSheet.source）
+    @State var saveDrop: URL?
+    /// 拖动经过的那张卡片（描边提示）
+    @State var dropCard: String?
     @State var displayFor: String?
     @State var inputFor: String?
     @State var deleteFor: GameSummary?
     /// 「找不到游戏文件」的那款（点了卡片）：重新指定文件夹 / 从游戏库移除
     @State var missingFor: GameSummary?
+    @State private var showController = false
     @State private var dropTargeted = false
     @State var collectionHeight: CGFloat = 300
     let brand: String
@@ -63,7 +70,7 @@ struct LauncherView: View {
                     .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
                         Self.fileURLs(providers) { urls in
                             // 拖进来的是 prod.keys 就当密钥放，别当游戏报错
-                            if urls.count == 1, urls[0].pathExtension.lowercased() == "keys" { model.importKeys(urls[0]) } else { model.importGames(urls) }
+                            if urls.count == 1, urls[0].pathExtension.lowercased() == "keys" { model.importKeys(urls[0]) } else { model.importGames(urls, partialResults: true) }
                         }
                         return true
                     }
@@ -79,7 +86,7 @@ struct LauncherView: View {
         .tint(LauncherPalette.cream)
         .font(.manrope(13))
         .frame(minWidth: 900, idealWidth: 1280, minHeight: 680, idealHeight: 900)
-        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate() }
+        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate(); model.startControllerConnection() }
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
             InstallView(model: model, gameID: target.id).environmentObject(loc)
         }
@@ -89,8 +96,8 @@ struct LauncherView: View {
         .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
             LaunchSettingsSheet(model: model, gameID: target.id, openInput: { inputFor = target.id }).environmentObject(loc)
         }
-        .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
-            SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)
+        .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id; if $0 == nil { saveDrop = nil } })) { target in
+            SaveManageSheet(model: model, gameID: target.id, source: saveDrop).environmentObject(loc)
         }
         .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: { inputFor = $0?.id })) { target in
             InputSettingsSheet(model: model, gameID: target.id).environmentObject(loc)
@@ -128,6 +135,8 @@ struct LauncherView: View {
                 if model.loading { ProgressView().controlSize(.small) }
                 exportPill
                 phonePill
+                ControllerToolbarButton(controller: model.controller, show: $showController,
+                                        simplifiedChinese: loc.lang == .zh)
                 updateButton
                 // 界面语言：一键切到另一种（同旧启动器 LanguageSwitch，维护者 10-23「不让玩家先选」）；当场生效、记住选择，不用重启（11-07 维护者 验收）
                 Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
@@ -291,5 +300,27 @@ struct LauncherView: View {
             }
         }
         group.notify(queue: .main) { done(urls) }
+    }
+}
+
+private struct ControllerToolbarButton: View {
+    @ObservedObject var controller: NS2LauncherController
+    @Binding var show: Bool
+    let simplifiedChinese: Bool
+
+    var body: some View {
+        Button { show.toggle() } label: {
+            HStack(spacing: 7) {
+                Circle().fill(Color(nsColor: controller.buttonColor)).frame(width: 7, height: 7)
+                Text(simplifiedChinese ? "手柄" : "Controller").font(.manrope(12.5, .semibold))
+            }
+        }
+        .buttonStyle(LauncherSecondaryButtonStyle())
+        .help("Switch 2 Pro：" + controller.buttonStatus)
+        .accessibilityLabel("Switch 2 Pro：" + controller.buttonStatus)
+        .accessibilityIdentifier("top.controller")
+        .popover(isPresented: $show, arrowEdge: .bottom) {
+            Switch2ProConnectionPopover(controller: controller, simplifiedChinese: simplifiedChinese)
+        }
     }
 }

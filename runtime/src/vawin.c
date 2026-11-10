@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
+#include <time.h>
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <mach/mach.h>
@@ -28,6 +29,8 @@
 #include <TargetConditionals.h>
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED   // 按 iOS SDK 编才有（Mac SDK 标成不可用）；t_ios_prewarm 在 Mac 上把 TARGET_OS_IPHONE 改成 1 编本文件，不能按它判
 #include <os/proc.h>   // os_proc_available_memory：客体内存文件后备的自动判定
+#else
+#include <dispatch/dispatch.h>   // Mac：系统内存压力监听（文件后备的安全阀，#306）
 #endif
 #include <crt_externs.h>
 #include <mach-o/dyld.h>
@@ -126,6 +129,42 @@ static uint64_t env_mb(const char *k, uint64_t def) { const char *v = getenv(k);
 static int g_ctr;
 static uint64_t g_ctr_pool;   // 多款容器：包内各款应用池的最大值（构造期还没选游戏，文件后备按最大的判）
 uint64_t s2a_window_container_pool(void) { return g_ctr_pool; }
+// Mac 开不开（纯函数，t_guest_file_auto 测；#306）：设了按设的（"0" 关、其余开）；没设 → ① 池本身大于「物理内存 − 预留」（room，0 = 读不到）就开：
+//   池放不进物理内存，第一局就要兜底，不等压力记录（PR #353，wwmogu）；② 否则本机本款上一局到过系统内存压力「严重」档才开（池装得下但实际挤爆的那种）。
+//   不加宿主开销估计、不看实测峰值：峰值含文件里已落块的客体字节，懒清零后只涨不降，开过一次就会一直判开（#353）
+int s2a_guest_file_wanted_mac(const char *e, uint64_t pool, uint64_t room, int pressed) {
+    if (e && *e) return strcmp(e, "0") != 0;
+    return (room && pool > room) || pressed;
+}
+// 压力记录：同 mem_peak 目录的 mem_pressure（存在 = 到过「严重」档；单测 / 诊断用 S2A_GUEST_PRESSURE_MARK 指定）。记下后一直有效：内存不够是这台机器跑这款的属性
+static int pressure_path(char *out, size_t n) {
+    const char *ov = getenv("S2A_GUEST_PRESSURE_MARK"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }
+    char p[1024]; if (!mem_peak_path(p, sizeof p)) return 0;
+    char *sl = strrchr(p, '/'); if (!sl) return 0; *sl = 0; snprintf(out, n, "%s/mem_pressure", p); return 1;
+}
+int s2a_guest_pressure_seen(void) { char p[1100]; struct stat st; return pressure_path(p, sizeof p) && !stat(p, &st); }
+static char g_pressure_path[1100];   // 起局时定（构造期按 npdm 程序号），压力回调里只写这一处
+// 记一次「严重」：写记录（只写一次）。压力回调调；单测直接调
+void s2a_guest_pressure_note(void) {
+    static int done; if (done) return;
+    if (!g_pressure_path[0] && !pressure_path(g_pressure_path, sizeof g_pressure_path)) { g_pressure_path[0] = 0; return; }
+    done = 1;
+    { char d[1100]; snprintf(d, sizeof d, "%s", g_pressure_path); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
+    FILE *f = fopen(g_pressure_path, "w"); if (f) { fprintf(f, "critical %ld\n", (long)time(NULL)); fclose(f); }
+    LOG("【黄】系统内存压力到「严重」档：已记下（%s），下一局本款自动开客体内存文件后备（#306 安全阀）", f ? "写成" : "写不了记录");
+}
+#ifndef __IPHONE_OS_VERSION_MIN_REQUIRED
+// Mac 匿名内存模式下监听系统内存压力（libdispatch，后台队列）；程序号未知（多款容器构造期）就不记
+static void guest_pressure_watch(void) {
+    if (!pressure_path(g_pressure_path, sizeof g_pressure_path)) { g_pressure_path[0] = 0; return; }
+    static dispatch_source_t src;
+    src = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_CRITICAL, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    if (!src) return;
+    dispatch_source_set_event_handler(src, ^{ if (dispatch_source_get_data(src) & DISPATCH_MEMORYPRESSURE_CRITICAL) s2a_guest_pressure_note(); });
+    dispatch_resume(src);
+}
+#endif
+static void guest_file_map(void);
 static void guest_file_attach_(void);
 static void guest_file_attach(void) { g_attach_phase = 1; guest_file_attach_(); g_attach_phase = 0; }
 static void guest_file_attach_(void) {
@@ -133,23 +172,14 @@ static void guest_file_attach_(void) {
     //   它是游戏能向系统要的内存总量（SetHeapSize 上限 = 池 − 映像），客体脏页最多涨到这么多；窗口跨度（几十 GB 地址）不是内存，堆区随池定，game.tsv 的 app_pool 是图形层的、要到图形初始化才读。
     //   按名字取（dlsym）：单测只链 vawin.c、不链 layout.c；取不到记 0（自动判定按装得下 = 关）
     const char *e = getenv("S2A_GUEST_FILE");
-    uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0, room = 0;
+    uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0;
     if (g_ctr && g_ctr_pool > pool) pool = g_ctr_pool;   // 多款容器：不按缺省池判，否则 Switch 2 款进局后内存超单进程上限被杀（#103）
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
-    room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
-#else
-    // Mac 没有单进程上限，但物理内存小时匿名内存会压进压缩器抖动：16 GB 机器跑 9 GB 池的款，压缩器占 11 GB、WindowServer 被看门狗杀、游戏约 1 帧 / 秒（#41 / #68）。
-    //   按物理内存减系统与其它 App 的预留当「剩余」：16 GB 跑 Switch 2 款开文件后备，大内存机器判装得下、行为不变
-    { uint64_t ph = 0; size_t phn = sizeof ph; uint64_t reserve = env_mb("S2A_GUEST_FILE_MAC_RESERVE_MB", 6144); if (!sysctlbyname("hw.memsize", &ph, &phn, NULL, 0) && ph > reserve) room = ph - reserve; }
-#endif
+    uint64_t room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
     // 宿主开销估计缺省 2560 MB（DOOM Eternal 实测约 2258 MB，往上取整）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     // 宿主开销估计缺省 2048 MB（11-07 真机实测分布，见 s2a_guest_file_wanted3）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     uint64_t host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen();
-#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
     int died = room && s2a_guest_run_died();
-#else
-    int died = 0;   // Mac 不按内存杀进程
-#endif
     int on = s2a_guest_file_wanted4(e, pool, room, seen, host, margin, died);
     const char *why = e && *e ? "按 S2A_GUEST_FILE 显式设定" : !room ? "自动：不知道单进程上限（Mac 会换页），缺省关"
                     : pool > room ? "自动：池本身大于剩余，装不下"
@@ -160,6 +190,28 @@ static void guest_file_attach_(void) {
     LOG("客体内存文件后备：%s——%s；本款应用内存池 %llu MB、离单进程内存上限还剩 %llu MB%s、本机本款实测峰值 %llu MB（0 = 没有）、宿主开销估计 %llu MB%s", on ? "开" : "关", why,
         (unsigned long long)(pool >> 20), (unsigned long long)(room >> 20), room ? "" : "（0 = 未知）", (unsigned long long)(seen == UINT64_MAX ? 0 : seen >> 20), (unsigned long long)(host >> 20), s2a_process_prewarmed() ? "；预热进程" : "");
     if (!on) return;
+    guest_file_map();
+#else
+    // Mac 缺省匿名内存，池本身放不进物理内存、或本机本款上一局到过系统内存压力「严重」档时开文件后备（s2a_guest_file_wanted_mac；#306 / #353）。
+    //   原先按「物理内存 − 6 GB」判（#41 / #68），16 GB 机器跑 Switch 2 款一律开，撞上 macOS 脏文件页上限：脏页过阈值后每缺一页都等内核写回一页，
+    //   阈值随物理内存缩放（16 GB Mac 逐页写共享文件映射，2.2 GB 后 1.5 → 26 µs/页 = SSD 写速；128 GB 机器写 8 GB 无拐点；匿名 0.7 µs/页）。
+    //   游戏内停 141 / 397 s、一局写盘 31 GB（#306 贡献者 M1 Pro 16 GB）。匿名内存只在真不够时由系统压缩 / 换出；真不够（#68：压缩器吃满、WindowServer 被杀）由压力记录兜住
+    {
+        uint64_t ph = 0, room = 0; size_t phn = sizeof ph, reserve = env_mb("S2A_GUEST_FILE_MAC_RESERVE_MB", 6144);
+        if (!sysctlbyname("hw.memsize", &ph, &phn, NULL, 0) && ph > reserve) room = ph - reserve;
+        int pressed = s2a_guest_pressure_seen(), on = s2a_guest_file_wanted_mac(e, pool, room, pressed);
+        LOG("客体内存文件后备：%s——%s；本款应用内存池 %llu MB、物理内存 − 预留 %llu MB", on ? "开" : "关",
+            e && *e ? "按 S2A_GUEST_FILE 显式设定" : room && pool > room ? "自动：池本身大于物理内存 − 预留，装不下"
+            : pressed ? "自动：本机本款上一局到过系统内存压力「严重」档" : "自动：Mac 缺省匿名内存（系统按需压缩 / 换出）",
+            (unsigned long long)(pool >> 20), (unsigned long long)(room >> 20));
+        if (!on) { guest_pressure_watch(); return; }
+        guest_file_map();
+        return;
+    }
+#endif
+}
+// 整段窗口换成临时文件的 MAP_SHARED 映射（判了开之后；iOS / Mac 共用）
+static void guest_file_map(void) {
     const char *td = getenv("TMPDIR"); char path[1024]; snprintf(path, sizeof path, "%s/s2a_guest_%d.bin", td && *td ? td : "/tmp", (int)getpid());
     // 起局前查闪存剩余空间（11-05 能耗线）：文件稀疏，只占内核写回的块，最坏涨到游戏弄脏的客体内存总量（Switch 2 是 12 GB）。
     //   不够就不接文件、照旧用匿名内存（等于开关关），打一行黄；门槛 S2A_GUEST_FILE_MIN_FREE_MB（缺省 12288）

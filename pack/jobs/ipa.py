@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from core import Failure, contained, read
+from core import Failure, contained, read, release_version
 import layout
 
 
@@ -130,6 +130,8 @@ def _iml_device_hint(c, tgt, gid):
 
 
 WIN_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "direct"), ("抽取 + 直连库", "ipa"))
+# 每步开头行「[时刻] 开始：步名」→ 这一步所属的段：一开始就切过去（社区贡献者补丁 #8：原先只认上一步收尾行，解包读完到播种结束前一直停在「解包 100%」）
+WIN_START_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "refresh"), ("抽取 + 直连库", "direct"), ("组工作根", "ipa"), ("ipa 收尾", "ipa"))
 
 
 def win_milestone(text):
@@ -137,6 +139,9 @@ def win_milestone(text):
     失败的步也打收尾行：原先照样进下一段，#244 / #269 的直连库失败被摘要报成「编 App 与签名」，把排查带偏"""
     if re.search(r"（rc=(?!0）)\d+）", text):
         return None
+    started = re.search(r"] 开始：(.+)$", text)
+    if started:
+        return next((stage for step, stage in WIN_START_MILESTONES if started.group(1).startswith(step)), None)
     return next((stage for step, stage in WIN_MILESTONES if f"] {step}：" in text), None)
 
 
@@ -266,8 +271,8 @@ def _build(c):
                 if watcher:
                     watcher.__exit__(None, None, None)
                 ms.enter(c, "ipa")
-            stage = win_milestone(text)   # Windows 一键出包：上一步成功收尾 = 进下一段
-            if stage:
+            stage = win_milestone(text)   # Windows 一键出包：这步开头 / 上一步成功收尾 = 进这一段（同一段不重复进，免得计时清零）
+            if stage and stage != getattr(c, "milestone", None):
                 ms.enter(c, stage)
         # 交付物 / 包号 / 画面模式从一键出包的事件流取（--events，最后一条 result；10-26 照上游 --progress json），不按人读完成行的字面抠
         events = c.logs / (c.task + "-ipa.events.jsonl")
@@ -334,9 +339,31 @@ def _build(c):
         done = inst.put_game(c, gid, inst.MacPhone(c, early.team, early.dev, early.udid), steps=False)
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(image), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
+    lib_ipa = refresh_library_ipa(c)
+    if lib_ipa:   # 完成页的「显示 .ipa」（两端都读结果里的 ipa）：指向刚组好的库根 S2Arm.ipa
+        result.update(ipa=str(lib_ipa), ipaBytes=lib_ipa.stat().st_size)
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
+
+
+def refresh_library_ipa(c):
+    """出 iPhone 包成功就把默认位置根 S2Arm.ipa 换成含游戏库里本版能用的全部各款的容器（#360）：原先它只在「装到 iPhone」成功后才更新，
+    只出包、自己用 SideStore / LiveContainer 侧载的玩家拿到的是旧包（或 0.1.x 迁移留下的单款包），出包完成页的「显示 .ipa」也不出现。
+    组装同装机（assemble，Mac ad-hoc / Windows 不签，侧载工具重签）、放置同装机（commit_phone_ipa：换了壳把旧的留作上一版）。
+    组装失败只警告：这款的 iPhone 版已经出好，不因为别的款连带判出包失败。→ 库根 S2Arm.ipa 路径 | None（没组）"""
+    sid = current_shell_id(c)
+    ready = [g["id"].upper() for g in c.catalog()["games"] if usable_kit(c, g["id"].upper(), sid)]
+    if not ready:
+        return None
+    c.begin("组装可直接侧载的 S2Arm.ipa（含 %d 款）" % len(ready))
+    try:
+        ipa, _, _ = assemble(c, None, ready)
+        commit_phone_ipa(c, ipa, sid)
+    except (Failure, OSError) as e:   # 组装出错（盘满、权限、容器件坏）都只警告
+        c.diagnostic("游戏库根目录的 S2Arm.ipa 这次没更新（" + str(e) + "）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。", code="job_failed", severity="warning")
+        return None
+    return layout.phone_ipa(c)
 
 
 CONTAINER_BUNDLE = "io.s2arm.games"   # 组装时的占位包名：Mac 装机换成团队专属的 io.s2arm.games.<团队>（install.container_bundle_id）；Windows 由 plumesign 按账号定
@@ -472,6 +499,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
+               "--version", release_version(c.engine),
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
