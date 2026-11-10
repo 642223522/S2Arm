@@ -81,9 +81,28 @@ else
   how=沿用; o=$(tz "$W")
   if [ "$(basename "$o")" != 010000000000080E ]; then mv "$o" "$o.up" && mv "$o.up" "$W/systemdata/010000000000080E" || { root_abort "$G" "$TAG"; echo "【红】时区目录改大写失败"; exit 1; }; how="沿用（目录名改大写）"; fi
 fi
+# 玩家目录可与产物根分卷。旧版 macOS 的 cp -c 跨卷会失败；同卷仍走产物根的克隆复制。
+copy_player_sysdata() {
+  local src_dev dst_dev
+  if [ "$(uname -s)" = Darwin ]; then src_dev=$(stat -f %d "$1") || return 1
+    dst_dev=$(stat -Lf %d "${2%/*}") || return 1
+    if [ "$src_dev" != "$dst_dev" ]; then
+      cp -p -R "$1" "$2" || return $?
+      return 0
+    fi
+  fi
+  _root_cp -R "$1" "$2"
+}
 while IFS=$'\t' read -r id src; do
   [ -n "$id" ] || continue
-  _root_rm "$W/systemdata/$id"; rm -f "$W/systemdata/$id.synth"; _root_cp -R "$src" "$W/systemdata/$id" || { root_abort "$G" "$TAG"; echo "【红】拷系统数据 $id 失败（${src}）"; exit 1; }
+  dst=$W/systemdata/$id
+  _root_rm "$dst"
+  rm -f "$dst.synth"
+  if ! copy_error=$(copy_player_sysdata "$src" "$dst" 2>&1); then
+    root_abort "$G" "$TAG"
+    echo "【红】拷系统数据 $id 失败：$(printf '%s' "$copy_error" | tr '\n' ' ')"
+    exit 1
+  fi
 done <<< "$CP"
 for id in $SY; do
   _root_rm "$W/systemdata/$id"; e=$(python3 "$H/sysdata_synth.py" "$id" "$W/systemdata/$id" 2>&1) && echo "合成：pack/sysdata_synth.py $id" > "$W/systemdata/$id.synth" \

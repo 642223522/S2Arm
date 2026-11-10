@@ -81,4 +81,35 @@ if [ "$(uname -s)" = Darwin ]; then
   o=$(PATH=$T/fakecp:$PATH FAKECP=both S fd 2>&1); r=$?
   ck "⑪b 两次都失败 → 退非 0、红行带两次原因（rc=${r}）" '[ $r != 0 ] && [[ "$o" == *"【红】拷字体失败："*"Cross-device link"*"普通复制："*"Permission denied"* ]]'
 fi
+# ⑫ 玩家系统数据跨卷：只模拟卷号和旧 Darwin 的克隆失败，普通复制走真 cp。
+if [ "$(uname -s)" = Darwin ]; then
+  mkdir -p "$T/fakesd" "$T/source with space/0100000000000801/subdir"
+  export TEST_SYSDATA="$T/source with space"
+  printf 'cross-volume' > "$TEST_SYSDATA/0100000000000801/subdir/sample.dat"
+  cat > "$T/fakesd/stat" <<'EOF'
+#!/bin/bash
+if [ "$#" = 3 ] && [ "$1" = -f ] && [ "$2" = %d ] && [ "$3" = "$TEST_SYSDATA/0100000000000801" ]; then
+  printf '0\n'
+else
+  exec /usr/bin/stat "$@"
+fi
+EOF
+  cat > "$T/fakesd/cp" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do last=$arg; done
+case "$last" in
+  */systemdata/0100000000000801)
+    if [ "$1" = -c ]; then printf 'cp: clonefile failed: Cross-device link\n' >&2; exit 1; fi
+    if [ "${TEST_SYSDATA_DENY:-0}" = 1 ]; then printf 'cp: Permission denied\n' >&2; exit 1; fi ;;
+esac
+exec /bin/cp "$@"
+EOF
+  chmod +x "$T/fakesd/stat" "$T/fakesd/cp"
+  mk sd 0100DADA00000000 99999999
+  o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$TEST_SYSDATA" S sd 2>&1); r=$?
+  ck "⑫a 系统数据跨卷 → 退 0、递归复制内容与来源相同（rc=${r}）" '[ $r = 0 ] && cmp -s "$(c sd)/systemdata/0100000000000801/subdir/sample.dat" "$TEST_SYSDATA/0100000000000801/subdir/sample.dat"'
+  mk sf 0100DADA00000001 aaaaaaaa
+  b=$(c sf); o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$TEST_SYSDATA" TEST_SYSDATA_DENY=1 S sf 2>&1); r=$?
+  ck "⑫b 跨卷复制被拒 → 退非 0、保留错误、现行不动（rc=${r}）" '[ $r != 0 ] && [[ "$o" == *【红】*拷系统数据*Permission\ denied* ]] && [ "$(c sf)" = "$b" ]'
+fi
 chmod -R u+w $T; rm -rf $T; [ $bad = 0 ] && echo "stage_sysdata 单测全过" || { echo "stage_sysdata 单测有不通"; exit 1; }
