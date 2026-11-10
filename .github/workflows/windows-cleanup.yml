@@ -8,12 +8,14 @@ on:
     paths:
       - .github/workflows/windows-cleanup.yml
       - pack/jobs/library.py
+      - pack/jobs/layout.py
       - pack/jobs/core.py
       - pack/jobs/tests/test_cleanup_links.py
   pull_request:
     paths:
       - .github/workflows/windows-cleanup.yml
       - pack/jobs/library.py
+      - pack/jobs/layout.py
       - pack/jobs/core.py
       - pack/jobs/tests/test_cleanup_links.py
   workflow_dispatch:
