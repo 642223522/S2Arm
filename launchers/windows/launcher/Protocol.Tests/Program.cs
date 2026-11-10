@@ -111,6 +111,7 @@ Check(report.Checks[1].Blocking, "reports without the field still block on anyth
 LibraryJobCases.Run(Check);
 LibraryFolderCases.Run(Check);
 PackCases.Run(Check);
+BackendTextCases.Run(Check);
 await WindowsLibraryCases.Run(Check);
 await WindowsProbeCases.Run(Check);
 await ControlPortCases.Run(Check);
