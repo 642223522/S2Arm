@@ -37,14 +37,14 @@ int s2a_ios_caps_value(const char *cap) {
 
 NSArray<NSDictionary *> *s2a_ios_graphics_options(void) {
     return @[
-        @{@"key": @"S2AResolutionScale", @"title": @"渲染分辨率", @"initial": @"1",
+        @{@"key": @"S2AResolutionScale", @"title": S2AL(@"gfx.resolution"), @"initial": @"1",
           @"values": @[@"0.5", @"0.75", @"1", @"1.5", @"2"], @"labels": @[@"0.5×", @"0.75×", @"1×", @"1.5×", @"2×"]},
-        @{@"key": @"S2AAntiAliasing", @"title": @"抗锯齿", @"initial": @"None",
-          @"values": @[@"None", @"SmaaMedium", @"SmaaHigh"], @"labels": @[@"关闭", @"SMAA 中", @"SMAA 高"]},
-        @{@"key": @"S2AScalingFilter", @"title": @"缩放滤镜", @"initial": @"Bilinear",
-          @"values": @[@"Bilinear", @"Nearest"], @"labels": @[@"双线性（平滑）", @"最近邻（像素清晰）"]},
-        @{@"key": @"S2AFrameRateLimit", @"title": @"帧率上限", @"initial": @"0",
-          @"values": @[@"30", @"60", @"120", @"0"], @"labels": @[@"30", @"60", @"120", @"不限"]}
+        @{@"key": @"S2AAntiAliasing", @"title": S2AL(@"gfx.antiAliasing"), @"initial": @"None",
+          @"values": @[@"None", @"SmaaMedium", @"SmaaHigh"], @"labels": @[S2AL(@"gfx.antiAliasing.off"), S2AL(@"gfx.antiAliasing.medium"), S2AL(@"gfx.antiAliasing.high")]},
+        @{@"key": @"S2AScalingFilter", @"title": S2AL(@"gfx.filter"), @"initial": @"Bilinear",
+          @"values": @[@"Bilinear", @"Nearest"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest")]},
+        @{@"key": @"S2AFrameRateLimit", @"title": S2AL(@"gfx.fpsLimit"), @"initial": @"0",
+          @"values": @[@"30", @"60", @"120", @"0"], @"labels": @[@"30", @"60", @"120", S2AL(@"gfx.fpsLimit.none")]}
     ];
 }
 

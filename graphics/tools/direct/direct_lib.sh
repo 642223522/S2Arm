@@ -335,14 +335,32 @@ BA=(--pkg "$W/merged/pkg" --profile "$P" --game "$BG" --chain "$V" --inputs "$BI
 #   调用方已把 TMP / TEMP / TMPDIR 指到本单工作盘（pack/orch/oneclick_win.py：Windows 出包机 / Windows 出包时指 <工作目录>/tmp，盘位按它登记）就沿用、在下面建本次的子目录：
 #   11-07 Windows 出包机两次出库 rc=127 = STATUS_DISK_FULL——常驻直连缓存在 T 盘，这里写死 $W/tmp 把几十 GB 临时文件拉回 T 盘，盘位登记里没有它，同时两单就写满。
 #   是系统缺省临时目录（Mac /var/folders、/tmp，Windows 用户 AppData\Local\Temp）才落 $W/tmp（原意：不让内置盘被写爆）
+# 出库 rc=127 怎么说（只在 Windows Git Bash 上说）：Windows 进程退出码经 Git Bash 只留低 8 位，127 可能是 0xC000007F（STATUS_DISK_FULL，11-07 Windows 出包机
+#   两次），也可能就是出库程序异常退出 127（11-09 维护方测试树诊断替换写错，dsh_batch 抛异常退 127，被一律译成盘满——T 盘还剩 127 GB，照着提示误删 37 GB 缓存）。
+#   判据：build.log 里有盘满原文 → 盘满；否则看临时目录 / 缓存所在盘余量，任一 < 2 GB 才说多半是盘满（带余量）；余量都够 → 明说不是盘满、看 build.log 末尾异常；
+#   有盘量不出余量（df 认不出路径）→ 两种都说、不下结论。
+#   余量 S2A_DISK_FREE_G（GB，单测注入，同 pack/jobs/space_rule.py）给了就用它。「不是盘满」那句不带系统盘满字样，错误分类（pack/jobs/errors.py）不会再归成 disk_full
+rc127_note() {   # rc127_note <rc> <build.log> <目录>… → 追加在报红行后的说明（可能为空）
+  local rc=$1 log=$2 d g gs= low= unk=; shift 2
+  [ "$rc" = 127 ] || return 0
+  case $(uname -s 2> /dev/null) in MINGW*|MSYS*|CYGWIN*) ;; *) return 0;; esac
+  if grep -aqiE 'not enough space on the disk|磁盘空间不足|No space left on device|ENOSPC|0x80070070|ERROR_DISK_FULL' "$log" 2> /dev/null; then
+    echo "；127 = 盘满（build.log 里有盘满原文，STATUS_DISK_FULL），看 $* 所在盘"; return 0; fi
+  for d; do
+    g=${S2A_DISK_FREE_G:-$(df -Pk "$d" 2> /dev/null | awk 'NR == 2 { printf "%.1f", $4 / 1048576 }')}
+    gs="${gs}${d} 剩 ${g:-?} GB、"; [ -n "$g" ] || unk=1; [ -n "$g" ] && awk -v g="$g" 'BEGIN { exit !(g + 0 < 2) }' && low=1
+  done
+  if [ -n "$unk" ] && [ -z "$low" ]; then echo "；rc=127 可能是盘满（Windows 盘满码的低 8 位），也可能是出库程序异常退出：余量量不全（${gs%、}），先看下面 build.log 末尾"
+  elif [ -n "$low" ]; then echo "；127 多半是盘满（STATUS_DISK_FULL 0xC000007F 低 8 位）：${gs%、}"
+  else echo "；rc=127 不是盘满（${gs%、}）：出库程序异常退出，看下面 build.log 末尾"; fi
+}
 BTX=; case "${TMPDIR:-}" in ''|/var/folders/*|/private/var/folders/*|/tmp|/tmp/*|/private/tmp|/private/tmp/*|*/AppData/Local/Temp|*/AppData/Local/Temp/*|*'\AppData\Local\Temp'*) BT=$W/tmp;;
   *) BT=${TMPDIR%/}/dsh_batch.$$; BTX=$BT;; esac
 mkdir -p "$BT"
 TMPDIR="$BT" "$PY" "$R/tools/nostall.py" --watch "$MS" --watch "$OUT" "${S2A_NOSTALL_S:-600}" -- "$PY" "$NX/../../translator/dsh_batch.py" build "${BA[@]}" > "$W/build.log" 2>&1
 brc=$?
-# Windows 进程退出码经 Git Bash 只留低 8 位：127 = 0xC000007F（STATUS_DISK_FULL），不是 bash 的「命令找不到」（11-07 Windows 出包机两次）
-DF=; [ "$brc" = 127 ] && case $(uname -s 2> /dev/null) in MINGW*|MSYS*|CYGWIN*) DF="；127 = 盘满（STATUS_DISK_FULL 0xC000007F 低 8 位），看临时目录 ${BT} 与缓存 ${C} 所在盘";; esac
-[ "$brc" = 0 ] || { [ "$brc" = 1 ] && gap "$W/build.log" "NVN 着色器"; say "🔴 出库失败 rc=${brc}（$W/build.log）${DF}"; tail -5 "$W/build.log"; exit 1; }
+DF=$(rc127_note "$brc" "$W/build.log" "$BT" "$C")
+[ "$brc" = 0 ] || { [ "$brc" = 1 ] && gap "$W/build.log" "NVN 着色器"; say "🔴 出库失败 rc=${brc}（$W/build.log）${DF}"; tail -"$([ -n "$DF" ] && echo 20 || echo 5)" "$W/build.log"; exit 1; }
 # 核产物出自本树的翻译器（11-06 时之笛第 49 版：DSH_BATCH_CMD 指到Windows 出包机上按旧树编的 dsh_batch.exe，它键里的翻译器指纹是旧的，41971 支全命中旧缓存，
 #   2ce17db8c 的翻译器改动没进包、出库照报绿）：dsh_batch 把自己的翻译器指纹 xfp 与 --lock 文件摘要写进库印章 inputs.tsv（Build.cs WriteStamp），
 #   这里拿本树算的 dmsh_chain.xlate_fp()（与 C# 编译期 Xfp 同一份清单、同一算法）与本树锁文件摘要逐项比，不等 / 印章没这两行（旧程序）报红。只核产物，不管出库命令经谁转手

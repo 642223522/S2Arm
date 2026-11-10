@@ -51,7 +51,7 @@ class Cancelled(Exception):
 def read(path, default=None):
     try:
         return json.loads(Path(path).read_text())
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):   # NotADirectoryError：路径中间一级是文件（遍历到 .DS_Store 再读 .DS_Store/game.json，#343）＝没有
         return default
 
 
@@ -155,6 +155,25 @@ def _sha256():
     return sha256_fast.new()
 
 
+def release_version(engine):
+    """S2Arm 发版号（三端同号：Mac 启动器、Windows 启动器、iPhone 容器都显示这一个，11-09 维护者）：
+    发布的引擎快照读打包时写进 engine.json 的 version；开发树取最近 tag 的数字段（v0.2.3-beta.1 → 0.2.3，同 Mac build_app）。取不到 → 空串"""
+    eng = Path(engine) / "engine.json"
+    if eng.is_file():
+        try:
+            v = json.loads(eng.read_text(encoding="utf-8")).get("version")
+            if isinstance(v, str) and v:
+                return v
+        except (OSError, ValueError):
+            pass
+    try:
+        tag = subprocess.run(["git", "-C", str(engine), "describe", "--tags", "--abbrev=0"], capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    m = re.match(r"v?(\d+(?:\.\d+)*)", tag)
+    return m.group(1) if m else ""
+
+
 def digest(path, progress=None):
     h = _sha256()
     done = 0
@@ -169,6 +188,7 @@ def digest(path, progress=None):
 
 
 def clone(source, destination, progress=None):
+    """→ True = 真克隆（APFS 共享块，不另占盘）；False = 退成了普通复制（跨卷 EXDEV、非 APFS、Windows）"""
     source, destination = Path(source), Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # macOS clonefile is an optimization, never part of the data format.
@@ -187,6 +207,7 @@ def clone(source, destination, progress=None):
                     progress(done, total)
     if progress:
         progress(source.stat().st_size, source.stat().st_size)
+    return copied
 
 
 def tree_hash(root, folders):
@@ -239,6 +260,29 @@ def _job_dirs(private):
     """读一条任务时依次找：当前的任务记录目录；库建好前退回私有目录写的（下一个作业开头 layout.adopt_private_logs 才收进库）；P3 之前的旧位置 <私有目录>/jobs"""
     private = Path(private).expanduser().resolve()
     return list(dict.fromkeys([jobs_dir(private), private / "logs" / "jobs", private / "jobs"]))
+
+
+IMPORT_RECORD_SOURCE_DIAGNOSTIC = 16_000    # 任务记录里每个来源的诊断上限（字符）：完整的在终态事件与按来源写的 inspect 日志里
+IMPORT_RECORD_DIAGNOSTICS_TOTAL = 200_000   # 任务记录里全部来源诊断的总上限：catalog 每次要读回最近 200 条任务记录，不能被一次大批导入撑大
+
+
+def record_sources(sources):
+    """逐来源导入结果写进任务记录的份：诊断每条截到 IMPORT_RECORD_SOURCE_DIAGNOSTIC（保留头尾），总量超 IMPORT_RECORD_DIAGNOSTICS_TOTAL
+    后其余来源只留 code / reason / status（诊断清空）"""
+    out, budget = [], IMPORT_RECORD_DIAGNOSTICS_TOTAL
+    for row in sources:
+        row = dict(row)
+        text = row.get("diagnostic") or ""
+        if len(text) > IMPORT_RECORD_SOURCE_DIAGNOSTIC:
+            marker = "\n…[已省略中间部分]…\n"
+            keep = IMPORT_RECORD_SOURCE_DIAGNOSTIC - len(marker)
+            text = text[:keep // 4] + marker + text[len(text) - (keep - keep // 4):]
+        if len(text) > budget:
+            text = ""
+        budget -= len(text)
+        row["diagnostic"] = text
+        out.append(row)
+    return out
 
 
 class Context:
@@ -773,16 +817,19 @@ class Context:
                 if reader_errors:
                     raise reader_errors[0]
                 self.check()
-                self.last_rc = p.returncode
-                if p.returncode not in ok_codes:
+                # 被信号结束的子进程（宿主崩溃处理写完现场后按默认处置重抛，系统才出 .ips）Python 给负数：折回 shell 口径 128 + 信号，
+                #   摘要、诊断、按退出码分类的地方照旧看到 139 / 134（runtime/src/crash.c crash_reraise）
+                rc = 128 - p.returncode if p.returncode < 0 and os.name != "nt" else p.returncode
+                self.last_rc = rc
+                if rc not in ok_codes:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=p.returncode, internal=failure.internal)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal)
                         raise failure
                     from errors import tool_reason
-                    message = f"{self.stage or '这一步'}失败（退出码 {p.returncode}）：{self.redact(tool_reason(self.last_log), limit=240)}"
-                    self.diagnostic(message, "tool_exit", exit_code=p.returncode)
+                    message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
+                    self.diagnostic(message, "tool_exit", exit_code=rc)
                     raise Failure(message, code="tool_exit")
             finally:
                 if p.poll() is None:
@@ -800,6 +847,8 @@ class Context:
     def finish(self, state, message, result=None):
         self.cancelled = False  # Allow the terminal event after cancellation.
         self.job.update(state=state, ended=time.time(), message=message)
+        if self.operation == "import" and "sources" in (result or {}) and self.r.get("partialResults") is True:
+            self.job["sources"] = record_sources(result["sources"])
         if (result or {}).get("outputPath"):
             self.job["outputPath"] = result["outputPath"]
         # 启动器重开后从任务记录恢复完成卡：IPA 路径 / 装到的设备 / 推了几个文件原先只在结果事件里，任务记录不存，
@@ -957,7 +1006,11 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
     if not jobs.is_dir():
         return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
     by_task = {}
-    for path in jobs.iterdir():
+    try:
+        listed = list(jobs.iterdir())
+    except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_private_logs）
+        return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
+    for path in listed:
         if path.is_symlink() or not path.is_file():
             continue
         if path.suffix not in (".json", ".jsonl"):
@@ -979,7 +1032,12 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
     records = {t: record(t) for t in by_task}
     finished = {t for t, r in records.items() if r.get("state") in TERMINAL_STATES or bool(r.get("ended"))}
     running = [t for t in by_task if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
-    newest = {t: max(p.stat().st_mtime for p in by_task[t]) for t in finished}
+    def mtime(p):   # 列完目录后被并发的作业搬走的文件：当作不在（不再整个作业失败）
+        try:
+            return p.stat().st_mtime
+        except FileNotFoundError:
+            return 0.0
+    newest = {t: max(mtime(p) for p in by_task[t]) for t in finished}
     finished_tasks = sorted(finished, key=lambda t: newest[t], reverse=True)
     floor, seen = set(), {}
     for task in finished_tasks:
@@ -996,7 +1054,7 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
             kept += 1
             continue
         files = by_task[task]
-        size = sum(p.stat().st_size for p in files)
+        size = sum(p.stat().st_size for p in files if p.exists())
         if not dry_run:
             for p in files:
                 p.unlink(missing_ok=True)

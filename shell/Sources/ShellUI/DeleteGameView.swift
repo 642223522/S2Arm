@@ -77,3 +77,20 @@ extension EnvironmentValues {
         set { self[ShellAskDeleteKey.self] = newValue }
     }
 }
+
+/// Long press on a library card: a menu with the game's settings and, where the library allows it, Delete game…
+/// (the same confirmation as the button at the bottom of the game's settings). Shared by the carousel and the portrait list.
+struct GameTileMenu: ViewModifier {
+    let detail: GameDetail
+    let select: (String) -> Void
+    let openSettings: () -> Void
+    @Environment(\.shellAskDelete) private var askDelete
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            Button { select(detail.id); openSettings() } label: { Label(ShellStrings.text("Game settings"), systemImage: "slider.horizontal.3") }
+            if let askDelete {
+                Button(role: .destructive) { askDelete(detail.game) } label: { Label(ShellStrings.text("Delete game…"), systemImage: "trash") }
+            }
+        }
+    }
+}

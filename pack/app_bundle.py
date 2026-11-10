@@ -196,6 +196,16 @@ def _destination(path, app):
     return dest
 
 
+def _set_display_name(strings, esc):
+    """<语言>.lproj/InfoPlist.strings 只换 / 补 CFBundleDisplayName 这一行：模板壳自带的同表其它键（本地网络 / 蓝牙权限说明的译文，#316）原样保留"""
+    line = f'"CFBundleDisplayName" = "{esc}";'
+    text = strings.read_text(encoding='utf-8') if strings.exists() else ''
+    pat = re.compile(r'^"CFBundleDisplayName"\s*=\s*"(?:[^"\\]|\\.)*";[ \t]*$', re.M)
+    if pat.search(text): text = pat.sub(lambda m: line, text)
+    else: text = (text if not text or text.endswith('\n') else text + '\n') + line + '\n'
+    strings.write_text(text, encoding='utf-8', newline='\n')
+
+
 def assemble(template_app, output_app, *, bundle_id, display_name, icon, metadata=None, localized_names=None):
     """Copy a read-only, previously verified unsigned template; atomically publish a new App."""
     if (not isinstance(bundle_id, str)
@@ -232,7 +242,7 @@ def assemble(template_app, output_app, *, bundle_id, display_name, icon, metadat
                 raise BundleError(f'本地化显示名不合法：{lang}={name!r}')
             esc = name.replace('\\', '\\\\').replace('"', '\\"')
             d = temp / f'{lang}.lproj'; d.mkdir(exist_ok=True)   # 模板壳自带同语言 .lproj（宿主界面字符串表 S2ArmHost.strings，#316）：并进去，不覆盖原表
-            (d / 'InfoPlist.strings').write_text(f'"CFBundleDisplayName" = "{esc}";\n', encoding='utf-8', newline='\n')
+            _set_display_name(d / 'InfoPlist.strings', esc)
         write_icons(icon, temp)
         _, copied = _tree(temp, unsigned=True)
         executable = _executable_paths(temp, copied)

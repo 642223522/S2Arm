@@ -132,10 +132,21 @@ namespace Ryujinx.Graphics.Nvdec.Vp9
                 {
                     try
                     {
+                        // S2Arm: tile decode can only go wide with several tile columns, but the loop filter
+                        // works on superblock rows (LfSync row/column sync), so it goes wide for any tile
+                        // layout. Upstream tied both to tileCols > 1, which kept single-column streams
+                        // (e.g. P4G's 1080p cutscenes) on one thread for the whole frame.
                         if (maxThreads > 1 && tileRows == 1 && tileCols > 1)
                         {
                             DecodeFrame.DecodeTilesMt(ref cm, new ArrayPtr<byte>(dataPtr, bitstream.Length), maxThreads);
+                        }
+                        else
+                        {
+                            DecodeFrame.DecodeTiles(ref cm, new ArrayPtr<byte>(dataPtr, bitstream.Length));
+                        }
 
+                        if (maxThreads > 1)
+                        {
                             LoopFilter.LoopFilterFrameMt(
                                 ref cm.Mb.CurBuf,
                                 ref cm,
@@ -147,8 +158,6 @@ namespace Ryujinx.Graphics.Nvdec.Vp9
                         }
                         else
                         {
-                            DecodeFrame.DecodeTiles(ref cm, new ArrayPtr<byte>(dataPtr, bitstream.Length));
-
                             LoopFilter.LoopFilterFrame(
                                 ref cm.Mb.CurBuf,
                                 ref cm,

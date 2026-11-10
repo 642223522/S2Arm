@@ -22,6 +22,10 @@ bad=0; for t in "${sel[@]}"; do
   new=$(comm -13 <(echo "$u0") <(untracked))
   if [ $rc = 0 ] && [ -z "$new" ]; then echo "通 ${t##*/}：$(grep -E '^Ran ' <<< "$o")"
   elif [ $rc = 0 ]; then echo "不通 ${t##*/}：跑完工作树里多了文件（单测要写临时目录）"; sed 's/^/    | /' <<< "$new" | head -5; bad=1
-  else echo "不通 ${t##*/}（rc=${rc}）"; tail -15 <<< "$o" | sed 's/^/    | /'; bad=1; fi
+  else echo "不通 ${t##*/}（rc=${rc}）"; tail -15 <<< "$o" | sed 's/^/    | /'
+    # 失败用例的完整报错进门禁日志（tools/gate.sh 收「  ┊」行最多 400 行，不受末尾 12 行截断；同 XCTest 点名 13d9383df）：
+    #   每个「ERROR: / FAIL: 用例名」起到 unittest 的分隔线为止（含调用栈），每份最多 80 行。11-09 test_saves 负载下红，日志只剩「FAILED (errors=1)」定不了因
+    awk '/^(ERROR|FAIL): /{on=1} on && /^-{20,}$/ && seen{on=0} on{print; seen=1} /^(ERROR|FAIL): /{seen=0}' <<< "$o" | head -80 | sed "s/^/  ┊ ${t##*/} /"
+    bad=1; fi
 done
 [ $bad = 0 ] && echo "pack/jobs 单测全过" || { echo "pack/jobs 单测有不通"; exit 1; }

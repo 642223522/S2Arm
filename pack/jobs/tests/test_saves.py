@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import os
+import shutil
 import stat
 import struct
 import subprocess
@@ -234,6 +235,75 @@ class SaveTests(unittest.TestCase):
         c = self.context(operation="saveRestore", path=str(self.archive), **self.preview())
         self.assertTrue(saves.restore(c)["committed"])
         self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-one")
+
+    def move_game_to_second_location(self):
+        """把这款搬到第二个存放位置（默认游戏库之外），返回那个位置的根"""
+        disk = self.directory / "disk2"
+        (disk / "games").mkdir(parents=True)
+        shutil.move(str(self.root.parent), str(disk / "games/TestGame"))
+        layout.register_location(self.context(), disk)
+        self.root = disk / "games/TestGame/saves"
+        self.assertEqual(layout.find_game(self.context(), GID), disk / "games/TestGame")
+        return disk
+
+    def test_restore_of_game_in_second_location_syncs_only_inside_that_location(self):
+        # 11-10 安装版 c341ca87 / M1 Max：一款游戏在第二存放位置，恢复存档停在「验证恢复条件」、进程占满一个核不结束（采样全在 open → fsync → close）。
+        # 根因：restore 把事务与备份目录的逐级同步终点写成默认游戏库 c.library，备份目录在游戏所在位置下，往上走不到 c.library，
+        #   到文件系统根后 parent 还是自己，sync_parents 不结束。
+        # 期望不跑被测实现就能定：恢复只在游戏所在位置里建目录，逐级同步的每个目录都是该位置的根或在它下面；走出去的第一步就判红（免得挂住整轮测试）
+        disk = self.move_game_to_second_location()
+        c = self.prepare_restore()
+        real, outside = saves.fsync_dir, []
+
+        def checked(path):
+            path = Path(path)
+            if path != disk and disk not in path.parents:
+                outside.append(path)
+                raise AssertionError("逐级同步走出了游戏所在的存放位置：%s" % path)
+            real(path)
+
+        with patch.object(saves, "fsync_dir", checked):
+            result = saves.restore(c)
+        self.assertEqual(outside, [])
+        self.assertTrue(result["committed"])
+        self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-one")
+        self.assertTrue(Path(result["previousBackup"]).is_relative_to(disk))
+        self.assertFalse((self.directory / "library/save-transactions").exists())
+
+    def test_backup_of_game_in_second_location_finishes_and_stays_out_of_that_location(self):
+        # 第二存放位置的款：备份照常写出；备份文件不许落进这款自己的存放位置（同默认游戏库那条，免得被当游戏数据一起搬 / 删）
+        disk = self.move_game_to_second_location()
+        self.assertTrue(Path(self.backup()["outputPath"]).is_file())
+        with self.assertRaises(Failure):
+            saves.backup(self.context(operation="saveBackup", path=str(disk / "inside.s2asave")))
+        self.assertFalse((disk / "inside.s2asave").exists())
+
+    def test_restore_checks_free_space_on_the_games_own_location(self):
+        # 暂存与恢复前副本写在这款的存放位置上：剩余空间要量那块盘，不是默认游戏库那块
+        disk = self.move_game_to_second_location()
+        c = self.prepare_restore()
+        seen, real = [], shutil.disk_usage
+        with patch.object(saves.shutil, "disk_usage", lambda p: (seen.append(Path(p)), real(p))[1]):
+            self.assertTrue(saves.restore(c)["committed"])
+        self.assertEqual(seen[0], disk)   # 恢复前预检；之后写恢复前副本时量的是副本目录，也在这个位置下
+        self.assertTrue(all(p == disk or disk in p.parents for p in seen), seen)
+
+    def test_sync_parents_refuses_a_root_that_is_not_an_ancestor(self):
+        # 终点不是起点的祖先：期望报错，不是在文件系统根上一直同步下去。同步次数上限手算 = 起点自己 + 它的全部祖先
+        start, calls = self.directory / "a/b", []
+        start.mkdir(parents=True)
+
+        def counted(path):
+            calls.append(Path(path))
+            if len(calls) > len(start.parents) + 1:
+                raise AssertionError("到文件系统根后仍在同步（第 %d 次：%s）" % (len(calls), path))
+
+        with patch.object(saves, "fsync_dir", counted):
+            with self.assertRaises(ValueError):
+                saves.sync_parents(start, self.directory / "elsewhere")
+            calls.clear()
+            saves.sync_parents(start, self.directory)
+        self.assertEqual(calls, [start, start.parent, self.directory])
 
     def test_empty_status_is_normal_and_backup_does_not_create_save_data(self):
         import shutil
@@ -737,6 +807,32 @@ class ExternalImportTests(unittest.TestCase):
         self.assertTrue(self.import_(src / "save_device")[0]["committed"])
         self.assertEqual((self.root / "bis/user/save/0000000000000002/0/device.bin").read_bytes(), b"device-new")
         self.assertEqual((self.root / PROGRESS).read_bytes(), b"account-new")
+
+    def test_nx2apple_folder_zip_and_save_folder_all_import(self):
+        # 11-09 实测：NX2Apple 存档拖 <游戏号>/ 能认，压缩包（外面多套一层）和直接拖 save/ 认不出——
+        #   save/ 顶层只有子文件夹时被当 JKSV 往下钻进第一个子文件夹；三种都要把整棵存档放进账户存档槽
+        self.put(saves.SAVE_INDEX, synthetic_index([(1, GID, 1, USER)]))
+        tree = {"save/Saved Games/Hades/Profile1.sav": b"nx-profile", "save/Data Records/.keep": b"", "save/Temp/t.bin": b"tmp"}
+        folder = self.community(GID.lower(), tree)
+        archive = self.directory / "nx2apple.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            for rel, data in tree.items():
+                z.writestr(GID.lower() + "/" + rel, data)
+        for i, src in enumerate((folder, archive, folder / "save")):
+            self.put("bis/user/save/0000000000000001/0/Saved Games/Hades/Profile1.sav", b"old-%d" % i)
+            self.assertTrue(self.import_(src)[0]["committed"], src)
+            slot = self.root / "bis/user/save/0000000000000001/0"
+            self.assertEqual((slot / "Saved Games/Hades/Profile1.sav").read_bytes(), b"nx-profile", src)
+            self.assertEqual((slot / "Temp/t.bin").read_bytes(), b"tmp", src)
+
+    def test_nx2apple_save_folder_goes_to_device_save_when_the_game_has_only_that(self):
+        # NX2Apple 引擎：游戏只有设备存档（如动森）时设备存档就放在 save/；按「只有设备存档就进设备存档」导入，不报没有存档位置
+        shutil.rmtree(self.root / "bis/user/save/0000000000000001", ignore_errors=True)
+        self.put(saves.SAVE_INDEX, synthetic_index([(2, GID, 3, "0" * 32)]))
+        self.put("bis/user/save/0000000000000002/0/device.bin", b"old-device")
+        src = self.community(GID.lower(), {"save/device.bin": b"device-new"})
+        self.assertTrue(self.import_(src)[0]["committed"])
+        self.assertEqual((self.root / "bis/user/save/0000000000000002/0/device.bin").read_bytes(), b"device-new")
 
     def test_zero_directory_judged_against_this_games_own_slot(self):
         # 10-27：社区存档唯一子目录 0/ —— 游戏自己的槽 0 顶层是 progress.bin → 0/ 是提交目录，剥掉；
