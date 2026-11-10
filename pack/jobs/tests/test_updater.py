@@ -76,7 +76,7 @@ class ApplyTests(Base):
         self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
         self.assertEqual(launches, ["new", "old"])
-        self.assertEqual(json.loads((self.private / "updates/last_failure.json").read_text())["code"], "update_rolled_back")
+        self.assertEqual(json.loads((self.private / "updates/last_failure.json").read_text(encoding="utf-8"))["code"], "update_rolled_back")
         self.assertEqual(self.data(), before)
 
     def test_swap_failure_keeps_old_version(self):
@@ -157,7 +157,7 @@ class ApplyTests(Base):
         with patch.object(updater, "retry_rename", rename), patch.object(Path, "rmdir", rmdir):
             self.assertEqual(self.run_apply(lambda install, args: None, health=0, exit_seconds=0), 1)
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
-        failure = json.loads((self.private / "updates/last_failure.json").read_text())
+        failure = json.loads((self.private / "updates/last_failure.json").read_text(encoding="utf-8"))
         self.assertEqual((failure["code"], failure["message"]), ("update_rolled_back", "新版没能启动，已回到旧版。"))
 
     def test_holds_copy_ignores_empty_leftovers(self):
@@ -208,7 +208,7 @@ class ApplyTests(Base):
         self.staged = self.root / "missing-staged"   # 这次替换必然失败
         launches = []
         self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
-        failure = json.loads((self.private / "updates/last_failure.json").read_text())
+        failure = json.loads((self.private / "updates/last_failure.json").read_text(encoding="utf-8"))
         self.assertEqual(failure["code"], "update_swap_failed")
         # 失败句说「已保留旧版」：盘上必须真有确认过能用的那一版
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
