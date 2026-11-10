@@ -245,12 +245,16 @@ int nvn_vk_readback_gpu(struct s2a_vk_device *d, const struct nvn_vk_tex *tex,
             return gpu_fail(why, why_size, "vkInvalidateMappedMemoryRanges failed: %d; refusing to hand out "
                                           "possibly stale readback bytes", (int)vr);
     }
+    // #398：D24 换成 D32 存储时深度面拷出来是 float，换回原 D24 深度面口径（低 24 位 UNORM）。
+    const int depth_f32_to_24 = aspect == VK_IMAGE_ASPECT_DEPTH_BIT && nvn_vk_format_substituted(tex->nvn_format);
     // 打包：staging 每层/切片按 staging_stride 对齐，行间紧排；dst 按 NVN 的 row/img 距离写入。
     for (uint32_t z = 0; z < p->nz; z++) {
         const uint8_t *src = (const uint8_t *)map + (size_t)z * p->staging_stride;
-        for (uint32_t y = 0; y < p->block_rows; y++)
-            memcpy(dst + (size_t)z * p->dst_img + (size_t)y * p->dst_row,
-                   src + (size_t)y * p->copy_row_bytes, p->copy_row_bytes);
+        for (uint32_t y = 0; y < p->block_rows; y++) {
+            uint8_t *row = dst + (size_t)z * p->dst_img + (size_t)y * p->dst_row;
+            memcpy(row, src + (size_t)y * p->copy_row_bytes, p->copy_row_bytes);
+            if (depth_f32_to_24) nvn_vk_depth_f32_to_24(row, p->copy_row_bytes / 4);
+        }
     }
     return 0;
 }

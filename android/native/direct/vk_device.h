@@ -39,6 +39,8 @@ struct s2a_vk_device {
     // native=optimal-tiling 有 SAMPLED_IMAGE；decode=要走 compute 解码（native 补集，force 时全 1）。
     uint32_t bc_native_mask;
     uint32_t bc_decode_mask;
+    // #398：深度格式替换位（NVN_VK_DEPTH_SUBST_*，nvn_vk_format.h）。0 = D24 原样可用。
+    uint32_t depth_subst_mask;
     int bc_decode_forced;   // S2A_VK_BC_DECODE=force（仅 debug 构建生效）
     // VK_EXT_external_memory_host：把 host 指针（guest 内存池直映射地址）导入成 VkBuffer 内存的零拷贝路径。
     // 只有驱动 advertise 且 debug.s2a.host_import=1 时才启用；未启用时行为与之前完全一致。
