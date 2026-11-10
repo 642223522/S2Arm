@@ -153,6 +153,15 @@ class Devpush:
         if rc: raise Fail(f"起 App 失败：{out.splitlines()[-1] if out else rc}")
 
 
+def launch_reason(out, rc):
+    """devicectl 拉 App 失败时挑最说明问题的一行：最后一条 NSLocalizedFailureReason（锁屏时是「…because the device was not, or could not be,
+    unlocked」，apply 据此判锁屏、等玩家解锁）；没有才取末行。11-10 测试设备锁屏实测：末行是「See 'devicectl device process launch --help'…」，
+    只取末行把锁屏原因丢了，玩家看到的是「没开开发者模式」那套说明、也不等解锁"""
+    lines = [l.strip() for l in (out or "").strip().splitlines() if l.strip()]
+    reasons = [l.split("=", 1)[1].strip() for l in lines if l.startswith("NSLocalizedFailureReason =")]
+    return ((reasons or lines or [str(rc)])[-1])[:300]
+
+
 class Devicectl:
     """Mac：xcrun devicectl（口径同 tools/dev_run.sh：一律用 devicectl 自带 --timeout，外层 timeout 只在它自己卡死时兜底；拷贝按大小定超时、挂了重试一次）。
     有 s2a-devpush + UDID 时流式写批次、核待解批完整性借它（手机只在 CoreDevice 无线隧道上、usbmuxd 看不到时那批退回 devicectl）"""
@@ -263,8 +272,11 @@ class Devicectl:
         return int(out) if re.fullmatch(r"\d+", out) else None
 
     def launch(self, env):
-        rc, out = self.dcp(120, "device", "process", "launch", "--device", self.device, "--terminate-existing", "--environment-variables", json.dumps(env), self.bid)
-        if rc: raise Fail(f"起 App 失败：{(out.strip().splitlines() or [str(rc)])[-1][:200]}（手机要解锁）")
+        # 没有环境变量就不带 --environment-variables：devicectl 收到 '{}' 直接拒（「Unable to decode environment variables」，11-10 测试设备实测），
+        #   多款容器拉起到游戏库（env 为空）在 Mac 上因此从来拉不起，不论锁没锁屏
+        envs = ["--environment-variables", json.dumps(env)] if env else []
+        rc, out = self.dcp(120, "device", "process", "launch", "--device", self.device, "--terminate-existing", *envs, self.bid)
+        if rc: raise Fail(f"起 App 失败：{launch_reason(out, rc)}")
 
     def nospc(self):   # 刚失败的那次拷贝是不是空间满（cp.log 末尾有 POSIX 28）
         try:
