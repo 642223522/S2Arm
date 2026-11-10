@@ -6,7 +6,7 @@
 # 期望（按规则手写）：
 #   ① 不设 GATE_LAYER：5 步全跑、无「另一层」行；② pre：a、y 不跑，3 / 3 绿，结论前「另一层：单测 y_test 钩子 a/gate.sh」
 #   ③ post：只跑 a、y，2 / 2 绿，「另一层」列语法、单测 x_test、钩子 b/gate.sh；④ GATE_LIST=1 三种同样按层过滤；⑤ GATE_LAYER 写错 → 退出 1
-#   ⑥ 本仓库声明：合入后 = graphics、tests/visual、android（改到 android/ 时合入前也跑）、launchers/macos 四个钩子 + iOS 全量编译，其余不在
+#   ⑥ 本仓库声明：合入后 = graphics、tests/visual、android（改到 android/ 时合入前也跑）、launchers/macos 四个钩子 + iOS 全量编译（改到 ios/ 时合入前也跑），其余不在
 # 反证：S2A_GATE_SH=<旧版 gate.sh> 跑本单测应红（旧版不认 GATE_LAYER：② a 照跑）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); bad=0; GS=${S2A_GATE_SH:-$H/tools/gate.sh}
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -35,7 +35,7 @@ ck "④ GATE_LIST 按层过滤（不设 ${l0} / pre ${l1} / post ${l2}）" '[ "$
 r=$(GATE_LAYER=later g o5)
 ck "⑤ GATE_LAYER 写错 → 退出 1（rc=${r}）" '[ $r = 1 ]'
 d=$(cd "$H" && python3 tools/gate_decl.py layer | tr '\n' '|')
-ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 android/gate.sh	合入后	android/|钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后|" ]'
+ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 android/gate.sh	合入后	android/|钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后	ios/|" ]'
 # ⑦ 显卡独占：单测文件头「# 门禁显卡：独占」→ 经 维护方工具 prio 跑（桩记 prio 名），普通单测不经（11-06 present_settings 被并行窗口抢焦点）
 printf '#!/bin/bash\n# 门禁显卡：独占\necho z >> %s/trace\n' "$T" > tests/z_test.sh
 mkdir -p $T/priv; printf '#!/bin/bash\n[ "$1" = prio ] && echo "prio $2" >> %s/prio; shift 4; exec "$@"\n' "$T" > $T/priv/mac_slot_frozen.sh; chmod +x $T/priv/mac_slot_frozen.sh; export S2A_PRIVATE_TOOLS=$T/priv
