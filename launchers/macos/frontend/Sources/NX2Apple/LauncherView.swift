@@ -25,6 +25,10 @@ struct LauncherView: View {
     @State var spaceFor: String?
     @State var moreFor: String?
     @State var saveFor: String?
+    /// 拖到卡片上的存档：随存档窗口一起打开、先检查（SaveManageSheet.source）
+    @State var saveDrop: URL?
+    /// 拖动经过的那张卡片（描边提示）
+    @State var dropCard: String?
     @State var displayFor: String?
     @State var inputFor: String?
     @State var deleteFor: GameSummary?
@@ -89,8 +93,8 @@ struct LauncherView: View {
         .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
             LaunchSettingsSheet(model: model, gameID: target.id, openInput: { inputFor = target.id }).environmentObject(loc)
         }
-        .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
-            SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)
+        .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id; if $0 == nil { saveDrop = nil } })) { target in
+            SaveManageSheet(model: model, gameID: target.id, source: saveDrop).environmentObject(loc)
         }
         .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: { inputFor = $0?.id })) { target in
             InputSettingsSheet(model: model, gameID: target.id).environmentObject(loc)
