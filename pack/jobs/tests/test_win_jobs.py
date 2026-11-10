@@ -306,6 +306,7 @@ class WinInstall(unittest.TestCase):
         res = self.go(w)
         self.assertEqual(seen, [("资源包已传完，还差最后一步：打开 App", {"code": "manual_unpack_required", "severity": "warning"})])
         self.assertEqual(res["packFiles"], 787)
+        self.assertEqual(res["unpackPending"], "资源包已传完，还差最后一步：打开 App")   # 结果带还差的一步（11-09 #336）
 
     def test_device_choice_errors(self):
         for devs, want in (([("U1", "USB", 3), ("U2", "USB", 4)], None), ([], None), ([("U1", "USB", 3)], "U9")):

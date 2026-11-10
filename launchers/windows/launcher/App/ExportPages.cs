@@ -118,7 +118,7 @@ public sealed partial class EnvironmentWindow
     private Button? PhonePill()
     {
         if (installGameId is null || (!installBusy && installSeen) || (page == "install" && SelectedGame?.Id == installGameId)) return null;
-        var key = installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : "install.pill.failed";
+        var key = installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed";
         var text = T(key).Replace("{0}", installGameName ?? installGameId);
         if (installBusy && installDone is { } d && installTotal is { } t && t > 0) text += " · " + (100 * d / t) + "%";
         var pill = new Button { Content = text, Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(16),
@@ -1120,7 +1120,7 @@ public sealed partial class EnvironmentWindow
         {
             // 正在装 / 刚装完的是另一款：这里不画它的进度（原先会画到当前这款上），给一个回去的入口
             var other = new StackPanel { Spacing = 8 };
-            other.Children.Add(Muted(T(installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : "install.pill.failed").Replace("{0}", installGameName ?? installGameId)));
+            other.Children.Add(Muted(T(installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed").Replace("{0}", installGameName ?? installGameId)));
             other.Children.Add(Action("install.pill.open", OpenPhoneJob));
             body.Children.Add(Card(other));
         }
@@ -1130,7 +1130,7 @@ public sealed partial class EnvironmentWindow
             var state = new StackPanel { Spacing = 8 };
             state.Children.Add(Label(T(installState switch
             {
-                "running" => "install.running", "succeeded" => "install.done", "cancelled" => "progress.cancelled",
+                "running" => "install.running", "succeeded" => "install.done", "needsPlayer" => "install.needs_player", "cancelled" => "progress.cancelled",
                 "invalid" => "library.invalid_result", _ => "install.failed"
             }), 18));
             if (installBusy)
@@ -1186,6 +1186,9 @@ public sealed partial class EnvironmentWindow
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;
+            // 资源传完但电脑没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不显示「已装到 iPhone」，显示还差的一步和原因 / 办法
+            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("unpackPending", out var pending) && pending.ValueKind == JsonValueKind.String)
+            { installState = "needsPlayer"; installMessage = pending.GetString() ?? ""; }
             installDiagnostics = JobDiagnostics(job);
         }
         catch (LibraryProtocolException error) { installState = "invalid"; installDiagnostics = error.Message; }
