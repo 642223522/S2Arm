@@ -48,8 +48,8 @@ class Base(unittest.TestCase):
         for name, value in (("latest_cache", lambda platform, current: self.root / "latest-cache.json"), ("LATEST_TTL", 0)):
             p = patch.object(updater, name, value); p.start(); self.addCleanup(p.stop)
 
-    def data(self):
-        return {k: v for k, v in tree(self.private).items() if not k.startswith("updates")}
+    def data(self):   # 玩家数据：更新自己的记录（updates/、换版失败记进的 logs/update.log）不算
+        return {k: v for k, v in tree(self.private).items() if not k.startswith(("updates", "logs"))}
 
 
 class ApplyTests(Base):
@@ -82,9 +82,9 @@ class ApplyTests(Base):
     def test_swap_failure_keeps_old_version(self):
         real, calls = os.rename, []
 
-        def flaky(source, target):
+        def flaky(source, target):   # 新版的东西放不进安装位置：整目录改名、逐项改名（move_dir 的退路）都被拒
             calls.append(target)
-            if str(target) == str(self.install) and len(calls) == 2:
+            if ".s2arm-new" in str(source) and (Path(target) == self.install or Path(target).parent == self.install):
                 raise PermissionError(13, "locked")
             real(source, target)
         launches = []
@@ -92,6 +92,37 @@ class ApplyTests(Base):
             self.assertEqual(self.run_apply(lambda i, a: launches.append((i / "S2Arm.exe").read_text())), 1)
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
         self.assertEqual(launches, ["old"])
+
+    def test_install_folder_held_open_swaps_its_contents(self):
+        # #379：下载工具持有安装目录本身的句柄，整目录改名一直被拒、里面的文件能改名 → 逐项换上新版，确认起来后旧副本删掉
+        real = os.rename
+        def held(source, target):
+            if Path(source) == self.install:
+                raise PermissionError(32, "being used by another process")
+            real(source, target)
+        with patch.object(updater.os, "rename", held), patch.object(updater.time, "sleep", lambda s: None), \
+             patch.object(updater.time, "monotonic", side_effect=iter(range(0, 10**6, 100)).__next__):
+            self.assertEqual(self.run_apply(self.healthy), 0)
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "new")
+        self.assertTrue((self.install / "Engine").is_dir())
+        self.assertFalse(self.install.with_name("S2Arm.s2arm-old").exists())
+
+    def test_held_folder_and_a_locked_file_rolls_every_entry_back(self):
+        # 逐项换到一半有文件也被占（残留的作业进程开着它）：已搬走的全部搬回，旧版原样，失败原因记进 update.log
+        real = os.rename
+        def held(source, target):
+            if Path(source) == self.install or Path(source) == self.install / "S2Arm.exe":
+                raise PermissionError(32, "being used by another process")
+            real(source, target)
+        with patch.object(updater.os, "rename", held), patch.object(updater.time, "sleep", lambda s: None), \
+             patch.object(updater.time, "monotonic", side_effect=iter(range(0, 10**6, 100)).__next__):
+            self.assertEqual(self.run_apply(self.healthy), 1)
+        self.assertEqual(((self.install / "S2Arm.exe").read_text(), sorted(p.name for p in self.install.iterdir())), ("old", ["Engine", "S2Arm.exe"]))
+        self.assertIn("update_swap_failed", (self.private / "logs/update.log").read_text(encoding="utf-8"))
+
+    def test_rollback_reason_is_kept_in_update_log(self):   # #379：last_failure.json 启动器读完就删，原因还要留在诊断包会收的日志里
+        self.assertEqual(self.run_apply(lambda i, a: None), 1)
+        self.assertIn("update_rolled_back", (self.private / "logs/update.log").read_text(encoding="utf-8"))
 
     def test_app_that_does_not_exit_is_left_alone(self):
         result = updater.apply(self.staged, self.install, os.getpid(), self.private, launch=self.fail, exit_seconds=0)
