@@ -1734,6 +1734,9 @@
   "s2arm.cloud.conflict.local": "Use this Mac's save ({0})",
   "s2arm.cloud.conflict.remote": "Use the save from {0} ({1}, {2})",
   "s2arm.cloud.conflict.later": "Not now",
+  "s2arm.cloud.error.notDownloaded": "iCloud hasn't downloaded {0} to this device yet, so your save wasn't changed. Connect to the internet, wait a moment, and try again.",
+  "s2arm.cloud.error.corrupt": "{0} in iCloud is incomplete, so your save wasn't changed. Sync again on the other device.",
+  "s2arm.cloud.error.writeBack": "Switched to the progress from {0}, but couldn't write it back to iCloud ({1}). The save itself is fine; the next sync will write it again.",
   "s2arm.cloud.failed": "iCloud saves didn't sync: {0}",
   "s2arm.cloud.syncing": "Syncing iCloud saves…",
   "s2arm.cloud.busyAfterSync": "Another task started during the sync, so the game didn't start. Click Play again when it finishes"

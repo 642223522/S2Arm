@@ -20,8 +20,12 @@ iOS「设置」App 的 S2Arm 页 Root.plist 原文英文、zh-Hans.lproj/Root.st
      显示路径（DISPLAY_CALLS 的调用参数、DISPLAY_FUNCS 的函数体）里不许再有中文 C 字面量
   ⑪ 存档服务层（services/S2A.Services/SaveTransfer*.cs）玩家看得到的说明：除 stderr 日志外，每个中文字面量都是 T("中文", "English") 的第一参，
      英文非空、不含中文；同一句中文全仓只对应一句英文
+  ⑫ iOS 游戏库 / iCloud 同步页（shell/Sources/S2ArmShellHost/*.swift，我方代码）：除日志（NSLog / print）与 SHELL_IDENT 登记的串外，没有中文字面量；
+     代码里 shellText("…") 的键（字符串插值按 %@ 算）与设置行标签（S2ArmGameSettings 的 title / label / note / SettingOption 标签，ShellUI 按英文原文查表）
+     在 ShellUI 的 Localizable.xcstrings 里都有非空的 en 与 zh-Hans、en 就是键本身、两种语言占位符一致、zh-Hans 里有中文；
+     共享 SaveSync（launchers/shared/SaveSync）源码不带中文句子；Mac 启动器 s2arm.cloud.error.* 三个键中英都有、{n} 占位一致、代码都用到
 """
-import os, pathlib, plistlib, re, shutil, subprocess, sys
+import json, os, pathlib, plistlib, re, shutil, subprocess, sys
 
 H = pathlib.Path(__file__).resolve().parents[1]
 SRCS = ['ios/vpad.m', 'ios/vpad_settings.m', 'ios/vpad_layout.m', 'ios/vpad_cheats.m', 'ios/vpad_shell.m', 'ios/cpatch_settings.m', 'ios/cpatch_model.m',
@@ -62,10 +66,20 @@ IDENT_C = {
 }
 UI_TEXT_H = 'runtime/include/s2a_ui_text.h'
 UI_USERS = ['runtime/src/pack_apply.c', 'runtime/src/qladder_host.c', 'runtime/src/ap_host.c', 'runtime/src/hud.c']
-UI_STRONG = {'ios/app.m': 's2a_l10n_zh()', 'macos/front_mac.m': 'preferredLocalizations'}
+UI_STRONG = {'ios/app.m': 's2a_l10n_zh()', 'macos/front_mac.m': 'NSLocale.preferredLanguages'}   # iOS 按 App 本地化；Mac 宿主不带 .lproj，按系统首选语言
 DISPLAY_CALLS = {'runtime/src/pack_apply.c': {'s2a_ios_show_notice', 's2a_ios_show_pack_help'}, 'runtime/src/qladder_host.c': {'s2a_ios_ladder_note'}}
 DISPLAY_FUNCS = {'runtime/src/pack_apply.c': ['s2a_pack_help_detail', 'help_title', 'gate_show'], 'runtime/src/ap_host.c': ['stall_note'], 'runtime/src/hud.c': ['s2a_hud_brief']}
 SAVE_CS = 'services/S2A.Services'
+SHELL_DIR = 'shell/Sources/S2ArmShellHost'
+SHELL_XCSTRINGS = 'shell/Sources/ShellUI/Resources/Localizable.xcstrings'
+SHELL_LOG_CALLS = {'NSLog', 'print'}
+SHELL_IDENT = {   # 文件 → {中文字面量开头: 不改的理由}
+    'Catalogue.swift': {s: 'Catalogue.problems：清单读不了 / 坏了的原因，只进 NSLog（S2ArmShellHostModel 打日志，shell/UPSTREAM.md「问题只进日志」）'
+                        for s in ('清单读不了：', '清单 JSON 坏了：', '清单 schema ', '重复的 title_id ', 'title_id \\"')},
+}
+SAVESYNC_DIR = 'launchers/shared/SaveSync/Sources/SaveSync'
+MAC_L10N = {'zh': 'launchers/macos/frontend/l10n/zh.json', 'en': 'launchers/macos/frontend/l10n/en.json'}
+MAC_CLOUD_SRC = 'launchers/macos/frontend/Sources/NX2Apple/S2ArmLauncherModel+CloudSaves.swift'
 EN_CJK = {k: '照写真实的「<游戏名>资源包」文件夹名（Mac 启动器交付的目录就叫这个，pack/jobs/ipa.py），译掉玩家就找不到' for k in ('notice.packFolder', 'notice.step.drag', 'app.library.packMissing')}
 CJK = re.compile('[㐀-䶿一-鿿　-〿！（），：；？]')
 PH = re.compile(r"%%|%(?:(\d+)\$)?([-+ #0']*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|q|L|z|j|t)?[@dDuUxXoOfeEgGcCsSpaAF])")
@@ -287,7 +301,7 @@ weak = r'__attribute__\(\(weak\)\)\s*int\s+s2a_ui_zh\(void\)\s*\{\s*return 1;\s*
 nweak = [rel for rel in UI_USERS if 'S2A_UI(' in (H / rel).read_text(encoding='utf-8') and not re.search(weak, (H / rel).read_text(encoding='utf-8'))]
 ck(f'⑩ 用 S2A_UI 的 {len(UI_USERS)} 个 .c 各带 s2a_ui_zh 弱缺省（返回 1 = 中文）', not nweak, ' '.join(nweak))
 nstrong = [rel for rel, how in UI_STRONG.items() if not re.search(r'^int s2a_ui_zh\(void\) \{[^\n]*' + re.escape(how), (H / rel).read_text(encoding='utf-8'), re.M)]
-ck('⑩ iOS（ios/app.m）与 Mac（macos/front_mac.m）各有 s2a_ui_zh 强定义、按 App 语言判', not nstrong, ' '.join(nstrong))
+ck('⑩ iOS（ios/app.m，App 语言）与 Mac（macos/front_mac.m，系统首选语言）各有 s2a_ui_zh 强定义', not nstrong, ' '.join(nstrong))
 dbad = []
 for rel, calls in DISPLAY_CALLS.items():
     for lit, line, cs in objc_literals((H / rel).read_text(encoding='utf-8'), objc=False):
@@ -323,6 +337,69 @@ bridge = re.findall(r'save_internal\\",\\"message\\":\\"((?:[^"\\]|\\.)*?)\\"', 
 ck(f'⑪ 存档服务层 {sum(len(v) for v in cs_pairs.values())} 句说明都经 T(中文, 英文)、英文无中文（stderr 日志除外）', not cs_bad and len(cs_pairs) > 50, '；'.join(cs_bad[:6]))
 ck('⑪ 同一句中文只对应一句英文', all(len(v) == 1 for v in cs_pairs.values()), '；'.join(k[:16] for k, v in cs_pairs.items() if len(v) > 1))
 ck('⑪ 桥接失败兜底 JSON 中英各一份（按 SaveTransfer.English 选）', len(bridge) == 2 and CJK.search(bridge[1]) and not CJK.search(bridge[0]) and 'SaveTransfer.English ?' in exp, str(bridge))
+
+# ⑫ 游戏库 / iCloud 同步页（Swift）
+def swift_literals(text):
+    """跳过注释，返回 (字面量原文, 行号, 外层调用名集合)；插值 \\( … ) 里的嵌套字面量不单列（整句算一条）"""
+    out, stack, i, n, line = [], [], 0, len(text), 1
+    while i < n:
+        c = text[i]
+        if c == '\n': line += 1; i += 1
+        elif text.startswith('//', i): i = text.find('\n', i) if '\n' in text[i:] else n
+        elif text.startswith('/*', i): j = text.find('*/', i + 2); j = n if j < 0 else j + 2; line += text.count('\n', i, j); i = j
+        elif c == '"':
+            j, depth = i + 1, 0
+            while j < n:
+                if text.startswith('\\(', j): depth += 1; j += 2; continue
+                if depth and text[j] == '(': depth += 1
+                elif depth and text[j] == ')': depth -= 1
+                elif text[j] == '\\': j += 2; continue
+                elif text[j] == '"' and not depth: break
+                j += 1
+            out.append((text[i + 1:j], line, {s for s in stack if s})); i = j + 1
+        elif c == '(':
+            m = re.search(r'([A-Za-z_]\w*)\s*$', text[max(0, i - 64):i]); stack.append(m.group(1) if m else ''); i += 1
+        elif c == ')':
+            if stack: stack.pop()
+            i += 1
+        else: i += 1
+    return out
+def swift_key(lit):   # shellText 的键：插值按 %@，转义还原
+    s = re.sub(r'\\\((?:[^()]|\([^()]*\))*\)', '%@', lit)
+    return re.sub(r'\\(.)', r'\1', s)
+xc = json.loads((H / SHELL_XCSTRINGS).read_text(encoding='utf-8'))['strings']
+def xval(k, lang): return ((xc.get(k) or {}).get('localizations', {}).get(lang) or {}).get('stringUnit', {}).get('value', '')
+shbad, shkeys, seen_sh = [], set(), set()
+for f in sorted((H / SHELL_DIR).glob('*.swift')):
+    src = f.read_text(encoding='utf-8')
+    for lit, line, calls in swift_literals(src):
+        if 'shellText' in calls and not calls & SHELL_LOG_CALLS and re.search(r'shellText\(\s*"' + re.escape(lit) + '"', src): shkeys.add(swift_key(lit))
+        if not CJK.search(lit) or calls & SHELL_LOG_CALLS: continue
+        hit = [p for p in SHELL_IDENT.get(f.name, {}) if lit.startswith(p)]
+        if hit: seen_sh |= {(f.name, p) for p in hit}; continue
+        shbad.append(f'{f.name}:{line} "{lit[:24]}"')
+gs = (H / SHELL_DIR / 'S2ArmGameSettings.swift').read_text(encoding='utf-8')
+setting_keys = set(re.findall(r'\b(?:title|label|note): "([^"\\]+)"', gs)) | set(re.findall(r'SettingOption\([^,()]+, "([^"\\]+)"\)', gs))
+for pair in re.findall(r'SettingOption\("[^"]+", [^()"]*\? "([^"\\]+)" : "([^"\\]+)"\)', gs): setting_keys |= set(pair)   # SettingOption("current", 已自定义 ? "…" : "…")
+ck(f'⑫ 游戏库 Swift（{len(list((H / SHELL_DIR).glob("*.swift")))} 个文件）没有显示用中文字面量', not shbad, '；'.join(shbad[:8]))
+shstale = [f'{fn} "{p}"' for fn, d in SHELL_IDENT.items() for p in d if (fn, p) not in seen_sh]
+ck(f'⑫ 游戏库豁免 {sum(map(len, SHELL_IDENT.values()))} 条都还在代码里', not shstale, '；'.join(shstale))
+allk = shkeys | setting_keys
+miss = sorted(k for k in allk if not (xval(k, 'en') and xval(k, 'zh-Hans')))
+ck(f'⑫ 用到的 {len(shkeys)} 个 shellText 键、{len(setting_keys)} 个设置行标签在 xcstrings 里都有 en 与 zh-Hans', bool(shkeys) and bool(setting_keys) and not miss, ' | '.join(miss[:6]))
+bad_en = sorted(k for k in allk if xval(k, 'en') and xval(k, 'en') != k)
+ck('⑫ 这些键的 en 值就是键本身（键 = 英文原文）', not bad_en, ' | '.join(bad_en[:6]))
+bad_ph = sorted(k for k in allk if xval(k, 'zh-Hans') and placeholders(xval(k, 'en')) != placeholders(xval(k, 'zh-Hans')))
+ck('⑫ 中英格式占位符一致', not bad_ph, ' | '.join(bad_ph[:6]))
+bad_zh = sorted(k for k in allk if xval(k, 'zh-Hans') and not CJK.search(xval(k, 'zh-Hans')) and k not in ('60 FPS',))
+ck('⑫ zh-Hans 值是中文译文', not bad_zh, ' | '.join(bad_zh[:6]))
+ss = [f'{f.name}:{line}' for f in sorted((H / SAVESYNC_DIR).glob('*.swift')) for lit, line, calls in swift_literals(f.read_text(encoding='utf-8')) if CJK.search(lit) and not calls & SHELL_LOG_CALLS]
+ck('⑫ 共享 SaveSync 源码不带中文句子（文字归显示端）', not ss, ' '.join(ss))
+mac = {lang: json.loads((H / rel).read_text(encoding='utf-8')) for lang, rel in MAC_L10N.items()}
+mk_keys = ['s2arm.cloud.error.notDownloaded', 's2arm.cloud.error.corrupt', 's2arm.cloud.error.writeBack']
+msrc = (H / MAC_CLOUD_SRC).read_text(encoding='utf-8')
+ck('⑫ Mac s2arm.cloud.error.* 中英都有、{n} 占位一致、代码都用到', all(k in mac['zh'] and k in mac['en'] and sorted(re.findall(r'\{\d\}', mac['zh'][k])) == sorted(re.findall(r'\{\d\}', mac['en'][k]))
+   and CJK.search(mac['zh'][k]) and not CJK.search(mac['en'][k]) and f'"{k}"' in msrc for k in mk_keys), ' '.join(k for k in mk_keys if k not in mac['zh'] or k not in mac['en'] or f'"{k}"' not in msrc))
 
 fails = results.count(False)
 print(f'{"✓" if not fails else "✗"} ios_l10n：{len(results)} 项断言，{fails} 项不通（扫 {len(SRCS)} 个 .m、代码用 {len(used)} 个键、设置页 {len(texts)} 条文字）')

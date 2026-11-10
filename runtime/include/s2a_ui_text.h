@@ -1,6 +1,6 @@
 // 跨平台 C 层（runtime/src）递给宿主界面显示的文字（#316）：中文原宏 + 英文 <宏>_EN，显示处用 S2A_UI(宏) 按界面语言取一种。
 //   界面语言由平台给：s2a_ui_zh() 1 = 中文。iOS 强定义在 ios/app.m（同 ios/s2a_l10n.h s2a_l10n_zh：主 bundle 首选本地化以 zh 开头）、
-//   Mac 在 macos/front_mac.m（同一判据）；用到它的 .c 各自带一份返回 1 的弱缺省（同 dm_thermal_now 的写法），别的平台 / 只链单个 .c 的单测保持中文。
+//   Mac 在 macos/front_mac.m（Mac 宿主不带 .lproj，按系统首选语言）；用到它的 .c 各自带一份返回 1 的弱缺省（同 dm_thermal_now 的写法），别的平台 / 只链单个 .c 的单测保持中文。
 //   日志、诊断里给开发者看的串不进这里。每个文案宏都要有 _EN、显示处只许经 S2A_UI 取，由 tests/ios_l10n_test.sh 核
 #pragma once
 #ifdef __cplusplus
