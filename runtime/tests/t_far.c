@@ -20,6 +20,7 @@ static void on_fault(int sig, siginfo_t *si, void *ctx) {
     g_refused = 1; siglongjmp(g_jb, 1);
 }
 int main(void) {
+    setenv("S2A_FAR_LINEAR", "0", 1);   // 以下老用例测分块影子（iOS 的走法：影子放堆区、堆区不够改占宿主任意地址）；线性影子（Mac）在末尾单测
     const uint64_t MB = 1ull << 20, SPAN = 16 * MB;
     // 影子区：布局给的堆区（窗口里的不可访问保留，这里自己占 64 MiB，没有堆）；远端：只取地址、不预先映射，s2a_far_set 自己把空洞占成不可访问
     const uint64_t SH = 64 * MB; uint8_t *sraw = mmap(NULL, SH + 2 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -184,6 +185,24 @@ int main(void) {
         if (ob != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), ob);
         EQ("新块放不开：已分块那页退回不可访问", 0, (uint64_t)p); }
       EQ("中途放不开用例退休", 0, s2a_far_session_reset()); munmap(sr, 10 * MB); }
+    // #419：游戏地址相邻、分两次映射的两块，显存池跨这两次映射时影子必须连续（nvn_mtl.m pool_host 整池建零拷贝缓冲）
+    {   const uint64_t A = G + 4 * MB;   // 两次请求：[A, A+2M) 与 [A+2M, A+4M)；池 [A+1M, A+3M) 跨界
+        setenv("S2A_FAR_LINEAR", "0", 1); s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
+        EQ("分块（负对照）：第一次请求", 0, s2a_far_map(A, 2 * MB)); EQ("分块（负对照）：第二次请求", 0, s2a_far_map(A + 2 * MB, 2 * MB));
+        EQ("分块（负对照）：跨两次映射的池影子不连续（#419 现场）", 0, s2a_far_g2h(A + 3 * MB - 0x4000) == s2a_far_g2h(A + MB) + 2 * MB - 0x4000);
+        EQ("分块退休", 0, s2a_far_session_reset());
+        setenv("S2A_FAR_LINEAR", "1", 1); s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
+        EQ("线性：第一次请求", 0, s2a_far_map(A, 2 * MB)); EQ("线性：第二次请求", 0, s2a_far_map(A + 2 * MB, 2 * MB));
+        uint8_t *h1 = s2a_far_g2h(A + MB), *h2 = s2a_far_g2h(A + 3 * MB - 0x4000);
+        EQ("线性：跨两次映射的池影子连续", 1, h1 && h2 == h1 + 2 * MB - 0x4000);
+        EQ("线性：影子不在堆区（不占堆）", 1, (uint64_t)(uintptr_t)h1 < (uint64_t)shadow || (uint64_t)(uintptr_t)h1 >= (uint64_t)shadow + SH);
+        EQ("线性：堆下限不被影子压低", (uint64_t)shadow + SH, s2a_far_floor());
+        if (h1 && h2) { h1[0] = 0x5a; h2[0] = 0xa5; }
+        EQ("线性：经游戏地址读到影子里写的（缺页代执行）", 0x5a, *(volatile uint8_t *)(uintptr_t)(A + MB));
+        EQ("线性：池尾页同样", 0xa5, *(volatile uint8_t *)(uintptr_t)(A + 3 * MB - 0x4000));
+        EQ("线性：反着先映射高的那块，再映射低的那块也连续", 0, s2a_far_map(A + 6 * MB, 2 * MB) | s2a_far_map(A + 4 * MB, 2 * MB));
+        EQ("线性：反序两块连续", 1, s2a_far_g2h(A + 6 * MB) == s2a_far_g2h(A + 4 * MB) + 2 * MB);
+        EQ("线性退休", 0, s2a_far_session_reset()); }
     printf("%s t_far：%d / %d 项通过\n", bad ? "✗" : "✓", cnt - bad, cnt);
     return bad != 0;
 }

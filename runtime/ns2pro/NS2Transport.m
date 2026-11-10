@@ -76,6 +76,10 @@ static pthread_mutex_t stateMu = PTHREAD_MUTEX_INITIALIZER;
 static ns2_vibration wanted[2], actual[2];
 static uint64_t wantedDeadline[2];
 static BOOL active, ready, terminal = YES, shutdownSent;
+// ns2_shutdown 有没有为这次关闭登记过一次「等零包」（dispatch_group_enter）：只有登记过才在零包发出时销账。
+//   原先发零包时无条件 leave：暂停（PAUSED）或恢复中 ready 为假，ns2_shutdown 不登记，零包照发、照 leave，
+//   一次没登记过的 dispatch_group_leave，libdispatch 直接终止进程（iOS 回前台时自动连接已关、运行中关掉设置都走得到）
+static BOOL shutdownEntered;
 static unsigned wantedMask, submittedMask, stopMask;
 static uint64_t rumbleRequests, quantizedSilentRequests;
 static dispatch_queue_t bleQueue;
@@ -820,8 +824,9 @@ static NS2Bridge *bridge;
     BOOL continuePause = pauseStopPending;
     pauseStopPending = NO;
     if (continuePause) LOG("NS2 Pro BLE pause stop submitted mono_ms=%.3f（CoreBluetooth提交，非电机确认）", now_ns() / 1e6);
-    BOOL signal = terminal && !shutdownSent;
-    if (signal) shutdownSent = YES;
+    BOOL signal = terminal && !shutdownSent && shutdownEntered;
+    if (terminal) shutdownSent = YES;
+    if (signal) shutdownEntered = NO;
     pthread_mutex_unlock(&stateMu);
     if (signal) {
         LOG("NS2 Pro BLE shutdown：42-byte零包已交给 CoreBluetooth（无硬件ACK）");
@@ -866,7 +871,7 @@ int ns2_start_with_motion(ns2_state_callback state, ns2_status_callback status, 
         }
         stateCallback = state; statusCallback = status; motionCallback = motion; callbackContext = context;
         pthread_mutex_lock(&stateMu);
-        terminal = NO; active = YES; ready = NO; shutdownSent = NO; wantedMask = submittedMask = stopMask = 0;
+        terminal = NO; active = YES; ready = NO; shutdownSent = NO; shutdownEntered = NO; wantedMask = submittedMask = stopMask = 0;
         rumbleRequests = quantizedSilentRequests = 0;
         memset(&deviceInfo, 0, sizeof deviceInfo);
         memset(&latestMotion, 0, sizeof latestMotion);
@@ -1002,7 +1007,7 @@ int ns2_shutdown(const char *reason, unsigned timeout_ms) {
         if (!target) return;
         pthread_mutex_lock(&stateMu);
         connected = ready;
-        if (!terminal && connected) dispatch_group_enter(shutdownGroup);
+        if (!terminal && connected) { dispatch_group_enter(shutdownGroup); shutdownEntered = YES; }
         terminal = YES; active = NO; deviceInfo.ready = 0; wantedMask = 0; stopMask |= submittedMask;
         memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
         pthread_mutex_unlock(&stateMu);
