@@ -369,6 +369,17 @@ class ImagePush(Base):
         self.assertEqual((nt, (self.w / "direct_img.tsv").read_text().split("\t")[0]), (1, "romfs.img"))
         self.assertTrue(any("被打断" in l for l in self.log))
 
+    def test_image_already_pushed_is_not_called_interrupted(self):
+        # #457：上次镜像整份传完、记进 .pushed，又有一批推完没解开（机上留着完整的 tar），之后解包没成，.applied 一直空。
+        #   期望（手写）：不重传镜像、也不说「被打断，这次重传」，如实说镜像已传完、问题在解包；b 在推送账上也不重推
+        f = self.phone(""); f[f"{INC}/20261110000000_000.tar"] = WHOLE
+        f[f"{RP}/.pushed"] = self.row("romfs.img").rsplit("\t", 1)[0].split("\t")[0] + "\t" + sha(b"IMAGE") + "\n" + "b\t" + sha(b"BB") + "\n"
+        self.dev = Fake(f)
+        nb, nt, n = push.plan(self.dev, self.pk, self.w, say=self.log.append)
+        self.assertEqual(nt, 0)
+        self.assertFalse(any("被打断" in l for l in self.log), self.log)
+        self.assertTrue(any("已整份传完" in l and "unpack.log" in l for l in self.log), self.log)
+
     def test_applied_image_is_not_pushed_again(self):
         self.dev = Fake(self.phone("abc"))
         self.assertEqual(push.plan(self.dev, self.pk, self.w, say=self.log.append)[1], 0)
