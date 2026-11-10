@@ -520,19 +520,19 @@ def heal_folder_names(c):
                 english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
                 if not _ascii_name(english):
                     continue
-                if g and not g.get("englishName"):
-                    g["englishName"] = english; changed = True
                 name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
                 dest = d.parent / name
                 if name.upper() == gid or os.path.lexists(dest):
                     continue
                 try:
                     os.replace(d, dest)
-                except OSError:   # Windows 上文件夹里有打开的文件：下次再试
+                except OSError:   # Windows 上文件夹里有打开的文件：整款不动（文件夹、索引、catalog 都留原样），下次再试
                     continue
                 from library import _retarget_links
                 _retarget_links(dest, d, dest)
                 _remember(c, gid, dest)
+                if g and not g.get("englishName"):   # 改名成了才记英文名：与文件夹、索引一起变
+                    g["englishName"] = english; changed = True
                 renamed += 1
             if changed:
                 atomic(cat_path, cat)

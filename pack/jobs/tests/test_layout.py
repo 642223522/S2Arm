@@ -348,3 +348,19 @@ class HealFolderNamesTests(JobCase):
             self.assertEqual(layout.heal_folder_names(self.fresh()), 0)
             filelock.unlock(f)
         self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
+
+
+    def test_rename_refused_leaves_everything_untouched(self):
+        # Windows 上文件夹里有被占用的文件时改名失败：这款整款不动——文件夹、索引、catalog 的 englishName 都留原样（不能只改一半）
+        real = os.replace
+        def busy(a, b, *args, **kwargs):
+            if Path(a).name == A:
+                raise PermissionError(32, "being used by another process")
+            return real(a, b, *args, **kwargs)
+        with patch.object(layout.os, "replace", busy):
+            self.assertEqual(layout.heal_folder_names(self.fresh()), 1)   # 只有 C（Hades）改成
+        L = self.c.library
+        self.assertTrue((L / "games" / A).is_dir())
+        self.assertEqual(layout.find_game(self.fresh(), A), L / "games" / A)
+        names = {g["id"]: g.get("englishName") for g in json.loads((L / "catalog.json").read_text())["games"]}
+        self.assertEqual(names, {A: None, B: None, C: "Hades"})
