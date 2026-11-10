@@ -409,6 +409,7 @@
 "settings.toggle.devHud" = "显示 S2Arm 诊断浮层";
 "settings.toggle.diagOnOpen" = "下次打开时导出诊断包";
 "settings.toggle.docked" = "主机模式";
+"settings.docked.note" = "画质更高，但更耗电、更容易发热；手机上不建议开";
 "settings.toggle.metalHud" = "显示 Metal 性能浮层";
 "settings.toggle.phoneHaptics" = "手机震动";
 "settings.toggle.touchHud" = "触屏诊断信息";

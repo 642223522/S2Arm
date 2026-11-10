@@ -409,6 +409,7 @@
 "settings.toggle.devHud" = "Show S2Arm diagnostics overlay";
 "settings.toggle.diagOnOpen" = "Export diagnostics on next open";
 "settings.toggle.docked" = "Docked mode";
+"settings.docked.note" = "Sharper picture, but uses more power and runs hotter; not recommended on a phone";
 "settings.toggle.metalHud" = "Show Metal performance HUD";
 "settings.toggle.phoneHaptics" = "Phone haptics";
 "settings.toggle.touchHud" = "Touch diagnostics";

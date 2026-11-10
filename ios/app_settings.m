@@ -224,6 +224,14 @@ static UILabel *textLabel(UIFontTextStyle style) {
     UISwitch *control = [UISwitch new]; id saved = [NSUserDefaults.standardUserDefaults objectForKey:key];
     control.on = saved ? [saved boolValue] : (index == 1 || index == 2 || index == 6 || index == 7);
     control.accessibilityLabel = toggleTitles()[index]; control.accessibilityIdentifier = [@"settings." stringByAppendingString:key];
+    // 主机模式（#352，维护者 11-09：手机缺省掌机，玩家可自己开）：标题下一行写明代价——更耗电换画质，手机上不建议开
+    if ([key isEqualToString:@"S2ADockedMode"]) {
+        UITableViewCell *sub = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        sub.textLabel.text = cell.textLabel.text; sub.textLabel.font = cell.textLabel.font; sub.textLabel.adjustsFontForContentSizeCategory = YES; sub.textLabel.numberOfLines = 0;
+        sub.detailTextLabel.text = S2AL(@"settings.docked.note"); sub.detailTextLabel.numberOfLines = 0; sub.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        sub.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]; sub.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+        sub.selectionStyle = UITableViewCellSelectionStyleNone; cell = sub;
+    }
     // 本款原生 60 帧（运行时判定后记在 S2AFpsNative60，app.m s2a_ios_fps_native60）：开关改不动帧率，显示原因、置灰（11-02 维护者 丝之歌关了照样 60 帧、以为没生效）
     if ([key isEqualToString:@"S2AFps60"] && [NSUserDefaults.standardUserDefaults boolForKey:@"S2AFpsNative60"]) {
         control.on = YES; control.enabled = NO; cell.detailTextLabel.text = S2AL(@"settings.fps.native"); control.accessibilityValue = S2AL(@"settings.fps.native");
