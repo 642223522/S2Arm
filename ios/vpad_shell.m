@@ -23,11 +23,11 @@ static S2AVPadLayoutStore *store_for(const char *gid) {
     return [[S2AVPadLayoutStore alloc] initWithDirectory:[game URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]
                                        settingsDirectory:[docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]];
 }
-// 要编辑的底稿：本款「我的布局」能读就用它，否则按这块安全区现算默认布局
+// 要编辑的底稿：本款「我的布局」能读就用它，否则按这块安全区现算（选的是 2D 就从 2D 改，#268；其余默认布局）
 static S2AVPadLayout *base_for(S2AVPadLayoutStore *s, CGRect safe, BOOL *hasMine) {
     *hasMine = NO;
     for (S2AVPadLayout *l in s.layouts) if ([l.identifier isEqualToString:S2AVPadLayoutMineIdentifier]) { *hasMine = YES; return l; }
-    return [S2AVPadLayout defaultForSafeRect:safe];
+    return [s.selectedIdentifier isEqualToString:S2AVPadLayout2DIdentifier] ? [S2AVPadLayout twoDForSafeRect:safe] : [S2AVPadLayout defaultForSafeRect:safe];
 }
 
 char *s2a_shell_vpad_layout_json(const char *game_id, double safe_w, double safe_h) {
