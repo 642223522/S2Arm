@@ -243,6 +243,8 @@ public struct PadSnapshot: Equatable, Sendable {
 public struct ShellActions {
     /// Moves a game to another card's position. Returns false for an invalid drop.
     public var onMoveGame: ((String, String) -> Bool)? = nil
+    /// Inserts the dragged games before an ID, or at the end when the destination is nil.
+    public var onReorderGames: (([String], String?) -> Bool)? = nil
     public var onSelect: (String) -> Void
     public var onPlay: (String) -> Void
     public var onChange: (_ gameID: String, _ settingID: String, _ value: String) -> Void

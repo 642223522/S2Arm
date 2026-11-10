@@ -26,6 +26,7 @@ struct CoverFlowView: View, Equatable {
     @State private var scrolled: CGFloat = 0
     /// True from the first touch of a scroll until it has settled.
     @State private var userScrolling = false
+    @State private var reordering = false
     /// The card nearest the middle when the current touch began, also mid-snap, for one card per gesture.
     @State private var gestureStart = 0
     /// False while the carousel scrolls, decelerates or snaps: a tap on the centre card then does nothing.
@@ -56,7 +57,7 @@ struct CoverFlowView: View, Equatable {
             let cardHeight = max(90, min(byBottom, byTop, geometry.size.width * 0.54 * 9 / 16) / 1.06)
             let cover = cardHeight * 16 / 9
             let displayed = CoverFlowSelection.game(games: games, selected: selected, offset: scrolled,
-                                                     stride: cover * 1.04, scrolling: userScrolling && games.count > 3)
+                                                     stride: cover * 1.04, scrolling: (userScrolling || reordering) && games.count > 3)
             ZStack(alignment: .top) {
                 VStack(spacing: 0) {
                     Group {
@@ -80,7 +81,7 @@ struct CoverFlowView: View, Equatable {
         .onChange(of: selected.id) { _, id in
             // A selection from the D-pad or a tap scrolls the carousel. Never while the player is touching it or it is
             // still moving: the player's gesture always wins.
-            guard centredID != id, !userScrolling else { return }
+            guard centredID != id, !userScrolling, !reordering else { return }
             withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = id }
         }
     }
@@ -140,10 +141,11 @@ struct CoverFlowView: View, Equatable {
                     coverButton(detail, cover: cover)
                         .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
                         .id(detail.id)
-                }
+                }.shellReorderable()
             }.scrollTargetLayout()
+                .modifier(GameReorderContainer(isReordering: $reordering))
         }
-        .scrollTargetBehavior(CardSnap(stride: stride, count: games.count, start: gestureStart))
+        .scrollTargetBehavior(CardSnap(stride: stride, count: games.count, start: gestureStart, enabled: !reordering))
         .scrollPosition(id: $centredID, anchor: .center)
         .contentMargins(.horizontal, margin, for: .scrollContent)
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x + $0.contentInsets.leading } action: { _, offset in
@@ -155,6 +157,8 @@ struct CoverFlowView: View, Equatable {
             // value can never send the carousel back. A scroll this view animates starts from idle and never sets the
             // flag, so it never selects.
             settled = phase == .idle
+            // Let the reorder interaction scroll at the edges without the one-card flick limiter snapping it back.
+            if reordering { userScrolling = false; return }
             if phase == .interacting && old != .interacting {
                 let offset = context.geometry.contentOffset.x + context.geometry.contentInsets.leading
                 gestureStart = min(games.count - 1, max(0, Int((offset / stride).rounded())))
@@ -171,6 +175,13 @@ struct CoverFlowView: View, Equatable {
             default: break
             }
         }
+        .onChange(of: reordering) { _, active in
+            guard !active, !games.isEmpty else { return }
+            let displayed = CoverFlowSelection.game(games: games, selected: selected, offset: scrolled,
+                                                   stride: stride, scrolling: true)
+            centredID = displayed.id
+            if displayed.id != selected.id { select(displayed.id) }
+        }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
     }
@@ -179,16 +190,16 @@ struct CoverFlowView: View, Equatable {
     private func shelf(width: CGFloat, cover: CGFloat) -> some View {
         let card = min(cover, width / (1 + CGFloat(games.count - 1) * 0.8))
         let chosenIndex = selectedIndex
-        return ZStack {
+        return HStack(spacing: -card * 0.22) {
             ForEach(Array(games.enumerated()), id: \.element.id) { index, detail in
                 let chosen = index == chosenIndex
                 coverButton(detail, cover: card)
                     .scaleEffect(chosen ? 1 : 0.8)
                     .brightness(chosen ? 0 : -0.22)
-                    .offset(x: (CGFloat(index) - CGFloat(games.count - 1) / 2) * card * 0.78)
                     .zIndex(chosen ? 10 : -Double(abs(index - chosenIndex)))
-            }
+            }.shellReorderable()
         }
+        .modifier(GameReorderContainer(isReordering: $reordering))
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: selected.id)
         .frame(maxWidth: .infinity)
     }
@@ -336,7 +347,9 @@ struct CardSnap: ScrollTargetBehavior {
     let count: Int
     /// The card nearest the middle when the touch began.
     let start: Int
+    var enabled = true
     func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+        guard enabled else { return }
         let card = Self.card(target: target.rect.origin.x, velocity: context.velocity.dx, stride: stride, count: count, start: start)
         target.rect.origin.x = CGFloat(card) * stride
     }

@@ -114,14 +114,14 @@ struct PortraitLibrary: View, Equatable {
             if wide {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 22, alignment: .top)],
                           alignment: .leading, spacing: 24) {
-                    ForEach(games) { tile($0) }
-                }.padding(.horizontal, 24)
+                    ForEach(games) { tile($0) }.shellReorderable()
+                }.modifier(GameReorderContainer()).padding(.horizontal, 24)
             } else {
                 ScrollView(.horizontal) {
                     // Not lazy: every cover is a focus target, so the D-pad can reach the ones still off screen.
                     HStack(alignment: .top, spacing: 24) {
-                        ForEach(games) { tile($0).frame(width: coverSize) }
-                    }.scrollTargetLayout().padding(.vertical, 6)
+                        ForEach(games) { tile($0).frame(width: coverSize) }.shellReorderable()
+                    }.scrollTargetLayout().modifier(GameReorderContainer()).padding(.vertical, 6)
                 }
                 .contentMargins(.horizontal, 24, for: .scrollContent)
                 .scrollIndicators(.hidden)

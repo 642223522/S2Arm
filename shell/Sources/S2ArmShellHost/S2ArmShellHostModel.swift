@@ -217,7 +217,25 @@ public final class S2ArmShellHostModel {
                      onButtonTest: { [weak self] open in self?.buttonTest(open) },
                      onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
         actions.onMoveGame = { [weak self] source, target in self?.moveGame(source, to: target) ?? false }
+        actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         return actions
+    }
+
+    /// Native reordering supplies stable IDs and an insertion point after the drag finishes.
+    private func reorderGames(_ sources: [String], before destination: String?) -> Bool {
+        let moving = Set(sources)
+        let visible = Set(games.map(\.id))
+        guard !sources.isEmpty, moving.count == sources.count, moving.isSubset(of: visible) else { return false }
+        if let destination {
+            guard visible.contains(destination), !moving.contains(destination) else { return false }
+        }
+        let entries = Dictionary(uniqueKeysWithValues: allGames.map { ($0.id, $0) })
+        var reordered = allGames.filter { !moving.contains($0.id) }
+        let insertion = destination.flatMap { id in reordered.firstIndex { $0.id == id } } ?? reordered.count
+        reordered.insert(contentsOf: sources.compactMap { entries[$0] }, at: insertion)
+        allGames = reordered
+        stores.app.set(allGames.map(\.id), forKey: "S2ALibraryOrder")
+        return true
     }
 
     /// Keep hidden entries in the saved order, so a pending install retains its position when it arrives.

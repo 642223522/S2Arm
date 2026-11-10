@@ -335,6 +335,12 @@ public struct LibraryView: View {
                 return move(source, target)
             }
         })
+        .environment(\.shellReorderGames, actions.onReorderGames.map { reorder in
+            { sources, before in
+                guard libraryPressAllowed, noteTouch() else { return false }
+                return reorder(sources, before)
+            }
+        })
         .environment(\.shellFocus, focus)
         .environment(\.shellInputDevice, device)
         .foregroundStyle(.white)

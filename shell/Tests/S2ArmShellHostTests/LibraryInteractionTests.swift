@@ -70,3 +70,50 @@ import Testing
     #expect(title(100, selected: 3, scrolling: false) == "Title 4")
     #expect(CoverFlowSelection.game(games: [], selected: games[0], offset: 100, stride: 100, scrolling: true).id == "1")
 }
+
+@MainActor @Test func nativeReorderCommitsInsertionAndPersists() throws {
+    let suite = "s2a.test.native-order.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let tiles = (1...5).map { GameTile(id: "\($0)", title: "Game \($0)") }
+    let stores = S2ArmGameSettings.Stores(game: { _ in nil }, app: defaults)
+    func model() -> S2ArmShellHostModel {
+        S2ArmShellHostModel(catalogue: Catalogue(tiles: tiles, problems: []), stores: stores,
+                           gameDataReady: { _ in true })
+    }
+    let library = model()
+    let reorder = try #require(library.actions.onReorderGames)
+    // Native reordering previews positions without changing the model until the drop callback.
+    #expect(defaults.stringArray(forKey: "S2ALibraryOrder") == nil)
+    #expect(reorder(["1"], "4"))
+    #expect(library.games.map(\.id) == ["2", "3", "1", "4", "5"])
+    #expect(reorder(["3", "1"], nil))
+    #expect(library.games.map(\.id) == ["2", "4", "5", "3", "1"])
+    #expect(reorder(["5"], "2"))
+    #expect(model().games.map(\.id) == ["5", "2", "4", "3", "1"])
+    let saved = defaults.stringArray(forKey: "S2ALibraryOrder")
+    #expect(!reorder([], nil))
+    #expect(!reorder(["5", "5"], nil))
+    #expect(!reorder(["unknown"], nil))
+    #expect(!reorder(["5"], "unknown"))
+    #expect(!reorder(["5"], "5"))
+    #expect(defaults.stringArray(forKey: "S2ALibraryOrder") == saved)
+}
+
+@MainActor @Test func nativeReorderRejectsHiddenItemsAndKeepsPendingGames() throws {
+    let suite = "s2a.test.native-hidden.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let tiles = (1...4).map { GameTile(id: "\($0)", title: "Game \($0)") }
+    var ready = Set(["1", "3", "4"])
+    let model = S2ArmShellHostModel(catalogue: Catalogue(tiles: tiles, problems: []),
+        stores: .init(game: { _ in nil }, app: defaults), gameDataReady: { ready.contains($0) })
+    let reorder = try #require(model.actions.onReorderGames)
+    #expect(!reorder(["1", "2"], "4"))
+    #expect(!reorder(["1"], "2"))
+    #expect(model.games.map(\.id) == ["1", "3", "4"])
+    #expect(reorder(["4"], "1"))
+    ready.insert("2")
+    model.refreshGameData()
+    #expect(model.games.map(\.id) == ["4", "1", "2", "3"])
+}

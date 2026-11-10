@@ -14,21 +14,78 @@ private struct ShellMoveGameKey: EnvironmentKey {
     nonisolated(unsafe) static let defaultValue: ((String, String) -> Bool)? = nil
 }
 
+private struct ShellReorderGamesKey: EnvironmentKey {
+    nonisolated(unsafe) static let defaultValue: (([String], String?) -> Bool)? = nil
+}
+
 extension EnvironmentValues {
     var shellMoveGame: ((String, String) -> Bool)? {
         get { self[ShellMoveGameKey.self] }
         set { self[ShellMoveGameKey.self] = newValue }
     }
+    var shellReorderGames: (([String], String?) -> Bool)? {
+        get { self[ShellReorderGamesKey.self] }
+        set { self[ShellReorderGamesKey.self] = newValue }
+    }
 }
 
-/// Native drag sessions cancel without changing the order. Only a drop on another game commits a move.
+extension DynamicViewContent {
+    @ViewBuilder func shellReorderable() -> some View {
+        if #available(iOS 27, macOS 27, *) {
+            reorderable()
+        } else {
+            self
+        }
+    }
+}
+
+/// The system animates the insertion gap and edge scrolling, then supplies one final move on drop.
+struct GameReorderContainer: ViewModifier {
+    @Binding var isReordering: Bool
+    @Environment(\.shellReorderGames) private var reorder
+
+    init(isReordering: Binding<Bool> = .constant(false)) {
+        _isReordering = isReordering
+    }
+
+    func body(content: Content) -> some View {
+        if #available(iOS 27, macOS 27, *) {
+            content.reorderContainer(for: GameDetail.self, isEnabled: reorder != nil) { difference in
+                switch difference.destination.position {
+                case .before(let id): _ = reorder?(difference.sources, id)
+                case .end: _ = reorder?(difference.sources, nil)
+                }
+            }
+            .onDragSessionUpdated { session in
+                switch session.phase {
+                case .initial, .active: isReordering = true
+                case .ended: isReordering = false
+                default: break
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Earlier systems retain the single-card drop interaction.
 struct GameReorderCard: ViewModifier {
     let id: String
     @Environment(\.shellMoveGame) private var move
+    @Environment(\.shellReorderGames) private var reorder
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var targeted = false
 
     func body(content: Content) -> some View {
+        if #available(iOS 27, macOS 27, *), reorder != nil {
+            content
+        } else {
+            legacyDrop(content)
+        }
+    }
+
+    @ViewBuilder private func legacyDrop(_ content: Content) -> some View {
         if let move {
             content
                 .draggable(GameReorderItem(id: id))
