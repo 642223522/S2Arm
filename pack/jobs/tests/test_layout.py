@@ -241,6 +241,25 @@ class LocationTests(JobCase):
         os.rename(self.disk, self.disk.with_name("拔掉了"))
         self.assertEqual(layout.state(self.fresh(), B), ("offline", self.disk))
 
+    def test_picking_another_location_when_the_old_one_is_offline(self):
+        # #453：这款记在一个没连上的位置（文件夹没了），而且在当前库清单里（所以是 offline，#432 那条管不到）；玩家在出包页另选了位置。
+        #   期望（手写）：在新选的位置建这款、黄字说明；还是选那个没连上的位置就照旧报「没连上」
+        import library
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha")]))
+        layout.game_dir(self.c, A, location=self.disk)
+        os.rename(self.disk, self.disk.with_name("拔掉了"))
+        self.assertEqual(layout.state(self.fresh(), A), ("offline", self.disk))
+        self.c.r["location"] = str(self.disk)
+        with self.assertRaisesRegex(Exception, "没连上"):
+            library.apply_location(self.c, dict(id=A))
+        other = self.root / "新位置"
+        self.c.r["location"] = str(other)
+        library.apply_location(self.c, dict(id=A))
+        self.assertEqual(layout.state(self.fresh(), A), ("ok", other / "games" / "Alpha"))
+        warn = [d for d in self.c.job["diagnostics"] if d.get("severity") == "warning"]
+        self.assertTrue(warn and "没连上" in warn[-1]["summary"], self.c.job["diagnostics"])
+        self.assertTrue((self.disk.with_name("拔掉了") / "games" / "Alpha").is_dir())   # 原位置上的文件不动
+
     def test_renamed_folder_offline_location_and_missing_folder(self):
         d = layout.game_dir(self.c, A, location=self.disk)
         os.rename(d, d.with_name("改过的名字"))
