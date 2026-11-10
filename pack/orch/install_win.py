@@ -132,8 +132,8 @@ def push_pack(udid, bid, pack, devpush=None, full=False, say=lambda m: print(m, 
                 try: P.apply(dev, Path(pack), Path(w), nb, say)
                 except P.NeedsPlayer as e:   # 传输是成功的：带上传了多少，装机作业按提醒收尾（#192）
                     need = Fail(str(e), 0, 'manual_unpack_required'); need.transferred = (nt, nbytes); raise need
-        except P.Fail as e:
-            raise Fail(f'推资源包失败：{e}', 1, 'device_install_failed')
+        except P.Fail as e:   # 推之前探针写不进 = 锁屏 / 断开：单独报 device_locked（#333）
+            raise Fail(f'推资源包失败：{e}', 1, getattr(e, 'code', None) or 'device_install_failed')
     return nt, nbytes
 
 

@@ -271,6 +271,34 @@ class WinInstall(unittest.TestCase):
         self.go(w)
         self.assertIsNone(w.calls[-1].bundle)
 
+    def test_overwrite_backup_only_skips_when_phone_says_not_installed(self):
+        # #333：覆盖装前备份存档。只有手机明确答「没有这个 App」（ApplicationLookupFailed）才跳过；锁屏 / 断开等取不到 → 停装 device_locked，
+        #   绝不当成没装过直接覆盖。这台没记录包名时按这次要装的包名查（可能有 Mac 装的同包名 App 和存档）
+        w = FakeW([("U1", "USB", 3)]); w.team = "ABCDE12345"
+        asked = []
+        def client(result):
+            def make(c, udid, bid, work):
+                asked.append(bid)
+                class Cl:
+                    def get_tree(self, rel, dest):
+                        if result is True:
+                            Path(dest).mkdir(parents=True); (Path(dest) / "s.dat").write_text("x"); return True, ""
+                        return False, result
+                return Cl()
+            return make
+        with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
+            ph = self.m.WinPhone(self.c)
+            self.assertIsNone(ph.bid)
+            with patch.object(self.m, "devpush_client", client("取不到 io.s2arm.games.abcde12345 的容器（App 没装或不是开发签名）：unknown error `ApplicationLookupFailed` returned from device")):
+                self.assertIsNone(ph.backup(self.gid))
+            self.assertEqual(asked[-1], "io.s2arm.games.abcde12345")
+            with patch.object(self.m, "devpush_client", client("取不到 io.s2arm.games.abcde12345 的容器（App 没装或不是开发签名）：connection reset")), \
+                 self.assertRaises(self.m.Failure) as e:
+                ph.backup(self.gid)
+            self.assertEqual(e.exception.code, "device_locked")
+            with patch.object(self.m, "devpush_client", client(True)):
+                self.assertTrue((ph.backup(self.gid) / "s.dat").is_file())
+
     def test_cant_open_app_is_warning_not_failure(self):   # #192：Windows 同 Mac，传输数从异常带回（替身 787 个文件）
         w = FakeW([("U1", "USB", 3)]); w.needs_player = "资源包已传完，还差最后一步：打开 App"
         seen = []; self.c.diagnostic = lambda m, **k: seen.append((m, k))
