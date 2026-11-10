@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 43,
+  "revision": 44,
   "languages": ["zh-Hans", "en"],
   "source_language": "zh-Hans",
   "note": "四端（Mac / iOS / Android / 鸿蒙）启动器的「一套体验」规格。状态、文案、错误码、任务事件到界面的映射只在这里定义一次；各端只负责画，不另写一套措辞。错误码的「下一步」不在本文件里写第二份：一律指向 pack/jobs/errors.py 的 RECOVERY（口径见 README.md）。口径号 revision 改动规则见 README.md。",
@@ -909,6 +909,9 @@
       {"id": "update.error.update_network", "zh-Hans": "连不上 GitHub（断网、超时或连接被断开），当前版本没有变化。请检查网络后重试，或打开下载页手动下载。", "en": "Couldn't reach GitHub (offline, timed out or the connection dropped). Nothing was changed. Check your network and retry, or use the download page."},
       {"id": "update.error.update_server", "zh-Hans": "GitHub 返回了错误，当前版本没有变化。稍后再试，或打开下载页手动下载。", "en": "GitHub returned an error. Nothing was changed. Try again later or use the download page."},
       {"id": "update.download_page", "zh-Hans": "打开下载页", "en": "Open download page"},
+      {"id": "notice.label", "zh-Hans": "重要通知", "en": "Important"},
+      {"id": "notice.details", "zh-Hans": "详情", "en": "Details"},
+      {"id": "notice.close", "zh-Hans": "关闭这条通知", "en": "Dismiss this notice"},
       {"id": "update.code", "zh-Hans": "错误码 {0}", "en": "Error code {0}"},
       {"id": "update.error.update_app_busy", "zh-Hans": "S2Arm 没有退出，这次没有更新。", "en": "S2Arm did not quit, so nothing was updated."},
       {"id": "environment.unzip_first", "zh-Hans": "要先解压：把下载的压缩包完整解压到一个文件夹，再打开里面的 S2Arm.exe。", "en": "Extract first: unzip the whole download into a folder, then open S2Arm.exe from there."},

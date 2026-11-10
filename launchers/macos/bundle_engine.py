@@ -32,7 +32,9 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "launchers/macos/Branding/AppIcon-1024.png",
           # 根 .gitignore（11-02 beta.3 走查）：出包会在快照副本里编出 bin/ obj/，没有忽略规则时 pack/ipa.sh「构建相关目录有未提交改动」
           #   把这些编译产物当成改动、拒绝出包——玩家导出 iPhone 版必死在最后一步
-          ".gitignore"]
+          ".gitignore",
+          # 启动器公告条的随包兜底（pack/jobs/updater.py notice：官方下载页上的同一份取不到时用它）
+          "docs/site/notice.json"]
 
 
 def include_source(relative):

@@ -75,6 +75,13 @@ SaveW("05_welcome_oneclick", w => {
     SetW(w, "connectedFolder", "/tmp/s2arm-library");
     SetW(w, "libraryId", "mock-lib-id");
 });
+// 顶部公告条（v0.2.3）：内容取仓库里那份 docs/site/notice.json（启动器实际读的同一份），中 / 英各一张
+var noticeDir = new DirectoryInfo(AppContext.BaseDirectory);
+while (noticeDir is not null && !File.Exists(Path.Combine(noticeDir.FullName, "docs/site/notice.json"))) noticeDir = noticeDir.Parent;
+var noticeJson = File.ReadAllText(Path.Combine(noticeDir?.FullName ?? throw new FileNotFoundException("docs/site/notice.json"), "docs/site/notice.json"));
+SaveW("06_notice_zh", w => { SetW(w, "notice", (JsonElement?)JsonDocument.Parse(noticeJson).RootElement); SetW(w, "language", "zh-Hans"); });
+SaveW("07_notice_en", w => { SetW(w, "language", "en"); });
+SetW(welcome, "notice", null); SetW(welcome, "language", "zh-Hans");
 
 welcome.Close();
 Dispatcher.UIThread.RunJobs();

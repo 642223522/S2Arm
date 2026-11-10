@@ -230,6 +230,17 @@ public final class JobClient {
         }
     }
 
+    /// 启动器顶部公告条（pack/jobs/updater.py notice）：{id, text: {zh-Hans, en}, url?}；没有要显示的、取不到、起不来都返回 nil，不打扰玩家
+    public func notice() async -> [String: Any]? {
+        let result = await runUpdater(["notice", "--private-root", environment.privateRoot.path])
+        return result?["id"] is String ? result : nil
+    }
+
+    /// 玩家关掉公告：记下它的号，同一条不再出现（换了新号的公告照常出现）
+    public func noticeDismiss(id: String) async {
+        _ = await runUpdater(["notice-dismiss", "--private-root", environment.privateRoot.path, "--id", id])
+    }
+
     /// 有比 current 高的正式版就返回版本号；查不到（没网、GitHub 不通）返回 nil，不打扰玩家。
     public func updateCheck(current: String) async -> String? {
         let result = await runUpdater(["check", "--platform", "mac", "--current", current])
