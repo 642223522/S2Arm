@@ -555,7 +555,9 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
-        let game = item.game, platforms = item.platforms
+        // 同一款先出 Mac、再出 iPhone：iPhone 出包收尾会清掉这款的解包和中间产物（pack/jobs/library.prune_build），Mac 打包成功不清；
+        //   iPhone 在前时第二个平台只能重新解包（端到端实测全部重写）。iPhone 还能从 Mac 的产物根接着做。页面上平台卡片的排列不变
+        let game = item.game, platforms = item.platforms.filter { $0 == .mac } + item.platforms.filter { $0 != .mac }
         var session = JobSession(kind: .export, gameID: game.id, name: game.name)
         session.export = ExportRun(platforms: platforms)
         start(session) { [weak self] sink in

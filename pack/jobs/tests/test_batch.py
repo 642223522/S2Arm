@@ -16,7 +16,7 @@ class BatchRules(unittest.TestCase):
     """批量出包的批次规则（v0.2.4）：期望按规则手写，不跑出包"""
 
     def make(self):
-        return batch.create([{"gameId": A, "name": "甲", "platforms": ["mac", "iphone"]},   # 勾的顺序不影响：先 iPhone 再 Mac
+        return batch.create([{"gameId": A, "name": "甲", "platforms": ["iphone", "mac"]},   # 勾的顺序不影响：先 Mac 再 iPhone（iPhone 收尾会清解包，放最后）
                              {"gameId": B, "name": "乙", "platforms": ["iphone"]},
                              {"gameId": C, "name": "丙", "platforms": []},                 # 没勾平台：不进批次
                              {"gameId": A, "name": "甲又一次", "platforms": ["iphone"]}],  # 同一款放进来两次只算一次
@@ -24,7 +24,7 @@ class BatchRules(unittest.TestCase):
 
     def test_create_keeps_order_and_drops_unchecked(self):
         b = self.make()
-        self.assertEqual([(i["gameId"], i["platforms"]) for i in b["items"]], [(A, ["iphone", "mac"]), (B, ["iphone"])])
+        self.assertEqual([(i["gameId"], i["platforms"]) for i in b["items"]], [(A, ["mac", "iphone"]), (B, ["iphone"])])
         self.assertEqual(b["location"], "/tmp/批量包")
         with self.assertRaises(ValueError):
             batch.create([{"gameId": C, "platforms": []}])
@@ -37,7 +37,7 @@ class BatchRules(unittest.TestCase):
             batch.mark(b, n["gameId"], n["platform"], "running")
             self.assertIsNone(batch.next_step(b))   # 正在出一个时不给下一个
             batch.mark(b, n["gameId"], n["platform"], "completed")
-        self.assertEqual(steps, [(A, "iphone"), (A, "mac"), (B, "iphone")])
+        self.assertEqual(steps, [(A, "mac"), (A, "iphone"), (B, "iphone")])
         self.assertEqual(batch.summary(b), {"total": 2, "completed": 2, "failed": 0, "cancelled": 0, "pending": 0, "done": True})
 
     def test_failure_does_not_stop_the_rest(self):
@@ -52,13 +52,13 @@ class BatchRules(unittest.TestCase):
 
     def test_disk_full_pauses_until_retry(self):
         b = self.make()
-        batch.mark(b, A, "iphone", "failed", "磁盘空间不足", "disk_full")
+        batch.mark(b, A, "mac", "failed", "磁盘空间不足", "disk_full")
         self.assertEqual(b["paused"], "disk_full")
         self.assertIsNone(batch.next_step(b))   # 后面的不接着出
         self.assertFalse(batch.summary(b)["done"])
         batch.retry(b, A)
         self.assertIsNone(b["paused"])
-        self.assertEqual(batch.next_step(b), {"gameId": A, "platform": "iphone"})
+        self.assertEqual(batch.next_step(b), {"gameId": A, "platform": "mac"})
 
     def test_cancel_keeps_finished_and_resume_continues(self):
         b = self.make()

@@ -26,7 +26,9 @@ import sys
 import time
 from pathlib import Path
 
-PLATFORMS = ("iphone", "mac")
+# 同一款先出 Mac、再出 iPhone：解包只做一次靠这个顺序——iPhone 出包收尾（成功或失败）会清掉这款的解包和中间产物（library.prune_build），
+#   Mac 打包成功不清；iPhone 在前时第二个平台只能重新解包（端到端实测：20675 个解包文件全部重写）。iPhone 还能从 Mac 的产物根接着做（build.seed_from_sibling）
+PLATFORMS = ("mac", "iphone")
 STATES = ("pending", "running", "completed", "failed", "cancelled")
 PAUSE_CODES = ("disk_full",)   # 失败了就暂停整批的错误码（pack/jobs/errors.py）
 
@@ -67,7 +69,7 @@ def create(items, location=None):
     out = []
     seen = set()
     for raw in items:
-        gid, platforms = raw.get("gameId"), [p for p in PLATFORMS if p in (raw.get("platforms") or [])]   # 同一款先出 iPhone 再出 Mac（页面上的顺序）
+        gid, platforms = raw.get("gameId"), [p for p in PLATFORMS if p in (raw.get("platforms") or [])]   # 同一款先出 Mac 再出 iPhone（PLATFORMS 的说明）
         if not isinstance(gid, str) or not gid or gid in seen or not platforms:
             continue
         seen.add(gid)
