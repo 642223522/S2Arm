@@ -164,8 +164,10 @@ struct PrimaryPillStyle: ButtonStyle {
 /// tinted with the cream — the only tinted glass in the shell (GameCase #61's rule: tint for the one
 /// primary action); everywhere else the plain cream capsule it has always been.
 private struct PrimarySurface: ViewModifier {
+    // S2Arm：开关值用 @AppStorage 绑同一个键，设置里一切换就重画（原先在 body 里直接读 store，切了要等别的原因重画才变）
+    @AppStorage(ShellSettingsStore.liquidGlassKey, store: ShellSettingsStore.current.defaults) private var glass = true
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, macOS 26.0, *), ShellSettingsStore.current.liquidGlass {
+        if #available(iOS 26.0, macOS 26.0, *), glass {
             content.glassEffect(.regular.tint(ShellPalette.cream).interactive(), in: Capsule())
         } else {
             content.background(ShellPalette.cream, in: Capsule())
@@ -206,8 +208,9 @@ struct ChipButtonStyle: ButtonStyle {
 /// everywhere else the blur and dark tint it has always worn, so it stays legible on any art.
 private struct ChipSurface: ViewModifier {
     let isPressed: Bool
+    @AppStorage(ShellSettingsStore.liquidGlassKey, store: ShellSettingsStore.current.defaults) private var glass = true   // 同 PrimarySurface
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, macOS 26.0, *), ShellSettingsStore.current.liquidGlass {
+        if #available(iOS 26.0, macOS 26.0, *), glass {
             content.glassEffect(.regular.interactive(), in: Capsule())
         } else {
             content.background {
