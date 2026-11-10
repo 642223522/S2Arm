@@ -955,7 +955,13 @@ public final class S2ArmLauncherModel: ObservableObject {
         self.session = session
         // 一局的结局只从事件来（run 是同步起的）；别的作业由 Task 结束收尾（中间可能有好几个作业，如先装 .NET 再出包）
         if session.kind == .play, event.isFinal {
-            finish(JobOutcome.State(rawValue: event.fields["state"] as? String ?? "") ?? .interrupted, message: event.message)
+            let state = JobOutcome.State(rawValue: event.fields["state"] as? String ?? "") ?? .interrupted
+            finish(state, message: event.message)
+            // 游戏里点了「切换游戏」（宿主菜单栏，pack/jobs/build.py launch 结果带 returnToLibrary）：不停在结果页，回到游戏库并切到前台，玩家直接点下一款
+            if state == .completed, (event.fields["result"] as? [String: Any])?["returnToLibrary"] as? Bool == true {
+                backToLibrary()
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
     }
 
