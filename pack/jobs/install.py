@@ -845,6 +845,15 @@ class MacPhone:
     def backup(self, g):
         backup_saves(self.c, self.dev["id"], self.bid, g, docs=game_docs(g))
 
+    def app_missing(self, bid, why):
+        """s2a-devpush 进不了容器时，这台手机确实没装这个包名吗？Mac 上没装时 s2a-devpush 只回「device socket io failed」（真机实测），
+        和真断线分不开，所以问 devicectl 的应用列表（同 backup_saves）；连它也问不出 → 停装"""
+        from diag import devicectl
+        rc, apps, err = devicectl(self.c, "device", "info", "apps", "--device", self.dev["id"], "--bundle-id", bid, timeout=60)
+        if rc:
+            raise Failure("确认不了 iPhone 上有没有装过 S2Arm：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
+        return not any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or [])
+
     def install(self, ipa, games, steps=True):
         sign_and_install(self.c, ipa, self.team, self.dev, self.udid, self.bid, games, steps=steps)
 
@@ -881,6 +890,10 @@ class WinPhone:
 
     def client(self, work):
         return devpush_client(self.c, self.udid, self.bid, work)
+
+    def app_missing(self, bid, why):
+        """Windows 上没有 devicectl：手机明确答「没有这个 App」时 s2a-devpush 的原文含 ApplicationLookupFailed（Windows 实机核过），只认它"""
+        return "ApplicationLookupFailed" in why
 
     def backup(self, g):
         """覆盖装前备份本款存档（同 Mac backup_saves 口径：拉失败就停装）。按这次要装的包名查（这台没记录也可能有 Mac 装的同包名 App 和存档）；
@@ -956,20 +969,25 @@ def phone_for(c):
 GID_RE = re.compile(r"[0-9A-F]{16}")
 
 
+def phone_bid(ph):
+    """这次要装的包名：这台记录过的；Windows 第一次装还没记录 → 按 Impactor 当前账号算（同 WinPhone.bundle_for_signing）"""
+    return ph.bid or (ph.bundle_for_signing() if hasattr(ph, "bundle_for_signing") else None)
+
+
 def phone_games(c, ph):
     """这台手机上的 S2Arm 里有哪些游戏——真相在手机上，不在某一台电脑的设备记录里（同一台手机 Mac 装几款、Windows 再装一款时，
     各自的记录只有自己装的）。列这个包名的 Documents/games/：只认目录名是 16 位游戏号、资源包已解开（资源包/.applied）的，别的跳过。
-    手机明确答没装这个 App（ApplicationLookupFailed）→ 空；别的列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
-    bid = ph.bid or (ph.bundle_for_signing() if hasattr(ph, "bundle_for_signing") else None)
+    进不了容器时问平台这个包名装没装（ph.app_missing）：确实没装 → 空；装着却列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
+    bid = phone_bid(ph)
     if not bid or not ph.udid:
         return set()
     with tempfile.TemporaryDirectory(dir=c.private) as w:
         cl = devpush_client(c, ph.udid, bid, w)
         rc, out = cl.call("ls", "Documents/games")
         if rc:
-            if "ApplicationLookupFailed" in out:
-                return set()
             if "No such file" in out or "ObjectNotFound" in out:   # App 在、还没装过任何一款
+                return set()
+            if ph.app_missing(bid, out):
                 return set()
             raise Failure("读不出 iPhone 上已经装了哪些游戏：" + out[-200:] + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         found = set()
@@ -988,7 +1006,7 @@ def phone_game_name(c, ph, gid, names):
         import library
         with tempfile.TemporaryDirectory(dir=c.private) as w:
             dst = Path(w) / "control.nacp"
-            if devpush_client(c, ph.udid, ph.bid, w).get(f"{game_docs(gid)}/资源包/ctl/control.nacp", dst):
+            if devpush_client(c, ph.udid, phone_bid(ph), w).get(f"{game_docs(gid)}/资源包/ctl/control.nacp", dst):
                 dump = library.engine_tool(c, "ns2_dump")
                 n = dst.read_bytes()
                 return dump.nacp_title(n, 14) or dump.nacp_title(n, 0) or gid

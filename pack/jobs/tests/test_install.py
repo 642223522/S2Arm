@@ -1043,19 +1043,45 @@ class PhoneGamesTruthTests(unittest.TestCase):
             def get(self, rel, dst): return False
         return lambda c, udid, bid, work: Cl()
 
-    def ph(self):
-        return types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345")
+    def ph(self, missing=False):
+        return types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345", app_missing=lambda bid, why: missing)
 
     def test_only_game_ids_with_applied_pack_count(self):
         with um.patch.object(install, "devpush_client", self.client([self.A + "/", "notes", self.B, "0100000000099999x", self.C], {self.A, self.C})):
             self.assertEqual(install.phone_games(self.c, self.ph()), {self.A, self.C})   # B 没解开、别的名字跳过
 
     def test_app_not_installed_is_empty_other_errors_stop(self):
-        with um.patch.object(install, "devpush_client", self.client([], set(), ls_error="取不到 x 的容器：unknown error `ApplicationLookupFailed` returned from device")):
-            self.assertEqual(install.phone_games(self.c, self.ph()), set())
-        with um.patch.object(install, "devpush_client", self.client([], set(), ls_error="connection reset")), self.assertRaises(Failure) as e:
-            install.phone_games(self.c, self.ph())
+        err = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
+        with um.patch.object(install, "devpush_client", err):
+            self.assertEqual(install.phone_games(self.c, self.ph(missing=True)), set())   # 平台确认没装
+            with self.assertRaises(Failure) as e:
+                install.phone_games(self.c, self.ph(missing=False))                    # 装着却进不去 = 锁屏 / 断开
         self.assertEqual(e.exception.code, "device_locked")
+
+    def test_name_read_from_phone_with_the_bundle_being_installed(self):
+        # Windows 第一次装（这台还没记录包名）：确认框里的名字照样按这次要装的包名去手机上读 control.nacp（Windows 实机曾显示成游戏号）
+        seen = []
+        class Cl:
+            def get(self, rel, dst): seen.append(rel); return False
+        ph = types.SimpleNamespace(udid="U1", bid=None, bundle_for_signing=lambda: "io.s2arm.games.abcde12345")
+        with um.patch.object(install, "devpush_client", lambda c, udid, bid, work: (seen.append(bid), Cl())[1]):
+            self.assertEqual(install.phone_game_name(self.c, ph, self.B, {}), self.B)
+        self.assertEqual(seen[0], "io.s2arm.games.abcde12345")
+
+    def test_platform_says_whether_app_is_missing(self):
+        # Mac：问 devicectl 应用列表（devpush 的原文和断线分不开）；问不出就停。Windows：只认 ApplicationLookupFailed 原文
+        mac = install.MacPhone.__new__(install.MacPhone); mac.c = self.c; mac.dev = {"id": "D1"}
+        bid = "io.s2arm.games.abcde12345"
+        with um.patch("diag.devicectl", return_value=(0, {"result": {"apps": []}}, "")):
+            self.assertTrue(mac.app_missing(bid, "device socket io failed"))
+        with um.patch("diag.devicectl", return_value=(0, {"result": {"apps": [{"bundleIdentifier": bid}]}}, "")):
+            self.assertFalse(mac.app_missing(bid, "device socket io failed"))
+        with um.patch("diag.devicectl", return_value=(1, {}, "The device is locked")), self.assertRaises(Failure) as e:
+            mac.app_missing(bid, "device socket io failed")
+        self.assertEqual(e.exception.code, "device_locked")
+        win = install.WinPhone.__new__(install.WinPhone)
+        self.assertTrue(win.app_missing(bid, "unknown error `ApplicationLookupFailed` returned from device"))
+        self.assertFalse(win.app_missing(bid, "connection reset"))
 
     def test_include_what_we_can_ask_before_dropping_the_rest(self):
         # 本机记录 A；手机上 A、B、C；本机游戏库有 C（另一台电脑装的、这台也导入过）→ 带 A、C；B 只在手机上 → 先问
