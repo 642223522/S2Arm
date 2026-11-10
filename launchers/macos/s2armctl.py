@@ -35,6 +35,9 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   prepare <游戏号>                   Mac 编译（排队）
   ipa <游戏号> [--space-override]    打 iPhone 包（出 IPA + 资源包）；--space-override 同界面「仍然继续」，磁盘预检不够也照出（先征得玩家同意）
   build <游戏号> [ios|mac|android|harmony] [--space-override]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；安卓、鸿蒙即将上线
+  batch <游戏号>[:mac,iphone] … [--location 文件夹]
+                                    批量出包：几款一起，每款可指定平台（缺省 iphone；同一款先 Mac 后 iPhone，解包只做一次）、一批共用一个存放位置；
+                                    一款接一款地出，失败不挡后面、磁盘满暂停；等到出完，打印每款结果和汇总，有失败退出码 1
   install-check <游戏号> [--json]    装到 iPhone 前的清单：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
   restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
@@ -492,6 +495,40 @@ def show_task(t, t0, last):
         sys.exit(0 if t['state'] == 'completed' else 1)
     return last
 
+def batch(rest, limit=7200):
+    """批量出包（POST /batch）：<游戏号>[:mac,iphone] …；发起后每 5 秒看一次 GET /state 的 batch，出完 / 暂停就打印每款结果与汇总"""
+    games, location, i = [], None, 0
+    while i < len(rest):
+        if rest[i] == '--location' and i + 1 < len(rest):
+            location = os.path.abspath(os.path.expanduser(rest[i + 1])); i += 2; continue
+        gid, _, ps = rest[i].partition(':')
+        games.append({'gameId': gid.upper(), 'platforms': [p.strip() for p in ps.split(',') if p.strip()] or ['iphone']}); i += 1
+    if not games:
+        sys.exit('用法：s2armctl batch <游戏号>[:mac,iphone] … [--location 文件夹]')
+    body = {'games': games}
+    if location: body['location'] = location
+    r = call('POST', '/batch', body)
+    for s in (r or {}).get('skipped') or []:
+        print(f"跳过 {s['gameId']}：{s['reason']}")
+    t0 = time.time(); last = None
+    while time.time() - t0 < limit:
+        time.sleep(5)
+        b = (call('GET', '/state', soft=True) or {}).get('batch')
+        if not b:
+            continue
+        line = json.dumps(b.get('summary'), ensure_ascii=False)
+        if line != last:
+            print('进度：' + line, flush=True); last = line
+        if not b.get('running'):
+            for it in b.get('items') or []:
+                res = it.get('results') or {}
+                print(it.get('name', it.get('gameId')) + '：' + '；'.join(f"{p} {res.get(p, {}).get('state')}" + (f"（{res[p].get('message')}）" if res.get(p, {}).get('message') else '') for p in it.get('platforms') or []))
+            if b.get('paused'):
+                print('磁盘空间不足，后面的游戏已暂停：释放空间后在 S2Arm 里点「重试」')
+            sys.exit(0 if (b.get('summary') or {}).get('failed', 0) == 0 and not b.get('paused') else 1)
+    sys.exit('等了 %d 秒还没出完' % limit)
+
+
 def wait_op(op, before, limit=1800):
     # 等「放密钥 / 放游戏」这类不属于某款游戏的任务结束（取发命令之后出现的最新一个），打结果；失败给出 errors 同样的信息
     t0 = time.time(); said = None; stage = None; n0 = len(call('GET', '/state')['games'])
@@ -593,6 +630,8 @@ def main():
             parser.error('Windows 只支持 iOS，不能使用 --target mac')
         show_next(args.game, args.json, args.target)
         return
+    if cmd == 'batch':
+        batch(rest); return
     if cmd == 'logs': logs(rest[0], int(rest[rest.index('--lines') + 1]) if '--lines' in rest else 40); return
     if WINDOWS and cmd in ('device', 'push-pack'):
         sys.exit('Windows 上用 s2armctl install-check <游戏号> 看手机状态；s2armctl install <游戏号> 会装 App 并拷资源包')

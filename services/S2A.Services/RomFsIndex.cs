@@ -202,6 +202,18 @@ namespace S2A.Services
                 OverlayFiles(Path.Combine(programDir, ImageOverlayDir)), handle, offsets);
         }
 
+        public enum Source { Image, Directory, Missing }
+
+        // 起局读哪份 RomFS（审计 P1-151）：镜像可用 → 镜像；镜像文件在却用不了（长度与对照表不符 = 推到一半，或对照表 / 索引缺）且没有 romfs/ 可退 →
+        //   起局失败（与对照表魔数不对同一条：抛 InvalidDataException，会话回失败），不再只报红后带着空的游戏数据开局；有 romfs/ → 退回目录（调用方报红说明没用这份镜像）
+        public static Source Decide(bool imageOpened, bool imageFileExists, bool romfsDirExists, string programDir)
+        {
+            if (imageOpened) return Source.Image;
+            if (imageFileExists && !romfsDirExists)
+                throw new InvalidDataException($"RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退：{programDir}；请重新装到 iPhone");
+            return romfsDirExists ? Source.Directory : Source.Missing;
+        }
+
         // macOS 垃圾（同 pack/pack.py、graphics/nvn/tools/romfs_list.py）：不进资源包，也就不能进镜像，否则游戏枚举到就读不到
         internal static bool IsHostJunk(string path)
         {
