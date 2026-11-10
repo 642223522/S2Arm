@@ -2394,9 +2394,13 @@ def diagnostics(c):
                             raise Failure("诊断文件在导出期间发生变化，请重试。")
                         stem, suffix = os.path.splitext(member)
                         # Archive separators are known structure, not email local-part characters.
-                        public_member = "/".join(redact_member_component(part) for part in stem.split("/")) + suffix
-                        if public_member in archive.namelist() or public_member == "manifest.json":
-                            raise Failure("脱敏后的诊断文件名重复，未生成诊断包。")
+                        public_stem = "/".join(redact_member_component(part) for part in stem.split("/"))
+                        public_member, n = public_stem + suffix, 1
+                        # 两个文件脱敏后同名（文件名里的设备号、邮箱之类被换成同一个标签）：后一个加序号照样收进去。
+                        #   原先整包报「文件名重复」不生成，玩家交不出诊断包（#457）
+                        while public_member in archive.namelist() or public_member == "manifest.json":
+                            n += 1
+                            public_member = f"{public_stem} ({n}){suffix}"
                         if job:
                             limit = DIAGNOSTIC_JOB_LIMIT
                             if opened.st_size > limit:

@@ -369,6 +369,32 @@ class JobsTests(unittest.TestCase):
             self.assertFalse(any(p.is_file() for root in failed for p in root.rglob("*")))
             self.assertEqual({p: p.read_bytes() for p in snapshot}, snapshot)
 
+    def test_pull_diagnostics_brings_each_games_unpack_log(self):
+        # #457：多款容器每款的解包日志在 Documents/games/<游戏号>/unpack.log（手机 host.log 写「见 unpack.log」），原先没拉回。
+        #   期望（手写）：游戏库里两款，机上只有 A 有这份日志 → 拉回 games/A/unpack.log，B 不留空目录；不碰资源包、存档
+        import unittest.mock as um, diag
+        A, B = "01008DB008C2C000", "0100000000010000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="A"), dict(id=B, name="B")]))
+        devices = {"result": {"devices": [{"identifier": "D1", "hardwareProperties": {"platform": "iOS", "udid": "U1"}, "connectionProperties": {"tunnelState": "connected"}}]}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "io.s2arm.games.abcde12345", "name": "S2Arm"}]}}
+        sources = []
+        def fake(c, *args, timeout=120):
+            if args[:2] == ("list", "devices"): return 0, devices, ""
+            if args[:3] == ("device", "info", "apps"): return 0, apps, ""
+            source = args[args.index("--source") + 1]; sources.append(source)
+            if source in ("Documents/host.log", f"Documents/games/{A}/unpack.log"):
+                Path(args[args.index("--destination") + 1]).write_text("资源包收推送：失败 " + source)
+                return 0, {}, ""
+            return 1, {}, "not found"
+        with um.patch.object(diag, "devicectl", fake):
+            out = diag.pull(self.c)
+        app = Path(out["apps"][0]["path"])
+        self.assertEqual((app / "games" / A / "unpack.log").read_text(), f"资源包收推送：失败 Documents/games/{A}/unpack.log")
+        self.assertFalse((app / "games" / B).exists())
+        self.assertEqual(out["apps"][0]["files"], 2)
+        self.assertIn(f"Documents/games/{B}/unpack.log", sources)
+        self.assertFalse(any("资源包" in s or "save" in s for s in sources))
+
     def test_pull_diagnostics_hints_resign_when_probe_says_iml_lost(self):
         # 拉回的 diag/iml_probe.json（App 首启复核写）has_iml_ent=false → 一行黄字提示重签；true / null / 没文件 / 坏文件 → 不提示、不报错
         import unittest.mock as um, diag
@@ -1610,9 +1636,14 @@ class JobsTests(unittest.TestCase):
         logs = self.c.logs; logs.mkdir(exist_ok=True)
         for name in ("one@example.invalid.log", "two@example.invalid.log"):
             (logs / name).write_text("synthetic log")
-        with self.assertRaisesRegex(Failure, "文件名重复"):
-            library.diagnostics(self.c)
-        self.assertEqual(destination.read_bytes(), previous)
+        # #457：两个文件脱敏后同名，原先整包不生成；现在后一个加序号照样收进去，内容都在
+        library.diagnostics(self.c)
+        self.assertNotEqual(destination.read_bytes(), previous)
+        with zipfile.ZipFile(destination) as archive:
+            same = sorted(n for n in archive.namelist() if n.startswith("logs/") and n.endswith(".log") and "example.invalid" not in n)
+            self.assertEqual(len(same), 2, archive.namelist())
+            self.assertTrue(same[0].endswith(" (2).log") or same[1].endswith(" (2).log"), same)
+            self.assertEqual({archive.read(n).decode() for n in same}, {"synthetic log"})
 
     def test_diagnostic_export_failure_names_the_step_and_reason_but_no_path(self):
         # #427：游戏库在 SMB 共享盘上导不出，原先只有一句「无法安全读取或写入」，看不出卡在哪一步。期望手写：所选位置的文件夹不在 → 建临时文件那一步失败
