@@ -1561,10 +1561,12 @@ def catalog(c):
         game["location"] = dict(state=where, path=str(root) if root else "", folder=str(place) if where == "ok" else "",
                                 volume=_volume(root) if root else "", default=root == c.library if root else True)
         cover = layout.path(c, game["id"], "cover.jpg", create=False)
+        banner = layout.path(c, game["id"], "banner.jpg", create=False)
         custom = game_custom(c, game["id"])
         game["customName"], game["customCover"] = bool(custom["name"]), custom["cover"] is not None
         game["name"] = custom["name"] or game["name"]
-        game["cover"] = str(custom["cover"] or cover) if custom["cover"] or cover.is_file() else ""
+        # 封面三级：玩家换的 → 游戏包自带图标（导入时从控制分区 icon_*.dat 取，cover.jpg）→ 商店横图（store_meta，banner.jpg）→ 空（界面用 S2Arm 标志）
+        game["cover"] = str(custom["cover"] or (cover if cover.is_file() else banner if banner.is_file() else "")) if custom["cover"] or cover.is_file() or banner.is_file() else ""
         choices = [p for p in selected_packages(game) if p["type"] in ("base", "update")]
         if choices:
             game["display"] = max(choices, key=lambda p: p["version"])["display"]

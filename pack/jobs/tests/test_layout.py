@@ -464,3 +464,18 @@ class StoreMetaTests(JobCase):
             with patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
                 self.assertFalse(library.store_meta_background(self.fresh(), {B}))
         self.assertEqual(len(popen), 1)
+
+
+class CoverFallbackTests(JobCase):
+    """catalog 的封面三级（期望按规则手写）：游戏包自带图标 cover.jpg → 商店横图 banner.jpg → 空（界面用 S2Arm 标志）"""
+    def test_cover_then_banner_then_empty(self):
+        L = self.c.library
+        atomic(L / "catalog.json", dict(schema=1, games=[dict(id=A, name="甲", packages=[]), dict(id=B, name="乙", packages=[]), dict(id=C, name="丙", packages=[])]))
+        for gid, files in ((A, ("cover.jpg", "banner.jpg")), (B, ("banner.jpg",)), (C, ())):
+            d = L / "games" / gid; d.mkdir(parents=True); atomic(d / "game.json", dict(schema=1, id=gid))
+            for f in files: (d / f).write_bytes(f.encode())
+        result, done = self.worker("catalog")
+        self.assertEqual(done["state"], "succeeded", result.stderr)
+        covers = {g["id"]: g["cover"] for g in done["result"]["games"]}
+        self.assertEqual(covers, {A: str(L / "games" / A / "cover.jpg"), B: str(L / "games" / B / "banner.jpg"), C: ""})
+
