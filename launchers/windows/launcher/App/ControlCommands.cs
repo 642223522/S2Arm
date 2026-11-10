@@ -298,7 +298,7 @@ public sealed partial class EnvironmentWindow
         {
             ["id"] = g.Id, ["name"] = g.Name, ["customName"] = g.CustomName, ["customCover"] = g.CustomCover, ["display"] = g.Version, ["compatibility"] = "", ["ready"] = g.IphoneReady, ["iphoneReady"] = g.IphoneReady,
             ["needsPreparation"] = false, ["needsKeys"] = g.NeedsKeys, ["buildable"] = g.Missing.Count == 0, ["missing"] = g.Missing,
-            ["baseBytes"] = (g.Packages ?? []).Where(p => p.Type == "base").Sum(p => p.Size), ["bytes"] = g.TotalBytes
+            ["baseBytes"] = (g.Packages ?? []).Where(p => p.Type == "base").Sum(g.OwnBytes), ["bytes"] = g.TotalBytes
         }).ToList();
         object? session = null;
         if (packRunning) session = new Dictionary<string, object?> { ["kind"] = "ipa", ["gameId"] = packGame?.Id, ["name"] = packGame?.Name, ["phase"] = "running" };

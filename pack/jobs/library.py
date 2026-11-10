@@ -379,7 +379,7 @@ def nup_inspect(c, source, icon_dir):
             meta = {}
             for k in sorted((k for k in n.packages if k.kind in (nup.BASE, nup.UPDATE)), key=lambda k: (k.kind, k.version)):
                 meta.update(k.meta())
-            content = sum(n.tree_bytes(k.root) for k in [base, vers.get(ver), *dlc.values()] if k is not None)
+            own = {id(k): n.tree_bytes(k.root) for k in [base, vers.get(ver), *dlc.values()] if k is not None}   # 每项各自的内容字节（界面 / 错误摘要逐项显示）
     except (nup.Error, OSError, ValueError) as e:
         raise Failure(f"读不出这个 NUP 容器（{Path(source).name}）：{e}", code="content_invalid") from None
     nacp = meta.get(nup.T_NACP) if len(meta.get(nup.T_NACP) or b"") == 0x4000 else None
@@ -389,11 +389,11 @@ def nup_inspect(c, source, icon_dir):
     icon = meta.get(nup.T_ICON) or nup.localized_icon(meta.get(nup.T_LICONS, b""))
     if icon:
         (Path(icon_dir) / f"{app:016X}.jpg").write_bytes(icon)
-    common = dict(baseId=f"{app:016X}", display=display, guestIsa="unknown", builds={}, contentBytes=content, format="nup")
-    out = [dict(common, titleId=f"{app:016X}", type="base", version=0, name=name)]
+    common = dict(baseId=f"{app:016X}", display=display, guestIsa="unknown", builds={}, format="nup")
+    out = [dict(common, titleId=f"{app:016X}", type="base", version=0, name=name, contentBytes=own.get(id(base), 0))]
     if ver:
-        out.append(dict(common, titleId=f"{app | 0x800:016X}", type="update", version=ver, name=name))
-    out += [dict(common, titleId=f"{tid:016X}", type="dlc", version=k.version, name="") for tid, k in sorted(dlc.items())]
+        out.append(dict(common, titleId=f"{app | 0x800:016X}", type="update", version=ver, name=name, contentBytes=own[id(vers[ver])]))
+    out += [dict(common, titleId=f"{tid:016X}", type="dlc", version=k.version, name="", contentBytes=own[id(k)]) for tid, k in sorted(dlc.items())]
     return out
 
 
