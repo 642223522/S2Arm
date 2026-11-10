@@ -908,6 +908,19 @@ namespace S2A.Services.Tests
                 bool okq = got.Length == 2 && got[0].Item1 == A && got[0].Item2 == B && got[1].Item1 == C && got[1].Item2 == B;
                 Check("hid SendVibrationValues 分组入队（位置 0 A、1 B、0 C）", "结果 0、入队 2 项：(A, B)、(C, B)",
                     $"结果 {svr.Result}、入队 {got.Length} 项{(okq ? "：(A, B)、(C, B)" : "（内容不符）")}");
+                // Switch 2 的 214（程序号 0400486024DEC000 每帧调，11-10 抓到的请求：数据区 24 字节 = 2、资源号 1、0；指针缓冲 0 = 设备句柄、1 = 震动值，与 206 同形）：
+                //   同样的三个句柄 / 三个值 → 同样入队 (A, B)、(C, B)。修前 214 只回成功、不入队
+                while (q.TryDequeue(out _)) { }
+                Host.Device.Hid.Npads.LastVibrationValues.Remove(Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Player1);
+                Msg nxv = Msg.Cmif(214, Bytes(2L, 1L, 0L)); nxv.X.Add(((ulong)vh, 12)); nxv.X.Add(((ulong)vv, 48));
+                Reply nvr = Call(hid, nxv);
+                var got2 = q.ToArray();
+                bool okq2 = got2.Length == 2 && got2[0].Item1 == A && got2[0].Item2 == B && got2[1].Item1 == C && got2[1].Item2 == B;
+                Check("hid 214（Switch 2 震动，与 206 同形的两个缓冲）分组入队", "结果 0、入队 2 项：(A, B)、(C, B)",
+                    $"结果 {nvr.Result}、入队 {got2.Length} 项{(okq2 ? "：(A, B)、(C, B)" : got2.Length == 0 ? "" : "（内容不符）")}");
+                while (q.TryDequeue(out _)) { }
+                Reply nv0 = Call(hid, Msg.Cmif(214, Bytes(2L, 1L, 0L)));
+                Check("hid 214 不带缓冲", "结果 0、入队 0 项", $"结果 {nv0.Result}、入队 {q.Count} 项");
                 Host.Device.Hid.Npads.RumbleQueues.Remove(Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Player1);
             }
 
