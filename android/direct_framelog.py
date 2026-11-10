@@ -111,9 +111,9 @@ def parse(text):
                     f"块@line {meta['line']}: end 行 frames/dropped 与 meta 不符")
             if m[3].lower() != hashlib.sha256(blob).hexdigest():
                 raise FrameLogError(f"块@line {meta['line']}: sha256 不符，载荷被改动/截断")
-            if meta["v"] not in (2, 3) or meta["unit"] != "us" or meta["endian"] != "le":
-                raise FrameLogError(f"块@line {meta['line']}: 不支持的 v/unit/endian（只认 v=2,3/us/le）")
-            expected_rec = 16 if meta["v"] == 2 else 24
+            if meta["v"] not in (2, 3, 4) or meta["unit"] != "us" or meta["endian"] != "le":
+                raise FrameLogError(f"块@line {meta['line']}: 不支持的 v/unit/endian（只认 v=2,3,4/us/le）")
+            expected_rec = {2: 16, 3: 24, 4: 32}[meta["v"]]
             if meta["rec"] != expected_rec:
                 raise FrameLogError(
                     f"块@line {meta['line']}: v={meta['v']} 记录必须 rec={expected_rec}（实得 rec={meta['rec']}）")
@@ -128,16 +128,19 @@ def parse(text):
                 raise FrameLogError(
                     f"块@line {meta['line']}: dropped != first（丢弃计数不自洽）")
             n = meta["recorded"]
-            fmt, width = ("QII", 3) if meta["v"] == 2 else ("QIIII", 5)
+            fmt, width = {2: ("QII", 3), 3: ("QIIII", 5), 4: ("QIIIIII", 7)}[meta["v"]]
             flat = struct.unpack("<" + fmt * n, blob) if n else ()
             ts = [flat[i * width] for i in range(n)]
             fence_us = [flat[i * width + 1] for i in range(n)]
             fence_n = [flat[i * width + 2] for i in range(n)]
-            acquire_us = [None if flat[i * width + 3] == 0xffffffff else flat[i * width + 3] for i in range(n)] if width == 5 else None
-            present_us = [None if flat[i * width + 4] == 0xffffffff else flat[i * width + 4] for i in range(n)] if width == 5 else None
+            acquire_us = [None if flat[i * width + 3] == 0xffffffff else flat[i * width + 3] for i in range(n)] if width >= 5 else None
+            present_us = [None if flat[i * width + 4] == 0xffffffff else flat[i * width + 4] for i in range(n)] if width >= 5 else None
+            gpu_us = [None if flat[i * width + 5] == 0xffffffff else flat[i * width + 5] for i in range(n)] if width == 7 else None
+            gpu_seq = [None if flat[i * width + 6] == 0xffffffff else flat[i * width + 6] for i in range(n)] if width == 7 else None
             captures.append({"meta": meta, "ts": ts, "fence_us": fence_us,
                              "fence_n": fence_n, "acquire_us": acquire_us,
-                             "present_us": present_us, "line": meta["line"]})
+                             "present_us": present_us, "gpu_us": gpu_us,
+                             "gpu_seq": gpu_seq, "line": meta["line"]})
             meta = None
             parts = None
             continue
