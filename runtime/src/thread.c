@@ -2783,16 +2783,7 @@ int s2a_tmem_get(uint32_t h, uint64_t *addr, uint64_t *size, uint32_t *perm) {
 }
 uint32_t s2a_thread_current(void) { thr_t *t = thread_current_or_null(); return t ? t->handle : 0; }
 
-#if defined(__ANDROID__)
-// Android has no stop/parking boundary equivalent to the Apple one below, and
-// session.c calls this unconditionally from s2a_host_restart(): without a
-// definition the game-mode link fails on
-//   undefined symbol: s2a_thread_restart_supported  (referenced by session.c:702)
-// Returning 0 makes the in-process-restart request fail closed with the clean
-// "缺少客体线程安全退出边界" path instead of breaking the link. Replace with a
-// real implementation when the Android thread stop boundary exists.
-int s2a_thread_restart_supported(void) { return 0; }
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
 int s2a_thread_restart_supported(void) {
     // Capability is queried before the first guest registers its thread keys.
     // Initialize the actual idempotent stop boundary before inspecting it.
@@ -2904,6 +2895,9 @@ int s2a_thread_session_reset(void) {
 // Android does not maintain the live/reap proof needed for in-process rebuild.
 // Callers first check s2a_session_rebuild_supported; never certify a join here.
 int s2a_thread_session_joined(void) { return 0; }
+// No stop/parking boundary off Apple: session.c calls this unconditionally from s2a_host_restart(),
+// so game mode needs the symbol to link. 0 = the in-process restart request fails closed (PR #15).
+int s2a_thread_restart_supported(void) { return 0; }
 #endif
 uint64_t s2a_thread_id(uint32_t h) { glock(); thr_t *t = h_obj(h, S2A_OBJ_THREAD); uint64_t id = t ? t->id : 0; pthread_mutex_unlock(&G); return id; }
 
