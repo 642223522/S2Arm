@@ -9,6 +9,8 @@
   其余文件段       每个文件起点页对齐（读时一次 pread / mmap 零拷贝）
   目录表           u32 槽数（2 的幂）| u32 条目数 | 槽数 × {u64 路径 FNV-1a 64（0 = 空槽）, u64 偏移, u64 长度, u32 路径偏移, u32 路径长} | 路径区（UTF-8）
                    开放寻址线性探测，按路径 O(1) 查；路径用 / 分隔、相对资源包根（如 exefs/main.npdm）
+                   有 RomFS 段时目录表另有一条 romfs.list：RomFS 里全部文件的相对路径（UTF-8，按字节序，一行一个）——服务层叠界面覆盖层时
+                   按它重建虚拟 RomFS（services RomFsIndex.OpenImg），不依赖 LibHac 的目录遍历
 格式号只在字节布局真变时加一；新壳必须保留读旧号的代码（坑记录与发版步骤）。
 
 用法：img.py build <RomFS 目录> <其余文件清单 tsv：相对路径\\t源文件> <输出 .img> --gid <游戏号> [--pack-id <资源包号>] [--romfs-index <romfs_index 命令>]
@@ -66,6 +68,10 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print):
             romfs_len = int(r.stdout.strip().splitlines()[-1])
         pos = up(romfs_off + romfs_len) if romfs_dir else PAGE
         entries = []
+        if romfs_dir:   # romfs.list：同 romfs_index 的文件集合（跳过 macOS 垃圾 .DS_Store / ._*，同 RomFsIndex.IsHostJunk），按字节序
+            names = sorted((os.path.relpath(os.path.join(d, n), romfs_dir).replace(os.sep, '/') for d, _, ns in os.walk(romfs_dir) for n in ns
+                            if n != '.DS_Store' and not n.startswith('._')), key=lambda x: x.encode('utf-8'))
+            lst = out + '.romfs.list'; open(lst, 'w', encoding='utf-8', newline='\n').write(''.join(n + '\n' for n in names)); others = [*others, ('romfs.list', lst)]
         with open(part, 'r+b') as f:
             for rel, src in sorted(others):
                 size = os.path.getsize(src); f.seek(pos)
@@ -76,6 +82,7 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print):
             total = toc_off + len(toc)
             f.seek(0); f.write(HDR.pack(MAGIC, FORMAT, 0, gid.upper().encode('ascii'), pack_id.encode('ascii')[:64], romfs_off, romfs_len, toc_off, len(toc), total))
         os.replace(part, out)
+        if romfs_dir: os.unlink(out + '.romfs.list')
     except BaseException:
         try: os.unlink(part)
         except OSError: pass
