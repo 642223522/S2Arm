@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[4]
-source = (ROOT / 'graphics/tools/direct/dsh/batch/Build.cs').read_text()
+source = (ROOT / 'graphics/tools/direct/dsh/batch/Build.cs').read_text(encoding='utf-8')
 signature = '    public static byte[] Compile(string target, string msl, string name, out string key)'
 assert source.count(signature) == 1, 'Metal.Compile signature must be unique'
 start = source.index(signature)
@@ -136,7 +136,7 @@ static class TestProgram {
 
 with tempfile.TemporaryDirectory(prefix='metal-cache-test-') as d:
     root = Path(d)
-    (root / 'Program.cs').write_text(HARNESS.replace('__METHOD__', method))
+    (root / 'Program.cs').write_text(HARNESS.replace('__METHOD__', method), encoding='utf-8')
     (root / 'test.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
         '<OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>'
         '<Nullable>disable</Nullable></PropertyGroup></Project>')
