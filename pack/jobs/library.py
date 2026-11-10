@@ -32,10 +32,59 @@ DIAGNOSTIC_LOG_EDGE = 16000          # 长日志保留的开头、结尾字节�
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
 DIAGNOSTIC_LOG_SCAN = 64 << 20       # 只在结尾前这么大的范围里找心跳行
 DIAGNOSTIC_LOG_CHUNK = 1 << 20
+DIAGNOSTIC_LOG_SCENE = 96000         # 中间最后一次崩溃摘要 + 全线程现场块最多保留这么多字节（超了按优先级裁，见 _scene_text）
+
+
+class _Scene:
+    """扫中段时收最后一次「崩溃摘要 + 全线程现场」（runtime/src/crash.c 打【红】CRASH 摘要行，随后 tdump.c 每行带「[现场] 」前缀，
+    「===== 全线程现场：…」起、「===== 现场完 =====」止）。#141：只留头尾时崩溃在中段就整段丢了，玩家交了诊断包也定不了因"""
+    CRASH, TAG = "CRASH 信号".encode(), "[现场]".encode()
+    START, END = "===== 全线程现场".encode(), "现场完".encode()
+
+    def __init__(self):
+        self.summary, self.block, self.in_block, self.taking = [], [], False, False
+        self.last = None   # (摘要行, 现场块行)
+
+    def feed(self, line):
+        if self.CRASH in line and self.TAG not in line:
+            self.summary, self.taking = [line], True
+            if not self.in_block: self.last = (self.summary, [])   # 只有摘要、没等到现场块也留
+            return
+        if self.TAG not in line:
+            if self.taking and len(self.summary) < 60: self.summary.append(line)
+            return
+        if self.START in line:
+            self.block, self.in_block, self.taking = [line], True, False
+            self.last = (self.summary if self.summary else [], self.block)
+            self.summary = []
+        elif self.in_block:
+            self.block.append(line)
+            if self.END in line: self.in_block = False
+
+
+def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
+    """整段放得下就整段；放不下按优先级：崩溃摘要 → 现场块头 → 第一个非等待线程的整段栈 → 其余线程的头一行 → 现场完"""
+    text = b"\n".join(summary + block)
+    if len(text) <= budget:
+        return text
+    keep = list(summary[:24]) + block[:1]
+    threads, cur = [], None
+    for line in block[1:]:
+        if "[现场] 线程 ".encode() in line: cur = [line]; threads.append(cur)
+        elif cur is not None and _Scene.END not in line: cur.append(line)
+    first = next((t for t in threads if "等待".encode() not in t[0]), threads[0] if threads else [])
+    keep += first
+    used = sum(len(x) + 1 for x in keep)
+    for t in threads:
+        if t is first: continue
+        if used + len(t[0]) + 1 > budget - 200: keep.append(f"[现场] …（还有线程略去：现场块 {len(text)} 字节超出保留上限）".encode()); break
+        keep.append(t[0]); used += len(t[0]) + 1
+    keep += [x for x in block[-1:] if _Scene.END in x]
+    return b"\n".join(keep)
 
 
 def diagnostic_log_excerpt(source, size):
-    """诊断包里的日志：短的整份；长的留开头（起局配置）+ 中间的心跳行（卡顿、内存走势）+ 结尾。总量有界。"""
+    """诊断包里的日志：短的整份；长的留开头（起局配置）+ 中间的心跳行（卡顿、内存走势）+ 中间最后一次崩溃摘要与全线程现场 + 结尾。总量有界。"""
     edge = DIAGNOSTIC_LOG_EDGE
     if size <= 2 * edge:
         return source.read(2 * edge)
@@ -43,6 +92,7 @@ def diagnostic_log_excerpt(source, size):
     start = max(edge, size - edge - DIAGNOSTIC_LOG_SCAN)
     source.seek(start)
     beats, used, partial, left = collections.deque(), 0, b"", size - edge - start
+    scene = _Scene()
     while left > 0:
         chunk = source.read(min(DIAGNOSTIC_LOG_CHUNK, left))
         if not chunk:
@@ -53,6 +103,7 @@ def diagnostic_log_excerpt(source, size):
         if len(partial) > DIAGNOSTIC_LOG_CHUNK:   # 没有换行的超长段不是心跳行，也别让它占内存
             partial = b""
         for line in lines:
+            if len(line) < 4096: scene.feed(line)
             if "[心跳]".encode() in line and len(line) < 4096:
                 beats.append(line)
                 used += len(line) + 1
@@ -61,7 +112,11 @@ def diagnostic_log_excerpt(source, size):
     source.seek(size - edge)
     tail = source.read(edge)
     gap = lambda text: f"\n…（{text}）…\n".encode()
-    return head + gap(f"日志共 {size} 字节，中间只保留 {len(beats)} 行心跳") + b"\n".join(beats) + gap("以下是日志结尾") + tail
+    if partial and len(partial) < 4096: scene.feed(partial)   # 扫描区最后一行没有换行（紧挨着结尾段）
+    mid = b""
+    if scene.last:
+        mid = gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)
+    return head + gap(f"日志共 {size} 字节，中间只保留 {len(beats)} 行心跳") + b"\n".join(beats) + mid + gap("以下是日志结尾") + tail
 
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20

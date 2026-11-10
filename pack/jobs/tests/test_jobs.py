@@ -1596,6 +1596,37 @@ class JobsTests(unittest.TestCase):
         self.assertIn(beat(19999).strip().encode(), out); self.assertNotIn(beat(0).strip().encode(), out)
         self.assertLessEqual(len(out), 16000 * 2 + 64000 + 200)
 
+    def test_diagnostic_log_keeps_crash_scene_in_the_middle(self):
+        # #141：28 万字节的 game.log，崩溃摘要与全线程现场在中段（只留头尾时整段丢，玩家交了诊断包也定不了因）。
+        #   现场格式同 runtime/src/crash.c（【红】CRASH 摘要）+ tdump.c（「[现场] 」前缀，===== 全线程现场 起、===== 现场完 ===== 止）
+        import io
+        def thread(i, n, state, frames):
+            rows = [f"[现场] 线程 {i}/{n} tid {9000 + i}「worker-{i}」{state} 优先级 31 QoS UI 用户态 1.00 s", f"[现场]     pc libS2A.dylib+{0x1000 + i:#x}", f"[现场]     lr libS2A.dylib+{0x2000 + i:#x}"]
+            rows += [f"[现场]     #{k} {frames}+{0x100 * k + i:#x}" for k in range(12)]
+            rows += [f"[现场]     x{r:<2d} " + " ".join(["%016x" % (r * 1000 + i)] * 4) for r in range(0, 29, 4)]
+            return rows
+        def scene(n, crash_at, waiting="等待"):
+            rows = ["【红】CRASH 信号 11 地址 0x10 pc main+0x1234 lr main+0x1200 sp 0x16f000000", "  x0  0000000000000000 0000000000000001 0000000000000002 0000000000000003",
+                    "崩溃时余量：低区空洞合计 512 MB、最大一块 256 MB；文件句柄已开 40 个，软上限 256、硬上限 10240",
+                    f"[现场] ===== 全线程现场：崩溃 信号 11（{n} 条线程）====="]
+            for i in range(1, n + 1):
+                rows += thread(i, n, "在跑" if i == crash_at else waiting, "CRASHFRAME" if i == crash_at else "idle")
+            return rows + ["[现场] ===== 现场完 ====="]
+        noise = "".join(f"[log] 第 {i} 行普通日志 padding padding padding\n" for i in range(2200)).encode()
+        body = b"HEAD_MARK\n" + noise + "\n".join(scene(30, 17)).encode() + b"\n" + noise + b"\nTAIL_MARK\n"
+        self.assertTrue(250000 < len(body) < 330000, len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        for want in ("【红】CRASH 信号 11", "全线程现场：崩溃 信号 11", "线程 17/30 tid 9017「worker-17」在跑", "#11 CRASHFRAME+0xb11", "===== 现场完 ====="):
+            self.assertIn(want.encode(), out, want)
+        self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
+        # 现场块超出保留上限：总量有界；崩溃摘要、第一个非等待线程（崩溃线程）的整段栈、其余线程头一行、现场完都在
+        body = b"h" * 16000 + noise + "\n".join(scene(600, 333)).encode() + b"\n" + b"t" * 16000
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        self.assertLessEqual(len(out), 16000 * 2 + 64000 + library.DIAGNOSTIC_LOG_SCENE + 400)
+        for want in ("【红】CRASH 信号 11", "线程 333/600 tid 9333「worker-333」在跑", f"#11 CRASHFRAME+{0x100 * 11 + 333:#x}", "线程 1/600 tid 9001", "===== 现场完 ====="):
+            self.assertIn(want.encode(), out, want)
+        self.assertNotIn(b"#11 idle+0xb01", out)   # 等待线程的栈让位给崩溃线程
+
     def customize_game(self, **fields):
         gid = "0100000000010000"
         cat = self.c.catalog()
