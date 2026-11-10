@@ -246,9 +246,10 @@ def notice_remote(timeout=5):
         return False, None   # 拿到的不是 JSON（门户页、被劫持的网络）：当没取到
 
 
-def notice(private_root, remote=notice_remote, bundled=None):
+def notice(private_root, remote=None, bundled=None):
     """→ 要显示的公告或 None：先官方下载页，取不到用随包那份；玩家关掉过的同一条（id 一样）不给"""
-    got, item = remote()
+    # 调用时才取 notice_remote（不写成默认参数）：默认参数在定义时就绑死，测试 patch updater.notice_remote 换不掉，单测会真联网取官方页
+    got, item = (remote or notice_remote)()
     if not got:
         try:
             item = notice_valid(json.loads((bundled or notice_file()).read_text(encoding="utf-8")))
