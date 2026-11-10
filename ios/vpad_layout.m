@@ -6,6 +6,7 @@ NSString *const S2AVPadLayoutDefaultIdentifier = @"default";
 NSString *const S2AVPadLayoutMineIdentifier = @"mine";
 // 纯触屏：没有虚拟按键，也就没有可编辑的几何，因此不落文件、只记在选择记录里。
 NSString *const S2AVPadLayoutTouchIdentifier = @"touch";
+NSString *const S2AVPadLayout2DIdentifier = @"2d";
 
 CGFloat S2AVPadKeyOpacity(CGFloat idle, BOOL active) {
     return active ? MAX(0.75, idle) : idle;
@@ -82,7 +83,8 @@ static CGRect normalized_rect(NSDictionary *value) {
     }
     if (![[NSSet setWithArray:required] isSubsetOfSet:seen]) { fail(error, @"F01.buttons", S2AL(@"vpad.layout.err.buttonMissing")); return nil; }
     NSArray *sticks = doc[@"sticks"];
-    if (sticks.count != 2) { fail(error, @"F01.sticks", S2AL(@"vpad.layout.err.stickCount")); return nil; }
+    // 0 根（2D 布局和从它改出来的「我的布局」，#268）或 2 根
+    if (sticks.count != 2 && sticks.count != 0) { fail(error, @"F01.sticks", S2AL(@"vpad.layout.err.stickCount")); return nil; }
     [seen removeAllObjects];
     for (id s in sticks) {
         if (!fields(s, @[@"id", @"activation", @"radius"]) ||
@@ -92,7 +94,7 @@ static CGRect normalized_rect(NSDictionary *value) {
         }
         [seen addObject:s[@"id"]];
     }
-    CGRect overlap = CGRectIntersection(normalized_rect(sticks[0][@"activation"]), normalized_rect(sticks[1][@"activation"]));
+    CGRect overlap = sticks.count == 2 ? CGRectIntersection(normalized_rect(sticks[0][@"activation"]), normalized_rect(sticks[1][@"activation"])) : CGRectNull;
     if (!CGRectIsNull(overlap) && overlap.size.width > geometryTolerance && overlap.size.height > geometryTolerance) {
         fail(error, @"F01.sticks", S2AL(@"vpad.layout.err.stickOverlap")); return nil;
     }
@@ -102,10 +104,11 @@ static CGRect normalized_rect(NSDictionary *value) {
     return layout;
 }
 + (BOOL)isBuiltinIdentifier:(NSString *)identifier {
-    return [identifier isEqualToString:S2AVPadLayoutDefaultIdentifier] || [identifier isEqualToString:S2AVPadLayoutTouchIdentifier];
+    return [identifier isEqualToString:S2AVPadLayoutDefaultIdentifier] || [identifier isEqualToString:S2AVPadLayoutTouchIdentifier] || [identifier isEqualToString:S2AVPadLayout2DIdentifier];
 }
 - (NSString *)displayName {
     if ([_identifier isEqualToString:S2AVPadLayoutDefaultIdentifier]) return S2AL(@"vpad.layout.default");
+    if ([_identifier isEqualToString:S2AVPadLayout2DIdentifier]) return S2AL(@"vpad.layout.2d");
     if ([_identifier isEqualToString:S2AVPadLayoutMineIdentifier]) return S2AL(@"vpad.layout.mine");
     return _name;
 }
@@ -134,6 +137,44 @@ static CGRect normalized_rect(NSDictionary *value) {
     // UIKit calls this only for landscape viewports. Do not parse our own trusted defaults on every resize.
     S2AVPadLayout *layout = [self new]; layout->_document = doc; layout->_identifier = S2AVPadLayoutDefaultIdentifier; layout->_name = doc[@"name"];
     layout->_buttons = buttons; layout->_sticks = doc[@"sticks"]; return layout;
+}
++ (instancetype)twoDForSafeRect:(CGRect)rect {
+    CGFloat w = MAX(rect.size.width, 1), h = MAX(rect.size.height, 1), unit = MIN(w, h);
+    // 定稿（iPhone 横屏 832×419 安全区设计，位置按比例、尺寸按点）：十字键 56 点、中心 (0.17, 0.66)、间距 52；ABXY 64 点、中心 (0.855, 0.64)、间距 58；
+    //   肩键、− / + 与默认布局同位置；没有 L3 / R3、没有摇杆
+    CGFloat px = 0.17 * w, py = 0.66 * h, pd = 52, ax = 0.855 * w, ay = 0.64 * h, ad = 58;
+    NSArray *spec = @[@[@"A", @(ax + ad), @(ay), @64, @32], @[@"B", @(ax), @(ay + ad), @64, @32], @[@"X", @(ax), @(ay - ad), @64, @32], @[@"Y", @(ax - ad), @(ay), @64, @32],
+        @[@"ZL", @(0.035 * w), @(0.358 * h), @58, @16], @[@"L", @(0.135 * w), @(0.358 * h), @58, @16],
+        @[@"R", @(0.865 * w), @(0.358 * h), @58, @16], @[@"ZR", @(0.965 * w), @(0.358 * h), @58, @16],
+        @[@"MINUS", @(w / 2 - 52), @(22 - rect.origin.y), @30, @15], @[@"PLUS", @(w / 2 + 52), @(22 - rect.origin.y), @30, @15],
+        @[@"UP", @(px), @(py - pd), @56, @10], @[@"DOWN", @(px), @(py + pd), @56, @10], @[@"LEFT", @(px - pd), @(py), @56, @10], @[@"RIGHT", @(px + pd), @(py), @56, @10]];
+    NSMutableArray *buttons = [NSMutableArray array];
+    for (NSArray *s in spec) {
+        CGFloat side = [s[3] doubleValue], height = [s[0] hasPrefix:@"Z"] || [s[0] isEqual:@"L"] || [s[0] isEqual:@"R"] ? 32 : side;
+        [buttons addObject:@{@"id": s[0], @"x": @(MAX(0, MIN(1, [s[1] doubleValue] / w))), @"y": @(MAX(0, MIN(1, [s[2] doubleValue] / h))),
+            @"width": @(side / unit), @"height": @(height / unit), @"cornerRadius": @([s[4] doubleValue] / unit)}];
+    }
+    NSDictionary *doc = @{@"schemaVersion": @1, @"id": S2AVPadLayout2DIdentifier, @"name": S2AL(@"vpad.layout.2d"), @"buttons": buttons, @"sticks": @[]};
+    S2AVPadLayout *layout = [self new]; layout->_document = doc; layout->_identifier = S2AVPadLayout2DIdentifier; layout->_name = doc[@"name"];
+    layout->_buttons = buttons; layout->_sticks = @[]; return layout;
+}
+- (int)dpadDirectionsAt:(CGPoint)p safeRect:(CGRect)rect {
+    if (_sticks.count) return -1;
+    CGFloat sx = 0, sy = 0, reach = 0, half = 0; int n = 0; CGRect frames[4];
+    for (NSDictionary *b in _buttons) {
+        NSUInteger i = [@[@"UP", @"DOWN", @"LEFT", @"RIGHT"] indexOfObject:b[@"id"]]; if (i == NSNotFound) continue;
+        frames[n] = [self frameForButton:b safeRect:rect]; sx += CGRectGetMidX(frames[n]); sy += CGRectGetMidY(frames[n]); n++;
+    }
+    if (n != 4) return -1;
+    CGPoint c = CGPointMake(sx / 4, sy / 4);
+    for (int i = 0; i < 4; i++) { reach = MAX(reach, hypot(CGRectGetMidX(frames[i]) - c.x, CGRectGetMidY(frames[i]) - c.y)); half = MAX(half, MAX(frames[i].size.width, frames[i].size.height) / 2); }
+    CGFloat r = reach + half, dx = p.x - c.x, dy = p.y - c.y, d = hypot(dx, dy);
+    if (d > r) return -1;
+    if (d < 0.2 * r) return 0;
+    // 八个 45° 扇区：右 0°、下 90°（UIKit 纵轴朝下）；扇区边界在 22.5° 处
+    int sector = (int)floor(fmod(atan2(dy, dx) * 180 / M_PI + 360 + 22.5, 360) / 45);
+    static const int bits[8] = {8, 8 | 2, 2, 2 | 4, 4, 4 | 1, 1, 1 | 8};
+    return bits[sector];
 }
 - (instancetype)layoutWithButtonCenters:(NSDictionary<NSString *, NSArray<NSNumber *> *> *)centers safeRect:(CGRect)rect
                              identifier:(NSString *)identifier name:(NSString *)name error:(NSError **)error {
