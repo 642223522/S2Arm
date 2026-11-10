@@ -32,6 +32,8 @@ public sealed partial class EnvironmentWindow
     private BatchState? batchState;
     private bool batchRunning, batchStopping;
     private string batchError = "";
+    /// <summary>控制口 POST /batch 指定的每款平台（AI 操作同 Mac：可以要 Mac，这台出不了的记失败「这台电脑出不了这个平台的包」）；界面清单为 null，按勾选出 iPhone</summary>
+    private Dictionary<string, string[]>? batchControlPlatforms;
     private ScrollViewer? batchScroller;
 
     /// <summary>放进来的几款列成清单（导入完多于 1 款时调）：iPhone 默认跟着出包页的勾选；缺东西的款写原因。正在出一批时只回到清单页</summary>
@@ -269,7 +271,10 @@ public sealed partial class EnvironmentWindow
     private async Task StartBatchAsync()
     {
         if (batchRunning || PackBusy) return;
-        var entries = batchDraft.Where(r => r.Problem is null && r.Iphone).Select(r => new BatchClient.Entry(r.Id, r.Name, ["iphone"])).ToList();
+        var control = batchControlPlatforms; batchControlPlatforms = null;
+        var entries = control is null
+            ? batchDraft.Where(r => r.Problem is null && r.Iphone).Select(r => new BatchClient.Entry(r.Id, r.Name, ["iphone"])).ToList()
+            : batchDraft.Where(r => r.Problem is null && control.ContainsKey(r.Id)).Select(r => new BatchClient.Entry(r.Id, r.Name, control[r.Id])).ToList();
         if (entries.Count == 0) return;
         var location = locationsFor == batchDraft[0].Id && exportLocation.Length > 0 ? exportLocation : null;
         if (!await BatchRunAsync("create", ["--json", BatchClient.CreateJson(entries, location)]) || batchState is null) { Render(); return; }
