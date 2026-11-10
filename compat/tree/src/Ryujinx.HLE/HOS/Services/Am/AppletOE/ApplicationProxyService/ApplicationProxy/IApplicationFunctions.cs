@@ -161,13 +161,17 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
 
             // If desired language is not supported by application, use first supported language from TitleLanguage.
             // TODO: In the future, a GUI could enable user-specified search priority
-            if (((1 << (int)context.Device.System.State.DesiredTitleLanguage) & supportedLanguages) == 0)
+            // S2Arm: 退路由宿主给（S2AHooks.TitleLanguageFallback = 主语言、同族变体、美式 / 英式英语，services SystemLocale.TitleFallback），都不中才取支持表第一项；
+            //   一行日志写清宿主主语言、支持表、最终选择和第几步（#445：原先只在退路时打「Using X」，看不出是哪一步选到的）
+            TitleLanguage hostLanguage = context.Device.System.State.DesiredTitleLanguage;
+            int picked = PickDesiredLanguage(hostLanguage, supportedLanguages, S2AHooks.TitleLanguageFallback);
+            if (picked != (int)hostLanguage)
             {
-                SystemLanguage newLanguage = Enum.Parse<SystemLanguage>(Enum.GetName(typeof(TitleLanguage), PickFallbackLanguage(supportedLanguages, S2AHooks.TitleLanguageFallback)));
+                SystemLanguage newLanguage = Enum.Parse<SystemLanguage>(Enum.GetName(typeof(TitleLanguage), picked));
                 desiredLanguageCode = SystemStateMgr.GetLanguageCode((int)newLanguage);
-
-                Logger.Info?.Print(LogClass.ServiceAm, $"Application doesn't support configured language. Using {newLanguage}");
             }
+
+            Logger.Info?.Print(LogClass.ServiceAm, $"[S2A 语言] 宿主主语言 {hostLanguage}，游戏支持表 0x{supportedLanguages:X4}，选 {(TitleLanguage)picked}（{LanguageStep(hostLanguage, picked, S2AHooks.TitleLanguageFallback)}）");
 
             context.ResponseData.Write(desiredLanguageCode);
 
@@ -177,6 +181,20 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
         // S2Arm: 支持语言位为 0 时回给游戏的语言码：缺省美式英语（#401）；玩家显式指定了系统语言就回它
         internal static long ZeroSupportedLanguageCode(long systemLanguageCode, bool explicitSystemLanguage) =>
             explicitSystemLanguage ? systemLanguageCode : SystemStateMgr.GetLanguageCode((int)SystemLanguage.AmericanEnglish);
+
+        // S2Arm: 主语言游戏支持就用它，否则按退路选（PickFallbackLanguage）
+        internal static int PickDesiredLanguage(TitleLanguage hostLanguage, int supportedLanguages, TitleLanguage[] fallback) =>
+            ((1 << (int)hostLanguage) & supportedLanguages) != 0 ? (int)hostLanguage : PickFallbackLanguage(supportedLanguages, fallback);
+
+        // S2Arm: 选到的语言走的是第几步（日志用）：① 主语言、② 同族变体、③ 英语、④ 支持表第一项
+        internal static string LanguageStep(TitleLanguage hostLanguage, int picked, TitleLanguage[] fallback)
+        {
+            if (picked == (int)hostLanguage) return "第 1 步：宿主主语言";
+            if (Array.IndexOf(fallback ?? Array.Empty<TitleLanguage>(), (TitleLanguage)picked) < 0) return "第 4 步：游戏支持表第一项";
+            bool english = picked == (int)TitleLanguage.AmericanEnglish || picked == (int)TitleLanguage.BritishEnglish;
+            bool hostEnglish = hostLanguage == TitleLanguage.AmericanEnglish || hostLanguage == TitleLanguage.BritishEnglish;
+            return english && !hostEnglish ? "第 3 步：英语" : "第 2 步：同族变体";
+        }
 
         // S2Arm: the first of the host's fallback languages the game supports, else the game's first supported language (upstream)
         internal static int PickFallbackLanguage(int supportedLanguages, TitleLanguage[] fallback)
