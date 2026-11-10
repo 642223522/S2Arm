@@ -61,7 +61,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   next [游戏号] [--target mac|ios] [--json]   AI 代操作入口（缺省 ios）：现在走到哪一步、下一步做什么、由谁做（ai 自己做 / ask 问玩家要输入 /
                                     human 只能玩家本人做 / confirm 先征得玩家同意）、为什么；出错时带错误码、原因和处理办法
   logs <任务号|游戏号> [--lines N]    读这条任务（或这款游戏最近一条任务）的日志末尾（缺省 40 行）
-  install <游戏号> [--team 团队号] [--device UDID或设备名] [--accept-dropped]   装到 iPhone（签名 + 装 App + 推资源包）；连着多台时用 --device 指定（同网配对的也行）；--accept-dropped 见错误码 container_would_drop
+  install <游戏号> [--team 团队号] [--device UDID或设备名] [--accept-dropped] [--timeout 秒] [--no-wait]   装到 iPhone（签名 + 装 App + 推资源包），等到装完：成功退 0，失败打错误码与建议、退 1（--no-wait 只发起不等）；连着多台时用 --device 指定（同网配对的也行）；--accept-dropped 见错误码 container_would_drop
   device <游戏号>                    iPhone 连没连、这款游戏的 App 装没装（装机要玩家用 AltStore 登录 Apple ID，AI 不代做）
   push-pack <游戏号>                 App 装好后把资源包拷进 iPhone（同在访达里把「资源包」文件夹拖到 App 上），拷完逐文件核对
 
@@ -328,14 +328,14 @@ def next_step(s, gid=None, target='ios'):
     if s.get('platform') == 'windows':
         if [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed']:
             return dict(step='打开游戏', who='human', do='已装到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
-        return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 只能玩家本人在 Impactor 里登录）；然后 s2armctl install {g["id"]}，然后 s2armctl wait {g["id"]} --op install --timeout 3600',
+        return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 只能玩家本人在 Impactor 里登录）；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                     why='iPhone 包已出好：用玩家在 Impactor 登录的 Apple ID 签名，数据线装上并拷资源包', ipa=ipa, **extra)
     # 装机主路（10-26 维护者 定）：用玩家在 Xcode 登录的 Apple ID 签名、数据线装、自动拷资源包；Xcode 没登录 / 没连设备由 install 报错码，再按 AI_NEXT 处理
     done = [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed' and (t.get('ended') or 0) >= max((x.get('ended') or 0) for x in mine if x['operation'] == 'ipa' and x['state'] == 'completed')]
     if done:
         return dict(step='打开游戏', who='human', do=f'已装到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
                     why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
-    return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}，然后 s2armctl wait {g["id"]} --op install --timeout 3600',
+    return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                 why='iPhone 包已出好：用玩家在 Xcode 登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）', ipa=ipa, **extra)
 
 def show_next(gid, as_json, target='ios'):
@@ -440,7 +440,7 @@ def job_alive(j):
     if not st or not start.strip() or not isinstance(identity, str) or not identity.strip(): return None
     return start.strip() == identity
 
-def wait(game, op, limit):
+def wait(game, op, limit, before=None):   # before：发命令前已有的任务号，只等之后新起的那个（install 发完立刻等，别拿上一次的结果当这次）
     t0 = time.time(); last = None; tid = None
     before_queue = None; queue_started = None; said_lost = False
     while time.time() - t0 < limit:
@@ -460,7 +460,7 @@ def wait(game, op, limit):
                 last = show_task(j, t0, last)
             time.sleep(2); continue
         if said_lost: print(f'[{time.time() - t0:6.0f}s] 控制口恢复', flush=True); said_lost = False
-        ts = [t for t in s['tasks'] if t.get('gameId') == game and t['operation'] == op]
+        ts = [t for t in s['tasks'] if t.get('gameId') == game and t['operation'] == op and (before is None or t['id'] not in before)]
         queued = op == 'build' and game in s.get('queue', [])
         # queue 先于 jobs 刷新到 tasks；此时不能拿历史构建结果提前结束等待。
         if queued:
@@ -706,13 +706,23 @@ def main():
         how = call('GET', '/state').get('lastSnapshotPath', '')
         if '截不全' in how: print('⚠️ ' + how[how.index('截不全'):], file=sys.stderr); sys.exit(3)
         return
+    if cmd == 'install' and '--no-wait' not in rest:
+        # 装机是后台作业：POST 只说「开始了」。原先打完 {"ok": true} 就退 0，作业随后失败（如 container_would_drop）调用方看不出（11-10 真机验收发现）；
+        #   现在等到这次作业结束，失败按 errors 打错误码和建议、退 1
+        before = {t['id'] for t in call('GET', '/state')['tasks'] if t.get('gameId') == rest[0] and t['operation'] == 'install'}
+        print(json.dumps(call('POST', '/install', simple_body('install', rest)), ensure_ascii=False), flush=True)
+        try: wait(rest[0], 'install', float(rest[rest.index('--timeout') + 1]) if '--timeout' in rest else 3600, before)
+        except SystemExit as e:
+            if e.code not in (0, None): errors(rest[0])
+            raise
+        return
     if cmd == 'wait':
         op = rest[rest.index('--op') + 1] if '--op' in rest else 'build'
         lim = float(rest[rest.index('--timeout') + 1]) if '--timeout' in rest else 14400
         wait(rest[0], op, lim); return
     simple = {
               'fonts': ('/fonts', lambda r: {'path': os.path.abspath(r[0]) if r and r[0] else ''}),
-              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {}), **({'acceptDropped': True} if '--accept-dropped' in r else {})}), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **({'acceptDropped': True} if '--accept-dropped' in r else {})}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
+              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **({'acceptDropped': True} if '--accept-dropped' in r else {})}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
               'cancel': ('/cancel', lambda r: {'taskId': r[0]}), 'retry': ('/retry', lambda r: {'taskId': r[0]}),
               'select': ('/select', lambda r: {'selection': r[0], **({'gameId': r[1]} if len(r) > 1 else {})}),
               'onboarding': ('/onboarding', lambda r: {'action': r[0], **({'step': int(r[1])} if len(r) > 1 else {})}),
@@ -720,6 +730,12 @@ def main():
               'env': ('/environment', lambda r: {}), 'refresh': ('/refresh', lambda r: {}), 'dismiss': ('/dismiss', lambda r: {})}
     if cmd not in simple: sys.exit(f'不认识 {cmd}')
     path, mk = simple[cmd]; print(json.dumps(call('POST', path, mk(rest)), ensure_ascii=False))
+
+def simple_body(cmd, rest):
+    if cmd == 'install':
+        r = rest
+        return {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {}), **({'acceptDropped': True} if '--accept-dropped' in r else {})}
+    raise KeyError(cmd)
 
 def space_flag(args): return {'spaceOverride': True} if '--space-override' in args else {}
 
