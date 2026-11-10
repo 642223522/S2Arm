@@ -216,7 +216,6 @@ public final class S2ArmShellHostModel {
                      onPickShellCloud: Self.pickCloudFolder, onClearShellCloud: Self.pickCloudFolder == nil ? nil : { CloudSaves.forget() },
                      onButtonTest: { [weak self] open in self?.buttonTest(open) },
                      onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
-        actions.onMoveGame = { [weak self] source, target in self?.moveGame(source, to: target) ?? false }
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         return actions
     }
@@ -234,17 +233,6 @@ public final class S2ArmShellHostModel {
         let insertion = destination.flatMap { id in reordered.firstIndex { $0.id == id } } ?? reordered.count
         reordered.insert(contentsOf: sources.compactMap { entries[$0] }, at: insertion)
         allGames = reordered
-        stores.app.set(allGames.map(\.id), forKey: "S2ALibraryOrder")
-        return true
-    }
-
-    /// Keep hidden entries in the saved order, so a pending install retains its position when it arrives.
-    private func moveGame(_ source: String, to target: String) -> Bool {
-        guard source != target, !notOnDevice.contains(source), !notOnDevice.contains(target),
-              let from = allGames.firstIndex(where: { $0.id == source }),
-              let to = allGames.firstIndex(where: { $0.id == target }) else { return false }
-        let game = allGames.remove(at: from)
-        allGames.insert(game, at: to)
         stores.app.set(allGames.map(\.id), forKey: "S2ALibraryOrder")
         return true
     }

@@ -330,18 +330,18 @@ public struct LibraryView: View {
         .environment(\.shellIgnoresPress, { [gate] in gate.isSystemEcho })
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
-        .environment(\.shellOpenGameOrder, actions.onMoveGame == nil && actions.onReorderGames == nil ? nil : {
+        .environment(\.shellOpenGameOrder, actions.onReorderGames == nil ? nil : {
             guard libraryPressAllowed, noteTouch() else { return }
             gameOrderOpen = true
         })
         #if os(iOS)
         .fullScreenCover(isPresented: $gameOrderOpen) {
-            GameOrderView(games: games, move: actions.onMoveGame, reorder: actions.onReorderGames)
+            GameOrderView(games: games, reorder: actions.onReorderGames)
                 .preferredColorScheme(.dark)
         }
         #else
         .sheet(isPresented: $gameOrderOpen) {
-            GameOrderView(games: games, move: actions.onMoveGame, reorder: actions.onReorderGames)
+            GameOrderView(games: games, reorder: actions.onReorderGames)
                 .preferredColorScheme(.dark)
         }
         #endif

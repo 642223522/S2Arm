@@ -31,7 +31,6 @@ struct GameOrderButton: View {
 /// List owns the vertical drag and landing animation; the host receives a single stable-ID move.
 struct GameOrderView: View {
     let games: [GameDetail]
-    let move: ((String, String) -> Bool)?
     let reorder: (([String], String?) -> Bool)?
     @Environment(\.dismiss) private var dismiss
 
@@ -79,11 +78,7 @@ struct GameOrderView: View {
     private func moveRows(from offsets: IndexSet, to destination: Int) {
         let ids = games.map(\.id)
         guard let change = GameOrderMove(ids: ids, offsets: offsets, destination: destination) else { return }
-        if let reorder {
-            _ = reorder(change.sources, change.before)
-        } else if change.sources.count == 1, let source = change.sources.first {
-            _ = move?(source, change.legacyTarget)
-        }
+        _ = reorder?(change.sources, change.before)
     }
 }
 
@@ -91,7 +86,6 @@ struct GameOrderView: View {
 struct GameOrderMove {
     let sources: [String]
     let before: String?
-    let legacyTarget: String
 
     init?(ids: [String], offsets: IndexSet, destination: Int) {
         guard !offsets.isEmpty, offsets.allSatisfy(ids.indices.contains),
@@ -99,9 +93,7 @@ struct GameOrderMove {
         sources = offsets.map { ids[$0] }
         var reordered = ids
         reordered.move(fromOffsets: offsets, toOffset: destination)
-        guard reordered != ids, let last = sources.last, let lastIndex = reordered.firstIndex(of: last),
-              let first = sources.first, let firstIndex = reordered.firstIndex(of: first) else { return nil }
+        guard reordered != ids, let last = sources.last, let lastIndex = reordered.firstIndex(of: last) else { return nil }
         before = reordered.indices.contains(lastIndex + 1) ? reordered[lastIndex + 1] : nil
-        legacyTarget = ids[firstIndex]
     }
 }
