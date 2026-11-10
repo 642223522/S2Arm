@@ -339,7 +339,8 @@ def plan(dev, pack, work, full=False, say=print):
         cut = bool(bad) or "截短包" in ((unpack or "").strip().splitlines() or [""])[-1]
         if cut and not bad: say(f"上次收推送撞到截短包（{(unpack or '').strip().splitlines()[-1][:60]}…）：不信 .pushed，按已应用索引补推")
         idx = None
-        if jver(read(dev, f"{rp(dev)}/manifest.json", work, "r.manifest")) == 2:
+        mf = read(dev, f"{rp(dev)}/manifest.json", work, "r.manifest")
+        if jver(mf) == 2 or (mf is not None and not mf.strip()):   # 空清单 = v2 推送开头置空、没推完（send），已应用索引照信，只补推缺的（不整包重推）
             idx = read(dev, f"{rp(dev)}/index.applied.tsv", work, "r.index")
             if not idx and not cut: idx = read(dev, f"{rp(dev)}/index.tsv", work, "r.index")
         have = rows(idx, 3)
