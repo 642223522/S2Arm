@@ -95,6 +95,82 @@ class MoveTests(unittest.TestCase):
         self.assert_moved(old, new)
         self.assertFalse(old.exists())
 
+    def test_same_volume_permission_error_falls_back_to_verified_copy(self):
+        old, new = self.old(), self.root / "new"
+        real = os.rename
+        failed = [False]
+
+        def deny_games_rename(src, dst):
+            if not failed[0] and Path(src) == old / "games":
+                failed[0] = True
+                raise PermissionError(5, "Access is denied", str(src))
+            return real(src, dst)
+
+        with um.patch.object(library.os, "rename", deny_games_rename):
+            r = self.run_setup(new, moveFrom=str(old))
+        self.assertTrue(failed[0])
+        self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
+        self.assert_moved(old, new)
+        self.assertFalse(old.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing semantics")
+    def test_windows_directory_handle_without_delete_share_uses_copy_fallback(self):
+        import ctypes
+        from ctypes import wintypes
+
+        old, new = self.old(), self.root / "new"
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = create_file(str(old / "games"), 0x80000000, 0x1 | 0x2, None, 3, 0x02000000, None)
+        self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+        errors = []
+        real = os.rename
+
+        def observe_rename(src, dst):
+            try:
+                return real(src, dst)
+            except PermissionError as error:
+                errors.append(getattr(error, "winerror", None))
+                raise
+
+        try:
+            with um.patch.object(library.os, "rename", observe_rename):
+                r = self.run_setup(new, moveFrom=str(old))
+        finally:
+            close_handle(handle)
+        self.assertTrue(errors and errors[0] in (5, 32), errors)
+        self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
+        self.assertTrue((new / "games" / GID).is_dir())
+        self.assertTrue((new / "saves" / GID / "save.bin").is_file())
+
+    def test_same_volume_fallback_copy_verification_failure_rolls_back(self):
+        old, new = self.old(), self.root / "new"
+        real_rename, real_verify = os.rename, library._verify_copy
+        failed = [False]
+
+        def deny_games_rename(src, dst):
+            if not failed[0] and Path(src) == old / "games":
+                failed[0] = True
+                raise PermissionError(5, "Access is denied", str(src))
+            return real_rename(src, dst)
+
+        def reject_games_copy(src, dst, strict):
+            if Path(src) == old / "games":
+                raise Failure("simulated verification mismatch", code="library_move_failed")
+            return real_verify(src, dst, strict)
+
+        with um.patch.object(library.os, "rename", deny_games_rename), um.patch.object(library, "_verify_copy", reject_games_copy), self.assertRaises(Failure):
+            self.run_setup(new, moveFrom=str(old))
+        self.assertTrue(failed[0])
+        self.assert_untouched(old, new)
+        self.assertEqual(list(new.iterdir()), [])
+
     def test_cross_volume_move(self):
         old, new = self.old(), self.root / "new"
         with um.patch.object(library, "_same_volume", return_value=False):

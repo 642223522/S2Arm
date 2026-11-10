@@ -750,9 +750,27 @@ def move_library(c, source):
                 c.progress(copied, total)
             c.begin("把游戏库放到新位置")
             staged = {a: stage / str(n) for n, (a, _) in enumerate(cross)}
-            for a, b in pairs:
+            for n, (a, b) in enumerate(pairs):
                 b.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(staged.get(a, a), b)
+                try:
+                    os.rename(staged.get(a, a), b)
+                except PermissionError:
+                    if a in staged:
+                        raise
+                    # A same-volume rename can be denied by a Windows handle/share mode even
+                    # when the tree is readable. Copy to staging, verify, then switch atomically.
+                    required = _size_of(a)
+                    if shutil.disk_usage(c.library).free < required:
+                        raise Failure("新位置空间不够，游戏库没有搬。", code="disk_full") from None
+                    target = stage / "fallback" / str(n)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if a.is_dir() and not _is_link(a):
+                        copy_tree_links(a, target)
+                    else:
+                        shutil.copy2(a, target, follow_symlinks=False)
+                    _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
+                    os.rename(target, b)
+                    staged[a] = target
                 done.append((a, b))
             for root in (c.library, _work_root_of(c, c.library)):
                 _retarget_links(root, source, c.library)
@@ -769,7 +787,7 @@ def move_library(c, source):
                 (c.library / ".s2arm-work").rmdir()   # 回滚后别留下搬的时候建的空目录
             raise
         _discard(stage)
-        for a, _ in cross:
+        for a in staged:
             try:
                 _discard(a)
             except OSError as error:
