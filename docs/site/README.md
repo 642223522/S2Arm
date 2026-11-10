@@ -10,6 +10,15 @@
 - 页面脚本调用一次 `api.github.com/repos/jhaizhou-ops/S2Arm/releases/latest`，补上版本号、发布日期、文件大小和 SHA-256。页顶的「点个星」链接到仓库主页（GitHub 不支持站外一键点星，要在仓库页点 Star），脚本再调一次 `api.github.com/repos/jhaizhou-ops/S2Arm` 显示当前 Star 数。接口不通（未登录用户每个 IP 每小时 60 次）时只少这几行字和数字，按钮照常可用；关掉脚本也能下载。
 - 发版不用重新发布页面：按钮和版本信息都是访问时现取的。
 
+## 启动器公告（notice.json）
+
+Mac / Windows 启动器顶部的公告条读 [notice.json](notice.json)：启动时从 <https://jhaizhou-ops.github.io/S2Arm/notice.json> 取（取不到用发版时打进包里的同一份，再没有就不显示，不报错），玩家点 × 关掉后同一条不再出现。
+
+- 发新公告：改 `text` 的中英文，**同时换一个新的 `id`**（关掉过旧公告的玩家才会看到新的）。合进 `main` 后 Pages 自动发布，已发出的启动器下次启动就显示，不用发版。
+- 撤掉公告：把文件改成 `{"schema": 1}`（没有 `id` / `text` 就不显示）。
+- `url` 可选：公告条上「详情」打开的链接，只认 `https` 的 github.com / jhaizhou-ops.github.io。
+- 只放一条公告，纯文本，不支持格式。
+
 ## 发布
 
 [.github/workflows/pages.yml](../../.github/workflows/pages.yml) 在 `main` 上本目录或用到的图片有改动时，把 `index.html` 和三张图（`docs/images/` 的标志、Mac / Windows 启动器截图，`launchers/macos/Branding/AppIcon-1024.png` 作图标）拷进 `_site/` 发布，不构建、不下载依赖。也可以在 Actions 页手动运行。

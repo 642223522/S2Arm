@@ -4,6 +4,8 @@
 check    查 GitHub 最新 Release，打印一行 JSON。
 prepare  验清单签名后后台下载官方包、核对清单里的校验值、解开并校验到数据目录下的 updates/，逐行打印进度。不碰正在用的安装目录。
          有 from 当前版本的差分包就先试差分（按文件替换，整棵目录核对清单），任何一步失败退回整包。
+notice   启动器顶部公告条：取官方下载页上的 notice.json（取不到用随包那份），玩家关掉过的同一条不再给；打印一行 JSON（没有要显示的打 {}）。
+notice-dismiss  记下玩家关掉的公告号（数据目录下 notice_dismissed.txt）。
 apply    启动器退出后，由 prepare 备好的独立 Python 运行：原地替换安装目录、重启；新版起不来就回滚到旧版。
 
 玩家的数据（游戏库、密钥、存档备份、任务记录、缓存）都在安装目录之外；prepare 先核实这一点，
@@ -197,6 +199,79 @@ def query_latest(platform, current):
     if isinstance(entry, dict):   # 差分包同样要在清单里，不在就只走整包
         info.update(delta=delta["browser_download_url"], deltaName=delta["name"], deltaSize=entry["size"], deltaSha256=entry["sha256"])
     return info
+
+
+NOTICE_URL = "https://jhaizhou-ops.github.io/S2Arm/notice.json"   # docs/site/notice.json，Pages 发布（docs/site/README.md）
+NOTICE_LINK_HOSTS = ("github.com", "jhaizhou-ops.github.io")
+
+
+def notice_file():
+    """随包那份：引擎快照里的 docs/site/notice.json（launchers/macos/bundle_engine.py INPUTS）"""
+    return Path(__file__).resolve().parents[2] / "docs" / "site" / "notice.json"
+
+
+def notice_valid(data):
+    """→ 要显示的公告 {id, text: {zh-Hans, en}, url?}；没有 id 或中英文缺一 → None（= 不显示，撤公告就这么写）。只认纯文本，链接只认官方 https 地址"""
+    import urllib.parse
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        return None
+    ident, text = data.get("id"), data.get("text")
+    if not (isinstance(ident, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", ident) and isinstance(text, dict)):
+        return None
+    zh, en = text.get("zh-Hans"), text.get("en")
+    if not (isinstance(zh, str) and isinstance(en, str) and zh.strip() and en.strip() and len(zh) <= 600 and len(en) <= 1200):
+        return None
+    out = {"id": ident, "text": {"zh-Hans": zh.strip(), "en": en.strip()}}
+    url = data.get("url")
+    if isinstance(url, str):
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme == "https" and parts.hostname in NOTICE_LINK_HOSTS:
+            out["url"] = url
+    return out
+
+
+def notice_remote(timeout=5):
+    """官方下载页上的 notice.json → (取到了没有, 内容)。取到但内容无效 / 已撤 = (True, None)：照撤，不退回随包那份"""
+    import urllib.request
+    url = os.environ.get("S2A_NOTICE_URL") or NOTICE_URL
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "S2Arm-Launcher", "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout, context=tls_context() if url.startswith("https:") else None) as response:
+            body = response.read(64 << 10)
+    except (OSError, ValueError, __import__("http.client").client.HTTPException, subprocess.SubprocessError):
+        return False, None
+    try:
+        return True, notice_valid(json.loads(body))
+    except ValueError:
+        return False, None   # 拿到的不是 JSON（门户页、被劫持的网络）：当没取到
+
+
+def notice(private_root, remote=notice_remote, bundled=None):
+    """→ 要显示的公告或 None：先官方下载页，取不到用随包那份；玩家关掉过的同一条（id 一样）不给"""
+    got, item = remote()
+    if not got:
+        try:
+            item = notice_valid(json.loads((bundled or notice_file()).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            item = None
+    if item is None:
+        return None
+    try:
+        if (Path(private_root) / "notice_dismissed.txt").read_text(encoding="utf-8").strip() == item["id"]:
+            return None
+    except OSError:
+        pass
+    return item
+
+
+def notice_dismiss(private_root, ident):
+    """玩家点了 ×：记下这条的号（只记最近一条；换了新号的公告照常出现）"""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", ident or ""):
+        raise ValueError("公告号不对")
+    root = Path(private_root); root.mkdir(parents=True, exist_ok=True)
+    tmp = root / "notice_dismissed.txt.tmp"
+    tmp.write_text(ident + "\n", encoding="utf-8")
+    tmp.replace(root / "notice_dismissed.txt")
 
 
 def inside(child, parent):
@@ -671,10 +746,24 @@ def main(argv=None):
             p.add_argument("--install", required=True)
             p.add_argument("--protect", action="append", default=[])
     sub.add_parser("selfcheck")
+    p = sub.add_parser("notice"); p.add_argument("--private-root", required=True)
+    p = sub.add_parser("notice-dismiss"); p.add_argument("--private-root", required=True); p.add_argument("--id", required=True)
     p = sub.add_parser("apply")
     p.add_argument("--staged", required=True); p.add_argument("--install", required=True); p.add_argument("--pid", required=True, type=int)
     p.add_argument("--private-root", required=True); p.add_argument("--arg", action="append", default=[])
     a = ap.parse_args(argv)
+    # 公告与更新无关：失败不走下面的更新失败记录（不写 update.log、不报「更新没有完成」）。取不到、读不了都不报错，打 {}，界面什么都不显示
+    if a.command == "notice":
+        print(json.dumps(notice(a.private_root) or {}, ensure_ascii=False))
+        return 0
+    if a.command == "notice-dismiss":
+        try:
+            notice_dismiss(a.private_root, a.id)
+        except (OSError, ValueError) as error:
+            print(json.dumps({"error": str(error)}, ensure_ascii=False))
+            return 1
+        print(json.dumps({"dismissed": a.id}))
+        return 0
     try:
         if a.command == "selfcheck":
             return 0

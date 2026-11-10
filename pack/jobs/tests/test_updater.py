@@ -817,5 +817,59 @@ class VersionTests(Base):
             self.assertTrue(updater.trusted("https://github.com/x"))
 
 
+class NoticeTests(unittest.TestCase):
+    """启动器公告条（v0.2.3）：官方下载页优先、取不到用随包那份、关掉的同一条不再给、换号再出现、已撤 / 无效不显示。期望手写"""
+    ITEM = {"schema": 1, "id": "n1", "text": {"zh-Hans": "中文公告", "en": "English notice"}, "url": "https://github.com/jhaizhou-ops/S2Arm#readme"}
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.bundled = self.root / "notice.json"; self.bundled.write_text(json.dumps(dict(self.ITEM, id="bundled")), encoding="utf-8")
+        self.private = self.root / "private"
+
+    def show(self, remote):
+        return updater.notice(self.private, remote=lambda: remote, bundled=self.bundled)
+
+    def test_remote_first_then_bundled(self):
+        self.assertEqual(self.show((True, updater.notice_valid(self.ITEM)))["id"], "n1")
+        self.assertEqual(self.show((False, None))["id"], "bundled")   # 没网 / 页面不通
+        self.assertEqual(self.show((False, None))["text"], {"zh-Hans": "中文公告", "en": "English notice"})
+
+    def test_retracted_remote_wins_over_bundled(self):   # 页面取到了、但已撤（只剩 schema）：不显示，不退回随包那份
+        self.assertIsNone(self.show((True, updater.notice_valid({"schema": 1}))))
+
+    def test_dismissed_stays_hidden_until_a_new_id(self):
+        updater.notice_dismiss(self.private, "n1")
+        self.assertIsNone(self.show((True, updater.notice_valid(self.ITEM))))
+        self.assertEqual(self.show((True, updater.notice_valid(dict(self.ITEM, id="n2"))))["id"], "n2")
+
+    def test_invalid_shapes_are_not_shown(self):
+        for bad in ({"schema": 2, "id": "a", "text": self.ITEM["text"]}, {"schema": 1, "text": self.ITEM["text"]},
+                    {"schema": 1, "id": "a b", "text": self.ITEM["text"]}, {"schema": 1, "id": "a", "text": {"zh-Hans": "只有中文"}},
+                    {"schema": 1, "id": "a", "text": {"zh-Hans": " ", "en": "x"}}, [], "x"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(updater.notice_valid(bad))
+
+    def test_link_only_official_https(self):
+        for url, kept in (("https://github.com/jhaizhou-ops/S2Arm", True), ("https://jhaizhou-ops.github.io/S2Arm/", True),
+                          ("http://github.com/x", False), ("https://s2arm.com/", False), ("javascript:alert(1)", False)):
+            with self.subTest(url=url):
+                self.assertEqual("url" in updater.notice_valid(dict(self.ITEM, url=url)), kept)
+
+    def test_cli_prints_empty_object_when_nothing_to_show(self):
+        import io, contextlib
+        self.bundled.unlink()
+        with patch.object(updater, "notice_file", return_value=self.bundled), patch.object(updater, "notice_remote", return_value=(False, None)):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(updater.main(["notice", "--private-root", str(self.private)]), 0)
+        self.assertEqual(json.loads(out.getvalue()), {})
+        self.assertFalse((self.private / "logs").exists())   # 公告与更新无关：不写 update.log
+
+    def test_shipped_notice_is_valid(self):   # 仓库里那份（Pages 发布 + 随包兜底）要能显示，带官方链接
+        item = updater.notice_valid(json.loads(updater.notice_file().read_text(encoding="utf-8")))
+        self.assertIsNotNone(item); self.assertIn("url", item)
+        self.assertIn("s2arm.com", item["text"]["zh-Hans"]); self.assertIn("s2arm.com", item["text"]["en"])
+
+
 if __name__ == "__main__":
     unittest.main()

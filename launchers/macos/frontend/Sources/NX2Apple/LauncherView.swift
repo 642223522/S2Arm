@@ -51,6 +51,7 @@ struct LauncherView: View {
         VStack(spacing: 0) {
             topBar
             Divider().opacity(0.3)
+            noticeBar
             if let result = model.viewingResult, let run = result.export {
                 ExportSessionView(model: model, covers: covers, session: result, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let session = model.session, let run = session.export, !model.sessionHidden {
@@ -86,7 +87,7 @@ struct LauncherView: View {
         .tint(LauncherPalette.cream)
         .font(.manrope(13))
         .frame(minWidth: 900, idealWidth: 1280, minHeight: 680, idealHeight: 900)
-        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate(); model.startControllerConnection() }
+        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate(); model.loadNotice(); model.startControllerConnection() }
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
             InstallView(model: model, gameID: target.id).environmentObject(loc)
         }
@@ -213,6 +214,27 @@ struct LauncherView: View {
         case .unknown: return LauncherPalette.unbuilt
         case .ready, .readyMac: return LauncherPalette.ready   // readyMac：Mac 上能玩，只差打 iPhone 包的项（环境检查页里单列）
         case .missing: return LauncherPalette.danger
+        }
+    }
+
+    /// 顶部公告条（v0.2.3）：醒目的琥珀色底、整条宽，压在内容上方但不盖住任何按钮；× 关掉后同一条不再出现。文字取自 notice.json，代码里不写公告内容
+    @ViewBuilder private var noticeBar: some View {
+        if let notice = model.notice, let text = (notice["text"] as? [String: String])?[uiLanguage] {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(LauncherPalette.building)
+                (Text(txt("notice.label") + "  ").font(.manrope(13, .bold)) + Text(text).font(.manrope(13)))
+                    .foregroundStyle(LauncherPalette.cream).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                Spacer(minLength: 8)
+                if let link = (notice["url"] as? String).flatMap(URL.init(string:)) {
+                    Button { NSWorkspace.shared.open(link) } label: { Text(txt("notice.details")).font(.manrope(12.5, .semibold)).underline() }
+                        .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                }
+                Button { model.dismissNotice() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                    .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream.opacity(0.8)).help(txt("notice.close")).accessibilityLabel(txt("notice.close"))
+            }
+            .padding(.horizontal, 24).padding(.vertical, 10)
+            .background(LauncherPalette.building.opacity(0.16))
+            .overlay(alignment: .bottom) { Rectangle().fill(LauncherPalette.building.opacity(0.45)).frame(height: 1) }
         }
     }
 

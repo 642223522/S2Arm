@@ -51,7 +51,7 @@ public sealed partial class EnvironmentWindow : Window
         Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
         Opened += (_, _) =>
         {
-            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync();
+            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
             // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
             //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
             if (File.Exists(LibraryPreference) || File.Exists(Path.Combine(SavedLibrary(), ".s2arm-library.json"))) EnsureLibrary(() => { });
@@ -163,6 +163,7 @@ public sealed partial class EnvironmentWindow : Window
 
         Grid.SetColumn(rightBar, 1); header.Children.Add(rightBar);
         body.Children.Add(header);
+        AddNoticeBar(body);
         if (unexpectedError.Length > 0)
         {
             // 全局兜底接住的意外错误（Program.cs）：启动器不退出，在顶部说清楚、给日志位置，玩家可以关掉提示继续用

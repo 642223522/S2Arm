@@ -138,6 +138,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var showEnvironment = false
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
     @Published var updateState: UpdateState = .idle
+    @Published var notice: [String: Any]?   // 顶部公告条（S2ArmLauncherModel+Update.swift loadNotice）；nil = 不显示
     var updateReady: [String: Any]?
     @Published var showAddGames = false
     @Published var showKeys = false
