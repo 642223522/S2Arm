@@ -35,6 +35,8 @@ int ns2_decode_report05_motion(const uint8_t *bytes, size_t length, ns2_motion *
 // 单只 Joy-Con 横握：把已校准的状态 / 六轴换成横握视角（按键随朝向转、SL / SR 当 L / R、唯一的摇杆当左摇杆）；Pro 不动
 void ns2_joycon_sideways(ns2_kind kind, int side_buttons, ns2_state *state);
 void ns2_joycon_sideways_motion(ns2_kind kind, ns2_motion *motion);
+// Joy-Con 2 左右拼成一对（竖握）：输入是两只各自已校准、未转横握的状态；按键取并集，左摇杆取左只、右摇杆取右只，不转向；NULL 当全 0
+void ns2_joycon_pair_state(const ns2_state *left, const ns2_state *right, ns2_state *out);
 // 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
 // Copy the latest motion sample, clearing it after 250 ms or disconnection without accessing hardware.
 void ns2_get_motion(ns2_motion *out);

@@ -1,4 +1,4 @@
-// Joy-Con 2 单只（runtime/ns2pro/NS2JoyCon.c）：型号识别、SL / SR、横握视角、六轴、震动包。期望按协议文档与映射表手算，未在实机验证。
+// Joy-Con 2（runtime/ns2pro/NS2JoyCon.c）：型号识别、SL / SR、单只横握视角、六轴、震动包、左右拼对。期望按协议文档与映射表手算，未在实机验证。
 #include "NS2Transport.h"
 #include <stdio.h>
 #include <string.h>
@@ -38,6 +38,21 @@ int main(void) {
     int tail0 = 1; for (int i = 17; i < 42; i++) tail0 &= jrp[i] == 0;
     ns2_encode_rumble_for(NS2_KIND_PRO, v, 3, 1, prop); ns2_encode_rumble(v, 3, 1, prop2);
     CK(!memcmp(jrp, ref, 17) && tail0 && (jrp[1] & 0xf0) == 0x50 && !memcmp(prop, prop2, 42), "⑨ 震动：右只只放一块（取右侧值）、第二块起全 0；Pro 与原编码逐字节相同");
+    // 拼对（竖握）：期望按「并集 + 左摇杆取左只 + 右摇杆取右只 + 不转向」手算
+    ns2_state pl = {BIT(UP) | BIT(L) | BIT(ZL) | BIT(MINUS) | BIT(LS) | BIT(CAPTURE), 1000, -2000, 5, 6};
+    ns2_state pr = {BIT(A) | BIT(R) | BIT(ZR) | BIT(PLUS) | BIT(RS) | BIT(HOME), 7, 8, -3000, 4000}, po;
+    ns2_joycon_pair_state(&pl, &pr, &po);
+    CK(po.buttons == (BIT(UP) | BIT(L) | BIT(ZL) | BIT(MINUS) | BIT(LS) | BIT(CAPTURE) | BIT(A) | BIT(R) | BIT(ZR) | BIT(PLUS) | BIT(RS) | BIT(HOME)) &&
+       po.lx == 1000 && po.ly == -2000 && po.rx == -3000 && po.ry == 4000,
+       "⑩ 拼对：按键取并集、上仍是上（不转横握）；左摇杆 (1000,−2000) 取左只、右摇杆 (−3000,4000) 取右只，左只第二字段 / 右只第一字段丢弃（实 %llx %d,%d,%d,%d）",
+       (unsigned long long)po.buttons, po.lx, po.ly, po.rx, po.ry);
+    ns2_joycon_pair_state(&pl, NULL, &po); ns2_state pn; ns2_joycon_pair_state(NULL, &pr, &pn);
+    CK(po.buttons == pl.buttons && po.lx == 1000 && po.ly == -2000 && po.rx == 0 && po.ry == 0 &&
+       pn.buttons == pr.buttons && pn.lx == 0 && pn.ly == 0 && pn.rx == -3000 && pn.ry == 4000, "⑪ 拼对一侧为空（还没报告 / 在恢复）：那一侧按全 0 算");
+    uint8_t left05[64] = {0}; left05[6] = 0x22;   // 按键字段第 2 字节：0x02 = 上（报告位 17），0x20 = 左只 SL（报告位 21）
+    ns2_raw_input raw; ns2_decode_input_report(5, left05, sizeof left05, &raw);
+    CK(raw.buttons == BIT(UP) && ns2_decode_side_buttons(left05, sizeof left05) == NS2_SIDE_SL_L,
+       "⑫ SL / SR 不进按键位：左只按住上 + SL，按键只有上，SL 只在横握专用的 side 位里（实 %llx）", (unsigned long long)raw.buttons);
     printf("%s test_joycon：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad ? 1 : 0;
 }

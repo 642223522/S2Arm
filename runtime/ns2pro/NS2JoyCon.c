@@ -1,4 +1,4 @@
-// Joy-Con 2（左 / 右单只）：型号识别、SL / SR 解码、单只横握换成横握视角。纯函数，单测 runtime/tests/t_ns2_joycon.c。
+// Joy-Con 2：型号识别、SL / SR 解码、单只横握换成横握视角、左右拼成一对（竖握）。纯函数，单测 runtime/ns2pro/tests/test_joycon.c。
 //   协议依据（11-10 调研，未在我方实机验证）：
 //   - 广播厂商数据：m[0..1] = 53 05（公司号），m[5..6] = 7e 05（VID），m[7..8] = 产品号小端：Pro 0x2069、左 0x2067、右 0x2066
 //     （ndeadly/switch2_controller_research bluetooth_interface.md、switch2mac Switch2Protocol.swift、SDL usb_ids.h）。
@@ -57,6 +57,14 @@ void ns2_joycon_sideways_motion(ns2_kind kind, ns2_motion *m) {
     float ax = m->acceleration_x, az = m->acceleration_z, gx = m->gyro_x, gz = m->gyro_z;
     if (kind == NS2_KIND_JOYCON_L) { m->acceleration_x = az; m->acceleration_z = -ax; m->gyro_x = gz; m->gyro_z = -gx; }
     else { m->acceleration_x = -az; m->acceleration_z = ax; m->gyro_x = -gz; m->gyro_z = gx; }
+}
+
+// 左右拼成一对（竖握，同 SDL 自动拼对与 switch2mac）：按键取并集——两只各报自己的键，SL / SR 不在 21 位按键表里，自然不映射；
+//   左摇杆取左只（第一个摇杆字段），右摇杆取右只（第二个摇杆字段）；不做横握转向。
+void ns2_joycon_pair_state(const ns2_state *left, const ns2_state *right, ns2_state *out) {
+    if (!out) return;
+    ns2_state l = left ? *left : (ns2_state){0}, r = right ? *right : (ns2_state){0};
+    *out = (ns2_state){l.buttons | r.buttons, l.lx, l.ly, r.rx, r.ry};
 }
 
 // 震动包：同 Pro 的 42 字节、同一编码，但每只一个线性马达，只在 0x01 处放一块（左只取左侧值、右只取右侧值），0x11 起的第二块全 0
