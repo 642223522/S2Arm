@@ -18,7 +18,8 @@ echo "pack/jobs 单测：跑 ${#sel[@]} 份（$(printf '%s ' "${sel[@]##*/}")）
 untracked() { git ls-files --others --exclude-standard 2> /dev/null | sort; }
 bad=0; for t in "${sel[@]}"; do
   u0=$(untracked)
-  o=$(python3 -B -m unittest discover -s pack/jobs/tests -p "${t##*/}" 2>&1); rc=$?
+  # 作业层测试一律不起后台商店查询（S2A_BANNER_FETCH=0）：它脱离作业、往测试的临时 library/ 写，收尾删目录时偶发 Directory not empty（11-10）
+  o=$(S2A_BANNER_FETCH=0 python3 -B -m unittest discover -s pack/jobs/tests -p "${t##*/}" 2>&1); rc=$?
   new=$(comm -13 <(echo "$u0") <(untracked))
   if [ $rc = 0 ] && [ -z "$new" ]; then echo "通 ${t##*/}：$(grep -E '^Ran ' <<< "$o")"
   elif [ $rc = 0 ]; then echo "不通 ${t##*/}：跑完工作树里多了文件（单测要写临时目录）"; sed 's/^/    | /' <<< "$new" | head -5; bad=1
