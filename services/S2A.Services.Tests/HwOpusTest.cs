@@ -302,6 +302,48 @@ namespace S2A.Services.Tests
 
             Check("hwopus 用例覆盖三种编码模式（按 TOC 计包）", "SILK、Hybrid、CELT 都有", modes[0] > 0 && modes[1] > 0 && modes[2] > 0 ? "SILK、Hybrid、CELT 都有" : $"SILK {modes[0]} / Hybrid {modes[1]} / CELT {modes[2]} 包");
             Console.Error.WriteLine($"hwopus 逐样本比对合计：{cases.Length} 例 {allSamples} 样本、不一致 {allBad}；模式 SILK {modes[0]} / Hybrid {modes[1]} / CELT {modes[2]} 包");
+
+            TestHwOpusLimit(hwo, cases[0]);
+        }
+
+        // 同时存活的解码器上限（0100A00019DE0000 存档后 Break 2010-0011）：游戏 SDK 客户端只有 16 个解码器对象的位置，开第 17 个就中止；
+        //   真机服务端在这之前回 0x3026F（codec 111-385），SDK 转成「资源不足」交给游戏。期望值来自 SDK：InitializeHardwareOpusDecoder 对 (结果 & 0x3fffff) == 0x3026F 走温和分支
+        private static void TestHwOpusLimit(uint hwo, OpusCase c)
+        {
+            var live = () => Ryujinx.Horizon.Sdk.Codec.Detail.HardwareOpusDecoder.LiveCount;
+            WaitFor(() => live() == 0, 5_000);   // 上面逐例都已关掉，等服务端处理完关会话
+            int before = live();
+            var held = new List<uint>();
+            int okCount = 0;
+
+            for (int i = 0; i < 16; i++)
+            {
+                uint d = OpusOpen(hwo, c);
+                if (d != 0) { held.Add(d); okCount++; }
+            }
+
+            // 第 17 个：要回 0x3026F、不给会话
+            int owb = 0x40000;
+            uint tm = FakeNative.TmemCreate((ulong)FakeNative.Alloc(owb), (ulong)owb, 0);
+            byte[] a = new byte[12];
+            BitConverter.TryWriteBytes(a.AsSpan(0), c.Rate); BitConverter.TryWriteBytes(a.AsSpan(4), c.Ch); BitConverter.TryWriteBytes(a.AsSpan(8), owb);
+            Msg om = Msg.Cmif(0, a);
+            om.Copy.Add(tm);
+            Reply r17 = Call(hwo, om);
+
+            // 关掉一个，名额回来后能再开
+            FakeNative.HandleClose(held[0]);
+            held.RemoveAt(0);
+            WaitFor(() => live() == 15, 5_000);
+            uint again = OpusOpen(hwo, c);
+            if (again != 0) held.Add(again);
+
+            foreach (uint d in held) FakeNative.HandleClose(d);
+            WaitFor(() => live() == 0, 5_000);
+
+            Check("hwopus 同时存活上限：开 16 个 / 第 17 个 / 关一个后再开 / 全关后存活",
+                "16 个成功（开始前存活 0） / 0x3026F 不给会话 / 成功 / 0",
+                $"{okCount} 个成功（开始前存活 {before}） / 0x{r17.Result:X} {(r17.Move.Count == 0 ? "不给会话" : $"给了 {r17.Move.Count} 个会话")} / {(again != 0 ? "成功" : "失败")} / {live()}");
         }
     }
 }

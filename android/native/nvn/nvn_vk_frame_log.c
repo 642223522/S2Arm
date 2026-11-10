@@ -47,6 +47,23 @@ uint64_t s2a_fl_note_timed(struct s2a_frame_log *fl, uint64_t boot_us, uint64_t 
     acquire_ns /= 1000; present_ns /= 1000;
     r->acquire_us = acquire_ns > UINT32_MAX ? UINT32_MAX : (uint32_t)acquire_ns;
     r->present_us = present_ns > UINT32_MAX ? UINT32_MAX : (uint32_t)present_ns;
+    // gpu 字段：first_draw 在渲染 fence signal 后非阻塞读回的 TOP→BOTTOM 帧耗时
+    // （debug.s2a.gpu_time，默认关）。同一结算帧只报一次（seq 去重）；没有新结算写
+    // UINT32_MAX——不写 0，与 iOS host_adapt.m gpu_us 空口径一致。
+    extern int nvn_vk_first_draw_gpu_last(double *, int *, uint64_t *) __attribute__((weak));
+    r->gpu_us = UINT32_MAX; r->gpu_seq = UINT32_MAX;
+    if (nvn_vk_first_draw_gpu_last) {
+        double gms = 0.0; uint64_t gf = 0;
+        if (nvn_vk_first_draw_gpu_last(&gms, NULL, &gf)) {
+            static uint64_t fl_gpu_seen;
+            if (gf != fl_gpu_seen) {
+                fl_gpu_seen = gf;
+                uint64_t u = (uint64_t)(gms * 1000.0 + 0.5);
+                r->gpu_us = u > UINT32_MAX - 1 ? UINT32_MAX - 1 : (uint32_t)u;
+                r->gpu_seq = gf > UINT32_MAX - 1 ? UINT32_MAX - 1 : (uint32_t)gf;
+            }
+        }
+    }
     fl->w = (fl->w + 1) % S2A_FL_CAP;
     if (fl->kept < S2A_FL_CAP) fl->kept++;
     else if (fl->dropped < UINT64_MAX) fl->dropped++;
@@ -78,7 +95,7 @@ uint32_t s2a_fl_fence_n(const struct s2a_frame_log *fl, uint64_t i) {
     return fl->rec[s2a_fl_slot(fl, i)].fence_n;
 }
 
-// 载荷第 j 字节（kept 条 24B LE 记录，最旧→最新），不在堆里重排整段。
+// 载荷第 j 字节（kept 条 32B LE 记录，最旧→最新），不在堆里重排整段。
 static uint8_t s2a_fl_byte(const struct s2a_frame_log *fl, uint64_t j) {
     const struct s2a_fl_rec *r = &fl->rec[s2a_fl_slot(fl, j / S2A_FL_REC_BYTES)];
     unsigned o = (unsigned)(j % S2A_FL_REC_BYTES);
@@ -86,7 +103,9 @@ static uint8_t s2a_fl_byte(const struct s2a_frame_log *fl, uint64_t j) {
     if (o < 12) return (uint8_t)(r->fence_wait_us >> ((o - 8) * 8));
     if (o < 16) return (uint8_t)(r->fence_n >> ((o - 12) * 8));
     if (o < 20) return (uint8_t)(r->acquire_us >> ((o - 16) * 8));
-    return (uint8_t)(r->present_us >> ((o - 20) * 8));
+    if (o < 24) return (uint8_t)(r->present_us >> ((o - 20) * 8));
+    if (o < 28) return (uint8_t)(r->gpu_us >> ((o - 24) * 8));
+    return (uint8_t)(r->gpu_seq >> ((o - 28) * 8));
 }
 
 // logcat 单条约 1 KiB 会截断：分片载荷 700 字符（同 caps/profile 先例），前缀约 30 字符。
@@ -102,7 +121,7 @@ void s2a_fl_dump(const struct s2a_frame_log *fl, void (*emit)(void *ctx, const c
     const unsigned chunks = (unsigned)((b64len + S2A_FL_CHUNK - 1) / S2A_FL_CHUNK);
     char line[800];
     snprintf(line, sizeof line,
-             "direct frame-log meta: v=3 clock=%s unit=us endian=le rec=%u cap=%u recorded=%llu "
+             "direct frame-log meta: v=4 clock=%s unit=us endian=le rec=%u cap=%u recorded=%llu "
              "presents=%llu dropped=%llu first=%llu bytes=%llu chunks=%u",
 #if defined(CLOCK_BOOTTIME)
              "CLOCK_BOOTTIME",
