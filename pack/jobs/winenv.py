@@ -633,23 +633,34 @@ def _metal(request, probe):
 
 
 def _apple(probe):
+    """Apple 移动设备支持：以本机 usbmux 端口 127.0.0.1:27015 能不能连上为准——签名装机（plumesign）和推资源包（s2a-devpush）真正用的就是它。
+    服务名「Apple Mobile Device Service」只用来在端口不通时说清原因：微软商店版 Apple Devices 能识别设备，系统服务里却查不到这个名字（#424），
+    原先先查服务名、查不到就判缺失，不看端口，装好了也一直报缺"""
     source = "Windows SCM + 127.0.0.1:27015"
     ready = False
     try:
-        state = probe("service")["state"]
-        if type(state) is not int or not 1 <= state <= 7:
-            raise ValueError()
-        if state == 4:
-            connected = probe("usbmux_port")["connected"]
-            if type(connected) is not bool:
+        try:
+            state = probe("service")["state"]
+            if type(state) is not int or not 1 <= state <= 7:
                 raise ValueError()
-            ready = connected
-            driver = _item("apple_driver", "Apple移动设备支持", "ok" if ready else "missing",
-                           "服务运行且本机端口可连接；只证明驱动就绪，不证明USB设备能力。" if ready else
+        except FileNotFoundError:
+            state = None   # 没有这个服务名：照样看端口
+        connected = probe("usbmux_port")["connected"]
+        if type(connected) is not bool:
+            raise ValueError()
+        ready = connected
+        if ready:
+            driver = _item("apple_driver", "Apple移动设备支持", "ok",
+                           "本机usbmux端口可连接；只证明驱动就绪，不证明USB设备能力。", source)
+        elif state is None:
+            driver = _item("apple_driver", "Apple移动设备支持", "missing",
+                           "没找到Apple Mobile Device Service，本机usbmux端口也连不上；请安装官方Apple设备支持。", source)
+        elif state == 4:
+            driver = _item("apple_driver", "Apple移动设备支持", "missing",
                            "服务运行但本机usbmux端口不通；请人工检查官方Apple设备支持。", source)
         else:
             driver = _item("apple_driver", "Apple移动设备支持", "mismatch",
-                           "Apple服务未运行；请人工检查官方安装与服务。", source)
+                           "Apple服务未运行，本机usbmux端口也连不上；请人工检查官方安装与服务。", source)
     except Exception as exc:
         driver = _failure("apple_driver", "Apple移动设备支持", exc, source)
     usb = _item("apple_usb", "Apple USB设备能力", "unverified",

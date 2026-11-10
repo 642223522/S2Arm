@@ -211,10 +211,12 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_service_stopped_is_not_ready(self):
         self.probe.values["service"] = {"state": 1}
+        self.probe.values["usbmux_port"] = {"connected": False}   # 端口通就算就绪（#424）：这里测的是服务有问题且端口不通
         self.assertEqual(self.item(self.report(), "apple_driver")["status"], "mismatch")
 
     def test_service_absent_is_named(self):
         self.probe.values["service"] = FileNotFoundError()
+        self.probe.values["usbmux_port"] = {"connected": False}   # 端口通就算就绪（#424）：这里测的是服务有问题且端口不通
         self.assertEqual(self.item(self.report(), "apple_driver")["status"], "missing")
 
     def test_missing_binary_has_manual_hint(self):
@@ -1000,11 +1002,22 @@ class RecoveryMappingTests(unittest.TestCase):
 
     def test_recovery_apple_driver_missing(self):
         self.probe.values["service"] = FileNotFoundError()
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.assert_recovery(self.report(), "apple_driver", "missing", "win_apple_devices_missing")
 
     def test_recovery_apple_service_stopped(self):
         self.probe.values["service"] = {"state": 1}
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.assert_recovery(self.report(), "apple_driver", "mismatch", "win_apple_service_stopped")
+
+    def test_usbmux_port_decides_even_without_the_service_name(self):
+        # #424：微软商店版 Apple Devices 能识别设备，系统服务里查不到「Apple Mobile Device Service」；端口能连上就是就绪（装机真正用的是端口）。
+        #   服务在但没运行、端口却通（别的方式起的 usbmux）同样算就绪
+        for service in (FileNotFoundError(), {"state": 1}):
+            with self.subTest(service=service):
+                self.probe.values["service"] = service
+                self.probe.values["usbmux_port"] = {"connected": True}
+                self.assertEqual(self.item(self.report(), "apple_driver")["status"], "ok")
 
     def test_recovery_usb_unverified(self):
         self.assert_recovery(self.report(), "apple_usb", "unverified", "device_not_connected")
