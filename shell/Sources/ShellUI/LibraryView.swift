@@ -1,3 +1,4 @@
+// S2Arm modification: route card reordering through the library input gate to the host.
 import SwiftUI
 
 /// How the library arranges itself. Only the available size decides, never the device model or orientation,
@@ -328,6 +329,12 @@ public struct LibraryView: View {
         .environment(\.shellIgnoresPress, { [gate] in gate.isSystemEcho })
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
+        .environment(\.shellMoveGame, actions.onMoveGame.map { move in
+            { source, target in
+                guard libraryPressAllowed, noteTouch() else { return false }
+                return move(source, target)
+            }
+        })
         .environment(\.shellFocus, focus)
         .environment(\.shellInputDevice, device)
         .foregroundStyle(.white)

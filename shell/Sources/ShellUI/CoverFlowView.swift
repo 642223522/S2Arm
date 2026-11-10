@@ -1,3 +1,4 @@
+// S2Arm modification: support card reordering and keep the title aligned with the scrolling cover.
 import SwiftUI
 
 /// The library when it is wider than it is tall: one card in the middle, its neighbours turned back, the title and
@@ -54,17 +55,19 @@ struct CoverFlowView: View, Equatable {
             let byTop = 2 * (middle - Self.barTop(short: short) - Self.barHeight - (short ? 6 : 16))
             let cardHeight = max(90, min(byBottom, byTop, geometry.size.width * 0.54 * 9 / 16) / 1.06)
             let cover = cardHeight * 16 / 9
+            let displayed = CoverFlowSelection.game(games: games, selected: selected, offset: scrolled,
+                                                     stride: cover * 1.04, scrolling: userScrolling && games.count > 3)
             ZStack(alignment: .top) {
                 VStack(spacing: 0) {
                     Group {
                         if games.count <= 3 { shelf(width: geometry.size.width, cover: cover) } else { carousel(width: geometry.size.width, cover: cover) }
                     }.frame(height: cardHeight * 1.06)
-                    info(short: short, width: geometry.size.width)
+                    info(displayed, short: short, width: geometry.size.width)
                         .padding(.top, gap).padding(.horizontal, 24)
                 }
                 .padding(.top, middle - cardHeight * 1.06 / 2)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                topBar(short: short).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
+                topBar(short: short, displayed: displayed).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
                 if !short {
                     // The hint row keeps its place when it is hidden, so nothing moves when it appears.
                     hints.opacity(showsHints ? 1 : 0).padding(.bottom, 20)
@@ -93,8 +96,9 @@ struct CoverFlowView: View, Equatable {
     static func barTop(short: Bool) -> CGFloat { short ? 12 : 16 }
     static let barHeight: CGFloat = 44
 
-    private func topBar(short: Bool) -> some View {
-        HStack(alignment: .center, spacing: 10) {
+    private func topBar(short: Bool, displayed: GameDetail) -> some View {
+        let position = (games.firstIndex { $0.id == displayed.id } ?? 0) + 1
+        return HStack(alignment: .center, spacing: 10) {
             SectionHeading(title: ShellStrings.text("Your games"))
             Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                 .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
@@ -121,7 +125,6 @@ struct CoverFlowView: View, Equatable {
         // title under the card does.
         .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
     }
-    private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
     private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
 
     /// More than three games: a carousel that moves one card per gesture, the neighbours turned back a little and
@@ -214,13 +217,14 @@ struct CoverFlowView: View, Equatable {
         .accessibilityAddTraits(chosen ? .isSelected : [])
         .accessibilityHint(chosen ? detail.game.state.actionTitle : ShellStrings.text("Double-tap to select"))
         .accessibilityIdentifier("tile.\(detail.id)")
+        .modifier(GameReorderCard(id: detail.id))
     }
 
     /// Under the centre card, the same on a phone and a tablet: the title with room for two lines, then one line of
     /// state. For a game that cannot start, that line is the way out: a small chip that says what is wrong and what to
-    /// do. The space is reserved, so nothing moves when the selection changes, only the words crossfade.
-    private func info(short: Bool, width: CGFloat) -> some View {
-        let game = selected.game
+    /// do. The reserved space stays fixed while the words follow the card nearest the centre.
+    private func info(_ displayed: GameDetail, short: Bool, width: CGFloat) -> some View {
+        let game = displayed.game
         let size: CGFloat = short ? 18 : 28
         return ZStack(alignment: .top) {
             VStack(spacing: 8) {
@@ -243,12 +247,10 @@ struct CoverFlowView: View, Equatable {
                 } else if game.state == .playable {
                     Color.clear.frame(height: 34).accessibilityHidden(true)
                 } else {
-                    StateAction(game: game) { primary(selected) }
+                    StateAction(game: game) { if settled { primary(displayed) } }
                 }
             }
-            .id(game.id).transition(.opacity)
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: game.id)
         .frame(maxWidth: min(560, width - 48))
         .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
     }
@@ -261,6 +263,14 @@ struct CoverFlowView: View, Equatable {
         }
         .frame(minHeight: 24)
         .accessibilityHidden(true)
+    }
+}
+
+enum CoverFlowSelection {
+    static func game(games: [GameDetail], selected: GameDetail, offset: CGFloat, stride: CGFloat, scrolling: Bool) -> GameDetail {
+        guard scrolling, !games.isEmpty, stride > 0, stride.isFinite, offset.isFinite else { return selected }
+        let position = min(CGFloat(games.count - 1), max(0, (offset / stride).rounded()))
+        return games[Int(position)]
     }
 }
 

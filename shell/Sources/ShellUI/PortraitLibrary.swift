@@ -1,3 +1,4 @@
+// S2Arm modification: enable drag-and-drop reordering on library cards.
 import SwiftUI
 
 /// A Recently played row starts its game, or opens the same fix as Play (game data, an app update).
@@ -168,6 +169,7 @@ struct PortraitLibrary: View, Equatable {
         .accessibilityAddTraits(chosen ? .isSelected : [])
         .accessibilityIdentifier("tile.\(detail.id)")
         .modifier(GameTileMenu(detail: detail, select: select, openSettings: openSettings))
+        .modifier(GameReorderCard(id: detail.id))
         .id(detail.id)
     }
 
