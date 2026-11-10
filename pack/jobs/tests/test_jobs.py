@@ -521,7 +521,7 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
 
     def test_run_reaps_leftover_session_processes(self):
-        # 10-26 斯普拉遁3 Spare-host：工具退出后，留在它会话里的孙进程（dl_gen 超时只杀 metal-tt，air-tt 过继给 launchd 继续编）要收掉；
+        # 10-26 0100C2500FC20000 Spare-host：工具退出后，留在它会话里的孙进程（dl_gen 超时只杀 metal-tt，air-tt 过继给 launchd 继续编）要收掉；
         #   有意活得比任务久、自立会话的（宽屏自动出表，perl setsid）不收
         import shlex
         d = self.root / "reap"; d.mkdir(); q = shlex.quote(str(d))
@@ -742,7 +742,7 @@ class JobsTests(unittest.TestCase):
         return [json.loads(l) for l in self.c.events.read_text().splitlines() if json.loads(l)["type"] == "space"]
 
     def test_space_budget_adds_direct_library_for_every_game(self):
-        # 直连优先、零配置（10-25）：每款都另加直连库预算（按动森实测 × 体积换算），不看有没有手写配置档；只有直连（11-07），没有不加的分支
+        # 直连优先、零配置（10-25）：每款都另加直连库预算（按01006F8002326000实测 × 体积换算），不看有没有手写配置档；只有直连（11-07），没有不加的分支
         import collections
         import unittest.mock as um
         du = collections.namedtuple("du", "total used free")
@@ -969,7 +969,7 @@ class JobsTests(unittest.TestCase):
         base = self.package()
         base["guestIsa"] = "aarch32"
         self.assertTrue(any("32 位" in x for x in library.requirements(self.c, self.game(packages=[base]))))
-        # 本体 32 位、最新更新 64 位（马车8 1.0 → 4.0.1）：按更新判 → 能打包；更新读不出指令集（unknown）→ 退回本体 → 不能打包
+        # 本体 32 位、最新更新 64 位（0100152000022000 1.0 → 4.0.1）：按更新判 → 能打包；更新读不出指令集（unknown）→ 退回本体 → 不能打包
         update64 = dict(self.package("update", 2), guestIsa="aarch64")
         self.assertFalse(any("32 位" in x for x in library.requirements(self.c, self.game(packages=[base, update64]))))
         update_unknown = dict(self.package("update", 2), guestIsa="unknown")

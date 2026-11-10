@@ -21,7 +21,7 @@ CUR=$(root_cur "$G"); [ -n "$CUR" ] || { echo "【红】$G 没有现行产物根
 # 同一款同时只一份刷新（10-25 维护者：巫师3 两棵合入后钩子树各跑一份 refresh，同样的阶段两份一起算）：后到的等前一份刷完再跑——各段按键跳过，等完只花算键的几秒。
 #   锁 = <S2A_REFRESH_LOCKS，缺省 ~/.s2arm/run/s2arm/locks>/refresh_<款>.lock（内核文件锁 tools/plock.sh，本进程退出即放；审计 P1-27）；等满 S2A_REFRESH_WAIT_S（缺省 10800）秒报红。
 #   子进程（如 ipa.sh 再调本脚本）认 S2A_REFRESH_HELD=<锁名：款，私有根是 款@哈希>，不重复拿
-#   锁按「根目录 + 款」（维护者 10-27 00:4x：塞尔达两份私有包在不同私有根里也共用 refresh_botw，R43 野外档包干等 zhz 那份 1 小时）：
+#   锁按「根目录 + 款」（维护者 10-27 00:4x：一款第一方动作冒险游戏两份私有包在不同私有根里也共用 refresh_botw，R43 野外档包干等 zhz 那份 1 小时）：
 #   共享现行根照旧 refresh_<款>；私有根 refresh_<款>@<私有根真实路径的短哈希>，同款不同私有根可并行，同一私有根仍一份一份来
 LK=$G; _root_shared || LK="$G@$(printf '%s' "$(_root_resolve_dir "$S2A_ROOTS")" | shasum | cut -c1-12)"
 RL=${S2A_REFRESH_LOCKS:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/locks}/refresh_$LK.lock
@@ -33,7 +33,7 @@ if [ "${S2A_REFRESH_HELD:-}" != "$LK" ]; then
   CUR=$(root_cur "$G")   # 等的期间前一份可能切了现行
 fi
 # 退出时删锁只删自己的（并行段的子 shell 被杀时也会跑 EXIT 陷阱：按 BASHPID 核持有者）
-# 各阶段输出 / 退出码目录放产物根目录下 .refresh/（10-30 出包线：原先在共享 ${TMPDIR}，跑一两个小时的刷新中途整个目录被删——botw-exp-8404 / 5afe 末尾读不到
+# 各阶段输出 / 退出码目录放产物根目录下 .refresh/（10-30 出包线：原先在共享 ${TMPDIR}，跑一两个小时的刷新中途整个目录被删——01007EF00011E000-exp-8404 / 5afe 末尾读不到
 #   shaders.rc，报「停在 shaders（rc=9）」、真因丢了）。刷新失败整份留进 .failed/refresh_<款>_<时刻>/（各阶段输出全文），成功才删；只有主进程收尾
 L=$(_root_resolve_dir "$S2A_ROOTS")/.refresh/$G.$$; rm -rf "$L"; mkdir -p "$L" || { echo "【红】$G 建不了刷新工作目录 $L"; exit 1; }
 case $(dirname "$L") in */.refresh) for d in "$(dirname "$L")/$G".*; do p=${d##*.}   # 被 kill -9 的刷新留下的：只清本款、名字是「款.进程号」且进程已不在的
@@ -126,7 +126,7 @@ rt() { RD=$((RD + ${1:-1})); prog_tick 刷新各阶段 "$RD" "$RN"; }
 #     界面布局改 romfs、抽取与直连库的键含 romfs 抽样（resource_input_key），所以它必须在抽取开工前落定，否则下次热出包白重抽一遍。
 #   旁路（后台，与关键链并行）：改写 ‖ 系统数据 → 能力表 → 宽屏自动出表；RomFS 索引（界面布局之后）。各段照旧提交（声明了 ROOT_REPLAY，并发提交时重放到新现行），
 #     旁路的输出与红行在关键链末尾汇合打出，任一段红照旧退 1；直连库开工前旁路已红就当场停（不白编十几分钟）。
-#   Spare-host 喷射战士3 基线（重排前串行）：直连库前的串行关键路径 184 秒（改写 52 + 能力表 11 + 配置推导 23 + RomFS 索引 26 + 抽取 72）
+#   Spare-host 0100C2500FC20000 基线（重排前串行）：直连库前的串行关键路径 184 秒（改写 52 + 能力表 11 + 配置推导 23 + RomFS 索引 26 + 抽取 72）
 dred() { echo "【红】$G 直连单轨停在 $1：$2；请导出诊断包反馈，现行 = $(basename "$(root_cur "$G")")"; exit 1; }
 st1() { local out rc t=$SECONDS; out=$(bash "$H/stage_$1.sh" "$G" 2>&1); rc=$?; tm "$1" $((SECONDS - t)); echo "$out" | tail -1
   [ $rc = 0 ] || { echo "【红】$G 刷新停在 $1 阶段（rc=${rc}），现行 = $(basename "$(root_cur "$G")")"; exit 1; }; }

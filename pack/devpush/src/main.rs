@@ -121,7 +121,7 @@ async fn write_file<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, F: FnMut(u64)>(
     Ok(total)
 }
 
-// pax tar（11-06 Windows 端到端线：push_win 原先每批先在出包机盘上打 1 GB 临时 tar 再整文件写进手机，和同机出包抢盘，旷野之息推包最慢 4.6 MB/s）：
+// pax tar（11-06 Windows 端到端线：push_win 原先每批先在出包机盘上打 1 GB 临时 tar 再整文件写进手机，和同机出包抢盘，01007EF00011E000推包最慢 4.6 MB/s）：
 //   手机端 runtime/src/pack_apply.c 只认普通文件 + pax 扩展头（path / size），结尾两块全零。每个文件都发一条 pax 头带完整路径（不受 ustar 100 字节名限制），
 //   再发 ustar 头 + 内容 + 补齐到 512。手机端解完即删 .incoming 里的这个文件，所以中途断了留下的是截短包，push_win 下次会用空包盖掉（同 tools/push_pack.sh）
 fn hdr(name: &[u8], size: u64, typ: u8) -> [u8; 512] {
@@ -145,7 +145,7 @@ fn pax_record(key: &str, val: &[u8]) -> Vec<u8> {   // 「长度 键=值\n」，
 }
 
 async fn write_tar<W: AsyncWrite + Unpin, F: FnMut(u64)>(w: &mut W, list: &[String], root: &str, progress: &mut Progress<F>) -> Result<u64, String> {
-    // 写缓冲 4 MB：AFC 每次 write 是一次往返，小文件每个要写头 / 内容 / 补齐三次（11-06 Windows 出包机原生 USB 推王国之泪：第 1 批 15.4 万个文件平均 6 KB，
+    // 写缓冲 4 MB：AFC 每次 write 是一次往返，小文件每个要写头 / 内容 / 补齐三次（11-06 Windows 出包机原生 USB 推0100F2C0115B6000：第 1 批 15.4 万个文件平均 6 KB，
     //   本地打包 16.6 秒、经 USB 约 1100 秒，全包 30.5 万个文件 19.2 GB 用 2696 秒、平均 7.1 MB/s）。合并成大块再发；大于缓冲的写直接透传
     let mut w = tokio::io::BufWriter::with_capacity(4 << 20, w);
     let mut total = 0u64; let mut payload = 0u64; let mut buf = vec![0u8; 1 << 20];

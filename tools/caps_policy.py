@@ -81,7 +81,7 @@ def sources(root):
     def nonempty(n):
         with open(os.path.join(root, n), encoding='utf-8', errors='replace') as f:
             return any(l.strip() and not l.startswith('#') for l in f)
-    # 第三层不靠逐款表、每款都有（10-29 画面线：八方2 / 马车8 第二层 0 个点也满屏、多档过），逐款表只是增强
+    # 第三层不靠逐款表、每款都有（10-29 画面线：八方2 / 0100152000022000 第二层 0 个点也满屏、多档过），逐款表只是增强
     w = ['第三层通用满屏'] + [n for n in sorted(fs) if n.startswith('widen_enable.') and n.endswith('.tsv')] + (['widen_verified.tsv'] if has('widen_verified.tsv') else []) \
         + [n for n in sorted(fs) if n.startswith('widen_full.') and n.endswith('.tsv')]
     if any(r.get('编号', '').startswith('widescreen:') for r in cp): w.append('社区宽屏补丁')
@@ -322,7 +322,7 @@ def native60(repo, pid, bid):   # 能力覆盖表 L1交换间隔 = L2引擎限�
                for r in rows(os.path.join(repo, 'docs/名单_60帧能力覆盖.tsv')))
 
 
-FPS60_MIN = 57.0   # 60 帧开着的持续平均帧率下限（10-29 维护者：塞尔达 32 帧 / 怪猎崛起 52.5 帧 / 巫师3 38 帧——开了达不到，退回原帧率）
+FPS60_MIN = 57.0   # 60 帧开着的持续平均帧率下限（10-29 维护者：一款第一方动作冒险游戏 32 帧 / 怪猎崛起 52.5 帧 / 巫师3 38 帧——开了达不到，退回原帧率）
 W30_MAX = 3.7      # 30 帧能耗线（同 score_cells.W_MAX）：自适应款主要稳在 30 档时按它判（10-29 维护者「按实际稳住的档用对应能耗线」）
 W60_MAX = 4.8      # 60 帧能耗线（维护者 10-26，与 tools/score_cells.py W_MAX60 同值，tests/caps_policy_test 核一致；不 import 它：改写阶段键不想带 score_cells 全文）
 

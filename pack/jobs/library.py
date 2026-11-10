@@ -889,7 +889,7 @@ SPACE_UNKNOWN = [
 ]
 
 
-# 双轨包多占的空间（10-24 动森实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
+# 双轨包多占的空间（10-24 01006F8002326000实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
 # 出包要多少盘（11-08 维护者）：不看这款做没做过，第一次出包也算得准，只有一个数。
 #   解包 = 原包 × 1.1（解包目录已完整在盘上时算 0）；Mac 的资源包是 APFS 克隆不另算，Windows（NTFS 无克隆）再加一份原包 × 1.1；
 #   直连（翻译缓存 + 着色器库 + 收尾临时，取上限）：原包 < 3 GB 记 5 GB，其余 15 GB（最坏样本巫师3 缓存 7.5 + 库 1.5 × 2 份 + 收尾临时约 4）
@@ -923,13 +923,13 @@ def _extract_bytes(c, gid):
     return max(sizes) if sizes and max(sizes) > 0 else None
 
 
-# 出包实测账（11-07 联合开发者旷野之息：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
+# 出包实测账（11-07 联合开发者01007EF00011E000：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
 #   量这一款在游戏库所在卷上的整套占用，追加一行到 游戏库/space-usage.tsv（取最后一行，同 tools/disk_admit.py 的 est.tsv）；
 #   预检先用同款实测、再用同大小档实测比例 × 本款大小，都没有才退回经验规则。余量 × 1.1 同 维护方工具 need_bytes
 SPACE_LEDGER = "space-usage.tsv"
 CLONED_DIRS = ("romfs", ".romfs_store")
 SPACE_LEDGER_FIELDS = ("time", "gameId", "target", "direct", "inputBytes", "footprintBytes", "name", "format")
-SPACE_LEDGER_FORMAT = "2"   # 2 起 RomFS 只算一份、直连缓存是压缩后的（DSZ1）；旧行偏大约 5 倍（火焰纹章记 152 GB，实占约 32 GB），不用
+SPACE_LEDGER_FORMAT = "2"   # 2 起 RomFS 只算一份、直连缓存是压缩后的（DSZ1）；旧行偏大约 5 倍（一款第一方策略 RPG记 152 GB，实占约 32 GB），不用
 
 
 def _space_target(c):
@@ -1111,7 +1111,7 @@ def check_pack_space(c, game, *, compiler_policy=None):
 
 def guest_isa(selected):
     # 真正跑的程序的指令集：最新更新的 ExeFS 是完整的，读得出就以它为准；读不出（unknown）才看本体。
-    # 有的游戏本体 32 位、更新后 64 位（马车8 1.0 AArch32 → 4.0.1 AArch64，10-23 一键出包曾按本体误拒）
+    # 有的游戏本体 32 位、更新后 64 位（0100152000022000 1.0 AArch32 → 4.0.1 AArch64，10-23 一键出包曾按本体误拒）
     upd = [p for p in selected if p["type"] == "update" and p.get("guestIsa") in ("aarch64", "aarch32")]
     if upd:
         return upd[0]["guestIsa"]

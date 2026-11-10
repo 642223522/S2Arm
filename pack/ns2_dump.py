@@ -90,7 +90,7 @@ def clone(src, dst):
     shutil.copy2(src, dst)   # 跨卷 / 非 APFS：真拷
 
 
-# 合成控制分区里各类存档按游戏代码实际挂的建（11-05 塞尔达时之笛：游戏挂临时存储 MountTemporaryStorage，合成件 TemporaryStorageSize = 0，
+# 合成控制分区里各类存档按游戏代码实际挂的建（11-05 0400486024DEC000：游戏挂临时存储 MountTemporaryStorage，合成件 TemporaryStorageSize = 0，
 #   启动时 EnsureApplicationSaveData 不建它，OpenSaveDataFileSystem（fs 命令 51）回 2002-1002、游戏 Break）。
 #   判法：游戏代码模块（main、subsdk*；sdk 定义全部 nn::fs 函数，不算）的动态符号名里有没有 nn::fs 对应挂载函数（导入名在 .dynstr，按段解开后找修饰名）；有就按下面的大小声明（与账号存档同量级），
 #   没有就保持 0（不凭空多建）。字段位置同 Ryujinx.Horizon/Sdk/Ns/ApplicationControlProperty.cs。

@@ -290,7 +290,7 @@ class SaveFormatTests(unittest.TestCase):
              {"save_persistent.sav", "save_preferences.sav", "save_launcher.sav"}, "0", False),
             # 勇敢的心型：0/ 里只有一个槽位文件 → 剥
             ("commit dir, one slot file", {"0/slot-000.sav": b"s"}, {"slot-000.sav"}, "0", False),
-            # 塞尔达型：游戏自己的存档顶层是 0/…5/ + option.sav → 0/ 是槽位，不剥
+            # 一款第一方动作冒险游戏型：游戏自己的存档顶层是 0/…5/ + option.sav → 0/ 是槽位，不剥
             ("slot dir", {"0/game_data.sav": b"g", "0/caption.sav": b"c"}, {"0", "1", "option.sav"}, "", False),
             # 没有参照：不剥，报结构存疑（不静默剥）
             ("no reference", {"0/game_data.sav": b"g"}, None, "", True),

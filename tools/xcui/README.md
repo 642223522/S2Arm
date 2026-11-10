@@ -16,7 +16,7 @@ S2A_DEVELOPER_DIR=/Applications/Xcode-27.1.app/Contents/Developer \
 ## 计划格式（tools/xcui/Runner/Plan.swift，单测 tests/xcui_plan_test.sh）
 
 ```json
-{"bundle": "io.s2arm.mk8d", "steps": [
+{"bundle": "io.s2arm.0100152000022000", "steps": [
   {"tap": "settings.S2ADockedMode"}, {"tap": "settings.done", "timeout": 5},
   {"slider": "settings.S2AResolutionScale", "to": 1}, {"tap": "立刻重启"},
   {"tapxy": [480, 220]}, {"press": [480, 220, 1.5]}, {"wait": 2}]}

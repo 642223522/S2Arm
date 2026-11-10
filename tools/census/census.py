@@ -268,7 +268,7 @@ def stub_missing(r, lg):
 
 MACHINE = '机器原因：出包开工时盘不够（不是游戏的问题，下次启动重排）'
 # 出包失败行自己的红行属于环境 / 工具缺件或出包进程被外部收掉（11-05 维护者：Windows 出包机普查 AM2R「OpenGL 款要 glslangValidator」、勇者XI S「set DM_OODLE_HOST」、
-#   ARMS 轻阶段 rc=75、被另一线 pkill 收掉的 rc=143、无人深空Windows 出包机 [WinError 31] 都记成了游戏「失败」；WinError 只在Windows 出包机出包道出现，归Windows 出包机环境）。只看本行的第一个失败点 + 红行前3（决定性的那行），不扫全目录日志（日志里提到环境的旁支不算）
+#   01009B500007C000 轻阶段 rc=75、被另一线 pkill 收掉的 rc=143、无人深空Windows 出包机 [WinError 31] 都记成了游戏「失败」；WinError 只在Windows 出包机出包道出现，归Windows 出包机环境）。只看本行的第一个失败点 + 红行前3（决定性的那行），不扫全目录日志（日志里提到环境的旁支不算）
 PACK_ENV_RE = re.compile(r'环境未就绪|环境缺件|缺工具|要 glslangValidator|brew install|DM_OODLE_HOST|rc=75\b|退出 75\b|被外部收掉|WinError')
 
 
@@ -299,7 +299,7 @@ def entry_ai(lg, judge=None):
         try: sj = json.load(open(sp, encoding='utf-8'))
         except (OSError, ValueError): continue
         if sj.get('marked'): return '是', f'自动玩家 MARK：模型说可操控 + 读数到场景量级（首帧后 {sj.get("first_frame_to_mark_s", -1)} 秒、按键 {sj.get("presses", 0)} 下、模型 {sj.get("vision_asks", 0)} 次）'
-    # ap_summary.json 没拉回来（11-02 c1102_v2_air 星之卡比 新星同盟：04:42 本机重启前收局，局目录里没有它，进局落到判官、判官失败记「未判」）：
+    # ap_summary.json 没拉回来（11-02 c1102_v2_air 01007E3006DDA000：04:42 本机重启前收局，局目录里没有它，进局落到判官、判官失败记「未判」）：
     #   打没打 MARK 的原始事实在 host.log——自动玩家写「S2A 标记 MARK：帧 N」与「导航 → 局内段（依据：…）」两行，都在就算进局
     try: hl = open(os.path.join(lg, 'host.log'), encoding='utf-8', errors='replace').read()
     except OSError: hl = ''
@@ -634,7 +634,7 @@ def one_shot(r):
     return '未判' if sm == '-' else '是'
 
 
-QUEUE_TH = ['键', '名称', '批次', '出包提交号', '结论', '第一个失败点', '进局', '档']   # 档 = 热门度档（1 任天堂第一方 / 宝可梦，2 百万级大作与知名系列，3 其余），人工排
+QUEUE_TH = ['键', '名称', '批次', '出包提交号', '结论', '第一个失败点', '进局', '档']   # 档 = 热门度档（1 任天堂第一方 / 一款第一方 RPG，2 百万级大作与知名系列，3 其余），人工排
 
 
 def manual_queue(table, queue, batch, sha):

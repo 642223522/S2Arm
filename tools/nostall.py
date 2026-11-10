@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 无进展看门狗（10-30 维护者 / 维护者「出包管线深修」①：固定墙钟超时把满载下的正常慢当挂死杀掉——今天实验单 20 张 0 绿，
-#   抽取 timeout 900 杀 5 单、直连库 timeout 7200 杀 2 单；塞尔达同一步平时 443 秒，只有 2 倍余量）：
+#   抽取 timeout 900 杀 5 单、直连库 timeout 7200 杀 2 单；一款第一方动作冒险游戏同一步平时 443 秒，只有 2 倍余量）：
 #   nostall.py [--watch <目录或文件>]… <无进展秒> -- <命令…>
 #   每 S2A_NOSTALL_POLL（缺省 30）秒看一次「有没有进展」，下面任一成立都算；连续 <无进展秒> 一条都不成立才判挂死：
 #     ① 被盯的路径有新写入：--watch 给的目录（目录自身与前几项子目录的修改时间——新建 / 改名 / 删除都会动它；不列全目录）
@@ -9,8 +9,8 @@
 #     ③ 进程树里有编译子进程活着（xcrun / metal / metallib / clang / air-* / spirv-* / glslc …）
 #     ④ 树里任一进程的磁盘读 / 写字节数在涨（macOS：libproc proc_pid_rusage 的 ri_diskio_bytesread / byteswritten；Linux：/proc/<pid>/io 的 read_bytes / write_bytes；取不到就只看 ①②③）
 #   ④ 的来由（11-04 巫师3 c1104_w3astc 抽取被误杀：本机负载 100–200、多个出包同读工作盘，两个工作进程整 600 秒停在 mmap 切片的缺页读上，
-#     缺页等盘几乎不涨 CPU、也还没写输出，旧版判挂死）。实测 mmap 缺页读计入 ri_diskio_bytesread（马里奥网球 xci 随机页读 5 秒：+452 MB，ri_pageins +26766）
-#   ③ 的来由（10-31 mhrise-formal-f285 02:03 被误杀、botw rc=124 同类）：Metal 编译真正在算的是系统的 MTLCompilerService，
+#     缺页等盘几乎不涨 CPU、也还没写输出，旧版判挂死）。实测 mmap 缺页读计入 ri_diskio_bytesread（一款第一方游戏网球 xci 随机页读 5 秒：+452 MB，ri_pageins +26766）
+#   ③ 的来由（10-31 mhrise-formal-f285 02:03 被误杀、01007EF00011E000 rc=124 同类）：Metal 编译真正在算的是系统的 MTLCompilerService，
 #     它由 launchd 起、不在本进程树里；树里的 xcrun / metal 只在等它，树内 CPU 不涨，旧版只看 ②，把正在编库的出库判成挂死。
 #   判挂死：打一行「【红】无进展看门狗：…」到标准错误、TERM 整棵树、10 秒后 KILL，退出 124（同 timeout，调用方按超时归类）。
 #   停之前先给树里每个进程抓 1 秒原生调用栈（/usr/bin/sample，各进程同时抓），写进第一个被盯目录下的 nostall_stacks.<命令进程号>.log，红行写明路径

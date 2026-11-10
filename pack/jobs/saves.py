@@ -35,7 +35,7 @@ MAX_FILES = save_formats.MAX_FILES
 MAX_BYTES = save_formats.MAX_BYTES
 MAX_MANIFEST = 8 << 20
 CHUNK = 1 << 20
-# 社区存档转换后目录结构存疑时给玩家看的一句（10-27 塞尔达 0/…5/）：inspect 预览里显示，restore 不因此拒绝
+# 社区存档转换后目录结构存疑时给玩家看的一句（10-27 一款第一方动作冒险游戏 0/…5/）：inspect 预览里显示，restore 不因此拒绝
 STRUCTURE_NOTICE = "这份存档的目录结构不常见，导入时会按原样照搬。如果游戏读不到进度，请换一份存档。"
 
 
@@ -852,7 +852,7 @@ def external_archive(c, game, root, source):
         def read(name):
             return (root / name).read_bytes()
 
-        # 这款游戏自己写出的存档顶层（槽 0）：社区存档唯一子目录「0」是提交目录还是游戏的槽位，靠它判（10-27 塞尔达 0/…5/）
+        # 这款游戏自己写出的存档顶层（槽 0）：社区存档唯一子目录「0」是提交目录还是游戏的槽位，靠它判（10-27 一款第一方动作冒险游戏 0/…5/）
         with save_formats.extracted(
             source, tid=game["id"], ref=save_top(read, files, dirs, game)
         ) as (layout, data, program, kind, why):

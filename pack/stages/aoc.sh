@@ -91,7 +91,7 @@ MISS=(); FROM=$C; KEEP=0   # MISS：「文件名<TAB>原因」；FROM：克隆�
 miss() { MISS+=("$(basename "$1")	$(printf '%s' "$2" | tr '\t\n' '  ' | cut -c1-160)"); echo "🟡 ${G} 追加内容 $(basename "$1") 未能解出（$(printf '%s' "$2" | cut -c1-160)），跳过"; }
 if [ ! -f "$C/aoc.tsv" ]; then   # 缓存没有：解到 C.tmp.<pid>（带一份 main 供版本核对，解完删），再改名；并发时后到的丢弃自己那份
   S=$C.tmp.$$; rm -rf "$S"; mkdir -p "$S/exefs" && _root_cp "$CUR/exefs/main" "$S/exefs/main" || { echo "【红】$G 建追加内容缓存失败"; exit 1; }
-  # 解不出（原始包与产物根程序版本不符、密钥缺等）只跳过不拦出包：DLC 是附加内容，拦住会让整款出不了包（10-20 动森：产物根 exefs 与本机 3.0.3 卡带版本不符，刷新全红）
+  # 解不出（原始包与产物根程序版本不符、密钥缺等）只跳过不拦出包：DLC 是附加内容，拦住会让整款出不了包（10-20 01006F8002326000：产物根 exefs 与本机 3.0.3 卡带版本不符，刷新全红）
   if ! ${S2A_HDD_READ:-} "$SRC_N" "$SRC_K" "$S" --aoc-only --title-id="$TID" "${fs[@]}" > "$S/aoc.log" 2>&1; then   # S2A_HDD_READ：读原件锁前缀（见 pack/stages/unpack.sh）
     # 整份解不出时逐份兜底（审计 P2-30：原先一份解不出连带其余能解的全部跳过）。--aoc-only 要本体 + 更新做版本核对，所以每次给「上下文 + 一份纯 DLC 包」：
     #   上下文 = 程序号对上的包 + 内容清单里有本体 / 更新的单独包（nx_unpack --inspect 按内容分，不看文件名）；内容清单都读不出的那份直接记缺

@@ -9,7 +9,7 @@ from jobcase import JobCase, synthetic_nacp, synthetic_npdm, synthetic_nup
 import library
 from core import atomic
 
-APP = 0x0400486024DEC000   # 时之笛的程序号（合成容器，内容是测试字节）
+APP = 0x0400486024DEC000   # 0400486024DEC000的程序号（合成容器，内容是测试字节）
 
 
 class DigestTests(unittest.TestCase):   # 11-06：导入的包身份 = 原件整份 SHA-256；Windows 走系统 CNG，结果必须与 hashlib 逐位相同

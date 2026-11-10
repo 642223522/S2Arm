@@ -7,8 +7,8 @@ using System.Text;
 
 namespace S2A.Services.Tests
 {
-    // 时之笛（Switch 2，0400486024DEC000）开局服务缺口第一批：nifm 101、pctl 1101、lm 3。
-    //   线上格式取自时之笛 sdk 客户端代理（CmifProxy 虚表 → 发送助手的头字、数据偏移、缓冲类型）；期望值按格式与真机语义手写，不跑被测实现：
+    // 0400486024DEC000（Switch 2，0400486024DEC000）开局服务缺口第一批：nifm 101、pctl 1101、lm 3。
+    //   线上格式取自0400486024DEC000 sdk 客户端代理（CmifProxy 虚表 → 发送助手的头字、数据偏移、缓冲类型）；期望值按格式与真机语义手写，不跑被测实现：
     //   - nifm IGeneralService 101（GetCurrentNetworkProfile V2）：域消息、无入数据、C 缓冲 0x1b4；本机无联网权限 = 没有当前网络 → 同命令 5 回 NoInternetConnection（2110-0300），不报红
     //   - pctl IParentalControlService 1101（CheckAgcPermissionUnderMinimumAge）：入数据 Uid 0x10、无 pid、回 1 字节；没设家长控制 → 0（游戏表里 0 = "success"），不报红
     //   - lm ILogger 3（DevNotify）：入数据 0x28 字节头、In|AutoSelect 缓冲放正文；回 0、不报红

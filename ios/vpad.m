@@ -759,7 +759,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 // 审计 P1-3：游戏启用了触屏（C# InputPump 读 Hid.Touchscreen.Active 后经 s2a_vpad_touch_wanted 转告）而当前是按键方案时，提示一次怎么切到「仅触屏操作」（本 App 只提示一次）。
 //   两套方案保持互斥、不做「又有按键又透传」：默认布局左右半屏空白处都是浮动摇杆的激活区，按键以外没有空地可透传，透传就等于推摇杆时游戏也收到点按；
 //   很多游戏开机就启用触屏、分不出真用不用，所以只提示、不自动切。自动化局不提示
-//   11-04 维护者（脑锻炼标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 维护者 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
+//   11-04 维护者（一款第一方益智游戏标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 维护者 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
 //   提示条（本 App 只提示一次）带「切到触屏」按钮，一点就切。切换与持久化在 vpad_layout.m setTouchOnly:（单测 t_vpad_toggle）
 - (void)offerTouchHint {
     _touchWanted = YES;
@@ -768,7 +768,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     NSUserDefaults *u = NSUserDefaults.standardUserDefaults;
     if (_touchOnly || [u boolForKey:kTouchHintKey]) return;
     // 等 3 秒再定弹不弹：游戏常先启用触屏（ActivateTouchScreen）、再声明触屏配置（SetTouchScreenConfiguration → 一次成功线的自动切，
-    //   ios/touch_config.m），脑锻炼就是这样。3 秒后已是仅触屏（被自动切了）就不弹「切到触屏」，也不记「提示过」，免得两条依次弹
+    //   ios/touch_config.m），一款第一方益智游戏就是这样。3 秒后已是仅触屏（被自动切了）就不弹「切到触屏」，也不记「提示过」，免得两条依次弹
     __weak S2AVPadView *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         S2AVPadView *view = weakSelf; if (!view || view->_touchOnly) { if (view) LOG("触屏布局：3 秒内已切到仅触屏（自动切），不弹「切到触屏」"); return; }

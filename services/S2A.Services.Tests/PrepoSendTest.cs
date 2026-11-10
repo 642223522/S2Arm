@@ -11,8 +11,8 @@ using System.Threading;
 
 namespace S2A.Services.Tests
 {
-    // prepo:u 10500（Switch 2 nn::prepo::PlayReport::Send(Uid)，时之笛 0400486024DEC000 玩法转场发）+ 回出的 IAsyncContext 0 / 1 / 2。
-    //   线上格式取自时之笛 sdk（代理 0x5aba60、发送助手 0x5ac640）：域消息、类型 6、pid、X = 事件名（含 NUL）、复制句柄 1 个 = 报告缓冲的传输内存（建时权限「无」）、
+    // prepo:u 10500（Switch 2 nn::prepo::PlayReport::Send(Uid)，0400486024DEC000 0400486024DEC000 玩法转场发）+ 回出的 IAsyncContext 0 / 1 / 2。
+    //   线上格式取自0400486024DEC000 sdk（代理 0x5aba60、发送助手 0x5ac640）：域消息、类型 6、pid、X = 事件名（含 NUL）、复制句柄 1 个 = 报告缓冲的传输内存（建时权限「无」）、
     //   数据 u8 同意检查 @0、u32 传输内存长 @4、u32 报告长 @8、Uid @0x10、u64 pid 占位 @0x20；IAsyncContext 命令表取自 sdk 代理 vtable 0xe72478（0 取事件 / 1 Cancel / 2 GetResult）。
     //   期望不跑被测实现：报告是手写的 MessagePack {"a": 1}，订阅者收到的事件名 / Uid / 内容按请求手算；离线不上传 → 异步上下文已完成（事件亮）、结果 0；
     //   Uid 全零照存报告带用户（10107）回 prepo InvalidArgument (1<<9)|129；报告长超传输内存（sdk 不会这样发）报红回未知命令
@@ -83,7 +83,7 @@ namespace S2A.Services.Tests
                 return Domain(m, root);
             }
 
-            // ---- 正路：时之笛同款请求 ----
+            // ---- 正路：0400486024DEC000同款请求 ----
             PlayReport got = default;
             int hits = 0;
             void OnReport(PlayReport r) { got = r; Interlocked.Increment(ref hits); }
