@@ -291,6 +291,11 @@ static int host_run(int argc, char **argv) {
     //   查不查、查哪个文档根由 s2a_import_docs_pick 按启动上下文定（多款容器 = 本款 Documents/games/<游戏号>；11-07 原先按「S2A_GAME_DATA 没设」判，容器选游戏总会设它 → 漏查）
     { int s2a_import_gate(void); int s2a_ios_reload_graphics_settings(void);
       if (s2a_import_gate() && s2a_ios_reload_graphics_settings()) die("【红】资源导入后重读画面设置 / 随包补丁失败（见上一行【红】）"); }
+    // 模块目录先定下（启动上下文 main 开头已冻结）：放行之后谁先调 s2a_gfx_mode() 谁就落定图形模式与程序号（gfxmode.c decide 读 <模块目录>/main.npdm）。
+    //   原先 iOS 要到装模块（loader.c load_modules）才设目录，放行与装载之间若有人先问——上次没正常收尾时开局弹诊断提示，关掉后 App 重新激活，
+    //   恢复回调 s2a_direct_suspend 问图形模式——程序号读成 0 并锁死整局：wire/<程序号> 的现编缓存、跑局知识落到 wire/0000000000000000，
+    //   库戳核对报「built for game …, not 0000000000000000」（11-10 测试设备连续冷启动 3 次后两次中；11-04 起的 iOS 日志就有）
+    { void s2a_module_dir_set(const char *); s2a_module_dir_set(lc->module_dir); }
     // 资源包已放行：图形模式此后才落定（gfxmode.c）。必须早于装载——装载器按模式绑定 nvnBootstrapLoader（loader.c）
     { void s2a_gfx_mode_data_ready(void); s2a_gfx_mode_data_ready(); }
 #endif
