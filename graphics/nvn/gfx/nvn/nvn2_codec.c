@@ -113,7 +113,11 @@ uint32_t nvn2_vi_vsync_event(void *sev, void *disp) {
     pthread_detach(th);
     LOG("vi::GetDisplayVsyncEvent：宿主线程按 60 Hz 触发（自动清除）"); return 0;
 }
-__attribute__((constructor)) static void vi_vsync_reg(void) { nvn2_vi_vsync_register((void *)nvn2_vi_vsync_event); nvn2_sev_attach_register(sev_attach); }
+uint64_t nvn2_chat_video_size(int w, int h, int count); uint32_t nvn2_chat_video_init(void *type, int w, int h, int count, void *buf, uint64_t size);
+void nvn2_chat_video_fini(void *type); uint32_t nvn2_chat_video_handle(const void *type, int i);   // 定义见下（GameChat 摄像头视频存储，#116）
+void nvn2_chat_video_register(void *size, void *init, void *fini, void *handle);   // nvn2.c（声明不放 nvn2.h：别让头文件改动牵动别处）
+__attribute__((constructor)) static void vi_vsync_reg(void) { nvn2_vi_vsync_register((void *)nvn2_vi_vsync_event); nvn2_sev_attach_register(sev_attach);
+    nvn2_chat_video_register((void *)nvn2_chat_video_size, (void *)nvn2_chat_video_init, (void *)nvn2_chat_video_fini, (void *)nvn2_chat_video_handle); }
 
 // ---------- 同步计数器与 nn::syncpt::sdk 事件 ----------
 typedef struct { uint32_t id_inv, mode; uint64_t value; } cv_sync;
@@ -332,6 +336,35 @@ static void cv_pool_fini(cv_pool *pool) {
     memset(pool, 0, sizeof *pool);
 }
 static uint32_t cv_pool_handle(const cv_pool *pool, uint32_t i) { return pool->first + i; }
+// GameChat 摄像头视频存储（nn::chat::Calculate / Initialize / Finalize{Local,Remote}CameraVideo*、Get*CameraImageHandle，nvn2.c chat_entry 调）：#116 马车世界开机就建
+//   本地 / 远端摄像头的图像池，之后按序号取原生图像句柄建 NVN 纹理；没人聊天时这些图像只是从不被写。原先「没在聊」一律回 0，游戏拿句柄 0 调 nvnNativeImageInitialize 后中止（2162-0001）。
+//   语义取自 Splatoon Raiders（0400380020056000）sdk 反汇编：Calculate(宽 32–1920, 高 32–1080, 张数 1–4) 按（宽, 高, 0）的图像偏好算图像池大小；Initialize(类型, 宽, 高, 张数, 缓冲, 大小)
+//   要缓冲与大小 4 KB 对齐、把 224 字节的类型清零后在缓冲里建池；Get(类型, 序号) 取第 i 张的句柄。宿主这里用解码图像同一套池（RGBA 线性，cv_pool 放进类型的前 0x20 字节）
+static int cv_chat_pref(uint32_t pref[3], int w, int h, int count) {
+    if (w < 32 || w > 1920 || h < 32 || h > 1080 || count < 1 || count > 4) { LOG("【红】GameChat 摄像头视频：尺寸 %dx%d、%d 张超出 sdk 的范围（宽 32–1920、高 32–1080、1–4 张）", w, h, count); return 0; }
+    pref[0] = 0; pref[1] = 2; pref[2] = (uint32_t)(w - 1) | (uint32_t)(h - 1) << 16;   // 布局码 2 = RGBA（cv_kind）
+    return 1;
+}
+uint64_t nvn2_chat_video_size(int w, int h, int count) {
+    uint32_t pref[3]; uint64_t size = 0, align = 0;
+    if (!cv_chat_pref(pref, w, h, count) || cv_pool_size(&size, &align, pref, (uint32_t)count) != RES_OK) return 0;
+    return (size + 0xfff) & ~(uint64_t)0xfff;
+}
+uint32_t nvn2_chat_video_init(void *type, int w, int h, int count, void *buf, uint64_t size) {
+    uint32_t pref[3];
+    if (!type) return RES_FAIL;
+    memset(type, 0, 224);
+    if (!cv_chat_pref(pref, w, h, count) || !buf || ((uintptr_t)buf & 0xfff) || (size & 0xfff)) { LOG("【红】GameChat 摄像头视频：缓冲 %p+%#llx 没按 4 KB 对齐或尺寸不对", buf, (unsigned long long)size); return RES_FAIL; }
+    Result r = cv_pool_init((cv_pool *)type, (uint8_t *)buf, size, pref, (uint32_t)count);
+    if (r == RES_OK) { static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) LOG("GameChat 摄像头视频：建 %d 张 %dx%d 原生图像（句柄 %u 起；没人聊天，从不写入）", count, w, h, ((cv_pool *)type)->first); }
+    return r;
+}
+void nvn2_chat_video_fini(void *type) { if (type && ((cv_pool *)type)->magic == 0x4c4f4f50) cv_pool_fini((cv_pool *)type); }
+uint32_t nvn2_chat_video_handle(const void *type, int i) {
+    const cv_pool *p = type;
+    if (!p || p->magic != 0x4c4f4f50 || i < 0 || (uint32_t)i >= p->count) { LOG("【红】GameChat 摄像头视频：取第 %d 张的句柄，存储没建或序号越界", i); return 0; }
+    return cv_pool_handle(p, (uint32_t)i);
+}
 static Result cv_read_rgba(const cv_pool *pool, uint32_t i, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *dst, uint64_t pitch, uint64_t size) {
     x &= 0xffff; y &= 0xffff; w &= 0xffff; h &= 0xffff;
     cv_img im;
