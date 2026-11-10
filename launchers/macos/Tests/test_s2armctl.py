@@ -562,6 +562,31 @@ class ErrorsCommandTests(unittest.TestCase):
         self.assertIn("disk_full", output)
         self.assertNotIn("Failed stage", output)
 
+class BatchCommandTests(unittest.TestCase):
+    """s2armctl batch（批量出包，v0.2.4）：命令行组成 POST /batch 的请求；轮询 GET /state 的 batch，出完打印每款结果，有失败退 1。期望手写"""
+    def run_batch(self, argv, final_summary):
+        calls = []
+        done = {"running": False, "summary": final_summary, "paused": None,
+                "items": [{"gameId": "0100A", "name": "甲", "platforms": ["mac", "iphone"], "results": {"mac": {"state": "completed"}, "iphone": {"state": "completed"}}}]}
+        def call(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"ok": True, "skipped": []} if path == "/batch" else {"batch": done}
+        out = io.StringIO()
+        with mock.patch.object(ctl, "call", call), mock.patch.object(ctl.time, "sleep", lambda s: None), contextlib.redirect_stdout(out), \
+             self.assertRaises(SystemExit) as caught:
+            ctl.batch(argv)
+        return calls, caught.exception.code, out.getvalue()
+
+    def test_request_and_exit_codes(self):
+        calls, code, text = self.run_batch(["0100a:mac,iphone", "0100b", "--location", "/tmp/包"], {"total": 2, "completed": 2, "failed": 0})
+        self.assertEqual(calls[0], ("POST", "/batch", {"games": [{"gameId": "0100A", "platforms": ["mac", "iphone"]},
+                                                                 {"gameId": "0100B", "platforms": ["iphone"]}], "location": "/tmp/包"}))
+        self.assertEqual(code, 0)
+        self.assertIn("甲：mac completed；iphone completed", text)
+        _, code, _ = self.run_batch(["0100a"], {"total": 1, "completed": 0, "failed": 1})
+        self.assertEqual(code, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 
