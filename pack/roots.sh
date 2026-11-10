@@ -182,7 +182,8 @@ _root_pinned() { local b f p l; b=$(basename "$1"); for f in "$S2A_ROOTS/.pin.$b
     read -r p l < "$f"; [ "$p" = "$$" ] && continue   # 自己的钉不算：自己 commit 之后不会再读自己取过的旧根（并行的别的阶段才会）
     [ -n "$p" ] && [ "$(_root_lstart "$p")" = "$l" ] && return 0; rm -f "$f"; done; return 1; }
 # 修剪被取代的版本：只留现行 + 上一版，被钉住（有进程正在把它当输入）的不删。$1 = 款，$2 = 现行目录名
-_root_prune() { ls -dt "$S2A_ROOTS/$1"@* 2>/dev/null | grep -v -e '@现行$' -e '\.tmp$' | while read -r d; do [ "$(basename "$d")" = "$2" ] || echo "$d"; done | tail -n +2 | while read -r d; do _root_pinned "$d" || _root_trash "$d"; done; }
+#   .tmp / .tmp.rb 是在途事务，不当版本候选：root_gc 与别的进程的重放可以并行（11-02 类别：在途重放被当成「最新备份」剪掉或挤掉真上一版）
+_root_prune() { ls -dt "$S2A_ROOTS/$1"@* 2>/dev/null | grep -v -e '@现行$' -e '\.tmp$' -e '\.tmp\.rb$' | while read -r d; do [ "$(basename "$d")" = "$2" ] || echo "$d"; done | tail -n +2 | while read -r d; do _root_pinned "$d" || _root_trash "$d"; done; }
 root_cur() { local r; r=$(_root_cur_raw "$@"); if [ -z "${S2A_ROOT_CUR:-}" ]; then root_gc "$1"; [ -n "$r" ] && _root_pin "$r"; fi; [ -z "$r" ] || echo "$r"; }
 _root_cur_raw() {
   [ -n "${S2A_ROOT_CUR:-}" ] && { echo "$S2A_ROOT_CUR"; return; }   # 只算键（pack/stage_keys.sh）：各阶段对指定产物根算键，不碰现行
@@ -254,7 +255,8 @@ _root_replay() {   # _root_replay <W.tmp> <新现行> <路径…>：新现行克
   python3 "$(dirname "${BASH_SOURCE[0]}")/../tools/clonedir.py" "$now" "$r" $sk $mvp > /dev/null || { _root_rm "$r"; return 1; }
   [ -z "$sk" ] || ln -s "$rl" "$r/romfs" || { _root_rm "$r"; return 1; }
   [ -n "$own" ] || _root_romfs_seal "$r" || { _root_rm "$r"; return 1; }
-  _root_resource_clone "$now" "$r"
+  _root_resource_clone "$now" "$r"   # 资源键交接要求此刻还没有 .root_pid（inherit_cache 的 before_owner 检查）
+  _root_owner > "$r/.root_pid"   # 重放也要持有者记录：root_gc 只按它判死在途的 .tmp.rb（没有记录的一律不碰）
   _root_shards "$r" "replay·克隆新现行"
   for p in "$@"; do case $p in '!'*) continue;; esac
     case " $mvp " in *" $p "*) [ -e "$w/$p" ] || [ -L "$w/$p" ] || continue; mv "$w/$p" "$r/$p" || { _root_rm "$r"; return 1; }; continue;; esac   # 上面克隆时跳过的：整个挪过来
@@ -317,24 +319,30 @@ root_tmp_live() {
 }
 root_abort() { local w; w=$(_root_dir "${1:?款}" "${2:?提交}"); _root_rm "$w.tmp"; }
 # 取现行时顺手回收（#338：修剪原先只在 commit 触发，进程死后 pin 过期、不再 commit 就没有第二个触发点，过期根一直攒着）。
-#   拿不到提交锁 = 有 commit 在跑，跳过（它收尾自己修剪）；拿到则串行做：修剪旧版 → RomFS 清扫（P1-108：与收纳同一把锁）→ 死持有者 .tmp。
-#   .trash 残余按名字里的 pid 判死（挪它的进程死了，后台删要么完成要么被打断），锁外清；无持有者记录的 .tmp / .tmp.rb 给 60 分钟宽限
-#   （root_begin 克隆到写 .root_pid 之间、重放在途的 .tmp.rb 都没有记录，不能误删在途的）。
+#   同一款 10 分钟内最多一次（$S2A_ROOTS/.gc.<款>.stamp）：root_cur 一次刷新要调几十次，整套扫描不能每次都跑。
+#   拿不到提交锁 = 有 commit 在跑，跳过（它收尾自己修剪）；拿到则串行做：修剪旧版 → RomFS 清扫（P1-108：与收纳同一把锁）→ 死持有者 .tmp / .tmp.rb。
+#   .tmp / .tmp.rb 只删「有 .root_pid 记录且持有者已死」的，没有记录的一律不碰：目录 mtime 只看顶层增删，长重放深层一直在写、
+#   顶层可以一个多小时不动，按 mtime 判会删掉在途的（10-23 事故）。重放两个入口（_root_replay / roots.py _replay）创建时就写记录。
+#   .trash 残余按名字里的 pid 判死（挪它的进程死了，后台删要么完成要么被打断），锁外清。
 root_gc() {
-  local g=${1:?款} d p t hold now
+  local g=${1:?款} d p t hold now stamp
   [ -d "$S2A_ROOTS" ] || return 0
   [ -z "${_ROOT_LOCK_PID:-}" ] || return 0   # 自己持着提交锁（root_commit 里取现行）：commit 收尾自己修剪，不再试锁
+  stamp="$S2A_ROOTS/.gc.$g.stamp"
+  [ -n "$(find "$stamp" -mmin -10 2> /dev/null)" ] && return 0   # 节流：同一款 10 分钟内最多回收一次
   type plock_take > /dev/null 2>&1 || source "$(dirname "${BASH_SOURCE[0]}")/../tools/plock.sh" || return 0
-  plock_take "$S2A_ROOTS/.$g.commit.lock" 0 > /dev/null 2>&1 || return 0
+  # 有 commit 在跑：它收尾会修剪；同样记一次节流，别让并行的 root_cur 反复起锁进程试锁
+  plock_take "$S2A_ROOTS/.$g.commit.lock" 0 > /dev/null 2>&1 || { touch "$stamp" 2> /dev/null; return 0; }
   _ROOT_LOCK_PID=$PLOCK_PID; _ROOT_LOCK_GAME=$g   # 登记成本进程持锁：root_romfs_sweep 同一款不再重复拿（同 root_commit）
   hold=$PLOCK_PID
+  touch "$stamp" 2> /dev/null
   now=$(readlink "$S2A_ROOTS/$g@现行" 2> /dev/null); now=${now##*/}
   _root_prune "$g" "$now"
   root_romfs_sweep "$g"
   for d in "$S2A_ROOTS/$g"@*.tmp "$S2A_ROOTS/$g"@*.tmp.rb; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
-    if [ -e "$d/.root_pid" ]; then root_tmp_live "$d" && continue
-    else [ -n "$(find "$d" -prune -mmin +60 2> /dev/null)" ] || continue; fi
+    [ -e "$d/.root_pid" ] || continue   # 没记录：可能是在途（克隆到写记录之间 / 旧格式），一律不碰
+    root_tmp_live "$d" && continue
     _root_trash "$d"
   done
   _root_unlock
