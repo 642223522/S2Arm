@@ -24,8 +24,8 @@ static NSString *game_manage_key(void) {
 //   （文件夹先建出来，「文件」App 里马上看得到），上次没读进来的原因（数据根 savedata-problem.txt，服务层写）接在后面
 static NSString *save_location(NSString *root) {
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    const char *d = getenv("S2A_DOCS");
-    NSString *folder = [(d && *d ? @(d) : documents) stringByAppendingPathComponent:@"SaveData"];
+    const char *f = getenv("S2A_SAVE_FOLDER"), *d = getenv("S2A_DOCS");   // 同 ios/settings.m 起局时给服务层的那条；存档页在起局前打开时按同一规则算
+    NSString *folder = f && *f ? @(f) : [(d && *d ? @(d) : documents) stringByAppendingPathComponent:@"SaveData"];
     [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
     char *rd = realpath(documents.fileSystemRepresentation, NULL), *rf = realpath(folder.fileSystemRepresentation, NULL);
     NSString *base = rd ? @(rd) : documents, *full = rf ? @(rf) : folder; free(rd); free(rf);

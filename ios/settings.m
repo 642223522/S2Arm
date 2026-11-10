@@ -225,6 +225,13 @@ void s2a_ios_load_graphics_settings(void) {
         s2a_ios_apply_graphics_settings(NSUserDefaults.standardUserDefaults);
         s2a_caps_apply(caps_dir().fileSystemRepresentation);
         s2a_ios_publish_bundle_info(NSBundle.mainBundle.infoDictionary ?: @{}, NSUserDefaults.standardUserDefaults);
+        // 存档位置 SaveData（services/S2A.Services/SaveFolder.cs 读 S2A_SAVE_FOLDER，共享层不判平台）：本款文档根下的 SaveData。
+        //   这里在服务层起来之前跑，多款容器选游戏后 S2A_DOCS 已是 Documents/games/<游戏号>（runtime/src/launchctx.c）；单款包没有 S2A_DOCS = Documents。启动环境显式给的优先
+        if (!getenv("S2A_SAVE_FOLDER")) {
+            const char *d = getenv("S2A_DOCS");
+            NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+            setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:@"SaveData"].fileSystemRepresentation, 0);
+        }
     }
 }
 

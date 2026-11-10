@@ -10,9 +10,9 @@ using System.Text.RegularExpressions;
 namespace S2A.Services
 {
     // 存档位置 SaveData（11-09 维护者定：每款游戏一个固定文件夹，里面就是原生存档格式；放进去就能用；Mac ↔ iPhone 原样拷就互通）。
-    //   路径：Mac 由作业层给 S2A_SAVE_FOLDER = <存放位置>/games/<英文名>/SaveData（pack/jobs/build.py）；iOS 没给时取本款文档根 S2A_DOCS
-    //   （多款容器选游戏后 = Documents/games/<游戏号>，runtime/src/launchctx.c）下的 SaveData，单款包没有 S2A_DOCS = Documents/SaveData。
-    //   其余（安卓平台自管存档、Mac 上不经作业层的开发起局）不启用。
+    //   路径由平台给 S2A_SAVE_FOLDER（共享层不判平台）：Mac 作业层 = <存放位置>/games/<英文名>/SaveData（pack/jobs/build.py）；
+    //   iOS 起局设置注入（ios/settings.m）= 本款文档根下的 SaveData（多款容器 Documents/games/<游戏号>/SaveData，单款包 Documents/SaveData）。
+    //   没给 = 不启用（安卓平台自管存档、Mac 上不经作业层的开发起局）。
     //   起局（游戏开跑前，Application.Register）：存档位置的内容和 App 上次写入 / 读入时不一样 → 玩家放了新的 → 识别后整棵换掉当前存档；一样 → 不动。
     //   退出（收局，存档服务还在）：当前存档按固定结构写回 save/（账号存档，只有设备存档的游戏是设备存档）+ save_device/（两种都有时的设备存档）；
     //   这一局里存档位置被玩家动过就不写回（保住刚放进来的，下次起局读它）；起局时放进来的没认出也不写回（原样留给玩家改）。
@@ -32,10 +32,7 @@ namespace S2A.Services
         {
             if (Host.Configuration != null) return null;   // 平台自管存档（安卓）不走这条
             string dir = Environment.GetEnvironmentVariable("S2A_SAVE_FOLDER");
-            if (!string.IsNullOrEmpty(dir)) return dir;
-            if (!OperatingSystem.IsIOS()) return null;
-            string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
-            return Path.Combine(string.IsNullOrEmpty(docs) ? Environment.GetFolderPath(Environment.SpecialFolder.Personal) : docs, "SaveData");
+            return string.IsNullOrEmpty(dir) ? null : dir;
         }
         static string DataRoot() => Ryujinx.Common.Configuration.AppDataManager.BaseDirPath;
 
