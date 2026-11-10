@@ -2,6 +2,7 @@
 // Copyright 2026 S2Arm contributors
 using S2A.Services;
 using System;
+using System.IO;
 using System.Text;
 
 namespace S2A.Services.Tests
@@ -49,16 +50,36 @@ namespace S2A.Services.Tests
         [SvcCase]
         private static void ZeldaPctl1101()
         {
-            uint sm = SmSession();
-            uint pf = Call(sm, Msg.Cmif(1, Name8("pctl"))).Move[0];
-            Msg cs = Msg.Cmif(0, Bytes(0UL)); cs.SendPid = true;
-            Reply r = Call(pf, cs);
-            uint svc = r.Move.Count == 1 ? r.Move[0] : 0;
+            string root = Path.Combine(Path.GetTempPath(), $"s2a_pctl_test_{Environment.ProcessId}");
+            Host.Device.Processes.TryGetProcess(FakeNative.GamePid, out var original);
+            try
+            {
+                WriteApplicationFixture(root);
+                Application.Register(Host.Device, root);
+                bool registered = Host.Device.Processes.TryGetProcess(Native.ProcessId(), out var process);
+                Check("pctl 前提：真实应用登记的 PID / ProgramId", $"0x51 / 0x{HomebrewFixtureProgramId:X}",
+                    registered ? $"0x{process.ProcessId:X} / 0x{process.ProgramId:X}" : "进程元数据未登记");
 
-            long red0 = Red.Total;
-            Reply a = Call(svc, Msg.Cmif(1101, Bytes(0x1122334455667788UL, 0x99AABBCCDDEEFF00UL)));
-            byte status = a.Result == 0 ? a.Data[0] : (byte)0xFF;
-            Check("pctl 1101 CheckAgcPermissionUnderMinimumAge，没设家长控制：结果 0、状态 0、不报红", "0x0、0、红 +0", $"0x{a.Result:X}、{status}、红 +{Red.Total - red0}");
+                uint sm = SmSession();
+                uint pf = Call(sm, Msg.Cmif(1, Name8("pctl"))).Move[0];
+                Msg cs = Msg.Cmif(0, Bytes(0UL)); cs.SendPid = true;
+                Reply r = Call(pf, cs);
+                uint svc = r.Move.Count == 1 ? r.Move[0] : 0;
+
+                long red0 = Red.Total;
+                Reply a = Call(svc, Msg.Cmif(1101, Bytes(0x1122334455667788UL, 0x99AABBCCDDEEFF00UL)));
+                byte status = a.Result == 0 ? a.Data[0] : (byte)0xFF;
+                Check("pctl 1101 CheckAgcPermissionUnderMinimumAge，没设家长控制：结果 0、状态 0、不报红", "0x0、0、红 +0", $"0x{a.Result:X}、{status}、红 +{Red.Total - red0}");
+                FakeNative.HandleClose(svc);
+                FakeNative.HandleClose(pf);
+                FakeNative.HandleClose(sm);
+            }
+            finally
+            {
+                Host.Device.Processes.ClearProcess(FakeNative.GamePid);
+                if (original != null) Host.Device.Processes.S2ARegisterApplication(original);
+                Directory.Delete(root, true);
+            }
         }
 
         [SvcCase]
