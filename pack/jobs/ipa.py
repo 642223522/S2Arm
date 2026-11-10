@@ -130,6 +130,8 @@ def _iml_device_hint(c, tgt, gid):
 
 
 WIN_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "direct"), ("抽取 + 直连库", "ipa"))
+# 每步开头行「[时刻] 开始：步名」→ 这一步所属的段：一开始就切过去（社区贡献者补丁 #8：原先只认上一步收尾行，解包读完到播种结束前一直停在「解包 100%」）
+WIN_START_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "refresh"), ("抽取 + 直连库", "direct"), ("组工作根", "ipa"), ("ipa 收尾", "ipa"))
 
 
 def win_milestone(text):
@@ -137,6 +139,9 @@ def win_milestone(text):
     失败的步也打收尾行：原先照样进下一段，#244 / #269 的直连库失败被摘要报成「编 App 与签名」，把排查带偏"""
     if re.search(r"（rc=(?!0）)\d+）", text):
         return None
+    started = re.search(r"] 开始：(.+)$", text)
+    if started:
+        return next((stage for step, stage in WIN_START_MILESTONES if started.group(1).startswith(step)), None)
     return next((stage for step, stage in WIN_MILESTONES if f"] {step}：" in text), None)
 
 
@@ -266,8 +271,8 @@ def _build(c):
                 if watcher:
                     watcher.__exit__(None, None, None)
                 ms.enter(c, "ipa")
-            stage = win_milestone(text)   # Windows 一键出包：上一步成功收尾 = 进下一段
-            if stage:
+            stage = win_milestone(text)   # Windows 一键出包：这步开头 / 上一步成功收尾 = 进这一段（同一段不重复进，免得计时清零）
+            if stage and stage != getattr(c, "milestone", None):
                 ms.enter(c, stage)
         # 交付物 / 包号 / 画面模式从一键出包的事件流取（--events，最后一条 result；10-26 照上游 --progress json），不按人读完成行的字面抠
         events = c.logs / (c.task + "-ipa.events.jsonl")

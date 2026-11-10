@@ -515,7 +515,8 @@ public sealed partial class EnvironmentWindow
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packCancellation = null; packRunning = false;
                 // 换了存放位置 / 第一次建文件夹：游戏库里这款的位置变了（搬到一半失败也可能已经动了），重读游戏库，出包页下次重读位置表
-                if (packLocation is not null && !SameFolder(packLocation, game.Location?.Path ?? "") && !libraryBusy) { locationsFor = null; libraryOperation = RunLibraryAsync("catalog", null); }
+                // 出好了（卡片上的 iPhone 就绪状态要更新）或换了存放位置：重读游戏库（社区贡献者补丁 #7：原先只有换位置才重读，卡片停在旧状态）
+                if (!libraryBusy && (packState == "succeeded" || packLocation is not null && !SameFolder(packLocation, game.Location?.Path ?? ""))) { locationsFor = null; libraryOperation = RunLibraryAsync("catalog", null); }
                 if (packState == "succeeded")
                 {
                     readinessFor = null;
