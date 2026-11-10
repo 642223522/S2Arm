@@ -8790,7 +8790,17 @@ static uint64_t pool_room(void) {   // what may still be made up front this fram
 }
 // A render target no pass has written holds nothing to read, and a pass makes its texture when it renders. Made for a read, one that only registers next frame's target took three times the
 // textures and 17 GB allocated on Ocarina of Time (upstream): the game re-registers its IDs with transient targets, whose IDs a shader read as the previous texture
-static int pool_unwritten_target(const tex_t *t) { return (t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) && t->serial && !tex_get(t->serial); }
+//   "No pass has written" is about the storage, not the object: an NVN texture object is a description, its content is the memory. A game that draws through one object and registers
+//   another over the same storage for its shaders (the same description but for use flags such as COMPRESSIBLE: the sharing table's key, alias_key_of) reads what the first drew; judged by
+//   the second object's own serial it read the dummy for good, however much the first drew. A shared texture already made over that storage and description means it is not unwritten
+static int pool_unwritten_target(const tex_t *t) {   // caller holds g_rmu (g_smu is taken after it, as everywhere)
+    if (!(t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) || !t->serial || tex_get(t->serial)) return 0;
+    alias_key ak; alias_key_of(&ak, t);
+    pthread_mutex_lock(&g_smu); int shared = nvn_hm_get(&g_alias, &ak) != NULL; pthread_mutex_unlock(&g_smu);
+    if (shared) { static int n; if (n++ < 8) MLOG("texture pool: render target ser=%llu %ux%u format %#x has no host texture of its own, but its storage was drawn through another object: read as that texture (previously the dummy, reading 0; case %d)",
+                                               (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, n); }
+    return !shared;
+}
 static int pool_size_cmp(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return x < y ? -1 : x > y; }
 static int pool_unmade(int id_) { return id_ > 0 && id_ < g_ntreg && g_treg[id_].ok && !g_treg[id_].gone && !g_treg[id_].view && !tex_get(g_treg[id_].t.serial); }
 // The largest texture these IDs may make: this frame's room, spent from the smallest up. UINT64_MAX while they all fit. ids NULL: base .. base + n - 1
