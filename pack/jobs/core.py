@@ -962,7 +962,11 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
     if not jobs.is_dir():
         return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
     by_task = {}
-    for path in jobs.iterdir():
+    try:
+        listed = list(jobs.iterdir())
+    except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_private_logs）
+        return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
+    for path in listed:
         if path.is_symlink() or not path.is_file():
             continue
         if path.suffix not in (".json", ".jsonl"):
@@ -984,7 +988,12 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
     records = {t: record(t) for t in by_task}
     finished = {t for t, r in records.items() if r.get("state") in TERMINAL_STATES or bool(r.get("ended"))}
     running = [t for t in by_task if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
-    newest = {t: max(p.stat().st_mtime for p in by_task[t]) for t in finished}
+    def mtime(p):   # 列完目录后被并发的作业搬走的文件：当作不在（不再整个作业失败）
+        try:
+            return p.stat().st_mtime
+        except FileNotFoundError:
+            return 0.0
+    newest = {t: max(mtime(p) for p in by_task[t]) for t in finished}
     finished_tasks = sorted(finished, key=lambda t: newest[t], reverse=True)
     floor, seen = set(), {}
     for task in finished_tasks:
@@ -1001,7 +1010,7 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
             kept += 1
             continue
         files = by_task[task]
-        size = sum(p.stat().st_size for p in files)
+        size = sum(p.stat().st_size for p in files if p.exists())
         if not dry_run:
             for p in files:
                 p.unlink(missing_ok=True)
