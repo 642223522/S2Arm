@@ -128,7 +128,7 @@ struct ExportView: View {
                 ForEach(ExportPlatform.allCases) { platform in tile(platform) }
             }
             locationRow
-            if model.exportTargets.contains(.ios) { deviceRow }
+            if model.exportTargets.contains(.ios) { deviceRow; DevCertRow(model: model) }
             if let error = model.choiceError {
                 Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
             }

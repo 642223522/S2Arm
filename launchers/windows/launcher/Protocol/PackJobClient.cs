@@ -74,24 +74,28 @@ public static class PackJobClient
 {
     public static readonly IReadOnlySet<string> Operations =
         new HashSet<string>(StringComparer.Ordinal) { "ipa", "installCheck", "install", "installRemove", "installRestore", "customize",
-            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree" };
+            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree", "devCert" };
 
+    /// <param name="Secrets">Environment variables for this one job process only (the developer certificate password,
+    /// pack/jobs/devcert.py); never written into the request file, and main.run_request drops them from its environment first.</param>
     public sealed record Request(LauncherPaths Paths, string PrivateRoot, string Library, string LibraryId, string Operation,
-        string GameId, IReadOnlyDictionary<string, object?>? Extra = null);
+        string GameId, IReadOnlyDictionary<string, object?>? Extra = null, IReadOnlyDictionary<string, string>? Secrets = null);
 
     /// <summary>The request body the backend reads (pure; unit-tested).</summary>
     public static Dictionary<string, object?> Payload(Request request, string jobId)
     {
         if (!Operations.Contains(request.Operation)) throw new ArgumentException("Unsupported pack operation.", nameof(request));
-        if (string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
+        var perGame = request.Operation != "devCert";   // the developer certificate belongs to this computer, not a game
+        if (perGame && string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
         var payload = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["jobId"] = jobId, ["operation"] = request.Operation,
             ["privateRoot"] = Path.GetFullPath(request.PrivateRoot), ["library"] = Path.GetFullPath(request.Library),
-            ["engineDir"] = Path.GetFullPath(request.Paths.Engine), ["libraryId"] = request.LibraryId, ["gameId"] = request.GameId,
+            ["engineDir"] = Path.GetFullPath(request.Paths.Engine), ["libraryId"] = request.LibraryId,
             // The job stops itself when this launcher process is gone (main.py supervise).
             ["parentPid"] = Environment.ProcessId
         };
+        if (perGame) payload["gameId"] = request.GameId;
         // The bundled iPhone shell is a launcher path setting (Settings → Shell); ipa.bundled_shell reads shellDir.
         if (request.Operation is "ipa" or "install") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
         // Bundled resources next to S2Arm.exe (bundle_win.py layout): ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
@@ -121,6 +125,7 @@ public static class PackJobClient
         using var file = PrivateJobRequest.Create(privateRoot, JsonSerializer.Serialize(Payload(request, jobId)));
         var info = EnvironmentProbe.StartInfo(request.Paths, file.FilePath);
         info.Arguments = "/d /v:off /s /c \"\"%S2A_UI_RUNTIME%\\s2arm_env.cmd\" && cd /d \"%S2A_UI_ENGINE%\" && python -X utf8 pack/jobs/main.py run --request \"%S2A_UI_REQUEST%\"\"";
+        foreach (var (key, value) in request.Secrets ?? new Dictionary<string, string>()) info.Environment[key] = value;
         var reader = new JobEventReader(jobId, request.Operation);
         using var process = EnvironmentProbe.StartProcess(info);
         var stderr = new StringBuilder();

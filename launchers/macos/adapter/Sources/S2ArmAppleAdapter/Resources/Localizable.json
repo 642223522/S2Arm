@@ -6778,5 +6778,137 @@
  {
   "source": "点「打开 Impactor」，在「设置 → 添加账号」登录你的 Apple ID（免费的就行），登录好回来这里自动打勾。",
   "en": "Click \"Open Impactor\", sign in to your Apple ID under \"Settings > Add account\" (a free one is fine), then come back here; it ticks automatically once you are signed in."
+ },
+ {
+  "source": "重新输入导出 .p12 时设的密码（区分大小写）；还不行就重新导出一份 .p12 再导入。",
+  "en": "Re-enter the password you set when exporting the .p12 (it is case-sensitive). If it still fails, export a new .p12 and import it again."
+ },
+ {
+  "source": "选导出的 .p12 证书和开发者网站下载的 .mobileprovision 描述文件，再导入一次。",
+  "en": "Choose the exported .p12 certificate and the .mobileprovision profile downloaded from the developer website, then import again."
+ },
+ {
+  "source": "在开发者网站重新生成描述文件并勾上这张证书，下载后和证书一起重新导入。",
+  "en": "Regenerate the provisioning profile on the developer website with this certificate selected, download it, and import it together with the certificate."
+ },
+ {
+  "source": "在出包页「我的开发者证书」里重新导入证书和描述文件，或切回「Apple ID 签名」。",
+  "en": "Import the certificate and profile again under “My developer certificate” on the export page, or switch back to “Apple ID signing”."
+ },
+ {
+  "source": "解锁登录钥匙串并允许 S2Arm 访问后，重新导入证书。",
+  "en": "Unlock your login keychain, allow S2Arm to access it, then import the certificate again."
+ },
+ {
+  "source": "找不到签名工具 rcodesign：请重新安装完整的 S2Arm。",
+  "en": "The signing tool rcodesign is missing. Reinstall the complete S2Arm."
+ },
+ {
+  "source": "描述文件读不出来：选的不是 .mobileprovision，或文件坏了。",
+  "en": "Can't read the provisioning profile: the file isn't a .mobileprovision, or it's damaged."
+ },
+ {
+  "source": "描述文件里没有权限表：选的不是 iOS 描述文件。",
+  "en": "The profile has no entitlements: it isn't an iOS provisioning profile."
+ },
+ {
+  "source": "证书打不开：密码不对，或 .p12 文件坏了。",
+  "en": "Can't open the certificate: the password is wrong, or the .p12 file is damaged."
+ },
+ {
+  "source": "证书打不开：.p12 里没有证书。",
+  "en": "Can't open the certificate: the .p12 contains no certificate."
+ },
+ {
+  "source": "证书和描述文件不配套：这份描述文件里没有这张证书，签出来装不上。请在开发者网站重新生成包含这张证书的描述文件。",
+  "en": "The certificate and profile don't match: this profile doesn't include the certificate, so a signed app won't install. Regenerate a profile that includes this certificate on the developer website."
+ },
+ {
+  "source": "描述文件没开「{0}」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。",
+  "en": "The profile doesn't enable “{0}”. Small games work as usual; large games may run out of memory and crash. Enable it for this App ID on the developer website, then download the profile again."
+ },
+ {
+  "source": "提高内存上限",
+  "en": "Increased Memory Limit"
+ },
+ {
+  "source": "扩展寻址",
+  "en": "Extended Virtual Addressing"
+ },
+ {
+  "source": "提高内存上限、扩展寻址",
+  "en": "Increased Memory Limit, Extended Virtual Addressing"
+ },
+ {
+  "source": "证书已于 {0} 过期：签出来的 App 装不上或打不开，请换新的证书。",
+  "en": "The certificate expired on {0}. Signed apps won't install or open; replace the certificate."
+ },
+ {
+  "source": "描述文件已于 {0} 过期：签出来的 App 装不上或打不开，请换新的描述文件。",
+  "en": "The profile expired on {0}. Signed apps won't install or open; replace the profile."
+ },
+ {
+  "source": "证书将于 {0} 到期（还剩 {1} 天）：到期后 App 打不开，记得提前换新。",
+  "en": "The certificate expires on {0} ({1} days left). The app won't open after that, so renew it in time."
+ },
+ {
+  "source": "描述文件将于 {0} 到期（还剩 {1} 天）：到期后 App 打不开，记得提前换新。",
+  "en": "The profile expires on {0} ({1} days left). The app won't open after that, so renew it in time."
+ },
+ {
+  "source": "连着的这台 iPhone 不在描述文件的设备列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件。",
+  "en": "The connected iPhone isn't in the profile's device list, so a signed app won't install on it. Register this device on the developer website and regenerate the profile."
+ },
+ {
+  "source": "证书密码没存进钥匙串：{0}",
+  "en": "Couldn't save the certificate password to the keychain: {0}"
+ },
+ {
+  "source": "开发者证书不完整（证书、描述文件或密码缺了）：在出包页重新导入一次。",
+  "en": "The developer certificate is incomplete (certificate, profile, or password missing). Import it again on the export page."
+ },
+ {
+  "source": "没收到证书密码。",
+  "en": "No certificate password was received."
+ },
+ {
+  "source": "找不到 .p12 证书：{0}",
+  "en": "Can't find the .p12 certificate: {0}"
+ },
+ {
+  "source": "找不到 .mobileprovision 描述文件：{0}",
+  "en": "Can't find the .mobileprovision profile: {0}"
+ },
+ {
+  "source": "还没导入开发者证书。",
+  "en": "No developer certificate has been imported yet."
+ },
+ {
+  "source": "不支持的证书操作。",
+  "en": "Unsupported certificate operation."
+ },
+ {
+  "source": "开发者证书可用",
+  "en": "Developer certificate is usable"
+ },
+ {
+  "source": "这台 iPhone 在描述文件的设备列表里",
+  "en": "This iPhone is in the profile's device list"
+ },
+ {
+  "source": "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。",
+  "en": "Not in the list, so a signed app won't install on it. Register this device on the developer website, regenerate the profile, then import it again on the export page."
+ },
+ {
+  "source": "读取证书与描述文件",
+  "en": "Reading certificate and profile"
+ },
+ {
+  "source": "保存证书",
+  "en": "Saving certificate"
+ },
+ {
+  "source": "用你的开发者证书签名",
+  "en": "Signing with your developer certificate"
  }
 ]

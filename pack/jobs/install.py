@@ -25,6 +25,7 @@ from pathlib import Path
 
 from core import Failure, atomic, contained, read
 from errors import recovery
+import devcert
 import layout
 
 
@@ -657,6 +658,21 @@ def phone_ipa_path(c):
     return str(ipa) if ipa.is_file() else ""
 
 
+def devcert_items(c, item, udid):
+    """开发者证书模式的清单项（v0.2.4）：替掉 Apple ID / Impactor 两项。问题只提示、不挡（blocking 只给「没出包」）；
+    到期 / 权限这类提醒随结果 devcert.warnings 给启动器画黄字。返回体检结果（读不出 → None）"""
+    try:
+        got = devcert.summary(c, udid=udid)
+    except Failure as e:
+        item("devcert", False, "开发者证书可用", str(e))
+        return None
+    item("devcert", not got["blocking"], "开发者证书可用", got["blocking"][0]["text"] if got["blocking"] else "")
+    if udid and not got["allDevices"]:
+        item("devcertDevice", got["deviceListed"], "这台 iPhone 在描述文件的设备列表里",
+             "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。")
+    return got
+
+
 def readiness(c):
     """装机前清单（用户体验线 11-02）：启动器装机页每几秒问一次、AI 代劳也读它，逐项说「好了没有、没好要谁做什么」，只有 iPhone 版没做好才挡（blocking），其余只提示，真失败由 install 给原因。
     只读不改：不申请描述文件、不签名、不碰设备上的 App。每项 {id, ok, title, detail, who}；who = human（只能玩家本人做）/ app（启动器自己能做）。
@@ -676,11 +692,15 @@ def readiness(c):
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
         item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
-    teams = xcode_teams(c.env())
-    team = (pick_team(teams) if teams else None)
-    item("appleId", team, "已登录 Apple ID", "" if team else (TEAM_PENDING if xcode_account(c.env())[0] else ACCOUNT_NONE))
+    use_cert = devcert.active(c)
+    team = None
+    if not use_cert:
+        teams = xcode_teams(c.env())
+        team = (pick_team(teams) if teams else None)
+        item("appleId", team, "已登录 Apple ID", "" if team else (TEAM_PENDING if xcode_account(c.env())[0] else ACCOUNT_NONE))
     link = device_link(c, (c.r.get("device") or "").strip(), polling=True)
     one, stage = link["device"], link["stage"]
+    cert = devcert_items(c, item, (one or {}).get("hardwareProperties", {}).get("udid") or "") if use_cert else None
     name = (one.get("deviceProperties", {}).get("name") or "").strip() if one else ""
     item("connected", one, "iPhone 已用数据线连上", link["problem"] if stage == "connected" else "")
     paired = bool(one) and stage != "trusted"
@@ -689,7 +709,9 @@ def readiness(c):
     dev_mode = paired and stage != "developerMode" and not mode_pending
     item("developerMode", dev_mode, "iPhone 已打开开发者模式", S_DEV_MODE, waiting=not paired or mode_pending)
     item("deviceReady", dev_mode and stage == "", "iPhone 已准备好安装", link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
-    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=(team["name"] or team["id"]) if team else "", ipaPath=ipa_path, signing=signing_summary(c.env()))
+    account = (cert or {}).get("teamName") or "" if use_cert else (team["name"] or team["id"]) if team else ""
+    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=account, ipaPath=ipa_path,
+                signing="" if use_cert else signing_summary(c.env()), signMode="devcert" if use_cert else "appleId", devcert=cert)
 
 
 def linked_sdk(exe):
@@ -749,18 +771,12 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             pl["CFBundleDisplayName"] = shown
         info.write_bytes(plistlib.dumps(pl))
         check_shell_sdk(c, app, dev)
-        if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6)
-        try:
-            c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log)
-            if steps: c.begin("用你的 Apple ID 签名", 4, 6)
-            c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log)
-        except Failure as e:
-            if e.code != "tool_exit":
-                raise
-            from errors import recovery, tool_reason
-            text = log.read_text(errors="replace")[-8000:] if log.is_file() else ""
-            code = classify(text)
-            raise Failure("签名没成：" + tool_reason(log) + "；" + recovery(code, packaged=bool(c.r.get("engineBundle"))), code=code) from e
+        if devcert.active(c):   # 玩家自己的开发者证书（v0.2.4）：rcodesign 直接读 p12 签，不申请描述文件、不要 Xcode 账号
+            if steps: c.begin("用你的开发者证书签名", 4, 6)
+            devcert.sign_app(c, app, log)
+            devcert.export_ipa(c, stage / "Payload")
+        else:
+            sign_with_apple_id(c, app, team, bid, ents, udid, log, steps)
         if steps: c.begin("装到 iPhone", 5, 6)
         from diag import devicectl
         for g in games:
@@ -774,6 +790,22 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             raise Failure("装不上 iPhone：" + reason, code=code)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+def sign_with_apple_id(c, app, team, bid, ents, udid, log, steps):
+    """Apple ID 模式：按玩家 Xcode 账号申请开发描述文件（ensure_profile.sh）再用钥匙串身份签（dev_sign.py）"""
+    if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6)
+    try:
+        c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log)
+        if steps: c.begin("用你的 Apple ID 签名", 4, 6)
+        c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log)
+    except Failure as e:
+        if e.code != "tool_exit":
+            raise
+        from errors import recovery, tool_reason
+        text = log.read_text(errors="replace")[-8000:] if log.is_file() else ""
+        code = classify(text)
+        raise Failure("签名没成：" + tool_reason(log) + "；" + recovery(code, packaged=bool(c.r.get("engineBundle"))), code=code) from e
 
 
 def win_install_mod(c):   # Windows 签名装机 + 推包（pack/orch/install_win.py：玩家自装的 Impactor 同版 plumesign + s2a-devpush）
@@ -823,8 +855,11 @@ def readiness_windows(c, gid):
     except Failure:
         item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
     resources = c.r.get("resources")
+    use_cert = devcert.active(c)
     st = W.impactor.status(resources=resources)
-    if st.get("bundled"):   # 发版启动器随包（11-07）：零跳转；第一次要在 Impactor 里登录 Apple ID（密码只在 Impactor 里输、只发给 Apple，我们不代输）
+    if use_cert:
+        pass   # 证书模式不用 Impactor 账号（plumesign 只装不签，随包就有）；证书两项排在设备之后（要设备 UDID）
+    elif st.get("bundled"):   # 发版启动器随包（11-07）：零跳转；第一次要在 Impactor 里登录 Apple ID（密码只在 Impactor 里输、只发给 Apple，我们不代输）
         item("impactor", st["verdict"] == "ok", "签名工具 Impactor 已就绪（随 S2Arm 附带的第三方开源工具）",
              recovery("impactor_missing", packaged=True))
         item("impactor_login", st["verdict"] != "ok" or W.impactor.logged_in(), "已在 Impactor 里登录 Apple ID（只需一次）",
@@ -839,7 +874,9 @@ def readiness_windows(c, gid):
         udids = []
     item("connected", len(udids) == 1, "iPhone 已用数据线连上",
          "连着不止一台 iPhone / iPad：只留要装的那一台。" if len(udids) > 1 else "用数据线把 iPhone 连到这台电脑，解锁手机并点「信任」。")
-    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=udids[0] if len(udids) == 1 else "", account="", ipaPath=ipa_path)
+    cert = devcert_items(c, item, udids[0] if len(udids) == 1 else "") if use_cert else None
+    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=udids[0] if len(udids) == 1 else "",
+                account=(cert or {}).get("teamName") or "", ipaPath=ipa_path, signMode="devcert" if use_cert else "appleId", devcert=cert)
 
 
 def devpush_client(c, udid, bid, work):
@@ -858,10 +895,10 @@ class MacPhone:
 
     def __init__(self, c, team=None, dev=None, udid=None):
         self.c = c
-        self.team = team or pick_team(xcode_teams(c.env()), c.r.get("teamId"))
+        self.team = team or devcert.team(c) or pick_team(xcode_teams(c.env()), c.r.get("teamId"))
         self.dev = dev or phone(c)
         self.udid = udid if udid is not None else udid_of(c, self.dev["id"])
-        self.bid = container_bundle_id(self.team["id"])
+        self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else container_bundle_id(self.team["id"])   # 证书模式：描述文件定的包名（和 Apple ID 模式是两个 App）
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
         self.info = dict(device=self.dev["name"], team=self.team["name"], free=self.team["free"])
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
@@ -907,7 +944,7 @@ class WinPhone:
         self.c, self.W = c, win_install_mod(c)
         self.udid = win_udid(c, self.W)
         self.key = self.udid
-        self.bid = layout.load_device(c, self.key).get("bundleId") or None
+        self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else layout.load_device(c, self.key).get("bundleId") or None
         self.devpush = c.engine / "Binaries/Prepare/devpush/s2a-devpush.exe"
         self.info = dict(device=self.udid)
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
@@ -938,6 +975,8 @@ class WinPhone:
     def install(self, ipa, games, steps=True):
         for g in games:
             self.backup(g)
+        if devcert.active(self.c):
+            return self.install_devcert(ipa, steps)
         if steps: self.c.begin("签名并装到 iPhone（Impactor 官方命令行 plumesign）", 3, 6)
         b = self.W.impactor.bundled(self.c.r.get("resources")) or {}   # 发版启动器随包的 plumesign（11-07）；源码树没有 → install_win 照旧找
         log = self.c.logs / (self.c.task + "-install.log")
@@ -956,10 +995,40 @@ class WinPhone:
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 
+    def install_devcert(self, ipa, steps):
+        """玩家自己的开发者证书（v0.2.4）：解 ipa → rcodesign 签（同 Mac devcert.sign_app）→ 另存 S2Arm.signed.ipa → plumesign 只装不签（device --install）"""
+        c = self.c
+        log = c.logs / (c.task + "-install.log")
+        c.last_log = log
+        stage = Path(tempfile.mkdtemp(prefix="s2a-install-", dir=c.private))
+        try:
+            import zipfile
+            with zipfile.ZipFile(ipa) as z:
+                z.extractall(stage)
+            app = next((stage / "Payload").glob("*.app"), None)
+            if not app:
+                raise Failure("解不开 iPhone 包：" + str(ipa), code="job_failed")
+            if steps: c.begin("用你的开发者证书签名", 3, 6)
+            bid, _ = devcert.sign_app(c, app, log)
+            devcert.export_ipa(c, stage / "Payload")
+            if steps: c.begin("装到 iPhone", 4, 6)
+            b = self.W.impactor.bundled(c.r.get("resources")) or {}
+            try:
+                self.W.install_signed(self.W.plumesign_path(b.get("plumesign")), app, self.udid, log)
+            except self.W.Fail as e:
+                raise Failure(str(e), code=e.err or "device_install_failed") from e
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
+        self.bid = bid
+        rec = layout.load_device(c, self.key)
+        layout.save_device(c, self.key, dict(rec, bundleId=bid))
+
     def bundle_for_signing(self):
         """交给 plumesign 的包名：和 Mac 同一个（container_bundle_id(团队号)，团队号取 Impactor 当前账号）。这台记录过只差大小写的包名
         （早先 Windows 让 plumesign 自己定的 io.s2arm.games.<大写团队号>）就沿用它：换成小写会在手机上多出一个 S2Arm、存档留在旧的里。
         读不到团队号 → None（照旧由 plumesign 定）"""
+        if devcert.active(self.c):
+            return devcert.state(self.c)["bundleId"]
         team = self.W.impactor.selected_team() if hasattr(self.W.impactor, "selected_team") else None
         if not team:
             return None

@@ -176,6 +176,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
+    /// 开发者证书（v0.2.4，S2ArmLauncherModel+DevCert.swift）：现况与体检；导入弹窗开着没有
+    @Published var devCert: DevCertStatus?
+    @Published var showDevCertImport = false
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false

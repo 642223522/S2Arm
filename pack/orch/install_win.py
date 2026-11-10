@@ -90,6 +90,24 @@ def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None):
         raise Fail(f'签名装机失败（{code}）：{tail[0][-300:]}', 1, code)
 
 
+def install_signed(exe, app, udid, log):
+    """已签好的 App（开发者证书模式，pack/jobs/devcert.py 签）只装不签：plumesign device --install（同版 v2.7.2 源码 commands/device.rs：
+    给 .app 目录直接走 installation_proxy 装；--udid 比的是设备编号，同 sign_install）"""
+    if not exe: raise Fail('找不到 plumesign（随 S2Arm 附带；源码树用 --plumesign / S2A_PLUMESIGN 指定）', 75, 'impactor_missing')
+    try: devs = mux_devices()
+    except OSError as e: raise Fail(f'连不上本机苹果设备服务（{e}）：装 iTunes 或「Apple 设备」', 75, 'device_pairing_required')
+    dev = device_id(udid, devs)
+    if dev is None: raise Fail(f'设备服务里没有 {udid}：插上线并解锁', 75, 'device_not_connected')
+    p = subprocess.run([exe, 'device', '--udid', str(dev), '--install', str(app)], capture_output=True, text=True, encoding='utf-8', errors='replace',
+                       env=dict(os.environ, RUST_LOG=os.environ.get('RUST_LOG', 'info')))
+    text = p.stdout + p.stderr
+    Path(log).open('a', encoding='utf-8').write(text)
+    if p.returncode:
+        tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln][-1:] or ['（没有输出）']
+        code = impactor.explain(text)
+        raise Fail(f'装机失败（{code}）：{tail[0][-300:]}', 1, code)
+
+
 def main(argv=None):
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, 'reconfigure'): s.reconfigure(encoding='utf-8')
