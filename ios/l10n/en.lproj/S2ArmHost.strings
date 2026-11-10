@@ -208,6 +208,7 @@
 "vpad.rumble.level.2" = "Standard";
 "vpad.rumble.level.3" = "Strong";
 "vpad.rumble.level.4" = "Strongest";
+"vpad.rumble.level.5" = "Max blast";
 "vpad.rumble.strength" = "Rumble strength";
 "vpad.stick.deadzone" = "Radial dead zone";
 "vpad.stick.exponent" = "Response exponent";

@@ -9,7 +9,7 @@ final class GameSettingsSpecTests: XCTestCase {
         let enhance = try XCTUnwrap(items.first { $0.id == "enhance" })
         XCTAssertEqual(enhance.text("zh-Hans"), "画面增强模式")
         XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "docked" }).options.map(\.value), ["docked", "handheld"])
-        XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "rumbleLevel" }).options.count, 5)
+        XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "rumbleLevel" }).options.count, 6)
     }
 
     func testBrokenTableIsAnError() {
