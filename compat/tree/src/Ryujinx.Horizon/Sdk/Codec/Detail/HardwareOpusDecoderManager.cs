@@ -30,7 +30,28 @@ namespace Ryujinx.Horizon.Sdk.Codec.Detail
                 return CodecResult.InvalidChannelCount;
             }
 
-            decoder = new HardwareOpusDecoder(parameter.SampleRate, parameter.ChannelsCount, workBufferHandle);
+            // S2Arm：同时存活的解码器有上限，到上限按真机回「资源不足」，游戏 SDK 走温和分支（HardwareOpusDecoder.MaxLive）
+            if (!HardwareOpusDecoder.TryReserve())
+            {
+                HorizonStatic.Syscall.CloseHandle(workBufferHandle);
+
+                return CodecResult.OutOfDecoders;
+            }
+
+            HardwareOpusDecoder created;
+
+            try
+            {
+                created = new HardwareOpusDecoder(parameter.SampleRate, parameter.ChannelsCount, workBufferHandle);
+            }
+            catch
+            {
+                HardwareOpusDecoder.ReleaseReservation();   // libopus 建不出解码器：名额还回去
+
+                throw;
+            }
+
+            decoder = created.MarkReserved();
 
             return Result.Success;
         }
@@ -89,13 +110,34 @@ namespace Ryujinx.Horizon.Sdk.Codec.Detail
                 return CodecResult.InvalidNumberOfStreams;
             }
 
-            decoder = new HardwareOpusDecoder(
+            // S2Arm：同时存活的解码器有上限，到上限按真机回「资源不足」，游戏 SDK 走温和分支（HardwareOpusDecoder.MaxLive）
+            if (!HardwareOpusDecoder.TryReserve())
+            {
+                HorizonStatic.Syscall.CloseHandle(workBufferHandle);
+
+                return CodecResult.OutOfDecoders;
+            }
+
+            HardwareOpusDecoder created;
+
+            try
+            {
+                created = new HardwareOpusDecoder(
                 parameter.SampleRate,
                 parameter.ChannelsCount,
                 parameter.NumberOfStreams,
                 parameter.NumberOfStereoStreams,
                 parameter.ChannelMappings.AsSpan().ToArray(),
                 workBufferHandle);
+            }
+            catch
+            {
+                HardwareOpusDecoder.ReleaseReservation();   // libopus 建不出解码器：名额还回去
+
+                throw;
+            }
+
+            decoder = created.MarkReserved();
 
             return Result.Success;
         }
@@ -155,7 +197,28 @@ namespace Ryujinx.Horizon.Sdk.Codec.Detail
                 return CodecResult.InvalidSampleRate;
             }
 
-            decoder = new HardwareOpusDecoder(parameter.SampleRate, parameter.ChannelsCount, workBufferHandle);
+            // S2Arm：同时存活的解码器有上限，到上限按真机回「资源不足」，游戏 SDK 走温和分支（HardwareOpusDecoder.MaxLive）
+            if (!HardwareOpusDecoder.TryReserve())
+            {
+                HorizonStatic.Syscall.CloseHandle(workBufferHandle);
+
+                return CodecResult.OutOfDecoders;
+            }
+
+            HardwareOpusDecoder created;
+
+            try
+            {
+                created = new HardwareOpusDecoder(parameter.SampleRate, parameter.ChannelsCount, workBufferHandle);
+            }
+            catch
+            {
+                HardwareOpusDecoder.ReleaseReservation();   // libopus 建不出解码器：名额还回去
+
+                throw;
+            }
+
+            decoder = created.MarkReserved();
 
             return Result.Success;
         }
@@ -196,13 +259,34 @@ namespace Ryujinx.Horizon.Sdk.Codec.Detail
                 return CodecResult.InvalidNumberOfStreams;
             }
 
-            decoder = new HardwareOpusDecoder(
+            // S2Arm：同时存活的解码器有上限，到上限按真机回「资源不足」，游戏 SDK 走温和分支（HardwareOpusDecoder.MaxLive）
+            if (!HardwareOpusDecoder.TryReserve())
+            {
+                HorizonStatic.Syscall.CloseHandle(workBufferHandle);
+
+                return CodecResult.OutOfDecoders;
+            }
+
+            HardwareOpusDecoder created;
+
+            try
+            {
+                created = new HardwareOpusDecoder(
                 parameter.SampleRate,
                 parameter.ChannelsCount,
                 parameter.NumberOfStreams,
                 parameter.NumberOfStereoStreams,
                 parameter.ChannelMappings.AsSpan().ToArray(),
                 workBufferHandle);
+            }
+            catch
+            {
+                HardwareOpusDecoder.ReleaseReservation();   // libopus 建不出解码器：名额还回去
+
+                throw;
+            }
+
+            decoder = created.MarkReserved();
 
             return Result.Success;
         }
