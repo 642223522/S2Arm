@@ -44,6 +44,44 @@ def shared_redact():
     return redact
 
 
+# 直连编批库时每 MB 批库在盘上要的字节倍数（中间产物 + 批库本身，直连缓存清理前一直攒着）：11-10 两局采样（0400A3A01EE4C000，
+#   编批库总量 64529 MB）：编到 11491 MB 时库所在目录 73 GB = 解包产物约 21 GB + 翻译中间产物约 16 GB（翻译 2.5 分钟、直连缓存每秒涨约 100 MB）
+#   + 约 35 GB → 每编 1 MB 批库约占 3 MB。翻译那一份是按速率推的，不是逐目录实测；见 direct_space_recheck
+DIRECT_BATCH_DISK_RATIO = 3.0
+
+# 直连编批库时的空间复核（11-10）：出包预检与 space_rule.py 按原件大小记直连段上限 15 GB，着色器多的大游戏远不止——
+#   0400A3A01EE4C000 预检 22.3 GB，编批库计数器总量 64529 MB，编到 11491 MB 时临时库已 73 GB、把系统盘写满。
+#   编批库计数器一出现就知道这次要编出多少 MB 的批库；中间产物按 DIRECT_BATCH_DISK_RATIO 倍占盘（同款采样实测），
+#   剩余量 × 倍数 × 1.1 大于库所在卷的余量就停下说清楚，不编到一半写满。玩家点过「仍然继续」（spaceOverride）只打一次黄。
+#   模块级函数、按 getattr 读上下文：stage_progress 也被只带进度字段的替身对象调用（tests/progress_test.sh 启动器读端）
+DIRECT_BATCH_COUNTER = "直连库·编批库（MB）"
+
+
+def direct_space_recheck(context, counters):
+    c = counters.get(DIRECT_BATCH_COUNTER)
+    library = getattr(context, "library", None)
+    if getattr(context, "operation", None) not in ("build", "ipa") or c is None or library is None or c["done"] >= c["total"]:
+        return
+    need = int((c["total"] - c["done"]) * DIRECT_BATCH_DISK_RATIO * 1.1 * (1 << 20))
+    try:
+        free = shutil.disk_usage(library).free
+    except OSError:
+        return
+    if free >= need:
+        return
+    gb = lambda n: f"{n / 1e9:.0f} GB"
+    head = (f"磁盘空间不够：这款游戏的着色器库要编出约 {c['total'] / 1024:.0f} GB，编译中还要再占约 {gb(need)}，"
+            f"游戏库所在的盘只剩 {gb(free)}。")
+    if getattr(context, "r", {}).get("spaceOverride") is True:
+        if not getattr(context, "_direct_space_warned", False):
+            context._direct_space_warned = True
+            context.diagnostic(head + "已按你的选择仍然继续；中途真写满会停下报错，游戏原件和存档不受影响。", "disk_full", severity="warning")
+        return
+    message = head + "请腾出空间或把游戏库换到空间更大的盘后再试；也可以点「仍然继续」。"
+    context.diagnostic(message, "disk_full")
+    raise Failure(message, code="disk_full")
+
+
 class Cancelled(Exception):
     pass
 
@@ -498,7 +536,10 @@ class Context:
                 rate = (c["done"] - c["d0"]) / (c["t"] - c["t0"]) if c["t"] > c["t0"] and c["done"] > c["d0"] else None
                 counters.append(dict(name=c["name"], done=c["done"], total=c["total"], rate=round(rate, 3) if rate else None))
             self.emit(message=f"{main['name']} {main['done']}/{main['total']}", done=main["done"], total=main["total"], unit="项", counters=counters)
+            direct_space_recheck(self, seen)
         return pos + end + 1
+
+
 
     def progress(self, done, total):
         self.check()
@@ -605,6 +646,8 @@ class Context:
         cache = self.work_root / "cache"
         cache.mkdir(parents=True, exist_ok=True)
         env.pop("DEVELOPER_DIR", None)
+        # GUI 不接受继承的通用 J；抽取与直连分别由 cores.sh 的阶段预算决定。
+        env.pop("J", None)
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
@@ -621,7 +664,7 @@ class Context:
                    S2A_XCKEY_CACHE=str(cache / "xckey"), S2A_SCHED_DIR=str(cache / "local-observations"),
                    S2A_PROGRESS=str(self.logs / (self.task + ".progress.tsv")),
                    GAL_PSO_CACHE=str(cache / "pso"), S2A_ROOTS_NO_BOOT="1",
-                   S2A_PACK_PLAT="macos", S2A_TARGET="macos", S2A_SEED_AOC="1", J=str(min(os.cpu_count() or 4, 8)),
+                   S2A_PACK_PLAT="macos", S2A_TARGET="macos", S2A_SEED_AOC="1",
                    # 出包用途 = 用户包（10-29 维护者定口径，pack/jobs/archs.py）：管线归档 / 函数体只出这个包要装的设备那几对——
                    #   Mac 包 = 出包的这台 Mac；iPhone 包由 ipa.py 按目标设备传 S2A_PSO_ARCHS / S2A_PSO_OS，没传就报红、不猜（不按我方跑局机清单出）
                    S2A_PACK_PURPOSE="user",

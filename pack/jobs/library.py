@@ -152,6 +152,8 @@ def diagnostic_log_excerpt(source, size, head=None, tail=None):
 
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20
+DIAG_RUN_FILE_LIMIT = 4 << 20    # 诊断局 PNG：单张上限
+DIAG_RUN_TOTAL_LIMIT = 40 << 20  # 诊断局 PNG：总量上限（#438 定）
 
 
 # 游戏原始包：安装包 NSP 与卡带镜像 XCI，及它们的压缩版 NSZ / XCZ（nx_unpack 按内容认格式、还原压缩的 NCA）；
@@ -989,9 +991,13 @@ PACK_SMALL_BYTES, DIRECT_SMALL_BYTES, DIRECT_LARGE_BYTES = int(3e9), int(5e9), i
 
 
 def _pack_input_bytes(packages):
-    # NSZ/XCZ按解包内容与原文件取大值；同一sha的原件只计一次。
-    return sum(max(p.get("size", 0), p.get("contentBytes", 0))
-               for p in {p["sha256"]: p for p in packages}.values())
+    # 同一 sha 的原件只计一次：取原件大小与所选各项内容字节之和的大值（NSZ/XCZ 解开比原件大）。
+    # 合集 / NUP 一个原件装多项，每项各记自己那份 contentBytes，要相加；原先按 sha 去重只留最后一项，压缩合集解开后的量少算（#444）
+    by_sha = {}
+    for p in packages:
+        size, content = by_sha.get(p["sha256"], (0, 0))
+        by_sha[p["sha256"]] = (max(size, p.get("size", 0)), content + p.get("contentBytes", 0))
+    return sum(max(size, content) for size, content in by_sha.values())
 
 
 def _pack_direct_bytes(size):
@@ -2460,6 +2466,24 @@ def diagnostics(c):
                             write_file(directory_fd, name, "logs/" + member)
                 if roots["logs"] is not None:
                     logs(roots["logs"])
+                # 诊断局（#438，community.diag_run_env）的读数：各款游戏文件夹 diagrun/ 里的 PNG（出图画面与颜色目标，渲染出来的图、不含游戏数据），
+                #   原样放 diagrun/<游戏号>_<原名>。单张超过 4 MB 跳过、总量至多 40 MB；链接不跟（不越出游戏文件夹）
+                step = "读诊断局读数"
+                used = 0
+                for g in sorted(c.catalog().get("games", []), key=lambda g: g.get("id", "")) if c.library.is_dir() else []:
+                    gdir = layout.find_game(c, g.get("id", ""))
+                    run = gdir / "diagrun" if gdir else None
+                    if run is None or run.is_symlink() or not run.is_dir():
+                        continue
+                    for f in sorted(run.iterdir()):
+                        c.check()
+                        if f.is_symlink() or not f.is_file() or f.suffix.lower() != ".png":
+                            continue
+                        n = f.stat().st_size
+                        if not n or n > DIAG_RUN_FILE_LIMIT or used + n > DIAG_RUN_TOTAL_LIMIT:
+                            continue
+                        archive.writestr(f"diagrun/{g['id']}_{f.name}", f.read_bytes())
+                        used += n
                 manifest = dict(launcher_version=launcher_version(),
                                 macos_version=platform.mac_ver()[0] or {"error": "macOS 版本不可用"},
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),

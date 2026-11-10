@@ -3001,6 +3001,12 @@ namespace S2A.Services.Tests
                 Check("语言选择：宿主简中 + 美 / 日 / 韩 / 繁 → 繁中；宿主简中 + 日 / 英 → 英语；宿主日语 + 英 / 繁 → 英语；宿主简中 + 简 → 简中；宿主德语 + 日 / 韩 → 日语（支持表第一项）；宿主美式英语 + 韩 / 繁 / 简 → 简中（11-03 亚洲版不回退韩语）",
                     "TraditionalChinese（第 2 步：同族变体） / AmericanEnglish（第 3 步：英语） / AmericanEnglish（第 3 步：英语） / SimplifiedChinese（第 1 步：宿主主语言） / Japanese（第 5 步：游戏支持表第一项） / SimplifiedChinese（第 4 步：中文）",
                     $"{Sel(SL, g445)} / {Sel(SL, jaEn)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.Japanese, enHant)} / {Sel(SL, 1 << 14)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.German, koOnly)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.AmericanEnglish, asia)}");
+                // #465：Switch 2 合成件（导出没有控制分区，显示版本 "?"、只声明英语）→ 直接回宿主主语言；Switch 1 合成件（#401 NUP）不走这条，照旧英语退路；真游戏走五步
+                var s2u = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.Switch2LanguagesUnknown;
+                Check("Switch 2 语言未知判定：04 款合成件（只声明英语、版本 ?）/ 04 款位为 0 / 01 款合成件（#401）/ 04 款真 NACP 0x3005 版本 1.0.2", "True / True / False / False",
+                    $"{s2u(0x0400486024DEC000, 1, "?")} / {s2u(0x0400486024DEC000, 0, "")} / {s2u(0x0100E95004038000, 1, "?")} / {s2u(0x0400486024DEC000, 0x3005, "1.0.2")}");
+                // 01 款合成件 + 宿主简中：不进 Switch 2 那条，按五步走 → 只声明英语 → 美式英语（不回退 #401）
+                Check("Switch 1 合成件（只声明英语）+ 宿主简中 → 美式英语（#401 不回退）", "AmericanEnglish（第 3 步：英语）", Sel(SL, 1));
                 // 支持语言位为 0（合成的 control.nacp）：缺省回美式英语（#401）；玩家显式指定系统语言时回它。语言码 = ASCII 小端："ja" = 0x616A、"en-US" = 0x53552D6E65
                 var zero = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.ZeroSupportedLanguageCode;
                 Check("支持语言位为 0：系统日语、没显式指定 → en-US；显式指定日语 → ja", "0x53552D6E65 / 0x616A", $"0x{zero(0x616A, false):X} / 0x{zero(0x616A, true):X}");
