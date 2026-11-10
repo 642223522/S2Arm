@@ -29,6 +29,7 @@ void s2a_det_init(void);
 void load_modules(const char *, const char **, int);
 void load_modules_from_source(const struct s2a_loader_source *, const char **, int);
 void s2a_caps_apply(const char *);   // runtime/src/caps.c
+void s2a_fps_start(const char *);    // runtime/src/fps.c
 unsigned s2a_unresolved_count(void);
 uint64_t s2a_mem_init(const char *);
 void *guest_sym(const char *);
@@ -235,6 +236,10 @@ static int run_common(const struct s2a_android_runtime_request *r,
     // prepared 只证资源、真实dispatcher安装和VM写入通道，最终同线程信号探针仍在SDK入口执行。
     if (s2a_android_guest_writers_init() || s2a_track_runtime_prepare() || s2a_android_tracking_vm_prepare())
         return failed(S2A_RUNTIME_TRACKING, 0, "native tracking preparation failed");
+    // 60 帧表（#48 D2）：改写器按包里 fps.tsv 打进的读槽指令要 fps.c 往键页槽里写值，没人写游戏就读到 0。
+    //   表与 s2a_caps.tsv 同在游戏数据根（tools/make_pack.py）；开关 S2A_FPS60 已由上面的能力清单 / 启动环境给定。
+    //   放在 VM 写入通道就绪之后：写入线程改游戏数据走 checked 写（fps_provider.c），要 writers / 跟踪已准备好。
+    s2a_fps_start(r->services.game_data_dir);
     // 在执行任何 SDK 指令前解析全部必需入口。DT_INIT 仍由共享 loader 按逆依赖顺序遍历。
     static const char *const sdk[] = {"_init_libc0", "nnosInitialize", "_init_libc1",
         "nninitInitializeSdkModule", "nninitStartup", "_init_libc2", "nnMain"};
