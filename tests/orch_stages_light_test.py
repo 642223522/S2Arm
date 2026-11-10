@@ -76,6 +76,17 @@ class LightTest(unittest.TestCase):
         self.assertIn('【红】编排中止：[Errno 31] 连到系统上的设备没有发挥作用。', err.getvalue())
         self.assertIn('deep_win32_call', err.getvalue())
 
+    def test_seed_reports_file_progress(self):
+        # #361：播种逐文件拷时写「播种 已拷 / 总数」（出包进度协议），不再让进度条停在解包 100% 像卡死。期望手写：源里 exefs 1 个 + romfs 3 个文件 →
+        #   总数 4，最后一行已拷 = 4（每秒最多一行，末项必写）
+        for n in ('a', 'b', 'c'):
+            (self.source / 'romfs' / n).write_bytes(n.encode())
+        prog = self.home / 'progress.tsv'
+        with patch.dict(os.environ, {'S2A_PROGRESS': str(prog)}):
+            refresh.seed(self.store, '原创', self.source)
+        rows = [l.split('\t') for l in prog.read_text(encoding='utf-8').splitlines() if '\t播种\t' in l]
+        self.assertTrue(rows); self.assertEqual(rows[-1][2:], ['4', '4'])
+
     def test_shaders_stage_is_gone(self):
         # 只服务通用模式的着色器阶段（11-07 拆通用模式）：编排不再认它，--stages shaders 当未知阶段拒（argparse 退 2）
         self.assertNotIn('shaders', stages.ENTRY)

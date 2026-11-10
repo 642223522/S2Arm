@@ -8,9 +8,8 @@
   cache     games/<名>/build（含 iPhone 出包工作目录 build/ios）+ shader-cache
   sources   这款引用的原件：同一份原件（按 sha256）只算一次；被 n 款引用的原件每款记 大小 // n（各款加起来等于原件大小，不重复算）。
             大小用导入时记的（catalog packages[].size：原件只读、按 sha256 认），不量盘、catalog 每次现算（for_catalog），删了一款，和它共用原件的别款跟着变
-量法同 library.disk_bytes：按 (卷, inode) 去重、不跟软链。APFS 克隆不重复算的口径同 library.pack_footprint：出包缓存里还有解包
-（build/extract）时，镜像、iPhone 输出和产物根里的 romfs / .romfs_store 是它的克隆，只在 cache 里算一次；解包删了就算进镜像。
-Windows（NTFS 无克隆）照实算。
+量法同 library.disk_bytes：按 (卷, inode) 去重、不跟软链；一款的各部分共用一份去重状态（#329），硬链接与 APFS 克隆族的共享块跨部分只算一次，
+记在先量的部分（cache → imageMac → imageIos → saves），四项相加就是这款真占的盘。Windows（NTFS 无克隆，硬链接照样去重）照实算。
 """
 from __future__ import annotations
 import os
@@ -23,7 +22,7 @@ from core import read
 PARTS = ("imageMac", "imageIos", "saves", "cache", "sources")
 
 
-def _bytes(paths, skip_under=()):
+def _bytes(paths, skip_under=(), state=None):
     """这些路径的实占字节（按所在卷分组交 disk_bytes；skip_under 下的克隆目录不算）"""
     from library import CLONED_DIRS, disk_bytes
     by_dev = {}
@@ -33,7 +32,7 @@ def _bytes(paths, skip_under=()):
         except OSError:
             pass
     skip = [os.fspath(u) for u in skip_under]
-    return sum(disk_bytes(v, dev, skip_names=CLONED_DIRS if skip else (), skip_under=skip) for dev, v in by_dev.items())
+    return sum(disk_bytes(v, dev, skip_names=CLONED_DIRS if skip else (), skip_under=skip, state=state) for dev, v in by_dev.items())
 
 
 def _source_share(gid, games):
@@ -54,16 +53,15 @@ def measure(c, gid, games=None):
         games = read(c.library / "catalog.json", {}).get("games", [])
     d = layout.find_game(c, gid)
     sizes = dict.fromkeys(PARTS, 0)
-    skip = []
     if d is not None:
-        build = d / "build"
-        if os.name != "nt" and (build / "extract").is_dir():   # 解包还在：别处的 romfs 克隆只在 cache 里算一次
-            skip = [d / "image" / "mac", d / "image" / "ios"] + [p for p in build.iterdir() if p.name != "extract"]   # 含 build/ios（iPhone 产物根）
-        sizes["imageMac"] = _bytes([d / "image" / "mac"], skip)
-        sizes["saves"] = _bytes([d / "saves", d / "save-backups"])
+        # 各部分共用一份去重状态（#329）：硬链接、APFS 克隆族跨部分只算一次，记在先量的部分——cache（解包、产物根）先量，镜像里和它同族的块
+        #   只记镜像独占的；解包删了，镜像先碰到就记在镜像。四项相加 = 这款真占的盘（原先按目录名跳过 romfs 的近似口径去掉）
+        state = {}
         from library import _build_entries
-        sizes["cache"] = _bytes([*_build_entries(c, gid), d / "shader-cache"], skip)   # iPhone 出包日志 build/ios/logs 不算（释放空间的保留项）
-        sizes["imageIos"] = _bytes([d / "image" / "ios"], skip)
+        sizes["cache"] = _bytes([*_build_entries(c, gid), d / "shader-cache"], state=state)   # iPhone 出包日志 build/ios/logs 不算（释放空间的保留项）
+        sizes["imageMac"] = _bytes([d / "image" / "mac"], state=state)
+        sizes["imageIos"] = _bytes([d / "image" / "ios"], state=state)
+        sizes["saves"] = _bytes([d / "saves", d / "save-backups"], state=state)
     sizes["sources"] = _source_share(gid, games)
     return sizes
 

@@ -104,21 +104,19 @@ struct ShellSettingsView: View {
                                 }
                             }
                         }
-                        SettingsGroup(title: ShellStrings.text("Touch controls")) {
-                            TouchControlsPreview(size: store.touchSize, stick: store.touchStick, layout: store.touchLayout)
-                            TouchControlsNote()
-                            ForEach([ShellSettingsRows.touchSizeRow(store), ShellSettingsRows.touchStickRow(store)]) { row in
-                                SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
-                                    ShellSettingsRows.apply(row.id, value: $0, to: store)
-                                }.equatable()
-                            }
-                            TouchArrangeRow(arranged: !store.touchLayout.isEmpty)
-                        }
+                        // S2Arm: the upstream Touch controls group (size, stick, arrangement) is left out. The game reads its own
+                        // per-game layout (each game's settings → button positions), never these shell settings (#372).
                         SettingsGroup(title: ShellStrings.text("Interface")) {
                             let hud = ShellSettingsRows.hudRow(store)
                             SettingControl(gameID: ShellSettingsRows.gameID, row: hud, targetPrefix: ShellSettingsRows.targetPrefix) {
                                 ShellSettingsRows.apply(hud.id, value: $0, to: store)
                             }.equatable()
+                        }
+                        // S2Arm: the version, the same number the computer's S2Arm shows (written when the computer installs the app).
+                        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, !version.isEmpty {
+                            Text(verbatim: "S2Arm " + version).shellText(12.5).foregroundStyle(.white.opacity(0.45))
+                                .frame(maxWidth: .infinity, alignment: .center).padding(.top, 8)
+                                .accessibilityIdentifier("shellSettings.version")
                         }
                     }
                     .padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640)

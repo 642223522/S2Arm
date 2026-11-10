@@ -5,6 +5,7 @@
 //   升档：热状态 ≤ 1、GPU 忙占比 × 2（升一档的负载按翻倍估：30 → 60 帧、掌机 → 主机分辨率）< 70%，这样的窗口连续攒满 2 分钟；
 //     离上次换档至少 5 分钟，上次是危急热降的至少 10 分钟。
 //   稳定：进一档后连续 2 分钟局内画面没触发降档 = 这一档稳了（调用方记成最后稳定档，下次从这起）。
+//   上限（s2a_ql_top）：玩家选的运行模式，升档到它为止（#352）。
 #include "s2a_qladder.h"
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +20,7 @@
 #define QL_RING 8192                    // 30 秒窗口最多帧数（≥ 120 帧/秒 × 30 秒 = 3600）
 
 static struct {
-    int kind, n, tier, why, hot_down, stable_said;
+    int kind, n, tier, why, hot_down, stable_said, top;
     uint64_t win_ns, up_ns, stable_ns, last_change, gpu_t0; double gpu0;
     uint32_t dt_us[QL_RING]; int nd;
     double l_fps, l_slow, l_gpu; int l_th;
@@ -29,6 +30,8 @@ void s2a_ql_setup(int kind, int tier) {
     memset(&q, 0, sizeof q); q.kind = kind == S2A_QL_FPS ? S2A_QL_FPS : S2A_QL_MODE; q.n = q.kind == S2A_QL_FPS ? 3 : 2;
     q.tier = tier < 0 ? 0 : tier >= q.n ? q.n - 1 : tier; q.gpu0 = -1;
 }
+void s2a_ql_top(int top) { q.top = top < 0 ? 0 : top >= q.n ? q.n - 1 : top; if (q.tier < q.top) q.tier = q.top; }
+int s2a_ql_top_tier(int kind, int docked) { return docked ? 0 : kind == S2A_QL_FPS ? 2 : 1; }
 int s2a_ql_tiers(void) { return q.n; }
 int s2a_ql_tier(void) { return q.tier; }
 int s2a_ql_docked(int tier) { return q.kind == S2A_QL_FPS ? tier < 2 : tier == 0; }
@@ -63,6 +66,6 @@ int s2a_ql_frame(uint64_t now, int game, uint64_t dt, double gpu_ms, int thermal
     q.stable_ns += win; if (q.stable_ns >= QL_STABLE_NS && !q.stable_said) q.stable_said = 1;
     if (thermal >= 0 && thermal <= 1 && gpu_pct >= 0 && gpu_pct * 2 < 70.0) q.up_ns += win; else q.up_ns = 0;
     uint64_t gap = q.hot_down ? QL_HOT_GAP_NS : QL_UP_GAP_NS;
-    if (q.tier > 0 && q.up_ns >= QL_UP_NS && (!q.last_change || now - q.last_change >= gap)) return go(now, q.tier - 1, S2A_QL_WHY_UP);
+    if (q.tier > q.top && q.up_ns >= QL_UP_NS && (!q.last_change || now - q.last_change >= gap)) return go(now, q.tier - 1, S2A_QL_WHY_UP);
     return -1;
 }

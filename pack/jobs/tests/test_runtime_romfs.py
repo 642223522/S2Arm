@@ -48,6 +48,16 @@ class RuntimeRomfs(unittest.TestCase):
         shutil.rmtree(self.store)
         self.assertEqual((self.dest / "romfs/data.bin").read_bytes(), b"synthetic resource\x00")
 
+    def test_reports_whether_every_file_was_cloned(self):
+        # #329：返回值决定 Mac 出包后解包目录留不留——整棵都是真克隆（同一克隆族、不另占盘）才 True；有一个退成普通复制（跨卷 / 非 APFS / Windows）就 False
+        real = build.clone
+        cloned = build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+        self.assertEqual(cloned, sys.platform == "darwin")   # 测试临时目录在 APFS 同卷：Mac 上整棵克隆；别的系统没有克隆
+        other = self.base / "library/games/game/releases/other.partial"; other.mkdir()
+        with patch.object(build, "clone", lambda a, b, progress=None: (real(a, b, progress), False)[1]):   # 模拟一个文件退成了普通复制
+            self.assertFalse(build.clone_tree(self.c, self.source, other, materialize_romfs=True))
+        self.assertEqual((other / "romfs/data.bin").read_bytes(), b"synthetic resource\x00")
+
     def test_legacy_real_directory_keeps_empty_directories(self):
         (self.source / "romfs").unlink()
         (self.source / "romfs/empty").mkdir(parents=True)
