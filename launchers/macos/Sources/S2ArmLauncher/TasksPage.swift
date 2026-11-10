@@ -218,7 +218,7 @@ struct GameContentLine: View {
         if let base { out.append(("shippingbox", L("本体 ") + (base.display.isEmpty ? "v\(base.version)" : base.display))) }
         if let last = updates.last { out.append(("arrow.triangle.2.circlepath", L("更新 ") + (last.display.isEmpty ? "v\(last.version)" : last.display))) }
         if dlc > 0 { out.append(("puzzlepiece.extension", "DLC \(dlc)")) }
-        let bytes = game.packages.reduce(Int64(0)) { $0 + $1.size }
+        let bytes = game.sourceBytes
         if bytes > 0 { out.append(("internaldrive", ByteCountFormatter.string(fromByteCount:bytes, countStyle:.file))) }
         return out
     }

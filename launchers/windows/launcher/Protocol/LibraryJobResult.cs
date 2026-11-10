@@ -81,7 +81,7 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
 }
 
 /// <summary>One registered package in the library (base / update / dlc), mirrors GamePackage in the Mac adapter.</summary>
-public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format);
+public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format, string Sha256 = "", long ContentBytes = 0);
 
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
@@ -100,8 +100,13 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
     /// <summary>Display version of the newest base / update package; null when none.</summary>
     public string? BaseVersion => PackageDisplayVersion("base");
     public string? UpdateVersion => PackageDisplayVersion("update");
-    /// <summary>Total raw size of all registered packages (SHA-256 dedup not available here; uses title-id dedup per type).</summary>
-    public long TotalBytes => (Packages ?? []).Sum(p => p.Size);
+    /// <summary>Total raw size of the source files: packages that share one file (same sha256, e.g. a base + DLC bundle) count once (#141).</summary>
+    public long TotalBytes => (Packages ?? []).GroupBy(p => p.Sha256.Length > 0 ? p.Sha256 : "\0" + p.TitleId + ":" + p.Type + ":" + p.Version)
+        .Sum(g => g.First().Size);
+    /// <summary>This package's own bytes: when one source file holds several packages, Size is the whole file, so use the reader's per-package
+    /// contentBytes (mirrors pack/jobs/report.py own_bytes and the Mac Game.ownBytes); single-package files and old records keep Size.</summary>
+    public long OwnBytes(GamePackage p) =>
+        p.Sha256.Length > 0 && (Packages ?? []).Count(q => q.Sha256 == p.Sha256) > 1 && p.ContentBytes > 0 ? p.ContentBytes : p.Size;
     private string? PackageDisplayVersion(string type) =>
         (Packages ?? []).Where(p => p.Type == type).OrderByDescending(p => p.Version).FirstOrDefault() is { } pkg
             ? (pkg.Display.Length > 0 ? pkg.Display : "v" + pkg.Version) : null;
@@ -134,7 +139,9 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                         var display = p.TryGetProperty("display", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() ?? "" : "";
                         var size = p.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetInt64() : 0;
                         var format = p.TryGetProperty("format", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() ?? "" : "";
-                        packages.Add(new(ptype, titleId, version, display, size, format));
+                        var sha = p.TryGetProperty("sha256", out var sh) && sh.ValueKind == JsonValueKind.String ? sh.GetString() ?? "" : "";
+                        var content = p.TryGetProperty("contentBytes", out var cb) && cb.ValueKind == JsonValueKind.Number ? cb.GetInt64() : 0;
+                        packages.Add(new(ptype, titleId, version, display, size, format, sha, content));
                     }
                 // iphoneInstall: { at, free } — matches the Mac adapter's LibraryProvider
                 double? iphoneAt = null; var iphoneFree = false;

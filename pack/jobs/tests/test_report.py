@@ -59,6 +59,20 @@ class ReportTests(unittest.TestCase):
         self.assertIn("原包合计：4.00 KB", text)
         self.assertFalse((self.library / "sources/game.nup").exists())
 
+    def test_bundle_rows_show_each_package_own_bytes(self):
+        # #141：本体 + 2 个 DLC 装在同一个 XCI 里，size 是整个原件；每行要显示本项内容字节，合计仍按原件算一次
+        packages = [{"type": "base", "version": 0, "sha256": "c" * 64, "size": 14 << 30, "contentBytes": (14 << 30) - (200 << 10)},
+                    {"type": "dlc", "version": 0, "sha256": "c" * 64, "size": 14 << 30, "contentBytes": 100 << 10},
+                    {"type": "dlc", "version": 0, "sha256": "c" * 64, "size": 14 << 30, "contentBytes": 100 << 10},
+                    {"type": "dlc", "version": 0, "sha256": "d" * 64, "size": 3 << 20, "contentBytes": 5 << 20}]   # 单项原件（NSZ）照旧显示原件大小
+        (self.library / "catalog.json").write_text(json.dumps({"games": [{"id": "0100", "packages": packages}]}))
+        self.job("bundle", gameId="0100")
+        text = report.build(self.private, "bundle")
+        self.assertEqual(text.count("包：dlc v0 NSP/XCI 100.00 KB"), 2)
+        self.assertIn("包：dlc v0 NSP/XCI 3.00 MB", text)
+        self.assertNotIn("包：dlc v0 NSP/XCI 14.00 GB", text)
+        self.assertIn("原包合计：14.00 GB", text)
+
     def test_source_total_uses_identity_not_path(self):
         cases = [
             ("same_sha_different_paths", [
