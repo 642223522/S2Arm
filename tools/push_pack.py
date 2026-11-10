@@ -67,6 +67,11 @@ class Fail(Exception):
     """推包失败：reason 是给调用方 fin / 启动器看的一句话"""
 
 
+class DeviceLocked(Fail):
+    """推之前写探针就写不进（多半是锁屏 / 数据线松了 / 隧道断了）：调用方报 device_locked，不推（#333）"""
+    code = "device_locked"
+
+
 class NeedsPlayer(Fail):
     """资源已传完，只差玩家在手机上打开 App 解开（电脑拉不起 App，#192）：不是传输失败，调用方按「需要玩家操作」收尾"""
 
@@ -107,7 +112,7 @@ class Devpush:
     def put(self, src, rel):
         rc, out = self.call("put", src, rel)
         if rc:
-            raise Fail(f"推 {Path(rel).name} 失败：{out.splitlines()[-1] if out else rc}")
+            raise Fail(f"资源包写进 iPhone 时中断（{out.splitlines()[-1] if out else f'退出码 {rc}'}）：确认手机解锁、数据线插稳后再点一次")   # 哪个文件写进 devpush.log
 
     def ls(self, rel):
         rc, out = self.call("ls", rel)
@@ -130,7 +135,7 @@ class Devpush:
     def put_tar(self, lst, root, rel):
         rc, out = self.call("put-tar", lst, root, rel)
         if rc:
-            raise Fail(f"推 {Path(rel).name} 失败：{out.splitlines()[-1] if out else rc}")
+            raise Fail(f"资源包写进 iPhone 时中断（{out.splitlines()[-1] if out else f'退出码 {rc}'}）：确认手机解锁、数据线插稳后再点一次")   # 哪个文件写进 devpush.log
         return "stream"
 
     def listing(self):   # 机上整个资源包目录的「路径 → 大小」：AFC 列表不带大小，读不到
@@ -195,7 +200,7 @@ class Devicectl:
             with open(self.work / "slow_devicectl.log", "a", encoding="utf-8") as f: f.write(f"[{time.strftime('%H:%M:%S')}] 挂：推 {rel} 超 {t} 秒（第 {i} 次）\n")
         self.slow(f"推 {rel}", s0, rc)
         if rc:
-            raise Fail(f"推 {Path(rel).name} 失败")
+            raise Fail("资源包写进 iPhone 时中断（" + ("iPhone 空间不够" if self.nospc() else f"devicectl 退出码 {rc}") + "）：确认手机解锁、数据线插稳、空间够后再点一次")   # 哪个文件写进 cp.log
 
     def put_big(self, src, rel):   # 大文件优先走 s2a-devpush 流式（usbmuxd 能到时快且不落临时文件），不行退回 devicectl
         if self.dp:
@@ -449,7 +454,7 @@ def send(dev, pack, work, say=print, progress=None):
         except Fail:
             if dev.nospc():
                 say(f"【红】推 {tn} 时测试设备空间满（POSIX 28）"); raise Fail(f"测试设备空间不足（推 {tn} 时 POSIX 28）")
-            say(f"推 {tn} 失败"); raise Fail(f"推 {tn} 失败")
+            say(f"推 {tn} 失败"); raise   # 底层已是人话原因（不带内部文件名，#333）；文件名留在上面这行日志
         finally:
             lst.unlink(missing_ok=True)
         ns += how == "stream"; nd += how != "stream"
@@ -464,7 +469,7 @@ def send(dev, pack, work, say=print, progress=None):
             dev.put(pack / f, f"{rp(dev)}/{f}")
         except Fail:
             if dev.nospc(): raise Fail(f"测试设备空间不足（推 {f} 时 POSIX 28）")
-            say(f"推 {f} 失败"); raise Fail(f"推 {f} 失败")
+            say(f"推 {f} 失败"); raise
     say(f"资源包：推 {nt} 个文件 {done >> 20} MB，分 {nb} 批（流式 s2a-devpush {ns} 批 / devicectl {nd} 批；{dev.why}）+ 索引 + 清单（{time.time() - t0:.0f} 秒）")
     return nb
 
@@ -513,13 +518,27 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
                f"资源包推进去了，但起 App 后 {stall} 秒机上解包没有开始：打开这款游戏、保持在前台等它导入完")
 
 
+PROBE = ".s2a-write-probe"   # 推之前写的几字节探针（资源包目录下，下次覆盖）
+
+
+def probe(dev, work):
+    """推之前先往机上写一个几字节的文件：锁屏 / 断开时这里就写不进，立刻停（原先要等核账、推到几分钟后才失败，前面推的全作废，#333）"""
+    src = Path(work) / PROBE
+    src.write_bytes(b"ok\n")
+    try:
+        dev.put(str(src), f"{rp(dev)}/{PROBE}")
+    except Fail as e:
+        raise DeviceLocked("iPhone 写不进资源包：多半是手机锁屏了或数据线松了。解锁手机、保持亮屏，插稳数据线后再点一次。") from e
+
+
 def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress=None):
-    """一条龙：算 → 核空间（不够报红，读不到照推）→ 推 → (推了几批, 文件数, 字节数)"""
+    """一条龙：探针（写不进就停）→ 算 → 核空间（不够报红；读不到提示后照推：探针已证明手机可写）→ 推 → (推了几批, 文件数, 字节数)"""
+    probe(dev, work)
     nb, nt, nbytes = plan(dev, pack, work, full, say)
     if on_plan: on_plan(nb, nt, nbytes)
     if nbytes:
         fb, need = space(dev, nbytes, work, env)
-        if fb is None: say("🟡 读不到测试设备剩余空间，不核、照推")
+        if fb is None: say(f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
         elif fb < need:
             say(f"【红】测试设备剩余空间不足：可写 {fb >> 30} GB < 要 {need >> 30} GB（待推 {nbytes >> 30} GB + 解开时最大一批 + 余量）；先卸掉机上不用的包")
             raise Fail("测试设备空间不足")

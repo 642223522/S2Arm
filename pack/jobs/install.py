@@ -544,6 +544,9 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         if m:
             c.diagnostic(m.group(0), code="manual_unpack_required", severity="warning")
             return got.get("files", 0), got.get("mb", 0) << 20
+        m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针就失败 = 锁屏 / 断开（#333）
+        if m:
+            raise Failure(m.group(0), code="device_locked") from e
         from errors import tool_reason
         raise Failure("资源包推不进 iPhone：" + tool_reason(log), code="resource_transfer_failed") from e
     return got.get("files", 0), got.get("mb", 0) << 20
@@ -605,10 +608,12 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
         #   往上逐级列父目录，第一个列得出的父目录定：里面看不到存档目录 = 没有存档，照装；看得到却列不出 / 父目录一个都列不出 = 停装
-        _, apps, _ = devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60)
+        arc, apps, aerr = devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60)
+        if arc:   # 连「装没装过」都问不出（锁屏 / 超时 / 断开）：不能当成第一次装，否则跳过备份直接覆盖（#333）
+            raise Failure("覆盖装前确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         if any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or []):
             if not save_dir_absent(c, ident, bid, save_dir):
-                raise Failure("覆盖装前读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="job_failed")
+                raise Failure("覆盖装前读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         return None
     if not files:
         return None
@@ -618,7 +623,7 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         rc, _, err = devicectl(c, "device", "copy", "from", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                                "--source", f"{save_dir}/{rel}", "--destination", str(dest / rel), timeout=120)
         if rc or not (dest / rel).is_file():
-            raise Failure(f"覆盖装前备份 iPhone 上的存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="job_failed")
+            raise Failure(f"覆盖装前备份 iPhone 上的存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
     return dest
 
 
@@ -863,14 +868,19 @@ class WinPhone:
         return devpush_client(self.c, self.udid, self.bid, work)
 
     def backup(self, g):
-        """覆盖装前备份本款存档（同 Mac backup_saves 口径：拉失败就停装）。还没装过（没记录包名 / 机上没这个 App）= 没有存档"""
-        if not self.bid:
+        """覆盖装前备份本款存档（同 Mac backup_saves 口径：拉失败就停装）。按这次要装的包名查（这台没记录也可能有 Mac 装的同包名 App 和存档）；
+        只有手机明确答「没有这个 App」（ApplicationLookupFailed）才算没装过、不备份。别的取不到（锁屏 / 断开 / 配对问题）一律停装，
+        不当成没装过——当成没装会跳过备份直接覆盖（#333）"""
+        bid = self.bid or self.bundle_for_signing()
+        if not bid:
             return None
         dest = layout.path(self.c, g, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
-            ok, out = self.client(w).get_tree(f"{game_docs(g)}/{SAVE_REL}", dest)
-        if not ok and "取不到" not in out:   # 取不到 = 这个包名的 App 不在机上（s2a-devpush vend_container 的报错）
-            raise Failure("覆盖装前备份 iPhone 上的存档失败：" + out[-200:] + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="job_failed")
+            ok, out = devpush_client(self.c, self.udid, bid, w).get_tree(f"{game_docs(g)}/{SAVE_REL}", dest)
+        if not ok:
+            if "ApplicationLookupFailed" in out:   # s2a-devpush vend_container：机上确实没装这个包名（Windows 实机核过的原文）
+                return None
+            raise Failure("覆盖装前备份 iPhone 上的存档失败：" + out[-200:] + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         return dest if dest.is_dir() else None
 
     def install(self, ipa, games, steps=True):
