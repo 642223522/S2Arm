@@ -170,6 +170,16 @@ public final class S2ArmLauncherModel: ObservableObject {
     static let exportDeviceKey = "S2AExportDevice"
     /// 排队等着出的；运行页被收起（后台继续）；本次打开以来每款最近一次的出包结果；正在查看的结果。
     @Published private(set) var exportQueue: [QueuedExport] = []
+    /// 批量出包（v0.2.4，S2ArmLauncherModel+Batch.swift）：清单页开着；出包前每款的勾选行；一批共用的存放位置；
+    ///   后端批次（pack/jobs/batch.py show 的结果，出包中途关掉启动器也在）；这批是不是正在一款接一款地出；放进来但认不出的
+    @Published var batchShown = false
+    @Published var batchDraft: [BatchRow] = []
+    @Published var batchLocation = ""
+    @Published var batchState: [String: Any]?
+    @Published var batchRunning = false
+    @Published var batchUnrecognized: [ImportSource] = []
+    /// 在单款出包页又放进游戏：导入完列清单时这款排第一
+    var batchSeed: String?
     @Published var sessionHidden = false
     @Published private(set) var finishedExports: [String: JobSession] = [:]
     @Published var viewingResult: JobSession?
@@ -399,6 +409,10 @@ public final class S2ArmLauncherModel: ObservableObject {
                 try Task.checkCancellation()
                 if partialResults { self.mergeImportSources(result.sources, submitted: urls) }
                 self.selectImportedGame(result.games.first, forWelcome: wasEmpty)
+                // 批量出包（v0.2.4）：一次放进多款、或在出包页又放进游戏 → 识别完列成清单（出包页那款排第一）；认不出的也列上、写原因
+                let seed = self.batchSeed; self.batchSeed = nil
+                let ids = (seed.map { [$0] } ?? []) + result.games.map(\.titleId).filter { $0 != seed }
+                if ids.count > 1 { self.openBatch(ids, unrecognized: self.pendingSources) }
             } catch let failure as JobFailure where partialResults {
                 try Task.checkCancellation()
                 let rows = ImportSource.rows(in: failure.outcome.result)
@@ -539,7 +553,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         return nil
     }
 
-    private func runExport(_ item: QueuedExport) {
+    func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
         let game = item.game, platforms = item.platforms
         var session = JobSession(kind: .export, gameID: game.id, name: game.name)
@@ -548,6 +562,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             for (k, platform) in platforms.enumerated() {
                 guard let self, let target = platform.target else { return nil }
                 try Task.checkCancellation()
+                await self.batchMark(game.id, platform, state: "running")
                 self.beginPlatform(k)
                 do {
                     let job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
@@ -566,6 +581,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 } catch {
                     self.endPlatform(platform, ExportRun.Outcome(state: .failed, message: error.localizedDescription))
                 }
+                await self.batchRecord(game.id, platform)   // 批量出包：这个平台出完记进批次（取消走 batchSessionEnded）
             }
             if self?.session?.export?.failed.isEmpty == false { throw ExportIncomplete() }
             return nil
@@ -728,7 +744,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    private static func requirementsText(_ game: GameSummary) -> String {
+    static func requirementsText(_ game: GameSummary) -> String {
         game.compatibility == "unsupported" ? "这款游戏暂不支持。" : "这款还缺文件：" + game.missing.joined(separator: "；")
     }
 
@@ -1039,7 +1055,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         if state == .completed && session.kind == .diagnostics, let reveal { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: reveal)]) }
         if session.kind == .export, let id = session.gameID {
             finishedExports[id] = session
-            if state == .cancelled {
+            if batchRunning {   // 批量出包：下一款听批次的（失败不挡后面、磁盘满暂停、取消整批停）
+                batchSessionEnded(cancelled: state == .cancelled)
+            } else if state == .cancelled {
                 exportQueue = []
             } else if !exportQueue.isEmpty {
                 let next = exportQueue.removeFirst()
