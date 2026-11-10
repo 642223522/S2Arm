@@ -358,6 +358,7 @@ public sealed partial class EnvironmentWindow
         }
         body.Children.Add(tiles);
         body.Children.Add(LocationRow(game));
+        if (exportIos) body.Children.Add(DevCertRow());   // 签名方式（v0.2.4，DevCertPage.cs）
 
         // action bar
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
