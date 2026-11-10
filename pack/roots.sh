@@ -247,12 +247,12 @@ _root_replay() {   # _root_replay <W.tmp> <新现行> <路径…>：新现行克
   _root_shards "$r" "replay·克隆新现行"
   for p in "$@"; do case $p in '!'*) continue;; esac
     case " $mvp " in *" $p "*) [ -e "$w/$p" ] || [ -L "$w/$p" ] || continue; mv "$w/$p" "$r/$p" || { _root_rm "$r"; return 1; }; continue;; esac   # 上面克隆时跳过的：整个挪过来
-    ( cd "$r" && shopt -s nullglob dotglob && for m in $p; do [ -L "$m" ] || chmod -R u+w "$m" 2> /dev/null; rm -rf -- "$m"; done ) || return 1
+    ( cd "$r" && shopt -s nullglob dotglob && for m in $p; do _root_rm "$m"; done ) || return 1   # 走 _root_rm：删的同时被写进系统文件也删得掉（#369）
     # 不带通配的字面路径 W 里没有 = 本阶段删了它；复制失败必须中止，不能提交缺失的产物。
     ( cd "$w" && shopt -s nullglob dotglob && for m in $p; do [ -e "$m" ] || continue; mkdir -p "$r/$(dirname "$m")" && _root_cp -R "$m" "$r/$m" || exit 1; done ) || { _root_rm "$r"; return 1; }
   done
   for p in "$@"; do case $p in '!'*) p=${p#!};; *) continue;; esac
-    ( cd "$r" && { [ -L "$p" ] || chmod -R u+w "$p" 2> /dev/null; }; rm -rf -- "$p"; [ -e "$now/$p" ] || exit 0; mkdir -p "$(dirname "$p")" && _root_cp -R "$now/$p" "$p" ) || { _root_rm "$r"; return 1; }
+    ( cd "$r" && _root_rm "$p"; [ -e "$now/$p" ] || exit 0; mkdir -p "$(dirname "$p")" && _root_cp -R "$now/$p" "$p" ) || { _root_rm "$r"; return 1; }
   done
   # 来源提交取两边较新的：新现行来自更新的 main 时留它的（旧树重放一个没被动过的阶段，不把共享现行的来源退回旧提交）
   local ns ms; ns=$(cat "$r/.root_src" 2> /dev/null); ms=$(cat "$w/.root_src" 2> /dev/null)
