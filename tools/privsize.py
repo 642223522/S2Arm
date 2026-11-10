@@ -2,7 +2,7 @@
 # APFS 真实独占占用（删掉这个文件真正能腾出的字节，不含与克隆共享的块）：getattrlist ATTR_CMNEXT_PRIVATESIZE。
 #   10-23 画面·着色器线：gc 原按 st_blocks 记账，gal_pso_cache 3.5 GB 的独占是 0（全和产物根共享），删了记成腾出 GB、提前收手。
 #   用法：privsize.py <路径…>（每个路径一行：独占字节、du 字节、文件数）；privsize.py --selftest（正对照：新文件独占 = 大小，克隆后两边都 ≈ 0）
-#   被 gc.sh 内的 Python 段 import：private_size(path) → 字节或 None（读不出）
+#   供维护方内部清扫器（gc.sh，未随公开树发布）import：private_size(path) → 字节或 None（读不出）
 import ctypes, ctypes.util, os, struct, subprocess, sys
 _libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
 class _AttrList(ctypes.Structure):

@@ -10,7 +10,7 @@
 set -u
 R=$(git rev-parse --show-toplevel) || exit 2; cd "$R"
 # 镜像与构建目录按工作树分开（10-21 测试出包线：全机一份时几条线的门禁排同一把锁 10–17 分钟，且不同树轮流往同一个增量构建目录里编、互相污染，
-#   本树单独编通过的提交在共享目录里 make ios 失败）。一棵树一份约 350 MB、冷编约 1.5 分钟；24 小时没用的由 tools/gc.sh 清
+#   本树单独编通过的提交在共享目录里 make ios 失败）。一棵树一份约 350 MB、冷编约 1.5 分钟；24 小时没用的由维护方内部清扫器清
 TK=$(printf %s "$R" | shasum | cut -c1-12)
 #   放在独立的 gate_ios/<树号>/ 下：不能放进旧的全机镜像 gate_ios_src/ 里——还没 rebase 的树跑旧版本脚本时对它 rsync --delete，会把子目录整个删掉（10-21 实测）
 GI=${GATE_IOS_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/gate_ios}/$TK
