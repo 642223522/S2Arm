@@ -11960,7 +11960,7 @@ static void fb_prepare(NvProg *pr) {
             pthread_mutex_lock(&g_rmu); void *tv = NULL; tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv; pthread_mutex_unlock(&g_rmu);
             int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t;
             if (!t || dup) continue;
-            id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0;
+            id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0;
             if (t.textureType != MTLTextureType2D || t.sampleCount != 1 || base.parentTexture) { RED_ONCE(179, "same-pass depth sampling: the sampled view cannot be copied whole (type %lu samples %lu, shader %s); left as is", (unsigned long)t.textureType, (unsigned long)t.sampleCount, fs->key); continue; }
             NSUInteger nl = t.mipmapLevelCount;
             if (g_dsnap.valid && g_dsnap.ser == ser && g_dsnap.src == t && g_dsnap.use) {   // the same view of an unchanged depth: read the copy made for an earlier draw, the pass stays open
@@ -11968,10 +11968,14 @@ static void fb_prepare(NvProg *pr) {
                 g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = g_dsnap.use; g_fb_rid[g_fb_n] = g_dsnap.use.gpuResourceID._impl; g_fb_n++; g_fb_hits++; g_fb_depth_reuse++;
                 continue; }
             id<MTLTexture> snap = dsnap_storage(base.pixelFormat, base.width, base.height, tl, nl); if (!snap) continue;
+            // a clear still waiting (the depth clear folded into the next pass's load action, or lazy clears) has not reached the texture: land it first, or the copy holds the depth
+            //   from before the clear, and later draws reuse it (audit P2-247; the colour branch below does the same)
+            if (!settled) { int pend = g_nlc || R.clear_d || R.clear_s; for (int c = 0; c < 8; c++) pend |= R.clear_c[c];
+                settled = 1; if (pend) { lc_land(); rp_flush(); memset(g_fb_dirty, 0, sizeof g_fb_dirty); } }
             if (g_enc) rp_end();
             id<MTL4ComputeCommandEncoder> e = blit();
             for (NSUInteger l = 0; l < nl; l++) { NSUInteger w = mip_extent(base.width, tl + l), h = mip_extent(base.height, tl + l);
-                enc_b_copy_texture(e, base, 0, tl + l, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), snap, 0, l, MTLOriginMake(0, 0, 0));
+                enc_b_copy_texture(e, base, ts, tl + l, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), snap, 0, l, MTLOriginMake(0, 0, 0));   // the view's own layer (audit P2-247: was layer 0)
                 g_fb_bytes += (uint64_t)w * h * (uint64_t)MAX(mtl_pf_bytes(base.pixelFormat), 1u); }
             id<MTLTexture> use = fb_narrow_view(snap, t, MTLTextureType2D, 0, nl, 0, 1);
             if (!use) { RED_ONCE(180, "same-pass depth sampling: cannot create the snapshot view (format %lu); left as is", (unsigned long)t.pixelFormat); continue; }
@@ -14589,7 +14593,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_COPY_T2T: dsnap_stale(); copy_t2t(a); break;
             case OP_DLSS: dlss_eval(a, h.size); break;   // NVN2 EvaluateDlss → MetalFX temporal upscale (nvn_dlss.inc)
             case OP_PUSH_CONST: case OP_PUSH_CONST_PTR: state_op(h.op, a, h.size); break;
-            case OP_CLEAR_TEX: clear_tex(a); break;
+            case OP_CLEAR_TEX: dsnap_stale(); clear_tex(a); break;   // it may clear the depth texture the copy was taken from (audit P2-247)
             case OP_DISPATCH: dispatch(a); break;
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4);   // ordered at the next draw pass (barrier_game); inside a pass with shader writes, the pass ends first (swrite_note)
                 int split = g_enc && g_pass_swrite && (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT));
