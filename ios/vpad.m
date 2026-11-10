@@ -761,11 +761,11 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         S2AVPadView *view = weakSelf; if (!view || view->_touchOnly) { if (view) LOG("触屏布局：3 秒内已切到仅触屏（自动切），不弹「切到触屏」"); return; }
         [u setBool:YES forKey:kTouchHintKey];
-        if (s2a_dprompt_ask) s2a_dprompt_ask(@S2A_DPROMPT_VPAD_TOUCH_TITLE, @S2A_DPROMPT_VPAD_TOUCH_BODY, @S2A_DPROMPT_VPAD_TOUCH_ACCEPT, @S2A_DPROMPT_VPAD_TOUCH_DECLINE, 0, 15, ^(BOOL accept) {
+        if (s2a_dprompt_ask) s2a_dprompt_ask(S2APICK(S2A_DPROMPT_VPAD_TOUCH_TITLE), S2APICK(S2A_DPROMPT_VPAD_TOUCH_BODY), S2APICK(S2A_DPROMPT_VPAD_TOUCH_ACCEPT), S2APICK(S2A_DPROMPT_VPAD_TOUCH_DECLINE), 0, 15, ^(BOOL accept) {
             LOG("触屏布局：提示条 %s", accept ? "点了「切到触屏」" : "没切（先不用 / 超时）");
             if (accept) [weakSelf setTouchOnly:YES manual:YES why:@"提示条"];
         });
-        else if (s2a_dprompt_notice) s2a_dprompt_notice(@S2A_DPROMPT_VPAD_TOUCH_TITLE, @S2A_DPROMPT_VPAD_TOUCH_BODY, 0, 15);
+        else if (s2a_dprompt_notice) s2a_dprompt_notice(S2APICK(S2A_DPROMPT_VPAD_TOUCH_TITLE), S2APICK(S2A_DPROMPT_VPAD_TOUCH_BODY), 0, 15);
     });
 }
 - (BOOL)touchOnly { return _touchOnly; }

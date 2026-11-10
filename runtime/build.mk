@@ -169,7 +169,7 @@ ios: ios-ns2pro
 	@rm -rf $(IOS_APP) && mkdir -p $(IOS_APP) $(BUILD)/ios
 	@mkdir -p $(IOS_APP)/Frameworks && cp -R $(NS2_FRAMEWORK) $(IOS_APP)/Frameworks/
 	@cp -R ios/Settings.bundle $(IOS_APP)/Settings.bundle
-	@cp -R ios/l10n/*.lproj $(IOS_APP)/   # 宿主界面字符串表（游戏内菜单 / 触屏布局 / 金手指 / 社区补丁，ios/s2a_l10n.h S2AL）：<语言>.lproj/S2ArmHost.strings 放主 bundle（#316）
+	@cp -R ios/l10n/*.lproj $(IOS_APP)/   # 宿主界面字符串表（ios/s2a_l10n.h S2AL）：<语言>.lproj/S2ArmHost.strings 放主 bundle；同目录 InfoPlist.strings 是权限说明的译文（#316）
 	@$(call ios_objs_cached,$(BUILD)/ios/obj_app,-fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include,$(IOS_SRCS))
 	$(IOS_LD_REPRO) $(IOS_CC) -fobjc-arc $(IOS_LD_DET) -Wl,-oso_prefix,$(IOS_BUILD_ABS)/ -o $(IOS_APP)/S2Arm $(call ios_objlist,$(BUILD)/ios/obj_app,$(IOS_SRCS)) $(IOS_LIBS) \
 	  -framework UIKit -framework Foundation -framework CoreGraphics $(IOS_SHELLUI_LINK) $(call S2A_WEAK_U,ios) -Wl,-S
@@ -192,7 +192,7 @@ ios: ios-ns2pro
 	@/usr/bin/plutil -insert LSSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 声明支持系统游戏模式（10-20 维护者二分：动森整机 5.88 → 3.37 W、30 帧不变，性能核 3.9 → 2.2 GHz；旧 S2A 包有此键、S2Arm 漏了）
 	@/usr/bin/plutil -insert LSApplicationCategoryType -string public.app-category.games $(IOS_APP)/Info.plist   # 系统靠类别认出是游戏才进游戏模式（11-01 调研：LSSupportsGameMode 之外还要类别键）
 	@/usr/bin/plutil -insert GCSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 部署目标 iOS 18.0 < 18.6：LSSupportsGameMode 18.6 起才认，18.0–18.5 靠旧键
-	@/usr/bin/plutil -insert NSLocalNetworkUsageDescription -string "本地联机：与同一 Wi-Fi 下的其他设备互相发现、进同一个房间。" $(IOS_APP)/Info.plist; /usr/bin/plutil -insert NSBonjourServices -json '["_s2arm-ldn._tcp"]' $(IOS_APP)/Info.plist   # ldn_lan.m
+	@/usr/bin/plutil -insert NSLocalNetworkUsageDescription -string "Local multiplayer: find other devices on the same Wi-Fi and join the same room." $(IOS_APP)/Info.plist; /usr/bin/plutil -insert NSBonjourServices -json '["_s2arm-ldn._tcp"]' $(IOS_APP)/Info.plist   # ldn_lan.m；主值英文（开发区域 en），中文在 ios/l10n/zh-Hans.lproj/InfoPlist.strings（#316，上面 cp -R 一并拷进包）
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
 	@/usr/bin/plutil -insert UIApplicationSceneManifest -json '{"UIApplicationSupportsMultipleScenes":false,"UISceneConfigurations":{"UIWindowSceneSessionRoleApplication":[{"UISceneConfigurationName":"Default","UISceneDelegateClassName":"S2ASceneDelegate"}]}}' $(IOS_APP)/Info.plist   # iOS 27 场景生命周期（27.1 SDK 强制 UIScene adoption，否则启动即崩）：指向 app.m 的 S2ASceneDelegate
 	@echo "iOS App：$(IOS_APP)（$$(du -sh $(IOS_APP) | cut -f1)，包名 $(IOS_BUNDLE)，未签名）"
