@@ -31,7 +31,7 @@ public sealed partial class EnvironmentWindow
         const string prefix = "--data-root=";
         return Environment.GetCommandLineArgs().FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal)) is { } argument
             ? Path.GetFullPath(argument[prefix.Length..])
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "S2Arm", "WindowsLauncher");
+            : LibraryPaths.StandardPrivateRoot;
     }
 
     private void StartControl()

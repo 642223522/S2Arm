@@ -13,13 +13,19 @@ public static class LibraryPaths
     /// <summary>设置：玩家选的库路径（一行文字）。</summary>
     public static string PreferenceFile(string privateRoot) => Path.Combine(privateRoot, "library-location.txt");
 
+    /// <summary>缺省私有目录：%LOCALAPPDATA%\S2Arm\WindowsLauncher。和作业层同一取法（layout.standard_private 读 LOCALAPPDATA 环境变量）。</summary>
     public static string StandardPrivateRoot =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "S2Arm", "WindowsLauncher");
+        Path.Combine(KnownFolder("LOCALAPPDATA", Environment.SpecialFolder.LocalApplicationData), "S2Arm", "WindowsLauncher");
+
+    /// <summary>先读环境变量，没有再问系统。作业层（Python）的 Path.home() 读 USERPROFILE、私有目录读 LOCALAPPDATA，
+    /// 前端只问系统（GetFolderPath 不看这两个变量）时，两边在改过环境变量的进程里会算出不同的目录：新缺省库搬到一处、前端去另一处找。</summary>
+    internal static string KnownFolder(string variable, Environment.SpecialFolder folder) =>
+        Environment.GetEnvironmentVariable(variable) is { Length: > 0 } value ? value : Environment.GetFolderPath(folder);
 
     /// <summary>新装的缺省库：%USERPROFILE%\S2Arm（资源管理器里看得见）；自定义数据目录（--data-root=、测试）时仍是数据目录下的 DefaultLibrary。</summary>
     public static string DefaultLibrary(string privateRoot) =>
         SamePath(privateRoot, StandardPrivateRoot)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "S2Arm")
+            ? Path.Combine(KnownFolder("USERPROFILE", Environment.SpecialFolder.UserProfile), "S2Arm")
             : Path.Combine(privateRoot, "DefaultLibrary");
 
     /// <summary>设置里记的库路径按作业层的搬库标记（library-relocate.json，旧默认库同盘改名到新缺省位置时写）换成现在的位置：
