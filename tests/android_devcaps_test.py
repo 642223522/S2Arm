@@ -2,8 +2,13 @@
 """tools/android_devcaps.py 单测：合成 profile JSON，不需要真机、网络或显卡。"""
 import json
 import os
+import subprocess
 import sys
 import tempfile
+
+for _stream in (sys.stdout, sys.stderr):  # Windows 管道下默认按系统代码页编码，中文直接崩
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
 
 H = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, os.path.join(H, "tools"))
@@ -125,5 +130,26 @@ with tempfile.TemporaryDirectory() as t:
     rc = dc.main(["check", os.path.join(t, "VP_VULKANINFO_nodc.json")])
     ck("⑤ check 起不来退出 1", rc == 1)
     ck("⑤ rules 子命令退出 0", dc.main(["rules"]) == 0)
+
+    # ⑥ 带 BOM 的 JSON（PowerShell 5.1 Set-Content -Encoding UTF8 的写法）照常读
+    bom = os.path.join(t, "VP_VULKANINFO_bom.json")
+    with open(os.path.join(t, "VP_VULKANINFO_full.json"), encoding="utf-8") as src, \
+            open(bom, "w", encoding="utf-8-sig") as dst:
+        dst.write(src.read())
+    ck("⑥ 带 BOM 的 profile JSON 照常判定", dc.main(["check", bom]) == 0)
+
+# ⑦ 输出编码：模拟 Windows 管道下的非中文代码页（强制 ascii），帮助 / 规则表 / 报错都不许崩
+tool = os.path.join(H, "tools", "android_devcaps.py")
+env = dict(os.environ, PYTHONIOENCODING="ascii")
+env.pop("PYTHONUTF8", None)
+for args, want_rc, want_text in (
+        (["--help"], 0, "安卓设备能力预检"),
+        (["check", "-h"], 0, "输出 JSON 而不是 Markdown"),
+        (["rules"], 0, "硬门槛"),
+        (["check", os.path.join(H, "不存在.json")], 2, "读不了")):
+    r = subprocess.run([sys.executable, "-X", "utf8=0", tool, *args], env=env, capture_output=True)
+    out = (r.stdout + r.stderr).decode("utf-8", "replace")
+    ck(f"⑦ 强制 ascii 输出下 {' '.join(args)} 退出 {r.returncode}（期望 {want_rc}）、中文原样输出",
+       r.returncode == want_rc and want_text in out and "UnicodeEncodeError" not in out)
 
 sys.exit(bad)

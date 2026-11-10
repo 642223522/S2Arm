@@ -198,7 +198,7 @@ def _profile_capability_names(entry):
 
 
 def load_caps(path, kind="auto", _seen=None):
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:  # PowerShell 5.1 存的 JSON 带 BOM
         doc = json.load(f)
     profiles = doc.get("profiles") or {}
     caps_defs = doc.get("capabilities") or {}
@@ -337,6 +337,13 @@ def render_markdown(results):
     return "\n".join(out) + "\n"
 
 
+def _utf8_streams():
+    """Windows 上 stdout / stderr 接管道或重定向时按系统 ANSI 代码页编码（如 cp1252），编不了中文。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="S2Arm 安卓设备能力预检（不用真机）")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -345,9 +352,8 @@ def main(argv=None):
     ck.add_argument("files", nargs="+")
     ck.add_argument("--kind", choices=["auto", "device", "guarantee"], default="auto")
     ck.add_argument("--json", action="store_true", help="输出 JSON 而不是 Markdown")
+    _utf8_streams()  # 先于 parse_args：--help / 用法报错也走 stdout / stderr
     args = ap.parse_args(argv)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")  # Windows 控制台默认不是 UTF-8
     try:
         rules = all_rules()
     except RulesError as e:
