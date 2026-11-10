@@ -55,13 +55,16 @@ struct SaveManageSheet: View {
     @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     let gameID: String
+    /// 拖到游戏库这款卡片上的存档（LauncherView+Library）：打开就先检查它，同拖进本窗口
+    let source: URL?
     @StateObject private var state = SaveSheetState()
     @State private var confirming = false
     @State private var dropTargeted = false
 
-    init(model: S2ArmLauncherModel, gameID: String) {
+    init(model: S2ArmLauncherModel, gameID: String, source: URL? = nil) {
         self.model = model
         self.gameID = gameID
+        self.source = source
     }
 
     private static let backupType = UTType(exportedAs: "org.s2arm.save-backup", conformingTo: .zip)
@@ -117,7 +120,7 @@ struct SaveManageSheet: View {
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: drop)
-        .onAppear { refresh() }
+        .onAppear { refresh(); if let source, !blocked { inspect(source) } }
         .onDisappear { state.stop() }
         .interactiveDismissDisabled(state.running == .restore)
         .frame(width: 600, height: 640)

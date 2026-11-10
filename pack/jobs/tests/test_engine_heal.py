@@ -49,9 +49,10 @@ class EngineHealTests(JobCase):
         self.assertEqual((c2.engine / PLIST).read_bytes(), b"<plist>original</plist>")
         self.assertEqual(list(c2.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
 
-    def test_same_size_rewrite_is_caught_by_artifact_digest(self):
+    def test_size_changed_artifact_is_reinstalled_when_used(self):
+        # v0.2.3 清理：用到产物时也只核大小（原先按摘要逐字节核，同大小改写现实里没出现过，#304 是大小变了）；大小变了照样从 App 包重解
         c = self.installed()
-        (c.engine / PLIST).write_bytes(b"<plist>ORIGINAL</plist>")   # 同样大小、内容变了：快速复核看不出，用到产物时按摘要核
+        (c.engine / PLIST).write_bytes(b"<plist>changed size</plist>")
         self.assertEqual(embedded.artifact(c, "S2ArmGame.app"), c.engine / "Binaries/S2ArmGame.app")
         self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>original</plist>")
 

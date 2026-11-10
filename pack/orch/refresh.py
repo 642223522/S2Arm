@@ -11,8 +11,16 @@ from pathlib import Path
 import sys
 import time
 
-from .roots import Conflict, Roots, UnsafeRoot, copy_file, directory_link, is_link, plain_entries, remove_owned, remove_patterns, text
+from .roots import Conflict, Roots, UnsafeRoot, copy_file, directory_link, is_link, plain_entries, remove_owned, remove_patterns, rename_dir, text
 from .stages import ENTRY, LIGHT_ORDER, REWRITE_OUTPUTS, StageError, Stages
+
+
+def _ticker(stage, total):
+    """tools/progress.py 的 Ticker（同一份进度协议写端）；按文件路径载入，不改 sys.path"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('_s2a_progress', Path(__file__).resolve().parents[2] / 'tools' / 'progress.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod.Ticker(stage, total)
 
 
 def seed(roots, game, source, *, move_romfs=False):
@@ -24,10 +32,14 @@ def seed(roots, game, source, *, move_romfs=False):
     names = ['exefs', 'romfs', 'systemdata', 'upd', 'rt_shaders']   # 同 pack/seed_root.sh SEED_DIRS：rt_shaders = 真机转储的着色器（<键>.ctl / .code），直连阶段并进库（11-06 Switch2 线 75：原先漏了，Windows 播种丢转储）
     if os.environ.get('S2A_SEED_AOC') == '1':
         names.append('aoc')
+    files = 0
     for name in names:
         p = source / name
         if p.is_dir():
-            plain_entries(p.resolve())
+            files += sum(1 for e in plain_entries(p.resolve()) if not e.is_dir())
+    # 播种的进度（#361：Switch 2 大款 20.6 万个文件逐个拷了约 30 分钟，进度条一直停在「解包 100%」像卡死）：每拷完一个文件计一次，
+    #   按出包进度协议写「播种 已拷 / 总数」（tools/progress.py，每秒最多一行；没给 S2A_PROGRESS 不写）；整目录改名搬进来的 RomFS 一次计满
+    tick = _ticker('播种', files)
     # 不独占 RomFS 开工：下面先 remove_owned 再放新的（死机重起续接的前提，Windows 端到端线 11-06），独占克隆来的整份 RomFS 立刻就被删掉，白拷白删
     tx = roots.begin(game, roots.tag(game, 'seed-' + str(time.time_ns())))
     moved = None
@@ -40,9 +52,10 @@ def seed(roots, game, source, *, move_romfs=False):
                 # move_romfs（只给一键出包自己的解包目录，下次解包整目录重建）：同卷就把 RomFS 整目录改名搬进来（一次操作），不逐文件克隆
                 #   （11-06 出包速度线：王国之泪 30.5 万个文件，Windows 出包机播种 1253 秒，逐文件克隆约 1 毫秒一个）；提交后原处留联接指向存储里的这份
                 if name == 'romfs' and move_romfs and not is_link(src) and os.stat(src).st_dev == os.stat(w).st_dev:
-                    src.rename(w / 'romfs'); moved = src
+                    rename_dir(src, w / 'romfs'); moved = src
+                    tick.step(sum(1 for e in plain_entries(w / 'romfs') if not e.is_dir()))
                 else:
-                    roots._copy_tree(src.resolve(), w / name)
+                    roots._copy_tree(src.resolve(), w / name, tick=tick.step)
         remove_patterns(w, (*REWRITE_OUTPUTS, '.stage_uilayout', '.stage_romfsidx', '.stage_romfsidx.deps',
                             '.stage_pkg', 'ui_overlay.tsv', 'romfs.s2aidx', 'unpack.tsv'))
         extras = ['unpack.tsv', 'icon.jpg', 'ctl/control.nacp']

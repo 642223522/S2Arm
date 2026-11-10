@@ -116,6 +116,15 @@ def disk_lines(label, path):
         return [f"{label}可用：-"]
 
 
+def own_bytes(package, packages):
+    """这一项自己的字节：同一个原件里装了多项（本体 + 更新 + DLC 合集、NUP 容器）时 size 是整个原件，改用读取器记的本项内容字节
+    （contentBytes，nx_unpack --inspect / nup_inspect 按项算）；单项原件或老记录没有 contentBytes 时照旧用 size（原件大小）。
+    原包合计仍按 sha256 去重用 size（#141：23 个约 0.1 MB 的 DLC 各显示成合集的 14.16 GB）"""
+    sha = package.get("sha256")
+    shared = bool(sha) and sum(1 for p in packages if p.get("sha256") == sha) > 1
+    return (package.get("contentBytes") or package.get("size")) if shared else package.get("size")
+
+
 def game_lines(request, game_id):
     if not game_id:
         return []
@@ -128,7 +137,7 @@ def game_lines(request, game_id):
     packages = [p for p in game.get("packages") or [] if isinstance(p, dict)]
     lines += ["名称：" + str(game.get("name") or "-"), "版本：" + str(game.get("display") or "-")]
     for package in packages:
-        lines.append(f"包：{package.get('type') or '?'} v{package.get('version', '?')} {package.get('format') or 'NSP/XCI'} {bytes_text(package.get('size'))}")
+        lines.append(f"包：{package.get('type') or '?'} v{package.get('version', '?')} {package.get('format') or 'NSP/XCI'} {bytes_text(own_bytes(package, packages))}")
     sources = {p["sha256"]: p for p in packages if p.get("sha256")}
     source_packages = list(sources.values()) + [p for p in packages if not p.get("sha256")]
     lines.append("原包合计：" + bytes_text(sum(p.get("size") or 0 for p in source_packages)))

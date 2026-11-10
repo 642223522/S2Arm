@@ -13,6 +13,14 @@ final class S2ArmPathsTests: XCTestCase {
         try Data(#"{"schema":1,"id":"x"}"#.utf8).write(to: url.appendingPathComponent(".s2arm-library.json"))
     }
 
+    /// 每款的文件（键位 input.json 等）按 catalog 给的文件夹找：英文名文件夹也对（原先按 mappings/<号>.json 拼，v3 起永远读不到）
+    func testGameFilesFollowCatalogFolder() {
+        let ok = GameLocation(catalog: ["state": "ok", "path": "/L", "folder": "/L/games/Animal Crossing New Horizons"])
+        XCTAssertEqual(ok.file("input.json")?.path, "/L/games/Animal Crossing New Horizons/input.json")
+        XCTAssertNil(GameLocation(catalog: ["state": "offline", "path": "/V", "folder": ""]).file("input.json"))
+        XCTAssertNil(GameLocation(catalog: ["state": "ok", "path": "/L", "folder": ""]).file("input.json"))
+    }
+
     func testLogsRootFollowsBuiltLibraryElsePrivate() throws {
         let r = try temp(); defer { try? FileManager.default.removeItem(at: r) }
         let priv = r.appendingPathComponent("private"), lib = r.appendingPathComponent("lib")

@@ -44,7 +44,7 @@ graphics/nvn/gfx/nvn/nvn_tex.c graphics/nvn/gfx/nvn/nvn_dirty.c graphics/nvn/gfx
 objects=()
 for src in "${sources[@]}"; do
   obj="$E/obj/$(basename "$src" .c).o"
-  "${CC:-cc}" -std=c11 -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -O0 -ffunction-sections -fdata-sections \
+  "${CC:-cc}" -std=c11 -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 -O0 -ffunction-sections -fdata-sections \
     -I"$E/include" -Iandroid/tests/vkhost -I"$VULKAN_INCLUDE" -Iandroid/native \
     -Iandroid/native/direct -Iandroid/native/nvn -Iruntime/include \
     -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/gfx/tex -c "$src" -o "$obj"

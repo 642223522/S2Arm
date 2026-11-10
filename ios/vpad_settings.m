@@ -52,13 +52,14 @@
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return _store.diagnostics.count ? 5 : 4; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? _layouts.count + 2 : section == 1 ? 5 : section == 2 ? 5 : section == 3 ? 5 : _store.diagnostics.count;
+    return section == 0 ? _layouts.count + 3 : section == 1 ? 5 : section == 2 ? 5 : section == 3 ? 5 : _store.diagnostics.count;
 }
-// 0 = 默认布局，1 = 触屏直通，之后是用户布局（内置两项没有对应文件，所以固定占前两行）
+// 0 = 默认布局，1 = 触屏直通，2 = 2D 布局（#268），之后是用户布局（内置三项没有对应文件，所以固定占前三行）
 - (NSString *)identifierAtRow:(NSInteger)row {
     if (row == 0) return S2AVPadLayoutDefaultIdentifier;
     if (row == 1) return S2AVPadLayoutTouchIdentifier;
-    return _layouts[row - 2].identifier;
+    if (row == 2) return S2AVPadLayout2DIdentifier;
+    return _layouts[row - 3].identifier;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     return section == 0 ? S2AL(@"vpad.layouts.section.choose") : section == 1 ? S2AL(@"vpad.layouts.section.manage") : section == 2 ? S2AL(@"vpad.layouts.section.display") : section == 3 ? S2AL(@"vpad.layouts.section.stick") : S2AL(@"vpad.layouts.section.broken");
@@ -73,10 +74,10 @@
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     if (indexPath.section == 0) {
         NSString *identifier = [self identifierAtRow:indexPath.row];
-        S2AVPadLayout *layout = indexPath.row >= 2 ? _layouts[indexPath.row - 2] : nil;
-        cell.textLabel.text = layout ? layout.displayName : indexPath.row == 0 ? S2AL(@"vpad.layout.buttons") : S2AL(@"vpad.layout.touch");
+        S2AVPadLayout *layout = indexPath.row >= 3 ? _layouts[indexPath.row - 3] : nil;
+        cell.textLabel.text = layout ? layout.displayName : indexPath.row == 0 ? S2AL(@"vpad.layout.buttons") : indexPath.row == 1 ? S2AL(@"vpad.layout.touch") : S2AL(@"vpad.layout.2d");
         cell.detailTextLabel.text = layout ? layout.identifier : indexPath.row == 0 ?
-            S2AL(@"vpad.layouts.buttons.note") : S2AL(@"vpad.layouts.touch.note");   // 审计 P1-5：原文「推荐连接手柄时使用」把该选的场景说反了
+            S2AL(@"vpad.layouts.buttons.note") : indexPath.row == 1 ? S2AL(@"vpad.layouts.touch.note") : S2AL(@"vpad.layout.2d.note");   // 审计 P1-5：原文「推荐连接手柄时使用」把该选的场景说反了
         cell.accessoryType = [_store.selectedIdentifier isEqualToString:identifier] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
         cell.accessibilityIdentifier = [@"vpad.layout." stringByAppendingString:identifier];
     } else if (indexPath.section == 1) {

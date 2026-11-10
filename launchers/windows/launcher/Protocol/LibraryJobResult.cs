@@ -81,7 +81,7 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
 }
 
 /// <summary>One registered package in the library (base / update / dlc), mirrors GamePackage in the Mac adapter.</summary>
-public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format);
+public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format, string Sha256 = "", long ContentBytes = 0);
 
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
@@ -90,6 +90,24 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
 {
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
+
+    /// <summary>可以显示的本地封面路径：只认作业层给的、就在这款自己文件夹里（catalog location.folder，按英文名或游戏号命名都行）的
+    /// cover.jpg（游戏包自带图标）、玩家换的 cover.custom.&lt;8 位十六进制&gt;.jpg（作业层 _CUSTOM_COVER），或没有自带图标时的商店横图 banner.jpg；其它一律 null。
+    /// 不按游戏号拼 games\&lt;号&gt;\：v0.2.0 起文件夹按英文名命名（#330）。</summary>
+    public string? CoverFile()
+    {
+        if (Cover.Length == 0 || Location is not { State: "ok", Folder.Length: > 0 } location) return null;
+        try
+        {
+            var path = System.IO.Path.GetFullPath(Cover);
+            var folder = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(location.Folder));
+            var parent = System.IO.Path.GetDirectoryName(path);
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return parent is not null && string.Equals(parent, folder, comparison) &&
+                System.Text.RegularExpressions.Regex.IsMatch(System.IO.Path.GetFileName(path), @"^(cover(\.custom\.[0-9a-f]{8})?|banner)\.jpg$") ? path : null;
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or System.IO.PathTooLongException) { return null; }
+    }
     /// <summary>Offline or missing games cannot be exported, moved or cleaned (mirrors the Mac card menu).</summary>
     public bool Reachable => LocationState is not ("offline" or "missing");
     /// <summary>NSP / XCI need prod.keys; extracted folders and NUP containers do not (mirrors GameSummary.needsKeys).</summary>
@@ -100,8 +118,13 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
     /// <summary>Display version of the newest base / update package; null when none.</summary>
     public string? BaseVersion => PackageDisplayVersion("base");
     public string? UpdateVersion => PackageDisplayVersion("update");
-    /// <summary>Total raw size of all registered packages (SHA-256 dedup not available here; uses title-id dedup per type).</summary>
-    public long TotalBytes => (Packages ?? []).Sum(p => p.Size);
+    /// <summary>Total raw size of the source files: packages that share one file (same sha256, e.g. a base + DLC bundle) count once (#141).</summary>
+    public long TotalBytes => (Packages ?? []).GroupBy(p => p.Sha256.Length > 0 ? p.Sha256 : "\0" + p.TitleId + ":" + p.Type + ":" + p.Version)
+        .Sum(g => g.First().Size);
+    /// <summary>This package's own bytes: when one source file holds several packages, Size is the whole file, so use the reader's per-package
+    /// contentBytes (mirrors pack/jobs/report.py own_bytes and the Mac Game.ownBytes); single-package files and old records keep Size.</summary>
+    public long OwnBytes(GamePackage p) =>
+        p.Sha256.Length > 0 && (Packages ?? []).Count(q => q.Sha256 == p.Sha256) > 1 && p.ContentBytes > 0 ? p.ContentBytes : p.Size;
     private string? PackageDisplayVersion(string type) =>
         (Packages ?? []).Where(p => p.Type == type).OrderByDescending(p => p.Version).FirstOrDefault() is { } pkg
             ? (pkg.Display.Length > 0 ? pkg.Display : "v" + pkg.Version) : null;
@@ -134,7 +157,9 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                         var display = p.TryGetProperty("display", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() ?? "" : "";
                         var size = p.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetInt64() : 0;
                         var format = p.TryGetProperty("format", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() ?? "" : "";
-                        packages.Add(new(ptype, titleId, version, display, size, format));
+                        var sha = p.TryGetProperty("sha256", out var sh) && sh.ValueKind == JsonValueKind.String ? sh.GetString() ?? "" : "";
+                        var content = p.TryGetProperty("contentBytes", out var cb) && cb.ValueKind == JsonValueKind.Number ? cb.GetInt64() : 0;
+                        packages.Add(new(ptype, titleId, version, display, size, format, sha, content));
                     }
                 // iphoneInstall: { at, free } — matches the Mac adapter's LibraryProvider
                 double? iphoneAt = null; var iphoneFree = false;

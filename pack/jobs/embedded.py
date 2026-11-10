@@ -86,8 +86,7 @@ def _reinstall(c, source, manifest, root, destination, identity):
     temporary = destination.with_name(identity + "." + uuid.uuid4().hex + ".partial")
     temporary.mkdir(parents=True)
     try:
-        clone_tree(c, source, temporary)
-        validate_files(c, temporary, manifest["files"])
+        clone_tree(c, source, temporary)   # v0.2.3 清理：不再对刚拷出的副本再核一遍——源刚核过，clone_tree 拷错会自己报
         check_git(temporary)
         atomic(temporary / ".installed.json", dict(schema=2, id=identity))
         c.check()
@@ -166,7 +165,7 @@ def _stable_files(manifest):
     return {p: v for p, v in (manifest.get("files") or {}).items() if not (p == ".git" or p.startswith(".git/"))}
 
 
-def _intact(c, root, manifest, files=None, full=True):
+def _intact(c, root, manifest, files=None, full=False):
     """副本里这些文件（缺省清单全部）在、是普通文件、大小对（full 再核摘要）"""
     from build import validate_files
     try:

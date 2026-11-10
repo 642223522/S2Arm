@@ -40,6 +40,7 @@ _FALLBACK = re.compile(r'"image"\s*:\s*"(https://assets\.nintendo\.com/image/upl
 
 # 本轮组装内的抓取账：程序号 → (成败, 说明, 成功时落盘路径)。失败条目即负缓存，同款不再联网重试。
 _run_cache: dict = {}
+_names: dict = {}   # 程序号 → 商品页英文标题（本进程抓到过的）
 _fail_spent = 0.0   # 本轮累计花在失败抓取上的秒数（成功不计，见 _fail_budget）
 
 
@@ -91,6 +92,27 @@ def _extract_image_url(html: str):
             pass
     m = _FALLBACK.search(html)
     return m.group(1) if m else None
+
+
+def _extract_title(html: str):
+    """商品页的英文标题（美区页 linkedData 里 VideoGame 条目的 name）；没有 → 空串。顺带取，不另发请求（取名第二来源，见 store_name）"""
+    m = _NEXT_DATA.search(html)
+    if not m:
+        return ""
+    try:
+        linked = json.loads(m.group(1))["props"]["pageProps"]["linkedData"]
+    except (ValueError, KeyError, TypeError):
+        return ""
+    for entry in [linked] if isinstance(linked, dict) else (linked if isinstance(linked, list) else []):
+        kind = entry.get("@type") if isinstance(entry, dict) else None
+        if "VideoGame" in (kind if isinstance(kind, list) else [kind]) and isinstance(entry.get("name"), str):
+            return entry["name"].strip()
+    return ""
+
+
+def store_name(title_id: str):
+    """本轮抓横图时商品页上的英文标题（没抓过 / 页面没有 → 空串）。游戏库文件夹在 NACP 没有英文标题时用它取名（pack/jobs/library.note_store_names）"""
+    return _names.get(title_id.strip().upper(), "")
 
 
 def _jpeg_size(data: bytes):
@@ -148,6 +170,9 @@ def _fetch_banner_once(tid: str, dest: Path):
         html = _get(f"https://ec.nintendo.com/apps/{tid}/US", _PAGE_TIMEOUT, _PAGE_MAX, img=False).decode("utf-8", "replace")
     except Exception as e:
         return False, f"商品页拉取失败：{e}"
+    title = _extract_title(html)
+    if title:
+        _names[tid] = title
     url = _extract_image_url(html)
     if not url:
         return False, "商品页没找到 assets.nintendo.com 主图"

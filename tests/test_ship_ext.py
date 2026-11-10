@@ -240,12 +240,12 @@ class ContainerTest(unittest.TestCase):
         (root / "ctl").mkdir(); (root / "ctl/control.nacp").write_bytes(bytes(nacp))
         return root
 
-    def run_c(self, d, shell, out, roots, base=None):
+    def run_c(self, d, shell, out, roots, base=None, version=None):
         from PIL import Image
         icon = Path(d) / "brand.png"
         if not icon.exists(): Image.new("RGB", (64, 64), (1, 2, 3)).save(icon)
         cmd = [sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell", str(shell), "--out", str(out), "--bundle-id", "dev.example.games", "--icon", str(icon), "--host-abi", "7"]
-        cmd += [x for r in roots for x in ("--game", str(r))] + (["--base", str(base)] if base else [])
+        cmd += [x for r in roots for x in ("--game", str(r))] + (["--base", str(base)] if base else []) + (["--version", version] if version else [])
         return subprocess.run(cmd, capture_output=True, text=True,
                               env={**os.environ, "S2A_BANNER_FETCH": "0"})   # 单测零联网：抓图关掉，A 的 banner 走产物根自带拷贝路径
 
@@ -257,6 +257,17 @@ class ContainerTest(unittest.TestCase):
         self.b = self.game(self.d, "b", 3, 0x1000, 0x0100000000020000, "乙游戏", b"")
 
     def tearDown(self): self.td.cleanup()
+
+    def test_version_written_into_info_plist(self):
+        # 三端同号：电脑上 S2Arm 的发版号写进容器 Info.plist 的 CFBundleShortVersionString；不给 --version 就沿用壳里的
+        import plistlib
+        r = self.run_c(self.d, self.shell, self.d / "v1/S2Arm.app", [self.a], version="9.8.7")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(plistlib.loads((self.d / "v1/S2Arm.app/Info.plist").read_bytes())["CFBundleShortVersionString"], "9.8.7")
+        r = self.run_c(self.d, self.shell, self.d / "v2/S2Arm.app", [self.a])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        shell_v = plistlib.loads((self.shell / "root/Info.plist").read_bytes()).get("CFBundleShortVersionString")
+        self.assertEqual(plistlib.loads((self.d / "v2/S2Arm.app/Info.plist").read_bytes()).get("CFBundleShortVersionString"), shell_v)
 
     def test_layout_catalogue_and_window_max(self):
         r = self.run_c(self.d, self.shell, self.d / "o1/S2Arm.app", [self.a, self.b])
@@ -332,35 +343,23 @@ class BannerPlaceTest(unittest.TestCase):
 
     def tearDown(self): self.td.cleanup()
 
-    def test_fetch_success_sets_entry(self):
+    def test_library_banner_copied_never_network(self):
+        # 横图是游戏库的元数据（作业层导入时抓好）：给了 --banner 那份就拷；组装本身绝不联网
         from pack import ship_ext
-        def fake(tid, dest):
-            Path(dest).write_bytes(b"JPGfake"); return True, "1920x1080 jpeg"
-        with mock.patch.dict(os.environ):
-            os.environ.pop("S2A_BANNER_FETCH", None)
-            with mock.patch("pack.banner_fetch.fetch_banner", fake):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        lib = self.d / "lib-banner.jpg"; lib.write_bytes(b"LIB")
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("组装不许联网")):
+            entry = {}
+            ship_ext._place_banner(self.GID, self.root, self.gd, entry, lib)
         self.assertEqual(entry.get("banner"), f"Games/{self.GID}/banner.jpg")
-        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"JPGfake")
+        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"LIB")
 
-    def test_fetch_failure_keeps_icon_only(self):
+    def test_no_banner_anywhere_keeps_icon_only(self):
         from pack import ship_ext
-        with mock.patch.dict(os.environ):
-            os.environ.pop("S2A_BANNER_FETCH", None)
-            with mock.patch("pack.banner_fetch.fetch_banner", return_value=(False, "连不上")):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("组装不许联网")):
+            entry = {}
+            ship_ext._place_banner(self.GID, self.root, self.gd, entry)
         self.assertNotIn("banner", entry)
         self.assertFalse((self.gd / "banner.jpg").exists())
-
-    def test_disabled_env_never_calls_fetch(self):
-        from pack import ship_ext
-        with mock.patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
-            with mock.patch("pack.banner_fetch.fetch_banner", side_effect=AssertionError("关着时不许调抓图")):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
-        self.assertNotIn("banner", entry)
 
 
 if __name__ == "__main__":

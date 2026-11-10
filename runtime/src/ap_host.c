@@ -3,6 +3,7 @@
 #include "native.h"
 #include "dev_facilities.h"
 #include "../include/s2a_hud.h"
+#include "../include/s2a_ui_text.h"   // 停住提示文字：中文原宏 + _EN，S2A_UI 按界面语言取（#316）
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -115,6 +116,9 @@ int s2a_ap_stall_notice_after(int idle, int n, int lim, int s, int ns, int quiet
     return idle >= nt;
 }
 int s2a_ap_stall_notice_due(int idle, int n, int lim) { return s2a_ap_stall_notice_after(idle, n, lim, stall_exit_s(), stall_notice_s(), stall_notice_idle_s()); }
+__attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_ui_text.h）：iOS ios/app.m、Mac macos/front_mac.m 强定义；别的平台 / 只链本文件的单测按中文
+// 屏上那句人话（第一段当提示页标题）：会退出 → 叫玩家划掉重开；不退出 → 可能还在加载。中英两份在 s2a_ui_text.h，按界面语言取
+static const char *stall_note(void) { return stall_exit_s() > 0 ? S2A_UI(S2A_UI_STALL_EXIT) : S2A_UI(S2A_UI_STALL_WAIT); }
 static void (*g_notice_hook)(const char *);
 void s2a_ap_set_notice_hook(void (*fn)(const char *)) { g_notice_hook = fn; }
 static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
@@ -141,8 +145,7 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
             noticed = 1;
             // 停了多久按 idle 算（每格 250 ms），不是打现场的阈值秒数
             // 屏上只给人话（第几帧、停了几秒在下一行日志里，11-02 维护者：内部读数不上屏）；第一段当提示页标题
-            if (stall_exit_s() > 0) snprintf(shown, sizeof shown, "游戏画面卡住了\n\n请从后台划掉本 App，再重新打开。还是卡住的话，四指长按屏幕打开设置，导出诊断包发给我们。");
-            else snprintf(shown, sizeof shown, "游戏画面卡住了\n\n可能还在加载，可以再等一会儿；一直不动的话，请从后台划掉本 App，再重新打开。");
+            snprintf(shown, sizeof shown, "%s", stall_note());
             LOG("出图停住看门：停在第 %llu 帧已 %d 秒，屏幕上提示玩家（S2A_STALL_EXIT_S=%d%s）", (unsigned long long)f, idle / 4, stall_exit_s(), stall_exit_s() > 0 ? " 秒后退出" : "，不退出，帧走了就收掉提示");
             if (g_notice_hook) g_notice_hook(shown); else if (msg) msg(shown);
         }

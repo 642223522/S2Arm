@@ -39,6 +39,10 @@ int main(void) {
         S2AVPadLayoutStore *ra = [[S2AVPadLayoutStore alloc] initWithDirectory:A settingsDirectory:S];
         S2AVPadLayout *sel = [ra selectedLayout:&e];
         CK(sel && [sel.identifier isEqualToString:S2AVPadLayoutMineIdentifier] && near([btn(sel, @"A")[@"x"] doubleValue], 0.25), "⑤ 重开 A：选中 mine、A 键 x 0.25（第二次的位置）（实得 %s）", sel ? [[btn(sel, @"A")[@"x"] description] UTF8String] : "无");
+        // #372：iPad Pro 12.9 横屏安全区约 1334×996 点。默认布局小键 30 点 → 30 / 996 = 0.030，原下限 0.04 拒收、拖完一保存就报错；下限 0.01 收下
+        CGRect pad = CGRectMake(0, 0, 1334, 996);
+        S2AVPadLayout *pm = [[S2AVPadLayout defaultForSafeRect:pad] layoutWithButtonCenters:@{@"A": @[@1200, @600]} safeRect:pad identifier:S2AVPadLayoutMineIdentifier name:@"我的布局" error:&e];
+        CK(pm && fabs([btn(pm, @"LS")[@"width"] doubleValue] - 30.0 / 996) < 1e-9, "⑥ iPad 大屏拖完保存成功，小键宽 30/996（%s）", pm ? "" : e.localizedDescription.UTF8String);
         [fm removeItemAtURL:root error:nil];
     }
     if (bad) printf("✗ t_vpad_custom：%d 项不通\n", bad); else printf("✓ t_vpad_custom：全部通过\n");
