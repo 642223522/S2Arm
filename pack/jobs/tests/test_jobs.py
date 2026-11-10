@@ -1393,6 +1393,16 @@ class JobsTests(unittest.TestCase):
             self.c.run([sys.executable, "-c", "raise SystemExit(17)"], log)
         self.assertEqual(self.c.job["diagnostics"][-1]["exitCode"], 17)
 
+    @unittest.skipIf(os.name == "nt", "POSIX 信号")
+    def test_signal_death_reports_shell_style_exit(self):
+        # 宿主崩溃处理写完现场后按默认处置重抛（系统出 .ips），进程被信号结束、Python 给负数（SIGSEGV = -11）：摘要与诊断照旧报 128 + 信号（139）。
+        #   这里用 SIGKILL（-9 → 137）验同一条折算：SIGSEGV 会让系统为测试进程生成崩溃报告
+        log = self.root / "sig.log"
+        with self.assertRaises(Failure) as caught:
+            self.c.run([sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"], log)
+        self.assertIn("退出码 137", str(caught.exception))
+        self.assertEqual((self.c.job["diagnostics"][-1]["exitCode"], self.c.last_rc), (137, 137))
+
     def test_cancel_stops_a_silent_process_group(self):
         timer = threading.Timer(.4, self.c.stop)
         timer.start()

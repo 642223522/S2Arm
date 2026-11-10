@@ -773,16 +773,19 @@ class Context:
                 if reader_errors:
                     raise reader_errors[0]
                 self.check()
-                self.last_rc = p.returncode
-                if p.returncode not in ok_codes:
+                # 被信号结束的子进程（宿主崩溃处理写完现场后按默认处置重抛，系统才出 .ips）Python 给负数：折回 shell 口径 128 + 信号，
+                #   摘要、诊断、按退出码分类的地方照旧看到 139 / 134（runtime/src/crash.c crash_reraise）
+                rc = 128 - p.returncode if p.returncode < 0 and os.name != "nt" else p.returncode
+                self.last_rc = rc
+                if rc not in ok_codes:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=p.returncode, internal=failure.internal)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal)
                         raise failure
                     from errors import tool_reason
-                    message = f"{self.stage or '这一步'}失败（退出码 {p.returncode}）：{self.redact(tool_reason(self.last_log), limit=240)}"
-                    self.diagnostic(message, "tool_exit", exit_code=p.returncode)
+                    message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
+                    self.diagnostic(message, "tool_exit", exit_code=rc)
                     raise Failure(message, code="tool_exit")
             finally:
                 if p.poll() is None:
