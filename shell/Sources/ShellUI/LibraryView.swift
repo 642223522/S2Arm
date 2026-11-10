@@ -423,7 +423,7 @@ public struct LibraryView: View {
                             // full insets. Full-screen panes keep the insets. (The same ruling GameCase's
                             // settings column ships with.)
                             .padding(.leading, floating ? 0 : insets.leading)
-                            .padding(.trailing, floating ? 0 : insets.trailing)
+                            .padding(.trailing, floating && !SensorEdge.onTrailing ? 0 : insets.trailing)   // 灵动岛转到右边时照扣，不然右侧开关被它盖住（SensorEdge）
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

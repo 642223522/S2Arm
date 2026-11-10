@@ -74,7 +74,7 @@ public struct ControllersView: View {
         // horizontal pair is ignored here, as the game settings pane ignores every edge; the top inset
         // still positions the header where the page takes the whole width, and the bottom was already
         // ignored with the content's own bottom padding below.
-        .ignoresSafeArea(edges: [.leading, .trailing, .bottom])
+        .modifier(TrailingOverlaySafeArea())   // 横向不扣安全区；灵动岛转到右边时右侧照扣（SensorEdge.swift）
         .onChange(of: focus.id) { _, id in
             guard let id, id.hasPrefix("ctl.") else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
