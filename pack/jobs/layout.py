@@ -464,7 +464,9 @@ def _split_release(c, gid, d):
 
 
 _NACP_GLOBS = ("games/{gid}/current/ctl/control.nacp", "games/{gid}/current/exefs/control.nacp", "iPhone/{gid}/*资源包/ctl/control.nacp",
-               "iPhone/{gid}/roots/*/ctl/control.nacp", "iPhone/{gid}/container-kit/ctl/control.nacp", "cache/{gid}/*/roots/*/ctl/control.nacp")
+               "iPhone/{gid}/roots/*/ctl/control.nacp", "iPhone/{gid}/container-kit/ctl/control.nacp", "cache/{gid}/*/roots/*/ctl/control.nacp",
+               # 新布局里还叫游戏号的文件夹（heal_folder_names）：Mac / iPhone 产物、出包解包目录
+               "games/{gid}/image/mac/ctl/control.nacp", "games/{gid}/image/ios/*/ctl/control.nacp", "games/{gid}/build/*/extract/ctl/control.nacp")
 
 
 def _english_from_disk(c, gid):
@@ -489,6 +491,54 @@ def _english_from_disk(c, gid):
 
 def _ascii_name(name):
     return bool(re.sub(r"[^A-Za-z0-9]", "", name or ""))
+
+
+def heal_folder_names(c):
+    """还叫游戏号的文件夹（导入时没拿到英文名：读取器早先不给英文名、拷封面时这款还没进 catalog）按英文名改名，英文名记进 catalog。
+    每个作业开始时看一眼（只列各位置的 games/，没有游戏号文件夹就返回）；拿不到执行锁（有游戏在跑 / 在出包）这次跳过，下个作业再试。
+    英文名按 catalog 的 englishName → catalog 名字（有 ASCII 时）→ 这款已有产物里的 control.nacp；都没有（还没出过包的中文名游戏）就留着，出过包后再改"""
+    roots = [r for _, r, online in locations(c) if online]
+    stuck = [d for r in roots if (games_root(c, r)).is_dir() for d in games_root(c, r).iterdir()
+             if _GID.fullmatch(d.name.upper()) and (d / GAME_JSON).is_file()]
+    if not stuck:
+        return 0
+    import filelock
+    renamed = 0
+    with (c.library / ".execution.lock").open("a") as f:
+        try:
+            filelock.try_lock(f)
+        except BlockingIOError:
+            return 0
+        try:
+            cat_path = c.library / "catalog.json"
+            cat = read(cat_path, {}) or {}
+            games = {g.get("id", "").upper(): g for g in cat.get("games", []) if isinstance(g, dict)}
+            changed = False
+            for d in stuck:
+                gid = d.name.upper()
+                g = games.get(gid, {})
+                english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
+                if not _ascii_name(english):
+                    continue
+                if g and not g.get("englishName"):
+                    g["englishName"] = english; changed = True
+                name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
+                dest = d.parent / name
+                if name.upper() == gid or os.path.lexists(dest):
+                    continue
+                try:
+                    os.replace(d, dest)
+                except OSError:   # Windows 上文件夹里有打开的文件：下次再试
+                    continue
+                from library import _retarget_links
+                _retarget_links(dest, d, dest)
+                _remember(c, gid, dest)
+                renamed += 1
+            if changed:
+                atomic(cat_path, cat)
+        finally:
+            filelock.unlock(f)
+    return renamed
 
 
 def migrate(c):
@@ -630,6 +680,7 @@ def ensure(c):
     _ensure_layout(c)
     if (c.library / ".s2arm-library.json").is_file():
         adopt_private_logs(c)
+        heal_folder_names(c)
 
 
 def _ensure_layout(c):

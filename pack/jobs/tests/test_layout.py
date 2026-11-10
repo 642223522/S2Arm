@@ -309,3 +309,42 @@ class VolumeNameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HealFolderNamesTests(JobCase):
+    """还叫游戏号的文件夹（v0.2.0 及以前导入的中文名游戏：读取器不给英文名、拷封面时这款还没进 catalog）在作业开始时按英文名改名。
+    期望按规则手写：A 有 Mac 产物 NACP「Hollow Knight: Silksong」→ 「Hollow Knight Silksong」、catalog 记 englishName、索引跟着改；
+    B 中文名、没有任何产物 → 留着游戏号；C 名字本来就是英文 → 「Hades」；有任务拿着执行锁时一个都不改"""
+    def setUp(self):
+        super().setUp()
+        L = self.c.library
+        atomic(L / "catalog.json", dict(schema=1, games=[dict(id=A, name="空洞骑士：丝之歌"), dict(id=B, name="泰拉瑞亚"), dict(id=C, name="Hades")]))
+        for gid in (A, B, C):
+            (L / "games" / gid).mkdir(parents=True)
+            atomic(L / "games" / gid / "game.json", dict(schema=1, id=gid))
+            (L / "games" / gid / "cover.jpg").write_bytes(gid.encode())
+        nacp = bytearray(0x4000); t = "Hollow Knight: Silksong".encode(); nacp[:len(t)] = t
+        ctl = L / "games" / A / "image" / "mac" / "ctl"; ctl.mkdir(parents=True); (ctl / "control.nacp").write_bytes(bytes(nacp))
+
+    def fresh(self):
+        self.c._layout_idx = None
+        return self.c
+
+    def test_renames_when_english_name_known(self):
+        L = self.c.library
+        self.assertEqual(layout.heal_folder_names(self.fresh()), 2)
+        self.assertEqual(sorted(p.name for p in (L / "games").iterdir()), sorted([B, "Hollow Knight Silksong", "Hades"]))
+        self.assertEqual((L / "games" / "Hollow Knight Silksong" / "cover.jpg").read_bytes(), A.encode())
+        self.assertEqual(layout.find_game(self.fresh(), A), L / "games" / "Hollow Knight Silksong")
+        self.assertEqual(layout.find_game(self.fresh(), C), L / "games" / "Hades")
+        names = {g["id"]: g.get("englishName") for g in json.loads((L / "catalog.json").read_text())["games"]}
+        self.assertEqual(names, {A: "Hollow Knight: Silksong", B: None, C: "Hades"})
+        self.assertEqual(layout.heal_folder_names(self.fresh()), 0)   # 再跑：只剩 B（没有英文名），不动
+
+    def test_skips_while_a_job_holds_the_execution_lock(self):
+        import filelock
+        with (self.c.library / ".execution.lock").open("a") as f:
+            filelock.try_lock(f)
+            self.assertEqual(layout.heal_folder_names(self.fresh()), 0)
+            filelock.unlock(f)
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
