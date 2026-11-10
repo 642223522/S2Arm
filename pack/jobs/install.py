@@ -337,14 +337,15 @@ def device_link(c, want="", polling=False):
         note("list devices", rc, raw)
         return devices, why
     def step(name, *args, timeout):
+        data = {}
         try:
-            rc, _, raw = devicectl(c, *args, timeout=timeout)
+            rc, data, raw = devicectl(c, *args, timeout=timeout)
         except subprocess.TimeoutExpired:
             rc, raw = "timeout", f"超过 {timeout} 秒"
         except OSError as e:
             rc, raw = "oserror", str(e)
         note(name, rc, raw)
-        return rc, raw
+        return rc, data, raw
     def out(device, stage, problem, devices=()):
         return dict(device=device, stage=stage, problem=problem, trace=trace, devices=list(devices))
     def again(dev):
@@ -365,33 +366,43 @@ def device_link(c, want="", polling=False):
         raw = ""
         if _cooled(c, dev, "pair", polling):
             say("正在请手机信任这台 Mac")
-            _, raw = step("manage pair", "manage", "pair", "--device", dev["identifier"], timeout=limits[0])
+            _, _, raw = step("manage pair", "manage", "pair", "--device", dev["identifier"], timeout=limits[0])
             devices, why, fresh = again(dev)
             dev = fresh or dev
         if _link(dev).get("pairingState") != "paired":
             return out(dev, "trusted", _with_raw(S_TRUST, raw), devices)
-    if dev.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None):
-        return out(dev, "developerMode", S_DEV_MODE, devices)
     def services_ready(d):
         return d.get("deviceProperties", {}).get("ddiServicesAvailable") is not False
-    if _link(dev).get("tunnelState") != "connected" or not services_ready(dev):
+    def refresh_details():
+        nonlocal dev, devices
+        rc, data, raw = step("device info details", "device", "info", "details", "--device", dev["identifier"], timeout=limits[1])
+        fresh = data.get("result") if isinstance(data, dict) else None
+        props = fresh.get("deviceProperties") if isinstance(fresh, dict) else None
+        if rc != 0 or not isinstance(props, dict) or fresh.get("identifier") != dev["identifier"] or props.get("developerModeStatus") not in ("enabled", "disabled"):
+            return _with_raw(S_TUNNEL, raw)
+        # list devices 可能仍留着旧值；以指定设备的详情为准，同时更新诊断快照。
+        dev = fresh
+        devices = [fresh if d.get("identifier") == dev["identifier"] else d for d in devices]
+        return ""
+    if dev.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None) or _link(dev).get("tunnelState") != "connected" or not services_ready(dev):
         say("正在和手机建立开发连接")
-        rc, raw = step("device info details", "device", "info", "details", "--device", dev["identifier"], timeout=limits[1])
-        if rc != 0:
-            return out(dev, "prepare", _with_raw(S_TUNNEL, raw), devices)
-        devices, why, fresh = again(dev)
-        dev = fresh or dev
+        problem = refresh_details()
+        if problem:
+            return out(dev, "prepare", problem, devices)
+    if dev.get("deviceProperties", {}).get("developerModeStatus") == "disabled":
+        return out(dev, "developerMode", S_DEV_MODE, devices)
+    if not services_ready(dev):
+        raw = ""
+        if _cooled(c, dev, "ddi", polling):
+            say("正在准备手机的开发者服务")
+            _, _, raw = step("manage ddis update", "manage", "ddis", "update", timeout=limits[2])
+            problem = refresh_details()
+            if problem:
+                return out(dev, "prepare", problem, devices)
+            if dev.get("deviceProperties", {}).get("developerModeStatus") == "disabled":
+                return out(dev, "developerMode", S_DEV_MODE, devices)
         if not services_ready(dev):
-            raw = ""
-            if _cooled(c, dev, "ddi", polling):
-                say("正在准备手机的开发者服务")
-                _, raw = step("manage ddis update", "manage", "ddis", "update", timeout=limits[2])
-                _, raw2 = step("device info details", "device", "info", "details", "--device", dev["identifier"], timeout=limits[1])
-                raw = raw2 or raw
-                devices, why, fresh = again(dev)
-                dev = fresh or dev
-            if not services_ready(dev):
-                return out(dev, "prepare", _with_raw(S_DDI, raw), devices)
+            return out(dev, "prepare", _with_raw(S_DDI, raw), devices)
     return out(dev, "", "", devices)
 
 
@@ -661,9 +672,10 @@ def readiness(c):
     item("connected", one, "iPhone 已用数据线连上", link["problem"] if stage == "connected" else "")
     paired = bool(one) and stage != "trusted"
     item("trusted", paired, "iPhone 已信任这台 Mac", link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
-    dev_mode = paired and stage != "developerMode"
-    item("developerMode", dev_mode, "iPhone 已打开开发者模式", S_DEV_MODE, waiting=not paired)
-    item("deviceReady", dev_mode and stage == "", "iPhone 已准备好安装", link["problem"] if stage == "prepare" else "", who="app", waiting=not dev_mode)
+    mode_pending = paired and stage == "prepare" and one.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None)
+    dev_mode = paired and stage != "developerMode" and not mode_pending
+    item("developerMode", dev_mode, "iPhone 已打开开发者模式", S_DEV_MODE, waiting=not paired or mode_pending)
+    item("deviceReady", dev_mode and stage == "", "iPhone 已准备好安装", link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
     return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=(team["name"] or team["id"]) if team else "", ipaPath=ipa_path, signing=signing_summary(c.env()))
 
 
