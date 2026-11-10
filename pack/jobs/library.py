@@ -989,9 +989,13 @@ PACK_SMALL_BYTES, DIRECT_SMALL_BYTES, DIRECT_LARGE_BYTES = int(3e9), int(5e9), i
 
 
 def _pack_input_bytes(packages):
-    # NSZ/XCZ按解包内容与原文件取大值；同一sha的原件只计一次。
-    return sum(max(p.get("size", 0), p.get("contentBytes", 0))
-               for p in {p["sha256"]: p for p in packages}.values())
+    # 同一 sha 的原件只计一次：取原件大小与所选各项内容字节之和的大值（NSZ/XCZ 解开比原件大）。
+    # 合集 / NUP 一个原件装多项，每项各记自己那份 contentBytes，要相加；原先按 sha 去重只留最后一项，压缩合集解开后的量少算（#444）
+    by_sha = {}
+    for p in packages:
+        size, content = by_sha.get(p["sha256"], (0, 0))
+        by_sha[p["sha256"]] = (max(size, p.get("size", 0)), content + p.get("contentBytes", 0))
+    return sum(max(size, content) for size, content in by_sha.values())
 
 
 def _pack_direct_bytes(size):
