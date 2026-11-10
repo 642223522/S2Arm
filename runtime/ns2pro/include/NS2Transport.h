@@ -13,6 +13,12 @@ typedef struct { uint64_t buttons; uint16_t lx, ly, rx, ry; } ns2_raw_input;
 // 纯输入解码：report_id 为 5 或 9，四轴为未校准 12-bit 原始值；BLE 数据不含 report ID 前缀。
 // Pure input decoding: report_id is 5 or 9, axes are uncalibrated 12-bit values; BLE data omits the report-ID prefix.
 int ns2_decode_input_report(unsigned report_id, const uint8_t *bytes, size_t length, ns2_raw_input *out);
+// 型号（广播厂商数据产品号）与 Joy-Con 2 单只横握（NS2JoyCon.c；协议依据见该文件开头，未在我方实机验证）
+typedef enum { NS2_KIND_NONE, NS2_KIND_PRO, NS2_KIND_JOYCON_L, NS2_KIND_JOYCON_R } ns2_kind;
+enum { NS2_SIDE_SL_L = 1, NS2_SIDE_SR_L = 2, NS2_SIDE_SL_R = 4, NS2_SIDE_SR_R = 8 };
+ns2_kind ns2_kind_from_manufacturer(const uint8_t *manufacturer, size_t length);
+// report05（不含报告号前缀）里 Joy-Con 的 SL / SR；返回 NS2_SIDE_* 位
+int ns2_decode_side_buttons(const uint8_t *bytes, size_t length);
 typedef struct { float low_amp, low_freq, high_amp, high_freq; } ns2_vibration;
 typedef struct { uint16_t low, high; } ns2_rumble_amplitudes;
 typedef struct {
@@ -26,6 +32,9 @@ typedef struct {
 // report05 默认量程：加速度 g、角速度 °/s，轴序保持设备原值；不套用未知的工厂运动校准。
 // Report05 default ranges: acceleration in g and angular velocity in degrees/s, preserving device axes without unknown factory motion calibration.
 int ns2_decode_report05_motion(const uint8_t *bytes, size_t length, ns2_motion *out);
+// 单只 Joy-Con 横握：把已校准的状态 / 六轴换成横握视角（按键随朝向转、SL / SR 当 L / R、唯一的摇杆当左摇杆）；Pro 不动
+void ns2_joycon_sideways(ns2_kind kind, int side_buttons, ns2_state *state);
+void ns2_joycon_sideways_motion(ns2_kind kind, ns2_motion *motion);
 // 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
 // Copy the latest motion sample, clearing it after 250 ms or disconnection without accessing hardware.
 void ns2_get_motion(ns2_motion *out);
@@ -124,6 +133,8 @@ int ns2_shutdown(const char *reason, unsigned timeout_ms);
 // 纯编码函数，不连接设备；完整 42-byte 双侧 report。
 // Pure codec without device access; produces a complete 42-byte report for both sides.
 void ns2_encode_rumble(const ns2_vibration values[2], uint8_t sequence, float gain, uint8_t out[42]);
+// 按型号编码：Pro 同 ns2_encode_rumble；Joy-Con 2 只放一块（这只那一侧的值），第二块全 0（NS2JoyCon.c）
+void ns2_encode_rumble_for(ns2_kind kind, const ns2_vibration values[2], uint8_t sequence, float gain, uint8_t out[42]);
 // 返回编码器实际使用的幅码，包含增益校验、量化和载频有效性；两码全零即静音。
 // Return the codec's amplitude codes after gain validation, quantization and carrier validation; both zero means silent.
 ns2_rumble_amplitudes ns2_rumble_amplitude_codes(ns2_vibration value, float gain);
