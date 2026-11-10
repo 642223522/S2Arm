@@ -9,7 +9,7 @@ public sealed record LibraryJobOutput(LibraryJobResult Report, ProbeOutput Outpu
 public static class LibraryJobClient
 {
     public static async Task<LibraryJobOutput> RunAsync(LauncherPaths paths, string privateRoot, string library,
-        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null)
+        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false)
     {
         if (operation is not ("setup" or "catalog" or "keys" or "import" or "diagnostics" or "locations" or "storageOverview" or "spaceSurvey"))
             throw new ArgumentException("Unsupported library operation.", nameof(operation));
@@ -24,6 +24,8 @@ public static class LibraryJobClient
         };
         if (selectedPaths is not null) payload["paths"] = selectedPaths;
         if (moveFrom is not null) payload["moveFrom"] = Path.GetFullPath(moveFrom);
+        // 逐来源结果（pack/jobs/library.py import_games）：认不出的来源不挡别的，结果里带 sources（批量出包清单列出认不出的文件）
+        if (partialResults && operation == "import") payload["partialResults"] = true;
         if (operation is "keys" or "diagnostics")
         {
             if (selectedPaths?.Count != 1) throw new ArgumentException("Choose exactly one file.");
