@@ -6,23 +6,23 @@
     <array>
         <dict>
             <key>Type</key><string>PSGroupSpecifier</string>
-            <key>Title</key><string>屏幕布局</string>
-            <key>FooterText</key><string>所有游戏共用。自动分屏仅在设备半折叠时开启；无法读取折叠状态时保持关闭。自动方向在分屏时使用竖屏，否则使用横屏。部分游戏需重启后才能按新区域应用宽屏比例。</string>
+            <key>Title</key><string>Screen Layout</string>
+            <key>FooterText</key><string>Applies to every game. Automatic split screen enables only when partially folded; without hinge status it stays off. Automatic orientation uses portrait for split screen and landscape otherwise. Some games need a restart to apply widescreen to the new area.</string>
         </dict>
         <dict>
             <key>Type</key><string>PSMultiValueSpecifier</string>
-            <key>Title</key><string>上下分屏</string>
-            <key>Key</key><string>S2ASplitScreen</string>
+            <key>Title</key><string>Split Screen</string>
+            <key>Key</key><string>splitScreen</string>
             <key>DefaultValue</key><string>auto</string>
-            <key>Titles</key><array><string>自动</string><string>开启</string><string>关闭</string></array>
+            <key>Titles</key><array><string>Automatic</string><string>On</string><string>Off</string></array>
             <key>Values</key><array><string>auto</string><string>on</string><string>off</string></array>
         </dict>
         <dict>
             <key>Type</key><string>PSMultiValueSpecifier</string>
-            <key>Title</key><string>屏幕方向</string>
-            <key>Key</key><string>S2AScreenOrientation</string>
+            <key>Title</key><string>Screen Orientation</string>
+            <key>Key</key><string>screenOrientation</string>
             <key>DefaultValue</key><string>auto</string>
-            <key>Titles</key><array><string>自动</string><string>横屏</string><string>竖屏</string></array>
+            <key>Titles</key><array><string>Automatic</string><string>Landscape</string><string>Portrait</string></array>
             <key>Values</key><array><string>auto</string><string>landscape</string><string>portrait</string></array>
         </dict>
         <dict>

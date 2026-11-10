@@ -65,7 +65,7 @@
     return section == 0 ? S2AL(@"vpad.layouts.section.choose") : section == 1 ? S2AL(@"vpad.layouts.section.manage") : section == 2 ? S2AL(@"vpad.layouts.section.display") : section == 3 ? S2AL(@"vpad.layouts.section.stick") : S2AL(@"vpad.layouts.section.broken");
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return section == 0 ? (_store.split ? S2AL(@"vpad.layouts.split.footer") : S2AL(@"vpad.layouts.normal.footer")) :
+    return section == 0 ? (_store.split ? S2AL(@"vpad.layouts.split.footer") : S2AL(@"vpad.layouts.footer.choose")) :
         section == 1 ? nil : section == 2 ? S2AL(@"vpad.layouts.footer.display") :
         section == 3 ? S2AL(@"vpad.layouts.footer.stick") :
         S2AL(@"vpad.layouts.footer.broken");

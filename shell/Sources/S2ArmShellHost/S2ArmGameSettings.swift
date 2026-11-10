@@ -32,6 +32,21 @@ public enum S2ArmGameSettings {
         return LayoutState(selected: obj?["selected"] as? String ?? "default", hasMine: obj?["hasMine"] as? Bool ?? false, holdLock: obj?["holdLock"] as? Bool ?? true)
     }
 
+    // 与原生窗口、设置 App 及共享表使用相同 app scope id；旧键只作迁移来源。
+    // 生产入口不注册这两项缺省；未保存时为 nil，缺省由读取逻辑返回。
+    private static func playChoice(_ key: String, legacy: String, values: [String], app: UserDefaults) -> String {
+        var value = app.object(forKey: key)
+        if value == nil, let old = app.string(forKey: legacy), values.contains(old) {
+            value = old; app.set(old, forKey: key)
+        }
+        if app.object(forKey: legacy) != nil { app.removeObject(forKey: legacy) }
+        guard let selected = value as? String, values.contains(selected) else {
+            if value != nil { app.removeObject(forKey: key) }
+            return "auto"
+        }
+        return selected
+    }
+
     public static func sections(for id: String, stores: Stores = .live, state: LayoutState) -> [SettingSection] {
         let g = stores.game(id)
         // 这款没设过就看「所有游戏的默认」（App 级，起局时 ios/settings.m 的 s2a_ios_settings_defaults 同一分层），再没有才是开
@@ -42,8 +57,8 @@ public enum S2ArmGameSettings {
         if state.hasMine { options.append(SettingOption("mine", "My layout")) }
         options.append(SettingOption(editLayout, "Adjust positions…"))
         let current = state.selected == "mine" && state.hasMine ? "mine" : "default"
-        let splitValue = stores.app.string(forKey: "S2ASplitScreen") ?? "auto"
-        let direction = stores.app.string(forKey: "S2AScreenOrientation") ?? "auto"
+        let splitValue = playChoice(splitScreen, legacy: "S2ASplitScreen", values: ["auto", "on", "off"], app: stores.app)
+        let direction = playChoice(screenOrientation, legacy: "S2AScreenOrientation", values: ["auto", "landscape", "portrait"], app: stores.app)
         return [
             SettingSection(id: "s2a.identity", title: "Display", rows: [
                 SettingRow(id: identity, label: "Name and Cover", note: "Only changes how it appears on this iPhone", kind: .choice([SettingOption("current", state.customIdentity ? "Customized" : "Default"), SettingOption(editIdentity, "Edit…")]), value: "current"),
@@ -66,8 +81,8 @@ public enum S2ArmGameSettings {
     @discardableResult
     public static func apply(id: String, setting: String, value: String, stores: Stores = .live) -> Bool {
         switch setting {
-        case splitScreen: if ["auto", "on", "off"].contains(value) { stores.app.set(value, forKey: "S2ASplitScreen") }
-        case screenOrientation: if ["auto", "landscape", "portrait"].contains(value) { stores.app.set(value, forKey: "S2AScreenOrientation") }
+        case splitScreen: if ["auto", "on", "off"].contains(value) { stores.app.set(value, forKey: splitScreen); stores.app.removeObject(forKey: "S2ASplitScreen") }
+        case screenOrientation: if ["auto", "landscape", "portrait"].contains(value) { stores.app.set(value, forKey: screenOrientation); stores.app.removeObject(forKey: "S2AScreenOrientation") }
         case fps60: stores.game(id)?.set(value == "on", forKey: "S2AFps60")
         case widenForce: stores.game(id)?.set(value == "on", forKey: "S2AWidenForce")
         case opacity: if let v = Double(value) { stores.app.set(min(1, max(0.1, v / 100)), forKey: "S2AVPadOpacity") }
