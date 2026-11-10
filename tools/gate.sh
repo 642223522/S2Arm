@@ -22,7 +22,7 @@
 #   在 维护方工具 的满核槽队列里排（列车优先级 0、预检 5；等待上限按队列长度算），排队超时 → gate-host 的步判红、写明排第几，不在本机重跑。远端工作树名 GATE_REMOTE_NAME（缺省本树目录名；列车给 train，增量编命中）。GATE_CLEAN=1：远端工作树连被忽略的构建产物一起清掉再跑（列车判假红的干净重跑；本机那份由调用方自己给干净树）。
 # 分层（10-30 维护者：合入前门禁只证明「这次改动没弄坏它影响到的东西」，目标中位 ≤5 分钟）：钩子 / tools/gate_ios.sh 文件头「# 门禁层：合入后」（tools/gate_decl.py layer 收；不写 = 合入前）。
 #   GATE_LAYER=pre（列车合入前）= 去掉声明合入后的步；post = 只跑声明合入后的步；不设 = 全跑（自检 11-05 起缺省 pre、显式空值才全跑；老单测同旧行为）。GATE_LIST=1 清单同样按层过滤；
-#   「# 门禁层：合入后（改到 <前缀…> 时合入前也跑）」= 合入后的步，但合入前层里改动集命中前缀也跑（11-10：安卓支合入前不跑 android/gate.sh，一天叠 4 处 main 红）
+#   「# 门禁层：合入后（路由命中时合入前也跑）」= 合入后的步，但合入前层里按改动路由选中它时也跑（11-10：安卓支合入前不跑 android/gate.sh、ios 头改动不跑 iOS 编译，一天叠多处 main 红）
 #   被分到另一层没跑的步在结论前列一行「另一层：<步…>」，不算红、不算没跑。
 # 单测结果缓存（只缓存「单测 <名>」步，钩子不缓存）：跑前 tools/test_cache.py key 算键（输入 = 路由覆盖面 ∪ 单测头「# 门禁输入：」+ 工具链指纹），
 #   命中 → 不跑、记绿「（缓存命中）」；没命中照跑，绿了 put、红了不记。缓存目录 ${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/testres；
@@ -80,10 +80,10 @@ inlayer() {   # inlayer <步名>：本次 GATE_LAYER 要不要这一步
   [ -n "$LAYER" ] || return 0
   local post=pre pf=; awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { f = 1 } END { exit !f }' < <(printf '%s\n' "$GLY") && post=post
   [ "$post" = "$LAYER" ] && return 0
-  # 「合入后（改到 <前缀…> 时合入前也跑）」：合入前层里改动集命中前缀也跑（11-10：安卓支合入前不跑安卓门禁，一天叠 4 处 main 红）
-  [ "$LAYER" = pre ] && [ "$post" = post ] || return 1
-  pf=$(awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { print $3 }' < <(printf '%s\n' "$GLY")); [ -n "$pf" ] || return 1
-  local c x; for c in $CHG; do for x in $pf; do case $c in "$x"*) return 0;; esac; done; done; return 1; }
+  # 「合入后（路由命中时合入前也跑）」：合入前层里只要按改动路由（RT=1）选中了它就跑——钩子 / iOS 编译只在路由命中时才 add 进来，
+  #   路由表就是各自文件头「# 门禁路由」与 gate_route.py，不另列前缀（11-10：安卓支、ios 头改动合入前不跑对应钩子，一天叠多处 main 红）
+  [ "$LAYER" = pre ] && [ "$post" = post ] && [ "${RT:-0}" = 1 ] || return 1
+  pf=$(awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { print $3 }' < <(printf '%s\n' "$GLY")); [ "$pf" = 路由 ]; }
 if [ "$TIER" != doc ] && [ -f "$R/tools/toolchain.env" ]; then
   if [ -n "$LINUX_LOCAL" ]; then
     # source 必须在当前 shell，保留 PATH；stderr 原文逐行加前缀，不伪装成步骤红。

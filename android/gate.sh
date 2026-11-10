@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 门禁层：合入后（改到 android/ 时合入前也跑）
+# 门禁层：合入后（路由命中时合入前也跑）
 # 门禁路由：android/ pack/sysdata_synth.py runtime/rewriter/ runtime/src/svc_mem.c runtime/src/det.c runtime/src/layout.c runtime/include/ graphics/track/
 # 门禁本机：linux 安卓 Linux runtime CTest 要 aarch64 Linux：本机进 colima 虚拟机跑（android/linux_ctest.sh），gate-host 没有 colima；10-28 main 上 guest_page_test 链接红（svc_mem.c 新外部符号漏补桩）门禁没拦下
 # 门禁路由：services/S2A.Services/Native.cs services/S2A.Services/InputPump.cs services/S2A.Services/ControllerFeedback.cs services/aot/ services/build.mk runtime/include/s2a_native.h compat/tree/src/Ryujinx.Graphics.Nvdec/ graphics/vulkan/
