@@ -754,18 +754,22 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
-    def test_space_budget_uses_extract_size_when_known(self):
-        # #265：产物根里已有着色器抽取时，直连按抽取量估（缓存 9× + 库 3×），不再用固定 15 GB；期望按 space_rule 文件头的系数手算
+    def test_space_budget_covers_measured_peaks(self):
+        # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
+        #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
+        #   #265 按抽取量的那支已删：0100559011740000 抽取 0.48 GiB 估 17.30 GiB < 峰值 17.77 GiB
         import collections
         import unittest.mock as um
         du = collections.namedtuple("du", "total used free")
-        tid = "0100559011740000"
-        game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
-        ex = self.c.library / "cache" / tid / "k" / "roots" / "m@现行" / "extract"; ex.mkdir(parents=True)
-        with um.patch("space_rule.tree_bytes", return_value=2 << 30), um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
-            lib = library.space_budget(self.c, game)["volumes"][0]
-        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包一份原包 × 1.1，再加直连（单文件镜像不再存进库，#329）
-        self.assertIn("按抽取", lib["note"])
+        GIB = 1 << 30
+        cases = (("010024B00F9D0000", 433397760, 1.03), ("01008FC00D964000", 10776169984, 18.61), ("0100559011740000", 11299842048, 17.77))
+        for tid, size, peak in cases:
+            with self.subTest(tid=tid):
+                game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=size)])
+                with um.patch("shutil.disk_usage", return_value=du(0, 0, 500 * GIB)):
+                    need = library.space_budget(self.c, game)["volumes"][0]["needBytes"]
+                self.assertGreaterEqual(need, int(peak * GIB), f"{tid}：估算 {need / GIB:.2f} GiB < 实测峰值 {peak} GiB")
+                self.assertIn("直连着色器上限", library.space_budget(self.c, game)["volumes"][0]["note"])
 
     def test_direct_check_counts_existing_cache_and_volume(self):
         # #265 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）：抽取 1 GB、同盘 → 要 12 GB；已有 4 GB 缓存 → 只要 8 GB

@@ -821,7 +821,6 @@ class EnvironmentTests(unittest.TestCase):
         scope = {"os": os, "Path": Path, "SPACE_UNKNOWN": [], "_volume": lambda _: "fixture-volume"}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "library.py budget fixture", "exec"), scope)
         scope["_unpacked_on_disk"] = lambda c, game: False
-        scope["_extract_bytes"] = lambda c, gid: None   # 还没抽过着色器：直连按经验值（#265 按抽取量估的那支见 test_jobs）
         return scope
 
     def test_budget_direct_catalog_matches_handwritten_bytes(self):
