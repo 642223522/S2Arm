@@ -78,7 +78,8 @@ bc_src=("$repo/android/tests/vk/t_bc_decode.c"
      "$repo/android/native/direct/vk_device.c"
      "$repo/android/native/direct/gs_path.c"
      "$repo/graphics/nvn/gfx/tex/nvn_bcdec.c")
-cflags=(-std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter)
+# 与发行 APK 同一组建设备规则（android/CMakeLists.txt 的 nvn_vk 后端定义此宏）。
+cflags=(-std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter -DS2A_ANDROID_VK_BACKEND_NVN_VK=1)
 case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
@@ -99,6 +100,13 @@ if [ "$mode" != "--tsan" ]; then
     export VK_LAYER_PATH=$layer
     export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
     export VK_LAYER_VALIDATE_SYNC=1   # 同步校验：缺屏障会报 SYNC-HAZARD-*
+fi
+# 机型能力模拟（可选）：S2A_VK_PROFILE_LAYER_DIR 指 VK_LAYER_KHRONOS_profiles 所在目录时，把它排在 validation
+# 之下（离驱动更近），让 lavapipe 按 VK_KHRONOS_PROFILES_* 指定的机型能力档上报；validation 看到的是模拟后的能力。
+# 设了 VK_LAYER_PATH 时加载器不认 VK_ADD_LAYER_PATH / VK_LOADER_LAYERS_ENABLE，只能在这里拼。
+if [ -n "${S2A_VK_PROFILE_LAYER_DIR:-}" ]; then
+    export VK_LAYER_PATH=${VK_LAYER_PATH:+$VK_LAYER_PATH:}$S2A_VK_PROFILE_LAYER_DIR
+    export VK_INSTANCE_LAYERS=${VK_INSTANCE_LAYERS:+$VK_INSTANCE_LAYERS:}VK_LAYER_KHRONOS_profiles
 fi
 
 set +e
