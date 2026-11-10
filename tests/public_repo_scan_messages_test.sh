@@ -42,4 +42,9 @@ ck "docs/*.md 只加泛指行、存量行不动 → 退 0（rc=${r}）" '[ $r = 
 printf '又一条：%s 在第二存放位置\n' "$G1" >> "$T/r/docs/pit.md"; g add docs/pit.md; g commit -qm "docs: 又一条"
 o=$(python3 "$H/tools/public_repo_scan.py" --repo "$T/r" --ref HEAD --path docs --base HEAD~1 --format gate); r=$?
 ck "docs/*.md 新增行写第一方游戏名 → 退 1、报 compliance_copy（rc=${r}）" '[ $r = 1 ] && grep -q "docs/pit.md.*compliance_copy" <<< "$o"'
+# 任天堂发行、外部工作室开发的作品也算第一方（11-10 维护者定）：名字运行时拼，本文件不写字面
+G3=$(python3 -c 'print("Bay" + "onetta 3")')
+base4=$(g rev-parse HEAD); echo j > "$T/r/j"; g add j; g commit -qm "fix(graphics): ${G3} 角色菜单背景"; gm4=$(g rev-parse HEAD)
+o=$(S "$gm4" "$base4"); r=$?
+ck "任天堂发行的外部开发作品名 → 退 1（rc=${r}）" '[ $r = 1 ] && grep -q "任天堂第一方游戏名" <<< "$o"'
 [ $bad = 0 ] && echo "提交信息扫描单测全过" || { echo "提交信息扫描单测有不通"; exit 1; }
