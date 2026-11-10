@@ -66,16 +66,103 @@ def mixed(p):   # Windows 原生 Python 与 Git Bash 都认的写法（R:/a/b）
     return str(p).replace('\\', '/')
 
 
-def metal_exe(environ=None):
-    """Windows Metal：显式目录优先，再查玩家的 PATH，最后用官方安装目录；显式配置无效时不另选一份。
-    玩家的 PATH：随包 s2arm_env.cmd 把作业 PATH 换成只含随包工具，换之前存进 S2A_USER_PATH（11-09 Windows 出包机实测 #137 合入后：
-    只设 PATH 的自定义安装在启动器里照样用默认目录），有它就查它。作业层（core.env）在父进程按这里选一次，显式写成子进程的 S2A_METAL_BIN"""
+METAL_LAYOUTS = (('bin',), ('ios', 'bin'))   # 官方安装器（NSIS）现行：<安装目录>\bin\metal.exe（转发到 metal\<版本>\bin）；早期版本：ios\bin\metal.exe
+METAL_UNINSTALL = (r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
+
+
+def _reg_values():
+    r"""Windows 注册表里和 Metal 有关的两类登记（非 Windows → 空）：
+    paths = 现在的 PATH（HKCU\Environment + HKLM 系统环境，展开 %变量%）——启动器开着时才装的工具，进程里继承的 PATH 是旧的，要现读；
+    homes = 官方安装器的卸载登记（DisplayName 以 Metal Developer Tools 开头）的安装目录：安装器不写 PATH，玩家在安装界面改了目录（装到 D 盘）时只有这里记着"""
+    if not WIN:
+        return [], []
+    try:
+        import winreg
+    except ImportError:   # 单测在 Mac / Linux 上把 WIN 设成真（as_windows）时没有 winreg：当作注册表里什么都没登记
+        return [], []
+    paths, homes = [], []
+    for hive, key in ((winreg.HKEY_CURRENT_USER, 'Environment'),
+                      (winreg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment')):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                paths.append(winreg.ExpandEnvironmentStrings(winreg.QueryValueEx(k, 'Path')[0]))
+        except OSError:
+            pass
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for root in METAL_UNINSTALL:
+            try:
+                top = winreg.OpenKey(hive, root)
+            except OSError:
+                continue
+            with top:
+                for i in range(winreg.QueryInfoKey(top)[0]):
+                    try:
+                        with winreg.OpenKey(top, winreg.EnumKey(top, i)) as k:
+                            def val(name):
+                                try: return str(winreg.QueryValueEx(k, name)[0] or '')
+                                except OSError: return ''
+                            if not val('DisplayName').startswith('Metal Developer Tools'):
+                                continue
+                            home = val('InstallLocation') or str(Path(val('UninstallString').strip().strip('"')).parent)
+                            if home and home not in homes:
+                                homes.append(home)
+                    except OSError:
+                        continue
+    return paths, homes
+
+
+def metal_search(environ=None, reg=None):
+    """按优先级列出找 metal.exe 的每一处：[(来源, metal.exe 路径或 None, 找到?)]。显式 S2A_METAL_BIN 只列它一处（显式配置无效时不另选一份）。
+    其余依次：玩家手动指定的文件夹（S2A_METAL_PICKED）→ 启动器启动时的 PATH（随包 s2arm_env.cmd 换 PATH 前存进 S2A_USER_PATH）→ 注册表里现在的 PATH（装完没重启启动器）→
+    官方安装器卸载登记的安装目录（改过安装目录）→ 官方默认目录（%ProgramW6432% / %ProgramFiles%，系统不在 C 盘也认）。
+    「复制错误摘要」带上这张表，玩家一贴就知道哪一处没找到。reg：单测注入 (paths, homes)"""
     e = os.environ if environ is None else environ
     configured = e.get('S2A_METAL_BIN')
-    if configured: return Path(configured) / 'metal.exe'
-    found = shutil.which('metal.exe', path=e.get('S2A_USER_PATH') or e.get('PATH'))
-    # PATH 可以含相对目录；后续编译在仓库目录运行，传给子进程前固定为绝对路径。
-    return Path(found).absolute() if found else Path(r'C:\Program Files\Metal Developer Tools\bin') / 'metal.exe'
+    if configured:
+        p = Path(configured) / 'metal.exe'
+        return [('S2A_METAL_BIN', str(p), p.is_file())]
+    rows = []
+    picked = e.get('S2A_METAL_PICKED')   # 玩家在「准备这台电脑」里手动指定的文件夹（启动器 MetalFolder，已解析到 metal.exe 所在目录）
+    if picked:
+        p = Path(picked) / 'metal.exe'
+        rows.append(('手动指定的文件夹', str(p), p.is_file()))
+    def path_row(label, value):
+        found = shutil.which('metal.exe', path=value) if value else None
+        # PATH 可以含相对目录；后续编译在仓库目录运行，传给子进程前固定为绝对路径。
+        rows.append((label, str(Path(found).absolute()) if found else None, bool(found)))
+    path_row('启动器启动时的 PATH', e.get('S2A_USER_PATH') or e.get('PATH'))
+    paths, homes = _reg_values() if reg is None else reg
+    path_row('注册表里现在的 PATH', os.pathsep.join(paths))
+    seen = set()
+    def home_rows(label, home):
+        for layout in METAL_LAYOUTS:
+            p = Path(home, *layout, 'metal.exe')
+            if str(p).lower() in seen:
+                continue
+            seen.add(str(p).lower())
+            rows.append((label, str(p), p.is_file()))
+    for home in homes:
+        home_rows('官方安装器登记的安装目录', home)
+    for var in ('ProgramW6432', 'ProgramFiles'):
+        if e.get(var):
+            home_rows('官方默认目录', str(Path(e[var]) / 'Metal Developer Tools'))
+    home_rows('官方默认目录', r'C:\Program Files\Metal Developer Tools')
+    return rows
+
+
+def metal_search_text(rows):
+    """给错误摘要用的一行：「来源 路径 → 有 / 没有」，没在 PATH 上的写「PATH 里没有 metal.exe」"""
+    return '；'.join(f'{label}：{path} → {"有" if ok else "没有"}' if path else f'{label}：里面没有 metal.exe' for label, path, ok in rows)
+
+
+def metal_exe(environ=None, reg=None):
+    """Windows Metal：metal_search 里第一处找到的；都没找到 → 显式配置那份或官方默认目录（调用方照实报缺）。
+    作业层（core.env）在父进程按这里选一次，显式写成子进程的 S2A_METAL_BIN"""
+    rows = metal_search(environ, reg)
+    for _, path, ok in rows:
+        if ok:
+            return Path(path)
+    return Path(rows[0][1]) if rows[0][0] == 'S2A_METAL_BIN' else Path(r'C:\Program Files\Metal Developer Tools\bin') / 'metal.exe'
 
 
 def metal_bin():
