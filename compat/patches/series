@@ -537,3 +537,5 @@
 20261110-2146-am-zero-language-explicit.patch
 20261110-0646-am-language-host-primary.patch
 20261110-0654-am-language-zh-tail.patch
+20261110-0812-shader-position-precise.patch
+20261110-0814-shader-bindless-guarded-table-handle.patch
