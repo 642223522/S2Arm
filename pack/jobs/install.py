@@ -831,6 +831,7 @@ class MacPhone:
         self.bid = container_bundle_id(self.team["id"])
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
         self.info = dict(device=self.dev["name"], team=self.team["name"], free=self.team["free"])
+        self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
     def backup(self, g):
         backup_saves(self.c, self.dev["id"], self.bid, g, docs=game_docs(g))
@@ -846,7 +847,11 @@ class MacPhone:
                               "换 USB 3 能快约 10 倍（以后重装只推变了的文件）", code="usb_slow", severity="warning")
 
     def push(self, g, pack):
-        return push_pack(self.c, self.dev["id"], self.bid, pack, udid=self.udid, docs=game_docs(g), ctx=game_ctx(g))
+        n0 = len(self.c.job["diagnostics"])
+        r = push_pack(self.c, self.dev["id"], self.bid, pack, udid=self.udid, docs=game_docs(g), ctx=game_ctx(g))
+        hit = [d for d in self.c.job["diagnostics"][n0:] if d.get("code") == "manual_unpack_required"]   # push_pack 按「需要玩家操作」收尾时记的那条
+        if hit: self.pending = hit[-1].get("summary") or ""
+        return r
 
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
@@ -863,6 +868,7 @@ class WinPhone:
         self.bid = layout.load_device(c, self.key).get("bundleId") or None
         self.devpush = c.engine / "Binaries/Prepare/devpush/s2a-devpush.exe"
         self.info = dict(device=self.udid)
+        self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
     def client(self, work):
         return devpush_client(self.c, self.udid, self.bid, work)
@@ -925,6 +931,7 @@ class WinPhone:
         except self.W.Fail as e:
             if e.err == "manual_unpack_required":
                 self.c.diagnostic(str(e), code=e.err, severity="warning")
+                self.pending = str(e)
                 return e.transferred
             raise Failure(str(e), code=e.err or "resource_transfer_failed") from e
 
@@ -966,7 +973,9 @@ def put_game(c, gid, ph, steps=True):
         signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info else {}
         layout.save_device(c, ph.key, dict(rec, games={g: dict(pack=pushed[g]) for g in games}, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
     packer.commit_phone_ipa(c, ipa, sid)
-    return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info)
+    # 资源传完但电脑没拉起 App 解开（manual_unpack_required，11-09 #336）：不算「已装好」，结果带上还差的一步，两端前端据此显示「还差最后一步」而不是「已装到 iPhone」
+    extra = dict(unpackPending=ph.pending) if ph.pending else {}
+    return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info, **extra)
 
 
 def install(c):

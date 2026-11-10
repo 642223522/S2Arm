@@ -268,6 +268,7 @@ class FlowTests(unittest.TestCase):
         d = [x for x in self.c.job["diagnostics"] if x["code"] == "manual_unpack_required"]
         self.assertEqual(len(d), 1); self.assertEqual(d[0]["severity"], "warning"); self.assertIn("资源包已传完", d[0]["summary"])
         self.assertEqual(r["packFiles"], 2)
+        self.assertIn("资源包已传完", r["unpackPending"])   # 结果带还差的一步（11-09 #336）：前端据此不说「已装到 iPhone」
 
     def test_install_signs_installs_and_pushes(self):
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
@@ -283,6 +284,8 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(seen["env"]["S2A_PUSH_UDID"], "00000000-0000000000000002")   # 推包脚本据 UDID 走 s2a-devpush 流式（11-06）
         self.assertEqual(launches, [{"S2A_PACK_APPLY_ONLY": "1"}])                                           # 推了就起一次 App 只解包
         self.assertEqual((r["device"], r["bundleId"], r["packFiles"], r["free"]), ("测试设备2", bid, 2, True))
+        self.assertNotIn("unpackPending", r)   # 解开了：结果不带还差的一步
+
 
     def test_container_install_paths(self):
         """装机走容器流程：包名 s2arm.<团队>.games；装前按 Documents/games/<游戏号> 拉见过的键、列存档；装后本款资源包推进本款文档根带启动上下文"""
