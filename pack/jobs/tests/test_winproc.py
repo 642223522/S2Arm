@@ -51,8 +51,8 @@ class PinnablePath(unittest.TestCase):
     """逐级钉句柄打开的起点（纯字符串判断，各平台都跑）：盘符根、网络共享根放行（#427 游戏库在 SMB 共享盘上），设备路径和相对路径拒绝。期望手写"""
     def test_drive_and_share_roots(self):
         import winproc as w
-        a = w.pinnable_path(r'C:\Users\p\S2Arm\logs')
-        self.assertEqual((a.anchor, a.parts[1:]), ('C:\\', ('Users', 'p', 'S2Arm', 'logs')))
+        a = w.pinnable_path(r'D:\Games\S2Arm\logs')
+        self.assertEqual((a.anchor, a.parts[1:]), ('D:\\', ('Games', 'S2Arm', 'logs')))
         b = w.pinnable_path(r'\\nas\share\S2Arm\logs')
         self.assertEqual((b.anchor, b.parts[1:]), ('\\\\nas\\share\\', ('S2Arm', 'logs')))
 
