@@ -271,6 +271,7 @@ def romfs_list_path():
 
 
 def clone_tree(c, source, destination, *, materialize_romfs=False):
+    """→ True = 每个文件都是真克隆（和源同属一个克隆族，不另占盘）；有一个退成普通复制就 False"""
     # 统一盘点也用于普通目录克隆；不修改模块搜索路径，避免和作业模块重名。
     spec = importlib.util.spec_from_file_location("_s2arm_clone_romfs_list", romfs_list_path())
     romfs_list = importlib.util.module_from_spec(spec)
@@ -308,18 +309,19 @@ def clone_tree(c, source, destination, *, materialize_romfs=False):
         (destination / d.relative_to(source)).mkdir(parents=True, exist_ok=True)
     files = [p for p in entries if p.is_file()]
     total = sum(p.stat().st_size for p in files)
-    done = 0
+    done, cloned = 0, True
     for p in files:
         c.check()
         if p.is_symlink():
             raise Failure("输入目录包含符号链接。")
         dst = destination / p.relative_to(source)
-        clone(p, dst, lambda n, t: c.progress(done + n, total))
+        cloned = clone(p, dst, lambda n, t: c.progress(done + n, total)) and cloned
         shutil.copymode(p, dst)
         done += p.stat().st_size
     if romfs is not None:
         (destination / "romfs").mkdir(parents=True, exist_ok=True)
-        clone_tree(c, romfs, destination / "romfs")
+        cloned = clone_tree(c, romfs, destination / "romfs") and cloned
+    return cloned
 
 
 
@@ -579,7 +581,7 @@ def prepare(c):
         temporary.parent.mkdir(parents=True, exist_ok=True)
         temporary.mkdir()
         try:
-            clone_tree(c, current, temporary, materialize_romfs=True)
+            all_cloned = clone_tree(c, current, temporary, materialize_romfs=True)
             # Transient stage logs and source paths are not runtime dependencies.
             for p in temporary.glob("*.log"):
                 p.unlink()
@@ -615,8 +617,10 @@ def prepare(c):
                 shutil.rmtree(temporary)
         ms.record(c, size_gb)
         from library import _part_bytes, _rm
-        unpacked = layout.build_dir(c, game["id"], create=False)   # 运行版本已是独立副本（clone_tree 含 RomFS）：解包和中间目录不再保留
-        if unpacked.exists():
+        # 解包和中间目录：运行版本整棵是克隆出来的（APFS 同卷，和产物根、解包同属一个克隆族）就保留——几乎不另占盘，下次出另一端的包不用重解（#329，
+        #   同一款的数据在盘上只占一份）；有文件退成了普通复制（跨卷、非 APFS、Windows）运行版本已是独立的一份，照旧删掉解包省一份
+        unpacked = layout.build_dir(c, game["id"], create=False)
+        if unpacked.exists() and not all_cloned:
             _rm(c, layout.root_of(c, game["id"]), unpacked)
         import sizes
         sizes.refresh(c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）

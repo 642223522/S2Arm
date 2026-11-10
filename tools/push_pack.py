@@ -542,8 +542,38 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         elif fb < need:
             say(f"【红】测试设备剩余空间不足：可写 {fb >> 30} GB < 要 {need >> 30} GB（待推 {nbytes >> 30} GB + 解开时最大一批 + 余量）；先卸掉机上不用的包")
             raise Fail("测试设备空间不足")
-    send(dev, pack, work, say, progress)
+    made = materialize_images(pack, work, say)
+    try:
+        send(dev, pack, work, say, progress)
+    finally:
+        for f in made: Path(f).unlink(missing_ok=True)   # 现拼的镜像推完（含失败）就删：库里只留逐文件那一份（#329）
     return nb, nt, nbytes
+
+
+def materialize_images(pack, work, say=print):
+    """这次要推的单文件镜像（plan 写的 direct_img.tsv）包里没有、但有 romfs.files/（pack/romfs_image.py v2 的库内形态）→ 现拼到包里，
+    返回现拼的路径（run 推完删）。本机盘放不下就报红不推：拼一份要镜像那么大的空间，推完即还"""
+    dl = Path(work) / "direct_img.tsv"
+    rows = [l.split("\t") for l in dl.read_text(encoding="utf-8").splitlines() if l] if dl.is_file() else []
+    todo = [w for w in rows if not (Path(pack) / w[0]).is_file()]
+    if not todo: return []
+    sys.path.insert(0, str(R / "pack"))
+    import romfs_image
+    need = sum(int(w[1]) for w in todo) + (256 << 20)
+    free = shutil.disk_usage(pack).free
+    if free < need:
+        say(f"【红】本机盘放不下现拼的镜像：要 {need / 1e9:.1f} GB，可用 {free / 1e9:.1f} GB（{pack}）；腾出空间再装")
+        raise Fail("本机盘空间不足，拼不出要推的镜像")
+    made = []
+    try:
+        for w in todo:
+            t0 = time.time()
+            made.append(romfs_image.materialize(pack, w[0], int(w[1]), w[2], say=say))
+            say(f"  现拼 {w[0]} 用时 {time.time() - t0:.0f} 秒")
+    except (romfs_image.Red, OSError) as e:
+        for f in made: Path(f).unlink(missing_ok=True)
+        say(f"【红】{e}"); raise Fail(f"拼不出要推的镜像：{e}")
+    return made
 
 
 def main(argv=None):

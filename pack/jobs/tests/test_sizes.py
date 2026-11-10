@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from jobcase import JobCase
+import core
 from core import Context, read
 import layout
 import library
@@ -33,10 +34,11 @@ class Sizes(JobCase):
         L = self.c.library
         d = layout.game_dir(self.c, GID, english="Xenoblade 3")
         write(d / "image" / "mac" / "main.bin", 2 * MIB)
-        write(d / "image" / "mac" / "romfs" / "data.arc", 3 * MIB)    # 解包在时是它的克隆（APFS 上不占新空间）
         write(d / "saves" / "slot0.bin", 1 * MIB)
         write(d / "save-backups" / "b0.bin", 1 * MIB)
         write(d / "build" / "extract" / "romfs" / "data.arc", 3 * MIB)
+        # 镜像里的 romfs 是解包的真克隆（APFS 上共享块；Windows / 非 APFS 退成复制，照实是第 2 份）——同出包 clone_tree
+        self.cloned = core.clone(d / "build" / "extract" / "romfs" / "data.arc", d / "image" / "mac" / "romfs" / "data.arc")
         write(d / "shader-cache" / "pso.bin", 1 * MIB)
         write(d / "image" / "ios" / "kit" / "main.bin", 2 * MIB)          # 容器件 → imageIos
         write(d / "image" / "ios" / "pack" / "r.bin", 1 * MIB)           # 资源包 → imageIos
@@ -53,12 +55,17 @@ class Sizes(JobCase):
 
     def test_measure_each_part(self):
         s = sizes.measure(self.c, GID)
-        apfs = os.name != "nt"
-        want = dict(imageMac=2 if apfs else 5, imageIos=3, saves=2, cache=3 + 1 + 1)   # cache = build/extract 3 + shader-cache 1 + roots 1
+        want = dict(imageMac=2 if self.cloned else 5, imageIos=3, saves=2, cache=3 + 1 + 1)   # cache = build/extract 3 + shader-cache 1 + roots 1；克隆的 3 MiB 记在先量的 cache
         for k, mib in want.items():
             with self.subTest(part=k):
                 self.assert_mib(s[k], mib, k)
         self.assertEqual(s["sources"], 5 * MIB + 4 * MIB)   # a 两款共用记一半，b 只这款
+
+    def test_independent_copy_counted_twice(self):
+        # #329 负对照：镜像里的 romfs 是独立写的一份（不是克隆，盘上真是两份）→ 照实算进镜像，不能按目录名当成克隆略掉
+        f = self.dir / "image" / "mac" / "romfs" / "data.arc"; f.unlink(); write(f, 3 * MIB)
+        s = sizes.measure(self.c, GID)
+        self.assert_mib(s["imageMac"], 5); self.assert_mib(s["cache"], 5)
 
     @unittest.skipIf(os.name == "nt", "NTFS 无克隆，镜像的 romfs 照实算")
     def test_romfs_counted_in_image_once_extract_gone(self):
