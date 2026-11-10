@@ -9,6 +9,7 @@
 #include "NS2Module.h"
 #include "pad_liveness.h"
 #include "haptic_retry.h"
+#include "ea_rumble.h"   // GameSir G8+ MFi 有线：手柄马达走配件协议（#462）
 #include <dlfcn.h>
 #include <stdatomic.h>
 #include <pthread.h>
@@ -57,6 +58,7 @@ static uint64_t g_phone_epoch;
 static s2a_pad_vibration g_phone_pair[2];
 
 static void system_stop_on_queue(void) {
+    s2a_ea_rumble_stop();
     if (g_haptic_player && g_haptic_playing) [g_haptic_player stopAtTime:CHHapticTimeImmediate error:nil];
     g_haptic_playing = NO;
     if (g_haptic_timer) dispatch_source_set_timer(g_haptic_timer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
@@ -105,6 +107,15 @@ static void system_fail_on_queue(const char *what, NSError *error) {
     if (died) LOG("【红】系统手柄震动：本设备本局停用（连续 %d 次失败，最后一次 %s/%ld）；换手柄或重新接入会再试一次",
                   S2A_HP_MAX_FAILS, domain, code);
 }
+// 1 秒没有新的震动帧就停（游戏不发停止也不会一直震）
+static void system_arm_stop_timer(void) {
+    if (!g_haptic_timer) {
+        g_haptic_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, g_system_haptics_queue);
+        dispatch_source_set_event_handler(g_haptic_timer, ^{ system_stop_on_queue(); });
+        dispatch_resume(g_haptic_timer);
+    }
+    dispatch_source_set_timer(g_haptic_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
+}
 static void system_play_on_queue(s2a_pad_vibration pair[2]) {
     float amplitude = 0, weighted = 0, weights = 0;
     for (int i = 0; i < 2; i++) {
@@ -114,6 +125,12 @@ static void system_play_on_queue(s2a_pad_vibration pair[2]) {
         weights += lo + hi;
     }
     if (amplitude <= 0.001f) { system_stop_on_queue(); return; }
+    // 走配件协议的手柄（#462）：左右两侧振幅直接发给手柄马达；Core Haptics 会把这只手柄的震动送到机身，不走它
+    if (s2a_ea_rumble_active()) {
+        s2a_ea_rumble_set(fmaxf(finite_clamp(pair[0].low_amp, 0, 1), finite_clamp(pair[0].high_amp, 0, 1)),
+                          fmaxf(finite_clamp(pair[1].low_amp, 0, 1), finite_clamp(pair[1].high_amp, 0, 1)));
+        system_arm_stop_timer(); return;
+    }
     // 退避期 / 已判死：一个 CoreHaptics 调用都不碰。游戏每秒提交约 29 次震动，这条路径必须廉价。
     if (s2a_hp_should_try(&g_haptic_retry, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) == S2A_HP_SKIP) return;
     float hz = weights > 0 ? weighted / weights : 160;
@@ -165,12 +182,7 @@ static void system_play_on_queue(s2a_pad_vibration pair[2]) {
     }
     s2a_hp_on_ok(&g_haptic_retry);   // 真正播起来了才清零连续失败
     static BOOL logged; if (!logged) { logged = YES; LOG("系统手柄震动：播放 强度 %.2f 锐度 %.2f", amplitude, sharp); }
-    if (!g_haptic_timer) {
-        g_haptic_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, g_system_haptics_queue);
-        dispatch_source_set_event_handler(g_haptic_timer, ^{ system_stop_on_queue(); });
-        dispatch_resume(g_haptic_timer);
-    }
-    dispatch_source_set_timer(g_haptic_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
+    system_arm_stop_timer();
 }
 
 static void system_select_device(GCController *device) {
@@ -189,6 +201,7 @@ static void system_select_device(GCController *device) {
     });
     pthread_mutex_unlock(&g_feedback_mu);
     if (device) LOG("系统手柄震动：%s", device.haptics ? "支持" : "不支持震动");
+    s2a_ea_rumble_refresh();   // 换手柄：重判是不是走配件协议的那只
 }
 static void system_sync_selection(void) {
     pthread_mutex_lock(&g_feedback_mu);
