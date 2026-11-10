@@ -187,6 +187,35 @@ def store_todo(c, ids=None):
     return todo
 
 
+STORE_QUIET_WAIT = 30.0   # 删除 / 移动 / 搬家前等后台商店查询结束的上限（秒）：它一轮联网最多 STORE_BUDGET 10 秒，加改文件夹名
+
+
+@contextlib.contextmanager
+def store_meta_quiet(library):
+    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock。
+    它正在查就等它查完（最多 STORE_QUIET_WAIT 秒，超了照常继续：它写横图在目录锁里、只写清单里还在的款并重新找文件夹，改名在执行锁里，
+    这里等是为了连它的任务记录也不写进正被删 / 搬的位置）；拿到后它再起来见锁被占就这次不查"""
+    path = Path(library) / ".store-meta.lock"
+    if not path.parent.is_dir():
+        yield
+        return
+    with path.open("a") as f:
+        held, deadline = False, time.monotonic() + STORE_QUIET_WAIT
+        while True:
+            try:
+                filelock.try_lock(f); held = True
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.5)
+        try:
+            yield
+        finally:
+            if held:
+                filelock.unlock(f)
+
+
 def store_meta_background(c, ids=None):
     """在后台查商店（pack/jobs/store_meta_bg.py：store_meta 然后 heal_folder_names）：作业本身不等联网（商品页单页要几秒）。
     有要查的款才起；起不来（系统拒绝）就算了，下个作业再试。子进程脱离本作业：作业结束、取消都不带走它（Windows 前端不把作业放进杀子进程的作业对象）。
@@ -483,7 +512,7 @@ def require_local(path):
         raise Failure(libloc.CLOUD_MESSAGE.format(cloud=cloud), code="library_in_cloud")
 
 
-MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
+MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".store-meta.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
 
 
 def _looks_like_library(root):
@@ -630,7 +659,7 @@ def move_library(c, source):
         raise Failure("原来的位置不是可搬的游戏库。", code="library_move_failed")
     if c.library == source or c.library.is_relative_to(source) or source.is_relative_to(c.library):
         raise Failure("新位置不能在原来的游戏库里面，也不能包含它。", code="library_move_failed")
-    with _source_locked(source):
+    with store_meta_quiet(source), _source_locked(source):
         pairs = _move_pairs(c, source)
         c.library.mkdir(parents=True, exist_ok=True)
         cross = [(a, b) for a, b in pairs if not _same_volume(a, c.library)]
@@ -680,7 +709,7 @@ def move_library(c, source):
                 _discard(a)
             except OSError as error:
                 c.diagnostic("游戏库已经搬好，旧位置有文件没删掉，可以手动删除：" + c.redact(str(error)), code="job_failed", severity="warning")
-    for name in (".execution.lock", ".catalog.lock", ".DS_Store"):
+    for name in (".execution.lock", ".catalog.lock", ".store-meta.lock", ".DS_Store"):
         (source / name).unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         _discard(source / ".s2arm-work")   # 工作目录回私有目录后剩的，都是能重新生成的
@@ -1981,7 +2010,7 @@ def delete(c):
     t0 = time.time()
     while True:
         try:
-            with c.lock("execution"), c.lock():
+            with store_meta_quiet(c.library), c.lock("execution"), c.lock():
                 gid = c.game()["id"]
                 c.begin("删除游戏与出包产物")
                 gdir = layout.find_game(c, gid)
@@ -2401,7 +2430,7 @@ def apply_location(c, game):
 
 
 def move_game(c):
-    with c.lock("execution"), c.lock():
+    with store_meta_quiet(c.library), c.lock("execution"), c.lock():
         game = c.game()
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")
