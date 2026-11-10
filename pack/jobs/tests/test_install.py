@@ -339,6 +339,7 @@ class FlowTests(unittest.TestCase):
                 Path(args[7]).write_bytes(b"ipa")
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), \
              um.patch.object(packer, "container_shell", return_value=shell), \
+             um.patch.object(packer, "release_version", return_value="9.8.7"), \
              um.patch.object(self.c, "run", run):
             ipa1, games1, sid1 = packer.assemble(self.c, A)
             ipa2, games2, sid2 = packer.assemble(self.c, A, [B])
@@ -346,6 +347,7 @@ class FlowTests(unittest.TestCase):
         for cmd in (c1, c2):
             self.assertNotIn("--base", cmd)
             self.assertEqual(cmd[cmd.index("--host-abi") + 1], str(host_update.HOST_ABI))
+            self.assertEqual(cmd[cmd.index("--version") + 1], "9.8.7")   # 三端同号：电脑上 S2Arm 的发版号写进容器
             self.assertEqual((cmd[cmd.index("--sign") + 1], cmd[cmd.index("--shell") + 1]), ("adhoc", str(shell)))
         self.assertEqual([c1[i + 1] for i, x in enumerate(c1) if x == "--game"], [str(kits[A].resolve())])
         self.assertEqual([c2[i + 1] for i, x in enumerate(c2) if x == "--game"], [str(kits[A].resolve()), str(kits[B].resolve())])
@@ -368,6 +370,8 @@ class FlowTests(unittest.TestCase):
         import target
         def devicectl(c, *a, timeout=0):
             if raises: raise raises
+            if a[:3] == ("device", "info", "details"):
+                return rc, {"result": next((d for d in devices if d["identifier"] == a[-1]), {})}, ""
             return rc, data, ""
         with um.patch.object(install, "xcode_teams", return_value=list(teams)), um.patch.object(diag, "devicectl", devicectl), \
              um.patch.object(target, "usb_idevices", return_value=list(usb)):
@@ -439,16 +443,27 @@ class FlowTests(unittest.TestCase):
         _, it = self._ready([self._dev(transport="localNetwork"), self._dev(name="线连的")])
         self.assertTrue(it["connected"]["ok"])   # 有线优先，同网另一台不算两台
 
-    def _link(self, states, want="", polling=False, usb=(), results=None, raises=None):
-        """device_link：states 是每次 list devices 依次读到的设备表（读完停在最后一张）；results = {子命令: (rc, 原文)}"""
+    def _link(self, states, want="", polling=False, usb=(), results=None, raises=None, details=None):
+        """states 是列表快照；details 独立给详情回包，缺省沿用下一张快照的同一设备；results 可给错误或异常"""
         import diag, target
-        calls, seen = [], [0]
+        calls, seen, detail_seen = [], [0], [0]
         def devicectl(c, *a, timeout=0):
             if a[:2] == ("list", "devices"):
                 if raises: raise raises
                 state = states[min(seen[0], len(states) - 1)]; seen[0] += 1
                 return state if isinstance(state, tuple) else (0, {"result": {"devices": state}}, "")
-            calls.append(a[:3]); rc, raw = (results or {}).get(a[1], (0, ""))
+            calls.append(a[:3])
+            result = (results or {}).get(a[1], (0, ""))
+            if isinstance(result, Exception): raise result
+            rc, raw = result
+            if a[:3] == ("device", "info", "details"):
+                if details is not None:
+                    row = details[min(detail_seen[0], len(details) - 1)]
+                else:
+                    rows = states[min(detail_seen[0] + 1, len(states) - 1)]
+                    row = next((d for d in rows if d["identifier"] == a[-1]), {})
+                detail_seen[0] += 1
+                return rc, {"result": row}, raw
             return rc, {}, raw
         with um.patch.object(diag, "devicectl", devicectl), um.patch.object(target, "usb_idevices", return_value=list(usb)):
             return install.device_link(self.c, want, polling=polling), calls
@@ -481,9 +496,72 @@ class FlowTests(unittest.TestCase):
         link, calls = self._link(states, polling=True)
         self.assertEqual(calls, []); self.assertEqual(link["stage"], "trusted")
 
-    def test_link_developer_mode_stops_before_connecting(self):
+    def test_link_rechecks_disabled_mode_from_details_not_stale_list(self):
+        stale = self._p(devmode="disabled", ddi=False)
+        fresh = self._p(tunnel="connected")
+        other = self._p(ident="D2", transport="localNetwork")
+        for polling in (False, True):
+            with self.subTest(polling=polling):
+                link, calls = self._link([[stale, other]], details=[fresh], polling=polling)
+                self.assertEqual(link["stage"], "")
+                self.assertEqual(calls, [("device", "info", "details")])
+                self.assertEqual(link["device"], fresh)
+                self.assertEqual(link["devices"], [fresh, other])
+
+    def test_link_confirmed_disabled_mode_stops_before_ddi_update(self):
         link, calls = self._link([[self._p(devmode="disabled", ddi=False)]])
-        self.assertEqual(link["stage"], "developerMode"); self.assertEqual(calls, []); self.assertIn("开发者模式", link["problem"])
+        self.assertEqual(link["stage"], "developerMode")
+        self.assertEqual(calls, [("device", "info", "details")]); self.assertIn("开发者模式", link["problem"])
+
+    def test_link_detail_query_failure_does_not_claim_mode_disabled(self):
+        for result, rc in [((1, "device locked"), 1), (subprocess.TimeoutExpired("devicectl", 20), "timeout"), (OSError("disconnected"), "oserror")]:
+            with self.subTest(result=result):
+                link, calls = self._link([[self._p(devmode="disabled")]], results={"info": result})
+                self.assertEqual(link["stage"], "prepare")
+                self.assertIn("开发连接", link["problem"])
+                self.assertEqual(link["trace"][-1]["rc"], rc)
+                self.assertEqual(calls, [("device", "info", "details")])
+
+    def test_link_details_must_identify_same_phone_and_mode(self):
+        stale = self._p(devmode="disabled")
+        for row in (None, [], {}, {"identifier": "D1", "deviceProperties": None}, self._p(ident="D2"), self._p(devmode=None), self._p(devmode="unknown")):
+            with self.subTest(row=row):
+                link, calls = self._link([[stale]], details=[row])
+                self.assertEqual(link["stage"], "prepare")
+                self.assertEqual(calls, [("device", "info", "details")])
+
+    def test_link_fresh_disabled_mode_overrides_enabled_list(self):
+        link, calls = self._link([[self._p(ddi=False)]], details=[self._p(devmode="disabled", ddi=False)])
+        self.assertEqual(link["stage"], "developerMode")
+        self.assertEqual(calls, [("device", "info", "details")])
+
+    def test_link_rechecked_enabled_mode_can_prepare_ddi(self):
+        stale = self._p(devmode="disabled", ddi=False)
+        down = self._p(tunnel="connected", ddi=False)
+        fresh = self._p(tunnel="connected")
+        link, calls = self._link([[stale]], details=[down, fresh])
+        self.assertEqual(link["stage"], "")
+        self.assertEqual(link["device"], fresh)
+        self.assertEqual(calls, [("device", "info", "details"), ("manage", "ddis", "update"), ("device", "info", "details")])
+
+    def test_link_ddi_recheck_does_not_accept_unreadable_or_disabled_details(self):
+        down = self._p(tunnel="connected", ddi=False)
+        for row, stage in [({}, "prepare"), (self._p(devmode="disabled", ddi=False), "developerMode")]:
+            with self.subTest(row=row):
+                link, calls = self._link([[down]], details=[down, row])
+                self.assertEqual(link["stage"], stage)
+                self.assertEqual(calls, [("device", "info", "details"), ("manage", "ddis", "update"), ("device", "info", "details")])
+
+    def test_readiness_failed_mode_query_waits_and_shows_connection_error(self):
+        link, _ = self._link([[self._p(devmode="disabled")]], results={"info": (1, "device locked")})
+        with um.patch.object(install, "device_link", return_value=link):
+            _, items = self._ready([])
+        self.assertFalse(items["developerMode"]["ok"])
+        self.assertTrue(items["developerMode"]["waiting"])
+        self.assertEqual(items["developerMode"]["detail"], "")
+        self.assertFalse(items["deviceReady"]["ok"])
+        self.assertFalse(items["deviceReady"]["waiting"])
+        self.assertIn("device locked", items["deviceReady"]["detail"])
 
     def test_link_brings_up_an_idle_tunnel(self):
         link, calls = self._link([[self._p(ddi=False)], [self._p(tunnel="connected")]])

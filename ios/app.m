@@ -679,8 +679,30 @@ static __weak UIWindow *g_lib_window;
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);   // pack_apply.c
 static int game_pack_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_import_state_game_quick(d, gid); }
 void s2a_shell_library_appeared(void) { static int once; if (!once++) BOOT_MARK("游戏库界面可操作"); }
-int s2a_game_on_device(const char *proc_docs, const char *gid);   // pack_apply.c
-int s2a_shell_game_data_ready(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_game_on_device(d, gid); }
+int s2a_game_install_state(const char *proc_docs, const char *gid);   // pack_apply.c
+int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_game_install_state(d, gid); }
+// 库里后台解开传完的那款（装机阶段 2，s2a_shell.h）：同一条 s2a_pack_apply（解包日志、.applied、清旧文件都同起局闸门），同时只解一款；
+//   解的时候关自动锁屏（锁屏 = 挂起 = 解包停住），进度经 s2a_pack_apply_progress 记下给库画蒙版，解完回主线程让库重判
+int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void);   // pack_apply.c
+static char g_inst_gid[32]; static atomic_int g_inst_busy, g_inst_done, g_inst_total;
+static void inst_progress(int done, int total) { atomic_store(&g_inst_done, done); atomic_store(&g_inst_total, total); }
+int s2a_shell_install_game(const char *gid) {   // 主线程（s2a_shell.h 约定）
+    if (!gid || strlen(gid) != 16 || strchr(gid, '/') || atomic_exchange(&g_inst_busy, 1)) return 0;
+    strlcpy(g_inst_gid, gid, sizeof g_inst_gid); atomic_store(&g_inst_done, 0); atomic_store(&g_inst_total, 0);
+    char d[1024]; s2a_container_docs(d, sizeof d);
+    NSString *docs = [NSString stringWithFormat:@"%s/games/%s", d, gid], *name = @(gid);
+    LOG("游戏库：后台解开 %s", gid); s2a_ios_keep_awake(1);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        s2a_pack_apply_progress = inst_progress; int rc = s2a_pack_apply(docs.fileSystemRepresentation); s2a_pack_apply_progress = NULL;
+        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, s2a_pack_apply_failure()); else LOG("游戏库：%s 解开了", name.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{ s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh(); });
+    });
+    return 1;
+}
+int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // 主线程
+    if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
+    *done = atomic_load(&g_inst_done); *total = atomic_load(&g_inst_total); return 1;
+}
 static void library_pack_help(NSString *gid, BOOL again) {
     int st = game_pack_state(gid.UTF8String);
     if (st == 0 || st == 1) { LOG("游戏库：%s 资源包已就绪，刷新库界面", gid.UTF8String); if (s2a_shell_refresh) s2a_shell_refresh(); return; }

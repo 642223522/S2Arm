@@ -228,13 +228,19 @@ struct CoverFlowView: View, Equatable {
                 StateChip(game: game) {}.allowsHitTesting(false)
             }.hidden().accessibilityHidden(true)
             VStack(spacing: 8) {
-                Text(game.title).shellType(ShellType.flowTitle(size))
-                    .lineLimit(2).truncationMode(.tail).multilineTextAlignment(.center)
-                    .shadow(color: .black.opacity(0.35), radius: 10)
-                    .accessibilityAddTraits(.isHeader).accessibilityIdentifier("hero.title")
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if game.showsNewNote { NewDot(size: max(8, size * 0.012)).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 } }
+                    Text(game.title).shellType(ShellType.flowTitle(size))
+                        .lineLimit(2).truncationMode(.tail).multilineTextAlignment(.center)
+                        .shadow(color: .black.opacity(0.35), radius: 10)
+                        .accessibilityAddTraits(.isHeader).accessibilityIdentifier("hero.title")
+                }
                 // A ready game needs no words: its green dot says it. A game that cannot start gets one small line, its
                 // way out in the state's colour. The space is reserved either way.
-                if game.state == .playable {
+                if game.showsNewNote {
+                    Text(ShellStrings.text("Installed – have fun!")).shellType(ShellType.button).foregroundStyle(.white.opacity(0.7))
+                        .frame(minHeight: 34).accessibilityIdentifier("hero.new")
+                } else if game.state == .playable {
                     Color.clear.frame(height: 34).accessibilityHidden(true)
                 } else {
                     StateAction(game: game) { primary(selected) }
@@ -266,8 +272,10 @@ struct StateAction: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Text(game.state.actionTitle).shellType(ShellType.button)
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
+                // Arriving: what is happening and how far, nothing to press. A stopped or failed install: what happened, then the way out.
+                Text(game.state.isArriving ? game.state.title : game.state.installPhase != nil ? game.state.title + " · " + game.state.actionTitle : game.state.actionTitle)
+                    .shellType(ShellType.button).monospacedDigit()
+                if !game.state.isArriving { Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)) }
             }
             .foregroundStyle(game.state.color)
             .lineLimit(1)
@@ -275,6 +283,7 @@ struct StateAction: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(game.state.isArriving)
         .accessibilityLabel(game.state.title + ", " + game.state.actionTitle)
         .accessibilityIdentifier("state.chip")
         .shellTarget("lib.chip", radius: 17, action: action)

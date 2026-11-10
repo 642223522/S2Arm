@@ -10,6 +10,25 @@ public enum GameState: Equatable, Sendable {
     /// for the player (what happened, what to do), shown under the title and in the How to fix sheet. `technical`
     /// is the underlying message, shown only as small secondary Details in the sheet.
     case broken(reason: String, detail: String = "", technical: String = "")
+    /// On its way from the computer: copied over the cable, then unpacked here. Its cover is greyed until it can be played.
+    case installing(InstallStage)
+}
+
+/// Where an arriving game is. `fraction` (0...1) is how far this phase has got; nil when it is not known yet.
+public struct InstallStage: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+        /// Being copied from the computer: the cable must stay connected.
+        case transferring
+        /// Copied; being unpacked on this device.
+        case installing
+        /// The copying stopped part way, such as when the cable came out. Connecting the computer again continues it.
+        case interrupted
+        /// The unpacking did not finish. Play tries it again.
+        case failed
+    }
+    public var phase: Phase
+    public var fraction: Double?
+    public init(_ phase: Phase, fraction: Double? = nil) { self.phase = phase; self.fraction = fraction.map { min(1, max(0, $0)) } }
 }
 
 public struct GameTile: Identifiable, Equatable, Sendable {
@@ -24,8 +43,10 @@ public struct GameTile: Identifiable, Equatable, Sendable {
     public var state: GameState
     /// Already localized, such as "Played today". Nil leaves the game out of Recently played.
     public var recentlyPlayed: String?
+    /// Installed (or updated) and not opened since: a blue dot before its name, as iOS marks a new app.
+    public var isNew: Bool
     public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
-                state: GameState = .playable, recentlyPlayed: String? = nil) {
+                state: GameState = .playable, recentlyPlayed: String? = nil, isNew: Bool = false) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
@@ -33,6 +54,7 @@ public struct GameTile: Identifiable, Equatable, Sendable {
         self.icon = icon
         self.state = state
         self.recentlyPlayed = recentlyPlayed
+        self.isNew = isNew
     }
 }
 

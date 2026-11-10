@@ -27,7 +27,7 @@
   python3 tools/push_pack.py run   <设备> <包名> <资源包目录> [--full] [--udid U] [--devpush P] [--work 目录] [--apply]   一条龙（启动器 / Windows / 手动装机）；
       --apply：推完起一次 App 只解包并等解完（.applied = 本包且解包日志本次新增完成行）
   各子命令都收 --docs <设备侧文档根>（缺省 Documents；多款容器每款 Documents/games/<游戏号>，资源包 / 解包日志都在它下面）
-      与 --launch-ctx <值>（多款容器：起 App 解包时带 S2A_LAUNCH_CTX=<值>，如 @bundle/Games/<游戏号>/launch.ctx）
+      与 --launch-ctx <值>（多款容器：推完正常拉起 App 到游戏库、由库解开这款（值本身已不再传给 App））
   python3 tools/push_pack.py plan  <设备> <包名> <资源包目录> --work O [--full] [--udid U]   算待推批次（dev_run 用：之后它按推送量放大看门、腾空间）
   python3 tools/push_pack.py free  <设备> <包名> <资源包目录> --work O [--udid U]           机上可写字节（读不到不打印）
   python3 tools/push_pack.py send  <设备> <包名> <资源包目录> --work O [--udid U] [--devpush P]   推 plan 算好的批次 + 索引 + 清单
@@ -425,6 +425,15 @@ def send(dev, pack, work, say=print, progress=None):
     batches = [[l.split("\t") for l in bf.read_text(encoding="utf-8").splitlines() if l] for bf in files]
     total, steps, step = sum(int(w[1]) for w in direct) + sum(int(w[1]) for b in batches for w in b), len(direct) + len(files), 0
     if progress: progress(0, total, 0, steps)
+    if direct or batches:   # 传输清单：手机上的游戏库按它画装机蒙版（各文件已到多少字节 / 本次总字节，S2ArmShellHostModel），只写这一次——
+        #   直写镜像单个几 GB、推包端要整个写完才知道进度，按推包端回报画会几分钟不动；手机自己看正在写的文件是连续的，也不跟推包抢 USB
+        #   base = 这款已在手机上的字节（整包 index.tsv 合计 − 本次要传）：续传 / 重装时进度从已有的接着涨，不因这次只传剩下的而往回掉
+        tr = work / "transfer.json"
+        whole = sum(int(r.split("\t")[1]) for r in (pack / "index.tsv").read_text(encoding="utf-8").splitlines() if r.count("\t") >= 2 and r.split("\t")[1].isdigit())
+        tr.write_text(json.dumps(dict(schema=1, total=total, base=max(0, whole - total), started=ts, files=[[w[0], int(w[1])] for w in direct] +
+                                      [[f".incoming/{ts}_{k:03d}.tar", sum(int(w[1]) for w in b)] for k, b in enumerate(batches)])), encoding="utf-8")
+        try: dev.put(tr, f"{rp(dev)}/.transfer")
+        finally: tr.unlink(missing_ok=True)
     if direct or batches:   # 开推先把机上清单置空（11-09 根修 Windows 装完游戏库空）：清单最后写，「清单读得出」= 这次推送完整。
         #   原先只靠下面把 .applied 清空表示「传到一半」，App 分不清「传完了只等解开」和「传断了」，Windows 起 App 解包没成时游戏库把这款整个藏掉
         e = work / "manifest_pending"; e.write_bytes(b"")
@@ -503,8 +512,10 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
         return False
     u0 = len((read(dev, unpack_log(dev), work, "r.unpack0") or "").splitlines())
     done = re.compile(r"解开 \d+ 个包 .*\.applied = " + re.escape(want or "-"))
-    say("起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）")
-    env = {"S2A_PACK_APPLY_ONLY": "1", **({"S2A_LAUNCH_CTX": dev.ctx} if dev.ctx else {})}   # 容器：起哪一款由启动上下文定
+    # 多款容器：正常拉起到游戏库，由库在后台解开传完的这款（图块显示「安装中」和进度，S2ArmShellHostModel）。只解包模式是整屏导入页、解完进程自己退出，
+    #   玩家正开着库时 App 会突然消失；拉不起时玩家手动打开也走库这同一条路。单款包照旧只解包模式
+    say("拉起 App 到游戏库，由它解开这款" if dev.ctx else "起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）")
+    env = {} if dev.ctx else {"S2A_PACK_APPLY_ONLY": "1"}
     def try_launch():   # → None 起成了；否则失败原文（拉起靠电脑侧的设备服务，玩家机上常常没有，#192）
         try: dev.launch(env); return None
         except Fail as e: return str(e)
@@ -602,7 +613,7 @@ def main(argv=None):
     ap.add_argument("--work"); ap.add_argument("--full", action="store_true"); ap.add_argument("--udid"); ap.add_argument("--devpush")
     ap.add_argument("--via", choices=("devpush", "devicectl")); ap.add_argument("--apply", action="store_true")
     ap.add_argument("--progress-lines", action="store_true")   # 推送进度另打机器读的行「PROGRESS_PREFIX 已传 总量 批 总批」（Mac 装机作业 pack/jobs/install.py 解析成作业计数）
-    ap.add_argument("--docs", default=DOCS); ap.add_argument("--launch-ctx")   # 多款容器：本款设备侧文档根 Documents/games/<游戏号>、起 App 解包时的 S2A_LAUNCH_CTX   # run 推完起一次 App 只解包并等解完（s2armctl push-pack / Windows 装机）
+    ap.add_argument("--docs", default=DOCS); ap.add_argument("--launch-ctx")   # 多款容器：本款设备侧文档根 Documents/games/<游戏号>、推完正常拉起 App 到游戏库由它解开   # run 推完等机上解开（s2armctl push-pack / Windows 装机）
     a = ap.parse_args(argv)
     pack = Path(a.pack)
     if not (pack / "index.tsv").is_file():
