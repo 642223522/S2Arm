@@ -342,6 +342,8 @@ class NativeProbe:
             return self.usb_devices()
         if kind == "icloud":
             return self.icloud()
+        if kind == "apple_devices":
+            return self.apple_devices()
         raise ValueError("未知只读探测")
 
     def usb_devices(self):
@@ -382,6 +384,23 @@ class NativeProbe:
             return counts  # Never return serials, handles, network addresses or raw payload.
         except Exception:
             raise ProbeError("USB清单只读探测未完成（超时、权限或协议）") from None
+
+    def apple_devices(self):
+        """商店版 Apple Devices（AppleInc.AppleDevices）装没装：只读安装登记的名字 / 状态 / 版本。商店版不注册老式「Apple Mobile Device Service」
+        （#424：玩家装了、能识别 iPad，SCM 里却没有这个服务），所以光看服务名会误判没装"""
+        if sys.platform != "win32":
+            raise ProbeError("此宿主不能核Windows安装登记")
+        exe = str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+        script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+                  "@(Get-AppxPackage -Name 'AppleInc.AppleDevices*' -ErrorAction Stop | ForEach-Object { "
+                  "[ordered]@{Name=$_.Name;Status=[string]$_.Status;Version=[string]$_.Version} }) | ConvertTo-Json -Compress -Depth 2")
+        raw = self.run([exe, "-NoProfile", "-NonInteractive", "-NoLogo", "-Command", script]).decode("utf-8-sig")
+        packages = json.loads(raw) if raw.strip() else []
+        if isinstance(packages, dict):
+            packages = [packages]
+        if not isinstance(packages, list) or len(packages) > 16 or not all(isinstance(x, dict) for x in packages):
+            raise ProbeError("安装清单格式不可核实")
+        return {"packages": [{k: str(x.get(k, ""))[:64] for k in ("Name", "Status", "Version")} for x in packages]}
 
     def icloud(self):
         if sys.platform != "win32":
@@ -639,35 +658,52 @@ def _metal(request, probe):
         return c
 
 
+APPLE_STATES = {1: "已停止", 2: "正在启动", 3: "正在停止", 4: "在运行", 5: "正在继续", 6: "正在暂停", 7: "已暂停"}
+
+
 def _apple(probe):
-    """Apple 移动设备支持：以本机 usbmux 端口 127.0.0.1:27015 能不能连上为准——签名装机（plumesign）和推资源包（s2a-devpush）真正用的就是它。
-    服务名「Apple Mobile Device Service」只用来在端口不通时说清原因：微软商店版 Apple Devices 能识别设备，系统服务里却查不到这个名字（#424），
-    原先先查服务名、查不到就判缺失，不看端口，装好了也一直报缺"""
-    source = "Windows SCM + 127.0.0.1:27015"
+    """要的是本机 usbmux 端口（127.0.0.1:27015）：装机工具靠它和手机通信。老式 Apple 移动设备支持（iTunes / Apple Mobile Device Service）
+    和商店版 Apple Devices 都提供它，但商店版不注册老式服务名（#424）。所以先连端口，连上即就绪，不管哪种安装；连不上才查两种安装形态，
+    把查过的每一处与结果写进 message（「复制错误摘要」即带上）"""
+    source = "127.0.0.1:27015 usbmux + Windows SCM + 商店安装登记"
     ready = False
     try:
-        try:
-            state = probe("service")["state"]
-            if type(state) is not int or not 1 <= state <= 7:
-                raise ValueError()
-        except FileNotFoundError:
-            state = None   # 没有这个服务名：照样看端口
         connected = probe("usbmux_port")["connected"]
         if type(connected) is not bool:
             raise ValueError()
-        ready = connected
-        if ready:
+        if connected:
+            ready = True
             driver = _item("apple_driver", "Apple移动设备支持", "ok",
-                           "本机usbmux端口可连接；只证明驱动就绪，不证明USB设备能力。", source)
-        elif state is None:
-            driver = _item("apple_driver", "Apple移动设备支持", "missing",
-                           "没找到Apple Mobile Device Service，本机usbmux端口也连不上；请安装官方Apple设备支持。", source)
-        elif state == 4:
-            driver = _item("apple_driver", "Apple移动设备支持", "missing",
-                           "服务运行但本机usbmux端口不通；请人工检查官方Apple设备支持。", source)
+                           "本机usbmux端口可连接（老式Apple移动设备支持或商店版Apple Devices均可）；只证明驱动就绪，不证明USB设备能力。", source)
         else:
-            driver = _item("apple_driver", "Apple移动设备支持", "mismatch",
-                           "Apple服务未运行，本机usbmux端口也连不上；请人工检查官方安装与服务。", source)
+            checked, state, store = ["本机usbmux端口 127.0.0.1:27015：连不上"], None, False
+            try:
+                state = probe("service")["state"]
+                if type(state) is not int or not 1 <= state <= 7:
+                    raise ValueError()
+                checked.append(f"服务 Apple Mobile Device Service：{APPLE_STATES[state]}")
+            except FileNotFoundError:
+                checked.append("服务 Apple Mobile Device Service：没装（商店版 Apple Devices 不注册这个服务，属正常）")
+            except Exception as exc:
+                if isinstance(exc, ValueError):
+                    raise
+                checked.append("服务 Apple Mobile Device Service：读不到")
+            try:
+                pkgs = probe("apple_devices")["packages"]
+                if not isinstance(pkgs, list):
+                    raise ValueError()
+                store = bool(pkgs)
+                checked.append("商店版 Apple Devices：" + ("已装（" + "、".join(f"{x.get('Version', '')} {x.get('Status', '')}".strip() for x in pkgs) + "）" if store else "没装"))
+            except Exception:
+                checked.append("商店版 Apple Devices：读不到安装登记")
+            seen = "查过：" + "；".join(checked)
+            if state is not None and state != 4:
+                driver = _item("apple_driver", "Apple移动设备支持", "mismatch", "Apple服务未运行；请人工检查官方安装与服务。" + seen, source)
+            elif store or state == 4:
+                driver = _item("apple_driver", "Apple移动设备支持", "missing",
+                               "已装Apple设备支持但本机usbmux端口不通：打开一次Apple Devices（或重启电脑）让后台服务起来后再查。" + seen, source)
+            else:
+                driver = _item("apple_driver", "Apple移动设备支持", "missing", "没找到Apple设备支持。" + seen, source)
     except Exception as exc:
         driver = _failure("apple_driver", "Apple移动设备支持", exc, source)
     usb = _item("apple_usb", "Apple USB设备能力", "unverified",
