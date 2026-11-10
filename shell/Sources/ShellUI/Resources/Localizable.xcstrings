@@ -11916,6 +11916,22 @@
           }
         }
       }
+    },
+    "Installed – have fun!": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed – have fun!"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装完成，祝您玩得愉快"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

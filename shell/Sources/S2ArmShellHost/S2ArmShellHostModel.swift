@@ -143,6 +143,8 @@ public final class S2ArmShellHostModel {
             case 3: want = .installing(transferStage(id)); arriving = true   // 断了也接着看：电脑重新插上续传时字节又涨
             default: missing.insert(id); want = listed == .playable ? .needsGameData : listed   // 不显示；Play 点到也只给导入说明，不放行
             }
+            let fresh = want == .playable && isFresh(id)
+            if allGames[i].game.isNew != fresh { allGames[i].game.isNew = fresh }
             if allGames[i].game.state != want {
                 if want.installPhase != allGames[i].game.state.installPhase { NSLog("S2Arm 游戏库：%@ → %@", id, String(describing: want)) }
                 allGames[i].game.state = want
@@ -184,6 +186,17 @@ public final class S2ArmShellHostModel {
         return InstallStage(.transferring, fraction: fraction)
     }
 
+    /// 装好（或更新）后还没点开过：资源包解开的时刻（资源包/.applied）比这款最后一次点开始（.played，requestPlay 写）新。
+    ///   没有 .played、但有存档目录 S2A/（这版之前就玩过）→ 算玩过，不因升级让每款都亮蓝点
+    private func isFresh(_ id: String) -> Bool {
+        let dir = gamesRoot.appendingPathComponent(id), fm = FileManager.default
+        func mtime(_ url: URL) -> Date? { (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date }
+        guard let applied = mtime(dir.appendingPathComponent("资源包/.applied")) else { return false }
+        if let played = mtime(dir.appendingPathComponent(Self.playedMark)) { return applied > played }
+        return !fm.fileExists(atPath: dir.appendingPathComponent(Self.saveRoot).path)
+    }
+    static let playedMark = ".played"
+
     private func startTicker() {
         guard ticker == nil else { return }
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refreshGameData() } }
@@ -217,6 +230,8 @@ public final class S2ArmShellHostModel {
             NSLog("S2Arm 游戏库：Play %@ 被拒（不在列表或不可运行）", id)
             return
         }
+        try? Data().write(to: gamesRoot.appendingPathComponent(id).appendingPathComponent(Self.playedMark))   // 点开过：蓝点消掉
+        if let i = allGames.firstIndex(where: { $0.id == id }) { allGames[i].game.isNew = false }
         play(id)
     }
 

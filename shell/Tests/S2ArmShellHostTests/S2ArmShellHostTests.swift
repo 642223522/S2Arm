@@ -307,3 +307,23 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.games.first?.game.state == .playable && !model.watching)
 }
 
+// 装好后第一次点开之前名字前亮蓝点（同 iOS 新装 App）：期望按文件时间手写——.applied 比 .played 新 = 新装；点开始写 .played → 灭；
+//   再装一版（.applied 更新）→ 又亮；升级前就玩过的款（有存档目录 S2A/、没有 .played）不亮
+@MainActor @Test func newlyInstalledGameShowsBlueDotUntilFirstPlay() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-new-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let (a, b) = ("0100000000010000", "0100000000020000")
+    for id in [a, b] { try fm.createDirectory(at: root.appendingPathComponent("\(id)/资源包"), withIntermediateDirectories: true); try Data("x".utf8).write(to: root.appendingPathComponent("\(id)/资源包/.applied")) }
+    try fm.createDirectory(at: root.appendingPathComponent("\(b)/S2A"), withIntermediateDirectories: true)
+    var played: [String] = []
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
+                                    installState: { _ in 1 }, gamesRoot: root)
+    #expect(model.games.map(\.game.isNew) == [true, false])
+    model.actions.onPlay(a)
+    #expect(played == [a] && model.games.map(\.game.isNew) == [false, false])
+    model.refreshGameData(); #expect(model.games.first?.game.isNew == false)
+    try fm.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: root.appendingPathComponent("\(a)/资源包/.applied").path)
+    model.refreshGameData(); #expect(model.games.first?.game.isNew == true)   // 再装一版
+}
+

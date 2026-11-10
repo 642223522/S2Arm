@@ -333,6 +333,17 @@ struct CoverView: View {
     }
 }
 
+/// The blue dot iOS puts before a new app's name until it is first opened.
+struct NewDot: View {
+    var size: CGFloat = 9
+    var body: some View { Circle().fill(Color(red: 0.04, green: 0.52, blue: 1)).frame(width: size, height: size).accessibilityHidden(true) }
+}
+
+extension GameTile {
+    /// Ready and not opened since it was installed: says so once, under the name.
+    var showsNewNote: Bool { isNew && state == .playable }
+}
+
 /// An arriving game's grey veil, as iOS draws an app being installed: the grey clears clockwise from twelve o'clock as
 /// this phase gets on, and a stopped or failed install stays fully grey with a sign of what happened.
 struct InstallMask: View {

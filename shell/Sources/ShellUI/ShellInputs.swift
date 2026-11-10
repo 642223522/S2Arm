@@ -43,8 +43,10 @@ public struct GameTile: Identifiable, Equatable, Sendable {
     public var state: GameState
     /// Already localized, such as "Played today". Nil leaves the game out of Recently played.
     public var recentlyPlayed: String?
+    /// Installed (or updated) and not opened since: a blue dot before its name, as iOS marks a new app.
+    public var isNew: Bool
     public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
-                state: GameState = .playable, recentlyPlayed: String? = nil) {
+                state: GameState = .playable, recentlyPlayed: String? = nil, isNew: Bool = false) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
@@ -52,6 +54,7 @@ public struct GameTile: Identifiable, Equatable, Sendable {
         self.icon = icon
         self.state = state
         self.recentlyPlayed = recentlyPlayed
+        self.isNew = isNew
     }
 }
 
