@@ -146,6 +146,31 @@ static void automatic_cases(NvProg *reader, prog_t *reader_p, NvProg *self, prog
     finish(); pixels("default self-write dirty=1",a,160,160,160);
 }
 
+// #387: a draw that samples its own pass's depth attachment (NVN: legal, reads memory; Metal: undefined in the same pass). Expected by the rule, not by
+// running the implementation: the argument the production encode_args writes for that slot is a different resource from the attached depth texture,
+// one more copy is made, and the submission completes without a Metal error. Against the source before the fix the argument is the attachment itself.
+static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b, tex_t *out, const p_draw *triangle) {
+    nvn_be_sub_begin(); state_reset(); S.prog=reader_p; S.tex[1][0]=4; S.tex[1][1]=2;
+    clear(b,160,192,224); clear(out,0,0,0);
+    uint64_t copies=g_fb_count, depth_before=g_fb_depth;
+    rp_flush(); memset(&R.rt, 0, sizeof R.rt); R.rt.n=3; R.rt.color[2]=out; R.rt.depth=depth;
+    R.has_rt=1; g_pso_dirty=1; args_dirty_all();
+    rp_begin(); REQUIRE(g_enc);
+    draw(triangle,NULL);
+    binding("depth attachment sampled in its own pass",reader->sh[1],depth,1);
+    CHECK(g_fb_depth-depth_before==1 && g_fb_count-copies==1,"depth attachment sampled in its own pass: one copy (depth copies %llu, all copies %llu)",
+        (unsigned long long)(g_fb_depth-depth_before),(unsigned long long)(g_fb_count-copies));
+    // The same depth unchanged: a second sampling draw reads the first copy (no new copy, no pass break); after a draw that writes depth the next one copies again
+    uint64_t c1=g_fb_depth, r1=g_fb_depth_reuse, passes=g_stat_pass;
+    draw(triangle,NULL);
+    CHECK(g_fb_depth==c1 && g_fb_depth_reuse-r1==1 && g_stat_pass==passes,"second draw on unchanged depth: reuses the copy (new copies %llu, reuses %llu, passes opened %llu)",
+        (unsigned long long)(g_fb_depth-c1),(unsigned long long)(g_fb_depth_reuse-r1),(unsigned long long)(g_stat_pass-passes));
+    S.ds.dt=1; S.ds.dw=1; S.ds.df=8; g_pso_dirty=1; draw(triangle,NULL);   // writes depth (and samples it: a fresh copy of the depth before this draw)
+    S.ds.dw=0; g_pso_dirty=1; uint64_t c2=g_fb_depth; draw(triangle,NULL);
+    CHECK(g_fb_depth-c2==1,"after a depth-writing draw the next sampling draw copies again (new copies %llu)",(unsigned long long)(g_fb_depth-c2));
+    finish(); CHECK(!mtl_last_commit_error(),"depth attachment sampled in its own pass: submission completes without a Metal error");
+}
+
 int main(int argc, char **argv) {
     int all=argc==2 && !strcmp(argv[1],"--snap-all");
     REQUIRE(argc==1 || all);
@@ -180,6 +205,12 @@ int main(int argc, char **argv) {
 
         if (!all) {
             automatic_cases(program,&p,self,&self_p,&a,&b,&first,&triangle);
+            tex_t depth; memset(&depth,0,sizeof depth); depth.magic=MAGIC('T','E','X',0); depth.serial=nvn_new_serial();
+            depth.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_DEPTH32F_STENCIL8, .width=4, .height=4, .depth=1, .levels=1};
+            depth.pool=pool; depth.off=262144; depth.mem=pool->mem+262144; nvn_tex_layout(&depth.d,&depth.L); nvn_be_tex_init(&depth);
+            REQUIRE(tex_mtl(&depth) && tex_mtl(&depth).pixelFormat==MTLPixelFormatDepth32Float_Stencil8);
+            nvn_be_reg_tex(4,&depth,NULL);
+            depth_case(program,&p,&depth,&b,&first,&triangle);
         } else {
         nvn_be_sub_begin(); state_reset(); S.prog=&p; S.tex[1][0]=1; S.tex[1][1]=2;
         clear(&a,32,64,96); clear(&b,160,192,224); clear(&first,0,0,0); clear(&second,0,0,0);
