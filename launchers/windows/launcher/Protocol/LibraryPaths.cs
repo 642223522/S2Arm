@@ -41,8 +41,17 @@ public static class LibraryPaths
         return saved;
     }
 
+    /// <summary>私有目录下的旧缺省库（0.1.x 没选过位置的玩家的库就在这里；作业层 layout.relocate_default 认这个路径才搬）。</summary>
+    public static string LegacyDefaultLibrary(string privateRoot) => Path.Combine(privateRoot, "DefaultLibrary");
+
     /// <summary>设置文件里的库路径（已按搬库标记换过）；没有设置就是缺省库。</summary>
-    public static string SavedLibrary(string privateRoot)
+    public static string SavedLibrary(string privateRoot) => SavedLibrary(privateRoot, DefaultLibrary(privateRoot));
+
+    /// <summary>同上，缺省库由调用方给（单测用：标准私有目录的缺省库在用户主目录，测不到）。
+    /// 没有设置文件时先认旧缺省库：0.1.x 老玩家从没选过位置、也就没有 library-location.txt，库还在私有目录下的 DefaultLibrary。
+    /// 把这个旧路径交给作业层，relocate_default 才会搬：新位置空着就同盘改名过去，被别的东西占着就原地照用，库里的游戏、存档都在；
+    /// 已经搬过的按搬库标记落到新位置。旧库不在也没搬过（新装）才用新缺省库。</summary>
+    public static string SavedLibrary(string privateRoot, string defaultLibrary)
     {
         try
         {
@@ -50,7 +59,8 @@ public static class LibraryPaths
             if (saved.Length > 0) return Library(privateRoot, saved);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-        return DefaultLibrary(privateRoot);
+        var legacy = Library(privateRoot, LegacyDefaultLibrary(privateRoot));
+        return Built(legacy) ? legacy : defaultLibrary;
     }
 
     /// <summary>任务日志 + 任务记录（logs\jobs\）：库建好了（有 .s2arm-library.json）是 库\logs，否则退回 私有目录\logs。library 不给就读设置。</summary>

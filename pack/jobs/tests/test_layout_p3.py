@@ -238,6 +238,33 @@ class RelocateDefaultTests(unittest.TestCase):
         self.assertEqual(layout.relocate_default(self.private, self.old), self.target)
         self.assertEqual(json.loads((self.private / "preferences.json").read_text())["library"], str(self.target))
 
+    def test_windows_upgrade_without_settings_file(self):
+        """0.1.x Windows 老玩家：库在私有目录 DefaultLibrary、没有 library-location.txt / preferences.json，前端把旧路径交过来：
+        ① 新位置不存在 → 搬过去、游戏存档都在、不凭空写设置文件；② 新位置被别的东西占着 → 留在旧路径、游戏存档都在"""
+        win = self.private / "DefaultLibrary"
+        os.replace(self.old, win)
+        (self.private / "preferences.json").unlink()
+        (self.private / "library-location.txt").unlink()
+        touch(self.target / "README.md", "someone else's checkout")   # ②
+        self.assertEqual(layout.relocate_default(self.private, win), win)
+        self.assertEqual((win / "games" / "G" / "saves" / "s.dat").read_text(), "save")
+        self.assertEqual((self.target / "README.md").read_text(), "someone else's checkout")
+        (self.target / "README.md").unlink()
+        touch(self.target / ".s2arm-library.json", json.dumps(dict(schema=1, id="empty-new")))   # ③ 0.2.0 在新位置建的空库
+        self.assertEqual(layout.relocate_default(self.private, win), win)
+        self.assertEqual((win / "games" / "G" / "saves" / "s.dat").read_text(), "save")
+        (self.private / "library-location.txt").write_text(str(win))       # 临时绕法：设置指回旧库，照用、不搬
+        self.assertEqual(layout.relocate_default(self.private, win), win)
+        self.assertEqual((self.private / "library-location.txt").read_text(), str(win))
+        (self.private / "library-location.txt").unlink()
+        (self.target / ".s2arm-library.json").unlink()
+        self.target.rmdir()                                                    # ①
+        self.assertEqual(layout.relocate_default(self.private, win), self.target)
+        self.assertEqual((self.target / "games" / "G" / "saves" / "s.dat").read_text(), "save")
+        self.assertFalse(win.exists())
+        self.assertFalse((self.private / "library-location.txt").exists())
+        self.assertEqual(layout.relocate_default(self.private, win), self.target)   # 前端之后照旧传旧路径也落到新位置
+
     def test_killed_after_rename_finishes_on_next_job(self):
         atomic(self.private / "library-relocate.json", {"schema": 1, "from": str(self.old), "to": str(self.target), "state": "moving"})
         os.replace(self.old, self.target)   # 改完名就被杀：设置、索引都还是旧路径
