@@ -617,19 +617,20 @@ def prepare(c):
             # 出包实测账（library.record_pack_usage）：在清旧镜像之前量，新旧同在盘上才是这一单真占到的峰值
             from library import record_pack_usage
             record_pack_usage(c, game)
+            # 新运行版本已换上：以下只是省盘 / 记账 / 刷新显示，出错只提示、不把这次出包判失败（v0.2.3 清理，#343）
             if old.exists():
-                shutil.rmtree(old)
-            host_update.prune(c)
+                host_update.tidy(c, "删除上一版运行文件", shutil.rmtree, old)
+            host_update.tidy(c, "清理不再用的旧运行层", host_update.prune, c)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
-        ms.record(c, size_gb)
+        host_update.tidy(c, "记录出包里程碑用时", ms.record, c, size_gb)
         from library import _part_bytes, _rm
         # 解包和中间目录：运行版本整棵是克隆出来的（APFS 同卷，和产物根、解包同属一个克隆族）就保留——几乎不另占盘，下次出另一端的包不用重解（#329，
         #   同一款的数据在盘上只占一份）；有文件退成了普通复制（跨卷、非 APFS、Windows）运行版本已是独立的一份，照旧删掉解包省一份
         unpacked = layout.build_dir(c, game["id"], create=False)
         if unpacked.exists() and not all_cloned:
-            _rm(c, layout.root_of(c, game["id"]), unpacked)
+            host_update.tidy(c, "删除解包目录", _rm, c, layout.root_of(c, game["id"]), unpacked)
         import sizes
-        sizes.refresh(c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
+        host_update.tidy(c, "刷新游戏占用大小", sizes.refresh, c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
         return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified")

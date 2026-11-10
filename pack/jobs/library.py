@@ -1291,6 +1291,7 @@ def scan_import(c, picked, *, partial):
                 dirs[:] = []
             else:
                 files.extend(path / name for name in names if name.lower().endswith(SOURCE_SUFFIXES)
+                             and not layout.os_junk(name)   # exFAT 盘上访达留下的 ._游戏.nsp 附属文件不是原件（v0.2.3 清理）
                              and os.path.isfile(path / name)
                              and (not name.lower().endswith(NUP_SUFFIX) or is_nup(c, path / name)))
         if files or extracts or errors:

@@ -51,7 +51,7 @@ class Cancelled(Exception):
 def read(path, default=None):
     try:
         return json.loads(Path(path).read_text())
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):   # NotADirectoryError：路径中间一级是文件（遍历到 .DS_Store 再读 .DS_Store/game.json，#343）＝没有
         return default
 
 
