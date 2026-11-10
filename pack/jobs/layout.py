@@ -825,7 +825,13 @@ def adopt_private_logs(c):
     for src, dst in sources:
         if not src.is_dir() or src.is_symlink():
             continue
-        for child in sorted(src.iterdir()):
+        # 每个作业起跑都收一次（ensure）：别的作业可能同时在收，判完 is_dir 到列目录之间目录已被它收空删掉（启动器同时起两个 catalog：
+        #   WorkerIntegrationTests 偶发「任务所需的文件或目录不存在」，main 全套两次红在这里）——被对方收走的就算收完了
+        try:
+            children = sorted(src.iterdir())
+        except FileNotFoundError:
+            continue
+        for child in children:
             if src == c.private / "logs" and child.name == "jobs":
                 continue
             if any(child.name.startswith(t) for t in running):

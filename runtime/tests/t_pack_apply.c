@@ -26,6 +26,7 @@ struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
 int s2a_import_transferring(const char *root, char *why, size_t n); int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n);
 static int g_pd = -1, g_pt = -1, g_pcalls; static void prog(int d, int t) { g_pd = d; g_pt = t; g_pcalls++; }
 uint64_t now_ns(void) { return 0; }
+static int g_ui_zh = 1; int s2a_ui_zh(void) { return g_ui_zh; }   // 界面语言（s2a_ui_text.h）：盖过 pack_apply.c 的弱缺省，⑨b 切英文
 static int bad;
 #define CHECK(c, ...) do { if (!(c)) { printf("✗ " __VA_ARGS__); printf("\n"); bad++; } } while (0)
 static int sh(const char *c) { return system(c); }
@@ -201,6 +202,12 @@ int main(void) {
       char hd[1024]; s2a_pack_help_detail(2, 1, hd, sizeof hd); CHECK(!strncmp(hd, "刚刚查过，还是没有完整的资源包。", strlen("刚刚查过，还是没有完整的资源包。")), "⑨ 重新检查后仍缺：开头说刚刚查过");
       s2a_pack_help_detail(2, 0, hd, sizeof hd); CHECK(!strstr(hd, "刚刚查过") && strstr(hd, "外壳"), "⑨ 首次显示：不说刚刚查过");
       s2a_pack_help_detail(3, 1, hd, sizeof hd); CHECK(strstr(hd, "刚刚查过") && strstr(hd, "没拷全"), "⑨ 不完整重新检查后：也说刚刚查过");
+      // ⑨b #316：英文界面（s2a_ui_zh 回 0）说明页正文出英文（文字手写），且除照写的「资源包」文件夹名外不含中文
+      g_ui_zh = 0;
+      s2a_pack_help_detail(2, 1, hd, sizeof hd); CHECK(!strncmp(hd, "Checked just now", 16) && strstr(hd, "shell"), "⑨b 英文：重新检查后仍缺 → 「Checked just now」开头、说 shell（实得 %s）", hd);
+      s2a_pack_help_detail(3, 0, hd, sizeof hd); CHECK(!strncmp(hd, "Some files in the resources", 27) && !strstr(hd, "Checked"), "⑨b 英文：不完整首次 → 不说 Checked just now（实得 %s）", hd);
+      { char *z = strstr(hd, "资源包"); if (z) memset(z, 'x', strlen("资源包")); int cjk = 0; for (unsigned char *q = (unsigned char *)hd; *q; q++) if (*q == 0xE4 || (*q >= 0xE5 && *q <= 0xE9)) cjk = 1; CHECK(!cjk, "⑨b 英文：除文件夹名外无中文（实得 %s）", hd); }
+      g_ui_zh = 1;
       // ⑩ 审计 P2-7：index.tsv 由 pack/pack.py 与 manifest.json 同写，出包保证在。manifest.json 在而 index.tsv 不在 / 打不开（自环软链 ELOOP，root 下也打不开）/ 读不了（目录，fopen 成功、读 EISDIR）
       //   → 期望都判 3 不完整；旧代码打不开当「老包不核」判 0 就绪。11-02 维护者：说明页不点名 index.tsv 这类内部词（缺哪个只进日志）
       snprintf(D, sizeof D, "%s/imp4", T); snprintf(c2, sizeof c2, "mkdir -p '%s/资源包/ctl' && echo '{}' > '%s/资源包/manifest.json' && echo n > '%s/资源包/ctl/control.nacp'", D, D, D); sh(c2);
@@ -301,10 +308,17 @@ int main(void) {
           snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); sh(qc);
           CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 1, ".applied 等于清单、main.npdm 在：游戏库显示");
           snprintf(qc, sizeof qc, "rm '%s/exefs/main.npdm'", qr); sh(qc);
-          snprintf(qc, sizeof qc, "mkdir -p '%s/.incoming' && printf x > '%s/.incoming/1_000.tar' && printf '' > '%s/.applied'", qr, qr, qr); sh(qc);
-          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, ".applied 被清空（传镜像被打断）：不显示");
+          // 推送包齐了只等解开（11-09 根修 Windows 装完游戏库空：推完起 App 解包没成，.applied 仍是推送开头清空的空文件）：包写完 + 清单读得出 → 显示
+          snprintf(qc, sizeof qc, "mkdir -p '%s/.incoming' && head -c 1024 /dev/zero > '%s/.incoming/1_000.tar' && touch '%s/index.tsv' && printf '' > '%s/.applied'", qr, qr, qr, qr); CHECK(sh(qc) == 0, "造待解开夹具失败");
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 1, "包齐、清单到了、.applied 为空（Windows 起 App 解包没成）：显示，点 Play 由导入闸门解开");
           snprintf(qc, sizeof qc, "rm '%s/.applied'", qr); sh(qc);
-          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 1, "推送包齐了只等解开：显示"); }
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 1, "包齐、没有 .applied：显示");
+          snprintf(qc, sizeof qc, "printf '' > '%s/manifest.json'", qr); sh(qc);
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, "清单被推送开头置空（还在传 / 传断了）：不显示");
+          snprintf(qc, sizeof qc, "printf '{\"version\":2,\"index_sha256\":\"abc123\"}' > '%s/manifest.json' && printf x > '%s/.incoming/1_000.tar'", qr, qr); sh(qc);
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, "有包没写完（没有归档尾）：不显示");
+          snprintf(qc, sizeof qc, "head -c 1024 /dev/zero > '%s/.incoming/1_000.tar' && printf 'abc123' > '%s/.applied'", qr, qr); sh(qc);
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, "机上清单还是上次已导入的那份（新清单没到）：不显示"); }
     }
     printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

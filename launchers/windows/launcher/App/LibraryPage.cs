@@ -82,24 +82,16 @@ public sealed partial class EnvironmentWindow
         // Only a backend-provided local cover in this library is considered; never load a remote URL.
         try
         {
-            if (connectedFolder is not null && game.Cover.Length > 0)
+            // 只认这款自己文件夹里的封面（LibraryGame.CoverFile：按 catalog 给的文件夹认，英文名文件夹也行，#330）
+            if (connectedFolder is not null && game.CoverFile() is { } path && new FileInfo(path).Length <= 16 * 1024 * 1024)
             {
-                var root = Path.GetFullPath(Path.Combine(connectedFolder, "games")) + Path.DirectorySeparatorChar;
-                var folder = Path.GetFullPath(Path.Combine(root, game.Id)) + Path.DirectorySeparatorChar;
-                var path = Path.GetFullPath(game.Cover);
-                // 只认这款游戏目录下的 cover.jpg 或玩家换的 cover.custom.<8 位十六进制>.jpg（后端 _CUSTOM_COVER）
-                if (folder.StartsWith(root, StringComparison.OrdinalIgnoreCase) && path.StartsWith(folder, StringComparison.OrdinalIgnoreCase) &&
-                    System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path), @"^cover(\.custom\.[0-9a-f]{8})?\.jpg$") &&
-                    Path.GetDirectoryName(path) + Path.DirectorySeparatorChar == folder && new FileInfo(path).Length <= 16 * 1024 * 1024)
+                if (!covers.TryGetValue(path, out var image))
                 {
-                    if (!covers.TryGetValue(path, out var image))
-                    {
-                        using var file = File.OpenRead(path);
-                        image = Bitmap.DecodeToWidth(file, 240);
-                        covers.Add(path, image);
-                    }
-                    return new Image { Source = image, Width = size, Height = size, Stretch = Stretch.UniformToFill };
+                    using var file = File.OpenRead(path);
+                    image = Bitmap.DecodeToWidth(file, 240);
+                    covers.Add(path, image);
                 }
+                return new Image { Source = image, Width = size, Height = size, Stretch = Stretch.UniformToFill };
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }

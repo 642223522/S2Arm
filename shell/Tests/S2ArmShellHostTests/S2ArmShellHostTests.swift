@@ -15,7 +15,8 @@ import ShellUI
     #expect(c.tiles[1].state == .needsGameData)
     #expect(c.tiles[2].state == .needsAppUpdate)
     #expect(c.tiles[3].state == .broken(reason: "R", detail: "D"))
-    #expect(c.tiles[4].state == .broken(reason: "", detail: "", technical: "未知状态 \"flying\""))
+    // technical 一行按 App 语言取 ShellUI 文字表（#316）：中文系统是原句，其余是英文原文（期望两种都手写）
+    #expect([GameState.broken(reason: "", detail: "", technical: "未知状态 \"flying\""), .broken(reason: "", detail: "", technical: "Unknown state \"flying\"")].contains(c.tiles[4].state))
     if case .broken = c.tiles[5].state {} else { Issue.record("非法 title_id 应显示为不可用") }
     #expect(c.tiles[6].state == .playable)   // 缺 state 按可运行
     #expect(c.problems.count == 2)           // 重复 1 + 非法 id 1

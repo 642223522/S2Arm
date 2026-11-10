@@ -6,6 +6,20 @@ internal static class LibraryJobCases
 {
     public static void Run(Action<bool, string> check)
     {
+        // 封面按 catalog 给的这款文件夹认（#330：v0.2.0 起文件夹按英文名，原先按游戏号拼 games\<号>\ 一律退回占位图）
+        var lib = Path.Combine(Path.GetTempPath(), "s2a-cover-" + Guid.NewGuid().ToString("N"));
+        var english = Path.Combine(lib, "games", "Animal Crossing New Horizons");
+        var byId = Path.Combine(lib, "games", "0100F38011CFE000");
+        LibraryGame Game(string id, string cover, string folder, string state = "ok") =>
+            new(id, "n", "", cover, false, Array.Empty<string>(), Location: new GameLocation(state, lib, folder, "", true));
+        check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english).CoverFile() == Path.Combine(english, "cover.jpg"), "cover: English-named game folder is shown");
+        check(Game("0100F38011CFE000", Path.Combine(byId, "cover.jpg"), byId).CoverFile() == Path.Combine(byId, "cover.jpg"), "cover: game-id folder still shown");
+        check(Game("01006F8002326000", Path.Combine(english, "cover.custom.0a1b2c3d.jpg"), english).CoverFile() is not null, "cover: custom cover in the English folder is shown");
+        check(Game("01006F8002326000", Path.Combine(byId, "cover.jpg"), english).CoverFile() is null, "cover: another game's folder is refused");
+        check(Game("01006F8002326000", Path.Combine(english, "icon.jpg"), english).CoverFile() is null, "cover: other file names are refused");
+        check(Game("01006F8002326000", Path.Combine(english, "sub", "cover.jpg"), english).CoverFile() is null, "cover: nested paths are refused");
+        check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english, "offline").CoverFile() is null, "cover: offline location shows no cover");
+
         // 导入失败的去向：只有读取器确认通用密钥版本不足（keys_outdated）才引导换密钥；
         // 无法读取、缺票据、内容截断都不是换 prod.keys 能解决的。
         check(ImportFailureRoute.For("keys_missing", false) == ImportFailureRoute.ImportKeys, "missing prod.keys asks to import keys");

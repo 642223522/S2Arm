@@ -220,6 +220,10 @@ public struct GameLocation: Equatable {
     public init(catalog l: [String: Any]) {
         state = l["state"] as? String ?? "none"; path = l["path"] as? String ?? ""; folder = l["folder"] as? String ?? ""; volume = l["volume"] as? String ?? ""
     }
+    /// 这款自己文件夹里的文件（按 catalog 给的文件夹，英文名或游戏号命名都行；不按游戏号自己拼路径）。位置没连上 / 文件夹找不到 → nil
+    public func file(_ name: String) -> URL? {
+        state == "ok" && !folder.isEmpty ? URL(fileURLWithPath: folder).appendingPathComponent(name) : nil
+    }
 }
 
 /// 一款的各部分大小（字节，catalog 的 sizes）：Mac 镜像、iPhone 镜像、存档、缓存（出包缓存 + 着色器缓存）、原件（多款共用的按款数均摊）。
