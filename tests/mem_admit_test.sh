@@ -42,14 +42,17 @@ ck "⑰ 放行后 <进度文件>.wait 删掉（心跳不再报在等）" '[ ! -e
 touch "$A/b.go" "$A/c.go"; wait
 
 # ㉑ 优先类别（11-07 维护者：启动器最高优先，App 打包排队等 CPU）：上限 10，a / b 各占 4；优先类 appbuild/p 要 4 先排队，之后普通 dsh/d 要 2
-#   （8 + 2 ≤ 10 本来放得进）→ d 不插空、在等；a 结束后 p 先放行，b 结束后 d 才放行。期望手算：p 起在 d 之前
+#   （8 + 2 ≤ 10 本来放得进）→ d 不插空、在等；a 结束后 p 先放行，d 在它之后放行（b 4 + p 4 + d 2 = 10）。期望手算：p 起在 d 之前
 P=$T/prio; mkdir -p "$P"; export S2A_MEM_DIR=$P/mem S2A_MEM_LOCK=$P/mem.flock
 holdc() { local D=$1 C=$2 N=$3; bash "$H/tools/mem_admit.sh" "$C" "$N" -- bash -c 'touch "$1/$2.in"; while [ ! -e "$1/$2.go" ] && [ -d "$1" ]; do sleep 0.1; done' _ "$D" "$N" > "$D/$N.out" 2>&1 & }
 holdc "$P" dsh a; waitf "$P/a.in"; holdc "$P" dsh b; waitf "$P/b.in"
 holdc "$P" appbuild p; waitg "$P/mem/admit.log" '【排队】mem_admit appbuild/p'; holdc "$P" dsh d; waitg "$P/mem/admit.log" '【排队】mem_admit dsh/d'; sleep 1
 ck "㉑ 优先类 appbuild/p 在等时，放得进的普通 dsh/d 不插空（d 没起）、排队行写明让优先类" '[ ! -e "$P/d.in" ] && grep "【排队】mem_admit dsh/d" "$P/mem/admit.log" | grep -q "优先类别 appbuild/p"'
 touch "$P/a.go"; waitf "$P/p.in" 300
-ck "㉑ a 结束后优先类 p 先放行、d 仍在等" '[ -e "$P/p.in" ] && [ ! -e "$P/d.in" ]'
+# p 放行后账内 4 + 4 = 8，d 要 2 → 8 + 2 ≤ 10 本来就放得进：d 可能紧跟着放行（原先断言「d 仍在等」靠 d 下一次轮询前抢先检查，负载高时偶发红）。
+#   判先后看账本日志的放行行：p 的在前，d 的在后或还没有
+lp=$(grep -n "放行 appbuild/p" "$P/mem/admit.log" | head -1 | cut -d: -f1); ld=$(grep -n "放行 dsh/d" "$P/mem/admit.log" | head -1 | cut -d: -f1)
+ck "㉑ a 结束后优先类 p 先放行（admit.log 里 p 的放行行在 d 之前）" '[ -e "$P/p.in" ] && [ -n "$lp" ] && { [ -z "$ld" ] || [ "$lp" -lt "$ld" ]; }'
 touch "$P/b.go"; waitf "$P/d.in" 300
 ck "㉑ b 结束后 d 放行" '[ -e "$P/d.in" ]'
 touch "$P/p.go" "$P/d.go"; wait
