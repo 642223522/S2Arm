@@ -208,6 +208,7 @@
 "vpad.rumble.level.2" = "标准";
 "vpad.rumble.level.3" = "较强";
 "vpad.rumble.level.4" = "强";
+"vpad.rumble.level.5" = "震爆我";
 "vpad.rumble.strength" = "震动强度";
 "vpad.stick.deadzone" = "径向死区";
 "vpad.stick.exponent" = "响应指数";

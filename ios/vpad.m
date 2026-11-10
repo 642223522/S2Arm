@@ -384,10 +384,10 @@ typedef BOOL (^VPFlag)(void);
     [items addObject:vp_sub(S2AL(@"vpad.menu.sticks"), @"circle.circle", @[fixed, vp_sub(S2AL(@"vpad.stick.sensitivity"), nil, sens), fine, lock])];
     // 震动：档位单选、选了就按那一档试震；关掉游戏震动时档位变灰
     VPFlag rumbleOn = ^BOOL{ id o = [d objectForKey:@"S2ARumbleOn"]; return o ? [o boolValue] : YES; };
-    NSInteger (^level)(void) = ^NSInteger{ id o = [d objectForKey:@"S2ARumbleLevel"]; return o ? MAX(0, MIN(4, [o integerValue])) : 2; };
+    NSInteger (^level)(void) = ^NSInteger{ id o = [d objectForKey:@"S2ARumbleLevel"]; return o ? MAX(0, MIN(5, [o integerValue])) : 2; };
     UIAction *game = [self live:@"vp.rumble.on" title:S2AL(@"vpad.rumble") note:S2AL(@"vpad.menu.rumble.note") on:rumbleOn disabled:nil run:^{
         [d setBool:!rumbleOn() forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }];
-    NSMutableArray<UIMenuElement *> *levels = [NSMutableArray array]; NSArray *names = @[S2AL(@"vpad.rumble.level.0"), S2AL(@"vpad.rumble.level.1"), S2AL(@"vpad.rumble.level.2"), S2AL(@"vpad.rumble.level.3"), S2AL(@"vpad.rumble.level.4")];
+    NSMutableArray<UIMenuElement *> *levels = [NSMutableArray array]; NSArray *names = @[S2AL(@"vpad.rumble.level.0"), S2AL(@"vpad.rumble.level.1"), S2AL(@"vpad.rumble.level.2"), S2AL(@"vpad.rumble.level.3"), S2AL(@"vpad.rumble.level.4"), S2AL(@"vpad.rumble.level.5")];
     for (NSInteger i = 0; i < 5; i++)
         [levels addObject:[self live:[NSString stringWithFormat:@"vp.rumble.level.%ld", (long)i] title:names[i] note:nil on:^BOOL{ return rumbleOn() && level() == i; }
                             disabled:^BOOL{ return !rumbleOn(); } run:^{ [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }]];

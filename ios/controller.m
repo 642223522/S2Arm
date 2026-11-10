@@ -68,11 +68,20 @@ static void system_reset_on_queue(void) {
 }
 void s2a_rumble_apply_settings(void);
 // 游戏震动的总开关和强度（设置页「按键显示与触感」）：提交前按倍率缩放振幅，手机马达 / 实体手柄 / NS2 Pro 共用
+//   手机马达和系统手柄先过 s2a_hp_feel 再乘倍率（同 Mac 宿主 macos/front_mac.m）：游戏的振幅是给 HD 线性马达的，常见值 0.06–0.19，
+//   按原值播几乎摸不到，之前「强」档最大一下也只有 0.19 × 1.8 ≈ 0.34。NS2 Pro 本身就是 HD 马达，振幅原样乘倍率
 static _Atomic float g_rumble_gain = 1;
 static float finite_clamp(float x, float lo, float hi);
-static float rumble_scaled(float amp) { return finite_clamp(amp * atomic_load(&g_rumble_gain), 0, 1); }
-static void rumble_scale_pair(const s2a_pad_vibration in[2], s2a_pad_vibration out[2]) {
-    for (int i = 0; i < 2; i++) { out[i] = in[i]; out[i].low_amp = rumble_scaled(in[i].low_amp); out[i].high_amp = rumble_scaled(in[i].high_amp); }
+static float rumble_scaled(float amp, BOOL feel) {
+    amp = finite_clamp(amp, 0, 1);
+    return finite_clamp((feel ? s2a_hp_feel(amp) : amp) * atomic_load(&g_rumble_gain), 0, 1);
+}
+static BOOL rumble_feel(uint64_t session) {
+    uint64_t kind = session & 0xffff000000000000ull;
+    return kind == PHONE_SESSION_BASE || kind == SYSTEM_SESSION_BASE;
+}
+static void rumble_scale_pair(const s2a_pad_vibration in[2], s2a_pad_vibration out[2], BOOL feel) {
+    for (int i = 0; i < 2; i++) { out[i] = in[i]; out[i].low_amp = rumble_scaled(in[i].low_amp, feel); out[i].high_amp = rumble_scaled(in[i].high_amp, feel); }
 }
 static float finite_clamp(float x, float lo, float hi) {
     return isfinite(x) ? fminf(hi, fmaxf(lo, x)) : lo;
@@ -749,7 +758,7 @@ __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(voi
 }
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration raw[2]) {
     if (!raw) return;
-    s2a_pad_vibration values[2]; rumble_scale_pair(raw, values);
+    s2a_pad_vibration values[2]; rumble_scale_pair(raw, values, rumble_feel(session));
     if ((session & 0xffff000000000000ull) == PHONE_SESSION_BASE) {
         pthread_mutex_lock(&g_feedback_mu);
         if (session == (PHONE_SESSION_BASE | g_phone_epoch)) phone_submit_locked(values, NO);
@@ -768,7 +777,7 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64
     pthread_mutex_unlock(&g_feedback_mu);
 }
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble(uint64_t session, unsigned side, float low_amp, float low_hz, float high_amp, float high_hz) {
-    low_amp = rumble_scaled(low_amp); high_amp = rumble_scaled(high_amp);
+    BOOL feel = rumble_feel(session); low_amp = rumble_scaled(low_amp, feel); high_amp = rumble_scaled(high_amp, feel);
     if ((session & 0xffff000000000000ull) == PHONE_SESSION_BASE) {   // 手机马达只有一个，合成两侧
         pthread_mutex_lock(&g_feedback_mu);
         if (side < 2 && session == (PHONE_SESSION_BASE | g_phone_epoch)) {
@@ -792,9 +801,9 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_rumble(uint64_t se
 // 设置页改了开关或强度：立即生效。关掉时三路马上停，不等游戏下一次提交
 void s2a_rumble_apply_settings(void) {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    static const float gains[5] = {0.35f, 0.7f, 1, 1.4f, 1.8f};
+    static const float gains[6] = {0.35f, 0.7f, 1, 1.4f, 1.8f, 5};   // 同定义表 launchers/shared/game_settings.v1.json rumbleLevel.scale
     id on = [d objectForKey:@"S2ARumbleOn"], level = [d objectForKey:@"S2ARumbleLevel"];
-    int lv = level ? (int)[level integerValue] : 2; lv = lv < 0 ? 0 : lv > 4 ? 4 : lv;
+    int lv = level ? (int)[level integerValue] : 2; lv = lv < 0 ? 0 : lv > 5 ? 5 : lv;
     float gain = (on && ![on boolValue]) ? 0 : gains[lv];
     float old = atomic_exchange(&g_rumble_gain, gain);
     if (gain == 0 && old != 0 && g_system_haptics_queue) {
@@ -805,11 +814,11 @@ void s2a_rumble_apply_settings(void) {
 }
 // 菜单里切震动档位 / 打开游戏震动时试震一下（11-09 维护者：「点击强弱机器是没有反应的……切换的时候手机震一下让玩家有感知」）：
 //   走游戏震动同一条出口（s2a_pad_rumble_session 选手机马达或手柄，s2a_pad_set_rumble_pair 按当前档位倍率缩放），震 0.3 秒，几档之间摸得出差别。
-//   基准振幅 0.5：弱 0.18、较弱 0.35、标准 0.5、较强 0.7、强 0.9（倍率见 s2a_rumble_apply_settings），强档不被 1.0 截平
+//   基准振幅 0.06（游戏常见值；手机马达 / 系统手柄过 s2a_hp_feel 后约 0.5）：弱 0.18、较弱 0.36、标准 0.51、较强 0.72、强 0.92、震爆我 1（倍率见 s2a_rumble_apply_settings）
 void s2a_rumble_preview(void) {
     if (atomic_load(&g_rumble_gain) <= 0) return;
     uint64_t session = s2a_pad_rumble_session(); if (!session) { LOG("游戏震动：试震跳过（现在没有可震的设备）"); return; }
-    const s2a_pad_vibration v[2] = {{0.5f, 160, 0.5f, 320}, {0.5f, 160, 0.5f, 320}};
+    const s2a_pad_vibration v[2] = {{0.06f, 160, 0.06f, 320}, {0.06f, 160, 0.06f, 320}};
     s2a_pad_set_rumble_pair(session, v);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ s2a_pad_stop_rumble(session); });
 }
