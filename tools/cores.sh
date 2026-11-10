@@ -23,16 +23,13 @@ s2a_lanes() {   # 本机正在出包的道数（含本道）：登记本道进�
   done
   echo $(( n > 0 ? n : 1 ))
 }
-s2a_mem_gb() {   # 本机物理内存（GB，取整）。先用系统自带的读法，不靠 PATH 上的 python3：装了 anaconda 的 Mac 上 PATH 最前面是
-  #   anaconda 的 3.9，它的 os.sysconf 不认 SC_PHYS_PAGES（ValueError），整单在并行度这一步就停（11-10 Intel Mac 实走）
+s2a_mem_gb() {   # 本机物理内存（GB，取整），不经 Python：macOS sysctl hw.memsize，Linux /proc/meminfo；都读不到输出空，由调用方报红
+  #   原先用 PATH 上的 python3 调 os.sysconf("SC_PHYS_PAGES")，anaconda 3.9 不认这个名字，整单停在并行度（#447，11-10 Intel Mac 实走）
   local b k
-  b=$(sysctl -n hw.memsize 2> /dev/null)                                              # macOS
+  b=$(sysctl -n hw.memsize 2> /dev/null)
   [ "$b" -gt 0 ] 2> /dev/null && { echo $(( b >> 30 )); return; }
-  k=$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2> /dev/null)               # Linux（kB）
-  [ "$k" -gt 0 ] 2> /dev/null && { echo $(( k >> 20 )); return; }
-  b=$(getconf PAGE_SIZE 2> /dev/null); k=$(getconf _PHYS_PAGES 2> /dev/null)
-  [ "$b" -gt 0 ] 2> /dev/null && [ "$k" -gt 0 ] 2> /dev/null && { echo $(( b * k >> 30 )); return; }
-  "${S2A_PYTHON:-python3}" -c 'import os; n = os.sysconf_names; print(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 30 if "SC_PHYS_PAGES" in n else 0)' 2> /dev/null
+  k=$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2> /dev/null)
+  [ "$k" -gt 0 ] 2> /dev/null && echo $(( k >> 20 ))
 }
 s2a_cores() {
   local nc gb ln mj live
@@ -51,7 +48,7 @@ s2a_cores() {
   fi
   if [ -z "${S2A_CPU_BAKE:-}" ] || [ -z "${S2A_DIRECT_J:-}" ]; then
     gb=${S2A_MEM_TOTAL_GB:-$(s2a_mem_gb)}
-    [ "$gb" -ge 1 ] 2> /dev/null || { echo "【红】并行度：读不出物理内存（试过 sysctl hw.memsize、/proc/meminfo、getconf _PHYS_PAGES、${S2A_PYTHON:-python3} 的 os.sysconf）；可用 S2A_MEM_TOTAL_GB=<GB> 手动指定" >&2; return 1; }
+    [ "$gb" -ge 1 ] 2> /dev/null || { echo "【红】并行度：读不出物理内存（sysctl -n hw.memsize、/proc/meminfo 都没读到）；可用 S2A_MEM_TOTAL_GB=<GB> 手动指定" >&2; return 1; }
   fi
   if [ -z "${S2A_CPU_BAKE:-}" ]; then
     mj=$(( gb * 3 / 4 / ln * 2 / 3 )); [ "$mj" -ge 1 ] || mj=1

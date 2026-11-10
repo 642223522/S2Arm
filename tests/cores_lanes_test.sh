@@ -60,4 +60,6 @@ if [ "$(uname -s)" = Darwin ]; then want_gb=$(( $(sysctl -n hw.memsize) >> 30 ))
 mem() { env -u S2A_JOBS -u S2A_CPU_BAKE -u S2A_DIRECT_J -u S2A_LANES -u S2A_MEM_TOTAL_GB -u S2A_PYTHON PATH="$F:$PATH" S2A_LANE_DIR="$D" S2A_CORES_QUIET=1 S2A_NCPU=8 \
   bash -c "source '$H/tools/cores.sh'; s2a_cores > /dev/null 2>&1 && echo \$(( (\$S2A_CPU_BAKE > 0) )) || echo 失败"; }
 ck "$(mem)" "1" "⑭ PATH 上的 python3 坏了（anaconda 3.9 那种），不给 S2A_MEM_TOTAL_GB 也算得出并行度（本机 ${want_gb} GB）"; rm -rf "$F"
+# ⑮ 入口接线（#447 评审）：一键出包选定 Python 后把它所在目录放到 PATH 最前，出包链各 .sh 的裸 python3 都落到同一个解释器
+ck "$(grep -c '^export S2A_PYTHON=$PY S2A_PY=$PY PATH="$(dirname "$PY"):$PATH"$' "$H/pack/oneclick/oneclick.sh")" "1" "⑮ oneclick.sh 把选定的 Python 目录放到 PATH 最前"
 echo "同机道数并行度单测：$([ $bad = 0 ] && echo 全通 || echo "$bad 项不通")"; exit $(( bad > 0 ))
