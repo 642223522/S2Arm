@@ -401,8 +401,7 @@ class Roots:
                 continue  # The immutable store was validated and sealed on intern.
             if is_link(p):
                 raise UnsafeRoot(f'版本中有非法链接：{p}')
-            if p.is_dir():
-                plain_entries(p)
+            # v0.2.3 清理：不再递归扫每个子目录查链接 / 特殊文件——版本根全是本流水线自己生成的，每个阶段都整棵扫一遍防的是不现实的情况
 
     def cur(self, game, *, pin=True):
         component(game)

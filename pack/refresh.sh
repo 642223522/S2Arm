@@ -45,10 +45,8 @@ TS0=$SECONDS; TM=$L/tm.tsv
 tm() { printf '%s\t%s\n' "$1" "$2" >> "$TM"; }
 tsum() { [ -s "$TM" ] || return 0
   echo "⏱ $G 刷新分阶段用时（秒，并行段各记各的墙钟）：$(awk -F'\t' '{printf "%s%s %s", (NR > 1 ? " · " : ""), $1, $2}' "$TM")；刷新共 $((SECONDS - TS0)) 秒"; }
-# 原件版本核对（pack/srcver.sh，10-25 维护者：动森共享根停在 3.0.0、本机原件已是 3.0.3，追加内容一直报黄跳过、正式包不带 DLC）：
-#   现行程序版本与本机原件不同 → 红、不刷（要按原件重解）；本机没有该款原件（gate-host / 别的机器）→ 黄、照常刷
-bash "$H/srcver.sh" "$G" > "$L/srcver.out" 2>&1; rc=$?; tail -1 "$L/srcver.out"
-case $rc in 0|2) ;; *) echo "【红】$G 刷新停在原件版本核对（rc=${rc}），现行 = $(basename "$CUR")"; exit 1;; esac
+# v0.2.3 清理：不再每次刷新都核「现行程序版本 = 本机原件」（pack/srcver.sh 留作开发共享根手动核对）。它防的是 10-25 开发共享根停在旧版本，
+#   玩家流程里产物根的键已含所选包身份（inputIdentity），换了原件就是另一个根；同 11-07「出包不重算原件校验」
 # Android keeps its existing make_pack rewrite as the sole module producer.
 # Run only shared content preparation and the offline Vulkan direct library
 # (#783) here; Metal/Apple module outputs do not belong to the Android package.
