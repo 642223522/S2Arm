@@ -6512,8 +6512,8 @@
   "en": "The game was removed from the app, but its data on iPhone could not be deleted: "
  },
  {
-   "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
-   "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
+  "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
+  "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
  },
  {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。",
@@ -6718,5 +6718,65 @@
  {
   "source": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",
   "en": "Apple refused to register this App ID (Apple error 9401: the identifier is already taken on Apple's side). In Impactor (Xcode on a Mac), make sure you are signed in with the Apple ID you first installed S2Arm with, then install again. With a paid developer account you can also delete the old identifier starting with io.s2arm.games under \"Certificates, Identifiers & Profiles > Identifiers\" on developer.apple.com and try again. If it still fails, export a diagnostics package and report it."
+ },
+ {
+  "source": "机上有推完、还没解开的推送包 {0} 个：其中 {1} 个文件算已推，不重推",
+  "en": "{0} pushed-but-not-unpacked batch(es) are already on the phone; {1} files count as pushed and are not resent"
+ },
+ {
+  "source": "起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）",
+  "en": "Launching the app once to unpack the pushed batch (S2A_PACK_APPLY_ONLY=1)"
+ },
+ {
+  "source": "资源包：机上已解开（.applied = 本包）",
+  "en": "Pack: unpacked on the phone (.applied = this pack)"
+ },
+ {
+  "source": "资源包：机上实况与已应用索引不符：{0} 拉不回或 sha256 不对",
+  "en": "Pack: the phone's state does not match the applied index: {0} could not be read back or has a wrong sha256"
+ },
+ {
+  "source": "资源包：抽查 {0} 个、{1} 个不符，机上清单拉不回，不信已应用索引，整包重推",
+  "en": "Pack: spot-checked {0} files, {1} mismatched, the on-device manifest could not be read back, so the applied index is not trusted and the whole pack is pushed again"
+ },
+ {
+  "source": "把这款放进手机上的 S2Arm",
+  "en": "Put this game into S2Arm on the phone"
+ },
+ {
+  "source": "签名并装到 iPhone（Impactor 官方命令行 plumesign）",
+  "en": "Sign and install on the iPhone (Impactor's official command line, plumesign)"
+ },
+ {
+  "source": "保存游戏名字和封面",
+  "en": "Save the game name and cover"
+ },
+ {
+  "source": "把这款游戏搬到新的存放位置",
+  "en": "Move this game to its new location"
+ },
+ {
+  "source": "【红】测试设备剩余空间不足：可写 {0} GB < 要 {1} GB（待推 {2} GB + 解开时最大一批 + 余量）；先卸掉机上不用的包",
+  "en": "[red] The device does not have enough free space: writable {0} GB < needed {1} GB ({2} GB to push + the largest unpack batch + margin); remove packages you do not need from the device first"
+ },
+ {
+  "source": "播种：{0} 秒（rc={1}）",
+  "en": "Seeding: {0} s (rc={1})"
+ },
+ {
+  "source": "格式通过，首次读取游戏时验证解密能力",
+  "en": "Format OK; decryption is verified the first time the game is read"
+ },
+ {
+  "source": "签名工具 Impactor 已就绪（随 S2Arm 附带的第三方开源工具）",
+  "en": "Signing tool Impactor is ready (the third-party open-source tool bundled with S2Arm)"
+ },
+ {
+  "source": "已在 Impactor 里登录 Apple ID（只需一次）",
+  "en": "Signed in to an Apple ID in Impactor (only needed once)"
+ },
+ {
+  "source": "点「打开 Impactor」，在「设置 → 添加账号」登录你的 Apple ID（免费的就行），登录好回来这里自动打勾。",
+  "en": "Click \"Open Impactor\", sign in to your Apple ID under \"Settings > Add account\" (a free one is fine), then come back here; it ticks automatically once you are signed in."
  }
 ]

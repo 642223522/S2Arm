@@ -33,6 +33,8 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.5" />
     <ProjectReference Include="../Protocol/Protocol.csproj" />
     <EmbeddedResource Include="../../../shared/experience.v1.json" LogicalName="S2Arm.experience.v1.json" />
+    <!-- 作业层文字的英文对照表：和 Mac 适配层同一份（BackendText），不在 Windows 存副本 -->
+    <EmbeddedResource Include="../../../macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json" LogicalName="S2Arm.Localizable.json" />
     <AvaloniaResource Include="Assets/Fonts/*.ttf" />
     <AvaloniaResource Include="Assets/S2Arm.ico" />
     <AvaloniaResource Include="../../../macos/Branding/AppIcon-1024.png" Link="Assets/AppIcon.png" />

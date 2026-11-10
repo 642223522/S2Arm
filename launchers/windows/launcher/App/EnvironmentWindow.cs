@@ -39,7 +39,12 @@ public sealed partial class EnvironmentWindow : Window
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.experience.v1.json")
             ?? throw new FileNotFoundException("Shared experience resource is missing.");
         using var reader = new StreamReader(stream);
-        text = new SharedText(reader.ReadToEnd());
+        var experience = reader.ReadToEnd();
+        text = new SharedText(experience);
+        using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
+            ?? throw new FileNotFoundException("Localization table resource is missing.");
+        using var tableReader = new StreamReader(table);
+        backend = new BackendText(tableReader.ReadToEnd(), experience);
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
@@ -59,9 +64,12 @@ public sealed partial class EnvironmentWindow : Window
     }
 
     private string T(string key) => text.Get(key, language);
-    private static TextBlock Label(string value, double size = 14) => new()
+    private readonly BackendText backend;
+    /// <summary>作业层来的中文原句（报错、阶段、检查项、进度说明）在英文界面下的显示；T() 的文案本来就是英文，原样通过。#361</summary>
+    private string B(string value) => language == "en" ? backend.English(value) : value;
+    private TextBlock Label(string value, double size = 14) => new()
     {
-        Text = value, FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
+        Text = B(value), FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
         TextWrapping = TextWrapping.Wrap
     };
     private Button Action(string key, Action handler, bool enabled = true)
