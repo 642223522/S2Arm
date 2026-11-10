@@ -16,7 +16,7 @@
      任何一个不符：拉机上实际清单（路径 + 大小）核账，只留在且大小对得上的行；清单拉不回才整包重推（10-25 马车8、11-02 测试设备1 奥德赛）
   ⑥ ≤1 GB 一批（单个超 1 GB 的文件自成一批）；每批 s2a-devpush put-tar 边读边打 pax tar 直接写进 .incoming（本机盘不落临时 tar）；
      Mac 上没工具 / 不知道 UDID / 这批流式写失败 → 这批打 tar + devicectl copy（同名覆盖半截包）
-  ⑦ 每推完一批把「路径 \\t sha」追加进 .pushed 并推上机（中断续推 / 出包重叠早推后补差量）；最后推 index.tsv 与 manifest.json
+  ⑦ 每推完一批把「路径 \\t sha」追加进 .pushed 并推上机（中断续推 / 出包重叠早推后补差量）；开推先把机上 manifest.json 置空，最后推 index.tsv 与 manifest.json
   ⑧ 推之前核剩余空间：待推量 + 最大一批 + 每文件 4 KB + S2A_PUSH_SPARE_GB（缺省 1）GB（need_bytes）；读不到照推
 
 设备操作两种（同一个 Dev 接口）：
@@ -339,7 +339,8 @@ def plan(dev, pack, work, full=False, say=print):
         cut = bool(bad) or "截短包" in ((unpack or "").strip().splitlines() or [""])[-1]
         if cut and not bad: say(f"上次收推送撞到截短包（{(unpack or '').strip().splitlines()[-1][:60]}…）：不信 .pushed，按已应用索引补推")
         idx = None
-        if jver(read(dev, f"{rp(dev)}/manifest.json", work, "r.manifest")) == 2:
+        mf = read(dev, f"{rp(dev)}/manifest.json", work, "r.manifest")
+        if jver(mf) == 2 or (mf is not None and not mf.strip()):   # 空清单 = v2 推送开头置空、没推完（send），已应用索引照信，只补推缺的（不整包重推）
             idx = read(dev, f"{rp(dev)}/index.applied.tsv", work, "r.index")
             if not idx and not cut: idx = read(dev, f"{rp(dev)}/index.tsv", work, "r.index")
         have = rows(idx, 3)
@@ -419,6 +420,11 @@ def send(dev, pack, work, say=print, progress=None):
     batches = [[l.split("\t") for l in bf.read_text(encoding="utf-8").splitlines() if l] for bf in files]
     total, steps, step = sum(int(w[1]) for w in direct) + sum(int(w[1]) for b in batches for w in b), len(direct) + len(files), 0
     if progress: progress(0, total, 0, steps)
+    if direct or batches:   # 开推先把机上清单置空（11-09 根修 Windows 装完游戏库空）：清单最后写，「清单读得出」= 这次推送完整。
+        #   原先只靠下面把 .applied 清空表示「传到一半」，App 分不清「传完了只等解开」和「传断了」，Windows 起 App 解包没成时游戏库把这款整个藏掉
+        e = work / "manifest_pending"; e.write_bytes(b"")
+        try: dev.put(e, f"{rp(dev)}/manifest.json")
+        finally: e.unlink(missing_ok=True)
     if direct:   # 先把「已应用」作废：镜像写到一半时机上不能判成就绪（App 看到长度不对会提示重新传）
         e = work / "not_applied"; e.write_bytes(b"")
         try: dev.put(e, f"{rp(dev)}/.applied")

@@ -81,6 +81,13 @@ class PlanRules(Base):
         self.assertEqual(self.go({})[:2], (1, 2)); self.assertEqual(self.dev.lists, [["a", "b"]])
         self.assertEqual(self.dev.files[f"{RP}/.pushed"].decode(), f"a\t{sha(b'A')}\nb\t{sha(b'BB')}\n")   # 推完这批即记账
         self.assertEqual(self.dev.puts[-2:], [f"{RP}/index.tsv", f"{RP}/manifest.json"])                   # 最后推索引与清单
+        # 开推第一件事把机上清单置空（11-09 根修：「清单读得出」= 推送完整，App 据此分清「传完只等解开」和「传断了」）
+        self.assertEqual(self.dev.puts[0], f"{RP}/manifest.json")
+        self.assertEqual(self.dev.files[f"{RP}/manifest.json"], (self.pk / "manifest.json").read_bytes())       # 最后写回的是本包清单
+
+    def test_nothing_to_push_keeps_manifest(self):   # 机上已有全部文件（已应用）、没东西推：不把机上清单置空
+        self.go(self.on_phone("a", "b"))
+        self.assertNotIn(b"", [self.dev.files.get(f"{RP}/manifest.json")])
 
     def test_applied_trusted_after_spot_check(self):   # 机上 a 在且 sha 对（抽查过）→ 只推 b
         self.assertEqual(self.go(self.on_phone("a"))[:2], (1, 1)); self.assertEqual(self.dev.lists, [["b"]])
@@ -218,8 +225,9 @@ class ContainerDocs(Base):
         self.dev.docs, self.dev.ctx = self.D, self.CTX
         nb, nt, _ = push.run(self.dev, self.pk, self.w, False, say=self.log.append)
         self.assertEqual((nb, nt), (1, 2))
-        self.assertTrue(self.dev.puts[0].startswith(f"{self.D}/资源包/.incoming/") and self.dev.puts[0].endswith("_000.tar"), self.dev.puts[0])
-        self.assertEqual(self.dev.puts[1:], [f"{self.D}/资源包/.pushed", f"{self.D}/资源包/index.tsv", f"{self.D}/资源包/manifest.json"])
+        self.assertEqual(self.dev.puts[0], f"{self.D}/资源包/manifest.json")   # 开推先置空本款清单（同一份文档根）
+        self.assertTrue(self.dev.puts[1].startswith(f"{self.D}/资源包/.incoming/") and self.dev.puts[1].endswith("_000.tar"), self.dev.puts[1])
+        self.assertEqual(self.dev.puts[2:], [f"{self.D}/资源包/.pushed", f"{self.D}/资源包/index.tsv", f"{self.D}/资源包/manifest.json"])
         def done(d):
             d.files[f"{self.D}/资源包/.applied"] = "x"; d.files[f"{self.D}/unpack.log"] = "11-07 解开 1 个包 2 个文件 0 MB，.applied = x（0.1 秒）\n"
         self.dev.on_launch = done; clock = [0.0]
