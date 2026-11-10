@@ -135,6 +135,10 @@ def synth_nacp(tid, name, saves=()):
     for i in range(16):   # ApplicationTitle[16]：名字 0x200 + 发行商 0x100
         n[i * 0x300:i * 0x300 + len(t)] = t
     n[0x3025] = 1                                   # StartupUserAccount = Required
+    # SupportedLanguageFlag：不知道游戏支持哪些语言时只声明美式英语（位 0）。留 0 = 「一种都不支持」，服务层把系统语言原样交给游戏，
+    #   游戏不认（#401：系统简体中文 → 游戏判无效语言、去读不存在的语言库、一直黑屏）；声明了英语，系统语言不在表里时就退到英语。
+    #   不按资源目录猜语言：各款语言资源的组织方式不同，没有通用判据
+    struct.pack_into('<I', n, 0x302C, 1)
     n[0x3060:0x3061] = b'?'                         # DisplayVersion 未知
     struct.pack_into('<Q', n, 0x3078, tid)          # SaveDataOwnerId = 程序号（错了开存档 2002-6400，11-03 火纹）
     struct.pack_into('<q', n, 0x3080, 0x08000000)   # UserAccountSaveDataSize 128 MB
