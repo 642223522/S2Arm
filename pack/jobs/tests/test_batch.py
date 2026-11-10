@@ -20,12 +20,12 @@ class BatchRules(unittest.TestCase):
                              {"gameId": B, "name": "乙", "platforms": ["iphone"]},
                              {"gameId": C, "name": "丙", "platforms": []},                 # 没勾平台：不进批次
                              {"gameId": A, "name": "甲又一次", "platforms": ["iphone"]}],  # 同一款放进来两次只算一次
-                            location="/Volumes/盘/包")
+                            location="/tmp/批量包")
 
     def test_create_keeps_order_and_drops_unchecked(self):
         b = self.make()
         self.assertEqual([(i["gameId"], i["platforms"]) for i in b["items"]], [(A, ["iphone", "mac"]), (B, ["iphone"])])
-        self.assertEqual(b["location"], "/Volumes/盘/包")
+        self.assertEqual(b["location"], "/tmp/批量包")
         with self.assertRaises(ValueError):
             batch.create([{"gameId": C, "platforms": []}])
 
