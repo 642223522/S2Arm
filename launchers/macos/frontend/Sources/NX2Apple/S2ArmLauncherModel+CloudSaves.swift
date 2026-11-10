@@ -22,6 +22,19 @@ extension S2ArmLauncherModel {
     /// 同步期间别的作业开始了、这次没开局
     static var cloudBusyAfterSync: String { Localizer().t("s2arm.cloud.busyAfterSync") }
 
+    /// 同步失败的原因句：SaveSyncError 只带文件名 / 设备名 / 原因，文字按界面语言取 Localizer 表 s2arm.cloud.error.*（中文与原先 SaveSync 里的句子逐字相同，#316）；别的错误照旧
+    static func cloudErrorText(_ error: Error, _ loc: Localizer = Localizer()) -> String {
+        func fill(_ key: String, _ args: String...) -> String {
+            args.enumerated().reduce(loc.t(key)) { $0.replacingOccurrences(of: "{\($1.offset)}", with: $1.element) }
+        }
+        switch error {
+        case SaveSyncError.notDownloaded(let name): return fill("s2arm.cloud.error.notDownloaded", name)
+        case SaveSyncError.corrupt(let name): return fill("s2arm.cloud.error.corrupt", name)
+        case SaveSyncError.cloudWriteAfterRestore(let from, let why): return fill("s2arm.cloud.error.writeBack", from, why)
+        default: return error.localizedDescription
+        }
+    }
+
     static func cloudFailure(_ why: String) -> String { Localizer().t("s2arm.cloud.failed").replacingOccurrences(of: "{0}", with: why) }
 
     private static func deviceID() -> String {
@@ -68,7 +81,7 @@ extension S2ArmLauncherModel {
             return nil
         } catch {
             NSLog("S2Arm 云存档：【红】%@ 同步失败：%@", gameID, error.localizedDescription)
-            return error.localizedDescription
+            return Self.cloudErrorText(error)
         }
     }
 

@@ -5,19 +5,22 @@
 import CryptoKit
 import Foundation
 
+/// 同步失败的原因：只带结构化信息（文件名 / 设备名 / 原因），给玩家看的句子由显示端按界面语言取（#316）：
+///   iOS shell/Sources/S2ArmShellHost/CloudSaves.swift `CloudSaves.message`、Mac launchers/macos/frontend S2ArmLauncherModel+CloudSaves.swift `cloudErrorText`。
+///   errorDescription 只是日志 / 兜底用的英文，界面不要直接显示它
 public enum SaveSyncError: Error, Equatable, LocalizedError, Sendable {
-    /// iCloud 里的文件还没下载到这台设备
+    /// iCloud 里的文件还没下载到这台设备（文件名）
     case notDownloaded(String)
-    /// 读回的快照和 head 里记的 sha256 不符（传了一半或被改过）
+    /// 读回的快照和 head 里记的 sha256 不符（传了一半或被改过；快照文件名）
     case corrupt(String)
-    /// 本机存档已经换成 from 的进度，但写回 iCloud 失败（下次同步会再写）
+    /// 本机存档已经换成 from 的进度，但写回 iCloud 失败（来源设备名，失败原因；下次同步会再写）
     case cloudWriteAfterRestore(String, String)
 
     public var errorDescription: String? {
         switch self {
-        case .notDownloaded(let name): return "iCloud 还没把 \(name) 下载到这台设备，存档没有改动。请联网稍等后再试。"
-        case .corrupt(let name): return "iCloud 里的 \(name) 不完整，存档没有改动。请在另一台设备上重新同步一次。"
-        case .cloudWriteAfterRestore(let from, let why): return "已换成 \(from) 的进度，但没能写回 iCloud（\(why)）。存档本身没问题，下次同步会再写。"
+        case .notDownloaded(let name): return "SaveSync: \(name) is not downloaded from iCloud yet; local save unchanged"
+        case .corrupt(let name): return "SaveSync: \(name) in iCloud is incomplete; local save unchanged"
+        case .cloudWriteAfterRestore(let from, let why): return "SaveSync: restored progress from \(from) but writing back to iCloud failed (\(why))"
         }
     }
 }
