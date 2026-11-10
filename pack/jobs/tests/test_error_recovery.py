@@ -276,8 +276,8 @@ raise SystemExit(main.main())
         value = "89abcdef" * 4
         rights_id = "01234567" * 4
         nca_id = "fedcba98" * 4
-        log = self.c.private / "logs/switch-key-fixture.log"
-        log.parent.mkdir(parents=True)
+        log = self.c.logs / "switch-key-fixture.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(f"master_kek_00 = {value}\nmaster_seed_00 = {value}\n{rights_id} = {value}\nMissing NCA {nca_id}.nca\n")
         self.c.last_log = log
         diagnostic = self.c.report_failure(Failure("synthetic failure"))

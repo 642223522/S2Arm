@@ -159,6 +159,11 @@ def shell_checked(shell_dir):
     return shell, [t for t in (shell / TABLES).read_text(encoding="utf-8").split("\n") if t], need
 
 
+def shell_chain(shell_dir):
+    """壳清单里的直连链号（容器清单每款记它，供只换宿主判兼容：pack/jobs/host_update.py）"""
+    return json.loads((Path(shell_dir) / "manifest.json").read_text(encoding="utf-8"))["details"]["chain"]
+
+
 def check_root(root):
     mods = modules(root)
     if not mods:
@@ -301,34 +306,24 @@ def sign_app(app, mode, bundle_id, team):
         red(f"签名核实失败：{(r.stdout + r.stderr).strip().splitlines()[-1:]}")
 
 
-def _place_banner(gid, root, gd, entry):
-    """横版封面落位（出包期抓取）：条目已有 banner 且文件在就不动；产物根带 banner.jpg 就拷；
-    都没有才按程序号联网抓一次（pack/banner_fetch.py，GC 已验链）。抓不到只打黄字、该款退回只有 icon，绝不报红。
-    S2A_BANNER_FETCH=0 可关（离线组装）。"""
+def _place_banner(gid, root, gd, entry, banner=None):
+    """横版封面落位：横图是游戏库的元数据，作业层导入时抓好放在这款文件夹（pack/jobs/library.store_meta），组装只读、不联网。
+    给了 banner（--banner 游戏号=路径，游戏库那份）就拷它；否则条目已有 banner 且文件在就不动；产物根带 banner.jpg 就拷；都没有该款只有 icon。"""
     rel = f"{GAMES}/{gid}/banner.jpg"
+    for src in (banner, root / "banner.jpg" if root is not None else None):
+        if src is not None and Path(src).is_file():
+            shutil.copyfile(src, gd / "banner.jpg")
+            entry["banner"] = rel
+            return
     if entry.get("banner") == rel and (gd / "banner.jpg").is_file():
         return
-    if root is not None and (root / "banner.jpg").is_file():
-        shutil.copyfile(root / "banner.jpg", gd / "banner.jpg")
-        entry["banner"] = rel
-        return
-    if os.environ.get("S2A_BANNER_FETCH", "1") == "0":
-        return
-    try:
-        from pack import banner_fetch
-        ok, why = banner_fetch.fetch_banner(gid, gd / "banner.jpg")
-    except Exception as exc:   # 抓取层任何意外都不许带倒组装
-        ok, why = False, f"抓取异常 {exc}"
-    if ok:
-        entry["banner"] = rel
-        print(f"🟢 {gid} 横版封面：{why}")
-    else:
-        print(f"【黄】{gid} 横版封面没抓到（{why}），该款先用 icon")
 
 
 def cmd_container(a):
     shell, tables, sid = shell_checked(a.shell)
     roots = [Path(r) for r in a.game]
+    banners = {k.upper(): Path(v) for k, _, v in (b.partition("=") for b in a.banner) if v}
+    compat = dict(host_abi=a.host_abi, chain=shell_chain(a.shell))
     if not roots:
         red("至少给一款 --game <产物根>")
     if a.sign == "dev" and not a.team:
@@ -363,13 +358,13 @@ def cmd_container(a):
                 if not (base / GAMES / gid).is_dir() or not (base / game_images(gid)).is_file():
                     red(f"已有容器里 {gid} 不完整（{GAMES}/{gid}/ 或 {game_images(gid)} 缺）")
                 kinds[gid] = npdm_ident(base / GAMES / gid / "main.npdm")[1]
-                games.append(e)
+                games.append(dict(e, **compat))   # 同壳原样带过来：配本壳的约定号与链号
         for gid, (r, ast) in new.items():
             try:
                 name = title(str(r))
             except NoTitle as e:
                 red(f"{gid} 取不到游戏名：{e}")
-            e = dict(title_id=gid, name=name)
+            e = dict(title_id=gid, name=name, **compat)
             v = display_version(r)
             if v:
                 e["display_version"] = v
@@ -391,13 +386,13 @@ def cmd_container(a):
             if gid not in new:   # 已有款原样带过来（加一款 = 在已有容器上重组装，已有各款逐字节不变；仅横版封面缺了会补抓）
                 shutil.copytree(base / GAMES / gid, gd, symlinks=True)
                 shutil.copyfile(base / game_images(gid), app / game_images(gid))
-                _place_banner(gid, None, gd, e)
+                _place_banner(gid, None, gd, e, banners.get(gid))
                 continue
             r = new[gid][0]
             place_game(r, gd, app / game_images(gid), tables)
             if (r / "icon.jpg").is_file():
                 shutil.copyfile(r / "icon.jpg", gd / "icon.jpg")
-            _place_banner(gid, r, gd, e)
+            _place_banner(gid, r, gd, e, banners.get(gid))
             si = r / "save-identity.json"
             if si.is_file():
                 c = subprocess.run([sys.executable, str(HERE / "save_identity.py"), "--check", str(si), "--output", str(gd / "save-identity.json")], capture_output=True, text=True)
@@ -447,6 +442,8 @@ def main():
     b.add_argument("--set", action="append", default=[])
     c = sub.add_parser("container"); c.add_argument("--shell", required=True); c.add_argument("--out", required=True); c.add_argument("--base"); c.add_argument("--custom")
     c.add_argument("--game", action="append", default=[]); c.add_argument("--bundle-id", required=True); c.add_argument("--icon", required=True)
+    c.add_argument("--banner", action="append", default=[], help="游戏号=横图路径（游戏库那份；组装不联网）")
+    c.add_argument("--host-abi", type=int, required=True)    # 宿主读产物约定号（pack/jobs/host_update.py HOST_ABI），写进每款条目
     c.add_argument("--display-name", default=PLACEHOLDER_NAME); c.add_argument("--sign", choices=("none", "adhoc", "dev"), default="none"); c.add_argument("--team", default="")
     d = sub.add_parser("container-drop"); d.add_argument("--base", required=True); d.add_argument("--game", required=True); d.add_argument("--out", required=True)
     a = ap.parse_args()

@@ -244,7 +244,7 @@ class ContainerTest(unittest.TestCase):
         from PIL import Image
         icon = Path(d) / "brand.png"
         if not icon.exists(): Image.new("RGB", (64, 64), (1, 2, 3)).save(icon)
-        cmd = [sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell", str(shell), "--out", str(out), "--bundle-id", "dev.example.games", "--icon", str(icon)]
+        cmd = [sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell", str(shell), "--out", str(out), "--bundle-id", "dev.example.games", "--icon", str(icon), "--host-abi", "7"]
         cmd += [x for r in roots for x in ("--game", str(r))] + (["--base", str(base)] if base else [])
         return subprocess.run(cmd, capture_output=True, text=True,
                               env={**os.environ, "S2A_BANNER_FETCH": "0"})   # 单测零联网：抓图关掉，A 的 banner 走产物根自带拷贝路径
@@ -272,9 +272,10 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual((app / "Games" / self.A / "addr_need.tsv").read_text(), "a\n")
         self.assertEqual((app / "Games" / self.B / "icon.jpg").read_bytes(), b"JPGb")
         cat = json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))
+        chain = json.loads((self.shell / "manifest.json").read_text(encoding="utf-8"))["details"]["chain"]   # 每款记 --host-abi 与壳清单的链号（只换宿主判兼容用）
         self.assertEqual(cat, {"schema": 1, "shell_id": shell_manifest.current_id(), "games": [
-            {"title_id": self.A, "name": "甲游戏", "display_version": "1.2.0", "icon": f"Games/{self.A}/icon.jpg", "banner": f"Games/{self.A}/banner.jpg", "state": "playable"},
-            {"title_id": self.B, "name": "乙游戏", "icon": f"Games/{self.B}/icon.jpg", "state": "playable"}]})
+            {"title_id": self.A, "name": "甲游戏", "display_version": "1.2.0", "icon": f"Games/{self.A}/icon.jpg", "banner": f"Games/{self.A}/banner.jpg", "state": "playable", "host_abi": 7, "chain": chain},
+            {"title_id": self.B, "name": "乙游戏", "icon": f"Games/{self.B}/icon.jpg", "state": "playable", "host_abi": 7, "chain": chain}]})
         self.assertEqual((app / "Games" / self.A / "launch.ctx").read_text(encoding="utf-8"),
                          f"version\t1\ngame_id\t{self.A}\nimages\t@bundle/Frameworks/S2AImages-{self.A}.dylib\nmodule_dir\t@bundle/Games/{self.A}\n"
                          f"game_data\t@home/Documents/games/{self.A}/资源包\ndocs\t@home/Documents/games/{self.A}\n")
@@ -331,35 +332,23 @@ class BannerPlaceTest(unittest.TestCase):
 
     def tearDown(self): self.td.cleanup()
 
-    def test_fetch_success_sets_entry(self):
+    def test_library_banner_copied_never_network(self):
+        # 横图是游戏库的元数据（作业层导入时抓好）：给了 --banner 那份就拷；组装本身绝不联网
         from pack import ship_ext
-        def fake(tid, dest):
-            Path(dest).write_bytes(b"JPGfake"); return True, "1920x1080 jpeg"
-        with mock.patch.dict(os.environ):
-            os.environ.pop("S2A_BANNER_FETCH", None)
-            with mock.patch("pack.banner_fetch.fetch_banner", fake):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        lib = self.d / "lib-banner.jpg"; lib.write_bytes(b"LIB")
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("组装不许联网")):
+            entry = {}
+            ship_ext._place_banner(self.GID, self.root, self.gd, entry, lib)
         self.assertEqual(entry.get("banner"), f"Games/{self.GID}/banner.jpg")
-        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"JPGfake")
+        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"LIB")
 
-    def test_fetch_failure_keeps_icon_only(self):
+    def test_no_banner_anywhere_keeps_icon_only(self):
         from pack import ship_ext
-        with mock.patch.dict(os.environ):
-            os.environ.pop("S2A_BANNER_FETCH", None)
-            with mock.patch("pack.banner_fetch.fetch_banner", return_value=(False, "连不上")):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("组装不许联网")):
+            entry = {}
+            ship_ext._place_banner(self.GID, self.root, self.gd, entry)
         self.assertNotIn("banner", entry)
         self.assertFalse((self.gd / "banner.jpg").exists())
-
-    def test_disabled_env_never_calls_fetch(self):
-        from pack import ship_ext
-        with mock.patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
-            with mock.patch("pack.banner_fetch.fetch_banner", side_effect=AssertionError("关着时不许调抓图")):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
-        self.assertNotIn("banner", entry)
 
 
 if __name__ == "__main__":

@@ -284,8 +284,11 @@ int main(void) {
         // 库界面快判：.applied 等于清单的 index_sha256 就不逐文件核（主线程上 10 万文件要几秒）；不等 / 没有 .applied 退回完整核对；非法游戏号同完整判据
         { char qc[4096], qr[2300]; snprintf(qr, sizeof qr, "%s/games/0100FD70134FA000/资源包", pd);
           snprintf(qc, sizeof qc, "printf '{\"version\":2,\"index_sha256\":\"abc123\"}' > '%s/manifest.json' && printf 'abc123' > '%s/.applied'", qr, qr); CHECK(sh(qc) == 0, "造快判夹具失败");
-          CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") == 0, "快判：.applied 等于清单 → 就绪(0)，不逐文件核");
+          CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") == 3, "快判（审计 P2-212）：.applied 等于清单但缺 main.npdm → 不报就绪，退回完整核对(3)");
           CHECK(s2a_import_state_game(pd, "0100FD70134FA000") == 3, "完整判据不受影响：照旧查出缺文件(3)");
+          snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); CHECK(sh(qc) == 0, "放回 main.npdm 失败");
+          CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") == 0, "快判：.applied 等于清单、main.npdm 在 → 就绪(0)，不逐文件核");
+          snprintf(qc, sizeof qc, "rm '%s/exefs/main.npdm'", qr); sh(qc);
           snprintf(qc, sizeof qc, "printf 'other' > '%s/.applied'", qr); sh(qc);
           CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") == 3, "快判：.applied 不等于清单 → 退回完整核对(3)");
           snprintf(qc, sizeof qc, "rm '%s/.applied'", qr); sh(qc);
@@ -294,7 +297,10 @@ int main(void) {
           CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, "资源不完整：游戏库不显示");
           CHECK(s2a_game_on_device(pd, "0100C2500FC20000") == 0, "没放资源：游戏库不显示");
           snprintf(qc, sizeof qc, "printf 'abc123' > '%s/.applied'", qr); sh(qc);
-          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 1, ".applied 等于清单：游戏库显示");
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, ".applied 等于清单但缺 main.npdm：游戏库不显示（审计 P2-212）");
+          snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); sh(qc);
+          CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 1, ".applied 等于清单、main.npdm 在：游戏库显示");
+          snprintf(qc, sizeof qc, "rm '%s/exefs/main.npdm'", qr); sh(qc);
           snprintf(qc, sizeof qc, "mkdir -p '%s/.incoming' && printf x > '%s/.incoming/1_000.tar' && printf '' > '%s/.applied'", qr, qr, qr); sh(qc);
           CHECK(s2a_game_on_device(pd, "0100FD70134FA000") == 0, ".applied 被清空（传镜像被打断）：不显示");
           snprintf(qc, sizeof qc, "rm '%s/.applied'", qr); sh(qc);

@@ -16,6 +16,7 @@ BOOL s2a_diag_is_exporting(void);
 @end
 static S2ASettingsRuntime *g_runtime;
 void s2a_settings_set_runtime(S2ASettingsRuntime *runtime) { g_runtime = runtime; }
+S2ASettingsRuntime *s2a_settings_runtime(void) { return g_runtime; }
 
 @interface S2ASteppedSlider : UISlider
 @end

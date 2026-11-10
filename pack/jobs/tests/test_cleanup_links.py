@@ -11,6 +11,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import Failure
+import layout
 import library
 
 
@@ -21,7 +22,8 @@ class CleanupLinkTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.c = SimpleNamespace(library=self.root / "library", work_root=self.root / "work")
         self.gid = "0100000000000000"
-        self.output = self.c.library / "iPhone" / self.gid
+        self.c.library.mkdir()
+        self.output = layout.ios_work(self.c, self.gid)   # 这款文件夹的出包工作目录 build/ios
         self.output.mkdir(parents=True)
 
     def payload(self, parent):
@@ -32,9 +34,10 @@ class CleanupLinkTests(unittest.TestCase):
 
     def test_prune_unlinks_intermediates_without_deleting_their_targets(self):
         for retain in (True, False):
-            for target in (self.c.library / "saves" / self.gid, self.root / "outside"):
+            for target in (layout.path(self.c, self.gid, "saves"), self.root / "outside"):
                 with self.subTest(retain_compiler=retain, target=target.name):
                     payload = self.payload(target)
+                    self.output.mkdir(parents=True, exist_ok=True)   # 上一轮清理把 build/ 整个删了
                     link = self.output / "intermediate"
                     link.unlink(missing_ok=True)
                     link.symlink_to(target, target_is_directory=True)
@@ -59,23 +62,24 @@ class CleanupLinkTests(unittest.TestCase):
 
     def test_success_prune_removes_roots_and_unpack_but_keeps_delivery(self):
         root = self.output / "roots" / "k@pkg"; self.seed_root(root)
-        (self.output / "shell.id").write_text("SID"); (self.output / "a.ipa").write_bytes(b"ipa")
-        pack = self.output / "t资源包"; pack.mkdir(); (pack / "index.tsv").write_bytes(b"i"); (self.output / "logs").mkdir(); (self.output / "work").mkdir()
-        unpacked = self.c.library / "cache" / self.gid; unpacked.mkdir(parents=True); (unpacked / "x").write_bytes(b"x")
+        image = layout.image_ios(self.c, self.gid)
+        pack = image / "pack"; pack.mkdir(parents=True); (pack / "index.tsv").write_bytes(b"i"); (pack / "manifest.json").write_text("{}")
+        (self.output / "logs").mkdir(); (self.output / "logs" / "refresh.log").write_text("l"); (self.output / "work").mkdir()
+        unpacked = layout.build_dir(self.c, self.gid); (unpacked / "x").write_bytes(b"x")
         library.save_container_kit(self.c, self.gid, root)
         library.prune_build(self.c, self.gid)
-        self.assertEqual(sorted(p.name for p in self.output.iterdir()), sorted(["a.ipa", "t资源包", "logs", library.CONTAINER_KIT, "shell.id"]))
-        self.assertFalse(unpacked.exists())
+        self.assertEqual(sorted(p.name for p in image.iterdir()), ["kit", "pack"])   # 交付件（容器件、资源包）在 image/ios，不动
+        self.assertEqual(sorted(str(p.relative_to(unpacked)) for p in unpacked.rglob("*")), ["ios", "ios/logs", "ios/logs/refresh.log"])   # 解包、产物根、work 清掉，出包日志留
 
     def test_without_kit_prune_keeps_current_root(self):
         root = self.output / "roots" / "k@pkg"; self.seed_root(root)
         (self.output / "roots" / "k@现行").symlink_to("k@pkg")
-        (self.output / "a.ipa").write_bytes(b"ipa")   # 老玩家：有 IPA 没容器件
+        pack = layout.image_ios(self.c, self.gid) / "pack"; pack.mkdir(parents=True); (pack / "manifest.json").write_text("{}")   # 老玩家：有资源包没容器件
         library.prune_build(self.c, self.gid)
         self.assertTrue((self.output / "roots" / "k@pkg" / "main.npdm").is_file())
 
     def test_unlinks_file_and_dangling_links_without_following_them(self):
-        payload = self.payload(self.c.library / "saves" / self.gid)
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
         for target in (payload, self.root / "missing"):
             with self.subTest(target=target.name):
                 link = self.output / "scratch"
@@ -87,7 +91,7 @@ class CleanupLinkTests(unittest.TestCase):
                 self.assertEqual(payload.read_bytes(), b"player data must survive")
 
     def test_refuses_a_symlink_in_an_ancestor(self):
-        payload = self.payload(self.c.library / "saves" / self.gid)
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
         link = self.output / "intermediate"
         link.symlink_to(payload.parent, target_is_directory=True)
         with self.assertRaises(Failure):
@@ -106,7 +110,7 @@ class CleanupLinkTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows junction requires Windows")
     def test_junction_is_removed_without_deleting_its_target(self):
-        payload = self.payload(self.c.library / "saves" / self.gid)
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
         junction = self.output / "intermediate"
         subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(payload.parent)],
                        check=True, capture_output=True)

@@ -176,21 +176,21 @@ final class ControlStateCache: @unchecked Sendable {
     }
 }
 
-/// 作业层自己写的作业记录（pack/jobs/core.py：<私有目录>/jobs/<任务>.json，字段 id / operation / gameId / state / stage / milestone / milestones /
+/// 作业层自己写的作业记录（pack/jobs/core.py：<游戏库>/logs/jobs/<任务>.json，库没建好时 <私有目录>/logs/jobs，见 S2ArmPaths.jobsDir，字段 id / operation / gameId / state / stage / milestone / milestones /
 ///   done / total / unit / message / started / ended / diagnostics / ipaPath / outputPath / pid / pidStart）当 GET /state 的 tasks：
 ///   作业是独立进程，界面没有任务表也照样有据（s2armctl wait / errors / logs 读的就是这些字段；控制口不应答时 s2armctl 本来就读同一份文件）。
 public enum ControlJournal {
     /// 玩家看得见的作业（同旧启动器 Store.visibleOperations）；查环境、读游戏库这类后台小作业不进。
-    public static let visibleOperations: Set<String> = ["install", "installRemove", "build", "import", "keys", "downloadMetal", "downloadIosPlatform", "launch", "clean",
+    public static let visibleOperations: Set<String> = ["install", "installRemove", "installRestore", "build", "moveGame", "import", "keys", "downloadMetal", "downloadIosPlatform", "launch", "clean",
                                                         "remove", "delete", "diagnostics", "prepareEngine", "pullDiagnostics", "ipa", "installDotnet", "setup", "spaceFree"]
 
     /// 最近的 limit 条，按开始时间从旧到新。
     /// 控制口每秒刷一次状态快照（ControlPort.refreshCache）都会调这里。原先每次把任务目录里所有记录重读、重解析一遍：
     ///   任务多了（11-09 维护者机器 45207 条、290 MB）闲置也占 30–90% CPU、风扇狂转。记录都是先写临时文件再改名（pack/jobs/core.py atomic），
     ///   每次更新都会改目录的修改时间：目录没变就直接用上次结果；变了只重新解析大小或修改时间变过的文件。没结束的任务每次单独再核一遍
-    public static func tasks(privateRoot: URL, limit: Int = 60) -> [[String: Any]] {
+    public static func tasks(privateRoot: URL, library: String? = nil, limit: Int = 60) -> [[String: Any]] {
         lock.lock(); defer { lock.unlock() }
-        let dir = privateRoot.appendingPathComponent("jobs")
+        let dir = S2ArmPaths.jobsDir(privateRoot: privateRoot, library: library)
         let stamp = stat(dir.path)
         if let stamp, cache.dir == dir.path, cache.stamp == stamp, cache.limit == limit, !cache.hasLiveTaskChanged(dir: dir) {
             return cache.result

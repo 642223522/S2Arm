@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Synthetic preflight probes keep Metal and Xcode status text consistent."""
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,7 +12,7 @@ import toolchain
 
 
 class ToolchainMessageTests(JobCase):
-    def preflight(self, *, has_xcode=True, metal=(True, "Apple metal version fixture"), sdk=True):
+    def preflight(self, *, has_xcode=True, metal=(True, "Apple metal version fixture"), sdk=True, developer_dir=None):
         developer = self.root / "synthetic-Xcode/Contents/Developer"
         xcodebuild = developer / "usr/bin/xcodebuild"
         xcodebuild.parent.mkdir(parents=True, exist_ok=True)
@@ -19,7 +20,7 @@ class ToolchainMessageTests(JobCase):
             xcodebuild.touch()
         else:
             xcodebuild.unlink(missing_ok=True)
-        self.c.r["developerDir"] = str(developer)
+        self.c.r["developerDir"] = str(developer) if developer_dir is None else developer_dir
 
         def probe(c, args, timeout=15):
             if "metal" in args:
@@ -51,6 +52,24 @@ class ToolchainMessageTests(JobCase):
                 self.assertEqual(row["group"], "system")
         self.assertEqual(rows["Metal 编译组件"]["action"], "downloadMetal")
         self.assertEqual(rows["Xcode"]["action"], "appStoreXcode")
+
+    def test_missing_xcode_with_empty_developer_dir_is_not_found(self):
+        # 只装命令行工具、没装 Xcode：启动器找不到 Xcode 时 developerDir 传空串；从 Finder 打开的 App 工作目录是 /，
+        # Path("") 拼出相对路径 usr/bin/xcodebuild，会落到系统自带的 /usr/bin/xcodebuild 空壳上，不能算装了 Xcode（#109）
+        self.assertTrue(Path("/usr/bin/xcodebuild").is_file(), "前提：系统自带 /usr/bin/xcodebuild")
+        cwd = os.getcwd()
+        os.chdir("/")
+        self.addCleanup(os.chdir, cwd)
+        rows = self.preflight(developer_dir="",
+                              metal=(True, "xcode-select: error: tool 'metal' requires Xcode, but active developer directory "
+                                           "'/Library/Developer/CommandLineTools' is a command line tools instance"))
+        self.assertFalse(rows["Xcode"]["ok"])
+        self.assertEqual(rows["Xcode"]["diagnostic"]["code"], "xcode_unavailable")
+        self.assertFalse(rows["Metal 编译组件"]["ok"])
+        self.assertIsNone(rows["Metal 编译组件"]["action"])   # 没 Xcode 不给「一键下载」（xcodebuild -downloadComponent 必失败）
+        self.assertEqual(rows["Metal 编译组件"]["diagnostic"]["code"], "xcode_unavailable")
+        self.assertNotIn("iOS 平台组件", rows)
+        self.assertNotIn("Apple ID 团队", rows)
 
     def test_failure_messages_and_diagnostics_unchanged(self):
         cases = [

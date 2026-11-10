@@ -78,6 +78,54 @@ def open_url(url, timeout, start=0):
     return urllib.request.urlopen(request, timeout=timeout, context=tls_context())
 
 
+FETCH_ATTEMPTS = 3        # 查版本、取签名清单这几个小请求：断了 / 超时再试两次（国内连 GitHub 常有一次性断开）
+FETCH_RETRY_SECONDS = 2
+
+
+def network_error(error, what="连接 GitHub"):
+    """网络异常 → 带错误码、玩家看得懂的 UpdateError（界面按码显示原因并给「打开下载页」）：
+    限流（403 / 429 且带 X-RateLimit-Remaining: 0 或 Retry-After）→ update_rate_limited，附约几分钟后恢复；
+    其它 HTTP 错误 → update_server；断网、DNS、超时、连接被掐、TLS → update_network（原因写进日志 detail）"""
+    import urllib.error
+    if isinstance(error, UpdateError):
+        return error
+    if isinstance(error, urllib.error.HTTPError):
+        headers = error.headers or {}
+        if error.code == 429 or (error.code == 403 and (headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After"))):
+            wait = None
+            try:
+                if headers.get("Retry-After"):
+                    wait = int(headers["Retry-After"])
+                elif headers.get("X-RateLimit-Reset"):
+                    wait = int(headers["X-RateLimit-Reset"]) - int(time.time())
+            except ValueError:
+                wait = None
+            minutes = max(1, (wait + 59) // 60) if wait and wait > 0 else None
+            return UpdateError("update_rate_limited", "GitHub 暂时限制了这个网络的查询次数" + (f"，约 {minutes} 分钟后恢复" if minutes else "，过一会儿会恢复")
+                               + "。当前版本没有变化，稍后再试，或打开下载页手动下载。", f"HTTP {error.code} {dict(headers)}")
+        return UpdateError("update_server", f"GitHub 返回错误（HTTP {error.code}），当前版本没有变化。稍后再试，或打开下载页手动下载。", f"HTTP {error.code} {error.reason}")
+    reason = getattr(error, "reason", None) or error
+    kind = "超时" if isinstance(reason, TimeoutError) or "timed out" in str(reason) else type(reason).__name__
+    return UpdateError("update_network", f"{what}失败（{kind}），当前版本没有变化。请检查网络后重试，或打开下载页手动下载。", f"{type(error).__name__}: {error}")
+
+
+def fetch(url, timeout, limit):
+    """小请求（Release 信息、签名清单）：断了 / 超时再试，限流不再试（只会更久）；还不行按 network_error 报码"""
+    import http.client
+    import urllib.error
+    for attempt in range(FETCH_ATTEMPTS):
+        try:
+            with open_url(url, timeout) as response:
+                return response.read(limit)
+        except UpdateError:
+            raise
+        except (OSError, http.client.HTTPException) as error:
+            failure = network_error(error)
+            if failure.code == "update_rate_limited" or (isinstance(error, urllib.error.HTTPError) and error.code < 500) or attempt == FETCH_ATTEMPTS - 1:
+                raise failure from error
+            time.sleep(FETCH_RETRY_SECONDS * (attempt + 1))
+
+
 def public_key():
     """S2A_UPDATE_PUBKEY 只给验收用的本机假 Release，和 S2A_UPDATE_API 一起设才生效。"""
     return bytes.fromhex(os.environ.get("S2A_UPDATE_API") and os.environ.get("S2A_UPDATE_PUBKEY") or PUBLIC_KEY)
@@ -87,10 +135,8 @@ def signed_manifest(assets, tag_version):
     """下载并验清单：签名不对、版本和 Release 对不上一律抛错，后面什么都不下。"""
     sys.path.insert(0, str(Path(__file__).resolve().parent))   # 启动器用 python -I 跑本文件，脚本目录不在搜索路径里
     import ed25519
-    with open_url(assets[MANIFEST]["browser_download_url"], 30) as response:
-        raw = response.read(1 << 20)
-    with open_url(assets[SIGNATURE]["browser_download_url"], 30) as response:
-        signature = response.read(1024)
+    raw = fetch(assets[MANIFEST]["browser_download_url"], 30, 1 << 20)
+    signature = fetch(assets[SIGNATURE]["browser_download_url"], 30, 1024)
     if not ed25519.verify(public_key(), raw, signature):
         raise UpdateError("update_bad_signature", "新版的签名校验没通过，已停止，当前版本没有变化。")
     manifest = json.loads(raw)
@@ -99,10 +145,39 @@ def signed_manifest(assets, tag_version):
     return manifest
 
 
+LATEST_TTL = 15 * 60   # 查版本结果在本机留 15 分钟：启动时查一次、接着下载、失败后重试都用这一份，不重复调 api.github.com（匿名每 IP 每小时 60 次）
+
+
+def latest_cache(platform, current):
+    """查版本结果的本机缓存（系统给本用户的临时目录）：按平台、当前版本、查询地址分开"""
+    import hashlib
+    key = hashlib.sha256(f"{platform}|{current}|{os.environ.get('S2A_UPDATE_API') or API}".encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"s2arm-update-latest-{key}.json"
+
+
 def latest(platform, current):
+    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。"""
+    cache = latest_cache(platform, current)
+    try:
+        if time.time() - cache.stat().st_mtime < LATEST_TTL:
+            info = json.loads(cache.read_text(encoding="utf-8"))
+            if isinstance(info, dict) and isinstance(info.get("available"), bool):
+                return info
+    except (OSError, ValueError):
+        pass
+    info = query_latest(platform, current)
+    try:
+        tmp = cache.with_suffix(".tmp")
+        tmp.write_text(json.dumps(info), encoding="utf-8")
+        tmp.replace(cache)
+    except OSError:
+        pass
+    return info
+
+
+def query_latest(platform, current):
     """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。"""
-    with open_url(os.environ.get("S2A_UPDATE_API") or API, 10) as response:
-        release = json.load(response)
+    release = json.loads(fetch(os.environ.get("S2A_UPDATE_API") or API, 15, 8 << 20))
     version = version_tuple(release.get("tag_name"))
     mine = version_tuple(current)
     assets = {a.get("name"): a for a in release.get("assets") or [] if isinstance(a, dict)}
@@ -188,9 +263,13 @@ def download(url, target, size):
             done = part.stat().st_size if part.exists() else 0
         if done >= size:
             break
+        import urllib.error
+        if isinstance(failure, urllib.error.HTTPError) and failure.code != 416:   # 安装包地址本身出错（404 / 5xx / 限流）：重试也没用
+            raise network_error(failure, "下载新版") from failure
         stalled = 0 if done > before else stalled + 1
         if stalled >= DOWNLOAD_ATTEMPTS:
-            raise UpdateError("update_download_failed", f"下载一直断开，已停止，旧版没有变化（{type(failure).__name__ if failure else '连接提前结束'}）。请检查网络后重试。")
+            why = network_error(failure, "下载新版").detail if failure else "连接提前结束"
+            raise UpdateError("update_download_failed", "下载一直断开，已停止，当前版本没有变化。请检查网络后重试，或打开下载页手动下载。", why)
         time.sleep(RETRY_SECONDS * stalled)
     part.replace(target)
 
@@ -532,16 +611,18 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
 
 
 def record_failure(args, code, message, detail=""):
-    """失败原因写进诊断包会收的日志（私有目录/logs）：界面只有一句话，玩家反馈时靠这里定位"""
+    """失败原因写进诊断包会收的日志（core.logs_root：默认位置的 logs/，库没建好时私有目录/logs）：界面只有一句话，玩家反馈时靠这里定位"""
     root = getattr(args, "private_root", None)
     if not root:
         return
     try:
-        log = Path(root) / "logs" / "update.log"
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from core import logs_root
+        log = logs_root(root) / "update.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as out:
             out.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {code} {message}\n{str(detail or '').strip()[-2000:]}\n")
-    except OSError:
+    except (OSError, ImportError):
         pass
 
 

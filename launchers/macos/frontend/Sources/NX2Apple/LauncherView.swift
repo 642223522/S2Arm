@@ -28,6 +28,8 @@ struct LauncherView: View {
     @State var displayFor: String?
     @State var inputFor: String?
     @State var deleteFor: GameSummary?
+    /// 「找不到游戏文件」的那款（点了卡片）：重新指定文件夹 / 从游戏库移除
+    @State var missingFor: GameSummary?
     @State private var dropTargeted = false
     @State var collectionHeight: CGFloat = 300
     let brand: String
@@ -85,7 +87,7 @@ struct LauncherView: View {
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
-            GameDisplaySheet(model: model, gameID: target.id).environmentObject(loc)
+            LaunchSettingsSheet(model: model, gameID: target.id, openInput: { inputFor = target.id }).environmentObject(loc)
         }
         .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id })) { target in
             SaveManageSheet(model: model, gameID: target.id).environmentObject(loc)
@@ -97,6 +99,11 @@ struct LauncherView: View {
             Button(txt("game.cancel"), role: .cancel) { deleteFor = nil }
             Button(txt("game.delete.confirm"), role: .destructive) { if let g = deleteFor { model.deleteGame(g) }; deleteFor = nil }
         } message: { Text(txt("game.delete.body")) }
+        .alert(txt("library.missing.title").replacingOccurrences(of: "{0}", with: missingFor?.name ?? ""), isPresented: Binding(get: { missingFor != nil }, set: { if !$0 { missingFor = nil } })) {
+            Button(txt("library.missing.relink")) { if let g = missingFor { relinkGame(g) }; missingFor = nil }
+            Button(txt("library.missing.forget"), role: .destructive) { if let g = missingFor { model.forgetGame(g) }; missingFor = nil }
+            Button(txt("game.cancel"), role: .cancel) { missingFor = nil }
+        } message: { Text(txt("library.missing.body")) }
         .sheet(isPresented: $model.showAddGames) { ImportSheet(model: model, kind: .games).environmentObject(loc) }
         .sheet(isPresented: $model.showKeys) { ImportSheet(model: model, kind: .keys).environmentObject(loc) }
         .sheet(isPresented: $model.showEnvironment) {
@@ -120,6 +127,7 @@ struct LauncherView: View {
         HStack(spacing: 12) {
                 if model.loading { ProgressView().controlSize(.small) }
                 exportPill
+                phonePill
                 updateButton
                 // 界面语言：一键切到另一种（同旧启动器 LanguageSwitch，维护者 10-23「不让玩家先选」）；当场生效、记住选择，不用重启（11-07 维护者 验收）
                 Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
@@ -213,8 +221,16 @@ struct LauncherView: View {
             }
             .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
         case .failed(let code):
-            Button { model.downloadUpdate() } label: { Text(txt("update.retry")).font(.manrope(12.5, .semibold)) }
-                .buttonStyle(LauncherSecondaryButtonStyle()).help(txt("update.error." + code))
+            // 失败原因直接写在按钮旁（人话 + 错误码），并给「打开下载页」：自动更新连不上 GitHub 时玩家能自己下（不再只藏在悬停提示里）
+            HStack(spacing: 8) {
+                Button { model.downloadUpdate() } label: { Text(txt("update.retry")).font(.manrope(12.5, .semibold)) }
+                    .buttonStyle(LauncherSecondaryButtonStyle())
+                Text(txt("update.error." + code) + " · " + txt("update.code").replacingOccurrences(of: "{0}", with: code))
+                    .font(.manrope(11.5)).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: 340, alignment: .leading)
+                    .help(txt("update.error." + code)).textSelection(.enabled)
+                Button { NSWorkspace.shared.open(S2ArmLauncherModel.downloadPage) } label: { Text(txt("update.download_page")).font(.manrope(12.5, .semibold)) }
+                    .buttonStyle(LauncherSecondaryButtonStyle())
+            }
         case .idle: EmptyView()
         }
     }
@@ -234,6 +250,31 @@ struct LauncherView: View {
                 }
             }
             .buttonStyle(LauncherSecondaryButtonStyle())
+        }
+    }
+
+    /// 装机弹窗关着时：手机作业在跑 → 「正在装到 iPhone · 查看进度」，点了回到同一个作业（弹窗显示 model.session，不新起安装）；
+    /// 跑完还没回去看 → 「已装好 / 没装完 · 查看结果」（#308，Mac 与 Windows 同一套入口）。
+    @ViewBuilder private var phonePill: some View {
+        if installFor == nil {
+            if let s = model.session, S2ArmLauncherModel.phoneKinds.contains(s.kind), let id = s.gameID {
+                Button { installFor = id } label: {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.mini)
+                        Text(txt("install.pill.running").replacingOccurrences(of: "{0}", with: s.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                        if let f = s.progress.fraction { Text("\(Int(f * 100))%").font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary) }
+                    }
+                }
+                .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.pill")
+            } else if let r = model.phoneResult {
+                Button { installFor = r.gameID } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: r.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(r.ok ? LauncherPalette.ready : LauncherPalette.danger)
+                        Text(txt(r.ok ? "install.pill.done" : "install.pill.failed").replacingOccurrences(of: "{0}", with: r.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                    }
+                }
+                .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.pill")
+            }
         }
     }
 

@@ -20,12 +20,18 @@ public sealed partial class EnvironmentWindow
         Environment.GetEnvironmentVariable("S2ARM_CONTROL") == "1";
     private string ControlSwitchFile => Path.Combine(privateRoot, "ai-control.on");
 
+    /// <summary>崩溃日志用（LauncherCrash）：同 ResolvePrivateRoot，算不出（参数坏了）退回系统临时目录。</summary>
+    internal static string PrivateRootForLogs()
+    {
+        try { return ResolvePrivateRoot(); } catch (Exception) { return Path.Combine(Path.GetTempPath(), "S2Arm"); }
+    }
+
     private static string ResolvePrivateRoot()
     {
         const string prefix = "--data-root=";
         return Environment.GetCommandLineArgs().FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal)) is { } argument
             ? Path.GetFullPath(argument[prefix.Length..])
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "S2Arm", "WindowsLauncher");
+            : LibraryPaths.StandardPrivateRoot;
     }
 
     private void StartControl()
@@ -193,7 +199,16 @@ public sealed partial class EnvironmentWindow
                 if (ControlBusy) return Busy();
                 selectedGame = game.Id;
                 Navigate("install");
-                _ = RemoveAsync(game);
+                _ = RunPhoneJobAsync(game, "installRemove", "install.remove");
+                return ControlReply.Ok();
+            }
+            case ("POST", "/restore-iphone"):   // s2armctl restore-iphone：装回上一版手机 S2Arm（同 Mac 控制口）
+            {
+                if (ControlGame(r) is not { } game) return NoGame;
+                if (ControlBusy) return Busy();
+                selectedGame = game.Id;
+                Navigate("install");
+                _ = RunPhoneJobAsync(game, "installRestore", "install.restore");
                 return ControlReply.Ok();
             }
             case ("POST", "/cancel"):
@@ -283,12 +298,13 @@ public sealed partial class EnvironmentWindow
         {
             ["id"] = g.Id, ["name"] = g.Name, ["customName"] = g.CustomName, ["customCover"] = g.CustomCover, ["display"] = g.Version, ["compatibility"] = "", ["ready"] = g.IphoneReady, ["iphoneReady"] = g.IphoneReady,
             ["needsPreparation"] = false, ["needsKeys"] = g.NeedsKeys, ["buildable"] = g.Missing.Count == 0, ["missing"] = g.Missing,
-            ["baseBytes"] = (g.Packages ?? []).Where(p => p.Type == "base").Sum(p => p.Size), ["bytes"] = g.TotalBytes
+            ["baseBytes"] = (g.Packages ?? []).Where(p => p.Type == "base").Sum(g.OwnBytes), ["bytes"] = g.TotalBytes
         }).ToList();
         object? session = null;
         if (packRunning) session = new Dictionary<string, object?> { ["kind"] = "ipa", ["gameId"] = packGame?.Id, ["name"] = packGame?.Name, ["phase"] = "running" };
         else if (importBusy) session = new Dictionary<string, object?> { ["kind"] = "import", ["gameId"] = null, ["name"] = importJobName, ["phase"] = "running" };
-        else if (installBusy) session = new Dictionary<string, object?> { ["kind"] = "install", ["gameId"] = SelectedGame?.Id, ["name"] = SelectedGame?.Name, ["phase"] = "running" };
+        else if (installBusy) session = new Dictionary<string, object?> { ["kind"] = "install", ["gameId"] = installGameId, ["name"] = installGameName, ["phase"] = "running",   // 装的那款，不是当前选中的（#308）
+            ["done"] = installDone, ["total"] = installTotal, ["unit"] = installUnit };
         object? install = null;
         if (readiness is { } ready && readinessFor is { } readyFor)
             install = new Dictionary<string, object?>

@@ -77,7 +77,7 @@ ifeq ($(shell uname -s),Darwin)
 .PHONY: native-test-input_config_apple
 native-test-input_config_apple:
 	@mkdir -p $(BUILD)/tests
-	$(CC) $(CFLAGS) $(NATIVE_INC) -Iios -fobjc-arc -o $(BUILD)/tests/t_input_config_apple runtime/tests/t_input_config_apple.m runtime/src/input_config.c runtime/src/pad.c ios/input_config.m -framework AppKit -framework CoreGraphics -framework GameController -framework QuartzCore
+	$(CC) $(CFLAGS) $(NATIVE_INC) -Iios -fobjc-arc -o $(BUILD)/tests/t_input_config_apple runtime/tests/t_input_config_apple.m runtime/src/input_config.c runtime/src/pad.c ios/input_config.m -framework AppKit -framework CoreGraphics -framework GameController -framework CoreHaptics -framework QuartzCore
 	$(BUILD)/tests/t_input_config_apple
 TEST_TARGETS += native-test-input_config_apple
 endif
@@ -141,7 +141,7 @@ S2A_SHELLUI ?= 0
 ifeq ($(S2A_SHELLUI),1)
 SHELLUI_DD = $(abspath $(BUILD))/ios/shellui
 SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-iphoneos
-IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o) \
+IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o SaveSync.o) \
   -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/iphoneos -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
 .PHONY: ios-shellui
 ios-shellui:
@@ -169,6 +169,7 @@ ios: ios-ns2pro
 	@rm -rf $(IOS_APP) && mkdir -p $(IOS_APP) $(BUILD)/ios
 	@mkdir -p $(IOS_APP)/Frameworks && cp -R $(NS2_FRAMEWORK) $(IOS_APP)/Frameworks/
 	@cp -R ios/Settings.bundle $(IOS_APP)/Settings.bundle
+	@cp -R ios/l10n/*.lproj $(IOS_APP)/   # 宿主界面字符串表（游戏内菜单 / 触屏布局 / 金手指 / 社区补丁，ios/s2a_l10n.h S2AL）：<语言>.lproj/S2ArmHost.strings 放主 bundle（#316）
 	@$(call ios_objs_cached,$(BUILD)/ios/obj_app,-fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include,$(IOS_SRCS))
 	$(IOS_LD_REPRO) $(IOS_CC) -fobjc-arc $(IOS_LD_DET) -Wl,-oso_prefix,$(IOS_BUILD_ABS)/ -o $(IOS_APP)/S2Arm $(call ios_objlist,$(BUILD)/ios/obj_app,$(IOS_SRCS)) $(IOS_LIBS) \
 	  -framework UIKit -framework Foundation -framework CoreGraphics $(IOS_SHELLUI_LINK) $(call S2A_WEAK_U,ios) -Wl,-S
@@ -185,6 +186,7 @@ ios: ios-ns2pro
 	  /usr/bin/plutil -insert LSSupportsOpeningDocumentsInPlace -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIApplicationShortcutItems -json "$$(cat ios/shortcuts.json)" $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleLocalizations -json '["en","zh-Hans","ja","de","fr","it","sv"]' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert CFBundleDevelopmentRegion -string en $(IOS_APP)/Info.plist; \
 	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string></array>' $(IOS_APP)/Info.plist; done; \
 	  /usr/bin/plutil -insert UIRequiresFullScreen -bool YES $(IOS_APP)/Info.plist; /usr/bin/plutil -insert UIStatusBarHidden -bool YES $(IOS_APP)/Info.plist   # 只许横屏、全屏、无状态栏
 	@/usr/bin/plutil -insert LSSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 声明支持系统游戏模式（10-20 维护者二分：动森整机 5.88 → 3.37 W、30 帧不变，性能核 3.9 → 2.2 GHz；旧 S2A 包有此键、S2Arm 漏了）

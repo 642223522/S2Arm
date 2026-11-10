@@ -575,6 +575,7 @@ namespace S2A.Services
                 if (TextInput.Open)
                     for (int i = 0; i < states.Count; i++) states[i] = new GamepadInput { PlayerId = states[i].PlayerId };
                 device.Hid.Npads.Update(states);
+                Cheats.SetKeys(states[0].Buttons);   // 金手指按键条件码看一号手柄（与 Ryujinx TamperMachine 同口径）
                 // A platform hook owns the HID touch ring (Android stable IDs);
                 // Apple uses the shared runtime/autoplay source when no hook is installed.
                 if (TouchHook != null) TouchHook(device);
