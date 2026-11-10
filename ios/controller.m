@@ -318,6 +318,7 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     });
 }
 
+static void log_controllers(int why);   // 下面 systemChanged 旁：GameController 枚举诊断（#456）
 @implementation S2AController {
     __weak UIView *_root;
     UIButton *_connect;
@@ -340,6 +341,7 @@ static void ble_status(ns2_status status, const char *message, void *context) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(systemChanged:) name:GCControllerDidDisconnectNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(settingsChanged:) name:NSUserDefaultsDidChangeNotification object:nil];
     pad_face_sync();
+    log_controllers(0);
     return self;
 }
 - (void)createConnectionButton {
@@ -576,9 +578,22 @@ static void pad_face_sync(void) {
     if (_foreground && _hasSystem) [self stopBLE:"system controller selected"];
     [self updateVisibility];
 }
+// 诊断（#456）：列出 GameController 枚举到的全部设备与 profile。只有带 extendedGamepad 的才会被选成系统手柄并打「接入」，
+//   第三方手柄的 Switch 模式若被枚举成只有 micro / 没有标准 profile，或根本没被枚举，原先日志里一片空白，分不清卡在系统层还是 App 层
+static void log_controllers(int why) {   // why：0 启动时、1 连接通知、2 断开通知
+    NSMutableArray<NSString *> *list = [NSMutableArray array];
+    for (GCController *c in GCController.controllers)
+        [list addObject:[NSString stringWithFormat:@"%@|%@|%@", c.vendorName ?: @"?", c.productCategory ?: @"?",
+                         c.extendedGamepad ? @"extended" : c.microGamepad ? @"micro" : @"none"]];
+    const char *items = [list componentsJoinedByString:@"; "].UTF8String ?: "";
+    if (why == 0) LOG("系统手柄：启动时枚举到 %d 个 %s", (int)list.count, items);
+    else if (why == 1) LOG("系统手柄：连接通知，枚举到 %d 个 %s", (int)list.count, items);
+    else LOG("系统手柄：断开通知，枚举到 %d 个 %s", (int)list.count, items);
+}
 - (void)systemChanged:(NSNotification *)notification {
     // 框架通知线程不作假设，设备输入本身仍只在 inputQueue 处理。
-    dispatch_async(dispatch_get_main_queue(), ^{ [self selectSystem]; });
+    BOOL connected = [notification.name isEqualToString:GCControllerDidConnectNotification];
+    dispatch_async(dispatch_get_main_queue(), ^{ log_controllers(connected ? 1 : 2); [self selectSystem]; });
 }
 - (void)stopBLE:(const char *)reason {
     _blePaused = _bleResuming = NO;
