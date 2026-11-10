@@ -124,7 +124,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var locations: [StorageLocation] = []
     @Published var lastLocation = ""
     /// 「选择其他文件夹…」选的路径所在盘会不会让解包多占数倍空间（#444；已登记的位置看 StorageLocation.slackWarning）
-    @Published var probedSlack: [String: Bool] = [:]
+    @Published var probedSlack: [String: LocationSlack?] = [:]
     /// 出包页记住的平台勾选（平台 id）。
     @Published private(set) var exportChoice: [String] = []
     /// 动作没能开始的原因（缺东西、没选游戏库等），显示在主按钮下面。只属于出错的那一款（导入等不针对某款的为 nil）：
@@ -823,9 +823,15 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 存放位置下面那行提示（#444）：这块盘的格式 / 分配单元会让解包多占数倍空间，只提示不拦
-    func locationSlack(_ path: String) -> Bool {
-        locations.first(where: { $0.path == path })?.slackWarning ?? probedSlack[path] ?? false
+    /// 存放位置下面那行提示（#444），只提示不拦；按原因说对：大分配单元「每个小文件至少占 N、多占数倍」/ 不是 APFS「不能克隆、多占一份」。没问题给 nil
+    func locationSlackText(_ path: String, language: String) -> String? {
+        let row = locations.first(where: { $0.path == path })
+        guard let slack = row != nil ? row?.slack : probedSlack[path] ?? nil else { return nil }
+        if slack.reason == "cluster" {
+            let size = ByteCountFormatter.string(fromByteCount: slack.clusterBytes, countStyle: .binary)
+            return BackendText.launcherText("export.location.slack_cluster", language: language).replacingOccurrences(of: "{0}", with: size)
+        }
+        return BackendText.launcherText("export.location.slack_format", language: language)
     }
 
     /// 出包页「存放位置」缺省选哪个：这款现在的位置 → 上次用的位置 → 默认位置。

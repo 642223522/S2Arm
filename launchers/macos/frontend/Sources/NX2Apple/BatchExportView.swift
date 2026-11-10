@@ -115,8 +115,8 @@ struct BatchExportView: View {
                 }
                 .accessibilityIdentifier("batch.location")
             }
-            if model.locationSlack(model.batchLocation) {   // #444 同单款出包页
-                Label(BackendText.launcherText("export.location.slack", language: uiLanguage), systemImage: "exclamationmark.triangle")
+            if let slack = model.locationSlackText(model.batchLocation, language: uiLanguage) {   // #444 同单款出包页
+                Label(slack, systemImage: "exclamationmark.triangle")
                     .font(.manrope(12)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("batch.location.slack")
             }

@@ -254,12 +254,22 @@ public struct StorageLocation: Identifiable, Equatable {
     public let connected: Bool
     public let freeBytes: Int64?
     public let isDefault: Bool
-    /// 这块盘的格式 / 分配单元会让解包多占数倍空间（#444，后端 libloc.slack_warning；只提示不拦）
-    public let slackWarning: Bool
+    /// 这块盘会让出包多占空间的原因（#444，后端 libloc.slack_reason；只提示不拦）：cluster 大分配单元 / format 不能克隆；nil 没问题
+    public let slack: LocationSlack?
     public init?(_ r: [String: Any]) {
         guard let id = r["id"] as? String, let path = r["path"] as? String else { return nil }
         self.id = id; self.path = path; volume = r["volume"] as? String ?? ""; connected = r["connected"] as? Bool ?? false
         freeBytes = (r["freeBytes"] as? NSNumber)?.int64Value; isDefault = r["default"] as? Bool ?? false
-        slackWarning = r["slackWarning"] as? Bool ?? false
+        slack = LocationSlack(r)
+    }
+}
+
+/// 存放位置所在盘会让出包多占空间：原因（cluster / format）与分配单元字节数（提示里写「每个小文件至少占 N」）
+public struct LocationSlack: Equatable {
+    public let reason: String
+    public let clusterBytes: Int64
+    public init?(_ r: [String: Any]) {
+        guard r["slackWarning"] as? Bool == true, let reason = r["slackReason"] as? String else { return nil }
+        self.reason = reason; clusterBytes = (r["clusterBytes"] as? NSNumber)?.int64Value ?? 0
     }
 }

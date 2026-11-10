@@ -547,10 +547,11 @@ def volume_cluster(path):
 
 
 def location_slack(path):
-    """存放位置的卷格式、分配单元，以及要不要提示「解包会多占数倍空间」（libloc.slack_warning，只提示不拦）"""
+    """存放位置的卷格式、分配单元，以及要不要提示出包会多占空间、为什么（libloc.slack_reason：cluster 大簇 / format 不能克隆或硬链接；只提示不拦）"""
     import libloc
     fmt, cluster = volume_format(path), volume_cluster(path)
-    return dict(format=fmt, clusterBytes=cluster, slackWarning=libloc.slack_warning(fmt, cluster, system="Windows" if os.name == "nt" else "Darwin"))
+    reason = libloc.slack_reason(fmt, cluster, system="Windows" if os.name == "nt" else "Darwin")
+    return dict(format=fmt, clusterBytes=cluster, slackWarning=reason is not None, slackReason=reason)
 
 def require_apfs(path):
     """游戏库所在卷的格式：Mac 要 APFS（原错误码 library_not_apfs），Windows 要 NTFS / ReFS（library_bad_format，libloc.format_ok）；读不到格式不拦"""

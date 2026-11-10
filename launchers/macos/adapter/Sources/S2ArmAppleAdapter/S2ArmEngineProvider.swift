@@ -152,10 +152,10 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     /// 各存放位置（出包页下拉框）和上次用的位置号。
     /// probe：刚在「选择其他文件夹…」里选的路径，另查它所在盘会不会让解包多占数倍空间（#444）
-    public func locations(probe: String? = nil) async throws -> (rows: [StorageLocation], last: String, probeSlack: Bool?) {
+    public func locations(probe: String? = nil) async throws -> (rows: [StorageLocation], last: String, probeSlack: LocationSlack??) {
         let r = try await client.perform("locations", extra: probe.map { ["probe": $0] } ?? [:], events: .discard).result
         return ((r["locations"] as? [[String: Any]] ?? []).compactMap(StorageLocation.init), r["last"] as? String ?? "",
-                (r["probe"] as? [String: Any])?["slackWarning"] as? Bool)
+                (r["probe"] as? [String: Any]).map { LocationSlack($0) })
     }
 
     /// 把这款整个搬到另一个存放位置（同一卷改名，跨卷拷完核对再删旧的；存档跟着走）。

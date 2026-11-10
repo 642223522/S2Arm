@@ -43,8 +43,8 @@ public sealed partial class EnvironmentWindow
     private StorageLocations? locations;
     private string? locationsFor;
     private string exportLocation = "";
-    /// <summary>「选择其他文件夹…」选的路径所在盘会不会让解包多占数倍空间（#444；已登记的位置看 StorageLocation.SlackWarning）。</summary>
-    private readonly Dictionary<string, bool> probedSlack = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>「选择其他文件夹…」选的路径所在盘的提示原因（#444；null = 没问题；已登记的位置看 StorageLocation.Slack）。</summary>
+    private readonly Dictionary<string, LocationSlack?> probedSlack = new(StringComparer.OrdinalIgnoreCase);
     private const string OtherFolder = "__other__";
     // pack job
     private LibraryGame? packGame;
@@ -414,9 +414,10 @@ public sealed partial class EnvironmentWindow
         var title = Label(T(titleKey), 16); title.VerticalAlignment = VerticalAlignment.Center;
         line.Children.Add(title);
         Grid.SetColumn(box, 1); line.Children.Add(box);
-        if (!LocationSlack(exportLocation)) return Card(line, 14);
-        // #444：exFAT / 大簇的盘，解包小文件每个占满一簇，实占多出数倍；只提示不拦（同 Mac ExportView.locationRow）
-        var slack = new TextBlock { Text = "⚠ " + T("export.location.slack_win"), FontSize = 13, TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        if (SlackFor(exportLocation) is not { } why) return Card(line, 14);
+        // #444：只提示不拦，原因说对（同 Mac ExportView.locationRow）：大簇「每个小文件至少占 N、多占数倍」/ 不是 NTFS「出包可能失败」
+        var text = why.Reason == "cluster" ? T("export.location.slack_cluster_win").Replace("{0}", FormatBytes(why.ClusterBytes)) : T("export.location.slack_format_win");
+        var slack = new TextBlock { Text = "⚠ " + text, FontSize = 13, TextWrapping = Avalonia.Media.TextWrapping.Wrap,
             Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FFC73D")) };
         AutomationId(slack, "export.location.slack");
         var stack = new StackPanel { Spacing = 8 };
@@ -424,8 +425,8 @@ public sealed partial class EnvironmentWindow
         return Card(stack, 14);
     }
 
-    private bool LocationSlack(string path) =>
-        locations?.Rows.FirstOrDefault(r => SameFolder(r.Path, path)) is { } row ? row.SlackWarning : probedSlack.TryGetValue(path, out var slack) && slack;
+    private LocationSlack? SlackFor(string path) =>
+        locations?.Rows.FirstOrDefault(r => SameFolder(r.Path, path)) is { } row ? row.Slack : probedSlack.TryGetValue(path, out var slack) ? slack : null;
 
     private async Task LoadLocationsAsync(LibraryGame game, string? probe = null)
     {
@@ -435,7 +436,7 @@ public sealed partial class EnvironmentWindow
             var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "locations", null, CancellationToken.None, probe: probe);
             if (!job.Report.Succeeded || locationsFor != game.Id) return;
             locations = StorageLocations.Parse(job.Report.Result);
-            if (probe is not null && locations.ProbeSlack is { } probed) probedSlack[probe] = probed;
+            if (probe is not null && locations.Probed) probedSlack[probe] = locations.ProbeSlack;
             if (exportLocation.Length == 0) exportLocation = locations.DefaultFor(game.Location);
         }
         // 读不回位置表同 Mac：下拉框只剩这款现在的位置和「选择其他文件夹…」，不选就不传，后端按这款现在的位置出包
