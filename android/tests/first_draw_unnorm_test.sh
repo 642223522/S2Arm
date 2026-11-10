@@ -29,6 +29,7 @@ cat > "$E/include/android/native_window.h" <<'HEADER'
 typedef struct ANativeWindow ANativeWindow;
 static inline int32_t ANativeWindow_getWidth(ANativeWindow*w){(void)w;return 0;}
 static inline int32_t ANativeWindow_getHeight(ANativeWindow*w){(void)w;return 0;}
+static inline int32_t ANativeWindow_setBuffersGeometry(ANativeWindow*w,int32_t wd,int32_t h,int32_t f){(void)w;(void)wd;(void)h;(void)f;return 0;}
 HEADER
 cat > "$E/include/sys/system_properties.h" <<'HEADER'
 #pragma once
