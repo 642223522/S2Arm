@@ -414,6 +414,23 @@ class SendProgress(Base):
         self.run_push(self.on_phone("a", "b", "c", "e"))
         self.assertNotIn(f"{RP}/.transfer", self.dev.puts)
 
+    def test_stages_before_pushing(self):
+        # ⑫ 推之前的准备子阶段按序报：核对手机上的文件 → 检查手机空间（有东西要推才查）
+        stages = []
+        self.dev = Fake({})
+        push.run(self.dev, self.pk, self.w, False, say=self.log.append, stage=lambda name, d=None, t=None: stages.append(name))
+        self.assertEqual(stages, [push.STAGE_CHECK, push.STAGE_SPACE])
+        stages.clear(); self.dev = Fake(self.on_phone("a", "b", "c", "e"))
+        push.run(self.dev, self.pk, self.w, False, say=self.log.append, stage=lambda name, d=None, t=None: stages.append(name))
+        self.assertEqual(stages, [push.STAGE_CHECK])   # 机上全有：不查空间
+
+    def test_stage_line_matches_job_parser(self):   # Mac 装机作业（pack/jobs/install.py push_pack）按这个格式解析准备子阶段
+        import re
+        line = f"{push.STAGE_PREFIX} {push.STAGE_IMAGE}\t{5}\t{17}"
+        m = re.match(r"S2A_PUSH_STAGE (.+?)\t(\d*)\t(\d*)$", line)
+        self.assertEqual(m.groups(), (push.STAGE_IMAGE, "5", "17"))
+        self.assertEqual(re.match(r"S2A_PUSH_STAGE (.+?)\t(\d*)\t(\d*)$", f"{push.STAGE_PREFIX} {push.STAGE_CHECK}\t\t").groups(), (push.STAGE_CHECK, "", ""))
+
     def test_cli_progress_lines(self):   # Mac 装机作业读的机器行
         line = push.PROGRESS_PREFIX + " 60 200 1 3"
         self.assertRegex(line, r"^S2A_PUSH_PROGRESS \d+ \d+ \d+ \d+$")

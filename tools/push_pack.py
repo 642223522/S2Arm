@@ -560,18 +560,22 @@ def probe(dev, work):
         raise DeviceLocked("iPhone 写不进资源包：多半是手机锁屏了或数据线松了。解锁手机、保持亮屏，插稳数据线后再点一次。") from e
 
 
-def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress=None):
-    """一条龙：探针（写不进就停）→ 算 → 核空间（不够报红；读不到提示后照推：探针已证明手机可写）→ 推 → (推了几批, 文件数, 字节数)"""
+def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress=None, stage=None):
+    """一条龙：探针（写不进就停）→ 算 → 核空间（不够报红；读不到提示后照推：探针已证明手机可写）→ 推 → (推了几批, 文件数, 字节数)。
+    stage(名字, 已做, 总量)：推之前的准备步骤报给装机页（核对手机上的文件 / 检查手机空间 / 准备资源（拼镜像）按字节），每一刻都看得到在做什么"""
+    stage = stage or (lambda name, done=None, total=None: None)
+    stage(STAGE_CHECK)
     probe(dev, work)
     nb, nt, nbytes = plan(dev, pack, work, full, say)
     if on_plan: on_plan(nb, nt, nbytes)
     if nbytes:
+        stage(STAGE_SPACE)
         fb, need = space(dev, nbytes, work, env)
         if fb is None: say(f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
         elif fb < need:
             say(f"【红】测试设备剩余空间不足：可写 {fb >> 30} GB < 要 {need >> 30} GB（待推 {nbytes >> 30} GB + 解开时最大一批 + 余量）；先卸掉机上不用的包")
             raise Fail("测试设备空间不足")
-    made = materialize_images(pack, work, say)
+    made = materialize_images(pack, work, say, stage)
     try:
         send(dev, pack, work, say, progress)
     finally:
@@ -579,7 +583,11 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
     return nb, nt, nbytes
 
 
-def materialize_images(pack, work, say=print):
+STAGE_CHECK, STAGE_SPACE, STAGE_IMAGE = "核对手机上的文件", "检查手机空间", "准备资源（拼镜像）"   # 装机页的准备子阶段（作业层原样上屏）
+STAGE_PREFIX = "S2A_PUSH_STAGE"   # --progress-lines 打的机器读行：S2A_PUSH_STAGE <名字>\t<已做字节>\t<总字节>（没有字节的两栏为空）
+
+
+def materialize_images(pack, work, say=print, stage=None):
     """这次要推的单文件镜像（plan 写的 direct_img.tsv）包里没有、但有 romfs.files/（pack/romfs_image.py v2 的库内形态）→ 现拼到包里，
     返回现拼的路径（run 推完删）。本机盘放不下就报红不推：拼一份要镜像那么大的空间，推完即还"""
     dl = Path(work) / "direct_img.tsv"
@@ -593,11 +601,14 @@ def materialize_images(pack, work, say=print):
     if free < need:
         say(f"【红】本机盘放不下现拼的镜像：要 {need / 1e9:.1f} GB，可用 {free / 1e9:.1f} GB（{pack}）；腾出空间再装")
         raise Fail("本机盘空间不足，拼不出要推的镜像")
-    made = []
+    made, base, whole = [], 0, sum(int(w[1]) for w in todo)
     try:
         for w in todo:
             t0 = time.time()
-            made.append(romfs_image.materialize(pack, w[0], int(w[1]), w[2], say=say))
+            if stage: stage(STAGE_IMAGE, base, whole)
+            made.append(romfs_image.materialize(pack, w[0], int(w[1]), w[2], say=say,
+                                                progress=(lambda n, b=base: stage(STAGE_IMAGE, b + n, whole)) if stage else None))
+            base += int(w[1])
             say(f"  现拼 {w[0]} 用时 {time.time() - t0:.0f} 秒")
     except (romfs_image.Red, OSError) as e:
         for f in made: Path(f).unlink(missing_ok=True)
@@ -637,7 +648,8 @@ def main(argv=None):
             state.write_text(f"SENT {send(dev, pack, work, say)}\n"); return 0
         say(f"推资源包：设备 {a.device} 包 {a.bundle_id} 目录 {pack}" + ("（--full 整包重推）" if a.full else ""))
         lines = (lambda d, t, k, n: print(f"{PROGRESS_PREFIX} {d} {t} {k} {n}", flush=True)) if a.progress_lines else None
-        nb, _, _ = run(dev, pack, work, a.full, say, progress=lines)
+        stages = (lambda name, d=None, t=None: print(f"{STAGE_PREFIX} {name}\t{'' if d is None else d}\t{'' if t is None else t}", flush=True)) if a.progress_lines else None
+        nb, _, _ = run(dev, pack, work, a.full, say, progress=lines, stage=stages)
         if a.apply: apply(dev, pack, work, nb, say)
         else: say(f"资源包：推完 {nb} 批；起一次 App 让它解开 .incoming（S2A_PACK_APPLY_ONLY=1 只解包不跑游戏）" if nb else "资源包：机上已是最新，不用推")
         return 0

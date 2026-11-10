@@ -113,7 +113,7 @@ def build(src_dir, out, root):
     print(f'🟢 单文件镜像 {img / 1e9:.2f} GB；资源包 {len(rows)} → {len(new)} 个文件，{out}')
 
 
-def materialize(pack, img_rel, size, want_sha, say=print):
+def materialize(pack, img_rel, size, want_sha, say=print, progress=None):
     """按 <前缀>romfs.s2aidx 的文件顺序、<前缀>romfs.imgmap 的偏移，把 <前缀>romfs.files/ 里的文件拼成 <前缀>romfs.img（先写 .part 再改名），
     边拼边核：长度、sha256 都要等于 index.tsv 记的（size / want_sha），对不上删掉半份、报红。→ 写出的路径（调用方推完删）"""
     pack = os.fspath(pack); prefix = img_rel[:-len('romfs.img')]
@@ -125,6 +125,7 @@ def materialize(pack, img_rel, size, want_sha, say=print):
     offsets = struct.unpack_from(f'<{nf}q', mb, 20)
     dst = os.path.join(pack, img_rel); part = dst + '.part'
     h, pos = sha256_fast.new(), 0
+    import time; last = time.monotonic()   # progress(已拼字节)：每秒一次（装机页「准备资源（拼镜像）X / Y GB」）
     try:
         with open(part, 'wb') as w:
             for o, (_, n, rel) in zip(offsets, files):
@@ -136,6 +137,7 @@ def materialize(pack, img_rel, size, want_sha, say=print):
                         b = f.read(min(CHUNK, left))
                         if not b: raise Red(f'{prefix}{FILES}/{rel} 读不满')
                         h.update(b); w.write(b); left -= len(b); pos += len(b)
+                        if progress and time.monotonic() - last >= 1: progress(pos); last = time.monotonic()
         if pos != size or h.hexdigest() != want_sha:
             raise Red(f'现拼的 {img_rel} 与索引不符（长 {pos} / {size}，sha256 {h.hexdigest()[:12]} / {want_sha[:12]}）：资源包里的文件被改过，重打 iPhone 包')
         os.replace(part, dst)
