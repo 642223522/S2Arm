@@ -579,7 +579,7 @@ else()
     add_test(NAME android_nvn_vk_lifecycle COMMAND nvn_vk_lifecycle_test)
     # 真实呈现退休路径的宿主回归：fake Vulkan 驱动生产 nvn_vk_swapchain.c。
     # 覆盖 present fence 与渲染 fence 分离、无后续帧 Stop 保留、present/渲染失败保留、
-    # acquire 超时跳过、maintenance1 准入；旋转/换代判定在 nvn_vk_lifecycle_test。
+    # acquire 超时跳过、无 maintenance1 时的同图像再 acquire 证明（#426）；旋转/换代判定在 nvn_vk_lifecycle_test。
     # 真机驱动行为仍需设备验证。
     add_executable(nvn_vk_swapchain_host_test tests/nvn_vk_swapchain_host_test.c
         native/nvn/nvn_vk_swapchain.c native/nvn/nvn_vk_surface.c native/game_touch.c)
