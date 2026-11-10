@@ -124,6 +124,11 @@ internal static class LibraryJobCases
         check(Locations(rows.Replace("\"last\":\"c\"", "\"last\":\"b\"")).DefaultFor(null) == "/lib", "locations: last one not connected → default location");
         try { Locations(rows.Replace("\"connected\":true,", "")); throw new Exception("accepted location without connected"); }
         catch (LibraryProtocolException) { check(true, "locations: row without connected rejected"); }
+        // #444：存放位置所在盘会让解包多占数倍空间（后端 libloc.slack_warning）；probe = 刚选的文件夹
+        check(places.Rows.All(r => !r.SlackWarning) && places.ProbeSlack is null, "locations: no slackWarning / probe field reads as false / null");
+        var slack = Locations(rows.Replace("\"freeBytes\":10,", "\"freeBytes\":10,\"format\":\"exfat\",\"clusterBytes\":524288,\"slackWarning\":true,")
+            .Replace(",\"last\":\"c\"", ",\"last\":\"c\",\"probe\":{\"path\":\"E:\\\\games\",\"format\":\"ntfs\",\"clusterBytes\":2097152,\"slackWarning\":true}"));
+        check(slack.Rows[2].SlackWarning && !slack.Rows[0].SlackWarning && slack.ProbeSlack == true, "locations: slackWarning per row and for the probed folder");
 
         // ---- library layout v3 P4: catalog game.sizes, storageOverview job (shapes from pack/jobs/sizes.py for_catalog / overview) ----
         using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"missing\":[],\"location\"",

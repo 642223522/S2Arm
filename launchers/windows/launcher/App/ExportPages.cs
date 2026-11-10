@@ -43,6 +43,8 @@ public sealed partial class EnvironmentWindow
     private StorageLocations? locations;
     private string? locationsFor;
     private string exportLocation = "";
+    /// <summary>「选择其他文件夹…」选的路径所在盘会不会让解包多占数倍空间（#444；已登记的位置看 StorageLocation.SlackWarning）。</summary>
+    private readonly Dictionary<string, bool> probedSlack = new(StringComparer.OrdinalIgnoreCase);
     private const string OtherFolder = "__other__";
     // pack job
     private LibraryGame? packGame;
@@ -404,24 +406,36 @@ public sealed partial class EnvironmentWindow
         box.SelectionChanged += (_, _) =>
         {
             if (box.SelectedItem is not ComboBoxItem { Tag: string value }) return;
-            if (value == OtherFolder) _ = ChooseLocationAsync(); else exportLocation = value;
+            if (value == OtherFolder) _ = ChooseLocationAsync();
+            else { exportLocation = value; Avalonia.Threading.Dispatcher.UIThread.Post(Render); }   // 换位置后重画：下面那行提示跟着变
         };
         AutomationId(box, "export.location");
         var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
         var title = Label(T(titleKey), 16); title.VerticalAlignment = VerticalAlignment.Center;
         line.Children.Add(title);
         Grid.SetColumn(box, 1); line.Children.Add(box);
-        return Card(line, 14);
+        if (!LocationSlack(exportLocation)) return Card(line, 14);
+        // #444：exFAT / 大簇的盘，解包小文件每个占满一簇，实占多出数倍；只提示不拦（同 Mac ExportView.locationRow）
+        var slack = new TextBlock { Text = "⚠ " + T("export.location.slack_win"), FontSize = 13, TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FFC73D")) };
+        AutomationId(slack, "export.location.slack");
+        var stack = new StackPanel { Spacing = 8 };
+        stack.Children.Add(line); stack.Children.Add(slack);
+        return Card(stack, 14);
     }
 
-    private async Task LoadLocationsAsync(LibraryGame game)
+    private bool LocationSlack(string path) =>
+        locations?.Rows.FirstOrDefault(r => SameFolder(r.Path, path)) is { } row ? row.SlackWarning : probedSlack.TryGetValue(path, out var slack) && slack;
+
+    private async Task LoadLocationsAsync(LibraryGame game, string? probe = null)
     {
         if (connectedFolder is null || libraryId is null) return;
         try
         {
-            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "locations", null, CancellationToken.None);
+            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "locations", null, CancellationToken.None, probe: probe);
             if (!job.Report.Succeeded || locationsFor != game.Id) return;
             locations = StorageLocations.Parse(job.Report.Result);
+            if (probe is not null && locations.ProbeSlack is { } probed) probedSlack[probe] = probed;
             if (exportLocation.Length == 0) exportLocation = locations.DefaultFor(game.Location);
         }
         // 读不回位置表同 Mac：下拉框只剩这款现在的位置和「选择其他文件夹…」，不选就不传，后端按这款现在的位置出包
@@ -435,7 +449,11 @@ public sealed partial class EnvironmentWindow
         try
         {
             var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("export.location.title") });
-            if (folders.Count > 0) exportLocation = LocalPath(folders[0]);
+            if (folders.Count > 0)
+            {
+                exportLocation = LocalPath(folders[0]);
+                if (catalog?.Games.FirstOrDefault(g => g.Id == locationsFor) is { } game) _ = LoadLocationsAsync(game, exportLocation);   // 查这块盘会不会让解包多占数倍空间（#444）
+            }
         }
         catch (IOException) { }   // 不是本地文件夹：不换
         Render();   // 取消时下拉框退回原来选的那项

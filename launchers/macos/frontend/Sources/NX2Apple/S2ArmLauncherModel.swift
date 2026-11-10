@@ -123,6 +123,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
     @Published var locations: [StorageLocation] = []
     @Published var lastLocation = ""
+    /// 「选择其他文件夹…」选的路径所在盘会不会让解包多占数倍空间（#444；已登记的位置看 StorageLocation.slackWarning）
+    @Published var probedSlack: [String: Bool] = [:]
     /// 出包页记住的平台勾选（平台 id）。
     @Published private(set) var exportChoice: [String] = []
     /// 动作没能开始的原因（缺东西、没选游戏库等），显示在主按钮下面。只属于出错的那一款（导入等不针对某款的为 nil）：
@@ -813,11 +815,17 @@ public final class S2ArmLauncherModel: ObservableObject {
     // ---- 存放位置（游戏库结构 v3）----
 
     /// 重读各存放位置（出包页打开时调；剩余空间是当时的）。
-    func loadLocations() {
+    func loadLocations(probe: String? = nil) {
         Task { [weak self] in
-            guard let self, let r = try? await self.provider.locations() else { return }
+            guard let self, let r = try? await self.provider.locations(probe: probe) else { return }
             self.locations = r.rows; self.lastLocation = r.last
+            if let probe, let slack = r.probeSlack { self.probedSlack[probe] = slack }
         }
+    }
+
+    /// 存放位置下面那行提示（#444）：这块盘的格式 / 分配单元会让解包多占数倍空间，只提示不拦
+    func locationSlack(_ path: String) -> Bool {
+        locations.first(where: { $0.path == path })?.slackWarning ?? probedSlack[path] ?? false
     }
 
     /// 出包页「存放位置」缺省选哪个：这款现在的位置 → 上次用的位置 → 默认位置。

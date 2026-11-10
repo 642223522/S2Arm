@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 45,
+  "revision": 46,
   "languages": ["zh-Hans", "en"],
   "source_language": "zh-Hans",
   "note": "四端（Mac / iOS / Android / 鸿蒙）启动器的「一套体验」规格。状态、文案、错误码、任务事件到界面的映射只在这里定义一次；各端只负责画，不另写一套措辞。错误码的「下一步」不在本文件里写第二份：一律指向 pack/jobs/errors.py 的 RECOVERY（口径见 README.md）。口径号 revision 改动规则见 README.md。",
@@ -1044,6 +1044,8 @@
       {"id": "export.location.offline", "zh-Hans": "{0}（未连接）", "en": "{0} (not connected)"},
       {"id": "export.location.other", "zh-Hans": "选择其他文件夹…", "en": "Choose another folder…"},
       {"id": "export.location.choose", "zh-Hans": "放在这里", "en": "Store here"},
+      {"id": "export.location.slack", "zh-Hans": "这块盘的格式会让解包多占数倍空间，建议用 APFS 格式的盘。", "en": "This drive's format makes unpacked games take several times more space. An APFS drive is recommended."},
+      {"id": "export.location.slack_win", "zh-Hans": "这块盘的格式或分配单元会让解包多占数倍空间，建议用默认分配单元的 NTFS 格式盘。", "en": "This drive's format or allocation unit size makes unpacked games take several times more space. An NTFS drive with the default allocation unit size is recommended."},
       {"id": "export.device.none", "zh-Hans": "把 iPhone 插上，可以按你的机型优化，进游戏更流畅。不插也能出包。", "en": "Plug in your iPhone to tune the build for it and make games smoother. You can also build without it."},
       {"id": "export.device.pick", "zh-Hans": "或选择机型", "en": "Or choose a model"},
       {"id": "export.device.many", "zh-Hans": "连着多台设备，会按选中的那台优化，装到 iPhone 时也装到它。", "en": "Several devices are connected. The build is tuned for the one you choose, and it is installed on that one too."},

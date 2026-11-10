@@ -254,9 +254,12 @@ public struct StorageLocation: Identifiable, Equatable {
     public let connected: Bool
     public let freeBytes: Int64?
     public let isDefault: Bool
+    /// 这块盘的格式 / 分配单元会让解包多占数倍空间（#444，后端 libloc.slack_warning；只提示不拦）
+    public let slackWarning: Bool
     public init?(_ r: [String: Any]) {
         guard let id = r["id"] as? String, let path = r["path"] as? String else { return nil }
         self.id = id; self.path = path; volume = r["volume"] as? String ?? ""; connected = r["connected"] as? Bool ?? false
         freeBytes = (r["freeBytes"] as? NSNumber)?.int64Value; isDefault = r["default"] as? Bool ?? false
+        slackWarning = r["slackWarning"] as? Bool ?? false
     }
 }

@@ -252,10 +252,12 @@ public sealed record StorageOverview(IReadOnlyList<StorageOverview.Location> Loc
 }
 
 /// <summary>One storage location (locations job, pack/jobs/library.py location_rows): one entry of the export page dropdown.</summary>
-public sealed record StorageLocation(string Id, string Path, string Volume, bool Connected, long? FreeBytes, bool IsDefault);
+/// <summary>SlackWarning：这块盘的格式 / 分配单元会让解包多占数倍空间（#444，后端 libloc.slack_warning；只提示不拦）。</summary>
+public sealed record StorageLocation(string Id, string Path, string Volume, bool Connected, long? FreeBytes, bool IsDefault, bool SlackWarning = false);
 
 /// <summary>Result of the locations job: every storage location and the id of the one used last.</summary>
-public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, string Last)
+/// <summary>ProbeSlack：请求带 probe（「选择其他文件夹…」选的路径）时这个路径的 SlackWarning；没带为 null。</summary>
+public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, string Last, bool? ProbeSlack = null)
 {
     public static StorageLocations Parse(JsonElement result)
     {
@@ -266,8 +268,11 @@ public sealed record StorageLocations(IReadOnlyList<StorageLocation> Rows, strin
                 LibraryJobResult.Text(r, "id"), LibraryJobResult.Text(r, "path"), LibraryJobResult.Text(r, "volume", true),
                 r.GetProperty("connected").GetBoolean(),
                 r.TryGetProperty("freeBytes", out var free) && free.ValueKind == JsonValueKind.Number ? free.GetInt64() : null,
-                r.TryGetProperty("default", out var d) && d.ValueKind == JsonValueKind.True)).ToArray();
-            return new(rows, result.TryGetProperty("last", out var last) && last.ValueKind == JsonValueKind.String ? last.GetString()! : "");
+                r.TryGetProperty("default", out var d) && d.ValueKind == JsonValueKind.True,
+                r.TryGetProperty("slackWarning", out var slack) && slack.ValueKind == JsonValueKind.True)).ToArray();
+            bool? probe = result.TryGetProperty("probe", out var p) && p.ValueKind == JsonValueKind.Object
+                ? p.TryGetProperty("slackWarning", out var ps) && ps.ValueKind == JsonValueKind.True : null;
+            return new(rows, result.TryGetProperty("last", out var last) && last.ValueKind == JsonValueKind.String ? last.GetString()! : "", probe);
         }
         catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException or FormatException)
         { throw new LibraryProtocolException("Invalid storage locations.", error); }
