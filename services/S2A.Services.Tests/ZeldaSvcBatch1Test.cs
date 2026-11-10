@@ -47,13 +47,14 @@ namespace S2A.Services.Tests
             Check("nifm IGeneralService 101 GetCurrentNetworkProfile(V2)，离线：结果 NoInternetConnection、不报红", $"0x{noNet:X}、红 +0", $"0x{rc:X}、红 +{Red.Total - red0}");
         }
 
-        [SvcCase]
+        [SoloTest("--pctl-real-application", Booted = true)]
         private static void ZeldaPctl1101()
         {
             string root = Path.Combine(Path.GetTempPath(), $"s2a_pctl_test_{Environment.ProcessId}");
-            Host.Device.Processes.TryGetProcess(FakeNative.GamePid, out var original);
             try
             {
+                // Application.Register also registers GPU memory and LibHac state.
+                // Run in a fresh host, independently of optional game registration in Run().
                 WriteApplicationFixture(root);
                 Application.Register(Host.Device, root);
                 bool registered = Host.Device.Processes.TryGetProcess(Native.ProcessId(), out var process);
@@ -76,8 +77,6 @@ namespace S2A.Services.Tests
             }
             finally
             {
-                Host.Device.Processes.ClearProcess(FakeNative.GamePid);
-                if (original != null) Host.Device.Processes.S2ARegisterApplication(original);
                 Directory.Delete(root, true);
             }
         }
