@@ -981,9 +981,9 @@ static class Metal
             return "mtl/" + target + "/" + Convert.ToHexString(h.GetHashAndReset()).ToLowerInvariant();
         }
         var fname = Encoding.UTF8.GetBytes(name + ".metal");
-        string kSrc = Key(new byte[] { 0 }), kNamed = Key(Encoding.UTF8.GetBytes("\0" + name + "\0"));
+        string kSrc = Key(new byte[] { 0 }), kNamed = null;
         key = kSrc; var hit = Store.Get(kSrc);
-        if (hit == null) { key = kNamed; hit = Store.Get(kNamed); }
+        if (hit == null) { kNamed = Key(Encoding.UTF8.GetBytes("\0" + name + "\0")); key = kNamed; hit = Store.Get(kNamed); }
         if (hit != null) { St.AddOrUpdate(target + " reused", 1, (_, v) => v + 1); return hit["lib"]; }
         var dir = Path.Combine(Work, $"{target}-{Guid.NewGuid():N}"); Directory.CreateDirectory(dir);
         string m = Path.Combine(dir, name + ".metal"), air = Path.Combine(dir, name + ".air"), lib = Path.Combine(dir, name + ".metallib");

@@ -415,6 +415,8 @@
 "settings.toggle.devHud" = "Show S2Arm diagnostics overlay";
 "settings.toggle.diagOnOpen" = "Export diagnostics on next open";
 "settings.toggle.docked" = "Docked mode";
+"settings.toggle.diagRun" = "Diagnostic run (next session)";
+"settings.diagRun.note" = "Turn on, close the app from the app switcher and start this game again. Stay where the problem shows for at least 3 minutes, then export diagnostics. Applies to the next session only; that session runs slower.";
 "settings.docked.note" = "Sharper picture, but uses more power and runs hotter; not recommended on a phone";
 "settings.toggle.metalHud" = "Show Metal performance HUD";
 "settings.toggle.phoneHaptics" = "Phone haptics";

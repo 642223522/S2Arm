@@ -1,4 +1,5 @@
 import contextlib
+import collections
 import io
 import json
 import os
@@ -1501,6 +1502,29 @@ class JobsTests(unittest.TestCase):
         self.assertEqual((event["done"], event["total"]), (0, 2))
         self.assertEqual([c["name"] for c in event["counters"]], ["直连库·整份出库与收尾"])
 
+    def test_direct_batch_space_recheck(self):
+        # 11-10（0400A3A01EE4C000 预检 22.3 GB、实际编到 11491 / 64529 MB 时 73 GB 写满系统盘）：编批库计数器一出现就按剩余量复核。
+        #   期望手算：剩 64529 − 11491 = 53038 MB × 3（每 MB 批库占盘倍数）× 1.1 = 175025 MiB ≈ 184 GB
+        import core
+        from errors import Failure
+        progress = self.root / "progress.tsv"
+        progress.write_text("1\t直连库·编批库（MB）\t11491\t64529\n", encoding="utf-8")
+        self.c.operation = "build"
+        DU = collections.namedtuple("DU", "total used free")
+        with patch.object(self.c, "emit"), patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, 48 * 10**9)), \
+                self.assertRaises(Failure) as stop:
+            self.c.stage_progress(progress, 0)
+        self.assertEqual(stop.exception.code, "disk_full")
+        self.assertIn("要编出约 63 GB", str(stop.exception)); self.assertIn("再占约 184 GB", str(stop.exception)); self.assertIn("只剩 48 GB", str(stop.exception))
+        with patch.object(self.c, "emit"), patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, 200 * 10**9)):
+            self.c.stage_progress(progress, 0)   # 盘够：照常
+        self.c.r["spaceOverride"] = True
+        with patch.object(self.c, "emit"), patch.object(self.c, "diagnostic") as diag, \
+                patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, 48 * 10**9)):
+            self.c.stage_progress(progress, 0)
+            self.c.stage_progress(progress, 0)   # 点过「仍然继续」：不停，只打一次黄
+        self.assertEqual([call.kwargs.get("severity") for call in diag.call_args_list], ["warning"])
+
     def test_protocol_has_ordered_events_and_measured_counters(self):
         self.c.begin("phase", 2, 5)
         self.c.emit(done=5, total=10, unit="files")
@@ -1727,6 +1751,23 @@ class JobsTests(unittest.TestCase):
         self.assertIn(f"中间截掉 {cut[0]['omitted']} 字节", text)
         tail_part = text[text.index("以下是日志结尾"):]
         self.assertGreater(len(tail_part.encode()), 6 * len(text[:text.index("中间截掉")].encode()))   # 尾部留得比头部多
+
+    def test_diagnostic_export_brings_diag_run_pictures(self):
+        # #438 诊断局：游戏文件夹 diagrun/ 里的 PNG 原样进诊断包 diagrun/<游戏号>_<原名>；单张超过上限的跳过、别的文件不带。期望（手写）
+        import unittest.mock as um
+        gid = "0100000000010000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="Alpha", packages=[])]))
+        run = layout.game_dir(self.c, gid, english="Alpha") / "diagrun"; run.mkdir()
+        (run / "shot_3600.png").write_bytes(b"\x89PNG small")
+        (run / "td_100.png").write_bytes(b"\x89PNG" + b"x" * 2000)
+        (run / "notes.txt").write_text("不带")
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        with um.patch.object(library, "DIAG_RUN_FILE_LIMIT", 1024):
+            library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            names = [n for n in z.namelist() if n.startswith("diagrun/")]
+            self.assertEqual(names, [f"diagrun/{gid}_shot_3600.png"])
+            self.assertEqual(z.read(names[0]), b"\x89PNG small")
 
     def test_diagnostic_fd_boundaries_and_directory_replacement(self):
         import unittest.mock as um
