@@ -371,9 +371,10 @@
 "save.pickCancelled" = "Backup selection cancelled.";
 "save.processing" = "Processing saves, please wait…";
 "save.quit.back" = "Back to game";
-"save.quit.confirm" = "Saved — quit game";
-"save.quit.message" = "Save in the game first. After you confirm, the app quits, and save management opens the next time you open it. Unsaved progress will be lost.";
-"save.quit.title" = "Quit the game to manage saves";
+"save.quit.manage" = "Quit and manage saves";
+"save.quit.message" = "Save in the game first. Unsaved progress will be lost. Choose “Quit and manage saves” to open save management the next time you open this game.";
+"save.quit.only" = "Quit game";
+"save.quit.title" = "Quit game";
 "save.readFailed" = "Couldn’t read the backup. Make sure the file is downloaded and your device has enough space.";
 "save.readFailed.detail" = "Couldn’t read the backup. Make sure the file is downloaded and your device has enough space.\n%@";
 "save.reading" = "Reading the selected backup…";
