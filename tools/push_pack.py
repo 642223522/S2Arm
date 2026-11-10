@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import json
 import os
@@ -90,16 +91,34 @@ class Devpush:
     """s2a-devpush（pack/devpush）：经 usbmuxd（USBMUXD_SOCKET_ADDRESS 可指别的机器）连手机，house_arrest 进 App 容器、AFC 读写"""
     kind = "devpush"
     docs, ctx = DOCS, None
+    progress = None   # 当前文件 / 批次的有效载荷字节；不代表 .pushed 已提交
 
     def __init__(self, exe, udid, bid, work, env=None):
         self.exe, self.udid, self.bid, self.work, self.env = exe, udid, bid, Path(work), env
 
     def call(self, *args):
         try:
-            p = subprocess.run([self.exe, self.udid, self.bid, *map(str, args)], capture_output=True, text=True, encoding="utf-8", errors="replace", env=self.env)
+            cmd = [self.exe, self.udid, self.bid, *map(str, args)]
+            if self.progress is not None and args[0] in ("put", "put-tar"):
+                env = dict(os.environ if self.env is None else self.env, S2A_DEVPUSH_PROGRESS="1")
+                tail = deque(maxlen=20)
+                # 合并 stderr 持续排空，避免任一管道写满；老工具忽略环境变量，照常只报批末进度。
+                with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env) as p:
+                    try:
+                        for line in p.stdout:
+                            m = re.fullmatch(r"S2A_DEVPUSH_PROGRESS (\d+)\s*", line)
+                            if m: self.progress(int(m[1]))
+                            else: tail.append(line)
+                        p.wait()
+                    except BaseException:
+                        p.kill(); p.wait()   # 回调失败 / 取消时与 subprocess.run 一样回收本次子进程
+                        raise
+                out = "".join(tail).strip()
+            else:
+                p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=self.env)
+                out = (p.stdout + p.stderr).strip()
         except OSError as e:
             return 1, str(e)
-        out = (p.stdout + p.stderr).strip()
         with open(self.work / "devpush.log", "a", encoding="utf-8") as f:
             f.write(f"[{time.strftime('%H:%M:%S')}] {args[0]} rc={p.returncode} {out[-300:]}\n")
         return p.returncode, out
@@ -151,6 +170,15 @@ class Devpush:
     def launch(self, env):   # 起 App（s2a-devpush launch：CoreDevice app_service，iOS 17+；旧工具没有 launch → 失败）
         rc, out = self.call("launch", *[f"{k}={v}" for k, v in env.items()])
         if rc: raise Fail(f"起 App 失败：{out.splitlines()[-1] if out else rc}")
+
+
+def launch_reason(out, rc):
+    """devicectl 拉 App 失败时挑最说明问题的一行：最后一条 NSLocalizedFailureReason（锁屏时是「…because the device was not, or could not be,
+    unlocked」，apply 据此判锁屏、等玩家解锁）；没有才取末行。11-10 测试设备锁屏实测：末行是「See 'devicectl device process launch --help'…」，
+    只取末行把锁屏原因丢了，玩家看到的是「没开开发者模式」那套说明、也不等解锁"""
+    lines = [l.strip() for l in (out or "").strip().splitlines() if l.strip()]
+    reasons = [l.split("=", 1)[1].strip() for l in lines if l.startswith("NSLocalizedFailureReason =")]
+    return ((reasons or lines or [str(rc)])[-1])[:300]
 
 
 class Devicectl:
@@ -263,8 +291,11 @@ class Devicectl:
         return int(out) if re.fullmatch(r"\d+", out) else None
 
     def launch(self, env):
-        rc, out = self.dcp(120, "device", "process", "launch", "--device", self.device, "--terminate-existing", "--environment-variables", json.dumps(env), self.bid)
-        if rc: raise Fail(f"起 App 失败：{(out.strip().splitlines() or [str(rc)])[-1][:200]}（手机要解锁）")
+        # 没有环境变量就不带 --environment-variables：devicectl 收到 '{}' 直接拒（「Unable to decode environment variables」，11-10 测试设备实测），
+        #   多款容器拉起到游戏库（env 为空）在 Mac 上因此从来拉不起，不论锁没锁屏
+        envs = ["--environment-variables", json.dumps(env)] if env else []
+        rc, out = self.dcp(120, "device", "process", "launch", "--device", self.device, "--terminate-existing", *envs, self.bid)
+        if rc: raise Fail(f"起 App 失败：{launch_reason(out, rc)}")
 
     def nospc(self):   # 刚失败的那次拷贝是不是空间满（cp.log 末尾有 POSIX 28）
         try:
@@ -414,8 +445,8 @@ PROGRESS_PREFIX = "S2A_PUSH_PROGRESS"   # --progress-lines 打的机器读行：
 
 def send(dev, pack, work, say=print, progress=None):
     """推 plan 写好的批次 → 推了几批；每批写完才把它的文件记进 .pushed 并推上机；最后推索引与清单。
-    progress(已传字节, 本次待传总字节, 已完成批次, 总批次)：开推时报一次 0，之后每推完一个直写大文件 / 一批报一次（#266：原先只有人读的日志行，
-    作业事件没有计数，十几分钟的正常推送被当成卡死）。分母是本次实际待传量（plan 算好的差量），不是整个游戏的大小"""
+    progress(已传字节, 本次待传总字节, 已完成批次, 总批次)：流式工具按秒报文件 / 批内进度，旧工具与 devicectl 退路仍按批报（#266）。
+    计数和手机蒙版同一口径：分母 = 已在手机上的 + 本次待传（plan 算好的差量），首装就是本次待传量；批内最多报到 size-1，成功记账后才报满。"""
     pack, work = Path(pack), Path(work)
     files = sorted(work.glob("push_*.tsv"))
     led = work / "pushed"; ledger = led.read_text(encoding="utf-8") if led.is_file() else ""
@@ -424,13 +455,30 @@ def send(dev, pack, work, say=print, progress=None):
     direct = [l.split("\t") for l in dl.read_text(encoding="utf-8").splitlines() if l] if dl.is_file() else []
     batches = [[l.split("\t") for l in bf.read_text(encoding="utf-8").splitlines() if l] for bf in files]
     total, steps, step = sum(int(w[1]) for w in direct) + sum(int(w[1]) for b in batches for w in b), len(direct) + len(files), 0
+    def transfer(method, *args, size):
+        stream = getattr(dev, "dp", None) or dev
+        old = getattr(stream, "progress", None); seen = 0
+        def report(n):
+            nonlocal seen
+            n = max(0, min(n, size - 1))
+            if n > seen:
+                seen = n
+                progress(done + n, total, step, steps)
+        stream.progress = report if progress else None
+        try: return method(*args)
+        finally: stream.progress = old
+    # base = 这款已在手机上的字节（整包 index.tsv 合计 − 本次要传）：电脑端计数和手机蒙版同一口径（已有 + 本次已到 / 整款），
+    #   续传 / 重装时两边显示同一个百分比，也不因这次只传剩下的而从 0 涨起
+    whole = sum(int(r.split("\t")[1]) for r in (pack / "index.tsv").read_text(encoding="utf-8").splitlines() if r.count("\t") >= 2 and r.split("\t")[1].isdigit()) if total else 0
+    base = max(0, whole - total)
+    if progress and base:
+        report_raw = progress
+        progress = lambda d, t, k, n: report_raw(base + d, base + t, k, n)
     if progress: progress(0, total, 0, steps)
     if direct or batches:   # 传输清单：手机上的游戏库按它画装机蒙版（各文件已到多少字节 / 本次总字节，S2ArmShellHostModel），只写这一次——
-        #   直写镜像单个几 GB、推包端要整个写完才知道进度，按推包端回报画会几分钟不动；手机自己看正在写的文件是连续的，也不跟推包抢 USB
-        #   base = 这款已在手机上的字节（整包 index.tsv 合计 − 本次要传）：续传 / 重装时进度从已有的接着涨，不因这次只传剩下的而往回掉
+        #   手机自己看正在写的文件，不依赖电脑端上报，也不跟推包抢 USB
         tr = work / "transfer.json"
-        whole = sum(int(r.split("\t")[1]) for r in (pack / "index.tsv").read_text(encoding="utf-8").splitlines() if r.count("\t") >= 2 and r.split("\t")[1].isdigit())
-        tr.write_text(json.dumps(dict(schema=1, total=total, base=max(0, whole - total), started=ts, files=[[w[0], int(w[1])] for w in direct] +
+        tr.write_text(json.dumps(dict(schema=1, total=total, base=base, started=ts, files=[[w[0], int(w[1])] for w in direct] +
                                       [[f".incoming/{ts}_{k:03d}.tar", sum(int(w[1]) for w in b)] for k, b in enumerate(batches)])), encoding="utf-8")
         try: dev.put(tr, f"{rp(dev)}/.transfer")
         finally: tr.unlink(missing_ok=True)
@@ -446,7 +494,7 @@ def send(dev, pack, work, say=print, progress=None):
     for w in direct:
         t1 = time.time()
         try:
-            dev.put_big(pack / w[0], f"{rp(dev)}/{w[0]}")
+            transfer(dev.put_big, pack / w[0], f"{rp(dev)}/{w[0]}", size=int(w[1]))
         except Fail as e:
             if dev.nospc(): raise Fail(f"测试设备空间不足（推 {w[0]} 时 POSIX 28）")
             say(f"【红】传 {w[0]} 中断（{e}）；机上这份不完整，不会被当成可用，重新装机会从头重传")
@@ -459,7 +507,7 @@ def send(dev, pack, work, say=print, progress=None):
         lst = work / "push.lst"; lst.write_text("".join(w[0] + "\n" for w in b), encoding="utf-8")
         tn = f"{ts}_{k:03d}.tar"
         try:
-            how = dev.put_tar(lst, pack, f"{inc(dev)}/{tn}")
+            how = transfer(dev.put_tar, lst, pack, f"{inc(dev)}/{tn}", size=sum(int(w[1]) for w in b))
         except Fail:
             if dev.nospc():
                 say(f"【红】推 {tn} 时测试设备空间满（POSIX 28）"); raise Fail(f"测试设备空间不足（推 {tn} 时 POSIX 28）")

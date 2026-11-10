@@ -474,6 +474,15 @@ class EnvironmentTests(unittest.TestCase):
                 self.probe.values["metal"] = {"output": text}
                 self.assertEqual(self.item(self.report(), "metal")["status"], "missing")
 
+    def test_cap_metal_missing_message_lists_searched_places(self):
+        # 玩家装了还认不出：「复制错误摘要」读 message，要带上找过的每一处和结果
+        self.capabilities()
+        self.probe.values["metal"] = self.mod.ProbeError("找不到Metal", missing=True, detail="找过：官方默认目录：D:\\X\\bin\\metal.exe → 没有")
+        c = self.item(self.report(), "metal")
+        self.assertEqual(c["status"], "missing")
+        self.assertIn("找过：官方默认目录：D:\\X\\bin\\metal.exe → 没有", c["message"])
+        self.assertEqual(c["help"], c["message"])
+
     def test_cap_metal_missing_still_lists_usb_and_disk(self):
         self.capabilities()
         self.probe.values["metal"] = FileNotFoundError()
@@ -714,9 +723,11 @@ class EnvironmentTests(unittest.TestCase):
             with patch.dict(os.environ, {"S2A_METAL_BIN": str(Path(tmp) / "missing")}, clear=True), \
                  patch.object(self.mod.shutil, "which", return_value=str(other)), \
                  patch.object(self.mod.NativeProbe, "run") as run:
-                with self.assertRaises(FileNotFoundError):
+                with self.assertRaises(self.mod.ProbeError) as ctx:
                     self.mod.NativeProbe()("metal", executable=None)
                 run.assert_not_called()
+            self.assertTrue(ctx.exception.missing)
+            self.assertIn("S2A_METAL_BIN：" + str(Path(tmp) / "missing" / "metal.exe") + " → 没有", ctx.exception.detail)   # 错误摘要写明找的是哪一处
 
     def test_cap_metal_nonzero_is_missing_timeout_and_overflow_still_error(self):
         self.capabilities()

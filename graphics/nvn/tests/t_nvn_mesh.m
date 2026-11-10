@@ -93,6 +93,15 @@ int main(void) {
         __block NvShader *big = nil; NSString *o = capture(^{ big = shader_get(@"4444444444444444_b", 4); });
         VERIFY(!big && red_lines(o, @"4444444444444444_b") == 1, "② max_vertices 300 的网格着色器载不进、报红 1 行（实得 %s，红 %d 行；stderr：%s）", big ? "载入了" : "nil", red_lines(o, @"4444444444444444_b"), o.UTF8String);
 
+        // ⑪ #418 Switch 1 曲面细分着色器在阶段 3 / 4：json 带 tess、msl_entry_kind 是 vertex / kernel。期望（按约定手写）：不按 task / mesh 契约判——载入成功、不是网格种类、
+        //   不打入口类型 / not usable 红行。反证：修前同一份 json 打入口类型红行，再因没有工作组线程数判「not usable」返回 nil
+        { NSString *src = [NSString stringWithFormat:@"%@/1111111111111111_b.metallib", dir], *dst = [NSString stringWithFormat:@"%@/5555555555555555_b.metallib", dir];
+          [NSFileManager.defaultManager removeItemAtPath:dst error:nil]; REQUIRE([NSFileManager.defaultManager copyItemAtPath:src toPath:dst error:nil]);   // 库内容无关：只验载入时的契约判定
+          put_json(dir, @"5555555555555555_b", @{@"stage": @"hs", @"msl_entry_kind": @"vertex", @"tess": @{@"mode": @0}});
+          __block NvShader *hs = nil; NSString *o11 = capture(^{ hs = shader_get(@"5555555555555555_b", 3); });
+          VERIFY(hs && hs->mesh_kind == 0 && red_lines(o11, @"5555555555555555_b") == 0, "⑪ 曲面细分着色器（阶段 3，带 tess、入口类型 vertex）：载入、非网格种类、0 行红（实得 %s，种类 %d，红 %d 行；stderr：%s）",
+                 hs ? "载入了" : "nil", hs ? hs->mesh_kind : -1, red_lines(o11, @"5555555555555555_b"), o11.UTF8String); }
+
         NvShader *fs = [NvShader new]; fs->stage = 1; strlcpy(fs->key, "ffffffffffffffff_b", sizeof fs->key); fs->ventry = @"main0";
         { NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0() { return float4(1); }\n" options:nil error:&e]; REQUIRE(l); fs->fn = [l newFunctionWithName:@"main0"]; REQUIRE(fs->fn); }
         NvProg *direct = [NvProg new]; direct->sh[1] = fs; direct->sh[4] = md;

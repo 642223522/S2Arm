@@ -4,6 +4,8 @@
 // imageExtent / imageSubresource.baseArrayLayer + imageOffset.z）、staging → dst 的行距/层距
 // 打包、以及“图像存储格式与 NVN 格式不同必须失败”的格式闸门。
 //
+// 另有 #398 D24 换 D32S8 存储时深度面读回换算一例。
+//
 // 只编生产实现：nvn_vk_readback_gpu.c + nvn_vk_readback_plan.c + nvn_vk_format.c + vk_device.c。
 // 不替身 Vulkan：在 lavapipe 上真的建图像、真的拷回。脚本在缺 lavapipe 时退 2（不静默跳过）。
 #include <stdarg.h>
@@ -282,6 +284,68 @@ static void case_format_mismatch(void) {
     END_CASE();
 }
 
+// #398：设备缺 D24 深度附件时 NVN DEPTH24_STENCIL8 按 D32_SFLOAT_S8_UINT 存储；深度面读回要换回
+// 原 D24 深度面口径（每纹素 4 字节、低 24 位 UNORM），不能把 float 位模式当 NVN 字节交出去。
+static void case_depth_subst(void) {
+    CASE("D24S8 stored as D32S8: depth read back as unorm24");
+    const uint32_t w = 8, h = 4;
+    const uint32_t saved = nvn_vk_format_depth_subst();
+    nvn_vk_format_set_depth_subst(NVN_VK_DEPTH_SUBST_D24S8);
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkImage img = create_image(VK_IMAGE_TYPE_2D, w, h, 1, 1, VK_FORMAT_D32_SFLOAT_S8_UINT, &mem);
+    CHECK(img != VK_NULL_HANDLE);
+    if (img) {
+        VkCommandBufferAllocateInfo ca = {0};
+        ca.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ca.commandPool = g_dev.command_pool;
+        ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ca.commandBufferCount = 1;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        CHECK(vkAllocateCommandBuffers(g_dev.device, &ca, &cmd) == VK_SUCCESS);
+        VkCommandBufferBeginInfo cb = {0};
+        cb.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &cb);
+        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+        VkImageMemoryBarrier to = {0};
+        to.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        to.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        to.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        to.srcQueueFamilyIndex = to.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to.image = img;
+        to.subresourceRange = all;
+        to.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, NULL, 0, NULL, 1, &to);
+        VkClearDepthStencilValue v = {0.25f, 7};
+        vkCmdClearDepthStencilImage(cmd, img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &all);
+        vkEndCommandBuffer(cmd);
+        CHECK(submit_and_wait(cmd) == 0);
+        vkFreeCommandBuffers(g_dev.device, g_dev.command_pool, 1, &cmd);
+
+        struct nvn_vk_tex tex;
+        memset(&tex, 0, sizeof tex);
+        tex.image = img; tex.nvn_format = 0x35 /*DEPTH24_STENCIL8*/; tex.vk_format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+        tex.width = w; tex.height = h; tex.depth = 1; tex.layers = 1; tex.serial = 14;
+        struct nvn_vk_rb_desc desc = rgba8_desc(1, w, h, 1, 1);
+        desc.nvn_format = 0x35;
+        struct nvn_vk_rb_region region = {0, 0, 0, w, h, 1};
+        struct nvn_vk_rb_plan plan;
+        char why[NVN_VK_RB_WHY_MAX] = "";
+        CHECK(nvn_vk_readback_plan(&desc, 0, 0, &region, 0, 0, &plan, why, sizeof why) == 0);
+        uint32_t dst[8 * 4];
+        memset(dst, 0xcd, sizeof dst);
+        CHECK(nvn_vk_readback_gpu(&g_dev, &tex, &plan, (uint8_t *)dst, why, sizeof why) == 0);
+        int all_ok = 1;
+        for (unsigned i = 0; i < w * h; i++) all_ok &= dst[i] == 0x00400000u;   // 0.25 × 0xffffff 四舍五入
+        if (!all_ok) printf(" got 0x%08x", dst[0]);
+        CHECK(all_ok);
+        destroy_image(img, mem);
+    }
+    nvn_vk_format_set_depth_subst(saved);
+    END_CASE();
+}
+
 int main(void) {
     char why[256] = {0};
     if (s2a_vk_device_create(&g_dev, why, sizeof why) != 0) {
@@ -292,6 +356,7 @@ int main(void) {
     case_2d_array();
     case_3d();
     case_format_mismatch();
+    case_depth_subst();
     nvn_vk_readback_gpu_release(&g_dev);
     s2a_vk_device_destroy(&g_dev, 0);
     printf("%s: %d checks, %d failed\n", g_fail ? "FAIL" : "PASS", g_checks, g_fail);

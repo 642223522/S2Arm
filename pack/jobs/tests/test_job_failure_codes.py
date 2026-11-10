@@ -421,6 +421,12 @@ class FreeAccountLimits(unittest.TestCase):
         self.assertNotRegex(en, r"(?i)\b(?:delete|remove) (?:a|an|one)\b")
         self.assertNotRegex(loc[RECOVERY["free_app_limit"]], r"10 App IDs|7 days")
         self.assertIn("9120", spec["free_appid_limit"]["detail"]["zh-Hans"])
+        # app_id_taken（#408 Apple 9401）：两端分类表都认、各处都登记
+        import impactor
+        raw = "Developer API error 9401 (HTTP Some(200)): An App ID with Identifier 'io.s2arm.games.abcde12345' is not available."
+        self.assertEqual((install.classify(raw), impactor.explain(raw)), ("app_id_taken", "app_id_taken"))
+        self.assertTrue(loc.get(RECOVERY["app_id_taken"]) and spec["app_id_taken"]["title"]["en"] and "app_id_taken" in guide)
+        self.assertEqual(ctl.AI_NEXT["app_id_taken"][0], "human")
 
 
 class LogCauses(JobCase):

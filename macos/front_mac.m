@@ -8,7 +8,9 @@
 #import <QuartzCore/CAMetalLayer.h>
 #include "../runtime/include/s2a_pad.h"
 #include "../runtime/include/phone_axes.h"
+#include "joycon_imu.h"
 #import "input_guide.h"
+#include "ns2_controller.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <math.h>
@@ -46,6 +48,7 @@ void s2a_guest_freeze(int on); void guest_clock_freeze_for(int reason, int on); 
 static BOOL focus_frozen;
 // 关窗 / 收尾也发布「没焦点」，但不冻结（may_freeze = NO）：收尾要等客机线程退出
 static void display_focus_publish_ex(BOOL active, BOOL may_freeze) {
+    s2a_mac_ns2_focus(active);
     if (active && !atomic_load(&display_focused)) atomic_store(&display_focus_since, now_ns());
     atomic_store(&display_focused, active);
     s2a_host_focus_set(active);
@@ -351,7 +354,8 @@ static void set_motion_source(GCMotion *source) {
     if (source.sensorsRequireManualActivation) source.sensorsActive = YES;
 }
 static void sample_motion(GCExtendedGamepad *pad) {
-    GCMotion *m = atomic_load(&g_motion_wanted) ? pad.controller.motion : nil;
+    BOOL ns2 = s2a_mac_ns2_status() == NS2_STATUS_READY;
+    GCMotion *m = atomic_load(&g_motion_wanted) && !ns2 ? pad.controller.motion : nil;
     set_motion_source(m.hasRotationRate && m.hasGravityAndUserAcceleration ? m : nil);
     s2a_pad_motion sample = {0};
     int known = g_motion_source != nil;
@@ -366,17 +370,45 @@ static void sample_motion(GCExtendedGamepad *pad) {
     g_motion = sample; g_motion_known = known;
     pthread_mutex_unlock(&g_motion_mu);
 }
-// 启动设置「体感」关（S2A_MOTION=0，pack/jobs/community.py launch_env）：游戏要六轴也不开手柄传感器
+// 启动设置「体感」关（S2A_MOTION=0，pack/jobs/community.py launch_env）：游戏要六轴也不开手柄传感器（系统手柄与 Switch 2 Pro 同一判断）
 __attribute__((visibility("default"), used)) void s2a_pad_set_motion_enabled(int enabled) {
     const char *off = getenv("S2A_MOTION");
-    atomic_store(&g_motion_wanted, enabled != 0 && !(off && !strcmp(off, "0")));
+    int want = enabled != 0 && !(off && !strcmp(off, "0"));
+    atomic_store(&g_motion_wanted, want);
+    s2a_mac_ns2_set_motion_enabled(want);
+    // Joy-Con：系统 GCMotion 为 nil，改走 HID 全报告六轴（macos/joycon_imu.m）
+    s2a_joycon_imu_set_enabled(want);
 }
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_motion *out) {
+    if (s2a_mac_ns2_status() == NS2_STATUS_READY) return s2a_mac_ns2_read_motion(out);
     pthread_mutex_lock(&g_motion_mu);
     int known = g_motion_switched ? 0 : g_motion_known;
     *out = g_motion; g_motion_switched = 0;
     pthread_mutex_unlock(&g_motion_mu);
-    return known;
+    if (known) return 1;
+    // GameController 无六轴时回退 Joy-Con HID（优先右、否则左）
+    s2a_pad_motion l = {0}, r = {0};
+    int mask = s2a_joycon_imu_read(&l, &r);
+    if (mask & 2) { *out = r; return 1; }
+    if (mask & 1) { *out = l; return 1; }
+    return 0;
+}
+// 左右 Joy-Con 各一路；只有 GCMotion 时退回单源写在 out[0]
+__attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pad_motion out[2]) {
+    if (!out) return 0;
+    s2a_pad_motion l = {0}, r = {0};
+    int mask = s2a_joycon_imu_read(&l, &r);
+    if (mask) {
+        int n = 0;
+        if (mask & 1) out[n++] = l;
+        if (mask & 2) out[n++] = r;
+        // 只有一只时仍返回 1：服务层 UpdateSixAxis 会把同一份写到双 Joy-Con 左右
+        return n;
+    }
+    s2a_pad_motion one = {0};
+    if (!s2a_pad_read_motion(&one)) return 0;
+    out[0] = one;
+    return 1;
 }
 // 实体手柄退出游戏（#276）：决策在 runtime/include/s2a_home_quit.h，界面（提示条、失焦、退出）在 S2AMacDelegate 后面的 home_quit_ui
 static s2a_hq_state g_hq;
@@ -512,13 +544,19 @@ static void rumble_select(GCController *device) {
     atomic_store(&g_rumble_epoch, device.haptics && !rumble_off() ? ++g_rumble_counter : 0);
     dispatch_async(g_rumble_q, ^{ rumble_reset_on_queue(); g_rumble_device = device; g_rumble_retry = (s2a_hp_state){0}; g_rumble_plain_only = NO; });
 }
+// 会话号高 16 位是 MAC_RUMBLE_BASE 的走系统手柄（CoreHaptics），其余是 Switch 2 Pro（macos/ns2_controller.c，#277）的
+static BOOL rumble_is_mac(uint64_t session) { return (session & 0xffff000000000000ull) == MAC_RUMBLE_BASE; }
 static void rumble_submit(uint64_t session, const s2a_pad_vibration pair[2]) {
+    if (session && !rumble_is_mac(session)) { s2a_mac_ns2_set_rumble_pair(session, pair); return; }
     uint64_t epoch = atomic_load(&g_rumble_epoch);
     if (!epoch || session != (MAC_RUMBLE_BASE | epoch) || !g_rumble_q) return;
     s2a_pad_vibration left = pair[0], right = pair[1];   // 块里不能捕获数组：拆成两个值
     dispatch_async(g_rumble_q, ^{ s2a_pad_vibration p[2] = {left, right}; rumble_play_on_queue(p); });
 }
 __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(void) {
+    if (rumble_off()) return 0;   // 启动设置「手柄震动」关：两路都不震
+    uint64_t ns2 = s2a_mac_ns2_rumble_session();   // Switch 2 Pro 连着且在前台：震动交给它（它是输入来源时系统手柄那路不读）
+    if (ns2) return ns2;
     uint64_t epoch = atomic_load(&g_rumble_epoch);
     return epoch ? (MAC_RUMBLE_BASE | epoch) : 0;
 }
@@ -536,6 +574,7 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_rumble(uint64_t se
     rumble_submit(session, pair);
 }
 __attribute__((visibility("default"), used)) void s2a_pad_stop_rumble(uint64_t session) {
+    if (session && !rumble_is_mac(session)) { s2a_mac_ns2_stop_rumble(session); return; }
     pthread_mutex_lock(&g_rumble_mu); memset(g_rumble_pair, 0, sizeof g_rumble_pair); pthread_mutex_unlock(&g_rumble_mu);
     s2a_pad_vibration zero[2] = {{0}};
     rumble_submit(session, zero);
@@ -564,24 +603,38 @@ static void sample_input(void) {
         if (!(consumed & own_mod) && [keys containsObject:code]) action(name, &buttons, sticks);
     }
     for (NSString *name in config[@"mouse"]) if ([mouse containsObject:config[@"mouse"][name]]) action(name, &buttons, sticks);
-    GCExtendedGamepad *pad = active_pad(GCController.controllers);
-    if (pad) {
-        // GameController 通常按物理方位上报（buttonA 在南侧）；Switch Pro 手柄在 macOS 上按键面字母上报（A 在东侧、X 在北侧）
-        //   位序调共用的 s2a_pad_abxy_order（同 iOS controller.m publishSystem；审计 P2-213：两端各写一套，以后只改一处就会一端错）。order 按任天堂 A / B / X / Y = 东 / 南 / 北 / 西
-        GCControllerButtonInput *face[4] = {pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY};
-        int order[4]; s2a_pad_abxy_order(s2a_pad_kind(pad.controller.productCategory.UTF8String, [pad isKindOfClass:GCXboxGamepad.class],
-            [pad isKindOfClass:GCDualShockGamepad.class] || [pad isKindOfClass:GCDualSenseGamepad.class]), s2a_pad_face_by_letter(), order);   // 按字母 / 按位置（pad.c，同 iOS）
-        NSDictionary *pad_buttons = @{@"east": face[order[0]], @"south": face[order[1]], @"north": face[order[2]], @"west": face[order[3]],
-            @"leftShoulder": pad.leftShoulder, @"rightShoulder": pad.rightShoulder,
-            @"leftTrigger": pad.leftTrigger, @"rightTrigger": pad.rightTrigger, @"menu": pad.buttonMenu,
-            @"dpadLeft": pad.dpad.left, @"dpadRight": pad.dpad.right, @"dpadUp": pad.dpad.up, @"dpadDown": pad.dpad.down};
-        NSMutableDictionary *all = [pad_buttons mutableCopy];
-        if (pad.buttonOptions) all[@"options"] = pad.buttonOptions;
-        if (pad.leftThumbstickButton) all[@"leftStick"] = pad.leftThumbstickButton;
-        if (pad.rightThumbstickButton) all[@"rightStick"] = pad.rightThumbstickButton;
-        for (NSString *name in config[@"gamepad"]) if ([all[config[@"gamepad"][name]] isPressed]) action(name, &buttons, sticks);
-        NSDictionary *axes = @{@"leftX": @(pad.leftThumbstick.xAxis.value), @"leftY": @(pad.leftThumbstick.yAxis.value),
-                               @"rightX": @(pad.rightThumbstick.xAxis.value), @"rightY": @(pad.rightThumbstick.yAxis.value)};
+    ns2_state ble;
+    BOOL hasBLE = s2a_mac_ns2_read(&ble);
+    GCExtendedGamepad *pad = hasBLE ? nil : active_pad(GCController.controllers);
+    if (hasBLE || pad) {
+        NSMutableDictionary *all = [NSMutableDictionary new];
+        NSDictionary *axes;
+        if (hasBLE) {
+            NSArray *codes = @[@"east", @"south", @"north", @"west", @"leftStick", @"rightStick",
+                @"leftShoulder", @"rightShoulder", @"leftTrigger", @"rightTrigger", @"menu", @"options",
+                @"dpadLeft", @"dpadUp", @"dpadRight", @"dpadDown"];
+            for (int i = 0; i < 16; i++) all[codes[i]] = @((ble.buttons & (1u << i)) != 0);
+            axes = @{@"leftX": @(ble.lx / 32767.0f), @"leftY": @(ble.ly / 32767.0f),
+                     @"rightX": @(ble.rx / 32767.0f), @"rightY": @(ble.ry / 32767.0f)};
+        } else {
+            // GameController 通常按物理方位上报（buttonA 在南侧）；Switch Pro 手柄在 macOS 上按键面字母上报（A 在东侧、X 在北侧）
+            //   位序调共用的 s2a_pad_abxy_order（同 iOS controller.m publishSystem；审计 P2-213：两端各写一套，以后只改一处就会一端错）。order 按任天堂 A / B / X / Y = 东 / 南 / 北 / 西
+            GCControllerButtonInput *face[4] = {pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY};
+            int order[4]; s2a_pad_abxy_order(s2a_pad_kind(pad.controller.productCategory.UTF8String, [pad isKindOfClass:GCXboxGamepad.class],
+                [pad isKindOfClass:GCDualShockGamepad.class] || [pad isKindOfClass:GCDualSenseGamepad.class]), s2a_pad_face_by_letter(), order);   // 按字母 / 按位置（pad.c，同 iOS）
+            NSDictionary *pad_buttons = @{@"east": face[order[0]], @"south": face[order[1]], @"north": face[order[2]], @"west": face[order[3]],
+                @"leftShoulder": pad.leftShoulder, @"rightShoulder": pad.rightShoulder,
+                @"leftTrigger": pad.leftTrigger, @"rightTrigger": pad.rightTrigger, @"menu": pad.buttonMenu,
+                @"dpadLeft": pad.dpad.left, @"dpadRight": pad.dpad.right, @"dpadUp": pad.dpad.up, @"dpadDown": pad.dpad.down};
+            NSMutableDictionary *inputs = [pad_buttons mutableCopy];
+            if (pad.buttonOptions) inputs[@"options"] = pad.buttonOptions;
+            if (pad.leftThumbstickButton) inputs[@"leftStick"] = pad.leftThumbstickButton;
+            if (pad.rightThumbstickButton) inputs[@"rightStick"] = pad.rightThumbstickButton;
+            for (NSString *code in inputs) all[code] = @([inputs[code] isPressed]);
+            axes = @{@"leftX": @(pad.leftThumbstick.xAxis.value), @"leftY": @(pad.leftThumbstick.yAxis.value),
+                     @"rightX": @(pad.rightThumbstick.xAxis.value), @"rightY": @(pad.rightThumbstick.yAxis.value)};
+        }
+        for (NSString *name in config[@"gamepad"]) if ([all[config[@"gamepad"][name]] boolValue]) action(name, &buttons, sticks);
         NSArray *names = @[@"LX", @"LY", @"RX", @"RY"];
         float dz = config[@"deadzone"] ? [config[@"deadzone"] floatValue] : .15;
         for (int i = 0; i < 4; i++) {
@@ -802,10 +855,59 @@ static NSString *lan_warning(void) {
 @property(strong) NSTimer *timer, *promptTimer;
 @property(strong) S2APromptBanner *banner;
 @property(strong) S2AMacInputGuide *inputGuide;
+@property(strong) NSMenuItem *controllerStatus;
+@property BOOL ns2ReconnectPending;
+@property BOOL ns2RelayDisconnectNoticeShown;
 @end
 static __weak S2AMacDelegate *g_delegate;
 @implementation S2AMacDelegate
+- (void)connectNS2:(id)sender {
+    self.ns2ReconnectPending = YES;
+    if (s2a_mac_ns2_connect())
+        [self.banner showTitle:@"Switch 2 Pro" body:@"正在连接 S2Arm 的手柄通道。若未连上，请回到 S2Arm 的手柄菜单重新连接。" accept:nil decline:nil seconds:10];
+    else
+        [self.banner showTitle:@"Switch 2 Pro" body:@"未能连接 S2Arm 手柄通道。请回到 S2Arm 手动连接后再重试。" accept:nil decline:nil seconds:8];
+}
+- (void)disconnectNS2:(id)sender {
+    self.ns2ReconnectPending = NO;
+    s2a_mac_ns2_disconnect();
+}
+- (void)testNS2Rumble:(id)sender {
+    uint64_t session = s2a_pad_rumble_session();
+    if (!session) return;
+    const s2a_pad_vibration pair[2] = {{.15f, 160, .0f, 320}, {.0f, 160, .15f, 320}};
+    s2a_pad_set_rumble_pair(session, pair);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{ s2a_pad_stop_rumble(session); });
+}
 - (void)pollPrompt {
+    ns2_status controller = s2a_mac_ns2_status();
+    if (controller == NS2_STATUS_READY) {
+        self.ns2ReconnectPending = YES;
+        self.ns2RelayDisconnectNoticeShown = NO;
+    }
+    if (self.ns2ReconnectPending && (controller == NS2_STATUS_ERROR || controller == NS2_STATUS_DISCONNECTED)) {
+        const char *relay = getenv("S2A_NS2_SOCKET");
+        if (relay && *relay) {
+            if (!self.ns2RelayDisconnectNoticeShown) {
+                [self.banner showTitle:@"Switch 2 Pro" body:@"S2Arm 手柄连接已中断；重新连接后游戏会自动接回。" accept:nil decline:nil seconds:12];
+                self.ns2RelayDisconnectNoticeShown = YES;
+            }
+            // S2Arm may be starting a fresh helper; keep trying the stable relay socket.
+            s2a_mac_ns2_connect();
+        } else {
+            // A standalone direct connection gets one manual scan window.
+            self.ns2ReconnectPending = NO;
+            s2a_mac_ns2_connect();
+            [self.banner showTitle:@"Switch 2 Pro" body:@"正在重新搜寻手柄（一分钟）。请按键唤醒；仍未连上时请长按 SYNC。" accept:nil decline:nil seconds:12];
+        }
+    }
+    NSString *state = controller == NS2_STATUS_READY ? @"已连接" :
+        controller == NS2_STATUS_SCANNING ? @"搜寻中" :
+        controller == NS2_STATUS_CONNECTING || controller == NS2_STATUS_INITIALIZING ? @"连接中" :
+        controller == NS2_STATUS_UNAVAILABLE ? @"蓝牙不可用，请检查授权" :
+        controller == NS2_STATUS_ERROR ? @"连接失败，请重试" : @"未连接";
+    self.controllerStatus.title = [@"Switch 2 Pro：" stringByAppendingString:state];
     // 存档不能原子提交（审计 P2-13；判定与 iOS 共用 runtime/src/direct_prompt.c s2a_save_atomic_poll）：非 0 提示一次
     if (s2a_save_atomic_poll()) [self.banner showTitle:@S2A_DPROMPT_SAVE_ATOMIC_TITLE body:@S2A_DPROMPT_SAVE_ATOMIC_MAC accept:nil decline:nil seconds:15];
     // 横幅正显示别的提醒时先不查，等它收起再提示，免得互相盖掉
@@ -815,7 +917,7 @@ static __weak S2AMacDelegate *g_delegate;
 - (void)shutdown {
     display_focus_publish_ex(NO, NO);
     set_mouse_capture(NO); focused = NO; reset_input();
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("Mac 窗口关闭"); });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_mac_ns2_detach(); s2a_host_shutdown("Mac 窗口关闭"); });
 }
 // 菜单栏「切换游戏」：先留标记（S2A_RETURN_MARKER，开局作业给的路径），再走关窗同一条收尾（等存档写完）；作业见到标记，启动器回到游戏库并切到前台。
 //   不二次确认，同菜单栏「退出」。标记写不了也照样退出（只是启动器停在这局的结果页）
@@ -885,6 +987,8 @@ void s2a_front_run(void (*guest_main)(void)) {
         int inputError = mac_input_config_read(getenv("S2A_INPUT_CONFIG"), &decoded);
         if (inputError) { fprintf(stderr, "[s2a] 【红】Mac 输入配置损坏，拒绝启动（%d: %s）\n", inputError, s2a_input_config_error_message(inputError)); exit(2); }
         config = input_config_dictionary(&decoded);
+        s2a_mac_ns2_set_back_buttons(decoded.back_buttons[0] < 0 ? 0 : (1u << decoded.back_buttons[0]),
+                                    decoded.back_buttons[1] < 0 ? 0 : (1u << decoded.back_buttons[1]));
         apply_mouse_options();
         NSApplication *app = NSApplication.sharedApplication;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -904,6 +1008,15 @@ void s2a_front_run(void (*guest_main)(void)) {
         root.submenu = application;
         NSMenuItem *inputRoot = [NSMenuItem new]; NSMenu *inputMenu = [[NSMenu alloc] initWithTitle:@"输入"];
         NSMenuItem *hint = [inputMenu addItemWithTitle:@"点击画面锁定鼠标视角；Esc 释放" action:NULL keyEquivalent:@""]; hint.enabled = NO;
+        [inputMenu addItem:NSMenuItem.separatorItem];
+        delegate.controllerStatus = [inputMenu addItemWithTitle:@"Switch 2 Pro：未连接" action:NULL keyEquivalent:@""];
+        delegate.controllerStatus.enabled = NO;
+        NSMenuItem *connect = [inputMenu addItemWithTitle:@"连接 / 重试 Switch 2 Pro…" action:@selector(connectNS2:) keyEquivalent:@""];
+        connect.target = delegate;
+        NSMenuItem *disconnect = [inputMenu addItemWithTitle:@"中断 Switch 2 Pro" action:@selector(disconnectNS2:) keyEquivalent:@""];
+        disconnect.target = delegate;
+        NSMenuItem *rumble = [inputMenu addItemWithTitle:@"测试手柄震动" action:@selector(testNS2Rumble:) keyEquivalent:@""];
+        rumble.target = delegate;
         inputRoot.submenu = inputMenu; [menu addItem:inputRoot]; app.mainMenu = menu;
         NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
@@ -954,8 +1067,17 @@ void s2a_front_run(void (*guest_main)(void)) {
         controls.target = delegate.inputGuide;
         delegate.timer = [NSTimer scheduledTimerWithTimeInterval:1.0/120 repeats:YES block:^(NSTimer *t) { (void)t; poll_input(); }];
         delegate.promptTimer = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) { (void)t; if (mouse_release_pending) set_mouse_capture(NO); [delegate pollPrompt]; }];
+        const char *relaySocket = getenv("S2A_NS2_SOCKET");
+        const char *launcherAutoConnect = getenv("S2A_NS2_AUTOCONNECT");
+        BOOL shouldAutoConnect = (relaySocket && *relaySocket) ||
+            (launcherAutoConnect && !strcmp(launcherAutoConnect, "1"));
+        if (shouldAutoConnect) {
+            delegate.ns2ReconnectPending = YES;
+            fprintf(stderr, "[Mac NS2] Connecting to the S2Arm controller relay\n");
+            s2a_mac_ns2_connect();
+        }
         [app run];
         display_focus_publish_ex(NO, NO);
-        set_mouse_capture(NO); focused = NO; reset_input(); front_layer_detach();
+        set_mouse_capture(NO); focused = NO; reset_input(); s2a_mac_ns2_detach(); front_layer_detach();
     }
 }

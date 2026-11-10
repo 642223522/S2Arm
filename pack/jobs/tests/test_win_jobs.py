@@ -94,6 +94,35 @@ class RuntimeEnv(unittest.TestCase):
             self.assertEqual(core.win_metal_dir({"S2A_METAL_BIN": str(Path(d, "没有这个目录"))}), str(Path(d, "没有这个目录")))
             self.assertEqual(core.win_metal_dir({"PATH": "", "S2A_USER_PATH": ""}), str(Path(r"C:\Program Files\Metal Developer Tools\bin")))
 
+    def test_metal_found_by_registry_and_program_files(self):
+        # 官方安装器（NSIS）不写 PATH：改过安装目录只记在卸载登记里；启动器开着时才装的，进程 PATH 是旧的要读注册表现在的 PATH；
+        #   系统不在 C 盘时官方默认目录跟 %ProgramW6432%。每种都要认得，且找过的每一处写进错误摘要
+        from pack.orch import oneclick_win as ow
+        def put(*parts):
+            p = Path(*parts, "metal.exe"); p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n", encoding="utf-8"); p.chmod(0o755); return p
+        with tempfile.TemporaryDirectory(prefix="metal 中文 ") as d, patch.dict(os.environ, {"PATHEXT": ".EXE"}):
+            stale = {"PATH": "", "S2A_USER_PATH": str(Path(d, "旧 PATH"))}
+            custom = put(d, "D 盘 工具", "bin")                 # 安装界面改到别处：卸载登记的安装目录
+            self.assertEqual(ow.metal_exe(stale, reg=([], [str(Path(d, "D 盘 工具"))])), custom)
+            old = put(d, "早期版本", "ios", "bin")               # 早期版本布局 ios\bin
+            self.assertEqual(ow.metal_exe(stale, reg=([], [str(Path(d, "早期版本"))])), old)
+            fresh = put(d, "装完没重启", "bin")                  # 注册表里现在的 PATH 优先于卸载登记
+            self.assertEqual(ow.metal_exe(stale, reg=([str(fresh.parent)], [str(Path(d, "D 盘 工具"))])), fresh)
+            pf = put(d, "E 盘 Program Files", "Metal Developer Tools", "bin")   # 系统在别的盘
+            self.assertEqual(ow.metal_exe(dict(stale, ProgramW6432=str(Path(d, "E 盘 Program Files"))), reg=([], [])), pf)
+            user = put(d, "玩家 PATH")                           # 启动时 PATH 里有的仍最优先
+            self.assertEqual(ow.metal_exe({"S2A_USER_PATH": str(user.parent)}, reg=([str(fresh.parent)], [str(Path(d, "D 盘 工具"))])), user)
+            picked = put(d, "手选 文件夹")                       # 玩家手动指定的优先于自动查找
+            self.assertEqual(ow.metal_exe(dict(stale, S2A_METAL_PICKED=str(picked.parent)), reg=([str(fresh.parent)], [])), picked)
+            self.assertEqual(ow.metal_exe(dict(stale, S2A_METAL_PICKED=str(Path(d, "手选后删了"))), reg=([str(fresh.parent)], [])), fresh)   # 选过的被删了：照常往下找
+            rows = ow.metal_search(stale, reg=([], [str(Path(d, "没装"))]))
+            self.assertEqual([r[0] for r in rows], ["启动器启动时的 PATH", "注册表里现在的 PATH", "官方安装器登记的安装目录", "官方安装器登记的安装目录", "官方默认目录", "官方默认目录"])
+            self.assertFalse(any(ok for _, _, ok in rows))
+            text = ow.metal_search_text(rows)
+            self.assertIn("启动器启动时的 PATH：里面没有 metal.exe", text)
+            self.assertIn(str(Path(d, "没装", "ios", "bin", "metal.exe")) + " → 没有", text)
+
     def test_same_path_as_bundled_env_cmd(self):
         # 作业环境与随包 s2arm_env.cmd（启动器 / 手工起出包用）同一份 PATH：两处各写一遍，这里核一致
         import importlib.util, ntpath

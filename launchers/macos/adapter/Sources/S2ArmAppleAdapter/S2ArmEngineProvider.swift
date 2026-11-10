@@ -205,10 +205,13 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     // MARK: run / control
 
-    /// 起一局：settings 只用 uiLanguage（宿主内提示的语言）；游戏语言跟系统、主机模式、宽屏 / 60 帧都由作业层定，settings.values 不读。
+    /// 起一局：settings 只用 uiLanguage 与 Switch 2 Pro 的本机转发通道；游戏语言跟系统、主机模式、宽屏 / 60 帧都由作业层定。
     /// 事件：作业事件按序转出，最后一条是这局的结局（result）。
     public func run(_ game: InstalledGame, settings s: Settings, events: EventSink) throws -> RunningGame {
-        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage,
+        var arguments: [String: Any] = [:]
+        if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
+        if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
+        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage, arguments: arguments,
                                    onEvent: { if !$0.isFinal { events.emit(EngineEvent(job: $0)) } },
                                    onFinish: { events.emit(EngineEvent(outcome: $0)) })
         return RunningGame(gameId: game.gameId, taskId: handle.id)
@@ -226,6 +229,12 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     public func signingProject() async throws -> String { try await installer.signingProject() }
     public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
+    public func devCertStatus(device: String? = nil) async throws -> DevCertStatus { try await installer.devCertStatus(device: device) }
+    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
+        try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
+    }
+    public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func devCertDelete() async throws { try await installer.devCertDelete() }
 
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> InstallResult {
         try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, events: events)

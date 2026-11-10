@@ -111,7 +111,7 @@ public sealed class MilestoneTrack
             Current = id; Fraction = null;
             started.TryAdd(id, now);
         }
-        if (type == "stage") Fraction = null;
+        if (type is "stage" or "message" or "cache") Fraction = null;   // 新的一句说明 = 上一个百分比不再代表当前在做的事（社区贡献者补丁 #8）
         if (type == "progress" && e.TryGetProperty("totalUnits", out var total) && total.ValueKind == JsonValueKind.Number && total.GetDouble() > 0 &&
             e.TryGetProperty("doneUnits", out var done) && done.ValueKind == JsonValueKind.Number)
             Fraction = Math.Min(1, Math.Max(0, done.GetDouble() / total.GetDouble()));

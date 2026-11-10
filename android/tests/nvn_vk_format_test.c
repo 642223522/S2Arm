@@ -101,6 +101,51 @@ int main(void) {
         printf("block-bytes unknown -> nonzero FAIL\n");
         bad++;
     }
+    // #398：设备缺 D24 深度附件（三星 Xclipse 只有 D16S8 / D32S8）时换 D32；有 D24 时一律原样。
+    {
+        const VkFormatFeatureFlags att = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        struct { VkFormatFeatureFlags d24s8, d32s8, x8d24, d32; uint32_t want; const char *name; } pick[] = {
+            { att, att, att, att, 0, "both D24 present" },
+            { 0, att, 0, att, NVN_VK_DEPTH_SUBST_D24S8 | NVN_VK_DEPTH_SUBST_X8D24, "Xclipse: no D24" },
+            { VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, att, att, att, NVN_VK_DEPTH_SUBST_D24S8, "D24S8 sample-only" },
+            { 0, 0, 0, att, NVN_VK_DEPTH_SUBST_X8D24, "no D24S8 / D32S8: keep D24S8" },
+        };
+        for (unsigned i = 0; i < sizeof pick / sizeof pick[0]; i++) {
+            uint32_t got = nvn_vk_depth_subst_pick(pick[i].d24s8, pick[i].d32s8, pick[i].x8d24, pick[i].d32);
+            printf("depth-subst %-30s -> %u (want %u) %s\n", pick[i].name, got, pick[i].want, got == pick[i].want ? "ok" : "FAIL");
+            if (got != pick[i].want) bad++;
+        }
+        nvn_vk_format_set_depth_subst(NVN_VK_DEPTH_SUBST_D24S8 | NVN_VK_DEPTH_SUBST_X8D24);
+        VkFormat ds = nvn_vk_format(NVN_FORMAT_DEPTH24_STENCIL8), dd = nvn_vk_format(NVN_FORMAT_DEPTH24);
+        VkFormat dt = nvn_vk_tex_format(NVN_FORMAT_DEPTH24_STENCIL8), d16 = nvn_vk_format(NVN_FORMAT_DEPTH16);
+        int sub = nvn_vk_format_substituted(NVN_FORMAT_DEPTH24_STENCIL8) && nvn_vk_format_substituted(NVN_FORMAT_DEPTH24) &&
+                  !nvn_vk_format_substituted(NVN_FORMAT_DEPTH32F_STENCIL8) && !nvn_vk_format_substituted(NVN_FORMAT_DEPTH16);
+        int okm = ds == VK_FORMAT_D32_SFLOAT_S8_UINT && dd == VK_FORMAT_D32_SFLOAT && dt == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+                  d16 == VK_FORMAT_D16_UNORM && sub;
+        printf("depth-subst on: D24S8 -> %d, D24 -> %d, tex D24S8 -> %d, D16 -> %d, substituted flags %d %s\n",
+               (int)ds, (int)dd, (int)dt, (int)d16, sub, okm ? "ok" : "FAIL");
+        if (!okm) bad++;
+        nvn_vk_format_set_depth_subst(0);
+        okm = nvn_vk_format(NVN_FORMAT_DEPTH24_STENCIL8) == VK_FORMAT_D24_UNORM_S8_UINT &&
+              nvn_vk_format(NVN_FORMAT_DEPTH24) == VK_FORMAT_X8_D24_UNORM_PACK32 &&
+              !nvn_vk_format_substituted(NVN_FORMAT_DEPTH24_STENCIL8);
+        printf("depth-subst off: back to D24 %s\n", okm ? "ok" : "FAIL");
+        if (!okm) bad++;
+        // 深度面换算：D24（低 24 位 UNORM，高 8 位不参与）→ float → D24 往返不丢值；越界 / NaN 夹到 [0,1]。
+        uint32_t t[5] = { 0x00000000u, 0x00ffffffu, 0xab800000u, 0x00123456u, 0x7f000001u };
+        const uint32_t back[5] = { 0x00000000u, 0x00ffffffu, 0x00800000u, 0x00123456u, 0x00000001u };
+        nvn_vk_depth24_to_f32(t, 5);
+        float f[5]; memcpy(f, t, sizeof f);
+        int okc = f[0] == 0.0f && f[1] == 1.0f && f[2] > 0.5f && f[2] < 0.5001f;
+        nvn_vk_depth_f32_to_24(t, 5);
+        for (int i = 0; i < 5; i++) okc = okc && t[i] == back[i];
+        float edge[3] = { -0.5f, 2.0f, 0.0f }; edge[2] = edge[2] / edge[2];   // NaN
+        nvn_vk_depth_f32_to_24(edge, 3);
+        uint32_t eu[3]; memcpy(eu, edge, sizeof eu);
+        okc = okc && eu[0] == 0 && eu[1] == 0x00ffffffu && eu[2] == 0;
+        printf("depth24 <-> f32 round trip %s\n", okc ? "ok" : "FAIL");
+        if (!okc) bad++;
+    }
     VkFormat unk = nvn_vk_format(0xDEADu);
     printf("unknown 0xDEAD -> %d (want %d) %s\n", (int)unk, (int)VK_FORMAT_UNDEFINED, unk == VK_FORMAT_UNDEFINED ? "ok" : "FAIL");
     if (unk != VK_FORMAT_UNDEFINED) bad++;

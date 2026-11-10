@@ -39,12 +39,24 @@ public sealed partial class EnvironmentWindow : Window
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.experience.v1.json")
             ?? throw new FileNotFoundException("Shared experience resource is missing.");
         using var reader = new StreamReader(stream);
-        text = new SharedText(reader.ReadToEnd());
+        var experience = reader.ReadToEnd();
+        text = new SharedText(experience);
+        using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
+            ?? throw new FileNotFoundException("Localization table resource is missing.");
+        using var tableReader = new StreamReader(table);
+        backend = new BackendText(tableReader.ReadToEnd(), experience);
+        MetalFolder.Load(privateRoot);   // 上次手动指定的 Metal 文件夹：设进本进程环境，环境检查 / 出包子进程继承
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
         Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
-        Opened += (_, _) => { StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); };
+        Opened += (_, _) =>
+        {
+            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
+            // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
+            //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
+            if (File.Exists(LibraryPreference) || File.Exists(Path.Combine(SavedLibrary(), ".s2arm-library.json"))) EnsureLibrary(() => { });
+        };
         Closing += CloseLibraryAsync;
         Closing += ClosePackAsync;
         // 欢迎页进来自动触发环境检查（回到窗口也会重查）
@@ -53,9 +65,12 @@ public sealed partial class EnvironmentWindow : Window
     }
 
     private string T(string key) => text.Get(key, language);
-    private static TextBlock Label(string value, double size = 14) => new()
+    private readonly BackendText backend;
+    /// <summary>作业层来的中文原句（报错、阶段、检查项、进度说明）在英文界面下的显示；T() 的文案本来就是英文，原样通过。#361</summary>
+    private string B(string value) => language == "en" ? backend.English(value) : value;
+    private TextBlock Label(string value, double size = 14) => new()
     {
-        Text = value, FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
+        Text = B(value), FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
         TextWrapping = TextWrapping.Wrap
     };
     private Button Action(string key, Action handler, bool enabled = true)
@@ -115,17 +130,23 @@ public sealed partial class EnvironmentWindow : Window
             Background = page == "library" ? Accent : Brush.Parse("#29292D"), Foreground = page == "library" ? Canvas : Ink
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(libraryBtn, "top.library");
-        libraryBtn.Click += (_, _) => { if (packRunning) sessionHidden = true; Navigate("library"); };
+        libraryBtn.Click += (_, _) =>
+        {
+            if (packRunning) sessionHidden = true;
+            welcomeGameId = null;   // 点「游戏库」就是要看游戏库：欢迎页记的那一款不再把它盖住（社区贡献者补丁 #1）
+            if (!libraryBusy) importDialog = null;   // 添加游戏弹窗开着也能直接从导航离开（同上 #3；正在导入时不关）
+            Navigate("library");
+        };
         rightBar.Children.Add(libraryBtn);
 
         // 添加游戏
         var addGameBtn = new Button
         {
-            Content = T("action.add_game"), IsEnabled = connectedFolder is not null && !libraryBusy && !busy,
+            Content = T("action.add_game"), IsEnabled = !libraryBusy && !busy,   // 没连上库也能点：OpenWelcomeGames 先连默认库（社区贡献者补丁 #4）
             Padding = new Thickness(14, 8), Background = Brush.Parse("#29292D"), Foreground = Ink,
             CornerRadius = new CornerRadius(8)
         };
-        addGameBtn.Click += (_, _) => { if (!libraryBusy) { importDialog = new ImportDialogState(ImportKind.Games); Render(); } };
+        addGameBtn.Click += (_, _) => OpenWelcomeGames();
         rightBar.Children.Add(addGameBtn);
 
         // 环境检查（弹窗入口：切到 settings 页）
@@ -138,11 +159,12 @@ public sealed partial class EnvironmentWindow : Window
             Foreground = page == "settings" ? Canvas : Ink,
             CornerRadius = new CornerRadius(8)
         };
-        envCheckBtn.Click += (_, _) => Navigate(page == "settings" ? "library" : "settings");
+        envCheckBtn.Click += (_, _) => { if (!libraryBusy) importDialog = null; Navigate(page == "settings" ? "library" : "settings"); };
         rightBar.Children.Add(envCheckBtn);
 
         Grid.SetColumn(rightBar, 1); header.Children.Add(rightBar);
         body.Children.Add(header);
+        AddNoticeBar(body);
         if (unexpectedError.Length > 0)
         {
             // 全局兜底接住的意外错误（Program.cs）：启动器不退出，在顶部说清楚、给日志位置，玩家可以关掉提示继续用

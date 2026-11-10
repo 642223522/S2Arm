@@ -230,6 +230,17 @@ public final class JobClient {
         }
     }
 
+    /// 启动器顶部公告条（pack/jobs/updater.py notice）：{id, text: {zh-Hans, en}, url?}；没有要显示的、取不到、起不来都返回 nil，不打扰玩家
+    public func notice() async -> [String: Any]? {
+        let result = await runUpdater(["notice", "--private-root", environment.privateRoot.path])
+        return result?["id"] is String ? result : nil
+    }
+
+    /// 玩家关掉公告：记下它的号，同一条不再出现（换了新号的公告照常出现）
+    public func noticeDismiss(id: String) async {
+        _ = await runUpdater(["notice-dismiss", "--private-root", environment.privateRoot.path, "--id", id])
+    }
+
     /// 有比 current 高的正式版就返回版本号；查不到（没网、GitHub 不通）返回 nil，不打扰玩家。
     public func updateCheck(current: String) async -> String? {
         let result = await runUpdater(["check", "--platform", "mac", "--current", current])
@@ -283,7 +294,8 @@ public final class JobClient {
     /// 交一个作业。onEvent / onFinish 都在 callbackQueue 上、按作业输出顺序到达；onFinish 只来一次、在最后。
     /// 起不来（缺 Python / 入口 / 写不进请求）直接抛错，不回调。
     @discardableResult
-    public func start(operation: String, extra: [String: Any] = [:], id: String = UUID().uuidString.lowercased(),
+    /// secrets：只给这一个作业进程的环境变量（开发者证书密码，pack/jobs/devcert.py ⑤）；不进请求文件，作业层一起来就从环境摘掉
+    public func start(operation: String, extra: [String: Any] = [:], id: String = UUID().uuidString.lowercased(), secrets: [String: String] = [:],
                       onEvent: @escaping (JobEvent) -> Void = { _ in },
                       onFinish: @escaping (JobOutcome) -> Void = { _ in }) throws -> JobHandle {
         let python = try pythonExecutable()
@@ -306,7 +318,7 @@ public final class JobClient {
         do {
             process = try runner.start(
                 executable: python, arguments: ["-B", "-I", entry.path, "run", "--request", file.path],
-                environment: processEnvironment(),
+                environment: processEnvironment().merging(secrets) { _, s in s },
                 onLine: { line in
                     guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     guard let event = JobEvent(json: object) else {

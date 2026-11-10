@@ -138,6 +138,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var showEnvironment = false
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
     @Published var updateState: UpdateState = .idle
+    @Published var notice: [String: Any]?   // 顶部公告条（S2ArmLauncherModel+Update.swift loadNotice）；nil = 不显示
     var updateReady: [String: Any]?
     @Published var showAddGames = false
     @Published var showKeys = false
@@ -176,6 +177,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
+    /// 开发者证书（v0.2.4，S2ArmLauncherModel+DevCert.swift）：现况与体检；导入弹窗开着没有
+    @Published var devCert: DevCertStatus?
+    @Published var showDevCertImport = false
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
@@ -195,15 +199,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var overviewError: String?
 
     let provider: S2ArmEngineProvider
+    let controller: NS2LauncherController
     private var running: RunningGame?
     /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
     @Published var cloudSyncing = false
     private var work: Task<Void, Never>?
+    private var controllerGameStarted = false
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
 
     public init(client: JobClient) {
         provider = S2ArmEngineProvider(client: client)
+        controller = NS2LauncherController(
+            socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"))
         exportChoice = provider.settings.exportTargets
     }
 
@@ -748,15 +756,26 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     private func startPlay(_ game: GameSummary, uiLanguage: String?) {
+        let relaySocket = controller.relaySocketForGame()
+        var controllerArguments: [String: String] = [
+            "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",
+        ]
+        if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        controllerGameStarted = false
         do {
             let sink = EventSink { [weak self] event in self?.ingest(event) }
             running = try provider.run(InstalledGame(gameId: game.id, name: game.name),
-                                       settings: S2ArmAppleAdapter.Settings(uiLanguage: uiLanguage), events: sink)
+                                       settings: S2ArmAppleAdapter.Settings(
+                                        values: controllerArguments,
+                                        uiLanguage: uiLanguage), events: sink)
             session = JobSession(kind: .play, gameID: game.id, name: game.name)
         } catch {
             failAction(error.localizedDescription, game: game.id)
         }
     }
+
+    func startControllerConnection() { controller.startIfEnabled() }
+    func shutdownControllerConnection() { controller.shutdown() }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
 
@@ -957,7 +976,13 @@ public final class S2ArmLauncherModel: ObservableObject {
         if let id = event.fields["taskId"] as? String, !id.isEmpty, session.taskID != id { session.taskID = id; self.session = session }
         if event.ev == "heartbeat" { return }
         if event.ev == "space", let space = PackSpace(event.fields["space"]) { session.space = space; self.session = session; return }
-        if let stage = event.stage, !stage.isEmpty { session.stage = stage }
+        if let stage = event.stage, !stage.isEmpty {
+            session.stage = stage
+            if session.kind == .play, stage == "游戏运行中" {
+                controllerGameStarted = true
+                controller.gameDidStart()
+            }
+        }
         session.progress.ingest(event)
         if !event.message.isEmpty {
             session.message = event.message
@@ -991,6 +1016,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         session.progress.finish()
         self.session = session
         running = nil; work = nil
+        if session.kind == .play, controllerGameStarted {
+            controllerGameStarted = false
+            controller.gameDidExit()
+        }
         // 放密钥、添加游戏、欢迎页上的下载：结果留在原页（弹窗 / 欢迎页那一行），不换到日志页（11-08 维护者）；环境页发起的下载成了也直接回来
         if isInline(session) || (state == .completed && Self.repairKinds.contains(session.kind)) {
             self.session = nil

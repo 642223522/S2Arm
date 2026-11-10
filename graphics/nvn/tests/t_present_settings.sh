@@ -23,7 +23,7 @@ make -j1 -C "$root/graphics/dsx" mac OUT="$out/dsx"   # 直连翻译库（翻译
 nvn="$root/build/nvn/mac/libnvn.a"
 gal="$out/gal/mac/libnxgal.a"
 dsx="$out/dsx/mac/libdsx.a"
-common=(-O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -I"$root/runtime/include")
+common=(-O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -I"$root/runtime/include" -I"$root/runtime/ns2pro/include" -DNS2_SCAN_SECONDS=60)   # Mac 前端源文件含 Switch 2 Pro 连接（macos/ns2_controller.c、runtime/ns2pro，#277），同 launchers/macos/build.mk
 objects=()
 for src in "$root"/runtime/src/*.c "$root"/runtime/src/*.S "$root/platform/apple/plat_apple.c" "$root/graphics/track/track.c" "$root/graphics/track/glue.c"; do
     rel=${src#"$root"/}
@@ -46,7 +46,7 @@ xcrun --sdk macosx clang "${common[@]}" -std=gnu11 -fobjc-arc \
     -I"$root/graphics/nvn/gfx/nvn" -I"$root/graphics/nvn/gfx/nvn/include" -I"$root/graphics/nvn/host" \
     "$root/graphics/nvn/tests/t_present_settings.m" "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" -o "$out/t_present_settings" \
     -Wl,-dead_strip -Wl,-export_dynamic -Wl,-u,_s2a_mac_front_layer -Wl,-u,_nxgal_gpu_hold "${weak_flags[@]}" \
-    -Wl,-rpath,"$(dirname "$widen")" -framework AppKit -framework GameController -framework CoreHaptics -framework Metal -framework Foundation \
+    -Wl,-rpath,"$(dirname "$widen")" -framework AppKit -framework GameController -framework CoreHaptics -framework CoreBluetooth -framework IOKit -framework Metal -framework Foundation \
     -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++
 shasum -a 256 "$root/graphics/nvn/tests/t_present_settings.m" "$root/graphics/nvn/tests/t_present_settings.sh" \
     "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" "$out/t_present_settings" > "$out/link-inputs.sha256"

@@ -44,7 +44,7 @@ jobs:
         run: |
           set -eu
           mkdir -p _site/images
-          cp docs/site/index.html _site/
+          cp docs/site/index.html docs/site/notice.json _site/
           cp docs/images/s2arm-wordmark-transparent.png docs/images/launcher-welcome.png \
              docs/images/launcher-windows.png _site/images/
           cp launchers/macos/Branding/AppIcon-1024.png _site/images/icon.png

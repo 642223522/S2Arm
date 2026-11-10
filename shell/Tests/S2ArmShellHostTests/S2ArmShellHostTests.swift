@@ -294,7 +294,8 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)) && installs == 2)
 }
 
-// 开着库时电脑才开始推（真机实测：库里一直看不到这款）：清单里有款没显示就每秒重判，它一开始传就出现；全都能玩了才停
+// 开着库时电脑才开始推（真机实测：库里一直看不到这款）：每秒重判，它一开始传就出现；全都能玩了也不停——
+//   已装好的款被重推 / 装更新（#399 真机验收：原先停了，整个推送过程一直显示可玩）下一秒就画上蒙版
 @MainActor @Test func libraryKeepsWatchingForGamesThatStartArriving() {
     var stage: Int32 = 0
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
@@ -304,7 +305,9 @@ nonisolated(unsafe) private var lastPlayed = ""
     stage = 3; model.refreshGameData()
     #expect(model.games.first?.game.state.installPhase == .transferring && model.watching)
     stage = 1; model.refreshGameData()
-    #expect(model.games.first?.game.state == .playable && !model.watching)
+    #expect(model.games.first?.game.state == .playable && model.watching)
+    stage = 3; model.refreshGameData()   // 已能玩的款又开始传：计时器还在，下一次重判就是「传输中」
+    #expect(model.games.first?.game.state.installPhase == .transferring && model.watching)
 }
 
 // 装好后第一次点开之前名字前亮蓝点（同 iOS 新装 App）：期望按文件时间手写——.applied 比 .played 新 = 新装；点开始写 .played → 灭；

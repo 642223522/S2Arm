@@ -314,16 +314,22 @@ class NativeProbe:
             return self.service()
         if kind == "metal":
             exe = options.get("executable") or os.environ.get("S2A_METAL_EXE")
+            searched = ""
             if not exe:
                 sys.path.insert(0, str(ROOT))
-                from pack.orch.oneclick_win import metal_exe
-                exe = str(metal_exe())   # 与出包预检、实际编译共用目录选择，显式目录优先于 PATH
+                from pack.orch.oneclick_win import metal_exe, metal_search, metal_search_text
+                rows = metal_search()   # 与出包预检、实际编译共用目录选择，显式目录优先于 PATH
+                exe, searched = str(metal_exe()), "找过：" + metal_search_text(rows)
             meta = self("file", path=exe)
-            if not meta["exists"]:
-                raise FileNotFoundError()
+            if not meta["exists"]:   # 「复制错误摘要」带上找过的每一处（玩家装了还认不出时一贴就能定因）
+                raise ProbeError("找不到Metal", missing=True, detail=searched or f"指定的 {exe} 不在")
             if not meta["regular"]:
-                raise ProbeError("Metal路径不是普通非链接文件")
-            return {"output": self.run([exe, "--version"], merge_stderr=True).decode("utf-8", "strict")}
+                raise ProbeError("Metal路径不是普通非链接文件", detail=f"{exe} 不是普通文件")
+            try:
+                return {"output": self.run([exe, "--version"], merge_stderr=True).decode("utf-8", "strict")}
+            except ProbeError as exc:   # 找到了但跑不起来（缺 VC++ 运行库、被杀毒拦）：写明是哪一份
+                exc.detail = f"找到 {exe}，但运行 metal --version 失败：{exc.detail or exc}"
+                raise
         if kind in ("usbmux_port", "usb_devices"):
             if sys.platform != "win32":
                 raise ProbeError("此宿主不能核Windows USB服务")
@@ -624,10 +630,11 @@ def _metal(request, probe):
         return _item("metal", "官方Windows Metal编译器", "ok", message, METAL_LOCK,
                      {"version": actual, "testedVersion": tested})
     except Exception as exc:
+        detail = getattr(exc, "detail", "")
         if isinstance(exc, ProbeError) and exc.nonzero:
             exc = ProbeError("Metal版本命令失败退出", missing=True)
         c = _failure("metal", "官方Windows Metal编译器", exc, METAL_LOCK)
-        c["message"] += hint
+        c["message"] += hint + (" " + _safe(detail) if detail else "")
         c["help"] = c["message"]
         return c
 
