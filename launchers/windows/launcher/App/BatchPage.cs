@@ -112,6 +112,10 @@ public sealed partial class EnvironmentWindow
         AutomationId(allMac, "batch.all.mac");
         Grid.SetColumn(allMac, 2); head.Children.Add(allMac);
         content.Children.Add(head);
+        // Mac 一栏置灰的原因写出来（同单款出包页 Mac 卡片「仅 Mac 可出」）
+        var macOnly = Muted(T("batch.mac_only")); macOnly.HorizontalAlignment = HorizontalAlignment.Right; macOnly.Margin = new Thickness(14, 0, 14, 0);
+        AutomationId(macOnly, "batch.mac_only");
+        content.Children.Add(macOnly);
         foreach (var row in batchDraft)
         {
             var line = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), ColumnSpacing = 14 };
