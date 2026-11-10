@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 门禁手动：只能 Linux（非 Linux 退 75），要 Mesa lavapipe 并构建 Khronos profiles 层（约 3 分钟，要联网）；由 CI .github/workflows/android-vk.yml 跑（改到安卓 Vulkan 相关目录时，或手动触发）
+# 门禁手动：只能 Linux（非 Linux 退 75），要 Mesa lavapipe 并构建 Khronos profiles 层（约 3 分钟，要联网）；由 CI .github/workflows/android-vk.yml 跑（改到安卓 Vulkan 相关目录时 + 每天定时全量）
 # 安卓 Vulkan 契约测试的「模拟机型」档（#429）：在 Mesa lavapipe 上用 Khronos VK_LAYER_KHRONOS_profiles
 # 只「藏」能力，让 android/tests/vk/run.sh 走到真机上才会走的降级 / 拒绝分支。
 # 档的定义在 android/tests/vk/profiles/s2a_sim_tiers.json：只按 Vulkan 规范的特性名 / 格式名手写，不含任何设备报告数据。
