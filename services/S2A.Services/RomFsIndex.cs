@@ -177,6 +177,51 @@ namespace S2A.Services
             File.Move(outPath + ".tmp", outPath, overwrite: true);
         }
 
+        // IMG v1 的 RomFS 段（单一 IMG 方案，v0.3.0）：把 romfsDir 的真实文件建成 Switch 标准 RomFS（LibHac RomFsBuilder，与 hactool / nxdumptool 的 romfs.bin 同一种布局），
+        //   写进 outPath 的 offset 处（文件须已存在；不落临时副本）。→ 写入的字节数。文件集合与排序同 Write（清单给了就不枚举目录）
+        public static long WriteStandard(string romfsDir, string listPath, string outPath, long offset)
+        {
+            string root = Path.GetFullPath(romfsDir);
+            List<string> rel = new();
+            if (listPath != null)
+            {
+                foreach (string line in File.ReadLines(listPath, Encoding.UTF8))
+                {
+                    int tab = line.IndexOf('\t');
+                    if (tab <= 0) throw new InvalidDataException($"RomFS 清单行不认识：{line}");
+                    rel.Add(line[(tab + 1)..]);
+                }
+            }
+            else
+            {
+                foreach (string f in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                    if (!IsHostJunk(f)) rel.Add(Path.GetRelativePath(root, f).Replace('\\', '/'));
+            }
+            rel.Sort(StringComparer.Ordinal);
+            RomFsBuilder builder = new();
+            // LazyHostFile：按需打开、句柄缓存（最多同时开 128 个）——9.9 万文件的游戏一次全开会超出文件句柄上限
+            foreach (string r in rel)
+            {
+                string full = Path.Combine(root, r);
+                builder.AddFile("/" + r, new LazyHostFile(full, new FileInfo(full).Length));
+            }
+            IStorage image = builder.Build();
+            image.GetSize(out long total).ThrowIfFailure();
+            using (FileStream o = new(outPath, FileMode.Open, FileAccess.Write, FileShare.None, 1 << 20))
+            {
+                o.Position = offset;
+                byte[] buf = new byte[1 << 22];
+                for (long pos = 0; pos < total;)
+                {
+                    int n = (int)Math.Min(buf.Length, total - pos);
+                    image.Read(pos, buf.AsSpan(0, n)).ThrowIfFailure();
+                    o.Write(buf, 0, n); pos += n;
+                }
+            }
+            LazyHostFile.CloseAll();
+            return total;
+        }
+
         public static IStorage Open(string romfsDir, string indexPath, string overlayDir = null) =>
             new IndexedStorage(Path.GetFullPath(romfsDir), File.ReadAllBytes(indexPath), indexPath, OverlayFiles(overlayDir), null, null);
 
