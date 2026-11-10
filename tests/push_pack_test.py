@@ -1,6 +1,6 @@
 """推资源包（tools/push_pack.py，Mac / Windows 共用，11-06 两端合一）：假设备（内存里的 App 容器）上核口径。期望按文件头规则手写，不跑被测实现推导。
 Mac 的整条 dev_run 推包回归（假 devicectl）在 tests/dev_run_test.sh，本文件只核规则本身与 Windows 那支（原 tests/oneclick_win_test.py 推包几组搬来）"""
-import hashlib, sys, tempfile, unittest
+import hashlib, struct, sys, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import push_pack as push
@@ -290,6 +290,23 @@ class ImagePush(Base):
     def test_applied_image_is_not_pushed_again(self):
         self.dev = Fake(self.phone("abc"))
         self.assertEqual(push.plan(self.dev, self.pk, self.w, say=self.log.append)[1], 0)
+
+    def test_library_pack_materializes_image_and_deletes_after(self):
+        # #329：库里的资源包不存 romfs.img、只存 romfs.files/ 硬链接 + 索引 + 偏移表；要推镜像时现拼、推的字节对、推完删
+        sys.path.insert(0, str(push.R / "pack")); import romfs_image
+        (self.pk / "romfs.img").unlink(); (self.pk / "romfs.files").mkdir(); (self.pk / "romfs.files" / "x").write_bytes(b"IMA"); (self.pk / "romfs.files" / "y").write_bytes(b"GE")
+        idx = b"S2ARFS01" + struct.pack("<qi", 5, 2) + struct.pack("<qqii", 0, 3, 0, 1) + struct.pack("<qqii", 3, 2, 1, 1) + struct.pack("<i", 2) + b"xy" + struct.pack("<i", 0)
+        (self.pk / "romfs.s2aidx").write_bytes(idx); (self.pk / "romfs.imgmap").write_bytes(romfs_image.MAGIC + struct.pack("<qi", 5, 2) + struct.pack("<2q", 0, 3))
+        self.dev = Fake({}); got = []
+        self.dev.put_big = lambda src, rel: got.append((rel, Path(src).read_bytes()))
+        push.run(self.dev, self.pk, self.w, full=True, say=self.log.append)
+        self.assertEqual(got, [(f"{RP}/romfs.img", b"IMAGE")])
+        self.assertFalse((self.pk / "romfs.img").exists())
+
+    def test_library_pack_image_already_on_phone_is_not_built(self):
+        (self.pk / "romfs.img").unlink(); self.dev = Fake(self.phone("abc"))   # 机上已应用同一镜像：不拼、不推
+        push.run(self.dev, self.pk, self.w, say=self.log.append)
+        self.assertFalse(any("现拼" in l for l in self.log)); self.assertFalse((self.pk / "romfs.img").exists())
 
     def test_send_invalidates_applied_before_writing_image(self):
         self.dev = Fake({}); order = []

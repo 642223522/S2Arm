@@ -6,6 +6,8 @@
 现在按两份 index.tsv 比：路径 / 字节数 / SHA-256 都相同且目标里大小对得上的文件不动，其余克隆（APFS clonefile，同 pack.py），
 新版没有的删掉；先删目标清单、最后写清单，中途失败留下的是「没有清单 = 不完整」的目录，下次照样按索引补齐。
 目标没有 index.tsv 或 manifest.json（第一次交付 / 上次中途失败前的旧格式）→ 整份重做。
+单文件镜像（#329）：源里没有 <前缀>romfs.img、只有 <前缀>romfs.files/（镜像各文件的硬链接，pack/romfs_image.py v2）时，交付这棵目录
+（逐文件克隆，同一克隆族不另占盘），镜像行没变且目标那棵在就不动；目标里旧格式留下的 romfs.img 删掉（库里只留一份）。
 输出一行：<文件数>\t<总字节>\t<克隆数>\t<删除数>\t<模式>
 """
 import ctypes, os, shutil, sys
@@ -50,6 +52,16 @@ def main():
     cloned = 0
     for p, (size, sha) in new.items():
         q = os.path.join(dst, p)
+        files = os.path.join(src, p[:-len('romfs.img')] + 'romfs.files') if p.endswith('romfs.img') else None
+        if files and not os.path.lexists(os.path.join(src, p)) and os.path.isdir(files):
+            qf = os.path.join(dst, p[:-len('romfs.img')] + 'romfs.files')
+            if os.path.lexists(q): os.remove(q); removed += 1   # 旧格式交付的真镜像
+            if old.get(p) == (size, sha) and os.path.isdir(qf): continue
+            if os.path.lexists(qf): shutil.rmtree(qf)
+            for r, _, fs in os.walk(files):
+                for f in fs:
+                    a = os.path.join(r, f); clone(a, os.path.join(qf, os.path.relpath(a, files))); cloned += 1
+            continue
         if old.get(p) == (size, sha):
             try:
                 if os.stat(q).st_size == size: continue

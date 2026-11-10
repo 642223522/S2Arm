@@ -905,7 +905,7 @@ def pack_need_bytes(packages, unpacked=False, windows=None, extract_bytes=None):
     copy = size * 11 // 10
     windows = os.name == "nt" if windows is None else windows
     direct = sum(space_rule.direct_need(extract_bytes)) if extract_bytes else _pack_direct_bytes(size)
-    return (0 if unpacked else copy) + (copy if windows else 0) + copy + direct   # 再加一份 copy：单文件镜像 romfs.img 是真实占盘的一份（pack/romfs_image.py）
+    return (0 if unpacked else copy) + (copy if windows else 0) + direct   # 单文件镜像 romfs.img 不再存进库（#329：存 romfs.files 硬链接，装机时现拼，push_pack 另核本机空间）
 
 
 def _extract_bytes(c, gid):
@@ -967,13 +967,17 @@ class _CloneInfo:
             return None
 
 
-def disk_bytes(roots, device, skip_names=(), skip_under=()):
+def disk_bytes(roots, device, skip_names=(), skip_under=(), state=None):
     """这些目录在 device 卷上实际分配的字节：按 (卷, inode) 去重（硬链接只算一次；多个根互相包含也只算一次），
     不跟软链（原件软链、@现行 指向）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
     APFS 克隆（#303）：同一克隆族（_CloneInfo）的共享块只算一次——每份记独占字节，族的共享部分取最大一份加一次；
-    取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账（sizes.py：解包还在时游戏资源目录的克隆归 cache）"""
-    seen, total, stack = set(), 0, [os.fspath(r) for r in roots]
-    shared = {}   # 克隆族号 → 族里共享块字节（取各份最大）
+    取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账。
+    state（sizes.measure 分部分量一款时传同一个 {}）：几次调用共用「见过的 inode」与「克隆族已记的共享块」——硬链接、克隆族跨部分也只算一次，
+    记在第一个碰到它的部分（#329：原先每部分各自去重，imageMac / imageIos / 解包共享的块各算一次，显示比实占多一两倍）"""
+    if state is None:
+        state = {}
+    seen, shared = state.setdefault("seen", set()), state.setdefault("shared", {})   # 克隆族号 → 已记的共享块字节（取各份最大）
+    total, stack, grow = 0, [os.fspath(r) for r in roots], {}
     while stack:
         path = stack.pop()
         try:
@@ -990,7 +994,8 @@ def disk_bytes(roots, device, skip_names=(), skip_under=()):
         clone = _CloneInfo.get(path) if stat.S_ISREG(st.st_mode) and alloc else None
         if clone and clone[2] >= 2 and 0 <= clone[0] <= alloc:
             total += clone[0]
-            shared[clone[1]] = max(shared.get(clone[1], 0), alloc - clone[0])
+            if alloc - clone[0] > max(shared.get(clone[1], 0), grow.get(clone[1], 0)):
+                grow[clone[1]] = alloc - clone[0]
         else:
             total += alloc
         if stat.S_ISDIR(st.st_mode):
@@ -999,7 +1004,9 @@ def disk_bytes(roots, device, skip_names=(), skip_under=()):
                     stack.extend(e.path for e in it)
             except OSError:
                 pass
-    return total + sum(shared.values())
+    for cid, b in grow.items():   # 本次调用让这个族的共享块变大的部分才记到本次
+        total += b - shared.get(cid, 0); shared[cid] = b
+    return total
 
 
 def pack_footprint(c, gid):

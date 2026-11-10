@@ -169,6 +169,7 @@ def digest(path, progress=None):
 
 
 def clone(source, destination, progress=None):
+    """→ True = 真克隆（APFS 共享块，不另占盘）；False = 退成了普通复制（跨卷 EXDEV、非 APFS、Windows）"""
     source, destination = Path(source), Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # macOS clonefile is an optimization, never part of the data format.
@@ -187,6 +188,7 @@ def clone(source, destination, progress=None):
                     progress(done, total)
     if progress:
         progress(source.stat().st_size, source.stat().st_size)
+    return copied
 
 
 def tree_hash(root, folders):
