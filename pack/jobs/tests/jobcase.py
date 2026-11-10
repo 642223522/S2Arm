@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import unittest.mock
 import os
+os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 作业层测试一律不连商店（library.store_meta）；要测的用例自己打桩
 
 JOBS = Path(__file__).resolve().parents[1]
 ROOT = JOBS.parents[1]

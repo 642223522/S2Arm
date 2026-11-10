@@ -164,6 +164,102 @@ def _copy_cover(c, tid, game, metadata, icon):
     shutil.copyfile(icon, target)
 
 
+STORE_RETRY = 7 * 86400   # 查过商店（断网 / 404 / 没有横图）的款，7 天内不再查
+STORE_BUDGET = 10.0       # 每次最多花的联网时间（秒）：单页 / 单图各一跳短超时（banner_fetch），超了剩下的下次再查
+
+
+def store_todo(c, ids=None):
+    """要查商店的款（不联网，只看 catalog 与文件夹）：缺横图或英文名；ids 不给时跳过 7 天内查过的"""
+    now = time.time()
+    todo = []
+    for g in c.catalog()["games"]:
+        gid = str(g.get("id", "")).upper()
+        if not re.fullmatch(r"[0-9A-F]{16}", gid) or (ids is not None and gid not in ids):
+            continue
+        d = layout.find_game(c, gid)
+        if g.get("englishName") and d is not None and (d / "banner.jpg").is_file():
+            continue
+        if ids is None and now - float(g.get("storeChecked") or 0) < STORE_RETRY:
+            continue
+        todo.append(gid)
+    return todo
+
+
+def store_meta_background(c, ids=None):
+    """在后台查商店（pack/jobs/store_meta_bg.py：store_meta 然后 heal_folder_names）：作业本身不等联网（商品页单页要几秒）。
+    有要查的款才起；起不来（系统拒绝）就算了，下个作业再试。子进程脱离本作业：作业结束、取消都不带走它（Windows 前端不把作业放进杀子进程的作业对象）。
+    S2A_BANNER_FETCH=0 不起"""
+    if os.environ.get("S2A_BANNER_FETCH", "1") == "0" or not store_todo(c, ids):
+        return False
+    import subprocess
+    args = [sys.executable, "-I", "-B", str(Path(__file__).with_name("store_meta_bg.py")), str(c.private), str(c.library),
+            str(c.r.get("libraryId") or ""), str(c.engine), *sorted(ids or ())]
+    common = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    try:
+        if os.name == "nt":
+            flags = 0x00000200 | 0x08000000   # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+            try:
+                subprocess.Popen(args, creationflags=flags | 0x01000000, **common)   # CREATE_BREAKAWAY_FROM_JOB：本作业万一在作业对象里也不被带走
+            except OSError:
+                subprocess.Popen(args, creationflags=flags, **common)
+        else:
+            subprocess.Popen(args, start_new_session=True, **common)
+        return True
+    except OSError:
+        return False
+
+
+def store_meta(c, ids=None, budget=STORE_BUDGET):
+    """游戏库的商店元数据（与出到哪个平台无关，Mac / iPhone / Windows 都读这一份）：按程序号打开美区商品页一次，
+    取横版封面放进这款文件夹（banner.jpg）、英文标题补进 catalog 的 englishName（NACP 没有英文标题时的第二来源：NACP 有的导入时已记，优先）。
+    ids 给了（导入刚加的款）就只查这些；不给（作业开始时）查缺横图或英文名、7 天内没查过的款。
+    断网、商品页 404、图不合格都静默跳过，只记 storeChecked；S2A_BANNER_FETCH=0 关掉。不含 ASCII 字母数字的标题不记（文件夹名用英文就是为了避开非 ASCII 路径）。
+    调用方不能拿着目录锁（这里自己拿；拿不到这次跳过）→ 记了几款"""
+    if os.environ.get("S2A_BANNER_FETCH", "1") == "0":
+        return 0
+    now = time.time()
+    todo = store_todo(c, ids)
+    if not todo:
+        return 0
+    try:
+        fetch = engine_tool(c, "banner_fetch")
+    except Exception:   # noqa: BLE001 —— 抓取工具载不进来：元数据是锦上添花，不挡作业
+        return 0
+    got = {}
+    t0 = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="store-", dir=c.private) as tmp:
+        for gid in todo:
+            if time.monotonic() - t0 > budget:
+                break
+            banner = Path(tmp) / (gid + ".jpg")
+            try:
+                ok, _why = fetch.fetch_banner(gid, banner)
+            except Exception:   # noqa: BLE001
+                ok = False
+            got[gid] = (banner if ok and banner.is_file() else None, fetch.store_name(gid))
+        if not got:
+            return 0
+        try:
+            with c.lock():
+                cat = c.catalog()
+                for g in cat["games"]:
+                    gid = str(g.get("id", "")).upper()
+                    if gid not in got:
+                        continue
+                    banner, name = got[gid]
+                    g["storeChecked"] = int(now)
+                    if name and layout._ascii_name(name) and not g.get("englishName"):
+                        g["englishName"] = name.strip()
+                    if banner:
+                        d = layout.find_game(c, gid) or layout.game_dir(c, gid, english=g.get("englishName") or g.get("name") or "")
+                        if not (d / "banner.jpg").is_file():
+                            os.replace(banner, d / "banner.jpg")
+                atomic(c.library / "catalog.json", cat)
+        except Failure:   # 目录锁被别的任务拿着：下次再查
+            return 0
+    return len(got)
+
+
 def extract_inspect(c, source, icon_dir):
     """解包目录 → 与 inspect / nup_inspect 同形的包元数据。三种 format（已在 import_games 按判据分开）：
     a. dump（Switch 2 导出）: 有 base/exefs/main.npdm
@@ -283,7 +379,7 @@ def nup_inspect(c, source, icon_dir):
             meta = {}
             for k in sorted((k for k in n.packages if k.kind in (nup.BASE, nup.UPDATE)), key=lambda k: (k.kind, k.version)):
                 meta.update(k.meta())
-            content = sum(n.tree_bytes(k.root) for k in [base, vers.get(ver), *dlc.values()] if k is not None)
+            own = {id(k): n.tree_bytes(k.root) for k in [base, vers.get(ver), *dlc.values()] if k is not None}   # 每项各自的内容字节（界面 / 错误摘要逐项显示）
     except (nup.Error, OSError, ValueError) as e:
         raise Failure(f"读不出这个 NUP 容器（{Path(source).name}）：{e}", code="content_invalid") from None
     nacp = meta.get(nup.T_NACP) if len(meta.get(nup.T_NACP) or b"") == 0x4000 else None
@@ -293,11 +389,11 @@ def nup_inspect(c, source, icon_dir):
     icon = meta.get(nup.T_ICON) or nup.localized_icon(meta.get(nup.T_LICONS, b""))
     if icon:
         (Path(icon_dir) / f"{app:016X}.jpg").write_bytes(icon)
-    common = dict(baseId=f"{app:016X}", display=display, guestIsa="unknown", builds={}, contentBytes=content, format="nup")
-    out = [dict(common, titleId=f"{app:016X}", type="base", version=0, name=name)]
+    common = dict(baseId=f"{app:016X}", display=display, guestIsa="unknown", builds={}, format="nup")
+    out = [dict(common, titleId=f"{app:016X}", type="base", version=0, name=name, contentBytes=own.get(id(base), 0))]
     if ver:
-        out.append(dict(common, titleId=f"{app | 0x800:016X}", type="update", version=ver, name=name))
-    out += [dict(common, titleId=f"{tid:016X}", type="dlc", version=k.version, name="") for tid, k in sorted(dlc.items())]
+        out.append(dict(common, titleId=f"{app | 0x800:016X}", type="update", version=ver, name=name, contentBytes=own[id(vers[ver])]))
+    out += [dict(common, titleId=f"{tid:016X}", type="dlc", version=k.version, name="", contentBytes=own[id(k)]) for tid, k in sorted(dlc.items())]
     return out
 
 
@@ -1236,6 +1332,9 @@ def import_games(c):
                 idx += 1
                 c.check()
                 atomic(c.library / "catalog.json", cat)
+    added = {r["id"].upper() for r in results if not r["duplicate"]}
+    if added:
+        store_meta_background(c, added)   # 横图、英文标题：后台查（导入不等联网），查到英文名接着改文件夹名
     if switch1:   # 读取器用这份密钥读通了 Switch 1 原件才算验证过；只导 NUP 或解包目录没用到密钥，不改密钥状态
         atomic(c.private / "keys/status.json", dict(ready=True, verified=True))
     return {"imports": results}

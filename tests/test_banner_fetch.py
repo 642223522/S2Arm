@@ -160,6 +160,22 @@ class FetchFlowTest(unittest.TestCase):
             return img_resp
         return fake
 
+    def test_store_title_taken_from_same_page(self):
+        # 商品页 linkedData 的 VideoGame 条目带 name（美区英文标题）：抓横图那一次顺带记下，store_name 取得到；不另发请求
+        linked = {"props": {"pageProps": {"linkedData": [{"@type": ["VideoGame", "Product"], "name": "Hollow Knight: Silksong", "image": IMG_URL},
+                                                         {"@type": "BreadcrumbList"}]}}}
+        page = Resp(('<script id="__NEXT_DATA__" type="application/json">' + json.dumps(linked) + "</script>").encode(),
+                    url="https://www.nintendo.com/us/store/products/x")
+        calls = []
+        banner_fetch._names.clear()
+        with mock.patch.object(urllib.request, "urlopen", self.dispatcher(page, Resp(jpeg(1920, 1080), url=IMG_URL), calls)):
+            ok, why = banner_fetch.fetch_banner(TID, self.dest)
+        self.assertTrue(ok, why)
+        self.assertEqual(banner_fetch.store_name(TID), "Hollow Knight: Silksong")
+        self.assertEqual(len(calls), 2)   # 页一次、图一次
+        self.assertEqual(banner_fetch.store_name("0100000000099000"), "")   # 没抓过的款
+        self.assertEqual(banner_fetch._extract_title(page_html(IMG_URL).decode()), "")   # 只有 Product、没有 VideoGame 名字 → 空
+
     def test_success_then_cache_hit_copies(self):
         page = Resp(page_html(IMG_URL), url="https://www.nintendo.com/us/store/products/x")
         img = Resp(jpeg(1920, 1080), url=IMG_URL)

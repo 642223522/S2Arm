@@ -23,6 +23,14 @@ internal static class LibraryJobCases
         check(catalog.Games.Count == 1 && catalog.Games[0].Name == "Synthetic game" &&
             catalog.Games[0].Version == "1.2" && !catalog.KeysReady, "handwritten catalog values preserved");
         check(catalog.Games[0].Missing.Single() == "Need base", "backend requirements preserved without UI inference");
+        // #141：本体 + 2 个 DLC 同一个原件（sha256 相同，size 都是整个原件）：合计按原件算一次，每项自己的字节用 contentBytes；单项原件照旧用 size
+        const string bundle = """
+        {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000002","name":"Bundle","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100000000000002","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":15032180736},{"type":"dlc","titleId":"0100000000001003","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001004","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001005","version":0,"display":"","size":3145728,"format":"","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","contentBytes":5242880}]}],"keys":{"ready":true,"verified":true,"message":""}}}
+        """;
+        var bundled = LibraryCatalog.Parse(LibraryJobResult.Parse(bundle, 0, "catalog-test", "catalog").Result).Games[0];
+        check(bundled.TotalBytes == 15032385536L + 3145728L, "bundle: source total counts the shared file once");
+        check(bundled.Packages!.Where(p => p.Type == "dlc" && p.Sha256.StartsWith('c')).All(p => bundled.OwnBytes(p) == 102400), "bundle: each DLC in the shared file shows its own bytes");
+        check(bundled.OwnBytes(bundled.Packages![3]) == 3145728 && bundled.OwnBytes(bundled.Packages![0]) == 15032180736L, "bundle: single-package file keeps file size, base uses its own content");
         void Reject(string data, int exit, string label)
         {
             try { LibraryJobResult.Parse(data, exit, "catalog-test", "catalog"); }

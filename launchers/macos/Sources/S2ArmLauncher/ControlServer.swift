@@ -204,7 +204,7 @@ typealias Request = ControlRequest
                 ["id": g.id, "name": g.name, "display": g.display, "compatibility": g.compatibility ?? NSNull(), "ready": g.ready ?? NSNull(),
                  "needsPreparation": g.needsPreparation ?? NSNull(), "buildable": g.buildable, "missing": g.missing ?? [],
                  // 本体 / 全部包字节数（AI 代操作：同一文件夹里的游戏 + 同系列小工具导入后是两款，按本体大小认主游戏，10-26）
-                 "baseBytes": g.packages.filter { $0.type == "base" }.reduce(Int64(0)) { $0 + $1.size }, "bytes": g.packages.reduce(Int64(0)) { $0 + $1.size }] },
+                 "baseBytes": g.packages.filter { $0.type == "base" }.reduce(Int64(0)) { $0 + g.ownBytes($1) }, "bytes": g.sourceBytes] },
             "tasks": s.tasks.map { obj($0) }, "queue": s.queue, "executionTask": s.executionTask ?? NSNull(),
             "notice": s.notice ?? NSNull(), "error": s.error ?? NSNull(),
             "installReadiness": s.installReadiness?.json ?? NSNull(),
