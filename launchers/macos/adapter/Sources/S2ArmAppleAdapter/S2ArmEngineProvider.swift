@@ -226,6 +226,12 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     public func signingProject() async throws -> String { try await installer.signingProject() }
     public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
+    public func devCertStatus(device: String? = nil) async throws -> DevCertStatus { try await installer.devCertStatus(device: device) }
+    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
+        try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
+    }
+    public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func devCertDelete() async throws { try await installer.devCertDelete() }
 
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> InstallResult {
         try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, events: events)
