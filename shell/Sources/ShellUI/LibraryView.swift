@@ -1,4 +1,4 @@
-// S2Arm modification: present a dedicated sorting grid and guard background library input while it is open.
+// S2Arm modification: present a dedicated sorting list and guard background library input while it is open.
 import SwiftUI
 
 /// How the library arranges itself. Only the available size decides, never the device model or orientation,
@@ -334,11 +334,17 @@ public struct LibraryView: View {
             guard libraryPressAllowed, noteTouch() else { return }
             gameOrderOpen = true
         })
-        .sheet(isPresented: $gameOrderOpen) {
+        #if os(iOS)
+        .fullScreenCover(isPresented: $gameOrderOpen) {
             GameOrderView(games: games, move: actions.onMoveGame, reorder: actions.onReorderGames)
-                .presentationDetents([.large])
                 .preferredColorScheme(.dark)
         }
+        #else
+        .sheet(isPresented: $gameOrderOpen) {
+            GameOrderView(games: games, move: actions.onMoveGame, reorder: actions.onReorderGames)
+                .preferredColorScheme(.dark)
+        }
+        #endif
         .environment(\.shellFocus, focus)
         .environment(\.shellInputDevice, device)
         .foregroundStyle(.white)

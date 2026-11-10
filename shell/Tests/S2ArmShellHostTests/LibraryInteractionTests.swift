@@ -117,3 +117,21 @@ import Testing
     model.refreshGameData()
     #expect(model.games.map(\.id) == ["4", "1", "2", "3"])
 }
+
+@Test func listReorderConvertsOriginalOffsetsToStableInsertionIDs() throws {
+    let ids = ["a", "b", "c", "d", "e"]
+    let down = try #require(GameOrderMove(ids: ids, offsets: IndexSet(integer: 0), destination: 3))
+    #expect(down.sources == ["a"])
+    #expect(down.before == "d")
+    #expect(down.legacyTarget == "c")
+    let up = try #require(GameOrderMove(ids: ids, offsets: IndexSet(integer: 4), destination: 0))
+    #expect(up.before == "a")
+    #expect(up.legacyTarget == "a")
+    let end = try #require(GameOrderMove(ids: ids, offsets: IndexSet([1, 3]), destination: 5))
+    #expect(end.sources == ["b", "d"])
+    #expect(end.before == nil)
+    #expect(GameOrderMove(ids: ids, offsets: IndexSet(integer: 1), destination: 2) == nil)
+    #expect(GameOrderMove(ids: ids, offsets: IndexSet(), destination: 1) == nil)
+    #expect(GameOrderMove(ids: ids, offsets: IndexSet(integer: 5), destination: 0) == nil)
+    #expect(GameOrderMove(ids: ids, offsets: IndexSet(integer: 0), destination: 6) == nil)
+}

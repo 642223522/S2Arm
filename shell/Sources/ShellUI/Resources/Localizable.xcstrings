@@ -33,18 +33,18 @@
         }
       }
     },
-    "Touch and hold a cover, then drag to reorder.": {
+    "Drag the handle up or down to reorder.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Touch and hold a cover, then drag to reorder."
+            "value": "Drag the handle up or down to reorder."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "长按封面并拖动，调整游戏顺序。"
+            "value": "按住右侧拖动柄，上下调整游戏顺序。"
           }
         }
       }
