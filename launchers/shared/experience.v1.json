@@ -485,8 +485,11 @@
       {"id": "home_quit_accept", "macro": "S2A_DPROMPT_HOME_QUIT_ACCEPT", "zh-Hans": "退出", "en": "Quit"},
       {"id": "home_quit_decline", "macro": "S2A_DPROMPT_HOME_QUIT_DECLINE", "zh-Hans": "回到游戏", "en": "Back to game"},
       {"id": "vpad_touch_auto", "macro": "S2A_DPROMPT_VPAD_TOUCH_AUTO", "zh-Hans": "已切到触屏操作：这款游戏用触屏点菜单。左上角齿轮 → 按键布局，可以切回按键。", "en": "Switched to touch controls: this game uses touch for its menus. You can switch back to buttons from the gear in the top-left corner → Button layout."},
-      {"id": "switch_game_title", "macro": "S2A_DPROMPT_SWITCH_GAME_TITLE", "zh-Hans": "换一款游戏", "en": "Switch games"},
-      {"id": "switch_game_body", "macro": "S2A_DPROMPT_SWITCH_GAME_BODY", "zh-Hans": "换一款游戏需要重新打开 S2Arm：先在游戏里存档，然后从屏幕底部上滑，把 S2Arm 划掉，再点开就回到游戏库。", "en": "To switch games, reopen S2Arm: save in the game first, then swipe up from the bottom of the screen, swipe S2Arm away, and tap it again to return to the game library."}
+      {"id": "switch_game_title", "macro": "S2A_DPROMPT_SWITCH_GAME_TITLE", "zh-Hans": "切换游戏", "en": "Switch Games"},
+      {"id": "switch_game_action", "macro": "S2A_DPROMPT_SWITCH_GAME_ACTION", "zh-Hans": "结束这局，回到游戏库", "en": "End this game and return to the library"},
+      {"id": "switch_game_note", "macro": "S2A_DPROMPT_SWITCH_GAME_NOTE", "zh-Hans": "S2Arm 会关闭，再点开就回到游戏库。", "en": "S2Arm closes; open it again to return to the game library."},
+      {"id": "switch_game_body", "macro": "S2A_DPROMPT_SWITCH_GAME_BODY", "zh-Hans": "请先在游戏里存档。确认后这局结束、S2Arm 关闭，再点开 S2Arm 就回到游戏库，选另一款开始。退出前会等游戏把存档写完；没在游戏里存的进度会丢。", "en": "Save in the game first. When you confirm, this game ends and S2Arm closes; open S2Arm again to return to the game library and pick another game. Quitting waits for the game to finish writing its save; progress you haven't saved in the game will be lost."},
+      {"id": "switch_game_accept", "macro": "S2A_DPROMPT_SWITCH_GAME_ACCEPT", "zh-Hans": "已存档，切换", "en": "Saved, switch"}
     ]
   },
 
