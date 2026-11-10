@@ -33,8 +33,14 @@ static const char *chain_name(void);   // DMSH_CHAIN（dmsh_chain.h 随 dsh_miss
 static int write_out, slow_first;   // 39–41（后台预编）：编译器桩真把产物写进兜底目录（dsh_have 认它）；41：键 0 编得慢（让排在它后面的键停在队里）
 static _Atomic int in_comp, overlap;   // 42：C# 现编入口不可重入，同时有两个调用在里面就计一次
 static int compiler_(const char *key, int stage, const char *out);
+static int inflight_chk, inflight_seen;   // 44：翻译器被调用时，兜底目录里 <键>.inflight.ctl / .code 已写好、逐字节等于交给它的那份（inflight_seen = 核到几次）
+static int same_file(const char *path, const void *want, size_t n) {
+    FILE *f = fopen(path, "rb"); if (!f) return 0; uint8_t buf[0x1000]; size_t got = n <= sizeof buf ? fread(buf, 1, sizeof buf, f) : 0; fclose(f);
+    return got == n && !memcmp(buf, want, n);
+}
 static int compiler(const char *key, int stage, const void *code, size_t nc, const void *ctl, size_t nt, const char *out) {
-    (void)code; (void)nc; (void)ctl; (void)nt;
+    if (inflight_chk && out) { char p1[1200], p2[1200]; snprintf(p1, sizeof p1, "%s/%s.inflight.ctl", out, key); snprintf(p2, sizeof p2, "%s/%s.inflight.code", out, key);
+        if (same_file(p1, ctl, nt) && same_file(p2, code, nc)) inflight_seen++; }
     if (atomic_fetch_add(&in_comp, 1)) atomic_fetch_add(&overlap, 1);
     int rc_ = compiler_(key, stage, out); atomic_fetch_sub(&in_comp, 1); return rc_;
 }
@@ -86,6 +92,14 @@ static void scenario(int n) {
         uint8_t got[sizeof ctl]; FILE *f;
         snprintf(p, sizeof p, "%s/0000000000000000.fail.ctl", d); f = fopen(p, "rb"); check(f != NULL); check(fread(got, 1, sizeof got, f) == sizeof ctl); fclose(f); check(!memcmp(got, ctl, sizeof ctl)); unlink(p);
         snprintf(p, sizeof p, "%s/0000000000000000.fail.code", d); f = fopen(p, "rb"); check(f != NULL); check(fread(got, 1, sizeof got, f) == sizeof code); fclose(f); check(!memcmp(got, code, sizeof code)); unlink(p);
+        rmdir(d);
+    }
+    if (n == 44) {   // #467：编的时候输入落盘成 <键>.inflight.*（进程编到一半没了就留下），翻译器返回后删掉——成功、报错各一次，都不留
+        char d[] = "/tmp/t_dsh_inflXXXXXX", p[256]; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1); unsetenv("DM_NVN_SHDUMP");
+        for (int i = 0x40; i < 0x80; i++) ctl[i] = (uint8_t)(i ^ 0x5a); for (int i = 0x40; i < 0x80; i++) code[i] = (uint8_t)(i * 3);
+        inflight_chk = 1; compile_rc = 0; call(); check(inflight_seen == 1);
+        struct stat sb; snprintf(p, sizeof p, "%s/0000000000000000.inflight.ctl", d); check(stat(p, &sb) != 0);
+        snprintf(p, sizeof p, "%s/0000000000000000.inflight.code", d); check(stat(p, &sb) != 0);
         rmdir(d);
     }
     if (n == 3) {
@@ -249,10 +263,11 @@ int main(void) {
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）", "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 39 后台编好首遇复用 / 40 后台失败首遇同步再编
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 41 排在慢键后面的键：首遇取消后台、同步编
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 1（正常收局）",   // 42 原注释见下行
-        "成功 0、失败 1、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 43 翻译器报错：输入自动存进兜底目录；42 后台在编同键时来输出类型变体：同锁、不并发、不重编（后台编好、没有首遇来取：不计成功）
+        "成功 0、失败 1、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 43 见下行
+        "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 44 编的时候输入落盘成 .inflight.*、返回后删掉；43 翻译器报错：输入自动存进兜底目录；42 后台在编同键时来输出类型变体：同锁、不并发、不重编（后台编好、没有首遇来取：不计成功）
     };
     int bad = 0;
-    for (int n = 0; n < 44; n++) {
+    for (int n = 0; n < 45; n++) {
         int fd[2]; pipe(fd); pid_t p = fork();
         if (!p) { close(fd[0]); dup2(fd[1], 1); close(fd[1]); scenario(n); }
         close(fd[1]); char buf[1024]; size_t at = 0; ssize_t got;
@@ -263,5 +278,5 @@ int main(void) {
         printf("%s 现编汇总场景 %d\n", ok ? "✓" : "✗", n);
         if (!ok) { bad++; puts(buf); }
     }
-    printf("%s t_dsh_stats：44 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
+    printf("%s t_dsh_stats：45 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }
