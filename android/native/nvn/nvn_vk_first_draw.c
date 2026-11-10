@@ -2367,8 +2367,38 @@ static int fd_gpu_enabled(void) {
     }
     return g_gpu_on;
 }
+// 时间戳能力（hula 要求查 timestampValidBits / 队列族）：队列族 timestampValidBits>0、
+// timestampComputeAndGraphics 且 timestampPeriod>0 才启用；validBits 用于回读掩码（32 位设备会回卷）。
+static int g_gpu_ts_cap = -1;
+static uint32_t g_gpu_valid_bits;
+static int fd_gpu_ts_capable(struct s2a_vk_device *d) {
+    if (g_gpu_ts_cap >= 0) return g_gpu_ts_cap;
+    g_gpu_ts_cap = 0;
+    if (d && d->physical && d->device) {
+        uint32_t nf = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(d->physical, &nf, NULL);
+        if (nf && d->queue_family < nf) {
+            if (nf > 64) nf = 64;
+            VkQueueFamilyProperties fams[64];
+            vkGetPhysicalDeviceQueueFamilyProperties(d->physical, &nf, fams);
+            g_gpu_valid_bits = fams[d->queue_family].timestampValidBits;
+            if (g_gpu_valid_bits && d->properties.limits.timestampPeriod > 0.f &&
+                d->properties.limits.timestampComputeAndGraphics)
+                g_gpu_ts_cap = 1;
+        }
+    }
+    if (!g_gpu_ts_cap)
+        FD_LOG("gpu_time: timestamps unsupported (validBits=%u period=%f computeGfx=%d); 本设备关闭",
+               g_gpu_valid_bits, d ? (double)d->properties.limits.timestampPeriod : 0.0,
+               d ? (int)d->properties.limits.timestampComputeAndGraphics : 0);
+    return g_gpu_ts_cap;
+}
+static uint64_t fd_gpu_mask(void) {
+    return g_gpu_valid_bits >= 64 ? ~0ull : ((1ull << g_gpu_valid_bits) - 1ull);
+}
 static void fd_gpu_arm(struct s2a_vk_device *d, VkCommandBuffer cmd) {
     if (!fd_gpu_enabled() || g_gpu_armed || !d || !d->device || !cmd) return;
+    if (!fd_gpu_ts_capable(d)) return;
     int p = g_arena_parity & 1;
     if (!g_gpu_pool[p]) {
         VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
@@ -2441,7 +2471,7 @@ int nvn_vk_first_draw_gpu_read_frame(struct s2a_vk_device *d, int parity, const 
         return 0;
     }
     double period = d->properties.limits.timestampPeriod > 0 ? d->properties.limits.timestampPeriod : 1.0;
-    double ms = (double)(r[1] - r[0]) * period / 1e6;
+    double ms = (double)((r[1] - r[0]) & fd_gpu_mask()) * period / 1e6;   // 掩码回卷（validBits<64）
     g_gpu_last_ms = ms;
     g_gpu_last_passes = g_gpu_frame_passes[parity];
     g_gpu_last_valid = 1;
@@ -2503,8 +2533,8 @@ void nvn_vk_first_draw_gpu_read(struct s2a_vk_device *d, const char *where) {
     if (vr == VK_SUCCESS) {
         (void)nvn_vk_first_draw_gpu_read_frame(d, g_gpu_frame_parity >= 0 ? g_gpu_frame_parity : 0, NULL);
         double period = d->properties.limits.timestampPeriod > 0 ? d->properties.limits.timestampPeriod : 1.0;
-        FD_LOG("gpu frame: %.2f ms (%s, %d passes)", (double)(r[1] - r[0]) * period / 1e6,
-               where ? where : "?", g_gpu_npass[pp]);
+        double frame_ms = (double)((r[1] - r[0]) & fd_gpu_mask()) * period / 1e6;
+        FD_LOG("gpu frame: %.2f ms (%s, %d passes)", frame_ms, where ? where : "?", g_gpu_npass[pp]);
         // 逐 pass：读回整段，按耗时排前 6；只报 (size, 格式, draws)，不带 request 身份。
         uint64_t q[2 * FD_GPU_PASSES];
         if (vkGetQueryPoolResults(d->device, g_gpu_pool[pp], 0, (uint32_t)(2 * g_gpu_npass[pp]), sizeof q, q,
@@ -2512,13 +2542,13 @@ void nvn_vk_first_draw_gpu_read(struct s2a_vk_device *d, const char *where) {
             double dur[FD_GPU_PASSES];
             double busy = 0;
             for (int i = 1; i < g_gpu_npass[pp]; i++) {
-                dur[i] = (double)(q[2 * i + 1] - q[2 * i]) * period / 1e6;
+                dur[i] = (double)((q[2 * i + 1] - q[2 * i]) & fd_gpu_mask()) * period / 1e6;
                 busy += dur[i];
             }
             FD_LOG("gpu busy: %.2f ms of %.2f ms frame (%.0f%%); 逐 pass 之间的空闲=%s",
-                   busy, (double)(r[1] - r[0]) * period / 1e6,
-                   (double)(r[1] - r[0]) > 0 ? 100.0 * busy / ((double)(r[1] - r[0]) * period / 1e6) : 0.0,
-                   busy >= (double)(r[1] - r[0]) * period / 1e6 ? "0（含重叠）" : "见差值");
+                   busy, frame_ms,
+                   frame_ms > 0 ? 100.0 * busy / frame_ms : 0.0,
+                   busy >= frame_ms ? "0（含重叠）" : "见差值");
             for (int k = 0; k < 6; k++) {
                 int best = -1; double bv = 0;
                 for (int i = 1; i < g_gpu_npass[pp]; i++) if (dur[i] > bv) { bv = dur[i]; best = i; }
@@ -3957,6 +3987,8 @@ void nvn_vk_first_draw_release_device(struct s2a_vk_device *d) {
     }
     g_gpu_armed = 0;
     g_gpu_arm_parity = -1;
+    g_gpu_ts_cap = -1;               // 新设备重新评估时间戳能力/validBits
+    g_gpu_valid_bits = 0;
     // pass probe 的 host buffer 归当前设备；设备销毁前收回（没走完 flush 时也不会把映射带过设备边界）。
     if (g_fq.pp_buf) fd_pp_release(d);
     // 驱动管线缓存落盘：必须在设备销毁前取（release_device 的调用点满足），失败只记一行，
