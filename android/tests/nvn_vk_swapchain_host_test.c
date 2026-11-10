@@ -8,7 +8,10 @@
 //      fence 全部保留；signal 后第二次 destroy 才真正销毁。
 //   4. 提交成功后 present 失败：命令缓冲/两把 fence 保留，不调 present_done，不伪造完成。
 //   5. 渲染 fence 超时：即使 present 成功也不解锁 pin，不声称呈现退休。
-//   6. present fence 能力缺失（maintenance1 未启用）：建链明确失败，不降级成渲染 fence 冒充。
+//   6. 无 maintenance1（#426）：改用同图像再 acquire 证明。只有同一序号的图像再次被 acquire、
+//      且那次 acquire 的 fence 已触发，上一次呈现才退休；别的图像被 acquire、fence 未触发、
+//      渲染 fence 触发都不算（负对照）。屏上最后一张不会再被交回：destroy 先等在途命令，再按
+//      队列空闲假设收口，单独计数、不算 retired；vkQueueWaitIdle 失败或 acquire fence 未触发则保留。
 //   7. debug.s2a.fail_present=2：故意不带 present fence，退休永远无法证明 → destroy 保留。
 //   8. 旋转/resize：同一窗口尺寸变化 needs_rebuild=1；尺寸相同=0。
 // 真机驱动行为（Adreno present fence 何时 signal）不在宿主覆盖范围内，报告中列为未验。
@@ -85,6 +88,12 @@ static int g_destroyed_swapchains, g_destroyed_surfaces;
 static int g_present_done_calls;
 static int g_revoke_on_present;
 static VkImageBlit g_last_blit;
+// #426 再 acquire：acquire 带的 fence；g_acquire_fence_signal=0 模拟“序号已交回、fence 还没触发”。
+static VkFence g_last_acquire_fence;
+static int g_acquire_fence_signal = 1;
+static int g_acquire_fence_was_signaled;
+static int g_queue_idle_calls;
+static VkResult g_queue_idle_result = VK_SUCCESS;
 
 static struct fake_fence *F(VkFence f) {
     for (int i = 0; i < 64; i++) if (g_fences[i].used && (VkFence)&g_fences[i] == f) return &g_fences[i];
@@ -121,6 +130,11 @@ static void fake_reset(void) {
     g_present_done_calls = 0;
     g_revoke_on_present = 0;
     memset(&g_last_blit, 0, sizeof g_last_blit);
+    g_last_acquire_fence = VK_NULL_HANDLE;
+    g_acquire_fence_signal = 1;
+    g_acquire_fence_was_signaled = 0;
+    g_queue_idle_calls = 0;
+    g_queue_idle_result = VK_SUCCESS;
     g_window_w = 100; g_window_h = 50;
     g_geo_calls = 0; g_geo_apply = 1; g_geo_rc = 0; g_geo_w = g_geo_h = g_geo_fmt = 0;
     g_prop_count = 0;
@@ -176,7 +190,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t count, cons
     if (g_render_fence_signal_on_submit && F(fence)) F(fence)->signaled = 1;
     return VK_SUCCESS;
 }
-VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue) { (void)queue; return VK_SUCCESS; }
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue) {
+    (void)queue;
+    g_queue_idle_calls++;
+    return g_queue_idle_result;
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateSemaphore(VkDevice d, const VkSemaphoreCreateInfo *i,
                                                  const VkAllocationCallbacks *a, VkSemaphore *s) {
@@ -337,9 +355,15 @@ static VkResult fake_get_images(VkDevice d, VkSwapchainKHR sc, uint32_t *count, 
 }
 static VkResult fake_acquire(VkDevice d, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence,
                              uint32_t *index) {
-    (void)d; (void)sc; (void)timeout; (void)sem; (void)fence;
+    (void)d; (void)sc; (void)timeout; (void)sem;
     g_acquire_calls++;
+    g_last_acquire_fence = fence;
     *index = g_acquire_index;
+    // 规范：没交回图像时不动 fence；交回时 fence 必须是未触发、未被别的操作占用的。
+    if (fence && F(fence) && F(fence)->signaled) g_acquire_fence_was_signaled = 1;
+    if (g_acquire_result == VK_SUCCESS || g_acquire_result == VK_SUBOPTIMAL_KHR) {
+        if (fence && F(fence) && g_acquire_fence_signal) F(fence)->signaled = 1;
+    }
     return g_acquire_result;
 }
 static VkResult fake_present(VkQueue q, const VkPresentInfoKHR *info) {
@@ -496,10 +520,120 @@ int main(void) {
         CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "nonstandard fixture cleanly retires");
     }
 
-    // 6. maintenance1 未启用：建链必须失败（不能拿渲染 fence 冒充呈现退休）。
-    CHECK(create_swapchain(0) != 0, "create without maintenance1 must fail");
-    CHECK(strstr(g_create_why, "maintenance1") != NULL || strstr(g_create_why, "retirement") != NULL,
-          "failure reason names presentation retirement");
+    // 6. 无 maintenance1（#426）：建链成功，退休证明改为同图像再 acquire。
+    //    只用 main 上已有的字段和桩记录断言：修前这里红在“建链被拒”，不是编译失败。
+    int rc6 = create_swapchain(0);
+    CHECK(rc6 == 0, "create without maintenance1 must succeed via same-image reacquire (#426): %s", g_create_why);
+    if (rc6 == 0) {
+        struct nvn_vk_swapchain_present_stats st;
+        g_acquire_index = 0;
+        int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        CHECK(rc == 0, "reacquire mode present rc=%d (%s)", rc, why);
+        CHECK(!g_present_fence_info_seen, "no present fence is attached without maintenance1");
+        VkFence acq = g_last_acquire_fence;
+        CHECK(acq != VK_NULL_HANDLE && F(acq) != NULL, "acquire carries a real fence as the reacquire proof");
+        CHECK(g_present_done_calls == 1, "draw completion still releases pins");
+        nvn_vk_swapchain_present_stats(&st);
+        CHECK(st.completed == 1 && st.retired == 0 && st.pending == 1,
+              "render fence does not retire the presentation (retired=%llu pending=%d)",
+              (unsigned long long)st.retired, st.pending);
+        CHECK(nvn_vk_swapchain_retire_present(&g_sc, NVK_PRESENT_RETIRE_BUDGET_NS) == 1,
+              "no fence to wait on: a bounded retire keeps the presentation pending");
+
+        // 负对照 1：别的图像被 acquire 交回，不能证明 0 号图的呈现结束。
+        g_acquire_index = 1;
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        nvn_vk_swapchain_present_stats(&st);
+        CHECK(rc == 0 && st.retired == 0 && st.pending == 2,
+              "acquiring a different image retires nothing (retired=%llu pending=%d)",
+              (unsigned long long)st.retired, st.pending);
+
+        // 负对照 2：0 号图再次交回，但那次 acquire 的 fence 还没触发——不退休。
+        g_acquire_index = 0;
+        g_acquire_fence_signal = 0;
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        nvn_vk_swapchain_present_stats(&st);
+        CHECK(rc == 0 && st.retired == 0 && st.pending == 3,
+              "same image re-acquired but acquire fence unsignaled: no early retirement (retired=%llu pending=%d)",
+              (unsigned long long)st.retired, st.pending);
+        CHECK(nvn_vk_swapchain_retire_present(&g_sc, 0) == 1, "nonblocking retire keeps it while the fence is unsignaled");
+        nvn_vk_swapchain_present_stats(&st);
+        CHECK(st.retired == 0, "still not retired before the acquire fence signals");
+
+        // 正例：fence 触发后，只退 0 号图上一次的呈现；本帧刚呈现的 0 号图和 1 号图仍在途。
+        if (acq && F(acq)) F(acq)->signaled = 1;
+        CHECK(nvn_vk_swapchain_retire_present(&g_sc, 0) == 1, "remaining presentations still pending");
+        nvn_vk_swapchain_present_stats(&st);
+        CHECK(st.retired == 1 && st.pending == 2,
+              "acquire fence signal retires exactly the previous present of that image (retired=%llu pending=%d)",
+              (unsigned long long)st.retired, st.pending);
+        CHECK(acq && F(acq) && !F(acq)->signaled, "observed acquire fence is reset for the next acquire");
+
+        // 稳态：fence 随 acquire 触发时当场收账；acquire fence 交出去时必须未触发。
+        g_acquire_fence_signal = 1;
+        g_acquire_index = 1;
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        nvn_vk_swapchain_present_stats(&st);
+        CHECK(rc == 0 && st.retired == 2 && st.pending == 2,
+              "steady state retires image 1's previous present on reacquire (retired=%llu pending=%d)",
+              (unsigned long long)st.retired, st.pending);
+        CHECK(!g_acquire_fence_was_signaled, "acquire fence is never handed over while signaled");
+
+        // acquire 超时不交回图像：fence 不挂起、不退休任何东西，下一帧照常。
+        g_acquire_result = VK_TIMEOUT;
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        CHECK(rc == 1 && acq && F(acq) && !F(acq)->signaled, "acquire timeout leaves the acquire fence untouched");
+        g_acquire_result = VK_SUCCESS;
+
+        // 窗口退休：屏上两张不会再交回 → 等在途命令后按队列空闲假设收口，不算 retired。
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "reacquire destroy settles via the queue-idle assumption");
+        CHECK(g_queue_idle_calls == 1, "queue idle observed exactly once at window retirement");
+        CHECK(g_sc.retired == 2, "idle assumption is not counted as retirement (retired=%llu)",
+              (unsigned long long)g_sc.retired);
+        CHECK(g_destroyed_swapchains == 1 && g_destroyed_surfaces == 1, "swapchain/surface destroyed once");
+        CHECK(acq && F(acq) && F(acq)->destroyed, "acquire fence destroyed with the swapchain");
+    }
+    // 6b. 负对照：队列空闲失败（如设备丢失）时不能假设呈现结束，保留全部对象。
+    if (create_swapchain(0) == 0) {
+        int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        CHECK(rc == 0, "reacquire present before failing idle rc=%d", rc);
+        g_queue_idle_result = VK_ERROR_DEVICE_LOST;
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == -1, "queue idle failure keeps the swapchain");
+        CHECK(g_destroyed_swapchains == 0 && g_destroyed_surfaces == 0 && g_destroyed_semaphores == 0,
+              "swapchain/surface/semaphores kept without presentation evidence");
+        CHECK(g_sc.retired == 0 && g_sc.npresent_pending == 1, "nothing assumed or retired on failure");
+        g_queue_idle_result = VK_SUCCESS;
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "second destroy settles once the queue idles");
+    }
+    // 6c. 负对照：交给 acquire 的 fence 一直不触发，destroy 不能销毁它（也不能做队列空闲假设）。
+    if (create_swapchain(0) == 0) {
+        g_acquire_fence_signal = 0;
+        int rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        VkFence acq = g_last_acquire_fence;
+        CHECK(rc == 0 && acq && F(acq) && !F(acq)->signaled, "acquire fence handed over and not yet signaled");
+        if (acq && F(acq)) F(acq)->never_signal = 1;
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == -1, "destroy refuses while the acquire fence is unobserved");
+        CHECK(g_queue_idle_calls == 0 && g_destroyed_swapchains == 0, "no idle assumption, swapchain kept");
+        CHECK(acq && F(acq) && !F(acq)->destroyed, "armed acquire fence is not destroyed");
+        // 下一帧也不能拿一把没触发的 fence 去 acquire。
+        int before = g_acquire_calls;
+        g_sc.present_failed = 0; g_sc.ready = 1;
+        rc = nvn_vk_swapchain_present_image(&g_sc, src, VK_FORMAT_R8G8B8A8_UNORM, 100, 50, NULL, why, sizeof why);
+        CHECK(rc < 0 && g_acquire_calls == before, "unobserved acquire fence blocks the next acquire");
+    }
+    // 6d. 探针 clear-present 在无 maintenance1 时同样不带 present fence，按图像记 pending。
+    if (create_swapchain(0) == 0) {
+        int rc = nvn_vk_swapchain_clear_present(&g_sc, 0.1f, 0.2f, 0.3f, 1.0f, why, sizeof why);
+        CHECK(rc == 0, "clear present without maintenance1 rc=%d (%s)", rc, why);
+        CHECK(!g_present_fence_info_seen, "clear present attaches no present fence");
+        CHECK(g_sc.retired == 0 && g_sc.npresent_pending == 1, "clear present waits for reacquire, not retired");
+        rc = nvn_vk_swapchain_clear_present(&g_sc, 0.1f, 0.2f, 0.3f, 1.0f, why, sizeof why);
+        CHECK(rc == 0 && g_sc.retired == 1 && g_sc.npresent_pending == 1,
+              "second clear on the same image retires the first (retired=%llu pending=%d)",
+              (unsigned long long)g_sc.retired, g_sc.npresent_pending);
+        CHECK(nvn_vk_swapchain_destroy(&g_sc) == 0, "destroy after reacquire clear presents");
+        CHECK(g_destroyed_semaphores == 1 + 3, "one acquire + one release per image destroyed once");
+    }
 
     // 1/2. present 成功 ≠ 呈现退休；两把 fence 必须不同。
     if (create_swapchain(1) == 0) {
