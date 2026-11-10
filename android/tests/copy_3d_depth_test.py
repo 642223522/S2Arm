@@ -44,6 +44,8 @@ typedef struct nvn_gpu_tex_s *nvn_gpu_tex;
 typedef struct nvn_gpu_buf_s *nvn_gpu_buf;
 typedef struct nvn_gpu_cmd_s *nvn_gpu_cmd;
 static int copies; static VkBufferImageCopy last;
+#define VK_IMAGE_ASPECT_DEPTH_BIT 2
+static int nvn_vk_format_substituted(uint32_t f) { (void)f; return 0; }   /* #398 D24 换 D32：本测试的贴图都不换存储 */
 static int rc_is(int got, int expected) { return got == expected; }
 static void set_sticky(struct nvn_gpu_cmd_s *c, int rc, const char *why, ...) { (void)why; c->sticky = rc; }
 static uint32_t fmt_bpp(uint32_t fmt) { (void)fmt; return 4; }
@@ -57,7 +59,7 @@ static void vkCmdCopyImageToBuffer(int cb, int i, int layout, int b, uint32_t n,
 '''
 production = '\n'.join(function(x) for x in (
     'static int copy_region(', 'static int check_copy_params(',
-    'void nvn_gpu_copy_buf_tex(', 'void nvn_gpu_copy_tex_buf('))
+    'static void copy_buf_tex_impl(', 'void nvn_gpu_copy_buf_tex(', 'void nvn_gpu_copy_tex_buf('))   # copy_buf_tex_impl：#422 起 nvn_gpu_copy_buf_tex 是它的薄壳
 main = r'''
 static int check_case(int direction, unsigned layer, const NVNcopyRegion *region, int expected, const char *name) {
     struct nvn_gpu_tex_s t = {.w=4,.h=4,.depth=4,.levels=3,.target=NVN_TEXTURE_TARGET_3D,.layers=1};
