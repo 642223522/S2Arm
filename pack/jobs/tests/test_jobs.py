@@ -772,24 +772,32 @@ class JobsTests(unittest.TestCase):
                 self.assertIn("直连着色器上限", library.space_budget(self.c, game)["volumes"][0]["note"])
 
     def test_direct_check_counts_existing_cache_and_volume(self):
-        # #265 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）：抽取 1 GB、同盘 → 要 12 GB；已有 4 GB 缓存 → 只要 8 GB
+        # 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）与出包预检同一规则：游戏内容（romfs + exefs + aoc）≥ 3e9 → 15e9、小于 → 5e9；
+        #   已有的同款直连缓存扣掉；期望按 library.py 的两档常量手算
         import collections
         import space_rule
         du = collections.namedtuple("du", "total used free")
-        d = self.root / "dc"; ex, cache, out = d / "ex", d / "cache", d / "out"
-        for x in (ex, cache, out): x.mkdir(parents=True)
-        sizes = {str(ex): 1 << 30, str(cache): 0}
+        d = self.root / "dc"; root, cache, out = d / "root", d / "cache", d / "out"
+        for x in (root / "romfs", root / "exefs", root / "aoc", cache, out): x.mkdir(parents=True)
+        sizes = {str(root / "romfs"): int(2.5e9), str(root / "exefs"): int(0.4e9), str(root / "aoc"): int(0.2e9), str(cache): 0}   # 内容 3.1e9 → 大档
         with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
-            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 12 << 30)))
-            why = space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, (12 << 30) - 1))
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(15e9))))
+            why = space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(15e9) - 1))
             self.assertIn("磁盘空间不足", why)   # pack/jobs/errors.py 据此归 disk_full
-            sizes[str(cache)] = 4 << 30
-            self.assertIsNone(space_rule.direct_check(ex, cache, out, free=lambda v: du(0, 0, 8 << 30)))
+            self.assertIn("游戏内容 3.10 GB", why)
+            sizes[str(cache)] = int(4e9)
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(11e9))))
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(11e9) - 1)))
+            sizes[str(root / "aoc")] = 0; sizes[str(cache)] = 0   # 内容 2.9e9 → 小档 5e9
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9))))
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9) - 1)))
             # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
-            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="7.9"):
-                self.assertIn("这块盘只剩 7.9 GB", space_rule.direct_check(ex, cache, out))
+            with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="4.9"):
+                self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
-                self.assertIsNone(space_rule.direct_check(ex, cache, out))
+                self.assertIsNone(space_rule.direct_check(root, cache, out))
+        self.assertEqual(space_rule.direct_bytes(int(3e9)), library._pack_direct_bytes(int(3e9)))   # 取的就是预检那一份
+        self.assertEqual(space_rule.direct_bytes(int(3e9) - 1), library._pack_direct_bytes(int(3e9) - 1))
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
