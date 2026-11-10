@@ -221,8 +221,16 @@ struct LauncherView: View {
             }
             .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
         case .failed(let code):
-            Button { model.downloadUpdate() } label: { Text(txt("update.retry")).font(.manrope(12.5, .semibold)) }
-                .buttonStyle(LauncherSecondaryButtonStyle()).help(txt("update.error." + code))
+            // 失败原因直接写在按钮旁（人话 + 错误码），并给「打开下载页」：自动更新连不上 GitHub 时玩家能自己下（不再只藏在悬停提示里）
+            HStack(spacing: 8) {
+                Button { model.downloadUpdate() } label: { Text(txt("update.retry")).font(.manrope(12.5, .semibold)) }
+                    .buttonStyle(LauncherSecondaryButtonStyle())
+                Text(txt("update.error." + code) + " · " + txt("update.code").replacingOccurrences(of: "{0}", with: code))
+                    .font(.manrope(11.5)).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: 340, alignment: .leading)
+                    .help(txt("update.error." + code)).textSelection(.enabled)
+                Button { NSWorkspace.shared.open(S2ArmLauncherModel.downloadPage) } label: { Text(txt("update.download_page")).font(.manrope(12.5, .semibold)) }
+                    .buttonStyle(LauncherSecondaryButtonStyle())
+            }
         case .idle: EmptyView()
         }
     }
