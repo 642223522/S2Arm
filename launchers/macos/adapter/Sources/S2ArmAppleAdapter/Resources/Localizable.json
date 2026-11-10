@@ -3312,10 +3312,6 @@
   "en": "Includes {0}; reinstall the complete app if the component is damaged."
  },
  {
-  "source": "与上一项在同一个文件里",
-  "en": "Same file as the item above"
- },
- {
   "source": "先放入密钥。",
   "en": "Add your keys first."
  },
@@ -5176,8 +5172,12 @@
   "en": "This backup belongs to another user. Select the matching user or their own backup and retry."
  },
  {
-  "source": "免费 Apple ID 每台设备最多同时装 3 个自签 App、每 7 天最多注册 10 个包名：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；包名额度用完则等 7 天恢复；或改用付费 Apple 开发者账号（没有这两个上限）。",
-  "en": "A free Apple ID allows 3 self-signed apps per device and 10 App IDs per 7 days. Delete a self-signed app you no longer play from the iPhone home screen and retry; if the App ID quota is used up, wait 7 days for it to reset; or use a paid Apple Developer account, which has neither limit."
+  "source": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
+  "en": "A free Apple ID can have at most 3 self-signed apps installed on a device at the same time, and this iPhone is full. Touch and hold a self-signed app you no longer play on the iPhone, remove it, and retry; or use a paid Apple Developer account, which has no such limit."
+ },
+ {
+  "source": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或在 Xcode / Impactor 里换一个 Apple ID 登录后再装；或改用付费 Apple 开发者账号（没有这个限制）。",
+  "en": "This is Apple's limit for free Apple IDs: at most 10 App IDs can be registered in 7 days, and this account has used them all. Removing apps from the iPhone does not give the quota back. Options: wait a few days, as the quota comes back once the earliest App IDs are 7 days old; sign in with a different Apple ID in Xcode or Impactor and install again; or use a paid Apple Developer account, which has no such limit."
  },
  {
   "source": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID（免费的就可以），再点一次「装到 iPhone」；不想登录 Xcode 也可以改用 AltStore 安装。",
@@ -6510,6 +6510,10 @@
  {
   "source": "App 里这款已经删了，但手机上它的数据没删掉：",
   "en": "The game was removed from the app, but its data on iPhone could not be deleted: "
+ },
+ {
+   "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
+   "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
  },
  {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。",

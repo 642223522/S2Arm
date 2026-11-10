@@ -64,11 +64,46 @@ public static class ControlPortCases
         File.WriteAllText(Path.Combine(lib, ".s2arm-library.json"), "{\"schema\":1,\"id\":\"x\"}");
         check(LibraryPaths.JobsDir(root) == Path.Combine(lib, "logs", "jobs") && LibraryPaths.LogsRoot(root, lib) == Path.Combine(lib, "logs"), "paths: built library holds logs and jobs");
         check(LibraryPaths.DefaultLibrary(root) == Path.Combine(root, "DefaultLibrary"), "paths: custom data root keeps its own default library");
+        // 私有目录 / 新缺省库和作业层同一取法：先读 LOCALAPPDATA / USERPROFILE 环境变量（作业层 layout.standard_private、Path.home()）
+        var savedLocal = Environment.GetEnvironmentVariable("LOCALAPPDATA"); var savedProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+        try
+        {
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", Path.Combine(root, "AppData", "Local"));
+            Environment.SetEnvironmentVariable("USERPROFILE", Path.Combine(root, "home"));
+            check(LibraryPaths.StandardPrivateRoot == Path.Combine(root, "AppData", "Local", "S2Arm", "WindowsLauncher"), "paths: private root follows LOCALAPPDATA like the job layer");
+            check(LibraryPaths.DefaultLibrary(LibraryPaths.StandardPrivateRoot) == Path.Combine(root, "home", "S2Arm"), "paths: new default library follows USERPROFILE like the job layer");
+        }
+        finally { Environment.SetEnvironmentVariable("LOCALAPPDATA", savedLocal); Environment.SetEnvironmentVariable("USERPROFILE", savedProfile); }
         // 搬库标记：设置里是旧路径、新位置有库、旧位置没库 → 用新位置；别的路径不动
         var old = Path.Combine(root, "DefaultLibrary");
         File.WriteAllText(Path.Combine(root, "library-relocate.json"), JsonSerializer.Serialize(new Dictionary<string, string> { ["from"] = old, ["to"] = lib, ["state"] = "done" }));
         check(LibraryPaths.Library(root, old) == lib, "paths: relocated default library follows the marker");
         check(LibraryPaths.Library(root, Path.Combine(root, "other")) == Path.Combine(root, "other"), "paths: a player-chosen library is untouched");
+        // 0.1.x 老玩家升级（没有 library-location.txt、库在私有目录下的 DefaultLibrary）：缺省库换成用户主目录后也要先交旧路径给作业层去搬
+        var up = Path.Combine(Path.GetTempPath(), "s2a-upgrade-" + Guid.NewGuid().ToString("N"));
+        var upLegacy = LibraryPaths.LegacyDefaultLibrary(up);
+        var upNew = Path.Combine(up, "home", "S2Arm");
+        Directory.CreateDirectory(upLegacy);
+        File.WriteAllText(Path.Combine(upLegacy, ".s2arm-library.json"), "{\"schema\":1,\"id\":\"old\"}");
+        check(LibraryPaths.SavedLibrary(up, upNew) == upLegacy, "paths: upgrade without settings hands the old default library to the job layer");
+        Directory.CreateDirectory(upNew); File.WriteAllText(Path.Combine(upNew, "README.md"), "someone else's folder");
+        check(LibraryPaths.SavedLibrary(up, upNew) == upLegacy, "paths: new default folder taken by other files keeps the old library");
+        Directory.Delete(upNew, true);
+        // ③ 0.2.0 已在新位置建了空库（有库标识、0 款），旧库里有游戏、玩家没选过位置：接回旧库
+        Directory.CreateDirectory(upNew); File.WriteAllText(Path.Combine(upNew, ".s2arm-library.json"), "{\"schema\":1,\"id\":\"empty-new\"}");
+        check(LibraryPaths.SavedLibrary(up, upNew) == upLegacy, "paths: an empty library made at the new default by 0.2.0 does not hide the old one");
+        // 按临时绕法把位置选回旧库（设置文件指向旧路径）：照用旧库
+        File.WriteAllText(LibraryPaths.PreferenceFile(up), upLegacy);
+        check(LibraryPaths.SavedLibrary(up, upNew) == upLegacy, "paths: the workaround setting pointing at the old library keeps working");
+        File.Delete(LibraryPaths.PreferenceFile(up));
+        Directory.Delete(upNew, true);
+        Directory.Move(upLegacy, upNew);   // 作业层搬成：旧位置没了、新位置有库、搬库标记 done
+        File.WriteAllText(Path.Combine(up, "library-relocate.json"), JsonSerializer.Serialize(new Dictionary<string, string> { ["from"] = upLegacy, ["to"] = upNew, ["state"] = "done" }));
+        check(LibraryPaths.SavedLibrary(up, upNew) == upNew, "paths: after the job layer moved it the library is the new default");
+        var fresh = Path.Combine(up, "fresh");
+        Directory.CreateDirectory(fresh);
+        check(LibraryPaths.SavedLibrary(fresh, upNew) == upNew, "paths: a fresh install uses the new default library");
+        Directory.Delete(up, true);
         Directory.Delete(root, true);
     }
 }

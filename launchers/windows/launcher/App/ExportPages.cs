@@ -72,6 +72,7 @@ public sealed partial class EnvironmentWindow
     // A checklist that could not be read must not lock the player out: start and let the install job give the real reason.
     private bool InstallAllowed => readiness?.Ready == true || (readiness is null && installCheckFailed);
     private string installState = "", installMessage = "", installDiagnostics = "";
+    private string revealProblem = "";   // 「显示 IPA」「打开游戏文件夹」找不到目标时的提示（不打开空的资源管理器）
     // 当前 / 最近一次手机作业属于哪一款（#308：原先只有一份「当前安装」状态、没记是哪款，回游戏库再点别的游戏，进度会画到那款上）。
     //   installSeen：跑完后玩家回安装页看过结果没有；没看过时顶栏胶囊一直在。进度计数来自作业事件 done / total / unit（推资源包按字节，机上解包按包）
     private string? installGameId, installGameName;
@@ -151,6 +152,8 @@ public sealed partial class EnvironmentWindow
     private string packScrollerPage = "";
 
     private bool PackBusy => packRunning || installBusy;
+    /// 这款现在能不能动（选、出包、移动、清缓存、删除）：游戏库作业或出包在跑时都不能；装机在跑时只锁正在装的那款（玩家装一款大游戏的十几分钟里别的照常用）
+    private bool BusyFor(LibraryGame game) => libraryBusy || packRunning || (installBusy && installGameId == game.Id);
     private LibraryGame? SelectedGame => catalog?.Games.FirstOrDefault(g => g.Id == selectedGame && !g.Hidden);
     private static double Clock => DateTime.UtcNow.Subtract(DateTime.UnixEpoch).TotalSeconds;
 
@@ -172,6 +175,12 @@ public sealed partial class EnvironmentWindow
         var bottomBar = RenderBottomBar();
 
         var dock = new DockPanel { LastChildFill = true };
+        if (PhonePill() is { } pill)   // 出包 / 进度 / 装机页没有游戏库页那条顶栏：胶囊放在这些页顶部，在哪页都找得回装机（#308）
+        {
+            var top = new Border { Padding = new Thickness(32, 14, 32, 0), Child = pill, HorizontalAlignment = HorizontalAlignment.Right };
+            DockPanel.SetDock(top, Dock.Top);
+            dock.Children.Add(top);
+        }
         DockPanel.SetDock(bottomBar, Dock.Bottom);
         dock.Children.Add(bottomBar);
 
@@ -275,20 +284,20 @@ public sealed partial class EnvironmentWindow
     private Control GameHeader(LibraryGame game)
     {
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), ColumnSpacing = 24 };
-        var coverButton = new Button { Content = GameCover(game, 120), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !PackBusy && !customizing };
+        var coverButton = new Button { Content = GameCover(game, 120), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !BusyFor(game) && !customizing };
         coverButton.Click += (_, _) => _ = ChooseCoverAsync(game);
         ToolTip.SetTip(coverButton, T("custom.cover.help"));
         AutomationId(coverButton, "export.cover");
         header.Children.Add(coverButton);
         var title = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        var nameButton = new Button { Content = Label(game.Name, 30), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !PackBusy && !customizing };
+        var nameButton = new Button { Content = Label(game.Name, 30), Background = Brushes.Transparent, Padding = new Thickness(0), IsEnabled = !BusyFor(game) && !customizing };
         nameButton.Click += (_, _) => _ = RenameGameAsync(game);
         ToolTip.SetTip(nameButton, T("custom.name.help"));
         AutomationId(nameButton, "export.name");
         title.Children.Add(nameButton);
         if (game.CustomCover)
         {
-            var reset = new Button { Content = T("custom.cover.reset"), Background = Brushes.Transparent, Foreground = Brush.Parse("#9A9AA0"), Padding = new Thickness(0), FontSize = 13, IsEnabled = !PackBusy && !customizing };
+            var reset = new Button { Content = T("custom.cover.reset"), Background = Brushes.Transparent, Foreground = Brush.Parse("#9A9AA0"), Padding = new Thickness(0), FontSize = 13, IsEnabled = !BusyFor(game) && !customizing };
             reset.Click += (_, _) => _ = CustomizeAsync(game, null, "");
             AutomationId(reset, "export.cover.reset");
             title.Children.Add(reset);
@@ -317,7 +326,7 @@ public sealed partial class EnvironmentWindow
         // platforms
         var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         heading.Children.Add(Label(T("export.platforms"), 16));
-        var existing = Action("export.install_existing", () => { readinessFor = null; Navigate("install"); }, !PackBusy);
+        var existing = Action("export.install_existing", () => { readinessFor = null; Navigate("install"); }, !BusyFor(game) || installBusy);   // 装机中也能进装机页：看别的游戏时提示「另一款正在装 · 查看那一款」
         Grid.SetColumn(existing, 1); heading.Children.Add(existing);
         body.Children.Add(heading);
         var tiles = new UniformGrid { Columns = 4 };
@@ -337,7 +346,7 @@ public sealed partial class EnvironmentWindow
             })));
             var card = new Button
             {
-                Content = tile, IsEnabled = open && !PackBusy, Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(18),
+                Content = tile, IsEnabled = open && !BusyFor(game), Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(18),
                 HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch, MinHeight = 120, CornerRadius = new CornerRadius(14),
                 Background = on ? Brush.Parse("#2A2722") : Surface, Foreground = Ink, Opacity = open ? 1 : 0.5,
@@ -385,7 +394,7 @@ public sealed partial class EnvironmentWindow
         }
         // 「选择其他文件夹…」选的、或位置表还没读回时这款现在的位置
         if (exportLocation.Length > 0 && !options.Any(o => SameFolder(o.path, exportLocation))) options.Add((exportLocation, exportLocation));
-        var box = new ComboBox { MinWidth = 300, IsEnabled = !PackBusy, VerticalAlignment = VerticalAlignment.Center };
+        var box = new ComboBox { MinWidth = 300, IsEnabled = !BusyFor(game), VerticalAlignment = VerticalAlignment.Center };
         foreach (var (path, label) in options) box.Items.Add(new ComboBoxItem { Content = label, Tag = path });
         box.Items.Add(new ComboBoxItem { Content = T("export.location.other"), Tag = OtherFolder });
         box.SelectedIndex = options.FindIndex(o => SameFolder(o.path, exportLocation));
@@ -440,7 +449,7 @@ public sealed partial class EnvironmentWindow
         if (!exportIos) return T("export.block.no_platform");
         if (game.Missing.Count > 0) return T("library.requirements") + " · " + string.Join(" / ", game.Missing);
         if (game.NeedsKeys && catalog?.KeysReady != true) return T("export.block.keys");
-        if (PackBusy || libraryBusy || busy) return T("export.block.busy");
+        if (BusyFor(game) || busy) return T("export.block.busy");   // 只锁正在装的那款：别的游戏装机期间照常出包（后端安装不占出包执行锁）
         return null;
     }
 
@@ -518,22 +527,27 @@ public sealed partial class EnvironmentWindow
         }
     }
 
+    /// 「本次操作与处理建议」折叠区：给玩家看的原因与建议，同一句只出现一次（9120 时原先同一段中文重复三遍）。
+    /// 作业层的失败事实（failureSummary：阶段、末行原文，常是英文）不放这里，只在「复制错误摘要」里带走
     private string JobDiagnostics(LibraryJobOutput job)
     {
-        var text = job.Report.Message + "\n" + T("diagnostics.exit_code") + ": " + job.Output.ExitCode;
+        var lines = new List<string> { job.Report.Message, T("diagnostics.exit_code") + ": " + job.Output.ExitCode };
+        void Add(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            line = line.Trim();
+            if (!lines.Any(l => l == line || l.Contains(line))) lines.Add(line);   // 已有（或被更长的一句包含）就不重复
+        }
         if (job.Report.Diagnostics.ValueKind == JsonValueKind.Array)
             foreach (var diagnostic in job.Report.Diagnostics.EnumerateArray())
             {
                 if (diagnostic.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String)
-                    text += "\n" + T("errors." + code.GetString() + ".title") + "\n" + T("errors." + code.GetString() + ".detail");
+                { Add(T("errors." + code.GetString() + ".title")); Add(T("errors." + code.GetString() + ".detail")); }
                 foreach (var key in new[] { "summary", "suggestion" })
-                    if (diagnostic.TryGetProperty(key, out var message) && message.ValueKind == JsonValueKind.String)
-                        text += "\n" + message.GetString();
-                if (diagnostic.TryGetProperty("failureSummary", out var failureSummary) && failureSummary.ValueKind == JsonValueKind.String)
-                    text += "\n" + failureSummary.GetString();
+                    if (diagnostic.TryGetProperty(key, out var message) && message.ValueKind == JsonValueKind.String) Add(message.GetString());
             }
-        if (!string.IsNullOrWhiteSpace(job.Output.StandardError)) text += "\n" + job.Output.StandardError;
-        return text;
+        if (!string.IsNullOrWhiteSpace(job.Output.StandardError)) Add(job.Output.StandardError);
+        return string.Join("\n", lines);
     }
 
     private void RenderProgress(StackPanel body)
@@ -892,12 +906,17 @@ public sealed partial class EnvironmentWindow
             var install = Primary(T("export.done.install"), () => { readinessFor = null; Navigate("install"); });
             AutomationId(install, "progress.install");
             install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
-            if (packIpa is not null)
+            // IPA 是装机时组装、整个游戏库共用一份（默认位置根 S2Arm.ipa）：出包这步没有 IPA，只给「打开游戏文件夹」（按索引找这款实际所在的位置）
+            if (!string.IsNullOrEmpty(packIpa))
             {
                 var reveal = Action("progress.reveal_ipa", () => Reveal(packIpa));
                 reveal.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(reveal);
             }
+            var folder = Action("progress.open_game_folder", () => OpenGameFolder(game));
+            AutomationId(folder, "progress.open_game_folder");
+            folder.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(folder);
             result.Children.Add(buttons);
+            if (revealProblem.Length > 0) result.Children.Add(Muted(revealProblem, 13));
             result.Children.Add(Muted(T("export.win.done.installNote"), 12));
 
             // 详细记录（折叠步骤列表）
@@ -920,7 +939,7 @@ public sealed partial class EnvironmentWindow
             retry.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(retry);
             if (packFailureCode == "disk_full")   // 磁盘预算偏保守：和 Mac 一样允许玩家自己决定继续
             {
-                var proceed = Action("export.fix.continue", () => StartPack(game, spaceOverride: true), !PackBusy);
+                var proceed = Action("export.fix.continue", () => StartPack(game, spaceOverride: true), !BusyFor(game));
                 proceed.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(proceed);
             }
             if (packState == "failed")
@@ -1002,6 +1021,9 @@ public sealed partial class EnvironmentWindow
 
     private void Reveal(string path)
     {
+        // 路径不在就说清楚，不把空参数交给资源管理器（原先 /select, 后面是空串，打开一个什么都没选中的空窗口）
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) { revealProblem = T("reveal.ipa_missing"); Render(); return; }
+        revealProblem = "";
         try
         {
             // Explorer selects the file; the path goes in as one argument, never through a shell.
@@ -1016,7 +1038,7 @@ public sealed partial class EnvironmentWindow
     private void RenderInstall(StackPanel body)
     {
         var game = SelectedGame ?? packGame;
-        body.Children.Add(Action("export.back", () => Navigate("build")));   // 装机在后台照跑，离开后顶栏胶囊能回来（#308）
+        body.Children.Add(Action("export.back", () => Navigate("library")));   // 回游戏库首页（原先回「出包到」页）；装机在后台照跑，顶栏胶囊能回来（#308）
         if (game is null || connectedFolder is null || libraryId is null) { body.Children.Add(Label(T("export.no_game"), 18)); return; }
         if (readinessFor != game.Id && !installChecking) { readinessFor = game.Id; readiness = null; installCheckFailed = false; _ = CheckInstallAsync(); }
         body.Children.Add(GameHeader(game));
@@ -1079,14 +1101,19 @@ public sealed partial class EnvironmentWindow
             restore.Click += (_, _) => _ = ConfirmRestoreAsync(game);
             buttons.Children.Add(restore);
         }
-        if (readiness is { IpaPath.Length: > 0 } located)
+        if (readiness is { IpaPath.Length: > 0 } located)   // 装机时组装的那份（默认位置根 S2Arm.ipa），还没装过就没有
         {
             var reveal = Action("progress.reveal_ipa", () => Reveal(located.IpaPath));
             reveal.Margin = new Thickness(12, 0, 0, 0);
             AutomationId(reveal, "install.reveal_ipa");
             buttons.Children.Add(reveal);
         }
+        var openFolder = Action("progress.open_game_folder", () => OpenGameFolder(game));
+        openFolder.Margin = new Thickness(12, 0, 0, 0);
+        AutomationId(openFolder, "install.open_game_folder");
+        buttons.Children.Add(openFolder);
         list.Children.Add(buttons);
+        if (revealProblem.Length > 0) list.Children.Add(Muted(revealProblem, 13));
         body.Children.Add(Card(list));
 
         if (installState != "" && installGameId is not null && installGameId != game.Id)
@@ -1145,13 +1172,17 @@ public sealed partial class EnvironmentWindow
         finally { installChecking = false; lastCheck = DateTime.UtcNow; if (page == "install") Render(); }
     }
 
-    private async Task InstallAsync(LibraryGame game)
+    /// <summary>acceptDropped: the player confirmed games installed from another computer can't come along this time
+    /// (job code container_would_drop). ask = false (control port) fails as-is instead of popping the dialog.</summary>
+    private async Task InstallAsync(LibraryGame game, bool acceptDropped = false, bool ask = true)
     {
         if (installBusy || !InstallAllowed) return;
         BeginPhoneJob(game, "");
+        string? dropAsk = null;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("install", game.Id), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
+            var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, DropExtra(acceptDropped)), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
+            if (ask && JobCode(job) == "container_would_drop") dropAsk = job.Report.Message;
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;
@@ -1162,6 +1193,17 @@ public sealed partial class EnvironmentWindow
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installDiagnostics = error.Message; }
         finally { installBusy = false; readinessFor = null; Render(); }
+        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk)) await InstallAsync(game, acceptDropped: true);
+    }
+
+    private static Dictionary<string, object?>? DropExtra(bool acceptDropped) => acceptDropped ? new() { ["acceptDropped"] = true } : null;
+
+    private static string? JobCode(LibraryJobOutput job)
+    {
+        if (job.Report.Diagnostics.ValueKind != JsonValueKind.Array) return null;
+        foreach (var d in job.Report.Diagnostics.EnumerateArray())
+            if (d.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String) return code.GetString();
+        return null;
     }
 
     private async Task ChooseCoverAsync(LibraryGame game)
@@ -1210,7 +1252,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>name / coverPath: null leaves it alone, empty restores the default.</summary>
     private async Task CustomizeAsync(LibraryGame game, string? name, string? coverPath)
     {
-        if (customizing || PackBusy) return;
+        if (customizing || BusyFor(game)) return;
         customizing = true; customizeError = ""; Render();
         var extra = new Dictionary<string, object?>();
         if (name is not null) extra["name"] = name;
@@ -1239,7 +1281,7 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
-    private async Task<bool> ConfirmInstallActionAsync(string prefix)
+    private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null)
     {
         if (installBusy || packRunning) return false;
         var dialog = new Window
@@ -1252,7 +1294,7 @@ public sealed partial class EnvironmentWindow
         var confirmed = false;
         var body = new StackPanel { Spacing = 16, Margin = new Thickness(28) };
         body.Children.Add(Label(T(prefix + "_title"), 20));
-        body.Children.Add(Muted(T(prefix + "_body"), 14));
+        body.Children.Add(Muted(bodyText ?? T(prefix + "_body"), 14));
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = T("action.cancel"), Padding = new Thickness(16, 9),
             Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8),
@@ -1271,13 +1313,15 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>installRemove / installRestore; texts are &lt;prefix&gt;_running / _done / _failed.</summary>
-    private async Task RunPhoneJobAsync(LibraryGame game, string operation, string prefix)
+    private async Task RunPhoneJobAsync(LibraryGame game, string operation, string prefix, bool acceptDropped = false, bool ask = true)
     {
         if (installBusy || packRunning) return;
         BeginPhoneJob(game, T(prefix + "_running"));
+        string? dropAsk = null;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
+            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id, DropExtra(acceptDropped)), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
+            if (ask && JobCode(job) == "container_would_drop") dropAsk = job.Report.Message;
             installState = job.Report.State;
             installMessage = job.Report.Succeeded ? T(prefix + "_done") : job.Report.Message;
             installDiagnostics = JobDiagnostics(job);
@@ -1287,6 +1331,7 @@ public sealed partial class EnvironmentWindow
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
         finally { installBusy = false; Render(); }
+        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk)) await RunPhoneJobAsync(game, operation, prefix, acceptDropped: true);
     }
 
     /// <summary>Closing while a pack runs: cancel through the job control plane first, then close.</summary>

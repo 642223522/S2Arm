@@ -20,6 +20,10 @@
 #include "../runtime/include/s2a_gfx_mode.h"
 #include "../runtime/include/s2a_hud.h"
 #include "../runtime/include/s2a_home_quit.h"
+#include "../runtime/include/s2a_ui_text.h"
+// 界面语言（runtime/include/s2a_ui_text.h，#316），盖过 runtime/src 各 .c 返回 1 的弱缺省。Mac 宿主程序不带 .lproj、主 bundle 首选本地化
+//   总是开发区域，判不出玩家语言，所以按系统首选语言以 zh 开头判（目前 Mac 上没有显示路径用到它）
+int s2a_ui_zh(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"]; }
 #include "../ios/haptic_retry.h"
 int s2a_screen_fit(int pw, int ph);   // runtime/src/widen.c：按窗口像素跟屏
 

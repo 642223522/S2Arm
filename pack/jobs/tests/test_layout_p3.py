@@ -60,6 +60,23 @@ class DirectoryRuleTests(JobCase):
         self.assertEqual(core.journal(self.c.private, "legacy")["id"], "legacy")
 
 
+class ConcurrentAdoptTests(JobCase):
+    """每个作业起跑都收一次私有目录里的日志（layout.ensure → adopt_private_logs）：启动器同时起两个作业时，另一个可能刚把目录收空删掉。
+    手写时序：判完 is_dir、列目录前目录没了 → 当作已收完，不让作业失败（原先抛 FileNotFoundError，catalog 报「任务所需的文件或目录不存在」）"""
+
+    def test_dir_removed_by_concurrent_job_is_treated_as_adopted(self):
+        touch(self.c.private / "logs" / "jobs" / "old.json", json.dumps(dict(id="old", state="completed", ended=1)))
+        c = Context(dict(self.request, taskId="t-race", operation="catalog"))
+        real = Path.iterdir
+        def vanished(self_):   # 对方作业在本作业判完 is_dir 之后把私有目录收空删掉
+            if self_ == c.private / "logs" / "jobs" or self_ == c.private / "logs":
+                raise FileNotFoundError(2, "No such file or directory", str(self_))
+            return real(self_)
+        with patch.object(Path, "iterdir", vanished):
+            layout.adopt_private_logs(c)   # 不抛
+            self.assertEqual(core.prune_jobs(c.private, jobs=c.private / "logs" / "jobs")["removed"], [])
+
+
 class Upgrade4Tests(JobCase):
     def v3_library(self):
         atomic(self.c.library / ".s2arm-layout.json", dict(version=3, games=[]))   # P1 + P2 都做完（协调约定：从 3 起步）
@@ -237,6 +254,33 @@ class RelocateDefaultTests(unittest.TestCase):
         atomic(self.private / "preferences.json", dict(library=str(self.old)))
         self.assertEqual(layout.relocate_default(self.private, self.old), self.target)
         self.assertEqual(json.loads((self.private / "preferences.json").read_text())["library"], str(self.target))
+
+    def test_windows_upgrade_without_settings_file(self):
+        """0.1.x Windows 老玩家：库在私有目录 DefaultLibrary、没有 library-location.txt / preferences.json，前端把旧路径交过来：
+        ① 新位置不存在 → 搬过去、游戏存档都在、不凭空写设置文件；② 新位置被别的东西占着 → 留在旧路径、游戏存档都在"""
+        win = self.private / "DefaultLibrary"
+        os.replace(self.old, win)
+        (self.private / "preferences.json").unlink()
+        (self.private / "library-location.txt").unlink()
+        touch(self.target / "README.md", "someone else's checkout")   # ②
+        self.assertEqual(layout.relocate_default(self.private, win), win)
+        self.assertEqual((win / "games" / "G" / "saves" / "s.dat").read_text(), "save")
+        self.assertEqual((self.target / "README.md").read_text(), "someone else's checkout")
+        (self.target / "README.md").unlink()
+        touch(self.target / ".s2arm-library.json", json.dumps(dict(schema=1, id="empty-new")))   # ③ 0.2.0 在新位置建的空库
+        self.assertEqual(layout.relocate_default(self.private, win), win)
+        self.assertEqual((win / "games" / "G" / "saves" / "s.dat").read_text(), "save")
+        (self.private / "library-location.txt").write_text(str(win))       # 临时绕法：设置指回旧库，照用、不搬
+        self.assertEqual(layout.relocate_default(self.private, win), win)
+        self.assertEqual((self.private / "library-location.txt").read_text(), str(win))
+        (self.private / "library-location.txt").unlink()
+        (self.target / ".s2arm-library.json").unlink()
+        self.target.rmdir()                                                    # ①
+        self.assertEqual(layout.relocate_default(self.private, win), self.target)
+        self.assertEqual((self.target / "games" / "G" / "saves" / "s.dat").read_text(), "save")
+        self.assertFalse(win.exists())
+        self.assertFalse((self.private / "library-location.txt").exists())
+        self.assertEqual(layout.relocate_default(self.private, win), self.target)   # 前端之后照旧传旧路径也落到新位置
 
     def test_killed_after_rename_finishes_on_next_job(self):
         atomic(self.private / "library-relocate.json", {"schema": 1, "from": str(self.old), "to": str(self.target), "state": "moving"})

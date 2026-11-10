@@ -15,7 +15,8 @@ import ShellUI
     #expect(c.tiles[1].state == .needsGameData)
     #expect(c.tiles[2].state == .needsAppUpdate)
     #expect(c.tiles[3].state == .broken(reason: "R", detail: "D"))
-    #expect(c.tiles[4].state == .broken(reason: "", detail: "", technical: "未知状态 \"flying\""))
+    // technical 一行按 App 语言取 ShellUI 文字表（#316）：中文系统是原句，其余是英文原文（期望两种都手写）
+    #expect([GameState.broken(reason: "", detail: "", technical: "未知状态 \"flying\""), .broken(reason: "", detail: "", technical: "Unknown state \"flying\"")].contains(c.tiles[4].state))
     if case .broken = c.tiles[5].state {} else { Issue.record("非法 title_id 应显示为不可用") }
     #expect(c.tiles[6].state == .playable)   // 缺 state 按可运行
     #expect(c.problems.count == 2)           // 重复 1 + 非法 id 1
@@ -211,4 +212,31 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.editingIdentity == nil && model.identityError == nil && model.games[0].game.title == "新名" && covers().count == 1)
     model.resetIdentity(a)
     #expect(covers().isEmpty && store.load(a) == nil)
+}
+
+// 两端混装：手机上有、清单里没有的款（另一台电脑装的）显示成不可玩并提示回原来那台电脑重装，不给 Play。
+//   只认 16 位游戏号目录 + 资源包/.applied；没解开的、别的名字跳过。名字取资源包 ctl/control.nacp（期望按手写的 NACP 字节）
+@MainActor @Test func gamesFromAnotherComputerShowAsReinstall() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-stray-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let (a, c, d) = ("0100000000010000", "0100000000030000", "0100000000040000")
+    for id in [a, c, d, "notes", "0100000000050000x"] {
+        try fm.createDirectory(at: root.appendingPathComponent("\(id)/资源包/ctl"), withIntermediateDirectories: true)
+    }
+    for id in [a, c, "notes"] { try Data("sha".utf8).write(to: root.appendingPathComponent("\(id)/资源包/.applied")) }
+    var nacp = Data(count: 0x4000)
+    nacp.replaceSubrange(0 ..< 5, with: Data("Gamma".utf8))
+    nacp.replaceSubrange(14 * 0x300 ..< 14 * 0x300 + 9, with: Data("丙游戏".utf8))
+    try nacp.write(to: root.appendingPathComponent("\(c)/资源包/ctl/control.nacp"))
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    var played: [String] = []
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), play: { played.append($0) },
+                                    gameDataReady: { _ in true }, gamesRoot: root)
+    #expect(model.games.map(\.id) == [a, c])
+    let stray = try #require(model.games.last?.game)
+    #expect(["丙游戏", "Gamma"].contains(stray.title))
+    #expect([GameState.broken(reason: "需要在原来那台电脑上重装", detail: "这款是在另一台电脑上装的，存档和游戏资源都还在这台 iPhone 上；到那台电脑上再点一次「装到 iPhone」就能回来。"),
+             .broken(reason: "Reinstall from the original computer", detail: "This game was installed from another computer. Its saves and game data are still on this iPhone; on that computer, choose “Install to iPhone” again to bring it back.")].contains(stray.state))
+    model.actions.onPlay(c)
+    #expect(played.isEmpty)
 }

@@ -793,8 +793,8 @@ class EnvironmentTests(unittest.TestCase):
         fields = self.budget_catalog()
         before = self.catalog_path.read_bytes()
         c = self.item(self.budget_report(**fields), "disk")
-        # Windows：10,700,000,000 × 1.1 × 3（解包 + 拷贝 + 单文件镜像）+ 15,000,000,000，独立手算
-        self.assertEqual(c["detected"]["requiredFreeBytes"], 50_310_000_000)
+        # Windows：10,700,000,000 × 1.1 × 2（解包 + 拷贝；单文件镜像不再存进库，#329）+ 15,000,000,000，独立手算
+        self.assertEqual(c["detected"]["requiredFreeBytes"], 38_540_000_000)
         self.assertTrue(c["ok"])
         self.assertEqual(self.catalog_path.read_bytes(), before)
         self.assertIn("library.py", c["source"])
@@ -805,7 +805,7 @@ class EnvironmentTests(unittest.TestCase):
         context = types.SimpleNamespace(library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40_000_000_000)):
             result = scope["space_budget"](context, self.budget_game)
-        self.assertEqual(result["volumes"][0]["needBytes"], 38_540_000_000)   # Mac：解包 + 单文件镜像，两份 × 1.1 + 15 GB
+        self.assertEqual(result["volumes"][0]["needBytes"], 26_770_000_000)   # Mac：解包一份 × 1.1 + 15 GB（单文件镜像不再存进库，#329）
         self.assertEqual(result["gameBytes"], 10_700_000_000)
         self.assertIn("直连着色器上限", result["volumes"][0]["note"])
 
@@ -886,7 +886,7 @@ class EnvironmentTests(unittest.TestCase):
             return text.replace("int(15e9)", "int(22e9)") if name == "pack/jobs/library.py" else text
         with patch.object(self.mod, "_text", side_effect=changed):
             c = self.item(self.budget_report(**fields), "disk")
-        self.assertEqual(c["detected"]["requiredFreeBytes"], 57_310_000_000)   # 10.7 GB × 1.1 × 3 + 22 GB，独立手算
+        self.assertEqual(c["detected"]["requiredFreeBytes"], 45_540_000_000)   # 10.7 GB × 1.1 × 2 + 22 GB，独立手算
 
     def test_budget_missing_shared_function_is_error_no_fallback(self):
         fields = self.budget_catalog()
@@ -903,7 +903,7 @@ class EnvironmentTests(unittest.TestCase):
         before = set(sys.modules)
         rules = self.mod._budget_rules()
         selected = rules["selected_packages"](self.budget_game)
-        self.assertEqual(rules["pack_need_bytes"](selected, windows=True), 50_310_000_000)
+        self.assertEqual(rules["pack_need_bytes"](selected, windows=True), 38_540_000_000)
         self.assertFalse({"core", "fcntl", "library"} & (set(sys.modules) - before))
 
     def test_budget_native_cli_valid_catalog_no_mac_context_import(self):
@@ -915,7 +915,7 @@ class EnvironmentTests(unittest.TestCase):
                            capture_output=True, env=env, timeout=30)
         self.assertEqual(p.returncode, 1, p.stderr)
         report = json.loads(p.stdout.decode("utf-8"))
-        self.assertEqual(self.item(report, "disk")["detected"]["requiredFreeBytes"], 50_310_000_000)
+        self.assertEqual(self.item(report, "disk")["detected"]["requiredFreeBytes"], 38_540_000_000)
         self.assertFalse(any(x.name == "sources" for x in self.catalog_path.parent.iterdir()))
 
     def test_budget_request_types_remain_strict(self):

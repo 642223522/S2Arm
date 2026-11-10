@@ -82,24 +82,16 @@ public sealed partial class EnvironmentWindow
         // Only a backend-provided local cover in this library is considered; never load a remote URL.
         try
         {
-            if (connectedFolder is not null && game.Cover.Length > 0)
+            // 只认这款自己文件夹里的封面（LibraryGame.CoverFile：按 catalog 给的文件夹认，英文名文件夹也行，#330）
+            if (connectedFolder is not null && game.CoverFile() is { } path && new FileInfo(path).Length <= 16 * 1024 * 1024)
             {
-                var root = Path.GetFullPath(Path.Combine(connectedFolder, "games")) + Path.DirectorySeparatorChar;
-                var folder = Path.GetFullPath(Path.Combine(root, game.Id)) + Path.DirectorySeparatorChar;
-                var path = Path.GetFullPath(game.Cover);
-                // 只认这款游戏目录下的 cover.jpg 或玩家换的 cover.custom.<8 位十六进制>.jpg（后端 _CUSTOM_COVER）
-                if (folder.StartsWith(root, StringComparison.OrdinalIgnoreCase) && path.StartsWith(folder, StringComparison.OrdinalIgnoreCase) &&
-                    System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path), @"^cover(\.custom\.[0-9a-f]{8})?\.jpg$") &&
-                    Path.GetDirectoryName(path) + Path.DirectorySeparatorChar == folder && new FileInfo(path).Length <= 16 * 1024 * 1024)
+                if (!covers.TryGetValue(path, out var image))
                 {
-                    if (!covers.TryGetValue(path, out var image))
-                    {
-                        using var file = File.OpenRead(path);
-                        image = Bitmap.DecodeToWidth(file, 240);
-                        covers.Add(path, image);
-                    }
-                    return new Image { Source = image, Width = size, Height = size, Stretch = Stretch.UniformToFill };
+                    using var file = File.OpenRead(path);
+                    image = Bitmap.DecodeToWidth(file, 240);
+                    covers.Add(path, image);
                 }
+                return new Image { Source = image, Width = size, Height = size, Stretch = Stretch.UniformToFill };
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
@@ -219,7 +211,8 @@ public sealed partial class EnvironmentWindow
                 ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; Navigate("install"); })
                 : game.LocationState == "missing" ? () => _ = MissingAsync(game)
                 : () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); };
-            var select = Action(primaryKey, primaryAction, !libraryBusy && !PackBusy && (game.IphoneReady || game.LocationState != "offline"));
+            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「装到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
+            var select = Action(primaryKey, primaryAction, !BusyFor(game) && (game.IphoneReady || game.LocationState != "offline"));
             select.VerticalAlignment = VerticalAlignment.Center;
             // secondary: show past result if one exists and game is not currently running
             if (finishedPacks.TryGetValue(game.Id, out _) && !(packRunning && packGame?.Id == game.Id))
@@ -227,7 +220,7 @@ public sealed partial class EnvironmentWindow
                 var actionCol = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
                 actionCol.Children.Add(select);
                 var results = Action("library.hero.results", () =>
-                { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("progress"); }, !libraryBusy && !PackBusy);
+                { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("progress"); }, !BusyFor(game));
                 actionCol.Children.Add(results);
                 Grid.SetColumn(actionCol, 2); line.Children.Add(actionCol);
             }
@@ -320,7 +313,7 @@ public sealed partial class EnvironmentWindow
     /// 位置未连接 / 找不到时出包、移动、清缓存不可用。</summary>
     private ContextMenu CardMenu(LibraryGame game)
     {
-        var idle = !libraryBusy && !PackBusy;
+        var idle = !BusyFor(game);
         var menu = new ContextMenu();
         void Add(string text, string id, Action action, bool enabled)
         {
@@ -344,17 +337,32 @@ public sealed partial class EnvironmentWindow
     /// <summary>在资源管理器中显示这款的文件夹（选中它）；还没有文件夹（找不到 / 没出过包）就打开所在的存放位置。</summary>
     private void RevealGame(LibraryGame game)
     {
+        if (!ShowGameFolder(game)) { librarySummary = "library.failed"; libraryDiagnostics = T("reveal.folder_missing"); Render(); }
+    }
+
+    /// <summary>出包完成页 / 装机页的「打开游戏文件夹」：找不到时在按钮下方提示（revealProblem），不打开空窗口</summary>
+    private void OpenGameFolder(LibraryGame game)
+    {
+        revealProblem = ShowGameFolder(game) ? "" : T("reveal.folder_missing");
+        Render();
+    }
+
+    /// <summary>在资源管理器里选中这款游戏的文件夹（catalog 给的 location.folder：按索引解析、可能在玩家另选的存放位置，不按游戏号拼）。
+    /// 文件夹不在时打开它所在的存放位置；两个都不在 → false（调用方提示）</summary>
+    private bool ShowGameFolder(LibraryGame game)
+    {
         var folder = game.Location?.Folder ?? "";
         var select = folder.Length > 0 && Directory.Exists(folder);
         var target = select ? folder : game.Location?.Path ?? "";
         // 路径来自后端目录：只认存在的绝对路径；Windows 路径不会带引号，带了就不拼进命令行
-        if (!Path.IsPathFullyQualified(target) || target.Contains('"') || !Directory.Exists(target)) return;
+        if (target.Length == 0 || !Path.IsPathFullyQualified(target) || target.Contains('"') || !Directory.Exists(target)) return false;
         try
         {
             using var process = Process.Start(new ProcessStartInfo("explorer.exe", select ? "/select,\"" + target + "\"" : "\"" + target + "\"") { UseShellExecute = false });
         }
         catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         { librarySummary = "library.failed"; libraryDiagnostics = T("process.start_failed") + " " + error.Message; Render(); }
+        return true;
     }
 
     private async Task MoveGameAsync(LibraryGame game)
@@ -376,7 +384,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>「删除这款游戏」确认（同 Mac 的 game.delete 弹窗）：确认后跑 delete 作业。</summary>
     private async Task ConfirmDeleteAsync(LibraryGame game)
     {
-        if (deleteOpen || libraryBusy || PackBusy) return;
+        if (deleteOpen || BusyFor(game)) return;
         deleteOpen = true;
         var confirmed = false;
         try
@@ -414,7 +422,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>「找不到游戏文件」（照 Mac missingFor 弹窗）：重新指定文件夹… / 从游戏库移除（磁盘上的文件不动）/ 取消。</summary>
     private async Task MissingAsync(LibraryGame game)
     {
-        if (missingOpen || libraryBusy || PackBusy) return;
+        if (missingOpen || BusyFor(game)) return;
         missingOpen = true;
         string? answer = null;
         try
@@ -460,7 +468,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>一款游戏的游戏库作业（游戏库结构 v3：moveGame / relinkGame / forgetGame / clean kind=cache / delete）：忙碌、结果与诊断同 RunLibraryAsync，成功后重读游戏库。</summary>
     private async Task RunGameJobAsync(string operation, LibraryGame game, Dictionary<string, object?>? extra = null)
     {
-        if (libraryBusy || PackBusy || connectedFolder is null || libraryId is null) return;
+        if (BusyFor(game) || connectedFolder is null || libraryId is null) return;
         libraryBusy = true; librarySummary = "library.working"; libraryDiagnostics = ""; Render();
         using var cancellation = new CancellationTokenSource();
         libraryCancellation = cancellation;
@@ -506,6 +514,9 @@ public sealed partial class EnvironmentWindow
         { librarySummary = "library.failed"; libraryDiagnostics = error.Message; Render(); }
     }
 
+    // 系统自动生成的文件（Windows 资源管理器 desktop.ini / Thumbs.db、从 Mac 拷来的 .DS_Store）：判空文件夹时不算数（同作业层 layout.OS_JUNK）
+    private static readonly HashSet<string> OsJunk = new(StringComparer.OrdinalIgnoreCase) { ".DS_Store", "desktop.ini", "Thumbs.db" };
+
     private static string LocalPath(IStorageItem item) => item.Path.IsFile ? Path.GetFullPath(item.Path.LocalPath)
         : throw new IOException("The selected item does not have a local filesystem path.");
 
@@ -528,7 +539,7 @@ public sealed partial class EnvironmentWindow
         var folder = LocalPath(folders[0]);
         // 有游戏、选的是空文件夹才问；已有游戏库或含旧产物的文件夹由作业层直接打开 / 认领
         libraryMoveFrom = null;
-        if (connectedFolder is not null && catalog is { Games.Count: > 0 } && !Directory.EnumerateFileSystemEntries(folder).Any())
+        if (connectedFolder is not null && catalog is { Games.Count: > 0 } && !Directory.EnumerateFileSystemEntries(folder).Any(e => !OsJunk.Contains(Path.GetFileName(e))))
         {
             var choice = await AskMoveLibraryAsync();
             if (choice is null) return;

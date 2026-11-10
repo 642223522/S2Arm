@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import unittest.mock
 import os
+os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 作业层测试一律不连商店（library.store_meta）；要测的用例自己打桩
 
 JOBS = Path(__file__).resolve().parents[1]
 ROOT = JOBS.parents[1]
@@ -155,6 +156,15 @@ class JobCase(unittest.TestCase):
         binary.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, sys
 source = pathlib.Path(sys.argv[4])
 if source.read_bytes() == b"truncated fixture":
+    print("Beginning of synthetic reader diagnostic")
+    print("long synthetic diagnostic " * 300)
+    print("Authorization: Bearer synthetic-bearer")
+    print("【内容截断】")
+if source.read_bytes() == b"huge truncated fixture":
+    print("HEAD-MARK")
+    for _ in range(3000):
+        print("x" * 100)
+    print("TAIL-MARK")
     print("【内容截断】")
 if source.read_bytes() == b"multi truncated fixture":
     # 合并包：本体和 DLC 的清单都读得出，末尾一个内容超出文件末尾。
@@ -172,12 +182,22 @@ if source.read_bytes() == b"unreadable fixture":
     print("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")
     print("Authorization: Bearer synthetic-bearer")
     raise SystemExit(3)
+if source.read_bytes() == b"disk full fixture":
+    print("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")
+    print("【原因 disk_full】")
+    raise SystemExit(3)
 if source.read_bytes() == b"unknown exit fixture":
     print("Unrecognized fixture error")
     raise SystemExit(17)
 if source.read_bytes().startswith(b"content id fixture"):   # 新读取器：带各 NCA 的 content ID（导入按它定原件身份，不读全文件）
     print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{},
         "contentIds":["000000000000000000000000000000bb","000000000000000000000000000000aa"]}]}))
+    raise SystemExit(0)
+if source.read_bytes() == b"chinese title fixture":   # 标题简体中文优先、另给英文名（文件夹取名用），封面写进 argv[5]
+    pathlib.Path(sys.argv[5]).mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(sys.argv[5]) / "0100000000000000.jpg").write_bytes(b"ICON")
+    print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"空洞骑士：丝之歌",
+        "englishName":"Hollow Knight: Silksong","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
     raise SystemExit(0)
 if source.read_bytes() == b"disappear fixture":
     source.unlink()

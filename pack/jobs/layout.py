@@ -464,7 +464,9 @@ def _split_release(c, gid, d):
 
 
 _NACP_GLOBS = ("games/{gid}/current/ctl/control.nacp", "games/{gid}/current/exefs/control.nacp", "iPhone/{gid}/*资源包/ctl/control.nacp",
-               "iPhone/{gid}/roots/*/ctl/control.nacp", "iPhone/{gid}/container-kit/ctl/control.nacp", "cache/{gid}/*/roots/*/ctl/control.nacp")
+               "iPhone/{gid}/roots/*/ctl/control.nacp", "iPhone/{gid}/container-kit/ctl/control.nacp", "cache/{gid}/*/roots/*/ctl/control.nacp",
+               # 新布局里还叫游戏号的文件夹（heal_folder_names）：Mac / iPhone 产物、出包解包目录
+               "games/{gid}/image/mac/ctl/control.nacp", "games/{gid}/image/ios/*/ctl/control.nacp", "games/{gid}/build/*/extract/ctl/control.nacp")
 
 
 def _english_from_disk(c, gid):
@@ -489,6 +491,54 @@ def _english_from_disk(c, gid):
 
 def _ascii_name(name):
     return bool(re.sub(r"[^A-Za-z0-9]", "", name or ""))
+
+
+def heal_folder_names(c):
+    """还叫游戏号的文件夹（导入时没拿到英文名：读取器早先不给英文名、拷封面时这款还没进 catalog）按英文名改名，英文名记进 catalog。
+    每个作业开始时看一眼（只列各位置的 games/，没有游戏号文件夹就返回）；拿不到执行锁（有游戏在跑 / 在出包）这次跳过，下个作业再试。
+    英文名按 catalog 的 englishName → catalog 名字（有 ASCII 时）→ 这款已有产物里的 control.nacp；都没有（还没出过包的中文名游戏）就留着，出过包后再改"""
+    roots = [r for _, r, online in locations(c) if online]
+    stuck = [d for r in roots if (games_root(c, r)).is_dir() for d in games_root(c, r).iterdir()
+             if _GID.fullmatch(d.name.upper()) and (d / GAME_JSON).is_file()]
+    if not stuck:
+        return 0
+    import filelock
+    renamed = 0
+    with (c.library / ".execution.lock").open("a") as f:
+        try:
+            filelock.try_lock(f)
+        except BlockingIOError:
+            return 0
+        try:
+            cat_path = c.library / "catalog.json"
+            cat = read(cat_path, {}) or {}
+            games = {g.get("id", "").upper(): g for g in cat.get("games", []) if isinstance(g, dict)}
+            changed = False
+            for d in stuck:
+                gid = d.name.upper()
+                g = games.get(gid, {})
+                english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
+                if not _ascii_name(english):
+                    continue
+                name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
+                dest = d.parent / name
+                if name.upper() == gid or os.path.lexists(dest):
+                    continue
+                try:
+                    os.replace(d, dest)
+                except OSError:   # Windows 上文件夹里有打开的文件：整款不动（文件夹、索引、catalog 都留原样），下次再试
+                    continue
+                from library import _retarget_links
+                _retarget_links(dest, d, dest)
+                _remember(c, gid, dest)
+                if g and not g.get("englishName"):   # 改名成了才记英文名：与文件夹、索引一起变
+                    g["englishName"] = english; changed = True
+                renamed += 1
+            if changed:
+                atomic(cat_path, cat)
+        finally:
+            filelock.unlock(f)
+    return renamed
 
 
 def migrate(c):
@@ -540,7 +590,9 @@ def _upgrade_2(c, marker, state):
         atomic(marker, dict(version=1, games=sorted(done)))
     for spec, _ in MOVES:   # 搬空的旧类型目录
         top = c.library / spec.split("/")[0]
-        if top.is_dir() and not any(top.iterdir()):
+        if top.is_dir() and not has_content(top):
+            for junk in OS_JUNK:   # 只剩系统自动生成的文件也算搬空了
+                (top / junk).unlink(missing_ok=True)
             top.rmdir()
     if not location_id(c.library):   # 旧库原地变成第一个存放位置（游戏库结构 v3）
         import uuid
@@ -630,6 +682,10 @@ def ensure(c):
     _ensure_layout(c)
     if (c.library / ".s2arm-library.json").is_file():
         adopt_private_logs(c)
+        heal_folder_names(c)             # 已有英文名、文件夹还叫游戏号的改名（不联网）
+        if c.operation != "launch":      # 起局时玩家在等：连后台也不起
+            from library import store_meta_background
+            store_meta_background(c)     # 缺横图 / 英文名、7 天内没查过的款：后台查，查到英文名在那里接着改名
 
 
 def _ensure_layout(c):
@@ -771,7 +827,13 @@ def adopt_private_logs(c):
     for src, dst in sources:
         if not src.is_dir() or src.is_symlink():
             continue
-        for child in sorted(src.iterdir()):
+        # 每个作业起跑都收一次（ensure）：别的作业可能同时在收，判完 is_dir 到列目录之间目录已被它收空删掉（启动器同时起两个 catalog：
+        #   WorkerIntegrationTests 偶发「任务所需的文件或目录不存在」，main 全套两次红在这里）——被对方收走的就算收完了
+        try:
+            children = sorted(src.iterdir())
+        except FileNotFoundError:
+            continue
+        for child in children:
             if src == c.private / "logs" and child.name == "jobs":
                 continue
             if any(child.name.startswith(t) for t in running):
@@ -789,6 +851,18 @@ def adopt_private_logs(c):
 # 老玩家的库若还在旧默认位置（私有目录下的「游戏库」= Mac 启动器、「DefaultLibrary」= Windows 启动器）：同一卷改名到新默认位置；
 # 目标已存在、跨卷、库里有任务在跑或改名失败就原地不动照常用。动之前在私有目录写 library-relocate.json，改完更新索引表与前端设置文件
 # （Mac preferences.json 的 library、Windows library-location.txt），中途被杀下次接着收尾。绝不删数据。玩家自己选过的位置不动。
+# 系统自动生成的文件（访达 .DS_Store、Windows 资源管理器 desktop.ini / Thumbs.db）：判「文件夹空不空」「里面有没有东西」时不算数（11-09 #343 同类扫描）
+OS_JUNK = frozenset({".DS_Store", "desktop.ini", "Thumbs.db"})
+
+
+def has_content(d):
+    """d 里除了系统自动生成的文件还有没有别的东西（d 不存在 / 不是目录 → False）"""
+    try:
+        return any(p.name not in OS_JUNK for p in Path(d).iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 OLD_DEFAULTS = ("游戏库", "DefaultLibrary")
 RELOCATE_JSON = "library-relocate.json"
 

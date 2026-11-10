@@ -69,7 +69,8 @@ RECOVERY = {
     "device_not_connected": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
-    "free_app_limit": "免费 Apple ID 每台设备最多同时装 3 个自签 App、每 7 天最多注册 10 个包名：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；包名额度用完则等 7 天恢复；或改用付费 Apple 开发者账号（没有这两个上限）。",
+    "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
+    "free_appid_limit": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或在 Xcode / Impactor 里换一个 Apple ID 登录后再装；或改用付费 Apple 开发者账号（没有这个限制）。",   # Apple 错误 9120；与 free_app_limit（设备上同时 3 个）是两件事，删 App 无效
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
     "sibling_clone_failed": "已改从解包目录准备，本次照常完成，只是多花一些时间；游戏库放在 APFS 格式的磁盘上（Mac 内置盘或格式化为 APFS 的外接盘）时，各平台导出可以共用已准备好的游戏数据。",
     "iml_missing": "用 Xcode（免费 Apple ID 即可）或 AltStore Classic v2.3 重新签名安装这款游戏；SideStore 0.7.0 免费账号重签会丢这项权限。已装的也可以用 GetMoreRam 给 App ID 补上权限后重装。",
@@ -105,6 +106,7 @@ RECOVERY = {
     'save_invalid': '这份文件不是可识别的存档备份；重新选择由 S2Arm 导出的完整备份。',
     'save_no_target': '这款游戏尚未建立存档目录；先启动游戏并正常保存退出，再恢复备份。',
     'save_recovery': '存档回退没完成：事务记录与副本都保留着。可以先在存档页备份当前存档；确认可能丢掉没做完的导入 / 恢复后，可选「仍要启动」。不要删除事务目录。',
+    'container_would_drop': '确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。',
     'container_stale': '先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。',
     'container_incompatible': '这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。',
     'container_purge_failed': '手机解锁、数据线插稳后再删一次；不影响其他游戏。',

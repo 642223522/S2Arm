@@ -705,7 +705,7 @@ class JobsTests(unittest.TestCase):
         # 预检门槛 = 原包 × 1.1 × 2（解包 + 单文件镜像）+ 直连上限：恰好够放行，差 1 字节拦下，提示里写需要与剩余
         import unittest.mock as um, collections
         base = dict(self.package("base"), size=6 << 30)
-        game = self.game(packages=[base]); need = 2 * ((6 << 30) * 11 // 10) + 15_000_000_000
+        game = self.game(packages=[base]); need = (6 << 30) * 11 // 10 + 15_000_000_000
         du = collections.namedtuple("du", "total used free")
         with um.patch("shutil.disk_usage", return_value=du(0, 0, need)):
             library.check_pack_space(self.c, game)
@@ -751,7 +751,7 @@ class JobsTests(unittest.TestCase):
                 game = self.game(tid=tid, packages=[dict(self.package("base", tid=tid), size=6 << 30)])
                 with um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
                     lib = library.space_budget(self.c, game)["volumes"][0]
-                self.assertEqual(lib["needBytes"], 2 * ((6 << 30) * 11 // 10) + 15_000_000_000)
+                self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
     def test_space_budget_uses_extract_size_when_known(self):
@@ -764,7 +764,7 @@ class JobsTests(unittest.TestCase):
         ex = self.c.library / "cache" / tid / "k" / "roots" / "m@现行" / "extract"; ex.mkdir(parents=True)
         with um.patch("space_rule.tree_bytes", return_value=2 << 30), um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
             lib = library.space_budget(self.c, game)["volumes"][0]
-        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 * 2 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包 + 单文件镜像各一份原包 × 1.1，再加直连
+        self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 9 * (2 << 30) + 3 * (2 << 30))   # 解包一份原包 × 1.1，再加直连（单文件镜像不再存进库，#329）
         self.assertIn("按抽取", lib["note"])
 
     def test_direct_check_counts_existing_cache_and_volume(self):
@@ -799,7 +799,7 @@ class JobsTests(unittest.TestCase):
                 with um.patch("shutil.disk_usage", return_value=du(0, 0, 50 << 30)):
                     budget = library.space_budget(self.c, game)
                 self.assertEqual(budget["gameBytes"], want)
-                self.assertEqual(budget["volumes"][0]["needBytes"], 2 * (want * 11 // 10) + 15_000_000_000)
+                self.assertEqual(budget["volumes"][0]["needBytes"], want * 11 // 10 + 15_000_000_000)
 
     def test_space_budget_library_volume_only(self):
         # 11-02 起打 iPhone 包不再把原件暂存到数据目录（共用 游戏库/cache/<程序号>/extract），预算只有游戏库一卷：原件跨卷与否都一样
@@ -827,7 +827,7 @@ class JobsTests(unittest.TestCase):
                     library.check_pack_space(self.c, game)
                 lib = budget["volumes"][0]
                 self.assertEqual((lib["role"], lib["basis"], lib["needBytes"], lib["freeBytes"], lib["enough"], lib["volume"]),
-                                 ("library", "rule", 2 * ((6 << 30) * 11 // 10) + 15_000_000_000, 50 << 30, True, "系统盘"))
+                                 ("library", "rule", (6 << 30) * 11 // 10 + 15_000_000_000, 50 << 30, True, "系统盘"))
                 self.assertIn("直连着色器上限", lib["note"]); self.assertEqual(lib["unknown"], ["shader_cache"])
                 self.assertEqual(budget["gameBytes"], 6 << 30)
                 self.assertEqual([u["id"] for u in budget["unknown"]], ["shader_cache"])
@@ -847,7 +847,7 @@ class JobsTests(unittest.TestCase):
         self.assertIn("磁盘空间不够", str(e.exception))
         event = self.space_events()[-1]
         self.assertFalse(event["space"]["volumes"][0]["enough"])
-        self.assertEqual(event["space"]["volumes"][0]["needBytes"], 2 * ((1 << 30) * 11 // 10) + 5_000_000_000)
+        self.assertEqual(event["space"]["volumes"][0]["needBytes"], (1 << 30) * 11 // 10 + 5_000_000_000)
         self.c.begin("下一阶段", 2, 3); self.c.emit(done=1, total=2)
         job = json.loads(self.c.jobpath.read_text())
         self.assertEqual(job["space"], event["space"]); self.assertEqual(job["message"], "下一阶段")
@@ -1393,6 +1393,16 @@ class JobsTests(unittest.TestCase):
             self.c.run([sys.executable, "-c", "raise SystemExit(17)"], log)
         self.assertEqual(self.c.job["diagnostics"][-1]["exitCode"], 17)
 
+    @unittest.skipIf(os.name == "nt", "POSIX 信号")
+    def test_signal_death_reports_shell_style_exit(self):
+        # 宿主崩溃处理写完现场后按默认处置重抛（系统出 .ips），进程被信号结束、Python 给负数（SIGSEGV = -11）：摘要与诊断照旧报 128 + 信号（139）。
+        #   这里用 SIGKILL（-9 → 137）验同一条折算：SIGSEGV 会让系统为测试进程生成崩溃报告
+        log = self.root / "sig.log"
+        with self.assertRaises(Failure) as caught:
+            self.c.run([sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"], log)
+        self.assertIn("退出码 137", str(caught.exception))
+        self.assertEqual((self.c.job["diagnostics"][-1]["exitCode"], self.c.last_rc), (137, 137))
+
     def test_cancel_stops_a_silent_process_group(self):
         timer = threading.Timer(.4, self.c.stop)
         timer.start()
@@ -1595,6 +1605,37 @@ class JobsTests(unittest.TestCase):
         out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
         self.assertIn(beat(19999).strip().encode(), out); self.assertNotIn(beat(0).strip().encode(), out)
         self.assertLessEqual(len(out), 16000 * 2 + 64000 + 200)
+
+    def test_diagnostic_log_keeps_crash_scene_in_the_middle(self):
+        # #141：28 万字节的 game.log，崩溃摘要与全线程现场在中段（只留头尾时整段丢，玩家交了诊断包也定不了因）。
+        #   现场格式同 runtime/src/crash.c（【红】CRASH 摘要）+ tdump.c（「[现场] 」前缀，===== 全线程现场 起、===== 现场完 ===== 止）
+        import io
+        def thread(i, n, state, frames):
+            rows = [f"[现场] 线程 {i}/{n} tid {9000 + i}「worker-{i}」{state} 优先级 31 QoS UI 用户态 1.00 s", f"[现场]     pc libS2A.dylib+{0x1000 + i:#x}", f"[现场]     lr libS2A.dylib+{0x2000 + i:#x}"]
+            rows += [f"[现场]     #{k} {frames}+{0x100 * k + i:#x}" for k in range(12)]
+            rows += [f"[现场]     x{r:<2d} " + " ".join(["%016x" % (r * 1000 + i)] * 4) for r in range(0, 29, 4)]
+            return rows
+        def scene(n, crash_at, waiting="等待"):
+            rows = ["【红】CRASH 信号 11 地址 0x10 pc main+0x1234 lr main+0x1200 sp 0x16f000000", "  x0  0000000000000000 0000000000000001 0000000000000002 0000000000000003",
+                    "崩溃时余量：低区空洞合计 512 MB、最大一块 256 MB；文件句柄已开 40 个，软上限 256、硬上限 10240",
+                    f"[现场] ===== 全线程现场：崩溃 信号 11（{n} 条线程）====="]
+            for i in range(1, n + 1):
+                rows += thread(i, n, "在跑" if i == crash_at else waiting, "CRASHFRAME" if i == crash_at else "idle")
+            return rows + ["[现场] ===== 现场完 ====="]
+        noise = "".join(f"[log] 第 {i} 行普通日志 padding padding padding\n" for i in range(2200)).encode()
+        body = b"HEAD_MARK\n" + noise + "\n".join(scene(30, 17)).encode() + b"\n" + noise + b"\nTAIL_MARK\n"
+        self.assertTrue(250000 < len(body) < 330000, len(body))
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        for want in ("【红】CRASH 信号 11", "全线程现场：崩溃 信号 11", "线程 17/30 tid 9017「worker-17」在跑", "#11 CRASHFRAME+0xb11", "===== 现场完 ====="):
+            self.assertIn(want.encode(), out, want)
+        self.assertTrue(out.startswith(b"HEAD_MARK")); self.assertTrue(out.endswith(b"TAIL_MARK\n"))
+        # 现场块超出保留上限：总量有界；崩溃摘要、第一个非等待线程（崩溃线程）的整段栈、其余线程头一行、现场完都在
+        body = b"h" * 16000 + noise + "\n".join(scene(600, 333)).encode() + b"\n" + b"t" * 16000
+        out = library.diagnostic_log_excerpt(io.BytesIO(body), len(body))
+        self.assertLessEqual(len(out), 16000 * 2 + 64000 + library.DIAGNOSTIC_LOG_SCENE + 400)
+        for want in ("【红】CRASH 信号 11", "线程 333/600 tid 9333「worker-333」在跑", f"#11 CRASHFRAME+{0x100 * 11 + 333:#x}", "线程 1/600 tid 9001", "===== 现场完 ====="):
+            self.assertIn(want.encode(), out, want)
+        self.assertNotIn(b"#11 idle+0xb01", out)   # 等待线程的栈让位给崩溃线程
 
     def customize_game(self, **fields):
         gid = "0100000000010000"

@@ -455,7 +455,18 @@ def usb_mbps(udid, env=None):
 SIGN_ERRORS = (
     (r"等钥匙串授权超时", "keychain_prompt"),   # pack/ensure_profile.sh：第一次签名的钥匙串框没人点（11-08 Spare-host 实测）
     (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
-    (r"maximum number of (?:installed )?(?:apps|App IDs)|App ID limit|(?:maximum|limit)[^\n]{0,100}free development profiles", "free_app_limit"),
+    # 免费 Apple ID 有两个不同的上限，原文措辞能分开，办法也不同：
+    #   ① 包名（App ID）额度：签名前向 Apple 注册包名时被拒，Apple 错误 9120，Xcode 原文
+    #      「Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days.」——
+    #      说的是「App ID」，按 7 天窗口计，删 App 不退额度 → free_appid_limit；
+    #   ② 设备同时装 3 个自签 App：签名已过、装机（devicectl / 系统安装服务）时设备拒收，原文
+    #      「This device has reached the maximum number of installed apps using a free developer profile」（iOS 27）、
+    #      「The maximum number of apps for free development profiles has been reached」（较早 iOS / Xcode）——
+    #      说的是「apps」装在这台设备上，删一个就能装 → free_app_limit。
+    # 两条正则互不相交：①只认「App ID(s)」字样或带 error / code 前缀的 9120，②的「apps」后面不跟「ID」；
+    # ①仍排在前面，万一一行里两种字样都有，按删 App 无效的那件事报，免得玩家白删。
+    (r"App ID limit|\b10 App IDs\b|maximum number of App IDs|(?:error|code)\D{0,20}\b9120\b", "free_appid_limit"),
+    (r"maximum number of (?:installed )?apps\b|(?:maximum|limit)[^\n]{0,100}free development profiles", "free_app_limit"),
     (r"Developer\s*Mode\s*(?:is\s*)?(?:disabled|not enabled|required)|DeveloperModeDisabled", "developer_mode_required"),
     (r"pairing (?:record|relationship)[^\n]{0,80}(?:invalid|missing|expired)|not paired|pair (?:the )?device again|InvalidHostID", "device_pairing_required"),
     (r"provisioning profile[^\n]{0,100}(?:has expired|is expired|expired on)|expired provisioning profile", "provisioning_expired"),
@@ -533,6 +544,9 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         if m:
             c.diagnostic(m.group(0), code="manual_unpack_required", severity="warning")
             return got.get("files", 0), got.get("mb", 0) << 20
+        m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针就失败 = 锁屏 / 断开（#333）
+        if m:
+            raise Failure(m.group(0), code="device_locked") from e
         from errors import tool_reason
         raise Failure("资源包推不进 iPhone：" + tool_reason(log), code="resource_transfer_failed") from e
     return got.get("files", 0), got.get("mb", 0) << 20
@@ -594,10 +608,12 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
         #   往上逐级列父目录，第一个列得出的父目录定：里面看不到存档目录 = 没有存档，照装；看得到却列不出 / 父目录一个都列不出 = 停装
-        _, apps, _ = devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60)
+        arc, apps, aerr = devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60)
+        if arc:   # 连「装没装过」都问不出（锁屏 / 超时 / 断开）：不能当成第一次装，否则跳过备份直接覆盖（#333）
+            raise Failure("覆盖装前确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         if any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or []):
             if not save_dir_absent(c, ident, bid, save_dir):
-                raise Failure("覆盖装前读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="job_failed")
+                raise Failure("覆盖装前读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         return None
     if not files:
         return None
@@ -607,8 +623,15 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         rc, _, err = devicectl(c, "device", "copy", "from", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                                "--source", f"{save_dir}/{rel}", "--destination", str(dest / rel), timeout=120)
         if rc or not (dest / rel).is_file():
-            raise Failure(f"覆盖装前备份 iPhone 上的存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="job_failed")
+            raise Failure(f"覆盖装前备份 iPhone 上的存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}") + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
     return dest
+
+
+def phone_ipa_path(c):
+    """「显示 IPA」用：装机时组装的那份 IPA（整个游戏库共用一份，在默认位置根 S2Arm.ipa）；还没装过、没有这个文件 → 空串（界面不给按钮）。
+    原先给的是这款的 image/ios 目录，「显示 IPA」打开的是游戏目录"""
+    ipa = layout.phone_ipa(c)
+    return str(ipa) if ipa.is_file() else ""
 
 
 def readiness(c):
@@ -625,7 +648,8 @@ def readiness(c):
         wait = waiting and not ok
         items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail="" if ok or wait else detail, who=who))   # 等前一步的不给说明，免得 AI 拿去催玩家
     try:
-        ipa_path = str(ios_pack(c, gid).parent)
+        ios_pack(c, gid)
+        ipa_path = phone_ipa_path(c)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
         item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
@@ -769,7 +793,8 @@ def readiness_windows(c, gid):
                           url=None if ok else url,   # 玩家自装件的官方下载页（同环境检查 winenv 的 url 字段）：启动器渲染成「打开官方下载页」，不从说明文字里抠链接
                           action=None if ok else action))   # 启动器本地动作（openImpactor：打开随包的 Impactor）；只认枚举，不传路径
     try:
-        ipa_path = str(ios_pack(c, gid).parent)
+        ios_pack(c, gid)
+        ipa_path = phone_ipa_path(c)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
         item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
@@ -852,14 +877,19 @@ class WinPhone:
         return devpush_client(self.c, self.udid, self.bid, work)
 
     def backup(self, g):
-        """覆盖装前备份本款存档（同 Mac backup_saves 口径：拉失败就停装）。还没装过（没记录包名 / 机上没这个 App）= 没有存档"""
-        if not self.bid:
+        """覆盖装前备份本款存档（同 Mac backup_saves 口径：拉失败就停装）。按这次要装的包名查（这台没记录也可能有 Mac 装的同包名 App 和存档）；
+        只有手机明确答「没有这个 App」（ApplicationLookupFailed）才算没装过、不备份。别的取不到（锁屏 / 断开 / 配对问题）一律停装，
+        不当成没装过——当成没装会跳过备份直接覆盖（#333）"""
+        bid = self.bid or self.bundle_for_signing()
+        if not bid:
             return None
         dest = layout.path(self.c, g, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
-            ok, out = self.client(w).get_tree(f"{game_docs(g)}/{SAVE_REL}", dest)
-        if not ok and "取不到" not in out:   # 取不到 = 这个包名的 App 不在机上（s2a-devpush vend_container 的报错）
-            raise Failure("覆盖装前备份 iPhone 上的存档失败：" + out[-200:] + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="job_failed")
+            ok, out = devpush_client(self.c, self.udid, bid, w).get_tree(f"{game_docs(g)}/{SAVE_REL}", dest)
+        if not ok:
+            if "ApplicationLookupFailed" in out:   # s2a-devpush vend_container：机上确实没装这个包名（Windows 实机核过的原文）
+                return None
+            raise Failure("覆盖装前备份 iPhone 上的存档失败：" + out[-200:] + "。为免丢档，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
         return dest if dest.is_dir() else None
 
     def install(self, ipa, games, steps=True):
@@ -869,13 +899,29 @@ class WinPhone:
         b = self.W.impactor.bundled(self.c.r.get("resources")) or {}   # 发版启动器随包的 plumesign（11-07）；源码树没有 → install_win 照旧找
         log = self.c.logs / (self.c.task + "-install.log")
         self.c.last_log = log
-        ns = argparse.Namespace(ipa=str(ipa), udid=self.udid, name=None, plumesign=b.get("plumesign"), log=str(log))
+        ns = argparse.Namespace(ipa=str(ipa), udid=self.udid, name=None, plumesign=b.get("plumesign"), log=str(log), bundle=self.bundle_for_signing())
         try:
             self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
         except self.W.Fail as e:
-            raise Failure(str(e), code=e.err or "device_install_failed") from e
+            # 有对应处理建议的码（free_appid_limit = Apple 9120 等）：上屏说人话的原因与办法，plumesign 英文原文只进诊断（Windows 实机：
+            #   原先整句英文「Developer API error 9120 …」直接上屏，玩家只看到签名失败）；没有专门建议的照旧上屏原文
+            code = e.err or "device_install_failed"
+            from errors import RECOVERY
+            if code in RECOVERY and code not in ("device_install_failed", "job_failed"):
+                raise Failure("签名装机没成：" + RECOVERY[code], code=code, internal=str(e)) from e
+            raise Failure(str(e), code=code) from e
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
+
+    def bundle_for_signing(self):
+        """交给 plumesign 的包名：和 Mac 同一个（container_bundle_id(团队号)，团队号取 Impactor 当前账号）。这台记录过只差大小写的包名
+        （早先 Windows 让 plumesign 自己定的 io.s2arm.games.<大写团队号>）就沿用它：换成小写会在手机上多出一个 S2Arm、存档留在旧的里。
+        读不到团队号 → None（照旧由 plumesign 定）"""
+        team = self.W.impactor.selected_team() if hasattr(self.W.impactor, "selected_team") else None
+        if not team:
+            return None
+        want = container_bundle_id(team)
+        return self.bid if self.bid and self.bid.lower() == want.lower() else want
 
     def before_push(self, packs):
         pass
@@ -900,6 +946,67 @@ def phone_for(c):
     return WinPhone(c) if os.name == "nt" else MacPhone(c)
 
 
+GID_RE = re.compile(r"[0-9A-F]{16}")
+
+
+def phone_games(c, ph):
+    """这台手机上的 S2Arm 里有哪些游戏——真相在手机上，不在某一台电脑的设备记录里（同一台手机 Mac 装几款、Windows 再装一款时，
+    各自的记录只有自己装的）。列这个包名的 Documents/games/：只认目录名是 16 位游戏号、资源包已解开（资源包/.applied）的，别的跳过。
+    手机明确答没装这个 App（ApplicationLookupFailed）→ 空；别的列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
+    bid = ph.bid or (ph.bundle_for_signing() if hasattr(ph, "bundle_for_signing") else None)
+    if not bid or not ph.udid:
+        return set()
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = devpush_client(c, ph.udid, bid, w)
+        rc, out = cl.call("ls", "Documents/games")
+        if rc:
+            if "ApplicationLookupFailed" in out:
+                return set()
+            if "No such file" in out or "ObjectNotFound" in out:   # App 在、还没装过任何一款
+                return set()
+            raise Failure("读不出 iPhone 上已经装了哪些游戏：" + out[-200:] + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
+        found = set()
+        for name in out.splitlines():
+            g = name.strip().rstrip("/").upper()
+            if GID_RE.fullmatch(g) and ".applied" in (cl.ls(f"{game_docs(g)}/资源包") or []):
+                found.add(g)
+        return found
+
+
+def phone_game_name(c, ph, gid, names):
+    """确认框里的名字：本机游戏库有就用库里的，否则读手机上这款资源包自带的 control.nacp，再不行用游戏号"""
+    if names.get(gid):
+        return names[gid]
+    try:
+        import library
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            dst = Path(w) / "control.nacp"
+            if devpush_client(c, ph.udid, ph.bid, w).get(f"{game_docs(gid)}/资源包/ctl/control.nacp", dst):
+                dump = library.engine_tool(c, "ns2_dump")
+                n = dst.read_bytes()
+                return dump.nacp_title(n, 14) or dump.nacp_title(n, 0) or gid
+    except Exception:   # noqa: BLE001 —— 名字读不到就用游戏号
+        pass
+    return gid
+
+
+def container_others(c, ph, rec, leave=None):
+    """现组容器要带的别的款：这台电脑记录的 + 手机上实际有的（phone_games）。手机上有、这台电脑没记录、游戏库里也没有的，带不进去
+    （App 里的游戏程序读不回电脑）：没带 acceptDropped 就停下报 container_would_drop，列出这几款，玩家确认后再装；确认了就不带它们——
+    它们的存档和资源包还在手机上，在原来那台电脑上再装一次就回来"""
+    known = set(rec.get("games", {}))
+    on_phone = phone_games(c, ph)
+    names = {g["id"].upper(): g.get("name") or "" for g in c.catalog()["games"]}
+    candidates = sorted((known | on_phone) - {leave})
+    lost = [g for g in candidates if g in on_phone and g not in known and g not in names]
+    if lost and c.r.get("acceptDropped") is not True:
+        shown = [phone_game_name(c, ph, g, names) for g in lost]
+        raise Failure(f"这次会让手机上的 {len(lost)} 款游戏暂时不能玩：" + "、".join(shown)
+                      + "。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「装到 iPhone」就能回来。确认继续再点一次。",
+                      code="container_would_drop", internal=" ".join(lost))
+    return [g for g in candidates if g not in lost]
+
+
 def put_game(c, gid, ph, steps=True):
     """把这款放进容器并装到手机：现组容器（这款 + 这台手机上已有的各款，ipa.assemble）→ 覆盖装 → 推资源包：这款照推，
     别的款只推「游戏库里的资源包比手机上记的新」的（重新打过 iPhone 包、还没装到这台的），没变的不推（数据和存档不动）。
@@ -908,7 +1015,7 @@ def put_game(c, gid, ph, steps=True):
     gid = gid.upper()
     ios_pack(c, gid)   # 这款没有资源包就不组装、不装
     rec = layout.load_device(c, ph.key)
-    others = [g for g in rec.get("games", {}) if g != gid]
+    others = container_others(c, ph, rec, leave=gid)   # 手机上实际有的款也带上（另一台电脑装的），带不了的先问玩家
     if steps: c.begin("把这款放进手机上的 S2Arm", 2, 6)
     ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
     packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
@@ -983,7 +1090,7 @@ def remove_from_phone(c):
     c.begin("备份这款的存档", 2, 4)
     backup = ph.backup(gid)
     c.begin("更新手机上的 S2Arm", 3, 4)
-    left = [g for g in rec["games"] if g != gid]
+    left = container_others(c, ph, rec, leave=gid)   # 同装机：手机上另一台电脑装的款也带上，带不了的先问
     # 最后一款（#227）：不装空容器（宿主 0 款的启动路径没在真机验过，vawin.c 报红不占窗口），手机上的 App 原样留着，
     #   下一步删掉它的数据后库界面按「数据不在」不再显示 = 空库；下次装新游戏时覆盖装把旧程序一起换掉
     if left:

@@ -350,7 +350,7 @@ class NextStepTests(unittest.TestCase):
         self.assertEqual((n["step"], n["who"], n["ipa"]), ("装机", "ai", "/lib/iPhone/g/tg.ipa"))
         self.assertIn("s2armctl install g", n["do"])
         # 装机失败按错误码：Xcode 没登录 → 玩家本人登录；没连设备 → 问玩家连上
-        for code, who in (("xcode_account_missing", "human"), ("device_not_connected", "ask"), ("free_app_limit", "human"), ("signing_failed", "ai")):
+        for code, who in (("xcode_account_missing", "human"), ("device_not_connected", "ask"), ("free_app_limit", "human"), ("free_appid_limit", "human"), ("signing_failed", "ai")):
             inst = {"id": "t4", "gameId": "g", "operation": "install", "state": "failed", "started": 5, "diagnostics": [{"code": code, "summary": "x"}]}
             n = ctl.next_step(full_state(games=[game("g", "G", 1e9)], tasks=[done, inst]))
             self.assertEqual((n["step"], n["who"], n["code"]), ("装机失败", who, code))
@@ -480,6 +480,16 @@ class LaunchArgsTests(unittest.TestCase):
              mock.patch.object(sys, "argv", ["s2armctl", "uninstall", "0100535012974000"]):
             ctl.main()
         self.assertEqual(posted, {"method": "POST", "path": "/uninstall", "body": {"gameId": "0100535012974000"}})
+
+    def test_accept_dropped_only_when_given(self):
+        """--accept-dropped 才带 acceptDropped（玩家同意别的电脑装的款这次带不上）；不给就不带，作业层停下报 container_would_drop"""
+        posted = []
+        with mock.patch.object(ctl, "call", side_effect=lambda m, p, b=None, **kw: posted.append((p, b)) or {"ok": True}):
+            for argv in (["install", "0100535012974000"], ["install", "0100535012974000", "--accept-dropped"], ["uninstall", "0100535012974000", "--accept-dropped"]):
+                with mock.patch.object(sys, "argv", ["s2armctl", *argv]):
+                    ctl.main()
+        self.assertEqual(posted, [("/install", {"gameId": "0100535012974000"}), ("/install", {"gameId": "0100535012974000", "acceptDropped": True}),
+                                  ("/uninstall", {"gameId": "0100535012974000", "acceptDropped": True})])
 
 class DiagCommandTests(unittest.TestCase):
     """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""

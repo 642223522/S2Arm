@@ -59,7 +59,7 @@ class ExtractImportTests(JobCase):
                          (f"{tid:016X}", "Zelda NS2", "base", "dump", 0))
         self.assertEqual(pkg["path"], str(dump.resolve()))
         self.assertTrue(pkg["size"] > 0)  # 目录内文件总字节
-        self.assertEqual((self.c.library / "games" / game["id"] / "cover.jpg").read_bytes(), b"DUMP_ICON")
+        self.assertEqual((self.c.library / "games" / "Zelda NS2" / "cover.jpg").read_bytes(), b"DUMP_ICON")   # 文件夹按英文名（NACP 美式英语）
         # 没有控制分区：标题取目录名
         dump2 = self.make_dump(self.root / "RawDump", 0x0100AABBCCDD0000)
         (self.c.library / "catalog.json").write_text('{"schema": 1, "games": []}')
@@ -78,7 +78,9 @@ class ExtractImportTests(JobCase):
         self.assertEqual((game["id"], game["name"], pkg["type"], pkg["format"], pkg["display"]),
                          (f"{tid:016X}", "马力欧", "base", "extract", "2.1.0"))
         self.assertEqual(pkg["path"], str(extract.resolve()))
-        self.assertEqual((self.c.library / "games" / game["id"] / "cover.jpg").read_bytes(), b"EXTRACT_ICON")
+        # 界面名取中文、文件夹按英文名（unpack.tsv 的 name），英文名记进 catalog
+        self.assertEqual(game["englishName"], "Mario")
+        self.assertEqual((self.c.library / "games" / "Mario" / "cover.jpg").read_bytes(), b"EXTRACT_ICON")
 
     def test_loose_folder_reaches_ns2_dump(self):
         # 玩家 #9：已解包目录出包走 extract_folder 的 loose 分支，用到 tempfile（曾漏 import，NameError）。手算期望：起 ns2_dump.py 一次，第一个位置参数 = 临时目录，里面 base 是指向源目录的链接
@@ -108,7 +110,7 @@ class ExtractImportTests(JobCase):
         [pkg] = game["packages"]
         self.assertEqual((game["id"], game["name"], pkg["type"], pkg["format"]),
                          (f"{tid:016X}", "Splatoon", "base", "loose"))
-        self.assertEqual((self.c.library / "games" / game["id"] / "cover.jpg").read_bytes(), b"LOOSE_ICON")
+        self.assertEqual((self.c.library / "games" / "Splatoon" / "cover.jpg").read_bytes(), b"LOOSE_ICON")
 
     def test_extract_dir_in_subfolder(self):
         # 解包目录嵌在子目录里：扫描时能找到，认到就不再往里走
@@ -138,6 +140,47 @@ class ExtractImportTests(JobCase):
         result, done = self.worker("import", paths=[str(dump)])
         self.assertEqual(done["state"], "succeeded", result.stderr)
         self.assertFalse((self.c.private / "keys/status.json").exists())
+
+
+class DefaultPathUnchangedTests(JobCase):
+    """#124 逐来源结果只给开了 partialResults 的调用方：默认路径（不开）结果形状、任务记录、错误码都同 #124 之前（期望按 #124 之前的行为手写）"""
+    make_extract = ExtractImportTests.make_extract
+    def test_default_result_has_only_imports_and_record_has_no_sources(self):
+        import json
+        extract = self.make_extract(self.root / "e1", 0x01002468ACE00000, "Mario", "马力欧")
+        result, done = self.worker("import", paths=[str(extract)])
+        self.assertEqual(done["state"], "succeeded", result.stderr)
+        self.assertEqual(sorted(done["result"]), ["imports"])
+        record = json.loads((self.c.library / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
+        self.assertNotIn("sources", record)
+        result, done = self.worker("import", paths=[str(self.root / "nope" / "x.nsp")])   # 失败：结果为空，同以前
+        self.assertEqual((done["state"], done.get("result") or {}), ("failed", {}))
+
+    def test_default_catalog_write_error_keeps_original_code(self):
+        # catalog 写不进（非盘满）：默认路径照旧抛原始 OSError，explain 归 permission_denied（#124 曾统一成 job_failed）
+        import library, errors
+        from unittest.mock import patch
+        extract = self.make_extract(self.root / "e2", 0x01002468ACE00000, "Mario", "马力欧")
+        real = library.atomic
+        def atomic(path, data, *a, **k):
+            if Path(path).name == "catalog.json" and data.get("games"):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, data, *a, **k)
+        self.c.r.update(paths=[str(extract)])
+        self.c.r.pop("partialResults", None)
+        with patch.object(library, "atomic", atomic), self.assertRaises(OSError) as e:
+            library.import_games(self.c)
+        self.assertEqual(errors.explain(e.exception).code, "permission_denied")
+
+    def test_record_sources_caps_each_and_total(self):
+        import core
+        big = "头" + "x" * 50_000 + "尾"
+        rows = core.record_sources([dict(status="failed", code="content_invalid", reason="r", diagnostic=big) for _ in range(30)])
+        self.assertTrue(all(len(r["diagnostic"]) <= core.IMPORT_RECORD_SOURCE_DIAGNOSTIC for r in rows))
+        self.assertTrue(rows[0]["diagnostic"].startswith("头") and rows[0]["diagnostic"].endswith("尾"))
+        self.assertLessEqual(sum(len(r["diagnostic"]) for r in rows), core.IMPORT_RECORD_DIAGNOSTICS_TOTAL)
+        self.assertEqual(rows[-1]["diagnostic"], "")                       # 超出总量的来源只留 code / reason / status
+        self.assertEqual((rows[-1]["code"], rows[-1]["status"]), ("content_invalid", "failed"))
 
 
 if __name__ == "__main__":

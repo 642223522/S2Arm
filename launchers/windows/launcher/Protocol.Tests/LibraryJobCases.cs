@@ -6,6 +6,21 @@ internal static class LibraryJobCases
 {
     public static void Run(Action<bool, string> check)
     {
+        // 封面按 catalog 给的这款文件夹认（#330：v0.2.0 起文件夹按英文名，原先按游戏号拼 games\<号>\ 一律退回占位图）
+        var lib = Path.Combine(Path.GetTempPath(), "s2a-cover-" + Guid.NewGuid().ToString("N"));
+        var english = Path.Combine(lib, "games", "Animal Crossing New Horizons");
+        var byId = Path.Combine(lib, "games", "0100F38011CFE000");
+        LibraryGame Game(string id, string cover, string folder, string state = "ok") =>
+            new(id, "n", "", cover, false, Array.Empty<string>(), Location: new GameLocation(state, lib, folder, "", true));
+        check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english).CoverFile() == Path.Combine(english, "cover.jpg"), "cover: English-named game folder is shown");
+        check(Game("0100F38011CFE000", Path.Combine(byId, "cover.jpg"), byId).CoverFile() == Path.Combine(byId, "cover.jpg"), "cover: game-id folder still shown");
+        check(Game("01006F8002326000", Path.Combine(english, "cover.custom.0a1b2c3d.jpg"), english).CoverFile() is not null, "cover: custom cover in the English folder is shown");
+        check(Game("01006F8002326000", Path.Combine(byId, "cover.jpg"), english).CoverFile() is null, "cover: another game's folder is refused");
+        check(Game("01006F8002326000", Path.Combine(english, "banner.jpg"), english).CoverFile() == Path.Combine(english, "banner.jpg"), "cover: store banner is the fallback when the game has no icon");
+        check(Game("01006F8002326000", Path.Combine(english, "icon.jpg"), english).CoverFile() is null, "cover: other file names are refused");
+        check(Game("01006F8002326000", Path.Combine(english, "sub", "cover.jpg"), english).CoverFile() is null, "cover: nested paths are refused");
+        check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english, "offline").CoverFile() is null, "cover: offline location shows no cover");
+
         // 导入失败的去向：只有读取器确认通用密钥版本不足（keys_outdated）才引导换密钥；
         // 无法读取、缺票据、内容截断都不是换 prod.keys 能解决的。
         check(ImportFailureRoute.For("keys_missing", false) == ImportFailureRoute.ImportKeys, "missing prod.keys asks to import keys");
@@ -23,6 +38,14 @@ internal static class LibraryJobCases
         check(catalog.Games.Count == 1 && catalog.Games[0].Name == "Synthetic game" &&
             catalog.Games[0].Version == "1.2" && !catalog.KeysReady, "handwritten catalog values preserved");
         check(catalog.Games[0].Missing.Single() == "Need base", "backend requirements preserved without UI inference");
+        // #141：本体 + 2 个 DLC 同一个原件（sha256 相同，size 都是整个原件）：合计按原件算一次，每项自己的字节用 contentBytes；单项原件照旧用 size
+        const string bundle = """
+        {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000002","name":"Bundle","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100000000000002","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":15032180736},{"type":"dlc","titleId":"0100000000001003","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001004","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001005","version":0,"display":"","size":3145728,"format":"","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","contentBytes":5242880}]}],"keys":{"ready":true,"verified":true,"message":""}}}
+        """;
+        var bundled = LibraryCatalog.Parse(LibraryJobResult.Parse(bundle, 0, "catalog-test", "catalog").Result).Games[0];
+        check(bundled.TotalBytes == 15032385536L + 3145728L, "bundle: source total counts the shared file once");
+        check(bundled.Packages!.Where(p => p.Type == "dlc" && p.Sha256.StartsWith('c')).All(p => bundled.OwnBytes(p) == 102400), "bundle: each DLC in the shared file shows its own bytes");
+        check(bundled.OwnBytes(bundled.Packages![3]) == 3145728 && bundled.OwnBytes(bundled.Packages![0]) == 15032180736L, "bundle: single-package file keeps file size, base uses its own content");
         void Reject(string data, int exit, string label)
         {
             try { LibraryJobResult.Parse(data, exit, "catalog-test", "catalog"); }

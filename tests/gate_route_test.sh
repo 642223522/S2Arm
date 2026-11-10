@@ -83,4 +83,11 @@ rm -rf "$T"
 o=$(r tests macos/front_mac.m); ck "改 macos/front_mac.m（HOST_SRCS 的 Mac 前端源文件）→ 含 present_settings_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]]'
 o=$(r tests runtime/src/input_config.c); ck "改 runtime/src/input_config.c（HOST_SRCS）→ 含 present_settings_test、shared_matrix_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]] && [[ "$o" == *tests/shared_matrix_test.sh* ]]'
 o=$(r tests launchers/macos/build.mk); ck "改 launchers/macos/build.mk（拼 HOST_SRCS 的清单）→ 含 present_settings_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]]'
+# 算构建清单不许有副作用（11-09：make 解析就改写 build/.host_cfg，门禁里一算路由 runtime/gate.sh 并行各组同时重编同一批 .o、链接读到空文件）：
+#   在 clone 里放一份已知配置戳、带 S2A_CS=1 环境算一次路由 → 戳内容与修改时间都不变、没起 C# 构建（build/cs 不出现）
+T=$(mktemp -d); git clone -q --shared "$H" "$T/c" 2> /dev/null && cp "$H/tools/gate_route.py" "$T/c/tools/" && mkdir -p "$T/c/build" && printf 'S2A_CS= sentinel' > "$T/c/build/.host_cfg" && touch -t 202601010000 "$T/c/build/.host_cfg"
+m0=$(stat -f %m "$T/c/build/.host_cfg" 2> /dev/null || stat -c %Y "$T/c/build/.host_cfg"); (cd "$T/c" && S2A_CS=1 python3 tools/gate_route.py tests macos/front_mac.m > "$T/o" 2> /dev/null)
+m1=$(stat -f %m "$T/c/build/.host_cfg" 2> /dev/null || stat -c %Y "$T/c/build/.host_cfg")
+ck "算构建清单不碰本树 build/：配置戳内容 / 修改时间不变、不起 C# 构建，路由照常（含 present_settings_test）" '[ "$(cat "$T/c/build/.host_cfg")" = "S2A_CS= sentinel" ] && [ "$m0" = "$m1" ] && [ ! -e "$T/c/build/cs" ] && grep -q present_settings_test "$T/o"'
+rm -rf "$T"
 [ $bad = 0 ] && echo "gate_route 单测全过" || { echo "gate_route 单测有不通"; exit 1; }

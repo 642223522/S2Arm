@@ -332,35 +332,23 @@ class BannerPlaceTest(unittest.TestCase):
 
     def tearDown(self): self.td.cleanup()
 
-    def test_fetch_success_sets_entry(self):
+    def test_library_banner_copied_never_network(self):
+        # 横图是游戏库的元数据（作业层导入时抓好）：给了 --banner 那份就拷；组装本身绝不联网
         from pack import ship_ext
-        def fake(tid, dest):
-            Path(dest).write_bytes(b"JPGfake"); return True, "1920x1080 jpeg"
-        with mock.patch.dict(os.environ):
-            os.environ.pop("S2A_BANNER_FETCH", None)
-            with mock.patch("pack.banner_fetch.fetch_banner", fake):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        lib = self.d / "lib-banner.jpg"; lib.write_bytes(b"LIB")
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("组装不许联网")):
+            entry = {}
+            ship_ext._place_banner(self.GID, self.root, self.gd, entry, lib)
         self.assertEqual(entry.get("banner"), f"Games/{self.GID}/banner.jpg")
-        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"JPGfake")
+        self.assertEqual((self.gd / "banner.jpg").read_bytes(), b"LIB")
 
-    def test_fetch_failure_keeps_icon_only(self):
+    def test_no_banner_anywhere_keeps_icon_only(self):
         from pack import ship_ext
-        with mock.patch.dict(os.environ):
-            os.environ.pop("S2A_BANNER_FETCH", None)
-            with mock.patch("pack.banner_fetch.fetch_banner", return_value=(False, "连不上")):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("组装不许联网")):
+            entry = {}
+            ship_ext._place_banner(self.GID, self.root, self.gd, entry)
         self.assertNotIn("banner", entry)
         self.assertFalse((self.gd / "banner.jpg").exists())
-
-    def test_disabled_env_never_calls_fetch(self):
-        from pack import ship_ext
-        with mock.patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
-            with mock.patch("pack.banner_fetch.fetch_banner", side_effect=AssertionError("关着时不许调抓图")):
-                entry = {}
-                ship_ext._place_banner(self.GID, self.root, self.gd, entry)
-        self.assertNotIn("banner", entry)
 
 
 if __name__ == "__main__":
