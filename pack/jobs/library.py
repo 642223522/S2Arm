@@ -1328,7 +1328,8 @@ def record_import_packages(c, cat, source, packages, icons, sha, extracted):
                 try:
                     _copy_cover(c, tid, game, metadata, icon)
                 except OSError as error:
-                    if explain(error).code == "disk_full":
+                    # 只在逐来源模式下包成这款的失败；默认路径照旧抛原始 OSError，由 explain 归 permission_denied / input_missing 等（同 #124 之前）
+                    if explain(error).code == "disk_full" or c.r.get("partialResults") is not True:
                         raise
                     raise Failure("游戏库封面无法写入。", internal=str(error)) from error
             metadata.pop("icon", None)
@@ -1425,7 +1426,7 @@ def import_games(c):
                         atomic(c.library / "catalog.json", draft)
                     except OSError as error:
                         failure = explain(error)
-                        if failure.code == "disk_full":
+                        if failure.code == "disk_full" or not partial:   # 默认路径同 #124 之前：原始 OSError 交 explain 归码
                             raise
                         raise Failure("游戏库目录无法写入。", internal=str(error)) from error
             except (Failure, OSError) as error:
@@ -1443,7 +1444,8 @@ def import_games(c):
     added = {r["id"].upper() for r in results if not r["duplicate"]}
     if added:
         store_meta_background(c, added)   # 横图、英文标题：后台查（导入不等联网），查到英文名接着改文件夹名
-    return c.import_result
+    # 不开 partialResults 时结果形状同 #124 之前：只有 imports（逐来源的 sources 只给要它的调用方）
+    return c.import_result if partial else {"imports": results}
 
 
 JOB_LIST_LIMIT = 200
