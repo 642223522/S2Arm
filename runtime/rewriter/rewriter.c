@@ -2395,6 +2395,28 @@ static int jt_targets(const IV* l, int j, AV* out) {
 }
 /* Static predecessor traversal for table base recovery. No path is invented
  * for a block that is only reachable through another indirect jump table. */
+static void reachdefs_edge(const IV* l, int dst, int r, int q, int* seen, AV* result, AV* todo,
+                           int* count) {
+  if (q < 0 || (size_t)q >= l->n)
+    return;
+  Ins* x = l->v + q;
+  int edge = (direct(x) && !eq(x->m, "bl") && target(x) == l->v[dst].at) ||
+             (q + 1 == dst && !in(x->m, "b|br|ret"));
+  if (!edge)
+    return;
+  (*count)++;
+  if (seen[q])
+    return;
+  seen[q] = 1;
+  if (writes(x, r)) {
+    if (!contains(result, q))
+      PUSH(*result, q);
+  } else {
+    if (q == 0 && !contains(result, -1))
+      PUSH(*result, -1);
+    PUSH(*todo, (A)q);
+  }
+}
 static AV reachdefs(const IV* l, int k, int r) {
   AV result = {0}, todo = {0};
   int* seen = zalloc(l->n * sizeof(int));
@@ -2404,24 +2426,21 @@ static AV reachdefs(const IV* l, int k, int r) {
   while (todo.n) {
     int dst = (int)todo.v[--todo.n];
     int count = 0;
-    for (size_t q = 0; q < l->n; q++) {
-      Ins* x = l->v + q;
-      int edge = (direct(x) && !eq(x->m, "bl") && target(x) == l->v[dst].at) ||
-                 (q + 1 == (size_t)dst && !in(x->m, "b|br|ret"));
-      if (!edge)
-        continue;
-      count++;
-      if (seen[q])
-        continue;
-      seen[q] = 1;
-      if (writes(x, r)) {
-        if (!contains(&result, q))
-          PUSH(result, q);
-      } else {
-        if (q == 0 && !contains(&result, -1))
-          PUSH(result, -1);
-        PUSH(todo, (A)q);
+    if (fn_indexed(l)) {
+      A at = l->v[dst].at;
+      size_t i = upper(&g->ftg, at);
+      if (i && g->ftg.v[i - 1] == at)
+        for (size_t e = g->fsrc_at[i - 1]; e < g->fsrc_at[i]; e++)
+          reachdefs_edge(l, dst, r, g->fsrc[e], seen, &result, &todo, &count);
+      if (dst > 0) {
+        int q = dst - 1;
+        Ins* x = l->v + q;
+        if (!(direct(x) && !eq(x->m, "bl") && target(x) == at))
+          reachdefs_edge(l, dst, r, q, seen, &result, &todo, &count);
       }
+    } else {
+      for (size_t q = 0; q < l->n; q++)
+        reachdefs_edge(l, dst, r, (int)q, seen, &result, &todo, &count);
     }
     if (!count && dst != k && !contains(&result, -1))
       PUSH(result, -1);
