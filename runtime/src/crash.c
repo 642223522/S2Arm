@@ -50,7 +50,6 @@ void s2a_backtrace(uint64_t fp) {
     for (int i = 0; i < k; i++) { char b[160]; where(lr[i], b, sizeof b); LOG("  #%d %s", i, b); }
 }
 void s2a_thread_dump(void);
-static void (*g_dsh_crash_dump)(void);   // graphics/nvn/host/dsh_miss.inc s2a_dsh_crash_dump：现编时崩溃，落盘正在编的那支输入；装信号时 dlsym 取一次（信号处理里不调 dlsym），只链运行时的单测取不到 = 空
 #include "../../graphics/track/s2a_track.h"
 #if defined(__ANDROID__)
 // The existing dispatcher remains the only owner. Managed/ART handlers may
@@ -203,6 +202,7 @@ static void crash_reraise(int sig) {
     raise(sig);
     _exit(128 + sig);
 }
+static void (*g_dsh_crash_dump)(void);   // graphics/nvn/host/dsh_miss.inc s2a_dsh_crash_dump：现编时崩溃，落盘正在编的那支输入；装信号时 dlsym 取一次（信号处理里不调 dlsym），只链运行时的单测取不到 = 空
 static void on_crash(int sig, siginfo_t *si, void *ctx) {
     // 先给 16 KB 写跟踪（graphics/track）认领：游戏 / 原生层写到被写保护的游戏页，跟踪模块记脏、放开后返回重执行那条指令。
     // 是否写取 ESR 的 WnR 位（数据中止 EC = 0x24 / 0x25 时有效）
