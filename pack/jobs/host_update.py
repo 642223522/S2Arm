@@ -128,10 +128,19 @@ def settle(c, gid, sha, ok):
     info = layout.game_info(c, gid)
     if ok:
         layout.update_info(c, gid, hostMac=sha)
-        prune(c)
+        tidy(c, "清理不再用的旧运行层", prune, c)   # 清旧宿主只是省盘：出错不能把玩过的这一局判失败
     else:
         layout.update_info(c, gid, hostFailed=sorted(set(info.get("hostFailed", [])) | {sha}))
         c.emit("message", "新版运行层这款没能正常启动，下次会用原来的版本启动；再点一次开始即可。")
+
+
+def tidy(c, what, fn, *a):
+    """收尾里只为省盘 / 刷新显示的步骤：出错只提示一句、不抛（v0.2.3 清理：#343 出包已成功，收尾清旧宿主抛错把整次出包判成失败）"""
+    try:
+        return fn(*a)
+    except Exception as e:   # noqa: BLE001 — 收尾步骤任何错误都不改变主结论
+        c.emit("message", f"{what}没做完（不影响这次结果）：{e}")
+        return None
 
 
 def prune(c):
@@ -141,6 +150,8 @@ def prune(c):
     if not root.is_dir():
         return
     keep = {bundled_sha(c)}
+    # 扫每个位置的 games/ 而不是只读索引：索引不保证覆盖每个文件夹（layout.state 对不上时也要回头扫），这里要「宁可多留不误删」。
+    #   只认是目录的条目；.DS_Store 这类文件读 .DS_Store/game.json 由 core.read 当「没有」（#343）
     for _, place, connected in layout.locations(c):
         if not connected:
             return
