@@ -110,6 +110,18 @@ ck "⑭ 排满的 big（8）在空闲 + 可回收 5 GB 下放不进：不占防�
 touch "$P/h.go" "$P/small2.go"; waitf "$P/big.in" 100
 ck "⑭ h、small2 结束后 big 照常放行（降级只是不锁全机，不是丢票）" '[ -e "$P/big.in" ]'
 touch "$P/big.go"; wait
+# ㉒ #235：账本路径带空格（玩家 Mac 的账本在 ~/Library/Application Support 下）+ 一张发车时刻不是数字的坏票（别的版本写的 / 写了一半）：
+#   同 ⑧ 的布局，期望防饿死照常生效（big 排满后 small2 不插空）、坏票被跳过、不报 unbound variable。
+#   旧码：for f in $(ls …) 把每张票的路径按空格切成三段，一张票也读不到 → small2 插空起（本项红）
+S="$T/sp/Application Support"; mkdir -p "$S/mem"; export S2A_MEM_DIR=$S/mem S2A_MEM_LOCK=$S/mem.flock S2A_MEM_SEED=$Q/seed.tsv S2A_MEM_STARVE_S=600 S2A_MEM_AVAIL_GB=100
+printf '%s\t1\tdsh\tbad\ton\t0\n' $$ > "$S/mem/q.1000.$$"   # 本测试进程持有（不被当死票清掉），第 5 列是文字
+hold "$S" h; waitf "$S/h.in"; hold "$S" big; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/big'
+export S2A_MEM_STARVE_S=1; sleep 1.5
+hold "$S" small2; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 1
+ck "㉒ 路径带空格 + 坏票：big 排满 1 秒，small2 不插空（排队行写明给 big 预留）" '[ ! -e "$S/small2.in" ] && grep "【排队】mem_admit dsh/small2" "$S/mem/admit.log" | grep -q "dsh/big.*给它预留"'
+touch "$S/h.go"; waitf "$S/big.in" 100; waitf "$S/small2.in" 100
+ck "㉒ h 结束后 big、small2 依次放行；全程没有 unbound variable" '[ -e "$S/big.in" ] && [ -e "$S/small2.in" ] && ! grep -q "unbound variable" "$S"/*.out'
+touch "$S/big.go" "$S/small2.go"; rm -f "$S/mem/q.1000.$$"; wait
 unset S2A_MEM_STARVE_S S2A_MEM_AVAIL_GB; export S2A_MEM_SEED=$T/seed.tsv
 
 # ⑮ 估值超过物理内存：物理内存 8 GiB（S2A_MEM_PHYS_BYTES），估值表 dsh/huge 20 → 【红】、退出 125、命令没起、没留排队票
