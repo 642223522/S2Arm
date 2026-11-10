@@ -94,6 +94,9 @@ static uint64_t level_walk(const nvn_texdesc *d, unsigned level, unsigned dpl, u
         uint32_t wg = (lwb + 63) / 64, hg = (lh + 7) / 8;
         tiled = tiled && lwb >= tw * 64 && lh >= 8u << tileH && ld >= 1u << tileD;
         if (tiled) wg = (wg + tw - 1) / tw * tw;
+        // Packaged layout byte 1: the row pitch of a level at least 2^n GOBs wide is aligned up to 2^n GOBs; narrower levels are not aligned.
+        // Packaged ASTC / BC textures in 01004A4010FEA000 need it; read unaligned, the padding (all zero) is sampled and ASTC decodes it as magenta
+        { unsigned pa = (unsigned)(d->pkg_block_h >> 8) & 0xff; if (!tiled && pa > 1) { unsigned a = 1u << (pa - 1); if (wg >= a) wg = (wg + a - 1) / a * a; } }
         if (i == level) { if (gobs) *gobs = wg; return off; }
         uint32_t ht = (hg + (1u << th) - 1) >> th, dt = (ld + (1u << td) - 1) >> td;
         off += (uint64_t)wg * ht * dt << (9 + th + td);
@@ -123,7 +126,7 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
     }
     unsigned tileH = 0, tileD = 0;
     unsigned px, py, pz;
-    if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = d->pkg_block_h ? (unsigned)d->pkg_block_h - 1 : sparse_page(d, t, &px, &py, &pz) && sparse_levels(d) ? py : pick_tile(ah * 3 / 16); }
+    if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = (d->pkg_block_h & 0xff) ? (unsigned)(d->pkg_block_h & 0xff) - 1 : sparse_page(d, t, &px, &py, &pz) && sparse_levels(d) ? py : pick_tile(ah * 3 / 16); }
     else if (dpl == 3) { if (sparse_page(d, t, &px, &py, &pz)) { tileH = py; tileD = pz; } else tileD = pick_tile(z + z / 2); }
     o->tileH = tileH; o->tileD = tileD;
     unsigned levels = d->levels ? d->levels : 1;
