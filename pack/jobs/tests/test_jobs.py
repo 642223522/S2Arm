@@ -1597,6 +1597,16 @@ class JobsTests(unittest.TestCase):
             library.diagnostics(self.c)
         self.assertEqual(destination.read_bytes(), previous)
 
+    def test_diagnostic_export_failure_names_the_step_and_reason_but_no_path(self):
+        # #427：游戏库在 SMB 共享盘上导不出，原先只有一句「无法安全读取或写入」，看不出卡在哪一步。期望手写：所选位置的文件夹不在 → 建临时文件那一步失败
+        destination = self.root / "不存在的文件夹" / "诊断.zip"; self.c.r["path"] = str(destination)
+        with self.assertRaises(Failure) as caught:
+            library.diagnostics(self.c)
+        message = str(caught.exception)
+        self.assertIn("无法安全读取或写入诊断文件，未更新诊断包（在所选位置建临时文件：", message)
+        self.assertIn("错误码", message)
+        self.assertNotIn(str(self.root), message)   # 不带路径（路径里可能有用户名，摘要会贴到公开帖子）
+
     def test_diagnostic_export_never_contains_keys_or_player_files(self):
         self.c.keys.parent.mkdir(parents=True)
         self.c.keys.write_text("header_key = " + "a" * 64)
