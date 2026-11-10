@@ -71,7 +71,9 @@ static CGRect normalized_rect(NSDictionary *value) {
         if (!fields(b, @[@"id", @"x", @"y", @"width", @"height", @"cornerRadius"]) ||
             ![b[@"id"] isKindOfClass:NSString.class] || ![allowed containsObject:b[@"id"]] || [seen containsObject:b[@"id"]] ||
             !number(b[@"x"], 0, 1) || !number(b[@"y"], 0, 1) ||
-            !number(b[@"width"], 0.04, 0.4) || !number(b[@"height"], 0.04, 0.4) ||
+            // 宽高按安全区短边折算（frameForButton）：默认布局按点设计，小键 30 点在 iPad 大屏（短边约 1000 点）只有 0.03；
+            //   下限原为 0.04（按 iPhone 定），iPad 上拖完一保存就过不了（#372），改成与摇杆激活区同一个下限 0.01
+            !number(b[@"width"], 0.01, 0.4) || !number(b[@"height"], 0.01, 0.4) ||
             !number(b[@"cornerRadius"], 0, 0.2) ||
             [b[@"cornerRadius"] doubleValue] > MIN([b[@"width"] doubleValue], [b[@"height"] doubleValue]) / 2 + geometryTolerance) {
             fail(error, @"F01.buttons", S2AL(@"vpad.layout.err.buttonFields")); return nil;
@@ -399,6 +401,13 @@ static int read_enabled(NSURL *file, BOOL *enabled) {
     if (!isfinite(center.x) || !isfinite(center.y) || center.x < 0 || center.x > 1 || center.y < 0 || center.y > 1) return fail(error, @"F01.stickMode", S2AL(@"vpad.layout.err.stickOffscreen"));
     _stickCenters[side ? 1 : 0] = center; return [self saveStickMode:error];
 }
+// 界面滑杆是单精度：拉到头的 1.6f 换成双精度是 1.6000000238，越过上限一点点就被拒（#372 iPad 上按键调到最大存不上）。
+//   存之前按界面精度 0.001 取整，再按原范围校验；文件格式与范围都不变
+static S2AVPadKeyStyle key_style_snapped(S2AVPadKeyStyle s) {
+    if (isfinite(s.scale)) s.scale = round(s.scale * 1000) / 1000;
+    if (isfinite(s.opacity)) s.opacity = round(s.opacity * 1000) / 1000;
+    return s;
+}
 static BOOL key_style_valid(S2AVPadKeyStyle s) {
     return isfinite(s.scale) && isfinite(s.opacity) && s.scale >= 0.6 && s.scale <= 1.6 && s.opacity >= 0.2 && s.opacity <= 1;
 }
@@ -429,6 +438,7 @@ static BOOL key_style_valid(S2AVPadKeyStyle s) {
     return v ? (S2AVPadKeyStyle){[v[@"scale"] doubleValue], [v[@"opacity"] doubleValue], [v[@"hidden"] boolValue]} : (S2AVPadKeyStyle){1, 1, NO};
 }
 - (BOOL)setKeyStyle:(S2AVPadKeyStyle)style forKey:(NSString *)identifier persist:(BOOL)persist error:(NSError **)error {
+    style = key_style_snapped(style);
     if (!key_style_valid(style)) return fail(error, @"F01.keyStyle", S2AL(@"vpad.layout.err.keyStyle"));
     _keyStyles[identifier] = @{@"scale": @(style.scale), @"opacity": @(style.opacity), @"hidden": @(style.hidden)};
     return persist ? [self saveKeyStyles:error] : YES;
@@ -438,9 +448,9 @@ static BOOL key_style_valid(S2AVPadKeyStyle s) {
     _keyTheme = theme; return [self saveKeyStyles:error];
 }
 - (BOOL)setGlobalScale:(CGFloat)scale opacity:(CGFloat)opacity persist:(BOOL)persist error:(NSError **)error {
-    S2AVPadKeyStyle check = {scale, opacity, NO};
+    S2AVPadKeyStyle check = key_style_snapped((S2AVPadKeyStyle){scale, opacity, NO});
     if (!key_style_valid(check)) return fail(error, @"F01.keyStyle", S2AL(@"vpad.layout.err.keyStyle"));
-    _globalScale = scale; _globalOpacity = opacity; return persist ? [self saveKeyStyles:error] : YES;
+    _globalScale = check.scale; _globalOpacity = check.opacity; return persist ? [self saveKeyStyles:error] : YES;
 }
 - (BOOL)resetKeyStyles:(NSError **)error { _keyStyles = [NSMutableDictionary dictionary]; _keyTheme = 0; _globalScale = _globalOpacity = 1; return [self saveKeyStyles:error]; }
 - (NSDictionary<NSString *, NSNumber *> *)keyScalesIncludingHidden:(BOOL)includeHidden {
