@@ -280,8 +280,10 @@ def preflight(c):
     add(".NET 10", ok and ("Microsoft.NETCore.App 10." in version if packaged else any(line.startswith("10.") for line in version.splitlines())),
         "应用内置 .NET 10 运行时。" if packaged else "开发构建需要 .NET 10 SDK。")
     ok, version = probe(c, ["xcrun", "--sdk", "macosx", "metal", "--version"])
-    developer = Path(c.r.get("developerDir", ""))
-    has_xcode = (developer / "usr/bin/xcodebuild").is_file()
+    developer = Path(c.r.get("developerDir") or "")
+    # 没找到 Xcode 时启动器传空串：Path("") 拼出的相对路径会按工作目录（从 Finder 打开是 /）落到系统自带的
+    # /usr/bin/xcodebuild 空壳上，误判成装了 Xcode（#109）。只认绝对路径下的 xcodebuild
+    has_xcode = developer.is_absolute() and (developer / "usr/bin/xcodebuild").is_file()
     # 外部依赖只有这两项（其余全随应用）：缺什么就给一键处理（维护者 10-23）——Xcode 跳 App Store；装了没打开过（许可没同意）就打开它；缺 Metal 组件就一键下载
     # Xcode's missing-component shim can return zero while printing an error.
     metal_ok = ok and "Apple metal version" in version and "error:" not in version.lower()
