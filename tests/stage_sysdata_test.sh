@@ -81,35 +81,34 @@ if [ "$(uname -s)" = Darwin ]; then
   o=$(PATH=$T/fakecp:$PATH FAKECP=both S fd 2>&1); r=$?
   ck "⑪b 两次都失败 → 退非 0、红行带两次原因（rc=${r}）" '[ $r != 0 ] && [[ "$o" == *"【红】拷字体失败："*"Cross-device link"*"普通复制："*"Permission denied"* ]]'
 fi
-# ⑫ 玩家系统数据跨卷：只模拟卷号和旧 Darwin 的克隆失败，普通复制走真 cp。
+# ⑫ 只模拟 cp 失败。递归克隆可能先留下半份目标目录，普通复制必须写到正确层级。
 if [ "$(uname -s)" = Darwin ]; then
   mkdir -p "$T/fakesd" "$T/source with space/0100000000000801/subdir"
-  export TEST_SYSDATA="$T/source with space"
-  printf 'cross-volume' > "$TEST_SYSDATA/0100000000000801/subdir/sample.dat"
-  cat > "$T/fakesd/stat" <<'EOF'
-#!/bin/bash
-if [ "$#" = 3 ] && [ "$1" = -f ] && [ "$2" = %d ] && [ "$3" = "$TEST_SYSDATA/0100000000000801" ]; then
-  printf '0\n'
-else
-  exec /usr/bin/stat "$@"
-fi
-EOF
+  sd_source="$T/source with space"
+  printf 'cross-volume' > "$sd_source/0100000000000801/subdir/sample.dat"
   cat > "$T/fakesd/cp" <<'EOF'
 #!/bin/bash
 for arg in "$@"; do last=$arg; done
 case "$last" in
   */systemdata/0100000000000801)
-    if [ "$1" = -c ]; then printf 'cp: clonefile failed: Cross-device link\n' >&2; exit 1; fi
+    if [ "$1" = -c ]; then
+      mkdir -p "$last" && printf 'partial' > "$last/clone-leftover"
+      printf 'cp: clonefile failed: %s\n' "${TEST_SYSDATA_CLONE_ERR:-Cross-device link}" >&2
+      exit 1
+    fi
     if [ "${TEST_SYSDATA_DENY:-0}" = 1 ]; then printf 'cp: Permission denied\n' >&2; exit 1; fi ;;
 esac
 exec /bin/cp "$@"
 EOF
-  chmod +x "$T/fakesd/stat" "$T/fakesd/cp"
+  chmod +x "$T/fakesd/cp"
   mk sd 0100DADA00000000 99999999
-  o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$TEST_SYSDATA" S sd 2>&1); r=$?
-  ck "⑫a 系统数据跨卷 → 退 0、递归复制内容与来源相同（rc=${r}）" '[ $r = 0 ] && cmp -s "$(c sd)/systemdata/0100000000000801/subdir/sample.dat" "$TEST_SYSDATA/0100000000000801/subdir/sample.dat"'
+  o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$sd_source" S sd 2>&1); r=$?
+  ck "⑫a 目录克隆跨卷失败 → 清理半份目标、普通复制成功、黄行带原因（rc=${r}）" '[ $r = 0 ] && cmp -s "$(c sd)/systemdata/0100000000000801/subdir/sample.dat" "$sd_source/0100000000000801/subdir/sample.dat" && [ ! -e "$(c sd)/systemdata/0100000000000801/clone-leftover" ] && [[ "$o" == *【黄】*克隆复制失败*"Cross-device link"* ]]'
   mk sf 0100DADA00000001 aaaaaaaa
-  b=$(c sf); o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$TEST_SYSDATA" TEST_SYSDATA_DENY=1 S sf 2>&1); r=$?
-  ck "⑫b 跨卷复制被拒 → 退非 0、保留错误、现行不动（rc=${r}）" '[ $r != 0 ] && [[ "$o" == *【红】*拷系统数据*Permission\ denied* ]] && [ "$(c sf)" = "$b" ]'
+  b=$(c sf); o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$sd_source" TEST_SYSDATA_DENY=1 S sf 2>&1); r=$?
+  ck "⑫b 两次复制都失败 → 保留两次错误、现行不动（rc=${r}）" '[ $r != 0 ] && [[ "$o" == *【红】*拷系统数据*"Cross-device link"*"普通复制："*"Permission denied"* ]] && [ "$(c sf)" = "$b" ]'
+  mk sg 0100DADA00000002 bbbbbbbb
+  o=$(PATH=$T/fakesd:$PATH S2A_SYSDATA="$sd_source" TEST_SYSDATA_CLONE_ERR='Operation not supported' S sg 2>&1); r=$?
+  ck "⑫c 同卷不支持克隆 → 仍可普通复制、黄行带原因（rc=${r}）" '[ $r = 0 ] && cmp -s "$(c sg)/systemdata/0100000000000801/subdir/sample.dat" "$sd_source/0100000000000801/subdir/sample.dat" && [[ "$o" == *【黄】*克隆复制失败*"Operation not supported"* ]]'
 fi
 chmod -R u+w $T; rm -rf $T; [ $bad = 0 ] && echo "stage_sysdata 单测全过" || { echo "stage_sysdata 单测有不通"; exit 1; }
