@@ -842,6 +842,27 @@ namespace S2A.Services.Tests
                 InputPump.SetPrimary(Host.Device, Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Handheld, Ryujinx.HLE.HOS.Services.Hid.ControllerType.Handheld);   // 还原
                 Check("游戏只收 Player1 → 虚拟手柄离开掌机格；再收掌机格 → 挪回", "Player1 / Player1 / Handheld", $"{only1} / {again} / {back}");
             }
+            // 游戏声明的样式不收主手柄现在的样式（#359：开局「用你要用的手柄按 A」只收 掌机 / 单只 Joy-Con / 精灵球；Remap 只会 Pro ↔ 双 Joy-Con，原先直接断开）：
+            //   掌机档 → 掌机格；主机档（掌机格被 Remap 去掉）→ 单只右；游戏又收 Pro → 换回 Player1 的 Pro；只收双 Joy-Con 时 Pro 不动（Remap 自己换）
+            {
+                var npads = Host.Device.Hid.Npads;
+                var full = npads.SupportedStyleSets; bool docked0 = Host.Device.System.State.DockedMode;
+                var picky = Ryujinx.HLE.HOS.Services.Hid.ControllerType.Handheld | Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconLeft | Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconRight;
+                string Run(bool docked, Ryujinx.HLE.HOS.Services.Hid.ControllerType styles)
+                {
+                    Host.Device.System.State.DockedMode = docked; npads.SupportedStyleSets = full;
+                    InputPump.SetPrimary(Host.Device, Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Player1, Ryujinx.HLE.HOS.Services.Hid.ControllerType.ProController);
+                    npads.SupportedStyleSets = styles; InputPump.FollowSupportedStyles(Host.Device);
+                    string first = $"{InputPump.Player} {InputPump.Type}";
+                    npads.SupportedStyleSets = full; InputPump.FollowSupportedStyles(Host.Device);
+                    return first + " → " + $"{InputPump.Player} {InputPump.Type}";
+                }
+                string got = string.Join(" / ", Run(false, picky), Run(true, picky), Run(true, Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconPair));
+                Host.Device.System.State.DockedMode = docked0; npads.SupportedStyleSets = full;
+                InputPump.SetPrimary(Host.Device, Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Handheld, Ryujinx.HLE.HOS.Services.Hid.ControllerType.Handheld);   // 还原
+                Check("游戏不收 Pro 手柄 → 换成它收的样式，再收 Pro 时换回（掌机档 / 主机档 / 只收双 Joy-Con）",
+                    "Handheld Handheld → Player1 ProController / Player1 JoyconRight → Player1 ProController / Player1 ProController → Player1 ProController", got);
+            }
             // 单只 Joy-Con 横握（11-03 Super Mario Party）：横握后看到的 ABXY / 摇杆换成物理键 / 物理方向（右只顺时针 90°：A→X、B→A、X→Y、Y→B，摇杆 (x,y)→(−y,x)；
             //   左只逆时针 90°：A→下、B→左、X→右、Y→上，摇杆 (x,y)→(y,−x)）；竖握 / Pro 手柄不动
             {

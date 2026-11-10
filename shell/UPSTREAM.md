@@ -26,6 +26,7 @@
    | 文件 | 位置 | 原因 | 上游 SHA |
    |---|---|---|---|
    | `Sources/ShellUI/TouchLayoutEditorView.swift` | `accessibilityElements` 的 `ForEach` 闭包（原 292 行） | Xcode 26.6 Release iOS「unable to type-check this expression in reasonable time」，带游戏库的容器壳编不过（27.0 / 27.1 编得过）。闭包体原样挪进 `accessibilityElement(_:_:k:)`，三元表达式提成带类型的局部变量，行为不变 | `908e4e848fd232304381fc19d4d847fcc10fc4c2` |
+   | `Sources/ShellUI/CoverFlowView.swift`、`PortraitLibrary.swift`、`DeleteGameView.swift` | 封面 / 竖屏卡片的长按；`DeleteGameView.swift` 末尾加 `GameTileMenu` | 长按游戏卡片弹菜单：「游戏设置」+「删除游戏…」（同设置页底部的删除确认）；上游长按居中卡片只开设置、竖屏卡片没有长按（11-09 删除游戏要能长按） | — |
    | `Sources/ShellUI/ShellStyle.swift` | `enum ShellStrings` 前加 `public func shellText(_:)` | 宿主层调整位置编辑页（`S2ArmShellHost/S2ArmTouchEditorView.swift`）取同一份文字表，不另起一份本地化资源（11-07 维护者 编辑页改版） | — |
    | `Sources/ShellUI/Resources/Localizable.xcstrings` | 加 5 条（en / zh-Hans）：Drag a button to move it (this game only)、Reset to default、Button opacity、Applies to all games; drag to preview here、Turn your phone sideways to adjust button positions | 同上 | — |
    | `Sources/ShellUI/Resources/Localizable.xcstrings` | #316 再加 54 条（只有 en / zh-Hans，键 = 英文原文，zh-Hans 是原中文句）：iCloud 同步页（`S2ArmShellHost/CloudSaves.swift`，含 SaveSync 三种失败原因）、名字和封面页、调整位置页、每款游戏设置行（`S2ArmGameSettings` 的标签经 `ShellStrings.setting` 查表）、清单 technical 两句。de / fr / it / ja / sv 不补：没有可核对的译文，缺了回退英文 | 英文 App 下游戏库不再出中文；我方代码一律经 `shellText(_:)` 取同一份表，键与占位符由 `tests/ios_l10n_test.sh` ⑫ 核 | — |

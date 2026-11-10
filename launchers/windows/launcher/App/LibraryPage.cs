@@ -516,6 +516,7 @@ public sealed partial class EnvironmentWindow
 
     // 系统自动生成的文件（Windows 资源管理器 desktop.ini / Thumbs.db、从 Mac 拷来的 .DS_Store）：判空文件夹时不算数（同作业层 layout.OS_JUNK）
     private static readonly HashSet<string> OsJunk = new(StringComparer.OrdinalIgnoreCase) { ".DS_Store", "desktop.ini", "Thumbs.db" };
+    private static bool IsOsJunk(string name) => OsJunk.Contains(name) || name.StartsWith("._", StringComparison.Ordinal);   // ._ 开头：访达往非 APFS 盘拷东西留下的附属文件
 
     private static string LocalPath(IStorageItem item) => item.Path.IsFile ? Path.GetFullPath(item.Path.LocalPath)
         : throw new IOException("The selected item does not have a local filesystem path.");
@@ -539,7 +540,7 @@ public sealed partial class EnvironmentWindow
         var folder = LocalPath(folders[0]);
         // 有游戏、选的是空文件夹才问；已有游戏库或含旧产物的文件夹由作业层直接打开 / 认领
         libraryMoveFrom = null;
-        if (connectedFolder is not null && catalog is { Games.Count: > 0 } && !Directory.EnumerateFileSystemEntries(folder).Any(e => !OsJunk.Contains(Path.GetFileName(e))))
+        if (connectedFolder is not null && catalog is { Games.Count: > 0 } && !Directory.EnumerateFileSystemEntries(folder).Any(e => !IsOsJunk(Path.GetFileName(e))))
         {
             var choice = await AskMoveLibraryAsync();
             if (choice is null) return;

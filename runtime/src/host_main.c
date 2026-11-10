@@ -249,10 +249,11 @@ static int host_run(int argc, char **argv) {
     // 进程级 env.txt 已在构造期应用；上下文文件给的本款文档根另有 env.txt 时此刻补读（只补缺）。日志 fd 就绪且正式会话开始后，只输出一次暂存的诊断。
     { const char *gd = s2a_launch_ctx_game_env_dir(s2a_envfile_process_docs()); if (gd) s2a_envfile_apply(gd); }
     s2a_envfile_log_flush();
-    { void s2a_ql_boot(void); s2a_ql_boot(); }   // 档位梯子（runtime/src/qladder_host.c）：按本机本款记下的稳定档设起局档位，要早于下面 iOS 画面设置注入 S2A_DOCKED
 #if TARGET_OS_IPHONE
     s2a_ios_load_graphics_settings();
 #endif
+    // 档位梯子（runtime/src/qladder_host.c）：要在 iOS 画面设置注入之后（玩家选的运行模式是梯子的上限，#352），服务层 / 宽屏装表读 S2A_DOCKED 之前
+    { void s2a_ql_boot(void); s2a_ql_boot(); }
 #if TARGET_OS_OSX
     // 文件句柄软上限（10-24 gate-host 实测）：macOS 的 Terminal / ssh / 图形 App 缺省软上限 256，硬上限不限；动森带存档起局读存档时
     //   「Too many open files」、游戏随即 Break。iOS 上是 2560。起局时把软上限抬到 min(硬上限, 10240)（OPEN_MAX，setrlimit 认的最大值）
