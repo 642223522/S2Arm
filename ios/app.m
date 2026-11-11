@@ -1016,6 +1016,8 @@ static void cloud_sync_done(void *ctx) {
     pthread_detach(th);
 }
 @end
+// 界面（UIKit）已在主线程跑着 = 预热路径：s2a_front_run 会立即返回、调用的宿主线程接着往下走（资源导入闸门据此在起线程前就定「有没有人等」）
+int s2a_front_is_running(void) { return atomic_load(&g_front_running); }
 void s2a_front_run(void (*start_host)(void)) {
     // 预热路径已在主线程运行 UIKit；宿主工作线程的提示页 / 导入 / 正常收尾不能再次进入 UIApplicationMain。
     if (atomic_exchange(&g_front_running, 1)) return;

@@ -673,7 +673,7 @@ int s2a_game_install_state(const char *proc_docs, const char *gid) {
 #include <stdatomic.h>
 void s2a_ios_show_notice(const char *symbol, const char *title, const char *body, int done, int total, int diag);   // app.m：整屏提示页（notice.m 画）
 void s2a_ios_keep_awake(int on);   // app.m：导入期间关自动锁屏（原生层线审：锁屏 = 挂起 = 解包停住）
-void s2a_front_run(void (*guest_main)(void));
+void s2a_front_run(void (*guest_main)(void)); int s2a_front_is_running(void);
 // 提示页文案（11-02 维护者：一句人话说清发生了什么 + 玩家下一步；失败原因、文件名、返回码只进 host.log / unpack.log，经「导出诊断包」带走）。
 //   「导入完」请重新打开（原生层线 10-23：不同进程内接着进游戏）。字面在 runtime/include/s2a_ui_text.h（中英两份，S2A_UI 按界面语言取）
 static void note_wait(void) { s2a_ios_show_notice("arrow.down.circle.fill", S2A_UI(S2A_UI_IMPORT_WAIT_TITLE), S2A_UI(S2A_UI_IMPORT_WAIT_BODY), 0, 0, 0); }
@@ -705,8 +705,8 @@ static void *gate_thread(void *a) { (void)a;
     for (;;) {
         char why[600]; int act = s2a_import_decide(g_imp_docs, &w, time(NULL), why, sizeof why);
         if (act == S2A_GATE_READY) {
-            // 预热路径：宿主线程在 s2a_import_gate 里等 → 收起页面、接着起游戏；老路径（闸门在主线程、UIKit 接管后不返回）没人等 → 请玩家重新打开
-            for (int i = 0; i < 20 && !atomic_load(&g_gate_waiting); i++) usleep(100000);
+            // 预热路径：宿主线程在 s2a_import_gate 里等 → 收起页面、接着起游戏；老路径（闸门在主线程、UIKit 接管后不返回）没人等 → 请玩家重新打开。
+            //   有没有人等在起线程前就定了（s2a_import_gate），不再在这里等 2 秒看宿主线程到没到（iOS 装机剃刀 #34：时间补丁，没赶上就误走「请重新打开」）
             s2a_ios_keep_awake(0); s2a_ios_hide_pack_help();
             if (atomic_load(&g_gate_waiting)) { s2a_ios_hide_notice(); LOG("资源导入：就绪，收起页面、接着起游戏"); dispatch_semaphore_signal(g_ready_sem); }
             else { LOG("资源导入：就绪，提示玩家重新打开"); note_ready_reopen(); }
@@ -749,9 +749,11 @@ int s2a_import_gate(void) {
     if (st == S2A_IMPORT_READY) return 0;
     LOG("资源导入：资源没就绪（状态 %d），起闸门线程每 3 秒判一次（UIKit 先起来，免得被启动看门狗杀）", st);
     g_poll_sem = dispatch_semaphore_create(0); g_ready_sem = dispatch_semaphore_create(0);
+    // 有没有人等：界面已在跑（预热路径）→ 下面 s2a_front_run 立即返回、本线程等闸门；否则 s2a_front_run 进 UIApplicationMain 不返回，没人等
+    atomic_store(&g_gate_waiting, s2a_front_is_running());
     pthread_t th; if (pthread_create(&th, NULL, gate_thread, NULL)) die("资源导入线程起不来");
     s2a_front_run(NULL);
-    atomic_store(&g_gate_waiting, 1); dispatch_semaphore_wait(g_ready_sem, DISPATCH_TIME_FOREVER); atomic_store(&g_gate_waiting, 0);
+    dispatch_semaphore_wait(g_ready_sem, DISPATCH_TIME_FOREVER); atomic_store(&g_gate_waiting, 0);
     return 1;
 }
 // main() 起 UIKit 前问：资源包没就绪（要显示说明页 / 导入进度）就走延后启动，闸门在宿主线程上等「重新检查」
