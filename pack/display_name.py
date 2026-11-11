@@ -102,7 +102,7 @@ def display_name(path, suffix=''):
     return compose(title(path), suffix)
 
 
-def _ascii(s):   # 苹果 App ID 名字只收英文字母、数字、空格：重音字母先拆成「字母 + 附加符」只留字母（Pokémon → Pokemon），其余字符去掉、空白并成一个
+def _ascii(s):   # 苹果 App ID 名字只收英文字母、数字、空格：重音字母先拆成「字母 + 附加符」只留字母（é → e），其余字符去掉、空白并成一个
     s = ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
     return ' '.join(''.join(c if (c.isascii() and c.isalnum()) else ' ' for c in s).split())
 

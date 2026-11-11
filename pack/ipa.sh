@@ -34,7 +34,7 @@ C=$(git -C "$R" rev-parse --short=9 HEAD) || exit 1
 #   根 .gitignore 时编译产物被当改动，玩家导出 iPhone 版全红——.gitignore 已补进快照，作第二道）
 src_dirty() { [ -f "$1/engine.json" ] && return 1; [ -n "$(git -C "$1" status --porcelain -- runtime ios graphics translator services compat Makefile)" ]; }
 src_dirty "$R" && { echo "【红】本树构建相关目录有未提交改动，包版本对不上提交号，不出"; exit 1; }
-# 同一产物根、同款、同提交只许一份在出（10-20 20:5x 我手出与自动正式局同时出动森 c85d1335a，两份抢 CPU）：后到的等先到的出完，
+# 同一产物根、同款、同提交只许一份在出（10-20 20:5x 我手出与自动正式局同时出01006F8002326000 c85d1335a，两份抢 CPU）：后到的等先到的出完，
 #   再走下面的正常流程——先到的已写好包键，后到的命中「现行已是包」直接登记，复用它的结果
 #   锁是内核文件锁（tools/plock.sh，审计 P1-27：原先 mkdir 锁目录后才写 pid，空 pid 当死锁删、两个等待者可按旧读数删掉新锁）
 PL=${S2A_PACK_LOCKS:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/pack_lock}/$G@$C@$(printf %s "$S2A_ROOTS" | cksum | cut -d' ' -f1).lock
@@ -64,7 +64,7 @@ TL0=$(mktemp)
 if [ -n "${S2A_REFRESHED:-}" ] && [ "$S2A_REFRESHED" = "$(basename "$(root_cur "$G")")" ]; then echo "🟢 $G 调用方刚刷过产物根（现行 ${S2A_REFRESHED}），不再刷新"; rfc=0
 else TM "刷新各阶段（键核对 / 跳过）" "$TL0" -- bash "$H/refresh.sh" "$G"; rfc=$?; fi
 [ $rfc = 0 ] || { echo "【红】$G 现行产物根刷不到本树的阶段键，不出包"; rm -f "$TL0"; exit 1; }   # 产物根落后于代码树（如着色器翻译器换了版本）就先重出对应阶段
-# 宽屏表：refresh.sh 改写段一过就在后台起掌机档自动出表（与着色器 / 直连库并行）。出包不等它（10-25 维护者：巫师3 等了 573 秒、动森 713 秒，表还没出成；
+# 宽屏表：refresh.sh 改写段一过就在后台起掌机档自动出表（与着色器 / 直连库并行）。出包不等它（10-25 维护者：巫师3 等了 573 秒、01006F8002326000 713 秒，表还没出成；
 #   维护者 要出包快，宽屏表晚一包生效可以接受）：已收尾 → 表在下面拷进本包；还在跑 → 本包用仓库表、没有就这一档位不带表（16:9 居中留黑边，不拉伸），
 #   后台照跑，出好的表下一个包按同一构建号带上。确需等它显式设 S2A_WIDEN_WAIT_S=<秒>。主机档照旧后台出、下一个包带上。S2A_WIDEN_AUTO_RUN=0 两档都不出
 TM 等宽屏 "$TL0" -- bash "$R/graphics/widen/scan/auto_pkg.sh" wait "$G" handheld "${S2A_WIDEN_WAIT_S:-0}"
@@ -139,13 +139,13 @@ if [ -z "$SHELL_DIR" ]; then
   if [ ! -f "$SHELL_DIR/manifest.json" ] || [ -n "$STALE" ]; then mkdir -p "$SC" || fail "建不了壳缓存目录 $SC"
     [ "$(uname -s)" = Darwin ] || fail "本机没有壳 ${SID}，也没给发布源 S2A_SHELL_SOURCE（只有 Mac 能现出壳）"
     ST=$SC/.tmp.$SID.$$; tmk "出壳（本提交第一次）" "$TL" -- bash "$H/shell_build.sh" "$ST" >> "$W/pkg/build.log" 2>&1 || { rm -rf "${ST:?}"; fail "出壳失败（$(grep -a '【红】' "$W/pkg/build.log" | tail -1)）"; }
-    if [ -n "$STALE" ] && ! mv "$SHELL_DIR" "$SC/.tmp.stale.$SID.$$" 2> /dev/null; then   # 旧编译器出的那份挪开（.tmp.* 由 tools/gc.sh 两小时后删）
+    if [ -n "$STALE" ] && ! mv "$SHELL_DIR" "$SC/.tmp.stale.$SID.$$" 2> /dev/null; then   # 旧编译器出的那份挪开（.tmp.* 两小时后可清：维护方内部清扫器定期删，手动清要确认无出包在跑）
       [ ! -e "$SHELL_DIR" ] || fail "旧编译器出的壳 $SHELL_DIR 挪不开（不挪开新壳会被套进它里面）"; fi   # 别的单已先挪走 = 不在了，照常
     if ! mv "$ST" "$SHELL_DIR" 2> /dev/null; then rm -rf "${ST:?}"; fi   # 两单同时出同一提交的壳：先到的发布，后到的丢自己那份（内容相同）
     s2a_tc_fp > "$SC/.$SID.toolchain" || fail "记不下壳的工具链版本（$SC/.$SID.toolchain）"
   fi
 fi
-touch "$SHELL_DIR" 2> /dev/null   # 目录时间 = 最近使用（tools/gc.sh 按它清壳缓存）
+touch "$SHELL_DIR" 2> /dev/null   # 目录时间 = 最近使用（维护方内部清扫器按它清壳缓存）
 [ -f "$SHELL_DIR/root/S2AShell.tables" ] && [ -f "$SHELL_DIR/manifest.json" ] || fail "壳目录 $SHELL_DIR 不完整（要 root/S2AShell.tables 与 manifest.json，pack/shell_build.sh 出）"
 # 出包收尾（组装 → 存档身份 → 图标 → Info.plist → 签名 → 提高内存上限权限核实 → 打 ipa → 进包核对 → 资源包 → 资源包核对）：唯一实现在 pack/ipa_tail.py，
 #   Windows 的 Python 编排调同一份（#1100，11-04）。包号 / 着色器目标 / 画面模式 / 资源包要件的判法都在那里

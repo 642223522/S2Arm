@@ -15,7 +15,7 @@ DEVELOPER_DIR := $(or $(S2A_DEVELOPER_DIR),$(_S2A_ENV_DD),$(shell S2A_TC_QUIET=1
 export DEVELOPER_DIR MACOSX_DEPLOYMENT_TARGET MSBUILDDISABLENODEREUSE   # iOS 下限不导出（两个都导出时不带 -target 的宿主编译会当成 iOS，见 tools/toolchain.sh）
 BUILD   ?= build
 CC      ?= clang
-CFLAGS  ?= -O1 -g -Wall -Wextra -Wno-unused-parameter
+CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
 HOST_SRCS :=
 HOST_LIBS :=
 TEST_TARGETS :=

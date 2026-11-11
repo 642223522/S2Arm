@@ -69,14 +69,11 @@ public static class LibraryPaths
         return Built(legacy) ? legacy : defaultLibrary;
     }
 
-    /// <summary>任务日志 + 任务记录（logs\jobs\）：库建好了（有 .s2arm-library.json）是 库\logs，否则退回 私有目录\logs。library 不给就读设置。</summary>
-    public static string LogsRoot(string privateRoot, string? library = null)
-    {
-        var lib = library is null ? SavedLibrary(privateRoot) : Library(privateRoot, library);
-        return Path.Combine(!string.IsNullOrEmpty(lib) && Built(lib) ? lib : privateRoot, "logs");
-    }
+    /// <summary>任务日志 + 任务记录（logs\jobs\）：固定 私有目录\logs，同作业层 core.logs_root（剃刀 H6 / W18：原先「库建好放库里、否则私有目录」，
+    /// 后端和三个前端各算一遍）。旧位置 库\logs 里的由作业层建任务时迁回。</summary>
+    public static string LogsRoot(string privateRoot) => Path.Combine(privateRoot, "logs");
 
-    public static string JobsDir(string privateRoot, string? library = null) => Path.Combine(LogsRoot(privateRoot, library), "jobs");
+    public static string JobsDir(string privateRoot) => Path.Combine(LogsRoot(privateRoot), "jobs");
 
     private static bool Built(string library) => File.Exists(Path.Combine(library, ".s2arm-library.json"));
 

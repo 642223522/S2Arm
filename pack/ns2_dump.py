@@ -90,7 +90,7 @@ def clone(src, dst):
     shutil.copy2(src, dst)   # 跨卷 / 非 APFS：真拷
 
 
-# 合成控制分区里各类存档按游戏代码实际挂的建（11-05 塞尔达时之笛：游戏挂临时存储 MountTemporaryStorage，合成件 TemporaryStorageSize = 0，
+# 合成控制分区里各类存档按游戏代码实际挂的建（11-05 0400486024DEC000：游戏挂临时存储 MountTemporaryStorage，合成件 TemporaryStorageSize = 0，
 #   启动时 EnsureApplicationSaveData 不建它，OpenSaveDataFileSystem（fs 命令 51）回 2002-1002、游戏 Break）。
 #   判法：游戏代码模块（main、subsdk*；sdk 定义全部 nn::fs 函数，不算）的动态符号名里有没有 nn::fs 对应挂载函数（导入名在 .dynstr，按段解开后找修饰名）；有就按下面的大小声明（与账号存档同量级），
 #   没有就保持 0（不凭空多建）。字段位置同 Ryujinx.Horizon/Sdk/Ns/ApplicationControlProperty.cs。
@@ -135,6 +135,10 @@ def synth_nacp(tid, name, saves=()):
     for i in range(16):   # ApplicationTitle[16]：名字 0x200 + 发行商 0x100
         n[i * 0x300:i * 0x300 + len(t)] = t
     n[0x3025] = 1                                   # StartupUserAccount = Required
+    # SupportedLanguageFlag：不知道游戏支持哪些语言时只声明美式英语（位 0）。留 0 = 「一种都不支持」，服务层把系统语言原样交给游戏，
+    #   游戏不认（#401：系统简体中文 → 游戏判无效语言、去读不存在的语言库、一直黑屏）；声明了英语，系统语言不在表里时就退到英语。
+    #   不按资源目录猜语言：各款语言资源的组织方式不同，没有通用判据
+    struct.pack_into('<I', n, 0x302C, 1)
     n[0x3060:0x3061] = b'?'                         # DisplayVersion 未知
     struct.pack_into('<Q', n, 0x3078, tid)          # SaveDataOwnerId = 程序号（错了开存档 2002-6400，11-03 火纹）
     struct.pack_into('<q', n, 0x3080, 0x08000000)   # UserAccountSaveDataSize 128 MB

@@ -171,7 +171,7 @@ struct ExportSessionView: View {
     // ---- timing: elapsed, time left, done at ----
 
     private func estimate(at now: Date) -> MilestoneEstimate {
-        session.progress.track.estimate(fraction: session.progress.fraction, now: now.timeIntervalSince1970)
+        session.progress.estimate(at: now)
     }
 
     /// 这一步在整单里占的比重：各步都有本机记录就按时间算，否则每步一样重（不编时间）。
@@ -335,11 +335,11 @@ struct ExportSessionView: View {
                 if value != nil { ProgressSweep().frame(height: 6).clipShape(Capsule()) }
             }
             .padding(.top, 6)
-            if !detail.isEmpty { Text(detail).font(.manrope(12.5, .medium)).monospacedDigit().foregroundStyle(.secondary) }
-            if !session.message.isEmpty, session.message != m.label, session.message != session.stage {
-                Text(loc.backend(session.message)).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).lineLimit(1).truncationMode(.middle)
-                    .id(session.message).transition(.opacity).animation(.easeOut(duration: 0.25), value: session.message)
-            }
+            // 这两行随作业事件有无、长短在变：恒占一行、不换行（空时透明占位），下面的步骤和日志不跟着上下跳
+            Text(detail.isEmpty ? " " : detail).font(.manrope(12.5, .medium)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+            let showMessage = !session.message.isEmpty && session.message != m.label && session.message != session.stage
+            Text(showMessage ? loc.backend(session.message) : " ").font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).lineLimit(1).truncationMode(.middle)
+                .id(session.message).transition(.opacity).animation(.easeOut(duration: 0.25), value: session.message)
         }
     }
 
@@ -442,7 +442,7 @@ struct ExportSessionView: View {
                             .accessibilityIdentifier("result.mac.play")
                         if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                     } else {
-                        Button(loc.t("s2arm.action.install")) { install(session.gameID ?? "") }
+                        Button(loc.t(model.installKey("s2arm.action.install"))) { install(session.gameID ?? "") }
                             .accessibilityIdentifier("result.ios.install")
                         if let ipa = outcome?.ipa, !ipa.isEmpty { Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) } }
                         if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
@@ -468,9 +468,13 @@ struct ExportSessionView: View {
                     Button(x("fix.space")) { freeSpace(session.gameID ?? "") }.buttonStyle(LauncherSecondaryButtonStyle())
                     Button(x("fix.continue")) { if let game { model.export(game, platforms: [platform], spaceOverride: true) } }.buttonStyle(LauncherSecondaryButtonStyle())
                 }
+                // 剃刀 M4：出包前不再按前端的环境检查结果挡人；作业因环境缺东西失败时（作业层错误码），这里给环境检查页的入口
+                if let code = outcome.code, S2ArmLauncherModel.environmentCodes.contains(code) {
+                    Button(loc.t("s2arm.env.title")) { model.showEnvironment = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                }
                 Button(x("fail.retry")) { if let game { model.export(game, platforms: [platform]) } }.buttonStyle(LauncherSecondaryButtonStyle())
                 Button(copied == platform ? loc.t("s2arm.export.copied") : loc.t("s2arm.export.copyError")) {
-                    let fallback = model.errorSummary(name, outcome: ExportRun.Outcome(state: outcome.state, message: loc.backend(outcome.message), code: outcome.code, suggestion: loc.backend(outcome.suggestion), failureSummary: outcome.failureSummary), game: session.name)
+                    let fallback = S2ArmLauncherModel.reportUnavailable(loc.backend(outcome.message), code: outcome.code)
                     Task {
                         await model.copyErrorReport(platform: name, gameID: session.gameID, operations: [platform == .ios ? "ipa" : "build"], fallback: fallback)
                         copied = platform

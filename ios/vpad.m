@@ -129,7 +129,7 @@ static int g_src_w, g_src_h;   // 最近一帧真实出图尺寸（gameRect 里�
 //   每次现读（settings.m s2a_ios_res_scale）：设置页「立刻重启」重写环境变量后进程内重启，不能沿用上一局的倍率（审计 P1-9）
 static float g_res_scale(void) {
     static float last = 1.0f;
-    float v = s2a_ios_res_scale(NSUserDefaults.standardUserDefaults);
+    float v = s2a_ios_res_scale(s2a_ios_settings_defaults());
     if (v != last) { last = v; LOG("触屏：渲染倍率 %gx，触点空间按游戏尺寸（出图 ÷ %g）算", v, v); }
     return v;
 }
@@ -384,10 +384,10 @@ typedef BOOL (^VPFlag)(void);
     [items addObject:vp_sub(S2AL(@"vpad.menu.sticks"), @"circle.circle", @[fixed, vp_sub(S2AL(@"vpad.stick.sensitivity"), nil, sens), fine, lock])];
     // 震动：档位单选、选了就按那一档试震；关掉游戏震动时档位变灰
     VPFlag rumbleOn = ^BOOL{ id o = [d objectForKey:@"S2ARumbleOn"]; return o ? [o boolValue] : YES; };
-    NSInteger (^level)(void) = ^NSInteger{ id o = [d objectForKey:@"S2ARumbleLevel"]; return o ? MAX(0, MIN(4, [o integerValue])) : 2; };
+    NSInteger (^level)(void) = ^NSInteger{ id o = [d objectForKey:@"S2ARumbleLevel"]; return o ? MAX(0, MIN(5, [o integerValue])) : 2; };
     UIAction *game = [self live:@"vp.rumble.on" title:S2AL(@"vpad.rumble") note:S2AL(@"vpad.menu.rumble.note") on:rumbleOn disabled:nil run:^{
         [d setBool:!rumbleOn() forKey:@"S2ARumbleOn"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }];
-    NSMutableArray<UIMenuElement *> *levels = [NSMutableArray array]; NSArray *names = @[S2AL(@"vpad.rumble.level.0"), S2AL(@"vpad.rumble.level.1"), S2AL(@"vpad.rumble.level.2"), S2AL(@"vpad.rumble.level.3"), S2AL(@"vpad.rumble.level.4")];
+    NSMutableArray<UIMenuElement *> *levels = [NSMutableArray array]; NSArray *names = @[S2AL(@"vpad.rumble.level.0"), S2AL(@"vpad.rumble.level.1"), S2AL(@"vpad.rumble.level.2"), S2AL(@"vpad.rumble.level.3"), S2AL(@"vpad.rumble.level.4"), S2AL(@"vpad.rumble.level.5")];
     for (NSInteger i = 0; i < 5; i++)
         [levels addObject:[self live:[NSString stringWithFormat:@"vp.rumble.level.%ld", (long)i] title:names[i] note:nil on:^BOOL{ return rumbleOn() && level() == i; }
                             disabled:^BOOL{ return !rumbleOn(); } run:^{ [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }]];
@@ -400,11 +400,17 @@ typedef BOOL (^VPFlag)(void);
         [self live:@"vp.pad.ns2pro" title:S2AL(@"vpad.menu.ns2pro") note:nil on:^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; } disabled:nil
                run:^{ [d setBool:![d boolForKey:@"S2ANS2ProAdapterEnabled"] forKey:@"S2ANS2ProAdapterEnabled"]; }],
         [self live:@"vp.pad.gyro" title:S2AL(@"vpad.menu.gyro") note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
-        // 手柄按键对应（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新口径
-        vp_inline(@[[self live:@"vp.pad.face.letter" title:S2AL(@"vpad.menu.face.letter") note:S2AL(@"vpad.menu.face.letter.note") on:^BOOL{ return ![[d stringForKey:@"padFace"] isEqualToString:@"position"]; }
-                         disabled:nil run:^{ [d setObject:@"letter" forKey:@"padFace"]; }],
-                     [self live:@"vp.pad.face.position" title:S2AL(@"vpad.menu.face.position") note:S2AL(@"vpad.menu.face.position.note") on:^BOOL{ return [[d stringForKey:@"padFace"] isEqualToString:@"position"]; }
-                         disabled:nil run:^{ [d setObject:@"position" forKey:@"padFace"]; }]])])];
+        // 手柄按键布局（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新布局；
+        //   勾选看 pad.c 解析后的值（旧值 letter / position 也落到对应一项）
+        vp_inline(@[[self live:@"vp.pad.face.auto" title:S2AL(@"vpad.menu.face.auto") note:S2AL(@"vpad.menu.face.auto.note")
+                            on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_AUTO; }
+                      disabled:nil run:^{ [d setObject:@"auto" forKey:@"padFace"]; }],
+                     [self live:@"vp.pad.face.switch" title:S2AL(@"vpad.menu.face.switch") note:S2AL(@"vpad.menu.face.switch.note")
+                            on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_SWITCH; }
+                      disabled:nil run:^{ [d setObject:@"switch" forKey:@"padFace"]; }],
+                     [self live:@"vp.pad.face.xbox" title:S2AL(@"vpad.menu.face.xbox") note:S2AL(@"vpad.menu.face.xbox.note")
+                            on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_XBOX; }
+                      disabled:nil run:^{ [d setObject:@"xbox" forKey:@"padFace"]; }]])])];
     // 画面：宽屏 / 60 帧 / 主机模式 / 补丁要按本款能力判可不可开、改完要重启，逻辑全在整页设置（app_settings.m），这里直接去那一页，不另抄一份
     UIAction *pic = vp_act(S2AL(@"vpad.menu.picture"), @"rectangle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); pic.subtitle = S2AL(@"vpad.menu.picture.note");
     [items addObject:pic];
@@ -759,7 +765,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 // 审计 P1-3：游戏启用了触屏（C# InputPump 读 Hid.Touchscreen.Active 后经 s2a_vpad_touch_wanted 转告）而当前是按键方案时，提示一次怎么切到「仅触屏操作」（本 App 只提示一次）。
 //   两套方案保持互斥、不做「又有按键又透传」：默认布局左右半屏空白处都是浮动摇杆的激活区，按键以外没有空地可透传，透传就等于推摇杆时游戏也收到点按；
 //   很多游戏开机就启用触屏、分不出真用不用，所以只提示、不自动切。自动化局不提示
-//   11-04 维护者（脑锻炼标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 维护者 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
+//   11-04 维护者（一款第一方益智游戏标题页只认触屏）曾在屏幕上方常驻「键 / 触」切换钮；11-09 维护者 删掉，切换在齿轮菜单「按键布局」（点开即到，不再藏得深）；
 //   提示条（本 App 只提示一次）带「切到触屏」按钮，一点就切。切换与持久化在 vpad_layout.m setTouchOnly:（单测 t_vpad_toggle）
 - (void)offerTouchHint {
     _touchWanted = YES;
@@ -768,7 +774,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     NSUserDefaults *u = NSUserDefaults.standardUserDefaults;
     if (_touchOnly || [u boolForKey:kTouchHintKey]) return;
     // 等 3 秒再定弹不弹：游戏常先启用触屏（ActivateTouchScreen）、再声明触屏配置（SetTouchScreenConfiguration → 一次成功线的自动切，
-    //   ios/touch_config.m），脑锻炼就是这样。3 秒后已是仅触屏（被自动切了）就不弹「切到触屏」，也不记「提示过」，免得两条依次弹
+    //   ios/touch_config.m），一款第一方益智游戏就是这样。3 秒后已是仅触屏（被自动切了）就不弹「切到触屏」，也不记「提示过」，免得两条依次弹
     __weak S2AVPadView *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         S2AVPadView *view = weakSelf; if (!view || view->_touchOnly) { if (view) LOG("触屏布局：3 秒内已切到仅触屏（自动切），不弹「切到触屏」"); return; }

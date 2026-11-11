@@ -72,19 +72,13 @@ class StartFailureTests(unittest.TestCase):
 
 
 class LogsRootTests(unittest.TestCase):
-    """游戏库结构 P3：库建好（有 .s2arm-library.json）→ <库>/logs；没建好 → <数据目录>/logs；旧默认库搬走后按搬库标记跟过去"""
+    """剃刀 H6：日志 / 任务记录固定 <数据目录>/logs，库建没建好、设置里选了哪个库都不变（同作业层 core.logs_root）"""
     def test_rules(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), mock.patch.object(ctl, "WINDOWS", False):
             lib = Path(root) / "lib"; lib.mkdir()
             (Path(root) / "preferences.json").write_text(json.dumps({"library": str(lib)}))
             self.assertEqual(ctl.logs_root(), os.path.join(root, "logs"))
             (lib / ".s2arm-library.json").write_text("{}")
-            self.assertEqual(ctl.logs_root(), os.path.join(str(lib), "logs"))
-            old = Path(root) / "游戏库"
-            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(old)}))
-            (Path(root) / "library-relocate.json").write_text(json.dumps({"from": str(old), "to": str(lib), "state": "done"}))
-            self.assertEqual(ctl.logs_root(), os.path.join(str(lib), "logs"))
-            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(Path(root) / "other")}))   # 别的路径不跟标记
             self.assertEqual(ctl.logs_root(), os.path.join(root, "logs"))
 
 
@@ -186,13 +180,39 @@ class WaitTests(unittest.TestCase):
             call.assert_called_once_with("POST", path, body)
 
     def test_install_passes_team_and_device_only_when_given(self):
-        for argv, body in [(["install", "G"], {"gameId": "G"}),
-                           (["install", "G", "--team", "ABCDE12345"], {"gameId": "G", "teamId": "ABCDE12345"}),
-                           (["install", "G", "--device", "测试 iPhone", "--team", "ABCDE12345"],
+        for argv, body in [(["install", "G", "--no-wait"], {"gameId": "G"}),
+                           (["install", "G", "--team", "ABCDE12345", "--no-wait"], {"gameId": "G", "teamId": "ABCDE12345"}),
+                           (["install", "G", "--device", "测试 iPhone", "--team", "ABCDE12345", "--no-wait"],
                             {"gameId": "G", "teamId": "ABCDE12345", "device": "测试 iPhone"})]:
             with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)
+
+    def run_install(self, after):
+        """install 默认等这次作业结束：发命令前已有一个上次成功的装机任务 old，之后出现的才是这次的"""
+        old = {"id": "old", "gameId": "G", "operation": "install", "state": "completed", "started": 1, "ended": 2}
+        states = [{"tasks": [old]}, {"ok": True}, {"tasks": [old], "error": "", "cachedAt": 0}] + [{"tasks": [old] + after, "error": "", "cachedAt": 0}] * 3
+        output = io.StringIO(); now = [0]
+        with mock.patch.object(ctl, "call", side_effect=lambda *a, **k: states.pop(0) if states else {"tasks": [old] + after, "error": "", "cachedAt": 0}), \
+                mock.patch.object(ctl.time, "time", side_effect=lambda: now[0]), mock.patch.object(ctl.time, "sleep", side_effect=lambda x: now.__setitem__(0, now[0] + x)), \
+                mock.patch.object(ctl, "errors") as errors, mock.patch.object(ctl.sys, "argv", ["s2armctl", "install", "G", "--timeout", "30"]), \
+                contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as result:
+            ctl.main()
+        return result.exception.code, errors.call_count, output.getvalue()
+
+    def test_install_failure_exits_1_with_error_details(self):
+        code, errors, out = self.run_install([{"id": "new", "gameId": "G", "operation": "install", "state": "failed", "started": 5, "ended": 6, "message": "手机上有几款是在别的电脑上装的"}])
+        self.assertEqual((code, errors), (1, 1))   # 11-10：原先打 {"ok": true} 就退 0
+        self.assertIn("failed", out)
+
+    def test_install_success_exits_0(self):
+        code, errors, _ = self.run_install([{"id": "new", "gameId": "G", "operation": "install", "state": "completed", "started": 5, "ended": 6}])
+        self.assertEqual((code, errors), (0, 0))
+
+    def test_install_does_not_take_last_runs_result(self):
+        # 这次的任务还没出现：只有上一次成功的 old，不能据此退 0，要等到超时
+        code, _, _ = self.run_install([])
+        self.assertIsInstance(code, str); self.assertIn("没结束", code)
 
     def test_cloud_commands_reach_the_app(self):
         # iCloud 存档：cloud-folder 给绝对路径、不给 = 关闭（空串）；cloud-sync 带游戏号
@@ -300,6 +320,29 @@ def game(identifier, name, base_bytes, buildable=True, ready=False, missing=()):
 class NextStepTests(unittest.TestCase):
     """AI 代操作入口 next（10-26）：期望按规则手写——每种状态推出的 step / who / 命令"""
 
+    def test_windows_iphone_ready_without_task_ipa_path_goes_to_install(self):
+        # 共享 S2Arm.ipa 不会记录为这款任务的 ipaPath；iphoneReady 才是已出包信号。
+        ready = dict(game("g", "G", 1e9), iphoneReady=True)
+        completed = {"id": "done-ipa", "gameId": "g", "operation": "ipa", "state": "completed", "started": 1, "ended": 2}
+        n = ctl.next_step(full_state(platform="windows", games=[ready], tasks=[completed]))
+        self.assertEqual((n["step"], n["who"]), ("装机", "ai"))
+        self.assertNotIn("出包", n["why"])
+
+    def test_windows_not_iphone_ready_without_ipa_path_still_builds(self):
+        # 反例：没有 ipaPath 且从未出好包，Windows 仍应建议出包。
+        not_ready = dict(game("g", "G", 1e9), iphoneReady=False)
+        n = ctl.next_step(full_state(platform="windows", games=[not_ready]))
+        self.assertEqual((n["step"], n["who"]), ("出包", "ai"))
+
+    def test_failed_ipa_does_not_override_previous_iphone_ready_package(self):
+        # 最近一次失败不抹掉早先已成功的 iPhone 包。
+        ready = dict(game("g", "G", 1e9), iphoneReady=True)
+        failed = {"id": "failed-ipa", "gameId": "g", "operation": "ipa", "state": "failed", "started": 1,
+                  "diagnostics": [{"code": "job_failed", "summary": "本次出包失败"}]}
+        n = ctl.next_step(full_state(platform="windows", games=[ready], tasks=[failed]))
+        self.assertEqual((n["step"], n["who"]), ("装机", "ai"))
+        self.assertNotIn("code", n)
+
     def test_no_check_result_yet_means_checking(self):
         # 刚拉起：环境检查还没开始（没有结果、也不在查）→ 让 AI 等，不能报「玩家去处理」却列不出缺什么
         n = ctl.next_step(full_state(environmentReady=False, checks=[], checkingEnvironment=False))
@@ -393,6 +436,31 @@ class NextTargetTests(unittest.TestCase):
         n = self.run_next(s, "g", "--target", "mac")
         self.assertEqual(n["do"], "s2armctl launch g")
 
+    def test_ready_mac_reports_own_running_launch(self):
+        launch = task("launch-g", "running", 1, game="g", operation="launch")
+        s = full_state(games=[game("g", "G", 1, ready=True)],
+                       tasks=[launch], executionTask=launch["id"])
+        n = self.run_next(s, "g", "--target", "mac")
+        self.assertEqual((n["step"], n["who"]), ("运行中", "human"))
+        self.assertEqual(n["task"], "launch-g")
+        self.assertEqual(n["do"], "请玩家查看 Mac 上的游戏窗口")
+
+    def test_ready_mac_waits_for_other_execution_tasks(self):
+        own_launch = task("launch-g", "running", 1, game="g", operation="launch")
+        busy_tasks = (
+            task("launch-other", "running", 2, game="other", operation="launch"),
+            task("ipa-g", "running", 2, game="g", operation="ipa"),
+            dict(own_launch, state="cancelling"),
+        )
+        for busy in busy_tasks:
+            with self.subTest(operation=busy["operation"], game=busy["gameId"], state=busy["state"]):
+                tasks = [busy] if busy["id"] == own_launch["id"] else [own_launch, busy]
+                s = full_state(games=[game("g", "G", 1, ready=True)],
+                               tasks=tasks, executionTask=busy["id"])
+                n = self.run_next(s, "g", "--target", "mac")
+                self.assertEqual((n["step"], n["who"]), ("等待", "ai"))
+                self.assertEqual(n["why"], "构建与游戏运行互斥")
+
     def test_ready_mac_waits_if_launcher_is_busy(self):
         for busy in ({"executionTask": "other-task"}, {"queue": ["other-game"]}):
             with self.subTest(busy=busy):
@@ -451,8 +519,8 @@ class NextTargetTests(unittest.TestCase):
         self.assertIn("--target mac", err.getvalue())
         call.assert_not_called()
 
-    def test_bad_target_fails_before_contacting_launcher(self):
-        for args in (["--target"], ["--target", "android"]):
+    def test_invalid_next_arguments_fail_before_contacting_launcher(self):
+        for args in (["--target"], ["--target", "android"], ["g", "extra"], ["--unknown"]):
             with self.subTest(args=args), \
                  mock.patch.object(sys, "argv", ["s2armctl", "next", *args]), \
                  mock.patch.object(ctl, "call") as call, contextlib.redirect_stderr(io.StringIO()), \
@@ -485,11 +553,60 @@ class LaunchArgsTests(unittest.TestCase):
         """--accept-dropped 才带 acceptDropped（玩家同意别的电脑装的款这次带不上）；不给就不带，作业层停下报 container_would_drop"""
         posted = []
         with mock.patch.object(ctl, "call", side_effect=lambda m, p, b=None, **kw: posted.append((p, b)) or {"ok": True}):
-            for argv in (["install", "0100535012974000"], ["install", "0100535012974000", "--accept-dropped"], ["uninstall", "0100535012974000", "--accept-dropped"]):
+            for argv in (["install", "0100535012974000", "--no-wait"], ["install", "0100535012974000", "--accept-dropped", "--no-wait"], ["uninstall", "0100535012974000", "--accept-dropped"]):
                 with mock.patch.object(sys, "argv", ["s2armctl", *argv]):
                     ctl.main()
         self.assertEqual(posted, [("/install", {"gameId": "0100535012974000"}), ("/install", {"gameId": "0100535012974000", "acceptDropped": True}),
                                   ("/uninstall", {"gameId": "0100535012974000", "acceptDropped": True})])
+
+class DeviceBundleTests(unittest.TestCase):
+    """#642：包里是占位名 io.s2arm.games，手机上装的是 io.s2arm.games.<团队>[.后缀]，device 要按前缀认"""
+    def test_container_match(self):
+        bid = "io.s2arm.games"
+        for installed in ("io.s2arm.games", "io.s2arm.games.7r5l7ty4r7", "io.s2arm.games.abc.dev2"):
+            self.assertTrue(ctl.container_match(installed, bid), installed)
+        for other in ("io.s2arm.gamesx", "io.s2arm", "com.example.app", ""):
+            self.assertFalse(ctl.container_match(other, bid), other)
+
+    def test_device_reports_installed_team_bundle(self):
+        dev = {"hardwareProperties": {"udid": "U1"}, "deviceProperties": {"name": "玩家的手机"}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "com.example.app"}, {"bundleIdentifier": "io.s2arm.games.7r5l7ty4r7"}]}}
+        def fake_dctl(args):
+            out = args[args.index("--json-output") + 1]
+            Path(out).write_text(json.dumps(apps))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "game_bundle", return_value=("x.ipa", "io.s2arm.games")), \
+             mock.patch.object(ctl, "iphone", return_value=[dev]), mock.patch.object(ctl, "dctl", side_effect=fake_dctl), \
+             contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            ctl.device("0100000000000000")
+        self.assertIn("已装 io.s2arm.games.7r5l7ty4r7", buf.getvalue())
+        self.assertNotIn("没装", buf.getvalue())
+
+
+class DeviceChoiceTests(unittest.TestCase):
+    """设备号贯穿（11-11 真机验收测出）：install-check 能带 --device；targets 列出设备名、设备号与连接方式（两台同型号时只看机型分不出）"""
+    def test_install_check_sends_device(self):
+        sent = []
+        def call(method, path, body=None, **kw):
+            if method == "POST": sent.append((path, body)); return {"ok": True}
+            return {"installReadiness": {"gameId": "G", "ready": True, "items": []}}
+        with mock.patch.object(ctl, "call", side_effect=call), contextlib.redirect_stdout(io.StringIO()):
+            for kw in (dict(device="U-1"), {}):
+                with self.assertRaises(SystemExit): ctl.install_check("G", False, **kw)   # 查完按 ready 退出
+        self.assertEqual(sent, [("/installCheck", {"gameId": "G", "device": "U-1"}), ("/installCheck", {"gameId": "G"})])
+
+    def test_targets_lists_name_udid_and_link(self):
+        t = {"current": None, "osChoices": [27], "models": [], "connected": [
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "甲", "udid": "U-1", "wired": True},
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "乙", "udid": "U-2", "wired": False}]}
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "call", return_value=t), mock.patch.object(sys, "argv", ["s2armctl", "targets"]), contextlib.redirect_stdout(buf):
+            ctl.main()
+        out = buf.getvalue()
+        self.assertIn("设备名「甲」，设备号 U-1，数据线", out)
+        self.assertIn("设备名「乙」，设备号 U-2，同一 Wi-Fi", out)
+
 
 class DiagCommandTests(unittest.TestCase):
     """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""
@@ -561,6 +678,43 @@ class ErrorsCommandTests(unittest.TestCase):
         output = self._run_errors(state)
         self.assertIn("disk_full", output)
         self.assertNotIn("Failed stage", output)
+
+class BatchCommandTests(unittest.TestCase):
+    """s2armctl batch（批量出包，v0.2.4）：命令行组成 POST /batch 的请求；轮询 GET /state 的 batch，出完打印每款结果，有失败退 1。期望手写"""
+    def run_batch(self, argv, final_summary):
+        calls = []
+        done = {"running": False, "summary": final_summary, "paused": None,
+                "items": [{"gameId": "0100A", "name": "甲", "platforms": ["mac", "iphone"], "results": {"mac": {"state": "completed"}, "iphone": {"state": "completed"}}}]}
+        def call(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {"ok": True, "skipped": []} if path == "/batch" else {"batch": done}
+        out = io.StringIO()
+        with mock.patch.object(ctl, "call", call), mock.patch.object(ctl.time, "sleep", lambda s: None), contextlib.redirect_stdout(out), \
+             self.assertRaises(SystemExit) as caught:
+            ctl.batch(argv)
+        return calls, caught.exception.code, out.getvalue()
+
+    def test_request_and_exit_codes(self):
+        calls, code, text = self.run_batch(["0100a:mac,iphone", "0100b", "--location", "/tmp/包"], {"total": 2, "completed": 2, "failed": 0})
+        self.assertEqual(calls[0], ("POST", "/batch", {"games": [{"gameId": "0100A", "platforms": ["mac", "iphone"]},
+                                                                 {"gameId": "0100B", "platforms": ["iphone"]}], "location": "/tmp/包"}))
+        self.assertEqual(code, 0)
+        self.assertIn("甲：mac completed；iphone completed", text)
+        _, code, _ = self.run_batch(["0100a"], {"total": 1, "completed": 0, "failed": 1})
+        self.assertEqual(code, 1)
+
+    def test_not_started_exits_without_polling(self):   # 审计 P1-166：控制口说没开始（一款都不能出）→ 立刻退非 0，不轮询、不读上一批
+        calls = []
+        def call(method, path, body=None, **kw):
+            calls.append(path); return {"ok": False, "error": "没有能出的游戏", "skipped": [{"gameId": "0100A", "reason": "keys"}]}
+        out = io.StringIO()
+        with mock.patch.object(ctl, "call", call), mock.patch.object(ctl.time, "sleep", lambda s: None), contextlib.redirect_stdout(out), \
+             self.assertRaises(SystemExit) as caught:
+            ctl.batch(["0100a"])
+        self.assertEqual(calls, ["/batch"])
+        self.assertIn("没有能出的游戏", str(caught.exception.code))
+        self.assertIn("跳过 0100A：keys", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -729,3 +883,37 @@ class JobIdentityTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("无法确认作业进程身份", output)
         self.assertNotIn("作业进程已不在", output)
+
+
+class UsageGuardTests(unittest.TestCase):
+    """Subcommand help and missing arguments must not reach the App's control port."""
+
+    def run_main(self, argv):
+        output = io.StringIO()
+        with mock.patch.object(ctl, "call") as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \
+                contextlib.redirect_stdout(output):
+            ctl.main()
+        return call, output.getvalue()
+
+    def test_subcommand_help_never_reaches_the_app(self):
+        for argv in (["install", "--help"], ["install", "-h"], ["wait", "--help"]):
+            with self.subTest(argv=argv):
+                call, output = self.run_main(argv)
+                call.assert_not_called()
+                self.assertIn("s2armctl", output)
+
+    def test_missing_required_argument_exits_2_without_app_call(self):
+        for argv in (["install"], ["wait"], ["build"], ["snapshot"], ["keys"],
+                     ["install-check", "--json"], ["ipa", "--space-override"],
+                     ["cloud-sync"], ["display", "--docked", "on"], ["library", "--move"], ["restore-iphone"], ["show"],
+                     ["install", "--team", "ABCDE12345"]):
+            with self.subTest(argv=argv):
+                with mock.patch.object(ctl, "call") as call, \
+                        mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        self.assertRaises(SystemExit) as caught:
+                    ctl.main()
+                call.assert_not_called()
+                self.assertEqual(caught.exception.code, 2)
+

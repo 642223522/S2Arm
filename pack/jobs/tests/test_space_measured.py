@@ -143,7 +143,7 @@ class SpaceMeasured(JobCase):
         self.assertTrue((self.c.library / library.SPACE_LEDGER).read_text(encoding="utf-8").startswith("# time\tgameId"))
 
     # —— 预算三档依据 ——
-    # 期望值手算：29.13 GB × 1.1 + 15 GB；验收数 火纹 ≈ 47、王国之泪 ≈ 34、小游戏 ≈ 8（维护者 11-08）。单文件镜像不再存进库（#329），不另加一份
+    # 期望值手算：29.13 GB × 1.1 + 15 GB；验收数 火纹 ≈ 47、0100F2C0115B6000 ≈ 34、小游戏 ≈ 8（维护者 11-08）。单文件镜像不再存进库（#329），不另加一份
     def need(self, size, **kw):
         return library.pack_need_bytes([dict(size=size, sha256="a" * 64)], **kw)
 
@@ -152,22 +152,91 @@ class SpaceMeasured(JobCase):
         self.assertEqual(self.need(17_480_000_000, windows=False), 19_228_000_000 + 15_000_000_000)
         self.assertEqual(self.need(2_700_000_000, windows=False), 2_970_000_000 + 5_000_000_000)
 
+    def test_shared_original_sums_item_contents(self):
+        # #444：一个压缩合集（XCZ）装本体 + 更新，原件 10 GB，两项解开各 8 GB、6 GB → 要按 14 GB 算；原先只留最后一项 → max(10, 6) = 10 GB
+        shared = [dict(size=10_000_000_000, contentBytes=8_000_000_000, sha256="b" * 64),
+                  dict(size=10_000_000_000, contentBytes=6_000_000_000, sha256="b" * 64)]
+        self.assertEqual(library.pack_input_bytes(shared), 14_000_000_000)
+        # 不压缩的合集 / NUP：各项之和不超过原件 → 仍按原件；另一个原件照加
+        nup = [dict(size=10_000_000_000, contentBytes=7_000_000_000, sha256="c" * 64),
+               dict(size=10_000_000_000, contentBytes=2_000_000_000, sha256="c" * 64),
+               dict(size=3_000_000_000, sha256="d" * 64)]
+        self.assertEqual(library.pack_input_bytes(nup), 13_000_000_000)
+
+    def test_nup_items_overlap_take_largest(self):
+        # NUP 容器内按块去重，更新是整份文件系统、和本体共用数据块：0400486024DEC000 实测文件 25.62 GB、本体与更新各 26.27 GB
+        #   → 按 26.27 GB 算（取大值）；相加会成 52.54 GB（v0.2.5 的回退）。同一 sha 里只要有一项是 nup 就按这条算
+        nup = [dict(size=25_622_267_860, contentBytes=26_270_000_000, sha256="e" * 64, format="nup"),
+               dict(size=25_622_267_860, contentBytes=26_270_000_000, sha256="e" * 64, format="nup")]
+        self.assertEqual(library.pack_input_bytes(nup), 26_270_000_000)
+        # 另一个原件（非 nup）照旧单独加上
+        self.assertEqual(library.pack_input_bytes(nup + [dict(size=3_000_000_000, sha256="f" * 64, format="nsp")]), 29_270_000_000)
+
     def test_unpacked_counts_zero_and_windows_adds_a_copy(self):
         self.assertEqual(self.need(10_000_000_000, unpacked=True, windows=False), 15_000_000_000)
         self.assertEqual(self.need(10_000_000_000, windows=True), 11_000_000_000 * 2 + 15_000_000_000)
+
+    def test_budget_splits_location_and_cache_volumes(self):
+        # P1-165：存放位置与工具缓存在两块盘时，各按自己那份需求和自己的余量判；期望手算：原件 16 GB → 存放位置 16 × 1.1 + 单一 IMG 16 = 33.6 GB
+        #   （打 iPhone 包写 game.img 在存放位置，11-11），工具缓存 15 GB（≥ 3 GB 档）
+        c = self.context("ipa")
+        loc, cache = Path(self.root) / "ext", Path(self.root) / "cache"
+        class St:   # 两个假卷号
+            def __init__(self, dev): self.st_dev = dev
+        disks = {str(loc): (1, 20 * 10**9), str(cache): (2, 10 * 10**9)}
+        fake = lambda path: type("V", (), {"stat": lambda self, d=disks[str(path)][0]: St(d), "__fspath__": lambda self, p=str(path): p,
+                                           "__str__": lambda self, p=str(path): p})()
+        with patch.object(library, "_existing", side_effect=lambda p: fake(loc if p != c.work_root else cache)), \
+                patch("shutil.disk_usage", side_effect=lambda p: DU(0, 0, disks[os.fspath(p)][1])), \
+                patch.object(library, "_volume", side_effect=lambda p: os.fspath(p)):
+            vols = library.space_budget(c, self.game(16 * 10**9))["volumes"]
+        self.assertEqual([(v["role"], v["needBytes"], v["freeBytes"], v["enough"]) for v in vols],
+                         [("library", 33_600_000_000, 20 * 10**9, False), ("cache", 15_000_000_000, 10 * 10**9, False)])
+        # 同一块盘：合成一项，需求 = 两份之和（同原来）
+        self.assertEqual(self.budget(c, self.game(16 * 10**9))["needBytes"], 33_600_000_000 + 15_000_000_000)
+
+    def test_direct_cache_follows_game_volume(self):
+        # 11-10 网友：存放位置设到外接盘，系统盘仍被写满。直连缓存（含编译中的翻译中间产物）跟着游戏的存放位置走：
+        #   同一块盘 → 工具缓存下（同原来）；游戏在另一块盘 → 这款文件夹第一层 direct-cache/；还没有游戏文件夹 → 工具缓存
+        c = self.context("ipa")
+        tool = c.work_root / "run" / "s2arm" / "cache" / "direct" / GID
+        game_dir = Path(self.root) / "ext" / "games" / GID
+        class St:
+            def __init__(self, dev): self.st_dev = dev
+        def existing(dev_of_game):
+            return lambda p: type("V", (), {"stat": lambda self: St(dev_of_game if Path(p) == game_dir else 1)})()
+        with patch.object(library.layout, "find_game", return_value=game_dir), patch.object(library, "_existing", side_effect=existing(1)):
+            self.assertEqual(library.direct_cache_dir(c, GID), tool)
+        with patch.object(library.layout, "find_game", return_value=game_dir), patch.object(library, "_existing", side_effect=existing(2)):
+            self.assertEqual(library.direct_cache_dir(c, GID), game_dir / "direct-cache")
+        with patch.object(library.layout, "find_game", return_value=None):
+            self.assertEqual(library.direct_cache_dir(c, GID), tool)
 
     def test_ledger_does_not_change_budget(self):
         c = self.context("ipa")
         self.ledger(("2026-11-07T10:00:00", GID, "ipa", "1", 16 * 10**9, 500 * 10**9, "旧账"))
         v = self.budget(c, self.game(16 * 10**9))
-        self.assertEqual((v["basis"], v["needBytes"]), ("rule", 17_600_000_000 + 15_000_000_000))
+        self.assertEqual((v["basis"], v["needBytes"]), ("rule", 33_600_000_000 + 15_000_000_000))   # 解包 17.6 + IMG 16 + 直连 15
 
     def test_rejection_names_need_and_free(self):
         with patch("shutil.disk_usage", return_value=DU(0, 0, 20 * 10**9)):
             with self.assertRaises(Failure) as e:
                 library.check_pack_space(self.context("ipa"), self.game(16 * 10**9))
         self.assertEqual(e.exception.code, "disk_full")
-        self.assertIn("要 33 GB", str(e.exception)); self.assertIn("只剩 20 GB", str(e.exception)); self.assertIn("「仍然继续」", str(e.exception))
+        self.assertIn("要 49 GB", str(e.exception));   # 16 × 1.1 + IMG 16 + 直连 15 = 48.6 → 49 GB
+        self.assertIn("只剩 20 GB", str(e.exception)); self.assertIn("「仍然继续」", str(e.exception))
+
+    def test_mac_build_has_no_image_and_ocarina_peak_is_covered(self):
+        # 单一 IMG 只在打 iPhone 包时写（Mac 打包不写）：同一款 Mac 打包少 IMG 那一份。
+        #   11-11 实测 0400486024DEC000（NUP，资源 26.27 GB）冷出 iPhone 包整次峰值 57.90 GiB（写 game.img 时）：预留须 ≥ 峰值且 ≤ 峰值 × 1.2。
+        #   手算：26.27 × 1.1 + IMG 26.27 + 直连 15 = 70.167 GB；峰值 57.90 GiB = 62.17 GB；比值 1.13
+        mac, ipa = self.budget(self.context("build"), self.game(16 * 10**9))["needBytes"], self.budget(self.context("ipa"), self.game(16 * 10**9))["needBytes"]
+        self.assertEqual(ipa - mac, 16 * 10**9)
+        need = library.pack_need_bytes([dict(size=25_622_267_860, contentBytes=26_270_000_000, sha256="b" * 64, format="nup")], windows=False, image=True)
+        self.assertEqual(need, 70_167_000_000)
+        peak = int(57.90 * 2**30)
+        self.assertGreaterEqual(need, peak)
+        self.assertLessEqual(need, peak * 1.2)
 
     def test_space_override_passes_with_warning(self):
         c = self.context("ipa", spaceOverride=True)
@@ -177,6 +246,17 @@ class SpaceMeasured(JobCase):
         [d] = c.job["diagnostics"]
         self.assertEqual((d["code"], d["severity"]), ("disk_full", "warning"))
         self.assertIn("已按你的选择仍然继续", d["summary"])
+
+    def test_follow_up_request_contract(self):
+        # 剃刀 M21：followUp 只给打 iPhone 包、只认布尔值（期望按 pack/contracts/README.md 手写）
+        self.context("ipa", followUp=True); self.context("ipa", followUp=False)
+        for op, value in (("build", True), ("ipa", "true"), ("catalog", True)):
+            with self.subTest(op=op, value=value), self.assertRaises(Failure):
+                self.context(op, followUp=value)
+        base = dict(schema=1, contract="s2a.job-request.v1", privateRoot="/p", library="/l", libraryId="x", gameId=GID)
+        validate("request", base | dict(operation="ipa", followUp=True))
+        with self.assertRaises(ContractError):
+            validate("request", base | dict(operation="ipa", followUp="yes"))
 
     def test_space_override_request_contract(self):
         self.context("build", spaceOverride=True); self.context("ipa", spaceOverride=False)

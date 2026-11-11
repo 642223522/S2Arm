@@ -100,6 +100,9 @@ int main(int argc, char **argv) {
     check(count_in(source, "supportedLocalities") == 1, "建引擎后打一次 locality 集合");
     check(count_in(source, "g_haptic_retry.diagnosed") == 2, "诊断行只打一次（判断 + 置位）");
     check(strstr(source, "%s/%ld") != NULL, "失败行带 NSError domain/code（4097 = NSXPCConnectionInvalid）");
+    check(count_in(source, "(feel ? s2a_hp_feel(amp) : amp) * atomic_load(&g_rumble_gain)") == 1, "震动强度：先过 s2a_hp_feel 再乘档位倍率（同 Mac）");
+    check(count_in(source, "rumble_feel(session)") == 2, "两个提交入口（整对 / 单侧）都按会话类型选换算：手机马达 / 系统手柄过曲线，NS2 Pro 原样");
+    check(count_in(source, "gains[6] = {0.35f, 0.7f, 1, 1.4f, 1.8f, 5}") == 1, "六档倍率同定义表 rumbleLevel.scale（第 6 档「震爆我」×5）");
 
     if (failures) { fprintf(stderr, "t_haptic_retry：%d/%d 项不符\n", failures, checks); return 1; }
     printf("✓ t_haptic_retry：%d 项（退避 1000/4000 ms；连续 3 次判死；换手柄 rearm；红行只报一次；失败点全部走同一归档）\n", checks);

@@ -111,7 +111,7 @@ public sealed class MilestoneTrack
             Current = id; Fraction = null;
             started.TryAdd(id, now);
         }
-        if (type == "stage") Fraction = null;
+        if (type is "stage" or "message" or "cache") Fraction = null;   // 新的一句说明 = 上一个百分比不再代表当前在做的事（社区贡献者补丁 #8）
         if (type == "progress" && e.TryGetProperty("totalUnits", out var total) && total.ValueKind == JsonValueKind.Number && total.GetDouble() > 0 &&
             e.TryGetProperty("doneUnits", out var done) && done.ValueKind == JsonValueKind.Number)
             Fraction = Math.Min(1, Math.Max(0, done.GetDouble() / total.GetDouble()));
@@ -162,7 +162,8 @@ public sealed record InstallItem(string Id, bool Ok, bool Waiting, string Title,
     public static readonly IReadOnlySet<string> Actions = new HashSet<string>(StringComparer.Ordinal) { "openImpactor" };
 }
 
-public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Ready, string Device, string Account, string IpaPath = "")
+/// <summary>DeviceKind：连着的设备是 "ipad" / "iphone"，读不出为 ""（#487：入口写「装到 iPad」；后端按 USB 产品号认）。</summary>
+public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Ready, string Device, string Account, string IpaPath = "", string DeviceKind = "")
 {
     public static InstallReadiness Parse(JsonElement result)
     {
@@ -172,27 +173,24 @@ public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Rea
             var items = new List<InstallItem>();
             foreach (var i in result.GetProperty("items").EnumerateArray())
             {
+                // 剃刀 W7：不认识的动作、不安全的链接只忽略这一项（这一项不给按钮 / 链接），不再整份清单作废——
+                //   原先后端加一个新动作，前端就当「这次没查到手机状态」，玩家只能盲装
                 Uri? url = null;
-                if (i.TryGetProperty("url", out var u) && u.ValueKind != JsonValueKind.Null)
-                {
-                    if (u.ValueKind != JsonValueKind.String || !Uri.TryCreate(u.GetString(), UriKind.Absolute, out url) ||
-                        url.Scheme != Uri.UriSchemeHttps || url.Host.Length == 0 || url.UserInfo.Length != 0)
-                        throw new LibraryProtocolException("Invalid official download URL.");
-                }
+                if (i.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String &&
+                    Uri.TryCreate(u.GetString(), UriKind.Absolute, out var parsed) &&
+                    parsed.Scheme == Uri.UriSchemeHttps && parsed.Host.Length != 0 && parsed.UserInfo.Length == 0)
+                    url = parsed;
                 string? action = null;
-                if (i.TryGetProperty("action", out var a) && a.ValueKind != JsonValueKind.Null)
-                {
-                    if (a.ValueKind != JsonValueKind.String || !InstallItem.Actions.Contains(a.GetString()!))
-                        throw new LibraryProtocolException("Unknown checklist action.");
+                if (i.TryGetProperty("action", out var a) && a.ValueKind == JsonValueKind.String && InstallItem.Actions.Contains(a.GetString()!))
                     action = a.GetString();
-                }
                 items.Add(new(LibraryJobResult.Text(i, "id"), i.GetProperty("ok").GetBoolean(),
                     i.TryGetProperty("waiting", out var w) && w.GetBoolean(), LibraryJobResult.Text(i, "title"),
                     LibraryJobResult.Text(i, "detail", true), i.TryGetProperty("who", out var who) ? who.GetString() ?? "" : "", url, action));
             }
             // ready is the backend's verdict: open items may be advisory (only a missing iPhone package blocks).
             return new(items.AsReadOnly(), result.GetProperty("ready").GetBoolean(), LibraryJobResult.Text(result, "device", true), LibraryJobResult.Text(result, "account", true),
-                result.TryGetProperty("ipaPath", out var ipa) && ipa.ValueKind == JsonValueKind.String ? ipa.GetString() ?? "" : "");
+                result.TryGetProperty("ipaPath", out var ipa) && ipa.ValueKind == JsonValueKind.String ? ipa.GetString() ?? "" : "",
+                result.TryGetProperty("deviceKind", out var kind) && kind.ValueKind == JsonValueKind.String ? kind.GetString() ?? "" : "");
         }
         catch (Exception error) when (error is KeyNotFoundException or InvalidOperationException)
         { throw new LibraryProtocolException("Invalid install checklist.", error); }

@@ -46,16 +46,14 @@ final class GameLibrary {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Listener listener;
     private final String selectedTitle;
-    private final boolean revisionEnabled;
     private boolean selectedRequested;
 
-    GameLibrary(Context context, Listener listener) { this(context, listener, null, false); }
+    GameLibrary(Context context, Listener listener) { this(context, listener, null); }
 
-    GameLibrary(Context context, Listener listener, String selectedTitle, boolean revisionEnabled) {
+    GameLibrary(Context context, Listener listener, String selectedTitle) {
         GameFingerprint.setStatProvider(AndroidFileStamp::read);
         GameFingerprint.setStatProbe(AndroidFileStamp::probe);
         this.selectedTitle = selectedTitle;
-        this.revisionEnabled = revisionEnabled;
         this.context = context;
         this.listener = listener;
         importDirs = GameInstall.importDirectories(context.getFilesDir(), context.getExternalFilesDir(null));
@@ -103,7 +101,7 @@ final class GameLibrary {
                     GameFingerprint.Timing.end(timing, "installed_apk_identity", phase);
                     phase = GameFingerprint.Timing.start(timing);
                     GameSession session = GameSession.load(spec, context.getFilesDir(), apk,
-                        (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0, revisionEnabled, DebugGate.open(), timing);
+                        (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0, DebugGate.open(), timing);
                     GameFingerprint.Timing.end(timing, "session_load_total", phase);
                     if (timing != null) for (String line : timing.lines()) Log.d("S2ArmBootTiming", line);
                     Log.i("S2Arm", session.resourceValidation);

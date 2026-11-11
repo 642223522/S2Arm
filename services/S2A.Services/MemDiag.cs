@@ -51,7 +51,7 @@ namespace S2A.Services
 
         // 托管堆 OutOfMemoryException 第一次出现时当场打原生地址表（vawin.c s2a_oom_dump：低区全列、窗口尾部逐块、按标签合计）。
         //   挂 FirstChanceException：服务层（IPC 里）与 GPU 模拟线程两条路都抓得到；只第一次，处理函数里不做托管分配（地址表由原生层直接写日志）。
-        //   10-24 异度神剑3 真机：低区还有 580 MB 整块、GC 却拿不到 32 MB 新段，要现场地址表才能分清是新段落进窗口尾部还是别的保留挡住
+        //   10-24 010074F013262000 真机：低区还有 580 MB 整块、GC 却拿不到 32 MB 新段，要现场地址表才能分清是新段落进窗口尾部还是别的保留挡住
         private static delegate* unmanaged<byte*, void> _oomDump;
         private static int _oomDumped;
         private static int _oomInstalled;

@@ -50,7 +50,7 @@ def seed(roots, game, source, *, move_romfs=False):
                 remove_owned(w / name)
                 src = source / name
                 # move_romfs（只给一键出包自己的解包目录，下次解包整目录重建）：同卷就把 RomFS 整目录改名搬进来（一次操作），不逐文件克隆
-                #   （11-06 出包速度线：王国之泪 30.5 万个文件，Windows 出包机播种 1253 秒，逐文件克隆约 1 毫秒一个）；提交后原处留联接指向存储里的这份
+                #   （11-06 出包速度线：0100F2C0115B6000 30.5 万个文件，Windows 出包机播种 1253 秒，逐文件克隆约 1 毫秒一个）；提交后原处留联接指向存储里的这份
                 if name == 'romfs' and move_romfs and not is_link(src) and os.stat(src).st_dev == os.stat(w).st_dev:
                     rename_dir(src, w / 'romfs'); moved = src
                     tick.step(sum(1 for e in plain_entries(w / 'romfs') if not e.is_dir()))

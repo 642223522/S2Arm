@@ -2,7 +2,7 @@
 //
 // 两个事实来源，按“当前内容归谁”选：
 //   · 内容归 CPU（guest 内存里的纹理存储就是事实来源）：按 NVN 块线性布局 deswizzle 后拷贝，
-//     不解析/不为此上传图像。刚被 CPU 填写、还没被任何 draw 用过的纹理正是这一类（王国之泪
+//     不解析/不为此上传图像。刚被 CPU 填写、还没被任何 draw 用过的纹理正是这一类（0100F2C0115B6000
 //     启动期把 1024x1024 BC4 材质贴图逐块填好再 ReadTexels 拼 atlas）。
 //   · 内容归 GPU（图像是事实来源）：先拿帧队列的完成证明（pass_break(1)），再把图像按区域
 //     VkBufferImageCopy 到 host-visible staging，fence 等到完成后打包进 dst。
@@ -41,6 +41,9 @@ int nvn_vk_readback_gpu(struct s2a_vk_device *d, const struct nvn_vk_tex *tex,
                         char *why, size_t why_size);
 // 会话销毁前释放读回 staging 缓存（设备空闲证明之后；等不到完成证明的缓冲会保留）。
 void nvn_vk_readback_gpu_release(struct s2a_vk_device *d);
+
+// 读回路径 fence 等待的不清零累计 ns（逐帧 TSV 的 rb_us 源；只在 frame_tsv 开关开时计时）。
+uint64_t nvn_vk_readback_wait_ns_total(void);
 
 #ifdef __cplusplus
 }

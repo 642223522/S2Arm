@@ -217,8 +217,11 @@ namespace S2A.DirectCompiler
             }
             else
             {
-                if (!stages.Any(s => s.IsVertex) || !stages.Any(s => s.IsFragment) || stages.Count != 2)
-                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", where + ": first graphics contract is exactly vs+fs");
+                // 图形程序认两种：vs+fs；只有 vs（只写深度的绘制：深度预通道、阴影图，游戏本来就没绑片元阶段）
+                bool vsFs = stages.Count == 2 && stages.Any(s => s.IsVertex) && stages.Any(s => s.IsFragment);
+                bool vsOnly = stages.Count == 1 && stages[0].IsVertex;
+                if (!vsFs && !vsOnly)
+                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", where + ": graphics contract is vs+fs or vs alone");
                 stages = stages.OrderBy(s => s.IsVertex ? 0 : 1).ToList();
             }
             bool tf = JsonStrict.Bool(e, "transformFeedbackEnabled", where);

@@ -103,7 +103,7 @@
     {
       "id": "compliance_first_party_titles",
       "category": "compliance_copy",
-      "regex": "(?i)(?:塞尔达|旷野之息|王国之泪|时之笛|马力欧|马里奥|马车8|动森|动物森友会|宝可梦|斯普拉遁|喷射战士|异度神剑|火焰纹章|星之卡比|密特罗德|银河战士|皮克敏|大乱斗|大金刚|脑锻炼|健身环|奇诺比奥|奥德赛|Zelda|Mario|Animal Crossing|Pok[eé]mon|Pokopia|Splatoon|Xenoblade|Fire Emblem|Kirby|Metroid|Pikmin|Smash Bros|Donkey Kong|Ring Fit|Captain Toad|Ocarina of Time|Tears of the Kingdom|Breath of the Wild|\\bacnh\\b|\\bbotw\\b|\\btotk\\b|\\bmk8d?\\b|\\bsmg2\\b|\\bxc3\\b)|(?-i:\\bARMS\\b)",
+      "regex": "(?i)(?:塞尔达|旷野之息|王国之泪|时之笛|马力欧|马里奥|马车8|动森|动物森友会|宝可梦|斯普拉遁|喷射战士|异度神剑|火焰纹章|星之卡比|密特罗德|银河战士|皮克敏|大乱斗|大金刚|脑锻炼|健身环|奇诺比奥|奥德赛|Zelda|Mario|Animal Crossing|Pok[eé]mon|Pokopia|Splatoon|Xenoblade|Fire Emblem|Kirby|Metroid|Pikmin|Smash Bros|Donkey Kong|Ring Fit|Captain Toad|Ocarina of Time|Tears of the Kingdom|Breath of the Wild|\\bacnh\\b|\\bbotw\\b|\\btotk\\b|\\bmk8d?\\b|\\bsmg2\\b|\\bxc3\\b|猎天使魔女|魔兵惊天录|Bayonetta|异界锁链|Astral Chain|耀西|\\bYoshi\\b|路易吉|\\bLuigi\\b|瓦力欧|\\bWario\\b|星际火狐|Star Fox|高级战争|Advance Wars|1-2-Switch|超级机器人大战X?|Daemon X Machina|机甲战魔)|(?-i:\\bARMS\\b)",
       "paths": [
         "README.md",
         "README.*.md",
@@ -113,7 +113,7 @@
         "docs/名单_*",
         "docs/名单_*/*", "docs/*.md"
       ],
-      "messages": true, "reason_note": "11-09 维护者批统一规则：公开仓不出现任天堂第一方游戏名；第三方只在说明性场合保留。先管给人看的文档与名单（11-09 晚起含 docs/ 下全部 Markdown，坑记录也算）与提交信息（messages: true），代码注释另议；pack/display_names.tsv 第一列是与 pack/oneclick/titles.tsv 对上的内部键，不在本规则内（显示名已是程序号）"
+      "messages": true, "reason_note": "11-09 维护者批统一规则：公开仓不出现任天堂第一方游戏名（11-10 jhz 定：第一方按「任天堂发行」算，不论哪家工作室开发，如猎天使魔女 2 / 3、异界锁链）；第三方只在说明性场合保留。先管给人看的文档与名单（11-09 晚起含 docs/ 下全部 Markdown，坑记录也算）与提交信息（messages: true），代码注释另议；pack/display_names.tsv 第一列是与 pack/oneclick/titles.tsv 对上的内部键，不在本规则内（显示名已是程序号）"
     }
   ],
   "metadata_rules": [
@@ -174,6 +174,16 @@
         "launchers/macos/Branding/wordmark-transparent.png"
       ],
       "reason": "自家 S2Arm 应用图标（同目录 AppIcon.svg 为源稿）和透明底字标。"
+    },
+    {
+      "id": "own_installer_ui",
+      "categories": [
+        "game_screenshot"
+      ],
+      "paths": [
+        "launchers/windows/installer/*.bmp"
+      ],
+      "reason": "Windows 安装程序界面素材：同目录 make_header.py 生成的纯色底、圆角按钮 / 卡片 / 进度条、复选框和自家字标，不是游戏画面。"
     },
     {
       "id": "own_ui_docs",

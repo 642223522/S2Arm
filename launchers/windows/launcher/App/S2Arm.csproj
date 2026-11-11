@@ -10,6 +10,12 @@
     <ApplicationIcon>Assets/S2Arm.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- 不自带 .NET：用随包 Runtime\dotnet（出包作业本来就要这份，bundle_runtime_win.py）。原先自包含单文件把同一份运行时又打进 exe 一次（0.2.8 exe 98.7 MB）。
+         按 exe 所在目录找（AppRelative），不看系统装没装 .NET、不看 DOTNET_ROOT，玩家机照旧零安装。
+         平台由发版命令给（dotnet publish -r win-x64，不要再带 \-\-self-contained true）；这里不写死 RID，免得引用本工程的 Mac 端测试也去编 Windows 启动壳 -->
+    <SelfContained>false</SelfContained>
+    <AppHostDotNetSearch>AppRelative</AppHostDotNetSearch>
+    <AppHostRelativeDotNet>Runtime\dotnet</AppHostRelativeDotNet>
     <DebugType>embedded</DebugType>
     <!-- 文件属性里的版本号（11-09 合入运维：曾显示 1.0.0+944ad83…）：构建时从最近的发版 tag 取，同 launchers/macos/build_app.py release_identity；不拼提交号 -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
@@ -33,6 +39,8 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.5" />
     <ProjectReference Include="../Protocol/Protocol.csproj" />
     <EmbeddedResource Include="../../../shared/experience.v1.json" LogicalName="S2Arm.experience.v1.json" />
+    <!-- 作业层文字的英文对照表：和 Mac 适配层同一份（BackendText），不在 Windows 存副本 -->
+    <EmbeddedResource Include="../../../macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json" LogicalName="S2Arm.Localizable.json" />
     <AvaloniaResource Include="Assets/Fonts/*.ttf" />
     <AvaloniaResource Include="Assets/S2Arm.ico" />
     <AvaloniaResource Include="../../../macos/Branding/AppIcon-1024.png" Link="Assets/AppIcon.png" />

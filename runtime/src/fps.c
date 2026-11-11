@@ -53,9 +53,14 @@ static void controls_ready(void) {
     g_writer_admit = 1;
 }
 static void *key_slot(int slot) { return g_fm ? g_fm->base + g_fm->key_page_off + (uint64_t)slot * 8 : NULL; }
+// 键页槽与帧步页（g_fs_page）是宿主自己的页，不是游戏数据：键页在安卓不进共享背板（android/native/module.c 映射时排除 text / 键页 / 补丁区），
+//   帧步页是本文件的静态数组。两者都不能走 plat_guest_store32——安卓那条走客体 VM 的 checked 写（fps_provider.c），私有页 / 窗口外地址写不进就报红中止。
+//   苹果 plat_guest_store32 本来就是这一句原子存，行为不变（#48 D2）
+static void host_store32(void *p, uint32_t v) { __atomic_store_n((uint32_t *)p, v, __ATOMIC_RELAXED); }
 // 起局开关只认 S2A_FPS60：S2A_FPS 是帧率上限（出图封顶，graphics/nvn nvn_fps.c、通用层 FramePacingPolicy），和游戏逻辑步长的 60 帧表是两件事
 //   （#619 审计 F-fps-cap-disables-table：原先 S2A_FPS=30 也算关，设置页上限选 30、60 帧开关留开时起局仍按关写表）
-static int fps_on_at_start(void) { const char *f = getenv("S2A_FPS60"); return !(f && !strcmp(f, "0")); }
+// 11-11 维护者：出包默认就是游戏原本的帧率，60 帧改成玩家手动开——只有 S2A_FPS60=1（设置页 / 启动器按款开了）才开；没设或 0 一律回游戏原生帧率
+static int fps_on_at_start(void) { const char *f = getenv("S2A_FPS60"); return f && !strcmp(f, "1"); }
 static _Atomic int g_on = 1, g_have;   // g_on：60 帧开 / 关（运行中可切）；g_have：这款有表（设置页据此决定显不显示开关）
 // 降档原因位（情报 10-28：通用模式没有热帽、低电量不降档）：热状态 ≥ 严重（2）或低电量模式开着 → 60 帧按关生效（同运行中关：w 行写回原值、
 //   槽写关时值、出图间隔退回游戏、社区帧率补丁跟随），原因去掉再恢复：热状态回到 ≤ 一般后稳 30 秒（防抖，同直连热帽 hle_nvn.c thermal_capped），
@@ -86,11 +91,11 @@ int s2a_fps_hot_revert_ok(void) { for (int i = 0; i < g_nfw; i++) if (!g_fw[i].h
 int s2a_fps_effective(void) { return eff(); }   // 60 帧此刻真在生效（撑不住就问玩家 runtime/src/qprompt_host.c 逐帧读）
 static struct { int sl; uint32_t on, off; } g_sl[16]; static int g_nsl, g_word_rows, g_present_row;   // g_present_row：表里有 present display
 static void spd_store(float v) {   // 步长槽（30 帧为 1）与秒槽（÷ 30）同写
-    plat_guest_store32((uintptr_t)key_slot(g_spd_slot), *(uint32_t *)&v);
-    if (g_spd_sec >= 0) { float sec = v / 30.0f; plat_guest_store32((uintptr_t)key_slot(g_spd_sec), *(uint32_t *)&sec); }
+    host_store32(key_slot(g_spd_slot), *(uint32_t *)&v);
+    if (g_spd_sec >= 0) { float sec = v / 30.0f; host_store32(key_slot(g_spd_sec), *(uint32_t *)&sec); }
 }
 static void slots_apply(int on) {   // 槽按开关写：slot 行开 / 关时值；速度槽关时固定 1.0（开时由钩子按帧间隔写）
-    for (int i = 0; i < g_nsl; i++) plat_guest_store32((uintptr_t)key_slot(g_sl[i].sl), on ? g_sl[i].on : g_sl[i].off);
+    for (int i = 0; i < g_nsl; i++) host_store32(key_slot(g_sl[i].sl), on ? g_sl[i].on : g_sl[i].off);
     if (g_spd_slot >= 0 && !on) spd_store(1.0f);
 }
 // 社区帧率补丁（直连线 cpatch，双路 + 键页槽 2046 掩码）跟着同一个「60 帧开」走：开关一变（起局一次 + 运行中每次切）通知 cpatch 把帧率类那几位写成对应值。
@@ -108,7 +113,7 @@ uint8_t *dm_fps_state;
 static uint8_t g_fs_page[4096] __attribute__((aligned(16)));
 static void fs_target(int on) {
     if (!dm_fps_state) return;
-    float t = on ? 60.0f : 0.0f; uint32_t b; memcpy(&b, &t, 4); plat_guest_store32((uintptr_t)dm_fps_state, b);
+    float t = on ? 60.0f : 0.0f; uint32_t b; memcpy(&b, &t, 4); host_store32(dm_fps_state, b);
 }
 static int fs_step(void) { return dm_fps_state ? (int)plat_guest_load32((uintptr_t)(dm_fps_state + 0x20)) : 0; }
 // 生效状态一变（用户开关或降档原因）：槽与社区帧率补丁按生效值写；w 行由写入线程每 100 ms 按 eff() 写
@@ -229,7 +234,7 @@ int s2a_fps_present_at(uint64_t now) {
     g_present_last = now;
     if (g_p30_slot >= 0) {
         int32_t cv = (int32_t)plat_guest_load32((uintptr_t)key_slot(g_p30_slot)); int p30 = (cv == g_p30_val) == g_p30_eq;
-        if (dm_fps_state) plat_guest_store32((uintptr_t)(dm_fps_state + 4), (uint32_t)p30);   // 帧步在跑时过场靠这一位稳定按 30（出图间隔跟帧步，不看钩子返回值）
+        if (dm_fps_state) host_store32(dm_fps_state + 4, (uint32_t)p30);   // 帧步在跑时过场靠这一位稳定按 30（出图间隔跟帧步，不看钩子返回值）
         return p30;
     }
     return 0;

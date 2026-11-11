@@ -32,10 +32,10 @@ def mark_draws(o):   # MARK 之后每帧绘制数的中位数；没有 MARK / �
          if r.get('frame', '').isdigit() and int(r['frame']) > int(m.group(1)) and (r.get('draw_n') or '').isdigit()]
     return sorted(w)[len(w) // 2] if w else None
 
-def scene_menu(o, game):   # 疑似菜单当成 MARK（10-21 帧率能耗线：塞尔达 botw_1021020218_1 MARK 后每帧 120 次绘制、停在菜单，整机 1.0 W 记成能耗绿）：
+def scene_menu(o, game):   # 疑似菜单当成 MARK（10-21 帧率能耗线：一款第一方动作冒险游戏 botw_1021020218_1 MARK 后每帧 120 次绘制、停在菜单，整机 1.0 W 记成能耗绿）：
     #   本局 MARK 后每帧绘制中位数 < 同款其它局（调度局目录 jobs/<款>_*/out_*）各自中位数的中位数的 1/4 → 局无效；没有可比的局（新款第一局）就不判。
     #   基线取中位数：混进来的菜单局拉不低它，单局密集场景也抬不高它（10-22 旧规则取最大值、阈值一半：怪猎场景里 MARK 后中位 455–1527 随摇杆走到哪而变，
-    #   04:37 真在村里的局 580 < 1527/2 被判菜单）。读数：塞尔达菜单 120 / 场景中位约 3640（30 倍）；怪猎场景最低 455 / 中位约 1300（2.9 倍）
+    #   04:37 真在村里的局 580 < 1527/2 被判菜单）。读数：一款第一方动作冒险游戏菜单 120 / 场景中位约 3640（30 倍）；怪猎场景最低 455 / 中位约 1300（2.9 倍）
     cur = mark_draws(o)
     if cur is None: return ''
     jobs = os.path.dirname(os.path.dirname(os.path.abspath(o))); me = os.path.realpath(o); vs = []
@@ -46,7 +46,7 @@ def scene_menu(o, game):   # 疑似菜单当成 MARK（10-21 帧率能耗线：�
     base = sorted(vs)[len(vs) // 2] if vs else 0
     return f'疑似菜单当成 MARK（MARK 后每帧绘制中位 {cur}，不到本款基线 {base} 的 1/4）' if base and cur * 4 < base else ''
 
-def infra(o):   # 执行器能判定的基础设施失败（不是游戏的结果）→ 局无效、不写格（10-20 维护者：17:52 动森增量推送漏推 gal.metallib 那局曾记成能玩红）
+def infra(o):   # 执行器能判定的基础设施失败（不是游戏的结果）→ 局无效、不写格（10-20 维护者：17:52 01006F8002326000增量推送漏推 gal.metallib 那局曾记成能玩红）
     for l in red_lines(rd(o, 'host.log')):
         m = re.search(r'(?:读不了|打不开)\s*\S*?(资源包/\S+)', l)
         if m: return f'机上资源包缺文件（{m.group(1)[:80]}）'
@@ -79,7 +79,7 @@ def test_unready(o):   # 测试没到位（游戏没问题，是测试没把局�
     return f'测试未到位：游戏一直在出图（最后 600 帧最长一帧 {max(wall) / 1000:.0f} ms、每帧绘制中位数 {med}、没崩溃），自动玩家导航卡住没打 MARK'
 
 def fps_basis(o):   # 帧率口径不是「游戏自己要的原生帧率」→ 局无效、不写格（帧率 / 能耗都随帧率变）
-    #   10-21 维护者：动森 06:34（包 561d83b42 早于 fbf80e3，没有帧节拍行）按 60 判出「慢帧 100%」假红；暗黑3 05:35 执行器传 S2A_FPS=30 封了帧，1.56 W 记成能耗绿
+    #   10-21 维护者：01006F8002326000 06:34（包 561d83b42 早于 fbf80e3，没有帧节拍行）按 60 判出「慢帧 100%」假红；暗黑3 05:35 执行器传 S2A_FPS=30 封了帧，1.56 W 记成能耗绿
     hl, rl = rd(o, 'host.log'), rd(o, 'run.log')
     if not hl.strip(): return ''
     if '用控制台流顶上' in rl: return 'host.log 没拉回、只有控制台流（缺帧节拍等 C# 侧行），待补拉'
@@ -141,7 +141,7 @@ def fs_reds(hl):
     不是不能开满屏的阻塞项」——五问满屏只看 MARK 之后（游戏局内画面）的红；MARK 之前（标题 / 菜单 / 选角色 / 读盘页）的红单记「界面页未满屏」，不算满屏不过。
     红行带「第 N 次出图起」，MARK 行「S2A 标记 MARK：帧 M」（出图次数与帧号同一计数）；这局没到 MARK（判不出哪段是局内）→ 全部算局内，照旧不过"""
     #   MARK 前起的红一直没恢复、延续到 MARK 之后（同种类的「出图恢复满屏」不早于 MARK）也算局内：判据只在状态变化时记一行，起点在界面页不等于只在界面页
-    #   （11-02 塞尔达 968a20ebe 回归：Mac 局第 1481 次出图起的接缝红一路没恢复、局内整幅压扁，原先只记界面页 1 条，五问满屏判过）
+    #   （11-02 一款第一方动作冒险游戏 968a20ebe 回归：Mac 局第 1481 次出图起的接缝红一路没恢复、局内整幅压扁，原先只记界面页 1 条，五问满屏判过）
     mk = re.search(r'S2A 标记 MARK：帧 (\d+)', hl); m = int(mk.group(1)) if mk else None
     ing = ui = 0
     ev = re.findall(r'(【红】出图未满屏|出图恢复满屏)（([^，]*)，第 (\d+) 次出图起', hl)
@@ -273,7 +273,7 @@ def cells(o, game, truth=None):
     fsok, fswhy = fullscreen(hl)
     if fsok is False:   # 没满屏：帧率 / 能耗读数照记、两格不判（看板投票也不取），说明写清原因
         fr, pwc = '未测', '未测'; fwhy = f'未满屏，读数不作数（{fswhy}）；{fwhy}'
-    # >100 ms 帧按渲染线程每帧 wall_us（有 gpu_us 列时与之取大），不用 disp_us：上屏间隔按 vsync 量化，同一次约 104–112 ms 的卡顿有时成 83+83（漏判）、有时成 100+100（10-20 维护者定，原生层查实动森开局第 174–179 帧）
+    # >100 ms 帧按渲染线程每帧 wall_us（有 gpu_us 列时与之取大），不用 disp_us：上屏间隔按 vsync 量化，同一次约 104–112 ms 的卡顿有时成 83+83（漏判）、有时成 100+100（10-20 维护者定，原生层查实01006F8002326000开局第 174–179 帧）
     big = [(v, r) for v, r in ((max(int(r.get('wall_us') or 0), int(r['gpu_us']) if (r.get('gpu_us') or '').isdigit() else 0) / 1000, r) for r in rows) if v > 100]
     # >100 ms 帧按归因分（10-22 维护者，测试出包线拆账 19 帧）：首局格只计「我方开销」造成的，全程都算、不分 MARK 前后；游戏自己加载（渲染线程不忙、没交新帧）单列「游戏加载停顿」只作读数
     #   我方 = 当帧宏耗时（macro_us，含宏里发出的绘制处理）≥ 帧时 70%，或当帧有当场翻译 / 建管线 / 现翻着色器。着色器包种入在第 1 帧之前、帧表无逐帧信号，不在此归因
@@ -375,7 +375,7 @@ def vote(rows, cells=('能玩', '画面', '帧率', '能耗', '首局', '分配'
                     if mc <= lim: out[c] = ('绿', len(cool), txt + f'；全部中位超门槛，凉机 {len(cool)} 局中位 {_med([W(r) for r in cool]):.2f} W 为准（偏热局只能证明绿）'); continue
                 elif not nf: out[c] = ('未测', n, txt + '；偏热，待凉机复测'); continue
             # 临界（10-30 iOS 功耗测量口径修法 4）：|中位 − 门槛| < 噪声底（同包 A/A 极差，ab_noise.tsv；表里没有的款取表内最大值）时不进红绿，
-            #   记「未测」+「临界·需加局」（同「偏热，待凉机复测」）；塞尔达 3.65 / 3.92 W 在 3.7 门槛两边来回翻就是这种
+            #   记「未测」+「临界·需加局」（同「偏热，待凉机复测」）；一款第一方动作冒险游戏 3.65 / 3.92 W 在 3.7 门槛两边来回翻就是这种
             nz = ab_power_noise(pick[-1][1]); nf_ = nz[0] if nz else max_power_noise()
             gap = round(abs(me - lim), 3) if me != float('inf') else None   # 读数到 0.01 W：先取整再比，免得 4.00 − 3.7 = 0.2999… 把边界判成临界
             if gap is not None and nf_ and gap < nf_:

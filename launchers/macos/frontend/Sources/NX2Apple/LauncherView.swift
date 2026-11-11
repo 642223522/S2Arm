@@ -7,6 +7,8 @@
 // (11-07): a game's Export opens ExportView in place of the library (platforms, options, start), and an export runs in
 // ExportSessionView (platform queue, steps, time left, per-platform results); the free-up-space sheet (FreeSpaceView) and
 // change library (JobSessionView, setup job) sit beside them.
+// Switch 2 Pro: the top bar adds the controller button and popover (Switch2ProConnectionPopover), and the library starts the
+//   controller connection on appear when the user enabled it (NS2LauncherController).
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -34,6 +36,7 @@ struct LauncherView: View {
     @State var deleteFor: GameSummary?
     /// 「找不到游戏文件」的那款（点了卡片）：重新指定文件夹 / 从游戏库移除
     @State var missingFor: GameSummary?
+    @State private var showController = false
     @State private var dropTargeted = false
     @State var collectionHeight: CGFloat = 300
     let brand: String
@@ -48,7 +51,10 @@ struct LauncherView: View {
         VStack(spacing: 0) {
             topBar
             Divider().opacity(0.3)
-            if let result = model.viewingResult, let run = result.export {
+            noticeBar
+            if model.batchShown {
+                BatchExportView(model: model, covers: covers, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
+            } else if let result = model.viewingResult, let run = result.export {
                 ExportSessionView(model: model, covers: covers, session: result, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let session = model.session, let run = session.export, !model.sessionHidden {
                 ExportSessionView(model: model, covers: covers, session: session, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
@@ -83,7 +89,7 @@ struct LauncherView: View {
         .tint(LauncherPalette.cream)
         .font(.manrope(13))
         .frame(minWidth: 900, idealWidth: 1280, minHeight: 680, idealHeight: 900)
-        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate() }
+        .onAppear { model.startup() }
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
             InstallView(model: model, gameID: target.id).environmentObject(loc)
         }
@@ -131,7 +137,11 @@ struct LauncherView: View {
         HStack(spacing: 12) {
                 if model.loading { ProgressView().controlSize(.small) }
                 exportPill
+                batchPill
+                PhoneUpdateButton(model: model, language: uiLanguage)
                 phonePill
+                ControllerToolbarButton(controller: model.controller, show: $showController,
+                                        simplifiedChinese: loc.lang == .zh)
                 updateButton
                 // 界面语言：一键切到另一种（同旧启动器 LanguageSwitch，维护者 10-23「不让玩家先选」）；当场生效、记住选择，不用重启（11-07 维护者 验收）
                 Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
@@ -211,6 +221,27 @@ struct LauncherView: View {
         }
     }
 
+    /// 顶部公告条（v0.2.3）：醒目的琥珀色底、整条宽，压在内容上方但不盖住任何按钮；× 关掉后同一条不再出现。文字取自 notice.json，代码里不写公告内容
+    @ViewBuilder private var noticeBar: some View {
+        if let notice = model.notice, let text = (notice["text"] as? [String: String])?[uiLanguage] {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(LauncherPalette.building)
+                (Text(txt("notice.label") + "  ").font(.manrope(13, .bold)) + Text(text).font(.manrope(13)))
+                    .foregroundStyle(LauncherPalette.cream).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                Spacer(minLength: 8)
+                if let link = (notice["url"] as? String).flatMap(URL.init(string:)) {
+                    Button { NSWorkspace.shared.open(link) } label: { Text(txt("notice.details")).font(.manrope(12.5, .semibold)).underline() }
+                        .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                }
+                Button { model.dismissNotice() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                    .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream.opacity(0.8)).help(txt("notice.close")).accessibilityLabel(txt("notice.close"))
+            }
+            .padding(.horizontal, 24).padding(.vertical, 10)
+            .background(LauncherPalette.building.opacity(0.16))
+            .overlay(alignment: .bottom) { Rectangle().fill(LauncherPalette.building.opacity(0.45)).frame(height: 1) }
+        }
+    }
+
     /// 有新版：后台下载时一行小字，下好后一颗「更新并重启」，都在顶栏，不打断玩家。
     @ViewBuilder private var updateButton: some View {
         switch model.updateState {
@@ -241,6 +272,21 @@ struct LauncherView: View {
 
     func txt(_ id: String) -> String { BackendText.launcherText(id, language: uiLanguage) }
 
+    /// 批量出包（v0.2.4）：清单页没开着时，这批正在出 / 上次还有没出完的 → 顶部胶囊回到清单页
+    @ViewBuilder private var batchPill: some View {
+        if !model.batchShown, model.batchRunning || model.batchUnfinished > 0 {
+            Button { model.batchShown = true } label: {
+                HStack(spacing: 7) {
+                    if model.batchRunning { ProgressView().controlSize(.mini) } else { Image(systemName: "list.bullet.rectangle") }
+                    Text(model.batchRunning ? BackendText.launcherText("batch.title", language: uiLanguage)
+                         : BackendText.launcherText("batch.unfinished", language: uiLanguage).replacingOccurrences(of: "{0}", with: "\(model.batchUnfinished)"))
+                        .font(.manrope(12.5, .semibold)).lineLimit(1)
+                }
+            }
+            .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("top.batch")
+        }
+    }
+
     /// 收起运行页、或还有排队时：顶部这颗胶囊回到出包页。
     @ViewBuilder private var exportPill: some View {
         if let session = model.session, session.export != nil, model.sessionHidden {
@@ -265,7 +311,7 @@ struct LauncherView: View {
                 Button { installFor = id } label: {
                     HStack(spacing: 7) {
                         ProgressView().controlSize(.mini)
-                        Text(txt("install.pill.running").replacingOccurrences(of: "{0}", with: s.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                        Text(txt("install.pill.running").replacingOccurrences(of: "{0}", with: s.name).replacingOccurrences(of: "{1}", with: model.installTargetLabel)).font(.manrope(12.5, .semibold)).lineLimit(1)
                         if let f = s.progress.fraction { Text("\(Int(f * 100))%").font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary) }
                     }
                 }
@@ -274,7 +320,8 @@ struct LauncherView: View {
                 Button { installFor = r.gameID } label: {
                     HStack(spacing: 7) {
                         Image(systemName: r.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(r.ok ? LauncherPalette.ready : LauncherPalette.danger)
-                        Text(txt(r.ok ? "install.pill.done" : "install.pill.failed").replacingOccurrences(of: "{0}", with: r.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                        Text(txt(r.ok ? "install.pill.done" : "install.pill.failed").replacingOccurrences(of: "{0}", with: r.name)
+                             .replacingOccurrences(of: "{1}", with: r.ok && !model.installedTo.isEmpty ? model.installedTo : model.installTargetLabel)).font(.manrope(12.5, .semibold)).lineLimit(1)
                     }
                 }
                 .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.pill")
@@ -295,5 +342,27 @@ struct LauncherView: View {
             }
         }
         group.notify(queue: .main) { done(urls) }
+    }
+}
+
+private struct ControllerToolbarButton: View {
+    @ObservedObject var controller: NS2LauncherController
+    @Binding var show: Bool
+    let simplifiedChinese: Bool
+
+    var body: some View {
+        Button { show.toggle() } label: {
+            HStack(spacing: 7) {
+                Circle().fill(Color(nsColor: controller.buttonColor)).frame(width: 7, height: 7)
+                Text(simplifiedChinese ? "手柄" : "Controller").font(.manrope(12.5, .semibold))
+            }
+        }
+        .buttonStyle(LauncherSecondaryButtonStyle())
+        .help("Switch 2 Pro：" + controller.buttonStatus)
+        .accessibilityLabel("Switch 2 Pro：" + controller.buttonStatus)
+        .accessibilityIdentifier("top.controller")
+        .popover(isPresented: $show, arrowEdge: .bottom) {
+            Switch2ProConnectionPopover(controller: controller, simplifiedChinese: simplifiedChinese)
+        }
     }
 }

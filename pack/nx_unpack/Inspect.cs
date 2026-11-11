@@ -62,6 +62,8 @@ static partial class P {
             Ks = ExternalKeyReader.ReadKeyFile(args[0]);
             string titleKeys = null;
             for (int i = 2; i < args.Length; i++) if (args[i].StartsWith("--title-keys=", StringComparison.Ordinal)) titleKeys = args[i].Substring(13);
+            // NCZ 解压临时文件放调用方给的目录（#612：游戏库在别的盘时仍写系统盘 %TEMP%，系统盘满就导入失败；解包模式本来就放输出目录旁边）
+            for (int i = 2; i < args.Length; i++) if (args[i].StartsWith("--temp-dir=", StringComparison.Ordinal)) NczCore.TempDir = args[i].Substring(11);
             LoadTitleKeys(args[0], titleKeys);
             Index(args[2], inspect: true); Resolve();
             var packages = new List<object>();
@@ -106,7 +108,7 @@ static partial class P {
                             }
                         }
                         // 更新包的 ExeFS 是完整的（不是差分），真正跑的是最新更新里的程序：有的游戏本体是 32 位、更新后变 64 位
-                        //（马车8：1.0 是 AArch32，4.0.1 更新是 AArch64；10-23 Spare-host 一键出包被误拒）。更新的读不出就记 unknown，由调用方退回看本体
+                        //（0100152000022000：1.0 是 AArch32，4.0.1 更新是 AArch64；10-23 Spare-host 一键出包被误拒）。更新的读不出就记 unknown，由调用方退回看本体
                         if (content.Type == ContentType.Program && kind == "update") {
                             try {
                                 var ucode = nca.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);

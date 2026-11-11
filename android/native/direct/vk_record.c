@@ -2,6 +2,7 @@
 #include "nvn_obj.h"
 #include "nvn_vk_texcache.h"   // A3：对象身份判据 / serial 状态（墓碑）查询；弱符号，宿主合同可替身
 #include "t2t_plan.h"
+#include "buffer_texture_plan.h"
 #include "nvn2_cmd.h"   // DM_PRIM_MESH_TASKS（NVN2 任务 / 网格绘制）
 #pragma weak nvn_ga2ca
 // A3：texcache 是资源状态的唯一归属；宿主单测单独编本 TU 时这两个符号为空（不分类，保持原失败路径）。
@@ -12,6 +13,7 @@ extern int nvn_vk_texcache_tex_identity(const tex_t *t, char *why, size_t why_si
 extern int nvn_vk_texcache_serial_state(uint64_t serial, struct nvn_tex_tombstone *tomb) __attribute__((weak));
 #include "nvn_vk_format.h"
 #include "nvn_vk_query.h"
+#include "nvn_vk_first_draw.h"
 #include "vk_clear.h"
 
 #include <android/log.h>
@@ -85,8 +87,16 @@ extern int nvn_vk_first_draw_pass_break(int sync) __attribute__((weak));
 extern int nvn_vk_first_draw_timestamp_top(struct s2a_vk_device *d, VkQueryPool pool, uint32_t slot,
                                            char *why, size_t why_size) __attribute__((weak));
 extern uint64_t nvn_vk_first_draw_frame_id(void) __attribute__((weak));
+extern uint64_t nvn_vk_first_draw_detach_submit_seq(void) __attribute__((weak));
+extern void s2a_poolahb_complete_seq(uint64_t seq) __attribute__((weak));
+// 通用帧队列入队三态：只有 NOT_TAKEN 允许调用方自提或回收。
+extern int nvn_vk_first_draw_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd) __attribute__((weak));
 // 帧队列首错（弱绑定）：失败传播时带上真实原因，不覆盖首错。
 extern const char *nvn_vk_first_draw_first_error(void) __attribute__((weak));
+// 间接参数的权威字节（弱绑定）：参数落在帧队列的可写 storage buffer 影子里时，帧队列先过同步边界再从影子
+// 读（返回 1）；否则 guest 内存是权威（返回 0）。没有帧队列的链接（宿主探针）没有影子，guest 即权威。
+extern int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out,
+                                           char *why, size_t why_size) __attribute__((weak));
 // ReportCounter 只在 pass 内切查询段（vkCmdEndQuery/BeginQuery 在 pass 内合法），不再关整个 render pass。
 // query 模块本就支持同 pass 内多段。默认开：真机 A/B 证 45→35 pass/帧、exec 13.3→12.3ms、fps 49.0→50.1、
 // 查询结果正确、red=0。回退旧行为（每次 Report 关 pass）用 debug.s2a.qseg_off=1。
@@ -208,6 +218,13 @@ static int rc_value(struct replay_state *S, const struct s2a_record_memory *m, u
     if (!addr || !m || m->read(m->opaque, addr, v, 8)) return 0;
     return 1;
 }
+// 间接绘制 / 间接派发（跨提交累计）：解析成确定值的笔数、按 GPU 值为空（0 顶点 / 0 实例 / 过了多重绘制
+// 计数 / 0 组）而不录的笔数。宿主测试与真机日志据此确认间接路径真被走到。
+static uint64_t g_ind_draws_resolved, g_ind_draws_skipped, g_ind_dispatches, g_ind_dispatches_empty;
+void s2a_record_indirect_counts(uint64_t out[4]) {
+    out[0] = g_ind_draws_resolved; out[1] = g_ind_draws_skipped;
+    out[2] = g_ind_dispatches; out[3] = g_ind_dispatches_empty;
+}
 // 诊断：每种状态对象历史上被真实绑定过多少次（跨提交累计，不受 reset 影响）。
 static uint32_t g_state_binds[6];
 unsigned s2a_record_state_bind_count(int kind) { return kind >= 0 && kind < 6 ? g_state_binds[kind] : 0; }
@@ -256,7 +273,8 @@ static const char *compute_reason_code(const char *why) {
     if (!why || !*why) return "";
     static const struct { const char *text, *code; } known[] = {
         {"dispatch payload too small", "payload_invalid"},
-        {"indirect dispatch needs GPU-written group counts (not wired yet)", "indirect_unsupported"},
+        {"indirect dispatch group counts unavailable", "indirect_args_unavailable"},
+        {"indirect dispatch group counts out of range", "indirect_args_range"},
         {"compute retention ledger full", "retention_full"},
         {"dispatch without CS/group counts", "dispatch_incomplete"},
         {"invalid compute builder output", "builder_invalid"},
@@ -307,7 +325,7 @@ void s2a_record_compute_note(const struct s2a_compute_diagnostic *d,
     if (g_compute.trace && g_compute.trace_lines < 64) { g_compute.trace_lines++; trace=1; }
     pthread_mutex_unlock(&g_compute_mu);
     if (trace) {
-        static const char *source_names[]={"unknown","offline","private","live","miss"};
+        static const char *source_names[]={"unknown","offline","private","live","miss","cached"};
         static const char *outcome_names[]={"build_failed","unsubmitted","completed","completion_unknown","copyback_failed"};
         const char *outcome_name = (unsigned)outcome < sizeof outcome_names/sizeof outcome_names[0] ? outcome_names[outcome] : "build_failed";
         char identity[65] = "unavailable";
@@ -330,10 +348,11 @@ int s2a_record_compute_session_end(void) {
         for(int j=0;j<n;j++) if(entry[j]=='\n' || entry[j]=='\r') entry[j]=' ';
         memcpy(reasons+used,entry,(size_t)n+1); used+=(size_t)n;
     }
-    __android_log_print(ANDROID_LOG_INFO,"S2Arm","compute session: session=%llu generation=%llu dispatches=%llu offline=%llu private=%llu live=%llu miss=%llu unknown_source=%llu submitted=%llu completed=%llu completion_unknown=%llu unsubmitted=%llu build_failed=%llu copyback_failed=%llu reason_overflow=%llu stale=%llu reason_log_omitted=%u%s",
+    __android_log_print(ANDROID_LOG_INFO,"S2Arm","compute session: session=%llu generation=%llu dispatches=%llu offline=%llu private=%llu live=%llu miss=%llu cached=%llu unknown_source=%llu submitted=%llu completed=%llu completion_unknown=%llu unsubmitted=%llu build_failed=%llu copyback_failed=%llu reason_overflow=%llu stale=%llu reason_log_omitted=%u%s",
         (unsigned long long)stats.session,(unsigned long long)stats.generation,(unsigned long long)stats.dispatches,
         (unsigned long long)stats.sources[S2A_COMPUTE_OFFLINE],(unsigned long long)stats.sources[S2A_COMPUTE_PRIVATE],
         (unsigned long long)stats.sources[S2A_COMPUTE_LIVE],(unsigned long long)stats.sources[S2A_COMPUTE_MISS],
+        (unsigned long long)stats.sources[S2A_COMPUTE_CACHED],
         (unsigned long long)stats.sources[S2A_COMPUTE_UNKNOWN],(unsigned long long)stats.submitted,(unsigned long long)stats.completed,
         (unsigned long long)stats.unknown_completion,(unsigned long long)stats.unsubmitted,(unsigned long long)stats.build_failed,
         (unsigned long long)stats.copyback_failed,(unsigned long long)stats.reason_overflow,(unsigned long long)stats.stale_events,omitted,reasons);
@@ -344,6 +363,25 @@ static int fail(struct s2a_record_result *r, int code, uint32_t opcode, const ch
     r->code = code; r->opcode = opcode;
     snprintf(r->why, sizeof r->why, "%s", why);
     return code;
+}
+
+// 间接参数（DrawArrays/ElementsIndirect 的参数、间接计数多重绘制的计数、DispatchComputeIndirect 的组数）
+// 回放时取确定值：这些字节可能由 GPU 写，权威副本在哪由帧队列判定（见 nvn_vk_first_draw_indirect_args），
+// 不在 GPU 影子里就经记录层的内存访问器读 guest（越出已登记的池即准确失败，不读野地址）。
+// 返回 0 = *out 已填；否则为 S2A_RECORD_* 失败码，why 写明。
+static int rec_indirect_args(const struct s2a_record_memory *memory, uint64_t addr, uint32_t len, void *out,
+                             char *why, size_t why_size) {
+    if (nvn_vk_first_draw_indirect_args) {
+        int r = nvn_vk_first_draw_indirect_args(addr, len, out, why, why_size);
+        if (r > 0) return 0;
+        if (r < 0) return S2A_RECORD_UNSUPPORTED;
+    }
+    if (memory->read(memory->opaque, addr, out, len) != 0) {
+        snprintf(why, why_size, "indirect arguments 0x%llx+%u are not in readable guest memory",
+                 (unsigned long long)addr, len);
+        return S2A_RECORD_MEMORY;
+    }
+    return 0;
 }
 
 // ---- 对象/提交记账：每次创建/销毁都计数，测试可核“正常完成后恰好回收一次”。 ----
@@ -485,6 +523,7 @@ struct rec_keep {
     // Compute-only ownership; every graphics keep remains zero in these fields.
     void *compute_owner;
     int (*compute_finish)(struct s2a_vk_device *, void *, int);
+    uint64_t pool_seq;  // 未入队后自提：保活直到这次提交有完成证明
 };
 struct rec_retained_entry {
     VkFence fence;
@@ -508,6 +547,85 @@ static void recount_device(struct s2a_vk_device *d) {
 
 static int g_submit_fault;   // 诊断注入：1 = 提交后按完成未知；2 = 假装提交失败
 void s2a_record_set_submit_fault(int mode) { g_submit_fault = mode; }
+
+// ---- OP_DISPATCH 帧队列收编（issue #48；默认关：debug.s2a.dispatch_fq / 宿主 S2A_DISPATCH_FQ）----
+// 门开且全部 guest-backed 绑定命中 AHB 池后备（builder 置 out.fq=1）时，把 dispatch 录进一段
+// 独立命令缓冲交帧队列统一提交/退休，省掉“每笔 dispatch 一次独立 submit + 立刻等 fence”的
+// 同步开销。门关时 dispatch 仍按原有顺序同步提交。
+static _Atomic int g_dispatch_fq_gate = -1;
+static int dispatch_fq_on(void) {
+    int v = atomic_load(&g_dispatch_fq_gate);
+    if (v < 0) {
+        char b[PROP_VALUE_MAX] = {0};
+        __system_property_get("debug.s2a.dispatch_fq", b);
+        v = b[0] == '1';
+        if (!v) {
+            const char *e = getenv("S2A_DISPATCH_FQ");
+            v = e && e[0] == '1';
+        }
+        atomic_store(&g_dispatch_fq_gate, v);
+    }
+    return v;
+}
+int s2a_record_dispatch_fq_enabled(void) { return dispatch_fq_on(); }
+static _Atomic uint64_t g_dispatch_fq_enq, g_dispatch_fq_fallback;
+
+// pending_fq：帧队列收编的在途 dispatch owner 表。与 g_retained 的区别：命令缓冲所有权在
+// 帧队列（不在本执行器），所以这里不记 fence/cmd，只记“等完成证明再 finish”的 owner。
+// 完成通知携带实际完成的帧号，只释放归属于该帧的 owner。
+#define REC_FQ_PENDING_MAX 64
+struct rec_fq_pending {
+    struct s2a_vk_device *d;
+    void *owner;
+    int (*finish)(struct s2a_vk_device *, void *, int);
+    uint64_t frame_id;
+    struct s2a_compute_diagnostic diag;
+};
+static struct rec_fq_pending g_fq_pend[REC_FQ_PENDING_MAX];
+static int g_fq_pend_n;
+static VkDevice g_fq_pend_dev;
+void s2a_record_dispatch_fq_stats(uint64_t *enqueued, uint64_t *fallback, uint64_t *pending) {
+    if (enqueued) *enqueued = atomic_load(&g_dispatch_fq_enq);
+    if (fallback) *fallback = atomic_load(&g_dispatch_fq_fallback);
+    if (pending) *pending = (uint64_t)g_fq_pend_n;
+}
+// 与 g_retained 同口径：旧设备上的在途项随设备消失，只清账、不在新设备上 finish。
+static void fq_pend_check_device(struct s2a_vk_device *d) {
+    if (g_fq_pend_dev && d && g_fq_pend_dev != d->device && g_fq_pend_n) {
+        fprintf(stderr, "[vk-record] %d queued dispatch owner(s) belong to a previous device; "
+                        "gone with it (no explicit finish)\n", g_fq_pend_n);
+        memset(g_fq_pend, 0, sizeof g_fq_pend);
+        g_fq_pend_n = 0;
+    }
+    if (d) g_fq_pend_dev = d->device;
+}
+// 只结算明确获得完成证明的帧；其他延迟槽可能仍在飞行。
+static void fq_pend_drain(uint64_t completed_frame) {
+    int left = 0;
+    for (int i = 0; i < g_fq_pend_n; ++i) {
+        struct rec_fq_pending e = g_fq_pend[i];
+        if (e.frame_id != completed_frame || !e.d || !e.d->device) { g_fq_pend[left++] = e; continue; }
+        int rc = e.finish ? e.finish(e.d, e.owner, 0) : 0;
+        s2a_record_compute_note(&e.diag,
+            rc ? S2A_COMPUTE_COPYBACK_FAILED : S2A_COMPUTE_COMPLETED,
+            rc ? "compute completion copyback failed" : "");
+    }
+    memset(g_fq_pend + left, 0, (size_t)(g_fq_pend_n - left) * sizeof g_fq_pend[0]);
+    g_fq_pend_n = left;
+}
+// 完成未知（槽退休失败 / pass_break 返回非 0）：逐项 finish(-2)——按契约一个对象都不释放，
+// 全部留在表里等后面的完成证明（或随设备销毁）。
+static void fq_pend_unknown(void) {
+    for (int i = 0; i < g_fq_pend_n; ++i)
+        if (g_fq_pend[i].d && g_fq_pend[i].d->device && g_fq_pend[i].finish)
+            (void)g_fq_pend[i].finish(g_fq_pend[i].d, g_fq_pend[i].owner, -2);
+}
+void s2a_record_fq_drain(int ok) {
+    if (!ok) fq_pend_unknown();
+}
+void s2a_record_fq_retire(uint64_t completed_frame) {
+    if (completed_frame) fq_pend_drain(completed_frame);
+}
 
 void s2a_record_gpu_stats(struct s2a_record_gpu_stats *out) {
     if (!out) return;
@@ -566,6 +684,8 @@ int s2a_record_release_retained(struct s2a_vk_device *d, uint64_t timeout_ns, ui
         if (e->keep.compute_finish &&
             e->keep.compute_finish(d, e->keep.compute_owner, REC_SUBMIT_COMPLETED))
             fprintf(stderr, "[vk-record] retired compute completion copyback failed\n");
+        if (e->keep.pool_seq && s2a_poolahb_complete_seq)
+            s2a_poolahb_complete_seq(e->keep.pool_seq);
         for (int b = 0; b < e->keep.nbuf; b++) {
             if (e->keep.buf[b]) { vkDestroyBuffer(d->device, e->keep.buf[b], NULL); g_buffer_freed++; }
             if (e->keep.mem[b]) { vkFreeMemory(d->device, e->keep.mem[b], NULL); g_memory_freed++; }
@@ -605,19 +725,13 @@ static int rec_retain(struct s2a_vk_device *d, VkFence fence, VkCommandBuffer cm
     return 0;
 }
 
-// 一次性提交并等完成。返回 REC_SUBMIT_*：
+// 一次性提交并等完成（命令缓冲已结束录制——供 dispatch 帧队列收编的“入队被拒后自提”路径）。
+// 返回 REC_SUBMIT_*：
 //   COMPLETED   —— 已提交且有完成证明；fence 已销毁，命令缓冲已回收（辅助资源仍归调用方）。
 //   UNSUBMITTED —— 没有提交成功，命令从未执行；fence/命令缓冲已回收（辅助资源仍归调用方）。
 //   INCOMPLETE  —— 已提交但没有完成证明；fence/命令缓冲/keep 里的资源全部转入保留账本，调用方不得释放/复用。
-static int submit(struct s2a_vk_device *d, VkCommandBuffer cmd, const struct rec_keep *keep) {
-    ++g_submit_seq;
-    VkResult rc = vkEndCommandBuffer(cmd);
-    if (rc != VK_SUCCESS) {
-        note_gpu_error("vkEndCommandBuffer", rc, NULL);
-        rec_free_command(d, cmd);
-        g_submit_unsubmitted++;
-        return REC_SUBMIT_UNSUBMITTED;
-    }
+static int submit_recorded(struct s2a_vk_device *d, VkCommandBuffer cmd, const struct rec_keep *keep) {
+    VkResult rc;
     VkFenceCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
@@ -657,10 +771,14 @@ static int submit(struct s2a_vk_device *d, VkCommandBuffer cmd, const struct rec
         // 模块不在或开关关都跳过一次分支判断，不计时也不记账（量的成本不默认付）。
         extern void nvn_vk_frame_log_fence_wait(uint64_t) __attribute__((weak));
         extern int nvn_vk_frame_log_on(void) __attribute__((weak));
+        extern void nvn_vk_frame_tsv_fence_wait(uint64_t) __attribute__((weak));
+        extern int nvn_vk_frame_tsv_on(void) __attribute__((weak));
         const int fl = nvn_vk_frame_log_on && nvn_vk_frame_log_on();
-        uint64_t wt0 = fl ? rec_now_ns() : 0;
+        const int ft = nvn_vk_frame_tsv_on && nvn_vk_frame_tsv_on();
+        uint64_t wt0 = (fl || ft) ? rec_now_ns() : 0;
         rc = vkWaitForFences(d->device, 1, &fence, VK_TRUE, 5000000000ull);
         if (fl) nvn_vk_frame_log_fence_wait(rec_now_ns() - wt0);
+        if (ft) nvn_vk_frame_tsv_fence_wait(rec_now_ns() - wt0);
     }
     if (rc != VK_SUCCESS) {
         // 提交成功但没拿到完成证明：fence/命令缓冲/辅助资源都不能释放或复用。
@@ -674,6 +792,19 @@ static int submit(struct s2a_vk_device *d, VkCommandBuffer cmd, const struct rec
     rec_free_command(d, cmd);
     g_submit_completed++;
     return REC_SUBMIT_COMPLETED;
+}
+
+// 常规一次性提交：先结束录制，再走 submit_recorded 的提交/等待/退休流程。
+static int submit(struct s2a_vk_device *d, VkCommandBuffer cmd, const struct rec_keep *keep) {
+    ++g_submit_seq;
+    VkResult rc = vkEndCommandBuffer(cmd);
+    if (rc != VK_SUCCESS) {
+        note_gpu_error("vkEndCommandBuffer", rc, NULL);
+        rec_free_command(d, cmd);
+        g_submit_unsubmitted++;
+        return REC_SUBMIT_UNSUBMITTED;
+    }
+    return submit_recorded(d, cmd, keep);
 }
 
 static VkCommandBuffer begin_command(struct s2a_vk_device *d) {
@@ -1263,66 +1394,87 @@ static int gpu_copy_texture_plan(struct s2a_vk_device *d, const struct s2a_repla
     return submit(d, cmd, NULL) == REC_SUBMIT_COMPLETED ? 0 : -1;
 }
 
-static int copy_image_buffer(struct s2a_vk_device *d, const struct s2a_replay_texture *tex,
-                             uint64_t guest, uint32_t row_stride, uint32_t image_stride,
-                             const struct s2a_record_memory *mem, int to_guest) {
-    if (!tex || !tex->image || tex->width == 0 || tex->height == 0) return -1;
-    if (row_stride == 0) row_stride = tex->width * 4;
-    if (image_stride == 0) image_stride = row_stride * tex->height;
-    if (row_stride < tex->width * 4 || image_stride < row_stride * tex->height) return -1;
+static VkImageMemoryBarrier bt_image_barrier(VkImage image, const struct s2a_bt_dependency *dep) {
+    VkImageMemoryBarrier b = {0};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcAccessMask = dep->src_access; b.dstAccessMask = dep->dst_access;
+    b.oldLayout = (VkImageLayout)dep->old_layout; b.newLayout = (VkImageLayout)dep->new_layout;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = (VkImageSubresourceRange){dep->aspect, dep->mip, 1, dep->base_layer, dep->layer_count};
+    return b;
+}
+
+// OP_COPY_B2T / OP_COPY_T2B 按 buffer_texture_plan 执行：guest 只读/写计划给出的块行（行尾填充与
+// 层尾不碰），staging 紧排，一条 VkBufferImageCopy 覆盖全部层/深度片；前后各一条图像依赖。
+static int copy_buffer_texture(struct s2a_vk_device *d, VkImage image, const struct s2a_bt_plan *p,
+                               const struct s2a_record_memory *mem) {
+    if (!image || !p || !p->staging_bytes) return -1;
+    const int to_guest = p->direction == S2A_BT_TO_BUFFER;
+    const uint32_t nrows = p->rows * p->slices;
+    const int tight = p->guest_row_pitch == p->row_bytes && p->image_stride == p->row_bytes * p->rows;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void *mapped = NULL;
-    if (create_visible(d, image_stride, &buffer, &memory, &mapped)) return -1;
-    if (!to_guest && mem->read(mem->opaque, guest, mapped, image_stride) != 0) {
-        destroy_visible(d, buffer, memory, mapped);
-        return -1;
-    }
-    VkCommandBuffer cmd = begin_command(d);
-    if (!cmd) { destroy_visible(d, buffer, memory, mapped); return -1; }
-    VkBufferImageCopy regions[4096];
-    uint32_t region_count = 0;
-    if (row_stride == tex->width * 4 && image_stride == row_stride * tex->height) {
-        VkBufferImageCopy region = {0};
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.layerCount = 1;
-        region.imageExtent = (VkExtent3D){tex->width, tex->height, 1};
-        regions[region_count++] = region;
-    } else {
-        if (tex->height > 4096) { rec_free_command(d, cmd); destroy_visible(d, buffer, memory, mapped); return -1; }
-        for (uint32_t y = 0; y < tex->height; y++) {
-            VkBufferImageCopy region = {0};
-            region.bufferOffset = (VkDeviceSize)y * row_stride;
-            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.imageSubresource.layerCount = 1;
-            region.imageOffset = (VkOffset3D){0, (int32_t)y, 0};
-            region.imageExtent = (VkExtent3D){tex->width, 1, 1};
-            regions[region_count++] = region;
+    if (create_visible(d, p->staging_bytes, &buffer, &memory, &mapped)) return -1;
+    if (!to_guest) {
+        if (tight) {
+            if (mem->read(mem->opaque, p->guest_address, mapped, (size_t)p->staging_bytes) != 0) goto fail_staging;
+        } else {
+            for (uint32_t row = 0; row < nrows; row++) {
+                struct s2a_bt_span span;
+                if (s2a_buffer_texture_row(p, row, &span) ||
+                    mem->read(mem->opaque, span.guest_address, (uint8_t *)mapped + span.staging_offset,
+                              (size_t)span.bytes) != 0) goto fail_staging;
+            }
         }
     }
+    VkCommandBuffer cmd = begin_command(d);
+    if (!cmd) goto fail_staging;
+    VkImageMemoryBarrier before = bt_image_barrier(image, &p->image_before);
+    vkCmdPipelineBarrier(cmd, p->image_before.src_stage, p->image_before.dst_stage, 0, 0, NULL, 0, NULL, 1, &before);
+    VkBufferImageCopy region = {0};
+    region.imageSubresource = (VkImageSubresourceLayers){p->aspect, p->mip, p->base_layer, p->layer_count};
+    region.imageOffset = (VkOffset3D){(int32_t)p->x, (int32_t)p->y, (int32_t)p->z};
+    region.imageExtent = (VkExtent3D){p->width, p->height, p->depth};
     if (to_guest)
-        vkCmdCopyImageToBuffer(cmd, tex->image, VK_IMAGE_LAYOUT_GENERAL, buffer, region_count, regions);
+        vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, &region);
     else
-        vkCmdCopyBufferToImage(cmd, buffer, tex->image, VK_IMAGE_LAYOUT_GENERAL, region_count, regions);
-    VkBufferMemoryBarrier barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    barrier.srcAccessMask = to_guest ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT;
-    barrier.dstAccessMask = to_guest ? VK_ACCESS_HOST_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.buffer = buffer; barrier.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         to_guest ? VK_PIPELINE_STAGE_HOST_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, NULL, 1, &barrier, 0, NULL);
+        vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    VkImageMemoryBarrier after = bt_image_barrier(image, &p->image_after);
+    vkCmdPipelineBarrier(cmd, p->image_after.src_stage, p->image_after.dst_stage, 0, 0, NULL, 0, NULL, 1, &after);
+    if (to_guest) {
+        VkBufferMemoryBarrier host = {0};
+        host.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.buffer = buffer; host.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host, 0, NULL);
+    }
     struct rec_keep keep;
     memset(&keep, 0, sizeof keep);
     keep.buf[0] = buffer; keep.mem[0] = memory; keep.nbuf = 1;
     int sr = submit(d, cmd, &keep);
     if (sr == REC_SUBMIT_INCOMPLETE) return -1;   // 完成未知：staging 已归保留账本，不能读回/释放
     int rc = sr == REC_SUBMIT_COMPLETED ? 0 : -1;
-    if (rc == 0 && to_guest && mem->write(mem->opaque, guest, mapped, image_stride) != 0) rc = -1;
+    if (rc == 0 && to_guest) {
+        if (tight) {
+            if (mem->write(mem->opaque, p->guest_address, mapped, (size_t)p->staging_bytes) != 0) rc = -1;
+        } else {
+            for (uint32_t row = 0; rc == 0 && row < nrows; row++) {
+                struct s2a_bt_span span;
+                if (s2a_buffer_texture_row(p, row, &span) ||
+                    mem->write(mem->opaque, span.guest_address, (const uint8_t *)mapped + span.staging_offset,
+                               (size_t)span.bytes) != 0) rc = -1;
+            }
+        }
+    }
     destroy_visible(d, buffer, memory, mapped);
     return rc;
+fail_staging:
+    destroy_visible(d, buffer, memory, mapped);
+    return -1;
 }
 
 static int gpu_copy(struct s2a_vk_device *d, uint64_t src, uint64_t dst, uint64_t bytes,
@@ -1425,6 +1577,11 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
         S->seq++;
         const uint64_t dbg_draw_t0 =
             (dbg_timing && (header.op == OP_DRAW || header.op == OP_DRAW_IDX)) ? rec_now_ns() : 0;
+        int dispatch_fq_try = header.op == OP_DISPATCH && dispatch_fq_on() &&
+            nvn_vk_first_draw_pass_break && nvn_vk_first_draw_enqueue &&
+            nvn_vk_first_draw_frame_id && nvn_vk_first_draw_detach_submit_seq &&
+            s2a_poolahb_complete_seq && g_fq_pend_n < REC_FQ_PENDING_MAX &&
+            (g_dispatch_builder || (g_keep_state && nvn_vk_compute_build));
         if (nvn_vk_first_draw_pass_break && op_breaks_pass(header.op)) {
             {
                 extern int nvn_vk_first_draw_pass_is_open(void) __attribute__((weak));
@@ -1439,12 +1596,16 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             // 不需要先 flush+等完成。这笔清除若表达不了（部分通道掩码、逐位模板掩码等）会退回同步
             // 路径，退回点在下面自己补一次 sync pass_break，顺序仍然成立。
             // 实测（Adreno 730）：旧逻辑每笔 clear 前等一次，8 笔颜色 + 4 笔深度合计 8.8–28 ms/帧。
+            // dispatch_fq 门开时 OP_DISPATCH 只关 pass（sync=0）：命令由帧队列统一提交，
+            // 不需要先排空；门关照旧 sync=1 排空后独立提交，逐字节不变。
             int sync = header.op == OP_CLEAR_TEX || header.op == OP_CLEAR_BUF ||
                        header.op == OP_COPY_B2B || header.op == OP_COPY_T2B || header.op == OP_COPY_B2T ||
-                       header.op == OP_COPY_T2T || header.op == OP_DISPATCH || header.op == OP_FENCE_SYNC;
+                       header.op == OP_COPY_T2T || header.op == OP_FENCE_SYNC ||
+                       (header.op == OP_DISPATCH && !dispatch_fq_try);
             if (nvn_vk_first_draw_pass_break(sync) != 0) {
                 // 帧队列没有拿到完成证明：命令顺序不再成立，这条 opcode 及其后的 clear/copy/fence/event
                 // 都不能执行。首错留在帧队列里，这里只转述，不覆盖。
+                fq_pend_unknown();   // 在途 dispatch owner 完成未知：finish(-2) 全保留在表
                 const char *first = nvn_vk_first_draw_first_error ? nvn_vk_first_draw_first_error() : NULL;
                 char msg[420];
                 snprintf(msg, sizeof msg,
@@ -1679,7 +1840,11 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                         texture->image, clear_format, VK_IMAGE_ASPECT_COLOR_BIT,
                         base_level + lv, base_layer + ly,
                         rec_mipdim(texture->width, base_level + lv), rec_mipdim(texture->height, base_level + lv),
+                        NULL,
                     };
+                    extern void *s2a_vk_adapter_clear_tex(uint64_t, VkImage) __attribute__((weak));
+                    if (s2a_vk_clear_fv_enabled() && s2a_vk_adapter_clear_tex)
+                        t.native_tex = s2a_vk_adapter_clear_tex(texture->serial, texture->image);
                     char cwhy[192] = "";
                     // C1：整幅、无掩码的清除录进帧队列，不 submit 不等 fence；不能表达才走同步路径。
                     int crc = s2a_vk_clear_color_queued(device, &t, &color, (uint32_t)clear.mask & 0xfu,
@@ -1729,6 +1894,13 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             }
             extern void s2a_vk_adapter_mark_written(VkImage image) __attribute__((weak));
             if (s2a_vk_adapter_mark_written) s2a_vk_adapter_mark_written(texture->image);
+            {
+                /* C4a 首用证据：这个颜色目标的内容在本帧重新起过（iOS rt_fresh）。
+                   弱绑定：后端实现挂在 nvn_vk_draw.c，无实现时啥都不发生。 */
+                extern void nvn_vk_fu_rt_fresh(uint64_t serial) __attribute__((weak));
+                if (nvn_vk_fu_rt_fresh && S->rt_snap_ok[clear.index])
+                    nvn_vk_fu_rt_fresh(S->rt_snap[clear.index].serial);
+            }
             if (clear_st) {
                 atomic_fetch_add(&g_clear_ns, rec_now_ns() - clear_t0);
                 atomic_fetch_add(&g_clear_n, 1);
@@ -1746,7 +1918,6 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             // NVN 的 BindProgram 按阶段绑定：本次调用的掩码只覆盖要改的阶段，未置位的阶段
             // 保留先前绑定。这里按阶段合并：每个被本次掩码覆盖的阶段，取本程序该阶段 sd[]
             // 的 key；空程序则解绑该阶段。不能只记本次调用的掩码，否则会丢掉更早的绑定。
-            S->bound_program = (const void *)program.prog;
             for (int st = 0; st < 5; st++) {
                 if (!((program.stages >> st) & 1)) continue;
                 int found = -1;
@@ -1761,6 +1932,13 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                     memcpy(S->bound_keys[st], program.keys[found], 8);
                     S->bound_stage_present |= (uint8_t)(1u << st);
                 }
+            }
+            // 图形程序身份同样按阶段归属（Metal state_op：stages & 0x1f 才换 S.prog）：只绑 CS 的调用
+            // 不动它；空程序只解绑本次掩码里的阶段，还有图形阶段在绑时保留原身份（各阶段键已在上面合并）。
+            // 旧写法每次都用本次 prog 覆盖，游戏先绑 VS/FS 再绑 CS（或空程序解绑别的阶段）后，
+            // 下一笔 draw 拿到 CS 程序或空指针（真机：「draw: no device/program」后 abort）。
+            if (!(program.stages & (1u << 5)) || (program.stages & 0x1f)) {
+                if (program.prog || !S->bound_stage_present) S->bound_program = (const void *)program.prog;
             }
             // CS has independent ownership: a later graphics bind must not replace it.
             if (program.stages & (1u << 5)) {
@@ -1812,37 +1990,100 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                         (unsigned long long)g_rc_skipped_draws);
                 break;
             }
-            // 生产入口闸（P0-0a）：adapter 注册了 draw builder（mtl_vk_adapter.c），所以生产路径永远走
-            // 下面的 builder 分支，**不会**经过 replay 回退里的 ind/mdi 检查。间接参数由 GPU 写、multi-draw
-            // 的计数也在 GPU 侧，两者都还没接；若在这里放行，记录里补的 count/first=0 会继续往下变成
-            // “返回成功但什么都没画”。先把表达不了的绘制准确拒掉，并把记录字段原样报出（opcode/ind/mdi/tfc）。
+            // 间接绘制 / 间接计数多重绘制（P0-0a 收口）：参数和计数可能是 GPU 写的，回放到这一笔时取确定值
+            // （权威副本在哪见 rec_indirect_args），改写成一笔普通绘制再走下面同一条 builder / 回退路径，
+            // 与 Metal 几何路径 geo_draw 读间接参数同一思路。多重绘制每条子绘制各有一条记录
+            // （hle_nvn.c MultiDraw*IndirectCount：ind 已按 stride 偏到第 mdi_i 条），mdi_i 不小于 GPU 写的
+            // 计数就不画；参数里顶点数或实例数为 0 时 GPU 上也是空画。DrawTransformFeedback（tfc：顶点数
+            // 来自 GPU 计数器的捕获字节数）还没接，照旧准确拒绝。
+            union { p_draw d; p_draw_idx i; } ind_rec;
+            uint32_t dsize = header.size;
             {
                 uint64_t ind = 0, mdi_cnt = 0, tfc = 0;
                 int32_t mdi_i = 0;
                 if (header.op == OP_DRAW_IDX) {
-                    p_draw_idx dim;
-                    const p_draw_idx *d = draw_idx_rec(payload, header.size, &dim);
+                    const p_draw_idx *d = draw_idx_rec(payload, header.size, &ind_rec.i);
                     ind = d->ind; mdi_cnt = d->mdi_cnt; mdi_i = d->mdi_i;
+                    if (d != &ind_rec.i) ind_rec.i = *d;
                 } else {
-                    p_draw dm;
-                    const p_draw *d = draw_rec(payload, header.size, &dm);
+                    const p_draw *d = draw_rec(payload, header.size, &ind_rec.d);
                     ind = d->ind; mdi_cnt = d->mdi_cnt; mdi_i = d->mdi_i; tfc = d->tfc;
+                    if (d != &ind_rec.d) ind_rec.d = *d;
                 }
-                if (ind || mdi_cnt || mdi_i || tfc) {
+                const char *opn = header.op == OP_DRAW_IDX ? "OP_DRAW_IDX" : "OP_DRAW";
+                if (tfc) {
                     char gate_why[192];
                     snprintf(gate_why, sizeof gate_why,
                              "draw cannot be expressed: op=%s(%u) ind=0x%llx mdi_cnt=0x%llx mdi_i=%d tfc=0x%llx: "
-                             "GPU-written draw params not wired yet",
-                             header.op == OP_DRAW_IDX ? "OP_DRAW_IDX" : "OP_DRAW", (unsigned)header.op,
-                             (unsigned long long)ind, (unsigned long long)mdi_cnt, (int)mdi_i,
-                             (unsigned long long)tfc);
+                             "DrawTransformFeedback vertex count not wired yet",
+                             opn, (unsigned)header.op, (unsigned long long)ind, (unsigned long long)mdi_cnt,
+                             (int)mdi_i, (unsigned long long)tfc);
                     return fail(result, S2A_RECORD_UNSUPPORTED, header.op, gate_why);
+                }
+                if (ind || mdi_cnt || mdi_i) {
+                    char aw[200] = "", gate_why[320];
+                    if (!ind || mdi_i < 0 || (mdi_i && !mdi_cnt)) {
+                        snprintf(gate_why, sizeof gate_why,
+                                 "malformed indirect draw record: op=%s(%u) ind=0x%llx mdi_cnt=0x%llx mdi_i=%d",
+                                 opn, (unsigned)header.op, (unsigned long long)ind, (unsigned long long)mdi_cnt,
+                                 (int)mdi_i);
+                        return fail(result, S2A_RECORD_INVALID, header.op, gate_why);
+                    }
+                    if (mdi_cnt) {
+                        uint32_t live = 0;
+                        int arc = rec_indirect_args(memory, mdi_cnt, 4, &live, aw, sizeof aw);
+                        if (arc) {
+                            snprintf(gate_why, sizeof gate_why, "op=%s(%u) multi-draw count at 0x%llx: %s", opn,
+                                     (unsigned)header.op, (unsigned long long)mdi_cnt, aw);
+                            return fail(result, arc, header.op, gate_why);
+                        }
+                        if ((uint32_t)mdi_i >= live) { g_ind_draws_skipped++; break; }
+                    }
+                    uint32_t a[5] = {0};
+                    const uint32_t an = header.op == OP_DRAW_IDX ? 20u : 16u;
+                    int arc = rec_indirect_args(memory, ind, an, a, aw, sizeof aw);
+                    if (arc) {
+                        snprintf(gate_why, sizeof gate_why, "op=%s(%u) indirect arguments at 0x%llx: %s", opn,
+                                 (unsigned)header.op, (unsigned long long)ind, aw);
+                        return fail(result, arc, header.op, gate_why);
+                    }
+                    if (!a[0] || !a[1]) { g_ind_draws_skipped++; break; }
+                    // 记录层的绘制参数是 int32：超出范围的 GPU 值不能悄悄截断成另一笔绘制。
+                    if (a[0] > INT32_MAX || a[1] > INT32_MAX || a[2] > INT32_MAX ||
+                        (header.op != OP_DRAW_IDX && a[3] > INT32_MAX) ||
+                        (header.op == OP_DRAW_IDX && a[4] > INT32_MAX)) {
+                        snprintf(gate_why, sizeof gate_why,
+                                 "op=%s(%u) indirect arguments at 0x%llx out of range: %u %u %u %u %u", opn,
+                                 (unsigned)header.op, (unsigned long long)ind, a[0], a[1], a[2], a[3], a[4]);
+                        return fail(result, S2A_RECORD_INVALID, header.op, gate_why);
+                    }
+                    if (header.op == OP_DRAW_IDX) {
+                        p_draw_idx *d = &ind_rec.i;
+                        if (d->itype < 0 || d->itype > 2)
+                            return fail(result, S2A_RECORD_INVALID, header.op, "indirect indexed draw has an invalid index type");
+                        // VkDrawIndexedIndirectCommand：{indexCount, instanceCount, firstIndex, vertexOffset, firstInstance}；
+                        // firstIndex 折进索引地址（与 Metal geo_draw、直接 DrawElements 记录同一口径）。
+                        d->count = (int32_t)a[0]; d->instances = (int32_t)a[1];
+                        d->ibuf += (uint64_t)a[2] << d->itype;
+                        d->base_vertex = (int32_t)a[3]; d->base_instance = (int32_t)a[4];
+                        d->ind = 0; d->mdi_cnt = 0; d->mdi_i = 0;
+                        dsize = (uint32_t)(sizeof(op_hdr) + sizeof *d);
+                    } else {
+                        // VkDrawIndirectCommand：{vertexCount, instanceCount, firstVertex, firstInstance}
+                        p_draw *d = &ind_rec.d;
+                        d->count = (int32_t)a[0]; d->instances = (int32_t)a[1];
+                        d->first = (int32_t)a[2]; d->base_instance = (int32_t)a[3];
+                        d->ind = 0; d->mdi_cnt = 0; d->mdi_i = 0;
+                        dsize = (uint32_t)(sizeof(op_hdr) + sizeof *d);
+                    }
+                    payload = (const uint8_t *)&ind_rec;
+                    g_ind_draws_resolved++;
                 }
             }
             // NVN2 任务 / 网格绘制（nvn2_cmd.h DM_PRIM_MESH_TASKS，11-05 只接了 Metal）：本后端没有任务 /
             // 网格管线，明确报不支持，不当普通绘制画。与上面的间接参数闸并列（main 侧新增，合并保留）。
             if (header.op == OP_DRAW) {
-                p_draw mt; const p_draw *md = draw_rec(payload, header.size, &mt);
+                p_draw mt; const p_draw *md = draw_rec(payload, dsize, &mt);
                 if (md->prim == DM_PRIM_MESH_TASKS)
                     return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "mesh tasks draw: the Vulkan backend has no task / mesh pipeline");
             }
@@ -1869,6 +2110,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                     if (S->rt_snap_ok[i]) {
                         ds.rt[i].obj_magic = S->rt_snap[i].magic;
                         ds.rt[i].obj_serial = S->rt_snap[i].serial;
+                        ds.rt[i].storage = (uint64_t)(uintptr_t)S->rt_snap[i].mem;
                     }
                     if (S->rt_has_view[i] && S->rt_view[i].set_format) ds.rt[i].view_format = S->rt_view[i].format;
                     // 编译请求只缺 VkFormat 时还有权威的 NVN 格式：优先视图覆盖格式，否则对象格式。
@@ -1886,6 +2128,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 }
                 if (S->rt_depth_snap_ok) {
                     ds.depth_key = (uint64_t)(uintptr_t)&S->rt_depth_snap;
+                    ds.depth_storage = (uint64_t)(uintptr_t)S->rt_depth_snap.mem;
                     ds.has_depth = 1;
                     ds.has_dview = S->rt_has_dview;
                     if (S->rt_has_dview) ds.dview = S->rt_dview;
@@ -1948,7 +2191,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                     // main 的紧凑记录省掉隐含的 instances=1 / base_instance=0：必须经 draw_idx_rec 重建，
                     // 直接 memcpy 会让 instances 读成 0（Vulkan 下等于不绘制）。
                     p_draw_idx dim;
-                    const p_draw_idx *di = draw_idx_rec(payload, header.size, &dim);
+                    const p_draw_idx *di = draw_idx_rec(payload, dsize, &dim);
                     ds.prim = (uint32_t)di->prim;
                     ds.count = (uint32_t)di->count; ds.first = (uint32_t)di->base_vertex;
                     ds.instances = (uint32_t)di->instances; ds.base_vertex = (uint32_t)di->base_vertex;
@@ -1957,7 +2200,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 } else {
                     // 普通 draw 可能停在 ind 之前（短记录）：draw_rec 把缺的间接字段补 0。
                     p_draw dm;
-                    const p_draw *d = draw_rec(payload, header.size, &dm);
+                    const p_draw *d = draw_rec(payload, dsize, &dm);
                     ds.prim = (uint32_t)d->prim;
                     ds.count = (uint32_t)d->count; ds.first = (uint32_t)d->first;
                     ds.instances = (uint32_t)d->instances;
@@ -1988,10 +2231,10 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             }
             if (header.op == OP_DRAW_IDX)
                 return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "indexed draw needs the backend draw builder");
-            if (header.size < sizeof(op_hdr) + offsetof(p_draw, ind))
+            if (dsize < sizeof(op_hdr) + offsetof(p_draw, ind))
                 return fail(result, S2A_RECORD_INVALID, header.op, "draw payload too small");
             p_draw draw;
-            const p_draw *drawp = draw_rec(payload, header.size, &draw);
+            const p_draw *drawp = draw_rec(payload, dsize, &draw);
             if (drawp->ind || drawp->mdi_cnt || drawp->mdi_i)
                 return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
                             "indirect/multi-draw needs GPU-written parameters (not wired yet)");
@@ -2082,16 +2325,60 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             if (header.size < sizeof(op_hdr) + sizeof copy)
                 return fail(result, S2A_RECORD_INVALID, header.op, "buffer/texture copy payload too small");
             memcpy(&copy, payload, sizeof copy);
-            if (copy.flags || copy.has_view || copy.r.xoffset || copy.r.yoffset || copy.r.zoffset)
-                return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
-                            "buffer/texture copy with view/flags/offset is not wired yet");
             const struct s2a_replay_texture *tex = find_texture(textures, texture_count, copy.tex);
             if (!tex) return fail(result, S2A_RECORD_MEMORY, header.op,
                 "buffer/texture copy target is not resolvable (refusing to fake success)");
-            if ((uint32_t)copy.r.width != tex->width || (uint32_t)copy.r.height != tex->height || copy.r.depth != 1)
-                return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "partial texture copy not wired yet");
-            if (copy_image_buffer(device, tex, copy.src, copy.row_stride, copy.image_stride, memory,
-                                  header.op == OP_COPY_T2B))
+            // REC_SNAP 把 tex_t 内嵌在记录里（payload + SNAP_OFF(p_copy_b2t)）：NVN 格式 / 目标 / 层数
+            // 只信快照，不解引用 guest 对象；magic 不对就明确报不支持。
+            const size_t b2t_snap = (sizeof(p_copy_b2t) + 7) & ~(size_t)7;
+            const tex_t *snap = NULL;
+            if (header.size >= sizeof(op_hdr) + b2t_snap + sizeof(tex_t)) {
+                const tex_t *t = (const tex_t *)(payload + b2t_snap);
+                if (t->magic == MAGIC('T', 'E', 'X', 0)) snap = t;
+            }
+            if (!snap) return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
+                "buffer/texture copy record carries no texture snapshot");
+            struct s2a_bt_input in;
+            memset(&in, 0, sizeof in);
+            const int layered = snap->d.target == NVN_TEXTURE_TARGET_2D_ARRAY ||
+                                snap->d.target == NVN_TEXTURE_TARGET_CUBEMAP ||
+                                snap->d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+            const int is_3d = snap->d.target == NVN_TEXTURE_TARGET_3D;
+            in.texture.nvn_format = (uint32_t)snap->d.format;
+            in.texture.vk_format = (uint32_t)tex->format;
+            in.texture.width = tex->width; in.texture.height = tex->height;
+            in.texture.depth = is_3d ? (tex->depth ? tex->depth : snap->d.depth) : 1;
+            in.texture.levels = tex->levels ? tex->levels : (snap->d.levels ? snap->d.levels : 1);
+            in.texture.layers = layered ? (tex->layers ? tex->layers : snap->d.depth) : 1;
+            in.texture.samples = (uint32_t)(snap->d.samples > 0 ? snap->d.samples : 0);
+            in.texture.target = snap->d.target;
+            if (copy.has_view) {
+                in.view.has = 1;
+                in.view.set_format = copy.view.set_format; in.view.format = copy.view.format;
+                in.view.set_levels = copy.view.set_levels;
+                in.view.base_level = copy.view.base_level; in.view.nlevels = copy.view.nlevels;
+                in.view.set_layers = copy.view.set_layers;
+                in.view.min_layer = copy.view.min_layer; in.view.nlayers = copy.view.nlayers;
+                in.view.set_target = copy.view.set_target; in.view.target = copy.view.target;
+                in.view.set_swizzle = copy.view.set_swizzle; in.view.set_dsmode = copy.view.set_dsmode;
+            }
+            in.region = (struct s2a_bt_region){copy.r.xoffset, copy.r.yoffset, copy.r.zoffset,
+                                               copy.r.width, copy.r.height, copy.r.depth};
+            in.direction = header.op == OP_COPY_T2B ? S2A_BT_TO_BUFFER : S2A_BT_TO_TEXTURE;
+            in.flags = (uint32_t)copy.flags;
+            in.row_stride = copy.row_stride; in.image_stride = copy.image_stride;
+            in.guest_address = copy.src;
+            in.max_staging_bytes = MAX_COPY; in.max_guest_span = (uint64_t)MAX_COPY * 4;
+            struct s2a_bt_plan plan;
+            char why[160];
+            int prc = s2a_buffer_texture_plan(&in, &plan, why, sizeof why);
+            if (prc) {
+                static char msg[224];
+                snprintf(msg, sizeof msg, "buffer/texture copy: %s", why);
+                return fail(result, prc == S2A_BT_UNSUPPORTED ? S2A_RECORD_UNSUPPORTED :
+                                    prc == S2A_BT_LIMIT ? S2A_RECORD_LIMIT : S2A_RECORD_INVALID, header.op, msg);
+            }
+            if (copy_buffer_texture(device, tex->image, &plan, memory))
                 return fail(result, S2A_RECORD_GPU, header.op, "GPU buffer/texture copy failed");
             // B2T（guest 缓冲 → 纹理）是 GPU 写图像：登记 gpu_written，否则 ReadTexels /
             // 缓存淘汰会把 guest 内存里的旧字节当成这张纹理的当前内容（T2B 只读图像，不登记）。
@@ -2099,14 +2386,15 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 extern void s2a_vk_adapter_mark_written(VkImage image) __attribute__((weak));
                 if (s2a_vk_adapter_mark_written) s2a_vk_adapter_mark_written(tex->image);
             }
-            // 诊断（最多 64 条）：谁在什么时候把整张图拷进/拷出 guest 内存（截图/流式路径定位）。
+            // 诊断（最多 64 条）：谁在什么时候把图拷进/拷出 guest 内存（截图/流式路径定位）。
             {
                 static int n;
                 if (n++ < 64)
                     __android_log_print(ANDROID_LOG_INFO, "S2Arm",
-                        "tex copy %s tex=%ux%u fmt=0x%x row_stride=%u image_stride=%u",
+                        "tex copy %s tex=%ux%u fmt=0x%x mip=%u layer=%u+%u region=%u,%u,%u %ux%ux%u row_stride=%u image_stride=%u",
                         header.op == OP_COPY_T2B ? "t2b" : "b2t", tex->width, tex->height, (unsigned)tex->format,
-                        (unsigned)copy.row_stride, (unsigned)copy.image_stride);
+                        plan.mip, plan.base_layer, plan.layer_count, plan.x, plan.y, plan.z, plan.width, plan.height,
+                        plan.depth, (unsigned)copy.row_stride, (unsigned)copy.image_stride);
             }
             break;
         }
@@ -2196,8 +2484,32 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             }
             memcpy(&dispatch, payload, sizeof dispatch);
             if (dispatch.ind) {
-                s2a_record_compute_note(NULL, S2A_COMPUTE_BUILD_FAILED, "indirect dispatch needs GPU-written group counts (not wired yet)");
-                return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "indirect dispatch needs GPU-written group counts (not wired yet)");
+                // DispatchComputeIndirect：三个组数可能是 GPU 写的（常见是前一笔计算算出的剔除结果）。
+                // 回放到这一笔时取确定值（权威副本在哪见 rec_indirect_args；上面 sync pass_break 已让本帧
+                // 之前的工作完成），改写成普通 dispatch 走同一条 builder；0 组与 vkCmdDispatchIndirect 一样不做事。
+                // 超出设备 maxComputeWorkGroupCount 的值录下去是未定义行为，准确拒绝。
+                uint32_t g[3] = {0};
+                char aw[200] = "", msg[320];
+                int arc = rec_indirect_args(memory, dispatch.ind, 12, g, aw, sizeof aw);
+                if (arc) {
+                    snprintf(msg, sizeof msg, "indirect dispatch group counts at 0x%llx: %s",
+                             (unsigned long long)dispatch.ind, aw);
+                    s2a_record_compute_note(NULL, S2A_COMPUTE_BUILD_FAILED, "indirect dispatch group counts unavailable");
+                    return fail(result, arc, header.op, msg);
+                }
+                g_ind_dispatches++;
+                if (!g[0] || !g[1] || !g[2]) { g_ind_dispatches_empty++; break; }
+                const uint32_t *lim = device->properties.limits.maxComputeWorkGroupCount;
+                if (g[0] > INT32_MAX || g[1] > INT32_MAX || g[2] > INT32_MAX ||
+                    (lim[0] && (g[0] > lim[0] || g[1] > lim[1] || g[2] > lim[2]))) {
+                    snprintf(msg, sizeof msg, "indirect dispatch group counts at 0x%llx out of range: %u %u %u "
+                             "(device max %u %u %u)", (unsigned long long)dispatch.ind, g[0], g[1], g[2],
+                             lim[0], lim[1], lim[2]);
+                    s2a_record_compute_note(NULL, S2A_COMPUTE_BUILD_FAILED, "indirect dispatch group counts out of range");
+                    return fail(result, S2A_RECORD_INVALID, header.op, msg);
+                }
+                dispatch.x = (int32_t)g[0]; dispatch.y = (int32_t)g[1]; dispatch.z = (int32_t)g[2];
+                dispatch.ind = 0;
             }
             {
                 // 诊断 A/B 门：跳过整笔 compute dispatch（不做 GPU 工作、不建资源）。只用于定位
@@ -2252,10 +2564,24 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 memcpy(ds.samp_present, S->st.samp_present[5], sizeof ds.samp_present);
                 memcpy(ds.image_handle, S->cs_image_handle, sizeof ds.image_handle);
                 memcpy(ds.image_present, S->cs_image_present, sizeof ds.image_present);
+                // 帧队列收编门：门开才允许 builder 试 AHB 池直绑；门关 builder 不做任何池查找。
+                ds.fq_pool = dispatch_fq_try ? 1 : 0;
                 // local memory is not a binding opcode fact; the compute source parser must prove it.
                 struct s2a_record_dispatch_output out;
                 memset(&out, 0, sizeof out);
                 int rc = builder(device, &ds, memory, &out, result, g_dispatch_builder_opaque);
+                int fallback_synced = !dispatch_fq_try;
+                if (dispatch_fq_try && (rc == S2A_RECORD_DISPATCH_RETRY_SYNC || (rc == 0 && !out.fq))) {
+                    if (out.finish) out.finish(device, out.owner, -1);
+                    if (nvn_vk_first_draw_pass_break(1) != 0) {
+                        fq_pend_unknown();
+                        return fail(result, S2A_RECORD_GPU, header.op, "dispatch fallback sync failed");
+                    }
+                    fallback_synced = 1;
+                    ds.fq_pool = 0;
+                    memset(&out, 0, sizeof out);
+                    rc = builder(device, &ds, memory, &out, result, g_dispatch_builder_opaque);
+                }
                 if (rc != 0) {
                     s2a_record_compute_note(&out.diagnostic, S2A_COMPUTE_BUILD_FAILED, result->why);
                     if (out.finish) out.finish(device, out.owner, -1);
@@ -2279,33 +2605,123 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                     s2a_record_compute_note(&out.diagnostic, S2A_COMPUTE_UNSUBMITTED, "compute command allocation failed");
                     return fail(result, S2A_RECORD_GPU, header.op, "compute command allocation failed");
                 }
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out.pipeline);
-                if (out.set_count) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    out.layout, 0, out.set_count, out.sets, 0, NULL);
-                vkCmdDispatch(cmd, ds.groups[0], ds.groups[1], ds.groups[2]);
-                // Fence completion alone does not make shader writes visible to the host.
-                // Compute owners may copy coherent mapped SSBOs back after submit completes.
-                VkMemoryBarrier host_read = {
-                    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                    .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
-                };
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host_read, 0, NULL, 0, NULL);
-                struct rec_keep keep;
-                memset(&keep, 0, sizeof keep);
-                keep.compute_owner = out.owner;
-                keep.compute_finish = out.finish;
-                int sr = submit(device, cmd, &keep);
-                int cleanup = out.finish ? out.finish(device, out.owner, sr) : 0;
-                const char *compute_why = sr == REC_SUBMIT_INCOMPLETE ? "compute completion unknown; resources retained" :
-                    sr == REC_SUBMIT_UNSUBMITTED ? "compute never submitted" : cleanup ? "compute completion copyback failed" : "";
-                s2a_record_compute_note(&out.diagnostic,
-                    sr == REC_SUBMIT_INCOMPLETE ? S2A_COMPUTE_COMPLETION_UNKNOWN :
-                    sr == REC_SUBMIT_UNSUBMITTED ? S2A_COMPUTE_UNSUBMITTED :
-                    cleanup ? S2A_COMPUTE_COPYBACK_FAILED : S2A_COMPUTE_COMPLETED, compute_why);
-                if (sr != REC_SUBMIT_COMPLETED || cleanup)
-                    return fail(result, S2A_RECORD_GPU, header.op, compute_why);
+                // 帧队列收编：门开 + builder 全命中池后备(out.fq) + 入队缝在 + pending 表有位
+                // → 录独立命令缓冲交帧队列（不 submit 不等），owner 进 pending_fq 等完成证明。
+                // 其余情况照旧同步提交，但先按旧语义排空——门开时上面的 pass_break 只关 pass
+                // （sync=0），队列可能还有已录制工作，直接单独提交会排到它们前面、打乱顺序。
+                int queued = 0;
+                uint64_t detached_pool_seq = 0;
+                if (dispatch_fq_try && out.fq) {
+                    // 头屏障：此前所有 GPU 写（draw/copy/upload）对 CS 读写可见；
+                    // 尾屏障：CS 写对后续 GPU 操作及完成后的宿主读取可见。
+                    // 外部 AHB 缓存一致性仍需单独证明，不能仅凭屏障判断。
+                    VkMemoryBarrier head = {
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    };
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &head, 0, NULL, 0, NULL);
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out.pipeline);
+                    if (out.set_count) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                        out.layout, 0, out.set_count, out.sets, 0, NULL);
+                    vkCmdDispatch(cmd, ds.groups[0], ds.groups[1], ds.groups[2]);
+                    VkMemoryBarrier tail = {
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_READ_BIT,
+                    };
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &tail, 0, NULL, 0, NULL);
+                    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+                        rec_free_command(device, cmd);
+                        if (out.finish) out.finish(device, out.owner, -1);
+                        s2a_record_compute_note(&out.diagnostic, S2A_COMPUTE_UNSUBMITTED,
+                                                "compute queued command end failed");
+                        return fail(result, S2A_RECORD_GPU, header.op,
+                                    "compute queued command end failed");
+                    }
+                    int enqueue_rc = nvn_vk_first_draw_enqueue(device, cmd);
+                    if (enqueue_rc != S2A_FQ_ENQUEUE_NOT_TAKEN) {
+                        fq_pend_check_device(device);
+                        struct rec_fq_pending *e = &g_fq_pend[g_fq_pend_n++];
+                        e->d = device;
+                        e->owner = out.owner;
+                        e->finish = out.finish;
+                        e->frame_id = nvn_vk_first_draw_frame_id ? nvn_vk_first_draw_frame_id() : 0;
+                        e->diag = out.diagnostic;
+                        atomic_fetch_add(&g_dispatch_fq_enq, 1);
+                        queued = 1;
+                        if (enqueue_rc != S2A_FQ_ENQUEUE_ACCEPTED) {
+                            fq_pend_unknown();
+                            s2a_record_compute_note(&out.diagnostic, S2A_COMPUTE_COMPLETION_UNKNOWN,
+                                                    "frame queue retained dispatch after submit failure");
+                            return fail(result, S2A_RECORD_GPU, header.op,
+                                        "frame queue retained dispatch after submit failure");
+                        }
+                    } else {
+                        // 帧队列没接手：命令已录完未提交，所有权仍在自己手里，下面自提走旧路径。
+                        detached_pool_seq = nvn_vk_first_draw_detach_submit_seq();
+                        queued = -1;
+                    }
+                }
+                if (queued != 1) {
+                    if (dispatch_fq_on()) {
+                        atomic_fetch_add(&g_dispatch_fq_fallback, 1);
+                        // 门开时 pass_break(0) 没排空：先按旧 sync=1 语义排空再单独提交。
+                        if (!fallback_synced && nvn_vk_first_draw_pass_break && nvn_vk_first_draw_pass_break(1) != 0) {
+                            fq_pend_unknown();
+                            rec_free_command(device, cmd);
+                            if (out.finish) out.finish(device, out.owner, -1);
+                            const char *first = nvn_vk_first_draw_first_error
+                                ? nvn_vk_first_draw_first_error() : NULL;
+                            char msg[420];
+                            snprintf(msg, sizeof msg,
+                                     "pass break before queued dispatch fallback has no completion proof: %s",
+                                     first && first[0] ? first
+                                                       : "frame queue failed (no first error recorded)");
+                            s2a_record_compute_note(&out.diagnostic, S2A_COMPUTE_UNSUBMITTED,
+                                                    "compute fallback pass break failed");
+                            return fail(result, S2A_RECORD_GPU, header.op, msg);
+                        }
+                    }
+                    if (queued == 0) {
+                        // 旧路径录制（或回退）：bind + dispatch + shader→host 屏障。
+                        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out.pipeline);
+                        if (out.set_count) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            out.layout, 0, out.set_count, out.sets, 0, NULL);
+                        vkCmdDispatch(cmd, ds.groups[0], ds.groups[1], ds.groups[2]);
+                        // Fence completion alone does not make shader writes visible to the host.
+                        // Compute owners may copy coherent mapped SSBOs back after submit completes.
+                        VkMemoryBarrier host_read = {
+                            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                        };
+                        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host_read, 0, NULL, 0, NULL);
+                    }
+                    // (queued==-1：命令已录完帧队列版屏障，直接自提提交)
+                    struct rec_keep keep;
+                    memset(&keep, 0, sizeof keep);
+                    keep.compute_owner = out.owner;
+                    keep.compute_finish = out.finish;
+                    keep.pool_seq = detached_pool_seq;
+                    if (queued == -1) ++g_submit_seq;
+                    int sr = queued == -1 ? submit_recorded(device, cmd, &keep)
+                                          : submit(device, cmd, &keep);
+                    int cleanup = out.finish ? out.finish(device, out.owner, sr) : 0;
+                    if (sr != REC_SUBMIT_INCOMPLETE && detached_pool_seq && s2a_poolahb_complete_seq)
+                        s2a_poolahb_complete_seq(detached_pool_seq);
+                    const char *compute_why = sr == REC_SUBMIT_INCOMPLETE ? "compute completion unknown; resources retained" :
+                        sr == REC_SUBMIT_UNSUBMITTED ? "compute never submitted" : cleanup ? "compute completion copyback failed" : "";
+                    s2a_record_compute_note(&out.diagnostic,
+                        sr == REC_SUBMIT_INCOMPLETE ? S2A_COMPUTE_COMPLETION_UNKNOWN :
+                        sr == REC_SUBMIT_UNSUBMITTED ? S2A_COMPUTE_UNSUBMITTED :
+                        cleanup ? S2A_COMPUTE_COPYBACK_FAILED : S2A_COMPUTE_COMPLETED, compute_why);
+                    if (sr != REC_SUBMIT_COMPLETED || cleanup)
+                        return fail(result, S2A_RECORD_GPU, header.op, compute_why);
+                }
                 break;
             }
             if (dispatch.x < 0 || dispatch.y < 0 || dispatch.z < 0 || !S->bound_program)
@@ -2686,7 +3102,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             const int dmask = v.depth_mask != 0;
             // NVN 的 stencil 掩码是 8 位平面掩码：0x01 只清 bit0，0xFF 才是整平面。
             // 位掩码用受 VkStencilWriteMask 约束的清除绘制表达，绝不把部分掩码降成整平面清除。
-            const uint32_t smask = (uint32_t)v.stencil_mask & 0xffu;
+            uint32_t smask = (uint32_t)v.stencil_mask & 0xffu;
             if (!dmask && !smask) break;
             char why[192];
             VkFormat fmt = nvn_vk_format(S->rt_depth_snap.d.format);
@@ -2698,9 +3114,8 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
                             "clear-depth-stencil through a format-overriding attachment view has no mutable depth path");
             const int has_stencil = nvn_vk_format_has_stencil(fmt);
-            if (smask && !has_stencil)
-                return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
-                            "clear requests stencil on a depth-only target format");
+            // 目标没有模板面时，清模板是空操作（硬件上、Metal 上都是）：游戏对纯深度目标也会带着模板位清。
+            if (smask && !has_stencil) { smask = 0; if (!dmask) break; }
             VkImageAspectFlags aspect = (dmask || smask) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0;
             if (smask) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
             const struct s2a_replay_texture *texture = find_texture(textures, texture_count, &S->rt_depth_snap);
@@ -2754,7 +3169,11 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                         texture->image, texture->format, aspect,
                         base_level + lv, base_layer + ly,
                         rec_mipdim(texture->width, base_level + lv), rec_mipdim(texture->height, base_level + lv),
+                        NULL,
                     };
+                    extern void *s2a_vk_adapter_clear_tex(uint64_t, VkImage) __attribute__((weak));
+                    if (s2a_vk_clear_fv_enabled() && s2a_vk_adapter_clear_tex)
+                        t.native_tex = s2a_vk_adapter_clear_tex(texture->serial, texture->image);
                     char cwhy[192] = "";
                     // C1：同 ClearColor。逐位模板掩码、部分 rect 等表达不了的仍走同步路径。
                     int crc = s2a_vk_clear_ds_queued(device, &t, v.depth, (uint32_t)v.stencil & 0xffu, dmask, smask,
@@ -2799,6 +3218,11 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             }
             extern void s2a_vk_adapter_mark_written(VkImage image) __attribute__((weak));
             if (s2a_vk_adapter_mark_written) s2a_vk_adapter_mark_written(texture->image);
+            {
+                /* C4a 首用证据：深度目标的内容在本帧重新起过（同 OP_CLEAR_COLOR 的 fresh 标记）。 */
+                extern void nvn_vk_fu_rt_fresh(uint64_t serial) __attribute__((weak));
+                if (nvn_vk_fu_rt_fresh) nvn_vk_fu_rt_fresh(S->rt_depth_snap.serial);
+            }
             break;
         }
         case OP_TF_BIND: {

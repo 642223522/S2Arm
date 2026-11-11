@@ -18,15 +18,26 @@ uint32_t s2a_pad_read(int32_t axes[4], s2a_pad_source *source);
 //   按着时返回当前序号，没按着返回 0。iOS 记下新序号、1.5 秒后再问一次仍是它 = 一直按着没松，开菜单（ios/controller.m）
 uint64_t s2a_pad_plus_press(void);
 void s2a_pad_stick(float x, float y, int32_t axes[2]);
-// 系统手柄的 ABXY：多数手柄按物理方位上报（buttonA 在南侧），任天堂手柄（Pro、Joy-Con）按键帽字母上报（印 A 的右键 = buttonA）。
+// 系统手柄的 ABXY：多数手柄按物理方位上报（buttonA 在南侧，MFi / Xbox 那颗键上印的也是 A），任天堂手柄（Pro、Joy-Con）按键帽字母上报（印 A 的右键 = buttonA）。
+//   所以系统的 buttonA 在每种手柄上都是印着 A（PS 是 ×）的那颗键。
 // iOS 与 Mac 共用这一套（#40、审计 P2-213）：category 取 GCController.productCategory（可为 NULL），is_xbox / is_playstation 由宿主按手柄类型判
 enum { S2A_PAD_KIND_OTHER = 0, S2A_PAD_KIND_NINTENDO, S2A_PAD_KIND_XBOX, S2A_PAD_KIND_PLAYSTATION };
 int s2a_pad_kind(const char *category, int is_xbox, int is_playstation);
-// 手柄按键对应：1 = 按字母（缺省，Xbox 的 A 就是 Switch 的 A），0 = 按位置；起局读 S2A_PAD_FACE（position = 按位置），s2a_pad_face_set 即时改
-int s2a_pad_face_by_letter(void);
-void s2a_pad_face_set(int by_letter);
+// 手柄按键布局（定义表 padFace，所有游戏共用；11-11 维护者「可切换 Xbox / Switch 布局，能识别型号就自动适配」）：
+//   自动（缺省）= 按键帽上印的字母：任天堂手柄即 Switch 布局、Xbox / MFi 即 Xbox 布局、PlayStation × = A；
+//   Switch 布局 = 按 Switch 的物理位置（右键确认）；Xbox 布局 = 按 Xbox 的物理位置（下键确认）。
+//   起局读 S2A_PAD_FACE（auto / switch / xbox；旧值 letter = auto、position = switch），s2a_pad_layout_set 即时改
+enum { S2A_PAD_LAYOUT_AUTO = 0, S2A_PAD_LAYOUT_SWITCH, S2A_PAD_LAYOUT_XBOX };
+int s2a_pad_layout(void);
+void s2a_pad_layout_set(int layout);
+int s2a_pad_layout_parse(const char *value);   // 定义表 / 环境变量的值 → S2A_PAD_LAYOUT_*；空 / 认不出 = 自动
 // 把系统的 buttonA/B/X/Y（下标 0/1/2/3）排成 Nintendo 位序 A、B、X、Y：out[i] = 第 i 位该读系统的哪个键
-void s2a_pad_abxy_order(int kind, int by_letter, int out[4]);
+void s2a_pad_abxy_order(int kind, int layout, int out[4]);
+
+// 本地多手柄槽位（Mac 与 iOS 共用一份规则）：prev 上一轮各槽的手柄身份（max 项，NULL = 空槽），live 本次在线的手柄（连接顺序）。
+//   slot_of[j] 写第 j 只占的槽（-1 = 超过 max 只，丢弃）；返回占到的最高槽位 + 1（至少 1：槽 0 留给键盘 / 鼠标 / 触屏）。
+//   还在线的保留原槽；新来的占最小空槽，所以断开后重连、中间没插别的就回原槽
+int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of);
 
 // 原子快照，固定 56 字节。epoch 在切源/前后台切换时变化，旧短按不得跨 epoch 回放。
 typedef struct {
@@ -62,4 +73,6 @@ void s2a_pad_set_rumble(uint64_t session, unsigned side, float low_amp, float lo
 void s2a_pad_stop_rumble(uint64_t session);
 void s2a_pad_set_motion_enabled(int enabled);
 int s2a_pad_read_motion(s2a_pad_motion *out);
+// 可选：左右两路体感（Mac Joy-Con HID）。返回写入条数 0..2；out[0]=左、out[1]=右。没有此导出时服务层只走 s2a_pad_read_motion。
+int s2a_pad_read_motion_pair(s2a_pad_motion out[2]);
 #endif

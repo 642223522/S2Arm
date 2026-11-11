@@ -184,29 +184,44 @@ PAD_EXPORT void s2a_pad_get_latency(s2a_pad_latency *out, int reset) {
 }
 // 手柄分类只认系统给的类别（productCategory 由苹果驱动按设备类型填，不是设备自报的名字）与手柄类型（宿主判 GCXboxGamepad / GCDualShockGamepad /
 //   GCDualSenseGamepad）；不看 vendorName（审计 P2-213：第三方手柄名字里带「Pro Controller」被认成任天堂）
+static int contains_nocase(const char *s, const char *word) {   // word 为小写 ASCII
+    for (size_t n = strlen(word); *s; s++) if (!strncasecmp(s, word, n)) return 1;
+    return 0;
+}
 int s2a_pad_kind(const char *category, int is_xbox, int is_playstation) {
     if (is_xbox) return S2A_PAD_KIND_XBOX;
     if (is_playstation) return S2A_PAD_KIND_PLAYSTATION;
-    static const char *const nintendo[] = {"Switch Pro Controller", "Nintendo Switch", "Joy-Con"};   // 苹果给任天堂 Pro / Joy-Con 的类别前缀
+    // 苹果给任天堂手柄的类别（macOS 26.4 系统库里实有「Switch Pro Controller」「Nintendo Switch Joy-Con (L/R)」等）；
+    //   以后的型号（Switch 2 Pro、Joy-Con 2）字样未知，按片段不分大小写找，不只认开头（同 NX2Apple ShellInputs.swift ControllerFamily）。
+    //   类别是系统驱动按设备类型填的，第三方手柄自报的名字在 vendorName，不在这里
+    static const char *const nintendo[] = {"nintendo", "switch", "joy-con", "joycon"};
     for (size_t n = 0; category && n < sizeof nintendo / sizeof *nintendo; n++)
-        if (!strncmp(category, nintendo[n], strlen(nintendo[n]))) return S2A_PAD_KIND_NINTENDO;
+        if (contains_nocase(category, nintendo[n])) return S2A_PAD_KIND_NINTENDO;
     return S2A_PAD_KIND_OTHER;
 }
-// 按字母 / 按位置（维护者 11-09：缺省按字母——Xbox 的 A 就是 Switch 的 A）。宿主起局按 S2A_PAD_FACE（position = 按位置），游戏内菜单改了经 s2a_pad_face_set 即时生效
-static _Atomic int g_face = -1;
-int s2a_pad_face_by_letter(void) {
-    int v = atomic_load(&g_face);
-    if (v < 0) { const char *e = getenv("S2A_PAD_FACE"); v = !(e && !strcmp(e, "position")); atomic_store(&g_face, v); }
+// 按键布局（s2a_pad.h）。宿主起局按 S2A_PAD_FACE，游戏内菜单改了经 s2a_pad_layout_set 即时生效
+static _Atomic int g_layout = -1;
+int s2a_pad_layout_parse(const char *v) {
+    if (v && (!strcmp(v, "switch") || !strcmp(v, "position"))) return S2A_PAD_LAYOUT_SWITCH;   // position：11-09 起的旧值「按位置」
+    if (v && !strcmp(v, "xbox")) return S2A_PAD_LAYOUT_XBOX;
+    return S2A_PAD_LAYOUT_AUTO;   // auto、旧值 letter（按字母）、空
+}
+int s2a_pad_layout(void) {
+    int v = atomic_load(&g_layout);
+    if (v < 0) { v = s2a_pad_layout_parse(getenv("S2A_PAD_FACE")); atomic_store(&g_layout, v); }
     return v;
 }
-void s2a_pad_face_set(int by_letter) { atomic_store(&g_face, by_letter ? 1 : 0); }
-void s2a_pad_abxy_order(int kind, int by_letter, int out[4]) {
-    // 系统 buttonA/B/X/Y 一律按物理方位上报（A 南、B 东、X 西、Y 北），只有任天堂手柄按键帽字母上报（印 A 的右键 = buttonA）。
-    //   任天堂：字母就在任天堂的位置，两种口径一样；Xbox：按字母 = 系统 A/B/X/Y 直接对 Switch A/B/X/Y，按位置 = 东/南/北/西；
-    //   PlayStation（×○□△ 没有字母）与其他手柄：只有位置口径（Switch A 在东 = 系统 B，即 PS 的 ○）
-    static const int position[4] = {1, 0, 3, 2}, letter[4] = {0, 1, 2, 3};
-    int same = kind == S2A_PAD_KIND_NINTENDO || (kind == S2A_PAD_KIND_XBOX && by_letter);
-    memcpy(out, same ? letter : position, sizeof letter);
+void s2a_pad_layout_set(int layout) {
+    atomic_store(&g_layout, layout == S2A_PAD_LAYOUT_SWITCH || layout == S2A_PAD_LAYOUT_XBOX ? layout : S2A_PAD_LAYOUT_AUTO);
+}
+void s2a_pad_abxy_order(int kind, int layout, int out[4]) {
+    // 系统 buttonA/B/X/Y = 印 A/B/X/Y 的键：任天堂手柄在 东/南/北/西，其余（Xbox、MFi、PS 的 ×○□△、认不出的）在 南/东/西/北。
+    //   自动 = 照字母（同 10-11「按键帽上印的字母」）；手动按物理位置：Switch 布局 A/B/X/Y = 东/南/北/西，Xbox 布局 = 南/东/西/北。
+    //   所以「同字母」与「换一对」只看手柄是不是任天堂的那种排法：任天堂手柄选 Xbox 布局、其余手柄选 Switch 布局才换
+    static const int swapped[4] = {1, 0, 3, 2}, letter[4] = {0, 1, 2, 3};
+    int nintendo = kind == S2A_PAD_KIND_NINTENDO;
+    int swap = layout == S2A_PAD_LAYOUT_SWITCH ? !nintendo : layout == S2A_PAD_LAYOUT_XBOX ? nintendo : 0;
+    memcpy(out, swap ? swapped : letter, sizeof letter);
 }
 void s2a_pad_stick(float x, float y, int32_t axes[2]) {
     float radius = hypotf(x, y);
@@ -214,4 +229,31 @@ void s2a_pad_stick(float x, float y, int32_t axes[2]) {
     float scale = (fminf(radius, 1) - .08f) / (.92f * radius);
     axes[0] = (int32_t)lroundf(x * scale * 32767);
     axes[1] = (int32_t)lroundf(y * scale * 32767);
+}
+// 本地多手柄槽位计划（Mac macos/front_mac.m 与 iOS ios/controller.m 共用；纯逻辑，不持有对象：单测直接喂身份指针，不碰 GameController）。
+//   prev 是上一轮的槽位身份（max 项，NULL = 空槽），live 是本次在线的手柄（顺序 = 连接顺序）。
+//   slot_of[j] 写第 j 只该占的槽（-1 = 超过 max 只，不参与）；返回占用到的最高槽位 + 1（至少 1：槽 0 总留给键盘 / 鼠标）。
+//   断开的手柄下一轮不在 live 里 → 槽空出来；重连时按「最小空槽」占回去（中间没插别的就回到原槽）。
+int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of) {
+    for (int j = 0; j < count; j++) {
+        slot_of[j] = -1;
+        for (int i = 0; i < max; i++) if (prev[i] && prev[i] == live[j]) { slot_of[j] = i; break; }   // 还在原槽
+    }
+    for (int j = 0; j < count; j++) {
+        if (slot_of[j] >= 0) continue;
+        for (int i = 0; i < max; i++) {
+            int taken = 0;
+            for (int k = 0; k < count; k++) if (slot_of[k] == i) { taken = 1; break; }   // 本轮已被别人占
+            if (taken) continue;
+            if (prev[i]) {
+                int still_alive = 0;
+                for (int k = 0; k < count; k++) if (live[k] == prev[i]) { still_alive = 1; break; }
+                if (still_alive) continue;   // 原占用者还在，别抢它的槽
+            }
+            slot_of[j] = i; break;
+        }
+    }
+    int top = 1;
+    for (int j = 0; j < count; j++) if (slot_of[j] + 1 > top) top = slot_of[j] + 1;
+    return top;
 }

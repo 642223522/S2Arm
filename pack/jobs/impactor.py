@@ -58,6 +58,9 @@ def selected_team(appdata=None):
 # Impactor / 侧载工具界面上的报错原文 → 共用错误码（顺序即优先级；处理办法在 pack/jobs/errors.py RECOVERY）
 EXPLAIN = (
     (r'-80046', 'login_identity_rejected'),
+    # 保存的 Apple ID 会话过期（Apple 开发者接口 1100「Your session has expired. Please log in.」，plumesign 恢复会话时报，玩家反馈 v0.2.7）：
+    #   要在 Impactor 里重新登录；原先落到 device_install_failed，建议写「检查设备连接与包的有效性」，把玩家往错的方向引
+    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again|not logged in', 'apple_session_expired'),
     (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),
@@ -66,6 +69,7 @@ EXPLAIN = (
     #   删 App 不退；说「apps」装满的是设备同时 3 个自签 App，删一个就行。前者先判，后者的「apps」不吃「app id(s)」。
     (r'app id limit|\b10 app ids\b|maximum number of app ids|(?:error|code)\D{0,20}\b9120\b', 'free_appid_limit'),
     (r'maximum number of (installed )?apps\b|\b3 apps\b', 'free_app_limit'),   # 11-06 plumesign 原文是「maximum number of installed apps」
+    (r'(?:error|code)\D{0,20}\b9401\b|app id with identifier[^\n]{0,120}is not available', 'app_id_taken'),
     (r'developer mode', 'developer_mode_required'),
     (r'device is locked|passcode|unlock', 'device_locked'),
     (r'pairing|not paired|invalidhostid|trust', 'device_pairing_required'),

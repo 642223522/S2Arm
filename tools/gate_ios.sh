@@ -1,8 +1,8 @@
 #!/bin/bash
-# 门禁层：合入后
-# 门禁路由：runtime/ graphics/ services/ compat/ tests/autoplay/ tests/build.mk Makefile */build.mk platform/apple/cs/
+# 门禁层：合入后（路由命中时合入前也跑）
+# 门禁路由：ios/ runtime/ graphics/ services/ compat/ tests/autoplay/ tests/build.mk Makefile */build.mk platform/apple/cs/
 # 门禁 full 档：iOS 全量编译检查（10-20 维护者：任何一线弄坏 iOS 构建都在合入前拦下）——make ios S2A_CS=1 编译 + 链接出壳的主程序，再用一款现成改写产物写游戏镜像包（11-04 全外置），不签名、不出包。
-# GATE_IOS_MODS=<现有改写产物目录> 显式指定；未指定时从共享根任一款的现行选取（只读，保留动森 / 马车 / 暗黑2的既有优先顺序）。
+# GATE_IOS_MODS=<现有改写产物目录> 显式指定；未指定时从共享根任一款的现行选取（只读，保留01006F8002326000 / 马车 / 暗黑2的既有优先顺序）。
 # 显式目录无效就报红，不改用其他款；产物必须包含 main.npdm、模块映像及对应随行表，不下载游戏。
 # 源码先同步到本树的私有镜像 ~/.s2arm/run/s2arm/gate_ios/<树号>/src 再编（10-20 回归提速）：C# 的 obj / build/cs 锁都在镜像里，不和同仓库其他钩子的 dotnet 抢，
 #   门禁可以把本步和钩子并行；镜像跨门禁保留，nxaot 缓存与 obj 增量命中。多份门禁同时跑时按镜像锁排队（持锁进程死了接管）。
@@ -10,7 +10,7 @@
 set -u
 R=$(git rev-parse --show-toplevel) || exit 2; cd "$R"
 # 镜像与构建目录按工作树分开（10-21 测试出包线：全机一份时几条线的门禁排同一把锁 10–17 分钟，且不同树轮流往同一个增量构建目录里编、互相污染，
-#   本树单独编通过的提交在共享目录里 make ios 失败）。一棵树一份约 350 MB、冷编约 1.5 分钟；24 小时没用的由 tools/gc.sh 清
+#   本树单独编通过的提交在共享目录里 make ios 失败）。一棵树一份约 350 MB、冷编约 1.5 分钟；24 小时没用的由维护方内部清扫器清
 TK=$(printf %s "$R" | shasum | cut -c1-12)
 #   放在独立的 gate_ios/<树号>/ 下：不能放进旧的全机镜像 gate_ios_src/ 里——还没 rebase 的树跑旧版本脚本时对它 rsync --delete，会把子目录整个删掉（10-21 实测）
 GI=${GATE_IOS_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/gate_ios}/$TK
@@ -39,7 +39,7 @@ else
   done
 fi
 [ -n "$M" ] || { echo "期望 iOS 编译链接通过 → 真结果 没有完整可用的改写产物（共享根 ${RT}）；可设 GATE_IOS_MODS=<现有改写产物目录>，需 main.npdm、*.patched.bin 和对应 .fixups.tsv / .gates.tsv"; exit 1; }
-# 改写产物先 APFS 克隆进本门禁自己的目录，整轮只读克隆（10-24 帧率能耗线查实：门禁开头解析出 acnh@pkg-dd5259ef2，07:13 登记新包时 root_commit 只留现行 + 上一版、把它删了，
+# 改写产物先 APFS 克隆进本门禁自己的目录，整轮只读克隆（10-24 帧率能耗线查实：门禁开头解析出 01006F8002326000@pkg-dd5259ef2，07:13 登记新包时 root_commit 只留现行 + 上一版、把它删了，
 #   make ios 编到一半目录没了、门禁误红）。make ios 只读产物根顶层文件（*.patched.bin / .fixups.tsv / .gates.tsv / .widen.tsv / main.npdm / widen_*.tsv），只克隆顶层普通文件，秒级、不占新空间
 MC=$GI/mods.$$; mkdir -p "$MC" || exit 1
 for f in "$M"/*; do [ -f "$f" ] && { cp -c "$f" "$MC/" 2> /dev/null || cp "$f" "$MC/"; } || true; done

@@ -48,6 +48,8 @@ public struct GameSummary: Identifiable, Equatable {
     /// 上次装到 iPhone 的时刻（秒）和是不是免费账号签的；没装过为 nil。
     public let iphoneInstalledAt: Double?
     public let iphoneFree: Bool
+    /// 上次装的那台设备（设备记录键，UDID）：「续签」装回当初那台，不换别的（pack/jobs/layout.py install_record 的 deviceKey）
+    public var iphoneInstallDevice: String? = nil
     /// 只换宿主（pack/jobs/host_update.py）：none / current / swap / incompatible（要重新准备才能用上新版修复）/ failed
     public let hostUpdate: String
     /// 存放位置（游戏库结构 v3）：state = ok / offline（位置没连上）/ missing（文件夹找不到）/ none（还没出过包）
@@ -80,6 +82,7 @@ public struct GameSummary: Identifiable, Equatable {
                   customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false,
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
+        self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
     }
 
     /// 某类原件里版本最新的那个的显示版本（base / update）；没有这类为 nil。
@@ -116,14 +119,18 @@ public final class LibraryProvider {
     private let client: JobClient
     private let lock = NSLock()
     private var keys: Bool?
+    private var updates: [PhoneUpdate] = []
     /// 上次读游戏库时 prod.keys 齐没齐（catalog 的 keys.ready）；还没读过为 nil。
     public var keysReady: Bool? { lock.withLock { keys } }
+    /// 上次读游戏库时，壳比本版旧的手机（catalog 的 phoneUpdates，只按本机设备记录判）：游戏库右上角「更新 iPhone 上的 S2Arm」
+    public var phoneUpdates: [PhoneUpdate] { lock.withLock { updates } }
 
     public init(client: JobClient) { self.client = client }
 
     private func remember(_ result: [String: Any]) {
         let ready = (result["keys"] as? [String: Any])?["ready"] as? Bool
-        lock.withLock { keys = ready }
+        let phones = (result["phoneUpdates"] as? [[String: Any]] ?? []).map(PhoneUpdate.init(catalog:))
+        lock.withLock { keys = ready; updates = phones }
     }
 
     private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
@@ -148,14 +155,15 @@ public final class LibraryProvider {
     public static let noLibraryMessage = "还没有游戏库：请先在 S2Arm 启动器里选择游戏库并导入游戏。"
 
     /// 读一遍游戏库。没配游戏库时不起作业，直接回失败。
+    /// startup：启动器这次打开后的第一次读（剃刀 H14）：作业层只在这一次清残留、判一天一次的任务目录清理；其余刷新只读。
     @discardableResult
-    public func load(_ completion: @escaping (Result<[GameSummary], JobClientError>) -> Void) -> JobHandle? {
+    public func load(startup: Bool = false, _ completion: @escaping (Result<[GameSummary], JobClientError>) -> Void) -> JobHandle? {
         guard !client.environment.library.isEmpty else {
             completion(.failure(JobClientError(Self.noLibraryMessage)))
             return nil
         }
         do {
-            return try client.start(operation: "catalog", onFinish: { outcome in
+            return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
                     completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
                     return
@@ -254,9 +262,38 @@ public struct StorageLocation: Identifiable, Equatable {
     public let connected: Bool
     public let freeBytes: Int64?
     public let isDefault: Bool
+    /// 这块盘会让出包多占空间的原因（#444，后端 libloc.slack_reason；只提示不拦）：cluster 大分配单元 / format 不能克隆；nil 没问题
+    public let slack: LocationSlack?
     public init?(_ r: [String: Any]) {
         guard let id = r["id"] as? String, let path = r["path"] as? String else { return nil }
         self.id = id; self.path = path; volume = r["volume"] as? String ?? ""; connected = r["connected"] as? Bool ?? false
         freeBytes = (r["freeBytes"] as? NSNumber)?.int64Value; isDefault = r["default"] as? Bool ?? false
+        slack = LocationSlack(r)
+    }
+}
+
+/// 存放位置所在盘会让出包多占空间：原因（cluster / format）与分配单元字节数（提示里写「每个小文件至少占 N」）
+public struct LocationSlack: Equatable {
+    public let reason: String
+    public let clusterBytes: Int64
+    public init?(_ r: [String: Any]) {
+        guard r["slackWarning"] as? Bool == true, let reason = r["slackReason"] as? String else { return nil }
+        self.reason = reason; clusterBytes = (r["clusterBytes"] as? NSNumber)?.int64Value ?? 0
+    }
+}
+
+/// 一台手机上的 S2Arm 壳比本版旧（catalog 的 phoneUpdates 一项，pack/jobs/install.py phone_updates）：
+///   games = 这台手机上的各款，stale = 新壳认不得、要按新版重新出包的（[(游戏号, 名字)]）
+public struct PhoneUpdate: Equatable, Sendable {
+    public let device: String
+    public let name: String
+    public let games: [GameRef]
+    public let stale: [GameRef]
+    public struct GameRef: Equatable, Sendable { public let id: String; public let name: String }
+    init(catalog u: [String: Any]) {
+        func refs(_ k: String) -> [GameRef] {
+            (u[k] as? [[String: Any]] ?? []).compactMap { g in (g["gameId"] as? String).map { GameRef(id: $0, name: g["name"] as? String ?? $0) } }
+        }
+        device = u["device"] as? String ?? ""; name = u["name"] as? String ?? ""; games = refs("games"); stale = refs("stale")
     }
 }

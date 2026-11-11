@@ -20,7 +20,7 @@ SDK_META = 0x3FE00000  # VammManager metadata at the start of the alias region; 
 ADDRESS_REGION = "_ZN2nn2os21AllocateAddressRegionEPmm"
 # 开局在别名区占大块地址的入口：AllocateAddressRegion，和 VAMM 开着时地址传空的 nn::mem::StandardAllocator 初始化（sdk 里
 #   CentralHeap::Init(nullptr, size) → nnmem_nlib_virtual_alloc → AllocateAddressRegion(size)，只占地址、用到才提交）。
-#   超级马力欧派对 main+0x981fc0 的 56 GiB 走的就是后者（0x981f9c → 0x981ccc → 0x98205c → 0x9820e8 → 0x98212c → Initialize）。
+#   一款第一方派对游戏 main+0x981fc0 的 56 GiB 走的就是后者（0x981f9c → 0x981ccc → 0x98205c → 0x9820e8 → 0x98212c → Initialize）。
 #   ≥ 4 GiB 的常量传给分配器初始化只能是空地址的 VAMM 预留：应用池 3285 MiB，带缓冲初始化给不出这么大的缓冲。
 #   nnmem_nlib_virtual_alloc 是导出的中间层（参数同 AllocateAddressRegion：x0 出参、x1 尺寸），游戏直接调它也认
 #   （瓦力欧制造 舞动 010045B018EC2000 的 60 GiB 走 StandardAllocator::Initialize(nullptr, 60 GiB, true)，11-05）
@@ -172,7 +172,7 @@ class _Code:
             or (word & 0xFF000010) == 0x54000000 or (word & 0xFE1FFC1F) == 0xD61F0000
 
     def function_start(self, address):
-        # 尾调用小桩（马力欧派对 0x98212c：mov w3, #1; b Initialize）：B 之前几条都不是分支、再往前是 ret / b / udf，桩从那之后起
+        # 尾调用小桩（一款第一方派对游戏 0x98212c：mov w3, #1; b Initialize）：B 之前几条都不是分支、再往前是 ret / b / udf，桩从那之后起
         if (self.word_at(address) & 0xFC000000) == 0x14000000:
             for k in range(0, 4):
                 at = address - 4 * k

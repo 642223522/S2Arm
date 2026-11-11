@@ -50,7 +50,7 @@ namespace S2A.Services
             Service = service;
             _name = service.GetType().Name;   // 取一次：每次请求都取类型名在 NativeAOT 下会新建字符串
             // fs 的数据存储（IStorage：RomFS / 系统数据，只读）每个会话各自串行，不排在 fs 服务端那把锁后面——真 Switch 的 fs 多线程并发服务；
-            //   原先所有 fs 请求共用一把锁，一次阻塞的 pread 让整个游戏卡住（10-26 动森 Mac 满载 90 秒黑屏）。存档等其余 fs 对象照旧走服务端锁
+            //   原先所有 fs 请求共用一把锁，一次阻塞的 pread 让整个游戏卡住（10-26 01006F8002326000 Mac 满载 90 秒黑屏）。存档等其余 fs 对象照旧走服务端锁
             _lock = service is Ryujinx.HLE.HOS.Services.Sockets.Bsd.IClient ? null
                 : service is Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy.IStorage ? new object()
                 : (object)service.Server ?? NetworkModuleLock(service) ?? _commonLock;

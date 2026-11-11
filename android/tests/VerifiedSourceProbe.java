@@ -15,7 +15,7 @@ public final class VerifiedSourceProbe {
                 for (boolean symlink : new boolean[]{false,true}) {
                     Path app = Files.createDirectories(root.resolve(suffix + symlink));
                     Path game = GameSessionAdmissionTest.fixture(app);
-                    try (GameSession session = GameSession.load(GameSessionAdmissionTest.spec(app,game),app.toFile(),null,true,true)) {
+                    try (GameSession session = GameSession.load(GameSessionAdmissionTest.spec(app,game),app.toFile(),null,true)) {
                         var start = session.begin(true,true,1280,720,320,60,BootSpec.ConsoleMode.HANDHELD);
                         Path path = Path.of(start.revisionDir,"modules/main." + suffix);
                         if (read(path.toString()) != 0) throw new AssertionError("valid source rejected");

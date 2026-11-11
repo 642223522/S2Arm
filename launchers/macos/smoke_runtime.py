@@ -48,6 +48,8 @@ def main():
         (root/'dp').mkdir(); (root/'dp/a.bin').write_bytes(b'S2Arm devpush probe'); (root/'dp.lst').write_text('a.bin\n')
         run([tools/'devpush/s2a-devpush','-','-','tar-local',root/'dp.lst',root/'dp',root/'dp.tar'])
         assert run([tools/'devpush/s2a-devpush','-','-','tar-ok-local',root/'dp.tar']).strip()=='ok'
+        # 内置 rcodesign（开发者证书签名，pack/jobs/devcert.py；v0.2.4）：签过发版身份后还能跑、版本对
+        assert run([tools/'rcodesign/rcodesign','--version']).split()[-1]=='0.29.0'
         src=root/'probe.metal'; air=root/'probe.air'; lib=root/'probe.metallib'
         src.write_text('#include <metal_stdlib>\nusing namespace metal;\nkernel void copy_value(device uint *v [[buffer(0)]], uint i [[thread_position_in_grid]]) { v[i]=i; }\n')
         run(['/usr/bin/xcrun','-sdk','macosx','metal','-mmacosx-version-min=15.0','-c',src,'-o',air])

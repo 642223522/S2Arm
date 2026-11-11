@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from jobcase import JobCase
+from test_jobs import img_step
 from core import Context, Failure
 import build
 import cache_retention
@@ -44,6 +45,7 @@ class EarlyInstallCase(JobCase):
         stamp = lambda what, *a: calls.append((time.time(), what) + a)
 
         def oneclick(args, log=None, env=None, **kwargs):   # 一键出包替身：先写旁路信号，「编直连库」2 秒，再交付
+            if img_step(args, kwargs.get('cwd'), env): return   # 出包收尾转单一 IMG（ipa.to_img 经 c.run）：真跑
             args = [str(a) for a in args]
             if any(a.endswith('ship_ext.py') for a in args) and 'container' in args:   # assemble 的容器组装命令
                 o = Path(args[args.index('--out') + 1]); o.mkdir(parents=True, exist_ok=True)
@@ -64,6 +66,8 @@ class EarlyInstallCase(JobCase):
                 raise Failure('替身出包失败', code='tool_exit')
             (out / 'tfake.ipa').write_bytes(b'final'); (out / 'tfake资源包').mkdir(exist_ok=True)
             (out / 'tfake资源包' / 'manifest.json').write_text(json.dumps(dict(version=2, index_sha256='final01')))   # 收尾 deliver 要资源包清单号
+            (out / 'tfake资源包' / 'exefs').mkdir(exist_ok=True); (out / 'tfake资源包' / 'exefs' / 'main.npdm').write_bytes(b'META')   # 收尾转单一 IMG（pack/img.py convert）读清单
+            (out / 'tfake资源包' / 'index.tsv').write_text('exefs/main.npdm\t4\tx\n')
             root = out / 'roots' / ('t' + GID.lower() + '@现行'); root.mkdir(parents=True, exist_ok=True); (root / 'main.npdm').write_bytes(b'META')   # 现行产物根（存容器件用）
             events.write_text(json.dumps(dict(ev='result', ok=True, ipa=str(out / 'tfake.ipa'), graphics_mode='direct', build_id='x')) + '\n')
 

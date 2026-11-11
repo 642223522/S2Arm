@@ -1,6 +1,6 @@
 """推资源包（tools/push_pack.py，Mac / Windows 共用，11-06 两端合一）：假设备（内存里的 App 容器）上核口径。期望按文件头规则手写，不跑被测实现推导。
 Mac 的整条 dev_run 推包回归（假 devicectl）在 tests/dev_run_test.sh，本文件只核规则本身与 Windows 那支（原 tests/oneclick_win_test.py 推包几组搬来）"""
-import hashlib, json, struct, sys, tempfile, unittest
+import hashlib, json, os, struct, sys, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import push_pack as push
@@ -208,6 +208,44 @@ class Apply(Base):
         r, t, _ = self.locked_then()
         self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
 
+    MAC_LOCKED = """ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x2712))
+       BundleIdentifier = io.s2arm.x
+           The request to open "io.s2arm.x" failed. (FBSOpenApplicationServiceErrorDomain error 1 (0x01))
+           BSErrorCodeDescription = RequestDenied
+           NSLocalizedFailureReason = The request was denied by service delegate (SBMainWorkspace) for reason: Locked ("Unable to launch io.s2arm.x because the device was not, or could not be, unlocked").
+               NSLocalizedFailureReason = Unable to launch io.s2arm.x because the device was not, or could not be, unlocked.
+               BSErrorCodeDescription = Locked
+See 'devicectl device process launch --help' for more information.
+"""
+
+    def test_mac_devicectl_locked_is_recognized(self):   # 11-10 Mac 锁屏实测：devicectl 末行是 --help 提示，锁屏原因在 NSLocalizedFailureReason 行
+        reason = push.launch_reason(self.MAC_LOCKED, 1)
+        self.assertIn("could not be, unlocked", reason)
+        self.assertNotIn("--help", reason)
+        self.assertEqual(push.launch_reason("", 3), "3")
+        self.assertEqual(push.launch_reason("ERROR: boom\nSee 'devicectl --help'\n", 1), "See 'devicectl --help'")   # 没有原因行照旧取末行
+        dev = Fake({}); self.dev = dev; clock = [0.0]
+        def launch(env): raise push.Fail("起 App 失败：" + push.launch_reason(self.MAC_LOCKED, 1))
+        dev.launch = launch
+        def sleep(x): clock[0] += x
+        try: r = push.apply(dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        except push.Fail as e: r = e
+        self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
+        self.assertIn(f"资源包已传完。{push.LOCKED_WAIT}", self.log)
+
+    def test_mac_launch_without_env_omits_flag(self):   # 多款容器拉起到游戏库 env 为空：devicectl 收 '{}' 会拒，得不带这个参数（11-10 测试设备实测）
+        import stat
+        argv = Path(self.w) / "argv.txt"; fake = Path(self.w) / "devicectl"
+        fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + str(argv) + "'\n"
+                        "for a in \"$@\"; do [ \"$a\" = '{}' ] && { echo 'Error: Unable to decode environment variables.' >&2; exit 64; }; done\nexit 0\n")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        d = push.Devicectl("DEV", "io.s2arm.x", self.w, env=dict(os.environ, S2A_DEVICECTL=str(fake)))
+        d.launch({})
+        args = argv.read_text().split("\n")
+        self.assertNotIn("--environment-variables", args); self.assertIn("io.s2arm.x", args)
+        d.launch({"S2A_PACK_APPLY_ONLY": "1"})   # 单款只解包照旧带
+        self.assertIn('{"S2A_PACK_APPLY_ONLY": "1"}', argv.read_text().split("\n"))
+
     def test_no_tunnel_says_developer_mode(self):   # s2a-devpush 建不了隧道（CoreDeviceProxy 连不上）：原因只说开发者模式
         dev = Fake({}); self.dev = dev; clock = [0.0]
         def boom(env): raise push.Fail("CoreDeviceProxy 连不上（要 iOS 17+、开发者模式）：x")
@@ -220,6 +258,19 @@ class Apply(Base):
         old = {f"{RP}/.applied": self.WANT, "Documents/unpack.log": f"10-01 解开 3 个包 9 个文件 1 MB，.applied = {self.WANT}（0.2 秒）\n"}
         with self.assertRaises(push.Fail) as e: self.ap(old, 1, False)
         self.assertIn("起 App 后 180 秒机上解包没有开始", str(e.exception)); self.assertEqual(len(self.dev.launches), 1)
+
+    def test_device_failure_reported_at_once_with_its_reason(self):
+        # App 起来解开、第一包前就失败（#569：目录 App 写不进）：解包日志新增「解包失败：…」→ 当场按原因报，不再等 180 秒后说「没有开始」。期望手写
+        self.dev = Fake({}); clock = [0.0]
+        def launched(d):
+            d.files["Documents/unpack.log"] = "11-11 解包失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501） 返回 -9（已解 0 个包 0 个文件）\n"
+        self.dev.on_launch = launched
+        def sleep(x): clock[0] += x
+        with self.assertRaises(push.Fail) as e:
+            push.apply(self.dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        self.assertIn("手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0", str(e.exception))
+        self.assertNotIn("没有开始", str(e.exception))
+        self.assertLess(clock[0], 10, "当场报，不等满 180 秒")
 
     def slow(self, stop_at=None, per=60.0, n=17):
         """合成进度：起 App 后每 per 秒解完一包（第 k 包写「进度：解开 x_k.tar（k/n）」），stop_at 给了就解到第 stop_at 包后再无进展；
@@ -278,6 +329,37 @@ class ContainerDocs(Base):
         self.assertEqual((d.docs, d.ctx), ("Documents", None))   # 单款缺省不变
 
 
+class BigFallback(unittest.TestCase):
+    """#641：流式写失败后，大于上限的文件不交给 devicectl 整份拷（CoreDeviceService 会把整个文件读进内存、拖垮整机）；小文件照旧退回"""
+    def run_put_big(self, size, cap):
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * size)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": str(cap)})
+            class Stream:
+                def put(self, src, rel): raise push.Fail("写文件失败：device socket io failed")
+            d.dp = Stream(); said, copied = [], []
+            d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            try:
+                d.put_big(src, "Documents/资源包/game.img"); return None, copied, said
+            except push.Fail as e:
+                return str(e), copied, said
+
+    def test_big_file_does_not_fall_back_to_devicectl(self):
+        err, copied, _ = self.run_put_big(4096, 1024)
+        self.assertEqual(copied, [])
+        self.assertIn("不改走 devicectl", err)
+        self.assertIn("device socket io failed", err)
+
+    def test_small_file_still_falls_back(self):
+        err, copied, said = self.run_put_big(512, 1024)
+        self.assertIsNone(err)
+        self.assertEqual(copied, ["Documents/资源包/game.img"])
+        self.assertTrue(any("改走 devicectl" in m for m in said))
+
+    def test_default_cap_is_two_gib(self):
+        self.assertEqual(push.DC_FALLBACK_MAX, 2 << 30)
+
+
 class SpaceNeed(Base):
     def batches(self, *sizes):
         for i, rows in enumerate(sizes):
@@ -331,6 +413,17 @@ class ImagePush(Base):
         self.assertEqual((nt, (self.w / "direct_img.tsv").read_text().split("\t")[0]), (1, "romfs.img"))
         self.assertTrue(any("被打断" in l for l in self.log))
 
+    def test_image_already_pushed_is_not_called_interrupted(self):
+        # #457：上次镜像整份传完、记进 .pushed，又有一批推完没解开（机上留着完整的 tar），之后解包没成，.applied 一直空。
+        #   期望（手写）：不重传镜像、也不说「被打断，这次重传」，如实说镜像已传完、问题在解包；b 在推送账上也不重推
+        f = self.phone(""); f[f"{INC}/20261110000000_000.tar"] = WHOLE
+        f[f"{RP}/.pushed"] = self.row("romfs.img").rsplit("\t", 1)[0].split("\t")[0] + "\t" + sha(b"IMAGE") + "\n" + "b\t" + sha(b"BB") + "\n"
+        self.dev = Fake(f)
+        nb, nt, n = push.plan(self.dev, self.pk, self.w, say=self.log.append)
+        self.assertEqual(nt, 0)
+        self.assertFalse(any("被打断" in l for l in self.log), self.log)
+        self.assertTrue(any("已整份传完" in l and "unpack.log" in l for l in self.log), self.log)
+
     def test_applied_image_is_not_pushed_again(self):
         self.dev = Fake(self.phone("abc"))
         self.assertEqual(push.plan(self.dev, self.pk, self.w, say=self.log.append)[1], 0)
@@ -347,6 +440,19 @@ class ImagePush(Base):
         self.assertEqual(got, [(f"{RP}/romfs.img", b"IMAGE")])
         self.assertFalse((self.pk / "romfs.img").exists())
 
+    def test_split_plan_send_materializes_library_pack(self):
+        # dev_run 走的两步路（push_pack.sh：plan → send，不走 run）同样要现拼库内形态的镜像（原先只有 run 拼，dev_run 推库里的包 FileNotFoundError: romfs.img）
+        sys.path.insert(0, str(push.R / "pack")); import romfs_image
+        (self.pk / "romfs.img").unlink(); (self.pk / "romfs.files").mkdir(); (self.pk / "romfs.files" / "x").write_bytes(b"IMA"); (self.pk / "romfs.files" / "y").write_bytes(b"GE")
+        idx = b"S2ARFS01" + struct.pack("<qi", 5, 2) + struct.pack("<qqii", 0, 3, 0, 1) + struct.pack("<qqii", 3, 2, 1, 1) + struct.pack("<i", 2) + b"xy" + struct.pack("<i", 0)
+        (self.pk / "romfs.s2aidx").write_bytes(idx); (self.pk / "romfs.imgmap").write_bytes(romfs_image.MAGIC + struct.pack("<qi", 5, 2) + struct.pack("<2q", 0, 3))
+        self.dev = Fake({}); got = []
+        self.dev.put_big = lambda src, rel: got.append((rel, Path(src).read_bytes()))
+        push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
+        push.send(self.dev, self.pk, self.w, say=self.log.append)
+        self.assertEqual(got, [(f"{RP}/romfs.img", b"IMAGE")])
+        self.assertFalse((self.pk / "romfs.img").exists())
+
     def test_library_pack_image_already_on_phone_is_not_built(self):
         (self.pk / "romfs.img").unlink(); self.dev = Fake(self.phone("abc"))   # 机上已应用同一镜像：不拼、不推
         push.run(self.dev, self.pk, self.w, say=self.log.append)
@@ -360,8 +466,112 @@ class ImagePush(Base):
         self.assertLess(order.index(f"{RP}/.applied"), order.index(f"{RP}/romfs.img"))
 
 
+P = push.IMG_PAGE
+
+
+def img(pack_id=b"f" * 64, body=b"D"):   # 假单一 IMG：第 0 页头（魔数、资源包号在 32..96），后面 3 整页 + 100 字节数据
+    head = bytearray(P); head[:8] = b"S2AIMG01"; head[32:32 + len(pack_id)] = pack_id
+    return bytes(head) + body * (3 * P + 100)
+
+
+class GameImgResume(Base):
+    """v0.3.0 单一 IMG（game.img）断点续传：机上开头一页与本地相同且资源包号不空 → 从机上长度按 16 KB 向下取整处接着写；否则整份重写"""
+    def setUp(self):
+        super().setUp()
+        self.local = img()
+        self.data = {"game.img": self.local, "b": b"BB"}
+        for k, v in self.data.items(): (self.pk / k).write_bytes(v)
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+
+    def device(self, on_phone=None, head_ok=True, put_at_fails=False, short_after=False):
+        dev = Fake({} if on_phone is None else {f"{RP}/game.img": on_phone}); dev.big, dev.at = [], []
+        def put_big(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()
+        def head(rel, n):
+            if not head_ok: return None
+            v = dev.files.get(rel); return (-1, b"") if v is None else (len(v), v[:n])
+        def put_at(src, rel, off):
+            if put_at_fails: raise push.Fail("断了")
+            dev.at.append((rel, off)); data = Path(src).read_bytes()
+            dev.files[rel] = dev.files[rel][:off] + data[off:len(data) - (1 if short_after else 0)]
+        dev.put_big, dev.head, dev.put_at = put_big, head, put_at
+        return dev
+
+    def push_it(self, dev):
+        self.dev = dev
+        push.plan(dev, self.pk, self.w, full=True, say=self.log.append); push.send(dev, self.pk, self.w, say=self.log.append)
+
+    def test_v3_img_manifest_plans(self):   # v0.3.0 单一 IMG 的清单是 v3（pack/img.py convert）：照推，game.img 直写（原先只认 v2，启动器 / dev_run 推 IMG 报「资源包不是 v2」）
+        (self.pk / "manifest.json").write_text('{"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "x"}')
+        self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
+        self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")
+
+    def test_full_write_checks_length_on_phone(self):   # 整份写完也核机上总长（11-11「传完并校验即成功」）：短一个字节不记账、说清长度
+        dev = self.device()
+        def short_write(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()[:-1]
+        dev.put_big = short_write
+        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        self.assertIn("game.img 没传完", str(e.exception))
+        self.assertTrue(any(f"长度 {len(self.local) - 1} 字节，应为 {len(self.local)} 字节" in l for l in self.log), self.log)
+        self.assertNotIn(f"{RP}/.pushed", dev.files)   # 没记账：下次重新判断续传
+
+    def test_full_write_length_ok_completes(self):
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
+
+    def test_game_img_is_direct_not_tar(self):
+        self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
+        self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")
+        self.assertNotIn("game.img", (self.w / "push_000.tsv").read_text())
+
+    def test_resume_from_page_floor(self):   # 机上有前 2.5 页（同一份）→ 从第 2 页起续写，写完机上与本地逐字节相同
+        dev = self.device(self.local[:2 * P + P // 2]); self.push_it(dev)
+        self.assertEqual((dev.at, dev.big), ([(f"{RP}/game.img", 2 * P)], []))
+        self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
+        self.assertTrue(any("续传 game.img" in l for l in self.log), self.log)
+
+    def test_other_pack_id_rewrites(self):   # 机上那份是别的资源包号（旧版本）→ 整份重写
+        dev = self.device(img(pack_id=b"e" * 64)[:2 * P]); self.push_it(dev)
+        self.assertEqual((dev.at, dev.big), ([], [f"{RP}/game.img"]))
+
+    def test_empty_pack_id_rewrites(self):   # 头里资源包号空：认不出是不是同一份 → 整份重写
+        self.local = img(pack_id=b""); (self.pk / "game.img").write_bytes(self.local); self.data["game.img"] = self.local
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        dev = self.device(self.local[:2 * P]); self.push_it(dev)
+        self.assertEqual((dev.at, dev.big), ([], [f"{RP}/game.img"]))
+
+    def test_phone_longer_rewrites(self):
+        dev = self.device(self.local + b"X"); self.push_it(dev)
+        self.assertEqual((dev.at, dev.big), ([], [f"{RP}/game.img"]))
+
+    def test_only_header_page_rewrites(self):   # 机上不足两页（只有头）：没东西可省，从头写
+        dev = self.device(self.local[:P + 10]); self.push_it(dev)
+        self.assertEqual((dev.at, dev.big), ([], [f"{RP}/game.img"]))
+
+    def test_old_tool_without_head_rewrites(self):
+        dev = self.device(self.local[:2 * P], head_ok=False); self.push_it(dev)
+        self.assertEqual((dev.at, dev.big), ([], [f"{RP}/game.img"]))
+
+    def test_resume_failure_falls_back_to_full(self):
+        dev = self.device(self.local[:2 * P], put_at_fails=True); self.push_it(dev)
+        self.assertEqual(dev.big, [f"{RP}/game.img"]); self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
+        self.assertTrue(any("改为整份重写" in l for l in self.log), self.log)
+
+    def test_wrong_length_after_resume_fails(self):   # 续写后机上总长不对：不记账、报中断（说会接着续传）
+        dev = self.device(self.local[:2 * P], short_after=True)
+        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        self.assertIn("续传", str(e.exception))
+        self.assertNotIn(f"{RP}/.pushed", dev.files)
+
+    def test_romfs_img_never_resumes(self):   # 旧形态 romfs.img 没有 IMG 头：不读机上头、整份写
+        sys_img = b"OLDIMAGE" * 5000
+        (self.pk / "game.img").unlink(); (self.pk / "romfs.img").write_bytes(sys_img)
+        self.data = {"romfs.img": sys_img, "b": b"BB"}; (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        dev = self.device(); dev.head = lambda *a: self.fail("旧形态不该读机上头"); self.push_it(dev)
+        self.assertEqual(dev.big, [f"{RP}/romfs.img"])
+
+
 class SendProgress(Base):
-    """#266：推送进度计数。3 批不同大小（上限 60 字节：a30+b30 | c50 | e90）；分母 = 本次待传量，不是整包"""
+    """#266：推送进度计数。3 批不同大小（上限 60 字节：a30+b30 | c50 | e90）；口径同手机蒙版：已在机上的 + 本次已到 / 整款"""
     def setUp(self):
         super().setUp()
         self.data = {"a": b"A" * 30, "b": b"B" * 30, "c": b"C" * 50, "e": b"E" * 90}
@@ -380,9 +590,9 @@ class SendProgress(Base):
         self.run_push({})
         self.assertEqual(self.calls, [(0, 200, 0, 3), (60, 200, 1, 3), (110, 200, 2, 3), (200, 200, 3, 3)])
 
-    def test_denominator_is_this_push_not_whole_pack(self):   # 机上已有 a、b：只推 c、e（两批 50 | 90），总量 140
+    def test_resume_counts_what_is_already_on_the_phone(self):   # 机上已有 a、b（60）：只推 c、e（两批 50 | 90），计数从 60 起、分母整款 200，和手机蒙版同一个百分比
         self.run_push(self.on_phone("a", "b"))
-        self.assertEqual(self.calls, [(0, 140, 0, 2), (50, 140, 1, 2), (140, 140, 2, 2)])
+        self.assertEqual(self.calls, [(60, 200, 0, 2), (110, 200, 1, 2), (200, 200, 2, 2)])
 
     def test_nothing_to_push_reports_zero_total(self):   # 机上全有：只报一次 0/0，作业层见 total=0 不发计数（不画 0/0）
         self.run_push(self.on_phone("a", "b", "c", "e"))
@@ -452,6 +662,90 @@ class LockedProbe(Base):
         self.go({})
         self.assertEqual(self.dev.puts[0], f"{RP}/{push.PROBE}")
         self.assertIn(f"{RP}/index.tsv", self.dev.files)
+
+
+class InflightProgress(Base):
+    def test_child_progress_is_delivered_before_child_exit(self):
+        # 子进程必须等回调写确认文件才退出；capture_output 等退出的旧实现必红。
+        script = self.w / "child.py"; ack = self.w / "ack"
+        script.write_text('''import pathlib, sys, time
+print("S2A_DEVPUSH_PROGRESS 40", flush=True)
+end = time.monotonic() + 2
+while not pathlib.Path(sys.argv[-1]).exists() and time.monotonic() < end:
+    time.sleep(0.01)
+sys.exit(0 if pathlib.Path(sys.argv[-1]).exists() else 1)
+''')
+        dev = push.Devpush(sys.executable, "-u", str(script), self.w)
+        seen = []
+        def report(n): seen.append(n); ack.touch()
+        dev.progress = report
+        dev.put(self.pk / "a", ack)
+        self.assertEqual(seen, [40])
+
+    def test_old_helper_output_still_succeeds_without_progress(self):
+        script = self.w / "old.py"
+        script.write_text('print("put 1 字节")\n', encoding="utf-8")
+        dev = push.Devpush(sys.executable, "-u", str(script), self.w)
+        seen = []; dev.progress = seen.append
+        dev.put(self.pk / "a", "remote")
+        self.assertEqual(seen, [])
+        self.assertIn("put 1 字节", (self.w / "devpush.log").read_text())
+
+    def test_streaming_error_keeps_diagnostics(self):
+        script = self.w / "fail.py"
+        script.write_text('import sys\nprint("S2A_DEVPUSH_PROGRESS 40", flush=True)\nprint("AFC write failed", file=sys.stderr)\nsys.exit(1)\n')
+        dev = push.Devpush(sys.executable, "-u", str(script), self.w)
+        seen = []; dev.progress = seen.append
+        with self.assertRaisesRegex(push.Fail, "AFC write failed"):
+            dev.put(self.pk / "a", "remote")
+        self.assertEqual(seen, [40])
+
+    def image_plan(self):
+        (self.pk / "romfs.img").write_bytes(b"x" * 100)
+        (self.w / "direct_img.tsv").write_text("romfs.img\t100\timage-sha\n")
+
+    def test_image_inflight_is_bounded_and_not_completed_or_ledgered(self):
+        self.image_plan(); dev = Fake({}); calls = []
+        def put_big(*args):
+            for n in (40, 20, 100, 999): dev.progress(n)
+            self.assertFalse((self.w / "pushed").exists())
+        dev.put_big = put_big
+        push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
+        self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (99, 100, 0, 1), (100, 100, 1, 1)])
+        self.assertIsNone(dev.progress)
+
+    def test_partial_image_failure_never_reports_completion(self):
+        self.image_plan(); dev = Fake({}); calls = []
+        def put_big(*args):
+            dev.progress(40); raise push.Fail("断开")
+        dev.put_big = put_big
+        with self.assertRaises(push.Fail):
+            push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
+        self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1)])
+        self.assertNotIn(f"{RP}/.pushed", dev.files)
+        self.assertIsNone(dev.progress)
+
+    def test_batches_add_payload_to_completed_bytes(self):
+        (self.w / "push_000.tsv").write_text("a\t1\ta-sha\n")
+        (self.w / "push_001.tsv").write_text("b\t2\tb-sha\n")
+        dev = Fake({}); calls = []
+        put_tar = dev.put_tar
+        def streaming(*args):
+            dev.progress(1)
+            return put_tar(*args)
+        dev.put_tar = streaming
+        push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
+        self.assertEqual(calls, [(0, 3, 0, 2), (1, 3, 1, 2), (2, 3, 1, 2), (3, 3, 2, 2)])
+
+    def test_mac_delegates_inflight_to_devpush(self):
+        self.image_plan(); calls = []
+        dev = push.Devicectl("device", "bundle", self.w)
+        dev.why = "合成流式工具"
+        dev.dp = Fake({}); dev.put = lambda *a: None
+        dev.dp.put = lambda *a: dev.dp.progress(40)
+        push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
+        self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (100, 100, 1, 1)])
+        self.assertIsNone(dev.dp.progress)
 
 
 class SendFail(Base):

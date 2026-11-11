@@ -53,6 +53,10 @@
 // svc_mem.c 的锁序断言与背板引用入口（只在 Android 有定义）。
 int s2a_mem_g_mu_held(void);
 void s2a_mem_lockorder_vp_enter(void);
+// #48 A3/A4（android/native/system_tuning.c，只在 Android 有定义）：省电档对最终周期取
+//   max(原周期, 33.3 ms)；登记最终周期给 Surface.setFrameRate 刷新率投票。
+uint64_t s2a_android_limit_frame_period(uint64_t period_ns);
+void s2a_android_present_note(uint64_t period_ns);
 #endif
 
 // ---------- Slot table, thunks, unimplemented stubs ----------
@@ -364,7 +368,9 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     if (!o->mem && (o->flags & 0x200)) o->mem = vpool_reserve(o);   // every virtual pool: its own address range, a page table over physical pools (see MapVirtual)
     else if (o->mem) { nvn_be_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
     if (!o->mem && !(o->flags & 0x200)) LOG("【红】 MemoryPoolInitialize: non-virtual pool has no storage flags=%#x size=%#llx", o->flags, o->size);
-    o->gva = o->mem || (o->flags & 0x200) ? gva_alloc((uint64_t)(uintptr_t)o->mem, o->size) : 0;   // 虚拟池的 CPU 侧是它自己的预留段（预留失败时没有，GPU 地址照给：真机初始化即有）
+    // Switch 2（NVN2）：池建在 gsv GPU 可访问内存上，那段内存的 GPU 虚拟地址就是它的 CPU 虚拟地址，缓冲区地址 = 存储的 CPU 地址；游戏会拿 GetBufferAddress 的结果加偏移直接用 CPU 读写
+    //   （#351：给窗口地址时 CPU 读 0xC086D00000 一带非法地址崩）。所以 NVN2 不另分窗口地址，pool_ga 回存储地址，nvn_ga2ca 对它原样过。窗口只给 Switch 1（大页对齐语义，见上）
+    o->gva = !nvn2_on() && (o->mem || (o->flags & 0x200)) ? gva_alloc((uint64_t)(uintptr_t)o->mem, o->size) : 0;   // 虚拟池的 CPU 侧是它自己的预留段（预留失败时没有，GPU 地址照给：真机初始化即有）
     if (getenv("DM_NVN_VLOG")) { LOG("[nvn] MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, (unsigned long long)o->size, o->flags); void dm_backtrace(uint64_t fp); dm_backtrace((uint64_t)__builtin_frame_address(0)); }
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     return 1;
@@ -499,7 +505,8 @@ NVN(nvnTextureBuilderSetStride, void, NVNtextureBuilder *b, ptrdiff_t s) { TB(b)
 NVN(nvnTextureBuilderSetStorage, void, NVNtextureBuilder *b, NVNmemoryPool *p, ptrdiff_t off) { TB(b)->pool = (pool_t *)p; TB(b)->off = off; }
 NVN(nvnTextureBuilderSetPackagedTextureLayout, void, NVNtextureBuilder *b, const NVNpackagedTextureLayout *l) {
     TB(b)->has_layout = l != NULL; if (l) memcpy(TB(b)->layout, l->layout, 8);
-    TB(b)->d.pkg_block_h = l ? l->layout[0] + 1 : 0;
+    // byte 0 = block height (log2 GOBs) + 1 in bits 0-7; byte 1 = row-width alignment (log2 GOBs) + 1 in bits 8-15 (kept in the same int: tex_t must stay <= 0x80)
+    TB(b)->d.pkg_block_h = l ? (l->layout[0] + 1) | (l->layout[1] + 1) << 8 : 0;
 }
 NVN(nvnTextureBuilderGetFlags, NVNtextureFlags, const NVNtextureBuilder *b) { return (NVNtextureFlags)((const tex_builder_t *)b)->d.flags; }
 NVN(nvnTextureBuilderGetDevice, const NVNdevice *, const NVNtextureBuilder *b) { return ((const tex_builder_t *)b)->dev; }
@@ -1925,7 +1932,10 @@ static void *rec(NVNcommandBuffer *c, uint32_t op, size_t payload) {
 // NVN 四边形条带（NVN_DRAW_PRIMITIVE_QUAD_STRIP = 8，Metal 没有）就地改成三角形条带（5）：第 i 个四边形 (2i, 2i+1, 2i+3, 2i+2) 正好是三角形条带第 2i、2i+1 两个三角形
 //   （同一组顶点、同一片覆盖面）；四边形条带不画末尾落单的那个顶点，三角形条带会多画一个三角形 → CPU 知道个数的把个数向下取偶（间接绘制的个数在 GPU 上，原样）。
 //   11-06 无人深空测试设备1：这类绘制原先在回放里整笔丢掉（「primitive type 8 not implemented」），录到 8 笔
-static void prim_quad_strip(int32_t *prim, int32_t *count) { if (*prim == 8) { *prim = 5; if (*count > 0) *count &= ~1; } }
+// NVN 多边形（NVN_DRAW_PRIMITIVE_POLYGON = 9，Metal 没有）就地改成三角形扇（6）：凸多边形 v0..vn-1 = 以 v0 为扇心的 (v0, vi, vi+1)，覆盖面相同
+//   （上游参考实现同样处理：Ryujinx.Graphics.Vulkan EnumConversion Polygon → TriangleFan）；扇形之后各条路径（展开、间接转换）照旧。
+//   #635：0100F43008C44000 Mac 局 16 笔「primitive type 9 not implemented」整笔丢掉（曾被当成曲面细分，日志里 hull / domain 都是「-」）
+static void prim_quad_strip(int32_t *prim, int32_t *count) { if (*prim == 8) { *prim = 5; if (*count > 0) *count &= ~1; } else if (*prim == 9) *prim = 6; }
 static void rec_draw(NVNcommandBuffer *c, p_draw d) { prim_quad_strip(&d.prim, &d.count); size_t n = d.ind || d.mdi_cnt || d.tfc ? sizeof d : offsetof(p_draw, ind); memcpy(rec(c, OP_DRAW, n), &d, n); }
 static void rec_draw_idx(NVNcommandBuffer *c, p_draw_idx d) {
     prim_quad_strip(&d.prim, &d.count);
@@ -2356,7 +2366,8 @@ static int frame_rec(void);
 static _Atomic uint64_t g_nvn_ns;   // Host time spent in submit / present this frame (replay encoding + present), used by the timing instrumentation
 
 // ---------- Lifecycle: dm_gfx_suspend (called before iOS goes to the background; equivalent to Switch suspend) ----------
-// on=1: subsequent submits / presents block until on=0; before returning, wait for in-progress submit / present calls to exit and for all in-flight GPU work to complete (iOS requires no GPU work in the background).
+// on=1 only closes the entry gate and must not wait: UIKit's scene-update callback has a 10 second watchdog.
+// dm_gfx_suspend_drain runs on the lifecycle worker with iOS background-task time: wait for calls already inside the gate, then drain GPU work.
 static pthread_mutex_t g_susp_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_susp_cv = PTHREAD_COND_INITIALIZER;
 static int g_susp, g_inflight_api;
@@ -2369,13 +2380,23 @@ void dm_gfx_enter(void) { gfx_enter(); }   // the same gate for the Vulkan layer
 void dm_gfx_leave(void) { gfx_leave(); }
 __attribute__((weak)) void dm_vk_drain(void) {}   // dm/gfx/vk/hle_vk.m: wait for the Vulkan layer's queue (the graphics unit tests do not link it)
 __attribute__((weak)) void dm_gl_drain(void) {}   // dm/gfx/gl/hle_gl.m: the same for the GL layer
+void (*dm_gfx_test_drain)(void);   // t_nvn_suspend: exercise the real gate / wait without acquiring a Metal device slot
 void dm_gfx_suspend(int on) {
     pthread_mutex_lock(&g_susp_mu);
     g_susp = on != 0;
-    if (on) while (g_inflight_api) pthread_cond_wait(&g_susp_cv, &g_susp_mu);
-    else pthread_cond_broadcast(&g_susp_cv);
+    if (!on) pthread_cond_broadcast(&g_susp_cv);
     pthread_mutex_unlock(&g_susp_mu);
-    if (on) { dm_vk_drain(); dm_gl_drain(); nvn_be_drain(); LOG("[nvn] graphics suspended: in-flight GPU work drained"); } else LOG("[nvn] graphics resumed");   // the Vulkan and GL queues first: presents on the NVN queue wait for their frames
+    if (!on) LOG("[nvn] graphics resumed");
+}
+void dm_gfx_suspend_drain(void) {
+    pthread_mutex_lock(&g_susp_mu);
+    while (g_susp && g_inflight_api) pthread_cond_wait(&g_susp_cv, &g_susp_mu);
+    int suspended = g_susp;
+    pthread_mutex_unlock(&g_susp_mu);
+    if (!suspended) { LOG("【红】[nvn] graphics suspend drain reached after the gate reopened; drain skipped"); return; }
+    if (dm_gfx_test_drain) dm_gfx_test_drain();
+    else { dm_vk_drain(); dm_gl_drain(); nvn_be_drain(); }   // Vulkan and GL first: presents on the NVN queue wait for their frames
+    LOG("[nvn] graphics suspended: in-flight GPU work drained");
 }
 int dm_gfx_guest_start_hold(void) {
     pthread_mutex_lock(&g_susp_mu);
@@ -3367,7 +3388,13 @@ static uint64_t present_period(const win_t *o) {
     }
     int itv = present_itv(o), hz = g_hz;
     // 上限作用于最终周期，不能把基准 60 Hz 降到 30 后再乘 interval（interval 2 会误成 15 帧）。
-    return nvn_fps_period_ns(hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0);
+    uint64_t period = nvn_fps_period_ns(hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0);
+#if defined(__ANDROID__)
+    // #48 A4：系统省电档对最终周期取 max(原周期, 33.3 ms)；A3：登记最终周期给刷新率投票。
+    period = s2a_android_limit_frame_period(period);
+    s2a_android_present_note(period);
+#endif
+    return period;
 }
 // The period the acquire thread declares to the scheduler (set_time_constraint): the present period, except that a hold the frame step raised for late frames keeps the cap's deadline.
 // Declaring the longer hold let the performance controller move the game to the efficiency cores at half the clock (TOTK on an iPhone: 3.4 → 1.5 GHz and 65% → 5% on performance

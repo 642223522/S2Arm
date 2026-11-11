@@ -57,7 +57,7 @@ static partial class P {
     sealed class UsageError : Exception { public UsageError(string m) : base(m) { } }
     static int Main(string[] a) {
         // 输出固定 UTF-8（无 BOM）：Windows 上 .NET 控制台缺省按系统代码页（中文 Windows 为 GBK）编码，调用方按 UTF-8 读会解不开
-        //   （11-04 Windows 出包机旷野之息：追加内容阶段读 --nacp-only 的中文提示报 UnicodeDecodeError）；Mac / Linux 缺省本就是 UTF-8，字节不变
+        //   （11-04 Windows 出包机01007EF00011E000：追加内容阶段读 --nacp-only 的中文提示报 UnicodeDecodeError）；Mac / Linux 缺省本就是 UTF-8，字节不变
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         try { return Run(a); }
         catch (SourceError e) { Console.Error.WriteLine("🔴 " + e.Message); return 1; }
@@ -308,7 +308,11 @@ static partial class P {
             var fs = new RomFsFileSystem(opener()); Walk(fs, "/", root, dst, opener, items);
         }
         RomfsExtraction.Result patchedRomfs = null;
-        if (!aocOnly) {
+        // 程序 NCA 没有资源段（第 1 段）的款（#620，数据全在 exefs 里的小游戏）：没有 RomFS，产出空 romfs 目录（空 RomFS 的下游同 #578），
+        //   原先照开第 1 段，抛「NCA section 1 does not exist」整次解包失败。只看本体：更新的资源段要叠在本体那段上，本体没有就无从叠
+        bool hasRomfs = new Nca(Ks, Where[baseId]()).SectionExists(NcaSectionType.Data);
+        if (!aocOnly && !hasRomfs) { Directory.CreateDirectory(Path.Combine(D, "romfs")); Console.WriteLine("程序没有资源分区（RomFS）：按空资源出包"); }
+        if (!aocOnly && hasRomfs) {
             if (patId == null) AddFs("romfs", () => RomfsOpener(IntegrityCheckLevel.ErrorOnInvalid), Path.Combine(D, "romfs"));
             else {
                 try { patchedRomfs = RomfsExtraction.Extract(RomfsOpener, Path.Combine(D, "romfs"), patched: true); }
@@ -429,7 +433,7 @@ static partial class P {
                 //   不抛异常：10-28 #633 实测这里原是 e.Name[..32]，名字短于 32 字符 → ArgumentOutOfRange → 整进程 SIGABRT（rc=134）
                 if (!IsContentName(e.Name)) { strange.Add(e.Name); continue; }
                 string id = e.Name[..32].ToLowerInvariant(); Func<IStorage> raw = e.Open;
-                // 截断核对：内容的最后一个字节要读得到（10-26 宝可梦朱 1.47 GB 的卡带镜像声明 6.27 GB，原先在解清单时抛 OutOfRange 调用栈）
+                // 截断核对：内容的最后一个字节要读得到（10-26 一款第一方 RPG 1.47 GB 的卡带镜像声明 6.27 GB，原先在解清单时抛 OutOfRange 调用栈）
                 byte[] last = new byte[1];
                 if (e.Size > 0) {
                     var read = raw().Read(e.Size - 1, last);

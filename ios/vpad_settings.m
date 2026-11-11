@@ -91,8 +91,8 @@
         [toggle addTarget:self action:@selector(rumbleSwitch:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = toggle;
     } else if (indexPath.section == 2 && indexPath.row == 4) {
         id level = [NSUserDefaults.standardUserDefaults objectForKey:@"S2ARumbleLevel"]; NSInteger lv = level ? [level integerValue] : 2;
-        cell.textLabel.text = S2AL(@"vpad.rumble.strength"); cell.detailTextLabel.text = @[S2AL(@"vpad.rumble.level.0"), S2AL(@"vpad.rumble.level.1"), S2AL(@"vpad.rumble.level.2"), S2AL(@"vpad.rumble.level.3"), S2AL(@"vpad.rumble.level.4")][MAX(0, MIN(4, lv))]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 44)]; slider.minimumValue = 0; slider.maximumValue = 4; slider.value = lv; slider.continuous = NO;
+        cell.textLabel.text = S2AL(@"vpad.rumble.strength"); cell.detailTextLabel.text = @[S2AL(@"vpad.rumble.level.0"), S2AL(@"vpad.rumble.level.1"), S2AL(@"vpad.rumble.level.2"), S2AL(@"vpad.rumble.level.3"), S2AL(@"vpad.rumble.level.4"), S2AL(@"vpad.rumble.level.5")][MAX(0, MIN(5, lv))]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 44)]; slider.minimumValue = 0; slider.maximumValue = 5; slider.value = lv; slider.continuous = NO;
         slider.accessibilityIdentifier = @"vpad.rumble.level"; slider.accessibilityLabel = S2AL(@"vpad.rumble.strength"); [slider addTarget:self action:@selector(rumbleLevel:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView = slider;
     } else if (indexPath.section == 2 && indexPath.row == 2) {
         cell.textLabel.text = S2AL(@"vpad.holdLock"); cell.detailTextLabel.text = S2AL(@"vpad.layouts.holdLock.note");

@@ -7,7 +7,7 @@ using Ryujinx.HLE.HOS.Services.Am.AppletAE;
 
 namespace S2A.Services.Tests
 {
-    // 游戏「增加新用户」（nn::account::ShowUserCreator）。11-05 测试设备1 脑锻炼在「请选择用户」页点「增加新用户」稳定 Break：
+    // 游戏「增加新用户」（nn::account::ShowUserCreator）。11-05 测试设备1 一款第一方益智游戏在「请选择用户」页点「增加新用户」稳定 Break：
     //   零售 SDK 的 ShowUserCreator 先调 IsUserRegistrationRequestPermitted（acc:u0 命令 50），回 false 就 Abort（sdk ShowUserCreator+0x90）；
     //   游戏本身不先查这个值、直接调 ShowUserCreator，说明零售机对应用回 true。上游对 acc:u0 回 false。
     //   放行后 SDK 拉起选用户小程序（psel），UiSettings 模式 1 = UserCreator，读回 0x18 字节：头 4 字节就是 ShowUserCreator 的返回结果；
@@ -18,6 +18,7 @@ namespace S2A.Services.Tests
     //   期望照反汇编手写：命令 50 → 结果 0、bool 1；UserCreator → 0x18 字节、结果 0、Uid 是新用户（非零、不是当前用户、账户表里有、用户数 +1）；
     //   连建两次是两个不同的用户（昵称也不同）；
     //   负对照：选用户模式 0（UserSelector）照旧回成功 + 当前用户（不受本次改动影响）
+    //   #621 / #634：模式 2 / 10 / 11（网络服务）回取消：长 0x18（完整 UiReturnArg）、结果 0x27C（账号界面取消 2124-0001）、Uid 全零（期望按 libnx PselUiReturnArg 与结果码编码手写）
     public static unsafe partial class Program
     {
         [SoloTest("--acc-user-creator", Booted = true)]
@@ -53,7 +54,7 @@ namespace S2A.Services.Tests
                 new PlayerSelectApplet(system).Start(normal, new AppletSession());
                 if (!game.TryPop(out byte[] r)) return ("无结果", "");
                 string uid = r.Length >= 0x18 ? Convert.ToHexString(r, 8, 16) : "-";
-                return ($"长 0x{r.Length:X}、结果 0x{BitConverter.ToUInt32(r, 0):X}、Uid {(uid == current ? "当前用户" : uid == new string('0', 32) ? "全零" : "其他")}", uid);
+                return ($"长 0x{r.Length:X}、结果 0x{BitConverter.ToUInt32(r, 0):X}、Uid {(uid == "-" ? "-" : uid == current ? "当前用户" : uid == new string('0', 32) ? "全零" : "其他")}", uid);
             }
 
             var users = system.AccountManager;
@@ -76,6 +77,11 @@ namespace S2A.Services.Tests
             Check("连建两次：两个不同用户、昵称不同、用户数 +2", "Uid 不同 1、昵称不同 1、用户数 +2",
                 $"Uid 不同 {(c1.Uid != c2.Uid ? 1 : 0)}、昵称不同 {(name1 != null && name2 != null && name1 != name2 ? 1 : 0)}、用户数 +{users.GetAllUsers().Count() - before}");
             Check("负对照：psel 模式 0 UserSelector 照旧选当前用户", "长 0x18、结果 0x0、Uid 当前用户", Psel(0));
+            // #621 / #634：网络服务模式（2 确保网络服务账号可用、10 / 11 网络服务资格）在离线宿主上回取消（结果 0x27C、Uid 全零），
+            //   不再回「选了当前用户」——那样游戏以为账号可用了，再查仍未绑定，就每帧重弹（太鼓之达人 咚咚雷音祭 17 秒 1007 次）
+            foreach (uint m in new uint[] { 2, 10, 11 })
+                Check($"psel 模式 {m} 网络服务（离线）回取消", "长 0x18、结果 0x27C、Uid 全零", Psel(m));
+            Check("用户数不因网络服务模式变化", $"{before + 2}", $"{users.GetAllUsers().Count()}");
             while (system.AppletState.Messages.TryDequeue(out _)) { }
 
             FakeNative.HandleClose(acc); FakeNative.HandleClose(sm);

@@ -73,31 +73,36 @@ public sealed class JobEventReader(string jobId, string operation)
 public static class PackJobClient
 {
     public static readonly IReadOnlySet<string> Operations =
-        new HashSet<string>(StringComparer.Ordinal) { "ipa", "installCheck", "install", "installRemove", "installRestore", "customize",
-            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree" };
+        new HashSet<string>(StringComparer.Ordinal) { "ipa", "installCheck", "install", "installRemove", "installRestore", "installMode", "installUpdate", "customize",
+            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree", "devCert" };
 
+    /// <param name="Secrets">Environment variables for this one job process only (the developer certificate password,
+    /// pack/jobs/devcert.py); never written into the request file, and main.run_request drops them from its environment first.</param>
     public sealed record Request(LauncherPaths Paths, string PrivateRoot, string Library, string LibraryId, string Operation,
-        string GameId, IReadOnlyDictionary<string, object?>? Extra = null);
+        string GameId, IReadOnlyDictionary<string, object?>? Extra = null, IReadOnlyDictionary<string, string>? Secrets = null);
 
     /// <summary>The request body the backend reads (pure; unit-tested).</summary>
     public static Dictionary<string, object?> Payload(Request request, string jobId)
     {
         if (!Operations.Contains(request.Operation)) throw new ArgumentException("Unsupported pack operation.", nameof(request));
-        if (string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
+        // The developer certificate and the install mode belong to this computer, installUpdate to the phone (install.update_phone): no game.
+        var perGame = request.Operation is not ("devCert" or "installMode" or "installUpdate");
+        if (perGame && string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
         var payload = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["jobId"] = jobId, ["operation"] = request.Operation,
             ["privateRoot"] = Path.GetFullPath(request.PrivateRoot), ["library"] = Path.GetFullPath(request.Library),
-            ["engineDir"] = Path.GetFullPath(request.Paths.Engine), ["libraryId"] = request.LibraryId, ["gameId"] = request.GameId,
+            ["engineDir"] = Path.GetFullPath(request.Paths.Engine), ["libraryId"] = request.LibraryId,
             // The job stops itself when this launcher process is gone (main.py supervise).
             ["parentPid"] = Environment.ProcessId
         };
+        if (perGame) payload["gameId"] = request.GameId;
         // The bundled iPhone shell is a launcher path setting (Settings → Shell); ipa.bundled_shell reads shellDir.
-        if (request.Operation is "ipa" or "install") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
+        if (request.Operation is "ipa" or "install" or "installUpdate") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
         // Bundled resources next to S2Arm.exe (bundle_win.py layout): ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
         // "shared fonts missing", tianyan 11-07); installCheck / install use the Impactor + plumesign shipped in resources/ThirdParty/Impactor
         // (pack/jobs/impactor.py bundled, 11-07 维护者: no download detour for players).
-        if (request.Operation is "ipa" or "installCheck" or "install" or "installRemove" or "installRestore") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
+        if (request.Operation is "ipa" or "installCheck" or "install" or "installRemove" or "installRestore" or "installMode" or "installUpdate") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
         foreach (var (key, value) in request.Extra ?? new Dictionary<string, object?>())
         {
             if (payload.ContainsKey(key)) throw new ArgumentException("Extra field overrides the request envelope: " + key);
@@ -113,14 +118,15 @@ public static class PackJobClient
         return payload;
     }
 
-    public static async Task<LibraryJobOutput> RunAsync(Request request, Action<JsonElement>? onEvent, CancellationToken cancellationToken)
+    public static async Task<LibraryJobOutput> RunAsync(Request request, Action<JsonElement>? onEvent, CancellationToken cancellationToken, string? jobId = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var jobId = "win-" + Guid.NewGuid().ToString("N");
+        jobId ??= "win-" + Guid.NewGuid().ToString("N");   // 前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
         var privateRoot = Path.GetFullPath(request.PrivateRoot);
         using var file = PrivateJobRequest.Create(privateRoot, JsonSerializer.Serialize(Payload(request, jobId)));
         var info = EnvironmentProbe.StartInfo(request.Paths, file.FilePath);
         info.Arguments = "/d /v:off /s /c \"\"%S2A_UI_RUNTIME%\\s2arm_env.cmd\" && cd /d \"%S2A_UI_ENGINE%\" && python -X utf8 pack/jobs/main.py run --request \"%S2A_UI_REQUEST%\"\"";
+        foreach (var (key, value) in request.Secrets ?? new Dictionary<string, string>()) info.Environment[key] = value;
         var reader = new JobEventReader(jobId, request.Operation);
         using var process = EnvironmentProbe.StartProcess(info);
         var stderr = new StringBuilder();
@@ -155,8 +161,9 @@ public static class PackJobClient
             if (await Task.WhenAny(finished, interrupted) != finished)
             {
                 await CancelAsync(request.Paths, file.FilePath, privateRoot, jobId);
-                await Task.WhenAny(finished, Task.Delay(TimeSpan.FromSeconds(3)));
-                throw new OperationCanceledException(cancellationToken);
+                // 点取消时作业恰好已经跑完：照它的真实结局走（产物已生成就是已出好），不一律报已取消（社区贡献者补丁 #7）
+                if (await Task.WhenAny(finished, Task.Delay(TimeSpan.FromSeconds(3))) != finished)
+                    throw new OperationCanceledException(cancellationToken);
             }
             await finished;
         }
@@ -174,7 +181,8 @@ public static class PackJobClient
     }
 
     // Ask the job control plane first (it verifies the journal's pid / start time), then stop only our own process tree.
-    private static async Task CancelAsync(LauncherPaths paths, string requestFile, string privateRoot, string jobId)
+    //   唯一一份取消（剃刀 W17：LibraryJobClient 原先另抄一份，#7「3 秒内跑完照真实结局」只改到这边）
+    internal static async Task CancelAsync(LauncherPaths paths, string requestFile, string privateRoot, string jobId)
     {
         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try

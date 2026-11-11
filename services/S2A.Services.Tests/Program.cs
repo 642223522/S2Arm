@@ -431,7 +431,7 @@ namespace S2A.Services.Tests
 
         private static int CloseOldConvention(uint h) => FakeNative.HandleClose(h) == 1 ? 0 : -1;
 
-        // 经 LibHac 挂动森设备存档读一个文件；不存在回 null
+        // 经 LibHac 挂01006F8002326000设备存档读一个文件；不存在回 null
         private static byte[] ReadDeviceSave(string path, LibHac.Fs.UserId? account = null)
         {
             LibHac.HorizonClient hc = Host.Device.System.LibHacHorizonManager.RyujinxClient;
@@ -604,6 +604,7 @@ namespace S2A.Services.Tests
         {
             TimeZoneBinaryTest.Run(Check);
             CheatsTest.Run(Check);
+            TouchGestureTest.Run(Check);
             GuestBufferAllocatorTest.Run(Check);
             GuestMemoryFar();
             ShaderCodeTableTest.Run(Check);
@@ -696,7 +697,7 @@ namespace S2A.Services.Tests
             Reply ior = Call(nv, ioc);
             Check("nvdrv Ioctl SYNCPT_READ(0)", "结果 0、NvResult 0、值 0", $"结果 {ior.Result}、NvResult {*(uint*)ior.Data}、值 {*(uint*)(io + 4)}");
 
-            // NVN 设备初始化（动森实跑）：ctrl-gpu Ioctl3 VsmsMapping 的内联输出缓冲末项预填哨兵 0xc0c0，必须被改写成 SM 映射 {GPC, TPC}
+            // NVN 设备初始化（01006F8002326000实跑）：ctrl-gpu Ioctl3 VsmsMapping 的内联输出缓冲末项预填哨兵 0xc0c0，必须被改写成 SM 映射 {GPC, TPC}
             byte* gpuPath = _game + 0x180;
             byte[] cg = Encoding.ASCII.GetBytes("/dev/nvhost-ctrl-gpu");
             cg.CopyTo(new Span<byte>(gpuPath, cg.Length));
@@ -741,7 +742,7 @@ namespace S2A.Services.Tests
 
             // ---- 时间：像游戏那样读时间共享内存（稳态时钟基准 + 本地系统时钟偏移），用游戏读到的计数器算当前时间 ----
             // 期望 = 宿主当前 UTC（没设 S2A_SYSTEM_TIME）；FakeNative 计数器零点在 10 小时前（同真机：宿主开机远早于进程启动），
-            // Ryujinx 若用自己的计数器写基准，这里会差出 10 小时（对拍查出动森游戏时间晚 10 小时的根因）
+            // Ryujinx 若用自己的计数器写基准，这里会差出 10 小时（对拍查出01006F8002326000游戏时间晚 10 小时的根因）
             {
                 Reply gtu = Call(sm, Msg.Cmif(1, Name8("time:u")));
                 uint timeSvc = gtu.Move.Count == 1 ? gtu.Move[0] : 0;
@@ -863,12 +864,12 @@ namespace S2A.Services.Tests
                 Check("游戏不收 Pro 手柄 → 换成它收的样式，再收 Pro 时换回（掌机档 / 主机档 / 只收双 Joy-Con）",
                     "Handheld Handheld → Player1 ProController / Player1 JoyconRight → Player1 ProController / Player1 ProController → Player1 ProController", got);
             }
-            // 单只 Joy-Con 横握（11-03 Super Mario Party）：横握后看到的 ABXY / 摇杆换成物理键 / 物理方向（右只顺时针 90°：A→X、B→A、X→Y、Y→B，摇杆 (x,y)→(−y,x)；
-            //   左只逆时针 90°：A→下、B→左、X→右、Y→上，摇杆 (x,y)→(y,−x)）；竖握 / Pro 手柄不动
+            // 单只 Joy-Con 横握（11-03 010036B0034E4000）：横握后看到的 ABXY / 摇杆换成物理键 / 物理方向（右只顺时针 90°：A→X、B→A、X→Y、Y→B，摇杆 (x,y)→(−y,x)；
+            //   左只逆时针 90°：A→下、B→左、X→右、Y→上，摇杆 (x,y)→(y,−x)）；竖握 / Pro 手柄不动。右只横握的物理摇杆是右摇杆（#592），读右摇杆槽
             {
                 var HZ = Ryujinx.HLE.HOS.Services.Hid.Types.NpadJoyHoldType.Horizontal; var VT = Ryujinx.HLE.HOS.Services.Hid.Types.NpadJoyHoldType.Vertical;
                 string R(Ryujinx.HLE.HOS.Services.Hid.ControllerType t, Ryujinx.HLE.HOS.Services.Hid.Types.NpadJoyHoldType h, Ryujinx.HLE.HOS.Services.Hid.ControllerKeys k, int x, int y)
-                { var g = new Ryujinx.HLE.HOS.Services.Hid.GamepadInput { Buttons = k }; g.LStick = new Ryujinx.HLE.HOS.Services.Hid.JoystickPosition { Dx = x, Dy = y }; InputPump.RotateSideways(ref g, t, h); return $"{g.Buttons}({g.LStick.Dx},{g.LStick.Dy})"; }
+                { var g = new Ryujinx.HLE.HOS.Services.Hid.GamepadInput { Buttons = k }; g.LStick = new Ryujinx.HLE.HOS.Services.Hid.JoystickPosition { Dx = x, Dy = y }; InputPump.RotateSideways(ref g, t, h); var st = t == Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconRight && h == HZ ? g.RStick : g.LStick; return $"{g.Buttons}({st.Dx},{st.Dy})"; }
                 string got = string.Join(" / ", R(Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconRight, HZ, Ryujinx.HLE.HOS.Services.Hid.ControllerKeys.A, 0, 32767),
                     R(Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconRight, HZ, Ryujinx.HLE.HOS.Services.Hid.ControllerKeys.B | Ryujinx.HLE.HOS.Services.Hid.ControllerKeys.Plus, 32767, 0),
                     R(Ryujinx.HLE.HOS.Services.Hid.ControllerType.JoyconLeft, HZ, Ryujinx.HLE.HOS.Services.Hid.ControllerKeys.A | Ryujinx.HLE.HOS.Services.Hid.ControllerKeys.Y, 0, 32767),
@@ -953,7 +954,7 @@ namespace S2A.Services.Tests
                 Msg Rest(int h) { Msg m = Msg.Cmif(82, Bytes(h, 0, 0L)); m.SendPid = true; return m; }
                 Reply rp2 = Call(hid, Rest(0x0103)); uint rp2r = rp2.Result; byte rp2v = rp2.Data[0];
                 Check("六轴取玩家号：⑤ 用 Player2 的句柄 0x0103 问是否静止（Player2 转动中、Player1 没接；0 = 没静止）", "结果 0、0", $"结果 {rp2r}、{rp2v}");
-                // ⑦ 掌机句柄（11-06 密特罗德 究极 复刻版开局即退）：句柄第 2 字节是 NpadIdType，掌机 0x20；按下标取会越界、IPC 82 报参数异常、游戏 Break。
+                // ⑦ 掌机句柄（11-06 010012101468C000开局即退）：句柄第 2 字节是 NpadIdType，掌机 0x20；按下标取会越界、IPC 82 报参数异常、游戏 Break。
                 //   换成手柄下标（掌机 = 8）后：掌机没接 → 样式空 → 回「静止」（1），结果 0
                 Reply rph = Call(hid, Rest(0x2002)); uint rphr = rph.Result; byte rphv = rph.Data[0];
                 Check("六轴取玩家号：⑦ 用掌机句柄 0x2002 问是否静止（掌机没接；1 = 静止）", "结果 0、1", $"结果 {rphr}、{rphv}");
@@ -1040,7 +1041,7 @@ namespace S2A.Services.Tests
                 Ryujinx.Common.S2AInputCaps.Reset();
             }
 
-            // 每帧都调的上游桩（动森 pctl IsFreeCommunicationAvailable 每秒 25 次）：稳态零分配、汇总里次数照计
+            // 每帧都调的上游桩（01006F8002326000 pctl IsFreeCommunicationAvailable 每秒 25 次）：稳态零分配、汇总里次数照计
             MeasureAlloc("hid EndPermitVibrationSession（上游桩，反复调）", hid, () => Msg.Cmif(210));
             string stubLine = Red.StubSummary();
             int at = stubLine.IndexOf("EndPermitVibrationSession: Stubbed.×", StringComparison.Ordinal);
@@ -1057,7 +1058,7 @@ namespace S2A.Services.Tests
                 Check("等已到达的围栏：不超时", "不超时", timedOut ? "超时" : "不超时");
             }
 
-            // 合成线程每圈（SurfaceFlinger.HandleComposition，10-21 动森 MARK 后每 20 秒约 100 KB 稳态分配）：发垂直同步、给没到达的围栏登记回调再由 GPU 递增触发
+            // 合成线程每圈（SurfaceFlinger.HandleComposition，10-21 01006F8002326000 MARK 后每 20 秒约 100 KB 稳态分配）：发垂直同步、给没到达的围栏登记回调再由 GPU 递增触发
             {
                 for (int i = 0; i < 100; i++) Host.Device.System.SignalVsync();
                 long v0 = GC.GetAllocatedBytesForCurrentThread();
@@ -1122,7 +1123,7 @@ namespace S2A.Services.Tests
             uint aud = ga.Move.Count == 1 ? ga.Move[0] : 0;
             Check("sm GetService(audren:u)", "结果 0、move 1 个会话句柄", $"结果 {ga.Result}、move {ga.Move.Count} 个{(FakeNative.KindOf(aud) == ObjKind.Session ? "会话" : "非会话")}句柄");
 
-            // aud:u（Switch 2 SDK 的统一音频入口，Pokopia）：命令 2 取到的渲染器管理对象与 audren:u 同一份——GetWorkBufferSize 同参数同结果；命令 0 / 1 各回一个对象
+            // aud:u（Switch 2 SDK 的统一音频入口，0400A3A01EE4C000）：命令 2 取到的渲染器管理对象与 audren:u 同一份——GetWorkBufferSize 同参数同结果；命令 0 / 1 各回一个对象
             {
                 Reply gu = Call(sm, Msg.Cmif(1, Name8("aud:u")));
                 uint audU = gu.Move.Count == 1 ? gu.Move[0] : 0;
@@ -1623,7 +1624,7 @@ namespace S2A.Services.Tests
             Reply wb2 = Call(aud, Msg.Cmif(1, cfg));
             Check("audren 未实现命令 77，之后会话仍可用", $"结果 0x{Red.ResultUnknownCommand:X}、报红 +1、再调 GetWorkBufferSize 结果 0", $"结果 0x{au.Result:X}、报红 +{Red.Total - red0}、再调 GetWorkBufferSize 结果 {wb2.Result}");
 
-            // 复制句柄语义（动森 iPhone 局：关 IAudioDevice 会话时服务析构 CloseHandle 回 InvalidHandle，上游 AbortOnFailure 终止进程）：
+            // 复制句柄语义（01006F8002326000 iPhone 局：关 IAudioDevice 会话时服务析构 CloseHandle 回 InvalidHandle，上游 AbortOnFailure 终止进程）：
             // 游戏拿到的是新句柄，先关它不影响服务手里那份；之后关会话，服务析构关自己的事件句柄须成功
             red0 = Red.Total;
             Reply gd = Call(aud, Msg.Cmif(2, new byte[8]));
@@ -1640,7 +1641,7 @@ namespace S2A.Services.Tests
                 //   这里补「游戏每帧 / 每局都会调到」的取句柄类命令：它们每次都 new 一个服务子会话，
                 //   走 IpcService 构造里的反射解析与域对象表创建，这批分配正是 JIT 下量不准、必须在 NativeAOT 发布版上量的那类。
                 //   量法同上面的 MeasureAlloc：预热 100 次、量 1000 次取平均；子会话取完即关，和游戏一致。
-                //   放在 RomFS 分支外面：这些命令不吃游戏数据，没有动森数据也能量（普查表要能在任意 Mac 上复现）。
+                //   放在 RomFS 分支外面：这些命令不吃游戏数据，没有01006F8002326000数据也能量（普查表要能在任意 Mac 上复现）。
                 {
                     int census0 = _alloc.Count;
                     // time:u：三个时钟的取句柄命令。游戏每帧读一次时间，每次 new 一个 ISystemClock
@@ -1677,7 +1678,7 @@ namespace S2A.Services.Tests
             if (Directory.Exists(Path.Combine(game, "romfs")))
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                // 旧翻译器版本的着色器磁盘缓存（夹具：动森实局写出的 9370 支，头里版本 7354 ≠ 当前）：登记前放进数据根
+                // 旧翻译器版本的着色器磁盘缓存（夹具：01006F8002326000实局写出的 9370 支，头里版本 7354 ≠ 当前）：登记前放进数据根
                 string staleFixture = Path.Combine(Environment.GetEnvironmentVariable("S2A_RUN_ROOT") ?? Path.Combine(Environment.GetEnvironmentVariable("HOME"), ".s2arm/run"), "s2arm/fixtures/acnh_shader_cache_7354");
                 string shaderCacheDir = Path.Combine(Ryujinx.Common.Configuration.AppDataManager.GamesDirPath, "01006f8002326000", "cache", "shader");
                 bool haveStale = Directory.Exists(staleFixture);
@@ -1767,7 +1768,7 @@ namespace S2A.Services.Tests
                         $"长度{(szDir == szIdx ? "相同" : $" {szDir}≠{szIdx}")}、头{(head ? "相同" : "不同")}、表区{(meta ? "相同" : "不同")}、随机 300 处 4 KB 不同 {diff}");
                 }
 
-                // 显存缓冲每帧映射 / 解除映射（动森岛上每帧约 5 对；Mac 局拆账 MapBufferEx 1039 B/次、UnmapBuffer 657 B/次）：
+                // 显存缓冲每帧映射 / 解除映射（01006F8002326000岛上每帧约 5 对；Mac 局拆账 MapBufferEx 1039 B/次、UnmapBuffer 657 B/次）：
                 // nvmap 建 64 KB 缓冲挂在一块游戏内存上，nvhost-as MapBufferEx（不给固定偏移，由地址空间分配）→ UnmapBuffer 成对
                 {
                     int OpenDev(string dev)
@@ -1789,7 +1790,7 @@ namespace S2A.Services.Tests
 
                     int mapFd = OpenDev("/dev/nvmap");
                     int asFd = OpenDev("/dev/nvhost-as-gpu");
-                    // Ioctl3 GetVaRegions（10-26 普查脑锻炼：sdk NvRmGpuAddressSpaceGetInfo 从 Ioctl3 的内联输出缓冲读两个显存地址区，上游只写回参数结构、
+                    // Ioctl3 GetVaRegions（10-26 普查一款第一方益智游戏：sdk NvRmGpuAddressSpaceGetInfo 从 Ioctl3 的内联输出缓冲读两个显存地址区，上游只写回参数结构、
                     //   内联缓冲原样留 0，游戏建显存分配器失败、在自己的回收路径里崩）。期望照 nvgpu 两区手写：小页区 [4 GB, 16 GB) 页 4 KB、
                     //   大页区 [16 GB, 128 GB) 页 64 KB → 页数 0x300000 / 0x1C0000；内联缓冲先填 0xEE，写回后两区逐字段对上
                     {
@@ -1804,7 +1805,7 @@ namespace S2A.Services.Tests
                             $"NvResult {*(uint*)r3.Data}、{Reg(inl)}、{Reg(inl + 0x18)}");
                     }
                     // 开多媒体通道不建 GPU 通道（帧率能耗线 10-24）：nvhost-vic / nvhost-nvdec 走 Host1x 提交、从不用 GPU 通道，原先构造里照建一个整套 3D / 计算 / DMA 状态的 GpuChannel，
-                    //   真机马车8 每开一次托管分配 19.3 MB、全进 gen2（开 4 次 77 MB），老代变大、读盘段 gen1 / gen2 停顿跟着变长。手算期望：开 vic 的整进程托管分配 < 1 MB（原先约 19 MB）
+                    //   真机0100152000022000 每开一次托管分配 19.3 MB、全进 gen2（开 4 次 77 MB），老代变大、读盘段 gen1 / gen2 停顿跟着变长。手算期望：开 vic 的整进程托管分配 < 1 MB（原先约 19 MB）
                     {
                         long v0 = GC.GetTotalAllocatedBytes(true);
                         int vicFd = OpenDev("/dev/nvhost-vic");
@@ -1873,7 +1874,7 @@ namespace S2A.Services.Tests
                     var deferred = (System.Collections.Concurrent.ConcurrentQueue<(ulong, ulong)>)vrc.GetType().GetField("_deferredUnmaps", bf).GetValue(vrc);
                     MeasureAllocPair("nvdrv 显存 MapBufferEx + UnmapBuffer（一对）", nv, mapMsg, unmapMsg, () => { *(ulong*)um = *(ulong*)(mp + 32); FillMap(); while (deferred.TryDequeue(out _)) { } });
 
-                    // 提交命令（nvhost-gpu Ioctl2 SubmitGpfifo，动森每帧约 2 次、Mac 局拆账 600–740 B/次）：1 条命令条目、带「完成后递增围栏」；
+                    // 提交命令（nvhost-gpu Ioctl2 SubmitGpfifo，01006F8002326000每帧约 2 次、Mac 局拆账 600–740 B/次）：1 条命令条目、带「完成后递增围栏」；
                     // 单测没有渲染线程取命令，夹具在两次之间清 GPU 命令队列（不计入）
                     int gpuFd = OpenDev("/dev/nvhost-gpu");
                     byte* bind = _game + 0x2DF0;  // nvhost-as BindChannel { 通道 fd }：通道绑到这个显存地址空间（游戏建完通道即调）
@@ -1994,7 +1995,7 @@ namespace S2A.Services.Tests
                     MeasureAlloc("fs IStorage Read 0x50（旧 HLE 框架）", st, () => { Msg x = Msg.Cmif(0, Bytes(0UL, 0x50UL)); x.B.Add(((ulong)head, 0x50)); return x; });
                     Check("IStorage Read(0, 0x50) / GetSize：RomFS 头", "0、头长 0x50、镜像 > 9 GB", $"{rdr.Result}、头长 0x{*(ulong*)head:X}、镜像 {(romSize > 9L << 30 ? "> 9 GB" : romSize.ToString())}");
 
-                    // fs 读盘不互相挡（10-26 动森 Mac 满载 90 秒黑屏：fs 服务端一把锁 + LazyHostFile 全局锁都包着阻塞的 pread，一次慢读让所有 RomFS 读排队）：
+                    // fs 读盘不互相挡（10-26 01006F8002326000 Mac 满载 90 秒黑屏：fs 服务端一把锁 + LazyHostFile 全局锁都包着阻塞的 pread，一次慢读让所有 RomFS 读排队）：
                     //   RomFS 文件表里取两个不同文件 A / B；钩子让第一次进 pread 的请求停住（最多 5 秒），A 在别的线程经会话 1 读、停在 pread 里，
                     //   主线程经会话 2 读 B——期望 1 秒内返回、结果 0；放行后 A 也返回 0。旧代码 B 排在 A 的锁后面，要等满 5 秒（反例即旧行为）
                     {
@@ -2077,7 +2078,7 @@ namespace S2A.Services.Tests
                 //   设备存档里建 32 MB 文件、一次写 32 MB，服务请求本身额外分配 < 64 KB，读回一致
                 {
                     const int Big = 32 << 20;
-                    // 动森设备存档（SaveDataSpaceId.User、SaveDataAttribute：程序号 / 用户号 0 / 类型 Device=3），目录存档、写完删文件、不提交
+                    // 01006F8002326000设备存档（SaveDataSpaceId.User、SaveDataAttribute：程序号 / 用户号 0 / 类型 Device=3），目录存档、写完删文件、不提交
                     byte[] attr = new byte[0x40]; BitConverter.GetBytes(0x01006F8002326000UL).CopyTo(attr, 0); attr[0x20] = 3;
                     Reply sdr = Call(fsp, Msg.Cmif(51, Bytes(1L, attr)));
                     uint sdfs = sdr.Move.Count == 1 ? sdr.Move[0] : 0;
@@ -2172,7 +2173,7 @@ namespace S2A.Services.Tests
                         Check("同一存档两次首次打开并发：真打开次数 / 共享计数 / 全关后计数", "1 / 2 / 0", $"{opens} / {shared} / {after}");
                     }
 
-                    // 存档原子提交（体系提升方案 F1，照上游参考实现 / 奥德赛 iOS）：挂载把已提交的 0 clonefile 成工作目录 1，提交把 1 克隆后 RENAME_SWAP 换进 0。
+                    // 存档原子提交（体系提升方案 F1，照上游参考实现 / 0100000000010000 iOS）：挂载把已提交的 0 clonefile 成工作目录 1，提交把 1 克隆后 RENAME_SWAP 换进 0。
                     //   期望按语义手写：写模式文件没关时提交回 WriteModeFileNotClosed（LibHac 常量）、关了提交 0；提交后 0 与 1 的文件共享 APFS 克隆号（不复制字节）；
                     //   宿主上放一个「提交到一半被杀」留下的 .s2a_new，再挂：残留清掉、读到上次提交的 AAAA、0 与 1 仍共享克隆号；改成 BBBB 不提交再挂仍是 AAAA。
                     //   旧代码（LibHac 逐字节复制）：克隆号不同、残留不清 → 判红
@@ -2323,7 +2324,7 @@ namespace S2A.Services.Tests
                         $"{nreg} / 结果 {cnt.Result}、{*(uint*)cnt.Data} / 结果 {lsr.Result}、{*(uint*)lsr.Data} 个：{lb[0]} {lb[1]}");
                     // aoc 列表（怪猎每分钟约 37 次，原先每次把全部 DLC 编号复制成新列表 4.4 KB）：按序号读，稳态 0 字节
                     //   夹具没登记游戏进程：GetProcess 每次走「找不到 pid → 退回当前应用」并打一行 Warning（插值字符串约 500 B）；
-                    //   正式局进程找得到（10-22 怪猎 / 动森真机 host.log 这行各只 1 次），计量时关 Warning 级，量的是生产路径
+                    //   正式局进程找得到（10-22 怪猎 / 01006F8002326000真机 host.log 这行各只 1 次），计量时关 Warning 级，量的是生产路径
                     Ryujinx.Common.Logging.Logger.SetEnable(Ryujinx.Common.Logging.LogLevel.Warning, false);
                     MeasureAlloc("aoc ListAddOnContentByApplicationId（#1，2 个 DLC）", aocs, () => { Msg m = Msg.Cmif(1, Bytes(App, 0u, 8u)); m.B.Add(((ulong)lb, 32)); return m; });
                     Ryujinx.Common.Logging.Logger.SetEnable(Ryujinx.Common.Logging.LogLevel.Warning, true);
@@ -2344,7 +2345,7 @@ namespace S2A.Services.Tests
                     try { Directory.Delete(ad, true); } catch (IOException) { }
                 }
 
-                // appletOE 命令 10 OpenApplicationProxyWithFlags（Switch 2 SDK 起局用它替代命令 0，Pokopia）：标志 0 → 回一个 IApplicationProxy 对象，且能照常取 ICommonStateGetter（命令 0）
+                // appletOE 命令 10 OpenApplicationProxyWithFlags（Switch 2 SDK 起局用它替代命令 0，0400A3A01EE4C000）：标志 0 → 回一个 IApplicationProxy 对象，且能照常取 ICommonStateGetter（命令 0）
                 {
                     Reply goe = Call(sm, Msg.Cmif(1, Name8("appletOE")));
                     uint oe = goe.Move.Count == 1 ? goe.Move[0] : 0;
@@ -2437,7 +2438,7 @@ namespace S2A.Services.Tests
                 }
 
                 // 服务处理请求中途调别的服务（prepo 存报告时经 sm 连 arp:r 查应用实例号）：游戏线程上直调，嵌套请求走同一块消息缓冲
-                // （动森 Mac 局：「Horizon 服务在没有 TLS 的线程上发请求」→ arp 初始化 AbortOnFailure）
+                // （01006F8002326000 Mac 局：「Horizon 服务在没有 TLS 的线程上发请求」→ arp 初始化 AbortOnFailure）
                 red0 = Red.Total;
                 Reply gp = Call(sm, Msg.Cmif(1, Name8("prepo:u")));
                 uint prepo = gp.Move.Count == 1 ? gp.Move[0] : 0;
@@ -2465,7 +2466,7 @@ namespace S2A.Services.Tests
                 }
 
                 // prepo 64 KB 以内的报告不解析不排版（帧率能耗线 10-24）：原先每份报告解成 MessagePack 对象树、整份排成缩进 JSON（字节数组每字节「0x.., 」6 字符）、
-                //   经四五次整串拷贝写日志，再每份起一条线程发给没人订阅的事件。真机马车8 读盘段第 412–420 帧一批报告产 69 MB 字符串，正好夹着一次 28 ms gen1。
+                //   经四五次整串拷贝写日志，再每份起一条线程发给没人订阅的事件。真机0100152000022000 读盘段第 412–420 帧一批报告产 69 MB 字符串，正好夹着一次 28 ms gen1。
                 //   手算期望：32 KB 报告（表里一个 32 KB 字节数组）整进程额外托管分配 < 64 KB（原先约为报告的几十倍）
                 {
                     const int MidRep = 32 << 10;
@@ -2525,7 +2526,7 @@ namespace S2A.Services.Tests
                             $"首播 异常 {e1}、big.dat {(bigBack != null && bigBack.AsSpan().SequenceEqual(big) ? "250 万字节一致" : bigBack == null ? "缺" : "不一致")}；带链接重播 异常 {e2}、link.dat {(linkIn ? "在" : "不在")}、big.dat {(bigAfter != null && bigAfter.AsSpan().SequenceEqual(big) ? "仍一致" : bigAfter == null ? "缺" : "不一致")}");
                     }
 
-                    // 带存档起局 account/：当前用户的账号存档（10-20 塞尔达：LibHac.Fs.SaveData 收 Uid 的 MountSaveData 是 throw NotImplementedException，S2A_Init 当场失败）
+                    // 带存档起局 account/：当前用户的账号存档（10-20 一款第一方动作冒险游戏：LibHac.Fs.SaveData 收 Uid 的 MountSaveData 是 throw NotImplementedException，S2A_Init 当场失败）
                     {
                         var uid = Host.Device.System.AccountManager.LastOpenedUser.UserId;
                         var fu = new LibHac.Fs.UserId((ulong)uid.High, (ulong)uid.Low);
@@ -2575,7 +2576,7 @@ namespace S2A.Services.Tests
                         Directory.Delete(accDir, true);
                     }
 
-                    // 用户号：存档目录 user 文件 → 当前用户（动森岛民按建档用户号认人）；非法值报红、用户不变
+                    // 用户号：存档目录 user 文件 → 当前用户（01006F8002326000岛民按建档用户号认人）；非法值报红、用户不变
                     var accounts = Host.Device.System.AccountManager;
                     File.WriteAllText(Path.Combine(sd, "user"), "78626c000000000153574e4154495645\n");
                     long redU = Red.Total;
@@ -2591,6 +2592,126 @@ namespace S2A.Services.Tests
 
                     Environment.SetEnvironmentVariable("S2A_SAVE_DIR", null);
                     Directory.Delete(sd, true);
+
+                    // 存档位置 SaveData（11-09，SaveFolder.cs）：识别（规则同 pack/jobs/save_formats.py）、起局读入、退出写回。期望按规则手写
+                    {
+                        string pid = Application.ProgramId.ToString("x16");
+                        string t = Path.Combine(Path.GetTempPath(), $"s2a_savedata_{Environment.ProcessId}");
+                        if (Directory.Exists(t)) Directory.Delete(t, true);
+                        string D(string name, params (string rel, byte[] data)[] files)
+                        {
+                            string d = Path.Combine(t, name);
+                            foreach (var (rel, data) in files) { string f = Path.Combine(d, rel); Directory.CreateDirectory(Path.GetDirectoryName(f)); File.WriteAllBytes(f, data); }
+                            return d;
+                        }
+                        string K(string root, System.Collections.Generic.List<(string kind, string dir)> r, string why) =>
+                            r == null ? $"无（{why}）" : string.Join("+", r.Select(x => x.kind + ":" + (Path.GetRelativePath(root, x.dir) is var rel && rel == "." ? "." : rel)));
+                        var own = new System.Collections.Generic.HashSet<string> { "Saved Games" };
+                        string w;
+                        string sd_a1 = D("a", ("save/x.bin", [1]), ("save_device/y.bin", [2]));
+                        string sd_b1 = D("b", ($"0x{pid} Game/2026-01-01/x.bin", [1]), ($"0x{pid} Game/2026-02-01/x.bin", [2]));
+                        Directory.SetLastWriteTimeUtc(Path.Combine(sd_b1, $"0x{pid} Game", "2026-01-01"), new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+                        Directory.SetLastWriteTimeUtc(Path.Combine(sd_b1, $"0x{pid} Game", "2026-02-01"), new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc));
+                        string sd_c1 = D("c", ("JKSV/Game/P1 - 2026.01.01 @ 10.00.00/x.bin", [1]), ("JKSV/Game/P1 - 2026.02.01 @ 10.00.00/x.bin", [2]));
+                        Directory.SetLastWriteTimeUtc(Path.Combine(sd_c1, "JKSV/Game/P1 - 2026.01.01 @ 10.00.00"), new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+                        Directory.SetLastWriteTimeUtc(Path.Combine(sd_c1, "JKSV/Game/P1 - 2026.02.01 @ 10.00.00"), new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc));
+                        string sd_r1 = D("r", ("bis/user/save/0000000000000005/0/x.bin", [1]));
+                        byte[] meta = new byte[0x40]; BitConverter.GetBytes(Application.ProgramId).CopyTo(meta, 0); meta[0x20] = 3;
+                        File.WriteAllBytes(Path.Combine(sd_r1, "bis/user/save/0000000000000005/ExtraData0"), meta);
+                        string sd_e1 = D("e", ("0x0100000000001000 Other/2026/x.bin", [1]));
+                        string sd_f1 = D("f", ("MySave/data.bin", [1]));
+                        string sd_g1 = D("g", ("cheats/a.txt", [1]));
+                        string sd_h1 = D("h", ("Saved Games/data.bin", [1]));
+                        string got = string.Join(" / ", new[] { sd_a1, sd_b1, sd_c1, sd_r1, sd_e1, sd_f1, sd_g1, sd_h1 }.Select(d => K(d, SaveFolder.Detect(d, Application.ProgramId, own, out w), w)));
+                        Check("存档位置识别：固定结构 / Checkpoint 取最新 / JKSV 取最新 / Ryujinx / 别款 / 外面套一层 / 金手指 / 游戏自己的顶层目录",
+                            $"save:save+device:save_device / save:0x{pid} Game/2026-02-01 / save:JKSV/Game/P1 - 2026.02.01 @ 10.00.00 / device:bis/user/save/0000000000000005/0 / 无（这是另一款游戏的存档（程序号 0100000000001000）） / save:MySave / 无（放进来的是金手指（cheats），不是存档） / save:.",
+                            got);
+
+                        // 起局读入 → 退出写回：放 save/（账号）+ save_device/（设备）→ 读入后两份存档是放进来的内容；写回后存档位置是固定结构、内容一致；
+                        //   再起局（摘要和写回时一样）不读（当前存档改成 [9] 后仍是 [9]）；局内玩家动过存档位置 → 退出不写回（玩家放的文件还在）
+                        string folder = Path.Combine(t, "SaveData");
+                        string state = Path.Combine(Ryujinx.Common.Configuration.AppDataManager.BaseDirPath, SaveFolder.StateFile);
+                        File.Delete(state);
+                        Environment.SetEnvironmentVariable("S2A_SAVE_FOLDER", folder);
+                        var uidF = Host.Device.System.AccountManager.LastOpenedUser.UserId;
+                        var fuF = new LibHac.Fs.UserId((ulong)uidF.High, (ulong)uidF.Low);
+                        byte[] prog = new byte[3000]; new Random(5).NextBytes(prog);
+                        D("SaveData", ("save/0/progress.sav", prog), ("save_device/dev.dat", [5, 6]));
+                        long redF = Red.Total;
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        byte[] accIn = ReadDeviceSave("/0/progress.sav", fuF), devIn = ReadDeviceSave("/dev.dat");
+                        SaveFolder.WriteBack(Host.Device);
+                        byte[] accOut = File.Exists(Path.Combine(folder, "save/0/progress.sav")) ? File.ReadAllBytes(Path.Combine(folder, "save/0/progress.sav")) : null;
+                        byte[] devOut = File.Exists(Path.Combine(folder, "save_device/dev.dat")) ? File.ReadAllBytes(Path.Combine(folder, "save_device/dev.dat")) : null;
+                        string nine = D("nine", ("dev.dat", [9]));
+                        Saves.SeedFrom(Host.Device, Application.ProgramId, [("device", nine)]);
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        byte[] devKept = ReadDeviceSave("/dev.dat");
+                        File.WriteAllBytes(Path.Combine(folder, "player.bin"), [7]);   // 局内玩家往存档位置里放了东西
+                        SaveFolder.WriteBack(Host.Device);
+                        bool playerKept = File.Exists(Path.Combine(folder, "player.bin"));
+                        byte[] devStill = File.Exists(Path.Combine(folder, "save_device/dev.dat")) ? File.ReadAllBytes(Path.Combine(folder, "save_device/dev.dat")) : null;
+                        Check("存档位置：起局读入 / 退出写回 / 没动不读 / 局内动过不写回",
+                            "账号 3000 字节一致、设备 [5,6]；写回 save/0/progress.sav 一致、save_device/dev.dat [5,6]；再起局设备仍 [9]；玩家文件在、save_device/dev.dat 仍 [5,6]、报红 +0",
+                            $"账号 {(accIn != null && accIn.AsSpan().SequenceEqual(prog) ? "3000 字节一致" : accIn == null ? "缺" : "不一致")}、设备 {(devIn == null ? "缺" : "[" + string.Join(",", devIn) + "]")}；" +
+                            $"写回 save/0/progress.sav {(accOut != null && accOut.AsSpan().SequenceEqual(prog) ? "一致" : accOut == null ? "缺" : "不一致")}、save_device/dev.dat {(devOut == null ? "缺" : "[" + string.Join(",", devOut) + "]")}；" +
+                            $"再起局设备仍 {(devKept == null ? "缺" : "[" + string.Join(",", devKept) + "]")}；玩家文件{(playerKept ? "在" : "不在")}、save_device/dev.dat 仍 {(devStill == null ? "缺" : "[" + string.Join(",", devStill) + "]")}、报红 +{Red.Total - redF}");
+                        // 放进来的认不出（只有金手指）：不读、写原因；退出不写回，玩家放的原样留着（11-09 Mac 实测发现：原先退出时被当前存档盖掉）
+                        Directory.Delete(folder, true);
+                        D("SaveData", ("cheats/a.txt", [1]));
+                        long redK = Red.Total;
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        string problem = File.Exists(Path.Combine(Ryujinx.Common.Configuration.AppDataManager.BaseDirPath, SaveFolder.ProblemFile)) ? File.ReadAllText(Path.Combine(Ryujinx.Common.Configuration.AppDataManager.BaseDirPath, SaveFolder.ProblemFile)) : "无";
+                        SaveFolder.WriteBack(Host.Device);
+                        Check("存档位置：认不出 → 不读、写原因、退出不写回", "原因 放进来的是金手指（cheats），不是存档、cheats/a.txt 还在、没有 save/、报红 +1",
+                            $"原因 {problem}、cheats/a.txt {(File.Exists(Path.Combine(folder, "cheats/a.txt")) ? "还在" : "没了")}、{(Directory.Exists(Path.Combine(folder, "save")) ? "有" : "没有")} save/、报红 +{Red.Total - redK}");
+                        File.Delete(Path.Combine(Ryujinx.Common.Configuration.AppDataManager.BaseDirPath, SaveFolder.ProblemFile));
+
+                        // 审计 P1-161：第一次放进来（游戏还没有存档、ownTop 空）不剥游戏自己的单层目录；游戏自己的十六进制顶层名也不剥（原先两种都剥）
+                        var none = new System.Collections.Generic.HashSet<string>();
+                        string sd_p1 = D("p1", ("slot0/data.bin", [1])), sd_p2 = D("p2", ("0123456789abcdef/data.bin", [1])), sd_p3 = D("p3", ("JKSV/Game/P1 - 2026.01.01 @ 10.00.00/x.bin", [1]));
+                        var hexOwn = new System.Collections.Generic.HashSet<string> { "0123456789abcdef" };
+                        Check("存档位置识别（P1-161）：首次放入单层目录不剥 / 游戏自己的十六进制顶层不剥 / 首次 JKSV 照剥",
+                            "save:. / save:. / save:JKSV/Game/P1 - 2026.01.01 @ 10.00.00",
+                            $"{K(sd_p1, SaveFolder.Detect(sd_p1, Application.ProgramId, none, out w), w)} / {K(sd_p2, SaveFolder.Detect(sd_p2, Application.ProgramId, hexOwn, out w), w)} / {K(sd_p3, SaveFolder.Detect(sd_p3, Application.ProgramId, none, out w), w)}");
+
+                        // 审计 P1-163：摘要按内容。同路径同大小同修改时间、内容不同 → 摘要不同；只改修改时间 → 摘要不变（原先两向都错）
+                        string dg = D("dg", ("save/slot.bin", [1, 2, 3, 4]));
+                        string slot = Path.Combine(dg, "save/slot.bin"); var keepT = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                        File.SetLastWriteTimeUtc(slot, keepT); string d0 = SaveFolder.Digest(dg);
+                        File.WriteAllBytes(slot, [9, 9, 9, 9]); File.SetLastWriteTimeUtc(slot, keepT); string d1 = SaveFolder.Digest(dg);
+                        File.SetLastWriteTimeUtc(slot, keepT.AddDays(3)); string d2 = SaveFolder.Digest(dg);
+                        Check("存档位置摘要（P1-163）：保留时间的同大小替换看得出 / 只动修改时间不算换过", "换了内容：不同；只改时间：相同",
+                            $"换了内容：{(d0 != d1 ? "不同" : "相同")}；只改时间：{(d1 == d2 ? "相同" : "不同")}");
+
+                        // 审计 P1-162：写回带上用户号；存档位置里的 user 文件 / Ryujinx 导出 ExtraData0 偏移 0x8 的用户号都认得出
+                        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+                        File.Delete(state);
+                        D("SaveData", ("save_device/dev.dat", [4]));
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        SaveFolder.WriteBack(Host.Device);
+                        string wantUser = Host.Device.System.AccountManager.LastOpenedUser.UserId.ToString();
+                        string userFile = Path.Combine(folder, "user");
+                        string sd_u = D("u", ("bis/user/save/0000000000000007/0/x.bin", [1]));
+                        byte[] metaU = new byte[0x40]; BitConverter.GetBytes(Application.ProgramId).CopyTo(metaU, 0); metaU[0x20] = 1;
+                        BitConverter.GetBytes(0x1122334455667788L).CopyTo(metaU, 0x8); BitConverter.GetBytes(0x0102030405060708L).CopyTo(metaU, 0x10);
+                        File.WriteAllBytes(Path.Combine(sd_u, "bis/user/save/0000000000000007/ExtraData0"), metaU);
+                        Check("存档位置用户号（P1-162）：写回带 user / 读 user 文件 / 读 Ryujinx 导出",
+                            $"user={wantUser} / {wantUser} / 11223344556677880102030405060708",
+                            $"user={(File.Exists(userFile) ? File.ReadAllText(userFile).Trim() : "缺")} / {SaveFolder.FolderUser(folder, Application.ProgramId) ?? "无"} / {SaveFolder.FolderUser(sd_u, Application.ProgramId) ?? "无"}");
+
+                        // 审计 P2-267：写回换到一半断了（现目录已改名 .old、.next 还没改回来）→ 起局放回写全了的 .next，不放 .old（放 .old 会把旧档当新放的、盖掉进度）
+                        Directory.Delete(folder, true);
+                        D("SaveData.next", ("save_device/dev.dat", [8]));
+                        D("SaveData.old", ("save_device/dev.dat", [1]));
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        string rec = File.Exists(Path.Combine(folder, "save_device/dev.dat")) ? "[" + string.Join(",", File.ReadAllBytes(Path.Combine(folder, "save_device/dev.dat"))) + "]" : "缺";
+                        Check("存档位置（P2-267）：写回中断后起局放回本局进度", "现目录 [8]、.next 没了、.old 没了",
+                            $"现目录 {rec}、.next {(Directory.Exists(folder + ".next") ? "还在" : "没了")}、.old {(Directory.Exists(folder + ".old") ? "还在" : "没了")}");
+                        Environment.SetEnvironmentVariable("S2A_SAVE_FOLDER", null);
+                        File.Delete(state);
+                        Directory.Delete(t, true);
+                    }
                 }
             }
             else
@@ -2598,7 +2719,7 @@ namespace S2A.Services.Tests
                 CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
             }
 
-            // ---- 系统数据按号（fsp-srv OpenDataStorageByDataId）：马车8 产物根的 0100000000000802 Mii 资源 ----
+            // ---- 系统数据按号（fsp-srv OpenDataStorageByDataId）：0100152000022000 产物根的 0100000000000802 Mii 资源 ----
             string sysRoot = Environment.GetEnvironmentVariable("S2A_TEST_SYSTEMDATA") ?? Path.Combine(Environment.GetEnvironmentVariable("S2A_RUN_ROOT") ?? Path.Combine(Environment.GetEnvironmentVariable("HOME"), ".s2arm/run"), "s2arm/roots/mk8d@现行/systemdata");
 
             if (Directory.Exists(Path.Combine(sysRoot, "0100000000000802")))
@@ -2808,7 +2929,7 @@ namespace S2A.Services.Tests
                 MeasureAlloc("vi TransactParcel GetBufferHistory（巫师3 直连每帧一次）", hos, () => hist);
             }
 
-            // ---- 域（nifm:u）：动森在 CreateGeneralService 之后崩；按 Horizon 域协议逐字节核 ----
+            // ---- 域（nifm:u）：01006F8002326000在 CreateGeneralService 之后崩；按 Horizon 域协议逐字节核 ----
             Reply gn = Call(sm, Msg.Cmif(1, Name8("nifm:u")));
             uint nif = gn.Move.Count == 1 ? gn.Move[0] : 0;
             Msg qp = Msg.Cmif(3); qp.Type = 5;
@@ -2903,16 +3024,40 @@ namespace S2A.Services.Tests
                 Check("系统语言：跳过认不出的取下一个 / 列表空回美式英语", "TraditionalChinese / AmericanEnglish", $"{a} / {b}");
                 string env = Environment.GetEnvironmentVariable("S2A_SYSTEM_LANGUAGE");
                 Check("系统语言：显式 S2A_SYSTEM_LANGUAGE 优先，否则跟本机首选", string.IsNullOrEmpty(env) ? SystemLocale.FromPreferred(SystemLocale.Preferred(), out _).ToString() : env, Host.Language.ToString());
-                // 游戏不支持系统语言时的退路（11-03 GB4 / FFR / JUMP FORCE 亚洲版只收韩 / 繁 / 简，上游取第一个 = 韩语）：系统首选依次 → 简中 → 繁中 → 英语，都不支持才取游戏首选
+                // 游戏不支持系统语言时的退路（维护者 11-10「根据咱们宿主来识别语言种类」）：只看宿主主语言，① 主语言 → ② 同族变体 → ③ 美式 / 英式英语 → ④ 简中 / 繁中 → ⑤ 支持表第一项
                 var TL = typeof(Ryujinx.HLE.HOS.SystemState.TitleLanguage);
-                string fb = string.Join(",", SystemLocale.TitleFallback(new[] { "en-US", "ja-JP", "xx-YY" }));
-                Check("语言退路列表：en-US, ja-JP, 认不出的 → 首选依次 + 简中 / 繁中 / 英式英语（去重）", "AmericanEnglish,Japanese,SimplifiedChinese,TraditionalChinese,BritishEnglish", fb);
-                int asia = (1 << 12) | (1 << 13) | (1 << 14), jpKo = (1 << 2) | (1 << 12), deOnly = 1 << 4;   // 韩 / 繁 / 简；日 / 韩；只有德语
-                var pick = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.PickFallbackLanguage;
-                var list = SystemLocale.TitleFallback(new[] { "en-US" });
-                Check("语言退路：亚洲版（韩 / 繁 / 简）→ 简中；日 / 韩 + 首选含日语 → 日语；只有德语 → 德语；不给退路 = 上游取第一个（韩）",
-                    "SimplifiedChinese / Japanese / German / Korean",
-                    $"{Enum.GetName(TL, pick(asia, list))} / {Enum.GetName(TL, pick(jpKo, SystemLocale.TitleFallback(new[] { "en-US", "ja-JP" })))} / {Enum.GetName(TL, pick(deOnly, list))} / {Enum.GetName(TL, pick(asia, null))}");
+                var SL = Ryujinx.HLE.HOS.SystemState.SystemLanguage.SimplifiedChinese;
+                Check("语言退路列表：宿主简中 / 美式英语 / 日语 / 德语", "SimplifiedChinese,TraditionalChinese,AmericanEnglish,BritishEnglish / AmericanEnglish,BritishEnglish,SimplifiedChinese,TraditionalChinese / Japanese,AmericanEnglish,BritishEnglish,SimplifiedChinese,TraditionalChinese / German,AmericanEnglish,BritishEnglish,SimplifiedChinese,TraditionalChinese",
+                    string.Join(" / ", Array.ConvertAll(new[] { SL, Ryujinx.HLE.HOS.SystemState.SystemLanguage.AmericanEnglish, Ryujinx.HLE.HOS.SystemState.SystemLanguage.Japanese, Ryujinx.HLE.HOS.SystemState.SystemLanguage.German },
+                        l => string.Join(",", SystemLocale.TitleFallback(l)))));
+                // 支持位按 TitleLanguage：美式英语 0、日 2、德 4、韩 12、繁 13、简 14。#445 那款声明 0x3005 = 美 / 日 / 韩 / 繁
+                var pick = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.PickDesiredLanguage;
+                var step = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.LanguageStep;
+                string Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage host, int supported)
+                {
+                    var hostT = Enum.Parse<Ryujinx.HLE.HOS.SystemState.TitleLanguage>(host.ToString());
+                    var fb = SystemLocale.TitleFallback(host);
+                    int p = pick(hostT, supported, fb);
+                    return $"{Enum.GetName(TL, p)}（{step(hostT, p, fb)}）";
+                }
+                int g445 = 0x3005, jaEn = (1 << 2) | (1 << 0), enHant = (1 << 0) | (1 << 13), koOnly = (1 << 12) | (1 << 2), asia = (1 << 12) | (1 << 13) | (1 << 14);
+                Check("语言选择：宿主简中 + 美 / 日 / 韩 / 繁 → 繁中；宿主简中 + 日 / 英 → 英语；宿主日语 + 英 / 繁 → 英语；宿主简中 + 简 → 简中；宿主德语 + 日 / 韩 → 日语（支持表第一项）；宿主美式英语 + 韩 / 繁 / 简 → 简中（11-03 亚洲版不回退韩语）",
+                    "TraditionalChinese（第 2 步：同族变体） / AmericanEnglish（第 3 步：英语） / AmericanEnglish（第 3 步：英语） / SimplifiedChinese（第 1 步：宿主主语言） / Japanese（第 5 步：游戏支持表第一项） / SimplifiedChinese（第 4 步：中文）",
+                    $"{Sel(SL, g445)} / {Sel(SL, jaEn)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.Japanese, enHant)} / {Sel(SL, 1 << 14)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.German, koOnly)} / {Sel(Ryujinx.HLE.HOS.SystemState.SystemLanguage.AmericanEnglish, asia)}");
+                // #465：Switch 2 合成件（导出没有控制分区，显示版本 "?"、只声明英语）→ 直接回宿主主语言；Switch 1 合成件（#401 NUP）不走这条，照旧英语退路；真游戏走五步
+                var s2u = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.Switch2LanguagesUnknown;
+                Check("Switch 2 语言未知判定：04 款合成件（只声明英语、版本 ?）/ 04 款位为 0 / 01 款合成件（#401）/ 04 款真 NACP 0x3005 版本 1.0.2", "True / True / False / False",
+                    $"{s2u(0x0400486024DEC000, 1, "?")} / {s2u(0x0400486024DEC000, 0, "")} / {s2u(0x0100E95004038000, 1, "?")} / {s2u(0x0400486024DEC000, 0x3005, "1.0.2")}");
+                // 审计 P2-275：已知语言是第 0–17 位（16 波兰语、17 泰语）；只支持波兰语 / 泰语不能当「没有语言」，未定义的位不算
+                var noLang = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.NoKnownLanguages;
+                Check("支持语言判定：无位 / 只有波兰语 / 只有泰语 / 只有第 18 位（未定义）/ 04 款只声明波兰语、版本 1.0.0 算未知？",
+                    "True / False / False / True / False",
+                    $"{noLang(0)} / {noLang(1 << 16)} / {noLang(1 << 17)} / {noLang(1 << 18)} / {s2u(0x0400486024DEC000, 1 << 16, "1.0.0")}");
+                // 01 款合成件 + 宿主简中：不进 Switch 2 那条，按五步走 → 只声明英语 → 美式英语（不回退 #401）
+                Check("Switch 1 合成件（只声明英语）+ 宿主简中 → 美式英语（#401 不回退）", "AmericanEnglish（第 3 步：英语）", Sel(SL, 1));
+                // 支持语言位为 0（合成的 control.nacp）：缺省回美式英语（#401）；玩家显式指定系统语言时回它。语言码 = ASCII 小端："ja" = 0x616A、"en-US" = 0x53552D6E65
+                var zero = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.ZeroSupportedLanguageCode;
+                Check("支持语言位为 0：系统日语、没显式指定 → en-US；显式指定日语 → ja", "0x53552D6E65 / 0x616A", $"0x{zero(0x616A, false):X} / 0x{zero(0x616A, true):X}");
             }
 
             // ---- 主机 / 掌机档（维护者 10-20 晚改回缺省掌机）：apm GetPerformanceMode 由 Ryujinx 按 DockedMode 回答，掌机档 = 0（Normal）、主机档 = 1（Boost）----
@@ -2981,7 +3126,7 @@ namespace S2A.Services.Tests
                 Check("GPU 写回副本区域：写回前游戏内存不变 / 嵌套 乱序 跨线程归还后 +0x100 +0x200 +0x300 / 写回经代写（flush）", "0 / A1 B2 C3 / 3 次 True",
                     $"{before:X} / {wp[0x100]:X} {wp[0x200]:X} {wp[0x300]:X} / {_untracked.Count} 次 {_untracked.TrueForAll(w => w.Flush)}");
 
-                // 并发借还（10-21 动森 Mac 局：前一版池在锁外按下标写槽，与扩容换数组交错，副本指针丢成空、Horizon 各服务线程起局即挂）：
+                // 并发借还（10-21 01006F8002326000 Mac 局：前一版池在锁外按下标写槽，与扩容换数组交错，副本指针丢成空、Horizon 各服务线程起局即挂）：
                 // 32 条线程同时起跑、每条同时借 48 块（池扩容与别的线程取槽交错），写各自的值、倒序归还、核内容
                 int bad = 0, exc = 0;
                 const int nt = 32, per = 48;
@@ -3238,7 +3383,7 @@ namespace S2A.Services.Tests
                     Check($"声音输出 ③ 苹果会话：渲染器式排队累计 32 MB 不消费，额外托管分配 < 512 KB（{a >> 10} KB）", "是", a < 512 << 10 ? "是" : "否");
                 }
 
-                // ④ 只交一块就等它播完（10-24 #164 动森开场视频：AudioOut 交一块 1024 帧 = 21 ms < 预充下限 64 ms，等这块播完才交下一块）：
+                // ④ 只交一块就等它播完（10-24 #164 01006F8002326000开场视频：AudioOut 交一块 1024 帧 = 21 ms < 预充下限 64 ms，等这块播完才交下一块）：
                 //   2 秒内设备必须开播并播完这 1024 帧（兜底 100 ms + 看门狗 ≤ 250 ms + 播放 21 ms）；修前没人再查兜底，永不开播、播完 0 帧。
                 //   真 CoreAudio：打不开设备就跳过（同上面苹果声音输出用例）
                 {

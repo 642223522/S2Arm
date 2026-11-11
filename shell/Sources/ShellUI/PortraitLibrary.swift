@@ -1,3 +1,4 @@
+// S2Arm modification: add an entry to the dedicated game sorting list.
 import SwiftUI
 
 /// A Recently played row starts its game, or opens the same fix as Play (game data, an app update).
@@ -91,6 +92,9 @@ struct PortraitLibrary: View, Equatable {
             .scrollIndicators(.hidden)
             .ignoresSafeArea(edges: wide ? [.top, .bottom] : .top)
             .safeAreaInset(edge: .bottom, spacing: 0) { if !wide { bottomBar } }
+            .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
+                LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
+            }
             .overlay(alignment: .topTrailing) {
                 if !chipsInSideBar {
                     HStack(spacing: 10) {
@@ -109,7 +113,10 @@ struct PortraitLibrary: View, Equatable {
 
     private var collection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)").padding(.horizontal, 24)
+            HStack {
+                SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)")
+                GameOrderButton(gameCount: games.count)
+            }.padding(.horizontal, 24)
             if wide {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 22, alignment: .top)],
                           alignment: .leading, spacing: 24) {

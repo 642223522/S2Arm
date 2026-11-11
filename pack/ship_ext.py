@@ -380,7 +380,9 @@ def cmd_container(a):
         if len(set(kinds.values())) != 1:   # 宿主构造期同一判据报红不占窗口（vawin.c s2a_window_container_need）：组装期先拒，不出起不了局的包
             red("各款 NPDM 地址空间类型不一致，装不进同一个窗口：" + "、".join(f"{g} 类型 {t}" for g, t in sorted(kinds.items())))
         app = app_bundle.assemble(shell, work / "S2Arm.app", bundle_id=a.bundle_id, display_name=a.display_name, icon=a.icon,
-                                  metadata={"CFBundleShortVersionString": a.version} if a.version else None)   # 发版号：同电脑上的 S2Arm（三端同号）
+                                  metadata={**({"CFBundleShortVersionString": a.version} if a.version else {}),
+                                            **({"S2ADisplayVersion": a.display_version} if a.display_version else {}), "S2AShellId": sid})
+        # 发版号：同电脑上的 S2Arm（三端同号）；S2ADisplayVersion：界面上的版本字（v0.3.0 / v0.2.6-dev+ba0ef07，设置页与游戏库顶部读，玩家截图定版）；S2AShellId：壳号（同 s2a_catalogue.json shell_id），电脑读手机上装的 App 信息就知道壳旧没旧（「更新 iPhone 上的 S2Arm」）
         (app / TABLES).unlink()
         for e in games:
             gid = e["title_id"]; gd = app / GAMES / gid
@@ -445,6 +447,7 @@ def main():
     c.add_argument("--game", action="append", default=[]); c.add_argument("--bundle-id", required=True); c.add_argument("--icon", required=True)
     c.add_argument("--banner", action="append", default=[], help="游戏号=横图路径（游戏库那份；组装不联网）")
     c.add_argument("--version", default="", help="写进 Info.plist CFBundleShortVersionString 的发版号（同电脑上的 S2Arm）")
+    c.add_argument("--display-version", default="", help="写进 Info.plist S2ADisplayVersion 的界面版本字（pack/jobs/core.py display_version）")
     c.add_argument("--host-abi", type=int, required=True)    # 宿主读产物约定号（pack/jobs/host_update.py HOST_ABI），写进每款条目
     c.add_argument("--display-name", default=PLACEHOLDER_NAME); c.add_argument("--sign", choices=("none", "adhoc", "dev"), default="none"); c.add_argument("--team", default="")
     d = sub.add_parser("container-drop"); d.add_argument("--base", required=True); d.add_argument("--game", required=True); d.add_argument("--out", required=True)

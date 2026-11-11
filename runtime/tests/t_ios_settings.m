@@ -334,7 +334,7 @@ int main(int argc, char **argv) {
         //   ⓑ 用户在设置里关了 60 帧与宽屏（审计 #854 F-caps-beats-settings）→ 设置赢：S2A_FPS60=0、S2A_WIDESCREEN=0（widen.c 设置关先于清单判）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
-            check([@"widen\t1\t# 单测\nfps60\t1\t# 单测\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"能力清单写进包目录");
+            check([@"widen\t1\t# 单测\nfps60\t1\t# 默认开：来源 fps.tsv\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"能力清单写进包目录");   // 11-11：原因是速度已验证的来源，清单才替玩家开
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
             for (int k = 0; k < 2; k++) {
                 [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AWidescreen"];
@@ -359,7 +359,7 @@ int main(int argc, char **argv) {
             check([@"fps60\t0\t# 强信号：静态无来源\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"未验证清单写进包目录");
             check(s2a_ios_caps_value("fps60") == 0, @"读到清单 fps60 0");
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
-            NSString *names[] = {@"没动过", @"手动开", @"只存着老的 S2AFps60=YES"}, *wants[] = {@"S2A_FPS60=0 间隔=未设 来源=0", @"S2A_FPS60=1 间隔=未设 来源=1", @"S2A_FPS60=0 间隔=未设 来源=0"};
+            NSString *names[] = {@"没动过", @"手动开", @"只存着老的 S2AFps60=YES"}, *wants[] = {@"S2A_FPS60=未设 间隔=未设 来源=0", @"S2A_FPS60=1 间隔=未设 来源=1", @"S2A_FPS60=未设 间隔=未设 来源=0"};   // 11-11：清单不再写 S2A_FPS60（没设 = 原帧率）
             for (int k = 0; k < 3; k++) {
                 [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AFps60Manual"];
                 if (k == 1) { [std setBool:YES forKey:@"S2AFps60Manual"]; [std setBool:YES forKey:@"S2AFps60"]; }
@@ -383,7 +383,7 @@ int main(int argc, char **argv) {
             s2a_ios_load_graphics_settings();
             const char *i = getenv("DM_PRESENT_INTERVAL");
             NSString *got = [NSString stringWithFormat:@"间隔=%@ 来源=%d", i ? @(i) : @"未设", s2a_fps60_display_source()];
-            check([got isEqual:@"间隔=未设 来源=1"], [NSString stringWithFormat:@"清单 fps60_display 1：期望 间隔=未设 来源=1 → 真结果 %@", got]);
+            check([got isEqual:@"间隔=未设 来源=0"], [NSString stringWithFormat:@"清单 fps60_display 1（11-11 起不算放开来源，玩家开才放开）：期望 间隔=未设 来源=0 → 真结果 %@", got]);
             [NSFileManager.defaultManager removeItemAtPath:caps error:nil]; clear_environment();
         }
 
@@ -392,7 +392,7 @@ int main(int argc, char **argv) {
         //   旧实现第 2 项红（重读只撤设置页登记的名字，清单写的 1 留着，设置那条「未设才写」写不进）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
-            check([@"fps60\t1\t# 单测\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"fps60 1 清单写进包目录");
+            check([@"fps60\t1\t# 默认开：来源 fps.tsv\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"fps60 1 清单写进包目录");   // 11-11：验证过的来源清单才写 1，立刻重启才有东西可撤
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults; [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AFps60Manual"];
             // 先清空设置页的登记表（进程级，前面 ⓓ 登记过 S2A_FPS60=1）：否则旧实现②会因为登记表里恰好是 1 被撤掉而碰巧过
             NSString *empty = [@"local.s2arm.settings-p180." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -421,6 +421,68 @@ int main(int argc, char **argv) {
         setenv("S2A_RES_SCALE", "9", 1); [a setObject:@"0.75" forKey:@"S2AResolutionScale"]; check(s2a_ios_res_scale(a) == 0.75f, @"渲染倍率：环境变量越界退回设置值 0.75");
         unsetenv("S2A_RES_SCALE"); [a setObject:@"7" forKey:@"S2AResolutionScale"]; check(s2a_ios_res_scale(a) == 1.0f, @"渲染倍率：都越界退回 1");
         [a removeObjectForKey:@"S2AResolutionScale"];
+
+        // 诊断局（#438）：开关开着 → 设定好的四个变量（帧号 3600 / 7200，读数写本款文档根 diagrun/），开关当场关掉，第二次起局不再开；
+        //   启动环境显式给的优先。期望值按规格手写
+        {   const char *dv[] = {"DM_NVN_PASSDUMP", "DM_NVN_TEXDUMP", "DM_NVN_TEXSNAP", "DM_NVN_SHOT"};
+            for (int i = 0; i < 4; i++) unsetenv(dv[i]);
+            NSString *docs = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+            NSString *dir = [docs stringByAppendingPathComponent:@"diagrun"];
+            [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+            [@"old" writeToFile:[dir stringByAppendingPathComponent:@"shot_1.png"] atomically:NO encoding:NSUTF8StringEncoding error:nil];
+            setenv("S2A_DOCS", docs.fileSystemRepresentation, 1);
+            s2a_ios_apply_diag_run(a);
+            check(getenv("DM_NVN_PASSDUMP") == NULL, @"诊断局：开关没开不设探针");
+            [a setBool:YES forKey:@"S2ADiagRunNext"]; setenv("DM_NVN_TEXSNAP", "5", 1);
+            s2a_ios_apply_diag_run(a);
+            NSString *want_td = [NSString stringWithFormat:@"3600,7200:%@/td_%%d.png", dir], *want_shot = [NSString stringWithFormat:@"3600,7200:%@/shot_%%d.png", dir];
+            check(getenv("DM_NVN_PASSDUMP") && !strcmp(getenv("DM_NVN_PASSDUMP"), "3600-3601"), @"诊断局：逐通道记录 3600-3601");
+            check(getenv("DM_NVN_TEXDUMP") && [@(getenv("DM_NVN_TEXDUMP")) isEqual:want_td], @"诊断局：颜色目标 3600,7200 写 diagrun/td_%d.png");
+            check(getenv("DM_NVN_SHOT") && [@(getenv("DM_NVN_SHOT")) isEqual:want_shot], @"诊断局：出图 3600,7200 写 diagrun/shot_%d.png");
+            check(getenv("DM_NVN_TEXSNAP") && !strcmp(getenv("DM_NVN_TEXSNAP"), "5"), @"诊断局：启动环境显式给的优先");
+            check(![a boolForKey:@"S2ADiagRunNext"], @"诊断局：开关用一次就关（只管这一局）");
+            check(![NSFileManager.defaultManager fileExistsAtPath:[dir stringByAppendingPathComponent:@"shot_1.png"]] && [NSFileManager.defaultManager fileExistsAtPath:dir],
+                  @"诊断局：上一次的图清掉、diagrun 目录在");
+            for (int i = 0; i < 4; i++) unsetenv(dv[i]);
+            s2a_ios_apply_diag_run(a);
+            check(getenv("DM_NVN_PASSDUMP") == NULL, @"诊断局：第二次起局不再开");
+            unsetenv("S2A_DOCS"); [NSFileManager.defaultManager removeItemAtPath:docs error:nil];
+        }
+        // 画面设置按游戏存（11-11）：多款容器选了游戏后 s2a_ios_settings_defaults 是分层的——画面键读「这款 → 所有游戏的默认（App 级）」、
+        //   写只写这款；非画面键原样走 App 级；没有游戏号就是 App 级本身。一次性迁移清掉 App 级里自动写下的「宽屏关 + 问过」与原生 60 帧记号，
+        //   玩家自己选的留作默认。期望按这条规则手写
+        {   clear_environment(); unsetenv("S2A_LAUNCH_GAME_ID");
+            NSUserDefaults *app = NSUserDefaults.standardUserDefaults;
+            check(s2a_ios_settings_defaults() == app, @"按游戏：没有游戏号就是 App 级本身（单款壳行为不变）");
+            NSString *gid = [@"01000000000" stringByAppendingString:[NSUUID.UUID.UUIDString substringToIndex:5]];
+            NSUserDefaults *game = [[NSUserDefaults alloc] initWithSuiteName:[@"S2AGame." stringByAppendingString:gid]];
+            for (NSString *k in s2a_ios_per_game_keys()) [app removeObjectForKey:k];
+            [app removeObjectForKey:@"S2APerGameMigrated1111"];
+            [app setBool:NO forKey:@"S2AWidescreen"]; [app setBool:YES forKey:@"S2AWidescreenAsked"];   // 某一款自动退回写下的
+            [app setBool:YES forKey:@"S2AFpsNative60"];
+            [app setObject:@"2" forKey:@"S2AResolutionScale"];                                          // 玩家自己选的
+            [app setBool:NO forKey:@"S2AFps60"];                                                         // 玩家自己关的（没有问过记号）
+            setenv("S2A_LAUNCH_GAME_ID", gid.UTF8String, 1);
+            NSUserDefaults *d = s2a_ios_settings_defaults();
+            s2a_ios_apply_graphics_settings(d);
+            check(![app objectForKey:@"S2AWidescreen"] && ![app objectForKey:@"S2AWidescreenAsked"] && ![app objectForKey:@"S2AFpsNative60"] && [app boolForKey:@"S2APerGameMigrated1111"],
+                  @"按游戏：迁移清掉 App 级里自动写下的宽屏关 + 问过、原生 60 帧记号");
+            check(getenv("S2A_WIDESCREEN") == NULL, @"按游戏：自动退回的宽屏关不再串到别的游戏");
+            check(getenv("S2A_RES_SCALE") && !strcmp(getenv("S2A_RES_SCALE"), "2"), @"按游戏：玩家自己选的分辨率留作所有游戏的默认");
+            check(getenv("S2A_FPS60") && !strcmp(getenv("S2A_FPS60"), "0"), @"按游戏：这款没设 60 帧 → 用所有游戏的默认（关）");
+            clear_environment(); [game setBool:YES forKey:@"S2AFps60"];
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_FPS60") == NULL, @"按游戏：这款开 60 帧压过所有游戏的默认（关）——原先压不过");
+            [d setBool:NO forKey:@"S2AWidescreen"];
+            check([game objectForKey:@"S2AWidescreen"] && ![game boolForKey:@"S2AWidescreen"] && ![app objectForKey:@"S2AWidescreen"], @"按游戏：设置页写宽屏只写这款，App 级不变");
+            [d setBool:YES forKey:@"S2ADevHUD"];
+            check([app boolForKey:@"S2ADevHUD"] && ![game objectForKey:@"S2ADevHUD"], @"按游戏：非画面键（开发浮层）照旧写 App 级");
+            check([[d stringForKey:@"S2AResolutionScale"] isEqual:@"2"] && [d boolForKey:@"S2AFps60"], @"按游戏：读这款有的、没有回落默认");
+            for (NSString *k in s2a_ios_per_game_keys()) [app removeObjectForKey:k];
+            [app removeObjectForKey:@"S2ADevHUD"]; [app removeObjectForKey:@"S2APerGameMigrated1111"];
+            [game removePersistentDomainForName:[@"S2AGame." stringByAppendingString:gid]];
+            unsetenv("S2A_LAUNCH_GAME_ID"); clear_environment();
+        }
         clear_environment();
         [a removePersistentDomainForName:suiteA];
         [b removePersistentDomainForName:suiteB];

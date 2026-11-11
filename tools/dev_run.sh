@@ -12,9 +12,9 @@
 #   GAME / COST_LINE / COST_WHY 款名、线名、为什么跑（调度填，进成本账本 维护方工具）
 #   PULL="<Documents 下相对路径> …" 额外拉回；PUSH="<作业内路径>:<Documents 下路径> …" 额外推送
 #   FS_STOP=1          host.log 一出「【红】出图未满屏」当场停局
-#   CAP_S=300|600      测试段上限（调度按款填：xc3 600，其余 300；别的值按 300）
+#   CAP_S=300|600      测试段上限（调度按款填：010074F013262000 600，其余 300；别的值按 300）
 #   SMOKE=1            登记冒烟：部署后起 App 看 30 秒进程在不在就收（RESULT=smoke-ok / smoke），不跑局
-# 两段看门（硬上限，不留开关）：部署段（取锁 → 装包 → 推送）≤ DCAP=900 秒；测试段（起局 → 收局拉回）≤ CAP=300 秒（job.env CAP_S，只有 xc3 由调度填 600）。到点杀局、放锁、判红。
+# 两段看门（硬上限，不留开关）：部署段（取锁 → 装包 → 推送）≤ DCAP=900 秒；测试段（起局 → 收局拉回）≤ CAP=300 秒（job.env CAP_S，只有 010074F013262000 由调度填 600）。到点杀局、放锁、判红。
 # 出错即停：起局 30 秒 host.log 仍空；60 秒没有「S2A 就绪」；60 秒没出帧；出帧后 10 秒不前进；电量开局 < 60% 或局中 < 30%（未充电）。
 # 结果：<作业目录>/out_<时刻>/（run.log timing.tsv host.log frames.tsv gate.txt …），最后一行 RESULT=done|red|suspect|skip|lock|install|push|deployed|smoke-ok|smoke out=… reason=…
 #   suspect = 局中测试设备前台失焦（系统弹框挡着 App）：不给绿也不记红，记分格按局无效（tools/score_cells.py infra）
@@ -115,7 +115,7 @@ pso_keep() {   # pso_keep <拉回的 pso_user.tsv> <标签>：非空就按时间
     cp "$1" "$d/$f.tmp" && mv "$d/$f.tmp" "$d/$f"; t "管线种子来源（$2）：拉回 pso_user.tsv $(grep -c . "$1") 行 → pso_seed/$u/$f"
   else rm -f "$1"; t "管线种子来源（$2）：机上没有 wire/$u/pso_user.tsv（没装过 / 通用模式局 / 没建过管线）"; fi
 }
-deadlog() {   # App 起来就退出时先把机上 host.log 拉回（10-23 xc3 冒烟 5 秒退出、什么证据都没留）：限 30 秒拉一次，打出最能说明问题的一行（【红】/ CRASH 优先，否则末行）
+deadlog() {   # App 起来就退出时先把机上 host.log 拉回（10-23 010074F013262000 冒烟 5 秒退出、什么证据都没留）：限 30 秒拉一次，打出最能说明问题的一行（【红】/ CRASH 优先，否则末行）
   CPF_T=30 cpfrom Documents/host.log "$O/host.log" && [ -s "$O/host.log" ] || { echo "host.log 没拉回"; return 0; }
   local l; l=$(LC_ALL=C /usr/bin/grep -aE '【红】|CRASH' "$O/host.log" | tail -1); [ -n "$l" ] || l=$(LC_ALL=C /usr/bin/grep -av '^[[:space:]]*$' "$O/host.log" | tail -1)
   echo "host.log 末要：$(cut -c1-160 <<< "$l")"
@@ -126,7 +126,7 @@ print(d)" "$1" "$2" 2>/dev/null; }
 
 export SW_DEVBATTERY_INRUN=1   # 拔电走网络时电量闸交局内判
 devlock_acquire() { :; }; devlock_release() { :; }; devlock_extend() { :; }; [ -z "${S2A_PRIVATE_TOOLS:-}" ] || source "$S2A_PRIVATE_TOOLS/devlock.sh"   # 设备锁是维护方多线共用设施：贡献者单人单机不上锁
-DCAP=900; CAP=${CAP_S:-300}; case $CAP in 300|600) ;; *) CAP=300;; esac; T_REQ=$(date +%s)   # CAP_S 调度按款填（只有 xc3 600，见 维护方工具），别的值一律按 300
+DCAP=900; CAP=${CAP_S:-300}; case $CAP in 300|600) ;; *) CAP=300;; esac; T_REQ=$(date +%s)   # CAP_S 调度按款填（只有 010074F013262000 600，见 维护方工具），别的值一律按 300
 devlock_acquire "真机局 $(basename "$J")（${DEVNAME}，部署 ≤ ${DCAP} 秒 + 测试 ≤ ${CAP} 秒）" $((DCAP + CAP)) || { t "等不到设备锁"; fin lock "等不到设备锁"; }
 trap devlock_release EXIT
 T_LOCK=$(date +%s); PH=部署; CAPN=$DCAP; W0=$T_LOCK
@@ -148,7 +148,7 @@ HW=$(dcp 60 device info details --device "$D" 2>/dev/null | sed -En 's/.*[Uu][Dd
 [ "$HW" = "$UD" ] || { t "【红】devicectl 报的硬件 UDID「${HW:-取不到}」≠ 选中的 $DEVNAME ${UD}，停"; fin red whitelist; }
 # 清残留（只部署时不清：人可能正在玩，10-20 维护者 试玩中被结束过一局）：起局前结束**本局要装的这个包名**的残留进程（旧库残留会拖死文件服务，10-20 测试设备1）。
 #   别的包名一律不碰，哪怕是本项目测试身份（io.s2arm.* / io.s2arm-exp.*）：11-04 21:09 能耗线巫师3 基线局按「全部本项目身份」清，维护者 正在测试设备1 手测，
-#   结束了机上 20 个 S2Arm 进程（out_1104210838 stale.txt）；11-02 怪猎局结束过 维护者 复测中的塞尔达、10-26 结束过银河 2。维护者 11-04 定只清本局包名。
+#   结束了机上 20 个 S2Arm 进程（out_1104210838 stale.txt）；11-02 怪猎局结束过 维护者 复测中的一款第一方动作冒险游戏、10-26 结束过银河 2。维护者 11-04 定只清本局包名。
 #   取舍：10-29 真机线改清全部，是因为双人成行挂在后台、每开一款弹「查找本地网络」框（7 局判可疑）——后台别款弹框只让局判可疑（不给绿也不记红），
 #   结束人正在玩的 App 不可挽回，前者让给后者。
 #   按包名查各自安装路径（info apps 的 url，认 /Bundle/Application/<UUID>/ 一段：url 带 /private、进程表可能不带）
@@ -237,7 +237,7 @@ smoke_fin() {   # smoke_fin <fin 的参数…>：部署前没装的先卸再收
   [ -n "$SMOKE_RM" ] && { dcp 120 device uninstall app --device "$D" "$B" > "$O/uninst.log" 2>&1 && t "冒烟：部署前机上没有 ${B}，已卸载（测试设备保持冒烟前的样子）" || t "【黄】冒烟：部署前机上没有 ${B}，收尾卸载失败（$O/uninst.log）"; }
   fin "$@"; }
 # 机上空间不够时腾空间（11-06 维护者：「如果安装遇到了空间问题，就删掉超过 24 小时的咱们的包」）：tools/dev_prune.sh 在本局持着的设备锁里，
-#   按最后装 / 用的时间从旧到新卸 24 小时以上的我方 App（跳过 io.s2arm.botw 等永不卸的、读不出时间的），卸前备份存档，腾到可用 ≥ 需要就停；记 $O/prune.log
+#   按最后装 / 用的时间从旧到新卸 24 小时以上的我方 App（跳过 io.s2arm.01007EF00011E000 等永不卸的、读不出时间的），卸前备份存档，腾到可用 ≥ 需要就停；记 $O/prune.log
 devfree() { if [ -n "${S2A_DEV_FREE_CMD:-}" ]; then bash -c "$S2A_DEV_FREE_CMD"; else ideviceinfo -u "$UD" -q com.apple.disk_usage -k AmountDataAvailable 2> /dev/null | awk '{printf "%d", $1 / 1048576}'; fi; }
 space_need() {   # space_need <需要 MB> <为什么>：可用不够就腾；腾完仍不够只记黄（照常往下走，由装包 / 推包自己报红）
   local f; f=$(devfree); [ -n "$f" ] && [ "$f" -lt "$1" ] || return 0
@@ -384,7 +384,7 @@ PY
 ) || { t "ENVJSON 不是合法 JSON 片段：${ENVJSON:-}"; fin red "ENVJSON 非法"; }
 # 局中日志走控制台流（S2A_CONSOLE：auto 缺省 = App 二进制里有 S2A_LOG_CONSOLE 就开；1 / 0 强制）：devicectl … launch --console 陪 App 跑完整局，
 #   原生层日志行（runtime/src/logcon.c）实时到 $O/live/con.raw，局中不再拉 host.log / frames.tsv。10-21 测试出包线实测：手机端文件服务挂死（拉 18 字节 20 秒超时）时
-#   控制台流 100 秒照样收到 454 行（心跳 / 能耗 / 自动玩家）；马车8 / 塞尔达局中第一次拉 frames.tsv 就挂的触发点随之消失。收局 SIGTERM 这条命令，devicectl 转给 App 优雅退出。
+#   控制台流 100 秒照样收到 454 行（心跳 / 能耗 / 自动玩家）；0100152000022000 / 一款第一方动作冒险游戏局中第一次拉 frames.tsv 就挂的触发点随之消失。收局 SIGTERM 这条命令，devicectl 转给 App 优雅退出。
 #   控制台里没有 C# 侧的行（[gal] 帧节拍 / GPU 慢等，走 fd 2 只进 host.log），收局拉回的 host.log 为准；拉不回就用控制台流顶上并记「待拉」。
 CONS=${S2A_CONSOLE:-auto}
 if [ "$CONS" = auto ]; then CONS=0; unzip -p "$IPA" 'Payload/*.app/S2Arm' 2> /dev/null | LC_ALL=C /usr/bin/grep -aq S2A_LOG_CONSOLE && CONS=1; fi
@@ -416,7 +416,7 @@ if [ -n "$ALT_S" ]; then   # 同局交替：护边 = 1 秒 / 轮询周期（向�
 fi
 SEC=$(( CAP - (T0 - T_PUSH) - ${S2A_PULL_RESERVE_S:-45} ))   # 起局后可用秒数：硬上限从测试段开始（装包 / 起局已花 T0−T_PUSH）算，留 S2A_PULL_RESERVE_S（缺省 45）秒结束 App + 拉回（10-20 M1：按起局算 285 秒，硬上限先到、局被杀、日志全丢）
 # 局中不拉 frames.tsv（S2A_LIVE_FRAMES=0，执行器环境或作业 --env 给）：帧号取 host.log 的 10 秒心跳「[心跳] 帧 N」，frames.tsv 收局结束 App 后再拉。
-#   10-21 测试出包线：马车8 / 塞尔达局里起局后第一次拉 frames.tsv 就挂、之后全部拉文件超时、手机端文件服务挂十几分钟；动森同拉法正常——对照验证这个触发点
+#   10-21 测试出包线：0100152000022000 / 一款第一方动作冒险游戏局里起局后第一次拉 frames.tsv 就挂、之后全部拉文件超时、手机端文件服务挂十几分钟；01006F8002326000同拉法正常——对照验证这个触发点
 LIVEF=${S2A_LIVE_FRAMES:-1}; case "${ENVJSON:-}" in *'"S2A_LIVE_FRAMES":"0"'*) LIVEF=0;; esac
 [ "$CONS" = 1 ] && LIVEF=0
 # 控制台流 → live/host.log：去掉 pty 的 \r 与 devicectl 自己的提示行
@@ -634,7 +634,7 @@ t "拉回 host.log $(wc -c < "$O/host.log" 2>/dev/null | tr -d ' ') 字节；CRA
 GM=$(grep -a -m1 -E '图形模式：(直连|通用)' "$O/host.log" 2> /dev/null | sed 's/^.*图形模式：//' | cut -c1-160); echo "${GM:-未知}" > "$O/gfx_mode.txt"
 t "本局图形模式：${GM:-未知（host.log 没有「图形模式」行）}"   # 记分板按它分直连 / 通用格（tools/score_cells.py gfx_mode）
 # 五问帧率格（11-02 维护者：真机局按 frames.tsv 墙钟出，与记分板 / quality_check 同口径 tools/score_cells.py fps_window；
-#   不引用 host.log「帧节拍：交换间隔」——那是游戏请求的节拍不是实测：回归 E2 塞尔达照抄成「60 帧」，实测 19.99 帧/秒、慢帧 99.92%）。--diag=1 只打印不写记分板
+#   不引用 host.log「帧节拍：交换间隔」——那是游戏请求的节拍不是实测：回归 E2 一款第一方动作冒险游戏照抄成「60 帧」，实测 19.99 帧/秒、慢帧 99.92%）。--diag=1 只打印不写记分板
 FR=$(python3 "$TOOLS/score_cells.py" "$O" --game="${GAME:-?}" --diag=1 2> "$O/score.notes" | awk -F'\t' '{print $6 "\t" $10}')
 t "五问帧率格：${FR%%	*}（${FR#*	}）"
 [ "$cr" -gt 0 ] && [ -z "$RED" ] && { RED=1; WHY=崩溃; }
@@ -644,7 +644,7 @@ uf=$(LC_ALL=C /usr/bin/grep -a '【红】出图未满屏' "$O/host.log" 2>/dev/n
 # 判据缺席不当通过（10-26 维护者：直连上屏 nvn_mtl.m 不打「[画] 满屏判据 已开」/「【红】出图未满屏」，没红行不等于满屏）：直连局一条满屏判据行都没有 → 记未验（画面格由 score_cells.fs_unverified 判未测）
 if LC_ALL=C /usr/bin/grep -aq '图形模式：直连' "$O/host.log" 2>/dev/null && ! LC_ALL=C /usr/bin/grep -aq '\[画\] 满屏判据 已开' "$O/host.log" 2>/dev/null; then t "满屏：未验（直连无判据：host.log 没有「[画] 满屏判据 已开」，没红行不算满屏）"; fi
 [ -n "${SKIP:-}" ] && fin skip "$WHY"   # 前置条件没满足（电量闸）：未跑，不带宿主红行、不改写成「没到 MARK」
-# 自动玩家自己收的局（200 秒没进可玩 → 优雅退出）：出图停住 / 没出帧是它停的，不是游戏卡死，按「没到 MARK」报（10-21 原生层线：botw 卡 DLC 介绍页被报成「出图停在第 5723 帧」）
+# 自动玩家自己收的局（200 秒没进可玩 → 优雅退出）：出图停住 / 没出帧是它停的，不是游戏卡死，按「没到 MARK」报（10-21 原生层线：01007EF00011E000 卡 DLC 介绍页被报成「出图停在第 5723 帧」）
 if [ -n "$RED" ] && [ -z "$MK" ] && LC_ALL=C /usr/bin/grep -aq '自动玩家结束：优雅退出' "$O/host.log" 2>/dev/null; then WHY="没到 MARK：自动玩家没进可玩、已结束并优雅退出（执行器原判：${WHY}）"; t "【红】$WHY"; fi
 # 屏上有系统浮层（心跳「前台失焦」：UIApplication 失焦但仍在前台，如更新提示 / 控制中心）：写进结论，红不一定是游戏的（10-21 测试设备2 00:20 起浮层挡着 App）
 nuf=$(LC_ALL=C /usr/bin/grep -a '\[心跳\] ' "$O/host.log" 2>/dev/null | LC_ALL=C /usr/bin/grep -ac '前台失焦'); nuf=${nuf:-0}

@@ -8,7 +8,7 @@ using Ryujinx.Common.Logging;
 namespace S2A.Services.Tests
 {
     // 审计 P2-223：bsd:u 命令 36（Switch 2 SDK nn::socket::Initialize，入参 u32 套接字配置首字 + pid，应答 u32 非 0 即初始化失败）
-    //   原先把配置首字读掉不留痕。宿主没有可按它限制的资源，照旧回 0（改回未实现会让 Pokopia 首帧后失败），但收到的值要打进日志。
+    //   原先把配置首字读掉不留痕。宿主没有可按它限制的资源，照旧回 0（改回未实现会让 0400A3A01EE4C000 首帧后失败），但收到的值要打进日志。
     // 期望（手写）：发配置首字 0x00C0FFEE → 结果码 0、应答 u32 0；日志里有一条含「0x00C0FFEE」的 bsd 命令 36 行
     public static unsafe partial class Program
     {

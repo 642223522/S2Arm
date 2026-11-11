@@ -2,7 +2,6 @@
 # Copyright 2026 S2Arm contributors
 """Independent Windows environment contracts; fake probes are not device proof."""
 import contextlib
-import ast
 import importlib.util
 import io
 import json
@@ -19,6 +18,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "pack/jobs/winenv.py"
+sys.path.insert(0, str(ROOT / "pack/jobs"))   # 用到真 library / toolchain 的几条（Mac 预检同一份规则）：从仓库根跑时也找得到
 
 
 class FakeProbe:
@@ -42,6 +42,7 @@ class FakeProbe:
             "usbmux_port": {"connected": True},
             "usb_devices": {"USB": 0, "Network": 0},
             "icloud": {"packages": [], "legacy": []},
+            "apple_devices": {"packages": []},
         }
 
     def __call__(self, kind, **options):
@@ -65,7 +66,6 @@ class EnvironmentTests(unittest.TestCase):
         original = self.mod._text
         fixtures = {
             self.mod.RUNTIME: "capstone==5.0.7\nlz4==4.4.5\nnumpy==2.4.2\nPillow==12.3.0\n",
-            self.mod.PREFLIGHT: 'def preflight(c):\n    add("Python", sys.version_info >= (3, 11), "minimum")\n',
         }
         override = patch.object(self.mod, "_text", side_effect=lambda name: fixtures.get(name, None)
                                 if name in fixtures else original(name))
@@ -188,12 +188,9 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(self.item(self.report(), "python.lz4")["status"], "error")
 
     def test_minimum_definition_is_read_instead_of_duplicated(self):
-        original = self.mod._text
-        def changed(name):
-            if name == self.mod.PREFLIGHT:
-                return 'def preflight(c):\n    add("Python", sys.version_info >= (3, 99), "minimum")\n'
-            return original(name)
-        with patch.object(self.mod, "_text", side_effect=changed):
+        # 读的是预检那一个常量（toolchain.PYTHON_MINIMUM，剃刀 H11），不另抄：把它改成 3.99，环境检查跟着判不符
+        import toolchain
+        with patch.object(toolchain, "PYTHON_MINIMUM", (3, 99)):
             self.assertEqual(self.item(self.report(), "python")["status"], "mismatch")
 
     def test_timeout_does_not_hide_inventory_or_leak_exception(self):
@@ -203,19 +200,42 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("ABC", json.dumps(report))
         self.assertIn("disk", [c["id"] for c in report["checks"]])
 
-    def test_service_access_denied_is_not_absent(self):
+    def test_service_access_denied_is_not_absent(self):   # 端口不通时才查服务；读不到服务照实写「读不到」，不漏私密原文
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = PermissionError("device_id=PRIVATE")
         report = self.report()
-        self.assertEqual(self.item(report, "apple_driver")["status"], "error")
+        c = self.item(report, "apple_driver")
+        self.assertEqual(c["status"], "missing"); self.assertIn("服务 Apple Mobile Device Service：读不到", c["message"])
         self.assertNotIn("PRIVATE", json.dumps(report))
 
     def test_service_stopped_is_not_ready(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = {"state": 1}
-        self.assertEqual(self.item(self.report(), "apple_driver")["status"], "mismatch")
+        c = self.item(self.report(), "apple_driver")
+        self.assertEqual(c["status"], "mismatch"); self.assertIn("服务 Apple Mobile Device Service：已停止", c["message"])
 
     def test_service_absent_is_named(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = FileNotFoundError()
-        self.assertEqual(self.item(self.report(), "apple_driver")["status"], "missing")
+        c = self.item(self.report(), "apple_driver")
+        self.assertEqual(c["status"], "missing")
+        for place in ("本机usbmux端口 127.0.0.1:27015：连不上", "服务 Apple Mobile Device Service：没装", "商店版 Apple Devices：没装"):
+            self.assertIn(place, c["message"])   # 「复制错误摘要」带上查过的三处
+
+    def test_store_apple_devices_without_legacy_service_is_ready(self):   # #424：商店版不注册老式服务名，端口通即就绪
+        self.probe.values["service"] = FileNotFoundError()
+        self.probe.values["apple_devices"] = {"packages": [{"Name": "AppleInc.AppleDevices", "Status": "Ok", "Version": "1.0.0.0"}]}
+        report = self.report()
+        self.assertTrue(self.item(report, "apple_driver")["ok"])
+        self.assertFalse(any(k == "service" for k, _ in self.probe.calls))   # 端口通就不再看服务名
+
+    def test_store_apple_devices_port_closed_says_open_app(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
+        self.probe.values["service"] = FileNotFoundError()
+        self.probe.values["apple_devices"] = {"packages": [{"Name": "AppleInc.AppleDevices", "Status": "Ok", "Version": "1.0.0.0"}]}
+        c = self.item(self.report(), "apple_driver")
+        self.assertEqual(c["status"], "missing")
+        self.assertIn("打开一次Apple Devices", c["message"]); self.assertIn("商店版 Apple Devices：已装（1.0.0.0 Ok）", c["message"])
 
     def test_missing_binary_has_manual_hint(self):
         self.probe.values["file"] = {"exists": False, "regular": False}
@@ -281,11 +301,11 @@ class EnvironmentTests(unittest.TestCase):
         for kind, bad in (("python", {"version": "3.13", "packages": {}}),
                           ("impactor", {"verdict": "ok"}),
                           ("disk", {"free": True}),
-                          ("service", {"state": True})):
+                          ("usbmux_port", {"connected": 1})):
             with self.subTest(kind=kind):
                 self.probe.values[kind] = bad
                 ident = {"python": "python", "impactor": "impactor",
-                         "disk": "disk", "service": "apple_driver"}[kind]
+                         "disk": "disk", "usbmux_port": "apple_driver"}[kind]
                 self.assertEqual(self.item(self.report(), ident)["status"], "error")
                 self.probe = FakeProbe()
 
@@ -473,6 +493,15 @@ class EnvironmentTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.probe.values["metal"] = {"output": text}
                 self.assertEqual(self.item(self.report(), "metal")["status"], "missing")
+
+    def test_cap_metal_missing_message_lists_searched_places(self):
+        # 玩家装了还认不出：「复制错误摘要」读 message，要带上找过的每一处和结果
+        self.capabilities()
+        self.probe.values["metal"] = self.mod.ProbeError("找不到Metal", missing=True, detail="找过：官方默认目录：D:\\X\\bin\\metal.exe → 没有")
+        c = self.item(self.report(), "metal")
+        self.assertEqual(c["status"], "missing")
+        self.assertIn("找过：官方默认目录：D:\\X\\bin\\metal.exe → 没有", c["message"])
+        self.assertEqual(c["help"], c["message"])
 
     def test_cap_metal_missing_still_lists_usb_and_disk(self):
         self.capabilities()
@@ -714,9 +743,11 @@ class EnvironmentTests(unittest.TestCase):
             with patch.dict(os.environ, {"S2A_METAL_BIN": str(Path(tmp) / "missing")}, clear=True), \
                  patch.object(self.mod.shutil, "which", return_value=str(other)), \
                  patch.object(self.mod.NativeProbe, "run") as run:
-                with self.assertRaises(FileNotFoundError):
+                with self.assertRaises(self.mod.ProbeError) as ctx:
                     self.mod.NativeProbe()("metal", executable=None)
                 run.assert_not_called()
+            self.assertTrue(ctx.exception.missing)
+            self.assertIn("S2A_METAL_BIN：" + str(Path(tmp) / "missing" / "metal.exe") + " → 没有", ctx.exception.detail)   # 错误摘要写明找的是哪一处
 
     def test_cap_metal_nonzero_is_missing_timeout_and_overflow_still_error(self):
         self.capabilities()
@@ -772,54 +803,50 @@ class EnvironmentTests(unittest.TestCase):
             self.fail("合法预算合同未产生报告：" + type(exc).__name__)
 
     @staticmethod
-    def library_budget_scope():
-        # Real function bodies, controlled Context/disk; not a Mac host run.
-        source = (ROOT / "pack/jobs/library.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        names = {"selected_packages", "_pack_input_bytes",
-                 "_pack_direct_bytes", "pack_need_bytes", "space_budget", "_gb",
-                 # 出包实测账（11-07）：夹具游戏库里没有 space-usage.tsv，预算走经验规则这一档
-                 "_space_target"}
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-        nodes += [n for n in tree.body if isinstance(n, ast.Assign) and any(
-            isinstance(x, ast.Name) and x.id in ("PACK_SMALL_BYTES", "SPACE_LEDGER", "SPACE_LEDGER_FIELDS") for t in n.targets for x in ast.walk(t))]
-        scope = {"os": os, "Path": Path, "SPACE_UNKNOWN": [], "_volume": lambda _: "fixture-volume"}
-        exec(compile(ast.Module(body=nodes, type_ignores=[]), "library.py budget fixture", "exec"), scope)
-        scope["_unpacked_on_disk"] = lambda c, game: False
-        scope["_extract_bytes"] = lambda c, gid: None   # 还没抽过着色器：直连按经验值（#265 按抽取量估的那支见 test_jobs）
-        return scope
+    def library_budget(context, game, need=None):
+        """Mac 预检的真函数（library.space_budget），只把游戏库位置 / 盘名 / 解包是否在盘上换成夹具（剃刀 H11：原先 AST 截 library.py 片段 exec）"""
+        import library
+        stubs = [patch.object(library, "_unpacked_on_disk", lambda c, g: False),
+                 patch.object(library, "_pack_paths", lambda c, g: (Path(c.library), Path(c.library))),   # 存放位置与工具缓存同在夹具游戏库（同卷：合成一项）
+                 patch.object(library, "_volume", lambda _: "fixture-volume")]
+        if need:
+            stubs.append(patch.object(library, "pack_need_bytes", need))
+        for stub in stubs:
+            stub.start()
+        try:
+            return library.space_budget(context, game)
+        finally:
+            for stub in stubs:
+                stub.stop()
 
     def test_budget_direct_catalog_matches_handwritten_bytes(self):
         fields = self.budget_catalog()
         before = self.catalog_path.read_bytes()
         c = self.item(self.budget_report(**fields), "disk")
-        # Windows：10,700,000,000 × 1.1 × 2（解包 + 拷贝；单文件镜像不再存进库，#329）+ 15,000,000,000，独立手算
-        self.assertEqual(c["detected"]["requiredFreeBytes"], 38_540_000_000)
+        # Windows：10,700,000,000 × 1.1 × 2（解包 + 拷贝）+ 15,000,000,000 + 单一 IMG 10,700,000,000（只出 iPhone 包，11-11），独立手算
+        self.assertEqual(c["detected"]["requiredFreeBytes"], 49_240_000_000)   # + 单一 IMG 10.7 GB（Windows 只出 iPhone 包，11-11）
         self.assertTrue(c["ok"])
         self.assertEqual(self.catalog_path.read_bytes(), before)
-        self.assertIn("library.py", c["source"])
+        self.assertIn("space_rule.py", c["source"])
 
     def test_budget_mac_function_body_keeps_direct_result(self):
         self.budget_catalog()
-        scope = self.library_budget_scope()
         context = types.SimpleNamespace(library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40_000_000_000)):
-            result = scope["space_budget"](context, self.budget_game)
+            result = self.library_budget(context, self.budget_game)
         self.assertEqual(result["volumes"][0]["needBytes"], 26_770_000_000)   # Mac：解包一份 × 1.1 + 15 GB（单文件镜像不再存进库，#329）
         self.assertEqual(result["gameBytes"], 10_700_000_000)
         self.assertIn("直连着色器上限", result["volumes"][0]["note"])
 
     def test_budget_mac_adapter_calls_shared_pure_function(self):
         self.budget_catalog()
-        scope = self.library_budget_scope()
         calls = []
         def shared(packages, **kw):
             calls.append(packages)
             return 12345
-        scope["pack_need_bytes"] = shared
         context = types.SimpleNamespace(library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40000)):
-            result = scope["space_budget"](context, self.budget_game)
+            result = self.library_budget(context, self.budget_game, need=shared)
         self.assertEqual(result["volumes"][0]["needBytes"], 12345)
         self.assertEqual(len(calls), 1)
 
@@ -879,31 +906,18 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(self.item(self.budget_report(**fields), "disk")["status"], "error")
 
     def test_budget_windows_reads_changed_shared_rule_not_second_formula(self):
+        # Windows 环境检查用的就是 space_rule 那一份规则（剃刀 H11）：把它的直连上限改成 22 GB，结果跟着变
         fields = self.budget_catalog()
-        original = self.mod._text
-        def changed(name):
-            text = original(name)
-            return text.replace("int(15e9)", "int(22e9)") if name == "pack/jobs/library.py" else text
-        with patch.object(self.mod, "_text", side_effect=changed):
+        with patch.object(self.mod._space_rule(), "DIRECT_LARGE_BYTES", int(22e9)):
             c = self.item(self.budget_report(**fields), "disk")
-        self.assertEqual(c["detected"]["requiredFreeBytes"], 45_540_000_000)   # 10.7 GB × 1.1 × 2 + 22 GB，独立手算
-
-    def test_budget_missing_shared_function_is_error_no_fallback(self):
-        fields = self.budget_catalog()
-        original = self.mod._text
-        def missing(name):
-            text = original(name)
-            return text.replace("def pack_need_bytes(", "def absent_budget(") if name == "pack/jobs/library.py" else text
-        with patch.object(self.mod, "_text", side_effect=missing):
-            c = self.item(self.budget_report(**fields), "disk")
-        self.assertEqual(c["status"], "error")
+        self.assertEqual(c["detected"]["requiredFreeBytes"], 56_240_000_000)   # 10.7 GB × 1.1 × 2 + 22 GB + 单一 IMG 10.7 GB，独立手算
 
     def test_budget_pure_function_needs_no_context_or_mac_import(self):
         self.budget_catalog()
         before = set(sys.modules)
-        rules = self.mod._budget_rules()
-        selected = rules["selected_packages"](self.budget_game)
-        self.assertEqual(rules["pack_need_bytes"](selected, windows=True), 38_540_000_000)
+        rules = self.mod._space_rule()
+        selected = rules.selected_packages(self.budget_game)
+        self.assertEqual(rules.pack_need_bytes(selected, windows=True, image=True), 49_240_000_000)
         self.assertFalse({"core", "fcntl", "library"} & (set(sys.modules) - before))
 
     def test_budget_native_cli_valid_catalog_no_mac_context_import(self):
@@ -915,7 +929,7 @@ class EnvironmentTests(unittest.TestCase):
                            capture_output=True, env=env, timeout=30)
         self.assertEqual(p.returncode, 1, p.stderr)
         report = json.loads(p.stdout.decode("utf-8"))
-        self.assertEqual(self.item(report, "disk")["detected"]["requiredFreeBytes"], 38_540_000_000)
+        self.assertEqual(self.item(report, "disk")["detected"]["requiredFreeBytes"], 49_240_000_000)
         self.assertFalse(any(x.name == "sources" for x in self.catalog_path.parent.iterdir()))
 
     def test_budget_request_types_remain_strict(self):
@@ -947,7 +961,7 @@ class RecoveryMappingTests(unittest.TestCase):
         "win_disk_budget_unknown": "先在游戏库选择游戏并生成出包计划，再点「重新检查」。",
         "win_check_failed": "本次环境探测失败；按诊断检查工具安装和权限，处理后点「重新检查」。",
         "tool_missing": "重新安装完整的 S2Arm，点「重新检查」后重试。",
-        "device_not_connected": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+        "device_not_connected": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
         "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
         "library_in_cloud": "游戏库在云盘同步目录里（iCloud 云盘、OneDrive、Dropbox 等）：出包时会写几十 GB 中间文件，云盘会上传它们、换成占位文件，出包中途会读不到。在「设置 → 游戏库与玩家数据」把游戏库改到本机磁盘上不同步的位置（例如默认位置），再重试；游戏原件放在哪都行。",
         "library_bad_format": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 NTFS 格式的磁盘上（FAT32 单个文件不能超过 4 GB，exFAT 没有可靠的原子替换）：在「设置 → 游戏库与玩家数据」改用这台电脑上的默认位置，或选一块 NTFS 格式的盘，再重试。",
@@ -999,10 +1013,12 @@ class RecoveryMappingTests(unittest.TestCase):
         self.assert_recovery(self.report(), "metal", "missing", "win_metal_missing")
 
     def test_recovery_apple_driver_missing(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = FileNotFoundError()
         self.assert_recovery(self.report(), "apple_driver", "missing", "win_apple_devices_missing")
 
     def test_recovery_apple_service_stopped(self):
+        self.probe.values["usbmux_port"] = {"connected": False}
         self.probe.values["service"] = {"state": 1}
         self.assert_recovery(self.report(), "apple_driver", "mismatch", "win_apple_service_stopped")
 
@@ -1029,7 +1045,7 @@ class RecoveryMappingTests(unittest.TestCase):
 
     def test_recovery_probe_failure_is_not_component_pending(self):
         for kind, ident in (("host", "host"), ("python", "python"), ("impactor", "impactor"), ("pack", "pack.items"),
-                            ("metal", "metal"), ("service", "apple_driver"),
+                            ("metal", "metal"), ("usbmux_port", "apple_driver"),
                             ("usb_devices", "apple_usb"), ("icloud", "anisette"), ("disk", "disk")):
             with self.subTest(ident=ident):
                 self.probe = FakeProbe()

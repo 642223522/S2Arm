@@ -1,0 +1,57 @@
+name: 安卓 / 鸿蒙新图形层 · 设备普查（联合开发者）
+description: 在自己的设备上用新图形层起一局，贴 android/tools/nvk_survey.sh 生成的 report.md。面向联合开发者，不是玩家问题回报
+title: "[新图形层普查] 芯片 · 程序号：一句话结论"
+labels: ["安卓新图形层", "设备普查"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        怎么编出新图形层的包、怎么跑普查脚本，见 [安卓 / 鸿蒙新图形层 · 联合开发](../blob/main/docs/安卓新图形层_联合开发.md)。
+        **不要上传游戏文件、密钥、存档，也不要上传游戏截图；标题和正文里用程序号，不写游戏名。** 脚本输出目录里的 screen.png 留在本地，画面情况在下面用文字选。
+  - type: textarea
+    id: report
+    attributes:
+      label: report.md（整段粘贴）
+      description: 脚本输出目录里的 report.md，原样粘贴，不要改读数。里面已有机型、芯片、系统版本、刷新率、程序号、未接清单、其它红行、最后一行呈现读数、进程是否还在。
+      render: markdown
+    validations:
+      required: true
+  - type: dropdown
+    id: picture
+    attributes:
+      label: 画面（看本地的 screen.png 选）
+      options:
+        - 正确
+        - 全黑
+        - 有画面但缺东西
+        - 花屏 / 颜色不对
+        - 没走到出画面（崩了或卡住）
+    validations:
+      required: true
+  - type: textarea
+    id: picture_detail
+    attributes:
+      label: 画面说明
+      description: 选的不是「正确」时，用文字说清缺什么、哪里不对、停在哪一步。不贴截图。
+  - type: textarea
+    id: logs
+    attributes:
+      label: logcat.txt 与 crash.txt
+      description: 把脚本输出目录里的 logcat.txt、crash.txt 压成一个 zip 拖进来（不含 screen.png）。
+      placeholder: 把 zip 拖到这里
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: 编包用的仓库提交号
+      description: 编这个包时本地仓库的 `git rev-parse --short HEAD`。
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: 平台
+      description: 安卓，或鸿蒙（鸿蒙请写用的是哪一份平台件 / 哪个 PR）。
+    validations:
+      required: true

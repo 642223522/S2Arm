@@ -56,6 +56,8 @@ static int has_device_extension(VkPhysicalDevice physical, const char *name) {
     return found;
 }
 
+const char *const *nvn_plat_vk_instance_exts(uint32_t *n) __attribute__((weak));
+
 int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) {
     if (!out) return fail(why, why_size, "null device");
     memset(out, 0, sizeof *out);
@@ -66,10 +68,19 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     const char *wanted[] = {
         "VK_KHR_get_physical_device_properties2", "VK_KHR_surface", "VK_KHR_android_surface",
         "VK_KHR_get_surface_capabilities2", "VK_EXT_surface_maintenance1" };
-    const char *enabled[sizeof wanted / sizeof *wanted];
+    const char *enabled[sizeof wanted / sizeof *wanted + 8];
     uint32_t enabled_count = 0;
     for (unsigned i = 0; i < sizeof wanted / sizeof *wanted; i++)
         if (has_instance_extension(wanted[i])) enabled[enabled_count++] = wanted[i];
+    // 平台件要的表面扩展（graphics/nvn/replay/nvn_plat_vk.h；鸿蒙是 VK_OHOS_surface，宿主测试是无头表面）。
+    // 上面写死的安卓名字是旧层留下的，旧层删除后这张表只留与平台无关的几项。
+    if (nvn_plat_vk_instance_exts) {
+        uint32_t pn = 0; const char *const *pe = nvn_plat_vk_instance_exts(&pn);
+        for (uint32_t i = 0; pe && i < pn && i < 8; i++) {
+            int dup = 0; for (uint32_t k = 0; k < enabled_count; k++) if (!strcmp(enabled[k], pe[i])) dup = 1;
+            if (!dup && has_instance_extension(pe[i])) enabled[enabled_count++] = pe[i];
+        }
+    }
     out->has_android_surface = has_instance_extension("VK_KHR_android_surface");
 
     VkApplicationInfo app = {0};
@@ -208,6 +219,28 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     fprintf(stderr, "[s2a] vk BC route: native=0x%04x compute=0x%04x%s\n",
             out->bc_native_mask, out->bc_decode_mask, out->bc_decode_forced ? " (force)" : "");
 
+    // #398：D24 深度附件不是必备能力（三星 Xclipse 只有 D16S8 / D32S8）。缺了就让 NVN DEPTH24(_STENCIL8)
+    // 按 D32 建，与 Mac 后端同一做法。位定义同 nvn_vk_format.h 的 NVN_VK_DEPTH_SUBST_*；格式映射在
+    // nvn_vk_format.c，弱引用：只链 vk_device.c 的宿主探针照旧能链接（它们不走 NVN 格式映射）。
+    {
+        extern uint32_t nvn_vk_depth_subst_pick(VkFormatFeatureFlags, VkFormatFeatureFlags,
+                                                VkFormatFeatureFlags, VkFormatFeatureFlags) __attribute__((weak));
+        extern void nvn_vk_format_set_depth_subst(uint32_t) __attribute__((weak));
+        const VkFormat dv[4] = { VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                 VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D32_SFLOAT };
+        VkFormatFeatureFlags df[4];
+        for (int i = 0; i < 4; i++) {
+            VkFormatProperties fp;
+            memset(&fp, 0, sizeof fp);
+            vkGetPhysicalDeviceFormatProperties(out->physical, dv[i], &fp);
+            df[i] = fp.optimalTilingFeatures;
+        }
+        out->depth_subst_mask = nvn_vk_depth_subst_pick ? nvn_vk_depth_subst_pick(df[0], df[1], df[2], df[3]) : 0;
+        if (nvn_vk_format_set_depth_subst) nvn_vk_format_set_depth_subst(out->depth_subst_mask);
+        fprintf(stderr, "[s2a] vk depth route: D24S8->%s X8D24->%s\n",
+                (out->depth_subst_mask & 1u) ? "D32S8" : "native", (out->depth_subst_mask & 2u) ? "D32" : "native");
+    }
+
     out->has_swapchain = has_device_extension(out->physical, "VK_KHR_swapchain");
     out->has_swapchain_maintenance1 = has_device_extension(out->physical, "VK_EXT_swapchain_maintenance1");
     VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance = {0};
@@ -256,6 +289,12 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     out->index_type_uint8_enabled = has_device_extension(out->physical, "VK_EXT_index_type_uint8") &&
                                     index_u8.indexTypeUint8 == VK_TRUE;
     if (out->index_type_uint8_enabled) device_ext[device_ext_count++] = "VK_EXT_index_type_uint8";
+    // B2：display_timing 在驱动 advertise 且 debug.s2a.display_timing=1 时才启用——默认关：
+    // 默认路径不请求扩展、不挂 presentID、不轮询（同 frame_log/gpu_time 惯例）。
+    // has_display_timing = advertise ∧ 本局已启用，cap 位与 attach 的 supported 都按可用性如实报。
+    out->has_display_timing = has_device_extension(out->physical, "VK_GOOGLE_display_timing") &&
+                              prop_int("debug.s2a.display_timing", 0) == 1;
+    if (out->has_display_timing) device_ext[device_ext_count++] = "VK_GOOGLE_display_timing";
     // 零拷贝可行性探测（只读，不改行为）：VK_EXT_external_memory_host 允许把一个 host 指针导入成 VkBuffer
     // 内存——这是把 guest 内存直接交给 GPU、免掉每笔 memcpy 的唯一合法路径（Metal 侧靠
     // newBufferWithBytesNoCopy 就做到了）。这里只查 advertise + 对齐要求；是否启用由调用方按属性决定。

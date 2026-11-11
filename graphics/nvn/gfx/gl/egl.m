@@ -219,7 +219,7 @@ GL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig c, EGLContext share, co
     x->st.stencil_wmask[0] = x->st.stencil_wmask[1] = ~0u;
     for (int i = 0; i < 2; i++) { x->st.stencil_func[i] = 0x0207; /* GL_ALWAYS */ x->st.stencil_mask[i] = ~0u; x->st.stencil_op[i][0] = x->st.stencil_op[i][1] = x->st.stencil_op[i][2] = 0x1E00; /* GL_KEEP */ }
     x->st.depth_range[1] = 1; x->st.clear_depth = 1; x->st.depth_func = 0x0201; /* GL_LESS */ x->st.cull = 0x0405; /* GL_BACK */ x->st.front = 0x0901; /* GL_CCW */
-    x->st.unpack_align = 4; x->st.unpack_row = 0; x->st.pack_align = 4; x->st.line_width = 1; // #272：每个上下文独立的 GL 初始像素存储。
+    x->st.unpack_align = 4; x->st.unpack_row = 0; x->st.pack_align = 4; x->st.line_width = 1; x->st.point_size = 1; // #272：每个上下文独立的 GL 初始像素存储。
     x->st.default_read = 0x0405; /* GL_BACK */ x->st.poly_mode = 0x1B02; /* GL_FILL */
     for (int i = 0; i < 16; i++) x->st.attr_cur[i][3] = 1;   // 当前通用顶点属性初值 (0, 0, 0, 1)
     x->st.dirty = ~0u;
@@ -345,6 +345,6 @@ GLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool 
     if (f > 9) { double a = nvn_be_presented_time(f - 8), b = nvn_be_presented_time(f - 9); dm_perf_present(a < 0 ? -1 : a > 0 && b > 0 ? (a - b) * 1e3 : 0); }   // 同 Vulkan 层：上屏序号即票号
     return 1;
 }}
-GL(eglGetProcAddress, void *, const char *name) { return gl_entry(name); }   // 重活套切栈桩（gl_core.m），同装载器解析的导入
+GL(eglGetProcAddress, void *, const char *name) { return gl_entry_or_stub(name); }   // 重活套切栈桩（gl_core.m）；没实现的核心名给安全空实现
 // 松开本线程的当前上下文与表面（EGL 1.5 §3.11：同 eglMakeCurrent 全空），错误码 / API 回初值；已删的此时才放
 GLB(eglReleaseThread, EGLBoolean, void) { @autoreleasepool { bind_current(NULL, NULL); g_api = EGL_OPENGL_ES_API; g_err = EGL_SUCCESS; return 1; }}

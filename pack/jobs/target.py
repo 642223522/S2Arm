@@ -28,7 +28,7 @@ from pathlib import Path
 
 # GPU 要 Apple7 及以上（A14 / M1 起，架构号 g13 起）；系统 iOS / iPadOS 18 起（10-26 维护者，依据 10-24 定的直连下限 iOS 18 / macOS 15）：
 #   26 起缺省 Metal 4 主路径，18–25 自动走 Metal 3 兼容路径——通用渲染器 graphics/metal/gal_core.m gal_be_select、直连 graphics/nvn/gfx/nvn/nvn_mtl.m nvn_be_pick 都按系统版本选；
-#   着色器库全部按 -mios-version-min=18.0 编（tools/toolchain.env），管线归档按目标系统大版本出（ipa.py S2A_PSO_OS）。M7 证据：milestones/M7_Metal3_1025（Mac 强制 Metal 3 直连动森到 MARK）
+#   着色器库全部按 -mios-version-min=18.0 编（tools/toolchain.env），管线归档按目标系统大版本出（ipa.py S2A_PSO_OS）。M7 证据：milestones/M7_Metal3_1025（Mac 强制 Metal 3 直连01006F8002326000到 MARK）
 MIN_GEN, MIN_OS = 13, 18
 # 架构要经「部署变体」表取（按系统版本各一行，老系统行是通用 air64，只取 applegpu_*）：Xcode 27.1 的库里 Devices.DeviceTraitSet 是占位，
 # 直接连会把 iPhone18,2 认成 g14g（10-23 实查；旧 Xcode 碰巧对）
@@ -166,7 +166,10 @@ def device_list(c, timeout=60):
 def usb_idevices():
     """USB 上看得到的 iPhone / iPad 名称（devicectl 只列 Xcode 配对过的设备，没配对的要靠这里知道「其实插着」）"""
     try:
-        out = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"], capture_output=True, text=True, timeout=10).stdout
+        # IORegistry 字符串可能包含无效 UTF-8 字节；先拿原始输出，再替换解码，
+        # 不能让 USB 辅助探测中断后续安装流程。
+        raw = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"], capture_output=True, timeout=10).stdout
+        out = raw.decode("utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return []
     return re.findall(r'"USB Product Name" = "((?:iPhone|iPad)[^"]*)"', out)
