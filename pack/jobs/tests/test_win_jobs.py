@@ -194,6 +194,12 @@ class WinOneclick(unittest.TestCase):
         self.assertEqual(first[first.index("--shell") + 1], str(self.t / "Shell"))
         self.assertEqual((res["build_id"], res["graphics_mode"]), ("b1", "direct"))
 
+    def test_sources_follow_from_extract(self):   # #613：原件与游戏号跟在 --from-extract 后面交给 oneclick_win（多程序合集的其余序号从原件解）
+        self.ok = True
+        self.ipa.win_oneclick(self.c, ROOT / "pack/orch/oneclick_win.py", self.t / "extract", self.t / "Fonts", self.out, self.events, self.t / "log", {}, None,
+                              sources=[self.t / "a.xci", self.t / "b.nsp"], gid="0100FD70134FA000")
+        self.assertEqual(self.calls[0][-4:], ["--title-id", "0100FD70134FA000", str(self.t / "a.xci"), str(self.t / "b.nsp")])
+
     def test_failed_pack_not_delivered(self):
         self.ok = False
         res = self.go()

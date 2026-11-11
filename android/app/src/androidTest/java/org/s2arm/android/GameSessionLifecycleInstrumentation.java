@@ -64,7 +64,7 @@ public final class GameSessionLifecycleInstrumentation extends Instrumentation {
     private void openLibrary(Context context) {
         context.startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             .setClass(context, LibraryActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            .putExtra(GameActivity.REVISION_EXTRA, true).putExtra(GameActivity.LIFECYCLE_TEST_EXTRA, true));
+            .putExtra(GameActivity.LIFECYCLE_TEST_EXTRA, true));
     }
     private void play(String title) throws Exception {
         await(() -> {
