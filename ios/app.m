@@ -27,6 +27,7 @@ void s2a_brightness_hold_log(void);   // 亮度保持（S2A_BRIGHTNESS）：心�
 //   缺省壳不带、为空指针（多款容器包配了不带库界面的壳 = 报红提示，不起游戏）。这里本地声明、不 include 那个头：缺省出壳不读 frontend-ios（壳输入闭包）
 // 弱链接[ios]：s2a_shell_library_vc
 // 弱链接[ios]：s2a_shell_set_play_handler
+static void img_scan_if_library(void);   // 下面游戏库段：回前台时认领「文件」里新拷进来的 game.img
 void *s2a_shell_library_vc(const char *catalogue_json_path) __attribute__((weak_import));
 void s2a_shell_set_play_handler(void (*fn)(const char *game_id, void *ctx), void *ctx) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_refresh
@@ -551,6 +552,7 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
     [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n;
         display_focus_publish(NO);
         atomic_store(&g_fg_note, now_ns()); s2a_dguard_background(0, now_ns());
+        img_scan_if_library();   // 多款容器挂着库：玩家可能刚在「文件」里拷进 game.img
         // 回前台时可能停在失焦（浮层还在），等不到「获得焦点」：主线程下一拍状态已离开后台就放开
         dispatch_async(dispatch_get_main_queue(), ^{ if (UIApplication.sharedApplication.applicationState != UIApplicationStateBackground) s2a_ios_suspend(0, "回前台"); }); }];
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(UIApplication.sharedApplication.applicationState == UIApplicationStateActive); { void s2a_diag_session_fg(int); s2a_diag_session_fg(1); } s2a_ios_suspend(0, "获得焦点"); s2a_guest_run_mark(1); }];
@@ -711,6 +713,19 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
 static atomic_int g_pack_checking;
 static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
 static void library_pack_help_show(NSString *gid, BOOL again, int st);
+// 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
+//   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
+int s2a_img_scan(const char *proc_docs);   // pack_apply.c
+static int img_scan_now(void) {   // 后台线程
+    if (atomic_load(&g_game_picked)) return 0;
+    char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
+    if (n > 0) LOG("资源导入：从「文件」里认出并放好 %d 个游戏资源包（game.img）", n);
+    return n;
+}
+static void img_scan_bg(void) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ if (img_scan_now() > 0) dispatch_async(dispatch_get_main_queue(), ^{ if (s2a_shell_refresh) s2a_shell_refresh(); }); });
+}
+static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }
 static void library_pack_help(NSString *gid, BOOL again) {   // 主线程
     if (atomic_exchange(&g_pack_checking, 1)) { LOG("游戏库：%s 正在核对资源包，这次点击不重复起", gid.UTF8String); return; }
     __block BOOL done = NO; __block UIAlertController *wait = nil;
@@ -722,6 +737,7 @@ static void library_pack_help(NSString *gid, BOOL again) {   // 主线程
     });
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        img_scan_now();   // 玩家可能刚把 game.img 拷进「文件」：先认领再核
         int st = game_pack_state(gid.UTF8String);
         double ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -773,6 +789,7 @@ static void cloud_sync_done(void *ctx) {
     g_lib_window = self.window;
     self.window.rootViewController = (__bridge_transfer UIViewController *)s2a_shell_library_vc(cat.fileSystemRepresentation);
     LOG("游戏库：已挂库界面（清单 %s）%s", cat.UTF8String, s2a_process_prewarmed() ? "，预热进程只显示库、不起宿主" : "");
+    img_scan_bg();
 }
 // Play 选上之后：换成游戏界面（同单款 willConnect 建的那套：加载页、提示页、安全网提示），再走同一条起宿主路（存档管理 → startHost）
 - (void)enterGame {
