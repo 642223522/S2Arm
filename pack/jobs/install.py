@@ -394,13 +394,17 @@ def device_link(c, want="", polling=False):
         fresh = data.get("result") if isinstance(data, dict) else None
         props = fresh.get("deviceProperties") if isinstance(fresh, dict) else None
         if rc != 0 or not isinstance(props, dict) or fresh.get("identifier") != dev["identifier"] or props.get("developerModeStatus") not in ("enabled", "disabled"):
+            if _link(dev).get("transportType") != "wired":   # 走 Wi-Fi 的那台现查不通 = 它现在不在线（人走开 / 锁屏睡眠），如实说是哪台，原文进诊断
+                return S_OFFLINE.replace("{0}", device_kind(dev)).replace("{1}", (dev.get("deviceProperties", {}).get("name") or "").strip())
             return _with_raw(S_TUNNEL, raw)
         # list devices 可能仍留着旧值；以指定设备的详情为准，同时更新诊断快照。
         dev = fresh
         devices = [fresh if d.get("identifier") == dev["identifier"] else d for d in devices]
         return ""
-    if dev.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None) or _link(dev).get("tunnelState") != "connected" or not services_ready(dev):
-        say("正在和手机建立开发连接")
+    # 真装机（非清单轮询）对选中的那台一律现查一次详情：设备列表里「同网」只说明配对过，不说明此刻连得上（11-11 玩家实报：
+    #   没插线点续签，列表里那台标着同网，走到「读已装游戏」才报「找不到设备」）；现查不通就在开工前拦下
+    if not polling or dev.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None) or _link(dev).get("tunnelState") != "connected" or not services_ready(dev):
+        say("正在和设备建立开发连接")
         problem = refresh_details()
         if problem:
             return out(dev, "prepare", problem, devices)
@@ -755,19 +759,24 @@ def readiness(c):
         teams = xcode_teams(c.env())
         team = (pick_team(teams) if teams else None)
         item("appleId", team, "已登录 Apple ID", "" if team else (TEAM_PENDING if xcode_account(c.env())[0] else ACCOUNT_NONE))
-    link = device_link(c, (c.r.get("device") or "").strip(), polling=True)
+    # 清单只看玩家选的那台、每次现查（11-11 玩家实报：没插线却亮「iPhone 已用数据线连上」——原先没选设备时作业自己挑了同网的 iPad 来打勾）
+    want = (c.r.get("device") or "").strip()
+    link = device_link(c, want, polling=True) if want else dict(device=None, stage="connected", problem=S_DEVICE_REQUIRED, trace=[], devices=[])
     one, stage = link["device"], link["stage"]
     cert = devcert_items(c, item, (one or {}).get("hardwareProperties", {}).get("udid") or "") if use_cert else None
     name = (one.get("deviceProperties", {}).get("name") or "").strip() if one else ""
-    item("connected", one, "iPhone 已用数据线连上", link["problem"] if stage == "connected" else "")
+    kind = device_kind(one) if one else "iPhone / iPad"
+    how = "数据线" if one and _link(one).get("transportType") == "wired" else "同一 Wi-Fi"
+    item("connected", one, "{0}「{1}」已连上（{2}）".replace("{0}", kind).replace("{1}", name).replace("{2}", how) if one else "选的设备已连上（数据线或同一 Wi-Fi）",
+         link["problem"] if stage == "connected" else "")
     paired = bool(one) and stage != "trusted"
-    item("trusted", paired, "iPhone 已信任这台 Mac", link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
+    item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
     mode_pending = paired and stage == "prepare" and one.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None)
     dev_mode = paired and stage != "developerMode" and not mode_pending
-    item("developerMode", dev_mode, "iPhone 已打开开发者模式", S_DEV_MODE, waiting=not paired or mode_pending)
-    item("deviceReady", dev_mode and stage == "", "iPhone 已准备好安装", link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
+    item("developerMode", dev_mode, "{0} 已打开开发者模式".replace("{0}", kind), S_DEV_MODE, waiting=not paired or mode_pending)
+    item("deviceReady", dev_mode and stage == "", "{0} 已准备好安装".replace("{0}", kind), link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
     account = (cert or {}).get("teamName") or "" if use_cert else (team["name"] or team["id"]) if team else ""
-    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),
+    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, deviceKind=kind.lower() if one else "", account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),
                 signing="" if use_cert else signing_summary(c.env()), signMode="devcert" if use_cert else "appleId", devcert=cert, installMode=install_mode(c))
 
 
@@ -925,12 +934,17 @@ def readiness_windows(c, gid):
     else:
         item("impactor", st["verdict"] == "ok" and bool(W.plumesign_path()), "Impactor 已装好并登录过 Apple ID",
              recovery(st["code"] or "impactor_missing", packaged=False), url=st["download"])
+    # 清单只看要装的那台、每次现查：请求带了 device（续签 = 当初那台）就只认它（USB 或同网都算）；没带就是唯一连着的那台（前端拿它的号去装）
+    want = (c.r.get("device") or "").strip()
     try:
-        udids = win_udids(W)
+        links = W.mux_devices()
+        udids = ([want] if want in {u for u, _, _ in links if u} else []) if want else win_udids(W)
     except OSError:
-        udids = []
-    item("connected", len(udids) == 1, "iPhone 已用数据线连上",
-         "连着不止一台 iPhone / iPad：只留要装的那一台。" if len(udids) > 1 else "用数据线把 iPhone 连到这台电脑，解锁手机并点「信任」。")
+        links, udids = [], []
+    how = "数据线" if udids and any(u == udids[0] and t == "USB" for u, t, _ in links) else "同一 Wi-Fi"
+    item("connected", len(udids) == 1, "{0}已连上（{1}）".replace("{0}", "设备").replace("{1}", how) if len(udids) == 1 else "选的设备已连上（数据线或同一 Wi-Fi）",
+         (f"要装的那台设备（编号末尾 {want[-6:]}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi。" if want else
+          "连着不止一台 iPhone / iPad：只留要装的那一台。" if len(udids) > 1 else "用数据线把 iPhone / iPad 连到这台电脑，或让它和这台电脑连同一个 Wi-Fi；解锁并点「信任」。"))
     cert = devcert_items(c, item, udids[0] if len(udids) == 1 else "") if use_cert else None
     kind = ""
     if len(udids) == 1 and hasattr(W, "device_kind"):   # #487：连着的是 iPad 时入口写「装到 iPad」
@@ -1171,7 +1185,10 @@ def phone_games(c, ph):
                 return set()
             if ph.app_missing(bid, out):
                 return None
-            raise Failure("读不出 iPhone 上已经装了哪些游戏：" + out[-200:] + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
+            info = getattr(ph, "info", None) or {}
+            who = f"{info.get('deviceKind') or 'iPhone / iPad'}「{info.get('deviceName')}」" if info.get("deviceName") else (info.get("deviceKind") or "设备")
+            raise Failure(f"读不出{who}上已经装了哪些游戏，为免把别的游戏挤掉，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
+                          code="device_locked", internal="s2a-devpush ls：" + out[-500:])
         found = set()
         for name in out.splitlines():
             g = name.strip().rstrip("/").upper()

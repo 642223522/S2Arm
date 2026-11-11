@@ -201,7 +201,11 @@ public sealed partial class EnvironmentWindow
         var succeeded = false;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("installUpdate", "", acceptStale ? new Dictionary<string, object?> { ["acceptStale"] = true } : null),
+            // 更新哪台：壳旧了的那台（phoneUpdates 的设备记录键），作业层不自己挑
+            var extra = new Dictionary<string, object?>();
+            if (acceptStale) extra["acceptStale"] = true;
+            if (PhoneUpdateTarget is { Device.Length: > 0 } target) extra["device"] = target.Device;
+            var job = await PackJobClient.RunAsync(PackRequest("installUpdate", "", extra.Count > 0 ? extra : null),
                 e => Dispatcher.UIThread.Post(() => IngestUpdateEvent(e)), CancellationToken.None);
             succeeded = job.Report.Succeeded;
             updateOutcome = succeeded ? "" : job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;

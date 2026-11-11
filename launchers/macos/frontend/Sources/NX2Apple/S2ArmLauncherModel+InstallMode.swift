@@ -30,8 +30,8 @@ extension S2ArmLauncherModel {
     func updatePhone(acceptStale: Bool, repack: [String], language: String, device: String? = nil) {
         guard !busy else { return }
         updateConfirm = nil; updateRepack = repack
-        // 连着多台时更新哪台：同装机（install），用出包页选中的那台；原先不传，连着两台就报「连着不止一台」（v0.3.0 验收测出）
-        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
+        // 更新哪台：壳旧了的那台（phoneUpdates 的设备记录键）；没有就是玩家选的那台。一律带上，作业层不自己挑（v0.3.0 验收测出连着两台报错；11-11 设备号贯穿所有装机入口）
+        let device = device ?? phoneUpdate?.device ?? installDeviceID
         start(JobSession(kind: .installUpdate, gameID: nil, name: BackendText.launcherText("update.running", language: language))) { [weak self] sink in
             _ = try await self?.provider.updatePhone(acceptStale: acceptStale, device: device, events: sink)
             return nil

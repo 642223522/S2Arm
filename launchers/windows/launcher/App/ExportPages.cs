@@ -71,6 +71,10 @@ public sealed partial class EnvironmentWindow
     /// <summary>上次装机清单认出连着的是 iPad：这几处入口写「装到 iPad」（键名加 _ipad，#487）；没认出照旧写 iPhone。</summary>
     private string PadKey(string key) => readiness?.DeviceKind == "ipad" ? key + "_ipad" : key;
     private string? readinessFor;
+    /// 这次实际装上的那台（装机结果的 deviceKind / deviceName；Windows 设备服务给不出名字时只有类型）：「已装到 iPad」不写死 iPhone
+    private string installedTo = "";
+    private string InstallTargetLabel => installedTo.Length > 0 ? installedTo :
+        readiness?.DeviceKind switch { "ipad" => "iPad", "iphone" => "iPhone", _ => "iPhone / iPad" };
     private bool installChecking, installBusy, installCheckFailed;
     private bool customizing;
     private string customizeError = "";
@@ -124,7 +128,7 @@ public sealed partial class EnvironmentWindow
     {
         if (installGameId is null || (!installBusy && installSeen) || (page == "install" && SelectedGame?.Id == installGameId)) return null;
         var key = installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed";
-        var text = T(key).Replace("{0}", installGameName ?? installGameId);
+        var text = T(key).Replace("{0}", installGameName ?? installGameId).Replace("{1}", InstallTargetLabel);
         if (installBusy && installDone is { } d && installTotal is { } t && t > 0) text += " · " + (100 * d / t) + "%";
         var pill = new Button { Content = text, Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(16),
             Background = Brush.Parse("#29292D"), Foreground = Ink };
@@ -1146,7 +1150,7 @@ public sealed partial class EnvironmentWindow
         {
             // 正在装 / 刚装完的是另一款：这里不画它的进度（原先会画到当前这款上），给一个回去的入口
             var other = new StackPanel { Spacing = 8 };
-            other.Children.Add(Muted(T(installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed").Replace("{0}", installGameName ?? installGameId)));
+            other.Children.Add(Muted(T(installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed").Replace("{0}", installGameName ?? installGameId).Replace("{1}", InstallTargetLabel)));
             other.Children.Add(Action("install.pill.open", OpenPhoneJob));
             body.Children.Add(Card(other));
         }
@@ -1169,7 +1173,7 @@ public sealed partial class EnvironmentWindow
         {
             "running" => "install.running", "succeeded" => "install.done", "needsPlayer" => "install.needs_player", "cancelled" => "progress.cancelled",
             "invalid" => "library.invalid_result", _ => "install.failed"
-        }), 18));
+        }).Replace("{0}", InstallTargetLabel), 18));
         if (installBusy)
         {
             var counted = installDone is { } d && installTotal is { } t && t > 0;
@@ -1193,7 +1197,8 @@ public sealed partial class EnvironmentWindow
         var before = (readiness is null, readinessRaw, installCheckFailed, installDiagnostics);   // 换了一款（readiness 清空）必重画
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("installCheck", game.Id), null, CancellationToken.None);
+            // 装过的款（续签 / 重装）清单只看当初那台；没装过的看唯一连着的那台（清单把它的设备号报回来，装机就带它）
+            var job = await PackJobClient.RunAsync(PackRequest("installCheck", game.Id, DeviceExtra(game.IphoneInstallDevice)), null, CancellationToken.None);
             if (readinessFor == game.Id)
             {
                 if (job.Report.Succeeded) { readiness = InstallReadiness.Parse(job.Report.Result); readinessRaw = job.Report.Result.GetRawText(); installCheckFailed = false; }
@@ -1219,8 +1224,9 @@ public sealed partial class EnvironmentWindow
         string? dropAsk = null;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, DropExtra(acceptDropped)), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
+            var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, DropExtra(acceptDropped, InstallDevice(game))), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
             if (ask && JobCode(job) == "container_would_drop") dropAsk = job.Report.Message;
+            installedTo = job.Report.Succeeded ? InstalledLabel(job.Report.Result) : "";
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;
@@ -1237,7 +1243,28 @@ public sealed partial class EnvironmentWindow
         if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk)) await InstallAsync(game, acceptDropped: true);
     }
 
-    private static Dictionary<string, object?>? DropExtra(bool acceptDropped) => acceptDropped ? new() { ["acceptDropped"] = true } : null;
+    /// 装到哪台：清单报回来的那台（续签时就是当初那台，在线才有），没有就是装机记录里的那台（不在线时作业层如实说「它不在线」）。
+    /// 作业层收不到设备号就拒绝、不自己挑（11-11：续签时同网的 iPad 被装上）
+    private string InstallDevice(LibraryGame game) =>
+        readiness is { Device.Length: > 0 } r && readinessFor == game.Id ? r.Device : game.IphoneInstallDevice;
+
+    private static string InstalledLabel(JsonElement result)
+    {
+        string S(string k) => result.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        var kind = S("deviceKind"); var name = S("deviceName");
+        if (kind.Length == 0) kind = "iPhone / iPad";
+        return name.Length > 0 ? kind + "「" + name + "」" : kind;
+    }
+
+    private static Dictionary<string, object?>? DeviceExtra(string device) => device.Length > 0 ? new() { ["device"] = device } : null;
+
+    private static Dictionary<string, object?>? DropExtra(bool acceptDropped, string device = "")
+    {
+        var extra = new Dictionary<string, object?>();
+        if (acceptDropped) extra["acceptDropped"] = true;
+        if (device.Length > 0) extra["device"] = device;
+        return extra.Count > 0 ? extra : null;
+    }
 
     private static string? JobCode(LibraryJobOutput job)
     {
@@ -1361,7 +1388,7 @@ public sealed partial class EnvironmentWindow
         string? dropAsk = null;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id, DropExtra(acceptDropped)), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
+            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id, DropExtra(acceptDropped, game.IphoneInstallDevice is { Length: > 0 } d ? d : InstallDevice(game))), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
             if (ask && JobCode(job) == "container_would_drop") dropAsk = job.Report.Message;
             installState = job.Report.State;
             installMessage = job.Report.Succeeded ? T(prefix + "_done") : job.Report.Message;

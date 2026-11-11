@@ -54,6 +54,8 @@ struct InstallView: View {
                         Text(loc.backend(failed.message)).font(.manrope(13)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                         CopyReportButton(model: model, gameID: gameID, operations: ["install", "installRemove", "installRestore"], fallback: failed.message)
                     }
+                    // 装到哪台：和出包页同一行；选过的那台不在线时如实说、让玩家改选（清单只看这台、每次现查）
+                    TargetDeviceRow(model: model).onChange(of: model.installDeviceID) { _ in model.checkInstall(gameID) }
                     if let r = model.installReadiness {
                         CardGroup(loc.t("s2arm.install.checklist"), footnote: footnote(r)) {
                             ForEach(r.items) { item in
@@ -166,7 +168,9 @@ struct InstallView: View {
     private var doneContent: some View {
         VStack(spacing: 16) {
             SuccessSeal()
-            Text(text("install.done.title")).font(.manrope(30, .heavy)).tracking(-0.8)
+            // 写实际装上的那台（装机结果的 deviceKind / deviceName），不写死 iPhone
+            Text(text("install.done.title").replacingOccurrences(of: "{0}", with: model.installedTo.isEmpty ? "iPhone / iPad" : model.installedTo))
+                .font(.manrope(30, .heavy)).tracking(-0.8).multilineTextAlignment(.center).accessibilityIdentifier("install.done.title")
             Text(text("install.done.trust")).font(.manrope(14)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             if game?.iphoneFree == true {
                 Text(text("install.done.free")).font(.manrope(13)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)

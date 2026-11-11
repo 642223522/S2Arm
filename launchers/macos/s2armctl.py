@@ -64,7 +64,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   next [游戏号] [--target mac|ios] [--json]   AI 代操作入口（缺省 ios）：现在走到哪一步、下一步做什么、由谁做（ai 自己做 / ask 问玩家要输入 /
                                     human 只能玩家本人做 / confirm 先征得玩家同意）、为什么；出错时带错误码、原因和处理办法
   logs <任务号|游戏号> [--lines N]    读这条任务（或这款游戏最近一条任务）的日志末尾（缺省 40 行）
-  install <游戏号> [--team 团队号] [--device UDID或设备名] [--accept-dropped] [--timeout 秒] [--no-wait]   装到 iPhone（签名 + 装 App + 推资源包），等到装完：成功退 0，失败打错误码与建议、退 1（--no-wait 只发起不等）；连着多台时用 --device 指定（同网配对的也行）；--accept-dropped 见错误码 container_would_drop
+  install <游戏号> --device UDID或设备名 [--team 团队号] [--accept-dropped] [--timeout 秒] [--no-wait]   装到 iPhone（签名 + 装 App + 推资源包），等到装完：成功退 0，失败打错误码与建议、退 1（--no-wait 只发起不等）；连着多台时用 --device 指定（同网配对的也行）；--accept-dropped 见错误码 container_would_drop
   device <游戏号>                    iPhone 连没连、这款游戏的 App 装没装（装机要玩家用 AltStore 登录 Apple ID，AI 不代做）
   push-pack <游戏号>                 App 装好后把资源包拷进 iPhone（同在访达里把「资源包」文件夹拖到 App 上），拷完逐文件核对
 
@@ -207,7 +207,8 @@ AI_NEXT = {
     'dotnet_sdk_missing': ('human', '缺 .NET SDK：请玩家在 S2Arm 环境检查里点安装，然后 s2armctl env'),
     'target_unsupported': ('human', '这台 iPhone 芯片太老或系统太旧（要 A14 及以上、iOS 18 及以上）：告诉玩家原因，升级系统或换设备'),
     'xcode_account_missing': ('human', 'Xcode 里没登录 Apple ID：请玩家打开 Xcode →「设置」→「账户」点「+」登录（免费的就行，要输 Apple ID 密码，AI 不代做），然后 s2armctl install <游戏号>；玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）'),
-    'device_not_connected': ('ask', '没连 iPhone 或连了不止一台：请玩家用数据线只连要装的那台、解锁、在手机上点「信任」（第一次还要打开开发者模式），连好后 s2armctl install <游戏号>'),
+    'device_not_connected': ('ask', '要装的那台设备不在线：请玩家插上数据线，或让它和电脑连同一个 Wi-Fi 并解锁（第一次还要点「信任」、打开开发者模式），连好后 s2armctl install <游戏号> --device <那台的设备号>'),
+    'device_required': ('ai', '没说装到哪台：先 s2armctl targets 看连着的设备和设备号，再 s2armctl install <游戏号> --device <设备号>（不替玩家挑）'),
     'device_locked': ('human', 'iPhone 锁屏了：请玩家解锁手机、停在主屏幕，然后重试 s2armctl install'),
     'container_would_drop': ('ask', '手机上有几款是在别的电脑上装的，这次装会让它们暂时不能玩（存档和资源包留在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名念给玩家，玩家同意了再 s2armctl install <游戏号> --accept-dropped（删除用 uninstall <游戏号> --accept-dropped）'),
     'free_app_limit': ('human', '这台 iPhone 上免费签名的自签 App 已满 3 个：请玩家在 iPhone 上删掉一个不玩的自签 App 再试，或改用付费 Apple 开发者账号（AltStore 同样受这个上限）'),

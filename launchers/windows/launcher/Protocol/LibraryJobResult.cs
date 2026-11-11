@@ -86,7 +86,7 @@ public sealed record GamePackage(string Type, string TitleId, int Version, strin
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
     bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
-    GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null)
+    GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null, string IphoneInstallDevice = "")
 {
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
@@ -186,12 +186,13 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                         var content = p.TryGetProperty("contentBytes", out var cb) && cb.ValueKind == JsonValueKind.Number ? cb.GetInt64() : 0;
                         packages.Add(new(ptype, titleId, version, display, size, format, sha, content));
                     }
-                // iphoneInstall: { at, free } — matches the Mac adapter's LibraryProvider
-                double? iphoneAt = null; var iphoneFree = false;
+                // iphoneInstall: { at, free, deviceKey } — matches the Mac adapter's LibraryProvider；deviceKey = 当初装的那台（续签装回它，不换别的）
+                double? iphoneAt = null; var iphoneFree = false; var iphoneDevice = "";
                 if (game.TryGetProperty("iphoneInstall", out var inst) && inst.ValueKind == JsonValueKind.Object)
                 {
                     if (inst.TryGetProperty("at", out var at) && at.ValueKind == JsonValueKind.Number) iphoneAt = at.GetDouble();
                     if (inst.TryGetProperty("free", out var fr) && fr.GetBoolean()) iphoneFree = true;
+                    if (inst.TryGetProperty("deviceKey", out var dk) && dk.ValueKind == JsonValueKind.String) iphoneDevice = dk.GetString() ?? "";
                 }
                 var iphoneReady = game.TryGetProperty("iphoneReady", out var ir) && ir.GetBoolean();
                 games.Add(new(id, LibraryJobResult.Text(game, "name"),
@@ -201,7 +202,7 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     game.TryGetProperty("customCover", out var customCover) && customCover.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("location", out var location) && location.ValueKind == JsonValueKind.Object ? GameLocation.Parse(location) : null,
                     game.TryGetProperty("iphoneRestorable", out var restorable) && restorable.ValueKind == JsonValueKind.True,
-                    game.TryGetProperty("sizes", out var sizes) && sizes.ValueKind == JsonValueKind.Object ? GameSizes.Parse(sizes) : null));
+                    game.TryGetProperty("sizes", out var sizes) && sizes.ValueKind == JsonValueKind.Object ? GameSizes.Parse(sizes) : null, iphoneDevice));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),

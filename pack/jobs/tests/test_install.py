@@ -377,9 +377,11 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(Failure) as e: packer.assemble(self.c, "0100000000090000")
         self.assertEqual(e.exception.code, "container_stale")
 
-    def _ready(self, devices, teams=(dict(id="team-a", name="我", free=True),), rc=0, usb=(), raises=None):
-        """跑装机前清单：devicectl list devices 回 devices（手造的 devicectl 行），Xcode 团队 teams"""
+    def _ready(self, devices, teams=(dict(id="team-a", name="我", free=True),), rc=0, usb=(), raises=None, want="测试设备2"):
+        """跑装机前清单：devicectl list devices 回 devices（手造的 devicectl 行），Xcode 团队 teams；want = 玩家选的那台（None = 没选）"""
         import diag
+        if want is None: self.c.r.pop("device", None)
+        else: self.c.r["device"] = want
         data = {"result": {"devices": list(devices)}}
         import target
         def devicectl(c, *a, timeout=0):
@@ -441,9 +443,12 @@ class FlowTests(unittest.TestCase):
         # 模拟器、Mac、只走无线隧道没通的不算连上
         r, it = self._ready([self._dev(reality="simulated"), self._dev(platform="macOS"), self._dev(transport=None, tunnel="unavailable")])
         self.assertFalse(it["connected"]["ok"])
-        # 两台都连着：要只留一台
-        r, it = self._ready([self._dev(), self._dev(name="测试设备1")])
-        self.assertFalse(it["connected"]["ok"]); self.assertIn("不止一台", it["connected"]["detail"]); self.assertEqual(r["device"], ""); self.assertTrue(it["trusted"]["waiting"])
+        # 两台都连着：只看玩家选的那台（不再要求只留一台）
+        r, it = self._ready([self._dev(), self._dev(name="测试设备1")], want="测试设备1")
+        self.assertTrue(it["connected"]["ok"]); self.assertEqual(r["device"], "测试设备1")
+        # 没选设备：不替玩家挑一台来打勾（11-11 玩家实报：没插线却亮「已用数据线连上」）
+        r, it = self._ready([self._dev()], want=None)
+        self.assertFalse(it["connected"]["ok"]); self.assertIn("没说要装到哪台", it["connected"]["detail"]); self.assertEqual(r["device"], "")
         # 读不到设备列表（devicectl 失败）= 当没连
         r, it = self._ready([self._dev()], rc=1)
         self.assertFalse(it["connected"]["ok"]); self.assertIn("读不到设备列表", it["connected"]["detail"])
@@ -452,10 +457,12 @@ class FlowTests(unittest.TestCase):
         gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
         r, it = self._ready([self._dev(transport="localNetwork")])
         self.assertTrue(it["connected"]["ok"]); self.assertEqual(r["device"], "测试设备2")
+        self.assertEqual(it["connected"]["title"], "iPhone「测试设备2」已连上（同一 Wi-Fi）")   # 写实际类型、名字和连接方式，不写死「数据线」
         _, it = self._ready([self._dev(transport="localNetwork"), self._dev(name="另一台", transport="localNetwork")])
-        self.assertFalse(it["connected"]["ok"]); self.assertIn("多台配对过", it["connected"]["detail"])
-        _, it = self._ready([self._dev(transport="localNetwork"), self._dev(name="线连的")])
-        self.assertTrue(it["connected"]["ok"])   # 有线优先，同网另一台不算两台
+        self.assertTrue(it["connected"]["ok"])   # 只看选的那台，同网另一台不相干
+        _, it = self._ready([self._dev(transport=None, tunnel="unavailable"), self._dev(name="线连的")])
+        self.assertFalse(it["connected"]["ok"]); self.assertIn("不在线", it["connected"]["detail"])   # 选的那台拔了线：不拿插着的另一台打勾
+        self.assertEqual(self._ready([self._dev()])[1]["connected"]["title"], "iPhone「测试设备2」已连上（数据线）")
 
     def _link(self, states, want="", polling=False, usb=(), results=None, raises=None, details=None):
         """states 是列表快照；details 独立给详情回包，缺省沿用下一张快照的同一设备；results 可给错误或异常"""
@@ -580,10 +587,14 @@ class FlowTests(unittest.TestCase):
     def test_link_brings_up_an_idle_tunnel(self):
         link, calls = self._link([[self._p(ddi=False)], [self._p(tunnel="connected")]])
         self.assertEqual(link["stage"], ""); self.assertEqual(calls, [("device", "info", "details")])
+        link, calls = self._link([[self._p(tunnel="connected")]], polling=True)
+        self.assertEqual((link["stage"], calls), ("", []))   # 清单轮询：已经通了不折腾
         link, calls = self._link([[self._p(tunnel="connected")]])
-        self.assertEqual((link["stage"], calls), ("", []))   # 已经通了不折腾
+        self.assertEqual((link["stage"], calls), ("", [("device", "info", "details")]))   # 真装机：选中的那台一律现查一次（列表里在不等于此刻连得上）
         link, _ = self._link([[self._p(transport="localNetwork", ddi=False)]], results={"info": (1, "device locked")})
-        self.assertEqual(link["stage"], "prepare"); self.assertIn("开发连接", link["problem"]); self.assertIn("device locked", link["problem"])
+        self.assertEqual(link["stage"], "prepare"); self.assertIn("不在线", link["problem"]); self.assertIn("iPhone「甲」", link["problem"])   # 走 Wi-Fi 的那台现查不通 = 不在线，说是哪台
+        link, _ = self._link([[self._p(ddi=False)]], results={"info": (1, "device locked")})
+        self.assertIn("开发连接", link["problem"]); self.assertIn("device locked", link["problem"])   # 插着线却建不起连接：照旧说开发连接失败
 
     def test_link_updates_disk_images_when_services_stay_down(self):
         down = [self._p(tunnel="connected", ddi=False)]
@@ -1275,6 +1286,13 @@ class PhoneGamesTruthTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 install.phone_games(self.c, self.ph(missing=False))                    # 装着却进不去 = 锁屏 / 断开
         self.assertEqual(e.exception.code, "device_locked")
+        # 上屏说人话：说是哪台、插线或同一 Wi-Fi；工具原文（含设备号，脱敏后是「[DEVICE_ID]」占位符）只进诊断（11-11 玩家实报）
+        ph = self.ph(missing=False); ph.info = dict(deviceKind="iPhone", deviceName="我的手机")
+        err2 = self.client([], set(), ls_error="找不到设备 00008150-001E60991A82401C：device not found")
+        with um.patch.object(install, "devpush_client", err2), self.assertRaises(Failure) as e:
+            install.phone_games(self.c, ph)
+        self.assertIn("iPhone「我的手机」", str(e.exception)); self.assertIn("Wi-Fi", str(e.exception))
+        self.assertNotIn("00008150", str(e.exception)); self.assertIn("device not found", e.exception.internal)
 
     def test_games_folder_not_created_yet_is_zero_games(self):
         """首次装机：App 在、还没有 Documents/games——当 0 款照常装（v0.2.8 热修，玩家实机原文「afc error: Object not found」带空格，原先被当读不出设备挡住）。
