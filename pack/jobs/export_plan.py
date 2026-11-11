@@ -10,6 +10,7 @@
 
 每一步是一个普通子作业（Mac = build、iPhone = ipa），各有自己的任务号、任务记录、日志与错误摘要；本作业不解包不编译，只起子作业、等它结束、记账、再起下一个：
   - 子作业的请求 = 本作业的请求去掉 plan，换 operation / taskId / gameId，parentPid 指本进程（本作业没了子作业跟着停）
+  - 这台电脑出不了的平台（Windows 上的 Mac 版）不起子作业，直接记失败「这台电脑出不了这个平台的包」（原先两端前端各判一遍）
   - 同一款 iPhone 后面还有平台时带 followUp（作业层先不清解包，剃刀 M21）；batch.py 把同一款排成先 Mac 后 iPhone，正常不会出现
   - 子作业的事件原样转发到标准输出（type child，step = {gameId, platform, task}，event = 子作业那条原样），不进本作业的事件记录（子作业自己有）；
     每步开始 / 结束各一条 step / stepEnded 事件（step = {gameId, platform, task, index, count}，stepEnded 另带 outcome），进记录
@@ -32,13 +33,16 @@ from errors import Failure
 import filelock
 
 OPERATION = {"mac": "build", "iphone": "ipa"}
+SUPPORTED = ("mac", "iphone") if sys.platform == "darwin" else ("iphone",)   # 这台电脑能出的平台：Mac 版只能在 Mac 上出
+UNSUPPORTED_MESSAGE = "这台电脑出不了这个平台的包"
 CHILD_ENTRY = Path(__file__).resolve().with_name("main.py")
 CHILD_KEYS_DROPPED = ("plan", "taskId", "jobId", "operation", "gameId", "target", "followUp", "location", "spaceOverride", "parentPid")
 
 
 def child_command(request_file):
-    """起一步子作业的命令（测试换成桩脚本）"""
-    py = [sys.executable, "-I", "-B"] + (["-X", "utf8"] if os.name == "nt" else [])
+    """起一步子作业的命令（测试换成桩脚本）：参数同各端前端起作业（Mac JobClient.swift「-B -I」、Windows PackJobClient.cs「-X utf8」，
+    Windows 随包 Python 的搜索路径由 ._pth 定，不加 -I）"""
+    py = [sys.executable] + (["-X", "utf8"] if os.name == "nt" else ["-B", "-I"])
     return py + [str(CHILD_ENTRY), "run", "--request", str(request_file)]
 
 
@@ -89,7 +93,7 @@ class _Book:
 def _run(c, plan):
     book = _Book(c, plan)
     location = plan.get("location") if book.inline else book.peek().get("location")
-    index = 0
+    index, paused_at = 0, None
     while True:
         with book.edit() as b:
             step = plans.next_step(b)
@@ -105,7 +109,8 @@ def _run(c, plan):
         try:
             where = dict(gameId=gid, platform=platform, task=child, index=index, count=total)
             c.emit("step", f"出 {item['name']}（{platform}）", step=where)
-            outcome = _run_step(c, child, gid, platform, plan, location, followUp=platform == "iphone" and bool(rest))
+            outcome = dict(state="failed", message=UNSUPPORTED_MESSAGE) if platform not in SUPPORTED else \
+                _run_step(c, child, gid, platform, plan, location, followUp=platform == "iphone" and bool(rest))
         except Cancelled:
             if not getattr(c, "parent_gone", False):
                 with book.edit() as b:   # 玩家取消：正在出的和没开始的记「已取消」，已出好的保留
@@ -113,7 +118,7 @@ def _run(c, plan):
                 raise
             with book.edit() as b:   # 启动器退出（main.py supervise 见 parentPid 没了）：正在出的那步重新排队，没开始的不动，已出好的保留
                 plans.recover(b)
-                stopped = _stopped_at(b)
+                stopped = _position(b, gid)
             raise Paused(f"启动器退出了，这一批停在第 {stopped} 款：重开启动器后点「继续剩下的」，只出还没出的。",
                          _result(book.peek(), "launcher_exit", stopped)) from None
         except BaseException:
@@ -122,19 +127,18 @@ def _run(c, plan):
             raise
         with book.edit() as b:
             plans.mark(b, gid, platform, outcome["state"], outcome.get("message", ""), outcome.get("code"), outcome.get("output"))
+            if b.get("paused"):
+                paused_at = _position(b, gid)   # 磁盘满停在这一款
         c.emit("stepEnded", outcome.get("message", ""), step=where, outcome=outcome)
     final = book.peek()
     if final.get("paused"):
-        raise Paused("磁盘空间不足，这一批暂停了：释放空间后点「重试」接着出，已出好的不受影响。", _result(final, final["paused"], _stopped_at(final)))
+        raise Paused("磁盘空间不足，这一批暂停了：释放空间后点「重试」接着出，已出好的不受影响。", _result(final, final["paused"], paused_at))
     return _result(final)
 
 
-def _stopped_at(b):
-    """停在第几款（从 1 数）：第一款还有平台没出完的；都出完了就是最后一款"""
-    for n, item in enumerate(b["items"], 1):
-        if any(item["results"][p]["state"] in ("pending", "running", "failed") for p in item["platforms"]):
-            return n
-    return len(b["items"])
+def _position(b, gid):
+    """这一款在批次里是第几款（从 1 数）：停在哪一款就报哪一款（启动器退出时正在出的、磁盘满的那款），不按状态去猜"""
+    return next(n for n, item in enumerate(b["items"], 1) if item["gameId"] == gid)
 
 
 def _result(b, paused_reason=None, stopped_at=None):

@@ -46,9 +46,10 @@ STUB = textwrap.dedent('''
             time.sleep(0.05)
         out(type="result", state="cancelled", message="任务已取消", result={}, diagnostics=[])
         sys.exit(130)
-    if what == "disk_full":
-        out(type="result", state="failed", message="磁盘空间不足", result={},
-            diagnostics=[{"severity": "error", "code": "disk_full", "summary": "磁盘空间不足"}])
+    if what in ("disk_full", "fail"):
+        code = "disk_full" if what == "disk_full" else "tool_exit"
+        out(type="result", state="failed", message="磁盘空间不足" if what == "disk_full" else "这一步失败", result={},
+            diagnostics=[{"severity": "error", "code": code, "summary": "失败"}])
         sys.exit(1)
     out(type="result", state="succeeded", message="操作完成",
         result={"outputPath": "/out/" + r["gameId"] + "-" + platform, "ipa": "/out/" + r["gameId"] + ".ipa" if platform == "iphone" else None}, diagnostics=[])
@@ -142,8 +143,6 @@ class ExportPlanTests(JobCase):
     def test_batch_other_failure_does_not_stop_the_rest(self):
         batch.save(self.c.private, batch.create(self.two()))
         self.scenario({f"{A}/mac": "fail"})
-        (self.stubdir / "stub.py").write_text(STUB.replace('if what == "disk_full":', 'if what in ("disk_full", "fail"):').replace(
-            '"code": "disk_full"', '"code": "disk_full" if what == "disk_full" else "tool_exit"'))
         task, path = self.new_request({"source": "batch"})
         self.assertEqual(self.run_inline(path), 0)
         self.assertEqual(len(self.steps(task)), 4)
@@ -175,7 +174,7 @@ class ExportPlanTests(JobCase):
     # ⑦ 启动器退出（parentPid 没了）→ 停下记 paused、原因 launcher_exit；出好的保留，正在出的重新排队；「继续剩下的」只出没出的
     def test_launcher_exit_pauses_then_continue_runs_only_the_rest(self):
         batch.save(self.c.private, batch.create(self.two()))
-        self.scenario({f"{B}/mac": "slow"})
+        self.scenario({f"{A}/iphone": "fail", f"{B}/mac": "slow"})   # 前面那款失败过：停在哪款仍按正在出的那款报
         launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])   # 假启动器
         self.addCleanup(lambda: launcher.poll() is None and launcher.kill())
         task, path = self.new_request({"source": "batch"}, parentPid=launcher.pid)
@@ -194,7 +193,7 @@ class ExportPlanTests(JobCase):
         result = [e for e in read_events(self.c.private, task) if e["type"] == "result"][-1]["result"]
         self.assertEqual((result["pausedReason"], result["stoppedAt"]), ("launcher_exit", 2))
         saved = batch.load(self.c.private)
-        self.assertEqual([saved["items"][0]["results"][pl]["state"] for pl in ("mac", "iphone")], ["completed", "completed"])
+        self.assertEqual([saved["items"][0]["results"][pl]["state"] for pl in ("mac", "iphone")], ["completed", "failed"])
         self.assertEqual(saved["items"][1]["results"]["mac"], {"state": "pending", "interrupted": True})
         self.assertEqual(saved["items"][1]["results"]["iphone"], {"state": "pending"})
         self.assertIsNone(saved["paused"])   # 不是磁盘满：「继续」不用先「重试」
@@ -203,7 +202,18 @@ class ExportPlanTests(JobCase):
         again, path2 = self.new_request({"source": "batch"})
         self.assertEqual(self.run_inline(path2), 0)
         self.assertEqual(self.steps(again), [(B, "mac"), (B, "iphone")])
-        self.assertEqual(batch.summary(batch.load(self.c.private))["completed"], 2)
+        self.assertEqual(batch.summary(batch.load(self.c.private))["completed"], 1)   # A 的 iPhone 失败过，「继续」不重出它（走「重试」）
+
+    # 这台电脑出不了的平台：不起子作业、直接记失败，不挡同一款别的平台
+    def test_unsupported_platform_marked_failed_without_child(self):
+        with mock.patch.object(export_plan, "SUPPORTED", ("iphone",)):
+            task, path = self.new_request({"source": "inline", "items": [{"gameId": A, "name": "甲", "platforms": ["mac", "iphone"]}]})
+            self.assertEqual(self.run_inline(path), 0)
+        ended = [e for e in read_events(self.c.private, task) if e["type"] == "stepEnded"]
+        self.assertEqual([(e["step"]["platform"], e["outcome"]["state"]) for e in ended], [("mac", "failed"), ("iphone", "completed")])
+        self.assertEqual(ended[0]["outcome"]["message"], "这台电脑出不了这个平台的包")
+        self.assertFalse((self.stubdir / "seen" / f"{task}-1.json").exists())   # Mac 那步没起子作业
+        self.assertTrue((self.stubdir / "seen" / f"{task}-2.json").exists())
 
     # ④ 批次记录写不进 → 本作业失败、说清是批次记录，一步都不起
     def test_batch_record_unwritable_fails_loudly(self):
