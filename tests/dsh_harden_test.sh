@@ -1,5 +1,6 @@
 #!/bin/bash
 # 门禁覆盖：graphics/dsx/gal_spvx.c graphics/dsx/gal_spvx.h graphics/tools/direct/dsh/SpvCross.cs graphics/tools/direct/dsh/Dsh.cs graphics/nvn/gfx/nvn/nvn_refl.m graphics/nvn/gfx/nvn/nvn_refl.h tests/dsh_harden_test.sh
+# 门禁显卡：独占（建 Metal 设备、在本机 GPU 上真跑；11-11 合入运维线补声明：入队预检据此把它的红记「没判、交列车门禁」，门禁走显卡独占锁）
 # 直连着色器链的越界保护（#1204 T1：S2A.Dsh 交 SPIRV-Cross 前调 NxgalSpvCross.Harden = libdsx nxgal_spv_harden，与通用路径同一份 gal_spvx.m；直连不加循环上限（11-01 维护者定，见 gal_spvx.m spv_harden）；约 20 秒，要 Metal）
 #   一支 GLSL 计算核（存储数组 a 声明 4 个元素，下标 idx 与循环次数 n 都从缓冲读，编译期不知道）：
 #     o[0] = a[idx]（越界读）；a[idx] = 77（越界写）；atomicAdd(a[idx], 5)（越界原子，返回值进 o[2]）；for (c < n) c++ → o[1] = c（读数据决定的循环）

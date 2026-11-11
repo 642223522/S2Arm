@@ -38,6 +38,53 @@ void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
     }
 }
 
+// ---------- 按游戏分层的设置（见 settings.h s2a_ios_settings_defaults） ----------
+// 画面类、会因游戏而异的键：分辨率 / 抗锯齿 / 缩放滤镜 / 帧率上限 / 宽屏 / 60 帧（含手动开）/ 主机模式 / 社区补丁，
+//   以及撑不住就问玩家的「问过」与「本款原生 60 帧」记号——原先全在 App 级，一款游戏自动退回 16:9、关 60 帧会串到所有游戏
+NSArray *s2a_ios_per_game_keys(void) {
+    return @[@"S2AResolutionScale", @"S2AAntiAliasing", @"S2AScalingFilter", @"S2AFrameRateLimit", @"S2AWidescreen", @"S2AFps60",
+             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60"];
+}
+@interface S2AGameLayeredDefaults : NSUserDefaults
+- (instancetype)initWithGame:(NSUserDefaults *)game app:(NSUserDefaults *)app keys:(NSSet<NSString *> *)keys;
+@end
+@implementation S2AGameLayeredDefaults {
+    NSUserDefaults *_game, *_app; NSSet<NSString *> *_keys;
+}
+- (instancetype)initWithGame:(NSUserDefaults *)game app:(NSUserDefaults *)app keys:(NSSet<NSString *> *)keys {
+    if ((self = [super initWithSuiteName:nil])) { _game = game; _app = app; _keys = [keys copy]; }
+    return self;
+}
+- (NSUserDefaults *)writerFor:(NSString *)key { return [_keys containsObject:key] ? _game : _app; }
+- (id)objectForKey:(NSString *)key { return ([_keys containsObject:key] ? [_game objectForKey:key] : nil) ?: [_app objectForKey:key]; }
+- (void)setObject:(id)value forKey:(NSString *)key { [[self writerFor:key] setObject:value forKey:key]; }
+- (void)removeObjectForKey:(NSString *)key { [[self writerFor:key] removeObjectForKey:key]; }
+- (BOOL)boolForKey:(NSString *)key { id v = [self objectForKey:key]; return [v respondsToSelector:@selector(boolValue)] && [v boolValue]; }
+- (NSInteger)integerForKey:(NSString *)key { id v = [self objectForKey:key]; return [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0; }
+- (float)floatForKey:(NSString *)key { id v = [self objectForKey:key]; return [v respondsToSelector:@selector(floatValue)] ? [v floatValue] : 0; }
+- (double)doubleForKey:(NSString *)key { id v = [self objectForKey:key]; return [v respondsToSelector:@selector(doubleValue)] ? [v doubleValue] : 0; }
+- (NSString *)stringForKey:(NSString *)key { id v = [self objectForKey:key]; return [v isKindOfClass:NSString.class] ? v : [v isKindOfClass:NSNumber.class] ? [v stringValue] : nil; }
+- (NSArray *)arrayForKey:(NSString *)key { id v = [self objectForKey:key]; return [v isKindOfClass:NSArray.class] ? v : nil; }
+- (NSDictionary *)dictionaryForKey:(NSString *)key { id v = [self objectForKey:key]; return [v isKindOfClass:NSDictionary.class] ? v : nil; }
+- (void)setBool:(BOOL)value forKey:(NSString *)key { [self setObject:@(value) forKey:key]; }
+- (void)setInteger:(NSInteger)value forKey:(NSString *)key { [self setObject:@(value) forKey:key]; }
+- (void)setFloat:(float)value forKey:(NSString *)key { [self setObject:@(value) forKey:key]; }
+- (void)setDouble:(double)value forKey:(NSString *)key { [self setObject:@(value) forKey:key]; }
+@end
+NSUserDefaults *s2a_ios_settings_defaults(void) {
+    const char *gid = getenv("S2A_LAUNCH_GAME_ID");
+    if (!gid || !*gid) return NSUserDefaults.standardUserDefaults;
+    static NSString *cachedID; static NSUserDefaults *cached;   // 进程内同一款反复取（设置页每行都取）：复用一个对象
+    @synchronized(NSUserDefaults.class) {
+        if (!cached || ![cachedID isEqualToString:@(gid)]) {
+            cachedID = @(gid);
+            cached = [[S2AGameLayeredDefaults alloc] initWithGame:[[NSUserDefaults alloc] initWithSuiteName:[@"S2AGame." stringByAppendingString:cachedID]]
+                                                              app:NSUserDefaults.standardUserDefaults keys:[NSSet setWithArray:s2a_ios_per_game_keys()]];
+        }
+        return cached;
+    }
+}
+
 // 包内能力清单（App 包顶层 s2a_caps.tsv，runtime/src/caps.c 同一份）里某项能力（fps60 / widen）的值：1 / 0；没有清单或没有这行 = -1。每次现读（设置页与起局都调，文件很小）
 int s2a_ios_caps_value(const char *cap) {
     NSString *text = [NSString stringWithContentsOfFile:[caps_dir() stringByAppendingPathComponent:@"s2a_caps.tsv"] encoding:NSUTF8StringEncoding error:nil];
@@ -126,11 +173,8 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     const char *gid = getenv("S2A_LAUNCH_GAME_ID");
     NSUserDefaults *game = gid && *gid ? [[NSUserDefaults alloc] initWithSuiteName:[@"S2AGame." stringByAppendingString:@(gid)]] : nil;
     if (game) {
-        // 60 帧关 = 回游戏自己的帧率（多为 30）；开 = 不设，按缺省 / 能力清单
-        if (!getenv("S2A_FPS60") && [game objectForKey:@"S2AFps60"] && ![game boolForKey:@"S2AFps60"]) {
-            apply_environment("S2A_FPS60", @"0");
-            fprintf(stderr, "[S2A 画面设置] S2A_FPS60=0（游戏库：这款关 60 帧）\n");
-        }
+        // 60 帧不在这里单独读：defaults 是按游戏分层的（s2a_ios_settings_defaults），下面 60 帧那段读到的就是「这款 → 所有游戏的默认」。
+        //   原先这里只在这款「关」时写，这款「开」压不过 App 级的「关」（11-11 宿主梳理：库里按款开 60 帧不生效）
         // 宽屏强制启用 = 这款按已验证开满屏（没进宽屏已验证名单也开），并压过 App 级的宽屏关；满屏自检照样兜底（拉伸 / 收窄连续两窗自动退回）
         if ([game boolForKey:@"S2AWidenForce"]) {
             if (!getenv("S2A_WIDEN_VERIFIED")) apply_environment("S2A_WIDEN_VERIFIED", @"1");
@@ -141,22 +185,40 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     // 宽屏（runtime/src/widen.c widen_setting_on）：设置关了 = S2A_WIDESCREEN=0，下次启动整局 16:9；没设过 / 开着不设（缺省开）；启动环境显式给的优先
     // 一次性清记忆（11-06 满屏自检改「两次启动都触发才记住」）：之前单次触发就写下的「宽屏关 + 问过」清掉，下次起局重新试满屏、重新自检。
     //   只清一次（S2AWidenAutoMigrated1106）；之后玩家在设置页自己关的照常记住
-    if (![defaults boolForKey:@"S2AWidenAutoMigrated1106"]) {
-        if ([defaults boolForKey:@"S2AWidescreenAsked"] && [defaults objectForKey:@"S2AWidescreen"] && ![defaults boolForKey:@"S2AWidescreen"]) {
-            [defaults removeObjectForKey:@"S2AWidescreen"]; [defaults removeObjectForKey:@"S2AWidescreenAsked"];
+    //   清的是 App 级的旧值：明确读写 App 级，不走按游戏分层
+    NSUserDefaults *app = NSUserDefaults.standardUserDefaults;
+    if (![app boolForKey:@"S2AWidenAutoMigrated1106"]) {
+        if ([app boolForKey:@"S2AWidescreenAsked"] && [app objectForKey:@"S2AWidescreen"] && ![app boolForKey:@"S2AWidescreen"]) {
+            [app removeObjectForKey:@"S2AWidescreen"]; [app removeObjectForKey:@"S2AWidescreenAsked"];
             fprintf(stderr, "[S2A 画面设置] 满屏自检旧记忆已清：本款下次起局重新试满屏\n");
         }
-        [defaults setBool:YES forKey:@"S2AWidenAutoMigrated1106"];
+        [app setBool:YES forKey:@"S2AWidenAutoMigrated1106"];
+    }
+    // 画面设置改按游戏存（11-11）的一次性迁移，只在多款容器里做：App 级里玩家自己选的值原样留作「所有游戏的默认」；
+    //   撑不住就问玩家 / 满屏自检在某一款上自动写下的那一对（宽屏关 + 问过、60 帧关 + 问过）和「本款原生 60 帧」记号是那一款的事，
+    //   留在 App 级会继续串到所有游戏，清掉，每款下次起局各自重新判（与 11-06 那次同一判法：带「问过」的关 = 自动写的）
+    if (game && ![app boolForKey:@"S2APerGameMigrated1111"]) {
+        if ([app boolForKey:@"S2AWidescreenAsked"]) {
+            if ([app objectForKey:@"S2AWidescreen"] && ![app boolForKey:@"S2AWidescreen"]) [app removeObjectForKey:@"S2AWidescreen"];
+            [app removeObjectForKey:@"S2AWidescreenAsked"];
+        }
+        if ([app boolForKey:@"S2AFps60Asked"]) {
+            if ([app objectForKey:@"S2AFps60"] && ![app boolForKey:@"S2AFps60"]) [app removeObjectForKey:@"S2AFps60"];
+            [app removeObjectForKey:@"S2AFps60Asked"];
+        }
+        [app removeObjectForKey:@"S2AFpsNative60"];
+        [app setBool:YES forKey:@"S2APerGameMigrated1111"];
+        fprintf(stderr, "[S2A 画面设置] 画面设置改按游戏存：自动写下的宽屏 / 60 帧记号已从「所有游戏的默认」里清掉，玩家自己选的保留\n");
     }
     if (!getenv("S2A_WIDESCREEN") && [defaults objectForKey:@"S2AWidescreen"] && ![defaults boolForKey:@"S2AWidescreen"]) {
         apply_environment("S2A_WIDESCREEN", @"0");
-        fprintf(stderr, "[S2A 画面设置] S2A_WIDESCREEN=0（本 App 设置：宽屏关）\n");
+        fprintf(stderr, "[S2A 画面设置] S2A_WIDESCREEN=0（宽屏关：%s）\n", game && [game objectForKey:@"S2AWidescreen"] ? "这款" : "所有游戏的默认");
     }
     // 60 帧（10-27 社区资源口径：表一律打进包、宿主运行时开关，缺省开）：关 = S2A_FPS60=0（回游戏自己的帧率，runtime/src/fps.c，帧率能耗线）；
     //   启动环境显式给的优先；与 Mac 启动器（pack/jobs/community.py launch_env）同口径
     if (!getenv("S2A_FPS60") && [defaults objectForKey:@"S2AFps60"] && ![defaults boolForKey:@"S2AFps60"]) {
         apply_environment("S2A_FPS60", @"0");
-        fprintf(stderr, "[S2A 画面设置] S2A_FPS60=0（本 App 设置：关）\n");
+        fprintf(stderr, "[S2A 画面设置] S2A_FPS60=0（60 帧关：%s）\n", game && [game objectForKey:@"S2AFps60"] ? "这款" : "所有游戏的默认");
     }
     // 包里 60 帧是关的（强信号，tools/caps_policy.py；11-02 起全引擎默认开）、玩家在设置页看过「此游戏开 60 帧有已知问题」提示后手动开了（S2AFps60Manual，
     //   只有设置页那一下会写）：S2A_FPS60=1。放开出图间隔由清单读到 fps60 0 + 这里的 1 认出（runtime/src/caps.c s2a_fps60_display_source），图形层每局按开关读时判，
@@ -246,19 +308,61 @@ void s2a_ios_apply_diag_run(NSUserDefaults *defaults) {
     fprintf(stderr, "[S2A 诊断局] 本局开逐通道读数（第 3600 / 7200 次出图），读数写 %s，下一局自动关\n", dir.fileSystemRepresentation);
 }
 
+// 本地玩家（#623，维护者 11-11）：游戏库（shell/Sources/S2ArmShellHost/LocalPlayers.swift）把玩家表写在 App 偏好 S2ALocalPlayers
+//   （数组，每项 {uid, name, folder}；第一项 uid 空串 = 第一个玩家）、当前玩家的 uid 写在 S2ALocalPlayer。按本机存，不在游戏数据目录里，删游戏不丢。
+//   这里只读、校验：表里没有当前那个 / 字段不对 → 第一个玩家；文件夹名只认一层、不以 . 开头、不含 /（防拼出本款文档根以外的路径），不对就按用户号起名
+static BOOL player_folder_ok(id v) {
+    if (![v isKindOfClass:NSString.class]) return NO;
+    NSString *s = v;
+    return s.length > 0 && s.length <= 120 && ![s hasPrefix:@"."] && [s rangeOfString:@"/"].location == NSNotFound && [s rangeOfString:@":"].location == NSNotFound;
+}
+static BOOL player_uid_ok(NSString *uid) {
+    if (uid.length != 32) return NO;
+    NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
+    return [uid rangeOfCharacterFromSet:bad].location == NSNotFound && ![uid isEqualToString:[@"" stringByPaddingToLength:32 withString:@"0" startingAtIndex:0]];
+}
+NSDictionary<NSString *, NSString *> *s2a_ios_local_player(NSUserDefaults *defaults) {
+    id list = [defaults objectForKey:@"S2ALocalPlayers"];
+    if (![list isKindOfClass:NSArray.class] || ![(NSArray *)list count]) return nil;
+    NSString *want = [defaults stringForKey:@"S2ALocalPlayer"] ?: @"";
+    NSDictionary *hit = nil;
+    for (id p in (NSArray *)list) {
+        if (![p isKindOfClass:NSDictionary.class] || ![p[@"uid"] isKindOfClass:NSString.class]) continue;
+        if (want.length && [p[@"uid"] isEqualToString:want] && player_uid_ok(want)) { hit = p; break; }
+    }
+    NSString *name = @"";
+    if (!hit) {   // 第一个玩家：表里 uid 空串那项的名字
+        for (id p in (NSArray *)list)
+            if ([p isKindOfClass:NSDictionary.class] && [p[@"uid"] isEqual:@""] && [p[@"name"] isKindOfClass:NSString.class]) { name = p[@"name"]; break; }
+        return @{@"uid": @"", @"name": name, @"folder": @"SaveData"};
+    }
+    if ([hit[@"name"] isKindOfClass:NSString.class]) name = hit[@"name"];
+    NSString *folder = player_folder_ok(hit[@"folder"]) && ![hit[@"folder"] isEqualToString:@"SaveData"] ? hit[@"folder"] : [@"SaveData-" stringByAppendingString:want];
+    return @{@"uid": want, @"name": name, @"folder": folder};
+}
+
 void s2a_ios_load_graphics_settings(void) {
     @autoreleasepool {
         // 先套用户设置、再读包内能力清单（在 App 包顶层）：两边都只在环境变量未设时写，先写的赢 → 启动环境 > 用户设置 > 清单
         //   （审计 #854 F-caps-beats-settings：原先清单先写，设置里关 60 帧 / 宽屏不生效）
-        s2a_ios_apply_graphics_settings(NSUserDefaults.standardUserDefaults);
+        s2a_ios_apply_graphics_settings(s2a_ios_settings_defaults());
         s2a_caps_apply(caps_dir().fileSystemRepresentation);
         s2a_ios_publish_bundle_info(NSBundle.mainBundle.infoDictionary ?: @{}, NSUserDefaults.standardUserDefaults);
         // 存档位置 SaveData（services/S2A.Services/SaveFolder.cs 读 S2A_SAVE_FOLDER，共享层不判平台）：本款文档根下的 SaveData。
         //   这里在服务层起来之前跑，多款容器选游戏后 S2A_DOCS 已是 Documents/games/<游戏号>（runtime/src/launchctx.c）；单款包没有 S2A_DOCS = Documents。启动环境显式给的优先
+        //   本地玩家（#623）：每个玩家一个存档位置（第一个玩家仍是 SaveData），当前玩家给服务层（services/S2A.Services/LocalPlayer.cs 读
+        //   S2A_PLAYER_USER = first / 用户号、S2A_PLAYER_NAME）；没建过玩家什么都不设（旧行为）。启动环境显式给了玩家就整个不套游戏库的（存档位置也不按它）
+        NSDictionary<NSString *, NSString *> *player = getenv("S2A_PLAYER_USER") ? nil : s2a_ios_local_player(NSUserDefaults.standardUserDefaults);
         if (!getenv("S2A_SAVE_FOLDER")) {
             const char *d = getenv("S2A_DOCS");
             NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:@"SaveData"].fileSystemRepresentation, 0);
+            setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:player ? player[@"folder"] : @"SaveData"].fileSystemRepresentation, 0);
+        }
+        if (player) {
+            setenv("S2A_PLAYER_USER", player[@"uid"].length ? player[@"uid"].UTF8String : "first", 0);
+            if (player[@"name"].length && !getenv("S2A_PLAYER_NAME")) setenv("S2A_PLAYER_NAME", player[@"name"].UTF8String, 0);
+            fprintf(stderr, "[S2A 本地玩家] %s（%s），存档位置 %s\n", player[@"uid"].length ? player[@"uid"].UTF8String : "第一个玩家",
+                    player[@"name"].length ? player[@"name"].UTF8String : "没改过名", getenv("S2A_SAVE_FOLDER"));
         }
         s2a_ios_apply_diag_run(NSUserDefaults.standardUserDefaults);
     }
@@ -276,7 +380,7 @@ int s2a_ios_reload_graphics_settings(void) {
         // 与起局同一顺序：设置 → 清单。先撤清单自己写的变量（审计 P1-80：原先只撤设置页登记的，清单写的 S2A_FPS60=1 留着，设置里关 60 帧、立刻重启不生效）
         @try {
             s2a_caps_reset();
-            s2a_ios_reapply_graphics_settings(NSUserDefaults.standardUserDefaults);
+            s2a_ios_reapply_graphics_settings(s2a_ios_settings_defaults());
             s2a_caps_apply(caps_dir().fileSystemRepresentation);
         }
         @catch (NSException *error) {

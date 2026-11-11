@@ -88,7 +88,7 @@ struct EnvironmentView: View {
                         CardRow(loc.t("s2arm.env.cloud.title"), detail: model.cloudFolder.map { $0.path + "\n" + loc.t("s2arm.env.cloud.on") } ?? loc.t("s2arm.env.cloud.off")) {
                             HStack(spacing: 8) {
                                 if model.cloudFolder != nil {
-                                    Button(loc.t("s2arm.env.cloud.turnOff")) { try? model.setCloudFolder(nil) }
+                                    Button(loc.t("s2arm.env.cloud.turnOff")) { do { try model.setCloudFolder(nil) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) } }
                                         .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.off")
                                 }
                                 Button(loc.t("s2arm.env.cloud.choose")) { chooseCloudFolder() }
@@ -170,7 +170,7 @@ struct EnvironmentView: View {
         let drive = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
         if FileManager.default.fileExists(atPath: drive.path) { panel.directoryURL = drive }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? model.setCloudFolder(url)
+        do { try model.setCloudFolder(url) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) }   // 剃刀 M13：失败报原因，不再停在旧值像没反应
     }
 
     private func s(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang == .zh ? "zh-Hans" : "en") }

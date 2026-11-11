@@ -5,7 +5,7 @@
 ## 怎么工作
 
 - 页面只有一个文件 [index.html](index.html)，样式和脚本都内联，不引外部资源。
-- 两个下载按钮直接指向 `releases/latest/download/<产物名>`，GitHub 自动跳到最新正式版的同名文件。**发版时 Mac / Windows 产物名必须保持 `S2Arm-mac-arm64.dmg`、`S2Arm-windows-x64.zip` 不变**，否则按钮会 404；改名要同步改 `index.html`。
+- 两个下载按钮直接指向 `releases/latest/download/<产物名>`，GitHub 自动跳到最新正式版的同名文件。**发版时 Mac / Windows 产物名必须保持 `S2Arm-mac-arm64.dmg`、`S2Arm-windows-x64.zip` 不变**，否则按钮会 404；改名要同步改 `index.html`。Windows 安装程序 `S2Arm-windows-x64-setup.exe`（v0.3.0 起）：页面脚本看最新正式版里有它，就把 Windows 主按钮换成它、压缩包降为「便携版」链接；没有就照旧给压缩包（所以页面可以先于带安装程序的版本发布）。
 - `releases/latest` 只认正式版：标成「预发布」的版本不会出现在按钮上。
 - 页面脚本调用一次 `api.github.com/repos/jhaizhou-ops/S2Arm/releases/latest`，补上版本号、发布日期、文件大小和 SHA-256。页顶的「点个星」链接到仓库主页（GitHub 不支持站外一键点星，要在仓库页点 Star），脚本再调一次 `api.github.com/repos/jhaizhou-ops/S2Arm` 显示当前 Star 数。接口不通（未登录用户每个 IP 每小时 60 次）时只少这几行字和数字，按钮照常可用；关掉脚本也能下载。
 - 发版不用重新发布页面：按钮和版本信息都是访问时现取的。

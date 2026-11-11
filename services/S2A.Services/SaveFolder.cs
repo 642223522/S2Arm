@@ -36,6 +36,9 @@ namespace S2A.Services
             return string.IsNullOrEmpty(dir) ? null : dir;
         }
         static string DataRoot() => Ryujinx.Common.Configuration.AppDataManager.BaseDirPath;
+        // 本地玩家（#623，LocalPlayer.cs）：每个玩家一个存档位置，两个记录文件也按玩家分；第一个玩家仍是原文件名（升级后接着用）
+        internal static string StatePath() => Path.Combine(DataRoot(), Path.GetFileNameWithoutExtension(StateFile) + LocalPlayer.FileSuffix() + ".txt");
+        internal static string ProblemPath() => Path.Combine(DataRoot(), Path.GetFileNameWithoutExtension(ProblemFile) + LocalPlayer.FileSuffix() + ".txt");
 
         // ---- 摘要 ----
         internal static List<string> Files(string dir)
@@ -178,16 +181,17 @@ namespace S2A.Services
             }
             return null;
         }
-        // 建存档之前调（Application.Register，EnsureSaveData 之前；同 Saves.SelectUser）：存档位置里有用户号就以它为当前用户
-        public static void SelectUser(Switch device, ulong programId)
+        // 建存档之前调（Application.Register，EnsureSaveData 之前；同 Saves.SelectUser）：存档位置里有用户号就以它为当前用户。
+        //   返回 true = 存档位置里记了用户号、已套上（本地玩家的第一个玩家据此决定要不要回缺省用户，LocalPlayer.cs）
+        public static bool SelectUser(Switch device, ulong programId)
         {
             string folder = Folder();
-            if (folder == null) return;
+            if (folder == null) return false;
             try
             {
                 Recover(folder);
                 string hex = FolderUser(folder, programId);
-                if (hex == null) return;
+                if (hex == null) return false;
                 var id = new Ryujinx.HLE.HOS.Services.Account.Acc.UserId(hex);
                 var accounts = device.System.AccountManager;
                 if (accounts.LastOpenedUser.UserId.ToString() != id.ToString())
@@ -196,8 +200,9 @@ namespace S2A.Services
                     accounts.OpenUser(id);
                 }
                 Console.Error.WriteLine($"S2A 存档位置：当前用户 {accounts.LastOpenedUser.UserId}（存档里记的用户号）");
+                return true;
             }
-            catch (Exception e) { Red.Report("存档位置：用户号没套上，沿用当前用户", e.Message); }
+            catch (Exception e) { Red.Report("存档位置：用户号没套上，沿用当前用户", e.Message); return false; }
         }
 
         // ---- 起局读入 ----
@@ -210,7 +215,7 @@ namespace S2A.Services
             {
                 Recover(folder);
                 Directory.CreateDirectory(folder);   // 玩家第一次就能在访达 / 「文件」App 里看到这个文件夹
-                string now = Digest(folder), state = Path.Combine(DataRoot(), StateFile);
+                string now = Digest(folder), state = StatePath();
                 _atLaunch = now;
                 string last = File.Exists(state) ? File.ReadAllText(state).Trim() : null;
                 if (now == "" || now == last) return;   // 空的（还没写回过）/ 和上次一样：沿用当前存档
@@ -219,13 +224,13 @@ namespace S2A.Services
                 if (src == null)
                 {
                     _keep = true;
-                    File.WriteAllText(Path.Combine(DataRoot(), ProblemFile), why);
+                    File.WriteAllText(ProblemPath(), why);
                     Red.Report("存档位置：认不出放进来的存档，沿用当前存档", $"{why}（{folder}）");
                     return;
                 }
                 Saves.SeedFrom(device, programId, src);
                 File.WriteAllText(state, now);
-                File.Delete(Path.Combine(DataRoot(), ProblemFile));
+                File.Delete(ProblemPath());
                 Console.Error.WriteLine($"S2A 存档位置：读入玩家放进来的存档 {string.Join("、", src.Select(x => x.kind + " ← " + Path.GetRelativePath(folder, x.dir)))}");
             }
             catch (InvalidOperationException) { throw; }   // 拷入 / 提交失败：本次起局失败（同 S2A_SAVE_DIR）
@@ -263,7 +268,7 @@ namespace S2A.Services
                 if (Directory.Exists(folder)) Directory.Move(folder, old);
                 Directory.Move(next, folder);
                 if (Directory.Exists(old)) Directory.Delete(old, true);
-                File.WriteAllText(Path.Combine(DataRoot(), StateFile), Digest(folder));
+                File.WriteAllText(StatePath(), Digest(folder));
                 Console.Error.WriteLine($"S2A 存档位置：当前存档写回 {folder}");
             }
             catch (Exception e)

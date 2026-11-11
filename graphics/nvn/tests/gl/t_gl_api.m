@@ -777,22 +777,26 @@ static void t_love(void) {
 // S 核心函数不回空（小丑牌 v0.2.6 iPhone 起局 5 次闪退：LÖVE 按报的 GL 4.5 取核心函数，没实现的回空，调用跳到 0 被代码签名杀掉）；
 //   GL_FRAMEBUFFER_SRGB 开关可开关可查、不置错（原先 glIsEnabled / glDisable 都置 0x500）。期望按 GL 规范与本层约定手写：
 //   核心名（结尾不是两个以上大写字母）没实现 → 非空、调用回 0；带厂商后缀的没实现 → 空；FRAMEBUFFER_SRGB 缺省关、开了查得到开、全程无错
+//   #601 起空实现按调用来源给：查表 gl_lookup 只回真实现（装载器先问直连层，层里交了空实现，游戏模块自己导出的同名函数就轮不到）；
+//   游戏运行时按名要（eglGetProcAddress）查表没有时才给空实现。所以下面空实现各项从 eglGetProcAddress 取，查表另核回空
 static void t_core_stub(void) {
-    void *core = gpa("glS2aNoSuchCore"), *ext = gpa("glS2aNoSuchFuncARB");
+    void *(*egpa)(const char *) = gpa("eglGetProcAddress"); CHECK(egpa != NULL, "eglGetProcAddress 查得到"); if (!egpa) return;
+    CHECK(gpa("glS2aNoSuchCore") == NULL, "查表（gl_lookup）对没实现的核心名回空（空实现不从查表给，#601）");
+    void *core = egpa("glS2aNoSuchCore"), *ext = egpa("glS2aNoSuchFuncARB");
     CHECK(core != NULL, "没实现的核心名拿到非空入口（空实现）");
     CHECK(core && ((uint64_t (*)(void))core)() == 0, "调用空实现不崩、回 0");
-    CHECK(core == gpa("glS2aNoSuchCore"), "同名再查拿到同一个空实现");
+    CHECK(core == egpa("glS2aNoSuchCore"), "同名再查拿到同一个空实现");
     CHECK(ext == NULL, "带厂商后缀的没实现照旧回空（程序按指针判扩展支持）");
     // #601：「gl」后跟小写的不是 GL 函数（NVN GLSL 编译库 glslc*，由游戏模块导出）——必须回空，装载器才会去游戏模块找
     { static const char *const glslc[] = {"glslcInitialize", "glslcSetAllocator", "glslcCompile", "glslcFinalize", "glslcGetVersion", "glslcCompilePreSpecialized"};
-      int nonnull = 0; for (int i = 0; i < 6; i++) nonnull += gpa(glslc[i]) != NULL;
+      int nonnull = 0; for (int i = 0; i < 6; i++) nonnull += (gpa(glslc[i]) != NULL) + (egpa(glslc[i]) != NULL);
       CHECK(nonnull == 0, "glslc* 六个名字全部回空（交给游戏模块），拿到非空 %d 个", nonnull); }
     // 小丑牌 v0.2.7 起局查了 854 个没实现的核心名：1000 个不同名字都要拿到各自的空实现（以前 256 个用完就回空、照样跳 0）
     int got = 0, distinct = 1; void *prev = NULL; char nm[40];
-    for (int i = 0; i < 1000; i++) { snprintf(nm, sizeof nm, "glS2aMissCore%dxyz", i); void *f = gpa(nm); got += f != NULL; if (f && f == prev) distinct = 0; prev = f; }
+    for (int i = 0; i < 1000; i++) { snprintf(nm, sizeof nm, "glS2aMissCore%dxyz", i); void *f = egpa(nm); got += f != NULL; if (f && f == prev) distinct = 0; prev = f; }
     CHECK(got == 1000 && distinct, "1000 个不同的没实现核心名全部拿到空实现、相邻两个不共用（拿到 %d）", got);
     // 编号空实现用完以后（再查 3200 个，累计超 4096）照样不回空，拿到的共用空实现调用回 0
-    int got2 = 0, ret0 = 1; for (int i = 0; i < 3200; i++) { snprintf(nm, sizeof nm, "glS2aMissMore%dxyz", i); void *f = gpa(nm); got2 += f != NULL; if (f && ((uint64_t (*)(void))f)() != 0) ret0 = 0; }
+    int got2 = 0, ret0 = 1; for (int i = 0; i < 3200; i++) { snprintf(nm, sizeof nm, "glS2aMissMore%dxyz", i); void *f = egpa(nm); got2 += f != NULL; if (f && ((uint64_t (*)(void))f)() != 0) ret0 = 0; }
     CHECK(got2 == 3200 && ret0, "超过 4096 个没实现核心名后仍全部拿到空实现、调用回 0（拿到 %d）", got2);
     GLboolean (*isen)(GLenum) = gpa("glIsEnabled"); void (*en)(GLenum) = gpa("glEnable"), (*dis)(GLenum) = gpa("glDisable");
     while (glGetError()) {}

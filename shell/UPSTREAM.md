@@ -35,6 +35,7 @@
    | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`GameStateView.swift`、`LibraryView.swift` | `GameState` 加 `installing(InstallStage)`（传输中 / 安装中 / 传输中断 / 安装没完成）及各处 `switch`；`CoverView` 加 `InstallMask` 灰色蒙版（`RemainingPie` / `DonePie`）；传着 / 解着时主按钮 `disabled` | v0.2.3 装机进度：App 装好就显示正在从电脑传的那款，蒙版随进度顺时针消掉，能玩了才给开始（宿主层 `S2ArmShellHostModel` 按 `s2a_shell_game_install_state` 出状态） | — |
    | `Sources/ShellUI/Resources/Localizable.xcstrings` | 装机进度加 10 条（en / zh-Hans）：Transferring – keep connected…、Installing…、Transfer stopped 等 | 同上 | — |
    | `Sources/ShellUI/LibraryView.swift`、`PortraitLibrary.swift`、`CoverFlowView.swift`、`ShellSettingsView.swift` | 空库 / 竖屏左上角加 `LibraryVersionBadge`（与右上角按钮同高）；横屏顶栏「x / N」后加同一个；设置页底部版本行改读 `ShellVersion.display`。新增 `ShellVersion.swift` 为 S2Arm 自有实现 | 游戏库与设置页显示版本字（正式版 v0.3.0、开发版 v0.2.6-dev+ba0ef07，读 Info.plist 的 `S2ADisplayVersion`，电脑组装时由 `pack/jobs/core.py display_version` 写），玩家截图就能定版（11-11 维护者） | — |
+   | `Sources/ShellUI/LibraryView.swift`、`PortraitLibrary.swift`、`CoverFlowView.swift`、`SideBar.swift`、`Resources/Localizable.xcstrings` | 竖屏 / 空库顶部版本字与右侧按钮并成一行（版本字先让位）；右侧按钮、横屏顶栏、侧边条在「手柄」前加 `PlayerChip`（侧边条按它多算一格高度）；字符串表加 14 条（七种语言）：Player、Switch player、Player 1、Who’s playing?、Add Player 等。新增 `ShellPlayers.swift`（`ShellPlayer` 环境值 + `PlayerChip`）为 S2Arm 自有实现，宿主没设 `shellPlayer` 时不画 | 本地玩家（#623，维护者 11-11）：游戏库顶部显示这次用谁的身份玩、点开切换（宿主层 `S2ArmShellHost/LocalPlayers.swift`、`S2ArmPlayersView.swift`） | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
 ## catalogue（游戏目录清单 JSON）

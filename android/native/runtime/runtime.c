@@ -414,7 +414,9 @@ uint64_t s2a_android_runtime_session(void) {
     return session;
 }
 // 强引用真实NativeAOT reverse-PInvoke，不能用Host.Init发生在另一线程代替附着。
+void s2a_capacity_child(void) __attribute__((weak));   // capacity_affinity.cpp（诊断探针等不带它的链接里没有）
 int s2a_android_runtime_enter_guest_thread(void) {
+    if (s2a_capacity_child) s2a_capacity_child();   // 先把继承来的窄亲和掩码放宽，再做下面的准入
     uint64_t session = s2a_android_runtime_session();
     if (!session) return S2A_RUNTIME_ARGUMENT;
     if (stop_requested()) return failed(S2A_RUNTIME_STOP, 0, "stop before managed thread attach");

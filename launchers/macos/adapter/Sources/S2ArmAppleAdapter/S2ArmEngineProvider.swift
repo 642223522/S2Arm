@@ -125,6 +125,7 @@ public final class S2ArmEngineProvider: EngineProvider {
             var extra: [String: Any] = ["gameId": job.gameId]
             if let target = job.deviceTarget { extra["target"] = target }
             if job.spaceOverride { extra["spaceOverride"] = true }
+            if job.followUp { extra["followUp"] = true }
             if let location = job.location { extra["location"] = location }
             let r = try await client.perform("ipa", extra: extra, events: events).result
             return BuildResult(gameId: job.gameId, target: .iPhone, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)
@@ -210,13 +211,22 @@ public final class S2ArmEngineProvider: EngineProvider {
     /// 起一局：settings 只用 uiLanguage 与 Switch 2 Pro 的本机转发通道；游戏语言跟系统、主机模式、宽屏 / 60 帧都由作业层定。
     /// 事件：作业事件按序转出，最后一条是这局的结局（result）。
     public func run(_ game: InstalledGame, settings s: Settings, events: EventSink) throws -> RunningGame {
-        var arguments: [String: Any] = [:]
-        if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
-        if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
-        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage, arguments: arguments,
+        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage, arguments: Self.launchArguments(s),
                                    onEvent: { if !$0.isFinal { events.emit(EngineEvent(job: $0)) } },
                                    onFinish: { events.emit(EngineEvent(outcome: $0)) })
         return RunningGame(gameId: game.gameId, taskId: handle.id)
+    }
+
+    /// launch 请求里设置带的字段（作业层 pack/jobs/build.py runtime_env 读）
+    static func launchArguments(_ s: Settings) -> [String: Any] {
+        var arguments: [String: Any] = [:]
+        if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
+        if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
+        // 本地玩家（#623）：player 字段 {user, name, folder}；没带 = 旧行为
+        if let user = s.values["playerUser"] {
+            arguments["player"] = ["user": user, "name": s.values["playerName"] ?? "", "folder": s.values["playerFolder"] ?? "SaveData"]
+        }
+        return arguments
     }
 
     public func control(_ game: RunningGame, _ cmd: ControlCommand) {
@@ -230,7 +240,7 @@ public final class S2ArmEngineProvider: EngineProvider {
     // MARK: iPhone 安装（设计稿协议之外）
 
     public func signingProject() async throws -> String { try await installer.signingProject() }
-    public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
+    public func installReadiness(gameId: String, device: String? = nil) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId, device: device) }
     public func devCertStatus(device: String? = nil) async throws -> DevCertStatus { try await installer.devCertStatus(device: device) }
     public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
         try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
@@ -243,15 +253,15 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
-    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
-        try await installer.updatePhone(acceptStale: acceptStale, events: events)
+    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, device: device, events: events)
     }
 
-    public func restorePhone(events: EventSink = .discard) async throws {
-        try await installer.restorePrevious(events: events)
+    public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {
+        try await installer.restorePrevious(device: device, events: events)
     }
 
-    public func removeFromPhone(gameId: String, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> RemoveResult {
-        try await installer.remove(gameId: gameId, acceptDropped: acceptDropped, events: events)
+    public func removeFromPhone(gameId: String, acceptDropped: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> RemoveResult {
+        try await installer.remove(gameId: gameId, acceptDropped: acceptDropped, device: device, events: events)
     }
 }

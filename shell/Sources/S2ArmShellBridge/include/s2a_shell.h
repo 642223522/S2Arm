@@ -36,6 +36,13 @@ int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
 // 库界面第一次出现（启动打点「游戏库界面可操作」）；弱定义缺省什么都不做
 void s2a_shell_library_appeared(void);
+// 单一 IMG 的分段安装进度（runtime/src/pack_apply.c s2a_pack_apply_phase）：正在解这一款时 1，*phase = 1 解开推送包 / 2 从 game.img 解小文件 /
+//   3 核对机上文件，*fraction = 这一段的完成比例（0–1，不知道总量时 < 0）；不在解这款返回 0。主线程
+int s2a_shell_install_phase(const char *game_id, int *phase, double *fraction);
+// 这一款最后一次解开失败的原因（一句人话，s2a_pack_apply_failure 的原样）；没失败过 / 之后成功了返回 NULL。返回的指针到下次调用前有效。主线程
+const char *s2a_shell_install_failure(const char *game_id);
+// 主屏快捷操作「设置」冷启动时宿主记下的请求：1 = 游戏库出现时要打开游戏库设置（取走即清）；运行中宿主直接发通知 S2AShellOpenSettings
+int s2a_shell_take_open_settings(void);
 void s2a_shell_pick_game_data(const char *game_id);
 // 宿主让库界面重判各款资源包（说明里「重新检查」后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
 typedef void (*s2a_shell_refresh_fn)(void *ctx);

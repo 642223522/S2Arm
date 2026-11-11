@@ -267,12 +267,35 @@ int main(void) {
     } while (!atomic_load(&finished));
     assert(!pthread_join(thread, NULL));
 
+    // 本地多手柄槽位（s2a_slot_plan，Mac / iOS 共用）：期望值按「还在线留原槽、新来的占最小空槽、超 4 只丢弃」手算
+    {
+        static const char A, B, C, D, E;
+        const void *prev[4] = {0}; int slot_of[5];
+        const void *ab[2] = {&A, &B};
+        assert(s2a_slot_plan(prev, ab, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1);   // 两只：A 槽 0、B 槽 1
+        prev[0] = &A; prev[1] = &B;
+        const void *b_only[1] = {&B};
+        assert(s2a_slot_plan(prev, b_only, 1, 4, slot_of) == 2 && slot_of[0] == 1);   // A 断开：B 留槽 1，仍报 2 格
+        prev[0] = NULL;
+        const void *ba[2] = {&B, &A};
+        assert(s2a_slot_plan(prev, ba, 2, 4, slot_of) == 2 && slot_of[0] == 1 && slot_of[1] == 0);   // A 接回：回槽 0
+        const void *bc[2] = {&B, &C};
+        assert(s2a_slot_plan(prev, bc, 2, 4, slot_of) == 2 && slot_of[0] == 1 && slot_of[1] == 0);   // A 不在时插进 C：C 占空出的槽 0
+        prev[0] = &C;
+        const void *bca[3] = {&B, &C, &A};
+        assert(s2a_slot_plan(prev, bca, 3, 4, slot_of) == 3 && slot_of[0] == 1 && slot_of[1] == 0 && slot_of[2] == 2);   // A 再接回：落槽 2
+        const void *none[4] = {0}, *five[5] = {&A, &B, &C, &D, &E};
+        assert(s2a_slot_plan(none, five, 5, 4, slot_of) == 4 && slot_of[0] == 0 && slot_of[1] == 1 && slot_of[2] == 2 &&
+               slot_of[3] == 3 && slot_of[4] == -1);   // 第 5 只丢弃
+        assert(s2a_slot_plan(none, five, 0, 4, slot_of) == 1);   // 没有手柄：1 格（触屏 / 键盘）
+    }
+
     const int iterations = 1000000;
     struct timespec start, end; int32_t axes[4];
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (int i = 0; i < iterations; i++) s2a_pad_read(axes, NULL);
     clock_gettime(CLOCK_MONOTONIC, &end);
     double ns = (end.tv_sec - start.tv_sec) * 1e9 + end.tv_nsec - start.tv_nsec;
-    printf("✓ t_pad：生命周期、短按、完整快照、通知等待与提交统计通过；宿主快照读取 %.1f ns/次（非设备蓝牙功耗测量）\n", ns / iterations);
+    printf("✓ t_pad：生命周期、短按、完整快照、通知等待、提交统计与多手柄槽位通过；宿主快照读取 %.1f ns/次（非设备蓝牙功耗测量）\n", ns / iterations);
     return 0;
 }

@@ -2,7 +2,8 @@ import Foundation
 
 /// 环境检查的一项（preflight 作业 result.checks 的一项，同旧启动器 ToolCheck）。
 public struct ToolCheck: Identifiable, Equatable {
-    public var id: String { name }
+    /// 稳定的英文检查项 id（作业层 toolchain.preflight 给：xcode / metal / ios_platform / apple_team …）；界面按它认项，不按中文 name（剃刀 M11）
+    public let id: String
     public let name: String
     public let ok: Bool
     public let message: String
@@ -15,16 +16,16 @@ public struct ToolCheck: Identifiable, Equatable {
     /// 失败诊断的恢复码。
     public let code: String?
 
-    public init(name: String, ok: Bool, message: String = "", action: String? = nil, group: String = "system",
+    public init(id: String? = nil, name: String, ok: Bool, message: String = "", action: String? = nil, group: String = "system",
                 requiredFor: [String] = ["prepare"], code: String? = nil) {
-        self.name = name; self.ok = ok; self.message = message; self.action = action; self.group = group
+        self.id = id ?? name; self.name = name; self.ok = ok; self.message = message; self.action = action; self.group = group
         self.requiredFor = requiredFor; self.code = code
     }
 
     public init?(json c: [String: Any]) {
-        guard let name = c["name"] as? String, let ok = c["ok"] as? Bool else { return nil }
+        guard let id = c["id"] as? String, let name = c["name"] as? String, let ok = c["ok"] as? Bool else { return nil }
         let message = (c["help"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? c["message"] as? String ?? ""
-        self.init(name: name, ok: ok, message: message, action: (c["action"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+        self.init(id: id, name: name, ok: ok, message: message, action: (c["action"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                   group: c["group"] as? String ?? "system", requiredFor: c["requiredFor"] as? [String] ?? ["prepare", "launch"],
                   code: (c["diagnostic"] as? [String: Any])?["code"] as? String)
     }

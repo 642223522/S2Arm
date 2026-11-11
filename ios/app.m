@@ -436,10 +436,11 @@ UIView *s2a_ios_root_view(void) { return g_root; }
 //   设置页「60 帧」「宽屏」开关读写的是同一个设置（S2AFps60 / S2AWidescreen），玩家随时改回。帧率选「切换」当场热切（s2a_fps_set_enabled(0)，游戏速度不变）；
 //   宽屏选「切换」调满屏线 s2a_widen_force_native(1)（runtime/src/widen.c：本局钉成 1920×1080、热切到原生 16:9）：返回 1 = 已热切；
 //   -1 = 游戏自己出宽图的款（第二层值槽装载时填死，裁中间会切掉贴边界面）→ 提示重启后生效（下次起局读 S2AWidescreen 关宽屏）
+#include "settings.h"   // s2a_ios_settings_defaults：问过 / 原生 60 帧 / 自动退回都记在这一款（11-11，原先 App 级、串到所有游戏）
 static NSString *qp_key(int kind) { return kind == 1 ? @"S2AFps60Asked" : @"S2AWidescreenAsked"; }
-int s2a_ios_qp_asked(int kind) { return [NSUserDefaults.standardUserDefaults boolForKey:qp_key(kind)]; }
+int s2a_ios_qp_asked(int kind) { return [s2a_ios_settings_defaults() boolForKey:qp_key(kind)]; }
 // 本款原生 60 帧（runtime/src/qprompt_host.c 按运行时实际状态判定后调）：记进本 App 设置，设置页 60 帧那行据此显示「本款原生 60 帧」、开关置灰（app_settings.m）
-void s2a_ios_fps_native60(int on) { [NSUserDefaults.standardUserDefaults setBool:on != 0 forKey:@"S2AFpsNative60"]; }
+void s2a_ios_fps_native60(int on) { [s2a_ios_settings_defaults() setBool:on != 0 forKey:@"S2AFpsNative60"]; }
 void s2a_fps_set_enabled(int on);
 int s2a_fps_hot_revert_ok(void);   // runtime/src/fps.c：1 = 运行中关 60 帧能完全回原帧率；0 = 游戏自己的限帧变量要重启才回（帧率表 w 行没写关值）
 // 「切换到原生帧率」重启后生效（原生线 11-02：w 行写回的「原值」是初始化前的快照，八方2 / 巫师3 写 0 = 不限帧）：S2AFps60 已写 NO，新局帧率表起局就关。
@@ -471,7 +472,7 @@ void s2a_ios_fps_capped(int reason) {
 // 满屏自检自动退回（runtime/src/qprompt_host.c widen_auto_revert，11-06 满屏泛化）：记进本 App 设置（宽屏关 = 下次起局 16:9，设置页可改回），横幅一行告诉玩家
 //   persist（11-06 起）：两次不同启动都触发才记住（runtime/src/widen_remember.c）；只一次的不写设置，下次启动重新试满屏
 void s2a_ios_widen_auto(int hot, int why, int persist) {
-    if (persist) { NSUserDefaults *d = NSUserDefaults.standardUserDefaults; [d setBool:NO forKey:@"S2AWidescreen"]; [d setBool:YES forKey:qp_key(2)]; }
+    if (persist) { NSUserDefaults *d = s2a_ios_settings_defaults(); [d setBool:NO forKey:@"S2AWidescreen"]; [d setBool:YES forKey:qp_key(2)]; }
     NSString *body = persist ? (hot ? S2AL(@"app.widen.persistHot") : S2AL(@"app.widen.persist"))
                              : (hot ? S2AL(@"app.widen.onceHot") : S2AL(@"app.widen.once"));
     (void)why; dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"app.widen.title"), body, 0, 6); });
@@ -484,7 +485,7 @@ void s2a_ios_qprompt(int kind, int secs) {   // 文案 维护者 11-02 定：「
                                 : [NSString stringWithFormat:S2AL(@"app.qp.widen.title"), secs];
         UIAlertController *a = [UIAlertController alertControllerWithTitle:t message:S2AL(@"app.qp.message") preferredStyle:UIAlertControllerStyleAlert];
         [a addAction:[UIAlertAction actionWithTitle:S2AL(@"app.qp.switch") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
-            NSUserDefaults *d = NSUserDefaults.standardUserDefaults; [d setBool:YES forKey:qp_key(kind)];
+            NSUserDefaults *d = s2a_ios_settings_defaults(); [d setBool:YES forKey:qp_key(kind)];
             if (kind == 1) { [d setBool:NO forKey:@"S2AFps60"];
                 if (s2a_fps_hot_revert_ok()) { s2a_fps_set_enabled(0); LOG("撑不住就问玩家：玩家选还原原生帧率，60 帧已热切关"); return; }
                 LOG("撑不住就问玩家：玩家选还原原生帧率，这款要重启后生效（帧率表有没写关值的 w 行）"); qp_fps_restart_ask(); return; }
@@ -495,7 +496,7 @@ void s2a_ios_qprompt(int kind, int secs) {   // 文案 维护者 11-02 定：「
             [r addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
             UIViewController *p = g_root.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:r animated:YES completion:nil]; }]];
         [a addAction:[UIAlertAction actionWithTitle:S2AL(@"app.qp.keep") style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x;
-            [NSUserDefaults.standardUserDefaults setBool:YES forKey:qp_key(kind)]; LOG("撑不住就问玩家：玩家选保持（%s）", kind == 1 ? "60 帧" : "宽屏"); }]];
+            [s2a_ios_settings_defaults() setBool:YES forKey:qp_key(kind)]; LOG("撑不住就问玩家：玩家选保持（%s）", kind == 1 ? "60 帧" : "宽屏"); }]];
         [top presentViewController:a animated:YES completion:nil];
         LOG("撑不住就问玩家：已弹「%s」", t.UTF8String);
     });
@@ -672,24 +673,31 @@ void s2a_brightness_hold_log(void) {
 //   冷启动（App 没开时选）：置开关，走原有打开流程；热启动（游戏开着时选）：就地执行
 void s2a_diag_export(void);
 void s2a_diag_open_menu(void);
+// 主屏快捷操作（ios/shortcuts.json）。多款容器打开先是游戏库、游戏界面点了 Play 才建，原先三项都挂在游戏界面上，
+//   在库里要么没反应、要么弹游戏内的退出框（11-11 宿主梳理）。现在：诊断包不依赖游戏界面、点了就导出分享；设置在库里直达
+//   游戏库设置（单款壳仍开游戏内设置）；「存档管理」删掉（库里不知道是哪款），改在长按游戏卡片里
+static _Atomic int g_game_picked;   // 本进程已选过游戏（选上之后才放行 sceneDidBecomeActive 起宿主）
+static _Atomic int g_open_shell_settings;   // 冷启动点了「设置」：游戏库出现时打开游戏库设置（S2ArmShellHostView 经 s2a_shell_take_open_settings 取走）
+int s2a_shell_take_open_settings(void) { return atomic_exchange(&g_open_shell_settings, 0); }   // s2a_shell.h；主线程
 static void home_shortcut(NSString *type, BOOL cold, UIViewController *presenter) {
+    (void)presenter;
     LOG("主屏快捷操作：%s（%s）", type.UTF8String, cold ? "冷启动" : "运行中");
-    if ([type isEqualToString:@"dev.s2arm.save"]) {
-        // 冷启动：同「设置 → 管理存档」置的开关（save_transfer.m ManageKey），sceneDidBecomeActive 先进存档管理页
-        if (cold) [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"S2ASaveManageOnOpen"];
-        else if (presenter) s2a_ios_save_present(presenter);
-    } else if ([type isEqualToString:@"dev.s2arm.diag"]) {
-        // 冷启动：同设置页「下次打开时导出诊断包」开关（diag.m kOpenToggle，打开时导出并复位）
-        if (cold) [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"S2ADiagExportOnOpen"];
+    BOOL library = s2a_launch_ctx_container() && !atomic_load(&g_game_picked);
+    if ([type isEqualToString:@"dev.s2arm.diag"]) {
+        // 冷启动等窗口和界面起来（1 秒）再导出；运行中直接导出。diag.m 在库里取游戏库窗口弹分享面板
+        if (cold) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ s2a_diag_export(); });
         else s2a_diag_export();
     } else if ([type isEqualToString:@"dev.s2arm.settings"]) {
-        // 冷启动：游戏界面建好后 2 秒开设置页（diag.m 读 S2A_OPEN_SETTINGS 的同一条路）；运行中直接开（四指长按同一入口）
-        if (cold) setenv("S2A_OPEN_SETTINGS", "2", 1);
+        if (library) {
+            // 游戏库设置：冷启动记下、库界面出现时打开；运行中直接通知库界面（ShellUI LibraryView 收 S2AShellOpenSettings）
+            if (cold) atomic_store(&g_open_shell_settings, 1);
+            else [NSNotificationCenter.defaultCenter postNotificationName:@"S2AShellOpenSettings" object:nil];
+        } else if (cold) setenv("S2A_OPEN_SETTINGS", "2", 1);   // 单款壳 / 游戏里：游戏界面建好后 2 秒开设置页（diag.m 同一条路）
         else s2a_diag_open_menu();
     }
 }
 // 多款容器（launchctx.c ③，11-07 P2 单款启动门）：场景先挂游戏库；Play → s2a_launch_ctx_select → 起局前检查 → 换游戏界面 → 现行起宿主流程。一进程一款
-static _Atomic int g_game_picked;   // 本进程已选过游戏（选上之后才放行 sceneDidBecomeActive 起宿主）
+//   （g_game_picked 声明在上面 home_shortcut 前）
 static void top_alert(UIWindow *w, NSString *title, NSString *body) {
     UIViewController *top = w.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:body preferredStyle:UIAlertControllerStyleAlert];
@@ -727,16 +735,43 @@ int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_
 int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void);   // pack_apply.c
 static char g_inst_gid[32]; static atomic_int g_inst_busy, g_inst_done, g_inst_total;
 static void inst_progress(int done, int total) { atomic_store(&g_inst_done, done); atomic_store(&g_inst_total, total); }
+// 单一 IMG 的分段进度（pack_apply.c s2a_pack_apply_phase，v0.3.0）：1 解开推送包（包数）/ 2 从 game.img 解小文件（字节）/ 3 核对机上文件（文件数）。
+//   弱引用：引擎还没有这个回调时（旧 pack_apply.c）不挂，库照旧按 s2a_pack_apply_progress 画一段进度
+extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total) __attribute__((weak_import));
+static atomic_int g_inst_phase; static _Atomic uint64_t g_inst_pdone, g_inst_ptotal;
+static void inst_phase(int phase, uint64_t done, uint64_t total) { atomic_store(&g_inst_phase, phase); atomic_store(&g_inst_pdone, done); atomic_store(&g_inst_ptotal, total); }
+static NSMutableDictionary<NSString *, NSString *> *g_inst_fail;   // 主线程：游戏号 → 最后一次解开失败的原因（成功后清掉）
+int s2a_shell_install_phase(const char *gid, int *phase, double *fraction) {   // 主线程
+    if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
+    int p = atomic_load(&g_inst_phase); uint64_t done = atomic_load(&g_inst_pdone), total = atomic_load(&g_inst_ptotal);
+    if (!p) { done = (uint64_t)atomic_load(&g_inst_done); total = (uint64_t)atomic_load(&g_inst_total); }
+    *phase = p; *fraction = total ? (double)done / (double)total : -1; return 1;
+}
+const char *s2a_shell_install_failure(const char *gid) {   // 主线程
+    static char out[600]; NSString *why = gid ? g_inst_fail[@(gid)] : nil;
+    if (!why.length) return NULL;
+    strlcpy(out, why.UTF8String, sizeof out); return out;
+}
+static atomic_int g_games_repairing = 1;   // 游戏目录 App 写不进时的迁移（#569，img_scan_bg）：第一次扫完之前算「在查」：冷启动库先于扫描出现时也不抢着解
 int s2a_shell_install_game(const char *gid) {   // 主线程（s2a_shell.h 约定）
+    if (atomic_load(&g_games_repairing)) return 0;   // 还在查 / 迁游戏目录（#569）：先不解，库下一秒重判再起
     if (!gid || strlen(gid) != 16 || strchr(gid, '/') || atomic_exchange(&g_inst_busy, 1)) return 0;
     strlcpy(g_inst_gid, gid, sizeof g_inst_gid); atomic_store(&g_inst_done, 0); atomic_store(&g_inst_total, 0);
+    atomic_store(&g_inst_phase, 0); atomic_store(&g_inst_pdone, 0); atomic_store(&g_inst_ptotal, 0);
     char d[1024]; s2a_container_docs(d, sizeof d);
     NSString *docs = [NSString stringWithFormat:@"%s/games/%s", d, gid], *name = @(gid);
     LOG("游戏库：后台解开 %s", gid); s2a_ios_keep_awake(1);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        s2a_pack_apply_progress = inst_progress; int rc = s2a_pack_apply(docs.fileSystemRepresentation); s2a_pack_apply_progress = NULL;
-        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, s2a_pack_apply_failure()); else LOG("游戏库：%s 解开了", name.UTF8String);
-        dispatch_async(dispatch_get_main_queue(), ^{ s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh(); });
+        s2a_pack_apply_progress = inst_progress; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = inst_phase;
+        int rc = s2a_pack_apply(docs.fileSystemRepresentation);
+        s2a_pack_apply_progress = NULL; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = NULL;
+        NSString *why = rc ? @(s2a_pack_apply_failure() ?: "") : nil;
+        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, why.UTF8String); else LOG("游戏库：%s 解开了", name.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!g_inst_fail) g_inst_fail = [NSMutableDictionary new];
+            if (why.length) g_inst_fail[name] = why; else [g_inst_fail removeObjectForKey:name];   // 卡片上「安装没完成」下面显示这一句，「重试」成功后清掉
+            s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh();
+        });
     });
     return 1;
 }
@@ -753,14 +788,42 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 // 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
+const char *s2a_img_scan_failure(void);   // pack_apply.c：最近一次认领失败的原因（空串 = 没失败）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
     if (n > 0) LOG("资源导入：从「文件」里认出并放好 %d 个游戏资源包（game.img）", n);
     return n;
 }
+// 认领失败（格式号不认识、挪不动等，pack_apply.c s2a_img_scan_failure）：在游戏库上弹一次原因。同一句只弹一次，回前台重扫不刷屏
+static void img_scan_report(void) {   // 主线程
+    static char shown[600]; const char *why = s2a_img_scan_failure();
+    if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
+    strlcpy(shown, why, sizeof shown);
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.scanFailed.title") message:@(why) preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+    [lib_top() presentViewController:a animated:YES completion:nil];
+}
+// 游戏目录 App 写不进时迁到新目录（#569，pack_apply.c s2a_games_repair）：本进程第一次扫之前做一次，迁移期间不起解包（s2a_shell_install_game 拒绝，
+//   库照旧显示「安装中」、下一秒重判再起）；结果用界面语言在库上说一次：迁好了 / 没迁成和原因（不悄悄绕路，玩家知道发生了什么）
+int s2a_games_repair(const char *proc_docs); const char *s2a_games_repair_detail(void); unsigned s2a_games_repair_files(void); unsigned s2a_games_repair_owner(void);   // pack_apply.c
+static void games_repair_report(int r) {   // 主线程
+    if (r == 0 || !g_lib_window) return;
+    NSString *title = r > 0 ? S2AL(@"games.repair.done.title") : S2AL(@"games.repair.failed.title");
+    // 屏上只说人话；属主 uid 与失败原文只进日志 / 诊断包（pack_apply.c 已记；11-11 维护者：原文和码不上屏）
+    NSString *body = r > 0 ? [NSString stringWithFormat:S2AL(@"games.repair.done.body"), s2a_games_repair_files()] : S2AL(@"games.repair.failed.body");
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:body preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+    [lib_top() presentViewController:a animated:YES completion:nil];
+}
 static void img_scan_bg(void) {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ if (img_scan_now() > 0) dispatch_async(dispatch_get_main_queue(), ^{ if (s2a_shell_refresh) s2a_shell_refresh(); }); });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        static atomic_int checked; int r = 0;
+        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); }
+        atomic_store(&g_games_repairing, 0);
+        int n = img_scan_now();
+        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); if (r == 0) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
+    });
 }
 static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }
 static void library_pack_help(NSString *gid, BOOL again) {   // 主线程

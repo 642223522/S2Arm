@@ -53,7 +53,14 @@ int nvn_vk_program_graphics_stage_index(const char *name) {
     return -1;
 }
 
+static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size);
 int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, char *why, size_t why_size) {
+    return parse_graphics(bytes, length, out, 0, why, why_size);
+}
+int nvn_vk_program_parse_graphics_stages(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size) {
+    return parse_graphics(bytes, length, out, allow_vs_only, why, why_size);
+}
+static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size) {
     struct s2a_jv top = { (const char *)bytes, length };
     if (!s2a_jv_is_object(top)) return fail(why, why_size, "program result is not a JSON object");
     struct s2a_jv schema;
@@ -95,6 +102,11 @@ int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd
         uint32_t mask_value = 0;
         if (!s2a_jv_obj_find(st, "attributeReadMask", &mask) && !s2a_jv_u32(mask, &mask_value))
             out->stage[idx].attr_mask = mask_value;
+        // 片元着色器的输出映射（每个颜色目标 4 位、RGBA 各 1 位）：在阶段的 info 里；读不到 = 全 1（不屏蔽）
+        out->stage[idx].fragment_output_map = 0xffffffffu;
+        { struct s2a_jv info = { NULL, 0 }, om = { NULL, 0 }; uint32_t om_v = 0;
+          if (!s2a_jv_obj_find(st, "info", &info) && s2a_jv_is_object(info) && !s2a_jv_obj_find(info, "fragmentOutputMap", &om) && !s2a_jv_u32(om, &om_v))
+              out->stage[idx].fragment_output_map = om_v; }
     }
 
     struct s2a_jv bindings;
@@ -140,6 +152,9 @@ int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd
             memset(dst, 0, sizeof *dst);
             dst->set = (int)set_v; dst->binding = (int)binding_v;
             dst->slot = has_slot ? (int)slot_v : -1;   // -1：反射没有 guest 槽位
+            dst->count = 1;
+            { struct s2a_jv cnt = { NULL, 0 }; uint32_t cnt_v = 0;   // 描述符数组的长度；省略或 1 = 不是数组
+              if (!s2a_jv_obj_find(b, "count", &cnt) && !s2a_jv_u32(cnt, &cnt_v) && cnt_v > 1 && cnt_v <= 0xffff) dst->count = (uint16_t)cnt_v; }
             if (!strcmp(kind_text, "support") || !strcmp(kind_text, "uniform")) dst->kind = 0;
             else if (!strcmp(kind_text, "storage")) dst->kind = 1;
             else if (!strcmp(kind_text, "texture")) dst->kind = 2;
@@ -225,7 +240,8 @@ int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd
             out->support_bytes = required_v;
     }
     if (out->support_bytes < SUPPORT_DEFAULT_BYTES) return fail(why, why_size, "support layout is smaller than the compiler layout");
-    if (!out->stage[0].present || !out->stage[1].present) return fail(why, why_size, "program is not a vs+fs program");
+    if (!out->stage[0].present) return fail(why, why_size, "program has no vertex stage");
+    if (!out->stage[1].present && !allow_vs_only) return fail(why, why_size, "program is not a vs+fs program");
     return 0;
 }
 

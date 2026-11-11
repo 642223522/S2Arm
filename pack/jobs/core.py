@@ -440,7 +440,7 @@ LIBRARY_MARKER = ".s2arm-library.json"
 def default_home(private, library=None):
     """日志、任务记录、工具缓存、引擎副本的根：默认位置（请求里的 library）建好了（有库标识文件）就是它；还没建好（setup 之前、没选库）退回私有目录。
     只拿得到私有目录的读者（main.py get / events / cancel / prune / report）不传 library，按索引表 library-index.json 第一项记的默认位置算
-    （layout.load_index 总把默认位置排第一，layout.adopt_private_logs 每个作业开头核一次它与请求一致）"""
+    （layout.load_index 总把默认位置排第一，layout.follow_task 每个作业建任务时核一次它与请求一致）"""
     private = Path(private).expanduser().resolve()
     if library is None:
         try:
@@ -455,20 +455,23 @@ def default_home(private, library=None):
     return private
 
 
-def logs_root(private, library=None):
-    """任务日志 + 任务记录（logs/jobs/）的目录：<默认位置>/logs，库没建好退回 <私有目录>/logs。后端所有读写日志 / 任务记录的地方都调它；
-    前端各一处照同一规则算：Swift S2ArmPaths.logsRoot、C# LibraryPaths.LogsRoot、s2armctl.logs_root"""
-    return default_home(private, library) / "logs"
+def logs_root(private):
+    """任务日志 + 任务记录（logs/jobs/）的目录：固定 <私有目录>/logs（剃刀 H6：原先「库建好了放 <库>/logs、没建好退回私有目录」，
+    任务记录在三个目录间搬、后端和三个前端各算一遍，规则一漂控制口 / 崩溃日志就去错的地方找；并发作业同时收日志还出过事故）。
+    后端所有读写日志 / 任务记录的地方都调它；前端照同一条规则：Swift S2ArmPaths.logsRoot、C# LibraryPaths.LogsRoot、s2armctl.logs_root"""
+    return Path(private).expanduser().resolve() / "logs"
 
 
-def jobs_dir(private, library=None):
-    return logs_root(private, library) / "jobs"
+def jobs_dir(private):
+    return logs_root(private) / "jobs"
 
 
 def _job_dirs(private):
-    """读一条任务时依次找：当前的任务记录目录；库建好前退回私有目录写的（下一个作业开头 layout.adopt_private_logs 才收进库）；P3 之前的旧位置 <私有目录>/jobs"""
+    """读一条任务时依次找：<私有目录>/logs/jobs；还没迁回来的旧位置 <默认位置>/logs/jobs（v0.3.0 之前库建好后写在库里，
+    下一个作业建任务时 layout.adopt_library_logs 迁回私有目录）；P3 之前的 <私有目录>/jobs"""
     private = Path(private).expanduser().resolve()
-    return list(dict.fromkeys([jobs_dir(private), private / "logs" / "jobs", private / "jobs"]))
+    old = default_home(private) / "logs" / "jobs"
+    return list(dict.fromkeys([jobs_dir(private), *([old] if old != jobs_dir(private) else []), private / "jobs"]))
 
 
 IMPORT_RECORD_SOURCE_DIAGNOSTIC = 16_000    # 任务记录里每个来源的诊断上限（字符）：完整的在终态事件与按来源写的 inspect 日志里
@@ -494,6 +497,11 @@ def record_sources(sources):
     return out
 
 
+# 只读探测（启动器剃刀 H4）：结果走标准输出，不落任务记录（request / journal / events 三个文件 + 起 ps 取进程起始时刻），作业开头也不收日志、
+#   不起后台商店查询、引擎副本有安装标记就直接用（逐文件复核留给真用引擎产物的作业，#304）。装机页每 5 秒一次的 installCheck、
+#   设备探测、刷新游戏库都在这里：原先每次都落三个文件，开一小时约 720 个作业记录
+PROBES = ("catalog", "installCheck", "targetDevice", "locations")
+JOURNAL_PROGRESS_S = 5.0   # 进度事件最多隔这么久重写一次任务记录（剃刀 H5：原先每条事件都原子重写 + fsync）；阶段、诊断、终态每次都写并 fsync
 LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
 OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm",
                    "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
@@ -516,6 +524,9 @@ class Context:
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
             raise Failure("spaceOverride 仅支持 Mac 打包（build）与打 iPhone 包（ipa）任务的布尔值。")
+        # 同一次出包后面还有平台（pack/contracts/README.md「同一次出包后面还有平台」）：只给打 iPhone 包，只认布尔值
+        if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
+            raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
         self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
@@ -529,10 +540,11 @@ class Context:
         self.library = Path(request.get("library") or self.private / "unconfigured").expanduser().resolve()
         import layout
         self.library = layout.relocate_default(self.private, self.library)   # 旧默认库（私有目录里的）已搬到 ~/S2Arm：照新位置用（游戏库结构 P3）
-        self.logs = logs_root(self.private, self.library)   # 本任务的日志与任务记录（logs/jobs/）在这里，整个任务不变
+        self.logs = logs_root(self.private)   # 本任务的日志与任务记录（logs/jobs/）：固定在私有目录（剃刀 H6）
         self.keys = self.private / "keys/prod.keys"
         self.t0 = time.monotonic()
         self.stage = ""
+        self.stage_key, self.keychain_prompt = None, False   # 本阶段的机读标记（begin 设）：前端认这两个，不按中文阶段名 / 步骤号猜
         self.number = self.count = self.seq = 0
         self.cancelled = False
         self.children = set()
@@ -540,10 +552,16 @@ class Context:
         self.last_progress = 0
         self.last_log = None
         self.frontend_gone = False
+        self.recorded = self.operation not in PROBES
+        self.last_journal = 0.0
         self.jobpath = self.logs / "jobs" / (self.task + ".json")
         self.events = self.logs / "jobs" / (self.task + ".events.jsonl")
         self.requestpath = self.logs / "jobs" / (self.task + ".request.json")
-        layout.follow_task(self)   # 同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        layout.follow_task(self)   # 索引表第一项核成默认库位置；同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        if not self.recorded:
+            self.job = dict(schema=1, id=self.task, operation=self.operation, gameId=request.get("gameId"),
+                            state="running", started=time.time(), diagnostics=[], pid=os.getpid(), attemptNo=1)
+            return
         # Keep the request next to the journal so `resume` can run the same task again after a kill without the caller having to keep the
         # request file around (J10). 0600 like the request itself: it holds player paths, never keys.
         if not self.requestpath.exists():
@@ -655,7 +673,8 @@ class Context:
                          operation=self.operation, gameId=self.r.get("gameId"), stage=self.stage,
                          stageIndex=self.number, stageCount=self.count, state=state,
                          doneUnits=done, totalUnits=total, done=done, total=total,
-                         elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None), **extra)
+                         elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None),
+                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt, **extra)
             if kind == "stage":
                 self.job.update(done=None, total=None, unit=None)
             elif kind == "progress":
@@ -672,12 +691,19 @@ class Context:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
             try:
-                atomic(self.jobpath, self.job)
-                with self.events.open("a", encoding="utf-8") as f:
-                    f.write(line + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
-                os.chmod(self.events, 0o600)
+                # 剃刀 H5：心跳只给标准输出（前端据此知道作业还活着），不落盘；进度追加进事件文件、不 fsync，任务记录最多隔 JOURNAL_PROGRESS_S 重写一次；
+                #   阶段 / 诊断 / 终态等每条都重写任务记录并 fsync（被杀时不丢最后一个阶段，J10）。原先每条事件（含每秒心跳）都整份重写 + 两次 fsync
+                if self.recorded and kind != "heartbeat":
+                    durable = kind != "progress"
+                    if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
+                        atomic(self.jobpath, self.job)
+                        self.last_journal = now
+                    with self.events.open("a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                        if durable:
+                            f.flush()
+                            os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
+                    os.chmod(self.events, 0o600)
             except OSError as error:
                 # A full or failing disk used to let the job finish "successfully" with its record missing: whoever looks for it later finds
                 # nothing, or finds it stuck at an old stage. Say so and fail the job instead (J10).
@@ -695,7 +721,10 @@ class Context:
                     except OSError:
                         pass
 
-    def begin(self, stage, number=1, count=1):
+    def begin(self, stage, number=1, count=1, key=None, keychain=False):
+        """key：本阶段的固定机读名（前端按它认，中文阶段名只给人看、随时会改）；keychain：本阶段可能弹出钥匙串授权（前端据此挂提示）。
+        两者都随本阶段的每条事件发（stageKey / keychainPrompt），下一次 begin 重置"""
+        self.stage_key, self.keychain_prompt = key, bool(keychain)
         # Deliberately no "completed stages" list (维护方 10-25 口径): whether a stage is done has exactly one judge, its product key in the product
         # root (.stage_<阶段>, pack/refresh.sh). A second copy in the journal would disagree the moment a kill lands between committing a stage and
         # writing the journal. What this journal does keep — attempts / previousStage — is for display and diagnosis only and never decides a skip.
@@ -852,6 +881,8 @@ class Context:
             result["exitCode"] = exit_code
         if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
             result["holder"] = failure.holder
+        if getattr(failure, "facts", None):   # 机读失败事实（errors.cause_facts）：改写失败的模块 / 缺口数 / 缺口类别
+            result["facts"] = failure.facts
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))
@@ -865,8 +896,9 @@ class Context:
         result["failureSummary"] = failure_summary(self.stage, rc, [self.redact(line, limit=None) for line in last_output_lines(self.last_log)])
         return result
 
-    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal=""):
-        result = self.describe_failure(Failure(message, code=code, internal=internal), severity, exit_code)
+    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None):
+        # holder / facts 原样带进失败结果（原先这里只按原句 + 码 + internal 重建 Failure，library_busy 的占锁者、改写失败的机读事实走真作业路径时都丢了）
+        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts), severity, exit_code)
         self.job["diagnostics"].append(result)
         self.emit("diagnostic", result["summary"], diagnostic=result, error=result,
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
@@ -906,7 +938,8 @@ class Context:
         if (previous and previous["code"] == "tool_exit" and failure.code != "job_failed"
                 and previous["stage"] == self.stage and previous["logPath"] == str(self.last_log)):
             exit_code = records.pop().get("exitCode")
-        return self.diagnostic(str(failure), failure.code, exit_code=exit_code, internal=getattr(failure, "internal", ""))
+        return self.diagnostic(str(failure), failure.code, exit_code=exit_code, internal=getattr(failure, "internal", ""),
+                               holder=getattr(failure, "holder", None), facts=getattr(failure, "facts", None))
 
     def fonts_dir(self):
         # 共享字体：玩家在设置里选了原版字体目录就用它，否则用应用自带的开源替代字体（Resources/Fonts，build_app.py 打进去；维护者 10-23：不再作为检测项）
@@ -935,6 +968,10 @@ class Context:
         env.pop("J", None)
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
+        gid = self.r.get("gameId")
+        if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
+            import library
+            env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -1160,7 +1197,7 @@ class Context:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts)
                         raise failure
                     from errors import tool_reason
                     message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
@@ -1196,7 +1233,8 @@ class Context:
         try:
             self.emit("result", message, state="succeeded" if state == "completed" else state,
                       result=result or {}, artifactRef=(result or {}).get("outputPath"), diagnostics=self.job["diagnostics"])
-            atomic(self.jobpath, self.job)
+            if self.recorded:
+                atomic(self.jobpath, self.job)
         except (Failure, OSError) as error:
             # The job is over either way; what must not happen is the caller seeing success while nothing was recorded. main.py turns
             # journal_broken into a non-zero exit, and this line is the only place a user can read why (J10).
@@ -1352,16 +1390,16 @@ KEEP_FAILED_PER_OPERATION = 50
 
 
 def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=False, *, per_operation=KEEP_PER_OPERATION,
-               failed_per_operation=KEEP_FAILED_PER_OPERATION, library=None, jobs=None):
+               failed_per_operation=KEEP_FAILED_PER_OPERATION, jobs=None):
     """Keep the job store bounded (J10, rules above). Only the three files this module owns per task are removed; anything else in the
-    directory is left alone. `jobs` names the directory directly (layout.adopt_private_logs prunes the private fallback before moving it)."""
-    jobs = Path(jobs) if jobs is not None else jobs_dir(private, library)
+    directory is left alone. `jobs` names the directory directly (layout.adopt_library_logs prunes the old location before moving it)."""
+    jobs = Path(jobs) if jobs is not None else jobs_dir(private)
     if not jobs.is_dir():
         return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     by_task = {}
     try:
         listed = list(jobs.iterdir())
-    except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_private_logs）
+    except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_library_logs）
         return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     for path in listed:
         if path.is_symlink() or not path.is_file():
@@ -1417,10 +1455,10 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
                 bytes=freed, invalidRecords=invalid)
 
 
-def status(private, library=None):
+def status(private):
     """One look at the whole job store: how many are running vs finished, how big it is, and which task last moved.
     The store is every directory a record can be read from (_job_dirs: the current one plus the private fallbacks not yet adopted)."""
-    dirs = [d for d in dict.fromkeys([jobs_dir(private, library), *_job_dirs(private)]) if d.is_dir()]
+    dirs = [d for d in _job_dirs(private) if d.is_dir()]
     result = dict(running=0, finished=0, interrupted=0, bytes=0, newest=None, oldest=None, invalidRecords=[])
     newest = oldest = None
     for path in (p for d in dirs for p in d.iterdir()):

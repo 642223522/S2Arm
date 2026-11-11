@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import S2ArmShellBridge
-import ShellUI
+@testable import ShellUI
 @testable import S2ArmShellHost
 
 // 期望值按 Fixtures/catalogue.json 手算：8 条里重复的 Alpha 丢弃 → 7 条；状态按字段逐条对位
@@ -368,3 +368,21 @@ nonisolated(unsafe) private var lastPlayed = ""
     model.refreshGameData(); #expect(model.games.first?.game.isNew == true)   // 再装一版
 }
 
+
+// 单一 IMG 的「安装中」蒙版（v0.3.0）：解开时宿主报阶段 1 / 2 / 3 与这一段比例，卡片写正在做哪一步、圈按这一段画；
+//   解完仍是阶段 2（没解成）→「安装没完成」，说明里带宿主给的那句原因。期望按 ShellUI 文案手写（英文界面）
+@MainActor @Test func imgInstallShowsStepAndFailureReason() {
+    var phase: (Int, Double?)? = (2, 0.37), installs = 0
+    let why = "Unpacking small files from game.img (unknown format, please update S2Arm)"
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return true }, installProgress: { _ in nil },
+                                    installPhase: { _ in phase }, installFailure: { _ in why }, gamesRoot: URL(fileURLWithPath: "/nonexistent"))
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0.37, step: 2)))
+    #expect(["Unpacking small files… 37%", "解出小文件… 37%"].contains(model.games.first?.game.state.title ?? ""))
+    phase = nil; model.refreshGameData()   // 第一次刷新时宿主已在解（报了阶段），这里不再起：installTried 里没有它 → 起一次
+    phase = nil; model.refreshGameData()   // 起过、宿主说已不在解、还是阶段 2 → 没解成
+    let state = model.games.first?.game.state
+    #expect(state == .installing(InstallStage(.failed, reason: why)))
+    #expect(state?.explanation.hasPrefix(why + "\n") == true)
+}

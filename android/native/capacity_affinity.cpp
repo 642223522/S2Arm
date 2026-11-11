@@ -153,6 +153,25 @@ void apply(Slot &s,int role) {
 }
 }
 extern "C" void s2a_capacity_enter(int role) { if(role<0||role>1)return; freeze_mode(); if(!enabled())return; std::lock_guard<std::mutex> lock(mu); Slot &s=slots[role]; if(s.tid) return; s.tid=static_cast<pid_t>(syscall(SYS_gettid)); role_thread=true; apply(s,role); }
+// 新建的游戏线程进游戏代码之前调：Linux 上新线程继承创建者的亲和掩码，角色线程（游戏主线程）被收窄到一个核之后，
+// 它建出来的游戏线程会全部挤在那一个核上——游戏的作业系统是「几条线程并行干活、主线程自旋等它们干完」，同核轮转时
+// 自旋的那条把时间片吃掉、干活的排不上（真机取样：一局标题画面 73% 的 CPU 在那个自旋循环里，三条游戏线程的掩码都是同一个核）。
+// 这里把「掩码正好等于某个角色收窄后掩码」的非角色线程放回那个角色原来的宽掩码；别的线程不动。
+extern "C" void s2a_capacity_child(void) {
+    if(!enabled()) return;
+    std::lock_guard<std::mutex> lock(mu);
+    pid_t tid=static_cast<pid_t>(syscall(SYS_gettid));
+    for(int i=0;i<2;++i) {
+        Slot &s=slots[i]; if(!s.applied || s.tid==tid || !s.bytes) continue;
+        cpu_set_t *cur=static_cast<cpu_set_t *>(std::malloc(s.bytes)); if(!cur) return;
+        if(!sched_getaffinity(tid,s.bytes,cur) && CPU_EQUAL_S(s.bytes,cur,s.preferred)) {
+            int rc=sched_setaffinity(tid,s.bytes,s.original);
+            debug_log("[s2a-capacity] child tid=%d inherited role=%d mask=%s widened=%s errno=%d\n",tid,i,mask_string(s.preferred,s.bytes).c_str(),mask_string(s.original,s.bytes).c_str(),rc?errno:0);
+            std::free(cur); return;
+        }
+        std::free(cur);
+    }
+}
 extern "C" void s2a_capacity_leave(int role) { if(role<0||role>1||!enabled())return; std::lock_guard<std::mutex> lock(mu); Slot &s=slots[role]; if(s.tid!=syscall(SYS_gettid))return; restore(s,role,true); s.tid=0; role_thread=false; }
 extern "C" void s2a_capacity_foreground(int fg) { if(!enabled())return; std::lock_guard<std::mutex> lock(mu); if(stopping)return; foreground=fg!=0; for(int i=0;i<2;++i) if(foreground)apply(slots[i],i);else restore(slots[i],i,true); }
 // 诊断只低频观察线程掩码；枚举不是原子快照，退出/权限/长度上限均明确报不完整。
