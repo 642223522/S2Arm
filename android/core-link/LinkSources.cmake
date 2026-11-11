@@ -96,7 +96,7 @@ function(s2a_android_direct_sources output)
         native/nvn/nvn_vk_bcdec.c
         # NVN ReadTexels：纯几何换算（宿主单测同源）+ guest 内存路径 + GPU 图像路径。
         native/nvn/nvn_vk_readback_plan.c native/nvn/nvn_vk_readback.c native/nvn/nvn_vk_readback_gpu.c
-        native/nvn/mtl_vk_adapter.c native/direct/vk_record.c native/direct/t2t_plan.c
+        native/nvn/mtl_vk_adapter.c native/direct/vk_record.c native/direct/t2t_plan.c native/direct/buffer_texture_plan.c
         # 批次 1/A：命令流拍平（A2 延迟参数入记录 + A4 记录内引用重定位）；shim 的 clone_append 调用它。
         native/direct/record_flat.c
         native/nvn/nvn_vk_sampler_cache.c native/nvn/nvn_vk_sampler.c native/nvn/nvn_vk_format.c
