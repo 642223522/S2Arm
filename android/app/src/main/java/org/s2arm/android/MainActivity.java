@@ -1106,10 +1106,9 @@ public class MainActivity extends Activity
             button.setOnClickListener(v -> action.run());
             touchEditBar.addView(button);
         }
-        FrameLayout.LayoutParams bar = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL);
-        bar.topMargin = windowInsets[1];
-        root.addView(touchEditBar, bar);
+        // Screen centre: the one place no built-in control sits (− / + are at the top centre).
+        root.addView(touchEditBar, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER));
     }
 
     private void endTouchEdit() {

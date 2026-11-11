@@ -16,7 +16,7 @@ import android.view.View;
 final class TouchPadView extends View {
     interface Listener {
         void onTouchPad(TouchPad pad);
-        /** Four fingers held still for MENU_HOLD_MS (as on iOS): the in-game touch menu. */
+        /** Exactly four fingers held for MENU_HOLD_MS (the iOS gesture): the in-game touch menu. */
         default void onTouchMenu() { }
     }
     static final long MENU_HOLD_MS = 1500;
