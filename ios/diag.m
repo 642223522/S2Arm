@@ -260,8 +260,20 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
 
 // 导出并弹系统分享面板（主线程调）。打包在后台线程做，不卡画面
 BOOL s2a_diag_is_exporting(void) { return g_exporting; }
+// 弹分享面板的地方：游戏里用游戏界面（g_vc）；多款容器还停在游戏库时 g_vc 为空——原先直接返回，快捷菜单「导出诊断包」
+//   在库里点了什么也不发生（11-11 宿主梳理）。这时取前台窗口的根控制器（游戏库）
+static UIViewController *diag_host(void) {
+    if (g_vc) return g_vc;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState == UISceneActivationStateBackground) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow && w.rootViewController) return w.rootViewController;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.rootViewController) return w.rootViewController;
+    }
+    return nil;
+}
 void s2a_diag_export(void) {
-    if (g_exporting || !g_vc) return; g_exporting = YES;
+    UIViewController *host = diag_host();
+    if (g_exporting || !host) return; g_exporting = YES;
     [NSNotificationCenter.defaultCenter postNotificationName:@"S2ADiagExportChanged" object:nil];
     LOG("诊断包：开始导出");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -277,15 +289,15 @@ void s2a_diag_export(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             g_exporting = NO;
             [NSNotificationCenter.defaultCenter postNotificationName:@"S2ADiagExportChanged" object:nil];
-            UIViewController *presenter = g_vc;
+            UIViewController *presenter = host;
             while (presenter.presentedViewController) presenter = presenter.presentedViewController;
             if ([presenter isKindOfClass:UINavigationController.class]) presenter = ((UINavigationController *)presenter).topViewController;
             if (!zip) { UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.error.title") message:err preferredStyle:UIAlertControllerStyleAlert];
                 [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]]; [presenter presentViewController:a animated:YES completion:nil]; return; }
             UIActivityViewController *av = [[UIActivityViewController alloc] initWithActivityItems:@[zip] applicationActivities:nil];
-            av.popoverPresentationController.sourceView = g_vc.view;   // iPad 要锚点
-            av.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(g_vc.view.bounds), CGRectGetMidY(g_vc.view.bounds), 1, 1);
-            void (^show)(void) = ^{ UIViewController *top = g_vc; while (top.presentedViewController) top = top.presentedViewController;
+            av.popoverPresentationController.sourceView = host.view;   // iPad 要锚点
+            av.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(host.view.bounds), CGRectGetMidY(host.view.bounds), 1, 1);
+            void (^show)(void) = ^{ UIViewController *top = host; while (top.presentedViewController) top = top.presentedViewController;
                 [top presentViewController:av animated:YES completion:nil]; };
             // 导出就是对「要不要发」的回答：询问弹窗还开着（比如自动导出和异常退出后的询问同时触发）就先关掉它，关完再弹分享面板
             UIAlertController *q = g_promptAlert;
