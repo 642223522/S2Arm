@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import re
 
 
@@ -153,16 +154,41 @@ class Failure(Exception):
         self.internal = internal
 
 
-def explain(error):
+def _under(path, roots):
+    # 两边都按真实路径比（macOS 的 /var 实为 /private/var、外接盘挂载点软链：请求里记的与报错带的写法可能不同；删掉的文件 realpath 照样解析父目录）
+    try:
+        p = os.path.realpath(os.fspath(path))
+    except TypeError:
+        return False
+    for r in roots:
+        r = os.path.realpath(os.fspath(r))
+        if p == r or p.startswith(r.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def explain(error, sources=(), library=None):
+    """OSError 按 errno 归码，不猜原文；「原件不见了」「去系统设置授权」只给确知是玩家这边的路径（启动器剃刀 H8，11-11）：
+    sources = 这次作业的原件（导入的路径、这款登记的原件），library = 游戏库根。
+    ENOENT 出在原件下，或游戏库根整个不在（外接盘没插）→ input_missing；EACCES / EPERM / EROFS 出在原件或游戏库下 → permission_denied；
+    其余（私有目录的日志 / 任务记录、并发竞态删掉的临时文件、不带路径的）→ job_failed，原文与路径进 internal（坑记录：两个作业同时收日志的
+    ENOENT 被说成原件缺失，玩家被指去接磁盘）"""
     if isinstance(error, Failure):
         return error
     if isinstance(error, OSError):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
+        paths = [p for p in (error.filename, error.filename2) if p]
+        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
-            return Failure("文件或目录不可访问或不可写。", code="permission_denied")
+            if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
+                return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)
+            return Failure("本地任务失败：S2Arm 自己的文件读写不了，请导出诊断发给我们。", internal=internal)
         if error.errno == errno.ENOENT:
-            return Failure("任务所需的文件或目录不存在。", code="input_missing")
+            if any(_under(p, sources) for p in paths) or (library is not None and not os.path.isdir(library)):
+                return Failure("任务所需的文件或目录不存在。", code="input_missing", internal=internal)
+            return Failure("本地任务失败：S2Arm 自己的文件找不到了，请重试；还不行请导出诊断发给我们。", internal=internal)
+        return Failure("本地任务失败，请检查日志和输入。", internal=internal)
     return Failure("本地任务失败，请检查日志和输入。")
 
 
