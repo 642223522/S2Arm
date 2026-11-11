@@ -254,10 +254,6 @@ public sealed partial class EnvironmentWindow
         {
             text = T("s2arm.job.running"); color = "#FFC857";
         }
-        else if (finishedPacks.ContainsKey(game.Id) && packRunning && packGame?.Id == game.Id)
-        {
-            text = T("export.status.queued"); color = "#FFC857";
-        }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来重读游戏库就恢复；文件夹没了 → 红字，点卡片重新指定或移除
         else if (game.LocationState == "offline")
         {
@@ -288,8 +284,6 @@ public sealed partial class EnvironmentWindow
                 }
                 else parts.Add(T("library.status.iphone"));
             }
-            if (parts.Count == 0 && finishedPacks.TryGetValue(game.Id, out var fin) && fin.state == "succeeded")
-                parts.Add(T("library.status.iphone"));
             if (parts.Count == 0)
             {
                 text = T("s2arm.library.notPrepared"); color = "#4A4A50";
@@ -658,9 +652,19 @@ public sealed partial class EnvironmentWindow
         libraryOperation = RunLibraryAsync(operation, null);
     }
 
+    /// <summary>游戏库作业在跑时又要刷新（出包 / 装机完、换页）：记一笔，这一轮结束后补刷一次（剃刀 W8：原先直接丢掉，刚出好的状态要等下一次别的刷新）。</summary>
+    private bool catalogAgain;
+
+    /// <summary>刷新游戏库：作业在跑就只记一笔（那一轮完了补刷），不在跑才起并记下这次作业（关库时要等它，不能被一个立刻返回的任务盖掉）。</summary>
+    private Task RefreshLibraryAsync()
+    {
+        if (libraryBusy) { catalogAgain = true; return Task.CompletedTask; }
+        return libraryOperation = RunLibraryAsync("catalog", null);
+    }
+
     private async Task RunLibraryAsync(string operation, string[]? selectedPaths)
     {
-        if (libraryBusy) return;
+        if (libraryBusy) { if (operation == "catalog") catalogAgain = true; return; }
         // 作业一律发给已连上的库（connectedFolder）；输入框里的路径只给「连接」按钮用（ConnectTypedFolder）。原先这里拿输入框草稿和已连的库比、
         //   不一样就断开：输入框只在游戏库页重建，别的页上读到的是空框，导入密钥 / 一键出包后游戏库被误断开（社区贡献者补丁 #6）
         if (operation != "setup" && (connectedFolder is null || libraryId is null)) return;
@@ -704,6 +708,7 @@ public sealed partial class EnvironmentWindow
         }
         finally
         { EndJob(front); Render(); }
+        if (catalogAgain && !closingLibrary) { catalogAgain = false; await RunLibraryAsync("catalog", null); }
     }
 
     private void DisplayJob(LibraryJobOutput job)

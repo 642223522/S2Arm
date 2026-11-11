@@ -211,7 +211,7 @@ public sealed partial class EnvironmentWindow
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { updateOutcome = error.Message.Length > 0 ? error.Message : error.GetType().Name; }
         finally { EndJob(front); phoneUpdating = false; Render(); }
-        if (!libraryBusy) { libraryOperation = RunLibraryAsync("catalog", null); await libraryOperation; }
+        await RefreshLibraryAsync();   // 游戏库作业在跑就记一笔、那一轮完了补刷（剃刀 W8），不再跳过
         if (!succeeded || repack.Count == 0 || batchRunning || PackBusy) return;
         OpenBatch(repack, []);
         batchControlPlatforms = batchDraft.ToDictionary(r => r.Id, _ => new[] { "iphone" });   // 只出 iPhone（缺东西的款 StartBatchAsync 自己跳过）
