@@ -322,14 +322,10 @@ def _build(c):
     # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
-    from library import prune_build
     c.begin("清理出包中间产物")
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
-    if c.r.get("followUp") is True:   # 同一款这次还要接着出别的平台：解包与中间产物留给它（pack/contracts/README.md，剃刀 M21）
-        c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
-    else:
-        prune_build(c, gid)
+    prune_unless_follow_up(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, **compiler_policy)
     from cache_retention import engine_installed_at, prune_tool_keys
     prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 当前引擎用不到的工具缓存旧键（NativeAOT / libvpx / opus / dav1d）
@@ -356,6 +352,16 @@ def _build(c):
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
+
+
+def prune_unless_follow_up(c, gid):
+    """出包收尾清本款解包与中间产物；请求带 followUp（同一款这次还要接着出别的平台）时先不清，留给下一个平台（pack/contracts/README.md，剃刀 M21）。返回是否清了"""
+    if c.r.get("followUp") is True:
+        c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
+        return False
+    from library import prune_build
+    prune_build(c, gid)
+    return True
 
 
 def refresh_library_ipa(c):
