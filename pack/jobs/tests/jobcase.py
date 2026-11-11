@@ -155,6 +155,11 @@ class JobCase(unittest.TestCase):
         binary.parent.mkdir(parents=True)
         binary.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, sys
 source = pathlib.Path(sys.argv[4])
+if source.read_bytes() == b"temp dir fixture":   # #612：记下读取器拿到的 --temp-dir 及当时它在不在，照常出一份包信息
+    tds = [x[11:] for x in sys.argv if x.startswith("--temp-dir=")]
+    (source.parent / "temp_dir_seen.txt").write_text((tds[0] + "\t" + str(pathlib.Path(tds[0]).is_dir())) if tds else "")
+    print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
+    raise SystemExit(0)
 if source.read_bytes() == b"truncated fixture":
     print("Beginning of synthetic reader diagnostic")
     print("long synthetic diagnostic " * 300)

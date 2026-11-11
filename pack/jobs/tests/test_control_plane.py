@@ -309,6 +309,43 @@ class ControlPlaneTests(unittest.TestCase):
             child.kill()
             child.wait(timeout=10)
 
+    def test_prune_keeps_request_only_task_as_running(self):
+        jobs = self.jobs_dir("queued")
+        jobs.mkdir(parents=True)
+        request = jobs / "queued.request.json"
+        request.write_text('{"schema":1,"operation":"setup"}')
+        before = request.read_bytes()
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                options = ["--dry-run"] if dry_run else []
+                result = self.cli("prune", "--private-root", self.private,
+                                  "--keep-count", 0, "--keep-days", 0, *options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["skippedRunning"], 1)
+                self.assertEqual(report["invalidRecords"], [])
+                self.assertEqual(report["kept"], 1)
+                self.assertEqual(report["removed"], [])
+                self.assertEqual(request.read_bytes(), before)
+
+    def test_status_ignores_a_record_removed_during_the_scan(self):
+        from unittest.mock import patch
+        import core
+        self.finish_task("healthy")
+        vanished = self.finish_task("vanished").resolve()
+        original_read = core.read
+
+        def remove_before_read(path, default=None):
+            if path == vanished:
+                vanished.unlink(missing_ok=True)
+            return original_read(path, default)
+
+        with patch.object(core, "read", side_effect=remove_before_read):
+            report = core.status(self.private)
+        self.assertEqual(report["finished"], 1)
+        self.assertEqual(report["interrupted"], 0)
+        self.assertEqual(report["invalidRecords"], [])
+
     def test_prune_leaves_a_job_that_is_finishing_right_now_alone(self):
         """一个刚写完终态、worker 还没退出的任务不能被清掉：它在 journal 里已经是终态，但文件还在被追加。"""
         import main as worker
@@ -354,6 +391,46 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertTrue((jobs / "notes.txt").is_file())
         self.assertTrue((jobs / "linked.json").is_symlink())
         self.assertTrue(outside.is_file())
+
+    def test_status_reports_bad_journals_and_still_counts_healthy_jobs(self):
+        self.finish_task("healthy")
+        jobs = self.jobs_dir("healthy")
+        broken = {"truncated": b"{", "encoding": b"\xff", "array": b"[]", "null": b"null",
+                  "foreign": b'{"id":"another-task","state":"completed"}'}
+        for name, content in broken.items():
+            (jobs / (name + ".json")).write_bytes(content)
+        result = self.cli("status", "--private-root", self.private)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["finished"], 1)
+        self.assertEqual({row["taskId"] for row in report["invalidRecords"]}, set(broken))
+        self.assertTrue(all(row["reason"] for row in report["invalidRecords"]))
+
+    def test_prune_preserves_bad_journals_and_their_companions(self):
+        self.finish_task("healthy", age=30 * 86400)
+        broken = {"truncated": b"{", "encoding": b"\xff", "array": b"[]", "null": b"null",
+                  "foreign": b'{"id":"another-task","state":"completed"}'}
+        snapshots = {}
+        for name, content in broken.items():
+            path = self.finish_task(name, age=30 * 86400)
+            path.write_bytes(content)
+            for file in path.parent.glob(name + ".*"):
+                snapshots[file] = file.read_bytes()
+        result = self.cli("prune", "--private-root", self.private, "--keep-count", 0, "--keep-days", 0, *NO_FLOOR)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["removed"], ["healthy"])
+        self.assertEqual(report["kept"], len(broken))
+        self.assertEqual({row["taskId"] for row in report["invalidRecords"]}, set(broken))
+        for path, content in snapshots.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_generic_json_read_still_rejects_corruption(self):
+        from core import read
+        path = self.root / "essential.json"
+        path.write_text("{")
+        with self.assertRaises(json.JSONDecodeError):
+            read(path, {})
 
     # ---- 记录写不进磁盘时不能假装成功 ----
     def stub_request(self, task=None):

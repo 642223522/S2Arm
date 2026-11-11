@@ -3,6 +3,7 @@
 由 `make.sh` 从程序生成的图案编码（ffmpeg `testsrc2` / `mandelbrot`、`resize_enc.c` 里的条纹），**不含任何游戏数据**。
 `make.sh` 固定单线程，重跑逐字节一致（ffmpeg 9.0.2 + libvpx-vp9；`resize.ivf` 用 libvpx 1.17.0 编码器）。
 用于原生 VP9（`docs/设计_原生VP9/design_phase2_B.md`）的对拍与恒等测试。
+门禁里两处用：`tests/vpx_patch_identity_test.sh`（补丁恒等）、`tests/vp9_synth_parity_test.sh`（逐帧转成 NVDEC 作业，原生 / 托管 / libvpx 三方对拍）。
 
 | 文件 | 尺寸 | 帧（关键 / 隐藏 / 其余） | 用途 |
 |---|---|---|---|
