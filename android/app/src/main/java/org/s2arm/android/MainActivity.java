@@ -1106,10 +1106,39 @@ public class MainActivity extends Activity
             button.setOnClickListener(v -> action.run());
             touchEditBar.addView(button);
         }
-        touchPad.setEditDragListener(dragging -> { if (touchEditBar != null) touchEditBar.setAlpha(dragging ? 0.15f : 1f); });
+        touchPad.setEditDragListener(dragging -> {
+            if (touchEditBar == null) return;
+            touchEditBar.setAlpha(dragging ? 0.15f : 1f);
+            if (!dragging) placeTouchEditBar();
+        });
         // Screen centre: the one place no built-in control sits (− / + are at the top centre).
         root.addView(touchEditBar, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER));
+    }
+
+    /** Keep the editor bar off the controls: centre, then bottom, then top; if all are taken, stay see-through. */
+    private void placeTouchEditBar() {
+        int w = touchEditBar.getWidth(), h = touchEditBar.getHeight(), rw = root.getWidth(), rh = root.getHeight();
+        if (w == 0 || h == 0) return;
+        int[] gravities = {android.view.Gravity.CENTER,
+            android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL,
+            android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL};
+        float[] tops = {(rh - h) / 2f, rh - windowInsets[3] - h, windowInsets[1]};
+        float left = (rw - w) / 2f;
+        for (int i = 0; i < gravities.length; i++) {
+            boolean covers = false;
+            for (TouchPad.Control c : touchPad.pad().controls())
+                covers |= c.x + c.radius > left && c.x - c.radius < left + w
+                    && c.y + c.radius > tops[i] && c.y - c.radius < tops[i] + h;
+            if (covers) continue;
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) touchEditBar.getLayoutParams();
+            lp.gravity = gravities[i];
+            lp.topMargin = i == 2 ? windowInsets[1] : 0;
+            lp.bottomMargin = i == 1 ? windowInsets[3] : 0;
+            touchEditBar.setLayoutParams(lp);
+            return;
+        }
+        touchEditBar.setAlpha(0.5f);
     }
 
     private void endTouchEdit() {
