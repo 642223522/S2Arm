@@ -1,0 +1,343 @@
+; SPDX-License-Identifier: Apache-2.0
+; Copyright 2026 S2Arm contributors
+;
+; S2Arm Windows 安装程序（v0.3.0 起；Inno Setup 6.7，钉版见 installer.json）。
+; 编译（Windows 出包机，发版脚本调）：ISCC.exe /DSourceDir=<解开的 S2Arm 目录> /DAppVersion=<0.3.0> /O<输出目录> S2Arm.iss
+; 要解决的问题（不是为了好看）：
+;   ① 解压位置太深撞长路径（#205、#461）→ 固定装到 %LOCALAPPDATA%\Programs\S2Arm（只装给当前用户、免管理员）。
+;      包内最深相对路径 139 字符，加上这个位置（20 字符用户名约 60）约 200，低于作业层长路径处理阈值 240（pack/orch/winlong.py）。
+;   ② 玩家在压缩包里直接双击 exe → 只有一个安装程序文件。
+;   ③ 系统解压上万个小文件慢、下载标记传给每个文件 → 固实压缩整包一次解开，下载标记只在安装程序这一个文件上。
+;   ④ 没有开始菜单入口、卸载只能手删 → 开始菜单 + 桌面图标，「设置 → 应用」里能卸载。
+; 和现有机制的衔接：
+;   - 只换壳更新：更新器（pack/jobs/updater.py）把安装目录整个改名换新（.s2arm-old / .s2arm-new），所以卸载程序放在安装目录外
+;     （UninstallFilesDir），卸载按目录整删程序目录（更新后新增的文件不在安装记录里）。
+;   - 数据都不在程序目录：私有目录 %LOCALAPPDATA%\S2Arm\WindowsLauncher、游戏库在玩家选的位置。卸载不碰它们。
+
+#ifndef SourceDir
+  #error 用 /DSourceDir=<解开的 S2Arm 目录> 指定要装的文件
+#endif
+#ifndef AppVersion
+  #error 用 /DAppVersion=<版本号，如 0.3.0> 指定版本
+#endif
+
+[Setup]
+; AppId 定下就不能改：卸载信息、升级识别都靠它
+AppId={{E44C11E8-9CDE-42B0-BBF0-619FA69156F2}
+AppName=S2Arm
+AppVersion={#AppVersion}
+AppVerName=S2Arm {#AppVersion}
+AppPublisher=S2Arm contributors
+AppPublisherURL=https://s2arm.com
+AppSupportURL=https://github.com/jhaizhou-ops/S2Arm/issues
+AppUpdatesURL=https://s2arm.com
+VersionInfoVersion={#AppVersion}
+DefaultDirName={localappdata}\Programs\S2Arm
+PrivilegesRequired=lowest
+DisableDirPage=yes
+DisableProgramGroupPage=yes
+DisableReadyPage=yes
+DisableWelcomePage=yes
+UninstallFilesDir={localappdata}\S2Arm\Uninstall
+UninstallDisplayName=S2Arm
+UninstallDisplayIcon={app}\S2Arm.exe
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+#ifdef Fast
+; 只给调界面用（ISCC /DFast）：不压缩，编得快；发版不带
+Compression=none
+#else
+Compression=lzma2/max
+SolidCompression=yes
+#endif
+OutputBaseFilename=S2Arm-windows-x64-setup
+SetupIconFile=..\launcher\App\Assets\S2Arm.ico
+WizardStyle=modern dark hidebevels includetitlebar
+WizardSmallImageFile=
+CloseApplications=yes
+RestartApplications=no
+ShowLanguageDialog=no
+
+[Languages]
+Name: "zh"; MessagesFile: "compiler:Default.isl,zh-Hans.isl"
+
+[Files]
+Source: "header.bmp"; Flags: dontcopy
+Source: "card.bmp"; Flags: dontcopy
+Source: "bar.bmp"; Flags: dontcopy
+Source: "track.bmp"; Flags: dontcopy
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; 重装 / 用安装程序升级：先清掉上一版的程序目录（只清安装包本身的几样，不碰玩家放进来的别的东西），免得旧版多出来的文件留在新版里
+Type: filesandordirs; Name: "{app}\Engine"
+Type: filesandordirs; Name: "{app}\Runtime"
+Type: filesandordirs; Name: "{app}\Shell"
+Type: filesandordirs; Name: "{app}\Fonts"
+Type: filesandordirs; Name: "{app}\ThirdParty"
+Type: filesandordirs; Name: "{app}\skill"
+
+[Icons]
+Name: "{userprograms}\S2Arm"; Filename: "{app}\S2Arm.exe"; WorkingDir: "{app}"
+Name: "{userdesktop}\S2Arm"; Filename: "{app}\S2Arm.exe"; WorkingDir: "{app}"; Check: WantDesktopIcon
+
+[Run]
+Filename: "{app}\S2Arm.exe"; WorkingDir: "{app}"; Description: "现在打开 S2Arm / Launch S2Arm now"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; 只删程序：安装目录整删（换壳更新后新增的文件不在安装记录里），连同更新器换壳留下的 .s2arm-old / .s2arm-new
+Type: filesandordirs; Name: "{app}"
+Type: filesandordirs; Name: "{app}.s2arm-old"
+Type: filesandordirs; Name: "{app}.s2arm-new"
+
+[Code]
+{ 界面照 DMG 新窗口：深色底、S2ARM 字标、奶油色进度、圆角卡片、中英两句。素材由 make_header.py 生成（底色 = 内置深色样式 #2b2b2b） }
+const
+  Ink = $EBF0F2;        { #F2F0EB }
+  Muted = $A8A8A8;      { #A8A8A8 }
+  Cream = $D6EAF5;      { #F5EAD6 }
+  SlideMs = 3500;       { 轮播几秒换一张 }
+
+var
+  DesktopBox: TNewCheckBox;
+  WelcomePageID: Integer;
+  PathText: TNewStaticText;
+  SlideTitle, SlideSub, SlideDots: TNewStaticText;
+  Bar: TBitmapImage;
+  BarWidth, SlideIndex, SlideTimer: Integer;
+  SlideCn, SlideEn: array of String;
+  FinishedBuilt: Boolean;
+
+function SetTimer(hWnd: LongWord; nIDEvent, uElapse: LongWord; lpTimerFunc: LongWord): LongWord; external 'SetTimer@user32.dll stdcall';
+function KillTimer(hWnd: LongWord; uIDEvent: LongWord): LongWord; external 'KillTimer@user32.dll stdcall';
+
+function WantDesktopIcon: Boolean;
+begin
+  Result := DesktopBox.Checked;
+end;
+
+function NewText(Parent: TWinControl; Left, Top, Width, Size: Integer; Color: Integer; Bold: Boolean; Caption: String): TNewStaticText;
+begin
+  Result := TNewStaticText.Create(WizardForm);
+  Result.Parent := Parent;
+  Result.Left := ScaleX(Left);
+  Result.Top := ScaleY(Top);
+  Result.AutoSize := False;
+  Result.WordWrap := True;
+  Result.Width := Width;
+  Result.Font.Name := 'Microsoft YaHei UI';
+  Result.Font.Size := Size;
+  Result.Font.Color := Color;
+  if Bold then Result.Font.Style := [fsBold];
+  Result.Caption := Caption;
+  Result.Height := ScaleY(Size * 2 + 8);
+end;
+
+function NewImage(Parent: TWinControl; FileName: String; Left, Top, Width, Height: Integer): TBitmapImage;
+begin
+  ExtractTemporaryFile(FileName);
+  Result := TBitmapImage.Create(WizardForm);
+  Result.Parent := Parent;
+  Result.Bitmap.LoadFromFile(ExpandConstant('{tmp}\' + FileName));
+  Result.Stretch := True;
+  Result.Left := Left;
+  Result.Top := Top;
+  Result.Width := Width;
+  Result.Height := Height;
+end;
+
+{ 卖点：只写已经有的功能（README / 官网），不写游戏名；中文一句、英文一句。最后一张是从压缩包版迁过来的说明 }
+procedure AddSlide(Cn, En: String);
+var
+  N: Integer;
+begin
+  N := GetArrayLength(SlideCn);
+  SetArrayLength(SlideCn, N + 1); SetArrayLength(SlideEn, N + 1);
+  SlideCn[N] := Cn; SlideEn[N] := En;
+end;
+
+procedure InitSlides;
+begin
+  AddSlide('一个 App 装下整个游戏库，只占开发者账号一个名额', 'One app holds your whole library, using a single App slot');
+  AddSlide('原生运行，不是模拟器：游戏代码改写成 ARM64，画面直达 Metal', 'A native port, not an emulator: code runs as ARM64, graphics go straight to Metal');
+  AddSlide('让 AI 帮你出包、装到手机，每一步都在启动器里看得见', 'Let an AI build and install for you, with every step visible in the launcher');
+  AddSlide('存档在 iPhone 和 Mac 之间互通', 'Saves move freely between iPhone and Mac');
+  AddSlide('每款游戏单独记住自己的画面设置', 'Each game remembers its own graphics settings');
+  AddSlide('升级 S2Arm 不用重新出包，出好的游戏原样带进新版', 'Updating S2Arm keeps the games you built; no rebuild needed');
+  AddSlide('以前用的是压缩包版？游戏库、设置、出好的包都照用', 'Used the zip version before? Your library and settings carry over');
+end;
+
+procedure ShowSlide;
+var
+  Dots: String;
+  I: Integer;
+begin
+  SlideTitle.Caption := SlideCn[SlideIndex];
+  SlideSub.Caption := SlideEn[SlideIndex];
+  Dots := '';
+  for I := 0 to GetArrayLength(SlideCn) - 1 do
+    if I = SlideIndex then Dots := Dots + '●  ' else Dots := Dots + '○  ';
+  SlideDots.Caption := Dots;
+end;
+
+procedure OnSlideTimer(Wnd: LongWord; Msg: LongWord; IdEvent: LongWord; Time: LongWord);
+begin
+  SlideIndex := (SlideIndex + 1) mod GetArrayLength(SlideCn);
+  ShowSlide;
+end;
+
+procedure StopSlides;
+begin
+  if SlideTimer <> 0 then begin
+    KillTimer(0, SlideTimer);
+    SlideTimer := 0;
+  end;
+end;
+
+procedure BuildHeader;
+var
+  Mark: TBitmapImage;
+  Pill: TNewStaticText;
+begin
+  { 顶栏：左边 S2ARM 字标，右边平台标签；不要 Inno 默认的页标题 / 小图 }
+  WizardForm.PageNameLabel.Visible := False;
+  WizardForm.PageDescriptionLabel.Visible := False;
+  WizardForm.WizardSmallBitmapImage.Visible := False;
+  ExtractTemporaryFile('header.bmp');
+  Mark := TBitmapImage.Create(WizardForm);
+  Mark.Parent := WizardForm.MainPanel;
+  Mark.Bitmap.LoadFromFile(ExpandConstant('{tmp}\header.bmp'));
+  Mark.Stretch := True;
+  Mark.Width := ScaleX(Mark.Bitmap.Width);
+  Mark.Height := ScaleY(Mark.Bitmap.Height);
+  Mark.Left := ScaleX(24);
+  Mark.Top := (WizardForm.MainPanel.Height - Mark.Height) div 2;
+  Pill := TNewStaticText.Create(WizardForm);
+  Pill.Parent := WizardForm.MainPanel;
+  Pill.Font.Name := 'Microsoft YaHei UI';
+  Pill.Font.Size := 9;
+  Pill.Font.Color := Muted;
+  Pill.Caption := 'Windows · x64';
+  Pill.Left := WizardForm.MainPanel.ClientWidth - Pill.Width - ScaleX(28);
+  Pill.Top := (WizardForm.MainPanel.Height - Pill.Height) div 2;
+end;
+
+procedure BuildWelcome;
+var
+  Page: TWizardPage;
+  W: Integer;
+begin
+  Page := CreateCustomPage(wpWelcome, '', '');
+  WelcomePageID := Page.ID;
+  W := Page.Surface.ClientWidth;
+  NewText(Page.Surface, 0, 0, W, 22, Ink, True, '安装 S2Arm');
+  NewText(Page.Surface, 0, 50, W, 10, Ink, False, '把启动器装到这台电脑上，开始菜单和桌面会有 S2Arm 图标。');
+  NewText(Page.Surface, 0, 74, W, 9, Muted, False, 'Installs the S2Arm launcher with Start menu and desktop shortcuts.');
+  NewImage(Page.Surface, 'card.bmp', 0, ScaleY(110), W, ScaleY(96));
+  NewText(Page.Surface, 18, 122, W - ScaleX(36), 9, Muted, False, '安装位置 / Install location');
+  PathText := NewText(Page.Surface, 18, 144, W - ScaleX(36), 10, Ink, False, '');   { 安装目录到页面显示时才定下来（CurPageChanged 填） }
+  NewText(Page.Surface, 18, 170, W - ScaleX(36), 9, Muted, False, '路径短、不要管理员权限；游戏库和存档不放这里，卸载也不会动它们。');
+  DesktopBox := TNewCheckBox.Create(WizardForm);
+  DesktopBox.Parent := Page.Surface;
+  DesktopBox.Top := ScaleY(222);
+  DesktopBox.Width := W;
+  DesktopBox.Height := ScaleY(22);
+  DesktopBox.Caption := '在桌面创建 S2Arm 图标 / Create a desktop shortcut';
+  DesktopBox.Checked := True;
+end;
+
+procedure BuildInstalling;
+var
+  P: TWinControl;
+  W, Y: Integer;
+begin
+  { 安装中：大标题 + 自己画的奶油色进度条 + 卖点轮播卡片（jhz 11-11：中间的宣传语轮播，几秒换一张、带页点）。
+    轮播只是计时器换字，不挡安装；装得快时一闪而过也不影响进度 }
+  P := WizardForm.InstallingPage;
+  W := P.ClientWidth;
+  WizardForm.StatusLabel.Visible := False;
+  WizardForm.FilenameLabel.Visible := False;
+  WizardForm.ProgressGauge.Visible := False;
+  NewText(P, 0, 0, W, 20, Ink, True, '正在安装…');
+  NewText(P, 0, 46, W, 9, Muted, False, 'Installing S2Arm');
+  NewImage(P, 'track.bmp', 0, ScaleY(84), W, ScaleY(8));
+  BarWidth := W;
+  Bar := NewImage(P, 'bar.bmp', 0, ScaleY(84), 0, ScaleY(8));
+  Y := 116;
+  NewImage(P, 'card.bmp', 0, ScaleY(Y), W, ScaleY(110));
+  SlideTitle := NewText(P, 20, Y + 18, W - ScaleX(40), 12, Ink, True, '');
+  SlideSub := NewText(P, 20, Y + 50, W - ScaleX(40), 9, Muted, False, '');
+  SlideDots := NewText(P, 20, Y + 80, W - ScaleX(40), 8, Cream, False, '');
+  SlideIndex := 0;
+  ShowSlide;
+end;
+
+procedure InitializeWizard;
+begin
+  InitSlides;
+  BuildHeader;
+  BuildWelcome;
+  BuildInstalling;
+end;
+
+procedure BuildFinished;
+var
+  P: TWinControl;
+  Mark: TBitmapImage;
+  W: Integer;
+begin
+  { 完成页：和前两步一套（Inno 默认左侧插图藏掉）。完成页的文字 Inno 在进页时按消息重设，所以在这里（CurPageChanged）填 }
+  P := WizardForm.FinishedPage;
+  WizardForm.WizardBitmapImage2.Visible := False;
+  WizardForm.FinishedLabel.Visible := False;
+  W := P.ClientWidth - ScaleX(48);
+  if not FinishedBuilt then begin
+    FinishedBuilt := True;
+    Mark := NewImage(P, 'header.bmp', ScaleX(24), ScaleY(18), 0, 0);
+    Mark.Width := ScaleX(Mark.Bitmap.Width);
+    Mark.Height := ScaleY(Mark.Bitmap.Height);
+    NewText(P, 24, 112, W, 10, Ink, False, '以后从开始菜单或桌面打开 S2Arm；新版本在启动器里自动更新。');
+    NewText(P, 24, 136, W, 9, Muted, False, 'Open S2Arm from the Start menu or desktop. Updates install themselves.');
+    NewImage(P, 'card.bmp', ScaleX(24), ScaleY(176), W, ScaleY(96));
+    NewText(P, 42, 188, W - ScaleX(36), 9, Muted, False, '卸载 / Uninstall');
+    NewText(P, 42, 210, W - ScaleX(36), 10, Ink, False, '设置 → 应用 → 已安装的应用 → S2Arm → 卸载');
+    NewText(P, 42, 236, W - ScaleX(36), 9, Muted, False, '只删程序本身；游戏库、存档、出好的 iPhone 包都保留。');
+  end;
+  WizardForm.FinishedHeadingLabel.Caption := '装好了';
+  WizardForm.FinishedHeadingLabel.Font.Name := 'Microsoft YaHei UI';
+  WizardForm.FinishedHeadingLabel.Font.Size := 22;
+  WizardForm.FinishedHeadingLabel.Left := ScaleX(24);
+  WizardForm.FinishedHeadingLabel.Top := ScaleY(64);
+  WizardForm.FinishedHeadingLabel.Width := W;
+  WizardForm.FinishedHeadingLabel.Height := ScaleY(44);
+  WizardForm.RunList.Left := ScaleX(24);
+  WizardForm.RunList.Top := ScaleY(292);
+  WizardForm.RunList.Width := W;
+end;
+
+procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
+begin
+  if MaxProgress > 0 then
+    Bar.Width := BarWidth * CurProgress div MaxProgress;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = WelcomePageID then begin
+    PathText.Caption := WizardDirValue;
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
+  end;
+  if CurPageID = wpFinished then BuildFinished;
+  if CurPageID = wpInstalling then begin
+    SlideIndex := 0;
+    ShowSlide;
+    SlideTimer := SetTimer(0, 0, SlideMs, CreateCallback(@OnSlideTimer));
+  end else
+    StopSlides;
+end;
+
+procedure DeinitializeSetup;
+begin
+  StopSlides;
+end;
