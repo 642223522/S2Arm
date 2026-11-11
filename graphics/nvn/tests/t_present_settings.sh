@@ -131,4 +131,6 @@ done
 printf 'present settings matrix: %d/18 passed, %d unproven (logs/images: %s)\n' "$((18-bad-unproven))" "$unproven" "$out"
 printf 'present settings output distinctions: %d/18 passed, %d skipped\n' "$distinctions" "$dskip"
 if ((unproven)); then printf 'present settings: %d cells 未证（宿主显示环境不给真上屏位）\n' "$unproven"; fi
+# 18 格全未证 = 这次一格真上屏都没验：退 75（门禁记「环境未就绪」重排），不能当绿（判据绿着失效）；部分未证照跳过那几格
+if ((unproven == 18)); then exit 75; fi
 [[ "$bad" == 0 && $((distinctions+dskip)) == 18 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 = 9，两个后端 18；未证格的对子计 skip 不判（10-30 去掉 FXAA 前 4 种模式是 28）

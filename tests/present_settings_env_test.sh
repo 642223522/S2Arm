@@ -6,7 +6,7 @@
 #   位，与焦点无关——无人值守跑门禁必中，11-11 实测双屏 Display Asleep、CGGetActiveDisplayList=0 时
 #   18 格全死在该检查）：
 #   ① S2A_PS_ENV=sleep → 建窗前早探针退 77、打「未证」；② awake+S2A_PS_WINDOW=occluded → 探针过、
-#   原检查照旧红退 1；③ offspace → 500ms 晚探针退 77；④ .sh 全程 sleep → 18 格全未证 rc=0、
+#   原检查照旧红退 1；③ offspace → 500ms 晚探针退 77；④ .sh 全程 sleep → 18 格全未证 rc=75（环境未就绪，不当绿）、
 #   跑前清 edge 图使跨跑残留假图不复活
 set -u
 cd "$(dirname "$0")/.."
@@ -53,7 +53,7 @@ for d in "$out"/mtl3-None-Nearest "$out"/mtl3-SmaaMedium-Nearest "$out"/mtl3-Sma
     mkdir -p "$d"; printf x > "$d/edge-native.bgra"; printf x > "$d/edge-scaled.bgra"
 done
 S2A_PS_ENV=sleep bash tests/present_settings_test.sh >"$T/sh.log" 2>&1; s=$?
-ck "④ .sh 全程未证 → rc=0" test "$s" = 0
+ck "④ .sh 全程未证 → rc=75（环境未就绪，不当绿）" test "$s" = 75
 ck "④ 18 格全 UNPROVEN" bash -c '[ "$(grep -c "^UNPROVEN " "$1")" = 18 ]' _ "$T/sh.log"
 ck "④ 尾行单列未证数" grep -q '18 cells 未证' "$T/sh.log"
 ck "④ 无 FAIL 行（假图不复活成 distinctions 红）" bash -c '! grep -q "^FAIL" "$1"' _ "$T/sh.log"
