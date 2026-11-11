@@ -227,6 +227,8 @@ public sealed partial class EnvironmentWindow
                 _ = RunPhoneJobAsync(game, "installRemove", "install.remove", r.Flag("acceptDropped"), ask: false);
                 return ControlReply.Ok();
             }
+            case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0，同 Mac 控制口 / 游戏库顶栏按钮，InstallModePage.cs）
+                return ControlUpdatePhone(r);
             case ("POST", "/restore-iphone"):   // s2armctl restore-iphone：装回上一版手机 S2Arm（同 Mac 控制口）
             {
                 if (ControlGame(r) is not { } game) return NoGame;
@@ -283,6 +285,17 @@ public sealed partial class EnvironmentWindow
             case ("POST", "/environment"):
                 if (!busy) _ = CheckAsync();
                 return ControlReply.Ok();
+            case ("POST", "/show"):   // 打开某一页（同点顶栏「环境检查」/ 游戏的「出包」/ 回游戏库，同 Mac）：AI 照手册操作、截图核界面用
+                switch (r.Text("page"))
+                {
+                    case "environment": Navigate("settings"); break;
+                    case "library": Navigate("library"); break;
+                    case "export":
+                        if (ControlGame(r) is not { } showGame) return NoGame;
+                        selectedGame = showGame.Id; OpenBuild(); break;
+                    default: return ControlReply.Bad("page 只认 environment / export / library");
+                }
+                return ControlReply.Ok();
             case ("POST", "/refresh"):
                 if (ControlBusy) return Busy();
                 libraryFolder = connectedFolder ?? libraryFolder;
@@ -308,6 +321,8 @@ public sealed partial class EnvironmentWindow
         ("POST /batch {games:[{gameId, platforms:[mac|iphone]}], location?}", "批量出包：一批几款、每款出哪些平台（Windows 只出 iPhone，要了 Mac 记失败「这台电脑出不了这个平台的包」），location = 一批共用的存放位置；一款接一款地出，失败不挡后面、磁盘满暂停；进度看 GET /state 的 batch（summary / items）"),
         ("POST /installCheck {gameId}", "装机前清单：几秒后看 GET /state 的 installReadiness"),
         ("POST /install {gameId, acceptDropped?}", "用 Impactor 装到 iPhone（清单全齐才能装；Apple ID 由玩家本人在 Impactor 里登录）；失败码 container_would_drop = 手机上有别的电脑装的游戏这次带不上，先问玩家，同意了带 acceptDropped = true 再发"),
+        ("POST /show {page: environment|library|export, gameId?}", "打开环境检查 / 回游戏库 / 打开这款的出包页（同点对应按钮）"),
+        ("POST /update-phone {ask?, acceptStale?, repack?}", "更新 iPhone 上的 S2Arm（同游戏库右上角按钮；GET /state 的 phoneUpdates 不空才有）：本版壳 + 手机上已有的程序模块，只装 App；有要按新版重新出包的款时没带 acceptStale 回 409 并列出 stale，repack = true 时更新完把它们排进批量出包、出完自动装"),
         ("POST /uninstall {gameId, acceptDropped?}", "从 iPhone 上的 S2Arm 删一款；acceptDropped 同 /install"),
         ("POST /cancel {taskId} | /retry {taskId}", "停掉在跑的作业 / 重试出包、装机任务"),
         ("POST /diagnostics {action:export, path}", "导出诊断包（已脱敏的 zip）"),
@@ -344,6 +359,8 @@ public sealed partial class EnvironmentWindow
         }).ToList();
         object? session = null;
         if (packRunning) session = new Dictionary<string, object?> { ["kind"] = "ipa", ["gameId"] = packGame?.Id, ["name"] = packGame?.Name, ["phase"] = "running" };
+        else if (phoneUpdating) session = new Dictionary<string, object?> { ["kind"] = "installUpdate", ["gameId"] = null, ["name"] = "正在更新 iPhone 上的 S2Arm", ["phase"] = "running",
+            ["done"] = updateDone, ["total"] = updateTotal };
         else if (importBusy) session = new Dictionary<string, object?> { ["kind"] = "import", ["gameId"] = null, ["name"] = importJobName, ["phase"] = "running" };
         else if (installBusy) session = new Dictionary<string, object?> { ["kind"] = "install", ["gameId"] = installGameId, ["name"] = installGameName, ["phase"] = "running",   // 装的那款，不是当前选中的（#308）
             ["done"] = installDone, ["total"] = installTotal, ["unit"] = installUnit };
@@ -367,7 +384,7 @@ public sealed partial class EnvironmentWindow
             ["library"] = connectedFolder, ["games"] = games, ["session"] = session, ["busy"] = ControlBusy,
             ["tasks"] = ControlJournal.Tasks(privateRoot), ["queue"] = Array.Empty<string>(), ["notice"] = null,
             ["error"] = importError.Length > 0 ? importError : aiControlError.Length > 0 ? aiControlError : null,
-            ["installReadiness"] = install, ["update"] = UpdateStatus, ["batch"] = ControlBatch(), ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            ["installReadiness"] = install, ["installMode"] = ControlInstallMode(), ["phoneUpdates"] = ControlPhoneUpdates(), ["update"] = UpdateStatus, ["batch"] = ControlBatch(), ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             ["lastSnapshotPath"] = "", ["windows"] = Array.Empty<object>(),
         };
     }

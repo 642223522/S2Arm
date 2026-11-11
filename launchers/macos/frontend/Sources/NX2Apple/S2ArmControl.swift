@@ -131,6 +131,19 @@ import S2ArmAppleAdapter
             model.install(g, teamId: str("teamId"), device: str("device"), acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
+        case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
+            if let b = busy() { return b }
+            guard let u = model.phoneUpdate else { return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "按这台电脑的装机记录，手机上的 S2Arm 已是本版"])) }
+            let accept = a["acceptStale"] as? Bool ?? false
+            let stale = u.stale.map { ["gameId": $0.id, "name": $0.name] }
+            if a["ask"] as? Bool == true {   // 同玩家点库页右上角按钮：有要重新出包的款弹三选一（玩家在窗口里选），没有就直接更新
+                model.requestPhoneUpdate(language: "zh-Hans"); return .object(["ok": true, "asked": !u.stale.isEmpty, "stale": stale])
+            }
+            if !u.stale.isEmpty, !accept {
+                return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "这几款要按新版重新出包，重新出包前暂时打不开：带 acceptStale 确认（repack 为真时更新完把它们排进批量出包、出完自动装）", "stale": stale]))
+            }
+            model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans")
+            return .object(["ok": true, "stale": stale])
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
@@ -216,6 +229,16 @@ import S2ArmAppleAdapter
             return .ok(["note": "新界面没有引导页，已忽略"])
         case ("POST", "/environment"):
             model.checkEnvironment(); return .ok()
+        case ("POST", "/show"):   // 打开某一页（同玩家点标题栏「环境检查」/ 游戏的「出包」/ 回游戏库）：AI 照手册操作、截图核界面用
+            switch str("page") ?? "" {
+            case "environment": model.exportFor = nil; model.showEnvironment = true
+            case "export":
+                guard let g = game() else { return .bad("没有这个 gameId") }
+                model.showEnvironment = false; model.exportFor = g.id
+            case "library": model.showEnvironment = false; model.exportFor = nil
+            default: return .bad("page 只认 environment / export / library")
+            }
+            return .ok()
         case ("POST", "/refresh"):
             model.refresh(); return .ok()
         case ("POST", "/dismiss"):
@@ -303,6 +326,8 @@ import S2ArmAppleAdapter
             "error": (m.actionError ?? (m.libraryError == LibraryProvider.noLibraryMessage ? nil : m.libraryError) ?? m.environmentError ?? m.installError ?? m.aiControlError).map { $0 as Any } ?? NSNull(),
             "installReadiness": rd,
             "update": m.updateStatus,
+            "installMode": ["mode": m.installMode.mode, "exportAvailable": m.installMode.exportAvailable],
+            "phoneUpdates": m.phoneUpdates.map { u in ["device": u.device, "games": u.games.map(\.id), "stale": u.stale.map(\.id)] as [String: Any] },
             "batch": m.batchState.map { s -> [String: Any] in ["running": m.batchRunning, "summary": s["summary"] ?? [:], "next": s["next"] ?? NSNull(),
                                                                    "items": ((s["batch"] as? [String: Any])?["items"]) ?? [], "paused": ((s["batch"] as? [String: Any])?["paused"]) ?? NSNull()] } ?? NSNull(),
             "cachedAt": Date().timeIntervalSince1970,

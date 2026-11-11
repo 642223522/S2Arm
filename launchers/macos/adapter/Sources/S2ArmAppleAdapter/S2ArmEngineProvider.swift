@@ -242,6 +242,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, events: events)
     }
 
+    public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
+    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, events: events)
+    }
+
     public func restorePhone(events: EventSink = .discard) async throws {
         try await installer.restorePrevious(events: events)
     }

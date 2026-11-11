@@ -363,7 +363,7 @@ public sealed partial class EnvironmentWindow
         }
         body.Children.Add(tiles);
         body.Children.Add(LocationRow(game));
-        if (exportIos) body.Children.Add(DevCertRow());   // 签名方式（v0.2.4，DevCertPage.cs）
+        if (exportIos) body.Children.Add(InstallModeLine());   // 装到 iPhone：一键装（Apple ID / 我的开发者证书）或导出 + 「更改」去环境检查（v0.3.0，InstallModePage.cs）
 
         // action bar
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
@@ -1103,10 +1103,11 @@ public sealed partial class EnvironmentWindow
             }
             else if (!item.Ok && item.Action == "openImpactor")
             {
-                var open = new Button { Content = T("action.open_impactor"), Background = Accent, Foreground = Canvas,
+                // 签名身份（Apple ID 在 Impactor 里登录 / 开发者证书）统一在环境检查「装到 iPhone 的方式」里设（v0.3.0）
+                var open = new Button { Content = T("install.mode.go_settings"), Background = Accent, Foreground = Canvas,
                     Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8), VerticalAlignment = VerticalAlignment.Center };
-                AutomationId(open, "install.open_impactor");
-                open.Click += (_, _) => OpenBundledImpactor();
+                AutomationId(open, "install.go_settings");
+                open.Click += (_, _) => Navigate("settings");
                 Grid.SetColumn(open, 2); row.Children.Add(open);
             }
             list.Children.Add(row);
