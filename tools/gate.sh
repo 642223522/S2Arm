@@ -66,7 +66,7 @@ if [ -n "$PLANM" ]; then L=$R/${GATE_OUT:?远端计划要给 GATE_OUT}; rm -rf "
 else L=$(mktemp -d); trap 'rm -rf "$L"; [ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT; fi
 # 同一棵树的 C# 编译串行（tools/dotnet_lock.sh，11-10 判据去负载化：并行各步编同一批 compat/tree 工程共用 obj/ 互踩，MSB4018 / nupkg 被占 / CS0006）：
 #   各步大多按 ${DOTNET:-~/.dotnet/dotnet} 调，少数直接调 dotnet——两路都接到锁包装上；真 dotnet 记在 S2A_DOTNET_REAL（嵌套门禁不套两层）
-if [ -x tools/dotnet_lock.sh ] && [ "${DOTNET##*/}" != dotnet_lock.sh ]; then
+if [ -x tools/dotnet_lock.sh ] && [ "$(basename "${DOTNET:-none}")" != dotnet_lock.sh ]; then
   export S2A_DOTNET_REAL=${S2A_DOTNET_REAL:-${DOTNET:-$HOME/.dotnet/dotnet}} DOTNET=$R/tools/dotnet_lock.sh
   mkdir -p "$L/bin" && printf '#!/bin/bash\nexec "%s" "$@"\n' "$R/tools/dotnet_lock.sh" > "$L/bin/dotnet" && chmod +x "$L/bin/dotnet" && export PATH=$L/bin:$PATH
 fi
