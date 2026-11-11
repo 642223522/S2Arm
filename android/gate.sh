@@ -142,11 +142,17 @@ run_apk_gate() {
   # 与合入后钩子 tools/post_android_prepare.sh 共用一把锁：Linux 上两边的容器共用同一缓存卷、macOS 上宿主 prepare 与宿主门禁读写同一缓存槽，同时 dotnet publish 会互相锁死
   #   （11-01：钩子 prepare 与两次 APK 门禁三个容器卡在 MSBuild、CPU 0 达 50 分钟）。准备在跑 → 本轮不跑 APK、报待宿主证，
   #   钩子跑完会删守望 last_checked 让这一提交补跑；门禁在跑时钩子排队等。持锁进程已死的锁收回
-  local lk=${S2A_ANDROID_PREPARE_LOCK:-$HOME/.cache/s2arm-build/post-prepare.lock} p
+  #   11-10：安卓门禁改成「路由命中时合入前也跑」后，入车撞上合入后钩子的 prepare 就记待宿主证、列车按缺宿主证明退回（launcher/batch-audit）。
+  #   改成先等 prepare 做完（上限 S2A_ANDROID_PREPARE_WAIT_S，缺省 1200 秒，prepare 实测几分钟），等满仍被占才报待宿主证
+  local lk=${S2A_ANDROID_PREPARE_LOCK:-$HOME/.cache/s2arm-build/post-prepare.lock} p waited=0 wmax=${S2A_ANDROID_PREPARE_WAIT_S:-1200}
   mkdir -p "$(dirname "$lk")"
   until mkdir "$lk" 2>/dev/null; do
-    p=$(cat "$lk/pid" 2>/dev/null); kill -0 "$p" 2>/dev/null && {
-      echo "未跑：安卓 APK 准备进行中（持锁 pid ${p}，合入后钩子在重跑 prepare），备料完成后守望补跑"; printf '待宿主证\t安卓宿主\tapk\n'; return 0; }
+    p=$(cat "$lk/pid" 2>/dev/null)
+    if kill -0 "$p" 2>/dev/null; then
+      if [ "$waited" -ge "$wmax" ]; then
+        echo "未跑：安卓 APK 准备进行中（持锁 pid ${p}，合入后钩子在重跑 prepare），已等 ${waited} 秒仍被占，备料完成后守望补跑"; printf '待宿主证\t安卓宿主\tapk\n'; return 0; fi
+      [ "$waited" = 0 ] && echo "安卓 APK 准备进行中（持锁 pid ${p}），先等它做完（上限 ${wmax} 秒）"
+      sleep 10; waited=$((waited + 10)); continue; fi
     rm -rf "$lk"; done
   echo $$ > "$lk/pid"
   # #1299：与 host/gate-apk.sh 开头的 uname 判断对称——docker 镜像只证 Linux 宿主，
