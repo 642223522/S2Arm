@@ -8,11 +8,16 @@ final class MilestoneTests: XCTestCase {
                 Milestone(id: "c", label: "C", purpose: "", expected: 300, source: "history", samples: 4)]
 
     func testRateFromRealCounts() {
-        // a 用了 100 秒（= 预计，校准 1）；b 已用 50 秒、完成 25% → 本步剩 50×0.75/0.25 = 150；之后 c 300 → 共 450
-        let e = MilestoneEstimate(plan: plan, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, now: 150)
+        // 剃刀 M20：本步剩余只用调用方给的实测速率值（measuredStep）。a 用了 100 秒（= 预计，校准 1）；b 实测还剩 120 → 本步 120；之后 c 300 → 共 420
+        let e = MilestoneEstimate(plan: plan, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, measuredStep: 120, now: 150)
         XCTAssertEqual(e.calibration, 1, accuracy: 1e-9)
-        XCTAssertEqual(e.remaining!, 450, accuracy: 1e-9)
+        XCTAssertEqual(e.stepRemainingByRate!, 120, accuracy: 1e-9)
+        XCTAssertEqual(e.remaining!, 420, accuracy: 1e-9)
         XCTAssertEqual(e.fill(0), 1); XCTAssertEqual(e.fill(1), 0.25, accuracy: 1e-9); XCTAssertEqual(e.fill(2), 0)
+        // 有完成比例但没有实测速率（刚开工、量不够两秒）：不再按「已用 × 未完成 ÷ 完成」另算一份，本步按历史兜底 200 − 50 = 150，共 450
+        let early = MilestoneEstimate(plan: plan, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, now: 150)
+        XCTAssertNil(early.stepRemainingByRate)
+        XCTAssertEqual(early.remaining!, 450, accuracy: 1e-9)
     }
     func testNoCountsUsesExpectedMinusElapsed() {
         // a 用了 200 秒（预计 100）→ 校准 2；b 已用 100 秒、无计数 → 本步剩 200×2−100 = 300；c 300×2 = 600 → 共 900
@@ -41,9 +46,9 @@ final class MilestoneTests: XCTestCase {
     func testNoLocalHistoryNeverEstimatesTotal() {
         // 本机没有记录（none）或老任务的缺省值（default）：整单预计一律不给；本步有真实完成数时只给按速度的本步剩余
         let none = plan.map { Milestone(id: $0.id, label: $0.label, purpose: "", expected: nil, source: "none", samples: 0) }
-        let e = MilestoneEstimate(plan: none, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, now: 150)
+        let e = MilestoneEstimate(plan: none, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, measuredStep: 80, now: 150)
         XCTAssertNil(e.remaining)
-        XCTAssertEqual(e.stepRemainingByRate!, 150, accuracy: 1e-9)   // 50 × 0.75 / 0.25
+        XCTAssertEqual(e.stepRemainingByRate!, 80, accuracy: 1e-9)   // 实测值原样
         let old = plan.map { Milestone(id: $0.id, label: $0.label, purpose: "", expected: $0.expected, source: "default", samples: 0) }
         let o = MilestoneEstimate(plan: old, current: "b", started: ["a": 0, "b": 100], fraction: nil, now: 150)
         XCTAssertNil(o.remaining); XCTAssertNil(o.stepRemainingByRate)
@@ -52,7 +57,7 @@ final class MilestoneTests: XCTestCase {
     func testOneMissingStepDropsTotal() {
         // 后面任何一步没有本机记录（c 缺）就不给整单预计
         var partial = plan; partial[2] = Milestone(id: "c", label: "C", purpose: "", expected: nil, source: "none", samples: 0)
-        let e = MilestoneEstimate(plan: partial, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, now: 150)
+        let e = MilestoneEstimate(plan: partial, current: "b", started: ["a": 0, "b": 100], fraction: 0.25, measuredStep: 80, now: 150)
         XCTAssertNil(e.remaining)
         XCTAssertNotNil(e.stepRemainingByRate)
     }

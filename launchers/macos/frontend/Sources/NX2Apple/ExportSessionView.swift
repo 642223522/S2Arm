@@ -171,7 +171,7 @@ struct ExportSessionView: View {
     // ---- timing: elapsed, time left, done at ----
 
     private func estimate(at now: Date) -> MilestoneEstimate {
-        session.progress.track.estimate(fraction: session.progress.fraction, now: now.timeIntervalSince1970)
+        session.progress.estimate(at: now)
     }
 
     /// 这一步在整单里占的比重：各步都有本机记录就按时间算，否则每步一样重（不编时间）。
