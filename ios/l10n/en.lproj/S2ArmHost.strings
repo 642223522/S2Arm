@@ -235,7 +235,7 @@
 "app.library.cantOpen.message" = "This game couldn’t be prepared to start. Swipe the app away in the app switcher and open it again; if it still fails, export diagnostics and send them to us.";
 "app.library.missing.title" = "Game resources are missing";
 "app.library.packBroken" = "Only part of this game’s resources were copied — the copy was probably interrupted. In S2Arm on your computer, click “Install on iPhone” for this game again to add what’s missing. When it’s done, tap “Check again”.";
-"app.library.packMissing" = "This game’s resources aren’t on the phone yet. In S2Arm on your computer, click “Install on iPhone” for this game and the resources are copied over automatically. You can also use Finder to copy its “…资源包” folder into the games/%@ folder in this app’s Files. Then tap “Check again”.";
+"app.library.packMissing" = "This game’s resources aren’t on the phone yet. In S2Arm on your computer, click “Install on iPhone” for this game and the resources are copied over automatically. You can also put this game’s game.img file anywhere in this app in the Files app. Then tap “Check again”.";
 "app.library.reopen.message" = "You can play only one game each time the app is opened. Swipe the app away in the app switcher, open it again, then choose this game.";
 "app.library.reopen.title" = "Close and reopen the app";
 "app.library.stillMissing" = "Checked just now — the complete resources still aren’t there.\n\n";
@@ -343,10 +343,8 @@
 "loadpage.subtitle" = "First launch: doing one-time setup for your device";
 "notice.batch" = "Batch %d of %d";
 "notice.cable" = "Cable";
-"notice.packFolder" = "“%@资源包”";
+"notice.step.img" = "Or put this game’s game.img file anywhere in “%@” in the Files app, then open “%@” again. It’s picked up automatically.";
 "notice.step.auto" = "In S2Arm on your computer, click “Install on iPhone” for this game and the resources are copied over automatically — the easiest way.";
-"notice.step.drag" = "Drag the whole “%@资源包” folder onto “%@”. This continues automatically when copying finishes.";
-"notice.step.manual" = "Or copy them yourself: connect to your Mac with a cable, open Finder, select this phone on the left → “Files” → find “%@”.";
 "save.blocked" = "%@\n\nCopy your data somewhere safe before deciding: open the Files app → “On My iPhone” (“On My iPad” on iPad) → “%@”, and copy the whole “S2A” folder somewhere else. Unfinished operations are recorded in S2A/save-transfer/save-transactions. You can also select this device in Finder on a Mac → “Files”, and drag out the “S2A” folder under this app.\n\nAfter copying, you can repackage and install to try again, or tap “Start game anyway…”.";
 "save.busy" = "The previous save operation is still running. Try again when it finishes.";
 "save.checking" = "Checking saves…";

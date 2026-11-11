@@ -272,9 +272,12 @@ int s2a_pack_apply(const char *docs) {
     { const char *dirs[] = {docs, root, inc}; struct stat ds;
       for (int i = 0; i < 3 && !rc; i++) if (!stat(dirs[i], &ds) && S_ISDIR(ds.st_mode) && access(dirs[i], W_OK)) {
           rc = -12; snprintf(what, sizeof what, "目录 App 写不进：%s（属主 uid %u、权限 %o，App 是 uid %u），重开 S2Arm 会自动迁到新目录", dirs[i], (unsigned)ds.st_uid, (unsigned)(ds.st_mode & 07777), (unsigned)getuid()); } }
-    DIR *d = rc ? NULL : opendir(inc); char *names[4096]; int nn = 0;
-    if (d) { struct dirent *e; while ((e = readdir(d)) && nn < 4096) { size_t l = strlen(e->d_name); if (l > 4 && !strcmp(e->d_name + l - 4, ".tar") && strncmp(e->d_name, "._", 2)) names[nn++] = strdup(e->d_name); } closedir(d); }
-    qsort(names, (size_t)nn, sizeof *names, name_cmp);
+    // 待解包只由推送端（tools/push_pack.py）写进 .incoming：不再跳过访达拷来的 `._` 附属文件、不设个数上限（iOS 装机剃刀 #20，随 #28）
+    DIR *d = rc ? NULL : opendir(inc); char **names = NULL; int nn = 0, cap = 0;
+    if (d) { struct dirent *e; while ((e = readdir(d))) { size_t l = strlen(e->d_name); if (l > 4 && !strcmp(e->d_name + l - 4, ".tar")) {
+        if (nn == cap) { char **grown = realloc(names, (size_t)(cap = cap ? cap * 2 : 64) * sizeof *names); if (!grown) break; names = grown; }
+        names[nn++] = strdup(e->d_name); } } closedir(d); }
+    if (nn) qsort(names, (size_t)nn, sizeof *names, name_cmp);
     if (s2a_pack_apply_progress) s2a_pack_apply_progress(0, nn);
     if (nn) PHASE(1, 0, (uint64_t)nn);
     for (int i = 0; i < nn && !rc; i++) {
@@ -297,6 +300,7 @@ int s2a_pack_apply(const char *docs) {
         if (r2) { rc = r2; snprintf(what, sizeof what, "清旧文件（读 index.tsv）"); }
         else if (nd) log_line(logp, "进度：清掉不在 index.tsv 里的旧文件 %u 个 %llu MB", nd, (unsigned long long)(db >> 20)); }
     for (int i = 0; i < nn; i++) free(names[i]);
+    free(names);
     char sha[200] = "";
     if (!rc) { char mp[2100]; snprintf(mp, sizeof mp, "%s/manifest.json", root);
         if (manifest_sha(mp, sha, sizeof sha)) { rc = -6; snprintf(what, sizeof what, "读 manifest.json 的 index_sha256"); }
@@ -324,8 +328,8 @@ int s2a_pack_apply(const char *docs) {
 enum { S2A_IMPORT_READY = 0, S2A_IMPORT_PENDING = 1, S2A_IMPORT_NONE = 2, S2A_IMPORT_BROKEN = 3 };
 // 闸门下一步（s2a_import_decide）与它的节拍：稳住 3 秒才导入、1 分钟内变过算正在拷、推送没完且 3 分钟没动算停住
 enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
-enum { S2A_GATE_MOVING_S = 60, S2A_GATE_STALL_S = 90 };   // 停住：同游戏库 transferStall（S2ArmShellHostModel.swift，iOS 装机剃刀 #32：原先闸门 180 秒、库 90 秒两套）
-struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
+enum { S2A_GATE_STALL_S = 90 };   // 停住：同游戏库 transferStall（S2ArmShellHostModel.swift，iOS 装机剃刀 #32：原先闸门 180 秒、库 90 秒两套）
+struct s2a_gate_watch { int n; uint64_t fp; time_t changed; };
 // 资源包完整性（10-26 测试设备2：装机拷到一半被 App 改名，留下有 manifest.json、缺 ctl/control.nacp 的「资源包」，原先只凭 manifest 判就绪，
 //   游戏起来读不到数据 Break、App 退出像闪退）：按 index.tsv（路径<TAB>字节<TAB>sha256）逐个核在不在、大小对不对，返回不符个数，first 记第一个。
 //   index.tsv 由 pack/pack.py 与 manifest.json 同写、出包保证在：不在 / 打不开 / 读不了都按不完整（审计 P2-7：原先打不开当「老包不核」判就绪），first 记 index.tsv 与原因
@@ -338,45 +342,19 @@ void s2a_pack_help_detail(int st, int again, char *d, size_t n) {
 }
 int s2a_pack_check(const char *root, char *first, size_t n) { return (int)index_check(root, first, first ? n : 0, 0); }
 static int ends_with(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !strcmp(s + a - b, t); }
-// 资源包目录里有东西可用：manifest.json（已就绪）或 .incoming 里有待导入的包
-static int pack_usable(const char *root) {
-    struct stat st; char p[2100]; snprintf(p, sizeof p, "%s/manifest.json", root); if (!stat(p, &st)) return 1;
-    snprintf(p, sizeof p, "%s/.incoming", root); DIR *d = opendir(p); int n = 0;
-    if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar") && strncmp(e->d_name, "._", 2)) n++; closedir(d); }
-    return n > 0;
-}
 static int applied_ready(const char *root);
 int s2a_import_state(const char *docs) {
     char root[2048]; struct stat st; snprintf(root, sizeof root, "%s/资源包", docs);
     int have = !stat(root, &st) && S_ISDIR(st.st_mode);
-    // 「资源包」在但里面没有可用的东西（10-26 测试设备2：App 先建了空的「资源包」，之后拷进来的「smg2资源包」按「资源包不在才改名」永远认不到，
-    //   游戏缺 ctl/control.nacp 自行退出、看着像闪退）：另有恰好一个可用的「…资源包」时，把空的挪到「资源包.空.<时刻>」（不删），换成那个
-    if (have && !pack_usable(root)) {
-        DIR *d = opendir(docs); char hit[1024] = ""; int n = 0;
-        if (d) { struct dirent *e; while ((e = readdir(d))) { char p[2100]; snprintf(p, sizeof p, "%s/%s", docs, e->d_name);
-            if (e->d_name[0] != '.' && strcmp(e->d_name, "资源包") && ends_with(e->d_name, "资源包") && !stat(p, &st) && S_ISDIR(st.st_mode) && pack_usable(p)) { n++; strlcpy(hit, e->d_name, sizeof hit); } } closedir(d); }
-        if (n == 1) {
-            char aside[2100]; snprintf(aside, sizeof aside, "%s/资源包.空.%ld", docs, (long)time(NULL));
-            if (rename(root, aside)) LOG("资源导入：把没有内容的「资源包」挪开失败：%s", strerror(errno));
-            else { LOG("资源导入：「资源包」里没有可用内容，挪到 %s，改用「%s」", strrchr(aside, '/') + 1, hit); have = 0; }
-        }
-    }
-    if (!have) {
-        DIR *d = opendir(docs); char hit[1024] = ""; int n = 0;
-        if (d) { struct dirent *e; while ((e = readdir(d))) { char p[2100]; snprintf(p, sizeof p, "%s/%s", docs, e->d_name);
-            if (e->d_name[0] != '.' && strcmp(e->d_name, "资源包") && ends_with(e->d_name, "资源包") && !stat(p, &st) && S_ISDIR(st.st_mode)) { n++; strlcpy(hit, e->d_name, sizeof hit); } } closedir(d); }
-        if (n != 1) { if (n > 1) LOG("资源导入：Documents 下有 %d 个「…资源包」目录，不猜，按没有资源提示", n); return S2A_IMPORT_NONE; }
-        char from[2100]; snprintf(from, sizeof from, "%s/%s", docs, hit);
-        if (rename(from, root)) { LOG("资源导入：把「%s」改名成「资源包」失败：%s", hit, strerror(errno)); return S2A_IMPORT_NONE; }
-        LOG("资源导入：「%s」改名成「资源包」", hit);
-    }
+    // 「资源包」不在 = 没有资源。原先还会把 Documents 下唯一一个「<游戏名>资源包」改名成「资源包」、把空的「资源包」挪开（玩家用访达拷整个文件夹那条路，
+    //   10-26）：v0.3.0 起单一 IMG 交付、单款壳不出，说明页只教「装到 iPhone」与「文件」里放 game.img，这条路连同查询里的改名副作用一起删（iOS 装机剃刀 #28）
+    if (!have) return S2A_IMPORT_NONE;
     // 先用游戏库那条快判（applied_ready）：解开时核对过每个文件、写下的 .applied 等于当前清单、程序描述在 = 就绪，不再逐文件核。
     //   原先闸门先看 .incoming、库先看 .applied，顺序相反：机上留一个包且清单没变时库说能玩、闸门判待导入 + 在传，等到「停住了」进不去；
     //   每次起局还要对同一目录逐文件核一遍（Play 时主线程 s2a_import_needs_ui 再核一遍）。逐文件核只留在没有 .applied 的路径与游戏 Break 时（iOS 装机剃刀 #27 / #38 / #39）
     if (applied_ready(root)) return S2A_IMPORT_READY;
     char inc[2100]; snprintf(inc, sizeof inc, "%s/.incoming", root); int ntar = 0;
-    // 「._」开头 = 访达从非 APFS 盘拷来的 AppleDouble 附属文件，不是包（s2a_pack_apply 选包同样跳过）
-    DIR *d = opendir(inc); if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar") && strncmp(e->d_name, "._", 2)) ntar++; closedir(d); }
+    DIR *d = opendir(inc); if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar")) ntar++; closedir(d); }
     if (ntar) return S2A_IMPORT_PENDING;
     char mf[2100]; snprintf(mf, sizeof mf, "%s/manifest.json", root);
     if (stat(mf, &st)) return S2A_IMPORT_NONE;
@@ -548,13 +526,13 @@ int s2a_import_transferring(const char *root, char *why, size_t n) {
     if (!idx || stat(p, &st)) { snprintf(why, n, "%s还没到", idx ? "manifest.json" : "index.tsv"); return 1; }
     if (manifest_sha(p, sha, sizeof sha)) { snprintf(why, n, "manifest.json 还没写完（读不出 index_sha256）"); return 1; }
     snprintf(p, sizeof p, "%s/.incoming", root); DIR *d = opendir(p); int busy = 0;
-    if (d) { struct dirent *e; while (!busy && (e = readdir(d))) { if (!ends_with(e->d_name, ".tar") || !strncmp(e->d_name, "._", 2)) continue;
+    if (d) { struct dirent *e; while (!busy && (e = readdir(d))) { if (!ends_with(e->d_name, ".tar")) continue;
         char t[2400]; snprintf(t, sizeof t, "%s/%s", p, e->d_name); if (!tar_done(t)) { busy = 1; snprintf(why, n, "%s 还没写完", e->d_name); } } closedir(d); }
     return busy;
 }
 // 资源包指纹：待导入时看 .incoming 的包、清单，以及推送端开推写的传输清单 .transfer 和它列的文件（同游戏库按 .transfer 判传断了，
 //   S2ArmShellHostModel.swift transferStage；原先闸门只看 .incoming，推送直写 game.img 时镜像在长闸门看不见、到点误报停住，iOS 装机剃刀 #32）；
-//   没有 / 不完整时看整个「资源包」目录的文件数与字节。指纹在变 = 有东西正在拷进来
+//   指纹在变 = 推送还在往里写。原先没有 / 不完整时还每 3 秒扫整个资源包目录、1 分钟内变过算「正在用访达拷」，随那条路删了（iOS 装机剃刀 #33）
 static uint64_t g_fp_n, g_fp_b;
 static int fp_one(const char *p, const struct stat *st, int flag, struct FTW *f) { (void)p; (void)f; if (flag == FTW_F) { g_fp_n++; g_fp_b += (uint64_t)st->st_size; } return 0; }
 // .transfer 的 "files": [["相对路径", 字节], …]（tools/push_pack.py json.dumps，非 ASCII 写成 \uXXXX）：逐个把路径解出来交给 fn
@@ -588,33 +566,25 @@ static void transfer_files(const char *root, void (*fn)(const char *path)) {
     free(buf);
 }
 static void fp_path(const char *p) { struct stat st; if (!stat(p, &st)) { g_fp_n++; g_fp_b += (uint64_t)st.st_size ^ (uint64_t)st.st_mtime << 20; } }
-static uint64_t pack_fp(const char *root, int pending) {
+static uint64_t pack_fp(const char *root) {
     g_fp_n = g_fp_b = 0; char p[2100]; struct stat st;
-    if (!pending) nftw(root, fp_one, 32, FTW_PHYS);
-    else { const char *top[] = {".incoming", "index.tsv", "manifest.json", ".applied", ".transfer"};
-        for (int i = 0; i < 5; i++) { snprintf(p, sizeof p, "%s/%s", root, top[i]); if (i) { if (!stat(p, &st)) fp_one(p, &st, FTW_F, NULL); } else nftw(p, fp_one, 8, FTW_PHYS); }
-        transfer_files(root, fp_path); }
+    const char *top[] = {".incoming", "index.tsv", "manifest.json", ".applied", ".transfer"};
+    for (int i = 0; i < 5; i++) { snprintf(p, sizeof p, "%s/%s", root, top[i]); if (i) { if (!stat(p, &st)) fp_one(p, &st, FTW_F, NULL); } else nftw(p, fp_one, 8, FTW_PHYS); }
+    transfer_files(root, fp_path);
     return g_fp_n * 0x9E3779B97F4A7C15ULL ^ g_fp_b;
 }
 // 闸门每隔几秒判一次下一步（iOS 闸门线程按它显示页面）。w 记上次的指纹、它最后变的时刻、是否真变过（首轮不算变）：
 //   就绪 → 进游戏；待导入且推送已完 → 导入（推送完没完由契约判，s2a_import_transferring；原先另要指纹稳住 3 秒，白等 3–6 秒，iOS 装机剃刀 #31）；
-//   推送没完 → 等（指纹 3 分钟没动 → 停住了，请回 Mac 重装）；
-//   没有 / 不完整、但指纹 1 分钟内变过（玩家正用访达拷）→ 等；否则说明页
+//   推送没完 → 等（指纹 90 秒没动 → 停住了，请回电脑重装）；没有 / 不完整 → 说明页（原先 1 分钟内变过算「正在用访达拷」再等，随那条路删了）
 int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n) {
     int st = s2a_import_state(docs); why[0] = 0;
     if (st == S2A_IMPORT_READY) return S2A_GATE_READY;
     char root[2048]; snprintf(root, sizeof root, "%s/资源包", docs);
-    int busy = st == S2A_IMPORT_PENDING && s2a_import_transferring(root, why, n);
-    uint64_t fp = pack_fp(root, st == S2A_IMPORT_PENDING);
-    if (!w->n++) { w->fp = fp; w->changed = now; w->moved = 0; }
-    else if (fp != w->fp) { w->fp = fp; w->changed = now; w->moved = 1; }
-    long still = (long)(now - w->changed);
-    if (st == S2A_IMPORT_PENDING) {
-        if (busy) return still >= S2A_GATE_STALL_S ? S2A_GATE_STALLED : S2A_GATE_WAIT;
-        return S2A_GATE_IMPORT;
-    }
-    if (w->moved && still < S2A_GATE_MOVING_S) { snprintf(why, n, "「资源包」%ld 秒前还在变（正在拷进来）", still); return S2A_GATE_WAIT; }
-    return st == S2A_IMPORT_BROKEN ? S2A_GATE_BROKEN : S2A_GATE_NONE;
+    if (st != S2A_IMPORT_PENDING) return st == S2A_IMPORT_BROKEN ? S2A_GATE_BROKEN : S2A_GATE_NONE;
+    if (!s2a_import_transferring(root, why, n)) return S2A_GATE_IMPORT;
+    uint64_t fp = pack_fp(root);
+    if (!w->n++ || fp != w->fp) { w->fp = fp; w->changed = now; }
+    return now - w->changed >= S2A_GATE_STALL_S ? S2A_GATE_STALLED : S2A_GATE_WAIT;
 }
 // 资源包闸门查哪个文档根、查不查（11-07 Duo「游戏没能启动：系统功能没能准备好」定因）：原先只看「S2A_GAME_DATA 没设」才查、且一律查进程级 Documents——
 //   多款容器选了游戏后 launchctx.c export_env 总会写 S2A_GAME_DATA → 不查，资源包不在也照起，服务层读 资源包/exefs/main.npdm 抛 DirectoryNotFound、归成 service_init。

@@ -27,7 +27,7 @@ extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
 static uint64_t g_ph[4][2]; static int g_phn[4]; static void phase(int ph, uint64_t d, uint64_t t) { if (ph > 0 && ph < 4) { g_ph[ph][0] = d; g_ph[ph][1] = t; g_phn[ph]++; } } int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
 // 与 runtime/src/pack_apply.c 同（闸门下一步与指纹记录）
 enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
-struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
+struct s2a_gate_watch { int n; uint64_t fp; time_t changed; };
 int s2a_import_transferring(const char *root, char *why, size_t n); int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n);
 static int g_pd = -1, g_pt = -1, g_pcalls; static void prog(int d, int t) { g_pd = d; g_pt = t; g_pcalls++; }
 uint64_t now_ns(void) { return 0; }
@@ -205,35 +205,31 @@ int main(void) {
       snprintf(ap, sizeof ap, "%s/资源包/.applied", D); FILE *f = fopen(ap, "r"); if (f) { size_t k = fread(got, 1, sizeof got - 1, f); got[k] = 0; fclose(f); }
       snprintf(ap, sizeof ap, "%s/资源包/.applied.tmp", D);
       CHECK(ec == 1 && !strcmp(got, "oldmark") && stat(ap, &s2) != 0, ".applied 写失败：期望 退出 1 / oldmark / 无 .applied.tmp → 退出 %d / %s / %s", ec, got, stat(ap, &s2) ? "无 .applied.tmp" : "留了 .applied.tmp"); }
-    // 玩家导入闸门（用户体验线 10-23）：状态 0 就绪 / 1 待导入 / 2 没有资源；先改名再判。期望按规则手写：
-    //   ① 空 Documents → 2；② 恰好一个「游戏名资源包」→ 改名成「资源包」，里面有 .incoming/*.tar → 1；③ 解开后（有 manifest.json、没有 tar）→ 0，进度回调最后一次 = (总批数, 总批数)；
-    //   ③b 混进一个「._1_000.tar」（访达从非 APFS 盘拷来的附属文件）：不算包、不解，导入照样成功
-    //   ④ 两个「…资源包」且没有「资源包」→ 2、两个都不改名；⑤ 只有「资源包」没有 manifest、没有 tar → 2
+    // 玩家导入闸门（用户体验线 10-23）：状态 0 就绪 / 1 待导入 / 2 没有资源。期望按规则手写：
+    //   ① 空 Documents → 2；② 「资源包」里有 .incoming/*.tar → 1；③ 解开后（有 manifest.json、没有 tar）→ 0，进度回调最后一次 = (总批数, 总批数)；
+    //   ④ 只有「…资源包」（访达拷的整个文件夹）、没有「资源包」→ 2，且不改名（iOS 装机剃刀 #28：那条路删了，原先唯一一个会被改名成「资源包」）；
+    //   ⑤ 只有「资源包」没有 manifest、没有 tar → 2；⑥ 空「资源包」+ 可用的「smg2资源包」→ 仍是 2、两个都不动（原先把空的挪开、改用后者）
     { char D[2100], c2[4096]; struct stat s2;
       snprintf(D, sizeof D, "%s/imp1", T); mkdir(D, 0755); CHECK(s2a_import_state(D) == 2, "① 空 Documents 应判没有资源");
-      snprintf(c2, sizeof c2, "cd %s && mkdir -p src2 '%s/SUPER MARIO ODYSSEY资源包/.incoming' && echo hi > src2/a.txt && cd src2 && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf '%s/SUPER MARIO ODYSSEY资源包/.incoming/1_000.tar' a.txt && cd .. && cp '%s/SUPER MARIO ODYSSEY资源包/.incoming/1_000.tar' '%s/SUPER MARIO ODYSSEY资源包/.incoming/1_001.tar' && printf 'a.txt\\t3\\tx\\n' > '%s/SUPER MARIO ODYSSEY资源包/index.tsv' && printf '{\"version\":2,\"index_sha256\":\"cafe01\"}' > '%s/SUPER MARIO ODYSSEY资源包/manifest.json'", T, D, D, D, D, D, D);
+      snprintf(c2, sizeof c2, "cd %s && mkdir -p src2 '%s/资源包/.incoming' && echo hi > src2/a.txt && cd src2 && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf '%s/资源包/.incoming/1_000.tar' a.txt && cd .. && cp '%s/资源包/.incoming/1_000.tar' '%s/资源包/.incoming/1_001.tar' && printf 'a.txt\\t3\\tx\\n' > '%s/资源包/index.tsv' && printf '{\"version\":2,\"index_sha256\":\"cafe01\"}' > '%s/资源包/manifest.json'", T, D, D, D, D, D, D);
       CHECK(sh(c2) == 0, "造导入夹具失败");
-      snprintf(c2, sizeof c2, "printf 'not a tar' > '%s/SUPER MARIO ODYSSEY资源包/.incoming/._1_000.tar'", D); CHECK(sh(c2) == 0, "造 AppleDouble 附属文件失败");
       CHECK(s2a_import_state(D) == 1, "② 有待导入的 tar 应判待导入");
-      snprintf(c2, sizeof c2, "%s/资源包/.incoming/1_000.tar", D); CHECK(stat(c2, &s2) == 0, "② 「游戏名资源包」应已改名成「资源包」");
       s2a_pack_apply_progress = prog; int r = s2a_pack_apply(D); s2a_pack_apply_progress = NULL;
-      snprintf(c2, sizeof c2, "%s/资源包/.incoming/._1_000.tar", D); CHECK(stat(c2, &s2) == 0, "③b 「._」附属文件不是包，不解、不删");
       CHECK(r == 0 && g_pd == 2 && g_pt == 2 && g_pcalls == 3, "③ 解包应成功、进度回调 3 次且最后 = 2/2（rc %d，最后 %d/%d，%d 次）", r, g_pd, g_pt, g_pcalls);
       CHECK(s2a_import_state(D) == 0, "③ 解开后应判就绪");
-      snprintf(D, sizeof D, "%s/imp2", T); snprintf(c2, sizeof c2, "mkdir -p '%s/甲资源包' '%s/乙资源包'", D, D); sh(c2);
-      CHECK(s2a_import_state(D) == 2, "④ 两个「…资源包」应判没有资源");
-      snprintf(c2, sizeof c2, "%s/甲资源包", D); CHECK(stat(c2, &s2) == 0, "④ 不应改名");
+      snprintf(D, sizeof D, "%s/imp2", T); snprintf(c2, sizeof c2, "mkdir -p '%s/甲资源包/.incoming' && echo '{}' > '%s/甲资源包/manifest.json'", D, D); sh(c2);
+      CHECK(s2a_import_state(D) == 2, "④ 只有「甲资源包」应判没有资源");
+      snprintf(c2, sizeof c2, "%s/甲资源包", D); CHECK(stat(c2, &s2) == 0, "④ 剃刀 #28：不应改名");
+      snprintf(c2, sizeof c2, "%s/资源包", D); CHECK(stat(c2, &s2) != 0, "④ 剃刀 #28：不应冒出「资源包」");
       snprintf(D, sizeof D, "%s/imp3", T); snprintf(c2, sizeof c2, "mkdir -p '%s/资源包'", D); sh(c2);
       CHECK(s2a_import_state(D) == 2, "⑤ 空的「资源包」应判没有资源");
-      // ⑥ 10-26 测试设备2：App 先建了空的「资源包」，再拷进来带 manifest.json 的「smg2资源包」→ 改用后者、判就绪；空的挪到「资源包.空.<时刻>」、不删
-      snprintf(c2, sizeof c2, "mkdir -p '%s/smg2资源包/ctl' && echo '{}' > '%s/smg2资源包/manifest.json' && echo n > '%s/smg2资源包/ctl/control.nacp' && printf 'ctl/control.nacp\\t2\\tx\\n' > '%s/smg2资源包/index.tsv'", D, D, D, D); sh(c2);   // pack.py 与 manifest.json 同写 index.tsv
-      CHECK(s2a_import_state(D) == 0, "⑥ 空「资源包」+ 可用的「smg2资源包」应改用后者、判就绪");
-      snprintf(c2, sizeof c2, "%s/资源包/ctl/control.nacp", D); CHECK(stat(c2, &s2) == 0, "⑥ 「smg2资源包」应已换成「资源包」");
-      snprintf(c2, sizeof c2, "ls -d '%s'/资源包.空.* > /dev/null 2>&1", D); CHECK(sh(c2) == 0, "⑥ 空的「资源包」应挪开保留，不删");
-      // ⑦ 「资源包」已有内容（manifest.json 在）时，另有「…资源包」也不动它
-      snprintf(c2, sizeof c2, "mkdir -p '%s/新资源包' && echo '{}' > '%s/新资源包/manifest.json'", D, D); sh(c2);
-      CHECK(s2a_import_state(D) == 0, "⑦ 已有可用「资源包」应判就绪");
-      snprintf(c2, sizeof c2, "%s/新资源包", D); CHECK(stat(c2, &s2) == 0, "⑦ 已有可用「资源包」时另一份不应被挪");
+      snprintf(c2, sizeof c2, "mkdir -p '%s/smg2资源包/ctl' && echo '{}' > '%s/smg2资源包/manifest.json' && echo n > '%s/smg2资源包/ctl/control.nacp' && printf 'ctl/control.nacp\\t2\\tx\\n' > '%s/smg2资源包/index.tsv'", D, D, D, D); sh(c2);
+      CHECK(s2a_import_state(D) == 2, "⑥ 剃刀 #28：空「资源包」+ 可用的「smg2资源包」仍判没有资源");
+      snprintf(c2, sizeof c2, "ls -d '%s'/资源包.空.* > /dev/null 2>&1", D); CHECK(sh(c2) != 0, "⑥ 剃刀 #28：空的「资源包」不应被挪开");
+      // ⑦ 资源放进「资源包」（推送 / 认领 game.img 落的就是这里）→ 就绪；旁边的「…资源包」不动
+      snprintf(c2, sizeof c2, "cp -R '%s/smg2资源包/.' '%s/资源包/'", D, D); sh(c2);
+      CHECK(s2a_import_state(D) == 0, "⑦ 「资源包」里有可用内容应判就绪");
+      snprintf(c2, sizeof c2, "%s/smg2资源包", D); CHECK(stat(c2, &s2) == 0, "⑦ 旁边的「smg2资源包」不应被挪");
       // ⑧ 10-26 测试设备2：manifest.json 在、但 index.tsv 记的文件缺（拷到一半）→ 3 不完整；补齐 → 0。期望按 index.tsv 手写：ctl/control.nacp 2 字节在、romfs/x.bin 5 字节缺
       snprintf(c2, sizeof c2, "printf 'ctl/control.nacp\\t2\\tx\\nromfs/x.bin\\t5\\tx\\n' > '%s/资源包/index.tsv'", D); sh(c2);
       CHECK(s2a_import_state(D) == 3, "⑧ index.tsv 里有文件缺应判不完整");
@@ -244,12 +240,12 @@ int main(void) {
       // ⑨ 审计 P2-2：说明页正文。按过「重新检查」还不行，开头说「刚刚查过」；首次不说（文字手写）
       char hd[1024]; s2a_pack_help_detail(2, 1, hd, sizeof hd); CHECK(!strncmp(hd, "刚刚查过，还是没有完整的资源包。", strlen("刚刚查过，还是没有完整的资源包。")), "⑨ 重新检查后仍缺：开头说刚刚查过");
       s2a_pack_help_detail(2, 0, hd, sizeof hd); CHECK(!strstr(hd, "刚刚查过") && strstr(hd, "外壳"), "⑨ 首次显示：不说刚刚查过");
-      s2a_pack_help_detail(3, 1, hd, sizeof hd); CHECK(strstr(hd, "刚刚查过") && strstr(hd, "没拷全"), "⑨ 不完整重新检查后：也说刚刚查过");
-      // ⑨b #316：英文界面（s2a_ui_zh 回 0）说明页正文出英文（文字手写），且除照写的「资源包」文件夹名外不含中文
+      s2a_pack_help_detail(3, 1, hd, sizeof hd); CHECK(strstr(hd, "刚刚查过") && strstr(hd, "没传全"), "⑨ 不完整重新检查后：也说刚刚查过");
+      // ⑨b #316：英文界面（s2a_ui_zh 回 0）说明页正文出英文（文字手写），且不含中文（11-11 起正文不再提「资源包」文件夹）
       g_ui_zh = 0;
       s2a_pack_help_detail(2, 1, hd, sizeof hd); CHECK(!strncmp(hd, "Checked just now", 16) && strstr(hd, "shell"), "⑨b 英文：重新检查后仍缺 → 「Checked just now」开头、说 shell（实得 %s）", hd);
-      s2a_pack_help_detail(3, 0, hd, sizeof hd); CHECK(!strncmp(hd, "Some files in the resources", 27) && !strstr(hd, "Checked"), "⑨b 英文：不完整首次 → 不说 Checked just now（实得 %s）", hd);
-      { char *z = strstr(hd, "资源包"); if (z) memset(z, 'x', strlen("资源包")); int cjk = 0; for (unsigned char *q = (unsigned char *)hd; *q; q++) if (*q == 0xE4 || (*q >= 0xE5 && *q <= 0xE9)) cjk = 1; CHECK(!cjk, "⑨b 英文：除文件夹名外无中文（实得 %s）", hd); }
+      s2a_pack_help_detail(3, 0, hd, sizeof hd); CHECK(!strncmp(hd, "Some of the game’s data", strlen("Some of the game’s data")) && !strstr(hd, "Checked"), "⑨b 英文：不完整首次 → 不说 Checked just now（实得 %s）", hd);
+      { int cjk = 0; for (unsigned char *q = (unsigned char *)hd; *q; q++) if (*q == 0xE4 || (*q >= 0xE5 && *q <= 0xE9)) cjk = 1; CHECK(!cjk, "⑨b 英文：无中文（实得 %s）", hd); }
       g_ui_zh = 1;
       // ⑩ 审计 P2-7：index.tsv 由 pack/pack.py 与 manifest.json 同写，出包保证在。manifest.json 在而 index.tsv 不在 / 打不开（自环软链 ELOOP，root 下也打不开）/ 读不了（目录，fopen 成功、读 EISDIR）
       //   → 期望都判 3 不完整；旧代码打不开当「老包不核」判 0 就绪。11-02 维护者：说明页不点名 index.tsv 这类内部词（缺哪个只进日志）
@@ -310,16 +306,15 @@ int main(void) {
       CHECK(s2a_import_decide(D, &w, 4340, why, sizeof why) == S2A_GATE_STALLED, "⑫ 剃刀 #32：最后一次长之后 90 秒都不动 → 停住");
       snprintf(c2, sizeof c2, "rm -f '%s/game.img' '%s/镜像.bin' '%s/.transfer'", R, R, R); sh(c2);
       snprintf(c2, sizeof c2, "%s/.incoming/1_000.tar", R); struct stat s3; CHECK(stat(c2, &s3) == 0, "⑫ 等待期间不应解 / 删任何包");
-      // 访达拷整个文件夹：首轮就是不完整 → 直接说明页（不假装在传）；拷进来一个文件（指纹变）→ 等；60 秒不动 → 说明页；拷齐 → 就绪
+      // 不完整（没在传）：直接说明页；之后文件变了也不再「当成正在拷」去等（剃刀 #33），补齐 → 就绪
       snprintf(D, sizeof D, "%s/imp7", T); snprintf(R, sizeof R, "%s/资源包", D);
       snprintf(c2, sizeof c2, "mkdir -p '%s/romfs' && echo '{}' > '%s/manifest.json' && printf 'a.bin\\t2\\tx\\nromfs/b.bin\\t5\\tx\\n' > '%s/index.tsv' && printf 12 > '%s/a.bin'", R, R, R, R); sh(c2);
       w = (struct s2a_gate_watch){0};
       CHECK(s2a_import_decide(D, &w, 100, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 不完整、首轮：应直接说明页");
       snprintf(c2, sizeof c2, "printf 12 > '%s/romfs/b.bin'", R); sh(c2);
-      CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_WAIT, "⑫ 不完整、文件在变：应等");
-      CHECK(s2a_import_decide(D, &w, 162, why, sizeof why) == S2A_GATE_WAIT && s2a_import_decide(D, &w, 163, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 不完整、59 秒仍等、60 秒不动回说明页");
+      CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 剃刀 #33：不完整、文件变了也不等，仍是说明页");
       snprintf(c2, sizeof c2, "printf 12345 > '%s/romfs/b.bin'", R); sh(c2);
-      CHECK(s2a_import_decide(D, &w, 170, why, sizeof why) == S2A_GATE_READY, "⑫ 拷齐：应就绪");
+      CHECK(s2a_import_decide(D, &w, 170, why, sizeof why) == S2A_GATE_READY, "⑫ 补齐：应就绪");
       snprintf(D, sizeof D, "%s/imp8", T); mkdir(D, 0755); w = (struct s2a_gate_watch){0};
       CHECK(s2a_import_decide(D, &w, 1, why, sizeof why) == S2A_GATE_NONE, "⑫ 没有资源包、首轮：应直接说明页"); }
     snprintf(c, sizeof c, "rm -rf %s", T); sh(c);

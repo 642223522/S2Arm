@@ -865,7 +865,7 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st) {   // 主
     LOG("游戏库：%s 资源包%s，给导入说明%s", gid.UTF8String, broken ? "不完整" : "不在机上", again ? "（重新检查后仍不行）" : "");
     NSString *body = broken
         ? S2AL(@"app.library.packBroken")
-        : [NSString stringWithFormat:S2AL(@"app.library.packMissing"), gid];
+        : S2AL(@"app.library.packMissing");
     if (again) body = [S2AL(@"app.library.stillMissing") stringByAppendingString:body];
     UIViewController *top = lib_top();
     if (!top) { LOG("【红】游戏库：没有窗口，导入说明画不出来"); return; }
