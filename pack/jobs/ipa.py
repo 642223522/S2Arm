@@ -153,13 +153,15 @@ def bundled_shell(c):
     return d
 
 
-def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line):
+def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line, sources=(), gid=None):
     """Windows：同一个共用解包目录交给 oneclick_win（--from-extract），产物照 Mac 一键出包交付成 <款>.ipa + <款>资源包（收尾 deliver 搬进这款的 image/ios），
-    结果事件里的 ipa / pack 改指交付件"""
+    结果事件里的 ipa / pack 改指交付件。sources / gid：游戏库里这款选中的原件与游戏号，一并交下去——
+    共用解包目录只有序号 0 那支程序，多程序合集的其余序号要 oneclick_win 从原件解（#613：原先不给原件，多程序合集直接报「改给原件」）"""
     work = out / "work"
     env = dict(env, S2A_FONTS=str(fonts))
     c.run([os.sys.executable, "-X", "utf8", "-m", "pack.orch.oneclick_win", "--from-extract", extraction, "--out", work, "--target", "ios",
-           "--shell", bundled_shell(c), "--events", events], log, env, cwd=c.engine, on_line=line)   # 按包起（模块里 from pack… 导入），从引擎根起
+           "--shell", bundled_shell(c), "--events", events, *(["--title-id", gid] if gid else []), *map(str, sources)],
+          log, env, cwd=c.engine, on_line=line)   # 按包起（模块里 from pack… 导入），从引擎根起
     res = oneclick_result(events) or {}
     if not res.get("ok"):
         return
@@ -282,7 +284,9 @@ def _build(c):
         refresh_before = _log_identity(refresh_log)
         try:
             if os.name == "nt":
-                win_oneclick(c, oneclick, extraction, fonts, out, events, ipa_log, env, line)
+                from library import source_path
+                win_oneclick(c, oneclick, extraction, fonts, out, events, ipa_log, env, line,
+                             sources=list(dict.fromkeys(source_path(c, p) for p in selected_packages(game))), gid=gid)
             else:
                 c.run(["bash", oneclick, "--from-extract", extraction, "--fonts", fonts, "--out", out, "--events", events],
                       ipa_log, env, on_line=line)
@@ -311,6 +315,10 @@ def _build(c):
     missing = [m for m in (res.get("aoc_missing") or []) if m]
     if missing:
         c.diagnostic("追加内容 %d 份没解出，包里不含（%s）" % (len(missing), "、".join(missing[:5]) + (" 等" if len(missing) > 5 else "")), code="aoc_missing", severity="warning")
+    root = product_root(c, gid)
+    if root:
+        from build import warn_offline_empty
+        warn_offline_empty(c, root)   # 离线 0 支（#470）：照常交付，完成页带黄字
     # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。

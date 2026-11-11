@@ -5,6 +5,18 @@
 static int destroyed[64], order[64], serial, writes, cache_gets, unmaps, unmap_order;
 #define H(T,n) ((T)(uintptr_t)(n))
 static void seen(uintptr_t h) { assert(h < 64 && h); destroyed[h]++; order[h]=++serial; }
+static int clear_fv_on, texture_unpins, view_unpins;
+static struct nvn_vk_tex *expected_pin;
+int s2a_vk_clear_fv_enabled(void) { return clear_fv_on; }
+uint64_t s2a_vk_adapter_registry_generation(void) { return 1; }
+void nvn_vk_texcache_unpin(struct nvn_vk_tex *t) {
+    assert(t == expected_pin && view_unpins == 1 && destroyed[21] == 1 && destroyed[22] == 1);
+    texture_unpins++;
+}
+void nvn_vk_texcache_unpin_view(struct nvn_vk_tex *t, VkImageView v) {
+    assert(t == expected_pin && v == H(VkImageView,23));
+    view_unpins++;
+}
 VKAPI_ATTR void VKAPI_CALL vkDestroyPipeline(VkDevice d,VkPipeline h,const VkAllocationCallbacks*a){(void)d;(void)a;seen((uintptr_t)h);}
 VKAPI_ATTR void VKAPI_CALL vkDestroyPipelineCache(VkDevice d,VkPipelineCache h,const VkAllocationCallbacks*a){(void)d;(void)a;seen((uintptr_t)h);}
 VKAPI_ATTR void VKAPI_CALL vkDestroyShaderModule(VkDevice d,VkShaderModule h,const VkAllocationCallbacks*a){(void)d;(void)a;seen((uintptr_t)h);}
@@ -31,9 +43,31 @@ void nvm_manifest_stats(uint32_t*a,uint32_t*b,uint32_t*c,uint32_t*d){*a=*b=*c=*d
 int nvm_manifest_count(void){return 0;}
 int nvk_driver_cache_write(const char*d,const uint8_t u[16],const void*p,size_t n,char*w,size_t z){(void)d;(void)u;(void)p;(void)n;(void)w;(void)z;writes++;return 0;}
 void nvn_vk_query_stats(struct nvn_vk_query_stats *s){memset(s,0,sizeof *s);}
+// 时间戳能力测试桩：队列族数=1，validBits 剧本化；查询结果剧本化（两槽一对值）。
+static uint32_t g_fam_bits = 64;
+static uint64_t g_ts_pair[2] = {0, 0};
+static VkResult g_ts_rc = VK_SUCCESS;
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice ph, uint32_t *n,
+                                                                    VkQueueFamilyProperties *q) {
+    (void)ph;
+    if (!q) { *n = 1; return; }
+    memset(q, 0, (size_t)*n * sizeof *q);
+    q[0].timestampValidBits = g_fam_bits;
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetQueryPoolResults(VkDevice d, VkQueryPool p, uint32_t f, uint32_t n,
+                                                     size_t sz, void *data, VkDeviceSize st,
+                                                     VkQueryResultFlags fl) {
+    (void)d; (void)p; (void)f; (void)sz; (void)fl;
+    if (g_ts_rc != VK_SUCCESS) return g_ts_rc;
+    for (uint32_t i = 0; i < n && i < 2; i++)
+        *(uint64_t *)((unsigned char *)data + i * st) = g_ts_pair[i];
+    return VK_SUCCESS;
+}
 void nvn_vk_query_release_device(void){}
 void nvn_vk_sampler_cache_destroy(struct nvn_vk_sampler_cache*c){(void)c;}
 void nvn_vk_program_free(struct fd_program*p){(void)p;}
+// C4b：release_device 先停管线 worker（本夹具里 worker 从未启动，如实返回 0）。
+int nvn_vk_pipe_worker_stop(uint32_t b, char*w, size_t n){(void)b;(void)w;(void)n;return 0;}
 static void scenario(int dir, int uuid) {
     static struct s2a_vk_device dev;
     memset(destroyed,0,sizeof destroyed); memset(order,0,sizeof order); serial=0; writes=cache_gets=unmaps=unmap_order=0;
@@ -88,4 +122,57 @@ static void scenario(int dir, int uuid) {
     assert(destroyed[19]==1 && destroyed[20]==1 && destroyed[32]==1);
     assert(destroyed[17]==1 && destroyed[18]==1);
 }
-int main(int argc, char **argv){ assert(argc == 3); scenario(atoi(argv[1]), atoi(argv[2])); puts("release lifecycle passed"); }
+// 时间戳能力门槛 + 回读掩码（fd_gpu_ts_capable / fd_gpu_mask / gpu_read_frame 白盒）。
+static void gpu_ts_cap_test(void) {
+    static struct s2a_vk_device dev;
+    memset(&dev, 0, sizeof dev);
+    dev.device = H(VkDevice,1); dev.physical = H(VkPhysicalDevice,2); dev.queue_family = 0;
+    dev.properties.limits.timestampPeriod = 1000.0f;   // 1 tick = 1 µs
+    dev.properties.limits.timestampComputeAndGraphics = 1;
+    // validBits=64 → 能力开，掩码全开
+    g_gpu_ts_cap = -1; g_fam_bits = 64;
+    assert(fd_gpu_ts_capable(&dev) == 1);
+    assert(fd_gpu_mask() == ~0ull);
+    // validBits=32 → 能力开，掩码 0xffffffff；回卷对 {0xfffffff0,0x10} → delta 0x20=32 ticks
+    g_gpu_ts_cap = -1; g_fam_bits = 32;
+    assert(fd_gpu_ts_capable(&dev) == 1);
+    assert(fd_gpu_mask() == 0xffffffffull);
+    g_gpu_frame_pool[0] = H(VkQueryPool,42); g_gpu_frame_passes[0] = 3;
+    g_ts_pair[0] = 0xfffffff0ull; g_ts_pair[1] = 0x10ull; g_ts_rc = VK_SUCCESS;
+    assert(nvn_vk_first_draw_gpu_read_frame(&dev, 0, NULL) == 1);
+    assert(g_gpu_last_valid && g_gpu_last_ms > 0.0319 && g_gpu_last_ms < 0.0321);   // 32 µs
+    assert(g_gpu_last_passes == 3);
+    // NOT_READY → 返回 0，不更新 last/seq（CPU 未等 GPU 的证明之一：查询结果未就绪就放弃）
+    g_ts_rc = VK_NOT_READY;
+    uint64_t seq = g_gpu_frame_seq;
+    assert(nvn_vk_first_draw_gpu_read_frame(&dev, 0, NULL) == 0);
+    assert(g_gpu_frame_seq == seq);
+    g_gpu_frame_pool[0] = VK_NULL_HANDLE; g_gpu_last_valid = 0;
+    // validBits=0 → 能力关（arm 不建池）
+    g_gpu_ts_cap = -1; g_fam_bits = 0;
+    assert(fd_gpu_ts_capable(&dev) == 0);
+    // period=0 → 能力关
+    g_gpu_ts_cap = -1; g_fam_bits = 64; dev.properties.limits.timestampPeriod = 0.f;
+    assert(fd_gpu_ts_capable(&dev) == 0);
+    // timestampComputeAndGraphics=0 → 能力关
+    dev.properties.limits.timestampPeriod = 1000.0f;
+    dev.properties.limits.timestampComputeAndGraphics = 0;
+    g_gpu_ts_cap = -1;
+    assert(fd_gpu_ts_capable(&dev) == 0);
+    g_gpu_ts_cap = -1; g_gpu_valid_bits = 0;
+}
+static void clear_fv_release_test(void) {
+    struct s2a_vk_device dev = {.device=H(VkDevice,1)};
+    struct nvn_vk_tex texture = {0};
+    expected_pin = &texture;
+    clear_fv_on = 1;
+    g_pin_n = 1; g_pin[0] = &texture; g_pin_view[0] = H(VkImageView,23);
+    g_fq.nclear = 1; g_fq.clear_fbs[0] = H(VkFramebuffer,21); g_fq.clear_views[0] = H(VkImageView,22);
+    nvn_vk_first_draw_release_device(&dev);
+    assert(destroyed[21] == 1 && destroyed[22] == 1 && order[21] < order[22]);
+    assert(view_unpins == 1 && texture_unpins == 1 && g_pin_n == 0 && g_fq.nclear == 0);
+    nvn_vk_first_draw_release_device(&dev);
+    assert(destroyed[21] == 1 && destroyed[22] == 1 && view_unpins == 1 && texture_unpins == 1);
+    clear_fv_on = 0;
+}
+int main(int argc, char **argv){ assert(argc == 3); scenario(atoi(argv[1]), atoi(argv[2])); gpu_ts_cap_test(); clear_fv_release_test(); puts("release lifecycle passed"); }

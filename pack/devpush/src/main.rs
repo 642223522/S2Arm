@@ -307,6 +307,27 @@ async fn run(a: &[String]) -> Result<(), String> {
             let total = write_file(&mut src, &mut f, &mut progress()).await.map_err(|e| format!("推 {remote} 失败：{e}"))?;
             println!("put {total} 字节 → {remote}");
         }
+        "put-at" => {   // 单文件 IMG 断点续传（v0.3.0）：机上已有前 offset 字节是同一份（调用方按 head 核过头），本地从 offset 起接着写进机上同一位置；
+            //   不截短（r+ 打开），调用方只在机上长度 ≤ 本地长度时用，写完由调用方再核总长
+            let (local, remote) = (&a[4], a[5].trim_start_matches('/').to_string());
+            let off: u64 = a.get(6).and_then(|v| v.parse().ok()).ok_or("put-at 缺偏移")?;
+            let mut src = tokio::fs::File::open(local).await.map_err(|e| format!("读不了 {local}：{e}"))?;
+            src.seek(std::io::SeekFrom::Start(off)).await.map_err(|e| format!("读 {local} 定位失败：{e}"))?;
+            let f = afc.open(remote.clone(), AfcFopenMode::Rw).await.map_err(|e| format!("打不开 {remote}：{e}"))?;
+            let mut f = Box::pin(f);
+            f.seek(std::io::SeekFrom::Start(off)).await.map_err(|e| format!("{remote} 定位失败：{e}"))?;
+            let total = write_file(&mut src, &mut f, &mut progress()).await.map_err(|e| format!("续推 {remote} 失败：{e}"))?;
+            println!("put-at {off}+{total} 字节 → {remote}");
+        }
+        "head" => {   // 机上文件的长度与开头至多 n 字节写到本地（续传前核是不是同一份 IMG）：不在 → 打「head -1」、退 0
+            let (remote, n, local) = (a[4].trim_start_matches('/').to_string(), a.get(5).and_then(|v| v.parse::<u64>().ok()).ok_or("head 缺字节数")?, &a[6]);
+            let size = match afc.get_file_info(remote.clone()).await { Ok(i) => i.size as u64, Err(_) => { println!("head -1"); return Ok(()); } };
+            let mut f = afc.open(remote.clone(), AfcFopenMode::RdOnly).await.map_err(|e| format!("打不开 {remote}：{e}"))?;
+            let mut buf = vec![0u8; n.min(size) as usize]; let mut got = 0;
+            while got < buf.len() { let k = f.read(&mut buf[got..]).await.map_err(|e| format!("读 {remote} 失败：{e}"))?; if k == 0 { break; } got += k; }
+            tokio::fs::write(local, &buf[..got]).await.map_err(|e| e.to_string())?;
+            println!("head {size}");
+        }
         "put-tar" => {
             let (list, root, remote) = (read_list(&a[4])?, &a[5], a[6].trim_start_matches('/').to_string());
             let mut parts: Vec<&str> = remote.split('/').collect(); parts.pop();
@@ -360,7 +381,13 @@ async fn run(a: &[String]) -> Result<(), String> {
             let i = afc.get_device_info().await.map_err(|e| e.to_string())?; println!("{}", i.free_bytes);
         }
         "ls" => {
-            for n in afc.list_dir(a[4].trim_start_matches('/').to_string()).await.map_err(|e| e.to_string())? { println!("{n}"); }
+            // 列不出时带 AFC 结构化错误码「S2A_AFC_ERR <码>」（8 = 目录不存在），调用方按码判「App 在、目录还没建」与「锁屏 / 断连」，
+            //   不再匹配英文原文（玩家实机原文「afc error: Object not found」带空格，按 ObjectNotFound 匹配不上，首次装机被挡，v0.2.8 热修）
+            match afc.list_dir(a[4].trim_start_matches('/').to_string()).await {
+                Ok(names) => for n in names { println!("{n}"); },
+                Err(idevice::IdeviceError::Afc(code)) => return Err(format!("S2A_AFC_ERR {} {code}", code.sub_code())),
+                Err(e) => return Err(e.to_string()),
+            }
         }
         _ => return Err(format!("不认识的操作 {op}")),
     }
@@ -370,6 +397,6 @@ async fn run(a: &[String]) -> Result<(), String> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]   // idevice AFC 内部用 block_in_place，单线程运行时会直接 panic
 async fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() < 5 { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | get <远端> <本地> | ls <目录>"); std::process::exit(2); }
+    if a.len() < 5 { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录>"); std::process::exit(2); }
     if let Err(e) = run(&a).await { eprintln!("{e}"); std::process::exit(1); }
 }

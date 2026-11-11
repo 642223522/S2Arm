@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 S2Arm contributors
+name: Windows cleanup links
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/windows-cleanup.yml
+      - pack/jobs/library.py
+      - pack/jobs/layout.py
+      - pack/jobs/core.py
+      - pack/jobs/tests/test_cleanup_links.py
+  pull_request:
+    paths:
+      - .github/workflows/windows-cleanup.yml
+      - pack/jobs/library.py
+      - pack/jobs/layout.py
+      - pack/jobs/core.py
+      - pack/jobs/tests/test_cleanup_links.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-cleanup-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-cleanup:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: 验证 Windows junction 与软链接清理（不允许跳过）
+        shell: python
+        run: |
+          import os
+          import sys
+          import unittest
+
+          assert os.name == "nt", "This check requires a real Windows host"
+          suite = unittest.defaultTestLoader.discover(
+              "pack/jobs/tests", pattern="test_cleanup_links.py"
+          )
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped:
+              print("Windows cleanup coverage must not be skipped", file=sys.stderr)
+          sys.exit(0 if result.wasSuccessful() and result.testsRun and not result.skipped else 1)

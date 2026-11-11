@@ -93,7 +93,7 @@ struct s2a_record_draw_state {
     // 该槽没有给纹理；obj_magic != 'TEX0' 表示记录下来的对象在回放时仍无效（快照丢失），
     // 此时 nvn_format/尺寸都不可信，不能当“合法未绑定槽”消费。
     struct { uint64_t key; VkFormat format; uint32_t nvn_format; uint32_t width, height; int has_view;
-             uint32_t obj_magic; uint64_t obj_serial; uint32_t view_format; view_t view; } rt[8];
+             uint32_t obj_magic; uint64_t obj_serial; uint64_t storage; uint32_t view_format; view_t view; } rt[8];
     uint64_t cmd_seq, rt_seq;        // 本笔 draw 的命令序号 / 当前颜色目标那次 SetRenderTargets 的序号
     int32_t vp_first, vp_n, sc_x, sc_y, sc_w, sc_h;
     uint8_t vp_seen, sc_seen;   // 0 = 该状态从未被该命令流设置（与显式设置成空区分开）
@@ -135,6 +135,7 @@ struct s2a_record_draw_state {
     uint64_t last_ub_bytes[6][16];
     uint32_t last_ub_count[6][16];
     uint64_t depth_key;                                      // 深度/模板目标（SetRenderTarget 的真实 depth 纹理快照）
+    uint64_t depth_storage;                                  // 深度目标的存储身份（tex_t.mem；首用 steady 判定的第二键）
     uint8_t has_depth;
     uint8_t has_dview;                                       // SetRenderTargets 给了深度视图（mip/层/格式/面）
     view_t dview;                                            // 深度视图原样（附件消费用；未给时保持 0）
@@ -152,6 +153,9 @@ struct s2a_record_draw_state {
 typedef int (*s2a_record_draw_fn)(struct s2a_vk_device *device, const struct s2a_record_draw_state *state,
                                   struct s2a_record_result *result, void *opaque);
 void s2a_record_set_draw_builder(s2a_record_draw_fn draw, void *opaque);
+// 间接绘制 / 间接派发累计：[0] 解析成确定值的绘制、[1] 按 GPU 值为空而不录的绘制、
+// [2] 解析成确定值的派发、[3] 组数为 0 而不录的派发。
+void s2a_record_indirect_counts(uint64_t out[4]);
 // Compute 快照独立于 draw；keys 为 packed CS key + 5 个 inactive 零槽，
 // ubo_use 按 NVN stage 编号（只有 [5] 活跃）。program 只作参考，serial 来自绑定记录。
 // 未观察到的 pool/local memory 不等于零；消费方必须按 seen 标志拒绝缺失事实。
@@ -171,6 +175,10 @@ struct s2a_record_dispatch_state {
     uint8_t tex_present[32], samp_present[32], image_present[32];
     uint32_t local_memory_bytes;
     uint8_t local_memory_seen;
+    // OP_DISPATCH 帧队列收编门（记录层 debug.s2a.dispatch_fq / 宿主 S2A_DISPATCH_FQ）：
+    // =1 时 builder 可以对 guest-backed 绑定试 AHB 池后备直绑（全命中才置 output.fq=1）；
+    // =0 时 builder 不做任何池查找，逐字节走 staging 旧路径。
+    int fq_pool;
 };
 #define S2A_RECORD_DISPATCH_MAX_SETS 8u
 // Callback gets 0 = proven completed after COMPUTE_SHADER/SHADER_WRITE -> HOST/HOST_READ,
@@ -181,7 +189,8 @@ struct s2a_record_dispatch_state {
 // lifetimes must extend through this delayed finish. Unknown completion is not success.
 /* Diagnostic facts never confer execution success. Unknown identity is explicit. */
 enum s2a_compute_source { S2A_COMPUTE_UNKNOWN, S2A_COMPUTE_OFFLINE,
-    S2A_COMPUTE_PRIVATE, S2A_COMPUTE_LIVE, S2A_COMPUTE_MISS, S2A_COMPUTE_SOURCE_COUNT };
+    S2A_COMPUTE_PRIVATE, S2A_COMPUTE_LIVE, S2A_COMPUTE_MISS, S2A_COMPUTE_CACHED,
+    S2A_COMPUTE_SOURCE_COUNT };
 struct s2a_compute_diagnostic {
     uint64_t session, generation;
     uint8_t identity[32], identity_valid;
@@ -206,6 +215,8 @@ void s2a_record_compute_snapshot(struct s2a_record_compute_stats *out);
 int s2a_record_compute_session_end(void);
 void s2a_record_compute_note(const struct s2a_compute_diagnostic *diagnostic,
     enum s2a_compute_outcome outcome, const char *why);
+// 内部 builder 协议：尚未读取 guest，须先同步帧队列再用 fq_pool=0 重试。
+#define S2A_RECORD_DISPATCH_RETRY_SYNC 1
 struct s2a_record_dispatch_output {
     struct s2a_compute_diagnostic diagnostic;
     VkPipeline pipeline;
@@ -215,6 +226,10 @@ struct s2a_record_dispatch_output {
     // 反射出来的采样纹理绑定数；>0 时派发前必须把此前所有 GPU 写发布给 CS 采样读
     // （图形路径的 pass/上传屏障 dstStage 不含 COMPUTE_SHADER，覆盖不到这里）。
     uint32_t sampled_images;
+    // =1 仅当所有 guest-backed 绑定只读且命中 AHB 池后备（描述符已绑池 buffer/offset）：
+    // 记录层可把这笔记进帧队列，owner/finish 等完成证明再结算；=0 = 有 miss 或走了 staging，
+    // 照旧同步提交。门关时恒为 0。
+    int fq;
     void *owner;
     int (*finish)(struct s2a_vk_device *device, void *owner, int completion);
 };
@@ -222,6 +237,15 @@ typedef int (*s2a_record_dispatch_fn)(struct s2a_vk_device *device,
     const struct s2a_record_dispatch_state *state, const struct s2a_record_memory *memory,
     struct s2a_record_dispatch_output *output, struct s2a_record_result *result, void *opaque);
 void s2a_record_set_dispatch_builder(s2a_record_dispatch_fn dispatch, void *opaque);
+
+// OP_DISPATCH 帧队列收编的计数（诊断/宿主验收用，不改执行语义）：
+//   enqueued = 命令缓冲已交帧队列的笔数；fallback = 门开但走了同步旧路径的笔数；
+//   pending  = 还在 pending_fq 表里的 owner 数（等完成证明）。
+void s2a_record_dispatch_fq_stats(uint64_t *enqueued, uint64_t *fallback, uint64_t *pending);
+// 槽退休失败时通知完成未知；所有在途项 finish(-2) 并保留。
+void s2a_record_fq_drain(int ok);
+// 只退休有完成证明的确切帧号。
+void s2a_record_fq_retire(uint64_t completed_frame);
 
 // 复位跨包保留的 GPU 绑定状态（一次提交开始时调用）。
 void s2a_record_reset_state(void);

@@ -825,7 +825,11 @@ class VersionTests(Base):
 
             def __exit__(self, *a):
                 pass
-        return patch.object(updater, "open_url", side_effect=lambda url, timeout: Response(answers[url]))
+        def answer(url, timeout):
+            if url not in answers:
+                raise OSError("offline")   # 官网（updater.MIRROR）连不上：这组测的是回退到 GitHub 后的版本比较
+            return Response(answers[url])
+        return patch.object(updater, "open_url", side_effect=answer)
 
     def test_only_a_strictly_higher_numeric_version_is_offered(self):
         key = ed25519.public_key(TEST_SECRET).hex()
@@ -878,7 +882,7 @@ class NoticeTests(unittest.TestCase):
 
     def test_link_only_official_https(self):
         for url, kept in (("https://github.com/jhaizhou-ops/S2Arm", True), ("https://jhaizhou-ops.github.io/S2Arm/", True),
-                          ("http://github.com/x", False), ("https://s2arm.com/", False), ("javascript:alert(1)", False)):
+                          ("http://github.com/x", False), ("https://s2arm.com/", True), ("https://evil.s2arm.com.example/", False), ("http://s2arm.com/", False), ("javascript:alert(1)", False)):
             with self.subTest(url=url):
                 self.assertEqual("url" in updater.notice_valid(dict(self.ITEM, url=url)), kept)
 
@@ -896,6 +900,82 @@ class NoticeTests(unittest.TestCase):
         item = updater.notice_valid(json.loads(updater.notice_file().read_text(encoding="utf-8")))
         self.assertIsNotNone(item); self.assertIn("url", item)
         self.assertIn("s2arm.com", item["text"]["zh-Hans"]); self.assertIn("s2arm.com", item["text"]["en"])
+
+
+class MirrorTests(Base):
+    """查版本先走官网静态清单（updater.MIRROR）、失败回退 GitHub API。期望按规则手写：
+    官网验签通过 → 以它为准（新就给、不新就没有），一次都不问 GitHub；官网超时 / 404 / 验签不过 → 问 GitHub；两边都不行 → 报 GitHub 那边的错误码"""
+    def setUp(self):
+        super().setUp()
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ScriptedHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+        ScriptedHandler.scripts, ScriptedHandler.hits = {}, []
+        for name, value in (("trusted", lambda url: True), ("FETCH_RETRY_SECONDS", 0), ("MIRROR_TIMEOUT", 1)):
+            p = patch.object(updater, name, value); p.start(); self.addCleanup(p.stop)
+        p = patch.dict(os.environ, {"S2A_UPDATE_API": self.base + "/latest", "S2A_UPDATE_MIRROR": self.base + "/update/latest.json",
+                                    "S2A_UPDATE_DOWNLOAD": self.base + "/dl/{version}/{name}", "S2A_UPDATE_PUBKEY": ed25519.public_key(TEST_SECRET).hex()})
+        p.start(); self.addCleanup(p.stop)
+        self.pkg = updater.ASSETS["windows"]
+
+    def site(self, version, secret=TEST_SECRET):
+        raw, sig = signed(version, {self.pkg: {"sha256": "a" * 64, "size": 7}, "S2Arm-windows-x64-delta-0.1.1.zip": {"sha256": "b" * 64, "size": 3}}, secret)
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]
+        ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+
+    def github(self, version="0.3.1"):
+        raw, sig = signed(version, {self.pkg: {"sha256": "c" * 64, "size": 9}})
+        release = {"tag_name": "v" + version, "assets": [{"name": self.pkg, "browser_download_url": self.base + "/gh/pkg"},
+                   {"name": updater.MANIFEST, "browser_download_url": self.base + "/gh/m"}, {"name": updater.SIGNATURE, "browser_download_url": self.base + "/gh/s"}]}
+        ScriptedHandler.scripts.update({"/latest": [(200, {}, json.dumps(release).encode())], "/gh/m": [(200, {}, raw)], "/gh/s": [(200, {}, sig)]})
+
+    def test_site_newer_version_is_used_without_asking_github(self):
+        self.site("0.3.0"); self.github()
+        info = updater.query_latest("windows", "0.1.1")
+        self.assertEqual((info["available"], info["version"], info["sha256"], info["size"]), (True, "0.3.0", "a" * 64, 7))
+        self.assertEqual(info["asset"], self.base + "/dl/0.3.0/" + self.pkg)   # 安装包仍从 Release 下载地址取
+        self.assertEqual((info["deltaName"], info["deltaSha256"]), ("S2Arm-windows-x64-delta-0.1.1.zip", "b" * 64))
+        self.assertNotIn("/latest", ScriptedHandler.hits)
+
+    def test_site_not_newer_means_no_update_and_github_is_not_asked(self):
+        for version in ("0.1.1", "0.1.0"):
+            with self.subTest(version=version):
+                ScriptedHandler.hits = []
+                self.site(version); self.github()
+                self.assertEqual(updater.query_latest("windows", "0.1.1"), {"available": False})
+                self.assertNotIn("/latest", ScriptedHandler.hits)
+
+    def test_site_timeout_falls_back_to_github(self):
+        ScriptedHandler.scripts["/update/latest.json"] = ["sleep"]; self.github()
+        info = updater.query_latest("windows", "0.1.1")
+        self.assertEqual((info["version"], info["sha256"], info["asset"]), ("0.3.1", "c" * 64, self.base + "/gh/pkg"))
+        self.assertEqual(ScriptedHandler.hits.count("/update/latest.json"), 1)   # 官网只试一次就回退
+
+    def test_site_missing_falls_back_to_github(self):
+        self.github()   # 官网 404（发版流程还没写入）
+        self.assertEqual(updater.query_latest("windows", "0.1.1")["version"], "0.3.1")
+        self.assertEqual(ScriptedHandler.hits[:1], ["/update/latest.json"])
+
+    def test_site_bad_signature_falls_back_to_github(self):
+        self.site("9.9.9", secret=bytes(range(1, 33))); self.github()   # 别的私钥签的「9.9.9」：不认，按 GitHub 的 0.3.1
+        self.assertEqual(updater.query_latest("windows", "0.1.1")["version"], "0.3.1")
+        self.assertIn("/latest", ScriptedHandler.hits)
+
+    def test_both_failing_reports_the_github_error(self):
+        reset = str(int(time.time()) + 600)
+        ScriptedHandler.scripts["/latest"] = [(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, b"{}")]
+        with self.assertRaises(updater.UpdateError) as caught:
+            updater.query_latest("windows", "0.1.1")
+        self.assertEqual(caught.exception.code, "update_rate_limited")
+
+    def test_official_build_trusts_the_site_but_tests_never_reach_it(self):
+        with patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+            self.assertEqual(updater.mirror_url(), "https://s2arm.com/update/latest.json")
+            self.assertTrue(updater.trusted(updater.MIRROR))
+        with patch.dict(os.environ, {"S2A_UPDATE_MIRROR": ""}):
+            self.assertEqual(updater.mirror_url(), "")   # 假 Release 验收没给官网地址：不连真网
 
 
 if __name__ == "__main__":

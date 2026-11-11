@@ -54,11 +54,15 @@ def decl(mode):
     if not os.path.exists(DECL): return []
     return [l.split('\t') for l in subprocess.run([sys.executable, DECL, mode, root], capture_output=True, text=True).stdout.splitlines() if l]
 ROUTE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate_route.py')
+# 过渡的无钩子路径（gate_route.py 的 NOHOOK，11-11 旧安卓三钩子删除后 android/）：那里的单测暂无钩子接线，不报；新钩子认领后 NOHOOK 清空即恢复检查
+nohook = tuple(subprocess.run([sys.executable, ROUTE, 'nohook'], cwd=root, capture_output=True, text=True).stdout.split()) if os.path.exists(ROUTE) else ()
+tests = [t for t in tests if not t.startswith(nohook)] if nohook else tests
 routed = subprocess.run([sys.executable, ROUTE, 'hooks'], cwd=root, capture_output=True, text=True)
 if routed.returncode:
     sys.exit('【红】test_wired：门禁钩子发现失败：' + routed.stderr.strip())
 hooks = [h for h in routed.stdout.splitlines() if h in files]
 entry = sorted({p for p in ('graphics/gate.sh', 'runtime/gate.sh', 'tools/gate.sh') if p in files} | set(hooks)) + sorted(p for p in files if re.fullmatch(r'tests/[^/]+_test\.sh', p))
+entry += sorted(p for p in files if nohook and p.startswith(nohook) and is_entry(p))   # 无钩子路径里的脚本调到的别处单测（android/test.sh → runtime/tests/support/…）同属那条流水线，过渡期一并不报
 
 # make 跟进（11-01 审计 P1-39）：节点 'make:<主 Makefile>\0<目标通配>'，只读配方文本、不执行 make
 def mk_glob(t):   # 目标里的 make / shell 变量当通配

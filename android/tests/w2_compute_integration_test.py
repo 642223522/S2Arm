@@ -75,7 +75,7 @@ def main():
             '    (void)d;(void)why;(void)cap;memset(&mock_tex,0,sizeof mock_tex);\n'
             '    mock_tex.nvn_format=0x25;mock_tex.nvn_target=0x1;mock_tex.view=(VkImageView)0x11;mock_tex.view_att=(VkImageView)0x12;\n'
             '    *tex_out=&mock_tex;*view_out=(VkImageView)(uintptr_t)(0x1000+handle);*sampler_out=(VkSampler)0x22;return 0;\n}')
-        old='assert((n==2&&w[0].dstBinding==3&&w[1].dstBinding==9)||(n==1&&w[0].dstBinding==9));'
+        old='assert(n<=(uint32_t)fixture.binding_count);for(uint32_t i=0;i<n;i++){int infix=0;for(int j=0;j<fixture.binding_count;j++)if(w[i].dstBinding==(uint32_t)fixture.bindings[j].binding)infix=1;assert(infix);}'  # #473 起夹具按 fixture.bindings 校验；本测试只走单绑定
         assert old in prefix;prefix=prefix.replace(old,'assert(n==1);')
         (td/'integration_vk_mock.h').write_text(prefix+guest_io)
         # macOS 弱引用放行由 host_link 按目标文件实算；本支保留消费点纹理快照依赖
@@ -87,7 +87,7 @@ def main():
         base+=['-I'+str(p) for p in (td,inc,NATIVE,NATIVE/'direct',NATIVE/'nvn',ROOT/'graphics/nvn/gfx/nvn',ROOT/'graphics/nvn/gfx/nvn/include')]
         base+=[str(Path(__file__).with_suffix('.c')),str(td/'bridge.c'),str(td/'source-store.c'),str(td/'worker.c')]
         base+=[str(NATIVE/'nvn'/p) for p in ('nvn_vk_compute_request.c','nvn_vk_compute_lookup.c','nvn_vk_program_result.c','nvn_vk_compute_texture.c')]
-        base+=[str(NATIVE/'direct'/p) for p in ('control.c','diag.c','compile_export.c','compile_export_w2.c','w2_single_query.c','input_identity.c','texture_facts.c','sha256.c','json.c')]
+        base+=[str(NATIVE/'direct'/p) for p in ('control.c','diag.c','compile_export.c','compile_export_w2.c','w2_single_query.c','input_identity.c','texture_facts.c','sha256.c','jv.c','json.c')]
         for name,(worker_text,text) in variants.items():
             if name!='positive':assert (worker_text,text)!=(source,bridge),name
             (td/'bridge.c').write_text(text);(td/'worker.c').write_text(worker_text);exe=td/name

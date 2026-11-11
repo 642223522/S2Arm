@@ -3,7 +3,9 @@
 #include "ns2_controller.h"
 #include "../runtime/include/s2a_pad.h"
 #include "ns2_relay.h"
+#include "../ios/haptic_retry.h"
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,13 +19,20 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t relayWriteLock = PTHREAD_MUTEX_INITIALIZER;
 static ns2_state input;
 static ns2_motion relayMotion;
+static ns2_kind relayKind;   // 通道 v2 带来的对外输出型号（持 lock）
 static ns2_status status;
 static int directStarted, ready, foreground, motion_requested;
 static int relayFD = -1;
+static int relayLastError;   // 上次连通道失败的 errno（只在主线程连接路径读写）
 static pthread_t relayThread;
 static int relayThreadStarted;
 static uint64_t epoch = 1;
 static uint16_t back_buttons[2];
+static float rumble_scale = 1;
+
+static float rumble_amplitude(float amplitude) {
+    return fminf(1, s2a_hp_feel(amplitude) * rumble_scale);
+}
 
 static void receive_input(const ns2_state *state, void *context) {
     pthread_mutex_lock(&lock);
@@ -64,10 +73,14 @@ static int connect_relay(const char *path) {
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, path, length + 1);
     if (connect(fd, (struct sockaddr *)&address, sizeof address)) {
+        int error = errno;
         close(fd);
-        fprintf(stderr, "[Mac NS2] Relay unavailable at %s: %s\n", path, strerror(errno));
+        // 开局时手柄还没连、游戏每秒重试：同一个原因只记一次，接上后再失败重新记
+        if (error != relayLastError) fprintf(stderr, "[Mac NS2] Relay unavailable at %s: %s\n", path, strerror(error));
+        relayLastError = error;
         return 0;
     }
+    relayLastError = 0;
 
     pthread_mutex_lock(&lock);
     relayFD = fd;
@@ -75,6 +88,7 @@ static int connect_relay(const char *path) {
     status = NS2_STATUS_CONNECTING;
     memset(&input, 0, sizeof input);
     memset(&relayMotion, 0, sizeof relayMotion);
+    relayKind = NS2_KIND_NONE;
     pthread_mutex_unlock(&lock);
     return 1;
 }
@@ -97,8 +111,11 @@ static void *relay_read_main(void *context) {
     int fd = (int)(intptr_t)context;
     ns2_relay_packet packet;
     while (receive_all(fd, &packet, sizeof packet)) {
-        if (packet.magic != NS2_RELAY_MAGIC || packet.version != NS2_RELAY_VERSION ||
-            packet.type != NS2_RELAY_INPUT) break;
+        if (packet.magic != NS2_RELAY_MAGIC || packet.version != NS2_RELAY_VERSION || packet.type != NS2_RELAY_INPUT) {
+            if (packet.magic == NS2_RELAY_MAGIC && packet.version != NS2_RELAY_VERSION)
+                fprintf(stderr, "[Mac NS2] 启动器通道版本 %u，本端 %u：断开（启动器与游戏宿主版本不一致）\n", packet.version, NS2_RELAY_VERSION);
+            break;
+        }
         pthread_mutex_lock(&lock);
         if (relayFD != fd) {
             pthread_mutex_unlock(&lock);
@@ -112,6 +129,7 @@ static void *relay_read_main(void *context) {
         ready = connected;
         status = (ns2_status)packet.status;
         if (connected) input = packet.state;
+        relayKind = connected ? (ns2_kind)packet.kind : NS2_KIND_NONE;
         if (packet.motion_known) relayMotion = packet.motion;
         else memset(&relayMotion, 0, sizeof relayMotion);
         pthread_mutex_unlock(&lock);
@@ -125,6 +143,7 @@ static void *relay_read_main(void *context) {
         epoch++;
         memset(&input, 0, sizeof input);
         memset(&relayMotion, 0, sizeof relayMotion);
+        relayKind = NS2_KIND_NONE;
     }
     pthread_mutex_unlock(&lock);
     close(fd);
@@ -160,6 +179,9 @@ static void set_relay_motion(int enabled) {
 }
 
 int s2a_mac_ns2_connect(void) {
+    const char *scale = getenv("S2A_RUMBLE_SCALE");
+    float value = scale ? strtof(scale, NULL) : 1;
+    rumble_scale = isfinite(value) && value > 0 ? value : 1;
     pthread_mutex_lock(&lock);
     if (relayFD >= 0) {
         pthread_mutex_unlock(&lock);
@@ -215,6 +237,7 @@ void s2a_mac_ns2_detach(void) {
     epoch++;
     memset(&input, 0, sizeof input);
     memset(&relayMotion, 0, sizeof relayMotion);
+    relayKind = NS2_KIND_NONE;
     pthread_mutex_unlock(&lock);
     if (fd >= 0) shutdown(fd, SHUT_RDWR);
     if (threadStarted) pthread_join(relayThread, NULL);
@@ -267,6 +290,27 @@ void s2a_mac_ns2_set_back_buttons(uint16_t left, uint16_t right) {
     pthread_mutex_unlock(&lock);
 }
 
+int s2a_mac_ns2_relay_due(ns2_status status, const char *relay) {
+    return relay && *relay && status == NS2_STATUS_IDLE && access(relay, F_OK) == 0;
+}
+
+ns2_kind s2a_mac_ns2_kind(void) {
+    pthread_mutex_lock(&lock);
+    ns2_kind kind = !ready ? NS2_KIND_NONE : relayFD >= 0 ? relayKind : ns2_get_output_kind();
+    pthread_mutex_unlock(&lock);
+    return kind;
+}
+
+const char *s2a_mac_ns2_kind_name(ns2_kind kind) {
+    switch (kind) {
+        case NS2_KIND_JOYCON_L: return "Joy-Con 2 (L)";
+        case NS2_KIND_JOYCON_R: return "Joy-Con 2 (R)";
+        case NS2_KIND_JOYCON_PAIR: return "Joy-Con 2 (L + R)";
+        case NS2_KIND_PRO: return "Switch 2 Pro";
+        default: return "Switch 手柄";   // 没连 / 还不知道型号（不分代）
+    }
+}
+
 ns2_status s2a_mac_ns2_status(void) {
     pthread_mutex_lock(&lock);
     ns2_status value = status;
@@ -284,8 +328,8 @@ uint64_t s2a_mac_ns2_rumble_session(void) {
 
 void s2a_mac_ns2_set_rumble_pair(uint64_t session, const s2a_pad_vibration values[2]) {
     ns2_vibration pair[2] = {
-        {values[0].low_amp, values[0].low_hz, values[0].high_amp, values[0].high_hz},
-        {values[1].low_amp, values[1].low_hz, values[1].high_amp, values[1].high_hz}
+        {rumble_amplitude(values[0].low_amp), values[0].low_hz, rumble_amplitude(values[0].high_amp), values[0].high_hz},
+        {rumble_amplitude(values[1].low_amp), values[1].low_hz, rumble_amplitude(values[1].high_amp), values[1].high_hz}
     };
     pthread_mutex_lock(&lock);
     int accepted = ready && foreground && session == epoch;

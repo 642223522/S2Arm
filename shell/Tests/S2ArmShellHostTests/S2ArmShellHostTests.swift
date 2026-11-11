@@ -61,6 +61,44 @@ import ShellUI
     #expect(model.games.isEmpty)
 }
 
+// v0.2.6「点删除没反应」：删除不在主线程同步做，点下当场离开列表、提示「正在删除」，后台删完提示释放了多少；挪不动提示原因、游戏留着；
+//   上次删到一半留下的 .deleting 下次打开时清掉。释放量期望手算：资源包 10 个 8192 字节 + 1 个 16384 字节文件 = 98304（APFS 按 4096 对齐，正好整块）
+@MainActor @Test func deleteGameIsInstantThenReportsFreedSpace() async throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-del2-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let id = "0100000000010000", pack = root.appendingPathComponent("\(id)/资源包")
+    try fm.createDirectory(at: pack.appendingPathComponent("romfs"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: root.appendingPathComponent("\(id)/S2A"), withIntermediateDirectories: true)
+    for i in 0..<10 { try Data(count: 8192).write(to: pack.appendingPathComponent("romfs/\(i).bin")) }
+    try Data(count: 16384).write(to: pack.appendingPathComponent("main"))
+    try fm.createDirectory(at: root.appendingPathComponent(".deleting/old"), withIntermediateDirectories: true)   // 上次没删完的
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    installState: { fm.fileExists(atPath: root.appendingPathComponent("\($0)/资源包").path) ? 1 : 0 }, gamesRoot: root)
+    model.actions.onDeleteGame?(id, false)
+    #expect(model.games.isEmpty)                                    // 当场离开列表
+    #expect(model.deleteNotice?.phase == .deleting)
+    #expect(try fm.contentsOfDirectory(atPath: root.appendingPathComponent(id).path) == ["S2A"])
+    for _ in 0..<200 where model.deleteNotice?.phase == .deleting { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(model.deleteNotice == .init(gameID: id, title: "A", phase: .done(freed: 98304)))
+    for _ in 0..<200 where !((try? fm.contentsOfDirectory(atPath: root.appendingPathComponent(".deleting").path)) ?? []).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(try fm.contentsOfDirectory(atPath: root.appendingPathComponent(".deleting").path).isEmpty)   // 这次的和上次留下的都删光
+}
+@MainActor @Test func deleteGameThatCannotMoveSaysWhyAndStays() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-del3-\(UUID().uuidString)")
+    let id = "0100000000010000"
+    try fm.createDirectory(at: root.appendingPathComponent("\(id)/资源包"), withIntermediateDirectories: true)
+    try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)       // 游戏根不可写：待删目录建不出来
+    defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path); try? fm.removeItem(at: root) }
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    installState: { fm.fileExists(atPath: root.appendingPathComponent("\($0)/资源包").path) ? 1 : 0 }, gamesRoot: root)
+    model.actions.onDeleteGame?(id, true)
+    guard case .failed(let why)? = model.deleteNotice?.phase else { Issue.record("应提示失败：\(String(describing: model.deleteNotice))"); return }
+    #expect(!why.isEmpty)
+    #expect(model.games.map(\.id) == [id])                         // 没删成就还在列表里
+}
+
 @MainActor @Test func playOnlyForPlayable() {
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B","state":"needs_game_data"}]}"#.utf8)
     var played: [String] = []

@@ -54,7 +54,7 @@ class CleanupLinkTests(unittest.TestCase):
     def test_container_kit_keeps_only_what_assembly_reads(self):
         root = self.root / "product"; self.seed_root(root)
         kit = library.save_container_kit(self.c, self.gid, root)
-        self.assertEqual(sorted(str(p.relative_to(kit)) for p in kit.rglob("*") if p.is_file()),
+        self.assertEqual(sorted(p.relative_to(kit).as_posix() for p in kit.rglob("*") if p.is_file()),
                          sorted(["main.npdm", "main.fixups.tsv", "main.gates.tsv", "main.patched.bin", "icon.jpg", "romfs.s2aidx", "ctl/control.nacp",
                                  "programs/1/main.npdm", "programs/1/main.fixups.tsv", "programs/1/main.patched.bin"]))
         self.assertIsNone(library.save_container_kit(self.c, self.gid, self.root / "missing"))
@@ -69,7 +69,7 @@ class CleanupLinkTests(unittest.TestCase):
         library.save_container_kit(self.c, self.gid, root)
         library.prune_build(self.c, self.gid)
         self.assertEqual(sorted(p.name for p in image.iterdir()), ["kit", "pack"])   # 交付件（容器件、资源包）在 image/ios，不动
-        self.assertEqual(sorted(str(p.relative_to(unpacked)) for p in unpacked.rglob("*")), ["ios", "ios/logs", "ios/logs/refresh.log"])   # 解包、产物根、work 清掉，出包日志留
+        self.assertEqual(sorted(p.relative_to(unpacked).as_posix() for p in unpacked.rglob("*")), ["ios", "ios/logs", "ios/logs/refresh.log"])   # 解包、产物根、work 清掉，出包日志留
 
     def test_without_kit_prune_keeps_current_root(self):
         root = self.output / "roots" / "k@pkg"; self.seed_root(root)
