@@ -106,6 +106,11 @@ static void *prof_report(void *arg) {
             o = snprintf(line, sizeof line, "剖析：最热页 %#lx（%zu 个样本）在映射 [%s]；页内：", (unsigned long)hot, hn, map);
             for (int k = 0; k < np; k++) { uint32_t ins = 0; memcpy(&ins, (const void *)tp[k].pc, 4); o += snprintf(line + o, sizeof line - (size_t)o, " +%#lx×%zu(指令 %08x)", (unsigned long)(tp[k].pc - hot), tp[k].n, ins); }
             __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: %s", line);
+            // 这一页连同前后各一页的原始字节落到缓存目录（同一页只落一次），拿回去反汇编看是哪个函数
+            static uintptr_t dumped[8]; static int nd; int seen = 0; for (int k = 0; k < nd; k++) if (dumped[k] == hot) seen = 1;
+            const char *dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
+            if (!seen && nd < 8 && dir && hn * 4 > n) { dumped[nd++] = hot; char pth[320]; snprintf(pth, sizeof pth, "%s/nvkprof_%lx.bin", dir, (unsigned long)(hot - 0x1000));
+                FILE *o2 = fopen(pth, "wb"); if (o2) { fwrite((const void *)(hot - 0x1000), 1, 0x3000, o2); fclose(o2); __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: 已落盘 %s", pth); } }
         }
     }
     return NULL;
