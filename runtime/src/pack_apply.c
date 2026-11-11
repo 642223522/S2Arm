@@ -37,15 +37,15 @@ static int safe(const char *p) { return *p && *p != '/' && !strstr(p, "../") && 
 
 // 解一个 tar 到 root；返回 0 成功，负数 = 失败码（-1 读不了 -2 头坏 -3 路径不安全 -4 写失败 -5 条目类型不支持）；*nf / *nb 累计文件数与字节
 int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb) {
-    g_untar_trunc = 0;
-    int fd = open(tar, O_RDONLY); if (fd < 0) return -1;
+    g_untar_trunc = 0; g_untar_err[0] = 0;   // 每次从空现场开始：不写现场的失败不能贴上一次的（iOS 装机剃刀 #10）
+    int fd = open(tar, O_RDONLY); if (fd < 0) { untar_err("打开包", tar, errno); return -1; }
     uint8_t h[512], buf[1 << 16]; char pax_path[4096] = ""; uint64_t pax_size = (uint64_t)-1; int rc = 0;
     for (;;) {
         // 没读到归档尾（全零块）就到文件末尾 / 只读到半个头 = 包被截短（执行器用 tar 打的包必有归档尾；截在条目边界时旧代码当成解完、把缺文件的状态记成已应用）
-        ssize_t r = read(fd, h, 512); if (r >= 0 && r != 512) { untar_err("包被截短（没有归档尾）", tar, EIO); g_untar_trunc = 1; rc = -4; break; } if (r < 0) { rc = -2; break; }
+        ssize_t r = read(fd, h, 512); if (r >= 0 && r != 512) { untar_err("包被截短（没有归档尾）", tar, EIO); g_untar_trunc = 1; rc = -4; break; } if (r < 0) { untar_err("读包头", tar, errno); rc = -2; break; }
         int zero = 1; for (int i = 0; i < 512 && zero; i++) zero = !h[i]; if (zero) break;   // 归档尾（两块全零）
         unsigned sum = 0; for (int i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? ' ' : h[i];
-        if (sum != oct((char *)h + 148, 8)) { rc = -2; break; }
+        if (sum != oct((char *)h + 148, 8)) { untar_err("条目头校验和不对（包没传对）", tar, EINVAL); rc = -2; break; }
         char type = (char)h[156]; uint64_t size = oct((char *)h + 124, 12);
         char name[4096];
         if (h[345]) snprintf(name, sizeof name, "%.155s/%.100s", (char *)h + 345, (char *)h); else snprintf(name, sizeof name, "%.100s", (char *)h);
@@ -53,12 +53,12 @@ int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb) {
         if (pax_path[0]) strlcpy(name, pax_path, sizeof name);
         uint64_t pad = (512 - size % 512) % 512;
         if (type == 'x' || type == 'g') {   // pax 扩展头：「长度 键=值\n」记录；只取 path / size，作用于下一个条目（g 全局头忽略）
-            if (size > sizeof buf - 1 || read(fd, buf, size) != (ssize_t)size || lseek(fd, (off_t)pad, SEEK_CUR) < 0) { rc = -2; break; }
+            if (size > sizeof buf - 1 || read(fd, buf, size) != (ssize_t)size || lseek(fd, (off_t)pad, SEEK_CUR) < 0) { untar_err("读 pax 扩展头", tar, EINVAL); rc = -2; break; }
             buf[size] = 0;   // strtoul 不越过本头数据
             pax_path[0] = 0; pax_size = (uint64_t)-1;
             if (type == 'g') continue;
             for (uint64_t o = 0; o < size;) {
-                char *rec = (char *)buf + o; unsigned long len = strtoul(rec, NULL, 10); if (!len || o + len > size) { rc = -2; break; }
+                char *rec = (char *)buf + o; unsigned long len = strtoul(rec, NULL, 10); if (!len || o + len > size) { untar_err("pax 扩展头记录长度不对", tar, EINVAL); rc = -2; break; }
                 // 记录格式「长度 键=值\n」：空格与换行都得在本条记录内（11-01 审计 P2-17：缺空格时 strchr 得 NULL、+1 后解引用崩；按整条长度找「=」会越过记录尾），不符判头坏
                 char *sp = memchr(rec, ' ', len), *end = rec + len - 1;
                 if (!sp || *end != '\n') { untar_err("pax 扩展头记录格式异常（缺空格或换行）", tar, EINVAL); rc = -2; break; }
@@ -73,9 +73,9 @@ int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb) {
         }
         pax_path[0] = 0; pax_size = (uint64_t)-1;
         if (!strncmp(name, "./", 2)) memmove(name, name + 2, strlen(name + 2) + 1);
-        if (type == '5') { if (!*name) continue; if (!safe(name)) { rc = -3; break; } char p[8192]; snprintf(p, sizeof p, "%s/%s/x", root, name); if (mkdirs(p)) { rc = -4; break; } continue; }
-        if (type != '0' && type != 0) { LOG("【红】解包：%s 条目类型 %c 不支持", name, type); rc = -5; break; }
-        if (!safe(name)) { LOG("【红】解包：路径不安全 %s", name); rc = -3; break; }
+        if (type == '5') { if (!*name) continue; if (!safe(name)) { untar_err("路径不安全", name, EINVAL); rc = -3; break; } char p[8192]; snprintf(p, sizeof p, "%s/%s/x", root, name); if (mkdirs(p)) { rc = -4; break; } continue; }
+        if (type != '0' && type != 0) { LOG("【红】解包：%s 条目类型 %c 不支持", name, type); untar_err("条目类型不支持", name, EINVAL); rc = -5; break; }
+        if (!safe(name)) { LOG("【红】解包：路径不安全 %s", name); untar_err("路径不安全", name, EINVAL); rc = -3; break; }
         char p[8192], tmp[8300]; snprintf(p, sizeof p, "%s/%s", root, name); snprintf(tmp, sizeof tmp, "%s.part", p);
         if (mkdirs(p)) { rc = -4; break; }
         int of = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (of < 0) { untar_err("建临时文件", tmp, errno); rc = -4; break; }
@@ -88,7 +88,7 @@ int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb) {
         if (close(of) && !rc) { untar_err("关文件", tmp, errno); rc = -4; }
         if (!rc && rename(tmp, p)) { untar_err("改名到", p, errno); rc = -4; }
         if (rc) { unlink(tmp); break; }
-        if (pad && lseek(fd, (off_t)pad, SEEK_CUR) < 0) { rc = -2; break; }
+        if (pad && lseek(fd, (off_t)pad, SEEK_CUR) < 0) { untar_err("跳过条目填充", name, errno); rc = -2; break; }
         (*nf)++; *nb += size;
     }
     close(fd); return rc;
@@ -200,20 +200,24 @@ static int prune(const char *root, unsigned *nd, uint64_t *db) {
 }
 
 // 核对机上实况（10-25 测试设备2 马车8：执行器推了 4 批、App 解开 0 个包，照样把新 index.tsv 记成 index.applied.tsv / .applied，
-//   之后两局执行器信这份「已应用」只推 3 个文件，机上没有直连库、退回通用）：index.tsv 每一行的文件都在、大小对得上，才算应用成功。
-//   返回缺 / 大小不符的个数，*ex 记第一个（报红现场）；逐个 stat，九款最大索引约 39 万行、本机约 1 秒
-static unsigned verify_present(const char *root, char *ex, size_t exn) {
+//   之后两局执行器信这份「已应用」只推 3 个文件，机上没有直连库、退回通用）：index.tsv 每一行的文件都在、是普通文件、大小对得上，才算完整。
+//   返回缺 / 不符的个数，ex 记第一个（「路径（不在 / 大小不符 / 不是文件）」，进日志）；progress = 1 时报「校验文件」阶段进度（解包那步）。
+//   解包核对与闸门 s2a_pack_check 共用这一份（iOS 装机剃刀 #14：原先两份，闸门那份不查是不是普通文件，同名目录占位时两边结论相反）。
+//   逐个 stat，九款最大索引约 39 万行、本机约 1 秒
+static unsigned index_check(const char *root, char *ex, size_t exn, int progress) {
     char ip[2100]; snprintf(ip, sizeof ip, "%s/index.tsv", root); FILE *f = fopen(ip, "r");
-    if (!f) { snprintf(ex, exn, "index.tsv 打不开：%s", strerror(errno)); return 1; }   // 审计 P2-7：原先只记缺 1 个、例子为空
-    char line[4600], p[6800]; unsigned miss = 0; struct stat st; ex[0] = 0;
-    uint64_t total = 0, done = 0; while (fgets(line, sizeof line, f)) total++; rewind(f); PHASE(3, 0, total);
+    if (!f) { if (exn) snprintf(ex, exn, "index.tsv 打不开：%s", errno == ENOENT ? "不在" : strerror(errno)); return 1; }   // 审计 P2-7：原先只记缺 1 个、例子为空
+    char line[4600], p[6800]; unsigned miss = 0; struct stat st; if (exn) ex[0] = 0;
+    uint64_t total = 0, done = 0;
+    if (progress) { while (fgets(line, sizeof line, f)) total++; rewind(f); PHASE(3, 0, total); }
     while (fgets(line, sizeof line, f)) {
-        if (++done % 256 == 0 || done == total) PHASE(3, done, total);
+        if (progress && (++done % 256 == 0 || done == total)) PHASE(3, done, total);
         char *t = strchr(line, '\t'); if (!t) continue; *t = 0; long long want = atoll(t + 1);
         snprintf(p, sizeof p, "%s/%s", root, line);
-        if (stat(p, &st) || !S_ISREG(st.st_mode) || st.st_size != want) { if (!miss++) snprintf(ex, exn, "%s（%s）", line, stat(p, &st) ? "不在" : "大小不符"); }
+        int gone = stat(p, &st) != 0;
+        if (gone || !S_ISREG(st.st_mode) || st.st_size != want) { if (!miss++ && exn) snprintf(ex, exn, "%s（%s）", line, gone ? "不在" : !S_ISREG(st.st_mode) ? "不是文件" : "大小不符"); }
     }
-    if (ferror(f)) { snprintf(ex, exn, "index.tsv 读失败：%s", strerror(errno)); miss++; }
+    if (ferror(f)) { if (exn) snprintf(ex, exn, "index.tsv 读失败：%s", strerror(errno)); miss++; }
     fclose(f); return miss;
 }
 // root/src 整份拷成 root/dst（先写 dst.tmp 再改名）；返回 0 成功
@@ -261,7 +265,7 @@ const char *s2a_pack_apply_code(void) { return g_apply_code; }
 // 返回进程退出码（0 成功）；docs = Documents 目录
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; snprintf(root, sizeof root, "%s/资源包", docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
-    uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0, from_img = 0; char what[2300] = ""; g_fail_errno = 0; g_untar_trunc = 0;
+    uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0, from_img = 0; char what[2300] = ""; g_fail_errno = 0; g_untar_trunc = 0; g_untar_err[0] = 0;
     // 本款目录 / 资源包 / 待解包目录 App 写不进（#569：玩家机上这一串归 root、0755，App 是 501）：一个包都不解，先把真实原因说清楚，
     //   不再去解包、报一句含糊的「解 xxx.tar」。迁到 App 自己的新目录在 s2a_games_repair（游戏库挂上时做）
     { const char *dirs[] = {docs, root, inc}; struct stat ds;
@@ -286,7 +290,7 @@ int s2a_pack_apply(const char *docs) {
         else { unlink(t); ntar++; if (s2a_pack_apply_progress) s2a_pack_apply_progress(i + 1, nn); PHASE(1, (uint64_t)(i + 1), (uint64_t)nn); log_line(logp, "进度：解开 %s（%u/%d）%u 个文件 %llu MB（%.1f 秒）", names[i], i + 1, nn, nf - f0, (unsigned long long)((nb - b0) >> 20), (now_ns() - t1) / 1e9); }
     }
     if (!rc) { int r = img_extract(root, &nf, &nb); if (r) { rc = r; from_img = 1; snprintf(what, sizeof what, "从 game.img 解小文件（%s）", r == -11 ? "格式号不认识，请更新 S2Arm" : r == -10 ? "IMG 坏或没传完" : "写失败"); } }
-    if (!rc) { char ex[2200]; unsigned miss = verify_present(root, ex, sizeof ex);
+    if (!rc) { char ex[2200]; unsigned miss = index_check(root, ex, sizeof ex, 1);
         if (miss) { rc = -8; snprintf(what, sizeof what, "核对：index.tsv 里 %u 个文件机上缺或大小不符（例：%s），不记已应用，执行器下次按旧的已应用索引补推", miss, ex); } }   // 核对在清旧文件之前：核不过不删任何文件
     if (!rc) { unsigned nd = 0; uint64_t db = 0; int r2 = prune(root, &nd, &db);   // 清旧文件：资源包下不在 index.tsv 里的（旧版分卷等）
         if (r2) { rc = r2; snprintf(what, sizeof what, "清旧文件（读 index.tsv）"); }
@@ -331,18 +335,7 @@ void s2a_pack_help_detail(int st, int again, char *d, size_t n) {
     // 缺哪个文件（g_pack_first）只进日志（s2a_import_state 已打），不上屏（11-02 维护者：index.tsv 这类内部词玩家看不懂）
     snprintf(d, n, "%s%s", pre, st == S2A_IMPORT_BROKEN ? S2A_UI(S2A_UI_PACK_BROKEN_DETAIL) : S2A_UI(S2A_UI_PACK_NONE_DETAIL));
 }
-int s2a_pack_check(const char *root, char *first, size_t n) {
-    char idx[2100]; snprintf(idx, sizeof idx, "%s/index.tsv", root); FILE *f = fopen(idx, "r");
-    if (!f) { if (first && n) snprintf(first, n, "index.tsv（%s）", errno == ENOENT ? "不在" : strerror(errno)); return 1; }
-    char line[4096]; int bad = 0; if (first && n) first[0] = 0;
-    while (fgets(line, sizeof line, f)) {
-        char *t1 = strchr(line, '\t'); if (!t1) continue; *t1 = 0; long long want = atoll(t1 + 1);
-        char p[4200]; struct stat st; snprintf(p, sizeof p, "%s/%s", root, line);
-        if (stat(p, &st) || st.st_size != want) { if (!bad++ && first && n) strlcpy(first, line, n); }
-    }
-    if (ferror(f)) { if (first && n) snprintf(first, n, "index.tsv（读失败：%s）", strerror(errno)); bad++; }
-    fclose(f); return bad;
-}
+int s2a_pack_check(const char *root, char *first, size_t n) { return (int)index_check(root, first, first ? n : 0, 0); }
 static int ends_with(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !strcmp(s + a - b, t); }
 // 资源包目录里有东西可用：manifest.json（已就绪）或 .incoming 里有待导入的包
 static int pack_usable(const char *root) {
@@ -439,7 +432,6 @@ static int clone_tree(const char *from, const char *to, unsigned *files, uint64_
 #else
     snprintf(why, n, "这个平台没有文件克隆"); return -1;
 #endif
-    struct stat ns; if (stat(to, &ns) || ns.st_size != st.st_size) { snprintf(why, n, "克隆 %s 后大小不符", from); return -1; }
     (*files)++; *bytes += (uint64_t)st.st_size; return 0;
 }
 static void remove_tree(const char *p) {   // 只删自己刚建的新树（归 App，删得掉）

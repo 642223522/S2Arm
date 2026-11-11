@@ -17,7 +17,7 @@
 #define TAR_RENAME "-s ',^a.txt,x/../../逃逸.txt,'"
 #endif
 int s2a_pack_apply(const char *docs); const char *s2a_pack_apply_failure(void);
-int s2a_games_repair(const char *proc_docs); const char *s2a_games_repair_detail(void); unsigned s2a_games_repair_files(void); unsigned s2a_games_repair_owner(void); int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb);
+int s2a_games_repair(const char *proc_docs); const char *s2a_games_repair_detail(void); unsigned s2a_games_repair_files(void); unsigned s2a_games_repair_owner(void); int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb); int s2a_pack_check(const char *root, char *first, size_t n);
 int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char *proc_docs, char *out, size_t n); int s2a_import_state_game(const char *proc_docs, const char *gid);
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
@@ -163,6 +163,8 @@ int main(void) {
     CHECK(sh(c) == 0, "造缺文件夹具失败");
     CHECK(s2a_pack_apply(docs) != 0, "索引里的文件机上不在，应判失败");
     snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '1 个文件机上缺或大小不符（例：shaders/direct/keys.tsv（不在））.*返回 -8'", T); CHECK(sh(c) == 0, "失败行应写明缺 1 个、例 keys.tsv、返回 -8");
+    // iOS 装机剃刀 #10：这次失败在核对（不写解包现场），上一次（截短包）的现场「包被截短」不能贴到这一行上
+    snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '现场'", T); CHECK(sh(c) != 0, "核对失败的行不应带现场（旧代码贴上一次截短包的现场）");
     snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied && cmp -s %s/ia.bak %s/docs/资源包/index.applied.tsv", T, T, T); CHECK(sh(c) == 0, "缺文件时 .applied / index.applied.tsv 不应变");
     snprintf(c, sizeof c, "cd %s && printf 'a.txt\\t4\\tx\\n' > docs/资源包/index.tsv", T); sh(c);
     snprintf(d, sizeof d, "%s/docs/资源包/空.txt", T); CHECK(stat(d, &st) == 0, "核对没过不应清旧文件（空.txt 被删了）");
@@ -175,6 +177,22 @@ int main(void) {
       tar_hdr(h, "PaxHeader/x", 5, 'x'); write(fd, h, 512); memset(h, 0, 512); memcpy(h, "4abc", 5); write(fd, h, 512); write(fd, z, sizeof z); close(fd);
       untar_child(tp, root2, r, sizeof r);
       CHECK(!strcmp(r, "返回 -2"), "pax 记录缺空格：期望 返回 -2 → %s", r); }
+    // iOS 装机剃刀 #4：条目头校验和不对（包没传对）→ 返回 -2、日志行带这次的现场「校验和」，给码按没传完
+    { char c2[4096]; uint8_t h[512], z[1024] = {0}; char tp[2200]; snprintf(tp, sizeof tp, "%s/docs/资源包/.incoming/5_000.tar", T);
+      snprintf(c2, sizeof c2, "rm -f %s/docs/资源包/.incoming/*.tar", T); sh(c2);
+      int fd = open(tp, O_WRONLY | O_CREAT | O_TRUNC, 0644); tar_hdr(h, "a.txt", 0, '0'); h[0] = 'b'; write(fd, h, 512); write(fd, z, sizeof z); close(fd);
+      CHECK(s2a_pack_apply(docs) != 0, "校验和坏的包应判失败");
+      snprintf(c2, sizeof c2, "tail -1 %s/docs/unpack.log | grep -q '返回 -2.*现场：条目头校验和不对'", T); CHECK(sh(c2) == 0, "校验和坏：失败行应含「返回 -2」与校验和现场");
+      CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_pack_truncated"), "校验和坏给码 ios_install_pack_truncated（实际 %s）", s2a_pack_apply_code());
+      unlink(tp); }
+    // iOS 装机剃刀 #14：闸门的核对（s2a_pack_check）和解包核对同一份：index.tsv 里的 d 被同名目录占着、大小恰好写成目录的大小 →
+    //   两边都判不完整、例子写明「不是文件」（旧闸门那份不查是不是普通文件，判完整）
+    { char R[2100], c2[4096], first[256] = ""; struct stat ds; snprintf(R, sizeof R, "%s/dirtaken", T);
+      snprintf(c2, sizeof c2, "mkdir -p '%s/d'", R); sh(c2);
+      snprintf(c2, sizeof c2, "%s/d", R); stat(c2, &ds);
+      snprintf(c2, sizeof c2, "printf 'd\\t%lld\\tx\\n' > '%s/index.tsv'", (long long)ds.st_size, R); sh(c2);
+      int bad1 = s2a_pack_check(R, first, sizeof first);
+      CHECK(bad1 == 1 && strstr(first, "d（不是文件）"), "同名目录占位：闸门核对应判 1 个不符、例「d（不是文件）」→ %d「%s」", bad1, first); }
     // .applied 不先截断（11-01 审计 P2-16）：旧 .applied = oldmark；这次 manifest 的 index_sha256 是 64 字符，子进程把单文件上限设成 32 字节（SIGXFSZ 忽略），
     //   index.applied.tsv（10 字节）写得下、.applied（64 字节）写不下。期望按语义手写：解包判失败（退出码 1）、.applied 仍是 oldmark、不留 .applied.tmp。
     //   旧代码 fopen("w") 先把 .applied 截成 0 字节再写失败 → 旧标记丢了
