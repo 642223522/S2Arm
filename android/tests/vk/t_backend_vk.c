@@ -3228,8 +3228,8 @@ static void c66_pool_sets(const char *dir) {
     nvn_gpu_shader_release(sh);
 }
 
-// C67 复现：origin_ll=1 的视口 {0,0,64,32} 没翻 Y。NVN 从左下量 → 正确应画下半屏；
-// 当前按左上原点下达 → 画上半屏。修好后期望翻成下半屏绿。
+// C67：origin_ll=1（NVN 窗口原点在左下）时后端不翻视口：这种约定下图是自下而上存的，行号 0 就是「下」，
+// 视口 {0,0,64,32} 落在行 0–31；呈现时由 present_desc.flip_y 整张翻过来。原点在左上的翻转见 C73。
 static void c67_viewport_yflip(const char *dir) {
     nvn_gpu_shader vs = NULL, fs = NULL;
     void *vm = NULL, *fm = NULL;
@@ -3269,9 +3269,8 @@ static void c67_viewport_yflip(const char *dir) {
     CHECK(OK(r), "C67 commit：%d %s", r.code, e.why);
     r = nvn_gpu_fence_wait(113, 5000000000ull, &e);
     CHECK(OK(r), "C67 wait：%d %s", r.code, e.why);
-    // 复现当前（错）：上半屏绿、下半屏蓝。修好后应反过来。
-    expect_rect(buf_cpu(rb), 0, 0, 64, 32, 0, 255, 0, "C67 上半（当前错，应为蓝）");
-    expect_rect(buf_cpu(rb), 0, 32, 64, 32, 0, 0, 255, "C67 下半（当前错，应为绿）");
+    expect_rect(buf_cpu(rb), 0, 0, 64, 32, 0, 255, 0, "C67 行 0–31（视口内，绿）");
+    expect_rect(buf_cpu(rb), 0, 32, 64, 32, 0, 0, 255, "C67 行 32–63（视口外，保持蓝底）");
     nvn_gpu_view_release(ov); nvn_gpu_tex_release(out);
     nvn_gpu_buf_release(vb, NULL, NULL);
     nvn_gpu_buf_release(rb, NULL, NULL);
@@ -3279,8 +3278,10 @@ static void c67_viewport_yflip(const char *dir) {
     free(vm); free(fm);
 }
 
-// C68 复现：模板 op / compare / 掩码没进管线。front/back 全 0 → compareOp=NEVER → 全丢。
-// 配置 sf=ALWAYS + zpass=REPLACE + ref=1 + 掩码 FF：正确应全绿；当前应零像素绿（全为清屏色）。
+// C68：模板的比较函数 / 三种操作进管线，读写掩码与参考值走动态状态。两笔：
+//   ① 只在左半屏（裁剪）画绿：函数 ALWAYS、通过时 REPLACE、参考值 1 → 左半屏模板变 1；
+//   ② 整屏画蓝：函数 NOTEQUAL、参考值 1、操作全 KEEP → 只有模板还是 0 的右半屏画得上。
+// 期望（手算）：左半绿、右半蓝。函数没进管线（全 0 = NEVER）时两笔都画不上，整屏是黑的清屏色。
 static void c68_stencil_ops(const char *dir) {
     nvn_gpu_shader vs = NULL, fs = NULL;
     void *vm = NULL, *fm = NULL;
@@ -3294,6 +3295,16 @@ static void c68_stencil_ops(const char *dir) {
     nvn_gpu_err e;
     nvn_gpu_pipe pipe = NULL;
     CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C68 pipe：%d %s", e.rc.code, e.why);
+    nvn_gpu_shader vs2 = NULL, fs2 = NULL; void *vm2 = NULL, *fm2 = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs2, &fs2, &vm2, &fm2)) { CHECK(0, "读不到 solid_blue"); return; }
+    nvn_gpu_pipe_desc pd2;
+    fill_gpipe_desc(&pd2, vs2, fs2, NVN_FORMAT_DEPTH24_STENCIL8);
+    pd2.ds.st = 1;
+    pd2.ds.sf_f = 6; pd2.ds.sf_b = 6;          // 6 = NOTEQUAL
+    pd2.ds.fail_f = pd2.ds.zfail_f = pd2.ds.zpass_f = 1;   // 1 = KEEP
+    pd2.ds.fail_b = pd2.ds.zfail_b = pd2.ds.zpass_b = 1;
+    nvn_gpu_pipe pipe2 = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd2, NVN_GPU_PIPE_SYNC, &pipe2, &e)), "C68 pipe2：%d %s", e.rc.code, e.why);
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
     nvn_gpu_tex ds = make_tex(64, 64, NVN_FORMAT_DEPTH24_STENCIL8, NVN_GPU_TEX_RENDER);
     nvn_gpu_view ov = make_view(out), dv = make_view(ds);
@@ -3314,11 +3325,17 @@ static void c68_stencil_ops(const char *dir) {
     dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF;
     dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF;
     dyn.st_ref[0] = dyn.st_ref[1] = 1;
+    dyn.sc[2] = 32;   // ① 只画左半屏
     nvn_gpu_set_dyn(c, &dyn);
     nvn_gpu_set_vbuf(c, 0, vb, 0);
     nvn_gpu_draw_args da;
     memset(&da, 0, sizeof da);
     da.prim = 4; da.count = 3; da.instances = 1;
+    nvn_gpu_draw(c, &da);
+    nvn_gpu_set_pipe(c, pipe2);   // ② 整屏、NOTEQUAL 1
+    dyn.sc[2] = 64;
+    nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_set_vbuf(c, 0, vb, 0);
     nvn_gpu_draw(c, &da);
     nvn_gpu_pass_end(c);
     nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
@@ -3326,12 +3343,9 @@ static void c68_stencil_ops(const char *dir) {
     CHECK(OK(r), "C68 commit：%d %s", r.code, e.why);
     r = nvn_gpu_fence_wait(114, 5000000000ull, &e);
     CHECK(OK(r), "C68 wait：%d %s", r.code, e.why);
-    // 复现当前（错）：管线 front/back 模板态全 0 → compareOp=NEVER → 一个像素都没画，
-    // 全为清屏色（a=255,r=g=b=0）。修好（sf=ALWAYS + zpass=REPLACE + mask/ref 生效）应全绿。
-    // 注：模板字节契约层读不回——copy_tex_buf 只能整 t->aspect 下 buffer copy，
-    // 多 aspect 贴图会撞 VUID-VkBufferImageCopy-aspectMask-09103（只许单 aspect）。
-    expect_rect(buf_cpu(rb), 0, 0, 64, 64, 0, 0, 0, "C68 颜色（已知缺陷：当前黑，修复后应绿）");
-    printf("C68 已知缺陷：颜色为黑（修复后期望绿）；仅核颜色，未读 stencil\n");
+    expect_rect(buf_cpu(rb), 0, 0, 32, 64, 0, 255, 0, "C68 左半（①写了模板 1，②被 NOTEQUAL 挡住：绿）");
+    expect_rect(buf_cpu(rb), 32, 0, 32, 64, 0, 0, 255, "C68 右半（模板还是 0，②画上：蓝）");
+    nvn_gpu_shader_release(vs2); nvn_gpu_shader_release(fs2); free(vm2); free(fm2);
     nvn_gpu_view_release(ov); nvn_gpu_view_release(dv);
     nvn_gpu_tex_release(out); nvn_gpu_tex_release(ds);
     nvn_gpu_buf_release(vb, NULL, NULL);

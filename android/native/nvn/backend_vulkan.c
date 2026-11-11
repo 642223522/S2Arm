@@ -1219,6 +1219,19 @@ static VkBlendOp vk_blend_op(uint32_t e) {
     default: return VK_BLEND_OP_MAX_ENUM;
     }
 }
+static VkStencilOp vk_stencil_op(uint32_t op) {   // NVN_STENCIL_OP_*：1 KEEP … 8 DECR_WRAP
+    switch (op) {
+    case 2: return VK_STENCIL_OP_ZERO;
+    case 3: return VK_STENCIL_OP_REPLACE;
+    case 4: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    case 5: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    case 6: return VK_STENCIL_OP_INVERT;
+    case 7: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    case 8: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    default: return VK_STENCIL_OP_KEEP;
+    }
+}
+
 static VkCompareOp vk_depth_func(uint32_t f) {
     switch (f) {
     case 1: return VK_COMPARE_OP_NEVER;
@@ -1850,7 +1863,11 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
         ds.depthWriteEnable = d->ds.dw ? VK_TRUE : VK_FALSE;
         ds.depthCompareOp = vk_depth_func(d->ds.df);
         ds.depthBoundsTestEnable = VK_FALSE;
-        ds.stencilTestEnable = d->ds.st ? VK_TRUE : VK_FALSE;
+    }
+    if (d->sfmt && d->ds.st) {   // 模板：比较函数与三种操作进管线；读掩码 / 写掩码 / 参考值是动态状态（apply_dyn）。通道没有模板附件时测试恒过，不开
+        ds.stencilTestEnable = VK_TRUE;
+        ds.front = (VkStencilOpState){vk_stencil_op(d->ds.fail_f), vk_stencil_op(d->ds.zpass_f), vk_stencil_op(d->ds.zfail_f), vk_depth_func(d->ds.sf_f), 0xff, 0xff, 0};
+        ds.back = (VkStencilOpState){vk_stencil_op(d->ds.fail_b), vk_stencil_op(d->ds.zpass_b), vk_stencil_op(d->ds.zfail_b), vk_depth_func(d->ds.sf_b), 0xff, 0xff, 0};
     }
 
     if (d->color.logic_op != 0x3) {   // NVN 缺省 COPY=0x3；其余逻辑操作未实现
@@ -1901,11 +1918,12 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     cbs.attachmentCount = ncb;
     cbs.pAttachments = cb;
 
-    VkDynamicState dyn[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
+    VkDynamicState dyn[6] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
     VkPipelineDynamicStateCreateInfo dyns;
     memset(&dyns, 0, sizeof dyns);
     dyns.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyns.dynamicStateCount = 3;
+    dyns.dynamicStateCount = 6;
     dyns.pDynamicStates = dyn;
 
     VkGraphicsPipelineCreateInfo gp;
@@ -2547,6 +2565,13 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     vkCmdSetScissor(c->cb, 0, 1, &sc);
     const float bc[4] = {c->dyn.blend_color[0], c->dyn.blend_color[1], c->dyn.blend_color[2], c->dyn.blend_color[3]};
     vkCmdSetBlendConstants(c->cb, bc);
+    // 模板的三个动态量：下标 0 = 正面、1 = 背面（NVN 的面位）。没发过动态状态时用 NVN 缺省（掩码全开、参考值 0）
+    for (int f = 0; f < 2; f++) {
+        VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
+        vkCmdSetStencilCompareMask(c->cb, face, c->has_dyn ? c->dyn.st_vmask[f] & 0xffu : 0xffu);
+        vkCmdSetStencilWriteMask(c->cb, face, c->has_dyn ? c->dyn.st_wmask[f] & 0xffu : 0xffu);
+        vkCmdSetStencilReference(c->cb, face, c->has_dyn ? c->dyn.st_ref[f] & 0xffu : 0u);
+    }
     for (uint32_t s = 0; s < 16; s++) {
         if (!c->vbuf[s].buf) continue;
         VkBuffer vb = c->vbuf[s].buf->buffer;

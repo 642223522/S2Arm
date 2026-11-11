@@ -158,6 +158,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
     if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); return; }
+    if (rp_S.poly.offset_en) nvn_unimpl("gpu", "polygon_offset_ignored", rec);   // 后端还没接深度偏移：照画，记一笔
     if (rp_pso_dirty || !g_pipe || g_pipe_cmd != c) {
         nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd);
         pd.st[0].sh = g_prog->sh[0]; pd.st[1].sh = g_prog->sh[1];
