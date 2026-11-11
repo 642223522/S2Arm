@@ -125,6 +125,7 @@ public final class S2ArmEngineProvider: EngineProvider {
             var extra: [String: Any] = ["gameId": job.gameId]
             if let target = job.deviceTarget { extra["target"] = target }
             if job.spaceOverride { extra["spaceOverride"] = true }
+            if job.followUp { extra["followUp"] = true }
             if let location = job.location { extra["location"] = location }
             let r = try await client.perform("ipa", extra: extra, events: events).result
             return BuildResult(gameId: job.gameId, target: .iPhone, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)

@@ -290,6 +290,15 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(r["packFiles"], 2)
         self.assertIn("资源包已传完", r["unpackPending"])   # 结果带还差的一步（11-09 #336）：前端据此不说「已装到 iPhone」
 
+    def test_img_pack_is_done_once_transferred(self):   # 11-11：单一 IMG 形态传完并核过长度即装好，不带 --apply、不起 App 等机上解开，结果带 openToFinish
+        gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
+        m = pack / "manifest.json"; data = json.loads(m.read_text()); data.update(version=3, format="img"); m.write_text(json.dumps(data))
+        r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
+        push = next(a for a in runs if a[2].endswith("tools/push_pack.py"))
+        self.assertIn("run", push[3:]); self.assertNotIn("--apply", push)
+        self.assertEqual(launches, [])                          # 没有为解包起 App
+        self.assertTrue(r["openToFinish"]); self.assertNotIn("unpackPending", r)
+
     def test_install_signs_installs_and_pushes(self):
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
         r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
@@ -305,6 +314,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(launches, [{"S2A_PACK_APPLY_ONLY": "1"}])                                           # 推了就起一次 App 只解包
         self.assertEqual((r["device"], r["bundleId"], r["packFiles"], r["free"]), ("测试设备2", bid, 2, True))
         self.assertNotIn("unpackPending", r)   # 解开了：结果不带还差的一步
+        self.assertNotIn("openToFinish", r)    # 旧形态等机上解开，不写「打开 S2Arm 会自动完成」
 
 
     def test_container_install_paths(self):

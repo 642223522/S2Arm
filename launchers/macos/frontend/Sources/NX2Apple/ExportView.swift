@@ -260,8 +260,6 @@ struct ExportView: View {
         case .noPlatform: return loc.t("s2arm.export.block.noPlatform")
         case .game(let text): return loc.backend(text)
         case .keys: return loc.t("s2arm.export.block.keys")
-        case .checking: return loc.t("s2arm.env.checking")
-        case .environment: return loc.t("s2arm.export.block.environment")
         case .busy: return loc.t("s2arm.export.block.busy")
         case .alreadyQueued: return loc.t("s2arm.export.block.alreadyQueued")
         }
@@ -275,10 +273,6 @@ struct ExportView: View {
                 Label(reason(blocker), systemImage: "info.circle").font(.manrope(13)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("export.reason")
-                if blocker == .environment {
-                    Button(loc.t("s2arm.export.openEnvironment")) { model.showEnvironment = true }
-                        .buttonStyle(LauncherSecondaryButtonStyle())
-                }
                 if blocker == .keys {
                     Button(x("fix.keys")) { model.showKeys = true }.buttonStyle(LauncherSecondaryButtonStyle())
                 }

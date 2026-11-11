@@ -171,6 +171,9 @@ struct InstallView: View {
             // 写实际装上的那台（装机结果的 deviceKind / deviceName），不写死 iPhone
             Text(text("install.done.title").replacingOccurrences(of: "{0}", with: model.installedTo.isEmpty ? "iPhone / iPad" : model.installedTo))
                 .font(.manrope(30, .heavy)).tracking(-0.8).multilineTextAlignment(.center).accessibilityIdentifier("install.done.title")
+            if model.installOpenToFinish {
+                Text(text("install.done.open")).font(.manrope(15, .semibold)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
             Text(text("install.done.trust")).font(.manrope(14)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             if game?.iphoneFree == true {
                 Text(text("install.done.free")).font(.manrope(13)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)

@@ -329,6 +329,37 @@ class ContainerDocs(Base):
         self.assertEqual((d.docs, d.ctx), ("Documents", None))   # 单款缺省不变
 
 
+class BigFallback(unittest.TestCase):
+    """#641：流式写失败后，大于上限的文件不交给 devicectl 整份拷（CoreDeviceService 会把整个文件读进内存、拖垮整机）；小文件照旧退回"""
+    def run_put_big(self, size, cap):
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * size)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": str(cap)})
+            class Stream:
+                def put(self, src, rel): raise push.Fail("写文件失败：device socket io failed")
+            d.dp = Stream(); said, copied = [], []
+            d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            try:
+                d.put_big(src, "Documents/资源包/game.img"); return None, copied, said
+            except push.Fail as e:
+                return str(e), copied, said
+
+    def test_big_file_does_not_fall_back_to_devicectl(self):
+        err, copied, _ = self.run_put_big(4096, 1024)
+        self.assertEqual(copied, [])
+        self.assertIn("不改走 devicectl", err)
+        self.assertIn("device socket io failed", err)
+
+    def test_small_file_still_falls_back(self):
+        err, copied, said = self.run_put_big(512, 1024)
+        self.assertIsNone(err)
+        self.assertEqual(copied, ["Documents/资源包/game.img"])
+        self.assertTrue(any("改走 devicectl" in m for m in said))
+
+    def test_default_cap_is_two_gib(self):
+        self.assertEqual(push.DC_FALLBACK_MAX, 2 << 30)
+
+
 class SpaceNeed(Base):
     def batches(self, *sizes):
         for i, rows in enumerate(sizes):
@@ -473,6 +504,19 @@ class GameImgResume(Base):
         (self.pk / "manifest.json").write_text('{"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "x"}')
         self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
         self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")
+
+    def test_full_write_checks_length_on_phone(self):   # 整份写完也核机上总长（11-11「传完并校验即成功」）：短一个字节不记账、说清长度
+        dev = self.device()
+        def short_write(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()[:-1]
+        dev.put_big = short_write
+        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        self.assertIn("game.img 没传完", str(e.exception))
+        self.assertTrue(any(f"长度 {len(self.local) - 1} 字节，应为 {len(self.local)} 字节" in l for l in self.log), self.log)
+        self.assertNotIn(f"{RP}/.pushed", dev.files)   # 没记账：下次重新判断续传
+
+    def test_full_write_length_ok_completes(self):
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
 
     def test_game_img_is_direct_not_tar(self):
         self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)

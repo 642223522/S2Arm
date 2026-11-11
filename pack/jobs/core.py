@@ -494,6 +494,11 @@ def record_sources(sources):
     return out
 
 
+# 只读探测（启动器剃刀 H4）：结果走标准输出，不落任务记录（request / journal / events 三个文件 + 起 ps 取进程起始时刻），作业开头也不收日志、
+#   不起后台商店查询、引擎副本有安装标记就直接用（逐文件复核留给真用引擎产物的作业，#304）。装机页每 5 秒一次的 installCheck、
+#   设备探测、刷新游戏库都在这里：原先每次都落三个文件，开一小时约 720 个作业记录
+PROBES = ("catalog", "installCheck", "targetDevice", "locations")
+JOURNAL_PROGRESS_S = 5.0   # 进度事件最多隔这么久重写一次任务记录（剃刀 H5：原先每条事件都原子重写 + fsync）；阶段、诊断、终态每次都写并 fsync
 LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
 OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm",
                    "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
@@ -516,6 +521,9 @@ class Context:
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
             raise Failure("spaceOverride 仅支持 Mac 打包（build）与打 iPhone 包（ipa）任务的布尔值。")
+        # 同一次出包后面还有平台（pack/contracts/README.md「同一次出包后面还有平台」）：只给打 iPhone 包，只认布尔值
+        if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
+            raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
         self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
@@ -540,10 +548,16 @@ class Context:
         self.last_progress = 0
         self.last_log = None
         self.frontend_gone = False
+        self.recorded = self.operation not in PROBES
+        self.last_journal = 0.0
         self.jobpath = self.logs / "jobs" / (self.task + ".json")
         self.events = self.logs / "jobs" / (self.task + ".events.jsonl")
         self.requestpath = self.logs / "jobs" / (self.task + ".request.json")
-        layout.follow_task(self)   # 同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        layout.follow_task(self)   # 索引表第一项核成默认库位置；同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        if not self.recorded:
+            self.job = dict(schema=1, id=self.task, operation=self.operation, gameId=request.get("gameId"),
+                            state="running", started=time.time(), diagnostics=[], pid=os.getpid(), attemptNo=1)
+            return
         # Keep the request next to the journal so `resume` can run the same task again after a kill without the caller having to keep the
         # request file around (J10). 0600 like the request itself: it holds player paths, never keys.
         if not self.requestpath.exists():
@@ -672,12 +686,19 @@ class Context:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
             try:
-                atomic(self.jobpath, self.job)
-                with self.events.open("a", encoding="utf-8") as f:
-                    f.write(line + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
-                os.chmod(self.events, 0o600)
+                # 剃刀 H5：心跳只给标准输出（前端据此知道作业还活着），不落盘；进度追加进事件文件、不 fsync，任务记录最多隔 JOURNAL_PROGRESS_S 重写一次；
+                #   阶段 / 诊断 / 终态等每条都重写任务记录并 fsync（被杀时不丢最后一个阶段，J10）。原先每条事件（含每秒心跳）都整份重写 + 两次 fsync
+                if self.recorded and kind != "heartbeat":
+                    durable = kind != "progress"
+                    if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
+                        atomic(self.jobpath, self.job)
+                        self.last_journal = now
+                    with self.events.open("a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                        if durable:
+                            f.flush()
+                            os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
+                    os.chmod(self.events, 0o600)
             except OSError as error:
                 # A full or failing disk used to let the job finish "successfully" with its record missing: whoever looks for it later finds
                 # nothing, or finds it stuck at an old stage. Say so and fail the job instead (J10).
@@ -852,6 +873,8 @@ class Context:
             result["exitCode"] = exit_code
         if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
             result["holder"] = failure.holder
+        if getattr(failure, "facts", None):   # 机读失败事实（errors.cause_facts）：改写失败的模块 / 缺口数 / 缺口类别
+            result["facts"] = failure.facts
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))
@@ -865,8 +888,9 @@ class Context:
         result["failureSummary"] = failure_summary(self.stage, rc, [self.redact(line, limit=None) for line in last_output_lines(self.last_log)])
         return result
 
-    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal=""):
-        result = self.describe_failure(Failure(message, code=code, internal=internal), severity, exit_code)
+    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None):
+        # holder / facts 原样带进失败结果（原先这里只按原句 + 码 + internal 重建 Failure，library_busy 的占锁者、改写失败的机读事实走真作业路径时都丢了）
+        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts), severity, exit_code)
         self.job["diagnostics"].append(result)
         self.emit("diagnostic", result["summary"], diagnostic=result, error=result,
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
@@ -906,7 +930,8 @@ class Context:
         if (previous and previous["code"] == "tool_exit" and failure.code != "job_failed"
                 and previous["stage"] == self.stage and previous["logPath"] == str(self.last_log)):
             exit_code = records.pop().get("exitCode")
-        return self.diagnostic(str(failure), failure.code, exit_code=exit_code, internal=getattr(failure, "internal", ""))
+        return self.diagnostic(str(failure), failure.code, exit_code=exit_code, internal=getattr(failure, "internal", ""),
+                               holder=getattr(failure, "holder", None), facts=getattr(failure, "facts", None))
 
     def fonts_dir(self):
         # 共享字体：玩家在设置里选了原版字体目录就用它，否则用应用自带的开源替代字体（Resources/Fonts，build_app.py 打进去；维护者 10-23：不再作为检测项）
@@ -935,6 +960,10 @@ class Context:
         env.pop("J", None)
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
+        gid = self.r.get("gameId")
+        if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
+            import library
+            env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -1160,7 +1189,7 @@ class Context:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts)
                         raise failure
                     from errors import tool_reason
                     message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
@@ -1196,7 +1225,8 @@ class Context:
         try:
             self.emit("result", message, state="succeeded" if state == "completed" else state,
                       result=result or {}, artifactRef=(result or {}).get("outputPath"), diagnostics=self.job["diagnostics"])
-            atomic(self.jobpath, self.job)
+            if self.recorded:
+                atomic(self.jobpath, self.job)
         except (Failure, OSError) as error:
             # The job is over either way; what must not happen is the caller seeing success while nothing was recorded. main.py turns
             # journal_broken into a non-zero exit, and this line is the only place a user can read why (J10).

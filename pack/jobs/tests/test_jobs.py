@@ -491,6 +491,20 @@ class JobsTests(unittest.TestCase):
         chk = subprocess.run([sys.executable, str(ROOT / "pack/save_identity.py"), "--check", str(si)], capture_output=True, text=True)
         self.assertEqual(chk.returncode, 0, chk.stderr)
 
+    def test_ipa_follow_up_keeps_unpack_for_next_platform(self):
+        # 剃刀 M21：同一次出包后面还有平台（followUp）→ 收尾不调 prune_build；缺省 / false 照调（期望按 pack/contracts/README.md 手写）。
+        #   只测收尾判断本身（ipa.prune_unless_follow_up），不跑整份 ipa.build（会留下解包状态影响别的用例）
+        import unittest.mock as um, ipa
+        for follow, want in ((True, 0), (False, 1), (None, 1)):
+            with self.subTest(followUp=follow):
+                self.c.r.pop("followUp", None)
+                if follow is not None:
+                    self.c.r["followUp"] = follow
+                with um.patch.object(library, "prune_build") as prune:
+                    pruned = ipa.prune_unless_follow_up(self.c, "0100000000000000")
+                self.assertEqual((prune.call_count, pruned), (want, bool(want)))
+        self.c.r.pop("followUp", None)
+
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
         # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
@@ -801,6 +815,17 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
+    def test_catalog_says_whether_keys_are_needed(self):
+        # 剃刀 W10：catalog 每款带 needsKeys，判据只有 library.KEYLESS_FORMATS 一份（前端不再各算一份格式名单）。
+        #   期望手写：NSP 原件 → 要；NUP 容器 / 解包目录（extract）→ 不要；NUP 本体 + NSP 的 DLC → 要
+        self.assertTrue(library.needs_keys([dict(format="nsp")]))
+        self.assertTrue(library.needs_keys([dict()]))   # 旧记录没有 format：按加密原件算（宁可提示导入密钥，不放过）
+        self.assertFalse(library.needs_keys([dict(format="nup"), dict(format="extract")]))
+        self.assertTrue(library.needs_keys([dict(format="nup"), dict(format="nsp")]))
+        game = self.game(packages=[self.package()]); self.catalogue([game])
+        out = library.catalog(self.c)
+        self.assertEqual(out["games"][0]["needsKeys"], library.needs_keys(library.selected_packages(game)))
+
     def test_space_budget_covers_measured_peaks(self):
         # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
         #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
@@ -856,8 +881,7 @@ class JobsTests(unittest.TestCase):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
                 self.assertIsNone(space_rule.direct_check(root, cache, out))
-        self.assertEqual(space_rule.direct_bytes(int(3e9)), library._pack_direct_bytes(int(3e9)))   # 取的就是预检那一份
-        self.assertEqual(space_rule.direct_bytes(int(3e9) - 1), library._pack_direct_bytes(int(3e9) - 1))
+        self.assertIs(library.pack_direct_bytes, space_rule.pack_direct_bytes)   # 预检与开工前复核是同一个函数（剃刀 H11：只在 space_rule 定义一份）
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节

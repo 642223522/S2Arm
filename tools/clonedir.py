@@ -6,8 +6,8 @@ mode 0700; a concurrently hostile process with the same UID is outside this
 boundary. Inside staging, directory/file creation remains exclusive and uses
 no-follow descriptors. Linux publishes the complete absent destination with
 renameat2(RENAME_NOREPLACE); macOS keeps normal clonefile behavior and publishes
-only each EXDEV fallback item with renamex_np(RENAME_EXCL). Unsupported atomic
-publication fails closed. Traversal holds a constant number of descriptors.
+only each EXDEV fallback item with renamex_np(RENAME_EXCL); a volume without
+RENAME_EXCL (exFAT) publishes after an existence check instead. Traversal holds a constant number of descriptors.
 Stale staging cleanup assumes users of a parent share the same PID namespace;
 the parent must not be shared between containers with separate PID namespaces.
 The published Linux snapshot root retains mode 0700, like the staging root.
@@ -49,6 +49,13 @@ def publish_noreplace(source, target):
         raise OSError(errno.ENOSYS, '宿主缺少原子不覆盖重命名') from exc
     if result != 0:
         e = ctypes.get_errno()
+        if platform == 'darwin' and e in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            # exFAT 等外接盘不支持 RENAME_EXCL（实测回 errno 45）：先确认目标不存在再普通改名。
+            #   同 UID 的并发恶意进程本就不在防护边界内（见文件头），这条退路不越出原边界
+            if os.path.lexists(target):
+                raise OSError(errno.EEXIST, os.strerror(errno.EEXIST), target)
+            os.rename(source, target)
+            return
         raise OSError(e, os.strerror(e), target)
 
 

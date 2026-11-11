@@ -692,7 +692,7 @@ def _legacy_ids(c, spec):
 def ensure(c):
     """作业开始前：库还是旧布局就拿执行锁迁移；之后把库建好前退回私有目录写的日志 / 任务记录收进默认位置（每个作业都看一眼，没有就只读一次索引表）"""
     _ensure_layout(c)
-    if (c.library / ".s2arm-library.json").is_file():
+    if (c.library / ".s2arm-library.json").is_file() and c.operation not in ("installCheck", "targetDevice", "locations"):   # 每几秒一次的只读探测不做这些（剃刀 H4）
         adopt_private_logs(c)
         if c.operation != "launch":      # 起局时玩家在等：连后台也不起
             from library import store_meta_background

@@ -2,7 +2,6 @@
 # Copyright 2026 S2Arm contributors
 """Independent Windows environment contracts; fake probes are not device proof."""
 import contextlib
-import ast
 import importlib.util
 import io
 import json
@@ -19,6 +18,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "pack/jobs/winenv.py"
+sys.path.insert(0, str(ROOT / "pack/jobs"))   # 用到真 library / toolchain 的几条（Mac 预检同一份规则）：从仓库根跑时也找得到
 
 
 class FakeProbe:
@@ -66,7 +66,6 @@ class EnvironmentTests(unittest.TestCase):
         original = self.mod._text
         fixtures = {
             self.mod.RUNTIME: "capstone==5.0.7\nlz4==4.4.5\nnumpy==2.4.2\nPillow==12.3.0\n",
-            self.mod.PREFLIGHT: 'def preflight(c):\n    add("Python", sys.version_info >= (3, 11), "minimum")\n',
         }
         override = patch.object(self.mod, "_text", side_effect=lambda name: fixtures.get(name, None)
                                 if name in fixtures else original(name))
@@ -189,12 +188,9 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(self.item(self.report(), "python.lz4")["status"], "error")
 
     def test_minimum_definition_is_read_instead_of_duplicated(self):
-        original = self.mod._text
-        def changed(name):
-            if name == self.mod.PREFLIGHT:
-                return 'def preflight(c):\n    add("Python", sys.version_info >= (3, 99), "minimum")\n'
-            return original(name)
-        with patch.object(self.mod, "_text", side_effect=changed):
+        # 读的是预检那一个常量（toolchain.PYTHON_MINIMUM，剃刀 H11），不另抄：把它改成 3.99，环境检查跟着判不符
+        import toolchain
+        with patch.object(toolchain, "PYTHON_MINIMUM", (3, 99)):
             self.assertEqual(self.item(self.report(), "python")["status"], "mismatch")
 
     def test_timeout_does_not_hide_inventory_or_leak_exception(self):
@@ -807,22 +803,21 @@ class EnvironmentTests(unittest.TestCase):
             self.fail("合法预算合同未产生报告：" + type(exc).__name__)
 
     @staticmethod
-    def library_budget_scope():
-        # Real function bodies, controlled Context/disk; not a Mac host run.
-        source = (ROOT / "pack/jobs/library.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        names = {"selected_packages", "_pack_input_bytes",
-                 "_pack_direct_bytes", "pack_need_bytes", "space_budget", "_gb",
-                 # 出包实测账（11-07）：夹具游戏库里没有 space-usage.tsv，预算走经验规则这一档
-                 "_space_target"}
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-        nodes += [n for n in tree.body if isinstance(n, ast.Assign) and any(
-            isinstance(x, ast.Name) and x.id in ("PACK_SMALL_BYTES", "SPACE_LEDGER", "SPACE_LEDGER_FIELDS") for t in n.targets for x in ast.walk(t))]
-        scope = {"os": os, "Path": Path, "SPACE_UNKNOWN": [], "_volume": lambda _: "fixture-volume"}
-        exec(compile(ast.Module(body=nodes, type_ignores=[]), "library.py budget fixture", "exec"), scope)
-        scope["_unpacked_on_disk"] = lambda c, game: False
-        scope["_pack_paths"] = lambda c, game: (Path(c.library), Path(c.library))   # 存放位置与工具缓存同在夹具游戏库（同卷：合成一项）
-        return scope
+    def library_budget(context, game, need=None):
+        """Mac 预检的真函数（library.space_budget），只把游戏库位置 / 盘名 / 解包是否在盘上换成夹具（剃刀 H11：原先 AST 截 library.py 片段 exec）"""
+        import library
+        stubs = [patch.object(library, "_unpacked_on_disk", lambda c, g: False),
+                 patch.object(library, "_pack_paths", lambda c, g: (Path(c.library), Path(c.library))),   # 存放位置与工具缓存同在夹具游戏库（同卷：合成一项）
+                 patch.object(library, "_volume", lambda _: "fixture-volume")]
+        if need:
+            stubs.append(patch.object(library, "pack_need_bytes", need))
+        for stub in stubs:
+            stub.start()
+        try:
+            return library.space_budget(context, game)
+        finally:
+            for stub in stubs:
+                stub.stop()
 
     def test_budget_direct_catalog_matches_handwritten_bytes(self):
         fields = self.budget_catalog()
@@ -832,29 +827,26 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(c["detected"]["requiredFreeBytes"], 49_240_000_000)   # + 单一 IMG 10.7 GB（Windows 只出 iPhone 包，11-11）
         self.assertTrue(c["ok"])
         self.assertEqual(self.catalog_path.read_bytes(), before)
-        self.assertIn("library.py", c["source"])
+        self.assertIn("space_rule.py", c["source"])
 
     def test_budget_mac_function_body_keeps_direct_result(self):
         self.budget_catalog()
-        scope = self.library_budget_scope()
         context = types.SimpleNamespace(library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40_000_000_000)):
-            result = scope["space_budget"](context, self.budget_game)
+            result = self.library_budget(context, self.budget_game)
         self.assertEqual(result["volumes"][0]["needBytes"], 26_770_000_000)   # Mac：解包一份 × 1.1 + 15 GB（单文件镜像不再存进库，#329）
         self.assertEqual(result["gameBytes"], 10_700_000_000)
         self.assertIn("直连着色器上限", result["volumes"][0]["note"])
 
     def test_budget_mac_adapter_calls_shared_pure_function(self):
         self.budget_catalog()
-        scope = self.library_budget_scope()
         calls = []
         def shared(packages, **kw):
             calls.append(packages)
             return 12345
-        scope["pack_need_bytes"] = shared
         context = types.SimpleNamespace(library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40000)):
-            result = scope["space_budget"](context, self.budget_game)
+            result = self.library_budget(context, self.budget_game, need=shared)
         self.assertEqual(result["volumes"][0]["needBytes"], 12345)
         self.assertEqual(len(calls), 1)
 
@@ -914,31 +906,18 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(self.item(self.budget_report(**fields), "disk")["status"], "error")
 
     def test_budget_windows_reads_changed_shared_rule_not_second_formula(self):
+        # Windows 环境检查用的就是 space_rule 那一份规则（剃刀 H11）：把它的直连上限改成 22 GB，结果跟着变
         fields = self.budget_catalog()
-        original = self.mod._text
-        def changed(name):
-            text = original(name)
-            return text.replace("int(15e9)", "int(22e9)") if name == "pack/jobs/library.py" else text
-        with patch.object(self.mod, "_text", side_effect=changed):
+        with patch.object(self.mod._space_rule(), "DIRECT_LARGE_BYTES", int(22e9)):
             c = self.item(self.budget_report(**fields), "disk")
         self.assertEqual(c["detected"]["requiredFreeBytes"], 56_240_000_000)   # 10.7 GB × 1.1 × 2 + 22 GB + 单一 IMG 10.7 GB，独立手算
-
-    def test_budget_missing_shared_function_is_error_no_fallback(self):
-        fields = self.budget_catalog()
-        original = self.mod._text
-        def missing(name):
-            text = original(name)
-            return text.replace("def pack_need_bytes(", "def absent_budget(") if name == "pack/jobs/library.py" else text
-        with patch.object(self.mod, "_text", side_effect=missing):
-            c = self.item(self.budget_report(**fields), "disk")
-        self.assertEqual(c["status"], "error")
 
     def test_budget_pure_function_needs_no_context_or_mac_import(self):
         self.budget_catalog()
         before = set(sys.modules)
-        rules = self.mod._budget_rules()
-        selected = rules["selected_packages"](self.budget_game)
-        self.assertEqual(rules["pack_need_bytes"](selected, windows=True, image=True), 49_240_000_000)
+        rules = self.mod._space_rule()
+        selected = rules.selected_packages(self.budget_game)
+        self.assertEqual(rules.pack_need_bytes(selected, windows=True, image=True), 49_240_000_000)
         self.assertFalse({"core", "fcntl", "library"} & (set(sys.modules) - before))
 
     def test_budget_native_cli_valid_catalog_no_mac_context_import(self):

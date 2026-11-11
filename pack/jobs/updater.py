@@ -165,11 +165,12 @@ def latest_cache(platform, current):
     return Path(tempfile.gettempdir()) / f"s2arm-update-latest-{key}.json"
 
 
-def latest(platform, current):
-    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。"""
+def latest(platform, current, fresh=False):
+    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。fresh=True（真要下载时，prepare）不读缓存、现查，结果写回缓存：
+    启动时的「有没有新版」可以用缓存省限流额度，真下载必须是此刻的发布（剃刀 H18：热修发出后 15 分钟内查不到、查完到下载之间撤版会报 update_none）"""
     cache = latest_cache(platform, current)
     try:
-        if time.time() - cache.stat().st_mtime < LATEST_TTL:
+        if not fresh and time.time() - cache.stat().st_mtime < LATEST_TTL:
             info = json.loads(cache.read_text(encoding="utf-8"))
             if isinstance(info, dict) and isinstance(info.get("available"), bool):
                 return info
@@ -349,6 +350,18 @@ def require_free(path, need):
         raise UpdateError("update_disk_full", "磁盘空间不够下载和解开新版，已停止，旧版没有变化。")
 
 
+def require_unpack_space(updates, install, unpacked, package_size):
+    """解开前按解开后的确切大小要空间（剃刀 H17：原先下载前就要「更新目录 4 倍包大小、安装盘 3 倍」，盘紧的玩家被拒）。
+    解开要 unpacked（包还在、已占着）；替换时 swap 把解开的那份拷到安装目录旁（再 unpacked），这时包已删。
+    两处在同一块盘上：峰值 = max(unpacked, 2 × unpacked − 包大小)；不同盘：各要 unpacked"""
+    parent = Path(install).resolve().parent
+    if os.stat(updates).st_dev == os.stat(parent).st_dev:
+        require_free(updates, max(unpacked, 2 * unpacked - package_size))
+    else:
+        require_free(updates, unpacked)
+        require_free(parent, unpacked)
+
+
 def sha256(path):
     import hashlib
     digest = hashlib.sha256()
@@ -401,13 +414,15 @@ def download(url, target, size):
     retry_rename(part, target, replace=True)
 
 
-def extract_windows(package, dest):
+def extract_windows(package, dest, before_unpack=None):
     import zipfile
     with zipfile.ZipFile(package) as archive:
         root = dest.resolve()
         for name in archive.namelist():
             if not inside(root / name, root):
                 raise UpdateError("update_bad_package", "安装包内容不正常，已停止，旧版没有变化。")
+        if before_unpack:
+            before_unpack(sum(i.file_size for i in archive.infolist()))   # 解开后的确切大小：ZIP 目录里记着
         archive.extractall(dest)
     found = next((p.parent for p in sorted(dest.rglob("S2Arm.exe"), key=lambda p: len(p.parts))), None)
     if not found or not (found / "Engine").is_dir() or not (found / "Runtime/python/python.exe").is_file():
@@ -415,7 +430,7 @@ def extract_windows(package, dest):
     return found
 
 
-def extract_mac(package, dest):
+def extract_mac(package, dest, before_unpack=None):
     # 挂载点放系统临时目录：放在数据目录下时，数据目录在外置盘上 hdiutil 会报 Permission denied
     mount = Path(tempfile.mkdtemp(prefix="s2arm-update-mount-"))
     attached = subprocess.run(["/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", str(mount), str(package)], capture_output=True, timeout=300)
@@ -427,6 +442,8 @@ def extract_mac(package, dest):
         if not app.is_dir():
             raise UpdateError("update_bad_package", "安装包不完整，已停止，旧版没有变化。")
         target = dest / "S2Arm.app"
+        if before_unpack:
+            before_unpack(tree_size(app))   # 解开后的确切大小：挂载后量 App 本身
         subprocess.run(["/usr/bin/ditto", str(app), str(target)], check=True, capture_output=True, timeout=1800)
     finally:
         subprocess.run(["/usr/bin/hdiutil", "detach", "-force", str(mount)], capture_output=True, timeout=120)
@@ -557,7 +574,7 @@ def prepare(platform, current, private, install, protect):
     updates = Path(private) / "updates"
     updates.mkdir(parents=True, exist_ok=True)
     check_paths(install, protect)
-    info = latest(platform, current)
+    info = latest(platform, current, fresh=True)
     if not info["available"]:
         raise UpdateError("update_none", "已经是最新版本。")
     work = updates / info["version"]
@@ -580,8 +597,7 @@ def prepare(platform, current, private, install, protect):
     if staged is None:
         via = "full"
         size = info["size"]
-        require_free(updates, size * 4)
-        require_free(Path(install).resolve().parent, size * 3)
+        require_free(updates, size)   # 先只要下载这一份；解开要多少在解开前按确切大小核（require_unpack_space）
         package = work / info["assetName"]
         emit(state="downloading", done=0, total=size)
         download(info["asset"], package, size)
@@ -592,7 +608,8 @@ def prepare(platform, current, private, install, protect):
         emit(state="unpacking")
         unpack = work / "unpack"
         unpack.mkdir()
-        staged = extract_mac(package, unpack) if platform == "mac" else extract_windows(package, unpack)
+        room = lambda unpacked: require_unpack_space(updates, install, unpacked, size)
+        staged = extract_mac(package, unpack, room) if platform == "mac" else extract_windows(package, unpack, room)
         package.unlink()
     runner = updates / "runner"
     python = runner_python(platform, staged, runner)
