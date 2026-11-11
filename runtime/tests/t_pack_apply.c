@@ -433,6 +433,17 @@ int main(void) {
       CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 2 的 IMG");
       CHECK(s2a_img_scan(D4) == 0 && !access(f4, F_OK) && !strcmp(s2a_img_scan_code(), "ios_install_img_format"),
             "格式号 2：不挪、给码 ios_install_img_format（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure()); }
+    // iOS 装机剃刀 #27 / #38：闸门与游戏库同一条快判。夹具：.applied = 清单、程序描述在、.incoming 里还留着一个写完的包（推送端盖残批的空包）。
+    //   期望 s2a_import_state 判就绪 0（旧闸门先看 .incoming 判待导入 1，库却说能玩）。
+    // 剃刀 #29：有 game.img、清单被推送开头置空、index.tsv 里的文件都在 → 期望不判就绪（旧代码清单读不出时当「不用解」→ 就绪 0）
+    { char D[2100], c2[4096]; snprintf(D, sizeof D, "%s/gate_quick", T);
+      snprintf(c2, sizeof c2, "mkdir -p '%s/资源包/.incoming' '%s/资源包/exefs' && cd '%s/资源包' && printf x > exefs/main.npdm && printf 'exefs/main.npdm\t1\tx\n' > index.tsv && "
+          "printf '{\"version\":2,\"index_sha256\":\"cc33\"}' > manifest.json && printf cc33 > .applied && head -c 1024 /dev/zero > .incoming/9_000.tar", D, D, D);
+      CHECK(sh(c2) == 0, "造闸门快判夹具失败");
+      int st1 = s2a_import_state(D); CHECK(st1 == 0, "剃刀 #27：.applied = 清单、程序描述在、留着一个写完的包 → 闸门判就绪 0（实际 %d）", st1);
+      snprintf(c2, sizeof c2, "cd '%s/资源包' && rm -f .incoming/*.tar .applied && printf img > game.img && printf 'exefs/main.npdm\t1\tx\ngame.img\t3\tx\n' > index.tsv && printf '' > manifest.json", D);
+      CHECK(sh(c2) == 0, "造 IMG 清单置空夹具失败");
+      int st2 = s2a_import_state(D); CHECK(st2 != 0, "剃刀 #29：有 game.img、清单被置空 → 闸门不判就绪（实际 %d）", st2); }
     // #540：游戏目录（多款容器 Documents/games/<游戏号>/）根本不在 → unpack.log 也建不了；失败原因仍要填上，并说明日志建不了。
     //   先跑一次成功的同名目录，核成功后原因清空（不留上一次的失败原因）
     { char gone[1100]; snprintf(gone, sizeof gone, "%s/games/0100000000000000", T); struct stat gs;

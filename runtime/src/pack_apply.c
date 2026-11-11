@@ -158,9 +158,10 @@ static int img_extract(const char *root, unsigned *nf, uint64_t *nb) {
 }
 // 资源包根有 game.img、还没按这份清单应用过（.applied ≠ manifest 的 index_sha256）→ 要先解开（导入状态判「待导入」，游戏库 / 闸门照常触发 s2a_pack_apply）
 static int manifest_sha(const char *path, char *out, size_t n);
+//   清单读不出（推送开头置空了、还没写回）按「要解」：原先当「不用解」，闸门判就绪放行半截镜像（iOS 装机剃刀 #29）；在不在传由闸门另判（s2a_import_transferring）
 static int img_needs_apply(const char *root) {
     char p[2200], want[200], got[200] = ""; struct stat st; snprintf(p, sizeof p, "%s/game.img", root); if (stat(p, &st)) return 0;
-    snprintf(p, sizeof p, "%s/manifest.json", root); if (manifest_sha(p, want, sizeof want)) return 0;
+    snprintf(p, sizeof p, "%s/manifest.json", root); if (manifest_sha(p, want, sizeof want)) return 1;
     snprintf(p, sizeof p, "%s/.applied", root); FILE *f = fopen(p, "r"); if (f) { size_t k = fread(got, 1, sizeof got - 1, f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; fclose(f); }
     return strcmp(got, want) != 0;
 }
@@ -344,6 +345,7 @@ static int pack_usable(const char *root) {
     if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar") && strncmp(e->d_name, "._", 2)) n++; closedir(d); }
     return n > 0;
 }
+static int applied_ready(const char *root);
 int s2a_import_state(const char *docs) {
     char root[2048]; struct stat st; snprintf(root, sizeof root, "%s/资源包", docs);
     int have = !stat(root, &st) && S_ISDIR(st.st_mode);
@@ -368,6 +370,10 @@ int s2a_import_state(const char *docs) {
         if (rename(from, root)) { LOG("资源导入：把「%s」改名成「资源包」失败：%s", hit, strerror(errno)); return S2A_IMPORT_NONE; }
         LOG("资源导入：「%s」改名成「资源包」", hit);
     }
+    // 先用游戏库那条快判（applied_ready）：解开时核对过每个文件、写下的 .applied 等于当前清单、程序描述在 = 就绪，不再逐文件核。
+    //   原先闸门先看 .incoming、库先看 .applied，顺序相反：机上留一个包且清单没变时库说能玩、闸门判待导入 + 在传，等到「停住了」进不去；
+    //   每次起局还要对同一目录逐文件核一遍（Play 时主线程 s2a_import_needs_ui 再核一遍）。逐文件核只留在没有 .applied 的路径与游戏 Break 时（iOS 装机剃刀 #27 / #38 / #39）
+    if (applied_ready(root)) return S2A_IMPORT_READY;
     char inc[2100]; snprintf(inc, sizeof inc, "%s/.incoming", root); int ntar = 0;
     // 「._」开头 = 访达从非 APFS 盘拷来的 AppleDouble 附属文件，不是包（s2a_pack_apply 选包同样跳过）
     DIR *d = opendir(inc); if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar") && strncmp(e->d_name, "._", 2)) ntar++; closedir(d); }
