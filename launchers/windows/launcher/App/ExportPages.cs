@@ -238,10 +238,12 @@ public sealed partial class EnvironmentWindow
         ticker.Tick += (_, _) =>
         {
             if (page is "progress" or "batch" && packRunning) RefreshLive();   // 计时 / 进度 / 当前阶段只刷新各自的格子（清单页也画正在出的阶段），不整页重画
-            // The checklist changes when the player plugs a phone in or installs Impactor: re-ask every 5 s while visible and idle.
-            if (page == "install" && !installBusy && !installChecking && DateTime.UtcNow - lastCheck > TimeSpan.FromSeconds(5))
+            // The checklist changes when the player plugs a phone in or installs Impactor: re-ask every 5 s while visible, idle and in front
+            //   （剃刀 W13：窗口不在前台就不问，原先后台也每 5 秒起作业；切回来立刻问一次，见下面 Activated）
+            if (IsActive && page == "install" && !installBusy && !installChecking && DateTime.UtcNow - lastCheck > TimeSpan.FromSeconds(5))
                 _ = CheckInstallAsync();
         };
+        Activated += (_, _) => { if (page == "install" && !installBusy && !installChecking) _ = CheckInstallAsync(); };
         ticker.Start();
         Closed += (_, _) => ticker.Stop();
     }
