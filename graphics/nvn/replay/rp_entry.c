@@ -13,6 +13,7 @@ void rp_res_tex_gone(uint64_t serial);   // rp_res.c
 void rp_res_reset(void);
 void rp_buf_pool_gone(const void *mem);   // rp_buf.c
 void rp_buf_reset(void);
+void rp_shader_reset(void);            // 着色器来源（核心外）
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -124,7 +125,7 @@ void nvn_be_ub_present(double iv_ms) { (void)iv_ms; }
 void nvn_be_begin_session(void) {}
 int nvn_be_request_stop(void) { return 0; }
 int nvn_be_drain_session(void) { nvn_be_finish(); return 0; }
-int nvn_be_shutdown_session(void) { rp_pass_reset(); rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }   // 上屏面由平台件摘（rp_present_set_surface）
+int nvn_be_shutdown_session(void) { rp_draw_reset(); rp_shader_reset(); rp_pass_reset(); rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }   // 上屏面由平台件摘（rp_present_set_surface）
 
 // ---------- Metal 侧诊断读数：新层没有对应账本，报 0 ----------
 double nvn_be_gpu_ms(uint64_t f) { (void)f; return 0; }

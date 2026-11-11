@@ -65,9 +65,15 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             return 1; }
         case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: { int tex = op == OP_SET_TEX_POOL, b = nvn_dpool_base(((const p_set_pool *)a)->pool, tex);
             if (b != (tex ? rp_S.tex_base : rp_S.samp_base)) { if (tex) rp_S.tex_base = b; else rp_S.samp_base = b; args_dirty_all(); }
+            { const dpool_t *dp = ((const p_set_pool *)a)->pool; int n = dp ? dp->n : 0;
+              if (tex) { if (rp_S.tex_pool_n != n) { rp_S.tex_pool_n = n; rp_pso_dirty = 1; } } else if (rp_S.samp_pool_n != n) { rp_S.samp_pool_n = n; rp_pso_dirty = 1; } }   // 池容量是着色器编译事实
             return 1; }
         case OP_BIND_PROGRAM: { p_bind_program t; const p_bind_program *bp = bind_program_rec(a, size, &t);
             const prog_t *p = prog_is(bp->prog, bp->snap.serial) ? bp->prog : NULL; uint64_t ser = bp->prog ? bp->snap.serial : 0;
+            // 各阶段的着色器键：记录里的 keys 按程序的着色器数组序，stage_of 给出每一项是哪个 NVN 阶段
+            for (int i = 0; i < 6; i++) { unsigned st = bp->stage_of[i]; if (st > 5 || !(bp->stages >> st & 1)) continue;
+                if (bp->kok >> i & 1) { memcpy(rp_S.skey[st], bp->keys[i], 8); rp_S.skey_ok |= (uint8_t)(1u << st); } else rp_S.skey_ok &= (uint8_t)~(1u << st); }
+            for (int st = 0; st < 6; st++) if ((bp->stages >> st & 1) && !ser) rp_S.skey_ok &= (uint8_t)~(1u << st);   // 解绑
             if (bp->stages & 0x20) { if (rp_S.cser != ser) args_dirty_all(); rp_S.cprog = p; rp_S.cser = ser; }
             if (bp->stages & 0x1f) {
                 int ch = 0;

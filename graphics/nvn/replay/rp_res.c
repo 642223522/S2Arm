@@ -262,6 +262,15 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out) {
     return out;
 }
 
+// 贴图号 → 登记时的贴图描述快照（着色器编译事实用；不建图）。1 = 有
+int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v) {
+    int ok = 0;
+    pthread_mutex_lock(&g_rmu);
+    if (id >= 0 && id < g_ntreg && g_treg[id].ok) { if (t) *t = g_treg[id].t; if (v) *v = g_treg[id].v; if (has_v) *has_v = g_treg[id].has_v; ok = 1; }
+    pthread_mutex_unlock(&g_rmu);
+    return ok;
+}
+
 nvn_gpu_samp rp_samp_by_id(int id) {
     pthread_mutex_lock(&g_rmu);
     nvn_gpu_samp s = NULL;

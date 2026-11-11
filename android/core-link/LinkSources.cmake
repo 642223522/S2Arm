@@ -84,13 +84,15 @@ function(s2a_android_nvk_sources output)
         # 着色器链里与旧回放无关的部分
         native/direct/compiler_bind.c native/direct/source_store.c native/direct/diag.c
         native/direct/compile_worker.c native/direct/program_cache.c native/direct/offline_library.c
+        native/direct/compile_request.c native/direct/input_identity.c native/direct/texture_facts.c
+        native/nvn/nvn_vk_program_result.c native/gfx_plat/nvk_shader.c
         # nvn_gpu_* 的 Vulkan 后端与它的零件
         native/nvn/backend_vulkan.c native/nvn/nvn_vk_format.c native/nvn/nvn_vk_bcdec.c
         ../graphics/nvn/gfx/nvn/nvn_fmt_expand.c
         # 回放核心（安卓 / 鸿蒙共用）
         ../graphics/nvn/replay/rp_exec.c ../graphics/nvn/replay/rp_state.c ../graphics/nvn/replay/rp_entry.c
         ../graphics/nvn/replay/rp_res.c ../graphics/nvn/replay/rp_buf.c ../graphics/nvn/replay/rp_pass.c
-        ../graphics/nvn/replay/rp_present.c
+        ../graphics/nvn/replay/rp_present.c ../graphics/nvn/replay/rp_draw.c
         ../graphics/nvn/replay/nvn_unimpl.c
         # 安卓平台件
         native/gfx_plat/nvk_session.c native/gfx_plat/plat_nvn.c native/gfx_plat/plat_nvn_vk.c native/gfx_plat/legacy_names.c

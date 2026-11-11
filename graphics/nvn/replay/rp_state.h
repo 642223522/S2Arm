@@ -10,6 +10,7 @@ struct rp_state {
     const prog_t *bst[5];      // 各图形阶段绑定的程序（NVN 阶段位 1 顶点 2 片元 4 几何 8 / 16 细分）
     uint64_t bser[5];          // 绑定当时的序号：之后对象被 Finalize 或复用时按序号取（见 rp_state.c stage_bind）
     const prog_t *cprog; uint64_t cser;   // 计算阶段单独一份绑定
+    uint8_t skey[6][8]; uint8_t skey_ok;   // 各 NVN 阶段（0 顶点 … 5 计算）绑定当时的着色器键；位 st = 该阶段的键有效
     p_prim_restart restart;
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
     va_st attr[16]; int nattr; vs_st stream[16]; int nstream;
@@ -21,6 +22,7 @@ struct rp_state {
     float blend_color[4];
     p_tf_bind tf[4]; uint64_t tf_off[4]; int tf_on, rast_discard; uint64_t tf_ctl;
     int tex_base, samp_base;   // 当前绑定的贴图池 / 采样器池在宿主表里的起点
+    int tex_pool_n, samp_pool_n;   // 当前绑定的两个描述符池的容量（0 = 没绑过）
     float alpha_ref;
     int patch_size;
     uint8_t push[2][NVN2_PUSH_SLOTS][NVN2_PUSH_BYTES];

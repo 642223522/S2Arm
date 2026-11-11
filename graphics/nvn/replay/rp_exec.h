@@ -44,3 +44,8 @@ const p_set_rt *rp_pass_target(void); // 当前目标（没设过 NULL）
 void rp_present_set_surface(nvn_gpu_surface s, int display_hz);   // 平台件：窗口挂上（s 非空）/ 摘下（NULL）
 void rp_present_stats(uint64_t *shown, uint64_t *dropped);
 void rp_present_reset(void);
+
+// ---------- 绘制（rp_draw.c）----------
+void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
+void rp_draw_stats(uint64_t *draws, uint64_t *skips);
+void rp_draw_reset(void);

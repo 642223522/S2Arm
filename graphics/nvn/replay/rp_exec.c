@@ -116,6 +116,8 @@ void nvn_be_exec(const uint8_t *p) {
                 if (m & NVN_EV_WAIT) nvn_unimpl("op", "OP_SIGNAL_EVENT+WAIT", p);   // GPU 侧等事件：跨队列顺序接上时做
                 else post_event(val, m, v);
                 break; }
+            case OP_DRAW: { p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); break; }
+            case OP_DRAW_IDX: { p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); break; }
             case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); break; }
             case OP_CLEAR_COLOR: rp_pass_clear_color(g_cmd, a, p); break;
             case OP_CLEAR_DS: rp_pass_clear_ds(g_cmd, a, p); break;
