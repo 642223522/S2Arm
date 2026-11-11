@@ -59,7 +59,7 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
 }
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
-enum { HIST_N = 4096, HIST_TEX = 12, DUMP_MAX = 48 };
+enum { HIST_N = 32768, HIST_TEX = 12, DUMP_MAX = 48 };
 static struct { uint64_t target, tex[HIST_TEX]; } g_hist[HIST_N]; static uint32_t g_hist_n;
 static void hist_note(uint64_t target, const uint64_t *tex, int ntex) {
     uint32_t i = g_hist_n++ % HIST_N; g_hist[i].target = target; memset(g_hist[i].tex, 0, sizeof g_hist[i].tex);
