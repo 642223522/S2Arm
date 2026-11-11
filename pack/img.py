@@ -20,6 +20,8 @@ import argparse, os, shlex, struct, subprocess, sys
 # RomFS 目录遍历一律经 graphics/nvn/tools/romfs_list.py（tools/romfs_walk_lint.py 守卫）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools'))
 import romfs_list  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
+from progress import Ticker  # noqa: E402
 
 MAGIC, FORMAT, PAGE = b'S2AIMG01', 1, 16384
 HDR = struct.Struct('<8sII16s64s5Q')
@@ -64,23 +66,34 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print):
     try:
         with open(part, 'wb') as f: f.truncate(PAGE)
         romfs_off = romfs_len = 0
-        if romfs_dir:
-            if not romfs_index: raise Red('写 RomFS 段要 romfs_index 命令（services/romfs_index）')
-            romfs_off = PAGE
-            r = subprocess.run([*shlex.split(romfs_index), '--std', romfs_dir, '-', part, str(romfs_off)], capture_output=True, text=True)
-            if r.returncode: raise Red(f'写标准 RomFS 段失败：{(r.stderr or r.stdout).strip()[-300:]}')
-            romfs_len = int(r.stdout.strip().splitlines()[-1])
-        pos = up(romfs_off + romfs_len) if romfs_dir else PAGE
-        entries = []
+        names = []
         if romfs_dir:   # romfs.list：同 romfs_index 的文件集合（跳过 macOS 垃圾 .DS_Store / ._*，同 RomFsIndex.IsHostJunk），按字节序
             names = sorted((os.path.relpath(os.path.join(d, n), romfs_dir).replace(os.sep, '/') for d, _, ns in romfs_list.walk(romfs_dir) for n in ns
                             if n != '.DS_Store' and not n.startswith('._')), key=lambda x: x.encode('utf-8'))
+        # 字节进度（S2A_PROGRESS，tools/progress.py）：总数 = RomFS 各文件 + 其余文件的字节（RomFS 目录表几 MB 不计，报满前封顶）
+        rom_bytes = sum(os.path.getsize(os.path.join(romfs_dir, n)) for n in names)
+        tk = Ticker('写单一 IMG', rom_bytes + sum(os.path.getsize(src) for _, src in others))
+        if romfs_dir:
+            if not romfs_index: raise Red('写 RomFS 段要 romfs_index 命令（services/romfs_index）')
+            romfs_off = PAGE
+            # romfs_index 是另一个进程：每秒看 .part 实际分配的字节（st_blocks，与写入顺序无关）当已写量
+            p = subprocess.Popen([*shlex.split(romfs_index), '--std', romfs_dir, '-', part, str(romfs_off)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            while True:
+                try: p.wait(timeout=1); break
+                except subprocess.TimeoutExpired: pass
+                tk.step(max(0, min(os.stat(part).st_blocks * 512 - PAGE, rom_bytes - 1) - tk.done))
+            so, se = p.communicate()
+            if p.returncode: raise Red(f'写标准 RomFS 段失败：{(se or so).strip()[-300:]}')
+            romfs_len = int(so.strip().splitlines()[-1])
             lst = out + '.romfs.list'; open(lst, 'w', encoding='utf-8', newline='\n').write(''.join(n + '\n' for n in names)); others = [*others, ('romfs.list', lst)]
+            tk.step(max(0, rom_bytes - tk.done))
+        pos = up(romfs_off + romfs_len) if romfs_dir else PAGE
+        entries = []
         with open(part, 'r+b') as f:
             for rel, src in sorted(others):
                 size = os.path.getsize(src); f.seek(pos)
                 with open(src, 'rb') as s:
-                    while b := s.read(1 << 22): f.write(b)
+                    while b := s.read(1 << 22): f.write(b); tk.step(len(b))
                 entries.append((rel, pos, size)); pos = up(pos + size)
             toc = toc_bytes(entries); toc_off = pos; f.seek(toc_off); f.write(toc)
             total = toc_off + len(toc)

@@ -408,11 +408,12 @@ def to_img(c, gid, root, pack_dir):
     """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
     多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
-    r = subprocess.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()],
-                       cwd=c.engine, env=c.env(), capture_output=True, text=True)
-    if r.returncode:
-        tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
-        raise Failure("写单一 IMG（game.img）失败：" + (tail[-1] if tail else f"退出 {r.returncode}"), code="package_failed")
+    log = c.logs / "img.log"
+    try:   # 走 c.run：它每秒读 S2A_PROGRESS，img.py 按已写字节报进度，出包页这一步有进度条（几十 GB 要写一两分钟）
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()], log, c.env(), cwd=c.engine)
+    except Failure as e:
+        from errors import tool_reason
+        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
 
 def current_shell_id(c):
