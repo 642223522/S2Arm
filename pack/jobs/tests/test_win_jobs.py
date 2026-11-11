@@ -357,7 +357,7 @@ class WinInstall(unittest.TestCase):
         self.assertEqual(res["unpackPending"], "资源包已传完，还差最后一步：打开 App")   # 结果带还差的一步（11-09 #336）
 
     def test_device_choice_errors(self):
-        """装到哪台由玩家选、作业照办（jhz 11-11）：没带设备号 → device_required（哪怕只连着一台也不自己挑）；
+        """装到哪台由玩家选、作业照办（维护者 11-11）：没带设备号 → device_required（哪怕只连着一台也不自己挑）；
         带了但那台不在 → device_not_connected，说的是那台（编号末尾），不换装旁边连着的另一台"""
         for devs in ([("U1", "USB", 3), ("U2", "USB", 4)], [("U1", "USB", 3)], []):
             with self.subTest(devs=devs), self.assertRaises(core.Failure) as e:

@@ -604,7 +604,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(link["stage"], "prepare"); self.assertIn("开发者服务", link["problem"])
 
     def test_link_only_the_chosen_device(self):
-        """装到哪台由玩家选、作业照办（jhz 11-11 玩家实报：续签时选的 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）：
+        """装到哪台由玩家选、作业照办（维护者 11-11 玩家实报：续签时选的 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）：
         选的那台在线（有线或同网）就用它；配对过但不在线 → 说「iPhone「名字」不在线」；没见过 → 没找到；都不换装别的设备"""
         ipad = self._p(name="小平板", ident="D2", transport="localNetwork", tunnel="connected", udid="PAD-UDID")
         ipad["hardwareProperties"]["platform"] = "iPadOS"
@@ -1288,7 +1288,7 @@ class PhoneGamesTruthTests(unittest.TestCase):
         self.assertEqual(e.exception.code, "device_locked")
         # 上屏说人话：说是哪台、插线或同一 Wi-Fi；工具原文（含设备号，脱敏后是「[DEVICE_ID]」占位符）只进诊断（11-11 玩家实报）
         ph = self.ph(missing=False); ph.info = dict(deviceKind="iPhone", deviceName="我的手机")
-        err2 = self.client([], set(), ls_error="找不到设备 00008150-001E60991A82401C：device not found")
+        err2 = self.client([], set(), ls_error="找不到设备 00008150-FAKEDEVICE：device not found")
         with um.patch.object(install, "devpush_client", err2), self.assertRaises(Failure) as e:
             install.phone_games(self.c, ph)
         self.assertIn("iPhone「我的手机」", str(e.exception)); self.assertIn("Wi-Fi", str(e.exception))
