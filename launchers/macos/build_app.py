@@ -59,8 +59,12 @@ def release_identity(engine_json):
         source = json.loads(engine_json.read_text()).get("source", "")
     except (OSError, ValueError):
         source = ""
+    # 顶栏版本号（11-11 维护者：玩家截图里要看得出是哪一版）：HEAD 正好是发版 tag 且没改动 = 正式版「v0.3.0」；
+    #   否则是开发版「v<最近 tag>-dev+<短提交号>」。发版流程先在构建树上打 tag 再构建（release.sh），所以正式包落在 tag 上。同 Windows S2Arm.csproj
+    release = not dirty and re.fullmatch(r"v?" + re.escape(short_version), git("describe", "--tags", "--exact-match", "HEAD"))
+    display = f"v{short_version}" if release else f"v{short_version}-dev+{commit[:7]}"
     return dict(CFBundleShortVersionString=short_version, CFBundleVersion=build,
-                S2ABuildID=f"{commit}{dirty}-{source[:8]}")
+                S2ABuildID=f"{commit}{dirty}-{source[:8]}", S2ADisplayVersion=display)
 
 
 def bundle_shell(engine_json, dest, env):

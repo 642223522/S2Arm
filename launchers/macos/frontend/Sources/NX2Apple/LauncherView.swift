@@ -121,9 +121,18 @@ struct LauncherView: View {
         }
     }
 
+    static var displayVersion: String {
+        let info = Bundle.main.infoDictionary
+        if let shown = info?["S2ADisplayVersion"] as? String, !shown.isEmpty { return shown }
+        return (info?["CFBundleShortVersionString"] as? String).map { "v" + $0 + "-dev" } ?? "dev"   // swift run 等不经 build_app 的开发构建
+    }
+
     private var topBar: some View {
         HStack(spacing: 12) {
             Text(brand).font(.manrope(22, .bold)).tracking(-0.6).lineLimit(1).fixedSize()
+            // 版本号（11-11 维护者：玩家截图时我们一眼看出是哪一版）：正式版 v0.3.0，开发版 v0.2.9-dev+短提交号（build_app.py 写进 Info.plist）
+            Text(verbatim: Self.displayVersion).font(.manrope(12.5, .semibold)).monospacedDigit().foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize().textSelection(.enabled).accessibilityIdentifier("topbar.version")
             Spacer()
         }
         .padding(.leading, 90).padding(.trailing, 24)   // the window's traffic lights sit in the transparent title bar

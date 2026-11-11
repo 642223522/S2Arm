@@ -107,6 +107,9 @@ public sealed partial class EnvironmentWindow : Window
         foreach (var (slot, build) in liveSlots) Fill(slot, build());
     }
 
+    private static readonly string DisplayVersion = "v" + (typeof(EnvironmentWindow).Assembly
+        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.1.0");
+
     private string T(string key) => text.Get(key, language);
     private readonly BackendText backend;
     /// <summary>作业层来的中文原句（报错、阶段、检查项、进度说明）在英文界面下的显示；T() 的文案本来就是英文，原样通过。#361</summary>
@@ -146,7 +149,11 @@ public sealed partial class EnvironmentWindow : Window
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var brand = new TextBlock { Text = "S2Arm × NX2Apple", FontSize = 22, FontWeight = FontWeight.SemiBold,
             Foreground = Ink, VerticalAlignment = VerticalAlignment.Center };
-        header.Children.Add(brand);
+        // 版本号（11-11 维护者：玩家截图时我们一眼看出是哪一版）：正式版 v0.3.0，开发版 v0.2.9-dev+短提交号（S2Arm.csproj 构建时算好）
+        var versionLabel = new TextBlock { Text = DisplayVersion, FontSize = 12.5, FontWeight = FontWeight.SemiBold, Foreground = Brush.Parse("#8C8A85"),
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 4, 0, 0) };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(versionLabel, "topbar.version");
+        header.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { brand, versionLabel } });
 
         var rightBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10,
             VerticalAlignment = VerticalAlignment.Center };

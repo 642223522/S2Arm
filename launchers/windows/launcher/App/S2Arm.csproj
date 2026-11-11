@@ -19,13 +19,27 @@
     <Exec Condition="'$(S2ArmVersion)' == ''" Command="git describe --tags --abbrev=0" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmTag" />
     </Exec>
+    <!-- 顶栏版本号（11-11 维护者，同 Mac build_app.py）：HEAD 正好是发版 tag 且没改动 = 正式版「0.3.0」；否则开发版「<版本>-dev+<短提交号>」。界面前面加 v -->
+    <Exec Command="git describe --tags --exact-match HEAD" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmExactTag" />
+    </Exec>
+    <Exec Command="git rev-parse --short=7 HEAD" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmCommit" />
+    </Exec>
+    <Exec Command="git status --porcelain --untracked-files=no" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmDirty" />
+    </Exec>
     <PropertyGroup>
       <S2ArmVersion Condition="'$(S2ArmVersion)' == ''">$([System.Text.RegularExpressions.Regex]::Match('$(S2ArmTag)', '\d+(\.\d+)*').Value)</S2ArmVersion>
       <S2ArmVersion Condition="'$(S2ArmVersion)' == ''">0.1.0</S2ArmVersion>
+      <S2ArmExactVersion>$([System.Text.RegularExpressions.Regex]::Match('$(S2ArmExactTag)', '\d+(\.\d+)*').Value)</S2ArmExactVersion>
+      <S2ArmDisplayVersion>$(S2ArmVersion)-dev+$(S2ArmCommit)</S2ArmDisplayVersion>
+      <S2ArmDisplayVersion Condition="'$(S2ArmDirty)' == '' and '$(S2ArmExactVersion)' == '$(S2ArmVersion)'">$(S2ArmVersion)</S2ArmDisplayVersion>
+      <S2ArmDisplayVersion Condition="'$(S2ArmCommit)' == ''">$(S2ArmVersion)</S2ArmDisplayVersion>
       <Version>$(S2ArmVersion)</Version>
       <FileVersion>$(S2ArmVersion)</FileVersion>
       <AssemblyVersion>$(S2ArmVersion)</AssemblyVersion>
-      <InformationalVersion>$(S2ArmVersion)</InformationalVersion>
+      <InformationalVersion>$(S2ArmDisplayVersion)</InformationalVersion>
     </PropertyGroup>
   </Target>
   <ItemGroup>
