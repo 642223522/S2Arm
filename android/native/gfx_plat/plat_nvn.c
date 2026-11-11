@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/system_properties.h>
 #include "debug_gate.h"
 
@@ -41,7 +42,69 @@ int dm_opmode(void) { const char *d = getenv("S2A_DOCKED"); return d && d[0] == 
 // 这里是强定义；vk_engine_host_shim.c 的弱桩是全 0，等于把这些全关掉——贴图在首次使用之后才被游戏填进内容的那些永远传不上来
 // （块压缩贴图停在全 0：ASTC 解成错误色洋红，DXT 解成全透明）。随包 game.tsv 的读取等资源包带上它时再接。
 #include "../../../graphics/nvn/host/game_profile.h"
+
+// ---------- 调试：进程内取样剖析（开关 debug.s2a.nvk_prof=1；默认关） ----------
+// 帧时间的大头在图形调用之外时，要知道 CPU 花在哪个模块。系统的剖析器要先放开一个系统属性，这里不动系统设置：
+// 按进程 CPU 时间每毫秒来一个 SIGPROF，落在谁身上就记谁当时的指令地址（处理函数里只写一个环，不加锁、不分配）；
+// 另有一条线程每 5 秒把这段时间的样本按模块、按 4 KB 页归拢，各打一行。只回答「CPU 时间花在哪」，等待不算在内。
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/time.h>
+#include <unistd.h>
+enum { PROF_RING = 1 << 16 };
+static uintptr_t g_prof_ring[PROF_RING]; static _Atomic uint64_t g_prof_w;
+static void prof_sig(int sig, siginfo_t *si, void *uc) {
+    (void)sig; (void)si;
+#if defined(__aarch64__)
+    uintptr_t pc = (uintptr_t)((ucontext_t *)uc)->uc_mcontext.pc;
+#else
+    uintptr_t pc = 0; (void)uc;
+#endif
+    g_prof_ring[atomic_fetch_add_explicit(&g_prof_w, 1, memory_order_relaxed) & (PROF_RING - 1)] = pc;
+}
+static int prof_cmp(const void *a, const void *b) { uintptr_t x = *(const uintptr_t *)a, y = *(const uintptr_t *)b; return x < y ? -1 : x > y; }
+static void *prof_report(void *arg) {
+    (void)arg; uint64_t r = 0; static uintptr_t buf[PROF_RING];
+    for (;;) {
+        sleep(5);
+        uint64_t w = atomic_load_explicit(&g_prof_w, memory_order_relaxed); if (w - r > PROF_RING) r = w - PROF_RING;
+        size_t n = (size_t)(w - r); if (!n) continue;
+        for (size_t i = 0; i < n; i++) buf[i] = g_prof_ring[(r + i) & (PROF_RING - 1)] & ~(uintptr_t)0xfff;   // 按 4 KB 页
+        r = w; qsort(buf, n, sizeof *buf, prof_cmp);
+        struct { uintptr_t page; size_t n; } top[12]; int nt = 0;
+        struct { char name[40]; size_t n; } mod[16]; int nm = 0;
+        for (size_t i = 0; i < n;) { size_t j = i; while (j < n && buf[j] == buf[i]) j++;
+            size_t cnt = j - i; Dl_info di; const char *nm0 = "游戏代码";
+            if (dladdr((void *)buf[i], &di) && di.dli_fname) { const char *sl = strrchr(di.dli_fname, '/'); nm0 = sl ? sl + 1 : di.dli_fname; }
+            int k = 0; for (; k < nm; k++) if (!strncmp(mod[k].name, nm0, sizeof mod[k].name - 1)) break;
+            if (k == nm && nm < 16) { snprintf(mod[nm].name, sizeof mod[nm].name, "%s", nm0); mod[nm].n = 0; nm++; }
+            if (k < nm) mod[k].n += cnt;
+            int at = nt < 12 ? nt : -1; if (at < 0) { int mi = 0; for (int q = 1; q < 12; q++) if (top[q].n < top[mi].n) mi = q; if (top[mi].n < cnt) at = mi; } else nt++;
+            if (at >= 0) { top[at].page = buf[i]; top[at].n = cnt; }
+            i = j; }
+        char line[900]; int o = snprintf(line, sizeof line, "剖析：5 秒 %zu 个样本（每个 1 毫秒 CPU）；按模块：", n);
+        for (int pass = 0; pass < nm && pass < 8; pass++) { int bi = -1; for (int k = 0; k < nm; k++) if (mod[k].n && (bi < 0 || mod[k].n > mod[bi].n)) bi = k; if (bi < 0) break;
+            o += snprintf(line + o, sizeof line - (size_t)o, " %s %.0f%%", mod[bi].name, 100.0 * (double)mod[bi].n / (double)n); mod[bi].n = 0; }
+        __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: %s", line);
+        o = snprintf(line, sizeof line, "剖析：最热的页：");
+        for (int pass = 0; pass < nt && pass < 10; pass++) { int bi = -1; for (int k = 0; k < nt; k++) if (top[k].n && (bi < 0 || top[k].n > top[bi].n)) bi = k; if (bi < 0) break;
+            Dl_info di; int ok = dladdr((void *)top[bi].page, &di) && di.dli_fname; const char *sl = ok ? strrchr(di.dli_fname, '/') : NULL;
+            o += snprintf(line + o, sizeof line - (size_t)o, " %s+%#lx %.1f%%;", ok ? (sl ? sl + 1 : di.dli_fname) : "游戏", (unsigned long)(ok ? top[bi].page - (uintptr_t)di.dli_fbase : top[bi].page), 100.0 * (double)top[bi].n / (double)n); top[bi].n = 0; }
+        __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: %s", line);
+    }
+    return NULL;
+}
+static void prof_start_once(void) {
+    static _Atomic int started; if (atomic_exchange(&started, 1) || !nvn_plat_flag("nvk_prof", 0)) return;
+    struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_sigaction = prof_sig; sa.sa_flags = SA_SIGINFO | SA_RESTART; sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGPROF, &sa, NULL)) return;
+    struct itimerval it = {{0, 1000}, {0, 1000}}; setitimer(ITIMER_PROF, &it, NULL);
+    pthread_t t; if (!pthread_create(&t, NULL, prof_report, NULL)) pthread_detach(t);
+    __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: 进程内取样剖析已开（每毫秒 CPU 一个样本）");
+}
+
 const s2a_nvn_profile *s2a_nvn_prof(void) {
+    prof_start_once();   // 借这个起局早期必被前端调到的入口开剖析（开关没开就什么都不做）
     static s2a_nvn_profile p; static _Atomic int ready;
     if (!atomic_load_explicit(&ready, memory_order_acquire)) {
         static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
