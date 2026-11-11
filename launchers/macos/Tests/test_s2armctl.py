@@ -592,9 +592,9 @@ class DeviceChoiceTests(unittest.TestCase):
             if method == "POST": sent.append((path, body)); return {"ok": True}
             return {"installReadiness": {"gameId": "G", "ready": True, "items": []}}
         with mock.patch.object(ctl, "call", side_effect=call), contextlib.redirect_stdout(io.StringIO()):
-            for kw in (dict(device="00008150-AAAA"), {}):
+            for kw in (dict(device="U-1"), {}):
                 with self.assertRaises(SystemExit): ctl.install_check("G", False, **kw)   # 查完按 ready 退出
-        self.assertEqual(sent, [("/installCheck", {"gameId": "G", "device": "00008150-AAAA"}), ("/installCheck", {"gameId": "G"})])
+        self.assertEqual(sent, [("/installCheck", {"gameId": "G", "device": "U-1"}), ("/installCheck", {"gameId": "G"})])
 
     def test_targets_lists_name_udid_and_link(self):
         t = {"current": None, "osChoices": [27], "models": [], "connected": [
