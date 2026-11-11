@@ -873,6 +873,8 @@ class Context:
             result["exitCode"] = exit_code
         if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
             result["holder"] = failure.holder
+        if getattr(failure, "facts", None):   # 机读失败事实（errors.cause_facts）：改写失败的模块 / 缺口数 / 缺口类别
+            result["facts"] = failure.facts
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))
@@ -886,8 +888,9 @@ class Context:
         result["failureSummary"] = failure_summary(self.stage, rc, [self.redact(line, limit=None) for line in last_output_lines(self.last_log)])
         return result
 
-    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal=""):
-        result = self.describe_failure(Failure(message, code=code, internal=internal), severity, exit_code)
+    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None):
+        # holder / facts 原样带进失败结果（原先这里只按原句 + 码 + internal 重建 Failure，library_busy 的占锁者、改写失败的机读事实走真作业路径时都丢了）
+        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts), severity, exit_code)
         self.job["diagnostics"].append(result)
         self.emit("diagnostic", result["summary"], diagnostic=result, error=result,
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
@@ -927,7 +930,8 @@ class Context:
         if (previous and previous["code"] == "tool_exit" and failure.code != "job_failed"
                 and previous["stage"] == self.stage and previous["logPath"] == str(self.last_log)):
             exit_code = records.pop().get("exitCode")
-        return self.diagnostic(str(failure), failure.code, exit_code=exit_code, internal=getattr(failure, "internal", ""))
+        return self.diagnostic(str(failure), failure.code, exit_code=exit_code, internal=getattr(failure, "internal", ""),
+                               holder=getattr(failure, "holder", None), facts=getattr(failure, "facts", None))
 
     def fonts_dir(self):
         # 共享字体：玩家在设置里选了原版字体目录就用它，否则用应用自带的开源替代字体（Resources/Fonts，build_app.py 打进去；维护者 10-23：不再作为检测项）
@@ -1185,7 +1189,7 @@ class Context:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts)
                         raise failure
                     from errors import tool_reason
                     message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
