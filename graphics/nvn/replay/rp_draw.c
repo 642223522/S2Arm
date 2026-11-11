@@ -286,7 +286,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
 
 // ---------- 调试：把「上屏那张图」和它上游几层的贴图读回落盘（开关 nvk_dump；rp_present 每 600 帧调一次） ----------
 // 每笔绘制记下目标序号和它采样的头几张贴图序号；从上屏的那张图往回走：画到它的那些笔采样了谁，再往上，至多 3 层、12 张。
-// 每张读第 0 级第 0 层的原始字节，写到诊断目录（没有就写缓存目录）的 nvkdump_<帧>_<层>_<序号>_<宽>x<高>_<格式>.raw。
+// 每张读第 0 级第 0 层的原始字节，写到缓存目录（没有就写诊断目录）的 nvkdump_<帧>_<层>_<序号>_<宽>x<高>_<格式>.raw。
 struct dump_job { nvn_gpu_buf buf; uint64_t bytes; char path[300]; };
 static void dump_done(void *user, const nvn_gpu_done *d) {
     struct dump_job *j = user;
@@ -302,7 +302,8 @@ void rp_debug_dump_poll(uint64_t *fence) {
     if (s) dump_chain(s, __atomic_load_n(&g_dump_frame, __ATOMIC_ACQUIRE), fence);
 }
 static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence) {
-    const char *dir = nvn_plat_dir(NVN_PLAT_DIR_DIAG); if (!dir) dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
+    // 先用缓存目录：安卓上它在应用私有区，调试包可以用 run-as 取出来；诊断目录在外部存储的应用目录里，新系统上 adb 读不到
+    const char *dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE); if (!dir) dir = nvn_plat_dir(NVN_PLAT_DIR_DIAG);
     if (!dir) { nvn_plat_log(NVN_PLAT_LOG_WARN, "dump", "没有可写目录，不落盘"); return; }
     uint64_t list[DUMP_MAX]; int depth[DUMP_MAX], n = 0; list[n] = present_serial; depth[n++] = 0;
     uint32_t have = g_hist_n < HIST_N ? g_hist_n : HIST_N;
