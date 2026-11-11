@@ -233,6 +233,13 @@ public final class S2ArmShellHostModel {
         }
         guard let data = try? Data(contentsOf: list), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let total = (json["total"] as? NSNumber)?.int64Value, total > 0, let files = json["files"] as? [[Any]], let listed = info(list) else {
+            // 没有传输清单（老电脑端推的、被删了）或读不出：看不了进度，但照样按资源包里这几样最新的改动判传断了（iOS 装机剃刀 #41：原先永远「传输中」）。
+            //   一样都看不到时只能说在传
+            let incoming = pack.appendingPathComponent(".incoming")
+            let tars = (try? fm.contentsOfDirectory(at: incoming, includingPropertiesForKeys: nil)) ?? []
+            let seen = ([pack, incoming, list, pack.appendingPathComponent("manifest.json"), pack.appendingPathComponent("index.tsv"),
+                         pack.appendingPathComponent("game.img")] + tars).compactMap { info($0)?.1 }
+            if let latest = seen.max(), now().timeIntervalSince(latest) > Self.transferStall { return InstallStage(.interrupted) }
             return InstallStage(.transferring)
         }
         var got: Int64 = 0, latest = listed.1

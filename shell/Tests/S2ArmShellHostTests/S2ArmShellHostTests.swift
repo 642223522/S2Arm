@@ -283,6 +283,26 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.games.first?.game.state == .installing(InstallStage(.transferring, fraction: 750.0 / 900)))
 }
 
+// iOS 装机剃刀 #41：没有传输清单（老电脑端推的）也要能判传断了。夹具：资源包里只有一个没写完的包，宿主报阶段 3。
+//   期望按时钟手写：刚改过 → 传输中；过了 transferStall + 5 秒没动 → 传输中断（原先永远「传输中」）；包又长了、时钟回到现在 → 又是传输中
+@MainActor @Test func transferWithoutListStillDetectsStall() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-nolist-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let id = "0100000000010000", pack = root.appendingPathComponent("\(id)/资源包")
+    try fm.createDirectory(at: pack.appendingPathComponent(".incoming"), withIntermediateDirectories: true)
+    try Data(count: 30).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    var clock = Date()
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), installState: { _ in 3 },
+                                    now: { clock }, gamesRoot: root)
+    #expect(model.games.first?.game.state.installPhase == .transferring)
+    clock = clock.addingTimeInterval(S2ArmShellHostModel.transferStall + 5); model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .interrupted)
+    try Data(count: 60).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    clock = Date(); model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .transferring)
+}
+
 // 正在解别的款（宿主拒绝起第二个）：这款排着显示「安装中」，不算没解成，下一次刷新再试
 @MainActor @Test func secondUnpackWaitsItsTurn() {
     var accept = false, installs = 0

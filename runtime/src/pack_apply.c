@@ -655,15 +655,18 @@ int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
 //   1 就绪——.applied 等于清单、程序描述在（同快判）；
 //   2 传完了、只等解开——清单读得出、不在传（11-09 根修 Windows 装完游戏库空：推送开头把清单置空、最后才写，「清单读得出 + 包都写完」= 推送完整）。
 //     库在后台跑 s2a_pack_apply 解开（没有待解包时它只核对、写 .applied：只直写了镜像的推送、访达拷进来的也一样），显示「安装中」；核对不过报「安装没完成」；
-//   3 传输中——推包端开推时写的 资源包/.transfer 在、这次推送没完（清单还没写回，或还有包没写完），库按它画进度；
-//   0 没有（不显示：没装过、玩家删了这款的数据、或清单读不出又没在传）
+//   3 传输中——这次推送没完（清单还没写回，或还有包没写完）：有 .transfer 时库按它画进度，没有（老电脑端推的、被删了）时库按资源包里文件的改动判传断了；
+//   0 没有（不显示）——只给「资源包」不在或是空的。原先清单读不出 / 在传又没有 .transfer 也给 0，有数据的款从库里静默消失（iOS 装机剃刀 #26 / #45）
 int s2a_game_install_state(const char *proc_docs, const char *gid) {
     if (!proc_docs || !*proc_docs || !gid || !*gid || strchr(gid, '/') || gid[0] == '.') return 0;
-    char root[2200], mf[2300], tp[2300], want[200], why[256]; struct stat ts;
-    snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid); snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s/.transfer", root);
+    char root[2200], mf[2300], want[200], why[256];
+    snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid); snprintf(mf, sizeof mf, "%s/manifest.json", root);
     if (applied_ready(root)) return 1;
-    int tr = !stat(tp, &ts) && S_ISREG(ts.st_mode);
-    if (manifest_sha(mf, want, sizeof want) || s2a_import_transferring(root, why, sizeof why)) return tr ? 3 : 0;
+    if (manifest_sha(mf, want, sizeof want) || s2a_import_transferring(root, why, sizeof why)) {
+        DIR *d = opendir(root); int any = 0;   // 资源包里有没有东西（. 开头的也算：.incoming / .transfer / .applied）
+        if (d) { struct dirent *e; while (!any && (e = readdir(d))) any = strcmp(e->d_name, ".") && strcmp(e->d_name, ".."); closedir(d); }
+        return any ? 3 : 0;
+    }
     return 2;
 }
 #if defined(__APPLE__) && TARGET_OS_IPHONE

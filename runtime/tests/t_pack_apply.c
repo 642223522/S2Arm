@@ -362,6 +362,8 @@ int main(void) {
           #define IS(want, why) CHECK(s2a_game_install_state(pd, "0100FD70134FA000") == (want), why)
           IS(2, "清单读得出、没有 .applied、不在传 → 2 待解开（缺 main.npdm 由库解开时核对报出，不在这里逐文件核）");
           CHECK(s2a_game_install_state(pd, "0100C2500FC20000") == 0, "没放资源 → 0 不显示");
+          { char ec[2400]; snprintf(ec, sizeof ec, "mkdir -p '%s/games/0100C2500FC20001/资源包'", pd); sh(ec);
+            CHECK(s2a_game_install_state(pd, "0100C2500FC20001") == 0, "剃刀 #26：资源包在但是空的 → 0 不显示（0 只留给这种）"); }
           snprintf(qc, sizeof qc, "printf 'abc123' > '%s/.applied'", qr); sh(qc);
           IS(2, ".applied 等于清单但缺 main.npdm（审计 P2-212）→ 2 待解开（库解开时核对报出缺文件；原先经「新清单没到」判在传、又没有 .transfer → 0 从库里消失，剃刀 #24 / #26）");
           snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); sh(qc);
@@ -373,9 +375,9 @@ int main(void) {
           snprintf(qc, sizeof qc, "rm '%s/.applied'", qr); sh(qc);
           IS(2, "包齐、没有 .applied → 2");
           snprintf(qc, sizeof qc, "printf '' > '%s/manifest.json'", qr); sh(qc);
-          IS(0, "清单被推送开头置空、没有传输清单（老电脑端推的）→ 0 不显示");
+          IS(3, "清单被推送开头置空、没有传输清单（老电脑端推的）→ 3 传输中（剃刀 #26：有数据不再从库里消失，库按文件改动判传断了）");
           snprintf(qc, sizeof qc, "printf '{\"version\":2,\"index_sha256\":\"abc123\"}' > '%s/manifest.json' && printf x > '%s/.incoming/1_000.tar'", qr, qr); sh(qc);
-          IS(0, "有包没写完（没有归档尾）、没有传输清单 → 0");
+          IS(3, "有包没写完（没有归档尾）、没有传输清单 → 3 传输中（剃刀 #26：原先 0 不显示）");
           snprintf(qc, sizeof qc, "head -c 1024 /dev/zero > '%s/.incoming/1_000.tar' && printf 'abc123' > '%s/.applied'", qr, qr); sh(qc);
           IS(2, "清单 = .applied、包写完（同一份清单重推）、没有传输清单 → 2 待解开（剃刀 #24：原先判在传 → 0 不显示）");
           snprintf(qc, sizeof qc, "printf '{}' > '%s/.transfer'", qr); sh(qc);
