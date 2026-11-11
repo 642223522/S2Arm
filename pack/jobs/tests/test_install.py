@@ -375,6 +375,31 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(Failure) as e: packer.assemble(self.c, "0100000000090000")
         self.assertEqual(e.exception.code, "container_stale")
 
+    def test_container_program_number_mismatch_says_files_dont_match(self):
+        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样 → game_files_mismatch，原因说人话、两个号都给出；
+        核对本身保留（玩家实报：把别的游戏的程序换进了这款的包里，放过去就推到手机上错的目录）"""
+        import ipa as packer
+        A, OTHER = "0100DD2053220000", "010051F0207B2000"
+        ios_fixture(self.c, A, shell="SID1")
+        self.c.catalog = lambda: {"games": [{"id": A, "name": "甲"}]}
+        shell = self.c.private / "shell"; shell.mkdir(); (shell / "manifest.json").write_text("{}")
+        def run(args, log=None, env=None, cwd=None, on_line=None):
+            args = [str(a) for a in args]
+            if len(args) > 5 and args[4].endswith("ship_ext.py") and args[5] == "container":
+                o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
+                (o / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "SID1", "games": [{"title_id": OTHER}]}))
+            if len(args) > 5 and args[4].endswith("app_bundle.py") and args[5] == "write_ipa":
+                Path(args[7]).write_bytes(b"ipa")
+        with um.patch.object(packer, "current_shell_id", return_value="SID1"), \
+             um.patch.object(packer, "container_shell", return_value=shell), \
+             um.patch.object(packer, "release_version", return_value="9.8.7"), \
+             um.patch.object(self.c, "run", run):
+            with self.assertRaises(Failure) as e: packer.assemble(self.c, A)
+        self.assertEqual(e.exception.code, "game_files_mismatch")
+        text = str(e.exception)
+        self.assertIn(OTHER, text); self.assertIn(A, text); self.assertIn("原版游戏文件重新导入", text)
+        self.assertNotIn("产物根", text)
+
     def _ready(self, devices, teams=(dict(id="team-a", name="我", free=True),), rc=0, usb=(), raises=None, want="测试设备2"):
         """跑装机前清单：devicectl list devices 回 devices（手造的 devicectl 行），Xcode 团队 teams；want = 玩家选的那台（None = 没选）"""
         import diag
