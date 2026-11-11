@@ -1274,6 +1274,21 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
             _context.Renderer.Pipeline.SetFrontFace(frontFace);
         }
 
+        // S2A：当前片元着色器的输出映射（OMAP，每目标 4 位）。没有片元着色器 / 读不到时全 1，不屏蔽。
+        private uint _s2aFragmentOutputMap = uint.MaxValue;
+
+        /// <summary>
+        /// S2A：颜色写掩码与片元着色器输出映射相与。着色器没输出的目标 / 分量，真机不落帧缓冲；
+        /// 主机上不屏蔽的话写进去的是未定义值（分块渲染 GPU 上是 tile 里的垃圾，#468）。不分驱动。
+        /// </summary>
+        /// <param name="componentMask">游戏设的这个目标的写掩码（RGBA 各 1 位）</param>
+        /// <param name="fragmentOutputMap">片元着色器输出映射，每目标 4 位；全 1 = 不屏蔽</param>
+        /// <param name="index">渲染目标序号 0–7</param>
+        internal static uint S2AOmapColorMask(uint componentMask, uint fragmentOutputMap, int index)
+        {
+            return componentMask & ((fragmentOutputMap >> (index * 4)) & 0xf);
+        }
+
         /// <summary>
         /// Updates host render target color masks, based on guest GPU state.
         /// This defines which color channels are written to each color buffer.
@@ -1296,6 +1311,8 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                 componentMask |= (colorMask.UnpackGreen() ? 2u : 0u);
                 componentMask |= (colorMask.UnpackBlue() ? 4u : 0u);
                 componentMask |= (colorMask.UnpackAlpha() ? 8u : 0u);
+
+                componentMask = S2AOmapColorMask(componentMask, _s2aFragmentOutputMap, index);
 
                 componentMasks[index] = componentMask;
                 colorWriteMaskSpan[index] = componentMask;
@@ -1559,6 +1576,15 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
             _currentSpecState.SetShader(gs);
 
             _shaderSpecState = gs.SpecializationState;
+
+            // S2A：换程序后按新片元着色器的输出映射重算颜色写掩码（见 UpdateRtColorMask）
+            uint fragmentOutputMap = gs.Shaders[5] != null ? (uint)gs.Shaders[5].Info.FragmentOutputMap : uint.MaxValue;
+
+            if (fragmentOutputMap != _s2aFragmentOutputMap)
+            {
+                _s2aFragmentOutputMap = fragmentOutputMap;
+                UpdateRtColorMask();
+            }
 
             byte oldVsClipDistancesWritten = _vsClipDistancesWritten;
 

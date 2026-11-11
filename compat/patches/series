@@ -544,3 +544,4 @@
 20261111-0102-shader-sr84-vrs-size.patch
 20261110-1335-arm-zero-mask-quirk-flag.patch
 20261110-1349-arm-zero-mask-attachments.patch
+20261110-1902-omap-color-mask.patch
