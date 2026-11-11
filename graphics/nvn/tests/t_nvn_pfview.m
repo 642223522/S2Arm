@@ -34,12 +34,12 @@ int main(void) {
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         int got = mtl_pfv_compatible(cases[i].base, cases[i].view);
-        if (got != cases[i].want) { printf("✗ t_pfview：失配 %s（期望 %d，得到 %d）\n", cases[i].name, cases[i].want, got); return 1; }
+        if (got != cases[i].want) { printf("✗ t_nvn_pfview：失配 %s（期望 %d，得到 %d）\n", cases[i].name, cases[i].want, got); return 1; }
     }
     assert(mtl_pf_bytes(MTLPixelFormatRGBA8Unorm) == 4);
     assert(mtl_pf_bytes(MTLPixelFormatRGBA32Uint) == 16);
     assert(mtl_pf_bytes(MTLPixelFormatBC3_RGBA) == 0);
     assert(mtl_pf_bytes(MTLPixelFormatDepth32Float) == 0);
-    printf("✓ t_pfview：%zu 组格式对与字节数表全部通过\n", sizeof cases / sizeof *cases);
+    printf("✓ t_nvn_pfview：%zu 组格式对与字节数表全部通过\n", sizeof cases / sizeof *cases);
     return 0;
 }
