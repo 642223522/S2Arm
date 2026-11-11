@@ -118,10 +118,10 @@ public static class PackJobClient
         return payload;
     }
 
-    public static async Task<LibraryJobOutput> RunAsync(Request request, Action<JsonElement>? onEvent, CancellationToken cancellationToken)
+    public static async Task<LibraryJobOutput> RunAsync(Request request, Action<JsonElement>? onEvent, CancellationToken cancellationToken, string? jobId = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var jobId = "win-" + Guid.NewGuid().ToString("N");
+        jobId ??= "win-" + Guid.NewGuid().ToString("N");   // 前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
         var privateRoot = Path.GetFullPath(request.PrivateRoot);
         using var file = PrivateJobRequest.Create(privateRoot, JsonSerializer.Serialize(Payload(request, jobId)));
         var info = EnvironmentProbe.StartInfo(request.Paths, file.FilePath);

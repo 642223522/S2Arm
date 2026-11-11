@@ -21,8 +21,7 @@ public sealed partial class EnvironmentWindow
     private string? connectedFolder, libraryId, selectedGame;
     private LibraryCatalog? catalog;
     private string librarySummary = "library.disconnected", libraryDiagnostics = "";
-    private bool libraryBusy, closingLibrary;
-    private CancellationTokenSource? libraryCancellation;
+    private bool closingLibrary;
     private Task? libraryOperation;
     private TextBox libraryFolderBox = new();
     private readonly Dictionary<string, Bitmap> covers = new(StringComparer.OrdinalIgnoreCase);
@@ -70,7 +69,7 @@ public sealed partial class EnvironmentWindow
         args.Cancel = true;
         if (closingLibrary) return;
         closingLibrary = true;
-        libraryCancellation?.Cancel();
+        CancelJob(JobKind.Library);
         if (libraryOperation is { } operation) await operation;
         Close();
     }
@@ -392,17 +391,17 @@ public sealed partial class EnvironmentWindow
         if (connectedFolder is null || libraryId is null || libraryBusy) return;
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = T("game.diag"), SuggestedFileName = $"S2Arm-{(language == "en" ? "diag" : "诊断")}-{DateTime.Now:MMdd-HHmm}.zip", DefaultExtension = "zip" });
         if (file?.TryGetLocalPath() is not { } output) return;
-        libraryBusy = true; librarySummary = "library.working"; Render();
+        var front = BeginJob(JobKind.Library); librarySummary = "library.working"; Render();
         try
         {
-            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "diagnostics", [output], CancellationToken.None);
+            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "diagnostics", [output], front.Token, jobId: front.Next());
             DisplayJob(job);
             librarySummary = job.Report.Succeeded ? "library.completed" : "library.failed";
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
         { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; }
-        finally { libraryBusy = false; Render(); }
+        finally { EndJob(front); Render(); }
     }
 
     private async Task ConfirmDeleteAsync(LibraryGame game)
@@ -492,13 +491,11 @@ public sealed partial class EnvironmentWindow
     private async Task RunGameJobAsync(string operation, LibraryGame game, Dictionary<string, object?>? extra = null)
     {
         if (BusyFor(game) || connectedFolder is null || libraryId is null) return;
-        libraryBusy = true; librarySummary = "library.working"; libraryDiagnostics = ""; Render();
-        using var cancellation = new CancellationTokenSource();
-        libraryCancellation = cancellation;
+        var front = BeginJob(JobKind.Library, game.Id); librarySummary = "library.working"; libraryDiagnostics = ""; Render();
         var succeeded = false;
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id, extra), null, cancellation.Token);
+            var job = await PackJobClient.RunAsync(PackRequest(operation, game.Id, extra), null, front.Token, front.Next());
             DisplayJob(job);
             succeeded = job.Report.Succeeded;
             librarySummary = succeeded ? "library.completed" : "library.failed";
@@ -515,7 +512,7 @@ public sealed partial class EnvironmentWindow
             LauncherCrash.Log(error, "library job");
         }
         finally
-        { libraryCancellation = null; libraryBusy = false; Render(); }
+        { EndJob(front); Render(); }
         if (!succeeded || closingLibrary) return;
         if ((operation == "forgetGame" || operation == "delete") && selectedGame == game.Id) selectedGame = null;
         locationsFor = null;   // 位置表的剩余空间 / 这款的位置变了：出包页下次重读
@@ -667,17 +664,15 @@ public sealed partial class EnvironmentWindow
         // 作业一律发给已连上的库（connectedFolder）；输入框里的路径只给「连接」按钮用（ConnectTypedFolder）。原先这里拿输入框草稿和已连的库比、
         //   不一样就断开：输入框只在游戏库页重建，别的页上读到的是空框，导入密钥 / 一键出包后游戏库被误断开（社区贡献者补丁 #6）
         if (operation != "setup" && (connectedFolder is null || libraryId is null)) return;
-        libraryBusy = true; librarySummary = operation == "catalog" ? "library.loading" : "library.working";
+        var front = BeginJob(JobKind.Library); librarySummary = operation == "catalog" ? "library.loading" : "library.working";
         libraryDiagnostics = ""; Render();
-        using var cancellation = new CancellationTokenSource();
-        libraryCancellation = cancellation;
         try
         {
             if (operation == "setup")
             {
                 connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
                 var folder = Path.GetFullPath(libraryFolder);
-                var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, cancellation.Token);
+                var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next());
                 DisplayJob(setup);
                 if (!setup.Report.Succeeded) { librarySummary = "library.failed"; return; }
                 var connection = LibraryConnection.Parse(setup.Report.Result);
@@ -685,11 +680,11 @@ public sealed partial class EnvironmentWindow
             }
             else if (operation != "catalog")
             {
-                var output = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, operation, selectedPaths, cancellation.Token);
+                var output = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, operation, selectedPaths, front.Token, jobId: front.Next());
                 DisplayJob(output);
                 if (!output.Report.Succeeded) { librarySummary = "library.failed"; return; }
             }
-            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, cancellation.Token);
+            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
             if (!listing.Report.Succeeded) { librarySummary = "library.failed"; return; }
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
@@ -708,7 +703,7 @@ public sealed partial class EnvironmentWindow
             LauncherCrash.Log(error, "library job");
         }
         finally
-        { libraryCancellation = null; libraryBusy = false; Render(); }
+        { EndJob(front); Render(); }
     }
 
     private void DisplayJob(LibraryJobOutput job)

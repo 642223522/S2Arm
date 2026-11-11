@@ -1620,7 +1620,9 @@ def catalog(c):
     import toolchain
     import host_update
     c.begin("读取游戏库")
-    sweep_residue(c)
+    startup = c.r.get("startup") is True   # 启动器打开后的第一次刷新（两端前端带 startup: true）
+    if startup:
+        sweep_residue(c)   # 崩溃 / 断电 / 被杀留下的解包与中间产物：启动时扫一次（剃刀 H14：原先每次刷新都扫两遍；正常失败与取消由 clean_after_stop 当场清）
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
     for game in cat["games"]:
@@ -1668,11 +1670,11 @@ def catalog(c):
         status = dict(ready=False, verified=False)
     status["message"] = "已验证解密能力" if status.get("verified") else "格式通过，首次读取游戏时验证解密能力" if status["ready"] else "尚未导入 prod.keys"
     # 任务目录里还有各任务留存的请求（<任务>.request.json，J10 resume 用）：不是任务记录，没有 id / state；混进来启动器整个任务列表解码失败、一条都读不回
-    # 任务目录有上限（保留规则见 core.prune_jobs）：catalog 每次启动都跑，在这里顺手清，一天最多一次
+    # 任务目录有上限（保留规则见 core.prune_jobs）：启动时那次 catalog 顺手清，一天最多一次
     #   （清理要把每条记录读一遍判结束没有），先清再读。只回最新 JOB_LIST_LIMIT 条：旧启动器的任务列表只看近期；
     #   11-07 实测任务目录 1.5 万条记录时整份读 + 回传 7 MB 占 catalog 数秒。
     marker = c.logs / ".jobs-pruned"
-    if time.time() - _mtime(marker) > 86400:
+    if startup and time.time() - _mtime(marker) > 86400:   # 只在启动那次判（剃刀 H14），仍一天最多一次
         prune_jobs(c.private, jobs=c.jobpath.parent)
         marker.parent.mkdir(parents=True, exist_ok=True)   # catalog 是只读探测、不落自己的记录（剃刀 H4）：日志目录不一定已被本作业建出来
         marker.touch()

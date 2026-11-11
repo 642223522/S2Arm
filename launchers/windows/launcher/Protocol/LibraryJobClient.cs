@@ -9,13 +9,14 @@ public sealed record LibraryJobOutput(LibraryJobResult Report, ProbeOutput Outpu
 public static class LibraryJobClient
 {
     public static async Task<LibraryJobOutput> RunAsync(LauncherPaths paths, string privateRoot, string library,
-        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null)
+        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null, string? jobId = null, bool startup = false)
     {
         if (operation is not ("setup" or "catalog" or "keys" or "import" or "diagnostics" or "locations" or "storageOverview" or "spaceSurvey"))
             throw new ArgumentException("Unsupported library operation.", nameof(operation));
         cancellationToken.ThrowIfCancellationRequested();
         privateRoot = Path.GetFullPath(privateRoot);
-        var jobId = "win-" + Guid.NewGuid().ToString("N");
+        // jobId：前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
+        jobId ??= "win-" + Guid.NewGuid().ToString("N");
         var payload = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["jobId"] = jobId, ["operation"] = operation,
@@ -28,6 +29,8 @@ public static class LibraryJobClient
         if (partialResults && operation == "import") payload["partialResults"] = true;
         // 存放位置表另查一个刚选的文件夹所在盘会不会让解包多占数倍空间（#444，pack/jobs/library.py list_locations）
         if (probe is not null && operation == "locations") payload["probe"] = Path.GetFullPath(probe);
+        // 启动器这次打开后的第一次 catalog（剃刀 H14）：作业层只在这一次清残留、判一天一次的任务目录清理
+        if (startup && operation == "catalog") payload["startup"] = true;
         if (operation is "keys" or "diagnostics")
         {
             if (selectedPaths?.Count != 1) throw new ArgumentException("Choose exactly one file.");
