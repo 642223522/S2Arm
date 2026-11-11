@@ -28,3 +28,4 @@ uint64_t rp_res_uploads(void);   // 累计上传次数（每张贴图每次同�
 // 前端按名字调、但上沿头文件里没有声明的两个入口（hle_nvn.c 里就地 extern）
 void nvn_be_pool_gpu_written(const void *pool);                    // 这个池里录到了 GPU 写
 int nvn_be_tex_gpu_owned_since(uint64_t serial, uint64_t stamp);   // 脏页轮询：这张贴图的内容自 stamp 起是否归 GPU
+int rp_tex_debug_state(uint64_t serial);   // 调试取证（逐笔日志用）

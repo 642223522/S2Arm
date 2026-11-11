@@ -242,7 +242,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         tv[st][i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, &tt);
         if (g_log_left && tn < sizeof tl - 56) {
             int id = h ? (int)(h & 0xFFFFF) : rp_S.tex_base;
-            if (tt) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%llu(%#x %dx%d swz %#x)", st, (unsigned)e->src_reg, (unsigned long long)tt->serial, (unsigned)tt->d.format, tt->d.width, tt->d.height, tt->set_swz ? (unsigned)tt->swz : 0u);
+            if (tt) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%llu(%#x %dx%d 态%x 存%08x%08x 标%#x)", st, (unsigned)e->src_reg, (unsigned long long)tt->serial, (unsigned)tt->d.format, tt->d.width, tt->d.height, (unsigned)rp_tex_debug_state(tt->serial),
+                                         tt->mem && tt->L.size >= 8 ? (unsigned)((const uint32_t *)(const void *)tt->mem)[0] : 0u, tt->mem && tt->L.size >= 8 ? (unsigned)((const uint32_t *)(const void *)tt->mem)[1] : 0u, (unsigned)tt->d.flags);
             else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
         }
         ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);

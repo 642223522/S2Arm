@@ -83,6 +83,13 @@ void nvn_be_tex_cpu_written(const tex_t *t) {
     if (x) { x->cpu = 1; x->gpu_written = 0; x->uploaded = 0; }   // 游戏刚用 CPU 写了它：下次使用整张重传
     pthread_mutex_unlock(&g_rmu);
 }
+// 调试取证：这个序号的存储现在的归属（位 0 当 CPU 贴图、位 1 传过、位 2 GPU 写过、位 3 有存储），没建过 = 0
+int rp_tex_debug_state(uint64_t serial) {
+    pthread_mutex_lock(&g_rmu);
+    struct rp_tex *x = nvn_hm_get(&g_by_serial, &serial); int r = x ? 8 | (x->cpu ? 1 : 0) | (x->uploaded ? 2 : 0) | (x->gpu_written ? 4 : 0) : 0;
+    pthread_mutex_unlock(&g_rmu);
+    return r;
+}
 int nvn_be_tex_gpu_owned(uint64_t serial) {
     pthread_mutex_lock(&g_rmu);
     struct rp_tex *x = nvn_hm_get(&g_by_serial, &serial); int r = x && x->gpu_written;
