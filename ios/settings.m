@@ -149,13 +149,15 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     }
     // 60 帧（11-11 维护者：缺省游戏原帧率、玩家手动开；速度已验证正确的款保留默认 60）：只转玩家明确的选择——开 S2A_FPS60=1、关 S2A_FPS60=0；
     //   没选过不写，由宿主按清单原因自己定（runtime/src/caps.c：验证过的款开、其余原帧率）。没选也写 0 会把验证过的款一起关掉。
-    //   先后：启动环境显式给的 > 这款在游戏库的选择 > App 级开关 > 强信号判红的款看过提示后手动开（S2AFps60Manual，只有设置页那一下会写）；
-    //   与 Mac 启动器（pack/jobs/community.py launch_env）同口径。老用户以前存过 S2AFps60=YES 的照旧开：那是玩家明确开过
+    //   先后：启动环境显式给的 > 这款在游戏库的选择 > App 级开关关 > 玩家在设置页手动开（S2AFps60Manual，只有设置页开关会写）；
+    //   与 Mac 启动器（pack/jobs/community.py launch_env）同口径。按款的游戏库键开 / 关都认；App 级老键只认关（见下）
     if (!getenv("S2A_FPS60")) {
         NSString *pick = nil;
         if (game && [game objectForKey:@"S2AFps60"]) pick = [game boolForKey:@"S2AFps60"] ? @"1" : @"0";
-        else if ([defaults objectForKey:@"S2AFps60"]) pick = [defaults boolForKey:@"S2AFps60"] ? @"1" : @"0";
-        else if ([defaults boolForKey:@"S2AFps60Manual"] && s2a_ios_caps_value("fps60") == 0) pick = @"1";
+        // App 级老键 S2AFps60：老口径缺省开，存着 YES 只代表「沿用缺省」，不算玩家明确开（不然强信号判红、已知会变速的款也被开成 60 帧）；只认 NO = 关
+        else if ([defaults objectForKey:@"S2AFps60"] && ![defaults boolForKey:@"S2AFps60"]) pick = @"0";
+        // 玩家明确开：设置页 60 帧开关打开时都会写 S2AFps60Manual（强信号款看过提示后开、普通款直接开），与老键是不是 YES 无关
+        else if ([defaults boolForKey:@"S2AFps60Manual"]) pick = @"1";
         if (pick) {
             apply_environment("S2A_FPS60", pick);
             fprintf(stderr, "[S2A 画面设置] S2A_FPS60=%s（玩家选了 60 帧%s）\n", pick.UTF8String, [pick isEqualToString:@"1"] ? "开" : "关");
