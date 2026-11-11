@@ -482,7 +482,6 @@ class JobsTests(unittest.TestCase):
         chk = subprocess.run([sys.executable, str(ROOT / "pack/save_identity.py"), "--check", str(si)], capture_output=True, text=True)
         self.assertEqual(chk.returncode, 0, chk.stderr)
 
-    @shared_extract
     def test_ipa_follow_up_keeps_unpack_for_next_platform(self):
         # 剃刀 M21：同一次出包后面还有平台（followUp）→ 收尾不调 prune_build；缺省 / false 照调（期望按 pack/contracts/README.md 手写）。
         #   只测收尾判断本身（ipa.prune_unless_follow_up），不跑整份 ipa.build（会留下解包状态影响别的用例）
@@ -497,6 +496,7 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual((prune.call_count, pruned), (want, bool(want)))
         self.c.r.pop("followUp", None)
 
+    @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
         # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
         import unittest.mock as um, ipa
