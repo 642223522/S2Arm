@@ -201,6 +201,8 @@ begin
   SecondaryImg.OnClick := @PressSecondary; SecondaryImg.Cursor := crHand;
   { 原按钮挪出可见区：仍是窗口的默认 / 取消按钮 }
   N.Left := -2000; C.Left := -2000; WizardForm.BackButton.Left := -2000;
+  { 不参与 Tab 切换：否则键盘焦点会停在看不见的按钮上。回车（默认按钮）/ Esc（取消按钮）不靠 Tab，照常可用 }
+  N.TabStop := False; C.TabStop := False; WizardForm.BackButton.TabStop := False;
 end;
 
 { ---- 自画复选框：图（奶油色勾 / 描边空框）+ 文字，点哪都切换 ---- }

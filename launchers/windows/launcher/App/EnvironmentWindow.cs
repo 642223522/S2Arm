@@ -52,7 +52,7 @@ public sealed partial class EnvironmentWindow : Window
         Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
         Opened += (_, _) =>
         {
-            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
+            StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
             _ = RecoverBatchAsync();   // 上次没出完的批量出包读回来（BatchPage.cs）
             // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
             //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
