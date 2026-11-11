@@ -47,8 +47,25 @@ class EngineGit(unittest.TestCase):
         for p in sorted((dst / ".git" / "refs").rglob("*"), reverse=True):
             p.rmdir() if p.is_dir() else p.unlink()
         (dst / ".git" / "refs").rmdir()   # 模拟改前：refs 目录丢了
-        with self.assertRaises(Failure):
+        with self.assertRaises(Failure) as caught:
             check_git(dst)
+        self.assertIn("快照无效", str(caught.exception))
+
+    def test_git_failure_says_what_git_said(self):
+        """#638：git 自己没跑成（如这台机的 git 起不来）时，提示带 git 的原话，不说成「快照无效，请重新安装」"""
+        dst = self.t / "engines" / "e3"; dst.mkdir(parents=True)
+        fake = self.t / "bin"; fake.mkdir()
+        (fake / "git").write_text("#!/bin/sh\necho 'git: simulated tool failure' >&2\nexit 69\n"); (fake / "git").chmod(0o755)
+        old = os.environ["PATH"]; os.environ["PATH"] = f"{fake}{os.pathsep}{old}"
+        try:
+            with self.assertRaises(Failure) as caught:
+                check_git(dst)
+        finally:
+            os.environ["PATH"] = old
+        text = str(caught.exception)
+        self.assertIn("simulated tool failure", text)
+        self.assertIn("69", text)
+        self.assertNotIn("快照无效", text)
 
 
 if __name__ == "__main__":
