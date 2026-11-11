@@ -49,7 +49,8 @@ void rp_present_reset(void);
 void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
 void rp_draw_stats(uint64_t *draws, uint64_t *skips);
 // 分时读数：自上次取走以来的累计（纳秒 / 次数），取走即清零
-enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_PERF_WAIT_N, RP_PERF_DONE_NS, RP_PERF_DONE_N, RP_PERF_N };
+enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_PERF_WAIT_N, RP_PERF_DONE_NS, RP_PERF_DONE_N, RP_PERF_PASSES, RP_PERF_PRESENT_NS, RP_PERF_N };
+void rp_perf_add(int i, uint64_t v);
 void rp_perf_take(uint64_t out[RP_PERF_N]);
 void rp_draw_reset(void);
 void rp_draw_log_arm(int lines);   // 接下来的 lines 笔绘制（含被跳过的）各出一行日志；0 = 关

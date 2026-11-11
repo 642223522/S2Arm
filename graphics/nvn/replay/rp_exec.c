@@ -44,6 +44,7 @@ static uint64_t now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC
 static uint64_t g_pf[RP_PERF_N];
 void rp_perf_take(uint64_t out[RP_PERF_N]) { for (int i = 0; i < RP_PERF_N; i++) out[i] = __atomic_exchange_n(&g_pf[i], 0, __ATOMIC_ACQ_REL); }
 static void pf_add(int i, uint64_t v) { __atomic_fetch_add(&g_pf[i], v, __ATOMIC_RELAXED); }
+void rp_perf_add(int i, uint64_t v) { pf_add(i, v); }
 static uint64_t g_done_fence;  // 已完成的最大围栏值（完成回调写，提交线程读）
 static uint64_t g_occ_acc;     // 遮挡计数：自上次复位以来已完成的各槽之和（只在完成回调里动）
 int s2a_nvn_render_cond(void);  // 宿主：这一款的条件渲染开没开（每款参数 render_cond）

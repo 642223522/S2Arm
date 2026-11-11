@@ -104,6 +104,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     d.occlusion = (uint8_t)rp_occl_want();
     nvn_gpu_pass_begin(c, &d);
     rp_occl_pass_opened(d.occlusion);
+    rp_perf_add(RP_PERF_PASSES, 1);
     for (int i = 0; i < P.rt.n; i++) if (P.rt.color[i]) rp_tex_mark_gpu_written(P.rt.color[i]);
     if (P.rt.depth) rp_tex_mark_gpu_written(P.rt.depth);
     memset(P.clear_c, 0, sizeof P.clear_c); P.clear_d = P.clear_s = 0;
