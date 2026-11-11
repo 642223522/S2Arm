@@ -59,7 +59,7 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
 }
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
-enum { HIST_N = 4096, HIST_TEX = 6, DUMP_MAX = 28 };
+enum { HIST_N = 4096, HIST_TEX = 12, DUMP_MAX = 48 };
 static struct { uint64_t target, tex[HIST_TEX]; } g_hist[HIST_N]; static uint32_t g_hist_n;
 static void hist_note(uint64_t target, const uint64_t *tex, int ntex) {
     uint32_t i = g_hist_n++ % HIST_N; g_hist[i].target = target; memset(g_hist[i].tex, 0, sizeof g_hist[i].tex);
@@ -320,7 +320,9 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
           if (e->src_kind != NVN_RB_TEX || e->count > 1) continue;
           uint64_t h = rp_S.tex[st][e->src_reg]; tex_t snap; view_t sv; int hv;
           if (rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &snap, &sv, &hv)) ts4[nt++] = snap.serial; }
-      hist_note(rt->n && rt->color[0] ? rt->color[0]->serial : rt->depth ? rt->depth->serial : 0, ts4, nt); }
+      int noted = 0;
+      for (int k = 0; k < rt->n; k++) if (rt->color[k]) { hist_note(rt->color[k]->serial, ts4, nt); noted = 1; }   // 每个颜色目标各记一条：多目标的绘制，第二个以后的目标也要能往上追
+      if (!noted) hist_note(rt->depth ? rt->depth->serial : 0, ts4, nt); }
     rp_pso_dirty = rp_dss_dirty = 0; memset(rp_args_dirty, 0, sizeof rp_args_dirty);
     g_draws++;
 }
