@@ -545,6 +545,28 @@ static void test_pad_slots(void) {
     expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
 }
 
+// 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
+//   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
+//   它的类别是「Siri Remote」，认不出类型只按位置对应（pad.c s2a_pad_abxy_order）：系统 A 在南侧 = Switch B，默认配置第 1 位（2）；
+//   方向键上是第 13 位（8192）；没按任何键是 0
+static void test_profile_only_pad(void) {
+    config = default_config();
+    GCController *c = [GCController controllerWithMicroGamepad];
+    expect(c.extendedGamepad == nil && pad_has_profile_buttons(c), "micro-only controller counts as a profile-only pad");
+    install_pad_handler(c);
+    expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue == dispatch_get_main_queue(), "profile handler installed on the main queue");
+    uint32_t buttons = 99; int32_t sticks[4];
+    sample_profile_state(c, &buttons, sticks);
+    expect(buttons == 0, "nothing pressed: no buttons");
+    [c.microGamepad.buttonA setValue:1];
+    sample_profile_state(c, &buttons, sticks);
+    expect(buttons == 2, "unrecognized pad: profile button A (south) maps to Switch B by position");
+    [c.microGamepad.buttonA setValue:0]; [c.microGamepad.dpad setValueForXAxis:0 yAxis:1];
+    sample_profile_state(c, &buttons, sticks);
+    expect(buttons == (1u << 13), "profile dpad up maps to Switch Up");
+    puts("Mac profile-only pad: handler and standard-name reading passed");
+}
+
 // 手柄事件回调（A2）：handlerQueue 必须切到主队列（与 AppKit 事件串行），回调直接发布整份当前状态；
 //   没有新事件时 120Hz 定时器仍是回退采样，长按不会因为「只发变化」而丢。
 static void test_pad_handler_install(void) {
@@ -848,6 +870,7 @@ int main(int argc, const char **argv) {
         test_event_input();
         test_pad_disconnect();
         test_pad_handler_install();
+        test_profile_only_pad();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();

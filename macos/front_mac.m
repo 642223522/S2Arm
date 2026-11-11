@@ -353,16 +353,42 @@ static GCExtendedGamepad *active_pad(NSArray *controllers) {
 }
 // 手柄事件驱动（A2）：valueChangedHandler 走 GameController 的回调队列，切到主队列后与 AppKit 键盘 / 鼠标事件串行，
 //   sample_input 可以直接读 keys / mouse / config。120Hz 定时器仍保留给键盘 / 鼠标的粘键核对，并顺手补装新连接的手柄。
+// 没有扩展手柄描述、但通用物理描述里有按键的手柄（部分第三方手柄的某些模式、只给简易描述的手柄）：原先整只被忽略、游戏里没反应也没有提示。
+//   按标准键名从 physicalInputProfile 读（参照维护者提供的前端实现 Gamepad.swift 的读法）。六轴 / 震动 / Home 退出仍只认扩展手柄
+static BOOL pad_has_profile_buttons(GCController *c) { return !c.extendedGamepad && c.physicalInputProfile.buttons.count > 0; }
 static void install_pad_handler(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
-    if (!pad || pad.valueChangedHandler) return;
+    if (pad) {
+        if (pad.valueChangedHandler) return;
+        controller.handlerQueue = dispatch_get_main_queue();
+        pad.valueChangedHandler = ^(GCExtendedGamepad *profile, GCControllerElement *element) {
+            (void)profile; (void)element;
+            sample_input();
+        };
+        return;
+    }
+    if (!pad_has_profile_buttons(controller) || controller.physicalInputProfile.valueDidChangeHandler) return;
     controller.handlerQueue = dispatch_get_main_queue();
-    pad.valueChangedHandler = ^(GCExtendedGamepad *profile, GCControllerElement *element) {
+    controller.physicalInputProfile.valueDidChangeHandler = ^(GCPhysicalInputProfile *profile, GCControllerElement *element) {
         (void)profile; (void)element;
         sample_input();
     };
 }
+// 诊断：GameController 枚举到的全部手柄与描述（格式同 iOS ios/controller.m log_controllers，#456）：名称 | 类型 | extended / micro / none。
+//   每拍都会来（轮询里补装回调），只在手柄集合变了时打一行
+static void log_controllers_if_changed(void) {
+    NSMutableArray<NSString *> *list = [NSMutableArray array];
+    for (GCController *c in GCController.controllers)
+        [list addObject:[NSString stringWithFormat:@"%@|%@|%@", c.vendorName ?: @"?", c.productCategory ?: @"?",
+                         c.extendedGamepad ? @"extended" : c.microGamepad ? @"micro" : @"none"]];
+    NSString *now = [list componentsJoinedByString:@"; "];
+    static NSString *last;
+    if (last && [last isEqualToString:now]) return;
+    last = now;
+    fprintf(stderr, "[s2a] 系统手柄：枚举到 %d 个 %s\n", (int)list.count, now.UTF8String ?: "");
+}
 static void install_pad_handlers(void) {
+    log_controllers_if_changed();
     for (GCController *controller in GCController.controllers) install_pad_handler(controller);
 }
 // 手柄六轴（同 iOS 的 s2a_pad_read_motion 约定）：游戏要六轴时才开传感器。主线程跟着输入采样读 GCMotion，游戏线程取最新一份
@@ -663,6 +689,23 @@ static void sample_pad_state(GCExtendedGamepad *pad, uint32_t *out_buttons, int3
     map_pad_inputs(all, @{@"leftX": @(pad.leftThumbstick.xAxis.value), @"leftY": @(pad.leftThumbstick.yAxis.value),
                           @"rightX": @(pad.rightThumbstick.xAxis.value), @"rightY": @(pad.rightThumbstick.yAxis.value)}, out_buttons, sticks);
 }
+// 只有通用物理描述的手柄：按标准键名读，位序与扩展手柄同一套（s2a_pad_abxy_order，类型按 productCategory 判）
+static void sample_profile_state(GCController *c, uint32_t *out_buttons, int32_t sticks[4]) {
+    GCPhysicalInputProfile *p = c.physicalInputProfile;
+    GCControllerButtonInput *(^btn)(NSString *) = ^GCControllerButtonInput *(NSString *name) { return p.buttons[name]; };
+    GCControllerButtonInput *face[4] = {btn(GCInputButtonA), btn(GCInputButtonB), btn(GCInputButtonX), btn(GCInputButtonY)};
+    int order[4]; s2a_pad_abxy_order(s2a_pad_kind(c.productCategory.UTF8String, NO, NO), s2a_pad_face_by_letter(), order);
+    NSMutableDictionary *all = [NSMutableDictionary new];
+    NSString *faces[4] = {@"east", @"south", @"north", @"west"};
+    for (int i = 0; i < 4; i++) all[faces[i]] = @(face[order[i]].isPressed);
+    NSDictionary *named = @{@"leftShoulder": GCInputLeftShoulder, @"rightShoulder": GCInputRightShoulder, @"leftTrigger": GCInputLeftTrigger,
+                            @"rightTrigger": GCInputRightTrigger, @"menu": GCInputButtonMenu, @"options": GCInputButtonOptions,
+                            @"leftStick": GCInputLeftThumbstickButton, @"rightStick": GCInputRightThumbstickButton};
+    for (NSString *code in named) all[code] = @(btn(named[code]).isPressed);
+    GCControllerDirectionPad *dpad = p.dpads[GCInputDirectionPad], *ls = p.dpads[GCInputLeftThumbstick], *rs = p.dpads[GCInputRightThumbstick];
+    all[@"dpadLeft"] = @(dpad.left.isPressed); all[@"dpadRight"] = @(dpad.right.isPressed); all[@"dpadUp"] = @(dpad.up.isPressed); all[@"dpadDown"] = @(dpad.down.isPressed);
+    map_pad_inputs(all, @{@"leftX": @(ls.xAxis.value), @"leftY": @(ls.yAxis.value), @"rightX": @(rs.xAxis.value), @"rightY": @(rs.yAxis.value)}, out_buttons, sticks);
+}
 // 槽位计划（纯逻辑，不持有对象：单测直接喂身份指针，不碰 GameController）。
 //   prev 是上一轮的槽位身份（max 项，NULL = 空槽），live 是本次在线的手柄（顺序 = 连接顺序）。
 //   slot_of[j] 写第 j 只该占的槽（-1 = 超过 max 只，不参与）；返回占用到的最高槽位 + 1（至少 1：槽 0 总留给键盘 / 鼠标）。
@@ -721,14 +764,14 @@ static void sample_input(void) {
     // 在线的手柄（顺序 = 连接顺序）：Switch 2 Pro 一只 + 系统报上来的扩展手柄；数组留得比槽位多，超出的交给 s2a_slot_plan 判 -1 丢弃
     ns2_state ble;
     BOOL hasBLE = s2a_mac_ns2_read(&ble);
-    const void *live_ids[9]; GCExtendedGamepad *live_pads[9]; int n = 0;
+    const void *live_ids[9]; GCExtendedGamepad *live_pads[9]; GCController *live_ctrls[9] = {nil}; int n = 0;
     if (hasBLE) { live_ids[n] = &ns2_slot_id; live_pads[n] = nil; n++; }
     // Switch 2 Pro 是输入来源时系统手柄那一路不读（同改前；同一只手柄也可能出现在系统手柄列表里，两路都读会变成两个玩家）
     if (!hasBLE) for (GCController *c in GCController.controllers) {
         GCExtendedGamepad *p = c.extendedGamepad;
-        if (!p) continue;
+        if (!p && !pad_has_profile_buttons(c)) continue;   // 只有通用物理描述的手柄也进槽位（sample_profile_state）
         if (n >= 9) break;
-        live_ids[n] = (__bridge const void *)c; live_pads[n] = p; n++;
+        live_ids[n] = (__bridge const void *)c; live_pads[n] = p; live_ctrls[n] = c; n++;
     }
     int slot_of[9];
     int live = s2a_slot_plan(pad_id, live_ids, n, S2A_MAX_PADS, slot_of);
@@ -738,8 +781,9 @@ static void sample_input(void) {
         int s = slot_of[j];
         if (s < 0) continue;   // 超过 S2A_MAX_PADS 只：多出来的不参与
         pad_id[s] = live_ids[j];
-        if (live_pads[j]) { pad_owner[s] = live_pads[j].controller; sample_pad_state(live_pads[j], &slot_buttons[s], slot_sticks[s]); }
-        else sample_ns2_state(&ble, &slot_buttons[s], slot_sticks[s]);
+        if (live_ids[j] == &ns2_slot_id) sample_ns2_state(&ble, &slot_buttons[s], slot_sticks[s]);
+        else if (live_pads[j]) { pad_owner[s] = live_ctrls[j]; sample_pad_state(live_pads[j], &slot_buttons[s], slot_sticks[s]); }
+        else { pad_owner[s] = live_ctrls[j]; sample_profile_state(live_ctrls[j], &slot_buttons[s], slot_sticks[s]); }
     }
     if (muted) {
         memset(slot_buttons, 0, sizeof slot_buttons); memset(slot_sticks, 0, sizeof slot_sticks);
