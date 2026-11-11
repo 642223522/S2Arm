@@ -30,6 +30,29 @@ Ryujinx game rendering. No game-specific
 addresses, assets, firmware, keys, storage permissions, or network permission
 are included.
 
+## FPS overlay
+
+In the game library, **Show FPS (successful frame submissions)** controls the
+game overlay for this app package. It is off by default and persists across
+launches. The existing `s2arm.fps=on|off` Intent override writes the same
+`display` / `fps` preference; returning to the library refreshes its checkbox.
+The library does not load the native runtime or start an overlay timer.
+
+The overlay refreshes once per second. NVN direct sessions read the atomic
+successful-present counter through `s2a_android_nvn_present_count`; Vulkan
+guest-direct sessions and the legacy counter retain their existing sources.
+Missing windows, acquire timeouts and failed presents do not add NVN samples.
+This is a submission rate, not the screen refresh rate or GPU completion rate.
+The first sample and a paused/stopping session show `FPS —`; a valid sample
+with no new submissions shows `FPS 0.0`.
+
+Host coverage: `bash android/core-runtime/fps-tests/test.sh` and
+`python3 android/tests/nvn_present_count_test.py`. Diagnostic UI coverage uses
+`-Ps2arm.testRunner=org.s2arm.android.FpsOverlayInstrumentation`; add the existing
+debug-only `-Ps2arm.testAppIdSuffix=.w2` for an isolated install when needed.
+The runner restores only the original FPS preference. Diagnostic samples are
+unavailable and do not certify real NVN game frame rates.
+
 ## Which build path to use
 
 Docker is no longer the default way to build Android packages. The backend is

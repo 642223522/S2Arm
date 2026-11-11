@@ -599,6 +599,7 @@ public class MainActivity extends Activity
     private void stopGame(String why, boolean normal) {
         if (!gameMode || gameStopping) return;
         gameStopping = true;
+        if (frameRate != null) frameRate.setResumed(false);
         saveAtomicProbe.removeCallbacks(saveAtomicSample);
         if (gameAudioFocus != null) gameAudioFocus.pause();
         try { GameResume.clear(getCacheDir()); }
@@ -640,7 +641,7 @@ public class MainActivity extends Activity
         hostKeyboard.resume();
         legacyTextInput.resume();
         dguardNotice.resume();
-        frameRate.setResumed(true);
+        frameRate.setResumed(!gameStopping);
         current = this;
         applyGameWindow();
         library.scanImports();   // report the library; imports require an explicit staging target

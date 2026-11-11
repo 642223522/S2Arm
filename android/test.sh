@@ -443,6 +443,8 @@ s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py" --withdraw
 # 默认全绿；--source-ref 旧源码必须红；--withdraw 的 5 条行为撤回变异必须各自转红。
 s2a_gate_step "$PY" "$android_dir/tests/record_flat_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_replayed_fence_test.py"
+# 成功提交计数：真实 NVN present 边界、跨线程读取与错误路径负控。
+s2a_gate_step "$PY" "$android_dir/tests/nvn_present_count_test.py"
 # 回放状态只在第一次提交前复位（#539）：mtl_sub_begin 生产函数体，三次提交只入队一次复位作业。
 s2a_gate_step "$PY" "$android_dir/tests/replay_state_keep_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/record_flat_test.py" --withdraw
