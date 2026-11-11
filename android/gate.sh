@@ -166,8 +166,10 @@ run_apk_gate() {
   #   11-10：安卓门禁合入前也跑后，安卓依赖刚变（前一支合入）、合入后钩子还没补备料的空档里入车的支被判红退回（fix/audit-p2-271-273）。
   #   prepare 本身失败照旧交下面的宿主门禁报红；S2A_ANDROID_AUTO_PREPARE=0 关掉（单测 / 只想看标记状态时用）
   if [ "${S2A_ANDROID_AUTO_PREPARE:-1}" = 1 ]; then
-    S2A_APK_RECEIPT_CHECK=1 timeout 600 bash android/host/gate-apk.sh > /dev/null 2>&1
-    if [ $? = 42 ]; then echo "安卓 APK：本依赖身份没有准备完成标记，先跑宿主 prepare.sh"; bash android/host/prepare.sh || echo "安卓 APK：宿主 prepare.sh 没跑通（rc=$?），交宿主门禁照常报"; fi
+    # 不包 timeout：macOS 门禁机 PATH 里没有 GNU timeout（rc=127），本脚本 set -e 会直接退出；只核标记这步只算依赖清单、不编译
+    local rc=0
+    S2A_APK_RECEIPT_CHECK=1 bash android/host/gate-apk.sh > /dev/null 2>&1 || rc=$?
+    if [ "$rc" = 42 ]; then echo "安卓 APK：本依赖身份没有准备完成标记，先跑宿主 prepare.sh"; bash android/host/prepare.sh || echo "安卓 APK：宿主 prepare.sh 没跑通（rc=$?），交宿主门禁照常报"; fi
   fi
   # #1131：宿主原生路径同一口径；只在 macOS 跑（脚本内自判），缺备料直接报红给命令。
   s2a_gate_step bash android/host/gate-apk.sh

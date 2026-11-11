@@ -23,7 +23,6 @@ for OS in Darwin Linux; do
   ck "③ ${OS} 锁被死进程占着：收回照跑，docker ${nd} 次、宿主 1 次（rc=${r}）" '[ $r = 0 ] && [ "$(grep -c docker/gate-apk $T/calls)" = $nd ] && [ "$(grep -c host/gate-apk $T/calls)" = 1 ] && [ ! -e $T/lock ]'
 done
 # ④ 缺准备完成标记（只核标记退 42）→ 先跑宿主 prepare.sh 再证；有标记（退 0）→ 不跑 prepare。bash 替身代替真脚本，只看调用顺序
-timeout() { shift; "$@"; }   # 门禁用 timeout 包着只核标记那一步：替身里去掉，好走到下面的 bash 替身
 bash() { case "$*" in *host/gate-apk.sh) if [ -n "${S2A_APK_RECEIPT_CHECK:-}" ]; then return "$RC"; fi;; *host/prepare.sh) echo prepare >> $T/calls; return 0;; esac; command bash "$@"; }
 for RC in 42 0; do rm -rf $T/lock; : > $T/calls; OS=Darwin; o=$(S2A_ANDROID_AUTO_PREPARE=1 run_apk_gate); r=$?
   [ $RC = 42 ] && want=1 || want=0
