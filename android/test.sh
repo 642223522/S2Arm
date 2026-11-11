@@ -235,11 +235,14 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameTouchTest
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/ThreadedRendererConfig.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/Json.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/TouchLayout.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/TouchPad.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/TouchLayoutStore.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/TouchRouting.java" \
     "$android_dir/tests/TouchPadTest.java" \
     "$android_dir/tests/TouchRoutingTest.java"
-s2a_gate_step java -cp "$out/java" org.s2arm.android.TouchPadTest
+s2a_gate_step java -cp "$out/java" org.s2arm.android.TouchPadTest "$repo_dir/ios/layouts/classic-reference.json"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.TouchRoutingTest
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/Json.java" \
@@ -402,6 +405,7 @@ s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_shutdown_contract.p
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/tests/stubs/android/util/Log.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/TouchPad.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/TouchLayoutStore.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameMetadata.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameSession.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/RuntimeLibrary.java" \
