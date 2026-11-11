@@ -119,14 +119,16 @@ import S2ArmAppleAdapter
             }
         case ("POST", "/installCheck"):
             guard let g = game() else { return .bad("没有这个 gameId") }
-            model.checkInstall(g.id); return .ok()
+            model.checkInstall(g.id, device: str("device")); return .ok()   // device：查哪一台（s2armctl install-check --device），不给按界面上选中的那台
         case ("POST", "/install"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
             guard model.installAllowed(g.id) else {
                 return .bad("还不能装：先 install-check \(g.id)；这款的 iPhone 版没做好时要先出包")
             }
-            model.install(g, teamId: str("teamId"), device: str("device"), acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
+            // 往设备上装东西一律要说明装到哪台（11-11：作业层不替玩家挑，控制口也不拿界面上选中的那台顶替）；s2armctl targets 列设备号
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.install(g, teamId: str("teamId"), device: device, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
@@ -147,11 +149,13 @@ import S2ArmAppleAdapter
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
             if let b = busy() { return b }
-            model.restorePhone(g); return .ok()
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.restorePhone(g, device: device); return .ok()
         case ("POST", "/uninstall"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
-            model.removeFromPhone(g, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.removeFromPhone(g, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false, device: device); return .ok()
         case ("POST", "/customize"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
@@ -263,6 +267,9 @@ import S2ArmAppleAdapter
     }
 
     /// 自描述：AI 先 GET /help 就知道能做什么（s2armctl help 打的就是这张表）。
+    /// 往设备上装 / 删 / 装回不带 device：拒绝（作业层也拒），告诉怎么查设备号
+    static let deviceRequired = "缺 device：说明装到哪台（s2armctl targets 列出连着的设备、设备名和设备号），不替你挑"
+
     static let endpoints: [[String: String]] = [
         ["GET /state", "当前界面状态：环境检查（checks）、密钥、游戏列表（id / 能否出包 / 缺什么）、作业页（session）、任务（tasks：作业记录，进度、里程碑、diagnostics 错误码 / 原因 / 建议 / 日志）"],
         ["GET /targets", "打 iPhone 包的目标设备：当前目标、连着的设备、可选机型、可选系统大版本（会现读一次设备）"],
@@ -295,7 +302,7 @@ import S2ArmAppleAdapter
         let privateRoot = m.provider.client.environment.privateRoot
         let keys = m.keysReady
         let rd: Any = m.installReadiness.map { r -> [String: Any] in
-            ["gameId": m.installGameID ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
+            ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
              "items": r.items.map { ["id": $0.id, "ok": $0.ok, "waiting": $0.waiting, "title": $0.title, "detail": $0.detail, "who": $0.who] }]
         } ?? NSNull()
         let session: Any = m.session.map { s -> [String: Any] in

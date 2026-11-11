@@ -735,18 +735,43 @@ int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_
 int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void);   // pack_apply.c
 static char g_inst_gid[32]; static atomic_int g_inst_busy, g_inst_done, g_inst_total;
 static void inst_progress(int done, int total) { atomic_store(&g_inst_done, done); atomic_store(&g_inst_total, total); }
+// 单一 IMG 的分段进度（pack_apply.c s2a_pack_apply_phase，v0.3.0）：1 解开推送包（包数）/ 2 从 game.img 解小文件（字节）/ 3 核对机上文件（文件数）。
+//   弱引用：引擎还没有这个回调时（旧 pack_apply.c）不挂，库照旧按 s2a_pack_apply_progress 画一段进度
+extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total) __attribute__((weak_import));
+static atomic_int g_inst_phase; static _Atomic uint64_t g_inst_pdone, g_inst_ptotal;
+static void inst_phase(int phase, uint64_t done, uint64_t total) { atomic_store(&g_inst_phase, phase); atomic_store(&g_inst_pdone, done); atomic_store(&g_inst_ptotal, total); }
+static NSMutableDictionary<NSString *, NSString *> *g_inst_fail;   // 主线程：游戏号 → 最后一次解开失败的原因（成功后清掉）
+int s2a_shell_install_phase(const char *gid, int *phase, double *fraction) {   // 主线程
+    if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
+    int p = atomic_load(&g_inst_phase); uint64_t done = atomic_load(&g_inst_pdone), total = atomic_load(&g_inst_ptotal);
+    if (!p) { done = (uint64_t)atomic_load(&g_inst_done); total = (uint64_t)atomic_load(&g_inst_total); }
+    *phase = p; *fraction = total ? (double)done / (double)total : -1; return 1;
+}
+const char *s2a_shell_install_failure(const char *gid) {   // 主线程
+    static char out[600]; NSString *why = gid ? g_inst_fail[@(gid)] : nil;
+    if (!why.length) return NULL;
+    strlcpy(out, why.UTF8String, sizeof out); return out;
+}
 static atomic_int g_games_repairing = 1;   // 游戏目录 App 写不进时的迁移（#569，img_scan_bg）：第一次扫完之前算「在查」：冷启动库先于扫描出现时也不抢着解
 int s2a_shell_install_game(const char *gid) {   // 主线程（s2a_shell.h 约定）
     if (atomic_load(&g_games_repairing)) return 0;   // 还在查 / 迁游戏目录（#569）：先不解，库下一秒重判再起
     if (!gid || strlen(gid) != 16 || strchr(gid, '/') || atomic_exchange(&g_inst_busy, 1)) return 0;
     strlcpy(g_inst_gid, gid, sizeof g_inst_gid); atomic_store(&g_inst_done, 0); atomic_store(&g_inst_total, 0);
+    atomic_store(&g_inst_phase, 0); atomic_store(&g_inst_pdone, 0); atomic_store(&g_inst_ptotal, 0);
     char d[1024]; s2a_container_docs(d, sizeof d);
     NSString *docs = [NSString stringWithFormat:@"%s/games/%s", d, gid], *name = @(gid);
     LOG("游戏库：后台解开 %s", gid); s2a_ios_keep_awake(1);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        s2a_pack_apply_progress = inst_progress; int rc = s2a_pack_apply(docs.fileSystemRepresentation); s2a_pack_apply_progress = NULL;
-        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, s2a_pack_apply_failure()); else LOG("游戏库：%s 解开了", name.UTF8String);
-        dispatch_async(dispatch_get_main_queue(), ^{ s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh(); });
+        s2a_pack_apply_progress = inst_progress; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = inst_phase;
+        int rc = s2a_pack_apply(docs.fileSystemRepresentation);
+        s2a_pack_apply_progress = NULL; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = NULL;
+        NSString *why = rc ? @(s2a_pack_apply_failure() ?: "") : nil;
+        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, why.UTF8String); else LOG("游戏库：%s 解开了", name.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!g_inst_fail) g_inst_fail = [NSMutableDictionary new];
+            if (why.length) g_inst_fail[name] = why; else [g_inst_fail removeObjectForKey:name];   // 卡片上「安装没完成」下面显示这一句，「重试」成功后清掉
+            s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh();
+        });
     });
     return 1;
 }
@@ -763,11 +788,21 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 // 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
+const char *s2a_img_scan_failure(void);   // pack_apply.c：最近一次认领失败的原因（空串 = 没失败）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
     if (n > 0) LOG("资源导入：从「文件」里认出并放好 %d 个游戏资源包（game.img）", n);
     return n;
+}
+// 认领失败（格式号不认识、挪不动等，pack_apply.c s2a_img_scan_failure）：在游戏库上弹一次原因。同一句只弹一次，回前台重扫不刷屏
+static void img_scan_report(void) {   // 主线程
+    static char shown[600]; const char *why = s2a_img_scan_failure();
+    if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
+    strlcpy(shown, why, sizeof shown);
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.scanFailed.title") message:@(why) preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+    [lib_top() presentViewController:a animated:YES completion:nil];
 }
 // 游戏目录 App 写不进时迁到新目录（#569，pack_apply.c s2a_games_repair）：本进程第一次扫之前做一次，迁移期间不起解包（s2a_shell_install_game 拒绝，
 //   库照旧显示「安装中」、下一秒重判再起）；结果用界面语言在库上说一次：迁好了 / 没迁成和原因（不悄悄绕路，玩家知道发生了什么）
@@ -787,7 +822,7 @@ static void img_scan_bg(void) {
         if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); }
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
-        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); });
+        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); if (r == 0) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
     });
 }
 static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }

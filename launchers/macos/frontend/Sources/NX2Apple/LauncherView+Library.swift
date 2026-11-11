@@ -73,7 +73,8 @@ extension LauncherView {
                     let queueable = !model.busy || model.session?.export != nil
                     if game.iphoneReady {
                         // 包已出好：主按钮是装机 / 续签，重新出包退到次要
-                        Button { installFor = game.id } label: {
+                        // 装过的款（续签 / 重装）：目标先设成当初装的那台，不换别的；要装到另一台在装机页改选
+                        Button { model.targetInstalledDevice(of: game); installFor = game.id } label: {
                             LauncherHeroActionLabel(title: txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), symbol: "iphone")
                         }
                         .buttonStyle(.plain).keyboardShortcut(.return, modifiers: []).accessibilityIdentifier("hero.install")
@@ -266,7 +267,7 @@ extension LauncherView {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
-                Button(txt("library.hero.renew")) { installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
             }
             .padding(.horizontal, 34).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
@@ -348,7 +349,11 @@ extension LauncherView {
         }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来自动恢复；文件夹没了 → 红字，点卡片重新指定或移除
-        if game.location.state == "offline" { return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: game.location.volume), LauncherPalette.unbuilt) }
+        // 未连接给具体路径（同出包页下拉框）：卷名会重名（内置盘一律「系统盘」），看不出是哪个位置没连上
+        if game.location.state == "offline" {
+            let place = game.location.path.isEmpty ? game.location.volume : (game.location.path as NSString).abbreviatingWithTildeInPath
+            return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: place), LauncherPalette.unbuilt)
+        }
         if game.location.state == "missing" { return (txt("library.location.missing"), LauncherPalette.danger) }
         var parts: [String] = []
         var expired = false

@@ -13,6 +13,8 @@ struct JobProgress: Equatable {
     private(set) var done: Double?
     private(set) var total: Double?
     private(set) var unit = ""
+    /// 本阶段可能弹钥匙串授权（作业事件 keychainPrompt，pack/jobs/core.py begin(keychain=)）：只在这时挂「请在钥匙串弹框里允许」的提示
+    private(set) var keychainPrompt = false
     /// 本阶段在这里开始的时刻（阶段时钟从它走）。
     private(set) var stageStarted: Date?
     /// 按实测速率算的剩余秒数，截至 etaAt。
@@ -26,7 +28,7 @@ struct JobProgress: Equatable {
     private(set) var track = MilestoneTrack()
 
     static func == (a: JobProgress, b: JobProgress) -> Bool {
-        a.stage == b.stage && a.index == b.index && a.count == b.count && a.done == b.done && a.total == b.total && a.unit == b.unit
+        a.stage == b.stage && a.keychainPrompt == b.keychainPrompt && a.index == b.index && a.count == b.count && a.done == b.done && a.total == b.total && a.unit == b.unit
             && a.stageStarted == b.stageStarted && a.eta == b.eta && a.etaAt == b.etaAt && a.rate == b.rate
             && a.origin?.t == b.origin?.t && a.origin?.done == b.origin?.done && a.track == b.track
     }
@@ -42,9 +44,10 @@ struct JobProgress: Equatable {
         let newIndex = number("stageIndex").map { Int($0) }
         if e.ev == "stage" || name != stage || (newIndex != nil && newIndex != index) {
             stage = name; stageStarted = now
-            done = nil; total = nil; unit = ""; origin = nil; eta = nil; etaAt = nil; rate = nil
+            done = nil; total = nil; unit = ""; origin = nil; eta = nil; etaAt = nil; rate = nil; keychainPrompt = false
         }
         if let newIndex { index = newIndex }
+        if let k = e.fields["keychainPrompt"] as? Bool { keychainPrompt = k }
         if let c = number("stageCount") { count = Int(c) }
         guard let d = number("done"), let t = number("total"), t > 0 else { return }
         // 换了一个计数器（总量变了 / 从头数起）：速率从这一次读数重算

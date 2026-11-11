@@ -85,7 +85,7 @@ function(s2a_android_nvk_sources output)
         native/direct/compiler_bind.c native/direct/source_store.c native/direct/diag.c
         native/direct/compile_worker.c native/direct/program_cache.c native/direct/offline_library.c
         native/direct/compile_request.c native/direct/input_identity.c native/direct/texture_facts.c
-        native/nvn/nvn_vk_program_result.c native/gfx_plat/nvk_shader.c
+        native/nvn/nvn_vk_program_result.c native/nvn/nvn_vk_compute_request.c native/gfx_plat/nvk_shader.c
         # nvn_gpu_* 的 Vulkan 后端与它的零件
         native/nvn/backend_vulkan.c native/nvn/nvn_vk_format.c native/nvn/nvn_vk_bcdec.c
         ../graphics/nvn/gfx/nvn/nvn_fmt_expand.c

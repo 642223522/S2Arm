@@ -48,6 +48,8 @@ public struct GameSummary: Identifiable, Equatable {
     /// 上次装到 iPhone 的时刻（秒）和是不是免费账号签的；没装过为 nil。
     public let iphoneInstalledAt: Double?
     public let iphoneFree: Bool
+    /// 上次装的那台设备（设备记录键，UDID）：「续签」装回当初那台，不换别的（pack/jobs/layout.py install_record 的 deviceKey）
+    public var iphoneInstallDevice: String? = nil
     /// 只换宿主（pack/jobs/host_update.py）：none / current / swap / incompatible（要重新准备才能用上新版修复）/ failed
     public let hostUpdate: String
     /// 存放位置（游戏库结构 v3）：state = ok / offline（位置没连上）/ missing（文件夹找不到）/ none（还没出过包）
@@ -80,6 +82,7 @@ public struct GameSummary: Identifiable, Equatable {
                   customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false,
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
+        self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
     }
 
     /// 某类原件里版本最新的那个的显示版本（base / update）；没有这类为 nil。

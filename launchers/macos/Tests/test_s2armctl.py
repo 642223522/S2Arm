@@ -584,6 +584,43 @@ class DeviceBundleTests(unittest.TestCase):
         self.assertNotIn("没装", buf.getvalue())
 
 
+class DeviceChoiceTests(unittest.TestCase):
+    """设备号贯穿（11-11 真机验收测出）：install-check 能带 --device；targets 列出设备名、设备号与连接方式（两台同型号时只看机型分不出）"""
+    def test_install_check_sends_device(self):
+        sent = []
+        def call(method, path, body=None, **kw):
+            if method == "POST": sent.append((path, body)); return {"ok": True}
+            return {"installReadiness": {"gameId": "G", "checkedDevice": "U-1", "ready": True, "items": []}}
+        with mock.patch.object(ctl, "call", side_effect=call), contextlib.redirect_stdout(io.StringIO()):
+            for kw in (dict(device="U-1"), {}):
+                with self.assertRaises(SystemExit): ctl.install_check("G", False, **kw)   # 查完按 ready 退出
+        self.assertEqual(sent, [("/installCheck", {"gameId": "G", "device": "U-1"}), ("/installCheck", {"gameId": "G"})])
+
+    def test_install_check_waits_for_the_requested_device(self):
+        """同一款上一台的清单还挂在 state 里：带 --device 时等到给这台查的那份才读，不拿上一台的（11-11 真机验收：连查两台，第二台读到第一台的结果）"""
+        states = iter([{"gameId": "G", "checkedDevice": "U-OLD", "ready": False, "items": [{"ok": False, "waiting": False, "title": "旧", "detail": "旧那台没找到", "who": "human"}]},
+                       {"gameId": "G", "checkedDevice": "U-NEW", "ready": True, "items": [{"ok": True, "waiting": False, "title": "新那台已连上", "detail": "", "who": "human"}]}])
+        def call(method, path, body=None, **kw):
+            return {"ok": True} if method == "POST" else {"installReadiness": next(states)}
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "call", side_effect=call), mock.patch.object(ctl.time, "sleep"), contextlib.redirect_stdout(buf), \
+             self.assertRaises(SystemExit) as done:
+            ctl.install_check("G", False, device="U-NEW")
+        self.assertEqual(done.exception.code, 0)
+        self.assertIn("新那台已连上", buf.getvalue()); self.assertNotIn("旧那台没找到", buf.getvalue())
+
+    def test_targets_lists_name_udid_and_link(self):
+        t = {"current": None, "osChoices": [27], "models": [], "connected": [
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "甲", "udid": "U-1", "wired": True},
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "乙", "udid": "U-2", "wired": False}]}
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "call", return_value=t), mock.patch.object(sys, "argv", ["s2armctl", "targets"]), contextlib.redirect_stdout(buf):
+            ctl.main()
+        out = buf.getvalue()
+        self.assertIn("设备名「甲」，设备号 U-1，数据线", out)
+        self.assertIn("设备名「乙」，设备号 U-2，同一 Wi-Fi", out)
+
+
 class DiagCommandTests(unittest.TestCase):
     """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""
 
@@ -859,3 +896,37 @@ class JobIdentityTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("无法确认作业进程身份", output)
         self.assertNotIn("作业进程已不在", output)
+
+
+class UsageGuardTests(unittest.TestCase):
+    """Subcommand help and missing arguments must not reach the App's control port."""
+
+    def run_main(self, argv):
+        output = io.StringIO()
+        with mock.patch.object(ctl, "call") as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \
+                contextlib.redirect_stdout(output):
+            ctl.main()
+        return call, output.getvalue()
+
+    def test_subcommand_help_never_reaches_the_app(self):
+        for argv in (["install", "--help"], ["install", "-h"], ["wait", "--help"]):
+            with self.subTest(argv=argv):
+                call, output = self.run_main(argv)
+                call.assert_not_called()
+                self.assertIn("s2armctl", output)
+
+    def test_missing_required_argument_exits_2_without_app_call(self):
+        for argv in (["install"], ["wait"], ["build"], ["snapshot"], ["keys"],
+                     ["install-check", "--json"], ["ipa", "--space-override"],
+                     ["cloud-sync"], ["display", "--docked", "on"], ["library", "--move"], ["restore-iphone"], ["show"],
+                     ["install", "--team", "ABCDE12345"]):
+            with self.subTest(argv=argv):
+                with mock.patch.object(ctl, "call") as call, \
+                        mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        self.assertRaises(SystemExit) as caught:
+                    ctl.main()
+                call.assert_not_called()
+                self.assertEqual(caught.exception.code, 2)
+

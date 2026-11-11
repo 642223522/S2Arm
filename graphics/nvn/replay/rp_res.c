@@ -18,6 +18,7 @@ struct rp_tex {
     uint8_t cpu;               // 内容来自游戏内存（按脏页重传）
     uint8_t gpu_written;       // 内容以 GPU 为准
     uint8_t uploaded;
+    uint8_t need_init;         // 刚建的存储，初始内容还没定（init_content）
     uint8_t in_alias;
     uint64_t stamp;            // 最近一次上传取的脏页代号
     uint64_t up_sub;           // 最近一次上传所在的提交序号
@@ -83,6 +84,13 @@ void nvn_be_tex_cpu_written(const tex_t *t) {
     if (x) { x->cpu = 1; x->gpu_written = 0; x->uploaded = 0; }   // 游戏刚用 CPU 写了它：下次使用整张重传
     pthread_mutex_unlock(&g_rmu);
 }
+// 调试取证：这个序号的存储现在的归属（位 0 当 CPU 贴图、位 1 传过、位 2 GPU 写过、位 3 有存储），没建过 = 0
+int rp_tex_debug_state(uint64_t serial) {
+    pthread_mutex_lock(&g_rmu);
+    struct rp_tex *x = nvn_hm_get(&g_by_serial, &serial); int r = x ? 8 | (x->cpu ? 1 : 0) | (x->uploaded ? 2 : 0) | (x->gpu_written ? 4 : 0) : 0;
+    pthread_mutex_unlock(&g_rmu);
+    return r;
+}
 int nvn_be_tex_gpu_owned(uint64_t serial) {
     pthread_mutex_lock(&g_rmu);
     struct rp_tex *x = nvn_hm_get(&g_by_serial, &serial); int r = x && x->gpu_written;
@@ -117,11 +125,13 @@ static int cpu_content(const tex_t *t) {
 }
 
 // ---------- 上传：块线性存储 → 逐级逐层线性 → 后端 ----------
-static int upload_all(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c) {
+// track：1 = CPU 贴图（先保护、记代号，之后脏了重传）；0 = 一次性的初始内容，不跟踪写
+static int upload_all(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c, int track) {
     if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) { nvn_unimpl("tex", "upload_linear_or_sparse", t); return -1; }
     int bw = 1, bh = 1; int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     if (!bpb) { nvn_unimpl("fmt", "upload_unknown_format", t); return -1; }
-    nvn_dirty_protect(t->mem, t->L.size); uint64_t st = nvn_dirty_now();   // 先保护、取代号、再读：取代号之后的写下次查得到
+    uint64_t st = 0;
+    if (track) { nvn_dirty_protect(t->mem, t->L.size); st = nvn_dirty_now(); }   // 先保护、取代号、再读：取代号之后的写下次查得到
     uint32_t levels = t->d.levels ? t->d.levels : 1, layers = t->L.layers ? t->L.layers : 1;
     int is3d = t->d.target == NVN_TEXTURE_TARGET_3D;
     uint8_t *tmp = NULL; size_t cap = 0; int rc = 0;
@@ -139,8 +149,53 @@ static int upload_all(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c) {
         }
     }
     free(tmp);
-    if (!rc) { x->stamp = st; x->uploaded = 1; g_uploads++; }
+    if (!rc && track) { x->stamp = st; x->uploaded = 1; g_uploads++; }
     return rc;
+}
+
+// ---------- 新建存储的初始内容（nvn_mtl.m tex_init_fill @3670、tex_zero_fill @3345 / @4297） ----------
+// Switch 上贴图就是内存池里那段内存：建贴图之前池里放着什么，贴图一开始就是什么。游戏把文件读进 CPU 不能访问的池再在上面建贴图，
+// 之后不会再有任何通知——不在建图时取一次，这类贴图永远是空的。取不了 / 不该取的，新图清零（宿主的新图内容没有定义）。
+// 与 iOS 的差：没有按页的 GPU 写账（gpw_stale：别的贴图的 GPU 写盖过、客体内存里已经过时的那些字节不取），这里整段照取；
+// 判全 0 时不跳过游戏没碰过的页（iOS mem_any_touched 靠 mincore；安卓上换出的页同样报不在内存，不能当 0）。
+static int fmt_nonfinite(const tex_t *t) {   // 浮点格式的存储里有 Inf / NaN（iOS fill_nonfinite）
+    const uint8_t *p = t->mem; uint64_t n;
+    switch (t->d.format) {
+    case NVN_FORMAT_R11G11B10F: n = t->L.size / 4; for (uint64_t i = 0; i < n; i++) { uint32_t v; memcpy(&v, p + i * 4, 4); if (((v >> 6) & 31) == 31 || ((v >> 17) & 31) == 31 || ((v >> 27) & 31) == 31) return 1; } return 0;
+    case NVN_FORMAT_R16F: case NVN_FORMAT_RG16F: case NVN_FORMAT_RGBA16F: n = t->L.size / 2; for (uint64_t i = 0; i < n; i++) { uint16_t v; memcpy(&v, p + i * 2, 2); if (((v >> 10) & 31) == 31) return 1; } return 0;
+    case NVN_FORMAT_R32F: case NVN_FORMAT_RG32F: case NVN_FORMAT_RGBA32F: n = t->L.size / 4; for (uint64_t i = 0; i < n; i++) { uint32_t v; memcpy(&v, p + i * 4, 4); if (((v >> 23) & 255) == 255) return 1; } return 0;
+    default: return 0;
+    }
+}
+static int init_from_storage(const tex_t *t) {
+    if (!t->mem || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || t->has_layout) return 0;
+    if (t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER || fmt_depth(t->d.format)) return 0;
+    int no_cpu = (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) != 0;
+    if (no_cpu && (t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE)) return 0;   // CPU 不能访问的池里带压缩提示的贴图：那段内存对 CPU 可能没有意义
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;   // 线性 / 稀疏的上传还没接（upload_all 记账）
+    if (!mem_any(t->mem, t->L.size)) return 0;
+    if (no_cpu && fmt_nonfinite(t)) return 0;   // 游戏写不了这种池：里面的 Inf / NaN 是别人留下的，不是数据
+    return 1;
+}
+static void zero_fill(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c) {
+    int bw = 1, bh = 1; int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    if (!bpb || bw != 1 || bh != 1 || fmt_depth(t->d.format) || t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return;   // 压缩 / 深度模板 / 多重采样的不清（同 iOS）
+    int is3d = t->d.target == NVN_TEXTURE_TARGET_3D;
+    uint32_t w0 = t->d.width ? (uint32_t)t->d.width : 1, h0 = t->d.height ? (uint32_t)t->d.height : 1, d0 = is3d && t->d.depth ? (uint32_t)t->d.depth : 1;
+    size_t need = (size_t)w0 * (size_t)bpb * h0 * d0;   // 第 0 级一层最大
+    if (need > (64u << 20)) return;
+    uint8_t *z = calloc(1, need); if (!z) return;
+    uint32_t levels = t->d.levels ? t->d.levels : 1, layers = t->L.layers ? t->L.layers : 1;
+    for (uint32_t l = 0; l < levels; l++) {
+        uint32_t w = w0 >> l, h = h0 >> l, dp = d0 >> l;
+        if (!w) w = 1;
+        if (!h) h = 1;
+        if (!dp) dp = 1;
+        size_t pitch = (size_t)w * (size_t)bpb;
+        NVNcopyRegion r = {0, 0, 0, (int)w, (int)h, (int)dp};
+        for (uint32_t y = 0; y < layers; y++) nvn_gpu_tex_upload(c, x->g, l, y, &r, z, pitch, pitch * h * dp);
+    }
+    free(z);
 }
 
 static uint32_t usage_of(const tex_t *t, int cpu) {
@@ -173,15 +228,19 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
                 char name[48]; snprintf(name, sizeof name, "tex_create_fmt_%#x_target_%d", (unsigned)t->d.format, t->d.target); if (nvn_unimpl("gpu", name, t) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);   // 首次：带上后端给的原因
                 return NULL;
             }
-            x = calloc(1, sizeof *x); x->g = g; x->cpu = (uint8_t)cpu; x->mem = t->mem; x->size = t->L.size; g_built++;
+            x = calloc(1, sizeof *x); x->g = g; x->cpu = (uint8_t)cpu; x->mem = t->mem; x->size = t->L.size; x->need_init = 1; g_built++;
             if (!cpu && t->pool) { nvn_hm_put(&g_alias, &k, x); x->in_alias = 1; }
         }
         x->users++;
         nvn_hm_put(&g_by_serial, &t->serial, x); g_ser_gen++;
     }
+    if (x->need_init && c) {   // 刚建的存储：CPU 贴图走下面的上传；其余的取一次存储里现有的内容，取不了的清零
+        x->need_init = 0;
+        if (!x->cpu && !x->gpu_written) { nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub); if (xc && (!init_from_storage(t) || upload_all(t, x, xc, 0))) zero_fill(t, x, xc); }
+    }
     if (x->cpu && !x->gpu_written && c && t->mem && (!x->uploaded || nvn_dirty_since(t->mem, t->L.size, x->stamp))) {
         nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);   // 上传是传输：录进前置段（本次提交里第二次上传才回主段）
-        if (xc) upload_all(t, x, xc);
+        if (xc) upload_all(t, x, xc, 1);
     }
     nvn_gpu_tex g = x->g;
     pthread_mutex_unlock(&g_rmu);
@@ -266,6 +325,23 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out) {
     return out;
 }
 
+// 一组贴图槽的「编译事实」摘要：每槽取绑定贴图的有效格式、有效目标、深度（没登记的槽取「在不在池范围里」）。
+// 着色器来源拿它判断「这些槽对编译来说跟上次一样」，一次加锁看完一组，不必逐槽取快照。
+uint64_t rp_tex_fact_sig(const uint64_t *handles, int n, int tex_base, int tex_pool_n) {
+    uint64_t hsh = 1469598103934665603ull;
+    #define SIG_MIX(v) do { hsh ^= (uint64_t)(v); hsh *= 1099511628211ull; } while (0)
+    pthread_mutex_lock(&g_rmu);
+    for (int i = 0; i < n; i++) {
+        long id = handles[i] ? (long)(handles[i] & 0xFFFFF) : (long)tex_base;
+        if (id >= 0 && id < g_ntreg && g_treg[id].ok) { const treg_t *r = &g_treg[id];
+            SIG_MIX(1); SIG_MIX(r->has_v && r->v.set_format ? r->v.format : r->t.d.format); SIG_MIX(r->has_v && r->v.set_target ? r->v.target : r->t.d.target); SIG_MIX(r->t.d.depth);
+        } else { SIG_MIX(2); SIG_MIX(id >= tex_base && (uint64_t)(id - tex_base) < (uint64_t)tex_pool_n); }
+    }
+    pthread_mutex_unlock(&g_rmu);
+    #undef SIG_MIX
+    return hsh;
+}
+
 // 贴图号 → 登记时的贴图描述快照（着色器编译事实用；不建图）。1 = 有
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v) {
     int ok = 0;
@@ -311,3 +387,11 @@ void rp_res_reset(void) {
 int rp_res_tex_built(void) { pthread_mutex_lock(&g_rmu); int n = g_built; pthread_mutex_unlock(&g_rmu); return n; }
 int rp_res_tex_serials(void) { pthread_mutex_lock(&g_rmu); int n = (int)g_by_serial.n; pthread_mutex_unlock(&g_rmu); return n; }
 uint64_t rp_res_uploads(void) { pthread_mutex_lock(&g_rmu); uint64_t n = g_uploads; pthread_mutex_unlock(&g_rmu); return n; }
+
+// 调试：序号 → 后端贴图（没建过 = NULL）。读回落盘用（rp_debug_dump_chain）
+nvn_gpu_tex rp_tex_backend_by_serial(uint64_t serial) {
+    pthread_mutex_lock(&g_rmu);
+    struct rp_tex *x = nvn_hm_get(&g_by_serial, &serial); nvn_gpu_tex g = x ? x->g : NULL;
+    pthread_mutex_unlock(&g_rmu);
+    return g;
+}

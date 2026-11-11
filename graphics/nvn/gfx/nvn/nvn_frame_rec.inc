@@ -325,7 +325,9 @@ static void fr_capture(const char *name, const tex_t *pt, double period, const i
     if (s2a_vk_front_used && s2a_vk_front_used()) { MLOG("【红】 帧录 %s：本款走 Vulkan 前端（hle_vk.m 自己编码 Metal，不经 NVN 回放层），这一版录不到", name); return; }
     if (!s2a_window_get) { MLOG("【红】 帧录 %s：宿主没有地址窗口接口", name); return; }
     s2a_window_get(&wb, &ws);
-    { pthread_mutex_lock(&g_mu); int sparse = 0; for (int i = 0; i < g_npool; i++) sparse |= g_pools[i].host != g_pools[i].base;   // the pool's host bytes are elsewhere (a far-alias shadow, or one view of it: pool_host) pthread_mutex_unlock(&g_mu);
+    // the pool's host bytes are elsewhere (a far-alias shadow, or one view of it: pool_host).
+    //   11-11：#450（71a0524e）把这行的注释写在了解锁前面，解锁被注释掉、g_mu 一直占着，随后 mtl_finish_gpu → nvn_be_wait 再锁 g_mu 自锁死，任何录帧都卡在出图（t_nvn_frec_tex ⑥）
+    { pthread_mutex_lock(&g_mu); int sparse = 0; for (int i = 0; i < g_npool; i++) sparse |= g_pools[i].host != g_pools[i].base; pthread_mutex_unlock(&g_mu);
       if (sparse) MLOG("【红】 帧录 %s：有内存池在远端别名区（影子另址），回放按游戏地址读不到它们的内容", name); }
     mtl_finish_gpu();   // GPU 做完这一帧之前的提交：GPU 私有贴图的内容、事件值都落定
     uint64_t mb = 0, nreg = 0, gb = 0; int skipped = 0;
@@ -537,8 +539,9 @@ int nvn_frame_replay(const char *dir) {
         uint64_t tk = nvn_be_present(pt, period, crop[2] || crop[3] ? crop : NULL);
         nvn_be_present_wait(tk); mtl_finish_gpu();
         uint64_t nd = dr1 - dr0;
-        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令%s", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
-             (unsigned long long)(c1[0] - c0[0]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "");
+        // 周期数（本线程自己跑的 CPU 周期，不含被抢占、不随别的进程起伏）：tools/frame_bench.sh 拿它比编译参数，墙钟 ms 在多会话共用的机器上波动超 3%
+        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令、%llu 个周期%s", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
+             (unsigned long long)(c1[0] - c0[0]), (unsigned long long)(c1[1] - c0[1]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "");
         if (it == 0) { int put = 0, miss = 0; snprintf(p, sizeof p, "%s/gpu.bin", dir); fr_restore_gpu(p, &put, &miss); MLOG("回放：GPU 私有贴图写回 %d 张（尺寸 / 格式对不上没写 %d 张，靠重画）", put, miss); }
     }
     for (int i = 0; i < 500 && !__atomic_load_n(&grabbed, __ATOMIC_ACQUIRE); i++) usleep(10000);

@@ -199,10 +199,18 @@ footer p { margin: 6px 0; }
       <span class="zh">下载 Windows 版</span><span class="en">Download for Windows</span>
     </a>
     <div class="meta" id="meta-win">S2Arm-windows-x64.zip</div>
-    <ol>
+    <ol id="win-steps-zip">
       <li><span class="zh">解压到任意文件夹（路径别太深），整个文件夹都要留着。</span><span class="en">Unzip to any folder (keep the path short) and keep the whole folder.</span></li>
       <li><span class="zh">双击 <code>S2Arm.exe</code> 启动。</span><span class="en">Double-click <code>S2Arm.exe</code>.</span></li>
     </ol>
+    <ol id="win-steps-setup" hidden>
+      <li><span class="zh">双击下载的安装程序，点「安装」。不需要管理员权限，装好后开始菜单和桌面都有 S2Arm。</span><span class="en">Run the downloaded installer and click Install. No admin rights needed; S2Arm appears in the Start menu and on the desktop.</span></li>
+      <li><span class="zh">以后在「设置 → 应用」里能卸载；卸载只删程序，游戏库和存档都保留。</span><span class="en">Uninstall from Settings → Apps; it removes only the program, your library and saves stay.</span></li>
+    </ol>
+    <p class="note" id="win-portable" hidden>
+      <span class="zh">不想安装？下载便携版：</span><span class="en">Prefer no installer? Get the portable version:</span>
+      <a id="dl-win-zip" href="https://github.com/jhaizhou-ops/S2Arm/releases/latest/download/S2Arm-windows-x64.zip">S2Arm-windows-x64.zip</a>
+    </p>
     <p class="note">
       <span class="zh">程序暂未代码签名，首次打开若弹出「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。</span>
       <span class="en">The exe is not code-signed yet. If "Windows protected your PC" appears, click "More info → Run anyway".</span>
@@ -270,6 +278,8 @@ footer p { margin: 6px 0; }
   'use strict';
   var REPO = 'jhaizhou-ops/S2Arm';
   var ASSETS = { mac: 'S2Arm-mac-arm64.dmg', win: 'S2Arm-windows-x64.zip' };
+  // Windows 安装程序（v0.3.0 起）：最新正式版里有它就把主按钮换成它、压缩包降为「便携版」链接；没有（老版本）就照旧给压缩包，按钮不会指向不存在的文件
+  var WIN_SETUP = 'S2Arm-windows-x64-setup.exe';
   var body = document.body;
 
   // 语言：?lang= 优先，其次记住的选择，再看浏览器语言。
@@ -332,6 +342,13 @@ footer p { margin: 6px 0; }
       if (rel.html_url) document.getElementById('notes-link').href = rel.html_url;
       var byName = {};
       (rel.assets || []).forEach(function (a) { byName[a.name] = a; });
+      if (byName[WIN_SETUP]) {
+        document.getElementById('dl-win').href = 'https://github.com/' + REPO + '/releases/latest/download/' + WIN_SETUP;
+        ASSETS.win = WIN_SETUP;
+        document.getElementById('win-steps-zip').hidden = true;
+        document.getElementById('win-steps-setup').hidden = false;
+        document.getElementById('win-portable').hidden = false;
+      }
       ['mac', 'win'].forEach(function (k) {
         var a = byName[ASSETS[k]];
         if (!a) return;

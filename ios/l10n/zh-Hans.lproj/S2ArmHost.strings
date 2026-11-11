@@ -284,6 +284,7 @@
 "controller.resuming.hint" = "正在恢复已连接手柄的输入；轻点可停止连接";
 "controller.scanning" = "正在查找，轻点取消";
 "controller.turnOnBluetooth" = "打开蓝牙后重试";
+"img.scanFailed.title" = "没能导入游戏文件";
 "games.repair.done.title" = "游戏文件夹已修好";
 "games.repair.done.body" = "游戏文件夹之前归系统账户，S2Arm 写不进去，安装一直开始不了。已自动迁到 S2Arm 自己的新文件夹（%u 个文件，和原文件共享数据，不多占空间），可以接着安装。旧文件夹 S2Arm 删不掉，下次连电脑时会清掉。";
 "games.repair.failed.title" = "游戏文件夹没能修好";
@@ -365,6 +366,8 @@
 "save.journalUnreadable" = "读不到存档操作记录目录（%@），没法确认上次的导入 / 恢复有没有做完。\n%@";
 "save.location" = "存档位置：打开“文件”App →“我的 iPhone”（iPad 为“我的 iPad”）→“%@”→ %@\n\n把原生格式的存档文件夹放进去（主机、JKSV / Checkpoint 等工具导出的，或电脑上同一款游戏 SaveData 里拷来的都行），下次开始游戏就用它；退出游戏后这里会更新成最新进度，整个文件夹拷到电脑或另一台设备的同一位置就能接着玩。\n\n从电脑拷过来：Mac 在访达侧边栏选中这台设备 →“文件”，把文件夹拖到“%@”上，再到“文件”App 里挪进上面的位置。";
 "save.location.problem" = "上次放进来的存档没读进来：%@。当前存档没有改动。";
+"save.players" = "当前玩家：%@。下面的存档位置只放这位玩家的存档；导出、导入的备份和 iCloud 同步是这款游戏所有玩家的存档一起。";
+"save.player.first" = "玩家 1";
 "save.noRoot" = "无法访问存档位置，这次不能导入或导出存档。可以先关闭后重新打开；也可以「仍要开始游戏…」照常进游戏。";
 "save.noService" = "此安装包缺少存档迁移所需的游戏身份或服务。请用新版 S2Arm 重新打包安装。当前存档仍可照常使用。";
 "save.noService.recover" = "此安装包缺少存档迁移所需的游戏身份或服务，无法恢复上次中断的存档操作。";

@@ -5184,10 +5184,6 @@
   "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
  },
  {
-  "source": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
-  "en": "Connect the target iPhone by cable, unlock it, and tap Trust. First enable Developer Mode under Settings → Privacy & Security, then retry."
- },
- {
   "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
   "en": "Check the signing error in the job log. Confirm that Xcode can sign for this iPhone with your account, or install with AltStore."
  },
@@ -6994,5 +6990,77 @@
  {
   "source": "导出诊断包发给我们。",
   "en": "Export a diagnostics package and send it to us."
+ },
+ {
+  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
+ },
+ {
+  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
+  "en": "Choose which iPhone or iPad to install to on the install page, then install."
+ },
+ {
+  "source": "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。",
+  "en": "No device chosen: choose an iPhone or iPad on the install page, then install."
+ },
+ {
+  "source": "{0}「{1}」现在不在线：插上数据线，或让它和这台电脑连同一个 Wi-Fi 并解锁，再试一次。",
+  "en": "{0} “{1}” is offline: plug it in with a cable, or unlock it on the same Wi-Fi as this computer, then try again."
+ },
+ {
+  "source": "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。",
+  "en": "The chosen device ({0}) hasn't been paired with this computer yet: plug it in, unlock it and tap Trust on the device (after that it can also install over the same Wi-Fi)."
+ },
+ {
+  "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
+  "en": "The chosen device (ID ending {0}) is offline: plug it in and unlock it, or put it on the same Wi-Fi as this computer, then try again."
+ },
+ {
+  "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi。",
+  "en": "The chosen device (ID ending {0}) is offline: plug it in and unlock it, or put it on the same Wi-Fi as this computer."
+ },
+ {
+  "source": "读不出{0}上已经装了哪些游戏，为免把别的游戏挤掉，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
+  "en": "Couldn't read which games are already on {0}, so nothing was installed to avoid pushing other games out: unlock it, plug it in or put it on the same Wi-Fi as this computer, then try again."
+ },
+ {
+  "source": "{0}「{1}」已连上（{2}）",
+  "en": "{0} “{1}” connected ({2})"
+ },
+ {
+  "source": "{0}已连上（{1}）",
+  "en": "{0} connected ({1})"
+ },
+ {
+  "source": "数据线",
+  "en": "cable"
+ },
+ {
+  "source": "同一 Wi-Fi",
+  "en": "same Wi-Fi"
+ },
+ {
+  "source": "设备",
+  "en": "Device"
+ },
+ {
+  "source": "选的设备已连上（数据线或同一 Wi-Fi）",
+  "en": "Chosen device connected (cable or same Wi-Fi)"
+ },
+ {
+  "source": "{0} 已信任这台 Mac",
+  "en": "{0} trusts this Mac"
+ },
+ {
+  "source": "{0} 已打开开发者模式",
+  "en": "Developer Mode is on"
+ },
+ {
+  "source": "{0} 已准备好安装",
+  "en": "{0} is ready to install"
+ },
+ {
+  "source": "用数据线把 iPhone / iPad 连到这台电脑，或让它和这台电脑连同一个 Wi-Fi；解锁并点「信任」。",
+  "en": "Connect the iPhone or iPad to this computer with a cable, or put it on the same Wi-Fi; unlock it and tap Trust."
  }
 ]

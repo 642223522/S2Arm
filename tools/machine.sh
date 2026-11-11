@@ -24,7 +24,9 @@
 S2A_MACHINE_FILE=
 if [ "${S2A_MACHINE_NO_LOCAL:-0}" != 1 ]; then
   for _S2A_MACHINE_F in ${S2A_MACHINE_LOCAL:+"$S2A_MACHINE_LOCAL"} "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/machine.local" "tools/machine.local"; do
-    [ -f "$_S2A_MACHINE_F" ] && { S2A_MACHINE_FILE=$_S2A_MACHINE_F; . "$_S2A_MACHINE_F"; break; }
+    # machine.local 只是一组赋值：它最后一条命令的退出码（如末行「[ -f X ] && . X」X 不在时为 1）不代表出错，不许传给调用方——
+    #   调用方多是 set -e 且 2> /dev/null 地 source 本文件（tools/toolchain.sh），原先整条脚本在这里无声退出（launchers/macos/test.sh 空日志 rc=1）
+    [ -f "$_S2A_MACHINE_F" ] && { S2A_MACHINE_FILE=$_S2A_MACHINE_F; . "$_S2A_MACHINE_F" || :; break; }
   done
   unset _S2A_MACHINE_F
 fi

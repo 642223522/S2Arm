@@ -5,6 +5,7 @@ import Foundation
 import Combine
 import NXModel
 import S2ArmAppleAdapter
+import SaveSync
 
 /// 一次出包（勾了几个平台就几个作业，按页面顺序排队，ExportPlatform.picked）：现在做到第几个、每个平台的结局。
 struct ExportRun: Equatable {
@@ -208,6 +209,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
+    /// 当前这份装机前清单是给哪台设备查的（控制口 GET /state 的 installReadiness.checkedDevice）：换了设备先清掉旧清单，
+    ///   s2armctl install-check --device 等到这台的结果才读（11-11 真机验收：连查两台，第二台读到了第一台的清单）
+    @Published private(set) var installReadinessDevice: String?
+    /// 正在查时又来了另一台（或另一款）的请求：记下，这次查完接着查它（原先直接丢掉）
+    private var pendingInstallCheck: (game: String, device: String?)?
     @Published private(set) var installError: String?
     private(set) var installGameID: String?
     // 释放空间（spaceSurvey / spaceFree，FreeSpaceView）：只看一款
@@ -623,10 +629,36 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 连着的设备里用哪台：玩家选过且还连着 → 它；否则有线连着的第一台；否则第一台（#272）
+    /// 界面上的目标设备：玩家选过 → 只认那台（连着就是它；不连着为 nil，界面说「它不在线」，不替玩家换成别的——11-11 玩家实报：
+    ///   续签时选的 iPhone 拔了线，同网的 iPad 被装上）。没选过 → 有线连着的那台，否则第一台（#272），装的就是界面上显示的这台
     nonisolated static func pickDevice(_ connected: [[String: Any]], chosen: String?) -> [String: Any]? {
-        if let chosen, let d = connected.first(where: { $0["id"] as? String == chosen }) { return d }
+        if let chosen { return connected.first(where: { $0["id"] as? String == chosen || $0["udid"] as? String == chosen }) }
         return connected.first(where: { $0["wired"] as? Bool == true }) ?? connected.first
+    }
+
+    /// 装机 / 续签 / 更新手机上的 S2Arm 一律带上的设备号：玩家选的那台（此刻不在线也照样带上，作业层如实说「iPhone「名字」不在线」），
+    /// 没选过时就是界面上显示的那台。作业层收不到设备号就拒绝，不自己挑
+    var installDeviceID: String? { chosenDevice ?? (selectedDevice?["udid"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? selectedDevice?["id"] as? String }
+
+    /// 选过的设备此刻不在线（不在连着的列表里）：界面提示并让玩家改选
+    var chosenDeviceOffline: Bool { chosenDevice != nil && selectedDevice == nil }
+
+    /// 续签：装回这款当初装的那台（装机记录里的设备号），不换别的；那台不在线时作业层如实说
+    func targetInstalledDevice(of game: GameSummary) {
+        if let key = game.iphoneInstallDevice, !key.isEmpty { chosenDevice = key }
+    }
+
+    /// 这次实际装上的那台（装机结果的 deviceKind / deviceName）：完成页、顶部胶囊写「已装到 iPad「名字」」，不写死 iPhone
+    @Published var installedTo: String = ""
+    nonisolated static func deviceLabel(kind: String, name: String) -> String {
+        let k = kind.isEmpty ? "iPhone / iPad" : kind
+        return name.isEmpty ? k : "\(k)「\(name)」"
+    }
+    /// 正在装 / 要装的那台的称呼（进度胶囊用）：选中且连着 → 类型 + 名字；否则「iPhone / iPad」
+    var installTargetLabel: String {
+        guard let d = selectedDevice else { return "iPhone / iPad" }
+        let pad = (d["productType"] as? String)?.hasPrefix("iPad") == true
+        return Self.deviceLabel(kind: pad ? "iPad" : "iPhone", name: d["name"] as? String ?? "")
     }
 
     var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
@@ -690,18 +722,22 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
-    func checkInstall(_ gameID: String) {
-        if installGameID != gameID { installGameID = gameID; installReadiness = nil; installError = nil }
-        guard !installChecking else { return }
+    func checkInstall(_ gameID: String, device: String? = nil) {
+        let target = device ?? installDeviceID
+        if installGameID != gameID || installReadinessDevice != target {   // 换了款或换了设备：旧清单不能当这台的
+            installGameID = gameID; installReadinessDevice = target; installReadiness = nil; installError = nil
+        }
+        if installChecking { pendingInstallCheck = (gameID, target); return }
         installChecking = true
         Task {
             do {
-                let readiness = try await provider.installReadiness(gameId: gameID)
-                if installGameID == gameID { installReadiness = readiness; installError = nil }
+                let readiness = try await provider.installReadiness(gameId: gameID, device: target)
+                if installGameID == gameID && installReadinessDevice == target { installReadiness = readiness; installError = nil }
             } catch {
-                if installGameID == gameID { installError = error.localizedDescription }
+                if installGameID == gameID && installReadinessDevice == target { installError = error.localizedDescription }
             }
             installChecking = false
+            if let next = pendingInstallCheck { pendingInstallCheck = nil; checkInstall(next.game, device: next.device) }
         }
     }
 
@@ -735,10 +771,15 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy else { return }
         let teamId = teamId ?? Self.enteredTeam
         failAction(nil, game: nil)
-        // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
-        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
+        // 装到玩家选的那台（控制口明说了 device 的照它；s2armctl 不带就是空，作业层拒绝）。界面发起的一律带上，不靠作业层挑
+        let device = device ?? installDeviceID
+        installedTo = ""
         start(.install, game: game, name: game.name) { [weak self] sink in
-            do { let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink); self?.installOpenToFinish = r?.openToFinish ?? false }
+            do {
+                let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink)
+                if let r { self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName) }
+                self?.installOpenToFinish = r?.openToFinish ?? false
+            }
             catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? ""); throw f }
             return nil
         }
@@ -751,20 +792,22 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。
-    func restorePhone(_ game: GameSummary) {
+    func restorePhone(_ game: GameSummary, device: String? = nil) {
         guard !busy else { return }
         failAction(nil, game: nil)
+        let device = device ?? game.iphoneInstallDevice ?? installDeviceID   // 装回当初那台
         start(.installRestore, game: game, name: game.name) { [weak self] sink in
-            try await self?.provider.restorePhone(events: sink)
+            try await self?.provider.restorePhone(device: device, events: sink)
             return nil
         }
     }
 
-    func removeFromPhone(_ game: GameSummary, acceptDropped: Bool = false, ask: Bool = true) {
+    func removeFromPhone(_ game: GameSummary, acceptDropped: Bool = false, ask: Bool = true, device: String? = nil) {
         guard !busy else { return }
         failAction(nil, game: nil)
+        let device = device ?? game.iphoneInstallDevice ?? installDeviceID   // 从装着它的那台删
         start(.installRemove, game: game, name: game.name) { [weak self] sink in
-            do { _ = try await self?.provider.removeFromPhone(gameId: game.id, acceptDropped: acceptDropped, events: sink) }
+            do { _ = try await self?.provider.removeFromPhone(gameId: game.id, acceptDropped: acceptDropped, device: device, events: sink) }
             catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .installRemove, game: game, message: f.errorDescription ?? ""); throw f }
             return nil
         }
@@ -802,6 +845,12 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
+        if let player = Self.launchPlayer() {
+            controllerArguments["playerUser"] = player.serviceUser
+            controllerArguments["playerName"] = player.name
+            controllerArguments["playerFolder"] = player.folder
+        }
         controllerGameStarted = false
         do {
             let sink = EventSink { [weak self] event in self?.ingest(event) }
@@ -816,6 +865,21 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func startControllerConnection() { controller.startIfEnabled() }
+
+    // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
+
+    /// 本机的玩家表（App 偏好，不在游戏库文件夹里）；firstDefault = 第一个玩家没改过名时显示的名字（按界面语言）
+    static func playerStore(firstDefault: String = "Player 1", defaults: UserDefaults = .standard) -> LocalPlayers {
+        LocalPlayers(defaults: defaults, firstDefault: firstDefault)
+    }
+    /// 起局要带的玩家：没建过玩家 = nil（旧行为，作业层不设玩家）
+    static func launchPlayer(_ defaults: UserDefaults = .standard) -> LocalPlayer? {
+        defaults.object(forKey: LocalPlayers.listKey) == nil ? nil : playerStore(defaults: defaults).current
+    }
+    /// 作业请求里的 player 字段（起局 pack/jobs/build.py、导入社区存档 saves.py 都按 saves.requested_player 校验）；没建过玩家 = nil
+    static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
+        launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
+    }
     func shutdownControllerConnection() { controller.shutdown() }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
@@ -845,6 +909,12 @@ public final class S2ArmLauncherModel: ObservableObject {
                 if let probe, let slack = r.probeSlack { self.probedSlack[probe] = slack }
             } catch { self.reportFailure("s2arm.fail.locations", error, passive: true) }   // 读不到就保留上次的列表
         }
+    }
+
+    /// 出包页「存放位置」下拉框一项显示什么名字（批量出包页、存储总览行首同）：具体路径（家目录缩写成 ~），不是卷名——
+    /// 同一块盘上的几个位置卷名一样（内置盘一律「系统盘」），只给卷名分不清是哪个文件夹；卷名收进来是为了在判据里明确不取它
+    nonisolated static func locationName(path: String, volume: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
     }
 
     /// 存放位置下面那行提示（#444），只提示不拦；按原因说对：大分配单元「每个小文件至少占 N、多占数倍」/ 不是 APFS「不能克隆、多占一份」。没问题给 nil
@@ -910,16 +980,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 存档位置（services/S2A.Services/SaveFolder.cs）：这款游戏文件夹里的 SaveData/，没有就建出来再在访达里打开（打开的是文件夹里面，玩家直接往里放）
+    ///   本地玩家（#623）：当前玩家的那个（第一个玩家 SaveData，其他人 SaveData-<名字>，同 iOS）
     func openSaveFolder(_ game: GameSummary) {
         guard !game.location.folder.isEmpty, FileManager.default.fileExists(atPath: game.location.folder) else { explainMissing("s2arm.reveal.folderMissing"); return }
-        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent("SaveData", isDirectory: true)
+        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent(Self.launchPlayer()?.folder ?? LocalPlayers.firstFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
     }
     /// 存档位置里放的存档上次起局没读进来的原因（服务层写在数据根 saves/savedata-problem.txt，读进来后删掉）；没有 = nil
     func saveFolderProblem(_ game: GameSummary) -> String? {
         guard !game.location.folder.isEmpty else { return nil }
-        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent("saves/savedata-problem.txt")
+        // 本地玩家（#623）：原因按玩家分文件（services SaveFolder.ProblemPath），第一个玩家仍是原文件名
+        let player = Self.launchPlayer()
+        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent(player.map { $0.isFirst ? "saves/savedata-problem.txt" : "saves/savedata-problem-\($0.uid).txt" } ?? "saves/savedata-problem.txt")
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         let why = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return why.isEmpty ? nil : why
@@ -1062,7 +1135,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if event.ev == "space", let space = PackSpace(event.fields["space"]) { session.space = space; self.session = session; return }
         if let stage = event.stage, !stage.isEmpty {
             session.stage = stage
-            if session.kind == .play, stage == "游戏运行中" {
+            if session.kind == .play, event.fields["stageKey"] as? String == "game_running" {   // 后端固定机读名（build.py begin key），不认中文阶段名
                 controllerGameStarted = true
                 controller.gameDidStart()
             }
