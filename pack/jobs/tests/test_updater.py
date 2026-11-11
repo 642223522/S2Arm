@@ -654,6 +654,14 @@ class PrepareTests(Base):
                 patch.object(updater, "require_unpack_space"):
             self.assertEqual(self.prepare()["state"], "ready")
 
+    def test_already_latest_failure_carries_message(self):
+        # 剃刀 W11：每个失败都带后端的 message（前端优先显示它；原先 Windows 前端查表，update_none 没有文案键，显示原样键名）。
+        #   当前版本 = 发布的版本 → prepare 失败事件 code=update_none、message「已经是最新版本。」
+        with patch("builtins.print") as out:
+            self.assertEqual(updater.main(["prepare", "--platform", "windows", "--current", "9.9.9", "--private-root", str(self.private), "--install", str(self.install)]), 1)
+        last = json.loads(out.call_args.args[0])
+        self.assertEqual((last["state"], last["code"], last["message"]), ("failed", "update_none", "已经是最新版本。"))
+
     def test_network_failure_is_reported_by_main_and_keeps_old(self):
         before = tree(self.install)
         Handler.routes["/pkg"] = None
