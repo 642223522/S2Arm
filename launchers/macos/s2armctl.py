@@ -602,7 +602,8 @@ def install_check(gid, as_json, limit=40, device=None):
     call('POST', '/installCheck', {'gameId': gid, **({'device': device} if device else {})}); t0 = time.time()
     while time.time() - t0 < limit:
         rd = call('GET', '/state').get('installReadiness')
-        if rd and rd.get('gameId') == gid:
+        # 带了 --device：等到给这台查的那份（checkedDevice）；同一款上一台的清单还挂在 state 里，不能拿它当这台的（11-11 真机验收测出）
+        if rd and rd.get('gameId') == gid and (not device or rd.get('checkedDevice') == device):
             if as_json: print(json.dumps(rd, ensure_ascii=False, indent=1)); return
             for i in rd['items']:
                 mark = '✓' if i['ok'] else ('…' if i['waiting'] else '✗')

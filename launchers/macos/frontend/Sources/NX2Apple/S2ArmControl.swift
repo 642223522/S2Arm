@@ -302,7 +302,7 @@ import S2ArmAppleAdapter
         let privateRoot = m.provider.client.environment.privateRoot
         let keys = m.keysReady
         let rd: Any = m.installReadiness.map { r -> [String: Any] in
-            ["gameId": m.installGameID ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
+            ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
              "items": r.items.map { ["id": $0.id, "ok": $0.ok, "waiting": $0.waiting, "title": $0.title, "detail": $0.detail, "who": $0.who] }]
         } ?? NSNull()
         let session: Any = m.session.map { s -> [String: Any] in
