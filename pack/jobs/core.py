@@ -563,7 +563,7 @@ class Context:
         self.job["attempts"][stage] = int(self.job["attempts"].get(stage, 0)) + 1
         self.emit("stage", stage)
 
-    def stage_progress(self, path, pos):
+    def stage_progress(self, path, pos, final=False):
         """读进度文件 pos 之后新增的整行，发一次 progress；返回新的读到位置。
         出包时几个计数器交替写（刷新各阶段 7/10、直连库 2/6、编库 n/23502、通用翻译 n/45455…），只按最后一行发会来回跳（10-26 维护者：
         「进行中的环节能看到着色器总数和编译数量的实时变化最好」）：每个计数器各记「已完成 / 总数 / 起止时刻」，
@@ -582,14 +582,22 @@ class Context:
             return pos
         end = chunk.rfind(b"\n")
         if end < 0:
-            self.stage_activity()
+            if final:   # 收尾补读没有新行：批次活动已结束，收掉，不再发脉冲
+                activity.clear()
+                self.clear_stage_activity(previous)
+            else:
+                self.stage_activity()
             return pos
         seen = getattr(self, "_counters", None)
         if seen is None:
             seen = self._counters = {}
         last, fine = None, None
-        for line in chunk[:end].decode(errors="replace").split("\n"):
+        lines = chunk[:end].decode(errors="replace").split("\n")
+        for line in lines:
             activity.accept(line)
+        if final:   # 子进程树已收完时的补读：批次活动必然已结束，只发计数、不再发「还在编」的活动脉冲
+            activity.clear()
+        for line in lines:
             f = line.split("\t")
             if len(f) != 4 or not f[2].isdigit() or not f[3].isdigit() or int(f[3]) <= 0:
                 continue
@@ -973,12 +981,16 @@ class Context:
                         self.signal_child(p, "KILL")
                         p.wait(timeout=5)
                     self.reap(p, out)
+                    if pf: ppos = self.stage_progress(pf, ppos, final=True)   # 收完进程组再补读一次：退出前写的最后几行也发出去（同下）
                     reader.join(timeout=5)
                     self.check()
                     self.last_rc = p.returncode
                     return self.last_log
                 # 工具退出了：先收它会话里的残留进程（还占着输出管道的也在内，否则读线程等不到结束、整个任务判「输出未关闭」），再等读线程
                 self.reap(p, out)
+                # 子进程树已收完、不会再写：补读一次进度。循环只在子进程活着时每秒读，退出前那一秒写的行原先发不出去，界面停在旧读数
+                #   （失败退出也读：错误页看得到停在哪一步）
+                if pf: ppos = self.stage_progress(pf, ppos, final=True)
                 reader.join(timeout=5)
                 if reader.is_alive():
                     raise Failure("子进程输出未关闭，任务未确认完成。")
