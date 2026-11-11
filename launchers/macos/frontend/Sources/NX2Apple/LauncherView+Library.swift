@@ -349,7 +349,11 @@ extension LauncherView {
         }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来自动恢复；文件夹没了 → 红字，点卡片重新指定或移除
-        if game.location.state == "offline" { return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: game.location.volume), LauncherPalette.unbuilt) }
+        // 未连接给具体路径（同出包页下拉框）：卷名会重名（内置盘一律「系统盘」），看不出是哪个位置没连上
+        if game.location.state == "offline" {
+            let place = game.location.path.isEmpty ? game.location.volume : (game.location.path as NSString).abbreviatingWithTildeInPath
+            return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: place), LauncherPalette.unbuilt)
+        }
         if game.location.state == "missing" { return (txt("library.location.missing"), LauncherPalette.danger) }
         var parts: [String] = []
         var expired = false

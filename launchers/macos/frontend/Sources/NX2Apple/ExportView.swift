@@ -148,7 +148,7 @@ struct ExportView: View {
     private var locationRow: some View {
         var options: [(value: String, label: String)] = model.locations.map { l in
             let free = l.freeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
-            let name = l.volume.isEmpty ? (l.path as NSString).lastPathComponent : l.volume
+            let name = S2ArmLauncherModel.locationName(path: l.path, volume: l.volume)
             return (l.path, l.connected ? x("location.free").replacingOccurrences(of: "{0}", with: name).replacingOccurrences(of: "{1}", with: free ?? "?")
                                         : x("location.offline").replacingOccurrences(of: "{0}", with: name))
         }
