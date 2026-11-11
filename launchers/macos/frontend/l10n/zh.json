@@ -1489,6 +1489,7 @@
   "s2arm.space.kept": "保留",
   "s2arm.space.kept.logs": "日志",
   "s2arm.space.kept.saves": "存档",
+  "s2arm.space.sharedNote": "有 %@ 是上面几项共用的文件：只删其中一项腾不出来，把共用的几项都勾上才会腾出。每项右边是只删这一项能腾出的大小。",
   "s2arm.space.keptNote": "存档和日志不在这里删。",
   "s2arm.space.parts": "可以删除",
   "s2arm.space.title": "释放空间",

@@ -26,20 +26,29 @@ public struct GameSpace: Identifiable, Equatable {
     public let name: String
     public let parts: [SpacePart]
     public let kept: [SpacePart]
+    /// 勾选组合（部件 id 排序后用「+」连）→ 删掉这几项真能腾出的字节（作业层 library.freeable：几项共用的克隆块 / 硬链接只在都勾上时算）
+    public let combos: [String: Int64]
+    /// 全勾比各项单删相加多出的字节（几项共用的部分）；0 = 各项互不共用
+    public let sharedBytes: Int64
 
-    public init(gameId: String, name: String, parts: [SpacePart], kept: [SpacePart]) {
-        self.gameId = gameId; self.name = name; self.parts = parts; self.kept = kept
+    public init(gameId: String, name: String, parts: [SpacePart], kept: [SpacePart], combos: [String: Int64] = [:], sharedBytes: Int64 = 0) {
+        self.gameId = gameId; self.name = name; self.parts = parts; self.kept = kept; self.combos = combos; self.sharedBytes = sharedBytes
     }
 
     init?(json g: [String: Any]) {
         guard let id = g["gameId"] as? String, !id.isEmpty else { return nil }
         self.init(gameId: id, name: g["name"] as? String ?? id,
                   parts: (g["parts"] as? [[String: Any]] ?? []).compactMap(SpacePart.init(json:)),
-                  kept: (g["kept"] as? [[String: Any]] ?? []).compactMap(SpacePart.init(json:)))
+                  kept: (g["kept"] as? [[String: Any]] ?? []).compactMap(SpacePart.init(json:)),
+                  combos: (g["combos"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.int64Value },
+                  sharedBytes: (g["sharedBytes"] as? NSNumber)?.int64Value ?? 0)
     }
 
-    /// 勾了这些部件一共能释放多少。
-    public func bytes(of ids: Set<String>) -> Int64 { parts.filter { ids.contains($0.id) }.reduce(0) { $0 + $1.bytes } }
+    /// 勾了这些部件一共能释放多少：按作业层的组合账查（共用块不重复算、也不漏算）；没有组合账时退回各项相加。
+    public func bytes(of ids: Set<String>) -> Int64 {
+        if ids.isEmpty { return 0 }
+        return combos[ids.sorted().joined(separator: "+")] ?? parts.filter { ids.contains($0.id) }.reduce(0) { $0 + $1.bytes }
+    }
 }
 
 /// 一次释放的结局（spaceFree 作业 result）：各部件删掉的字节与合计。

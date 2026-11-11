@@ -2250,6 +2250,69 @@ def _part_bytes(paths):
     return sum(disk_bytes(v, dev) for dev, v in by_dev.items())
 
 
+def freeable(parts):
+    """{部件 id: [路径…]} → {勾选组合键: 删掉这几项真能腾出的字节}，组合键是排好序的部件 id 用「+」连（全部非空组合都给）。
+    只按目录各自量再相加会多算（玩家报：一款游戏 Mac 运行版本 15.45 GB、iPhone 包 15.13 GB，可两份 romfs 是同一组 APFS 克隆块，
+    单删 iPhone 包实际只腾出约 1.5 GB）。按「腾出单位」算：
+      · 每个 inode 的独占字节（克隆文件取 ATTR_CMNEXT_PRIVATESIZE，否则 st_blocks）——它的硬链接（st_nlink 份）全在勾选里才腾出；
+      · 每个克隆族的共享块（各份 已分配 − 独占 取最大）——族里的份数（CLONE_REFCNT）全在勾选里才腾出。
+    族里还有份在别处（别的部件没勾、解包目录、别款）就不算腾出。同卷才算（不跟软链、不跨卷，同 disk_bytes）；Windows 没有克隆，只剩硬链接这条"""
+    units, seen_inodes = {}, {}   # 单位键 → [字节, 要几份, {部件: 已见份数}]
+    def hold(key, size, need, part):
+        u = units.setdefault(key, [0, need, {}])
+        u[0] = max(u[0], size); u[2][part] = u[2].get(part, 0) + 1
+    for part, roots in parts.items():
+        visited = set()   # 本部件走过的目录（按 inode）和文件（按路径）：根互相包含只记一次；同一 inode 的两条硬链接各算一份
+        for root in roots:
+            try:
+                device = Path(root).lstat().st_dev
+            except OSError:
+                continue
+            stack = [os.fspath(root)]
+            while stack:
+                path = stack.pop()
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    continue
+                if st.st_dev != device or stat.S_ISLNK(st.st_mode):
+                    continue
+                key = ("inode", st.st_dev, st.st_ino)
+                mark = key if stat.S_ISDIR(st.st_mode) else os.path.normpath(path)
+                if mark in visited:
+                    continue
+                visited.add(mark)
+                blocks = getattr(st, "st_blocks", None)
+                alloc = blocks * 512 if blocks is not None else st.st_size
+                if stat.S_ISDIR(st.st_mode):
+                    hold(key, alloc, 1, part)
+                    try:
+                        with os.scandir(path) as it:
+                            stack.extend(e.path for e in it)
+                    except OSError:
+                        pass
+                    continue
+                clone = _CloneInfo.get(path) if stat.S_ISREG(st.st_mode) and alloc else None
+                if clone and clone[2] >= 2 and 0 <= clone[0] <= alloc:
+                    hold(key, clone[0], max(1, st.st_nlink), part)
+                    if key not in seen_inodes.setdefault(clone[1], set()):   # 族里的份数按 inode 数（硬链接不算多一份）
+                        seen_inodes[clone[1]].add(key)
+                        hold(("clone", st.st_dev, clone[1]), alloc - clone[0], clone[2], part)
+                else:
+                    hold(key, alloc, max(1, st.st_nlink), part)
+    ids = sorted(parts)
+    out = {}
+    for mask in range(1, 1 << len(ids)):
+        chosen = {ids[i] for i in range(len(ids)) if mask >> i & 1}
+        out["+".join(sorted(chosen))] = sum(size for size, need, held in units.values() if sum(n for p, n in held.items() if p in chosen) >= need)
+    return out
+
+
+def space_key(ids):
+    """勾选组合 → freeable 的键"""
+    return "+".join(sorted(ids))
+
+
 def space_survey(c):
     """每款（gameId 给了只这一款）按部件的占用（字节，按所在卷实测）：parts 可勾选删除，kept 只报不删"""
     games = c.catalog()["games"]
@@ -2263,8 +2326,12 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
+        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]]   # 没有旧版残留就不显示
+        combos = freeable({k: parts[k] for k, _, _ in shown})
+        # 每行是「只删这一项」腾出的字节；几项共用的克隆块只在都勾上时算进合计（combos），sharedBytes = 全勾比各项单删相加多出的部分
         rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
-                         parts=[dict(id=k, title=t, rebuild=r, bytes=_part_bytes(parts[k])) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]],   # 没有旧版残留就不显示
+                         parts=[dict(id=k, title=t, rebuild=r, bytes=combos[k]) for k, t, r in shown],
+                         combos=combos, sharedBytes=combos[space_key(k for k, _, _ in shown)] - sum(combos[k] for k, _, _ in shown),
                          kept=[dict(id=k, bytes=_part_bytes(parts[k])) for k in SPACE_KEPT]))
     return dict(games=rows)
 
@@ -2284,15 +2351,14 @@ def space_free(c):
             if root is not None and not (layout.ios_kit(c, gid) / "main.npdm").is_file():
                 save_container_kit(c, gid, root)
         parts = space_parts(c, gid)
-        freed, done = 0, []
+        # 腾出多少按删前的组合账算（同 space_survey 的合计）：逐项「删前 − 删后」会把共用克隆块记在最后删的那项上、单项又各算一遍
+        combos = freeable({k: parts[k] for k, _, _ in SPACE_PARTS})
+        freed, done = combos[space_key(want)], []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
-            before = _part_bytes(parts[k])
             for p in parts[k]:
                 root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
                 _rm(c, root, p)
-            after = _part_bytes([p for p in parts[k] if p.exists() or p.is_symlink()])
-            freed += before - after
-            done.append(dict(id=k, bytes=before - after))
+            done.append(dict(id=k, bytes=combos[k]))
         sizes.refresh(c, gid)
         return dict(gameId=gid, parts=done, freedBytes=freed)
 

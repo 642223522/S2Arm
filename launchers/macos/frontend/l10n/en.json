@@ -1488,6 +1488,7 @@
   "s2arm.space.kept": "Kept",
   "s2arm.space.kept.logs": "Logs",
   "s2arm.space.kept.saves": "Saves",
+  "s2arm.space.sharedNote": "%@ is shared between the items above: deleting just one of them won't free it, only checking all of them will. Each size shows what deleting that item alone frees.",
   "s2arm.space.keptNote": "Saves and logs are not deleted here.",
   "s2arm.space.parts": "Can be deleted",
   "s2arm.space.title": "Free up space",

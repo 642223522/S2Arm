@@ -201,6 +201,8 @@ class FreeSpace(JobCase):
             with self.subTest(part=row["id"]):
                 self.assert_mib(row["bytes"], self.mib[row["id"]])
         self.assertTrue(all(p["title"] and p["rebuild"] for p in g["parts"]))
+        self.assert_mib(g["sharedBytes"], 0)   # 这套合成文件各项不共用
+        self.assert_mib(g["combos"]["ipa+mac"], 5)
         everyone = library.space_survey(self.context("spaceSurvey"))
         self.assertEqual([g["gameId"] for g in everyone["games"]], [GID, OTHER])
         other = everyone["games"][1]
@@ -262,6 +264,53 @@ class FreeSpace(JobCase):
         self.assertEqual((result.returncode, event["state"]), (0, "succeeded"), result.stderr)
         self.assert_mib(event["result"]["freedBytes"], 4)
         self.assertFalse(self.files["legacy"][0].exists()); self.assertTrue(self.files["ipa"][0].exists())
+
+
+
+class SharedBlocks(JobCase):
+    """几项共用的块（APFS 克隆族 / 硬链接）只在都勾上时才算腾出。玩家报：Mac 运行版本和 iPhone 包的 romfs 是同一组克隆块，
+    各项单独量相加显示 15.45 + 15.13 GB，单删 iPhone 包实际只腾出约 1.5 GB。期望值按文件大小手算（各项另有独占文件）"""
+    def setUp(self):
+        super().setUp()
+        self.d = self.root / "parts"
+        self.mac, self.ipa, self.elsewhere = self.d / "mac", self.d / "ipa", self.d / "elsewhere"
+
+    def clone(self, src, dst):
+        import subprocess
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["cp", "-c", str(src), str(dst)], check=True)
+        if library._CloneInfo.get(str(dst)) is None:
+            self.skipTest("这块盘取不到 APFS 克隆信息")
+
+    def assert_mib(self, got, mib):
+        self.assertGreaterEqual(got, mib * MIB); self.assertLess(got, mib * MIB + SLACK)
+
+    @unittest.skipUnless(sys.platform == "darwin", "APFS 克隆只在 macOS")
+    def test_clone_family_freed_only_when_every_copy_is_chosen(self):
+        write(self.mac / "romfs" / "big.bin", 4 * MIB); self.clone(self.mac / "romfs" / "big.bin", self.ipa / "pack" / "romfs" / "big.bin")
+        write(self.mac / "app.bin", 1 * MIB); write(self.ipa / "kit.bin", 2 * MIB)
+        got = library.freeable({"mac": [self.mac], "ipa": [self.ipa]})
+        self.assert_mib(got["mac"], 1); self.assert_mib(got["ipa"], 2); self.assert_mib(got["ipa+mac"], 7)
+
+    @unittest.skipUnless(sys.platform == "darwin", "APFS 克隆只在 macOS")
+    def test_copy_outside_the_chosen_parts_keeps_the_blocks(self):
+        write(self.mac / "romfs" / "big.bin", 4 * MIB)
+        self.clone(self.mac / "romfs" / "big.bin", self.ipa / "romfs" / "big.bin")
+        self.clone(self.mac / "romfs" / "big.bin", self.elsewhere / "big.bin")   # 第三份在两项之外（别款 / 没列的目录）
+        got = library.freeable({"mac": [self.mac], "ipa": [self.ipa]})
+        self.assert_mib(got["ipa+mac"], 0)
+
+    def test_hard_link_freed_only_when_every_link_is_chosen(self):
+        a = write(self.mac / "a.bin", 3 * MIB); self.ipa.mkdir(parents=True); os.link(a, self.ipa / "a.bin")
+        write(self.ipa / "own.bin", 1 * MIB)
+        got = library.freeable({"mac": [self.mac], "ipa": [self.ipa]})
+        self.assert_mib(got["mac"], 0); self.assert_mib(got["ipa"], 1); self.assert_mib(got["ipa+mac"], 4)
+        os.link(a, self.root / "outside.bin")   # 还有一条链接在外面：都勾也腾不出
+        self.assert_mib(library.freeable({"mac": [self.mac], "ipa": [self.ipa]})["ipa+mac"], 1)
+
+    def test_nested_roots_count_once(self):
+        write(self.mac / "sub" / "x.bin", 2 * MIB)
+        self.assert_mib(library.freeable({"mac": [self.mac, self.mac / "sub"]})["mac"], 2)
 
 
 if __name__ == "__main__":
