@@ -25,6 +25,10 @@ NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults);
 //   返回 -1 = 底座没变，0 / 1 = 要切成掌机 / 主机；*restart = 除底座外还有要重启才生效的画面设置变了
 NSInteger s2a_ios_settings_docked_change(NSDictionary *entry, NSDictionary *now, BOOL *restart);
 void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults);
+// 浮层两个开关（S2ADevHUD / MetalHUDForceEnabled）的偏好先落成环境变量：要在 app.m 建视图、hud.m 挂浮层之前调一次，
+// 否则 s2a_hud_on() 会把还没设的 S2A_HUD 缓存成 0（#153）；host_run 里 s2a_ios_apply_graphics_settings 会再调一次兜底。
+// 启动环境显式给的优先；开关语义仍是「下次启动生效」。
+void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults);
 // 当前渲染倍率（S2A_RES_SCALE，0.25–4；没设或越界退回设置值，再退回 1）。每次现读，不缓存：进程内重启后环境变量会被重写（审计 P1-9）
 float s2a_ios_res_scale(NSUserDefaults *defaults);
 void s2a_ios_reapply_graphics_settings(NSUserDefaults *defaults);

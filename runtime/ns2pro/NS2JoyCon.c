@@ -75,3 +75,21 @@ void ns2_encode_rumble_for(ns2_kind kind, const ns2_vibration values[2], uint8_t
     ns2_encode_rumble(one, sequence, gain, out);
     for (unsigned i = 17; i < 42; i++) out[i] = 0;
 }
+
+// 扫描策略（11-11 实机：记着左只、左只没开机时，右只长按 SYNC 也连不上——只直连记住的那只不扫描，直连 30 秒超时失败时又把扫描停掉）
+int ns2_scan_wants_other_side(ns2_kind only, int only_ready, int only_failed) {
+    (void)only_ready;   // 就绪与否都扫：改前要求已就绪，记住的那只没开机时直连等 30 秒，这段时间另一侧找不到
+    return (only == NS2_KIND_JOYCON_L || only == NS2_KIND_JOYCON_R) && !only_failed;
+}
+
+int ns2_link_failure_stops_scan(ns2_kind failed) {
+    return failed != NS2_KIND_JOYCON_L && failed != NS2_KIND_JOYCON_R;
+}
+
+ns2_kind ns2_output_kind(ns2_kind a, int a_present, ns2_kind b, int b_present) {
+    int a_jc = a == NS2_KIND_JOYCON_L || a == NS2_KIND_JOYCON_R, b_jc = b == NS2_KIND_JOYCON_L || b == NS2_KIND_JOYCON_R;
+    if (a_present && b_present && a_jc && b_jc && a != b) return NS2_KIND_JOYCON_PAIR;
+    if (a_present) return a;
+    if (b_present) return b;
+    return NS2_KIND_NONE;
+}

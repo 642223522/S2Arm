@@ -57,7 +57,7 @@ ROUTE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate_route.py'
 routed = subprocess.run([sys.executable, ROUTE, 'hooks'], cwd=root, capture_output=True, text=True)
 if routed.returncode:
     sys.exit('【红】test_wired：门禁钩子发现失败：' + routed.stderr.strip())
-hooks = [h for h in routed.stdout.splitlines() if h in files]
+hooks = [h for h in routed.stdout.splitlines() if h in files] + [r[0] for r in decl('off') if r and r[0] in files]   # 停用的钩子仍算接线入口（退役不是漏接）
 entry = sorted({p for p in ('graphics/gate.sh', 'runtime/gate.sh', 'tools/gate.sh') if p in files} | set(hooks)) + sorted(p for p in files if re.fullmatch(r'tests/[^/]+_test\.sh', p))
 
 # make 跟进（11-01 审计 P1-39）：节点 'make:<主 Makefile>\0<目标通配>'，只读配方文本、不执行 make

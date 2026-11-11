@@ -222,7 +222,7 @@ public sealed partial class EnvironmentWindow
     {
         if (e.TryGetProperty("done", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Number &&
             e.TryGetProperty("total", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Number && t.GetInt64() > 0)
-        { updateDone = d.GetInt64(); updateTotal = t.GetInt64(); Render(); }
+        { updateDone = d.GetInt64(); updateTotal = t.GetInt64(); RefreshLive(); }   // 只刷新顶栏「更新中 · N%」那一格
     }
 
     /// <summary>批次出完（AdvanceBatchAsync 没有下一个了）：由更新发起的那批，出好的 iPhone 包逐款跑现有的装到 iPhone 流程（暂停 / 取消的不装）。

@@ -25,8 +25,10 @@
     等于本局才 bound，字段缺/值不符 → unproven。文件名 seg 只做与首行名实互核；
     stat -c %Y 整秒 vs birth 浮点判不了先后——不跳过照收证，先后由内容 uuid 裁决
 """
-import base64, contextlib, hashlib, importlib.util, io, json, os, signal, struct, subprocess, sys, tarfile, tempfile, time, unittest
+import base64, contextlib, hashlib, importlib.util, io, json, os, re, signal, struct, subprocess, sys, tarfile, tempfile, time, unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 ANDROID = Path(__file__).resolve().parents[1]
 REPO = ANDROID.parent
@@ -39,6 +41,20 @@ SERIAL = "TESTSERIAL01"
 FIELDS = ("boot_us", "status", "current_ua", "voltage_uv", "energy_uwh", "charge_uah",
           "temp_tenths_c", "source", "ac_powered", "usb_powered", "wireless_powered",
           "dock_powered", "plugged", "interactive", "power_save", "thermal_status")
+
+
+class FixtureClock:
+    """只替换被测模块的等待；真实子进程、信号和推送超时仍用系统时钟。"""
+    def __init__(self):
+        self.offset = 0.0
+
+    def monotonic(self):
+        return time.monotonic() + self.offset
+
+    def sleep(self, seconds):
+        if seconds < 0:
+            raise ValueError("sleep length must be non-negative")
+        self.offset += seconds
 
 FAKE_ADB = '''#!/usr/bin/env python3
 import hashlib, io, json, os, re, shlex, sys, tarfile, time
@@ -662,6 +678,7 @@ def frame_log_text(recorded=200, step_us=16667, first=0, base_ts=10_500_000, pid
 
 
 LOG_HEAD = """11-09 12:00:00.100  4242  4242 I S2Arm: direct provider prepared: code=2334 gpu=MaliTest sym=251 apis=0x3
+11-09 12:00:00.200  4242  4242 I S2Arm: [s2a] graphics selection: direct (graphics.v1.json admitted), devices=1 queues=1 workers=1 consumers=2
 11-09 12:00:00.500  4242  4242 I S2Arm: Game startup accepted: 0123456789ABCDEF session t1
 """
 
@@ -730,7 +747,10 @@ class RunGameTest(unittest.TestCase):
                 "--power-interval", "0", "--discharge-settle", "0"]
         args += argv or []
         try:
-            rc = run_game.main(args)
+            clock = FixtureClock()
+            with mock.patch.object(run_game, "time", clock), \
+                    mock.patch.object(run_game.dev_runtime, "time", clock):
+                rc = run_game.main(args)
         finally:
             if old_home is None:
                 os.environ.pop("ANDROID_HOME", None)
@@ -1302,6 +1322,53 @@ class RunGameTest(unittest.TestCase):
         meta = json.loads((self.tmp / "out_1" / "android.json").read_text())
         self.assertIn("--es s2arm.graphics_mode direct", meta["launch"])
 
+    def test_graphics_selection_asserts_actual_path(self):
+        """--mode 断言本局实际路径：本局 PID 的「graphics selection:」行为准。
+        符合→done+actual 记账；不符→RESULT=red；缺行（含别 PID 行顶包）→red；
+        auto→不比值只如实记。"""
+        log_sel = [ln for ln in LOG_HEAD.splitlines() if "graphics selection:" in ln]
+        self.assertEqual(1, len(log_sel), "夹具应恰含一条选择行")
+
+        # ① 符合：--mode direct + 夹具 actual=direct → 绿，manifest/android.json 记原文
+        rc, out, _ = self.run_tool(argv=["--mode", "direct"], state={})
+        self.assertEqual(0, rc)
+        man = json.loads((out / "run-manifest.json").read_text())
+        sel = man["graphics_selection"]
+        self.assertEqual("direct", sel["requested"])
+        self.assertEqual("direct", sel["actual"])
+        self.assertEqual(log_sel, sel["lines"])
+        meta = json.loads((out / "android.json").read_text())
+        self.assertEqual(sel, meta["graphics_selection"])
+
+        # ② 不符：--mode generic + actual=direct → 红，原因写清请求 vs 实际
+        rc, out2, _ = self.run_tool(argv=["--mode", "generic"], state={}, out_name="out_2")
+        self.assertEqual(2, rc)
+        man2 = json.loads((out2 / "run-manifest.json").read_text())
+        self.assertIn("graphics selection 与 --mode 不符", man2["reason"])
+        self.assertIn("请求 generic、本局实际 direct", man2["reason"])
+
+        # ③ 缺行：本局 PID 没有选择行（9999 的别进程行不顶包）→ 红
+        stray = ("11-09 12:00:00.200  9999  9999 I S2Arm: "
+                 "[s2a] graphics selection: direct (stale), devices=1 queues=1\n")
+        no_sel_dump = (self.tmp / "logcat_nosel_dump.txt")
+        no_sel_stream = (self.tmp / "logcat_nosel_stream.txt")
+        for src, dst in ((self.tmp / "logcat_dump.txt", no_sel_dump),
+                         (self.tmp / "logcat_stream.txt", no_sel_stream)):
+            dst.write_text(src.read_text().replace(log_sel[0] + "\n", stray))
+        rc, out3, _ = self.run_tool(state={"logcat_dump": str(no_sel_dump),
+                                           "logcat_stream": str(no_sel_stream)},
+                                    out_name="out_3")
+        self.assertEqual(2, rc)
+        man3 = json.loads((out3 / "run-manifest.json").read_text())
+        self.assertIn("没有「graphics selection:」行", man3["reason"])
+
+        # ④ auto：不比值、如实记实际
+        rc, out4, _ = self.run_tool(state={}, out_name="out_4")
+        self.assertEqual(0, rc)
+        man4 = json.loads((out4 / "run-manifest.json").read_text())
+        self.assertEqual({"requested": "auto", "actual": "direct", "lines": log_sel},
+                         man4["graphics_selection"])
+
     def _qc_energy(self, tsv):
         """最小局目录只给 power.tsv / android.json，单独验能耗判据。"""
         d = self.tmp / "qc-energy"
@@ -1800,7 +1867,8 @@ class RunGameTest(unittest.TestCase):
         self.assertTrue(trunc, f"notes 没有截断报告：{man['notes']}")
         self.assertIn("缺分片", trunc[0])
 
-    def test_stop_waits_dump_end_before_force_stop(self):
+    @mock.patch.object(run_game.dev_runtime, "time", new_callable=FixtureClock)
+    def test_stop_waits_dump_end_before_force_stop(self, clock):
         """⑲ 收局时序：wait_done 没见 end 前不得 force-stop（有上限照走）；
         见 end 后进程还赖着才强杀；进程在转储窗口内先退 → 不强杀。"""
         calls = []
@@ -1822,6 +1890,7 @@ class RunGameTest(unittest.TestCase):
             return polls[0] >= 3
         res = run_game.dev_runtime.stop(d, PKG, wait_done=done, wait_seconds=30)
         self.assertEqual(3, polls[0], "没见 end 就该继续等，不能提前往下走")
+        self.assertGreaterEqual(clock.offset, 6, "转储轮询和强杀前等待仍须走满虚拟时钟")
         self.assertTrue(res["forced_stop"], "转储落定后进程还赖着 → 才强杀")
         self.assertTrue(res["dump_done"])
         self.assertEqual("am force-stop " + PKG, calls[-1])
@@ -1880,5 +1949,35 @@ class RunGameTest(unittest.TestCase):
                         "只留短 stderr 尾，不能把核验输出整份灌进 reason")
 
 
+def run_isolated_suite(options=()):
+    """Each worker gets its own environment and module state; no device is used."""
+    names = unittest.defaultTestLoader.getTestCaseNames(RunGameTest)
+    if not names:
+        print("no run_game tests discovered", file=sys.stderr)
+        return 1
+    groups = [names[i::4] for i in range(min(4, len(names)))]
+    started = time.monotonic()
+
+    def run_group(group):
+        return subprocess.run(
+            [sys.executable, __file__, *options, *("RunGameTest." + n for n in group)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+        results = list(pool.map(run_group, groups))
+    failed = False
+    for group, result in zip(groups, results):
+        print(result.stdout, end="")
+        match = re.search(r"(?m)^Ran (\d+) tests? in ", result.stdout)
+        if result.returncode or not match or int(match.group(1)) != len(group):
+            print(f"worker incomplete: expected {len(group)}, rc={result.returncode}", file=sys.stderr)
+            failed = True
+    print(f"run_game: {len(names)} tests in {len(groups)} isolated processes; "
+          f"wall {time.monotonic() - started:.3f}s")
+    return int(failed)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 1 or sys.argv[1:] == ["--durations", "0"]:
+        sys.exit(run_isolated_suite(sys.argv[1:]))
     unittest.main(verbosity=2)

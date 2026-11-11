@@ -99,7 +99,7 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2arm/run/s2arm/ownplay	测试出包	维护者 实机局日志存档（两局测试之间有人自己玩过时，执行器起局前从机上拉回的 host.log / host.prev.log / frames.tsv / firstuse.txt），按款_时刻_机号分目录	只由 tools/dev_run.sh ownplay 写；各线只读；不进 gc
 ~/.s2arm/run/s2arm/openfonts	用户体验	开源替代共享字体产物（pack/fonts/make_open_fonts.py 生成；tests/openfonts_test.sh 缺省读它）	只有手动跑生成器时写（直接覆盖写，跑前确认没人在读）；单测只读。出 App 用 build/macos/OpenFonts 私有副本，不读这里
 ~/.s2arm/run/s2arm/cache/openfonts	用户体验	开源字体下载缓存（来源钉版本 + sha256）	先写 .part 再 replace；内容按 sha256 校验；可整目录删（下次重下）
-~/.s2arm/run/s2arm/beta_inbox	测试出包	内测诊断包收件目录（玩家 App「导出诊断包」交回的 s2a_diag_*.zip 放顶层；tools/beta_intake.py 解到 x/<包名>/、处理过的记 done/、按会话汇总进 summary.tsv）	诊断包与汇总长期留（内测证据），x/ 解包目录可按需清
+~/.s2arm/run/s2arm/beta_inbox	测试出包	内测诊断包收件目录（玩家 App「导出诊断包」交回的诊断包（S2Arm-诊断-*.zip / S2Arm-diag-*.zip，旧版 s2a_diag_*.zip）放顶层；tools/beta_intake.py 解到 x/<包名>/、处理过的记 done/、按会话汇总进 summary.tsv）	诊断包与汇总长期留（内测证据），x/ 解包目录可按需清
 ~/.s2arm/run/s2arm/apponly	测试出包	只换 App 程序快道的包目录（tools/app_only.sh：<款>-<提交>/pkg = 新 ipa + 登记包快照克隆）	每款只留最近两份；登记时 sched.sh pkg 另存快照，删这里不影响已登记的
 ~/.s2arm/run/s2arm/gate_data/dsh	测试出包	S2A.Dsh 门禁考卷的冻结输入（动森包目录 + 表，graphics/tools/direct/tests/t_dsh.sh freeze 写，inputs.sha 核内容）；生产出库不读不写	只读；只有人工 freeze 时写（已在就拒绝）
 ~/.s2arm/run/s2arm/cache/gate_dsh	测试出包	S2A.Dsh 门禁考卷：被测树的离线链对冻结输入只出抽样键（<输入指纹>-<链版本>-<键表>/，cas/ 内容寻址）；生产出库不读不写	临时目录出完 mv 成品（先到的留下）；只留最近 3 份
@@ -107,6 +107,7 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/Library/Caches/colima/caches	基础设施线（colima 镜像缓存）	colima 系统镜像缓存（文件名 = 镜像地址的 sha256）；tools/colima_setup.sh 经代理下好、核过 SHA512 后放进来	先下到缓存外临时文件，核对通过才 mv 进来（colima start 失败会清空整个缓存目录，10-29）
 ~/Library/Caches/s2a_vulkan	一次成功线（Vulkan 容器单测）	tests/vulkan/run.sh 挂进容器 /cache；shader_cases/<编译输入摘要>/translator 存编好的 ShaderCases.dll（tests/shader_cases/run.py build_key）	内容寻址：未命中编完拷进同目录临时名再整目录 rename，同键并发只落一份；只留最近 8 份；删了只让下次冷编
 ~/.s2arm/run/s2arm/cache/testres	列车线	门禁单测结果缓存（tools/test_cache.py，tools/gate.sh 用；键 = 单测名 + 输入文件内容哈希 + 工具链指纹，一键一个空文件，只记绿；gate-host 上在远端假家目录下）	内容寻址；写 .<键>.<pid>.tmp 再 os.replace，同键并发写结果相同；读方只看文件在不在
+~/.s2arm/run/s2arm/gate_ledger.jsonl	列车线	门禁台账（tools/gate.sh gl_put：每步一行 JSON，步名 / 缓存键 / 在哪台 / 退出码 / 秒数 / 排令牌秒数 / 调用方；GATE_LEDGER 可改、=- 关）	只追加，每行一次 printf >> 写（远小于管道原子长度），多份门禁并发追加不交错；读方按行解析
 ~/.s2a/lanes	出包线（11-01）	同机正在出包的道数登记（tools/cores.sh s2a_lanes：每道按入口进程号建空文件，算并行度时数活着的）	每道只写自己进程号的空文件；数道数时删进程已退的登记；内容为空，撞了也只是多 / 少数一道
 ~/.s2arm/run/s2arm/census_dcache	出包线（11-01）	普查直连库缓存（远端常驻，按程序号分目录；tools/census/dcache_gc.py 管总量上限，Spare-host 缺省 40 GB）	dmsh_store 自带片锁与 .inuse 共享锁；超上限按 .used 最久没用的款淘汰，在用（.inuse 拿不到独占锁）与本次要用的款不动；删除走 safe_rm
 ~/.cache/s2arm-build/post-prepare.lock	合入线	合入后钩子 tools/post_android_prepare.sh 的串行锁（两棵钩子树同时跑时 prepare 排队）；S2A_ANDROID_PREPARE_LOCK 可改	mkdir 原子拿锁、写 pid；持锁进程死了下一个收回；退出时 trap 删
@@ -115,4 +116,3 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2arm/run/s2arm/packq/bin/slot.sh	出包运维	机器槽脚本（我方运行区专用，不进发布物；Spare-host 上在同一路径手工放一份）；tools/slot_res.sh 缺省取它，S2A_SLOT_BIN 可改	只读脚本；更新用 .new + mv，不原地改在用的脚本
 ~/../reserve	出包运维	远端 <远端根>/reserve/（远端命令里 HOME=<远端根>/home 的上一级）：tools/remote.sh 在这台被独占预留时从本机预留目录同步一份，只读给 tools/slot_res.sh 复查	单写者 tools/remote.sh（put 先清后写、clear 删）；读方只读，S2A_RES_DIR 可改
 ~/.s2a/update-signing/ed25519.key	维护方	发版清单签名私钥（tools/sign_update_manifest.py 读；只在发版机上，不进仓库）	只读；权限 600，目录 700；脚本启动时校验它与启动器内置公钥一致，对不上就拒绝签名
-~/.s2a/gate_tokens	门禁	本机预跑整份令牌（tools/run_token.sh；GATE_RUN_TOKEN_DIR 可改）	内核文件锁 run.<号>（flock_hold.py take-any），持有者退出即放；锁文件常驻不删，.holder 只作提示
