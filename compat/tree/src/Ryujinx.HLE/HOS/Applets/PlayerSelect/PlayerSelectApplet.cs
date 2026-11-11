@@ -38,7 +38,26 @@ namespace Ryujinx.HLE.HOS.Applets
             // left "add new user" doing nothing (11-06 Brain Training); upstream opens the user selector and reports the
             // existing user as newly created, which adds no user either.
             _normalSession.TryPop(out _);
-            if (_normalSession.TryPop(out byte[] uiSettings) && uiSettings.Length >= 4 && BitConverter.ToUInt32(uiSettings, 0) == UiModeUserCreator)
+            uint mode = _normalSession.TryPop(out byte[] uiSettings) && uiSettings.Length >= 4 ? BitConverter.ToUInt32(uiSettings, 0) : 0;
+            // S2Arm (#621 Taiko no Tatsujin Rhythm Festival): the network-service modes - EnsureNetworkServiceAccountAvailable (2) and the
+            // license requirements for a network service (10, 11) - link or check a Nintendo Account online. The host is offline and the
+            // account service says no network service account is linked (CheckAvailability -> NetworkServiceAccountRegistrationRequired),
+            // so on a console with no connection the applet ends without one: answer it failed. Answering "selected the current user"
+            // told the game the account was now usable; it checked again, still unlinked, and opened the applet again every frame
+            // (1007 times in 17 s) instead of going on offline.
+            if (mode is UiModeEnsureNetworkServiceAccountAvailable or UiModeLicenseRequirementsForNetworkService or UiModeLicenseRequirementsForNetworkServiceWithUserContext)
+            {
+                if (s_offlineAnswered.TryAdd(mode, 0))
+                {
+                    Logger.Info?.Print(LogClass.ServiceAm, $"Player select applet mode {mode} (network service account) answered failed: the host is offline and no network service account is linked");
+                }
+                _normalSession.Push(BuildResponse());
+                AppletStateChanged?.Invoke(this, null);
+                _system.ReturnFocus();
+
+                return ResultCode.Success;
+            }
+            if (mode == UiModeUserCreator)
             {
                 AccountManager accounts = _system.AccountManager;
                 // count + 1 candidates against count existing names: one is always free
@@ -109,7 +128,12 @@ namespace Ryujinx.HLE.HOS.Applets
             return stream.ToArray();
         }
 
+        // nn::account::UiMode (libnx PselUiMode)
         private const uint UiModeUserCreator = 1;
+        private const uint UiModeEnsureNetworkServiceAccountAvailable = 2;
+        private const uint UiModeLicenseRequirementsForNetworkService = 10;
+        private const uint UiModeLicenseRequirementsForNetworkServiceWithUserContext = 11;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, byte> s_offlineAnswered = new();   // modes already logged
 
         private static byte[] BuildResponse()
         {
