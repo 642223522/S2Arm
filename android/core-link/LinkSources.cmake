@@ -51,7 +51,11 @@ function(s2a_android_diagnostic_sources output)
         native/capprobe/capprobe_host.c
         # dguard_android.c / bridge.cpp 引用的共用出口：诊断目标编入同一实现（无武装点，
         # 只靠弱回退的日志与 stub 的 s2a_host_session_state 空转），行为与游戏目标一致。
-        ../runtime/src/dguard.c ../runtime/src/direct_prompt.c)
+        ../runtime/src/dguard.c ../runtime/src/direct_prompt.c
+        # 诊断目标没有原生会话核心：direct_prompt.c 要的 s2a_host_session_state 等会话入口由 stub 给
+        # （恒报 FAILED）。不论服务层是否静态链入都要它，否则缺省 assembleDebug（S2A_CS_SERVICES=0）
+        # 在 -z defs 下报 undefined symbol: s2a_host_session_state。
+        native/s2a_native_stub.c)
     set(${output} "${sources}" PARENT_SCOPE)
 endfunction()
 
@@ -60,7 +64,8 @@ function(s2a_android_static_sources output mode)
     # provider 提供同一组符号。只读 guest 复制只在诊断目标需要。
     if(mode STREQUAL "diagnostic")
         # readonly_copy.c 现在也读背板打洞世代号（#1217 §2.6），诊断单库必须带 backing.c。
-        set(sources native/s2a_native_stub.c native/runtime/tracking/readonly_copy.c native/runtime/vm/backing.c)
+        # 链接桩 s2a_native_stub.c 已在 s2a_android_diagnostic_sources 里（不论服务层模式）。
+        set(sources native/runtime/tracking/readonly_copy.c native/runtime/vm/backing.c)
     else()
         set(sources)
     endif()
