@@ -3,9 +3,9 @@
 //   · 整屏、全通道的清除不编码任何东西：记成「待折清除」，开通道时落成该附件的 load = CLEAR。
 //     一直没有绘制：换目标或提交时为它开一个只做清除的通道。
 //   · 目标绑定跨命令缓冲、跨提交保留（记录内的贴图快照拷一份自己留着）；打开的通道与待折清除不跨提交。
-//   · 带裁剪的清除（裁剪矩形盖不满目标）：像绘制一样开通道（待折清除先落），在通道里按矩形清（后端 nvn_gpu_clear_rect）。
-// 还没接：只写部分颜色通道 / 部分模板位的清除（iOS 用清除三角形；后端的矩形清不看写掩码，不拿它近似）、
-//         通道合并与存储前瞻（TBDR 上省带宽的手段，不影响画面）。
+//   · 带裁剪或带写掩码的清除（裁剪矩形盖不满目标 / 只写部分颜色通道 / 只写部分模板位）：像绘制一样开通道（待折清除先落），
+//     在通道里按矩形清（后端 nvn_gpu_clear_rect，写掩码一并交给它）。清完后端的管线与动态状态不保证，下一笔绘制前全部重发。
+// 还没接：通道合并与存储前瞻（TBDR 上省带宽的手段，不影响画面）。
 #include "rp_exec.h"
 #include "rp_state.h"
 #include "rp_res.h"
@@ -118,13 +118,13 @@ void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec
     if (!P.has_rt || cc->index < 0 || cc->index >= P.rt.n || cc->index >= 8 || !P.rt.color[cc->index]) { nvn_unimpl("pass", "clear_color_no_target", rec); return; }
     if (!(cc->mask & 0xf)) return;
     int i = cc->index;
-    if ((cc->mask & 0xf) != 0xf) { nvn_unimpl("pass", "clear_color_chmask", rec); return; }
-    if (!scissor_full(P.rt.color[i], &P.rt.cview[i], P.rt.has_cview[i])) {
-        nvn_gpu_clear cl; memset(&cl, 0, sizeof cl); cl.color = i;
+    if ((cc->mask & 0xf) != 0xf || !scissor_full(P.rt.color[i], &P.rt.cview[i], P.rt.has_cview[i])) {
+        nvn_gpu_clear cl; memset(&cl, 0, sizeof cl); cl.color = i; cl.color_mask = (uint8_t)(cc->mask & 0xf); cl.stencil_mask = 0xff;
         if (!scissor_rect(P.rt.color[i], &P.rt.cview[i], P.rt.has_cview[i], &cl)) return;
         if (!c || !rp_pass_begin(c)) { if (c) nvn_unimpl("pass", "clear_rect_pass_begin_failed", rec); return; }
         color_value(i, cc->rgba, &cl.value);
         nvn_gpu_clear_rect(c, &cl);
+        rp_dirty_all();
         return;
     }
     if (P.open) rp_pass_end(c);   // 通道中的整屏清除：结束这一通道，清除挂到下一个通道开头（其余附件照常 LOAD）
@@ -138,14 +138,14 @@ void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec) {
     // 目标实际有哪些面：没有的面这次清除对它无事可做（同 rp_pass_begin 的附件判定）
     nvn_fmt_info fi; int ok = nvn_fmt_info_of((uint32_t)P.rt.depth->d.format, &fi);
     int do_d = cd->depth_mask && (!ok || fi.depth), do_s = sm && ok && fi.stencil;
-    if (do_s && sm != 0xff) { nvn_unimpl("pass", "clear_stencil_wmask", rec); do_s = 0; }   // 只写部分模板位：没接，深度那一半照做
     if (!do_d && !do_s) return;
-    if (!scissor_full(P.rt.depth, &P.rt.dview, P.rt.has_dview)) {
-        nvn_gpu_clear cl; memset(&cl, 0, sizeof cl); cl.color = -1;
+    if (!scissor_full(P.rt.depth, &P.rt.dview, P.rt.has_dview) || (do_s && sm != 0xff)) {
+        nvn_gpu_clear cl; memset(&cl, 0, sizeof cl); cl.color = -1; cl.color_mask = 0xf; cl.stencil_mask = (uint8_t)(do_s ? sm : 0xff);
         if (!scissor_rect(P.rt.depth, &P.rt.dview, P.rt.has_dview, &cl)) return;
         if (!c || !rp_pass_begin(c)) { if (c) nvn_unimpl("pass", "clear_rect_pass_begin_failed", rec); return; }
         cl.depth = (uint8_t)do_d; cl.stencil = (uint8_t)do_s; cl.depth_value = depth_value(cd->depth); cl.stencil_value = (uint32_t)cd->stencil & 0xff;
         nvn_gpu_clear_rect(c, &cl);
+        rp_dirty_all();
         return;
     }
     if (P.open) rp_pass_end(c);

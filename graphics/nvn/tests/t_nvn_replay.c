@@ -563,11 +563,12 @@ static void t_pass_switch_and_partial(void) {
     CHECK(g_npd == 3 && g_pass_ends == 3);
     CHECK(g_pd[0].w == 16 && g_pd[0].color[0].clear.f[2] == 1);                     // 第一个通道是 a 的
     CHECK(g_pd[1].w == 8 && g_pd[1].color[0].load == NVN_GPU_LOAD_LOAD);            // 为矩形清开的通道：原内容留着
-    CHECK(g_ncr == 1 && g_cr[0].npd == 2 && g_cr[0].ends == 1);                     // 矩形清发在第二个通道开着的时候
-    CHECK(g_cr[0].d.color == 0 && !g_cr[0].d.depth && !g_cr[0].d.stencil && g_cr[0].d.x == 0 && g_cr[0].d.y == 0 && g_cr[0].d.w == 4 && g_cr[0].d.h == 4 && g_cr[0].d.value.f[1] == 0.125f);
+    CHECK(g_ncr == 2 && g_cr[0].npd == 2 && g_cr[0].ends == 1 && g_cr[1].npd == 2 && g_cr[1].ends == 1);   // 两次矩形清都发在第二个通道开着的时候
+    CHECK(g_cr[0].d.color == 0 && g_cr[0].d.color_mask == 0x7 && g_cr[0].d.x == 0 && g_cr[0].d.y == 0 && g_cr[0].d.w == 8 && g_cr[0].d.h == 8);   // 只写三个通道：整张目标、掩码原样交给后端
+    CHECK(g_cr[1].d.color == 0 && g_cr[1].d.color_mask == 0xf && !g_cr[1].d.depth && !g_cr[1].d.stencil && g_cr[1].d.x == 0 && g_cr[1].d.y == 0 && g_cr[1].d.w == 4 && g_cr[1].d.h == 4 && g_cr[1].d.value.f[1] == 0.125f);
     CHECK(g_pd[2].w == 8 && g_pd[2].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[2].color[0].clear.f[0] == 0.5f);   // 之后的整屏清除：结束那个通道，折进下一个
-    CHECK(nvn_unimpl_count("pass", "clear_color_chmask") == 1 && nvn_unimpl_count("pass", "clear_color_no_target") == 1 && nvn_unimpl_count("pass", "clear_ds_no_target") == 1);
-    CHECK(nvn_unimpl_kinds() == 3);
+    CHECK(nvn_unimpl_count("pass", "clear_color_no_target") == 1 && nvn_unimpl_count("pass", "clear_ds_no_target") == 1);
+    CHECK(nvn_unimpl_kinds() == 2);
     pass_fresh();
     tex_t z = mk_tex(66, 0, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
     stream d = {0}; put_set_rt(&d, NULL, &z); p_clear_ds *c2 = put(&d, OP_CLEAR_DS, sizeof *c2); c2->depth_mask = 1; c2->depth = 1; end(&d);
@@ -601,8 +602,7 @@ static void t_clear_rect(void) {   // 带裁剪的清除：矩形与目标求交
     p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 4; sc->y = -2; sc->w = 20; sc->h = 8;      // 与 16×16 的交集：x 4..16、y 0..6
     p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 3.75f; cc->rgba[1] = -1; cc->rgba[2] = 5e9f; cc->rgba[3] = 255;
     p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 0.5f; cd->depth_mask = 1; cd->stencil = 0x105; cd->stencil_mask = 0xff;
-    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 2; cd->depth_mask = 1; cd->stencil = 9; cd->stencil_mask = 0x0f;   // 只写低四位模板：模板那一半没接，深度照清（超界的深度值收到 1）
-    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 0; cd->stencil = 9; cd->stencil_mask = 0x0f;                  // 只剩没接的那一半：不发
+    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 2; cd->depth_mask = 1; cd->stencil = 9; cd->stencil_mask = 0x0f;   // 只写低四位模板：掩码交给后端；超界的深度值收到 1
     sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 100; sc->y = 0; sc->w = 4; sc->h = 4;                 // 整个在目标外：什么都不动
     cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;
     cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1; cd->stencil_mask = 0xff;
@@ -613,8 +613,9 @@ static void t_clear_rect(void) {   // 带裁剪的清除：矩形与目标求交
     for (int i = 0; i < 3 && i < g_ncr; i++) CHECK(g_cr[i].npd == 1 && g_cr[i].ends == 0 && g_cr[i].d.x == 4 && g_cr[i].d.y == 0 && g_cr[i].d.w == 12 && g_cr[i].d.h == 6);
     CHECK(g_cr[0].d.color == 0 && g_cr[0].d.value.u[0] == 3 && g_cr[0].d.value.u[1] == 0 && g_cr[0].d.value.u[2] == 0xffffffffu && g_cr[0].d.value.u[3] == 255);
     CHECK(g_cr[1].d.color == -1 && g_cr[1].d.depth == 1 && g_cr[1].d.stencil == 1 && g_cr[1].d.depth_value == 0.5f && g_cr[1].d.stencil_value == 5);
-    CHECK(g_cr[2].d.color == -1 && g_cr[2].d.depth == 1 && g_cr[2].d.stencil == 0 && g_cr[2].d.depth_value == 1);
-    CHECK(nvn_unimpl_count("pass", "clear_stencil_wmask") == 2 && nvn_unimpl_kinds() == 1);
+    CHECK(g_cr[0].d.color_mask == 0xf && g_cr[1].d.stencil_mask == 0xff);
+    CHECK(g_cr[2].d.color == -1 && g_cr[2].d.depth == 1 && g_cr[2].d.stencil == 1 && g_cr[2].d.stencil_mask == 0x0f && g_cr[2].d.stencil_value == 9 && g_cr[2].d.depth_value == 1);
+    CHECK(nvn_unimpl_kinds() == 0);
     pass_fresh();
 }
 

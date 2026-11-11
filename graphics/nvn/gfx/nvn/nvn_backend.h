@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 4   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 5   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -380,17 +380,19 @@ void nvn_gpu_copy_tex(nvn_gpu_cmd c, nvn_gpu_tex src, uint32_t slevel, uint32_t 
                       nvn_gpu_tex dst, uint32_t dlevel, uint32_t dlayer, const NVNcopyRegion *dr);
 void nvn_gpu_blit(nvn_gpu_cmd c, nvn_gpu_view src, const NVNcopyRegion *sr, nvn_gpu_view dst, const NVNcopyRegion *dr, int linear);   // 要 CAP_BLIT_SCALED
 void nvn_gpu_clear_view(nvn_gpu_cmd c, nvn_gpu_view v, const float rgba[4], const uint32_t uint4[4], int is_int);
-// v4：通道内把当前通道的附件按矩形清成给定值（NVN 带裁剪的 ClearColor / ClearDepthStencil；整屏清除由核心折成 load = CLEAR，不走这里）。
-// 不看管线与动态状态：颜色四个通道全写、模板八位全写（部分通道 / 部分模板掩码的清除不在本入口的语义里，核心不得用它近似）。
+// v4：通道内把当前通道的附件按矩形清成给定值（NVN 带裁剪或带写掩码的 ClearColor / ClearDepthStencil；整屏全掩码的清除由核心折成 load = CLEAR，不走这里）。
+// v5：带写掩码——color_mask 是要写的颜色通道（r=1 g=2 b=4 a=8），stencil_mask 是要写的模板位；没点到的通道 / 位保持原值。
+// 不看当前绑定的管线与动态状态，调用之后它们的值不保证，核心照「新通道」那样在下一笔绘制前全部重发。
 // 矩形与 nvn_gpu_dyn.sc 同一坐标约定，必须整个落在通道范围内且非空；通道的全部层都清。
 typedef struct {
     int32_t color;                    // 要清的颜色附件 = pass_desc.color[] 的下标；-1 = 不清颜色
     union { float f[4]; uint32_t u[4]; int32_t i[4]; } value;   // 按附件格式的数值类别取用（同 nvn_gpu_att.clear）
-    uint8_t depth, stencil, _rsv[2];  // 1 = 清深度 / 清模板（通道必须带对应附件）
+    uint8_t depth, stencil;           // 1 = 清深度 / 清模板（通道必须带对应附件）
+    uint8_t color_mask, stencil_mask; // 颜色写掩码（color >= 0 时至少一位；0xF = 四个通道）、模板写掩码（stencil = 1 时至少一位；0xFF = 八位）
     float depth_value; uint32_t stencil_value;
     int32_t x, y; uint32_t w, h;
 } nvn_gpu_clear;
-// 线程：[提交]，通道内。出错：粘滞 ORDER（通道外）/ ARG（下标越界、通道没有该附件、矩形越界或为空、什么都不清）。
+// 线程：[提交]，通道内。出错：粘滞 ORDER（通道外）/ ARG（下标越界、通道没有该附件、矩形越界或为空、什么都不清、掩码为 0）。
 void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d);
 // NVN 屏障（NVNbarrierBits 原样）。
 /* 定稿 #7：核心只表达 NVN 的顺序与访问语义（这个位、这次拷贝、这次附件写）；Vulkan 后端自己跟踪每个子资源的 layout / stage / access 并据此发屏障，

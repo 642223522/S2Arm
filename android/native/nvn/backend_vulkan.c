@@ -152,6 +152,7 @@ struct nvn_gpu_cmd_s {
     uint32_t pass_w, pass_h;
     uint32_t pass_ncolor, pass_layers;       // 当前通道的颜色槽数、层数（clear_rect 用）
     uint32_t pass_color_mask;                // 哪些颜色槽有附件（位 i = 槽 i；空位为 0）
+    uint32_t pass_cfmt[8], pass_dsfmt, pass_samples;   // 当前通道各槽的 NVN 格式（空位 0）、深度模板格式、采样数（带掩码的清除建管线用）
     VkImageAspectFlags pass_ds_aspect;       // 当前通道深度模板附件有的面（0 = 没有该附件）
     struct nvn_gpu_tex_s *pass_tex[8];
     uint32_t pass_ntex;
@@ -798,6 +799,7 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
 }
 
 static void wsi_close_locked(void);   // backend_vulkan_wsi.inc
+static void clr_close(void);          // backend_vulkan_clear.inc
 nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     if (!g_open) return rc(NVN_GPU_OK);
     if (g_in_callback) return fail(err, NVN_GPU_E_ORDER, "回调里不许 close");
@@ -862,6 +864,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         free(b);
         b = next;
     }
+    clr_close();
     struct nvn_gpu_pipe_s *p = g.pipes;
     g.pipes = NULL;
     while (p) {
@@ -2250,7 +2253,10 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     c->pass_h = d->h;
     c->pass_ncolor = d->ncolor < 8 ? d->ncolor : 8;
     c->pass_color_mask = 0;
-    for (uint32_t i = 0; i < c->pass_ncolor; i++) if (d->color[i].view) c->pass_color_mask |= 1u << i;
+    memset(c->pass_cfmt, 0, sizeof c->pass_cfmt); c->pass_dsfmt = 0; c->pass_samples = 1;
+    for (uint32_t i = 0; i < c->pass_ncolor; i++) if (d->color[i].view) {
+        c->pass_color_mask |= 1u << i; c->pass_cfmt[i] = d->color[i].view->tex->nvn_format; c->pass_samples = d->color[i].view->tex->samples; }
+    if (d->depth.view || d->stencil.view) { struct nvn_gpu_tex_s *dt = (d->depth.view ? d->depth.view : d->stencil.view)->tex; c->pass_dsfmt = dt->nvn_format; c->pass_samples = dt->samples; }
     c->pass_layers = fi.layers;
     c->pass_ds_aspect = (d->depth.view ? d->depth.view->tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (d->stencil.view ? d->stencil.view->tex->aspect & VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     c->pass_ntex = 0;
@@ -3479,6 +3485,8 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
     }
 }
 
+#include "backend_vulkan_clear.inc"
+
 void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -3491,17 +3499,25 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     if (!d->w || !d->h || d->x < 0 || d->y < 0 || (uint64_t)d->x + d->w > c->pass_w || (uint64_t)d->y + d->h > c->pass_h) {
         set_sticky(c, NVN_GPU_E_ARG, "clear_rect 矩形 %d,%d %ux%u 为空或超出通道 %ux%u", d->x, d->y, d->w, d->h, c->pass_w, c->pass_h); return;
     }
+    uint32_t cm = d->color >= 0 ? d->color_mask & 0xfu : 0xfu, sm = d->stencil ? d->stencil_mask : 0xffu;
+    if (!cm || !sm) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 写掩码为 0（颜色 %#x 模板 %#x）", (unsigned)d->color_mask, (unsigned)d->stencil_mask); return; }
+    // 掩码不满的那一半画一笔带写掩码的三角形（backend_vulkan_clear.inc）；其余照旧用附件清除
+    if (d->color >= 0 && cm != 0xfu) clr_draw(c, d->color, cm, &d->value, 0, 0, d);
+    if (d->stencil && sm != 0xffu) clr_draw(c, -1, 0, NULL, sm, d->stencil_value, d);
+    if (!rc_is(c->sticky, NVN_GPU_OK)) return;
+    int plain_color = d->color >= 0 && cm == 0xfu, plain_stencil = d->stencil && sm == 0xffu;
+    if (!plain_color && !d->depth && !plain_stencil) return;
     VkClearAttachment at[2];
     uint32_t n = 0;
     memset(at, 0, sizeof at);
-    if (d->color >= 0) {   // 颜色附件在子通道里的下标 = pass_desc.color[] 的下标（make_pass 按序建）
+    if (plain_color) {   // 颜色附件在子通道里的下标 = pass_desc.color[] 的下标（make_pass 按序建）
         at[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         at[n].colorAttachment = (uint32_t)d->color;
         memcpy(&at[n].clearValue.color, &d->value, sizeof at[n].clearValue.color);
         n++;
     }
-    if (d->depth || d->stencil) {
-        at[n].aspectMask = (d->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (d->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    if (d->depth || plain_stencil) {
+        at[n].aspectMask = (d->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (plain_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
         at[n].clearValue.depthStencil.depth = d->depth_value;
         at[n].clearValue.depthStencil.stencil = d->stencil_value;
         n++;
