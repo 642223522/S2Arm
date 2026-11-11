@@ -687,6 +687,29 @@ def _work_root_of(c, library):
     return c.private if library.is_relative_to(c.private) else library / ".s2arm-work"
 
 
+# Match pack/orch/roots.rename_dir: a scanner may briefly hold files under a
+# directory and prevent a Windows same-volume rename (WinError 5 / 32).
+_LIBRARY_RENAME_RETRIES = (0.1, 0.2, 0.5, 1, 2, 4, 8, 15, 30)
+
+
+def _rename_library_path(source, target):
+    delays = _LIBRARY_RENAME_RETRIES if os.name == "nt" else ()
+    for delay in (*delays, None):
+        try:
+            os.rename(source, target)
+            return
+        except PermissionError as error:
+            if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32):
+                raise
+            if delay is None:
+                raise Failure(
+                    f"Windows 重试约 1 分钟后，游戏库项目“{Path(source).name}”仍被占用，无法改名。"
+                    "请关闭正在访问游戏库的资源管理器窗口、杀毒扫描或下载工具后重试；原游戏库仍保留在原位置。",
+                    code="library_move_failed",
+                ) from error
+            time.sleep(delay)
+
+
 def _move_pairs(c, source):
     """要搬的 (旧, 新)：游戏库里的每一项，加上放在库外的工作目录（缺省游戏库在私有目录里时，着色器缓存在私有目录的 cache / run 下）。marker 排最后：有它才算搬完"""
     old_work, new_work = _work_root_of(c, source), _work_root_of(c, c.library)
@@ -750,27 +773,9 @@ def move_library(c, source):
                 c.progress(copied, total)
             c.begin("把游戏库放到新位置")
             staged = {a: stage / str(n) for n, (a, _) in enumerate(cross)}
-            for n, (a, b) in enumerate(pairs):
+            for a, b in pairs:
                 b.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.rename(staged.get(a, a), b)
-                except PermissionError:
-                    if a in staged:
-                        raise
-                    # A same-volume rename can be denied by a Windows handle/share mode even
-                    # when the tree is readable. Copy to staging, verify, then switch atomically.
-                    required = _size_of(a)
-                    if shutil.disk_usage(c.library).free < required:
-                        raise Failure("新位置空间不够，游戏库没有搬。", code="disk_full") from None
-                    target = stage / "fallback" / str(n)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if a.is_dir() and not _is_link(a):
-                        copy_tree_links(a, target)
-                    else:
-                        shutil.copy2(a, target, follow_symlinks=False)
-                    _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
-                    os.rename(target, b)
-                    staged[a] = target
+                _rename_library_path(staged.get(a, a), b)
                 done.append((a, b))
             for root in (c.library, _work_root_of(c, c.library)):
                 _retarget_links(root, source, c.library)
@@ -781,7 +786,7 @@ def move_library(c, source):
                 if a in staged:
                     _discard(b)
                 else:
-                    os.rename(b, a)
+                    _rename_library_path(b, a)
             _discard(stage)
             with contextlib.suppress(OSError):
                 (c.library / ".s2arm-work").rmdir()   # 回滚后别留下搬的时候建的空目录

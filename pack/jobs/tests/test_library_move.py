@@ -95,26 +95,79 @@ class MoveTests(unittest.TestCase):
         self.assert_moved(old, new)
         self.assertFalse(old.exists())
 
-    def test_same_volume_permission_error_falls_back_to_verified_copy(self):
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing errors")
+    def test_same_volume_rename_retries_after_temporary_lock(self):
         old, new = self.old(), self.root / "new"
-        real = os.rename
-        failed = [False]
+        real, failures, sleeps = os.rename, [0], []
 
-        def deny_games_rename(src, dst):
-            if not failed[0] and Path(src) == old / "games":
-                failed[0] = True
-                raise PermissionError(5, "Access is denied", str(src))
+        def locked_once(src, dst):
+            if Path(src) == old / "games" and not failures[0]:
+                failures[0] += 1
+                error = PermissionError(13, "Access is denied", str(src))
+                error.winerror = 5
+                raise error
             return real(src, dst)
 
-        with um.patch.object(library.os, "rename", deny_games_rename):
+        with um.patch.object(library, "_same_volume", return_value=True), \
+             um.patch.object(library.os, "rename", locked_once), \
+             um.patch.object(library.time, "sleep", sleeps.append):
             r = self.run_setup(new, moveFrom=str(old))
-        self.assertTrue(failed[0])
+        self.assertEqual(failures, [1])
+        self.assertEqual(sleeps, [library._LIBRARY_RENAME_RETRIES[0]])
         self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
         self.assert_moved(old, new)
         self.assertFalse(old.exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing errors")
+    def test_same_volume_persistent_lock_times_out_and_preserves_source(self):
+        old, new = self.old(), self.root / "new"
+        real, refusals, sleeps = os.rename, [0], []
+
+        def always_locked(src, dst):
+            if Path(src) == old / "games":
+                refusals[0] += 1
+                error = PermissionError(13, "Access is denied", str(src))
+                error.winerror = 32
+                raise error
+            return real(src, dst)
+
+        with um.patch.object(library, "_same_volume", return_value=True), \
+             um.patch.object(library.os, "rename", always_locked), \
+             um.patch.object(library.time, "sleep", sleeps.append), \
+             self.assertRaises(Failure) as caught:
+            self.run_setup(new, moveFrom=str(old))
+        self.assertEqual(caught.exception.code, "library_move_failed")
+        self.assertIn("重试约 1 分钟", str(caught.exception))
+        self.assertIn("资源管理器", str(caught.exception))
+        self.assertIn("原游戏库仍保留在原位置", str(caught.exception))
+        self.assertEqual(refusals, [len(library._LIBRARY_RENAME_RETRIES) + 1])
+        self.assertEqual(sleeps, list(library._LIBRARY_RENAME_RETRIES))
+        self.assert_untouched(old, new)
+        self.assertEqual(list(new.iterdir()), [])
+
+    def test_nonretryable_no_space_rename_fails_immediately_and_preserves_source(self):
+        old, new = self.old(), self.root / "new"
+        real, failed, sleeps = os.rename, [0], []
+
+        def no_space(src, dst):
+            if Path(src) == old / "games":
+                failed[0] += 1
+                raise OSError(28, "No space left on device", str(src))
+            return real(src, dst)
+
+        with um.patch.object(library, "_same_volume", return_value=True), \
+             um.patch.object(library.os, "rename", no_space), \
+             um.patch.object(library.time, "sleep", sleeps.append), \
+             self.assertRaises(OSError) as caught:
+            self.run_setup(new, moveFrom=str(old))
+        self.assertEqual(caught.exception.errno, 28)
+        self.assertEqual(failed, [1])
+        self.assertEqual(sleeps, [])
+        self.assert_untouched(old, new)
+        self.assertEqual(list(new.iterdir()), [])
+
     @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing semantics")
-    def test_windows_directory_handle_without_delete_share_uses_copy_fallback(self):
+    def test_windows_directory_handle_times_out_without_moving_source(self):
         import ctypes
         from ctypes import wintypes
 
@@ -140,34 +193,15 @@ class MoveTests(unittest.TestCase):
                 raise
 
         try:
-            with um.patch.object(library.os, "rename", observe_rename):
-                r = self.run_setup(new, moveFrom=str(old))
+            with um.patch.object(library.os, "rename", observe_rename), \
+                 um.patch.object(library.time, "sleep", lambda _: None), \
+                 self.assertRaises(Failure) as caught:
+                self.run_setup(new, moveFrom=str(old))
         finally:
             close_handle(handle)
         self.assertTrue(errors and errors[0] in (5, 32), errors)
-        self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
-        self.assertTrue((new / "games" / GID).is_dir())
-        self.assertTrue((new / "saves" / GID / "save.bin").is_file())
-
-    def test_same_volume_fallback_copy_verification_failure_rolls_back(self):
-        old, new = self.old(), self.root / "new"
-        real_rename, real_verify = os.rename, library._verify_copy
-        failed = [False]
-
-        def deny_games_rename(src, dst):
-            if not failed[0] and Path(src) == old / "games":
-                failed[0] = True
-                raise PermissionError(5, "Access is denied", str(src))
-            return real_rename(src, dst)
-
-        def reject_games_copy(src, dst, strict):
-            if Path(src) == old / "games":
-                raise Failure("simulated verification mismatch", code="library_move_failed")
-            return real_verify(src, dst, strict)
-
-        with um.patch.object(library.os, "rename", deny_games_rename), um.patch.object(library, "_verify_copy", reject_games_copy), self.assertRaises(Failure):
-            self.run_setup(new, moveFrom=str(old))
-        self.assertTrue(failed[0])
+        self.assertEqual(len(errors), len(library._LIBRARY_RENAME_RETRIES) + 1)
+        self.assertIn("资源管理器", str(caught.exception))
         self.assert_untouched(old, new)
         self.assertEqual(list(new.iterdir()), [])
 
