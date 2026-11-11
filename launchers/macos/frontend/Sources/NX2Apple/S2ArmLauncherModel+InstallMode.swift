@@ -6,12 +6,19 @@ import Foundation
 import S2ArmAppleAdapter
 
 extension S2ArmLauncherModel {
+    // 失败不吞（剃刀 M13）：读失败保留原值、报一次原因；切换失败报原因（界面停在旧值是真实状态，不再像点了没反应）
     func refreshInstallMode() {
-        Task { if let i = try? await provider.installMode() { installMode = i } }
+        Task {
+            do { installMode = try await provider.installMode(); readOK("s2arm.fail.installMode") }
+            catch { reportFailure("s2arm.fail.installMode", error, passive: true) }
+        }
     }
 
     func setInstallMode(_ mode: String) {
-        Task { if let i = try? await provider.installMode(set: mode) { installMode = i } }
+        Task {
+            do { installMode = try await provider.installMode(set: mode) }
+            catch { reportFailure("s2arm.fail.installModeSet", error) }
+        }
     }
 
     /// 签名身份（一键装时）：开发者证书开着 = devcert，否则 Xcode 账号
@@ -27,11 +34,13 @@ extension S2ArmLauncherModel {
     }
 
     /// 三选一的结果：repack = 更新完要排进批量出包的款（「更新并重新出这几款」），空 = 「只更新，其他稍后」
-    func updatePhone(acceptStale: Bool, repack: [String], language: String) {
+    func updatePhone(acceptStale: Bool, repack: [String], language: String, device: String? = nil) {
         guard !busy else { return }
         updateConfirm = nil; updateRepack = repack
+        // 更新哪台：壳旧了的那台（phoneUpdates 的设备记录键）；没有就是玩家选的那台。一律带上，作业层不自己挑（v0.3.0 验收测出连着两台报错；11-11 设备号贯穿所有装机入口）
+        let device = device ?? phoneUpdate?.device ?? installDeviceID
         start(JobSession(kind: .installUpdate, gameID: nil, name: BackendText.launcherText("update.running", language: language))) { [weak self] sink in
-            _ = try await self?.provider.updatePhone(acceptStale: acceptStale, events: sink)
+            _ = try await self?.provider.updatePhone(acceptStale: acceptStale, device: device, events: sink)
             return nil
         }
     }

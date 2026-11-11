@@ -100,6 +100,9 @@ struct s2a_compile_request_input {
     uint32_t texture_array_length;  // 真实纹理描述符池容量；0 = 未知
     uint32_t sampler_array_length;  // 真实采样器描述符池容量；0 = 未知
     int transform_feedback_enabled;
+    // 驱动的贴图句柄表（常量缓冲 2）有多少个 8 字节项；0 = 不给（请求里不出 textureBufferLengths）。
+    // 着色器按运行时下标取句柄时，翻译器把它变成长度为这个数的贴图数组（BindlessToArray）。
+    uint32_t handle_table_entries;
 };
 
 struct s2a_compile_outcome {

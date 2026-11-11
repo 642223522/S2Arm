@@ -507,6 +507,17 @@ class LogCauses(JobCase):
         self.assertEqual(error.code, "permission_denied")
         self.assertEqual(d["suggestion"], RECOVERY["permission_denied"])
 
+    def test_exfat_unsupported_ops_says_change_drive(self):
+        # 11-10 网友（v0.2.6 Mac）：存放位置设到外接盘写入失败；exFAT 映像复现，解包 seed 克隆退回拷贝后发布用 RENAME_EXCL 回 errno 45。
+        #   原先落成笼统的「资源准备失败」；现在说清这块盘格式不支持、换 APFS 盘
+        from errors import RECOVERY
+        error, d = self.mac_refresh(["克隆失败：main：[Errno 45] Operation not supported: '[PRIVATE_PATH]'",
+                                     "【红】克隆 exefs 失败",
+                                     "【红】010024B00F9D0000 刷新停在 seed 阶段（rc=1），现行 = 010024B00F9D0000@ex-1234abcd"])
+        self.assertEqual(error.code, "volume_ops_unsupported")
+        self.assertEqual(d["summary"], "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。")
+        self.assertEqual(d["suggestion"], RECOVERY["volume_ops_unsupported"])
+
     def test_windows_precheck_missing_metal_says_metal_unavailable(self):
         # 11-09 Windows 出包机：S2A_METAL_BIN 指到不存在的目录，预检打「环境缺件 metal」、退 75。原先落成笼统的 package_failed（出包未完成）
         error, d = self.mac_refresh(["【红】环境缺件 metal：Metal Developer Tools（D:\\no_such_metal\\bin；S2A_METAL_BIN 可指定，否则查 PATH / 官方安装目录）",
@@ -595,6 +606,23 @@ class LogCauses(JobCase):
             error, d = self.mac_refresh(["pack/stage_x.sh: line 9: spirv-cross: command not found", "【红】fixture 刷新停在 caps 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertNotEqual(error.code, "tool_missing")
         self.assertIn("候选 tool_missing 未采信", d["detail"])
+
+    def test_rewrite_gap_failure_carries_machine_facts(self):
+        # 剃刀 G5 / H9：改写失败带机读事实（facts），前端按字段显示、不解析中文。证据里两条统计行取最后一条；GAP 行去掉地址 / 寄存器后按类别计数。
+        #   期望手算：最后一条 PFRW mod=main need=120 gaps=3 fatal=0；三条 GAP 归两类——「ldr _, [_, _]」2 次、「svc _」1 次
+        error, d = self.mac_refresh(["PFRW mod=rtld need=4 gaps=0 fatal=0",
+                                     "PFRW mod=main need=120 gaps=3 fatal=0",
+                                     "GAP\t1\t0x7100001000\tldr x1, [x2, #0x10]",
+                                     "GAP\t2\t0x7100002000\tldr x3, [x4, #-8]",
+                                     "GAP\t3\t0x7100003000\tsvc #0x55",
+                                     "【红】fixture 刷新停在 rewrite 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "rewrite_gap")
+        self.assertEqual(d["facts"], {"module": "main", "need": 120, "gaps": 3, "fatal": 0,
+                                      "gapKinds": [{"kind": "ldr _, [_, _]", "count": 2}, {"kind": "svc _", "count": 1}]})
+
+    def test_non_rewrite_failure_has_no_facts(self):
+        error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertNotIn("facts", d)
 
     def test_unrecognized_cause_asks_for_error_summary(self):
         error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])

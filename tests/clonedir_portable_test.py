@@ -390,5 +390,34 @@ class CloneDirContract(unittest.TestCase):
             self.assertEqual(victim.read_text(), 'safe')
             self.assertEqual(list(dst.glob('.s2a-clonedir-*')), [])
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS exFAT publish fallback')
+    def test_mac_fallback_publishes_without_rename_excl(self):
+        # 11-10 网友：存放位置设到 exFAT 外接盘写入失败。exFAT 不支持 RENAME_EXCL（实测 errno 45）：拷贝退路发布时先确认目标不存在再普通改名
+        code = textwrap.dedent('''
+            import ctypes, errno, os, runpy, sys
+            script, src, dst = sys.argv[1:]
+            real_cdll = ctypes.CDLL
+            class Proxy:
+                def __init__(self, *args, **kwargs): self.lib = real_cdll(*args, **kwargs)
+                def __getattr__(self, name):
+                    if name == 'clonefile':
+                        def clone(*args): ctypes.set_errno(errno.ENOTSUP); return -1
+                        return clone
+                    if name == 'renamex_np':
+                        def publish(*args): ctypes.set_errno(errno.ENOTSUP); return -1
+                        return publish
+                    return getattr(self.lib, name)
+            ctypes.CDLL = Proxy
+            sys.argv = [script, src, dst]
+            runpy.run_path(script, run_name='__main__')
+        ''')
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); src = base / 'src'; dst = base / 'dst'
+            (src / 'd').mkdir(parents=True); dst.mkdir(); (src / 'item').write_text('new'); (src / 'd' / 'x').write_text('deep')
+            run = subprocess.run([sys.executable, '-c', code, str(SCRIPT), str(src), str(dst)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(((dst / 'item').read_text(), (dst / 'd' / 'x').read_text()), ('new', 'deep'))
+            self.assertEqual(list(dst.glob('.s2a-clonedir-*')), [])
+
 if __name__ == '__main__':
     unittest.main()

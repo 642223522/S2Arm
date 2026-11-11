@@ -80,6 +80,10 @@
       "type": "boolean",
       "description": "Player chose to continue after the disk-space preflight blocked this build: do not block, emit a warning diagnostic."
     },
+    "followUp": {
+      "type": "boolean",
+      "description": "ipa: another platform of the same game is exported right after this job in the same run; keep the shared unpack (skip prune_build) so it does not unpack again. The job layer decides what to keep, the launcher only says more is coming."
+    },
     "parts": {
       "type": "array",
       "minItems": 1,

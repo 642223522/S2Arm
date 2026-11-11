@@ -22,16 +22,14 @@ public sealed partial class EnvironmentWindow : Window
     private string summaryKey = "environment.idle";
     private string unexpectedError = "";
 
-    /// <summary>Program.cs 全局兜底接住界面线程上没处理的异常后调：在顶部报出来，忙碌标记复位（出错的那个操作已经中断），启动器继续可用。</summary>
+    /// <summary>Program.cs 全局兜底接住界面线程上没处理的异常后调：只在顶部报出来，不碰作业登记（启动器剃刀 W3）——
+    /// 原先这里把忙碌标记清掉，正在跑的游戏库作业「看起来空闲」，玩家能再起一个并发作业。作业登记只由作业自己收尾时撤（JobSlots.cs EndJob）。</summary>
     internal void ReportUnexpected(Exception error, string logPath)
     {
         unexpectedError = error.GetType().Name + ": " + error.Message + "\n" + T("launcher.unexpected_log") + " " + logPath;
-        busy = false; libraryBusy = false;
         try { Render(); } catch (Exception again) { LauncherCrash.Log(again, "render after unexpected"); }
     }
     private string diagnostics = "";
-    private bool busy;
-    private CancellationTokenSource? active;
     private TextBox engine = new(), runtime = new(), shell = new();
 
     public EnvironmentWindow()
@@ -49,10 +47,10 @@ public sealed partial class EnvironmentWindow : Window
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
-        Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
+        Closed += (_, _) => { CancelJob(JobKind.Environment); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
         Opened += (_, _) =>
         {
-            StartControl(); FinishPendingUpdate(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
+            StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
             _ = RecoverBatchAsync();   // 上次没出完的批量出包读回来（BatchPage.cs）
             // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
             //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
@@ -99,13 +97,75 @@ public sealed partial class EnvironmentWindow : Window
         return slot;
     }
 
-    private static void Fill(ContentControl slot, Control? content) { slot.Content = content; slot.IsVisible = content is not null; }
+    // 闪烁根修（11-11，维护者「出包页面还在闪」）：活格子原先每秒把内容整块换成新建的控件——文字一样也是新控件，
+    //   不确定进度条（首次出包没有历史用时）的来回动画每秒从头重来，看着一抽一抽；装机卡、批量页进度行同理。
+    //   现在新建的内容只当「目标样子」：和屏上那份逐节点比，类型一样就把会变的属性拷过去（控件不换、动画不断），对不上的节点才整个替换。
+    private static void Fill(ContentControl slot, Control? content)
+    {
+        if (!(slot.Content is Control old && content is not null && Patch(old, content))) slot.Content = content;
+        slot.IsVisible = content is not null;
+    }
+
+    /// <summary>把 next 的可见属性拷到 old 上；返回 false = 结构对不上，调用方用 next 换掉 old。
+    /// 只认纯展示控件（文字、进度条、边框、面板）；按钮、输入框等带事件或状态的控件一律换新，免得留着旧的点击回调。</summary>
+    private static bool Patch(Control old, Control next)
+    {
+        if (old.GetType() != next.GetType() || old is not (TextBlock or ProgressBar or Border or Panel)) return false;
+        foreach (var p in PatchedProperties)
+            if (p.IsAttached || AvaloniaPropertyRegistry.Instance.IsRegistered(next, p))
+            {
+                if (next.IsSet(p)) old.SetValue(p, next.GetValue(p)); else if (old.IsSet(p)) old.ClearValue(p);
+            }
+        if (old is Grid og && next is Grid ng)
+        {
+            if (!SameLengths(og.ColumnDefinitions.Select(d => d.Width), ng.ColumnDefinitions.Select(d => d.Width)))
+                og.ColumnDefinitions = new ColumnDefinitions(string.Join(",", ng.ColumnDefinitions.Select(d => d.Width.ToString())));
+            if (!SameLengths(og.RowDefinitions.Select(d => d.Height), ng.RowDefinitions.Select(d => d.Height)))
+                og.RowDefinitions = new RowDefinitions(string.Join(",", ng.RowDefinitions.Select(d => d.Height.ToString())));
+        }
+        if (old is Border ob && next is Border nb)
+        {
+            var nc = nb.Child; nb.Child = null;
+            if (!(ob.Child is Control oc && nc is not null && Patch(oc, nc))) ob.Child = nc;
+        }
+        if (old is Panel o && next is Panel n)
+        {
+            var fresh = n.Children.ToList(); n.Children.Clear();
+            for (var i = 0; i < fresh.Count; i++)
+            {
+                if (i < o.Children.Count && Patch(o.Children[i], fresh[i])) continue;
+                if (i < o.Children.Count) o.Children[i] = fresh[i]; else o.Children.Add(fresh[i]);
+            }
+            while (o.Children.Count > fresh.Count) o.Children.RemoveAt(o.Children.Count - 1);
+        }
+        return true;
+    }
+
+    private static bool SameLengths(IEnumerable<GridLength> a, IEnumerable<GridLength> b) => a.SequenceEqual(b);
+
+    /// 活格子里会随进度变的展示属性（只拷本地设过的值，没设的清掉、回到继承 / 主题值）
+    private static readonly AvaloniaProperty[] PatchedProperties =
+    [
+        TextBlock.TextProperty, TextBlock.ForegroundProperty, TextBlock.FontSizeProperty, TextBlock.FontWeightProperty,
+        TextBlock.TextWrappingProperty, TextBlock.TextTrimmingProperty,
+        Avalonia.Controls.Primitives.RangeBase.MinimumProperty, Avalonia.Controls.Primitives.RangeBase.MaximumProperty,
+        Avalonia.Controls.Primitives.RangeBase.ValueProperty, ProgressBar.IsIndeterminateProperty, Avalonia.Controls.Primitives.TemplatedControl.ForegroundProperty,
+        Border.BackgroundProperty, Border.BorderBrushProperty, Border.BorderThicknessProperty, Border.CornerRadiusProperty, Border.PaddingProperty,
+        Panel.BackgroundProperty, StackPanel.SpacingProperty, StackPanel.OrientationProperty, WrapPanel.OrientationProperty,
+        Grid.ColumnSpacingProperty, Grid.RowSpacingProperty,
+        Layoutable.MarginProperty, Layoutable.WidthProperty, Layoutable.HeightProperty, Visual.IsVisibleProperty,
+        Layoutable.HorizontalAlignmentProperty, Layoutable.VerticalAlignmentProperty,
+        Grid.ColumnProperty, Grid.RowProperty, Grid.ColumnSpanProperty, Grid.RowSpanProperty,
+    ];
 
     private void RefreshLive()
     {
         if (importDialog?.Targeted == true) return;   // 拖放悬停时不动界面（同 RenderCore）
         foreach (var (slot, build) in liveSlots) Fill(slot, build());
     }
+
+    private static readonly string DisplayVersion = "v" + (typeof(EnvironmentWindow).Assembly
+        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.1.0");
 
     private string T(string key) => text.Get(key, language);
     private readonly BackendText backend;
@@ -146,7 +206,11 @@ public sealed partial class EnvironmentWindow : Window
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var brand = new TextBlock { Text = "S2Arm × NX2Apple", FontSize = 22, FontWeight = FontWeight.SemiBold,
             Foreground = Ink, VerticalAlignment = VerticalAlignment.Center };
-        header.Children.Add(brand);
+        // 版本号（11-11 维护者：玩家截图时我们一眼看出是哪一版）：正式版 v0.3.0，开发版 v0.2.9-dev+短提交号（S2Arm.csproj 构建时算好）
+        var versionLabel = new TextBlock { Text = DisplayVersion, FontSize = 12.5, FontWeight = FontWeight.SemiBold, Foreground = Brush.Parse("#8C8A85"),
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 4, 0, 0) };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(versionLabel, "topbar.version");
+        header.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { brand, versionLabel } });
 
         var rightBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10,
             VerticalAlignment = VerticalAlignment.Center };
@@ -267,7 +331,7 @@ public sealed partial class EnvironmentWindow : Window
         var libraryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var libraryText = new StackPanel { Spacing = 4 };
         libraryText.Children.Add(Label(T("environment.library.title"), 16));
-        libraryText.Children.Add(Label(connectedFolder ?? libraryFolder));
+        libraryText.Children.Add(PathLink(connectedFolder ?? libraryFolder, 14));
         libraryText.Children.Add(Label(T("environment.library.detail")));
         libraryRow.Children.Add(libraryText);
         var libraryChange = Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy);
@@ -366,13 +430,12 @@ public sealed partial class EnvironmentWindow : Window
         if (busy) return;
         CapturePaths(); report = null; diagnostics = "";
         if (EnvironmentProbe.BundleIncomplete(paths)) { summaryKey = "environment.unzip_first"; Render(); return; }
-        busy = true;
+        var job = BeginJob(JobKind.Environment);
+        job.Cancellation.CancelAfter(TimeSpan.FromMinutes(2));
         summaryKey = "environment.checking"; Render();
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        active = cancellation;
         try
         {
-            var output = await EnvironmentProbe.RunAsync(paths, cancellation.Token);
+            var output = await EnvironmentProbe.RunAsync(paths, job.Token);
             diagnostics = T("diagnostics.exit_code") + ": " + output.ExitCode + "\n" + output.StandardError;
             report = EnvironmentReport.Parse(output.StandardOutput, output.ExitCode);
             if (report.Error is not null)
@@ -396,7 +459,7 @@ public sealed partial class EnvironmentWindow : Window
         }
         finally
         {
-            active = null; busy = false; Render();
+            EndJob(job); Render();
         }
     }
 }

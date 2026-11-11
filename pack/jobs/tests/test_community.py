@@ -61,6 +61,15 @@ class CommunityTests(unittest.TestCase):
         self.c.r = {"gameId": GID, "graphics": {"nope": True}}
         with self.assertRaises(Failure): community.save(self.c)
 
+    def test_game_language(self):
+        # 游戏语言（启动设置页）：跟随系统不设变量（宿主读系统首选语言）；选了哪种就把宿主枚举名交给 S2A_SYSTEM_LANGUAGE；不在表里的值拒收
+        self.c.r.update(settings={"language": "system"}); community.save(self.c)
+        self.assertNotIn("S2A_SYSTEM_LANGUAGE", community.launch_env(self.c, GID))
+        self.c.r = {"gameId": GID, "settings": {"language": "Japanese"}}; community.save(self.c)
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_SYSTEM_LANGUAGE"], "Japanese")
+        self.c.r = {"gameId": GID, "settings": {"language": "Klingon"}}
+        with self.assertRaises(Failure): community.save(self.c)
+
     def test_diag_run_is_one_session_only(self):
         # #438 诊断局：打开后下一次起局设定好的四个探针（帧号 3600 / 7200，图写这款文件夹 diagrun/），起局时就把这项从 launch.json 去掉，
         #   第二次起局不再开；上一次诊断局的图清掉。期望值按规格手写
@@ -133,7 +142,7 @@ class MacDisplayTests(unittest.TestCase):
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = enhance fps60 widescreen widenForce docked rumble rumbleLevel motion hud
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "widescreen", "widenForce", "docked", "rumble", "rumbleLevel", "motion", "padFace", "hud", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "widescreen", "widenForce", "docked", "language", "rumble", "rumbleLevel", "motion", "padFace", "hud", "diagRun"]))
 
     def test_game_without_a_mac_build_says_why(self):
         m = self.mac()

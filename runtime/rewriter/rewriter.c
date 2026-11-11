@@ -1841,26 +1841,76 @@ static int cmppair(const void* a, const void* b) {
   const Pair *x = a, *y = b;
   return x->a == y->a ? (x->b > y->b) - (x->b < y->b) : (x->a > y->a) - (x->a < y->a);
 }
+/* 函数边界的来源（模块没有 .eh_frame_hdr 时 MOD0 的起点 = 终点，原先照读起点后面的字节当 FDE 个数 → REQUIRE 中止）：
+ *   ① .eh_frame_hdr 带二分表、表整个落在 MOD0 给的 [起点, 终点) 里 → 照表读（原路，产物不变）
+ *   ② 有 .eh_frame_hdr、没有二分表（个数 / 表编码 = DW_EH_PE_omit 0xff，或表越出终点）→ 从它的 eh_frame_ptr 顺着 .eh_frame 本体逐条读 FDE，同一批函数
+ *   ③ 没有 .eh_frame_hdr（终点 - 起点 < 4、版本不是 1、eh_frame_ptr 编码 omit）→ 没有 FDE；函数边界 = 动态符号表的函数（起点、起点 + 长度）
+ *      + 直接调用目标——改写器对 FDE 覆盖不到的代码本来就按这一套分函数（func_of 的 bounds），这里整个模块都走它；统计行 eh_frame_walk / eh_frame_none */
+typedef VEC(Pair) PairV;
+static void eh_walk(A ef, PairV* fdes) {   /* ②：.eh_frame 从 ef 起逐条记录，FDE 记成 (-1, 位置)；遇零长终止符、或记录不像 .eh_frame 了就停 */
+  for (A f = ef; f >= 0 && (uint64_t)f + 8 <= g->len;) {
+    uint32_t l = iw(f);
+    if (!l)
+      break;
+    if (l == UINT32_MAX) {   /* 64 位长度：同表路径不解析，跳过 */
+      if ((uint64_t)f + 12 > g->len)
+        break;
+      f += 12 + (A)iu64(f + 4);
+      continue;
+    }
+    if (l & 3 || (uint64_t)f + 4 + l > g->len)
+      break;
+    uint32_t id = iw(f + 4);
+    if (id) {   /* FDE：CIE 指针要落回本段前面一条 CIE 上，不然已经走出 .eh_frame */
+      A cie = f + 4 - (A)id;
+      if (cie < ef || cie >= f || iw(cie + 4))
+        break;
+      Pair r = {-1, f};
+      PUSH(*fdes, r);
+    }
+    f += 4 + (A)l;
+  }
+}
 static void boundaries(void) {
   A m0 = iw(4);
-  REQUIRE(m0 >= 0 && (uint64_t)m0 + 20 <= g->len && !memcmp(g->img + m0, "MOD0", 4));
+  REQUIRE(m0 >= 0 && (uint64_t)m0 + 24 <= g->len && !memcmp(g->img + m0, "MOD0", 4));
   g->ehs = m0 + si(m0 + 16);
-  A e = g->ehs;
-  REQUIRE(e >= 0 && (uint64_t)e + 4 <= g->len);
+  A e = g->ehs, he = m0 + si(m0 + 20);
   int sz;
-  A q = e + 4;
-  rd(q, g->img[e + 1], &sz);
-  q += sz;
-  A n = rd(q, g->img[e + 2], &sz);
-  q += sz;
-  REQUIRE(n >= 0 && (uint64_t)n <= g->len / 8);
+  PairV fdes = {0};   /* (表里的函数起点或 -1, FDE 位置) */
+  int src = 0;   /* 0 = ① 表、1 = ② 本体、2 = ③ 无 */
+  if (e < 0 || he - e < 4 || (uint64_t)he > g->len || g->img[e] != 1 || g->img[e + 1] == 0xff)
+    src = 2;
+  else {
+    A q = e + 4, ef = rd(q, g->img[e + 1], &sz);
+    q += sz;
+    A n = -1;
+    if (g->img[e + 2] != 0xff && g->img[e + 3] != 0xff) {
+      n = rd(q, g->img[e + 2], &sz);
+      q += sz;
+      int esz;
+      rd(q, g->img[e + 3], &esz);
+      if (n < 0 || n > (he - q) / (2 * esz))   /* 表要整个落在 [起点, 终点) 里 */
+        n = -1;
+    }
+    if (n >= 0)
+      for (A i = 0; i < n; i++) {
+        A a = rd(q, g->img[e + 3], &sz);
+        q += sz;
+        A f = rd(q, g->img[e + 3], &sz);
+        q += sz;
+        Pair r = {a, f};
+        PUSH(fdes, r);
+      }
+    else {
+      src = 1;
+      eh_walk(ef, &fdes);
+    }
+  }
   VEC(Pair) ranges = {0};
-  for (A i = 0; i < n; i++) {
-    A a = rd(q, g->img[e + 3], &sz);
-    q += sz;
-    A f = rd(q, g->img[e + 3], &sz);
-    q += sz;
-    if (a < (A)g->text)
+  for (size_t i = 0; i < fdes.n; i++) {
+    A a = fdes.v[i].a, f = fdes.v[i].b;
+    if (a >= 0 && a < (A)g->text)
       PUSH(g->starts, a);
     if (iw(f) == 0 || iw(f) == UINT32_MAX)
       continue;
@@ -1895,6 +1945,8 @@ static void boundaries(void) {
     A b = ehptr(f + 8, enc, &sz);
     int ns;
     A len = ehptr(f + 8 + sz, enc & 15, &ns);
+    if (a < 0 && b < (A)g->text)   /* ②：起点取 FDE 自己的 pc_begin */
+      PUSH(g->starts, b);
     if (b < (A)g->text) {
       Pair r = {b, b + len};
       PUSH(ranges, r);
@@ -1903,6 +1955,35 @@ static void boundaries(void) {
         PUSH(g->bounds, b + len);
     }
   }
+  if (src)
+    bump(src == 1 ? "eh_frame_walk" : "eh_frame_none");   /* 统计行：② / ③ 才有，常规模块统计不变 */
+  if (src == 2) {   /* ③：动态符号表的函数起止进 bounds */
+    A dyn = m0 + si(m0 + 4), st = -1, sy = -1;
+    size_t syms = 0;
+    if (dyn >= 0 && (uint64_t)dyn + 16 <= g->len)
+      for (A at = dyn, end = MIN(dyn + 0x400 * 16, (A)g->len - 16); at < end; at += 16) {
+        uint64_t tag = iu64(at), v = iu64(at + 8);
+        if (!tag)
+          break;
+        if (v <= g->len && tag == 5 && st < 0)
+          st = (A)v;
+        if (v <= g->len && tag == 6 && sy < 0)
+          sy = (A)v;
+      }
+    if (st >= 0 && sy >= 0 && sy < st)
+      for (A at = sy; at + 24 <= st && (uint64_t)at + 24 <= g->len; at += 24) {
+        uint64_t val = iu64(at + 8), size = iu64(at + 16);
+        if ((g->img[at + 4] & 15) != 2 || !val || val >= g->text || (val & 3))   /* STT_FUNC、在代码段里 */
+          continue;
+        PUSH(g->bounds, (A)val);
+        if (size && val + size <= g->text)
+          PUSH(g->bounds, (A)(val + size));
+        syms++;
+      }
+    msg("%s 没有 .eh_frame_hdr（MOD0 起点 %#llx 终点 %#llx）：函数边界改用动态符号的函数 %zu 个 + 直接调用目标\n", g->r.module, (unsigned long long)e,
+        (unsigned long long)he, syms);
+  } else if (src == 1)
+    msg("%s .eh_frame_hdr 没有二分表：顺着 .eh_frame 本体读到 FDE %zu 条\n", g->r.module, g->starts.n);
   sort(&g->starts);
   if (ranges.n > 1)
     qsort(ranges.v, ranges.n, sizeof(Pair), cmppair);

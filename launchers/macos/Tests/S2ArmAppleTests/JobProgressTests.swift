@@ -10,6 +10,21 @@ final class JobProgressTests: XCTestCase {
                     fields: ["stage": "下载 Xcode 的 iOS 平台组件（约 8 GB）", "done": done, "total": total, "unit": "B"])
     }
 
+    /// M9：钥匙串提示按后端的 keychainPrompt 挂，不按步骤号；字段走真实 JSON 解析（布尔解成 NSNumber），换阶段就清
+    func test_keychain_prompt_follows_the_backend_flag_per_stage() throws {
+        func stage(_ t: Double, _ json: String) throws -> EngineEvent {
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            return EngineEvent(ev: "stage", t: t, code: nil, severity: .info, fields: fields)
+        }
+        var p = JobProgress()
+        p.ingest(try stage(0, #"{"stage":"用你的 Apple ID 签名","stageIndex":4,"stageCount":6,"keychainPrompt":true,"stageKey":null}"#))
+        XCTAssertTrue(p.keychainPrompt)
+        p.ingest(try stage(1, #"{"stage":"装到 iPhone","stageIndex":5,"stageCount":6,"keychainPrompt":false,"stageKey":null}"#))
+        XCTAssertFalse(p.keychainPrompt)
+        p.ingest(try stage(2, #"{"stage":"用你的开发者证书签名","stageIndex":4,"stageCount":6}"#))   // 没带字段的阶段：不沿用上一阶段
+        XCTAssertFalse(p.keychainPrompt)
+    }
+
     func test_rate_appears_after_two_seconds_and_is_bytes_per_second() {
         var p = JobProgress()
         p.ingest(progress(0, done: 1_000_000_000))
@@ -28,5 +43,21 @@ final class JobProgressTests: XCTestCase {
         p.ingest(progress(4, done: 10_000_000))               // 换了个从头数起的计数器
         XCTAssertNil(p.rate)
         XCTAssertEqual(p.rateText, "")
+    }
+
+    // 剃刀 M20：剩余时间只有一套。期望手算：总量 100、t=0 完成 10、t=4 完成 30 → 速率 5/秒，剩 70 → 14 秒（etaAt = 第二次读数时刻）；
+    //   再过 4 秒倒数到 10。出包页的本步还需（estimate.stepRemainingByRate）是同一个数
+    func test_export_step_left_is_the_same_measured_value() {
+        var p = JobProgress()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let ev = { (t: Double, d: Double) in EngineEvent(ev: "progress", t: t, code: nil, severity: .info,
+                                                       fields: ["stage": "s", "milestone": "m1", "done": d, "total": 100.0, "unit": "项"]) }
+        p.ingest(EngineEvent(ev: "plan", t: 0, code: nil, severity: .info,
+                             fields: ["milestones": [["id": "m1", "label": "M1", "purpose": ""]]]), now: t0)
+        p.ingest(ev(0, 10), now: t0)
+        p.ingest(ev(4, 30), now: t0.addingTimeInterval(4))
+        let at = t0.addingTimeInterval(8)
+        XCTAssertEqual(p.stepLeft(at: at) ?? -1, 10, accuracy: 1e-9)
+        XCTAssertEqual(p.estimate(at: at).stepRemainingByRate ?? -1, 10, accuracy: 1e-9)
     }
 }

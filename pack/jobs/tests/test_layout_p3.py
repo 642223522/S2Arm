@@ -27,17 +27,18 @@ def touch(path, text="x", mtime=None):
 
 
 class DirectoryRuleTests(JobCase):
-    """日志 / 任务记录 / 工具缓存的根：库建好 → 默认位置；没建好 → 私有目录"""
+    """日志 / 任务记录固定在私有目录（剃刀 H6，期望手写）；工具缓存仍按默认位置：库建好 → <库>/tool-cache，没建好 → 私有目录"""
 
-    def test_built_library_holds_logs_jobs_and_tool_cache(self):
-        c = Context(dict(self.request, taskId="t-built", operation="catalog"))
-        self.assertEqual(c.logs, self.c.library / "logs")
-        self.assertEqual(c.jobpath, self.c.library / "logs" / "jobs" / "t-built.json")
+    def test_logs_stay_private_tool_cache_follows_library(self):
+        c = Context(dict(self.request, taskId="t-built", operation="keys"))
+        self.assertEqual(c.logs, c.private / "logs")
+        self.assertEqual(c.jobpath, c.private / "logs" / "jobs" / "t-built.json")
         self.assertTrue(c.jobpath.is_file())
+        self.assertFalse((self.c.library / "logs").exists(), "库里不再写日志")
         self.assertEqual(c.work_root, self.c.library / "tool-cache")
         self.assertEqual(c.env()["S2A_RUN_ROOT"], str(self.c.library / "tool-cache" / "run"))
 
-    def test_unbuilt_library_falls_back_to_private(self):
+    def test_unbuilt_library_same_logs_private_tool_cache(self):
         empty = self.root / "not-yet"
         empty.mkdir()
         c = Context(dict(self.request, taskId="t-fresh", operation="setup", library=str(empty)))
@@ -45,14 +46,12 @@ class DirectoryRuleTests(JobCase):
         self.assertEqual(c.jobpath, c.private / "logs" / "jobs" / "t-fresh.json")
         self.assertEqual(c.work_root, c.private / "tool-cache")
 
-    def test_private_only_readers_find_jobs_through_the_index(self):
-        c = Context(dict(self.request, taskId="t-read", operation="catalog"))
-        layout.save_index(c)   # 索引表第一项 = 默认位置
-        self.assertEqual(core.logs_root(c.private), self.c.library / "logs")
-        self.assertEqual(core.journal(c.private, "t-read")["id"], "t-read")
-        # 负对照：索引表指向的库没有库标识 → 退回私有目录
-        (self.c.library / ".s2arm-library.json").rename(self.c.library / "moved-away.json")
-        self.assertEqual(core.logs_root(c.private), c.private / "logs")
+    def test_private_only_readers_find_old_library_records_before_migration(self):
+        # v0.3.0 之前库建好后记录写在 <库>/logs/jobs：还没有作业迁回时，只拿得到私有目录的读者（main.py get / events / cancel）照样找得到
+        layout.save_index(self.c)
+        touch(self.c.library / "logs" / "jobs" / "older.json", json.dumps(dict(id="older", state="completed")))
+        self.assertEqual(core.logs_root(self.c.private), self.c.private / "logs")
+        self.assertEqual(core.journal(self.c.private, "older")["id"], "older")
 
     def test_reader_falls_back_to_records_not_yet_adopted(self):
         layout.save_index(self.c)
@@ -61,20 +60,19 @@ class DirectoryRuleTests(JobCase):
 
 
 class ConcurrentAdoptTests(JobCase):
-    """每个作业起跑都收一次私有目录里的日志（layout.ensure → adopt_private_logs）：启动器同时起两个作业时，另一个可能刚把目录收空删掉。
+    """每个作业建任务时都把旧位置的日志收回私有目录（layout.follow_task → adopt_library_logs）：启动器同时起两个作业时，另一个可能刚把旧目录收空删掉。
     手写时序：判完 is_dir、列目录前目录没了 → 当作已收完，不让作业失败（原先抛 FileNotFoundError，catalog 报「任务所需的文件或目录不存在」）"""
 
     def test_dir_removed_by_concurrent_job_is_treated_as_adopted(self):
-        touch(self.c.private / "logs" / "jobs" / "old.json", json.dumps(dict(id="old", state="completed", ended=1)))
         c = Context(dict(self.request, taskId="t-race", operation="catalog"))
+        touch(self.c.library / "logs" / "jobs" / "old.json", json.dumps(dict(id="old", state="completed", ended=1)))
         real = Path.iterdir
-        def vanished(self_):   # 对方作业在本作业判完 is_dir 之后把私有目录收空删掉
-            if self_ == c.private / "logs" / "jobs" or self_ == c.private / "logs":
+        def vanished(self_):   # 对方作业在本作业判完 is_dir 之后把旧目录收空删掉
+            if self_ in (self.c.library / "logs" / "jobs", self.c.library / "logs"):
                 raise FileNotFoundError(2, "No such file or directory", str(self_))
             return real(self_)
         with patch.object(Path, "iterdir", vanished):
-            layout.adopt_private_logs(c)   # 不抛
-            self.assertEqual(core.prune_jobs(c.private, jobs=c.private / "logs" / "jobs")["removed"], [])
+            layout.adopt_library_logs(c)   # 不抛
 
 
 class Upgrade4Tests(JobCase):
@@ -128,44 +126,46 @@ class Upgrade4Tests(JobCase):
 
 
 class AdoptLogsTests(JobCase):
-    def test_private_logs_and_jobs_move_but_running_task_stays(self):
+    """旧位置（v0.3.0 之前的 <库>/logs、P3 之前的 <私有目录>/jobs）在建任务时收回 <私有目录>/logs（剃刀 H6）；期望手写"""
+
+    def test_library_logs_and_legacy_jobs_move_back_but_running_task_stays(self):
         P, L = self.c.private, self.c.library
         touch(P / "jobs" / "old.json", json.dumps(dict(id="old", operation="ipa", state="completed")))
         touch(P / "jobs" / "old.request.json", "{}")
-        touch(P / "logs" / "old.log", "old log")
-        touch(P / "logs" / "old" / "stage.log", "stage")
-        touch(P / "logs" / "jobs" / "boot.json", json.dumps(dict(id="boot", operation="setup", state="failed")))
-        touch(P / "logs" / "jobs" / "live.json", json.dumps(dict(id="live", operation="ipa", state="running", pid=os.getpid())))
-        touch(P / "logs" / "live.log", "still writing")
-        c = Context(dict(self.request, taskId="adopter", operation="catalog"))
-        layout.adopt_private_logs(c)
-        self.assertEqual((L / "logs" / "old.log").read_text(), "old log")
-        self.assertEqual((L / "logs" / "old" / "stage.log").read_text(), "stage")
+        touch(L / "logs" / "lib.log", "lib log")
+        touch(L / "logs" / "lib" / "stage.log", "stage")
+        touch(L / "logs" / "jobs" / "boot.json", json.dumps(dict(id="boot", operation="setup", state="failed")))
+        touch(L / "logs" / "jobs" / "live.json", json.dumps(dict(id="live", operation="ipa", state="running", pid=os.getpid())))
+        touch(L / "logs" / "live.log", "still writing")
+        Context(dict(self.request, taskId="adopter", operation="catalog"))   # 建任务即收
+        self.assertEqual((P / "logs" / "lib.log").read_text(), "lib log")
+        self.assertEqual((P / "logs" / "lib" / "stage.log").read_text(), "stage")
         for name in ("old.json", "old.request.json", "boot.json"):
-            self.assertTrue((L / "logs" / "jobs" / name).is_file(), name)
+            self.assertTrue((P / "logs" / "jobs" / name).is_file(), name)
         self.assertFalse((P / "jobs").exists())
-        # 负对照：进程还活着、没写终态的任务（记录 + 以任务号开头的日志）不动
-        self.assertTrue((P / "logs" / "jobs" / "live.json").is_file())
-        self.assertTrue((P / "logs" / "live.log").is_file())
-        self.assertFalse((L / "logs" / "live.log").exists())
+        # 负对照：进程还活着、没写终态的任务（记录 + 以任务号开头的日志）留在旧位置，读的一方照样找得到
+        self.assertTrue((L / "logs" / "jobs" / "live.json").is_file())
+        self.assertTrue((L / "logs" / "live.log").is_file())
+        self.assertFalse((P / "logs" / "live.log").exists())
+        self.assertEqual(core.journal(P, "live")["id"], "live")
         self.assertEqual(json.loads((P / "library-index.json").read_text())["locations"][0]["path"], str(L))
 
-    def test_same_task_rerun_after_library_exists_keeps_attempts(self):
+    def test_same_task_rerun_keeps_attempts(self):
         P, L = self.c.private, self.c.library
-        touch(P / "logs" / "jobs" / "again.json", json.dumps(dict(id="again", operation="build", state="failed", attemptNo=1, stage="解包")))
-        touch(P / "logs" / "jobs" / "again.request.json", "{}")
+        touch(L / "logs" / "jobs" / "again.json", json.dumps(dict(id="again", operation="build", state="failed", attemptNo=1, stage="解包")))
+        touch(L / "logs" / "jobs" / "again.request.json", "{}")
         c = Context(dict(self.request, taskId="again", operation="build"))
-        self.assertEqual(c.jobpath, L / "logs" / "jobs" / "again.json")
+        self.assertEqual(c.jobpath, P / "logs" / "jobs" / "again.json")
         self.assertEqual((c.job["attemptNo"], c.job["previousStage"]), (2, "解包"))
-        self.assertFalse((P / "logs" / "jobs" / "again.json").exists())
-        self.assertTrue((L / "logs" / "jobs" / "again.request.json").is_file())
+        self.assertFalse((L / "logs" / "jobs" / "again.json").exists())
+        self.assertTrue((P / "logs" / "jobs" / "again.request.json").is_file())
 
     def test_existing_destination_is_never_overwritten(self):
         touch(self.c.private / "logs" / "same.log", "private copy")
         touch(self.c.library / "logs" / "same.log", "library copy")
-        layout.adopt_private_logs(Context(dict(self.request, taskId="adopter2", operation="catalog")))
-        self.assertEqual((self.c.library / "logs" / "same.log").read_text(), "library copy")
+        Context(dict(self.request, taskId="adopter2", operation="catalog"))
         self.assertEqual((self.c.private / "logs" / "same.log").read_text(), "private copy")
+        self.assertEqual((self.c.library / "logs" / "same.log").read_text(), "library copy")
 
 
 class PruneJobsTests(unittest.TestCase):

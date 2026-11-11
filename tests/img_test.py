@@ -7,6 +7,7 @@
      romfs*、覆盖层、直连库、清单不进；RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；有 programs/ → 报红；is_img 认魔数
   ⑤ convert（出包交付）：资源包目录只剩 game.img + 着色器库 / 覆盖层 + 新清单；index.tsv 首行 game.img<TAB>文件长<TAB>资源包号、其余是原着色器库 / 覆盖层行；
      manifest v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）；着色器库那行变了资源包号不变；多程序合集 → None、目录不动
+  ⑦ 写 IMG 报字节进度（S2A_PROGRESS）：末行已写 = 总数 = 夹具 RomFS 文件 + 其余原始资源字节和
   ⑥ 原件 + 预建偏移表（11-11 真机对比：产物根 romfs 是界面覆盖后版本、有覆盖层时起局重建目录表 138.6 ms）：RomFS 段 = 产物根 romfs，覆盖清单里的文件换回 seed.txt 数据目录的原版
      （数据目录里别的文件变过也不取它）；
      game.imgmap 按 romfs.s2aidx 顺序，被覆盖的记 -1、其余从 game.img 读回的字节等于文件本身；index.tsv 登记 romfs.s2aidx 与 game.imgmap；残留的 romfs.files/ 删掉；
@@ -85,7 +86,12 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         (pk / 'index.tsv').write_text(''.join(f'{k}\t{len(v)}\tx\n' for k, v in rows.items()))
         (pk / 'manifest.json').write_text('{"version": 2, "index_sha256": "feedbeef"}')
         want_id = hashlib.sha256(''.join(f'{k}\t{len(v)}\tx\n' for k, v in rows.items() if not k.startswith(('shaders/', 'romfs_overlay/'))).encode()).hexdigest()
+        pf = T / 'progress.tsv'; os.environ['S2A_PROGRESS'] = str(pf)   # ⑦ 字节进度：末行 = 写单一 IMG、已写 = 总数 = RomFS 两个文件 8 字节 + 其余三个原始资源的字节
         w = str(T / 'w.img'); img.write(str(root), str(pk), w, romfs_index=cmd)
+        del os.environ['S2A_PROGRESS']
+        want7 = 8 + sum(len(rows[k]) for k in ('aoc/1/x.bin', 'ctl/control.nacp', 'exefs/main.npdm'))
+        last7 = pf.read_text(encoding='utf-8').splitlines()[-1].split('\t')[1:] if pf.is_file() else []
+        ck(last7 == ['写单一 IMG', str(want7), str(want7)], f'⑦ 进度末行（阶段 / 已写 / 总数）：期望 写单一 IMG / {want7} / {want7} → {last7}')
         hw = img.header(w); names = [e[0] for e in img.entries(w)]
         ck((hw['gid'], hw['pack_id'], img.is_img(w), img.is_img(str(pk / 'index.tsv'))) == ('0100ABCD00000001', want_id, True, False), f'④ 头 {hw["gid"]} / {hw["pack_id"]}、is_img')
         ck(names == ['aoc/1/x.bin', 'ctl/control.nacp', 'exefs/main.npdm', 'romfs.list'], f'④ 其余文件段只收原始资源：{names}')

@@ -20,7 +20,6 @@ public sealed partial class EnvironmentWindow
     // 释放空间（同 Mac FreeSpaceView：spaceSurvey 每款按部件列占用、勾选后 spaceFree 直接删；存档和日志只报不删）
     private JsonElement? survey;
     private readonly Dictionary<string, HashSet<string>> freeChosen = new();
-    private bool freeing;
     private string freeNote = "";
 
     private static readonly string[] SizeParts = ["imageIos", "saves", "cache", "sources"];
@@ -65,13 +64,13 @@ public sealed partial class EnvironmentWindow
 
     private async Task FreeAsync(string gameId, string name, IReadOnlyList<string> parts, long bytes)
     {
-        if (freeing || packRunning || installBusy) { freeNote = T("space.busy"); Render(); return; }
+        if (jobs.Any(j => j.Blocks(gameId))) { freeNote = T("space.busy"); Render(); return; }
         var body = T("space.free_body").Replace("{0}", string.Join("、", parts.Select(p => T("space.part." + p)))).Replace("{1}", name);
         if (!await ConfirmInstallActionAsync("space.free", body.Replace("{2}", FormatBytes(bytes)))) return;
-        freeing = true; freeNote = ""; Render();
+        var front = BeginJob(JobKind.Space, gameId); freeNote = ""; Render();
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("spaceFree", gameId, new Dictionary<string, object?> { ["parts"] = parts }), null, CancellationToken.None);
+            var job = await PackJobClient.RunAsync(PackRequest("spaceFree", gameId, new Dictionary<string, object?> { ["parts"] = parts }), null, front.Token, front.Next());
             freeNote = job.Report.Succeeded && job.Report.Result.TryGetProperty("freedBytes", out var f) && f.TryGetInt64(out var freed)
                 ? T("space.freed").Replace("{0}", FormatBytes(freed)) : job.Report.Message;
             freeChosen.Remove(gameId);
@@ -79,7 +78,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
         { freeNote = error.Message; }
-        finally { freeing = false; }
+        finally { EndJob(front); }
         await LoadSurveyAsync(); await LoadOverviewAsync(); await RunLibraryAsync("catalog", null);
     }
 
@@ -171,7 +170,7 @@ public sealed partial class EnvironmentWindow
             row.Children.Add(Muted(l.Connected && l.TotalBytes is { } total && l.FreeBytes is { } free
                 ? T("storage.location.usage").Replace("{0}", FormatBytes(l.UsedBytes ?? 0)).Replace("{1}", FormatBytes(free)).Replace("{2}", FormatBytes(total))
                 : T("storage.location.offline")));
-            row.Children.Add(Muted(l.Path, 12));
+            row.Children.Add(PathLink(l.Path));
             places.Children.Add(row);
         }
         body.Children.Add(Card(places));

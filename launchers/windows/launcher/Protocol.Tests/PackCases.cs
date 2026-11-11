@@ -91,7 +91,17 @@ public static class PackCases
             catch (LibraryProtocolException) { check(true, label); return; }
             throw new Exception("accepted " + label);
         }
-        RejectChecklist(checklist.Replace("https://github.com", "http://github.com"), "checklist: non-HTTPS link rejected");
+        // 剃刀 W7：不安全链接 / 不认识的动作只丢这一项的链接 / 动作，整份清单照常（期望按规则手写）
+        using (var doc = JsonDocument.Parse(checklist.Replace("https://github.com", "http://github.com")))
+        {
+            var r = InstallReadiness.Parse(doc.RootElement);
+            check(r.Items.Count == 3 && r.Items[1].OfficialUrl is null && r.Items[1].Id == "impactor", "checklist: non-HTTPS link dropped for that item only");
+        }
+        using (var doc = JsonDocument.Parse(checklist.Replace("\"who\":\"human\"}],", "\"who\":\"human\",\"action\":\"futureAction\"}],")))
+        {
+            var r = InstallReadiness.Parse(doc.RootElement);
+            check(r.Items.Count == 3 && r.Items[2].Action is null && !r.Items[2].Ok, "checklist: unknown action dropped for that item only");
+        }
         using (var doc = JsonDocument.Parse(checklist.Replace("\"ready\":false", "\"ready\":true")))
             check(InstallReadiness.Parse(doc.RootElement) is { Ready: true } r && r.Items.Any(i => !i.Ok), "checklist: backend ready with advisory open items is accepted");
         RejectChecklist("{}", "checklist: malformed");
@@ -111,7 +121,8 @@ public static class PackCases
             check(ready.Items[1].Action == "openImpactor" && ready.Items[1].OfficialUrl is null && ready.Items[0].Action is null,
                 "checklist: bundled Impactor sign-in step carries the openImpactor action and no download link");
         }
-        RejectChecklist(bundledChecklist.Replace("\"openImpactor\"", "\"C:/x.exe\""), "checklist: unknown / path action rejected");
+        using (var doc = JsonDocument.Parse(bundledChecklist.Replace("\"openImpactor\"", "\"C:/x.exe\"")))
+            check(InstallReadiness.Parse(doc.RootElement).Items[1].Action is null, "checklist: unknown / path action never becomes an action (dropped, razor W7)");
 
         // ---- request body ----
         var paths = new LauncherPaths(Path.Combine(Path.GetTempPath(), "E"), Path.Combine(Path.GetTempPath(), "R"), Path.Combine(Path.GetTempPath(), "S"));
