@@ -74,6 +74,7 @@ Source: "btn_finish.bmp"; Flags: dontcopy
 Source: "btn_cancel.bmp"; Flags: dontcopy
 Source: "check_on.bmp"; Flags: dontcopy
 Source: "check_off.bmp"; Flags: dontcopy
+Source: "bg.bmp"; Flags: dontcopy
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
@@ -109,8 +110,9 @@ const
 var
   DesktopOn, LaunchOn: Boolean;
   DesktopImg, LaunchImg: TBitmapImage;
-  PrimaryImg, SecondaryImg: TBitmapImage;
+  PrimaryImg, FinishImg, SecondaryImg: TBitmapImage;
   BtnRight, BtnMid: Integer;
+  BtnPanel: TPanel;
   WelcomePageID: Integer;
   PathText: TNewStaticText;
   SlideTitle, SlideSub, SlideDots: TNewStaticText;
@@ -158,30 +160,73 @@ begin
 end;
 
 { ---- 自画按钮：原按钮挪出可见区（回车 / Esc 照常由它响应，Inno 自己切文字和显隐不受影响），这里照着它同步文字、显隐，点击转给它 ---- }
+const
+  BM_CLICK = $00F5;
+  WM_SETREDRAW = $000B;
+  RDW_INVALIDATE = $0001; RDW_ERASE = $0004; RDW_ALLCHILDREN = $0080; RDW_UPDATENOW = $0100; RDW_FRAME = $0400;
+
+function RedrawWindow(hWnd: HWND; lprcUpdate: Longint; hrgnUpdate: Longint; flags: UINT): BOOL; external 'RedrawWindow@user32.dll stdcall';
+
+var
+  RedrawLocked: Boolean;
+  UnlockTimer: LongWord;
+
+{ 翻页不留残影：自画按钮是画在窗体上的图，Inno 换页内容和我们在 CurPageChanged 里换按钮显隐不是同一次重画，
+  中间窗体先画出「新页 + 旧按钮」那一帧（jhz 11-11 在天眼上看到「安装」按钮残留一下才消失）。
+  所以点下一步时先停掉窗体重画，换完页、同步完按钮（CurPageChanged 末尾）再一次性整窗重画。
+  点「完成」不锁（窗口直接关） }
+procedure UnlockRedraw;
+begin
+  if UnlockTimer <> 0 then begin KillTimer(0, UnlockTimer); UnlockTimer := 0; end;
+  if not RedrawLocked then exit;
+  RedrawLocked := False;
+  SendMessage(WizardForm.Handle, WM_SETREDRAW, 1, 0);
+  RedrawWindow(WizardForm.Handle, 0, 0, RDW_ERASE or RDW_FRAME or RDW_INVALIDATE or RDW_ALLCHILDREN or RDW_UPDATENOW);
+end;
+
+procedure OnUnlockTimer(Wnd: LongWord; Msg: LongWord; IdEvent: LongWord; Time: LongWord);
+begin
+  UnlockRedraw;
+end;
+
+{ 兜底：点下一步后没翻页（Inno 弹框拦下、回车路径没有 PressPrimary 的收尾）时，下一次消息循环空闲就放开重画。
+  翻页时 CurPageChanged 先放开并撤掉这个计时器，它不参与正常翻页的那一帧 }
+procedure LockRedraw;
+begin
+  if RedrawLocked then exit;
+  RedrawLocked := True;
+  SendMessage(WizardForm.Handle, WM_SETREDRAW, 0, 0);
+  UnlockTimer := SetTimer(0, 0, 300, CreateCallback(@OnUnlockTimer));
+end;
+
+{ 点击转给原按钮：发标准的按钮点击消息，和回车 / 真鼠标点原按钮走同一条路（Inno 的翻页、校验、完成页 [Run] 都在原按钮里） }
 procedure PressPrimary(Sender: TObject);
 begin
-  if (WizardForm.CurPageID = wpFinished) and (WizardForm.RunList.Items.Count > 0) then
-    WizardForm.RunList.Checked[0] := LaunchOn;   { 完成页「现在打开 S2Arm」：勾选状态来自自画复选框，照旧由 [Run] postinstall 执行 }
-  WizardForm.NextButton.OnClick(WizardForm.NextButton);
+  Log('自画主按钮被点：页 ' + IntToStr(WizardForm.CurPageID) + '，原按钮可用 ' + IntToStr(Ord(WizardForm.NextButton.Enabled)));
+  if WizardForm.CurPageID = wpFinished then   { 嵌套判断：Pascal Script 的 and 不短路，别在别的页去读完成页的列表 }
+    if WizardForm.RunList.Items.Count > 0 then
+      WizardForm.RunList.Checked[0] := LaunchOn;   { 完成页「现在打开 S2Arm」：勾选状态来自自画复选框，照旧由 [Run] postinstall 执行 }
+  SendMessage(WizardForm.NextButton.Handle, BM_CLICK, 0, 0);
+  UnlockRedraw;   { 兜底：没翻页（被校验拦下）时也要放开重画；翻了页 CurPageChanged 已放开，这里空转 }
 end;
 
 procedure PressSecondary(Sender: TObject);
 begin
-  WizardForm.CancelButton.OnClick(WizardForm.CancelButton);
+  Log('自画次按钮被点：页 ' + IntToStr(WizardForm.CurPageID));
+  SendMessage(WizardForm.CancelButton.Handle, BM_CLICK, 0, 0);
 end;
 
 procedure SyncButtons;
 begin
   { 按钮文字画在图里（深色样式会把叠在上面的字强制画成浅色，奶油色底上看不见）：主按钮按原按钮当前的文字选「安装」/「完成」 }
-  if Pos(SetupMessage(msgButtonFinish), WizardForm.NextButton.Caption) > 0 then
-    PrimaryImg.Bitmap.LoadFromFile(ExpandConstant('{tmp}\btn_finish.bmp'))
-  else
-    PrimaryImg.Bitmap.LoadFromFile(ExpandConstant('{tmp}\btn_install.bmp'));
-  PrimaryImg.Visible := WizardForm.NextButton.Visible;
+  { 「安装」「完成」是两个独立的图，换页只切显隐、不重新读图（翻页那一帧不多一次重画） }
+  FinishImg.Visible := WizardForm.NextButton.Visible and (Pos(SetupMessage(msgButtonFinish), WizardForm.NextButton.Caption) > 0);
+  PrimaryImg.Visible := WizardForm.NextButton.Visible and not FinishImg.Visible;
   SecondaryImg.Visible := WizardForm.CancelButton.Visible;
   { 只有一个按钮时它靠右；两个时次按钮在主按钮左边 }
-  if PrimaryImg.Visible then begin
-    PrimaryImg.Left := BtnRight - PrimaryImg.Width;
+  PrimaryImg.Left := BtnRight - PrimaryImg.Width;
+  FinishImg.Left := PrimaryImg.Left;
+  if WizardForm.NextButton.Visible then begin
     SecondaryImg.Left := PrimaryImg.Left - ScaleX(12) - SecondaryImg.Width;
   end else
     SecondaryImg.Left := BtnRight - SecondaryImg.Width;
@@ -194,9 +239,22 @@ begin
   N := WizardForm.NextButton; C := WizardForm.CancelButton;
   BtnRight := N.Left + N.Width;
   BtnMid := N.Top + N.Height div 2 - ScaleY(10);   { 比原按钮略高：底边留出和示意图一样的空 }
-  ExtractTemporaryFile('btn_finish.bmp');
-  PrimaryImg := NewImage(WizardForm, 'btn_install.bmp', 0, BtnMid - ScaleY(20), ScaleX(160), ScaleY(40));
-  SecondaryImg := NewImage(WizardForm, 'btn_cancel.bmp', 0, BtnMid - ScaleY(20), ScaleX(144), ScaleY(40));
+  { 按钮放在自己的子窗口（面板）里，不直接画在窗体上：窗体上的图和页面容器（子窗口）有重叠，
+    藏图时窗体只重画自己、画不到子窗口盖住的那条，旧按钮的上沿就一直留着（天眼连帧测出的残影根因） }
+  BtnPanel := TPanel.Create(WizardForm);
+  BtnPanel.Parent := WizardForm;
+  BtnPanel.BevelOuter := bvNone;
+  BtnPanel.Width := ScaleX(144) + ScaleX(12) + ScaleX(160);
+  BtnPanel.Height := ScaleY(40);
+  BtnPanel.Left := BtnRight - BtnPanel.Width;
+  BtnPanel.Top := BtnMid - ScaleY(20);
+  BtnPanel.BringToFront;
+  BtnRight := BtnPanel.Width;   { 以下按钮坐标都相对面板 }
+  NewImage(BtnPanel, 'bg.bmp', 0, 0, BtnPanel.Width, BtnPanel.Height);   { 面板底色：深色样式不认面板的 Color（实机画成灰），铺纯底色图；先建、在按钮下面 }
+  PrimaryImg := NewImage(BtnPanel, 'btn_install.bmp', 0, 0, ScaleX(160), ScaleY(40));
+  FinishImg := NewImage(BtnPanel, 'btn_finish.bmp', 0, 0, ScaleX(160), ScaleY(40));
+  FinishImg.OnClick := @PressPrimary; FinishImg.Cursor := crHand;
+  SecondaryImg := NewImage(BtnPanel, 'btn_cancel.bmp', 0, 0, ScaleX(144), ScaleY(40));
   PrimaryImg.OnClick := @PressPrimary; PrimaryImg.Cursor := crHand;
   SecondaryImg.OnClick := @PressSecondary; SecondaryImg.Cursor := crHand;
   { 原按钮挪出可见区：仍是窗口的默认 / 取消按钮 }
@@ -412,6 +470,20 @@ begin
     Bar.Width := BarWidth * CurProgress div MaxProgress;
 end;
 
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  { 鼠标点自画按钮、回车按原按钮都经过这里：翻页前停重画（见 LockRedraw） }
+  if CurPageID <> wpFinished then LockRedraw;
+  Result := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  { 装完自动翻到完成页不经过「下一步」：在装完这一步就停重画，完成页搭好（CurPageChanged）再一次性画出
+    （天眼连帧：不锁时完成页的字、复选框分两三帧陆续出来） }
+  if CurStep = ssPostInstall then LockRedraw;
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
   SyncButtons;
@@ -426,6 +498,9 @@ begin
     SlideTimer := SetTimer(0, 0, SlideMs, CreateCallback(@OnSlideTimer));
   end else
     StopSlides;
+  { 新页内容 + 新按钮一起画出来。「准备安装」页只是去安装页路上的一站（天眼连帧：会先闪出空白页 + 旧按钮），
+    不在这里放开；它真停住（要关占用文件的程序等）时由 LockRedraw 的兜底计时器放开 }
+  if CurPageID <> wpPreparing then UnlockRedraw;
 end;
 
 procedure DeinitializeSetup;

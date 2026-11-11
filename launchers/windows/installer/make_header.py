@@ -68,4 +68,5 @@ check(False).save(HERE / "check_off.bmp")
 rounded((560, 120), CARD, LINE).save(HERE / "card.bmp")
 rounded((560, 8), CREAM, radius=4).save(HERE / "bar.bmp")
 rounded((560, 8), TRACK, radius=4).save(HERE / "track.bmp")
+Image.new("RGB", (8, 8), BG).save(HERE / "bg.bmp")   # 按钮面板的底：深色样式下面板自己的 Color 不生效（会画成灰），铺这张纯底色
 print("界面素材已生成，底色", BG)
