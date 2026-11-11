@@ -327,7 +327,26 @@ HOST=${GATE_HOST:-local}; [ -n "$PLANM" ] && HOST=local; WHY=
 RHN=$HOST; RHA=(); case $HOST in local|gate-host) ;; spare-host) echo "🔴 门禁不在 Spare-host 跑（10-28 Spare-host 退出门禁池）：用 GATE_HOST=gate-host，gate-host 不就绪会回「环境未就绪」"; exit 2;; *) echo "🔴 GATE_HOST 只认 local / gate-host"; exit 1;; esac
 if [ "$HOST" = gate-host ]; then
   REV=$(git rev-parse -q --verify "${GATE_REV:-HEAD}^{commit}") || WHY="待测提交 ${GATE_REV:-HEAD} 解析不了"
-  [ -n "${S2A_PRIVATE_TOOLS:-}" ] && [ -f "$S2A_PRIVATE_TOOLS/remote.sh" ] || WHY="没设 S2A_PRIVATE_TOOLS（远端门禁是维护方设施）"
+  # 门禁机配置自找，找不到红停（11-11 合入运维线，同一个坑踩了三次：新入口 / 新临时树只设 GATE_HOST，没带 S2A_PRIVATE_TOOLS 或
+  #   machine.local，原先整份或逐步悄悄退回本机跑——第二道证 486 步全量在本机跑起来才发现）：
+  #   ① 私有工具：没给 S2A_PRIVATE_TOOLS → 从 machine.local 读（S2A_MACHINE_LOCAL → 本树 tools/ → 主检出 tools/，主检出按 git 公共目录定位）；
+  #   ② 门禁机地址：按现有顺序（tools/machine.sh）找不到、又没显式给 S2A_MACHINE_LOCAL → 用私有工具目录里那份；
+  #   ③ 派之前核：remote.sh 在、配得出门禁机地址（S2A_REMOTE / S2A_REMOTE_HOSTS / S2A_REMOTE_DEFAULT）。核不过 → 【红】门禁机配置缺失、退出 2，一步都不在本机跑。
+  #   门禁机连不上 / 盘不足等运行时不可用照旧按 GATE_FALLBACK_LOCAL 退回本机补跑（那是环境问题，这里管的是配置漏传）
+  MCK=$(git rev-parse --path-format=absolute --git-common-dir 2> /dev/null); MCK=${MCK%/.git}
+  if [ -z "${S2A_PRIVATE_TOOLS:-}" ]; then
+    for mf in ${S2A_MACHINE_LOCAL:+"$S2A_MACHINE_LOCAL"} "$R/tools/machine.local" "${MCK:+$MCK/tools/machine.local}"; do
+      [ -f "$mf" ] || continue; pt=$(S2A_PRIVATE_TOOLS= bash -c '. "$1" > /dev/null 2>&1; printf %s "${S2A_PRIVATE_TOOLS:-}"' _ "$mf"); [ -n "$pt" ] && { export S2A_PRIVATE_TOOLS=$pt; break; }; done
+  fi
+  miss=; [ -n "${S2A_PRIVATE_TOOLS:-}" ] && [ -f "$S2A_PRIVATE_TOOLS/remote.sh" ] || miss="私有工具 remote.sh（S2A_PRIVATE_TOOLS=${S2A_PRIVATE_TOOLS:-没设}）"
+  if [ -z "${S2A_REMOTE:-}" ]; then
+    rhost() { bash "$R/tools/machine.sh" get S2A_REMOTE_HOSTS 2> /dev/null; bash "$R/tools/machine.sh" get S2A_REMOTE_DEFAULT 2> /dev/null; }
+    rh=$(rhost)
+    if [ -z "$(tr -d '[:space:]' <<< "$rh")" ] && [ -z "${S2A_MACHINE_LOCAL:-}" ] && [ -f "${S2A_PRIVATE_TOOLS:-/nonexistent}/machine.local" ]; then
+      export S2A_MACHINE_LOCAL=$S2A_PRIVATE_TOOLS/machine.local; rh=$(rhost); fi
+    [ -n "$(tr -d '[:space:]' <<< "$rh")" ] || miss="${miss:+${miss}；}门禁机地址（S2A_REMOTE_HOSTS / S2A_REMOTE_DEFAULT；找过 ${S2A_MACHINE_LOCAL:-本树 tools/machine.local}${MCK:+ 与主检出 $MCK/tools/machine.local}）"
+  fi
+  [ -z "$miss" ] || { echo "🔴 门禁机配置缺失：GATE_HOST=gate-host，但找不到 ${miss}；不退回本机整份跑。给 S2A_PRIVATE_TOOLS / S2A_MACHINE_LOCAL，或在主检出放 tools/machine.local"; exit 2; }
   [ -z "$WHY" ] && ! git diff --quiet "$REV" -- 2> /dev/null && WHY="工作树的跟踪文件与待测提交 ${REV:0:9} 不同（gate-host 只跑提交）"
 fi
 WH=(); SK=(); LPI=(); LPK=(); PLAN=; PI=(); F75=(); mx=60   # WH[i] = 本机 / gate-host；SK[i] = 该步在 gate-host 上跳过的子项键；LP* = 本机另跑的子项（步号、键）；PI[m] = 远端第 m 步对应的本机步号
