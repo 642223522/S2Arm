@@ -2700,7 +2700,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             const int dmask = v.depth_mask != 0;
             // NVN 的 stencil 掩码是 8 位平面掩码：0x01 只清 bit0，0xFF 才是整平面。
             // 位掩码用受 VkStencilWriteMask 约束的清除绘制表达，绝不把部分掩码降成整平面清除。
-            const uint32_t smask = (uint32_t)v.stencil_mask & 0xffu;
+            uint32_t smask = (uint32_t)v.stencil_mask & 0xffu;
             if (!dmask && !smask) break;
             char why[192];
             VkFormat fmt = nvn_vk_format(S->rt_depth_snap.d.format);
@@ -2712,9 +2712,8 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
                             "clear-depth-stencil through a format-overriding attachment view has no mutable depth path");
             const int has_stencil = nvn_vk_format_has_stencil(fmt);
-            if (smask && !has_stencil)
-                return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
-                            "clear requests stencil on a depth-only target format");
+            // 目标没有模板面时，清模板是空操作（硬件上、Metal 上都是）：游戏对纯深度目标也会带着模板位清。
+            if (smask && !has_stencil) { smask = 0; if (!dmask) break; }
             VkImageAspectFlags aspect = (dmask || smask) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0;
             if (smask) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
             const struct s2a_replay_texture *texture = find_texture(textures, texture_count, &S->rt_depth_snap);

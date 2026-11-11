@@ -507,8 +507,12 @@ void mtl_sub_begin(void) {
     // 保守档：在开始下一次提交之前把队列跑空。这保证 game 复用/释放上一提交的命令内存时，
     // 翻译线程已经不再读它——代价是只在「上一次 commit 到这一次 begin」之间能重叠。
     if (shim_async_mode() == SHIM_ASYNC_CONSERVATIVE) shim_drain();
+    // 回放状态只在本进程第一次提交前复位（同 Metal nvn_be_exec 的 inited）：NVN 的绑定状态挂在队列上，
+    // 上一批命令设的池 / 程序 / 绑定下一批仍然有效。每次提交都清零的话，游戏只在早先的提交里设过一次的
+    // 采样器池到首笔 draw 时已是 0，编译请求缺 samplerArrayLength 被拒（#539）。
     // 复位必须排在本次提交的 exec 作业之前，所以也走队列（不能就地做，会和 worker 上的状态打架）。
-    shim_enqueue(job_reset_state, NULL);
+    static int state_inited;
+    if (!state_inited) { state_inited = 1; shim_enqueue(job_reset_state, NULL); }
     s2a_record_flat_reset();
 }
 
