@@ -537,15 +537,19 @@ class Context:
                 raise Failure(f"游戏库所在的磁盘「{parts[2]}」没连上：插上这块盘后再试一次。")
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
+    def lock_holder(self):
+        """写进锁旁挂文件的「我是谁」：别的任务据此说清在等谁"""
+        return dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
+                    gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
+
     @contextlib.contextmanager
-    def lock(self, name="catalog", wait=None):
-        """游戏库锁（启动器剃刀 H1 / H2）：拿不到就排队，最多等 lock_wait 秒（缺省 LOCK_WAIT_S），期间发进度「在等『X』结束」
+    def lock(self, name="catalog", wait=None, root=None):
+        """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
         （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
-        wait 给个别作业另定上限（删除等刚取消的任务收尾）。拿到后在旁挂文件记下本任务，别的任务据此说清在等谁。报错原句不改：旧前端按它做本地化匹配"""
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
         self.check()
-        self.require_library()
-        me = dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
-                  gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
+        if root is None:
+            self.require_library()
         wait = getattr(self, "lock_wait", LOCK_WAIT_S) if wait is None else wait
         def waiting(info, waited):
             try:
@@ -553,11 +557,23 @@ class Context:
             except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
                 pass
         try:
-            with filelock.held(self.library / ("." + name + ".lock"), wait_s=wait, holder=me, on_wait=waiting):
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
                 yield
         except filelock.Busy as busy:
             raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
                           internal=f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）") from None
+
+    @contextlib.contextmanager
+    def idle(self, name="execution"):
+        """「库里没任务在用这把锁才顺手做、否则这次不做」的活（清残留、改文件夹名）：拿得到 yield True（照样记占锁者），拿不到不等、yield False。
+        和 lock 同一把锁、同一个旁挂文件；不查取消：被取消的任务收尾也要能用"""
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(filelock.held(self.library / ("." + name + ".lock"), holder=self.lock_holder()))
+            except filelock.Busy:
+                yield False
+                return
+            yield True
 
     def catalog(self):
         self.require_library()
