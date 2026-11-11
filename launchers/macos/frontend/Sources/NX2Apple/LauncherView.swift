@@ -145,6 +145,8 @@ struct LauncherView: View {
             .accessibilityIdentifier("notice.library")
             .task(id: n) { if n.kind == .done { try? await Task.sleep(nanoseconds: 6_000_000_000); if model.libraryNotice == n { model.libraryNotice = nil } } }
         }
+    }
+
     static var displayVersion: String {
         let info = Bundle.main.infoDictionary
         if let shown = info?["S2ADisplayVersion"] as? String, !shown.isEmpty { return shown }

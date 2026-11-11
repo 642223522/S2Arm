@@ -273,7 +273,6 @@ def game_ctx(gid):
 S_NO_USB = "这台 Mac 的 USB 上没看到 iPhone / iPad：换一根能传数据的线（充电线不行）、换个接口直连 Mac，并解锁手机。"
 S_NOT_LISTED = "这台 Mac 看到手机插着，但设备服务还没列出它：解锁手机，在弹出的框里点「信任」；还不行就拔掉重插一次。"
 S_MANY_WIRED = "连着不止一台 iPhone / iPad：只留要装的那一台。"
-S_NETWORK_TITLE = "iPhone 通过同一网络连着（没插数据线）"
 S_NETWORK = "能装，但网络传资源包慢、容易断：插上数据线再装更稳。"
 S_MANY_NETWORK = "同一网络上有多台配对过的 iPhone / iPad：用数据线连上要装的那一台。"
 # 装到哪台由玩家选、作业照办，不替玩家换一台（维护者 11-11：续签时玩家选的 iPhone 拔了线，旁边同网的 iPad 被装上了）
@@ -810,7 +809,7 @@ def readiness(c):
     kind = device_kind(one) if one else "iPhone / iPad"
     how = "数据线" if one and _link(one).get("transportType") == "wired" else "同一 Wi-Fi"
     item("connected", one, "{0}「{1}」已连上（{2}）".replace("{0}", kind).replace("{1}", name).replace("{2}", how) if one else "选的设备已连上（数据线或同一 Wi-Fi）",
-         link["problem"] if stage == "connected" else "")
+         link["problem"] if stage == "connected" else "", note=S_NETWORK if one and how != "数据线" else "")   # 只靠网络连着：能装，但提醒插线更稳（玩家反馈 11-11）
     paired = bool(one) and stage != "trusted"
     item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
     mode_pending = paired and stage == "prepare" and one.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None)

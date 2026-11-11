@@ -428,9 +428,9 @@ class FlowTests(unittest.TestCase):
         gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
         r, it = self._ready([self._dev(transport="localNetwork")])
         self.assertTrue(it["connected"]["ok"])
-        self.assertEqual((it["connected"]["title"], it["connected"]["detail"]), (install.S_NETWORK_TITLE, install.S_NETWORK))
+        self.assertIn("同一 Wi-Fi", it["connected"]["title"]); self.assertEqual(it["connected"]["detail"], install.S_NETWORK)   # 标题写明走 Wi-Fi，说明提醒插线更稳
         r, it = self._ready([self._dev()])
-        self.assertEqual((it["connected"]["title"], it["connected"]["detail"]), ("iPhone 已用数据线连上", ""))
+        self.assertIn("（数据线）", it["connected"]["title"]); self.assertEqual(it["connected"]["detail"], "")   # 插着线：不提醒
 
     def test_probe_reports_why_device_list_unreadable(self):
         """出包页设备探测：读不到设备列表（超时）→ connected 空 + connectedError 带原因，界面据此说「读不到」而不是「把 iPhone 插上」；读得到 → connectedError 空"""
