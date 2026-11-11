@@ -301,6 +301,8 @@ def launch_env(c, gid):
         env["S2A_SCALING_FILTER"] = "MetalFX"   # 画面增强模式 = 直连上屏 MetalFX 空间放大（graphics/nvn/gfx/nvn/nvn_present_fx.inc）
     if "docked" in s:
         env["S2A_DOCKED"] = "1" if s["docked"] == "docked" else "0"
+    if s.get("language", "system") != "system":
+        env["S2A_SYSTEM_LANGUAGE"] = s["language"]   # 游戏语言：值就是宿主枚举名（services/S2A.Services/Host.cs PickLanguage）；跟随系统不设，宿主读系统首选语言
     if s.get("hud") is True:
         env["S2A_HUD"] = "1"              # S2Arm 诊断浮层：front_mac.m 绘制，hud.c 格式化
     if s.get("rumble") is False:
