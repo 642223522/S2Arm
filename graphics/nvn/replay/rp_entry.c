@@ -11,6 +11,8 @@
 
 void rp_res_tex_gone(uint64_t serial);   // rp_res.c
 void rp_res_reset(void);
+void rp_buf_pool_gone(const void *mem);   // rp_buf.c
+void rp_buf_reset(void);
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -37,12 +39,21 @@ void nvn_be_pool_del(const void *mem) {
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_npool; i++) if (g_pool[i].mem == mem) { g_pool[i] = g_pool[--g_npool]; break; }
     pthread_mutex_unlock(&g_mu);
+    rp_buf_pool_gone(mem);
 }
 int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     int hit = 0;
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_npool; i++) { uint64_t b = (uint64_t)(uintptr_t)g_pool[i].mem;
         if (addr >= b && addr - b <= g_pool[i].size && len <= g_pool[i].size - (addr - b)) { if (buf) *buf = (void *)g_pool[i].mem; if (off) *off = addr - b; hit = 1; break; } }
+    pthread_mutex_unlock(&g_mu);
+    return hit;
+}
+int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
+    int hit = 0;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_npool; i++) { uint64_t b = (uint64_t)(uintptr_t)g_pool[i].mem;
+        if (addr >= b && addr - b <= g_pool[i].size && len <= g_pool[i].size - (addr - b)) { if (mem) *mem = g_pool[i].mem; if (size) *size = g_pool[i].size; hit = 1; break; } }
     pthread_mutex_unlock(&g_mu);
     return hit;
 }
@@ -119,7 +130,7 @@ void nvn_be_ub_present(double iv_ms) { (void)iv_ms; }
 void nvn_be_begin_session(void) {}
 int nvn_be_request_stop(void) { return 0; }
 int nvn_be_drain_session(void) { nvn_be_finish(); return 0; }
-int nvn_be_shutdown_session(void) { rp_res_reset(); rp_state_reset(); return 0; }
+int nvn_be_shutdown_session(void) { rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }
 
 // ---------- Metal 侧诊断读数：新层没有对应账本，报 0 ----------
 double nvn_be_gpu_ms(uint64_t f) { (void)f; return 0; }

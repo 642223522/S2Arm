@@ -5,8 +5,8 @@
 3	OP_CALL	控制流	14520	（递归）	已接	t_jump_call	否
 4	OP_SIGNAL_EVENT	同步 / 查询	14525	mtl_sub_event / ev_wait	部分：信号已接；等待（NVN_EV_WAIT）未接	t_event_after_done	否
 5	OP_REPORT_COUNTER	同步 / 查询	14530	mtl_sub_counter / post	未接	无	0100633007D48000
-6	OP_COPY_B2B	拷贝 / 填充	14559	mtl_sub_copy	未接	无	0100633007D48000
-7	OP_UPDATE_UB	拷贝 / 填充	14561	mtl_sub_update	未接	无	0100633007D48000
+6	OP_COPY_B2B	拷贝 / 填充	14559	mtl_sub_copy	已接（同上）	t_buf_ops	0100633007D48000
+7	OP_UPDATE_UB	拷贝 / 填充	14561	mtl_sub_update	已接（改游戏内存，使用点按页同步镜像）	t_buf_ops	0100633007D48000
 8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	未接	无	0100633007D48000
 9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	未接	无	0100633007D48000
 10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	未接	无	0100633007D48000
@@ -30,14 +30,14 @@
 28	OP_BARRIER	同步 / 查询	14646	（就地：拆通道 + barrier_game）	未接	无	0100633007D48000
 29	OP_SET_TEX_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
 30	OP_SET_SAMP_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
-31	OP_COPY_B2T	拷贝 / 填充	14639	copy_b2t	未接	无	0100633007D48000
+31	OP_COPY_B2T	拷贝 / 填充	14639	copy_b2t	已接（线性行直传；3D 多片、LINEAR 贴图未接）	t_copy_b2t	0100633007D48000
 32	OP_BLEND_COLOR	状态（绘制时生效）	14631	state_op:10440	状态已记；绘制侧未接	t_state_persists	否
 33	OP_COPY_T2B	拷贝 / 填充	14640	copy_t2b	未接	无	否
 34	OP_BIND_IMG	状态（绘制时生效）	14630	state_op:10428	状态已记；绘制侧未接	无	否
 35	OP_COPY_T2T	拷贝 / 填充	14641	copy_t2t	未接	无	否
 36	OP_RESET_COUNTER	同步 / 查询	14548	（就地：遮挡计数开）	未接	无	否
 37	OP_CLEAR_TEX	拷贝 / 填充	14644	clear_tex	未接	无	否
-38	OP_CLEAR_BUF	拷贝 / 填充	14558	mtl_sub_fill	未接	无	否
+38	OP_CLEAR_BUF	拷贝 / 填充	14558	mtl_sub_fill	已接（同上，32 位样式）	t_buf_ops	否
 39	OP_DEPTH_CLAMP	状态（绘制时生效）	14631	state_op:10438	状态已记；绘制侧未接	无	否
 40	OP_RENDER_COND	同步 / 查询	14536	（就地：g_rc_skip）	未接	无	否
 41	OP_FENCE_SYNC	同步 / 查询	14546	sync_publish	已接	t_fence_sync	否

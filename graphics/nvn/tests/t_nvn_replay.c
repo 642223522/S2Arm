@@ -67,6 +67,27 @@ void nvn_dirty_protect(const void *addr, size_t len) { (void)addr; (void)len; g_
 uint64_t nvn_dirty_now(void) { return g_dirty_now; }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { (void)addr; (void)len; return g_dirty_written > stamp; }
 
+// 缓冲替身：记每次按 GPU 顺序的写（偏移、长度、首 8 字节）
+struct nvn_gpu_buf_s { uint64_t bytes; };
+static int g_buf_creates, g_buf_releases; static uint64_t g_buf_bytes;
+static struct { uint64_t off, len; uint8_t head[8]; } g_bw[32]; static int g_nbw;
+nvn_gpu_rc nvn_gpu_buf_create(uint64_t bytes, int mem, const void *init, nvn_gpu_buf *out, nvn_gpu_err *err) { (void)mem; (void)init; (void)err; g_buf_creates++; g_buf_bytes = bytes; *out = calloc(1, sizeof **out); (*out)->bytes = bytes; return (nvn_gpu_rc){NVN_GPU_OK}; }
+void nvn_gpu_buf_release(nvn_gpu_buf b, nvn_gpu_retired_fn retired, void *user) { (void)retired; (void)user; g_buf_releases++; free(b); }
+void nvn_gpu_buf_write(nvn_gpu_cmd c, nvn_gpu_buf dst, uint64_t off, const void *src, uint64_t bytes) { (void)c; (void)dst; if (g_nbw == 32) return;
+    g_bw[g_nbw].off = off; g_bw[g_nbw].len = bytes; memcpy(g_bw[g_nbw].head, src, bytes < 8 ? bytes : 8); g_nbw++; }
+// 页级脏账替身：4096 字节一页，g_pmem 这个池每页的写代号由用例设
+enum { PG = 4096, NPG = 8 };
+static _Alignas(4096) uint8_t g_pmem[PG * NPG]; static uint64_t g_pg_gen[NPG]; static int g_pg_tracked = 1;
+size_t nvn_dirty_page_size(void) { return PG; }
+const void *nvn_dirty_span(const void *addr, size_t len) { (void)len; return (const uint8_t *)addr >= g_pmem && (const uint8_t *)addr < g_pmem + sizeof g_pmem ? g_pmem : NULL; }
+long nvn_dirty_page_gens(const void *span, const void *addr, size_t len, uint64_t *gens, size_t n) {
+    if (!span || !g_pg_tracked) return -1;
+    size_t p = (size_t)((const uint8_t *)addr - g_pmem) / PG, q = (size_t)((const uint8_t *)addr + len - 1 - g_pmem) / PG;
+    if (q - p + 1 > n) return -1;
+    for (size_t i = p; i <= q; i++) gens[i - p] = g_pg_gen[i];
+    return (long)(q - p + 1);
+}
+
 static void fake_complete(uint32_t status) {
     for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败"; g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
     g_npend = 0;
@@ -334,6 +355,76 @@ static void t_registry(void) {
     res_fresh();
 }
 
+static void t_buf_mirror(void) {   // 池镜像：首次使用建一份、按页同步；没写过的页不重传；按使用点的先后保证 GPU 顺序
+    nvn_be_shutdown_session(); nvn_unimpl_reset(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_nbw = 0; g_dirty_now = 100;
+    for (unsigned i = 0; i < sizeof g_pmem; i++) g_pmem[i] = (uint8_t)(i / PG + 1);   // 第 k 页全是 k+1
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem; int c0 = g_buf_creates, r0 = g_buf_releases;
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    CHECK(g_buf_creates == c0);                                     // 登记池不建镜像
+    nvn_gpu_buf b1 = NULL, b2 = NULL; uint64_t o1 = 0, o2 = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG + 100, 200, &b1, &o1) == 1);
+    CHECK(g_buf_creates - c0 == 1 && g_buf_bytes == sizeof g_pmem && o1 == PG + 100);
+    CHECK(g_nbw == 1 && g_bw[0].off == PG && g_bw[0].len == PG && g_bw[0].head[0] == 2);   // 只同步用到的那一页（整页）
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG + 300, 50, &b2, &o2) == 1 && b2 == b1 && g_nbw == 1);   // 同页、没写过：不重传
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG - 8, 2 * PG, NULL, NULL) == 1);             // 跨第 0–2 页：第 1 页已同步，补第 0 页和第 2 页
+    CHECK(g_nbw == 3 && g_bw[1].off == 0 && g_bw[1].len == PG && g_bw[2].off == 2 * PG && g_bw[2].len == PG);
+    g_pg_gen[1] = 101; g_dirty_now = 102;                           // 游戏写了第 1 页
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 4 && g_bw[3].off == PG && g_bw[3].len == PG);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 4);       // 再用：干净
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + sizeof g_pmem - 4, 8, NULL, NULL) == 0 && nvn_unimpl_count("buf", "address_outside_pools") == 1);   // 越过池尾
+    g_pg_tracked = 0;                                               // 没被写跟踪：每次使用都同步
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 100, NULL, NULL) == 1 && rp_buf_resolve(&g_fake_cmd, base, 100, NULL, NULL) == 1 && g_nbw == 6);
+    g_pg_tracked = 1;
+    CHECK(rp_buf_mirrors() == 1);
+    nvn_be_pool_del(g_pmem);
+    CHECK(g_buf_releases - r0 == 1 && rp_buf_mirrors() == 0);       // 池销毁：镜像放掉
+}
+
+static void t_buf_ops(void) {   // 缓冲类命令只改游戏内存；GPU 顺序由使用点同步保证：先用的看到旧内容，后用的看到新内容
+    nvn_be_shutdown_session(); nvn_unimpl_reset(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_nbw = 0; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem);
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem; nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    memset(g_pmem, 0xA1, 16);
+    stream a = {0};
+    uint8_t *r = put(&a, OP_UPDATE_UB, 16 + 8); uint64_t d = base, n = 8; memcpy(r, &d, 8); memcpy(r + 8, &n, 8); memset(r + 16, 0xB2, 8);
+    r = put(&a, OP_COPY_B2B, 24); uint64_t sv = base, dv = base + PG; n = 8; memcpy(r, &sv, 8); memcpy(r + 8, &dv, 8); memcpy(r + 16, &n, 8);
+    p_clear_buf *cb = put(&a, OP_CLEAR_BUF, sizeof *cb); cb->addr = base + 2 * PG; cb->size = 10; cb->value = 0x11223344;
+    r = put(&a, OP_UPDATE_UB, 16 + 8); d = base + sizeof g_pmem - 4; n = 8; memcpy(r, &d, 8); memcpy(r + 8, &n, 8);   // 越过池尾：拒绝
+    end(&a);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 8, NULL, NULL) == 1 && g_nbw == 1 && g_bw[0].head[0] == 0xA1);   // 命令之前的使用点：旧内容
+    nvn_be_sub_begin(); nvn_be_exec(a.b);
+    CHECK(g_pmem[0] == 0xB2 && g_pmem[7] == 0xB2 && g_pmem[8] == 0xA1);        // UPDATE_UB
+    CHECK(g_pmem[PG] == 0xB2 && g_pmem[PG + 7] == 0xB2 && g_pmem[PG + 8] == 0);  // COPY_B2B 拷的是更新后的内容
+    uint8_t want[10] = {0x44, 0x33, 0x22, 0x11, 0x44, 0x33, 0x22, 0x11, 0x44, 0x33};
+    CHECK(!memcmp(g_pmem + 2 * PG, want, 10) && g_pmem[2 * PG + 10] == 0);     // CLEAR_BUF：32 位样式，不是按字节
+    CHECK(nvn_unimpl_count("buf", "update_outside_pools") == 1);
+    CHECK(nvn_unimpl_count("op", "OP_UPDATE_UB") == 0 && nvn_unimpl_count("op", "OP_COPY_B2B") == 0 && nvn_unimpl_count("op", "OP_CLEAR_BUF") == 0);
+    g_pg_gen[0] = 101; g_dirty_now = 102;                                       // 写跟踪看到了第 0 页被写
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 8, NULL, NULL) == 1 && g_nbw == 2 && g_bw[1].head[0] == 0xB2);   // 命令之后的使用点：新内容
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_pool_del(g_pmem);
+}
+
+static void t_copy_b2t(void) {   // 缓冲 → 贴图：线性行直接传；级 / 层取自视图；行距可由游戏设；之后内容归 GPU
+    nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); memset(g_pmem, 0, sizeof g_pmem);
+    for (int i = 0; i < 64; i++) g_pmem[i] = (uint8_t)(i + 1);
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    tex_t t = mk_tex(51, 0, NVN_FORMAT_RGBA8, 16, 16, 3, 0);
+    stream a = {0};
+    p_copy_b2t *o = put(&a, OP_COPY_B2T, sizeof *o + sizeof t); tex_t *snap = (tex_t *)(o + 1); *snap = t;
+    o->src = (uint64_t)(uintptr_t)g_pmem; o->tex = snap; o->has_view = 1; o->view.set_levels = 1; o->view.base_level = 2;
+    o->r = (NVNcopyRegion){1, 0, 0, 2, 2, 1};
+    o = put(&a, OP_COPY_B2T, sizeof *o + sizeof t); snap = (tex_t *)(o + 1); *snap = t;
+    o->src = (uint64_t)(uintptr_t)g_pmem + 16; o->tex = snap; o->r = (NVNcopyRegion){0, 0, 0, 4, 2, 1}; o->row_stride = 32;
+    end(&a);
+    nvn_be_sub_begin(); nvn_be_exec(a.b);
+    CHECK(g_nup == 2 && nvn_unimpl_count("op", "OP_COPY_B2T") == 0);
+    CHECK(g_up[0].level == 2 && g_up[0].layer == 0 && g_up[0].w == 2 && g_up[0].h == 2 && g_up[0].pitch == 8 && g_up[0].img == 16 && g_up[0].first[0] == 1);
+    CHECK(g_up[1].level == 0 && g_up[1].pitch == 32 && g_up[1].img == 64 && g_up[1].first[0] == 17);
+    CHECK(nvn_be_tex_gpu_owned(51) == 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&g_tp); nvn_be_pool_del(g_pmem);
+}
+
 static void t_entry_unimpl(void) {   // 有语义而没接的入口：记账，不报假成功
     nvn_unimpl_reset();
     CHECK(nvn_be_present(NULL, 0, NULL) == 1 && nvn_be_present(NULL, 0, NULL) == 2);
@@ -357,7 +448,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_entry_unimpl();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_entry_unimpl();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
