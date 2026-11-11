@@ -881,10 +881,10 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
 
 def sign_with_apple_id(c, app, team, bid, ents, udid, log, steps):
     """Apple ID 模式：按玩家 Xcode 账号申请开发描述文件（ensure_profile.sh）再用钥匙串身份签（dev_sign.py）"""
-    if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6)
+    if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6, keychain=True)   # 用 Xcode 账号申请：可能弹钥匙串授权
     try:
         c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log)
-        if steps: c.begin("用你的 Apple ID 签名", 4, 6)
+        if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)   # codesign 用钥匙串里的签名身份：可能弹授权（开发者证书模式读 p12，不弹）
         c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log)
     except Failure as e:
         if e.code != "tool_exit":

@@ -1104,7 +1104,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if event.ev == "space", let space = PackSpace(event.fields["space"]) { session.space = space; self.session = session; return }
         if let stage = event.stage, !stage.isEmpty {
             session.stage = stage
-            if session.kind == .play, stage == "游戏运行中" {
+            if session.kind == .play, event.fields["stageKey"] as? String == "game_running" {   // 后端固定机读名（build.py begin key），不认中文阶段名
                 controllerGameStarted = true
                 controller.gameDidStart()
             }
