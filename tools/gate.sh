@@ -375,7 +375,7 @@ NONCE=; if [ ${#PI[@]} -gt 0 ]; then
       --env GATE_TIER --env GATE_SCAN_BASE --env GATE_CHANGED --env GATE_HOOK_S --env GATE_IOS_S --env GATE_IOS_WORK_S --env GATE_PLAN --env GATE_OUT --env GATE_TEST_CACHE --env GATE_ROLE \
       --pull "$OUTR=$L/r" -- bash tools/gate.sh > "$L/remote.log" 2>&1 & tp=$!; echo $tp > "$L/remote.tp"; wait $tp; r=$?; rm -f "$L/remote.tp"; echo $r > "$L/remote.rc"; echo "$h" > "$L/remote.host"; }
   ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=$(( TPRIO < 2 ? TPRIO : 2 ))
-    rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) &
+    rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) & RJ=$!   # 跑远端那份的子 shell：收尾限时（tailwait）不当拖尾，它有自己的远端时限
 fi
 TK=()   # TK[i] = 第 i 步（单测）的缓存键；没有 = 不走缓存
 tc_keys() {   # tc_keys <步号…>：给其中的单测步一次算好键（tools/test_cache.py key）；关了 / 没有算键器 / 算失败 = 不走缓存
@@ -425,7 +425,8 @@ for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r
 #   结论整份被当成「门禁机不可用」扔掉、本机重跑 74 分钟）：步都出结论后，还在跑的子进程最多再等 GATE_TAIL_WAIT_S（缺省 120）秒；
 #   还不退 → 把它们的命令行列进日志（抓是谁攥着不放）、收掉、照常收尾
 tailwait() { local t0=$SECONDS k p
-  while k=$(jobs -pr); [ -n "$k" ]; do
+  # 本机侧跑远端那份的子 shell（RJ）不算拖尾（11-11：73d022d6b 首版把它也收掉，远端被 TERM、每批环境未就绪；tests/gate_remote_partial_test.sh ⑤）
+  while k=$(jobs -pr | grep -vx "${RJ:-0}"); [ -n "$k" ]; do
     if [ $((SECONDS - t0)) -ge "${GATE_TAIL_WAIT_S:-120}" ]; then
       echo "【黄】门禁收尾：步都出结论了，还有 $(grep -c . <<< "$k") 个子进程 ${GATE_TAIL_WAIT_S:-120} 秒不退，收掉：$(for p in $k; do ps -ww -o pid=,command= -p "$p" 2> /dev/null | cut -c1-200; pgrep -P "$p" 2> /dev/null | while read -r c; do ps -ww -o pid=,command= -p "$c" 2> /dev/null | sed 's/^/  └ /' | cut -c1-200; done; done | tr '\n' '；')"
       for p in $k; do pkill -TERM -P "$p" 2> /dev/null; kill -TERM "$p" 2> /dev/null; done; sleep 2; for p in $k; do pkill -KILL -P "$p" 2> /dev/null; kill -KILL "$p" 2> /dev/null; done; break; fi
