@@ -46,11 +46,11 @@ nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err)
 // 贴图 / 视图 / 采样器 / 上传：只记账
 struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; }; struct nvn_gpu_samp_s { int x; };
 static int g_tex_creates, g_tex_releases, g_view_creates, g_view_releases, g_samp_creates, g_samp_releases, g_tex_create_fail;
-static uint32_t g_last_usage;
+static uint32_t g_last_usage; static uint16_t g_last_swz;
 static struct { uint32_t level, layer; uint64_t pitch, img; int w, h; uint8_t first[64]; } g_up[16]; static int g_nup;
 nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_gpu_err *err) {
     if (g_tex_create_fail) { snprintf(err->why, sizeof err->why, "替身：不支持"); *out = NULL; return (nvn_gpu_rc){NVN_GPU_E_UNSUPPORTED}; }
-    g_tex_creates++; g_last_usage = d->usage; *out = calloc(1, sizeof **out); (*out)->d = *d; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    g_tex_creates++; g_last_usage = d->usage; g_last_swz = d->swz; *out = calloc(1, sizeof **out); (*out)->d = *d; return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_tex_release(nvn_gpu_tex t) { g_tex_releases++; free(t); }
 nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex t, const view_t *v, nvn_gpu_view *out, nvn_gpu_err *err) { (void)err; g_view_creates++; *out = calloc(1, sizeof **out); (*out)->of = t; (*out)->has_v = v != NULL; return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_view_release(nvn_gpu_view v) { g_view_releases++; free(v); }
@@ -276,13 +276,19 @@ static void t_alias(void) {   // 同池同偏移同描述的对象共用一份�
     CHECK(g_tex_creates - c0 == 2 && rp_res_tex_built() == 2 && rp_res_tex_serials() == 3);
     CHECK(g_nup == 0);                                              // 存储全 0：不是 CPU 内容，不上传
     CHECK(g_last_usage & NVN_GPU_TEX_RENDER);                       // 能当附件的格式建图时就带附件用途
+    tex_t sw = mk_tex(4, 0x8000, NVN_FORMAT_RGBA8, 32, 32, 1, 0); sw.set_swz = 1; sw.swz = 2 | 3 << 3 | 4 << 6 | 5 << 9;
+    CHECK(rp_tex_resolve(&sw, &g_fake_cmd) != NULL && g_last_swz == 0);   // 游戏设了恒等通道映射：按「没设」交给后端
+    sw.serial = 6; sw.off = 0xC000; sw.mem = g_tmem + 0xC000; sw.swz = 5 | 4 << 3 | 3 << 6 | 2 << 9;
+    CHECK(rp_tex_resolve(&sw, &g_fake_cmd) != NULL && g_last_swz == (5 | 4 << 3 | 3 << 6 | 2 << 9));   // 非恒等：原样交
+    nvn_be_tex_release(&sw); sw.serial = 4; nvn_be_tex_release(&sw);   // 两个对象都 Finalize；存储仍由共用表持有
+    c0 += 2;
     nvn_be_tex_release(&a); nvn_be_tex_release(&b);
     CHECK(g_tex_releases == r0);                                    // 共用表持有：对象 Finalize 不放存储
     tex_t a2 = mk_tex(9, 0, NVN_FORMAT_RGBA8, 32, 32, 1, 0);
     CHECK(rp_tex_resolve(&a2, &g_fake_cmd) == ga && g_tex_creates - c0 == 2);   // 每帧在新对象上重建同一张：还是那份
     nvn_be_tex_release(&a2); nvn_be_tex_release(&c);
     nvn_be_alias_drop_pool(&g_tp);
-    CHECK(g_tex_releases - r0 == 2 && rp_res_tex_built() == 0);     // 池销毁：出表并放掉
+    CHECK(g_tex_releases - r0 == 4 && rp_res_tex_built() == 0);     // 池销毁：出表并放掉（a/b 共用的一份、c、两张通道映射的）
 }
 
 static void t_cpu_upload(void) {   // 存储里是 CPU 写的数据：首次使用上传，之后只在脏了时重传；内容交 GPU 后不再传

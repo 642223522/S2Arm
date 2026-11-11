@@ -25,6 +25,7 @@ struct rp_tex {
 // 同存储共用表的键：内存池 + 偏移 + 描述（去掉只表示用途、不影响存储布局的标志）
 typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } alias_key;
 enum { ALIAS_USE_FLAGS = NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_ADAPTIVE_ZCULL | NVN_TEXTURE_FLAGS_DEPTH16_PREFER_FAST_CLEAR | NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL };
+enum { SWZ_IDENTITY = 2 | 3 << 3 | 4 << 6 | 5 << 9 };   // tex_builder_t.swz 打包法下的 R G B A：等于没设
 static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~(int)ALIAS_USE_FLAGS; }
 
 typedef struct { tex_t t; view_t v; uint8_t ok, has_v; nvn_gpu_view view; struct rp_tex *of; uint64_t gen; } treg_t;
@@ -164,11 +165,11 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
         alias_key k; alias_key_of(&k, t);
         if (!cpu && t->pool) x = nvn_hm_get(&g_alias, &k);   // 同存储同描述的另一个对象已经建过：共用
         if (!x) {
-            nvn_gpu_tex_desc d = {0}; d.d = t->d; d.usage = usage_of(t, cpu); d.swz = t->set_swz ? t->swz : 0; d.stencil_view = t->stencil;
+            nvn_gpu_tex_desc d = {0}; d.d = t->d; d.usage = usage_of(t, cpu); d.swz = t->set_swz && t->swz != SWZ_IDENTITY ? t->swz : 0; d.stencil_view = t->stencil;
             nvn_gpu_tex g = NULL; nvn_gpu_err err = {0};
             if (!nvn_gpu_ok(nvn_gpu_tex_create(&d, &g, &err))) {
                 pthread_mutex_unlock(&g_rmu);
-                char name[48]; snprintf(name, sizeof name, "tex_create_fmt_%#x_target_%d", (unsigned)t->d.format, t->d.target); nvn_unimpl("gpu", name, t);
+                char name[48]; snprintf(name, sizeof name, "tex_create_fmt_%#x_target_%d", (unsigned)t->d.format, t->d.target); if (nvn_unimpl("gpu", name, t) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);   // 首次：带上后端给的原因
                 return NULL;
             }
             x = calloc(1, sizeof *x); x->g = g; x->cpu = (uint8_t)cpu; x->mem = t->mem; x->size = t->L.size; g_built++;
