@@ -15,7 +15,7 @@ G=${1:?款}; REC=${2:?录像目录}; shift 2
 R=$(cd "$(dirname "$0")/.." && pwd)
 [ $# -gt 0 ] || set -- "$R"
 RUNS=${S2A_BENCH_RUNS:-3}; PASSES=${S2A_BENCH_PASSES:-200}; WARM=${S2A_BENCH_WARM:-20}
-[ "$PASSES" -gt "$WARM" ] || { echo "🔴 S2A_BENCH_PASSES（$PASSES）要大于 S2A_BENCH_WARM（$WARM）"; exit 2; }
+[ "$PASSES" -gt "$WARM" ] || { echo "🔴 S2A_BENCH_PASSES（${PASSES}）要大于 S2A_BENCH_WARM（${WARM}）"; exit 2; }
 OUT=${S2A_BENCH_OUT:-$REC/bench_$(date +%m%d_%H%M%S)}; mkdir -p "$OUT" || exit 2; OUT=$(cd "$OUT" && pwd); : > "$OUT/runs.tsv"
 TREES=(); for t in "$@"; do d=$(cd "$t" 2>/dev/null && pwd) || { echo "🔴 树 $t 不存在"; exit 2; }; [ -f "$d/tools/frame_replay.sh" ] || { echo "🔴 $d 没有 tools/frame_replay.sh"; exit 2; }; TREES+=("$d"); done
 echo "树：${TREES[*]}；每树 $RUNS 次 × $PASSES 遍（丢前 $WARM 遍）；输出 $OUT"
