@@ -79,7 +79,8 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
     g->has_halve_primitive_id = 1; g->halve_primitive_id = g->topology && q->prim == 0x7u;
     g->has_cb_draw_params = 1; g->cb_draw_params = pc->shader_draw_parameters;
     g->has_point_size = 1; g->program_point_size_enable = 1; g->point_size = 1.0f;
-    g->has_alpha_test_reference = 1; g->alpha_test_reference = 0.0f;
+    // 参考值是绘制时的状态（OP_ALPHA_REF）。测试没开（函数是 ALWAYS）时固定给 0：不让同一个程序因为一个用不到的数拆成多份
+    g->has_alpha_test_reference = 1; g->alpha_test_reference = rp_S.color.alpha_func >= 1 && rp_S.color.alpha_func <= 7 ? rp_S.alpha_ref : 0.0f;
     int any_ssbo = 0, unaligned = 0;
     for (int st = 0; st < 5; st++) for (int i = 0; i < 16; i++) if (rp_S.ssbo[st][i].addr) { any_ssbo = 1; if (pc->storage_buffer_offset_alignment && rp_S.ssbo[st][i].addr % pc->storage_buffer_offset_alignment) unaligned = 1; }
     if (!any_ssbo || pc->storage_buffer_offset_alignment) { g->has_unaligned_ssbo = 1; g->unaligned_ssbo = unaligned; }
@@ -132,6 +133,7 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
     memset(&fp, 0, sizeof fp);
     if (nvn_vk_program_parse_graphics_stages(bytes, len, &fp, nst == 1, why, sizeof why)) { red1("program_parse_failed", why); e->failed = 1; return e; }
     e->prog.support_bytes = fp.support_bytes; e->prog.attr_mask = fp.stage[0].attr_mask;
+    e->prog.color_out_mask = nst == 2 && fp.stage[1].present ? fp.stage[1].fragment_output_map : 0xffffffffu;
     for (int st = 0; st < nst && !e->failed; st++) {
         if (!fp.stage[st].present) { red1("stage_missing_in_result", st ? "fs" : "vs"); e->failed = 1; break; }
         for (int i = 0; i < fp.binding_count && !e->failed; i++) {

@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 5   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 6   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -281,7 +281,11 @@ typedef struct {
        不把变体查找推迟到 draw（预测预编要看得到这些状态）。没有对应能力时 dyn 里的同名字段必须与这里相同，否则粘滞 NVN_GPU_E_ARG。 */
     ds_st ds; poly_st poly;
     uint8_t rast_discard, clip_neg1; // clip_neg1 只在 CAP_DEPTH_CLIP_CTL 时可为 1；否则核心选 main0_z 入口
-    uint8_t _rsv[2];
+    /* v6：正面绕序。poly.front 由核心给成「规范化设备坐标（y 朝上）里的正面绕序」，已经算进了队列的光栅翻转位（见 rp_draw.c）；
+       后端把它换成自己帧缓冲坐标下的绕序，这取决于它画这笔时翻不翻视口，所以窗口原点也进管线描述：
+       origin_ll 必须与绘制时 nvn_gpu_dyn.origin_ll 相同，不同则粘滞 NVN_GPU_E_ARG。 */
+    uint8_t origin_ll;
+    uint8_t _rsv[1];
 } nvn_gpu_pipe_desc;
 enum {
     NVN_GPU_PIPE_SYNC = 0,         // 现在就建，阻塞到出结果

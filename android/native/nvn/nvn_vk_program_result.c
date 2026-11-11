@@ -102,6 +102,11 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
         uint32_t mask_value = 0;
         if (!s2a_jv_obj_find(st, "attributeReadMask", &mask) && !s2a_jv_u32(mask, &mask_value))
             out->stage[idx].attr_mask = mask_value;
+        // 片元着色器的输出映射（每个颜色目标 4 位、RGBA 各 1 位）：在阶段的 info 里；读不到 = 全 1（不屏蔽）
+        out->stage[idx].fragment_output_map = 0xffffffffu;
+        { struct s2a_jv info = { NULL, 0 }, om = { NULL, 0 }; uint32_t om_v = 0;
+          if (!s2a_jv_obj_find(st, "info", &info) && s2a_jv_is_object(info) && !s2a_jv_obj_find(info, "fragmentOutputMap", &om) && !s2a_jv_u32(om, &om_v))
+              out->stage[idx].fragment_output_map = om_v; }
     }
 
     struct s2a_jv bindings;

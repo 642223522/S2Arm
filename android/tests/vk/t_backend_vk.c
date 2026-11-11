@@ -556,7 +556,7 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
     CHECK(OK(nvn_gpu_shader_load(&ssrc, &fs_sh, &e)), "FS 装载：%d %s", e.rc.code, e.why);
 
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs_sh;
     pd.st[NVN_GPU_SH_FS].sh = fs_sh;
@@ -905,7 +905,7 @@ static nvn_gpu_pipe make_combined_pipe(const char *dir, nvn_gpu_shader *vs_out, 
     free(vs);
     free(fs);
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = *vs_out;
     pd.st[NVN_GPU_SH_FS].sh = *fs_out;
@@ -1212,7 +1212,7 @@ static void t31_vertex_formats(const char *dir) {
 
     for (int which = 0; which < 2; which++) {
         nvn_gpu_pipe_desc pd;
-        memset(&pd, 0, sizeof pd);
+        memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
         pd.st[NVN_GPU_SH_VS].sh = vs_sh;
         pd.st[NVN_GPU_SH_FS].sh = fs_sh;
@@ -1329,7 +1329,7 @@ static void fs_draw_tex_frag(nvn_gpu_cmd c, nvn_gpu_view view, nvn_gpu_samp samp
     nvn_gpu_shader vs = NULL, fs = NULL;
     if (!load_shader_pair(dir, "tri.vert", frag, &vl, &fl, &vs, &fs, &vsm, &fsm)) { CHECK(0, "读不到 %s 着色器", frag); return; }
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs;
     pd.st[NVN_GPU_SH_FS].sh = fs;
@@ -1372,7 +1372,7 @@ static void fs_draw_solid(nvn_gpu_cmd c, const char *dir, const char *frag, cons
     nvn_gpu_shader vs = NULL, fs = NULL;
     if (!load_shader_pair(dir, "tri3.vert", frag, NULL, NULL, &vs, &fs, &vsm, &fsm)) { CHECK(0, "读不到 %s 着色器", frag); return; }
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
@@ -1544,7 +1544,7 @@ static nvn_gpu_pipe color_pipe(const char *dir, int inst) {
     nvn_gpu_shader vs = NULL, fs = NULL;
     if (!load_shader_pair(dir, inst ? "inst.vert" : "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm)) return NULL;
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
@@ -1726,7 +1726,7 @@ static nvn_gpu_pipe blend_pipe(const char *dir, const blend_st *b, int en, uint3
     nvn_gpu_shader vs = NULL, fs = NULL;
     if (!load_shader_pair(dir, "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm)) return NULL;
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = mask;
@@ -1789,7 +1789,7 @@ static nvn_gpu_rc c69_dual_src_get(const char *dir, nvn_gpu_pipe *pipe, nvn_gpu_
         return bad;
     }
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
@@ -1857,7 +1857,7 @@ static nvn_gpu_rc prim_pipe(const char *dir, uint32_t prim, nvn_gpu_pipe *out) {
     nvn_gpu_shader vs = NULL, fs = NULL;
     if (!load_shader_pair(dir, prim == 0 ? "point.vert" : "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm)) return (nvn_gpu_rc){NVN_GPU_E_COMPILE};
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = prim; pd.chmask.mask = 0xF;
@@ -1940,7 +1940,7 @@ static void blend2_draw(const char *dir, const blend_st b[2], uint8_t *out0, uin
     void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
     CHECK(load_shader_pair(dir, "quad.vert", "quad2.frag", NULL, NULL, &vs, &fs, &vsm, &fsm), "C45 shader");
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;   // NVN 缺省 COPY
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.cfmt[1] = NVN_FORMAT_RGBA8;
@@ -2027,7 +2027,7 @@ static void c47_logic(const char *dir) {
     void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
     CHECK(load_shader_pair(dir, "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm), "C47 shader");
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
     pd.attr[0].fmt = NVN_FORMAT_RGBA32F; pd.attr[0].offset = 0; pd.attr[0].stream = 0;
@@ -2083,7 +2083,7 @@ static int restart_draw(const char *dir, int on, uint8_t *out, uint64_t sig) {
     void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
     if (!load_shader_pair(dir, "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm)) return -1;
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 5; pd.prim_restart = on ? 1 : 0; pd.chmask.mask = 0xF;
@@ -2150,7 +2150,7 @@ static void c50_list_restart(const char *dir) {
     void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
     CHECK(load_shader_pair(dir, "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm), "C50 shader");
     nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd);
+    memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul;
     pd.color.logic_op = 0x3;
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.prim_restart = 1; pd.chmask.mask = 0xF;
@@ -2186,7 +2186,7 @@ static void c51_array(const char *dir) {
     nvn_gpu_layout vl; memset(&vl, 0, sizeof vl);
     void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
     CHECK(load_shader_pair(dir, "tri.vert", "arr.frag", &vl, &fl, &vs, &fs, &vsm, &fsm), "C51 读着色器失败");
-    nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd); pd.color.logic_op = 0x3;
+    nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul; pd.color.logic_op = 0x3;
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
     pd.attr[0].fmt = NVN_FORMAT_RG32F; pd.attr[0].offset = 0; pd.attr[0].stream = 0;
@@ -2264,7 +2264,7 @@ static void sample_tex(const char *dir, const char *frag, uint32_t target, uint3
     nvn_gpu_layout vl; memset(&vl, 0, sizeof vl);
     void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
     CHECK(load_shader_pair(dir, "tri.vert", frag, &vl, &fl, &vs, &fs, &vsm, &fsm), "%s 读着色器失败", frag);
-    nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd); pd.color.logic_op = 0x3;
+    nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd); pd.origin_ll = (uint8_t)!g_tri_origin_ul; pd.color.logic_op = 0x3;
     pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
     pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
     pd.attr[0].fmt = NVN_FORMAT_RG32F; pd.attr[0].offset = 0; pd.attr[0].stream = 0;
@@ -2461,6 +2461,7 @@ static void fill_gpipe_desc(nvn_gpu_pipe_desc *pd, nvn_gpu_shader vs, nvn_gpu_sh
     pd->chmask.mask = 0xF;
     pd->attr[0].fmt = NVN_FORMAT_RGBA32F; pd->attr[0].offset = 0; pd->attr[0].stream = 0;
     pd->stream[0].stride = 16;
+    pd->origin_ll = 1;   // 与 full_dyn 的窗口原点一致（契约 v6：两处必须相同）
 }
 
 static void full_dyn(nvn_gpu_dyn *d) {
@@ -3595,6 +3596,48 @@ static void c79_masked_clear(const char *dir) {
     nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
 }
 
+// C80：正面绕序（契约 v6）。管线描述里的 poly.front 是 y 朝上的规范化设备坐标里的绕序；整屏三角形 (-1,-1) (3,-1) (-1,3) 在那个坐标里是逆时针。
+//   剔除背面时：正面 = 逆时针的管线画得上，正面 = 顺时针的画不上——窗口原点在左下（视口不翻）和在左上（视口翻）两种情况都一样。
+// 期望（手算）：每种原点下，先用「正面逆时针」画绿 → 整屏绿；再用「正面顺时针」画蓝 → 被剔掉，仍然整屏绿。
+static void c80_front_face(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL, vs2 = NULL, fs2 = NULL; void *vm = NULL, *fm = NULL, *vm2 = NULL, *fm2 = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 solid_green"); return; }
+    if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs2, &fs2, &vm2, &fm2)) { CHECK(0, "读不到 solid_blue"); return; }
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view ov = make_view(out);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = full_vb();
+    for (int ll = 1; ll >= 0; ll--) {
+        nvn_gpu_pipe_desc pd, pd2; nvn_gpu_err e; nvn_gpu_pipe pipe = NULL, pipe2 = NULL;
+        fill_gpipe_desc(&pd, vs, fs, 0); pd.poly.cull = 2; pd.poly.front = 1; pd.origin_ll = (uint8_t)ll;      // 剔背面，正面逆时针
+        fill_gpipe_desc(&pd2, vs2, fs2, 0); pd2.poly.cull = 2; pd2.poly.front = 0; pd2.origin_ll = (uint8_t)ll;  // 剔背面，正面顺时针
+        CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C80 pipe：%d %s", e.rc.code, e.why);
+        CHECK(OK(nvn_gpu_pipe_get(&pd2, NVN_GPU_PIPE_SYNC, &pipe2, &e)), "C80 pipe2：%d %s", e.rc.code, e.why);
+        if (!pipe || !pipe2) break;
+        nvn_gpu_cmd c = begin_cmd();
+        nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+        p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+        p.w = 64; p.h = 64; p.layers = 1;
+        nvn_gpu_pass_begin(c, &p);
+        nvn_gpu_dyn dyn; full_dyn(&dyn); dyn.origin_ll = (uint8_t)ll;
+        nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+        nvn_gpu_set_pipe(c, pipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+        nvn_gpu_set_pipe(c, pipe2); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+        nvn_gpu_pass_end(c);
+        nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+        uint64_t sig = 122 + (uint64_t)(1 - ll);
+        nvn_gpu_rc r = nvn_gpu_cmd_commit(c, sig, on_done, NULL, &e);
+        CHECK(OK(r), "C80 commit（原点左下 = %d）：%d %s", ll, r.code, e.why);
+        r = nvn_gpu_fence_wait(sig, 5000000000ull, &e);
+        CHECK(OK(r), "C80 wait：%d %s", r.code, e.why);
+        expect_rect(buf_cpu(rb), 0, 0, 64, 64, 0, 255, 0, ll ? "C80 原点左下：逆时针画上、顺时针被剔（整屏绿）" : "C80 原点左上：逆时针画上、顺时针被剔（整屏绿）");
+    }
+    nvn_gpu_view_release(ov); nvn_gpu_tex_release(out);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); nvn_gpu_shader_release(vs2); nvn_gpu_shader_release(fs2);
+    free(vm); free(fm); free(vm2); free(fm2);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -3827,6 +3870,7 @@ int main(int argc, char **argv) {
     c76_vs_only_depth(argv[1]);
     c77_null_color_slot(argv[1]);
     c79_masked_clear(argv[1]);
+    c80_front_face(argv[1]);
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;

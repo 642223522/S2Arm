@@ -29,6 +29,7 @@ struct fd_stage {
     uint8_t *spirv;
     size_t spirv_bytes;
     uint32_t attr_mask;
+    uint32_t fragment_output_map;   // 片元阶段：每个颜色目标 4 位（RGBA）= 着色器写了哪些输出分量；读不到为全 1
 };
 
 struct fd_binding {

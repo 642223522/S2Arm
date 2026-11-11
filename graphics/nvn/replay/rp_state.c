@@ -143,7 +143,9 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             if (b->what == 0) { rp_S.tf_on = 1; rp_S.tf_ctl = b->ctl; memset(rp_S.tf_off, 0, sizeof rp_S.tf_off); } else rp_S.tf_on = b->what == 3;
             return 1; }
         case OP_PRIM_RESTART: rp_S.restart = *(const p_prim_restart *)a; return 1;
-        case OP_ALPHA_REF: rp_S.alpha_ref = ((const p_alpha_ref *)a)->ref; return 1;
+        case OP_ALPHA_REF: { float r = ((const p_alpha_ref *)a)->ref;   // 透明测试开着时参考值是着色器编译事实：变了要重新取程序
+            if (r != rp_S.alpha_ref) { rp_S.alpha_ref = r; if (rp_S.color.alpha_func >= 1 && rp_S.color.alpha_func <= 7) rp_pso_dirty = 1; }
+            return 1; }
         case OP_SET_PATCH_SIZE: { int sz = ((const p_set_patch_size *)a)->size; if (sz > 0 && sz <= 32) rp_S.patch_size = sz; return 1; }
         case OP_RAST_DISCARD: rp_S.rast_discard = ((const p_rast_discard *)a)->on; return 1;
         default: return 0;
