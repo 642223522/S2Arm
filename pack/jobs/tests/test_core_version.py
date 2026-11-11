@@ -18,6 +18,20 @@ class ReleaseVersion(unittest.TestCase):
                 subprocess.run(["git", "-C", d, *args], check=True, env=env)
             self.assertEqual(release_version(d), "0.3.1")
 
+    def test_hotfix_tags_off_main_still_count(self):
+        # 11-11：热修 tag 打在热修分支上、没合回 main（v0.2.7–v0.2.9 的实际情形）。夹具：main 上 A 打 v0.2.6，从 A 分出热修提交 H 打 v0.2.9、v0.2.10-rc1，
+        #   main 接着有提交 C。期望手写：在 C 上取 0.2.10（按数字比，字符串比会选 0.2.9；旧的 git describe 给 0.2.6）；切到 A（正好在 v0.2.6 上）仍是 0.2.6
+        with tempfile.TemporaryDirectory() as d:
+            env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+            g = lambda *a: subprocess.run(["git", "-C", d, "-c", "tag.gpgsign=false", "-c", "commit.gpgsign=false", *a], check=True, env=env, capture_output=True, text=True).stdout.strip()
+            g("init", "-q", "-b", "main"); g("commit", "-q", "--allow-empty", "-m", "A"); g("tag", "v0.2.6")
+            g("checkout", "-q", "-b", "hotfix"); g("commit", "-q", "--allow-empty", "-m", "H"); g("tag", "v0.2.9"); g("tag", "v0.2.10-rc1")
+            g("checkout", "-q", "main"); g("commit", "-q", "--allow-empty", "-m", "C")
+            self.assertEqual(release_version(d), "0.2.10")
+            self.assertEqual(display_version(d), "v0.2.10-dev+" + g("rev-parse", "--short=7", "HEAD")[:7])
+            g("checkout", "-q", "v0.2.6")
+            self.assertEqual(release_version(d), "0.2.6")
+
     def test_nothing_known_is_empty(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(release_version(d), "")
