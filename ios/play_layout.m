@@ -7,6 +7,8 @@
 static _Atomic int g_split_active;
 void S2APlayPublishSplit(BOOL split) { atomic_store(&g_split_active,split ? 1 : 0); }
 int s2a_ios_split_active(void) { return atomic_load(&g_split_active); }
+// 游戏区域（graphics/nvn/host_adapt.m、graphics/metal/gal_ios_layer.m 弱引用）：分屏布局（#301）接上前没有单独的游戏区域，回空矩形 = 调用方用视图自身
+CGRect s2a_ios_game_area(void) { return CGRectNull; }
 
 NSString *const S2APlaySplitKey=@"S2ASplitScreen", *const S2APlayOrientationKey=@"S2AScreenOrientation", *const S2APlayLayoutChanged=@"S2APlayLayoutChanged";
 S2APlaySplitMode S2APlayReadSplit(NSUserDefaults *d) {
