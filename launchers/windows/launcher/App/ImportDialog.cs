@@ -145,15 +145,28 @@ public sealed partial class EnvironmentWindow
             Foreground = Ink, HorizontalAlignment = HorizontalAlignment.Center });
         inner.Children.Add(new TextBlock { Text = C("or"), FontSize = 12.5, Foreground = Brush.Parse("#A8A6A1"),
             HorizontalAlignment = HorizontalAlignment.Center });
-        var browse = new Button
+        Button Pick(string text, bool primary, Func<Task> open)
         {
-            Content = S("browse"), Background = Accent, Foreground = Canvas,
-            Padding = new Thickness(20, 9), CornerRadius = new CornerRadius(20),
-            FontSize = 14, FontWeight = FontWeight.SemiBold,
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-        browse.Click += (_, _) => BeginPicker(() => BrowseImportAsync(kind));
-        inner.Children.Add(browse);
+            var b = new Button
+            {
+                Content = text, Background = primary ? Accent : Brush.Parse("#29292D"), Foreground = primary ? Canvas : Ink,
+                Padding = new Thickness(20, 9), CornerRadius = new CornerRadius(20),
+                FontSize = 14, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center
+            };
+            b.Click += (_, _) => BeginPicker(open);
+            return b;
+        }
+        if (kind == ImportKind.Keys)
+            inner.Children.Add(Pick(S("browse"), true, () => BrowseImportAsync(kind)));
+        else
+        {
+            // #611：文件和文件夹各一个按钮、各弹各的窗口（Windows 的系统窗口不能同时选文件和文件夹）。
+            //   原先一个按钮先弹文件窗口、再无条件弹文件夹窗口，取消文件窗口也会接着弹文件夹窗口
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center };
+            row.Children.Add(Pick(T("library.import_files"), true, () => BrowseImportAsync(kind)));
+            row.Children.Add(Pick(T("library.import_folder"), false, () => BrowseImportAsync(kind, folder: true)));
+            inner.Children.Add(row);
+        }
         return inner;
     }
 
@@ -169,7 +182,10 @@ public sealed partial class EnvironmentWindow
     private string importJobName = "", importJobMessage = "", importError = "";
     private CancellationTokenSource? importCancellation;
 
-    private async Task BrowseImportAsync(ImportKind kind)
+    /// 选择器认的游戏文件后缀：与后端 pack/jobs/library.py SOURCE_SUFFIXES 一致（#611：原先漏了 Switch 2 的 .nup，拖进来认得、选择器里看不到）
+    private static readonly string[] GameFilePatterns = ["*.nsp", "*.xci", "*.nsz", "*.xcz", "*.nup"];
+
+    private async Task BrowseImportAsync(ImportKind kind, bool folder = false)
     {
         if (kind == ImportKind.Keys)
         {
@@ -181,18 +197,22 @@ public sealed partial class EnvironmentWindow
             if (files.Count == 0) return;
             AcceptImport([LocalPath(files[0])], ImportKind.Keys);
         }
+        else if (folder)
+        {
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+                { Title = T("library.import_folder"), AllowMultiple = true });
+            if (folders.Count == 0) return;   // 取消就是取消
+            AcceptImport(folders.Select(LocalPath).ToArray(), ImportKind.Games);
+        }
         else
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
                 Title = T("library.import_files"), AllowMultiple = true,
-                FileTypeFilter = [new FilePickerFileType(T("library.import_files")) { Patterns = ["*.nsp", "*.xci", "*.nsz", "*.xcz"] }]
+                FileTypeFilter = [new FilePickerFileType(T("library.import_files")) { Patterns = GameFilePatterns }]
             });
-            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-                { Title = T("library.import_folder") });
-            var paths = files.Select(LocalPath).Concat(folders.Select(LocalPath)).ToArray();
-            if (paths.Length == 0) return;
-            AcceptImport(paths, ImportKind.Games);
+            if (files.Count == 0) return;     // 取消就是取消，不再接着弹文件夹窗口
+            AcceptImport(files.Select(LocalPath).ToArray(), ImportKind.Games);
         }
     }
 

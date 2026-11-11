@@ -200,7 +200,7 @@ extension LauncherView {
     func cardTargeted(_ id: String) -> Binding<Bool> {
         Binding(get: { dropCard == id }, set: { dropCard = $0 ? id : (dropCard == id ? nil : dropCard) })
     }
-    static let gameFileTypes: Set<String> = ["nsp", "xci", "nsz", "xcz"]
+    static let gameFileTypes: Set<String> = ["nsp", "xci", "nsz", "xcz", "nup"]   // 同后端 pack/jobs/library.py SOURCE_SUFFIXES（#611：漏了 Switch 2 的 .nup，拖到卡片上会被当成存档）
     func dropOnCard(_ urls: [URL], game: GameSummary) {
         guard let first = urls.first else { return }
         let ext = first.pathExtension.lowercased()
