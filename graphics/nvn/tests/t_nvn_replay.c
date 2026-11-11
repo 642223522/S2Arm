@@ -124,13 +124,13 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
 void rp_shader_reset(void) {}
 static int g_pipe_gets, g_set_pipes, g_set_dyns, g_gdraws; static nvn_gpu_pipe_desc g_last_pdesc; static nvn_gpu_dyn g_last_dyn; static nvn_gpu_draw_args g_last_da;
 static struct { uint32_t stream; uint64_t off; } g_vb[4]; static int g_nvb;
-static nvn_gpu_binding g_fb[2][8]; static uint32_t g_nfb[2];
+static nvn_gpu_binding g_fb[2][16]; static uint32_t g_nfb[2];
 static _Alignas(16) uint8_t g_arena[1 << 16]; static uint64_t g_arena_used; static struct nvn_gpu_buf_s g_arena_buf;
 nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; (void)err; g_pipe_gets++; g_last_pdesc = *d; *out = &g_fpipe; return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_set_pipe(nvn_gpu_cmd c, nvn_gpu_pipe p) { (void)c; (void)p; g_set_pipes++; }
 void nvn_gpu_set_dyn(nvn_gpu_cmd c, const nvn_gpu_dyn *d) { (void)c; g_set_dyns++; g_last_dyn = *d; }
 void nvn_gpu_set_vbuf(nvn_gpu_cmd c, uint32_t stream, nvn_gpu_buf b, uint64_t off) { (void)c; (void)b; if (g_nvb < 4) { g_vb[g_nvb].stream = stream; g_vb[g_nvb].off = off; } g_nvb++; }
-void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n) { (void)c; int i = st == NVN_GPU_SH_FS; g_nfb[i] = n; memcpy(g_fb[i], b, (n < 8 ? n : 8) * sizeof *b); }
+void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n) { (void)c; int i = st == NVN_GPU_SH_FS; g_nfb[i] = n; memcpy(g_fb[i], b, (n < 16 ? n : 16) * sizeof *b); }
 void nvn_gpu_draw(nvn_gpu_cmd c, const nvn_gpu_draw_args *a) { (void)c; g_gdraws++; g_last_da = *a; }
 void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; }
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err) { (void)c; (void)err;
@@ -718,12 +718,24 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
       CHECK(g_gdraws == g0 + 2 && g_last_da.count == 12 && g_last_da.itype == 2 && g_last_da.base_vertex == 2 && g_last_pdesc.prim_restart == 0);
       { const uint32_t exp2[12] = {5, 6, 7, 5, 7, 8, 20, 21, 22, 20, 22, 23}; CHECK(!memcmp(g_arena + g_last_da.ioff, exp2, sizeof exp2)); }
       nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); }
+    // 贴图数组（着色器按运行时下标取句柄）：数组第 k 项 = 驱动句柄表第 k 个 8 字节项 = 贴图槽 k − 4；前 4 项与没绑的槽读作池里的第 0 项
+    { tex_t tb = mk_tex(83, 0x8000, NVN_FORMAT_RGBA8, 4, 4, 1, 0); nvn_be_reg_tex(0, &tb, NULL); nvn_be_reg_samp(0, &sp);   // 池基号在这份用例里是 0：池的第 0 项 = 贴图 0 / 采样器 0
+      g_fprog.ent[1][0].count = 10; g_fprog.ent[1][0].src_reg = 0;       // 片元阶段那一项改成从句柄表第 0 项起、10 项的数组
+      stream ar = {0};
+      bh = put(&ar, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 1; bh->n = 1; bh->h[0] = 7 | 3 << 20;          // 只绑贴图槽 1 = 贴图 7
+      di = put(&ar, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&ar);
+      int g1 = g_gdraws; submit1(&ar); fake_complete(NVN_GPU_DONE_OK);
+      nvn_gpu_view v7 = rp_view_by_id(7, &g_fake_cmd, NULL), v9 = rp_view_by_id(0, &g_fake_cmd, NULL);
+      CHECK(g_gdraws == g1 + 1 && g_nfb[1] == 10 && v7 && v9 && v7 != v9);
+      // 槽 1（这里绑的）→ 第 5 项，槽 5（本用例开头绑的）→ 第 9 项，都是贴图 7；其余读作池里第 0 项
+      for (uint32_t k = 0; k < 10 && g_nfb[1] == 10; k++) CHECK(g_fb[1][k].ent == 0 && g_fb[1][k].elem == k && g_fb[1][k].u.ts.samp != NULL && g_fb[1][k].u.ts.view == (k == 5 || k == 9 ? v7 : v9));
+      g_fprog.ent[1][0].count = 0; g_fprog.ent[1][0].src_reg = 5; nvn_be_tex_release(&tb); }
     g_resolve_rc = -1;
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 5);                            // 着色器取不到：跳过
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 8 && sk_n == 3);
+    CHECK(g_gdraws == d0 + 6);                            // 着色器取不到：跳过
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 9 && sk_n == 3);
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
