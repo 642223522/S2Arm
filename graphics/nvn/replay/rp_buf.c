@@ -19,8 +19,8 @@
 #include <string.h>
 
 struct gpu_write { uint64_t off, len, id; };   // GPU 写进镜像、还没回写到游戏内存的一段
-struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw;
-    uint64_t seen_now, seen_map; uint8_t seen_ok; };   // 上次逐页核对时的全局写代号：代号没动 = 这之后游戏没写过任何被跟踪的页   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
+struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw;
+    uint64_t seen_map; uint8_t seen_ok; };   // checked[i]：第 i 页上次逐页核对时的全局写代号。代号没动 = 那之后游戏没写过任何被跟踪的页，这一页不用再核   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
@@ -39,6 +39,7 @@ static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     s->npages = ((uintptr_t)mem + size - s->page0 + ps - 1) / ps;
     s->synced = calloc(s->npages ? s->npages : 1, sizeof *s->synced);
     s->sub = calloc(s->npages ? s->npages : 1, sizeof *s->sub);   // 各页上次同步所在的提交序号
+    s->checked = calloc(s->npages ? s->npages : 1, sizeof *s->checked);
     nvn_hm_put(&g_shadow, &k, s);
     return s;
 }
@@ -95,8 +96,10 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
     uint64_t p = ((uintptr_t)addr - s->page0) / ps, q = ((uintptr_t)addr + len - 1 - s->page0) / ps, n = q - p + 1;
     uint64_t now0 = nvn_dirty_now();
     uint64_t map0 = nvn_dirty_mapping_generation();   // 跟踪的区间有增减 / 换底：代际变，快路径作废
-    if (s->seen_ok && s->seen_now == now0 && s->seen_map == map0 && !nvn_dirty_tracking_unreliable()) {   // 快路径：全局写代号没动，同步过的页一定还是干净的；只有从没同步过的页要走下面
-        int all = 1; for (uint64_t i = p; i <= q; i++) if (!s->synced[i]) { all = 0; break; }
+    if (s->seen_ok && s->seen_map == map0 && !nvn_dirty_tracking_unreliable()) {
+        // 快路径：要用的每一页都在「全局写代号 = 现在这个值」时核对过（核对过 = 当时是干净的或当场同步了），之后没有任何写。
+        // 必须按页记：只记「镜像上次核对时的代号」不够——上次核对的是别的页，这几页可能在那之前就脏了（11-11 真机：镜头一动几何全碎）
+        int all = 1; for (uint64_t i = p; i <= q; i++) if (!s->synced[i] || s->checked[i] != now0) { all = 0; break; }
         if (all) { if (buf) *buf = s->buf; if (off) *off = addr - (uint64_t)(uintptr_t)mem; pthread_mutex_unlock(&g_bmu); return 1; }
     }
     uint64_t stack[256], *gens = n <= 256 ? stack : malloc((size_t)n * sizeof *gens);
@@ -118,7 +121,8 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
         i = j + 1;
     }
     if (gens != stack) free(gens);
-    s->seen_ok = (uint8_t)tracked; s->seen_now = now0; s->seen_map = map0;   // 没被写跟踪的池不走快路径（每次使用都整段同步）
+    s->seen_ok = (uint8_t)tracked; s->seen_map = map0;
+    for (uint64_t i = p; i <= q; i++) s->checked[i] = now0;   // now0 取在读各页代号之前：这之后才写的页，代号已经不等于 now0   // 没被写跟踪的池不走快路径（每次使用都整段同步）
     if (buf) *buf = s->buf;
     if (off) *off = addr - (uint64_t)(uintptr_t)mem;
     pthread_mutex_unlock(&g_bmu);
@@ -129,12 +133,12 @@ void rp_buf_pool_gone(const void *mem) {
     uint64_t k = (uint64_t)(uintptr_t)mem;
     pthread_mutex_lock(&g_bmu);
     struct shadow *s = nvn_hm_del(&g_shadow, &k);
-    if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s->sub); free(s); }
+    if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s->sub); free(s->checked); free(s); }
     pthread_mutex_unlock(&g_bmu);
 }
 void rp_buf_reset(void) {
     pthread_mutex_lock(&g_bmu);
-    for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s->sub); free(s); } }
+    for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s->sub); free(s->checked); free(s); } }
     free(g_shadow.keys); free(g_shadow.vals); nvn_hm_init(&g_shadow, 8);
     pthread_mutex_unlock(&g_bmu);
 }

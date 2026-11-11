@@ -491,6 +491,11 @@ static void t_buf_mirror(void) {   // 池镜像：首次使用建一份、按页
       CHECK(rp_buf_resolve(&g_fake_cmd, base + 10, 2 * PG, NULL, NULL) == 1 && g_nbw == n1);
       g_pg_gen[2] = g_dirty_now + 1; g_dirty_now += 2;
       CHECK(rp_buf_resolve(&g_fake_cmd, base + 2 * PG, 16, NULL, NULL) == 1 && g_nbw == n1 + 1 && g_bw[(n1 < 32 ? n1 : 31)].off == 2 * PG); (void)n0; }
+    // 反例（真机上镜头一动几何全碎的那个次序）：第 2 页写了之后，先用了别的页，再用第 2 页——不能因为「刚核对过、代号没动」就放过它
+    { g_pg_gen[2] = g_dirty_now + 1; g_dirty_now += 2; int n2 = g_nbw;
+      CHECK(rp_buf_resolve(&g_fake_cmd, base, 16, NULL, NULL) == 1 && g_nbw == n2);                       // 第 0 页：干净
+      CHECK(rp_buf_resolve(&g_fake_cmd, base + 2 * PG + 8, 16, NULL, NULL) == 1 && g_nbw == n2 + 1);     // 第 2 页：脏，必须传
+      CHECK(rp_buf_resolve(&g_fake_cmd, base + 2 * PG + 8, 16, NULL, NULL) == 1 && g_nbw == n2 + 1); }   // 再用：干净
     CHECK(rp_buf_mirrors() == 1);
     nvn_be_pool_del(g_pmem);
     CHECK(g_buf_releases - r0 == 1 && rp_buf_mirrors() == 0);       // 池销毁：镜像放掉
