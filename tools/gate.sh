@@ -434,7 +434,7 @@ tailwait() { local t0=$SECONDS k p
 tailwait; pkill -P $HB 2> /dev/null; kill $HB 2> /dev/null
 QWHY=; if [ -n "$NONCE" ] && [ "$(cat "$L/r/done" 2> /dev/null)" != "$NONCE" ]; then
   QWHY=$(grep -m1 '【红】' "$L/remote.log" 2> /dev/null | sed 's/^.*【红】\(remote：\)\{0,1\}//' | cut -c1-400); QWHY="$RHN 不可用（remote.sh rc=$(cat "$L/remote.rc" 2> /dev/null || echo ?)：${QWHY:-没有远端结果}）"
-  # 按步认（11-11 总指挥：门禁要的是每一步的结论，不是远端主进程正常退出）：远端没写 done，但拉回的结果目录里已有结论的步照用，
+  # 按步认（11-11 维护者：门禁要的是每一步的结论，不是远端主进程正常退出）：远端没写 done，但拉回的结果目录里已有结论的步照用，
   #   只把没结论的步当不可用（退回 / 环境未就绪）；全都有结论 → 整份照用
   PM=(); m=0; for i in ${PI[@]+"${PI[@]}"}; do m=$((m + 1)); [ -f "$L/r/$m.rc" ] || PM+=("$i"); done
   if [ ${#PI[@]} -gt 0 ] && [ ${#PM[@]} -lt ${#PI[@]} ]; then
@@ -453,7 +453,7 @@ fi
 # gate-host 是因为超载一直没接（维护方工具「超载等降」）→ 不退回本机（本机负载通常更高，补跑同样是假红），按环境未就绪退 75、列车留队稍后再取（10-29 维护者）
 #   只在远端没跑完时看超载：远端已跑完、只有几步自报 75（RDONE）时，排队途中出现过的「超载等降」不算——那几步照常退回本机（11-04 #1503 自检：gate-host 缺 docker 的 1 步因排队时超载过一次而没补跑，第一层 34/35）
 OVLD=; [ -n "${QWHY:-}" ] && [ -z "${RDONE:-}" ] && grep -q '超载等降' "$L/remote.log" 2> /dev/null && OVLD=1
-# 退回上限（11-11 总指挥：154 步整份退回本机跑了 74 分钟，正是要消灭的「悄悄本机整份跑」）：要退回的步超过 GATE_FALLBACK_MAX（缺省不限；列车给 20）
+# 退回上限（11-11 维护者：154 步整份退回本机跑了 74 分钟，正是要消灭的「悄悄本机整份跑」）：要退回的步超过 GATE_FALLBACK_MAX（缺省不限；列车给 20）
 #   → 不本机补跑，按环境未就绪退 75，调用方稍后重派门禁机
 FBMAX=; [ -n "${QWHY:-}" ] && [ ${#PI[@]} -gt "${GATE_FALLBACK_MAX:-1000000}" ] && { FBMAX=1; echo "⤵ ${QWHY}：要退回本机 ${#PI[@]} 步，超过上限 ${GATE_FALLBACK_MAX}，不本机补跑，按环境未就绪退出、稍后重派 ${RHN}"; }
 FBN=0; if [ -n "${QWHY:-}" ] && [ -z "$OVLD" ] && [ -z "$FBMAX" ] && [ "${GATE_FALLBACK_LOCAL:-1}" = 1 ] && [ ${#PI[@]} -gt 0 ]; then
