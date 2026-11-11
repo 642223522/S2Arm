@@ -324,7 +324,7 @@ int s2a_pack_apply(const char *docs) {
 enum { S2A_IMPORT_READY = 0, S2A_IMPORT_PENDING = 1, S2A_IMPORT_NONE = 2, S2A_IMPORT_BROKEN = 3 };
 // 闸门下一步（s2a_import_decide）与它的节拍：稳住 3 秒才导入、1 分钟内变过算正在拷、推送没完且 3 分钟没动算停住
 enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
-enum { S2A_GATE_MOVING_S = 60, S2A_GATE_STALL_S = 180 };
+enum { S2A_GATE_MOVING_S = 60, S2A_GATE_STALL_S = 90 };   // 停住：同游戏库 transferStall（S2ArmShellHostModel.swift，iOS 装机剃刀 #32：原先闸门 180 秒、库 90 秒两套）
 struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
 // 资源包完整性（10-26 测试设备2：装机拷到一半被 App 改名，留下有 manifest.json、缺 ctl/control.nacp 的「资源包」，原先只凭 manifest 判就绪，
 //   游戏起来读不到数据 Break、App 退出像闪退）：按 index.tsv（路径<TAB>字节<TAB>sha256）逐个核在不在、大小对不对，返回不符个数，first 记第一个。
@@ -552,14 +552,48 @@ int s2a_import_transferring(const char *root, char *why, size_t n) {
         char t[2400]; snprintf(t, sizeof t, "%s/%s", p, e->d_name); if (!tar_done(t)) { busy = 1; snprintf(why, n, "%s 还没写完", e->d_name); } } closedir(d); }
     return busy;
 }
-// 资源包指纹：待导入时看 .incoming 的包与清单（老版本的几十万个文件不用每轮扫）；没有 / 不完整时看整个「资源包」目录的文件数与字节。指纹在变 = 有东西正在拷进来
+// 资源包指纹：待导入时看 .incoming 的包、清单，以及推送端开推写的传输清单 .transfer 和它列的文件（同游戏库按 .transfer 判传断了，
+//   S2ArmShellHostModel.swift transferStage；原先闸门只看 .incoming，推送直写 game.img 时镜像在长闸门看不见、到点误报停住，iOS 装机剃刀 #32）；
+//   没有 / 不完整时看整个「资源包」目录的文件数与字节。指纹在变 = 有东西正在拷进来
 static uint64_t g_fp_n, g_fp_b;
 static int fp_one(const char *p, const struct stat *st, int flag, struct FTW *f) { (void)p; (void)f; if (flag == FTW_F) { g_fp_n++; g_fp_b += (uint64_t)st->st_size; } return 0; }
+// .transfer 的 "files": [["相对路径", 字节], …]（tools/push_pack.py json.dumps，非 ASCII 写成 \uXXXX）：逐个把路径解出来交给 fn
+static void transfer_files(const char *root, void (*fn)(const char *path)) {
+    char tp[2200]; snprintf(tp, sizeof tp, "%s/.transfer", root); FILE *f = fopen(tp, "r"); if (!f) return;
+    enum { CAP = 1 << 20 }; char *buf = malloc(CAP); if (!buf) { fclose(f); return; }
+    size_t k = fread(buf, 1, CAP - 1, f); fclose(f); buf[k] = 0;
+    char *q = strstr(buf, "\"files\""); if (!q) { free(buf); return; }
+    while ((q = strstr(q, "[\""))) {
+        q += 2; char rel[2048]; size_t o = 0; int ok = 1;
+        for (; *q && *q != '"' && ok; q++) {
+            unsigned c = (unsigned char)*q;
+            if (c == '\\') {
+                q++;
+                if (*q == 'u') {   // \uXXXX（含代理对）→ UTF-8
+                    unsigned cp = (unsigned)strtoul((char[5]){q[1], q[2], q[3], q[4], 0}, NULL, 16); q += 4;
+                    if (cp >= 0xD800 && cp < 0xDC00 && q[1] == '\\' && q[2] == 'u') { unsigned lo = (unsigned)strtoul((char[5]){q[3], q[4], q[5], q[6], 0}, NULL, 16); cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); q += 6; }
+                    char u[4]; int n = cp < 0x80 ? (u[0] = (char)cp, 1) : cp < 0x800 ? (u[0] = (char)(0xC0 | cp >> 6), u[1] = (char)(0x80 | (cp & 63)), 2)
+                        : cp < 0x10000 ? (u[0] = (char)(0xE0 | cp >> 12), u[1] = (char)(0x80 | (cp >> 6 & 63)), u[2] = (char)(0x80 | (cp & 63)), 3)
+                        : (u[0] = (char)(0xF0 | cp >> 18), u[1] = (char)(0x80 | (cp >> 12 & 63)), u[2] = (char)(0x80 | (cp >> 6 & 63)), u[3] = (char)(0x80 | (cp & 63)), 4);
+                    if (o + (size_t)n < sizeof rel) { memcpy(rel + o, u, (size_t)n); o += (size_t)n; } else ok = 0;
+                    continue;
+                }
+                c = (unsigned char)*q;   // \" \\ \/
+            }
+            if (o + 1 < sizeof rel) rel[o++] = (char)c; else ok = 0;
+        }
+        rel[o] = 0;
+        if (ok && rel[0] && rel[0] != '/' && !strstr(rel, "..")) { char p[4300]; snprintf(p, sizeof p, "%s/%s", root, rel); fn(p); }
+    }
+    free(buf);
+}
+static void fp_path(const char *p) { struct stat st; if (!stat(p, &st)) { g_fp_n++; g_fp_b += (uint64_t)st.st_size ^ (uint64_t)st.st_mtime << 20; } }
 static uint64_t pack_fp(const char *root, int pending) {
     g_fp_n = g_fp_b = 0; char p[2100]; struct stat st;
     if (!pending) nftw(root, fp_one, 32, FTW_PHYS);
-    else { const char *top[] = {".incoming", "index.tsv", "manifest.json", ".applied"};
-        for (int i = 0; i < 4; i++) { snprintf(p, sizeof p, "%s/%s", root, top[i]); if (i) { if (!stat(p, &st)) fp_one(p, &st, FTW_F, NULL); } else nftw(p, fp_one, 8, FTW_PHYS); } }
+    else { const char *top[] = {".incoming", "index.tsv", "manifest.json", ".applied", ".transfer"};
+        for (int i = 0; i < 5; i++) { snprintf(p, sizeof p, "%s/%s", root, top[i]); if (i) { if (!stat(p, &st)) fp_one(p, &st, FTW_F, NULL); } else nftw(p, fp_one, 8, FTW_PHYS); }
+        transfer_files(root, fp_path); }
     return g_fp_n * 0x9E3779B97F4A7C15ULL ^ g_fp_b;
 }
 // 闸门每隔几秒判一次下一步（iOS 闸门线程按它显示页面）。w 记上次的指纹、它最后变的时刻、是否真变过（首轮不算变）：

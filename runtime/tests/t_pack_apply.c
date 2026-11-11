@@ -293,10 +293,22 @@ int main(void) {
       snprintf(c2, sizeof c2, "cd '%s/.incoming' && n=$(wc -c < 1_000.tar) && head -c $((n - 1024)) 1_000.tar > 1_001.tar", R); CHECK(sh(c2) == 0, "⑫ 造半截包失败");
       CHECK(s2a_import_transferring(R, why, sizeof why) == 1 && strstr(why, "1_001.tar"), "⑫ 半截包：应判还在传、点名 1_001.tar →「%s」", why);
       w = (struct s2a_gate_watch){0};
-      a0 = s2a_import_decide(D, &w, 3000, why, sizeof why); a1 = s2a_import_decide(D, &w, 3179, why, sizeof why); a2 = s2a_import_decide(D, &w, 3180, why, sizeof why);
-      CHECK(a0 == S2A_GATE_WAIT && a1 == S2A_GATE_WAIT && a2 == S2A_GATE_STALLED, "⑫ 半截包不动：0 / 179 秒等、180 秒停住 → %d %d %d", a0, a1, a2);
+      a0 = s2a_import_decide(D, &w, 3000, why, sizeof why); a1 = s2a_import_decide(D, &w, 3089, why, sizeof why); a2 = s2a_import_decide(D, &w, 3090, why, sizeof why);
+      CHECK(a0 == S2A_GATE_WAIT && a1 == S2A_GATE_WAIT && a2 == S2A_GATE_STALLED, "⑫ 半截包不动：0 / 89 秒等、90 秒停住（同游戏库 transferStall）→ %d %d %d", a0, a1, a2);
       snprintf(c2, sizeof c2, "head -c 512 /dev/urandom >> '%s/.incoming/1_001.tar'", R); sh(c2);
       CHECK(s2a_import_decide(D, &w, 3200, why, sizeof why) == S2A_GATE_WAIT, "⑫ 半截包又长了：应回到等");
+      // 剃刀 #32：推送端直写 game.img（不经 .incoming），传输清单 .transfer 列着它（路径用 \uXXXX 写也认）。镜像在长 → 闸门照样看得见、不报停住；
+      //   旧闸门指纹只看 .incoming 与三个小文件，90 秒后（旧阈值 180 秒）误报停住
+      snprintf(c2, sizeof c2, "printf x > '%s/game.img' && printf '{\"schema\":1,\"total\":9,\"files\":[[\"game.img\",9],[\"\\u955c\\u50cf.bin\",1]]}' > '%s/.transfer'", R, R); sh(c2);
+      w = (struct s2a_gate_watch){0};
+      a0 = s2a_import_decide(D, &w, 4000, why, sizeof why);
+      snprintf(c2, sizeof c2, "printf y >> '%s/game.img'", R); sh(c2); a1 = s2a_import_decide(D, &w, 4080, why, sizeof why);
+      snprintf(c2, sizeof c2, "printf z >> '%s/镜像.bin'", R); sh(c2); a2 = s2a_import_decide(D, &w, 4170, why, sizeof why);   // 只有中文名文件长：离上次 90 秒，没解出 \uXXXX 路径就会判停住
+      snprintf(c2, sizeof c2, "printf y >> '%s/game.img'", R); sh(c2); int a3 = s2a_import_decide(D, &w, 4250, why, sizeof why);
+      CHECK(a0 == S2A_GATE_WAIT && a1 == S2A_GATE_WAIT && a2 == S2A_GATE_WAIT && a3 == S2A_GATE_WAIT,
+            "⑫ 剃刀 #32：.transfer 列的 game.img / 中文名文件轮流长、间隔 80–90 秒、共 250 秒 → 一直等、不报停住 → %d %d %d %d", a0, a1, a2, a3);
+      CHECK(s2a_import_decide(D, &w, 4340, why, sizeof why) == S2A_GATE_STALLED, "⑫ 剃刀 #32：最后一次长之后 90 秒都不动 → 停住");
+      snprintf(c2, sizeof c2, "rm -f '%s/game.img' '%s/镜像.bin' '%s/.transfer'", R, R, R); sh(c2);
       snprintf(c2, sizeof c2, "%s/.incoming/1_000.tar", R); struct stat s3; CHECK(stat(c2, &s3) == 0, "⑫ 等待期间不应解 / 删任何包");
       // 访达拷整个文件夹：首轮就是不完整 → 直接说明页（不假装在传）；拷进来一个文件（指纹变）→ 等；60 秒不动 → 说明页；拷齐 → 就绪
       snprintf(D, sizeof D, "%s/imp7", T); snprintf(R, sizeof R, "%s/资源包", D);
