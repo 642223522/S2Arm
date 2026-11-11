@@ -10,44 +10,44 @@
 8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	已接（换目标；通道在绘制时开；通道合并 / 存储前瞻未接）	t_pass_clear_fold	0100633007D48000
 9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	部分：整屏全通道折进 load 已接；带裁剪 / 部分通道未接	t_pass_clear_fold	0100633007D48000
 10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	部分：整屏折进 load 已接；带裁剪 / 部分模板掩码未接	t_pass_clear_fold	0100633007D48000
-11	OP_VIEWPORTS	状态（绘制时生效）	14631	state_op:10436	状态已记；绘制侧未接	t_state_persists	否
-12	OP_SCISSOR	状态（绘制时生效）	14629	state_op:10376	状态已记；绘制侧未接	t_state_persists	否
-13	OP_DEPTH_RANGE	状态（绘制时生效）	14631	state_op:10437	状态已记；绘制侧未接	t_jump_call	否
-14	OP_BIND_PROGRAM	状态（绘制时生效）	14629	state_op:10393	状态已记；绘制侧未接	t_program_stages	否
-15	OP_BIND_STATE	状态（绘制时生效）	14629	state_op:10397	状态已记；绘制侧未接	t_dirty_bits	否
-16	OP_BIND_VATTR	状态（绘制时生效）	14629	state_op:10411	状态已记；绘制侧未接	无	否
-17	OP_BIND_VSTREAM	状态（绘制时生效）	14629	state_op:10414	状态已记；绘制侧未接	无	否
-18	OP_BIND_VBUF	状态（绘制时生效）	14629	state_op:10415	状态已记；绘制侧未接	无	否
-19	OP_BIND_UBO	状态（绘制时生效）	14630	state_op:10416	状态已记；绘制侧未接	t_deferred_bind	否
-20	OP_BIND_SSBO	状态（绘制时生效）	14630	state_op:10417	状态已记；绘制侧未接	无	否
-21	OP_BIND_TEX	状态（绘制时生效）	14630	state_op:10418	状态已记；绘制侧未接	无	否
-22	OP_BIND_SAMP	状态（绘制时生效）	14630	state_op:10427	状态已记；绘制侧未接	无	否
-23	OP_STENCIL	状态（绘制时生效）	14630	state_op:10429	状态已记；绘制侧未接	t_dirty_bits	否
-24	OP_POLY_OFFSET	状态（绘制时生效）	14631	state_op:10435	状态已记；绘制侧未接	无	否
-25	OP_DRAW	绘制	14619	draw_top	未接	无	否
-26	OP_DRAW_IDX	绘制	14621	draw_top	未接	无	0100633007D48000
+11	OP_VIEWPORTS	状态（绘制时生效）	14631	state_op:10436	已接（rp_draw 在绘制时取用）	t_state_persists	否
+12	OP_SCISSOR	状态（绘制时生效）	14629	state_op:10376	已接（rp_draw 在绘制时取用）	t_state_persists	否
+13	OP_DEPTH_RANGE	状态（绘制时生效）	14631	state_op:10437	已接（rp_draw 在绘制时取用）	t_jump_call	否
+14	OP_BIND_PROGRAM	状态（绘制时生效）	14629	state_op:10393	已接（rp_draw 在绘制时取用）	t_program_stages	否
+15	OP_BIND_STATE	状态（绘制时生效）	14629	state_op:10397	已接（rp_draw 在绘制时取用）	t_dirty_bits	否
+16	OP_BIND_VATTR	状态（绘制时生效）	14629	state_op:10411	已接（rp_draw 在绘制时取用）	t_draw	否
+17	OP_BIND_VSTREAM	状态（绘制时生效）	14629	state_op:10414	已接（rp_draw 在绘制时取用）	t_draw	否
+18	OP_BIND_VBUF	状态（绘制时生效）	14629	state_op:10415	已接（rp_draw 在绘制时取用）	t_draw	否
+19	OP_BIND_UBO	状态（绘制时生效）	14630	state_op:10416	已接（rp_draw 在绘制时取用）	t_deferred_bind	否
+20	OP_BIND_SSBO	状态（绘制时生效）	14630	state_op:10417	状态已记；地址进驱动常量块，存储缓冲本体绑定未接	无	否
+21	OP_BIND_TEX	状态（绘制时生效）	14630	state_op:10418	已接（rp_draw 在绘制时取用）	t_draw	否
+22	OP_BIND_SAMP	状态（绘制时生效）	14630	state_op:10427	已接（rp_draw 在绘制时取用）	t_draw	否
+23	OP_STENCIL	状态（绘制时生效）	14630	state_op:10429	已接（rp_draw 在绘制时取用）	t_dirty_bits	否
+24	OP_POLY_OFFSET	状态（绘制时生效）	14631	state_op:10435	已接（rp_draw 在绘制时取用）	t_draw	否
+25	OP_DRAW	绘制	14619	draw_top	已接（三角形 / 线 / 点类图元；间接、多重间接、变换反馈计数未接，遇到跳过并报名）	t_draw	否
+26	OP_DRAW_IDX	绘制	14621	draw_top	已接（同 OP_DRAW；索引缓冲走池镜像）	t_draw	0100633007D48000
 27	OP_DISPATCH	计算	14645	dispatch	未接	无	否
 28	OP_BARRIER	同步 / 查询	14646	（就地：拆通道 + barrier_game）	部分：位交给后端已接；通道内写图像后的拆通道未接	t_pass_clear_fold	0100633007D48000
-29	OP_SET_TEX_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
-30	OP_SET_SAMP_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
+29	OP_SET_TEX_POOL	状态（绘制时生效）	14651	state_op:10388	已接（rp_draw 在绘制时取用）	t_draw	否
+30	OP_SET_SAMP_POOL	状态（绘制时生效）	14651	state_op:10388	已接（rp_draw 在绘制时取用）	t_draw	否
 31	OP_COPY_B2T	拷贝 / 填充	14639	copy_b2t	已接（线性行直传；3D 多片、LINEAR 贴图未接）	t_copy_b2t	0100633007D48000
-32	OP_BLEND_COLOR	状态（绘制时生效）	14631	state_op:10440	状态已记；绘制侧未接	t_state_persists	否
+32	OP_BLEND_COLOR	状态（绘制时生效）	14631	state_op:10440	已接（rp_draw 在绘制时取用）	t_state_persists	否
 33	OP_COPY_T2B	拷贝 / 填充	14640	copy_t2b	未接	无	否
-34	OP_BIND_IMG	状态（绘制时生效）	14630	state_op:10428	状态已记；绘制侧未接	无	否
+34	OP_BIND_IMG	状态（绘制时生效）	14630	state_op:10428	状态已记；图像绑定未接	无	否
 35	OP_COPY_T2T	拷贝 / 填充	14641	copy_t2t	未接	无	否
 36	OP_RESET_COUNTER	同步 / 查询	14548	（就地：遮挡计数开）	未接	无	否
 37	OP_CLEAR_TEX	拷贝 / 填充	14644	clear_tex	未接	无	否
 38	OP_CLEAR_BUF	拷贝 / 填充	14558	mtl_sub_fill	已接（同上，32 位样式）	t_buf_ops	否
-39	OP_DEPTH_CLAMP	状态（绘制时生效）	14631	state_op:10438	状态已记；绘制侧未接	无	否
+39	OP_DEPTH_CLAMP	状态（绘制时生效）	14631	state_op:10438	已接（rp_draw 在绘制时取用）	t_draw	否
 40	OP_RENDER_COND	同步 / 查询	14536	（就地：g_rc_skip）	未接	无	否
 41	OP_FENCE_SYNC	同步 / 查询	14546	sync_publish	已接	t_fence_sync	否
-42	OP_TF_BIND	状态（绘制时生效）	14633	state_op:10441	状态已记；绘制侧未接	无	否
-43	OP_TF_STATE	状态（绘制时生效）	14634	state_op:10442	状态已记；绘制侧未接	无	否
-44	OP_RAST_DISCARD	状态（绘制时生效）	14638	state_op:10447	状态已记；绘制侧未接	无	否
-45	OP_VP_SWIZZLE	状态（绘制时生效）	14631	state_op:10439	状态已记；绘制侧未接	无	否
-46	OP_BIND_TEX1	状态（绘制时生效）	14630	state_op:10418	状态已记；绘制侧未接	无	否
-47	OP_PRIM_RESTART	状态（绘制时生效）	14636	state_op:10444	状态已记；绘制侧未接	无	否
-48	OP_SET_PATCH_SIZE	状态（绘制时生效）	14637	state_op:10446	状态已记；绘制侧未接	t_jump_call	否
+42	OP_TF_BIND	状态（绘制时生效）	14633	state_op:10441	状态已记；变换反馈未接（开着时绘制跳过并报名）	无	否
+43	OP_TF_STATE	状态（绘制时生效）	14634	state_op:10442	状态已记；变换反馈未接（开着时绘制跳过并报名）	无	否
+44	OP_RAST_DISCARD	状态（绘制时生效）	14638	state_op:10447	已接（rp_draw 在绘制时取用）	t_draw	否
+45	OP_VP_SWIZZLE	状态（绘制时生效）	14631	state_op:10439	已接（rp_draw 在绘制时取用）	t_draw	否
+46	OP_BIND_TEX1	状态（绘制时生效）	14630	state_op:10418	已接（rp_draw 在绘制时取用）	t_draw	否
+47	OP_PRIM_RESTART	状态（绘制时生效）	14636	state_op:10444	已接（rp_draw 在绘制时取用）	t_draw	否
+48	OP_SET_PATCH_SIZE	状态（绘制时生效）	14637	state_op:10446	已接（rp_draw 在绘制时取用）	t_jump_call	否
 49	OP_DRAW_TEX	绘制	14627	draw_tex	未接	无	否
 50	OP_WAIT_SYNC	同步 / 查询	14542	queue_wait_event	未接	无	否
 51	OP_ALPHA_REF	状态（绘制时生效）	14637	state_op:10445	状态已记；绘制侧未接	t_unimpl_names	否

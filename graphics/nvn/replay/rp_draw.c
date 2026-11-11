@@ -32,7 +32,13 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
     return 1;
 }
 
-static int skip(const char *why, const void *rec) { nvn_unimpl("draw", why, rec); g_skips++; return 0; }
+static int g_log_left;   // 逐笔日志还剩几行（调试开关 nvk_drawlog：上屏每 600 帧给下一帧开一次，见 rp_draw_log_arm）
+static int skip(const char *why, const void *rec) {
+    nvn_unimpl("draw", why, rec); g_skips++;
+    if (g_log_left) { g_log_left--; char b[96]; snprintf(b, sizeof b, "跳过一笔：%s", why); nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b); }
+    return 0;
+}
+void rp_draw_log_arm(int lines) { g_log_left = lines; }
 
 // 一个阶段的全部绑定。0 = 有取不到的资源（已记账），这笔不画
 static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) {
@@ -117,7 +123,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         struct rp_shader_req q; memset(&q, 0, sizeof q); q.prim = prim; q.rt_count = rt->n;
         for (int i = 0; i < rt->n && i < 8; i++) if (rt->color[i]) q.rt_format[i] = (uint32_t)(rt->has_cview[i] && rt->cview[i].set_format ? rt->cview[i].format : rt->color[i]->d.format);
         const struct rp_prog *np = NULL;
-        if (rp_shader_resolve(&q, &np)) { g_skips++; g_prog = NULL; return; }
+        int sr = rp_shader_resolve(&q, &np);
+        if (sr) { skip(sr > 0 ? "program_not_ready" : "program_unresolved", rec); g_prog = NULL; return; }
         if (np != g_prog) { g_prog = np; rp_pso_dirty = 1; }
     }
     // 先把这笔要用的资源都取好：池镜像同步、贴图上传是传输，不能出现在通道里，必须在开通道之前做完
@@ -126,24 +133,31 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     for (int i = 0; i < 16; i++) if (streams >> i & 1) {
         uint64_t va = nvn_ga2ca(rp_S.vbuf[i].address), vn = rp_S.vbuf[i].size;   // 记录里的顶点缓冲地址是 GPU 地址
         if (!va || !vn) { skip("vertex_stream_unbound", rec); return; }
-        if (!rp_buf_resolve(c, va, vn, &vb_buf[i], &vb_off[i])) { g_skips++; return; }
+        if (!rp_buf_resolve(c, va, vn, &vb_buf[i], &vb_off[i])) { skip("vertex_buffer_unresolved", rec); return; }
     }
     nvn_gpu_draw_args a; memset(&a, 0, sizeof a);
     if (di) {
         if (di->itype < 0 || di->itype > 2) { skip("index_type_invalid", rec); return; }
         uint32_t isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4;
-        if (!rp_buf_resolve(c, di->ibuf, (uint64_t)count * isz, &a.ibuf, &a.ioff)) { g_skips++; return; }
+        if (!rp_buf_resolve(c, di->ibuf, (uint64_t)count * isz, &a.ibuf, &a.ioff)) { skip("index_buffer_unresolved", rec); return; }
         a.itype = (uint32_t)di->itype; a.base_vertex = di->base_vertex;
     } else a.first = (uint32_t)dr->first;
     static nvn_gpu_view tv[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static nvn_gpu_samp ts[RP_PROG_STAGES][RP_PROG_ENT_MAX];
+    char tl[160]; size_t tn = 0; tl[0] = 0;   // 逐笔日志用：这笔采样的贴图
     for (int st = 0; st < 2; st++) for (uint32_t i = 0; i < g_prog->nent[st]; i++) {
         const nvn_gpu_layout_ent *e = &g_prog->ent[st][i]; tv[st][i] = NULL; ts[st][i] = NULL;
         if (e->src_kind != NVN_RB_TEX) continue;
         uint64_t h = rp_S.tex[st][e->src_reg];
-        tv[st][i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, NULL);
+        const tex_t *tt = NULL;
+        tv[st][i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, &tt);
+        if (g_log_left && tn < sizeof tl - 56) {
+            int id = h ? (int)(h & 0xFFFFF) : rp_S.tex_base;
+            if (tt) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(%#x %dx%d swz %#x)", st, (unsigned)e->src_reg, id, (unsigned)tt->d.format, tt->d.width, tt->d.height, tt->set_swz ? (unsigned)tt->swz : 0u);
+            else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
+        }
         ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
-    if (!rp_pass_begin(c)) { g_skips++; return; }
+    if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); return; }
     if (rp_pso_dirty || !g_pipe || g_pipe_cmd != c) {
         nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd);
         pd.st[0].sh = g_prog->sh[0]; pd.st[1].sh = g_prog->sh[1];
@@ -169,6 +183,15 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
     a.prim = prim; a.count = count; a.instances = (uint32_t)(di ? di->instances : dr->instances); if (!a.instances) a.instances = 1; a.base_instance = base_instance;
     nvn_gpu_draw(c, &a);
+    if (g_log_left) {
+        g_log_left--;
+        char b[420]; const blend_st *bl = &rp_S.blend[0];
+        snprintf(b, sizeof b, "第 %llu 笔：图元 %u 数 %u 实例 %u%s 目标 %ux%u 格式 %#x 程序 %02x%02x/%02x%02x 混合 开%#x 源%u 目%u 掩码 %#x 视口 %.0f,%.0f %.0fx%.0f 裁剪 %d(%d,%d %dx%d) 深度测 %d 模板 %d 剔除 %u 正面 %u%s",
+                 (unsigned long long)g_draws, prim, count, a.instances, di ? " 带索引" : "", tw, th, (unsigned)(rt->n && rt->color[0] ? rt->color[0]->d.format : 0),
+                 rp_S.skey[0][0], rp_S.skey[0][1], rp_S.skey[1][0], rp_S.skey[1][1], (unsigned)rp_S.color.blend_en, (unsigned)bl->src_rgb, (unsigned)bl->dst_rgb, (unsigned)rp_S.chmask.mask,
+                 dyn.vp[0][0], dyn.vp[0][1], dyn.vp[0][2], dyn.vp[0][3], dyn.has_sc, dyn.sc[0], dyn.sc[1], dyn.sc[2], dyn.sc[3], (int)rp_S.ds.dt, (int)rp_S.ds.st, (unsigned)rp_S.poly.cull, (unsigned)rp_S.poly.front, tl);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b);
+    }
     rp_pso_dirty = rp_dss_dirty = 0; memset(rp_args_dirty, 0, sizeof rp_args_dirty);
     g_draws++;
 }

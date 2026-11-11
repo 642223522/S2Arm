@@ -70,9 +70,12 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     r = nvn_gpu_present(g_surf, &dr, &d, ticket, on_shown, NULL, &err);
     if (nvn_gpu_ok(r)) {
         if (!g_n_shown++ || g_n_shown % 600 == 0) {   // 首帧一行，之后每 600 帧一行
-            char b[200]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 %ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）", (unsigned long long)g_n_shown,
-                                  t->d.width, t->d.height, d.crop[0], d.crop[1], d.crop[2], d.crop[3], dr.w, dr.h, d.dst[0], d.dst[1], d.dst[2], d.dst[3], (unsigned long long)g_n_dropped);
+            uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
+            char b[260]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 %ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）；累计绘制 %llu 笔、跳过 %llu 笔", (unsigned long long)g_n_shown,
+                                  t->d.width, t->d.height, d.crop[0], d.crop[1], d.crop[2], d.crop[3], dr.w, dr.h, d.dst[0], d.dst[1], d.dst[2], d.dst[3], (unsigned long long)g_n_dropped,
+                                  (unsigned long long)nd, (unsigned long long)ns);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+            if (nvn_plat_flag("nvk_drawlog", 0)) rp_draw_log_arm(160);   // 调试开关：接下来的 160 笔绘制逐笔出日志
         }
     } else g_n_dropped++;
     pthread_mutex_unlock(&g_pmu);
