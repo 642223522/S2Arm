@@ -18,7 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 
-struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; };   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
+struct gpu_write { uint64_t off, len, id; };   // GPU 写进镜像、还没回写到游戏内存的一段
+struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw; };   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
@@ -39,6 +40,47 @@ static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     s->sub = calloc(s->npages ? s->npages : 1, sizeof *s->sub);   // 各页上次同步所在的提交序号
     nvn_hm_put(&g_shadow, &k, s);
     return s;
+}
+
+// 把游戏内存的 [a, b)（池内偏移）传进镜像，绕开 GPU 写过、还没回写落地的那些段：
+// 那些字节镜像里的才是新的，游戏内存里是旧的（同步按页，一页里别的字节脏了不能连它一起盖回去）。
+static void sync_write(nvn_gpu_cmd xc, struct shadow *s, uint64_t a, uint64_t b) {
+    while (a < b) {
+        uint64_t stop = b, skip_to = 0;   // 找起点落在 [a, b) 里最靠前的一段；a 本身在某段里就先跳过去
+        int inside = 0;
+        for (int i = 0; i < s->ngw; i++) { uint64_t g0 = s->gw[i].off, g1 = g0 + s->gw[i].len;
+            if (g0 <= a && a < g1) { inside = 1; if (g1 > skip_to) skip_to = g1; }
+            else if (g0 > a && g0 < stop) stop = g0; }
+        if (inside) { a = skip_to; continue; }
+        nvn_gpu_buf_write(xc, s->buf, a, s->mem + a, stop - a);
+        a = stop;
+    }
+}
+
+// GPU 往池里写（计算着色器写存储缓冲）。提交线程登记这一段，返回登记号；段完成时 rp_buf_gpu_write_land 把结果拷回游戏内存、撤掉登记。
+// pool_key：这段所在池的起点（落地时凭它找镜像：池已经销毁就什么都不做）。0 = 地址不在登记过的池里。
+uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) {
+    static uint64_t next_id;
+    const uint8_t *mem; uint64_t size;
+    if (!len || !rp_pool_find(addr, len, &mem, &size)) return 0;
+    pthread_mutex_lock(&g_bmu);
+    struct shadow *s = shadow_get(mem, size); uint64_t id = 0;
+    if (s) {
+        if (s->ngw == s->cgw) { int nc = s->cgw ? s->cgw * 2 : 8; struct gpu_write *n = realloc(s->gw, (size_t)nc * sizeof *n); if (n) { s->gw = n; s->cgw = nc; } }
+        if (s->ngw < s->cgw) { id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){addr - (uint64_t)(uintptr_t)mem, len, id}; *pool_key = (uint64_t)(uintptr_t)mem; }
+    }
+    pthread_mutex_unlock(&g_bmu);
+    return id;
+}
+void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) {   // 线程：[完成回调]
+    pthread_mutex_lock(&g_bmu);
+    struct shadow *s = nvn_hm_get(&g_shadow, &pool_key);
+    if (s) for (int i = 0; i < s->ngw; i++) if (s->gw[i].id == id) {
+        const uint8_t *src = ok ? nvn_gpu_buf_cpu(s->buf) : NULL;
+        if (src) memcpy((uint8_t *)(uintptr_t)(s->mem + s->gw[i].off), src + s->gw[i].off, (size_t)s->gw[i].len);   // 游戏内存是真值：GPU 的结果回到它那里
+        s->gw[i] = s->gw[--s->ngw];
+        break; }
+    pthread_mutex_unlock(&g_bmu);
 }
 
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off) {
@@ -63,7 +105,7 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
         // 这一串里只要有一页本次提交已同步过，整串就按「第二次同步」走主段
         uint64_t last = 0; for (uint64_t k = i; k <= j; k++) if (s->sub[k] > last) last = s->sub[k];
         nvn_gpu_cmd xc = rp_xfer_cmd(&last);
-        if (xc) nvn_gpu_buf_write(xc, s->buf, a - (uintptr_t)mem, (const void *)a, b - a);
+        if (xc) sync_write(xc, s, a - (uintptr_t)mem, b - (uintptr_t)mem);
         for (uint64_t k = i; k <= j; k++) { s->synced[k] = st; s->sub[k] = last; }
         g_sync_bytes += b - a; g_sync_runs++;
         i = j + 1;

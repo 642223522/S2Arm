@@ -13,6 +13,7 @@ struct rp_prog {
     uint32_t attr_mask;                                       // 顶点着色器实际读的属性位
     uint32_t color_out_mask;                                  // 片元着色器写了哪些输出分量：每个颜色目标 4 位（RGBA）。没有片元阶段 / 不知道 = 全 1
     uint8_t c1[RP_PROG_STAGES][0x100]; uint8_t c1_ok;         // NVN_RB_C1：着色器自带的常量段（位 i = 阶段 i 有）
+    uint8_t is_compute;                                       // 计算程序：只有 sh[0] / ent[0]，绑定取 NVN 阶段 5 的状态
 };
 struct rp_shader_req {
     uint32_t prim;              // NVNdrawPrimitive
@@ -21,4 +22,6 @@ struct rp_shader_req {
 };
 // 取当前回放状态（rp_S）下这笔绘制的程序。0 = 得到；1 = 还没好，跳过这笔；-1 = 取不到（已记账）。线程：[提交]。
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out);
+// 取当前回放状态下计算阶段（NVN 阶段 5）绑着的程序。返回值同上。
+int rp_shader_resolve_compute(const struct rp_prog **out);
 void rp_shader_reset(void);     // 会话收尾：放掉全部着色器

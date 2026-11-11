@@ -38,7 +38,8 @@ const char *rp_op_name(uint32_t op) { return op < OP_NVN2_END_ && k_op_name[op] 
 // ---------- 提交 ----------
 struct post { volatile uint32_t *val; uint32_t mode, v; uint64_t report; uint32_t type; };   // 完成后写事件值（mode 0 写 / 1 加）；report 非 0 = 计数器报告的写回地址
 struct occ_ev { uint32_t pos; uint32_t report; uint64_t addr; };   // 遮挡计数的事件：发生时本段已经开过 pos 个槽；report 0 = 复位、1 = 报告（写回 addr）
-struct sub { struct post *p; int n, cap; uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; };
+struct gw_ev { uint64_t pool_key, id; };   // 本段里 GPU 写进池的一段（rp_buf_gpu_write_note 的登记）
+struct sub { struct post *p; int n, cap; uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; struct gw_ev *gw; int ngw, gwcap; };
 // 分时读数（上屏那边每 5 秒取走一次清零）：一次队列提交里回放花的、交给后端花的、游戏等围栏花的、段从提交到完成隔了多久
 static uint64_t now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
 static uint64_t g_pf[RP_PERF_N];
@@ -100,7 +101,8 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
       }
       g_occ_acc = acc; }
     if (s->fence) { uint64_t f = __atomic_load_n(&g_done_fence, __ATOMIC_RELAXED); if (s->fence > f) __atomic_store_n(&g_done_fence, s->fence, __ATOMIC_RELEASE); }
-    free(s->oe); free(s->p); free(s);
+    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
+    free(s->gw); free(s->oe); free(s->p); free(s);
 }
 
 // ---------- 遮挡计数（NVN_COUNTER_TYPE_SAMPLES_PASSED；nvn_mtl.m @950 一带） ----------
@@ -223,6 +225,12 @@ static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
     s->p[s->n++] = (struct post){val, mode, v, 0, 0};
 }
+void rp_post_gpu_write(uint64_t addr, uint64_t len) {
+    struct sub *s = g_sub; if (!s) return;
+    uint64_t key = 0, id = rp_buf_gpu_write_note(addr, len, &key); if (!id) return;
+    if (s->ngw == s->gwcap) { int cap = s->gwcap ? s->gwcap * 2 : 4; struct gw_ev *n = realloc(s->gw, (size_t)cap * sizeof *n); if (!n) { rp_buf_gpu_write_land(key, id, 0); return; } s->gw = n; s->gwcap = cap; }
+    s->gw[s->ngw++] = (struct gw_ev){key, id};
+}
 static void post_report(uint64_t addr, uint32_t type) {
     struct sub *s = g_sub; if (!s || !addr) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
@@ -271,8 +279,8 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
             case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
             case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + 2); break; }   // 本次提交主段的栅栏值
-            case OP_DISPATCH: {   // 计算派发还没接：照旧记账；头几次把它的输入列出来（调试取证：这款的派发读写什么）
-                const p_dispatch *dp = a; static int said;
+            case OP_DISPATCH: {
+                const p_dispatch *dp = a; static int said;   // 调试开关 nvk_drawlog：头几次把它的输入列出来
                 if (said < 6 && nvn_plat_flag("nvk_drawlog", 0)) { said++; char b[700]; int o = snprintf(b, sizeof b, "计算派发 %dx%dx%d 间接 %#llx 着色器键 %02x%02x%02x%02x 有效 %d；", dp->x, dp->y, dp->z, (unsigned long long)dp->ind,
                         rp_S.skey[5][0], rp_S.skey[5][1], rp_S.skey[5][2], rp_S.skey[5][3], rp_S.skey_ok >> 5 & 1);
                     for (int i = 0; i < 16; i++) if (rp_S.ubo[5][i].addr) o += snprintf(b + o, sizeof b - (size_t)o, " 常量%d(%llu)", i, (unsigned long long)rp_S.ubo[5][i].size);
@@ -280,7 +288,7 @@ void nvn_be_exec(const uint8_t *p) {
                     for (int i = 0; i < 32; i++) if (rp_S.img[5][i]) o += snprintf(b + o, sizeof b - (size_t)o, " 图像%d(#%llu)", i, (unsigned long long)(rp_S.img[5][i] & 0xFFFFF));
                     for (int i = 0; i < 32; i++) if (rp_S.tex[5][i]) o += snprintf(b + o, sizeof b - (size_t)o, " 贴图%d(#%llu)", i, (unsigned long long)(rp_S.tex[5][i] & 0xFFFFF));
                     nvn_plat_log(NVN_PLAT_LOG_INFO, "dispatch", b); }
-                nvn_unimpl("op", "OP_DISPATCH", p);
+                rp_dispatch(g_cmd, dp, p);
                 break; }
             default:
                 if (!rp_state_op(h.op, a, h.size)) nvn_unimpl("op", rp_op_name(h.op), p);
