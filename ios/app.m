@@ -23,6 +23,7 @@ void s2a_brightness_hold_log(void);   // 亮度保持（S2A_BRIGHTNESS）：心�
 #include "s2a_boot.h"
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"   // s2a_container_docs：游戏库按款核资源包的进程级 Documents
+#include "settings.h"   // 浮层开关要在建视图 / Metal 设备之前先落环境变量（#153）
 // 游戏库界面（shell 的 S2ArmShellHost，C 边界同 Sources/S2ArmShellBridge/include/s2a_shell.h）：make ios S2A_SHELLUI=1 才链进来，
 //   缺省壳不带、为空指针（多款容器包配了不带库界面的壳 = 报红提示，不起游戏）。这里本地声明、不 include 那个头：缺省出壳不读 frontend-ios（壳输入闭包）
 // 弱链接[ios]：s2a_shell_library_vc
@@ -870,6 +871,8 @@ static void cloud_sync_done(void *ctx) {
 }
 - (void)prepareGameView {
     UIViewController *vc = self.window.rootViewController;
+    // 浮层开关要赶在 s2a_hud_attach 与建 Metal 设备之前生效；host_run 里按同口径还会再兜底一次（#153）。
+    s2a_ios_apply_overlay_settings(NSUserDefaults.standardUserDefaults);
     settings_attach_runtime();
     if (!g_msg) { s2a_vpad_attach(vc.view); void s2a_dprompt_attach(UIView *root); s2a_dprompt_attach(vc.view); }   // 触屏虚拟手柄（vpad.m）；游戏内提示条（dprompt.m）
     // 四指长按 1.5 秒打开设置；提示页（缺资源 / 导入失败）保留诊断按钮。
