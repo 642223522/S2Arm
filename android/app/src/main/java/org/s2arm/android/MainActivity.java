@@ -808,14 +808,15 @@ public class MainActivity extends Activity
         frameRate.setEnabledForGame(gameMode && prefs.getBoolean("fps", false));
     }
 
-    /** 冷启动 intent：s2arm.graphics_mode=auto|generic|direct；未知值记错误并按 auto。 */
+    /** 安卓只走直连（与 iOS 对齐）：不给、auto、direct 都按直连（2）起。
+     * 原先 auto（0）在上一局直连没正常结束、或直连准备失败时会悄悄改走通用后端，问题被盖住；
+     * 现在直连出问题就按直连的失败处理（直连安全网计数与提示），不换路。generic 不再是可选项，给了记一行错误、仍按直连。 */
     private static int graphicsModeFromIntent(android.content.Intent intent) {
         String value = intent == null ? null : intent.getStringExtra("s2arm.graphics_mode");
-        if (value == null || value.isEmpty() || "auto".equals(value)) return 0;
-        if ("generic".equals(value)) return 1;
-        if ("direct".equals(value)) return 2;
-        Log.e("S2Arm", "Unknown s2arm.graphics_mode '" + value + "'; using auto");
-        return 0;
+        if (value == null || value.isEmpty() || "auto".equals(value) || "direct".equals(value)) return 2;
+        if ("generic".equals(value)) Log.e("S2Arm", "s2arm.graphics_mode=generic is no longer available on Android; using direct");
+        else Log.e("S2Arm", "Unknown s2arm.graphics_mode '" + value + "'; using direct");
+        return 2;
     }
 
     @SuppressWarnings("deprecation")
