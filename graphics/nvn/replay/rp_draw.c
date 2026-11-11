@@ -139,18 +139,30 @@ static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t 
     return 1;
 }
 
-static void fill_dyn(nvn_gpu_dyn *d, uint32_t tw, uint32_t th) {
+// 绘制时的动态状态（对照 nvn_mtl.m @12740–12776）。返回 0 = 裁剪矩形与目标没有交集：这笔什么都画不出，不发（iOS 同样跳过，不算未接）
+static int fill_dyn(nvn_gpu_dyn *d, uint32_t tw, uint32_t th, const void *rec) {
     memset(d, 0, sizeof *d);
     d->nvp = 1;
     if (rp_S.has_vp) { memcpy(d->vp[0], rp_S.vp[0], 16); } else { d->vp[0][2] = (float)tw; d->vp[0][3] = (float)th; }
     d->vp[0][4] = rp_S.dr[0]; d->vp[0][5] = rp_S.dr[1];
-    memcpy(d->vp_sw, rp_S.vp_sw, sizeof d->vp_sw);
-    if (rp_R.has_sc) { d->has_sc = 1; d->sc[0] = rp_R.sc.x; d->sc[1] = rp_R.sc.y; d->sc[2] = rp_R.sc.w; d->sc[3] = rp_R.sc.h; }
+    // 视口重排：只认「y 取反」（等于视口上下翻，正面判定在它之后做，绕序状态不用动）；其余重排照没重排画，记一笔
+    { uint32_t sw; memcpy(&sw, rp_S.vp_sw[0], 4);
+      if (sw == 0x100) { d->vp[0][1] += d->vp[0][3]; d->vp[0][3] = -d->vp[0][3]; }
+      else if (sw) nvn_unimpl("gpu", "viewport_swizzle", rec); }
+    // 裁剪矩形夹到目标范围内（原生接口不收负的起点；宽高是游戏给的任意数）
+    if (rp_R.has_sc) {
+        int64_t x0 = rp_R.sc.x < 0 ? 0 : rp_R.sc.x, y0 = rp_R.sc.y < 0 ? 0 : rp_R.sc.y, x1 = (int64_t)rp_R.sc.x + rp_R.sc.w, y1 = (int64_t)rp_R.sc.y + rp_R.sc.h;
+        if (x1 > (int64_t)tw) x1 = tw;
+        if (y1 > (int64_t)th) y1 = th;
+        if (x1 <= x0 || y1 <= y0) return 0;
+        d->has_sc = 1; d->sc[0] = (int32_t)x0; d->sc[1] = (int32_t)y0; d->sc[2] = (int32_t)(x1 - x0); d->sc[3] = (int32_t)(y1 - y0);
+    }
     d->origin_ll = (uint8_t)rp_origin_lower_left(); d->depth_clamp = (uint8_t)(rp_S.depth_clamp != 0);
     d->po = rp_S.po;
     memcpy(d->st_vmask, rp_S.st_vmask, sizeof d->st_vmask); memcpy(d->st_wmask, rp_S.st_wmask, sizeof d->st_wmask); memcpy(d->st_ref, rp_S.st_ref, sizeof d->st_ref);
     memcpy(d->blend_color, rp_S.blend_color, sizeof d->blend_color);
     d->ds = rp_S.ds; d->poly = rp_S.poly;
+    return 1;
 }
 
 // OP_DRAW / OP_DRAW_IDX 共用。di 非空 = 带索引
@@ -263,6 +275,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         // 后端再按它翻不翻视口换成自己的帧缓冲绕序，所以窗口原点一并给它。
         pd.poly.front = ((rp_S.poly.front == NVN_FRONT_FACE_CCW) != (s2a_nvn_rast_flip != 0)) ? NVN_FRONT_FACE_CCW : NVN_FRONT_FACE_CW;
         pd.origin_ll = (uint8_t)(rp_origin_lower_left() != 0);
+        pd.depth_clamp = (uint8_t)(rp_S.depth_clamp != 0);
         nvn_gpu_pipe np = NULL; nvn_gpu_err err = {0};
         nvn_gpu_rc r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
         if (!nvn_gpu_ok(r)) { if (nvn_unimpl("gpu", "pipe_get", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; g_pipe = NULL; return; }
@@ -276,7 +289,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
       else if (rt->depth) { uint32_t l = rt->has_dview && rt->dview.set_levels ? rt->dview.base_level : 0; tw = rt->depth->d.width >> l; th = rt->depth->d.height >> l; }
       if (!tw) tw = 1;
       if (!th) th = 1; }
-    nvn_gpu_dyn dyn; fill_dyn(&dyn, tw, th); nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_dyn dyn; if (!fill_dyn(&dyn, tw, th, rec)) return;
+    nvn_gpu_set_dyn(c, &dyn);
     for (int i = 0; i < 16; i++) if (streams >> i & 1) nvn_gpu_set_vbuf(c, (uint32_t)i, vb_buf[i], vb_off[i]);
     uint32_t base_instance = (uint32_t)(di ? di->base_instance : dr->base_instance);
     for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事

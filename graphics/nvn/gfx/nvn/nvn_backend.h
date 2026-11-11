@@ -285,7 +285,7 @@ typedef struct {
        后端把它换成自己帧缓冲坐标下的绕序，这取决于它画这笔时翻不翻视口，所以窗口原点也进管线描述：
        origin_ll 必须与绘制时 nvn_gpu_dyn.origin_ll 相同，不同则粘滞 NVN_GPU_E_ARG。 */
     uint8_t origin_ll;
-    uint8_t _rsv[1];
+    uint8_t depth_clamp;             // v6：深度夹取（NVN SetDepthClamp）：1 = 超出近远面的片元夹到范围内而不是裁掉。必须与 nvn_gpu_dyn.depth_clamp 相同
 } nvn_gpu_pipe_desc;
 enum {
     NVN_GPU_PIPE_SYNC = 0,         // 现在就建，阻塞到出结果

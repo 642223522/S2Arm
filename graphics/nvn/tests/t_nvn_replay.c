@@ -749,12 +749,27 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
       submit1(&w2); fake_complete(NVN_GPU_DONE_OK);
       CHECK(g_pipe_gets == pg0 + 1 && g_last_pdesc.poly.front == NVN_FRONT_FACE_CCW);
       s2a_nvn_rast_flip = 1; }
+    // 裁剪矩形夹到目标（64×36）内；整个在目标外的不发绘制；深度夹取进管线描述；「y 取反」的视口重排 = 视口上下翻
+    { stream c1 = {0}; p_scissor *sc1 = put(&c1, OP_SCISSOR, sizeof *sc1); sc1->x = -5; sc1->y = -6; sc1->w = 20; sc1->h = 100;
+      p_depth_clamp *dc = put(&c1, OP_DEPTH_CLAMP, sizeof *dc); dc->on = 1;
+      p_vp_swizzle *vsw = put(&c1, OP_VP_SWIZZLE, sizeof *vsw); vsw->first = 0; vsw->n = 1; vsw->sw[0][1] = 1;      // 四个字节 0,1,0,0 = 0x100
+      di = put(&c1, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&c1);
+      int g2 = g_gdraws; submit1(&c1); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g2 + 1 && g_last_dyn.has_sc && g_last_dyn.sc[0] == 0 && g_last_dyn.sc[1] == 0 && g_last_dyn.sc[2] == 15 && g_last_dyn.sc[3] == 36);
+      CHECK(g_last_pdesc.depth_clamp == 1 && g_last_dyn.depth_clamp == 1);
+      CHECK(g_last_dyn.vp[0][1] == 36 && g_last_dyn.vp[0][3] == -36 && nvn_unimpl_count("gpu", "viewport_swizzle") == 0);   // 视口原是 0,0 64×36
+      stream c2 = {0}; sc1 = put(&c2, OP_SCISSOR, sizeof *sc1); sc1->x = 64; sc1->y = 0; sc1->w = 10; sc1->h = 10;
+      di = put(&c2, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG;
+      sc1 = put(&c2, OP_SCISSOR, sizeof *sc1); sc1->x = 0; sc1->y = 0; sc1->w = 64; sc1->h = 36;
+      dc = put(&c2, OP_DEPTH_CLAMP, sizeof *dc); dc->on = 0; vsw = put(&c2, OP_VP_SWIZZLE, sizeof *vsw); vsw->first = 0; vsw->n = 1; end(&c2);
+      submit1(&c2); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g2 + 1); }
     g_resolve_rc = -1;
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 8);                            // 着色器取不到：跳过
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 11 && sk_n == 3);
+    CHECK(g_gdraws == d0 + 9);                            // 着色器取不到：跳过
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 12 && sk_n == 3);
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
