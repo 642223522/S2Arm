@@ -7395,6 +7395,9 @@ int nvn_vk_first_draw(struct s2a_vk_device *d, const struct s2a_record_draw_stat
             }
         }
     }
+    // 这笔 draw 进来以后如果做过同步 flush（帧队列腾位 / 块编码目标的周期排空），入口取的池序号已随那次 flush 退休；
+    //   下面的池查找要记在新序号下，否则引用挂在已退休的序号上，再没有人替它退休。
+    if (g_frame_ref_refresh) (void)nvn_vk_first_draw_submit_seq();
     for (int s = 0; s < 16; s++) {
         if (!stream_used[s]) continue;
         if (!state->vbuf_addr[s] || !state->vbuf_size[s]) { fail(why, why_size, "vertex buffer for a used stream is not bound"); goto done; }
