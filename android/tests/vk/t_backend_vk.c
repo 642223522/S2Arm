@@ -31,6 +31,7 @@ VkResult nvn_plat_vk_surface_create(VkInstance instance, void *native, VkSurface
     return vkCreateHeadlessSurfaceEXT(instance, &ci, NULL, out);
 }
 int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native; *w = 320; *h = 180; return 1; }
+int nvn_plat_flag(const char *name, int dflt) { (void)name; return dflt; }
 
 // C66 only: model a strict driver enforcing maxSets=64; all other calls
 // reach the real lavapipe entry. This is injected behaviour, not a claim about llvmpipe.

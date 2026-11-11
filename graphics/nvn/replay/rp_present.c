@@ -66,7 +66,13 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     if (d.dst[0] + d.dst[2] > (int32_t)dr.w) d.dst[2] = (int32_t)dr.w - d.dst[0];
     if (d.dst[1] + d.dst[3] > (int32_t)dr.h) d.dst[3] = (int32_t)dr.h - d.dst[1];
     r = nvn_gpu_present(g_surf, &dr, &d, ticket, on_shown, NULL, &err);
-    if (nvn_gpu_ok(r)) g_n_shown++; else g_n_dropped++;
+    if (nvn_gpu_ok(r)) {
+        if (!g_n_shown++ || g_n_shown % 600 == 0) {   // 首帧一行，之后每 600 帧一行
+            char b[200]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 %ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）", (unsigned long long)g_n_shown,
+                                  t->d.width, t->d.height, d.crop[0], d.crop[1], d.crop[2], d.crop[3], dr.w, dr.h, d.dst[0], d.dst[1], d.dst[2], d.dst[3], (unsigned long long)g_n_dropped);
+            nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+        }
+    } else g_n_dropped++;
     pthread_mutex_unlock(&g_pmu);
     if (!nvn_gpu_ok(r) && r.code != NVN_GPU_E_OUTDATED && nvn_unimpl("present", "present_failed", t) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "present", err.why);
     return ticket;

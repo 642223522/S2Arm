@@ -3,6 +3,7 @@
 // 呈现用后端自己的内部段：与游戏的段走同一把提交锁，所以在 GPU 上排在此前已提交的段之后；
 // 内部段不占时间线上的值，完成后只做资源回收。
 #include "nvn_plat_vk.h"
+#include "nvn_plat.h"
 
 enum { WSI_MAX_IMAGES = 8 };
 struct nvn_gpu_surface_s {
@@ -248,6 +249,8 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkClearColorValue black; memset(&black, 0, sizeof black); black.float32[3] = 1.0f;
+    { static int bars = -1; if (bars < 0) bars = nvn_plat_flag("nvk_bars", 0);   // 调试：黑边改成品红，截图上一眼分清「没呈现」和「呈现了一张黑图」
+      if (bars) { black.float32[0] = 1.0f; black.float32[2] = 1.0f; } }
     VkImageSubresourceRange whole = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(c->cb, s->images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &whole);   // 目标矩形外是黑的
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
