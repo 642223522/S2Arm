@@ -35,6 +35,10 @@ void s2a_caps_reset(void) {
     g_ncaps_env = 0; g_caps_fps60 = -1; g_caps_fps60_display = 0; g_npkeys = 0;
 }
 
+int s2a_caps_fps60_verified(const char *val, const char *why) {
+    return val && val[0] == '1' && why && (strstr(why, "fps.tsv") || strstr(why, "逻辑速度同局 A/B 绿") || strstr(why, "游戏原生 60 帧"));
+}
+
 // 一行能力：src = "能力清单" / "补丁" / "补丁例外"
 static void apply_cap(const char *cap, const char *v, const char *why, const char *src) {
         // 值：1 = 开、0 = 显式关（发布包：fps60 / 满屏缺省开，强信号才写 0，pack/gen_caps.sh → tools/caps_policy.py）；别的值不认、跳过。已设的环境变量优先、不覆盖：
@@ -50,7 +54,7 @@ static void apply_cap(const char *cap, const char *v, const char *why, const cha
             // 11-11 维护者：出包默认游戏原本的帧率、60 帧玩家手动开；例外是速度已验证正确的款保留默认 60：清单原因来自我方帧率表（fps.tsv，正确帧步）、
             //   普查同局 A/B 逻辑速度绿、或游戏原生 60 帧（放开出图间隔不会变快）。老包的清单原因里就写着来源，所以新壳认得出、不用重出包。
             //   全引擎档 / Unity·UE 推导 / 社区帧率补丁（分类前）不算：清单写 1 也不替玩家开
-            int verified = v[0] == '1' && (strstr(why, "fps.tsv") || strstr(why, "逻辑速度同局 A/B 绿") || strstr(why, "游戏原生 60 帧"));
+            int verified = s2a_caps_fps60_verified(v, why);
             g_caps_fps60 = verified;
             if (verified && !getenv("S2A_FPS60")) caps_setenv("S2A_FPS60", "1");
             const char *e = getenv("S2A_FPS60"); int on = e && !strcmp(e, "1");
