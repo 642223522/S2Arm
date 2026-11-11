@@ -1746,5 +1746,13 @@
   "s2arm.cloud.busyAfterSync": "同步期间开始了别的任务，这次没开局，等它做完再点「开始游戏」",
   "s2arm.action.installPad": "装到 iPad",
   "s2arm.install.titlePad": "装到 iPad",
-  "s2arm.export.installExistingPad": "已有 iPhone / iPad 包？装到 iPad"
+  "s2arm.export.installExistingPad": "已有 iPhone / iPad 包？装到 iPad",
+  "s2arm.fail.locations": "读不到存放位置",
+  "s2arm.fail.installMode": "读不到装机方式",
+  "s2arm.fail.installModeSet": "装机方式没有切换成功",
+  "s2arm.fail.devCert": "读不到开发者证书状态",
+  "s2arm.fail.devCertUse": "签名方式没有切换成功",
+  "s2arm.fail.devCertDelete": "开发者证书没有删除成功",
+  "s2arm.fail.cloudFolder": "iCloud 存档文件夹没有设置成功",
+  "s2arm.fail.targets": "读不到连接的设备"
 }
