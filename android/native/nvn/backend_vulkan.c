@@ -71,6 +71,7 @@ struct nvn_gpu_tex_s {
     uint32_t w, h, depth, levels, layers, samples, nvn_format, target;
     int array_compatible;
     int view_fmt, released, refs;
+    uint16_t swz;   // 存储自带的通道映射（tex_builder_t.swz 打包法，0 = 恒等）：视图没自己设映射时用它
     struct nvn_gpu_tex_s *all_next;
 };
 
@@ -85,6 +86,7 @@ struct nvn_gpu_view_s {
     uint32_t nvn_format;   // 视图的有效 NVN 格式（可从贴图覆盖）；clear 的 is_int 按它判
     uint32_t base_level, levels, base_layer, layers;
     int released, refs;
+    int swizzled;   // 通道映射非恒等：只能采样，不能当附件
     struct nvn_gpu_view_s *all_next;
 };
 
@@ -2161,6 +2163,8 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "pass_begin 时已在通道里"); return; }
     if (!d || !d->ncolor || !d->w || !d->h) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 参数非法"); return; }
+    for (uint32_t i = 0; i < d->ncolor && i < 8; i++)
+        if (d->color[i].view && d->color[i].view->swizzled) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "颜色附件 %u 的视图带通道映射（Vulkan 附件视图必须恒等）", i); return; }
     VkImageView fb_views[9];
     VkAttachmentDescription att[9];
     VkAttachmentReference col[8];
@@ -2787,7 +2791,6 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     if (!g_open) return fail(err, NVN_GPU_E_STOPPED, "后端未打开");
     if (!d) return fail(err, NVN_GPU_E_ARG, "描述为空");
     if (d->host_w || d->host_h) return fail(err, NVN_GPU_E_UNSUPPORTED, "宽屏宿主尺寸（host_w/h）：本段未实现");
-    if (d->swz) return fail(err, NVN_GPU_E_UNSUPPORTED, "存储自带通道映射（swz）：本段未实现");
     if (d->stencil_view) return fail(err, NVN_GPU_E_UNSUPPORTED, "模板视图：本段未实现");
     uint32_t target = (uint32_t)d->d.target;
     uint32_t depth = d->d.depth ? (uint32_t)d->d.depth : 1;
@@ -2847,6 +2850,7 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     t->samples = samples;
     t->nvn_format = (uint32_t)d->d.format;
     t->view_fmt = (d->usage & NVN_GPU_TEX_VIEW_FMT) != 0;
+    t->swz = d->swz;
     t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImageCreateInfo ci;
@@ -2967,6 +2971,20 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     ci.viewType = type;
     ci.format = fmt;
     ci.subresourceRange = (VkImageSubresourceRange){t->aspect, base_level, levels, base_layer, layers};
+    // 通道映射：视图自己设了就用视图的，否则用存储自带的（与 nvn_mtl.m:6546 同序，是取代不是叠加）。
+    // NVN 的取值 0 零 / 1 一 / 2 R / 3 G / 4 B / 5 A，其它值按该通道恒等。
+    {
+        uint8_t sw[4] = {2, 3, 4, 5};
+        if (v && v->set_swizzle) memcpy(sw, v->swz, 4);
+        else if (t->swz) for (int ch = 0; ch < 4; ch++) sw[ch] = (uint8_t)(t->swz >> (3 * ch) & 7);
+        VkComponentSwizzle *comp[4] = {&ci.components.r, &ci.components.g, &ci.components.b, &ci.components.a};
+        for (int ch = 0; ch < 4; ch++) {
+            if (sw[ch] > 5) sw[ch] = (uint8_t)(2 + ch);
+            *comp[ch] = sw[ch] == 0 ? VK_COMPONENT_SWIZZLE_ZERO : sw[ch] == 1 ? VK_COMPONENT_SWIZZLE_ONE : (VkComponentSwizzle)(VK_COMPONENT_SWIZZLE_R + (sw[ch] - 2));
+            if (sw[ch] != 2 + ch) o->swizzled = 1;
+        }
+        if (!o->swizzled) memset(&ci.components, 0, sizeof ci.components);   // 恒等：留 IDENTITY，附件可用
+    }
     if (vkCreateImageView(g.d, &ci, NULL, &o->view) != VK_SUCCESS) {
         free(o);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreateImageView 拒绝（格式 / 范围）");

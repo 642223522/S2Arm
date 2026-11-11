@@ -503,6 +503,8 @@ static void *read_file(const char *path, size_t *n) {
 }
 
 // 原创纹理三角形：全屏三角形 + 2x2 纹理 + nearest 采样；逐像素用 CPU 手算真值。
+// 通道映射用例的旋钮（缺省全 0 = 不设）：存储自带映射、视图映射（NVN 取值 0 零 / 1 一 / 2 R / 3 G / 4 B / 5 A）
+static uint16_t g_tri_swz; static int g_tri_vsw_on; static uint8_t g_tri_vsw[4];
 static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *texels, int tbpp, int trow, int want_a) {
     char path[512];
     size_t vsz = 0, fsz = 0;
@@ -557,8 +559,20 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
                                { 3.0f, -1.0f, 2.0f, 0.0f},
                                {-1.0f,  3.0f, 0.0f, 2.0f}};
     nvn_gpu_buf vb = make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
-    nvn_gpu_tex tex = make_tex(2, 2, tex_fmt, NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD);
-    nvn_gpu_view tview = make_view(tex);
+    nvn_gpu_tex tex = NULL;
+    {
+        nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
+        td.d.target = NVN_TEXTURE_TARGET_2D; td.d.format = (int)tex_fmt; td.d.width = 2; td.d.height = 2; td.d.depth = 1; td.d.levels = 1;
+        td.usage = NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD; td.swz = g_tri_swz;
+        r = nvn_gpu_tex_create(&td, &tex, &e);
+        CHECK(OK(r), "tex_create（swz=%#x）：%d %s", g_tri_swz, r.code, e.why);
+    }
+    nvn_gpu_view tview = NULL;
+    if (g_tri_vsw_on) {
+        view_t vw; memset(&vw, 0, sizeof vw); vw.set_swizzle = 1; memcpy(vw.swz, g_tri_vsw, 4);
+        r = nvn_gpu_view_create(tex, &vw, &tview, &e);
+        CHECK(OK(r), "view_create（带通道映射）：%d %s", r.code, e.why);
+    } else tview = make_view(tex);
     samp_par sp;
     memset(&sp, 0, sizeof sp);   // nearest / clamp
     nvn_gpu_samp samp = NULL;
@@ -620,9 +634,15 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
             float u = (x + 0.5f) / 64.0f, v = (y + 0.5f) / 64.0f;
             int tx = (int)(u * 2.0f); if (tx > 1) tx = 1;
             int ty = (int)(v * 2.0f); if (ty > 1) ty = 1;
-            const uint8_t *want = texels + (ty * 2 + tx) * tbpp;
+            const uint8_t *src = texels + (ty * 2 + tx) * tbpp;
+            // 期望：先取纹素（没有 alpha 的格式按 want_a），再按生效的通道映射手算（视图设了用视图的，否则用存储的）
+            uint8_t px[4] = {src[0], src[1], src[2], (uint8_t)(tbpp == 4 ? src[3] : want_a)}, mapped[4], sw[4] = {2, 3, 4, 5};
+            if (g_tri_vsw_on) memcpy(sw, g_tri_vsw, 4);
+            else if (g_tri_swz) for (int ch = 0; ch < 4; ch++) sw[ch] = (uint8_t)(g_tri_swz >> (3 * ch) & 7);
+            for (int ch = 0; ch < 4; ch++) mapped[ch] = sw[ch] == 0 ? 0 : sw[ch] == 1 ? 255 : px[sw[ch] - 2];
+            const uint8_t *want = mapped;
             const uint8_t *got = buf_cpu(rb) + (y * 64 + x) * 4;
-            if (got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want_a) {
+            if (got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != (g_tri_vsw_on || g_tri_swz ? want[3] : want_a)) {
                 g_fail++;
                 printf("FAIL %s:%d: 三角像素 (%d,%d) = %02x%02x%02x%02x，期望 %02x%02x%02x%02x\n",
                        __FILE__, __LINE__, x, y, got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
@@ -644,6 +664,17 @@ static void t14_textured_triangle(const char *dir) {
     static const uint8_t texels[16] = {255, 0, 0, 255,   0, 255, 0, 255,
                                        0, 0, 255, 255,   255, 255, 255, 255};
     tri_impl(dir, NVN_FORMAT_RGBA8, texels, 4, 8, 255);
+}
+
+// C70：通道映射。存储自带映射 B G R 一（红蓝对调、alpha 恒 1）；视图映射 零 R A G 取代存储的（不是叠加）。
+// 纹素的四个通道互不相同，哪一路映射错了都读得出来。期望在 tri_impl 里按 NVN 取值手算。
+static void c70_swizzle(const char *dir, int view_overrides) {
+    static const uint8_t texels[16] = {10, 60, 110, 200,   20, 70, 120, 210,
+                                       30, 80, 130, 220,   40, 90, 140, 230};
+    g_tri_swz = 4 | 3 << 3 | 2 << 6 | 1 << 9;
+    if (view_overrides) { g_tri_vsw_on = 1; g_tri_vsw[0] = 0; g_tri_vsw[1] = 2; g_tri_vsw[2] = 5; g_tri_vsw[3] = 3; }
+    tri_impl(dir, NVN_FORMAT_RGBA8, texels, 4, 8, 255);
+    g_tri_swz = 0; g_tri_vsw_on = 0;
 }
 
 // C30：RGB8 上传展开成 RGBA8 后经三角形采样读回；期望按 2x2 最近邻 + a=0xFF 手算。
@@ -3277,6 +3308,12 @@ int main(int argc, char **argv) {
     t28_rgb8_upload();
     nvn_gpu_err e7;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e7)), "t30/t28 close：%d %s", e7.rc.code, e7.why);
+    for (int k = 0; k < 2; k++) {   // tri_impl 的提交序号固定：每个变体一个会话
+        if (!open_backend()) return 1;
+        c70_swizzle(argv[1], k);
+        nvn_gpu_err e70;
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e70)), "C70 close：%d %s", e70.rc.code, e70.why);
+    }
     if (!open_backend()) return 1;
     t31_vertex_formats(argv[1]);
     nvn_gpu_err e8;
