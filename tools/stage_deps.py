@@ -32,6 +32,14 @@ def _digest(kind, p, keep=None):
         return '缺'
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import stage_equiv   # 产物等价表（pack/stage_inputs/equiv.tsv）
+
+
+def _eq(repo, k, n, h):
+    """仓库内文件登记过产物等价：记成旧版本的内容哈希（只提速、不改产物的改动不让老游戏重跑，11-11）"""
+    return stage_equiv.canon(repo, n[2:], h) if k == 'f' and n.startswith('R:') else h
+
+
 def _real(repo, name):
     return (repo if name == 'R:.' else os.path.join(repo, name[2:])) if name.startswith('R:') else name
 
@@ -104,7 +112,7 @@ def collect(raw, repo, excl):
         elif any((rp + os.sep).startswith(e) for e in ext):
             out.add((k, rp))
     kids = _children(files, dirs) if files is not None else None
-    return [(k, n, _digest(k, _real(repo, n), _keep(kids, n))) for k, n in sorted(out)]
+    return [(k, n, _eq(repo, k, n, _digest(k, _real(repo, n), _keep(kids, n)))) for k, n in sorted(out)]
 
 
 def rehash(manifest, repo):
@@ -115,7 +123,7 @@ def rehash(manifest, repo):
             if len(c) != 3: continue
             if c[0] == 'd' and kids is False:   # 有目录项才列一次仓库（git ls-files）
                 files, dirs = _listed(repo); kids = _children(files, dirs) if files is not None else None
-            res.append((c[0], c[1], _digest(c[0], _real(repo, c[1]), _keep(kids, c[1]) if c[0] == 'd' else None)))
+            res.append((c[0], c[1], _eq(repo, c[0], c[1], _digest(c[0], _real(repo, c[1]), _keep(kids, c[1]) if c[0] == 'd' else None))))
     return res
 
 

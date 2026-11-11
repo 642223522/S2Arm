@@ -1,0 +1,7 @@
+# 阶段缓存键的「产物等价」声明（11-11 jhz 产品原则「资源包稳定、更新只换壳，老游戏不重编不重推」）：只提速 / 只重构、不改产物的改动，
+#   在这里登记「新内容 ≡ 某个旧版本」，阶段源码键（pack/stage_keyfiles.sh）和实际读入清单（tools/stage_deps.py）都按旧版本算——更新后老游戏命中缓存。
+# 没登记的改动照旧让键变（宁可重跑，不用错旧产物）。登记前必须实测产物逐字节相同；行用 python3 tools/stage_equiv.py add <路径> <基线提交> 生成。
+# 格式：路径<TAB>新内容 sha256 前 16 位<TAB>等价的旧版本 git 对象号<TAB>旧版本内容 sha256 前 16 位<TAB>理由
+graphics/tools/shbake/nxsh_extract.py	c4b0d07ee95679b6	02096b55f9cdb2e62a02f3f87d598e6eef1223b1	c9928df9f385fff6	#606 判魔数改查 RomFS 清单文件头，少打开文件、产物不变
+graphics/tools/shbake/kitpak.py	2e11665908f3c584	f77158ac47aa536cc6a45c53c4f85b6094847752	d45f1975be4ba99d	#606 判魔数改查 RomFS 清单文件头，少打开文件、产物不变
+graphics/tools/shbake/hgpak.py	03fc3afef415b29e	5b1071bf2d35a4a0920d9d64b9de8f955f5a7960	9f4cc77ba8aa521a	#606 判魔数改查 RomFS 清单文件头，少打开文件、产物不变
