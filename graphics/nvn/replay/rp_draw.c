@@ -1,7 +1,8 @@
 // 绘制（对齐 nvn_mtl.m draw / draw_emit @12900 一带与 encode_args_ @9640 的职责）：
 // 状态类命令早已落在 rp_S 里，这里在绘制时把它们变成后端的管线、动态状态、顶点流和绑定，再发绘制。
 // 没改过的不重发：管线看 rp_pso_dirty，各阶段绑定看 rp_args_dirty[阶段]。
-// 还没接：间接绘制、间接计数多绘、变换反馈、四边形 / 线环等要展开的图元、图元重启以外的小状态、存储缓冲与图像绑定、空槽假贴图。
+// 四边形图元（NVN 7）没有原生对应：在这里展开成三角形列表的 32 位索引（每个四边形 0,1,2 / 0,2,3，同 nvn_mtl.m fanquad_expand），按带索引的三角形画。
+// 还没接：间接绘制、间接计数多绘、变换反馈、线环 / 四边形带、图元重启以外的小状态、存储缓冲与图像绑定、空槽假贴图。
 #include "rp_exec.h"
 #include "rp_state.h"
 #include "rp_res.h"
@@ -22,7 +23,25 @@ static const int k_drv0_base[5] = {0x110, 0x510, 0x410, 0x210, 0x310};   // 各�
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c
 
 static const struct rp_prog *g_prog; static nvn_gpu_pipe g_pipe; static nvn_gpu_cmd g_pipe_cmd;
-static uint64_t g_draws, g_skips; static uint32_t g_prim = ~0u;
+static uint64_t g_draws, g_skips; static uint32_t g_prim = ~0u; static int g_quads = -1;
+
+// 四边形 → 三角形索引。src NULL = 不带索引（顶点自己，0 起；first 由调用方放进 base vertex）；否则是 isz 字节一个的索引。
+// rv >= 0：图元重启值，每遇到一个就另起一串四边形，前一串不足一个四边形的零头丢掉。返回写出的索引个数（d 至少要 count / 4 * 6 个）
+static uint32_t quad_expand(const uint8_t *src, uint32_t isz, uint32_t count, int64_t rv, uint32_t *d) {
+#define IX(i) (!src ? (uint32_t)(i) : isz == 1 ? src[i] : isz == 2 ? (uint32_t)(src[(size_t)(i) * 2] | src[(size_t)(i) * 2 + 1] << 8) : \
+               ((uint32_t)src[(size_t)(i) * 4] | (uint32_t)src[(size_t)(i) * 4 + 1] << 8 | (uint32_t)src[(size_t)(i) * 4 + 2] << 16 | (uint32_t)src[(size_t)(i) * 4 + 3] << 24))
+    uint32_t o = 0;
+    for (uint32_t s = 0; s < count;) {
+        uint32_t e = s; if (src && rv >= 0) { while (e < count && IX(e) != (uint32_t)rv) e++; } else e = count;
+        for (uint32_t q = s; q + 4 <= e; q += 4) {
+            d[o++] = IX(q); d[o++] = IX(q + 1); d[o++] = IX(q + 2);
+            d[o++] = IX(q); d[o++] = IX(q + 2); d[o++] = IX(q + 3);
+        }
+        s = e + 1;
+    }
+#undef IX
+    return o;
+}
 
 static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice *sl) {
     nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
@@ -111,13 +130,14 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     if ((di && (di->ind || di->mdi_cnt)) || (dr && (dr->ind || dr->mdi_cnt))) { skip("indirect", rec); return; }
     if (dr && dr->tfc) { skip("transform_feedback_count", rec); return; }
     if (rp_S.tf_on) { skip("transform_feedback_active", rec); return; }
-    if (!(prim == 0 || prim == 1 || prim == 3 || prim == 4 || prim == 5 || prim == 6)) { char nm[24]; snprintf(nm, sizeof nm, "prim_%u", prim); skip(nm, rec); return; }
+    if (!(prim == 0 || prim == 1 || prim == 3 || prim == 4 || prim == 5 || prim == 6 || prim == 7)) { char nm[24]; snprintf(nm, sizeof nm, "prim_%u", prim); skip(nm, rec); return; }
+    int quads = prim == 7; if (quads) prim = 4;   // 四边形：下面一律按三角形列表走，索引在取资源那一步展开
     uint32_t count = (uint32_t)(di ? di->count : dr->count);
     if (!count) return;
     const p_set_rt *rt = rp_pass_target();
     if (!rt) { skip("draw_without_target", rec); return; }
     // 程序：管线状态或任一阶段的绑定变过才重新取（贴图槽里换了不同类型的贴图会换变体）
-    if (prim != g_prim) { g_prim = prim; rp_pso_dirty = 1; }   // 图元在绘制记录里，不在状态块里：换了图元就是换管线
+    if (prim != g_prim || quads != g_quads) { g_prim = prim; g_quads = quads; rp_pso_dirty = 1; }   // 图元在绘制记录里，不在状态块里：换了图元就是换管线
     int args_dirty = rp_args_dirty[0] || rp_args_dirty[1];
     if (!g_prog || rp_pso_dirty || args_dirty) {
         struct rp_shader_req q; memset(&q, 0, sizeof q); q.prim = prim; q.rt_count = rt->n;
@@ -136,8 +156,18 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (!rp_buf_resolve(c, va, vn, &vb_buf[i], &vb_off[i])) { skip("vertex_buffer_unresolved", rec); return; }
     }
     nvn_gpu_draw_args a; memset(&a, 0, sizeof a);
-    if (di) {
-        if (di->itype < 0 || di->itype > 2) { skip("index_type_invalid", rec); return; }
+    if (di && (di->itype < 0 || di->itype > 2)) { skip("index_type_invalid", rec); return; }
+    if (quads) {
+        uint32_t isz = di ? (di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4) : 0;
+        if (count / 4 == 0) return;   // 不足一个四边形：什么都不画
+        // 带索引：游戏的索引在登记过的池里，编码这一刻读出来展开（同常量缓冲：就是此刻的内容）
+        if (di && !rp_pool_find(di->ibuf, (uint64_t)count * isz, NULL, NULL)) { skip("index_buffer_unresolved", rec); return; }
+        nvn_gpu_slice sl; nvn_gpu_err err = {0};
+        if (!nvn_gpu_ok(nvn_gpu_arena_alloc(c, (uint64_t)(count / 4) * 6 * 4, 4, &sl, &err)) || !sl.cpu) { skip("arena_alloc_failed", rec); return; }
+        uint32_t n = quad_expand(di ? (const uint8_t *)(uintptr_t)di->ibuf : NULL, isz, count, di && rp_S.restart.on ? (int64_t)rp_S.restart.index : -1, (uint32_t *)(void *)sl.cpu);
+        if (!n) return;
+        a.ibuf = sl.buf; a.ioff = sl.off; a.itype = 2; a.base_vertex = di ? di->base_vertex : dr->first; count = n;
+    } else if (di) {
         uint32_t isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4;
         if (!rp_buf_resolve(c, di->ibuf, (uint64_t)count * isz, &a.ibuf, &a.ioff)) { skip("index_buffer_unresolved", rec); return; }
         a.itype = (uint32_t)di->itype; a.base_vertex = di->base_vertex;
@@ -165,7 +195,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         for (int i = 0; i < rt->n && i < 8; i++) { pd.cfmt[i] = rt->color[i] ? (uint32_t)(rt->has_cview[i] && rt->cview[i].set_format ? rt->cview[i].format : rt->color[i]->d.format) : 0; pd.lmap[i] = (uint8_t)i; }
         if (rt->depth) { nvn_fmt_info fi; uint32_t f = (uint32_t)rt->depth->d.format; int ok = nvn_fmt_info_of(f, &fi); if (!ok || fi.depth) pd.dfmt = f; if (ok && fi.stencil) pd.sfmt = f; }
         pd.samples = rt->n && rt->color[0] ? (uint32_t)rt->color[0]->d.samples : rt->depth ? (uint32_t)rt->depth->d.samples : 0;
-        pd.prim = prim; pd.patch_size = (uint32_t)rp_S.patch_size; pd.prim_restart = (uint8_t)(rp_S.restart.on != 0);
+        pd.prim = prim; pd.patch_size = (uint32_t)rp_S.patch_size; pd.prim_restart = (uint8_t)(rp_S.restart.on != 0 && !quads);   // 四边形的重启在展开时已经处理掉
         memcpy(pd.blend, rp_S.blend, sizeof pd.blend); pd.color = rp_S.color; pd.chmask = rp_S.chmask; pd.ms = rp_S.ms;
         for (int i = 0; i < rp_S.nattr && i < 16; i++) pd.attr[i] = rp_S.attr[i];
         for (int i = 0; i < rp_S.nstream && i < 16; i++) pd.stream[i] = rp_S.stream[i];
@@ -200,4 +230,4 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
 }
 
 void rp_draw_stats(uint64_t *draws, uint64_t *skips) { if (draws) *draws = g_draws; if (skips) *skips = g_skips; }
-void rp_draw_reset(void) { g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; }
+void rp_draw_reset(void) { g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; g_quads = -1; }

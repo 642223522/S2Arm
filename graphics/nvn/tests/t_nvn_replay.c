@@ -641,12 +641,12 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     p_viewports *vp = put(&s, OP_VIEWPORTS, sizeof *vp); vp->n = 1; vp->v[0][2] = 64; vp->v[0][3] = 36;
     p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 6; di->base_vertex = 3; di->instances = 0; di->ibuf = base + 3 * PG + 8;
     di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG + 8;   // 第二笔：什么都没变
-    di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 7; di->itype = 1; di->count = 4; di->ibuf = base + 3 * PG;        // 四边形：还没接
+    di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 8; di->itype = 1; di->count = 4; di->ibuf = base + 3 * PG;        // 四边形带：还没接
     p_draw *dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 5; dn->first = 2; dn->count = 4; dn->instances = 3;            // 不带索引的条带
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 3 && g_npd == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD);   // 三笔画在同一个通道里；没有清除 → LOAD
-    CHECK(nvn_unimpl_count("draw", "prim_7") == 1);
+    CHECK(nvn_unimpl_count("draw", "prim_8") == 1);
     CHECK(g_resolves == 2 && g_pipe_gets == 2);          // 第一笔取一次；第二笔没变不取；条带换了图元再取一次
     CHECK(g_last_req.prim == 5 && g_last_req.rt_count == 1 && g_last_req.rt_format[0] == NVN_FORMAT_RGBA8);
     CHECK(g_last_pdesc.st[0].sh == &g_fsh[0] && g_last_pdesc.st[1].sh == &g_fsh[1] && g_last_pdesc.cfmt[0] == NVN_FORMAT_RGBA8 && g_last_pdesc.dfmt == 0);
@@ -680,12 +680,31 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     di = put(&y2, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&y2);
     submit1(&y2); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 1);
+    // 四边形：展开成三角形列表的 32 位索引（每个四边形 0,1,2 / 0,2,3），按带索引的三角形画
+    { py.mode = NVN_POLYGON_MODE_FILL; stream z = {0}; by = put(&z, OP_BIND_STATE, sizeof *by); by->kind = 4; memcpy(by->bytes, &py, sizeof py);
+      dn = put(&z, OP_DRAW, sizeof *dn); dn->prim = 7; dn->first = 10; dn->count = 9;                   // 不带索引、9 个顶点：两个四边形，零头 1 个丢掉
+      uint16_t qi[9] = {5, 6, 7, 8, 0xffff, 20, 21, 22, 23}; memcpy(g_pmem + 3 * PG + 512, qi, sizeof qi);
+      p_prim_restart *pr = put(&z, OP_PRIM_RESTART, sizeof *pr); pr->on = 1; pr->index = 0xffff;
+      di = put(&z, OP_DRAW_IDX, sizeof *di); di->prim = 7; di->itype = 1; di->count = 9; di->base_vertex = 2; di->ibuf = base + 3 * PG + 512;   // 带索引 + 重启：重启前后各一个四边形
+      pr = put(&z, OP_PRIM_RESTART, sizeof *pr); pr->on = 0;
+      dn = put(&z, OP_DRAW, sizeof *dn); dn->prim = 7; dn->count = 3; end(&z);                         // 不足一个四边形：不画
+      int g0 = g_gdraws; nvn_be_sub_begin(); const uint8_t *zp = z.b;
+      // 逐条回放，好在每笔之后核暂存区里的索引
+      op_hdr zh; memcpy(&zh, zp, 8); size_t off1 = zh.size; memcpy(&zh, zp + off1, 8); size_t off2 = off1 + zh.size;   // 状态、第一笔
+      uint8_t save[16]; memcpy(save, z.b + off2, 8); op_hdr eh = {OP_END, 8}; memcpy(z.b + off2, &eh, 8);
+      nvn_be_exec(z.b);
+      CHECK(g_gdraws == g0 + 1 && g_last_da.prim == 4 && g_last_da.count == 12 && g_last_da.itype == 2 && g_last_da.base_vertex == 10 && g_last_da.ibuf == &g_arena_buf && g_last_pdesc.prim == 4);
+      { const uint32_t exp1[12] = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7}; CHECK(!memcmp(g_arena + g_last_da.ioff, exp1, sizeof exp1)); }
+      memcpy(z.b + off2, save, 8); nvn_be_exec(z.b + off2);
+      CHECK(g_gdraws == g0 + 2 && g_last_da.count == 12 && g_last_da.itype == 2 && g_last_da.base_vertex == 2 && g_last_pdesc.prim_restart == 0);
+      { const uint32_t exp2[12] = {5, 6, 7, 5, 7, 8, 20, 21, 22, 20, 22, 23}; CHECK(!memcmp(g_arena + g_last_da.ioff, exp2, sizeof exp2)); }
+      nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); }
     g_resolve_rc = -1;
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 3);                            // 着色器取不到：跳过
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 6 && sk_n == 3);
+    CHECK(g_gdraws == d0 + 5);                            // 着色器取不到：跳过
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 8 && sk_n == 3);
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
