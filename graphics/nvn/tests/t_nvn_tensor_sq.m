@@ -13,6 +13,7 @@
 //   ④ 输出起点 (64,64)、宽高 64x64、步长 1/64 → 输入有效 64x64（整张）放大进输出右下 64x64：(80,80) 对到输入 16.5 → A²（R ≈ 0.25）；
 //      (120,120) 对到 56.5 → B²（R ≈ 4）；(32,32) 不在区域里，保持 ③ 的 A²（R ≈ 0.25）。不按输出区域（整张输出）时 (80,80) 对到输入 40 → B²（R ≈ 4）
 //   ⑤ 推常量不成立（宽 0）→ 照整张图，计数不加
+// ⑥ 诊断开关 DM_NVN_TENSOR_STANDIN=0：出口层不顶替、输出图逐位不变；撤掉恢复。负对照（11-11 手工）：去掉 tensor_standin 开头的开关判断 → ⑥ 放大 1 次、关计数 0，两项红
 // 每种情形顶替两次、读第二次的输出：新建的 MetalFX 空间放大器（Metal 4）头一次编码约 1/10 写出全 0（11-05 改前代码同样复现：同格式第二个提交里新建放大器 40 次 4 次全 0，
 //   是既有现象、不归本单测管，记在 docs/坑记录.md），第二次起稳定
 // 负对照（11-05 手工做过，写进报告）：把 tensor_standin 里 in 的取法改回恒为 c（= 改前）→ ① 红（实测输出 0.484 / 0.244 / 1.94、①/② = 1 / 1 / 1）
@@ -118,6 +119,21 @@ int main(void) { @autoreleasepool {
     VERIFY(g_tensor_rect_runs == rc0 && g_tensor_up == up1 + 1 && (cr->tensor_log & 4), "⑤ 推常量宽 0：不按有效区域（实 %llu 次）、照整张放大 1 次（实 %llu）、报红 %d",
            (unsigned long long)(g_tensor_rect_runs - rc0), (unsigned long long)(g_tensor_up - up1), (cr->tensor_log & 4) != 0);
     #undef PUSH
-    printf("%s t_nvn_tensor_sq：%u 项，%u 项不过（张量核网络顶替：平方域出口层先平方输入、同域照原样；按推常量取输入有效区域与输出区域）\n", fails ? "✗" : "✓", checks, fails);
+    // ⑥ 诊断开关 DM_NVN_TENSOR_STANDIN（11-11 #376）：取值表手写（=0 关，不设 / 空 / 其他值开，同 DM_NVN_GMEM）；①–⑤ 都在不设时跑 = 缺省照旧顶替
+    VERIFY(tensor_standin_decide(NULL) == 1 && tensor_standin_decide("") == 1 && tensor_standin_decide("1") == 1 && tensor_standin_decide("0") == 0,
+           "⑥ 取值：不设 %d、空 %d、1 %d、0 %d（期望 1 1 1 0）", tensor_standin_decide(NULL), tensor_standin_decide(""), tensor_standin_decide("1"), tensor_standin_decide("0"));
+    {   // 经真 getenv 关掉：出口层不顶替（不放大、不平方、记一次关），输出图逐位不变；撤掉后回到顶替
+        float b0[3], b1[3]; read_at(tex_mtl(&to), 32, 32, b0);
+        setenv("DM_NVN_TENSOR_STANDIN", "0", 1); g_tensor_standin_on = -1;
+        uint64_t up2 = g_tensor_up, sq2 = g_tensor_sq_runs, off2 = g_tensor_off; cs->tensor_sq = 0;   // 不平方：真顶替会把 (32,32) 写成 A ≈ 0.5（≠ 现值 A² ≈ 0.25），逐位比才有判别力
+        standin(cs); read_at(tex_mtl(&to), 32, 32, b1);
+        VERIFY(g_tensor_up == up2 && g_tensor_sq_runs == sq2 && g_tensor_off == off2 + 1, "⑥ =0：放大 %llu 次、平方 %llu 次、关计数 +%llu（期望 0 / 0 / 1）",
+               (unsigned long long)(g_tensor_up - up2), (unsigned long long)(g_tensor_sq_runs - sq2), (unsigned long long)(g_tensor_off - off2));
+        VERIFY(!memcmp(b0, b1, sizeof b0), "⑥ =0：输出图 (32,32) 前 (%g, %g, %g) 后 (%g, %g, %g)（期望逐位相同）", b0[0], b0[1], b0[2], b1[0], b1[1], b1[2]);
+        unsetenv("DM_NVN_TENSOR_STANDIN"); g_tensor_standin_on = -1; up2 = g_tensor_up;
+        standin(cs);
+        VERIFY(g_tensor_up == up2 + 1, "⑥ 撤掉后照旧顶替：放大 %llu 次（期望 1）", (unsigned long long)(g_tensor_up - up2));
+    }
+    printf("%s t_nvn_tensor_sq：%u 项，%u 项不过（张量核网络顶替：平方域出口层先平方输入、同域照原样；按推常量取输入有效区域与输出区域；诊断开关关掉不顶替）\n", fails ? "✗" : "✓", checks, fails);
     return fails ? 1 : 0;
 } }
