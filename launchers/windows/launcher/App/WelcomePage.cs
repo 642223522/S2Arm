@@ -223,7 +223,7 @@ public sealed partial class EnvironmentWindow
             if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = setup.Report.Message; return; }
             var conn = LibraryConnection.Parse(setup.Report.Result);
             connectedFolder = conn.Folder; libraryId = conn.Id; libraryFolder = connectedFolder;
-            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "catalog", null, front.Token, jobId: front.Next());
+            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
             if (listing.Report.Succeeded)
             { catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers(); }

@@ -217,7 +217,7 @@ public sealed partial class EnvironmentWindow
             if (!result.Report.Succeeded) { importError = result.Report.Message; return; }
             // 放好密钥后重查 catalog，接着导入悬挂的游戏
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "catalog", null, front.Token, jobId: front.Next());
+                "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             { catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers(); }
             importDialog = null;
@@ -271,7 +271,7 @@ public sealed partial class EnvironmentWindow
             }
             // 成功：重查目录，更新欢迎页状态
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "catalog", null, front.Token, jobId: front.Next());
+                "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             {
                 catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();

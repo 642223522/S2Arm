@@ -684,7 +684,7 @@ public sealed partial class EnvironmentWindow
                 DisplayJob(output);
                 if (!output.Report.Succeeded) { librarySummary = "library.failed"; return; }
             }
-            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, front.Token, jobId: front.Next());
+            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
             if (!listing.Report.Succeeded) { librarySummary = "library.failed"; return; }
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();

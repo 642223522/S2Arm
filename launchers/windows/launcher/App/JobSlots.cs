@@ -54,6 +54,15 @@ public partial class EnvironmentWindow
     private bool installBusy => JobOf(JobKind.Phone) is not null;
     private bool busy => JobOf(JobKind.Environment) is not null;
     private bool freeing => JobOf(JobKind.Space) is not null;
+    private bool startupCatalogSent;
+    /// <summary>这次打开启动器后的第一次 catalog 带 startup（剃刀 H14）：作业层只在这一次清残留、判任务目录清理；取一次就没了</summary>
+    private bool TakeStartupCatalog()
+    {
+        var first = !startupCatalogSent;
+        startupCatalogSent = true;
+        return first;
+    }
+
     /// <summary>有任何作业在跑（控制口拒新命令、更新启动器要等）</summary>
     private bool AnyJob => jobs.Count > 0;
 }

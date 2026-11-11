@@ -152,14 +152,15 @@ public final class LibraryProvider {
     public static let noLibraryMessage = "还没有游戏库：请先在 S2Arm 启动器里选择游戏库并导入游戏。"
 
     /// 读一遍游戏库。没配游戏库时不起作业，直接回失败。
+    /// startup：启动器这次打开后的第一次读（剃刀 H14）：作业层只在这一次清残留、判一天一次的任务目录清理；其余刷新只读。
     @discardableResult
-    public func load(_ completion: @escaping (Result<[GameSummary], JobClientError>) -> Void) -> JobHandle? {
+    public func load(startup: Bool = false, _ completion: @escaping (Result<[GameSummary], JobClientError>) -> Void) -> JobHandle? {
         guard !client.environment.library.isEmpty else {
             completion(.failure(JobClientError(Self.noLibraryMessage)))
             return nil
         }
         do {
-            return try client.start(operation: "catalog", onFinish: { outcome in
+            return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
                     completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
                     return

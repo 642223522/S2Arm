@@ -225,6 +225,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var cloudSyncing = false
     private var work: Task<Void, Never>?
     private var refreshWaiters: [() -> Void] = []
+    private var startupCatalogSent = false
     private var controllerGameStarted = false
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
@@ -260,7 +261,9 @@ public final class S2ArmLauncherModel: ObservableObject {
             showingSnapshot = true
         }
         loading = true
-        provider.library.load { [weak self] result in
+        // 启动器这次打开后的第一次读带 startup（剃刀 H14）：作业层只在这一次清残留 / 判任务目录清理，之后每次刷新只读
+        let startup = !startupCatalogSent; startupCatalogSent = true
+        provider.library.load(startup: startup) { [weak self] result in
             guard let self else { return }
             self.loading = false
             self.libraryLoaded = true
