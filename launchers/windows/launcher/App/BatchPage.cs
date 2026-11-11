@@ -34,7 +34,6 @@ public sealed partial class EnvironmentWindow
     private string batchError = "";
     /// <summary>控制口 POST /batch 指定的每款平台（AI 操作同 Mac：可以要 Mac，这台出不了的记失败「这台电脑出不了这个平台的包」）；界面清单为 null，按勾选出 iPhone</summary>
     private Dictionary<string, string[]>? batchControlPlatforms;
-    private ScrollViewer? batchScroller;
 
     /// <summary>放进来的几款列成清单（导入完多于 1 款时调）：iPhone 默认跟着出包页的勾选；缺东西的款写原因。正在出一批时只回到清单页</summary>
     private void OpenBatch(IReadOnlyList<string> ids, IReadOnlyList<ImportOutcome.Unrecognized> unrecognized)
@@ -76,19 +75,9 @@ public sealed partial class EnvironmentWindow
         if (batchError.Length > 0) content.Children.Add(new TextBlock { Text = B(batchError), FontSize = 13, Foreground = Brush.Parse("#E55"), TextWrapping = TextWrapping.Wrap });
         if (batchState is null) RenderBatchDraft(content); else RenderBatchProgress(content, batchState);
 
-        var dock = new DockPanel { LastChildFill = true };
-        if (PhonePill() is { } pill)
-        {
-            var top = new Border { Padding = new Thickness(32, 14, 32, 0), Child = pill, HorizontalAlignment = HorizontalAlignment.Right };
-            DockPanel.SetDock(top, Dock.Top); dock.Children.Add(top);
-        }
-        var bar = BatchBottomBar();
-        DockPanel.SetDock(bar, Dock.Bottom); dock.Children.Add(bar);
-        var offset = batchScroller?.Offset ?? default;
-        batchScroller = new ScrollViewer { Content = content, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        if (offset != default) { var scroller = batchScroller; Dispatcher.UIThread.Post(() => scroller.Offset = offset, DispatcherPriority.Loaded); }
-        dock.Children.Add(batchScroller);
-        Content = dock;
+        Control? top = PhonePill() is null ? null
+            : new Border { Padding = new Thickness(32, 14, 32, 0), Child = LiveSlot(PhonePill), HorizontalAlignment = HorizontalAlignment.Right };
+        ShowPage("batch", content, top, BatchBottomBar());
         return true;
     }
 
@@ -165,7 +154,11 @@ public sealed partial class EnvironmentWindow
             var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
             var name = Label(item.Name, 15); name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis;
             text.Children.Add(name);
-            foreach (var p in item.Platforms) text.Children.Add(BatchPlatformLine(item.GameId, p, item.Result(p)));
+            foreach (var p in item.Platforms)   // 正在出的那行带当前阶段：活格子，计时器每秒只刷新它
+            {
+                var (gameId, platform, result) = (item.GameId, p, item.Result(p));
+                text.Children.Add(result.State == "running" ? LiveSlot(() => BatchPlatformLine(gameId, platform, result)) : BatchPlatformLine(gameId, platform, result));
+            }
             Grid.SetColumn(text, 1); line.Children.Add(text);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
             if (item.Any("failed"))

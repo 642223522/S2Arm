@@ -35,7 +35,7 @@ def nums(pat):
     return [x for x in out if x > 1]
 def looks_ours(pid):
     c = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return any(k in c for k in ("timeout", "bash", "sleep"))
+    return any(k in c for k in ("timeout", "bash", "sleep", "nostall"))
 def hit(sig):
     n = 0
     # 各步命令自立的进程组（步开跑时写的组号 = 组长进程号）：经 tools/safe_killpg.sh 发（进程组信号唯一入口，tests/killpg_lint_test.sh 守）；

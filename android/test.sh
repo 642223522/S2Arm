@@ -339,9 +339,10 @@ s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
 # vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.
 case "$(uname -s)" in
   Linux)
+    s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_clear_enqueue_ownership_test.py"
     s2a_gate_step "$PY" "$android_dir/tests/w2_dispatch_snapshot_test.py"
     s2a_gate_step "$PY" "$android_dir/tests/w2_record_chain_test.py" ;;
-  *) s2a_gate_note "W2 dispatch snapshot / record chain：未运行（仅 Linux 主机 libvulkan.so.1 组件测试）" ;;
+  *) s2a_gate_note "clear queue ownership / W2 dispatch snapshot / record chain：未运行（仅 Linux 主机 libvulkan.so.1 组件测试）" ;;
 esac
 # vk_record 生产入口探针（P0-0b DrawTexture 准确拒绝 / P0-0b' Deferred 句柄执行时读取）：只链生产
 # vk_record.c 与其直接依赖，vk* 导入由宿主 Vulkan loader 解析（不建 device、不开 ICD）。只在
@@ -476,6 +477,7 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_query_terminal_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_deferred_slot_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_indirect_args_test.py"   # 间接参数的权威字节（影子同步 / 在途帧退休）+ 变异控制
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_sampler_mapping_test.py"   # P0-2 采样器映射判定表 + 变异控制
 # 真 Vulkan 收尾探针：macOS 上要 docker；门禁派 gate-host 时作为子项 vkreal 跳过、本机另跑（android/gate.sh 头注）
 [ "${S2A_ANDROID_SKIP_VKREAL:-0}" = 1 ] || s2a_gate_step bash "$android_dir/tests/nvn_vk_real_teardown_test.sh"

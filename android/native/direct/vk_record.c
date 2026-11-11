@@ -88,6 +88,10 @@ extern int nvn_vk_first_draw_timestamp_top(struct s2a_vk_device *d, VkQueryPool 
 extern uint64_t nvn_vk_first_draw_frame_id(void) __attribute__((weak));
 // 帧队列首错（弱绑定）：失败传播时带上真实原因，不覆盖首错。
 extern const char *nvn_vk_first_draw_first_error(void) __attribute__((weak));
+// 间接参数的权威字节（弱绑定）：参数落在帧队列的可写 storage buffer 影子里时，帧队列先过同步边界再从影子
+// 读（返回 1）；否则 guest 内存是权威（返回 0）。没有帧队列的链接（宿主探针）没有影子，guest 即权威。
+extern int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out,
+                                           char *why, size_t why_size) __attribute__((weak));
 // ReportCounter 只在 pass 内切查询段（vkCmdEndQuery/BeginQuery 在 pass 内合法），不再关整个 render pass。
 // query 模块本就支持同 pass 内多段。默认开：真机 A/B 证 45→35 pass/帧、exec 13.3→12.3ms、fps 49.0→50.1、
 // 查询结果正确、red=0。回退旧行为（每次 Report 关 pass）用 debug.s2a.qseg_off=1。
@@ -209,6 +213,13 @@ static int rc_value(struct replay_state *S, const struct s2a_record_memory *m, u
     if (!addr || !m || m->read(m->opaque, addr, v, 8)) return 0;
     return 1;
 }
+// 间接绘制 / 间接派发（跨提交累计）：解析成确定值的笔数、按 GPU 值为空（0 顶点 / 0 实例 / 过了多重绘制
+// 计数 / 0 组）而不录的笔数。宿主测试与真机日志据此确认间接路径真被走到。
+static uint64_t g_ind_draws_resolved, g_ind_draws_skipped, g_ind_dispatches, g_ind_dispatches_empty;
+void s2a_record_indirect_counts(uint64_t out[4]) {
+    out[0] = g_ind_draws_resolved; out[1] = g_ind_draws_skipped;
+    out[2] = g_ind_dispatches; out[3] = g_ind_dispatches_empty;
+}
 // 诊断：每种状态对象历史上被真实绑定过多少次（跨提交累计，不受 reset 影响）。
 static uint32_t g_state_binds[6];
 unsigned s2a_record_state_bind_count(int kind) { return kind >= 0 && kind < 6 ? g_state_binds[kind] : 0; }
@@ -257,7 +268,8 @@ static const char *compute_reason_code(const char *why) {
     if (!why || !*why) return "";
     static const struct { const char *text, *code; } known[] = {
         {"dispatch payload too small", "payload_invalid"},
-        {"indirect dispatch needs GPU-written group counts (not wired yet)", "indirect_unsupported"},
+        {"indirect dispatch group counts unavailable", "indirect_args_unavailable"},
+        {"indirect dispatch group counts out of range", "indirect_args_range"},
         {"compute retention ledger full", "retention_full"},
         {"dispatch without CS/group counts", "dispatch_incomplete"},
         {"invalid compute builder output", "builder_invalid"},
@@ -346,6 +358,25 @@ static int fail(struct s2a_record_result *r, int code, uint32_t opcode, const ch
     r->code = code; r->opcode = opcode;
     snprintf(r->why, sizeof r->why, "%s", why);
     return code;
+}
+
+// 间接参数（DrawArrays/ElementsIndirect 的参数、间接计数多重绘制的计数、DispatchComputeIndirect 的组数）
+// 回放时取确定值：这些字节可能由 GPU 写，权威副本在哪由帧队列判定（见 nvn_vk_first_draw_indirect_args），
+// 不在 GPU 影子里就经记录层的内存访问器读 guest（越出已登记的池即准确失败，不读野地址）。
+// 返回 0 = *out 已填；否则为 S2A_RECORD_* 失败码，why 写明。
+static int rec_indirect_args(const struct s2a_record_memory *memory, uint64_t addr, uint32_t len, void *out,
+                             char *why, size_t why_size) {
+    if (nvn_vk_first_draw_indirect_args) {
+        int r = nvn_vk_first_draw_indirect_args(addr, len, out, why, why_size);
+        if (r > 0) return 0;
+        if (r < 0) return S2A_RECORD_UNSUPPORTED;
+    }
+    if (memory->read(memory->opaque, addr, out, len) != 0) {
+        snprintf(why, why_size, "indirect arguments 0x%llx+%u are not in readable guest memory",
+                 (unsigned long long)addr, len);
+        return S2A_RECORD_MEMORY;
+    }
+    return 0;
 }
 
 // ---- 对象/提交记账：每次创建/销毁都计数，测试可核“正常完成后恰好回收一次”。 ----
@@ -1852,37 +1883,100 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                         (unsigned long long)g_rc_skipped_draws);
                 break;
             }
-            // 生产入口闸（P0-0a）：adapter 注册了 draw builder（mtl_vk_adapter.c），所以生产路径永远走
-            // 下面的 builder 分支，**不会**经过 replay 回退里的 ind/mdi 检查。间接参数由 GPU 写、multi-draw
-            // 的计数也在 GPU 侧，两者都还没接；若在这里放行，记录里补的 count/first=0 会继续往下变成
-            // “返回成功但什么都没画”。先把表达不了的绘制准确拒掉，并把记录字段原样报出（opcode/ind/mdi/tfc）。
+            // 间接绘制 / 间接计数多重绘制（P0-0a 收口）：参数和计数可能是 GPU 写的，回放到这一笔时取确定值
+            // （权威副本在哪见 rec_indirect_args），改写成一笔普通绘制再走下面同一条 builder / 回退路径，
+            // 与 Metal 几何路径 geo_draw 读间接参数同一思路。多重绘制每条子绘制各有一条记录
+            // （hle_nvn.c MultiDraw*IndirectCount：ind 已按 stride 偏到第 mdi_i 条），mdi_i 不小于 GPU 写的
+            // 计数就不画；参数里顶点数或实例数为 0 时 GPU 上也是空画。DrawTransformFeedback（tfc：顶点数
+            // 来自 GPU 计数器的捕获字节数）还没接，照旧准确拒绝。
+            union { p_draw d; p_draw_idx i; } ind_rec;
+            uint32_t dsize = header.size;
             {
                 uint64_t ind = 0, mdi_cnt = 0, tfc = 0;
                 int32_t mdi_i = 0;
                 if (header.op == OP_DRAW_IDX) {
-                    p_draw_idx dim;
-                    const p_draw_idx *d = draw_idx_rec(payload, header.size, &dim);
+                    const p_draw_idx *d = draw_idx_rec(payload, header.size, &ind_rec.i);
                     ind = d->ind; mdi_cnt = d->mdi_cnt; mdi_i = d->mdi_i;
+                    if (d != &ind_rec.i) ind_rec.i = *d;
                 } else {
-                    p_draw dm;
-                    const p_draw *d = draw_rec(payload, header.size, &dm);
+                    const p_draw *d = draw_rec(payload, header.size, &ind_rec.d);
                     ind = d->ind; mdi_cnt = d->mdi_cnt; mdi_i = d->mdi_i; tfc = d->tfc;
+                    if (d != &ind_rec.d) ind_rec.d = *d;
                 }
-                if (ind || mdi_cnt || mdi_i || tfc) {
+                const char *opn = header.op == OP_DRAW_IDX ? "OP_DRAW_IDX" : "OP_DRAW";
+                if (tfc) {
                     char gate_why[192];
                     snprintf(gate_why, sizeof gate_why,
                              "draw cannot be expressed: op=%s(%u) ind=0x%llx mdi_cnt=0x%llx mdi_i=%d tfc=0x%llx: "
-                             "GPU-written draw params not wired yet",
-                             header.op == OP_DRAW_IDX ? "OP_DRAW_IDX" : "OP_DRAW", (unsigned)header.op,
-                             (unsigned long long)ind, (unsigned long long)mdi_cnt, (int)mdi_i,
-                             (unsigned long long)tfc);
+                             "DrawTransformFeedback vertex count not wired yet",
+                             opn, (unsigned)header.op, (unsigned long long)ind, (unsigned long long)mdi_cnt,
+                             (int)mdi_i, (unsigned long long)tfc);
                     return fail(result, S2A_RECORD_UNSUPPORTED, header.op, gate_why);
+                }
+                if (ind || mdi_cnt || mdi_i) {
+                    char aw[200] = "", gate_why[320];
+                    if (!ind || mdi_i < 0 || (mdi_i && !mdi_cnt)) {
+                        snprintf(gate_why, sizeof gate_why,
+                                 "malformed indirect draw record: op=%s(%u) ind=0x%llx mdi_cnt=0x%llx mdi_i=%d",
+                                 opn, (unsigned)header.op, (unsigned long long)ind, (unsigned long long)mdi_cnt,
+                                 (int)mdi_i);
+                        return fail(result, S2A_RECORD_INVALID, header.op, gate_why);
+                    }
+                    if (mdi_cnt) {
+                        uint32_t live = 0;
+                        int arc = rec_indirect_args(memory, mdi_cnt, 4, &live, aw, sizeof aw);
+                        if (arc) {
+                            snprintf(gate_why, sizeof gate_why, "op=%s(%u) multi-draw count at 0x%llx: %s", opn,
+                                     (unsigned)header.op, (unsigned long long)mdi_cnt, aw);
+                            return fail(result, arc, header.op, gate_why);
+                        }
+                        if ((uint32_t)mdi_i >= live) { g_ind_draws_skipped++; break; }
+                    }
+                    uint32_t a[5] = {0};
+                    const uint32_t an = header.op == OP_DRAW_IDX ? 20u : 16u;
+                    int arc = rec_indirect_args(memory, ind, an, a, aw, sizeof aw);
+                    if (arc) {
+                        snprintf(gate_why, sizeof gate_why, "op=%s(%u) indirect arguments at 0x%llx: %s", opn,
+                                 (unsigned)header.op, (unsigned long long)ind, aw);
+                        return fail(result, arc, header.op, gate_why);
+                    }
+                    if (!a[0] || !a[1]) { g_ind_draws_skipped++; break; }
+                    // 记录层的绘制参数是 int32：超出范围的 GPU 值不能悄悄截断成另一笔绘制。
+                    if (a[0] > INT32_MAX || a[1] > INT32_MAX || a[2] > INT32_MAX ||
+                        (header.op != OP_DRAW_IDX && a[3] > INT32_MAX) ||
+                        (header.op == OP_DRAW_IDX && a[4] > INT32_MAX)) {
+                        snprintf(gate_why, sizeof gate_why,
+                                 "op=%s(%u) indirect arguments at 0x%llx out of range: %u %u %u %u %u", opn,
+                                 (unsigned)header.op, (unsigned long long)ind, a[0], a[1], a[2], a[3], a[4]);
+                        return fail(result, S2A_RECORD_INVALID, header.op, gate_why);
+                    }
+                    if (header.op == OP_DRAW_IDX) {
+                        p_draw_idx *d = &ind_rec.i;
+                        if (d->itype < 0 || d->itype > 2)
+                            return fail(result, S2A_RECORD_INVALID, header.op, "indirect indexed draw has an invalid index type");
+                        // VkDrawIndexedIndirectCommand：{indexCount, instanceCount, firstIndex, vertexOffset, firstInstance}；
+                        // firstIndex 折进索引地址（与 Metal geo_draw、直接 DrawElements 记录同一口径）。
+                        d->count = (int32_t)a[0]; d->instances = (int32_t)a[1];
+                        d->ibuf += (uint64_t)a[2] << d->itype;
+                        d->base_vertex = (int32_t)a[3]; d->base_instance = (int32_t)a[4];
+                        d->ind = 0; d->mdi_cnt = 0; d->mdi_i = 0;
+                        dsize = (uint32_t)(sizeof(op_hdr) + sizeof *d);
+                    } else {
+                        // VkDrawIndirectCommand：{vertexCount, instanceCount, firstVertex, firstInstance}
+                        p_draw *d = &ind_rec.d;
+                        d->count = (int32_t)a[0]; d->instances = (int32_t)a[1];
+                        d->first = (int32_t)a[2]; d->base_instance = (int32_t)a[3];
+                        d->ind = 0; d->mdi_cnt = 0; d->mdi_i = 0;
+                        dsize = (uint32_t)(sizeof(op_hdr) + sizeof *d);
+                    }
+                    payload = (const uint8_t *)&ind_rec;
+                    g_ind_draws_resolved++;
                 }
             }
             // NVN2 任务 / 网格绘制（nvn2_cmd.h DM_PRIM_MESH_TASKS，11-05 只接了 Metal）：本后端没有任务 /
             // 网格管线，明确报不支持，不当普通绘制画。与上面的间接参数闸并列（main 侧新增，合并保留）。
             if (header.op == OP_DRAW) {
-                p_draw mt; const p_draw *md = draw_rec(payload, header.size, &mt);
+                p_draw mt; const p_draw *md = draw_rec(payload, dsize, &mt);
                 if (md->prim == DM_PRIM_MESH_TASKS)
                     return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "mesh tasks draw: the Vulkan backend has no task / mesh pipeline");
             }
@@ -1990,7 +2084,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                     // main 的紧凑记录省掉隐含的 instances=1 / base_instance=0：必须经 draw_idx_rec 重建，
                     // 直接 memcpy 会让 instances 读成 0（Vulkan 下等于不绘制）。
                     p_draw_idx dim;
-                    const p_draw_idx *di = draw_idx_rec(payload, header.size, &dim);
+                    const p_draw_idx *di = draw_idx_rec(payload, dsize, &dim);
                     ds.prim = (uint32_t)di->prim;
                     ds.count = (uint32_t)di->count; ds.first = (uint32_t)di->base_vertex;
                     ds.instances = (uint32_t)di->instances; ds.base_vertex = (uint32_t)di->base_vertex;
@@ -1999,7 +2093,7 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                 } else {
                     // 普通 draw 可能停在 ind 之前（短记录）：draw_rec 把缺的间接字段补 0。
                     p_draw dm;
-                    const p_draw *d = draw_rec(payload, header.size, &dm);
+                    const p_draw *d = draw_rec(payload, dsize, &dm);
                     ds.prim = (uint32_t)d->prim;
                     ds.count = (uint32_t)d->count; ds.first = (uint32_t)d->first;
                     ds.instances = (uint32_t)d->instances;
@@ -2030,10 +2124,10 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             }
             if (header.op == OP_DRAW_IDX)
                 return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "indexed draw needs the backend draw builder");
-            if (header.size < sizeof(op_hdr) + offsetof(p_draw, ind))
+            if (dsize < sizeof(op_hdr) + offsetof(p_draw, ind))
                 return fail(result, S2A_RECORD_INVALID, header.op, "draw payload too small");
             p_draw draw;
-            const p_draw *drawp = draw_rec(payload, header.size, &draw);
+            const p_draw *drawp = draw_rec(payload, dsize, &draw);
             if (drawp->ind || drawp->mdi_cnt || drawp->mdi_i)
                 return fail(result, S2A_RECORD_UNSUPPORTED, header.op,
                             "indirect/multi-draw needs GPU-written parameters (not wired yet)");
@@ -2283,8 +2377,32 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             }
             memcpy(&dispatch, payload, sizeof dispatch);
             if (dispatch.ind) {
-                s2a_record_compute_note(NULL, S2A_COMPUTE_BUILD_FAILED, "indirect dispatch needs GPU-written group counts (not wired yet)");
-                return fail(result, S2A_RECORD_UNSUPPORTED, header.op, "indirect dispatch needs GPU-written group counts (not wired yet)");
+                // DispatchComputeIndirect：三个组数可能是 GPU 写的（常见是前一笔计算算出的剔除结果）。
+                // 回放到这一笔时取确定值（权威副本在哪见 rec_indirect_args；上面 sync pass_break 已让本帧
+                // 之前的工作完成），改写成普通 dispatch 走同一条 builder；0 组与 vkCmdDispatchIndirect 一样不做事。
+                // 超出设备 maxComputeWorkGroupCount 的值录下去是未定义行为，准确拒绝。
+                uint32_t g[3] = {0};
+                char aw[200] = "", msg[320];
+                int arc = rec_indirect_args(memory, dispatch.ind, 12, g, aw, sizeof aw);
+                if (arc) {
+                    snprintf(msg, sizeof msg, "indirect dispatch group counts at 0x%llx: %s",
+                             (unsigned long long)dispatch.ind, aw);
+                    s2a_record_compute_note(NULL, S2A_COMPUTE_BUILD_FAILED, "indirect dispatch group counts unavailable");
+                    return fail(result, arc, header.op, msg);
+                }
+                g_ind_dispatches++;
+                if (!g[0] || !g[1] || !g[2]) { g_ind_dispatches_empty++; break; }
+                const uint32_t *lim = device->properties.limits.maxComputeWorkGroupCount;
+                if (g[0] > INT32_MAX || g[1] > INT32_MAX || g[2] > INT32_MAX ||
+                    (lim[0] && (g[0] > lim[0] || g[1] > lim[1] || g[2] > lim[2]))) {
+                    snprintf(msg, sizeof msg, "indirect dispatch group counts at 0x%llx out of range: %u %u %u "
+                             "(device max %u %u %u)", (unsigned long long)dispatch.ind, g[0], g[1], g[2],
+                             lim[0], lim[1], lim[2]);
+                    s2a_record_compute_note(NULL, S2A_COMPUTE_BUILD_FAILED, "indirect dispatch group counts out of range");
+                    return fail(result, S2A_RECORD_INVALID, header.op, msg);
+                }
+                dispatch.x = (int32_t)g[0]; dispatch.y = (int32_t)g[1]; dispatch.z = (int32_t)g[2];
+                dispatch.ind = 0;
             }
             {
                 // 诊断 A/B 门：跳过整笔 compute dispatch（不做 GPU 工作、不建资源）。只用于定位
