@@ -365,6 +365,8 @@
 "save.journalUnreadable" = "Can’t read the save operation records folder (%@), so there’s no way to tell whether the last import / restore finished.\n%@";
 "save.location" = "Save location: open the Files app → On My iPhone (On My iPad on iPad) → %@ → %@\n\nPut a save folder in its original format there (exported from a console, JKSV / Checkpoint and similar tools, or copied from the same game's SaveData on your computer) and the game uses it the next time you start. When you quit, it's updated with your latest progress; copy the whole folder to the same place on your computer or another device to keep playing.\n\nCopying from a computer: on a Mac, select this device in the Finder sidebar → Files, drag the folder onto \"%@\", then use the Files app to move it into the location above.";
 "save.location.problem" = "The save you put there last time wasn't loaded: %@. Your current save is unchanged.";
+"save.players" = "Player: %@. The save location below holds this player’s saves only. Exports, imports and iCloud sync cover every player’s saves for this game together.";
+"save.player.first" = "Player 1";
 "save.noRoot" = "Can’t access the save location, so saves can’t be imported or exported this time. You can close and reopen the app, or tap “Start game anyway…” to play as usual.";
 "save.noService" = "This package is missing the game identity or service needed to transfer saves. Repackage and install it with the latest S2Arm. Your current save still works as usual.";
 "save.noService.recover" = "This package is missing the game identity or service needed to transfer saves, so the interrupted save operation can’t be recovered.";

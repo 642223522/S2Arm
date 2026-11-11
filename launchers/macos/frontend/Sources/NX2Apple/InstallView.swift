@@ -39,8 +39,9 @@ struct InstallView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(loc.backend(job.stage.isEmpty ? job.message : job.stage)).font(.manrope(16, .bold)).lineLimit(1)
                     InlineProgress(session: job)
-                    // 钥匙串授权只在申请描述文件 / 签名这两步（pack/jobs/install.py sign_and_install 第 3、4 步）会弹；推资源包时还挂着它会让玩家以为在等授权（#266）
-                    if job.kind == .install, [3, 4].contains(job.progress.index ?? 0) {
+                    // 钥匙串授权只在后端标了 keychainPrompt 的阶段会弹（Apple ID 模式申请描述文件 / 签名；开发者证书模式不弹）；
+                    //   推资源包时还挂着它会让玩家以为在等授权（#266）。原先写死第 3、4 步，开发者证书模式第 4 步是「装到 iPhone」也挂了
+                    if job.kind == .install, job.progress.keychainPrompt {
                         Text(text("install.keychain")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在装到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）

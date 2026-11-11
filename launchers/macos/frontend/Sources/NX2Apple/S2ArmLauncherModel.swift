@@ -5,6 +5,7 @@ import Foundation
 import Combine
 import NXModel
 import S2ArmAppleAdapter
+import SaveSync
 
 /// 一次出包（勾了几个平台就几个作业，按页面顺序排队，ExportPlatform.picked）：现在做到第几个、每个平台的结局。
 struct ExportRun: Equatable {
@@ -208,6 +209,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
+    /// 当前这份装机前清单是给哪台设备查的（控制口 GET /state 的 installReadiness.checkedDevice）：换了设备先清掉旧清单，
+    ///   s2armctl install-check --device 等到这台的结果才读（11-11 真机验收：连查两台，第二台读到了第一台的清单）
+    @Published private(set) var installReadinessDevice: String?
+    /// 正在查时又来了另一台（或另一款）的请求：记下，这次查完接着查它（原先直接丢掉）
+    private var pendingInstallCheck: (game: String, device: String?)?
     @Published private(set) var installError: String?
     private(set) var installGameID: String?
     // 释放空间（spaceSurvey / spaceFree，FreeSpaceView）：只看一款
@@ -717,17 +723,21 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
     func checkInstall(_ gameID: String, device: String? = nil) {
-        if installGameID != gameID { installGameID = gameID; installReadiness = nil; installError = nil }
-        guard !installChecking else { return }
+        let target = device ?? installDeviceID
+        if installGameID != gameID || installReadinessDevice != target {   // 换了款或换了设备：旧清单不能当这台的
+            installGameID = gameID; installReadinessDevice = target; installReadiness = nil; installError = nil
+        }
+        if installChecking { pendingInstallCheck = (gameID, target); return }
         installChecking = true
         Task {
             do {
-                let readiness = try await provider.installReadiness(gameId: gameID, device: device ?? installDeviceID)
-                if installGameID == gameID { installReadiness = readiness; installError = nil }
+                let readiness = try await provider.installReadiness(gameId: gameID, device: target)
+                if installGameID == gameID && installReadinessDevice == target { installReadiness = readiness; installError = nil }
             } catch {
-                if installGameID == gameID { installError = error.localizedDescription }
+                if installGameID == gameID && installReadinessDevice == target { installError = error.localizedDescription }
             }
             installChecking = false
+            if let next = pendingInstallCheck { pendingInstallCheck = nil; checkInstall(next.game, device: next.device) }
         }
     }
 
@@ -835,6 +845,12 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
+        if let player = Self.launchPlayer() {
+            controllerArguments["playerUser"] = player.serviceUser
+            controllerArguments["playerName"] = player.name
+            controllerArguments["playerFolder"] = player.folder
+        }
         controllerGameStarted = false
         do {
             let sink = EventSink { [weak self] event in self?.ingest(event) }
@@ -849,6 +865,21 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func startControllerConnection() { controller.startIfEnabled() }
+
+    // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
+
+    /// 本机的玩家表（App 偏好，不在游戏库文件夹里）；firstDefault = 第一个玩家没改过名时显示的名字（按界面语言）
+    static func playerStore(firstDefault: String = "Player 1", defaults: UserDefaults = .standard) -> LocalPlayers {
+        LocalPlayers(defaults: defaults, firstDefault: firstDefault)
+    }
+    /// 起局要带的玩家：没建过玩家 = nil（旧行为，作业层不设玩家）
+    static func launchPlayer(_ defaults: UserDefaults = .standard) -> LocalPlayer? {
+        defaults.object(forKey: LocalPlayers.listKey) == nil ? nil : playerStore(defaults: defaults).current
+    }
+    /// 作业请求里的 player 字段（起局 pack/jobs/build.py、导入社区存档 saves.py 都按 saves.requested_player 校验）；没建过玩家 = nil
+    static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
+        launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
+    }
     func shutdownControllerConnection() { controller.shutdown() }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
@@ -943,16 +974,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 存档位置（services/S2A.Services/SaveFolder.cs）：这款游戏文件夹里的 SaveData/，没有就建出来再在访达里打开（打开的是文件夹里面，玩家直接往里放）
+    ///   本地玩家（#623）：当前玩家的那个（第一个玩家 SaveData，其他人 SaveData-<名字>，同 iOS）
     func openSaveFolder(_ game: GameSummary) {
         guard !game.location.folder.isEmpty, FileManager.default.fileExists(atPath: game.location.folder) else { explainMissing("s2arm.reveal.folderMissing"); return }
-        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent("SaveData", isDirectory: true)
+        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent(Self.launchPlayer()?.folder ?? LocalPlayers.firstFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
     }
     /// 存档位置里放的存档上次起局没读进来的原因（服务层写在数据根 saves/savedata-problem.txt，读进来后删掉）；没有 = nil
     func saveFolderProblem(_ game: GameSummary) -> String? {
         guard !game.location.folder.isEmpty else { return nil }
-        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent("saves/savedata-problem.txt")
+        // 本地玩家（#623）：原因按玩家分文件（services SaveFolder.ProblemPath），第一个玩家仍是原文件名
+        let player = Self.launchPlayer()
+        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent(player.map { $0.isFirst ? "saves/savedata-problem.txt" : "saves/savedata-problem-\($0.uid).txt" } ?? "saves/savedata-problem.txt")
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         let why = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return why.isEmpty ? nil : why
@@ -1095,7 +1129,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if event.ev == "space", let space = PackSpace(event.fields["space"]) { session.space = space; self.session = session; return }
         if let stage = event.stage, !stage.isEmpty {
             session.stage = stage
-            if session.kind == .play, stage == "游戏运行中" {
+            if session.kind == .play, event.fields["stageKey"] as? String == "game_running" {   // 后端固定机读名（build.py begin key），不认中文阶段名
                 controllerGameStarted = true
                 controller.gameDidStart()
             }

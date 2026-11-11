@@ -544,6 +544,7 @@ class Context:
         self.keys = self.private / "keys/prod.keys"
         self.t0 = time.monotonic()
         self.stage = ""
+        self.stage_key, self.keychain_prompt = None, False   # 本阶段的机读标记（begin 设）：前端认这两个，不按中文阶段名 / 步骤号猜
         self.number = self.count = self.seq = 0
         self.cancelled = False
         self.children = set()
@@ -672,7 +673,8 @@ class Context:
                          operation=self.operation, gameId=self.r.get("gameId"), stage=self.stage,
                          stageIndex=self.number, stageCount=self.count, state=state,
                          doneUnits=done, totalUnits=total, done=done, total=total,
-                         elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None), **extra)
+                         elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None),
+                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt, **extra)
             if kind == "stage":
                 self.job.update(done=None, total=None, unit=None)
             elif kind == "progress":
@@ -719,7 +721,10 @@ class Context:
                     except OSError:
                         pass
 
-    def begin(self, stage, number=1, count=1):
+    def begin(self, stage, number=1, count=1, key=None, keychain=False):
+        """key：本阶段的固定机读名（前端按它认，中文阶段名只给人看、随时会改）；keychain：本阶段可能弹出钥匙串授权（前端据此挂提示）。
+        两者都随本阶段的每条事件发（stageKey / keychainPrompt），下一次 begin 重置"""
+        self.stage_key, self.keychain_prompt = key, bool(keychain)
         # Deliberately no "completed stages" list (维护方 10-25 口径): whether a stage is done has exactly one judge, its product key in the product
         # root (.stage_<阶段>, pack/refresh.sh). A second copy in the journal would disagree the moment a kill lands between committing a stage and
         # writing the journal. What this journal does keep — attempts / previousStage — is for display and diagnosis only and never decides a skip.

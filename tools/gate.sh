@@ -111,12 +111,12 @@ gl_end() {   # gl_end <结论>：台账记一行整份汇总（kind=run：起止
 OTHER=()   # 分到另一层、本次不跑的步
 inlayer() {   # inlayer <步名>：本次 GATE_LAYER 要不要这一步
   [ -n "$LAYER" ] || return 0
-  local post=pre pf=; awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { f = 1 } END { exit !f }' < <(printf '%s\n' "$GLY") && post=post
+  local post=pre pf=; LC_ALL=C awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { f = 1 } END { exit !f }' < <(printf '%s\n' "$GLY") && post=post
   [ "$post" = "$LAYER" ] && return 0
   # 「合入后（路由命中时合入前也跑）」：合入前层里只要按改动路由（RT=1）选中了它就跑——钩子 / iOS 编译只在路由命中时才 add 进来，
   #   路由表就是各自文件头「# 门禁路由」与 gate_route.py，不另列前缀（11-10：安卓支、ios 头改动合入前不跑对应钩子，一天叠多处 main 红）
   [ "$LAYER" = pre ] && [ "$post" = post ] && [ "${RT:-0}" = 1 ] || return 1
-  pf=$(awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { print $3 }' < <(printf '%s\n' "$GLY")); [ "$pf" = 路由 ]; }
+  pf=$(LC_ALL=C awk -F'	' -v n="$1" '$1 == n && $2 == "合入后" { print $3 }' < <(printf '%s\n' "$GLY")); [ "$pf" = 路由 ]; }
 if [ "$TIER" != doc ] && [ -f "$R/tools/toolchain.env" ]; then
   if [ -n "$LINUX_LOCAL" ]; then
     # source 必须在当前 shell，保留 PATH；stderr 原文逐行加前缀，不伪装成步骤红。
@@ -375,7 +375,7 @@ NONCE=; if [ ${#PI[@]} -gt 0 ]; then
       --env GATE_TIER --env GATE_SCAN_BASE --env GATE_CHANGED --env GATE_HOOK_S --env GATE_IOS_S --env GATE_IOS_WORK_S --env GATE_PLAN --env GATE_OUT --env GATE_TEST_CACHE --env GATE_ROLE \
       --pull "$OUTR=$L/r" -- bash tools/gate.sh > "$L/remote.log" 2>&1 & tp=$!; echo $tp > "$L/remote.tp"; wait $tp; r=$?; rm -f "$L/remote.tp"; echo $r > "$L/remote.rc"; echo "$h" > "$L/remote.host"; }
   ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=$(( TPRIO < 2 ? TPRIO : 2 ))
-    rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) &
+    rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) & RJ=$!   # 跑远端那份的子 shell：收尾限时（tailwait）不当拖尾，它有自己的远端时限
 fi
 TK=()   # TK[i] = 第 i 步（单测）的缓存键；没有 = 不走缓存
 tc_keys() {   # tc_keys <步号…>：给其中的单测步一次算好键（tools/test_cache.py key）；关了 / 没有算键器 / 算失败 = 不走缓存
@@ -425,7 +425,8 @@ for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r
 #   结论整份被当成「门禁机不可用」扔掉、本机重跑 74 分钟）：步都出结论后，还在跑的子进程最多再等 GATE_TAIL_WAIT_S（缺省 120）秒；
 #   还不退 → 把它们的命令行列进日志（抓是谁攥着不放）、收掉、照常收尾
 tailwait() { local t0=$SECONDS k p
-  while k=$(jobs -pr); [ -n "$k" ]; do
+  # 本机侧跑远端那份的子 shell（RJ）不算拖尾（11-11：73d022d6b 首版把它也收掉，远端被 TERM、每批环境未就绪；tests/gate_remote_partial_test.sh ⑤）
+  while k=$(jobs -pr | grep -vx "${RJ:-0}"); [ -n "$k" ]; do
     if [ $((SECONDS - t0)) -ge "${GATE_TAIL_WAIT_S:-120}" ]; then
       echo "【黄】门禁收尾：步都出结论了，还有 $(grep -c . <<< "$k") 个子进程 ${GATE_TAIL_WAIT_S:-120} 秒不退，收掉：$(for p in $k; do ps -ww -o pid=,command= -p "$p" 2> /dev/null | cut -c1-200; pgrep -P "$p" 2> /dev/null | while read -r c; do ps -ww -o pid=,command= -p "$c" 2> /dev/null | sed 's/^/  └ /' | cut -c1-200; done; done | tr '\n' '；')"
       for p in $k; do pkill -TERM -P "$p" 2> /dev/null; kill -TERM "$p" 2> /dev/null; done; sleep 2; for p in $k; do pkill -KILL -P "$p" 2> /dev/null; kill -KILL "$p" 2> /dev/null; done; break; fi
@@ -547,7 +548,7 @@ macsum
 # 宿主项汇总：机读行原样（去重）；有待证项 → 末行写「本机绿、待<类别>证」，不许被当成整份门禁绿（列车另核证明）
 HPL=; if [ -s "$L/hostlines" ]; then sort -u "$L/hostlines" > "$L/hostlines.u"; cat "$L/hostlines.u"
   while IFS=$'\t' read -r k c it st; do [ "$k" = 待宿主证 ] && echo "⏭ ${it}（${st}）：本机不是${c}，待${c}证"; done < "$L/hostlines.u"
-  HPL=$(awk -F'\t' '$1 == "待宿主证" { n[$2]++ } END { for (c in n) printf "；待%s证 %d 项", c, n[c] }' "$L/hostlines.u"); fi
+  HPL=$(LC_ALL=C awk -F'\t' '$1 == "待宿主证" { n[$2]++ } END { for (c in n) printf "；待%s证 %d 项", c, n[c] }' "$L/hostlines.u"); fi
 if [ -n "$HPL" ] && [ "$MACN" = 0 ]; then echo "门禁 $([ $red = 0 ] && echo "本机绿、待宿主证" || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${RWARN}${HPL}$where"
 elif [ "$MACN" -gt 0 ]; then echo "门禁 $([ $red = 0 ] && echo 本机绿、待 Mac 证 || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${MACL}${HPL}"
 else echo "门禁 $([ $red = 0 ] && echo 绿 || echo 红)：$TIER 档，跑了 $ran 步 / 应跑 $N 步${RWARN}$where"; fi

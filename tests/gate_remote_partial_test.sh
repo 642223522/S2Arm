@@ -6,6 +6,8 @@
 #   派门禁机的共 4 步（语法 + a b c，远端编号 1–4）。① K=3：语法 a b 用远端结论（本机不跑），只 c 退回本机补跑；输出「3 步已有结论、照用，只 1 步没结论」
 #   ② K=4：四步都用远端结论，本机一步不跑，门禁绿（退出 0）
 #   ③ K=0、GATE_FALLBACK_MAX=1：要退回 4 步超过上限 → 本机一步不跑、退出 75（环境未就绪）
+#   ⑤ 远端比本机步慢：桩 5 秒后才交出 4 步结论（写 done）、GATE_TAIL_WAIT_S=1 → 跑远端的子 shell 不被当拖尾收掉，结论照用、本机不跑、绿
+#      （11-11 73d022d6b 首版把它收掉：远端被 TERM、每批环境未就绪）
 #   ④ 收尾限时：主进程有个 30 秒不退的子进程、GATE_TAIL_WAIT_S=2 → tailwait 几秒内返回、日志点名它、它被收掉
 # 反证：S2A_GATE_SH=<旧 gate.sh> 跑应红（① a b 也在本机重跑；② 整份本机跑；③ 本机补跑；④ 没有 tailwait）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); bad=0; GS=${S2A_GATE_SH:-$H/tools/gate.sh}
@@ -22,7 +24,7 @@ printf 'S2A_REMOTE_HOSTS=fakehost\n' > $T/p/machine.local
 cat > $T/p/remote.sh <<'R'
 #!/bin/bash
 while [ $# -gt 0 ]; do case $1 in --pull) d=${2#*=}; shift 2;; --) break;; *) shift;; esac; done
-mkdir -p "$d"; for m in $(seq 1 ${STUB_K:-0}); do echo "0 1" > "$d/$m.rc"; echo "远端 第 $m 步 过" > "$d/$m.log"; done
+sleep ${STUB_SLEEP:-0}; mkdir -p "$d"; [ -n "${STUB_DONE:-}" ] && cp "$d/../nonce" "$d/done" 2> /dev/null; for m in $(seq 1 ${STUB_K:-0}); do echo "0 1" > "$d/$m.rc"; echo "远端 第 $m 步 过" > "$d/$m.log"; done
 echo "remote：rc=124；桩：远端主进程没退出、到时限" ; exit 124
 R
 export S2A_PRIVATE_TOOLS=$T/p S2A_MACHINE_LOCAL=$T/p/machine.local
@@ -33,6 +35,8 @@ r=$(STUB_K=4 run)
 ck "② K=4：四步都用远端、本机不跑、绿（rc=${r}）" '[ "$r" = 0 ] && [ ! -e $T/trace ]'
 r=$(STUB_K=0 GATE_FALLBACK_MAX=1 run)
 ck "③ K=0、上限 1：本机不跑、退出 75（rc=${r}）" '[ "$r" = 75 ] && [ ! -e $T/trace ] && grep -q "超过上限 1" $T/out'
+r=$(STUB_K=4 STUB_SLEEP=5 GATE_TAIL_WAIT_S=1 run)
+ck "⑤ 远端慢 5 秒、收尾限时 1 秒：远端子 shell 不被收掉，结论照用、本机不跑、绿（rc=${r}）" '[ "$r" = 0 ] && [ ! -e $T/trace ] && ! grep -q "秒不退，收掉" $T/out'
 # ④ tailwait 抽出来跑
 eval "$(sed -n '/^tailwait() {/,/^  wait 2> \/dev\/null; }$/p' "$GS")"
 o=$(bash -c "$(declare -f tailwait 2> /dev/null); sleep 30 & sp=\$!; echo \$sp > $T/sp; t0=\$SECONDS; GATE_TAIL_WAIT_S=2 tailwait; echo 用时 \$((SECONDS - t0))" 2>&1)

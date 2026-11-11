@@ -155,8 +155,10 @@ public static partial class SaveTransfer
         static Dictionary<string, HashSet<string>> Owners(JsonArray entries) => entries.GroupBy(e => Str(e, "programId") + "/" + Str(e, "type"))
             .ToDictionary(g => g.Key, g => g.Select(e => Str(e, "userId")).ToHashSet(StringComparer.Ordinal));
         var a = Owners(target); var b = Owners(incoming);
+        // 本地玩家（#623）：一台设备上加了 / 删了玩家，两边的账号集合是包含关系（另一台设备还没建这个玩家、恢复建玩家之前的备份），照常恢复；
+        //   两边各有对方没有的账号 = 不是同一套账号，照旧拒绝（原先要求完全相同，加了第二个玩家后 iCloud 另一端、旧备份都恢复不了）
         foreach (string group in a.Keys.Intersect(b.Keys))
-            Require(a[group].SetEquals(b[group]), T("备份与目标存档账号归属不同。", "The backup and the target save belong to different accounts."), "save_wrong_user");
+            Require(a[group].IsSubsetOf(b[group]) || b[group].IsSubsetOf(a[group]), T("备份与目标存档账号归属不同。", "The backup and the target save belong to different accounts."), "save_wrong_user");
     }
     private static string Source(Context c)
     {
