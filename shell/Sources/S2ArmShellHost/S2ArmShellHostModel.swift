@@ -150,6 +150,7 @@ public final class S2ArmShellHostModel {
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default: missing.insert(id); want = listed == .playable ? .needsGameData : listed   // 不显示；Play 点到也只给导入说明，不放行
             }
+            noteDataSize(i, ready: installState(id) == 1)
             let fresh = want == .playable && isFresh(id)
             if allGames[i].game.isNew != fresh { allGames[i].game.isNew = fresh }
             if allGames[i].game.state != want {
@@ -157,6 +158,45 @@ public final class S2ArmShellHostModel {
                 allGames[i].game.state = want
             }
         }
+    }
+
+    /// 游戏设置页「游戏数据」那一栏（11-11 宿主梳理：原先永远「未选择数据」、点「选择…」没反应）：资源已就绪的款显示
+    ///   「已就绪 · 本机占用 X」，只读。占用要遍历这款整个数据根（一款约 10 万文件），后台算一次、按游戏缓存；不就绪（没有 / 传着 /
+    ///   解着）就清掉缓存和显示，装好或删除后下一次重判重新算。显示「选择…」只在还没有数据时（ShellUI GameDetailView）
+    @ObservationIgnored private var dataSizes: [String: Int64] = [:]
+    @ObservationIgnored private var sizing: Set<String> = []
+    private func noteDataSize(_ i: Int, ready: Bool) {
+        let id = allGames[i].id
+        guard ready else {
+            dataSizes[id] = nil
+            if !allGames[i].dataSource.isEmpty { allGames[i].dataSource = "" }
+            return
+        }
+        if let size = dataSizes[id] {
+            let text = shellText("Ready · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) on this device")
+            if allGames[i].dataSource != text { allGames[i].dataSource = text }
+            return
+        }
+        guard !sizing.contains(id) else { return }
+        sizing.insert(id)
+        let dir = gamesRoot.appendingPathComponent(id)
+        Task { [weak self] in
+            let size = await Task.detached(priority: .utility) { Self.allocatedSize(dir) }.value
+            guard let self else { return }
+            self.sizing.remove(id); self.dataSizes[id] = size
+            self.refreshGameData()
+        }
+    }
+    /// 目录下全部文件占用的空间（按分配大小，与「设置 → 储存空间」同口径）
+    nonisolated static func allocatedSize(_ url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isDirectoryKey]
+        var total: Int64 = 0
+        guard let walk = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in true }) else { return 0 }
+        for case let file as URL in walk {
+            guard let v = try? file.resourceValues(forKeys: Set(keys)), v.isDirectory != true else { continue }
+            total += Int64(v.totalFileAllocatedSize ?? v.fileAllocatedSize ?? 0)
+        }
+        return total
     }
 
     /// 传完了：没起过就在后台解开（正在解别的款 → 排着，下一秒再试）；起过、宿主说已不在解、还是阶段 2 → 没解成
@@ -215,7 +255,8 @@ public final class S2ArmShellHostModel {
                      onPickGameData: { [weak self] id in self?.requestGameData(id) },
                      onPickShellCloud: Self.pickCloudFolder, onClearShellCloud: Self.pickCloudFolder == nil ? nil : { CloudSaves.forget() },
                      onButtonTest: { [weak self] open in self?.buttonTest(open) },
-                     onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
+                     onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) },
+                     onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         return actions
     }
@@ -247,6 +288,14 @@ public final class S2ArmShellHostModel {
     }
 
     /// 只放行可运行的那款（界面本身也只在 playable 时调 onPlay，这里再守一道）；放行前当场重判资源包（库开着时资源被删 / 换机拷走）
+    /// 长按卡片「管理存档…」（11-11 宿主梳理：原先在主屏快捷菜单里，库里不知道是哪款，一进 App 就弹退出框）：记下这一款
+    ///   「下次开局先进存档管理」（ios/save_transfer.m 同一个按游戏的键 S2ASaveManageOnOpen.<游戏号>），再照常开始这一款，起局前就进存档管理页
+    public func manageSaves(_ id: String) {
+        guard allGames.contains(where: { $0.id == id }), id.allSatisfy({ $0.isHexDigit }) else { return }
+        stores.app.set(true, forKey: "S2ASaveManageOnOpen." + id)
+        requestPlay(id)
+    }
+
     public func requestPlay(_ id: String) {
         if allGames.first(where: { $0.id == id })?.game.state.installPhase == .failed { installTried.remove(id) }   // 「安装没完成」点重试：再解一次
         refreshGameData()

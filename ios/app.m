@@ -672,24 +672,31 @@ void s2a_brightness_hold_log(void) {
 //   冷启动（App 没开时选）：置开关，走原有打开流程；热启动（游戏开着时选）：就地执行
 void s2a_diag_export(void);
 void s2a_diag_open_menu(void);
+// 主屏快捷操作（ios/shortcuts.json）。多款容器打开先是游戏库、游戏界面点了 Play 才建，原先三项都挂在游戏界面上，
+//   在库里要么没反应、要么弹游戏内的退出框（11-11 宿主梳理）。现在：诊断包不依赖游戏界面、点了就导出分享；设置在库里直达
+//   游戏库设置（单款壳仍开游戏内设置）；「存档管理」删掉（库里不知道是哪款），改在长按游戏卡片里
+static _Atomic int g_game_picked;   // 本进程已选过游戏（选上之后才放行 sceneDidBecomeActive 起宿主）
+static _Atomic int g_open_shell_settings;   // 冷启动点了「设置」：游戏库出现时打开游戏库设置（S2ArmShellHostView 经 s2a_shell_take_open_settings 取走）
+int s2a_shell_take_open_settings(void) { return atomic_exchange(&g_open_shell_settings, 0); }   // s2a_shell.h；主线程
 static void home_shortcut(NSString *type, BOOL cold, UIViewController *presenter) {
+    (void)presenter;
     LOG("主屏快捷操作：%s（%s）", type.UTF8String, cold ? "冷启动" : "运行中");
-    if ([type isEqualToString:@"dev.s2arm.save"]) {
-        // 冷启动：同「设置 → 管理存档」置的开关（save_transfer.m ManageKey），sceneDidBecomeActive 先进存档管理页
-        if (cold) [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"S2ASaveManageOnOpen"];
-        else if (presenter) s2a_ios_save_present(presenter);
-    } else if ([type isEqualToString:@"dev.s2arm.diag"]) {
-        // 冷启动：同设置页「下次打开时导出诊断包」开关（diag.m kOpenToggle，打开时导出并复位）
-        if (cold) [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"S2ADiagExportOnOpen"];
+    BOOL library = s2a_launch_ctx_container() && !atomic_load(&g_game_picked);
+    if ([type isEqualToString:@"dev.s2arm.diag"]) {
+        // 冷启动等窗口和界面起来（1 秒）再导出；运行中直接导出。diag.m 在库里取游戏库窗口弹分享面板
+        if (cold) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ s2a_diag_export(); });
         else s2a_diag_export();
     } else if ([type isEqualToString:@"dev.s2arm.settings"]) {
-        // 冷启动：游戏界面建好后 2 秒开设置页（diag.m 读 S2A_OPEN_SETTINGS 的同一条路）；运行中直接开（四指长按同一入口）
-        if (cold) setenv("S2A_OPEN_SETTINGS", "2", 1);
+        if (library) {
+            // 游戏库设置：冷启动记下、库界面出现时打开；运行中直接通知库界面（ShellUI LibraryView 收 S2AShellOpenSettings）
+            if (cold) atomic_store(&g_open_shell_settings, 1);
+            else [NSNotificationCenter.defaultCenter postNotificationName:@"S2AShellOpenSettings" object:nil];
+        } else if (cold) setenv("S2A_OPEN_SETTINGS", "2", 1);   // 单款壳 / 游戏里：游戏界面建好后 2 秒开设置页（diag.m 同一条路）
         else s2a_diag_open_menu();
     }
 }
 // 多款容器（launchctx.c ③，11-07 P2 单款启动门）：场景先挂游戏库；Play → s2a_launch_ctx_select → 起局前检查 → 换游戏界面 → 现行起宿主流程。一进程一款
-static _Atomic int g_game_picked;   // 本进程已选过游戏（选上之后才放行 sceneDidBecomeActive 起宿主）
+//   （g_game_picked 声明在上面 home_shortcut 前）
 static void top_alert(UIWindow *w, NSString *title, NSString *body) {
     UIViewController *top = w.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:body preferredStyle:UIAlertControllerStyleAlert];

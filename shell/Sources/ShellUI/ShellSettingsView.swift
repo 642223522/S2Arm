@@ -17,8 +17,8 @@ enum ShellSettingsRows {
     }
 
     static func hudRow(_ store: ShellSettingsStore) -> SettingRow {
-        SettingRow(id: hud, label: ShellStrings.text("Performance overlay"), note: ShellStrings.text("Used by games that have no choice of their own."),
-                   kind: .toggle(on: "1", off: "0"), value: store.performanceHUD == true ? "1" : "0")
+        SettingRow(id: hud, label: ShellStrings.text("Performance overlay"), note: ShellStrings.text("Shared by all games; you can also switch it in a game any time."),
+                   kind: .toggle(on: "1", off: "0"), value: store.performanceHUD ? "1" : "0")
     }
 
     /// The touch controls' size for every game. The preview above the row shows it.
