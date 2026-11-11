@@ -22,6 +22,7 @@ static ns2_motion relayMotion;
 static ns2_status status;
 static int directStarted, ready, foreground, motion_requested;
 static int relayFD = -1;
+static int relayLastError;   // 上次连通道失败的 errno（只在主线程连接路径读写）
 static pthread_t relayThread;
 static int relayThreadStarted;
 static uint64_t epoch = 1;
@@ -71,10 +72,14 @@ static int connect_relay(const char *path) {
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, path, length + 1);
     if (connect(fd, (struct sockaddr *)&address, sizeof address)) {
+        int error = errno;
         close(fd);
-        fprintf(stderr, "[Mac NS2] Relay unavailable at %s: %s\n", path, strerror(errno));
+        // 开局时手柄还没连、游戏每秒重试：同一个原因只记一次，接上后再失败重新记
+        if (error != relayLastError) fprintf(stderr, "[Mac NS2] Relay unavailable at %s: %s\n", path, strerror(error));
+        relayLastError = error;
         return 0;
     }
+    relayLastError = 0;
 
     pthread_mutex_lock(&lock);
     relayFD = fd;
@@ -275,6 +280,10 @@ void s2a_mac_ns2_set_back_buttons(uint16_t left, uint16_t right) {
     back_buttons[0] = left;
     back_buttons[1] = right;
     pthread_mutex_unlock(&lock);
+}
+
+int s2a_mac_ns2_relay_due(ns2_status status, const char *relay) {
+    return relay && *relay && status == NS2_STATUS_IDLE && access(relay, F_OK) == 0;
 }
 
 ns2_status s2a_mac_ns2_status(void) {
