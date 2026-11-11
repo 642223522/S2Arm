@@ -3288,7 +3288,7 @@ static void c68_stencil_ops(const char *dir) {
     if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 solid_green"); return; }
     nvn_gpu_pipe_desc pd;
     fill_gpipe_desc(&pd, vs, fs, NVN_FORMAT_DEPTH24_STENCIL8);
-    pd.ds.st = 1;
+    pd.sfmt = NVN_FORMAT_DEPTH24_STENCIL8; pd.ds.st = 1;
     pd.ds.sf_f = 8; pd.ds.sf_b = 8;            // NVN StencilFunc：8 = ALWAYS
     pd.ds.fail_f = 2; pd.ds.zfail_f = 2; pd.ds.zpass_f = 3;   // NVN op 值 = MTLStencilOperation+1：2=ZERO、3=REPLACE
     pd.ds.fail_b = 2; pd.ds.zfail_b = 2; pd.ds.zpass_b = 3;
@@ -3299,7 +3299,7 @@ static void c68_stencil_ops(const char *dir) {
     if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs2, &fs2, &vm2, &fm2)) { CHECK(0, "读不到 solid_blue"); return; }
     nvn_gpu_pipe_desc pd2;
     fill_gpipe_desc(&pd2, vs2, fs2, NVN_FORMAT_DEPTH24_STENCIL8);
-    pd2.ds.st = 1;
+    pd2.sfmt = NVN_FORMAT_DEPTH24_STENCIL8; pd2.ds.st = 1;
     pd2.ds.sf_f = 6; pd2.ds.sf_b = 6;          // 6 = NOTEQUAL
     pd2.ds.fail_f = pd2.ds.zfail_f = pd2.ds.zpass_f = 1;   // 1 = KEEP
     pd2.ds.fail_b = pd2.ds.zfail_b = pd2.ds.zpass_b = 1;
@@ -3316,6 +3316,7 @@ static void c68_stencil_ops(const char *dir) {
     p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
     p.color[0].clear.f[3] = 1;
     p.depth.view = dv; p.depth.load = NVN_GPU_LOAD_CLEAR; p.depth.store = NVN_GPU_STORE_STORE;
+    p.stencil.view = dv; p.stencil.load = NVN_GPU_LOAD_CLEAR; p.stencil.store = NVN_GPU_STORE_STORE;
     p.clear_depth = 1.0f; p.clear_stencil = 0;
     p.w = 64; p.h = 64; p.layers = 1;
     nvn_gpu_pass_begin(c, &p);
