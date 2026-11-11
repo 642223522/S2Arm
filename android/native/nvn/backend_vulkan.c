@@ -1654,8 +1654,9 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
     if (!d) return fail(err, NVN_GPU_E_ARG, "管线描述为空");
-    if (!d->st[NVN_GPU_SH_VS].sh || !d->st[NVN_GPU_SH_FS].sh)
-        return fail(err, NVN_GPU_E_ARG, "图形管线至少需要 VS 与 FS");
+    // 片元阶段可以没有：只写深度的管线（深度预通道、阴影图），颜色附件上没有输出
+    if (!d->st[NVN_GPU_SH_VS].sh)
+        return fail(err, NVN_GPU_E_ARG, "图形管线至少需要顶点阶段");
     for (int st = 0; st < 5; st++)
         if (d->st[st].sh && d->st[st].sh->missing_storage_format_feature)
             return fail(err, NVN_GPU_E_UNSUPPORTED, "设备未启用无格式存储图像所需特性");

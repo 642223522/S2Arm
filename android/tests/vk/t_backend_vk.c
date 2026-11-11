@@ -3372,6 +3372,45 @@ static nvn_gpu_buf half_depth_vb(void) {
     return make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
 }
 
+// C76：只有顶点阶段的管线（没有片元着色器）在只有深度附件的通道里写深度。深度清成 1，整屏三角形平铺在 z = 0.5，深度函数 ALWAYS、写深度。
+// 期望（手算）：提交成功；读回的 64×64 个 32 位浮点全是 0.5。管线没建成或没写深度则仍是 1。
+static void c76_vs_only_depth(const char *dir) {
+    nvn_gpu_shader vs = load_one_shader(dir, "tri3.vert", NVN_GPU_SH_VS, NULL);
+    if (!vs) return;
+    nvn_gpu_pipe_desc pd;
+    fill_gpipe_desc(&pd, vs, NULL, NVN_FORMAT_DEPTH32F);
+    pd.cfmt[0] = 0; pd.chmask.mask = 0;
+    pd.ds.dt = 1; pd.ds.dw = 1; pd.ds.df = 8;   // 深度测试开、写深度、ALWAYS
+    nvn_gpu_err e; nvn_gpu_pipe pipe = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C76 pipe：%d %s", e.rc.code, e.why);
+    if (!pipe) { nvn_gpu_shader_release(vs); return; }
+    nvn_gpu_tex t = make_tex(64, 64, NVN_FORMAT_DEPTH32F, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view v = make_view(t);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = half_depth_vb();
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.depth.view = v; p.depth.load = NVN_GPU_LOAD_CLEAR; p.depth.store = NVN_GPU_STORE_STORE; p.clear_depth = 1.0f;
+    p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_set_pipe(c, pipe);
+    nvn_gpu_dyn dyn; full_dyn(&dyn); nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_set_vbuf(c, 0, vb, 0);
+    nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+    nvn_gpu_draw(c, &da);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, t, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 118, on_done, NULL, &e);
+    CHECK(OK(r), "C76 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(118, 5000000000ull, &e);
+    CHECK(OK(r), "C76 wait：%d %s", r.code, e.why);
+    { const float *f = (const float *)buf_cpu(rb); int bad = -1; for (int i = 0; i < 64 * 64; i++) if (f[i] != 0.5f) { bad = i; break; }
+      CHECK(bad < 0, "C76 深度读回第 %d 个 = %g，期望 0.5", bad, bad < 0 ? 0.0 : (double)f[bad]); }
+    nvn_gpu_view_release(v); nvn_gpu_tex_release(t);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs);
+}
+
 // C74：通道内按矩形清（契约 v4 nvn_gpu_clear_rect）。通道开头整屏清成黑 / 深度 1 / 模板 0，然后三次矩形清：
 //   ① 颜色：x 8–31、y 16–47 清成红；② 只清模板：左半屏 x 0–31 写 1；③ 只清深度：右上 x 32–63、y 0–31 写 0。
 //   再整屏画一笔蓝（z = 0.5）：深度 LESS、不写深度；模板 NOTEQUAL 1、操作全 KEEP。
@@ -3660,6 +3699,7 @@ int main(int argc, char **argv) {
     c68_stencil_ops(argv[1]);
     c74_clear_rect(argv[1]);
     c75_depth_bias(argv[1]);
+    c76_vs_only_depth(argv[1]);
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;

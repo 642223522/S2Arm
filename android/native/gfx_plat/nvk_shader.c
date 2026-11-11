@@ -64,7 +64,7 @@ struct facts {
     uint32_t ubo_use[6];
 };
 
-static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, struct facts *f) {
+static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, struct facts *f, int nst) {
     memset(f, 0, sizeof *f);
     struct s2a_compile_graphics_src *g = &f->gfx;
     g->topology = topology(q->prim);
@@ -87,7 +87,7 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
     for (int i = 0; i < 8; i++) g->fragment_output_types[i] = i < q->rt_count && q->rt_format[i] ? num_type(q->rt_format[i], 0) : "Float";
     for (int st = 0; st < 6; st++) { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[st][i].size) m |= 1u << i; f->ubo_use[st] = m << 3; }   // 用户常量缓冲从 c3 起
     // 组合贴图槽事实：顶点、片元各 32 槽。槽里是「贴图号 | 采样器号 << 20」；没绑过的槽读作池里的第 0 项。
-    for (int st = 0; st < 2 && f->ntex < 64; st++) for (int slot = 0; slot < 32 && f->ntex < 64; slot++) {
+    for (int st = 0; st < nst && f->ntex < 64; st++) for (int slot = 0; slot < 32 && f->ntex < 64; slot++) {
         uint64_t h = rp_S.tex[st][slot]; long id = h ? (long)(h & 0xFFFFF) : (long)rp_S.tex_base;
         tex_t t; struct s2a_nvn_texture_fact nf; char why[96];
         if (rp_tex_snap_by_id((int)id, &t, NULL, NULL)) {
@@ -120,13 +120,13 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     return 0;   // 存储缓冲、图像：随对应命令接
 }
 
-static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view views[2]) {
+static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view views[2], int nst) {
     struct entry *e = calloc(1, sizeof *e);
     struct fd_program fp; char why[192] = "";
     memset(&fp, 0, sizeof fp);
     if (nvn_vk_program_parse_graphics(bytes, len, &fp, why, sizeof why)) { red1("program_parse_failed", why); e->failed = 1; return e; }
     e->prog.support_bytes = fp.support_bytes; e->prog.attr_mask = fp.stage[0].attr_mask;
-    for (int st = 0; st < 2 && !e->failed; st++) {
+    for (int st = 0; st < nst && !e->failed; st++) {
         if (!fp.stage[st].present) { red1("stage_missing_in_result", st ? "fs" : "vs"); e->failed = 1; break; }
         for (int i = 0; i < fp.binding_count && !e->failed; i++) {
             const struct fd_binding *b = &fp.bindings[i];
@@ -134,7 +134,7 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             if (e->prog.nent[st] == RP_PROG_ENT_MAX) { red1("too_many_bindings", ""); e->failed = 1; break; }
             nvn_gpu_layout_ent *le = &e->prog.ent[st][e->prog.nent[st]];
             if (!layout_ent(b, le)) { char nm[40]; snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot); red1(nm, b->stage); e->failed = 1; break; }
-            le->stages = b->is_support ? 3u : 1u << st;
+            le->stages = b->is_support ? (nst == 2 ? 3u : 1u) : 1u << st;
             e->prog.nent[st]++;
         }
         if (e->failed) break;
@@ -153,18 +153,20 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
     *out = NULL;
     uint32_t stages = 0; for (int st = 0; st < 5; st++) if (rp_S.bser[st]) stages |= 1u << st;
-    if (stages != 3u) { char nm[32]; snprintf(nm, sizeof nm, "stages_%#x_not_vs_fs", stages); nvn_unimpl("shader", nm, NULL); return -1; }
-    if ((rp_S.skey_ok & 3) != 3) { nvn_unimpl("shader", "stage_key_missing", NULL); return -1; }
+    // 认两种：顶点 + 片元；只有顶点（只写深度的绘制：深度预通道、阴影图）。几何 / 细分阶段还没接
+    if (stages != 3u && stages != 1u) { char nm[32]; snprintf(nm, sizeof nm, "stages_%#x_not_vs_fs", stages); nvn_unimpl("shader", nm, NULL); return -1; }
+    const int nst = stages == 3u ? 2 : 1;
+    if ((rp_S.skey_ok & stages) != stages) { nvn_unimpl("shader", "stage_key_missing", NULL); return -1; }
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
     if (s2a_direct_provider_compile_context(&pc) || !pc.profile_json || !pc.profile_bytes) { nvn_unimpl("shader", "no_compile_context", NULL); return -1; }
     if (!g_profile.ok || g_profile.session != pc.session || g_profile.generation != pc.generation) {
         sha256(pc.profile_json, pc.profile_bytes, g_profile.sha); g_profile.session = pc.session; g_profile.generation = pc.generation; g_profile.ok = 1; }
     static struct facts f;   // 提交线程独占；结构大，不放栈上
-    fill_facts(q, &pc, &f);
+    fill_facts(q, &pc, &f, nst);
     struct s2a_input_identity id; memset(&id, 0, sizeof id);
     id.direct_abi = (int)pc.direct_abi; id.translator_closure = pc.translator_closure; memcpy(id.profile_sha, g_profile.sha, 32);
-    id.stage_mask = 3;
-    for (int st = 0; st < 2; st++) {
+    id.stage_mask = stages;
+    for (int st = 0; st < nst; st++) {
         memcpy(id.keys[st], rp_S.skey[st], 8);
         if (s2a_source_identity(rp_S.skey[st], id.source_sha[st], &id.source_code_bytes[st], &id.source_control_bytes[st])) { nvn_unimpl("shader", "source_snapshot_missing", NULL); return -1; }
         id.source_present |= (uint8_t)(1u << st);
@@ -178,7 +180,7 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     struct entry *e = nvn_hm_get(&g_progs, sha);
     if (!e) {
         struct s2a_source_entry_view views[2]; memset(views, 0, sizeof views);
-        for (int st = 0; st < 2; st++) if (!s2a_source_get_key(rp_S.skey[st], &views[st]) || !views[st].complete)   /* get_key：1 = 命中 */ { nvn_unimpl("shader", "source_snapshot_incomplete", NULL); return -1; }
+        for (int st = 0; st < nst; st++) if (!s2a_source_get_key(rp_S.skey[st], &views[st]) || !views[st].complete)   /* get_key：1 = 命中 */ { nvn_unimpl("shader", "source_snapshot_incomplete", NULL); return -1; }
         uint8_t *bytes = NULL; size_t len = 0; char why[256] = "";
         const char *root = getenv("S2A_SHADER_REVISION_ROOT"), *cdir = getenv("S2A_DIRECT_CACHE_DIR");
         if (root && pc.profile_hash && pc.profile_hash[0] && !nvn_plat_flag("no_offline", 0)) {
@@ -194,7 +196,7 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
             in.texture_array_length = (uint32_t)rp_S.tex_pool_n; in.sampler_array_length = (uint32_t)rp_S.samp_pool_n; in.transform_feedback_enabled = rp_S.tf_on;
             in.gfx = f.gfx; memcpy(in.textures, f.tex, sizeof in.textures); in.texture_count = f.ntex;
             char ident[40]; int o = 0;
-            for (int st = 0; st < 2; st++) {
+            for (int st = 0; st < nst; st++) {
                 struct s2a_compile_stage_src *d = &in.stages[in.stage_count++];
                 const uint8_t *code = views[st].code; uint32_t nb = views[st].code_bytes;
                 if (nb > 0x30 && code[0] == 0x78 && code[1] == 0x56 && code[2] == 0x34 && code[3] == 0x12) { code += 0x30; nb -= 0x30; }   // 带 0x30 字节头的代码段
@@ -218,7 +220,7 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
             bytes = oc.bytes; len = oc.bytes_len; oc.bytes = NULL; s2a_compile_outcome_free(&oc); g_n_compiled++;
             if (cdir && !nvn_plat_flag("no_disk_cache", 0)) s2a_program_cache_store_async(cdir, sha, bytes, len);
         }
-        e = build(bytes, len, views);
+        e = build(bytes, len, views, nst);
         free(bytes);
         nvn_hm_put(&g_progs, sha, e);
         if (!e->failed && ((g_n_offline + g_n_cache + g_n_compiled) == 1 || (g_n_offline + g_n_cache + g_n_compiled) % 50 == 0)) {
