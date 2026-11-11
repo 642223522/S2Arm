@@ -112,6 +112,9 @@ struct nvn_vk_open_window {
 };
 void nvn_vk_first_draw_take_open_window(struct nvn_vk_open_window *o);
 int nvn_vk_first_draw_retire_all(void);
+// 间接参数的权威字节（GPU 可能写过）：1 = 已从本帧可写影子读到 out（先过同步边界）；
+// 0 = guest 内存是权威，调用方自己读；-1 = 表达不了，why 写明。见 nvn_vk_first_draw.c。
+int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out, char *why, size_t why_size);
 // 当前录制帧的序号（从 1 开始，每帧/每次完整 flush 递增）：时间戳待写项按它归属到帧，
 // 退休只结算已拿到完成证明的帧。
 uint64_t nvn_vk_first_draw_frame_id(void);
