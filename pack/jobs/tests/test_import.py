@@ -225,7 +225,7 @@ class PartialImportTests(JobCase):
         self.assertLessEqual(len(diagnostic), IMPORT_DIAGNOSTIC_LIMIT)
         self.assertGreater(len(diagnostic), 3000)
         self.assertIn("TAIL-MARK", diagnostic)
-        saved = json.loads((self.c.library / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
+        saved = json.loads((self.c.private / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
         self.assertLessEqual(len(saved["sources"][0]["diagnostic"]), IMPORT_DIAGNOSTIC_LIMIT)
 
     def test_io_error_on_one_source_does_not_block_other_files(self):
@@ -300,7 +300,7 @@ raise SystemExit(main.main())
                 self.assertIn(rows[0]["status"], ("imported", "duplicate"))
                 self.assertEqual(rows[1]["status"], "unprocessed" if reason == "cancelled" else "failed")
                 self.assertEqual(rows[2]["status"], "unprocessed")
-                saved = json.loads((self.c.library / "logs" / "jobs" / (event["taskId"] + ".json")).read_text())
+                saved = json.loads((self.c.private / "logs" / "jobs" / (event["taskId"] + ".json")).read_text())
                 self.assertEqual(saved["sources"], rows)
 
     def test_multi_package_source_rolls_back_if_catalog_commit_fails(self):

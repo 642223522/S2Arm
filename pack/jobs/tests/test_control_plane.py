@@ -77,14 +77,8 @@ class ControlPlaneTests(unittest.TestCase):
 
     # ---- helpers ----
     def jobs_dir(self, task=None):
-        """任务记录目录（游戏库结构 P3）：任务起跑时库已建好（有库标识）→ <库>/logs/jobs，否则 <私有目录>/logs/jobs。
-        setup 起跑时库还没建好，它的记录留在私有目录，等下一个作业收进库：给了 task 就看它在哪一边"""
-        built = self.library / "logs" / "jobs"
-        fallback = self.private / "logs" / "jobs"
-        name = (task or self.task) + ".json"
-        if (built / name).exists() or not (fallback / name).exists() and (self.library / ".s2arm-library.json").is_file():
-            return built
-        return fallback
+        """任务记录目录：固定 <私有目录>/logs/jobs（剃刀 H6；库建没建好都一样）"""
+        return self.private / "logs" / "jobs"
 
     def request(self, task=None, **extra):
         body = dict(schema=1, taskId=task or self.task, operation="setup", engineDir=str(ROOT),

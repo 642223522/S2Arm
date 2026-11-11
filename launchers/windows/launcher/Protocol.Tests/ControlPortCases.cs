@@ -60,13 +60,13 @@ public static class ControlPortCases
         var tasks = ControlJournal.Tasks(root);
         check(tasks.Count == 2 && tasks[0].GetProperty("id").GetString() == "b" && tasks[0].GetProperty("state").GetString() == "running", "journal: live job stays running, hidden and request files skipped");
         check(tasks[1].GetProperty("state").GetString() == "interrupted", "journal: running job with a dead process reads interrupted");
-        // 游戏库结构 P3：库建好（有 .s2arm-library.json）后日志与作业记录在 库\logs；只有文件夹没标识仍在私有目录
+        // 剃刀 H6：日志与作业记录固定 私有目录\logs，库建没建好都不变（同作业层 core.logs_root）
         var lib = Path.Combine(root, "lib");
         Directory.CreateDirectory(lib);
         File.WriteAllText(LibraryPaths.PreferenceFile(root), lib);
         check(LibraryPaths.JobsDir(root) == Path.Combine(root, "logs", "jobs"), "paths: unbuilt library keeps logs in the private root");
         File.WriteAllText(Path.Combine(lib, ".s2arm-library.json"), "{\"schema\":1,\"id\":\"x\"}");
-        check(LibraryPaths.JobsDir(root) == Path.Combine(lib, "logs", "jobs") && LibraryPaths.LogsRoot(root, lib) == Path.Combine(lib, "logs"), "paths: built library holds logs and jobs");
+        check(LibraryPaths.JobsDir(root) == Path.Combine(root, "logs", "jobs") && LibraryPaths.LogsRoot(root) == Path.Combine(root, "logs"), "paths: built library still keeps logs and jobs in the private root");
         check(LibraryPaths.DefaultLibrary(root) == Path.Combine(root, "DefaultLibrary"), "paths: custom data root keeps its own default library");
         // 私有目录 / 新缺省库和作业层同一取法：先读 LOCALAPPDATA / USERPROFILE 环境变量（作业层 layout.standard_private、Path.home()）
         var savedLocal = Environment.GetEnvironmentVariable("LOCALAPPDATA"); var savedProfile = Environment.GetEnvironmentVariable("USERPROFILE");
