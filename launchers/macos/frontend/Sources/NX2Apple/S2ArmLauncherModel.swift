@@ -208,6 +208,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
+    /// 当前这份装机前清单是给哪台设备查的（控制口 GET /state 的 installReadiness.checkedDevice）：换了设备先清掉旧清单，
+    ///   s2armctl install-check --device 等到这台的结果才读（11-11 真机验收：连查两台，第二台读到了第一台的清单）
+    @Published private(set) var installReadinessDevice: String?
+    /// 正在查时又来了另一台（或另一款）的请求：记下，这次查完接着查它（原先直接丢掉）
+    private var pendingInstallCheck: (game: String, device: String?)?
     @Published private(set) var installError: String?
     private(set) var installGameID: String?
     // 释放空间（spaceSurvey / spaceFree，FreeSpaceView）：只看一款
@@ -717,17 +722,21 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
     func checkInstall(_ gameID: String, device: String? = nil) {
-        if installGameID != gameID { installGameID = gameID; installReadiness = nil; installError = nil }
-        guard !installChecking else { return }
+        let target = device ?? installDeviceID
+        if installGameID != gameID || installReadinessDevice != target {   // 换了款或换了设备：旧清单不能当这台的
+            installGameID = gameID; installReadinessDevice = target; installReadiness = nil; installError = nil
+        }
+        if installChecking { pendingInstallCheck = (gameID, target); return }
         installChecking = true
         Task {
             do {
-                let readiness = try await provider.installReadiness(gameId: gameID, device: device ?? installDeviceID)
-                if installGameID == gameID { installReadiness = readiness; installError = nil }
+                let readiness = try await provider.installReadiness(gameId: gameID, device: target)
+                if installGameID == gameID && installReadinessDevice == target { installReadiness = readiness; installError = nil }
             } catch {
-                if installGameID == gameID { installError = error.localizedDescription }
+                if installGameID == gameID && installReadinessDevice == target { installError = error.localizedDescription }
             }
             installChecking = false
+            if let next = pendingInstallCheck { pendingInstallCheck = nil; checkInstall(next.game, device: next.device) }
         }
     }
 
