@@ -587,7 +587,8 @@ def sub_programs(run, a, x, w, src_dir):
     services Application.ProgramDir：模块目录与游戏数据目录都在这里，Mac 产物根两者同根）。单程序款不进来"""
     n = programs_of(x)
     if n <= 1: return
-    if a.from_extract: raise Fail(f'多程序合集（{n} 支）：--from-extract 只给了序号 0 的解包目录，其余序号要从原件解，改给原件')
+    # --from-extract 的共用解包目录只有序号 0；其余序号从原件解（作业层把游戏库里的原件跟在后面一起给，#613）
+    if a.from_extract and not a.source: raise Fail(f'多程序合集（{n} 支）：--from-extract 只给了序号 0 的解包目录，其余序号要从原件解，原件没一起给')
     for i in range(1, n):
         xi, tid_i, _ = unpack(run, a.source, a.title_id, i)
         if WIN: host_decoder_gate(run, xi); glslc_gate(run, xi)

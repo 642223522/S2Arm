@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the production CMake reader, including an actual host static-library link."""
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -86,7 +87,7 @@ class LinkInputTests(unittest.TestCase):
             self.run_command([CMAKE, "-S", consumer, "-B", consumer_build, "-G", "Unix Makefiles",
                               f"-DHELPER={HELPER}", f"-DINPUT={inputs}"])
             self.run_command([CMAKE, "--build", consumer_build])
-            executable = consumer_build / ("consumer.exe" if shutil.which("cmd.exe") else "consumer")
+            executable = consumer_build / ("consumer.exe" if os.name == "nt" else "consumer")
             self.run_command([executable])
 
 

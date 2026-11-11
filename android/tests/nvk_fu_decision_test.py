@@ -49,7 +49,7 @@ def main():
             'int __android_log_vprint(int,const char*,const char*,va_list);\n')
         (inc / 'sys/system_properties.h').write_text(
             '#define PROP_VALUE_MAX 92\nint __system_property_get(const char*,char*);\n')
-        base = [os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
+        base = [os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_DEFAULT_SOURCE',
                 '-O0', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-misleading-indentation', '-pthread',
                 '-DS2A_ANDROID_VK_ENGINE=1', '-DS2A_ANDROID_VK_BACKEND_NVN_VK=1', '-DS2A_ANDROID_DEBUG_ENV=1']
         base += ['-I' + str(p) for p in (inc, NATIVE, NATIVE / 'nvn', NATIVE / 'direct',
