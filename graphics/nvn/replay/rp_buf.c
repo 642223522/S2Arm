@@ -11,6 +11,7 @@
 #include "nvn_unimpl.h"
 #include "nvn_plat.h"
 #include "nvn_hmap.h"
+#include "nvn_fmt_info.h"
 #include "nvn_dirty.h"
 #include "nvn_mtl.h"
 #include <pthread.h>
@@ -217,8 +218,25 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
     } else {
         int nz = sr.depth > 0 ? sr.depth : 1, dnz = dr.depth > 0 ? dr.depth : 1;
         if (o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_MIRROR_Z_BIT)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
-        if (sr.width != dr.width || sr.height != dr.height || nz != dnz) { nvn_unimpl("tex", "t2t_scaled", rec); return; }
-        if (sfmt != dfmt) { nvn_unimpl("tex", "t2t_format_change", rec); return; }
+        if (sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
+            // 缩放 / 换格式（iOS 是画出来的，copy_t2t_draw；这边后端有原生的缩放拷贝）：只做二维、单层、单采样、两边都不是整数 / 深度模板格式的
+            nvn_fmt_info fa, fb; int ia = !nvn_fmt_info_of((uint32_t)sfmt, &fa) || fa.kind == NVN_FMT_UINT || fa.kind == NVN_FMT_SINT || fa.depth || fa.stencil;
+            int ib = !nvn_fmt_info_of((uint32_t)dfmt, &fb) || fb.kind == NVN_FMT_UINT || fb.kind == NVN_FMT_SINT || fb.depth || fb.stencil;
+            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ia || ib) { nvn_unimpl("tex", sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
+            nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
+            if (!(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) { nvn_unimpl("tex", "t2t_scaled_no_native_blit", rec); return; }
+            // 视图只取级与层：拷贝按存储的格式做
+            view_t vs, vd; memset(&vs, 0, sizeof vs); memset(&vd, 0, sizeof vd);
+            vs.set_levels = 1; vs.base_level = (int)sl; vs.nlevels = 1; vs.set_layers = 1; vs.min_layer = (int)(sz0 + (uint32_t)sr.zoffset); vs.nlayers = 1;
+            vd.set_levels = 1; vd.base_level = (int)dl; vd.nlevels = 1; vd.set_layers = 1; vd.min_layer = (int)(dz0 + (uint32_t)dr.zoffset); vd.nlayers = 1;
+            nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
+            if (!gv || !hv) return;
+            NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
+            nvn_gpu_blit(c, gv, &a, hv, &b, (o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0);
+            rp_tex_mark_gpu_written(d);
+            return;
+        }
+        if (nz != dnz) { nvn_unimpl("tex", "t2t_scaled", rec); return; }
         if (s3 != d3) { nvn_unimpl("tex", "t2t_3d_mismatch", rec); return; }
     }
     if (sr.width <= 0 || sr.height <= 0) return;
