@@ -944,6 +944,7 @@
       {"id": "batch.keys", "zh-Hans": "缺密钥：先在游戏库放入密钥", "en": "Keys missing: add your keys in the library first"},
       {"id": "batch.unrecognized", "zh-Hans": "认不出：{0}", "en": "Not recognized: {0}"},
       {"id": "batch.summary", "zh-Hans": "{0} 款：{1} 款已出好，{2} 款失败", "en": "{0} games: {1} built, {2} failed"},
+      {"id": "batch.stopped", "zh-Hans": "批次记录没写成，已停在这里（已出好的不受影响）：{0}", "en": "The batch record wasn't saved, so the batch stopped here (finished games are kept): {0}"},
       {"id": "batch.paused", "zh-Hans": "磁盘空间不足，后面的游戏已暂停：释放空间后点「重试」接着出。", "en": "Not enough disk space, so the remaining games are paused. Free up space, then click Retry to continue."},
       {"id": "batch.state.pending", "zh-Hans": "排队中", "en": "Queued"},
       {"id": "batch.state.running", "zh-Hans": "正在出", "en": "Building"},
