@@ -623,10 +623,36 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 连着的设备里用哪台：玩家选过且还连着 → 它；否则有线连着的第一台；否则第一台（#272）
+    /// 界面上的目标设备：玩家选过 → 只认那台（连着就是它；不连着为 nil，界面说「它不在线」，不替玩家换成别的——11-11 玩家实报：
+    ///   续签时选的 iPhone 拔了线，同网的 iPad 被装上）。没选过 → 有线连着的那台，否则第一台（#272），装的就是界面上显示的这台
     nonisolated static func pickDevice(_ connected: [[String: Any]], chosen: String?) -> [String: Any]? {
-        if let chosen, let d = connected.first(where: { $0["id"] as? String == chosen }) { return d }
+        if let chosen { return connected.first(where: { $0["id"] as? String == chosen || $0["udid"] as? String == chosen }) }
         return connected.first(where: { $0["wired"] as? Bool == true }) ?? connected.first
+    }
+
+    /// 装机 / 续签 / 更新手机上的 S2Arm 一律带上的设备号：玩家选的那台（此刻不在线也照样带上，作业层如实说「iPhone「名字」不在线」），
+    /// 没选过时就是界面上显示的那台。作业层收不到设备号就拒绝，不自己挑
+    var installDeviceID: String? { chosenDevice ?? (selectedDevice?["udid"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? selectedDevice?["id"] as? String }
+
+    /// 选过的设备此刻不在线（不在连着的列表里）：界面提示并让玩家改选
+    var chosenDeviceOffline: Bool { chosenDevice != nil && selectedDevice == nil }
+
+    /// 续签：装回这款当初装的那台（装机记录里的设备号），不换别的；那台不在线时作业层如实说
+    func targetInstalledDevice(of game: GameSummary) {
+        if let key = game.iphoneInstallDevice, !key.isEmpty { chosenDevice = key }
+    }
+
+    /// 这次实际装上的那台（装机结果的 deviceKind / deviceName）：完成页、顶部胶囊写「已装到 iPad「名字」」，不写死 iPhone
+    @Published var installedTo: String = ""
+    nonisolated static func deviceLabel(kind: String, name: String) -> String {
+        let k = kind.isEmpty ? "iPhone / iPad" : kind
+        return name.isEmpty ? k : "\(k)「\(name)」"
+    }
+    /// 正在装 / 要装的那台的称呼（进度胶囊用）：选中且连着 → 类型 + 名字；否则「iPhone / iPad」
+    var installTargetLabel: String {
+        guard let d = selectedDevice else { return "iPhone / iPad" }
+        let pad = (d["productType"] as? String)?.hasPrefix("iPad") == true
+        return Self.deviceLabel(kind: pad ? "iPad" : "iPhone", name: d["name"] as? String ?? "")
     }
 
     var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
@@ -696,7 +722,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         installChecking = true
         Task {
             do {
-                let readiness = try await provider.installReadiness(gameId: gameID)
+                let readiness = try await provider.installReadiness(gameId: gameID, device: installDeviceID)
                 if installGameID == gameID { installReadiness = readiness; installError = nil }
             } catch {
                 if installGameID == gameID { installError = error.localizedDescription }
@@ -735,10 +761,15 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy else { return }
         let teamId = teamId ?? Self.enteredTeam
         failAction(nil, game: nil)
-        // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
-        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
+        // 装到玩家选的那台（控制口明说了 device 的照它；s2armctl 不带就是空，作业层拒绝）。界面发起的一律带上，不靠作业层挑
+        let device = device ?? installDeviceID
+        installedTo = ""
         start(.install, game: game, name: game.name) { [weak self] sink in
-            do { let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink); self?.installOpenToFinish = r?.openToFinish ?? false }
+            do {
+                let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink)
+                if let r { self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName) }
+                self?.installOpenToFinish = r?.openToFinish ?? false
+            }
             catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? ""); throw f }
             return nil
         }
@@ -751,20 +782,22 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。
-    func restorePhone(_ game: GameSummary) {
+    func restorePhone(_ game: GameSummary, device: String? = nil) {
         guard !busy else { return }
         failAction(nil, game: nil)
+        let device = device ?? game.iphoneInstallDevice ?? installDeviceID   // 装回当初那台
         start(.installRestore, game: game, name: game.name) { [weak self] sink in
-            try await self?.provider.restorePhone(events: sink)
+            try await self?.provider.restorePhone(device: device, events: sink)
             return nil
         }
     }
 
-    func removeFromPhone(_ game: GameSummary, acceptDropped: Bool = false, ask: Bool = true) {
+    func removeFromPhone(_ game: GameSummary, acceptDropped: Bool = false, ask: Bool = true, device: String? = nil) {
         guard !busy else { return }
         failAction(nil, game: nil)
+        let device = device ?? game.iphoneInstallDevice ?? installDeviceID   // 从装着它的那台删
         start(.installRemove, game: game, name: game.name) { [weak self] sink in
-            do { _ = try await self?.provider.removeFromPhone(gameId: game.id, acceptDropped: acceptDropped, events: sink) }
+            do { _ = try await self?.provider.removeFromPhone(gameId: game.id, acceptDropped: acceptDropped, device: device, events: sink) }
             catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .installRemove, game: game, message: f.errorDescription ?? ""); throw f }
             return nil
         }
