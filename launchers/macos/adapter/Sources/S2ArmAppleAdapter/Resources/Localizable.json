@@ -6984,10 +6984,6 @@
   "en": "Install to iPhone from the computer again."
  },
  {
-  "source": "从电脑重新装到 iPhone。",
-  "en": "Install to iPhone from the computer again."
- },
- {
   "source": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",
   "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
  },
