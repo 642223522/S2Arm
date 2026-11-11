@@ -119,6 +119,14 @@ public sealed partial class EnvironmentWindow
     {
         body.Children.Add(Label(T("library.title"), 23));
         body.Children.Add(Label(T("library.description")));
+        // 游戏库放在了某个 S2Arm 程序文件夹里（多半是旧压缩包版解压出来的那个）：换装安装版后清理旧文件夹、或更新换壳，都会连游戏库一起删（v0.3.0 安装程序）
+        if (ProgramFolderAround(connectedFolder) is { } program)
+        {
+            var warn = new StackPanel { Spacing = 10 };
+            warn.Children.Add(Label(T("library.inside_program").Replace("{0}", program)));
+            warn.Children.Add(Action("library.inside_program.move", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy));
+            body.Children.Add(new Border { Background = Brush.Parse("#2A1F14"), CornerRadius = new CornerRadius(12), Padding = new Thickness(16, 12), Child = warn });
+        }
 
         // In-progress capsule: shown when a pack is running and the session is hidden
         if (packRunning && sessionHidden)
@@ -577,6 +585,20 @@ public sealed partial class EnvironmentWindow
 
     // 旧默认库（私有目录下的 DefaultLibrary）被作业层同盘改名到 %USERPROFILE%\S2Arm 后，设置里的旧路径按搬库标记换成新位置（游戏库结构 P3）
     private string SavedLibrary() => LibraryPaths.SavedLibrary(privateRoot);
+
+    /// <summary>游戏库所在路径往上，最近的一个 S2Arm 程序文件夹（有 S2Arm.exe 和 Engine\）；没有为 null</summary>
+    internal static string? ProgramFolderAround(string? library)
+    {
+        if (string.IsNullOrEmpty(library)) return null;
+        try
+        {
+            for (var d = new DirectoryInfo(Path.GetFullPath(library)); d is not null; d = d.Parent)
+                if (File.Exists(Path.Combine(d.FullName, "S2Arm.exe")) && Directory.Exists(Path.Combine(d.FullName, "Engine")))
+                    return Path.TrimEndingDirectorySeparator(d.FullName);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        return null;
+    }
 
     private async Task ChangeLibraryAsync()
     {

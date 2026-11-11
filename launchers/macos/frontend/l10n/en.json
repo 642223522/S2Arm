@@ -1352,7 +1352,6 @@
   "s2arm.export.basisReuse": "the rest reuses the cache",
   "s2arm.export.block.busy": "Another task is running. Export when it is done.",
   "s2arm.export.block.alreadyQueued": "This game is already exporting or queued. Try again when it is done.",
-  "s2arm.export.block.environment": "This Mac is missing components the export needs.",
   "s2arm.export.block.keys": "prod.keys (the keys that decrypt the game) is not in place yet. Add it to export.",
   "s2arm.export.block.noPlatform": "Pick at least one platform to export to.",
   "s2arm.export.byRate": "at this step's current pace",
@@ -1745,5 +1744,14 @@
   "s2arm.cloud.busyAfterSync": "Another task started during the sync, so the game didn't start. Click Play again when it finishes",
   "s2arm.action.installPad": "Install on iPad",
   "s2arm.install.titlePad": "Install on iPad",
-  "s2arm.export.installExistingPad": "Already built? Install it on iPad"
+  "s2arm.export.installExistingPad": "Already built? Install it on iPad",
+  "s2arm.fail.locations": "Couldn't read storage locations",
+  "s2arm.fail.installMode": "Couldn't read the install method",
+  "s2arm.fail.installModeSet": "Couldn't switch the install method",
+  "s2arm.fail.devCert": "Couldn't read the developer certificate status",
+  "s2arm.fail.devCertUse": "Couldn't switch the signing method",
+  "s2arm.fail.devCertDelete": "Couldn't delete the developer certificate",
+  "s2arm.fail.cloudFolder": "Couldn't set the iCloud saves folder",
+  "s2arm.fail.targets": "Couldn't read connected devices",
+  "s2arm.report.unavailable": "The error report couldn't be generated (the job layer returned nothing). The reason shown on screen:"
 }

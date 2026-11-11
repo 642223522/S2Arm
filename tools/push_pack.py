@@ -54,6 +54,10 @@ from pathlib import Path
 R = Path(__file__).resolve().parents[1]
 LIM = 1 << 30
 IMG = re.compile(r"(^|.*/)romfs\.img$|game\.img")   # 单文件镜像（旧形态 romfs.img / v0.3.0 单一 IMG game.img，pack/img.py）：直接写到最终路径，不进 tar、不用首启解开
+# 流式写失败后还能交给 devicectl 整份拷的上限（缺省 2 GiB，S2A_DC_FALLBACK_MAX 可改）：devicectl device copy to 把整个文件读进
+#   CoreDeviceService 内存（#641 实测 12.2 GiB 的资源包：服务涨到约 20 GB、整机换页 10 GB 并卡死，下一次流式写在 0 字节就失败）。
+#   批次 tar（≤1 GB）照旧可以退回
+DC_FALLBACK_MAX = 2 << 30
 IMG_PAGE = 16384   # 单一 IMG 的页（pack/img.py PAGE）：第 0 页是头，续传按页向下取整接着写
 IMG_PACK_ID = slice(32, 96)   # 头里的资源包号（ASCII，可空）：空 = 认不出是不是同一份，不续传
 DOCS = "Documents"   # 设备侧文档根（单款 App）；多款容器每款 Documents/games/<游戏号>（pack/ship_ext.py 容器布局），设备对象的 docs 属性
@@ -245,11 +249,15 @@ class Devicectl:
         if rc:
             raise Fail("资源包写进 iPhone 时中断（" + ("iPhone 空间不够" if self.nospc() else f"devicectl 退出码 {rc}") + "）：确认手机解锁、数据线插稳、空间够后再点一次")   # 哪个文件写进 cp.log
 
-    def put_big(self, src, rel):   # 大文件优先走 s2a-devpush 流式（usbmuxd 能到时快且不落临时文件），不行退回 devicectl
+    def put_big(self, src, rel):   # 大文件优先走 s2a-devpush 流式（usbmuxd 能到时快且不落临时文件），不行退回 devicectl（大于上限的不退，见 DC_FALLBACK_MAX）
         if self.dp:
             try:
                 return self.dp.put(src, rel)
             except Fail as e:
+                size, cap = Path(src).stat().st_size, int((self.env or os.environ).get("S2A_DC_FALLBACK_MAX") or DC_FALLBACK_MAX)
+                if size > cap:
+                    raise Fail(f"流式写 {Path(rel).name} 中断（{str(e)[-160:]}）。这份有 {size / 2**30:.1f} GB，不改走 devicectl（它会把整个文件读进内存、"
+                               "拖垮系统的设备服务）：换一根数据线或换个接口、手机保持解锁，再装一次") from None
                 self.say(f"流式写 {Path(rel).name} 没成（{str(e)[-160:]}），改走 devicectl")
         self.put(src, rel)
 

@@ -41,7 +41,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   install-check <游戏号> [--json]    装到 iPhone 前的清单：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
   restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   show environment|library|export [游戏号]   打开环境检查 / 回游戏库 / 打开这款的出包页（同点对应按钮）
-  update-phone [--ask | --accept-stale [--repack]]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
+  update-phone [--ask | --accept-stale [--repack]] [--device UDID或设备名]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
                                     有要按新版重新出包的款时不带 --accept-stale 退 1 并列出它们；--repack 更新完把它们排进批量出包、出完自动装
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
@@ -385,6 +385,10 @@ def iphone():
           and d.get('hardwareProperties', {}).get('platform') == 'iOS']
     return ds
 
+def container_match(installed, placeholder):
+    """手机上装的包名是不是这个容器：同名，或占位名 + 「.团队[.后缀]」"""
+    return installed == placeholder or installed.startswith(placeholder + '.')
+
 def device(gid):
     ipa, bid = game_bundle(gid); ds = iphone()
     if not ds: print(f'没连 iPhone：请玩家用数据线连上并解锁、在手机上点「信任」。包 {ipa}（应用身份 {bid}）'); sys.exit(2)
@@ -392,10 +396,12 @@ def device(gid):
         u = d['hardwareProperties']['udid']; name = d.get('deviceProperties', {}).get('name', u)
         import tempfile
         with tempfile.NamedTemporaryFile(suffix='.json') as f:
-            dctl(['device', 'info', 'apps', '--device', u, '--bundle-id', bid, '--json-output', f.name])
+            dctl(['device', 'info', 'apps', '--device', u, '--json-output', f.name])
             try: apps = json.load(open(f.name))['result']['apps']
             except Exception: apps = []
-        print(f'iPhone「{name}」（{u}）：{"已装" if apps else "没装"} {bid}' + ('' if apps else '——请玩家用 AltStore 装（要登录 Apple ID，AI 不代做）'))
+        # 包里的 io.s2arm.games 只是组装时的占位名：装机时换成 io.s2arm.games.<团队>（开发用还可再带后缀），按前缀认手机上实际装的（#642）
+        got = sorted(a.get('bundleIdentifier', '') for a in apps if container_match(a.get('bundleIdentifier', ''), bid))
+        print(f'iPhone「{name}」（{u}）：' + (f'已装 {"、".join(got)}' if got else f'没装 {bid}——请玩家用 AltStore 装（要登录 Apple ID，AI 不代做）'))
     sys.exit(0)
 
 def engine_root():   # 引擎目录：App 里是 Contents/Resources/Engine（bundle_engine 冻结的快照），仓库里是仓库根
@@ -736,7 +742,8 @@ def main():
         return
     if cmd == 'update-phone':
         before = {t['id'] for t in call('GET', '/state')['tasks'] if t['operation'] == 'installUpdate'}
-        body = {**({'acceptStale': True} if '--accept-stale' in rest else {}), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {})}
+        body = {**({'acceptStale': True} if '--accept-stale' in rest else {}), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {}),
+                **({'device': rest[rest.index('--device') + 1]} if '--device' in rest else {})}   # 连着多台时指定哪台（同 install --device）
         r = call('POST', '/update-phone', body); print(json.dumps(r, ensure_ascii=False), flush=True)   # 409（已是本版 / 有要重出的款没确认）在 call 里带原因退非 0
         if r.get('asked'): print('窗口里弹了三选一，等玩家选'); return   # --ask：同点按钮，有要重出的款时由玩家在窗口里选
         wait_op('installUpdate', before, 3600); return

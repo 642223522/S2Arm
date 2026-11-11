@@ -95,16 +95,15 @@ final class NS2LauncherController: ObservableObject {
         startProcess()
     }
 
-    func disconnectManually() {
-        stopProcess()
+    func disconnectManually(then done: (@MainActor () -> Void)? = nil) {
+        stopProcess(then: done)
         phase = .off
         detail = "手柄已断开。开始游戏不受影响。"
     }
 
     func retry() {
         guard process != nil else { connectManually(); return }
-        disconnectManually()
-        connectManually()
+        disconnectManually { [weak self] in self?.connectManually() }   // 旧连接程序退干净（放开蓝牙）再起新的
     }
 
     /// 通道路径固定，开局时手柄还没连也照样交给游戏：游戏没接上时每秒重试，玩家开局后再连手柄，游戏也会接回
@@ -136,7 +135,7 @@ final class NS2LauncherController: ObservableObject {
     }
 
     func shutdown() {
-        stopProcess()
+        stopProcess(wait: true)   // 启动器退出：就地等（有上限），不留没退的连接程序
     }
 
     private func startProcess() {
@@ -191,15 +190,34 @@ final class NS2LauncherController: ObservableObject {
         }
     }
 
-    private func stopProcess() {
+    /// 停连接程序（剃刀 M16）：原先主线程上 terminate 后 waitUntilExit() 不设上限，连接程序不退出时整个启动器冻住。
+    ///   现在后台等（stopGrace 秒），不退就 SIGKILL；done 在确认退出后回主线程调。wait = true（启动器退出）就地等同样有上限
+    private func stopProcess(wait: Bool = false, then done: (@MainActor () -> Void)? = nil) {
         intentionalStop = true
         kind = 0
         output?.fileHandleForReading.readabilityHandler = nil
         output = nil
-        guard let task = process else { return }
+        guard let task = process else { done?(); return }
         process = nil
         task.terminationHandler = nil
-        if task.isRunning { task.terminate(); task.waitUntilExit() }
+        if wait { Self.terminate(task, grace: Self.stopGrace); done?(); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            Self.terminate(task, grace: Self.stopGrace)
+            Task { @MainActor in done?() }
+        }
+    }
+
+    static let stopGrace: TimeInterval = 3
+    /// SIGTERM → 最多等 grace 秒 → 还在就 SIGKILL 并收尸。回来时进程一定已退出；返回是否动用了 SIGKILL。不要在主线程调
+    @discardableResult nonisolated static func terminate(_ task: Process, grace: TimeInterval) -> Bool {
+        guard task.isRunning else { return false }
+        task.terminate()
+        let deadline = Date().addingTimeInterval(grace)
+        while task.isRunning && Date() < deadline { usleep(20_000) }
+        guard task.isRunning else { return false }
+        kill(task.processIdentifier, SIGKILL)
+        task.waitUntilExit()
+        return true
     }
 
     private func consume(_ data: Data) {

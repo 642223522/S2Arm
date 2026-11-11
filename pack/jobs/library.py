@@ -8,6 +8,7 @@ import contextlib
 from copy import deepcopy
 import errno
 import filelock
+from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages   # 出包空间规则的唯一定义（剃刀 H11）
 import hashlib
 import json
 import os
@@ -162,6 +163,12 @@ DIAG_RUN_TOTAL_LIMIT = 40 << 20  # 诊断局 PNG：总量上限（#438 定）
 #   已解包的游戏目录（Switch 2 导出 dump / S2Arm 解包 extract / 通用解包 loose）也可直接导入，不要密钥
 SOURCE_SUFFIXES = (".nsp", ".xci", ".nsz", ".xcz", ".nup")
 NUP_SUFFIX = ".nup"
+KEYLESS_FORMATS = ("nup", "dump", "extract", "loose")   # 不加密、不要 prod.keys 的格式（NUP 容器与解包目录）：要不要密钥只按这一份判（剃刀 W10）
+
+
+def needs_keys(packages):
+    """这组包（selected_packages 选定的）要不要 prod.keys：有任一项格式不在 KEYLESS_FORMATS（NSP / XCI / NSZ / XCZ 加密原件）就要"""
+    return any(p.get("format") not in KEYLESS_FORMATS for p in packages)
 
 
 def engine_tool(c, name):
@@ -506,7 +513,6 @@ def _win_volume_format(path):
         return ""
 
 
-
 def volume_cluster(path):
     """路径所在卷的分配单元（簇）字节数；读不到给 0。Mac：statvfs 的 f_frsize（文件系统基本块；f_bsize 在 macOS 上是建议的读写大小，APFS 读出 1 MB，不能用）；
     Windows：GetDiskFreeSpaceW 的「每簇扇区数 × 每扇区字节数」。路径还不存在时看最近一级已存在的上级目录"""
@@ -842,7 +848,7 @@ def keys(c):
         verified = False
         with c.lock("execution"), c.lock():
             candidate = next((source_path(c, p) for g in c.catalog()["games"] for p in selected_packages(g)
-                              if p["type"] == "base" and p.get("format") not in ("nup", "dump", "extract", "loose") and source_path(c, p).is_file()), None)   # NUP 与解包目录不加密，验不了密钥
+                              if p["type"] == "base" and p.get("format") not in KEYLESS_FORMATS and source_path(c, p).is_file()), None)   # NUP 与解包目录不加密，验不了密钥
             if candidate:
                 with tempfile.TemporaryDirectory(dir=c.private) as icons:
                     diagnostics_before = len(c.job["diagnostics"])
@@ -910,19 +916,6 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
         raise Failure("内容读取器返回的元数据不完整。", code="content_invalid") from None
 
 
-def selected_packages(game):
-    bases = [p for p in game["packages"] if p["type"] == "base"]
-    updates = [p for p in game["packages"] if p["type"] == "update"]
-    result = ([max(bases, key=lambda p: p["version"])] if bases else [])
-    if updates:
-        result.append(max(updates, key=lambda p: p["version"]))
-    dlc = {}
-    for p in game["packages"]:
-        if p["type"] == "dlc" and (p["titleId"] not in dlc or dlc[p["titleId"]]["version"] < p["version"]):
-            dlc[p["titleId"]] = p
-    return result + [dlc[k] for k in sorted(dlc)]
-
-
 def input_identity(game):
     return hashlib.sha256(json.dumps([(p["titleId"], p["version"], p["sha256"])
                                      for p in selected_packages(game)], separators=(",", ":")).encode()).hexdigest()
@@ -959,45 +952,6 @@ def _win_volume_label(root):
 SPACE_UNKNOWN = [
     dict(id="shader_cache", role="library", label="着色器缓存", note="着色器缓存另占若干 GB，随游戏与设备而变，未量化，不计入门槛。"),
 ]
-
-
-# 双轨包多占的空间（10-24 01006F8002326000实测，RomFS 10.7 GB）：直连库中间缓存（S2A_DIRECT_CACHE，跨次复用）+ 包里的直连库，按游戏体积换算
-# 出包要多少盘（11-08 维护者）：不看这款做没做过，第一次出包也算得准，只有一个数。
-#   解包 = 原包 × 1.1（解包目录已完整在盘上时算 0）；Mac 的资源包是 APFS 克隆不另算，Windows（NTFS 无克隆）再加一份原包 × 1.1；
-#   直连（翻译缓存 + 着色器库 + 收尾临时，取上限）：原包 < 3 GB 记 5 GB，其余 15 GB（最坏样本巫师3 缓存 7.5 + 库 1.5 × 2 份 + 收尾临时约 4）
-PACK_SMALL_BYTES, DIRECT_SMALL_BYTES, DIRECT_LARGE_BYTES = int(3e9), int(5e9), int(15e9)
-
-
-def _pack_input_bytes(packages):
-    # 同一 sha 的原件只计一次：取原件大小与所选各项内容字节的大值（NSZ/XCZ 解开比原件大）。
-    # 压缩合集（XCZ 等）一个原件装多项，各项内容互不重叠，contentBytes 相加（#444：原先按 sha 去重只留最后一项，解开后的量少算）。
-    # NUP 容器不同：不压缩、容器内按块去重，更新是整份打过补丁的文件系统、和本体共用数据块，各项 contentBytes 重叠——
-    #   0400486024DEC000：文件 25.62 GB，本体、更新各 26.27 GB，相加成 52.5 GB 多估一倍——取各项最大值，不相加
-    by_sha = {}
-    for p in packages:
-        size, summed, largest, nup = by_sha.get(p["sha256"], (0, 0, 0, False))
-        content = p.get("contentBytes", 0)
-        by_sha[p["sha256"]] = (max(size, p.get("size", 0)), summed + content, max(largest, content), nup or p.get("format") == "nup")
-    return sum(max(size, largest if nup else summed) for size, summed, largest, nup in by_sha.values())
-
-
-def _pack_direct_bytes(size):
-    return DIRECT_SMALL_BYTES if size < PACK_SMALL_BYTES else DIRECT_LARGE_BYTES
-
-
-def pack_need_bytes(packages, unpacked=False, windows=None, image=False):
-    """这次出包要多少盘；packages 已按 selected_packages 选定。unpacked：解包目录已完整在盘上。windows 不给就按当前系统。
-    image：打 iPhone 包（单一 IMG 交付）——出包最后一步把资源整份写成 game.img（真数据，克隆不了），写时解包目录、直连缓存都还在盘上，
-    再加一份原件大小（11-11 实测 0400486024DEC000：IMG 24.49 GiB ≈ 资源内容 24.47 GiB，整次峰值 57.90 GiB 出在写 IMG 时；原先没算，预留 43.9 GB < 峰值 62.2 GB）。
-    直连段按原件大小分两档（_pack_direct_bytes）。11-10 删掉 #265 的「按着色器抽取量 × 系数」：抽取字节数不是直连占用的驱动量——
-    抽取产物有的是压缩过的着色器档案（0100559011740000 只有 23 个、0.48 GiB），有的是原文（01008FC00D964000 1.66 GiB），两者直连编译缓存峰值
-    却差不多（6.3 / 7.0 GiB），乘系数注定一款多一款少；那条分支从 #265 起读的是 v2 旧路径、从没生效过。按原件的规则在克隆感知、只量出包作业目录的
-    峰值上三款都够（单测 test_space_budget_covers_measured_peaks）"""
-    size = _pack_input_bytes(packages)
-    copy = size * 11 // 10
-    windows = os.name == "nt" if windows is None else windows
-    direct = _pack_direct_bytes(size)
-    return (0 if unpacked else copy) + (copy if windows else 0) + direct + (size if image else 0)
 
 
 # 出包实测账（11-07 联合开发者01007EF00011E000：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
@@ -1145,7 +1099,7 @@ def pack_footprint(c, gid):
 def record_pack_usage(c, game):
     """出包成功后（清中间产物之前）记一行实测：程序号、目标、直连与否、输入大小、整套占用。量不出来不影响这次出包，只少一行账"""
     try:
-        size = _pack_input_bytes(selected_packages(game))
+        size = pack_input_bytes(selected_packages(game))
         if size <= 0:
             return None
         footprint = pack_footprint(c, game["id"])
@@ -1175,10 +1129,10 @@ def space_budget(c, game):
     """打包前的空间预算（纯计算，不拦）：只有一个数，出包页显示和拦截都用它；公式见 pack_need_bytes。space-usage.tsv 只记账校准常量，不进判断。只写盘名，不写绝对路径。"""
     import shutil as _sh
     packages = selected_packages(game)
-    size = _pack_input_bytes(packages)
+    size = pack_input_bytes(packages)
     unpacked = _unpacked_on_disk(c, game)
     # P1-165：解包 / 产物写在这款的存放位置，直连缓存写在工具缓存；两块盘各按自己那份需求、自己的余量判（同卷合成一项，同原来）
-    direct_need = _pack_direct_bytes(size)
+    direct_need = pack_direct_bytes(size)
     image = getattr(c, "operation", None) == "ipa"   # 打 iPhone 包写 game.img（写在存放位置）；Mac 打包不写
     copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image) - direct_need
     unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "")
@@ -1673,6 +1627,7 @@ def catalog(c):
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
         game["compatibility"] = "unsupported" if guest_isa(selected_packages(game)) == "aarch32" else "experimental"
+        game["needsKeys"] = needs_keys(selected_packages(game))   # 出包要不要 prod.keys：前端直接用，不再各算一份格式名单（剃刀 W10）
         image = layout.image_mac(c, game["id"], create=False)
         try:
             manifest = validate_runtime(c, image, full=False, files=False)
@@ -1719,6 +1674,7 @@ def catalog(c):
     marker = c.logs / ".jobs-pruned"
     if time.time() - _mtime(marker) > 86400:
         prune_jobs(c.private, jobs=c.jobpath.parent)
+        marker.parent.mkdir(parents=True, exist_ok=True)   # catalog 是只读探测、不落自己的记录（剃刀 H4）：日志目录不一定已被本作业建出来
         marker.touch()
     records = sorted((p for p in c.jobpath.parent.glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
                      key=_mtime, reverse=True)[:JOB_LIST_LIMIT]
@@ -1734,10 +1690,21 @@ def catalog(c):
 
 # 这一款在私有目录里按程序号存的出包缓存（直连 / 翻译 / 追加内容 / 原件核对 / 宽屏；都在 S2A_RUN_ROOT = <私有>/run 下，pack/jobs/core.py Context.env）
 # 显式清理/删除含共享编库缓存；Q15 成功后的自动清理仅清本款中间产物，保留可复用编库条目。
+def direct_cache_dir(c, gid):
+    """本款直连缓存（graphics/tools/direct/direct_lib.sh 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
+    存放位置与工具缓存在同一块盘：工具缓存下（同原来）；不在同一块盘（游戏放外接盘）：这款游戏文件夹第一层的 direct-cache/，
+    大头写入跟着游戏落到外接盘，系统盘只留固定开销（引擎、宿主）。放在 build/ 外面：出包成功后清 build/ 不带走它，重出包照样复用"""
+    tool = c.work_root / "run" / "s2arm" / "cache" / "direct" / gid.upper()
+    loc = layout.find_game(c, gid)
+    if loc is None or _existing(loc).stat().st_dev == _existing(c.work_root).stat().st_dev:
+        return tool
+    return loc / "direct-cache"
+
+
 def game_caches(c, gid, *, include_compiler=True):
     run = c.work_root / "run" / "s2arm"
     low = gid.lower()
-    direct = run / "cache" / "direct" / gid.upper()
+    direct = direct_cache_dir(c, gid)
     out = [direct] if include_compiler else direct_transients(c, direct)
     for d, pat in ((run / "cache" / "bake", f"{low}-*"), (run / "cache" / "aoc", f"t{low}-*"), (run / "cache" / "srcver", f"t{low}-*"),
                    (run / "widen", f"t{low}_*"), (run / "widen" / "auto", f"t{low}_*")):

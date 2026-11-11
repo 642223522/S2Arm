@@ -1932,7 +1932,10 @@ static void *rec(NVNcommandBuffer *c, uint32_t op, size_t payload) {
 // NVN 四边形条带（NVN_DRAW_PRIMITIVE_QUAD_STRIP = 8，Metal 没有）就地改成三角形条带（5）：第 i 个四边形 (2i, 2i+1, 2i+3, 2i+2) 正好是三角形条带第 2i、2i+1 两个三角形
 //   （同一组顶点、同一片覆盖面）；四边形条带不画末尾落单的那个顶点，三角形条带会多画一个三角形 → CPU 知道个数的把个数向下取偶（间接绘制的个数在 GPU 上，原样）。
 //   11-06 无人深空测试设备1：这类绘制原先在回放里整笔丢掉（「primitive type 8 not implemented」），录到 8 笔
-static void prim_quad_strip(int32_t *prim, int32_t *count) { if (*prim == 8) { *prim = 5; if (*count > 0) *count &= ~1; } }
+// NVN 多边形（NVN_DRAW_PRIMITIVE_POLYGON = 9，Metal 没有）就地改成三角形扇（6）：凸多边形 v0..vn-1 = 以 v0 为扇心的 (v0, vi, vi+1)，覆盖面相同
+//   （上游参考实现同样处理：Ryujinx.Graphics.Vulkan EnumConversion Polygon → TriangleFan）；扇形之后各条路径（展开、间接转换）照旧。
+//   #635：0100F43008C44000 Mac 局 16 笔「primitive type 9 not implemented」整笔丢掉（曾被当成曲面细分，日志里 hull / domain 都是「-」）
+static void prim_quad_strip(int32_t *prim, int32_t *count) { if (*prim == 8) { *prim = 5; if (*count > 0) *count &= ~1; } else if (*prim == 9) *prim = 6; }
 static void rec_draw(NVNcommandBuffer *c, p_draw d) { prim_quad_strip(&d.prim, &d.count); size_t n = d.ind || d.mdi_cnt || d.tfc ? sizeof d : offsetof(p_draw, ind); memcpy(rec(c, OP_DRAW, n), &d, n); }
 static void rec_draw_idx(NVNcommandBuffer *c, p_draw_idx d) {
     prim_quad_strip(&d.prim, &d.count);

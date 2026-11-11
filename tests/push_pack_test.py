@@ -329,6 +329,37 @@ class ContainerDocs(Base):
         self.assertEqual((d.docs, d.ctx), ("Documents", None))   # 单款缺省不变
 
 
+class BigFallback(unittest.TestCase):
+    """#641：流式写失败后，大于上限的文件不交给 devicectl 整份拷（CoreDeviceService 会把整个文件读进内存、拖垮整机）；小文件照旧退回"""
+    def run_put_big(self, size, cap):
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * size)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": str(cap)})
+            class Stream:
+                def put(self, src, rel): raise push.Fail("写文件失败：device socket io failed")
+            d.dp = Stream(); said, copied = [], []
+            d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            try:
+                d.put_big(src, "Documents/资源包/game.img"); return None, copied, said
+            except push.Fail as e:
+                return str(e), copied, said
+
+    def test_big_file_does_not_fall_back_to_devicectl(self):
+        err, copied, _ = self.run_put_big(4096, 1024)
+        self.assertEqual(copied, [])
+        self.assertIn("不改走 devicectl", err)
+        self.assertIn("device socket io failed", err)
+
+    def test_small_file_still_falls_back(self):
+        err, copied, said = self.run_put_big(512, 1024)
+        self.assertIsNone(err)
+        self.assertEqual(copied, ["Documents/资源包/game.img"])
+        self.assertTrue(any("改走 devicectl" in m for m in said))
+
+    def test_default_cap_is_two_gib(self):
+        self.assertEqual(push.DC_FALLBACK_MAX, 2 << 30)
+
+
 class SpaceNeed(Base):
     def batches(self, *sizes):
         for i, rows in enumerate(sizes):

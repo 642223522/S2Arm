@@ -58,6 +58,7 @@ RECOVERY = {
     "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
     "permission_denied": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
+    "volume_ops_unsupported": "游戏存放位置或游戏库所在的盘不支持 S2Arm 需要的文件操作（常见于 exFAT / FAT 格式的外接盘）：把这款游戏的存放位置换到 APFS 格式的盘（Mac 内置盘就是；外接盘可在「磁盘工具」里另分一个 APFS 分区），再重试；游戏原件不用挪。",
     "architecture_unsupported": "当前路径需要 Apple Silicon Mac，请换用支持的设备；重试不会改变硬件兼容性。",
     "os_unsupported": "当前游戏路径需要 macOS 15 或更新版本；在支持的系统上重新检查环境后再试。",
     "xcode_unavailable": "去 App Store 安装 Xcode，装好打开一次并完成必要组件安装，回来点「重新检查」。",
@@ -161,11 +162,12 @@ def recovery(code, *, packaged):
 
 class Failure(Exception):
     """message 是上屏的那句；internal 是只进诊断 detail（「复制错误摘要」带走）的内部原文：阶段、rc、构建号、红行。"""
-    def __init__(self, message, *, code="job_failed", internal="", holder=None):
+    def __init__(self, message, *, code="job_failed", internal="", holder=None, facts=None):
         super().__init__(message)
         self.code = code
         self.internal = internal
         self.holder = holder   # library_busy：占着游戏库锁的任务（filelock 旁挂文件里记的那份），其余为 None
+        self.facts = facts     # 机读的失败事实（cause_facts：改写失败的模块 / 缺口数 / 缺口类别），前端按字段显示，不解析中文；没有为 None
 
 
 def _under(path, roots):
@@ -231,6 +233,7 @@ PLAYER_REASON = {
     "graphics_api_unsupported": "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。",
     "tool_missing": "缺少工具：这条链上有个工具没装。",
     "content_invalid": "文件内容不对：文件结构校验没通过，可能没下完整。",
+    "volume_ops_unsupported": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
     "signing_failed": "签名没成：用你的 Apple ID 给这台 iPhone 签名没成功。",
     "configuration_failed": "配置推导失败。",
     "shader_extract_failed": "着色器抽取失败。",
@@ -253,6 +256,8 @@ LOG_CAUSES = (
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
      r"|STATUS_DISK_FULL|磁盘空间不足", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样
+    # 盘不支持某种文件操作（exFAT 外接盘不支持原子改名 / 克隆 / 硬链接，实测 errno 45）：出包写入的这块盘格式不对，说清换 APFS 盘（11-10 网友：存放位置设到外接盘写入失败）
+    (r"\[Errno 45\] Operation not supported|\bENOTSUP\b|Operation not supported on socket", "volume_ops_unsupported"),
     # cp 被系统拒绝（拷字体等，pack/stages/sysdata.sh 红行带 cp 原文）：macOS 隐私授权没给（桌面 / 文稿 / 下载 / 外接盘）或目录没写权限 → 提示去系统设置授权
     (r"\bcp: .*: (?:Operation not permitted|Permission denied)", "permission_denied"),
     # 直连库出库前核链号对不上：旧引擎（≤ beta.4，direct_lib.sh 把 dmsh_chain.py --build-env 的 stderr 一起收进链号）遇到 metal 比锁新的 Xcode，
@@ -405,6 +410,36 @@ def refresh_stop_phase(red):
     return None
 
 
+_PFRW = re.compile(r"PFRW\s+mod=(\S+)\s+need=(\d+)\s+gaps=(\d+)(?:\s+fatal=(-?\d+))?")   # 改写器统计行（runtime/rewriter/rewriter.c 打的机读格式）
+_GAP_KIND = re.compile(r"0x[0-9a-fA-F]+|\b[0-9a-f]{8}\b|#-?\w+|S\d_\d_C\d+_C\d+_\d|\b[xw]\d+\b")   # 同 core.write_rewrite_digest 的归类：去掉地址、寄存器号、立即数
+GAP_KINDS_MAX = 5
+
+
+def cause_facts(code, log, texts=()):
+    """失败的机读事实（剃刀 G5 / H9）→ dict 或 None。改写类（rewrite_gap / rewrite_failed）：同一份有界证据（gather_evidence）里
+    改写器自己打的最后一条统计行 PFRW → {"module", "need", "gaps", "fatal"}；证据里有 GAP 行再加 gapKinds = 前 GAP_KINDS_MAX 类 [{"kind", "count"}]（按次数降序）。
+    其余码、证据里没有统计行 → None（不猜）"""
+    if code not in ("rewrite_gap", "rewrite_failed"):
+        return None
+    chunks = gather_evidence(log, texts)
+    last, kinds = None, {}
+    for _, text in chunks:
+        for m in _PFRW.finditer(text):
+            last = m
+        for line in text.splitlines():
+            if line.startswith("GAP\t"):
+                kind = _GAP_KIND.sub("_", line.split("\t", 3)[-1])[:80]
+                kinds[kind] = kinds.get(kind, 0) + 1
+    if not last:
+        return None
+    facts = {"module": last.group(1), "need": int(last.group(2)), "gaps": int(last.group(3))}
+    if last.group(4) is not None:
+        facts["fatal"] = int(last.group(4))
+    if kinds:
+        facts["gapKinds"] = [{"kind": k, "count": n} for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))[:GAP_KINDS_MAX]]
+    return facts
+
+
 def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
@@ -481,5 +516,6 @@ def build_tool_failure(args, milestone, log):
     elif executable == "dotnet" and milestone == "unpack":
         phase = "unpack"
     code, why = classify_failure(phase, log)
-    # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why)
+    # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）；机读事实进 facts（前端按字段显示）
+    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,
+                   facts=cause_facts(code, log))

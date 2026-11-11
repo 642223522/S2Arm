@@ -109,7 +109,7 @@ final class EngineProviderBuildTests: XCTestCase {
             case "preflight":
                 preflights += 1
                 let ok = preflights > 1 ? "true" : "false"
-                return ([result(#"{"checks":[{"name":"Xcode","ok":true,"requiredFor":["prepare"],"action":"appStoreXcode"},{"name":".NET SDK（打 iPhone 包）","ok":\#(ok),"requiredFor":["ipa"],"action":"installDotnet"}]}"#)], 0, false)
+                return ([result(#"{"checks":[{"id":"xcode","name":"Xcode","ok":true,"requiredFor":["prepare"],"action":"appStoreXcode"},{"id":"dotnet_sdk","name":".NET SDK（打 iPhone 包）","ok":\#(ok),"requiredFor":["ipa"],"action":"installDotnet"}]}"#)], 0, false)
             case "installDotnet": return ([result("{}")], 0, false)
             default: return ([result(#"{"outputPath":"/out/A","ipa":"/out/A/A.ipa","buildId":"abc"}"#)], 0, false)
             }
@@ -138,7 +138,7 @@ final class EngineProviderBuildTests: XCTestCase {
         let runner = FakeRunner()
         runner.script = { req in
             req["operation"] as? String == "preflight"
-                ? ([result(#"{"checks":[{"name":".NET SDK（打 iPhone 包）","ok":false,"requiredFor":["ipa"],"action":"installDotnet"}]}"#)], 0, false)
+                ? ([result(#"{"checks":[{"id":"dotnet_sdk","name":".NET SDK（打 iPhone 包）","ok":false,"requiredFor":["ipa"],"action":"installDotnet"}]}"#)], 0, false)
                 : ([result("{}")], 0, false)
         }
         let provider = S2ArmEngineProvider(client: client(box, runner), xcodeLocator: { nil })
@@ -259,7 +259,7 @@ final class EnvironmentAndInstallTests: XCTestCase {
         runner.script = { req in
             if req["operation"] as? String == "downloadIosPlatform" { downloaded = true; return ([eventLine("progress", message: "下载 Xcode 的 iOS 平台组件"), result("{}")], 0, false) }
             let ok = downloaded ? "true" : "false"
-            return ([result(#"{"checks":[{"name":"iOS 平台组件","ok":"# + ok + #","requiredFor":["ipa"],"group":"system","action":"downloadIosPlatform"}]}"#)], 0, false)
+            return ([result(#"{"checks":[{"id":"ios_platform","name":"iOS 平台组件","ok":"# + ok + #","requiredFor":["ipa"],"group":"system","action":"downloadIosPlatform"}]}"#)], 0, false)
         }
         let service = EnvironmentService(client: client(box, runner), xcodeLocator: { nil })
         _ = try await service.check()
@@ -275,7 +275,7 @@ final class EnvironmentAndInstallTests: XCTestCase {
         let runner = FakeRunner()
         runner.script = { req in
             req["operation"] as? String == "preflight"
-                ? ([result(#"{"checks":[{"name":"Metal 编译组件","ok":true,"requiredFor":["prepare"],"group":"system"}]}"#)], 0, false)
+                ? ([result(#"{"checks":[{"id":"metal","name":"Metal 编译组件","ok":true,"requiredFor":["prepare"],"group":"system"}]}"#)], 0, false)
                 : ([eventLine("progress", message: "下载 Metal 组件"), result("{}")], 0, false)
         }
         let service = EnvironmentService(client: client(box, runner), xcodeLocator: { nil })
@@ -283,7 +283,7 @@ final class EnvironmentAndInstallTests: XCTestCase {
         let checks = try await service.repair("downloadMetal", events: log.sink)
         XCTAssertEqual(ops(runner), ["downloadMetal", "preflight"])
         XCTAssertEqual(runner.starts[1].request["libraryId"] as? String, "")   // 环境准备不依赖游戏库
-        XCTAssertEqual(checks, [ToolCheck(name: "Metal 编译组件", ok: true, message: "", group: "system", requiredFor: ["prepare"])])
+        XCTAssertEqual(checks, [ToolCheck(id: "metal", name: "Metal 编译组件", ok: true, message: "", group: "system", requiredFor: ["prepare"])])
         XCTAssertTrue(service.ready(for: "prepare"))
         XCTAssertEqual(log.kinds, ["progress", "result"])
         do { _ = try await service.repair("library"); XCTFail() } catch { XCTAssertTrue(error is JobClientError) }

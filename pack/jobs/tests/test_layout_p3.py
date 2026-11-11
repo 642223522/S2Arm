@@ -30,7 +30,7 @@ class DirectoryRuleTests(JobCase):
     """日志 / 任务记录 / 工具缓存的根：库建好 → 默认位置；没建好 → 私有目录"""
 
     def test_built_library_holds_logs_jobs_and_tool_cache(self):
-        c = Context(dict(self.request, taskId="t-built", operation="catalog"))
+        c = Context(dict(self.request, taskId="t-built", operation="keys"))
         self.assertEqual(c.logs, self.c.library / "logs")
         self.assertEqual(c.jobpath, self.c.library / "logs" / "jobs" / "t-built.json")
         self.assertTrue(c.jobpath.is_file())
@@ -46,7 +46,7 @@ class DirectoryRuleTests(JobCase):
         self.assertEqual(c.work_root, c.private / "tool-cache")
 
     def test_private_only_readers_find_jobs_through_the_index(self):
-        c = Context(dict(self.request, taskId="t-read", operation="catalog"))
+        c = Context(dict(self.request, taskId="t-read", operation="keys"))
         layout.save_index(c)   # 索引表第一项 = 默认位置
         self.assertEqual(core.logs_root(c.private), self.c.library / "logs")
         self.assertEqual(core.journal(c.private, "t-read")["id"], "t-read")

@@ -6986,5 +6986,13 @@
  {
   "source": "导出诊断包发给我们。",
   "en": "Export a diagnostics package and send it to us."
+ },
+ {
+  "source": "游戏存放位置或游戏库所在的盘不支持 S2Arm 需要的文件操作（常见于 exFAT / FAT 格式的外接盘）：把这款游戏的存放位置换到 APFS 格式的盘（Mac 内置盘就是；外接盘可在「磁盘工具」里另分一个 APFS 分区），再重试；游戏原件不用挪。",
+  "en": "The drive holding this game's storage location or the game library doesn't support the file operations S2Arm needs (common on exFAT / FAT external drives). Move this game's storage location to an APFS drive (the Mac's built-in drive is APFS; on an external drive you can add an APFS partition in Disk Utility), then try again. The original game files can stay where they are."
+ },
+ {
+  "source": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
+  "en": "Drive format not supported: this drive doesn't support the file operations exporting needs (common on exFAT / FAT external drives)."
  }
 ]
