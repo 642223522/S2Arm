@@ -59,7 +59,7 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
 }
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
-enum { HIST_N = 32768, HIST_TEX = 12, DUMP_MAX = 48 };
+enum { HIST_N = 4096, HIST_TEX = 12, DUMP_MAX = 48 };
 static struct { uint64_t target, tex[HIST_TEX]; } g_hist[HIST_N]; static uint32_t g_hist_n;
 static void hist_note(uint64_t target, const uint64_t *tex, int ntex) {
     uint32_t i = g_hist_n++ % HIST_N; g_hist[i].target = target; memset(g_hist[i].tex, 0, sizeof g_hist[i].tex);
@@ -349,6 +349,8 @@ static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence)
     const char *dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE); if (!dir) dir = nvn_plat_dir(NVN_PLAT_DIR_DIAG);
     if (!dir) { nvn_plat_log(NVN_PLAT_LOG_WARN, "dump", "没有可写目录，不落盘"); return; }
     uint64_t list[DUMP_MAX]; int depth[DUMP_MAX], n = 0; list[n] = present_serial; depth[n++] = 0;
+    // 点名要读的贴图序号（调试开关 nvk_dump_s0 … s5）：不靠往上追，直接读；层号记 9
+    for (int k = 0; k < 6; k++) { char nm[16]; snprintf(nm, sizeof nm, "nvk_dump_s%d", k); int sv = nvn_plat_flag(nm, 0); if (sv > 0) { list[n] = (uint64_t)sv; depth[n++] = 9; } }
     uint32_t have = g_hist_n < HIST_N ? g_hist_n : HIST_N;
     for (int i = 0; i < n && n < DUMP_MAX; i++) {
         if (depth[i] >= 6) continue;
