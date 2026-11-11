@@ -12,7 +12,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import errno
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import stat
 import struct
@@ -349,80 +349,12 @@ def _info(handle):
                            st_size=(info.size_high << 32) | info.size_low, attributes=info.attributes)
 
 
-def _sid_bytes(sid):
-    if not _api('advapi32', 'IsValidSid', W.BOOL, C.c_void_p)(sid):
-        raise OSError('invalid security identifier')
-    length = _api('advapi32', 'GetLengthSid', W.DWORD, C.c_void_p)(sid)
-    return C.string_at(sid, length)
-
-
-def _current_sid():
-    token = W.HANDLE()
-    current = _api('kernel32', 'GetCurrentProcess', W.HANDLE)()
-    _checked(_api('advapi32', 'OpenProcessToken', W.BOOL, W.HANDLE, W.DWORD, C.c_void_p)(current, 8, C.byref(token)))
-    try:
-        size = W.DWORD()
-        query = _api('advapi32', 'GetTokenInformation', W.BOOL, W.HANDLE, C.c_int,
-                     C.c_void_p, W.DWORD, C.c_void_p)
-        query(token, 1, None, 0, C.byref(size))
-        data = C.create_string_buffer(size.value)
-        _checked(query(token, 1, data, size, C.byref(size)))
-        return _sid_bytes(C.c_void_p.from_buffer(data).value)
-    finally:
-        _close(token)
-
-
-def _well_known_sid(kind):
-    size = W.DWORD(68); data = C.create_string_buffer(size.value)
-    _checked(_api('advapi32', 'CreateWellKnownSid', W.BOOL, C.c_int, C.c_void_p,
-                  C.c_void_p, C.c_void_p)(kind, None, data, C.byref(size)))
-    return _sid_bytes(data)
-
-
-def _private_security(handle):
-    owner, dacl, descriptor = C.c_void_p(), C.c_void_p(), C.c_void_p()
-    result = _api('advapi32', 'GetSecurityInfo', W.DWORD, W.HANDLE, C.c_int, W.DWORD,
-                  C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p)(
-                      handle, 1, 5, C.byref(owner), None, C.byref(dacl), None, C.byref(descriptor))
-    if result:
-        raise C.WinError(result)
-    try:
-        current = _current_sid()
-        if _sid_bytes(owner) != current or not dacl.value:
-            return False
-        allowed = {current, _well_known_sid(22), _well_known_sid(26)}  # SYSTEM, Administrators
-        # ACL header: revision, reserved, size WORD, ace count WORD, reserved.
-        count = C.c_ushort.from_address(dacl.value + 4).value
-        for index in range(count):
-            ace = C.c_void_p()
-            _checked(_api('advapi32', 'GetAce', W.BOOL, C.c_void_p, W.DWORD, C.c_void_p)(dacl, index, C.byref(ace)))
-            kind, flags, size = struct.unpack('<BBH', C.string_at(ace, 4))
-            if flags & 8:  # INHERIT_ONLY_ACE does not grant access to this file
-                continue
-            if kind == 1:  # A deny ACE grants no rights
-                continue
-            if kind != 0 or size < 16:
-                return False  # Unknown/object/callback ACEs are not proof of privacy
-            mask = C.c_uint32.from_address(ace.value + 4).value
-            if mask & 0x90020089 and _sid_bytes(ace.value + 8) not in allowed:
-                return False
-        return True
-    finally:
-        if descriptor.value:
-            _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)(descriptor)
-
-
 def request_is_private(path):
-    if os.name != 'nt':
-        path = Path(path)
-        return not (path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid())
-    try:
-        # Pin the inspected leaf for security queries; never query an unchecked
-        # path again (GetNamedSecurityInfo would follow a replaced link).
-        with open_dir_nofollow(path, directory=False, security=True) as opened:
-            return stat.S_ISREG(opened.info.st_mode) and _private_security(opened.handle)
-    except (OSError, ValueError):
-        return False
+    """Mac / Linux：请求文件属主是本用户且只有本用户可读写（0600）。
+    Windows 不在这里再核（11-11 装机链路审查）：启动器建请求文件时已带只给本人的权限（PrivateJobRequest.cs），这层是重复的；
+    它遇到不认识的权限条目类型就判「不私有」，作业抛一句英文退出、没有错误码，比它防的「同机别的用户读到请求里的路径」更伤"""
+    path = Path(path)
+    return not (path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid())
 
 
 class _UnicodeString(C.Structure):
@@ -521,14 +453,21 @@ def _relative(parent, name, directory=None, delete=False):
     return Opened(handle.value, directory)
 
 
-def open_dir_nofollow(path, parent=None, *, directory=True, security=False):
+def pinnable_path(text):
+    """逐级钉句柄打开的起点：盘符根（C:\\）或网络共享根（\\\\服务器\\共享\\，游戏库放在 SMB 共享盘上，#427 诊断包导不出）。
+    设备路径（\\\\?\\、\\\\.\\）照旧拒绝：它们绕过正常的路径解析。传进来的是绝对路径字符串"""
+    absolute = PureWindowsPath(text)
+    if not absolute.anchor or str(absolute).startswith(('\\\\?\\', '\\\\.\\')):
+        raise OSError(errno.EINVAL, 'only drive or network share paths are accepted (no device paths)')
+    return absolute
+
+
+def open_dir_nofollow(path, parent=None, *, directory=True):
     if parent is not None:
         return _relative(parent, str(path), directory)
-    # Open and pin every lexical ancestor from the volume root. No resolve(),
+    # Open and pin every lexical ancestor from the volume / share root. No resolve(),
     # which could hide reparse points, and no path-based child read/delete.
-    absolute = Path(os.path.abspath(path))
-    if not absolute.anchor or str(absolute).startswith('\\\\'):
-        raise OSError(errno.EINVAL, 'UNC/device paths not accepted by this adapter')
+    absolute = pinnable_path(os.path.abspath(path))
     handle = _api('kernel32', 'CreateFileW', W.HANDLE, W.LPCWSTR, W.DWORD,   # lp-exempt: 只传卷根（absolute.anchor），其下逐级用相对句柄打开
                   W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE)(
                       absolute.anchor, 0x100081, 3, None, 3, 0x02200000, None)
@@ -541,15 +480,6 @@ def open_dir_nofollow(path, parent=None, *, directory=True, security=False):
             child = _relative(current, name, directory if final else True)
             current.close()
             current = child
-        if security:
-            # Relative handles need READ_CONTROL for GetSecurityInfo. Reopen
-            # the *same object* with that additional access, not its path.
-            handle = _api('kernel32', 'ReOpenFile', W.HANDLE, W.HANDLE, W.DWORD, W.DWORD, W.DWORD)(
-                current.handle, 0x20081, 3, 0x02200000)
-            if handle == C.c_void_p(-1).value:
-                raise C.WinError(C.get_last_error())
-            old, current = current, Opened(handle, directory)
-            old.close()
         return current
     except BaseException:
         current.close()

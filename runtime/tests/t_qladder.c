@@ -46,6 +46,25 @@ int main(void) {
     CHECK(feed(120, 33.333, 1, 0.5, 0, 2, 0) < 0, "原生 30 帧（游戏间隔 2）跑 30 帧：跟得上，不降");
     r = feed(40, 50, 1, 0.9, 0, 2, 0); CHECK(r == 1, "原生 30 帧只跑出 20 帧：降到掌机（实 %d）", r);
     fresh(S2A_QL_MODE, 0); CHECK(feed(40, 33.333, 1, 0.9, 0, 1, 0) == 1, "原生 60 帧（间隔 1）只跑出 30：降到掌机");
+    // #352 运行模式上限：玩家选掌机（iPhone 缺省）时梯子不自己升到主机；没有上限的同一段喂数会升（对照）
+    CHECK(s2a_ql_top_tier(S2A_QL_FPS, 1) == 0 && s2a_ql_top_tier(S2A_QL_MODE, 1) == 0 && s2a_ql_top_tier(S2A_QL_FPS, 0) == 2 && s2a_ql_top_tier(S2A_QL_MODE, 0) == 1,
+          "上限对应的档：主机 0；掌机 三档款 2、两档款 1");
+    fresh(S2A_QL_MODE, 1); CHECK(feed(600, 16.667, 1, 0.2, 0, 1, 0) == 0, "对照：两档款在掌机、余量足（GPU 20%%）、没上限：10 分钟内升回主机");
+    fresh(S2A_QL_MODE, 1); s2a_ql_top(1); CHECK(feed(600, 16.667, 1, 0.2, 0, 1, 0) < 0 && s2a_ql_tier() == 1, "两档款上限掌机：同样余量 10 分钟不升（停在掌机）");
+    fresh(S2A_QL_FPS, 0); s2a_ql_top(2); CHECK(s2a_ql_tier() == 2, "三档款记下的主机60、上限掌机：拉到掌机30（实 %d）", s2a_ql_tier());
+    CHECK(feed(600, 33.333, 1, 0.2, 0, 1, 0) < 0 && s2a_ql_tier() == 2, "三档款上限掌机：余量足 10 分钟不升");
+    fresh(S2A_QL_FPS, 2); s2a_ql_top(0); r = feed(320, 33.333, 1, 0.2, 0, 1, 0); CHECK(r == 1, "上限主机（Mac / 玩家开了主机）：照旧升档（实 %d）", r);
+    // 梯子压 / 放 60 帧时要不要告诉玩家（审计 P1-80 原因 4）：期望按「起局不说、没变不说、没开 60 帧 / 自动化局不说、压了说 4、放开说 0」手推
+    { struct { int boot, last, hold, on, un, want; const char *why; } c[] = {
+        {1, -1, 1, 1, 0, -1, "起局按记下的档压回：不说（每次开游戏都弹是噪音）"},
+        {0, -1, 1, 1, 0, -1, "还没摆过档（last = -1）：不说"},
+        {0, 0, 1, 1, 0, 4, "局中从 60 帧压回原帧率：说原因 4"},
+        {0, 1, 0, 1, 0, 0, "局中放开回 60 帧：说已恢复"},
+        {0, 1, 1, 1, 0, -1, "压着没变：不说"},
+        {0, 0, 1, 0, 0, -1, "玩家没开 60 帧：不说"},
+        {0, 0, 1, 1, 1, -1, "自动化局：不说"} };
+      for (unsigned i = 0; i < sizeof c / sizeof *c; i++) { int got = s2a_ql_fps_note(c[i].boot, c[i].last, c[i].hold, c[i].on, c[i].un), ok = got == c[i].want;
+        bad += !ok; printf("%s 提示 %s：期望 %d → 实 %d\n", ok ? "✓" : "✗", c[i].why, c[i].want, got); } }
     printf("%s t_qladder：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad ? 1 : 0;
 }

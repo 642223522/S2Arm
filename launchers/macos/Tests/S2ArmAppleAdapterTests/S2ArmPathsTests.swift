@@ -13,19 +13,24 @@ final class S2ArmPathsTests: XCTestCase {
         try Data(#"{"schema":1,"id":"x"}"#.utf8).write(to: url.appendingPathComponent(".s2arm-library.json"))
     }
 
-    func testLogsRootFollowsBuiltLibraryElsePrivate() throws {
+    /// 每款的文件（键位 input.json 等）按 catalog 给的文件夹找：英文名文件夹也对（原先按 mappings/<号>.json 拼，v3 起永远读不到）
+    func testGameFilesFollowCatalogFolder() {
+        let ok = GameLocation(catalog: ["state": "ok", "path": "/L", "folder": "/L/games/Animal Crossing New Horizons"])
+        XCTAssertEqual(ok.file("input.json")?.path, "/L/games/Animal Crossing New Horizons/input.json")
+        XCTAssertNil(GameLocation(catalog: ["state": "offline", "path": "/V", "folder": ""]).file("input.json"))
+        XCTAssertNil(GameLocation(catalog: ["state": "ok", "path": "/L", "folder": ""]).file("input.json"))
+    }
+
+    // 剃刀 H6：日志 / 任务记录固定 <私有目录>/logs，库建没建好、设置里选了哪个库都不变（同作业层 core.logs_root）
+    func testLogsRootIsAlwaysPrivate() throws {
         let r = try temp(); defer { try? FileManager.default.removeItem(at: r) }
         let priv = r.appendingPathComponent("private"), lib = r.appendingPathComponent("lib")
-        XCTAssertEqual(S2ArmPaths.logsRoot(privateRoot: priv, library: "").path, priv.path + "/logs")
-        try FileManager.default.createDirectory(at: lib, withIntermediateDirectories: true)   // 有文件夹、没标识 = 还没建好
-        XCTAssertEqual(S2ArmPaths.logsRoot(privateRoot: priv, library: lib.path).path, priv.path + "/logs")
+        XCTAssertEqual(S2ArmPaths.logsRoot(privateRoot: priv).path, priv.path + "/logs")
         try makeLibrary(lib)
-        XCTAssertEqual(S2ArmPaths.logsRoot(privateRoot: priv, library: lib.path).path, lib.path + "/logs")
-        XCTAssertEqual(S2ArmPaths.jobsDir(privateRoot: priv, library: lib.path).path, lib.path + "/logs/jobs")
-        // 不传 library 读 preferences.json
         try FileManager.default.createDirectory(at: priv, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["library": lib.path]).write(to: priv.appendingPathComponent("preferences.json"))
-        XCTAssertEqual(S2ArmPaths.logsRoot(privateRoot: priv).path, lib.path + "/logs")
+        XCTAssertEqual(S2ArmPaths.logsRoot(privateRoot: priv).path, priv.path + "/logs")
+        XCTAssertEqual(S2ArmPaths.jobsDir(privateRoot: priv).path, priv.path + "/logs/jobs")
     }
 
     func testRelocationMarkerRedirectsOnlyTheOldPath() throws {

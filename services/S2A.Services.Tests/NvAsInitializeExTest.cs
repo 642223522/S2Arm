@@ -6,7 +6,7 @@ namespace S2A.Services.Tests
 {
     public static unsafe partial class Program
     {
-        // nvhost-as InitializeEx（nvservices AllocAsEx）定 GPU 地址空间的两个区间，GetVaRegions 照它报（10-29 脑锻炼带 CUDA：要的区间远大于写死的
+        // nvhost-as InitializeEx（nvservices AllocAsEx）定 GPU 地址空间的两个区间，GetVaRegions 照它报（10-29 一款第一方益智游戏带 CUDA：要的区间远大于写死的
         //   12 GiB 小页 / 112 GiB 大页，读回后空指针崩，直连 / 通用都崩）。期望照 nvservices（yuzu nvhost_as_gpu VM 常量）手算：
         //   ① 全 0 = 现在的缺省：小页 [4 GiB, 16 GiB)、大页 [16 GiB, 128 GiB)、大页 64 KiB
         //   ② 只给大页 128 KiB：起点 = 128 KiB << 10 = 128 MiB，分界 16 GiB，终点 128 GiB

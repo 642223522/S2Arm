@@ -171,7 +171,7 @@ struct ExportSessionView: View {
     // ---- timing: elapsed, time left, done at ----
 
     private func estimate(at now: Date) -> MilestoneEstimate {
-        session.progress.track.estimate(fraction: session.progress.fraction, now: now.timeIntervalSince1970)
+        session.progress.estimate(at: now)
     }
 
     /// 这一步在整单里占的比重：各步都有本机记录就按时间算，否则每步一样重（不编时间）。
@@ -335,11 +335,11 @@ struct ExportSessionView: View {
                 if value != nil { ProgressSweep().frame(height: 6).clipShape(Capsule()) }
             }
             .padding(.top, 6)
-            if !detail.isEmpty { Text(detail).font(.manrope(12.5, .medium)).monospacedDigit().foregroundStyle(.secondary) }
-            if !session.message.isEmpty, session.message != m.label, session.message != session.stage {
-                Text(loc.backend(session.message)).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).lineLimit(1).truncationMode(.middle)
-                    .id(session.message).transition(.opacity).animation(.easeOut(duration: 0.25), value: session.message)
-            }
+            // 这两行随作业事件有无、长短在变：恒占一行、不换行（空时透明占位），下面的步骤和日志不跟着上下跳
+            Text(detail.isEmpty ? " " : detail).font(.manrope(12.5, .medium)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+            let showMessage = !session.message.isEmpty && session.message != m.label && session.message != session.stage
+            Text(showMessage ? loc.backend(session.message) : " ").font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).lineLimit(1).truncationMode(.middle)
+                .id(session.message).transition(.opacity).animation(.easeOut(duration: 0.25), value: session.message)
         }
     }
 
@@ -389,13 +389,15 @@ struct ExportSessionView: View {
                 if platform == .ios {
                     Button { install(session.gameID ?? "") } label: { LauncherHeroActionLabel(title: x("done.install"), symbol: "iphone") }
                         .buttonStyle(.plain).keyboardShortcut(.defaultAction).accessibilityIdentifier("result.ios.install")
-                    if let path = o.ipa ?? o.output { finderButton(path) }
+                    // 出包这步没有 IPA（装机时才组装、整库共用一份）：给「打开游戏文件夹」；真有 IPA 才给「显示 .ipa」
+                    if let ipa = o.ipa, !ipa.isEmpty { finderButton(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) } }
+                    if let game { finderButton(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                 } else {
                     Button { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } } label: {
                         LauncherHeroActionLabel(title: loc.t("library.play"), symbol: "play.fill")
                     }
                     .buttonStyle(.plain).accessibilityIdentifier("result.mac.play")
-                    if let path = o.output { finderButton(path) }
+                    if let game { finderButton(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                 }
             }
             if platform == .ios {
@@ -404,9 +406,9 @@ struct ExportSessionView: View {
         }
     }
 
-    private func finderButton(_ path: String) -> some View {
-        Button { revealInFinder(path) } label: {
-            Label(loc.t("s2arm.job.reveal"), systemImage: "folder").font(.manrope(15, .bold)).foregroundStyle(LauncherPalette.cream)
+    private func finderButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: "folder").font(.manrope(15, .bold)).foregroundStyle(LauncherPalette.cream)
                 .padding(.horizontal, 24).frame(height: LauncherHeroAction.height)
                 .background(Color.white.opacity(0.08), in: Capsule())
                 .overlay(Capsule().strokeBorder(LauncherPalette.cream.opacity(0.3)))
@@ -438,11 +440,12 @@ struct ExportSessionView: View {
                     if platform == .mac {
                         Button(loc.t("library.play")) { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } }
                             .accessibilityIdentifier("result.mac.play")
-                        if let path = outcome?.output { Button(loc.t("s2arm.job.reveal")) { revealInFinder(path) } }
+                        if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                     } else {
-                        Button(loc.t("s2arm.action.install")) { install(session.gameID ?? "") }
+                        Button(loc.t(model.installKey("s2arm.action.install"))) { install(session.gameID ?? "") }
                             .accessibilityIdentifier("result.ios.install")
-                        if let path = outcome?.ipa ?? outcome?.output { Button(loc.t("s2arm.export.revealIpa")) { revealInFinder(path) } }
+                        if let ipa = outcome?.ipa, !ipa.isEmpty { Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) } }
+                        if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                     }
                 }
                 .launcherRowControls()
@@ -465,9 +468,13 @@ struct ExportSessionView: View {
                     Button(x("fix.space")) { freeSpace(session.gameID ?? "") }.buttonStyle(LauncherSecondaryButtonStyle())
                     Button(x("fix.continue")) { if let game { model.export(game, platforms: [platform], spaceOverride: true) } }.buttonStyle(LauncherSecondaryButtonStyle())
                 }
+                // 剃刀 M4：出包前不再按前端的环境检查结果挡人；作业因环境缺东西失败时（作业层错误码），这里给环境检查页的入口
+                if let code = outcome.code, S2ArmLauncherModel.environmentCodes.contains(code) {
+                    Button(loc.t("s2arm.env.title")) { model.showEnvironment = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                }
                 Button(x("fail.retry")) { if let game { model.export(game, platforms: [platform]) } }.buttonStyle(LauncherSecondaryButtonStyle())
                 Button(copied == platform ? loc.t("s2arm.export.copied") : loc.t("s2arm.export.copyError")) {
-                    let fallback = model.errorSummary(name, outcome: ExportRun.Outcome(state: outcome.state, message: loc.backend(outcome.message), code: outcome.code, suggestion: loc.backend(outcome.suggestion), failureSummary: outcome.failureSummary), game: session.name)
+                    let fallback = S2ArmLauncherModel.reportUnavailable(loc.backend(outcome.message), code: outcome.code)
                     Task {
                         await model.copyErrorReport(platform: name, gameID: session.gameID, operations: [platform == .ios ? "ipa" : "build"], fallback: fallback)
                         copied = platform

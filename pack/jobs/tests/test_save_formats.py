@@ -60,14 +60,23 @@ class SaveFormatTests(unittest.TestCase):
         tid = "0100000000010000"
         root = self.tree(tid, {"save/a.bin": b"a", "save.work/x": b"uncommitted", "save_device/b.bin": b"b"})
         with save_formats.extracted(root, tid=tid) as (layout, data, program, kind, _):
-            self.assertEqual((layout, os.path.basename(data), program, kind), ("nx2apple", "save", tid, "account"))
+            # save 不定类型（NX2Apple：只有设备存档的游戏也放 save），导入时有账户存档按账户、只有设备存档按设备
+            self.assertEqual((layout, os.path.basename(data), program, kind), ("nx2apple", "save", tid, None))
         # 外层文件夹名不是游戏号：程序号用调用方给的
         renamed = self.tree("copied", {"save/a.bin": b"a"})
         with save_formats.extracted(renamed, tid=tid) as (_, _, program, kind, _):
-            self.assertEqual((program, kind), (tid, "account"))
+            self.assertEqual((program, kind), (tid, None))
         only_device = self.tree("device", {"save_device/b.bin": b"b"})
         with save_formats.extracted(only_device, tid=tid) as (_, data, _, kind, _):
             self.assertEqual((os.path.basename(data), kind), ("save_device", "device"))
+
+    def test_nx2apple_wrapped_once_only_when_inner_folder_is_a_game_id(self):
+        # 压缩包解出来是 <游戏号>/save：认；外面那层不是游戏号（游戏自己的存档恰好只有一个子目录、里面叫 save）：不当 NX2Apple
+        tid = "0100000000010000"
+        wrapped = self.tree("zip-root", {tid + "/save/a.bin": b"a"})
+        self.assertEqual([(h[0], h[2]) for h in save_formats.detect(str(wrapped))], [("nx2apple", tid)])
+        native = self.tree("native-one", {"Saved Games/save/a.bin": b"a"})
+        self.assertEqual(save_formats.detect(str(native)), [])
 
     def test_folder_with_other_contents_is_not_nx2apple(self):
         # 游戏自己的存档里恰好有 save 子目录，旁边还有别的：不能当成 NX2Apple
@@ -281,7 +290,7 @@ class SaveFormatTests(unittest.TestCase):
              {"save_persistent.sav", "save_preferences.sav", "save_launcher.sav"}, "0", False),
             # 勇敢的心型：0/ 里只有一个槽位文件 → 剥
             ("commit dir, one slot file", {"0/slot-000.sav": b"s"}, {"slot-000.sav"}, "0", False),
-            # 塞尔达型：游戏自己的存档顶层是 0/…5/ + option.sav → 0/ 是槽位，不剥
+            # 一款第一方动作冒险游戏型：游戏自己的存档顶层是 0/…5/ + option.sav → 0/ 是槽位，不剥
             ("slot dir", {"0/game_data.sav": b"g", "0/caption.sav": b"c"}, {"0", "1", "option.sav"}, "", False),
             # 没有参照：不剥，报结构存疑（不静默剥）
             ("no reference", {"0/game_data.sav": b"g"}, None, "", True),

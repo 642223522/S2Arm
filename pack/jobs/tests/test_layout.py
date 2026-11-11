@@ -1,4 +1,5 @@
 """游戏库布局（pack/jobs/layout.py）单测：命名规则、旧布局迁移、中断续做。期望值按设计文档的规则手写，不跑被测实现推导。"""
+import errno
 import hashlib
 import json
 import os
@@ -6,7 +7,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from jobcase import JobCase
+from jobcase import JobCase, OsView   # OsView：只给被测模块看 os.name = "nt"，不改全进程（7d265148）
 
 import layout
 from core import atomic
@@ -167,7 +168,7 @@ class Upgrade3Tests(JobCase):
         # 第一台装机的设备认领迁移来的记录
         self.assertEqual(layout.load_device(self.c, "phone-1")["games"], {A: {}, B: {}})
         self.assertFalse((L / "devices/legacy.json").exists()); self.assertTrue((L / "devices/phone-1.json").is_file())
-        self.assertEqual(layout.install_record(self.c, B), dict(at=200, free=False, device="乙机"))
+        self.assertEqual(layout.install_record(self.c, B), dict(at=200, free=False, device="乙机", deviceKey="phone-1"))   # 带上装在哪台（设备记录键）：续签 / 装机按它找回同一台
 
     def test_upgrade_moves_iphone_outputs_into_each_game(self):
         L = self.v2_library()
@@ -227,6 +228,39 @@ class LocationTests(JobCase):
         layout.game_dir(self.c, B)   # 没指定位置、没用过别的位置 → 默认位置
         self.assertEqual(layout.find_game(self.fresh(), B), self.c.library / "games" / "Beta")
 
+    def test_stale_entry_from_a_previous_library_does_not_block_import(self):
+        # #432：索引在私有目录，换过游戏库后上一个库的记录还在。期望（手写）：那个位置不在了、这款也不在当前库清单里 → 不算「没连上」，
+        #   在当前库里照常建文件夹；清单里有的款（放在拔掉的移动硬盘上）仍是 offline
+        old = self.root / "旧游戏库"
+        layout.game_dir(self.c, A, location=old)
+        os.rename(old, old.with_name("已经删了"))
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=B, name="Beta")]))   # 当前库里没有 A
+        self.assertEqual(layout.state(self.fresh(), A), ("none", None))
+        self.assertEqual(layout.game_dir(self.c, A, english="Alpha"), self.c.library / "games" / "Alpha")
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha"), dict(id=B, name="Beta")]))
+        d = layout.game_dir(self.c, B, location=self.disk)
+        os.rename(self.disk, self.disk.with_name("拔掉了"))
+        self.assertEqual(layout.state(self.fresh(), B), ("offline", self.disk))
+
+    def test_picking_another_location_when_the_old_one_is_offline(self):
+        # #453：这款记在一个没连上的位置（文件夹没了），而且在当前库清单里（所以是 offline，#432 那条管不到）；玩家在出包页另选了位置。
+        #   期望（手写）：在新选的位置建这款、黄字说明；还是选那个没连上的位置就照旧报「没连上」
+        import library
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha")]))
+        layout.game_dir(self.c, A, location=self.disk)
+        os.rename(self.disk, self.disk.with_name("拔掉了"))
+        self.assertEqual(layout.state(self.fresh(), A), ("offline", self.disk))
+        self.c.r["location"] = str(self.disk)
+        with self.assertRaisesRegex(Exception, "没连上"):
+            library.apply_location(self.c, dict(id=A))
+        other = self.root / "新位置"
+        self.c.r["location"] = str(other)
+        library.apply_location(self.c, dict(id=A))
+        self.assertEqual(layout.state(self.fresh(), A), ("ok", other / "games" / "Alpha"))
+        warn = [d for d in self.c.job["diagnostics"] if d.get("severity") == "warning"]
+        self.assertTrue(warn and "没连上" in warn[-1]["summary"], self.c.job["diagnostics"])
+        self.assertTrue((self.disk.with_name("拔掉了") / "games" / "Alpha").is_dir())   # 原位置上的文件不动
+
     def test_renamed_folder_offline_location_and_missing_folder(self):
         d = layout.game_dir(self.c, A, location=self.disk)
         os.rename(d, d.with_name("改过的名字"))
@@ -279,6 +313,26 @@ class LocationTests(JobCase):
 
 class HostPruneTests(JobCase):
     """公共宿主清理（host_update.prune）：别的存放位置里的游戏在用的宿主不能删；有位置没连上就不清"""
+    def test_prune_skips_files_in_games_root(self):
+        import host_update
+
+        game = layout.game_dir(self.c, A, english="Alpha")
+        used, unused = "aaaaaaaaaaaa", "bbbbbbbbbbbb"
+        layout.update_info(self.c, A, hostMac=used)
+        hosts = layout.hosts_mac(self.c)
+        for sha in (used, unused):
+            (hosts / sha / host_update.APP).mkdir(parents=True)
+
+        files = [game.parent / name for name in (".DS_Store", "notes.txt")]
+        for path in files:
+            path.write_bytes(b"metadata")
+
+        host_update.prune(self.c)
+
+        self.assertEqual({p.name for p in hosts.iterdir()}, {used})
+        for path in files:
+            self.assertEqual(path.read_bytes(), b"metadata")
+
     def test_hosts_used_in_other_locations_survive_and_offline_skips(self):
         import host_update
         atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha"), dict(id=B, name="Beta")]))
@@ -301,7 +355,7 @@ class VolumeNameTests(unittest.TestCase):
         import library
         cases = [("C:\\S2Arm", "", "系统盘"), ("D:\\S2Arm", "Games", "Games（D:）"), ("e:\\x", "", "E 盘"), ("\\\\nas\\share\\S2Arm", "", "\\\\nas\\share")]
         for path, label, want in cases:
-            with self.subTest(path=path), patch.object(library.os, "name", "nt"), patch.dict(os.environ, {"SystemDrive": "C:"}), \
+            with self.subTest(path=path), patch.object(library, "os", OsView()), patch.dict(os.environ, {"SystemDrive": "C:"}), \
                  patch.object(library, "_win_volume_label", return_value=label):
                 self.assertEqual(library._volume(path), want)
         self.assertEqual(library._volume(os.path.join(os.sep, "Volumes", "移动硬盘", "S2Arm")), "移动硬盘")
@@ -312,7 +366,7 @@ if __name__ == "__main__":
 
 
 class HealFolderNamesTests(JobCase):
-    """还叫游戏号的文件夹（v0.2.0 及以前导入的中文名游戏：读取器不给英文名、拷封面时这款还没进 catalog）在作业开始时按英文名改名。
+    """还叫游戏号的文件夹（v0.2.0 及以前导入的中文名游戏：读取器不给英文名、拷封面时这款还没进 catalog）在导入 / 出包结束、后台商店查询后按英文名改名（剃刀 H3）。
     期望按规则手写：A 有 Mac 产物 NACP「Hollow Knight: Silksong」→ 「Hollow Knight Silksong」、catalog 记 englishName、索引跟着改；
     B 中文名、没有任何产物 → 留着游戏号；C 名字本来就是英文 → 「Hades」；有任务拿着执行锁时一个都不改"""
     def setUp(self):
@@ -349,6 +403,34 @@ class HealFolderNamesTests(JobCase):
             filelock.unlock(f)
         self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
 
+
+    def test_skips_while_a_job_holds_the_catalog_lock(self):
+        # 改名要写 catalog：目录锁被占（别的任务正改着 catalog）也这次不改（旧代码只拿执行锁就写 catalog，与目录锁里的写互相覆盖）
+        import filelock
+        with (self.c.library / ".catalog.lock").open("a") as f:
+            filelock.try_lock(f)
+            self.assertEqual(layout.heal_folder_names(self.fresh()), 0)
+            filelock.unlock(f)
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
+
+    def test_job_start_no_longer_renames(self):
+        # 作业开头（layout.ensure）不再改名、不碰执行锁：起局 / 出包撞上它报忙的那条路没了（剃刀 H3）
+        with patch.object(layout, "heal_folder_names", side_effect=AssertionError("作业开头去改名")), \
+                patch("library.store_meta_background"):
+            layout.ensure(self.fresh())
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
+
+    def test_rename_runs_after_import_and_build_only(self):
+        # 导入 / 出包 / 打 iPhone 包成功结束时各改一次；刷新游戏库这类作业不改。用真 main.run_request + 打桩的作业函数
+        import main
+        calls = []
+        for op in ("import", "build", "ipa", "catalog", "launch"):
+            path = self.root / ("req-" + op + ".json")
+            atomic(path, self.request | dict(taskId="h3-" + op, operation=op))
+            with patch.object(layout, "heal_folder_names", lambda c: calls.append(c.operation)), patch("library.store_meta_background"), \
+                    patch("embedded.install"):
+                self.assertEqual(main.run_request(path, operation_overrides={op: lambda c: {}}), 0)
+        self.assertEqual(calls, ["import", "build", "ipa"])
 
     def test_rename_refused_leaves_everything_untouched(self):
         # Windows 上文件夹里有被占用的文件时改名失败：这款整款不动——文件夹、索引、catalog 的 englishName 都留原样（不能只改一半）
@@ -425,6 +507,22 @@ class StoreMetaTests(JobCase):
         self.assertEqual(library.store_meta(self.fresh()), 0)                          # 7 天内查过：不再查
         self.assertEqual(self.calls, [])
 
+    def test_library_on_other_volume(self):
+        # 游戏库在外置盘、临时目录在私有目录：跨卷时 os.replace 报 EXDEV（本机外置盘游戏库实测：五款一张横图都没进库、storeChecked 也没记上）
+        import library
+        L = self.c.library
+        real = os.replace
+
+        def cross(src, dst):
+            if Path(src).parent != Path(dst).parent:
+                raise OSError(errno.EXDEV, "Cross-device link")
+            return real(src, dst)
+        with patch("library.os.replace", cross):
+            self.assertEqual(library.store_meta(self.fresh(), {B}), 1)
+        self.assertEqual((L / "games" / B / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
+        self.assertFalse((L / "games" / B / ".banner.jpg.part").exists())
+        self.assertTrue(self.catalog()[B].get("storeChecked"))
+
     def test_import_ids_only_and_switch_off(self):
         import library
         self.assertEqual(library.store_meta(self.fresh(), {B}), 1)                     # 导入刚加的款：只查它
@@ -453,14 +551,63 @@ class StoreMetaTests(JobCase):
         self.assertEqual(sorted(self.calls), sorted([B, C, self.D]))
         self.assertEqual((L / "games" / "Terraria" / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
 
+    def test_background_entry_writes_nothing_when_the_library_moved(self):
+        # 起进程到拿到锁之间库搬走了 / 换了（标识对不上）：不查、不建任务上下文，库里一个字节都不写（任务记录不进已搬走的位置）
+        import store_meta_bg
+        L = self.c.library
+        before = sorted(str(p.relative_to(L)) for p in L.rglob("*") if p.name != ".store-meta.lock")
+        self.assertEqual(store_meta_bg.main([str(self.c.private), str(L), "另一个库的标识", str(self.c.engine)]), 0)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(sorted(str(p.relative_to(L)) for p in L.rglob("*") if p.name != ".store-meta.lock"), before)
+
+    @unittest.skipIf(os.name == "nt", "占锁的子进程用 fcntl.flock")
+    def test_delete_and_move_wait_for_a_running_background_query(self):
+        # 删游戏 / 移动 / 搬家前等后台商店查询放锁（library.store_meta_quiet）：另一个进程占着 .store-meta.lock 1.5 秒，这里应等到它放开才进去
+        import subprocess, sys, time, library
+        L = self.c.library
+        holder = subprocess.Popen([sys.executable, "-c", "import fcntl,sys,time; f=open(sys.argv[1],'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                                   "print('held', flush=True); time.sleep(1.5)", str(L / ".store-meta.lock")], stdout=subprocess.PIPE, text=True)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        t0 = time.monotonic()
+        with library.store_meta_quiet(self.c):
+            waited = time.monotonic() - t0
+        holder.wait(timeout=10)
+        self.assertGreater(waited, 0.8)
+        # 超过上限：报 library_busy、不进去（剃刀 H2；旧代码「等不到就不拿锁照常继续」，删游戏照样往被查询写着的库里删）
+        with patch.object(library, "STORE_QUIET_WAIT", 0.2):
+            holder = subprocess.Popen([sys.executable, "-c", "import fcntl,sys,time; f=open(sys.argv[1],'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                                       "print('held', flush=True); time.sleep(3)", str(L / ".store-meta.lock")], stdout=subprocess.PIPE, text=True)
+            holder.stdout.readline()
+            entered = []
+            with self.assertRaises(layout.Failure) as raised:
+                with library.store_meta_quiet(self.c):
+                    entered.append(1)
+            self.assertEqual((raised.exception.code, entered), ("library_busy", []))
+            holder.kill(); holder.wait()
+
     def test_spawn_args_and_skips(self):
         import library
         popen = []
         with patch("subprocess.Popen", lambda args, **kw: popen.append(args)):
             self.assertTrue(library.store_meta_background(self.fresh(), {B}))
-            self.assertEqual(popen[-1][3:5], [str(Path(library.__file__).with_name("store_meta_bg.py")), str(self.c.private)])
+            self.assertEqual(popen[-1][1:7], ["-I", "-X", "utf8", "-B", str(Path(library.__file__).with_name("store_meta_bg.py")), str(self.c.private)])   # -X utf8：-I 下 PYTHONUTF8 不生效（#514）
             self.assertEqual(popen[-1][-1], B)                                          # 只查导入刚加的款
             self.assertFalse(library.store_meta_background(self.fresh(), {A}))          # A 都有了：不起
             with patch.dict(os.environ, {"S2A_BANNER_FETCH": "0"}):
                 self.assertFalse(library.store_meta_background(self.fresh(), {B}))
         self.assertEqual(len(popen), 1)
+
+
+class CoverFallbackTests(JobCase):
+    """catalog 的封面三级（期望按规则手写）：游戏包自带图标 cover.jpg → 商店横图 banner.jpg → 空（界面用 S2Arm 标志）"""
+    def test_cover_then_banner_then_empty(self):
+        L = self.c.library
+        atomic(L / "catalog.json", dict(schema=1, games=[dict(id=A, name="甲", packages=[]), dict(id=B, name="乙", packages=[]), dict(id=C, name="丙", packages=[])]))
+        for gid, files in ((A, ("cover.jpg", "banner.jpg")), (B, ("banner.jpg",)), (C, ())):
+            d = L / "games" / gid; d.mkdir(parents=True); atomic(d / "game.json", dict(schema=1, id=gid))
+            for f in files: (d / f).write_bytes(f.encode())
+        result, done = self.worker("catalog")
+        self.assertEqual(done["state"], "succeeded", result.stderr)
+        covers = {g["id"]: g["cover"] for g in done["result"]["games"]}
+        self.assertEqual(covers, {A: str(L / "games" / A / "cover.jpg"), B: str(L / "games" / B / "banner.jpg"), C: ""})
+

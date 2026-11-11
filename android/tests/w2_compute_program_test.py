@@ -103,7 +103,7 @@ class ComputeProgram(unittest.TestCase):
         bad('duplicate_binding',lambda c:c['bindings'][1].update(set=0))
         # FD_MAX_BINDINGS 按 producer 合同推导：1 + 2×(18 uniform + 16 storage + 64 texture + 16 image)
         # = 229（图形程序固定 vs+fs 两阶段，再加 1 条全程序共享 support；compute 只 cs 一阶段
-        # 1+18+16=35，被同一上限覆盖）。17 条是 TOTK 实测的下限证据，不是上限；65/229 必须接受，
+        # 1+18+16=35，被同一上限覆盖）。17 条是 0100F2C0115B6000 实测的下限证据，不是上限；65/229 必须接受，
         # 230 越过合同才准确失败——与 nvn_vk_program_binding_cap_test.c 的 cap=229 断言同源。
         obj=fixture();obj['content']['bindings']=[{'stage':'program','kind':'support','set':0,'binding':i,'count':1} for i in range(17)];cases.append(('seventeen_bindings',obj,0))
         obj=fixture();obj['content']['bindings']=[{'stage':'program','kind':'support','set':0,'binding':i,'count':1} for i in range(65)];cases.append(('sixty_five_bindings',obj,0))
@@ -144,11 +144,11 @@ class ComputeProgram(unittest.TestCase):
                 'negative_texture_range':source.replace('dst->slot < 8 || dst->slot >= 72 || (dst->slot & 1)', '0'),
                 'negative_texture_storage_fields':source.replace('if (dst->kind != 1) {', 'if (0) {'),
                 'negative_support_padding':source.replace('r->size <= scale->element_bytes - delta % scale->stride','r->size <= scale->stride - delta % scale->stride'),
-                'negative_support_required':source.replace('CS_FAIL("compute support reads missing");','reads=(struct jv){"[]",2};'),
+                'negative_support_required':source.replace('CS_FAIL("compute support reads missing");','reads=(struct s2a_jv){"[]",2};'),
                 'negative_c0_boundary':source.replace('r->size > 12 - (r->offset - begin)', '0'),
-                'negative_c0_required':source.replace('CS_FAIL("compute c0 reads are missing");', 'reads=(struct jv){"[]",2};'),
-                'negative_rw_required':source.replace('if (obj_find(b, "rw", &v)) return -1;', 'if (obj_find(b, "rw", &v)) v=(struct jv){"true",4};'),
-                'negative_alignment_required':source.replace('CS_FAIL("compute storage alignment fact missing");','alignment=(struct jv){"false",5};'),
+                'negative_c0_required':source.replace('CS_FAIL("compute c0 reads are missing");', 'reads=(struct s2a_jv){"[]",2};'),
+                'negative_rw_required':source.replace('if (s2a_jv_obj_find(b, "rw", &v)) return -1;', 'if (s2a_jv_obj_find(b, "rw", &v)) v=(struct s2a_jv){"true",4};'),
+                'negative_alignment_required':source.replace('CS_FAIL("compute storage alignment fact missing");','alignment=(struct s2a_jv){"false",5};'),
                 'negative_stage_check':source.replace('!compute_string_is(st, "stage", "cs")','0'),
                 'negative_unknown_kind':source.replace('else CS_FAIL("unknown compute binding kind");','else dst->kind = 1;'),
                 'negative_c1_slot':source.replace('if (dst->slot != 0 && dst->slot != 1 && (dst->slot < 3 || dst->slot > 18))','if ((dst->slot != 0 && dst->slot < 3) || dst->slot > 18)'),
@@ -157,7 +157,7 @@ class ComputeProgram(unittest.TestCase):
             for label,code in variants.items():
                 if label!='positive':self.assertNotEqual(code,source)
                 c=td/(label+'.c');c.write_text(code);exe=td/label
-                subprocess.run([os.environ.get('CC','cc'),'-std=c11','-I'+str(NATIVE),'-I'+str(NATIVE/'nvn'),str(h),str(c),str(NATIVE/'direct/json.c'),'-lm','-o',str(exe)],check=True)
+                subprocess.run([os.environ.get('CC','cc'),'-std=c11','-I'+str(NATIVE),'-I'+str(NATIVE/'nvn'),str(h),str(c),str(NATIVE/'direct/jv.c'),str(NATIVE/'direct/json.c'),'-lm','-o',str(exe)],check=True)
                 mismatches=[]
                 for name,obj,expected in cases:
                     f=td/'input.json';f.write_text(obj if isinstance(obj,str) else json.dumps(obj,separators=(',',':')))

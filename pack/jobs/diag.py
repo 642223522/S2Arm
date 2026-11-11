@@ -30,12 +30,20 @@ COREDEVICE = Path(os.environ.get("S2A_COREDEVICE", "/Library/Developer/PrivateFr
 NO_COREDEVICE = "这台 Mac 没装 Xcode 的设备组件（CoreDevice），读不到连着的设备：打开一次 Xcode、按提示装附加组件后再试；也可以在出包页直接选机型"
 
 
+DEVICECTL_TIMEOUT = 124   # devicectl 超时的返回码（同 coreutils timeout）
+
+
 def devicectl(c, *args, timeout=120):
     exe = COREDEVICE / "Resources/bin/devicectl"
     if not (exe.is_file() and os.access(exe, os.X_OK)):
         return 127, {}, NO_COREDEVICE
     with tempfile.NamedTemporaryFile(suffix=".json", dir=c.private) as out:
-        p = subprocess.run([str(exe), *args, "--json-output", out.name], env=c.env(), capture_output=True, text=True, timeout=timeout)
+        try:
+            p = subprocess.run([str(exe), *args, "--json-output", out.name], env=c.env(), capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # devicectl 会一直挂到超时（#333）：转成非零退出，不再裸 traceback 收场。原因如实只说「等了多久没返回」，不猜锁屏
+            #   （启动器剃刀 H21：推送链实测锁屏照样能写，一律说「可能锁屏了」会把玩家指错方向）；要不要提示解锁由调用方按它知道的事实判
+            return DEVICECTL_TIMEOUT, {}, f"devicectl 等了 {timeout} 秒没有返回，已停止等待"
         try:
             data = json.loads(Path(out.name).read_text() or "{}")
         except ValueError:
@@ -59,6 +67,14 @@ def iml_hint(c, probe, app):
     if isinstance(rec, dict) and rec.get("has_iml_ent") is False:
         c.diagnostic(f"{app}：这台机上装的包签名丢了提高内存上限权限，大游戏容易被系统杀；用 Xcode / AltStore Classic v2.3 重签后重装",
                      code="iml_missing", severity="warning")
+
+
+def game_ids(c):
+    """这台电脑游戏库里的游戏号（试拉各款解包日志用）；库没建好 / 读不了给空"""
+    try:
+        return sorted({str(g.get("id", "")).upper() for g in c.catalog().get("games", []) if re.fullmatch(r"[0-9A-Fa-f]{16}", str(g.get("id", "")))})
+    except Exception:   # 诊断拉取不因游戏库读不了而失败
+        return []
 
 
 def pull(c):
@@ -100,6 +116,21 @@ def pull(c):
                     shutil.rmtree(target)  # Only this failed copy in the new exclusive directory.
                 else:
                     target.unlink(missing_ok=True)
+            # 多款容器每款自己的解包日志 Documents/games/<游戏号>/unpack.log（#457：手机 host.log 写「资源包收推送：失败（见 unpack.log）」，
+            #   原先只拉容器根上的 unpack.log，这一份没拉回、定不了因）。按这台电脑游戏库里的游戏号逐个试拉，机上没有的跳过；
+            #   不列整个 games/ 目录：devicectl 列目录是递归的，资源包十万个文件
+            for gid in game_ids(c):
+                target = dest / "games" / gid / "unpack.log"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                rc, _, _ = devicectl(c, "device", "copy", "from", "--device", dev, "--domain-type", "appDataContainer",
+                                     "--domain-identifier", bid, "--source", f"Documents/games/{gid}/unpack.log", "--destination", str(target), timeout=120)
+                if rc == 0 and target.is_file():
+                    got += 1
+                else:
+                    target.unlink(missing_ok=True)
+                    target.parent.rmdir()   # 本次新建的空目录
+            if (dest / "games").is_dir() and not any((dest / "games").iterdir()):
+                (dest / "games").rmdir()
             if got:
                 pulled.append(dict(app=app.get("name") or bid, bundle=bid, files=got, path=str(dest)))
                 iml_hint(c, dest / "diag" / "iml_probe.json", app.get("name") or bid)

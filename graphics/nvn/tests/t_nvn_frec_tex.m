@@ -86,6 +86,12 @@ int main(void) { @autoreleasepool {
     id<MTLTexture> md = resolve_ms(msd); id<MTLBuffer> r5 = blit_out(md, 32 * 16 * 4, 32 * 4, 32 * 16 * 4, 32, 16, 0, MTLBlitOptionNone); const float *d5 = r5.contents; int all5 = 1;
     for (int i = 0; i < 32 * 16; i++) all5 &= d5[i] == 0.25f;
     VERIFY(all5, "⑤ 多重采样深度解析（样本 0）%.3f（期望 0.250）", d5[0]);
+    // ⑥ 整帧录（fr_capture）走完后 g_mu 不被占着：11-11 #450 把解锁写进了注释，录帧拿了 g_mu 不放，随后 nvn_be_wait 再锁就自锁死
+    //    （路易吉洋馆 3 Mac 局录帧卡在出图）。这里真调一次：卡住会被 alarm 收掉（退出非 0）；返回后 trylock 必须拿得到
+    char dir[] = "/tmp/t_nvn_frec_cap_XXXXXX"; REQUIRE(mkdtemp(dir)); snprintf(g_fr_dir, sizeof g_fr_dir, "%s", dir);
+    int crop[4] = {0, 0, 32, 16}; fr_capture("cap", NULL, 1 / 30.0, crop);
+    int got = pthread_mutex_trylock(&g_mu); if (!got) pthread_mutex_unlock(&g_mu);
+    VERIFY(got == 0, "⑥ 整帧录走完后 g_mu 可拿（trylock %d，期望 0）", got);
   }
     if (failures) { printf("✗ t_nvn_frec_tex：%u 项里 %u 项不符\n", checks, failures); return 1; }
     printf("✓ t_nvn_frec_tex：%u 项全过（帧录 GPU 贴图：压缩 / 深度模板 / 深度 / 多重采样颜色 / 多重采样深度 存放还原）\n", checks); return 0;

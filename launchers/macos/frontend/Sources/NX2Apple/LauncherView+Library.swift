@@ -4,9 +4,10 @@
 // Export (11-07 维护者: the launcher is built around exporting, Mac and iPhone / iPad alike; it opens ExportView), and a game whose Mac
 // version is ready also gets Play (launch job) beside it, then the launch options button and Free up space (FreeSpaceView: spaceSurvey / spaceFree jobs); the cards and the hero's buttons carry
 // their own accessibility labels (a card read as an image before); the empty library offers Add games; the rebuild, iPhone
-// re-sign, Manage menu, Switch 2 badge and library filter are left out.
+// re-sign, Manage menu, Switch 2 badge and library filter are left out; a save dropped on a card opens that game's save window on it (11-09).
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import NXCore
 import NXModel
 import NXLauncher
@@ -72,7 +73,8 @@ extension LauncherView {
                     let queueable = !model.busy || model.session?.export != nil
                     if game.iphoneReady {
                         // 包已出好：主按钮是装机 / 续签，重新出包退到次要
-                        Button { installFor = game.id } label: {
+                        // 装过的款（续签 / 重装）：目标先设成当初装的那台，不换别的；要装到另一台在装机页改选
+                        Button { model.targetInstalledDevice(of: game); installFor = game.id } label: {
                             LauncherHeroActionLabel(title: txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), symbol: "iphone")
                         }
                         .buttonStyle(.plain).keyboardShortcut(.return, modifiers: []).accessibilityIdentifier("hero.install")
@@ -172,6 +174,9 @@ extension LauncherView {
                             .accessibilityIdentifier("card." + game.id)
                             .padTarget("card." + game.id, scope: "main", radius: 7) { model.selectedID = game.id }
                             .contextMenu { cardMenu(game) }
+                            // 存档拖到这款卡片上 = 给这款导入存档：打开存档窗口并先检查（同拖进存档窗口，确认后才覆盖）；
+                            //   游戏文件 / 密钥仍走整页那条（添加游戏、放密钥），别当存档
+                            .modifier(CardDrop(targeted: cardTargeted(game.id), artwork: cardWidth / 1.8) { urls in dropOnCard(urls, game: game) })
                         }
                     }
                     .padding(.horizontal, Self.ringRoom).padding(.top, Self.ringRoom).padding(.bottom, 5 + Self.ringRoom)
@@ -191,6 +196,18 @@ extension LauncherView {
             }
         }
         .padding(.horizontal, 34).padding(.top, 8).padding(.bottom, 22)
+    }
+
+    func cardTargeted(_ id: String) -> Binding<Bool> {
+        Binding(get: { dropCard == id }, set: { dropCard = $0 ? id : (dropCard == id ? nil : dropCard) })
+    }
+    static let gameFileTypes: Set<String> = ["nsp", "xci", "nsz", "xcz"]
+    func dropOnCard(_ urls: [URL], game: GameSummary) {
+        guard let first = urls.first else { return }
+        let ext = first.pathExtension.lowercased()
+        if urls.count == 1, ext == "keys" { model.importKeys(first); return }
+        if urls.contains(where: { Self.gameFileTypes.contains($0.pathExtension.lowercased()) }) { model.importGames(urls, partialResults: true); return }
+        saveDrop = first; saveFor = game.id
     }
 
     /// A round button floating over the row's edge, centred on the artwork, shown while the row scrolls that way.
@@ -250,7 +267,7 @@ extension LauncherView {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
-                Button(txt("library.hero.renew")) { installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
             }
             .padding(.horizontal, 34).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
@@ -319,7 +336,9 @@ extension LauncherView {
 
     private func exportDiagnostics() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "S2Arm-diagnostics.zip"
+        // 短名：S2Arm-诊断-月日-时分（英文界面 S2Arm-diag-…），与 iOS / Windows 一致；版本、系统、提交号都在包里，不进文件名（11-11 维护者）
+        let stamp = DateFormatter(); stamp.locale = Locale(identifier: "en_US_POSIX"); stamp.dateFormat = "MMdd-HHmm"
+        panel.nameFieldStringValue = "S2Arm-\(uiLanguage == "en" ? "diag" : "诊断")-\(stamp.string(from: Date())).zip"
         if panel.runModal() == .OK, let url = panel.url { model.diagnostics(exportTo: url) }
     }
 
@@ -374,17 +393,42 @@ struct CoverFill: View {
     }
 }
 
-/// Covers decoded once per path (the library redraws on every job event while a game runs).
+/// Covers decoded once per file version (the library redraws on every job event while a game runs).
+/// 键 = 路径 + 修改时间（剃刀 M15：原先只按路径永久缓存——玩家换封面、后台查到横图写同一路径后一直显示旧图 / 一直空，要重开启动器）；
+/// 每次只做一次 stat，解码只在文件变了时做。解不开的也按同一个键记，文件一变就重试
 @MainActor final class CoverCache: ObservableObject {
     private var images: [String: NSImage] = [:]
     private var missing: Set<String> = []
     func image(_ path: String?) -> NSImage? {
         guard let path else { return nil }
-        if let image = images[path] { return image }
-        if missing.contains(path) { return nil }
+        guard let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
+        let key = path + "|" + String(stamp.timeIntervalSinceReferenceDate)
+        if let image = images[key] { return image }
+        if missing.contains(key) { return nil }
         let _ = LauncherWork.count(.artworkDecode)
-        guard let image = NSImage(contentsOfFile: path) else { missing.insert(path); return nil }
-        images[path] = image
+        guard let image = NSImage(contentsOfFile: path) else { missing.insert(key); return nil }
+        images = images.filter { !$0.key.hasPrefix(path + "|") }   // 同一张图的旧版本不留着占内存
+        images[key] = image
         return image
+    }
+}
+
+/// 游戏卡片的拖放落点：拖着文件经过时封面描虚线，放下交给 perform（LauncherView.dropOnCard）。
+struct CardDrop: ViewModifier {
+    let targeted: Binding<Bool>
+    let artwork: CGFloat
+    let perform: ([URL]) -> Void
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if targeted.wrappedValue {
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                        .frame(height: artwork).allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [UTType.fileURL], isTargeted: targeted) { providers in
+                LauncherView.fileURLs(providers, perform)
+                return true
+            }
     }
 }

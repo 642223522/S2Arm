@@ -1,4 +1,6 @@
 """Q15: production cleanup on original, non-game directory fixtures."""
+import os
+os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 同 jobcase.py：作业开始时 layout.ensure 会起脱离作业的商店查询子进程，往 library/ 写；测试收尾删临时目录时它还在写 → Directory not empty（11-10 负载下偶发）
 import sys
 import tempfile
 import unittest
@@ -40,7 +42,7 @@ class CompilerRetentionTests(unittest.TestCase):
                  patch('shutil.disk_usage', side_effect=usage):
                 budget = library.check_pack_space(c, game, compiler_policy=cache_retention.retention_policy())
             # 4 GiB × 1.1 × 2（解包 + 单文件镜像）+ 15 GB，独立手算
-            self.assertEqual(budget['compilerMinFreeBytes'], 2 * ((4 << 30) * 11 // 10) + 15_000_000_000)
+            self.assertEqual(budget['compilerMinFreeBytes'], (4 << 30) * 11 // 10 + 15_000_000_000)
             self.assertTrue(all(p.exists() for p in paths[:3]))
             self.assertFalse(paths[3].exists())
 

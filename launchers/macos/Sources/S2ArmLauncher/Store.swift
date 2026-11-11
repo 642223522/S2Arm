@@ -486,8 +486,8 @@ final class WorkerOutput: @unchecked Sendable {
     }
     // 缺省游戏库（维护者 10-23：减少交互，首次打开不再让玩家选库）：~/S2Arm（游戏库结构 P3：访达里看得见；自定义数据目录时仍在数据目录里），设置里可换
     var defaultLibraryURL: URL { S2ArmPaths.defaultLibrary(privateRoot:privateRoot) }
-    /// 任务日志 + 任务记录：库建好了在 <库>/logs（任务记录 logs/jobs/），否则 <私有目录>/logs（S2ArmPaths.logsRoot，同作业层 core.logs_root）
-    var logsRoot: URL { S2ArmPaths.logsRoot(privateRoot:privateRoot, library:preferences.library) }
+    /// 任务日志 + 任务记录：固定 <私有目录>/logs（任务记录 logs/jobs/，剃刀 H6；S2ArmPaths.logsRoot，同作业层 core.logs_root）
+    var logsRoot: URL { S2ArmPaths.logsRoot(privateRoot:privateRoot) }
     var jobsRoot: URL { logsRoot.appendingPathComponent("jobs") }
     func ensureLibrary(_ then: @escaping () -> Void) {
         guard preferences.library.isEmpty else { then(); return }
@@ -759,6 +759,7 @@ final class WorkerOutput: @unchecked Sendable {
                 if let path = result["ipa"] as? String { tasks[index].ipaPath = path }
                 if let device = result["device"] as? String { tasks[index].device = device }
                 if let files = result["packFiles"] as? Int { tasks[index].packFiles = files }
+                if let pending = result["unpackPending"] as? String { tasks[index].unpackPending = pending }
             }
             let state = e["state"] as? String
             if state == "completed" { let callback=callbacks.removeValue(forKey:id);callback?(e["result"] as? [String:Any] ?? [:]) }
@@ -970,7 +971,8 @@ final class WorkerOutput: @unchecked Sendable {
         selection = "tasks"
         executionTask = worker("install",extra:["gameId":game.id]) { r in
             let device = (r["device"] as? String).map { "「\($0)」" } ?? ""   // 设备名夹在句中：按片段先翻译再拼（提示显示时 L() 整句查不到）
-            let done = L("已装到 iPhone") + device + Store.packPushedClause(r["packFiles"] as? Int) + L("。打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再点一次「装到 iPhone」。")
+            // 资源传完但没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不说「已装到 iPhone」，说还差的一步和原因 / 办法（后端原话）
+            let done = (r["unpackPending"] as? String) ?? L("已装到 iPhone") + device + Store.packPushedClause(r["packFiles"] as? Int) + L("。打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再点一次「装到 iPhone」。")
             self.stickyNotice = done; self.notice = done
         }
     }

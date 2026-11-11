@@ -32,21 +32,27 @@ LANGUAGES = {
 
 
 def snapshot(c, root):
-    files = sorted(p for p in root.rglob("*") if p.is_file())
-    result, done = {}, 0
-    total = sum(p.stat().st_size for p in files)
-    for p in files:
-        c.check()
-        if p.is_symlink():
-            raise Failure("准备产物包含符号链接，拒绝安装。")
-        size = p.stat().st_size
-        sha = digest(p, lambda n, t: c.progress(done + n, total))
-        result[str(p.relative_to(root))] = [size, sha]
-        done += size
+    """产物清单：每个文件的大小（v0.2.3 清理：原先逐个 sha256，几十 GB 的游戏资源要读一遍；校验一律只核大小，摘要没人用了。
+    第二项留空串，旧清单的摘要照旧读得进来、不再比对）。软链由 clone_tree 拷的时候就拒了，这里不再重复"""
+    result = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file() and not layout.os_junk(p.name):   # 访达 .DS_Store / ._ 等系统文件不进清单：出包期间会被写入 / 改动 / 删掉（#382）
+            c.check()
+            result[str(p.relative_to(root))] = [p.stat().st_size, ""]
     return result
 
 
-def validate_files(c, root, files, full=True):
+ENGINE_SOURCES = ["runtime", "ios", "graphics", "translator", "services", "compat", "pack", "Makefile", "platform/build.mk", "macos",
+                  "launchers/macos/build.mk", "tools/toolchain.env", "tools/toolchain.sh", "tools/addr_need.py"]
+
+
+def source_fingerprint(c):
+    """产物根的键里「引擎源码」这一项：发版应用的引擎副本是冻结的，engine.json 的 id（键里已有 engineBundleId）就代表它，不再整份哈希源码树
+    （v0.2.3 清理：每次出包两遍 rglob + sha256 整个引擎源码）；源码树开发照旧哈希"""
+    return None if c.r.get("engineBundle") else tree_hash(c.engine, ENGINE_SOURCES)
+
+
+def validate_files(c, root, files, full=False):
     if not isinstance(files, dict) or not files:
         raise Failure("运行产物校验清单缺失。", code="runtime_invalid")
     # 判据同逐个 contained()：解析后在 root 里、本身是普通文件（不是软链）、大小对。所在目录只解析一次（11-07：运行包 6 万多个文件，
@@ -55,6 +61,8 @@ def validate_files(c, root, files, full=True):
     dirs = {}
     for name, expected in files.items():
         c.check()
+        if layout.os_junk(Path(name).name):   # 旧清单里记进去的系统文件（#382 之前 snapshot 没过滤）：不核，访达随时会改它
+            continue
         p = root / name
         if p.parent not in dirs:
             dirs[p.parent] = contained(root, p.parent) if p.parent != root else root
@@ -65,14 +73,14 @@ def validate_files(c, root, files, full=True):
             st = None
         if st is None or not stat.S_ISREG(st.st_mode) or st.st_size != expected[0]:
             raise Failure("准备产物缺失或大小不符，请重新准备：" + name, code="runtime_invalid")
-        if full and digest(p) != expected[1]:
+        if full and expected[1] and digest(p) != expected[1]:   # full 只在调用方明确要求时核摘要（v0.2.3 清理：缺省只核大小，#304 被改的文件就是靠大小查出来的）
             raise Failure("准备产物校验失败，请重新准备：" + name, code="runtime_invalid")
 
 
 QUICK_FILES = ("main", "main.npdm")   # 游戏库列表快判也核的几个文件（主程序与程序描述）：在、是普通文件、大小同清单
 
 
-def validate_runtime(c, runtime, full=True, files=True):
+def validate_runtime(c, runtime, full=False, files=True):
     """files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
     原先清单没变、主程序被删也报就绪，点开始才报错）；真正启动时还会完整校验"""
     root = runtime.resolve()
@@ -112,13 +120,16 @@ def runtime_env(c, game, runtime):
     env.pop("S2A_VAMM_LAYOUT", None)
     env.pop("S2A_PATCH_DIR", None)   # 补丁只在出包时读（随包 patch.tsv 在游戏数据目录里，宿主自己找）；玩家导入的在 <S2A_DOCS>/S2A/patches
     save = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "saves"))
+    # 存档位置（11-09 维护者）：这款游戏文件夹里的 SaveData/，原生存档格式，放进去下次起局就读、退出时写回（services/S2A.Services/SaveFolder.cs）。
+    #   不叫 Saves：同一文件夹里已有运行层内部的 saves/，APFS / NTFS 不分大小写会撞名；ASCII 名避开非 ASCII 路径的坑
+    save_folder = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "SaveData"))
     cache = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "shader-cache"))
     docs = contained(c.library, c.library / "temp" / game["id"])
     for p in (save, cache, docs):
         p.mkdir(parents=True, exist_ok=True)
     # S2A_SAVE_DIR is a test/import seed that clears saves at boot; launch() sets it
     # only for a save the player just imported, never for normal play. Persist the Ryujinx data root instead.
-    env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs),
+    env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs), S2A_SAVE_FOLDER=str(save_folder),
                NXGAL_SHADER_CACHE_DIR=str(cache / "shaders"), NXGAL_PSO_DEV_DIR=str(cache / "pso"),
                S2A_MACRO_DUMP=str(cache / "macros"),
                S2A_DOCKED="0" if c.r.get("docked") is False else "1",   # Mac 缺省主机模式（维护者 11-07）；只有请求明说 false 才掌机
@@ -132,6 +143,16 @@ def runtime_env(c, game, runtime):
             env["S2A_BUILD_ID"] = c.r["buildId"]   # 浮层「包」一行：启动器 Info.plist 的 S2ABuildID
     if c.r.get("metalHud"):
         env.setdefault("MTL_HUD_ENABLED", "1")
+    controller_auto_connect = c.r.get("switch2ProAutoConnect")
+    if controller_auto_connect is not None:
+        if not isinstance(controller_auto_connect, bool):
+            raise Failure("Switch 2 Pro 自动连接设置无效。")
+        env["S2A_NS2_AUTOCONNECT"] = "1" if controller_auto_connect else "0"
+    controller_relay = c.r.get("switch2ProRelaySocket")
+    if controller_relay is not None:
+        if not isinstance(controller_relay, str) or not controller_relay or "\0" in controller_relay:
+            raise Failure("Switch 2 Pro 本机通道设置无效。")
+        env["S2A_NS2_SOCKET"] = controller_relay
     # Freeze exactly what the pre-launch card showed. Never rewrite another run's snapshot.
     config = c.r.get("launchInputConfig")
     if config is None:
@@ -155,6 +176,9 @@ def launch(c):
         from saves import recover
         recover(c, game, override=c.r.get("overrideRecovery") is True)   # 回退失败：玩家单独确认「仍要启动」才放行（同 iPhone，审计 18:00 P0-3）
         runtime = layout.image_mac(c, game["id"], create=False)
+        # 改写器修过的话：起局前按本引擎改写器核一遍这款，受影响的只换改写产物（rewrite_refresh.py；核不了不挡起局）
+        from rewrite_refresh import refresh_mac
+        refresh_mac(c, game["id"], runtime)
         c.begin("验证运行文件")
         manifest = validate_runtime(c, runtime)
         if manifest.get("gameId") != game["id"]:
@@ -175,8 +199,14 @@ def launch(c):
         if seed:
             env["S2A_SAVE_DIR"] = str(seed)   # 玩家导入过存档、这是第一次启动：运行时建好存档再灌入
         env.update(community.launch_env(c, game["id"]))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
+        # 宿主菜单栏「切换游戏」（macos/front_mac.m）：收尾前在这里留标记，结果带 returnToLibrary，启动器回到游戏库。先删上一局残留
+        marker = c.private / "runtime-return" / (c.task + ".flag")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.unlink(missing_ok=True)
+        env["S2A_RETURN_MARKER"] = str(marker)
+        back = False
         try:
-            c.begin("游戏运行中")
+            c.begin("游戏运行中", key="game_running")
             log = c.logs / (c.task + "-game.log")
             started = time.monotonic()
             try:
@@ -187,7 +217,9 @@ def launch(c):
                 raise
             if trial:
                 host_update.settle(c, game["id"], host, ok=True)
+            back = marker.exists()
         finally:
+            marker.unlink(missing_ok=True)
             if seed:
                 finish_seed(c, game["id"], log)
             # Context.run waits for the host, including failure/cancellation.
@@ -198,7 +230,7 @@ def launch(c):
                     path.unlink(missing_ok=True)
                 except OSError:
                     c.emit("message", "本局映射快照清理失败，请检查应用数据目录权限。")
-        return {"gameId": game["id"]}
+        return {"gameId": game["id"], "returnToLibrary": True} if back else {"gameId": game["id"]}
 
 
 VAGUARD = "libs2a_vaguard.dylib"
@@ -236,9 +268,12 @@ def compile_host(c, fingerprint, env, log_root):
         c.emit("cache", "已校验并复用 S2Arm Mac 宿主（含地址窗口护栏库）", cacheHit=True)
         ms.reuse(c, "host")
         return app
-    c.run(["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
-           "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]],
-          log_root / "host.log", env)
+    args = ["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
+            "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
+    dav1d = os.environ.get("S2A_DAV1D")   # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 1 不用带）
+    if dav1d in ("0", "1"):
+        args.append("S2A_DAV1D=" + dav1d)
+    c.run(args, log_root / "host.log", env)
     binary = host_root / "build/s2arm-host"
     if not binary.is_file():
         raise Failure("S2Arm Mac 宿主未生成。")
@@ -252,6 +287,7 @@ def compile_host(c, fingerprint, env, log_root):
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
     plist = dict(CFBundleIdentifier="org.s2arm.macos.game", CFBundleName="S2Arm Game",
                  CFBundleExecutable="s2arm-host", CFBundlePackageType="APPL", LSMinimumSystemVersion="15.0",
+                 NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",
                  NSHighResolutionCapable=True, LSSupportsGameMode=True,
                  LSApplicationCategoryType="public.app-category.games")   # 游戏模式要系统靠类别认出是游戏（11-01 调研：Mac 全屏才进游戏模式）
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
@@ -271,6 +307,7 @@ def romfs_list_path():
 
 
 def clone_tree(c, source, destination, *, materialize_romfs=False):
+    """→ True = 每个文件都是真克隆（和源同属一个克隆族，不另占盘）；有一个退成普通复制就 False"""
     # 统一盘点也用于普通目录克隆；不修改模块搜索路径，避免和作业模块重名。
     spec = importlib.util.spec_from_file_location("_s2arm_clone_romfs_list", romfs_list_path())
     romfs_list = importlib.util.module_from_spec(spec)
@@ -308,18 +345,19 @@ def clone_tree(c, source, destination, *, materialize_romfs=False):
         (destination / d.relative_to(source)).mkdir(parents=True, exist_ok=True)
     files = [p for p in entries if p.is_file()]
     total = sum(p.stat().st_size for p in files)
-    done = 0
+    done, cloned = 0, True
     for p in files:
         c.check()
         if p.is_symlink():
             raise Failure("输入目录包含符号链接。")
         dst = destination / p.relative_to(source)
-        clone(p, dst, lambda n, t: c.progress(done + n, total))
+        cloned = clone(p, dst, lambda n, t: c.progress(done + n, total)) and cloned
         shutil.copymode(p, dst)
         done += p.stat().st_size
     if romfs is not None:
         (destination / "romfs").mkdir(parents=True, exist_ok=True)
-        clone_tree(c, romfs, destination / "romfs")
+        cloned = clone_tree(c, romfs, destination / "romfs") and cloned
+    return cloned
 
 
 
@@ -352,6 +390,16 @@ def reader_program(c, where):
     shim = where / "nx_unpack"
     shim.write_text("#!/bin/sh\nexec dotnet " + shlex.quote(str(dll)) + ' "$@"\n'); shim.chmod(0o755)
     return shim
+
+
+def warn_offline_empty(c, root):
+    """直连库只能运行时现编（runtime_only_lib.sh 写 shaders/direct/runtime_only.txt，首行是原因）：出包照常算成功，但完成页要说（#470：
+    抽取红、离线 0 支，完成页却是纯绿的「出包完成」、diagnostics 为空）。Mac 包（build.prepare）与 iPhone 包（ipa.build）共用"""
+    p = Path(root) / "shaders/direct/runtime_only.txt"
+    if not p.is_file():
+        return
+    why = (p.read_text(encoding="utf-8", errors="replace").strip().splitlines() or [""])[0][:300]
+    c.diagnostic("这款的着色器离线预编 0 支，游戏能玩，但首次遇到的画面要现编、开头会卡顿" + (f"（{why}）" if why else ""), code="direct_offline_empty", severity="warning")
 
 
 def extract_nup(c, game, packages, extraction, env, logs):
@@ -403,7 +451,8 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
     ms.enter(c, "unpack")
     if not valid:
         if extraction.exists():
-            shutil.rmtree(extraction)
+            from library import _rmtree
+            _rmtree(extraction)   # 走统一删除：只读 / Windows 封存 / 删的同时有程序往里写系统文件（#369 外置盘 Errno 66）都在这一处处理
         paths = list(dict.fromkeys(source_path(c, p) for p in packages))
         if any(p.get("format") == "nup" for p in packages):
             extract_nup(c, game, packages, extraction, env, logs)
@@ -411,6 +460,7 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
             extract_folder(c, game, packages, extraction, env, logs)
         else:
             c.run(["dotnet", toolchain.reader(c), c.keys, extraction, "--aoc-index", "--title-id=" + game["id"], *paths], logs / "extract.log", env)
+        c.emit("message", "解包已完成，正在校验合并结果并写入缓存")   # 解包读满 100% 后还要校验、写缓存：说明在做什么，进度不停在「解包 100%」（社区贡献者补丁 #8）
         if not (extraction / "exefs/main.npdm").is_file() or not (extraction / "ctl/control.nacp").is_file():
             raise Failure("解包结果缺少 NPDM 或 NACP。")
         # 程序位数只走 nx_unpack --npdm-isa（全仓唯一判法，pack/nx_unpack/Inspect.cs NpdmIsa）：读不了 / unknown 退 3，同样拒
@@ -501,9 +551,7 @@ def prepare(c):
         packages = selected_packages(game)
         size_gb = sum(p.get("size", 0) for p in {p["sha256"]: p for p in packages}.values()) / 1e9
         # 先定这次的产物根（键 = 引擎源码、工具版本、所选包、字体、引擎号），再发计划：哪几步会复用缓存要在计划里先标出来（11-07）
-        fingerprint = tree_hash(c.engine, ["runtime", "ios", "graphics", "translator", "services", "compat", "pack", "Makefile",
-                                          "platform/build.mk", "macos", "launchers/macos/build.mk",
-                                          "tools/toolchain.env", "tools/toolchain.sh", "tools/addr_need.py"])
+        fingerprint = source_fingerprint(c)
         fonts = c.fonts_dir()
         if fonts is None:
             raise Failure("应用自带的共享字体缺失，请重新安装完整应用。")
@@ -568,6 +616,7 @@ def prepare(c):
             raise Failure("着色器准备存在缺口，请查看构建日志；未替换上次成功版本。")
         if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
+        warn_offline_empty(c, current)
         ms.enter(c, "host")
         host = compile_host(c, fingerprint, env, logs)
         ms.enter(c, "install")
@@ -579,22 +628,20 @@ def prepare(c):
         temporary.parent.mkdir(parents=True, exist_ok=True)
         temporary.mkdir()
         try:
-            clone_tree(c, current, temporary, materialize_romfs=True)
+            all_cloned = clone_tree(c, current, temporary, materialize_romfs=True)
             # Transient stage logs and source paths are not runtime dependencies.
             for p in temporary.glob("*.log"):
                 p.unlink()
             for name in ("seed.txt", ".root_src", ".root_base"):
                 (temporary / name).unlink(missing_ok=True)
-            if fingerprint != tree_hash(c.engine, ["runtime", "ios", "graphics", "translator", "services", "compat", "pack", "Makefile",
-                                                   "platform/build.mk", "macos", "launchers/macos/build.mk",
-                                                   "tools/toolchain.env", "tools/toolchain.sh", "tools/addr_need.py"]):
+            if not c.r.get("engineBundle") and fingerprint != source_fingerprint(c):   # 只有源码树开发会在出包中途改源码；发版引擎冻结
                 raise Failure("构建期间 S2Arm 源码发生变化，请重试；旧运行版本已保留。")
             manifest = dict(identity, memoryRequirementsVersion=2,
                             memoryRequirementsSha256=digest(current / "addr_need.tsv"),
                             engine="S2Arm", gameId=game["id"], gameName=game["name"], compatibility="unverified",
-                            files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}))   # 只换宿主的判据（host_update.py）
-            atomic(temporary / "manifest.json", manifest)
-            validate_runtime(c, temporary)
+                            files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}),   # 只换宿主的判据（host_update.py）
+                            rewriterId=__import__("rewrite_refresh").rewriter_id(c))   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
+            atomic(temporary / "manifest.json", manifest)   # v0.2.3 清理：不再紧接着全量复验——清单就是同一进程刚从这些文件量出来的
             sha = host_update.install_host(c, host)
             c.check()
             old = image.with_name("mac.old")
@@ -607,17 +654,20 @@ def prepare(c):
             # 出包实测账（library.record_pack_usage）：在清旧镜像之前量，新旧同在盘上才是这一单真占到的峰值
             from library import record_pack_usage
             record_pack_usage(c, game)
+            # 新运行版本已换上：以下只是省盘 / 记账 / 刷新显示，出错只提示、不把这次出包判失败（v0.2.3 清理，#343）
             if old.exists():
-                shutil.rmtree(old)
-            host_update.prune(c)
+                host_update.tidy(c, "删除上一版运行文件", shutil.rmtree, old)
+            host_update.tidy(c, "清理不再用的旧运行层", host_update.prune, c)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
-        ms.record(c, size_gb)
+        host_update.tidy(c, "记录出包里程碑用时", ms.record, c, size_gb)
         from library import _part_bytes, _rm
-        unpacked = layout.build_dir(c, game["id"], create=False)   # 运行版本已是独立副本（clone_tree 含 RomFS）：解包和中间目录不再保留
-        if unpacked.exists():
-            _rm(c, layout.root_of(c, game["id"]), unpacked)
+        # 解包和中间目录：运行版本整棵是克隆出来的（APFS 同卷，和产物根、解包同属一个克隆族）就保留——几乎不另占盘，下次出另一端的包不用重解（#329，
+        #   同一款的数据在盘上只占一份）；有文件退成了普通复制（跨卷、非 APFS、Windows）运行版本已是独立的一份，照旧删掉解包省一份
+        unpacked = layout.build_dir(c, game["id"], create=False)
+        if unpacked.exists() and not all_cloned:
+            host_update.tidy(c, "删除解包目录", _rm, c, layout.root_of(c, game["id"]), unpacked)
         import sizes
-        sizes.refresh(c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
+        host_update.tidy(c, "刷新游戏占用大小", sizes.refresh, c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
         return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified")

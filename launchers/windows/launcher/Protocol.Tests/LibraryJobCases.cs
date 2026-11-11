@@ -6,6 +6,21 @@ internal static class LibraryJobCases
 {
     public static void Run(Action<bool, string> check)
     {
+        // 封面按 catalog 给的这款文件夹认（#330：v0.2.0 起文件夹按英文名，原先按游戏号拼 games\<号>\ 一律退回占位图）
+        var lib = Path.Combine(Path.GetTempPath(), "s2a-cover-" + Guid.NewGuid().ToString("N"));
+        var english = Path.Combine(lib, "games", "Animal Crossing New Horizons");
+        var byId = Path.Combine(lib, "games", "0100F38011CFE000");
+        LibraryGame Game(string id, string cover, string folder, string state = "ok") =>
+            new(id, "n", "", cover, false, Array.Empty<string>(), Location: new GameLocation(state, lib, folder, "", true));
+        check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english).CoverFile() == Path.Combine(english, "cover.jpg"), "cover: English-named game folder is shown");
+        check(Game("0100F38011CFE000", Path.Combine(byId, "cover.jpg"), byId).CoverFile() == Path.Combine(byId, "cover.jpg"), "cover: game-id folder still shown");
+        check(Game("01006F8002326000", Path.Combine(english, "cover.custom.0a1b2c3d.jpg"), english).CoverFile() is not null, "cover: custom cover in the English folder is shown");
+        check(Game("01006F8002326000", Path.Combine(byId, "cover.jpg"), english).CoverFile() is null, "cover: another game's folder is refused");
+        check(Game("01006F8002326000", Path.Combine(english, "banner.jpg"), english).CoverFile() == Path.Combine(english, "banner.jpg"), "cover: store banner is the fallback when the game has no icon");
+        check(Game("01006F8002326000", Path.Combine(english, "icon.jpg"), english).CoverFile() is null, "cover: other file names are refused");
+        check(Game("01006F8002326000", Path.Combine(english, "sub", "cover.jpg"), english).CoverFile() is null, "cover: nested paths are refused");
+        check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english, "offline").CoverFile() is null, "cover: offline location shows no cover");
+
         // 导入失败的去向：只有读取器确认通用密钥版本不足（keys_outdated）才引导换密钥；
         // 无法读取、缺票据、内容截断都不是换 prod.keys 能解决的。
         check(ImportFailureRoute.For("keys_missing", false) == ImportFailureRoute.ImportKeys, "missing prod.keys asks to import keys");
@@ -53,6 +68,37 @@ internal static class LibraryJobCases
         var empty = LibraryCatalog.Parse(LibraryJobResult.Parse(recorded, 0, "recorded-catalog", "catalog").Result);
         check(empty.Games.Count == 0 && !empty.KeysReady, "recorded real empty Windows catalogue has no games or keys");
         check(empty.KeysMessage == "尚未导入 prod.keys", "recorded backend key status stays verbatim");
+        check(empty.PhoneUpdates.Count == 0, "catalog: no phoneUpdates field reads as an empty list");
+        // 壳比本版旧的手机（pack/jobs/install.py phone_updates 的形状）：一台两款、其中一款要重新出包；不是数组 / 没有 device 的项不算
+        const string updates = """
+        {"games":[],"keys":{"ready":true,"message":""},"phoneUpdates":[
+          {"device":"dev-key-1","name":"测试手机","fromShell":"s1","toShell":"s2",
+           "games":[{"gameId":"0100A","name":"Alpha"},{"gameId":"0100B","name":""}],"stale":[{"gameId":"0100B","name":""}]},
+          {"name":"no device"}]}
+        """;
+        // 剃刀 W10：要不要 prod.keys 只读作业层 catalog 的 needsKeys（不按包格式另算）：NUP 款后端说要（比如带了 NSP 的 DLC）就是要，没给就是不要
+        const string keyed = """
+        {"games":[{"id":"0100A","name":"A","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100A","version":0,"display":"","size":1,"format":"nup"}],"needsKeys":true},
+                  {"id":"0100B","name":"B","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100B","version":0,"display":"","size":1,"format":"nsp"}]}],
+         "keys":{"ready":false,"message":""}}
+        """;
+        using (var document = System.Text.Json.JsonDocument.Parse(keyed))
+        {
+            var g = LibraryCatalog.Parse(document.RootElement).Games;
+            check(g[0].NeedsKeys && !g[1].NeedsKeys, "catalog: needsKeys comes from the backend field, not from package formats");
+        }
+        using (var document = System.Text.Json.JsonDocument.Parse(updates))
+        {
+            var u = LibraryCatalog.Parse(document.RootElement).PhoneUpdates;
+            check(u.Count == 1 && u[0].Device == "dev-key-1" && u[0].Name == "测试手机" && u[0].FromShell == "s1" && u[0].ToShell == "s2",
+                "catalog: phoneUpdates device, name and shells read; entry without device skipped");
+            check(string.Join(",", u[0].Games.Select(g => g.Id + "=" + g.Name)) == "0100A=Alpha,0100B=0100B" &&
+                  string.Join(",", u[0].Stale.Select(g => g.Id)) == "0100B", "catalog: phoneUpdates games / stale, empty name falls back to the game id");
+        }
+        using (var document = System.Text.Json.JsonDocument.Parse(updates.Replace("\"phoneUpdates\":[", "\"phoneUpdates\":null,\"x\":[")))
+            check(LibraryCatalog.Parse(document.RootElement).PhoneUpdates.Count == 0, "catalog: phoneUpdates null reads as an empty list");
+        using (var document = System.Text.Json.JsonDocument.Parse(updates.Replace(",\"stale\":[{\"gameId\":\"0100B\",\"name\":\"\"}]", "")))
+            check(LibraryCatalog.Parse(document.RootElement).PhoneUpdates[0].Stale.Count == 0, "catalog: phoneUpdates entry without stale reads as none stale");
         var canonical = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "canonical-library"));
         using var setup = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new { library = canonical, libraryId = "legacy-id" }));
         LibraryConnection connection;
@@ -109,6 +155,14 @@ internal static class LibraryJobCases
         check(Locations(rows.Replace("\"last\":\"c\"", "\"last\":\"b\"")).DefaultFor(null) == "/lib", "locations: last one not connected → default location");
         try { Locations(rows.Replace("\"connected\":true,", "")); throw new Exception("accepted location without connected"); }
         catch (LibraryProtocolException) { check(true, "locations: row without connected rejected"); }
+        // #444：存放位置所在盘会让出包多占空间 / 可能失败（后端 libloc.slack_reason）；probe = 刚选的文件夹
+        check(places.Rows.All(r => r.Slack is null) && !places.Probed && places.ProbeSlack is null, "locations: no slack / probe fields read as none");
+        var slack = Locations(rows.Replace("\"freeBytes\":10,", "\"freeBytes\":10,\"format\":\"exfat\",\"clusterBytes\":524288,\"slackWarning\":true,\"slackReason\":\"cluster\",")
+            .Replace(",\"last\":\"c\"", ",\"last\":\"c\",\"probe\":{\"path\":\"E:\\\\games\",\"format\":\"fat32\",\"clusterBytes\":32768,\"slackWarning\":true,\"slackReason\":\"format\"}"));
+        check(slack.Rows[2].Slack == new LocationSlack("cluster", 524288) && slack.Rows[0].Slack is null, "locations: slack reason and cluster size per row");
+        check(slack.Probed && slack.ProbeSlack == new LocationSlack("format", 32768), "locations: probed folder's slack reason");
+        var fine = Locations(rows.Replace(",\"last\":\"c\"", ",\"last\":\"c\",\"probe\":{\"path\":\"C:\\\\S2Arm\",\"format\":\"ntfs\",\"clusterBytes\":4096,\"slackWarning\":false,\"slackReason\":null}"));
+        check(fine.Probed && fine.ProbeSlack is null, "locations: probed folder without a problem reads as probed, no slack");
 
         // ---- library layout v3 P4: catalog game.sizes, storageOverview job (shapes from pack/jobs/sizes.py for_catalog / overview) ----
         using (var document = System.Text.Json.JsonDocument.Parse(located.Replace("\"missing\":[],\"location\"",

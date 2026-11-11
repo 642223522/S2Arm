@@ -5,8 +5,8 @@ using System.Text;
 
 namespace S2A.Services.Tests
 {
-    // auddmg:u（Switch 2 虚拟音频设备管理，nn::audio::devmgr）：时之笛 GetDefaultVirtualOutputDevice → devmgr::Initialize 连不上就 Abort。
-    //   报文按游戏 sdk 客户端组包函数反推的线上格式手写（时之笛 sdk 0x2ad8e0 / 0x2adde0 / 0x134360 / 0x1a3090 / 0x2ae280 / 0x2ae430 等）：
+    // auddmg:u（Switch 2 虚拟音频设备管理，nn::audio::devmgr）：0400486024DEC000 GetDefaultVirtualOutputDevice → devmgr::Initialize 连不上就 Abort。
+    //   报文按游戏 sdk 客户端组包函数反推的线上格式手写（0400486024DEC000 sdk 0x2ad8e0 / 0x2adde0 / 0x134360 / 0x1a3090 / 0x2ae280 / 0x2ae430 等）：
     //     管理对象 0：in u32 种类 @0（SDK 恒发 2）、aruid @8、u64 @0x10（恒 0），带 pid；回会话（move）
     //     会话 0  ：in bool @0、u32 功能 @4；B 缓冲 n×0x100；回 u32 个数 @0
     //     会话 100：in u32 功能 @0；B 缓冲 0x100

@@ -54,7 +54,7 @@ class CleanupLinkTests(unittest.TestCase):
     def test_container_kit_keeps_only_what_assembly_reads(self):
         root = self.root / "product"; self.seed_root(root)
         kit = library.save_container_kit(self.c, self.gid, root)
-        self.assertEqual(sorted(str(p.relative_to(kit)) for p in kit.rglob("*") if p.is_file()),
+        self.assertEqual(sorted(p.relative_to(kit).as_posix() for p in kit.rglob("*") if p.is_file()),
                          sorted(["main.npdm", "main.fixups.tsv", "main.gates.tsv", "main.patched.bin", "icon.jpg", "romfs.s2aidx", "ctl/control.nacp",
                                  "programs/1/main.npdm", "programs/1/main.fixups.tsv", "programs/1/main.patched.bin"]))
         self.assertIsNone(library.save_container_kit(self.c, self.gid, self.root / "missing"))
@@ -69,7 +69,7 @@ class CleanupLinkTests(unittest.TestCase):
         library.save_container_kit(self.c, self.gid, root)
         library.prune_build(self.c, self.gid)
         self.assertEqual(sorted(p.name for p in image.iterdir()), ["kit", "pack"])   # 交付件（容器件、资源包）在 image/ios，不动
-        self.assertEqual(sorted(str(p.relative_to(unpacked)) for p in unpacked.rglob("*")), ["ios", "ios/logs", "ios/logs/refresh.log"])   # 解包、产物根、work 清掉，出包日志留
+        self.assertEqual(sorted(p.relative_to(unpacked).as_posix() for p in unpacked.rglob("*")), ["ios", "ios/logs", "ios/logs/refresh.log"])   # 解包、产物根、work 清掉，出包日志留
 
     def test_without_kit_prune_keeps_current_root(self):
         root = self.output / "roots" / "k@pkg"; self.seed_root(root)
@@ -123,3 +123,56 @@ class CleanupLinkTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemoveWhileSomethingWritesTests(unittest.TestCase):
+    """#369：游戏库在外置盘，删的同时访达往正在删的目录写 .DS_Store，shutil.rmtree 报 Errno 66（目录非空）。期望手写：
+    ① 第一次删目标目录时被塞进一个 .DS_Store（模拟访达）→ 统一删除 library._rmtree 清掉系统文件再删，整棵删干净；
+    ② 塞进的是普通文件（真有程序在写）→ 不硬删：报 ENOTEMPTY，原文点名剩下的那个文件，目录还在；
+    ③ _rmdir_past_os_junk 直接调：只剩 .DS_Store / ._x / desktop.ini 的目录 → 删掉"""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="s2arm enotempty ")
+        self.root = Path(self.temp.name) / "extract"
+        (self.root / "romfs" / "sub").mkdir(parents=True)
+        for name in ("a.bin", "romfs/b.bin", "romfs/sub/c.bin"):
+            (self.root / name).write_bytes(b"x")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def injected(self, name):
+        """os.rmdir 换桩：第一次删 romfs 目录（shutil 按目录句柄删时只给名字「romfs」）之前往里塞一个文件，模拟删的同时有程序写入"""
+        from unittest import mock
+        real, hits = os.rmdir, []
+        def rmdir(path, *args, **kw):
+            if not hits and os.path.basename(os.fspath(path)) == "romfs":
+                hits.append(path)
+                (self.root / "romfs" / name).write_bytes(b"late")
+            return real(path, *args, **kw)
+        return mock.patch.object(os, "rmdir", rmdir), hits
+
+    def test_os_junk_written_during_delete_is_cleared(self):
+        patcher, hits = self.injected(".DS_Store")
+        with patcher:
+            library._rmtree(self.root)
+        self.assertTrue(hits)   # 注入真的发生了
+        self.assertFalse(self.root.exists())
+
+    def test_real_file_written_during_delete_is_not_forced(self):
+        import errno as E
+        patcher, hits = self.injected("game.nsp")
+        with patcher, self.assertRaises(OSError) as caught:
+            library._rmtree(self.root)
+        self.assertTrue(hits)
+        self.assertEqual(caught.exception.errno, E.ENOTEMPTY)
+        self.assertIn("game.nsp", str(caught.exception))
+        self.assertTrue((self.root / "romfs" / "game.nsp").exists())
+
+    def test_only_os_junk_left_is_removed(self):
+        import errno as E
+        d = Path(self.temp.name) / "junk"
+        d.mkdir()
+        for name in (".DS_Store", "._x.nsp", "desktop.ini"):
+            (d / name).write_bytes(b"")
+        library._rmdir_past_os_junk(str(d), OSError(E.ENOTEMPTY, "x"), wait=0)
+        self.assertFalse(d.exists())

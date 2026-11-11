@@ -23,7 +23,7 @@ make -j1 -C "$root/graphics/dsx" mac OUT="$out/dsx"   # 直连翻译库（翻译
 nvn="$root/build/nvn/mac/libnvn.a"
 gal="$out/gal/mac/libnxgal.a"
 dsx="$out/dsx/mac/libdsx.a"
-common=(-O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -I"$root/runtime/include")
+common=(-O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -I"$root/runtime/include" -I"$root/runtime/ns2pro/include" -DNS2_SCAN_SECONDS=60)   # Mac 前端源文件含 Switch 2 Pro 连接（macos/ns2_controller.c、runtime/ns2pro，#277），同 launchers/macos/build.mk
 objects=()
 for src in "$root"/runtime/src/*.c "$root"/runtime/src/*.S "$root/platform/apple/plat_apple.c" "$root/graphics/track/track.c" "$root/graphics/track/glue.c"; do
     rel=${src#"$root"/}
@@ -46,7 +46,7 @@ xcrun --sdk macosx clang "${common[@]}" -std=gnu11 -fobjc-arc \
     -I"$root/graphics/nvn/gfx/nvn" -I"$root/graphics/nvn/gfx/nvn/include" -I"$root/graphics/nvn/host" \
     "$root/graphics/nvn/tests/t_present_settings.m" "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" -o "$out/t_present_settings" \
     -Wl,-dead_strip -Wl,-export_dynamic -Wl,-u,_s2a_mac_front_layer -Wl,-u,_nxgal_gpu_hold "${weak_flags[@]}" \
-    -Wl,-rpath,"$(dirname "$widen")" -framework AppKit -framework GameController -framework CoreHaptics -framework Metal -framework Foundation \
+    -Wl,-rpath,"$(dirname "$widen")" -framework AppKit -framework GameController -framework CoreHaptics -framework CoreBluetooth -framework IOKit -framework Metal -framework Foundation \
     -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++
 shasum -a 256 "$root/graphics/nvn/tests/t_present_settings.m" "$root/graphics/nvn/tests/t_present_settings.sh" \
     "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" "$out/t_present_settings" > "$out/link-inputs.sha256"
@@ -57,7 +57,9 @@ if [[ ${PRESENT_SETTINGS_BUILD_ONLY:-0} == 1 ]]; then
     exit 0
 fi
 
-bad=0
+# 各格 edge 图跨跑残留：格没跑成时旧图会让 distinctions 假绿——先清
+rm -f "$out"/mtl?-*/edge-*.bgra
+bad=0; unproven=0; unpr=' '
 for backend in mtl3 mtl4; do
     for aa in None SmaaMedium SmaaHigh; do
         for filter in Nearest Bilinear MetalFX; do
@@ -79,6 +81,8 @@ for backend in mtl3 mtl4; do
                 echo "说明 ${name}：macOS $(sw_vers -productVersion) 的 Metal 调试层不支持 Metal 4 + MetalFX，本格不开调试层（macOS 27 起照开）"; fi
             status=0
             "${run_env[@]}" "$out/t_present_settings" "$runtime" > "$runtime/run.log" 2>&1 || status=$?
+            # 77 = 宿主显示环境未证（屏睡/非活动 Space）：记未证不计红，见 t_present_settings.m 探针
+            if [[ "$status" == 77 ]]; then unpr+="$name "; unproven=$((unproven+1)); printf 'UNPROVEN %s（宿主显示环境未证）\n' "$name"; continue; fi
             ok=1
             [[ "$status" == 0 ]] || ok=0
             if [[ "$backend" == mtl3 ]]; then expected='direct backend: Metal 3 (forced by NXGAL_BE=mtl3)'
@@ -101,25 +105,32 @@ for backend in mtl3 mtl4; do
         done
     done
 done
-distinctions=0
+distinctions=0; dskip=0
 for backend in mtl3 mtl4; do
     modes=(None SmaaMedium SmaaHigh)
     for ((i=0;i<3;i++)); do
         for ((j=i+1;j<3;j++)); do
             a="$out/$backend-${modes[i]}-Nearest/edge-native.bgra"
             b="$out/$backend-${modes[j]}-Nearest/edge-native.bgra"
-            if [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
+            if [[ "$unpr" == *" $backend-${modes[i]}-Nearest "* || "$unpr" == *" $backend-${modes[j]}-Nearest "* ]]; then dskip=$((dskip+1))
+            elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
             else printf 'FAIL %s AA outputs not distinct: %s / %s\n' "$backend" "${modes[i]}" "${modes[j]}" >&2; fi
         done
         a="$out/$backend-${modes[i]}-Nearest/edge-scaled.bgra"
         b="$out/$backend-${modes[i]}-Bilinear/edge-scaled.bgra"
-        if [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
+        if [[ "$unpr" == *" $backend-${modes[i]}-Nearest "* || "$unpr" == *" $backend-${modes[i]}-Bilinear "* ]]; then dskip=$((dskip+1))
+        elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
         else printf 'FAIL %s %s filters produce identical pixels\n' "$backend" "${modes[i]}" >&2; fi
         a="$out/$backend-${modes[i]}-MetalFX/edge-scaled.bgra"
-        if [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
+        b="$out/$backend-${modes[i]}-Bilinear/edge-scaled.bgra"
+        if [[ "$unpr" == *" $backend-${modes[i]}-MetalFX "* || "$unpr" == *" $backend-${modes[i]}-Bilinear "* ]]; then dskip=$((dskip+1))
+        elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
         else printf 'FAIL %s %s MetalFX and Bilinear produce identical pixels\n' "$backend" "${modes[i]}" >&2; fi
     done
 done
-printf 'present settings matrix: %d/18 passed (logs/images: %s)\n' "$((18-bad))" "$out"
-printf 'present settings output distinctions: %d/18 passed\n' "$distinctions"
-[[ "$bad" == 0 && "$distinctions" == 18 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 = 9，两个后端 18（10-30 去掉 FXAA 前 4 种模式是 28）
+printf 'present settings matrix: %d/18 passed, %d unproven (logs/images: %s)\n' "$((18-bad-unproven))" "$unproven" "$out"
+printf 'present settings output distinctions: %d/18 passed, %d skipped\n' "$distinctions" "$dskip"
+if ((unproven)); then printf 'present settings: %d cells 未证（宿主显示环境不给真上屏位）\n' "$unproven"; fi
+# 18 格全未证 = 这次一格真上屏都没验：退 75（门禁记「环境未就绪」重排），不能当绿（判据绿着失效）；部分未证照跳过那几格
+if ((unproven == 18)); then exit 75; fi
+[[ "$bad" == 0 && $((distinctions+dskip)) == 18 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 = 9，两个后端 18；未证格的对子计 skip 不判（10-30 去掉 FXAA 前 4 种模式是 28）

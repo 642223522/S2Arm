@@ -22,7 +22,7 @@ import XCTest
             try "romfs/a\t5400000000\tx\n".write(to:pack.appendingPathComponent("index.tsv"), atomically:true, encoding:.utf8)
             return d.appendingPathComponent(name)
         }
-        // 出包时间按「现在」往前推，与下面任务的结束时刻同一把尺（原先写死日期，11-02 09:40Z 起动森的「25 小时前清理」就比王国之泪新、顺序翻了）
+        // 出包时间按「现在」往前推，与下面任务的结束时刻同一把尺（原先写死日期，11-02 09:40Z 起01006F8002326000的「25 小时前清理」就比0100F2C0115B6000新、顺序翻了）
         let now = Date().timeIntervalSince1970
         func ago(_ s:Double) -> String { ISO8601DateFormatter().string(from:Date(timeIntervalSince1970:now - s)) }
         let newest = try ipa(ids[0], "spl3-b.ipa", "direct", ago(120)); _ = try ipa(ids[0], "spl3-a.ipa", "direct", ago(100000))

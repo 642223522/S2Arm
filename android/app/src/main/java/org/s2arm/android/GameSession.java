@@ -54,25 +54,25 @@ final class GameSession implements AutoCloseable {
      * Admission before any guest execution. Keep the storage lease until process exit, including native
      * shutdown: a later import cannot prune the live revision. Native module reads also check the copied bytes.
      */
-    static GameSession load(BootSpec spec, File privateRoot, InstalledApk installed, boolean debuggable, boolean revisionEnabled)
+    static GameSession load(BootSpec spec, File privateRoot, InstalledApk installed, boolean debuggable)
             throws IOException, BootContract.BadGame, GamePack.BadPack {
-        return load(spec, privateRoot, installed, debuggable, revisionEnabled, false, null);
+        return load(spec, privateRoot, installed, debuggable, false, null);
     }
 
     static GameSession load(BootSpec spec, File privateRoot, InstalledApk installed, boolean debuggable,
-            boolean revisionEnabled, boolean debugEntriesOpen)
+            boolean debugEntriesOpen)
             throws IOException, BootContract.BadGame, GamePack.BadPack {
-        return load(spec, privateRoot, installed, debuggable, revisionEnabled, debugEntriesOpen, null);
+        return load(spec, privateRoot, installed, debuggable, debugEntriesOpen, null);
     }
 
     static GameSession load(BootSpec spec, File privateRoot, InstalledApk installed, boolean debuggable,
-            boolean revisionEnabled, GameFingerprint.Timing timing)
+            GameFingerprint.Timing timing)
             throws IOException, BootContract.BadGame, GamePack.BadPack {
-        return load(spec, privateRoot, installed, debuggable, revisionEnabled, false, timing);
+        return load(spec, privateRoot, installed, debuggable, false, timing);
     }
 
     static GameSession load(BootSpec spec, File privateRoot, InstalledApk installed, boolean debuggable,
-            boolean revisionEnabled, boolean debugEntriesOpen, GameFingerprint.Timing timing)
+            boolean debugEntriesOpen, GameFingerprint.Timing timing)
             throws IOException, BootContract.BadGame, GamePack.BadPack {
         long phase = GameFingerprint.Timing.start(timing);
         GameStorage storage = GameStorage.acquire(privateRoot);
@@ -89,8 +89,6 @@ final class GameSession implements AutoCloseable {
                 BootContract.requireTestApkPermission(game.titleId, game.apk.packageName,
                     installed == null ? "" : installed.packageName, debuggable, debugEntriesOpen);
             phase = GameFingerprint.Timing.start(timing);
-            if (!game.hasApkModules() && (!debuggable || !revisionEnabled))
-                throw new IOException("revision execution is experimental: requires a debuggable APK and explicit s2arm.experimental_revision=true");
             File revision = BootContract.under(gameRoot, game.revisionDir, "revision");
             Map<String, Object> artifact = Json.object(Json.parse(new String(Files.readAllBytes(
                 BootContract.under(revision, game.artifact, "artifact").toPath()), java.nio.charset.StandardCharsets.UTF_8)), "artifact");

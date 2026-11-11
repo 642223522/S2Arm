@@ -104,15 +104,24 @@ namespace S2A.Services
 
             string romfs = Path.Combine(programDir, "romfs");
 
-            IStorage imageStorage = RomFsIndex.OpenImage(programDir);
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            if (imgV1 != null)
+            {
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, imgV1);
+                Native.Mark("服务：RomFS 单一 IMG\0"u8);
+            }
+            IStorage imageStorage = imgV1 != null ? null : RomFsIndex.OpenImage(programDir);
+            RomFsIndex.Source source = imgV1 != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
 
-            if (imageStorage != null)
+            if (source == RomFsIndex.Source.Image)
             {
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, imageStorage);
                 Native.Mark("服务：RomFS 单文件镜像\0"u8);
             }
-            else if (Directory.Exists(romfs))
+            else if (source == RomFsIndex.Source.Directory)
             {
+                if (File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)))
+                    Red.Report("RomFS 单文件镜像不完整（多半推到一半），这局改读 romfs/ 目录", programDir);   // 审计 P1-151：不静默改读
                 // 出包时预建的索引（RomFsIndex）优先：免去起局枚举十几万文件；没有就按目录现建（慢，打一行提示）
                 string index = Path.Combine(programDir, RomFsIndex.FileName);
                 string overlay = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
@@ -131,7 +140,7 @@ namespace S2A.Services
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, image);   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }
-            else
+            else if (imgV1 == null)
             {
                 Red.Report("游戏数据缺 romfs/", programDir);
             }
@@ -139,9 +148,11 @@ namespace S2A.Services
             Aoc.Register(gameDir);   // DLC：aoc.tsv 里的全部登记为已拥有（有数据的挂 aoc/<idx>/，仅授权的挂载时报红）
 
             Saves.SelectUser(device);
+            if (Saves.Dir() == null) SaveFolder.SelectUser(device, applicationId);   // 存档位置里记的用户号（SaveFolder.cs，审计 P1-162）：建存档之前
             Result saveResult = ProcessLoaderHelper.EnsureSaveData(device, new ApplicationId(applicationId), nacp);
             if (requireSuccess) saveResult.ThrowIfFailure();
             Saves.Seed(device, applicationId);
+            if (Saves.Dir() == null) SaveFolder.ReadIn(device, applicationId);   // 存档位置 SaveData：玩家放了新存档就读进来（SaveFolder.cs）；测试 / 导入种子局不读
             Native.Mark("服务：存档\0"u8);
 
             // Ryujinx 加载器原本做的显卡侧三步（FileSystemExtensions / ArmProcessContext）：着色器缓存按程序号、GPU 认得客体内存、宿主就绪
@@ -229,7 +240,7 @@ namespace S2A.Services
     }
 
     // 只读、按需打开的宿主文件：读时经句柄缓存取 FileStream（缓存满了关最久没用的）。
-    // 锁只管最近使用表与登记，打开文件和 pread 都在锁外（10-26 动森 Mac 满载 90 秒黑屏：全局锁包着阻塞的 pread，一次慢读让所有 RomFS 读排队）；
+    // 锁只管最近使用表与登记，打开文件和 pread 都在锁外（10-26 01006F8002326000 Mac 满载 90 秒黑屏：全局锁包着阻塞的 pread，一次慢读让所有 RomFS 读排队）；
     // _busy = 正在锁外读这个文件的线程数，淘汰时跳过它们（句柄不会在读到一半时被关）
     sealed class LazyHostFile : IFile
     {
@@ -346,7 +357,7 @@ namespace S2A.Services
                 }
                 catch (IOException e) when (e.HResult == EFault)
                 {
-                    if (!ReadViaBounce(stream.SafeFileHandle, destination[..n], offset, out bytesRead))
+                    if (!ReadViaBounce(stream.SafeFileHandle, destination[..n], offset, Path.GetFileName(_path), out bytesRead))
                     {
                         return ResultFs.UnexpectedInLocalFileSystemE.Value;
                     }
@@ -385,10 +396,11 @@ namespace S2A.Services
         //   内核的写不能交给写跟踪：先读进宿主中转缓冲，再报一次写（解保护、GPU 改过的子页先回写，同 GetWritableRegion(tracked)），由 CPU 拷进去。
         //   给不出游戏地址（远端开着、目标不在本线程取过的区域里）就报不了写：不拷、回 false，读盘回失败（11-01 审计 P2-21：原先只报红照拷，
         //   往仍受保护的页写即宿主崩溃，写进去了跟踪器也不知道）
-        private const int EFault = 14;
+        internal const int EFault = 14;
         private static long _bounceCount;
 
-        private unsafe bool ReadViaBounce(SafeFileHandle handle, Span<byte> destination, long offset, out long bytesRead)
+        // 也给单文件镜像 / 单一 IMG 的预建路径用（RomFsIndex.IndexedStorage 直接读 romfs.img / game.img 进游戏内存，同样会 EFAULT，#602）：name 只进日志
+        internal static unsafe bool ReadViaBounce(SafeFileHandle handle, Span<byte> destination, long offset, string name, out long bytesRead)
         {
             // 写钩子收游戏地址：远端连续块的目标视图是影子页、指针不是游戏地址，按取区域时的游戏地址换算（11-01 审计 P1-17）
             ulong host = (ulong)Unsafe.AsPointer(ref MemoryMarshal.GetReference(destination));
@@ -396,7 +408,7 @@ namespace S2A.Services
 
             if (!GuestMemory.TryGuestAddress(host, (ulong)destination.Length, out ulong va))
             {
-                Red.Report("读盘中转：目标不在本线程取过的游戏内存区域里，给不出游戏地址，报不了写、不拷，读盘回失败", $"{Path.GetFileName(_path)} 偏移 0x{offset:X}，宿主 0x{host:X} +0x{destination.Length:X}");
+                Red.Report("读盘中转：目标不在本线程取过的游戏内存区域里，给不出游戏地址，报不了写、不拷，读盘回失败", $"{name} 偏移 0x{offset:X}，宿主 0x{host:X} +0x{destination.Length:X}");
                 return false;
             }
 
@@ -404,7 +416,7 @@ namespace S2A.Services
 
             if (k <= 8 || (k & (k - 1)) == 0)
             {
-                Console.Error.WriteLine($"[fs] 读盘目标页写保护（EFAULT）改中转读：第 {k} 次，{Path.GetFileName(_path)} 偏移 0x{offset:X}，目标 0x{va:X} +0x{destination.Length:X}");
+                Console.Error.WriteLine($"[fs] 读盘目标页写保护（EFAULT）改中转读：第 {k} 次，{name} 偏移 0x{offset:X}，目标 0x{va:X} +0x{destination.Length:X}");
             }
 
             byte[] buf = ArrayPool<byte>.Shared.Rent(destination.Length);

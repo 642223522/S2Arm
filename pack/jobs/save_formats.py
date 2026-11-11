@@ -6,7 +6,10 @@
   yuzu        …/nand/user/save/0000000000000000/<32 位用户号>/<程序号>/（用户号全 0 = 设备存档）
   checkpoint  …/0x<程序号> <游戏名>/<时间戳 …>/（取最新一份）
   jksv        JKSV/<游戏名>/<用户名 - 时间戳>/ 或 zip（路径里没有程序号，调用方给 tid）；下钻到第一层有文件的目录，同层取最新
-  nx2apple    <游戏号>/save（账户存档）、save_device（设备存档）；旁边的 .work / .new 是未提交的副本，不算存档
+  nx2apple    <游戏号>/save、save_device；旁边的 .work / .new 是未提交的副本，不算存档。NX2Apple 引擎（hle_fs.c）的规矩：
+              save 放账户存档，游戏只有设备存档（如动森）时设备存档也放 save；只有两种都用的游戏才另有 save_device。
+              所以 save 不定类型（同 raw：有账户存档按账户，只有设备存档按设备），save_device 按设备。
+              压缩包 / 外面多套一层文件夹（<外层>/<游戏号>/save）也认；直接拖 save / save_device 文件夹本身按裸文件
   raw         直接就是游戏存档文件；外面套的程序号 / 用户号目录剥掉，套着 JKSV 目录的按 JKSV；
               唯一子目录「0」有两种解释（Ryujinx 提交目录 / 游戏自己的槽位目录，如塞尔达 0/…5/），按调用方给的
               「这款游戏自己写出的存档顶层」（ref）比对决定剥不剥；没有参照或比不出 → 不剥、说明里报「结构存疑」
@@ -26,7 +29,7 @@ import zipfile
 SKIP = {".DS_Store", "Thumbs.db", "desktop.ini", "edizon_save_metadata.json"}
 RYU_META = {"ExtraData0", "ExtraData1"}
 LAYOUTS = ("ryujinx", "yuzu", "checkpoint", "jksv", "nx2apple", "raw")
-NX2APPLE_FOLDERS = {"save": "account", "save_device": "device"}
+NX2APPLE_FOLDERS = {"save": None, "save_device": "device"}
 # 说明里带这个词 = 识别没定下来、按保守解释导入（zero_layer 的「结构存疑：…」）；
 # 调用方（pack/jobs/saves.py 的 inspect）靠它把这类说明翻成给玩家的一句提示，不当成导入失败的证据
 DOUBT = "结构存疑"
@@ -83,12 +86,13 @@ def latest_child(d):
 def detect(src):
     """返回 [(布局, 存档目录, 程序号, 类型或 None, 说明)]，一个来源里可能有多份。"""
     found = []
-    subs = {x for x in os.listdir(src) if os.path.isdir(os.path.join(src, x)) and not x.startswith(".")}
-    folders = [x for x in NX2APPLE_FOLDERS if x in subs and files_under(os.path.join(src, x))]
-    if folders and all(x in NX2APPLE_FOLDERS or x.endswith((".work", ".new")) for x in subs):
-        # 外层文件夹就是 <游戏号> 时用它；否则由调用方给的程序号定（程序号留空）
-        name = os.path.basename(src.rstrip("/\\")).lower()
-        return [("nx2apple", os.path.join(src, folders[0]), name if re.fullmatch(r"[0-9a-f]{16}", name) else None, NX2APPLE_FOLDERS[folders[0]], "NX2Apple " + folders[0])]
+    hit = nx2apple(src)
+    if not hit:   # 压缩包解出来 / 拖了上一层：外面只套着唯一一个文件夹，里面才是 <游戏号>/save
+        names = [x for x in os.listdir(src) if not x.startswith(".") and x not in SKIP]
+        if len(names) == 1 and re.fullmatch(r"[0-9a-fA-F]{16}", names[0]) and os.path.isdir(os.path.join(src, names[0])):   # 只认里面那层是游戏号
+            hit = nx2apple(os.path.join(src, names[0]))
+    if hit:
+        return hit
     for base, dirs, _ in os.walk(src):
         parts = base[len(src):].strip("/").split("/") if base != src else []
         if len(parts) >= 2 and parts[-1] == "0" and re.fullmatch(r"[0-9a-fA-F]{16}", parts[-2]):
@@ -116,6 +120,17 @@ def detect(src):
             found.append(("checkpoint", d, m.group(1).lower(), None, f"Checkpoint 取 {os.path.basename(d)}"))
             dirs[:] = []
     return found
+
+
+def nx2apple(src):
+    """src 是 NX2Apple 的 <游戏号> 文件夹（下面只有 save / save_device 和未提交副本）→ [命中]，否则 []"""
+    subs = {x for x in os.listdir(src) if os.path.isdir(os.path.join(src, x)) and not x.startswith(".")}
+    folders = [x for x in NX2APPLE_FOLDERS if x in subs and files_under(os.path.join(src, x))]
+    if not folders or not all(x in NX2APPLE_FOLDERS or x.endswith((".work", ".new")) for x in subs):
+        return []
+    # 外层文件夹就是 <游戏号> 时用它；否则由调用方给的程序号定（程序号留空）
+    name = os.path.basename(src.rstrip("/\\")).lower()
+    return [("nx2apple", os.path.join(src, folders[0]), name if re.fullmatch(r"[0-9a-f]{16}", name) else None, NX2APPLE_FOLDERS[folders[0]], "NX2Apple " + folders[0])]
 
 
 @contextlib.contextmanager
@@ -156,7 +171,9 @@ def extracted(src, tid=None, layout=None, ref=None):
             if not tid:
                 raise ValueError("认不出布局（JKSV / 裸文件路径里没有程序号），须指明程序号")
             d, why = src, ""
-            lay = layout or ("jksv" if any(os.path.isdir(os.path.join(src, x)) for x in os.listdir(src)) else "raw")
+            # 直接拖 NX2Apple 的 save / save_device 文件夹：里面就是游戏原样的存档（顶层常常只有子文件夹，别当 JKSV 往下钻）
+            nx_folder = os.path.basename(src.rstrip("/\\")) in NX2APPLE_FOLDERS
+            lay = layout or ("jksv" if not nx_folder and any(os.path.isdir(os.path.join(src, x)) for x in os.listdir(src)) else "raw")
             ez = [b for b, _, ns in os.walk(d) if "edizon_save_metadata.json" in ns] if lay == "raw" else []
             if len(ez) == 1:   # EdiZon 备份：带元数据的那层就是存档根
                 d = ez[0]

@@ -65,6 +65,9 @@ public static class PackCases
             track.Ingest(progress.RootElement, 15);
         check(track.Plan.Count == 1 && track.Current == "unpack" && track.Started["unpack"] == 10, "track: plan and step start");
         check(track.Fraction == 0.25 && track.Message == "解包 25/100", "track: real fraction and message");
+        using (var message = JsonDocument.Parse("""{"type":"message","milestone":"unpack","message":"解包已完成，正在校验"}"""))
+            track.Ingest(message.RootElement, 16);
+        check(track.Fraction is null && track.Message.Contains("校验"), "track: finalization message clears stale 100% fraction");   // 社区贡献者补丁 #8 附带的用例
         check(track.Plan[0].Measured is null, "track: no local record means no expected time");
         track.Finish(40);
         check(track.Duration("unpack") == 30, "track: last step ends at the job end");
@@ -88,10 +91,25 @@ public static class PackCases
             catch (LibraryProtocolException) { check(true, label); return; }
             throw new Exception("accepted " + label);
         }
-        RejectChecklist(checklist.Replace("https://github.com", "http://github.com"), "checklist: non-HTTPS link rejected");
+        // 剃刀 W7：不安全链接 / 不认识的动作只丢这一项的链接 / 动作，整份清单照常（期望按规则手写）
+        using (var doc = JsonDocument.Parse(checklist.Replace("https://github.com", "http://github.com")))
+        {
+            var r = InstallReadiness.Parse(doc.RootElement);
+            check(r.Items.Count == 3 && r.Items[1].OfficialUrl is null && r.Items[1].Id == "impactor", "checklist: non-HTTPS link dropped for that item only");
+        }
+        using (var doc = JsonDocument.Parse(checklist.Replace("\"who\":\"human\"}],", "\"who\":\"human\",\"action\":\"futureAction\"}],")))
+        {
+            var r = InstallReadiness.Parse(doc.RootElement);
+            check(r.Items.Count == 3 && r.Items[2].Action is null && !r.Items[2].Ok, "checklist: unknown action dropped for that item only");
+        }
         using (var doc = JsonDocument.Parse(checklist.Replace("\"ready\":false", "\"ready\":true")))
             check(InstallReadiness.Parse(doc.RootElement) is { Ready: true } r && r.Items.Any(i => !i.Ok), "checklist: backend ready with advisory open items is accepted");
         RejectChecklist("{}", "checklist: malformed");
+        // #487：deviceKind（后端按 USB 产品号认 iPad）；旧后端没有这个字段读成 ""
+        using (var doc = JsonDocument.Parse(checklist.Replace("\"account\":\"\"", "\"account\":\"\",\"deviceKind\":\"ipad\"")))
+            check(InstallReadiness.Parse(doc.RootElement).DeviceKind == "ipad", "checklist: deviceKind ipad kept");
+        using (var doc = JsonDocument.Parse(checklist))
+            check(InstallReadiness.Parse(doc.RootElement).DeviceKind == "", "checklist: no deviceKind reads as empty");
         // 11-07 bundled Impactor: the backend asks for a launcher-local step by name only (openImpactor), never a path or an unknown verb
         const string bundledChecklist = """
 {"gameId":"G","items":[{"id":"impactor","ok":true,"waiting":false,"title":"t","detail":"","who":"human","url":null,"action":null},
@@ -103,7 +121,8 @@ public static class PackCases
             check(ready.Items[1].Action == "openImpactor" && ready.Items[1].OfficialUrl is null && ready.Items[0].Action is null,
                 "checklist: bundled Impactor sign-in step carries the openImpactor action and no download link");
         }
-        RejectChecklist(bundledChecklist.Replace("\"openImpactor\"", "\"C:/x.exe\""), "checklist: unknown / path action rejected");
+        using (var doc = JsonDocument.Parse(bundledChecklist.Replace("\"openImpactor\"", "\"C:/x.exe\"")))
+            check(InstallReadiness.Parse(doc.RootElement).Items[1].Action is null, "checklist: unknown / path action never becomes an action (dropped, razor W7)");
 
         // ---- request body ----
         var paths = new LauncherPaths(Path.Combine(Path.GetTempPath(), "E"), Path.Combine(Path.GetTempPath(), "R"), Path.Combine(Path.GetTempPath(), "S"));
@@ -118,6 +137,25 @@ public static class PackCases
             check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (op == "install") == r.ContainsKey("shellDir"),
                 $"request: {op} carries the launcher folder (bundled Impactor); only install carries the shell");
         }
+        // 开发者证书（v0.2.4）：属于这台电脑、不属于某款游戏 → 不带 gameId；密码只走 Secrets（作业进程环境），请求体里没有
+        var cert = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "devCert", "",
+            new Dictionary<string, object?> { ["action"] = "import", ["p12Path"] = "C:/c.p12", ["profilePath"] = "C:/p.mobileprovision" },
+            new Dictionary<string, string> { ["S2A_DEVCERT_PASSWORD"] = "pw-secret" }), "win-3");
+        check((string?)cert["operation"] == "devCert" && !cert.ContainsKey("gameId") && (string?)cert["action"] == "import" &&
+              !JsonSerializer.Serialize(cert).Contains("pw-secret"),
+            "request: devCert needs no game and never carries the password");
+        // 装到 iPhone 的方式 / 更新 iPhone 上的 S2Arm（v0.3.0，install.install_mode_job / update_phone）：属于这台电脑 / 这台手机，不带 gameId；
+        //   都带随包资源（Impactor），installUpdate 还要组装容器，同 install 带预编壳
+        check(PackJobClient.Operations.Contains("installMode") && PackJobClient.Operations.Contains("installUpdate"),
+            "request: installMode / installUpdate are launcher operations");
+        var mode = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installMode", "",
+            new Dictionary<string, object?> { ["mode"] = "device" }), "win-5");
+        check((string?)mode["mode"] == "device" && !mode.ContainsKey("gameId") && !mode.ContainsKey("shellDir") &&
+              (string?)mode["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installMode needs no game, carries mode and resources");
+        var update = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installUpdate", "",
+            new Dictionary<string, object?> { ["acceptStale"] = true }), "win-6");
+        check(update["acceptStale"] is true && !update.ContainsKey("gameId") && (string?)update["shellDir"] == Path.GetFullPath(paths.Shell) &&
+              (string?)update["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installUpdate needs no game, carries acceptStale, shell and resources");
         check(PackJobClient.Operations.Contains("delete"), "request: delete (remove the whole game, saves kept) is a launcher operation since library layout v3");
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]
         {
@@ -141,6 +179,10 @@ public static class PackCases
         check((string?)V3("relinkGame", new() { ["folder"] = where })["folder"] == where, "request: relinkGame carries the chosen folder");
         check(V3("forgetGame", null).Count == move.Count - 1, "request: forgetGame is the bare envelope");
         check((string?)V3("clean", new() { ["kind"] = "cache" })["kind"] == "cache", "request: clean kind=cache accepted");
+        // 释放空间（同 Mac FreeSpaceView）：spaceFree 带这款和勾选的部件列表，原样交给 pack/jobs/library.py space_free
+        var free = V3("spaceFree", new() { ["parts"] = new[] { "shaders", "ipa" } });
+        check((string?)free["operation"] == "spaceFree" && (string?)free["gameId"] == "0100FD70134FA000" && free["parts"] is string[] { Length: 2 } ps && ps[0] == "shaders" && ps[1] == "ipa",
+              "request: spaceFree carries the game and the chosen parts");
         check((string?)V3("ipa", new() { ["location"] = where })["location"] == where && !V3("ipa", null).ContainsKey("location"),
             "request: ipa location optional, passed through when chosen");
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]

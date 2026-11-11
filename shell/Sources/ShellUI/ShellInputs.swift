@@ -1,3 +1,4 @@
+// S2Arm modification: expose the host callback for persistent game reordering.
 import Foundation
 import CoreGraphics
 
@@ -10,6 +11,25 @@ public enum GameState: Equatable, Sendable {
     /// for the player (what happened, what to do), shown under the title and in the How to fix sheet. `technical`
     /// is the underlying message, shown only as small secondary Details in the sheet.
     case broken(reason: String, detail: String = "", technical: String = "")
+    /// On its way from the computer: copied over the cable, then unpacked here. Its cover is greyed until it can be played.
+    case installing(InstallStage)
+}
+
+/// Where an arriving game is. `fraction` (0...1) is how far this phase has got; nil when it is not known yet.
+public struct InstallStage: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+        /// Being copied from the computer: the cable must stay connected.
+        case transferring
+        /// Copied; being unpacked on this device.
+        case installing
+        /// The copying stopped part way, such as when the cable came out. Connecting the computer again continues it.
+        case interrupted
+        /// The unpacking did not finish. Play tries it again.
+        case failed
+    }
+    public var phase: Phase
+    public var fraction: Double?
+    public init(_ phase: Phase, fraction: Double? = nil) { self.phase = phase; self.fraction = fraction.map { min(1, max(0, $0)) } }
 }
 
 public struct GameTile: Identifiable, Equatable, Sendable {
@@ -24,8 +44,10 @@ public struct GameTile: Identifiable, Equatable, Sendable {
     public var state: GameState
     /// Already localized, such as "Played today". Nil leaves the game out of Recently played.
     public var recentlyPlayed: String?
+    /// Installed (or updated) and not opened since: a blue dot before its name, as iOS marks a new app.
+    public var isNew: Bool
     public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
-                state: GameState = .playable, recentlyPlayed: String? = nil) {
+                state: GameState = .playable, recentlyPlayed: String? = nil, isNew: Bool = false) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
@@ -33,6 +55,7 @@ public struct GameTile: Identifiable, Equatable, Sendable {
         self.icon = icon
         self.state = state
         self.recentlyPlayed = recentlyPlayed
+        self.isNew = isNew
     }
 }
 
@@ -218,6 +241,8 @@ public struct PadSnapshot: Equatable, Sendable {
 /// All effects leave the package through these closures. The game ID is always explicit.
 /// An optional closure the host leaves nil has no handler: the button for it is not shown, so nothing on screen does nothing.
 public struct ShellActions {
+    /// Inserts the dragged games before an ID, or at the end when the destination is nil.
+    public var onReorderGames: (([String], String?) -> Bool)? = nil
     public var onSelect: (String) -> Void
     public var onPlay: (String) -> Void
     public var onChange: (_ gameID: String, _ settingID: String, _ value: String) -> Void
@@ -240,6 +265,8 @@ public struct ShellActions {
     public var onButtonTest: (Bool) -> Void
     /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
     public var onDeleteGame: ((_ gameID: String, _ saves: Bool) -> Void)?
+    /// Opens the game's save management (export / import saves) before it starts. nil: no item in the card's menu.
+    public var onManageSaves: ((_ gameID: String) -> Void)?
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,
@@ -251,7 +278,7 @@ public struct ShellActions {
                 onClearShellCloud: (() -> Void)? = nil,
                 onGlobalPadMapChange: ((String, String) -> Void)? = nil,
                 onGlobalPadMapReset: (() -> Void)? = nil, onButtonTest: @escaping (Bool) -> Void = { _ in },
-                onDeleteGame: ((String, Bool) -> Void)? = nil) {
+                onDeleteGame: ((String, Bool) -> Void)? = nil, onManageSaves: ((String) -> Void)? = nil) {
         self.onSelect = onSelect
         self.onPlay = onPlay
         self.onChange = onChange
@@ -272,5 +299,6 @@ public struct ShellActions {
         self.onGlobalPadMapReset = onGlobalPadMapReset
         self.onButtonTest = onButtonTest
         self.onDeleteGame = onDeleteGame
+        self.onManageSaves = onManageSaves
     }
 }

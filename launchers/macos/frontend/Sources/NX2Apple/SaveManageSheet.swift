@@ -55,13 +55,16 @@ struct SaveManageSheet: View {
     @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     let gameID: String
+    /// 拖到游戏库这款卡片上的存档（LauncherView+Library）：打开就先检查它，同拖进本窗口
+    let source: URL?
     @StateObject private var state = SaveSheetState()
     @State private var confirming = false
     @State private var dropTargeted = false
 
-    init(model: S2ArmLauncherModel, gameID: String) {
+    init(model: S2ArmLauncherModel, gameID: String, source: URL? = nil) {
         self.model = model
         self.gameID = gameID
+        self.source = source
     }
 
     private static let backupType = UTType(exportedAs: "org.s2arm.save-backup", conformingTo: .zip)
@@ -79,6 +82,18 @@ struct SaveManageSheet: View {
                 Text(gameName).font(.manrope(14)).foregroundStyle(.secondary).lineLimit(1)
                 Text(t("save.hint")).font(.manrope(12.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                // 存档位置 SaveData：原生存档放进去下次起局就用（services SaveFolder.cs）；上次没读进来的原因写在这里
+                Text(t("save.folder.note")).font(.manrope(12.5)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+                if let game, let why = model.saveFolderProblem(game) {
+                    Label { Text(t("save.folder.problem").replacingOccurrences(of: "{0}", with: why)).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+                        .font(.manrope(12)).foregroundStyle(LauncherPalette.danger).padding(.top, 4)
+                }
+                if let game {
+                    Button(t("save.folder.open")) { model.openSaveFolder(game) }
+                        .buttonStyle(LauncherSecondaryButtonStyle()).padding(.top, 8)
+                        .accessibilityIdentifier("save.folder.open")
+                }
             }
             .padding(.horizontal, 30).padding(.top, 28).padding(.bottom, 16)
             feedback.padding(.horizontal, 30)
@@ -117,7 +132,7 @@ struct SaveManageSheet: View {
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: drop)
-        .onAppear { refresh() }
+        .onAppear { refresh(); if let source, !blocked { inspect(source) } }
         .onDisappear { state.stop() }
         .interactiveDismissDisabled(state.running == .restore)
         .frame(width: 600, height: 640)

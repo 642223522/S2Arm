@@ -7,6 +7,7 @@
 #include "../include/s2a_hud.h"
 #include "../include/s2a_native.h"
 #include "../include/s2a_gfx_mode.h"
+#include "../include/s2a_ui_text.h"   // 齿轮菜单「性能浮层」那一行：中文原宏 + _EN，S2A_UI 按界面语言取（#316）
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -64,7 +65,8 @@ static int hud_target(void) {
 static int cmp_u64(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return (x > y) - (x < y); }
 // 60 帧降档原因（runtime/src/fps.c：热状态危急 / 低电量模式时自动按关生效）：弱定义缺省 0，fps.c 的强定义覆盖（单测只链本文件时用缺省）
 __attribute__((weak)) int s2a_fps_cap_reason(void) { return 0; }
-static const char *cap_note(void) { int r = s2a_fps_cap_reason(); return r == 1 ? "　60 帧降档：热" : r == 2 ? "　60 帧降档：低电量" : r == 3 ? "　60 帧：同局 A/B 测原帧率" : ""; }
+__attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_ui_text.h）：iOS ios/app.m、Mac macos/front_mac.m 强定义；别的平台 / 只链本文件的单测按中文
+static const char *cap_note(void) { int r = s2a_fps_cap_reason(); return r == 1 ? "　60 帧降档：热" : r == 2 ? "　60 帧降档：低电量" : r == 3 ? "　60 帧：同局 A/B 测原帧率" : r == 4 ? "　60 帧：档位梯子压回原帧率" : ""; }
 static void line_fps(char *o, size_t n) {
     uint64_t end = atomic_load_explicit(&g_fn, memory_order_acquire), now = mono_ns();
     static uint64_t itv[HR]; int k = 0; uint64_t f1 = 0, prev = 0;
@@ -221,8 +223,8 @@ int s2a_hud_brief(char *out, size_t n) {
     }
     task_vm_info_data_t vi; mach_msg_type_number_t c = TASK_VM_INFO_COUNT;
     double gb = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) == KERN_SUCCESS ? vi.phys_footprint / 1073741824.0 : -1;
-    char m[24] = "内存读取失败"; if (gb >= 0) snprintf(m, sizeof m, "%.1f GB", gb);
-    return snprintf(out, n, "%llu 帧 · %s", (unsigned long long)f1, m);
+    char m[24]; snprintf(m, sizeof m, "%s", S2A_UI(S2A_UI_HUD_MEM_FAIL)); if (gb >= 0) snprintf(m, sizeof m, "%.1f GB", gb);
+    return snprintf(out, n, S2A_UI(S2A_UI_HUD_BRIEF), (unsigned long long)f1, m);
 }
 
 int s2a_hud_text(char *out, size_t n, const s2a_hud_host *h) {

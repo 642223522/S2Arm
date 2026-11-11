@@ -9,7 +9,13 @@
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
+#include <stdlib.h>
+#include <sys/system_properties.h>
+#include <android/log.h>
+#include <pthread.h>
+#include "nvn_vk_texcache.h"
 #include "nvn_vk_format.h"
+#include "nvn_vk_first_draw.h"
 #include "maskclear_spv.h"
 #include "colorclear_spv.h"
 
@@ -430,17 +436,22 @@ static int clr_submit(struct s2a_vk_device *d, VkCommandBuffer cmd, VkFramebuffe
         // 模块不在或开关关都跳过一次分支判断，不计时也不记账（量的成本不默认付）。
         extern void nvn_vk_frame_log_fence_wait(uint64_t) __attribute__((weak));
         extern int nvn_vk_frame_log_on(void) __attribute__((weak));
+        extern void nvn_vk_frame_tsv_fence_wait(uint64_t) __attribute__((weak));
+        extern int nvn_vk_frame_tsv_on(void) __attribute__((weak));
         const int fl = nvn_vk_frame_log_on && nvn_vk_frame_log_on();
+        const int ft = nvn_vk_frame_tsv_on && nvn_vk_frame_tsv_on();
         struct timespec wt;
         uint64_t wt0 = 0;
-        if (fl) {
+        if (fl || ft) {
             clock_gettime(CLOCK_MONOTONIC, &wt);
             wt0 = (uint64_t)wt.tv_sec * 1000000000ull + (uint64_t)wt.tv_nsec;
         }
         rc = vkWaitForFences(d->device, 1, &fence, VK_TRUE, 5000000000ull);
-        if (fl) {
+        if (fl || ft) {
             clock_gettime(CLOCK_MONOTONIC, &wt);
-            nvn_vk_frame_log_fence_wait((uint64_t)wt.tv_sec * 1000000000ull + (uint64_t)wt.tv_nsec - wt0);
+            uint64_t wt_ns = (uint64_t)wt.tv_sec * 1000000000ull + (uint64_t)wt.tv_nsec - wt0;
+            if (fl) nvn_vk_frame_log_fence_wait(wt_ns);
+            if (ft) nvn_vk_frame_tsv_fence_wait(wt_ns);
         }
     }
     if (rc != VK_SUCCESS) {
@@ -560,9 +571,18 @@ static void clr_q_note(int reason, const char *what) {
     fprintf(stderr, "[s2a] clear queue: %s -> 同步路径\n", what);
 }
 
-// C1：帧队列入口由 nvn_vk_first_draw 提供（弱符号）。返回 0 = 已接手，命令缓冲所有权移交；
-// 非 0 = 没接手，调用方必须自己回收那段“从未提交”的命令缓冲。
-extern int nvn_vk_first_draw_clear_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd) __attribute__((weak));
+// 弱绑定：没有帧队列的构建走原同步路径。
+extern int nvn_vk_first_draw_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd) __attribute__((weak));
+extern int nvn_vk_first_draw_enqueue_clear(struct s2a_vk_device *, VkCommandBuffer, void *, VkImage,
+                                            uint64_t, VkFramebuffer, VkImageView, int) __attribute__((weak));
+static int clr_fv_q_on(void) {
+    static int on = -1;
+    if (on < 0) { char b[PROP_VALUE_MAX] = {0}; __system_property_get("debug.s2a.clear_fv_q", b); on = b[0] && atoi(b) != 0; }
+    return on;
+}
+extern const char *nvn_vk_first_draw_first_error(void) __attribute__((weak));
+
+int s2a_vk_clear_fv_enabled(void) { return clr_fv_q_on(); }
 
 // 队列化清除要复用 framebuffer/view：同步路径在拿到完成证明后才销毁它们（Vulkan 禁止更早），
 // 而队列化没有“立刻完成”这个时点。这里按目标子资源缓存，活到设备切换为止；缓存满就退回同步路径，
@@ -571,6 +591,8 @@ extern int nvn_vk_first_draw_clear_enqueue(struct s2a_vk_device *d, VkCommandBuf
 struct clr_fv {
     int used;
     VkImage image;
+    uint64_t generation;
+    struct nvn_vk_tex *owner;
     VkFormat fmt;
     VkImageAspectFlags aspect;
     uint32_t level, layer, w, h;
@@ -590,23 +612,113 @@ static void clr_fv_check_device(VkDevice dev) {
     g_fv_dev = dev;
 }
 
+// 调用者保证纹理的所有在途 pin 都已归零；旧设备的句柄不能交给新设备销毁。
+void s2a_vk_clear_forget_image(struct s2a_vk_device *d, VkImage image, uint64_t generation) {
+    if (!clr_fv_q_on() || !d || !d->device || g_fv_dev != d->device || !image || !generation) return;
+    for (int i = 0; i < CLR_FV_MAX; i++) {
+        struct clr_fv *e = &g_fv[i];
+        if (!e->used || e->image != image || e->generation != generation) continue;
+        if (e->owner && e->owner->pins) continue;  // 不得丢掉仍在途的 framebuffer / view
+        if (e->fb) { vkDestroyFramebuffer(d->device, e->fb, NULL); g_fb_freed++; }
+        if (e->view) { vkDestroyImageView(d->device, e->view, NULL); g_view_freed++; }
+        memset(e, 0, sizeof *e);
+    }
+}
+
+static void clr_fv_diag_reset(void);
+// session 已取得 device idle 后调用：先丢 framebuffer/view，再清其引用的 render pass。
+void s2a_vk_clear_fv_release_device(struct s2a_vk_device *d) {
+    if (!clr_fv_q_on() || !d || !d->device) return;
+    if (g_fv_dev == d->device) {
+        for (int i = 0; i < CLR_FV_MAX; i++) {
+            if (g_fv[i].fb) vkDestroyFramebuffer(d->device, g_fv[i].fb, NULL);
+            if (g_fv[i].view) vkDestroyImageView(d->device, g_fv[i].view, NULL);
+        }
+        memset(g_fv, 0, sizeof g_fv); g_fv_dev = VK_NULL_HANDLE;
+    }
+    if (g_clr.dev && g_clr.dev->device == d->device) {
+        for (int i = 0; i < g_clr.npipe; i++) {
+            if (g_clr.pipes[i].pipe) vkDestroyPipeline(d->device, g_clr.pipes[i].pipe, NULL);
+            if (g_clr.pipes[i].layout) vkDestroyPipelineLayout(d->device, g_clr.pipes[i].layout, NULL);
+        }
+        for (int i = 0; i < g_clr.npass; i++) if (g_clr.passes[i].pass) vkDestroyRenderPass(d->device, g_clr.passes[i].pass, NULL);
+        memset(&g_clr, 0, sizeof g_clr);
+    }
+    clr_fv_diag_reset();
+}
+
+// 诊断仅在 clear_fv_q 开启时记录：一个成功 present 窗内不同的完整 FV 键。
+// 超过 1024 个键时明确标记 overflow，unique 是下界而非伪造的精确值。
+#define CLR_FV_DIAG_MAX 1024
+struct clr_fv_diag_key {
+    VkImage image; uint64_t generation; VkFormat fmt; VkImageAspectFlags aspect, clear_aspect;
+    uint32_t level, layer, w, h; int do_clear;
+};
+static struct clr_fv_diag_key g_fv_diag[CLR_FV_DIAG_MAX];
+static unsigned g_fv_diag_n, g_fv_diag_overflow, g_fv_diag_created, g_fv_diag_temporary, g_fv_diag_hits;
+static uint64_t g_fv_diag_frames;
+static pthread_mutex_t g_fv_diag_mu = PTHREAD_MUTEX_INITIALIZER;
+static void clr_fv_diag_reset(void) {
+    pthread_mutex_lock(&g_fv_diag_mu);
+    g_fv_diag_n = g_fv_diag_overflow = g_fv_diag_created = g_fv_diag_temporary = g_fv_diag_hits = 0;
+    g_fv_diag_frames = 0;
+    pthread_mutex_unlock(&g_fv_diag_mu);
+}
+static void clr_fv_diag_key(const s2a_clear_target *t, uint64_t gen, VkImageAspectFlags a, int clear) {
+    pthread_mutex_lock(&g_fv_diag_mu);
+    unsigned i;
+    for (i = 0; i < g_fv_diag_n; i++) {
+        struct clr_fv_diag_key *k = &g_fv_diag[i];
+        if (k->image == t->image && k->generation == gen && k->fmt == t->format && k->aspect == t->aspect &&
+            k->clear_aspect == a && k->level == t->base_level && k->layer == t->base_layer &&
+            k->w == t->width && k->h == t->height && k->do_clear == clear) break;
+    }
+    if (i == g_fv_diag_n) {
+        if (g_fv_diag_n == CLR_FV_DIAG_MAX) g_fv_diag_overflow = 1;
+        else g_fv_diag[g_fv_diag_n++] = (struct clr_fv_diag_key){t->image, gen, t->format, t->aspect, a,
+                                                                  t->base_level, t->base_layer, t->width, t->height, clear};
+    }
+    pthread_mutex_unlock(&g_fv_diag_mu);
+}
+static void clr_fv_diag_result(int created, int temporary) {
+    pthread_mutex_lock(&g_fv_diag_mu);
+    if (created) g_fv_diag_created++; else g_fv_diag_hits++;
+    if (temporary) g_fv_diag_temporary++;
+    pthread_mutex_unlock(&g_fv_diag_mu);
+}
+void s2a_vk_clear_fv_present(void) {
+    if (!clr_fv_q_on()) return;
+    pthread_mutex_lock(&g_fv_diag_mu);
+    unsigned unique = g_fv_diag_n, overflow = g_fv_diag_overflow, created = g_fv_diag_created;
+    unsigned temp = g_fv_diag_temporary, hits = g_fv_diag_hits;
+    uint64_t frame = ++g_fv_diag_frames;
+    g_fv_diag_n = g_fv_diag_overflow = g_fv_diag_created = g_fv_diag_temporary = g_fv_diag_hits = 0;
+    pthread_mutex_unlock(&g_fv_diag_mu);
+    __android_log_print(ANDROID_LOG_INFO, "S2Arm", "clear-fv frame=%llu unique=%u overflow=%u created=%u temporary=%u hits=%u",
+                        (unsigned long long)frame, unique, overflow, created, temp, hits);
+}
+
 static int clr_fv_get(struct s2a_vk_device *d, const s2a_clear_target *t, int do_clear,
                       VkImageAspectFlags clear_aspect, VkFramebuffer *fb_out, VkImageView *view_out,
-                      char *why, size_t why_size) {
+                      char *why, size_t why_size, int q_on, uint64_t generation, int *temporary) {
+    *temporary = 0;
+    if (q_on) clr_fv_diag_key(t, generation, clear_aspect, do_clear);
     clr_fv_check_device(d->device);
     struct clr_fv *slot = NULL;
     for (int i = 0; i < CLR_FV_MAX; i++) {
         struct clr_fv *e = &g_fv[i];
         if (!e->used) { if (!slot) slot = e; continue; }
-        if (e->image == t->image && e->fmt == t->format && e->aspect == t->aspect &&
+        if (e->image == t->image && (!q_on || e->generation == generation) && e->fmt == t->format && e->aspect == t->aspect &&
             e->level == t->base_level && e->layer == t->base_layer &&
             e->w == t->width && e->h == t->height && e->do_clear == do_clear &&
             e->clear_aspect == clear_aspect) {
             *fb_out = e->fb; *view_out = e->view;
+            if (q_on) clr_fv_diag_result(0, 0);
             return 0;
         }
     }
-    if (!slot) return fail(why, why_size, "clear: 队列化目标缓存已满"), -1;
+    if (!slot && !q_on) return fail(why, why_size, "clear: 队列化目标缓存已满"), -1;
+    *temporary = slot == NULL;
     VkImageView view = clr_view(d, t, why, why_size);
     if (!view) return -1;
     VkRenderPass pass = clr_pass(d, t->format, t->aspect, clear_aspect, do_clear, why, why_size);
@@ -621,11 +733,14 @@ static int clr_fv_get(struct s2a_vk_device *d, const s2a_clear_target *t, int do
         return fail(why, why_size, "clear: 队列化 framebuffer 创建失败"), -1;
     }
     g_fb_created++; g_view_created++;
-    slot->used = 1; slot->image = t->image; slot->fmt = t->format; slot->aspect = t->aspect;
-    slot->level = t->base_level; slot->layer = t->base_layer; slot->w = t->width; slot->h = t->height;
-    slot->do_clear = do_clear; slot->clear_aspect = clear_aspect;
-    slot->fb = fb; slot->view = view;
+    if (slot) {
+        slot->used = 1; slot->image = t->image; slot->generation = generation; slot->owner = q_on ? t->native_tex : NULL; slot->fmt = t->format; slot->aspect = t->aspect;
+        slot->level = t->base_level; slot->layer = t->base_layer; slot->w = t->width; slot->h = t->height;
+        slot->do_clear = do_clear; slot->clear_aspect = clear_aspect;
+        slot->fb = fb; slot->view = view;
+    }
     *fb_out = fb; *view_out = view;
+    if (q_on) clr_fv_diag_result(1, *temporary);
     return 0;
 }
 
@@ -634,23 +749,30 @@ static int clr_record_queued(struct s2a_vk_device *d, const s2a_clear_target *t,
                              const VkClearAttachment *att, const VkRect2D *rect,
                              int do_clear, const VkClearValue *clear_values,
                              char *why, size_t why_size) {
-    if (!nvn_vk_first_draw_clear_enqueue) { clr_q_note(CLR_Q_NO_HOOK, "没有帧队列入口"); return S2A_VK_CLEAR_UNHANDLED; }
+    const int q_on = clr_fv_q_on();
+    if (!nvn_vk_first_draw_enqueue || (q_on && !nvn_vk_first_draw_enqueue_clear)) { clr_q_note(CLR_Q_NO_HOOK, "没有帧队列入口"); return S2A_VK_CLEAR_UNHANDLED; }
     if (!d || !d->device || !t || !t->image || !rect) { clr_q_note(CLR_Q_BAD_TARGET, "目标参数不完整"); return S2A_VK_CLEAR_UNHANDLED; }
+    struct nvn_vk_tex *tex = q_on ? t->native_tex : NULL;
+    if (q_on && (!tex || !tex->valid || tex->retired || !tex->generation || tex->image != t->image))
+        return S2A_VK_CLEAR_UNHANDLED;
+    uint64_t generation = tex ? tex->generation : 0;
+    int temporary = 0;
     clr_reset_device(d);
     VkFramebuffer fb = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
-    if (clr_fv_get(d, t, do_clear, att ? att->aspectMask : 0, &fb, &view, why, why_size) != 0) {
+    if (clr_fv_get(d, t, do_clear, att ? att->aspectMask : 0, &fb, &view, why, why_size, q_on, generation, &temporary) != 0) {
         why[0] = 0;   // 缓存满/建失败不是清除错误：退回同步路径，不报错
         clr_q_note(CLR_Q_FV, "framebuffer/view 缓存不可用或已满");
         return S2A_VK_CLEAR_UNHANDLED;
     }
     VkRenderPass pass = clr_pass(d, t->format, t->aspect, att ? att->aspectMask : 0, do_clear, why, why_size);
-    if (!pass) { why[0] = 0; clr_q_note(CLR_Q_PASS, "render pass 缓存不可用"); return S2A_VK_CLEAR_UNHANDLED; }
+    if (!pass) { if (temporary) { vkDestroyFramebuffer(d->device, fb, NULL); vkDestroyImageView(d->device, view, NULL); g_fb_freed++; g_view_freed++; } why[0] = 0; clr_q_note(CLR_Q_PASS, "render pass 缓存不可用"); return S2A_VK_CLEAR_UNHANDLED; }
     VkCommandBufferAllocateInfo cai = {0};
     cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cai.commandPool = d->command_pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     if (vkAllocateCommandBuffers(d->device, &cai, &cmd) != VK_SUCCESS) {
+        if (temporary) { vkDestroyFramebuffer(d->device, fb, NULL); vkDestroyImageView(d->device, view, NULL); g_fb_freed++; g_view_freed++; }
         why[0] = 0;
         clr_q_note(CLR_Q_ALLOC, "命令缓冲分配失败");
         return S2A_VK_CLEAR_UNHANDLED;
@@ -660,6 +782,7 @@ static int clr_record_queued(struct s2a_vk_device *d, const s2a_clear_target *t,
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
         vkFreeCommandBuffers(d->device, d->command_pool, 1, &cmd);
+        if (temporary) { vkDestroyFramebuffer(d->device, fb, NULL); vkDestroyImageView(d->device, view, NULL); g_fb_freed++; g_view_freed++; }
         why[0] = 0;
         return S2A_VK_CLEAR_UNHANDLED;
     }
@@ -677,15 +800,26 @@ static int clr_record_queued(struct s2a_vk_device *d, const s2a_clear_target *t,
     vkCmdEndRenderPass(cmd);
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         vkFreeCommandBuffers(d->device, d->command_pool, 1, &cmd);
+        if (temporary) { vkDestroyFramebuffer(d->device, fb, NULL); vkDestroyImageView(d->device, view, NULL); g_fb_freed++; g_view_freed++; }
         why[0] = 0;
         return S2A_VK_CLEAR_UNHANDLED;
     }
-    if (nvn_vk_first_draw_clear_enqueue(d, cmd) != 0) {
-        // 帧队列没接手：命令从未提交，可安全释放，退回同步路径。
+    int enqueued = q_on ? nvn_vk_first_draw_enqueue_clear(d, cmd, tex, t->image, generation, fb, view, temporary)
+                        : nvn_vk_first_draw_enqueue(d, cmd);
+    if (enqueued == S2A_FQ_ENQUEUE_NOT_TAKEN) {
+        // 从未移交，可回收；上层同步回退前仍会核验队列是否失败。
         vkFreeCommandBuffers(d->device, d->command_pool, 1, &cmd);
+        if (temporary) { vkDestroyFramebuffer(d->device, fb, NULL); vkDestroyImageView(d->device, view, NULL); g_fb_freed++; g_view_freed++; }
         why[0] = 0;
         clr_q_note(CLR_Q_ENQUEUE, "帧队列没接手（已满/未就绪/已毒化）");
         return S2A_VK_CLEAR_UNHANDLED;
+    }
+    if (enqueued != S2A_FQ_ENQUEUE_ACCEPTED) {
+        // 已移交（包括无法识别的返回值），保留命令、报告失败，绝不自提。
+        const char *first = nvn_vk_first_draw_first_error ? nvn_vk_first_draw_first_error() : NULL;
+        if (why && why_size) snprintf(why, why_size, "clear: frame queue failed after taking command: %s",
+                                      first && first[0] ? first : "unknown queue failure");
+        return S2A_VK_CLEAR_FQ_FAILED;
     }
     return S2A_VK_CLEAR_QUEUED;
 }

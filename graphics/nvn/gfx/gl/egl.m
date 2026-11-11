@@ -12,13 +12,18 @@
 #include <time.h>
 const char gl_slice_egl = 1;   // 分片锚（gl_core.m 引用：静态链接时整片进来，见 gl_int.h「分片锚」）
 
-enum { EGL_SUCCESS = 0x3000, EGL_BAD_CONTEXT = 0x3006, EGL_BAD_SURFACE = 0x300D, EGL_HEIGHT = 0x3056, EGL_WIDTH = 0x3057, EGL_OPENGL_ES_API = 0x30A0, EGL_OPENGL_API = 0x30A2 };
+enum { EGL_SUCCESS = 0x3000, EGL_NOT_INITIALIZED = 0x3001, EGL_BAD_ACCESS = 0x3002,
+    EGL_BAD_ALLOC = 0x3003, EGL_BAD_ATTRIBUTE = 0x3004, EGL_BAD_CONFIG = 0x3005,
+    EGL_BAD_CONTEXT = 0x3006, EGL_BAD_DISPLAY = 0x3008, EGL_BAD_MATCH = 0x3009,
+    EGL_BAD_PARAMETER = 0x300C, EGL_BAD_SURFACE = 0x300D, EGL_NONE = 0x3038,
+    EGL_HEIGHT = 0x3056, EGL_WIDTH = 0x3057, EGL_OPENGL_ES_API = 0x30A0, EGL_OPENGL_API = 0x30A2,
+    EGL_PBUFFER_LIMIT = 16384 };
 int nvn_be_fps_target(void); int nvn_be_link_active(void); int nvn_be_link_wait_tick(int vsyncs, uint64_t timeout_ns);   // nvn_mtl.m
 void s2a_sleep_ns(int64_t ns);   // runtime/src/thread.c：按时睡
 void dm_guest_frame_tick(void); double nvn_be_presented_time(uint64_t n); void dm_perf_present(double iv_ms);
 
 #define NSURF 3
-typedef struct surface_t { uint32_t w, h, cur, interval, ext_w, ext_h, wid[NSURF], did; __strong id<MTLTexture> col[NSURF], depth; uint64_t serial[NSURF], ticket[NSURF]; double next_swap; int bound, dead; struct surface_t *next; } surface_t;   // next_swap：下一拍（单调钟秒）；wid / did：宽屏核心贴图号（宽屏关 = 0）；w / h 是游戏看到的尺寸，贴图可能被放宽
+typedef struct surface_t { uint32_t w, h, cur, interval, ext_w, ext_h, wid[NSURF], did; __strong id<MTLTexture> col[NSURF], depth; uint64_t serial[NSURF], ticket[NSURF]; double next_swap; int bound, dead, pbuffer, largest; struct surface_t *next; } surface_t;   // next_swap：下一拍（单调钟秒）；wid / did：宽屏核心贴图号（宽屏关 = 0）；w / h 是游戏看到的尺寸，贴图可能被放宽
 typedef struct context_t { gl_state st; int bound, dead; struct context_t *next; } context_t;   // bound：绑着它的线程数；dead：已 eglDestroy*、等最后一个线程松开再放
 static __thread surface_t *g_draw;     // 本线程的当前绘制表面（MakeCurrent；无表面上下文 = NULL）
 static surface_t *g_surfaces;
@@ -29,6 +34,36 @@ static int g_gl_game_fps = -1;
 int nvn_gl_game_fps(void) { return __atomic_load_n(&g_gl_game_fps, __ATOMIC_RELAXED); }
 static __thread EGLenum g_api = EGL_OPENGL_ES_API;   // 当前 API 与错误码都按线程（EGL 1.5 §3.1 / §3.7）
 static __thread EGLint g_err = EGL_SUCCESS;
+static _Atomic int g_initialized;
+static int display_ready(EGLDisplay d) {
+    if (d != (EGLDisplay)1) { g_err = EGL_BAD_DISPLAY; return 0; }
+    if (!atomic_load(&g_initialized)) { g_err = EGL_NOT_INITIALIZED; return 0; }
+    return 1;
+}
+// Single actual configuration: RGBA8 + Metal Depth32Float_Stencil8, no MSAA,
+// native drawing, pixmaps or EGL texture binding. No conformance claim.
+static int config_value(EGLint attr, EGLint *v) {
+    switch (attr) {
+    case 0x3020: *v = 32; break; // EGL_BUFFER_SIZE
+    case 0x3021: case 0x3022: case 0x3023: case 0x3024: *v = 8; break;
+    case 0x3025: *v = 32; break; // EGL_DEPTH_SIZE matches actual storage.
+    case 0x3026: *v = 8; break;
+    case 0x3027: *v = 0x3051; break; // EGL_NON_CONFORMANT_CONFIG
+    case 0x3028: *v = 1; break;
+    case 0x302A: case 0x302C: *v = EGL_PBUFFER_LIMIT; break;
+    case 0x302B: *v = EGL_PBUFFER_LIMIT * EGL_PBUFFER_LIMIT; break;
+    case 0x3033: *v = 0x0001 | 0x0004; break; // EGL_PBUFFER_BIT | EGL_WINDOW_BIT
+    case 0x3034: *v = EGL_NONE; break; // No transparent pixel matching.
+    case 0x303C: *v = INT32_MAX; break; // Existing window interval accepts every nonnegative EGLint.
+    case 0x303F: *v = 0x308E; break; // EGL_RGB_BUFFER
+    case 0x3040: *v = 0x0004 | 0x0008 | 0x0040; break; // ES2 / OpenGL / ES3; no ES1 fixed pipeline.
+    case 0x3029: case 0x302D: case 0x302E: case 0x302F: case 0x3031: case 0x3032:
+    case 0x3035: case 0x3036: case 0x3037: case 0x3039: case 0x303A: case 0x303B:
+    case 0x303D: case 0x303E: case 0x3042: *v = 0; break;
+    default: return 0;
+    }
+    return 1;
+}
 
 id<MTLTexture> gl_surface_color(void) { return g_draw ? g_draw->col[g_draw->cur] : nil; }
 void gl_surface_game(uint32_t *w, uint32_t *h) { *w = g_draw ? g_draw->w : 0; *h = g_draw ? g_draw->h : 0; }   // 游戏看到的表面尺寸（eglQuerySurface）；贴图可能按宽屏放宽
@@ -44,14 +79,34 @@ void gl_surface_extent(GLint x1, GLint y1) {
 
 __attribute__((weak)) void s2a_gl_first_use(void) {}   // graphics/nvn/host_adapt.m：定着色器库路径、起直连异常看门（单测不链宿主，用这个空的）
 GLB(eglGetDisplay, EGLDisplay, void *native) { @autoreleasepool { (void)native; s2a_gl_first_use(); return (EGLDisplay)1; }}   // 游戏进 GL 的第一个调用；写日志 / 建目录，走宿主栈
-GL(eglInitialize, EGLBoolean, EGLDisplay d, EGLint *major, EGLint *minor) { (void)d; if (major) *major = 1; if (minor) *minor = 5; return 1; }
-GL(eglTerminate, EGLBoolean, EGLDisplay d) { (void)d; return 1; }
+GL(eglInitialize, EGLBoolean, EGLDisplay d, EGLint *major, EGLint *minor) { if (d != (EGLDisplay)1) { g_err = EGL_BAD_DISPLAY; return 0; } atomic_store(&g_initialized, 1); if (major) *major = 1; if (minor) *minor = 5; return 1; }
+GL(eglTerminate, EGLBoolean, EGLDisplay d) { if (d != (EGLDisplay)1) { g_err = EGL_BAD_DISPLAY; return 0; } atomic_store(&g_initialized, 0); return 1; }
 GL(eglGetError, EGLint, void) { EGLint e = g_err; g_err = EGL_SUCCESS; return e; }
 GL(eglBindAPI, EGLBoolean, EGLenum api) {
-    if (api != EGL_OPENGL_ES_API && api != EGL_OPENGL_API) { GLRED1("eglBindAPI %#x：只实现 OpenGL / OpenGL ES", api); return 0; }
+    if (api != EGL_OPENGL_ES_API && api != EGL_OPENGL_API) { g_err = EGL_BAD_PARAMETER; return 0; }
     g_api = api; return 1;
 }
-// 只有一个配置：RGBA8 + 深度 24 / 模板 8（Metal 存成 Depth32Float_Stencil8）；属性表照收、不筛
+GL(eglQueryAPI, EGLenum, void) { return g_api; }
+GL(eglQueryString, const char *, EGLDisplay d, EGLint name) {
+    // EGL 1.5 §3.3 permits client version/extensions without a display.
+    if (!d && (name == 0x3054 || name == 0x3055)) return name == 0x3054 ? "1.5 S2Arm" : "";
+    if (!display_ready(d)) return NULL;
+    switch (name) {
+    case 0x3053: return "S2Arm";
+    case 0x3054: return "1.5 S2Arm";
+    case 0x3055: return ""; // Do not advertise unimplemented KHR context attributes / sync extensions.
+    case 0x308D: return "OpenGL OpenGL_ES";
+    default: g_err = EGL_BAD_PARAMETER; return NULL;
+    }
+}
+GL(eglGetConfigAttrib, EGLBoolean, EGLDisplay d, EGLConfig c, EGLint attr, EGLint *v) {
+    if (!display_ready(d)) return 0;
+    if (c != (EGLConfig)1) { g_err = EGL_BAD_CONFIG; return 0; }
+    if (!v) { g_err = EGL_BAD_PARAMETER; return 0; }
+    if (!config_value(attr, v)) { g_err = EGL_BAD_ATTRIBUTE; return 0; }
+    return 1;
+}
+// 只有一个配置；配置的查询值以 config_value 为准。
 GL(eglChooseConfig, EGLBoolean, EGLDisplay d, const EGLint *attrib, EGLConfig *cfg, EGLint size, EGLint *num) {
     (void)d; (void)attrib; if (num) *num = 1; if (cfg && size > 0) cfg[0] = (EGLConfig)1; return 1;
 }
@@ -90,6 +145,47 @@ static void surface_free(surface_t *s, int wait) {   // 已摘链、没有线程
     gl_wd_release_id(s->did); s->depth = nil;
     free(s);
 }
+GLB(eglCreatePbufferSurface, EGLSurface, EGLDisplay d, EGLConfig c, const EGLint *attrib) { @autoreleasepool {
+    if (!display_ready(d)) return NULL;
+    if (c != (EGLConfig)1) { g_err = EGL_BAD_CONFIG; return NULL; }
+    EGLint w = 0, h = 0, largest = 0, format = 0x305C, target = 0x305C;
+    if (attrib) for (const EGLint *a = attrib; a[0] != EGL_NONE; a += 2) {
+        switch (a[0]) {
+        case EGL_WIDTH: w = a[1]; break;
+        case EGL_HEIGHT: h = a[1]; break;
+        case 0x3058: if (a[1] != 0 && a[1] != 1) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } largest = a[1]; break;
+        case 0x3080: if (a[1] < 0x305C || a[1] > 0x305E) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } format = a[1]; break;
+        case 0x3081: if (a[1] != 0x305C && a[1] != 0x305F) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } target = a[1]; break;
+        case 0x3082: if (a[1] != 0 && a[1] != 1) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } break; // No texture: mipmap attribute has no effect.
+        case 0x309D: if (a[1] != 0x308A) { g_err = EGL_BAD_MATCH; return NULL; } break; // EGL_GL_COLORSPACE_LINEAR
+        default: g_err = EGL_BAD_ATTRIBUTE; return NULL;
+        }
+    }
+    if (w < 0 || h < 0) { g_err = EGL_BAD_PARAMETER; return NULL; }
+    // EGL_BIND_TO_TEXTURE_RGB/RGBA are false: never return a fake texture-backed pbuffer.
+    if (format != 0x305C || target != 0x305C) { g_err = EGL_BAD_MATCH; return NULL; }
+    if ((w > EGL_PBUFFER_LIMIT || h > EGL_PBUFFER_LIMIT) && !largest) { g_err = EGL_BAD_ALLOC; return NULL; }
+    if (w > EGL_PBUFFER_LIMIT) w = EGL_PBUFFER_LIMIT;
+    if (h > EGL_PBUFFER_LIMIT) h = EGL_PBUFFER_LIMIT;
+    surface_t *s = calloc(1, sizeof *s); if (!s) { g_err = EGL_BAD_ALLOC; return NULL; }
+    s->pbuffer = 1; s->largest = largest; s->w = (uint32_t)w; s->h = (uint32_t)h;
+    gl_dev_init();
+    // Pbuffers have no present registration, widening IDs or swapchain. A legal
+    // zero-sized surface keeps minimal Metal backing while exposing size zero.
+    for (;;) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:MAX(s->w, 1u) height:MAX(s->h, 1u) mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
+        s->col[0] = [gl_dev newTextureWithDescriptor:td];
+        td.pixelFormat = MTLPixelFormatDepth32Float_Stencil8; td.usage = MTLTextureUsageRenderTarget;
+        s->depth = [gl_dev newTextureWithDescriptor:td];
+        if (s->col[0] && s->depth) break;
+        s->col[0] = nil; s->depth = nil;
+        if (!largest || (s->w <= 1 && s->h <= 1)) { surface_free(s, 0); g_err = EGL_BAD_ALLOC; return NULL; }
+        if (s->w >= s->h && s->w > 1) s->w /= 2; else s->h /= 2;
+    }
+    pthread_mutex_lock(&g_egl_mu); s->next = g_surfaces; g_surfaces = s; pthread_mutex_unlock(&g_egl_mu);
+    return s;
+}}
 GLB(eglDestroySurface, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool {
     (void)d; surface_t *s = sf; if (!s) { g_err = EGL_BAD_SURFACE; return 0; }
     pthread_mutex_lock(&g_egl_mu);
@@ -101,7 +197,12 @@ GLB(eglDestroySurface, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepo
 }}
 GL(eglQuerySurface, EGLBoolean, EGLDisplay d, EGLSurface sf, EGLint attr, EGLint *v) {
     (void)d; surface_t *s = sf; if (!s) { g_err = EGL_BAD_SURFACE; return 0; }
-    if (attr == EGL_WIDTH) *v = (EGLint)s->w; else if (attr == EGL_HEIGHT) *v = (EGLint)s->h; else { GLRED1("eglQuerySurface 属性 %#x 没实现", attr); return 0; }
+    if (!v) { g_err = EGL_BAD_PARAMETER; return 0; }
+    if (attr == EGL_WIDTH) *v = (EGLint)s->w; else if (attr == EGL_HEIGHT) *v = (EGLint)s->h;
+    else if (s->pbuffer && attr == 0x3058) *v = s->largest;
+    else if (s->pbuffer && (attr == 0x3080 || attr == 0x3081)) *v = 0x305C; // EGL_NO_TEXTURE
+    else if (s->pbuffer && (attr == 0x3082 || attr == 0x3083)) *v = 0;
+    else { g_err = EGL_BAD_ATTRIBUTE; return 0; }
     return 1;
 }
 GL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig c, EGLContext share, const EGLint *attrib) {
@@ -118,7 +219,7 @@ GL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig c, EGLContext share, co
     x->st.stencil_wmask[0] = x->st.stencil_wmask[1] = ~0u;
     for (int i = 0; i < 2; i++) { x->st.stencil_func[i] = 0x0207; /* GL_ALWAYS */ x->st.stencil_mask[i] = ~0u; x->st.stencil_op[i][0] = x->st.stencil_op[i][1] = x->st.stencil_op[i][2] = 0x1E00; /* GL_KEEP */ }
     x->st.depth_range[1] = 1; x->st.clear_depth = 1; x->st.depth_func = 0x0201; /* GL_LESS */ x->st.cull = 0x0405; /* GL_BACK */ x->st.front = 0x0901; /* GL_CCW */
-    x->st.unpack_align = 4; x->st.unpack_row = 0; x->st.pack_align = 4; x->st.line_width = 1; // #272：每个上下文独立的 GL 初始像素存储。
+    x->st.unpack_align = 4; x->st.unpack_row = 0; x->st.pack_align = 4; x->st.line_width = 1; x->st.point_size = 1; // #272：每个上下文独立的 GL 初始像素存储。
     x->st.default_read = 0x0405; /* GL_BACK */ x->st.poly_mode = 0x1B02; /* GL_FILL */
     for (int i = 0; i < 16; i++) x->st.attr_cur[i][3] = 1;   // 当前通用顶点属性初值 (0, 0, 0, 1)
     x->st.dirty = ~0u;
@@ -147,6 +248,7 @@ void gl_egl_session_reset(void) {
     while (g_surfaces) { surface_t *s = g_surfaces; g_surfaces = s->next; surface_free(s, 0); }
     while (g_contexts) { context_t *c = g_contexts; g_contexts = c->next; context_free(c); }
     g_draw = NULL; gl_cur = NULL; g_api = EGL_OPENGL_ES_API; g_err = EGL_SUCCESS;
+    atomic_store(&g_initialized, 0);
     g_gl_game_fps = -1;
 }
 // 换绑本线程：新的先记绑定、旧的松开；松开后没人绑、又已删的当场放（宿主栈：放贴图 / 等上屏）
@@ -163,7 +265,7 @@ static void bind_current(surface_t *draw, context_t *c) {
 }
 // draw = NULL 且 c 非空：无表面上下文（EGL_KHR_surfaceless_context，游戏只画自己的帧缓冲对象；0 号帧缓冲不存在）
 GLB(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface draw, EGLSurface read, EGLContext c) { @autoreleasepool {
-    (void)d; if (read != draw) GLRED1("读表面与绘制表面不同没实现");
+    (void)d; if (read != draw) { g_err = EGL_BAD_MATCH; return 0; }
     context_t *x = c; surface_t *s = draw;
     if (x && x != cur_context() && x->dead) { g_err = EGL_BAD_CONTEXT; return 0; }   // 已删的上下文不能新绑（还绑着的线程照用）
     if (s && s != g_draw && s->dead) { g_err = EGL_BAD_SURFACE; return 0; }
@@ -172,6 +274,21 @@ GLB(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface draw, EGLSurface read, 
     return 1;
 }}
 GL(eglGetCurrentContext, EGLContext, void) { return cur_context(); }
+GLB(eglWaitGL, EGLBoolean, void) { @autoreleasepool {
+    // EGL 1.5 §3.8: waits the ES context, regardless of the currently bound API.
+    // OpenGL and ES share the one current GL context slot in this frontend.
+    if (!gl_cur || gl_cur->api != EGL_OPENGL_ES_API) return 1;
+    if (gl_session_stopping()) { g_err = EGL_BAD_ACCESS; return 0; }
+    uint64_t v = gl_commit(); gl_wait(v);
+    if (gl_session_stopping() || gl_ev.signaledValue < v) { g_err = EGL_BAD_ACCESS; return 0; }
+    return 1;
+}}
+GL(eglWaitNative, EGLBoolean, EGLint engine) {
+    if (engine != 0x305B) { g_err = EGL_BAD_PARAMETER; return 0; } // EGL_CORE_NATIVE_ENGINE
+    // No supported surface shares its color storage with native rendering.
+    // The specified no-op (including without a current context), not a GPU wait.
+    return 1;
+}
 GL(eglSwapInterval, EGLBoolean, EGLDisplay d, EGLint n) { (void)d; if (g_draw) g_draw->interval = n < 0 ? 0 : (uint32_t)n; return 1; }
 // S2Arm 标称帧率（host_adapt.m 在 dm_guest_frame_tick 里取，即 eglSwapBuffers 的线程）：出图实际跟的节拍 = 目标帧率 / 交换间隔（间隔 0 = 不等垂直同步，上屏仍按目标帧率的最短显示时长）；
 //   还没有表面交换过回 0（这局不是 GL 款）
@@ -180,6 +297,11 @@ int gl_present_fps(void) { return g_draw && atomic_load(&gl_n_frames) ? nvn_be_f
 GLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool {
     if (gl_session_stopping()) return 0;
     (void)d; surface_t *s = sf; if (!s) { g_err = EGL_BAD_SURFACE; return 0; }
+    if (s->pbuffer) {
+        if (!gl_cur || g_draw != s) { g_err = EGL_BAD_SURFACE; return 0; }
+        gl_commit(); // EGL §3.10.3 implicit flush; no presentation, rotation or pacing.
+        return 1;
+    }
     dm_gfx_enter(); uint64_t t_in = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint64_t v = gl_commit();
     // 存储按 GL 行序：GL 的左下 (0,0) 起 ext_w × ext_h 就是贴图第 0 行起的这块（上屏再翻转）
@@ -223,6 +345,6 @@ GLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool 
     if (f > 9) { double a = nvn_be_presented_time(f - 8), b = nvn_be_presented_time(f - 9); dm_perf_present(a < 0 ? -1 : a > 0 && b > 0 ? (a - b) * 1e3 : 0); }   // 同 Vulkan 层：上屏序号即票号
     return 1;
 }}
-GL(eglGetProcAddress, void *, const char *name) { return gl_entry(name); }   // 重活套切栈桩（gl_core.m），同装载器解析的导入
+GL(eglGetProcAddress, void *, const char *name) { return gl_entry_or_stub(name); }   // 重活套切栈桩（gl_core.m）；没实现的核心名给安全空实现
 // 松开本线程的当前上下文与表面（EGL 1.5 §3.11：同 eglMakeCurrent 全空），错误码 / API 回初值；已删的此时才放
 GLB(eglReleaseThread, EGLBoolean, void) { @autoreleasepool { bind_current(NULL, NULL); g_api = EGL_OPENGL_ES_API; g_err = EGL_SUCCESS; return 1; }}

@@ -387,14 +387,14 @@ def scan(repo, ref, paths, list_only=False, base=None):
             'uncovered_blocking': uncovered_blocking, 'uncovered_allowed': uncovered_allowed}
 
 
-MESSAGE_CATEGORIES = ('internal_name',)   # 提交信息只查内部称呼（维护者账号 / 内部线名 / 设备代号 / 私有主机）；路径限定的规则（合规文案等）不适用于提交信息
+MESSAGE_CATEGORIES = ('internal_name',)   # 提交信息查内部称呼（维护者账号 / 内部线名 / 设备代号 / 私有主机），外加规则里写了 "messages": true 的（第一方游戏名，11-09 晚：#371 提交标题漏过）；其余路径限定的规则不适用于提交信息
 
 
 def scan_messages(repo, ref, base):
     """提交信息扫描（11-09 维护方：公开仓扫描只查文件，main 提交信息里漏进内部线名 / 设备代号这类内部称呼）：
     base..ref 每条提交信息逐行用同一份 content_rules 里 internal_name 类判；返回 [(短提交号, 行号, 规则 id)]，命中的词本身不外泄"""
     rules = load_rules()
-    rows = [r for r in rules['content_rules'] if r['category'] in MESSAGE_CATEGORIES]
+    rows = [r for r in rules['content_rules'] if r['category'] in MESSAGE_CATEGORIES or r.get('messages')]
     revs = git(repo, 'rev-list', f'{base}..{ref}').decode().split()
     hits = []
     for rev in revs:
@@ -427,10 +427,10 @@ def main():
         except (ScanError, OSError, subprocess.CalledProcessError) as exc:
             print(f'【红】提交信息扫描没跑成：{exc}'); return 2
         for rev, line, rid in hits:
-            print(f'🔴 提交 {rev} 信息第 {line} 行：内部称呼（规则 {rid}）')
+            print(f'🔴 提交 {rev} 信息第 {line} 行：' + ('任天堂第一方游戏名' if rid == 'compliance_first_party_titles' else '内部称呼') + f'（规则 {rid}）')
         if hits:
-            print('提交信息里不许出现内部称呼：改成「维护者 / Windows 实机 / Mac 实机」等通用说法，'
-                  '用 git rebase -i <基线> 把对应提交标成 reword 改信息后重新入队')
+            print('提交信息里不许出现内部称呼与任天堂第一方游戏名：内部称呼改成「维护者 / Windows 实机 / Mac 实机」等通用说法，'
+                  '游戏名改成泛指（「一款大型开放世界游戏」）或只写程序号；用 git rebase -i <基线> 把对应提交标成 reword 改信息后重新入队')
         print(f'提交信息扫描：{n} 条提交，命中 {len(hits)} 处')
         return 1 if hits else 0
     try:

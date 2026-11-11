@@ -297,6 +297,27 @@ class MultiProgram(unittest.TestCase):   # 多程序合集（11-06 索尼克×�
         self.assertEqual([c for c in self.calls if c[0] in ('unpack', 'direct', 'product')],
                          [('unpack', 0), ('direct', 'direct'), ('product', 'product'), ('unpack', 1), ('direct', 'direct_p1'), ('product', os.path.join('product', 'programs', '1'))])
         self.assertNotIn('【红】多程序合集', buf.getvalue())
+    def from_extract_run(self, argv):   # 共用解包目录（作业层 --from-extract）里只有序号 0
+        x0 = self.t / 'shared'; x0.mkdir(exist_ok=True)
+        (x0 / 'unpack.tsv').write_text('title_id\t0100abcd00000000\nprograms\t2\nprogram_index\t0\n', encoding='utf-8')
+        saved, seen = oneclick_win.from_extract, {}
+        oneclick_win.from_extract = lambda run, d: (x0, '0100ABCD00000000', self.t / 'nosrc')
+        real_unpack = oneclick_win.unpack
+        def unpack(run, sources, title_id, program_index=0): seen[program_index] = (list(sources), title_id); return real_unpack(run, sources, title_id, program_index)
+        oneclick_win.unpack = unpack
+        import io, contextlib
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf): rc = oneclick_win.main(['--from-extract', str(x0), '--out', str(self.t / 'out'), '--target', 'mac', *argv])
+        finally: oneclick_win.from_extract = saved
+        return rc, seen, buf.getvalue()
+    def test_from_extract_with_sources(self):   # #613：作业层把原件跟在 --from-extract 后面给 → 序号 1 从这些原件解（期望手写：序号 1 收到给的原件与游戏号、不打【红】）
+        rc, seen, out = self.from_extract_run(['--title-id', '0100ABCD00000000', 'a.xci', 'b.nsp'])
+        self.assertEqual((rc, seen), (0, {1: (['a.xci', 'b.nsp'], '0100ABCD00000000')}))
+        self.assertNotIn('【红】', out)
+    def test_from_extract_without_sources(self):   # 没给原件：照旧报红说清缺什么，不解
+        rc, seen, out = self.from_extract_run([])
+        self.assertNotEqual(rc, 0); self.assertEqual(seen, {}); self.assertIn('原件没一起给', out)
 
 class SeedAoc(unittest.TestCase):   # ④ 播种与轻阶段带 S2A_SEED_AOC=1（同 oneclick.sh 私有产物根）：Switch 2 导出的 DLC 只在解包目录里
     def test_seed_env(self):
@@ -462,6 +483,15 @@ class InstallWin(unittest.TestCase):
         self.assertEqual(install_win.device_id('U1', [('U1', 'Network', 7)]), 7)
         self.assertIsNone(install_win.device_id('U3', [('U1', 'USB', 9)]))
 
+    def test_plumesign_is_never_taken_from_desktop_or_downloads(self):
+        # 11-11 审查：桌面 / 下载里叫 plumesign* 的任意程序不能被拿来执行；其他档都没有时就是找不到（发版随包那份由调用方传）
+        with tempfile.TemporaryDirectory() as home:
+            for d in ('Desktop', 'Downloads', os.path.join('OneDrive', 'Desktop')):
+                Path(home, d).mkdir(parents=True); f = Path(home, d, 'plumesign.exe' if os.name == 'nt' else 'plumesign'); f.write_text('x'); f.chmod(0o755)
+            with patch.dict(os.environ, {'HOME': home, 'USERPROFILE': home, 'PATH': '', 'S2A_PLUMESIGN': ''}), \
+                 patch.object(install_win.impactor, 'status', return_value={}):
+                self.assertIsNone(install_win.plumesign_path())
+
     def test_missing_plumesign(self):
         with tempfile.TemporaryDirectory() as d:
             old = install_win.plumesign_path; install_win.plumesign_path = lambda g=None: None
@@ -469,6 +499,14 @@ class InstallWin(unittest.TestCase):
                 with self.assertRaises(install_win.Fail) as c: install_win.run(self.ns(d, None), say=lambda m: None)
                 self.assertEqual(c.exception.code, 75)
             finally: install_win.plumesign_path = old
+
+    def test_inherited_rust_log_does_not_hide_completion(self):
+        # #585：玩家环境里 RUST_LOG=warn → info 级的「Installation complete」被压掉，装好了也判失败。假 plumesign 按 RUST_LOG 决定打不打这行
+        with tempfile.TemporaryDirectory() as d:
+            exe = self.fake(d, "import os\nif os.environ.get('RUST_LOG') in ('info', 'debug', 'trace'): print('INFO Installation complete')\n")
+            with patch.dict(os.environ, {'RUST_LOG': 'warn'}):
+                install_win.sign_install(exe, Path(d, 'x.ipa'), 7, None, Path(d, 'p.log'), Path(d, 'o.ipa'))   # 不抛 = 判成功
+            self.assertIn('Installation complete', Path(d, 'p.log').read_text(encoding='utf-8'))
 
     def run_fake(self, body):
         with tempfile.TemporaryDirectory() as d:
@@ -488,6 +526,53 @@ class InstallWin(unittest.TestCase):
         self.assertEqual(bid, 'a.b.TEAM')
         self.assertEqual(got['push'][:2], ['U1', 'a.b.TEAM'])
         self.assertIn("'--udid', '42'", log); self.assertIn("'--custom-name', 'N'", log)
+        self.assertNotIn("--custom-identifier", log)   # 没给包名：照旧由 plumesign 定
+
+    def test_given_bundle_is_passed_as_custom_identifier(self):
+        # 9401：调用方定的包名（和 Mac 一致的小写团队号）原样交给 plumesign，它就不再自己接大写团队号
+        body = ("print('args', a)\nprint('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', b'<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>io.s2arm.games.abcde12345</string></dict></plist>')\nz.close()\n")
+        old_ns = self.ns
+        self.ns = lambda d, exe: __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), bundle="io.s2arm.games.abcde12345"))
+        try:
+            bid, got, log = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertEqual(bid, 'io.s2arm.games.abcde12345')
+        self.assertIn("'--custom-identifier', 'io.s2arm.games.abcde12345'", log)
+
+    def test_9401_retries_once_with_the_old_uppercase_spelling(self):
+        # #408：Apple 包名不分大小写。这个 Apple ID 早先（0.2.1 及以前 Windows）注册过 io.s2arm.games.<大写团队号>，本机却没记录 →
+        #   小写的被拒 9401 → 换大写重试一次，成功就返回大写包名；两次输出都在日志里。假 plumesign：只收大写那个
+        body = ("ident = a[a.index('--custom-identifier') + 1]\nprint('try', ident)\n"
+                "if ident != 'io.s2arm.games.ABCDE12345':\n"
+                "    print(\"Error: Developer API error 9401 (HTTP Some(200)): An App ID with Identifier '\" + ident + \"' is not available.\"); sys.exit(1)\n"
+                "print('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', ('<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>' + ident + '</string></dict></plist>').encode())\nz.close()\n")
+        old_ns = self.ns
+        self.ns = lambda d, exe: __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), bundle="io.s2arm.games.abcde12345"))
+        try:
+            bid, got, log = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertEqual(bid, 'io.s2arm.games.ABCDE12345')
+        self.assertEqual(got['push'][1], 'io.s2arm.games.ABCDE12345')
+        self.assertIn('try io.s2arm.games.abcde12345', log); self.assertIn('try io.s2arm.games.ABCDE12345', log)
+
+    def test_9401_on_both_spellings_reports_app_id_taken(self):
+        body = "print(\"Error: Developer API error 9401: An App ID with Identifier 'x' is not available.\")\nsys.exit(1)\n"
+        old_ns = self.ns
+        self.ns = lambda d, exe: __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), bundle="io.s2arm.games.abcde12345"))
+        try:
+            e, got, _ = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'app_id_taken'); self.assertNotIn('push', got)
+
+    def test_legacy_case_bundle(self):
+        self.assertEqual(install_win.legacy_case_bundle('io.s2arm.games.abcde12345'), 'io.s2arm.games.ABCDE12345')
+        for other in (None, 'io.s2arm.games.ABCDE12345', 'io.s2arm.games.0123456789', 'io.s2arm.games.abcde12345.dev', 'a.b.c'):
+            self.assertIsNone(install_win.legacy_case_bundle(other))   # 已是大写 / 纯数字没有大小写之分 / 开发后缀 / 不是容器包名：不重试
 
     def test_login_rejected(self):
         e, got, _ = self.run_fake("print('Error: Apple rejected -80046')\nsys.exit(1)\n")

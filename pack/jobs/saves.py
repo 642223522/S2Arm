@@ -35,7 +35,7 @@ MAX_FILES = save_formats.MAX_FILES
 MAX_BYTES = save_formats.MAX_BYTES
 MAX_MANIFEST = 8 << 20
 CHUNK = 1 << 20
-# 社区存档转换后目录结构存疑时给玩家看的一句（10-27 塞尔达 0/…5/）：inspect 预览里显示，restore 不因此拒绝
+# 社区存档转换后目录结构存疑时给玩家看的一句（10-27 一款第一方动作冒险游戏 0/…5/）：inspect 预览里显示，restore 不因此拒绝
 STRUCTURE_NOTICE = "这份存档的目录结构不常见，导入时会按原样照搬。如果游戏读不到进度，请换一份存档。"
 
 
@@ -62,10 +62,14 @@ def fsync_dir(path):
 
 
 def sync_parents(path, root):
+    """从 path 逐级同步到 root（含两端）。root 必须是 path 自己或它的祖先：不是就报错，
+    不在文件系统根上一直同步下去（根的 parent 还是根；11-10 第二存放位置的款恢复存档不结束）"""
     while True:
         fsync_dir(path)
         if path == root:
             return
+        if path.parent == path:
+            raise ValueError("sync root is not an ancestor")
         path = path.parent
 
 
@@ -717,10 +721,13 @@ def backup(c):
         root, _, _ = locations(c, game)
         destination = Path(c.r["path"]).expanduser()
         destination = destination.parent.resolve() / destination.name
+        home = layout.root_of(c, game["id"]).resolve()   # 这款所在存放位置（可以不是默认游戏库）也不许放
         if (
             not destination.parent.is_dir()
             or destination == c.library
             or c.library in destination.parents
+            or destination == home
+            or home in destination.parents
             or destination == c.private
             or c.private in destination.parents
         ):
@@ -845,7 +852,7 @@ def external_archive(c, game, root, source):
         def read(name):
             return (root / name).read_bytes()
 
-        # 这款游戏自己写出的存档顶层（槽 0）：社区存档唯一子目录「0」是提交目录还是游戏的槽位，靠它判（10-27 塞尔达 0/…5/）
+        # 这款游戏自己写出的存档顶层（槽 0）：社区存档唯一子目录「0」是提交目录还是游戏的槽位，靠它判（10-27 一款第一方动作冒险游戏 0/…5/）
         with save_formats.extracted(
             source, tid=game["id"], ref=save_top(read, files, dirs, game)
         ) as (layout, data, program, kind, why):
@@ -1106,7 +1113,7 @@ def restore(c):
         previous = backups / token
         previous.mkdir(parents=True, mode=0o700)
         sync_parents(transaction, layout.root_of(c, game["id"]))
-        sync_parents(previous, c.library)
+        sync_parents(previous, layout.root_of(c, game["id"]))   # 备份目录在这款所在的存放位置下，不一定在默认游戏库里
         new, old = transaction / "new", previous / "data"
         journal = transactions / (game["id"] + ".json")
         had_original = root.exists()
@@ -1115,7 +1122,7 @@ def restore(c):
             total = sum(info[2] for info in scan(c, root)[0].values()) + sum(
                 f["size"] for f in manifest["files"]
             )
-            if shutil.disk_usage(c.library).free < 2 * total + (64 << 20):
+            if shutil.disk_usage(layout.root_of(c, game["id"])).free < 2 * total + (64 << 20):   # 暂存与恢复前副本都在这款的存放位置上，查那块盘
                 fail(c, "游戏库磁盘空间不足，无法暂存并保留恢复前副本。", "space")
             if had_original and any(n.startswith("bis/user/save/") for n in scan(c, root)[0]):
                 c.begin("保留恢复前副本", 2, 3)
@@ -1165,7 +1172,7 @@ def restore(c):
             atomic(journal, record)
             fsync_dir(transactions)
             root.parent.mkdir(parents=True, exist_ok=True)
-            sync_parents(root.parent, c.library)
+            sync_parents(root.parent, layout.root_of(c, game["id"]))
             c.begin("提交存档恢复", 3, 3)
             if had_original:
                 os.rename(root, old)

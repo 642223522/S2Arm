@@ -28,7 +28,9 @@ class EngineHealTests(JobCase):
             (self.bundle / rel).write_bytes(body)
         env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
-        for args in (["init", "-q", "--template="], ["add", "pack"], ["commit", "-qm", "fixture"]):
+        # 清单包含 .git：禁用后台自动维护，避免提交返回后把短命的 maintenance.lock 收进不可变快照。
+        for args in (["init", "-q", "--template="], ["config", "maintenance.auto", "false"],
+                     ["add", "pack"], ["commit", "-qm", "fixture"]):
             subprocess.run(["git", "-C", str(self.bundle), *args], env=env, check=True, stdout=subprocess.DEVNULL)
         files = {p.relative_to(self.bundle).as_posix(): [p.stat().st_size, hashlib.sha256(p.read_bytes()).hexdigest()]
                  for p in self.bundle.rglob("*") if p.is_file() and not p.is_symlink()}
@@ -49,9 +51,22 @@ class EngineHealTests(JobCase):
         self.assertEqual((c2.engine / PLIST).read_bytes(), b"<plist>original</plist>")
         self.assertEqual(list(c2.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
 
-    def test_same_size_rewrite_is_caught_by_artifact_digest(self):
+    def test_probe_uses_installed_copy_without_rechecking_build_still_heals(self):
+        # 剃刀 H4：只读探测（installCheck，装机页每 5 秒一次）有安装标记就直接用副本、不逐文件复核；同一个被改过的副本，下一个出包作业照旧复核、重解（#304 防线不丢）
+        from unittest.mock import patch
         c = self.installed()
-        (c.engine / PLIST).write_bytes(b"<plist>ORIGINAL</plist>")   # 同样大小、内容变了：快速复核看不出，用到产物时按摘要核
+        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")
+        probe = Context(dict(self.request, taskId="probe-1", operation="installCheck", engineBundle=str(self.bundle)))
+        with patch.object(embedded, "_ready", side_effect=AssertionError("探测作业去逐文件复核了")):
+            embedded.install(probe)
+        self.assertEqual(probe.engine, c.engine)
+        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>rewritten by something else</plist>")   # 探测不动副本
+        self.assertEqual((self.installed().engine / PLIST).read_bytes(), b"<plist>original</plist>")   # 出包作业照旧重解
+
+    def test_size_changed_artifact_is_reinstalled_when_used(self):
+        # v0.2.3 清理：用到产物时也只核大小（原先按摘要逐字节核，同大小改写现实里没出现过，#304 是大小变了）；大小变了照样从 App 包重解
+        c = self.installed()
+        (c.engine / PLIST).write_bytes(b"<plist>changed size</plist>")
         self.assertEqual(embedded.artifact(c, "S2ArmGame.app"), c.engine / "Binaries/S2ArmGame.app")
         self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>original</plist>")
 

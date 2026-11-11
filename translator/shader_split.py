@@ -38,7 +38,7 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import collections, concurrent.futures as cf, hashlib, json, os, posixpath, re, struct, sys
+import collections, concurrent.futures as cf, hashlib, json, mmap, os, posixpath, re, struct, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../graphics/nvn/games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
 import ns2_shaders as ns2   # Switch 2 (NVN2) GLSLC outputs and control sections
@@ -72,6 +72,15 @@ def sph_stage(code):
 STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # shader_map.tsv column 3
 
 def red(msg): sys.exit('[RED] ' + msg)
+# 直连包一条记录：'BTCDBTCD' + 0x38 头（+0x28 控制段长、+0x2c 代码长）+ 代码 + 控制段。读这些记录的都按 BTCDBTCD 分记录、按头里的长度切代码 / 控制段
+#   （graphics/tools/direct/dsh/batch/PkgRead.cs Split、graphics/tools/direct/merge_extract.py、android/tools/direct_prepare.py），没有按 CTL_MAGIC 找控制段的。
+#   原先代码区里出现 CTL_MAGIC 四个字节就整批退出（为早已不在仓库里的 dmsh_build），一支着色器碰巧含这四字节，整款离线直连库就是 0 支（#477）：改成只记一行。
+#   分隔符出现在记录里仍然退出：按 BTCDBTCD 分记录的读法会真的切错
+def pkg_record(key, ctl, code):
+    rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
+    if rec.find(CTL_MAGIC) != 0x38 + len(code): print(f'[WARN] key {key}: the control magic also appears in the code area; readers cut by the header lengths, kept', flush=True)
+    if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
+    return rec
 
 def ctl_len(ctl):
     if ns2.is_nvn2(ctl): return ns2.KEY_CTL   # Switch 2: see ns2_shaders.py
@@ -500,6 +509,14 @@ def mtarc_shaders(d, label, out):
         if m[:4] == MTSPK: out.extend(mtspk_shaders(m, f'{label}#{path}'))
 
 SCNE, ZSTD_MAGIC = b'SCNE', bytes.fromhex('28b52ffd')
+BIG = 128 << 20   # plain files above this are scanned through mmap (scan_file); the same threshold as graphics/tools/shbake/nxsh_extract.py BIG
+
+class Mapped(mmap.mmap):
+    """A read-only map of a big file that the readers take like bytes. A bare mmap differs from bytes silently in two places: `b'BNSH' in m` is False even when
+    m holds it (mmap's `in` only matches one byte), and iterating yields 1-byte bytes instead of ints. Slicing, len, indexing, find, re and struct already agree;
+    any other bytes method is missing and fails loudly"""
+    def __contains__(self, x): return self.find(x) >= 0 if isinstance(x, (bytes, bytearray)) else super().__contains__(x)
+    def __iter__(self): return iter(memoryview(self))
 def bea_members(d, label):
     """NintendoWare Bezel Engine archive ('.bea', magic 'SCNE', a NintendoWare binary file of version 0x10100; Big Brain Academy: Brain vs. Brain keeps nearly all of RomFS in 603 of them):
     +0x20 u64 entry count, +0x28 u64 offset of the entry pointer array (u64 each), each pointing at a 0x30-byte 'ASST' entry {+0x10 u16 kind, u16 alignment shift, u32 stored length,
@@ -1403,15 +1420,24 @@ def scan_file(args):
     if head[:4] == SCNE:   # a Bezel Engine archive (bea_members): each entry scanned as a file of its own (the shaders are BNSH in its .bfsha entries)
         for nm, m in bea_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}/{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
-    d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
-    if d[:4] == b'Yaz0': d = yaz0(d)
+    if head[:4] == ZSTD_MAGIC: d = unzs(path)   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
+    elif os.path.getsize(path) > BIG:   # a big plain file is mapped, not copied into this process (Persona 5 Royal's ALL_ASIA.CPK, 12.7 GB: one worker held 13 GB on a 16 GB Windows PC)
+        with open(path, 'rb') as f: mm = d = Mapped(f.fileno(), 0, access=mmap.ACCESS_READ)
+        try: return scan_plain(path, rel, d, found, trees)
+        finally: mm.close()
+    else: d = open(path, 'rb').read()
+    return scan_plain(path, rel, d, found, trees)
+
+def scan_plain(path, rel, d, found, trees):
+    """The rest of scan_file for a plain file's contents d: bytes, or an mmap of a big file (slicing, `in`, find, re and struct read it the same; the Yaz0 and Unity readers take bytes, so those copy)"""
+    if d[:4] == b'Yaz0': d = yaz0(d[:] if isinstance(d, Mapped) else d)
     if path.endswith('.xxx') and d[:4] == struct.pack('<I', 0x9E2A83C1) or UE3_DNBC in d or d[:4] == b'BMSG':   # an Unreal Engine 3 package, or a file holding its shader blocks plain (GlobalShaderCache-NX.bin, -Switch.bin)
         u = ue3_package(d, '/' + rel) if path.endswith('.xxx') else d
         ue3_dnbc_shaders(u, '/' + rel, found); ue3_lz4_shaders(u, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
-        try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
+        try: unity_shaders(d[:] if isinstance(d, Mapped) else d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree as e:
             if SECOND: print(f'[RED] /{rel}: {e}', flush=True)
             return rel, {}, set(), 'defer'
@@ -1544,9 +1570,7 @@ def main():
     for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
         where, st, ctl, code = keys[key]
         name = f'{st}_{group(where)}.bin'
-        rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
-        if rec.find(CTL_MAGIC) != 0x38 + len(code): red(f'key {key}: the control magic appears in the code area, dmsh_build would split the record wrongly')
-        if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
+        rec = pkg_record(key, ctl, code)
         rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
         if st == 'cs':
             nvn2 = ns2.is_nvn2(ctl)

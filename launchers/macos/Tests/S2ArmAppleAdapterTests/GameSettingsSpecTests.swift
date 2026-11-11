@@ -5,11 +5,11 @@ import XCTest
 final class GameSettingsSpecTests: XCTestCase {
     func testMacItemsComeFromTheSharedTable() throws {
         let items = try GameSettingsSpec.macItems()
-        XCTAssertEqual(items.map(\.id), ["enhance", "fps60", "widescreen", "widenForce", "docked", "patches", "input", "rumble", "rumbleLevel", "motion", "padFace", "hud"])
+        XCTAssertEqual(items.map(\.id), ["enhance", "fps60", "widescreen", "widenForce", "docked", "language", "patches", "input", "rumble", "rumbleLevel", "motion", "padFace", "hud", "diagRun"])
         let enhance = try XCTUnwrap(items.first { $0.id == "enhance" })
         XCTAssertEqual(enhance.text("zh-Hans"), "画面增强模式")
         XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "docked" }).options.map(\.value), ["docked", "handheld"])
-        XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "rumbleLevel" }).options.count, 5)
+        XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "rumbleLevel" }).options.count, 6)
     }
 
     func testBrokenTableIsAnError() {

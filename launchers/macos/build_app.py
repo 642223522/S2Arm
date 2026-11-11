@@ -50,9 +50,8 @@ def release_identity(engine_json):
                                            stderr=subprocess.DEVNULL).strip()
         except (OSError, subprocess.CalledProcessError):
             return ""
-    tag = git("describe", "--tags", "--abbrev=0")
-    match = re.match(r"v?(\d+(?:\.\d+)*)", tag)
-    short_version = match.group(1) if match else "0.1.0"
+    sys.path.insert(0, str(ROOT / "pack/jobs")); from core import release_version
+    short_version = release_version(ROOT) or "0.1.0"   # 同 iPhone 容器、Windows 启动器（三端同号，pack/jobs/core.py）
     build = git("rev-list", "--count", "HEAD") or "1"
     commit = git("rev-parse", "--short=8", "HEAD") or "unknown"
     dirty = "-dirty" if git("status", "--porcelain", "--untracked-files=no") else ""
@@ -60,8 +59,12 @@ def release_identity(engine_json):
         source = json.loads(engine_json.read_text()).get("source", "")
     except (OSError, ValueError):
         source = ""
+    # 顶栏版本号（11-11 维护者：玩家截图里要看得出是哪一版）：HEAD 正好是发版 tag 且没改动 = 正式版「v0.3.0」；
+    #   否则是开发版「v<最近 tag>-dev+<短提交号>」。发版流程先在构建树上打 tag 再构建（release.sh），所以正式包落在 tag 上。同 Windows S2Arm.csproj
+    release = not dirty and re.fullmatch(r"v?" + re.escape(short_version), git("describe", "--tags", "--exact-match", "HEAD"))
+    display = f"v{short_version}" if release else f"v{short_version}-dev+{commit[:7]}"
     return dict(CFBundleShortVersionString=short_version, CFBundleVersion=build,
-                S2ABuildID=f"{commit}{dirty}-{source[:8]}")
+                S2ABuildID=f"{commit}{dirty}-{source[:8]}", S2ADisplayVersion=display)
 
 
 def bundle_shell(engine_json, dest, env):
@@ -83,7 +86,7 @@ def bundle_shell(engine_json, dest, env):
         raise SystemExit(f"【红】发版要用装着的最新 Xcode（{newest}）出，这次选的是 {env['DEVELOPER_DIR']}：去掉 --developer-dir / S2A_DEVELOPER_DIR 重来")
     if (cache / "manifest.json").is_file() and linked_sdk(cache / "root/S2Arm") != want:
         print(f"壳缓存 {cache} 是 iOS SDK {linked_sdk(cache / 'root/S2Arm')} 出的，发版要 {want}：挪开重出")
-        cache.rename(cache.parent / f".tmp.stale.{sid}.{os.getpid()}")   # 同 pack/ipa.sh：挪开不删（别的出包单可能正读它），.tmp.* 由 tools/gc.sh 清
+        cache.rename(cache.parent / f".tmp.stale.{sid}.{os.getpid()}")   # 同 pack/ipa.sh：挪开不删（别的出包单可能正读它），.tmp.* 由维护方内部清扫器清
     if not (cache / "manifest.json").is_file():
         cache.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["bash", str(ROOT / "pack/shell_build.sh"), str(cache)], env=env, check=True)
@@ -139,6 +142,9 @@ def main():
     macos.mkdir(parents=True)
     resources.mkdir()
     shutil.copy2(Path(bindir) / front["executable"], macos / front["executable"])
+    # Switch 2 Pro 蓝牙连接由启动器旁的独立进程持有，游戏经本机通道读输入（docs/mac-switch2-pro.md）
+    subprocess.run(["make", "-C", str(ROOT), "S2A_MAC_FRONTEND=1", "build/S2ArmNS2Connection"], env=env, check=True)
+    shutil.copy2(ROOT / "build/S2ArmNS2Connection", macos / "S2ArmNS2Connection")
     copy_launcher_resources(Path(bindir), resources)
     if front["nx2apple_resources"]:
         print("前端资源：" + " ".join(frontend_layout.stage_apple_resources(ROOT, resources)))
@@ -203,12 +209,14 @@ def main():
     info = dict(**frontend_layout.info_identity(front), CFBundlePackageType="APPL",
                 CFBundleIconFile="S2Arm", LSMinimumSystemVersion=runtime_sources.deployment_target(),
                 NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans"],
+                NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",
                 **release_identity(resources / "Engine/engine.json"))
     info["UTExportedTypeDeclarations"] = [dict(UTTypeIdentifier="org.s2arm.save-backup", UTTypeDescription="S2Arm Save Backup",
         UTTypeConformsTo=["public.zip-archive"], UTTypeTagSpecification={"public.filename-extension": ["s2asave"]})]
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
     # 启动器本体同样去掉调试映射（见 bundle_engine.strip_debug_maps），再签整个 App
     subprocess.run(["xcrun", "strip", "-S", str(app / "Contents/MacOS" / front["executable"])], env=env, check=True)
+    subprocess.run(["codesign", "--force", "--sign", "-", str(macos / "S2ArmNS2Connection")], env=env, check=True)
     subprocess.run(["codesign", "--force", "--sign", "-", str(app)], env=env, check=True)
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], env=env, check=True)
     print("最低系统检查：", verify_minimum_macos(app, runtime_sources.deployment_target()), "个 Mach-O")

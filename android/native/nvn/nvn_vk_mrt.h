@@ -132,7 +132,7 @@ enum { NVN_VK_FB_BIND_NONE = 0, NVN_VK_FB_BIND_SUBSTITUTE = 1, NVN_VK_FB_BIND_LE
 int nvn_vk_feedback_bind_plan(const struct nvn_vk_feedback_bind *in, char *why, size_t why_size);
 
 // BC/块压缩纹理作为渲染目标（经“块=像素”的无压缩 UI 视图）：
-//   TOTK 把一张 32x32x32 的 RGTC1(BC4) 3D 纹理每笔画一个深度切片，附件视图用 RGBA16UI 之类
+//   0100F2C0115B6000 把一张 32x32x32 的 RGTC1(BC4) 3D 纹理每笔画一个深度切片，附件视图用 RGBA16UI 之类
 //   无压缩格式覆盖——一个视图像素 = 一个 8 字节压缩块（GPU 上直接编码 BC4）。Vulkan 既不能把
 //   压缩格式当颜色附件，也不能建压缩↔无压缩视图，所以渲染到等尺寸影子（bw×bh 像素），pass
 //   前后用 buffer 往返拷块：压缩格式没有 COLOR_ATTACHMENT 特性、不能建无压缩视图，而

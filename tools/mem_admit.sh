@@ -19,7 +19,7 @@
 #      同类有 1–9 个样本时取它与「同类最大 × 1.5」中大的；估值表有本类别的下限行「<类别> *」（已量过的类别最大 × 1.5，审计 #1534 P1-113）时再与它取大。
 #      下限行只在这一档用、不当缺省值：旧的 dsh * 50 是单进程无界时的量级，让单测生键一张票估 50 GB（11-04 晚事故），不恢复。生键一律打一行【黄】写明按什么估的。
 #   来由：估值表 dsh * 50 是 dsh-mem2（9b306ec9f）之前单进程无界时的量级（见 tools/mem_peak.tsv 注释），11-04 本机实测表 52 款 dsh 实测中位 1.5 / p90 3.5 / 最大 5.2 GB；
-#   没实测过的款按 50 GB 记账，上限 89.6 GB 下全机同时只放得进一个直连库，严格先来先放又让后面的小款一起等（密特罗德究极直连库段本身 58 秒、排队 1692 秒，同时有款排 3132 秒）。
+#   没实测过的款按 50 GB 记账，上限 89.6 GB 下全机同时只放得进一个直连库，严格先来先放又让后面的小款一起等（一款第一方动作游戏直连库段本身 58 秒、排队 1692 秒，同时有款排 3132 秒）。
 #   取最大值而非 p90、再乘 1.5：没实测过的款低估会多放、重演 11-02 内存吃光；最大值是已观测总体的上界，1.5 倍留给比样本更大的款，跑完即被本款实测覆盖。
 #   每次跑完把本次实测峰值写回 peak.tsv（退出 0 = 覆盖；非 0 = 只升不降，被杀的局峰值不全）；下次按实测。取数 = 命令进程树的物理足迹合计（tools/mem_peak_sample.py，
 #   与 iOS 判杀同口径，同 phys_footprint.py）。注意：Metal 真正编译在系统 MTLCompilerService（launchd 起、不在进程树里）不计入，metal 类的值靠估值表保守给。
@@ -60,7 +60,7 @@ _ma_total10() {
 }
 _ma_find() { [ -f "$1" ] || return 0; awk -F'\t' -v c="$2" -v k="$3" '/^#/{next} $1==c&&$2==k{print $3, $4; exit}' "$1"; }
 # 实测表里本类别「实」行：样本数 ≥ S2A_MEM_CLASS_MIN_N（缺省 10）→ 「最大值 × S2A_MEM_CLASS_X（缺省 1.5） 同类实测最大×1.5」；样本不够 → 空
-_ma_cmax() { [ -f "$1" ] || return 0; awk -F'\t' -v c="$2" -v n0="${S2A_MEM_CLASS_MIN_N:-10}" -v x="${S2A_MEM_CLASS_X:-1.5}" '/^#/{next} $1==c&&$4=="实"{n++; if ($3+0>m) m=$3+0} END{if (n >= n0 && m > 0) printf "%.1f 同类实测最大×%s\n", m*x, x}' "$1"; }
+_ma_cmax() { [ -f "$1" ] || return 0; LC_ALL=C awk -F'\t' -v c="$2" -v n0="${S2A_MEM_CLASS_MIN_N:-10}" -v x="${S2A_MEM_CLASS_X:-1.5}" '/^#/{next} $1==c&&$4=="实"{n++; if ($3+0>m) m=$3+0} END{if (n >= n0 && m > 0) printf "%.1f 同类实测最大×%s\n", m*x, x}' "$1"; }
 _ma_need() {   # 类别 键 → 「十分之一GB 来源」（实 / 估 / 生键·同类实测最大×1.5 / 生键·核数比例…；实测表、估值表都没有本键 = 生键）；要先有 MA_TOTAL10 / MA_NCORES / MA_CORES
   local v src c n p10 f
   v=$(_ma_find "$MA_TAB" "$1" "$2"); [ -n "$v" ] || v=$(_ma_find "$MA_SEED" "$1" "$2")
@@ -113,12 +113,16 @@ _ma_try() {
   used=$(_ma_used10); now=$(date +%s)
   if [ -z "$MA_PRIO" ]; then local pq; pq=$(ls "$MA_DIR"/q.0* 2> /dev/null | head -1)
     [ -n "$pq" ] && { MA_WHY="优先类别 $(awk -F'\t' '{printf "%s/%s(pid %s)", $3, $4, $1}' "$pq" 2> /dev/null) 在等，普通作业不插空（S2A_MEM_PRIO_CLASSES）"; return 2; }; fi
-  for f in $(ls "$MA_DIR"/q.* 2> /dev/null | sort); do
+  # 通配直接遍历（按名排序，同 ls | sort）：原先 for f in $(ls …) 按空格切词，玩家机账本在「Application Support」下，每张票的路径被切成三段，
+  #   别人的票一张也读不到、自己的票也认不出（#235 玩家 Mac 出包在这里报 unbound variable 停下）。
+  #   票的发车时刻 / 预留量不是纯数字（别的版本写的、写了一半的）就跳过这张：set -u 下进算术会让整个出包停下
+  for f in "$MA_DIR"/q.*; do [ -e "$f" ] || continue
     [ "$f" = "$MA_TK" ] && break
-    t0=$(cut -f5 "$f" 2> /dev/null); [ -n "$t0" ] && [ $((now - t0)) -ge "${S2A_MEM_STARVE_S:-900}" ] || continue
+    t0=$(cut -f5 "$f" 2> /dev/null); case $t0 in ''|*[!0-9]*) continue;; esac
+    [ $((now - t0)) -ge "${S2A_MEM_STARVE_S:-900}" ] || continue
     # 只给本机当前「空闲 + 可回收」放得进的票预留；放不进的降回普通排队（不占防饿死位），看下一张（11-04 晚：生键 50 GB 一直放不进、挡住后面 12 张票）
-    n0=$(cut -f2 "$f" 2> /dev/null); [ -n "$av" ] || av=$(_ma_avail10)
-    [ "${n0:-0}" -le "$av" ] 2> /dev/null && { old=$f; break; }
+    n0=$(cut -f2 "$f" 2> /dev/null); case $n0 in ''|*[!0-9]*) continue;; esac; [ -n "$av" ] || av=$(_ma_avail10)
+    [ "$n0" -le "$av" ] 2> /dev/null && { old=$f; break; }
   done
   if [ -n "$old" ]; then
     MA_WHY="前面 $(awk -F'\t' '{printf "%s/%s(pid %s)", $3, $4, $1}' "$old" 2> /dev/null) 已排满 ${S2A_MEM_STARVE_S:-900} 秒、本机空闲 + 可回收放得进，给它预留、不插空（账内已占 $(_ma_gb "$used") GB / 上限 $(_ma_gb "$MA_TOTAL10") GB）"

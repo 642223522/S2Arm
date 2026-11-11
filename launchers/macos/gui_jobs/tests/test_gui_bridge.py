@@ -144,7 +144,8 @@ class BridgeTests(unittest.TestCase):
         (ndk / "llvm/bin/clang").write_text("#!/bin/sh\nexit 0\n")
         (ndk / "llvm/bin/clang").chmod(0o700)
         marker = self.root / "child-pid"
-        self.script("ohos", 'echo $$ > "' + str(marker) + '"\nwhile true; do sleep 1; done\n')
+        # 先写临时文件再改名（原子）：直接 echo > marker 时 shell 先建空文件再写，测试一见文件存在就读会偶尔读到空串（int('') 偶发红）
+        self.script("ohos", 'echo $$ > "' + str(marker) + '.tmp" && mv "' + str(marker) + '.tmp" "' + str(marker) + '"\nwhile true; do sleep 1; done\n')
         self.request.update(target="ohos")
         import shutil
         (self.source / "tools").mkdir()

@@ -26,6 +26,7 @@ if os.name == "nt":   # 作业主程序自己也要长路径处理：子 Python 
     from pack.orch import winlong as _winlong
     _winlong.install()
 import community
+import devcert
 import diag
 import embedded
 import install
@@ -43,10 +44,17 @@ from core import (KEEP_DAYS, KEEP_FAILED_PER_OPERATION, KEEP_PER_OPERATION, KEEP
 import build
 
 
+def partial_import_result(c):
+    """中途失败 / 取消时随终态带回的逐来源结果：只有要 partialResults 的调用方才有（默认路径同 #124 之前，失败结果为空）"""
+    return getattr(c, "import_result", None) if c.operation == "import" and c.r.get("partialResults") is True else None
+
+
 def run_request(request_path, *, context_class=Context, operation_overrides=None):
+    # 开发者证书密码（devCert 导入那一次由启动器经环境变量给，devcert.py ⑤）：先从环境摘掉，任何子进程都拿不到；请求文件里从不放
+    devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
     winproc.prepare_child_environment()
     path = Path(request_path)
-    if not winproc.request_is_private(path):
+    if os.name != "nt" and not winproc.request_is_private(path):   # Windows 由启动器建文件时就给只本人可读写的权限，不在这里再核（winproc.request_is_private 说明）
         raise SystemExit("request must be owned by this user and private (0600)")
     request = json.loads(path.read_text())
     if request.get("schema") != 1:
@@ -62,6 +70,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         # The job cannot even register its record (full disk, read-only volume): say why and come back non-zero instead of a traceback (J10)
         print(f"[s2a] 【红】任务记录写不进磁盘，任务未开始：{error}", file=sys.stderr, flush=True)
         return 1
+    c.devcert_password = devcert_password
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())
     ended = threading.Event()
@@ -79,19 +88,28 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
                   "diagnostics": library.diagnostics, "saveInput": library.save_input,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save}
+                  "community": community.listing, "communitySave": community.save, "devCert": devcert.operation}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
         if c.operation not in operations:
             raise Failure("不支持的任务类型。")
+        if c.operation == "import" and c.r.get("partialResults") is True:   # 默认路径不带 sources（结果与任务记录同 #124 之前）
+            c.import_result = library.initial_import_result(c)
         if c.operation not in saves.OPERATIONS:
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
         result = operations[c.operation](c)
+        if c.operation in HEAL_AFTER:
+            # 英文名可能刚拿到（导入读 NACP、出包解出 control.nacp）：锁已放，空闲就把还叫游戏号的文件夹改名（剃刀 H3）。
+            #   改名只是好看，出错不把已完成的任务变成失败，原文进标准错误（随任务日志）
+            try:
+                layout.heal_folder_names(c)
+            except (OSError, ValueError) as error:
+                print(f"[s2a] 游戏文件夹改英文名没做成，下次导入 / 出包再试：{error}", file=sys.stderr, flush=True)
         # A completed save-directory swap is the commit point. A later cancel
         # signal cannot turn a committed restore into a misleading cancelled job.
         if not (c.operation == "saveRestore" and result.get("committed")):
@@ -109,7 +127,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             library.clean_after_stop(c)
         c.finish("cancelled", "游戏已停止。" if c.operation == "launch" else
                  "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。" if waiting else
-                 "任务已取消；上次成功的运行版本和存档已保留。")
+                 "任务已取消；上次成功的运行版本和存档已保留。", partial_import_result(c))
         return 130
     except Exception as error:
         ended.set()
@@ -123,7 +141,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         message = diagnostic["summary"]
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
-        c.finish("failed", message)
+        c.finish("failed", message, partial_import_result(c))
         return 1
     finally:
         ended.set()
@@ -142,7 +160,8 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
-NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject")
+HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
+NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
 
 
 def parser():

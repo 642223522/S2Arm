@@ -5184,8 +5184,12 @@
   "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
  },
  {
-  "source": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
-  "en": "Connect the target iPhone by cable, unlock it, and tap Trust. First enable Developer Mode under Settings → Privacy & Security, then retry."
+  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
+ },
+ {
+  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
+  "en": "Choose which iPhone or iPad to install to on the install page, then install."
  },
  {
   "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
@@ -6512,6 +6516,10 @@
   "en": "The game was removed from the app, but its data on iPhone could not be deleted: "
  },
  {
+  "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
+  "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
+ },
+ {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。",
   "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone; the games already on your phone are not affected."
  },
@@ -6710,5 +6718,313 @@
  {
   "source": "正在传输资源",
   "en": "Transferring resources"
+ },
+ {
+  "source": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",
+  "en": "Apple refused to register this App ID (Apple error 9401: the identifier is already taken on Apple's side). In Impactor (Xcode on a Mac), make sure you are signed in with the Apple ID you first installed S2Arm with, then install again. With a paid developer account you can also delete the old identifier starting with io.s2arm.games under \"Certificates, Identifiers & Profiles > Identifiers\" on developer.apple.com and try again. If it still fails, export a diagnostics package and report it."
+ },
+ {
+  "source": "机上有推完、还没解开的推送包 {0} 个：其中 {1} 个文件算已推，不重推",
+  "en": "{0} pushed-but-not-unpacked batch(es) are already on the phone; {1} files count as pushed and are not resent"
+ },
+ {
+  "source": "起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）",
+  "en": "Launching the app once to unpack the pushed batch (S2A_PACK_APPLY_ONLY=1)"
+ },
+ {
+  "source": "资源包：机上已解开（.applied = 本包）",
+  "en": "Pack: unpacked on the phone (.applied = this pack)"
+ },
+ {
+  "source": "资源包：机上实况与已应用索引不符：{0} 拉不回或 sha256 不对",
+  "en": "Pack: the phone's state does not match the applied index: {0} could not be read back or has a wrong sha256"
+ },
+ {
+  "source": "资源包：抽查 {0} 个、{1} 个不符，机上清单拉不回，不信已应用索引，整包重推",
+  "en": "Pack: spot-checked {0} files, {1} mismatched, the on-device manifest could not be read back, so the applied index is not trusted and the whole pack is pushed again"
+ },
+ {
+  "source": "把这款放进手机上的 S2Arm",
+  "en": "Put this game into S2Arm on the phone"
+ },
+ {
+  "source": "签名并装到 iPhone（Impactor 官方命令行 plumesign）",
+  "en": "Sign and install on the iPhone (Impactor's official command line, plumesign)"
+ },
+ {
+  "source": "保存游戏名字和封面",
+  "en": "Save the game name and cover"
+ },
+ {
+  "source": "把这款游戏搬到新的存放位置",
+  "en": "Move this game to its new location"
+ },
+ {
+  "source": "【红】测试设备剩余空间不足：可写 {0} GB < 要 {1} GB（待推 {2} GB + 解开时最大一批 + 余量）；先卸掉机上不用的包",
+  "en": "[red] The device does not have enough free space: writable {0} GB < needed {1} GB ({2} GB to push + the largest unpack batch + margin); remove packages you do not need from the device first"
+ },
+ {
+  "source": "播种：{0} 秒（rc={1}）",
+  "en": "Seeding: {0} s (rc={1})"
+ },
+ {
+  "source": "格式通过，首次读取游戏时验证解密能力",
+  "en": "Format OK; decryption is verified the first time the game is read"
+ },
+ {
+  "source": "签名工具 Impactor 已就绪（随 S2Arm 附带的第三方开源工具）",
+  "en": "Signing tool Impactor is ready (the third-party open-source tool bundled with S2Arm)"
+ },
+ {
+  "source": "已在 Impactor 里登录 Apple ID（只需一次）",
+  "en": "Signed in to an Apple ID in Impactor (only needed once)"
+ },
+ {
+  "source": "点「打开 Impactor」，在「设置 → 添加账号」登录你的 Apple ID（免费的就行），登录好回来这里自动打勾。",
+  "en": "Click \"Open Impactor\", sign in to your Apple ID under \"Settings > Add account\" (a free one is fine), then come back here; it ticks automatically once you are signed in."
+ },
+ {
+  "source": "重新输入导出 .p12 时设的密码（区分大小写）；还不行就重新导出一份 .p12 再导入。",
+  "en": "Re-enter the password you set when exporting the .p12 (it is case-sensitive). If it still fails, export a new .p12 and import it again."
+ },
+ {
+  "source": "选导出的 .p12 证书和开发者网站下载的 .mobileprovision 描述文件，再导入一次。",
+  "en": "Choose the exported .p12 certificate and the .mobileprovision profile downloaded from the developer website, then import again."
+ },
+ {
+  "source": "在开发者网站重新生成描述文件并勾上这张证书，下载后和证书一起重新导入。",
+  "en": "Regenerate the provisioning profile on the developer website with this certificate selected, download it, and import it together with the certificate."
+ },
+ {
+  "source": "在出包页「我的开发者证书」里重新导入证书和描述文件，或切回「Apple ID 签名」。",
+  "en": "Import the certificate and profile again under “My developer certificate” on the export page, or switch back to “Apple ID signing”."
+ },
+ {
+  "source": "解锁登录钥匙串并允许 S2Arm 访问后，重新导入证书。",
+  "en": "Unlock your login keychain, allow S2Arm to access it, then import the certificate again."
+ },
+ {
+  "source": "找不到签名工具 rcodesign：请重新安装完整的 S2Arm。",
+  "en": "The signing tool rcodesign is missing. Reinstall the complete S2Arm."
+ },
+ {
+  "source": "描述文件读不出来：选的不是 .mobileprovision，或文件坏了。",
+  "en": "Can't read the provisioning profile: the file isn't a .mobileprovision, or it's damaged."
+ },
+ {
+  "source": "描述文件里没有权限表：选的不是 iOS 描述文件。",
+  "en": "The profile has no entitlements: it isn't an iOS provisioning profile."
+ },
+ {
+  "source": "证书打不开：密码不对，或 .p12 文件坏了。",
+  "en": "Can't open the certificate: the password is wrong, or the .p12 file is damaged."
+ },
+ {
+  "source": "证书打不开：.p12 里没有证书。",
+  "en": "Can't open the certificate: the .p12 contains no certificate."
+ },
+ {
+  "source": "证书和描述文件不配套：这份描述文件里没有这张证书，签出来装不上。请在开发者网站重新生成包含这张证书的描述文件。",
+  "en": "The certificate and profile don't match: this profile doesn't include the certificate, so a signed app won't install. Regenerate a profile that includes this certificate on the developer website."
+ },
+ {
+  "source": "描述文件没开「{0}」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。",
+  "en": "The profile doesn't enable “{0}”. Small games work as usual; large games may run out of memory and crash. Enable it for this App ID on the developer website, then download the profile again."
+ },
+ {
+  "source": "提高内存上限",
+  "en": "Increased Memory Limit"
+ },
+ {
+  "source": "扩展寻址",
+  "en": "Extended Virtual Addressing"
+ },
+ {
+  "source": "提高内存上限、扩展寻址",
+  "en": "Increased Memory Limit, Extended Virtual Addressing"
+ },
+ {
+  "source": "证书已于 {0} 过期：签出来的 App 装不上或打不开，请换新的证书。",
+  "en": "The certificate expired on {0}. Signed apps won't install or open; replace the certificate."
+ },
+ {
+  "source": "描述文件已于 {0} 过期：签出来的 App 装不上或打不开，请换新的描述文件。",
+  "en": "The profile expired on {0}. Signed apps won't install or open; replace the profile."
+ },
+ {
+  "source": "证书将于 {0} 到期（还剩 {1} 天）：到期后 App 打不开，记得提前换新。",
+  "en": "The certificate expires on {0} ({1} days left). The app won't open after that, so renew it in time."
+ },
+ {
+  "source": "描述文件将于 {0} 到期（还剩 {1} 天）：到期后 App 打不开，记得提前换新。",
+  "en": "The profile expires on {0} ({1} days left). The app won't open after that, so renew it in time."
+ },
+ {
+  "source": "连着的这台 iPhone 不在描述文件的设备列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件。",
+  "en": "The connected iPhone isn't in the profile's device list, so a signed app won't install on it. Register this device on the developer website and regenerate the profile."
+ },
+ {
+  "source": "证书密码没存进钥匙串：{0}",
+  "en": "Couldn't save the certificate password to the keychain: {0}"
+ },
+ {
+  "source": "开发者证书不完整（证书、描述文件或密码缺了）：在出包页重新导入一次。",
+  "en": "The developer certificate is incomplete (certificate, profile, or password missing). Import it again on the export page."
+ },
+ {
+  "source": "没收到证书密码。",
+  "en": "No certificate password was received."
+ },
+ {
+  "source": "找不到 .p12 证书：{0}",
+  "en": "Can't find the .p12 certificate: {0}"
+ },
+ {
+  "source": "找不到 .mobileprovision 描述文件：{0}",
+  "en": "Can't find the .mobileprovision profile: {0}"
+ },
+ {
+  "source": "还没导入开发者证书。",
+  "en": "No developer certificate has been imported yet."
+ },
+ {
+  "source": "不支持的证书操作。",
+  "en": "Unsupported certificate operation."
+ },
+ {
+  "source": "开发者证书可用",
+  "en": "Developer certificate is usable"
+ },
+ {
+  "source": "这台 iPhone 在描述文件的设备列表里",
+  "en": "This iPhone is in the profile's device list"
+ },
+ {
+  "source": "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。",
+  "en": "Not in the list, so a signed app won't install on it. Register this device on the developer website, regenerate the profile, then import it again on the export page."
+ },
+ {
+  "source": "读取证书与描述文件",
+  "en": "Reading certificate and profile"
+ },
+ {
+  "source": "保存证书",
+  "en": "Saving certificate"
+ },
+ {
+  "source": "用你的开发者证书签名",
+  "en": "Signing with your developer certificate"
+ },
+ {
+  "source": "无法安全读取或写入诊断文件，未更新诊断包（{0}：{1}）。",
+  "en": "Couldn't safely read or write the diagnostics files, so the diagnostics package was not updated ({0}: {1})."
+ },
+ {
+  "source": "打开日志目录",
+  "en": "opening the log folder"
+ },
+ {
+  "source": "在所选位置建临时文件",
+  "en": "creating a temporary file in the chosen location"
+ },
+ {
+  "source": "读日志与任务记录",
+  "en": "reading logs and task records"
+ },
+ {
+  "source": "把诊断包放到所选位置",
+  "en": "moving the package to the chosen location"
+ },
+ {
+  "source": "游戏库里已经没有这款游戏",
+  "en": "This game is no longer in your library"
+ },
+ {
+  "source": "这台电脑出不了这个平台的包",
+  "en": "This computer cannot build for this platform"
+ },
+ {
+  "source": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
+  "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
+ },
+ {
+  "source": "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。",
+  "en": "No device chosen: choose an iPhone or iPad on the install page, then install."
+ },
+ {
+  "source": "{0}「{1}」现在不在线：插上数据线，或让它和这台电脑连同一个 Wi-Fi 并解锁，再试一次。",
+  "en": "{0} “{1}” is offline: plug it in with a cable, or unlock it on the same Wi-Fi as this computer, then try again."
+ },
+ {
+  "source": "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。",
+  "en": "The chosen device ({0}) hasn't been paired with this computer yet: plug it in, unlock it and tap Trust on the device (after that it can also install over the same Wi-Fi)."
+ },
+ {
+  "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
+  "en": "The chosen device (ID ending {0}) is offline: plug it in and unlock it, or put it on the same Wi-Fi as this computer, then try again."
+ },
+ {
+  "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi。",
+  "en": "The chosen device (ID ending {0}) is offline: plug it in and unlock it, or put it on the same Wi-Fi as this computer."
+ },
+ {
+  "source": "读不出{0}上已经装了哪些游戏，为免把别的游戏挤掉，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
+  "en": "Couldn't read which games are already on {0}, so nothing was installed to avoid pushing other games out: unlock it, plug it in or put it on the same Wi-Fi as this computer, then try again."
+ },
+ {
+  "source": "{0}「{1}」已连上（{2}）",
+  "en": "{0} “{1}” connected ({2})"
+ },
+ {
+  "source": "{0}已连上（{1}）",
+  "en": "{0} connected ({1})"
+ },
+ {
+  "source": "数据线",
+  "en": "cable"
+ },
+ {
+  "source": "同一 Wi-Fi",
+  "en": "same Wi-Fi"
+ },
+ {
+  "source": "设备",
+  "en": "Device"
+ },
+ {
+  "source": "选的设备已连上（数据线或同一 Wi-Fi）",
+  "en": "Chosen device connected (cable or same Wi-Fi)"
+ },
+ {
+  "source": "{0} 已信任这台 Mac",
+  "en": "{0} trusts this Mac"
+ },
+ {
+  "source": "{0} 已打开开发者模式",
+  "en": "Developer Mode is on"
+ },
+ {
+  "source": "{0} 已准备好安装",
+  "en": "{0} is ready to install"
+ },
+ {
+  "source": "用数据线把 iPhone / iPad 连到这台电脑，或让它和这台电脑连同一个 Wi-Fi；解锁并点「信任」。",
+  "en": "Connect the iPhone or iPad to this computer with a cable, or put it on the same Wi-Fi; unlock it and tap Trust."
+ },
+ {
+  "source": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
+  "en": "Wait for the task that is using the library to finish (or cancel it in the task list), then try again. Nothing was changed."
+ },
+ {
+  "source": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
+  "en": "Your Apple ID sign-in has expired. Sign in again, then install: on the install page click Open Impactor → Settings, select your Apple ID and click Remove Account, then Add Account and sign in with the same Apple ID (email, password and the code on your devices; switch the keyboard to English first). Come back and click Install to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
+ },
+ {
+  "source": "游戏存放位置或游戏库所在的盘不支持 S2Arm 需要的文件操作（常见于 exFAT / FAT 格式的外接盘）：把这款游戏的存放位置换到 APFS 格式的盘（Mac 内置盘就是；外接盘可在「磁盘工具」里另分一个 APFS 分区），再重试；游戏原件不用挪。",
+  "en": "The drive holding this game's storage location or the game library doesn't support the file operations S2Arm needs (common on exFAT / FAT external drives). Move this game's storage location to an APFS drive (the Mac's built-in drive is APFS; on an external drive you can add an APFS partition in Disk Utility), then try again. The original game files can stay where they are."
+ },
+ {
+  "source": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
+  "en": "Drive format not supported: this drive doesn't support the file operations exporting needs (common on exFAT / FAT external drives)."
  }
 ]

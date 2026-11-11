@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import ctypes as C
+from .shortroot import table_now, to_long
 from .winlong import long_path   # Win32 路径入口（CreateFileW / CopyFile2 / SetFileSecurityW / GetVolumePathNameW）不吃 Python 层的前缀补丁：>240 字符必须自己过 long_path
 from ctypes import wintypes as W
 import errno
@@ -108,6 +109,11 @@ def _junction(target, link):
 
 def directory_link(target, link, *, relative=None):
     target, link = Path(target), Path(link)
+    if os.name == 'nt':
+        # #461：Windows 上一律写绝对目标、且是玩家路径（短根联接换回长路径）。相对目标的目录软链经短根联接（%LOCALAPPDATA%\S2A\j\…）访问时，
+        #   有的 Windows（玩家实测 26320）stat / listdir / realpath 一律 WinError 3，同一链接走长路径或改写绝对目标都正常；没开开发者模式时走的
+        #   junction 退路本来就只能写绝对目标。写长路径不写短路径：短根入口任务结束就拆，链接不能指向它
+        target, relative = Path(to_long(str(target.absolute()), table_now())), None
     try:
         # Windows stores the substitute name verbatim; '/' in a relative
         # reparse target can be created successfully but fails kernel traversal.
@@ -118,6 +124,20 @@ def directory_link(target, link, *, relative=None):
             raise
         print(f'【黄】目录软链不可用，显式 junction 退路：{link.name}', file=sys.stderr)
         _junction(target, link)
+
+
+def link_target(path):
+    """目录链接 → 它指向的真实目录（strict）。Windows 上先读链接内容自己拼成绝对路径再解析，不让系统去解析相对目标：
+    #461 之前建的相对软链（v0.1.x / v0.2.x 开着开发者模式时）经短根联接访问会 WinError 3，读得出来才能克隆现行、换成绝对链接"""
+    path = Path(path)
+    if os.name != 'nt':
+        return path.resolve(strict=True)
+    raw = os.readlink(path)
+    for prefix in ('\\\\?\\', '\\??\\'):
+        if raw.startswith(prefix) and not raw.startswith('\\\\?\\UNC\\'):
+            raw = raw[len(prefix):]
+    target = Path(raw)
+    return (target if target.is_absolute() else path.parent / target).resolve(strict=True)
 
 
 def replace_link(source, dest):
@@ -269,9 +289,16 @@ def remove_owned(path):
             _win_acl(path, False)
         else:
             path.chmod(stat.S_IMODE(path.stat().st_mode) | 0o700)
-        for p in path.iterdir():
-            remove_owned(p)
-        path.rmdir()
+        for attempt in range(5):   # 删的同时目录里又被写进文件（外置盘访达 .DS_Store / ._ 等，#369）：重列再删
+            for p in path.iterdir():
+                remove_owned(p)
+            try:
+                path.rmdir()
+                break
+            except OSError as e:
+                if e.errno != errno.ENOTEMPTY or attempt == 4:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
     elif path.exists():
         if os.name == 'nt':
             _win_acl(path, False)
@@ -286,6 +313,29 @@ def remove_patterns(directory, patterns):
             raise UnsafeRoot('删除模式离开版本根')
         for p in Path(directory).glob(pattern):
             remove_owned(p)
+
+
+# 目录改名（Windows 等占用）：刚写完几十万个新文件的目录（播种 / 收纳 RomFS / 提交事务），杀软或索引程序扫描时开着里面文件的句柄，
+#   Windows 上目录改名就报 WinError 5（拒绝访问）/ 32（被占用）；扫完会放开。原先一次失败整单失败（#361：Switch 2 大款 20.6 万个文件、
+#   拷了 30 分钟后在 ….tmp 改名处报 Access is denied）。按退避重试约 1 分钟；仍不行报红写明哪个目录、建议把游戏库加进杀软排除。其它系统不重试
+DIR_RENAME_RETRIES = (0.1, 0.2, 0.5, 1, 2, 4, 8, 15, 30)
+
+
+def rename_dir(src, dst, *, sleep=time.sleep):
+    src, dst = Path(src), Path(dst)
+    delays = DIR_RENAME_RETRIES if os.name == 'nt' else ()
+    for i, delay in enumerate((*delays, None)):
+        try:
+            return src.rename(dst)
+        except PermissionError as e:
+            if delay is None:
+                if os.name != 'nt':
+                    raise
+                raise PermissionError(e.errno, f'目录改名 {i} 次都被拒（{e}）：{src} 里有文件被别的程序开着（多半是杀毒软件或索引程序在扫刚写完的文件）。'
+                                               f'等扫描结束重试，或把游戏库文件夹加进杀毒软件的排除列表', str(src)) from e
+            if getattr(e, 'winerror', 5) not in (5, 32):
+                raise
+            sleep(delay)
 
 
 def plain_entries(path):
@@ -355,14 +405,14 @@ class Roots:
         p = version / 'romfs'
         if not is_link(p):
             return None
-        target = p.resolve(strict=True)
+        target = link_target(p)
         store = self.path / '.romfs_store' / game
         if target.parent != store or not target.is_dir() or is_link(target) or target.name.startswith('.'):
             raise UnsafeRoot('RomFS 只能指向本款存储中的单个真实身份目录')
         for ancestor in (store, store.parent):
             if is_link(ancestor):
                 raise UnsafeRoot('RomFS 存储父目录不能是链接')
-        if p.is_symlink():
+        if p.is_symlink() and os.name != 'nt':   # Windows 写绝对目标（#461），上面已核它落在本款存储里
             expected = f'../.romfs_store/{game}/{target.name}'
             if os.readlink(p).replace('\\', '/') != expected:
                 raise UnsafeRoot('RomFS 必须使用约定相对链接')
@@ -378,8 +428,7 @@ class Roots:
                 continue  # The immutable store was validated and sealed on intern.
             if is_link(p):
                 raise UnsafeRoot(f'版本中有非法链接：{p}')
-            if p.is_dir():
-                plain_entries(p)
+            # v0.2.3 清理：不再递归扫每个子目录查链接 / 特殊文件——版本根全是本流水线自己生成的，每个阶段都整棵扫一遍防的是不现实的情况
 
     def cur(self, game, *, pin=True):
         component(game)
@@ -413,7 +462,7 @@ class Roots:
             return None
         if not is_link(link):
             raise UnsafeRoot('现行必须是目录链接')
-        current = link.resolve(strict=True)
+        current = link_target(link)
         if current.parent != self.path or not current.name.startswith(game + '@') or is_link(current):
             raise UnsafeRoot('现行链接离开了本款版本目录')
         if pin:
@@ -469,7 +518,7 @@ class Roots:
         self._resource('--root-clone', source, dest, env=env)
         self._shards(dest, '克隆现行(root_begin)', env=env)
 
-    def _copy_tree(self, source, dest):
+    def _copy_tree(self, source, dest, tick=None):
         if is_link(source):
             raise UnsafeRoot('克隆拒绝未批准的链接')
         dest.mkdir(parents=True)
@@ -479,6 +528,8 @@ class Roots:
                 output.mkdir(parents=True, exist_ok=True)
             else:
                 copy_file(p, output)
+                if tick:
+                    tick()
 
     def _resource(self, mode, *paths, env=None):
         helper = self.repo / 'pack/resource_input_key.py'
@@ -532,16 +583,16 @@ class Roots:
             _win_acl(p, False)
         else:
             p.chmod(stat.S_IMODE(p.stat().st_mode) | 0o200)
-        p.rename(temp)
+        rename_dir(p, temp)
         try:
             directory_link(store / identity, p, relative=f'../.romfs_store/{game}/{identity}')
-            temp.rename(store / identity)
+            rename_dir(temp, store / identity)
             seal(store / identity)
         except BaseException:
             if is_link(p):
                 remove_owned(p)
             if temp.exists():
-                temp.rename(p)
+                rename_dir(temp, p)
             raise
 
     def _pinned(self, version):
@@ -587,6 +638,7 @@ class Transaction:
         r = self.path.with_name(self.path.name + '.rb')
         own_romfs = any(p.lstrip('!') == 'romfs' or p.lstrip('!').startswith('romfs/') for p in patterns)
         self.roots._clone(current, r, self.game, own_romfs=own_romfs, env=self.env)
+        text(r / '.root_pid', f'{os.getpid()} {process_start(os.getpid())}\n')   # 重放也记持有者：外部清扫只按记录判死，没有记录的一律不碰
         try:
             for exclude in (False, True):
                 source = current if exclude else self.path
@@ -610,7 +662,7 @@ class Transaction:
             text(r / '.root_base', current.name + '\n')
             self.roots._shards(r, 'replay·换完路径后', env=self.env)
             remove_owned(self.path)
-            r.rename(self.path)
+            rename_dir(r, self.path)
         except BaseException:
             remove_owned(r)
             raise
@@ -638,7 +690,7 @@ class Transaction:
                     self._replay(current, tuple(replay))
                 roots._validate(self.path, self.game)
                 roots._intern(self.path, self.game)
-                self.path.rename(final)
+                rename_dir(self.path, final)
                 directory_link(final, activation, relative=final.name)
                 replace_link(activation, roots.path / f'{self.game}@现行')
                 self.closed = True

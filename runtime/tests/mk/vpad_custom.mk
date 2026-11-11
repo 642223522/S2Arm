@@ -19,3 +19,21 @@ native-test-vpad_shell:
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -framework Foundation -framework CoreGraphics -o $(BUILD)/tests/t_vpad_shell runtime/tests/t_vpad_shell.m ios/vpad_shell.m ios/vpad_layout.m
 	$(BUILD)/tests/t_vpad_shell
 TEST_TARGETS += native-test-vpad_shell
+
+# 2D 布局（#268）：内置方案几何、0 根摇杆可存、八方向十字键判定
+NATIVE_TEST_OWN += vpad_2d
+.PHONY: native-test-vpad_2d
+native-test-vpad_2d:
+	@mkdir -p $(BUILD)/tests
+	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -framework Foundation -framework CoreGraphics -o $(BUILD)/tests/t_vpad_2d runtime/tests/t_vpad_2d.m ios/vpad_layout.m
+	$(BUILD)/tests/t_vpad_2d
+TEST_TARGETS += native-test-vpad_2d
+
+# 金手指文本解析（ios/cheats_parse.m，#458）：只依赖 Foundation，Mac 上直接编直接跑
+NATIVE_TEST_OWN += cheats_parse
+.PHONY: native-test-cheats_parse
+native-test-cheats_parse:
+	@mkdir -p $(BUILD)/tests
+	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -framework Foundation -o $(BUILD)/tests/t_cheats_parse runtime/tests/t_cheats_parse.m ios/cheats_parse.m
+	$(BUILD)/tests/t_cheats_parse
+TEST_TARGETS += native-test-cheats_parse

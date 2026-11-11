@@ -52,7 +52,7 @@ class EarlyInstall:
     def __init__(self, c, gid, env, out):
         import install as inst
         self.c, self.gid, self.inst, self.env = c, gid, inst, env
-        self.team = inst.pick_team(inst.xcode_teams(env), c.r.get("teamId"))
+        self.team = inst.devcert.team(c) or inst.pick_team(inst.xcode_teams(env), c.r.get("teamId"))
         self.dev = inst.phone(c)
         self.udid = inst.udid_of(c, self.dev["id"])
         self.bid = inst.container_bundle_id(self.team["id"])

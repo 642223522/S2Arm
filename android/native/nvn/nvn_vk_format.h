@@ -16,6 +16,20 @@ int nvn_vk_format_is_compressed(VkFormat f);
 uint64_t nvn_vk_format_compressed_image_bytes(uint32_t nvn_format, uint32_t w, uint32_t h);
 int nvn_vk_format_has_stencil(VkFormat f);
 VkFormat nvn_vk_format(uint32_t nvn_format);
+// #398 深度格式替换：设备的 D24_UNORM_S8_UINT / X8_D24_UNORM_PACK32 没有 DEPTH_STENCIL_ATTACHMENT 时，
+// NVN DEPTH24_STENCIL8 / DEPTH24 映射成 D32_SFLOAT_S8_UINT / D32_SFLOAT（同 Mac 后端「D24 换 D32」：
+// 作渲染目标是精度提升、行为等价；按字节上传 / 回读要换算深度面）。
+enum { NVN_VK_DEPTH_SUBST_D24S8 = 1u << 0, NVN_VK_DEPTH_SUBST_X8D24 = 1u << 1 };
+// 纯判定（可单测）：各参数是对应格式的 optimalTilingFeatures。原格式缺深度附件、替换格式有，才换。
+uint32_t nvn_vk_depth_subst_pick(VkFormatFeatureFlags d24s8, VkFormatFeatureFlags d32s8,
+                                 VkFormatFeatureFlags x8d24, VkFormatFeatureFlags d32);
+// 建设备时设一次（vk_device.c）；影响之后所有 nvn_vk_format / nvn_vk_tex_format 的结果。
+void nvn_vk_format_set_depth_subst(uint32_t mask);
+uint32_t nvn_vk_format_depth_subst(void);
+int nvn_vk_format_substituted(uint32_t nvn_format);   // 1 = 本设备上这个 NVN 格式被换了存储
+// 深度面字节换算（n 个 4 字节纹素，原地）：D24 深度面（低 24 位 UNORM）↔ D32_SFLOAT 深度面。
+void nvn_vk_depth24_to_f32(void *texels, size_t n);
+void nvn_vk_depth_f32_to_24(void *texels, size_t n);
 VkFormat nvn_vk_tex_format(uint32_t nvn_format);   // 贴图专用：需要上传展开时返回展开目标格式
 // CPU 顶点解码：设备不支持顶点获取（bufferFeatures 无 VERTEX_BUFFER_BIT）的格式，
 // 把一个顶点的属性字节解成 float4，经 R32G32B32A32_SFLOAT 顶点缓冲进 shader。

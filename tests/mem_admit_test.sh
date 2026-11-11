@@ -17,6 +17,7 @@
 #   ⑨ 核数：内存够、核不够（账内核数 + 本作业 > 上限）→ 排队，原因行写「核」；占核的结束后放行
 #   ⑩ 夹具随测试退出：测试目录被删（收尾 trap 的 rm -rf）后，占内存夹具与它的 mem_admit 3 秒内都退出
 #     （11-04 门禁超时杀掉本单测，trap 删了目录、只杀到 mem_admit；夹具死等已删目录里的 .go，在 gate-host 上挂了 3 小时）
+#   ⑩b 测试进程被 KILL（收尾 trap 不跑、目录还在）→ 夹具 3 秒内也退出（11-11 本机两个夹具空转 41 小时）
 #   ⑪ dsh_batch.py build 直接调用也过准入：账本出现 dsh/<键> 的 use 行、核数 = -j，且只有这一行（不重复记账）
 #   ④ 负控：S2A_MEM_ADMIT=0（去掉准入）同样三个申请，第 3 个不排队直接起 → 用例 ① 的「第 3 个被挡」在此红，证明用例 ① 测的是准入本身
 set -u; unset J S2A_CPU_BAKE S2A_MEM_KEY; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'kill $(jobs -p) 2> /dev/null; rm -rf "$T"' EXIT; bad=0
@@ -25,8 +26,9 @@ waitf() { local i; for i in $(seq 1 "${3:-150}"); do [ -e "$1" ] && return 0; sl
 waitg() { local i; for i in $(seq 1 "${3:-150}"); do grep -q "$2" "$1" 2> /dev/null && return 0; sleep 0.1; done; return 1; }
 printf 'dsh\ta\t4\t估\ndsh\tb\t4\t估\ndsh\tc\t4\t估\nmem\tbig\t0.3\t估\nappbuild\tp\t4\t估\ndsh\td\t2\t估\n' > "$T/seed.tsv"
 export S2A_MEM_TOTAL_GB=10 S2A_MEM_SEED=$T/seed.tsv S2A_MEM_POLL=0.2 S2A_MEM_SAMPLE_S=0.2 S2A_MEM_SAY_S=1
-# 一道「占着内存直到放行文件出现」的命令：起了就写 <D>/<名>.in；目录没了（测试收尾删了 ${T}）就退出，测试被杀也不留孤儿
-hold() { local D=$1 N=$2; bash "$H/tools/mem_admit.sh" dsh "$N" -- bash -c 'touch "$1/$2.in"; while [ ! -e "$1/$2.go" ] && [ -d "$1" ]; do sleep 0.1; done' _ "$D" "$N" > "$D/$N.out" 2>&1 & }
+# 一道「占着内存直到放行文件出现」的命令：起了就写 <D>/<名>.in；目录没了（测试收尾删了 ${T}）或测试进程没了就退出（11-11：测试被 KILL 时收尾 trap 不跑、目录还在，
+#   两个夹具空转 41 小时、每秒各起 10 个 sleep；见 ⑩b）
+hold() { local D=$1 N=$2; bash "$H/tools/mem_admit.sh" dsh "$N" -- bash -c 'touch "$1/$2.in"; while [ ! -e "$1/$2.go" ] && [ -d "$1" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$D" "$N" > "$D/$N.out" 2>&1 & }
 
 A=$T/on; mkdir -p "$A"; export S2A_MEM_DIR=$A/mem S2A_MEM_LOCK=$A/mem.flock
 hold "$A" a; waitf "$A/a.in"; hold "$A" b; waitf "$A/b.in"
@@ -42,14 +44,17 @@ ck "⑰ 放行后 <进度文件>.wait 删掉（心跳不再报在等）" '[ ! -e
 touch "$A/b.go" "$A/c.go"; wait
 
 # ㉑ 优先类别（11-07 维护者：启动器最高优先，App 打包排队等 CPU）：上限 10，a / b 各占 4；优先类 appbuild/p 要 4 先排队，之后普通 dsh/d 要 2
-#   （8 + 2 ≤ 10 本来放得进）→ d 不插空、在等；a 结束后 p 先放行，b 结束后 d 才放行。期望手算：p 起在 d 之前
+#   （8 + 2 ≤ 10 本来放得进）→ d 不插空、在等；a 结束后 p 先放行，d 在它之后放行（b 4 + p 4 + d 2 = 10）。期望手算：p 起在 d 之前
 P=$T/prio; mkdir -p "$P"; export S2A_MEM_DIR=$P/mem S2A_MEM_LOCK=$P/mem.flock
-holdc() { local D=$1 C=$2 N=$3; bash "$H/tools/mem_admit.sh" "$C" "$N" -- bash -c 'touch "$1/$2.in"; while [ ! -e "$1/$2.go" ] && [ -d "$1" ]; do sleep 0.1; done' _ "$D" "$N" > "$D/$N.out" 2>&1 & }
+holdc() { local D=$1 C=$2 N=$3; bash "$H/tools/mem_admit.sh" "$C" "$N" -- bash -c 'touch "$1/$2.in"; while [ ! -e "$1/$2.go" ] && [ -d "$1" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$D" "$N" > "$D/$N.out" 2>&1 & }
 holdc "$P" dsh a; waitf "$P/a.in"; holdc "$P" dsh b; waitf "$P/b.in"
 holdc "$P" appbuild p; waitg "$P/mem/admit.log" '【排队】mem_admit appbuild/p'; holdc "$P" dsh d; waitg "$P/mem/admit.log" '【排队】mem_admit dsh/d'; sleep 1
 ck "㉑ 优先类 appbuild/p 在等时，放得进的普通 dsh/d 不插空（d 没起）、排队行写明让优先类" '[ ! -e "$P/d.in" ] && grep "【排队】mem_admit dsh/d" "$P/mem/admit.log" | grep -q "优先类别 appbuild/p"'
 touch "$P/a.go"; waitf "$P/p.in" 300
-ck "㉑ a 结束后优先类 p 先放行、d 仍在等" '[ -e "$P/p.in" ] && [ ! -e "$P/d.in" ]'
+# p 放行后账内 4 + 4 = 8，d 要 2 → 8 + 2 ≤ 10 本来就放得进：d 可能紧跟着放行（原先断言「d 仍在等」靠 d 下一次轮询前抢先检查，负载高时偶发红）。
+#   判先后看账本日志的放行行：p 的在前，d 的在后或还没有
+lp=$(grep -n "放行 appbuild/p" "$P/mem/admit.log" | head -1 | cut -d: -f1); ld=$(grep -n "放行 dsh/d" "$P/mem/admit.log" | head -1 | cut -d: -f1)
+ck "㉑ a 结束后优先类 p 先放行（admit.log 里 p 的放行行在 d 之前）" '[ -e "$P/p.in" ] && [ -n "$lp" ] && { [ -z "$ld" ] || [ "$lp" -lt "$ld" ]; }'
 touch "$P/b.go"; waitf "$P/d.in" 300
 ck "㉑ b 结束后 d 放行" '[ -e "$P/d.in" ]'
 touch "$P/p.go" "$P/d.go"; wait
@@ -110,6 +115,18 @@ ck "⑭ 排满的 big（8）在空闲 + 可回收 5 GB 下放不进：不占防�
 touch "$P/h.go" "$P/small2.go"; waitf "$P/big.in" 100
 ck "⑭ h、small2 结束后 big 照常放行（降级只是不锁全机，不是丢票）" '[ -e "$P/big.in" ]'
 touch "$P/big.go"; wait
+# ㉒ #235：账本路径带空格（玩家 Mac 的账本在 ~/Library/Application Support 下）+ 一张发车时刻不是数字的坏票（别的版本写的 / 写了一半）：
+#   同 ⑧ 的布局，期望防饿死照常生效（big 排满后 small2 不插空）、坏票被跳过、不报 unbound variable。
+#   旧码：for f in $(ls …) 把每张票的路径按空格切成三段，一张票也读不到 → small2 插空起（本项红）
+S="$T/sp/Application Support"; mkdir -p "$S/mem"; export S2A_MEM_DIR=$S/mem S2A_MEM_LOCK=$S/mem.flock S2A_MEM_SEED=$Q/seed.tsv S2A_MEM_STARVE_S=600 S2A_MEM_AVAIL_GB=100
+printf '%s\t1\tdsh\tbad\ton\t0\n' $$ > "$S/mem/q.1000.$$"   # 本测试进程持有（不被当死票清掉），第 5 列是文字
+hold "$S" h; waitf "$S/h.in"; hold "$S" big; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/big'
+export S2A_MEM_STARVE_S=1; sleep 1.5
+hold "$S" small2; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 1
+ck "㉒ 路径带空格 + 坏票：big 排满 1 秒，small2 不插空（排队行写明给 big 预留）" '[ ! -e "$S/small2.in" ] && grep "【排队】mem_admit dsh/small2" "$S/mem/admit.log" | grep -q "dsh/big.*给它预留"'
+touch "$S/h.go"; waitf "$S/big.in" 100; waitf "$S/small2.in" 100
+ck "㉒ h 结束后 big、small2 依次放行；全程没有 unbound variable" '[ -e "$S/big.in" ] && [ -e "$S/small2.in" ] && ! grep -q "unbound variable" "$S"/*.out'
+touch "$S/big.go" "$S/small2.go"; rm -f "$S/mem/q.1000.$$"; wait
 unset S2A_MEM_STARVE_S S2A_MEM_AVAIL_GB; export S2A_MEM_SEED=$T/seed.tsv
 
 # ⑮ 估值超过物理内存：物理内存 8 GiB（S2A_MEM_PHYS_BYTES），估值表 dsh/huge 20 → 【红】、退出 125、命令没起、没留排队票
@@ -136,8 +153,8 @@ ck "⑯ 显式给了 S2A_MEM_DIR 照常放行（退出 ${grc}）" '[ "$grc" = 0 
 # ⑨ 核数：上限 4 核、内存 10 GB。h（1 GB、3 核）占着；x（1 GB、2 核）内存够（2 ≤ 10）、核不够（3 + 2 > 4）→ 排队；h 结束后放行
 K=$T/core; mkdir -p "$K/mem"; export S2A_MEM_DIR=$K/mem S2A_MEM_LOCK=$K/mem.flock S2A_MEM_SEED=$K/seed.tsv S2A_MEM_CORES_MAX=4
 printf 'dsh\th\t1\t估\ndsh\tx\t1\t估\n' > "$K/seed.tsv"
-bash "$H/tools/mem_admit.sh" dsh h --cores 3 -- bash -c 'touch "$1/h.in"; while [ ! -e "$1/h.go" ]; do sleep 0.1; done' _ "$K" > /dev/null 2>&1 & waitf "$K/h.in"
-bash "$H/tools/mem_admit.sh" dsh x --cores 2 -- bash -c 'touch "$1/x.in"; while [ ! -e "$1/x.go" ]; do sleep 0.1; done' _ "$K" > /dev/null 2>&1 &
+bash "$H/tools/mem_admit.sh" dsh h --cores 3 -- bash -c 'touch "$1/h.in"; while [ ! -e "$1/h.go" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$K" > /dev/null 2>&1 & waitf "$K/h.in"
+bash "$H/tools/mem_admit.sh" dsh x --cores 2 -- bash -c 'touch "$1/x.in"; while [ ! -e "$1/x.go" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$K" > /dev/null 2>&1 &
 waitg "$K/mem/admit.log" '【排队】mem_admit dsh/x'; sleep 1
 ck "⑨ 内存够（1 + 1 ≤ 10）但核不够（3 + 2 > 4）：x 没起，排队行写明差 1 核" '[ ! -e "$K/x.in" ] && grep "【排队】mem_admit dsh/x" "$K/mem/admit.log" | grep -q "差 1 核"'
 touch "$K/h.go"; waitf "$K/x.in" 300
@@ -171,4 +188,9 @@ R=$T/reap; mkdir -p "$R"; export S2A_MEM_DIR=$T/reap_mem S2A_MEM_LOCK=$T/reap_me
 hold "$R" x; hp=$!; waitf "$R/x.in"; fp=$(pgrep -f "^bash -c touch .* $R x$" | head -1)
 rm -rf "$R"; for i in $(seq 1 30); do kill -0 "$hp" 2> /dev/null || { [ -n "$fp" ] && kill -0 "$fp" 2> /dev/null; } || break; sleep 0.1; done
 ck "⑩ 测试目录删掉后夹具（pid ${fp:-没找到}）与 mem_admit（pid ${hp}）3 秒内都退出" '[ -n "$fp" ] && ! kill -0 "$fp" 2> /dev/null && ! kill -0 "$hp" 2> /dev/null'
+# ⑩b 测试进程被 KILL：另起一个 bash 当「测试」，在里面起夹具，再 KILL 它（trap 不跑、目录留着）
+R=$T/reapk; mkdir -p "$R"
+bash -c "H='$H'; $(declare -f hold); hold '$R' y; sleep 60" & sp=$!; waitf "$R/y.in"; fp=$(pgrep -f "^bash -c touch .* $R y$" | head -1)
+kill -KILL $sp; for i in $(seq 1 30); do { [ -n "$fp" ] && kill -0 "$fp" 2> /dev/null; } || break; sleep 0.1; done
+ck "⑩b 测试进程被 KILL、目录还在 → 夹具（pid ${fp:-没找到}）3 秒内退出" '[ -n "$fp" ] && [ -d "$R" ] && ! kill -0 "$fp" 2> /dev/null'
 [ $bad = 0 ] && echo "✓ mem_admit_test：全部通过" || { echo "✗ mem_admit_test：有不通"; exit 1; }

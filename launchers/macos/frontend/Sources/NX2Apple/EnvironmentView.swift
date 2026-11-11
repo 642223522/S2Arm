@@ -42,6 +42,7 @@ struct EnvironmentView: View {
                                 .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
                         }
                     }
+                    InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
                     let failing = model.checks.filter { !$0.ok }
                     if !failing.isEmpty || model.environmentError != nil {
                         CopyReportButton(model: model, gameID: nil, operations: nil,
@@ -61,7 +62,7 @@ struct EnvironmentView: View {
                         CardRow(loc.t("s2arm.env.cloud.title"), detail: model.cloudFolder.map { $0.path + "\n" + loc.t("s2arm.env.cloud.on") } ?? loc.t("s2arm.env.cloud.off")) {
                             HStack(spacing: 8) {
                                 if model.cloudFolder != nil {
-                                    Button(loc.t("s2arm.env.cloud.turnOff")) { try? model.setCloudFolder(nil) }
+                                    Button(loc.t("s2arm.env.cloud.turnOff")) { do { try model.setCloudFolder(nil) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) } }
                                         .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.off")
                                 }
                                 Button(loc.t("s2arm.env.cloud.choose")) { chooseCloudFolder() }
@@ -89,6 +90,10 @@ struct EnvironmentView: View {
                             }
                         }
                     }
+                    // 版本号（三端同号：Windows 启动器、iPhone 上的 S2Arm 显示同一个，装机时写进 iPhone 那份）
+                    Text(verbatim: "S2Arm " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"))
+                        .font(.manrope(12)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .center)
+                        .accessibilityIdentifier("env.version")
                 }
                 .padding(.horizontal, 30).padding(.bottom, 24)
             }
@@ -139,7 +144,7 @@ struct EnvironmentView: View {
         let drive = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
         if FileManager.default.fileExists(atPath: drive.path) { panel.directoryURL = drive }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? model.setCloudFolder(url)
+        do { try model.setCloudFolder(url) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) }   // 剃刀 M13：失败报原因，不再停在旧值像没反应
     }
 
     private func chooseLibrary() {
@@ -151,7 +156,9 @@ struct EnvironmentView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         // 有游戏、选的是空文件夹才问；已有游戏库或含旧产物的文件夹由作业层直接打开 / 认领
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
-        guard !model.games.isEmpty, contents.allSatisfy({ $0 == ".DS_Store" }) else { model.changeLibrary(to: url); return }
+        // 系统自动生成的文件不算数：同作业层 layout.OS_JUNK / OS_JUNK_PREFIX（三端一份，tests/os_junk_sync_test.sh 核一致）
+        let osJunk: Set<String> = [".DS_Store", "desktop.ini", "Thumbs.db"]
+        guard !model.games.isEmpty, contents.allSatisfy({ osJunk.contains($0) || $0.hasPrefix("._") }) else { model.changeLibrary(to: url); return }
         let alert = NSAlert()
         alert.messageText = loc.t("s2arm.library.moveTitle")
         alert.informativeText = loc.t("s2arm.library.moveBody")

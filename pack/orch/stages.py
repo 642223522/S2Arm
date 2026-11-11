@@ -112,7 +112,7 @@ def run(args, *, env=None, log=None, allowed=(0,), timeout=600):
     elif err:
         sys.stderr.write(err.decode('utf-8', errors='replace'))
     if rc not in allowed:
-        # 日志写在本阶段事务目录里，阶段失败事务整个丢弃（roots.py abort），「详见 <日志>」事后找不到（11-06 Windows 出包机马力欧高尔夫只剩一句「详见 nro_to_nso.log」）：
+        # 日志写在本阶段事务目录里，阶段失败事务整个丢弃（roots.py abort），「详见 <日志>」事后找不到（11-06 Windows 出包机0100C9C00E25C000只剩一句「详见 nro_to_nso.log」）：
         #   把工具输出最后几行带进报红，light.log / 红日志包里就有原因
         tail = [ln.strip() for ln in (out + err).decode('utf-8', errors='replace').splitlines() if ln.strip()][-4:]
         raise StageError(f'{Path(command[0]).name} 退出 {rc}；{Path(log).name if log else "stderr"} 末尾：' + (' / '.join(tail)[-600:] or '（无输出）'),
@@ -263,6 +263,29 @@ def community(env):
     return dirs, selection, cv
 
 
+def community_selection(env, pid, bid):
+    """社区补丁这一款打不打、打哪些（苹果改写阶段 rewrite_plan 与安卓 android/tools/make_pack.py 共用这一份，#48 D2）：
+    (索引目录, 缺省开的编号, 打不打)。缺省开 = graphics/cpatch/verified.tsv 本款「程序号 + main 构建号」的行 + S2A_CPATCH + 启动器玩家选择（同 stage_rewrite.sh CSEL）；
+    打 = S2A_COMMUNITY_PATCHES=1（10-30 维护者：玩家包缺省不带上游补丁字节）且有索引目录且 S2A_CPATCH 不是 none"""
+    dirs, selection, cv = community(env)
+    verified_selection = ','.join(line.split('\t')[2] for line in read(cv).splitlines()
+                                  if not line.startswith('#') and len(line.split('\t')) >= 3
+                                  and line.split('\t')[0].upper() == pid and line.split('\t')[1].lower() == bid)
+    if not selection:
+        selection = verified_selection
+    elif verified_selection and selection not in ('all', 'none'):
+        # Same CSEL rule as stage_rewrite.sh: an explicit list augments the
+        # verified defaults; all/none remain complete selections.
+        selection = verified_selection + ',' + selection
+    if env.get('S2A_COMMUNITY_SELECT'):
+        selection_json = json.loads(Path(env['S2A_COMMUNITY_SELECT']).read_text(encoding='utf-8'))
+        extra = ','.join(sorted(k for k, v in (selection_json.get('enabled') or {}).items() if v is True and k != 'ws:verified'))
+        if extra:
+            selection = selection + ',' + extra if selection and selection != 'none' else extra
+    on = env.get('S2A_COMMUNITY_PATCHES', '0') == '1' and bool(dirs) and env.get('S2A_CPATCH') != 'none'
+    return dirs, selection, on
+
+
 def rewrite_plan(game, current, deps):
     env = deps.env
     main, npdm = current / 'exefs/main', current / 'exefs/main.npdm'
@@ -279,24 +302,11 @@ def rewrite_plan(game, current, deps):
                      and len(line.split('\t')) >= 4 and line.split('\t')[0].upper() == pid
                      and line.split('\t')[1].lower() == bid and line.split('\t')[3].lower() == 'apple'), '')   # F7 #1574：苹果路线只取 apple 行
     fps = REPO / f'runtime/fps/{bid[:16]}.tsv'
-    dirs, selection, cv = community(env)
-    verified_selection = ','.join(line.split('\t')[2] for line in read(cv).splitlines()
-                                  if not line.startswith('#') and len(line.split('\t')) >= 3
-                                  and line.split('\t')[0].upper() == pid and line.split('\t')[1].lower() == bid)
-    if not selection:
-        selection = verified_selection
-    elif verified_selection and selection not in ('all', 'none'):
-        # Same CSEL rule as stage_rewrite.sh: an explicit list augments the
-        # verified defaults; all/none remain complete selections.
-        selection = verified_selection + ',' + selection
+    dirs, selection, on = community_selection(env, pid, bid)
     if env.get('S2A_COMMUNITY_SELECT'):
-        selection_json = json.loads(Path(env['S2A_COMMUNITY_SELECT']).read_text(encoding='utf-8'))
-        extra = ','.join(sorted(k for k, v in (selection_json.get('enabled') or {}).items() if v is True and k != 'ws:verified'))
-        if extra:
-            selection = selection + ',' + extra if selection and selection != 'none' else extra
         deps.record(env['S2A_COMMUNITY_SELECT'])
     ck = ''
-    if env.get('S2A_COMMUNITY_PATCHES', '0') == '1' and dirs and env.get('S2A_CPATCH') != 'none':
+    if on:
         b = (selection + '\n').encode() + (REPO / 'pack/cpatch.py').read_bytes()
         b += b''.join((d / 'INDEX.tsv').read_bytes() for d in dirs if (d / 'INDEX.tsv').is_file())
         ck = ' cpatch=' + digest(b)
@@ -779,7 +789,7 @@ class Stages:
             return self._result('uilayout', start, current, key, skipped=True)
         # 覆盖层（11-06 出包速度线，维护者批）：现行 RomFS 不动（仍联到存储里那份不可变的身份），改动的布局文件只写进
         #   <版本>/ui_overlay/romfs/<路径>，读方（RomFS 索引、资源包 pack/pkg_srcs.py）按「覆盖层优先」叠上去。
-        #   原先为改几十个文件独占克隆整份 RomFS、提交时整份封存、修剪时再整份解封删除（王国之泪 30.5 万个文件，Windows 出包机 uilayout 1283 秒）。
+        #   原先为改几十个文件独占克隆整份 RomFS、提交时整份封存、修剪时再整份解封删除（0100F2C0115B6000 30.5 万个文件，Windows 出包机 uilayout 1283 秒）。
         tx = self.roots.begin(game, self.roots.tag(game, 'ui-w' + str(width) + '-' + key[:8]))
         try:
             base = tx.path / 'romfs'
@@ -817,8 +827,7 @@ class Stages:
         if selected is not None:
             if is_link(selected) or not selected.is_dir() or not list(selected.glob('*.bfttf')):
                 raise StageError('共享字体目录缺失/非法；配置S2A_FONTS', 75)
-            plain_entries(selected)
-            return selected
+            return selected   # v0.2.3 清理：玩家选的字体目录只认 *.bfttf，里面别的条目（软链、.DS_Store）不管、不拒
         run_root = Path(os.environ.get('S2A_RUN_ROOT', Path.home() / '.s2arm/run'))
         dest = Path(os.environ.get('S2A_OPENFONTS_DIR', run_root / 's2arm/openfonts'))
         generator = REPO / 'pack/fonts/make_open_fonts.py'
@@ -827,8 +836,7 @@ class Stages:
             return (dest.is_dir() and not is_link(dest)
                     and read(dest / '.generator.sha256') == stamp and len(list(dest.glob('*.bfttf'))) == 7)
         if ready():
-            plain_entries(dest)
-            return dest
+            return dest   # 自家生成的缓存：ready() 已核生成器指纹与 7 份字体，不再递归扫链接（v0.2.3 清理）
         if is_link(dest) or is_link(dest.parent):
             raise StageError('开源字体缓存路径不能是链接')
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1038,7 +1046,11 @@ class Stages:
 
     @staticmethod
     def _source_files():
-        directory = Path(os.environ.get('S2A_GAME_SRC', Path.home() / 'Downloads'))
+        # 只认调用方给的原件目录（Mac 出包与一键出包都设 S2A_GAME_SRC）。v0.2.3 清理：去掉没设时退回扫 ~/Downloads 的兜底——
+        #   10-26 扫 Downloads 弹出访问授权框（build.py 注释），玩家流程用不上它
+        if not os.environ.get('S2A_GAME_SRC'):
+            return []
+        directory = Path(os.environ['S2A_GAME_SRC'])
         if not directory.is_dir():
             return []
         found = []
@@ -1049,7 +1061,7 @@ class Stages:
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in ('$RECYCLE.BIN', 'System Volume Information')) if depth < 3 else []
             for name in names:
                 p = Path(parent) / name
-                if p.suffix.lower() in ('.xci', '.nsp', '.nsz', '.xcz') and p.is_file():
+                if p.suffix.lower() in ('.xci', '.nsp', '.nsz', '.xcz') and not name.startswith('._') and p.is_file():   # ._ = exFAT 上的访达附属文件
                     if '\n' in str(p) or '\t' in str(p):
                         raise StageError('原件路径不能含TAB/换行', 3)
                     found.append(p.absolute())

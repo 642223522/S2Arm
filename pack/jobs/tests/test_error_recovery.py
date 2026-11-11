@@ -187,11 +187,27 @@ raise SystemExit(main.main())
         self.assertEqual(library.requirement_errors(self.c, game)[0].code, "guest_isa_unsupported")
 
     def test_os_failures_use_errno_not_message_guessing(self):
-        for number, code in ((errno.ENOSPC, "disk_full"), (errno.EDQUOT, "disk_full"),
-                             (errno.EACCES, "permission_denied"), (errno.EROFS, "permission_denied"),
-                             (errno.ENOENT, "input_missing")):
+        for number, code in ((errno.ENOSPC, "disk_full"), (errno.EDQUOT, "disk_full")):
             with self.subTest(errno=number):
                 self.assertEqual(explain(OSError(number, "unrelated localized text")).code, code)
+        # 启动器剃刀 H8（11-11）：「原件不见了」「去系统设置授权」只给玩家侧路径。期望按路径手写：
+        #   原件下 ENOENT / EACCES → input_missing / permission_denied；游戏库下 EROFS → permission_denied；游戏库根整个不在 → input_missing；
+        #   私有目录（任务记录 / 日志）下 ENOENT / EACCES、不带路径的 → job_failed，原文与路径进 internal（旧代码一律归 input_missing / permission_denied）
+        src, lib, private = self.root / "h8-originals", self.root / "h8-lib", self.root / "h8-private"
+        src.mkdir(); lib.mkdir(); private.mkdir()
+        cases = ((errno.ENOENT, src / "game.nsp", "input_missing"), (errno.EACCES, src / "game.nsp", "permission_denied"),
+                 (errno.EROFS, lib / "games/x/build", "permission_denied"),
+                 (errno.ENOENT, private / "logs/t1-import.log", "job_failed"), (errno.EACCES, private / "jobs/t1.json", "job_failed"),
+                 (errno.ENOENT, None, "job_failed"))
+        for number, path, code in cases:
+            with self.subTest(errno=number, path=path):
+                error = OSError(number, "unrelated localized text", str(path)) if path else OSError(number, "unrelated localized text")
+                got = explain(error, sources=[src], library=lib)
+                self.assertEqual(got.code, code)
+                if code == "job_failed" and path:
+                    self.assertIn(str(path), got.internal)
+        self.assertEqual(explain(FileNotFoundError(errno.ENOENT, "x", str(lib / "catalog.json")), sources=[src], library=self.root / "unplugged").code,
+                         "input_missing")   # 游戏库根整个不在 = 外接盘没插
         self.assertEqual(explain(Failure("No space left on device")).code, "job_failed")
         self.assertEqual(explain(ValueError("Check keys")).code, "job_failed")
 
@@ -213,7 +229,8 @@ raise SystemExit(main.main())
         self.assertEqual(raised.exception.code, "tool_missing")
         with self.assertRaises(FileNotFoundError) as raised:
             self.c.run([sys.executable, "-c", "pass"], cwd=self.root / "missing-cwd")
-        self.assertEqual(explain(raised.exception).code, "input_missing")
+        # 启动器剃刀 H8：工作目录是 S2Arm 自己的，不是原件 → 本地任务失败（旧代码说「原件不见了、去接磁盘」）
+        self.assertEqual(explain(raised.exception, **self.c.failure_roots()).code, "job_failed")
         self.c.run([sys.executable, "-c", "print('fixed')"])
         self.assertIn("fixed", self.c.last_log.read_text())
 
@@ -226,7 +243,8 @@ raise SystemExit(main.main())
                 self.skipTest("Windows 无执行权限位")
             with self.assertRaises(PermissionError) as raised:
                 self.c.run([binary])
-            self.assertEqual(explain(raised.exception).code, "permission_denied")
+            # 启动器剃刀 H8：S2Arm 自己的工具没执行权限 → 本地任务失败，不指玩家去系统设置授权
+            self.assertEqual(explain(raised.exception, **self.c.failure_roots()).code, "job_failed")
         binary.chmod(0o700)
         self.c.run([sys.executable, binary] if os.name == "nt" else [binary])
 

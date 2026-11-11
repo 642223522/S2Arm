@@ -2,12 +2,13 @@
 // Copyright 2026 S2Arm contributors
 using S2A.Services;
 using System;
+using System.IO;
 using System.Text;
 
 namespace S2A.Services.Tests
 {
-    // 时之笛（Switch 2，0400486024DEC000）开局服务缺口第一批：nifm 101、pctl 1101、lm 3。
-    //   线上格式取自时之笛 sdk 客户端代理（CmifProxy 虚表 → 发送助手的头字、数据偏移、缓冲类型）；期望值按格式与真机语义手写，不跑被测实现：
+    // 0400486024DEC000（Switch 2，0400486024DEC000）开局服务缺口第一批：nifm 101、pctl 1101、lm 3。
+    //   线上格式取自0400486024DEC000 sdk 客户端代理（CmifProxy 虚表 → 发送助手的头字、数据偏移、缓冲类型）；期望值按格式与真机语义手写，不跑被测实现：
     //   - nifm IGeneralService 101（GetCurrentNetworkProfile V2）：域消息、无入数据、C 缓冲 0x1b4；本机无联网权限 = 没有当前网络 → 同命令 5 回 NoInternetConnection（2110-0300），不报红
     //   - pctl IParentalControlService 1101（CheckAgcPermissionUnderMinimumAge）：入数据 Uid 0x10、无 pid、回 1 字节；没设家长控制 → 0（游戏表里 0 = "success"），不报红
     //   - lm ILogger 3（DevNotify）：入数据 0x28 字节头、In|AutoSelect 缓冲放正文；回 0、不报红
@@ -46,19 +47,38 @@ namespace S2A.Services.Tests
             Check("nifm IGeneralService 101 GetCurrentNetworkProfile(V2)，离线：结果 NoInternetConnection、不报红", $"0x{noNet:X}、红 +0", $"0x{rc:X}、红 +{Red.Total - red0}");
         }
 
-        [SvcCase]
+        [SoloTest("--pctl-real-application", Booted = true)]
         private static void ZeldaPctl1101()
         {
-            uint sm = SmSession();
-            uint pf = Call(sm, Msg.Cmif(1, Name8("pctl"))).Move[0];
-            Msg cs = Msg.Cmif(0, Bytes(0UL)); cs.SendPid = true;
-            Reply r = Call(pf, cs);
-            uint svc = r.Move.Count == 1 ? r.Move[0] : 0;
+            string root = Path.Combine(Path.GetTempPath(), $"s2a_pctl_test_{Environment.ProcessId}");
+            try
+            {
+                // Application.Register also registers GPU memory and LibHac state.
+                // Run in a fresh host, independently of optional game registration in Run().
+                WriteApplicationFixture(root);
+                Application.Register(Host.Device, root);
+                bool registered = Host.Device.Processes.TryGetProcess(Native.ProcessId(), out var process);
+                Check("pctl 前提：真实应用登记的 PID / ProgramId", $"0x51 / 0x{HomebrewFixtureProgramId:X}",
+                    registered ? $"0x{process.ProcessId:X} / 0x{process.ProgramId:X}" : "进程元数据未登记");
 
-            long red0 = Red.Total;
-            Reply a = Call(svc, Msg.Cmif(1101, Bytes(0x1122334455667788UL, 0x99AABBCCDDEEFF00UL)));
-            byte status = a.Result == 0 ? a.Data[0] : (byte)0xFF;
-            Check("pctl 1101 CheckAgcPermissionUnderMinimumAge，没设家长控制：结果 0、状态 0、不报红", "0x0、0、红 +0", $"0x{a.Result:X}、{status}、红 +{Red.Total - red0}");
+                uint sm = SmSession();
+                uint pf = Call(sm, Msg.Cmif(1, Name8("pctl"))).Move[0];
+                Msg cs = Msg.Cmif(0, Bytes(0UL)); cs.SendPid = true;
+                Reply r = Call(pf, cs);
+                uint svc = r.Move.Count == 1 ? r.Move[0] : 0;
+
+                long red0 = Red.Total;
+                Reply a = Call(svc, Msg.Cmif(1101, Bytes(0x1122334455667788UL, 0x99AABBCCDDEEFF00UL)));
+                byte status = a.Result == 0 ? a.Data[0] : (byte)0xFF;
+                Check("pctl 1101 CheckAgcPermissionUnderMinimumAge，没设家长控制：结果 0、状态 0、不报红", "0x0、0、红 +0", $"0x{a.Result:X}、{status}、红 +{Red.Total - red0}");
+                FakeNative.HandleClose(svc);
+                FakeNative.HandleClose(pf);
+                FakeNative.HandleClose(sm);
+            }
+            finally
+            {
+                Directory.Delete(root, true);
+            }
         }
 
         [SvcCase]

@@ -19,6 +19,56 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pack.orch import roots
 
 
+class _Os:
+    """只给 roots 模块看的 os：name 换成 nt，其余转给真 os（不改全进程 os.name，见 pack/jobs/tests/jobcase.py OsView）"""
+    def __init__(self, name): self.name = name
+    def __getattr__(self, key): return getattr(os, key)
+
+
+class RenameDirTest(unittest.TestCase):
+    # #361：刚写完大量文件的目录，Windows 上杀软 / 索引扫描时开着句柄，目录改名报 WinError 5 / 32；扫完放开。期望手写：
+    #   ① nt：前两次被拒、第三次成 → 改名成功，睡了 DIR_RENAME_RETRIES 前两档；② nt：一直被拒 → 重试满后报 PermissionError，原文点名目录并建议加杀软排除；
+    #   ③ 非 nt：被拒一次就原样抛、不睡；④ nt：别的 WinError（如 3 路径不存在）不重试
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='s2a-rename-'); self.home = Path(self.temp.name)
+        (self.home / 'a.tmp').mkdir()
+
+    def tearDown(self): self.temp.cleanup()
+
+    def run_case(self, name, refusals, winerror=5):
+        real = Path.rename; left = [refusals]; sleeps = []
+        def rename(path, target):
+            if left[0]:
+                left[0] -= 1
+                e = PermissionError(13, '拒绝访问。'); e.winerror = winerror; raise e
+            return real(path, target)
+        with patch.object(roots, 'os', _Os(name)), patch.object(Path, 'rename', rename):
+            try:
+                roots.rename_dir(self.home / 'a.tmp', self.home / 'a', sleep=sleeps.append); error = None
+            except PermissionError as e:
+                error = e
+        return error, sleeps
+
+    def test_windows_retries_until_scanner_lets_go(self):
+        error, sleeps = self.run_case('nt', 2)
+        self.assertIsNone(error); self.assertTrue((self.home / 'a').is_dir())
+        self.assertEqual(sleeps, list(roots.DIR_RENAME_RETRIES[:2]))
+
+    def test_windows_gives_up_with_actionable_message(self):
+        error, sleeps = self.run_case('nt', len(roots.DIR_RENAME_RETRIES) + 1)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(sleeps, list(roots.DIR_RENAME_RETRIES))
+        self.assertIn(str(self.home / 'a.tmp'), str(error)); self.assertIn('排除', str(error))
+        self.assertTrue((self.home / 'a.tmp').is_dir())
+
+    def test_other_platforms_do_not_retry(self):
+        error, sleeps = self.run_case('posix', 1)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(sleeps, [])
+
+    def test_windows_other_errors_not_retried(self):
+        error, sleeps = self.run_case('nt', 1, winerror=3)
+        self.assertIsInstance(error, PermissionError); self.assertEqual(sleeps, [])
+
+
 class RootsTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='s2a-orch-')
@@ -275,6 +325,50 @@ class RootsTest(unittest.TestCase):
         finally:
             if p.poll() is None:
                 p.terminate(); p.communicate(timeout=10)
+
+
+class ShortRootLinkTest(unittest.TestCase):
+    # #461：Windows 上目录链接一律写绝对的玩家路径（短根换回长路径）；读链接自己拼，老的相对链接经短根联接也读得出。期望手写：
+    #   ① nt（模拟）：给了 relative、目标在短根下 → os.symlink 收到的是长路径下的绝对目标，不是相对、不是短路径
+    #   ② 原生 Windows：经短根联接访问时，老的相对软链 link_target 解析到真实目录；directory_link 新建的链接内容 = 长路径绝对目标，经联接 stat / listdir 正常
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='s2a-461-'); self.home = Path(self.temp.name)
+
+    def tearDown(self): self.temp.cleanup()
+
+    def test_nt_writes_absolute_long_target(self):
+        fake = _Os('nt'); fake.symlink = Mock()
+        long, short = self.home / 'long', self.home / 'j' / 'ab12'
+        with patch.object(roots, 'os', fake), patch.object(roots, 'table_now', return_value=__import__('pack.orch.winlong', fromlist=['parse_table']).parse_table(f'{long}\t{short}')):
+            roots.directory_link(short / 'roots' / 'g@v1', short / 'roots' / 'g@现行', relative='g@v1')
+        value = fake.symlink.call_args.args[0]
+        self.assertEqual(value, os.path.normpath(str(long / 'roots' / 'g@v1')))
+        self.assertTrue(fake.symlink.call_args.kwargs.get('target_is_directory'))
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows short-root junction')
+    def test_native_relative_old_link_and_new_absolute_link(self):
+        import _winapi
+        long, short = self.home / 'long', self.home / 'j' / 'ab12'
+        (long / 'roots' / 'v1').mkdir(parents=True); (long / 'roots' / 'v1' / 'f').write_bytes(b'x'); short.parent.mkdir()
+        _winapi.CreateJunction(str(long), str(short))
+        try:
+            try:
+                os.symlink('v1', long / 'roots' / 'old', target_is_directory=True)   # #461 之前的写法
+            except OSError as e:
+                self.skipTest(f'建不了软链（没开开发者模式、非提权）：{e}')
+            got = roots.link_target(short / 'roots' / 'old')
+            self.assertEqual(os.path.normcase(str(got)), os.path.normcase(str((long / 'roots' / 'v1').resolve())))
+            env = {'S2A_SHORT_ROOTS': f'{long}\t{short}'}
+            with patch.dict(os.environ, env):
+                roots.directory_link(short / 'roots' / 'v1', short / 'roots' / 'new', relative='v1')
+            link = short / 'roots' / 'new'
+            raw = os.readlink(link)
+            for prefix in ('\\\\?\\', '\\??\\'):
+                raw = raw[len(prefix):] if raw.startswith(prefix) else raw
+            self.assertEqual(os.path.normcase(raw), os.path.normcase(str(long / 'roots' / 'v1')))
+            os.stat(link); self.assertEqual(os.listdir(link), ['f'])
+        finally:
+            os.rmdir(short)
 
 
 if __name__ == '__main__':

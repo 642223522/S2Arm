@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 
 namespace S2A.Services.Tests
 {
-    // 11-04 维护者定（脑锻炼 010062200D392000 标题页只认触屏）：游戏经 hid 调 SetTouchScreenConfiguration（命令 1002，声明触屏 / 手写笔模式）
+    // 11-04 维护者定（一款第一方益智游戏 010062200D392000 标题页只认触屏）：游戏经 hid 调 SetTouchScreenConfiguration（命令 1002，声明触屏 / 手写笔模式）
     //   → Ryujinx 记 Hid.Touchscreen.ConfiguredMode（补丁 hid-touch-config-mode）→ InputPump.OfferTouchConfigured 递给 iOS 壳 s2a_vpad_touch_configured 自动切仅触屏。
     //   期望（只看调用约定即可写出）：没调过 → 模式 -1、壳 0 次；经真 IPC 调 1002、配置首字节 2（Heat2 手写笔）→ 模式 2；
     //   壳回 0（首帧前）每拍都递（3 拍 = 3 次、每次递 2）；壳回 1 → 再递 1 次后清空，之后不再递（共 4 次）

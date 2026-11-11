@@ -35,9 +35,9 @@ static const struct { int code; const char *id, *summary, *msg; } k_want[] = {
     {S2A_INIT_FAIL_E_SERVICE_EARLY, "service_early", "服务失败早于初启成功发布", "游戏需要的系统功能没能准备好。"},
     {S2A_INIT_FAIL_E_DGUARD_LIMIT, "dguard_limit", "直连安全网：此前已连续失败满 3 次，自动化局不停在提示页，收局（重新出包后从 0 数）", "启动过程中出了问题。"},
     {S2A_INIT_FAIL_E_GAME_FILES, "game_files_missing", "服务会话初始化失败：资源包里没有 exefs/main.npdm（游戏文件不在机上 / 没导完）",
-     "游戏文件缺失，请重新导入：在 Mac 上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"},
+     "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"},
     {S2A_INIT_FAIL_E_DIRECT_LIB, "direct_lib_missing", "包里没有本宿主口径的直连着色器库（没导完 / 旧版本出的包 / 设备跑不了直连；只有直连，11-07 拆通用模式后不再退通用）",
-     "游戏文件缺失，请重新导入：在 Mac 上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"},
+     "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"},
     {S2A_INIT_FAIL_E_UNKNOWN, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {999, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {-1, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
@@ -121,7 +121,7 @@ int main(void) {
         WANT(s2a_init_fail_service_code(NULL) == S2A_INIT_FAIL_E_SERVICE_INIT); WANT(s2a_init_fail_service_code("") == S2A_INIT_FAIL_E_SERVICE_INIT);
         unlink(p); snprintf(p, sizeof p, "%s/exefs", d); rmdir(p); rmdir(d);
         char b[512]; s2a_init_fail_screen(b, sizeof b, S2A_INIT_FAIL_E_GAME_FILES);
-        WANT(!strcmp(b, "游戏文件缺失，请重新导入：在 Mac 上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。\n" NEXT_WANT)); });
+        WANT(!strcmp(b, "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。\n" NEXT_WANT)); });
 
     if (fails) { printf("✗ t_init_fail：%d / %d 例不通\n", fails, cases); return 1; }
     printf("✓ t_init_fail：%d 例全过\n", cases); return 0;

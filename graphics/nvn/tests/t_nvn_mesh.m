@@ -13,6 +13,7 @@
 //   ⑨ 着色器映射表的阶段名（翻译侧 shader_map.tsv 第 3 列写 task / mesh）经 prog_get 的 stage_of 落到宿主阶段 3 / 4（nvn2_stage_host：NVN 阶段 6 / 7 放曲面两阶段的位置），
 //      shader_get 按该阶段载入的是 object / mesh 着色器（11-06 时之笛日志每局 20–30 行「shader … (task|mesh) failed to load」：stage_of 不认这两个名字回 -1，库里明明有）
 //   ⑩ GPU 没有对象 / 网格管线（g_mesh_ok = 0，MTLGPUFamilyMetal3 以下）：跳过并计数、报红 1 行、不画（不当普通绘制画）
+// 校验层（mk 另跑 MTL_DEBUG_LAYER=1 两套后端）：全部项照过、不中止。负对照（11-11 手工）：改前 pso_desc 给网格管线设 vertexFunction = 网格函数，校验层两套后端都 abort rc=134（setVertexFunction 断言）
 // 负对照（11-05 手工做，见坑记录）：把 mtk_encode 写进 29 号槽的起始号换成 0 → ④ 0x07、⑤ 0x0f、⑥ 0x07，三项红
 #include "../gfx/nvn/nvn_mtl.m"
 
@@ -92,6 +93,15 @@ int main(void) {
         // ②
         __block NvShader *big = nil; NSString *o = capture(^{ big = shader_get(@"4444444444444444_b", 4); });
         VERIFY(!big && red_lines(o, @"4444444444444444_b") == 1, "② max_vertices 300 的网格着色器载不进、报红 1 行（实得 %s，红 %d 行；stderr：%s）", big ? "载入了" : "nil", red_lines(o, @"4444444444444444_b"), o.UTF8String);
+
+        // ⑪ #418 Switch 1 曲面细分着色器在阶段 3 / 4：json 带 tess、msl_entry_kind 是 vertex / kernel。期望（按约定手写）：不按 task / mesh 契约判——载入成功、不是网格种类、
+        //   不打入口类型 / not usable 红行。反证：修前同一份 json 打入口类型红行，再因没有工作组线程数判「not usable」返回 nil
+        { NSString *src = [NSString stringWithFormat:@"%@/1111111111111111_b.metallib", dir], *dst = [NSString stringWithFormat:@"%@/5555555555555555_b.metallib", dir];
+          [NSFileManager.defaultManager removeItemAtPath:dst error:nil]; REQUIRE([NSFileManager.defaultManager copyItemAtPath:src toPath:dst error:nil]);   // 库内容无关：只验载入时的契约判定
+          put_json(dir, @"5555555555555555_b", @{@"stage": @"hs", @"msl_entry_kind": @"vertex", @"tess": @{@"mode": @0}});
+          __block NvShader *hs = nil; NSString *o11 = capture(^{ hs = shader_get(@"5555555555555555_b", 3); });
+          VERIFY(hs && hs->mesh_kind == 0 && red_lines(o11, @"5555555555555555_b") == 0, "⑪ 曲面细分着色器（阶段 3，带 tess、入口类型 vertex）：载入、非网格种类、0 行红（实得 %s，种类 %d，红 %d 行；stderr：%s）",
+                 hs ? "载入了" : "nil", hs ? hs->mesh_kind : -1, red_lines(o11, @"5555555555555555_b"), o11.UTF8String); }
 
         NvShader *fs = [NvShader new]; fs->stage = 1; strlcpy(fs->key, "ffffffffffffffff_b", sizeof fs->key); fs->ventry = @"main0";
         { NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0() { return float4(1); }\n" options:nil error:&e]; REQUIRE(l); fs->fn = [l newFunctionWithName:@"main0"]; REQUIRE(fs->fn); }

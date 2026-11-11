@@ -1,4 +1,5 @@
 """导入游戏（pack/jobs/library.py import_games）单测（从 test_error_recovery.py 拆出，10-26；夹具 jobcase.JobCase）。"""
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from jobcase import JobCase, synthetic_nacp, synthetic_npdm, synthetic_nup
 import library
 from core import atomic
 
-APP = 0x0400486024DEC000   # 时之笛的程序号（合成容器，内容是测试字节）
+APP = 0x0400486024DEC000   # 0400486024DEC000的程序号（合成容器，内容是测试字节）
 
 
 class DigestTests(unittest.TestCase):   # 11-06：导入的包身份 = 原件整份 SHA-256；Windows 走系统 CNG，结果必须与 hashlib 逐位相同
@@ -168,6 +169,171 @@ class ImportTests(JobCase):
         self.assertEqual(run(), [str(original.resolve())])
 
 
+class PartialImportTests(JobCase):
+    def setUp(self):
+        super().setUp()
+        self.import_keys()
+        self.install_reader_fixture()
+
+    def source(self, name, data):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path.resolve())
+
+    def run_import(self, paths, **options):
+        _, terminal = self.worker("import", paths=paths, **options)
+        return terminal
+
+    def test_opt_in_continues_and_distinguishes_same_name(self):
+        a = self.source("a/game.nsp", b"unreadable fixture")
+        b = self.source("b/game.nsp", b"complete fixture")
+        failed = self.run_import([a, b])
+        self.assert_failure(failed, "content_unreadable")
+        self.assertEqual(self.c.catalog()["games"], [])
+        done = self.run_import([a, b], partialResults=True)
+        self.assertEqual(done["state"], "succeeded")
+        first, second = done["result"]["sources"]
+        self.assertEqual((first["status"], second["status"]), ("failed", "imported"))
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["path"], a)
+        self.assertEqual(second["path"], b)
+        self.assertIn("Check keys", first["diagnostic"])
+        self.assertNotIn("synthetic-bearer", first["diagnostic"])
+
+    def test_scan_errors_are_per_source_and_all_failed_leaves_keys_unverified(self):
+        a = self.source("a.nsp", b"truncated fixture")
+        b = str((self.root / "b.nsp").resolve())
+        c = self.source("c.txt", b"unsupported")
+        done = self.run_import([a, b, c], partialResults=True)
+        self.assertEqual(done["state"], "succeeded")
+        self.assertEqual([row["code"] for row in done["result"]["sources"]],
+                         ["content_truncated", "input_missing", "input_type_unsupported"])
+        diagnostic = done["result"]["sources"][0]["diagnostic"]
+        self.assertIn("Beginning of synthetic reader diagnostic", diagnostic)
+        self.assertGreater(len(diagnostic), 3000)
+        self.assertNotIn("synthetic-bearer", diagnostic)
+        self.assertNotIn("Beginning of synthetic reader diagnostic", done["result"]["sources"][1]["diagnostic"])
+        status = json.loads((self.c.private / "keys/status.json").read_text())
+        self.assertFalse(status["verified"])
+
+    def test_per_source_diagnostic_has_a_cap_and_keeps_both_ends(self):
+        from library import IMPORT_DIAGNOSTIC_LIMIT
+        a = self.source("a.nsp", b"huge truncated fixture")
+        done = self.run_import([a], partialResults=True)
+        diagnostic = done["result"]["sources"][0]["diagnostic"]
+        self.assertLessEqual(len(diagnostic), IMPORT_DIAGNOSTIC_LIMIT)
+        self.assertGreater(len(diagnostic), 3000)
+        self.assertIn("TAIL-MARK", diagnostic)
+        saved = json.loads((self.c.private / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
+        self.assertLessEqual(len(saved["sources"][0]["diagnostic"]), IMPORT_DIAGNOSTIC_LIMIT)
+
+    def test_io_error_on_one_source_does_not_block_other_files(self):
+        from jobcase import JOBS
+        a = self.source("a.nsp", b"unreadable bytes fixture")
+        b = self.source("b.nsp", b"complete fixture")
+        entry = self.root / "source-io.py"
+        entry.write_text(f"""import errno, sys
+sys.path.insert(0, {str(JOBS)!r})
+import main
+digest = main.library.digest
+def read(ctx, *args):
+    if ctx.name == 'a.nsp':
+        raise OSError(errno.EIO, 'synthetic source read error')
+    return digest(ctx, *args)
+main.library.digest = read
+raise SystemExit(main.main())
+""")
+        _, done = self.worker("import", paths=[a, b], partialResults=True, entrypoint=entry)
+        self.assertEqual(done["state"], "succeeded")
+        first, second = done["result"]["sources"]
+        self.assertEqual(first["code"], "input_unreadable")
+        self.assertEqual(second["status"], "imported")
+
+    def test_reader_temp_dir_on_library_volume(self):
+        # #612：读取游戏信息时 NCZ 解压临时文件要落游戏库那块盘（Windows 上游戏库在别的盘、系统盘只剩百来 MB 时缺省写 %TEMP% 导入失败）：
+        #   读取器拿到 --temp-dir，目录在游戏库下、读取时存在，读完删掉
+        a = self.source("a.nsp", b"temp dir fixture")
+        done = self.run_import([a])
+        self.assertEqual(done["state"], "succeeded")
+        seen = (Path(a).parent / "temp_dir_seen.txt").read_text()
+        self.assertTrue(seen, "读取器没收到 --temp-dir")
+        path, existed = seen.split("\t")
+        self.assertEqual(existed, "True")
+        self.assertTrue(Path(path).resolve().is_relative_to(self.c.library.resolve()), f"临时目录 {path} 不在游戏库 {self.c.library} 下")
+        self.assertFalse(Path(path).exists(), "读完没删")
+
+    def test_reader_disk_full_is_batch_failure(self):
+        a = self.source("a.nsp", b"disk full fixture")
+        b = self.source("b.nsp", b"complete fixture")
+        failed = self.run_import([a, b], partialResults=True)
+        self.assert_failure(failed, "disk_full")
+        self.assertEqual([row["status"] for row in failed["result"]["sources"]], ["failed", "unprocessed"])
+        self.assertEqual(self.c.catalog()["games"], [])
+
+    def test_abort_preserves_source_states_in_terminal_event_and_record(self):
+        from jobcase import JOBS
+        a = self.source("a.nsp", b"complete fixture")
+        b = self.source("b.nsp", b"stop fixture")
+        c = self.source("c.nsp", b"later fixture")
+        entry = self.root / "abort.py"
+        for reason in ("disk_full", "tool_missing", "keys_invalid", "library", "cancelled"):
+            with self.subTest(reason=reason):
+                entry.write_text(f"""import sys
+sys.path.insert(0, {str(JOBS)!r})
+import main
+from core import Cancelled, Failure
+inspect = main.library.inspect
+def stop(ctx, source, *args, **kwargs):
+    if source.name == 'b.nsp':
+        reason = {reason!r}
+        if reason == 'cancelled':
+            raise Cancelled()
+        raise Failure('synthetic abort', code='job_failed' if reason == 'library' else reason)
+    return inspect(ctx, source, *args, **kwargs)
+main.library.inspect = stop
+raise SystemExit(main.main())
+""")
+                _, event = self.worker("import", paths=[a, b, c], partialResults=True, entrypoint=entry)
+                self.assertEqual(event["state"], "cancelled" if reason == "cancelled" else "failed")
+                rows = event["result"]["sources"]
+                self.assertIn(rows[0]["status"], ("imported", "duplicate"))
+                self.assertEqual(rows[1]["status"], "unprocessed" if reason == "cancelled" else "failed")
+                self.assertEqual(rows[2]["status"], "unprocessed")
+                saved = json.loads((self.c.private / "logs" / "jobs" / (event["taskId"] + ".json")).read_text())
+                self.assertEqual(saved["sources"], rows)
+
+    def test_multi_package_source_rolls_back_if_catalog_commit_fails(self):
+        from jobcase import JOBS
+        bad = self.source("a.nsp", b"multi fixture")
+        good = self.source("b.nsp", b"complete fixture")
+        entry = self.root / "rollback.py"
+        entry.write_text(f"""import sys
+sys.path.insert(0, {str(JOBS)!r})
+import main
+from core import Failure
+inspect = main.library.inspect
+def multi(ctx, source, *args, **kwargs):
+    packages = inspect(ctx, source, *args, **kwargs)
+    if source.name == 'a.nsp':
+        packages.append(dict(packages[0], titleId='0100000000000800', type='update'))
+    return packages
+main.library.inspect = multi
+atomic = main.library.atomic
+def fail_once(path, value):
+    if path.name == 'catalog.json' and any(p['type'] == 'update' for g in value['games'] for p in g['packages']):
+        raise Failure('synthetic commit failure', code='content_invalid')
+    atomic(path, value)
+main.library.atomic = fail_once
+raise SystemExit(main.main())
+""")
+        _, done = self.worker("import", paths=[bad, good], partialResults=True, entrypoint=entry)
+        self.assertEqual(done["state"], "succeeded")
+        self.assertEqual([row["status"] for row in done["result"]["sources"]], ["failed", "imported"])
+        [game] = self.c.catalog()["games"]
+        self.assertEqual([package["path"] for package in game["packages"]], [good])
+
+
 class NupImportTests(JobCase):
     """Switch 2 NUP 容器导入（11-07）：pack/ns2_nup.py 认（不看扩展名）、不要 prod.keys；Switch 1 原件照旧要密钥、走读取器"""
 
@@ -201,6 +367,36 @@ class NupImportTests(JobCase):
         result, done = self.worker("import", paths=[str(bare)])
         self.assertEqual(done["state"], "succeeded", result.stderr)
         self.assertEqual(self.c.catalog()["games"][0]["name"], "Bare Name")
+
+    def test_multi_package_nup_counts_as_one_source(self):
+        src = self.nup(self.root / "multi.nup")
+        _, done = self.worker("import", paths=[str(src)], partialResults=True)
+        self.assertEqual(len(done["result"]["imports"]), 3)
+        [source] = done["result"]["sources"]
+        self.assertEqual(source["status"], "imported")
+        self.assertFalse(source["needsKeys"])
+
+    def test_nup_read_error_keeps_content_invalid_on_the_default_path(self):
+        # 默认路径（不开 partialResults）：NUP 读错误仍是 content_invalid，与改动前一致
+        from jobcase import JOBS
+        src = self.nup(self.root / "bad.nup")
+        entry = self.root / "nup-io.py"
+        entry.write_text(f"""import errno, sys
+sys.path.insert(0, {str(JOBS)!r})
+import main
+engine_tool = main.library.engine_tool
+def read_error(*args, **kwargs):
+    raise OSError(errno.EIO, 'synthetic NUP read error')
+def tool(ctx, name):
+    module = engine_tool(ctx, name)
+    if name == 'ns2_nup':
+        module.scan = read_error
+    return module
+main.library.engine_tool = tool
+raise SystemExit(main.main())
+""")
+        _, done = self.worker("import", paths=[str(src)], entrypoint=entry)
+        self.assert_failure(done, "content_invalid")
 
     def test_fake_nup_rejected(self):
         # ② 扩展名是 .nup 但不是 NUP（文件头不是 NUP 魔数）：直接选它照旧报「不支持的类型」；文件夹里混着真假两个 → 只收真的

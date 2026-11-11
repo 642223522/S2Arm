@@ -1,0 +1,42 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs b/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs
+index f8227b2e8d2bc6eef17cfe969fe0569f39709db4..8be96feb860d28c40c14b3f03ac76ee9b7d7cc10 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs
+@@ -1353,6 +1353,13 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+             long appletResourceUserId = context.RequestData.ReadInt64();
+ #pragma warning restore IDE0059
+ 
++            return SendVibrationValuesFromBuffers(context);
++        }
++
++        // S2Arm: the two pointer buffers of SendVibrationValues (206): device handles and vibration values. Switch 2's 214 sends the same two buffers
++        private static ResultCode SendVibrationValuesFromBuffers(ServiceCtx context)
++        {
++
+             // S2Arm: zero allocation (10-22 mhrise: ~170 calls per second, 320 B each = the game threads' largest steady allocation):
+             // the two small arrays are read onto the stack, and each group (same player, at most two positions) is kept in locals
+             // instead of a dictionary per group. Same grouping and the same values reach the rumble queue as before.
+@@ -2003,7 +2010,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+ 
+         // ---------- S2Arm：Switch 2 SDK 的 hid 新命令（Pokopia 首帧后起用；HD 振动 2、Joy-Con 2 鼠标 / Jcms 传感器、原生输入）----------
+         // 宿主没有这些设备：输入一律收下（不改任何状态）、回成功；有输出的回「没有 / 0」——220 旗标 false、1003 不需要更新固件、3133 状态 0。
+-        //   命令号与输出形状来自 Eden-NS2 hid_server.cpp（GPL，只借事实，代码自写）；手柄 / 振动的真实现仍走原有命令
++        //   命令号与输出形状来自 Eden-NS2 hid_server.cpp（GPL，只借事实，代码自写）；手柄的真实现仍走原有命令；214 震动见下
+ 
+         [CommandCmif(89)]
+         public ResultCode ResetIsSixAxisSensorDeviceNewlyAssigned(ServiceCtx context) => ResultCode.Success;
+@@ -2024,7 +2031,13 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+         public ResultCode SendNativeVibrationValue213(ServiceCtx context) => ResultCode.Success;
+ 
+         [CommandCmif(214)]
+-        public ResultCode SendNativeVibrationValues(ServiceCtx context) => ResultCode.Success;
++        // S2Arm: Switch 2 游戏的震动走这条（11-10 程序号 0400486024DEC000 每帧一次；请求数据区 24 字节 = 2、资源号、0，指针缓冲 0 = 设备句柄、1 = 震动值，
++        //   与 206 SendVibrationValues 同形）：按 206 同一条路入震动队列。不带两个缓冲的照旧只回成功
++        public ResultCode SendNativeVibrationValues(ServiceCtx context)
++        {
++            if (context.Request.PtrBuff.Count < 2) return ResultCode.Success;
++            return SendVibrationValuesFromBuffers(context);
++        }
+ 
+         [CommandCmif(220)]
+         public ResultCode GetNativeInputFlag220(ServiceCtx context) { context.ResponseData.Write(false); return ResultCode.Success; }

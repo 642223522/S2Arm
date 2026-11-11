@@ -1,6 +1,6 @@
 // 批次 1 / 模块 A：命令流拍平（A2 延迟参数入记录 + A4 记录内引用重定位）与 A1 捕获分类。
 //
-// 背景（统一方案 `android/docs/fast-generic-v3.md#totk-chain-design` §④⑤⑥）：
+// 背景（统一方案 `android/docs/fast-generic-v3.md#0100F2C0115B6000-chain-design` §④⑤⑥）：
 // Android 直连的提交在 `mtl_exec` 就把整条命令链拍平成宿主自有线性记录（mtl_vk_shim.c 的
 // g_clone → job_flat → exec_chain → s2a_record_exec_one），游戏随后即可销毁/复用命令内存。
 // 但“复制命令字节”不等于“拥有命令引用的数据”，旧实现只做逐字节 memcpy，留下两类缺口：
@@ -29,7 +29,7 @@
 //
 // “延迟”一类明确**不是**“回放时再读 guest”：那正是本批要消除的旧行为（旧 vk_record.c 的
 // BIND_BUF_DEFER / rec.defer 分支）。拍平后的记录里这些字段已是自持值；旧分支只在测试直接
-// 构造未拍平记录时可达。NVN 语义允许游戏在录制后、提交前改写句柄数组（旷野之息逐纹理 Deferred
+// 构造未拍平记录时可达。NVN 语义允许游戏在录制后、提交前改写句柄数组（01007EF00011E000逐纹理 Deferred
 // 绑定即如此），因此读取点必须落在“提交/拍平”而不是更晚；见 `graphics/nvn/docs/deferred_texture_pools.md`
 // 的实测（录制后改句柄 → 期望按改写后的值）。
 //
@@ -70,7 +70,7 @@ size_t s2a_record_flat_size(const uint8_t *record, size_t size);
 //
 // 为什么缓冲由本模块持有：拍平要在记录里写入“宿主自有快照”的**地址**，而一条命令链有成千上万条记录，
 // 缓冲必须随追加增长（realloc）。若由调用方给一块固定 dst，后面每次增长都会让先前写进去的地址悬垂：
-// 真机实测（TOTK 标题画面，2026-11-07）就是 rt 快照指针读成全零 → 颜色附件格式缺失 →
+// 真机实测（0100F2C0115B6000 标题画面，2026-11-07）就是 rt 快照指针读成全零 → 颜色附件格式缺失 →
 // `fragmentOutputTypes` 被编译器判 MISSING_FIELD → 首笔图形 draw 报红并中止。
 // 因此地址只能等“缓冲不再移动”之后再落：追加时登记（字段偏移, 快照偏移），take 时一次写成真实地址。
 //

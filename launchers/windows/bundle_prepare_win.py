@@ -6,6 +6,7 @@
   romfs/romfs_index.dll                 RomFS 索引（pack/orch/stages.py、services/romfs_index.sh）
   dsh_batch/dsh_batch.dll + .src_digest + .xfp 直连出库 C# 批量进程（translator/dsh_batch.py，摘要同才用；.xfp 供没 SDK 的玩家机核库印章）
   devpush/s2a-devpush.exe               推资源包（tools/push_pack.py）
+  rcodesign/rcodesign.exe + 许可        开发者证书签名（pack/jobs/devcert.py；官方发布件，SHA-256 钉死）
   dsx/dsx.dll                           直连翻译库（pack/orch/oneclick_win.py direct，graphics/dsx/dsx_win.py 编）
   nx_unpack/nx_unpack.exe + .src_digest 解包（oneclick_win.nx_unpack，身份 = nx_unpack_id）
   gamedec/gamedec.exe + .src_digest     游戏自带解码器工具模式（oneclick_win.gamedec，身份 = gamedec_id）
@@ -47,7 +48,10 @@ def run(args, log, env=None):
 
 
 def dotnet_build(project, out, log, *extra):
-    run(["dotnet", "build", ROOT / project, "-c", "Release", "-nologo", "-p:UseSharedCompilation=false", *extra, "-o", out], log)
+    # -r win-x64（仍是 framework-dependent）：只带 Windows x64 的原生库。不给 RID 时 NuGet 包的 runtimes/ 全平台照抄
+    #   （0.2.8 romfs 带了 SkiaSharp 等 17 个平台共 193 MB，玩家只用得到 win-x64 的 11 MB）
+    run(["dotnet", "build", ROOT / project, "-c", "Release", "-nologo", "-p:UseSharedCompilation=false", "-r", "win-x64", "--self-contained", "false",
+         *extra, "-o", out], log)
 
 
 def copy_dir(src, dst):
@@ -101,6 +105,10 @@ def bundle(target):
         env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
     (tools / "devpush").mkdir()
     shutil.copy2(ROOT / "build/devpush-static/release/s2a-devpush.exe", tools / "devpush/s2a-devpush.exe")
+
+    # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
+    import devcert
+    devcert.fetch_rcodesign(tools / "rcodesign", "win")
 
     (tools / "dsx").mkdir()
     run([sys.executable, "-X", "utf8", ROOT / "graphics/dsx/dsx_win.py", stage / "dsx/dsx.dll"], "dsx.log")

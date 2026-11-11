@@ -103,15 +103,37 @@ static void face_buttons(void) {
     assert(s2a_pad_kind("DualSense", 0, 1) == S2A_PAD_KIND_PLAYSTATION);
     assert(s2a_pad_kind("8BitDo Pro Controller", 0, 0) == S2A_PAD_KIND_OTHER);   // P2-213：名字里带 Pro Controller 的第三方不是任天堂
     assert(s2a_pad_kind(NULL, 0, 0) == S2A_PAD_KIND_OTHER);
+    assert(s2a_pad_kind("MFi", 0, 0) == S2A_PAD_KIND_OTHER && s2a_pad_kind("HID", 0, 0) == S2A_PAD_KIND_OTHER);
+    // 以后型号的字样未知：按片段不分大小写认（只认开头时第 1、3 个落到「认不出」→ 旧口径按位置，印 A 的右键变成 Switch B）
+    assert(s2a_pad_kind("Switch 2 Pro Controller", 0, 0) == S2A_PAD_KIND_NINTENDO);
+    assert(s2a_pad_kind("Joy-Con 2 (L)", 0, 0) == S2A_PAD_KIND_NINTENDO);
+    assert(s2a_pad_kind("NINTENDO SWITCH 2 PRO CONTROLLER", 0, 0) == S2A_PAD_KIND_NINTENDO);
+    assert(s2a_pad_kind("Switch Pro Controller", 1, 0) == S2A_PAD_KIND_XBOX);   // 手柄类型先于类别
     int o[4];
+    // 期望手算：系统 buttonA/B/X/Y（下标 0..3）在任天堂手柄上是 东/南/北/西，其余手柄是 南/东/西/北。
+    //   Switch 布局要 A/B/X/Y = 东/南/北/西，Xbox 布局要 南/东/西/北；自动 = 照字母 {0,1,2,3}
 #define ORDER(k, l, a, b, c, d) do { s2a_pad_abxy_order(k, l, o); assert(o[0] == a && o[1] == b && o[2] == c && o[3] == d); } while (0)
-    ORDER(S2A_PAD_KIND_NINTENDO, 1, 0, 1, 2, 3); ORDER(S2A_PAD_KIND_NINTENDO, 0, 0, 1, 2, 3);   // 任天堂：两种口径都同字母
-    ORDER(S2A_PAD_KIND_XBOX, 1, 0, 1, 2, 3);                                                   // Xbox 按字母：Xbox A = Switch A
-    ORDER(S2A_PAD_KIND_XBOX, 0, 1, 0, 3, 2);                                                   // Xbox 按位置：Switch A（东）= Xbox B
-    ORDER(S2A_PAD_KIND_PLAYSTATION, 1, 1, 0, 3, 2); ORDER(S2A_PAD_KIND_OTHER, 1, 1, 0, 3, 2);  // PS / 第三方没有可对的字母：只按位置
+    ORDER(S2A_PAD_KIND_NINTENDO, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);       // 任天堂 自动 = Switch 布局：印 A 的右键 = A
+    ORDER(S2A_PAD_KIND_NINTENDO, S2A_PAD_LAYOUT_SWITCH, 0, 1, 2, 3);     // 东 = buttonA
+    ORDER(S2A_PAD_KIND_NINTENDO, S2A_PAD_LAYOUT_XBOX, 1, 0, 3, 2);       // 南 = buttonB（印 B 的下键确认）、西 = buttonY、北 = buttonX
+    ORDER(S2A_PAD_KIND_XBOX, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);           // Xbox 自动 = Xbox 布局：Xbox A（南）= Switch A
+    ORDER(S2A_PAD_KIND_XBOX, S2A_PAD_LAYOUT_XBOX, 0, 1, 2, 3);
+    ORDER(S2A_PAD_KIND_XBOX, S2A_PAD_LAYOUT_SWITCH, 1, 0, 3, 2);         // 东 = Xbox B、南 = Xbox A、北 = Xbox Y、西 = Xbox X
+    ORDER(S2A_PAD_KIND_PLAYSTATION, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);    // PS 自动：× = A（#466）
+    ORDER(S2A_PAD_KIND_PLAYSTATION, S2A_PAD_LAYOUT_SWITCH, 1, 0, 3, 2);  // ○ = A
+    ORDER(S2A_PAD_KIND_PLAYSTATION, S2A_PAD_LAYOUT_XBOX, 0, 1, 2, 3);
+    ORDER(S2A_PAD_KIND_OTHER, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);          // 认不出的（MFi 等，键帽同 Xbox）：照字母
+    ORDER(S2A_PAD_KIND_OTHER, S2A_PAD_LAYOUT_SWITCH, 1, 0, 3, 2);
+    ORDER(S2A_PAD_KIND_OTHER, S2A_PAD_LAYOUT_XBOX, 0, 1, 2, 3);
 #undef ORDER
-    unsetenv("S2A_PAD_FACE"); assert(s2a_pad_face_by_letter() == 1);   // 缺省按字母
-    s2a_pad_face_set(0); assert(s2a_pad_face_by_letter() == 0); s2a_pad_face_set(1); assert(s2a_pad_face_by_letter() == 1);
+    assert(s2a_pad_layout_parse(NULL) == S2A_PAD_LAYOUT_AUTO && s2a_pad_layout_parse("auto") == S2A_PAD_LAYOUT_AUTO);
+    assert(s2a_pad_layout_parse("letter") == S2A_PAD_LAYOUT_AUTO && s2a_pad_layout_parse("bogus") == S2A_PAD_LAYOUT_AUTO);   // 旧值「按字母」= 自动
+    assert(s2a_pad_layout_parse("switch") == S2A_PAD_LAYOUT_SWITCH && s2a_pad_layout_parse("position") == S2A_PAD_LAYOUT_SWITCH);   // 旧值「按位置」= Switch 布局
+    assert(s2a_pad_layout_parse("xbox") == S2A_PAD_LAYOUT_XBOX);
+    unsetenv("S2A_PAD_FACE"); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_AUTO);   // 缺省自动
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_XBOX); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_XBOX);
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_SWITCH); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_SWITCH);
+    s2a_pad_layout_set(99); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_AUTO);
 }
 
 int main(void) {
@@ -179,6 +201,17 @@ int main(void) {
         s2a_pad_update(S2A_PAD_TOUCH, 1, plus, zero); assert(!s2a_pad_plus_press());                // 虚拟键「+」不算
         s2a_pad_update(S2A_PAD_TOUCH, 1, 0, zero);
         s2a_pad_set_active(0); s2a_pad_set_active(1); expect(0, 0, 0); }
+    // #276 Home（扩展位 bit16）同「+」开菜单：系统手柄 / NS2 手柄按住 Home 有序号、松开回 0；按着 Home 再按「+」还是同一下；Home 不进游戏（截掉高位）；触屏不算
+    {   const uint32_t plus = 1u << 10, home = 1u << 16;
+        s2a_pad_update(S2A_PAD_SYSTEM, 1, home, zero); uint64_t h = s2a_pad_plus_press(); assert(h);
+        expect(0, 0, 0);                                                                             // Home 位不当成任何游戏按键
+        s2a_pad_update(S2A_PAD_SYSTEM, 1, home | plus, zero); assert(s2a_pad_plus_press() == h);    // 按着 Home 再按「+」：同一下
+        s2a_pad_update(S2A_PAD_SYSTEM, 1, 0, zero); assert(!s2a_pad_plus_press());
+        s2a_pad_update(S2A_PAD_BLE, 1, home, zero); uint64_t h2 = s2a_pad_plus_press(); assert(h2 && h2 != h);
+        s2a_pad_update(S2A_PAD_BLE, 0, 0, NULL); assert(!s2a_pad_plus_press());
+        s2a_pad_update(S2A_PAD_TOUCH, 1, home, zero); assert(!s2a_pad_plus_press());
+        s2a_pad_update(S2A_PAD_TOUCH, 1, 0, zero);
+        s2a_pad_set_active(0); s2a_pad_set_active(1); expect(0, 0, 0); }
 
     s2a_pad_snapshot snapshot, next;
     s2a_pad_read_ex(&snapshot);
@@ -234,12 +267,35 @@ int main(void) {
     } while (!atomic_load(&finished));
     assert(!pthread_join(thread, NULL));
 
+    // 本地多手柄槽位（s2a_slot_plan，Mac / iOS 共用）：期望值按「还在线留原槽、新来的占最小空槽、超 4 只丢弃」手算
+    {
+        static const char A, B, C, D, E;
+        const void *prev[4] = {0}; int slot_of[5];
+        const void *ab[2] = {&A, &B};
+        assert(s2a_slot_plan(prev, ab, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1);   // 两只：A 槽 0、B 槽 1
+        prev[0] = &A; prev[1] = &B;
+        const void *b_only[1] = {&B};
+        assert(s2a_slot_plan(prev, b_only, 1, 4, slot_of) == 2 && slot_of[0] == 1);   // A 断开：B 留槽 1，仍报 2 格
+        prev[0] = NULL;
+        const void *ba[2] = {&B, &A};
+        assert(s2a_slot_plan(prev, ba, 2, 4, slot_of) == 2 && slot_of[0] == 1 && slot_of[1] == 0);   // A 接回：回槽 0
+        const void *bc[2] = {&B, &C};
+        assert(s2a_slot_plan(prev, bc, 2, 4, slot_of) == 2 && slot_of[0] == 1 && slot_of[1] == 0);   // A 不在时插进 C：C 占空出的槽 0
+        prev[0] = &C;
+        const void *bca[3] = {&B, &C, &A};
+        assert(s2a_slot_plan(prev, bca, 3, 4, slot_of) == 3 && slot_of[0] == 1 && slot_of[1] == 0 && slot_of[2] == 2);   // A 再接回：落槽 2
+        const void *none[4] = {0}, *five[5] = {&A, &B, &C, &D, &E};
+        assert(s2a_slot_plan(none, five, 5, 4, slot_of) == 4 && slot_of[0] == 0 && slot_of[1] == 1 && slot_of[2] == 2 &&
+               slot_of[3] == 3 && slot_of[4] == -1);   // 第 5 只丢弃
+        assert(s2a_slot_plan(none, five, 0, 4, slot_of) == 1);   // 没有手柄：1 格（触屏 / 键盘）
+    }
+
     const int iterations = 1000000;
     struct timespec start, end; int32_t axes[4];
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (int i = 0; i < iterations; i++) s2a_pad_read(axes, NULL);
     clock_gettime(CLOCK_MONOTONIC, &end);
     double ns = (end.tv_sec - start.tv_sec) * 1e9 + end.tv_nsec - start.tv_nsec;
-    printf("✓ t_pad：生命周期、短按、完整快照、通知等待与提交统计通过；宿主快照读取 %.1f ns/次（非设备蓝牙功耗测量）\n", ns / iterations);
+    printf("✓ t_pad：生命周期、短按、完整快照、通知等待、提交统计与多手柄槽位通过；宿主快照读取 %.1f ns/次（非设备蓝牙功耗测量）\n", ns / iterations);
     return 0;
 }

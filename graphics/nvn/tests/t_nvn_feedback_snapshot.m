@@ -146,6 +146,79 @@ static void automatic_cases(NvProg *reader, prog_t *reader_p, NvProg *self, prog
     finish(); pixels("default self-write dirty=1",a,160,160,160);
 }
 
+static void storage_alias_cases(prog_t *p, tex_t *a, tex_t *b, tex_t *out,
+                                pool_t *pool, const p_draw *triangle, int all) {
+    // Run in the process-selected policy; do not change cached production flags.
+    tex_t alias_a,alias_b;
+    make_texture(&alias_a,pool,0); make_texture(&alias_b,pool,65536);
+    REQUIRE(alias_a.serial!=a->serial && alias_b.serial!=b->serial);
+    REQUIRE(tex_mtl(&alias_a)==tex_mtl(a) && tex_mtl(&alias_b)==tex_mtl(b));
+    nvn_be_reg_tex(4,&alias_a,NULL); nvn_be_reg_tex(5,&alias_b,NULL);
+    nvn_be_sub_begin(); state_reset(); S.prog=p; S.tex[1][0]=4; S.tex[1][1]=5;
+    clear(a,0,0,0); clear(b,0,0,0); clear(out,0,0,0);
+    uint64_t copies_before=g_fb_count, hits_before=g_fb_hits;
+    targets(a,b,out); pending_clear_draw(triangle); finish();
+    pixels("different serials sharing attachment storage see pending clears",out,48,176,80);
+    CHECK(g_fb_hits-hits_before==2,"detect both aliased attachments (got %llu)",
+        (unsigned long long)(g_fb_hits-hits_before));
+    CHECK(g_fb_count-copies_before==(all?2:0),"storage aliases use policy's snapshot count (expected %d, got %llu)",
+        all?2:0,(unsigned long long)(g_fb_count-copies_before));
+
+    // Equal dimensions and format do not make disjoint pool ranges alias.
+    tex_t independent_a,independent_b;
+    make_texture(&independent_a,pool,262144); make_texture(&independent_b,pool,327680);
+    nvn_be_reg_tex(6,&independent_a,NULL); nvn_be_reg_tex(7,&independent_b,NULL);
+    nvn_be_sub_begin(); state_reset(); S.prog=p; S.tex[1][0]=6; S.tex[1][1]=7;
+    clear(&independent_a,32,64,96); clear(&independent_b,160,192,224);
+    clear(a,0,0,0); clear(b,0,0,0); clear(out,0,0,0);
+    copies_before=g_fb_count;
+    targets(a,b,out); pending_clear_draw(triangle); finish();
+    pixels("same-shape disjoint storage remains independent",out,32,160,64);
+    CHECK(g_fb_count==copies_before,"disjoint storage takes no feedback snapshots (got %llu)",
+        (unsigned long long)(g_fb_count-copies_before));
+}
+
+// #387: a draw that samples its own pass's depth attachment (NVN: legal, reads memory; Metal: undefined in the same pass). Expected by the rule, not by
+// running the implementation: the argument the production encode_args writes for that slot is a different resource from the attached depth texture,
+// one more copy is made, and the submission completes without a Metal error. Against the source before the fix the argument is the attachment itself.
+static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b, tex_t *out, const p_draw *triangle) {
+    nvn_be_sub_begin(); state_reset(); S.prog=reader_p; S.tex[1][0]=4; S.tex[1][1]=2;
+    clear(b,160,192,224); clear(out,0,0,0);
+    uint64_t copies=g_fb_count, depth_before=g_fb_depth;
+    rp_flush(); memset(&R.rt, 0, sizeof R.rt); R.rt.n=3; R.rt.color[2]=out; R.rt.depth=depth;
+    R.has_rt=1; g_pso_dirty=1; args_dirty_all();
+    rp_begin(); REQUIRE(g_enc);
+    draw(triangle,NULL);
+    binding("depth attachment sampled in its own pass",reader->sh[1],depth,1);
+    CHECK(g_fb_depth-depth_before==1 && g_fb_count-copies==1,"depth attachment sampled in its own pass: one copy (depth copies %llu, all copies %llu)",
+        (unsigned long long)(g_fb_depth-depth_before),(unsigned long long)(g_fb_count-copies));
+    // The same depth unchanged: a second sampling draw reads the first copy (no new copy, no pass break); after a draw that writes depth the next one copies again
+    uint64_t c1=g_fb_depth, r1=g_fb_depth_reuse, passes=g_stat_pass;
+    draw(triangle,NULL);
+    CHECK(g_fb_depth==c1 && g_fb_depth_reuse-r1==1 && g_stat_pass==passes,"second draw on unchanged depth: reuses the copy (new copies %llu, reuses %llu, passes opened %llu)",
+        (unsigned long long)(g_fb_depth-c1),(unsigned long long)(g_fb_depth_reuse-r1),(unsigned long long)(g_stat_pass-passes));
+    S.ds.dt=1; S.ds.dw=1; S.ds.df=8; g_pso_dirty=1; draw(triangle,NULL);   // writes depth (and samples it: a fresh copy of the depth before this draw)
+    S.ds.dw=0; g_pso_dirty=1; uint64_t c2=g_fb_depth; draw(triangle,NULL);
+    CHECK(g_fb_depth-c2==1,"after a depth-writing draw the next sampling draw copies again (new copies %llu)",(unsigned long long)(g_fb_depth-c2));
+    finish(); CHECK(!mtl_last_commit_error(),"depth attachment sampled in its own pass: submission completes without a Metal error");
+    // Audit P2-247: a whole-surface depth clear with no pass open is only recorded (R.clear_d, folded into the next pass's load action). A draw sampling that depth in the pass must
+    //   see the cleared value, as on the Switch the clear is in memory before the draw runs: the copy is taken after the clear lands. Expected 0.75 (the clear), never the old 0.25
+    nvn_be_sub_begin(); state_reset(); S.prog=reader_p; S.tex[1][0]=4; S.tex[1][1]=2;
+    rp_flush(); memset(&R.rt, 0, sizeof R.rt); R.rt.n=3; R.rt.color[2]=out; R.rt.depth=depth; R.has_rt=1; g_pso_dirty=1; args_dirty_all();
+    R.clear_d=1; R.cd=0.25; rp_flush();   // old content 0.25 in the texture
+    dsnap_stale(); R.clear_d=1; R.cd=0.75;   // what OP_CLEAR_DS records with no pass open (full scissor, no stencil)
+    uint64_t c3=g_fb_depth; draw(triangle,NULL);
+    REQUIRE(g_fb_depth-c3==1 && g_dsnap.use);
+    id<MTLTexture> snap=g_dsnap.use; finish();
+    id<MTLBuffer> rb=[g_dev newBufferWithLength:16*4 options:MTLResourceStorageModeShared];
+    id<MTLCommandQueue> q=[g_dev newCommandQueue]; id<MTLCommandBuffer> cb=[q commandBuffer]; id<MTLBlitCommandEncoder> be=[cb blitCommandEncoder];
+    id<MTLTexture> sb=snap.parentTexture ? snap.parentTexture : snap;
+    [be copyFromTexture:sb sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(4,4,1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:16 destinationBytesPerImage:64 options:MTLBlitOptionDepthFromDepthStencil];
+    [be endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    float d0=((float *)rb.contents)[0];
+    CHECK(d0==0.75f,"pending depth clear then same-pass sampling: the copy holds the cleared depth (read %g, expected 0.75)",d0);
+}
+
 int main(int argc, char **argv) {
     int all=argc==2 && !strcmp(argv[1],"--snap-all");
     REQUIRE(argc==1 || all);
@@ -180,6 +253,12 @@ int main(int argc, char **argv) {
 
         if (!all) {
             automatic_cases(program,&p,self,&self_p,&a,&b,&first,&triangle);
+            tex_t depth; memset(&depth,0,sizeof depth); depth.magic=MAGIC('T','E','X',0); depth.serial=nvn_new_serial();
+            depth.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_DEPTH32F_STENCIL8, .width=4, .height=4, .depth=1, .levels=1};
+            depth.pool=pool; depth.off=262144; depth.mem=pool->mem+262144; nvn_tex_layout(&depth.d,&depth.L); nvn_be_tex_init(&depth);
+            REQUIRE(tex_mtl(&depth) && tex_mtl(&depth).pixelFormat==MTLPixelFormatDepth32Float_Stencil8);
+            nvn_be_reg_tex(4,&depth,NULL);
+            depth_case(program,&p,&depth,&b,&first,&triangle);
         } else {
         nvn_be_sub_begin(); state_reset(); S.prog=&p; S.tex[1][0]=1; S.tex[1][1]=2;
         clear(&a,32,64,96); clear(&b,160,192,224); clear(&first,0,0,0); clear(&second,0,0,0);
@@ -205,6 +284,7 @@ int main(int argc, char **argv) {
         targets(&a,&b,&first); pending_clear_draw(&triangle); finish();
         pixels("pending ClearColor lands before feedback snapshot",&first,48,176,80);
         }
+        storage_alias_cases(&p,&a,&b,&first,pool,&triangle,all);
         unlink(map); unlink(user);
     }
     printf("%s t_nvn_feedback_snapshot %s: %u checks, %u failures\n",failures?"✗":"✓",all?"snap-all":"default",checks,failures);

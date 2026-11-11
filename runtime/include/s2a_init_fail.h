@@ -19,14 +19,25 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
 #define S2A_INIT_FAIL_LOG_TAIL (64 << 10)  // 只读 host.log 末尾这么多字节找红行
 // 提示页文案（玩家话术；改字面要同一提交改 experience.v1.json 的 init_fail_page.items，revision + 1）
 #define S2A_INIT_FAIL_TITLE       "游戏没能启动"
+#define S2A_INIT_FAIL_TITLE_EN    "The game couldn't start"
 #define S2A_INIT_FAIL_NEXT        "请从后台划掉本 App 再打开；仍不行请点「复制诊断」把诊断发给我们。"
+#define S2A_INIT_FAIL_NEXT_EN     "Swipe this app away in the app switcher and open it again. If it still fails, tap \"Copy diagnostics\" and send it to us."
 #define S2A_INIT_FAIL_MSG_SERVICE "游戏需要的系统功能没能准备好。"
+#define S2A_INIT_FAIL_MSG_SERVICE_EN "System features the game needs couldn't be prepared."
 #define S2A_INIT_FAIL_MSG_RUNTIME "本 App 没能准备好运行游戏。"
+#define S2A_INIT_FAIL_MSG_RUNTIME_EN "This app couldn't get ready to run the game."
 #define S2A_INIT_FAIL_MSG_GAME    "游戏程序没能开始运行。"
+#define S2A_INIT_FAIL_MSG_GAME_EN "The game program couldn't start running."
 #define S2A_INIT_FAIL_MSG_GENERIC "启动过程中出了问题。"
-#define S2A_INIT_FAIL_MSG_FILES   "游戏文件缺失，请重新导入：在 Mac 上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"
+#define S2A_INIT_FAIL_MSG_GENERIC_EN "Something went wrong during startup."
+#define S2A_INIT_FAIL_MSG_FILES   "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"
+#define S2A_INIT_FAIL_MSG_FILES_EN "Game files are missing. Import them again: in S2Arm on your computer, choose \"Install on iPhone\" for this game again."
+#define S2A_INIT_FAIL_MSG_DEVICE  "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。"
+#define S2A_INIT_FAIL_MSG_DEVICE_EN "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."
 #define S2A_INIT_FAIL_COPY        "复制诊断"
+#define S2A_INIT_FAIL_COPY_EN     "Copy diagnostics"
 #define S2A_INIT_FAIL_COPIED      "已复制"
+#define S2A_INIT_FAIL_COPIED_EN   "Copied"
 // 错误码：由失败出口显式指定（host_main.c failed_session 的调用点一处一个），不从摘要文本猜。
 //   X(枚举名, 码 id, 内部摘要（只进诊断）, 玩家话术宏)；码 id 与话术归类同样登记在 experience.v1.json 的 init_fail_page.codes。
 //   码表外的值按 S2A_INIT_FAIL_E_UNKNOWN（码 id unknown、通用句）处理
@@ -37,7 +48,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
     X(S2A_INIT_FAIL_E_SERVICE_EARLY, "service_early", "服务失败早于初启成功发布",       S2A_INIT_FAIL_MSG_SERVICE) \
     X(S2A_INIT_FAIL_E_DGUARD_LIMIT,  "dguard_limit",  "直连安全网：此前已连续失败满 3 次，自动化局不停在提示页，收局（重新出包后从 0 数）", S2A_INIT_FAIL_MSG_GENERIC) \
     X(S2A_INIT_FAIL_E_GAME_FILES,    "game_files_missing", "服务会话初始化失败：资源包里没有 exefs/main.npdm（游戏文件不在机上 / 没导完）", S2A_INIT_FAIL_MSG_FILES) \
-    X(S2A_INIT_FAIL_E_DIRECT_LIB,    "direct_lib_missing", "包里没有本宿主口径的直连着色器库（没导完 / 旧版本出的包 / 设备跑不了直连；只有直连，11-07 拆通用模式后不再退通用）", S2A_INIT_FAIL_MSG_FILES)
+    X(S2A_INIT_FAIL_E_DIRECT_LIB,    "direct_lib_missing", "包里没有本宿主口径的直连着色器库（没导完 / 旧版本出的包 / 设备跑不了直连；只有直连，11-07 拆通用模式后不再退通用）", S2A_INIT_FAIL_MSG_FILES) \
+    X(S2A_INIT_FAIL_E_DEVICE_ADDRESS, "device_address_space", "地址窗口连模块段、栈、堆前段都放不下：设备地址空间 / App 内存上限不够跑这款（#446，原先 abort 静默闪退）", S2A_INIT_FAIL_MSG_DEVICE)
 #define S2A_INIT_FAIL_ENUM_(e, id, summary, msg) e,
 enum { S2A_INIT_FAIL_E_UNKNOWN = 0, S2A_INIT_FAIL_CODES(S2A_INIT_FAIL_ENUM_) S2A_INIT_FAIL_E_COUNT };
 #undef S2A_INIT_FAIL_ENUM_

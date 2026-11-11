@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
+#include <time.h>
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <mach/mach.h>
@@ -28,6 +29,8 @@
 #include <TargetConditionals.h>
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED   // 按 iOS SDK 编才有（Mac SDK 标成不可用）；t_ios_prewarm 在 Mac 上把 TARGET_OS_IPHONE 改成 1 编本文件，不能按它判
 #include <os/proc.h>   // os_proc_available_memory：客体内存文件后备的自动判定
+#else
+#include <dispatch/dispatch.h>   // Mac：系统内存压力监听（文件后备的安全阀，#306）
 #endif
 #include <crt_externs.h>
 #include <mach-o/dyld.h>
@@ -126,6 +129,45 @@ static uint64_t env_mb(const char *k, uint64_t def) { const char *v = getenv(k);
 static int g_ctr;
 static uint64_t g_ctr_pool;   // 多款容器：包内各款应用池的最大值（构造期还没选游戏，文件后备按最大的判）
 uint64_t s2a_window_container_pool(void) { return g_ctr_pool; }
+// Mac 开不开（纯函数，t_guest_file_auto 测；#306）：设了按设的（"0" 关、其余开）；没设 → ① 池本身大于「物理内存 − 预留」（room，0 = 读不到）就开：
+//   池放不进物理内存，第一局就要兜底，不等压力记录（PR #353，wwmogu）；② 否则本机本款上一局到过系统内存压力「严重」档才开（池装得下但实际挤爆的那种）。
+//   不加宿主开销估计、不看实测峰值：峰值含文件里已落块的客体字节，懒清零后只涨不降，开过一次就会一直判开（#353）
+int s2a_guest_file_wanted_mac(const char *e, uint64_t pool, uint64_t room, int pressed) {
+    if (e && *e) return strcmp(e, "0") != 0;
+    return (room && pool > room) || pressed;
+}
+// 压力记录：同 mem_peak 目录的 mem_pressure（存在 = 到过「严重」档；单测 / 诊断用 S2A_GUEST_PRESSURE_MARK 指定）。记下后一直有效：内存不够是这台机器跑这款的属性
+static int pressure_path(char *out, size_t n) {
+    const char *ov = getenv("S2A_GUEST_PRESSURE_MARK"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }
+    char p[1024]; if (!mem_peak_path(p, sizeof p)) return 0;
+    char *sl = strrchr(p, '/'); if (!sl) return 0; *sl = 0; snprintf(out, n, "%s/mem_pressure", p); return 1;
+}
+int s2a_guest_pressure_seen(void) { char p[1100]; struct stat st; return pressure_path(p, sizeof p) && !stat(p, &st); }
+static char g_pressure_path[1100];   // 起局时定（构造期按 npdm 程序号），压力回调里只写这一处
+// 记一次「严重」：写记录（只写一次）。压力回调调；单测直接调
+void s2a_guest_pressure_note(void) {
+    static int done; if (done) return;
+    if (!g_pressure_path[0] && !pressure_path(g_pressure_path, sizeof g_pressure_path)) { g_pressure_path[0] = 0; return; }
+    done = 1;
+    { char d[1100]; snprintf(d, sizeof d, "%s", g_pressure_path); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
+    FILE *f = fopen(g_pressure_path, "w"); if (f) { fprintf(f, "critical %ld\n", (long)time(NULL)); fclose(f); }
+    LOG("【黄】系统内存压力到「严重」档：已记下（%s），下一局本款自动开客体内存文件后备（#306 安全阀）", f ? "写成" : "写不了记录");
+}
+#ifndef __IPHONE_OS_VERSION_MIN_REQUIRED
+// Mac 匿名内存模式下监听系统内存压力（libdispatch，后台队列）；程序号未知（多款容器构造期）就不记
+static void guest_pressure_watch(void) {
+    if (!pressure_path(g_pressure_path, sizeof g_pressure_path)) { g_pressure_path[0] = 0; return; }
+    static dispatch_source_t src;
+    src = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_CRITICAL, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    if (!src) return;
+    dispatch_source_set_event_handler(src, ^{ if (dispatch_source_get_data(src) & DISPATCH_MEMORYPRESSURE_CRITICAL) s2a_guest_pressure_note(); });
+    dispatch_resume(src);
+}
+#endif
+static void guest_file_map(void);
+// 判了要接文件、空间检查没过（#483 时之笛 iPhone：进程一起来就判，那一刻 App 正在同一进程里解刚推上来的 2.5 GB 资源包，剩余 2367 MB < 12288 MB，
+//   退回匿名内存，池 9 GB 装不下，6 分钟后涨到系统上限被收掉；同一台手机解完包重开那局空间够、接上了）：记下来，装游戏模块前再查一次
+static int g_gfile_pending; static uint64_t g_gfile_need, g_gfile_avail;
 static void guest_file_attach_(void);
 static void guest_file_attach(void) { g_attach_phase = 1; guest_file_attach_(); g_attach_phase = 0; }
 static void guest_file_attach_(void) {
@@ -133,23 +175,14 @@ static void guest_file_attach_(void) {
     //   它是游戏能向系统要的内存总量（SetHeapSize 上限 = 池 − 映像），客体脏页最多涨到这么多；窗口跨度（几十 GB 地址）不是内存，堆区随池定，game.tsv 的 app_pool 是图形层的、要到图形初始化才读。
     //   按名字取（dlsym）：单测只链 vawin.c、不链 layout.c；取不到记 0（自动判定按装得下 = 关）
     const char *e = getenv("S2A_GUEST_FILE");
-    uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0, room = 0;
+    uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0;
     if (g_ctr && g_ctr_pool > pool) pool = g_ctr_pool;   // 多款容器：不按缺省池判，否则 Switch 2 款进局后内存超单进程上限被杀（#103）
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
-    room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
-#else
-    // Mac 没有单进程上限，但物理内存小时匿名内存会压进压缩器抖动：16 GB 机器跑 9 GB 池的款，压缩器占 11 GB、WindowServer 被看门狗杀、游戏约 1 帧 / 秒（#41 / #68）。
-    //   按物理内存减系统与其它 App 的预留当「剩余」：16 GB 跑 Switch 2 款开文件后备，大内存机器判装得下、行为不变
-    { uint64_t ph = 0; size_t phn = sizeof ph; uint64_t reserve = env_mb("S2A_GUEST_FILE_MAC_RESERVE_MB", 6144); if (!sysctlbyname("hw.memsize", &ph, &phn, NULL, 0) && ph > reserve) room = ph - reserve; }
-#endif
+    uint64_t room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
     // 宿主开销估计缺省 2560 MB（DOOM Eternal 实测约 2258 MB，往上取整）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     // 宿主开销估计缺省 2048 MB（11-07 真机实测分布，见 s2a_guest_file_wanted3）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     uint64_t host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen();
-#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
     int died = room && s2a_guest_run_died();
-#else
-    int died = 0;   // Mac 不按内存杀进程
-#endif
     int on = s2a_guest_file_wanted4(e, pool, room, seen, host, margin, died);
     const char *why = e && *e ? "按 S2A_GUEST_FILE 显式设定" : !room ? "自动：不知道单进程上限（Mac 会换页），缺省关"
                     : pool > room ? "自动：池本身大于剩余，装不下"
@@ -160,13 +193,40 @@ static void guest_file_attach_(void) {
     LOG("客体内存文件后备：%s——%s；本款应用内存池 %llu MB、离单进程内存上限还剩 %llu MB%s、本机本款实测峰值 %llu MB（0 = 没有）、宿主开销估计 %llu MB%s", on ? "开" : "关", why,
         (unsigned long long)(pool >> 20), (unsigned long long)(room >> 20), room ? "" : "（0 = 未知）", (unsigned long long)(seen == UINT64_MAX ? 0 : seen >> 20), (unsigned long long)(host >> 20), s2a_process_prewarmed() ? "；预热进程" : "");
     if (!on) return;
+    guest_file_map();
+#else
+    // Mac 缺省匿名内存，池本身放不进物理内存、或本机本款上一局到过系统内存压力「严重」档时开文件后备（s2a_guest_file_wanted_mac；#306 / #353）。
+    //   原先按「物理内存 − 6 GB」判（#41 / #68），16 GB 机器跑 Switch 2 款一律开，撞上 macOS 脏文件页上限：脏页过阈值后每缺一页都等内核写回一页，
+    //   阈值随物理内存缩放（16 GB Mac 逐页写共享文件映射，2.2 GB 后 1.5 → 26 µs/页 = SSD 写速；128 GB 机器写 8 GB 无拐点；匿名 0.7 µs/页）。
+    //   游戏内停 141 / 397 s、一局写盘 31 GB（#306 贡献者 M1 Pro 16 GB）。匿名内存只在真不够时由系统压缩 / 换出；真不够（#68：压缩器吃满、WindowServer 被杀）由压力记录兜住
+    {
+        uint64_t ph = 0, room = 0; size_t phn = sizeof ph, reserve = env_mb("S2A_GUEST_FILE_MAC_RESERVE_MB", 6144);
+        if (!sysctlbyname("hw.memsize", &ph, &phn, NULL, 0) && ph > reserve) room = ph - reserve;
+        int pressed = s2a_guest_pressure_seen(), on = s2a_guest_file_wanted_mac(e, pool, room, pressed);
+        LOG("客体内存文件后备：%s——%s；本款应用内存池 %llu MB、物理内存 − 预留 %llu MB", on ? "开" : "关",
+            e && *e ? "按 S2A_GUEST_FILE 显式设定" : room && pool > room ? "自动：池本身大于物理内存 − 预留，装不下"
+            : pressed ? "自动：本机本款上一局到过系统内存压力「严重」档" : "自动：Mac 缺省匿名内存（系统按需压缩 / 换出）",
+            (unsigned long long)(pool >> 20), (unsigned long long)(room >> 20));
+        if (!on) { guest_pressure_watch(); return; }
+        guest_file_map();
+        return;
+    }
+#endif
+}
+// 整段窗口换成临时文件的 MAP_SHARED 映射（判了开之后；iOS / Mac 共用）
+static void guest_file_map(void) {
     const char *td = getenv("TMPDIR"); char path[1024]; snprintf(path, sizeof path, "%s/s2a_guest_%d.bin", td && *td ? td : "/tmp", (int)getpid());
     // 起局前查闪存剩余空间（11-05 能耗线）：文件稀疏，只占内核写回的块，最坏涨到游戏弄脏的客体内存总量（Switch 2 是 12 GB）。
     //   不够就不接文件、照旧用匿名内存（等于开关关），打一行黄；门槛 S2A_GUEST_FILE_MIN_FREE_MB（缺省 12288）
     { const char *m = getenv("S2A_GUEST_FILE_MIN_FREE_MB"); uint64_t need = (m && *m ? strtoull(m, NULL, 10) : 12288ull) << 20; struct statfs sf;
-      if (statfs(td && *td ? td : "/tmp", &sf)) { LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
+      if (statfs(td && *td ? td : "/tmp", &sf)) {
+          if (g_gfile_pending) g_gfile_avail = UINT64_MAX;   // 补接时这次没查到：别拿起局时那次的旧剩余数告诉玩家（审计 P2-265）
+          LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
       uint64_t avail = (uint64_t)sf.f_bavail * (uint64_t)sf.f_bsize;
-      if (avail < need) { LOG("【黄】客体内存文件后备：临时目录剩余 %llu MB < 需要 %llu MB（S2A_GUEST_FILE_MIN_FREE_MB），照旧用匿名内存", (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20)); return; } }
+      if (avail < need) {   // 先不接、记下「要接没接上」，开局装模块前再试一次（s2a_guest_file_retry）
+          g_gfile_pending = 1; g_gfile_need = need; g_gfile_avail = avail;
+          LOG("【黄】客体内存文件后备：临时目录剩余 %llu MB < 需要 %llu MB（S2A_GUEST_FILE_MIN_FREE_MB），先用匿名内存，装游戏前再查一次", (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20)); return; }
+      g_gfile_pending = 0; }
     int fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
     if (fd < 0) { LOG("【红】客体内存文件后备：建不了临时文件（errno=%d），照旧用匿名内存", errno); return; }
     unlink(path);
@@ -178,14 +238,72 @@ static void guest_file_attach_(void) {
     g_gfd = fd;
     LOG("客体内存文件后备：窗口 %#llx +%llu MB 映射到临时文件（已 unlink，稀疏），脏页不计进程实占（S2A_GUEST_FILE）", (unsigned long long)g_base, (unsigned long long)(g_size >> 20));
 }
+// 开局装模块前（host_main.c load_session_modules）：起局时判了要接文件、但空间不够的，此刻（解包已完）再查一次、够了就接上。
+//   只在窗口还原封不动（整段一块 PROT_NONE 的匿名保留）时才换：换成文件是整段 MAP_FIXED，窗口里已经有东西就会被抹掉，那种情形不换、照旧匿名。
+//   还是不够：报红，并在屏幕上告诉玩家差多少空间（不然这款几分钟后涨到单进程上限被系统收掉，没有崩溃报告，玩家只看到闪退）
+int s2a_guest_file_retry(void) {
+    if (!g_gfile_pending || g_gfd >= 0 || !g_ok) return 0;
+    // 窗口起局后分成几段保留（构造时就不止一段），逐段看：全部仍是 PROT_NONE、非共享 = 还没放开过、没有内容
+    for (vm_address_t a = (vm_address_t)g_base, end = (vm_address_t)(g_base + g_size); a < end; ) {
+        vm_address_t ra = a; vm_size_t sz = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+        if (vm_region_64(mach_task_self(), &ra, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &obj) != KERN_SUCCESS || ra >= end) break;
+        if (bi.protection != VM_PROT_NONE || bi.shared) {
+            LOG("【黄】客体内存文件后备：装游戏前想补接文件，但窗口里已有放开过的映射（%#llx +%llu MB，权限 %d），不换，照旧匿名内存", (unsigned long long)ra, (unsigned long long)(sz >> 20), bi.protection);
+            g_gfile_pending = 0; return 0; }
+        a = ra + sz;
+    }
+    guest_file_map();
+    if (g_gfd >= 0) { LOG("客体内存文件后备：装游戏前补接上了（起局时剩余 %llu MB 不够，此刻够了）", (unsigned long long)(g_gfile_avail >> 20)); return 1; }
+    if (g_gfile_pending) {
+        g_gfile_pending = 0;
+        unsigned long long gb_need = (g_gfile_need + (1ull << 30) - 1) >> 30, gb_have = g_gfile_avail >> 30;
+        int unknown = g_gfile_avail == UINT64_MAX;   // 这次没查到剩余空间
+        if (unknown) LOG("【红】客体内存文件后备：装游戏前查不到剩余空间，没接上文件（需要 %llu MB）；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_need >> 20));
+        else LOG("【红】客体内存文件后备：装游戏前仍不够，剩余 %llu MB < 需要 %llu MB；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_avail >> 20), (unsigned long long)(g_gfile_need >> 20));
+        void (*msg)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_show_message");
+        int (*zh)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_ui_zh");
+        char m[512];
+        if (unknown) {
+            if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间可能不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在查不到剩余空间。请确认有足够空间后重新打开，否则游戏玩一会儿可能会闪退。", gb_need);
+            else snprintf(m, sizeof m, "Free storage may be too low\nThis game needs about %llu GB of free space for its memory while running, and free space could not be checked. Make sure there is enough space and reopen it, or the game may quit after a while.", gb_need);
+        } else if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在只有 %llu GB。请删掉一些文件或应用后重新打开，否则游戏玩一会儿可能会闪退。", gb_need, gb_have);
+        else snprintf(m, sizeof m, "Not enough free storage\nThis game needs about %llu GB of free space for its memory while running; only %llu GB is free. Free up some space and reopen it, or the game may quit after a while.", gb_need, gb_have);
+        if (msg) msg(m);
+    }
+    return 0;
+}
 // 窗口外也要文件后备的一段（远端影子区堆区余量用完、改从宿主任意空闲地址分时，far.c）：文件往后接长，按新偏移映射到内核挑的地址（同匿名的落点规则，不多占窗口外地址）。
 //   没开文件后备返回 MAP_FAILED（调用方照旧匿名）。这些段还页时不打洞（s2a_guest_zero 只认窗口），换匿名占位：语义同样是零，只是那几页回到匿名记账
 static pthread_mutex_t g_gextra_mu = PTHREAD_MUTEX_INITIALIZER; static uint64_t g_gextra;
+// 文件往后接长 len，返回这段的偏移；失败返回 UINT64_MAX
+static uint64_t gextra_take(uint64_t len) {
+    pthread_mutex_lock(&g_gextra_mu); uint64_t off = g_size + g_gextra; int ok = !ftruncate(g_gfd, (off_t)(off + len)); if (ok) g_gextra += len; pthread_mutex_unlock(&g_gextra_mu);
+    return ok ? off : UINT64_MAX;
+}
+// 映射失败时退回刚接长的那段（审计 P2-264）：还在文件末尾才退、截回去；后面已有别人接上就留成空洞（稀疏文件，不占盘）
+static void gextra_undo(uint64_t off, uint64_t len) {
+    pthread_mutex_lock(&g_gextra_mu);
+    if (g_size + g_gextra == off + len && !ftruncate(g_gfd, (off_t)off)) g_gextra -= len;
+    pthread_mutex_unlock(&g_gextra_mu);
+}
 void *s2a_guest_map_any(uint64_t len) {
     if (g_gfd < 0 || !len) return MAP_FAILED;
-    pthread_mutex_lock(&g_gextra_mu); uint64_t off = g_size + g_gextra; int ok = !ftruncate(g_gfd, (off_t)(off + len)); if (ok) g_gextra += len; pthread_mutex_unlock(&g_gextra_mu);
-    if (!ok) return MAP_FAILED;
-    return mmap(NULL, len, PROT_NONE, MAP_SHARED, g_gfd, (off_t)off);
+    uint64_t off = gextra_take(len);
+    if (off == UINT64_MAX) return MAP_FAILED;
+    void *p = mmap(NULL, len, PROT_NONE, MAP_SHARED, g_gfd, (off_t)off);
+    if (p == MAP_FAILED) gextra_undo(off, len);
+    return p;
+}
+// 线性远端影子（far.c，#419）的一块也要文件后备：文件往后接长，按新偏移映射到 far.c 自己预留的线性影子区里的固定地址（那段是 far.c 占的不可访问预留，
+//   MAP_FIXED 只盖它自己的地址）。没开文件后备回 1（调用方用预留里的匿名页）；成功回 0，失败回 -1
+int s2a_guest_map_fixed(uint64_t a, uint64_t len) {
+    if (g_gfd < 0) return 1;
+    if (!len) return 0;
+    uint64_t off = gextra_take(len);
+    if (off == UINT64_MAX) return -1;
+    if (mmap((void *)(uintptr_t)a, len, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, (off_t)off) == (void *)(uintptr_t)a) return 0;
+    gextra_undo(off, len);
+    return -1;
 }
 // [a, a + n) 在文件后备的窗口里：打洞（还文件块，再读是 0）并按原偏移重新映射成不可访问，返回 1；不在 / 没开文件后备返回 0（调用方照旧换匿名占位）
 int s2a_guest_zero(uint64_t a, uint64_t n) {

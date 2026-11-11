@@ -1,3 +1,4 @@
+// S2Arm modification: add an entry to the dedicated game sorting list.
 import SwiftUI
 
 /// A Recently played row starts its game, or opens the same fix as Play (game data, an app update).
@@ -91,6 +92,9 @@ struct PortraitLibrary: View, Equatable {
             .scrollIndicators(.hidden)
             .ignoresSafeArea(edges: wide ? [.top, .bottom] : .top)
             .safeAreaInset(edge: .bottom, spacing: 0) { if !wide { bottomBar } }
+            .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
+                LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
+            }
             .overlay(alignment: .topTrailing) {
                 if !chipsInSideBar {
                     HStack(spacing: 10) {
@@ -109,7 +113,10 @@ struct PortraitLibrary: View, Equatable {
 
     private var collection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)").padding(.horizontal, 24)
+            HStack {
+                SectionHeading(title: ShellStrings.text("Your games"), trailing: "\(games.count)")
+                GameOrderButton(gameCount: games.count)
+            }.padding(.horizontal, 24)
             if wide {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 22, alignment: .top)],
                           alignment: .leading, spacing: 24) {
@@ -147,15 +154,18 @@ struct PortraitLibrary: View, Equatable {
             VStack(alignment: .leading, spacing: 0) {
                 CoverView(game: detail.game, showsState: true)
                     .shellTarget("lib.tile.\(detail.id)") { primary(detail) }
-                Text(detail.game.title).shellType(ShellType.cardTitle).lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
-                    .foregroundStyle(.white.opacity(chosen ? 1 : 0.86))
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
+                HStack(spacing: 6) {
+                    if detail.game.showsNewNote { NewDot(size: 7) }
+                    Text(detail.game.title).shellType(ShellType.cardTitle).lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+                        .foregroundStyle(.white.opacity(chosen ? 1 : 0.86))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
                 // The dot on the card carries the state. Words only where the game needs something, the line kept for
                 // every card so the row stays even.
-                Text(detail.game.state == .playable ? " " : detail.game.state.title)
-                    .shellType(ShellType.status).foregroundStyle(detail.game.state.color).lineLimit(1)
+                Text(detail.game.showsNewNote ? ShellStrings.text("Installed – have fun!") : detail.game.state == .playable ? " " : detail.game.state.title)
+                    .shellType(ShellType.status).foregroundStyle(detail.game.showsNewNote ? .white.opacity(0.7) : detail.game.state.color).lineLimit(1)
                     .padding(.top, 4)
-                    .accessibilityHidden(detail.game.state == .playable)
+                    .accessibilityHidden(detail.game.state == .playable && !detail.game.showsNewNote)
                 // The Mac's selection mark: a cream bar under the chosen game.
                 Capsule().fill(ShellPalette.cream).frame(height: 3).padding(.top, 10).opacity(chosen ? 1 : 0)
             }.contentShape(Rectangle())
@@ -164,6 +174,7 @@ struct PortraitLibrary: View, Equatable {
         .accessibilityLabel(detail.game.title + ", " + detail.game.state.title)
         .accessibilityAddTraits(chosen ? .isSelected : [])
         .accessibilityIdentifier("tile.\(detail.id)")
+        .modifier(GameTileMenu(detail: detail, select: select, openSettings: openSettings))
         .id(detail.id)
     }
 

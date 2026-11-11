@@ -1,5 +1,5 @@
 // 游戏声明触屏配置 → 自动切「仅触屏操作」（11-04 维护者定，方案第 1 条）。
-//   游戏调 hid SetTouchScreenConfiguration（声明手指 / 手写笔触屏模式）= 它自己的界面靠触屏走（脑锻炼标题页「开始」只认点按：
+//   游戏调 hid SetTouchScreenConfiguration（声明手指 / 手写笔触屏模式）= 它自己的界面靠触屏走（一款第一方益智游戏标题页「开始」只认点按：
 //   普查 c1103 / c1104 按键 25+ 下不动、点触 (120,330) 即进下一页）。普查 144 款里只有这一款调它，ActivateTouchScreen 则有 70 款开机就调、分不出真用不用。
 //   链路：Ryujinx IHidServer.SetTouchScreenConfiguration 记 Hid.Touchscreen.ConfiguredMode（补丁 hid-touch-config-mode）
 //   → 服务层 InputPump.OfferTouchConfigured 每次 HID 提交看一眼，有值就调这里的 s2a_vpad_touch_configured(模式)
@@ -9,7 +9,8 @@
 #import <Foundation/Foundation.h>
 #include "native.h"
 #include "s2a_unattended.h"
-#include "s2a_direct_prompt.h"   // 提示文案（与 launchers/shared/experience.v1.json prompts 逐字一致）
+#include "s2a_direct_prompt.h"   // 提示文案（与 launchers/shared/experience.v1.json prompts 逐字一致；中英按 App 语言取，S2APICK）
+#import "s2a_l10n.h"
 
 uint64_t s2a_ap_frames(void);   // runtime/src/ap_host.c：上屏帧数
 int s2a_vpad_set_touch_only(int on, int manual, const char *why);   // vpad.m：主线程同步返回 1 切了 / 0 没切（本来就是或玩家手动选过）/ -1 失败
@@ -22,7 +23,7 @@ int s2a_touchcfg_apply(int mode) {
     if (r == 0) { LOG("触屏：游戏声明了触屏配置（模式 %d），没自动切（本来就是仅触屏，或玩家手动选过方案）", mode); return 0; }
     LOG("触屏：游戏声明了触屏配置（模式 %d），已自动切到仅触屏操作（本次运行，不改玩家设置）", mode);
     if (!s2a_unattended() && s2a_dprompt_notice)
-        s2a_dprompt_notice(@"", @S2A_DPROMPT_VPAD_TOUCH_AUTO, 0, 12);
+        s2a_dprompt_notice(@"", S2APICK(S2A_DPROMPT_VPAD_TOUCH_AUTO), 0, 12);
     return r;
 }
 

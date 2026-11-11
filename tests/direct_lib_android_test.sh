@@ -14,7 +14,7 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 P=$T/repo; mkdir -p $P/graphics/tools/direct/vklib $P/graphics/nvn/tools $P/graphics/nvn/games $P/translator $P/pack $P/tools
-cp "$H/graphics/tools/direct/direct_lib.sh" $P/graphics/tools/direct/; mkdir -p $P/pack/jobs && cp "$H/pack/jobs/space_rule.py" $P/pack/jobs/; cp "$H/pack/srcs.sh" $P/pack/; cp "$H/tools/progress.sh" "$H/tools/clonedir.py" "$H/tools/nostall.py" $P/tools/
+cp "$H/graphics/tools/direct/direct_lib.sh" $P/graphics/tools/direct/; mkdir -p $P/pack/jobs && cp "$H/pack/jobs/space_rule.py" "$H/pack/jobs/library.py" $P/pack/jobs/; cp "$H/pack/srcs.sh" $P/pack/; cp "$H/tools/progress.sh" "$H/tools/clonedir.py" "$H/tools/nostall.py" $P/tools/
 export FAKE_CALLS=$T/calls
 cat > $P/graphics/nvn/tools/gfx_api.py <<'EOF'
 import os
@@ -74,7 +74,7 @@ export FAKE_PROF=$T/prof S2A_PYTHON=python3 S2A_DIRECT_CACHE=$T/cache S2A_CPU_LE
 O=$T/out
 D() { S2A_DIRECT_TARGETS=android S2A_DIRECT_PUBLISH=${PUB:-android} bash $P/graphics/tools/direct/direct_lib.sh $G $O 2>&1; }
 n() { wc -l < "$1" 2> /dev/null | tr -d ' ' || echo 0; }
-snap() { (cd $O 2> /dev/null && find . -type f | sort | xargs -r cat | cksum); }
+snap() { (cd $O 2> /dev/null && find . -type f | LC_ALL=C sort | xargs -r cat | cksum); }
 o=$(D); r=$?; V=$O/b-v1-vk
 ck "① 出成（rc=${r}）：b-v1-vk/ 里是库容器、没有逐键散文件，没有 Metal 的 b-v1/，vk_build.tsv 副本在输出目录" '[ $r = 0 ] && [ -s $V/lib.idx ] && [ -s $V/lib.000.pak ] && [ -z "$(ls $V | grep _b\.)" ] && [ -f $O/vk_build.tsv ] && [ ! -e $O/b-v1 ]'
 ck "① keys.tsv 只列 ok 的键、排好序（实 $(tr '\n' ' ' < $O/keys.tsv 2> /dev/null)）" '[ "$(tr "\n" " " < $O/keys.tsv)" = "aaaaaaaaaaaaaaaa cccccccccccccccc " ]'

@@ -82,7 +82,10 @@ echo "$L" | awk -F'\t' -v t="$TID" 'toupper($4) == t {f=1} END {exit !f}' || { e
 # 工具只按内容进键：shasum 带文件名（完整检出 / 家目录路径）时换目录键就变，只取哈希列（同 pack/stage_rewrite.sh 10-23 那处）
 # 原件身份（pack/srcs.sh src_ident：大小 修改时间 ctime inode；审计 P1-54：src_ids 那行只有路径 / 大小 / 修改时间，保住这三样换了 DLC 原件照用旧的）。不读内容：原件可能软链在机械盘上
 SI=$(f=(); while IFS=$'\t' read -r x _; do [ -n "$x" ] && f+=("$x"); done <<< "$L"; [ ${#f[@]} = 0 ] || src_ident "${f[@]}") || { echo "【红】$G 读不出追加内容原件的身份（stat）"; exit 1; }
-K=$( { echo "$L"; echo "$SI"; for t in "$SRC_N.dll" "$SRC_N"; do [ -f "$t" ] && shasum -a 256 < "$t"; done; xxd -s 0x40 -l 16 -p "$CUR/exefs/main"; } | shasum -a 256 | cut -c1-16)
+# main 构建号用 od 读（P2-278：不依赖 xxd；输出与原 xxd -p 逐字节相同，键不变）
+BID=$(od -An -v -tx1 -j 64 -N 16 "$CUR/exefs/main" | tr -d ' \n')
+[[ "$BID" =~ ^[0-9a-f]{32}$ ]] || { echo "【红】$G 读不出 exefs/main 的构建号（0x40 起 16 字节，读到「${BID}」）"; exit 1; }
+K=$( { echo "$L"; echo "$SI"; for t in "$SRC_N.dll" "$SRC_N"; do [ -f "$t" ] && shasum -a 256 < "$t"; done; printf '%s\n' "$BID"; } | shasum -a 256 | cut -c1-16)
 KB=$K; K=$(stage_deps_key "$CUR" aoc "$KB" "$SELF") || exit 1
 root_stage_done "$CUR" aoc "$K" && { echo "🟢 $G 现行已是追加内容 ${K}，跳过"; exit 0; }
 fs=(); while IFS=$'\t' read -r f _; do fs+=("$f"); done <<< "$L"
@@ -91,7 +94,7 @@ MISS=(); FROM=$C; KEEP=0   # MISS：「文件名<TAB>原因」；FROM：克隆�
 miss() { MISS+=("$(basename "$1")	$(printf '%s' "$2" | tr '\t\n' '  ' | cut -c1-160)"); echo "🟡 ${G} 追加内容 $(basename "$1") 未能解出（$(printf '%s' "$2" | cut -c1-160)），跳过"; }
 if [ ! -f "$C/aoc.tsv" ]; then   # 缓存没有：解到 C.tmp.<pid>（带一份 main 供版本核对，解完删），再改名；并发时后到的丢弃自己那份
   S=$C.tmp.$$; rm -rf "$S"; mkdir -p "$S/exefs" && _root_cp "$CUR/exefs/main" "$S/exefs/main" || { echo "【红】$G 建追加内容缓存失败"; exit 1; }
-  # 解不出（原始包与产物根程序版本不符、密钥缺等）只跳过不拦出包：DLC 是附加内容，拦住会让整款出不了包（10-20 动森：产物根 exefs 与本机 3.0.3 卡带版本不符，刷新全红）
+  # 解不出（原始包与产物根程序版本不符、密钥缺等）只跳过不拦出包：DLC 是附加内容，拦住会让整款出不了包（10-20 01006F8002326000：产物根 exefs 与本机 3.0.3 卡带版本不符，刷新全红）
   if ! ${S2A_HDD_READ:-} "$SRC_N" "$SRC_K" "$S" --aoc-only --title-id="$TID" "${fs[@]}" > "$S/aoc.log" 2>&1; then   # S2A_HDD_READ：读原件锁前缀（见 pack/stages/unpack.sh）
     # 整份解不出时逐份兜底（审计 P2-30：原先一份解不出连带其余能解的全部跳过）。--aoc-only 要本体 + 更新做版本核对，所以每次给「上下文 + 一份纯 DLC 包」：
     #   上下文 = 程序号对上的包 + 内容清单里有本体 / 更新的单独包（nx_unpack --inspect 按内容分，不看文件名）；内容清单都读不出的那份直接记缺

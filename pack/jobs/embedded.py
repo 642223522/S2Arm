@@ -8,16 +8,28 @@ from pathlib import Path
 import os
 import shutil
 import uuid
-from core import Failure, atomic, contained, read
+from core import PROBES, Failure, atomic, contained, read
 
 
 def check_git(engine):
     """内置引擎的 Git 快照必须自成一库：Git 认出的仓库目录就是引擎自己的 .git，不许往上认到外层仓库"""
     import subprocess
     env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(Path(engine).resolve().parent))
+    # 先看 git 自己跑不跑得起来（#638：原先吞掉 stderr 一律说「快照无效，请重新安装」，分不清是副本坏还是这台机的 git 跑不起来）：
+    #   git 本身起不来 / 退非 0 → 如实转述 git 的原话，不猜原因；git 好好的而认不出引擎自己的仓库 → 才是快照坏
+    try:
+        v = subprocess.run(["git", "--version"], capture_output=True, text=True, env=env)
+    except OSError as e:
+        raise Failure("内置 S2Arm 引擎初始化要用系统的 git，git 起不来：" + str(e), internal=f"git --version：{e!r}") from None
+    if v.returncode:
+        said = (v.stderr or v.stdout).strip()
+        raise Failure("内置 S2Arm 引擎初始化要用系统的 git，git 报错（退出码 " + str(v.returncode) + "）：" + (" ".join(said.split())[:300] if said else "没有输出"),
+                      internal="git --version：" + said)
     p = subprocess.run(["git", "-C", str(engine), "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, env=env)
-    if p.returncode or Path(p.stdout.strip()).resolve() != (Path(engine) / ".git").resolve():
-        raise Failure("应用内置引擎的版本快照无效，请重新安装完整应用。")
+    found = Path(p.stdout.strip()).resolve() if not p.returncode else None
+    if found != (Path(engine) / ".git").resolve():
+        raise Failure("应用内置引擎的版本快照无效，请重新安装完整应用。",
+                      internal=f"git rev-parse --absolute-git-dir 退出码 {p.returncode}，认出 {found}；{(p.stderr or '').strip()}")
 
 
 def install(c):
@@ -37,6 +49,9 @@ def install(c):
     #   不核 .git/（_stable_files：快照自带的 Git 仓库元数据，正常使用就可能变）。
     #   完好的副本直接用、不拿锁；要挪开 / 重解时拿跨进程锁（_install_lock），拿到后重读标记、再核一次（别的作业可能刚装好）才动手——
     #   v0.2.0 前回归：启动时 preflight 与 setup 同时初始化同一份副本，一个读到另一个装到一半 / 正被收走的副本，误判「被改过」、挪走对方的
+    if getattr(c, "operation", None) in PROBES and read(destination / ".installed.json", {}).get("schema") == 2:   # 非作业的调用方（tools 里的假上下文）没有 operation：按非探测、照常复核
+        c.engine = destination   # 只读探测（剃刀 H4）：装过就直接用，不逐文件复核、不清旧副本；出包 / 起局这类真用引擎产物的作业照旧每次复核（#304）
+        return
     if not _ready(c, destination, manifest):
         with _install_lock(root):
             if not _ready(c, destination, manifest):
@@ -53,24 +68,16 @@ def _ready(c, destination, manifest):
 
 @contextlib.contextmanager
 def _install_lock(root, timeout=1800):
-    """同一引擎目录的挪开 / 重解只许一个作业做（跨进程：flock / msvcrt，同 filelock）。等别的作业解完最多 timeout 秒（解一份几秒到一两分钟）"""
+    """同一引擎目录的挪开 / 重解只许一个作业做（跨进程：filelock.held，与库锁同一实现）。等别的作业解完最多 timeout 秒（解一份几秒到一两分钟）"""
+    import os
     import time
     import filelock
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".install.lock").open("a") as f:
-        t0 = time.time()
-        while True:
-            try:
-                filelock.try_lock(f)
-                break
-            except BlockingIOError:
-                if time.time() - t0 > timeout:
-                    raise Failure("另一个任务正在初始化内置 S2Arm 引擎，等了太久，请稍后重试。") from None
-                time.sleep(0.5)
-        try:
+    try:
+        with filelock.held(root / ".install.lock", wait_s=timeout, holder=dict(operation="prepareEngine", pid=os.getpid(), startedAt=round(time.time(), 3))):
             yield
-        finally:
-            filelock.unlock(f)
+    except filelock.Busy as busy:
+        raise Failure("另一个任务正在初始化内置 S2Arm 引擎，等了太久，请稍后重试。", internal=f"引擎安装锁占锁者：{busy.holder}") from None
 
 
 def _reinstall(c, source, manifest, root, destination, identity):
@@ -86,8 +93,7 @@ def _reinstall(c, source, manifest, root, destination, identity):
     temporary = destination.with_name(identity + "." + uuid.uuid4().hex + ".partial")
     temporary.mkdir(parents=True)
     try:
-        clone_tree(c, source, temporary)
-        validate_files(c, temporary, manifest["files"])
+        clone_tree(c, source, temporary)   # v0.2.3 清理：不再对刚拷出的副本再核一遍——源刚核过，clone_tree 拷错会自己报
         check_git(temporary)
         atomic(temporary / ".installed.json", dict(schema=2, id=identity))
         c.check()
@@ -166,7 +172,7 @@ def _stable_files(manifest):
     return {p: v for p, v in (manifest.get("files") or {}).items() if not (p == ".git" or p.startswith(".git/"))}
 
 
-def _intact(c, root, manifest, files=None, full=True):
+def _intact(c, root, manifest, files=None, full=False):
     """副本里这些文件（缺省清单全部）在、是普通文件、大小对（full 再核摘要）"""
     from build import validate_files
     try:

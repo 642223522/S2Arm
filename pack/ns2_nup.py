@@ -185,7 +185,7 @@ class Nup:
         return self
 
     def __exit__(self, et, ev, tb):
-        # with 块里已经出错时，关映射失败不能盖掉原异常（11-06 Windows 出包机时之笛：并发出包把 T 盘写满，原样文件写到一半抛 OSError 28，
+        # with 块里已经出错时，关映射失败不能盖掉原异常（11-06 Windows 出包机0400486024DEC000：并发出包把 T 盘写满，原样文件写到一半抛 OSError 28，
         #   退出时 mm.close() 因还有导出的视图抛 BufferError，日志只剩 BufferError）：原异常照抛，附一句关映射失败的说明
         try:
             self.close()
@@ -325,17 +325,37 @@ def safe_name(n, raw):
     return name
 
 
-def write_tree(n, d, dst, stat):
-    """容器里的目录 d 整棵写到 dst（逐文件核 SHA-256）。"""
+def write_tree(n, d, dst, stat, written=None):
+    """容器里的目录 d 整棵写到 dst（逐文件核 SHA-256）。written（一次展开共用的 {(内容 SHA-256, 大小): 已写的路径}）：
+    内容相同的文件只真写一次，其余从已写的那份克隆（同卷 APFS 不占新空间）/ 硬链接——NUP 容器按块去重，本体与整份打过补丁的更新
+    大部分文件相同，原先各写一份，解包时盘上同时有近两份（26 GB 的款峰值到 50 GiB）"""
     os.makedirs(dst, exist_ok=True)
     for raw, isdir, i in n.children(d):
         p = os.path.join(dst, safe_name(n, raw))
         if isdir:
-            write_tree(n, i, p, stat)
+            write_tree(n, i, p, stat, written)
+            continue
+        _, size, sha, _, _, _ = n.files[i]
+        same = written.get((sha, size)) if written is not None else None
+        if same is not None:
+            _share(same, p)
+            stat[2] += size
         else:
             with open(p, 'wb') as f:
                 stat[1] += n.copy(i, f)
-            stat[0] += 1
+            if written is not None:
+                written[(sha, size)] = p
+        stat[0] += 1
+
+
+def _share(src, dst):
+    """同内容的第二份：macOS 同卷克隆（不占新空间）→ 硬链接（这棵中间目录只给 pack/ns2_dump.py 读出、随后整棵删，不会有人原地改）→ 真拷"""
+    if _clone_only(src, dst):
+        return
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 
 
 def localized_icon(payload):   # 本地化图标记录（TLV 0x000A）→ 英语图标，没有就第一个
@@ -393,13 +413,13 @@ def convert(src, out, say=print):
             say(f'🟡 {NO_BASE}')
         tmp = out + '.tmp'
         shutil.rmtree(tmp, ignore_errors=True)
-        stat = [0, 0]
+        stat, written = [0, 0, 0], {}   # 文件数、真写字节、按内容共用省下的字节
         for k, rel in ([(base, 'base')] if base else []) + ([(vers[ver], os.path.join('updates', str(ver)))] if ver else []):
             if k.exefs == NO_DIR or n.child(k.exefs, b'main') is None or n.child(k.exefs, b'main.npdm') is None:
                 raise Error(f'{k.kind} v{k.version}：没有 exefs/main 与 exefs/main.npdm')
-            write_tree(n, k.exefs, os.path.join(tmp, rel, 'exefs'), stat)
+            write_tree(n, k.exefs, os.path.join(tmp, rel, 'exefs'), stat, written)
             if k.romfs != NO_DIR:
-                write_tree(n, k.romfs, os.path.join(tmp, rel, 'romfs'), stat)
+                write_tree(n, k.romfs, os.path.join(tmp, rel, 'romfs'), stat, written)
             if write_control(n, k, base, os.path.join(tmp, rel)):
                 say(f'   {rel}：带控制分区（control.nacp + 图标），用原件')
         if base is None:   # 没有本体：最新更新当整款，同时写成 base/（ns2_dump 要 base/exefs/main.npdm 认目录）
@@ -408,25 +428,29 @@ def convert(src, out, say=print):
                 if os.path.isdir(os.path.join(u, part)):
                     shutil.copytree(os.path.join(u, part), os.path.join(tmp, 'base', part), copy_function=_clone)
         for tid, k in sorted(dlc.items()):
-            write_tree(n, k.romfs, os.path.join(tmp, 'dlc', f'{tid:016X}', '0', 'romfs'), stat)
+            write_tree(n, k.romfs, os.path.join(tmp, 'dlc', f'{tid:016X}', '0', 'romfs'), stat, written)
         with open(os.path.join(tmp, '.ns2_nup_key'), 'w', encoding='utf-8', newline='\n') as f:
             f.write(key + '\n')
         shutil.rmtree(out, ignore_errors=True)
         os.rename(tmp, out)
-        say(f'🟢 展开完成：{stat[0]:,} 个文件，{stat[1] / 2**30:.2f} GB → {out}')
+        say(f'🟢 展开完成：{stat[0]:,} 个文件，真写 {stat[1] / 2**30:.2f} GB，同内容共用 {stat[2] / 2**30:.2f} GB（{stat[2]:,} 字节）→ {out}')
         return app
 
 
-def _clone(s, d):   # macOS 同卷 APFS 克隆（不占新空间），其余平台或克隆不成就真拷（ctypes.CDLL(None) 在 Windows 上抛 TypeError，#128）
+def _clone_only(s, d):   # macOS 同卷 APFS 克隆（不占新空间）→ True；其余平台或克隆不成 → False（ctypes.CDLL(None) 在 Windows 上抛 TypeError，#128）
     if sys.platform == 'darwin':
         try:
             import ctypes
             libc = ctypes.CDLL(None, use_errno=True)
             if hasattr(libc, 'clonefile') and libc.clonefile(os.fsencode(s), os.fsencode(d), 0) == 0:
-                return d
+                return True
         except OSError:
             pass
-    return shutil.copy2(s, d)
+    return False
+
+
+def _clone(s, d):   # 克隆不成就真拷
+    return d if _clone_only(s, d) else shutil.copy2(s, d)
 
 
 def inspect_row(src):
