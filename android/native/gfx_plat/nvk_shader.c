@@ -90,9 +90,10 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
     // 组合贴图槽事实：顶点、片元各 32 槽。槽里是「贴图号 | 采样器号 << 20」；没绑过的槽读作池里的第 0 项。
     for (int st = 0; st < nst && f->ntex < 64; st++) for (int slot = 0; slot < 32 && f->ntex < 64; slot++) {
         uint64_t h = rp_S.tex[st][slot]; long id = h ? (long)(h & 0xFFFFF) : (long)rp_S.tex_base;
-        tex_t t; struct s2a_nvn_texture_fact nf; char why[96];
-        if (rp_tex_snap_by_id((int)id, &t, NULL, NULL)) {
-            if (s2a_nvn_texture_fact((uint32_t)t.d.format, (uint32_t)t.d.target, t.d.depth, &nf, why, sizeof why)) continue;   // 表达不了的格式 / 目标：不出事实，编译器按缺项准确失败
+        tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
+        if (rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
+            // 格式取绑定视图的（视图自己设了格式就用它的）：着色器声明的采样数值型要和实际绑上去的视图一致
+            if (s2a_nvn_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)t.d.target, t.d.depth, &nf, why, sizeof why)) continue;   // 表达不了的格式 / 目标：不出事实，编译器按缺项准确失败
         } else {
             int in_pool = id >= rp_S.tex_base && (uint64_t)(id - rp_S.tex_base) < (uint64_t)rp_S.tex_pool_n;
             memset(&nf, 0, sizeof nf); snprintf(nf.format, sizeof nf.format, "Unknown");

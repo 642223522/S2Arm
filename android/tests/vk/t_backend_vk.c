@@ -3638,6 +3638,53 @@ static void c80_front_face(const char *dir) {
     free(vm); free(fm); free(vm2); free(fm2);
 }
 
+// C81：整数格式的贴图绑进采样槽。游戏的采样器是线性过滤也照绑（整数格式不能线性过滤：后端给它换最近点的那一个）。
+// 期望（手算）：2x2 的 R32UI 贴图存四个位模式（含浮点里是非数、次正规数的那两种），画到 2x2 的 R32UI 目标，逐像素读回来与存进去的位相同；校验层 0 条。
+static void c81_int_sampled(const char *dir) {
+    static const uint32_t bits[4] = {0x12345678u, 0xFFFFFFFFu, 0x00000123u, 0x7FC00001u};
+    nvn_gpu_layout_ent ent; memset(&ent, 0, sizeof ent);
+    ent.set = 0; ent.cls = NVN_GPU_RES_TEX_SAMP; ent.access = NVN_GPU_ACC_R; ent.binding = 0; ent.count = 1; ent.stages = 1u << NVN_GPU_SH_FS;
+    nvn_gpu_layout fl; memset(&fl, 0, sizeof fl); fl.ent = &ent; fl.nent = 1;
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "tex_u.frag", NULL, &fl, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 tex_u"); return; }
+    nvn_gpu_tex src = make_tex(2, 2, NVN_FORMAT_R32UI, NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex out = make_tex(2, 2, NVN_FORMAT_R32UI, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view sv = make_view(src), ov = make_view(out);
+    nvn_gpu_buf rb = make_buf(16, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = full_vb();
+    nvn_gpu_err e; samp_par sp; memset(&sp, 0, sizeof sp);
+    sp.magf = NVN_MAG_FILTER_LINEAR; sp.minf = NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR; sp.lod_max = 1000.0f;
+    nvn_gpu_samp samp = NULL;
+    CHECK(OK(nvn_gpu_samp_create(&sp, &samp, &e)), "C81 samp：%d %s", e.rc.code, e.why);
+    nvn_gpu_pipe_desc pd; nvn_gpu_pipe pipe = NULL;
+    fill_gpipe_desc(&pd, vs, fs, 0); pd.cfmt[0] = NVN_FORMAT_R32UI;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C81 pipe：%d %s", e.rc.code, e.why);
+    if (pipe && samp) {
+        nvn_gpu_cmd c = begin_cmd();
+        nvn_gpu_tex_upload(c, src, 0, 0, NULL, bits, 8, 16);
+        nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+        p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
+        p.w = 2; p.h = 2; p.layers = 1;
+        nvn_gpu_pass_begin(c, &p);
+        nvn_gpu_dyn dyn; full_dyn(&dyn); dyn.vp[0][2] = 2; dyn.vp[0][3] = 2; dyn.sc[2] = 2; dyn.sc[3] = 2;
+        nvn_gpu_binding b; memset(&b, 0, sizeof b); b.ent = 0; b.cls = NVN_GPU_RES_TEX_SAMP; b.u.ts.view = sv; b.u.ts.samp = samp;
+        nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+        nvn_gpu_set_pipe(c, pipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_bind(c, NVN_GPU_SH_FS, &b, 1); nvn_gpu_draw(c, &da);
+        nvn_gpu_pass_end(c);
+        nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 8, 16);
+        nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 124, on_done, NULL, &e);
+        CHECK(OK(r), "C81 commit：%d %s", r.code, e.why);
+        r = nvn_gpu_fence_wait(124, 5000000000ull, &e);
+        CHECK(OK(r), "C81 wait：%d %s", r.code, e.why);
+        uint32_t got[4]; memcpy(got, buf_cpu(rb), 16);
+        CHECK(!memcmp(got, bits, 16), "C81 整数贴图读回的位：%#x %#x %#x %#x（期望 %#x %#x %#x %#x）", got[0], got[1], got[2], got[3], bits[0], bits[1], bits[2], bits[3]);
+    }
+    if (samp) nvn_gpu_samp_release(samp);
+    nvn_gpu_view_release(sv); nvn_gpu_view_release(ov); nvn_gpu_tex_release(src); nvn_gpu_tex_release(out);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -3871,6 +3918,7 @@ int main(int argc, char **argv) {
     c77_null_color_slot(argv[1]);
     c79_masked_clear(argv[1]);
     c80_front_face(argv[1]);
+    c81_int_sampled(argv[1]);
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;

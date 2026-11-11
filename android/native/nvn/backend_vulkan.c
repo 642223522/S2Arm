@@ -120,6 +120,7 @@ struct nvn_gpu_pipe_s {
 
 struct nvn_gpu_samp_s {
     VkSampler sampler;
+    VkSampler int_sampler;   // 给整数格式的视图用：最近点、不做各向异性、整数边界色（整数格式不能线性过滤）；参数本来就合规时与 sampler 是同一个
     int released, refs;
     struct nvn_gpu_samp_s *all_next;
 };
@@ -351,6 +352,7 @@ static void destroy_samp_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_samp_s *s)
     struct nvn_gpu_samp_s **pp = &vk->samps;
     while (*pp && *pp != s) pp = &(*pp)->all_next;
     if (*pp) *pp = s->all_next;
+    if (s->int_sampler && s->int_sampler != s->sampler) vkDestroySampler(vk->d, s->int_sampler, NULL);
     if (s->sampler) vkDestroySampler(vk->d, s->sampler, NULL);
     free(s);
 }
@@ -887,6 +889,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     g.samps = NULL;
     while (sp) {
         struct nvn_gpu_samp_s *sn = sp->all_next;
+        if (sp->int_sampler && sp->int_sampler != sp->sampler) vkDestroySampler(g.d, sp->int_sampler, NULL);
         if (sp->sampler) vkDestroySampler(g.d, sp->sampler, NULL);
         free(sp);
         sp = sn;
@@ -2528,7 +2531,8 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             if (!b->u.ts.view || !b->u.ts.samp) { set_sticky(c, NVN_GPU_E_LAYOUT, "TEX_SAMP 绑定缺 view 或 samp"); return -1; }
             memset(im, 0, sizeof *im);
             im->imageView = b->u.ts.view->view;
-            im->sampler = b->u.ts.samp->sampler;
+            { nvn_fmt_info vfi; int vint = nvn_fmt_info_of(b->u.ts.view->nvn_format, &vfi) && (vfi.kind == NVN_FMT_UINT || vfi.kind == NVN_FMT_SINT);
+              im->sampler = vint ? b->u.ts.samp->int_sampler : b->u.ts.samp->sampler; }
             im->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             w->pImageInfo = im;
             break;
@@ -3232,6 +3236,16 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     if (vkCreateSampler(g.d, &ci, NULL, &s->sampler) != VK_SUCCESS) {
         free(s);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreateSampler 拒绝（可能缺少 samplerAnisotropy）");
+    }
+    {   // 整数格式视图用的那一个：过滤全改最近点、关各向异性、边界色换整数的同名值
+        VkSamplerCreateInfo ii = ci;
+        ii.magFilter = ii.minFilter = VK_FILTER_NEAREST; ii.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ii.anisotropyEnable = VK_FALSE; ii.maxAnisotropy = 1.0f;
+        ii.borderColor = white ? VK_BORDER_COLOR_INT_OPAQUE_WHITE : transparent ? VK_BORDER_COLOR_INT_TRANSPARENT_BLACK : VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        if (vkCreateSampler(g.d, &ii, NULL, &s->int_sampler) != VK_SUCCESS) {
+            vkDestroySampler(g.d, s->sampler, NULL); free(s);
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreateSampler 拒绝（整数格式用的最近点采样器）");
+        }
     }
     pthread_mutex_lock(&g_mu);
     s->all_next = g.samps;
