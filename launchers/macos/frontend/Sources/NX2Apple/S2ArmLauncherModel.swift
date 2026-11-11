@@ -189,6 +189,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var batchLocation = ""
     @Published var batchState: [String: Any]?
     @Published var batchRunning = false
+    /// 批次记录（batch.py mark / 命令）没写成的原因：整批停住、批量页显示（剃刀 M7：原先失败照样往下走，状态和真实结局分叉）；nil = 没出错
+    @Published var batchError: String?
     @Published var batchUnrecognized: [ImportSource] = []
     /// 在单款出包页又放进游戏：导入完列清单时这款排第一
     var batchSeed: String?
@@ -227,6 +229,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
     @Published var cloudSyncing = false
     private var work: Task<Void, Never>?
+    private var refreshWaiters: [() -> Void] = []
+    /// 正在列时又要刷新（导入完、出包完、切回窗口……）：记一笔，这一轮列完再补列一次；这期间挂的回调归补的那一轮（剃刀 M8：原先直接丢掉，
+    /// 刚导入的游戏要等下一次别的刷新才出现）。nil = 没有要补的
+    private var refreshAgain: [() -> Void]?
+    private var startupCatalogSent = false
     private var controllerGameStarted = false
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
@@ -242,8 +249,18 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 有作业在跑（一局、准备、出包、装机……）：别的动作先不让点。
     var busy: Bool { if let session, case .finished = session.phase { return false }; return session != nil }
 
-    public func refresh() {
-        guard !loading else { return }
+    /// 启动时（启动器剃刀 M6）：碰游戏库 / 私有目录的后端作业一个接一个起——先列游戏库，再恢复批次，再查环境。
+    /// 原先 onAppear 一次并发起这几个作业，每个作业开头都做迁移 / 收日志：两个作业同时收私有目录日志、老库搬家时旧库目录被建回来（坑记录）。
+    /// 不碰游戏库的（控制口、更新、公告、手柄中继）照常一起起。
+    func startup() {
+        startControl(); finishPendingUpdate(); checkForUpdate(); loadNotice(); startControllerConnection()
+        refresh { [weak self] in self?.recoverBatch { self?.checkEnvironment() } }
+    }
+
+    /// done：这次列完（成功或失败）后调；已经在列时不再起新作业，等那一次列完再调
+    public func refresh(_ done: (() -> Void)? = nil) {
+        guard !loading else { refreshAgain = (refreshAgain ?? []) + (done.map { [$0] } ?? []); return }
+        if let done { refreshWaiters.append(done) }
         // 启动时先显示上次的列表，不等作业；能不能玩在真正启动时还会完整校验
         if !libraryLoaded, games.isEmpty, let known = provider.library.lastKnownGames(), !known.isEmpty {
             games = known
@@ -252,7 +269,9 @@ public final class S2ArmLauncherModel: ObservableObject {
             showingSnapshot = true
         }
         loading = true
-        provider.library.load { [weak self] result in
+        // 启动器这次打开后的第一次读带 startup（剃刀 H14）：作业层只在这一次清残留 / 判任务目录清理，之后每次刷新只读
+        let startup = !startupCatalogSent; startupCatalogSent = true
+        provider.library.load(startup: startup) { [weak self] result in
             guard let self else { return }
             self.loading = false
             self.libraryLoaded = true
@@ -265,6 +284,9 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.libraryError = error.message
                 self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
             }
+            let waiters = self.refreshWaiters; self.refreshWaiters = []
+            waiters.forEach { $0() }
+            if let again = self.refreshAgain { self.refreshAgain = nil; self.refreshWaiters = again; self.refresh() }
         }
     }
 

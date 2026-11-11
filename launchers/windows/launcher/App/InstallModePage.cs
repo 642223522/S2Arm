@@ -196,7 +196,7 @@ public sealed partial class EnvironmentWindow
     private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack)
     {
         if (installBusy || packRunning || connectedFolder is null || libraryId is null) return;
-        installBusy = true; phoneUpdating = true; updateOutcome = null; updateDiagnostics = ""; updateDone = updateTotal = null;
+        var front = BeginJob(JobKind.Phone); phoneUpdating = true; updateOutcome = null; updateDiagnostics = ""; updateDone = updateTotal = null;
         Render();
         var succeeded = false;
         try
@@ -206,7 +206,7 @@ public sealed partial class EnvironmentWindow
             if (acceptStale) extra["acceptStale"] = true;
             if (PhoneUpdateTarget is { Device.Length: > 0 } target) extra["device"] = target.Device;
             var job = await PackJobClient.RunAsync(PackRequest("installUpdate", "", extra.Count > 0 ? extra : null),
-                e => Dispatcher.UIThread.Post(() => IngestUpdateEvent(e)), CancellationToken.None);
+                e => Dispatcher.UIThread.Post(() => IngestUpdateEvent(e)), front.Token, front.Next());
             succeeded = job.Report.Succeeded;
             updateOutcome = succeeded ? "" : job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
             updateDiagnostics = succeeded ? "" : JobDiagnostics(job);
@@ -214,8 +214,8 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { updateOutcome = error.Message.Length > 0 ? error.Message : error.GetType().Name; }
-        finally { installBusy = false; phoneUpdating = false; Render(); }
-        if (!libraryBusy) { libraryOperation = RunLibraryAsync("catalog", null); await libraryOperation; }
+        finally { EndJob(front); phoneUpdating = false; Render(); }
+        await RefreshLibraryAsync();   // 游戏库作业在跑就记一笔、那一轮完了补刷（剃刀 W8），不再跳过
         if (!succeeded || repack.Count == 0 || batchRunning || PackBusy) return;
         OpenBatch(repack, []);
         batchControlPlatforms = batchDraft.ToDictionary(r => r.Id, _ => new[] { "iphone" });   // 只出 iPhone（缺东西的款 StartBatchAsync 自己跳过）

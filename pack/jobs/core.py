@@ -440,7 +440,7 @@ LIBRARY_MARKER = ".s2arm-library.json"
 def default_home(private, library=None):
     """日志、任务记录、工具缓存、引擎副本的根：默认位置（请求里的 library）建好了（有库标识文件）就是它；还没建好（setup 之前、没选库）退回私有目录。
     只拿得到私有目录的读者（main.py get / events / cancel / prune / report）不传 library，按索引表 library-index.json 第一项记的默认位置算
-    （layout.load_index 总把默认位置排第一，layout.adopt_private_logs 每个作业开头核一次它与请求一致）"""
+    （layout.load_index 总把默认位置排第一，layout.follow_task 每个作业建任务时核一次它与请求一致）"""
     private = Path(private).expanduser().resolve()
     if library is None:
         try:
@@ -455,20 +455,23 @@ def default_home(private, library=None):
     return private
 
 
-def logs_root(private, library=None):
-    """任务日志 + 任务记录（logs/jobs/）的目录：<默认位置>/logs，库没建好退回 <私有目录>/logs。后端所有读写日志 / 任务记录的地方都调它；
-    前端各一处照同一规则算：Swift S2ArmPaths.logsRoot、C# LibraryPaths.LogsRoot、s2armctl.logs_root"""
-    return default_home(private, library) / "logs"
+def logs_root(private):
+    """任务日志 + 任务记录（logs/jobs/）的目录：固定 <私有目录>/logs（剃刀 H6：原先「库建好了放 <库>/logs、没建好退回私有目录」，
+    任务记录在三个目录间搬、后端和三个前端各算一遍，规则一漂控制口 / 崩溃日志就去错的地方找；并发作业同时收日志还出过事故）。
+    后端所有读写日志 / 任务记录的地方都调它；前端照同一条规则：Swift S2ArmPaths.logsRoot、C# LibraryPaths.LogsRoot、s2armctl.logs_root"""
+    return Path(private).expanduser().resolve() / "logs"
 
 
-def jobs_dir(private, library=None):
-    return logs_root(private, library) / "jobs"
+def jobs_dir(private):
+    return logs_root(private) / "jobs"
 
 
 def _job_dirs(private):
-    """读一条任务时依次找：当前的任务记录目录；库建好前退回私有目录写的（下一个作业开头 layout.adopt_private_logs 才收进库）；P3 之前的旧位置 <私有目录>/jobs"""
+    """读一条任务时依次找：<私有目录>/logs/jobs；还没迁回来的旧位置 <默认位置>/logs/jobs（v0.3.0 之前库建好后写在库里，
+    下一个作业建任务时 layout.adopt_library_logs 迁回私有目录）；P3 之前的 <私有目录>/jobs"""
     private = Path(private).expanduser().resolve()
-    return list(dict.fromkeys([jobs_dir(private), private / "logs" / "jobs", private / "jobs"]))
+    old = default_home(private) / "logs" / "jobs"
+    return list(dict.fromkeys([jobs_dir(private), *([old] if old != jobs_dir(private) else []), private / "jobs"]))
 
 
 IMPORT_RECORD_SOURCE_DIAGNOSTIC = 16_000    # 任务记录里每个来源的诊断上限（字符）：完整的在终态事件与按来源写的 inspect 日志里
@@ -537,7 +540,7 @@ class Context:
         self.library = Path(request.get("library") or self.private / "unconfigured").expanduser().resolve()
         import layout
         self.library = layout.relocate_default(self.private, self.library)   # 旧默认库（私有目录里的）已搬到 ~/S2Arm：照新位置用（游戏库结构 P3）
-        self.logs = logs_root(self.private, self.library)   # 本任务的日志与任务记录（logs/jobs/）在这里，整个任务不变
+        self.logs = logs_root(self.private)   # 本任务的日志与任务记录（logs/jobs/）：固定在私有目录（剃刀 H6）
         self.keys = self.private / "keys/prod.keys"
         self.t0 = time.monotonic()
         self.stage = ""
@@ -1382,16 +1385,16 @@ KEEP_FAILED_PER_OPERATION = 50
 
 
 def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=False, *, per_operation=KEEP_PER_OPERATION,
-               failed_per_operation=KEEP_FAILED_PER_OPERATION, library=None, jobs=None):
+               failed_per_operation=KEEP_FAILED_PER_OPERATION, jobs=None):
     """Keep the job store bounded (J10, rules above). Only the three files this module owns per task are removed; anything else in the
-    directory is left alone. `jobs` names the directory directly (layout.adopt_private_logs prunes the private fallback before moving it)."""
-    jobs = Path(jobs) if jobs is not None else jobs_dir(private, library)
+    directory is left alone. `jobs` names the directory directly (layout.adopt_library_logs prunes the old location before moving it)."""
+    jobs = Path(jobs) if jobs is not None else jobs_dir(private)
     if not jobs.is_dir():
         return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     by_task = {}
     try:
         listed = list(jobs.iterdir())
-    except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_private_logs）
+    except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_library_logs）
         return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     for path in listed:
         if path.is_symlink() or not path.is_file():
@@ -1447,10 +1450,10 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
                 bytes=freed, invalidRecords=invalid)
 
 
-def status(private, library=None):
+def status(private):
     """One look at the whole job store: how many are running vs finished, how big it is, and which task last moved.
     The store is every directory a record can be read from (_job_dirs: the current one plus the private fallbacks not yet adopted)."""
-    dirs = [d for d in dict.fromkeys([jobs_dir(private, library), *_job_dirs(private)]) if d.is_dir()]
+    dirs = [d for d in _job_dirs(private) if d.is_dir()]
     result = dict(running=0, finished=0, interrupted=0, bytes=0, newest=None, oldest=None, invalidRecords=[])
     newest = oldest = None
     for path in (p for d in dirs for p in d.iterdir()):

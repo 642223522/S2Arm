@@ -148,11 +148,15 @@ struct InstallView: View {
             }
         }
         .task {
-            // 开着就每几秒问一次（旧启动器装机页同此）；关掉页面 Task 自动取消
+            // 开着、且启动器在前台时每几秒问一次（玩家插手机 / 点信任后界面自己变过来）；切到别的程序就不问（剃刀 M5：原先后台也一直起作业），
+            //   切回来立刻问一次（下面 didBecomeActive）；关掉页面 Task 自动取消
             while !Task.isCancelled {
-                if installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
+                if NSApp.isActive, installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
                 try? await Task.sleep(nanoseconds: Self.pollSeconds * 1_000_000_000)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
         }
         .onAppear { if model.phoneResult?.gameID == gameID { model.phoneResult = nil } }   // 回来看过结果，顶部胶囊收起
         .frame(width: 600, height: 520)

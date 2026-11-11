@@ -72,19 +72,13 @@ class StartFailureTests(unittest.TestCase):
 
 
 class LogsRootTests(unittest.TestCase):
-    """游戏库结构 P3：库建好（有 .s2arm-library.json）→ <库>/logs；没建好 → <数据目录>/logs；旧默认库搬走后按搬库标记跟过去"""
+    """剃刀 H6：日志 / 任务记录固定 <数据目录>/logs，库建没建好、设置里选了哪个库都不变（同作业层 core.logs_root）"""
     def test_rules(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), mock.patch.object(ctl, "WINDOWS", False):
             lib = Path(root) / "lib"; lib.mkdir()
             (Path(root) / "preferences.json").write_text(json.dumps({"library": str(lib)}))
             self.assertEqual(ctl.logs_root(), os.path.join(root, "logs"))
             (lib / ".s2arm-library.json").write_text("{}")
-            self.assertEqual(ctl.logs_root(), os.path.join(str(lib), "logs"))
-            old = Path(root) / "游戏库"
-            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(old)}))
-            (Path(root) / "library-relocate.json").write_text(json.dumps({"from": str(old), "to": str(lib), "state": "done"}))
-            self.assertEqual(ctl.logs_root(), os.path.join(str(lib), "logs"))
-            (Path(root) / "preferences.json").write_text(json.dumps({"library": str(Path(root) / "other")}))   # 别的路径不跟标记
             self.assertEqual(ctl.logs_root(), os.path.join(root, "logs"))
 
 

@@ -2,7 +2,7 @@
 //   App 自带的 s2armctl / skill（launchers/macos/skill/s2arm-operator，维护者 10-23：玩家用自己的 AI 完成移植）对缺省 App 全部连不上。
 // 收发、令牌、control.json 用适配层 ControlPort（与旧启动器同一份）；协议同旧启动器（launchers/macos/s2armctl.py 不用改）。
 // 每个命令调界面按钮背后的同一个模型方法（S2ArmLauncherModel），屏幕上的作业页照常显示；选文件的对话框改成直接给路径。
-// GET /state 的 tasks 读作业层自己写的作业记录（<游戏库>/logs/jobs/<任务>.json，库没建好时 <私有目录>/logs/jobs；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
+// GET /state 的 tasks 读作业层自己写的作业记录（固定 <私有目录>/logs/jobs/<任务>.json，剃刀 H6；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
 import AppKit
 import Foundation
 import S2ArmAppleAdapter
@@ -171,8 +171,12 @@ import S2ArmAppleAdapter
             if let e = model.actionError(for: g.id) { return .bad(e) }
             return .ok()
         case ("POST", "/cancel"):
-            guard str("taskId") != nil else { return .bad("缺 taskId") }
+            // 按任务号取消（启动器剃刀 M23）：原先不管传什么都停当前那个；任务号对不上回 409，不停错作业
+            guard let id = str("taskId") else { return .bad("缺 taskId") }
             guard model.busy else { return .bad("没有在跑的作业") }
+            guard let current = model.session?.taskID, current == id else {
+                return .bad("这个 taskId 不是正在跑的作业（正在跑：\(model.session?.taskID ?? "还没拿到任务号")）", code: 409)
+            }
             model.stop(); return .ok()
         case ("POST", "/retry"):
             guard let id = str("taskId"), let t = ControlJournal.tasks(privateRoot: model.provider.client.environment.privateRoot, limit: 500).first(where: { $0["id"] as? String == id }) else {

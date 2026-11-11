@@ -781,11 +781,30 @@ def _discard(p):
         shutil.rmtree(p)
 
 
+def _within(path, parent):
+    return path == parent or parent in path.parents
+
+
+def _occupied(d):
+    """建不了游戏库的文件夹：有系统文件以外的东西，又不是游戏库（没有标识、也不像旧游戏库）"""
+    return not (d / ".s2arm-library.json").exists() and layout.has_content(d) and not _looks_like_library(d)
+
+
 def setup(c):
-    """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建"""
+    """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建。
+    库路径规则只在这里（剃刀 W19，两端前端只把玩家输入转成绝对路径）：
+      盘根 / 用户主目录 / 引擎目录不行；请求带 installDir（启动器安装目录，升级时整个替换）时，库在它里面或包含它都不行；
+      请求带 freeDefault（玩家没选过位置，用的是缺省库）而缺省位置被别的文件占着（多半是把 S2Arm 解压到了同名文件夹）：
+      换到旁边的「<名字> Library」「<名字> Library 2」…，结果里的 library 是实际用的位置，前端照它记住"""
     c.begin("创建游戏库")
     if c.library == Path(c.library.anchor) or c.library == Path.home() or c.library == c.engine:
-        raise Failure("请选择独立的游戏库文件夹。")
+        raise Failure("请选择独立的游戏库文件夹，不能直接用整个盘或用户文件夹。")
+    install = c.r.get("installDir")
+    if install and (_within(c.library, Path(install).resolve()) or _within(Path(install).resolve(), c.library)):
+        raise Failure("游戏库不能放在 S2Arm 启动器自己的文件夹里，也不能包含它（升级时这个文件夹会整个替换，库会被一起删掉）：换一个文件夹。")
+    if c.r.get("freeDefault") and _occupied(c.library):
+        c.library = next((n for n in (c.library.with_name(f"{c.library.name} Library" + (f" {i}" if i > 1 else "")) for i in range(1, 10))
+                          if not _occupied(n)), c.library)   # 都被占就原样往下走，由下面报「已有别的文件」
     require_apfs(c.library)
     require_local(c.library)
     c.library.mkdir(parents=True, exist_ok=True)
@@ -1620,7 +1639,9 @@ def catalog(c):
     import toolchain
     import host_update
     c.begin("读取游戏库")
-    sweep_residue(c)
+    startup = c.r.get("startup") is True   # 启动器打开后的第一次刷新（两端前端带 startup: true）
+    if startup:
+        sweep_residue(c)   # 崩溃 / 断电 / 被杀留下的解包与中间产物：启动时扫一次（剃刀 H14：原先每次刷新都扫两遍；正常失败与取消由 clean_after_stop 当场清）
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
     for game in cat["games"]:
@@ -1668,11 +1689,11 @@ def catalog(c):
         status = dict(ready=False, verified=False)
     status["message"] = "已验证解密能力" if status.get("verified") else "格式通过，首次读取游戏时验证解密能力" if status["ready"] else "尚未导入 prod.keys"
     # 任务目录里还有各任务留存的请求（<任务>.request.json，J10 resume 用）：不是任务记录，没有 id / state；混进来启动器整个任务列表解码失败、一条都读不回
-    # 任务目录有上限（保留规则见 core.prune_jobs）：catalog 每次启动都跑，在这里顺手清，一天最多一次
+    # 任务目录有上限（保留规则见 core.prune_jobs）：启动时那次 catalog 顺手清，一天最多一次
     #   （清理要把每条记录读一遍判结束没有），先清再读。只回最新 JOB_LIST_LIMIT 条：旧启动器的任务列表只看近期；
     #   11-07 实测任务目录 1.5 万条记录时整份读 + 回传 7 MB 占 catalog 数秒。
     marker = c.logs / ".jobs-pruned"
-    if time.time() - _mtime(marker) > 86400:
+    if startup and time.time() - _mtime(marker) > 86400:   # 只在启动那次判（剃刀 H14），仍一天最多一次
         prune_jobs(c.private, jobs=c.jobpath.parent)
         marker.parent.mkdir(parents=True, exist_ok=True)   # catalog 是只读探测、不落自己的记录（剃刀 H4）：日志目录不一定已被本作业建出来
         marker.touch()
@@ -2348,7 +2369,7 @@ def diagnostics(c):
     step = "打开日志目录"   # 失败时写进报错：哪一步、什么错误（#427：SMB 共享盘上导不出，原先只有一句笼统的话，看不出卡在哪）
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
-        # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
+        # 日志与任务记录在 core.logs_root（固定 <私有目录>/logs，任务记录在 logs/jobs/，剃刀 H6）：逐级不跟链接打开
         home_fd = winproc.open_dir_nofollow(c.logs.parent) if os.name == "nt" else os.open(c.logs.parent, flags)
         descriptors.append(home_fd)
         roots = {}

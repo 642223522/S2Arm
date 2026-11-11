@@ -7,7 +7,7 @@
 # 期望按规则手写（不调被测函数推）：
 #   ① 快步 a 跑完后它的 .tp 不在（只留活着的步的进程号）；慢步 b 在跑时它的 .tp 在
 #   ② TERM 门禁主进程：在跑的 b 被停；冒充「跑完的步、进程号被复用」的诱饵进程（bash -c sleep）不受影响
-#   ③ 收尸：门禁主进程被 KILL、结果目录留着，诱饵 pid 写进一份 .tp（模拟陈旧记录）→ 诱饵仍活（命令行里没有本份结果目录）；在跑的 b 被收掉
+#   ③ 收尸：门禁主进程被 KILL、结果目录留着，诱饵 pid 写进一份 .tp（模拟陈旧记录）→ 诱饵仍活（命令行里没有本份结果目录）；在跑的 b 被收掉；收完结果目录被删（11-11 TMPDIR 积了 5800 多个）
 # 反证：S2A_GATE_SH=<旧 gate.sh> S2A_GATE_REAP=<旧 gate_reap.py> 跑应红（① a 的 .tp 留着、③ 诱饵被杀）
 set -u; A= LD= AI= BI=; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); bad=0; GS=${S2A_GATE_SH:-$H/tools/gate.sh}; GR=${S2A_GATE_REAP:-$H/tools/gate_reap.py}; PIDS=
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -39,5 +39,7 @@ kill -KILL $d 2> /dev/null; rm -rf "$LD"
 up; bt=$(cat "$LD/$BI.tp" 2> /dev/null); decoy; sleep 0.3; echo $d > "$LD/99.tp"
 kill -KILL $G; for _ in $(seq 75); do kill -0 "$bt" 2> /dev/null || break; sleep 0.2; done; sleep 1
 ck "③ 收尸：在跑的 b（pid ${bt}）被收掉" '[ -n "$bt" ] && ! kill -0 "$bt" 2> /dev/null'
+for _ in $(seq 50); do [ -d "$LD" ] || break; sleep 0.2; done   # 收尸：TERM、5 秒后 KILL、再删目录
+ck "③ 收尸：收完删掉留下的结果目录（${LD##*/}）" '[ -n "$LD" ] && [ ! -d "$LD" ]'
 ck "③ 收尸：陈旧 .tp 指向的诱饵（命令行没有本份结果目录）仍活" 'kill -0 $d 2> /dev/null'
 [ $bad = 0 ] && echo "gate_stale_pid 单测全过" || { echo "gate_stale_pid 单测有不通"; exit 1; }
