@@ -34,6 +34,7 @@
    | `Sources/ShellUI/Resources/Localizable.xcstrings` | #316 再加 54 条（只有 en / zh-Hans，键 = 英文原文，zh-Hans 是原中文句）：iCloud 同步页（`S2ArmShellHost/CloudSaves.swift`，含 SaveSync 三种失败原因）、名字和封面页、调整位置页、每款游戏设置行（`S2ArmGameSettings` 的标签经 `ShellStrings.setting` 查表）、清单 technical 两句。de / fr / it / ja / sv 不补：没有可核对的译文，缺了回退英文 | 英文 App 下游戏库不再出中文；我方代码一律经 `shellText(_:)` 取同一份表，键与占位符由 `tests/ios_l10n_test.sh` ⑫ 核 | — |
    | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`GameStateView.swift`、`LibraryView.swift` | `GameState` 加 `installing(InstallStage)`（传输中 / 安装中 / 传输中断 / 安装没完成）及各处 `switch`；`CoverView` 加 `InstallMask` 灰色蒙版（`RemainingPie` / `DonePie`）；传着 / 解着时主按钮 `disabled` | v0.2.3 装机进度：App 装好就显示正在从电脑传的那款，蒙版随进度顺时针消掉，能玩了才给开始（宿主层 `S2ArmShellHostModel` 按 `s2a_shell_game_install_state` 出状态） | — |
    | `Sources/ShellUI/Resources/Localizable.xcstrings` | 装机进度加 10 条（en / zh-Hans）：Transferring – keep connected…、Installing…、Transfer stopped 等 | 同上 | — |
+   | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`Resources/Localizable.xcstrings` | `InstallStage.step` 加 4（等另一款装完）、5（正在整理游戏目录）与两条文案（七种语言） | 库起解包被拒时说清在等什么（iOS 装机剃刀 #46 / #47） | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
 ## catalogue（游戏目录清单 JSON）

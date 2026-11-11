@@ -303,15 +303,21 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.games.first?.game.state.installPhase == .transferring)
 }
 
-// 正在解别的款（宿主拒绝起第二个）：这款排着显示「安装中」，不算没解成，下一次刷新再试
+// 正在解别的款（宿主拒绝起第二个）：这款排着，卡片说在等什么（iOS 装机剃刀 #46 / #47：宿主答 1 另一款在解 → 第 4 步「等另一款装完」，
+//   2 在整理游戏目录 → 第 5 步；原先一律只写「安装中」），不算没解成，下一次刷新再试
 @MainActor @Test func secondUnpackWaitsItsTurn() {
-    var accept = false, installs = 0
+    var accept = false, installs = 0, wait: Int32 = 1
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
     let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
-                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return accept }, installProgress: { _ in nil })
-    #expect(model.games.first?.game.state == .installing(InstallStage(.installing)) && installs == 1)
+                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return accept }, installProgress: { _ in nil },
+                                    installWait: { wait })
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, step: 4)) && installs == 1)
+    wait = 2; model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, step: 5)) && installs == 2)
+    wait = 0; model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing)) && installs == 3)
     accept = true; model.refreshGameData()
-    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)) && installs == 2)
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)) && installs == 4)
 }
 
 // 开着库时电脑才开始推（真机实测：库里一直看不到这款）：每秒重判，它一开始传就出现；全都能玩了也不停——

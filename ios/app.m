@@ -785,6 +785,7 @@ int s2a_shell_install_game(const char *gid) {   // 主线程（s2a_shell.h 约�
     });
     return 1;
 }
+int s2a_shell_install_wait(void) { return atomic_load(&g_games_repairing) ? 2 : atomic_load(&g_inst_busy) ? 1 : 0; }   // 主线程（s2a_shell.h）
 int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // 主线程
     if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
     *done = atomic_load(&g_inst_done); *total = atomic_load(&g_inst_total); return 1;
