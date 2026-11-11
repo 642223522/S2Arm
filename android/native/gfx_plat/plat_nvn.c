@@ -64,12 +64,12 @@ static void prof_sig(int sig, siginfo_t *si, void *uc) {
 }
 static int prof_cmp(const void *a, const void *b) { uintptr_t x = *(const uintptr_t *)a, y = *(const uintptr_t *)b; return x < y ? -1 : x > y; }
 static void *prof_report(void *arg) {
-    (void)arg; uint64_t r = 0; static uintptr_t buf[PROF_RING];
+    (void)arg; uint64_t r = 0; static uintptr_t buf[PROF_RING], raw[PROF_RING];
     for (;;) {
         sleep(5);
         uint64_t w = atomic_load_explicit(&g_prof_w, memory_order_relaxed); if (w - r > PROF_RING) r = w - PROF_RING;
         size_t n = (size_t)(w - r); if (!n) continue;
-        for (size_t i = 0; i < n; i++) buf[i] = g_prof_ring[(r + i) & (PROF_RING - 1)] & ~(uintptr_t)0xfff;   // 按 4 KB 页
+        for (size_t i = 0; i < n; i++) { raw[i] = g_prof_ring[(r + i) & (PROF_RING - 1)]; buf[i] = raw[i] & ~(uintptr_t)0xfff; }   // 按 4 KB 页
         r = w; qsort(buf, n, sizeof *buf, prof_cmp);
         struct { uintptr_t page; size_t n; } top[12]; int nt = 0;
         struct { char name[40]; size_t n; } mod[16]; int nm = 0;
@@ -91,6 +91,22 @@ static void *prof_report(void *arg) {
             Dl_info di; int ok = dladdr((void *)top[bi].page, &di) && di.dli_fname; const char *sl = ok ? strrchr(di.dli_fname, '/') : NULL;
             o += snprintf(line + o, sizeof line - (size_t)o, " %s+%#lx %.1f%%;", ok ? (sl ? sl + 1 : di.dli_fname) : "游戏", (unsigned long)(ok ? top[bi].page - (uintptr_t)di.dli_fbase : top[bi].page), 100.0 * (double)top[bi].n / (double)n); top[bi].n = 0; }
         __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: %s", line);
+        {   // 最热的那一页：它落在进程的哪段映射里（/proc/self/maps 的那一行），页里最热的几个地址
+            uintptr_t hot = 0; size_t hn = 0;
+            for (size_t i = 0; i < n;) { size_t j = i; while (j < n && buf[j] == buf[i]) j++; if (j - i > hn) { hn = j - i; hot = buf[i]; } i = j; }
+            char map[200] = "?"; FILE *f = fopen("/proc/self/maps", "r");
+            if (f) { char ln[400]; while (fgets(ln, sizeof ln, f)) { unsigned long a = 0, b = 0; if (sscanf(ln, "%lx-%lx", &a, &b) == 2 && hot >= a && hot < b) { size_t L = strlen(ln); if (L && ln[L - 1] == '\n') ln[L - 1] = 0; snprintf(map, sizeof map, "%s", ln); break; } } fclose(f); }
+            size_t m = 0; for (size_t i = 0; i < n; i++) if ((raw[i] & ~(uintptr_t)0xfff) == hot) raw[m++] = raw[i];
+            qsort(raw, m, sizeof *raw, prof_cmp);
+            struct { uintptr_t pc; size_t n; } tp[6]; int np = 0;
+            for (size_t i = 0; i < m;) { size_t j = i; while (j < m && raw[j] == raw[i]) j++;
+                int at = np < 6 ? np : -1; if (at < 0) { int mi = 0; for (int q = 1; q < 6; q++) if (tp[q].n < tp[mi].n) mi = q; if (tp[mi].n < j - i) at = mi; } else np++;
+                if (at >= 0) { tp[at].pc = raw[i]; tp[at].n = j - i; }
+                i = j; }
+            o = snprintf(line, sizeof line, "剖析：最热页 %#lx（%zu 个样本）在映射 [%s]；页内：", (unsigned long)hot, hn, map);
+            for (int k = 0; k < np; k++) { uint32_t ins = 0; memcpy(&ins, (const void *)tp[k].pc, 4); o += snprintf(line + o, sizeof line - (size_t)o, " +%#lx×%zu(指令 %08x)", (unsigned long)(tp[k].pc - hot), tp[k].n, ins); }
+            __android_log_print(ANDROID_LOG_INFO, "S2Arm", "nvk prof: %s", line);
+        }
     }
     return NULL;
 }
