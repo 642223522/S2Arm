@@ -584,6 +584,30 @@ class DeviceBundleTests(unittest.TestCase):
         self.assertNotIn("没装", buf.getvalue())
 
 
+class DeviceChoiceTests(unittest.TestCase):
+    """设备号贯穿（11-11 真机验收测出）：install-check 能带 --device；targets 列出设备名、设备号与连接方式（两台同型号时只看机型分不出）"""
+    def test_install_check_sends_device(self):
+        sent = []
+        def call(method, path, body=None, **kw):
+            if method == "POST": sent.append((path, body)); return {"ok": True}
+            return {"installReadiness": {"gameId": "G", "ready": True, "items": []}}
+        with mock.patch.object(ctl, "call", side_effect=call), contextlib.redirect_stdout(io.StringIO()):
+            for kw in (dict(device="00008150-AAAA"), {}):
+                with self.assertRaises(SystemExit): ctl.install_check("G", False, **kw)   # 查完按 ready 退出
+        self.assertEqual(sent, [("/installCheck", {"gameId": "G", "device": "00008150-AAAA"}), ("/installCheck", {"gameId": "G"})])
+
+    def test_targets_lists_name_udid_and_link(self):
+        t = {"current": None, "osChoices": [27], "models": [], "connected": [
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "甲", "udid": "U-1", "wired": True},
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "乙", "udid": "U-2", "wired": False}]}
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "call", return_value=t), mock.patch.object(sys, "argv", ["s2armctl", "targets"]), contextlib.redirect_stdout(buf):
+            ctl.main()
+        out = buf.getvalue()
+        self.assertIn("设备名「甲」，设备号 U-1，数据线", out)
+        self.assertIn("设备名「乙」，设备号 U-2，同一 Wi-Fi", out)
+
+
 class DiagCommandTests(unittest.TestCase):
     """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""
 
