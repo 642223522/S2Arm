@@ -79,6 +79,17 @@ struct JobProgress: Equatable {
         return String(format: "%.1f", rate) + (unit.isEmpty ? "/s" : " \(unit)/s")
     }
 
+    /// 本步还需（实测速率，在两次事件之间倒数）：剩余时间只有这一套（剃刀 M20），作业页「还剩」与出包页「本步还需 / 预计还需」都从这里取
+    func stepLeft(at now: Date) -> Double? {
+        guard let eta, let etaAt else { return nil }
+        return max(0, eta - now.timeIntervalSince(etaAt))
+    }
+
+    /// 出包页的时间推算：本步用上面的实测值，整单 = 本步 + 后面各步本机历史（没有实测时本步也按历史兜底）
+    func estimate(at now: Date) -> MilestoneEstimate {
+        track.estimate(fraction: fraction, measuredStep: stepLeft(at: now), now: now.timeIntervalSince1970)
+    }
+
     /// 「已用 · 还剩」，left 是界面语言的「还剩 %@」。
     func clock(at now: Date, left: String) -> String {
         Stage(id: index ?? 0, name: stage, started: stageStarted, eta: eta, etaAt: etaAt).clock(at: now, left: left)
