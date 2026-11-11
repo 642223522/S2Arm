@@ -269,7 +269,10 @@ def host_signer_env(build_source, env):
     也不登记 java_home），apksigner 是 Java 程序，要用同一个 JDK，否则落到 Mac 的 /usr/bin/java 空壳。"""
     if java_runtime_ok(env):
         return env
-    found = subprocess.run(['bash', str(Path(build_source) / 'android/tools/jdk17.sh')], env=env, capture_output=True, text=True)
+    try:
+        found = subprocess.run(['bash', str(Path(build_source) / 'android/tools/jdk17.sh')], env=env, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return env
     javac = found.stdout.strip() if found.returncode == 0 else ''
     if not javac:
         return env
