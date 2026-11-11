@@ -20,6 +20,7 @@ static int draw_calls;
 static int capture_draw(struct s2a_vk_device*d,const struct s2a_record_draw_state*s,
  struct s2a_record_result*r,void*o){(void)d;(void)o;draw_got=*s;draw_calls++;r->code=-78;return -78;}
 static int rd(void *o,uint64_t a,void *b,size_t n){(void)o;memcpy(b,(void*)(uintptr_t)a,n);return 0;}
+static int rd_fail(void *o,uint64_t a,void *b,size_t n){(void)o;(void)a;(void)b;(void)n;return -1;}
 static int wr(void *o,uint64_t a,const void *b,size_t n){(void)o;memcpy((void*)(uintptr_t)a,b,n);return 0;}
 static int capture(struct s2a_vk_device*d,const struct s2a_record_dispatch_state*s,
  const struct s2a_record_memory*m,struct s2a_record_dispatch_output*out,
@@ -186,32 +187,59 @@ int main(void){
   assert(draw_got.ubo_use[0]==0);
  }
  s2a_record_set_draw_builder(capture_draw,NULL);
- // P0-0a：间接参数由 GPU 写、multi-draw 计数在 GPU 侧、transform-feedback 顶点数来自计数器——
- // 三者都还没接。生产 builder 路径（adapter 已注册）必须在入口准确拒绝，不许静默空画
- // （记录里补的 count/first=0 会继续往下变成“返回成功但什么都没画”）。
+ // 间接绘制 / 间接计数多重绘制：回放到这一笔时从 guest 内存（宿主替身没有帧队列影子，guest 即权威）
+ // 取参数，改写成普通绘制交给 builder；过了 GPU 计数 / 0 顶点 / 0 实例的不画；DrawTransformFeedback
+ // 仍准确拒绝。取不到参数（越出可读内存）准确失败，不能静默空画。
  {
-  struct s2a_record_result rr;int before=draw_calls;
-  p_draw idr={0};idr.count=3;idr.instances=1;idr.ind=0x1234;
+  struct s2a_record_result rr;int before=draw_calls;uint64_t ic[4],ic0[4];s2a_record_indirect_counts(ic0);
+  static uint32_t args[2][5]={{7,2,11,13,0},{0,0,0,0,0}};
+  p_draw idr={0};idr.prim=4;idr.count=0;idr.instances=1;idr.ind=(uint64_t)(uintptr_t)args[0];
+  assert(packet(OP_DRAW,&idr,sizeof idr)==-78&&draw_calls==before+1);
+  assert(draw_got.count==7&&draw_got.instances==2&&draw_got.first==11&&draw_got.base_instance==13&&!draw_got.indexed&&draw_got.prim==4);
+  // 参数在两次回放之间被改写（GPU 写回 / CPU 写）：每次都按回放时的值，不缓存。
+  args[0][0]=9;assert(packet(OP_DRAW,&idr,sizeof idr)==-78&&draw_got.count==9&&draw_calls==before+2);
+  // 0 实例：GPU 上是空画，这里不调 builder、不报错。
+  args[0][1]=0;assert(packet(OP_DRAW,&idr,sizeof idr)==0&&draw_calls==before+2);
+  args[0][1]=2;
+  // 间接计数多重绘制：第 i 条只在 i < 计数时画。
+  static uint32_t live=2;
+  idr.mdi_cnt=(uint64_t)(uintptr_t)&live;idr.mdi_i=1;
+  assert(packet(OP_DRAW,&idr,sizeof idr)==-78&&draw_calls==before+3&&draw_got.count==9);
+  idr.mdi_i=2;assert(packet(OP_DRAW,&idr,sizeof idr)==0&&draw_calls==before+3);
+  live=3;assert(packet(OP_DRAW,&idr,sizeof idr)==-78&&draw_calls==before+4);
+  // 坏记录：有计数无参数地址、无计数却带序号。
+  idr.ind=0;assert(packet_r(OP_DRAW,&idr,sizeof idr,&rr)==S2A_RECORD_INVALID&&strstr(rr.why,"malformed indirect draw"));
+  idr.ind=(uint64_t)(uintptr_t)args[0];idr.mdi_cnt=0;idr.mdi_i=3;
+  assert(packet_r(OP_DRAW,&idr,sizeof idr,&rr)==S2A_RECORD_INVALID&&draw_calls==before+4);
+  idr.mdi_i=0;
+  // 超出 int32 的 GPU 值不截断成另一笔绘制。
+  args[0][0]=0x80000000u;assert(packet_r(OP_DRAW,&idr,sizeof idr,&rr)==S2A_RECORD_INVALID&&strstr(rr.why,"out of range")&&draw_calls==before+4);
+  args[0][0]=9;
+  idr.mdi_cnt=0;idr.mdi_i=0;idr.ind=0;idr.tfc=0x3333;
   assert(packet_r(OP_DRAW,&idr,sizeof idr,&rr)==S2A_RECORD_UNSUPPORTED);
-  assert(strstr(rr.why,"op=OP_DRAW(25) ind=0x1234 mdi_cnt=0x0 mdi_i=0 tfc=0x0"));
-  assert(strstr(rr.why,"not wired yet")&&draw_calls==before);
-  idr.ind=0;idr.mdi_cnt=0x2222;idr.mdi_i=3;
-  assert(packet_r(OP_DRAW,&idr,sizeof idr,&rr)==S2A_RECORD_UNSUPPORTED);
-  assert(strstr(rr.why,"op=OP_DRAW(25) ind=0x0 mdi_cnt=0x2222 mdi_i=3 tfc=0x0")&&draw_calls==before);
-  idr.mdi_cnt=0;idr.mdi_i=0;idr.tfc=0x3333;
-  assert(packet_r(OP_DRAW,&idr,sizeof idr,&rr)==S2A_RECORD_UNSUPPORTED);
-  assert(strstr(rr.why,"tfc=0x3333")&&draw_calls==before);
-  p_draw_idx idir={0};idir.count=3;idir.instances=1;idir.ind=0x4444;idir.ibuf=0x1000;
-  assert(packet_r(OP_DRAW_IDX,&idir,sizeof idir,&rr)==S2A_RECORD_UNSUPPORTED);
-  assert(strstr(rr.why,"op=OP_DRAW_IDX(26) ind=0x4444")&&draw_calls==before);
+  assert(strstr(rr.why,"tfc=0x3333")&&strstr(rr.why,"DrawTransformFeedback")&&draw_calls==before+4);
+  // 间接索引绘制：{count, instances, firstIndex, baseVertex, baseInstance}，firstIndex 折进索引地址。
+  static uint32_t iargs[5]={36,1,6,5,3};
+  p_draw_idx idir={0};idir.prim=4;idir.itype=1;idir.instances=1;idir.ind=(uint64_t)(uintptr_t)iargs;idir.ibuf=0x10000;
+  assert(packet(OP_DRAW_IDX,&idir,sizeof idir)==-78&&draw_calls==before+5);
+  assert(draw_got.indexed&&draw_got.count==36&&draw_got.instances==1&&draw_got.base_vertex==5&&draw_got.base_instance==3);
+  assert(draw_got.index_address==0x10000+6*2&&draw_got.index_type==1);
+  idir.mdi_cnt=(uint64_t)(uintptr_t)&live;idir.mdi_i=5;
+  assert(packet(OP_DRAW_IDX,&idir,sizeof idir)==0&&draw_calls==before+5);
+  idir.mdi_cnt=0;idir.mdi_i=0;mem.read=rd_fail;
+  assert(packet_r(OP_DRAW_IDX,&idir,sizeof idir,&rr)==S2A_RECORD_MEMORY&&strstr(rr.why,"indirect arguments at")&&draw_calls==before+5);
+  mem.read=rd;
+  s2a_record_indirect_counts(ic);
+  assert(ic[0]-ic0[0]==5&&ic[1]-ic0[1]==3);
+  (void)args[1];
   p_draw ok_dr={0};ok_dr.count=3;ok_dr.instances=2;ok_dr.base_instance=5;
-  assert(packet(OP_DRAW,&ok_dr,sizeof ok_dr)==-78&&draw_calls==before+1);
+  assert(packet(OP_DRAW,&ok_dr,sizeof ok_dr)==-78&&draw_calls==before+6);
   // P0-1：base_instance 必须进快照（Vulkan firstInstance 不能用固定 0），实例化绘制才读得到正确
   // 的 per-instance 属性/instance id。
   assert(draw_got.base_instance==5&&draw_got.instances==2);
   p_draw_idx ok_idr={0};ok_idr.count=3;ok_idr.instances=1;ok_idr.base_instance=7;ok_idr.base_vertex=9;
   ok_idr.ibuf=0x5000;ok_idr.itype=0;
-  assert(packet(OP_DRAW_IDX,&ok_idr,sizeof ok_idr)==-78&&draw_calls==before+2);
+  assert(packet(OP_DRAW_IDX,&ok_idr,sizeof ok_idr)==-78&&draw_calls==before+7);
   assert(draw_got.base_instance==7&&draw_got.base_vertex==9&&draw_got.indexed);
   assert(draw_got.index_address==0x5000&&draw_got.index_type==0);
  }
@@ -243,6 +271,20 @@ int main(void){
  p_bind_program_id un={.stages=32};assert(packet(OP_BIND_PROGRAM,&un,sizeof un)==0);
  assert(packet(OP_DISPATCH,&dp,sizeof dp)==S2A_RECORD_INVALID);
  bind(5,0,44,0xef);s2a_record_set_dispatch_builder(capture,NULL);assert(packet(OP_DISPATCH,&dp,sizeof dp)==-77);
+ {
+  // DispatchComputeIndirect：三个组数在回放时从 guest 读（宿主替身无帧队列影子），改写成普通 dispatch；
+  // 0 组与 vkCmdDispatchIndirect 一样不做事；超出 int32 的值准确拒绝；读不到准确失败。
+  static uint32_t grp[3]={5,6,7};uint64_t ic[4],ic0[4];s2a_record_indirect_counts(ic0);
+  p_dispatch idp={.ind=(uint64_t)(uintptr_t)grp};int c0=calls;struct s2a_record_result rr;
+  assert(packet(OP_DISPATCH,&idp,sizeof idp)==-77&&calls==c0+1);
+  assert(got.groups[0]==5&&got.groups[1]==6&&got.groups[2]==7);
+  grp[1]=0;assert(packet(OP_DISPATCH,&idp,sizeof idp)==0&&calls==c0+1);
+  grp[1]=0x80000000u;assert(packet_r(OP_DISPATCH,&idp,sizeof idp,&rr)==S2A_RECORD_INVALID&&strstr(rr.why,"out of range")&&calls==c0+1);
+  grp[1]=6;
+  mem.read=rd_fail;assert(packet_r(OP_DISPATCH,&idp,sizeof idp,&rr)==S2A_RECORD_MEMORY&&strstr(rr.why,"not in readable guest memory")&&calls==c0+1);
+  mem.read=rd;
+  s2a_record_indirect_counts(ic);assert(ic[2]-ic0[2]==3&&ic[3]-ic0[3]==1);
+ }
  s2a_record_reset_state();assert(packet(OP_DISPATCH,&dp,sizeof dp)==S2A_RECORD_INVALID);
  bind(5,0,45,0xfa);s2a_record_set_dispatch_builder(gpu_builder,NULL);
  assert(packet(OP_DISPATCH,&dp,sizeof dp)==0);
