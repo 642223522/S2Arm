@@ -1,4 +1,5 @@
 import contextlib
+import collections
 import io
 import json
 import os
@@ -1501,6 +1502,42 @@ class JobsTests(unittest.TestCase):
         self.assertEqual((event["done"], event["total"]), (0, 2))
         self.assertEqual([c["name"] for c in event["counters"]], ["直连库·整份出库与收尾"])
 
+    def test_direct_space_recheck_extrapolates_this_run(self):
+        # 11-10（0400A3A01EE4C000 预检 22.3 GB，翻译 99084 个着色器期间直连缓存涨到约 44 GB 写满盘）：按本局实际消耗外推，不用常数。
+        #   期望手算：开始时本款占用 10.5 GB；10 秒后完成 20000、占用 19.5 GB、卷剩 36 GB → 还需 9 GB ÷ 20000 × 79084 × 1.1 = 39.15 GB > 36 GB → 停
+        import core
+        from errors import Failure
+        self.c.operation = "build"
+        name = "直连库·翻译与收尾"
+        DU = collections.namedtuple("DU", "total used free")
+        def step(done, used_gb, free_gb, now):
+            with patch.object(core, "job_footprint", return_value=int(used_gb * 10**9)), \
+                    patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, int(free_gb * 10**9))):
+                core.direct_space_recheck(self.c, {name: dict(done=done, total=99084)}, now=now)
+        step(0, 10.5, 45, 100.0)                         # 记起点
+        step(3000, 11.5, 44, 111.0)                      # 不到 5%：不判
+        with self.assertRaises(Failure) as stop:
+            step(20000, 19.5, 36, 122.0)
+        self.assertEqual(stop.exception.code, "disk_full")
+        self.assertIn("还要再占约 39 GB", str(stop.exception)); self.assertIn("只剩 36 GB", str(stop.exception))
+        # 同卷别的作业写盘：卷从 45 GB 掉到 30 GB，但本款只多占 1 GB → 还需 1 ÷ 20000 × 79084 × 1.1 ≈ 4.3 GB < 30 GB，不误判
+        self.c._direct_space_marks = {}
+        step(0, 10.5, 45, 200.0); step(20000, 11.5, 30, 211.0)
+        self.c._direct_space_marks = {}
+        self.c.r["spaceOverride"] = True
+        with patch.object(self.c, "diagnostic") as diag:
+            step(0, 10.5, 45, 300.0); step(20000, 19.5, 36, 311.0); step(30000, 24, 31, 322.0)   # 点过「仍然继续」：不停，只打一次黄
+        self.assertEqual([call.kwargs.get("severity") for call in diag.call_args_list], ["warning"])
+
+    def test_stage_progress_feeds_direct_space_recheck(self):
+        import core
+        progress = self.root / "progress.tsv"
+        progress.write_text("1\t直连库·翻译与收尾\t20000\t99084\n", encoding="utf-8")
+        with patch.object(self.c, "emit"), patch.object(core, "direct_space_recheck") as recheck:
+            self.c.stage_progress(progress, 0)
+        counters = recheck.call_args.args[1]
+        self.assertEqual((counters["直连库·翻译与收尾"]["done"], counters["直连库·翻译与收尾"]["total"]), (20000, 99084))
+
     def test_protocol_has_ordered_events_and_measured_counters(self):
         self.c.begin("phase", 2, 5)
         self.c.emit(done=5, total=10, unit="files")
@@ -1727,6 +1764,23 @@ class JobsTests(unittest.TestCase):
         self.assertIn(f"中间截掉 {cut[0]['omitted']} 字节", text)
         tail_part = text[text.index("以下是日志结尾"):]
         self.assertGreater(len(tail_part.encode()), 6 * len(text[:text.index("中间截掉")].encode()))   # 尾部留得比头部多
+
+    def test_diagnostic_export_brings_diag_run_pictures(self):
+        # #438 诊断局：游戏文件夹 diagrun/ 里的 PNG 原样进诊断包 diagrun/<游戏号>_<原名>；单张超过上限的跳过、别的文件不带。期望（手写）
+        import unittest.mock as um
+        gid = "0100000000010000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="Alpha", packages=[])]))
+        run = layout.game_dir(self.c, gid, english="Alpha") / "diagrun"; run.mkdir()
+        (run / "shot_3600.png").write_bytes(b"\x89PNG small")
+        (run / "td_100.png").write_bytes(b"\x89PNG" + b"x" * 2000)
+        (run / "notes.txt").write_text("不带")
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        with um.patch.object(library, "DIAG_RUN_FILE_LIMIT", 1024):
+            library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as z:
+            names = [n for n in z.namelist() if n.startswith("diagrun/")]
+            self.assertEqual(names, [f"diagrun/{gid}_shot_3600.png"])
+            self.assertEqual(z.read(names[0]), b"\x89PNG small")
 
     def test_diagnostic_fd_boundaries_and_directory_replacement(self):
         import unittest.mock as um

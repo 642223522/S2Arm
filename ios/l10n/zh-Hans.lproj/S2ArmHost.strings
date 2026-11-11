@@ -224,6 +224,7 @@
 "about.unknown" = "未知";
 
 /* 宿主其余界面（#316 第二轮）：设置页、提示页 / 加载页、存档管理、手柄连接、诊断、联机、文字输入等 */
+"app.fpsCap.ladder" = "这台设备暂时跑不稳 60 帧，已回到原生帧率；跑稳后会自动再试 60 帧。";
 "app.fpsCap.lowPower" = "低电量模式开着，已暂时回到原生帧率，关掉低电量模式后自动恢复。";
 "app.fpsCap.restored" = "60 帧已恢复。";
 "app.fpsCap.thermal" = "手机温度过高（危急），已暂时回到原生帧率，降温后自动恢复。";
@@ -415,6 +416,8 @@
 "settings.toggle.devHud" = "显示 S2Arm 诊断浮层";
 "settings.toggle.diagOnOpen" = "下次打开时导出诊断包";
 "settings.toggle.docked" = "主机模式";
+"settings.toggle.diagRun" = "诊断局（下一局）";
+"settings.diagRun.note" = "打开后从后台划掉、重新进这款游戏，到出问题的地方待 3 分钟以上，再导出诊断包。只管下一局，这一局画面会变慢。";
 "settings.docked.note" = "画质更高，但更耗电、更容易发热；手机上不建议开";
 "settings.toggle.metalHud" = "显示 Metal 性能浮层";
 "settings.toggle.phoneHaptics" = "手机震动";

@@ -88,15 +88,27 @@ s2a_gate_step bash "$android_dir/tools/vk_poolahb_alias_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_timeline_test.sh"
 # 直连逐帧帧时间（宿主，确定性）：环形语义、丢弃/计数可见、分片转储字节级核回。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
+# B2 VK_GOOGLE_display_timing（宿主，确定性）：挂 id/回读、乱序对号、丢帧 UNKNOWN、
+# 迟到补账、门关闭、ring 环覆、detach 复位、last_gap 最新确认对。
+s2a_gate_step bash "$android_dir/tools/nvn_vk_dt_test.sh"
+# 直连逐帧 TSV（宿主，确定性）：列掩码/差分/gpuq 账/开关与目录门。
+s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_tsv_test.sh"
 s2a_gate_step bash "$android_dir/tools/generic_frame_trace_test.sh"
 # #48 A5（宿主，确定性）：BatteryManager 净放电换算与不可用状态、采样器停采/迟到回调/读数开关。
 s2a_gate_step bash "$android_dir/tools/system_power_test.sh"
+# #48 A3+A4（宿主，确定性）：Surface.setFrameRate 投票边界（去重/未知清票/API<30）、
+# 轮询接线（周期→票、省电档→cap、开关、停后迟到回调不采）、生产 present_period 的封顶与登记。
+s2a_gate_step bash "$android_dir/tools/frame_rate_vote_test.sh"
+s2a_gate_step bash "$android_dir/tools/system_tuning_test.sh"
+# #48 P8（宿主，确定性）：热状态映射与 dm_thermal_now / dm_low_power_now 强定义、采样器起停 / 只在变化时推。
+s2a_gate_step bash "$android_dir/tools/power_state_test.sh"
 # 转储解析器（宿主，确定性）：分片拼回/完整性拒绝、全窗统计、与 16 帧聚合行对拍、C→python 对拍。
 s2a_gate_step "$PY" "$android_dir/tests/direct_framelog_test.py"
 # 设备锁与起局最小闭环（宿主，确定性；adb 替身不起真机）：锁并发/失效/留置、还原失败保留锁、
 # 局目录被 tools/quality_check.py 安卓分支判读。
 s2a_gate_step "$PY" "$android_dir/tests/device_lock_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/run_game_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/direct_game_mode_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_refresh_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_touch_generation_test.py"
 # 通用模式编译事件：原生文件生成、丢弃负控及读取器完整性校验。
@@ -106,8 +118,12 @@ s2a_gate_step "$PY" "$android_dir/tests/compile_events_reader_test.py"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_threadbuf_test.sh"
 # CMake 挑选规则的宿主单测（假 cmake，可移植，始终跑）
 s2a_gate_step bash "$android_dir/tools/cmake_pick_test.sh"
-# S2A_TEST_NO_NATIVE 只跳过 Linux runtime CTest 阶段（native/memory.c 使用
-# Linux mremap / MREMAP_MAYMOVE，macOS 编不了）；可移植改写器矩阵始终执行。
+# S2A_TEST_NO_NATIVE 只跳过宿主 ctest 阶段；可移植改写器矩阵始终执行。
+# 非 Linux 宿主：CMakeLists 按 CMAKE_SYSTEM_NAME 门掉 Linux 专属 API 的目标
+# （memory.c 的 mremap；guest_signal.c 的 SIGRTMIN/sigcontext.h/ucontext；
+# host_android.c 的 eventfd；wsi_lease.c 的 pthread_condattr_setclock；
+# direct/selection.c 的 getrandom；tsd.c 与 module_test.c 的 /proc/self/maps），
+# 这里显式登记未测项，不静默当绿。
 if [ -z "${S2A_TEST_NO_NATIVE:-}" ]; then
     s2a_cmake_pick || { s2a_gate_note "【红】安卓宿主测试找不到 CMake（见上一行）"; exit 1; }
     echo "CMake：${S2A_CMAKE}（${S2A_CMAKE_FROM}）；ctest：$S2A_CTEST"
@@ -119,6 +135,8 @@ if [ -z "${S2A_TEST_NO_NATIVE:-}" ]; then
     s2a_gate_step "${cmake_env[@]}" "$cmake_bin" -S "$android_dir" -B "$out" -DCMAKE_BUILD_TYPE=Debug
     s2a_gate_step "${cmake_env[@]}" "$cmake_bin" --build "$out" --parallel 2
     s2a_gate_step "${cmake_env[@]}" "$cmake_bin" -E chdir "$out" "$S2A_CTEST" --output-on-failure --timeout 30
+    [ "$(uname -s)" = Linux ] ||
+        s2a_gate_note "未测：android_memory / android_plat（mremap）、android_guest_signal（SIGRTMIN）、android_host_android（eventfd）、android_wsi_lease（pthread_condattr_setclock）、android_direct_selection（getrandom）、android_tsd / android_module（/proc/self/maps）需 Linux"
 fi
 s2a_gate_step "$PY" "$android_dir/tests/debug_environment_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_gate_test.py"
@@ -306,6 +324,10 @@ s2a_gate_step "$PY" "$android_dir/tests/w2_adapter_capture_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_core_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_compute_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_draw_test.py"
+# C4a 首用判定环：真 nvn_vk_draw.c + 真 compile_worker/nvn_first_use，可控假编译器。
+s2a_gate_step "$PY" "$android_dir/tests/nvk_fu_decision_test.py"
+# C4b 管线异步缝：真 nvn_vk_first_draw.c TU + 真 pipe_worker/nvn_first_use，假 Vulkan。
+s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_pipe_async_draw_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_lifecycle_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
 # vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.

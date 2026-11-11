@@ -37,10 +37,12 @@ struct result { int rc, prompts; char diag[2048]; };
     waitpid(q, NULL, 0); ssize_t g = read(fd[0], &res, sizeof res); WANT(g == (ssize_t)sizeof res); close(fd[0]); close(fd[1]); } while (0)
 // 记录文件行数（含头行）：pending「?」行 = 已武装未定
 static int record_rows(void) { char p[1200]; s2a_docs_path(p, sizeof p, "wire/direct_guard");
-    FILE *f = fopen(p, "r"); if (!f) return -1; int n = 0; char line[256]; while (fgets(line, sizeof line, f)) n++; fclose(f); return n; }
+    FILE *f = fopen(p, "r"); if (!f) return -1; int n = 0; char line[256]; while (fgets(line, sizeof line, f)) { n++; }
+    fclose(f); return n; }
 static int record_pending(void) { char p[1200]; s2a_docs_path(p, sizeof p, "wire/direct_guard");
     FILE *f = fopen(p, "r"); if (!f) return 0; char line[256]; int pending = 0;
-    while (fgets(line, sizeof line, f)) pending = line[0] == '?'; fclose(f); return pending; }
+    while (fgets(line, sizeof line, f)) { pending = line[0] == '?'; }
+    fclose(f); return pending; }
 #define PID 0x0100152000022000ull
 
 int main(void) {
