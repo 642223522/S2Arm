@@ -592,18 +592,34 @@ class FlowTests(unittest.TestCase):
         link, _ = self._link([down], results={"info": (0, "still no ddi")})
         self.assertEqual(link["stage"], "prepare"); self.assertIn("开发者服务", link["problem"])
 
-    def test_link_stale_choice(self):
-        link, _ = self._link([[self._p(tunnel="connected")]], want="旧手机")
-        self.assertEqual((link["stage"], link["device"]["identifier"]), ("", "D1"))
-        link, _ = self._link([[self._p(name="甲"), self._p(name="乙", ident="D2")]], want="旧手机")
-        self.assertEqual(link["stage"], "connected")
-        for text in ("旧手机", "甲", "乙"): self.assertIn(text, link["problem"])
-        link, _ = self._link([[self._p(name="甲"), self._p(name="乙", ident="D2"), self._p(name="网上的", ident="D3", transport="localNetwork")]], want="旧手机")
-        self.assertNotIn("网上的", link["problem"])   # 有线优先：同网配对的不列
-        link, _ = self._link([[self._p(name="线连的", tunnel="connected"), self._p(name="网上的", ident="D3", transport="localNetwork")]], want="旧手机")
-        self.assertEqual((link["stage"], link["device"]["identifier"]), ("", "D1"))
+    def test_link_only_the_chosen_device(self):
+        """装到哪台由玩家选、作业照办（jhz 11-11 玩家实报：续签时选的 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）：
+        选的那台在线（有线或同网）就用它；配对过但不在线 → 说「iPhone「名字」不在线」；没见过 → 没找到；都不换装别的设备"""
+        ipad = self._p(name="小平板", ident="D2", transport="localNetwork", tunnel="connected", udid="PAD-UDID")
+        ipad["hardwareProperties"]["platform"] = "iPadOS"
+        offline_phone = self._p(name="我的手机", ident="D1", transport=None, tunnel="unavailable", udid="PHONE-UDID")
+        link, _ = self._link([[offline_phone, ipad]], want="PHONE-UDID")
+        self.assertIsNone(link["device"]); self.assertEqual(link["stage"], "connected")
+        for text in ("iPhone", "我的手机", "不在线", "Wi-Fi"): self.assertIn(text, link["problem"])
+        self.assertNotIn("小平板", link["problem"])
+        link, _ = self._link([[ipad]], want="旧手机")   # 没见过的设备：没找到，不装旁边唯一在线的那台
+        self.assertIsNone(link["device"]); self.assertIn("没找到", link["problem"])
+        link, _ = self._link([[offline_phone, ipad]], want="PAD-UDID")   # 选的是走 Wi-Fi 的 iPad：装它
+        self.assertEqual(link["device"]["identifier"], "D2")
         link, _ = self._link([[self._p(name="甲", tunnel="connected"), self._p(name="乙", ident="D2", tunnel="connected")]], want="乙")
         self.assertEqual(link["device"]["identifier"], "D2")
+        offline_ipad = dict(ipad, connectionProperties={"transportType": None, "pairingState": "paired", "tunnelState": "unavailable"})
+        self.assertIn("iPad「小平板」", self._link([[offline_ipad]], want="PAD-UDID")[0]["problem"])
+
+    def test_phone_requires_a_chosen_device(self):
+        """真装机（phone）不带设备号就拒：哪怕只连着一台也不自己挑（s2armctl install 不带 --device 同样被拒）"""
+        import diag, target
+        data = {"result": {"devices": [self._p(name="唯一一台", tunnel="connected")]}}
+        self.c.r.pop("device", None)
+        with um.patch.object(diag, "devicectl", lambda c, *a, timeout=0: (0, data, "")), um.patch.object(target, "usb_idevices", return_value=[]), \
+                self.assertRaises(Failure) as e:
+            install.phone(self.c)
+        self.assertEqual(e.exception.code, "device_required")
 
     def test_phone_failure_writes_a_redacted_report(self):
         import diag, target
@@ -611,6 +627,7 @@ class FlowTests(unittest.TestCase):
         data = {"result": {"devices": [self._p(name="张三的手机", ddi=False, udid=udid)]}}
         def devicectl(c, *a, timeout=0):
             return (0, data, "") if a[:2] == ("list", "devices") else (1, {}, f"error on {udid}")
+        self.c.r["device"] = udid
         with um.patch.object(diag, "devicectl", devicectl), um.patch.object(target, "usb_idevices", return_value=[]), self.assertRaises(Failure) as e:
             install.phone(self.c)
         self.assertEqual(e.exception.code, "device_not_ready"); self.assertNotIn(udid, str(e.exception))

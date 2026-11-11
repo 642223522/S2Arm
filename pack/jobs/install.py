@@ -258,7 +258,10 @@ S_NO_USB = "这台 Mac 的 USB 上没看到 iPhone / iPad：换一根能传数�
 S_NOT_LISTED = "这台 Mac 看到手机插着，但设备服务还没列出它：解锁手机，在弹出的框里点「信任」；还不行就拔掉重插一次。"
 S_MANY_WIRED = "连着不止一台 iPhone / iPad：只留要装的那一台。"
 S_MANY_NETWORK = "同一网络上有多台配对过的 iPhone / iPad：用数据线连上要装的那一台。"
-S_STALE_CHOICE = "之前选的设备「{0}」现在不在，可选：{1}。用数据线只连要装的那一台再试。"
+# 装到哪台由玩家选、作业照办，不替玩家换一台（jhz 11-11：续签时玩家选的 iPhone 拔了线，旁边同网的 iPad 被装上了）
+S_DEVICE_REQUIRED = "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。"
+S_OFFLINE = "{0}「{1}」现在不在线：插上数据线，或让它和这台电脑连同一个 Wi-Fi 并解锁，再试一次。"
+S_NOT_PAIRED = "没找到要装的那台设备（{0}）：插上数据线并解锁，在设备上点「信任」。"
 S_TRUST = "在 iPhone 上点「信任」，再输入手机的锁屏密码。"
 S_DEV_MODE = "在 iPhone 上打开「设置 → 隐私与安全性 → 开发者模式」，按提示重启手机；重启后解锁，这里会自动打勾。"
 S_TUNNEL = "和手机建立开发连接失败：解锁手机后再试；走无线的话换成数据线。"
@@ -285,8 +288,17 @@ def _with_raw(sentence, raw):
     return sentence + ("\n" + tail[-1] if tail else "")
 
 
+def device_kind(d):
+    """devicectl 设备 → 「iPad」或「iPhone」（文案里写实际的设备类型，不写死 iPhone）"""
+    h = d.get("hardwareProperties", {})
+    return "iPad" if h.get("platform") == "iPadOS" or (h.get("productType") or "").startswith("iPad") else "iPhone"
+
+
 def _pick_device(devices, want):
-    """要装的那台：返回 (设备, 连接环节的问题)。旧选择对不上时不算没连：只有一台就用它，多台列出来让玩家选"""
+    """要装的那台：返回 (设备, 连接环节的问题)。
+    给了 want（玩家选的那台）：只认它——在线（有线或同网）就用它；配对过但不在线 → 如实说「iPhone「名字」不在线」；没见过 → 没找到。
+    不替玩家换一台（原先 want 对不上时「只有一台就用它」：续签时 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）。
+    没给 want：只给装机前清单看（polling），有线优先挑出连着的那台供界面显示；真装机不走这里（phone() 先要求 want）"""
     phones = [d for d in devices if d.get("hardwareProperties", {}).get("reality") == "physical" and d.get("hardwareProperties", {}).get("platform") in ("iOS", "iPadOS")]
     live = [d for d in phones if _link(d).get("transportType") in ("wired", "localNetwork") or _link(d).get("tunnelState") == "connected"]
     if want:
@@ -294,9 +306,11 @@ def _pick_device(devices, want):
             return want in (d.get("identifier"), d.get("hardwareProperties", {}).get("udid"), (d.get("deviceProperties", {}).get("name") or "").strip())
         chosen = [d for d in live if named(d)]
         if chosen:
-            live = chosen
-        elif len(pool := [d for d in live if _link(d).get("transportType") == "wired"] or live) > 1:   # 有线优先，同网配对过的不列
-            return None, S_STALE_CHOICE.replace("{0}", want).replace("{1}", "、".join(dict.fromkeys((d.get("deviceProperties", {}).get("name") or "").strip() for d in pool)))
+            return chosen[0], ""
+        known = [d for d in phones if named(d)]
+        if known:
+            return None, S_OFFLINE.replace("{0}", device_kind(known[0])).replace("{1}", (known[0].get("deviceProperties", {}).get("name") or "").strip())
+        return None, S_NOT_PAIRED.replace("{0}", want)
     wired = [d for d in live if _link(d).get("transportType") == "wired"]
     if len(wired) > 1:
         return None, S_MANY_WIRED
@@ -423,7 +437,10 @@ def _write_link_report(c, link):
 
 def phone(c):
     import target
-    link = device_link(c, (c.r.get("device") or "").strip())
+    want = (c.r.get("device") or "").strip()
+    if not want:   # 装机一律要玩家选的那台（前端 / s2armctl 都要带 device），作业层不自己挑
+        raise Failure(S_DEVICE_REQUIRED, code="device_required")
+    link = device_link(c, want)
     if link["problem"]:
         _write_link_report(c, link)
         raise Failure(link["problem"], code="device_not_connected" if link["stage"] == "connected" else "device_not_ready")
@@ -861,20 +878,20 @@ def win_udids(W):
 
 
 def win_udid(c, W):
-    """要装的那台：请求给的 device（UDID）> 设备服务里唯一连着的一台（同一台 USB + Wi-Fi 算一台）"""
-    want = c.r.get("device")
+    """要装的那台 = 请求给的 device（UDID，玩家选的那台），不自己挑。这台在任何连接方式上（USB 或同网）在就算在线：有线、无线都可以，
+    只要是玩家选的那台（原先有 USB 连着的就只认 USB 的，玩家选的那台走 Wi-Fi、旁边插着另一台时会被判成不在）"""
+    want = (c.r.get("device") or "").strip()
+    if not want:   # 装机一律要玩家选的那台（前端从装机前清单拿到设备号再带上）
+        raise Failure(S_DEVICE_REQUIRED, code="device_required")
     try:
-        udids = win_udids(W)
+        links = W.mux_devices()
     except OSError as e:
         raise Failure(f"连不上本机苹果设备服务（{e}）：从 Microsoft Store 装「Apple Devices」后重试。", code="device_pairing_required") from e
-    if want:
-        if want not in udids:
-            raise Failure("没找到要装的那台 iPhone：插上数据线并解锁，在手机上点「信任」。", code="device_not_connected")
-        return want
-    if len(udids) != 1:
-        raise Failure("连着不止一台 iPhone / iPad：只留要装的那一台。" if udids else
-                      "没找到 iPhone：插上数据线并解锁，在手机上点「信任」。", code="device_not_connected")
-    return udids[0]
+    if want not in {u for u, _, _ in links if u}:
+        # Windows 设备服务分不出「不在线」和「没配对过」、也给不出设备名：按设备号末尾指认那台，不换别的
+        raise Failure(f"要装的那台设备（编号末尾 {want[-6:]}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
+                      code="device_not_connected")
+    return want
 
 
 def readiness_windows(c, gid):
@@ -947,7 +964,10 @@ class MacPhone:
         self.udid = udid if udid is not None else udid_of(c, self.dev["id"])
         self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else container_bundle_id(self.team["id"])   # 证书模式：描述文件定的包名（和 Apple ID 模式是两个 App）
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
-        self.info = dict(device=self.dev["name"], team=self.team["name"], free=self.team["free"])
+        # deviceKind / deviceName：完成页、诊断写「已装到 iPad「名字」」，不写死 iPhone
+        self.info = dict(device=self.dev["name"], deviceName=self.dev["name"],
+                         deviceKind="iPad" if (self.dev.get("productType") or "").startswith("iPad") else "iPhone",
+                         team=self.team["name"], free=self.team["free"])
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
     def backup(self, g):
@@ -993,7 +1013,14 @@ class WinPhone:
         self.key = self.udid
         self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else layout.load_device(c, self.key).get("bundleId") or None
         self.devpush = c.engine / "Binaries/Prepare/devpush/s2a-devpush.exe"
-        self.info = dict(device=self.udid)
+        # Windows 设备服务给不出设备名，类型按 USB 产品号认（同装机前清单 deviceKind）；认不出写空，前端写「iPhone / iPad」
+        kind = ""
+        if hasattr(self.W, "device_kind"):
+            try:
+                kind = {"ipad": "iPad", "iphone": "iPhone"}.get(self.W.device_kind(self.udid), "")
+            except Exception:
+                kind = ""
+        self.info = dict(device=self.udid, deviceName="", deviceKind=kind)
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
     def client(self, work):

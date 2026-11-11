@@ -5184,8 +5184,12 @@
   "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
  },
  {
-  "source": "用数据线连上要装的那台 iPhone 并解锁，在手机上点「信任」；第一次还要在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
-  "en": "Connect the target iPhone by cable, unlock it, and tap Trust. First enable Developer Mode under Settings → Privacy & Security, then retry."
+  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
+ },
+ {
+  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
+  "en": "Choose which iPhone or iPad to install to on the install page, then install."
  },
  {
   "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",

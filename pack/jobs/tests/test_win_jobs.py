@@ -267,7 +267,9 @@ class WinInstall(unittest.TestCase):
     def go(self, w, **r):
         """走新 install.install 的 Windows 分支（phone_for → WinPhone + assemble + put_game）"""
         import ipa as packer
-        self.c.r.update(r)
+        r = {"device": "U1", **r}   # 装机一律带玩家选的那台；device=None 测「没带设备号」
+        self.c.r.update({k: v for k, v in r.items() if v is not None})
+        if r["device"] is None: self.c.r.pop("device", None)
         gid = self.c.r["gameId"].upper()
         # assemble 替身：在游戏库临时目录出一个真 zip ipa（WinPhone.install 不解包，但 put_game 要把它放到默认位置根 S2Arm.ipa）
         def fake_assemble(c, g, others=(), failed=(), root=None, dest=None):
@@ -324,7 +326,7 @@ class WinInstall(unittest.TestCase):
                 return Cl()
             return make
         with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
-            ph = self.m.WinPhone(self.c)
+            self.c.r["device"] = "U1"; ph = self.m.WinPhone(self.c)
             self.assertIsNone(ph.bid)
             with patch.object(self.m, "devpush_client", client("取不到 io.s2arm.games.abcde12345 的容器（App 没装或不是开发签名）：unknown error `ApplicationLookupFailed` returned from device")):
                 self.assertIsNone(ph.backup(self.gid))
@@ -340,7 +342,7 @@ class WinInstall(unittest.TestCase):
         # 审计 P2-253：这台没记过包名、又读不到团队号 → 查不了手机上有没有存档 → 停装，不交给 plumesign 自己定包名直接覆盖；记过包名的照常按记录备份
         w = FakeW([("U1", "USB", 3)]); w.team = None
         with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
-            ph = self.m.WinPhone(self.c)
+            self.c.r["device"] = "U1"; ph = self.m.WinPhone(self.c)
             self.assertIsNone(ph.bid)
             with patch.object(self.m, "devpush_client", side_effect=AssertionError("不该去手机上查")), self.assertRaises(self.m.Failure) as e:
                 ph.backup(self.gid)
@@ -355,10 +357,20 @@ class WinInstall(unittest.TestCase):
         self.assertEqual(res["unpackPending"], "资源包已传完，还差最后一步：打开 App")   # 结果带还差的一步（11-09 #336）
 
     def test_device_choice_errors(self):
-        for devs, want in (([("U1", "USB", 3), ("U2", "USB", 4)], None), ([], None), ([("U1", "USB", 3)], "U9")):
+        """装到哪台由玩家选、作业照办（jhz 11-11）：没带设备号 → device_required（哪怕只连着一台也不自己挑）；
+        带了但那台不在 → device_not_connected，说的是那台（编号末尾），不换装旁边连着的另一台"""
+        for devs in ([("U1", "USB", 3), ("U2", "USB", 4)], [("U1", "USB", 3)], []):
+            with self.subTest(devs=devs), self.assertRaises(core.Failure) as e:
+                self.go(FakeW(devs), device=None)
+            self.assertEqual(e.exception.code, "device_required")
+        for devs, want in (([], "U1"), ([("U2", "USB", 3)], "U1"), ([("U2", "Network", 3)], "U1")):
             with self.subTest(devs=devs, want=want), self.assertRaises(core.Failure) as e:
-                self.go(FakeW(devs), **({"device": want} if want else {}))
+                self.go(FakeW(devs), device=want)
             self.assertEqual(e.exception.code, "device_not_connected")
+            self.assertIn("U1"[-6:], str(e.exception)); self.assertIn("不在线", str(e.exception))
+        w = FakeW([("U2", "USB", 3), ("U1", "Network", 9)])   # 选的那台走 Wi-Fi、另一台插着线：装选的那台
+        self.go(w, device="U1")
+        self.assertEqual(w.calls[0].udid, "U1")
         with self.assertRaises(core.Failure) as e:
             self.go(FakeW(ConnectionRefusedError()))
         self.assertEqual(e.exception.code, "device_pairing_required")

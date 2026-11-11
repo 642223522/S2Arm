@@ -418,7 +418,8 @@ def save_device(c, ident, rec):
 def install_record(c, gid):
     """这款最近一次装机签名的记录 {at, free, device}（游戏库页「还有几天到期 / 续签」）：各台手机记录里带这款的取最新一次；没装过 → None"""
     gid = gid.upper()
-    recs = [r.get("signed") for _, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
+    # deviceKey：那台设备的记录键（UDID）。续签 / 重装装回当初那台，不替玩家换一台（jhz 11-11：续签时 iPad 被装上）
+    recs = [dict(r["signed"], deviceKey=k) for k, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
     return max(recs, key=lambda r: r.get("at") or 0) if recs else None
 
 
