@@ -50,6 +50,17 @@ class CableFirstTest(unittest.TestCase):
         W2 = type("W", (), {"mux_devices": staticmethod(lambda: [("U2", "Network", 2)])})
         self.assertEqual(install.win_udids(W2), ["U2"])
 
+    def test_macos_usb_names_tolerate_invalid_ioreg_bytes(self):
+        import target
+        raw = b'"USB Product Name" = "iPad Pro"\n' + b'\xca' * 4 + b'"USB Product Name" = "iPhone 17"'
+        def run_process(*args, **kwargs):
+            output = raw.decode("utf-8") if kwargs.get("text") else raw
+            return types.SimpleNamespace(stdout=output)
+        with um.patch.object(target.subprocess, "run", side_effect=run_process) as run:
+            self.assertEqual(target.usb_idevices(), ["iPad Pro", "iPhone 17"])
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertNotIn("text", run.call_args.kwargs)
+
 
 class PickTests(unittest.TestCase):
     def test_team_choice_and_container_bundle_id(self):
