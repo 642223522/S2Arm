@@ -120,6 +120,9 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     return 0;   // 存储缓冲、图像：随对应命令接
 }
 
+// 驱动的贴图句柄表：贴图槽 s 的句柄在第 8 + 2s 个 32 位字，即第 4 + s 个 8 字节项；32 个槽 → 36 项
+enum { HANDLE_TABLE_ENTRIES = 4 + 32 };
+
 static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view views[2], int nst) {
     struct entry *e = calloc(1, sizeof *e);
     struct fd_program fp; char why[192] = "";
@@ -195,6 +198,7 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
             in.direct_abi = (int)pc.direct_abi; in.translator_closure = pc.translator_closure;
             in.texture_array_length = (uint32_t)rp_S.tex_pool_n; in.sampler_array_length = (uint32_t)rp_S.samp_pool_n; in.transform_feedback_enabled = rp_S.tf_on;
             in.gfx = f.gfx; memcpy(in.textures, f.tex, sizeof in.textures); in.texture_count = f.ntex;
+            in.handle_table_entries = HANDLE_TABLE_ENTRIES;
             char ident[40]; int o = 0;
             for (int st = 0; st < nst; st++) {
                 struct s2a_compile_stage_src *d = &in.stages[in.stage_count++];
