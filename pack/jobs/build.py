@@ -206,7 +206,7 @@ def launch(c):
         env["S2A_RETURN_MARKER"] = str(marker)
         back = False
         try:
-            c.begin("游戏运行中")
+            c.begin("游戏运行中", key="game_running")
             log = c.logs / (c.task + "-game.log")
             started = time.monotonic()
             try:

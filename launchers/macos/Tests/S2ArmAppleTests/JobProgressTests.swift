@@ -10,6 +10,21 @@ final class JobProgressTests: XCTestCase {
                     fields: ["stage": "下载 Xcode 的 iOS 平台组件（约 8 GB）", "done": done, "total": total, "unit": "B"])
     }
 
+    /// M9：钥匙串提示按后端的 keychainPrompt 挂，不按步骤号；字段走真实 JSON 解析（布尔解成 NSNumber），换阶段就清
+    func test_keychain_prompt_follows_the_backend_flag_per_stage() throws {
+        func stage(_ t: Double, _ json: String) throws -> EngineEvent {
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            return EngineEvent(ev: "stage", t: t, code: nil, severity: .info, fields: fields)
+        }
+        var p = JobProgress()
+        p.ingest(try stage(0, #"{"stage":"用你的 Apple ID 签名","stageIndex":4,"stageCount":6,"keychainPrompt":true,"stageKey":null}"#))
+        XCTAssertTrue(p.keychainPrompt)
+        p.ingest(try stage(1, #"{"stage":"装到 iPhone","stageIndex":5,"stageCount":6,"keychainPrompt":false,"stageKey":null}"#))
+        XCTAssertFalse(p.keychainPrompt)
+        p.ingest(try stage(2, #"{"stage":"用你的开发者证书签名","stageIndex":4,"stageCount":6}"#))   // 没带字段的阶段：不沿用上一阶段
+        XCTAssertFalse(p.keychainPrompt)
+    }
+
     func test_rate_appears_after_two_seconds_and_is_bytes_per_second() {
         var p = JobProgress()
         p.ingest(progress(0, done: 1_000_000_000))
