@@ -32,17 +32,41 @@ def _digest(kind, p, keep=None):
         return '缺'
 
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import stage_equiv   # 产物等价表（pack/stage_inputs/equiv.tsv）
+# 产物等价表（pack/stage_inputs/equiv.tsv；登记命令 tools/stage_equiv.py add）。读表写在本文件里、不 import 旁边的模块：
+#   本工具会被单独拷进各种隔离引擎目录（阶段单测、门禁机的假引擎都只拷 stage_deps.py），多一个同目录依赖就整条算键失败、缓存永不命中（11-11 列车红）
+EQUIV_TABLE = os.path.join('pack', 'stage_inputs', 'equiv.tsv')
 
 
-# 算键 / 记清单的基础设施本身（阶段表里归「外」：只读输入算键、不改产物）：不进实际读入清单；老清单里已记的行重算时原样沿用记录值。
-#   11-11 实测：改了这几个文件（加产物等价）后，同根换代码再出，抽取被清单里的 stage_keyfiles.sh / stage_deps.py 对不上判成重跑
+def equiv_load(repo):
+    """→ {(路径, 新 sha16): (旧对象号, 旧 sha16)}；没有表 → {}"""
+    out = {}
+    try:
+        for ln in open(os.path.join(repo, EQUIV_TABLE), encoding='utf-8'):
+            if ln.startswith('#') or not ln.strip(): continue
+            c = ln.rstrip('\n').split('\t')
+            if len(c) >= 4: out[(c[0], c[1])] = (c[2], c[3])
+    except FileNotFoundError:
+        pass
+    return out
+
+
+_equiv = {}
+def equiv_canon(repo, rel, h):
+    """登记过等价的「路径 + 新内容」→ 旧版本的 sha16，否则原样"""
+    t = _equiv.get(repo)
+    if t is None: t = _equiv[repo] = equiv_load(repo)
+    return t.get((rel, h), (None, h))[1]
+
+
+# 算键 / 记清单的基础设施本身（阶段表里归「外」：只读输入算键、不改产物）：照记进实际读入清单（编排层 pack/orch/stages.py 要求清单里有这几行，
+#   缺了就判清单无效、永不跳过——11-11 第一版把它们从清单里去掉，列车上各阶段缓存测试全红）；重算时这几行原样沿用记录值，
+#   改了它们（如加产物等价）不让老游戏重跑（11-11 实测：同根换代码再出，抽取曾因清单里 stage_keyfiles.sh / stage_deps.py 对不上被判重跑）
 INFRA = {'R:pack/stage_keyfiles.sh', 'R:tools/stage_deps.py', 'R:tools/stage_equiv.py', 'R:pack/stage_inputs/equiv.tsv'}
 
 
 def _eq(repo, k, n, h):
     """仓库内文件登记过产物等价：记成旧版本的内容哈希（只提速、不改产物的改动不让老游戏重跑，11-11）"""
-    return stage_equiv.canon(repo, n[2:], h) if k == 'f' and n.startswith('R:') else h
+    return equiv_canon(repo, n[2:], h) if k == 'f' and n.startswith('R:') else h
 
 
 def _real(repo, name):
@@ -117,7 +141,7 @@ def collect(raw, repo, excl):
         elif any((rp + os.sep).startswith(e) for e in ext):
             out.add((k, rp))
     kids = _children(files, dirs) if files is not None else None
-    return [(k, n, _eq(repo, k, n, _digest(k, _real(repo, n), _keep(kids, n)))) for k, n in sorted(out) if n not in INFRA]
+    return [(k, n, _eq(repo, k, n, _digest(k, _real(repo, n), _keep(kids, n)))) for k, n in sorted(out)]   # 算键基础设施照记（pack/orch/stages.py 要求清单里有这几行才认）
 
 
 def rehash(manifest, repo):

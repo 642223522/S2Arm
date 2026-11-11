@@ -4,31 +4,11 @@
                                                          旧版本自己也登记过等价时顺着链取最早那一版，即老玩家缓存里记的那一版）
   证据必填、要可复核（登错一行老玩家会一直拿旧产物且没人发现）：写实测读数和它在哪（提交说明 / 单测名），例如
     「#606 实测：同根换代码抽取 / 直连都跳过、冷抽 extract/ 产物 15 个文件逐字节同 main，读数见提交说明」；只写「只提速 / 产物不变」拒绝
-供 tools/stage_deps.py import：canon(仓库相对路径, 内容 sha256 前 16 位) → 等价表里登记过就回旧版本的 sha16，否则原样。
-阶段源码键那一层（git 对象号）在 pack/stage_keyfiles.sh 里用同一张表替换，不经本文件。"""
+读表（equiv_load / equiv_canon）在 tools/stage_deps.py 里：算键工具会被单独拷进隔离引擎目录，不能依赖本文件。
+阶段源码键那一层（git 对象号）在 pack/stage_keyfiles.sh 里用同一张表替换。"""
 import hashlib, os, subprocess, sys
-
-TABLE = os.path.join('pack', 'stage_inputs', 'equiv.tsv')
-
-
-def load(repo):
-    """→ {(路径, 新 sha16): (旧对象号, 旧 sha16)}；没有表 → {}"""
-    out = {}
-    try:
-        for ln in open(os.path.join(repo, TABLE), encoding='utf-8'):
-            if ln.startswith('#') or not ln.strip(): continue
-            c = ln.rstrip('\n').split('\t')
-            if len(c) >= 4: out[(c[0], c[1])] = (c[2], c[3])
-    except FileNotFoundError:
-        pass
-    return out
-
-
-_cache = {}
-def canon(repo, rel, h):
-    t = _cache.get(repo)
-    if t is None: t = _cache[repo] = load(repo)
-    return t.get((rel, h), (None, h))[1]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stage_deps import equiv_load as load
 
 
 def sha16(b): return hashlib.sha256(b).hexdigest()[:16]
