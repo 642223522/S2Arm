@@ -247,6 +247,17 @@ class SpaceMeasured(JobCase):
         self.assertEqual((d["code"], d["severity"]), ("disk_full", "warning"))
         self.assertIn("已按你的选择仍然继续", d["summary"])
 
+    def test_follow_up_request_contract(self):
+        # 剃刀 M21：followUp 只给打 iPhone 包、只认布尔值（期望按 pack/contracts/README.md 手写）
+        self.context("ipa", followUp=True); self.context("ipa", followUp=False)
+        for op, value in (("build", True), ("ipa", "true"), ("catalog", True)):
+            with self.subTest(op=op, value=value), self.assertRaises(Failure):
+                self.context(op, followUp=value)
+        base = dict(schema=1, contract="s2a.job-request.v1", privateRoot="/p", library="/l", libraryId="x", gameId=GID)
+        validate("request", base | dict(operation="ipa", followUp=True))
+        with self.assertRaises(ContractError):
+            validate("request", base | dict(operation="ipa", followUp="yes"))
+
     def test_space_override_request_contract(self):
         self.context("build", spaceOverride=True); self.context("ipa", spaceOverride=False)
         for op, value in (("catalog", True), ("ipa", "true"), ("build", 1), ("launch", True)):

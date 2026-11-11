@@ -555,9 +555,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
-        // 同一款先出 Mac、再出 iPhone：iPhone 出包收尾会清掉这款的解包和中间产物（pack/jobs/library.prune_build），Mac 打包成功不清；
-        //   iPhone 在前时第二个平台只能重新解包（端到端实测全部重写）。iPhone 还能从 Mac 的产物根接着做。页面上平台卡片的排列不变
-        let game = item.game, platforms = item.platforms.filter { $0 == .mac } + item.platforms.filter { $0 != .mac }
+        // 按页面顺序出；收尾清什么由作业层定（剃刀 M21）：iPhone 后面还有平台时请求带 followUp，作业层先不清解包
+        let game = item.game, platforms = item.platforms
         var session = JobSession(kind: .export, gameID: game.id, name: game.name)
         session.export = ExportRun(platforms: platforms)
         start(session) { [weak self] sink in
@@ -568,7 +567,8 @@ public final class S2ArmLauncherModel: ObservableObject {
                 await self.batchMark(game.id, platform, state: "running")
                 self.beginPlatform(k)
                 do {
-                    let job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
+                    var job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
+                    job.followUp = target == .iPhone && k < platforms.count - 1
                     let r = try await self.provider.build(job, events: sink)
                     self.endPlatform(platform, ExportRun.Outcome(state: .completed, output: r.outputPath, ipa: r.ipa,
                                                                  appBytes: ((r.raw["ipaBytes"] ?? r.raw["outputBytes"]) as? NSNumber)?.int64Value,

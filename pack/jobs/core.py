@@ -516,6 +516,9 @@ class Context:
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
             raise Failure("spaceOverride 仅支持 Mac 打包（build）与打 iPhone 包（ipa）任务的布尔值。")
+        # 同一次出包后面还有平台（pack/contracts/README.md「同一次出包后面还有平台」）：只给打 iPhone 包，只认布尔值
+        if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
+            raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
         self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
