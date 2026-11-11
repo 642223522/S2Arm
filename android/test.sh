@@ -531,3 +531,4 @@ s2a_gate_step "$PY" -B "$android_dir/doctor/test_doctor.py"
 
 # op31 独立计划器（未接 record）：逐行字节/默认视图/局部区域与图像依赖合同，含四种功能负控。
 s2a_gate_step "$PY" "$android_dir/tests/buffer_texture_plan_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/buffer_texture_exec_test.py"
