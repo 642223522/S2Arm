@@ -192,24 +192,6 @@ if [ -n "$LINUX_LOCAL" ] && [ -n "${GATE_RERUN+x}" ]; then
     [ -n "$found" ] || { echo "自检请求的步骤未在本次清单中：${requested}（结论不完整）" >&2; exit 2; }
   done
 fi
-# CPU 排队（10-24 维护者 重新分工：本机忙时新门禁先排队，资源让给双轨；10-29 维护者 批：判据从 15 分钟 load average 换成 CPU 实际空闲——
-#   load average 把等硬盘的线程也算进去，出包读写小文件时虚高到 50–75、CPU 其实闲着）：CPU 实际空闲 < S2A_GATE_CPU_IDLE_MIN（缺省 15%；0 = 关）时每 30 秒看一次，
-#   最多等 S2A_GATE_LOAD_WAIT_S（缺省 1800）秒，到点照跑并在结论里写明；双轨线的门禁设 GATE_DUAL=1 不排；远端那一份（GATE_PLAN）不排；
-#   列车起的门禁（tools/train.sh grun 设 GATE_NO_LOADQ=1）不排：它有墙钟上限，排队会把合入通道拖成超时红
-#   单测临时仓库里的假门禁（没有路由器 tools/gate_route.py）不排；专测排队的 gate_loadq_test 给 S2A_GATE_IDLE_TEST，照排。读不到空闲（没有 top）不排
-if [ -z "${GATE_DUAL:-}" ] && [ -z "${GATE_NO_LOADQ:-}" ] && [ -z "${GATE_PLAN:-}" ] && [ "${S2A_GATE_CPU_IDLE_MIN:-15}" != 0 ] \
-   && { [ -f tools/gate_route.py ] || [ -n "${S2A_GATE_IDLE_TEST:-}" ]; }; then
-  lw0=$SECONDS; lsaid=
-  while :; do
-    ci=${S2A_GATE_IDLE_TEST:-$(top -l 2 -n 0 -s 1 2> /dev/null | awk '/CPU usage/ { for (i = 1; i <= NF; i++) if ($i ~ /idle/) v = $(i - 1) } END { sub(/%/, "", v); if (v != "") printf "%d", v + 0.5 }')}
-    [ -n "$ci" ] || break
-    [ "$ci" -ge "${S2A_GATE_CPU_IDLE_MIN:-15}" ] && break
-    [ $((SECONDS - lw0)) -ge "${S2A_GATE_LOAD_WAIT_S:-1800}" ] && { echo "【黄】本机 CPU 实际空闲 ${ci}% 仍低于 ${S2A_GATE_CPU_IDLE_MIN:-15}%，已排队 $((SECONDS - lw0)) 秒，到上限照跑"; break; }
-    [ -z "$lsaid" ] && { echo "本机 CPU 实际空闲 ${ci}% < ${S2A_GATE_CPU_IDLE_MIN:-15}%：门禁先排队（双轨优先；最多 ${S2A_GATE_LOAD_WAIT_S:-1800} 秒）"; lsaid=1; }
-    sleep "${S2A_GATE_LOAD_POLL_S:-30}"
-  done
-  [ -n "$lsaid" ] && echo "CPU 排队结束：等了 $((SECONDS - lw0)) 秒"
-fi
 # ---- 每步在哪跑（GATE_HOST=gate-host）----
 # 假红重跑（列车用）：GATE_RERUN=<上次门禁「红步」行的名字，tab 分隔> → 只跑这几步；部分跑，绿了也不写已验记录
 if [ -n "$RER" ]; then
@@ -239,6 +221,25 @@ N=${#STEPS[@]}
 # 待 Mac 证的步另起一行机读（tab 分隔），总结行写成「本机绿、待 Mac 证」——不许让读末行的人 / 脚本把它当成整份门禁绿
 macsum() { [ "$MACN" -gt 0 ] || return 0; printf '待Mac证'; printf '\t%s' "${MACS[@]}"; echo; }
 [ "$N" = 0 ] && { gl_end 绿; [ ${#OTHER[@]} -gt 0 ] && echo "另一层：${OTHER[*]}"; macsum; if [ "$MACN" -gt 0 ]; then echo "门禁 本机绿、待 Mac 证：$TIER 档，本机已证 0 步（本机能跑的步本树都不涉及）${MACL}"; else echo "门禁 绿：$TIER 档，跑了 0 步 / 应跑 0 步（要跑的步本树都不涉及）"; fi; exit 0; }
+# CPU 排队（10-24 维护者 重新分工：本机忙时新门禁先排队，资源让给双轨；10-29 维护者 批：判据从 15 分钟 load average 换成 CPU 实际空闲——
+#   load average 把等硬盘的线程也算进去，出包读写小文件时虚高到 50–75、CPU 其实闲着）：CPU 实际空闲 < S2A_GATE_CPU_IDLE_MIN（缺省 15%；0 = 关）时每 30 秒看一次，
+#   最多等 S2A_GATE_LOAD_WAIT_S（缺省 1800）秒，到点照跑并在结论里写明；双轨线的门禁设 GATE_DUAL=1 不排；远端那一份（GATE_PLAN）不排；
+#   11-11 挪到算出步数之后（0 步不排：热修 post 层 0 步白等 601 秒）；GATE_ROLE=热修 不排（热修入队到开跑 < 1 分钟）
+#   列车起的门禁（tools/train.sh grun 设 GATE_NO_LOADQ=1）不排：它有墙钟上限，排队会把合入通道拖成超时红
+#   单测临时仓库里的假门禁（没有路由器 tools/gate_route.py）不排；专测排队的 gate_loadq_test 给 S2A_GATE_IDLE_TEST，照排。读不到空闲（没有 top）不排
+if [ -z "${GATE_DUAL:-}" ] && [ -z "${GATE_NO_LOADQ:-}" ] && [ "${GLROLE:-}" != 热修 ] && [ -z "${GATE_PLAN:-}" ] && [ "${S2A_GATE_CPU_IDLE_MIN:-15}" != 0 ] \
+   && { [ -f tools/gate_route.py ] || [ -n "${S2A_GATE_IDLE_TEST:-}" ]; }; then
+  lw0=$SECONDS; lsaid=
+  while :; do
+    ci=${S2A_GATE_IDLE_TEST:-$(top -l 2 -n 0 -s 1 2> /dev/null | awk '/CPU usage/ { for (i = 1; i <= NF; i++) if ($i ~ /idle/) v = $(i - 1) } END { sub(/%/, "", v); if (v != "") printf "%d", v + 0.5 }')}
+    [ -n "$ci" ] || break
+    [ "$ci" -ge "${S2A_GATE_CPU_IDLE_MIN:-15}" ] && break
+    [ $((SECONDS - lw0)) -ge "${S2A_GATE_LOAD_WAIT_S:-1800}" ] && { echo "【黄】本机 CPU 实际空闲 ${ci}% 仍低于 ${S2A_GATE_CPU_IDLE_MIN:-15}%，已排队 $((SECONDS - lw0)) 秒，到上限照跑"; break; }
+    [ -z "$lsaid" ] && { echo "本机 CPU 实际空闲 ${ci}% < ${S2A_GATE_CPU_IDLE_MIN:-15}%：门禁先排队（双轨优先；最多 ${S2A_GATE_LOAD_WAIT_S:-1800} 秒）"; lsaid=1; }
+    sleep "${S2A_GATE_LOAD_POLL_S:-30}"
+  done
+  [ -n "$lsaid" ] && echo "CPU 排队结束：等了 $((SECONDS - lw0)) 秒"
+fi
 # >>> step_par（单测 tests/gate_step_par_test.sh 按这两行标记抽出来测）
 # 全机步数上限（11-04 合入运维线）：一份门禁原先把所有步同时起（job 全部 &），gate-host 上 3 份门禁叠起来 300+ 进程、负载 18–23，单测跑满 600 秒被杀成假红。
 #   每步开跑前先拿一个全机令牌（内核文件锁，见下），令牌数 GATE_STEP_PAR 缺省 = 核数 × 2/3（至少 2）：
