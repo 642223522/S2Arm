@@ -225,6 +225,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var cloudSyncing = false
     private var work: Task<Void, Never>?
     private var refreshWaiters: [() -> Void] = []
+    /// 正在列时又要刷新（导入完、出包完、切回窗口……）：记一笔，这一轮列完再补列一次；这期间挂的回调归补的那一轮（剃刀 M8：原先直接丢掉，
+    /// 刚导入的游戏要等下一次别的刷新才出现）。nil = 没有要补的
+    private var refreshAgain: [() -> Void]?
     private var startupCatalogSent = false
     private var controllerGameStarted = false
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
@@ -251,8 +254,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// done：这次列完（成功或失败）后调；已经在列时不再起新作业，等那一次列完再调
     public func refresh(_ done: (() -> Void)? = nil) {
+        guard !loading else { refreshAgain = (refreshAgain ?? []) + (done.map { [$0] } ?? []); return }
         if let done { refreshWaiters.append(done) }
-        guard !loading else { return }
         // 启动时先显示上次的列表，不等作业；能不能玩在真正启动时还会完整校验
         if !libraryLoaded, games.isEmpty, let known = provider.library.lastKnownGames(), !known.isEmpty {
             games = known
@@ -278,6 +281,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             }
             let waiters = self.refreshWaiters; self.refreshWaiters = []
             waiters.forEach { $0() }
+            if let again = self.refreshAgain { self.refreshAgain = nil; self.refreshWaiters = again; self.refresh() }
         }
     }
 
