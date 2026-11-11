@@ -137,7 +137,12 @@ def refresh_ios(c, games):
     """组容器前：这几款的 iPhone 容器件按本引擎改写器核一遍（见文件头）。→ 换了改写产物的款"""
     if not games:
         return []
-    rid = rewriter_id(c)
+    try:
+        rid = rewriter_id(c)
+    except (Failure, OSError, subprocess.SubprocessError) as e:
+        # 同 refresh_mac：取不到改写器指纹就整轮不核，不挡这次装机；各款保留原来的产物、不记指纹，下次再核
+        c.emit("message", f"【黄】没取到改写器指纹，这次先不核要不要按新版更新程序：{str(e)[:200]}")
+        return []
     todo = [g for g in games if (layout.game_info(c, g).get("ios") or {}).get("rewriterId") != rid]
     if not todo:
         return []
