@@ -4,6 +4,7 @@ from __future__ import annotations
 import errno
 import os
 import re
+from pathlib import Path
 
 
 RECOVERY = {
@@ -260,6 +261,7 @@ LOG_CAUSES = (
 )
 _RED = ("【红】", "🔴", "[RED]")
 # 红行里点名的子日志（如直连库 <缓存>/work.stage.N/build.log）：绝对路径（可含空格，如「Application Support」），以 .log / .out 结尾
+_LOG_PATH_ANY = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s'\"（）()，,；;]+)")   # 命中行里点名的绝对路径（核盘满用：不限 .log）
 _LOG_PATH = re.compile(r"(?:(?<=[\s（(：:，,=])|^)((?:[A-Za-z]:[\\/]|/)[^（）()，,；;\"'\r\n]*?\.(?:log|out))(?=$|[\s）)，,；;:\"'])")
 EVIDENCE_MAIN_BYTES = 16000   # 主日志（refresh / 一键出包输出）尾部
 EVIDENCE_SUB_BYTES = 32000    # 每份子日志尾部（.NET 未处理异常连调用栈约 4–10 KB）
@@ -316,16 +318,68 @@ def gather_evidence(log, texts=()):
     return chunks
 
 
-def log_cause(chunks):
-    """证据里有确凿根因字样 → (码, 来源, 命中行)；没有 → None。"""
+# 环境类的码（盘满、缺工具）字样只是候选：工具重试、可选探测（`command -v x || …`）都会打出同样字样却与这次失败无关
+#   （坑记录 11-09：Windows 出库 rc=127 被一律译成盘满，玩家照提示删了 37 GB）。启动器剃刀 H9：候选要当场核事实才定码，核不实不采信，
+#   字样与未采信的理由进 internal。其余码的字样只有出错的那个工具自己会打（改写缺口、链号、图形接口、预检缺件、xcrun / xcodebuild 原文），照旧直接定码
+DISK_FULL_FREE = 5 << 30   # 盘满候选的核实线：命中行点名的路径或日志所在的盘，剩余空间低于它才算真满（工具失败后常会删掉自己的临时文件，留出余量）
+
+
+def _free_bytes(path):
+    """path（可不存在：往上找到存在的那层）所在盘的剩余字节；读不到为 None"""
+    import os
+    import shutil
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    try:
+        return shutil.disk_usage(p).free
+    except OSError:
+        return None
+
+
+def _tool_present(name):
+    import shutil
+    return shutil.which(name) is not None
+
+
+def _confirm(code, line, log):
+    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信"""
+    if code == "disk_full":
+        paths = [m.group(1) for m in _LOG_PATH_ANY.finditer(line)] + ([str(Path(log).parent)] if log else [])
+        free = [(p, f) for p, f in ((p, _free_bytes(p)) for p in paths) if f is not None]
+        if not free:
+            return True, "读不到所在盘的剩余空间，按字样"
+        path, least = min(free, key=lambda pf: pf[1])
+        gib = least / (1 << 30)
+        if least < DISK_FULL_FREE:
+            return True, "核实：%s 所在盘只剩 %.1f GB" % (path, gib)
+        return False, "所在盘还剩 %.1f GB（%s），不是盘满" % (gib, path)
+    if code == "tool_missing":
+        m = re.search(r"([\w.+-]+): command not found", line)
+        if m and _tool_present(m.group(1)):
+            return False, "「%s」现在找得到，不是没装" % m.group(1)
+    return True, ""
+
+
+def log_cause(chunks, log=None):
+    """证据里有确凿根因字样、且（环境类的码）核实了 → (码, 来源, 命中行, 核对说明)；没有 → (None, 未采信的候选说明列表)。"""
+    rejected = []
     for pattern, code in LOG_CAUSES:
         for label, text in chunks:
             m = re.search(pattern, text, re.I)
             if m:
                 start = text.rfind("\n", 0, m.start()) + 1
                 end = text.find("\n", m.end())
-                return code, label, text[start:end if end >= 0 else None].strip()[:300]
-    return None
+                line = text[start:end if end >= 0 else None].strip()[:300]
+                ok, why = _confirm(code, line, log)
+                if ok:
+                    return code, label, line, why
+                rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))
+                break   # 同一个码事实已核过，别的来源同样字样不再重复核
+    return None, rejected
 
 
 def refresh_stop_phase(red):
@@ -345,12 +399,12 @@ def classify_failure(phase, log, texts=()):
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
     chunks = gather_evidence(log, texts)
     read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"
-    hit = log_cause(chunks)
-    if hit:
-        code, label, line = hit
-        return code, "归因 %s：%s 里「%s」；读过 %s" % (code, label, line, read)
+    hit = log_cause(chunks, log)
+    if hit[0]:
+        code, label, line, why = hit
+        return code, "归因 %s：%s 里「%s」%s；读过 %s" % (code, label, line, "（" + why + "）" if why else "", read)
     code = STAGE_CODES.get(phase, "package_failed")
-    return code, "归因 %s：按阶段 %s；读过 %s" % (code, phase or "未识别", read)
+    return code, "归因 %s：按阶段 %s；%s读过 %s" % (code, phase or "未识别", "".join(r + "；" for r in hit[1]), read)
 
 
 def tool_reason(log):
