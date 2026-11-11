@@ -836,6 +836,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     static func launchPlayer(_ defaults: UserDefaults = .standard) -> LocalPlayer? {
         defaults.object(forKey: LocalPlayers.listKey) == nil ? nil : playerStore(defaults: defaults).current
     }
+    /// 作业请求里的 player 字段（起局 pack/jobs/build.py、导入社区存档 saves.py 都按 saves.requested_player 校验）；没建过玩家 = nil
+    static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
+        launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
+    }
     func shutdownControllerConnection() { controller.shutdown() }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
