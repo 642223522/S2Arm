@@ -494,6 +494,11 @@ def record_sources(sources):
     return out
 
 
+# 只读探测（启动器剃刀 H4）：结果走标准输出，不落任务记录（request / journal / events 三个文件 + 起 ps 取进程起始时刻），作业开头也不收日志、
+#   不起后台商店查询、引擎副本有安装标记就直接用（逐文件复核留给真用引擎产物的作业，#304）。装机页每 5 秒一次的 installCheck、
+#   设备探测、刷新游戏库都在这里：原先每次都落三个文件，开一小时约 720 个作业记录
+PROBES = ("catalog", "installCheck", "targetDevice", "locations")
+JOURNAL_PROGRESS_S = 5.0   # 进度事件最多隔这么久重写一次任务记录（剃刀 H5：原先每条事件都原子重写 + fsync）；阶段、诊断、终态每次都写并 fsync
 LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
 OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm",
                    "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
@@ -543,10 +548,16 @@ class Context:
         self.last_progress = 0
         self.last_log = None
         self.frontend_gone = False
+        self.recorded = self.operation not in PROBES
+        self.last_journal = 0.0
         self.jobpath = self.logs / "jobs" / (self.task + ".json")
         self.events = self.logs / "jobs" / (self.task + ".events.jsonl")
         self.requestpath = self.logs / "jobs" / (self.task + ".request.json")
-        layout.follow_task(self)   # 同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        layout.follow_task(self)   # 索引表第一项核成默认库位置；同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        if not self.recorded:
+            self.job = dict(schema=1, id=self.task, operation=self.operation, gameId=request.get("gameId"),
+                            state="running", started=time.time(), diagnostics=[], pid=os.getpid(), attemptNo=1)
+            return
         # Keep the request next to the journal so `resume` can run the same task again after a kill without the caller having to keep the
         # request file around (J10). 0600 like the request itself: it holds player paths, never keys.
         if not self.requestpath.exists():
@@ -675,12 +686,19 @@ class Context:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
             try:
-                atomic(self.jobpath, self.job)
-                with self.events.open("a", encoding="utf-8") as f:
-                    f.write(line + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
-                os.chmod(self.events, 0o600)
+                # 剃刀 H5：心跳只给标准输出（前端据此知道作业还活着），不落盘；进度追加进事件文件、不 fsync，任务记录最多隔 JOURNAL_PROGRESS_S 重写一次；
+                #   阶段 / 诊断 / 终态等每条都重写任务记录并 fsync（被杀时不丢最后一个阶段，J10）。原先每条事件（含每秒心跳）都整份重写 + 两次 fsync
+                if self.recorded and kind != "heartbeat":
+                    durable = kind != "progress"
+                    if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
+                        atomic(self.jobpath, self.job)
+                        self.last_journal = now
+                    with self.events.open("a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                        if durable:
+                            f.flush()
+                            os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
+                    os.chmod(self.events, 0o600)
             except OSError as error:
                 # A full or failing disk used to let the job finish "successfully" with its record missing: whoever looks for it later finds
                 # nothing, or finds it stuck at an old stage. Say so and fail the job instead (J10).
@@ -1203,7 +1221,8 @@ class Context:
         try:
             self.emit("result", message, state="succeeded" if state == "completed" else state,
                       result=result or {}, artifactRef=(result or {}).get("outputPath"), diagnostics=self.job["diagnostics"])
-            atomic(self.jobpath, self.job)
+            if self.recorded:
+                atomic(self.jobpath, self.job)
         except (Failure, OSError) as error:
             # The job is over either way; what must not happen is the caller seeing success while nothing was recorded. main.py turns
             # journal_broken into a non-zero exit, and this line is the only place a user can read why (J10).
