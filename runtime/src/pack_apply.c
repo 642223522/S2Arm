@@ -268,9 +268,13 @@ int s2a_pack_apply(const char *docs) {
         else if (write_atomic(root, ".applied", sha)) { rc = -4; snprintf(what, sizeof what, "写 .applied"); }
         else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
-    FILE *lf = fopen(logp, "a");
+    FILE *lf = fopen(logp, "a"); int lerr = lf ? 0 : errno;
+    // 失败原因不依赖 unpack.log 打得开（#540：游戏目录 Documents/games/<游戏号>/ 不在时 unpack.log 也建不了，原先原因只在 lf 打开时才填，
+    //   host.log 那一行「解开 … 没成：」后面是空的、又指去一个不存在的 unpack.log）：先填原因，日志打不开再把这一句接上
+    g_apply_fail[0] = 0;
+    if (rc) { int k = snprintf(g_apply_fail, sizeof g_apply_fail, "%s（返回 %d）", what, rc);
+        if (!lf && k > 0 && (size_t)k < sizeof g_apply_fail) snprintf(g_apply_fail + k, sizeof g_apply_fail - (size_t)k, "；unpack.log 建不了：%s %s", logp, strerror(lerr)); }
     if (lf) {
-        if (rc) snprintf(g_apply_fail, sizeof g_apply_fail, "%s（返回 %d）", what, rc);
         if (rc) fprintf(lf, "%s 解包失败：%s 返回 %d（已解 %u 个包 %u 个文件）%s%s\n", ts, what, rc, ntar, nf, g_untar_err[0] ? "；现场：" : "", g_untar_err);
         else fprintf(lf, "%s 解开 %u 个包 %u 个文件 %llu MB，.applied = %s（%.1f 秒）\n", ts, ntar, nf, (unsigned long long)(nb >> 20), sha, (now_ns() - t0) / 1e9);
         fclose(lf);

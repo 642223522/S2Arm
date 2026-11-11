@@ -15,7 +15,7 @@
 #define TAR_OPTIONS "--format pax --no-xattrs --no-mac-metadata"
 #define TAR_RENAME "-s ',^a.txt,x/../../逃逸.txt,'"
 #endif
-int s2a_pack_apply(const char *docs); int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb);
+int s2a_pack_apply(const char *docs); const char *s2a_pack_apply_failure(void); int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb);
 int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char *proc_docs, char *out, size_t n); int s2a_import_state_game(const char *proc_docs, const char *gid);
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
@@ -376,5 +376,17 @@ int main(void) {
         CHECK(s2a_pack_apply(g3) == 0, "⑭ 应用成功");
         snprintf(c, sizeof c, "cmp -s '%s/src/npdm' '%s/资源包/exefs/main.npdm'", D, g3); CHECK(sh(c) == 0, "⑭ 小文件逐字节解出"); }
       CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）"); }
+    // #540：游戏目录（多款容器 Documents/games/<游戏号>/）根本不在 → unpack.log 也建不了；失败原因仍要填上，并说明日志建不了。
+    //   先跑一次成功的同名目录，核成功后原因清空（不留上一次的失败原因）
+    { char gone[1100]; snprintf(gone, sizeof gone, "%s/games/0100000000000000", T); struct stat gs;
+      CHECK(stat(gone, &gs) != 0, "夹具：游戏目录应不在");
+      CHECK(s2a_pack_apply(gone) != 0, "游戏目录不在应判失败");
+      const char *why = s2a_pack_apply_failure();
+      CHECK(why && strstr(why, "index.tsv 打不开") && strstr(why, "返回 -8"), "目录不在：期望原因含「index.tsv 打不开」「返回 -8」→ 「%s」", why ? why : "(null)");
+      CHECK(why && strstr(why, "unpack.log 建不了") && strstr(why, "No such file"), "目录不在：期望原因注明 unpack.log 建不了（No such file）→ 「%s」", why ? why : "(null)");
+      char ok[1100]; snprintf(ok, sizeof ok, "%s/ok", T); snprintf(c, sizeof c, "mkdir -p %s/资源包 && printf '{\"index_sha256\":\"aa\"}' > %s/资源包/manifest.json && : > %s/资源包/index.tsv", ok, ok, ok);
+      CHECK(sh(c) == 0, "造空包夹具失败");
+      CHECK(s2a_pack_apply(ok) == 0, "空索引的包应解开");
+      CHECK(!*s2a_pack_apply_failure(), "成功后失败原因应清空 →「%s」", s2a_pack_apply_failure()); }
     printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }
