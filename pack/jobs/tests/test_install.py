@@ -50,6 +50,17 @@ class CableFirstTest(unittest.TestCase):
         W2 = type("W", (), {"mux_devices": staticmethod(lambda: [("U2", "Network", 2)])})
         self.assertEqual(install.win_udids(W2), ["U2"])
 
+    def test_macos_usb_names_tolerate_invalid_ioreg_bytes(self):
+        import target
+        raw = b'"USB Product Name" = "iPad Pro"\n' + b'\xca' * 4 + b'"USB Product Name" = "iPhone 17"'
+        def run_process(*args, **kwargs):
+            output = raw.decode("utf-8") if kwargs.get("text") else raw
+            return types.SimpleNamespace(stdout=output)
+        with um.patch.object(target.subprocess, "run", side_effect=run_process) as run:
+            self.assertEqual(target.usb_idevices(), ["iPad Pro", "iPhone 17"])
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertNotIn("text", run.call_args.kwargs)
+
 
 class PickTests(unittest.TestCase):
     def test_team_choice_and_container_bundle_id(self):
@@ -279,6 +290,15 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(r["packFiles"], 2)
         self.assertIn("资源包已传完", r["unpackPending"])   # 结果带还差的一步（11-09 #336）：前端据此不说「已装到 iPhone」
 
+    def test_img_pack_is_done_once_transferred(self):   # 11-11：单一 IMG 形态传完并核过长度即装好，不带 --apply、不起 App 等机上解开，结果带 openToFinish
+        gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
+        m = pack / "manifest.json"; data = json.loads(m.read_text()); data.update(version=3, format="img"); m.write_text(json.dumps(data))
+        r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
+        push = next(a for a in runs if a[2].endswith("tools/push_pack.py"))
+        self.assertIn("run", push[3:]); self.assertNotIn("--apply", push)
+        self.assertEqual(launches, [])                          # 没有为解包起 App
+        self.assertTrue(r["openToFinish"]); self.assertNotIn("unpackPending", r)
+
     def test_install_signs_installs_and_pushes(self):
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
         r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
@@ -294,6 +314,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(launches, [{"S2A_PACK_APPLY_ONLY": "1"}])                                           # 推了就起一次 App 只解包
         self.assertEqual((r["device"], r["bundleId"], r["packFiles"], r["free"]), ("测试设备2", bid, 2, True))
         self.assertNotIn("unpackPending", r)   # 解开了：结果不带还差的一步
+        self.assertNotIn("openToFinish", r)    # 旧形态等机上解开，不写「打开 S2Arm 会自动完成」
 
 
     def test_container_install_paths(self):
@@ -343,6 +364,7 @@ class FlowTests(unittest.TestCase):
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), \
              um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(packer, "release_version", return_value="9.8.7"), \
+             um.patch.object(packer, "display_version", return_value="v9.8.7-dev+abc1234"), \
              um.patch.object(self.c, "run", run):
             ipa1, games1, sid1 = packer.assemble(self.c, A)
             ipa2, games2, sid2 = packer.assemble(self.c, A, [B])
@@ -351,6 +373,7 @@ class FlowTests(unittest.TestCase):
             self.assertNotIn("--base", cmd)
             self.assertEqual(cmd[cmd.index("--host-abi") + 1], str(host_update.HOST_ABI))
             self.assertEqual(cmd[cmd.index("--version") + 1], "9.8.7")   # 三端同号：电脑上 S2Arm 的发版号写进容器
+            self.assertEqual(cmd[cmd.index("--display-version") + 1], "v9.8.7-dev+abc1234")   # 界面版本字同一来源
             self.assertEqual((cmd[cmd.index("--sign") + 1], cmd[cmd.index("--shell") + 1]), ("adhoc", str(shell)))
         self.assertEqual([c1[i + 1] for i, x in enumerate(c1) if x == "--game"], [str(kits[A].resolve())])
         self.assertEqual([c2[i + 1] for i, x in enumerate(c2) if x == "--game"], [str(kits[A].resolve()), str(kits[B].resolve())])
@@ -703,7 +726,7 @@ class SaveBackupTests(unittest.TestCase):
         def devicectl(c, *a, timeout=0):
             if a[:3] == ("device", "info", "apps"):
                 if apps_rc:
-                    return apps_rc, {}, "devicectl 60 秒没有响应：手机可能锁屏了或连接断开"
+                    return apps_rc, {}, "devicectl 等了 60 秒没有返回，已停止等待"
                 return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.0100c2500fc20000"}] if installed else []}}, ""
             if a[:3] == ("device", "info", "files") and list_rc:
                 return list_rc, {}, "The operation couldn’t be completed"
@@ -1202,6 +1225,17 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ApplyFailureReasonTests(unittest.TestCase):
+    """手机上解开失败（如 #569 目录 App 写不进）：tools/push_pack.py 按解包日志「解包失败：…」当场报原因，装机作业认这一句、原因原样上屏。
+    两边原句对不上会红（期望手写）"""
+    def test_job_reads_the_push_tool_sentence(self):
+        import install
+        tool = (Path(install.__file__).resolve().parents[2] / "tools/push_pack.py").read_text(encoding="utf-8")
+        self.assertIn('f"资源包推进去了，但手机上解开失败：{', tool)
+        log = "[12:00:09] 【红】资源包推进去了，但手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）\n"
+        self.assertEqual(install.APPLY_FAILED.search(log).group(1), "目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）")
+
+
 class DevicectlTimeoutTests(unittest.TestCase):
     """#333：devicectl 超时（锁屏 / 隧道断时一直挂）转成非零返回码 124 + 人话原因，不再抛 TimeoutExpired 让装机任务裸 traceback 收场"""
     def test_timeout_becomes_rc_124(self):
@@ -1212,8 +1246,7 @@ class DevicectlTimeoutTests(unittest.TestCase):
             with um.patch.object(diag, "COREDEVICE", Path(d)), \
                  um.patch.object(diag.subprocess, "run", side_effect=subprocess.TimeoutExpired("devicectl", 120)):
                 rc, data, err = diag.devicectl(c, "device", "info", "files", timeout=120)
-        self.assertEqual((rc, data), (124, {}))
-        self.assertIn("锁屏", err)
+        self.assertEqual((rc, data, err), (124, {}, "devicectl 等了 120 秒没有返回，已停止等待"))   # 如实说超时，不猜锁屏（剃刀 H21）
 
 
 class PhoneGamesTruthTests(unittest.TestCase):
@@ -1247,6 +1280,18 @@ class PhoneGamesTruthTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 install.phone_games(self.c, self.ph(missing=False))                    # 装着却进不去 = 锁屏 / 断开
         self.assertEqual(e.exception.code, "device_locked")
+
+    def test_games_folder_not_created_yet_is_zero_games(self):
+        """首次装机：App 在、还没有 Documents/games——当 0 款照常装（v0.2.8 热修，玩家实机原文「afc error: Object not found」带空格，原先被当读不出设备挡住）。
+        新工具给结构化码 S2A_AFC_ERR 8；旧工具 / devicectl 只有原文，带不带空格、大小写都认。别的 AFC 错误码（如 4 读错误）与锁屏 / 断连照旧停"""
+        for out in ("S2A_AFC_ERR 8 Object not found", "afc error: Object not found", "ObjectNotFound", "No such file or directory", "OBJECT NOT FOUND"):
+            with self.subTest(out=out), um.patch.object(install, "devpush_client", self.client([], set(), ls_error=out)):
+                self.assertEqual(install.phone_games(self.c, self.ph()), set())
+        for out in ("S2A_AFC_ERR 4 Read error", "device socket io failed"):
+            with self.subTest(out=out), um.patch.object(install, "devpush_client", self.client([], set(), ls_error=out)):
+                with self.assertRaises(Failure) as e:
+                    install.phone_games(self.c, self.ph())
+                self.assertEqual(e.exception.code, "device_locked")
 
     def test_name_read_from_phone_with_the_bundle_being_installed(self):
         # Windows 第一次装（这台还没记录包名）：确认框里的名字照样按这次要装的包名去手机上读 control.nacp（Windows 实机曾显示成游戏号）

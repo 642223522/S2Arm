@@ -34,6 +34,19 @@ int nvn_vk_first_draw_flush(void);
 // 返回 0 = 已提交部分全部完成；1 = 尚未完成（非失败，资源/fence/命令保留）；-1 = 终态失败。
 // 不能把 1 当完成，也不能据此释放/复用资源。
 int nvn_vk_first_draw_flush_ready(int64_t budget_ns);
+// 已结束录制的命令缓冲入帧队列：三态明确区分所有权与失败。
+// NOT_TAKEN: 调用方仍拥有 cmd；ACCEPTED: 队列拥有（可能还未提交）；
+// FAILED_OWNED: 队列已接手后批次提交失败，队列持有 cmd，调用方必须报错且不可释放/重试。
+enum s2a_fq_enqueue_result {
+    S2A_FQ_ENQUEUE_NOT_TAKEN = -1,
+    S2A_FQ_ENQUEUE_ACCEPTED = 0,
+    S2A_FQ_ENQUEUE_FAILED_OWNED = 1,
+};
+int nvn_vk_first_draw_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd);
+// 接手时原子登记底图 pin；临时 framebuffer/view 同归队列，完成证据后销毁。
+int nvn_vk_first_draw_enqueue_clear(struct s2a_vk_device *d, VkCommandBuffer cmd,
+                                    void *native_tex, VkImage image, uint64_t generation,
+                                    VkFramebuffer fb, VkImageView view, int temporary);
 // pass 边界（记录回放在附件变化/非绘制 GPU 操作前调用）：关闭当前 open pass；sync != 0 时
 // 还把已录制但尚未提交的前缀按队列顺序交出去并等完成，之后的 GPU 操作才有顺序保证。
 // 返回 0 = 边界已落地（sync 时有完成证明）；非 0 = 没有完成证明（帧队列进入终态并保留在途资源），
@@ -112,9 +125,17 @@ struct nvn_vk_open_window {
 };
 void nvn_vk_first_draw_take_open_window(struct nvn_vk_open_window *o);
 int nvn_vk_first_draw_retire_all(void);
+// 间接参数的权威字节（GPU 可能写过）：1 = 已从本帧可写影子读到 out（先过同步边界）；
+// 0 = guest 内存是权威，调用方自己读；-1 = 表达不了，why 写明。见 nvn_vk_first_draw.c。
+int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out, char *why, size_t why_size);
 // 当前录制帧的序号（从 1 开始，每帧/每次完整 flush 递增）：时间戳待写项按它归属到帧，
 // 退休只结算已拿到完成证明的帧。
 uint64_t nvn_vk_first_draw_frame_id(void);
+// 本帧池后备保活序号（懒分配）：池 lookup 登记在途引用前先调，保证拿到的是本帧自己的
+// 序号而不是上一帧已移交槽位的序号；dispatch 早于首笔 draw 时也必须有效。
+uint64_t nvn_vk_first_draw_submit_seq(void);
+// 将当前帧的池保活序号移交给未入队命令；调用方负责在真实完成后退休。
+uint64_t nvn_vk_first_draw_detach_submit_seq(void);
 // OP_REPORT_COUNTER(TIMESTAMP_TOP)：把 reset + TOP_OF_PIPE 时间戳录进当前帧队列的命令缓冲，
 // 不 submit、不等 fence；地址与槽位的写回由 nvn_vk_query.c 在帧完成点统一处理。
 int nvn_vk_first_draw_timestamp_top(struct s2a_vk_device *d, VkQueryPool pool, uint32_t slot,

@@ -9,7 +9,7 @@ ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 r() { python3 tools/gate_route.py "$@" | tr '\n' ' '; }
 NT=$(( $(ls tests/*_test.sh | wc -l | tr -d ' ') + 1 ))   # 根单测 + 已登记的独立 drain_readflush 入口
 # 单测自己带目录点名的本线外文件按仓库路径认（10-22：toolchain271 改 graphics/metal/Makefile、xc_key.sh，路由没带上 tests/xc_key_test.sh，main 红在它上）；
-#   只认单测自己点名的，不顺着编排脚本往下认（post_android_prepare / cc_cache 单测在假仓库里跑桩，不该挂到 gfx 工具上）
+#   只认单测自己点名的，不顺着编排脚本往下认（cc_cache 单测在假仓库里跑桩，不该挂到 gfx 工具上）
 o=$(r tests graphics/tools/shbake/xc_key.sh); ck "改 graphics/tools/shbake/xc_key.sh → 含 xc_key 单测、不含 dev_run / pack 单测（实得：${o}）" '[[ "$o" == *tests/xc_key_test.sh* ]] && [[ "$o" != *dev_run_test* ]] && [[ "$o" != *pack_test* ]]'
 o=$(r tests graphics/metal/Makefile); ck "改 graphics/metal/Makefile（没扩展名，靠单测头「门禁覆盖」）→ 含 xc_key 单测（实得：${o}）" '[[ "$o" == *tests/xc_key_test.sh* ]]'
 o=$(r tests services/opus/build.sh); ck "改 services/opus/build.sh（单测按 services/ 下相对路径写 opus/build.sh，末两段唯一）→ 含 svc_hang 单测（实得：${o}）" '[[ "$o" == *tests/svc_hang_test.sh* ]]'
@@ -26,27 +26,24 @@ o=$(r tests compat/tree/src/Ryujinx.Graphics.Gpu/Shader/S2AShaderFaultCache.cs);
 o=$(r tests docs/坑记录.md); ck "普通文档负对照 → 不跑三个C#目标测试" '[[ "$o" != *drain_readflush/build_run.sh* ]] && [[ "$o" != *shader_garbage_guard_test.sh* ]] && [[ "$o" != *shader_fault_cache_test.sh* ]]'
 o=$(r tests graphics/metal/cs/NxTrack.cs.bak); ck "仅文件名近似 → 不选排空测试" '[[ "$o" != *drain_readflush/build_run.sh* ]]'
 # 改文档要跑的 = 「每次」单测 + 头部「门禁覆盖」点名 *.md 的单测（如 no_remote_exec_pipe：用户照抄的文档里不许「下载 + 执行」一步走；11-09 它加了 *.md 覆盖后本断言没跟上，main 已知红）
-MD=$( { grep -l '^# 门禁：每次' tests/*_test.sh; grep -lE '^# 门禁覆盖：.*[*][.]md( |$)' tests/*_test.sh; } | sort -u | tr '\n' ' ')
+#   + 列车入队预检固定跑的那组（shell_lint / shared_path / test_wired / shell_pyimports + 全部 *lint*_test，11-10 起门禁每次跑，见 gate_route.precheck_test）
+MD=$( { grep -l '^# 门禁：每次' tests/*_test.sh; grep -lE '^# 门禁覆盖：.*[*][.]md( |$)' tests/*_test.sh; ls tests/*lint*_test.sh; printf 'tests/%s.sh\n' shell_lint_test shared_path_test test_wired_test shell_pyimports_test; } | sort -u | tr '\n' ' ')
 ck "改文档 → 只有「每次」与点名覆盖 *.md 的单测、钩子不跑、iOS 不跑（实得：$(r tests docs/a.md)）" '[ "$(r tests docs/a.md)" = "$MD" ] && [ -z "$(r hooks docs/a.md | tr -d " ")" ] && [ "$(r ios docs/a.md)" = "no " ]'
 o=$(r hooks graphics/tools/shbake/x.py); ck "改出包期着色器工具 graphics/tools → 跑 gfx 钩子、不跑画幅回放（10-24 门禁整改：回放器不编 graphics/tools；实得：${o}）" '[[ "$o" == *graphics/gate.sh* ]] && [[ "$o" != *tests/visual/gate.sh* ]]'
 o=$(r hooks graphics/metal/x.m); ck "改渲染器 graphics/metal → 画幅回放照跑（实得：${o}）" '[[ "$o" == *tests/visual/gate.sh* ]]'
 o=$(r hooks services/S2A.Services/A.cs); ck "改服务 → 服务钩子，不跑原生钩子（原生门禁 make host 不带 S2A_CS、不链 C#，99 组 C 单测不碰服务层；10-28 梳理）、不跑 gfx 钩子、不跑画幅回放；iOS 跑（实得：${o}）" '[[ "$o" != *runtime/gate.sh* ]] && [[ "$o" == *services/gate.sh* ]] && [[ "$o" != *tests/visual/gate.sh* ]] && [[ "$o" != *graphics/gate.sh* ]] && [ "$(r ios services/S2A.Services/A.cs)" = "yes " ]'
 o=$(r hooks compat/tree/src/Ryujinx.Graphics.Vulkan/Effects/Textures/SmaaAreaTexture.bin); ck "改 SMAA 查表数据（graphics/nvn 生成 nvn_aa_lut.h、NVN 单测链它）→ 跑原生钩子（实得：${o}）" '[[ "$o" == *runtime/gate.sh* ]]'
 o=$(r hooks compat/tree/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs); ck "改 Ryujinx 服务代码 → 不跑原生钩子、跑服务钩子（实得：${o}）" '[[ "$o" != *runtime/gate.sh* ]] && [[ "$o" == *services/gate.sh* ]]'
-o=$(r hooks android/app/A.java); ck "改安卓外壳 → 只跑安卓钩子（实得：${o}）" '[ "$(echo $o)" = "android/gate.sh" ]'
-o=$(r hooks runtime/rewriter/rewriter.c); ck "改改写器（runtime/rewriter/rewriter.c）→ 原生 + gfx + 安卓钩子（实得：${o}）" '[ "$(echo $o)" = "android/gate.sh graphics/gate.sh runtime/gate.sh" ]'
+o=$(r hooks android/app/A.java); ck "改安卓外壳 → 只跑安卓新图形层的钩子，旧三钩子 11-11 已删（安卓图形层重搭，新钩子接回；实得：${o}）" '[ "$(echo $o)" = android/native/gfx_plat/gate.sh ]'
+o=$(r hooks runtime/src/svc_mem.c .github/workflows/windows-cleanup.yml); ck "改 runtime/src + 表外路径 → 全跑含安卓新钩子、不含已删的三个旧钩子（实得：${o}）" '[[ "$o" == *runtime/gate.sh* ]] && [[ "$o" == *android/native/gfx_plat/gate.sh* ]] && [[ " $(echo $o) " != *" android/gate.sh "* ]] && [[ "$o" != *android/core-link/* ]] && [[ "$o" != *android/ctest-link/* ]]'
+o=$(r hooks runtime/rewriter/rewriter.c); ck "改改写器（runtime/rewriter/rewriter.c）→ 原生 + gfx 钩子（实得：${o}）" '[ "$(echo $o)" = "graphics/gate.sh runtime/gate.sh" ]'
 o=$(r hooks weird/x.c); ck "表外代码路径 → 钩子全跑（实得：${o}）" '[ "$(wc -w <<< "$o" | tr -d " ")" = "$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path "./tools/*" -not -path "./.git/*" | wc -l | tr -d " ")" ]'
-# #530 第一层：编进安卓单库的共用 C#（services/、compat/tree/src/、graphics/metal/cs/ 的 NxTrack.cs 带 s2a_native 导入）改了要跑安卓链接核对钩子
-o=$(r hooks graphics/metal/cs/NxTrack.cs); ck "改 graphics/metal/cs/NxTrack.cs（编进安卓单库）→ 含安卓链接核对钩子（实得：${o}）" '[[ "$o" == *android/core-link/gate.sh* ]]'
-o=$(r hooks services/S2A.Services/Native.cs); ck "改 services/S2A.Services/Native.cs → 含安卓链接核对钩子（实得：${o}）" '[[ "$o" == *android/core-link/gate.sh* ]]'
-# 定义侧（#530 后续）：安卓单库编进去的共用原生源（runtime/src/、两个 graphics/nvn 文件）改了也要跑安卓链接核对钩子
-o=$(r hooks runtime/src/alt.c); ck "改 runtime/src/alt.c（编进安卓单库、定义 C# 绑定的 s2a_alt_phase）→ 含安卓链接核对钩子（实得：${o}）" '[[ "$o" == *android/core-link/gate.sh* ]]'
 o=$(r hooks launchers/macos/Sources/S2ArmLauncher/Store.swift); ck "改 Mac 前端 → 仅 Mac 钩子、iOS 不跑" '[ "$o" = "launchers/macos/gate.sh " ] && [ "$(r ios launchers/macos/Sources/S2ArmLauncher/Store.swift)" = "no " ]'
 o=$(r hooks pack/roots.sh); ck "公共 pack 文件保留单测路由、不挂前端钩子" '[ -z "$(echo "$o" | tr -d " ")" ] && [[ "$(r tests pack/roots.sh)" == *tests/pack_test.sh* ]]'
 o=$(r hooks tools/toolchain.sh); ck "公共工具链保留原有路由、不挂前端钩子" '[ -z "$(echo "$o" | tr -d " ")" ] && [ "$(r ios tools/toolchain.sh)" = "no " ]'
 # tool 档要跑的钩子 = 文件头「# 门禁路由：」明确点到改动的（10-31：原先 tool 档一个钩子都不跑）
 o=$(r claimed pack/jobs/core.py pack/contracts/README.md); ck "改 pack/jobs/ → claimed 只出 Mac 钩子（实得：${o}）" '[ "$o" = "launchers/macos/gate.sh " ]'
-o=$(r claimed tools/post_android_prepare.sh tests/post_android_prepare_test.sh pack/roots.sh); ck "改纯本线工具 → claimed 0 个钩子、不吃表外兜底（实得：${o}）" '[ -z "$(echo "$o" | tr -d " ")" ]'
+o=$(r claimed tools/gate_plan.sh tests/gate_plan_same_test.sh pack/roots.sh); ck "改纯本线工具 → claimed 0 个钩子、不吃表外兜底（实得：${o}）" '[ -z "$(echo "$o" | tr -d " ")" ]'
 o=$(r claimed weird/x.c); ck "表外代码路径 → claimed 不兜底全跑（全跑归 full 档 hooks；实得：${o}）" '[ -z "$(echo "$o" | tr -d " ")" ]'
 ck "空改动 → 单测全跑（$NT 份）" '[ "$(r tests | wc -w | tr -d " ")" = "$NT" ]'
 ck "证据：改 native → 整局九款" '[[ "$(r evidence runtime/src/a.c)" == *整局* ]]'
@@ -67,16 +64,6 @@ T=$(mktemp -d); git clone -q --shared "$H" "$T/c" 2> /dev/null && (cd "$T/c" && 
   echo 'print(1)' > tools/zz_probe.py; printf '\npython3 "$R/tools/zz_probe.py" > /dev/null\n' >> pack/stage_direct.sh
   git add -A > /dev/null && git -c user.email=t@t -c user.name=t commit -qm probe && python3 tools/gate_route.py tests tools/zz_probe.py) > "$T/o" 2>&1
 ck "临时克隆：stage_direct.sh 新调用 tools/zz_probe.py，改它 → 含 stage_keys 单测（实得：$(tr '\n' ' ' < "$T/o" | cut -c1-200)）" 'grep -qx tests/stage_keys_test.sh "$T/o"'
-rm -rf "$T"
-# 定义侧负对照（#1044 列车线）：临时克隆里把 core-link 钩子文件头那行「# 门禁路由：runtime/src/ …」去掉 → 改 runtime/src/alt.c 不再选中它（正例见上面 alt.c 那条）
-T=$(mktemp -d); git clone -q --shared "$H" "$T/c" 2> /dev/null && (cd "$T/c" && git checkout -q "$(git -C "$H" rev-parse HEAD)" 2> /dev/null
-  cp "$H/tools/gate_route.py" "$H/tools/gate_decl.py" tools/ && cp "$H/android/core-link/gate.sh" android/core-link/gate.sh
-  #   按行首删整行，不写死行尾文件清单（11-01：#1209 往这行加了 nvn_dirty.c，整行精确匹配删不掉，负对照假红）
-  sed -i.bak '/^# 门禁路由：runtime\/src\/ /d' android/core-link/gate.sh
-  rm -f android/core-link/gate.sh.bak
-  grep -q '^# 门禁路由：runtime/src/' android/core-link/gate.sh && echo "负对照没删掉 runtime/src/ 登记行"
-  python3 tools/gate_route.py hooks runtime/src/alt.c) > "$T/o" 2>&1
-ck "负对照：临时克隆去掉 runtime/src/ 登记 → 改 runtime/src/alt.c 不选 core-link 钩子、原生钩子照选（实得：$(tr '\n' ' ' < "$T/o" | cut -c1-200)）" 'grep -qx runtime/gate.sh "$T/o" && ! grep -qx android/core-link/gate.sh "$T/o"'
 rm -rf "$T"
 # 构建清单自动进覆盖面（11-09 维护方：present_settings_test 现算 $(HOST_SRCS) 把 macos/front_mac.m 编进来，头上「门禁只看」手写清单没有它，
 #   feat/launch-settings 改 front_mac.m 列车没跑、合入后 main 链接红）：期望按 launchers/macos/build.mk 的 HOST_SRCS += macos/front_mac.m 手写

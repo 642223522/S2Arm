@@ -137,6 +137,10 @@ struct BatchExportView: View {
             if model.batchPaused == "disk_full" {
                 Text(t("paused")).font(.manrope(13)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true)
             }
+            if let error = model.batchError {
+                Text(t("stopped").replacingOccurrences(of: "{0}", with: error)).font(.manrope(13)).foregroundStyle(LauncherPalette.building)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

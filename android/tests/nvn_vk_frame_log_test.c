@@ -182,7 +182,9 @@ static void concurrent_snapshot_test(void) {
 static double g_stub_ms; static uint64_t g_stub_seq; static int g_stub_on;
 int nvn_vk_first_draw_gpu_last(double *ms, int *passes, uint64_t *frame) {
     if (!g_stub_on) return 0;
-    if (ms) *ms = g_stub_ms; if (passes) *passes = 0; if (frame) *frame = g_stub_seq;
+    if (ms) *ms = g_stub_ms;
+    if (passes) *passes = 0;
+    if (frame) *frame = g_stub_seq;
     return 1;
 }
 static void gpu_field_test(void) {
@@ -210,7 +212,8 @@ static void gpu_field_test(void) {
 static uint64_t g_dt_frame; static uint64_t g_dt_gap_ns; static int g_dt_on;
 int nvn_vk_dt_last_gap(uint64_t *frame, uint64_t *gap_ns) {
     if (!g_dt_on) return 0;
-    if (frame) *frame = g_dt_frame; if (gap_ns) *gap_ns = g_dt_gap_ns;
+    if (frame) *frame = g_dt_frame;
+    if (gap_ns) *gap_ns = g_dt_gap_ns;
     return 1;
 }
 static void disp_field_test(void) {

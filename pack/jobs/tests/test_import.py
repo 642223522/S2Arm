@@ -225,7 +225,7 @@ class PartialImportTests(JobCase):
         self.assertLessEqual(len(diagnostic), IMPORT_DIAGNOSTIC_LIMIT)
         self.assertGreater(len(diagnostic), 3000)
         self.assertIn("TAIL-MARK", diagnostic)
-        saved = json.loads((self.c.library / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
+        saved = json.loads((self.c.private / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
         self.assertLessEqual(len(saved["sources"][0]["diagnostic"]), IMPORT_DIAGNOSTIC_LIMIT)
 
     def test_io_error_on_one_source_does_not_block_other_files(self):
@@ -249,6 +249,19 @@ raise SystemExit(main.main())
         first, second = done["result"]["sources"]
         self.assertEqual(first["code"], "input_unreadable")
         self.assertEqual(second["status"], "imported")
+
+    def test_reader_temp_dir_on_library_volume(self):
+        # #612：读取游戏信息时 NCZ 解压临时文件要落游戏库那块盘（Windows 上游戏库在别的盘、系统盘只剩百来 MB 时缺省写 %TEMP% 导入失败）：
+        #   读取器拿到 --temp-dir，目录在游戏库下、读取时存在，读完删掉
+        a = self.source("a.nsp", b"temp dir fixture")
+        done = self.run_import([a])
+        self.assertEqual(done["state"], "succeeded")
+        seen = (Path(a).parent / "temp_dir_seen.txt").read_text()
+        self.assertTrue(seen, "读取器没收到 --temp-dir")
+        path, existed = seen.split("\t")
+        self.assertEqual(existed, "True")
+        self.assertTrue(Path(path).resolve().is_relative_to(self.c.library.resolve()), f"临时目录 {path} 不在游戏库 {self.c.library} 下")
+        self.assertFalse(Path(path).exists(), "读完没删")
 
     def test_reader_disk_full_is_batch_failure(self):
         a = self.source("a.nsp", b"disk full fixture")
@@ -287,7 +300,7 @@ raise SystemExit(main.main())
                 self.assertIn(rows[0]["status"], ("imported", "duplicate"))
                 self.assertEqual(rows[1]["status"], "unprocessed" if reason == "cancelled" else "failed")
                 self.assertEqual(rows[2]["status"], "unprocessed")
-                saved = json.loads((self.c.library / "logs" / "jobs" / (event["taskId"] + ".json")).read_text())
+                saved = json.loads((self.c.private / "logs" / "jobs" / (event["taskId"] + ".json")).read_text())
                 self.assertEqual(saved["sources"], rows)
 
     def test_multi_package_source_rolls_back_if_catalog_commit_fails(self):

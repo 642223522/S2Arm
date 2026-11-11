@@ -54,9 +54,16 @@ class DispatchSnapshot(unittest.TestCase):
                 'negative_host_access':source.replace(
                     '.dstAccessMask = VK_ACCESS_HOST_READ_BIT,\n                };',
                     '.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,\n                };'),
-                # P0-0a 变异：去掉生产入口的间接/multi-draw/transform-feedback 闸 → 正例必须红
-                # （间接绘制会以补 0 的 count/first 继续走到 builder，变成静默空画）。
-                'negative_drop_draw_param_gate':source.replace('if (ind || mdi_cnt || mdi_i || tfc) {', 'if (0) {'),
+                # 间接绘制变异：不解析间接参数 → 记录里补 0 的 count/first 走到 builder（静默空画），正例必须红。
+                'negative_drop_indirect_resolve':source.replace('if (ind || mdi_cnt || mdi_i) {', 'if (0) {'),
+                # 多重绘制变异：不看 GPU 计数，过了计数的子绘制也画。
+                'negative_ignore_multi_draw_count':source.replace('if ((uint32_t)mdi_i >= live) {', 'if (0) {'),
+                # 间接索引绘制变异：firstIndex 不折进索引地址（从第 0 个索引开始画）。
+                'negative_first_index_dropped':source.replace('d->ibuf += (uint64_t)a[2] << d->itype;', '(void)0;'),
+                # transform-feedback 变异：tfc 闸去掉，DrawTransformFeedback 以补 0 的顶点数静默空画。
+                'negative_drop_tfc_gate':source.replace('if (tfc) {', 'if (0) {'),
+                # 间接派发变异：组数不按 GPU 值改写（仍带 ind 走 builder，组数是 0）。
+                'negative_indirect_dispatch_groups':source.replace('dispatch.x = (int32_t)g[0];', 'dispatch.x = 0;'),
                 # P0-1 变异：不把 base_instance 拷进快照（Vulkan 侧 firstInstance 就回到固定 0）。
                 'negative_drop_base_instance':source.replace('ds.base_instance = (uint32_t)d->base_instance;', 'ds.base_instance = 0;'),
                 # P0-3 变异：图形掩码退回旧的 5 位截断（高位信息丢失，着色器与 layout 会不一致）。
@@ -70,7 +77,7 @@ class DispatchSnapshot(unittest.TestCase):
                     cmd=[os.environ.get('CC','cc'),'-std=c11','-D_POSIX_C_SOURCE=200809L','-O0']
                     cmd += ['-I'+str(p) for p in (inc,NATIVE/'direct',NATIVE/'nvn',ROOT/'graphics/nvn/gfx/nvn',ROOT/'graphics/nvn/gfx/nvn/include')]
                     cmd += [str(ROOT/'android/tests/w2_dispatch_snapshot_test.c'),str(src)]
-                    cmd += [str(NATIVE/p) for p in ('direct/bind_defer.c','direct/t2t_plan.c','direct/vk_clear.c','direct/vk_device.c','direct/gs_path.c','nvn/nvn_vk_format.c','nvn/nvn_vk_query.c')]
+                    cmd += [str(NATIVE/p) for p in ('direct/bind_defer.c','direct/t2t_plan.c','direct/buffer_texture_plan.c','direct/vk_clear.c','direct/vk_device.c','direct/gs_path.c','nvn/nvn_vk_format.c','nvn/nvn_vk_query.c')]
                     cmd += ['-Wl,-l:libvulkan.so.1','-lm','-o',str(exe)]
                     built=subprocess.run(cmd,text=True,capture_output=True)
                     self.assertEqual(built.returncode,0,built.stderr)

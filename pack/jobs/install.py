@@ -529,6 +529,15 @@ def push_stage(c, name, done=None, total=None):
         c.emit("message", name)
 
 
+def img_pack(pack):
+    """单一 IMG 形态的资源包（manifest v3 format=img，pack/img.py convert）：传完并核过 game.img 长度即装好，不再起 App 等机上解包——
+    机上要从 game.img 解出的几个小件由玩家打开 S2Arm 时自己完成（11-11 维护者：启动器到「完整传到手机并校验通过」就结束）"""
+    try:
+        return json.loads((Path(pack) / "manifest.json").read_text(encoding="utf-8")).get("format") == "img"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     """资源包推进 App 并在机上解开：调 Mac / Windows 共用的 tools/push_pack.py run --apply（同 dev_run、Windows 一键装机、s2armctl push-pack，
     #206 / PR #470、11-06 两端合一）——按 sha256 只推机上没有 / 变了的文件（免费账号 7 天到期重装、改一点重出一版时只推几个文件），
@@ -556,11 +565,15 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     log = c.logs / (c.task + "-push" + (f"-{docs.rsplit('/', 1)[-1]}" if docs else "") + ".log")
     extra = (["--docs", docs] if docs else []) + (["--launch-ctx", ctx] if ctx else [])
     try:
-        c.run([sys.executable, "-B", c.engine / "tools/push_pack.py", "run", ident, bid, pack, "--via", "devicectl", "--apply", "--progress-lines", *extra], log, env=env, on_line=line)
+        apply = [] if img_pack(pack) else ["--apply"]   # 旧形态（多程序合集等）照旧推完起 App 等解完
+        c.run([sys.executable, "-B", c.engine / "tools/push_pack.py", "run", ident, bid, pack, "--via", "devicectl", *apply, "--progress-lines", *extra], log, env=env, on_line=line)
     except Failure as e:
         if e.code != "tool_exit":
             raise
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+        m = APPLY_FAILED.search(text)   # tools/push_pack.py apply：App 自己写的解开失败原因（如 #569 目录写不进），原样上屏，不说「推不进」「没有开始」
+        if m:
+            raise Failure(f"资源包已传到 iPhone，但手机上解开失败：{m.group(1)}", code="job_failed") from e
         m = re.search(r"资源包推进去了，但(机上解包 \d+ 秒没有新进展[^：\n]*|起 App 后 \d+ 秒机上解包没有开始)", text)   # tools/push_pack.py apply：按进度判停住（11-07）
         if m:
             raise Failure(f"资源包推进去了，但{m.group(1)}：请打开这款游戏，保持在前台等它导入完，会自动进入游戏。", code="job_failed") from e
@@ -574,6 +587,9 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         from errors import tool_reason
         raise Failure("资源包推不进 iPhone：" + tool_reason(log), code="resource_transfer_failed") from e
     return got.get("files", 0), got.get("mb", 0) << 20
+
+
+APPLY_FAILED = re.compile(r"资源包推进去了，但手机上解开失败：([^\n]+)")   # tools/push_pack.py apply 读到解包日志「解包失败：…」时报的那句
 
 
 def pull_seen(c, ident, bid, gid, tag, docs="Documents"):
@@ -1090,7 +1106,7 @@ class WinPhone:
     def push(self, g, pack):
         try:
             return self.W.push_pack(self.udid, self.bid, str(pack), str(self.devpush) if self.devpush.is_file() else None,
-                                    say=lambda m: self.c.emit("message", m), docs=game_docs(g), ctx=game_ctx(g), apply_after=True,
+                                    say=lambda m: self.c.emit("message", m), docs=game_docs(g), ctx=game_ctx(g), apply_after=not img_pack(pack),
                                     progress=lambda d, t, k, n: push_progress(self.c, d, t, k, n),
                                     stage=lambda name, d=None, t=None: push_stage(self.c, name, d, t))
         except self.W.Fail as e:
@@ -1110,6 +1126,17 @@ def phone_for(c):
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
+# 机上目录不存在：s2a-devpush ls 的结构化错误码 S2A_AFC_ERR 8（AFC ObjectNotFound）；旧工具 / devicectl 只有原文，兜底认
+#   「No such file」与「Object not found / ObjectNotFound」（带不带空格、大小写都认）。玩家实机（Windows 0.2.7、iOS 27.0.1）原文是
+#   「afc error: Object not found」，原先只认 ObjectNotFound，首次装机（App 在、还没有 Documents/games）被当成读不出设备挡住（v0.2.8 热修）
+AFC_NOT_FOUND = 8
+
+
+def dir_missing(out):
+    m = re.search(r"S2A_AFC_ERR (\d+)", out or "")
+    if m:
+        return int(m.group(1)) == AFC_NOT_FOUND
+    return bool(re.search(r"no such file|object\s*not\s*found", out or "", re.I))
 
 
 def phone_bid(ph):
@@ -1129,7 +1156,7 @@ def phone_games(c, ph):
         cl = devpush_client(c, ph.udid, bid, w)
         rc, out = cl.call("ls", "Documents/games")
         if rc:
-            if "No such file" in out or "ObjectNotFound" in out:   # App 在、还没装过任何一款
+            if dir_missing(out):   # App 在、还没装过任何一款（Documents/games 还没建）：当 0 款，装机照常（推资源包时自会建目录）
                 return set()
             if ph.app_missing(bid, out):
                 return None
@@ -1192,12 +1219,16 @@ def put_game(c, gid, ph, steps=True, others=None):
     if others is None:
         others = container_others(c, ph, rec, leave=gid)   # 手机上实际有的款也带上（另一台电脑装的），带不了的先问玩家
     if steps: c.begin("把这款放进手机上的 S2Arm", 2, 6)
+    # 改写器修过的话：容器里各款按本引擎改写器核一遍，受影响的只换改写产物（不重出资源包、不推 game.img），再组进新壳（rewrite_refresh.py）
+    from rewrite_refresh import refresh_ios
+    refresh_ios(c, [g for g in ([gid] if gid else []) + list(others) if g])
     ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
     packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
     stale = [g for g in games if g == gid or pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack")]
     ph.install(ipa, games, steps=steps)
     ph.before_push({g: packs[g] for g in stale})
-    if steps: c.begin("把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
+    img = bool(stale) and all(img_pack(packs[g]) for g in stale)   # 这次推的全是单一 IMG：传完并核过长度即装好，不等机上解开
+    if steps: c.begin("把游戏推进 iPhone（只推变了的文件；第一次大游戏要几分钟）" if img else "把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
     files = size = 0
     pushed = dict((g, (rec["games"].get(g) or {}).get("pack", "")) for g in games)
     try:
@@ -1213,6 +1244,7 @@ def put_game(c, gid, ph, steps=True, others=None):
     packer.commit_phone_ipa(c, ipa, sid)
     # 资源传完但电脑没拉起 App 解开（manual_unpack_required，11-09 #336）：不算「已装好」，结果带上还差的一步，两端前端据此显示「还差最后一步」而不是「已装到 iPhone」
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
+    if img: extra["openToFinish"] = True   # 两端成功页写「已传到 iPhone，打开 S2Arm 会自动完成安装」（机上从 game.img 解出几个小件由 App 打开时完成）
     return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info, **extra)
 
 

@@ -26,6 +26,7 @@ int s2a_android_vk_nvn_guest(void) { return g_vk_direct_nvn ? 1 : 0; }
 void s2a_nro_table_load(const char *dir) { assert(dir); }
 void s2a_caps_apply(const char *dir) { (void)dir; }
 void s2a_fps_start(const char *dir) { assert(dir); }
+void s2a_ql_boot_mode(int docked) { (void)docked; }
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static int created, release_entry, sdk_started, release_sdk, result;

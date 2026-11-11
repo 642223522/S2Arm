@@ -79,7 +79,7 @@ public sealed partial class EnvironmentWindow
         control?.Dispose(); control = null;
     }
 
-    private bool ControlBusy => PackBusy || libraryBusy || importBusy || busy;
+    private bool ControlBusy => AnyJob;
     private static ControlReply Busy() => ControlReply.Bad("有作业在跑：等它结束或 cancel 再来", 409);
     private static ControlReply MacOnly(string what) => ControlReply.Bad($"Windows 版没有{what}：Windows 只出 iPhone / iPad 包", 409);
     private LibraryGame? ControlGame(ControlRequest r) =>
@@ -240,10 +240,11 @@ public sealed partial class EnvironmentWindow
             }
             case ("POST", "/cancel"):
             {
-                if (r.Text("taskId") is null) return ControlReply.Bad("缺 taskId");
-                var running = packCancellation ?? importCancellation ?? libraryCancellation;
-                if (running is null) return ControlReply.Bad("没有能取消的作业");
-                running.Cancel();
+                // 按任务号取消（启动器剃刀 W20）：原先不看 taskId，停的是「出包 / 导入 / 游戏库」里先排到的那个，装机根本停不了
+                if (r.Text("taskId") is not { } taskId) return ControlReply.Bad("缺 taskId");
+                if (jobs.FirstOrDefault(j => j.TaskId == taskId) is not { } running)
+                    return ControlReply.Bad(AnyJob ? "这个 taskId 不是正在跑的作业（正在跑：" + string.Join("、", jobs.Select(j => j.TaskId)) + "）" : "没有能取消的作业", 409);
+                running.Cancellation.Cancel();
                 return ControlReply.Ok();
             }
             case ("POST", "/retry"):

@@ -7,6 +7,11 @@
      romfs*、覆盖层、直连库、清单不进；RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；有 programs/ → 报红；is_img 认魔数
   ⑤ convert（出包交付）：资源包目录只剩 game.img + 着色器库 / 覆盖层 + 新清单；index.tsv 首行 game.img<TAB>文件长<TAB>资源包号、其余是原着色器库 / 覆盖层行；
      manifest v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）；着色器库那行变了资源包号不变；多程序合集 → None、目录不动
+  ⑦ 写 IMG 报字节进度（S2A_PROGRESS）：末行已写 = 总数 = 夹具 RomFS 文件 + 其余原始资源字节和
+  ⑥ 原件 + 预建偏移表（11-11 真机对比：产物根 romfs 是界面覆盖后版本、有覆盖层时起局重建目录表 138.6 ms）：RomFS 段 = 产物根 romfs，覆盖清单里的文件换回 seed.txt 数据目录的原版
+     （数据目录里别的文件变过也不取它）；
+     game.imgmap 按 romfs.s2aidx 顺序，被覆盖的记 -1、其余从 game.img 读回的字节等于文件本身；index.tsv 登记 romfs.s2aidx 与 game.imgmap；残留的 romfs.files/ 删掉；
+     没有 seed.txt 但产物根叠过覆盖 → 报红
      （要 dotnet 编 services/romfs_index；没有 dotnet 时 ③ 跳过并打印原因，①② 照测）"""
 import hashlib, json, os, shlex, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
@@ -81,7 +86,12 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         (pk / 'index.tsv').write_text(''.join(f'{k}\t{len(v)}\tx\n' for k, v in rows.items()))
         (pk / 'manifest.json').write_text('{"version": 2, "index_sha256": "feedbeef"}')
         want_id = hashlib.sha256(''.join(f'{k}\t{len(v)}\tx\n' for k, v in rows.items() if not k.startswith(('shaders/', 'romfs_overlay/'))).encode()).hexdigest()
+        pf = T / 'progress.tsv'; os.environ['S2A_PROGRESS'] = str(pf)   # ⑦ 字节进度：末行 = 写单一 IMG、已写 = 总数 = RomFS 两个文件 8 字节 + 其余三个原始资源的字节
         w = str(T / 'w.img'); img.write(str(root), str(pk), w, romfs_index=cmd)
+        del os.environ['S2A_PROGRESS']
+        want7 = 8 + sum(len(rows[k]) for k in ('aoc/1/x.bin', 'ctl/control.nacp', 'exefs/main.npdm'))
+        last7 = pf.read_text(encoding='utf-8').splitlines()[-1].split('\t')[1:] if pf.is_file() else []
+        ck(last7 == ['写单一 IMG', str(want7), str(want7)], f'⑦ 进度末行（阶段 / 已写 / 总数）：期望 写单一 IMG / {want7} / {want7} → {last7}')
         hw = img.header(w); names = [e[0] for e in img.entries(w)]
         ck((hw['gid'], hw['pack_id'], img.is_img(w), img.is_img(str(pk / 'index.tsv'))) == ('0100ABCD00000001', want_id, True, False), f'④ 头 {hw["gid"]} / {hw["pack_id"]}、is_img')
         ck(names == ['aoc/1/x.bin', 'ctl/control.nacp', 'exefs/main.npdm', 'romfs.list'], f'④ 其余文件段只收原始资源：{names}')
@@ -98,6 +108,31 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         ck(ix == f'game.img\t{os.path.getsize(g)}\t{want_id}\nromfs_overlay/ui/layout.bin\t4\tx\nshaders/direct/keys.tsv\t1\tx\n', f'⑤ 新 index.tsv：{ix!r}')
         ck((m['version'], m['format'], m['imgFile'], m['index_sha256']) == (3, 'img', 'game.img', hashlib.sha256(ix.encode()).hexdigest()), f'⑤ manifest v3：{m}')
         ck(std_romfs(g, img.header(g)['romfs'][0]) == {'ui/layout.bin': b'ORIG', 'data.bin': b'DATA'} and img.find(g, 'exefs/main.npdm') is not None, '⑤ game.img 内容同 write')
+        # ⑥ 原件 + 预建偏移表
+        orig = T / 'orig'; (orig / 'romfs/ui').mkdir(parents=True); (orig / 'romfs/ui/layout.bin').write_bytes(b'ORIGINAL'); (orig / 'romfs/data.bin').write_bytes(b'STALE')   # 数据目录播种后变过（非覆盖文件）：应取产物根那份
+        r6 = T / 'root6'; (r6 / 'romfs/ui').mkdir(parents=True); (r6 / 'romfs/ui/layout.bin').write_bytes(b'OVER'); (r6 / 'romfs/data.bin').write_bytes(b'DATA')
+        (r6 / 'seed.txt').write_text(f'src={orig}\ntag=t\n'); (r6 / 'ui_overlay.tsv').write_text('ui/layout.bin\n'); (r6 / 'unpack.tsv').write_text('title_id\t0100ABCD00000006\n')
+        r = subprocess.run([*shlex.split(cmd), str(r6)], capture_output=True, text=True); ck(r.returncode == 0, f'⑥ 造预建索引（romfs_index）rc={r.returncode} {r.stderr[-200:]}')
+        p6 = T / 'pack6'; (p6 / 'exefs').mkdir(parents=True); (p6 / 'romfs_overlay/ui').mkdir(parents=True); (p6 / 'romfs.files').mkdir()
+        (p6 / 'exefs/main.npdm').write_bytes(b'NPDM'); (p6 / 'romfs_overlay/ui/layout.bin').write_bytes(b'OVER'); (p6 / 'romfs.files/data.bin').write_bytes(b'DATA')
+        shutil.copyfile(r6 / 'romfs.s2aidx', p6 / 'romfs.s2aidx')
+        r6rows = {'exefs/main.npdm': b'NPDM', 'romfs_overlay/ui/layout.bin': b'OVER', 'romfs.s2aidx': (p6 / 'romfs.s2aidx').read_bytes()}
+        (p6 / 'index.tsv').write_text(''.join(f'{k}\t{len(v)}\t{hashlib.sha256(v).hexdigest()}\n' for k, v in r6rows.items()))
+        (p6 / 'manifest.json').write_text('{"version": 2}')
+        g6 = img.convert(str(r6), str(p6), romfs_index=cmd)
+        ck(std_romfs(g6, img.header(g6)['romfs'][0]) == {'ui/layout.bin': b'ORIGINAL', 'data.bin': b'DATA'}, '⑥ RomFS 段是原件（被覆盖的 ui/layout.bin 是原版字节）')
+        sys.path.insert(0, str(R / 'pack')); import romfs_image
+        _, idx6 = romfs_image.parse_index(str(p6 / 'romfs.s2aidx'))
+        mb = (p6 / 'game.imgmap').read_bytes(); n6 = struct.unpack_from('<i', mb, 16)[0]; offs = struct.unpack_from(f'<{n6}q', mb, 20)
+        def at(o, n): f = open(g6, 'rb'); f.seek(o); return f.read(n)
+        got6 = {rel: (-1 if o < 0 else at(o, n)) for (_, n, rel), o in zip(idx6, offs)}
+        ck(mb[:8] == b'S2ARIM01' and struct.unpack_from('<q', mb, 8)[0] == os.path.getsize(g6) and got6 == {'ui/layout.bin': -1, 'data.bin': b'DATA'},
+           f'⑥ game.imgmap：镜像长 = game.img、被覆盖的 -1、其余读回原字节 {got6}')
+        ix6 = (p6 / 'index.tsv').read_text()
+        ck('romfs.s2aidx\t' in ix6 and 'game.imgmap\t' in ix6 and not (p6 / 'romfs.files').exists(), '⑥ index.tsv 登记 romfs.s2aidx / game.imgmap，romfs.files/ 已删')
+        (r6 / 'seed.txt').unlink()
+        try: img.orig_romfs(str(r6), str(T)); ck(False, '⑥ 没有 seed.txt 但叠过覆盖应报红')
+        except img.Red: ck(True, '⑥ 没有 seed.txt 但产物根叠过覆盖 → 报红')
         (pk / 'programs/1').mkdir(parents=True); (pk / 'programs/1/a').write_bytes(b'p')
         (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\n')
         try: img.write(str(root), str(pk), w, romfs_index=cmd); ck(False, '④ 多程序合集应报红')

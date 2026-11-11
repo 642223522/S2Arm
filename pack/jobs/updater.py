@@ -28,13 +28,19 @@ from pathlib import Path
 # 只有 check / prepare 才用到的模块在这里按需导入，apply 走不到。
 
 API = "https://api.github.com/repos/jhaizhou-ops/S2Arm/releases/latest"
+# 官网静态文件：发版时和 Release 里的 update-manifest.json / .sig 同一份字节（发版流程写入）。走 CDN、不占 GitHub 匿名查询次数（每 IP 每小时 60 次，
+#   国内共享出口很容易被限流）。安全靠清单的 Ed25519 签名，不靠来源：官网那份验签不过就当没有，回退 GitHub。
+MIRROR = "https://s2arm.com/update/latest.json"
+MIRROR_TIMEOUT = 8   # 官网是首选，连不上要尽快回退 GitHub：只试一次、不重试
+# 安装包仍从 GitHub Release 下载（下载链接不是 API，没有 60 次限制）；版本号取自签过名的清单
+RELEASE_DOWNLOAD = "https://github.com/jhaizhou-ops/S2Arm/releases/download/v{version}/{name}"
 ASSETS = {"mac": "S2Arm-mac-arm64.dmg", "windows": "S2Arm-windows-x64.zip"}
 DELTAS = {"mac": "S2Arm-mac-arm64-delta-{}.zip", "windows": "S2Arm-windows-x64-delta-{}.zip"}
 MANIFEST = "update-manifest.json"
 SIGNATURE = "update-manifest.json.sig"
 # 发版清单的 Ed25519 公钥。私钥只在发版机上（tools/sign_update_manifest.py）：Release 或发布账号被改，也改不了这份清单。
 PUBLIC_KEY = "d553da82bad575ce87bf521a080c9d0997f97d189f0d517e97f80808bafc5225"
-TRUSTED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
+TRUSTED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "s2arm.com")
 HEALTH_SECONDS = 90
 EXIT_SECONDS = 120
 CHUNK = 1 << 20
@@ -155,15 +161,16 @@ LATEST_TTL = 15 * 60   # 查版本结果在本机留 15 分钟：启动时查一
 def latest_cache(platform, current):
     """查版本结果的本机缓存（系统给本用户的临时目录）：按平台、当前版本、查询地址分开"""
     import hashlib
-    key = hashlib.sha256(f"{platform}|{current}|{os.environ.get('S2A_UPDATE_API') or API}".encode()).hexdigest()[:16]
+    key = hashlib.sha256(f"{platform}|{current}|{os.environ.get('S2A_UPDATE_API') or API}|{mirror_url()}".encode()).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"s2arm-update-latest-{key}.json"
 
 
-def latest(platform, current):
-    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。"""
+def latest(platform, current, fresh=False):
+    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。fresh=True（真要下载时，prepare）不读缓存、现查，结果写回缓存：
+    启动时的「有没有新版」可以用缓存省限流额度，真下载必须是此刻的发布（剃刀 H18：热修发出后 15 分钟内查不到、查完到下载之间撤版会报 update_none）"""
     cache = latest_cache(platform, current)
     try:
-        if time.time() - cache.stat().st_mtime < LATEST_TTL:
+        if not fresh and time.time() - cache.stat().st_mtime < LATEST_TTL:
             info = json.loads(cache.read_text(encoding="utf-8"))
             if isinstance(info, dict) and isinstance(info.get("available"), bool):
                 return info
@@ -179,26 +186,68 @@ def latest(platform, current):
     return info
 
 
+def mirror_url():
+    """验收用的本机假 Release（S2A_UPDATE_API）只认 S2A_UPDATE_MIRROR，没设就不查官网：单测不连真网"""
+    return os.environ.get("S2A_UPDATE_MIRROR", "") if os.environ.get("S2A_UPDATE_API") else MIRROR
+
+
+def mirror_manifest():
+    """官网那份签名清单 → dict；连不上、非 200、验签不过、格式不对一律 None（调用方回退 GitHub）。"""
+    url = mirror_url()
+    if not url:
+        return None
+    import http.client
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ed25519
+    try:
+        with open_url(url, MIRROR_TIMEOUT) as response:
+            raw = response.read(1 << 20)
+        with open_url(url + ".sig", MIRROR_TIMEOUT) as response:
+            signature = response.read(1024)
+        if not ed25519.verify(public_key(), raw, signature):
+            return None
+        manifest = json.loads(raw)
+    except (UpdateError, OSError, http.client.HTTPException, ValueError):
+        return None
+    return manifest if isinstance(manifest, dict) and version_tuple(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
+
+
+def offer(platform, version, mine, files, url_of):
+    """签过名的清单 files + 每个文件的下载地址（url_of(名字)，没有为 None）→ 给启动器的结果；安装包不在清单里按签名不对处理。"""
+    name = ASSETS[platform]
+    wanted = files.get(name)
+    if not isinstance(wanted, dict):
+        raise UpdateError("update_bad_signature", "签名清单里没有这个安装包，已停止，当前版本没有变化。")
+    info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
+            "asset": url_of(name), "assetName": name}
+    delta = DELTAS[platform].format(".".join(map(str, mine)))
+    entry = files.get(delta)
+    if isinstance(entry, dict) and url_of(delta):   # 差分包同样要在清单里，不在就只走整包
+        info.update(delta=url_of(delta), deltaName=delta, deltaSize=entry["size"], deltaSha256=entry["sha256"])
+    return info
+
+
 def query_latest(platform, current):
-    """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。"""
+    """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。
+    先查官网（mirror_manifest）：验签通过就以它为准——不比当前新就是没有新版，不再去问 GitHub（省下的正是限流的那 60 次）；
+    官网拿不到 / 验签不过才查 GitHub Release。"""
+    mine = version_tuple(current)
+    manifest = mirror_manifest()
+    if manifest is not None:
+        version = version_tuple(manifest["version"])
+        if not mine or version <= mine:
+            return {"available": False}
+        template = os.environ.get("S2A_UPDATE_API") and os.environ.get("S2A_UPDATE_DOWNLOAD") or RELEASE_DOWNLOAD   # 假 Release 验收时下载也指到本机
+        return offer(platform, version, mine, manifest["files"],
+                     lambda name: template.format(version=".".join(map(str, version)), name=name))
     release = json.loads(fetch(os.environ.get("S2A_UPDATE_API") or API, 15, 8 << 20))
     version = version_tuple(release.get("tag_name"))
-    mine = version_tuple(current)
     assets = {a.get("name"): a for a in release.get("assets") or [] if isinstance(a, dict)}
     package = assets.get(ASSETS[platform])
     if not version or not mine or version <= mine or not package or MANIFEST not in assets or SIGNATURE not in assets:
         return {"available": False}
     files = signed_manifest(assets, version)["files"]
-    wanted = files.get(package["name"])
-    if not isinstance(wanted, dict):
-        raise UpdateError("update_bad_signature", "签名清单里没有这个安装包，已停止，当前版本没有变化。")
-    info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
-            "asset": package["browser_download_url"], "assetName": package["name"]}
-    delta = assets.get(DELTAS[platform].format(".".join(map(str, mine))))
-    entry = files.get(delta["name"]) if delta else None
-    if isinstance(entry, dict):   # 差分包同样要在清单里，不在就只走整包
-        info.update(delta=delta["browser_download_url"], deltaName=delta["name"], deltaSize=entry["size"], deltaSha256=entry["sha256"])
-    return info
+    return offer(platform, version, mine, files, lambda name: assets[name]["browser_download_url"] if name in assets else None)
 
 
 NOTICE_URL = "https://jhaizhou-ops.github.io/S2Arm/notice.json"   # docs/site/notice.json，Pages 发布（docs/site/README.md）
@@ -301,6 +350,18 @@ def require_free(path, need):
         raise UpdateError("update_disk_full", "磁盘空间不够下载和解开新版，已停止，旧版没有变化。")
 
 
+def require_unpack_space(updates, install, unpacked, package_size):
+    """解开前按解开后的确切大小要空间（剃刀 H17：原先下载前就要「更新目录 4 倍包大小、安装盘 3 倍」，盘紧的玩家被拒）。
+    解开要 unpacked（包还在、已占着）；替换时 swap 把解开的那份拷到安装目录旁（再 unpacked），这时包已删。
+    两处在同一块盘上：峰值 = max(unpacked, 2 × unpacked − 包大小)；不同盘：各要 unpacked"""
+    parent = Path(install).resolve().parent
+    if os.stat(updates).st_dev == os.stat(parent).st_dev:
+        require_free(updates, max(unpacked, 2 * unpacked - package_size))
+    else:
+        require_free(updates, unpacked)
+        require_free(parent, unpacked)
+
+
 def sha256(path):
     import hashlib
     digest = hashlib.sha256()
@@ -353,13 +414,15 @@ def download(url, target, size):
     retry_rename(part, target, replace=True)
 
 
-def extract_windows(package, dest):
+def extract_windows(package, dest, before_unpack=None):
     import zipfile
     with zipfile.ZipFile(package) as archive:
         root = dest.resolve()
         for name in archive.namelist():
             if not inside(root / name, root):
                 raise UpdateError("update_bad_package", "安装包内容不正常，已停止，旧版没有变化。")
+        if before_unpack:
+            before_unpack(sum(i.file_size for i in archive.infolist()))   # 解开后的确切大小：ZIP 目录里记着
         archive.extractall(dest)
     found = next((p.parent for p in sorted(dest.rglob("S2Arm.exe"), key=lambda p: len(p.parts))), None)
     if not found or not (found / "Engine").is_dir() or not (found / "Runtime/python/python.exe").is_file():
@@ -367,7 +430,7 @@ def extract_windows(package, dest):
     return found
 
 
-def extract_mac(package, dest):
+def extract_mac(package, dest, before_unpack=None):
     # 挂载点放系统临时目录：放在数据目录下时，数据目录在外置盘上 hdiutil 会报 Permission denied
     mount = Path(tempfile.mkdtemp(prefix="s2arm-update-mount-"))
     attached = subprocess.run(["/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", str(mount), str(package)], capture_output=True, timeout=300)
@@ -379,6 +442,8 @@ def extract_mac(package, dest):
         if not app.is_dir():
             raise UpdateError("update_bad_package", "安装包不完整，已停止，旧版没有变化。")
         target = dest / "S2Arm.app"
+        if before_unpack:
+            before_unpack(tree_size(app))   # 解开后的确切大小：挂载后量 App 本身
         subprocess.run(["/usr/bin/ditto", str(app), str(target)], check=True, capture_output=True, timeout=1800)
     finally:
         subprocess.run(["/usr/bin/hdiutil", "detach", "-force", str(mount)], capture_output=True, timeout=120)
@@ -509,7 +574,7 @@ def prepare(platform, current, private, install, protect):
     updates = Path(private) / "updates"
     updates.mkdir(parents=True, exist_ok=True)
     check_paths(install, protect)
-    info = latest(platform, current)
+    info = latest(platform, current, fresh=True)
     if not info["available"]:
         raise UpdateError("update_none", "已经是最新版本。")
     work = updates / info["version"]
@@ -532,8 +597,7 @@ def prepare(platform, current, private, install, protect):
     if staged is None:
         via = "full"
         size = info["size"]
-        require_free(updates, size * 4)
-        require_free(Path(install).resolve().parent, size * 3)
+        require_free(updates, size)   # 先只要下载这一份；解开要多少在解开前按确切大小核（require_unpack_space）
         package = work / info["assetName"]
         emit(state="downloading", done=0, total=size)
         download(info["asset"], package, size)
@@ -544,7 +608,8 @@ def prepare(platform, current, private, install, protect):
         emit(state="unpacking")
         unpack = work / "unpack"
         unpack.mkdir()
-        staged = extract_mac(package, unpack) if platform == "mac" else extract_windows(package, unpack)
+        room = lambda unpacked: require_unpack_space(updates, install, unpacked, size)
+        staged = extract_mac(package, unpack, room) if platform == "mac" else extract_windows(package, unpack, room)
         package.unlink()
     runner = updates / "runner"
     python = runner_python(platform, staged, runner)

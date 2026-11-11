@@ -15,12 +15,13 @@ public sealed partial class EnvironmentWindow
     private string updateProgress = "";
     private JsonElement? updateReady;
     private string updateFailure = "";   // 错误码
+    private string updateFailureMessage = "";   // 后端给的那句（updater.py 每个失败都带 message）：文案表没有这个码时显示它（剃刀 W11）
     private static readonly Uri DownloadPage = new("https://jhaizhou-ops.github.io/S2Arm/");   // 自动更新失败时「打开下载页」，系统浏览器打开
     private static string InstallDir => Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
     // The release version lives in version.txt (written by bundle_win.py); the assembly version is always 1.0.0.0.
     private static string AppVersion => UpdateClient.CurrentVersion(InstallDir) is { Length: > 0 } version ? version : "-";
     private string UpdatesFolder => Path.Combine(privateRoot, "updates");
-    private bool UpdateBlocked => PackBusy || libraryBusy || importBusy || busy;
+    private bool UpdateBlocked => AnyJob;
 
     private Dictionary<string, object?> UpdateStatus => updateProgress.Length > 0
         ? new() { ["state"] = "working", ["detail"] = updateProgress }
@@ -38,6 +39,7 @@ public sealed partial class EnvironmentWindow
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(failure));
                 updateFailure = document.RootElement.GetProperty("code").GetString() ?? "update_failed";
+                updateFailureMessage = document.RootElement.TryGetProperty("message", out var said) ? said.GetString() ?? "" : "";
                 File.Delete(failure);
             }
         }
@@ -56,7 +58,7 @@ public sealed partial class EnvironmentWindow
     private async Task DownloadUpdateAsync()
     {
         if (updateProgress.Length > 0) return;
-        updateFailure = ""; updateProgress = T("update.downloading").Replace("{0}", "0"); Render();
+        updateFailure = ""; updateFailureMessage = ""; updateProgress = T("update.downloading").Replace("{0}", "0"); Render();
         var command = new List<string> { "prepare", "--platform", "windows", "--current", UpdateClient.CurrentVersion(InstallDir), "--private-root", privateRoot, "--install", InstallDir };
         if (connectedFolder is not null) { command.Add("--protect"); command.Add(connectedFolder); }
         var result = await UpdateClient.RunAsync(paths, command, e => Dispatcher.UIThread.Post(() =>
@@ -66,15 +68,19 @@ public sealed partial class EnvironmentWindow
                 case "downloading":
                     var total = e.GetProperty("total").GetInt64();
                     updateProgress = T("update.downloading").Replace("{0}", total > 0 ? (e.GetProperty("done").GetInt64() * 100 / total).ToString() : "0");
-                    Render(); break;
-                case "verifying": updateProgress = T("update.verifying"); Render(); break;
-                case "unpacking": updateProgress = T("update.unpacking"); Render(); break;
+                    RefreshLive(); break;   // 只刷新顶栏那一格（UpdateControls），不整页重画
+                case "verifying": updateProgress = T("update.verifying"); RefreshLive(); break;
+                case "unpacking": updateProgress = T("update.unpacking"); RefreshLive(); break;
             }
         }), TimeSpan.FromHours(2));
         updateProgress = "";
         if (result is { } ready && ready.GetProperty("state").GetString() == "ready")
             updateReady = ready;
-        else updateFailure = (result is { } failed && failed.TryGetProperty("code", out var code) ? code.GetString() : null) ?? "update_failed";
+        else
+        {
+            updateFailure = (result is { } failed && failed.TryGetProperty("code", out var code) ? code.GetString() : null) ?? "update_failed";
+            updateFailureMessage = result is { } said && said.TryGetProperty("message", out var message) ? message.GetString() ?? "" : "";
+        }
         Render();
     }
 
@@ -87,7 +93,7 @@ public sealed partial class EnvironmentWindow
             Close();
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException)
-        { updateFailure = "update_failed"; updateReady = null; Render(); }
+        { updateFailure = "update_failed"; updateFailureMessage = ""; updateReady = null; Render(); }
     }
 
     // ── 顶部公告条（v0.2.3，同 Mac LauncherView.noticeBar）：内容是数据（官方下载页上的 notice.json，取不到用随包那份，pack/jobs/updater.py notice），
@@ -139,8 +145,10 @@ public sealed partial class EnvironmentWindow
             Background = new SolidColorBrush(amber, 0.16), BorderBrush = new SolidColorBrush(amber, 0.45), BorderThickness = new Thickness(1) });
     }
 
-    private void AddUpdateControls(StackPanel bar)
+    /// <summary>顶栏的自更新状态（下载中百分比 / 重启更新 / 失败原因）；没有可显示的返回 null。是顶栏的活格子，下载进度事件只刷新它。</summary>
+    private Control? UpdateControls()
     {
+        var bar = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
         if (updateProgress.Length > 0)
             bar.Children.Add(new TextBlock { Text = updateProgress, FontSize = 12, Foreground = Brush.Parse("#A8A6A1"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
         else if (updateReady is not null)   // 只有玩家点了才重启；作业进行中置灰并说明
@@ -149,11 +157,14 @@ public sealed partial class EnvironmentWindow
         {
             // 失败原因直接写在按钮旁（人话 + 错误码），并给「打开下载页」：自动更新连不上 GitHub 时玩家能自己下（不再只藏在悬停提示里）
             bar.Children.Add(Action("update.retry", () => _ = DownloadUpdateAsync()));
-            var why = new TextBlock { Text = T("update.error." + updateFailure) + " · " + T("update.code").Replace("{0}", updateFailure), FontSize = 12,
+            // 文案表有这个码就用表里的（中英都有）；没有（如 update_none）就用后端那句，不显示「[update.error.…]」原样键名（剃刀 W11）
+            var reason = text.Has("update.error." + updateFailure) || updateFailureMessage.Length == 0 ? T("update.error." + updateFailure) : B(updateFailureMessage);
+            var why = new TextBlock { Text = reason + " · " + T("update.code").Replace("{0}", updateFailure), FontSize = 12,
                 Foreground = Brush.Parse("#A8A6A1"), MaxWidth = 360, TextWrapping = Avalonia.Media.TextWrapping.Wrap, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
             Avalonia.Automation.AutomationProperties.SetAutomationId(why, "update.failure");
             bar.Children.Add(why);
             bar.Children.Add(Action("update.download_page", () => _ = OpenOfficialAsync(DownloadPage)));
         }
+        return bar.Children.Count > 0 ? bar : null;
     }
 }

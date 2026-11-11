@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 from core import Failure, atomic, contained, read
@@ -509,49 +510,45 @@ def _ascii_name(name):
 
 def heal_folder_names(c):
     """还叫游戏号的文件夹（导入时没拿到英文名：读取器早先不给英文名、拷封面时这款还没进 catalog）按英文名改名，英文名记进 catalog。
-    每个作业开始时看一眼（只列各位置的 games/，没有游戏号文件夹就返回）；拿不到执行锁（有游戏在跑 / 在出包）这次跳过，下个作业再试。
+    只在英文名可能刚拿到的那一刻调（启动器剃刀 H3：原先每个作业开头都抢一次执行锁，中文名、没出过包的款永远在待改名单里，正撞上起局 / 出包就报忙）：
+    导入、出包（Mac / iPhone）作业结束时（main.HEAL_AFTER，锁都已放），后台商店查询拿到英文名后（store_meta_bg）。
+    执行锁、目录锁（改名动执行区，写 catalog 要目录锁）有一把被占就这次不改：文件夹叫游戏号只是不好看，下次这三处任一再试。
     英文名按 catalog 的 englishName → catalog 名字（有 ASCII 时）→ 这款已有产物里的 control.nacp；都没有（还没出过包的中文名游戏）就留着，出过包后再改"""
     roots = [r for _, r, online in locations(c) if online]
     stuck = [d for r in roots if (games_root(c, r)).is_dir() for d in games_root(c, r).iterdir()
              if _GID.fullmatch(d.name.upper()) and (d / GAME_JSON).is_file()]
     if not stuck:
         return 0
-    import filelock
     renamed = 0
-    with (c.library / ".execution.lock").open("a") as f:
-        try:
-            filelock.try_lock(f)
-        except BlockingIOError:
+    with c.idle("execution") as idle, c.idle("catalog") as idle_catalog:
+        if not (idle and idle_catalog):
             return 0
-        try:
-            cat_path = c.library / "catalog.json"
-            cat = read(cat_path, {}) or {}
-            games = {g.get("id", "").upper(): g for g in cat.get("games", []) if isinstance(g, dict)}
-            changed = False
-            for d in stuck:
-                gid = d.name.upper()
-                g = games.get(gid, {})
-                english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
-                if not _ascii_name(english):
-                    continue
-                name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
-                dest = d.parent / name
-                if name.upper() == gid or os.path.lexists(dest):
-                    continue
-                try:
-                    os.replace(d, dest)
-                except OSError:   # Windows 上文件夹里有打开的文件：整款不动（文件夹、索引、catalog 都留原样），下次再试
-                    continue
-                from library import _retarget_links
-                _retarget_links(dest, d, dest)
-                _remember(c, gid, dest)
-                if g and not g.get("englishName"):   # 改名成了才记英文名：与文件夹、索引一起变
-                    g["englishName"] = english; changed = True
-                renamed += 1
-            if changed:
-                atomic(cat_path, cat)
-        finally:
-            filelock.unlock(f)
+        cat_path = c.library / "catalog.json"
+        cat = read(cat_path, {}) or {}
+        games = {g.get("id", "").upper(): g for g in cat.get("games", []) if isinstance(g, dict)}
+        changed = False
+        for d in stuck:
+            gid = d.name.upper()
+            g = games.get(gid, {})
+            english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
+            if not _ascii_name(english):
+                continue
+            name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
+            dest = d.parent / name
+            if name.upper() == gid or os.path.lexists(dest):
+                continue
+            try:
+                os.replace(d, dest)
+            except OSError:   # Windows 上文件夹里有打开的文件：整款不动（文件夹、索引、catalog 都留原样），下次再试
+                continue
+            from library import _retarget_links
+            _retarget_links(dest, d, dest)
+            _remember(c, gid, dest)
+            if g and not g.get("englishName"):   # 改名成了才记英文名：与文件夹、索引一起变
+                g["englishName"] = english; changed = True
+            renamed += 1
+        if changed:
+            atomic(cat_path, cat)
     return renamed
 
 
@@ -692,47 +689,27 @@ def _legacy_ids(c, spec):
 
 
 def ensure(c):
-    """作业开始前：库还是旧布局就拿执行锁迁移；之后把库建好前退回私有目录写的日志 / 任务记录收进默认位置（每个作业都看一眼，没有就只读一次索引表）"""
+    """作业开始前：库还是旧布局就拿执行锁迁移；之后（非探测作业）起后台商店查询。日志 / 任务记录的迁回在建任务时（follow_task）"""
     _ensure_layout(c)
-    if (c.library / ".s2arm-library.json").is_file():
-        adopt_private_logs(c)
-        heal_folder_names(c)             # 已有英文名、文件夹还叫游戏号的改名（不联网）
-        if c.operation != "launch":      # 起局时玩家在等：连后台也不起
-            from library import store_meta_background
-            store_meta_background(c)     # 缺横图 / 英文名、7 天内没查过的款：后台查，查到英文名在那里接着改名
+    if (c.library / ".s2arm-library.json").is_file() and c.operation not in ("installCheck", "targetDevice", "locations", "launch"):   # 每几秒一次的只读探测不起；起局时玩家在等，连后台也不起
+        from library import store_meta_background
+        store_meta_background(c)     # 缺横图 / 英文名、7 天内没查过的款：后台查，查到英文名在那里接着改名
 
 
 def _ensure_layout(c):
-    """库还是旧布局就拿执行锁迁移（拿不到每 2 秒再试，最多 120 秒：别的作业在跑时它已经迁过了，再看一眼标记）"""
-    import time
-    import filelock
+    """库还是旧布局就拿执行锁迁移：按库锁同一语义排队（剃刀 H2：原先另写一套每 2 秒再试、120 秒后报另一句话）；
+    拿到锁先看标记（排队期间别的作业可能已迁完，migrate 已迁完直接返回）"""
     if read(c.library / ".s2arm-layout.json", {}).get("version") == VERSION or not (c.library / ".s2arm-library.json").is_file():
         return
-    c.require_library()
-    t0 = time.time()
-    while True:
-        with (c.library / ".execution.lock").open("a") as f:
-            try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                if time.time() - t0 > 120:
-                    raise Failure("游戏库正在被别的任务使用，结构整理没能开始，请稍后重试。") from None
-            else:
-                try:
-                    migrate(c)
-                finally:
-                    filelock.unlock(f)
-                return
-        if read(c.library / ".s2arm-layout.json", {}).get("version") == VERSION:
-            return
-        time.sleep(2)
+    with c.lock("execution"):
+        migrate(c)
 
 
 # ---- 3→4（游戏库结构 P3）：库外的东西搬进默认位置 ----
 # 目标：玩家指定的库是入口，私有目录（Mac ~/Library/Application Support/S2Arm，Windows %LOCALAPPDATA%\S2Arm\WindowsLauncher）只留设置、密钥和控制口文件。
 #   工具缓存：原 work_root（库在私有目录里时 = 私有目录，否则 = 库/.s2arm-work）下的 cache/、run/ → <默认位置>/tool-cache/{cache,run}（core.Context.work_root）。
 #     都能重建：同一卷改名（逐个子项，目标已有的不盖），跨卷直接删、不拷。
-#   日志、任务记录：<私有目录>/logs、jobs → <默认位置>/logs/（任务记录 logs/jobs/，core.logs_root），见 adopt_private_logs。
+#   日志、任务记录：v0.3.0 起固定在 <私有目录>/logs（剃刀 H6），不再搬进默认位置；旧的在建任务时收回（adopt_library_logs）。
 #   引擎副本在 embedded.install 里搬（它在 ensure 之前跑）。
 # 每步都是逐项改名 / 删，中途被杀下次接着做；布局标记最后才写 4。
 
@@ -743,7 +720,6 @@ def _upgrade_4(c):
             _absorb_rebuildable(c, old / name, new / name)
     with contextlib.suppress(OSError):
         (c.library / ".s2arm-work").rmdir()
-    adopt_private_logs(c)
 
 
 def _absorb_rebuildable(c, src, dst):
@@ -791,42 +767,34 @@ def _moved(src, dst):
 
 
 def follow_task(c):
-    """Context 建任务时调（任务记录在默认位置时）：索引表第一项核成这个默认位置（core.default_home 只拿私有目录时靠它找日志）；
-    这个任务号上次的记录还在私有目录（库建好前跑的、resume 续跑）就先搬过来，attemptNo 等接得上"""
-    if c.logs.parent == c.private:
-        return
-    try:
-        disk = (read(_index_path(c), {}) or {}).get("locations") or []
-    except (OSError, ValueError):
-        disk = []
-    if not disk or not isinstance(disk[0], dict) or disk[0].get("path") != str(c.library):
-        save_index(c)
-    if c.jobpath.exists():
-        return
-    for old in (c.private / "logs" / "jobs", c.private / "jobs"):
-        if (old / c.jobpath.name).is_file():
-            for suffix in (".json", ".events.jsonl", ".request.json"):
-                try:
-                    _moved(old / (c.task + suffix), c.jobpath.parent / (c.task + suffix))
-                except OSError:
-                    pass
-            return
+    """Context 建任务时调：索引表第一项核成这个默认位置（core.default_home 只拿私有目录时靠它找工具缓存 / 引擎副本）；
+    旧位置还有日志 / 任务记录（v0.3.0 之前库建好后写在 <库>/logs）就迁回私有目录（adopt_library_logs），续跑的同一任务号 attemptNo 接得上"""
+    if (c.library / ".s2arm-library.json").is_file():
+        try:
+            disk = (read(_index_path(c), {}) or {}).get("locations") or []
+        except (OSError, ValueError):
+            disk = []
+        if not disk or not isinstance(disk[0], dict) or disk[0].get("path") != str(c.library):
+            save_index(c)
+    adopt_library_logs(c)
 
 
-def adopt_private_logs(c):
-    """<私有目录>/logs、jobs（P3 之前的位置，以及库建好前 core.logs_root 退回私有目录写下的）收进默认位置的 logs/。
-    先按保留规则清一遍（core.prune_jobs）再搬，跨卷时少拷；还没写终态、进程还在的任务（日志名以任务号开头）不动，等它结束后的下一个作业再收。
-    顺手核索引表第一项是这个默认位置（core.default_home 只拿私有目录时靠它找日志）"""
+def adopt_library_logs(c):
+    """日志与任务记录固定在 <私有目录>/logs（core.logs_root，剃刀 H6）。旧位置——v0.3.0 之前库建好后写的 <默认位置>/logs，以及 P3 之前的
+    <私有目录>/jobs——收回来：先按保留规则清一遍（core.prune_jobs）再搬，跨卷时少拷；还没写终态、进程还在的任务（日志名以任务号开头）不动，
+    等它结束后的下一个作业再收（读的一方 core._job_dirs 照样找得到）。没有旧目录时只是两次 is_dir"""
     from core import TERMINAL_STATES, pid_alive, prune_jobs
     target = c.logs
-    if target.parent == c.private:
-        return
-    sources = [(c.private / "jobs", target / "jobs"), (c.private / "logs" / "jobs", target / "jobs"), (c.private / "logs", target)]
+    old = c.library / "logs"
+    sources = [(c.private / "jobs", target / "jobs")]
+    if (c.library / ".s2arm-library.json").is_file():   # 只收游戏库自己的旧日志：setup 时玩家选的文件夹还不是库，里面的 logs 是玩家自己的东西
+        sources += [(old / "jobs", target / "jobs"), (old, target)]
+    sources = [(s, d) for s, d in sources if s != d and s != target / "jobs"]
     if not any(s.is_dir() for s, _ in sources):
         return
     running = set()
-    for src, _ in sources[:2]:
-        if not src.is_dir():
+    for src, _ in sources:
+        if src.name != "jobs" or not src.is_dir():
             continue
         prune_jobs(c.private, jobs=src)
         for p in src.glob("*.json"):
@@ -841,14 +809,13 @@ def adopt_private_logs(c):
     for src, dst in sources:
         if not src.is_dir() or src.is_symlink():
             continue
-        # 每个作业起跑都收一次（ensure）：别的作业可能同时在收，判完 is_dir 到列目录之间目录已被它收空删掉（启动器同时起两个 catalog：
-        #   WorkerIntegrationTests 偶发「任务所需的文件或目录不存在」，main 全套两次红在这里）——被对方收走的就算收完了
+        # 每个作业建任务时都收一次：别的作业可能同时在收，判完 is_dir 到列目录之间目录已被它收空删掉——被对方收走的就算收完了
         try:
             children = sorted(src.iterdir())
         except FileNotFoundError:
             continue
         for child in children:
-            if src == c.private / "logs" and child.name == "jobs":
+            if src == old and child.name == "jobs":
                 continue
             if any(child.name.startswith(t) for t in running):
                 continue
@@ -856,7 +823,7 @@ def adopt_private_logs(c):
                 _moved(child, dst / child.name)
             except OSError:
                 continue   # 这一项这次搬不动，留着下次再试；读的一方（core._job_dirs）照样找得到
-    for d in (c.private / "logs" / "jobs", c.private / "logs", c.private / "jobs"):
+    for d in (old / "jobs", old, c.private / "jobs"):
         with contextlib.suppress(OSError):
             d.rmdir()
 
@@ -918,31 +885,22 @@ def relocate_default(private, library):
 
 @contextlib.contextmanager
 def _relocate_lock(private):
+    """判断和改名只许一个作业做：排队等前一个做完（最多 RELOCATE_LOCK_WAIT 秒），到上限报 library_busy（剃刀 H2：原先等不到就不拿锁照常判断，等于没锁）。
+    私有目录写不了（建不了锁文件）照旧判断：后面写标记也会失败、原样返回"""
     import filelock
-    import time
-    f = None
     try:
         private.mkdir(parents=True, exist_ok=True)
-        f = (private / RELOCATE_LOCK).open("a")
+        (private / RELOCATE_LOCK).open("a").close()
     except OSError:
-        yield   # 私有目录写不了：照旧判断（后面写标记也会失败、原样返回）
-        return
-    held, deadline = False, time.monotonic() + RELOCATE_LOCK_WAIT
-    try:
-        while True:
-            try:
-                filelock.try_lock(f); held = True
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    break   # 那边卡住了：不再等，照旧判断（标记已写就按标记走）
-                time.sleep(0.05)
         yield
-    finally:
-        if held:
-            with contextlib.suppress(OSError):
-                filelock.unlock(f)
-        f.close()
+        return
+    try:
+        with filelock.held(private / RELOCATE_LOCK, wait_s=RELOCATE_LOCK_WAIT, poll=0.05,
+                           holder=dict(operation="relocate", pid=os.getpid(), startedAt=round(time.time(), 3))):
+            yield
+    except filelock.Busy as busy:
+        raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
+                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None
 
 
 def _relocate_locked(private, library):
@@ -981,18 +939,11 @@ def _relocate_locked(private, library):
 def _idle(library):
     """库里没有任务在跑（同整库搬家：执行锁、目录锁都拿得到）才搬。拿到就放：Windows 上库里有打开的文件时目录改不了名"""
     import filelock
-    handles = []
     try:
-        for name in (".execution.lock", ".catalog.lock"):
-            f = (library / name).open("a")
-            handles.append(f)
-            filelock.try_lock(f)
-        return True
-    except BlockingIOError:
+        with filelock.held(library / ".execution.lock"), filelock.held(library / ".catalog.lock"):
+            return True
+    except filelock.Busy:
         return False
-    finally:
-        for f in handles:
-            f.close()
 
 
 def _finish_relocate(private, old, new):

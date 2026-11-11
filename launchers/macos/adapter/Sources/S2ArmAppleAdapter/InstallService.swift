@@ -85,6 +85,8 @@ public struct InstallResult: Equatable {
     /// 推到手机上的资源包文件数（没推为 nil）。
     public let packFiles: Int?
     public let outputPath: String?
+    /// 这次推的全是单一 IMG：已传到手机、打开 S2Arm 会自动完成安装（作业结果 openToFinish）
+    public var openToFinish: Bool = false
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -130,7 +132,7 @@ public final class InstallService {
         if let device, !device.isEmpty { extra["device"] = device }
         let r = try await client.perform("install", extra: extra, events: events).result
         return InstallResult(device: r["device"] as? String ?? "", packFiles: (r["packFiles"] as? NSNumber)?.intValue,
-                             outputPath: r["outputPath"] as? String)
+                             outputPath: r["outputPath"] as? String, openToFinish: r["openToFinish"] as? Bool ?? false)
     }
 
     // ---- 开发者证书（v0.2.4，pack/jobs/devcert.py）----
@@ -171,8 +173,11 @@ public final class InstallService {
 
     /// 更新 iPhone 上的 S2Arm（installUpdate 作业，install.update_phone）：本版壳 + 已有程序模块，只装 App；
     ///   有要重新出包的款且没 acceptStale → 作业以 container_stale 失败（界面先问玩家）
-    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
-        try await client.perform("installUpdate", extra: acceptStale ? ["acceptStale": true] : [:], events: events).result
+    ///   device：连着多台时装到哪台（同 install；不给 = 只连着一台）
+    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        var extra: [String: Any] = acceptStale ? ["acceptStale": true] : [:]
+        if let device { extra["device"] = device }
+        return try await client.perform("installUpdate", extra: extra, events: events).result
     }
 
     /// 装回只换宿主前的那一版手机 S2Arm（installRestore 作业，pack/jobs/install.py restore_previous）。

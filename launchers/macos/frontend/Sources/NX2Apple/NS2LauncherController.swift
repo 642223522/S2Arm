@@ -15,6 +15,24 @@ final class NS2LauncherController: ObservableObject {
     @Published private(set) var phase: Phase = .off
     @Published private(set) var detail = ""
     @Published private(set) var deviceName = "Switch 2 Pro"
+    /// 连接程序报的对外输出型号（ns2_kind：1 Pro、2 Joy-Con 左、3 右、4 左右一对；0 = 没连 / 旧连接程序没报）
+    @Published private(set) var kind = 0
+
+    /// 弹窗标题：照连着的型号写；没连 / 还不知道型号时写通用的「Switch 手柄」（不分代：一代 Joy-Con 以后也在这里）（#520）
+    func title(simplifiedChinese zh: Bool) -> String { Self.title(kind: kind, simplifiedChinese: zh) }
+    /// 状态行里的型号；连接程序报的是 ns2_kind 数字，旧连接程序没这个字段时当 0
+    nonisolated static func kind(from object: [String: Any]) -> Int {
+        (object["kind"] as? NSNumber)?.intValue ?? 0
+    }
+    nonisolated static func title(kind: Int, simplifiedChinese zh: Bool) -> String {
+        switch kind {
+        case 1: return "Switch 2 Pro"
+        case 2: return "Joy-Con 2 (L)"
+        case 3: return "Joy-Con 2 (R)"
+        case 4: return "Joy-Con 2 (L + R)"
+        default: return zh ? "Switch 手柄" : "Switch Controller"
+        }
+    }
 
     private let defaults: UserDefaults
     let socketURL: URL
@@ -77,21 +95,21 @@ final class NS2LauncherController: ObservableObject {
         startProcess()
     }
 
-    func disconnectManually() {
-        stopProcess()
+    func disconnectManually(then done: (@MainActor () -> Void)? = nil) {
+        stopProcess(then: done)
         phase = .off
         detail = "手柄已断开。开始游戏不受影响。"
     }
 
     func retry() {
         guard process != nil else { connectManually(); return }
-        disconnectManually()
-        connectManually()
+        disconnectManually { [weak self] in self?.connectManually() }   // 旧连接程序退干净（放开蓝牙）再起新的
     }
 
-    /// 游戏启动前只交回可用通道；连接本身始终留在 S2Arm 的连接程序内。
+    /// 通道路径固定，开局时手柄还没连也照样交给游戏：游戏没接上时每秒重试，玩家开局后再连手柄，游戏也会接回
+    ///   （以前没连接程序就不给，游戏开着时再连手柄，游戏这边一直没反应）。连接本身始终留在 S2Arm 的连接程序内。
     func relaySocketForGame() -> String? {
-        process == nil ? nil : socketURL.path
+        socketURL.path
     }
 
     func gameDidStart() {
@@ -117,7 +135,7 @@ final class NS2LauncherController: ObservableObject {
     }
 
     func shutdown() {
-        stopProcess()
+        stopProcess(wait: true)   // 启动器退出：就地等（有上限），不留没退的连接程序
     }
 
     private func startProcess() {
@@ -129,6 +147,7 @@ final class NS2LauncherController: ObservableObject {
         phase = .starting
         detail = "正在启动蓝牙连接。首次使用时，请在 macOS 提示中允许。"
         deviceName = "Switch 2 Pro"
+        kind = 0
         buffer.removeAll(keepingCapacity: true)
         intentionalStop = false
 
@@ -152,6 +171,7 @@ final class NS2LauncherController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.process === finished else { return }
                 self.process = nil
+                self.kind = 0
                 self.output?.fileHandleForReading.readabilityHandler = nil
                 self.output = nil
                 if !self.intentionalStop {
@@ -170,14 +190,34 @@ final class NS2LauncherController: ObservableObject {
         }
     }
 
-    private func stopProcess() {
+    /// 停连接程序（剃刀 M16）：原先主线程上 terminate 后 waitUntilExit() 不设上限，连接程序不退出时整个启动器冻住。
+    ///   现在后台等（stopGrace 秒），不退就 SIGKILL；done 在确认退出后回主线程调。wait = true（启动器退出）就地等同样有上限
+    private func stopProcess(wait: Bool = false, then done: (@MainActor () -> Void)? = nil) {
         intentionalStop = true
+        kind = 0
         output?.fileHandleForReading.readabilityHandler = nil
         output = nil
-        guard let task = process else { return }
+        guard let task = process else { done?(); return }
         process = nil
         task.terminationHandler = nil
-        if task.isRunning { task.terminate(); task.waitUntilExit() }
+        if wait { Self.terminate(task, grace: Self.stopGrace); done?(); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            Self.terminate(task, grace: Self.stopGrace)
+            Task { @MainActor in done?() }
+        }
+    }
+
+    static let stopGrace: TimeInterval = 3
+    /// SIGTERM → 最多等 grace 秒 → 还在就 SIGKILL 并收尸。回来时进程一定已退出；返回是否动用了 SIGKILL。不要在主线程调
+    @discardableResult nonisolated static func terminate(_ task: Process, grace: TimeInterval) -> Bool {
+        guard task.isRunning else { return false }
+        task.terminate()
+        let deadline = Date().addingTimeInterval(grace)
+        while task.isRunning && Date() < deadline { usleep(20_000) }
+        guard task.isRunning else { return false }
+        kill(task.processIdentifier, SIGKILL)
+        task.waitUntilExit()
+        return true
     }
 
     private func consume(_ data: Data) {
@@ -193,6 +233,7 @@ final class NS2LauncherController: ObservableObject {
 
     private func apply(status code: Int, _ object: [String: Any]) {
         if let name = object["name"] as? String, !name.isEmpty { deviceName = name }
+        kind = Self.kind(from: object)
         switch code {
         case 0:
             phase = .starting

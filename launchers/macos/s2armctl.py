@@ -41,7 +41,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   install-check <游戏号> [--json]    装到 iPhone 前的清单：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
   restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   show environment|library|export [游戏号]   打开环境检查 / 回游戏库 / 打开这款的出包页（同点对应按钮）
-  update-phone [--ask | --accept-stale [--repack]]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
+  update-phone [--ask | --accept-stale [--repack]] [--device UDID或设备名]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
                                     有要按新版重新出包的款时不带 --accept-stale 退 1 并列出它们；--repack 更新完把它们排进批量出包、出完自动装
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
@@ -217,6 +217,7 @@ AI_NEXT = {
     'devcert_mismatch': ('human', '证书和描述文件不配套：请玩家在开发者网站重新生成含这张证书的描述文件，再在出包页重新导入'),
     'devcert_missing': ('human', '开发者证书不完整：请玩家在出包页重新导入，或切回 Apple ID 签名后 s2armctl install <游戏号>'),
     'devcert_keychain': ('human', '证书密码存不进钥匙串：请玩家解锁登录钥匙串、允许 S2Arm 访问后在出包页重新导入'),
+    'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
     'stage_timeout': ('ai', 's2armctl logs <任务号> 看卡在哪；s2armctl retry <任务号> 重试一次，还超时就 s2armctl diag export <输出.zip> 交给玩家反馈'),
@@ -242,9 +243,8 @@ def saved_library():
     return lib
 
 def logs_root():
-    """任务日志 + 任务记录（logs/jobs/）：库建好了（有 .s2arm-library.json）是 <库>/logs，否则 <数据目录>/logs。同作业层 pack/jobs/core.py logs_root"""
-    lib = saved_library()
-    return os.path.join(lib if lib and os.path.isfile(os.path.join(lib, '.s2arm-library.json')) else ROOT, 'logs')
+    """任务日志 + 任务记录（logs/jobs/）：固定 <数据目录>/logs，同作业层 pack/jobs/core.py logs_root（剃刀 H6）"""
+    return os.path.join(ROOT, 'logs')
 
 def task_log(task_id):
     d = logs_root()
@@ -310,13 +310,22 @@ def next_step(s, gid=None, target='ios'):
     if mac and g['id'] in s.get('queue', []):
         return dict(step='等待', who='ai', do=f's2armctl wait {g["id"]} --op build（或隔一会儿 {next_command}）', why='这款的 Mac 准备任务正在排队', **extra)
     if mac_ready:
-        if s.get('executionTask') or s.get('queue'):
+        execution_task = s.get('executionTask')
+        if execution_task and any(
+            t['id'] == execution_task and t['operation'] == 'launch'
+            and t.get('gameId') == g['id'] and t['state'] == 'running'
+            for t in s['tasks']
+        ):
+            return dict(step='运行中', who='human', do='请玩家查看 Mac 上的游戏窗口',
+                        why='这款游戏正在启动或运行', task=execution_task, **extra)
+        if execution_task or s.get('queue'):
             return dict(step='等待', who='ai', do=f'等当前任务结束后再 {next_command}', why='构建与游戏运行互斥', **extra)
         return dict(step='启动', who='ai', do=f's2armctl launch {g["id"]}', why='这款游戏的 Mac 版已准备好', **extra)
 
     ipa = None if mac else ipa_of(s, g['id'])
+    ios_package_ready = bool(ipa or g.get('iphoneReady'))
     last = mine[-1] if mine else None
-    if last and last['state'] in ('failed', 'interrupted') and (mac or last['operation'] == 'install' or (last['operation'] == 'ipa' and not ipa)):
+    if last and last['state'] in ('failed', 'interrupted') and (mac or last['operation'] == 'install' or (last['operation'] == 'ipa' and not ios_package_ready)):
         d = (last.get('diagnostics') or [{}])[0]; code = d.get('code') or 'job_failed'
         who, do = AI_NEXT.get(code, DEFAULT_NEXT)
         step = {'build': '准备失败', 'install': '装机失败', 'ipa': '出包失败'}[last['operation']]
@@ -325,7 +334,7 @@ def next_step(s, gid=None, target='ios'):
         return dict(step='导入', who='ask', do='这款游戏缺：' + '、'.join(g.get('missing') or []) + '；问玩家要缺的文件，s2armctl games <文件夹>', why='游戏文件不全', **extra)
     if mac:
         return dict(step='准备', who='ai', do=f's2armctl build {g["id"]} mac，然后 s2armctl wait {g["id"]} --op build', why='还需要准备这款游戏的 Mac 版', **extra)
-    if not ipa:
+    if not ios_package_ready:
         # 一包通用（10-30）：iPhone 包与机型无关，不用先选目标设备——11-02 beta.3 走查发现这里还在多问一步
         return dict(step='出包', who='ai', do=f's2armctl build {g["id"]} ios，然后 s2armctl wait {g["id"]} --op ipa --timeout 7200', why='还没出 iPhone 版（大游戏第一次要几十分钟到一个多小时，请玩家插上电源、别让%s睡眠）' % ('电脑' if s.get('platform') == 'windows' else ' Mac '), **extra)
     if s.get('platform') == 'windows':
@@ -376,6 +385,10 @@ def iphone():
           and d.get('hardwareProperties', {}).get('platform') == 'iOS']
     return ds
 
+def container_match(installed, placeholder):
+    """手机上装的包名是不是这个容器：同名，或占位名 + 「.团队[.后缀]」"""
+    return installed == placeholder or installed.startswith(placeholder + '.')
+
 def device(gid):
     ipa, bid = game_bundle(gid); ds = iphone()
     if not ds: print(f'没连 iPhone：请玩家用数据线连上并解锁、在手机上点「信任」。包 {ipa}（应用身份 {bid}）'); sys.exit(2)
@@ -383,10 +396,12 @@ def device(gid):
         u = d['hardwareProperties']['udid']; name = d.get('deviceProperties', {}).get('name', u)
         import tempfile
         with tempfile.NamedTemporaryFile(suffix='.json') as f:
-            dctl(['device', 'info', 'apps', '--device', u, '--bundle-id', bid, '--json-output', f.name])
+            dctl(['device', 'info', 'apps', '--device', u, '--json-output', f.name])
             try: apps = json.load(open(f.name))['result']['apps']
             except Exception: apps = []
-        print(f'iPhone「{name}」（{u}）：{"已装" if apps else "没装"} {bid}' + ('' if apps else '——请玩家用 AltStore 装（要登录 Apple ID，AI 不代做）'))
+        # 包里的 io.s2arm.games 只是组装时的占位名：装机时换成 io.s2arm.games.<团队>（开发用还可再带后缀），按前缀认手机上实际装的（#642）
+        got = sorted(a.get('bundleIdentifier', '') for a in apps if container_match(a.get('bundleIdentifier', ''), bid))
+        print(f'iPhone「{name}」（{u}）：' + (f'已装 {"、".join(got)}' if got else f'没装 {bid}——请玩家用 AltStore 装（要登录 Apple ID，AI 不代做）'))
     sys.exit(0)
 
 def engine_root():   # 引擎目录：App 里是 Contents/Resources/Engine（bundle_engine 冻结的快照），仓库里是仓库根
@@ -412,7 +427,7 @@ def push_pack(gid):
         sys.exit('资源包没推完（上面最后一行【红】是原因）：手机要解锁、保持连接；App 还没装的话请玩家先用 AltStore / Impactor 装好再试')
     print('🟢 资源包已推进 iPhone 并解开。请玩家打开这款游戏：第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏')
 
-# 作业记录（pack/jobs/core.py 写的 <游戏库>/logs/jobs/<任务>.json，库没建好时 <数据目录>/logs/jobs，见 logs_root：state / stage / milestone / done / total / pid / pidStart …）：
+# 作业记录（pack/jobs/core.py 写的 <数据目录>/logs/jobs/<任务>.json，固定在数据目录，见 logs_root：state / stage / milestone / done / total / pid / pidStart …）：
 #   控制口不应答或给的快照太旧时，wait 按它判。作业是独立进程，启动器卡住（内存吃紧、主线程忙）不等于作业停了
 def journal_task(game, op, tid, since):
     best = None
@@ -605,7 +620,11 @@ def diag_body(rest, now=None):
     if rest[:1] == ['export'] and len(rest) == 2: return {'action': 'export', 'path': os.path.abspath(os.path.expanduser(rest[1]))}
     if rest and rest != ['export']: return None
     desk = os.path.expanduser('~/Desktop'); base = desk if os.path.isdir(desk) else os.getcwd()
-    return {'action': 'export', 'path': os.path.join(base, time.strftime('S2Arm-诊断-%Y%m%d-%H%M%S.zip', time.localtime(now)))}
+    # 短名 S2Arm-诊断-月日-时分.zip（与 iOS / 启动器一致，版本信息在包里的 manifest）；同一分钟已有同名就加 -2、-3
+    stem = os.path.join(base, time.strftime('S2Arm-诊断-%m%d-%H%M', time.localtime(now)))
+    path, k = stem + '.zip', 2
+    while os.path.exists(path): path, k = f'{stem}-{k}.zip', k + 1
+    return {'action': 'export', 'path': path}
 
 def main():
     a = sys.argv[1:]
@@ -723,7 +742,8 @@ def main():
         return
     if cmd == 'update-phone':
         before = {t['id'] for t in call('GET', '/state')['tasks'] if t['operation'] == 'installUpdate'}
-        body = {**({'acceptStale': True} if '--accept-stale' in rest else {}), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {})}
+        body = {**({'acceptStale': True} if '--accept-stale' in rest else {}), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {}),
+                **({'device': rest[rest.index('--device') + 1]} if '--device' in rest else {})}   # 连着多台时指定哪台（同 install --device）
         r = call('POST', '/update-phone', body); print(json.dumps(r, ensure_ascii=False), flush=True)   # 409（已是本版 / 有要重出的款没确认）在 call 里带原因退非 0
         if r.get('asked'): print('窗口里弹了三选一，等玩家选'); return   # --ask：同点按钮，有要重出的款时由玩家在窗口里选
         wait_op('installUpdate', before, 3600); return
