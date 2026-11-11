@@ -428,6 +428,16 @@ class FreeAccountLimits(unittest.TestCase):
         self.assertEqual((install.classify(raw), impactor.explain(raw)), ("app_id_taken", "app_id_taken"))
         self.assertTrue(loc.get(RECOVERY["app_id_taken"]) and spec["app_id_taken"]["title"]["en"] and "app_id_taken" in guide)
         self.assertEqual(ctl.AI_NEXT["app_id_taken"][0], "human")
+        # apple_session_expired（玩家错误摘要原文，Windows v0.2.7 plumesign 恢复保存的会话时报）：认成登录过期、给 Impactor 重新登录的办法，各处都登记；
+        #   旁边的 9401 / 两步验证 / 密码错各自仍归原码，不被这条吞掉
+        raw = "Error: Developer API error 1100 (HTTP Some(200)): Your session has expired. Please log in. (listTeams.action)"
+        self.assertEqual(impactor.explain(raw), "apple_session_expired")
+        self.assertIn("移除账号", RECOVERY["apple_session_expired"]); self.assertIn("添加账号", RECOVERY["apple_session_expired"])
+        self.assertTrue(loc.get(RECOVERY["apple_session_expired"]) and spec["apple_session_expired"]["title"]["en"] and "apple_session_expired" in guide)
+        self.assertEqual(ctl.AI_NEXT["apple_session_expired"][0], "human")
+        for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
+                            ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
+            self.assertEqual(impactor.explain(other), code)
 
 
 class LogCauses(JobCase):
@@ -496,6 +506,17 @@ class LogCauses(JobCase):
                                      "【红】01007EF00011E000 刷新停在 sysdata 阶段（rc=1），现行 = 01007EF00011E000@ex-b3eed688"])
         self.assertEqual(error.code, "permission_denied")
         self.assertEqual(d["suggestion"], RECOVERY["permission_denied"])
+
+    def test_exfat_unsupported_ops_says_change_drive(self):
+        # 11-10 网友（v0.2.6 Mac）：存放位置设到外接盘写入失败；exFAT 映像复现，解包 seed 克隆退回拷贝后发布用 RENAME_EXCL 回 errno 45。
+        #   原先落成笼统的「资源准备失败」；现在说清这块盘格式不支持、换 APFS 盘
+        from errors import RECOVERY
+        error, d = self.mac_refresh(["克隆失败：main：[Errno 45] Operation not supported: '[PRIVATE_PATH]'",
+                                     "【红】克隆 exefs 失败",
+                                     "【红】010024B00F9D0000 刷新停在 seed 阶段（rc=1），现行 = 010024B00F9D0000@ex-1234abcd"])
+        self.assertEqual(error.code, "volume_ops_unsupported")
+        self.assertEqual(d["summary"], "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。")
+        self.assertEqual(d["suggestion"], RECOVERY["volume_ops_unsupported"])
 
     def test_windows_precheck_missing_metal_says_metal_unavailable(self):
         # 11-09 Windows 出包机：S2A_METAL_BIN 指到不存在的目录，预检打「环境缺件 metal」、退 75。原先落成笼统的 package_failed（出包未完成）

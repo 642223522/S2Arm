@@ -54,7 +54,7 @@ def decl(mode):
     if not os.path.exists(DECL): return []
     return [l.split('\t') for l in subprocess.run([sys.executable, DECL, mode, root], capture_output=True, text=True).stdout.splitlines() if l]
 ROUTE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate_route.py')
-# 过渡的无钩子路径（gate_route.py 的 NOHOOK，11-11 旧安卓三钩子删除后 android/）：那里的单测暂无钩子接线，不报；新钩子认领后 NOHOOK 清空即恢复检查
+# 过渡的无钩子路径（gate_route.py 的 NOHOOK，11-11 旧安卓三钩子删除后 android/）：那里的单测暂无钩子接线，不报；旧层源码删除时 NOHOOK 清空即恢复检查
 nohook = tuple(subprocess.run([sys.executable, ROUTE, 'nohook'], cwd=root, capture_output=True, text=True).stdout.split()) if os.path.exists(ROUTE) else ()
 tests = [t for t in tests if not t.startswith(nohook)] if nohook else tests
 routed = subprocess.run([sys.executable, ROUTE, 'hooks'], cwd=root, capture_output=True, text=True)

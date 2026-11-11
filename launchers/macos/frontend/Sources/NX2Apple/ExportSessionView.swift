@@ -468,9 +468,13 @@ struct ExportSessionView: View {
                     Button(x("fix.space")) { freeSpace(session.gameID ?? "") }.buttonStyle(LauncherSecondaryButtonStyle())
                     Button(x("fix.continue")) { if let game { model.export(game, platforms: [platform], spaceOverride: true) } }.buttonStyle(LauncherSecondaryButtonStyle())
                 }
+                // 剃刀 M4：出包前不再按前端的环境检查结果挡人；作业因环境缺东西失败时（作业层错误码），这里给环境检查页的入口
+                if let code = outcome.code, S2ArmLauncherModel.environmentCodes.contains(code) {
+                    Button(loc.t("s2arm.env.title")) { model.showEnvironment = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                }
                 Button(x("fail.retry")) { if let game { model.export(game, platforms: [platform]) } }.buttonStyle(LauncherSecondaryButtonStyle())
                 Button(copied == platform ? loc.t("s2arm.export.copied") : loc.t("s2arm.export.copyError")) {
-                    let fallback = model.errorSummary(name, outcome: ExportRun.Outcome(state: outcome.state, message: loc.backend(outcome.message), code: outcome.code, suggestion: loc.backend(outcome.suggestion), failureSummary: outcome.failureSummary), game: session.name)
+                    let fallback = S2ArmLauncherModel.reportUnavailable(loc.backend(outcome.message), code: outcome.code)
                     Task {
                         await model.copyErrorReport(platform: name, gameID: session.gameID, operations: [platform == .ios ? "ipa" : "build"], fallback: fallback)
                         copied = platform

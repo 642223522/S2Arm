@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from core import Failure, contained, read, release_version
+from core import Failure, contained, display_version, read, release_version
 import layout
 
 
@@ -384,6 +384,7 @@ def deliver(c, gid, root, pack_dir, ipa):
     from library import save_container_kit, _rm
     if root is None or save_container_kit(c, gid, root) is None:
         raise Failure("一键出包结束了，但产物根里没有组装 iPhone 版要用的文件（main.npdm），请查看日志。", code="package_failed")
+    to_img(c, gid, root, pack_dir)
     want = read(Path(pack_dir) / "manifest.json", {}).get("index_sha256")
     if not want:
         raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack_dir}）：请重新打 iPhone 包。", code="package_failed")
@@ -398,8 +399,21 @@ def deliver(c, gid, root, pack_dir, ipa):
     if old.exists():
         _rm(c, managed, old)
     compat = host_update.engine_compat(c) or {}
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, **compat))
+    from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), **compat))
     Path(ipa).unlink(missing_ok=True)
+
+
+def to_img(c, gid, root, pack_dir):
+    """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
+    多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
+    c.begin("把游戏资源写成单一 IMG（game.img）")
+    log = c.logs / "img.log"
+    try:   # 走 c.run：它每秒读 S2A_PROGRESS，img.py 按已写字节报进度，出包页这一步有进度条（几十 GB 要写一两分钟）
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()], log, c.env(), cwd=c.engine)
+    except Failure as e:
+        from errors import tool_reason
+        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
 
 def current_shell_id(c):
@@ -507,7 +521,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
-               "--version", release_version(c.engine),
+               "--version", release_version(c.engine), "--display-version", display_version(c.engine),
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
