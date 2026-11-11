@@ -4,6 +4,9 @@
 set -euo pipefail
 android_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$android_dir/.." && pwd)
+# 超时用仓库的 perl 版 tools/bin/timeout（#591，同 tools/toolchain.sh / graphics/gate.sh）：直接 bash android/test.sh 时
+# 子脚本（如 core-runtime/tests/run_shutdown_thread.sh）裸调 timeout，macOS 没有 GNU timeout 就 127。
+source "$repo_dir/tools/_timeout.sh"
 # 输出目录按运行隔离（#919）：同树两份门禁并行、或上一次运行被中断时，
 # 固定目录 build/android-host-tests 里的半写 .class / 半写 boot-spec 会被当成输入，
 # 红成 java.lang.ClassFormatError: Truncated class file / JSONDecodeError。
