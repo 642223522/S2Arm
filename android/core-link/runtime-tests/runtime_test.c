@@ -26,6 +26,7 @@ int s2a_android_vk_skip_module(const char *name) { assert(name); return 0; }
 void s2a_nro_table_load(const char *dir) { assert(dir); }
 void s2a_caps_apply(const char *dir) { (void)dir; }
 void s2a_fps_start(const char *dir) { assert(dir); }
+void s2a_ql_boot_mode(int docked) { (void)docked; }
 
 static const char *mode;
 static char trace[2048];
