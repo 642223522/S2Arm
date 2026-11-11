@@ -1,15 +1,15 @@
-值	命令	类别	iOS 分发（nvn_mtl.m 行）	iOS 落地	新层实现（graphics/nvn/replay）	宿主用例（t_nvn_replay.c）	真机见过
+值	命令	类别	iOS 分发（nvn_mtl.m 行）	iOS 落地	新层实现（graphics/nvn/replay）	宿主用例（t_nvn_replay.c）	真机见过（未接清单里出现过的程序号）
 0	OP_END	控制流	14512	（返回）	已接	t_jump_call	否
 1	OP_JUMP	控制流	14519	（跳转）	已接	t_jump_call	否
 2	OP_BEGIN	控制流	14518	（不再录制，判坏记录）	已接（判坏记录）	无	否
 3	OP_CALL	控制流	14520	（递归）	已接	t_jump_call	否
 4	OP_SIGNAL_EVENT	同步 / 查询	14525	mtl_sub_event / ev_wait	部分：信号已接；等待（NVN_EV_WAIT）未接	t_event_after_done	否
-5	OP_REPORT_COUNTER	同步 / 查询	14530	mtl_sub_counter / post	未接	无	否
-6	OP_COPY_B2B	拷贝 / 填充	14559	mtl_sub_copy	未接	无	否
-7	OP_UPDATE_UB	拷贝 / 填充	14561	mtl_sub_update	未接	无	否
-8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	未接	无	否
-9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	未接	无	否
-10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	未接	无	否
+5	OP_REPORT_COUNTER	同步 / 查询	14530	mtl_sub_counter / post	未接	无	0100633007D48000
+6	OP_COPY_B2B	拷贝 / 填充	14559	mtl_sub_copy	未接	无	0100633007D48000
+7	OP_UPDATE_UB	拷贝 / 填充	14561	mtl_sub_update	未接	无	0100633007D48000
+8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	未接	无	0100633007D48000
+9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	未接	无	0100633007D48000
+10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	未接	无	0100633007D48000
 11	OP_VIEWPORTS	状态（绘制时生效）	14631	state_op:10436	状态已记；绘制侧未接	t_state_persists	否
 12	OP_SCISSOR	状态（绘制时生效）	14629	state_op:10376	状态已记；绘制侧未接	t_state_persists	否
 13	OP_DEPTH_RANGE	状态（绘制时生效）	14631	state_op:10437	状态已记；绘制侧未接	t_jump_call	否
@@ -25,12 +25,12 @@
 23	OP_STENCIL	状态（绘制时生效）	14630	state_op:10429	状态已记；绘制侧未接	t_dirty_bits	否
 24	OP_POLY_OFFSET	状态（绘制时生效）	14631	state_op:10435	状态已记；绘制侧未接	无	否
 25	OP_DRAW	绘制	14619	draw_top	未接	无	否
-26	OP_DRAW_IDX	绘制	14621	draw_top	未接	无	否
+26	OP_DRAW_IDX	绘制	14621	draw_top	未接	无	0100633007D48000
 27	OP_DISPATCH	计算	14645	dispatch	未接	无	否
-28	OP_BARRIER	同步 / 查询	14646	（就地：拆通道 + barrier_game）	未接	无	否
+28	OP_BARRIER	同步 / 查询	14646	（就地：拆通道 + barrier_game）	未接	无	0100633007D48000
 29	OP_SET_TEX_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
 30	OP_SET_SAMP_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
-31	OP_COPY_B2T	拷贝 / 填充	14639	copy_b2t	未接	无	否
+31	OP_COPY_B2T	拷贝 / 填充	14639	copy_b2t	未接	无	0100633007D48000
 32	OP_BLEND_COLOR	状态（绘制时生效）	14631	state_op:10440	状态已记；绘制侧未接	t_state_persists	否
 33	OP_COPY_T2B	拷贝 / 填充	14640	copy_t2b	未接	无	否
 34	OP_BIND_IMG	状态（绘制时生效）	14630	state_op:10428	状态已记；绘制侧未接	无	否

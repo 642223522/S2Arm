@@ -27,6 +27,7 @@ void nvn_hle_queue_enter(void *q) { (void)q; g_q_enter++; }
 void nvn_hle_piece_begun(void) { g_piece++; }
 int nvn_dpool_base(const void *pool, int tex) { return (int)(uintptr_t)pool + (tex ? 0 : 1000); }
 const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok, uint8_t stage[6]) { (void)serial; (void)keys; (void)ok; (void)stage; return NULL; }   // 宿主表里没有快照
+int dm_fps_setting(void) { return 30; }
 uint64_t nvn_ga2ca(uint64_t a) { return a + 0x1000; }   // 与恒等不同：证明延后绑定确实做了地址换算
 
 // ---------- 后端替身：段只记账；完成由用例手动触发 ----------
@@ -182,6 +183,39 @@ static void t_program_stages(void) {
     CHECK(rp_S.bser[0] == 11 && rp_S.bst[0] == NULL);   // 仍按绑定当时的序号，不再读那个对象
 }
 
+static void t_pools(void) {
+    static uint8_t mem[0x1000]; uint64_t b = (uint64_t)(uintptr_t)mem; void *buf = NULL; uint64_t off = 0;
+    int n0 = rp_pool_count();
+    nvn_be_pool_add(mem, sizeof mem);
+    CHECK(rp_pool_count() == n0 + 1);
+    CHECK(nvn_be_addr(b + 0x800, 0x100, &buf, &off) == 1 && buf == (void *)mem && off == 0x800);
+    CHECK(nvn_be_addr(b + 0xf80, 0x100, &buf, &off) == 0);    // 越过池尾
+    CHECK(nvn_be_addr(b + 0xf00, 0x100, &buf, &off) == 1);    // 恰好到池尾
+    nvn_be_pool_del(mem);
+    CHECK(nvn_be_addr(b + 0x800, 0x100, &buf, &off) == 0 && rp_pool_count() == n0);
+}
+
+// 结论 A：贴图初始化只登记。替身后端里根本没有 nvn_gpu_tex_create，能链接成功即证明核心在初始化路径上没有引用建图。
+static void t_tex_init_registers_only(void) {
+    enum { N = 11400 }; static tex_t t[N]; int n0 = rp_tex_live_n();
+    for (int i = 0; i < N; i++) { t[i].serial = 1000 + (uint64_t)i; nvn_be_tex_init(&t[i]); }
+    CHECK(rp_tex_live_n() == n0 + N);
+    for (int i = 0; i < 400; i++) nvn_be_tex_release(&t[i]);
+    CHECK(rp_tex_live_n() == n0 + N - 400);
+    tex_t z; memset(&z, 0, sizeof z); nvn_be_tex_init(&z);   // 序号 0：不登记
+    CHECK(rp_tex_live_n() == n0 + N - 400);
+    uint64_t in = 0, rel = 0; nvn_be_tex_counters(&in, &rel); CHECK(in == N && rel == 400);
+}
+
+static void t_entry_unimpl(void) {   // 有语义而没接的入口：记账，不报假成功
+    nvn_unimpl_reset();
+    CHECK(nvn_be_present(NULL, 0, NULL) == 1 && nvn_be_present(NULL, 0, NULL) == 2);
+    CHECK(nvn_unimpl_count("be", "present") == 2);
+    CHECK(nvn_be_presented_time(1) == -1);
+    CHECK(nvn_be_has_window() == 0 && nvn_be_display_hz() == 0);
+    CHECK(nvn_be_fps_target() == 30);   // 替身宿主设的是 30
+}
+
 static int t_table(const char *tsv) {   // 接线表与名字表一致：值、命令名逐行对
     FILE *f = fopen(tsv, "r"); if (!f) { printf("【红】 打不开接线表 %s\n", tsv); return 1; }
     char line[512]; int rows = 0; if (!fgets(line, sizeof line, f)) { fclose(f); return 1; }
@@ -196,6 +230,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
+    t_pools(); t_tex_init_registers_only(); t_entry_unimpl();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
