@@ -2361,7 +2361,8 @@ static int frame_rec(void);
 static _Atomic uint64_t g_nvn_ns;   // Host time spent in submit / present this frame (replay encoding + present), used by the timing instrumentation
 
 // ---------- Lifecycle: dm_gfx_suspend (called before iOS goes to the background; equivalent to Switch suspend) ----------
-// on=1: subsequent submits / presents block until on=0; before returning, wait for in-progress submit / present calls to exit and for all in-flight GPU work to complete (iOS requires no GPU work in the background).
+// on=1 only closes the entry gate and must not wait: UIKit's scene-update callback has a 10 second watchdog.
+// dm_gfx_suspend_drain runs on the lifecycle worker with iOS background-task time: wait for calls already inside the gate, then drain GPU work.
 static pthread_mutex_t g_susp_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_susp_cv = PTHREAD_COND_INITIALIZER;
 static int g_susp, g_inflight_api;
@@ -2374,13 +2375,23 @@ void dm_gfx_enter(void) { gfx_enter(); }   // the same gate for the Vulkan layer
 void dm_gfx_leave(void) { gfx_leave(); }
 __attribute__((weak)) void dm_vk_drain(void) {}   // dm/gfx/vk/hle_vk.m: wait for the Vulkan layer's queue (the graphics unit tests do not link it)
 __attribute__((weak)) void dm_gl_drain(void) {}   // dm/gfx/gl/hle_gl.m: the same for the GL layer
+void (*dm_gfx_test_drain)(void);   // t_nvn_suspend: exercise the real gate / wait without acquiring a Metal device slot
 void dm_gfx_suspend(int on) {
     pthread_mutex_lock(&g_susp_mu);
     g_susp = on != 0;
-    if (on) while (g_inflight_api) pthread_cond_wait(&g_susp_cv, &g_susp_mu);
-    else pthread_cond_broadcast(&g_susp_cv);
+    if (!on) pthread_cond_broadcast(&g_susp_cv);
     pthread_mutex_unlock(&g_susp_mu);
-    if (on) { dm_vk_drain(); dm_gl_drain(); nvn_be_drain(); LOG("[nvn] graphics suspended: in-flight GPU work drained"); } else LOG("[nvn] graphics resumed");   // the Vulkan and GL queues first: presents on the NVN queue wait for their frames
+    if (!on) LOG("[nvn] graphics resumed");
+}
+void dm_gfx_suspend_drain(void) {
+    pthread_mutex_lock(&g_susp_mu);
+    while (g_susp && g_inflight_api) pthread_cond_wait(&g_susp_cv, &g_susp_mu);
+    int suspended = g_susp;
+    pthread_mutex_unlock(&g_susp_mu);
+    if (!suspended) { LOG("【红】[nvn] graphics suspend drain reached after the gate reopened; drain skipped"); return; }
+    if (dm_gfx_test_drain) dm_gfx_test_drain();
+    else { dm_vk_drain(); dm_gl_drain(); nvn_be_drain(); }   // Vulkan and GL first: presents on the NVN queue wait for their frames
+    LOG("[nvn] graphics suspended: in-flight GPU work drained");
 }
 int dm_gfx_guest_start_hold(void) {
     pthread_mutex_lock(&g_susp_mu);

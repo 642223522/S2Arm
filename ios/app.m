@@ -50,12 +50,13 @@ static void display_focus_publish(BOOL active) {
 }
 static _Atomic int g_front_running;
 static void s2a_ios_suspend(int on, const char *why);
+static void s2a_ios_suspend_enqueue(int on, const char *why);
 // 重启完成（runtime/src/session.c s2a_session_on_restart_done，启动时登记一次）：不管设置页 / 游戏 ExecuteProgram / 测试开关谁发起，
 //   新局起来后都在这里放「重启首帧屏障」（s2a_session_guest_start_prepare 立的客体冻结 + GPU hold）。屏障防的是重建期间 App 进了后台、
 //   新局在后台提交 GPU：所以只在 UIKit 确认前台活跃时放；不活跃就留给「回前台 / 获得焦点」那次 s2a_ios_suspend(0) 放
 static void restart_done(unsigned generation) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) s2a_ios_suspend(0, "重启完成");
+        if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) s2a_ios_suspend_enqueue(0, "重启完成");
         else LOG("iOS 壳：会话 %u 重启完成，App 不在前台活跃，屏障留到回前台放", generation);
     });
 }
@@ -171,6 +172,16 @@ void nxgal_gpu_hold(int on, const char *why);    // gal_core.m
 static _Atomic int g_bg;              // 进过后台、还没恢复
 static _Atomic uint64_t g_fg_note;   // 最近一次「将回前台」通知的时刻（恢复时间线起点）
 void s2a_resume_timeline(uint64_t t_note, uint64_t t_ds, uint64_t t_gpu, uint64_t t_thr, uint64_t t_done);   // ap_host.c
+static void s2a_direct_gate(int on) {
+    static void (*gate)(int); static int got;
+    if (!got) { gate = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_direct_suspend_gate"); got = 1; }
+    if (gate) gate(on);
+}
+static void s2a_direct_drain_or_resume(int on) {
+    static void (*suspend)(int); static int got;
+    if (!got) { suspend = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_direct_suspend"); got = 1; }
+    if (suspend) suspend(on);
+}
 static void s2a_ios_suspend(int on, const char *why) {
     int transition = s2a_session_background_begin(on);
     if (transition == S2A_SESSION_LIFECYCLE_DEFERRED) {
@@ -199,7 +210,7 @@ static void s2a_ios_suspend(int on, const char *why) {
         dispatch_async(dispatch_get_main_queue(), ^{
             UIApplicationState state = UIApplication.sharedApplication.applicationState;
             if ((on && state == UIApplicationStateBackground) || (!on && state != UIApplicationStateBackground))
-                s2a_ios_suspend(on, why);
+                s2a_ios_suspend_enqueue(on, why);
         });
         return;
     }
@@ -211,7 +222,7 @@ static void s2a_ios_suspend(int on, const char *why) {
     s2a_host_focus_set(!on); s2a_host_sleep_set(on);   // iOS 后台同时算睡眠（psc 休眠 / 唤醒请求）
     // 直连模式进出后台（双轨 §12.2，s2a_direct_suspend 在直连图形层 graphics/nvn/host_adapt.m）：运行时取符号，没链直连层的构建取不到就不调；通用模式下它是空操作
     uint64_t t_ds = now_ns();
-    { static void (*ds)(int); static int got; if (!got) { ds = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_direct_suspend"); got = 1; } if (ds) ds(on); }
+    s2a_direct_drain_or_resume(on);
     // 游戏时钟（#495）：进后台最先冻、回前台最后放——解冻瞬间先跑的线程看到的是停住的时钟，不会看到后台那段时间
     if (on) { guest_clock_freeze_for(1, 1); s2a_guest_freeze(1); nxgal_gpu_hold(1, why); atomic_store(&g_bg, 1); LOG("iOS 壳：%s → 游戏时钟与线程冻结、GPU 停止提交", why); }
     else {
@@ -224,6 +235,31 @@ static void s2a_ios_suspend(int on, const char *why) {
         LOG("iOS 壳：%s → 恢复", why);
     }
     s2a_session_background_end();
+}
+static dispatch_queue_t s2a_lifecycle_queue(void) {
+    static dispatch_queue_t queue; static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("s2a.ios-lifecycle", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0)); });
+    return queue;
+}
+// UIKit 的 scene-update 回调只做两件有界操作：同步关图形入口、登记一段后台执行时间；
+// 等旧提交 / PSO 编译退出、排空 GPU、冻结客体都在串行生命周期队列上完成。前台恢复排在其后，不会在 drain 中途重开 gate。
+static void s2a_ios_suspend_enqueue(int on, const char *why) {
+    if (!on) { dispatch_async(s2a_lifecycle_queue(), ^{ s2a_ios_suspend(0, why); }); return; }
+    s2a_direct_gate(1);   // 不等 g_inflight_api；通知返回前已经挡住新提交
+    UIApplication *app = UIApplication.sharedApplication;
+    __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
+    task = [app beginBackgroundTaskWithName:@"S2A graphics suspend" expirationHandler:^{
+        UIBackgroundTaskIdentifier expired = task; task = UIBackgroundTaskInvalid;
+        LOG("【红】iOS 后台图形排空超过系统给的后台执行时间");
+        if (expired != UIBackgroundTaskInvalid) [app endBackgroundTask:expired];
+    }];
+    dispatch_async(s2a_lifecycle_queue(), ^{
+        s2a_ios_suspend(1, why);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIBackgroundTaskIdentifier finished = task; task = UIBackgroundTaskInvalid;
+            if (finished != UIBackgroundTaskInvalid) [app endBackgroundTask:finished];
+        });
+    });
 }
 // 提示 / 出错页（notice.m 画；11-02 维护者：满屏、一句人话 + 下一步、和加载页同一套样子、技术细节进诊断包不上屏）。窗口还没建时只记下，建窗口时显示
 static NSString *g_msg;   // 正在屏上（或待显示）的提示，s2a_ios_clear_message 按它认
@@ -538,14 +574,14 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
         LOG("[电] 电量 %d%%，%s", (int)lroundf(d.batteryLevel * 100), st == UIDeviceBatteryStateCharging ? "充电中" : st == UIDeviceBatteryStateFull ? "已充满" : "未充电"); };
     battery(nil); [NSTimer scheduledTimerWithTimeInterval:60 repeats:YES block:battery];
     // 前后台（10-20 测试设备1 一款第一方动作冒险游戏切桌面后 GPU 拒收后台提交、渲染器按出错退出）：iOS 只禁后台提交 GPU，进后台 = 游戏线程在系统调用出入口冻结 + GPU 闸门关
-    // （不放新提交、已提交的做完才返回；queue:nil 在发通知的主线程上同步跑完，满足「进后台回调返回前停提交」）；回前台 = 放开，游戏接着跑，不重开
+    // （通知返回前只同步关入口；已在图形 API 里的调用与 GPU 排空在后台任务 + 串行生命周期队列完成）；回前台 = 排在排空之后放开，游戏接着跑，不重开
     // 只失去焦点（系统弹框 / 控制中心 / 来电横幅，仍在前台）不冻结：10-21 测试设备2 一款第一方动作冒险游戏起局 3 秒系统浮层失焦，旧做法冻到收局 54 秒没出首帧；
     // 同一浮层下随后起的暗黑3 从没「回前台」过、一直出帧——失焦期间画面照常可提交，冻结只该跟后台走
     // 用通知不用委托方法：场景式 / 旧式生命周期都发这几条
     s2a_session_on_restart_done(restart_done);   // 任何发起方的进程内重启完成都由壳放重启首帧屏障（见 restart_done）
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); LOG("iOS 壳：失去焦点（仍在前台，游戏照跑）"); }];
-    [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); s2a_dguard_background(1, now_ns()); { void s2a_diag_session_fg(int); s2a_diag_session_fg(0); } s2a_ios_suspend(1, "进后台"); s2a_guest_run_mark(0); }];   // 直连安全网：后台被杀 / 玩家划掉不算崩
+    [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); s2a_dguard_background(1, now_ns()); { void s2a_diag_session_fg(int); s2a_diag_session_fg(0); } s2a_ios_suspend_enqueue(1, "进后台"); s2a_guest_run_mark(0); }];   // 直连安全网：后台被杀 / 玩家划掉不算崩
     // 直连安全网：前台收到内存告警算这局的失败证据（之后被系统按内存杀掉进不了崩溃处理）；玩满 60 秒照样清零，进后台撤回
     [nc addObserverForName:UIApplicationDidReceiveMemoryWarningNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n;
         if (UIApplication.sharedApplication.applicationState != UIApplicationStateBackground) s2a_dguard_evidence("内存告警", 0); }];
@@ -554,8 +590,8 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
         atomic_store(&g_fg_note, now_ns()); s2a_dguard_background(0, now_ns());
         img_scan_if_library();   // 多款容器挂着库：玩家可能刚在「文件」里拷进 game.img
         // 回前台时可能停在失焦（浮层还在），等不到「获得焦点」：主线程下一拍状态已离开后台就放开
-        dispatch_async(dispatch_get_main_queue(), ^{ if (UIApplication.sharedApplication.applicationState != UIApplicationStateBackground) s2a_ios_suspend(0, "回前台"); }); }];
-    [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(UIApplication.sharedApplication.applicationState == UIApplicationStateActive); { void s2a_diag_session_fg(int); s2a_diag_session_fg(1); } s2a_ios_suspend(0, "获得焦点"); s2a_guest_run_mark(1); }];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (UIApplication.sharedApplication.applicationState != UIApplicationStateBackground) s2a_ios_suspend_enqueue(0, "回前台"); }); }];
+    [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(UIApplication.sharedApplication.applicationState == UIApplicationStateActive); { void s2a_diag_session_fg(int); s2a_diag_session_fg(1); } s2a_ios_suspend_enqueue(0, "获得焦点"); s2a_guest_run_mark(1); }];
     // 心跳：每 10 秒一行，被系统直接杀（SIGKILL 不进崩溃处理）时也能看到死前最后的帧号 / 热状态 / 内存（10-20 维护者 一款第一方动作冒险游戏闪退，日志 12 秒后无一行）
     // 低区余量（10-21 巫师3 玩约 2 分钟低区耗尽、Metal 申请失败崩溃）：每行带上，局中能看到往下掉的过程
     [NSTimer scheduledTimerWithTimeInterval:10 repeats:YES block:^(NSTimer *t) { (void)t;
