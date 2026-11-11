@@ -154,6 +154,12 @@ if(ANDROID)
         endforeach()
         s2a_android_game_sources(game_sources)
         target_sources(s2arm_android PRIVATE ${game_sources})
+        # 游戏 sdk 里的 SDK 主版本 / 自带驱动报的 NVN API 版本（与苹果宿主共用 nvn_drvinfo.inc）：
+        # 要装载器的模块表（game 模式才有）和共用前端（VK 引擎才编）都在，所以放在这里而不是前端源列表。
+        if(S2A_ANDROID_VK_ENGINE)
+            target_sources(s2arm_android PRIVATE native/nvn/nvn_drvinfo_android.c)
+            set_source_files_properties(native/nvn/nvn_drvinfo_android.c PROPERTIES COMPILE_OPTIONS "-Wno-error")
+        endif()
         # Bionic exposes process_vm_readv (used by crash.c's safe frame read)
         # only with GNU feature declarations; Android minSdk 29 exceeds API 23.
         set_property(SOURCE "${S2A_ANDROID_RUNTIME_ROOT}/runtime/src/crash.c" APPEND PROPERTY COMPILE_DEFINITIONS _GNU_SOURCE)
@@ -682,6 +688,11 @@ else()
         ../graphics/nvn/gfx/nvn ../graphics/nvn/third_party/vulkan-headers/include)
     target_compile_options(buffer_texture_plan_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_buffer_texture_plan COMMAND buffer_texture_plan_test)
+    # 游戏 sdk 模块里的 SDK 主版本 / 自带驱动 NVN API 版本在安卓上的强定义（与苹果共用 nvn_drvinfo.inc）。
+    add_executable(nvn_drvinfo_android_test tests/nvn_drvinfo_android_test.c native/nvn/nvn_drvinfo_android.c)
+    target_include_directories(nvn_drvinfo_android_test PRIVATE .. ../runtime/include)
+    target_compile_options(nvn_drvinfo_android_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME android_nvn_drvinfo COMMAND nvn_drvinfo_android_test)
     # F4.4：有界需求编译 worker（去重/单槽/pause/Stop/超时/重启）。
     add_executable(direct_compile_worker_test tests/direct_compile_worker_test.c native/direct/compile_worker.c)
     target_include_directories(direct_compile_worker_test PRIVATE native ../runtime/include)

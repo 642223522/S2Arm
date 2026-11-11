@@ -15,6 +15,9 @@ using Avalonia.Threading;
 using S2Arm.Launcher;
 using S2Arm.Launcher.Protocol;
 
+// --scroll-probe <目录>：各页滚到中间后连续刷新，逐帧读控件屏幕坐标、存帧图（跳动验收，ScrollProbe.cs）
+var scrollProbe = args.Length > 0 && args[0] == "--scroll-probe";
+if (scrollProbe) args = args[1..];
 var outDir = args.Length > 0 ? args[0] : Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
     ".s2arm/run/s2arm/cmdr/evidence/launcher/win");
@@ -25,6 +28,7 @@ AppBuilder.Configure<SnapshotApp>()
     .With(new SkiaOptions())
     .UseSkia()
     .SetupWithoutStarting();
+if (scrollProbe) { Environment.Exit(ScrollProbe.Run(outDir)); }
 
 // ── 统一夹具游戏（不用固定游戏名字符串以外的占位）────────────────────
 static LibraryGame MockGame(bool keysReady = true) => new(

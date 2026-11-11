@@ -310,7 +310,15 @@ def next_step(s, gid=None, target='ios'):
     if mac and g['id'] in s.get('queue', []):
         return dict(step='等待', who='ai', do=f's2armctl wait {g["id"]} --op build（或隔一会儿 {next_command}）', why='这款的 Mac 准备任务正在排队', **extra)
     if mac_ready:
-        if s.get('executionTask') or s.get('queue'):
+        execution_task = s.get('executionTask')
+        if execution_task and any(
+            t['id'] == execution_task and t['operation'] == 'launch'
+            and t.get('gameId') == g['id'] and t['state'] == 'running'
+            for t in s['tasks']
+        ):
+            return dict(step='运行中', who='human', do='请玩家查看 Mac 上的游戏窗口',
+                        why='这款游戏正在启动或运行', task=execution_task, **extra)
+        if execution_task or s.get('queue'):
             return dict(step='等待', who='ai', do=f'等当前任务结束后再 {next_command}', why='构建与游戏运行互斥', **extra)
         return dict(step='启动', who='ai', do=f's2armctl launch {g["id"]}', why='这款游戏的 Mac 版已准备好', **extra)
 
@@ -605,7 +613,11 @@ def diag_body(rest, now=None):
     if rest[:1] == ['export'] and len(rest) == 2: return {'action': 'export', 'path': os.path.abspath(os.path.expanduser(rest[1]))}
     if rest and rest != ['export']: return None
     desk = os.path.expanduser('~/Desktop'); base = desk if os.path.isdir(desk) else os.getcwd()
-    return {'action': 'export', 'path': os.path.join(base, time.strftime('S2Arm-诊断-%Y%m%d-%H%M%S.zip', time.localtime(now)))}
+    # 短名 S2Arm-诊断-月日-时分.zip（与 iOS / 启动器一致，版本信息在包里的 manifest）；同一分钟已有同名就加 -2、-3
+    stem = os.path.join(base, time.strftime('S2Arm-诊断-%m%d-%H%M', time.localtime(now)))
+    path, k = stem + '.zip', 2
+    while os.path.exists(path): path, k = f'{stem}-{k}.zip', k + 1
+    return {'action': 'export', 'path': path}
 
 def main():
     a = sys.argv[1:]

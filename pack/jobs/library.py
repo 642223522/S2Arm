@@ -316,7 +316,10 @@ def store_meta(c, ids=None, budget=STORE_BUDGET):
                     if banner:
                         d = layout.find_game(c, gid) or layout.game_dir(c, gid, english=g.get("englishName") or g.get("name") or "")
                         if not (d / "banner.jpg").is_file():
-                            os.replace(banner, d / "banner.jpg")
+                            # 临时目录在私有目录、游戏库常在外置盘：不能直接 os.replace 过去（跨卷 EXDEV），先拷进目标文件夹再原子改名
+                            part = d / ".banner.jpg.part"
+                            shutil.copyfile(banner, part)
+                            os.replace(part, d / "banner.jpg")
                 atomic(c.library / "catalog.json", cat)
         except Failure:   # 目录锁被别的任务拿着：下次再查
             return 0
@@ -899,8 +902,10 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
     validate_keys(keyfile)
     lines = []
     log_name = f"{c.task}-{source_id}-inspect.log" if source_id else c.task + "-inspect.log"
+    # NCZ 解压临时文件落游戏库那块盘（#612：Windows 上游戏库在别的盘、系统盘只剩百来 MB 时，读取器缺省写 %TEMP%，导入报空间不足）
+    scratch = tempfile.TemporaryDirectory(prefix=".s2a-inspect-", dir=c.library if c.library.is_dir() else c.private)
     try:
-        c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir],
+        c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir, f"--temp-dir={scratch.name}"],
               c.logs / log_name, on_line=lines.append)
     except Failure as error:
         if error.code not in ("tool_exit", "job_failed"):
@@ -916,6 +921,8 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
         if any("could not be decrypted" in line or "Check keys" in line for line in lines):
             raise Failure(KEYS_CANNOT_DECRYPT, code="content_unreadable") from None
         raise
+    finally:
+        scratch.cleanup()
     if "【内容截断】" in lines:
         raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated")
     try:

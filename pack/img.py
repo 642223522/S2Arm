@@ -17,6 +17,9 @@
       img.py convert <产物根> <资源包目录> [--gid <游戏号>]   出包交付：资源包目录就地转 IMG 形态
       img.py ls <img>   列目录表（单测 / 诊断）"""
 import argparse, os, shlex, struct, subprocess, sys
+# RomFS 目录遍历一律经 graphics/nvn/tools/romfs_list.py（tools/romfs_walk_lint.py 守卫）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools'))
+import romfs_list  # noqa: E402
 
 MAGIC, FORMAT, PAGE = b'S2AIMG01', 1, 16384
 HDR = struct.Struct('<8sII16s64s5Q')
@@ -70,7 +73,7 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print):
         pos = up(romfs_off + romfs_len) if romfs_dir else PAGE
         entries = []
         if romfs_dir:   # romfs.list：同 romfs_index 的文件集合（跳过 macOS 垃圾 .DS_Store / ._*，同 RomFsIndex.IsHostJunk），按字节序
-            names = sorted((os.path.relpath(os.path.join(d, n), romfs_dir).replace(os.sep, '/') for d, _, ns in os.walk(romfs_dir) for n in ns
+            names = sorted((os.path.relpath(os.path.join(d, n), romfs_dir).replace(os.sep, '/') for d, _, ns in romfs_list.walk(romfs_dir) for n in ns
                             if n != '.DS_Store' and not n.startswith('._')), key=lambda x: x.encode('utf-8'))
             lst = out + '.romfs.list'; open(lst, 'w', encoding='utf-8', newline='\n').write(''.join(n + '\n' for n in names)); others = [*others, ('romfs.list', lst)]
         with open(part, 'r+b') as f:

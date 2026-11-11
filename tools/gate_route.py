@@ -21,6 +21,9 @@ import fnmatch, os, re, subprocess, sys, tempfile
 TOK = re.compile(r'(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|c|h|m|mm|cc|cpp|swift|cs|tsv|mk|json)\b')   # 带目录的写法整段取（graphics/tools/shbake/xc_key.sh），见 refs
 LOCAL = ('tools/', 'pack/', 'tests/')   # 本线目录：单测覆盖面只在这里面推
 DOC = re.compile(r'^docs/|\.md$|^\.github/ISSUE_TEMPLATE/')   # 与 tools/gate_plan.sh GATE_DOC_RE 同一条
+# 无钩子路径（过渡，11-11 维护者：旧安卓三钩子删除）：android/ 眼下没有钩子认领，改到它不选钩子、也不算表外触发全跑；
+#   安卓线新 android/gate.sh 头里「# 门禁路由：android/ …」接上时删掉这一条（单测照旧按覆盖面路由）
+NOHOOK = ('android/',)
 
 # 独立测试的显式覆盖合同（#925）：已有 shell 引用推导不解析 MSBuild 项目，
 # 中文说明中的 .cs 名字也不是可用的路径通配。按测试消费者合同登记，不能仅凭同名猜。
@@ -236,12 +239,15 @@ def cover_files(test, files, by_name, full=False):
 
 def main():
     mode, changed = sys.argv[1], [f for f in sys.argv[2:] if f]
+    if mode == 'nohook':   # 过渡的无钩子路径（tools/test_wired_lint.py 读：这些前缀下的单测暂无钩子接线，不报没接线）
+        if NOHOOK: print('\n'.join(NOHOOK))
+        return
     if mode == 'owns':   # 10-25 维护者：vk/wp6 改了 graphics/nvn、红在 graphics/gate.sh，列车却报「与本批无关的步」——钩子与本批有关 = 本批有文件路由到它
         h, changed = changed[0], changed[1:]; ps = dict(load_table()).get(h)
         if ps is None: own = [f for f in changed if f.startswith(os.path.dirname(h) + '/')]   # 表里没登记的钩子：每次都跑，「负责的」按它自己的目录算
         else:
             known = [p for _, q in load_table() for p in q]
-            code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',)))]
+            code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',) + NOHOOK))]
             own = hit(changed, ps) + [f for f in code if not hit([f], known) and f not in hit(changed, ps)]   # 表外代码路径让全部钩子跑，也算
         if own: print('\n'.join(own))
         return
@@ -250,7 +256,7 @@ def main():
     table = load_table()
     hooks_all = sorted(f for f in files if f.endswith('/gate.sh') and f != 'tools/gate.sh' and f.count('/') <= 3)
     known = [p for _, ps in table for p in ps]
-    code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',)))]   # 代码改动（本线目录与文档以外）
+    code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',) + NOHOOK))]   # 代码改动（本线目录与文档以外）
     unknown = [f for f in code if not hit([f], known)]   # 表里没列到的代码路径 → 钩子全跑
     if mode == 'tests':
         for t in tests:

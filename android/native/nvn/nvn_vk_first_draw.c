@@ -1064,6 +1064,7 @@ struct fd_frame_q {
     VkSampler samps[FD_FRAME_SAMPS]; int nsamp;
     VkDescriptorPool pools[FD_FRAME_POOLS]; int npool;
     VkFramebuffer fbs[FD_FRAME_FBS]; int nfb;
+    VkFramebuffer clear_fbs[FD_FRAME_FBS]; VkImageView clear_views[FD_FRAME_FBS]; int nclear;
     // feedback 采样快照：本帧内“附件同时当采样源”的 draw 用；等这批命令有完成证明后再销毁。
     VkImage fbimg[FD_FRAME_FBS]; VkDeviceMemory fbmem[FD_FRAME_FBS]; VkImageView fbview[FD_FRAME_FBS];
     int nfbimg;
@@ -1237,6 +1238,7 @@ static void fd_slot_release(struct s2a_vk_device *d, struct fd_frame_q *q) {
     for (int i = 0; i < q->nsamp; i++) vkDestroySampler(d->device, q->samps[i], NULL);
     for (int i = 0; i < q->npool; i++) vkDestroyDescriptorPool(d->device, q->pools[i], NULL);
     for (int i = 0; i < q->nfb; i++) vkDestroyFramebuffer(d->device, q->fbs[i], NULL);
+    for (int i = 0; i < q->nclear; i++) { vkDestroyFramebuffer(d->device, q->clear_fbs[i], NULL); vkDestroyImageView(d->device, q->clear_views[i], NULL); }
     for (int i = 0; i < q->npass; i++) vkDestroyRenderPass(d->device, q->passes[i], NULL);
     for (int i = 0; i < q->nfbimg; i++) {
         if (q->fbview[i]) vkDestroyImageView(d->device, q->fbview[i], NULL);
@@ -1385,7 +1387,7 @@ static VkDevice g_fq_fence_dev;
 
 static void fd_fq_reset(void) {
     g_fq.ncmd = 0; g_fq.nbuf = 0; g_fq.nsamp = 0; g_fq.npool = 0; g_fq.nfb = 0; g_fq.npass = 0; g_fq.npend = 0;
-    g_fq.nfbimg = 0;
+    g_fq.nfbimg = 0; g_fq.nclear = 0;
     g_fq.submitted_n = 0; g_fq.nbatch_fence = 0; g_fq.fence = VK_NULL_HANDLE;
     memset(g_fq.batch_qid, 0, sizeof g_fq.batch_qid); g_fq.suffix_qid = 0;
     g_fq.state = FD_FQ_IDLE;
@@ -2446,24 +2448,52 @@ static int fd_pass_close(struct s2a_vk_device *d, int reason) {
     return fd_fq_poisoned() ? -1 : 0;
 }
 
-// C1：清屏走帧队列。vk_clear.c 录好一段“只含这笔清除”的命令缓冲后调这里，
-// 与 pass 一样并入队列一起提交，完成/失败后由队列统一释放；不 submit、不等 fence。
-// 返回 0 = 已接手（命令缓冲所有权归帧队列）；非 0 = 没接手，调用方自己回收。
+// 已结束录制的外部命令按位置并入帧队列；所有权转移发生在追加到 g_fq 时。
+// 批次提交可能同步失败：返回 FAILED_OWNED 表示已转移，调用方不可释放/重试。
 // 顺序要求：先把当前 open pass 收尾，清除才能排在前面那些 draw 之后。
-int nvn_vk_first_draw_clear_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd) {
-    if (!d || !cmd) return -1;
-    if (!g_fq.dev || fd_fq_poisoned()) return -1;
-    if (g_op.open && fd_pass_close(g_op.dev ? g_op.dev : g_fq.dev, FD_PCR_CLEAR) != 0) return -1;
+int nvn_vk_first_draw_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd) {
+    if (!d || !cmd) return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (!g_fq.dev || fd_fq_poisoned()) return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (g_op.open && fd_pass_close(g_op.dev ? g_op.dev : g_fq.dev, FD_PCR_CLEAR) != 0) return S2A_FQ_ENQUEUE_NOT_TAKEN;
     // 顺序：当前批次里可能还有已录制未封口的 pass，必须先封口入队，
     // 否则这笔 clear 的命令缓冲会排到那些 draw 前面（画面重排）。
-    if (fd_batch_seal(d) != 0) return -1;
-    if (g_fq.ncmd >= fd_fq_cmd_capacity()) return -1;
+    if (fd_batch_seal(d) != 0) return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (g_fq.ncmd >= fd_fq_cmd_capacity()) return S2A_FQ_ENQUEUE_NOT_TAKEN;
     g_fq.cmds[g_fq.ncmd] = cmd;
     g_fq.pmap[g_fq.ncmd] = NULL;
     g_fq.pid[g_fq.ncmd][0] = 0;
     g_fq.ncmd++;
-    if (g_fq.ncmd - g_fq.submitted_n >= fd_batch_passes() && fd_submit_batch() != 0) return -1;
-    return 0;
+    if (g_fq.ncmd - g_fq.submitted_n >= fd_batch_passes() && fd_submit_batch() != 0)
+        return S2A_FQ_ENQUEUE_FAILED_OWNED;
+    return S2A_FQ_ENQUEUE_ACCEPTED;
+}
+
+// 按同一个三态契约接手清除命令及其底图/临时对象：所有失败点在转移前，
+// 唯一转移点之后若 submit 失败，命令和对象仍留在终态帧队列中。
+int nvn_vk_first_draw_enqueue_clear(struct s2a_vk_device *d, VkCommandBuffer cmd,
+                                    void *native_tex, VkImage image, uint64_t generation,
+                                    VkFramebuffer fb, VkImageView view, int temporary) {
+    struct nvn_vk_tex *tex = native_tex;
+    if (!d || !cmd || !tex || !tex->valid || tex->retired || tex->image != image ||
+        !generation || tex->generation != generation || !g_fq.dev || g_fq.dev->device != d->device || fd_fq_poisoned())
+        return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (g_op.open && fd_pass_close(g_op.dev ? g_op.dev : g_fq.dev, FD_PCR_CLEAR) != 0)
+        return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (fd_batch_seal(d) != 0 || g_fq.ncmd >= fd_fq_cmd_capacity()) return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (temporary && (!fb || !view || g_fq.nclear >= FD_FRAME_FBS))
+        return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (fd_pin_tex(tex) != 0) return S2A_FQ_ENQUEUE_NOT_TAKEN;
+    if (temporary) {
+        g_fq.clear_fbs[g_fq.nclear] = fb;
+        g_fq.clear_views[g_fq.nclear++] = view;
+    }
+    g_fq.cmds[g_fq.ncmd] = cmd;
+    g_fq.pmap[g_fq.ncmd] = NULL;
+    g_fq.pid[g_fq.ncmd][0] = 0;
+    g_fq.ncmd++;
+    if (g_fq.ncmd - g_fq.submitted_n >= fd_batch_passes() && fd_submit_batch() != 0)
+        return S2A_FQ_ENQUEUE_FAILED_OWNED;
+    return S2A_FQ_ENQUEUE_ACCEPTED;
 }
 
 // 返回 1 = 这个 draw 已并入现有 pass；0 = 需要新 pass。
@@ -3773,6 +3803,69 @@ static void fd_ssbo_wb_writeback(struct fd_frame_q *q) {
     }
     q->n_ssbo_wb = 0;
 }
+// 区间与一份影子里真正被可写绑定过的子区间相交吗（只读影子是 guest 的拷贝，不改变权威）。
+static int fd_ssbo_wb_dirty(const struct fd_ssbo_wb *w, uint64_t addr, uint64_t len) {
+    if (!w->writable || !w->guest) return 0;
+    for (uint32_t j = 0; j < w->nwb; j++) {
+        uint64_t lo = w->guest + w->wb[j].off, hi = lo + w->wb[j].size;
+        if (w->wb[j].size && addr < hi && lo < addr + len) return 1;
+    }
+    return 0;
+}
+// 间接参数（DrawArrays/ElementsIndirect 的参数、DispatchComputeIndirect 的组数、间接计数多重绘制的计数）
+// 的权威字节在哪：这些字节可能是 GPU 写的，回放要在录这一笔之前拿到确定值（与 Metal 几何路径
+// geo_draw 读间接参数同一思路）。本后端 GPU 写 guest 内存只有一条路——可写 storage buffer 的帧影子，
+// 帧退休时拷回 guest（计算 dispatch 是同步提交、完成即回写，不留影子）。所以：
+//   1. 区间碰到在途延迟帧的可写影子：先把在途帧收口（retire_all 等 fence 并回写），guest 才是新的；
+//   2. 区间落在本帧的可写影子里：走同步边界（pass_break(1)：关 pass、封口、提交并等完成），
+//      再从影子（host-visible coherent，fence 之后对 host 可见）读；
+//   3. 其余情况 guest 内存就是权威，由调用方经记录层的内存访问器读。
+// 返回 1 = 已从本帧影子读到 *out；0 = 调用方读 guest；-1 = 表达不了（部分落在影子里 / 同步失败），why 写明。
+// 只有真碰到影子才付同步的代价；不碰影子的间接绘制没有额外开销。
+int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out, char *why, size_t why_size) {
+    if (!addr || !len || !out) { fail(why, why_size, "indirect arguments: empty address or length"); return -1; }
+    if (addr > ~0ull - len) { fail(why, why_size, "indirect arguments: address range overflows"); return -1; }
+    for (int i = 0; i < 2; i++) {
+        const struct fd_frame_q *q = &g_slot[i].q;
+        if (!g_slot[i].used) continue;
+        for (int k = 0; k < q->n_ssbo_wb; k++) {
+            if (!fd_ssbo_wb_dirty(&q->ssbo_wb[k], addr, len)) continue;
+            if (nvn_vk_first_draw_retire_all() != 0) {
+                fail(why, why_size, "indirect arguments were written by a frame still in flight and it has no completion proof");
+                return -1;
+            }
+            static _Atomic int noted;
+            if (atomic_fetch_add(&noted, 1) < 4)
+                FD_LOG("indirect arguments at 0x%llx+%u were GPU-written by the in-flight frame: retired it before reading",
+                       (unsigned long long)addr, len);
+            i = 2;   // retire_all 已收口全部在途帧
+            break;
+        }
+    }
+    for (int k = 0; k < g_fq.n_ssbo_wb; k++) {
+        struct fd_ssbo_wb *w = &g_fq.ssbo_wb[k];
+        if (!fd_ssbo_wb_dirty(w, addr, len)) continue;
+        if (addr < w->guest || addr + len > w->guest + w->size || !w->map) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "indirect arguments 0x%llx+%u straddle a writable storage-buffer shadow "
+                     "[0x%llx,+%u) of this frame", (unsigned long long)addr, len,
+                     (unsigned long long)w->guest, w->size);
+            fail(why, why_size, msg);
+            return -1;
+        }
+        if (nvn_vk_first_draw_pass_break(1) != 0) {
+            fail(why, why_size, "indirect arguments are GPU-written in this frame and the pending work did not complete");
+            return -1;
+        }
+        memcpy(out, (const uint8_t *)w->map + (addr - w->guest), len);
+        static _Atomic int noted;
+        if (atomic_fetch_add(&noted, 1) < 4)
+            FD_LOG("indirect arguments at 0x%llx+%u are GPU-written in this frame: synced and read from the shadow",
+                   (unsigned long long)addr, len);
+        return 1;
+    }
+    return 0;
+}
 static int fd_arena_alloc(struct s2a_vk_device *d, uint64_t size, uint64_t align, uint64_t *off, VkBuffer *buf, void **map) {
     if (!g_arena_align) g_arena_align = 64;
     if (!align) align = g_arena_align;
@@ -4171,6 +4264,7 @@ static int fd_fq_flush_impl(int64_t budget_ns, int terminal_timeout, int defer, 
     for (int i = 0; i < g_fq.nsamp; i++) vkDestroySampler(d->device, g_fq.samps[i], NULL);
     for (int i = 0; i < g_fq.npool; i++) vkDestroyDescriptorPool(d->device, g_fq.pools[i], NULL);
     for (int i = 0; i < g_fq.nfb; i++) vkDestroyFramebuffer(d->device, g_fq.fbs[i], NULL);
+    for (int i = 0; i < g_fq.nclear; i++) { vkDestroyFramebuffer(d->device, g_fq.clear_fbs[i], NULL); vkDestroyImageView(d->device, g_fq.clear_views[i], NULL); }
     for (int i = 0; i < g_fq.npass; i++) vkDestroyRenderPass(d->device, g_fq.passes[i], NULL);
     // 到这里本周期所有提交都已有完成证明（fence 已等到）；快照池的“最后已退休帧号”已在上面的完成点推进。
     for (int i = 0; i < g_fq.nfbimg; i++) {
@@ -4424,6 +4518,12 @@ void nvn_vk_first_draw_release_device(struct s2a_vk_device *d) {
         if (c->buf) vkDestroyBuffer(d->device, c->buf, NULL);
         if (c->mem) fd_devmem_release_dev(d->device, c->mem);
     }
+    // 此入口仅在 device idle 已证后调用。清理可能在终态队列中保留的临时 clear 对象；
+    // 失败/超时且 idle 未证时 session 不会到这里。
+    for (int i = 0; i < g_fq.nclear; i++) {
+        vkDestroyFramebuffer(d->device, g_fq.clear_fbs[i], NULL);
+        vkDestroyImageView(d->device, g_fq.clear_views[i], NULL);
+    }
     memset(&g_op, 0, sizeof g_op);   // 旧设备的 pass/cmd 随设备回收，不再调用 vkDestroy*
     memset(&g_fq, 0, sizeof g_fq);
     g_fq_fence_dev = VK_NULL_HANDLE;
@@ -4442,7 +4542,13 @@ void nvn_vk_first_draw_release_device(struct s2a_vk_device *d) {
     memset(g_pipe_cache, 0, sizeof g_pipe_cache);
     fd_pipe_index_reset();
     g_pipe_clock = 0;
-    g_pin_n = 0;   // 旧设备的纹理随设备回收；不要再 unpin
+#if defined(__APPLE__)
+    extern int s2a_vk_clear_fv_enabled(void) __attribute__((weak_import));
+#else
+    extern int s2a_vk_clear_fv_enabled(void) __attribute__((weak));
+#endif
+    if (s2a_vk_clear_fv_enabled && s2a_vk_clear_fv_enabled()) fd_unpin_all();
+    else g_pin_n = 0;   // 门关保留原有收尾
     // 采样器与程序对象归旧设备；设备销毁前先释放采样器，再清账本。
     if (g_samp_cache_ready) { nvn_vk_sampler_cache_destroy(&g_samp_cache); g_samp_cache_ready = 0; }
     for (int i = 0; i < FD_PROG_OBJ; i++)

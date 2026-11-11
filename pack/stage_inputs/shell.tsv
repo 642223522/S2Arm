@@ -221,4 +221,5 @@
 不	tests/rewriter_api_test.c
 不	tests/sync_contract_litmus.c
 不	tests/sync_publish_litmus.c
+不	tools/dotnet_lock.c
 不	tools/pipeline_timing.m

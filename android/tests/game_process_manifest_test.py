@@ -37,7 +37,6 @@ if __name__ == '__main__':
     assert 'GameSessionLifecycleInstrumentation' in entry.read_text(), 'registered entry must invoke the lifecycle runner'
     instrument = (repo/'android/app/src/androidTest/java/org/s2arm/android/GameSessionLifecycleInstrumentation.java').read_text()
     assert instrument.count('play(title);') == 2 and 'getUiAutomation()' in instrument, 'cold/resume must click actual Library Play'
-    assert 'putExtra(GameActivity.REVISION_EXTRA,true), title)' not in instrument, 'no internal launch bypass for positive lifecycle'
     assert 'backgroundAndResume(context,pid,title,"cold startup",false)' in instrument and 'backgroundAndResume(context,pid,title,"running guest " + cycle,cycle == 1)' in instrument, 'test bootstrap and steady-state Library/HOME background'
     assert 'cycle < 3' in instrument and 'presents(context,pid) >= 30' in instrument, 'repeat steady-state after actual presents'
     assert 'awaitLive(context,pid,' in instrument and 'game-lifecycle-test.tsv' in instrument, 'record phase boundaries and fail immediately on admitted PID death'

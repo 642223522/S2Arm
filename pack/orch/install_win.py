@@ -23,13 +23,12 @@ class Fail(Exception):
 
 
 def plumesign_path(given=None):
-    """plumesign 位置：指定 > S2A_PLUMESIGN > PATH > 玩家 Impactor 同目录 > 桌面 / 下载"""
+    """plumesign 位置：指定（发版随包那份由调用方传）> S2A_PLUMESIGN > PATH > 玩家 Impactor 同目录。
+    不再去桌面 / 下载文件夹找（11-11 装机链路审查）：那一档会执行下载目录里任何叫 plumesign* 的程序，发版本来就随包带了"""
     exe = 'plumesign.exe' if os.name == 'nt' else 'plumesign'
     cands = [given, os.environ.get('S2A_PLUMESIGN'), shutil.which('plumesign')]
     st = impactor.status()
     if st.get('path'): cands += glob.glob(os.path.join(os.path.dirname(st['path']), 'plumesign*'))
-    home = os.path.expanduser('~')
-    for d in ('Desktop', 'Downloads', os.path.join('OneDrive', 'Desktop')): cands += sorted(glob.glob(os.path.join(home, d, 'plumesign*')), reverse=True)
     for c in cands:
         if c and os.path.isfile(c) and (os.name != 'nt' or c.lower().endswith('.exe')): return c
     return None
@@ -94,13 +93,19 @@ def legacy_case_bundle(bundle):
     return m[1] + m[2].upper() if m and m[2] != m[2].upper() else None
 
 
+def plumesign_env():
+    """起 plumesign 的环境：日志级别固定 info，不继承玩家机上的 RUST_LOG（#585：环境里有 RUST_LOG=warn，info 级的「Installation complete」
+    被压掉，装好了、退出码 0 也判成失败）。判装机成功靠这行，级别得由我们定"""
+    return dict(os.environ, RUST_LOG='info')
+
+
 def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None):
     cmd = [exe, 'sign', '--package', str(ipa), '--apple-id', '--register-and-install', '--udid', str(dev_id), '-o', str(out_ipa)]
     if name: cmd += ['--custom-name', name]
     # 包名由调用方定（install.container_bundle_id，和 Mac 一致的小写团队号）：不给时 plumesign 自己在包里的包名后接「.大写团队号」，
     #   它查已有 App ID 分大小写，同一团队在 Mac 注册过的小写包名认不出、去新建又撞 Apple 9401（包名不分大小写已被占）。给了它就原样用、不再接团队号
     if bundle: cmd += ['--custom-identifier', bundle]
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', env=dict(os.environ, RUST_LOG=os.environ.get('RUST_LOG', 'info')))
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', env=plumesign_env())
     text = p.stdout + p.stderr
     Path(log).write_text(text, encoding='utf-8')
     if p.returncode or 'Installation complete' not in text:
@@ -118,7 +123,7 @@ def install_signed(exe, app, udid, log):
     dev = device_id(udid, devs)
     if dev is None: raise Fail(f'设备服务里没有 {udid}：插上线并解锁', 75, 'device_not_connected')
     p = subprocess.run([exe, 'device', '--udid', str(dev), '--install', str(app)], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                       env=dict(os.environ, RUST_LOG=os.environ.get('RUST_LOG', 'info')))
+                       env=plumesign_env())
     text = p.stdout + p.stderr
     Path(log).open('a', encoding='utf-8').write(text)
     if p.returncode:

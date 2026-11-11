@@ -4,6 +4,9 @@
 set -euo pipefail
 android_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$android_dir/.." && pwd)
+# 超时用仓库的 perl 版 tools/bin/timeout（#591，同 tools/toolchain.sh / graphics/gate.sh）：直接 bash android/test.sh 时
+# 子脚本（如 core-runtime/tests/run_shutdown_thread.sh）裸调 timeout，macOS 没有 GNU timeout 就 127。
+source "$repo_dir/tools/_timeout.sh"
 # 输出目录按运行隔离（#919）：同树两份门禁并行、或上一次运行被中断时，
 # 固定目录 build/android-host-tests 里的半写 .class / 半写 boot-spec 会被当成输入，
 # 红成 java.lang.ClassFormatError: Truncated class file / JSONDecodeError。
@@ -29,6 +32,8 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/AudioFocusPolicy.java" \
     "$android_dir/tests/AudioFocusPolicyTest.java"
 s2a_gate_step java -ea -cp "$out/java" org.s2arm.android.AudioFocusPolicyTest
+# Diagnostic archive preflight: synthetic names and sizes only; never reads logs.
+s2a_gate_step bash "$android_dir/tests/diagnostics/run.sh"
 # Capacity selection is shared by the production Android host implementation.
 s2a_gate_step "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror "$android_dir/tests/capacity/policy_test.cpp" -o "$out/capacity-policy-test"
 s2a_gate_step "$out/capacity-policy-test"
@@ -235,12 +240,17 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameTouchTest
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/ThreadedRendererConfig.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/Json.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/TouchLayout.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/TouchPad.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/TouchLayoutStore.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/TouchRouting.java" \
     "$android_dir/tests/TouchPadTest.java" \
     "$android_dir/tests/TouchRoutingTest.java"
-s2a_gate_step java -cp "$out/java" org.s2arm.android.TouchPadTest
+s2a_gate_step java -cp "$out/java" org.s2arm.android.TouchPadTest "$repo_dir/ios/layouts/classic-reference.json"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.TouchRoutingTest
+# 触屏菜单文案：英文默认和 values-zh 必须成对，MainActivity 不再硬编码（#528 第 11 项）
+s2a_gate_step "$PY" "$android_dir/tests/touch_strings_test.py"
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/Json.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/BootContract.java" \
@@ -333,9 +343,11 @@ s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
 # vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.
 case "$(uname -s)" in
   Linux)
+    s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_clear_enqueue_ownership_test.py"
+    s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_clear_fv_test.py"
     s2a_gate_step "$PY" "$android_dir/tests/w2_dispatch_snapshot_test.py"
     s2a_gate_step "$PY" "$android_dir/tests/w2_record_chain_test.py" ;;
-  *) s2a_gate_note "W2 dispatch snapshot / record chain：未运行（仅 Linux 主机 libvulkan.so.1 组件测试）" ;;
+  *) s2a_gate_note "clear queue ownership / clear FV lifetime / W2 dispatch snapshot / record chain：未运行（仅 Linux 主机 libvulkan.so.1 组件测试）" ;;
 esac
 # vk_record 生产入口探针（P0-0b DrawTexture 准确拒绝 / P0-0b' Deferred 句柄执行时读取）：只链生产
 # vk_record.c 与其直接依赖，vk* 导入由宿主 Vulkan loader 解析（不建 device、不开 ICD）。只在
@@ -345,6 +357,7 @@ case "$(uname -s)" in
     if [ -n "$(ldconfig -p 2>/dev/null | grep 'libvulkan\.so\.1' | head -1)" ]; then
       s2a_gate_step bash "$android_dir/tools/vk_record_drawtex_reject_test.sh"
       s2a_gate_step bash "$android_dir/tools/vk_record_deferred_bind_test.sh"
+      s2a_gate_step bash "$android_dir/tools/vk_record_bind_program_test.sh"
     else
       s2a_gate_note "vk_record 生产入口探针：未运行（Linux 但缺宿主 libvulkan.so.1，探针只需它解析符号）"
     fi ;;
@@ -401,6 +414,7 @@ s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_shutdown_contract.p
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/tests/stubs/android/util/Log.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/TouchPad.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/TouchLayoutStore.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameMetadata.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameSession.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/RuntimeLibrary.java" \
@@ -434,6 +448,8 @@ s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py" --withdraw
 # 默认全绿；--source-ref 旧源码必须红；--withdraw 的 5 条行为撤回变异必须各自转红。
 s2a_gate_step "$PY" "$android_dir/tests/record_flat_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_replayed_fence_test.py"
+# 回放状态只在第一次提交前复位（#539）：mtl_sub_begin 生产函数体，三次提交只入队一次复位作业。
+s2a_gate_step "$PY" "$android_dir/tests/replay_state_keep_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/record_flat_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/core-runtime/metrics-tests/cli_test.py"
 s2a_gate_step bash "$android_dir/core-runtime/fps-tests/test.sh"
@@ -466,6 +482,7 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_query_terminal_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_deferred_slot_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_indirect_args_test.py"   # 间接参数的权威字节（影子同步 / 在途帧退休）+ 变异控制
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_sampler_mapping_test.py"   # P0-2 采样器映射判定表 + 变异控制
 # 真 Vulkan 收尾探针：macOS 上要 docker；门禁派 gate-host 时作为子项 vkreal 跳过、本机另跑（android/gate.sh 头注）
 [ "${S2A_ANDROID_SKIP_VKREAL:-0}" = 1 ] || s2a_gate_step bash "$android_dir/tests/nvn_vk_real_teardown_test.sh"
@@ -535,3 +552,4 @@ s2a_gate_step "$PY" -B "$android_dir/doctor/test_doctor.py"
 
 # op31 独立计划器（未接 record）：逐行字节/默认视图/局部区域与图像依赖合同，含四种功能负控。
 s2a_gate_step "$PY" "$android_dir/tests/buffer_texture_plan_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/buffer_texture_exec_test.py"
