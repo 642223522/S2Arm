@@ -62,6 +62,8 @@ static partial class P {
             Ks = ExternalKeyReader.ReadKeyFile(args[0]);
             string titleKeys = null;
             for (int i = 2; i < args.Length; i++) if (args[i].StartsWith("--title-keys=", StringComparison.Ordinal)) titleKeys = args[i].Substring(13);
+            // NCZ 解压临时文件放调用方给的目录（#612：游戏库在别的盘时仍写系统盘 %TEMP%，系统盘满就导入失败；解包模式本来就放输出目录旁边）
+            for (int i = 2; i < args.Length; i++) if (args[i].StartsWith("--temp-dir=", StringComparison.Ordinal)) NczCore.TempDir = args[i].Substring(11);
             LoadTitleKeys(args[0], titleKeys);
             Index(args[2], inspect: true); Resolve();
             var packages = new List<object>();

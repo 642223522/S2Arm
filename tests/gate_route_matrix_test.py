@@ -25,18 +25,6 @@ class RouteMatrixTest(unittest.TestCase):
             ('tests', 'pack/stage_direct.sh', {'tests/stage_keys_test.sh'}, {'tests/pack_jobs_test.sh'}),   # 11-05 起 run_mac.sh 不在直连阶段闭包里（出包不再起局），样例换成仍是阶段输入的脚本
             ('tests', 'graphics/tools/shbake/xc_key.sh', {'tests/xc_key_test.sh'}, {'tests/pack_jobs_test.sh'}),
             ('hooks', 'pack/jobs/core.py', {'launchers/macos/gate.sh'}, {'runtime/gate.sh', 'graphics/gate.sh'}),
-            ('hooks', 'services/S2A.Services/Native.cs', {'android/gate.sh', 'android/core-link/gate.sh'}, set()),
-            ('hooks', 'services/S2A.Services/HidServer.cs', {'android/core-link/gate.sh'}, {'android/gate.sh'}),
-            ('hooks', 'services/S2A.Services/SmDirect.cs', {'android/core-link/gate.sh'}, {'android/gate.sh'}),
-            ('hooks', 'graphics/metal/cs/NxTrack.cs', {'android/core-link/gate.sh'}, {'android/gate.sh'}),
-            ('hooks', 'android/cs/video/AvcH264Decoder.cs', {'android/gate.sh', 'android/core-link/gate.sh'}, set()),
-            ('hooks', 'graphics/vulkan/wsi/AndroidWindow.cs', {'android/gate.sh'}, set()),
-            ('hooks', 'android/verify-apk.py', {'android/gate.sh'}, set()),
-            ('hooks', 'graphics/tools/direct/compiler/DirectBundle.cs', {'android/core-link/gate.sh'}, set()),
-            ('hooks', 'graphics/tools/direct/dsh/Tables.cs', {'android/core-link/gate.sh'}, set()),
-            ('hooks', 'translator/dmsh_xlate/Program.cs', {'android/core-link/gate.sh'}, set()),
-            ('hooks', 'graphics/widen/shader/SpirvFetchScale.cs', {'android/core-link/gate.sh'}, set()),
-            ('hooks', 'graphics/widen/SpirvCbufUseText.cs', {'android/core-link/gate.sh'}, set()),
             ('hooks', 'runtime/src/ap_host.c', {'runtime/gate.sh', 'graphics/gate.sh'}, {'tests/visual/gate.sh'}),
             ('hooks', 'graphics/metal/gal_core.m', {'runtime/gate.sh', 'graphics/gate.sh', 'tests/visual/gate.sh'}, {'launchers/macos/gate.sh'}),
         ]

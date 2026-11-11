@@ -194,6 +194,12 @@ class WinOneclick(unittest.TestCase):
         self.assertEqual(first[first.index("--shell") + 1], str(self.t / "Shell"))
         self.assertEqual((res["build_id"], res["graphics_mode"]), ("b1", "direct"))
 
+    def test_sources_follow_from_extract(self):   # #613：原件与游戏号跟在 --from-extract 后面交给 oneclick_win（多程序合集的其余序号从原件解）
+        self.ok = True
+        self.ipa.win_oneclick(self.c, ROOT / "pack/orch/oneclick_win.py", self.t / "extract", self.t / "Fonts", self.out, self.events, self.t / "log", {}, None,
+                              sources=[self.t / "a.xci", self.t / "b.nsp"], gid="0100FD70134FA000")
+        self.assertEqual(self.calls[0][-4:], ["--title-id", "0100FD70134FA000", str(self.t / "a.xci"), str(self.t / "b.nsp")])
+
     def test_failed_pack_not_delivered(self):
         self.ok = False
         res = self.go()
@@ -269,7 +275,9 @@ class WinInstall(unittest.TestCase):
             with __import__("zipfile").ZipFile(self.assembled, "w") as z:
                 z.writestr("Payload/S2Arm.app/Info.plist", __import__("plistlib").dumps({"CFBundleIdentifier": "dev.s2arm.games", "CFBundleExecutable": "S2Arm"}))
             return self.assembled, [gid, *others], "SID1"
+        import rewrite_refresh   # 改写产物核对另有单测（test_rewrite_refresh）；这里只测 Windows 装机
         with patch.object(self.m, "win_install_mod", return_value=w), \
+             patch.object(rewrite_refresh, "refresh_ios", return_value=[]), \
              patch.object(packer, "assemble", side_effect=fake_assemble), \
              patch.object(self.m.WinPhone, "backup", lambda ph, g: None), \
              as_windows(self.m):   # 覆盖装前的存档备份另有用例（test_overwrite_backup_* / test_no_record_and_no_team_*）

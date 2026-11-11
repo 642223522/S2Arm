@@ -50,6 +50,17 @@ class CableFirstTest(unittest.TestCase):
         W2 = type("W", (), {"mux_devices": staticmethod(lambda: [("U2", "Network", 2)])})
         self.assertEqual(install.win_udids(W2), ["U2"])
 
+    def test_macos_usb_names_tolerate_invalid_ioreg_bytes(self):
+        import target
+        raw = b'"USB Product Name" = "iPad Pro"\n' + b'\xca' * 4 + b'"USB Product Name" = "iPhone 17"'
+        def run_process(*args, **kwargs):
+            output = raw.decode("utf-8") if kwargs.get("text") else raw
+            return types.SimpleNamespace(stdout=output)
+        with um.patch.object(target.subprocess, "run", side_effect=run_process) as run:
+            self.assertEqual(target.usb_idevices(), ["iPad Pro", "iPhone 17"])
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertNotIn("text", run.call_args.kwargs)
+
 
 class PickTests(unittest.TestCase):
     def test_team_choice_and_container_bundle_id(self):
@@ -703,7 +714,7 @@ class SaveBackupTests(unittest.TestCase):
         def devicectl(c, *a, timeout=0):
             if a[:3] == ("device", "info", "apps"):
                 if apps_rc:
-                    return apps_rc, {}, "devicectl 60 秒没有响应：手机可能锁屏了或连接断开"
+                    return apps_rc, {}, "devicectl 等了 60 秒没有返回，已停止等待"
                 return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.0100c2500fc20000"}] if installed else []}}, ""
             if a[:3] == ("device", "info", "files") and list_rc:
                 return list_rc, {}, "The operation couldn’t be completed"
@@ -1202,6 +1213,17 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ApplyFailureReasonTests(unittest.TestCase):
+    """手机上解开失败（如 #569 目录 App 写不进）：tools/push_pack.py 按解包日志「解包失败：…」当场报原因，装机作业认这一句、原因原样上屏。
+    两边原句对不上会红（期望手写）"""
+    def test_job_reads_the_push_tool_sentence(self):
+        import install
+        tool = (Path(install.__file__).resolve().parents[2] / "tools/push_pack.py").read_text(encoding="utf-8")
+        self.assertIn('f"资源包推进去了，但手机上解开失败：{', tool)
+        log = "[12:00:09] 【红】资源包推进去了，但手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）\n"
+        self.assertEqual(install.APPLY_FAILED.search(log).group(1), "目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）")
+
+
 class DevicectlTimeoutTests(unittest.TestCase):
     """#333：devicectl 超时（锁屏 / 隧道断时一直挂）转成非零返回码 124 + 人话原因，不再抛 TimeoutExpired 让装机任务裸 traceback 收场"""
     def test_timeout_becomes_rc_124(self):
@@ -1212,8 +1234,7 @@ class DevicectlTimeoutTests(unittest.TestCase):
             with um.patch.object(diag, "COREDEVICE", Path(d)), \
                  um.patch.object(diag.subprocess, "run", side_effect=subprocess.TimeoutExpired("devicectl", 120)):
                 rc, data, err = diag.devicectl(c, "device", "info", "files", timeout=120)
-        self.assertEqual((rc, data), (124, {}))
-        self.assertIn("锁屏", err)
+        self.assertEqual((rc, data, err), (124, {}, "devicectl 等了 120 秒没有返回，已停止等待"))   # 如实说超时，不猜锁屏（剃刀 H21）
 
 
 class PhoneGamesTruthTests(unittest.TestCase):
@@ -1247,6 +1268,18 @@ class PhoneGamesTruthTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 install.phone_games(self.c, self.ph(missing=False))                    # 装着却进不去 = 锁屏 / 断开
         self.assertEqual(e.exception.code, "device_locked")
+
+    def test_games_folder_not_created_yet_is_zero_games(self):
+        """首次装机：App 在、还没有 Documents/games——当 0 款照常装（v0.2.8 热修，玩家实机原文「afc error: Object not found」带空格，原先被当读不出设备挡住）。
+        新工具给结构化码 S2A_AFC_ERR 8；旧工具 / devicectl 只有原文，带不带空格、大小写都认。别的 AFC 错误码（如 4 读错误）与锁屏 / 断连照旧停"""
+        for out in ("S2A_AFC_ERR 8 Object not found", "afc error: Object not found", "ObjectNotFound", "No such file or directory", "OBJECT NOT FOUND"):
+            with self.subTest(out=out), um.patch.object(install, "devpush_client", self.client([], set(), ls_error=out)):
+                self.assertEqual(install.phone_games(self.c, self.ph()), set())
+        for out in ("S2A_AFC_ERR 4 Read error", "device socket io failed"):
+            with self.subTest(out=out), um.patch.object(install, "devpush_client", self.client([], set(), ls_error=out)):
+                with self.assertRaises(Failure) as e:
+                    install.phone_games(self.c, self.ph())
+                self.assertEqual(e.exception.code, "device_locked")
 
     def test_name_read_from_phone_with_the_bundle_being_installed(self):
         # Windows 第一次装（这台还没记录包名）：确认框里的名字照样按这次要装的包名去手机上读 control.nacp（Windows 实机曾显示成游戏号）

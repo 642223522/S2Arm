@@ -65,7 +65,7 @@ public final class GameSessionAdmissionTest {
     static void refuses(Path root, String name, boolean addressNeeds, Change change) throws Exception {
         Path app = Files.createDirectories(root.resolve(name)); Path game = fixture(app, addressNeeds);
         change.run(app, game);
-        try (GameSession ignored = GameSession.load(spec(app, game), app.toFile(), null, true, true)) {
+        try (GameSession ignored = GameSession.load(spec(app, game), app.toFile(), null, true)) {
             throw new AssertionError("admission accepted " + name);
         } catch (IOException | BootContract.BadGame | GamePack.BadPack expected) { checks++; }
         try (GameStorage ignored = GameStorage.acquire(app.toFile())) { checks++; }
@@ -98,7 +98,7 @@ public final class GameSessionAdmissionTest {
             Path game = fixture(app);
             Map<String,Object> currentDoc = Json.object(Json.parse(Files.readString(game.resolve("current.json"))), "current");
             check(currentDoc.get("fingerprint") instanceof Map, "import publishes a fingerprint reference with current");
-            try (GameSession session = GameSession.load(spec(app, game), app.toFile(), null, true, true)) {
+            try (GameSession session = GameSession.load(spec(app, game), app.toFile(), null, true)) {
                 GameSession.FrozenStart start = session.begin(true,true,1280,720,320,60,BootSpec.ConsoleMode.HANDHELD);
                 check(start != null && start.assetRoot.isEmpty(), "revision is admitted without APK binding");
                 check("9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a".equals(start.moduleSha256.get("main")),
@@ -118,12 +118,11 @@ public final class GameSessionAdmissionTest {
             var oldMtime = Files.getLastModifiedTime(content);
             Files.setLastModifiedTime(content, java.nio.file.attribute.FileTime.fromMillis(oldMtime.toMillis()+5000));
             check(!oldMtime.equals(Files.getLastModifiedTime(content)), "touch changes actual target mtime");
-            try (GameSession ignored = GameSession.load(spec(app,game),app.toFile(),null,true,true)) { }
+            try (GameSession ignored = GameSession.load(spec(app,game),app.toFile(),null,true)) { }
             check(!beforeTouch.equals(Files.readString(game.resolve("current.json"))), "touch refreshes the current fingerprint");
-            for (boolean[] policy : new boolean[][]{{false,false},{false,true},{true,false}}) {
-                try (GameSession ignored = GameSession.load(spec(app,game),app.toFile(),null,policy[0],policy[1])) {
-                    throw new AssertionError("revision experimental gate bypassed");
-                } catch (IOException expected) { checks++; }
+            // Imported modules are admitted on a release (non-debuggable) app as well: no experimental gate.
+            try (GameSession released = GameSession.load(spec(app,game),app.toFile(),null,false)) {
+                check(released != null, "revision modules admitted without a debuggable app");
             }
             refuses(app,"bad-content",(a,g)-> {
                 Path file = g.resolve(BootContract.readCurrent(g.toFile()).revisionDir).resolve("modules/main.patched.bin");
@@ -183,7 +182,7 @@ public final class GameSessionAdmissionTest {
             });
             Path noNeeds = Files.createDirectories(app.resolve("missing-address-needs"));
             Path noNeedsGame = fixture(noNeeds, false);
-            try (GameSession session = GameSession.load(spec(noNeeds,noNeedsGame),noNeeds.toFile(),null,true,true)) {
+            try (GameSession session = GameSession.load(spec(noNeeds,noNeedsGame),noNeeds.toFile(),null,true)) {
                 check(session.begin(true,true,1280,720,320,60,BootSpec.ConsoleMode.HANDHELD) != null,
                     "production-shaped pack without an indexed or on-disk address table is valid");
             }
@@ -201,7 +200,7 @@ public final class GameSessionAdmissionTest {
             for (String late : List.of("file","dangling-link")) {
                 Path lateApp = Files.createDirectories(app.resolve("late-unindexed-needs-"+late));
                 Path lateGame = fixture(lateApp,false);
-                try (GameSession session = GameSession.load(spec(lateApp,lateGame),lateApp.toFile(),null,true,true)) {
+                try (GameSession session = GameSession.load(spec(lateApp,lateGame),lateApp.toFile(),null,true)) {
                     Path file = Path.of(session.spec.gameRoot,session.spec.game.revisionDir,"exefs/addr_need.tsv");
                     if (late.equals("file")) Files.write(file,new byte[]{1,2,3});
                     else Files.createSymbolicLink(file,Path.of("missing-table-target"));
@@ -212,7 +211,7 @@ public final class GameSessionAdmissionTest {
             Path noNeedsApk = Files.createDirectories(app.resolve("optional-needs-apk"));
             Path noNeedsApkGame = fixture(noNeedsApk,false);
             var noNeedsInstalled = apk(noNeedsApk,noNeedsApkGame);
-            try (GameSession session = GameSession.load(spec(noNeedsApk,noNeedsApkGame),noNeedsApk.toFile(),noNeedsInstalled,true,true)) {
+            try (GameSession session = GameSession.load(spec(noNeedsApk,noNeedsApkGame),noNeedsApk.toFile(),noNeedsInstalled,true)) {
                 check(session.begin(true,true,1280,720,320,60,BootSpec.ConsoleMode.HANDHELD) != null,
                     "APK arm also accepts the current production shape without an address table");
             }
@@ -234,7 +233,7 @@ public final class GameSessionAdmissionTest {
             for (String path : List.of("exefs/main.npdm", "exefs/addr_need.tsv")) {
                 Path metaApp = Files.createDirectories(app.resolve("metadata-"+path.replace('/','-')));
                 Path metaGame = fixture(metaApp);
-                try (GameSession session = GameSession.load(spec(metaApp,metaGame),metaApp.toFile(),null,true,true)) {
+                try (GameSession session = GameSession.load(spec(metaApp,metaGame),metaApp.toFile(),null,true)) {
                     Path file = Path.of(session.spec.gameRoot,session.spec.game.revisionDir,path);
                     Files.delete(file); Files.write(file,new byte[]{9});
                     try { session.begin(true,true,1280,720,320,60,BootSpec.ConsoleMode.HANDHELD); throw new AssertionError("changed native metadata accepted"); }
@@ -243,7 +242,7 @@ public final class GameSessionAdmissionTest {
             }
             Path assetApp = Files.createDirectories(app.resolve("apk")); Path assetGame = fixture(assetApp);
             GameSession.InstalledApk installed = apk(assetApp,assetGame);
-            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,true)) {
+            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true)) {
                 var start = session.begin(true,true,1280,720,320,60,BootSpec.ConsoleMode.HANDHELD);
                 check(start.assetRoot.equals("game/modules") && "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a".equals(start.moduleSha256.get("main")),
                     "identical revision/APK executable bytes produce the same digest");
@@ -264,7 +263,7 @@ public final class GameSessionAdmissionTest {
             check(stamp.get("sha256").equals(GamePack.sha256(Files.readAllBytes(installed.file.toPath()))),
                 "admission persists the measured APK stamp");
             GameFingerprint.Timing stampTiming = new GameFingerprint.Timing();
-            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,true,stampTiming)) {
+            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,stampTiming)) {
                 check(String.join("\n", stampTiming.lines()).contains("phase=apk_sha_stamp_hit ns="),
                     "matching APK stamp admits without re-hashing the APK");
             }
@@ -275,11 +274,11 @@ public final class GameSessionAdmissionTest {
             Files.setLastModifiedTime(apkCopy, apkTime);
             Files.move(apkCopy, installed.file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             GameFingerprint.Timing recalcTiming = new GameFingerprint.Timing();
-            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,true,recalcTiming)) {
+            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,recalcTiming)) {
                 check(String.join("\n", recalcTiming.lines()).contains("phase=apk_sha_recalculated ns="),
                     "inode change forces a fresh APK hash");
             }
-            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,true,
+            try (GameSession session = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,
                     stampTiming = new GameFingerprint.Timing())) {
                 check(String.join("\n", stampTiming.lines()).contains("phase=apk_sha_stamp_hit ns="),
                     "refreshed APK stamp hits on the following boot");
@@ -291,7 +290,7 @@ public final class GameSessionAdmissionTest {
             Files.write(apkCopy, tampered);
             Files.setLastModifiedTime(apkCopy, apkTime);
             Files.move(apkCopy, installed.file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            try (GameSession ignored = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,true)) {
+            try (GameSession ignored = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true)) {
                 throw new AssertionError("stamp miss re-hash accepted different APK bytes");
             } catch (IOException expected) { checks++; }
             for (var wrong : List.of(
@@ -299,12 +298,12 @@ public final class GameSessionAdmissionTest {
                     new GameSession.InstalledApk(installed.file,installed.packageName,2,installed.signerSha256,false),
                     new GameSession.InstalledApk(installed.file,installed.packageName,1,List.of("00".repeat(32)),false),
                     new GameSession.InstalledApk(installed.file,installed.packageName,1,installed.signerSha256,true))) {
-                try (GameSession ignored = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),wrong,true,true)) {
+                try (GameSession ignored = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),wrong,true)) {
                     throw new AssertionError("APK identity check bypassed");
                 } catch (IOException expected) { checks++; }
             }
             Files.writeString(installed.file.toPath(),"different APK build");
-            try (GameSession ignored = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true,true)) {
+            try (GameSession ignored = GameSession.load(spec(assetApp,assetGame),assetApp.toFile(),installed,true)) {
                 throw new AssertionError("APK SHA check bypassed");
             } catch (IOException expected) { checks++; }
             System.out.println("GameSession admission: " + checks + " checks PASS (synthetic host only)");
