@@ -398,7 +398,10 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *
     }
     return 0;
 }
-int s2a_img_scan(const char *proc_docs) { int placed = 0; g_img_err[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); return placed; }
+int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可能同时调：一把锁串起来，免得两边抢着挪同一个文件
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); pthread_mutex_unlock(&mu); return placed;
+}
 // 资源还在传（11-02 维护者 测试设备2 暗黑3：推 21.7 GB 中途点开 App，已到的几批被解开、核对时 index.tsv 还没到，报「返回 -8」要玩家删文件夹重拷）。
 //   推送契约（tools/push_pack.sh）：各批 tar 先推进 .incoming/，index.tsv 与 manifest.json 最后推。所以有待导入的包、且下面任一条成立 = 这次推送还没完，不能开始解：
 //   ① index.tsv / manifest.json 不在（首次推送，清单还没到）；② manifest.json 的 index_sha256 就是 .applied（机上清单还是上次解开的那份，这次的新清单还没到）；
