@@ -259,6 +259,19 @@ See 'devicectl device process launch --help' for more information.
         with self.assertRaises(push.Fail) as e: self.ap(old, 1, False)
         self.assertIn("起 App 后 180 秒机上解包没有开始", str(e.exception)); self.assertEqual(len(self.dev.launches), 1)
 
+    def test_device_failure_reported_at_once_with_its_reason(self):
+        # App 起来解开、第一包前就失败（#569：目录 App 写不进）：解包日志新增「解包失败：…」→ 当场按原因报，不再等 180 秒后说「没有开始」。期望手写
+        self.dev = Fake({}); clock = [0.0]
+        def launched(d):
+            d.files["Documents/unpack.log"] = "11-11 解包失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501） 返回 -9（已解 0 个包 0 个文件）\n"
+        self.dev.on_launch = launched
+        def sleep(x): clock[0] += x
+        with self.assertRaises(push.Fail) as e:
+            push.apply(self.dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        self.assertIn("手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0", str(e.exception))
+        self.assertNotIn("没有开始", str(e.exception))
+        self.assertLess(clock[0], 10, "当场报，不等满 180 秒")
+
     def slow(self, stop_at=None, per=60.0, n=17):
         """合成进度：起 App 后每 per 秒解完一包（第 k 包写「进度：解开 x_k.tar（k/n）」），stop_at 给了就解到第 stop_at 包后再无进展；
         n 包都解完写完成行与 .applied。返回 (结果或异常, 失败 / 完成时刻)"""
@@ -314,6 +327,37 @@ class ContainerDocs(Base):
         self.assertEqual((d.docs, d.ctx), (self.D, self.CTX))
         d = push.device("C891", "s2arm.z.0100000000010000", self.w, via="devicectl", env={})
         self.assertEqual((d.docs, d.ctx), ("Documents", None))   # 单款缺省不变
+
+
+class BigFallback(unittest.TestCase):
+    """#641：流式写失败后，大于上限的文件不交给 devicectl 整份拷（CoreDeviceService 会把整个文件读进内存、拖垮整机）；小文件照旧退回"""
+    def run_put_big(self, size, cap):
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * size)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": str(cap)})
+            class Stream:
+                def put(self, src, rel): raise push.Fail("写文件失败：device socket io failed")
+            d.dp = Stream(); said, copied = [], []
+            d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            try:
+                d.put_big(src, "Documents/资源包/game.img"); return None, copied, said
+            except push.Fail as e:
+                return str(e), copied, said
+
+    def test_big_file_does_not_fall_back_to_devicectl(self):
+        err, copied, _ = self.run_put_big(4096, 1024)
+        self.assertEqual(copied, [])
+        self.assertIn("不改走 devicectl", err)
+        self.assertIn("device socket io failed", err)
+
+    def test_small_file_still_falls_back(self):
+        err, copied, said = self.run_put_big(512, 1024)
+        self.assertIsNone(err)
+        self.assertEqual(copied, ["Documents/资源包/game.img"])
+        self.assertTrue(any("改走 devicectl" in m for m in said))
+
+    def test_default_cap_is_two_gib(self):
+        self.assertEqual(push.DC_FALLBACK_MAX, 2 << 30)
 
 
 class SpaceNeed(Base):
@@ -396,6 +440,19 @@ class ImagePush(Base):
         self.assertEqual(got, [(f"{RP}/romfs.img", b"IMAGE")])
         self.assertFalse((self.pk / "romfs.img").exists())
 
+    def test_split_plan_send_materializes_library_pack(self):
+        # dev_run 走的两步路（push_pack.sh：plan → send，不走 run）同样要现拼库内形态的镜像（原先只有 run 拼，dev_run 推库里的包 FileNotFoundError: romfs.img）
+        sys.path.insert(0, str(push.R / "pack")); import romfs_image
+        (self.pk / "romfs.img").unlink(); (self.pk / "romfs.files").mkdir(); (self.pk / "romfs.files" / "x").write_bytes(b"IMA"); (self.pk / "romfs.files" / "y").write_bytes(b"GE")
+        idx = b"S2ARFS01" + struct.pack("<qi", 5, 2) + struct.pack("<qqii", 0, 3, 0, 1) + struct.pack("<qqii", 3, 2, 1, 1) + struct.pack("<i", 2) + b"xy" + struct.pack("<i", 0)
+        (self.pk / "romfs.s2aidx").write_bytes(idx); (self.pk / "romfs.imgmap").write_bytes(romfs_image.MAGIC + struct.pack("<qi", 5, 2) + struct.pack("<2q", 0, 3))
+        self.dev = Fake({}); got = []
+        self.dev.put_big = lambda src, rel: got.append((rel, Path(src).read_bytes()))
+        push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
+        push.send(self.dev, self.pk, self.w, say=self.log.append)
+        self.assertEqual(got, [(f"{RP}/romfs.img", b"IMAGE")])
+        self.assertFalse((self.pk / "romfs.img").exists())
+
     def test_library_pack_image_already_on_phone_is_not_built(self):
         (self.pk / "romfs.img").unlink(); self.dev = Fake(self.phone("abc"))   # 机上已应用同一镜像：不拼、不推
         push.run(self.dev, self.pk, self.w, say=self.log.append)
@@ -442,6 +499,11 @@ class GameImgResume(Base):
     def push_it(self, dev):
         self.dev = dev
         push.plan(dev, self.pk, self.w, full=True, say=self.log.append); push.send(dev, self.pk, self.w, say=self.log.append)
+
+    def test_v3_img_manifest_plans(self):   # v0.3.0 单一 IMG 的清单是 v3（pack/img.py convert）：照推，game.img 直写（原先只认 v2，启动器 / dev_run 推 IMG 报「资源包不是 v2」）
+        (self.pk / "manifest.json").write_text('{"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "x"}')
+        self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
+        self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")
 
     def test_game_img_is_direct_not_tar(self):
         self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)

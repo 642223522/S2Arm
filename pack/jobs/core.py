@@ -318,7 +318,7 @@ def _sha256():
 
 def release_version(engine):
     """S2Arm 发版号（三端同号：Mac 启动器、Windows 启动器、iPhone 容器都显示这一个，11-09 维护者）：
-    发布的引擎快照读打包时写进 engine.json 的 version；开发树取最近 tag 的数字段（v0.2.3-beta.1 → 0.2.3，同 Mac build_app）。取不到 → 空串"""
+    发布的引擎快照读打包时写进 engine.json 的 version；开发树取发版 tag 的数字段（v0.2.3-beta.1 → 0.2.3；规则见 _release_tag_numbers）。取不到 → 空串"""
     eng = Path(engine) / "engine.json"
     if eng.is_file():
         try:
@@ -327,12 +327,60 @@ def release_version(engine):
                 return v
         except (OSError, ValueError):
             pass
-    try:
-        tag = subprocess.run(["git", "-C", str(engine), "describe", "--tags", "--abbrev=0"], capture_output=True, text=True, timeout=30).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    return _release_tag_numbers(engine)
+
+
+def _release_tag_numbers(engine):
+    """开发树的发版号数字段：HEAD 正好落在发版 tag 上就用它（热修分支上打的旧版号照旧是它自己）；否则取仓库里版本号最大的发版 tag。
+    不用 git describe：热修 tag（v0.2.7–v0.2.9 打在热修分支上、没合回 main）不在 main 的祖先里，describe 一直找到 v0.2.6，
+    开发版界面、CFBundleShortVersionString、engine.json 的 version 三端一起显示成发布前好几版（11-11 维护者截图发现）"""
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(engine), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return r.stdout if r.returncode == 0 else ""
+    def numbers(tag):
+        m = re.match(r"v?(\d+(?:\.\d+)*)", tag.strip())
+        return m.group(1) if m else ""
+    exact = numbers(git("describe", "--tags", "--exact-match", "HEAD"))
+    if exact:
+        return exact
+    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split()) if n]
+    return max(found, key=lambda n: tuple(int(x) for x in n.split(".")), default="")
+
+
+def display_version(engine):
+    """界面上给玩家看的版本字（11-11 维护者：玩家截图里要看得出是哪一版；Mac / Windows 启动器顶栏、iPhone 设置页与游戏库同一口径）：
+    正式版「v0.3.0」；开发版「v<最新发版号>-dev+<7 位短提交号>」（最新发版号见 _release_tag_numbers：不要求是 HEAD 的祖先）。HEAD 正好落在发版 tag 上且已跟踪文件没改动 = 正式版。
+    发布的引擎快照读打包时写进 engine.json 的 displayVersion；开发树在 engine 目录用 git 现算；git 不可用退回「v<release_version>」，连它也没有 → 空串"""
+    eng = Path(engine) / "engine.json"
+    if eng.is_file():
+        try:
+            v = json.loads(eng.read_text(encoding="utf-8")).get("displayVersion")
+            if isinstance(v, str) and v:
+                return v
+        except (OSError, ValueError):
+            pass
+    short = release_version(engine)
+    if not short:
         return ""
-    m = re.match(r"v?(\d+(?:\.\d+)*)", tag)
-    return m.group(1) if m else ""
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(engine), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    commit = git("rev-parse", "--short=7", "HEAD")
+    if not commit:
+        return f"v{short}"
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    tag = git("describe", "--tags", "--exact-match", "HEAD") or ""
+    if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
+        return f"v{short}"
+    return f"v{short}-dev+{commit[:7]}"
 
 
 def digest(path, progress=None):
@@ -446,11 +494,36 @@ def record_sources(sources):
     return out
 
 
+# 只读探测（启动器剃刀 H4）：结果走标准输出，不落任务记录（request / journal / events 三个文件 + 起 ps 取进程起始时刻），作业开头也不收日志、
+#   不起后台商店查询、引擎副本有安装标记就直接用（逐文件复核留给真用引擎产物的作业，#304）。装机页每 5 秒一次的 installCheck、
+#   设备探测、刷新游戏库都在这里：原先每次都落三个文件，开一小时约 720 个作业记录
+PROBES = ("catalog", "installCheck", "targetDevice", "locations")
+JOURNAL_PROGRESS_S = 5.0   # 进度事件最多隔这么久重写一次任务记录（剃刀 H5：原先每条事件都原子重写 + fsync）；阶段、诊断、终态每次都写并 fsync
+LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
+OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm",
+                   "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
+                   "remove": "移出游戏库", "delete": "删除游戏", "clean": "清理空间", "spaceFree": "释放空间", "launch": "开始游戏",
+                   "moveGame": "移动游戏", "relinkGame": "重新关联原件", "forgetGame": "忘掉游戏", "setup": "设置游戏库", "keys": "导入密钥",
+                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态",
+                   "communitySave": "保存补丁设置", "diagnostics": "导出诊断"}
+
+
+def describe_holder(info):
+    """占锁任务的一句话：「出包 · 0100…（任务 t12）」；不知道是谁时「另一个任务」"""
+    if not info:
+        return "另一个任务"
+    op = OPERATION_NAMES.get(info.get("operation"), info.get("operation") or "另一个任务")
+    return op + (" · " + info["gameId"] if info.get("gameId") else "") + ("（任务 " + str(info["taskId"]) + "）" if info.get("taskId") else "")
+
+
 class Context:
     def __init__(self, request):
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
             raise Failure("spaceOverride 仅支持 Mac 打包（build）与打 iPhone 包（ipa）任务的布尔值。")
+        # 同一次出包后面还有平台（pack/contracts/README.md「同一次出包后面还有平台」）：只给打 iPhone 包，只认布尔值
+        if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
+            raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
         self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
@@ -475,10 +548,16 @@ class Context:
         self.last_progress = 0
         self.last_log = None
         self.frontend_gone = False
+        self.recorded = self.operation not in PROBES
+        self.last_journal = 0.0
         self.jobpath = self.logs / "jobs" / (self.task + ".json")
         self.events = self.logs / "jobs" / (self.task + ".events.jsonl")
         self.requestpath = self.logs / "jobs" / (self.task + ".request.json")
-        layout.follow_task(self)   # 同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        layout.follow_task(self)   # 索引表第一项核成默认库位置；同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
+        if not self.recorded:
+            self.job = dict(schema=1, id=self.task, operation=self.operation, gameId=request.get("gameId"),
+                            state="running", started=time.time(), diagnostics=[], pid=os.getpid(), attemptNo=1)
+            return
         # Keep the request next to the journal so `resume` can run the same task again after a kill without the caller having to keep the
         # request file around (J10). 0600 like the request itself: it holds player paths, never keys.
         if not self.requestpath.exists():
@@ -520,19 +599,43 @@ class Context:
                 raise Failure(f"游戏库所在的磁盘「{parts[2]}」没连上：插上这块盘后再试一次。")
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
+    def lock_holder(self):
+        """写进锁旁挂文件的「我是谁」：别的任务据此说清在等谁"""
+        return dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
+                    gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
+
     @contextlib.contextmanager
-    def lock(self, name="catalog"):
+    def lock(self, name="catalog", wait=None, root=None):
+        """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
+        （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
         self.check()
-        self.require_library()
-        with (self.library / ("." + name + ".lock")).open("a") as f:
+        if root is None:
+            self.require_library()
+        wait = getattr(self, "lock_wait", LOCK_WAIT_S) if wait is None else wait
+        def waiting(info, waited):
             try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                raise Failure("另一个任务正在使用游戏库，请稍后重试。") from None
-            try:
+                self.emit("progress", "在等「" + describe_holder(info) + "」结束…", phase="waiting_lock", holder=info)
+            except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
+                pass
+        try:
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
                 yield
-            finally:
-                filelock.unlock(f)
+        except filelock.Busy as busy:
+            raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
+                          internal=f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）") from None
+
+    @contextlib.contextmanager
+    def idle(self, name="execution"):
+        """「库里没任务在用这把锁才顺手做、否则这次不做」的活（清残留、改文件夹名）：拿得到 yield True（照样记占锁者），拿不到不等、yield False。
+        和 lock 同一把锁、同一个旁挂文件；不查取消：被取消的任务收尾也要能用"""
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(filelock.held(self.library / ("." + name + ".lock"), holder=self.lock_holder()))
+            except filelock.Busy:
+                yield False
+                return
+            yield True
 
     def catalog(self):
         self.require_library()
@@ -583,12 +686,19 @@ class Context:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
             try:
-                atomic(self.jobpath, self.job)
-                with self.events.open("a", encoding="utf-8") as f:
-                    f.write(line + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
-                os.chmod(self.events, 0o600)
+                # 剃刀 H5：心跳只给标准输出（前端据此知道作业还活着），不落盘；进度追加进事件文件、不 fsync，任务记录最多隔 JOURNAL_PROGRESS_S 重写一次；
+                #   阶段 / 诊断 / 终态等每条都重写任务记录并 fsync（被杀时不丢最后一个阶段，J10）。原先每条事件（含每秒心跳）都整份重写 + 两次 fsync
+                if self.recorded and kind != "heartbeat":
+                    durable = kind != "progress"
+                    if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
+                        atomic(self.jobpath, self.job)
+                        self.last_journal = now
+                    with self.events.open("a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                        if durable:
+                            f.flush()
+                            os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
+                    os.chmod(self.events, 0o600)
             except OSError as error:
                 # A full or failing disk used to let the job finish "successfully" with its record missing: whoever looks for it later finds
                 # nothing, or finds it stuck at an old stage. Say so and fail the job instead (J10).
@@ -742,14 +852,27 @@ class Context:
             self._key_values = shared_redact().load_key_values([self.keys] if getattr(self, "keys", None) else [])
         return self._key_values
 
+    def failure_roots(self):
+        """explain 判「原件不见了 / 去系统设置授权」用的玩家侧路径（启动器剃刀 H8）：这次导入的路径、这款登记的原件，加游戏库根。取不到的省略"""
+        sources = [Path(p).expanduser() for p in (self.r.get("paths") or []) if isinstance(p, str)]
+        if self.r.get("gameId"):
+            try:
+                from library import selected_packages, source_path
+                sources += [source_path(self, p) for p in selected_packages(self.game())]
+            except Exception:   # 游戏没登记 / catalog 读不了：只按已有的判，判不了的落 job_failed
+                pass
+        return dict(sources=sources, library=getattr(self, "library", None))
+
     def describe_failure(self, error, severity="error", exit_code=None):
-        failure = explain(error)
+        failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
                       suggestion=recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
+        if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
+            result["holder"] = failure.holder
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))
@@ -783,7 +906,7 @@ class Context:
             pass
 
     def report_failure(self, error):
-        failure = explain(error)
+        failure = explain(error, **self.failure_roots())
         self.save_rewrite_digest(failure)
         if self.last_log is None:
             self.last_log = self.logs / (self.task + "-failure.log")
@@ -833,6 +956,10 @@ class Context:
         env.pop("J", None)
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
+        gid = self.r.get("gameId")
+        if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
+            import library
+            env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -1094,7 +1221,8 @@ class Context:
         try:
             self.emit("result", message, state="succeeded" if state == "completed" else state,
                       result=result or {}, artifactRef=(result or {}).get("outputPath"), diagnostics=self.job["diagnostics"])
-            atomic(self.jobpath, self.job)
+            if self.recorded:
+                atomic(self.jobpath, self.job)
         except (Failure, OSError) as error:
             # The job is over either way; what must not happen is the caller seeing success while nothing was recorded. main.py turns
             # journal_broken into a non-zero exit, and this line is the only place a user can read why (J10).

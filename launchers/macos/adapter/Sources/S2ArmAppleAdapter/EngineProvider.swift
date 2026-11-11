@@ -73,6 +73,8 @@ public struct BuildJob {
     public var deviceTarget: [String: Any]?
     /// 空间预检没过时玩家选了「仍然继续」。
     public var spaceOverride = false
+    /// 同一款这次还要接着出别的平台（只对 iPhone 有意义）：作业层收尾先不清解包（pack/contracts/README.md，剃刀 M21）
+    public var followUp = false
     /// 出包页选的存放位置（游戏库结构 v3）：这款放到哪个文件夹；在别的位置就先整个搬过去。nil = 不动
     public var location: String?
 

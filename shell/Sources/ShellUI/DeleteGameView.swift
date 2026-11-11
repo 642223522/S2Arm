@@ -78,6 +78,22 @@ extension EnvironmentValues {
     }
 }
 
+/// Opens a game's save management. The library provides it when the host has one. Without one, the card's menu has no
+/// Manage saves… item.
+private struct ShellManageSavesKey: EnvironmentKey {
+    nonisolated(unsafe) static let defaultValue: ((String) -> Void)? = nil
+}
+extension EnvironmentValues {
+    var shellManageSaves: ((String) -> Void)? {
+        get { self[ShellManageSavesKey.self] }
+        set { self[ShellManageSavesKey.self] = newValue }
+    }
+}
+public extension Notification.Name {
+    /// The host asks the library to open its own settings (the Home Screen quick action Settings).
+    static let shellOpenSettings = Notification.Name("S2AShellOpenSettings")
+}
+
 /// Long press on a library card: a menu with the game's settings and, where the library allows it, Delete game…
 /// (the same confirmation as the button at the bottom of the game's settings). Shared by the carousel and the portrait list.
 struct GameTileMenu: ViewModifier {
@@ -85,9 +101,13 @@ struct GameTileMenu: ViewModifier {
     let select: (String) -> Void
     let openSettings: () -> Void
     @Environment(\.shellAskDelete) private var askDelete
+    @Environment(\.shellManageSaves) private var manageSaves
     func body(content: Content) -> some View {
         content.contextMenu {
             Button { select(detail.id); openSettings() } label: { Label(ShellStrings.text("Game settings"), systemImage: "slider.horizontal.3") }
+            if let manageSaves {
+                Button { manageSaves(detail.id) } label: { Label(ShellStrings.text("Manage saves…"), systemImage: "externaldrive") }
+            }
             if let askDelete {
                 Button(role: .destructive) { askDelete(detail.game) } label: { Label(ShellStrings.text("Delete game…"), systemImage: "trash") }
             }

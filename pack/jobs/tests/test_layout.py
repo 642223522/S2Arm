@@ -366,7 +366,7 @@ if __name__ == "__main__":
 
 
 class HealFolderNamesTests(JobCase):
-    """还叫游戏号的文件夹（v0.2.0 及以前导入的中文名游戏：读取器不给英文名、拷封面时这款还没进 catalog）在作业开始时按英文名改名。
+    """还叫游戏号的文件夹（v0.2.0 及以前导入的中文名游戏：读取器不给英文名、拷封面时这款还没进 catalog）在导入 / 出包结束、后台商店查询后按英文名改名（剃刀 H3）。
     期望按规则手写：A 有 Mac 产物 NACP「Hollow Knight: Silksong」→ 「Hollow Knight Silksong」、catalog 记 englishName、索引跟着改；
     B 中文名、没有任何产物 → 留着游戏号；C 名字本来就是英文 → 「Hades」；有任务拿着执行锁时一个都不改"""
     def setUp(self):
@@ -403,6 +403,34 @@ class HealFolderNamesTests(JobCase):
             filelock.unlock(f)
         self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
 
+
+    def test_skips_while_a_job_holds_the_catalog_lock(self):
+        # 改名要写 catalog：目录锁被占（别的任务正改着 catalog）也这次不改（旧代码只拿执行锁就写 catalog，与目录锁里的写互相覆盖）
+        import filelock
+        with (self.c.library / ".catalog.lock").open("a") as f:
+            filelock.try_lock(f)
+            self.assertEqual(layout.heal_folder_names(self.fresh()), 0)
+            filelock.unlock(f)
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
+
+    def test_job_start_no_longer_renames(self):
+        # 作业开头（layout.ensure）不再改名、不碰执行锁：起局 / 出包撞上它报忙的那条路没了（剃刀 H3）
+        with patch.object(layout, "heal_folder_names", side_effect=AssertionError("作业开头去改名")), \
+                patch("library.store_meta_background"):
+            layout.ensure(self.fresh())
+        self.assertEqual(sorted(p.name for p in (self.c.library / "games").iterdir()), sorted([A, B, C]))
+
+    def test_rename_runs_after_import_and_build_only(self):
+        # 导入 / 出包 / 打 iPhone 包成功结束时各改一次；刷新游戏库这类作业不改。用真 main.run_request + 打桩的作业函数
+        import main
+        calls = []
+        for op in ("import", "build", "ipa", "catalog", "launch"):
+            path = self.root / ("req-" + op + ".json")
+            atomic(path, self.request | dict(taskId="h3-" + op, operation=op))
+            with patch.object(layout, "heal_folder_names", lambda c: calls.append(c.operation)), patch("library.store_meta_background"), \
+                    patch("embedded.install"):
+                self.assertEqual(main.run_request(path, operation_overrides={op: lambda c: {}}), 0)
+        self.assertEqual(calls, ["import", "build", "ipa"])
 
     def test_rename_refused_leaves_everything_untouched(self):
         # Windows 上文件夹里有被占用的文件时改名失败：这款整款不动——文件夹、索引、catalog 的 englishName 都留原样（不能只改一半）
@@ -541,17 +569,20 @@ class StoreMetaTests(JobCase):
                                    "print('held', flush=True); time.sleep(1.5)", str(L / ".store-meta.lock")], stdout=subprocess.PIPE, text=True)
         self.assertEqual(holder.stdout.readline().strip(), "held")
         t0 = time.monotonic()
-        with library.store_meta_quiet(L):
+        with library.store_meta_quiet(self.c):
             waited = time.monotonic() - t0
         holder.wait(timeout=10)
         self.assertGreater(waited, 0.8)
-        with patch.object(library, "STORE_QUIET_WAIT", 0.2):   # 超过上限照常继续，不把删除卡死
+        # 超过上限：报 library_busy、不进去（剃刀 H2；旧代码「等不到就不拿锁照常继续」，删游戏照样往被查询写着的库里删）
+        with patch.object(library, "STORE_QUIET_WAIT", 0.2):
             holder = subprocess.Popen([sys.executable, "-c", "import fcntl,sys,time; f=open(sys.argv[1],'a'); fcntl.flock(f, fcntl.LOCK_EX); "
                                        "print('held', flush=True); time.sleep(3)", str(L / ".store-meta.lock")], stdout=subprocess.PIPE, text=True)
             holder.stdout.readline()
-            t0 = time.monotonic()
-            with library.store_meta_quiet(L):
-                self.assertLess(time.monotonic() - t0, 2)
+            entered = []
+            with self.assertRaises(layout.Failure) as raised:
+                with library.store_meta_quiet(self.c):
+                    entered.append(1)
+            self.assertEqual((raised.exception.code, entered), ("library_busy", []))
             holder.kill(); holder.wait()
 
     def test_spawn_args_and_skips(self):

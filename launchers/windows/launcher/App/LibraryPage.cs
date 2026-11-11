@@ -119,6 +119,14 @@ public sealed partial class EnvironmentWindow
     {
         body.Children.Add(Label(T("library.title"), 23));
         body.Children.Add(Label(T("library.description")));
+        // 游戏库放在了某个 S2Arm 程序文件夹里（多半是旧压缩包版解压出来的那个）：换装安装版后清理旧文件夹、或更新换壳，都会连游戏库一起删（v0.3.0 安装程序）
+        if (ProgramFolderAround(connectedFolder) is { } program)
+        {
+            var warn = new StackPanel { Spacing = 10 };
+            warn.Children.Add(Label(T("library.inside_program").Replace("{0}", program)));
+            warn.Children.Add(Action("library.inside_program.move", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy));
+            body.Children.Add(new Border { Background = Brush.Parse("#2A1F14"), CornerRadius = new CornerRadius(12), Padding = new Thickness(16, 12), Child = warn });
+        }
 
         // In-progress capsule: shown when a pack is running and the session is hidden
         if (packRunning && sessionHidden)
@@ -369,6 +377,28 @@ public sealed partial class EnvironmentWindow
         return true;
     }
 
+    /// <summary>界面上显示的文件夹路径：存在就做成链接，点一下在资源管理器里打开（文件则选中它），玩家不用对着路径复制；不在（外接盘没插）只显示文字。
+    /// 同 Mac NXLauncher PathLink</summary>
+    private Control PathLink(string path, double size = 12)
+    {
+        var isDir = path.Length > 0 && Path.IsPathFullyQualified(path) && !path.Contains('"') && Directory.Exists(path);
+        var isFile = !isDir && path.Length > 0 && Path.IsPathFullyQualified(path) && !path.Contains('"') && File.Exists(path);
+        if (!isDir && !isFile) return Muted(path, size);
+        var text = new TextBlock { Text = path, FontSize = size, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1") };
+        var link = new Button { Content = text, Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0),
+            Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand), HorizontalAlignment = HorizontalAlignment.Left };
+        ToolTip.SetTip(link, T("path.open"));
+        link.PointerEntered += (_, _) => { text.TextDecorations = TextDecorations.Underline; text.Foreground = Ink; };
+        link.PointerExited += (_, _) => { text.TextDecorations = null; text.Foreground = Brush.Parse("#A8A6A1"); };
+        link.Click += (_, _) =>
+        {
+            if (!OperatingSystem.IsWindows()) return;
+            try { using var process = Process.Start(new ProcessStartInfo("explorer.exe", isDir ? "\"" + path + "\"" : "/select,\"" + path + "\"") { UseShellExecute = false }); }
+            catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or IOException) { }
+        };
+        return link;
+    }
+
     private async Task MoveGameAsync(LibraryGame game)
     {
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("library.menu.move") });
@@ -555,6 +585,20 @@ public sealed partial class EnvironmentWindow
 
     // 旧默认库（私有目录下的 DefaultLibrary）被作业层同盘改名到 %USERPROFILE%\S2Arm 后，设置里的旧路径按搬库标记换成新位置（游戏库结构 P3）
     private string SavedLibrary() => LibraryPaths.SavedLibrary(privateRoot);
+
+    /// <summary>游戏库所在路径往上，最近的一个 S2Arm 程序文件夹（有 S2Arm.exe 和 Engine\）；没有为 null</summary>
+    internal static string? ProgramFolderAround(string? library)
+    {
+        if (string.IsNullOrEmpty(library)) return null;
+        try
+        {
+            for (var d = new DirectoryInfo(Path.GetFullPath(library)); d is not null; d = d.Parent)
+                if (File.Exists(Path.Combine(d.FullName, "S2Arm.exe")) && Directory.Exists(Path.Combine(d.FullName, "Engine")))
+                    return Path.TrimEndingDirectorySeparator(d.FullName);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        return null;
+    }
 
     private async Task ChangeLibraryAsync()
     {
