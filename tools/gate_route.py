@@ -119,6 +119,19 @@ def _refs(path, by_name, direct):
     return frozenset(got), txt
 
 
+# 列车入队预检（tools/train.sh pre()）固定跑的单测：shell_lint / shared_path / test_wired / shell_pyimports + 全部 tests/*lint*_test.sh。
+#   列车门禁也必须每次跑它们：11-10 feat/img-read 改 pack/img.py 带进 os.walk，文本推导没路由到 romfs_walk_lint，合进 main 后所有支的入队预检都被拒。
+#   规则与 pre() 同一条（改这里要同笔改 train.sh pre() 的 PL）
+PRECHECK_TESTS = ('shell_lint_test', 'shared_path_test', 'test_wired_test', 'shell_pyimports_test')
+
+
+def precheck_test(test):
+    n = os.path.basename(test)
+    if not (n.endswith('.sh') and os.path.dirname(test) == 'tests'): return False
+    n = n[:-3]
+    return n in PRECHECK_TESTS or fnmatch.fnmatch(n, '*lint*_test')
+
+
 def test_cover(test, files, by_name, full=False):
     """单测的覆盖面：自身 + 文本里点名的本线文件的传递闭包 + 头部「门禁覆盖」通配。
     full=True（缓存键用）：「门禁只看」不截断闭包，只并进去——路由可以窄，缓存输入只能宽（10-30：train_test「门禁只看」漏 known_red.py，
@@ -133,6 +146,7 @@ def test_cover(test, files, by_name, full=False):
         if re.match(r'#\s*门禁：每次', l): always = True
         m = re.match(r'#\s*门禁闭包：(.*)', l)   # 「门禁闭包：[--table <表>] <入口…>」：改动落在入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（含新增文件）
         if m: closures.append(m.group(1).split())
+    if precheck_test(test): always = True
     if only is not None:
         gone = [g for g in only if not re.search(r'[*?\[]', g) and g not in FILESET]   # 写错 / 改名的路径永远对不上 = 这支单测再也不跑，报红
         if gone: sys.exit(f'【红】gate_route：{test} 的「门禁只看」里 {" ".join(gone)} 不在仓库里（改名了要同笔改这行）')
