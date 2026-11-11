@@ -15,7 +15,7 @@ def names(directory, translatable_only=False):
 
 class StringsTranslationTest(unittest.TestCase):
     def test_simplified_chinese_covers_every_translatable_string(self):
-        self.assertEqual(names('values', translatable_only=True), names('values-b+zh+Hans'))
+        self.assertEqual(names('values', translatable_only=True), names('values-zh'))
 
 
 if __name__ == '__main__':

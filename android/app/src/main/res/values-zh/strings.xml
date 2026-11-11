@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 触屏菜单（四指长按）与编辑条；术语对齐 iOS 的 zh-Hans 文案 -->
+    <string name="touch_menu_title">触屏布局</string>
+    <string name="touch_menu_edit_positions">编辑按键位置</string>
+    <string name="touch_menu_restore_default">恢复默认布局</string>
+    <string name="touch_passthrough_on">触屏直通：开（点按关闭）</string>
+    <string name="touch_passthrough_off">触屏直通：关（点按开启）</string>
+    <string name="touch_edit_save">保存</string>
+    <string name="touch_edit_default">默认</string>
+    <string name="touch_edit_cancel">取消</string>
+    <string name="touch_layout_load_failed">已保存的触屏布局读取失败，暂时使用默认布局</string>
+    <string name="touch_layout_save_failed">布局未保存：%1$s</string>
+
+    <!-- 主界面与运行模式 -->
+    <string name="preview_title">S2Arm Android 预览</string>
+    <string name="preview_description">安卓宿主调试构建，尚未接入游戏运行。</string>
+    <string name="native_unavailable">原生宿主无法启动，详情见 S2Arm 日志。</string>
+    <string name="import_game">导入游戏包…</string>
+    <string name="console_mode_handheld">运行模式：掌机（点按切到主机）</string>
+    <string name="console_mode_docked">运行模式：主机（点按切到掌机）</string>
+    <string name="console_mode_switched">运行模式已切换。</string>
+    <string name="console_mode_saved">运行模式已保存，下次启动游戏时生效。</string>
+</resources>

@@ -11,5 +11,17 @@
     <string name="console_mode_docked">Console mode: docked (tap for handheld)</string>
     <string name="console_mode_switched">Console mode switched.</string>
     <string name="console_mode_saved">Console mode saved. It applies the next time the game starts.</string>
+
+    <!-- Touch controls: the four-finger menu and the edit bar -->
+    <string name="touch_menu_title">Touch controls</string>
+    <string name="touch_menu_edit_positions">Edit button positions</string>
+    <string name="touch_menu_restore_default">Restore default layout</string>
+    <string name="touch_passthrough_on">Touch passthrough: on (tap to turn off)</string>
+    <string name="touch_passthrough_off">Touch passthrough: off (tap to turn on)</string>
+    <string name="touch_edit_save">Save</string>
+    <string name="touch_edit_default">Default</string>
+    <string name="touch_edit_cancel">Cancel</string>
+    <string name="touch_layout_load_failed">Saved touch layout could not be read; using the default</string>
+    <string name="touch_layout_save_failed">Layout not saved: %1$s</string>
 </resources>
 

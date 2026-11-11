@@ -19,7 +19,7 @@
 #   合并后每步一行，标「［gate-host］」「［本机］」，拆两边的步两份都绿才绿、只算一步，「跑了 N 步 / 应跑 N 步」的 N 与本机全跑相同。
 #   待测提交 GATE_REV（缺省 HEAD；tools/ship.sh 给暂存区的临时提交）；工作树的跟踪文件与它不同、没有 维护方工具、gate-host 那份没出完整结果
 #   （连不上 / 工具链不同 / 中途断 / 排队超时 / 盘不足）→ 原派 gate-host 的步退回本机补跑（10-29 起；GATE_FALLBACK_LOCAL=0 = 旧行为：记没跑、「环境未就绪」退 75），不换 Spare-host。gate-host 忙不退回（10-22 维护者：退回本机高负载下偶发红、连环挡人）：
-#   在 维护方工具 的满核槽队列里排（列车优先级 0、预检 5；等待上限按队列长度算），排队超时 → gate-host 的步判红、写明排第几，不在本机重跑。远端工作树名 GATE_REMOTE_NAME（缺省本树目录名；列车给 train，增量编命中）。GATE_CLEAN=1：远端工作树连被忽略的构建产物一起清掉再跑（列车判假红的干净重跑；本机那份由调用方自己给干净树）。
+#   在 维护方工具 的满核槽队列里排（优先级按 GATE_ROLE：热修 0、列车 1、其余 2，先比优先级再比先后；1 号槽只给热修 / 列车；等待上限按队列长度算），排队超时 → gate-host 的步判红、写明排第几，不在本机重跑。远端工作树名 GATE_REMOTE_NAME（缺省本树目录名；列车给 train，增量编命中）。GATE_CLEAN=1：远端工作树连被忽略的构建产物一起清掉再跑（列车判假红的干净重跑；本机那份由调用方自己给干净树）。
 # 分层（10-30 维护者：合入前门禁只证明「这次改动没弄坏它影响到的东西」，目标中位 ≤5 分钟）：钩子 / tools/gate_ios.sh 文件头「# 门禁层：合入后」（tools/gate_decl.py layer 收；不写 = 合入前）。
 #   GATE_LAYER=pre（列车合入前）= 去掉声明合入后的步；post = 只跑声明合入后的步；不设 = 全跑（自检 11-05 起缺省 pre、显式空值才全跑；老单测同旧行为）。GATE_LIST=1 清单同样按层过滤；
 #   「# 门禁层：合入后（路由命中时合入前也跑）」= 合入后的步，但合入前层里按改动路由选中它时也跑（11-10：安卓支合入前不跑 android/gate.sh、ios 头改动不跑 iOS 编译，一天叠多处 main 红）
@@ -64,6 +64,14 @@ fi
 # 远端那一份（GATE_PLAN 非空）把每步结果写进仓库里的 GATE_OUT（build/ 下、被忽略），本机经 维护方工具 --pull 拉回；本机那份用临时目录
 if [ -n "$PLANM" ]; then L=$R/${GATE_OUT:?远端计划要给 GATE_OUT}; rm -rf "$R/build/gate_out"; mkdir -p "$L"; trap '[ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT
 else L=$(mktemp -d); trap 'rm -rf "$L"; [ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT; fi
+# 同一棵树的 C# 编译串行（tools/dotnet_lock.c，11-10 判据去负载化：并行各步编同一批 compat/tree 工程共用 obj/ 互踩，MSB4018 / nupkg 被占 / CS0006）：
+#   开头现编到 $L/bin/dotnet，各步 DOTNET 与 PATH 都指它（各步大多按 ${DOTNET:-~/.dotnet/dotnet} 调，少数直接调 dotnet）；真 dotnet 记在 S2A_DOTNET_REAL。
+#   用编出来的程序而不是脚本：脚本解释器受 SIP 保护会清掉 DYLD_*（t_native_provider 靠 DYLD_INSERT_LIBRARIES 注入，11-11 经脚本包装后服务层红）。
+#   编不出（没有 cc）= 不接锁照跑；嵌套门禁（S2A_DOTNET_LOCK 已给）不套两层
+if [ -f tools/dotnet_lock.c ] && [ -z "${S2A_DOTNET_LOCK:-}" ] && mkdir -p "$L/bin" && cc -O2 -o "$L/bin/dotnet" tools/dotnet_lock.c 2> /dev/null; then
+  export S2A_DOTNET_REAL=${DOTNET:-$HOME/.dotnet/dotnet} S2A_DOTNET_LOCK=$R/build/.dotnet_build.lock DOTNET=$L/bin/dotnet PATH=$L/bin:$PATH
+  mkdir -p "$R/build"
+fi
 # C / ObjC / C++ 按内容编译缓存（tools/cc_cache.sh，10-30 列车线）：本机那份与 gate-host 那份各自打开，每次编译的命中情况记 $L/ccache.log（gate-host 那份随结果目录拉回）
 [ -f tools/cc_cache.sh ] && { source tools/cc_cache.sh; S2A_CCACHE_LOG=$L/ccache.log s2a_ccache_on "$R"; }
 # doc 仍须扫描；只有非 doc 档需要统一 Apple 编译工具链（#665）。
@@ -146,7 +154,7 @@ if [ "$TIER" = full ]; then
   # iOS 全量编译 + 链接（10-20 维护者：坐标探测的 mach_vm.h 弄坏过 main 的 iOS 出包，门禁只编 Mac 没拦住）；缓存构建目录，热编约 5 秒
   # 源码同步到私有镜像再编（gate_ios.sh），不和钩子的 dotnet 抢 obj / 锁，和钩子并行跑；只在进 App 的源码有改动时跑
   [ -f runtime/build.mk ] && [ -f tools/gate_ios.sh ] && { [ $RT = 0 ] || [ "$(route ios)" = yes ]; } && add "iOS 全量编译" 'bash tools/gate_ios.sh' "${GATE_IOS_S:-3600}"   # 有 iOS 构建入口的仓库才跑（列车单测的假仓库没有）
-  if [ $RT = 1 ]; then HOOKS=$(route hooks); else HOOKS=$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path './tools/*' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort); fi
+  if [ $RT = 1 ]; then HOOKS=$(route hooks); else HOOKS=$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path './tools/*' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort | { off=$(python3 tools/gate_decl.py off 2> /dev/null | cut -f1); if [ -n "$off" ]; then LC_ALL=C grep -v -x -F "$off" || true; else cat; fi; }); fi   # 「# 门禁停用：」的钩子不跑（11-11）
 fi
   # 钩子自报预算（10-21：宽屏门禁离线着色器库缓存键一变整份重建 912 秒，超固定的 600 秒）：钩子文件里有「# 门禁预算：--budget」这一行才问
   #   （不认 --budget 的钩子会把它当普通参数整份跑完），bash <钩子> --budget 打一个整数秒 → 本步墙钟上限；问不出来用缺省 GATE_HOOK_S
@@ -186,24 +194,6 @@ if [ -n "$LINUX_LOCAL" ] && [ -n "${GATE_RERUN+x}" ]; then
     [ -n "$found" ] || { echo "自检请求的步骤未在本次清单中：${requested}（结论不完整）" >&2; exit 2; }
   done
 fi
-# CPU 排队（10-24 维护者 重新分工：本机忙时新门禁先排队，资源让给双轨；10-29 维护者 批：判据从 15 分钟 load average 换成 CPU 实际空闲——
-#   load average 把等硬盘的线程也算进去，出包读写小文件时虚高到 50–75、CPU 其实闲着）：CPU 实际空闲 < S2A_GATE_CPU_IDLE_MIN（缺省 15%；0 = 关）时每 30 秒看一次，
-#   最多等 S2A_GATE_LOAD_WAIT_S（缺省 1800）秒，到点照跑并在结论里写明；双轨线的门禁设 GATE_DUAL=1 不排；远端那一份（GATE_PLAN）不排；
-#   列车起的门禁（tools/train.sh grun 设 GATE_NO_LOADQ=1）不排：它有墙钟上限，排队会把合入通道拖成超时红
-#   单测临时仓库里的假门禁（没有路由器 tools/gate_route.py）不排；专测排队的 gate_loadq_test 给 S2A_GATE_IDLE_TEST，照排。读不到空闲（没有 top）不排
-if [ -z "${GATE_DUAL:-}" ] && [ -z "${GATE_NO_LOADQ:-}" ] && [ -z "${GATE_PLAN:-}" ] && [ "${S2A_GATE_CPU_IDLE_MIN:-15}" != 0 ] \
-   && { [ -f tools/gate_route.py ] || [ -n "${S2A_GATE_IDLE_TEST:-}" ]; }; then
-  lw0=$SECONDS; lsaid=
-  while :; do
-    ci=${S2A_GATE_IDLE_TEST:-$(top -l 2 -n 0 -s 1 2> /dev/null | awk '/CPU usage/ { for (i = 1; i <= NF; i++) if ($i ~ /idle/) v = $(i - 1) } END { sub(/%/, "", v); if (v != "") printf "%d", v + 0.5 }')}
-    [ -n "$ci" ] || break
-    [ "$ci" -ge "${S2A_GATE_CPU_IDLE_MIN:-15}" ] && break
-    [ $((SECONDS - lw0)) -ge "${S2A_GATE_LOAD_WAIT_S:-1800}" ] && { echo "【黄】本机 CPU 实际空闲 ${ci}% 仍低于 ${S2A_GATE_CPU_IDLE_MIN:-15}%，已排队 $((SECONDS - lw0)) 秒，到上限照跑"; break; }
-    [ -z "$lsaid" ] && { echo "本机 CPU 实际空闲 ${ci}% < ${S2A_GATE_CPU_IDLE_MIN:-15}%：门禁先排队（双轨优先；最多 ${S2A_GATE_LOAD_WAIT_S:-1800} 秒）"; lsaid=1; }
-    sleep "${S2A_GATE_LOAD_POLL_S:-30}"
-  done
-  [ -n "$lsaid" ] && echo "CPU 排队结束：等了 $((SECONDS - lw0)) 秒"
-fi
 # ---- 每步在哪跑（GATE_HOST=gate-host）----
 # 假红重跑（列车用）：GATE_RERUN=<上次门禁「红步」行的名字，tab 分隔> → 只跑这几步；部分跑，绿了也不写已验记录
 if [ -n "$RER" ]; then
@@ -233,6 +223,25 @@ N=${#STEPS[@]}
 # 待 Mac 证的步另起一行机读（tab 分隔），总结行写成「本机绿、待 Mac 证」——不许让读末行的人 / 脚本把它当成整份门禁绿
 macsum() { [ "$MACN" -gt 0 ] || return 0; printf '待Mac证'; printf '\t%s' "${MACS[@]}"; echo; }
 [ "$N" = 0 ] && { gl_end 绿; [ ${#OTHER[@]} -gt 0 ] && echo "另一层：${OTHER[*]}"; macsum; if [ "$MACN" -gt 0 ]; then echo "门禁 本机绿、待 Mac 证：$TIER 档，本机已证 0 步（本机能跑的步本树都不涉及）${MACL}"; else echo "门禁 绿：$TIER 档，跑了 0 步 / 应跑 0 步（要跑的步本树都不涉及）"; fi; exit 0; }
+# CPU 排队（10-24 维护者 重新分工：本机忙时新门禁先排队，资源让给双轨；10-29 维护者 批：判据从 15 分钟 load average 换成 CPU 实际空闲——
+#   load average 把等硬盘的线程也算进去，出包读写小文件时虚高到 50–75、CPU 其实闲着）：CPU 实际空闲 < S2A_GATE_CPU_IDLE_MIN（缺省 15%；0 = 关）时每 30 秒看一次，
+#   最多等 S2A_GATE_LOAD_WAIT_S（缺省 1800）秒，到点照跑并在结论里写明；双轨线的门禁设 GATE_DUAL=1 不排；远端那一份（GATE_PLAN）不排；
+#   11-11 挪到算出步数之后（0 步不排：热修 post 层 0 步白等 601 秒）；GATE_ROLE=热修 不排（热修入队到开跑 < 1 分钟）
+#   列车起的门禁（tools/train.sh grun 设 GATE_NO_LOADQ=1）不排：它有墙钟上限，排队会把合入通道拖成超时红
+#   单测临时仓库里的假门禁（没有路由器 tools/gate_route.py）不排；专测排队的 gate_loadq_test 给 S2A_GATE_IDLE_TEST，照排。读不到空闲（没有 top）不排
+if [ -z "${GATE_DUAL:-}" ] && [ -z "${GATE_NO_LOADQ:-}" ] && [ "${GLROLE:-}" != 热修 ] && [ -z "${GATE_PLAN:-}" ] && [ "${S2A_GATE_CPU_IDLE_MIN:-15}" != 0 ] \
+   && { [ -f tools/gate_route.py ] || [ -n "${S2A_GATE_IDLE_TEST:-}" ]; }; then
+  lw0=$SECONDS; lsaid=
+  while :; do
+    ci=${S2A_GATE_IDLE_TEST:-$(top -l 2 -n 0 -s 1 2> /dev/null | awk '/CPU usage/ { for (i = 1; i <= NF; i++) if ($i ~ /idle/) v = $(i - 1) } END { sub(/%/, "", v); if (v != "") printf "%d", v + 0.5 }')}
+    [ -n "$ci" ] || break
+    [ "$ci" -ge "${S2A_GATE_CPU_IDLE_MIN:-15}" ] && break
+    [ $((SECONDS - lw0)) -ge "${S2A_GATE_LOAD_WAIT_S:-1800}" ] && { echo "【黄】本机 CPU 实际空闲 ${ci}% 仍低于 ${S2A_GATE_CPU_IDLE_MIN:-15}%，已排队 $((SECONDS - lw0)) 秒，到上限照跑"; break; }
+    [ -z "$lsaid" ] && { echo "本机 CPU 实际空闲 ${ci}% < ${S2A_GATE_CPU_IDLE_MIN:-15}%：门禁先排队（双轨优先；最多 ${S2A_GATE_LOAD_WAIT_S:-1800} 秒）"; lsaid=1; }
+    sleep "${S2A_GATE_LOAD_POLL_S:-30}"
+  done
+  [ -n "$lsaid" ] && echo "CPU 排队结束：等了 $((SECONDS - lw0)) 秒"
+fi
 # >>> step_par（单测 tests/gate_step_par_test.sh 按这两行标记抽出来测）
 # 全机步数上限（11-04 合入运维线）：一份门禁原先把所有步同时起（job 全部 &），gate-host 上 3 份门禁叠起来 300+ 进程、负载 18–23，单测跑满 600 秒被杀成假红。
 #   每步开跑前先拿一个全机令牌（内核文件锁，见下），令牌数 GATE_STEP_PAR 缺省 = 核数 × 2/3（至少 2）：
@@ -286,7 +295,13 @@ LJ=(); LJN=(); TKS=(); job() {   # job <编号> <命令> <上限>：先排令牌
   trap "_sigrc '$1' 143 TERM" TERM; trap "_sigrc '$1' 130 INT" INT; trap "_sigrc '$1' 129 HUP" HUP; trap 'tok_put "$tk"' EXIT
   # 末尾另起一行 exit $?：bash 5 对「-c 串的最后一条简单命令」直接 exec，组长会变成被测命令本身、命令行里没有 .pg 路径，
   #   收尸进程（tools/gate_reap.py）按这个字样经 safe_killpg 认组就认不出（11-11 门禁机上列车 run_token_test ④ 红）；最后一条是内建命令就不会 exec
-  export GATE_IN_STEP=1; timeout "$3" bash -c "echo \$\$ > '$L/$1.pg'; $2"$'\n''exit $?' > "$L/$1.log" 2>&1 & tp=$!; echo $tp > "$L/$1.tp"; wait $tp; rc=$?; echo "$rc $((SECONDS - s0))" > "$L/$1.rc" ) & LJ+=($!); LJN+=("$1"); }   # LJ = 本机步的进程号（先等它们、还 CPU 账，再等 gate-host）
+  # 步时限按「无进展」判（11-10 判据去负载化：墙钟上限把满载下的正常慢判成超时——weak_link / 语法 / oneclick 一晚三个超时未判）：
+  #   tools/nostall.py 连续 GATE_NOSTALL_S（缺省 300）秒日志不长、树内 CPU / 磁盘不涨、没有编译子进程才判挂死（红）；墙钟只留本步上限 × GATE_HARD_X（缺省 4）
+  #   作保底（死循环一直吃 CPU 也算「有进展」），撞保底才记超时未判。GATE_NOSTALL_S=0 或缺 nostall.py（单测假仓库）= 旧行为：墙钟上限 = 本步上限
+  if [ "${GATE_NOSTALL_S:-300}" != 0 ] && [ -f tools/nostall.py ]; then echo "${GATE_NOSTALL_S:-300} $(( $3 * ${GATE_HARD_X:-4} ))" > "$L/$1.ns"
+    set -- "$1" "$2" "$3" "${S2A_PY:-python3}" tools/nostall.py "${GATE_NOSTALL_S:-300}" -- timeout "$(( $3 * ${GATE_HARD_X:-4} ))"
+  else set -- "$1" "$2" "$3" timeout "$3"; fi
+  export GATE_IN_STEP=1; "${@:4}" bash -c "echo \$\$ > '$L/$1.pg'; $2"$'\n''exit $?' > "$L/$1.log" 2>&1 & tp=$!; echo $tp > "$L/$1.tp"; wait $tp; rc=$?; echo "$rc $((SECONDS - s0))" > "$L/$1.rc" ) & LJ+=($!); LJN+=("$1"); }   # LJ = 本机步的进程号（先等它们、还 CPU 账，再等 gate-host）
 tok_putall() { local t; for t in ${TKS[@]+"${TKS[@]}"}; do tok_put "$t"; done; TKS=(); }   # 收尾兜底：步被 kill -9 没放的令牌（持锁者是门禁主进程，不收要等门禁退出）
 # <<< step_par
 # 门禁被停（列车收到 TERM 转来）时各步一起停：每步的 timeout 自成进程组、不随门禁退出，逐个 TERM 它（timeout 转给整组）；gate-host 那份停本机的 维护方工具
@@ -325,7 +340,7 @@ NONCE=; if [ ${#PI[@]} -gt 0 ]; then
     S2A_REMOTE_SLOTS=${SL0:-$([ "$h" = spare-host ] && echo 1 || echo 3)} bash "$S2A_PRIVATE_TOOLS/remote.sh" "$@" --name "$RN" $GC --rev "$REV" --timeout $((mx + 300)) --sync @gate \
       --env GATE_TIER --env GATE_SCAN_BASE --env GATE_CHANGED --env GATE_HOOK_S --env GATE_IOS_S --env GATE_IOS_WORK_S --env GATE_PLAN --env GATE_OUT --env GATE_TEST_CACHE --env GATE_ROLE \
       --pull "$OUTR=$L/r" -- bash tools/gate.sh > "$L/remote.log" 2>&1 & tp=$!; echo $tp > "$L/remote.tp"; wait $tp; echo $? > "$L/remote.rc"; echo "$h" > "$L/remote.host"; }
-  ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=${GATE_HOST_PRIO:-2}
+  ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=$(( TPRIO < 2 ? TPRIO : 2 ))
     rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) &
 fi
 TK=()   # TK[i] = 第 i 步（单测）的缓存键；没有 = 不走缓存
@@ -421,6 +436,10 @@ show() {   # show <行首> <结果文件（$L 下，不带后缀）> <显示名>
   if [ "$rc" = 75 ]; then echo "${1}🟡 $3 $sec 秒（rc=75，这一步自报环境未就绪）：$last"; return 3; fi
   # 跑满本步墙钟上限被杀（rc=124 且用满上限）= 超时未判（11-04 维护者）：多半是机器负载，不当本支红、不进红步清单；
   #   同 75 走「环境未就绪」（没有真红时整份退 75）。列车遇 75 先核干净 main，main 能过而本支超时才算本支的（真卡死照样拦下）。步自己内部 timeout 退 124 仍是红
+  # 无进展看门狗判的挂死（步跑在 tools/nostall.py 下，见 job）：与负载无关，记红；墙钟保底 = 本步上限 × GATE_HARD_X，撞保底才是超时未判
+  local ns= hard=$4; [ -f "$f.ns" ] && read -r ns hard < "$f.ns"
+  if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; grep -a '无进展看门狗' "$f.log" | head -2 | sed 's/^/    | /'; return 1; fi
+  set -- "$1" "$2" "$3" "$hard"
   if [ "$rc" = 124 ] && [ "$sec" -ge $(($4 - 2)) ]; then echo "${1}🟡 $3 $sec 秒（超时未判：跑满 ${4} 秒上限被杀，负载 $(sysctl -n vm.loadavg 2> /dev/null | awk '{print $2}')；不算本支红）：$last"; echo "$3" >> "$L/timeouts"; return 3; fi
   echo "${1}🔴 $3 $sec 秒（rc=$rc$([ "$rc" = 124 ] && { [ "$sec" -ge $(($4 - 2)) ] && echo "，超 ${4} 秒" || echo "，没到 ${4} 秒上限：是这一步自己退出 124（它内部的 timeout 到点）"; })）：$last"; { grep -E '^(不通|✗)' "$f.log" | head -10; grep -a '^  ┊' "$f.log" | head -400; grep -v '^[[:space:]]*$' "$f.log" | grep -av '^  ┊' | tail -12; } | sed 's/^/    | /'   # 先列「不通 / ✗」行：单测全文长时末尾看不到是哪条（✗ 是 python 单测与 widen 系列的写法，10-31 widen_auto_pkg 红行被截掉）
   return 1
