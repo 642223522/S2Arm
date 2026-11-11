@@ -1757,7 +1757,6 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
             // NVN 的 BindProgram 按阶段绑定：本次调用的掩码只覆盖要改的阶段，未置位的阶段
             // 保留先前绑定。这里按阶段合并：每个被本次掩码覆盖的阶段，取本程序该阶段 sd[]
             // 的 key；空程序则解绑该阶段。不能只记本次调用的掩码，否则会丢掉更早的绑定。
-            S->bound_program = (const void *)program.prog;
             for (int st = 0; st < 5; st++) {
                 if (!((program.stages >> st) & 1)) continue;
                 int found = -1;
@@ -1772,6 +1771,13 @@ int s2a_record_replay(struct s2a_vk_device *device, const uint8_t *begin, const 
                     memcpy(S->bound_keys[st], program.keys[found], 8);
                     S->bound_stage_present |= (uint8_t)(1u << st);
                 }
+            }
+            // 图形程序身份同样按阶段归属（Metal state_op：stages & 0x1f 才换 S.prog）：只绑 CS 的调用
+            // 不动它；空程序只解绑本次掩码里的阶段，还有图形阶段在绑时保留原身份（各阶段键已在上面合并）。
+            // 旧写法每次都用本次 prog 覆盖，游戏先绑 VS/FS 再绑 CS（或空程序解绑别的阶段）后，
+            // 下一笔 draw 拿到 CS 程序或空指针（真机：「draw: no device/program」后 abort）。
+            if (!(program.stages & (1u << 5)) || (program.stages & 0x1f)) {
+                if (program.prog || !S->bound_stage_present) S->bound_program = (const void *)program.prog;
             }
             // CS has independent ownership: a later graphics bind must not replace it.
             if (program.stages & (1u << 5)) {

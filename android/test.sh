@@ -341,6 +341,7 @@ case "$(uname -s)" in
     if [ -n "$(ldconfig -p 2>/dev/null | grep 'libvulkan\.so\.1' | head -1)" ]; then
       s2a_gate_step bash "$android_dir/tools/vk_record_drawtex_reject_test.sh"
       s2a_gate_step bash "$android_dir/tools/vk_record_deferred_bind_test.sh"
+      s2a_gate_step bash "$android_dir/tools/vk_record_bind_program_test.sh"
     else
       s2a_gate_note "vk_record 生产入口探针：未运行（Linux 但缺宿主 libvulkan.so.1，探针只需它解析符号）"
     fi ;;
