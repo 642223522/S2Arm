@@ -72,13 +72,13 @@ extension S2ArmLauncherModel {
     func advanceBatch() {
         guard batchRunning, !busy else { return }
         guard let next = batchState?["next"] as? [String: Any], let gid = next["gameId"] as? String,
-              let item = batchItems.first(where: { $0["gameId"] as? String == gid }) else { batchRunning = false; batchFinished(); return }
+              let item = batchItems.first(where: { $0["gameId"] as? String == gid }) else { batchRunning = false; batchFinished(); pumpQueue(); return }
         let results = item["results"] as? [String: [String: Any]] ?? [:]
         let platforms = (item["platforms"] as? [String] ?? []).filter { results[$0]?["state"] as? String == "pending" }.compactMap(Self.exportPlatform)
         guard let game = games.first(where: { $0.id == gid }), !platforms.isEmpty else {
             // 游戏库里已经没有这款（玩家删了）：记失败、接着下一款
             Task {
-                for p in platforms.compactMap(Self.batchPlatform) { await batchMark(gid, p, state: "failed", message: "游戏库里已经没有这款游戏") }
+                for p in platforms.compactMap(Self.batchPlatform) { guard await batchMark(gid, p, state: "failed", message: "游戏库里已经没有这款游戏") else { return } }
                 advanceBatch()
             }
             return
@@ -93,12 +93,22 @@ extension S2ArmLauncherModel {
         await batchMark(gid, p, state: state, message: message, code: code, output: output)
     }
 
-    private func batchMark(_ gid: String, _ p: String, state: String, message: String = "", code: String? = nil, output: String? = nil) async {
+    /// → 记成了没有。没记成：整批停住、原因给批量页（剃刀 M7：原先失败不更新状态照样往下走，下一轮还按旧状态出同一款或误判「已没有这款」）
+    @discardableResult
+    private func batchMark(_ gid: String, _ p: String, state: String, message: String = "", code: String? = nil, output: String? = nil) async -> Bool {
         var args = ["--game", gid, "--platform", p, "--state", state]
         if !message.isEmpty { args += ["--message", message] }
         if let code { args += ["--code", code] }
         if let output { args += ["--output", output] }
-        if let s = await provider.client.batch("mark", args), s["batch"] != nil { batchState = s }
+        return accept(await provider.client.batch("mark", args))
+    }
+
+    /// 批次脚本的回复：有 batch 就收下；没有（脚本起不来 / 报错，如另一个进程正改着批次）就停住整批、记原因
+    private func accept(_ reply: [String: Any]?) -> Bool {
+        if let reply, reply["batch"] != nil { batchState = reply; batchError = nil; return true }
+        batchError = reply?["error"] as? String ?? "批次脚本没有回应"
+        batchRunning = false
+        return false
     }
 
     func batchRecord(_ gid: String, _ platform: ExportPlatform) async {
@@ -111,7 +121,7 @@ extension S2ArmLauncherModel {
     func batchSessionEnded(cancelled: Bool) {
         Task {
             if cancelled {
-                if let s = await provider.client.batch("cancel"), s["batch"] != nil { batchState = s }
+                _ = accept(await provider.client.batch("cancel"))
                 batchRunning = false
                 return
             }
@@ -126,8 +136,7 @@ extension S2ArmLauncherModel {
     private func batchCommand(_ command: String, _ args: [String] = []) {
         guard !busy else { return }
         Task {
-            guard let s = await provider.client.batch(command, args), s["batch"] != nil else { return }
-            batchState = s
+            guard accept(await provider.client.batch(command, args)) else { batchShown = true; return }   // 「重试 / 继续」没成：批量页说清原因（原先点了没反应）
             batchRunning = true
             batchShown = true
             advanceBatch()
@@ -142,8 +151,9 @@ extension S2ArmLauncherModel {
     }
 
     /// 启动器刚打开：上次没出完的批次读回来（正在出的那款记成被打断、重新排队），出包页顶部提示继续
-    func recoverBatch() {
+    func recoverBatch(_ done: @escaping () -> Void = {}) {
         Task {
+            defer { done() }
             guard let s = await provider.client.batch("recover"), s["batch"] != nil else { return }
             batchState = s
         }

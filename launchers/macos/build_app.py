@@ -82,7 +82,7 @@ def bundle_shell(engine_json, dest, env):
         raise SystemExit(f"【红】发版要用装着的最新 Xcode（{newest}）出，这次选的是 {env['DEVELOPER_DIR']}：去掉 --developer-dir / S2A_DEVELOPER_DIR 重来")
     if (cache / "manifest.json").is_file() and linked_sdk(cache / "root/S2Arm") != want:
         print(f"壳缓存 {cache} 是 iOS SDK {linked_sdk(cache / 'root/S2Arm')} 出的，发版要 {want}：挪开重出")
-        cache.rename(cache.parent / f".tmp.stale.{sid}.{os.getpid()}")   # 同 pack/ipa.sh：挪开不删（别的出包单可能正读它），.tmp.* 由 tools/gc.sh 清
+        cache.rename(cache.parent / f".tmp.stale.{sid}.{os.getpid()}")   # 同 pack/ipa.sh：挪开不删（别的出包单可能正读它），.tmp.* 由维护方内部清扫器清
     if not (cache / "manifest.json").is_file():
         cache.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["bash", str(ROOT / "pack/shell_build.sh"), str(cache)], env=env, check=True)

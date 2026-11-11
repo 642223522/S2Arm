@@ -107,7 +107,7 @@ public sealed partial class EnvironmentWindow
             HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0), Spacing = 8 };
         if (importBusy)
         {
-            var cancel = Action("welcome.tool.cancel", () => importCancellation?.Cancel(), !false);
+            var cancel = Action("welcome.tool.cancel", () => CancelJob(JobKind.Import), !false);
             footer.Children.Add(cancel);
         }
         else
@@ -176,9 +176,7 @@ public sealed partial class EnvironmentWindow
     }
 
     // ---- import job state ----
-    private bool importBusy;
     private string importJobName = "", importJobMessage = "", importError = "";
-    private CancellationTokenSource? importCancellation;
 
     private async Task BrowseImportAsync(ImportKind kind)
     {
@@ -223,25 +221,24 @@ public sealed partial class EnvironmentWindow
     private async Task RunImportKeysAsync(string keyPath)
     {
         if (importBusy || connectedFolder is null || libraryId is null) return;
-        importBusy = true; importError = ""; importJobName = Path.GetFileName(keyPath); importJobMessage = "";
+        var front = BeginJob(JobKind.Import); importError = ""; importJobName = Path.GetFileName(keyPath); importJobMessage = "";
         keysRejected = false; Render();
-        using var cts = new CancellationTokenSource(); importCancellation = cts;
         try
         {
             var result = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "keys", [keyPath], cts.Token);
+                "keys", [keyPath], front.Token, jobId: front.Next());
             DisplayJob(result);
             if (!result.Report.Succeeded) { importError = result.Report.Message; return; }
             // 放好密钥后重查 catalog，接着导入悬挂的游戏
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "catalog", null, cts.Token);
+                "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             { catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers(); }
             importDialog = null;
             if (pendingImportPaths.Length > 0)
             {
                 var pending = pendingImportPaths; pendingImportPaths = [];
-                importBusy = false; importCancellation = null;
+                EndJob(front);   // 接着导入悬挂的游戏是另一个导入作业
                 _ = RunImportGamesAsync(pending);
                 return;
             }
@@ -251,19 +248,18 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         { importError = error.Message; }
-        finally { importCancellation = null; importBusy = false; Render(); }
+        finally { EndJob(front); Render(); }
     }
 
     private async Task RunImportGamesAsync(string[] filePaths)
     {
         if (importBusy || connectedFolder is null || libraryId is null) return;
-        importBusy = true; importError = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
+        var front = BeginJob(JobKind.Import); importError = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
         keysRejected = false; Render();
-        using var cts = new CancellationTokenSource(); importCancellation = cts;
         try
         {
             var result = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "import", filePaths, cts.Token, partialResults: true);
+                "import", filePaths, front.Token, partialResults: true, jobId: front.Next());
             DisplayJob(result);
             if (!result.Report.Succeeded)
             {
@@ -289,7 +285,7 @@ public sealed partial class EnvironmentWindow
             }
             // 成功：重查目录，更新欢迎页状态
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "catalog", null, cts.Token);
+                "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             {
                 catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
@@ -323,7 +319,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         { importError = error.Message; }
-        finally { importCancellation = null; importBusy = false; Render(); }
+        finally { EndJob(front); Render(); }
     }
 
     private static string? GetDiagCode(LibraryJobOutput job) => DiagnosticCode(job.Report.Diagnostics);

@@ -137,7 +137,7 @@ class JobCase(unittest.TestCase):
         self.assertTrue(diagnostic["suggestion"])
         self.assertEqual(terminal["message"], diagnostic["summary"])
         self.assertTrue(Path(diagnostic["logPath"]).is_file())
-        saved = json.loads((self.c.library / "logs" / "jobs" / (terminal["taskId"] + ".json")).read_text())   # 库已建好：任务记录在 <库>/logs/jobs
+        saved = json.loads((self.c.private / "logs" / "jobs" / (terminal["taskId"] + ".json")).read_text())   # 任务记录固定在 <私有目录>/logs/jobs（剃刀 H6）
         self.assertEqual(saved["diagnostics"], terminal["diagnostics"])
         return diagnostic
 

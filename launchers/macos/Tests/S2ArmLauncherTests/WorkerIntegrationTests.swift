@@ -20,7 +20,7 @@ import XCTest
         XCTAssertEqual(marker?["id"] as? String,store.preferences.libraryId)
         XCTAssertFalse(store.preferences.libraryId.isEmpty)
         XCTAssertEqual(store.tasks.first(where:{$0.id==id})?.state,"completed")
-        // 游戏库结构 P3：setup 起跑时库还没建好，任务记录退回 <私有目录>/logs/jobs；库建好后的作业写 <库>/logs/jobs
+        // 任务记录固定在 <私有目录>/logs/jobs（剃刀 H6），库建没建好都一样
         let firstRequest=try JSONSerialization.jsonObject(with:Data(contentsOf:store.privateRoot.appendingPathComponent("logs/jobs/\(id).request.json"))) as? [String:Any]
         XCTAssertEqual(firstRequest?["metalHud"] as? Bool,false)
         store.preferences.metalHud=true
@@ -39,7 +39,7 @@ import XCTest
         // catalog 是只读探测、不落任务记录（剃刀 H4）：「请求带上 metalHud」改用会落记录的作业核——keys 不给路径，作业当场失败，
         //   请求在建任务时就已落盘；等那份文件出现（失败的作业不走完成回调）
         let keysID=store.worker("keys",visible:false)
-        let keysRequest=library.appendingPathComponent("logs/jobs/\(keysID).request.json")
+        let keysRequest=store.privateRoot.appendingPathComponent("logs/jobs/\(keysID).request.json")   // 任务记录固定在私有目录（剃刀 H6）
         for _ in 0..<100 where !FileManager.default.fileExists(atPath:keysRequest.path) { try await Task.sleep(nanoseconds:100_000_000) }
         let request=try JSONSerialization.jsonObject(with:Data(contentsOf:keysRequest)) as? [String:Any]
         XCTAssertEqual(request?["metalHud"] as? Bool,true)

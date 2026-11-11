@@ -164,6 +164,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var keysRejected = false
     /// 刚装好的那款（装机弹窗显示完成页）。
     @Published var installDone: String?
+    /// 刚装完的那次是单一 IMG：成功页多写一句「打开 S2Arm 会自动完成安装」
+    @Published var installOpenToFinish = false
     /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
     /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
     @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
@@ -187,6 +189,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var batchLocation = ""
     @Published var batchState: [String: Any]?
     @Published var batchRunning = false
+    /// 批次记录（batch.py mark / 命令）没写成的原因：整批停住、批量页显示（剃刀 M7：原先失败照样往下走，状态和真实结局分叉）；nil = 没出错
+    @Published var batchError: String?
     @Published var batchUnrecognized: [ImportSource] = []
     /// 在单款出包页又放进游戏：导入完列清单时这款排第一
     var batchSeed: String?
@@ -225,6 +229,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
     @Published var cloudSyncing = false
     private var work: Task<Void, Never>?
+    private var refreshWaiters: [() -> Void] = []
+    /// 正在列时又要刷新（导入完、出包完、切回窗口……）：记一笔，这一轮列完再补列一次；这期间挂的回调归补的那一轮（剃刀 M8：原先直接丢掉，
+    /// 刚导入的游戏要等下一次别的刷新才出现）。nil = 没有要补的
+    private var refreshAgain: [() -> Void]?
+    private var startupCatalogSent = false
     private var controllerGameStarted = false
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
@@ -240,8 +249,18 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 有作业在跑（一局、准备、出包、装机……）：别的动作先不让点。
     var busy: Bool { if let session, case .finished = session.phase { return false }; return session != nil }
 
-    public func refresh() {
-        guard !loading else { return }
+    /// 启动时（启动器剃刀 M6）：碰游戏库 / 私有目录的后端作业一个接一个起——先列游戏库，再恢复批次，再查环境。
+    /// 原先 onAppear 一次并发起这几个作业，每个作业开头都做迁移 / 收日志：两个作业同时收私有目录日志、老库搬家时旧库目录被建回来（坑记录）。
+    /// 不碰游戏库的（控制口、更新、公告、手柄中继）照常一起起。
+    func startup() {
+        startControl(); finishPendingUpdate(); checkForUpdate(); loadNotice(); startControllerConnection()
+        refresh { [weak self] in self?.recoverBatch { self?.checkEnvironment() } }
+    }
+
+    /// done：这次列完（成功或失败）后调；已经在列时不再起新作业，等那一次列完再调
+    public func refresh(_ done: (() -> Void)? = nil) {
+        guard !loading else { refreshAgain = (refreshAgain ?? []) + (done.map { [$0] } ?? []); return }
+        if let done { refreshWaiters.append(done) }
         // 启动时先显示上次的列表，不等作业；能不能玩在真正启动时还会完整校验
         if !libraryLoaded, games.isEmpty, let known = provider.library.lastKnownGames(), !known.isEmpty {
             games = known
@@ -250,7 +269,9 @@ public final class S2ArmLauncherModel: ObservableObject {
             showingSnapshot = true
         }
         loading = true
-        provider.library.load { [weak self] result in
+        // 启动器这次打开后的第一次读带 startup（剃刀 H14）：作业层只在这一次清残留 / 判任务目录清理，之后每次刷新只读
+        let startup = !startupCatalogSent; startupCatalogSent = true
+        provider.library.load(startup: startup) { [weak self] result in
             guard let self else { return }
             self.loading = false
             self.libraryLoaded = true
@@ -263,6 +284,9 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.libraryError = error.message
                 self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
             }
+            let waiters = self.refreshWaiters; self.refreshWaiters = []
+            waiters.forEach { $0() }
+            if let again = self.refreshAgain { self.refreshAgain = nil; self.refreshWaiters = again; self.refresh() }
         }
     }
 
@@ -553,6 +577,14 @@ public final class S2ArmLauncherModel: ObservableObject {
         return nil
     }
 
+    /// 空闲时接着做排着的事（启动器剃刀 M2）：先装批量出完的款，再出批次进行中单独点的款。批次结束、装机结束都从这里走，
+    ///   原先批次结束只看自动装机，批次期间排进 exportQueue 的单款永远「排队中」
+    func pumpQueue() {
+        guard !busy, !batchRunning else { return }
+        if !installAfterQueue.isEmpty { installNextQueued(); return }
+        if !exportQueue.isEmpty { let next = exportQueue.removeFirst(); session = nil; runExport(next) }
+    }
+
     func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
         // 按页面顺序出；收尾清什么由作业层定（剃刀 M21）：iPhone 后面还有平台时请求带 followUp，作业层先不清解包
@@ -699,13 +731,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, ask: Bool = true) {
-        guard !busy, installAllowed(game.id) else { return }
+        // 不在这里再核装机页清单（启动器剃刀 M1）：装机页按钮和控制口调用前各自核过；批量出完自动装的款从没打开过装机页，原先在这里被悄悄挡掉、队列停住
+        guard !busy else { return }
         let teamId = teamId ?? Self.enteredTeam
         failAction(nil, game: nil)
         // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
         let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
-            do { _ = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink) }
+            do { let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink); self?.installOpenToFinish = r?.openToFinish ?? false }
             catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? ""); throw f }
             return nil
         }
@@ -1078,7 +1111,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
         if session.kind == .installUpdate { phoneUpdateEnded(completed: state == .completed) }
-        if session.kind == .install, !installAfterQueue.isEmpty { Task { installNextQueued() } }
+        if session.kind == .install { Task { pumpQueue() } }
         if Self.phoneKinds.contains(session.kind), let id = session.gameID { phoneResult = (id, session.name, state == .completed) }
         // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
         if session.kind == .play, let id = session.gameID, cloudFolder != nil {

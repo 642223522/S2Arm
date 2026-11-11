@@ -607,6 +607,23 @@ class LogCauses(JobCase):
         self.assertNotEqual(error.code, "tool_missing")
         self.assertIn("候选 tool_missing 未采信", d["detail"])
 
+    def test_rewrite_gap_failure_carries_machine_facts(self):
+        # 剃刀 G5 / H9：改写失败带机读事实（facts），前端按字段显示、不解析中文。证据里两条统计行取最后一条；GAP 行去掉地址 / 寄存器后按类别计数。
+        #   期望手算：最后一条 PFRW mod=main need=120 gaps=3 fatal=0；三条 GAP 归两类——「ldr _, [_, _]」2 次、「svc _」1 次
+        error, d = self.mac_refresh(["PFRW mod=rtld need=4 gaps=0 fatal=0",
+                                     "PFRW mod=main need=120 gaps=3 fatal=0",
+                                     "GAP\t1\t0x7100001000\tldr x1, [x2, #0x10]",
+                                     "GAP\t2\t0x7100002000\tldr x3, [x4, #-8]",
+                                     "GAP\t3\t0x7100003000\tsvc #0x55",
+                                     "【红】fixture 刷新停在 rewrite 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "rewrite_gap")
+        self.assertEqual(d["facts"], {"module": "main", "need": 120, "gaps": 3, "fatal": 0,
+                                      "gapKinds": [{"kind": "ldr _, [_, _]", "count": 2}, {"kind": "svc _", "count": 1}]})
+
+    def test_non_rewrite_failure_has_no_facts(self):
+        error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertNotIn("facts", d)
+
     def test_unrecognized_cause_asks_for_error_summary(self):
         error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(d["code"], "package_failed")

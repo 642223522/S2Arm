@@ -321,8 +321,7 @@ class JobsTests(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, OUT=str(out)), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "True 乙 3 0")   # 发现断管、没抛；三条事件都进了记录；子进程照常跑完
-        built = Path(self.request["library"]) / ".s2arm-library.json"   # 库建好了任务记录在 <库>/logs/jobs，否则 <私有目录>/logs/jobs
-        jobs = Path(self.request["library"]) / "logs/jobs" if built.is_file() else self.root / "private/logs/jobs"
+        jobs = self.root / "private/logs/jobs"   # 任务记录固定在 <私有目录>/logs/jobs（剃刀 H6）
         events = (jobs / "gone.events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(l)["stage"] for l in events], ["甲", "甲", "乙"])
 
@@ -815,6 +814,17 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
+    def test_catalog_says_whether_keys_are_needed(self):
+        # 剃刀 W10：catalog 每款带 needsKeys，判据只有 library.KEYLESS_FORMATS 一份（前端不再各算一份格式名单）。
+        #   期望手写：NSP 原件 → 要；NUP 容器 / 解包目录（extract）→ 不要；NUP 本体 + NSP 的 DLC → 要
+        self.assertTrue(library.needs_keys([dict(format="nsp")]))
+        self.assertTrue(library.needs_keys([dict()]))   # 旧记录没有 format：按加密原件算（宁可提示导入密钥，不放过）
+        self.assertFalse(library.needs_keys([dict(format="nup"), dict(format="extract")]))
+        self.assertTrue(library.needs_keys([dict(format="nup"), dict(format="nsp")]))
+        game = self.game(packages=[self.package()]); self.catalogue([game])
+        out = library.catalog(self.c)
+        self.assertEqual(out["games"][0]["needsKeys"], library.needs_keys(library.selected_packages(game)))
+
     def test_space_budget_covers_measured_peaks(self):
         # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
         #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
@@ -870,8 +880,7 @@ class JobsTests(unittest.TestCase):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
                 self.assertIsNone(space_rule.direct_check(root, cache, out))
-        self.assertEqual(space_rule.direct_bytes(int(3e9)), library._pack_direct_bytes(int(3e9)))   # 取的就是预检那一份
-        self.assertEqual(space_rule.direct_bytes(int(3e9) - 1), library._pack_direct_bytes(int(3e9) - 1))
+        self.assertIs(library.pack_direct_bytes, space_rule.pack_direct_bytes)   # 预检与开工前复核是同一个函数（剃刀 H11：只在 space_rule 定义一份）
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
@@ -2079,6 +2088,24 @@ class JobsTests(unittest.TestCase):
         library.sweep_residue(c)
         self.assertFalse((out / "roots").exists())
         self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
+
+    def test_catalog_sweeps_and_prunes_only_on_startup_refresh(self):
+        # 剃刀 H14：残留清扫与任务目录清理只在启动器打开后那次刷新（startup: true）做；之后的刷新（装机页、导入完、切回窗口）都不做。
+        #   用真残留夹具：普通刷新后残留还在、清理没调；startup 刷新后残留清掉、清理调了一次
+        import unittest.mock as um
+        gid, out, _ = self.stopped_game()
+        pruned = []
+        with um.patch.object(library, "prune_jobs", lambda *a, **k: pruned.append(1)):
+            library.catalog(self.c)
+            self.assertTrue((out / "roots").exists())
+            self.assertEqual(pruned, [])
+            self.c.r["startup"] = True
+            try:
+                library.catalog(self.c)
+            finally:
+                self.c.r.pop("startup", None)
+        self.assertFalse((out / "roots").exists())
+        self.assertEqual(pruned, [1])
 
     def test_sweep_without_residue_never_takes_execution_lock(self):
         """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""

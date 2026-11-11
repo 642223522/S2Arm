@@ -5,6 +5,7 @@ import json
 import os
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from jobcase import JobCase
@@ -24,7 +25,7 @@ class ProbeJobTests(JobCase):
 
     def test_probe_writes_no_job_files_but_reports_on_stdout(self):
         # installCheck / targetDevice / catalog / locations：jobs/ 下没有这个任务的任何文件；结果照样从标准输出回来（终态 succeeded、result 原样）
-        jobs = self.c.library / "logs" / "jobs"   # 库建好后任务记录在 <库>/logs/jobs（core.logs_root）
+        jobs = self.c.private / "logs" / "jobs"   # 任务记录固定在 <私有目录>/logs/jobs（core.logs_root，剃刀 H6）
         for op in ("installCheck", "targetDevice", "catalog", "locations"):
             with self.subTest(op=op):
                 events = self.run_op(op, "probe-" + op)
@@ -33,8 +34,34 @@ class ProbeJobTests(JobCase):
 
     def test_real_job_still_writes_its_three_files(self):
         self.run_op("keys", "real-keys")
-        self.assertEqual(sorted(p.name for p in (self.c.library / "logs" / "jobs").glob("real-keys*")),
+        self.assertEqual(sorted(p.name for p in (self.c.private / "logs" / "jobs").glob("real-keys*")),
                          ["real-keys.events.jsonl", "real-keys.json", "real-keys.request.json"])
+
+
+class LibraryBusyEndToEndTests(JobCase):
+    def test_lock_timeout_reaches_terminal_event_with_holder(self):
+        # 走真作业路径（main → report_failure → diagnostic）：外部进程占着目录锁并记了占锁者，作业排队到上限（打桩 0.3 秒）失败；
+        #   终态事件的诊断里 code=library_busy、holder 原样（原先 diagnostic 重建 Failure 时 holder 丢了，只在直接调 describe_failure 时有）
+        import subprocess, sys
+        lock = self.c.library / ".catalog.lock"
+        info = dict(taskId="t7", operation="build", gameId="0100000000010000", pid=1, startedAt=1.0)
+        holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); "
+                                   "open(sys.argv[1]+'.holder','w').write(sys.argv[3]); print('ok',flush=True); sys.stdin.readline()",
+                                   str(lock), str(Path(core.__file__).parent), json.dumps(info)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            path = self.root / "busy.request.json"
+            atomic(path, self.request | dict(taskId="busy-1", operation="keys"))
+            def op(c):
+                with c.lock():
+                    return {}
+            with patch.object(core, "LOCK_WAIT_S", 0.3), patch("embedded.install"), patch("library.store_meta_background"):
+                self.assertEqual(main.run_request(path, operation_overrides={"keys": op}), 1)
+            last = [json.loads(l) for l in self.output.getvalue().splitlines() if l.startswith("{") and "busy-1" in l][-1]
+            d = last["diagnostics"][-1]
+            self.assertEqual((last["state"], d["code"], d["holder"]), ("failed", "library_busy", info))
+        finally:
+            holder.stdin.write("\n"); holder.stdin.flush(); holder.communicate(timeout=5)
 
 
 class JournalCadenceTests(JobCase):

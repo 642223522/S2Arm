@@ -151,7 +151,7 @@ class DefaultPathUnchangedTests(JobCase):
         result, done = self.worker("import", paths=[str(extract)])
         self.assertEqual(done["state"], "succeeded", result.stderr)
         self.assertEqual(sorted(done["result"]), ["imports"])
-        record = json.loads((self.c.library / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
+        record = json.loads((self.c.private / "logs" / "jobs" / (done["taskId"] + ".json")).read_text())
         self.assertNotIn("sources", record)
         result, done = self.worker("import", paths=[str(self.root / "nope" / "x.nsp")])   # 失败：结果为空，同以前
         self.assertEqual((done["state"], done.get("result") or {}), ("failed", {}))

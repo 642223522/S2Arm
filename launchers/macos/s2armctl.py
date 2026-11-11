@@ -243,9 +243,8 @@ def saved_library():
     return lib
 
 def logs_root():
-    """任务日志 + 任务记录（logs/jobs/）：库建好了（有 .s2arm-library.json）是 <库>/logs，否则 <数据目录>/logs。同作业层 pack/jobs/core.py logs_root"""
-    lib = saved_library()
-    return os.path.join(lib if lib and os.path.isfile(os.path.join(lib, '.s2arm-library.json')) else ROOT, 'logs')
+    """任务日志 + 任务记录（logs/jobs/）：固定 <数据目录>/logs，同作业层 pack/jobs/core.py logs_root（剃刀 H6）"""
+    return os.path.join(ROOT, 'logs')
 
 def task_log(task_id):
     d = logs_root()
@@ -324,8 +323,9 @@ def next_step(s, gid=None, target='ios'):
         return dict(step='启动', who='ai', do=f's2armctl launch {g["id"]}', why='这款游戏的 Mac 版已准备好', **extra)
 
     ipa = None if mac else ipa_of(s, g['id'])
+    ios_package_ready = bool(ipa or g.get('iphoneReady'))
     last = mine[-1] if mine else None
-    if last and last['state'] in ('failed', 'interrupted') and (mac or last['operation'] == 'install' or (last['operation'] == 'ipa' and not ipa)):
+    if last and last['state'] in ('failed', 'interrupted') and (mac or last['operation'] == 'install' or (last['operation'] == 'ipa' and not ios_package_ready)):
         d = (last.get('diagnostics') or [{}])[0]; code = d.get('code') or 'job_failed'
         who, do = AI_NEXT.get(code, DEFAULT_NEXT)
         step = {'build': '准备失败', 'install': '装机失败', 'ipa': '出包失败'}[last['operation']]
@@ -334,7 +334,7 @@ def next_step(s, gid=None, target='ios'):
         return dict(step='导入', who='ask', do='这款游戏缺：' + '、'.join(g.get('missing') or []) + '；问玩家要缺的文件，s2armctl games <文件夹>', why='游戏文件不全', **extra)
     if mac:
         return dict(step='准备', who='ai', do=f's2armctl build {g["id"]} mac，然后 s2armctl wait {g["id"]} --op build', why='还需要准备这款游戏的 Mac 版', **extra)
-    if not ipa:
+    if not ios_package_ready:
         # 一包通用（10-30）：iPhone 包与机型无关，不用先选目标设备——11-02 beta.3 走查发现这里还在多问一步
         return dict(step='出包', who='ai', do=f's2armctl build {g["id"]} ios，然后 s2armctl wait {g["id"]} --op ipa --timeout 7200', why='还没出 iPhone 版（大游戏第一次要几十分钟到一个多小时，请玩家插上电源、别让%s睡眠）' % ('电脑' if s.get('platform') == 'windows' else ' Mac '), **extra)
     if s.get('platform') == 'windows':
@@ -427,7 +427,7 @@ def push_pack(gid):
         sys.exit('资源包没推完（上面最后一行【红】是原因）：手机要解锁、保持连接；App 还没装的话请玩家先用 AltStore / Impactor 装好再试')
     print('🟢 资源包已推进 iPhone 并解开。请玩家打开这款游戏：第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏')
 
-# 作业记录（pack/jobs/core.py 写的 <游戏库>/logs/jobs/<任务>.json，库没建好时 <数据目录>/logs/jobs，见 logs_root：state / stage / milestone / done / total / pid / pidStart …）：
+# 作业记录（pack/jobs/core.py 写的 <数据目录>/logs/jobs/<任务>.json，固定在数据目录，见 logs_root：state / stage / milestone / done / total / pid / pidStart …）：
 #   控制口不应答或给的快照太旧时，wait 按它判。作业是独立进程，启动器卡住（内存吃紧、主线程忙）不等于作业停了
 def journal_task(game, op, tid, since):
     best = None

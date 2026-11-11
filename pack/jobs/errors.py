@@ -152,11 +152,12 @@ def recovery(code, *, packaged):
 
 class Failure(Exception):
     """message 是上屏的那句；internal 是只进诊断 detail（「复制错误摘要」带走）的内部原文：阶段、rc、构建号、红行。"""
-    def __init__(self, message, *, code="job_failed", internal="", holder=None):
+    def __init__(self, message, *, code="job_failed", internal="", holder=None, facts=None):
         super().__init__(message)
         self.code = code
         self.internal = internal
         self.holder = holder   # library_busy：占着游戏库锁的任务（filelock 旁挂文件里记的那份），其余为 None
+        self.facts = facts     # 机读的失败事实（cause_facts：改写失败的模块 / 缺口数 / 缺口类别），前端按字段显示，不解析中文；没有为 None
 
 
 def _under(path, roots):
@@ -399,6 +400,36 @@ def refresh_stop_phase(red):
     return None
 
 
+_PFRW = re.compile(r"PFRW\s+mod=(\S+)\s+need=(\d+)\s+gaps=(\d+)(?:\s+fatal=(-?\d+))?")   # 改写器统计行（runtime/rewriter/rewriter.c 打的机读格式）
+_GAP_KIND = re.compile(r"0x[0-9a-fA-F]+|\b[0-9a-f]{8}\b|#-?\w+|S\d_\d_C\d+_C\d+_\d|\b[xw]\d+\b")   # 同 core.write_rewrite_digest 的归类：去掉地址、寄存器号、立即数
+GAP_KINDS_MAX = 5
+
+
+def cause_facts(code, log, texts=()):
+    """失败的机读事实（剃刀 G5 / H9）→ dict 或 None。改写类（rewrite_gap / rewrite_failed）：同一份有界证据（gather_evidence）里
+    改写器自己打的最后一条统计行 PFRW → {"module", "need", "gaps", "fatal"}；证据里有 GAP 行再加 gapKinds = 前 GAP_KINDS_MAX 类 [{"kind", "count"}]（按次数降序）。
+    其余码、证据里没有统计行 → None（不猜）"""
+    if code not in ("rewrite_gap", "rewrite_failed"):
+        return None
+    chunks = gather_evidence(log, texts)
+    last, kinds = None, {}
+    for _, text in chunks:
+        for m in _PFRW.finditer(text):
+            last = m
+        for line in text.splitlines():
+            if line.startswith("GAP\t"):
+                kind = _GAP_KIND.sub("_", line.split("\t", 3)[-1])[:80]
+                kinds[kind] = kinds.get(kind, 0) + 1
+    if not last:
+        return None
+    facts = {"module": last.group(1), "need": int(last.group(2)), "gaps": int(last.group(3))}
+    if last.group(4) is not None:
+        facts["fatal"] = int(last.group(4))
+    if kinds:
+        facts["gapKinds"] = [{"kind": k, "count": n} for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))[:GAP_KINDS_MAX]]
+    return facts
+
+
 def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
@@ -475,5 +506,6 @@ def build_tool_failure(args, milestone, log):
     elif executable == "dotnet" and milestone == "unpack":
         phase = "unpack"
     code, why = classify_failure(phase, log)
-    # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why)
+    # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）；机读事实进 facts（前端按字段显示）
+    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,
+                   facts=cause_facts(code, log))
