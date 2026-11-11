@@ -207,6 +207,10 @@ def bundle(destination, developer_dir):
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert
     devcert.fetch_rcodesign(tools / "rcodesign", "mac")
+    # 官方只发 universal（arm64 + x86_64，51.8 MB）；本 App 只支持 Apple 芯片，只留 arm64 那一片（各片签名各自独立，抽出来仍有效），约省一半
+    exe = tools / "rcodesign/rcodesign"
+    subprocess.run(["lipo", str(exe), "-thin", "arm64", "-output", str(exe) + ".arm64"], check=True)
+    os.replace(str(exe) + ".arm64", exe)
     (tools / "gal").mkdir()
     shutil.copy2(ROOT / "build/gal/gal_xc", tools / "gal/gal_xc")
     (tools / "dsx").mkdir()   # 直连翻译库（pack/stage_direct.sh 认 dsx/libdsx.dylib，11-08 从 libnxgal 拆出）
