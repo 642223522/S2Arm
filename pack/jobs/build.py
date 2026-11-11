@@ -208,9 +208,11 @@ def launch(c):
             started = time.monotonic()
             try:
                 c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"])
-            except Failure:
+            except Failure as f:
                 if trial:   # 新宿主试玩：TRIAL_OK_SECONDS 内异常退出 = 不认这款，下次退回原来的；玩过这么久才崩不怪宿主
                     host_update.settle(c, game["id"], host, ok=time.monotonic() - started >= host_update.TRIAL_OK_SECONDS)
+                if f.code == "tool_exit":   # 游戏进程自己非 0 退出（多为崩溃，139 = 段错误）：给启动页一个说人话的码，原文与退出码随错误摘要带走
+                    raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。", code="game_crashed", internal=str(f)) from None
                 raise
             if trial:
                 host_update.settle(c, game["id"], host, ok=True)

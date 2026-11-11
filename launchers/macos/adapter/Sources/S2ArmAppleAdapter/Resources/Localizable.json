@@ -6942,5 +6942,9 @@
  {
   "source": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
   "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
+ },
+ {
+  "source": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",
+  "en": "Try starting it again. If it happens again, export a diagnostics package from Environment Check and attach it to a GitHub issue so we can fix the crash."
  }
 ]
