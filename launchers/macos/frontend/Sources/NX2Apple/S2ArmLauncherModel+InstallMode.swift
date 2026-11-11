@@ -27,11 +27,13 @@ extension S2ArmLauncherModel {
     }
 
     /// 三选一的结果：repack = 更新完要排进批量出包的款（「更新并重新出这几款」），空 = 「只更新，其他稍后」
-    func updatePhone(acceptStale: Bool, repack: [String], language: String) {
+    func updatePhone(acceptStale: Bool, repack: [String], language: String, device: String? = nil) {
         guard !busy else { return }
         updateConfirm = nil; updateRepack = repack
+        // 连着多台时更新哪台：同装机（install），用出包页选中的那台；原先不传，连着两台就报「连着不止一台」（v0.3.0 验收测出）
+        let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
         start(JobSession(kind: .installUpdate, gameID: nil, name: BackendText.launcherText("update.running", language: language))) { [weak self] sink in
-            _ = try await self?.provider.updatePhone(acceptStale: acceptStale, events: sink)
+            _ = try await self?.provider.updatePhone(acceptStale: acceptStale, device: device, events: sink)
             return nil
         }
     }
