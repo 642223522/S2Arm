@@ -72,7 +72,7 @@ extension S2ArmLauncherModel {
     func advanceBatch() {
         guard batchRunning, !busy else { return }
         guard let next = batchState?["next"] as? [String: Any], let gid = next["gameId"] as? String,
-              let item = batchItems.first(where: { $0["gameId"] as? String == gid }) else { batchRunning = false; batchFinished(); return }
+              let item = batchItems.first(where: { $0["gameId"] as? String == gid }) else { batchRunning = false; batchFinished(); pumpQueue(); return }
         let results = item["results"] as? [String: [String: Any]] ?? [:]
         let platforms = (item["platforms"] as? [String] ?? []).filter { results[$0]?["state"] as? String == "pending" }.compactMap(Self.exportPlatform)
         guard let game = games.first(where: { $0.id == gid }), !platforms.isEmpty else {
