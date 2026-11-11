@@ -44,8 +44,6 @@ import S2ArmAppleAdapter
             case .noPlatform: return .bad("没选平台")
             case .game(let why): return .bad(why)
             case .keys: return .bad("还没放密钥：s2armctl keys <prod.keys>")
-            case .checking: return .bad("环境检查还在跑，几秒后再试", code: 409)
-            case .environment: return .bad("环境缺东西：看 GET /state 的 checks（ok 为 false 的项），处理后 POST /environment 重查")
             case .busy: return .bad("有作业在跑：等它结束或 cancel 再来", code: 409)
             case .alreadyQueued: return .bad("这款已在出包或排队，没有新建任务：等它结束再发", code: 409)
             }
@@ -142,7 +140,8 @@ import S2ArmAppleAdapter
             if !u.stale.isEmpty, !accept {
                 return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "这几款要按新版重新出包，重新出包前暂时打不开：带 acceptStale 确认（repack 为真时更新完把它们排进批量出包、出完自动装）", "stale": stale]))
             }
-            model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans")
+            model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans",
+                              device: (a["device"] as? String).flatMap { $0.isEmpty ? nil : $0 })   // 同 /install：连着多台时指定哪台
             return .object(["ok": true, "stale": stale])
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }

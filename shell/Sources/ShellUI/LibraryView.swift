@@ -137,6 +137,9 @@ public struct LibraryView: View {
                 if layout.isCoverFlow, let selected { CoverFlowBackdrop(game: selected.game) } else { ShellPalette.background.ignoresSafeArea() }
                 if games.isEmpty {
                     EmptyLibraryView()
+                        .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
+                            LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
+                        }
                         .overlay(alignment: .topTrailing) {
                             if column == nil {
                                 HStack(spacing: 10) {
@@ -330,6 +333,7 @@ public struct LibraryView: View {
         .environment(\.shellIgnoresPress, { [gate] in gate.isSystemEcho })
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
+        .environment(\.shellManageSaves, guardedActions.onManageSaves)
         .environment(\.shellOpenGameOrder, actions.onReorderGames == nil ? nil : {
             guard libraryPressAllowed, noteTouch() else { return }
             gameOrderOpen = true
@@ -362,6 +366,8 @@ public struct LibraryView: View {
         // Y opens controllers.
         .focusable().focused($keyboardFocus).focusEffectDisabled()
         .onAppear { keyboardFocus = true }
+        // The host's Home Screen quick action Settings: the library's own settings, the same as its gear button
+        .onReceive(NotificationCenter.default.publisher(for: .shellOpenSettings)) { _ in openShellSettings() }
         .onAnyTouch { gate.touch() }
         .onKeyPress(.leftArrow) { handle(.left, from: .keyboard); return .handled }
         .onKeyPress(.rightArrow) { handle(.right, from: .keyboard); return .handled }
@@ -502,6 +508,7 @@ public struct LibraryView: View {
         a.onGlobalPadMapChange = o.onGlobalPadMapChange.map { act in { if !echo() { act($0, $1) } } }
         a.onGlobalPadMapReset = o.onGlobalPadMapReset.map { act in { if !echo() { act() } } }
         a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
+        a.onManageSaves = o.onManageSaves.map { act in { if !echo() { act($0) } } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when

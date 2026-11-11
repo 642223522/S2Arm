@@ -1,3 +1,4 @@
+// S2Arm: distinguish network-account setup from local-user selection.
 using Microsoft.IO;
 using Ryujinx.Common;
 using Ryujinx.Common.Logging;
@@ -38,7 +39,28 @@ namespace Ryujinx.HLE.HOS.Applets
             // left "add new user" doing nothing (11-06 Brain Training); upstream opens the user selector and reports the
             // existing user as newly created, which adds no user either.
             _normalSession.TryPop(out _);
-            if (_normalSession.TryPop(out byte[] uiSettings) && uiSettings.Length >= 4 && BitConverter.ToUInt32(uiSettings, 0) == UiModeUserCreator)
+            uint mode = _normalSession.TryPop(out byte[] uiSettings) && uiSettings.Length >= 4 ? BitConverter.ToUInt32(uiSettings, 0) : 0;
+            // S2Arm (#621 Taiko no Tatsujin Rhythm Festival): the network-service modes - EnsureNetworkServiceAccountAvailable (2) and the
+            // license requirements for a network service (10, 11) - link or check a Nintendo Account online. The host is offline and the
+            // account service says no network service account is linked (CheckAvailability -> NetworkServiceAccountRegistrationRequired),
+            // so on a console with no connection the applet ends without one: answer it cancelled. Answering "selected the current user"
+            // told the game the account was now usable; it checked again, still unlinked, and opened the applet again every frame
+            // (1007 times in 17 s) instead of going on offline; Diablo II: Resurrected waited on its account setup forever (#634, #28).
+            // The reply is a full UiReturnArg (24 bytes: result, then a zero Uid) with the account UI's cancellation result 2124-0001
+            // (0x27C), which games take as "go on offline" (#634, albionlee), not the 8-byte generic failure word.
+            if (mode is UiModeEnsureNetworkServiceAccountAvailable or UiModeLicenseRequirementsForNetworkService or UiModeLicenseRequirementsForNetworkServiceWithUserContext)
+            {
+                if (s_offlineAnswered.TryAdd(mode, 0))
+                {
+                    Logger.Info?.Print(LogClass.ServiceAm, $"Player select applet mode {mode} (network service account) answered cancelled: the host is offline and no network service account is linked");
+                }
+                _normalSession.Push(BuildCancelledResponse());
+                AppletStateChanged?.Invoke(this, null);
+                _system.ReturnFocus();
+
+                return ResultCode.Success;
+            }
+            if (mode == UiModeUserCreator)
             {
                 AccountManager accounts = _system.AccountManager;
                 // count + 1 candidates against count existing names: one is always free
@@ -109,7 +131,21 @@ namespace Ryujinx.HLE.HOS.Applets
             return stream.ToArray();
         }
 
+        // nn::account::UiMode (libnx PselUiMode)
         private const uint UiModeUserCreator = 1;
+        private const uint UiModeEnsureNetworkServiceAccountAvailable = 2;
+        private const uint UiModeLicenseRequirementsForNetworkService = 10;
+        private const uint UiModeLicenseRequirementsForNetworkServiceWithUserContext = 11;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, byte> s_offlineAnswered = new();   // modes already logged
+
+        private static byte[] BuildCancelledResponse()
+        {
+            // UiReturnArg: u64 Result, then a 16-byte Uid. The SDK returns the
+            // result directly; 2124-0001 is the account UI cancellation result.
+            byte[] response = new byte[0x18];
+            BitConverter.GetBytes(0x27CUL).CopyTo(response, 0);
+            return response;
+        }
 
         private static byte[] BuildResponse()
         {

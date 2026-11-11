@@ -318,7 +318,7 @@ def _sha256():
 
 def release_version(engine):
     """S2Arm 发版号（三端同号：Mac 启动器、Windows 启动器、iPhone 容器都显示这一个，11-09 维护者）：
-    发布的引擎快照读打包时写进 engine.json 的 version；开发树取最近 tag 的数字段（v0.2.3-beta.1 → 0.2.3，同 Mac build_app）。取不到 → 空串"""
+    发布的引擎快照读打包时写进 engine.json 的 version；开发树取发版 tag 的数字段（v0.2.3-beta.1 → 0.2.3；规则见 _release_tag_numbers）。取不到 → 空串"""
     eng = Path(engine) / "engine.json"
     if eng.is_file():
         try:
@@ -327,12 +327,60 @@ def release_version(engine):
                 return v
         except (OSError, ValueError):
             pass
-    try:
-        tag = subprocess.run(["git", "-C", str(engine), "describe", "--tags", "--abbrev=0"], capture_output=True, text=True, timeout=30).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    return _release_tag_numbers(engine)
+
+
+def _release_tag_numbers(engine):
+    """开发树的发版号数字段：HEAD 正好落在发版 tag 上就用它（热修分支上打的旧版号照旧是它自己）；否则取仓库里版本号最大的发版 tag。
+    不用 git describe：热修 tag（v0.2.7–v0.2.9 打在热修分支上、没合回 main）不在 main 的祖先里，describe 一直找到 v0.2.6，
+    开发版界面、CFBundleShortVersionString、engine.json 的 version 三端一起显示成发布前好几版（11-11 维护者截图发现）"""
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(engine), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return r.stdout if r.returncode == 0 else ""
+    def numbers(tag):
+        m = re.match(r"v?(\d+(?:\.\d+)*)", tag.strip())
+        return m.group(1) if m else ""
+    exact = numbers(git("describe", "--tags", "--exact-match", "HEAD"))
+    if exact:
+        return exact
+    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split()) if n]
+    return max(found, key=lambda n: tuple(int(x) for x in n.split(".")), default="")
+
+
+def display_version(engine):
+    """界面上给玩家看的版本字（11-11 维护者：玩家截图里要看得出是哪一版；Mac / Windows 启动器顶栏、iPhone 设置页与游戏库同一口径）：
+    正式版「v0.3.0」；开发版「v<最新发版号>-dev+<7 位短提交号>」（最新发版号见 _release_tag_numbers：不要求是 HEAD 的祖先）。HEAD 正好落在发版 tag 上且已跟踪文件没改动 = 正式版。
+    发布的引擎快照读打包时写进 engine.json 的 displayVersion；开发树在 engine 目录用 git 现算；git 不可用退回「v<release_version>」，连它也没有 → 空串"""
+    eng = Path(engine) / "engine.json"
+    if eng.is_file():
+        try:
+            v = json.loads(eng.read_text(encoding="utf-8")).get("displayVersion")
+            if isinstance(v, str) and v:
+                return v
+        except (OSError, ValueError):
+            pass
+    short = release_version(engine)
+    if not short:
         return ""
-    m = re.match(r"v?(\d+(?:\.\d+)*)", tag)
-    return m.group(1) if m else ""
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(engine), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    commit = git("rev-parse", "--short=7", "HEAD")
+    if not commit:
+        return f"v{short}"
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    tag = git("describe", "--tags", "--exact-match", "HEAD") or ""
+    if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
+        return f"v{short}"
+    return f"v{short}-dev+{commit[:7]}"
 
 
 def digest(path, progress=None):
@@ -909,6 +957,10 @@ class Context:
         env.pop("J", None)
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
+        gid = self.r.get("gameId")
+        if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
+            import library
+            env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)

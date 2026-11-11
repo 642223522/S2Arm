@@ -17,8 +17,8 @@ enum ShellSettingsRows {
     }
 
     static func hudRow(_ store: ShellSettingsStore) -> SettingRow {
-        SettingRow(id: hud, label: ShellStrings.text("Performance overlay"), note: ShellStrings.text("Used by games that have no choice of their own."),
-                   kind: .toggle(on: "1", off: "0"), value: store.performanceHUD == true ? "1" : "0")
+        SettingRow(id: hud, label: ShellStrings.text("Performance overlay"), note: ShellStrings.text("Shared by all games; you can also switch it in a game any time."),
+                   kind: .toggle(on: "1", off: "0"), value: store.performanceHUD ? "1" : "0")
     }
 
     /// The touch controls' size for every game. The preview above the row shows it.
@@ -121,9 +121,9 @@ struct ShellSettingsView: View {
                                 }.equatable()
                             }
                         }
-                        // S2Arm: the version, the same number the computer's S2Arm shows (written when the computer installs the app).
-                        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, !version.isEmpty {
-                            Text(verbatim: "S2Arm " + version).shellText(12.5).foregroundStyle(.white.opacity(0.45))
+                        // S2Arm: the version, the same text the computer's S2Arm shows (written when the computer installs the app; ShellVersion).
+                        if !ShellVersion.display.isEmpty {
+                            Text(verbatim: "S2Arm " + ShellVersion.display).shellText(12.5).foregroundStyle(.white.opacity(0.45))
                                 .frame(maxWidth: .infinity, alignment: .center).padding(.top, 8)
                                 .accessibilityIdentifier("shellSettings.version")
                         }

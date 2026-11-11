@@ -5,6 +5,9 @@
 //   3 个顶点不够一个四边形 = 0（三角形条带会画出 (-1,-1)(-1,1)(0,-1) 那个三角形，所以这一格能分出「按三角形条带硬画」）；
 //   7 个顶点 = 落单的第 7 个不画 = 64，且第 7 个顶点取 (1,-1) 之外的远点也不越界（这里与 6 个同为 64，只判不崩不报错）。
 //   不剔除（缺省多边形状态）。DrawArrays / DrawElements（16 位索引 0..6）各判一遍。
+// 多边形（NVN_DRAW_PRIMITIVE_POLYGON = 9；#635 0100F43008C44000回放报「primitive type 9 not implemented」整笔丢掉）：按 GL 凸多边形定义（以 v0 为扇心）手算：
+//   DrawArrays 3 个顶点 (-1,-1)(-1,1)(0,-1) = 左下三角，像素中心按行数 4+3+3+2+2+1+1+0 = 16；DrawElements 索引 0,4,5,1 = (-1,-1)(1,-1)(1,1)(-1,1) 整屏 = 64；
+//   2 个顶点不成形 = 0。改前整笔丢掉，前两格为 0（负对照）
 #ifndef NVN_WIND_SOURCE
 #define NVN_WIND_SOURCE "../gfx/nvn/nvn_mtl.m"
 #endif
@@ -34,6 +37,7 @@ static void setup(void) {
     NVNdeviceBuilder db; API(nvnDeviceBuilderSetDefaults)(&db); if (!API(nvnDeviceInitialize)(&dev, &db)) { printf("✗ 设备\n"); exit(1); }
     make_queue(NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT); API(nvnDeviceSetWindowOriginMode)(&dev, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT); mtl_init(); g_wd = 0;
     uint8_t *mem = NULL; if (posix_memalign((void **)&mem, 65536, POOL)) exit(1); memset(mem, 0, POOL); for (int i = 0; i < 7; i++) ((uint16_t *)(mem + IB))[i] = (uint16_t)i;
+    { static const uint16_t sq[4] = {0, 4, 5, 1}; memcpy(mem + IB + 64, sq, sizeof sq); }   // 多边形：整屏方块
     NVNmemoryPoolBuilder pb; API(nvnMemoryPoolBuilderSetDefaults)(&pb); API(nvnMemoryPoolBuilderSetDevice)(&pb, &dev);
     API(nvnMemoryPoolBuilderSetStorage)(&pb, mem, POOL); API(nvnMemoryPoolBuilderSetFlags)(&pb, NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
     API(nvnMemoryPoolInitialize)(&pool, &pb); API(nvnCommandBufferInitialize)(&cmd, &dev); API(nvnCommandBufferAddControlMemory)(&cmd, control, sizeof control);
@@ -48,15 +52,15 @@ static void setup(void) {
     prog = (prog_t){.magic = MAGIC('P', 'R', 'O', 'G'), .serial = nvn_new_serial()}; serial_put(prog.serial, pr);
 }
 // 画一遍四边形条带（indexed = 走 DrawElements，索引 0..6 放在池 IB 处），返回被画成红的像素数
-static int qdraw(int indexed, int count) {
+static int qdraw_p(NVNdrawPrimitive pm, int indexed, uint64_t ib_off, int count) {
     API(nvnCommandBufferAddCommandMemory)(&cmd, &pool, 0, CMD); API(nvnCommandBufferBeginRecording)(&cmd);
     const NVNtexture *colors[] = {&rt}; const float black[4] = {0, 0, 0, 1};
     API(nvnCommandBufferSetRenderTargets)(&cmd, 1, colors, NULL, NULL, NULL); API(nvnCommandBufferClearColor)(&cmd, 0, black, 15);
     API(nvnCommandBufferSetViewport)(&cmd, 0, 0, W, W); API(nvnCommandBufferSetScissor)(&cmd, 0, 0, W, W);
     NVNpolygonState ps; API(nvnPolygonStateSetDefaults)(&ps); API(nvnPolygonStateSetCullFace)(&ps, NVN_FACE_NONE); API(nvnCommandBufferBindPolygonState)(&cmd, &ps);
     API(nvnCommandBufferBindProgram)(&cmd, (const NVNprogram *)&prog, NVN_SHADER_STAGE_ALL_GRAPHICS_BITS);
-    if (indexed) API(nvnCommandBufferDrawElements)(&cmd, NVN_DRAW_PRIMITIVE_QUAD_STRIP, NVN_INDEX_TYPE_UNSIGNED_SHORT, count, API(nvnMemoryPoolGetBufferAddress)(&pool) + IB);
-    else API(nvnCommandBufferDrawArrays)(&cmd, NVN_DRAW_PRIMITIVE_QUAD_STRIP, 0, count);
+    if (indexed) API(nvnCommandBufferDrawElements)(&cmd, pm, NVN_INDEX_TYPE_UNSIGNED_SHORT, count, API(nvnMemoryPoolGetBufferAddress)(&pool) + ib_off);
+    else API(nvnCommandBufferDrawArrays)(&cmd, pm, 0, count);
     NVNcommandHandle h = API(nvnCommandBufferEndRecording)(&cmd);
     API(nvnQueueSubmitCommands)(&q, 1, &h); API(nvnQueueFinish)(&q);
     if (mtl_last_commit_error()) { printf("✗ GPU 报错\n"); exit(1); }
@@ -67,6 +71,7 @@ static int qdraw(int indexed, int count) {
     const uint8_t *px = out.contents; int red = 0; for (int i = 0; i < W * W; i++) red += px[4 * i] > 200 && px[4 * i + 1] < 50;
     return red;
 }
+static int qdraw(int indexed, int count) { return qdraw_p(NVN_DRAW_PRIMITIVE_QUAD_STRIP, indexed, IB, count); }
 
 int main(void) { @autoreleasepool {
     signal(SIGALRM, on_alarm); alarm(60);
@@ -76,6 +81,11 @@ int main(void) { @autoreleasepool {
     for (int ix = 0; ix < 2; ix++) for (int k = 0; k < 4; k++) {
         int got = qdraw(ix, C[k].count), ok = got == C[k].want; n++; if (!ok) bad++;
         printf("%s %s 四边形条带 %d 个顶点：红 %d 像素（应 %d）\n", ok ? "✓" : "✗", ix ? "DrawElements" : "DrawArrays", C[k].count, got, C[k].want);
+    }
+    static const struct { int indexed, count, want; } P[] = {{0, 3, 16}, {1, 4, 64}, {0, 2, 0}};   // 多边形，见文件头
+    for (int k = 0; k < 3; k++) {
+        int got = qdraw_p(NVN_DRAW_PRIMITIVE_POLYGON, P[k].indexed, IB + 64, P[k].count), ok = got == P[k].want; n++; if (!ok) bad++;
+        printf("%s %s 多边形 %d 个顶点：红 %d 像素（应 %d）\n", ok ? "✓" : "✗", P[k].indexed ? "DrawElements" : "DrawArrays", P[k].count, got, P[k].want);
     }
     printf("%s t_nvn_quadstrip：%d 格，不符 %d（Metal %s）\n", bad ? "✗" : "✓", n, bad, g_m3 ? "3" : "4");
     return bad ? 1 : 0;

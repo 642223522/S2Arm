@@ -190,19 +190,30 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual([float(x.strip().rstrip("f")) for x in ios.split(",")], [scale[str(i)] for i in range(6)])
 
     def test_pad_face_is_shared_by_every_game(self):
-        # 全游戏共用：存数据目录 game-settings.json、不进这款 launch.json；另一款（没有 Mac 版）也读到「按位置」；起局转 S2A_PAD_FACE=position
+        # 全游戏共用：存数据目录 game-settings.json、不进这款 launch.json；另一款（没有 Mac 版）也读到「Switch 布局」；起局转 S2A_PAD_FACE=switch
         self.caps()
-        self.save(padFace="position")
-        self.assertEqual(json.loads((self.c.private / "game-settings.json").read_text())["settings"], {"padFace": "position"})
+        self.save(padFace="switch")
+        self.assertEqual(json.loads((self.c.private / "game-settings.json").read_text())["settings"], {"padFace": "switch"})
         self.assertEqual(self.launch_file()["settings"], {})
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_PAD_FACE": "position"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_PAD_FACE": "switch"})
         other = "0100000000000001"
         write(self.c.library / "catalog.json", json.dumps({"games": [{"id": GID, "packages": []}, {"id": other, "packages": []}]}))
         m = community.mac_settings(self.c, other)
-        self.assertEqual((m["padFace"]["available"], m["padFace"]["value"]), (True, "position"))
-        self.assertEqual(community.launch_env(self.c, other), {"S2A_PAD_FACE": "position"})
-        self.save(padFace=None)   # 回缺省「按字母」：不设环境变量
+        self.assertEqual((m["padFace"]["available"], m["padFace"]["value"]), (True, "switch"))
+        self.assertEqual(community.launch_env(self.c, other), {"S2A_PAD_FACE": "switch"})
+        self.save(padFace="xbox")
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_PAD_FACE": "xbox"})
+        self.save(padFace=None)   # 回缺省「自动」：不设环境变量
         self.assertEqual(community.launch_env(self.c, GID), {})
+        self.assertEqual(community.mac_settings(self.c, GID)["padFace"]["value"], "auto")
+
+    def test_pad_face_old_values_still_count(self):
+        # 11-11 前存下的旧值：按位置 = Switch 布局（照旧转 switch），按字母 = 自动（不设环境变量）
+        self.caps()
+        for old, value, env in (("position", "switch", {"S2A_PAD_FACE": "switch"}), ("letter", "auto", {})):
+            write(self.c.private / "game-settings.json", json.dumps({"schema": 1, "settings": {"padFace": old}}))
+            self.assertEqual(community.mac_settings(self.c, GID)["padFace"]["value"], value)
+            self.assertEqual(community.launch_env(self.c, GID), env)
 
     def test_bad_key_or_value_is_refused_and_file_unchanged(self):
         self.caps()
