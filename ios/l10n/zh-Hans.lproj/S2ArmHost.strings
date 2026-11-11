@@ -285,6 +285,10 @@
 "controller.scanning" = "正在查找，轻点取消";
 "controller.turnOnBluetooth" = "打开蓝牙后重试";
 "img.scanFailed.title" = "没能导入游戏文件";
+"games.repair.done.title" = "游戏文件夹已修好";
+"games.repair.done.body" = "游戏文件夹之前归系统账户，S2Arm 写不进去，安装一直开始不了。已自动迁到 S2Arm 自己的新文件夹（%u 个文件，和原文件共享数据，不多占空间），可以接着安装。旧文件夹 S2Arm 删不掉，下次连电脑时会清掉。";
+"games.repair.failed.title" = "游戏文件夹没能修好";
+"games.repair.failed.body" = "游戏文件夹归系统账户，S2Arm 写不进去，自动迁到新文件夹也没成。游戏数据没有动，可以从电脑重新安装这款游戏；还不行就导出诊断包发给我们。";
 "diag.fileWord" = "诊断";
 "diag.error.bundleName" = "诊断包名脱敏失败，未导出诊断包";
 "diag.error.redact" = "诊断脱敏或写入失败，未导出诊断包";

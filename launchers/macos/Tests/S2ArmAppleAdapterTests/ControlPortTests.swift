@@ -102,4 +102,22 @@ import XCTest
         try FileManager.default.removeItem(at: jobs.appendingPathComponent("a.json"))
         XCTAssertEqual(states(), ["b:failed"])                                    // 删除
     }
+
+    /// #642：作业进程被强杀、来不及写终态，记录一直停在 running。快照里进程不在就报 interrupted（缓存命中时也核），进程在就照报 running
+    func testJournalReportsRunningJobWhoseProcessIsGoneAsInterrupted() throws {
+        let r = root(); defer { try? FileManager.default.removeItem(at: r) }
+        let jobs = r.appendingPathComponent("logs/jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        let gone = Process(); gone.executableURL = URL(fileURLWithPath: "/usr/bin/true"); try gone.run(); gone.waitUntilExit()   // 已退出并收尸的进程号
+        func put(_ name: String, _ o: [String: Any]) throws { try JSONSerialization.data(withJSONObject: o).write(to: jobs.appendingPathComponent(name)) }
+        try put("live.json", ["id": "live", "operation": "install", "state": "running", "started": 1.0, "pid": Int(getpid())])
+        try put("dead.json", ["id": "dead", "operation": "install", "state": "running", "started": 2.0, "pid": Int(gone.processIdentifier)])
+        try put("nopid.json", ["id": "nopid", "operation": "install", "state": "queued", "started": 3.0])
+        try put("done.json", ["id": "done", "operation": "install", "state": "completed", "started": 4.0, "pid": Int(gone.processIdentifier)])
+        func states() -> [String] { ControlJournal.tasks(privateRoot: r).map { "\($0["id"]!):\($0["state"]!)" } }
+        let want = ["live:running", "dead:interrupted", "nopid:queued", "done:completed"]
+        XCTAssertEqual(states(), want)
+        XCTAssertEqual(states(), want)   // 第二次走缓存，照样核
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: jobs.appendingPathComponent("dead.json"))) as? [String: Any]
+        XCTAssertEqual(raw?["state"] as? String, "running")   // 作业记录本身不改
+    }
 }

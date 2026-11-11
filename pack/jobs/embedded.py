@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 import shutil
 import uuid
-from core import Failure, atomic, contained, read
+from core import PROBES, Failure, atomic, contained, read
 
 
 def check_git(engine):
@@ -49,6 +49,9 @@ def install(c):
     #   不核 .git/（_stable_files：快照自带的 Git 仓库元数据，正常使用就可能变）。
     #   完好的副本直接用、不拿锁；要挪开 / 重解时拿跨进程锁（_install_lock），拿到后重读标记、再核一次（别的作业可能刚装好）才动手——
     #   v0.2.0 前回归：启动时 preflight 与 setup 同时初始化同一份副本，一个读到另一个装到一半 / 正被收走的副本，误判「被改过」、挪走对方的
+    if getattr(c, "operation", None) in PROBES and read(destination / ".installed.json", {}).get("schema") == 2:   # 非作业的调用方（tools 里的假上下文）没有 operation：按非探测、照常复核
+        c.engine = destination   # 只读探测（剃刀 H4）：装过就直接用，不逐文件复核、不清旧副本；出包 / 起局这类真用引擎产物的作业照旧每次复核（#304）
+        return
     if not _ready(c, destination, manifest):
         with _install_lock(root):
             if not _ready(c, destination, manifest):
@@ -65,24 +68,16 @@ def _ready(c, destination, manifest):
 
 @contextlib.contextmanager
 def _install_lock(root, timeout=1800):
-    """同一引擎目录的挪开 / 重解只许一个作业做（跨进程：flock / msvcrt，同 filelock）。等别的作业解完最多 timeout 秒（解一份几秒到一两分钟）"""
+    """同一引擎目录的挪开 / 重解只许一个作业做（跨进程：filelock.held，与库锁同一实现）。等别的作业解完最多 timeout 秒（解一份几秒到一两分钟）"""
+    import os
     import time
     import filelock
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".install.lock").open("a") as f:
-        t0 = time.time()
-        while True:
-            try:
-                filelock.try_lock(f)
-                break
-            except BlockingIOError:
-                if time.time() - t0 > timeout:
-                    raise Failure("另一个任务正在初始化内置 S2Arm 引擎，等了太久，请稍后重试。") from None
-                time.sleep(0.5)
-        try:
+    try:
+        with filelock.held(root / ".install.lock", wait_s=timeout, holder=dict(operation="prepareEngine", pid=os.getpid(), startedAt=round(time.time(), 3))):
             yield
-        finally:
-            filelock.unlock(f)
+    except filelock.Busy as busy:
+        raise Failure("另一个任务正在初始化内置 S2Arm 引擎，等了太久，请稍后重试。", internal=f"引擎安装锁占锁者：{busy.holder}") from None
 
 
 def _reinstall(c, source, manifest, root, destination, identity):

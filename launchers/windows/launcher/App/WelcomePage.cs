@@ -25,7 +25,9 @@ public sealed partial class EnvironmentWindow
     // 检查本身没做成不等于环境有问题：不拦玩家，真缺东西时出包会报具体原因
     private bool EnvironmentUnknown => !busy && (report is { Error: not null } ||
         (report is null && summaryKey is "process.start_failed" or "protocol.invalid_report" or "process.interrupted" or "environment.failed"));
+    // PcReady = 可以往下走（真准备好，或检查本身没做成也不拦）；绿勾和「检查全部通过」只给真准备好的（剃刀 W5：没查成也打绿勾、写全部通过，文案对不上）
     private bool PcReady => report is { Ready: true } || EnvironmentUnknown;
+    private bool PcChecked => report is { Ready: true };
     private bool GamesChosen => pendingImportPaths.Length > 0 || welcomeGameId != null;
     private bool KeysSettled => welcomeGameId != null ||
         (catalog?.KeysReady == true && !keysRejected) ||
@@ -34,7 +36,7 @@ public sealed partial class EnvironmentWindow
         !PcReady ? WelcomeStep.Pc : !GamesChosen ? WelcomeStep.Games : WelcomeStep.Keys;
     private bool WelcomeDone(WelcomeStep s) => s switch
     {
-        WelcomeStep.Pc => PcReady,
+        WelcomeStep.Pc => PcChecked,
         WelcomeStep.Games => GamesChosen,
         WelcomeStep.Keys => KeysSettled,
         _ => false
@@ -72,7 +74,7 @@ public sealed partial class EnvironmentWindow
         // ── 右列：三步 ──────────────────────────────────────────────────
         var steps = new StackPanel { Spacing = 0, Margin = new Thickness(0, 44, 48, 44) };
         steps.Children.Add(WelcomeStepRow(WelcomeStep.Pc,
-            T(PcReady ? "welcome.win.step.pc.done" : "welcome.win.step.pc.title"), false, PcContent()));
+            T(PcChecked ? "welcome.win.step.pc.done" : EnvironmentUnknown ? "welcome.win.step.pc.unknown" : "welcome.win.step.pc.title"), false, PcContent()));
         steps.Children.Add(WelcomeStepRow(WelcomeStep.Games,
             T(GamesChosen ? "welcome.step.games.done" : "welcome.step.games.title"), false, GamesContent()));
         steps.Children.Add(WelcomeStepRow(WelcomeStep.Keys,
@@ -204,9 +206,18 @@ public sealed partial class EnvironmentWindow
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
         var defaultLib = SavedLibrary();
+        // 玩家没选过位置、缺省位置又被别的文件占着（多半是把 S2Arm 解压到了 %USERPROFILE%\S2Arm）：换到旁边的空位置并记下来，
+        //   原先 setup 拒收后整个添加游戏卡死（v0.2.8 热修，Windows 玩家反馈「一直提示还有任务在进行」）
+        rememberLibrary = !File.Exists(LibraryPreference) && LibraryPaths.FreeDefaultLibrary(defaultLib) is var free && free != defaultLib;
+        if (rememberLibrary) defaultLib = LibraryPaths.FreeDefaultLibrary(defaultLib);
         libraryFolder = defaultLib;
         libraryOperation = EnsureLibraryAsync(defaultLib, next);
     }
+
+    /// <summary>缺省库换过位置（EnsureLibrary）：连上后写进设置，下次启动直接连它</summary>
+    private bool rememberLibrary;
+    /// <summary>游戏库最近一次没连上的原因（建库作业的原话 / 异常）：添加游戏时显示它，不再说成「有任务在进行」</summary>
+    private string libraryFailure = "";
 
     private async Task EnsureLibraryAsync(string folder, Action next)
     {
@@ -222,9 +233,15 @@ public sealed partial class EnvironmentWindow
             var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, cancellation.Token, libraryMoveFrom);
             libraryMoveFrom = null;
             DisplayJob(setup);
-            if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = setup.Report.Message; return; }
+            if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = libraryFailure = LibraryFailed(folder, setup.Report.Message); return; }
             var conn = LibraryConnection.Parse(setup.Report.Result);
-            connectedFolder = conn.Folder; libraryId = conn.Id; libraryFolder = connectedFolder;
+            connectedFolder = conn.Folder; libraryId = conn.Id; libraryFolder = connectedFolder; libraryFailure = "";
+            if (rememberLibrary)
+            {
+                rememberLibrary = false;
+                try { File.WriteAllText(LibraryPreference, connectedFolder); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { libraryDiagnostics += "\n" + error.Message; }
+            }
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "catalog", null, cancellation.Token);
             DisplayJob(listing);
             if (listing.Report.Succeeded)
@@ -233,10 +250,10 @@ public sealed partial class EnvironmentWindow
             next();
         }
         catch (LibraryProtocolException error)
-        { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; importError = error.Message; }
+        { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         catch (OperationCanceledException) { librarySummary = "library.interrupted"; }
         catch (Exception error)   // 玩家输入驱动的连接 / 创建：任何异常都报出来、不逃出去（玩家反馈：点「连接或创建游戏库」闪退）
-        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = error.Message; }
+        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         finally { libraryCancellation = null; libraryBusy = false; Render(); }
     }
 
@@ -306,7 +323,17 @@ public sealed partial class EnvironmentWindow
             panel.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4, MaxWidth = 200 });
             return panel;
         }
-        if (PcReady) { panel.Children.Add(Muted(T("welcome.win.step.pc.doneDetail"))); return panel; }
+        if (PcChecked) { panel.Children.Add(Muted(T("welcome.win.step.pc.doneDetail"))); return panel; }
+        if (EnvironmentUnknown)
+        {
+            // 没查成：说实话，可以先继续（真缺东西时出包会报具体原因），给重查 / 复制错误摘要
+            panel.Children.Add(Muted(T("welcome.win.step.pc.unknownDetail")));
+            var again = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };
+            again.Children.Add(Action("action.recheck", () => _ = CheckAsync(), !busy));
+            again.Children.Add(CopyReportButton(null, null, EnvironmentSummary));
+            panel.Children.Add(again);
+            return panel;
+        }
         if (report is null)
         {
             // 尚未检查：Activated 事件会自动触发；从压缩包里直接打开时不会有报告，要告诉玩家先解压
@@ -340,4 +367,7 @@ public sealed partial class EnvironmentWindow
         panel.Children.Add(pcButtons);
         return panel;
     }
+
+    private string LibraryFailed(string folder, string reason) =>
+        T("welcome.sheet.libraryFailed").Replace("{0}", folder).Replace("{1}", reason.Length > 0 ? reason : T("library.failed"));
 }

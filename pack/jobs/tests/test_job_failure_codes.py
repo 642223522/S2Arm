@@ -12,6 +12,7 @@ import shlex
 import sys
 import os
 import unittest
+import unittest.mock as um
 from unittest.mock import patch
 import zipfile
 
@@ -427,6 +428,16 @@ class FreeAccountLimits(unittest.TestCase):
         self.assertEqual((install.classify(raw), impactor.explain(raw)), ("app_id_taken", "app_id_taken"))
         self.assertTrue(loc.get(RECOVERY["app_id_taken"]) and spec["app_id_taken"]["title"]["en"] and "app_id_taken" in guide)
         self.assertEqual(ctl.AI_NEXT["app_id_taken"][0], "human")
+        # apple_session_expired（玩家错误摘要原文，Windows v0.2.7 plumesign 恢复保存的会话时报）：认成登录过期、给 Impactor 重新登录的办法，各处都登记；
+        #   旁边的 9401 / 两步验证 / 密码错各自仍归原码，不被这条吞掉
+        raw = "Error: Developer API error 1100 (HTTP Some(200)): Your session has expired. Please log in. (listTeams.action)"
+        self.assertEqual(impactor.explain(raw), "apple_session_expired")
+        self.assertIn("移除账号", RECOVERY["apple_session_expired"]); self.assertIn("添加账号", RECOVERY["apple_session_expired"])
+        self.assertTrue(loc.get(RECOVERY["apple_session_expired"]) and spec["apple_session_expired"]["title"]["en"] and "apple_session_expired" in guide)
+        self.assertEqual(ctl.AI_NEXT["apple_session_expired"][0], "human")
+        for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
+                            ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
+            self.assertEqual(impactor.explain(other), code)
 
 
 class LogCauses(JobCase):
@@ -459,6 +470,7 @@ class LogCauses(JobCase):
                 "【红】01007EF00011E000 直连库出库失败（rc=1，[直连库] 🔴 出库失败 rc=1（%s））" % build_log,
                 self.STOP]
 
+    @um.patch("errors._free_bytes", lambda path: 1 << 30)   # 前提：盘真满了（只剩 1 GB）——盘满字样要核实才采信（剃刀 H9）
     def test_direct_stage_dotnet_disk_full_reads_build_log(self):
         log = self.direct_build_log(
             "[直连库] 第 4/5 步 出库：41971 支，8 路并行\n"
@@ -495,6 +507,17 @@ class LogCauses(JobCase):
         self.assertEqual(error.code, "permission_denied")
         self.assertEqual(d["suggestion"], RECOVERY["permission_denied"])
 
+    def test_exfat_unsupported_ops_says_change_drive(self):
+        # 11-10 网友（v0.2.6 Mac）：存放位置设到外接盘写入失败；exFAT 映像复现，解包 seed 克隆退回拷贝后发布用 RENAME_EXCL 回 errno 45。
+        #   原先落成笼统的「资源准备失败」；现在说清这块盘格式不支持、换 APFS 盘
+        from errors import RECOVERY
+        error, d = self.mac_refresh(["克隆失败：main：[Errno 45] Operation not supported: '[PRIVATE_PATH]'",
+                                     "【红】克隆 exefs 失败",
+                                     "【红】010024B00F9D0000 刷新停在 seed 阶段（rc=1），现行 = 010024B00F9D0000@ex-1234abcd"])
+        self.assertEqual(error.code, "volume_ops_unsupported")
+        self.assertEqual(d["summary"], "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。")
+        self.assertEqual(d["suggestion"], RECOVERY["volume_ops_unsupported"])
+
     def test_windows_precheck_missing_metal_says_metal_unavailable(self):
         # 11-09 Windows 出包机：S2A_METAL_BIN 指到不存在的目录，预检打「环境缺件 metal」、退 75。原先落成笼统的 package_failed（出包未完成）
         error, d = self.mac_refresh(["【红】环境缺件 metal：Metal Developer Tools（D:\\no_such_metal\\bin；S2A_METAL_BIN 可指定，否则查 PATH / 官方安装目录）",
@@ -524,6 +547,7 @@ class LogCauses(JobCase):
         error, _ = self.mac_refresh(self.direct_refresh_lines(log))
         self.assertEqual(error.code, "package_failed")
 
+    @um.patch("errors._free_bytes", lambda path: 1 << 30)   # 前提：盘真满了（只剩 1 GB）——盘满字样要核实才采信（剃刀 H9）
     def test_python_errno_28_in_fresh_refresh_log(self):
         events = self.root / "events.jsonl"
         events.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in [
@@ -543,6 +567,7 @@ class LogCauses(JobCase):
         got = ipa.oneclick_failure(events, None, None, refresh_log=refresh, refresh_before=ipa._log_identity(refresh))
         self.assertEqual(got.code, "package_failed")
 
+    @um.patch("errors._free_bytes", lambda path: 1 << 30)   # 前提：盘真满了（只剩 1 GB）——盘满字样要核实才采信（剃刀 H9）
     def test_windows_dotnet_not_enough_space(self):
         events = self.root / "events.jsonl"
         events.write_text(json.dumps(dict(ev="result", ok=False, msg="刷新停在：【红】fixture 直连库出库失败（rc=1）")))
@@ -560,9 +585,27 @@ class LogCauses(JobCase):
                 self.assertEqual(error.code, "metal_unavailable")
                 self.assertEqual(d["summary"], "缺少 Metal 组件：编着色器要用的 Metal 组件没装上。")
 
+    @um.patch("errors._tool_present", lambda name: False)   # 前提：spirv-cross 真没装（「command not found」要核实才采信，剃刀 H9）
     def test_other_missing_tool(self):
         error, _ = self.mac_refresh(["pack/stage_x.sh: line 9: spirv-cross: command not found", "【红】fixture 刷新停在 caps 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(error.code, "tool_missing")
+
+    def test_disk_full_words_with_free_space_are_not_believed(self):
+        # 剃刀 H9 反例：日志里有 [Errno 28] 字样（例如前面一次已重试成功的写），但点名的盘还剩 40 GB → 不说盘满，按阶段归；字样与未采信理由进 detail
+        #   （坑记录 11-09：Windows rc=127 被一律译成盘满，玩家照提示删了 37 GB）
+        with um.patch("errors._free_bytes", return_value=40 << 30):
+            error, d = self.mac_refresh(["OSError: [Errno 28] No space left on device: '/w/tmp/retry.bin'",
+                                         "【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(d["code"], "package_failed")
+        self.assertIn("候选 disk_full 未采信", d["detail"])
+        self.assertIn("40.0 GB", d["detail"])
+
+    def test_command_not_found_for_present_tool_is_not_believed(self):
+        # 剃刀 H9 反例：「x: command not found」但 x 现在找得到（可选探测、PATH 一时没带上）→ 不叫玩家去装工具，按阶段归
+        with um.patch("errors._tool_present", return_value=True):
+            error, d = self.mac_refresh(["pack/stage_x.sh: line 9: spirv-cross: command not found", "【红】fixture 刷新停在 caps 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertNotEqual(error.code, "tool_missing")
+        self.assertIn("候选 tool_missing 未采信", d["detail"])
 
     def test_unrecognized_cause_asks_for_error_summary(self):
         error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])

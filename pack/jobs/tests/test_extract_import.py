@@ -170,7 +170,36 @@ class DefaultPathUnchangedTests(JobCase):
         self.c.r.pop("partialResults", None)
         with patch.object(library, "atomic", atomic), self.assertRaises(OSError) as e:
             library.import_games(self.c)
-        self.assertEqual(errors.explain(e.exception).code, "permission_denied")
+        # 作业里 explain 带本作业的玩家侧路径（Context.failure_roots，启动器剃刀 H8）：catalog.json 在游戏库下 → 仍归 permission_denied
+        self.assertEqual(errors.explain(e.exception, **self.c.failure_roots()).code, "permission_denied")
+
+    def test_catalog_lock_free_while_reading_sources_held_only_for_write(self):
+        # 剃刀 H27：读原件（元数据、身份）期间目录锁空着，别的任务改名 / 换封面不报忙；只在记进 catalog、写 catalog.json 那一下持锁。
+        #   读第一款时插一个「别的任务」往 catalog 里加一款 → 导入锁里重读，两款都在（旧代码整段持锁：读的时候目录锁拿不到）
+        import filelock, json, library
+        from unittest.mock import patch
+        extract = self.make_extract(self.root / "e3", 0x01002468ACE00000, "Mario", "马力欧")
+        real, seen = library.extract_inspect, []
+        def reading(c, source, icons):
+            with filelock.held(c.library / ".catalog.lock"):   # 拿得到 = 读的时候没人持目录锁（拿不到抛 Busy，导入失败）
+                cat = json.loads((c.library / "catalog.json").read_text())
+                cat["games"].append(dict(id="0100AAAAAAAA0000", name="别的任务刚加的", packages=[]))
+                (c.library / "catalog.json").write_text(json.dumps(cat))
+                seen.append("free")
+            return real(c, source, icons)
+        written = []
+        real_atomic = library.atomic
+        def atomic(path, data, *a, **k):
+            if Path(path).name == "catalog.json":
+                written.append(filelock.read_holder(self.c.library / ".catalog.lock").get("taskId"))   # 写 catalog 时本任务持着目录锁
+            return real_atomic(path, data, *a, **k)
+        self.c.r.update(paths=[str(extract)])
+        self.c.r.pop("partialResults", None)
+        with patch.object(library, "extract_inspect", reading), patch.object(library, "atomic", atomic):
+            library.import_games(self.c)
+        self.assertEqual((seen, written), (["free"], [self.c.task]))
+        ids = sorted(g["id"] for g in json.loads((self.c.library / "catalog.json").read_text())["games"])
+        self.assertEqual(ids, sorted(["0100AAAAAAAA0000", "01002468ACE00000"]))
 
     def test_record_sources_caps_each_and_total(self):
         import core

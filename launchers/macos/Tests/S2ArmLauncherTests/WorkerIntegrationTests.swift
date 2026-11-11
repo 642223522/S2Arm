@@ -33,11 +33,16 @@ import XCTest
         XCTAssertNil(store.error)
         for _ in 0..<6 {
             let done=expectation(description:"fast catalogue EOF")
-            let requestID=store.worker("catalog",visible:false) {_ in done.fulfill()}
+            store.worker("catalog",visible:false) {_ in done.fulfill()}
             await fulfillment(of:[done],timeout:10)
-            let request=try JSONSerialization.jsonObject(with:Data(contentsOf:library.appendingPathComponent("logs/jobs/\(requestID).request.json"))) as? [String:Any]
-            XCTAssertEqual(request?["metalHud"] as? Bool,true)
         }
+        // catalog 是只读探测、不落任务记录（剃刀 H4）：「请求带上 metalHud」改用会落记录的作业核——keys 不给路径，作业当场失败，
+        //   请求在建任务时就已落盘；等那份文件出现（失败的作业不走完成回调）
+        let keysID=store.worker("keys",visible:false)
+        let keysRequest=library.appendingPathComponent("logs/jobs/\(keysID).request.json")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath:keysRequest.path) { try await Task.sleep(nanoseconds:100_000_000) }
+        let request=try JSONSerialization.jsonObject(with:Data(contentsOf:keysRequest)) as? [String:Any]
+        XCTAssertEqual(request?["metalHud"] as? Bool,true)
         store.terminate()
     }
     func testExplicitInvalidPythonDoesNotSilentlyUseAnotherInterpreter() {

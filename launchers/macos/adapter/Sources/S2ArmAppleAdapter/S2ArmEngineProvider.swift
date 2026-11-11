@@ -125,6 +125,7 @@ public final class S2ArmEngineProvider: EngineProvider {
             var extra: [String: Any] = ["gameId": job.gameId]
             if let target = job.deviceTarget { extra["target"] = target }
             if job.spaceOverride { extra["spaceOverride"] = true }
+            if job.followUp { extra["followUp"] = true }
             if let location = job.location { extra["location"] = location }
             let r = try await client.perform("ipa", extra: extra, events: events).result
             return BuildResult(gameId: job.gameId, target: .iPhone, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)
@@ -243,8 +244,8 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
-    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
-        try await installer.updatePhone(acceptStale: acceptStale, events: events)
+    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, device: device, events: events)
     }
 
     public func restorePhone(events: EventSink = .discard) async throws {

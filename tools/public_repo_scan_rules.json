@@ -176,6 +176,16 @@
       "reason": "自家 S2Arm 应用图标（同目录 AppIcon.svg 为源稿）和透明底字标。"
     },
     {
+      "id": "own_installer_ui",
+      "categories": [
+        "game_screenshot"
+      ],
+      "paths": [
+        "launchers/windows/installer/*.bmp"
+      ],
+      "reason": "Windows 安装程序界面素材：同目录 make_header.py 生成的纯色底、圆角按钮 / 卡片 / 进度条、复选框和自家字标，不是游戏画面。"
+    },
+    {
       "id": "own_ui_docs",
       "categories": [
         "game_screenshot"

@@ -17,6 +17,7 @@ REW=$C "$PY" "$H/tests/rewrite_reachdefs_scale_test.py" || { echo "🔴 rewrite_
 REW=$C "$PY" "$H/tests/rewrite_eh_absptr_test.py" || { echo "🔴 rewrite_eh_absptr_test：.eh_frame 绝对指针编码（absptr）读不了或函数范围不符（#286）"; rc=1; }
 REW=$C "$PY" "$H/tests/rewrite_front_synth_test.py" || { echo "🔴 rewrite_front_synth_test：C 的 FAR 容量重选与金样不符"; rc=1; }
 REW=$C "$PY" "$H/tests/rewrite_below_sp_test.py" || { echo "🔴 rewrite_below_sp_test：恢复 sp 后还用 sp 以下数据的函数里，x18 补丁岛仍往 sp 以下写（一款第一方动作游戏 / #515）"; rc=1; }
+REW=$C "$PY" "$H/tests/rewrite_eh_hdr_test.py" || { echo "🔴 rewrite_eh_hdr_test：.eh_frame_hdr 没有二分表 / 整个缺失时函数边界取不到或改写中止"; rc=1; }
 DEPS=$("$PY" "$H/pack/rewriter.py" deps-path) || { echo "🔴 取不到 C 改写器固定依赖（pack/rewriter.py deps-path）"; exit 1; }
 AB="$H/build/rewriter-api-test"
 # 固定构建目录的缓存记着上次配置时的源码路径：同一棵树先后跑过不同目录布局的分支（源码搬了目录）时，CMake 拒绝配置

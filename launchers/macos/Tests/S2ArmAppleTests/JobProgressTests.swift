@@ -29,4 +29,20 @@ final class JobProgressTests: XCTestCase {
         XCTAssertNil(p.rate)
         XCTAssertEqual(p.rateText, "")
     }
+
+    // 剃刀 M20：剩余时间只有一套。期望手算：总量 100、t=0 完成 10、t=4 完成 30 → 速率 5/秒，剩 70 → 14 秒（etaAt = 第二次读数时刻）；
+    //   再过 4 秒倒数到 10。出包页的本步还需（estimate.stepRemainingByRate）是同一个数
+    func test_export_step_left_is_the_same_measured_value() {
+        var p = JobProgress()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let ev = { (t: Double, d: Double) in EngineEvent(ev: "progress", t: t, code: nil, severity: .info,
+                                                       fields: ["stage": "s", "milestone": "m1", "done": d, "total": 100.0, "unit": "项"]) }
+        p.ingest(EngineEvent(ev: "plan", t: 0, code: nil, severity: .info,
+                             fields: ["milestones": [["id": "m1", "label": "M1", "purpose": ""]]]), now: t0)
+        p.ingest(ev(0, 10), now: t0)
+        p.ingest(ev(4, 30), now: t0.addingTimeInterval(4))
+        let at = t0.addingTimeInterval(8)
+        XCTAssertEqual(p.stepLeft(at: at) ?? -1, 10, accuracy: 1e-9)
+        XCTAssertEqual(p.estimate(at: at).stepRemainingByRate ?? -1, 10, accuracy: 1e-9)
+    }
 }

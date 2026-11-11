@@ -195,6 +195,23 @@ class SpaceMeasured(JobCase):
         # 同一块盘：合成一项，需求 = 两份之和（同原来）
         self.assertEqual(self.budget(c, self.game(16 * 10**9))["needBytes"], 33_600_000_000 + 15_000_000_000)
 
+    def test_direct_cache_follows_game_volume(self):
+        # 11-10 网友：存放位置设到外接盘，系统盘仍被写满。直连缓存（含编译中的翻译中间产物）跟着游戏的存放位置走：
+        #   同一块盘 → 工具缓存下（同原来）；游戏在另一块盘 → 这款文件夹第一层 direct-cache/；还没有游戏文件夹 → 工具缓存
+        c = self.context("ipa")
+        tool = c.work_root / "run" / "s2arm" / "cache" / "direct" / GID
+        game_dir = Path(self.root) / "ext" / "games" / GID
+        class St:
+            def __init__(self, dev): self.st_dev = dev
+        def existing(dev_of_game):
+            return lambda p: type("V", (), {"stat": lambda self: St(dev_of_game if Path(p) == game_dir else 1)})()
+        with patch.object(library.layout, "find_game", return_value=game_dir), patch.object(library, "_existing", side_effect=existing(1)):
+            self.assertEqual(library.direct_cache_dir(c, GID), tool)
+        with patch.object(library.layout, "find_game", return_value=game_dir), patch.object(library, "_existing", side_effect=existing(2)):
+            self.assertEqual(library.direct_cache_dir(c, GID), game_dir / "direct-cache")
+        with patch.object(library.layout, "find_game", return_value=None):
+            self.assertEqual(library.direct_cache_dir(c, GID), tool)
+
     def test_ledger_does_not_change_budget(self):
         c = self.context("ipa")
         self.ledger(("2026-11-07T10:00:00", GID, "ipa", "1", 16 * 10**9, 500 * 10**9, "旧账"))
@@ -229,6 +246,17 @@ class SpaceMeasured(JobCase):
         [d] = c.job["diagnostics"]
         self.assertEqual((d["code"], d["severity"]), ("disk_full", "warning"))
         self.assertIn("已按你的选择仍然继续", d["summary"])
+
+    def test_follow_up_request_contract(self):
+        # 剃刀 M21：followUp 只给打 iPhone 包、只认布尔值（期望按 pack/contracts/README.md 手写）
+        self.context("ipa", followUp=True); self.context("ipa", followUp=False)
+        for op, value in (("build", True), ("ipa", "true"), ("catalog", True)):
+            with self.subTest(op=op, value=value), self.assertRaises(Failure):
+                self.context(op, followUp=value)
+        base = dict(schema=1, contract="s2a.job-request.v1", privateRoot="/p", library="/l", libraryId="x", gameId=GID)
+        validate("request", base | dict(operation="ipa", followUp=True))
+        with self.assertRaises(ContractError):
+            validate("request", base | dict(operation="ipa", followUp="yes"))
 
     def test_space_override_request_contract(self):
         self.context("build", spaceOverride=True); self.context("ipa", spaceOverride=False)
