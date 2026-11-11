@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+#define _POSIX_C_SOURCE 200809L   // setenv/unsetenv：cpso 门默认开翻转后要驱动真实环境解析
 // 宿主编译缝：生产 compute.c 的 bad: 事实行直接调 __android_log_print(ANDROID_LOG_INFO,...)，
 // main 7afe4bfa1 用的是 weak extern + 数字级别，本分支没有为宿主编译留声明。这里在包含生产 TU
 // 之前补宏/原型，并在下面给 strong 捕获替身（Android 构建仍走真实 <android/log.h>）。
@@ -114,7 +115,7 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
     return 0;
 }
 
-static void reset(void){assert(live==0);accepted=(struct nvk_compute_lookup_result){.bytes=(uint8_t*)"x",.length=1,.profile={.storage_alignment=16}};step=0;fail_at=0;descriptors=0;reads=writes=write_fail=read_fail=unknown_type=low_limit=0;unpin_calls=tex_writes=0;expected_view=VK_NULL_HANDLE;memset(&snapshot,0,sizeof snapshot);memset(&mock_tex,0,sizeof mock_tex);pool_missing=log_calls=0;log_line[0]=0;guest_extent=0;guest_extent_exact=0;g_indirect_trunc_n=0;pipe_calls=plc_calls=0;g_cpso_gate=-1;memset(g_indirect_trunc,0,sizeof g_indirect_trunc);memset(&fixture,0,sizeof fixture);memset(&state,0,sizeof state);memset(&src,0,sizeof src);src.c1=c1_bytes;src.c1_bytes=sizeof c1_bytes;for(unsigned i=0;i<sizeof c1_bytes;i++)c1_bytes[i]=(uint8_t)(0x40+i);memset(guest,0x34,sizeof guest);fixture.stage.spirv=(uint8_t*)spv;fixture.stage.spirv_bytes=sizeof spv;fixture.binding_count=2;fixture.bindings[0]=(struct fd_binding){.set=0,.binding=3,.kind=0,.slot=3,.ubo_slot=0};fixture.bindings[1]=(struct fd_binding){.set=2,.binding=9,.kind=1,.slot=-1};fixture.storage[1]=(struct nvn_vk_compute_storage){.writable=1,.mapping=NVK_STORAGE_NVN,.index=7,.cb_slot=0,.cb_offset=0x380};state.stages=32;state.groups[0]=state.groups[1]=state.groups[2]=1;state.ubo_seen=1;state.ssbo_seen=1<<7;state.ubo[0].addr=0x1000;state.ubo[0].size=32;state.ssbo[7].addr=0x1100;state.ssbo[7].size=32;}
+static void reset(void){assert(live==0);accepted=(struct nvk_compute_lookup_result){.bytes=(uint8_t*)"x",.length=1,.profile={.storage_alignment=16}};step=0;fail_at=0;descriptors=0;reads=writes=write_fail=read_fail=unknown_type=low_limit=0;unpin_calls=tex_writes=0;expected_view=VK_NULL_HANDLE;memset(&snapshot,0,sizeof snapshot);memset(&mock_tex,0,sizeof mock_tex);pool_missing=log_calls=0;log_line[0]=0;guest_extent=0;guest_extent_exact=0;g_indirect_trunc_n=0;pipe_calls=plc_calls=0;setenv("S2A_COMPUTE_PSO_CACHE","0",1);g_cpso_gate=-1;unsetenv("S2A_COMPUTE_PROG_CACHE");g_prog_gate=-1;memset(g_indirect_trunc,0,sizeof g_indirect_trunc);memset(&fixture,0,sizeof fixture);memset(&state,0,sizeof state);memset(&src,0,sizeof src);src.c1=c1_bytes;src.c1_bytes=sizeof c1_bytes;for(unsigned i=0;i<sizeof c1_bytes;i++)c1_bytes[i]=(uint8_t)(0x40+i);memset(guest,0x34,sizeof guest);fixture.stage.spirv=(uint8_t*)spv;fixture.stage.spirv_bytes=sizeof spv;fixture.binding_count=2;fixture.bindings[0]=(struct fd_binding){.set=0,.binding=3,.kind=0,.slot=3,.ubo_slot=0};fixture.bindings[1]=(struct fd_binding){.set=2,.binding=9,.kind=1,.slot=-1};fixture.storage[1]=(struct nvn_vk_compute_storage){.writable=1,.mapping=NVK_STORAGE_NVN,.index=7,.cb_slot=0,.cb_offset=0x380};state.stages=32;state.groups[0]=state.groups[1]=state.groups[2]=1;state.ubo_seen=1;state.ssbo_seen=1<<7;state.ubo[0].addr=0x1000;state.ubo[0].size=32;state.ssbo[7].addr=0x1100;state.ssbo[7].size=32;}
 static int build(struct s2a_record_dispatch_output*out){return nvn_vk_compute_pipeline_build(&device,&state,&memory,&snapshot,&src,&accepted,out,why,sizeof why);}
 
 #ifdef S2A_TEST_NO_POOL_FIND
@@ -242,9 +243,22 @@ reset();fixture.bindings[0].slot=0;fixture.c0_read_count=1;fixture.c0_reads[0]=(
 reset();fixture.bindings[0].slot=0;fixture.c0_read_count=1;fixture.c0_reads[0]=(struct nvn_vk_c0_read){0x210,12};state.ubo[0].size=(uint64_t)UINT32_MAX+1;assert(build(&out)!=0&&step==0);cases++;
 
 reset();fixture.has_unaligned_storage_buffer=1;fixture.bindings[0].kind=1;fixture.storage[0]=(struct nvn_vk_compute_storage){.mapping=NVK_STORAGE_NVN,.index=6};state.ssbo_seen|=1<<6;state.ssbo[6].addr=4;state.ssbo[6].size=4;state.ssbo[7].addr=8;state.ssbo[7].size=4;assert(build(&out)!=0&&step==0&&strstr(why,"[0x0,0x8) [0x0,0xc)"));cases++;
-// ── compute PSO 缓存（debug.s2a.compute_pso_cache / 宿主 S2A_COMPUTE_PSO_CACHE，默认关）──
-// 门关基线：同一 shader 连续 3 次 dispatch = 3 次 vkCreateComputePipelines（修前行为）。
-reset();g_cpso_gate=0;
+// ── compute PSO 缓存（debug.s2a.compute_pso_cache / 宿主 S2A_COMPUTE_PSO_CACHE，默认开；设 0 退回逐笔创建）──
+// 默认态（属性不设）：同一 shader 连续 3 次 dispatch = 1 次 vkCreateComputePipelines（键命中）。
+reset();unsetenv("S2A_COMPUTE_PSO_CACHE");g_cpso_gate=-1;
+assert(build(&out)==0);assert(pipe_calls==1&&plc_calls==1);VkPipeline d1=out.pipeline;
+for(int i=0;i<2;i++){assert(out.finish(&device,out.owner,-1)==0);assert(build(&out)==0);assert(pipe_calls==1&&out.pipeline==d1);}
+assert(out.finish(&device,out.owner,-1)==0);
+nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
+// 属性设 1：与默认态同义，同键命中。
+reset();setenv("S2A_COMPUTE_PSO_CACHE","1",1);g_cpso_gate=-1;
+assert(build(&out)==0);assert(pipe_calls==1);VkPipeline e1=out.pipeline;
+assert(out.finish(&device,out.owner,-1)==0);
+assert(build(&out)==0);assert(pipe_calls==1&&out.pipeline==e1);
+assert(out.finish(&device,out.owner,-1)==0);
+nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
+// 负控：属性设 0 → 退回逐笔创建（修前行为）；reset 已置 env="0"，走真实属性解析。
+reset();
 uint64_t cn0;nvn_vk_compute_cpso_totals(&cn0,NULL);
 for(int i=0;i<3;i++){assert(build(&out)==0);assert(out.finish(&device,out.owner,-1)==0&&live==0);}
 assert(pipe_calls==3&&plc_calls==0);
@@ -280,6 +294,58 @@ struct s2a_record_dispatch_output held;assert(build(&held)==0&&pipe_calls==1);
 for(int i=0;i<(int)CPSO_CAP+6;i++){spv[3]=(uint32_t)(0x1000+i);assert(build(&out)==0);assert(out.finish(&device,out.owner,-1)==0);assert(g_cpso_n<=CPSO_CAP);}
 assert(pipe_calls==CPSO_CAP+7&&g_cpso_n==CPSO_CAP);
 assert(held.finish(&device,held.owner,-1)==0);
+nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
+// ── 程序级缓存（debug.s2a.compute_prog_cache / 宿主 S2A_COMPUTE_PROG_CACHE，默认关）──
+// 门关：prog_lookup 永不命中也不计数；构建照常（pso 门语义不受影响）。
+reset();g_prog_gate=0;
+uint8_t ida[32],idb[32];for(int i=0;i<32;i++){ida[i]=(uint8_t)(0xA0+i);idb[i]=(uint8_t)(0xC0+i);}
+assert(!nvn_vk_compute_prog_lookup(&device,ida));
+assert(nvn_vk_compute_pipeline_build_prog(&device,&state,&memory,&snapshot,&src,&accepted,ida,&out,why,sizeof why)==0);
+assert(pipe_calls==1);assert(out.finish(&device,out.owner,-1)==0);
+assert(!nvn_vk_compute_prog_lookup(&device,ida));   // 门关不入表
+uint64_t ph0,pm0;nvn_vk_compute_prog_totals(&ph0,&pm0);assert(ph0==0&&pm0==0);cases++;
+// 门开：miss→build_prog 入表→prog_lookup 命中→cached build 零创建、同一对象、
+// 描述符/回写/finish 语义不变；命中后 owner 引用归位、表引用留待 release。
+reset();g_prog_gate=1;
+assert(!nvn_vk_compute_prog_lookup(&device,ida));   // miss：首查未中
+assert(nvn_vk_compute_pipeline_build_prog(&device,&state,&memory,&snapshot,&src,&accepted,ida,&out,why,sizeof why)==0);
+assert(pipe_calls==1&&plc_calls==1);VkPipeline g1=out.pipeline;
+struct cpso *e=nvn_vk_compute_prog_lookup(&device,ida);
+assert(e);                                          // 命中：持 owner 引用的条目
+struct s2a_record_dispatch_output out2;
+assert(nvn_vk_compute_pipeline_build_cached(&device,&state,&memory,&snapshot,&src,e,&out2,why,sizeof why)==0);
+assert(pipe_calls==1&&out2.pipeline==g1&&out2.set_count==3&&descriptors==2);
+o=out2.owner;memset(o->buffers[1].mapped,0x66,32);
+assert(out.finish(&device,out.owner,-1)==0);
+assert(out2.finish(&device,out2.owner,0)==0&&writes==1&&guest[256]==0x66);   // 命中路径回写真字节
+uint64_t ph1,pm1;nvn_vk_compute_prog_totals(&ph1,&pm1);assert(ph1==ph0+1&&pm1==pm0+1);
+nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
+// 键绑定：同 spirv 不同 identity → 不同条目、各自建对象（identity 即键，spirv 不参政）。
+reset();g_prog_gate=1;
+assert(nvn_vk_compute_pipeline_build_prog(&device,&state,&memory,&snapshot,&src,&accepted,ida,&out,why,sizeof why)==0);
+assert(pipe_calls==1);VkPipeline k1=out.pipeline;assert(out.finish(&device,out.owner,-1)==0);
+assert(!nvn_vk_compute_prog_lookup(&device,idb));   // 不同 identity 不中同一条目
+assert(nvn_vk_compute_pipeline_build_prog(&device,&state,&memory,&snapshot,&src,&accepted,idb,&out,why,sizeof why)==0);
+assert(pipe_calls==2&&out.pipeline!=k1);assert(out.finish(&device,out.owner,-1)==0);
+struct cpso *ea=nvn_vk_compute_prog_lookup(&device,ida),*eb=nvn_vk_compute_prog_lookup(&device,idb);
+assert(ea&&eb&&ea!=eb);nvn_vk_compute_prog_release(ea);nvn_vk_compute_prog_release(eb);
+nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
+// 命中路径仍按活状态逐笔填：guest 字节变了 cached build 读的是新值（常量不进键、不缓存每笔数据）。
+reset();g_prog_gate=1;
+assert(nvn_vk_compute_pipeline_build_prog(&device,&state,&memory,&snapshot,&src,&accepted,ida,&out,why,sizeof why)==0);
+assert(out.finish(&device,out.owner,-1)==0);
+guest[0]=0x99;guest[0x100]=0x77;
+e=nvn_vk_compute_prog_lookup(&device,ida);assert(e);
+assert(nvn_vk_compute_pipeline_build_cached(&device,&state,&memory,&snapshot,&src,e,&out2,why,sizeof why)==0);
+o=out2.owner;assert(((uint8_t*)o->buffers[0].mapped)[0]==0x99&&((uint8_t*)o->buffers[1].mapped)[0]==0x77);
+assert(out2.finish(&device,out2.owner,-1)==0);
+nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
+// prog 门开时不叠 spirv 键层：表里只有 by_identity 条目，pso 查找语义不受影响（门关恒零）。
+reset();g_prog_gate=1;
+assert(nvn_vk_compute_pipeline_build_prog(&device,&state,&memory,&snapshot,&src,&accepted,ida,&out,why,sizeof why)==0);
+assert(out.finish(&device,out.owner,-1)==0);int only_prog=0;
+for(unsigned i=0;i<CPSO_CAP;i++)only_prog+=g_cpso_tab[i].in_table&&g_cpso_tab[i].by_identity;
+assert(only_prog==1&&g_cpso_n==1);
 nvn_vk_compute_pso_cache_release(&device);assert(live==0);cases++;
 printf("compute pipeline host mock: %d scenarios, %d Vulkan failure points PASS\n",cases,max_step);return 0;
 #endif
