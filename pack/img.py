@@ -14,6 +14,7 @@
 格式号只在字节布局真变时加一；新壳必须保留读旧号的代码（坑记录与发版步骤）。
 
 用法：img.py build <RomFS 目录> <其余文件清单 tsv：相对路径\\t源文件> <输出 .img> --gid <游戏号> [--pack-id <资源包号>] [--romfs-index <romfs_index 命令>]
+      img.py convert <产物根> <资源包目录> [--gid <游戏号>]   出包交付：资源包目录就地转 IMG 形态
       img.py ls <img>   列目录表（单测 / 诊断）"""
 import argparse, os, shlex, struct, subprocess, sys
 
@@ -94,27 +95,78 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print):
 SKIP = ('romfs/', 'romfs.', 'romfs_overlay/', 'shaders/')   # 资源包里不进 IMG 的：RomFS（另建标准段）、旧镜像件、界面覆盖层、直连库（派生产物）
 
 
-def write(root, pack_dir, out_path, progress=None, romfs_index=None):
-    """出包最后一步（启动器线调）：产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建），
-    资源包 pack_dir 清单（index.tsv）里的其余原始资源进其余文件段；游戏号取 root/unpack.tsv，资源包号取 pack_dir/manifest.json 的 index_sha256（必须有：
-    启动器推送续传按它认是不是同一份）。多程序合集（programs/）这一版不出 IMG（报红，调用方照旧出旧形态）。原子写（先 .part 再改名）"""
-    import json
-    say = progress or (lambda *_: None)
-    gid = next((l.rstrip('\n').split('\t', 1)[1] for l in open(os.path.join(root, 'unpack.tsv'), encoding='utf-8') if l.startswith('title_id\t')), '')
-    try: pack_id = json.load(open(os.path.join(pack_dir, 'manifest.json'), encoding='utf-8')).get('index_sha256') or ''
-    except (OSError, ValueError): pack_id = ''
-    if not pack_id: raise Red(f'{pack_dir}/manifest.json 没有 index_sha256：IMG 头必须带资源包号')
-    others = []
+KEEP = ('romfs_overlay/', 'shaders/')   # 转 IMG 后照旧按文件留在资源包里的（App 管的缓存，可更新；IMG 不动）
+
+
+def pack_rows(pack_dir):
+    """资源包 index.tsv 的行 → [(路径, 整行)]（跳过空行与清单自身）"""
+    out = []
     for line in open(os.path.join(pack_dir, 'index.tsv'), encoding='utf-8'):
         rel = line.split('\t', 1)[0]
-        if not rel or rel in ('index.tsv', 'manifest.json') or rel.startswith(SKIP): continue
+        if rel and rel not in ('index.tsv', 'manifest.json'): out.append((rel, line if line.endswith('\n') else line + '\n'))
+    return out
+
+
+def image_id(pack_dir):
+    """IMG 的资源包号：清单里进 IMG 那部分行（除着色器库 / 覆盖层之外，各行带每个文件的 SHA-256）的 SHA-256。
+    只随游戏原始资源变：着色器库重编、覆盖层更新都不改它，IMG 字节不变、启动器续传认得出是同一份"""
+    import hashlib
+    return hashlib.sha256(''.join(l for r, l in pack_rows(pack_dir) if not r.startswith(KEEP)).encode('utf-8')).hexdigest()
+
+
+def default_romfs_index():
+    """发版应用：预编工具（S2A_PREBUILT_TOOLS/romfs/romfs_index.dll，Windows 没有 bash）；开发树：services/romfs_index.sh 现编"""
+    pre = os.environ.get('S2A_PREBUILT_TOOLS')
+    if pre and os.path.isfile(os.path.join(pre, 'romfs', 'romfs_index.dll')):
+        import shutil
+        dn = os.environ.get('DOTNET') or shutil.which('dotnet') or 'dotnet'
+        return f'{shlex.quote(dn)} {shlex.quote(os.path.join(pre, "romfs", "romfs_index.dll"))}'
+    return f'bash {shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "services", "romfs_index.sh"))}'
+
+
+def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None):
+    """产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建），
+    资源包 pack_dir 清单（index.tsv）里的其余原始资源进其余文件段；游戏号 gid（没给取 root/unpack.tsv），资源包号 = image_id。
+    多程序合集（programs/）这一版不出 IMG（报红，调用方照旧出旧形态）。原子写（先 .part 再改名）"""
+    say = progress or (lambda *_: None)
+    gid = gid or next((l.rstrip('\n').split('\t', 1)[1] for l in open(os.path.join(root, 'unpack.tsv'), encoding='utf-8') if l.startswith('title_id\t')), '')
+    others = []
+    for rel, _ in pack_rows(pack_dir):
+        if rel.startswith(SKIP): continue
         if rel.startswith('programs/'): raise Red('多程序合集（programs/）这一版不出 IMG')
         src = os.path.join(pack_dir, rel)
         if not os.path.isfile(src): raise Red(f'资源包清单里的 {rel} 不在 {pack_dir}')
         others.append((rel, src))
     romfs = os.path.join(root, 'romfs')
-    cmd = romfs_index or f'bash {shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "services", "romfs_index.sh"))}'
-    return build(romfs if os.path.isdir(romfs) else None, others, out_path, gid, pack_id, cmd, say=say)
+    return build(romfs if os.path.isdir(romfs) else None, others, out_path, gid, image_id(pack_dir), romfs_index or default_romfs_index(), say=say)
+
+
+def convert(root, pack_dir, progress=None, romfs_index=None, gid=None):
+    """出包交付（pack/jobs/ipa.py deliver）：资源包目录就地转成 IMG 形态——game.img（游戏原始资源）+ 照旧按文件的着色器库 / 覆盖层 +
+    新 index.tsv（game.img 一行，第三列 = 资源包号；其余行原样）+ manifest.json v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）。
+    进了 IMG 的旧形态文件删掉。多程序合集 → 返回 None、目录不动（照旧旧形态）。→ game.img 路径"""
+    import hashlib, json
+    rows = pack_rows(pack_dir)
+    if any(r.startswith('programs/') for r, _ in rows): return None
+    out = os.path.join(pack_dir, 'game.img')
+    write(root, pack_dir, out, progress, romfs_index, gid)
+    h = header(out)
+    ix = f"game.img\t{h['total']}\t{h['pack_id']}\n" + ''.join(l for r, l in rows if r.startswith(KEEP))
+    for rel, _ in rows:
+        if not rel.startswith(KEEP):
+            try: os.unlink(os.path.join(pack_dir, rel))
+            except FileNotFoundError: pass
+    for d, subs, files in os.walk(pack_dir, topdown=False):   # 删空了的目录
+        if d != pack_dir and not os.listdir(d): os.rmdir(d)
+    def put(name, text):
+        tmp = os.path.join(pack_dir, name + '.tmp')
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as f: f.write(text)
+        os.replace(tmp, os.path.join(pack_dir, name))
+    put('index.tsv', ix)
+    total = sum(int(l.split('\t')[1]) for l in ix.splitlines())
+    put('manifest.json', json.dumps({'version': 3, 'format': 'img', 'imgFile': 'game.img', 'files': len(ix.splitlines()), 'total': total,
+                                     'index_sha256': hashlib.sha256(ix.encode('utf-8')).hexdigest()}, indent=1) + '\n')
+    return out
 
 
 def is_img(path):
@@ -159,12 +211,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest='cmd', required=True)
     b = sp.add_parser('build'); b.add_argument('romfs'); b.add_argument('others'); b.add_argument('out'); b.add_argument('--gid', required=True)
     b.add_argument('--pack-id', default=''); b.add_argument('--romfs-index')
+    v = sp.add_parser('convert', help='资源包目录就地转 IMG 形态（出包交付）'); v.add_argument('root'); v.add_argument('pack_dir'); v.add_argument('--gid')
     l = sp.add_parser('ls'); l.add_argument('img')
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'build':
             others = [tuple(l.rstrip('\n').split('\t', 1)) for l in open(a.others, encoding='utf-8') if '\t' in l]
             build(None if a.romfs == '-' else a.romfs, others, a.out, a.gid, a.pack_id, a.romfs_index)
+        elif a.cmd == 'convert':
+            print(convert(a.root, a.pack_dir, gid=a.gid) or '多程序合集：照旧旧形态')
         else:
             print(header(a.img))
             for e in entries(a.img): print(*e, sep='\t')

@@ -658,6 +658,19 @@ def phone_ipa_path(c):
     return str(ipa) if ipa.is_file() else ""
 
 
+def phone_img_path(c, gid):
+    """导出给自签玩家（v0.3.0）：这款的单一 IMG（image/ios/pack/game.img），和库根 S2Arm.ipa 一起就是玩家要拷的全部；
+    还没出成 IMG 形态（旧版出的包 / 多程序合集）→ 空串（界面不给按钮）"""
+    img = layout.ios_pack(c, gid) / "game.img" if gid else None
+    return str(img) if img and img.is_file() else ""
+
+
+def phone_shader_cache(c, gid):
+    """导出可选附带的着色器缓存（加速首次进局，不带也能玩）：资源包里的 shaders/ 目录；没有 → 空串"""
+    d = layout.ios_pack(c, gid) / "shaders" if gid else None
+    return str(d) if d and d.is_dir() else ""
+
+
 def devcert_items(c, item, udid):
     """开发者证书模式的清单项（v0.2.4）：替掉 Apple ID / Impactor 两项。问题只提示、不挡（blocking 只给「没出包」）；
     到期 / 权限这类提醒随结果 devcert.warnings 给启动器画黄字。返回体检结果（读不出 → None）"""
@@ -737,7 +750,7 @@ def readiness(c):
     item("developerMode", dev_mode, "iPhone 已打开开发者模式", S_DEV_MODE, waiting=not paired or mode_pending)
     item("deviceReady", dev_mode and stage == "", "iPhone 已准备好安装", link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
     account = (cert or {}).get("teamName") or "" if use_cert else (team["name"] or team["id"]) if team else ""
-    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=account, ipaPath=ipa_path,
+    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),
                 signing="" if use_cert else signing_summary(c.env()), signMode="devcert" if use_cert else "appleId", devcert=cert, installMode=install_mode(c))
 
 
@@ -909,7 +922,7 @@ def readiness_windows(c, gid):
         except (OSError, ValueError):
             kind = ""
     return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=udids[0] if len(udids) == 1 else "", deviceKind=kind,
-                account=(cert or {}).get("teamName") or "", ipaPath=ipa_path, signMode="devcert" if use_cert else "appleId", devcert=cert,
+                account=(cert or {}).get("teamName") or "", ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid), signMode="devcert" if use_cert else "appleId", devcert=cert,
                 installMode=install_mode(c))
 
 
