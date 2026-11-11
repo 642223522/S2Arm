@@ -566,6 +566,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             for (k, platform) in platforms.enumerated() {
                 guard let self, let target = platform.target else { return nil }
                 try Task.checkCancellation()
+                if self.batchRunning, self.batchPaused != nil { break }   // 批量出包磁盘满暂停了：同一款的下一个平台也不开（审计 P1-164，暂停只由「重试」解除）
                 await self.batchMark(game.id, platform, state: "running")
                 self.beginPlatform(k)
                 do {

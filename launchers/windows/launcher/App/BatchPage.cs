@@ -228,8 +228,9 @@ public sealed partial class EnvironmentWindow
         }
         else
         {
-            if (batchState.Summary.Failed > 0) Put(Action("batch.retry_failed", () => _ = BatchCommandAsync("retry"), !PackBusy), 0);
-            if (batchState.Summary.Cancelled > 0 || batchState.Summary.Pending > 0)
+            // 暂停着（磁盘满）只给「重试」：它解除暂停、重出失败的那个平台；「继续」不解除暂停（审计 P1-164，同 Mac）
+            if (batchState.Summary.Failed > 0 || batchState.Paused is not null) Put(Action("batch.retry_failed", () => _ = BatchCommandAsync("retry"), !PackBusy), 0);
+            if (batchState.Paused is null && (batchState.Summary.Cancelled > 0 || batchState.Summary.Pending > 0))
             {
                 var resume = Action("batch.resume", () => _ = BatchCommandAsync("resume"), !PackBusy);
                 AutomationId(resume, "batch.resume");

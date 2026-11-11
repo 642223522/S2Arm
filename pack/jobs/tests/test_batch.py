@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -60,6 +61,27 @@ class BatchRules(unittest.TestCase):
         self.assertIsNone(b["paused"])
         self.assertEqual(batch.next_step(b), {"gameId": A, "platform": "mac"})
 
+    def test_disk_full_holds_until_retry(self):   # 审计 P1-164：甲 Mac 磁盘满 → 甲 iPhone 不许再开；「继续」不解除暂停；只有重试解除
+        b = self.make()
+        batch.mark(b, A, "mac", "running"); batch.mark(b, A, "mac", "failed", "磁盘空间不足", "disk_full")
+        with self.assertRaises(ValueError):
+            batch.mark(b, A, "iphone", "running")
+        self.assertEqual(b["items"][0]["results"]["iphone"], {"state": "pending"})
+        batch.resume(b)
+        self.assertEqual((b["paused"], batch.next_step(b)), ("disk_full", None))
+        batch.retry(b)
+        self.assertEqual((b["paused"], batch.next_step(b)), (None, {"gameId": A, "platform": "mac"}))
+
+    def test_game_with_platform_left_is_not_finished(self):   # 审计 P1-168：甲 Mac 签名失败、iPhone 还没出 → 甲算没出完，整批没完
+        b = self.make()
+        batch.mark(b, A, "mac", "failed", "签名失败", "signing_failed")
+        self.assertEqual(batch.next_step(b), {"gameId": A, "platform": "iphone"})
+        self.assertEqual(batch.summary(b), {"total": 2, "completed": 0, "failed": 0, "cancelled": 0, "pending": 2, "done": False})
+        batch.mark(b, A, "iphone", "running")
+        self.assertEqual(batch.summary(b)["pending"], 2)   # 正在出的也算没出完
+        batch.mark(b, A, "iphone", "completed"); batch.mark(b, B, "iphone", "completed")
+        self.assertEqual(batch.summary(b), {"total": 2, "completed": 1, "failed": 1, "cancelled": 0, "pending": 0, "done": True})
+
     def test_cancel_keeps_finished_and_resume_continues(self):
         b = self.make()
         batch.mark(b, A, "iphone", "completed"); batch.mark(b, A, "mac", "running")
@@ -113,6 +135,36 @@ class BatchCli(unittest.TestCase):
         self.assertEqual((got["summary"]["done"], got["batch"]["items"][0]["results"]["iphone"]["output"]), (True, "/x/S2Arm.ipa"))
         self.assertEqual(self.run_cli("clear"), (0, {}))
         self.assertFalse(Path(self.root, "batch.json").exists())
+
+    def test_broken_file_is_no_batch(self):   # 审计 P2-280：某款缺 results / 状态不对 → 当没有批次，一行 JSON 报错，不抛异常
+        for item in ({"gameId": A, "platforms": ["iphone"]}, {"gameId": A, "platforms": ["iphone"], "results": {"iphone": {"state": "done"}}}):
+            with self.subTest(item=item):
+                Path(self.root, "batch.json").write_text(json.dumps({"schema": 1, "items": [item]}), encoding="utf-8")
+                self.assertEqual(self.run_cli("show"), (0, {}))
+                rc, got = self.run_cli("mark", "--game", A, "--platform", "iphone", "--state", "running")
+                self.assertEqual(rc, 1); self.assertIn("没有进行中的批次", got["error"])
+
+    def test_create_does_not_overwrite_unfinished(self):   # 审计 P2-270：暂停 / 没出完的批次不被下一次 create 盖掉；出完了才能新建
+        one = json.dumps({"items": [{"gameId": A, "platforms": ["iphone"]}]}); two = json.dumps({"items": [{"gameId": B, "platforms": ["iphone"]}]})
+        self.run_cli("create", "--json", one)
+        self.run_cli("mark", "--game", A, "--platform", "iphone", "--state", "failed", "--code", "disk_full")
+        rc, got = self.run_cli("create", "--json", two)
+        self.assertEqual(rc, 1); self.assertIn("上一批还没出完", got["error"])
+        self.assertEqual(json.loads(Path(self.root, "batch.json").read_text(encoding="utf-8"))["items"][0]["gameId"], A)
+        self.run_cli("retry"); self.run_cli("mark", "--game", A, "--platform", "iphone", "--state", "completed")
+        rc, got = self.run_cli("create", "--json", two)
+        self.assertEqual((rc, got["batch"]["items"][0]["gameId"]), (0, B))
+
+    def test_held_lock_is_an_error_not_a_silent_write(self):   # 审计 P2-270：另一个进程正改着 batch.json → 等不到锁报错，不写
+        self.run_cli("create", "--json", json.dumps({"items": [{"gameId": A, "platforms": ["iphone"]}]}))
+        before = Path(self.root, "batch.json").read_text(encoding="utf-8")
+        import filelock
+        with open(Path(self.root, "batch.json.lock"), "a+") as f, mock.patch.object(batch.time, "sleep", lambda s: None):
+            filelock.try_lock(f)
+            rc, got = self.run_cli("mark", "--game", A, "--platform", "iphone", "--state", "running")
+            filelock.unlock(f)
+        self.assertEqual(rc, 1); self.assertIn("另一个进程", got["error"])
+        self.assertEqual(Path(self.root, "batch.json").read_text(encoding="utf-8"), before)
 
     def test_errors_are_one_json_line(self):
         rc, got = self.run_cli("mark", "--game", A, "--platform", "iphone", "--state", "completed")

@@ -221,10 +221,11 @@ struct BatchExportView: View {
                     Spacer()
                     Button(t("cancel")) { model.stop() }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("batch.cancel")
                 } else {
-                    if (s["failed"] as? Int ?? 0) > 0 {
+                    // 暂停着（磁盘满）只给「重试」：它解除暂停、重出失败的那个平台；「继续」不解除暂停（审计 P1-164）
+                    if (s["failed"] as? Int ?? 0) > 0 || model.batchPaused != nil {
                         Button(t("retry_failed")) { model.retryBatch() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
                     }
-                    if (s["cancelled"] as? Int ?? 0) > 0 || (s["pending"] as? Int ?? 0) > 0 {
+                    if model.batchPaused == nil, (s["cancelled"] as? Int ?? 0) > 0 || (s["pending"] as? Int ?? 0) > 0 {
                         Button(t("resume")) { model.resumeBatch() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
                             .accessibilityIdentifier("batch.resume")
                     }

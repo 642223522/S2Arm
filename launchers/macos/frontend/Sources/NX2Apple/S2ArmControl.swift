@@ -93,6 +93,9 @@ import S2ArmAppleAdapter
                                         deviceTarget: deviceTarget ?? (probe["connected"] as? [[String: Any]])?.first, spaceOverride: spaceOverride))
         case ("POST", "/batch"):   // 批量出包（v0.2.4）：同界面清单页——建批次后一款接一款地出，进度看 GET /state 的 batch
             if let r = busy() { return r }
+            if model.batchState != nil, model.batchSummary["done"] as? Bool != true {   // 上一批暂停着 / 没出完：不盖掉（审计 P2-270），同 Windows 回 409
+                return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "上一批还没出完：在 S2Arm 的批量出包页「重试」/「继续」，或点「完成」清掉再建"]))
+            }
             guard let rows = a["games"] as? [[String: Any]], !rows.isEmpty else { return .bad("games 要给 [{gameId, platforms:[mac|iphone]}]") }
             var want: [String: [String]] = [:]
             for row in rows {
@@ -105,7 +108,8 @@ import S2ArmAppleAdapter
             model.openBatch(rows.compactMap { $0["gameId"] as? String })
             for i in model.batchDraft.indices { let ps = want[model.batchDraft[i].id] ?? []; model.batchDraft[i].iphone = ps.contains("iphone"); model.batchDraft[i].mac = ps.contains("mac") }
             let skipped = model.batchDraft.filter { $0.problem != nil }.map { ["gameId": $0.id, "reason": $0.problem ?? ""] }
-            model.startBatch()
+            // 一款都不能出 / 建批次失败：回 409、ok false（同 Windows），不先回成功让 s2armctl 空等或读上一批（审计 P1-166）
+            if let why = await model.createBatch() { return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": why, "skipped": skipped])) }
             return .object(["ok": true, "skipped": skipped])
         case ("POST", "/build"):
             guard let g = game() else { return .bad("没有这个 gameId") }

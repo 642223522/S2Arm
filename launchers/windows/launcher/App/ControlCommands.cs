@@ -158,6 +158,8 @@ public sealed partial class EnvironmentWindow
             case ("POST", "/batch"):   // 批量出包（同 Mac 控制口、同界面清单页）：建批次后一款接一款地出，进度看 GET /state 的 batch
             {
                 if (ControlBusy || batchRunning) return Busy();
+                if (batchState is { Summary.Done: false })   // 上一批暂停着 / 没出完：不盖掉（审计 P2-270，同 Mac）
+                    return ControlReply.Json(new Dictionary<string, object?> { ["ok"] = false, ["error"] = "上一批还没出完：在 S2Arm 的批量出包页「重试」/「继续」，或点「完成」清掉再建" }, 409);
                 var (want, why) = BatchClient.ControlGames(r.Body);
                 if (why is not null) return ControlReply.Bad(why);
                 foreach (var (gid, _) in want)

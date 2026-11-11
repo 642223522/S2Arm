@@ -507,9 +507,11 @@ def batch(rest, limit=7200):
         sys.exit('用法：s2armctl batch <游戏号>[:mac,iphone] … [--location 文件夹]')
     body = {'games': games}
     if location: body['location'] = location
-    r = call('POST', '/batch', body)
-    for s in (r or {}).get('skipped') or []:
+    r = call('POST', '/batch', body) or {}   # 409（一款都不能出 / 建批次失败 / 上一批没出完，审计 P1-166）在 call 里带原因退出非 0
+    for s in r.get('skipped') or []:
         print(f"跳过 {s['gameId']}：{s['reason']}")
+    if r.get('ok') is not True:   # 一款都不能出 / 建批次失败 / 上一批没出完：控制口回 409（审计 P1-166），不空等、不读上一批
+        sys.exit('没有开始出包：' + (r.get('error') or '一款都不能出'))
     t0 = time.time(); last = None
     while time.time() - t0 < limit:
         time.sleep(5)
