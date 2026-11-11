@@ -164,7 +164,9 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
 // 快路径：输入跟上一次取程序时一样，就还是那个程序。下面的摘要盖住 fill_facts 与身份用到的全部回放状态
 // （游戏每笔绘制前都会重绑贴图 / 缓冲，绑的东西对编译来说通常没变；不走快路径时每笔要重填事实、编码身份、算一次 SHA-256）。
 // 调试开关 nvk_resolve_check=1：命中后仍走一遍慢路径核对，不一致报红。
-static struct { int ok; uint64_t key; uint64_t session, generation; const struct rp_prog *prog; } g_last;
+// 一张小的直映射表而不是只记上一次：相邻两笔常在两三种材质之间来回换，只记一项时每次都落空。
+enum { LAST_N = 1024 };
+static struct last_ent { int ok; uint64_t key; uint64_t session, generation; const struct rp_prog *prog; } g_lasts[LAST_N];
 static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, uint32_t stages) {
     uint64_t h = 1469598103934665603ull;
     #define MIX(v) do { h ^= (uint64_t)(v); h *= 1099511628211ull; } while (0)
@@ -194,13 +196,15 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
     if (s2a_direct_provider_compile_context(&pc) || !pc.profile_json || !pc.profile_bytes) { nvn_unimpl("shader", "no_compile_context", NULL); return -1; }
     uint64_t key = input_sig(q, &pc, stages);
-    if (g_last.ok && g_last.key == key && g_last.session == pc.session && g_last.generation == pc.generation) {
-        *out = g_last.prog;
-        if (nvn_plat_flag("nvk_resolve_check", 0)) { const struct rp_prog *chk = NULL; int rc = resolve_slow(q, &chk, &pc, stages, nst); if (rc || chk != g_last.prog) red1("resolve_fast_path_mismatch", "快路径给的程序与慢路径不一致"); }
+    struct last_ent *le = &g_lasts[(key ^ key >> 32) & (LAST_N - 1)];
+    static int check = -1; if (check < 0) check = nvn_plat_flag("nvk_resolve_check", 0);
+    if (le->ok && le->key == key && le->session == pc.session && le->generation == pc.generation) {
+        *out = le->prog;
+        if (check) { const struct rp_prog *chk = NULL; int rc = resolve_slow(q, &chk, &pc, stages, nst); if (rc || chk != le->prog) red1("resolve_fast_path_mismatch", "快路径给的程序与慢路径不一致"); }
         return 0;
     }
     int rc = resolve_slow(q, out, &pc, stages, nst);
-    g_last.ok = rc == 0; g_last.key = key; g_last.session = pc.session; g_last.generation = pc.generation; g_last.prog = *out;
+    le->ok = rc == 0; le->key = key; le->session = pc.session; le->generation = pc.generation; le->prog = *out;
     return rc;
 }
 
@@ -387,5 +391,5 @@ void rp_shader_reset(void) {
         for (int st = 0; st < 2; st++) if (e->prog.sh[st]) nvn_gpu_shader_release(e->prog.sh[st]);
         free(e); }
     free(g_progs.keys); free(g_progs.vals); nvn_hm_init(&g_progs, 32);
-    g_profile.ok = 0; g_last.ok = 0;
+    g_profile.ok = 0; memset(g_lasts, 0, sizeof g_lasts);
 }
