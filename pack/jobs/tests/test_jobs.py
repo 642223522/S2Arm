@@ -1511,7 +1511,7 @@ class JobsTests(unittest.TestCase):
         name = "直连库·翻译与收尾"
         DU = collections.namedtuple("DU", "total used free")
         def step(done, used_gb, free_gb, now):
-            with patch.object(core, "job_footprint", return_value=int(used_gb * 10**9)), \
+            with patch.object(core, "job_footprint", return_value={1: (self.root, int(used_gb * 10**9), "library")}), \
                     patch.object(core.shutil, "disk_usage", return_value=DU(0, 0, int(free_gb * 10**9))):
                 core.direct_space_recheck(self.c, {name: dict(done=done, total=99084)}, now=now)
         step(0, 10.5, 45, 100.0)                         # 记起点
@@ -1528,6 +1528,25 @@ class JobsTests(unittest.TestCase):
         with patch.object(self.c, "diagnostic") as diag:
             step(0, 10.5, 45, 300.0); step(20000, 19.5, 36, 311.0); step(30000, 24, 31, 322.0)   # 点过「仍然继续」：不停，只打一次黄
         self.assertEqual([call.kwargs.get("severity") for call in diag.call_args_list], ["warning"])
+
+    def test_direct_space_recheck_per_volume(self):
+        # P1-165：存放位置（卷 1）与工具缓存（卷 2）是两块盘。翻译期间只有缓存那块在涨：卷 1 余量再大也救不了卷 2。
+        #   期望手算：卷 2 开始 5 GB → 10 秒后完成 20000、14 GB，余量 30 GB → 还需 9 ÷ 20000 × 79084 × 1.1 = 39.15 GB > 30 GB → 停，点名工具缓存那块盘
+        import core
+        from errors import Failure
+        self.c.operation = "build"
+        name = "直连库·翻译与收尾"
+        free = {"loc": 500 * 10**9, "cache": 30 * 10**9}
+        DU = collections.namedtuple("DU", "total used free")
+        def step(done, loc_gb, cache_gb, now):
+            fp = {1: ("loc", int(loc_gb * 10**9), "library"), 2: ("cache", int(cache_gb * 10**9), "cache")}
+            with patch.object(core, "job_footprint", return_value=fp), \
+                    patch.object(core.shutil, "disk_usage", side_effect=lambda path: DU(0, 0, free[path])):
+                core.direct_space_recheck(self.c, {name: dict(done=done, total=99084)}, now=now)
+        step(0, 10.5, 5, 100.0)
+        with self.assertRaises(Failure) as stop:
+            step(20000, 10.5, 14, 111.0)
+        self.assertIn("工具缓存所在的盘只剩 30 GB", str(stop.exception)); self.assertIn("还要再占约 39 GB", str(stop.exception))
 
     def test_stage_progress_feeds_direct_space_recheck(self):
         import core

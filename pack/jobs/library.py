@@ -1114,6 +1114,42 @@ def disk_bytes(roots, device, skip_names=(), skip_under=(), state=None):
     return total
 
 
+def _existing(path):
+    """path 或它最近的已存在的上级（还没建出来的工具缓存目录也能取到所在卷）"""
+    path = Path(path)
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return path
+
+
+def _pack_paths(c, game):
+    """(这款的存放位置根, 工具缓存根)，都取到已存在的那一级（取余量 / 判同卷用；P1-165）。没有程序号的游戏记录按默认游戏库"""
+    gid = game.get("id")
+    return _existing(layout.root_of(c, gid) if gid else c.library), _existing(c.work_root)
+
+
+def pack_volumes(c, gid):
+    """这一款出包会写的目录按卷分组（P1-165：存放位置可以和默认游戏库、工具缓存不在同一块盘）：
+    [{role, path（取余量用）, device, roots（量本款占用用）}]。存放位置那块盘：这款的 build/、image/；工具缓存那块盘：本款的直连 / 翻译缓存
+    （不含各款共用的编库缓存）。两者同卷就合成一项（role=library）"""
+    loc = _existing(layout.root_of(c, gid))
+    gdir = layout.find_game(c, gid)
+    shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}
+    cache_at = _existing(c.work_root)
+    vols = {loc.stat().st_dev: dict(role="library", path=loc, device=loc.stat().st_dev, roots=[gdir / "build", gdir / "image"] if gdir else [])}
+    cache_dev = cache_at.stat().st_dev
+    vols.setdefault(cache_dev, dict(role="cache", path=cache_at, device=cache_dev, roots=[]))
+    for p in game_caches(c, gid):
+        if p in shared:
+            continue
+        try:
+            dev = p.stat().st_dev
+        except OSError:
+            continue
+        vols.setdefault(dev, dict(role="cache", path=_existing(p), device=dev, roots=[]))["roots"].append(p)
+    return list(vols.values())
+
+
 def pack_footprint(c, gid):
     """这一款出包在所在卷上的整套占用：这款文件夹里出包产生的（出包缓存 build/：共用解包、Mac 各层产物根、iPhone 出包工作目录；
     镜像 image/：Mac 运行版本、iPhone 容器件与资源包），再加私有目录 / 工具缓存里本款的出包缓存（直连 / 翻译…，game_caches）——后者只在同一卷时才算进来。
@@ -1161,11 +1197,21 @@ def space_budget(c, game):
     packages = selected_packages(game)
     size = _pack_input_bytes(packages)
     unpacked = _unpacked_on_disk(c, game)
-    need, free = pack_need_bytes(packages, unpacked=unpacked), _sh.disk_usage(c.library).free
-    direct = f"直连着色器上限 {_gb(_pack_direct_bytes(size))}"
-    note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}，{direct}"
-    volumes = [dict(role="library", volume=_volume(c.library), needBytes=need, freeBytes=free, enough=free >= need,
-                    note=note, unknown=["shader_cache"], basis="rule")]
+    # P1-165：解包 / 产物写在这款的存放位置，直连缓存写在工具缓存；两块盘各按自己那份需求、自己的余量判（同卷合成一项，同原来）
+    direct_need = _pack_direct_bytes(size)
+    copy_need = pack_need_bytes(packages, unpacked=unpacked) - direct_need
+    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}"
+    direct_note = f"直连着色器上限 {_gb(direct_need)}"
+    loc, cache = _pack_paths(c, game)
+    if loc.stat().st_dev == cache.stat().st_dev:
+        parts = [("library", loc, copy_need + direct_need, f"{unpack_note}，{direct_note}")]
+    else:
+        parts = [("library", loc, copy_need, unpack_note), ("cache", cache, direct_need, direct_note)]
+    volumes = []
+    for role, path, need, note in parts:
+        free = _sh.disk_usage(path).free
+        volumes.append(dict(role=role, volume=_volume(path), needBytes=need, freeBytes=free, enough=free >= need,
+                            note=note, unknown=["shader_cache"], basis="rule"))
     return dict(gameBytes=size, volumes=volumes, unknown=[dict(u) for u in SPACE_UNKNOWN])
 
 
@@ -1177,8 +1223,10 @@ def check_pack_space(c, game, *, compiler_policy=None):
     if compiler_policy is not None:
         from cache_retention import trim
         # 缓存只释放工具缓存所在卷（默认位置的 tool-cache，游戏库结构 P3）；不同卷的 library 不借用这笔 free。
-        device = c.work_root.parent.stat().st_dev
-        relevant = budget["volumes"] if c.library.stat().st_dev == device else []
+        # 删缓存只释放工具缓存所在卷：存放位置也在这块盘才帮得上全部各项，否则只帮得上 cache 那一项（P1-165）
+        loc, cache = _pack_paths(c, game)
+        same = loc.stat().st_dev == cache.stat().st_dev
+        relevant = budget["volumes"] if same else [v for v in budget["volumes"] if v["role"] == "cache"]
         target = max([compiler_policy["min_free_bytes"], *(v["needBytes"] for v in relevant)])
         if any(not v["enough"] for v in budget["volumes"]):
             # 若不足的是另一卷，只统计缓存，不为它删除本卷冷条目。
@@ -1196,7 +1244,8 @@ def check_pack_space(c, game, *, compiler_policy=None):
         if v["enough"]:
             continue
         need, free = v["needBytes"], v["freeBytes"]
-        head = f"磁盘空间不够：这次出包预计要 {need / 1e9:.0f} GB，现在只剩 {free / 1e9:.0f} GB。"
+        where = "" if len(budget["volumes"]) == 1 else ("游戏存放位置所在的盘" if v["role"] == "library" else "工具缓存所在的盘")
+        head = f"磁盘空间不够：{where}这次出包预计要 {need / 1e9:.0f} GB，现在只剩 {free / 1e9:.0f} GB。"
         if override:
             c.diagnostic(head + "已按你的选择仍然继续；中途真写满会停下报错，游戏原件和存档不受影响。", code="disk_full", severity="warning")
             continue

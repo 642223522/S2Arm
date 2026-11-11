@@ -49,7 +49,7 @@ def shared_redact():
 #   0400A3A01EE4C000 预检 22.3 GB，直连缓存在「翻译与收尾」（99084 个着色器）期间涨到约 44 GB、编批库开始后反而涨得慢，把系统盘写满。
 #   每个着色器 / 每 MB 批库占多少盘因游戏差很多（同一口径下另一款 8734 个着色器整局峰值约 1 GB），不能用常数：
 #   按这一局自己的实际消耗外推——计数器开始时记下（已完成量、这一款出包的真实占用 library.pack_footprint：克隆共享块只算一次），
-#   之后每 10 秒按「占用增量 ÷ 已完成 × 剩余 × 1.1」估还要多少，大于库所在卷当前可用就停下说清楚。只量自己的目录、不用卷余量差：
+#   之后每 10 秒按「占用增量 ÷ 已完成 × 剩余 × 1.1」估还要多少，按卷分开（存放位置、工具缓存可以是两块盘，P1-165），大于那块盘当前可用就停下说清楚。只量自己的目录、不用卷余量差：
 #   同卷别的作业写盘不算进本局消耗（11-10 第四次采样卷余量被别的作业带偏、作废）。完成量到总量 5%、增量超过 256 MB 才判。
 #   玩家点过「仍然继续」只打一次黄。
 #   先前按编批库总量 × 3 估（790efd9ec）：3 是拿 du 推的，du 把 APFS 克隆的解包内容重复算，且占盘大头在翻译阶段、编批库前就已发生。
@@ -61,9 +61,11 @@ DIRECT_SPACE_MIN_SPENT = 256 << 20
 
 
 def job_footprint(context):
-    """这一款出包在所在卷上的真实占用（产物根、解包、镜像、本款直连 / 翻译缓存；APFS 克隆共享块只算一次）"""
+    """这一款出包按卷的真实占用 {卷: (取余量的路径, 字节, 角色)}：存放位置那块盘量 build/ image/，工具缓存那块盘量本款直连 / 翻译缓存
+    （P1-165：两块盘可以不同；APFS 克隆共享块只算一次）"""
     import library   # library 导入 core：用到时再取
-    return library.pack_footprint(context, context.r.get("gameId"))
+    return {v["device"]: (v["path"], library.disk_bytes(v["roots"], v["device"]), v["role"])
+            for v in library.pack_volumes(context, context.r.get("gameId"))}
 
 
 def direct_space_recheck(context, counters, now=None):
@@ -88,22 +90,32 @@ def direct_space_recheck(context, counters, now=None):
         except OSError:
             return
         if m is None:
-            marks[name] = dict(total=c["total"], done=c["done"], used=used, at=now)
+            marks[name] = dict(total=c["total"], done=c["done"], used={dev: u[1] for dev, u in used.items()}, at=now)
             continue
         m["at"] = now
-        done, spent = c["done"] - m["done"], used - m["used"]
-        if done < c["total"] * DIRECT_SPACE_MIN_FRACTION or spent < DIRECT_SPACE_MIN_SPENT:
+        done = c["done"] - m["done"]
+        if done < c["total"] * DIRECT_SPACE_MIN_FRACTION:
             continue
-        need = int(spent / done * (c["total"] - c["done"]) * 1.1)
-        try:
-            free = shutil.disk_usage(library).free
-        except OSError:
-            return
-        if free >= need:
+        short = None
+        for dev, (path, bytes_now, role) in used.items():   # 每块盘只算写在它上面的、和它自己的余量比（P1-165）
+            spent = bytes_now - m["used"].get(dev, bytes_now)
+            if spent < DIRECT_SPACE_MIN_SPENT:
+                continue
+            need = int(spent / done * (c["total"] - c["done"]) * 1.1)
+            try:
+                free = shutil.disk_usage(path).free
+            except OSError:
+                continue
+            if free < need:
+                short = (role, need, free, spent)
+                break
+        if short is None:
             continue
+        role, need, free, spent = short
+        where = "游戏存放位置所在的盘" if role == "library" else "工具缓存所在的盘"
         gb = lambda n: f"{n / 1e9:.0f} GB"
         head = (f"磁盘空间不够：编译着色器这一步（{name.split('·')[-1]}）照现在的进度还要再占约 {gb(need)}，"
-                f"游戏库所在的盘只剩 {gb(free)}（已完成 {c['done']} / {c['total']}，这段已用掉 {gb(spent)}）。")
+                f"{where}只剩 {gb(free)}（已完成 {c['done']} / {c['total']}，这段已用掉 {gb(spent)}）。")
         if getattr(context, "r", {}).get("spaceOverride") is True:
             if not getattr(context, "_direct_space_warned", False):
                 context._direct_space_warned = True
