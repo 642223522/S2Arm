@@ -25,6 +25,8 @@ function(s2a_android_host_sources output)
         # 安卓侧共用文档根绑定：runtime.c 起局把 S2A_DOCS 指到本局 state 目录（iOS/Mac 由
         # launchctx 提供，安卓无此环节；dguard 的 wire/direct_guard 等消费者才得以落盘）
         native/docs_android.c
+        # AMediaCodec 视频解码边界（#44 第二刀）：纯 NDK API，无钉版源码，直接进单库。
+        codecs/s2a_mc.c
         native/direct_vk.c native/direct_session.c native/direct_choice.c native/direct_callback.c native/direct_callback.S)
     if(S2A_ANDROID_EXPERIMENTAL_TOUCH)
         list(APPEND sources native/touch_input.c)
@@ -49,7 +51,11 @@ function(s2a_android_diagnostic_sources output)
         native/capprobe/capprobe_host.c
         # dguard_android.c / bridge.cpp 引用的共用出口：诊断目标编入同一实现（无武装点，
         # 只靠弱回退的日志与 stub 的 s2a_host_session_state 空转），行为与游戏目标一致。
-        ../runtime/src/dguard.c ../runtime/src/direct_prompt.c)
+        ../runtime/src/dguard.c ../runtime/src/direct_prompt.c
+        # 诊断目标没有原生会话核心：direct_prompt.c 要的 s2a_host_session_state 等会话入口由 stub 给
+        # （恒报 FAILED）。不论服务层是否静态链入都要它，否则缺省 assembleDebug（S2A_CS_SERVICES=0）
+        # 在 -z defs 下报 undefined symbol: s2a_host_session_state。
+        native/s2a_native_stub.c)
     set(${output} "${sources}" PARENT_SCOPE)
 endfunction()
 
@@ -58,7 +64,8 @@ function(s2a_android_static_sources output mode)
     # provider 提供同一组符号。只读 guest 复制只在诊断目标需要。
     if(mode STREQUAL "diagnostic")
         # readonly_copy.c 现在也读背板打洞世代号（#1217 §2.6），诊断单库必须带 backing.c。
-        set(sources native/s2a_native_stub.c native/runtime/tracking/readonly_copy.c native/runtime/vm/backing.c)
+        # 链接桩 s2a_native_stub.c 已在 s2a_android_diagnostic_sources 里（不论服务层模式）。
+        set(sources native/runtime/tracking/readonly_copy.c native/runtime/vm/backing.c)
     else()
         set(sources)
     endif()
@@ -94,7 +101,7 @@ function(s2a_android_direct_sources output)
         native/nvn/nvn_vk_bcdec.c
         # NVN ReadTexels：纯几何换算（宿主单测同源）+ guest 内存路径 + GPU 图像路径。
         native/nvn/nvn_vk_readback_plan.c native/nvn/nvn_vk_readback.c native/nvn/nvn_vk_readback_gpu.c
-        native/nvn/mtl_vk_adapter.c native/direct/vk_record.c native/direct/t2t_plan.c
+        native/nvn/mtl_vk_adapter.c native/direct/vk_record.c native/direct/t2t_plan.c native/direct/buffer_texture_plan.c
         # 批次 1/A：命令流拍平（A2 延迟参数入记录 + A4 记录内引用重定位）；shim 的 clone_append 调用它。
         native/direct/record_flat.c
         native/nvn/nvn_vk_sampler_cache.c native/nvn/nvn_vk_sampler.c native/nvn/nvn_vk_format.c

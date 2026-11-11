@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 门禁停用：11-11 维护者定：安卓图形层以 iOS 为蓝本干净重搭，旧层钩子全部退役；安卓线出新钩子后接回
 # 门禁层：合入后（路由命中时合入前也跑）
 # 门禁路由：android/ pack/sysdata_synth.py runtime/rewriter/ runtime/src/svc_mem.c runtime/src/det.c runtime/src/layout.c runtime/include/ graphics/track/
 # 门禁本机：linux 安卓 Linux runtime CTest 要 aarch64 Linux：本机进 colima 虚拟机跑（android/linux_ctest.sh），gate-host 没有 colima；10-28 main 上 guest_page_test 链接红（svc_mem.c 新外部符号漏补桩）门禁没拦下
@@ -22,9 +23,9 @@
 # NDK 搜索顺序与 Q19 一致；找不到时报告全部候选和环境，不跳过。完整 SDK 的其他包留给 Gradle。
 # Linux 必须运行 runtime CTest；macOS 跳过
 # 该项（memory.c 的 mremap / MREMAP_MAYMOVE 在 macOS 编不了），仍运行可移植改写准备回归。
-# 门禁预算：--budget → 900 秒（本机 Apple Silicon 实测整份 608 秒：docker 路 amd64 模拟构建
-#   ~231 秒 + host 路 ~90 秒 + 无设备套件 ~290 秒；不自报时 tools/gate.sh 只给 600 秒会掐在尾巴上）
-[ "${1:-}" = --budget ] && { echo 900; exit 0; }
+# 门禁预算：--budget → 1500 秒。整份实跑：11-10 列车 501–902 秒（902 秒那次撞上旧 900 秒上限判「环境未就绪」）；
+#   另含 APK 备料锁等待（上限 S2A_ANDROID_PREPARE_WAIT_S，缺省 480 秒）和缺标记时的自动 prepare，预算要盖住「实跑最长 + 等锁上限」
+[ "${1:-}" = --budget ] && { echo 1500; exit 0; }
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/tools/gate_step.sh"
 s2a_gate_init
@@ -143,8 +144,8 @@ run_apk_gate() {
   #   （11-01：钩子 prepare 与两次 APK 门禁三个容器卡在 MSBuild、CPU 0 达 50 分钟）。准备在跑 → 本轮不跑 APK、报待宿主证，
   #   钩子跑完会删守望 last_checked 让这一提交补跑；门禁在跑时钩子排队等。持锁进程已死的锁收回
   #   11-10：安卓门禁改成「路由命中时合入前也跑」后，入车撞上合入后钩子的 prepare 就记待宿主证、列车按缺宿主证明退回（launcher/batch-audit）。
-  #   改成先等 prepare 做完（上限 S2A_ANDROID_PREPARE_WAIT_S，缺省 1200 秒，prepare 实测几分钟），等满仍被占才报待宿主证
-  local lk=${S2A_ANDROID_PREPARE_LOCK:-$HOME/.cache/s2arm-build/post-prepare.lock} p waited=0 wmax=${S2A_ANDROID_PREPARE_WAIT_S:-1200}
+  #   改成先等 prepare 做完（上限 S2A_ANDROID_PREPARE_WAIT_S，缺省 480 秒，prepare 实测几分钟；和上面的门禁预算一起定），等满仍被占才报待宿主证
+  local lk=${S2A_ANDROID_PREPARE_LOCK:-$HOME/.cache/s2arm-build/post-prepare.lock} p waited=0 wmax=${S2A_ANDROID_PREPARE_WAIT_S:-480}
   mkdir -p "$(dirname "$lk")"
   until mkdir "$lk" 2>/dev/null; do
     p=$(cat "$lk/pid" 2>/dev/null)

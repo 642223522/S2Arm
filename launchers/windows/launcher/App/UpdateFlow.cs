@@ -66,9 +66,9 @@ public sealed partial class EnvironmentWindow
                 case "downloading":
                     var total = e.GetProperty("total").GetInt64();
                     updateProgress = T("update.downloading").Replace("{0}", total > 0 ? (e.GetProperty("done").GetInt64() * 100 / total).ToString() : "0");
-                    Render(); break;
-                case "verifying": updateProgress = T("update.verifying"); Render(); break;
-                case "unpacking": updateProgress = T("update.unpacking"); Render(); break;
+                    RefreshLive(); break;   // 只刷新顶栏那一格（UpdateControls），不整页重画
+                case "verifying": updateProgress = T("update.verifying"); RefreshLive(); break;
+                case "unpacking": updateProgress = T("update.unpacking"); RefreshLive(); break;
             }
         }), TimeSpan.FromHours(2));
         updateProgress = "";
@@ -139,8 +139,10 @@ public sealed partial class EnvironmentWindow
             Background = new SolidColorBrush(amber, 0.16), BorderBrush = new SolidColorBrush(amber, 0.45), BorderThickness = new Thickness(1) });
     }
 
-    private void AddUpdateControls(StackPanel bar)
+    /// <summary>顶栏的自更新状态（下载中百分比 / 重启更新 / 失败原因）；没有可显示的返回 null。是顶栏的活格子，下载进度事件只刷新它。</summary>
+    private Control? UpdateControls()
     {
+        var bar = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
         if (updateProgress.Length > 0)
             bar.Children.Add(new TextBlock { Text = updateProgress, FontSize = 12, Foreground = Brush.Parse("#A8A6A1"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
         else if (updateReady is not null)   // 只有玩家点了才重启；作业进行中置灰并说明
@@ -155,5 +157,6 @@ public sealed partial class EnvironmentWindow
             bar.Children.Add(why);
             bar.Children.Add(Action("update.download_page", () => _ = OpenOfficialAsync(DownloadPage)));
         }
+        return bar.Children.Count > 0 ? bar : null;
     }
 }

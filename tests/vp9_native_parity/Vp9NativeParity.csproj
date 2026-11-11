@@ -3,6 +3,8 @@
   <ItemGroup>
     <!-- Internal to Ryujinx.Graphics.Nvdec: the frame builder the game runs, and the NVDEC probability layout with its Convert. -->
     <Compile Include="../../compat/tree/src/Ryujinx.Graphics.Nvdec/Vp9NativeFrame.cs" />
+    <!-- Vp9NativeFrame.cs 自 11-10 起要用 Vp9CompressedHeader（Nvdec 程序集内部类型，从引用里看不见）：同样直接编；它只依赖 System / System.Numerics -->
+    <Compile Include="../../compat/tree/src/Ryujinx.Graphics.Nvdec/Vp9CompressedHeader.cs" />
     <Compile Include="../../compat/tree/src/Ryujinx.Graphics.Nvdec/Types/Vp9/EntropyProbs.cs" />
     <ProjectReference Include="../../compat/tree/src/Ryujinx.Graphics.Nvdec/Ryujinx.Graphics.Nvdec.csproj" />
     <ProjectReference Include="../../compat/tree/src/Ryujinx.Graphics.Nvdec.Vp9/Ryujinx.Graphics.Nvdec.Vp9.csproj" />

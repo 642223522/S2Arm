@@ -801,7 +801,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     private func startPlay(_ game: GameSummary, uiLanguage: String?) {
         let relaySocket = controller.relaySocketForGame()
         var controllerArguments: [String: String] = [
-            "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",
+            "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
         controllerGameStarted = false

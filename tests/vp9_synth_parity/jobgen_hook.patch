@@ -1,0 +1,34 @@
+--- a/vp9/decoder/vp9_decodeframe.c
++++ b/vp9/decoder/vp9_decodeframe.c
+@@ -2955,6 +2955,14 @@
+   return (BITSTREAM_PROFILE)profile;
+ }
+ 
++// S2Arm test hook (tests/vp9_synth_parity): NULL unless the job generator sets them.
++// header: compressed header read (cm->fc = this frame's probabilities before
++// backward adaptation); tiles .. tiles_end is the tile data an NVDEC job carries.
++// done: frame fully decoded and loop-filtered.
++void (*s2a_jobgen_header)(VP9Decoder *pbi, const uint8_t *tiles,
++                          const uint8_t *tiles_end);
++void (*s2a_jobgen_done)(VP9Decoder *pbi);
++
+ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
+                       const uint8_t *data_end, const uint8_t **p_data_end) {
+   VP9_COMMON *const cm = &pbi->common;
+@@ -3004,6 +3012,9 @@
+     vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
+                        "Decode failed. Frame data header is corrupted.");
+ 
++  if (s2a_jobgen_header)
++    s2a_jobgen_header(pbi, data + first_partition_size, data_end);
++
+   if (cm->lf.filter_level && !cm->skip_loop_filter) {
+     vp9_loop_filter_frame_init(cm, cm->lf.filter_level);
+   }
+@@ -3066,4 +3077,6 @@
+   // Non frame parallel update frame context here.
+   if (cm->refresh_frame_context && !context_updated)
+     cm->frame_contexts[cm->frame_context_idx] = *cm->fc;
++
++  if (s2a_jobgen_done) s2a_jobgen_done(pbi);
+ }
