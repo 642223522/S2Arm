@@ -62,7 +62,7 @@ TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_
 if [ "${GATE_LAYER:-}" = pre ] && [ -z "${GATE_CHANGED:-}" ] && [ -z "$PLANM" ] && [ -z "$RER" ]; then
   case ${GATE_ROLE:-} in 列车|热修) ;; *)
     _mb=$(git merge-base origin/main "${GATE_REV:-HEAD}" 2> /dev/null) \
-      && _chg=$(git -c core.quotepath=off diff --name-only "$_mb" "${GATE_REV:-HEAD}" 2> /dev/null | tr '\n' ' ') && [ -n "${_chg// /}" ] \
+      && _chg=$(git -c core.quotepath=off diff --name-only "$_mb" "${GATE_REV:-HEAD}" 2> /dev/null) && _chg=${_chg//$'\n'/ } && [ -n "${_chg// /}" ] \
       && { export GATE_CHANGED=$_chg; echo "预跑按路由：改动清单取 merge-base ${_mb:0:9} → ${GATE_REV:-HEAD}（$(wc -w <<< "$_chg" | tr -d ' ') 个文件）" >&2; }
     unset _mb _chg;; esac
 fi
