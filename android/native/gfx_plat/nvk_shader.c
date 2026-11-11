@@ -124,7 +124,7 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
     struct entry *e = calloc(1, sizeof *e);
     struct fd_program fp; char why[192] = "";
     memset(&fp, 0, sizeof fp);
-    if (nvn_vk_program_parse_graphics(bytes, len, &fp, why, sizeof why)) { red1("program_parse_failed", why); e->failed = 1; return e; }
+    if (nvn_vk_program_parse_graphics_stages(bytes, len, &fp, nst == 1, why, sizeof why)) { red1("program_parse_failed", why); e->failed = 1; return e; }
     e->prog.support_bytes = fp.support_bytes; e->prog.attr_mask = fp.stage[0].attr_mask;
     for (int st = 0; st < nst && !e->failed; st++) {
         if (!fp.stage[st].present) { red1("stage_missing_in_result", st ? "fs" : "vs"); e->failed = 1; break; }

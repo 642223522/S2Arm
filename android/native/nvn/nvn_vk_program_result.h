@@ -60,6 +60,8 @@ extern "C" {
 #endif
 int nvn_vk_program_graphics_stage_index(const char *name);
 int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, char *why, size_t why_size);
+// 同上，allow_vs_only = 1 时也接受只有顶点阶段的程序（只写深度的绘制；新回放层用）。
+int nvn_vk_program_parse_graphics_stages(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size);
 void nvn_vk_program_free(struct fd_program *program);
 int nvn_vk_program_vertex_storage_safe(const uint8_t *bytes, size_t length, char *why, size_t why_size);
 #ifdef __cplusplus

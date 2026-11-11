@@ -53,7 +53,14 @@ int nvn_vk_program_graphics_stage_index(const char *name) {
     return -1;
 }
 
+static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size);
 int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, char *why, size_t why_size) {
+    return parse_graphics(bytes, length, out, 0, why, why_size);
+}
+int nvn_vk_program_parse_graphics_stages(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size) {
+    return parse_graphics(bytes, length, out, allow_vs_only, why, why_size);
+}
+static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size) {
     struct s2a_jv top = { (const char *)bytes, length };
     if (!s2a_jv_is_object(top)) return fail(why, why_size, "program result is not a JSON object");
     struct s2a_jv schema;
@@ -225,7 +232,8 @@ int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd
             out->support_bytes = required_v;
     }
     if (out->support_bytes < SUPPORT_DEFAULT_BYTES) return fail(why, why_size, "support layout is smaller than the compiler layout");
-    if (!out->stage[0].present || !out->stage[1].present) return fail(why, why_size, "program is not a vs+fs program");
+    if (!out->stage[0].present) return fail(why, why_size, "program has no vertex stage");
+    if (!out->stage[1].present && !allow_vs_only) return fail(why, why_size, "program is not a vs+fs program");
     return 0;
 }
 

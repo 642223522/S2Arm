@@ -80,17 +80,23 @@ namespace S2A.DirectCompiler
                 else
                 {
                     // 先按 VS 再 FS 解码：共享 allocator 的绑定号必须反映合同规定的 stage 顺序。
+                    // 片元阶段可以没有（只写深度的程序）：这时顶点阶段没有下一阶段，按最后一个阶段翻译。
                     DirectStage vs = program.StageOf("vs"), fs = program.StageOf("fs");
                     var vsAccessor = new DirectGpuAccessor(profile, program, vs, 1, allocator, queries);
-                    var fsAccessor = new DirectGpuAccessor(profile, program, fs, 5, allocator, queries);
-                    accessors.Add(vsAccessor); accessors.Add(fsAccessor);
+                    accessors.Add(vsAccessor);
                     TranslatorContext vsContext = ShaderCache.DecodeGraphicsShader(vsAccessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0);
-                    TranslatorContext fsContext = ShaderCache.DecodeGraphicsShader(fsAccessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0);
-                    vsContext.SetNextStage(fsContext);
-                    ShaderProgram vsShader = vsContext.Translate();
-                    ShaderProgram fsShader = fsContext.Translate();
-                    translated.Add((vs, vsShader, vsAccessor));
-                    translated.Add((fs, fsShader, fsAccessor));
+                    if (fs != null)
+                    {
+                        var fsAccessor = new DirectGpuAccessor(profile, program, fs, 5, allocator, queries);
+                        accessors.Add(fsAccessor);
+                        TranslatorContext fsContext = ShaderCache.DecodeGraphicsShader(fsAccessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0);
+                        vsContext.SetNextStage(fsContext);
+                        ShaderProgram vsShader = vsContext.Translate();
+                        ShaderProgram fsShader = fsContext.Translate();
+                        translated.Add((vs, vsShader, vsAccessor));
+                        translated.Add((fs, fsShader, fsAccessor));
+                    }
+                    else translated.Add((vs, vsContext.Translate(), vsAccessor));
                 }
             }
             catch (DirectCompileException) { throw; }
