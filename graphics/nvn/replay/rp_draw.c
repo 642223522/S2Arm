@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // SupportBuffer 里现在要填的字段（翻译器产物的布局；其余保持 0）
 enum { SB_RENDER_SCALE = 192, SB_S2A_FLAGS = 1392, SB_S2A_POINT = 1408, SB_RENDER_SCALE_Y = 1440, SB_RENDER_SCALE_COUNT = 73 };
@@ -166,8 +167,12 @@ static int fill_dyn(nvn_gpu_dyn *d, uint32_t tw, uint32_t th, const void *rec) {
 }
 
 // OP_DRAW / OP_DRAW_IDX 共用。di 非空 = 带索引
+// 分时：一笔绘制里各步各花多久（累计到 rp_perf，上屏那边每 5 秒报一次）
+static uint64_t dt_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
+#define DT(step) do { uint64_t n_ = dt_now(); rp_perf_add(step, n_ - dt_); dt_ = n_; } while (0)
 void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec) {
     if (!c) return;
+    uint64_t dt_ = dt_now();
     uint32_t prim = (uint32_t)(di ? di->prim : dr->prim);
     if ((di && (di->ind || di->mdi_cnt)) || (dr && (dr->ind || dr->mdi_cnt))) { skip("indirect", rec); return; }
     if (dr && dr->tfc) { skip("transform_feedback_count", rec); return; }
@@ -219,6 +224,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     static nvn_gpu_view tv[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static nvn_gpu_samp ts[RP_PROG_STAGES][RP_PROG_ENT_MAX];
     char tl[520]; size_t tn = 0; tl[0] = 0;   // 逐笔日志用：这笔采样的贴图
     int narr[RP_PROG_STAGES] = {0, 0};
+    DT(RP_PERF_D_PREP);
     for (int st = 0; st < 2; st++) for (uint32_t i = 0; i < g_prog->nent[st]; i++) {
         const nvn_gpu_layout_ent *e = &g_prog->ent[st][i]; tv[st][i] = NULL; ts[st][i] = NULL;
         if (e->src_kind != NVN_RB_TEX) continue;
@@ -248,6 +254,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         }
         ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
+    DT(RP_PERF_D_TEX);
     if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); return; }
     if (rp_S.poly.mode != NVN_POLYGON_MODE_FILL) nvn_unimpl("gpu", "polygon_mode_not_fill", rec);   // 点 / 线填充模式（连同它们的深度偏移位）：后端只建填充模式的管线，照画，记一笔
     if (rp_pso_dirty || !g_pipe || g_pipe_cmd != c) {
@@ -290,14 +297,18 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
       else if (rt->depth) { uint32_t l = rt->has_dview && rt->dview.set_levels ? rt->dview.base_level : 0; tw = rt->depth->d.width >> l; th = rt->depth->d.height >> l; }
       if (!tw) tw = 1;
       if (!th) th = 1; }
+    DT(RP_PERF_D_PIPE);
     nvn_gpu_dyn dyn; if (!fill_dyn(&dyn, tw, th, rec)) return;
     nvn_gpu_set_dyn(c, &dyn);
     for (int i = 0; i < 16; i++) if (streams >> i & 1) nvn_gpu_set_vbuf(c, (uint32_t)i, vb_buf[i], vb_off[i]);
     uint32_t base_instance = (uint32_t)(di ? di->base_instance : dr->base_instance);
-    for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
+    DT(RP_PERF_D_DYN);
+    for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;
+    DT(RP_PERF_D_BIND);   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
     a.prim = prim; a.count = count; a.instances = (uint32_t)(di ? di->instances : dr->instances); if (!a.instances) a.instances = 1; a.base_instance = base_instance;
     rp_occl_draw(c);
     nvn_gpu_draw(c, &a);
+    DT(RP_PERF_D_DRAW);
     if (g_log_left) {
         g_log_left--;
         char b[1100]; const blend_st *bl = &rp_S.blend[0];
@@ -327,6 +338,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
       if (!noted) hist_note(rt->depth ? rt->depth->serial : 0, ts4, nt); }
     rp_pso_dirty = rp_dss_dirty = 0; memset(rp_args_dirty, 0, sizeof rp_args_dirty);
     g_draws++;
+    DT(RP_PERF_D_TAIL);
 }
 
 // ---------- 调试：把「上屏那张图」和它上游几层的贴图读回落盘（开关 nvk_dump；rp_present 每 600 帧调一次） ----------
