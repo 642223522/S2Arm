@@ -179,10 +179,12 @@
 "vpad.layouts.title" = "触屏布局";
 "vpad.layouts.touch.note" = "游戏自己的触屏操作用这项；虚拟按键会关掉，四指长按 1.5 秒可切回";
 "vpad.menu.editDisabled" = "仅触屏操作时没有按键可编辑";
-"vpad.menu.face.letter" = "按键按字母对应";
-"vpad.menu.face.letter.note" = "Xbox 的 A、PlayStation 的 × 就是 Switch 的 A";
-"vpad.menu.face.position" = "按键按位置对应";
-"vpad.menu.face.position.note" = "按 Switch 的按键位置";
+"vpad.menu.face.auto" = "手柄按键：自动";
+"vpad.menu.face.auto.note" = "按手柄键帽上印的字母：任天堂手柄用 Switch 布局，Xbox 手柄用 Xbox 布局";
+"vpad.menu.face.switch" = "手柄按键：Switch 布局";
+"vpad.menu.face.switch.note" = "按 Switch 的按键位置，右键确认";
+"vpad.menu.face.xbox" = "手柄按键：Xbox 布局";
+"vpad.menu.face.xbox.note" = "按 Xbox 的按键位置，下键确认";
 "vpad.menu.gyro" = "手机陀螺仪";
 "vpad.menu.haptic.note" = "按下时轻震一下";
 "vpad.menu.holdLock.note" = "按住 2 秒锁定，只对这款游戏";
@@ -283,6 +285,7 @@
 "controller.scanning" = "正在查找，轻点取消";
 "controller.turnOnBluetooth" = "打开蓝牙后重试";
 "img.scanFailed.title" = "没能导入游戏文件";
+"diag.fileWord" = "诊断";
 "diag.error.bundleName" = "诊断包名脱敏失败，未导出诊断包";
 "diag.error.redact" = "诊断脱敏或写入失败，未导出诊断包";
 "diag.error.title" = "诊断包没生成";

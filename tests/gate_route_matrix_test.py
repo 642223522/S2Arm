@@ -17,7 +17,6 @@ spec.loader.exec_module(route)
 
 class RouteMatrixTest(unittest.TestCase):
     def test_required_routes(self):
-        # 安卓三个旧钩子 11-11 起「门禁停用」（维护者：安卓图形层重搭，旧钩子退役）：原先路由到它们的改动现在一个都不能选中它们；安卓线出新钩子后改回。
         # 分别覆盖作业层、抽取阶段闭包、原生执行入口、图形工具及渲染器。
         # 必选项依据实际依赖/钩子契约手写；禁选项防止宽泛匹配掩盖缺口。
         cases = [
@@ -26,18 +25,6 @@ class RouteMatrixTest(unittest.TestCase):
             ('tests', 'pack/stage_direct.sh', {'tests/stage_keys_test.sh'}, {'tests/pack_jobs_test.sh'}),   # 11-05 起 run_mac.sh 不在直连阶段闭包里（出包不再起局），样例换成仍是阶段输入的脚本
             ('tests', 'graphics/tools/shbake/xc_key.sh', {'tests/xc_key_test.sh'}, {'tests/pack_jobs_test.sh'}),
             ('hooks', 'pack/jobs/core.py', {'launchers/macos/gate.sh'}, {'runtime/gate.sh', 'graphics/gate.sh'}),
-            ('hooks', 'services/S2A.Services/Native.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'services/S2A.Services/HidServer.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'services/S2A.Services/SmDirect.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'graphics/metal/cs/NxTrack.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'android/cs/video/AvcH264Decoder.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'graphics/vulkan/wsi/AndroidWindow.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'android/verify-apk.py', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'graphics/tools/direct/compiler/DirectBundle.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'graphics/tools/direct/dsh/Tables.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'translator/dmsh_xlate/Program.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'graphics/widen/shader/SpirvFetchScale.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
-            ('hooks', 'graphics/widen/SpirvCbufUseText.cs', set(), {'android/gate.sh', 'android/core-link/gate.sh', 'android/ctest-link/gate.sh'}),
             ('hooks', 'runtime/src/ap_host.c', {'runtime/gate.sh', 'graphics/gate.sh'}, {'tests/visual/gate.sh'}),
             ('hooks', 'graphics/metal/gal_core.m', {'runtime/gate.sh', 'graphics/gate.sh', 'tests/visual/gate.sh'}, {'launchers/macos/gate.sh'}),
         ]

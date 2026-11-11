@@ -496,6 +496,103 @@ static void test_pad_disconnect(void) {
     puts("Mac pad: disconnect returns to touch source and keeps keyboard input passed");
 }
 
+// 本地多手柄槽位（s2a_slot_plan 是纯逻辑，用假身份指针测，不碰 GameController）：
+//   按连接顺序占槽、断开清槽（槽位不压实，玩家号不跳）、重连回原槽、超过 4 只的第 5 只丢弃。
+//   apply_slots 与 sample_input 的写回同构：整表重建，只有本轮还在的才写回。
+static void apply_slots(const void **owners, const void *const *live, const int *slot_of, int count, int max) {
+    for (int i = 0; i < max; i++) owners[i] = NULL;
+    for (int j = 0; j < count; j++) if (slot_of[j] >= 0) owners[slot_of[j]] = live[j];
+}
+static void test_pad_slots(void) {
+    int ids[5] = {1, 2, 3, 4, 5};
+    const void *a = &ids[0], *b = &ids[1], *c = &ids[2], *d = &ids[3], *e = &ids[4];
+    const void *owners[4] = {NULL, NULL, NULL, NULL};
+    const void *live[5]; int slot_of[5];
+
+    live[0] = a;
+    expect(s2a_slot_plan(owners, live, 1, 4, slot_of) == 1 && slot_of[0] == 0, "one pad takes slot 0 and reports one pad");
+    apply_slots(owners, live, slot_of, 1, 4);
+
+    live[1] = b;
+    expect(s2a_slot_plan(owners, live, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1,
+        "second pad joins after the first in connection order");
+    apply_slots(owners, live, slot_of, 2, 4);
+
+    live[2] = c;
+    expect(s2a_slot_plan(owners, live, 3, 4, slot_of) == 3 && slot_of[2] == 2, "third pad takes slot 2");
+    apply_slots(owners, live, slot_of, 3, 4);
+
+    // 第一只断开：槽 0 空出来，第二、三只留在原槽（不压实，玩家号不跳）
+    expect(s2a_slot_plan(owners, live + 1, 2, 4, slot_of) == 3 && slot_of[0] == 1 && slot_of[1] == 2,
+        "unplugging the first clears slot 0 and leaves the others where they were");
+    apply_slots(owners, live + 1, slot_of, 2, 4);
+
+    // 重连回原槽：中间没插别的，第一只回到槽 0
+    expect(s2a_slot_plan(owners, live, 3, 4, slot_of) == 3 && slot_of[0] == 0,
+        "a pad that comes back reclaims its original slot");
+    apply_slots(owners, live, slot_of, 3, 4);
+
+    // 第一只又断开、新的第四只接上：占最小空槽（槽 0），不是追加到末尾
+    const void *bcd[3] = {b, c, d};
+    expect(s2a_slot_plan(owners, bcd, 3, 4, slot_of) == 3 && slot_of[0] == 1 && slot_of[1] == 2 && slot_of[2] == 0,
+        "a new pad takes the lowest free slot");
+    apply_slots(owners, bcd, slot_of, 3, 4);
+
+    // 超过 4 只：第五只 -1，不参与
+    const void *five[5] = {a, b, c, d, e};
+    expect(s2a_slot_plan(owners, five, 5, 4, slot_of) == 4 && slot_of[4] == -1, "a fifth pad is ignored");
+    // 全断开：回到只有槽 0（键盘 / 鼠标）的那一位
+    expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
+}
+
+// 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
+//   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
+//   它的类别是「Siri Remote」，认不出类型按缺省「自动」照字母（pad.c s2a_pad_abxy_order）：系统 A = Switch A，默认配置第 0 位（1）；
+//   方向键上是第 13 位（8192）；没按任何键是 0
+static void test_profile_only_pad(void) {
+    config = default_config();
+    GCController *c = [GCController controllerWithMicroGamepad];
+    expect(c.extendedGamepad == nil && pad_has_profile_buttons(c), "micro-only controller counts as a profile-only pad");
+    install_pad_handler(c);
+    expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue == dispatch_get_main_queue(), "profile handler installed on the main queue");
+    uint32_t buttons = 99; int32_t sticks[4];
+    sample_profile_state(c, &buttons, sticks);
+    expect(buttons == 0, "nothing pressed: no buttons");
+    [c.microGamepad.buttonA setValue:1];
+    sample_profile_state(c, &buttons, sticks);
+    expect(buttons == 1, "unrecognized pad, automatic layout: profile button A maps to Switch A by its letter");
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_SWITCH); sample_profile_state(c, &buttons, sticks);
+    expect(buttons == 2, "Switch layout: profile button A (south) maps to Switch B by position");
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_AUTO);
+    [c.microGamepad.buttonA setValue:0]; [c.microGamepad.dpad setValueForXAxis:0 yAxis:1];
+    sample_profile_state(c, &buttons, sticks);
+    expect(buttons == (1u << 13), "profile dpad up maps to Switch Up");
+    puts("Mac profile-only pad: handler and standard-name reading passed");
+}
+
+// 手柄按键布局（11-11）：系统自带的虚拟扩展手柄（controllerWithExtendedGamepad，类别认不出 = 按 Xbox / MFi 那种排法：buttonA 在南、Y 在北）。
+//   期望手算（默认配置 东/南/北/西 = Switch A/B/X/Y = 第 0/1/2/3 位）：
+//   自动 / Xbox 布局：照字母，按 buttonA → Switch A（1）、按 buttonY → Switch Y（8）；
+//   Switch 布局：按位置，buttonA 在南 → Switch B（2）、buttonY 在北 → Switch X（4）；切换后下一次读即按新布局，不用重开
+static void test_pad_layout(void) {
+    config = default_config();
+    GCController *c = [GCController controllerWithExtendedGamepad];
+    GCExtendedGamepad *pad = c.extendedGamepad;
+    uint32_t buttons; int32_t sticks[4];
+    int layouts[3] = {S2A_PAD_LAYOUT_AUTO, S2A_PAD_LAYOUT_SWITCH, S2A_PAD_LAYOUT_XBOX};
+    uint32_t want_a[3] = {1, 2, 1}, want_y[3] = {8, 4, 8};
+    for (int i = 0; i < 3; i++) {
+        s2a_pad_layout_set(layouts[i]);
+        [pad.buttonA setValue:1]; sample_pad_state(pad, &buttons, sticks);
+        expect(buttons == want_a[i], "pad layout: button A lands on the expected Switch button");
+        [pad.buttonA setValue:0]; [pad.buttonY setValue:1]; sample_pad_state(pad, &buttons, sticks);
+        expect(buttons == want_y[i], "pad layout: button Y lands on the expected Switch button");
+        [pad.buttonY setValue:0];
+    }
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_AUTO);
+    puts("Mac pad layout: automatic / Switch / Xbox take effect on the next read passed");
+}
+
 // 手柄事件回调（A2）：handlerQueue 必须切到主队列（与 AppKit 事件串行），回调直接发布整份当前状态；
 //   没有新事件时 120Hz 定时器仍是回退采样，长按不会因为「只发变化」而丢。
 static void test_pad_handler_install(void) {
@@ -788,6 +885,7 @@ int main(int argc, const char **argv) {
         if (argc == 2 && !strcmp(argv[1], "--guide-preview")) { guide_preview = YES; s2a_front_run(NULL); return 0; }
         test_shared_input_config();
         test_active_pad();
+        test_pad_slots();
         // 同一个真实前端实现：通用 attach 先发布层，detach 先通知再清层；
         // 直连只发布/清层，不通知尚未初始化且不应初始化的通用 NxGal。
         CAMetalLayer *front = [CAMetalLayer layer];
@@ -809,6 +907,8 @@ int main(int argc, const char **argv) {
         test_event_input();
         test_pad_disconnect();
         test_pad_handler_install();
+        test_profile_only_pad();
+    test_pad_layout();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();

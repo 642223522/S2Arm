@@ -179,10 +179,12 @@
 "vpad.layouts.title" = "Touch layout";
 "vpad.layouts.touch.note" = "For games with their own touch controls. The on-screen buttons turn off; hold four fingers for 1.5 s to switch back.";
 "vpad.menu.editDisabled" = "No buttons to edit in touch-only mode";
-"vpad.menu.face.letter" = "Map buttons by letter";
-"vpad.menu.face.letter.note" = "Xbox A and PlayStation × are Switch A";
-"vpad.menu.face.position" = "Map buttons by position";
-"vpad.menu.face.position.note" = "Buttons follow the Switch layout";
+"vpad.menu.face.auto" = "Buttons: Automatic";
+"vpad.menu.face.auto.note" = "Follows the letters on your controller: Switch layout on Nintendo controllers, Xbox layout on Xbox controllers";
+"vpad.menu.face.switch" = "Buttons: Switch layout";
+"vpad.menu.face.switch.note" = "Switch button positions; the right button confirms";
+"vpad.menu.face.xbox" = "Buttons: Xbox layout";
+"vpad.menu.face.xbox.note" = "Xbox button positions; the bottom button confirms";
 "vpad.menu.gyro" = "Phone gyro";
 "vpad.menu.haptic.note" = "A light tap when you press a button";
 "vpad.menu.holdLock.note" = "Hold for 2 s to lock; this game only";
@@ -283,6 +285,7 @@
 "controller.scanning" = "Searching, tap to cancel";
 "controller.turnOnBluetooth" = "Turn on Bluetooth and try again";
 "img.scanFailed.title" = "Couldn't import the game file";
+"diag.fileWord" = "diag";
 "diag.error.bundleName" = "Couldn’t redact the bundle name, so no diagnostics bundle was exported";
 "diag.error.redact" = "Couldn’t redact or write the diagnostics, so no diagnostics bundle was exported";
 "diag.error.title" = "Diagnostics bundle not created";

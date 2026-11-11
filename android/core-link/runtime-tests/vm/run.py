@@ -20,7 +20,8 @@ print('lockorder-wired PASS',flush=True)
 # vpalias-wired：vpool_map 的「只进页表」早退必须在别名表 / 背板 ref 之前；否则 4K 对齐、16K 不对齐的请求会撞 add/remove 的对齐断言。
 start=hle.find('static int vpool_map'); end=hle.find('NVN(nvnMemoryPoolMapVirtual')
 body=hle[start:end] if start>=0 and end>start else ''
-early=body.find('kept in the page table only'); ref=body.find('s2a_mem_backing_alias_ref('); rem=body.find('s2a_vp_alias_remove(')
+# 锚点用早退条件本身，不用注释：注释改词会让检查误红（main 上 "kept in the page table only" 已去掉 only）。
+early=body.find('if ((uint64_t)r->voff + r->size > v->len'); ref=body.find('s2a_mem_backing_alias_ref('); rem=body.find('s2a_vp_alias_remove(')
 if not body or early<0 or ref<0 or rem<0 or not (early<ref and early<rem):
     raise SystemExit('vpalias-wired FAIL: vpool_map 的页表早退不在别名表 / ref 之前')
 if 'NVN 别名表' not in (root/'android/native/nvn/s2a_vp_alias.c').read_text():

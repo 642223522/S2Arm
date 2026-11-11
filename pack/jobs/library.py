@@ -1014,8 +1014,10 @@ def _pack_direct_bytes(size):
     return DIRECT_SMALL_BYTES if size < PACK_SMALL_BYTES else DIRECT_LARGE_BYTES
 
 
-def pack_need_bytes(packages, unpacked=False, windows=None):
+def pack_need_bytes(packages, unpacked=False, windows=None, image=False):
     """这次出包要多少盘；packages 已按 selected_packages 选定。unpacked：解包目录已完整在盘上。windows 不给就按当前系统。
+    image：打 iPhone 包（单一 IMG 交付）——出包最后一步把资源整份写成 game.img（真数据，克隆不了），写时解包目录、直连缓存都还在盘上，
+    再加一份原件大小（11-11 实测 0400486024DEC000：IMG 24.49 GiB ≈ 资源内容 24.47 GiB，整次峰值 57.90 GiB 出在写 IMG 时；原先没算，预留 43.9 GB < 峰值 62.2 GB）。
     直连段按原件大小分两档（_pack_direct_bytes）。11-10 删掉 #265 的「按着色器抽取量 × 系数」：抽取字节数不是直连占用的驱动量——
     抽取产物有的是压缩过的着色器档案（0100559011740000 只有 23 个、0.48 GiB），有的是原文（01008FC00D964000 1.66 GiB），两者直连编译缓存峰值
     却差不多（6.3 / 7.0 GiB），乘系数注定一款多一款少；那条分支从 #265 起读的是 v2 旧路径、从没生效过。按原件的规则在克隆感知、只量出包作业目录的
@@ -1024,7 +1026,7 @@ def pack_need_bytes(packages, unpacked=False, windows=None):
     copy = size * 11 // 10
     windows = os.name == "nt" if windows is None else windows
     direct = _pack_direct_bytes(size)
-    return (0 if unpacked else copy) + (copy if windows else 0) + direct   # 单文件镜像 romfs.img 不再存进库（#329：存 romfs.files 硬链接，装机时现拼，push_pack 另核本机空间）
+    return (0 if unpacked else copy) + (copy if windows else 0) + direct + (size if image else 0)
 
 
 # 出包实测账（11-07 联合开发者01007EF00011E000：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
@@ -1206,8 +1208,9 @@ def space_budget(c, game):
     unpacked = _unpacked_on_disk(c, game)
     # P1-165：解包 / 产物写在这款的存放位置，直连缓存写在工具缓存；两块盘各按自己那份需求、自己的余量判（同卷合成一项，同原来）
     direct_need = _pack_direct_bytes(size)
-    copy_need = pack_need_bytes(packages, unpacked=unpacked) - direct_need
-    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}"
+    image = getattr(c, "operation", None) == "ipa"   # 打 iPhone 包写 game.img（写在存放位置）；Mac 打包不写
+    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image) - direct_need
+    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "")
     direct_note = f"直连着色器上限 {_gb(direct_need)}"
     loc, cache = _pack_paths(c, game)
     if loc.stat().st_dev == cache.stat().st_dev:
