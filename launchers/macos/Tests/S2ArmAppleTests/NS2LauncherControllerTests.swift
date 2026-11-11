@@ -19,4 +19,22 @@ final class NS2LauncherControllerTests: XCTestCase {
         XCTAssertEqual(NS2LauncherController.kind(from: object), 3)
         XCTAssertEqual(NS2LauncherController.kind(from: ["status": 4]), 0, "旧连接程序没报 kind")
     }
+
+    // 剃刀 M16：停连接程序不再在主线程无上限 waitUntilExit。期望按信号语义手写：
+    //   ① 收到 SIGTERM 就退的子进程：terminate 回来时已退出、没动用 SIGKILL，用时远小于宽限
+    //   ② 忽略 SIGTERM 的子进程（trap '' TERM）：宽限 0.5 秒到点 SIGKILL，回来时已退出，用时在 [0.5, 0.5 + 2) 秒内（改前会一直等下去）
+    func testTerminateIsBounded() throws {
+        func spawn(_ script: String) throws -> Process {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/sh"); p.arguments = ["-c", script]; try p.run(); usleep(200_000); return p
+        }
+        let polite = try spawn("sleep 30")
+        var t0 = Date()
+        XCTAssertFalse(NS2LauncherController.terminate(polite, grace: 0.5), "SIGTERM 就退，不该动用 SIGKILL")
+        XCTAssertFalse(polite.isRunning); XCTAssertLessThan(Date().timeIntervalSince(t0), 0.5)
+        let stubborn = try spawn("trap '' TERM; while :; do sleep 0.05; done")
+        t0 = Date()
+        XCTAssertTrue(NS2LauncherController.terminate(stubborn, grace: 0.5), "忽略 SIGTERM 的要到点 SIGKILL")
+        let took = Date().timeIntervalSince(t0)
+        XCTAssertFalse(stubborn.isRunning); XCTAssertGreaterThanOrEqual(took, 0.5); XCTAssertLessThan(took, 2.5)
+    }
 }

@@ -92,6 +92,9 @@ struct PortraitLibrary: View, Equatable {
             .scrollIndicators(.hidden)
             .ignoresSafeArea(edges: wide ? [.top, .bottom] : .top)
             .safeAreaInset(edge: .bottom, spacing: 0) { if !wide { bottomBar } }
+            .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
+                LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
+            }
             .overlay(alignment: .topTrailing) {
                 if !chipsInSideBar {
                     HStack(spacing: 10) {

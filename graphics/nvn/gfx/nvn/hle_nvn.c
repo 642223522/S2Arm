@@ -368,7 +368,9 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     if (!o->mem && (o->flags & 0x200)) o->mem = vpool_reserve(o);   // every virtual pool: its own address range, a page table over physical pools (see MapVirtual)
     else if (o->mem) { nvn_be_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
     if (!o->mem && !(o->flags & 0x200)) LOG("【红】 MemoryPoolInitialize: non-virtual pool has no storage flags=%#x size=%#llx", o->flags, o->size);
-    o->gva = o->mem || (o->flags & 0x200) ? gva_alloc((uint64_t)(uintptr_t)o->mem, o->size) : 0;   // 虚拟池的 CPU 侧是它自己的预留段（预留失败时没有，GPU 地址照给：真机初始化即有）
+    // Switch 2（NVN2）：池建在 gsv GPU 可访问内存上，那段内存的 GPU 虚拟地址就是它的 CPU 虚拟地址，缓冲区地址 = 存储的 CPU 地址；游戏会拿 GetBufferAddress 的结果加偏移直接用 CPU 读写
+    //   （#351：给窗口地址时 CPU 读 0xC086D00000 一带非法地址崩）。所以 NVN2 不另分窗口地址，pool_ga 回存储地址，nvn_ga2ca 对它原样过。窗口只给 Switch 1（大页对齐语义，见上）
+    o->gva = !nvn2_on() && (o->mem || (o->flags & 0x200)) ? gva_alloc((uint64_t)(uintptr_t)o->mem, o->size) : 0;   // 虚拟池的 CPU 侧是它自己的预留段（预留失败时没有，GPU 地址照给：真机初始化即有）
     if (getenv("DM_NVN_VLOG")) { LOG("[nvn] MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, (unsigned long long)o->size, o->flags); void dm_backtrace(uint64_t fp); dm_backtrace((uint64_t)__builtin_frame_address(0)); }
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     return 1;
@@ -1930,7 +1932,10 @@ static void *rec(NVNcommandBuffer *c, uint32_t op, size_t payload) {
 // NVN 四边形条带（NVN_DRAW_PRIMITIVE_QUAD_STRIP = 8，Metal 没有）就地改成三角形条带（5）：第 i 个四边形 (2i, 2i+1, 2i+3, 2i+2) 正好是三角形条带第 2i、2i+1 两个三角形
 //   （同一组顶点、同一片覆盖面）；四边形条带不画末尾落单的那个顶点，三角形条带会多画一个三角形 → CPU 知道个数的把个数向下取偶（间接绘制的个数在 GPU 上，原样）。
 //   11-06 无人深空测试设备1：这类绘制原先在回放里整笔丢掉（「primitive type 8 not implemented」），录到 8 笔
-static void prim_quad_strip(int32_t *prim, int32_t *count) { if (*prim == 8) { *prim = 5; if (*count > 0) *count &= ~1; } }
+// NVN 多边形（NVN_DRAW_PRIMITIVE_POLYGON = 9，Metal 没有）就地改成三角形扇（6）：凸多边形 v0..vn-1 = 以 v0 为扇心的 (v0, vi, vi+1)，覆盖面相同
+//   （上游参考实现同样处理：Ryujinx.Graphics.Vulkan EnumConversion Polygon → TriangleFan）；扇形之后各条路径（展开、间接转换）照旧。
+//   #635：0100F43008C44000 Mac 局 16 笔「primitive type 9 not implemented」整笔丢掉（曾被当成曲面细分，日志里 hull / domain 都是「-」）
+static void prim_quad_strip(int32_t *prim, int32_t *count) { if (*prim == 8) { *prim = 5; if (*count > 0) *count &= ~1; } else if (*prim == 9) *prim = 6; }
 static void rec_draw(NVNcommandBuffer *c, p_draw d) { prim_quad_strip(&d.prim, &d.count); size_t n = d.ind || d.mdi_cnt || d.tfc ? sizeof d : offsetof(p_draw, ind); memcpy(rec(c, OP_DRAW, n), &d, n); }
 static void rec_draw_idx(NVNcommandBuffer *c, p_draw_idx d) {
     prim_quad_strip(&d.prim, &d.count);
