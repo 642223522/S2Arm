@@ -14,7 +14,7 @@ int nvk_session_open(struct s2a_vk_device *dev, const char *cache_dir, char *why
 int nvk_session_ready(void);
 // 关闭：等在途提交完成并关后端。0 = 已关且完成有证明；非 0 = 没有证明（调用方保留设备与窗口租约，不归还）。
 int nvk_session_close(void);
-// 窗口（ANativeWindow*）挂上 / 摘下。0 = 成功。上屏面还没接：现在只记窗口与发布尺寸。
+// 窗口（ANativeWindow*）挂上 / 摘下。0 = 成功；摘下返回非 0 = 最后一帧没有完成证明，调用方保留窗口租约。
 int nvk_session_attach_window(void *window, uint64_t generation, char *why, size_t why_size);
 int nvk_session_detach_window(void);
 void nvk_session_window_size(int32_t *w, int32_t *h);   // 挂窗口时记下的发布尺寸；没窗口 0

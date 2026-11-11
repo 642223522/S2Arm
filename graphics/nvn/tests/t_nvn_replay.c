@@ -94,6 +94,19 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd c, const nvn_gpu_pass_desc *d) { (void)c; if
 void nvn_gpu_pass_end(nvn_gpu_cmd c) { (void)c; g_pass_ends++; }
 void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t bits) { (void)c; g_barrier_bits |= bits; g_barrier_at = g_npd; }
 
+// 上屏替身：取图结果按脚本给，呈现记下描述并按「没有上屏时刻」回调
+struct nvn_gpu_surface_s { int x; };
+static struct nvn_gpu_surface_s g_fake_surf;
+static int g_acq_script[4], g_acq_i, g_rebuilds, g_presents; static nvn_gpu_present_desc g_last_pd;   // 脚本：0 成功 / 其它 = 错误码
+uint64_t plat_now_ns(void) { return 5000000000ull; }
+nvn_gpu_rc nvn_gpu_drawable_acquire(nvn_gpu_surface s, uint64_t timeout_ns, void *plat_frame, nvn_gpu_drawable *out, nvn_gpu_err *err) {
+    (void)s; (void)timeout_ns; (void)plat_frame; (void)err; int code = g_acq_i < 4 ? g_acq_script[g_acq_i] : 0; g_acq_i++;
+    memset(out, 0, sizeof *out); if (code) return (nvn_gpu_rc){code};
+    out->w = 1280; out->h = 720; out->gen = 1; out->token = 1; return (nvn_gpu_rc){NVN_GPU_OK}; }
+nvn_gpu_rc nvn_gpu_surface_rebuild(nvn_gpu_surface s, nvn_gpu_err *err) { (void)s; (void)err; g_rebuilds++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const nvn_gpu_present_desc *d, uint64_t ticket, nvn_gpu_presented_fn presented, void *user, nvn_gpu_err *err) {
+    (void)s; (void)dr; (void)err; g_presents++; g_last_pd = *d; nvn_gpu_shown sh = {ticket, NVN_GPU_SHOWN_UNKNOWN, 0}; presented(user, &sh); return (nvn_gpu_rc){NVN_GPU_OK}; }
+
 static void fake_complete(uint32_t status) {
     for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败"; g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
     g_npend = 0;
@@ -510,12 +523,29 @@ static void t_pass_switch_and_partial(void) {
     pass_fresh();
 }
 
-static void t_entry_unimpl(void) {   // 有语义而没接的入口：记账，不报假成功
-    nvn_unimpl_reset();
-    CHECK(nvn_be_present(NULL, 0, NULL) == 1 && nvn_be_present(NULL, 0, NULL) == 2);
-    CHECK(nvn_unimpl_count("be", "present") == 2);
-    CHECK(nvn_be_presented_time(1) == -1);
+static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口时取图、按比例贴合、呈现；交换链过期先重建
+    pass_fresh(); rp_present_reset(); memset(g_acq_script, 0, sizeof g_acq_script); g_acq_i = g_rebuilds = g_presents = 0;
+    tex_t t = mk_tex(71, 0, NVN_FORMAT_RGBA8, 640, 360, 1, 0);
     CHECK(nvn_be_has_window() == 0 && nvn_be_display_hz() == 0);
+    uint64_t k1 = nvn_be_present(&t, 0, NULL);
+    CHECK(k1 == 1 && nvn_be_presented_time(1) == -1 && g_presents == 0 && nvn_unimpl_count("present", "no_window") == 1);
+    CHECK(nvn_be_presented_time(2) == 0);                           // 还没发出的票：没结果
+    rp_present_set_surface(&g_fake_surf, 120);
+    CHECK(nvn_be_has_window() == 1 && nvn_be_display_hz() == 120);
+    CHECK(nvn_be_present(&t, 0, NULL) == 2 && g_presents == 1);
+    CHECK(g_last_pd.src != NULL && g_last_pd.crop[2] == 0 && g_last_pd.dst[0] == 0 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 1280 && g_last_pd.dst[3] == 720);   // 16:9 贴满 16:9
+    CHECK(nvn_be_presented_time(2) == 5.0);                         // 后端没给上屏时刻：按交给呈现引擎的时刻记
+    int crop[4] = {0, 0, 320, 360};                                 // 8:9 的裁剪放进 1280x720：高贴满，宽 640，左右各 320 黑边
+    CHECK(nvn_be_present(&t, 0, crop) == 3 && g_presents == 2);
+    CHECK(g_last_pd.crop[0] == 0 && g_last_pd.crop[2] == 320 && g_last_pd.crop[3] == 360 && g_last_pd.dst[0] == 320 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 640 && g_last_pd.dst[3] == 720);
+    g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_OUTDATED;              // 交换链过期：重建一次再取
+    CHECK(nvn_be_present(&t, 0, NULL) == 4 && g_rebuilds == 1 && g_presents == 3 && nvn_be_presented_time(4) == 5.0);
+    g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_TIMEOUT;               // 没有空闲图：丢这一帧，不算故障
+    CHECK(nvn_be_present(&t, 0, NULL) == 5 && g_presents == 3 && nvn_be_presented_time(5) == -1 && nvn_unimpl_count("present", "acquire_failed") == 0);
+    uint64_t sh = 0, dp = 0; rp_present_stats(&sh, &dp); CHECK(sh == 3 && dp == 2);
+    rp_present_set_surface(NULL, 0);
+    CHECK(nvn_be_has_window() == 0);
+    nvn_be_tex_release(&t); pass_fresh(); rp_present_reset();
     CHECK(nvn_be_fps_target() == 30);   // 替身宿主设的是 30
 }
 
@@ -533,7 +563,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_entry_unimpl();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_present();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

@@ -39,3 +39,8 @@ void rp_pass_flush(nvn_gpu_cmd c);    // 提交前 / 通道外操作前：落地
 void rp_pass_reset(void);
 int rp_pass_is_open(void);
 const p_set_rt *rp_pass_target(void); // 当前目标（没设过 NULL）
+
+// ---------- 上屏（rp_present.c）----------
+void rp_present_set_surface(nvn_gpu_surface s, int display_hz);   // 平台件：窗口挂上（s 非空）/ 摘下（NULL）
+void rp_present_stats(uint64_t *shown, uint64_t *dropped);
+void rp_present_reset(void);

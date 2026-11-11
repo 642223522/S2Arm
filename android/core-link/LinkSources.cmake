@@ -90,9 +90,10 @@ function(s2a_android_nvk_sources output)
         # 回放核心（安卓 / 鸿蒙共用）
         ../graphics/nvn/replay/rp_exec.c ../graphics/nvn/replay/rp_state.c ../graphics/nvn/replay/rp_entry.c
         ../graphics/nvn/replay/rp_res.c ../graphics/nvn/replay/rp_buf.c ../graphics/nvn/replay/rp_pass.c
+        ../graphics/nvn/replay/rp_present.c
         ../graphics/nvn/replay/nvn_unimpl.c
         # 安卓平台件
-        native/gfx_plat/nvk_session.c native/gfx_plat/plat_nvn.c native/gfx_plat/legacy_names.c
+        native/gfx_plat/nvk_session.c native/gfx_plat/plat_nvn.c native/gfx_plat/plat_nvn_vk.c native/gfx_plat/legacy_names.c
         native/nvn/nvn_vsync_android.c native/nvn/nvn_vk_lifecycle.c native/nvn/poolahb_alias.c
         # 层外按名字要的两组：C# 的帧日志转储（AndroidGameRuntime）与通用后端的编译事件（S2ACompileEvents）
         native/nvn/nvn_vk_frame_log.c native/nvn/nvn_vk_compile_events.c

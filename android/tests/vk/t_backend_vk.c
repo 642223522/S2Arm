@@ -17,6 +17,20 @@
 #include "nvn_vk_format.h"
 #include "nvn_fmt_info.h"
 #include "vk_device.h"
+#include "nvn_plat_vk.h"
+
+// 平台件替身：无头表面（lavapipe 没有窗口系统）。交换链、取图、呈现段、信号量与布局都是真的，校验层照查。
+const char *const *nvn_plat_vk_instance_exts(uint32_t *n) {
+    static const char *const exts[] = {"VK_KHR_surface", "VK_EXT_headless_surface"};
+    *n = 2; return exts;
+}
+VkResult nvn_plat_vk_surface_create(VkInstance instance, void *native, VkSurfaceKHR *out) {
+    (void)native;
+    VkHeadlessSurfaceCreateInfoEXT ci; memset(&ci, 0, sizeof ci);
+    ci.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT;
+    return vkCreateHeadlessSurfaceEXT(instance, &ci, NULL, out);
+}
+int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native; *w = 320; *h = 180; return 1; }
 
 // C66 only: model a strict driver enforcing maxSets=64; all other calls
 // reach the real lavapipe entry. This is injected behaviour, not a claim about llvmpipe.
@@ -675,6 +689,79 @@ static void c70_swizzle(const char *dir, int view_overrides) {
     if (view_overrides) { g_tri_vsw_on = 1; g_tri_vsw[0] = 0; g_tri_vsw[1] = 2; g_tri_vsw[2] = 5; g_tri_vsw[3] = 3; }
     tri_impl(dir, NVN_FORMAT_RGBA8, texels, 4, 8, 255);
     g_tri_swz = 0; g_tri_vsw_on = 0;
+}
+
+// C71：上屏。接面 → 取图 → 把刚提交（还没等完成）的贴图贴上去呈现 → 取了不呈现再取 → 越界矩形 → 重建换代 → 撤面。
+// 无头表面读不回屏上像素：本用例核的是所有权与换代语义、每个 ticket 恰好回调一次，以及校验层 0 条（布局、信号量、交换链用法）。
+static int g_shown_n; static uint64_t g_shown_ticket; static uint32_t g_shown_status;
+static void on_shown(void *user, const nvn_gpu_shown *s) { (void)user; g_shown_n++; g_shown_ticket = s->ticket; g_shown_status = s->status; }
+static void c71_present(void) {
+    nvn_gpu_err e; memset(&e, 0, sizeof e);
+    nvn_gpu_surface sf = NULL, sf2 = NULL;
+    nvn_gpu_rc r = nvn_gpu_surface_attach((void *)1, &sf, &e);
+    CHECK(OK(r) && sf, "C71 attach：%d %s", r.code, e.why);
+    if (!sf) return;
+    CHECK(nvn_gpu_surface_gen(sf) == 1, "C71 首个 generation 应为 1，得 %llu", (unsigned long long)nvn_gpu_surface_gen(sf));
+    r = nvn_gpu_surface_attach((void *)1, &sf2, &e);
+    CHECK(r.code == NVN_GPU_E_ORDER && !sf2, "C71 已接着一个面时再 attach 应 E_ORDER，得 %d", r.code);
+
+    nvn_gpu_tex tex = make_tex(64, 36, NVN_FORMAT_RGBA8, NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_RENDER | NVN_GPU_TEX_CPU_UPLOAD);
+    nvn_gpu_view view = make_view(tex);
+    static uint8_t px[64 * 36 * 4]; memset(px, 0x80, sizeof px);
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_tex_upload(c, tex, 0, 0, NULL, px, 64 * 4, sizeof px);
+    r = nvn_gpu_cmd_commit(c, 7, on_done, NULL, &e);
+    CHECK(OK(r), "C71 commit：%d %s", r.code, e.why);
+
+    nvn_gpu_drawable dr; memset(&dr, 0, sizeof dr);
+    r = nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &dr, &e);
+    CHECK(OK(r) && dr.w == 320 && dr.h == 180 && dr.gen == 1, "C71 acquire：%d %s（%ux%u gen %llu）", r.code, e.why, dr.w, dr.h, (unsigned long long)dr.gen);
+    nvn_gpu_present_desc pd; memset(&pd, 0, sizeof pd); pd.src = view; pd.filter = 1;
+    g_shown_n = 0;
+    r = nvn_gpu_present(sf, &dr, &pd, 42, on_shown, NULL, &e);   // 上传那一段还没等完成：呈现段排在它后面
+    CHECK(OK(r), "C71 present：%d %s", r.code, e.why);
+    CHECK(g_shown_n == 1 && g_shown_ticket == 42 && g_shown_status == NVN_GPU_SHOWN_UNKNOWN, "C71 presented 应恰好一次、UNKNOWN（没有上屏时刻），得 n=%d status=%u", g_shown_n, g_shown_status);
+    CHECK(OK(nvn_gpu_fence_wait(7, 5000000000ull, &e)), "C71 wait 7：%d %s", e.rc.code, e.why);
+
+    // 取了不呈现：交回后下一次取到的是同一张
+    nvn_gpu_drawable a, b; memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
+    CHECK(OK(nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &a, &e)), "C71 acquire 2：%d %s", e.rc.code, e.why);
+    nvn_gpu_drawable_release(sf, &a);
+    CHECK(OK(nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &b, &e)) && b.token == a.token, "C71 交回的 drawable 应作为下次取图的结果");
+    // 目标矩形越界：拒绝、按丢帧回调；这张图仍留给下一次
+    pd.dst[0] = 300; pd.dst[1] = 0; pd.dst[2] = 100; pd.dst[3] = 50;
+    g_shown_n = 0;
+    r = nvn_gpu_present(sf, &b, &pd, 43, on_shown, NULL, &e);
+    CHECK(r.code == NVN_GPU_E_ARG && g_shown_n == 1 && g_shown_status == NVN_GPU_SHOWN_DROPPED, "C71 越界矩形应 E_ARG + DROPPED，得 %d n=%d status=%u", r.code, g_shown_n, g_shown_status);
+    nvn_gpu_drawable d3; memset(&d3, 0, sizeof d3);
+    CHECK(OK(nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &d3, &e)) && d3.token == b.token, "C71 被拒的那张应留给下一次取图");
+    memset(pd.dst, 0, sizeof pd.dst); pd.dst[0] = 40; pd.dst[1] = 0; pd.dst[2] = 240; pd.dst[3] = 180;   // 两侧留黑边
+    pd.crop[0] = 0; pd.crop[1] = 0; pd.crop[2] = 32; pd.crop[3] = 18;
+    g_shown_n = 0;
+    r = nvn_gpu_present(sf, &d3, &pd, 44, on_shown, NULL, &e);
+    CHECK(OK(r) && g_shown_n == 1 && g_shown_ticket == 44, "C71 present（裁剪 + 黑边）：%d %s", r.code, e.why);
+
+    // 重建换代：旧 generation 的 drawable 作废
+    nvn_gpu_drawable old; memset(&old, 0, sizeof old);
+    CHECK(OK(nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &old, &e)), "C71 acquire 4：%d %s", e.rc.code, e.why);
+    r = nvn_gpu_surface_rebuild(sf, &e);
+    CHECK(OK(r) && nvn_gpu_surface_gen(sf) == 2, "C71 rebuild：%d %s gen=%llu", r.code, e.why, (unsigned long long)nvn_gpu_surface_gen(sf));
+    memset(pd.dst, 0, sizeof pd.dst); memset(pd.crop, 0, sizeof pd.crop);
+    g_shown_n = 0;
+    r = nvn_gpu_present(sf, &old, &pd, 45, on_shown, NULL, &e);
+    CHECK(r.code == NVN_GPU_E_OUTDATED && g_shown_n == 1 && g_shown_status == NVN_GPU_SHOWN_DROPPED, "C71 旧 generation 的 drawable 应 E_OUTDATED + DROPPED，得 %d", r.code);
+    nvn_gpu_drawable nd; memset(&nd, 0, sizeof nd);
+    CHECK(OK(nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &nd, &e)) && nd.gen == 2, "C71 重建后 acquire：%d %s", e.rc.code, e.why);
+    g_shown_n = 0;
+    r = nvn_gpu_present(sf, &nd, &pd, 46, on_shown, NULL, &e);
+    CHECK(OK(r) && g_shown_n == 1, "C71 重建后 present：%d %s", r.code, e.why);
+
+    nvn_gpu_view_release(view); nvn_gpu_tex_release(tex);
+    r = nvn_gpu_surface_detach(sf, 5000000000ull, &e);
+    CHECK(OK(r), "C71 detach：%d %s", r.code, e.why);
+    r = nvn_gpu_surface_attach((void *)1, &sf, &e);          // 撤掉以后可以再接
+    CHECK(OK(r) && nvn_gpu_surface_gen(sf) == 1, "C71 再 attach：%d %s", r.code, e.why);
+    // 不 detach 直接 close：close 负责收掉还接着的面（由 main 里紧跟的 close 验）
 }
 
 // C30：RGB8 上传展开成 RGBA8 后经三角形采样读回；期望按 2x2 最近邻 + a=0xFF 手算。
@@ -3308,6 +3395,9 @@ int main(int argc, char **argv) {
     t28_rgb8_upload();
     nvn_gpu_err e7;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e7)), "t30/t28 close：%d %s", e7.rc.code, e7.why);
+    if (!open_backend()) return 1;
+    c71_present();
+    { nvn_gpu_err e71; CHECK(OK(nvn_gpu_close(5000000000ull, &e71)), "C71 close（面还接着）：%d %s", e71.rc.code, e71.why); }
     for (int k = 0; k < 2; k++) {   // tri_impl 的提交序号固定：每个变体一个会话
         if (!open_backend()) return 1;
         c70_swizzle(argv[1], k);

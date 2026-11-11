@@ -115,13 +115,7 @@ void nvn_be_xq_wait_queue(void *q, void *owner) { (void)q; (void)owner; }
 void nvn_be_finish(void) { uint64_t f = nvn_be_last_fence(); if (f) nvn_be_wait(f, 5000000000ull); }
 void nvn_be_drain(void) { nvn_be_finish(); }
 
-// ---------- 上屏与节拍：未接 ----------
-static _Atomic uint64_t g_present_n;
-uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) { (void)t; (void)period_s; (void)crop; UN("present"); return atomic_fetch_add(&g_present_n, 1) + 1; }
-void nvn_be_present_wait(uint64_t ticket) { (void)ticket; }
-double nvn_be_presented_time(uint64_t n) { (void)n; return -1; }   // 没上屏：按「丢弃」报，不拿别的时刻冒充
-int nvn_be_has_window(void) { return 0; }
-int nvn_be_display_hz(void) { return 0; }
+// ---------- 显示节拍：未接（上屏本身在 rp_present.c）----------
 int nvn_be_link_active(void) { return 0; }
 int nvn_be_link_wait_tick(int vsyncs, uint64_t timeout_ns) { (void)vsyncs; (void)timeout_ns; return 0; }
 void nvn_be_ub_present(double iv_ms) { (void)iv_ms; }
@@ -130,7 +124,7 @@ void nvn_be_ub_present(double iv_ms) { (void)iv_ms; }
 void nvn_be_begin_session(void) {}
 int nvn_be_request_stop(void) { return 0; }
 int nvn_be_drain_session(void) { nvn_be_finish(); return 0; }
-int nvn_be_shutdown_session(void) { rp_pass_reset(); rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }
+int nvn_be_shutdown_session(void) { rp_pass_reset(); rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }   // 上屏面由平台件摘（rp_present_set_surface）
 
 // ---------- Metal 侧诊断读数：新层没有对应账本，报 0 ----------
 double nvn_be_gpu_ms(uint64_t f) { (void)f; return 0; }

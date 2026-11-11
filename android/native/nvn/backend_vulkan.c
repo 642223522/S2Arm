@@ -174,6 +174,7 @@ struct vk_segment {
     int failed;
     int submitted;
     int executed;
+    int internal;   // 后端自己的段（呈现）：不占时间线上的值，完成后只回收
     nvn_gpu_rc rc;
     char why[192];
 };
@@ -627,7 +628,7 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
         if (r != VK_SUCCESS) {
             pthread_mutex_lock(&g_mu);
             if (r == VK_ERROR_DEVICE_LOST) vk->device_lost = 1;
-            if (!vk->failed || s->signal < vk->failed) vk->failed = s->signal;
+            if (!s->internal && (!vk->failed || s->signal < vk->failed)) vk->failed = s->signal;
             pthread_cond_broadcast(&g_cv);
             pthread_mutex_unlock(&g_mu);
             // #1456：真实 DEVICE_LOST 回写当前指纹 capprobe 结果（source=runtime-lost，
@@ -649,7 +650,11 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
         }
     }
 
-    if (failed) {
+    if (s->internal) {   // 呈现段：没有回调、不动时间线
+        pthread_mutex_lock(&g_mu);
+        pthread_cond_broadcast(&g_cv);
+        pthread_mutex_unlock(&g_mu);
+    } else if (failed) {
         segment_done(s, NVN_GPU_DONE_FAILED, code.code, why);
         pthread_mutex_lock(&g_mu);
         vk->stats[STAT_DONE_FAILED]++;
@@ -785,6 +790,7 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     return out;
 }
 
+static void wsi_close_locked(void);   // backend_vulkan_wsi.inc
 nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     if (!g_open) return rc(NVN_GPU_OK);
     if (g_in_callback) return fail(err, NVN_GPU_E_ORDER, "回调里不许 close");
@@ -814,6 +820,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     pthread_mutex_lock(&g_mu);
     for (;;) {
         if (!g.qhead && !g.busy && !g.rhead && g.commit_active == 0) {
+            wsi_close_locked();   // 在途段都完成了：还接着的面连同交换链一起收掉
             // 先销毁视图、放下其持有的底层缓冲引用，再由 worker 完成退休回调。
             while (g.views) destroy_view_locked(&g, g.views);
             if (!g.rhead) break;
@@ -3415,31 +3422,7 @@ void nvn_gpu_label(nvn_gpu_cmd c, const char *text) { (void)c; (void)text; }
 void nvn_gpu_tex_upload_blocklinear(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t l, uint32_t y, const nvn_texlayout *L, const void *src, uint64_t bytes) {
     (void)t; (void)l; (void)y; (void)L; (void)src; (void)bytes; VK_NOT_YET(c, "nvn_gpu_tex_upload_blocklinear");
 }
-nvn_gpu_rc nvn_gpu_surface_attach(void *native, nvn_gpu_surface *out, nvn_gpu_err *err) {
-    (void)native; if (out) *out = NULL;
-    return fail(err, NVN_GPU_E_UNSUPPORTED, "上屏：D8 第一段未实现");
-}
-nvn_gpu_rc nvn_gpu_surface_rebuild(nvn_gpu_surface s, nvn_gpu_err *err) {
-    (void)s; return fail(err, NVN_GPU_E_UNSUPPORTED, "上屏：D8 第一段未实现");
-}
-uint64_t nvn_gpu_surface_gen(nvn_gpu_surface s) { (void)s; return 0; }
-nvn_gpu_rc nvn_gpu_surface_detach(nvn_gpu_surface s, uint64_t timeout_ns, nvn_gpu_err *err) {
-    (void)s; (void)timeout_ns; return fail(err, NVN_GPU_E_UNSUPPORTED, "上屏：D8 第一段未实现");
-}
-nvn_gpu_rc nvn_gpu_drawable_acquire(nvn_gpu_surface s, uint64_t timeout_ns, void *plat_frame, nvn_gpu_drawable *out, nvn_gpu_err *err) {
-    (void)s; (void)timeout_ns; (void)plat_frame; if (out) memset(out, 0, sizeof *out);
-    return fail(err, NVN_GPU_E_UNSUPPORTED, "上屏：D8 第一段未实现");
-}
-void nvn_gpu_drawable_release(nvn_gpu_surface s, const nvn_gpu_drawable *dr) { (void)s; (void)dr; }
-nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const nvn_gpu_present_desc *d, uint64_t ticket,
-                           nvn_gpu_presented_fn presented, void *user, nvn_gpu_err *err) {
-    (void)s; (void)dr; (void)d; (void)ticket;
-    if (presented) {
-        nvn_gpu_shown shown = {ticket, NVN_GPU_SHOWN_DROPPED, 0.0};
-        presented(user, &shown);
-    }
-    return fail(err, NVN_GPU_E_UNSUPPORTED, "上屏：D8 第一段未实现");
-}
+// 上屏 6 个入口在 backend_vulkan_wsi.inc（文件末尾 include：它要用后面定义的提交与回收函数）
 
 // ---------------------------------------------------------------- 命令
 
@@ -3524,7 +3507,7 @@ static void enqueue_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
     if (vk->qtail) vk->qtail->next = s;
     else vk->qhead = s;
     vk->qtail = s;
-    if (!submitted_add(vk, s->signal) && (!vk->failed || s->signal < vk->failed)) vk->failed = s->signal;
+    if (!s->internal && !submitted_add(vk, s->signal) && (!vk->failed || s->signal < vk->failed)) vk->failed = s->signal;
     pthread_cond_broadcast(&g_cv);
     pthread_mutex_unlock(&g_mu);
 }
@@ -3778,3 +3761,5 @@ void nvn_gpu_vk_test_set_fault(int mode) {
     g.fault_inject = mode;
     pthread_mutex_unlock(&g_mu);
 }
+
+#include "backend_vulkan_wsi.inc"
