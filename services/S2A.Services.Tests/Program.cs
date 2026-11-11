@@ -3047,6 +3047,11 @@ namespace S2A.Services.Tests
                 var s2u = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.Switch2LanguagesUnknown;
                 Check("Switch 2 语言未知判定：04 款合成件（只声明英语、版本 ?）/ 04 款位为 0 / 01 款合成件（#401）/ 04 款真 NACP 0x3005 版本 1.0.2", "True / True / False / False",
                     $"{s2u(0x0400486024DEC000, 1, "?")} / {s2u(0x0400486024DEC000, 0, "")} / {s2u(0x0100E95004038000, 1, "?")} / {s2u(0x0400486024DEC000, 0x3005, "1.0.2")}");
+                // 审计 P2-275：已知语言是第 0–17 位（16 波兰语、17 泰语）；只支持波兰语 / 泰语不能当「没有语言」，未定义的位不算
+                var noLang = Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.ApplicationProxy.IApplicationFunctions.NoKnownLanguages;
+                Check("支持语言判定：无位 / 只有波兰语 / 只有泰语 / 只有第 18 位（未定义）/ 04 款只声明波兰语、版本 1.0.0 算未知？",
+                    "True / False / False / True / False",
+                    $"{noLang(0)} / {noLang(1 << 16)} / {noLang(1 << 17)} / {noLang(1 << 18)} / {s2u(0x0400486024DEC000, 1 << 16, "1.0.0")}");
                 // 01 款合成件 + 宿主简中：不进 Switch 2 那条，按五步走 → 只声明英语 → 美式英语（不回退 #401）
                 Check("Switch 1 合成件（只声明英语）+ 宿主简中 → 美式英语（#401 不回退）", "AmericanEnglish（第 3 步：英语）", Sel(SL, 1));
                 // 支持语言位为 0（合成的 control.nacp）：缺省回美式英语（#401）；玩家显式指定系统语言时回它。语言码 = ASCII 小端："ja" = 0x616A、"en-US" = 0x53552D6E65
