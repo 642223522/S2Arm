@@ -44,26 +44,15 @@ public static class LibraryJobClient
         var interrupted = Task.Delay(Timeout.Infinite, cancellationToken);
         if (await Task.WhenAny(running, interrupted) != running)
         {
-            // Ask the owning job control plane first; it verifies the journal's pid/start time.
-            using var controlLimit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
-            {
-                var control = EnvironmentProbe.StartInfo(paths, request.FilePath);
-                control.Environment["S2A_UI_PRIVATE"] = privateRoot;
-                control.Environment["S2A_UI_JOB"] = jobId;
-                control.Arguments = "/d /v:off /s /c \"\"%S2A_UI_RUNTIME%\\s2arm_env.cmd\" && cd /d \"%S2A_UI_ENGINE%\" && python -X utf8 pack/jobs/main.py cancel --private-root \"%S2A_UI_PRIVATE%\" --task \"%S2A_UI_JOB%\"\"";
-                await EnvironmentProbe.RunProcessAsync(control, controlLimit.Token);
-                await Task.WhenAny(running, Task.Delay(TimeSpan.FromSeconds(3)));
-            }
-            catch (Exception error) when (error is IOException or OperationCanceledException or
-                System.ComponentModel.Win32Exception or InvalidOperationException) { }
-            finally
+            await PackJobClient.CancelAsync(paths, request.FilePath, privateRoot, jobId);   // 同一份取消（剃刀 W17）
+            // 点取消时作业恰好已经跑完：照它的真实结局走，不一律报已中断（社区贡献者补丁 #7，原先只在 PackJobClient）
+            if (await Task.WhenAny(running, Task.Delay(TimeSpan.FromSeconds(3))) != running)
             {
                 forcedStop.Cancel(); // Last resort only for the process tree this invocation owns.
                 try { await running; }
                 catch (Exception error) when (error is OperationCanceledException or IOException) { }
+                throw new OperationCanceledException(cancellationToken);
             }
-            throw new OperationCanceledException(cancellationToken);
         }
         var output = await running;
         try { return new(LibraryJobResult.Parse(output.StandardOutput, output.ExitCode, jobId, operation), output); }

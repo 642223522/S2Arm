@@ -181,7 +181,8 @@ public static class PackJobClient
     }
 
     // Ask the job control plane first (it verifies the journal's pid / start time), then stop only our own process tree.
-    private static async Task CancelAsync(LauncherPaths paths, string requestFile, string privateRoot, string jobId)
+    //   唯一一份取消（剃刀 W17：LibraryJobClient 原先另抄一份，#7「3 秒内跑完照真实结局」只改到这边）
+    internal static async Task CancelAsync(LauncherPaths paths, string requestFile, string privateRoot, string jobId)
     {
         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try

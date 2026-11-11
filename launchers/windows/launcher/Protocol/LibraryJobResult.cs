@@ -11,49 +11,12 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
     public bool Succeeded => State == "succeeded";
 
     // Jobs NDJSON is not the oneclick ev/t stream. A terminal event alone is not process success.
+    //   整段输出也逐行交 JobEventReader：事件流规则只有那一份（剃刀 W17：原先这里另写一遍，改一处漏一处）
     public static LibraryJobResult Parse(string ndjson, int exitCode, string jobId, string operation)
     {
-        try
-        {
-            LibraryJobResult? result = null;
-            long previous = 0;
-            foreach (var line in ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                if (result is not null) throw new LibraryProtocolException("Event follows the terminal result.");
-                using var document = JsonDocument.Parse(line);
-                var e = document.RootElement;
-                UniqueFields(e);
-                if (e.GetProperty("schema").GetInt32() != 1 || Text(e, "jobId") != jobId ||
-                    Text(e, "operation") != operation ||
-                    (e.TryGetProperty("taskId", out var task) && task.GetString() != jobId))
-                    throw new LibraryProtocolException("Event schema, task or operation does not match the request.");
-                var seq = e.GetProperty("seq").GetInt64();
-                if (seq <= previous) throw new LibraryProtocolException("Event sequence is not increasing.");
-                previous = seq;
-                var type = Text(e, "type");
-                var state = Text(e, "state");
-                if (type != "result")
-                {
-                    if (state != "running") throw new LibraryProtocolException("Terminal state lacks a result event.");
-                    continue;
-                }
-                if (state is not ("succeeded" or "failed" or "cancelled"))
-                    throw new LibraryProtocolException("Unknown terminal result state.");
-                var payload = e.GetProperty("result");
-                if (payload.ValueKind != JsonValueKind.Object) throw new LibraryProtocolException("Result must be an object.");
-                result = new(state, Text(e, "message", allowEmpty: true), payload.Clone(),
-                    e.TryGetProperty("diagnostics", out var diagnostics) ? diagnostics.Clone() : default);
-            }
-            if (result is null) throw new LibraryProtocolException("EOF without a terminal result.");
-            if (exitCode != (result.State == "succeeded" ? 0 : result.State == "cancelled" ? 130 : 1))
-                throw new LibraryProtocolException("Terminal result disagrees with process exit.");
-            return result;
-        }
-        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
-        {
-            throw new LibraryProtocolException("Invalid jobs event stream.", error);
-        }
+        var reader = new JobEventReader(jobId, operation);
+        foreach (var line in ndjson.Split('\n')) reader.Accept(line);
+        return reader.Finish(exitCode);
     }
 
     internal static string Text(JsonElement value, string key, bool allowEmpty = false)
