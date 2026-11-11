@@ -163,6 +163,12 @@ DIAG_RUN_TOTAL_LIMIT = 40 << 20  # 诊断局 PNG：总量上限（#438 定）
 #   已解包的游戏目录（Switch 2 导出 dump / S2Arm 解包 extract / 通用解包 loose）也可直接导入，不要密钥
 SOURCE_SUFFIXES = (".nsp", ".xci", ".nsz", ".xcz", ".nup")
 NUP_SUFFIX = ".nup"
+KEYLESS_FORMATS = ("nup", "dump", "extract", "loose")   # 不加密、不要 prod.keys 的格式（NUP 容器与解包目录）：要不要密钥只按这一份判（剃刀 W10）
+
+
+def needs_keys(packages):
+    """这组包（selected_packages 选定的）要不要 prod.keys：有任一项格式不在 KEYLESS_FORMATS（NSP / XCI / NSZ / XCZ 加密原件）就要"""
+    return any(p.get("format") not in KEYLESS_FORMATS for p in packages)
 
 
 def engine_tool(c, name):
@@ -842,7 +848,7 @@ def keys(c):
         verified = False
         with c.lock("execution"), c.lock():
             candidate = next((source_path(c, p) for g in c.catalog()["games"] for p in selected_packages(g)
-                              if p["type"] == "base" and p.get("format") not in ("nup", "dump", "extract", "loose") and source_path(c, p).is_file()), None)   # NUP 与解包目录不加密，验不了密钥
+                              if p["type"] == "base" and p.get("format") not in KEYLESS_FORMATS and source_path(c, p).is_file()), None)   # NUP 与解包目录不加密，验不了密钥
             if candidate:
                 with tempfile.TemporaryDirectory(dir=c.private) as icons:
                     diagnostics_before = len(c.job["diagnostics"])
@@ -1620,6 +1626,7 @@ def catalog(c):
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
         game["compatibility"] = "unsupported" if guest_isa(selected_packages(game)) == "aarch32" else "experimental"
+        game["needsKeys"] = needs_keys(selected_packages(game))   # 出包要不要 prod.keys：前端直接用，不再各算一份格式名单（剃刀 W10）
         image = layout.image_mac(c, game["id"], create=False)
         try:
             manifest = validate_runtime(c, image, full=False, files=False)

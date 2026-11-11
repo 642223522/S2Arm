@@ -209,7 +209,7 @@
        "detail": {"zh-Hans": "没有找到内容对应的票据或标题密钥。", "en": "The ticket or title key for this content is missing."},
        "next_action": {"from": "pack/jobs/errors.py"}},
       {"code": "content_truncated", "severity": "error", "retryable": false, "recoverable": true,
-       "title": {"zh-Hans": "NSP 文件不完整", "en": "Incomplete NSP file"},
+       "title": {"zh-Hans": "游戏文件不完整", "en": "Incomplete game file"},
        "detail": {"zh-Hans": "部分内容超出文件末尾。", "en": "Some content extends past the end of the file."},
        "next_action": {"from": "pack/jobs/errors.py"}},
       {"code": "keys_outdated", "severity": "error", "retryable": false, "recoverable": true,

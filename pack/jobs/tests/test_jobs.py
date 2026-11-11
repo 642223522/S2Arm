@@ -781,6 +781,17 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
+    def test_catalog_says_whether_keys_are_needed(self):
+        # 剃刀 W10：catalog 每款带 needsKeys，判据只有 library.KEYLESS_FORMATS 一份（前端不再各算一份格式名单）。
+        #   期望手写：NSP 原件 → 要；NUP 容器 / 解包目录（extract）→ 不要；NUP 本体 + NSP 的 DLC → 要
+        self.assertTrue(library.needs_keys([dict(format="nsp")]))
+        self.assertTrue(library.needs_keys([dict()]))   # 旧记录没有 format：按加密原件算（宁可提示导入密钥，不放过）
+        self.assertFalse(library.needs_keys([dict(format="nup"), dict(format="extract")]))
+        self.assertTrue(library.needs_keys([dict(format="nup"), dict(format="nsp")]))
+        game = self.game(packages=[self.package()]); self.catalogue([game])
+        out = library.catalog(self.c)
+        self.assertEqual(out["games"][0]["needsKeys"], library.needs_keys(library.selected_packages(game)))
+
     def test_space_budget_covers_measured_peaks(self):
         # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
         #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
