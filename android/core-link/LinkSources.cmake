@@ -76,8 +76,8 @@ endfunction()
 # 旧回放与绘制源一个都不在这里；这张表里出现 mtl_vk_* / vk_record / nvn_vk_first_draw / nvn_vk_texcache 即是错。
 function(s2a_android_nvk_sources output)
     set(sources
-        # 会话 ABI、包描述、选择事务
-        native/direct/s2a_direct_abi.c native/direct/json.c native/direct/sha256.c
+        # 会话 ABI、包描述、选择事务（jv.c：离线着色器库读面用的 JSON 取值件）
+        native/direct/s2a_direct_abi.c native/direct/json.c native/direct/jv.c native/direct/sha256.c
         native/direct/graphics.c native/direct/attempt.c native/direct/selection.c native/direct/control.c
         # 设备与能力
         native/direct/vk_device.c native/direct/gs_path.c native/direct/device_caps.c native/direct/vk_identity.c
