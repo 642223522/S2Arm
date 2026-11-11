@@ -9,13 +9,14 @@ public sealed record LibraryJobOutput(LibraryJobResult Report, ProbeOutput Outpu
 public static class LibraryJobClient
 {
     public static async Task<LibraryJobOutput> RunAsync(LauncherPaths paths, string privateRoot, string library,
-        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null)
+        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null, string? jobId = null)
     {
         if (operation is not ("setup" or "catalog" or "keys" or "import" or "diagnostics" or "locations" or "storageOverview" or "spaceSurvey"))
             throw new ArgumentException("Unsupported library operation.", nameof(operation));
         cancellationToken.ThrowIfCancellationRequested();
         privateRoot = Path.GetFullPath(privateRoot);
-        var jobId = "win-" + Guid.NewGuid().ToString("N");
+        // jobId：前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
+        jobId ??= "win-" + Guid.NewGuid().ToString("N");
         var payload = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["jobId"] = jobId, ["operation"] = operation,

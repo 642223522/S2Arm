@@ -196,13 +196,13 @@ public sealed partial class EnvironmentWindow
     private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack)
     {
         if (installBusy || packRunning || connectedFolder is null || libraryId is null) return;
-        installBusy = true; phoneUpdating = true; updateOutcome = null; updateDiagnostics = ""; updateDone = updateTotal = null;
+        var front = BeginJob(JobKind.Phone); phoneUpdating = true; updateOutcome = null; updateDiagnostics = ""; updateDone = updateTotal = null;
         Render();
         var succeeded = false;
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("installUpdate", "", acceptStale ? new Dictionary<string, object?> { ["acceptStale"] = true } : null),
-                e => Dispatcher.UIThread.Post(() => IngestUpdateEvent(e)), CancellationToken.None);
+                e => Dispatcher.UIThread.Post(() => IngestUpdateEvent(e)), front.Token, front.Next());
             succeeded = job.Report.Succeeded;
             updateOutcome = succeeded ? "" : job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
             updateDiagnostics = succeeded ? "" : JobDiagnostics(job);
@@ -210,7 +210,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { updateOutcome = error.Message.Length > 0 ? error.Message : error.GetType().Name; }
-        finally { installBusy = false; phoneUpdating = false; Render(); }
+        finally { EndJob(front); phoneUpdating = false; Render(); }
         if (!libraryBusy) { libraryOperation = RunLibraryAsync("catalog", null); await libraryOperation; }
         if (!succeeded || repack.Count == 0 || batchRunning || PackBusy) return;
         OpenBatch(repack, []);
