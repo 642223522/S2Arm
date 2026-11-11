@@ -32,8 +32,8 @@ case "$out0" in *libs2a_dav1d.a*) fail "S2A_DAV1D=0 仍链了 dav1d：$out0";; e
 n1=$(grep -o 'libs2a_dav1d.a' <<<"$out1" | wc -l | tr -d ' ' || true)
 [ "$n1" = 2 ] || fail "S2A_DAV1D=1 没有同时链 host/iOS dav1d：$out1"
 for lib in libs2a_vpx.a libs2a_opus.a libs2a_cs.a; do
-  grep -q "$lib" <<<"$out0" || fail "S2A_DAV1D=0 丢了 $lib：$out0"
-  grep -q "$lib" <<<"$out1" || fail "S2A_DAV1D=1 丢了 $lib：$out1"
+  grep -q "${lib}" <<<"$out0" || fail "S2A_DAV1D=0 丢了 ${lib}：$out0"
+  grep -q "${lib}" <<<"$out1" || fail "S2A_DAV1D=1 丢了 ${lib}：$out1"
 done
 
 # 2) prepare_build.py：S2A_DAV1D=0 不再要求 meson/ninja；默认仍要求
