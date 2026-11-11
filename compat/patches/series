@@ -554,3 +554,4 @@
 20261110-2118-omap-pipeline-state-drawtexture.patch
 20261110-1611-audit-1111-language-hwopus.patch
 20261111-0705-shader-subgroup-no-propagate.patch
+20261111-1524-apple-audio-real-channels.patch
