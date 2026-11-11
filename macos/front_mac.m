@@ -915,9 +915,12 @@ static __weak S2AMacDelegate *g_delegate;
         self.ns2ReconnectPending = YES;
         self.ns2RelayDisconnectNoticeShown = NO;
     }
+    const char *relay = getenv("S2A_NS2_SOCKET");
+    BOOL relayMode = relay && *relay;
+    // 开局时 S2Arm 可能还没开连接程序（玩家开局后才连手柄）：通道文件出现才去连，接上前不提示（ns2_controller.c s2a_mac_ns2_relay_due）
+    if (self.ns2ReconnectPending && s2a_mac_ns2_relay_due(controller, relay)) s2a_mac_ns2_connect();
     if (self.ns2ReconnectPending && (controller == NS2_STATUS_ERROR || controller == NS2_STATUS_DISCONNECTED)) {
-        const char *relay = getenv("S2A_NS2_SOCKET");
-        if (relay && *relay) {
+        if (relayMode) {
             if (!self.ns2RelayDisconnectNoticeShown) {
                 [self.banner showTitle:@"Switch 2 Pro" body:@"S2Arm 手柄连接已中断；重新连接后游戏会自动接回。" accept:nil decline:nil seconds:12];
                 self.ns2RelayDisconnectNoticeShown = YES;

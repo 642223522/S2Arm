@@ -725,6 +725,14 @@ int main(int argc, const char **argv) {
     int relayListener = socket(AF_UNIX, SOCK_STREAM, 0);
     expect(bind(relayListener, (struct sockaddr *)&relayAddress, sizeof relayAddress) == 0, "motion relay bind");
     expect(listen(relayListener, 1) == 0, "motion relay listen");
+    // 开局后才连手柄（11-11 实机：先开游戏、再在 S2Arm 连 Joy-Con 2，游戏一直收不到输入）：通道文件不在不连、出现后连；已接上 / 非 IDLE 不重复连
+    char missingRelay[96];
+    snprintf(missingRelay, sizeof missingRelay, "/tmp/s2arm-missing-%d.sock", getpid());
+    expect(!s2a_mac_ns2_relay_due(NS2_STATUS_IDLE, missingRelay), "relay not due before the S2Arm connection program creates the socket");
+    expect(s2a_mac_ns2_relay_due(NS2_STATUS_IDLE, relayPath), "relay due once the socket exists and the game never connected");
+    expect(!s2a_mac_ns2_relay_due(NS2_STATUS_READY, relayPath) && !s2a_mac_ns2_relay_due(NS2_STATUS_CONNECTING, relayPath),
+           "relay not reconnected while connected or connecting");
+    expect(!s2a_mac_ns2_relay_due(NS2_STATUS_IDLE, NULL) && !s2a_mac_ns2_relay_due(NS2_STATUS_IDLE, ""), "no relay path: keyboard-only launch never connects");
     setenv("S2A_NS2_SOCKET", relayPath, 1);
     s2a_mac_ns2_focus(1);
     expect(s2a_mac_ns2_connect(), "Switch 2 Pro motion relay connects");
