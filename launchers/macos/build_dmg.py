@@ -28,7 +28,7 @@ def artwork(destination, app=None):
     subprocess.run(command, check=True, env=env)
 
 
-def build(app, output):
+def build(app, output, volume_name="S2Arm Installer"):
     try:
         import dmgbuild
     except ImportError as error:
@@ -71,7 +71,7 @@ def build(app, output):
         if icon.is_file():
             settings["icon"] = str(icon)
         temporary = work / "installer.dmg"
-        dmgbuild.build_dmg(str(temporary), "S2Arm Installer", settings=settings)
+        dmgbuild.build_dmg(str(temporary), volume_name, settings=settings)
         subprocess.run(["hdiutil", "verify", str(temporary)], check=True)
         os.replace(temporary, output)
     return output
@@ -81,12 +81,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, default=ROOT / "build/macos/S2Arm.app")
     parser.add_argument("--output", type=Path, default=ROOT / "build/macos/S2Arm-mac-arm64.dmg")
+    # 发版传「S2Arm v<版本>」（同以往卷名，玩家挂载时看得出是哪一版）；缺省用于本机试打
+    parser.add_argument("--volume-name", default="S2Arm Installer", help="挂载后的卷名（窗口标题），发版传 S2Arm v<版本>")
     parser.add_argument("--preview", type=Path, help="仅生成背景和示意预览，不打包应用；不需要 dmgbuild")
     args = parser.parse_args()
     if args.preview:
         artwork(args.preview.resolve(), args.app.resolve() if args.app.is_dir() else None)
     else:
-        print("Created:", build(args.app, args.output))
+        print("Created:", build(args.app, args.output, args.volume_name))
 
 
 if __name__ == "__main__":
