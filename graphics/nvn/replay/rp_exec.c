@@ -38,10 +38,26 @@ struct post { volatile uint32_t *val; uint32_t mode, v; };   // 完成后写事�
 struct sub { struct post *p; int n, cap; };
 static struct sub *g_sub;      // 当前段挂着的完成后副作用
 static nvn_gpu_cmd g_cmd;      // 当前段（NULL = 后端没给出段：本次提交只走状态，不编码）
+static nvn_gpu_cmd g_pre;      // 前置段：本次提交里资源同步用的传输（池镜像、贴图上传），先于 g_cmd 提交。用到才开
+static uint64_t g_sub_serial;  // 第几次提交（资源按它判断「本次提交里已经用过」）
 static uint64_t g_fence;       // 最近一次提交的栅栏值
 static int g_ret_n;            // OP_CALL 嵌套深度
 
 static void red(const char *fmt, const char *why) { char b[256]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
+static void pre_done(void *user, const nvn_gpu_done *d) { (void)user; if (d->status == NVN_GPU_DONE_FAILED) red("前置段失败：%s", d->why ? d->why : "?"); }
+
+// 资源同步该录进哪一段。传输不能出现在渲染通道里，所以同步一律录进前置段，它在 GPU 上先于本次提交的全部通道执行。
+// 前提是「同步的内容对本次提交里每个使用点都成立」：回放发生在游戏提交之后，游戏对池内存的写在提交前已经做完，这个前提成立；
+// 例外是同一资源在本次提交里已经同步过又变了（命令流里按序的写、别的线程正在写下一帧）：那一次必须排在已录的绘制之后，
+// 于是结束当前通道、录进主段（通道在下一笔绘制时重开）。last_sub：该资源上次同步所在的提交序号，由调用方持有。
+nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
+    if (!g_cmd) return NULL;
+    if (*last_sub == g_sub_serial) { rp_pass_end(g_cmd); return g_cmd; }
+    *last_sub = g_sub_serial;
+    if (!g_pre) { nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {0, "nvn submit pre"};
+        if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_pre, &err))) { g_pre = NULL; rp_pass_end(g_cmd); return g_cmd; } }
+    return g_pre;
+}
 
 static void sub_done(void *user, const nvn_gpu_done *d) {
     struct sub *s = user;
@@ -57,8 +73,8 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
 void nvn_be_sub_begin(void) {
     g_sub = calloc(1, sizeof *g_sub);
     nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {0, "nvn submit"};
-    g_cmd = NULL;
-    if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_cmd, &err))) { g_cmd = NULL; red("开提交段失败：%s", err.why); }
+    g_cmd = NULL; g_pre = NULL; g_sub_serial++;
+    if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_cmd, &err))) { g_cmd = NULL; static int said; if (!said++) red("开提交段失败（之后同样的失败不再逐条报）：%s", err.why); }
     rp_dirty_all();   // 新段：已发给后端的状态全部重发；rp_S / rp_R 不动
 }
 
@@ -67,9 +83,11 @@ uint64_t nvn_be_sub_commit(void) {
     rp_pass_flush(g_cmd);   // 打开的通道与待折清除不跨提交
     if (!g_cmd) {   // 没有段：副作用无处挂，直接按失败丢弃（不写假成功）
         if (s) { free(s->p); free(s); }
+        if (g_pre) { nvn_gpu_cmd_abort(g_pre); g_pre = NULL; }
         return g_fence;
     }
-    nvn_gpu_err err = {0}; uint64_t f = g_fence + 1;
+    nvn_gpu_err err = {0}; uint64_t f = g_fence + 2;   // 前置段占 +1（没开就空着：时间线的值只要求递增），主段 +2
+    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + 1, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, sub_done, s, &err))) red("提交失败：%s", err.why);
@@ -126,7 +144,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_UPDATE_UB: rp_op_update_ub(a, p); break;
             case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
             case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
-            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + 1); break; }
+            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + 2); break; }   // 本次提交主段的栅栏值
             default:
                 if (!rp_state_op(h.op, a, h.size)) nvn_unimpl("op", rp_op_name(h.op), p);
                 break;

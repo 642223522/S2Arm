@@ -19,6 +19,8 @@ enum { SB_RENDER_SCALE = 192, SB_S2A_FLAGS = 1392, SB_S2A_POINT = 1408, SB_RENDE
 enum { DRV0_BYTES = 0xA00 };
 static const int k_drv0_base[5] = {0x110, 0x510, 0x410, 0x210, 0x310};   // 各图形阶段的存储缓冲表起点
 
+int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c
+
 static const struct rp_prog *g_prog; static nvn_gpu_pipe g_pipe; static nvn_gpu_cmd g_pipe_cmd;
 static uint64_t g_draws, g_skips; static uint32_t g_prim = ~0u;
 
@@ -33,7 +35,7 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
 static int skip(const char *why, const void *rec) { nvn_unimpl("draw", why, rec); g_skips++; return 0; }
 
 // 一个阶段的全部绑定。0 = 有取不到的资源（已记账），这笔不画
-static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t base_instance, const void *rec) {
+static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) {
     nvn_gpu_binding b[RP_PROG_ENT_MAX]; uint32_t n = 0;
     nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
     for (uint32_t i = 0; i < pg->nent[st]; i++) {
@@ -65,22 +67,15 @@ static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t 
             case NVN_RB_CBUF: {
                 const p_bind_buf *ub = &rp_S.ubo[st][e->src_reg];
                 if (!ub->addr || !ub->size) return skip("uniform_buffer_unbound", rec);
-                nvn_gpu_buf buf; uint64_t off;
-                if (!rp_buf_resolve(c, ub->addr, ub->size, &buf, &off)) { g_skips++; return 0; }
-                if (caps.min_ubo_align && off % caps.min_ubo_align) {   // 池内偏移不合设备的对齐：这一段拷进暂存区再绑
-                    if (!alloc_copy(c, ub->size, (const void *)(uintptr_t)ub->addr, &sl)) return skip("arena_alloc_failed", rec);
-                    buf = sl.buf; off = sl.off;
-                }
-                o->u.b.buf = buf; o->u.b.off = off; o->u.b.len = ub->size; break; }
+                // 常量缓冲一律拷进本段的暂存区再绑：就是编码这一刻的内容（按序的 OP_UPDATE_UB 之后再用自然是新值），
+                // 不经池镜像，也就没有通道内的传输。地址必须在登记过的池里。
+                if (!rp_pool_find(ub->addr, ub->size, NULL, NULL)) return skip("uniform_buffer_outside_pools", rec);
+                if (!alloc_copy(c, ub->size, (const void *)(uintptr_t)ub->addr, &sl)) return skip("arena_alloc_failed", rec);
+                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = ub->size; break; }
             case NVN_RB_TEX: {
-                uint64_t h = rp_S.tex[st][e->src_reg];
-                int tid = h ? (int)(h & 0xFFFFF) : rp_S.tex_base, sid = (int)(h >> 20);
-                if (!h) sid = rp_S.samp_base;
-                nvn_gpu_view v = rp_view_by_id(tid, c, NULL);
-                nvn_gpu_samp s = rp_samp_by_id(sid);
-                if (!v) return skip("texture_slot_unresolved", rec);
-                if (!s) return skip("sampler_slot_unresolved", rec);
-                o->u.ts.view = v; o->u.ts.samp = s; break; }
+                if (!tv[i]) return skip("texture_slot_unresolved", rec);
+                if (!ts[i]) return skip("sampler_slot_unresolved", rec);
+                o->u.ts.view = tv[i]; o->u.ts.samp = ts[i]; break; }
             default: return skip("binding_source_unknown", rec);
         }
         n++;
@@ -113,8 +108,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     if (!(prim == 0 || prim == 1 || prim == 3 || prim == 4 || prim == 5 || prim == 6)) { char nm[24]; snprintf(nm, sizeof nm, "prim_%u", prim); skip(nm, rec); return; }
     uint32_t count = (uint32_t)(di ? di->count : dr->count);
     if (!count) return;
-    if (!rp_pass_begin(c)) { g_skips++; return; }
     const p_set_rt *rt = rp_pass_target();
+    if (!rt) { skip("draw_without_target", rec); return; }
     // 程序：管线状态或任一阶段的绑定变过才重新取（贴图槽里换了不同类型的贴图会换变体）
     if (prim != g_prim) { g_prim = prim; rp_pso_dirty = 1; }   // 图元在绘制记录里，不在状态块里：换了图元就是换管线
     int args_dirty = rp_args_dirty[0] || rp_args_dirty[1];
@@ -125,6 +120,30 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (rp_shader_resolve(&q, &np)) { g_skips++; g_prog = NULL; return; }
         if (np != g_prog) { g_prog = np; rp_pso_dirty = 1; }
     }
+    // 先把这笔要用的资源都取好：池镜像同步、贴图上传是传输，不能出现在通道里，必须在开通道之前做完
+    nvn_gpu_buf vb_buf[16]; uint64_t vb_off[16]; uint32_t streams = 0;
+    for (int i = 0; i < rp_S.nattr && i < 16; i++) if (g_prog->attr_mask >> i & 1) streams |= 1u << rp_S.attr[i].stream;
+    for (int i = 0; i < 16; i++) if (streams >> i & 1) {
+        uint64_t va = nvn_ga2ca(rp_S.vbuf[i].address), vn = rp_S.vbuf[i].size;   // 记录里的顶点缓冲地址是 GPU 地址
+        if (!va || !vn) { skip("vertex_stream_unbound", rec); return; }
+        if (!rp_buf_resolve(c, va, vn, &vb_buf[i], &vb_off[i])) { g_skips++; return; }
+    }
+    nvn_gpu_draw_args a; memset(&a, 0, sizeof a);
+    if (di) {
+        if (di->itype < 0 || di->itype > 2) { skip("index_type_invalid", rec); return; }
+        uint32_t isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4;
+        if (!rp_buf_resolve(c, di->ibuf, (uint64_t)count * isz, &a.ibuf, &a.ioff)) { g_skips++; return; }
+        a.itype = (uint32_t)di->itype; a.base_vertex = di->base_vertex;
+    } else a.first = (uint32_t)dr->first;
+    static nvn_gpu_view tv[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static nvn_gpu_samp ts[RP_PROG_STAGES][RP_PROG_ENT_MAX];
+    for (int st = 0; st < 2; st++) for (uint32_t i = 0; i < g_prog->nent[st]; i++) {
+        const nvn_gpu_layout_ent *e = &g_prog->ent[st][i]; tv[st][i] = NULL; ts[st][i] = NULL;
+        if (e->src_kind != NVN_RB_TEX) continue;
+        uint64_t h = rp_S.tex[st][e->src_reg];
+        tv[st][i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, NULL);
+        ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
+    }
+    if (!rp_pass_begin(c)) { g_skips++; return; }
     if (rp_pso_dirty || !g_pipe || g_pipe_cmd != c) {
         nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd);
         pd.st[0].sh = g_prog->sh[0]; pd.st[1].sh = g_prog->sh[1];
@@ -145,25 +164,10 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     }
     uint32_t tw = 1, th = 1; if (rt->n && rt->color[0]) { uint32_t l = rt->has_cview[0] && rt->cview[0].set_levels ? rt->cview[0].base_level : 0; tw = rt->color[0]->d.width >> l; th = rt->color[0]->d.height >> l; if (!tw) tw = 1; if (!th) th = 1; }
     nvn_gpu_dyn dyn; fill_dyn(&dyn, tw, th); nvn_gpu_set_dyn(c, &dyn);
-    // 顶点流：只绑着色器实际读的属性用到的流。记录里的顶点缓冲地址是 GPU 地址
-    uint32_t streams = 0;
-    for (int i = 0; i < rp_S.nattr && i < 16; i++) if (g_prog->attr_mask >> i & 1) streams |= 1u << rp_S.attr[i].stream;
-    for (int i = 0; i < 16; i++) if (streams >> i & 1) {
-        uint64_t a = nvn_ga2ca(rp_S.vbuf[i].address), n = rp_S.vbuf[i].size; nvn_gpu_buf buf; uint64_t off;
-        if (!a || !n) { skip("vertex_stream_unbound", rec); return; }
-        if (!rp_buf_resolve(c, a, n, &buf, &off)) { g_skips++; return; }
-        nvn_gpu_set_vbuf(c, (uint32_t)i, buf, off);
-    }
+    for (int i = 0; i < 16; i++) if (streams >> i & 1) nvn_gpu_set_vbuf(c, (uint32_t)i, vb_buf[i], vb_off[i]);
     uint32_t base_instance = (uint32_t)(di ? di->base_instance : dr->base_instance);
-    for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, rec)) return;   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
-    nvn_gpu_draw_args a; memset(&a, 0, sizeof a);
+    for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
     a.prim = prim; a.count = count; a.instances = (uint32_t)(di ? di->instances : dr->instances); if (!a.instances) a.instances = 1; a.base_instance = base_instance;
-    if (di) {
-        uint32_t isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4;
-        if (di->itype < 0 || di->itype > 2) { skip("index_type_invalid", rec); return; }
-        if (!rp_buf_resolve(c, di->ibuf, (uint64_t)count * isz, &a.ibuf, &a.ioff)) { g_skips++; return; }
-        a.itype = (uint32_t)di->itype; a.base_vertex = di->base_vertex;
-    } else a.first = (uint32_t)dr->first;
     nvn_gpu_draw(c, &a);
     rp_pso_dirty = rp_dss_dirty = 0; memset(rp_args_dirty, 0, sizeof rp_args_dirty);
     g_draws++;

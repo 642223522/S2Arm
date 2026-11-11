@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced; uint64_t npages; uintptr_t page0; };   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
+struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; };   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
@@ -34,11 +34,13 @@ static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     s->page0 = (uintptr_t)mem & ~(uintptr_t)(ps - 1);
     s->npages = ((uintptr_t)mem + size - s->page0 + ps - 1) / ps;
     s->synced = calloc(s->npages ? s->npages : 1, sizeof *s->synced);
+    s->sub = calloc(s->npages ? s->npages : 1, sizeof *s->sub);   // 各页上次同步所在的提交序号
     nvn_hm_put(&g_shadow, &k, s);
     return s;
 }
 
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off) {
+    (void)c;   // 同步录进哪一段由 rp_xfer_cmd 定
     const uint8_t *mem; uint64_t size;
     if (!len || !rp_pool_find(addr, len, &mem, &size)) { nvn_unimpl("buf", "address_outside_pools", (const void *)(uintptr_t)addr); return 0; }
     pthread_mutex_lock(&g_bmu);
@@ -56,8 +58,11 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
         if (a < (uintptr_t)mem) a = (uintptr_t)mem;
         if (b > (uintptr_t)mem + size) b = (uintptr_t)mem + size;
         nvn_dirty_protect((const void *)a, b - a); uint64_t st = nvn_dirty_now(); if (!st) st = 1;   // 先保护、取代号、再读
-        nvn_gpu_buf_write(c, s->buf, a - (uintptr_t)mem, (const void *)a, b - a);
-        for (uint64_t k = i; k <= j; k++) s->synced[k] = st;
+        // 这一串里只要有一页本次提交已同步过，整串就按「第二次同步」走主段
+        uint64_t last = 0; for (uint64_t k = i; k <= j; k++) if (s->sub[k] > last) last = s->sub[k];
+        nvn_gpu_cmd xc = rp_xfer_cmd(&last);
+        if (xc) nvn_gpu_buf_write(xc, s->buf, a - (uintptr_t)mem, (const void *)a, b - a);
+        for (uint64_t k = i; k <= j; k++) { s->synced[k] = st; s->sub[k] = last; }
         g_sync_bytes += b - a; g_sync_runs++;
         i = j + 1;
     }
@@ -72,12 +77,12 @@ void rp_buf_pool_gone(const void *mem) {
     uint64_t k = (uint64_t)(uintptr_t)mem;
     pthread_mutex_lock(&g_bmu);
     struct shadow *s = nvn_hm_del(&g_shadow, &k);
-    if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s); }
+    if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s->sub); free(s); }
     pthread_mutex_unlock(&g_bmu);
 }
 void rp_buf_reset(void) {
     pthread_mutex_lock(&g_bmu);
-    for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s); } }
+    for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) { nvn_gpu_buf_release(s->buf, NULL, NULL); free(s->synced); free(s->sub); free(s); } }
     free(g_shadow.keys); free(g_shadow.vals); nvn_hm_init(&g_shadow, 8);
     pthread_mutex_unlock(&g_bmu);
 }

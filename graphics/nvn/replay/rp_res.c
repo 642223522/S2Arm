@@ -20,6 +20,7 @@ struct rp_tex {
     uint8_t uploaded;
     uint8_t in_alias;
     uint64_t stamp;            // 最近一次上传取的脏页代号
+    uint64_t up_sub;           // 最近一次上传所在的提交序号
     const uint8_t *mem; uint64_t size;
 };
 // 同存储共用表的键：内存池 + 偏移 + 描述（去掉只表示用途、不影响存储布局的标志）
@@ -178,7 +179,10 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
         x->users++;
         nvn_hm_put(&g_by_serial, &t->serial, x); g_ser_gen++;
     }
-    if (x->cpu && !x->gpu_written && c && t->mem && (!x->uploaded || nvn_dirty_since(t->mem, t->L.size, x->stamp))) upload_all(t, x, c);
+    if (x->cpu && !x->gpu_written && c && t->mem && (!x->uploaded || nvn_dirty_since(t->mem, t->L.size, x->stamp))) {
+        nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);   // 上传是传输：录进前置段（本次提交里第二次上传才回主段）
+        if (xc) upload_all(t, x, xc);
+    }
     nvn_gpu_tex g = x->g;
     pthread_mutex_unlock(&g_rmu);
     return g;

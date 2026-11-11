@@ -49,3 +49,6 @@ void rp_present_reset(void);
 void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
 void rp_draw_stats(uint64_t *draws, uint64_t *skips);
 void rp_draw_reset(void);
+
+// 资源同步用的段（见 rp_exec.c）：通常是先于主段提交的前置段；同一资源本次提交里第二次同步时结束当前通道、回到主段。
+nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub);
