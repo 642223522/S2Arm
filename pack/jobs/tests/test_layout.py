@@ -1,4 +1,5 @@
 """游戏库布局（pack/jobs/layout.py）单测：命名规则、旧布局迁移、中断续做。期望值按设计文档的规则手写，不跑被测实现推导。"""
+import errno
 import hashlib
 import json
 import os
@@ -477,6 +478,22 @@ class StoreMetaTests(JobCase):
         self.calls.clear()
         self.assertEqual(library.store_meta(self.fresh()), 0)                          # 7 天内查过：不再查
         self.assertEqual(self.calls, [])
+
+    def test_library_on_other_volume(self):
+        # 游戏库在外置盘、临时目录在私有目录：跨卷时 os.replace 报 EXDEV（本机外置盘游戏库实测：五款一张横图都没进库、storeChecked 也没记上）
+        import library
+        L = self.c.library
+        real = os.replace
+
+        def cross(src, dst):
+            if Path(src).parent != Path(dst).parent:
+                raise OSError(errno.EXDEV, "Cross-device link")
+            return real(src, dst)
+        with patch("library.os.replace", cross):
+            self.assertEqual(library.store_meta(self.fresh(), {B}), 1)
+        self.assertEqual((L / "games" / B / "banner.jpg").read_bytes(), b"JPG-" + B.encode())
+        self.assertFalse((L / "games" / B / ".banner.jpg.part").exists())
+        self.assertTrue(self.catalog()[B].get("storeChecked"))
 
     def test_import_ids_only_and_switch_off(self):
         import library

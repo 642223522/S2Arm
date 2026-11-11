@@ -316,7 +316,10 @@ def store_meta(c, ids=None, budget=STORE_BUDGET):
                     if banner:
                         d = layout.find_game(c, gid) or layout.game_dir(c, gid, english=g.get("englishName") or g.get("name") or "")
                         if not (d / "banner.jpg").is_file():
-                            os.replace(banner, d / "banner.jpg")
+                            # 临时目录在私有目录、游戏库常在外置盘：不能直接 os.replace 过去（跨卷 EXDEV），先拷进目标文件夹再原子改名
+                            part = d / ".banner.jpg.part"
+                            shutil.copyfile(banner, part)
+                            os.replace(part, d / "banner.jpg")
                 atomic(c.library / "catalog.json", cat)
         except Failure:   # 目录锁被别的任务拿着：下次再查
             return 0
