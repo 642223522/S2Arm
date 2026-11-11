@@ -7010,5 +7010,13 @@
  {
   "source": "用数据线把 iPhone / iPad 连到这台电脑，或让它和这台电脑连同一个 Wi-Fi；解锁并点「信任」。",
   "en": "Connect the iPhone or iPad to this computer with a cable, or put it on the same Wi-Fi; unlock it and tap Trust."
+ },
+ {
+  "source": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
+  "en": "Wait for the task that is using the library to finish (or cancel it in the task list), then try again. Nothing was changed."
+ },
+ {
+  "source": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
+  "en": "Your Apple ID sign-in has expired. Sign in again, then install: on the install page click Open Impactor → Settings, select your Apple ID and click Remove Account, then Add Account and sign in with the same Apple ID (email, password and the code on your devices; switch the keyboard to English first). Come back and click Install to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
  }
 ]

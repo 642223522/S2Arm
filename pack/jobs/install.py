@@ -582,6 +582,9 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         if e.code != "tool_exit":
             raise
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+        m = APPLY_FAILED.search(text)   # tools/push_pack.py apply：App 自己写的解开失败原因（如 #569 目录写不进），原样上屏，不说「推不进」「没有开始」
+        if m:
+            raise Failure(f"资源包已传到 iPhone，但手机上解开失败：{m.group(1)}", code="job_failed") from e
         m = re.search(r"资源包推进去了，但(机上解包 \d+ 秒没有新进展[^：\n]*|起 App 后 \d+ 秒机上解包没有开始)", text)   # tools/push_pack.py apply：按进度判停住（11-07）
         if m:
             raise Failure(f"资源包推进去了，但{m.group(1)}：请打开这款游戏，保持在前台等它导入完，会自动进入游戏。", code="job_failed") from e
@@ -595,6 +598,9 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         from errors import tool_reason
         raise Failure("资源包推不进 iPhone：" + tool_reason(log), code="resource_transfer_failed") from e
     return got.get("files", 0), got.get("mb", 0) << 20
+
+
+APPLY_FAILED = re.compile(r"资源包推进去了，但手机上解开失败：([^\n]+)")   # tools/push_pack.py apply 读到解包日志「解包失败：…」时报的那句
 
 
 def pull_seen(c, ident, bid, gid, tag, docs="Documents"):
@@ -1247,6 +1253,9 @@ def put_game(c, gid, ph, steps=True, others=None):
     if others is None:
         others = container_others(c, ph, rec, leave=gid)   # 手机上实际有的款也带上（另一台电脑装的），带不了的先问玩家
     if steps: c.begin("把这款放进手机上的 S2Arm", 2, 6)
+    # 改写器修过的话：容器里各款按本引擎改写器核一遍，受影响的只换改写产物（不重出资源包、不推 game.img），再组进新壳（rewrite_refresh.py）
+    from rewrite_refresh import refresh_ios
+    refresh_ios(c, [g for g in ([gid] if gid else []) + list(others) if g])
     ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
     packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
     stale = [g for g in games if g == gid or pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack")]

@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 2   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 4   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -380,6 +380,18 @@ void nvn_gpu_copy_tex(nvn_gpu_cmd c, nvn_gpu_tex src, uint32_t slevel, uint32_t 
                       nvn_gpu_tex dst, uint32_t dlevel, uint32_t dlayer, const NVNcopyRegion *dr);
 void nvn_gpu_blit(nvn_gpu_cmd c, nvn_gpu_view src, const NVNcopyRegion *sr, nvn_gpu_view dst, const NVNcopyRegion *dr, int linear);   // 要 CAP_BLIT_SCALED
 void nvn_gpu_clear_view(nvn_gpu_cmd c, nvn_gpu_view v, const float rgba[4], const uint32_t uint4[4], int is_int);
+// v4：通道内把当前通道的附件按矩形清成给定值（NVN 带裁剪的 ClearColor / ClearDepthStencil；整屏清除由核心折成 load = CLEAR，不走这里）。
+// 不看管线与动态状态：颜色四个通道全写、模板八位全写（部分通道 / 部分模板掩码的清除不在本入口的语义里，核心不得用它近似）。
+// 矩形与 nvn_gpu_dyn.sc 同一坐标约定，必须整个落在通道范围内且非空；通道的全部层都清。
+typedef struct {
+    int32_t color;                    // 要清的颜色附件 = pass_desc.color[] 的下标；-1 = 不清颜色
+    union { float f[4]; uint32_t u[4]; int32_t i[4]; } value;   // 按附件格式的数值类别取用（同 nvn_gpu_att.clear）
+    uint8_t depth, stencil, _rsv[2];  // 1 = 清深度 / 清模板（通道必须带对应附件）
+    float depth_value; uint32_t stencil_value;
+    int32_t x, y; uint32_t w, h;
+} nvn_gpu_clear;
+// 线程：[提交]，通道内。出错：粘滞 ORDER（通道外）/ ARG（下标越界、通道没有该附件、矩形越界或为空、什么都不清）。
+void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d);
 // NVN 屏障（NVNbarrierBits 原样）。
 /* 定稿 #7：核心只表达 NVN 的顺序与访问语义（这个位、这次拷贝、这次附件写）；Vulkan 后端自己跟踪每个子资源的 layout / stage / access 并据此发屏障，
    VkImageLayout 不进核心；Metal 4 后端同理自己补编码器间屏障，Metal 3 交给自动冒险追踪。经裸 GPU 地址的写后读只有 NVN 位能表达，核心照游戏原样传。 */
@@ -444,6 +456,7 @@ typedef struct {
     int32_t dst[4];                      // 核心按 nvn_present_fit.h 算好；矩形外后端清黑
     uint32_t filter;                     // 0 最近点 1 线性 2 后端的抗锯齿缩放
     double at;                           // 期望呈现时刻（主机单调秒；0 = 尽快）
+    uint8_t flip_y, _rsv[7];             // 1 = 源是自下而上存的（NVN 窗口原点在左下）：呈现时上下翻过来（v3 新增）
 } nvn_gpu_present_desc;
 enum { NVN_GPU_SHOWN_AT = 0, NVN_GPU_SHOWN_DROPPED = 1, NVN_GPU_SHOWN_UNKNOWN = 2 };
 typedef struct { uint64_t ticket; uint32_t status; double at; } nvn_gpu_shown;   // at 只在 SHOWN_AT 时有意义（主机单调秒）

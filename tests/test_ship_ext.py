@@ -240,12 +240,13 @@ class ContainerTest(unittest.TestCase):
         (root / "ctl").mkdir(); (root / "ctl/control.nacp").write_bytes(bytes(nacp))
         return root
 
-    def run_c(self, d, shell, out, roots, base=None, version=None):
+    def run_c(self, d, shell, out, roots, base=None, version=None, display_version=None):
         from PIL import Image
         icon = Path(d) / "brand.png"
         if not icon.exists(): Image.new("RGB", (64, 64), (1, 2, 3)).save(icon)
         cmd = [sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell", str(shell), "--out", str(out), "--bundle-id", "dev.example.games", "--icon", str(icon), "--host-abi", "7"]
         cmd += [x for r in roots for x in ("--game", str(r))] + (["--base", str(base)] if base else []) + (["--version", version] if version else [])
+        cmd += ["--display-version", display_version] if display_version else []
         return subprocess.run(cmd, capture_output=True, text=True,
                               env={**os.environ, "S2A_BANNER_FETCH": "0"})   # 单测零联网：抓图关掉，A 的 banner 走产物根自带拷贝路径
 
@@ -261,13 +262,17 @@ class ContainerTest(unittest.TestCase):
     def test_version_written_into_info_plist(self):
         # 三端同号：电脑上 S2Arm 的发版号写进容器 Info.plist 的 CFBundleShortVersionString；不给 --version 就沿用壳里的
         import plistlib
-        r = self.run_c(self.d, self.shell, self.d / "v1/S2Arm.app", [self.a], version="9.8.7")
+        # 界面版本字同理写 S2ADisplayVersion（设置页 / 游戏库顶部读）；不给就不写
+        r = self.run_c(self.d, self.shell, self.d / "v1/S2Arm.app", [self.a], version="9.8.7", display_version="v9.8.7-dev+abc1234")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(plistlib.loads((self.d / "v1/S2Arm.app/Info.plist").read_bytes())["CFBundleShortVersionString"], "9.8.7")
+        p1 = plistlib.loads((self.d / "v1/S2Arm.app/Info.plist").read_bytes())
+        self.assertEqual((p1["CFBundleShortVersionString"], p1["S2ADisplayVersion"]), ("9.8.7", "v9.8.7-dev+abc1234"))
         r = self.run_c(self.d, self.shell, self.d / "v2/S2Arm.app", [self.a])
         self.assertEqual(r.returncode, 0, r.stderr)
         shell_v = plistlib.loads((self.shell / "root/Info.plist").read_bytes()).get("CFBundleShortVersionString")
-        self.assertEqual(plistlib.loads((self.d / "v2/S2Arm.app/Info.plist").read_bytes()).get("CFBundleShortVersionString"), shell_v)
+        p2 = plistlib.loads((self.d / "v2/S2Arm.app/Info.plist").read_bytes())
+        self.assertEqual(p2.get("CFBundleShortVersionString"), shell_v)
+        self.assertNotIn("S2ADisplayVersion", p2)
 
     def test_layout_catalogue_and_window_max(self):
         r = self.run_c(self.d, self.shell, self.d / "o1/S2Arm.app", [self.a, self.b])

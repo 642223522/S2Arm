@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import errno
+import os
 import re
+from pathlib import Path
 
 
 RECOVERY = {
@@ -43,6 +45,7 @@ RECOVERY = {
     "library_in_cloud": "游戏库在云盘同步目录里（iCloud 云盘、OneDrive、Dropbox 等）：出包时会写几十 GB 中间文件，云盘会上传它们、换成占位文件，出包中途会读不到。在「设置 → 游戏库与玩家数据」把游戏库改到本机磁盘上不同步的位置（例如默认位置），再重试；游戏原件放在哪都行。",
     "library_bad_format": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 NTFS 格式的磁盘上（FAT32 单个文件不能超过 4 GB，exFAT 没有可靠的原子替换）：在「设置 → 游戏库与玩家数据」改用这台电脑上的默认位置，或选一块 NTFS 格式的盘，再重试。",
     "library_move_failed": "游戏库还在原来的位置，什么都没有丢：按上面的原因处理后再搬一次。",
+    "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
     "permission_denied": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
     "architecture_unsupported": "当前路径需要 Apple Silicon Mac，请换用支持的设备；重试不会改变硬件兼容性。",
@@ -73,6 +76,7 @@ RECOVERY = {
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
     "free_appid_limit": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或在 Xcode / Impactor 里换一个 Apple ID 登录后再装；或改用付费 Apple 开发者账号（没有这个限制）。",   # Apple 错误 9120；与 free_app_limit（设备上同时 3 个）是两件事，删 App 无效
     "app_id_taken": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",   # Apple 错误 9401；Windows 装机先用大小写两种包名各试一次（install_win.install_app），都被拒才报这个码
+    "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
     "direct_offline_empty": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
     "sibling_clone_failed": "已改从解包目录准备，本次照常完成，只是多花一些时间；游戏库放在 APFS 格式的磁盘上（Mac 内置盘或格式化为 APFS 的外接盘）时，各平台导出可以共用已准备好的游戏数据。",
@@ -148,22 +152,48 @@ def recovery(code, *, packaged):
 
 class Failure(Exception):
     """message 是上屏的那句；internal 是只进诊断 detail（「复制错误摘要」带走）的内部原文：阶段、rc、构建号、红行。"""
-    def __init__(self, message, *, code="job_failed", internal=""):
+    def __init__(self, message, *, code="job_failed", internal="", holder=None):
         super().__init__(message)
         self.code = code
         self.internal = internal
+        self.holder = holder   # library_busy：占着游戏库锁的任务（filelock 旁挂文件里记的那份），其余为 None
 
 
-def explain(error):
+def _under(path, roots):
+    # 两边都按真实路径比（macOS 的 /var 实为 /private/var、外接盘挂载点软链：请求里记的与报错带的写法可能不同；删掉的文件 realpath 照样解析父目录）
+    try:
+        p = os.path.realpath(os.fspath(path))
+    except TypeError:
+        return False
+    for r in roots:
+        r = os.path.realpath(os.fspath(r))
+        if p == r or p.startswith(r.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def explain(error, sources=(), library=None):
+    """OSError 按 errno 归码，不猜原文；「原件不见了」「去系统设置授权」只给确知是玩家这边的路径（启动器剃刀 H8，11-11）：
+    sources = 这次作业的原件（导入的路径、这款登记的原件），library = 游戏库根。
+    ENOENT 出在原件下，或游戏库根整个不在（外接盘没插）→ input_missing；EACCES / EPERM / EROFS 出在原件或游戏库下 → permission_denied；
+    其余（私有目录的日志 / 任务记录、并发竞态删掉的临时文件、不带路径的）→ job_failed，原文与路径进 internal（坑记录：两个作业同时收日志的
+    ENOENT 被说成原件缺失，玩家被指去接磁盘）"""
     if isinstance(error, Failure):
         return error
     if isinstance(error, OSError):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
+        paths = [p for p in (error.filename, error.filename2) if p]
+        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
-            return Failure("文件或目录不可访问或不可写。", code="permission_denied")
+            if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
+                return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)
+            return Failure("本地任务失败：S2Arm 自己的文件读写不了，请导出诊断发给我们。", internal=internal)
         if error.errno == errno.ENOENT:
-            return Failure("任务所需的文件或目录不存在。", code="input_missing")
+            if any(_under(p, sources) for p in paths) or (library is not None and not os.path.isdir(library)):
+                return Failure("任务所需的文件或目录不存在。", code="input_missing", internal=internal)
+            return Failure("本地任务失败：S2Arm 自己的文件找不到了，请重试；还不行请导出诊断发给我们。", internal=internal)
+        return Failure("本地任务失败，请检查日志和输入。", internal=internal)
     return Failure("本地任务失败，请检查日志和输入。")
 
 
@@ -233,6 +263,7 @@ LOG_CAUSES = (
 )
 _RED = ("【红】", "🔴", "[RED]")
 # 红行里点名的子日志（如直连库 <缓存>/work.stage.N/build.log）：绝对路径（可含空格，如「Application Support」），以 .log / .out 结尾
+_LOG_PATH_ANY = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s'\"（）()，,；;]+)")   # 命中行里点名的绝对路径（核盘满用：不限 .log）
 _LOG_PATH = re.compile(r"(?:(?<=[\s（(：:，,=])|^)((?:[A-Za-z]:[\\/]|/)[^（）()，,；;\"'\r\n]*?\.(?:log|out))(?=$|[\s）)，,；;:\"'])")
 EVIDENCE_MAIN_BYTES = 16000   # 主日志（refresh / 一键出包输出）尾部
 EVIDENCE_SUB_BYTES = 32000    # 每份子日志尾部（.NET 未处理异常连调用栈约 4–10 KB）
@@ -289,16 +320,68 @@ def gather_evidence(log, texts=()):
     return chunks
 
 
-def log_cause(chunks):
-    """证据里有确凿根因字样 → (码, 来源, 命中行)；没有 → None。"""
+# 环境类的码（盘满、缺工具）字样只是候选：工具重试、可选探测（`command -v x || …`）都会打出同样字样却与这次失败无关
+#   （坑记录 11-09：Windows 出库 rc=127 被一律译成盘满，玩家照提示删了 37 GB）。启动器剃刀 H9：候选要当场核事实才定码，核不实不采信，
+#   字样与未采信的理由进 internal。其余码的字样只有出错的那个工具自己会打（改写缺口、链号、图形接口、预检缺件、xcrun / xcodebuild 原文），照旧直接定码
+DISK_FULL_FREE = 5 << 30   # 盘满候选的核实线：命中行点名的路径或日志所在的盘，剩余空间低于它才算真满（工具失败后常会删掉自己的临时文件，留出余量）
+
+
+def _free_bytes(path):
+    """path（可不存在：往上找到存在的那层）所在盘的剩余字节；读不到为 None"""
+    import os
+    import shutil
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    try:
+        return shutil.disk_usage(p).free
+    except OSError:
+        return None
+
+
+def _tool_present(name):
+    import shutil
+    return shutil.which(name) is not None
+
+
+def _confirm(code, line, log):
+    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信"""
+    if code == "disk_full":
+        paths = [m.group(1) for m in _LOG_PATH_ANY.finditer(line)] + ([str(Path(log).parent)] if log else [])
+        free = [(p, f) for p, f in ((p, _free_bytes(p)) for p in paths) if f is not None]
+        if not free:
+            return True, "读不到所在盘的剩余空间，按字样"
+        path, least = min(free, key=lambda pf: pf[1])
+        gib = least / (1 << 30)
+        if least < DISK_FULL_FREE:
+            return True, "核实：%s 所在盘只剩 %.1f GB" % (path, gib)
+        return False, "所在盘还剩 %.1f GB（%s），不是盘满" % (gib, path)
+    if code == "tool_missing":
+        m = re.search(r"([\w.+-]+): command not found", line)
+        if m and _tool_present(m.group(1)):
+            return False, "「%s」现在找得到，不是没装" % m.group(1)
+    return True, ""
+
+
+def log_cause(chunks, log=None):
+    """证据里有确凿根因字样、且（环境类的码）核实了 → (码, 来源, 命中行, 核对说明)；没有 → (None, 未采信的候选说明列表)。"""
+    rejected = []
     for pattern, code in LOG_CAUSES:
         for label, text in chunks:
             m = re.search(pattern, text, re.I)
             if m:
                 start = text.rfind("\n", 0, m.start()) + 1
                 end = text.find("\n", m.end())
-                return code, label, text[start:end if end >= 0 else None].strip()[:300]
-    return None
+                line = text[start:end if end >= 0 else None].strip()[:300]
+                ok, why = _confirm(code, line, log)
+                if ok:
+                    return code, label, line, why
+                rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))
+                break   # 同一个码事实已核过，别的来源同样字样不再重复核
+    return None, rejected
 
 
 def refresh_stop_phase(red):
@@ -318,12 +401,12 @@ def classify_failure(phase, log, texts=()):
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
     chunks = gather_evidence(log, texts)
     read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"
-    hit = log_cause(chunks)
-    if hit:
-        code, label, line = hit
-        return code, "归因 %s：%s 里「%s」；读过 %s" % (code, label, line, read)
+    hit = log_cause(chunks, log)
+    if hit[0]:
+        code, label, line, why = hit
+        return code, "归因 %s：%s 里「%s」%s；读过 %s" % (code, label, line, "（" + why + "）" if why else "", read)
     code = STAGE_CODES.get(phase, "package_failed")
-    return code, "归因 %s：按阶段 %s；读过 %s" % (code, phase or "未识别", read)
+    return code, "归因 %s：按阶段 %s；%s读过 %s" % (code, phase or "未识别", "".join(r + "；" for r in hit[1]), read)
 
 
 def tool_reason(log):

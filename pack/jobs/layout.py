@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 from core import Failure, atomic, contained, read
@@ -510,49 +511,45 @@ def _ascii_name(name):
 
 def heal_folder_names(c):
     """还叫游戏号的文件夹（导入时没拿到英文名：读取器早先不给英文名、拷封面时这款还没进 catalog）按英文名改名，英文名记进 catalog。
-    每个作业开始时看一眼（只列各位置的 games/，没有游戏号文件夹就返回）；拿不到执行锁（有游戏在跑 / 在出包）这次跳过，下个作业再试。
+    只在英文名可能刚拿到的那一刻调（启动器剃刀 H3：原先每个作业开头都抢一次执行锁，中文名、没出过包的款永远在待改名单里，正撞上起局 / 出包就报忙）：
+    导入、出包（Mac / iPhone）作业结束时（main.HEAL_AFTER，锁都已放），后台商店查询拿到英文名后（store_meta_bg）。
+    执行锁、目录锁（改名动执行区，写 catalog 要目录锁）有一把被占就这次不改：文件夹叫游戏号只是不好看，下次这三处任一再试。
     英文名按 catalog 的 englishName → catalog 名字（有 ASCII 时）→ 这款已有产物里的 control.nacp；都没有（还没出过包的中文名游戏）就留着，出过包后再改"""
     roots = [r for _, r, online in locations(c) if online]
     stuck = [d for r in roots if (games_root(c, r)).is_dir() for d in games_root(c, r).iterdir()
              if _GID.fullmatch(d.name.upper()) and (d / GAME_JSON).is_file()]
     if not stuck:
         return 0
-    import filelock
     renamed = 0
-    with (c.library / ".execution.lock").open("a") as f:
-        try:
-            filelock.try_lock(f)
-        except BlockingIOError:
+    with c.idle("execution") as idle, c.idle("catalog") as idle_catalog:
+        if not (idle and idle_catalog):
             return 0
-        try:
-            cat_path = c.library / "catalog.json"
-            cat = read(cat_path, {}) or {}
-            games = {g.get("id", "").upper(): g for g in cat.get("games", []) if isinstance(g, dict)}
-            changed = False
-            for d in stuck:
-                gid = d.name.upper()
-                g = games.get(gid, {})
-                english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
-                if not _ascii_name(english):
-                    continue
-                name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
-                dest = d.parent / name
-                if name.upper() == gid or os.path.lexists(dest):
-                    continue
-                try:
-                    os.replace(d, dest)
-                except OSError:   # Windows 上文件夹里有打开的文件：整款不动（文件夹、索引、catalog 都留原样），下次再试
-                    continue
-                from library import _retarget_links
-                _retarget_links(dest, d, dest)
-                _remember(c, gid, dest)
-                if g and not g.get("englishName"):   # 改名成了才记英文名：与文件夹、索引一起变
-                    g["englishName"] = english; changed = True
-                renamed += 1
-            if changed:
-                atomic(cat_path, cat)
-        finally:
-            filelock.unlock(f)
+        cat_path = c.library / "catalog.json"
+        cat = read(cat_path, {}) or {}
+        games = {g.get("id", "").upper(): g for g in cat.get("games", []) if isinstance(g, dict)}
+        changed = False
+        for d in stuck:
+            gid = d.name.upper()
+            g = games.get(gid, {})
+            english = g.get("englishName") or (g.get("name") if _ascii_name(g.get("name")) else "") or _english_from_disk(c, gid)
+            if not _ascii_name(english):
+                continue
+            name = folder_name(english, gid, [p.name for p in d.parent.iterdir() if p != d])
+            dest = d.parent / name
+            if name.upper() == gid or os.path.lexists(dest):
+                continue
+            try:
+                os.replace(d, dest)
+            except OSError:   # Windows 上文件夹里有打开的文件：整款不动（文件夹、索引、catalog 都留原样），下次再试
+                continue
+            from library import _retarget_links
+            _retarget_links(dest, d, dest)
+            _remember(c, gid, dest)
+            if g and not g.get("englishName"):   # 改名成了才记英文名：与文件夹、索引一起变
+                g["englishName"] = english; changed = True
+            renamed += 1
+        if changed:
+            atomic(cat_path, cat)
     return renamed
 
 
@@ -697,36 +694,18 @@ def ensure(c):
     _ensure_layout(c)
     if (c.library / ".s2arm-library.json").is_file():
         adopt_private_logs(c)
-        heal_folder_names(c)             # 已有英文名、文件夹还叫游戏号的改名（不联网）
         if c.operation != "launch":      # 起局时玩家在等：连后台也不起
             from library import store_meta_background
             store_meta_background(c)     # 缺横图 / 英文名、7 天内没查过的款：后台查，查到英文名在那里接着改名
 
 
 def _ensure_layout(c):
-    """库还是旧布局就拿执行锁迁移（拿不到每 2 秒再试，最多 120 秒：别的作业在跑时它已经迁过了，再看一眼标记）"""
-    import time
-    import filelock
+    """库还是旧布局就拿执行锁迁移：按库锁同一语义排队（剃刀 H2：原先另写一套每 2 秒再试、120 秒后报另一句话）；
+    拿到锁先看标记（排队期间别的作业可能已迁完，migrate 已迁完直接返回）"""
     if read(c.library / ".s2arm-layout.json", {}).get("version") == VERSION or not (c.library / ".s2arm-library.json").is_file():
         return
-    c.require_library()
-    t0 = time.time()
-    while True:
-        with (c.library / ".execution.lock").open("a") as f:
-            try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                if time.time() - t0 > 120:
-                    raise Failure("游戏库正在被别的任务使用，结构整理没能开始，请稍后重试。") from None
-            else:
-                try:
-                    migrate(c)
-                finally:
-                    filelock.unlock(f)
-                return
-        if read(c.library / ".s2arm-layout.json", {}).get("version") == VERSION:
-            return
-        time.sleep(2)
+    with c.lock("execution"):
+        migrate(c)
 
 
 # ---- 3→4（游戏库结构 P3）：库外的东西搬进默认位置 ----
@@ -919,31 +898,22 @@ def relocate_default(private, library):
 
 @contextlib.contextmanager
 def _relocate_lock(private):
+    """判断和改名只许一个作业做：排队等前一个做完（最多 RELOCATE_LOCK_WAIT 秒），到上限报 library_busy（剃刀 H2：原先等不到就不拿锁照常判断，等于没锁）。
+    私有目录写不了（建不了锁文件）照旧判断：后面写标记也会失败、原样返回"""
     import filelock
-    import time
-    f = None
     try:
         private.mkdir(parents=True, exist_ok=True)
-        f = (private / RELOCATE_LOCK).open("a")
+        (private / RELOCATE_LOCK).open("a").close()
     except OSError:
-        yield   # 私有目录写不了：照旧判断（后面写标记也会失败、原样返回）
-        return
-    held, deadline = False, time.monotonic() + RELOCATE_LOCK_WAIT
-    try:
-        while True:
-            try:
-                filelock.try_lock(f); held = True
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    break   # 那边卡住了：不再等，照旧判断（标记已写就按标记走）
-                time.sleep(0.05)
         yield
-    finally:
-        if held:
-            with contextlib.suppress(OSError):
-                filelock.unlock(f)
-        f.close()
+        return
+    try:
+        with filelock.held(private / RELOCATE_LOCK, wait_s=RELOCATE_LOCK_WAIT, poll=0.05,
+                           holder=dict(operation="relocate", pid=os.getpid(), startedAt=round(time.time(), 3))):
+            yield
+    except filelock.Busy as busy:
+        raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
+                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None
 
 
 def _relocate_locked(private, library):
@@ -982,18 +952,11 @@ def _relocate_locked(private, library):
 def _idle(library):
     """库里没有任务在跑（同整库搬家：执行锁、目录锁都拿得到）才搬。拿到就放：Windows 上库里有打开的文件时目录改不了名"""
     import filelock
-    handles = []
     try:
-        for name in (".execution.lock", ".catalog.lock"):
-            f = (library / name).open("a")
-            handles.append(f)
-            filelock.try_lock(f)
-        return True
-    except BlockingIOError:
+        with filelock.held(library / ".execution.lock"), filelock.held(library / ".catalog.lock"):
+            return True
+    except filelock.Busy:
         return False
-    finally:
-        for f in handles:
-            f.close()
 
 
 def _finish_relocate(private, old, new):
