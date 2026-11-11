@@ -37,14 +37,17 @@ public struct Milestone: Codable, Identifiable, Equatable {
 }
 
 /// 里程碑进度的时间推算（纯计算，单测覆盖）。只用两种真读数（10-25 维护者：不是即时计算或写死的数字都不显示）：
-/// - 本步速度：当前步有真实完成数（≥5%）时，本步还需 = 本步已用 ×（1 − 完成比例）÷ 完成比例。
+/// - 本步速度（剃刀 M20：只留一套）：调用方按当前计数器的实测速率算好的本步还需（measuredStep，新前端 = JobProgress.stepLeft，
+///   同作业页「还剩」那一个数）；原先这里另用「本步已用 ×（1 − 完成比例）÷ 完成比例」外推一份，两处剩余时间对不上。
 /// - 本机历史：当前步及之后每一步都有本机同种任务的记录（Milestone.measured）时，才给整单「预计还需」：
 ///   当前步剩余（有速度按速度，否则按「记录 − 已用」，至少留记录的 10%）+ 后面各步记录 × 校准系数。
 ///   校准系数 = 已完成各步实际 ÷ 记录（夹在 0.5–3 之间）。缺任何一步的记录就不给（nil），不拿缺省值或别的游戏顶。
 public struct MilestoneEstimate {
     public let plan: [Milestone]; public let current: String?; public let started: [String: Double]; public let fraction: Double?; public let now: Double
-    public init(plan: [Milestone], current: String?, started: [String: Double], fraction: Double?, now: Double) {
-        self.plan = plan; self.current = current; self.started = started; self.fraction = fraction; self.now = now
+    /// 本步还需（实测速率，调用方给）；没有实测为 nil，整单 remaining 用本机历史兜底
+    public let measuredStep: Double?
+    public init(plan: [Milestone], current: String?, started: [String: Double], fraction: Double?, measuredStep: Double? = nil, now: Double) {
+        self.plan = plan; self.current = current; self.started = started; self.fraction = fraction; self.measuredStep = measuredStep; self.now = now
     }
     public var index: Int? { plan.firstIndex { $0.id == current } }
     public var stepElapsed: Double { guard let c = current, let s = started[c] else { return 0 }; return max(0, now - s) }
@@ -56,11 +59,8 @@ public struct MilestoneEstimate {
             let end = started[plan[k + 1].id] ?? now; actual += max(0, end - s); expected += e }
         return expected > 1 ? min(3, max(0.5, actual / expected)) : 1
     }
-    /// 按本步实际速度外推的本步剩余；没有真实完成数（或不到 5%）时 nil
-    public var stepRemainingByRate: Double? {
-        guard index != nil, let f = fraction, f >= 0.05, f < 1 else { return nil }
-        return stepElapsed * (1 - f) / f
-    }
+    /// 本步剩余：实测速率（measuredStep）；没有实测时 nil
+    public var stepRemainingByRate: Double? { index != nil ? measuredStep : nil }
     /// 整单预计还需：当前步及之后都有本机记录才给
     public var remaining: Double? {
         guard let i = index else { return nil }
@@ -119,7 +119,7 @@ public struct MilestoneTrack: Equatable {
         return end.map { max(0, $0 - s) }
     }
 
-    public func estimate(fraction: Double?, now: Double) -> MilestoneEstimate {
-        MilestoneEstimate(plan: plan, current: current, started: started, fraction: fraction, now: now)
+    public func estimate(fraction: Double?, measuredStep: Double? = nil, now: Double) -> MilestoneEstimate {
+        MilestoneEstimate(plan: plan, current: current, started: started, fraction: fraction, measuredStep: measuredStep, now: now)
     }
 }

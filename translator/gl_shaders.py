@@ -307,7 +307,12 @@ def one(task, temp, components):
     if not rows and len(errors) == 2:
         compiled = [e for e in errors if "SPIR-V is not generated" not in e and "ERROR:" not in e]
         if compiled: errors = compiled[:1]
-    return rows, [] if rows else errors
+    # 每个试过的阶段都只卡在 glslang 链接「Missing entry point」：源码里没有 main，不是一支完整着色器，而是引擎运行时拼接用的片段
+    #   （main 里的公共头「#version … precision …」、包含文件；#518 0100BB400B276000 main#0）。离线翻不出也不该翻，记跳过；
+    #   游戏运行时拼成的完整源码由宿主首遇现编（gl_prog.m）。只认这一种原因，别的编译错照旧计失败
+    if not rows and errors and all("Missing entry point" in e for e in errors):
+        return [], [], 1
+    return rows, [] if rows else errors, 0
 
 
 def metal(command, temp):
@@ -455,7 +460,8 @@ def main():
                     pool.map(lambda task: one(task, temp, args.components_only), enumerate(items))
                 )
             rows = {}
-            for candidates, errors in translated:
+            skipped = sum(skip for _, _, skip in translated)
+            for candidates, errors, _ in translated:
                 if errors:
                     failed.append("\n".join(errors))
                 for row in candidates:
@@ -482,6 +488,7 @@ def main():
                 "schema_version": 1,
                 "runtime_table": not args.components_only,
                 "failed": len(failed),
+                "skipped": skipped,
                 "errors": failed,
                 "shaders": [],
             }
@@ -494,9 +501,14 @@ def main():
             (diagnostics / "gl_shaders.json").write_text(
                 json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
             )
+            if not rows and not failed and not args.components_only:
+                # 只有跳过的片段：同离线一支没有，只出表头、全部运行时首遇现编
+                write_empty(destinations)
+                print(f"GLSL 汇总：成功 0、失败 0、跳过 {skipped}")
+                return 0
             if not rows:
                 clear_products(destinations)
-                print(f"GLSL 汇总：成功 0、失败 {len(failed)}、跳过 0")
+                print(f"GLSL 汇总：成功 0、失败 {len(failed)}、跳过 {skipped}")
                 return 1
             table = table_header()
             table += [
@@ -514,7 +526,7 @@ def main():
                     None if args.components_only else "\n".join(table) + "\n",
                     diagnostics,
                 )
-        print(f"GLSL 汇总：成功 {len(rows)}、失败 {len(failed)}、跳过 0")
+        print(f"GLSL 汇总：成功 {len(rows)}、失败 {len(failed)}、跳过 {skipped}")
         return 1 if failed else 0
     except (ValueError, OSError, ImportError, subprocess.SubprocessError, SystemExit) as exc:
         if can_clear:

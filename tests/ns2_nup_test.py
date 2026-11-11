@@ -194,6 +194,10 @@ with tempfile.TemporaryDirectory() as t:
     out = os.path.join(t, 'dump')
     r = run(NUP, src, out)
     chk('① 退出 0', r.returncode, 0)
+    # 本体与最新更新内容相同的文件只真写一份（NUP 按块去重；原先各写一份，解包峰值近两倍）：手算 = dir/c.bin 70000 + same.bin 4096 + exefs/main.npdm 两边同一份
+    shared = 70000 + 4096 + len(npdm(APP))
+    chk('① 同内容只写一份（共用字节数）', f'（{shared:,} 字节）' in r.stdout, True)
+    chk('① 共用的那份内容照样对', [rd(os.path.join(out, 'updates/131072/romfs/same.bin')), rd(os.path.join(out, 'updates/131072/exefs/main.npdm'))], [b'S' * 4096, npdm(APP)])
     chk('① 本体 exefs/main', rd(os.path.join(out, 'base/exefs/main')), MAIN_B)
     chk('① 最新更新 exefs/main', rd(os.path.join(out, 'updates/131072/exefs/main')), MAIN_U)
     chk('① 旧版 v65536 不写', os.path.exists(os.path.join(out, 'updates/65536')), False)

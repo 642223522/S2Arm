@@ -51,6 +51,16 @@ static int acquired, released;''')
     memset(&out, 0, sizeof out);
     memset(&result, 0, sizeof result); result.executed = 123;
     int rc=nvn_vk_compute_build(&device,&state,&memory,&out,&result,NULL);
+    if (mode == 31 && rc == S2A_RECORD_DISPATCH_RETRY_SYNC) {
+        if (enabled) {
+            struct s2a_w2_snapshot interim;
+            assert(s2a_w2_snapshot(window, &interim) == 0);
+            assert(interim.shaders == 0 && interim.observations == 0 &&
+                   interim.accepted_builds == 0 && interim.build_failures == 0 && interim.rejects == 0);
+        }
+        state.fq_pool = 0; memset(&out, 0, sizeof out);
+        rc=nvn_vk_compute_build(&device,&state,&memory,&out,&result,NULL);
+    }
     s2a_w2_scope_leave(&scope, rc == 0);
     if (enabled) {
         struct s2a_w2_snapshot snapshot;
@@ -65,7 +75,7 @@ static int acquired, released;''')
             assert(snapshot.observations == 1 && snapshot.entry_count == 1);
             assert(snapshot.entries[0].kind == S2A_W2_COMPUTE);
             assert(!memcmp(snapshot.entries[0].identity, out.diagnostic.identity, 32));
-            assert(snapshot.entries[0].source_counts[(mode == 13 || mode == 14) ? S2A_W2_OFFLINE : S2A_W2_LIVE] == 1);
+            assert(snapshot.entries[0].source_counts[mode == 31 ? S2A_W2_MEMO : (mode == 13 || mode == 14) ? S2A_W2_OFFLINE : S2A_W2_LIVE] == 1);
             assert(snapshot.metadata_complete == !unsealed);
         } else assert(!snapshot.metadata_complete);
         if (mode == 15) assert(snapshot.build_failures == 1 && snapshot.observations == 1);
@@ -112,6 +122,7 @@ def main():
     # 身份 profileHash 属于另一个 profile”，这才是离线库必须拒掉的那类陈旧条目。
     bad = copy.deepcopy(texture)
     bad["content"]["identity"]["profileHash"] = "sha256-" + "b" * 64
+    build=ROOT/"build/w2-observation-compute";build.mkdir(parents=True,exist_ok=True);tempfile.tempdir=str(build)
     with tempfile.TemporaryDirectory(prefix="w2-observe-compute-") as directory:
         td = Path(directory)
         inc = td / "include"; inc.mkdir()
@@ -133,7 +144,7 @@ def main():
         files += [str(NATIVE / "nvn" / p) for p in ("nvn_vk_compute_bridge.c", "nvn_vk_compute_request.c",
             "nvn_vk_compute_lookup.c", "nvn_vk_program_result.c", "nvn_vk_compile_facts.c",
             "nvn_vk_compute_texture.c", "nvn_vk_format.c", "nvn_vk_mrt.c")]
-        files += [str(NATIVE / "direct" / p) for p in ("control.c", "diag.c", "compile_export.c", "compile_export_w2.c", "w2_single_query.c", "input_identity.c", "texture_facts.c", "sha256.c", "json.c")]
+        files += [str(NATIVE / "direct" / p) for p in ("control.c", "diag.c", "compile_export.c", "compile_export_w2.c", "w2_single_query.c", "input_identity.c", "texture_facts.c", "sha256.c", "jv.c", "json.c")]
         executable = td / "compute"
         host_link.run(flags + files + ["-lm", "-o", str(executable)], check=True, timeout=60)
         bridge_file = str(NATIVE / "nvn/nvn_vk_compute_bridge.c")
@@ -156,7 +167,7 @@ def main():
                 env=red_env, capture_output=True, text=True, timeout=5)
             assert red.returncode != 0 and "Assertion" in red.stderr, (name, red.stderr)
             print(name, "expected functional red:", red.stderr.strip())
-        for mode in range(21):
+        for mode in list(range(21)) + [31]:
             observed = []
             for setting in ("off", "on", "unsealed"):
                 env = os.environ.copy()
@@ -172,7 +183,7 @@ def main():
                 output = td / (str(mode) + "baseline.bin"); env["W2_RESULT"] = str(output)
                 subprocess.run([str(binaries["baseline"]), str(mode), str(td / ("unaligned.json" if mode in (1, 2) else "good.json")), str(td / "texture.json"), str(td / ("diag" + str(mode)))], env=env, check=True, timeout=5)
                 assert output.read_bytes() == observed[0], (mode, "frozen baseline output differs")
-        print("PASS: 21 actual compute cases x off/on/unsealed; stable output bytes and IO counts identical")
+        print("PASS: 22 actual compute cases x off/on/unsealed; stable output bytes and IO counts identical")
 
 
 if __name__ == "__main__":

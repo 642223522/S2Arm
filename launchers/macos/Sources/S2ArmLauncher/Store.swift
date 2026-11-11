@@ -486,8 +486,8 @@ final class WorkerOutput: @unchecked Sendable {
     }
     // 缺省游戏库（维护者 10-23：减少交互，首次打开不再让玩家选库）：~/S2Arm（游戏库结构 P3：访达里看得见；自定义数据目录时仍在数据目录里），设置里可换
     var defaultLibraryURL: URL { S2ArmPaths.defaultLibrary(privateRoot:privateRoot) }
-    /// 任务日志 + 任务记录：库建好了在 <库>/logs（任务记录 logs/jobs/），否则 <私有目录>/logs（S2ArmPaths.logsRoot，同作业层 core.logs_root）
-    var logsRoot: URL { S2ArmPaths.logsRoot(privateRoot:privateRoot, library:preferences.library) }
+    /// 任务日志 + 任务记录：固定 <私有目录>/logs（任务记录 logs/jobs/，剃刀 H6；S2ArmPaths.logsRoot，同作业层 core.logs_root）
+    var logsRoot: URL { S2ArmPaths.logsRoot(privateRoot:privateRoot) }
     var jobsRoot: URL { logsRoot.appendingPathComponent("jobs") }
     func ensureLibrary(_ then: @escaping () -> Void) {
         guard preferences.library.isEmpty else { then(); return }

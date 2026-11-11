@@ -48,6 +48,8 @@ public struct GameSummary: Identifiable, Equatable {
     /// 上次装到 iPhone 的时刻（秒）和是不是免费账号签的；没装过为 nil。
     public let iphoneInstalledAt: Double?
     public let iphoneFree: Bool
+    /// 上次装的那台设备（设备记录键，UDID）：「续签」装回当初那台，不换别的（pack/jobs/layout.py install_record 的 deviceKey）
+    public var iphoneInstallDevice: String? = nil
     /// 只换宿主（pack/jobs/host_update.py）：none / current / swap / incompatible（要重新准备才能用上新版修复）/ failed
     public let hostUpdate: String
     /// 存放位置（游戏库结构 v3）：state = ok / offline（位置没连上）/ missing（文件夹找不到）/ none（还没出过包）
@@ -80,6 +82,7 @@ public struct GameSummary: Identifiable, Equatable {
                   customName: g["customName"] as? Bool ?? false, customCover: g["customCover"] as? Bool ?? false,
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
+        self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
     }
 
     /// 某类原件里版本最新的那个的显示版本（base / update）；没有这类为 nil。
@@ -152,14 +155,15 @@ public final class LibraryProvider {
     public static let noLibraryMessage = "还没有游戏库：请先在 S2Arm 启动器里选择游戏库并导入游戏。"
 
     /// 读一遍游戏库。没配游戏库时不起作业，直接回失败。
+    /// startup：启动器这次打开后的第一次读（剃刀 H14）：作业层只在这一次清残留、判一天一次的任务目录清理；其余刷新只读。
     @discardableResult
-    public func load(_ completion: @escaping (Result<[GameSummary], JobClientError>) -> Void) -> JobHandle? {
+    public func load(startup: Bool = false, _ completion: @escaping (Result<[GameSummary], JobClientError>) -> Void) -> JobHandle? {
         guard !client.environment.library.isEmpty else {
             completion(.failure(JobClientError(Self.noLibraryMessage)))
             return nil
         }
         do {
-            return try client.start(operation: "catalog", onFinish: { outcome in
+            return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
                     completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
                     return

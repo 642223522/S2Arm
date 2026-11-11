@@ -14,6 +14,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -79,8 +80,16 @@ def dotnet(rt, versions):
     versions["dotnet"] = have[-1].name
 
 
+# Git for Windows 的 usr/bin 里出包用不到的交互程序：vim 一族各 3.7 MB（共约 22 MB）。perl 留着（oneclick.sh / shader_pack.sh 等在用）
+GIT_SKIP = {"vim.exe", "vimdiff.exe", "view.exe", "rview.exe", "rvim.exe", "ex.exe", "vimtutor", "vi"}
+# MinGit 里出包用不到的：usr/（和 Runtime/git/usr/bin 同一版本的同名文件，84 个全重复）、Git Credential Manager（联网认证用的 .NET 图形程序，约 30 MB）。
+#   出包只在本机跑 init / add / commit / gc / ls-tree / rev-parse / describe（引擎快照与壳号，见 bundle_win.py、pack/shell/manifest.py）
+MINGIT_SKIP = re.compile(r"^(usr/|mingw64/bin/(git-credential-manager[^/]*|[^/]*(Avalonia|SkiaSharp|HarfBuzz|av_lib|msal|gcmcore|Atlassian|GitHub|GitLab|"
+                         r"Bitbucket|Newtonsoft)[^/]*|Microsoft\.[^/]*\.dll|System\.[^/]*\.dll))", re.I)
+
+
 def git(rt, versions):
-    shutil.copytree(GIT / "usr/bin", rt / "git/usr/bin")
+    shutil.copytree(GIT / "usr/bin", rt / "git/usr/bin", ignore=lambda d, names: [n for n in names if n.lower() in GIT_SKIP])
     if (GIT / "etc").is_dir(): shutil.copytree(GIT / "etc", rt / "git/etc")   # bash 读 /etc 下的 profile / passwd 等（缺了照跑，带上少告警）
     out = subprocess.run([str(GIT / "cmd/git.exe"), "--version"], capture_output=True, text=True).stdout.strip()
     versions["git"] = out.replace("git version ", "")
@@ -90,7 +99,8 @@ def mingit(rt, versions):
     ver = versions["git"]   # 例 2.54.0.windows.1
     url = f"https://github.com/git-for-windows/git/releases/download/v{ver}/MinGit-{ver.split('.windows')[0]}-64-bit.zip"
     d = rt / "mingit"; d.mkdir()
-    zipfile.ZipFile(runtime_cache.fetch_file(url.rsplit("/", 1)[1])).extractall(d)
+    with zipfile.ZipFile(runtime_cache.fetch_file(url.rsplit("/", 1)[1])) as z:
+        z.extractall(d, [n for n in z.namelist() if not MINGIT_SKIP.match(n)])
     versions["mingit_url"] = url
 
 
@@ -165,6 +175,21 @@ def smoke(rt):   # 每件跑一下：Python 带四个库、dotnet 只有运行�
             p = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if want not in p.stdout: raise SystemExit(f"【红】自检不过：{' '.join(cmd)[:120]} → {(p.stdout + p.stderr).strip()[-300:]}")
             say(f"  自检 {Path(cmd[-1] if cmd[-1].endswith('python') else cmd[0]).name}：{p.stdout.strip().splitlines()[0][:80]}")
+        # 去掉 MinGit 的 usr/ 与凭据管理器后，出包实际用到的 git 操作照跑：建库、提交、按对象号列树（引擎快照 bundle_win.py / 壳号 pack/shell/manifest.py）
+        repo = Path(t, "repo"); repo.mkdir(); Path(repo, "a.txt").write_text("a\n", encoding="utf-8")
+        g = [str(rt / "mingit/cmd/git.exe"), "-C", str(repo), "-c", "user.name=s", "-c", "user.email=s@localhost", "-c", "commit.gpgsign=false"]
+        for args in (["init", "-q", "--template="], ["add", "--all"], ["commit", "-qm", "x"], ["gc", "-q", "--prune=now"]):
+            p = subprocess.run(g + args, capture_output=True, text=True, env=env)
+            if p.returncode: raise SystemExit(f"【红】自检不过：git {args[0]} → {(p.stdout + p.stderr).strip()[-300:]}")
+        p = subprocess.run(g + ["ls-tree", "HEAD"], capture_output=True, text=True, env=env)
+        if "78981922613b2afb6025042ff6bd878ac1994e85\ta.txt" not in p.stdout: raise SystemExit(f"【红】自检不过：git ls-tree → {p.stdout + p.stderr}")
+        # 出包路径上其余的 git 子命令（全部本地、没有联网操作：git grep 引擎各阶段脚本得出）：取树号 / 看改动 / 读文件 / 打包源码 / 刷索引
+        for args, want in ((["rev-parse", "HEAD^{tree}"], ""), (["status", "--porcelain"], ""), (["show", "HEAD:a.txt"], "a"),
+                           (["ls-files", "-co", "--exclude-standard"], "a.txt"), (["update-index", "-q", "--refresh"], ""),
+                           (["archive", "HEAD", "a.txt", "-o", str(Path(t, "a.tar"))], "")):
+            p = subprocess.run(g + args, capture_output=True, text=True, env=env)
+            if p.returncode or want not in p.stdout: raise SystemExit(f"【红】自检不过：git {' '.join(args[:2])} → {(p.stdout + p.stderr).strip()[-300:]}")
+        say("  自检 git 本地操作：init / add / commit / gc / ls-tree / rev-parse / status / show / ls-files / update-index / archive 正常")
     if subprocess.run([str(rt / "dotnet/dotnet.exe"), "--list-sdks"], capture_output=True, text=True, env=env).stdout.strip():
         raise SystemExit("【红】随包 dotnet 带了 SDK（只该带运行时）")
 

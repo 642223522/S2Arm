@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 直连缓存按容量预算淘汰（LRU；11-02 出包线，维护者「存储换时间」：缓存放 2T，超预算才删最久没用的，不按天数删）。tools/gc.sh 每轮调：
+# 直连缓存按容量预算淘汰（LRU；11-02 出包线，维护者「存储换时间」：缓存放 2T，超预算才删最久没用的，不按天数删）。维护方内部清扫器每轮调：
 #   python3 tools/direct_cache_lru.py <cache/direct 目录> --budget-gb <预算> [--in-use <程序号,…>] [--dry]
 # 统计：<目录>/<程序号>/ 下全部文件的字节（合计）；能淘汰的只有内容寻址仓条目 <程序号>/store/**/*.e（C# 出库链 Store，graphics/tools/direct/dsh/batch/Build.cs：
 #   翻译结果与 Metal 库，删了下次按需重算；出库整理只给本次用到的条目刷新修改时间、不删——修改时间就是「最近用过」）。

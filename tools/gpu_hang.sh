@@ -14,11 +14,14 @@ S2A_GPU_HANG_RE='GPU Hang|kIOGPUCommandBufferCallbackErrorHang|kIOGPUCommandBuff
 # 增量扫（11-07 启动器线：自写脚本每 2 秒全量重扫 syslog，几百 MB 后一轮极慢，拖到设备锁看门狗 600 秒强收，win_line/dk_net/run2.sh）：
 #   每个（文件, 调用方 shell $$）记上次扫到的字节偏移，下次只读新增部分；多回看 4 KB（S2A_GPU_HANG_BACK），签名跨两轮交界的那行不漏；
 #   文件变短（轮转 / 整份重写成更短）→ 从头扫。调用方常用 L=$(s2a_gpu_hang f) 在子 shell 里调、变量带不回来，所以偏移存小状态文件
-#   （S2A_GPU_HANG_STATE_DIR，缺省 ${TMPDIR:-/tmp}；文件名 = 路径校验和 + 调用方 $$）。命中后照旧返回 0、打第一行（截 160 字）
+#   （S2A_GPU_HANG_STATE_DIR；不给就放被扫文件旁边 .<文件名>.gpu_hang_pos.<调用方 $$>，随局目录清，不往 TMPDIR 丢）。命中后照旧返回 0、打第一行（截 160 字）
 s2a_gpu_hang() {
   local f=$1 sz pos st l back=${S2A_GPU_HANG_BACK:-4096}
   sz=$(stat -f %z "$f" 2> /dev/null || stat -c %s "$f" 2> /dev/null) || return 1
-  st=${S2A_GPU_HANG_STATE_DIR:-${TMPDIR:-/tmp}}/s2a_gpu_hang.$(printf '%s' "$f" | cksum | cut -d' ' -f1).$$
+  # 状态缺省放在被扫文件旁边（随局目录一起清）；目录不可写才退回 TMPDIR（11-11 合入运维线：原先一律放 TMPDIR、从不删，每局一个，积了 6400 多个）
+  if [ -n "${S2A_GPU_HANG_STATE_DIR:-}" ]; then st=$S2A_GPU_HANG_STATE_DIR/s2a_gpu_hang.$(printf '%s' "$f" | cksum | cut -d' ' -f1).$$
+  elif [ -w "$(dirname "$f")" ]; then st=$(dirname "$f")/.$(basename "$f").gpu_hang_pos.$$
+  else st=${TMPDIR:-/tmp}/s2a_gpu_hang.$(printf '%s' "$f" | cksum | cut -d' ' -f1).$$; fi
   pos=$(cat "$st" 2> /dev/null || echo 0); case $pos in ''|*[!0-9]*) pos=0;; esac
   [ "$sz" -lt "$pos" ] && pos=0
   [ "$pos" -gt "$back" ] && pos=$((pos - back)) || pos=0

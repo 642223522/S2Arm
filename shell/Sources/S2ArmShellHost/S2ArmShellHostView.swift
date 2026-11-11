@@ -9,8 +9,21 @@ public struct S2ArmShellHostView: View {
     public var body: some View {
         LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
                     padSnapshot: model.padSnapshot)
-            .onAppear { model.startControllers(); s2a_shell_library_appeared() }
+            .onAppear {
+                model.startControllers(); s2a_shell_library_appeared()
+                // 主屏快捷操作「设置」冷启动：库界面出现后打开游戏库设置（LibraryView 已经订阅，下一拍再发）
+                if s2a_shell_take_open_settings() != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: .shellOpenSettings, object: nil) } }
+            }
             .onDisappear { model.stopControllers() }
+            // 删除游戏的进度与结果（正在删除 → 已删除，释放多少 / 失败原因）：库顶上一条，点一下收起结果
+            .overlay(alignment: .top) {
+                if let notice = model.deleteNotice {
+                    DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
+                        .padding(.top, 12).padding(.horizontal, 16)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.smooth(duration: 0.25), value: model.deleteNotice)
         #if canImport(UIKit)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.refreshGameData() }
@@ -27,6 +40,36 @@ public struct S2ArmShellHostView: View {
                 }
             }
         #endif
+    }
+}
+
+/// 删除提示条：正在删除带转圈，已删除带对勾和释放的空间，失败带原因（红）
+struct DeleteNoticeBar: View {
+    let notice: S2ArmShellHostModel.DeleteNotice
+    var body: some View {
+        HStack(spacing: 10) {
+            switch notice.phase {
+            case .deleting: ProgressView().tint(.white)
+            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(red: 1, green: 0.42, blue: 0.40))
+            }
+            Text(Self.text(notice)).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+        .shadow(color: .black.opacity(0.45), radius: 20)
+        .frame(maxWidth: 560)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("delete.notice")
+    }
+    static func text(_ n: S2ArmShellHostModel.DeleteNotice) -> String {
+        switch n.phase {
+        case .deleting: shellText("Deleting “\(n.title)”…")
+        case .done(let freed): shellText("Deleted “\(n.title)”. \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)) freed.")
+        case .failed(let why): shellText("Couldn’t delete “\(n.title)”: \(why)")
+        }
     }
 }
 
