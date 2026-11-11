@@ -5581,9 +5581,11 @@ static const char *fb_xfp(void) {
 static int fb_json_current(NSDictionary *j) { const char *x = fb_xfp(); return x && [j[@"chain"] isEqual:@DMSH_CHAIN] && [j[@"xfp"] isEqual:@(x)]; }
 // Only newly lowered libraries may execute the network. Old scalar libraries retain the stand-in.
 // The override is process-wide and diagnostic, so A/B differs by one variable for the whole network.
+// Off unless asked (DM_NVN_TENSOR_NATIVE=2: newly lowered libraries that carry the flag; =1: always): a repacked game's default picture must not change
+//   on one still-scene reading; turn the default on once frame-time and picture A/B across games are in.
 static int tensor_native_json(NSDictionary *j) {
     static int enabled = -1;
-    if (enabled < 0) { const char *e = getenv("DM_NVN_TENSOR_NATIVE"); enabled = e && !strcmp(e, "0") ? 0 : e && !strcmp(e, "1") ? 1 : 2; }
+    if (enabled < 0) { const char *e = getenv("DM_NVN_TENSOR_NATIVE"); enabled = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "2") ? 2 : 0; }
     lp_pack *pack = lp_pack_get(); uint32_t flags = 0; if (pack) memcpy(&flags, pack->idx + 20, 4);
     return enabled && (enabled == 1 || (flags & 1)) && [j[@"tensor_mma_abi"] intValue] == 1 && [j[@"tensor_mma_count"] intValue] > 0
         && [g_dev supportsFamily:MTLGPUFamilyApple7];

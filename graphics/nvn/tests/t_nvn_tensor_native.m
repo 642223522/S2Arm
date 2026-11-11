@@ -21,7 +21,7 @@ int main(void) { @autoreleasepool {
     NvShader *old = shader_build(@"old_b",5,0,0); REQUIRE(old && old->tensor==1 && !old->fn);
     // Unit fixture for the capability word read from a successfully opened container; no provider is replaced.
     static uint8_t header[48]; uint32_t flags=1; memcpy(header+20,&flags,4); g_libpack.idx=header; g_libpack_ok=1;
-    BOOL disabled = getenv("DM_NVN_TENSOR_NATIVE") && !strcmp(getenv("DM_NVN_TENSOR_NATIVE"),"0");
+    const char *tn = getenv("DM_NVN_TENSOR_NATIVE"); BOOL disabled = !tn || (strcmp(tn,"1") && strcmp(tn,"2"));   // off by default
     REQUIRE(tensor_native_json(j)==!disabled);
     j[@"tensor_mma_abi"]=@2; REQUIRE(!tensor_native_json(j));
     j[@"tensor_mma_abi"]=@1; j[@"tensor_mma_count"]=@0; REQUIRE(!tensor_native_json(j)); j[@"tensor_mma_count"]=@1;

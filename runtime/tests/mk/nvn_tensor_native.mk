@@ -13,9 +13,10 @@ $(BUILD)/tests/t_nvn_tensor_native: graphics/nvn/tests/t_nvn_tensor_native.m $(N
 	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
 .PHONY: native-test-nvn_tensor_native
 native-test-nvn_tensor_native: $(BUILD)/tests/t_nvn_tensor_native
-	NXGAL_BE=mtl4 DM_NVN_ENC_THREAD=0 $(BUILD)/tests/t_nvn_tensor_native
-	NXGAL_BE=mtl4 DM_NVN_ENC_THREAD=1 $(BUILD)/tests/t_nvn_tensor_native
-	NXGAL_BE=mtl3 DM_NVN_ENC_THREAD=0 $(BUILD)/tests/t_nvn_tensor_native
+	DM_NVN_TENSOR_NATIVE=2 NXGAL_BE=mtl4 DM_NVN_ENC_THREAD=0 $(BUILD)/tests/t_nvn_tensor_native
+	DM_NVN_TENSOR_NATIVE=2 NXGAL_BE=mtl4 DM_NVN_ENC_THREAD=1 $(BUILD)/tests/t_nvn_tensor_native
+	DM_NVN_TENSOR_NATIVE=2 NXGAL_BE=mtl3 DM_NVN_ENC_THREAD=0 $(BUILD)/tests/t_nvn_tensor_native
 	DM_NVN_TENSOR_NATIVE=0 $(BUILD)/tests/t_nvn_tensor_native
+	$(BUILD)/tests/t_nvn_tensor_native
 TEST_TARGETS += native-test-nvn_tensor_native
 endif
