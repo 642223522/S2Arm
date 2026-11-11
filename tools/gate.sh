@@ -82,6 +82,12 @@ GL=${GATE_LEDGER:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/gate_ledger.jsonl}
 if [ "$GL" = - ]; then GL=
 elif [ -z "${GATE_LEDGER:-}" ]; then case $R in "${TMPDIR:-/tmp}"*|/tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) GL=;; esac; { [ -n "$PLANM" ] || [ -n "${GATE_IN_STEP:-}" ]; } && GL=; fi
 GLROLE=${GATE_ROLE:-预跑}; GLREV=$(git rev-parse --short=12 "${GATE_REV:-HEAD}" 2> /dev/null); GLRUN=$(date +%s)-$$
+case $GLROLE in 热修) TPRIO=0;; 列车) TPRIO=1;; 手工) TPRIO=3;; *) TPRIO=2;; esac   # 排步令牌的级（tok_get）：热修 > 列车 > 预跑 > 手工；只认显式 GATE_ROLE
+GLT0=$(date +%s)
+gl_end() {   # gl_end <结论>：台账记一行整份汇总（kind=run：起止、墙钟、结论、跑了几步；日报算门禁中位 / p90 墙钟用）
+  [ -n "${GL:-}" ] || return 0
+  printf '{"kind":"run","t":%s,"run":"%s","start":%s,"wall":%s,"verdict":"%s","steps":%s,"ran":%s,"role":"%s","tier":"%s","layer":"%s","rev":"%s"}\n' \
+    "$(date +%s)" "${GLRUN:-}" "$GLT0" "$(( $(date +%s) - GLT0 ))" "$1" "${N:-0}" "${ran:-0}" "${GLROLE:-}" "${TIER:-}" "${LAYER:-}" "${GLREV:-}" >> "$GL" 2> /dev/null; return 0; }
 OTHER=()   # 分到另一层、本次不跑的步
 inlayer() {   # inlayer <步名>：本次 GATE_LAYER 要不要这一步
   [ -n "$LAYER" ] || return 0
@@ -226,7 +232,7 @@ N=${#STEPS[@]}
 # 0 步（GATE_RERUN 只跑的步本树都不涉及，如列车逐支核里这支路由不到红步）：直接绿退出——下面的 $(seq 1 $N) 在 macOS 上 N=0 时打出「1 0」，会越界取 STEPS
 # 待 Mac 证的步另起一行机读（tab 分隔），总结行写成「本机绿、待 Mac 证」——不许让读末行的人 / 脚本把它当成整份门禁绿
 macsum() { [ "$MACN" -gt 0 ] || return 0; printf '待Mac证'; printf '\t%s' "${MACS[@]}"; echo; }
-[ "$N" = 0 ] && { [ ${#OTHER[@]} -gt 0 ] && echo "另一层：${OTHER[*]}"; macsum; if [ "$MACN" -gt 0 ]; then echo "门禁 本机绿、待 Mac 证：$TIER 档，本机已证 0 步（本机能跑的步本树都不涉及）${MACL}"; else echo "门禁 绿：$TIER 档，跑了 0 步 / 应跑 0 步（要跑的步本树都不涉及）"; fi; exit 0; }
+[ "$N" = 0 ] && { gl_end 绿; [ ${#OTHER[@]} -gt 0 ] && echo "另一层：${OTHER[*]}"; macsum; if [ "$MACN" -gt 0 ]; then echo "门禁 本机绿、待 Mac 证：$TIER 档，本机已证 0 步（本机能跑的步本树都不涉及）${MACL}"; else echo "门禁 绿：$TIER 档，跑了 0 步 / 应跑 0 步（要跑的步本树都不涉及）"; fi; exit 0; }
 # >>> step_par（单测 tests/gate_step_par_test.sh 按这两行标记抽出来测）
 # 全机步数上限（11-04 合入运维线）：一份门禁原先把所有步同时起（job 全部 &），gate-host 上 3 份门禁叠起来 300+ 进程、负载 18–23，单测跑满 600 秒被杀成假红。
 #   每步开跑前先拿一个全机令牌（内核文件锁，见下），令牌数 GATE_STEP_PAR 缺省 = 核数 × 2/3（至少 2）：
@@ -236,30 +242,55 @@ macsum() { [ "$MACN" -gt 0 ] || return 0; printf '待Mac证'; printf '\t%s' "${M
 #   令牌 = 内核文件锁 $GATE_TOKEN_DIR/lk.<号>（tools/flock_hold.py take-any，与 plock / 维护方工具 同一份）：持有者（本步子 shell）一退出（含 kill -9、被总时限收掉）
 #   守护进程随即退出、内核放锁。11-04 原先 mkdir t.<号> + 写 pid：mkdir 到写 pid 之间被杀 → 空目录永远收不回（gate-host 18:0x 8 个漏了 4 个）；
 #   等待方按旧 pid 判死 rmdir 时别人刚 mkdir、还没写 pid → 同一令牌两边都用（gate.sh「t.3/pid: No such file」）。锁文件常驻不删。
-tok_get() {   # tok_get <持有者 pid>：拿到一个令牌，回显「守护进程 pid<TAB>锁文件」（在步里 → 回显空，不占）；持锁进程起不来返回 2
+#   排队（11-10 门禁减压 C）：原先每步先起子 shell 再各自排令牌，一份预跑展开上百个排队进程、每个每秒起一次解释器，停门禁时它们不随门禁退出（gate_stop 负载 80 下卡 4 分钟、
+#   一棵树约 400 个排队进程只能 KILL）；令牌也不分先后，热修只绕过外层排队，内层照样卡。改为：门禁主进程按步序逐个排令牌（每份门禁只有它一个在排），
+#   拿到才起这一步的子 shell；持锁者 = 门禁主进程（主进程没了内核放锁），步跑完由步自己放、门禁收尾再兜底放一遍（步被 kill -9 时不漏到门禁结束之后）。
+#   先后：排队者登记 want.<级>.<开始排的秒>.<排队进程号>，有活着的、级更高（数小）或同级先来的排在前面就不去抢；级 0 热修 / 1 列车 / 2 预跑 / 3 手工（GATE_ROLE，不给 = 预跑，见 TPRIO）
+tok_ahead() {   # tok_ahead <令牌目录> <级> <开始秒> <进程号>：有活着的、排在我前面的排队者 → 0；死标记顺手删
+  local f b p2 t2 q2
+  for f in "$1"/want.*; do [ -e "$f" ] || continue; b=${f##*/want.}; p2=${b%%.*}; b=${b#*.}; t2=${b%%.*}; q2=${b#*.}
+    [ "$q2" = "$4" ] && continue
+    kill -0 "$q2" 2> /dev/null || { rm -f "$f"; continue; }
+    [ "$p2" -lt "$2" ] && return 0
+    [ "$p2" = "$2" ] && { [ "$t2" -lt "$3" ] || { [ "$t2" = "$3" ] && [ "$q2" -lt "$4" ]; }; } && return 0
+  done; return 1; }
+tok_get() {   # tok_get <持有者 pid> [级]：拿到一个令牌，回显「守护进程 pid<TAB>锁文件」（在步里 → 回显空，不占）；持锁进程起不来返回 2；排队中本份早停（$L/stop）/ 持有者没了返回 3
   [ -n "${GATE_IN_STEP:-}" ] && return 0
   [ -f "${GATE_FLOCK_PY:-tools/flock_hold.py}" ] || return 0   # 单测夹具只拷了 gate.sh 的临时仓库：不参与全机令牌（真仓库里 gate.sh 与 flock_hold.py 同一提交带来，必在）
-  local c n d=${GATE_TOKEN_DIR:-${TMPDIR:-/tmp}/s2a_gate_tokens} i ls= r rc w0=$SECONDS lw=$SECONDS
+  local c n d=${GATE_TOKEN_DIR:-${TMPDIR:-/tmp}/s2a_gate_tokens} i ls= r rc w0=$SECONDS lw=$SECONDS pr=${2:-${TPRIO:-2}} t0 me=$BASHPID wf
   c=$(sysctl -n hw.ncpu 2> /dev/null || nproc 2> /dev/null || echo 6); n=${GATE_STEP_PAR:-$(( c * 2 / 3 > 2 ? c * 2 / 3 : 2 ))}
   mkdir -p "$d"; for i in $(seq 1 "$n"); do ls="$ls${ls:+:}$d/lk.$i"; done
+  t0=$(date +%s); wf=$d/want.$pr.$t0.$me; : > "$wf"
   while :; do
-    r=$(python3 "${GATE_FLOCK_PY:-tools/flock_hold.py}" "$ls" "$1" take-any gate_tok 2> /dev/null); rc=$?
-    if [ $rc = 0 ]; then printf '%s\n' "$1" > "${r#*$'\t'}.holder" 2> /dev/null; echo "$r"; return 0; fi
-    [ $rc = 1 ] || { echo "【红】门禁令牌：持锁小进程起不来（flock_hold.py 返回 ${rc}）" >&2; return 2; }
+    if [ -n "${L:-}" ] && [ -f "$L/stop" ]; then rm -f "$wf"; return 3; fi
+    kill -0 "$1" 2> /dev/null || { rm -f "$wf"; return 3; }
+    if tok_ahead "$d" "$pr" "$t0" "$me"; then rc=1; else r=$(python3 "${GATE_FLOCK_PY:-tools/flock_hold.py}" "$ls" "$1" take-any gate_tok 2> /dev/null); rc=$?; fi
+    if [ $rc = 0 ]; then rm -f "$wf"; printf '%s\n' "$1" > "${r#*$'\t'}.holder" 2> /dev/null; echo "$r"; return 0; fi
+    [ $rc = 1 ] || { rm -f "$wf"; echo "【红】门禁令牌：持锁小进程起不来（flock_hold.py 返回 ${rc}）" >&2; return 2; }
     [ $((SECONDS - lw)) -ge 60 ] && { lw=$SECONDS; echo "门禁令牌：本步已排 $((SECONDS - w0)) 秒，${n} 个全被占（${d}）" >&2; }
-    sleep 1; done; }
+    declare -F tok_tick > /dev/null && tok_tick
+    sleep "${GATE_TOK_POLL_S:-1}"; done; }
 tok_put() { local p=${1%%$'\t'*}; [ -n "$p" ] || return 0; ps -o command= -p "$p" 2> /dev/null | grep -q gate_tok && kill -TERM "$p" 2> /dev/null; return 0; }   # 只结束自己起的持锁进程
-# 步自己（排队取令牌时或跑步时）被信号杀也留退出码（11-05 不稳定清单第 1 项：oneclick_beat / public_repo_scan「没跑完（无退出码）」分不清被杀、挂死、没起来）。
+# 步自己（跑步时）被信号杀也留退出码（11-05 不稳定清单第 1 项：oneclick_beat / public_repo_scan「没跑完（无退出码）」分不清被杀、挂死、没起来）。
 #   KILL 拦不住：show 见「有 .started、无 .rc」记「被强杀」
 _sigrc() { [ -f "$L/$1.rc" ] || { echo "$2 $((SECONDS - ${s0:-$SECONDS}))" > "$L/$1.rc"; echo "被信号 $3 停（步自己的进程被停，不是被测命令退出）" >> "$L/$1.log"; }; exit "$2"; }
-LJ=(); job() { ( me=$BASHPID; : > "$L/$1.started"; s0=$SECONDS
-  trap "_sigrc '$1' 143 TERM" TERM; trap "_sigrc '$1' 130 INT" INT; trap "_sigrc '$1' 129 HUP" HUP
-  tk=$(tok_get "$me") || { echo "75 0" > "$L/$1.rc"; echo "环境未就绪：拿不到门禁令牌（持锁进程起不来）" > "$L/$1.log"; exit 0; }; trap 'tok_put "$tk"' EXIT; echo $((SECONDS - s0)) > "$L/$1.wait"   # .wait = 排队等令牌的秒数（台账用）
-  if [ -f "$L/stop" ]; then echo "143 0" > "$L/$1.rc"; exit 0; fi
-  export GATE_IN_STEP=1; s0=$SECONDS; timeout "$3" bash -c "$2" > "$L/$1.log" 2>&1 & tp=$!; echo $tp > "$L/$1.tp"; wait $tp; rc=$?; echo "$rc $((SECONDS - s0))" > "$L/$1.rc" ) & LJ+=($!); }   # LJ = 本机步的进程号（先等它们、还 CPU 账，再等 gate-host）   # job <编号> <命令> <上限>：后台跑，写 $L/<编号>.log / .rc；.tp = 该步 timeout 进程号
+LJ=(); LJN=(); TKS=(); job() {   # job <编号> <命令> <上限>：先排令牌（在调用者进程里排，排到才返回），再后台起这一步，写 $L/<编号>.log / .rc；.tp = 该步 timeout 进程号；.wait = 排令牌秒数（台账）
+  local tk w0=$SECONDS rc=0 me=$BASHPID
+  if [ -f "$L/stop" ]; then echo "143 0" > "$L/$1.rc"; return 0; fi
+  # 排令牌放后台、主进程 wait：bash 3.2 在 $(…) 里阻塞时收到 TERM 不执行 trap（实测 10 秒停不下），wait 能被信号打断；TW 供 TERM 时一起停
+  tok_get "$me" > "$L/$1.tk" & TW=$!; wait $TW || rc=$?; TW=; tk=$(cat "$L/$1.tk" 2> /dev/null); rm -f "$L/$1.tk"
+  case $rc in 0) ;; 3) echo "143 0" > "$L/$1.rc"; return 0;;
+    *) echo "75 0" > "$L/$1.rc"; echo "环境未就绪：拿不到门禁令牌（持锁进程起不来）" > "$L/$1.log"; return 0;; esac
+  echo $((SECONDS - w0)) > "$L/$1.wait"; [ -n "$tk" ] && TKS+=("$tk")
+  ( : > "$L/$1.started"; s0=$SECONDS
+  trap "_sigrc '$1' 143 TERM" TERM; trap "_sigrc '$1' 130 INT" INT; trap "_sigrc '$1' 129 HUP" HUP; trap 'tok_put "$tk"' EXIT
+  # 末尾另起一行 exit $?：bash 5 对「-c 串的最后一条简单命令」直接 exec，组长会变成被测命令本身、命令行里没有 .pg 路径，
+  #   收尸进程（tools/gate_reap.py）按这个字样经 safe_killpg 认组就认不出（11-11 门禁机上列车 run_token_test ④ 红）；最后一条是内建命令就不会 exec
+  export GATE_IN_STEP=1; timeout "$3" bash -c "echo \$\$ > '$L/$1.pg'; $2"$'\n''exit $?' > "$L/$1.log" 2>&1 & tp=$!; echo $tp > "$L/$1.tp"; wait $tp; rc=$?; echo "$rc $((SECONDS - s0))" > "$L/$1.rc" ) & LJ+=($!); LJN+=("$1"); }   # LJ = 本机步的进程号（先等它们、还 CPU 账，再等 gate-host）
+tok_putall() { local t; for t in ${TKS[@]+"${TKS[@]}"}; do tok_put "$t"; done; TKS=(); }   # 收尾兜底：步被 kill -9 没放的令牌（持锁者是门禁主进程，不收要等门禁退出）
 # <<< step_par
 # 门禁被停（列车收到 TERM 转来）时各步一起停：每步的 timeout 自成进程组、不随门禁退出，逐个 TERM 它（timeout 转给整组）；gate-host 那份停本机的 维护方工具
-trap 'for f in "$L"/*.tp; do [ -f "$f" ] && kill -TERM "$(cat "$f")" 2> /dev/null; done; exit 143' TERM
+trap 'for f in "$L"/*.tp; do [ -f "$f" ] && kill -TERM "$(cat "$f")" 2> /dev/null; done; [ -n "${TW:-}" ] && kill -TERM "$TW" 2> /dev/null; tok_putall; exit 143' TERM
 HOST=${GATE_HOST:-local}; [ -n "$PLANM" ] && HOST=local; WHY=
 # GATE_HOST=spare-host（10-25 列车提速：远端门禁只有 gate-host 一台，列车门禁 + 各线自检挤一个队）：与 gate-host 同一套远端流程，只是 维护方工具 带 --host spare-host、Spare-host 8 核只开 1 个槽；
 #   下文 HOST=gate-host 表示「远端模式」，RHN 是实际机器名（日志与结论行用）
@@ -292,9 +323,9 @@ NONCE=; if [ ${#PI[@]} -gt 0 ]; then
   rrun() {   # rrun <机器名> [维护方工具 选机参数…]：跑一份远端门禁，日志 $L/remote.log、退出码 $L/remote.rc
     local h=$1 tp; shift
     S2A_REMOTE_SLOTS=${SL0:-$([ "$h" = spare-host ] && echo 1 || echo 3)} bash "$S2A_PRIVATE_TOOLS/remote.sh" "$@" --name "$RN" $GC --rev "$REV" --timeout $((mx + 300)) --sync @gate \
-      --env GATE_TIER --env GATE_SCAN_BASE --env GATE_CHANGED --env GATE_HOOK_S --env GATE_IOS_S --env GATE_IOS_WORK_S --env GATE_PLAN --env GATE_OUT --env GATE_TEST_CACHE \
+      --env GATE_TIER --env GATE_SCAN_BASE --env GATE_CHANGED --env GATE_HOOK_S --env GATE_IOS_S --env GATE_IOS_WORK_S --env GATE_PLAN --env GATE_OUT --env GATE_TEST_CACHE --env GATE_ROLE \
       --pull "$OUTR=$L/r" -- bash tools/gate.sh > "$L/remote.log" 2>&1 & tp=$!; echo $tp > "$L/remote.tp"; wait $tp; echo $? > "$L/remote.rc"; echo "$h" > "$L/remote.host"; }
-  ( export GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=${GATE_HOST_PRIO:-2}
+  ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=${GATE_HOST_PRIO:-2}
     rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) &
 fi
 TK=()   # TK[i] = 第 i 步（单测）的缓存键；没有 = 不走缓存
@@ -310,35 +341,36 @@ tcw() {   # tcw <步号> <命令>：有键就包一层：命中 → 不跑、记
   printf 'if python3 tools/test_cache.py hit %q %q; then : > %q; echo "输入与工具链没变，沿用上次的绿"; exit 0; fi; ( %s ); _tr=$?; [ $_tr = 0 ] && python3 tools/test_cache.py put %q %q; exit $_tr' \
     "$TCD" "$k" "$L/$1.hit" "$2" "$TCD" "$k"; }
 LI=(); for i in $(seq 1 $N); do [ "${WH[$i]}" = 本机 ] && LI+=("$i"); done; tc_keys ${LI[@]+"${LI[@]}"}
-# 本机预跑整份令牌（tools/run_token.sh，11-09）：有本机步才领，同机同时不超过 GATE_RUN_PAR 份（缺省 2）；领不到排队。
-#   列车（GATE_NO_LOADQ=1）/ 门禁步里嵌套的门禁 / 远端那份（GATE_PLAN）/ 单测假仓库（没有路由器；专测的 run_token_test 给 S2A_GATE_RUNTOK_TEST）不领
-if [ ${#LI[@]} -gt 0 ] && [ -z "$PLANM" ] && [ -z "$NOLQ" ] && [ -z "${GATE_IN_STEP:-}" ] && [ -f tools/run_token.sh ] \
-   && { [ -f tools/gate_route.py ] || [ -n "${S2A_GATE_RUNTOK_TEST:-}" ]; }; then
-  source tools/run_token.sh; runtok_take $$ || { echo "门禁 环境未就绪：拿不到本机预跑令牌（tools/run_token.sh）"; exit 75; }
-fi
-# 本机那份：整步本机的 + 拆出来的子项；gate-host 那份一次 维护方工具 跑完（带 @gate 共享数据，结果目录拉回 $L/r），两边同时跑
-for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; job "$i" "$(tcw "$i" "${r1%	*}")" "${s##*	}"; }; done
-{ j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
+# 本机预跑整份令牌（tools/run_token.sh，11-09）11-10 撤：门禁拿着整份令牌再排步令牌 = 持有并等待（21:2x 一份拿着名额 68 分钟一步没跑）；
+#   同机同时在跑的步本来就受步令牌（GATE_STEP_PAR）限，整份令牌只多一层等。手工命令（bash tools/run_token.sh …）改排步令牌、级 3（手工）
 # 确定性步骤一红就停本份其余步（10-29 列车线：所有步同时起、等最慢的跑完才出结论，语法 / 扫描 10 秒就红的批照样占满 10 分钟）：
 #   确定性 = 结果只由树内容决定、不受负载与环境影响的步（GATE_DET_STEPS，| 分隔）；退出 75（环境）/ 124（超时）不算。停掉的步记「没跑完」，
 #   结论行前打「早停：…」，列车据此不信任其余步（同批不连坐、只跑红步核都不能用没跑的步当绿）。GATE_DET_STOP=0 关
 DET=${GATE_DET_STEPS:-语法|公开仓扫描|Ryujinx 补丁核对|单测 shell_lint_test|单测 shared_path_test|单测 test_wired_test}
-detwait() {   # 等本机步（LJ）跑完；期间有确定性步骤红 → 写 $L/stop（步名）、TERM 其余还在跑的本机步
-  local p alive i n r f j
-  while :; do alive=0; for p in "${LJ[@]}"; do kill -0 "$p" 2> /dev/null && { alive=1; break; }; done; [ $alive = 0 ] && break
-    if [ ! -f "$L/stop" ] && [ "${GATE_DET_STOP:-1}" = 1 ]; then
-      for i in $(seq 1 $N); do n=${STEPS[$((i - 1))]%%	*}; [ -f "$L/$i.rc" ] || continue
-        case "|$DET|" in *"|$n|"*) ;; *) continue;; esac
-        read -r r _ < "$L/$i.rc"; case $r in 0|75|124) continue;; esac
-        echo "$n" > "$L/stop"
-        for f in "$L"/*.tp; do j=${f##*/}; j=${j%.tp}; [ -f "$L/$j.rc" ] || kill -TERM "$(cat "$f")" 2> /dev/null; done; break; done
-    fi; sleep "${GATE_DET_POLL_S:-1}"; done
-  wait "${LJ[@]}" 2> /dev/null; }
+detcheck() {   # 一轮：有确定性步骤红 → 写 $L/stop（步名）、TERM 其余还在跑的本机步
+  local i n r f j
+  [ ! -f "$L/stop" ] && [ "${GATE_DET_STOP:-1}" = 1 ] || return 0
+  for i in $(seq 1 $N); do n=${STEPS[$((i - 1))]%%	*}; [ -f "$L/$i.rc" ] || continue
+    case "|$DET|" in *"|$n|"*) ;; *) continue;; esac
+    read -r r _ < "$L/$i.rc"; case $r in 0|75|124) continue;; esac
+    echo "$n" > "$L/stop"
+    for f in "$L"/*.tp; do j=${f##*/}; j=${j%.tp}; [ -f "$L/$j.rc" ] || kill -TERM "$(cat "$f")" 2> /dev/null; done; break; done; }
+tok_tick() { detcheck; }   # 主进程排令牌的每一轮也查（tok_get 调）
+detwait() {   # 等本机步（LJ）跑完；期间有确定性步骤红 → 早停
+  local k alive
+  # 「还在跑」= 结论没落盘且进程还在（11-10 启动器线：只看 kill -0，步跑完被回收后进程号被别的会话复用，474 步全出结论后主进程空等约 10 分钟）
+  while :; do alive=0; for k in "${!LJ[@]}"; do [ -f "$L/${LJN[$k]}.rc" ] && continue; kill -0 "${LJ[$k]}" 2> /dev/null && { alive=1; break; }; done; [ $alive = 0 ] && break
+    detcheck; sleep "${GATE_DET_POLL_S:-1}"; done
+  wait "${LJ[@]}" 2> /dev/null; tok_putall; }
 # 心跳（11-04 合入运维线）：所有步结束前不打结论，令牌 / 满核槽 / 显卡独占排队时日志长时间无输出，外层按「无进展」收卡死（tools/idle_timeout.sh）会误杀——
 #   每 GATE_BEAT_S（缺省 300）秒打一行进度；disown 免得下面的 wait 等它，门禁主进程没了自己退出（被外层杀时不留孤儿）
 #   sleep 不带门禁的标准输出（11-05：原写法 kill 心跳子 shell 后它睡着的 sleep 仍开着输出管道，外层 $(bash tools/gate.sh) 每份白等至多 GATE_BEAT_S 秒，
 #   remote_test / gate_budget_test 等起假门禁的单测在 gate-host 上全部跑满 600 秒）；门禁任何一条路退出都收心跳（含它的 sleep）
 GP=$$; ( while sleep "${GATE_BEAT_S:-300}" > /dev/null 2>&1 < /dev/null; kill -0 $GP 2> /dev/null; do echo "门禁进度 $(date '+%H:%M:%S')：本份已出 $(ls "$L"/*.rc 2> /dev/null | wc -l | tr -d ' ') 个步结论，其余仍在跑 / 排队"; done ) & HB=$!; disown $HB 2> /dev/null; trap 'pkill -P $HB 2> /dev/null; kill $HB 2> /dev/null' EXIT
+echo $HB > "$L/hb.pid"; [ -f tools/gate_reap.py ] && python3 tools/gate_reap.py $$ "$L" 2> /dev/null   # 收尸进程：本主进程被 KILL 时停掉在跑的步与心跳（见 tools/gate_reap.py）
+# 本机那份：整步本机的 + 拆出来的子项；gate-host 那份一次 维护方工具 跑完（带 @gate 共享数据，结果目录拉回 $L/r），两边同时跑
+for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; job "$i" "$(tcw "$i" "${r1%	*}")" "${s##*	}"; }; done
+{ j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
 [ ${#LJ[@]} -gt 0 ] && detwait
 wait; pkill -P $HB 2> /dev/null; kill $HB 2> /dev/null
 QWHY=; if [ -n "$NONCE" ] && [ "$(cat "$L/r/done" 2> /dev/null)" != "$NONCE" ]; then
@@ -358,10 +390,10 @@ fi
 OVLD=; [ -n "${QWHY:-}" ] && [ -z "${RDONE:-}" ] && grep -q '超载等降' "$L/remote.log" 2> /dev/null && OVLD=1
 FBN=0; if [ -n "${QWHY:-}" ] && [ -z "$OVLD" ] && [ "${GATE_FALLBACK_LOCAL:-1}" = 1 ] && [ ${#PI[@]} -gt 0 ]; then
   echo "⤵ ${QWHY}：原派 ${RHN} 的 ${#PI[@]} 步退回本机补跑"
-  LJ=(); tc_keys "${PI[@]}"
+  LJ=(); LJN=(); tc_keys "${PI[@]}"
   for i in "${PI[@]}"; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; c=${r1%	*}; WH[$i]=回退; F75[$i]=${RDONE:-}; FBN=$((FBN + 1))
     [ -n "${SK[$i]}" ] && c="export GATE_SKIP='${SK[$i]}'; $c"; job "$i" "$(tcw "$i" "$c")" "${s##*	}"; done
-  [ ${#LJ[@]} -gt 0 ] && wait "${LJ[@]}"
+  [ ${#LJ[@]} -gt 0 ] && wait "${LJ[@]}"; tok_putall
   FBWHY=$QWHY; QWHY=
 fi
 # >>> show（单测 tests/gate_step_par_test.sh 按标记抽出来测）
@@ -438,7 +470,7 @@ for f in "$L/stop" "$L/r/stop"; do [ -f "$f" ] && { echo "早停：确定性步�
 # 远端那份：结果齐了的标记（本机凭它认这次的结果，没有 = 远端没跑完）。写在「环境未就绪退 75」之前（11-02：远端有一步自报 75 时整份没写标记，
 #   本机当成 gate-host 不可用、把 gate-host 已绿的 11 步全部退回本机重跑，挤本机显卡与普查）
 [ -n "$PLANM" ] && basename "$L" > "$L/done"
-if { [ -n "${QWHY:-}" ] || [ ${#LQ[@]} -gt 0 ]; } && [ $real = 0 ]; then echo "门禁 环境未就绪：$TIER 档，跑了 $ran 步 / 应跑 $N 步${RWARN}$where"; exit 75; fi
+if { [ -n "${QWHY:-}" ] || [ ${#LQ[@]} -gt 0 ]; } && [ $real = 0 ]; then gl_end 环境未就绪; echo "门禁 环境未就绪：$TIER 档，跑了 $ran 步 / 应跑 $N 步${RWARN}$where"; exit 75; fi
 macsum
 # 宿主项汇总：机读行原样（去重）；有待证项 → 末行写「本机绿、待<类别>证」，不许被当成整份门禁绿（列车另核证明）
 HPL=; if [ -s "$L/hostlines" ]; then sort -u "$L/hostlines" > "$L/hostlines.u"; cat "$L/hostlines.u"
@@ -447,4 +479,5 @@ HPL=; if [ -s "$L/hostlines" ]; then sort -u "$L/hostlines" > "$L/hostlines.u"; 
 if [ -n "$HPL" ] && [ "$MACN" = 0 ]; then echo "门禁 $([ $red = 0 ] && echo "本机绿、待宿主证" || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${RWARN}${HPL}$where"
 elif [ "$MACN" -gt 0 ]; then echo "门禁 $([ $red = 0 ] && echo 本机绿、待 Mac 证 || echo 红)：$TIER 档，本机已证：跑了 $ran 步 / 应跑 $N 步${MACL}${HPL}"
 else echo "门禁 $([ $red = 0 ] && echo 绿 || echo 红)：$TIER 档，跑了 $ran 步 / 应跑 $N 步${RWARN}$where"; fi
+gl_end "$([ $red = 0 ] && echo 绿 || echo 红)"
 exit $red
