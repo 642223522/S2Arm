@@ -168,7 +168,7 @@ class Upgrade3Tests(JobCase):
         # 第一台装机的设备认领迁移来的记录
         self.assertEqual(layout.load_device(self.c, "phone-1")["games"], {A: {}, B: {}})
         self.assertFalse((L / "devices/legacy.json").exists()); self.assertTrue((L / "devices/phone-1.json").is_file())
-        self.assertEqual(layout.install_record(self.c, B), dict(at=200, free=False, device="乙机"))
+        self.assertEqual(layout.install_record(self.c, B), dict(at=200, free=False, device="乙机", deviceKey="phone-1"))   # 带上装在哪台（设备记录键）：续签 / 装机按它找回同一台
 
     def test_upgrade_moves_iphone_outputs_into_each_game(self):
         L = self.v2_library()

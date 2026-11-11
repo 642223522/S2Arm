@@ -7,7 +7,7 @@ import XCTest
 import S2ArmAppleAdapter
 
 // 「更新 iPhone 上的 S2Arm」连着多台 iPhone 时要说清更新哪台（v0.3.0 验收测出：原先不传 device，作业层报「连着不止一台」）：
-//   给了 device → installUpdate 请求里带上它；没给（只连一台）→ 不带
+//   给了 device → installUpdate 请求里带上它；没给时用壳旧的那台 / 玩家选的那台，都没有就不带（作业层拒绝，11-11 设备号贯穿所有装机入口）
 @MainActor final class UpdatePhoneDeviceTests: XCTestCase {
     func testUpdatePhonePassesTheChosenDevice() async throws {
         _ = NSApplication.shared
@@ -24,7 +24,7 @@ import S2ArmAppleAdapter
         }
         XCTAssertEqual(runner.updates.count, 2)
         XCTAssertEqual(runner.updates.first?["device"] as? String, "00008160-FIXTURE", "指定了哪台就带上哪台")
-        XCTAssertNil(runner.updates.last?["device"], "只连一台时不带，作业层自己认")
+        XCTAssertNil(runner.updates.last?["device"], "既没壳旧的那台、也没选中 / 连着的设备时不带：作业层拒绝（device_required），不自己挑")
     }
 }
 

@@ -73,7 +73,8 @@ extension LauncherView {
                     let queueable = !model.busy || model.session?.export != nil
                     if game.iphoneReady {
                         // 包已出好：主按钮是装机 / 续签，重新出包退到次要
-                        Button { installFor = game.id } label: {
+                        // 装过的款（续签 / 重装）：目标先设成当初装的那台，不换别的；要装到另一台在装机页改选
+                        Button { model.targetInstalledDevice(of: game); installFor = game.id } label: {
                             LauncherHeroActionLabel(title: txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), symbol: "iphone")
                         }
                         .buttonStyle(.plain).keyboardShortcut(.return, modifiers: []).accessibilityIdentifier("hero.install")
@@ -266,7 +267,7 @@ extension LauncherView {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
-                Button(txt("library.hero.renew")) { installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
             }
             .padding(.horizontal, 34).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
