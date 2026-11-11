@@ -66,9 +66,9 @@ IDENT_C = {
     'ios/iml_probe.m': {s: '地址档名，只拼进 [IML] 首启复核日志行' for s in ('地址上限读不到', '大地址档', '小地址档')},
 }
 UI_TEXT_H = 'runtime/include/s2a_ui_text.h'
-UI_USERS = ['runtime/src/pack_apply.c', 'runtime/src/qladder_host.c', 'runtime/src/ap_host.c', 'runtime/src/hud.c']
+UI_USERS = ['runtime/src/pack_apply.c', 'runtime/src/ap_host.c', 'runtime/src/hud.c']
 UI_STRONG = {'ios/app.m': 's2a_l10n_zh()', 'macos/front_mac.m': 'NSLocale.preferredLanguages'}   # iOS 按 App 本地化；Mac 宿主不带 .lproj，按系统首选语言
-DISPLAY_CALLS = {'runtime/src/pack_apply.c': {'s2a_ios_show_notice', 's2a_ios_show_pack_help'}, 'runtime/src/qladder_host.c': {'s2a_ios_ladder_note'}}
+DISPLAY_CALLS = {'runtime/src/pack_apply.c': {'s2a_ios_show_notice', 's2a_ios_show_pack_help'}}
 DISPLAY_FUNCS = {'runtime/src/pack_apply.c': ['s2a_pack_help_detail', 'help_title', 'gate_show'], 'runtime/src/ap_host.c': ['stall_note'], 'runtime/src/hud.c': ['s2a_hud_brief']}
 SAVE_CS = 'services/S2A.Services'
 SHELL_DIR = 'shell/Sources/S2ArmShellHost'

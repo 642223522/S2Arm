@@ -304,6 +304,30 @@ namespace S2A.Services.Tests
             Console.Error.WriteLine($"hwopus 逐样本比对合计：{cases.Length} 例 {allSamples} 样本、不一致 {allBad}；模式 SILK {modes[0]} / Hybrid {modes[1]} / CELT {modes[2]} 包");
 
             TestHwOpusLimit(hwo, cases[0]);
+            TestHwOpusCreateFailure(hwo);
+        }
+
+        // 审计 P2-276：libopus 拒绝的参数（多流声道映射指到不存在的流）要回参数错误，名额还回去、工作缓冲句柄关掉；不能让异常冲出服务分发。
+        //   期望手算：OpusBadArg = 模块 111 | 描述 130 << 9 = 0x1046F
+        private static void TestHwOpusCreateFailure(uint hwo)
+        {
+            int before = Ryujinx.Horizon.Sdk.Codec.Detail.HardwareOpusDecoder.LiveCount, copies = NativeSyscall.CopyCount;
+            int owb = 0x40000;
+            uint tm = FakeNative.TmemCreate((ulong)FakeNative.Alloc(owb), (ulong)owb, 0);
+            byte* prm = FakeNative.Alloc(0x110);
+            new Span<byte>(prm, 0x110).Clear();
+            *(int*)prm = 48000; *(int*)(prm + 4) = 2; *(int*)(prm + 8) = 1; *(int*)(prm + 12) = 1;
+            prm[16] = 0; prm[17] = 5;   // 第二个声道映射到第 5 路：流数 + 立体声流数只有 2
+            Msg om = Msg.Cmif(2, BitConverter.GetBytes(owb));
+            om.X.Add(((ulong)prm, 0x110));
+            om.Copy.Add(tm);
+            Reply r = Call(hwo, om);
+            // 服务端拿到的是复制记号（NativeSyscall.CopyIn），关的是记号；游戏自己的工作缓冲句柄照旧开着（同真机：复制句柄互不影响），测完由这里关
+            bool closed = WaitFor(() => NativeSyscall.CopyCount == copies, 5_000);
+            FakeNative.HandleClose(tm);
+            Check("hwopus libopus 拒绝的参数：结果 / 会话 / 服务端的工作缓冲句柄 / 存活名额",
+                $"0x1046F / 不给会话 / 已关 / {before}",
+                $"0x{r.Result:X} / {(r.Move.Count == 0 ? "不给会话" : $"给了 {r.Move.Count} 个会话")} / {(closed ? "已关" : $"还开着（复制记号 {NativeSyscall.CopyCount}，调用前 {copies}）")} / {Ryujinx.Horizon.Sdk.Codec.Detail.HardwareOpusDecoder.LiveCount}");
         }
 
         // 同时存活的解码器上限（0100A00019DE0000 存档后 Break 2010-0011）：游戏 SDK 客户端只有 16 个解码器对象的位置，开第 17 个就中止；

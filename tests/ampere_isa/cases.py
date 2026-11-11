@@ -479,6 +479,23 @@ refl('ISBERD.b8 读回任务自己写的载荷字（时之笛 5d3a096025e375a1�
                      else '读回的不是刚写的那个阶段内存字（或没写到 +0x14）')(re.search(r'(\w+)\[(\d+)\] = 4660u;', msl)),
      '写 [+0x10] = 0x1234、读回同一个字、再写 [+0x14]（下一个字）；修前「ISBERD mode b8 in a task or mesh shader」拒翻')
 
+# 投票的位掩码留在原处（04008E001F098000 近海任务着色器 8acb4308：最低活动车道之外都 return 之后才写 popcount(ballot)）：任务着色器 32 线程，
+#   S2R R0 = 车道号，P1 = 车道号 != 0，VOTE.ANY R5 ← ballot(P1)（31 个车道置位），全体车道先写 POPC(R5) 到载荷 +0x10，@P1 EXIT，剩下的车道 0 再写 POPC(R5) 到 +0x14。
+#   期望（手推）：位掩码在 return 之前就取（硬件上 VOTE 执行时 32 车道都在：两处 POPC 都是 31）。修前 AST 优化把位掩码（一元运算、源是变量，用两次也挪）
+#   复制到每个使用处，第二处落在其他车道 return 之后，只剩车道 0 自己（它的 P1 假，POPC = 0；近海每组 32 块只画 1 块）。
+#   用任务着色器：计算着色器这条单测链不做表达式传播，测不出来；谓词要是车道变量：常量 ballot(true) 修前也不挪
+VOTE_ANY = lambda rd, p: inst(0x806, rd=(16, rd), mode=(72, 1), pd=(81, PT), p=(87, p))
+POPC = lambda rd, rb: alu(0x109, 1, rd, RZ, rb=(32, rb))
+def at_p1(v): return v & ~(0xf << 12) | 1 << 12   # 守卫 @P1
+def ballot_before_return(msl, j):
+    body = msl[msl.find('dm_stage_body'):] if 'dm_stage_body' in msl else msl
+    r = body.find('return;'); bs = [m.start() for m in re.finditer(r'spvSubgroupBallot\(', body)]
+    if not bs: return 'MSL 里没有 spvSubgroupBallot'
+    return None if r < 0 or max(bs) < r else '位掩码在其他车道 return 之后才取'
+refl('投票位掩码不挪过提前返回（近海 8acb4308）', True,
+     ts_shader([S2R(0, 0x00), ISETP_NE(1, 0, RZ), VOTE_ANY(5, 1), POPC(7, 5), STO(0x10, 7), at_p1(EXIT), POPC(6, 5), STO(0x14, 6)]),
+     ballot_before_return, 'VOTE 在全体车道都在时取位掩码，车道 0 之后才 POPC：位掩码不能等到 POPC 处才算')
+
 # 多处池表读（11-05 时之笛慢编；11-07 时之笛主遍顶点）：地址从内存里读出来的全局读，翻译器追不到具体存储缓冲，走查内存池表。11-05 把整个查表函数改成不内联（每处一份展开时
 # 3d0d6d61bb9076e7 253 处、IR 6.5 万条），可函数带线程私有字（上次命中项）的引用，调用点按调用约定存栈取栈：时之笛主遍顶点着色器每顶点 253 次调用、主遍六成时间。
 # 11-07：每处访问的辅助函数内联（区间缓存在私有字里，命中不查表），只有查找（提示字 + 二分 + 访问位图）全着色器一份、不内联、不带私有字引用。

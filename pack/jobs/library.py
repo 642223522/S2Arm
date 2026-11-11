@@ -1743,7 +1743,12 @@ def catalog(c):
     records = sorted((p for p in c.jobpath.parent.glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
                      key=_mtime, reverse=True)[:JOB_LIST_LIMIT]
     jobs = [r for r in (read(p) for p in records) if isinstance(r, dict)]
-    return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs,
+    try:   # 「更新 iPhone 上的 S2Arm」：各台手机的设备记录里壳比本版旧的（只读本机记录，不连手机，install.phone_updates）
+        import install
+        phone_updates = install.phone_updates(c)
+    except (Failure, OSError, ValueError):   # 算不出本版壳号（开发树没出过壳等）：不提示，不挡游戏库
+        phone_updates = []
+    return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates,
                 engineInfo={"inputConfig": input_supported, "inputConfigReason": input_reason})
 
 

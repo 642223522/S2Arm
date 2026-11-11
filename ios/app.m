@@ -430,11 +430,6 @@ void s2a_ios_fps_capped(int reason) {
     NSString *body = reason == 1 ? S2AL(@"app.fpsCap.thermal") : reason == 2 ? S2AL(@"app.fpsCap.lowPower") : reason == 4 ? S2AL(@"app.fpsCap.ladder") : S2AL(@"app.fpsCap.restored");
     dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"cpatch.group.fps"), body, 0, 6); });
 }
-// 档位梯子要下次启动才生效的换档（runtime/src/qladder_host.c：宽屏第二层按起局档位装表的款切主机 / 掌机）：一行横幅，不打断游戏
-void s2a_ios_ladder_note(const char *msg) {
-    NSString *body = @(msg ?: "");
-    dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"app.ladder.title"), body, 0, 6); });
-}
 // 满屏自检自动退回（runtime/src/qprompt_host.c widen_auto_revert，11-06 满屏泛化）：记进本 App 设置（宽屏关 = 下次起局 16:9，设置页可改回），横幅一行告诉玩家
 //   persist（11-06 起）：两次不同启动都触发才记住（runtime/src/widen_remember.c）；只一次的不写设置，下次启动重新试满屏
 void s2a_ios_widen_auto(int hot, int why, int persist) {

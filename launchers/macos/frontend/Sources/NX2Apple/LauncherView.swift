@@ -138,6 +138,7 @@ struct LauncherView: View {
                 if model.loading { ProgressView().controlSize(.small) }
                 exportPill
                 batchPill
+                PhoneUpdateButton(model: model, language: uiLanguage)
                 phonePill
                 ControllerToolbarButton(controller: model.controller, show: $showController,
                                         simplifiedChinese: loc.lang == .zh)

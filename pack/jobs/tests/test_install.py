@@ -928,6 +928,73 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual(install_ipa_games(layout.phone_ipa(self.c)), ([A, B, C], "SID1"))
         self.assertEqual((r["outputPath"], r["games"], r["packFiles"]), (str(layout.phone_ipa(self.c)), [A, B, C], 2))
 
+    def _update(self, sid="SID2", **req):
+        """「更新 iPhone 上的 S2Arm」夹具：甲兼容新宿主（只换壳）、乙新宿主认不得（要重新出包）；手机记录是旧壳 SID1、两款资源包都没变"""
+        A, B = self.A, self.B
+        self._library((A, "甲"), (B, "乙款"))
+        ios_fixture(self.c, A, shell="SID1", pack="pa", compat=self.COMPAT); ios_fixture(self.c, B, shell="SID1", pack="pb", compat=dict(hostAbi=2, dmshChain="aaaa"))
+        layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="pb")}, shellId="SID1"))
+        ph, pushed, signed = self._phone()
+        import ipa as packer, host_update
+        self.sid = sid
+        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
+        self.c.r = dict(self.c.r, **req)
+        for p in (um.patch.object(packer, "current_shell_id", return_value=sid), um.patch.object(packer, "container_shell", return_value=shell),
+                  um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])),
+                  um.patch.object(install, "phone_for", lambda c: ph)):
+            p.start(); self.addCleanup(p.stop)
+        return ph, pushed, signed
+
+    def test_update_phone_lists_games_needing_repack_and_stops(self):
+        """新壳认不得乙：没确认就停下报 container_stale 点名乙，不签不装、设备记录不动"""
+        _, pushed, signed = self._update()
+        with self.assertRaises(Failure) as e:
+            install.update_phone(self.c)
+        self.assertEqual((e.exception.code, signed, pushed), ("container_stale", [], []))
+        self.assertIn("乙款", str(e.exception)); self.assertNotIn("甲", str(e.exception))
+        self.assertEqual(layout.load_device(self.c, "dev1")["shellId"], "SID1")
+
+    def test_update_phone_accepted_swaps_shell_without_pushing(self):
+        """确认后：新壳 SID2 只带甲（原样复用旧程序模块），资源包号没变一个都不推；记录换成 SID2、只剩甲；结果说明跳过了乙"""
+        A, B = self.A, self.B
+        _, pushed, signed = self._update(acceptStale=True)
+        r = install.update_phone(self.c)
+        self.assertEqual((signed, pushed), ([([A], ([A], "SID2"))], []))
+        self.assertEqual((r["updated"], r["fromShell"], r["toShell"], r["skipped"]), (True, "SID1", "SID2", [B]))
+        rec = layout.load_device(self.c, "dev1")
+        self.assertEqual((rec["shellId"], rec["games"]), ("SID2", {A: dict(pack="pa")}))
+
+    def test_update_phone_same_shell_does_nothing(self):
+        _, pushed, signed = self._update(sid="SID1")
+        r = install.update_phone(self.c)
+        self.assertEqual((r["updated"], signed, pushed), (False, [], []))
+
+    def test_phone_updates_from_device_records(self):
+        """游戏库页检测：只读设备记录——壳旧了列出各款和要重新出包的乙；壳是本版 → 空"""
+        A, B = self.A, self.B
+        self._update()
+        got = install.phone_updates(self.c)
+        self.assertEqual([(u["device"], u["fromShell"], u["toShell"], [g["gameId"] for g in u["games"]], [g["gameId"] for g in u["stale"]]) for u in got],
+                         [("dev1", "SID1", "SID2", [A, B], [B])])
+        import ipa as packer
+        with um.patch.object(packer, "current_shell_id", return_value="SID1"):
+            self.assertEqual(install.phone_updates(self.c), [])
+
+    def test_install_mode_defaults_and_persists(self):
+        """装到 iPhone 的方式：没设过 = device；改 export 在导出作业合入前拒收；不认识的拒收；设成 device 写进 install.json"""
+        self.assertEqual(install.install_mode_job(self.c)["mode"], "device")
+        for bad in ("export", "cloud"):
+            self.c.r = dict(self.c.r, mode=bad)
+            with self.assertRaises(Failure): install.install_mode_job(self.c)
+        self.c.r = dict(self.c.r, mode="device")
+        self.assertEqual(install.install_mode_job(self.c), dict(mode="device", exportAvailable=False, signMode="appleId"))
+        self.assertEqual(json.loads((self.c.private / "install.json").read_text()), {"mode": "device"})
+        with um.patch.object(install, "export_phone", lambda c: None, create=True):
+            self.c.r = dict(self.c.r, mode="export")
+            self.assertEqual(install.install_mode_job(self.c)["mode"], "export")
+            self.c.r = {k: v for k, v in self.c.r.items() if k != "mode"}
+            self.assertEqual(install.install_mode(self.c), "export")
+
     def _app_gone(self, ph):
         """玩家在手机上删了整个 S2Arm：进不了容器、平台确认这个包名没装（走真的 install.phone_games，不用夹具里的替身）"""
         class Cl:

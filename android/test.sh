@@ -451,6 +451,7 @@ s2a_gate_step "$PY" "$android_dir/tests/shader_pack_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_qa_compare_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/first_draw_diag_bounds_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_first_draw_release_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_fd_fence_wait_test.py"   # 逐帧 drain 账：fd_fence_wait 双账挂接（含变异控制）
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_session_release_order_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_adapter_release_order_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvn_event_completion_test.py"   # P0-4 事件信号写值前必须有完成证明（含变异控制）

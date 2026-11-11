@@ -219,7 +219,9 @@ static void guest_file_map(void) {
     // 起局前查闪存剩余空间（11-05 能耗线）：文件稀疏，只占内核写回的块，最坏涨到游戏弄脏的客体内存总量（Switch 2 是 12 GB）。
     //   不够就不接文件、照旧用匿名内存（等于开关关），打一行黄；门槛 S2A_GUEST_FILE_MIN_FREE_MB（缺省 12288）
     { const char *m = getenv("S2A_GUEST_FILE_MIN_FREE_MB"); uint64_t need = (m && *m ? strtoull(m, NULL, 10) : 12288ull) << 20; struct statfs sf;
-      if (statfs(td && *td ? td : "/tmp", &sf)) { LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
+      if (statfs(td && *td ? td : "/tmp", &sf)) {
+          if (g_gfile_pending) g_gfile_avail = UINT64_MAX;   // 补接时这次没查到：别拿起局时那次的旧剩余数告诉玩家（审计 P2-265）
+          LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
       uint64_t avail = (uint64_t)sf.f_bavail * (uint64_t)sf.f_bsize;
       if (avail < need) {   // 先不接、记下「要接没接上」，开局装模块前再试一次（s2a_guest_file_retry）
           g_gfile_pending = 1; g_gfile_need = need; g_gfile_avail = avail;
@@ -255,11 +257,16 @@ int s2a_guest_file_retry(void) {
     if (g_gfile_pending) {
         g_gfile_pending = 0;
         unsigned long long gb_need = (g_gfile_need + (1ull << 30) - 1) >> 30, gb_have = g_gfile_avail >> 30;
-        LOG("【红】客体内存文件后备：装游戏前仍不够，剩余 %llu MB < 需要 %llu MB；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_avail >> 20), (unsigned long long)(g_gfile_need >> 20));
+        int unknown = g_gfile_avail == UINT64_MAX;   // 这次没查到剩余空间
+        if (unknown) LOG("【红】客体内存文件后备：装游戏前查不到剩余空间，没接上文件（需要 %llu MB）；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_need >> 20));
+        else LOG("【红】客体内存文件后备：装游戏前仍不够，剩余 %llu MB < 需要 %llu MB；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_avail >> 20), (unsigned long long)(g_gfile_need >> 20));
         void (*msg)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_show_message");
         int (*zh)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_ui_zh");
         char m[512];
-        if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在只有 %llu GB。请删掉一些文件或应用后重新打开，否则游戏玩一会儿可能会闪退。", gb_need, gb_have);
+        if (unknown) {
+            if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间可能不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在查不到剩余空间。请确认有足够空间后重新打开，否则游戏玩一会儿可能会闪退。", gb_need);
+            else snprintf(m, sizeof m, "Free storage may be too low\nThis game needs about %llu GB of free space for its memory while running, and free space could not be checked. Make sure there is enough space and reopen it, or the game may quit after a while.", gb_need);
+        } else if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在只有 %llu GB。请删掉一些文件或应用后重新打开，否则游戏玩一会儿可能会闪退。", gb_need, gb_have);
         else snprintf(m, sizeof m, "Not enough free storage\nThis game needs about %llu GB of free space for its memory while running; only %llu GB is free. Free up some space and reopen it, or the game may quit after a while.", gb_need, gb_have);
         if (msg) msg(m);
     }
@@ -268,20 +275,35 @@ int s2a_guest_file_retry(void) {
 // 窗口外也要文件后备的一段（远端影子区堆区余量用完、改从宿主任意空闲地址分时，far.c）：文件往后接长，按新偏移映射到内核挑的地址（同匿名的落点规则，不多占窗口外地址）。
 //   没开文件后备返回 MAP_FAILED（调用方照旧匿名）。这些段还页时不打洞（s2a_guest_zero 只认窗口），换匿名占位：语义同样是零，只是那几页回到匿名记账
 static pthread_mutex_t g_gextra_mu = PTHREAD_MUTEX_INITIALIZER; static uint64_t g_gextra;
+// 文件往后接长 len，返回这段的偏移；失败返回 UINT64_MAX
+static uint64_t gextra_take(uint64_t len) {
+    pthread_mutex_lock(&g_gextra_mu); uint64_t off = g_size + g_gextra; int ok = !ftruncate(g_gfd, (off_t)(off + len)); if (ok) g_gextra += len; pthread_mutex_unlock(&g_gextra_mu);
+    return ok ? off : UINT64_MAX;
+}
+// 映射失败时退回刚接长的那段（审计 P2-264）：还在文件末尾才退、截回去；后面已有别人接上就留成空洞（稀疏文件，不占盘）
+static void gextra_undo(uint64_t off, uint64_t len) {
+    pthread_mutex_lock(&g_gextra_mu);
+    if (g_size + g_gextra == off + len && !ftruncate(g_gfd, (off_t)off)) g_gextra -= len;
+    pthread_mutex_unlock(&g_gextra_mu);
+}
 void *s2a_guest_map_any(uint64_t len) {
     if (g_gfd < 0 || !len) return MAP_FAILED;
-    pthread_mutex_lock(&g_gextra_mu); uint64_t off = g_size + g_gextra; int ok = !ftruncate(g_gfd, (off_t)(off + len)); if (ok) g_gextra += len; pthread_mutex_unlock(&g_gextra_mu);
-    if (!ok) return MAP_FAILED;
-    return mmap(NULL, len, PROT_NONE, MAP_SHARED, g_gfd, (off_t)off);
+    uint64_t off = gextra_take(len);
+    if (off == UINT64_MAX) return MAP_FAILED;
+    void *p = mmap(NULL, len, PROT_NONE, MAP_SHARED, g_gfd, (off_t)off);
+    if (p == MAP_FAILED) gextra_undo(off, len);
+    return p;
 }
 // 线性远端影子（far.c，#419）的一块也要文件后备：文件往后接长，按新偏移映射到 far.c 自己预留的线性影子区里的固定地址（那段是 far.c 占的不可访问预留，
 //   MAP_FIXED 只盖它自己的地址）。没开文件后备回 1（调用方用预留里的匿名页）；成功回 0，失败回 -1
 int s2a_guest_map_fixed(uint64_t a, uint64_t len) {
     if (g_gfd < 0) return 1;
     if (!len) return 0;
-    pthread_mutex_lock(&g_gextra_mu); uint64_t off = g_size + g_gextra; int ok = !ftruncate(g_gfd, (off_t)(off + len)); if (ok) g_gextra += len; pthread_mutex_unlock(&g_gextra_mu);
-    if (!ok) return -1;
-    return mmap((void *)(uintptr_t)a, len, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, (off_t)off) == (void *)(uintptr_t)a ? 0 : -1;
+    uint64_t off = gextra_take(len);
+    if (off == UINT64_MAX) return -1;
+    if (mmap((void *)(uintptr_t)a, len, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, (off_t)off) == (void *)(uintptr_t)a) return 0;
+    gextra_undo(off, len);
+    return -1;
 }
 // [a, a + n) 在文件后备的窗口里：打洞（还文件块，再读是 0）并按原偏移重新映射成不可访问，返回 1；不在 / 没开文件后备返回 0（调用方照旧换匿名占位）
 int s2a_guest_zero(uint64_t a, uint64_t n) {

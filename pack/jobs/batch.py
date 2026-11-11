@@ -6,25 +6,30 @@
 
 界面只负责按 next 给的顺序一款接一款地发起出包作业（Mac = build、iPhone = ipa，同一款的两个平台连着出，
 解包等平台无关阶段作业层本来就共用），每个平台出完 mark 一次；出没出完、下一个出谁、停不停都按这里的规则：
-  - 一款失败不挡后面；磁盘满（disk_full）就暂停整批：接着出只会一款接一款都因为没空间失败，释放空间后 resume 接着出
-  - cancel：正在出的和没开始的都记「已取消」，已出好的保留；resume 把取消的接回来接着出
+  - 一款失败不挡后面；磁盘满（disk_full）就暂停整批：接着出只会一款接一款都因为没空间失败。暂停只由 retry 解除（磁盘满那款就是要重试的），
+    暂停期间 mark running 拒收（同一款的下一个平台也不开，审计 P1-164）
+  - cancel：正在出的和没开始的都记「已取消」，已出好的保留；resume 把取消的接回来接着出（不解除暂停）
   - retry：失败的重新排队（给游戏号只重试这一款）
   - 启动器刚打开时调一次 recover：还记着「正在出」的（上次关掉启动器时没出完）→ 记成「被打断」并重新排队，从头出这款（缓存照常复用）。
     只在打开时调：出包过程中界面随时 show / mark，不能把正在出的那款当成没出
 
 命令（每条打印一行 JSON = 改完后的批次，或 show 的结果）：
   show   [--private-root]                                 → {batch, next, summary}；没有批次 → {}
-  create --private-root R --json <批次>                   → 新建（覆盖上一批）
+  create --private-root R --json <批次>                   → 新建（上一批出完了才覆盖；还没出完 / 暂停着拒收，走 retry / resume 或先 clear，审计 P2-270）
   mark   --private-root R --game G --platform P --state S [--message M] [--code C] [--output O]
   recover / cancel / resume / clear --private-root R
   retry  --private-root R [--game G]
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # 两端用 python -I 跑本脚本（脚本目录不在搜索路径）：同目录的 filelock 要自己加（同 main.py）
+import filelock  # noqa: E402
 
 # 同一款先出 Mac、再出 iPhone：解包只做一次靠这个顺序——iPhone 出包收尾（成功或失败）会清掉这款的解包和中间产物（library.prune_build），
 #   Mac 打包成功不清；iPhone 在前时第二个平台只能重新解包（端到端实测：20675 个解包文件全部重写）。iPhone 还能从 Mac 的产物根接着做（build.seed_from_sibling）
@@ -37,15 +42,45 @@ def path(private_root):
     return Path(private_root) / "batch.json"
 
 
+def valid(batch):
+    """形状对不对：各款都有 gameId、平台、每个平台一条带合法状态的结果（缺字段的坏文件当没有批次，不抛异常，审计 P2-280）"""
+    if not isinstance(batch, dict) or batch.get("schema") != 1 or not isinstance(batch.get("items"), list):
+        return False
+    for item in batch["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("gameId"), str) or not isinstance(item.get("platforms"), list):
+            return False
+        results = item.get("results")
+        if not isinstance(results, dict) or any(not isinstance(results.get(p), dict) or results[p].get("state") not in STATES for p in item["platforms"]):
+            return False
+    return True
+
+
 def load(private_root):
     """→ 批次或 None（读不出、格式不对都当没有）"""
     try:
         batch = json.loads(path(private_root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(batch, dict) or batch.get("schema") != 1 or not isinstance(batch.get("items"), list):
-        return None
-    return batch
+    return batch if valid(batch) else None
+
+
+@contextlib.contextmanager
+def locked(private_root):
+    """一条命令读 → 改 → 写期间独占 batch.json（作业层已有的 filelock，Mac / Windows 同一套）：两个进程同时 mark 时不互相盖掉（审计 P2-270）。
+    锁被占着就短等（每条命令都是毫秒级），等不到报错，不静默写"""
+    root = Path(private_root); root.mkdir(parents=True, exist_ok=True)
+    with open(root / "batch.json.lock", "a+") as f:
+        for _ in range(100):
+            try:
+                filelock.try_lock(f); break
+            except BlockingIOError:
+                time.sleep(0.05)
+        else:
+            raise OSError("批次正被另一个进程改着，稍后再试")
+        try:
+            yield
+        finally:
+            filelock.unlock(f)
 
 
 def recover(batch):
@@ -111,6 +146,8 @@ def mark(batch, gid, platform, state, message="", code=None, output=None):
     if message: result["message"] = message
     if code: result["code"] = code
     if output: result["output"] = output
+    if state == "running" and batch.get("paused"):
+        raise ValueError("这一批因为磁盘空间不足暂停着：释放空间后点「重试」")
     item["results"][platform] = result
     if state == "failed" and code in PAUSE_CODES:
         batch["paused"] = code
@@ -126,8 +163,7 @@ def cancel(batch):
 
 
 def resume(batch):
-    """接着出：解除暂停，取消的接回来（失败的不动，走 retry）"""
-    batch["paused"] = None
+    """接着出：取消的接回来（失败的不动、暂停也不解除，都走 retry）"""
     for item in batch["items"]:
         for result in item["results"].values():
             if result["state"] == "cancelled":
@@ -147,14 +183,15 @@ def retry(batch, gid=None):
 
 
 def summary(batch):
-    """按款数：一款所有平台都出好 = 已出好；有平台失败 = 失败；有平台取消（且没失败）= 已取消；其余 = 还没出完"""
+    """按款数：还有平台没出 / 正在出 = 还没出完（哪怕别的平台已失败，审计 P1-168）；其余所有平台都出好 = 已出好；有平台失败 = 失败；
+    有平台取消（且没失败）= 已取消。done = 没有还没出完的、也没暂停"""
     counts = {"total": len(batch["items"]), "completed": 0, "failed": 0, "cancelled": 0, "pending": 0}
     for item in batch["items"]:
         states = [item["results"][p]["state"] for p in item["platforms"]]
-        if all(s == "completed" for s in states): counts["completed"] += 1
+        if any(s in ("pending", "running") for s in states): counts["pending"] += 1
+        elif all(s == "completed" for s in states): counts["completed"] += 1
         elif "failed" in states: counts["failed"] += 1
-        elif "cancelled" in states: counts["cancelled"] += 1
-        else: counts["pending"] += 1
+        else: counts["cancelled"] += 1
     counts["done"] = counts["pending"] == 0 and not batch.get("paused")
     return counts
 
@@ -173,33 +210,41 @@ def main(argv=None):
     ap.add_argument("--state", choices=STATES); ap.add_argument("--message", default=""); ap.add_argument("--code"); ap.add_argument("--output")
     a = ap.parse_args(argv)
     try:
-        if a.command == "clear":
-            path(a.private_root).unlink(missing_ok=True)
-            print("{}"); return 0
-        if a.command == "create":
-            data = json.loads(a.json or sys.stdin.read())
-            batch = create(data.get("items") or [], data.get("location"))
-        else:
-            batch = load(a.private_root)
-            if batch is None:
-                if a.command == "show":
-                    print("{}"); return 0
-                raise ValueError("没有进行中的批次")
-            if a.command == "mark":
-                if not (a.game and a.platform and a.state):
-                    raise ValueError("mark 要 --game --platform --state")
-                mark(batch, a.game, a.platform, a.state, a.message, a.code, a.output)
-            elif a.command == "recover": recover(batch)
-            elif a.command == "cancel": cancel(batch)
-            elif a.command == "resume": resume(batch)
-            elif a.command == "retry": retry(batch, a.game)
-        if a.command != "show":
-            save(a.private_root, batch)
-        print(json.dumps(show(batch), ensure_ascii=False))
-        return 0
+        if a.command == "show":
+            print(json.dumps(show(load(a.private_root)), ensure_ascii=False)); return 0
+        with locked(a.private_root):
+            return run(a)
     except (OSError, ValueError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False))
         return 1
+
+
+def run(a):
+    """main 里持锁后跑一条改批次的命令（show 不改，不进这里）"""
+    if a.command == "clear":
+        path(a.private_root).unlink(missing_ok=True)
+        print("{}"); return 0
+    if a.command == "create":
+        data = json.loads(a.json or sys.stdin.read())
+        old = load(a.private_root)
+        if old and not summary(old)["done"]:
+            raise ValueError("上一批还没出完：在 S2Arm 的批量出包页「重试」/「继续」，或点「完成」清掉再建")
+        batch = create(data.get("items") or [], data.get("location"))
+    else:
+        batch = load(a.private_root)
+        if batch is None:
+            raise ValueError("没有进行中的批次")
+        if a.command == "mark":
+            if not (a.game and a.platform and a.state):
+                raise ValueError("mark 要 --game --platform --state")
+            mark(batch, a.game, a.platform, a.state, a.message, a.code, a.output)
+        elif a.command == "recover": recover(batch)
+        elif a.command == "cancel": cancel(batch)
+        elif a.command == "resume": resume(batch)
+        elif a.command == "retry": retry(batch, a.game)
+    save(a.private_root, batch)
+    print(json.dumps(show(batch), ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
