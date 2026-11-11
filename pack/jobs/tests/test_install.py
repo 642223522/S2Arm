@@ -1213,6 +1213,17 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ApplyFailureReasonTests(unittest.TestCase):
+    """手机上解开失败（如 #569 目录 App 写不进）：tools/push_pack.py 按解包日志「解包失败：…」当场报原因，装机作业认这一句、原因原样上屏。
+    两边原句对不上会红（期望手写）"""
+    def test_job_reads_the_push_tool_sentence(self):
+        import install
+        tool = (Path(install.__file__).resolve().parents[2] / "tools/push_pack.py").read_text(encoding="utf-8")
+        self.assertIn('f"资源包推进去了，但手机上解开失败：{', tool)
+        log = "[12:00:09] 【红】资源包推进去了，但手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）\n"
+        self.assertEqual(install.APPLY_FAILED.search(log).group(1), "目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）")
+
+
 class DevicectlTimeoutTests(unittest.TestCase):
     """#333：devicectl 超时（锁屏 / 隧道断时一直挂）转成非零返回码 124 + 人话原因，不再抛 TimeoutExpired 让装机任务裸 traceback 收场"""
     def test_timeout_becomes_rc_124(self):

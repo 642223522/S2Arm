@@ -601,6 +601,7 @@ LOCKED_SIGNS = ("XPC response missing CoreDevice.output", "locked", "Locked")   
 DEVMODE_SIGNS = ("CoreDeviceProxy",)   # s2a-devpush 建不了隧道（没开开发者模式 / iOS 17 以下）
 RELAUNCH_S = 10   # 拉不起时每隔几秒再拉一次（拉一次约 1 秒；等待总长仍按 STALL_S 无进展判）
 PROGRESS = re.compile(r"进度：解开 \S+（(\d+)/(\d+)）")
+FAILED = re.compile(r"解包失败：(.+)")   # App 解开失败时写进解包日志的那一行（runtime/src/pack_apply.c s2a_pack_apply 收尾）：原因原样带回
 
 
 def send(dev, pack, work, say=print, progress=None, stage=None):
@@ -646,6 +647,9 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
         new = (read(dev, unpack_log(dev), work, "r.unpack1") or "").splitlines()[u0:]
         if applied() == want and any(done.search(l) for l in new):
             say("资源包：机上已解开（.applied = 本包）"); return True
+        failed = [m.group(1).strip() for m in map(FAILED.search, new) if m]
+        if failed:   # App 已经起来解过、失败了：按它写的原因当场报（原先只看进度行，第一包前就失败时干等 stall 秒、再报「解包没有开始」，原因丢了）
+            raise Fail(f"资源包推进去了，但手机上解开失败：{failed[-1][:600]}")
         got = [(int(m.group(1)), int(m.group(2))) for m in map(PROGRESS.search, new) if m]
         if got and got[-1][0] > seen:
             seen, last = got[-1][0], now(); say(f"机上解包 {seen}/{got[-1][1]}")
