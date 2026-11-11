@@ -321,8 +321,7 @@ class JobsTests(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, OUT=str(out)), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "True 乙 3 0")   # 发现断管、没抛；三条事件都进了记录；子进程照常跑完
-        built = Path(self.request["library"]) / ".s2arm-library.json"   # 库建好了任务记录在 <库>/logs/jobs，否则 <私有目录>/logs/jobs
-        jobs = Path(self.request["library"]) / "logs/jobs" if built.is_file() else self.root / "private/logs/jobs"
+        jobs = self.root / "private/logs/jobs"   # 任务记录固定在 <私有目录>/logs/jobs（剃刀 H6）
         events = (jobs / "gone.events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(l)["stage"] for l in events], ["甲", "甲", "乙"])
 

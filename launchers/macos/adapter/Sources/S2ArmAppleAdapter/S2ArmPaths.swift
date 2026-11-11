@@ -36,21 +36,14 @@ public enum S2ArmPaths {
         return library(privateRoot: privateRoot, saved: p["library"] as? String ?? "")
     }
 
-    /// 任务日志 + 任务记录（logs/jobs/）的目录：库建好了（有 .s2arm-library.json）是 <库>/logs，否则退回 <私有目录>/logs。
-    /// library 不传就读设置文件。
-    public static func logsRoot(privateRoot: URL, library: String? = nil) -> URL {
-        let lib = library.map { Self.library(privateRoot: privateRoot, saved: $0) } ?? savedLibrary(privateRoot: privateRoot)
-        if !lib.isEmpty {
-            let root = URL(fileURLWithPath: lib, isDirectory: true)
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent(".s2arm-library.json").path) {
-                return root.appendingPathComponent("logs")
-            }
-        }
-        return privateRoot.appendingPathComponent("logs")
+    /// 任务日志 + 任务记录（logs/jobs/）的目录：固定 <私有目录>/logs，同作业层 core.logs_root（剃刀 H6 / W18：原先「库建好放库里、否则私有目录」，
+    /// 后端和三个前端各算一遍）。旧位置 <库>/logs 里的由作业层建任务时迁回。
+    public static func logsRoot(privateRoot: URL) -> URL {
+        privateRoot.appendingPathComponent("logs")
     }
 
     /// 任务记录目录 logs/jobs/。
-    public static func jobsDir(privateRoot: URL, library: String? = nil) -> URL {
-        logsRoot(privateRoot: privateRoot, library: library).appendingPathComponent("jobs")
+    public static func jobsDir(privateRoot: URL) -> URL {
+        logsRoot(privateRoot: privateRoot).appendingPathComponent("jobs")
     }
 }

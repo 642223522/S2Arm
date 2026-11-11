@@ -25,7 +25,7 @@ class ProbeJobTests(JobCase):
 
     def test_probe_writes_no_job_files_but_reports_on_stdout(self):
         # installCheck / targetDevice / catalog / locations：jobs/ 下没有这个任务的任何文件；结果照样从标准输出回来（终态 succeeded、result 原样）
-        jobs = self.c.library / "logs" / "jobs"   # 库建好后任务记录在 <库>/logs/jobs（core.logs_root）
+        jobs = self.c.private / "logs" / "jobs"   # 任务记录固定在 <私有目录>/logs/jobs（core.logs_root，剃刀 H6）
         for op in ("installCheck", "targetDevice", "catalog", "locations"):
             with self.subTest(op=op):
                 events = self.run_op(op, "probe-" + op)
@@ -34,7 +34,7 @@ class ProbeJobTests(JobCase):
 
     def test_real_job_still_writes_its_three_files(self):
         self.run_op("keys", "real-keys")
-        self.assertEqual(sorted(p.name for p in (self.c.library / "logs" / "jobs").glob("real-keys*")),
+        self.assertEqual(sorted(p.name for p in (self.c.private / "logs" / "jobs").glob("real-keys*")),
                          ["real-keys.events.jsonl", "real-keys.json", "real-keys.request.json"])
 
 

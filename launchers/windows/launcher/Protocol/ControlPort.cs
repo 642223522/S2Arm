@@ -188,12 +188,12 @@ public static class ControlJournal
     public static bool SameStart(long fileTime, string? pidStart) =>
         string.IsNullOrEmpty(pidStart) || pidStart == fileTime.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>作业记录在 LibraryPaths.JobsDir（库\logs\jobs，库没建好时 私有目录\logs\jobs）；library 不给就读设置。</summary>
-    public static List<JsonElement> Tasks(string privateRoot, int limit = 60, string? library = null)
+    /// <summary>作业记录在 LibraryPaths.JobsDir（固定 私有目录\logs\jobs，剃刀 H6）。</summary>
+    public static List<JsonElement> Tasks(string privateRoot, int limit = 60)
     {
         var found = new List<(double Started, JsonElement Task)>();
         string[] files;
-        try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot, library), "*.json"); }
+        try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot), "*.json"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
         foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase)))
         {

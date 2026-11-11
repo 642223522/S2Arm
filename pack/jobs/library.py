@@ -2350,7 +2350,7 @@ def diagnostics(c):
     step = "打开日志目录"   # 失败时写进报错：哪一步、什么错误（#427：SMB 共享盘上导不出，原先只有一句笼统的话，看不出卡在哪）
     try:
         flags = 0 if os.name == "nt" else os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
-        # 日志与任务记录在 core.logs_root（默认位置的 logs/，任务记录在 logs/jobs/；库没建好退回私有目录）：逐级不跟链接打开
+        # 日志与任务记录在 core.logs_root（固定 <私有目录>/logs，任务记录在 logs/jobs/，剃刀 H6）：逐级不跟链接打开
         home_fd = winproc.open_dir_nofollow(c.logs.parent) if os.name == "nt" else os.open(c.logs.parent, flags)
         descriptors.append(home_fd)
         roots = {}
