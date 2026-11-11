@@ -110,6 +110,8 @@ struct CoverFlowView: View, Equatable {
             SectionHeading(title: ShellStrings.text("Your games")).fixedSize()
             Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                 .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4).fixedSize()
+            // S2Arm: the version for screenshots, after the count; the first thing to give way when the row is tight.
+            LibraryVersionBadge().padding(.leading, 6).layoutPriority(-1)
             Spacer(minLength: 12)
             if short && showsHints && !compact {
                 // Keep optional controller hints only when the whole row fits.

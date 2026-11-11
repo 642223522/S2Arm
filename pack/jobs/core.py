@@ -282,6 +282,39 @@ def release_version(engine):
     return m.group(1) if m else ""
 
 
+def display_version(engine):
+    """界面上给玩家看的版本字（11-11 维护者：玩家截图里要看得出是哪一版；Mac / Windows 启动器顶栏、iPhone 设置页与游戏库同一口径）：
+    正式版「v0.3.0」；开发版「v<最近 tag 数字段>-dev+<7 位短提交号>」。HEAD 正好落在发版 tag 上且已跟踪文件没改动 = 正式版。
+    发布的引擎快照读打包时写进 engine.json 的 displayVersion；开发树在 engine 目录用 git 现算；git 不可用退回「v<release_version>」，连它也没有 → 空串"""
+    eng = Path(engine) / "engine.json"
+    if eng.is_file():
+        try:
+            v = json.loads(eng.read_text(encoding="utf-8")).get("displayVersion")
+            if isinstance(v, str) and v:
+                return v
+        except (OSError, ValueError):
+            pass
+    short = release_version(engine)
+    if not short:
+        return ""
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(engine), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    commit = git("rev-parse", "--short=7", "HEAD")
+    if not commit:
+        return f"v{short}"
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    tag = git("describe", "--tags", "--exact-match", "HEAD") or ""
+    if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
+        return f"v{short}"
+    return f"v{short}-dev+{commit[:7]}"
+
+
 def digest(path, progress=None):
     h = _sha256()
     done = 0

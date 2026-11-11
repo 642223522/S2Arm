@@ -230,8 +230,9 @@ def write_manifest(destination, fingerprint):
     identity = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     # 壳编号（pack/shell/manifest.py current_id）：在开发树按壳输入表算好写进来，快照里的出包直接读（快照按目录挑文件、剔测试目录，重算会对不上发布的壳）
     sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
-    # 发版号（三端同号）：在开发树按最近 tag 算好写进来，快照里组装 iPhone 容器直接读（core.release_version）
-    from core import release_version
-    atomic(destination / "engine.json", dict(schema=1, id=identity, source=fingerprint, version=release_version(ROOT),
+    # 发版号（三端同号）：在开发树按最近 tag 算好写进来，快照里组装 iPhone 容器直接读（core.release_version）；
+    #   显示版本（v0.3.0 / v0.2.6-dev+ba0ef07）同理在开发树算好写进来——快照是全新单提交 Git 库，在快照里现算会得到快照自己的提交号（core.display_version）
+    from core import display_version, release_version
+    atomic(destination / "engine.json", dict(schema=1, id=identity, source=fingerprint, version=release_version(ROOT), displayVersion=display_version(ROOT),
                                            memoryRequirementsVersion=2, shellId=shell_manifest.current_id(), files=files))
     return identity
