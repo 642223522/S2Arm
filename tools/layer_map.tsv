@@ -37,6 +37,7 @@ graphics/cpatch/	核心	补丁说明	共用层
 graphics/metal/	图形后端	Metal	Metal档
 graphics/nvn/	图形后端	直连前端	Metal档
 graphics/nvn/gfx/nvn/	图形后端	直连前端	共用层
+graphics/nvn/replay/	图形后端	直连回放核心	直连Vulkan
 graphics/nvn/gfx/gl/	图形后端	直连前端	共用层
 graphics/nvn/gfx/tex/	图形后端	直连前端	共用层
 translator/	图形后端	离线着色器	共用层
