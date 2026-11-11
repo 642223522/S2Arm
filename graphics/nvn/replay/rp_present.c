@@ -71,11 +71,17 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     if (nvn_gpu_ok(r)) {
         if (!g_n_shown++ || g_n_shown % 600 == 0) {   // 首帧一行，之后每 600 帧一行
             uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
-            char b[260]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 %ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）；累计绘制 %llu 笔、跳过 %llu 笔", (unsigned long long)g_n_shown,
-                                  t->d.width, t->d.height, d.crop[0], d.crop[1], d.crop[2], d.crop[3], dr.w, dr.h, d.dst[0], d.dst[1], d.dst[2], d.dst[3], (unsigned long long)g_n_dropped,
+            char b[300]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 #%llu（格式 %#x，%s）%ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）；累计绘制 %llu 笔、跳过 %llu 笔", (unsigned long long)g_n_shown,
+                                  (unsigned long long)t->serial, (unsigned)t->d.format, nvn_be_tex_gpu_owned(t->serial) == 1 ? "GPU 写过" : "GPU 没写过", t->d.width, t->d.height, d.crop[0], d.crop[1], d.crop[2], d.crop[3], dr.w, dr.h, d.dst[0], d.dst[1], d.dst[2], d.dst[3], (unsigned long long)g_n_dropped,
                                   (unsigned long long)nd, (unsigned long long)ns);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
-            if (nvn_plat_flag("nvk_drawlog", 0)) rp_draw_log_arm(160);   // 调试开关：接下来的 160 笔绘制逐笔出日志
+            if (nvn_unimpl_kinds()) {   // 未接项各出现了多少次（首次出现时只打一行，量级要看这里）
+                char u[700], line[760]; size_t n = nvn_unimpl_dump(u, sizeof u);
+                for (size_t i = 0; i < n; i++) if (u[i] == '\n') u[i] = ';'; else if (u[i] == '\t') u[i] = ' ';
+                snprintf(line, sizeof line, "未接计数：%s", u); nvn_plat_log(NVN_PLAT_LOG_INFO, "present", line);
+            }
+            if (nvn_plat_flag("nvk_drawlog", 0)) rp_draw_log_arm(nvn_plat_flag("nvk_drawlog", 0) > 1 ? nvn_plat_flag("nvk_drawlog", 0) : 160);
+            if (nvn_plat_flag("nvk_dump", 0)) rp_debug_dump_request(t->serial, g_n_shown);   // 调试开关：把这张图和它上游的贴图读回落盘   // 调试开关：接下来的 160 笔绘制逐笔出日志
         }
     } else g_n_dropped++;
     pthread_mutex_unlock(&g_pmu);

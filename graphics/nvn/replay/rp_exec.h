@@ -53,3 +53,7 @@ void rp_draw_log_arm(int lines);   // 接下来的 lines 笔绘制（含被跳�
 
 // 资源同步用的段（见 rp_exec.c）：通常是先于主段提交的前置段；同一资源本次提交里第二次同步时结束当前通道、回到主段。
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub);
+int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式
+// 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
+void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
+void rp_debug_dump_poll(uint64_t *fence);

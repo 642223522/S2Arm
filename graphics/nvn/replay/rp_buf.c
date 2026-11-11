@@ -9,11 +9,13 @@
 #include "rp_exec.h"
 #include "rp_res.h"
 #include "nvn_unimpl.h"
+#include "nvn_plat.h"
 #include "nvn_hmap.h"
 #include "nvn_dirty.h"
 #include "nvn_mtl.h"
 #include <pthread.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; };   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
@@ -121,14 +123,20 @@ void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec) {
     uint64_t row = o->row_stride ? o->row_stride : (uint64_t)(((uint32_t)o->r.width + (uint32_t)bw - 1) / (uint32_t)bw) * (uint64_t)bpb;
     uint64_t rows = ((uint32_t)o->r.height + (uint32_t)bh - 1) / (uint32_t)bh, img = o->image_stride ? o->image_stride : row * rows;
     uint32_t nz = o->r.depth > 0 ? (uint32_t)o->r.depth : 1;
-    if (t->d.target == NVN_TEXTURE_TARGET_3D && nz > 1) { nvn_unimpl("tex", "b2t_3d_multi_slice", rec); return; }
     if (!in_pool(o->src, img * nz)) { nvn_unimpl("buf", "b2t_source_outside_pools", rec); return; }
     nvn_gpu_tex g = rp_tex_resolve(t, c);
     if (!g || !c) return;
+    if (t->d.target == NVN_TEXTURE_TARGET_3D && nvn_plat_flag("nvk_drawlog", 0)) {   // 调试开关下：三维贴图的每次上传打一行
+        char b[200]; snprintf(b, sizeof b, "三维贴图上传 #%llu 格式 %#x 尺寸 %dx%dx%d 级 %u：区域 %d,%d,%d %dx%dx%d 行距 %llu 片距 %llu（记录里 行 %llu 片 %llu）块 %dx%d 每块 %d 字节",
+                             (unsigned long long)t->serial, (unsigned)t->d.format, t->d.width, t->d.height, t->d.depth, level, o->r.xoffset, o->r.yoffset, o->r.zoffset, o->r.width, o->r.height, o->r.depth,
+                             (unsigned long long)row, (unsigned long long)img, (unsigned long long)o->row_stride, (unsigned long long)o->image_stride, bw, bh, bpb);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", b);
+    }
     for (uint32_t z = 0; z < nz; z++) {
         NVNcopyRegion r = o->r; r.depth = 1;
-        uint32_t layer = layer0 + (uint32_t)o->r.zoffset + z;
-        if (t->d.target == NVN_TEXTURE_TARGET_3D) layer = 0; else r.zoffset = 0;
+        // 第几层 / 第几片都经 layer 交给后端（三维贴图的 layer 就是深度方向的片号；视图的起始层只对分层贴图有意义）
+        uint32_t layer = (uint32_t)o->r.zoffset + z + (t->d.target == NVN_TEXTURE_TARGET_3D ? 0 : layer0);
+        r.zoffset = 0;
         nvn_gpu_tex_upload(c, g, level, layer, &r, (const void *)(uintptr_t)(o->src + z * img), row, img);
     }
     rp_tex_mark_gpu_written(t);   // 这张贴图的内容从此不再从它自己的存储重传
