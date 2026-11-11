@@ -716,13 +716,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
-    func checkInstall(_ gameID: String) {
+    func checkInstall(_ gameID: String, device: String? = nil) {
         if installGameID != gameID { installGameID = gameID; installReadiness = nil; installError = nil }
         guard !installChecking else { return }
         installChecking = true
         Task {
             do {
-                let readiness = try await provider.installReadiness(gameId: gameID, device: installDeviceID)
+                let readiness = try await provider.installReadiness(gameId: gameID, device: device ?? installDeviceID)
                 if installGameID == gameID { installReadiness = readiness; installError = nil }
             } catch {
                 if installGameID == gameID { installError = error.localizedDescription }
