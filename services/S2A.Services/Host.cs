@@ -917,7 +917,7 @@ namespace S2A.Services
             return null;
         }
 
-        // 选用户小程序：只有一个用户（带存档起局时是存档的用户，见 Saves.SelectUser），真机上即选它
+        // 选用户小程序：答当前用户——游戏库里选的本地玩家（LocalPlayer.cs，#623）；带存档起局时是存档的用户（Saves.SelectUser）。玩家已在起局前选过，这里不再弹
         public UserProfile ShowPlayerSelectDialog()
         {
             UserProfile user = Host.Device.System.AccountManager.LastOpenedUser;

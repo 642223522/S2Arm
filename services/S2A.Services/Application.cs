@@ -148,7 +148,10 @@ namespace S2A.Services
             Aoc.Register(gameDir);   // DLC：aoc.tsv 里的全部登记为已拥有（有数据的挂 aoc/<idx>/，仅授权的挂载时报红）
 
             Saves.SelectUser(device);
-            if (Saves.Dir() == null) SaveFolder.SelectUser(device, applicationId);   // 存档位置里记的用户号（SaveFolder.cs，审计 P1-162）：建存档之前
+            // 本地玩家（LocalPlayer.cs，#623）：游戏库里选的玩家定当前用户；没给玩家走旧规则——存档位置里记的用户号（SaveFolder.cs，审计 P1-162）。都在建存档之前
+            //   带存档起局（Mac 导入的社区存档首次起局灌入）的种子没记用户号时，也灌给选的玩家（不然落到数据根里上次打开的用户）
+            if (Saves.Dir() == null) { if (!LocalPlayer.Select(device, applicationId)) SaveFolder.SelectUser(device, applicationId); }
+            else if (!File.Exists(Path.Combine(Saves.Dir(), "user"))) LocalPlayer.Select(device, applicationId);
             Result saveResult = ProcessLoaderHelper.EnsureSaveData(device, new ApplicationId(applicationId), nacp);
             if (requireSuccess) saveResult.ThrowIfFailure();
             Saves.Seed(device, applicationId);

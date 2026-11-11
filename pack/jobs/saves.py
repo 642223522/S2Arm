@@ -941,7 +941,9 @@ def checked_archive(c, game, root):
                         save_entries(lambda name: (root / name).read_bytes(), files, dirs)
                     )
                     incoming = ownership(manifest["saveEntries"])
-                    if any(target[key] != incoming[key] for key in target.keys() & incoming.keys()):
+                    # 本地玩家（#623）：账号集合是包含关系（一边多了 / 少了玩家）照常恢复，各有对方没有的才拒绝（同 SaveTransferArchive.cs Identity）
+                    if any(not (target[key] <= incoming[key] or incoming[key] <= target[key])
+                           for key in target.keys() & incoming.keys()):
                         fail(c, "备份用户与当前存档用户不符，已拒绝恢复。", "wrong_user")
         if before != hash_file(c, source):
             fail(c, "备份已变化，请重新检查。", "changed")
