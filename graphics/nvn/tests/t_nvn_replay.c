@@ -75,6 +75,8 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t l
 // 脏页替身：代号由用例推进
 static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects;
 void nvn_dirty_protect(const void *addr, size_t len) { (void)addr; (void)len; g_protects++; }
+void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 0; *p = 0; }
+void nvn_dirty_mp_stats(uint64_t *c, uint64_t *g, uint64_t *n) { *c = 0; *g = 0; *n = 0; }
 uint64_t nvn_dirty_now(void) { return g_dirty_now; }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { (void)addr; (void)len; return g_dirty_written > stamp; }
 

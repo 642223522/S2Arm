@@ -6,6 +6,7 @@
 #include "rp_res.h"
 #include "nvn_unimpl.h"
 #include "nvn_plat.h"
+#include "nvn_dirty.h"
 #include "nvn_present_fit.h"
 #include "nvn_mtl.h"
 #include "platform/plat.h"
@@ -82,6 +83,11 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                                       sec, (unsigned long long)fr, (double)fr / sec, (double)(nd - d_last) / f, (double)pf[RP_PERF_SUBS] / f, (double)pf[RP_PERF_SUBMIT_NS] / 1e6 / f, (double)pf[RP_PERF_COMMIT_NS] / 1e6 / f,
                                       (double)pf[RP_PERF_WAIT_N] / f, (double)pf[RP_PERF_WAIT_NS] / 1e6 / f, pf[RP_PERF_DONE_N] ? (double)pf[RP_PERF_DONE_NS] / 1e6 / (double)pf[RP_PERF_DONE_N] : 0.0, (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_PRESENT_NS] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+                {   // 写跟踪的开销：游戏写到被保护的页要走一次缺页处理，改保护要进内核
+                    static uint64_t f0, p0, c0, g0, n0; uint64_t fl = 0, pr = 0, mc = 0, mpg = 0, mns = 0; nvn_dirty_stats(&fl, &pr); nvn_dirty_mp_stats(&mc, &mpg, &mns);
+                    snprintf(b, sizeof b, "分时（写跟踪）：每帧缺页 %.0f 次、宿主写前解保护 %.0f 页、改保护 %.0f 次共 %.0f 页 %.1f 毫秒", (double)(fl - f0) / f, (double)(pr - p0) / f, (double)(mc - c0) / f, (double)(mpg - g0) / f, (double)(mns - n0) / 1e6 / f);
+                    nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+                    f0 = fl; p0 = pr; c0 = mc; g0 = mpg; n0 = mns; }
                 t_last = now; n_last = g_n_shown + 1; d_last = nd;
             }
         }
