@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import re
 
 
@@ -43,6 +44,7 @@ RECOVERY = {
     "library_in_cloud": "游戏库在云盘同步目录里（iCloud 云盘、OneDrive、Dropbox 等）：出包时会写几十 GB 中间文件，云盘会上传它们、换成占位文件，出包中途会读不到。在「设置 → 游戏库与玩家数据」把游戏库改到本机磁盘上不同步的位置（例如默认位置），再重试；游戏原件放在哪都行。",
     "library_bad_format": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 NTFS 格式的磁盘上（FAT32 单个文件不能超过 4 GB，exFAT 没有可靠的原子替换）：在「设置 → 游戏库与玩家数据」改用这台电脑上的默认位置，或选一块 NTFS 格式的盘，再重试。",
     "library_move_failed": "游戏库还在原来的位置，什么都没有丢：按上面的原因处理后再搬一次。",
+    "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
     "permission_denied": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
     "architecture_unsupported": "当前路径需要 Apple Silicon Mac，请换用支持的设备；重试不会改变硬件兼容性。",
@@ -147,22 +149,48 @@ def recovery(code, *, packaged):
 
 class Failure(Exception):
     """message 是上屏的那句；internal 是只进诊断 detail（「复制错误摘要」带走）的内部原文：阶段、rc、构建号、红行。"""
-    def __init__(self, message, *, code="job_failed", internal=""):
+    def __init__(self, message, *, code="job_failed", internal="", holder=None):
         super().__init__(message)
         self.code = code
         self.internal = internal
+        self.holder = holder   # library_busy：占着游戏库锁的任务（filelock 旁挂文件里记的那份），其余为 None
 
 
-def explain(error):
+def _under(path, roots):
+    # 两边都按真实路径比（macOS 的 /var 实为 /private/var、外接盘挂载点软链：请求里记的与报错带的写法可能不同；删掉的文件 realpath 照样解析父目录）
+    try:
+        p = os.path.realpath(os.fspath(path))
+    except TypeError:
+        return False
+    for r in roots:
+        r = os.path.realpath(os.fspath(r))
+        if p == r or p.startswith(r.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def explain(error, sources=(), library=None):
+    """OSError 按 errno 归码，不猜原文；「原件不见了」「去系统设置授权」只给确知是玩家这边的路径（启动器剃刀 H8，11-11）：
+    sources = 这次作业的原件（导入的路径、这款登记的原件），library = 游戏库根。
+    ENOENT 出在原件下，或游戏库根整个不在（外接盘没插）→ input_missing；EACCES / EPERM / EROFS 出在原件或游戏库下 → permission_denied；
+    其余（私有目录的日志 / 任务记录、并发竞态删掉的临时文件、不带路径的）→ job_failed，原文与路径进 internal（坑记录：两个作业同时收日志的
+    ENOENT 被说成原件缺失，玩家被指去接磁盘）"""
     if isinstance(error, Failure):
         return error
     if isinstance(error, OSError):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
+        paths = [p for p in (error.filename, error.filename2) if p]
+        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
-            return Failure("文件或目录不可访问或不可写。", code="permission_denied")
+            if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
+                return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)
+            return Failure("本地任务失败：S2Arm 自己的文件读写不了，请导出诊断发给我们。", internal=internal)
         if error.errno == errno.ENOENT:
-            return Failure("任务所需的文件或目录不存在。", code="input_missing")
+            if any(_under(p, sources) for p in paths) or (library is not None and not os.path.isdir(library)):
+                return Failure("任务所需的文件或目录不存在。", code="input_missing", internal=internal)
+            return Failure("本地任务失败：S2Arm 自己的文件找不到了，请重试；还不行请导出诊断发给我们。", internal=internal)
+        return Failure("本地任务失败，请检查日志和输入。", internal=internal)
     return Failure("本地任务失败，请检查日志和输入。")
 
 

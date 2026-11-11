@@ -170,7 +170,8 @@ class DefaultPathUnchangedTests(JobCase):
         self.c.r.pop("partialResults", None)
         with patch.object(library, "atomic", atomic), self.assertRaises(OSError) as e:
             library.import_games(self.c)
-        self.assertEqual(errors.explain(e.exception).code, "permission_denied")
+        # 作业里 explain 带本作业的玩家侧路径（Context.failure_roots，启动器剃刀 H8）：catalog.json 在游戏库下 → 仍归 permission_denied
+        self.assertEqual(errors.explain(e.exception, **self.c.failure_roots()).code, "permission_denied")
 
     def test_record_sources_caps_each_and_total(self):
         import core

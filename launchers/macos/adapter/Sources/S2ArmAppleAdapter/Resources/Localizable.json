@@ -6664,6 +6664,10 @@
   "en": "This folder already has other files. Choose an empty folder or an existing S2Arm library. Nothing was changed."
  },
  {
+  "source": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
+  "en": "Wait for the task that is using the library to finish (or cancel it in the task list), then try again. Nothing was changed."
+ },
+ {
   "source": "游戏库还在原来的位置，什么都没有丢：按上面的原因处理后再搬一次。",
   "en": "The library is still where it was and nothing was lost. Fix the problem above and move it again."
  },
