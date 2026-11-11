@@ -21,7 +21,7 @@ public sealed partial class EnvironmentWindow
     // The release version lives in version.txt (written by bundle_win.py); the assembly version is always 1.0.0.0.
     private static string AppVersion => UpdateClient.CurrentVersion(InstallDir) is { Length: > 0 } version ? version : "-";
     private string UpdatesFolder => Path.Combine(privateRoot, "updates");
-    private bool UpdateBlocked => PackBusy || libraryBusy || importBusy || busy;
+    private bool UpdateBlocked => AnyJob;
 
     private Dictionary<string, object?> UpdateStatus => updateProgress.Length > 0
         ? new() { ["state"] = "working", ["detail"] = updateProgress }

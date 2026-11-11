@@ -142,8 +142,9 @@ extension S2ArmLauncherModel {
     }
 
     /// 启动器刚打开：上次没出完的批次读回来（正在出的那款记成被打断、重新排队），出包页顶部提示继续
-    func recoverBatch() {
+    func recoverBatch(_ done: @escaping () -> Void = {}) {
         Task {
+            defer { done() }
             guard let s = await provider.client.batch("recover"), s["batch"] != nil else { return }
             batchState = s
         }

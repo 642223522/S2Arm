@@ -222,15 +222,13 @@ public sealed partial class EnvironmentWindow
     private async Task EnsureLibraryAsync(string folder, Action next)
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
-        libraryBusy = true; librarySummary = "library.working"; Render();
-        using var cancellation = new CancellationTokenSource();
-        libraryCancellation = cancellation;
+        var front = BeginJob(JobKind.Library); librarySummary = "library.working"; Render();
         try
         {
             connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
             PrivateJobRequest.EnsurePrivateRoot(privateRoot);
             Directory.CreateDirectory(folder);
-            var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, cancellation.Token, libraryMoveFrom);
+            var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, libraryMoveFrom, jobId: front.Next());
             libraryMoveFrom = null;
             DisplayJob(setup);
             if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = libraryFailure = LibraryFailed(folder, setup.Report.Message); return; }
@@ -242,7 +240,7 @@ public sealed partial class EnvironmentWindow
                 try { File.WriteAllText(LibraryPreference, connectedFolder); }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { libraryDiagnostics += "\n" + error.Message; }
             }
-            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "catalog", null, cancellation.Token);
+            var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
             if (listing.Report.Succeeded)
             { catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers(); }
@@ -254,7 +252,7 @@ public sealed partial class EnvironmentWindow
         catch (OperationCanceledException) { librarySummary = "library.interrupted"; }
         catch (Exception error)   // 玩家输入驱动的连接 / 创建：任何异常都报出来、不逃出去（玩家反馈：点「连接或创建游戏库」闪退）
         { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
-        finally { libraryCancellation = null; libraryBusy = false; Render(); }
+        finally { EndJob(front); Render(); }
     }
 
     // 欢迎页「一键出包」：进入出包页（由 ExportPages.cs 渲染），留空壳等另一个任务填。

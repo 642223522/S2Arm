@@ -53,6 +53,10 @@ public static class ControlPortCases
         File.WriteAllText(Path.Combine(jobs, "b.json"), $"{{\"id\":\"b\",\"operation\":\"ipa\",\"state\":\"running\",\"started\":2,\"pid\":{Environment.ProcessId}}}");
         File.WriteAllText(Path.Combine(jobs, "c.json"), "{\"id\":\"c\",\"operation\":\"ipa\",\"state\":\"running\",\"started\":3,\"pid\":2147483646}");
         File.WriteAllText(Path.Combine(jobs, "c.request.json"), "{\"id\":\"x\",\"operation\":\"ipa\"}");
+        // 剃刀 W9：进程号被复用时按起始时刻认出不是同一个（作业层 winproc.pid_start 记 FILETIME 十进制）；旧记录没写起始时刻按同一个算
+        check(ControlJournal.SameStart(133000000000000000, "133000000000000000"), "control journal: same pid start time is the same process");
+        check(!ControlJournal.SameStart(133000000000000001, "133000000000000000"), "control journal: reused pid with another start time is not the job");
+        check(ControlJournal.SameStart(133000000000000001, null), "control journal: record without pidStart keeps the pid check");
         var tasks = ControlJournal.Tasks(root);
         check(tasks.Count == 2 && tasks[0].GetProperty("id").GetString() == "b" && tasks[0].GetProperty("state").GetString() == "running", "journal: live job stays running, hidden and request files skipped");
         check(tasks[1].GetProperty("state").GetString() == "interrupted", "journal: running job with a dead process reads interrupted");
