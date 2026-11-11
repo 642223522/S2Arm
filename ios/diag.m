@@ -233,6 +233,8 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
         @"tester": @{@"id": tester_id(), @"group": @"", @"note": @""},
         @"app": @{@"bundle": bundle, @"version": [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"", @"commit": commit,
                   @"build_id": [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2ABuildID"] ?: @"",
+                  // 界面版本字（设置页 / 游戏库顶部显示的 v0.3.0 / v0.2.6-dev+ba0ef07，电脑组装时写 Info.plist 的 S2ADisplayVersion）：玩家截图与诊断包对得上
+                  @"display_version": [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2ADisplayVersion"] ?: @"",
                   // 包里着色器归档的目标「架构.系统」（ipa.sh 写 Info.plist 的 S2APsoTarget，如 applegpu_g18p.ios27，多份逗号连）：和 device.gpu_family / ios 对照，一眼看出整份不命中
                   @"pso_target": [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2APsoTarget"] ?: @""},
         @"game": @{@"name": game_name(), @"title_id": title_id(), @"build_id": main_build_id(), @"pack_fp": pack_fp()},
