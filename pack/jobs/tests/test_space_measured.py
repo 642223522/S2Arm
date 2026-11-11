@@ -176,6 +176,24 @@ class SpaceMeasured(JobCase):
         self.assertEqual(self.need(10_000_000_000, unpacked=True, windows=False), 15_000_000_000)
         self.assertEqual(self.need(10_000_000_000, windows=True), 11_000_000_000 * 2 + 15_000_000_000)
 
+    def test_budget_splits_location_and_cache_volumes(self):
+        # P1-165：存放位置与工具缓存在两块盘时，各按自己那份需求和自己的余量判；期望手算：原件 16 GB → 存放位置 16 × 1.1 = 17.6 GB，工具缓存 15 GB（≥ 3 GB 档）
+        c = self.context("ipa")
+        loc, cache = Path(self.root) / "ext", Path(self.root) / "cache"
+        class St:   # 两个假卷号
+            def __init__(self, dev): self.st_dev = dev
+        disks = {str(loc): (1, 20 * 10**9), str(cache): (2, 10 * 10**9)}
+        fake = lambda path: type("V", (), {"stat": lambda self, d=disks[str(path)][0]: St(d), "__fspath__": lambda self, p=str(path): p,
+                                           "__str__": lambda self, p=str(path): p})()
+        with patch.object(library, "_existing", side_effect=lambda p: fake(loc if p != c.work_root else cache)), \
+                patch("shutil.disk_usage", side_effect=lambda p: DU(0, 0, disks[os.fspath(p)][1])), \
+                patch.object(library, "_volume", side_effect=lambda p: os.fspath(p)):
+            vols = library.space_budget(c, self.game(16 * 10**9))["volumes"]
+        self.assertEqual([(v["role"], v["needBytes"], v["freeBytes"], v["enough"]) for v in vols],
+                         [("library", 17_600_000_000, 20 * 10**9, True), ("cache", 15_000_000_000, 10 * 10**9, False)])
+        # 同一块盘：合成一项，需求 = 两份之和（同原来）
+        self.assertEqual(self.budget(c, self.game(16 * 10**9))["needBytes"], 17_600_000_000 + 15_000_000_000)
+
     def test_ledger_does_not_change_budget(self):
         c = self.context("ipa")
         self.ledger(("2026-11-07T10:00:00", GID, "ipa", "1", 16 * 10**9, 500 * 10**9, "旧账"))
