@@ -286,7 +286,13 @@ LJ=(); LJN=(); TKS=(); job() {   # job <编号> <命令> <上限>：先排令牌
   trap "_sigrc '$1' 143 TERM" TERM; trap "_sigrc '$1' 130 INT" INT; trap "_sigrc '$1' 129 HUP" HUP; trap 'tok_put "$tk"' EXIT
   # 末尾另起一行 exit $?：bash 5 对「-c 串的最后一条简单命令」直接 exec，组长会变成被测命令本身、命令行里没有 .pg 路径，
   #   收尸进程（tools/gate_reap.py）按这个字样经 safe_killpg 认组就认不出（11-11 门禁机上列车 run_token_test ④ 红）；最后一条是内建命令就不会 exec
-  export GATE_IN_STEP=1; timeout "$3" bash -c "echo \$\$ > '$L/$1.pg'; $2"$'\n''exit $?' > "$L/$1.log" 2>&1 & tp=$!; echo $tp > "$L/$1.tp"; wait $tp; rc=$?; echo "$rc $((SECONDS - s0))" > "$L/$1.rc" ) & LJ+=($!); LJN+=("$1"); }   # LJ = 本机步的进程号（先等它们、还 CPU 账，再等 gate-host）
+  # 步时限按「无进展」判（11-10 判据去负载化：墙钟上限把满载下的正常慢判成超时——weak_link / 语法 / oneclick 一晚三个超时未判）：
+  #   tools/nostall.py 连续 GATE_NOSTALL_S（缺省 300）秒日志不长、树内 CPU / 磁盘不涨、没有编译子进程才判挂死（红）；墙钟只留本步上限 × GATE_HARD_X（缺省 4）
+  #   作保底（死循环一直吃 CPU 也算「有进展」），撞保底才记超时未判。GATE_NOSTALL_S=0 或缺 nostall.py（单测假仓库）= 旧行为：墙钟上限 = 本步上限
+  if [ "${GATE_NOSTALL_S:-300}" != 0 ] && [ -f tools/nostall.py ]; then echo "${GATE_NOSTALL_S:-300} $(( $3 * ${GATE_HARD_X:-4} ))" > "$L/$1.ns"
+    set -- "$1" "$2" "$3" "${S2A_PY:-python3}" tools/nostall.py "${GATE_NOSTALL_S:-300}" -- timeout "$(( $3 * ${GATE_HARD_X:-4} ))"
+  else set -- "$1" "$2" "$3" timeout "$3"; fi
+  export GATE_IN_STEP=1; "${@:4}" bash -c "echo \$\$ > '$L/$1.pg'; $2"$'\n''exit $?' > "$L/$1.log" 2>&1 & tp=$!; echo $tp > "$L/$1.tp"; wait $tp; rc=$?; echo "$rc $((SECONDS - s0))" > "$L/$1.rc" ) & LJ+=($!); LJN+=("$1"); }   # LJ = 本机步的进程号（先等它们、还 CPU 账，再等 gate-host）
 tok_putall() { local t; for t in ${TKS[@]+"${TKS[@]}"}; do tok_put "$t"; done; TKS=(); }   # 收尾兜底：步被 kill -9 没放的令牌（持锁者是门禁主进程，不收要等门禁退出）
 # <<< step_par
 # 门禁被停（列车收到 TERM 转来）时各步一起停：每步的 timeout 自成进程组、不随门禁退出，逐个 TERM 它（timeout 转给整组）；gate-host 那份停本机的 维护方工具
@@ -421,6 +427,10 @@ show() {   # show <行首> <结果文件（$L 下，不带后缀）> <显示名>
   if [ "$rc" = 75 ]; then echo "${1}🟡 $3 $sec 秒（rc=75，这一步自报环境未就绪）：$last"; return 3; fi
   # 跑满本步墙钟上限被杀（rc=124 且用满上限）= 超时未判（11-04 维护者）：多半是机器负载，不当本支红、不进红步清单；
   #   同 75 走「环境未就绪」（没有真红时整份退 75）。列车遇 75 先核干净 main，main 能过而本支超时才算本支的（真卡死照样拦下）。步自己内部 timeout 退 124 仍是红
+  # 无进展看门狗判的挂死（步跑在 tools/nostall.py 下，见 job）：与负载无关，记红；墙钟保底 = 本步上限 × GATE_HARD_X，撞保底才是超时未判
+  local ns= hard=$4; [ -f "$f.ns" ] && read -r ns hard < "$f.ns"
+  if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; grep -a '无进展看门狗' "$f.log" | head -2 | sed 's/^/    | /'; return 1; fi
+  set -- "$1" "$2" "$3" "$hard"
   if [ "$rc" = 124 ] && [ "$sec" -ge $(($4 - 2)) ]; then echo "${1}🟡 $3 $sec 秒（超时未判：跑满 ${4} 秒上限被杀，负载 $(sysctl -n vm.loadavg 2> /dev/null | awk '{print $2}')；不算本支红）：$last"; echo "$3" >> "$L/timeouts"; return 3; fi
   echo "${1}🔴 $3 $sec 秒（rc=$rc$([ "$rc" = 124 ] && { [ "$sec" -ge $(($4 - 2)) ] && echo "，超 ${4} 秒" || echo "，没到 ${4} 秒上限：是这一步自己退出 124（它内部的 timeout 到点）"; })）：$last"; { grep -E '^(不通|✗)' "$f.log" | head -10; grep -a '^  ┊' "$f.log" | head -400; grep -v '^[[:space:]]*$' "$f.log" | grep -av '^  ┊' | tail -12; } | sed 's/^/    | /'   # 先列「不通 / ✗」行：单测全文长时末尾看不到是哪条（✗ 是 python 单测与 widen 系列的写法，10-31 widen_auto_pkg 红行被截掉）
   return 1
