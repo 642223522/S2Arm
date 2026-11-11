@@ -1716,6 +1716,7 @@ def catalog(c):
     marker = c.logs / ".jobs-pruned"
     if time.time() - _mtime(marker) > 86400:
         prune_jobs(c.private, jobs=c.jobpath.parent)
+        marker.parent.mkdir(parents=True, exist_ok=True)   # catalog 是只读探测、不落自己的记录（剃刀 H4）：日志目录不一定已被本作业建出来
         marker.touch()
     records = sorted((p for p in c.jobpath.parent.glob("*.json") if p != c.jobpath and not p.name.endswith(".request.json")),
                      key=_mtime, reverse=True)[:JOB_LIST_LIMIT]

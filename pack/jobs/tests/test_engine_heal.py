@@ -51,6 +51,18 @@ class EngineHealTests(JobCase):
         self.assertEqual((c2.engine / PLIST).read_bytes(), b"<plist>original</plist>")
         self.assertEqual(list(c2.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
 
+    def test_probe_uses_installed_copy_without_rechecking_build_still_heals(self):
+        # 剃刀 H4：只读探测（installCheck，装机页每 5 秒一次）有安装标记就直接用副本、不逐文件复核；同一个被改过的副本，下一个出包作业照旧复核、重解（#304 防线不丢）
+        from unittest.mock import patch
+        c = self.installed()
+        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")
+        probe = Context(dict(self.request, taskId="probe-1", operation="installCheck", engineBundle=str(self.bundle)))
+        with patch.object(embedded, "_ready", side_effect=AssertionError("探测作业去逐文件复核了")):
+            embedded.install(probe)
+        self.assertEqual(probe.engine, c.engine)
+        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>rewritten by something else</plist>")   # 探测不动副本
+        self.assertEqual((self.installed().engine / PLIST).read_bytes(), b"<plist>original</plist>")   # 出包作业照旧重解
+
     def test_size_changed_artifact_is_reinstalled_when_used(self):
         # v0.2.3 清理：用到产物时也只核大小（原先按摘要逐字节核，同大小改写现实里没出现过，#304 是大小变了）；大小变了照样从 App 包重解
         c = self.installed()
