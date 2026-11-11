@@ -520,6 +520,7 @@ static void *read_file(const char *path, size_t *n) {
 // 原创纹理三角形：全屏三角形 + 2x2 纹理 + nearest 采样；逐像素用 CPU 手算真值。
 // 通道映射用例的旋钮（缺省全 0 = 不设）：存储自带映射、视图映射（NVN 取值 0 零 / 1 一 / 2 R / 3 G / 4 B / 5 A）
 static uint16_t g_tri_swz; static int g_tri_vsw_on; static uint8_t g_tri_vsw[4];
+static const uint8_t *g_tri_expect;   // 非空：整张图期望都是这 4 个字节（压缩格式用，纹素不是按像素摆的）
 static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *texels, int tbpp, int trow, int want_a) {
     char path[512];
     size_t vsz = 0, fsz = 0;
@@ -602,7 +603,7 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
 
     nvn_gpu_cmd c = begin_cmd();
     // r=NULL：整级上传，展开时按该级宽高取区域（C30 覆盖这条路径）
-    nvn_gpu_tex_upload(c, tex, 0, 0, NULL, texels, (uint64_t)trow, (uint64_t)trow * 2);
+    nvn_gpu_tex_upload(c, tex, 0, 0, NULL, texels, (uint64_t)trow, g_tri_expect ? (uint64_t)trow : (uint64_t)trow * 2);   // 压缩：2x2 只有一排块
 
     nvn_gpu_pass_desc pass;
     memset(&pass, 0, sizeof pass);
@@ -649,7 +650,7 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
             float u = (x + 0.5f) / 64.0f, v = (y + 0.5f) / 64.0f;
             int tx = (int)(u * 2.0f); if (tx > 1) tx = 1;
             int ty = (int)(v * 2.0f); if (ty > 1) ty = 1;
-            const uint8_t *src = texels + (ty * 2 + tx) * tbpp;
+            const uint8_t *src = g_tri_expect ? g_tri_expect : texels + (ty * 2 + tx) * tbpp;
             // 期望：先取纹素（没有 alpha 的格式按 want_a），再按生效的通道映射手算（视图设了用视图的，否则用存储的）
             uint8_t px[4] = {src[0], src[1], src[2], (uint8_t)(tbpp == 4 ? src[3] : want_a)}, mapped[4], sw[4] = {2, 3, 4, 5};
             if (g_tri_vsw_on) memcpy(sw, g_tri_vsw, 4);
@@ -763,6 +764,17 @@ static void c71_present(void) {
     r = nvn_gpu_surface_attach((void *)1, &sf, &e);          // 撤掉以后可以再接
     CHECK(OK(r) && nvn_gpu_surface_gen(sf) == 1, "C71 再 attach：%d %s", r.code, e.why);
     // 不 detach 直接 close：close 负责收掉还接着的面（由 main 里紧跟的 close 验）
+}
+
+// C72：块压缩贴图上传（一行是一排块）。BC1 一个 4x4 块：两个端点色都是纯红（565 的 0xF800）、索引全 0 → 解出来每个纹素都是不透明纯红。
+// 2x2 的贴图只占这一个块的左上角。设备不支持 BC 直接采样时这条由 compute 解码路线负责，本用例只在原生支持时跑。
+static void c72_bc1_upload(const char *dir) {
+    if (!(nvn_gpu_format_caps(NVN_FORMAT_RGBA_DXT1) & NVN_GPU_FMT_SAMPLE)) { printf("C72 跳过：本设备档 BC1 不可直接采样\n"); return; }
+    static const uint8_t block[8] = {0x00, 0xF8, 0x00, 0xF8, 0, 0, 0, 0};
+    static const uint8_t red[4] = {255, 0, 0, 255};
+    g_tri_expect = red;
+    tri_impl(dir, NVN_FORMAT_RGBA_DXT1, block, 4, 8, 255);
+    g_tri_expect = NULL;
 }
 
 // C30：RGB8 上传展开成 RGBA8 后经三角形采样读回；期望按 2x2 最近邻 + a=0xFF 手算。
@@ -3399,6 +3411,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     c71_present();
     { nvn_gpu_err e71; CHECK(OK(nvn_gpu_close(5000000000ull, &e71)), "C71 close（面还接着）：%d %s", e71.rc.code, e71.why); }
+    if (!open_backend()) return 1;
+    c72_bc1_upload(argv[1]);
+    { nvn_gpu_err e72; CHECK(OK(nvn_gpu_close(5000000000ull, &e72)), "C72 close：%d %s", e72.rc.code, e72.why); }
     for (int k = 0; k < 2; k++) {   // tri_impl 的提交序号固定：每个变体一个会话
         if (!open_backend()) return 1;
         c70_swizzle(argv[1], k);

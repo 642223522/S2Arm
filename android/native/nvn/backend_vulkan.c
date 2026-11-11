@@ -3178,6 +3178,12 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
         return;
     }
     uint32_t bpp = depth_f32 ? 4 : t ? fmt_bpp(t->format) : 0;
+    // 块信息：压缩格式一行是一排块（blk_w x blk_h 纹素、blk 字节）；没列进 fmt_bpp 的非压缩格式按 NVN 格式表的每纹素字节数
+    uint32_t blk_w = 1, blk_h = 1, blk = bpp;
+    if (t && !depth_f32 && !bpp) {
+        nvn_fmt_info fi;
+        if (nvn_fmt_info_of(t->nvn_format, &fi) && !nvn_fmt_expand_target(t->nvn_format, NULL, NULL)) { blk_w = fi.bw; blk_h = fi.bh; blk = fi.bytes; bpp = blk; }
+    }
     VkOffset3D o;
     VkExtent3D e;
     NVNcopyRegion rr;
@@ -3191,8 +3197,12 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     }
     if (!t || !b || !bpp || (t->target != NVN_TEXTURE_TARGET_3D && layer >= t->layers) || (off & 3) ||
         !buf_range(b, off, image_bytes) ||
-        check_copy_params(t, level, r, row_bytes, image_bytes, bpp, &o, &e)) {
-        set_sticky(c, NVN_GPU_E_ARG, "copy_buf_tex 参数非法（越界 / 行宽 / 偏移未 4 对齐）");
+        (blk_w == 1 && blk_h == 1 ? check_copy_params(t, level, r, row_bytes, image_bytes, bpp, &o, &e)
+                            : (level >= t->levels || copy_region(t, level, r, &o, &e) || !row_bytes ||
+                               row_bytes < (uint64_t)((e.width + blk_w - 1) / blk_w) * blk || image_bytes < row_bytes * ((e.height + blk_h - 1) / blk_h) ||
+                               (o.x % (int32_t)blk_w) || (o.y % (int32_t)blk_h)))) {
+        set_sticky(c, NVN_GPU_E_ARG, "copy_buf_tex 参数非法（格式 0x%x 级 %u：越界 / 行宽 %llu / 总 %llu / 偏移 %llu 未 4 对齐）", t ? t->nvn_format : 0, level,
+                   (unsigned long long)row_bytes, (unsigned long long)image_bytes, (unsigned long long)off);
         return;
     }
     full_barrier(c);
@@ -3200,8 +3210,8 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     VkBufferImageCopy bc;
     memset(&bc, 0, sizeof bc);
     bc.bufferOffset = off;
-    bc.bufferRowLength = (uint32_t)(row_bytes / bpp);
-    bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? e.height : (uint32_t)(image_bytes / row_bytes);
+    bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
+    bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;
     bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect, level,
                                                      t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
