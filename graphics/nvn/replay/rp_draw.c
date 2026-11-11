@@ -207,6 +207,11 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
                 g_av[st][k] = rp_view_by_id(hk ? (int)(hk & 0xFFFFF) : rp_S.tex_base, c, NULL);
                 g_as[st][k] = rp_samp_by_id(hk ? (int)(hk >> 20) : rp_S.samp_base);
             }
+            // 取不到的项（没绑的槽、池里第 0 项不是贴图）拿数组里第一个取到的顶上：描述符数组每一项都必须是有效的，
+            // 而着色器只会按游戏绑过的槽去取，顶上的这些项不会被采样。一项都取不到才算这笔取不到贴图（绑定时报）。
+            { nvn_gpu_view fv = NULL; nvn_gpu_samp fs = NULL;
+              for (uint32_t k = 0; k < e->count && !(fv && fs); k++) { if (!fv) fv = g_av[st][k]; if (!fs) fs = g_as[st][k]; }
+              for (uint32_t k = 0; k < e->count; k++) { if (!g_av[st][k]) g_av[st][k] = fv; if (!g_as[st][k]) g_as[st][k] = fs; } }
             continue;
         }
         uint64_t h = rp_S.tex[st][e->src_reg];
