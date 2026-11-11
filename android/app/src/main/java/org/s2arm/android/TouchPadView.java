@@ -35,6 +35,10 @@ final class TouchPadView extends View {
     private TouchPad.Control dragging;
     private int dragPointer = -1;
     private float dragX, dragY;
+    interface EditDragListener { void onEditDrag(boolean dragging); }
+    private EditDragListener editDrag = dragging -> { };
+    /** The editor bar fades while a control is dragged, so a control can pass under it. */
+    void setEditDragListener(EditDragListener listener) { editDrag = listener; }
     private final Runnable menuHold = this::openMenu;
     void setTrace(boolean enabled) { trace = enabled; TouchInputBridge.touchTrace(enabled); }
 
@@ -241,6 +245,7 @@ final class TouchPadView extends View {
                 if (dragging == null) break;
                 dragPointer = e.getPointerId(index);
                 dragX = dragging.x - e.getX(index); dragY = dragging.y - e.getY(index);
+                editDrag.onEditDrag(true);
                 performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                 break;
             case MotionEvent.ACTION_MOVE: {
@@ -250,10 +255,11 @@ final class TouchPadView extends View {
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP:
-                if (e.getPointerId(index) == dragPointer) { dragging = null; dragPointer = -1; }
+                if (e.getPointerId(index) == dragPointer) { dragging = null; dragPointer = -1; editDrag.onEditDrag(false); }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 dragging = null; dragPointer = -1;
+                editDrag.onEditDrag(false);
                 break;
             default:
                 break;

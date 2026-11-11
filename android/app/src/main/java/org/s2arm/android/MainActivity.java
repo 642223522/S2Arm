@@ -1052,7 +1052,7 @@ public class MainActivity extends Activity
 
     /** The player's touch passthrough choice for this game (the old adb extra still overrides for one run). */
     private void applyTouchPassthrough() {
-        if (touchPad == null || touchLayouts == null) return;
+        if (touchPad == null || touchLayouts == null || !BuildConfig.EXPERIMENTAL_TOUCH) return;
         if (!getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(passthroughKey(), false)) return;
         setTouchPassthrough(true, false);
     }
@@ -1080,7 +1080,7 @@ public class MainActivity extends Activity
         if (touchLayouts.file().isFile()) {
             labels.add("Restore default layout"); actions.add(this::resetTouchLayout);
         }
-        if (host != 0) {
+        if (host != 0 && BuildConfig.EXPERIMENTAL_TOUCH) {   // not built in: no item that can only fail
             boolean on = touchPad.gameTouchEnabled();
             labels.add(on ? "Touch passthrough: on (tap to turn off)" : "Touch passthrough: off (tap to turn on)");
             actions.add(() -> setTouchPassthrough(!on, true));
@@ -1106,6 +1106,7 @@ public class MainActivity extends Activity
             button.setOnClickListener(v -> action.run());
             touchEditBar.addView(button);
         }
+        touchPad.setEditDragListener(dragging -> { if (touchEditBar != null) touchEditBar.setAlpha(dragging ? 0.15f : 1f); });
         // Screen centre: the one place no built-in control sits (− / + are at the top centre).
         root.addView(touchEditBar, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER));
@@ -1134,6 +1135,7 @@ public class MainActivity extends Activity
     private void resetTouchLayout() {
         try {
             touchLayouts.reset();
+            Log.i("S2Arm", "Touch layout restored to default");
         } catch (java.io.IOException error) {
             Log.e("S2Arm", "Touch layout reset failed: " + error.getMessage());
         }

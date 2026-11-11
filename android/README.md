@@ -453,7 +453,9 @@ no controller-model override is applied.
   dims the game and lets every key, the D-pad and both sticks be dragged; *Save*
   writes the player's layout for this game to `files/touch-layouts/<title id>.json`
   (the diagnostic app uses `app.json`), *Default* deletes it. *Touch passthrough*
-  sends touches that miss the controls to the game, and is remembered per game.
+  sends touches that miss the controls to the game, and is remembered per game;
+  it is listed only in builds with `-Ps2arm.experimentalTouch=true` (the native
+  transport is off by default).
 
 The Activity merges the pad with a physical controller before publishing through
 `s2a_vpad_read`: buttons are OR'ed, and each stick comes from whichever is
