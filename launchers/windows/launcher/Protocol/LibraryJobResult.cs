@@ -130,8 +130,33 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
             ? (pkg.Display.Length > 0 ? pkg.Display : "v" + pkg.Version) : null;
 };
 
+/// <summary>catalog phoneUpdates 的一项（pack/jobs/install.py phone_updates）：按本机装机记录，这台手机上的 S2Arm 壳比本版旧。
+/// Games = 记录里的各款，Stale = 新壳认不得、要按新版重新出包的款（都是 {gameId, name}）。</summary>
+public sealed record PhoneUpdate(string Device, string Name, string FromShell, string ToShell,
+    IReadOnlyList<PhoneUpdate.Game> Games, IReadOnlyList<PhoneUpdate.Game> Stale)
+{
+    public sealed record Game(string Id, string Name);
+
+    /// <summary>缺字段 / 不是数组 → 空列表（旧后端没有这个字段）；没有 device 的项跳过。</summary>
+    public static IReadOnlyList<PhoneUpdate> ParseList(JsonElement result)
+    {
+        if (!result.TryGetProperty("phoneUpdates", out var list) || list.ValueKind != JsonValueKind.Array) return [];
+        static string S(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        static IReadOnlyList<Game> Games(JsonElement e, string key) =>
+            e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array
+                ? v.EnumerateArray().Where(g => g.ValueKind == JsonValueKind.Object && S(g, "gameId").Length > 0)
+                    .Select(g => new Game(S(g, "gameId"), S(g, "name").Length > 0 ? S(g, "name") : S(g, "gameId"))).ToArray()
+                : [];
+        return list.EnumerateArray().Where(u => u.ValueKind == JsonValueKind.Object && S(u, "device").Length > 0)
+            .Select(u => new PhoneUpdate(S(u, "device"), S(u, "name"), S(u, "fromShell"), S(u, "toShell"), Games(u, "games"), Games(u, "stale"))).ToArray();
+    }
+}
+
 public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysReady, string KeysMessage)
 {
+    /// <summary>壳比本版旧的手机（游戏库顶栏「更新 iPhone 上的 S2Arm」按钮）；旧后端没有这个字段时为空。</summary>
+    public IReadOnlyList<PhoneUpdate> PhoneUpdates { get; init; } = [];
+
     public static LibraryCatalog Parse(JsonElement result)
     {
         try
@@ -180,7 +205,7 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),
-                LibraryJobResult.Text(keys, "message", true));
+                LibraryJobResult.Text(keys, "message", true)) { PhoneUpdates = PhoneUpdate.ParseList(result) };
         }
         catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException)
         {

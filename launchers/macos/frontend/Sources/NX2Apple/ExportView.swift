@@ -135,7 +135,7 @@ struct ExportView: View {
                 ForEach(ExportPlatform.allCases) { platform in tile(platform) }
             }
             locationRow
-            if model.exportTargets.contains(.ios) { deviceRow; DevCertRow(model: model) }
+            if model.exportTargets.contains(.ios) { deviceRow; InstallModeLine(model: model) }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
             if let error = model.choiceError {
                 Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
             }

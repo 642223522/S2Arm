@@ -122,6 +122,7 @@ public sealed partial class EnvironmentWindow : Window
         };
         if (PhonePill() is { } phonePill) rightBar.Children.Add(phonePill);
         if (BatchPill() is { } batchPill) rightBar.Children.Add(batchPill);
+        if (PhoneUpdateControl() is { } phoneUpdate) rightBar.Children.Add(phoneUpdate);   // 更新 iPhone 上的 S2Arm（壳比本版旧才出现，InstallModePage.cs）
         AddUpdateControls(rightBar);
         rightBar.Children.Add(languages);
 
@@ -230,6 +231,7 @@ public sealed partial class EnvironmentWindow : Window
         libraryChange.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(libraryChange, 1); libraryRow.Children.Add(libraryChange);
         body.Children.Add(Card(libraryRow));
+        body.Children.Add(InstallModeCard());   // 装到 iPhone 的方式（v0.3.0，InstallModePage.cs）
 
         var aiRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var aiText = new StackPanel { Spacing = 4 };

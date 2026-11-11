@@ -11,8 +11,9 @@ import UIKit
 enum SensorEdge {
     @MainActor static var onTrailing: Bool {
         #if canImport(UIKit) && !os(macOS)
-        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive }
-            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        // 只看手机自己的应用场景：接了外接显示器时多一个外接屏场景（ios/extdisplay.m，iOS 27 起），它的朝向不是手机的（审计 P2-272）
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.filter { $0.session.role == .windowApplication }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
         return UIDevice.current.userInterfaceIdiom == .phone && scene?.interfaceOrientation == .landscapeLeft
         #else
         return false

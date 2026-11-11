@@ -228,8 +228,9 @@ public sealed partial class EnvironmentWindow
         }
         else
         {
-            if (batchState.Summary.Failed > 0) Put(Action("batch.retry_failed", () => _ = BatchCommandAsync("retry"), !PackBusy), 0);
-            if (batchState.Summary.Cancelled > 0 || batchState.Summary.Pending > 0)
+            // 暂停着（磁盘满）只给「重试」：它解除暂停、重出失败的那个平台；「继续」不解除暂停（审计 P1-164，同 Mac）
+            if (batchState.Summary.Failed > 0 || batchState.Paused is not null) Put(Action("batch.retry_failed", () => _ = BatchCommandAsync("retry"), !PackBusy), 0);
+            if (batchState.Paused is null && (batchState.Summary.Cancelled > 0 || batchState.Summary.Pending > 0))
             {
                 var resume = Action("batch.resume", () => _ = BatchCommandAsync("resume"), !PackBusy);
                 AutomationId(resume, "batch.resume");
@@ -272,9 +273,11 @@ public sealed partial class EnvironmentWindow
         BatchRunAsync("mark", BatchClient.MarkArguments(gameId, platform, state, message, code, output));
 
     /// <summary>点「出包（N 款）」：后端建批次（一批共用出包页选的存放位置），开始出第一款</summary>
-    private async Task StartBatchAsync()
+    /// <param name="installAfter">「更新并重新出这几款」排的批：整批出完逐款装到 iPhone（InstallModePage.cs BatchFinishedAsync）</param>
+    private async Task StartBatchAsync(bool installAfter = false)
     {
         if (batchRunning || PackBusy) return;
+        batchInstallAfter = installAfter;   // 每批自己定：界面 / 控制口建的批不接着装
         var control = batchControlPlatforms; batchControlPlatforms = null;
         var entries = control is null
             ? batchDraft.Where(r => r.Problem is null && r.Iphone).Select(r => new BatchClient.Entry(r.Id, r.Name, ["iphone"])).ToList()
@@ -295,7 +298,7 @@ public sealed partial class EnvironmentWindow
             if (batchStopping) { await StopBatchAsync(); return; }
             if (packRunning) return;
             if (libraryOperation is { IsCompleted: false } reload) { await reload; continue; }   // 上一款出好后重读游戏库：读完再出下一款
-            if (batchState?.Step(BatchSupported) is not { } run) { batchRunning = false; Render(); return; }
+            if (batchState?.Step(BatchSupported) is not { } run) { batchRunning = false; Render(); _ = BatchFinishedAsync(); return; }
             var gid = run.Item.GameId;
             var marked = true;
             foreach (var p in run.Unsupported) marked &= await BatchMarkAsync(gid, p, "failed", "这台电脑出不了这个平台的包");
