@@ -462,6 +462,15 @@ class InstallWin(unittest.TestCase):
         self.assertEqual(install_win.device_id('U1', [('U1', 'Network', 7)]), 7)
         self.assertIsNone(install_win.device_id('U3', [('U1', 'USB', 9)]))
 
+    def test_plumesign_is_never_taken_from_desktop_or_downloads(self):
+        # 11-11 审查：桌面 / 下载里叫 plumesign* 的任意程序不能被拿来执行；其他档都没有时就是找不到（发版随包那份由调用方传）
+        with tempfile.TemporaryDirectory() as home:
+            for d in ('Desktop', 'Downloads', os.path.join('OneDrive', 'Desktop')):
+                Path(home, d).mkdir(parents=True); f = Path(home, d, 'plumesign.exe' if os.name == 'nt' else 'plumesign'); f.write_text('x'); f.chmod(0o755)
+            with patch.dict(os.environ, {'HOME': home, 'USERPROFILE': home, 'PATH': '', 'S2A_PLUMESIGN': ''}), \
+                 patch.object(install_win.impactor, 'status', return_value={}):
+                self.assertIsNone(install_win.plumesign_path())
+
     def test_missing_plumesign(self):
         with tempfile.TemporaryDirectory() as d:
             old = install_win.plumesign_path; install_win.plumesign_path = lambda g=None: None
