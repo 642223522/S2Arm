@@ -97,7 +97,66 @@ public sealed partial class EnvironmentWindow : Window
         return slot;
     }
 
-    private static void Fill(ContentControl slot, Control? content) { slot.Content = content; slot.IsVisible = content is not null; }
+    // 闪烁根修（11-11，维护者「出包页面还在闪」）：活格子原先每秒把内容整块换成新建的控件——文字一样也是新控件，
+    //   不确定进度条（首次出包没有历史用时）的来回动画每秒从头重来，看着一抽一抽；装机卡、批量页进度行同理。
+    //   现在新建的内容只当「目标样子」：和屏上那份逐节点比，类型一样就把会变的属性拷过去（控件不换、动画不断），对不上的节点才整个替换。
+    private static void Fill(ContentControl slot, Control? content)
+    {
+        if (!(slot.Content is Control old && content is not null && Patch(old, content))) slot.Content = content;
+        slot.IsVisible = content is not null;
+    }
+
+    /// <summary>把 next 的可见属性拷到 old 上；返回 false = 结构对不上，调用方用 next 换掉 old。
+    /// 只认纯展示控件（文字、进度条、边框、面板）；按钮、输入框等带事件或状态的控件一律换新，免得留着旧的点击回调。</summary>
+    private static bool Patch(Control old, Control next)
+    {
+        if (old.GetType() != next.GetType() || old is not (TextBlock or ProgressBar or Border or Panel)) return false;
+        foreach (var p in PatchedProperties)
+            if (p.IsAttached || AvaloniaPropertyRegistry.Instance.IsRegistered(next, p))
+            {
+                if (next.IsSet(p)) old.SetValue(p, next.GetValue(p)); else if (old.IsSet(p)) old.ClearValue(p);
+            }
+        if (old is Grid og && next is Grid ng)
+        {
+            if (!SameLengths(og.ColumnDefinitions.Select(d => d.Width), ng.ColumnDefinitions.Select(d => d.Width)))
+                og.ColumnDefinitions = new ColumnDefinitions(string.Join(",", ng.ColumnDefinitions.Select(d => d.Width.ToString())));
+            if (!SameLengths(og.RowDefinitions.Select(d => d.Height), ng.RowDefinitions.Select(d => d.Height)))
+                og.RowDefinitions = new RowDefinitions(string.Join(",", ng.RowDefinitions.Select(d => d.Height.ToString())));
+        }
+        if (old is Border ob && next is Border nb)
+        {
+            var nc = nb.Child; nb.Child = null;
+            if (!(ob.Child is Control oc && nc is not null && Patch(oc, nc))) ob.Child = nc;
+        }
+        if (old is Panel o && next is Panel n)
+        {
+            var fresh = n.Children.ToList(); n.Children.Clear();
+            for (var i = 0; i < fresh.Count; i++)
+            {
+                if (i < o.Children.Count && Patch(o.Children[i], fresh[i])) continue;
+                if (i < o.Children.Count) o.Children[i] = fresh[i]; else o.Children.Add(fresh[i]);
+            }
+            while (o.Children.Count > fresh.Count) o.Children.RemoveAt(o.Children.Count - 1);
+        }
+        return true;
+    }
+
+    private static bool SameLengths(IEnumerable<GridLength> a, IEnumerable<GridLength> b) => a.SequenceEqual(b);
+
+    /// 活格子里会随进度变的展示属性（只拷本地设过的值，没设的清掉、回到继承 / 主题值）
+    private static readonly AvaloniaProperty[] PatchedProperties =
+    [
+        TextBlock.TextProperty, TextBlock.ForegroundProperty, TextBlock.FontSizeProperty, TextBlock.FontWeightProperty,
+        TextBlock.TextWrappingProperty, TextBlock.TextTrimmingProperty,
+        Avalonia.Controls.Primitives.RangeBase.MinimumProperty, Avalonia.Controls.Primitives.RangeBase.MaximumProperty,
+        Avalonia.Controls.Primitives.RangeBase.ValueProperty, ProgressBar.IsIndeterminateProperty, Avalonia.Controls.Primitives.TemplatedControl.ForegroundProperty,
+        Border.BackgroundProperty, Border.BorderBrushProperty, Border.BorderThicknessProperty, Border.CornerRadiusProperty, Border.PaddingProperty,
+        Panel.BackgroundProperty, StackPanel.SpacingProperty, StackPanel.OrientationProperty, WrapPanel.OrientationProperty,
+        Grid.ColumnSpacingProperty, Grid.RowSpacingProperty,
+        Layoutable.MarginProperty, Layoutable.WidthProperty, Layoutable.HeightProperty, Visual.IsVisibleProperty,
+        Layoutable.HorizontalAlignmentProperty, Layoutable.VerticalAlignmentProperty,
+        Grid.ColumnProperty, Grid.RowProperty, Grid.ColumnSpanProperty, Grid.RowSpanProperty,
+    ];
 
     private void RefreshLive()
     {
@@ -265,7 +324,7 @@ public sealed partial class EnvironmentWindow : Window
         var libraryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var libraryText = new StackPanel { Spacing = 4 };
         libraryText.Children.Add(Label(T("environment.library.title"), 16));
-        libraryText.Children.Add(Label(connectedFolder ?? libraryFolder));
+        libraryText.Children.Add(PathLink(connectedFolder ?? libraryFolder, 14));
         libraryText.Children.Add(Label(T("environment.library.detail")));
         libraryRow.Children.Add(libraryText);
         var libraryChange = Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy);

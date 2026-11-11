@@ -6,7 +6,7 @@ Mac 的 pack/ipa.sh 与 Windows 的 Python 编排调同一份（原 ipa.sh 这�
 
   ipa_tail.py --work <工作根> --game <款> --shell <壳目录> --bundle-id <包名> --suffix <显示名后缀> --key <包键串> --title <游戏名>
               --sign none|adhoc|dev [--team <签名团队>] [--save-identity <存档身份 json>] [--app-only]
-  步骤：组装（ship_ext build）→ 存档身份 → 图标 → Info.plist（包号 / 着色器目标 / 画面模式 / 出包时间）→ 签名 → 提高内存上限权限核实 → 打 ipa
+  步骤：组装（ship_ext build）→ 存档身份 → 图标 → Info.plist（包号 / 着色器目标 / 画面模式 / 显示版本 / 出包时间）→ 签名 → 提高内存上限权限核实 → 打 ipa
         → Metal 3 辅助库进包核对 →（--app-only 到此为止）→ 资源包要件核对 → 资源包（pack.py）→ 资源包核对（verify.py）
   签名：none = 不签（Windows / 交给侧载工具签：壳主程序与游戏镜像包已各自带 ad-hoc 签名，侧载工具重签）；adhoc = 本机 codesign 自签（只 Mac）；
         dev = 开发直签（只 Mac，pack/dev_sign.py，缺描述文件时 ensure_profile.sh 补）
@@ -149,8 +149,9 @@ def assemble(a):
         if run([PY, os.path.join(H, 'save_identity.py'), '--check', a.save_identity, '--output', si], bl): raise Red('存档游戏身份校验失败')
         shutil.copyfile(si, os.path.join(app, 'save-identity.json'))
     if run([PY, os.path.join(H, 'app_bundle.py'), 'write_icons', icon, app], bl): raise Red(f'加图标失败（{last(bl)}）')
+    sys.path.insert(0, os.path.join(H, 'jobs')); from core import display_version   # 界面版本字（设置页 / 游戏库顶部，同容器 ship_ext --display-version；空 = 删键）
     kv = [('S2ABuildID', build_id(a.key)), ('S2APsoTarget', pso_target(w)), ('S2AGameTitle', a.title), ('S2AGraphicsMode', 'direct'),   # 只有直连（11-07 拆通用模式）
-          ('S2ADirectLibVersion', direct_lib_version(w)),
+          ('S2ADirectLibVersion', direct_lib_version(w)), ('S2ADisplayVersion', display_version(R)),
           ('S2APackTime', datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')),
           ('S2ADevFacilities', dev_facilities())]   # 开发设施开关（runtime/src/os.c s2a_dev_on）：玩家包写 "0"，开发包删键（= 开）
     for k, v in kv:

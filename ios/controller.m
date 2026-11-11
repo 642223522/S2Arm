@@ -443,10 +443,11 @@ static void log_controllers(int why);   // 下面 systemChanged 旁：GameContro
     s2a_pad_wake();
     LOG("NS2 Pro：本 App 适配%s", enabled ? "开启" : "关闭");
 }
-// 手柄按键对应（定义表 game_settings.v1.json 的 padFace：letter 按字母（缺省）/ position 按位置）：偏好一变就转给 pad.c，下一次按键即按新口径（不用重启）
+// 手柄按键布局（定义表 game_settings.v1.json 的 padFace：auto 自动（缺省）/ switch / xbox，旧值 letter / position 照认）：
+//   偏好一变就转给 pad.c，下一次按键即按新布局（不用重启）
 static void pad_face_sync(void) {
     NSString *v = [NSUserDefaults.standardUserDefaults stringForKey:@"padFace"];
-    if (v) s2a_pad_face_set(![v isEqualToString:@"position"]);
+    if (v) s2a_pad_layout_set(s2a_pad_layout_parse(v.UTF8String));
 }
 - (void)settingsChanged:(NSNotification *)notification {
     pad_face_sync();
@@ -493,7 +494,7 @@ static void pad_face_sync(void) {
     GCControllerButtonInput *options = pad.buttonOptions;
     GCControllerButtonInput *face[4] = {pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY};
     int order[4]; s2a_pad_abxy_order(s2a_pad_kind(pad.controller.productCategory.UTF8String, [pad isKindOfClass:GCXboxGamepad.class],
-        [pad isKindOfClass:GCDualShockGamepad.class] || [pad isKindOfClass:GCDualSenseGamepad.class]), s2a_pad_face_by_letter(), order);   // 按字母 / 按位置（pad.c）
+        [pad isKindOfClass:GCDualShockGamepad.class] || [pad isKindOfClass:GCDualSenseGamepad.class]), s2a_pad_layout(), order);   // 按键布局（pad.c）
     GCControllerButtonInput *keys[16] = {face[order[0]], face[order[1]], face[order[2]], face[order[3]],
         pad.leftThumbstickButton, pad.rightThumbstickButton, pad.leftShoulder, pad.rightShoulder,
         pad.leftTrigger, pad.rightTrigger, pad.buttonMenu, options,

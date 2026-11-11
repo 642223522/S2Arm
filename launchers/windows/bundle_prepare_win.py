@@ -48,7 +48,10 @@ def run(args, log, env=None):
 
 
 def dotnet_build(project, out, log, *extra):
-    run(["dotnet", "build", ROOT / project, "-c", "Release", "-nologo", "-p:UseSharedCompilation=false", *extra, "-o", out], log)
+    # -r win-x64（仍是 framework-dependent）：只带 Windows x64 的原生库。不给 RID 时 NuGet 包的 runtimes/ 全平台照抄
+    #   （0.2.8 romfs 带了 SkiaSharp 等 17 个平台共 193 MB，玩家只用得到 win-x64 的 11 MB）
+    run(["dotnet", "build", ROOT / project, "-c", "Release", "-nologo", "-p:UseSharedCompilation=false", "-r", "win-x64", "--self-contained", "false",
+         *extra, "-o", out], log)
 
 
 def copy_dir(src, dst):

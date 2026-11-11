@@ -32,6 +32,8 @@ def oneclick_done(args, ipa, gid="0100000000000000", pack_id="pack-" + "0" * 8, 
     ipa = Path(ipa)
     root = ipa.parent / "roots" / ("t" + gid.lower() + "@现行"); root.mkdir(parents=True, exist_ok=True); (root / "main.npdm").write_bytes(b"META")
     pack = ipa.parent / (ipa.stem + "资源包"); pack.mkdir(exist_ok=True); (pack / "manifest.json").write_text(json.dumps(dict(version=2, index_sha256=pack_id)))
+    (pack / "exefs").mkdir(exist_ok=True); (pack / "exefs" / "main.npdm").write_bytes(pack_id.encode())   # 收尾转单一 IMG（pack/img.py convert）读清单；内容随资源包号变
+    (pack / "index.tsv").write_text(f"exefs/main.npdm\t{len(pack_id)}\t{pack_id}\n")
     ev = Path(str(args[args.index("--events") + 1]))
     with ev.open("a", encoding="utf-8") as f:
         f.write(json.dumps(dict(ev="result", t=0, ok=True, ipa=str(ipa), **fields), ensure_ascii=False) + "\n")
@@ -50,6 +52,14 @@ def shared_extract(f):
             return f(self, *args, **kwargs)
     return wrapped
 
+
+
+def img_step(args, cwd=None, env=None):
+    """假 c.run 遇到出包收尾转单一 IMG（ipa.to_img 经 c.run 调 pack/img.py convert，好让出包页有字节进度）就真跑它；→ 是不是这一步"""
+    if "pack/img.py" not in [str(a) for a in args]: return False
+    r = subprocess.run([str(a) for a in args], cwd=cwd, env=env, capture_output=True, text=True)
+    if r.returncode: raise AssertionError(r.stdout + r.stderr)
+    return True
 
 class JobsTests(unittest.TestCase):
     def setUp(self):
@@ -441,6 +451,7 @@ class JobsTests(unittest.TestCase):
             self.assertIn("一键安装", str(e.exception))
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(args=[str(a) for a in args], env=env)
             out = Path(args[args.index("--out") + 1]); (out / "x.ipa").write_bytes(b"ipa")
             oneclick_done(args, out / "x.ipa", build_id="abc-123", graphics_mode="direct")
@@ -467,7 +478,9 @@ class JobsTests(unittest.TestCase):
         self.assertEqual((r["ipa"], r["outputPath"]), ("", str(image)))   # 不再交付单款 ipa：装机时现组容器
         self.assertTrue((image / "kit" / "main.npdm").is_file()); self.assertTrue((image / "pack" / "manifest.json").is_file())
         self.assertFalse((gdir / "build" / "ios" / "x.ipa").exists())
-        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], "pack-" + "0" * 8)
+        man = json.loads((image / "pack" / "manifest.json").read_text())   # 交付转成单一 IMG 形态：game.json 记的资源包号 = 新清单的
+        self.assertEqual((man["format"], man["imgFile"], (image / "pack" / "game.img").is_file()), ("img", "game.img", True))
+        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], man["index_sha256"])
         # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
         #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
         import saves
@@ -501,6 +514,7 @@ class JobsTests(unittest.TestCase):
         import cache_retention
         lines = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "current-title.ipa").write_bytes(b"new")
             if lines.get("done", True):
                 oneclick_done(args, o / "current-title.ipa", pack_id="current-pack", build_id="current-123", graphics_mode="direct")
@@ -514,8 +528,12 @@ class JobsTests(unittest.TestCase):
             r = ipa.build(self.c)
             image = layout.image_ios(self.c, "0100000000000000")
             self.assertEqual(r["buildId"], "current-123")
-            self.assertEqual(json.loads((image / "pack" / "manifest.json").read_text())["index_sha256"], "current-pack")
-            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], "current-pack")
+            man = json.loads((image / "pack" / "manifest.json").read_text())   # 本轮交付的那份（转成 IMG 后清单号按新 index.tsv 算）：exefs/main.npdm 内容是本轮的资源包号
+            self.assertEqual(man["format"], "img")
+            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], man["index_sha256"])
+            import importlib.util; spec = importlib.util.spec_from_file_location("img", ROOT / "pack/img.py"); img = importlib.util.module_from_spec(spec); spec.loader.exec_module(img)
+            g = str(image / "pack" / "game.img"); off, n = img.find(g, "exefs/main.npdm"); fh = open(g, "rb"); fh.seek(off)
+            self.assertEqual(fh.read(n), b"current-pack")
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
             self.assertEqual(direct_lib.read_bytes(), b'synthetic direct')
             self.assertFalse(direct_work.exists())
@@ -578,6 +596,7 @@ class JobsTests(unittest.TestCase):
         res = self.root / "res"; (res / "Fonts").mkdir(parents=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
         miss = {"v": ["DLC 套装 A.nsp", "dlc_b.nsp"]}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "g.ipa").write_bytes(b"new")
             oneclick_done(args, o / "g.ipa", graphics_mode="direct", aoc_missing=miss["v"])
         home = self.root / "dn"; (home / "sdk/10.0.403").mkdir(parents=True); (home / "dotnet").write_text("")
@@ -681,6 +700,7 @@ class JobsTests(unittest.TestCase):
         fonts = self.root / "fonts"; fonts.mkdir()
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(env=env)
             out = Path(args[args.index("--out") + 1]); (out / "synthetic.ipa").write_bytes(b"synthetic IPA fixture")
             oneclick_done(args, out / "synthetic.ipa", graphics_mode="direct")
