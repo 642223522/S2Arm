@@ -1467,7 +1467,7 @@ class JobsTests(unittest.TestCase):
             self.c.r["gameId"] = game["id"]
             worker.start()
             deadline = time.monotonic() + 10
-            while "等这款游戏在跑的任务结束" not in self.output.getvalue():
+            while '"phase": "waiting_lock"' not in self.output.getvalue():   # 锁排队进度（剃刀 H2：不再另套按报错原文重试的循环）
                 self.assertFalse(finished.wait(0.01), "delete returned before reporting the held execution lock")
                 self.assertLess(time.monotonic(), deadline, "delete did not report waiting for the held execution lock")
             self.assertFalse(finished.is_set(), "delete finished while another process still held the lock")
@@ -1485,6 +1485,27 @@ class JobsTests(unittest.TestCase):
             if worker.ident is not None:
                 worker.join(5)
             self.assertFalse(worker.is_alive(), "delete worker remained after lock-holder cleanup")
+
+    def test_lock_timeout_failure_event_is_library_busy_with_holder(self):
+        # 出包任务 t7 占着游戏库锁不放；排队上限 0.3 秒 → 失败事件 code=library_busy、holder 原样带出、下一步取 RECOVERY["library_busy"]、
+        #   上屏原句不变（旧代码：code=job_failed，占锁者只在 detail 文字里）
+        self.c.require_library()
+        lockf = self.c.library / ".catalog.lock"
+        info = dict(taskId="t7", operation="build", gameId="0100000000010000", pid=1, startedAt=1.0)
+        holder = subprocess.Popen([sys.executable, "-c", "import sys,json; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); open(sys.argv[1]+'.holder','w').write(sys.argv[3]); print('ok',flush=True); sys.stdin.readline(); filelock.unlock(f)", str(lockf), str(JOBS), json.dumps(info)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            self.c.lock_wait = 0.3
+            with self.assertRaises(Failure) as raised:
+                with self.c.lock():
+                    pass
+            event = self.c.describe_failure(raised.exception)
+            self.assertEqual((event["code"], event["holder"], event["summary"]), ("library_busy", info, "另一个任务正在使用游戏库，请稍后重试。"))
+            self.assertEqual(event["suggestion"], __import__("errors").RECOVERY["library_busy"])
+            self.assertNotIn("holder", self.c.describe_failure(Failure("别的失败")))
+        finally:
+            holder.stdin.write("release\n"); holder.stdin.flush()
+            holder.communicate(timeout=5)
 
     def test_direct_small_batch_progress_replaces_finished_translation(self):
         progress = self.root / "progress.tsv"

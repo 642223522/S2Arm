@@ -44,6 +44,7 @@ RECOVERY = {
     "library_in_cloud": "游戏库在云盘同步目录里（iCloud 云盘、OneDrive、Dropbox 等）：出包时会写几十 GB 中间文件，云盘会上传它们、换成占位文件，出包中途会读不到。在「设置 → 游戏库与玩家数据」把游戏库改到本机磁盘上不同步的位置（例如默认位置），再重试；游戏原件放在哪都行。",
     "library_bad_format": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 NTFS 格式的磁盘上（FAT32 单个文件不能超过 4 GB，exFAT 没有可靠的原子替换）：在「设置 → 游戏库与玩家数据」改用这台电脑上的默认位置，或选一块 NTFS 格式的盘，再重试。",
     "library_move_failed": "游戏库还在原来的位置，什么都没有丢：按上面的原因处理后再搬一次。",
+    "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
     "permission_denied": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
     "architecture_unsupported": "当前路径需要 Apple Silicon Mac，请换用支持的设备；重试不会改变硬件兼容性。",
@@ -148,10 +149,11 @@ def recovery(code, *, packaged):
 
 class Failure(Exception):
     """message 是上屏的那句；internal 是只进诊断 detail（「复制错误摘要」带走）的内部原文：阶段、rc、构建号、红行。"""
-    def __init__(self, message, *, code="job_failed", internal=""):
+    def __init__(self, message, *, code="job_failed", internal="", holder=None):
         super().__init__(message)
         self.code = code
         self.internal = internal
+        self.holder = holder   # library_busy：占着游戏库锁的任务（filelock 旁挂文件里记的那份），其余为 None
 
 
 def _under(path, roots):

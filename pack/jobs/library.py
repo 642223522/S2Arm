@@ -32,6 +32,7 @@ import sizes
 # 诊断包里的日志整份放（zip 压缩，文本约 10 倍）：一份超过 DIAGNOSTIC_LOG_LIMIT 才截，截时留开头 1/8、结尾 7/8（崩溃、存档前后的读数多在后段），
 #   中间另捞心跳行与最后一次崩溃现场，manifest.json 的 truncated 写明每份原长、留了多少、截掉多少。
 #   原先每份只留头尾各 16 KB + 心跳行，帧读数整段丢，玩家只能再传完整日志（#41）
+DELETE_LOCK_WAIT_S = 120   # 删除等执行锁的上限：启动器发删除前先取消这款在跑的任务，它杀子进程组收尾比短作业排队（core.LOCK_WAIT_S）久
 DIAGNOSTIC_LOG_LIMIT = 200 << 20     # 单份原文上限（压缩后约 20 MB）
 DIAGNOSTIC_LOG_HEAD = DIAGNOSTIC_LOG_LIMIT // 8
 DIAGNOSTIC_LOG_TAIL = DIAGNOSTIC_LOG_LIMIT - DIAGNOSTIC_LOG_HEAD
@@ -2134,39 +2135,33 @@ def drop_from_container(c, gid):
 def delete(c):
     """删除这款游戏（连出包产物与缓存）：iPhone 输出整个目录（IPA / 资源包 / 中间产物）、Mac 构建缓存、game_caches，并从游戏库清单里删掉；
     保留存档（library/saves/<程序号>）与游戏原件（原地导入的不碰；旧版复制进 library/sources 的托管副本另有「删除托管 NSP 副本」）。
-    执行锁可能还被这一款刚被取消的任务占着（启动器发删除前先结束它在跑的任务，进程退出要几秒）：拿不到就每 2 秒再试，最多 120 秒"""
-    t0 = time.time()
-    while True:
-        try:
-            with store_meta_quiet(c.library), c.lock("execution"), c.lock():
-                gid = c.game()["id"]
-                c.begin("删除游戏与出包产物")
-                # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
-                #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
-                gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
-                if gdir and gdir.exists():
-                    # 存档有内容就保留
-                    saves = gdir / "saves"
-                    backups = gdir / "save-backups"
-                    has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
-                    root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-                    if has_saves:
-                        for item in gdir.iterdir():
-                            if item.name not in ("saves", "save-backups"):
-                                _rm(c, root, item)
-                    else:
-                        _rm(c, root, gdir)
-                for p in game_caches(c, gid):
-                    _rm(c, c.work_root, p)
-                drop_from_container(c, gid)
-                cat = c.catalog()
-                cat["games"] = [g for g in cat["games"] if g["id"] != gid]
-                atomic(c.library / "catalog.json", cat)
-            return {}
-        except Failure as e:
-            if "另一个任务正在使用游戏库" not in str(e) or time.time() - t0 > 120:
-                raise
-            c.begin("等这款游戏在跑的任务结束"); time.sleep(2)
+    执行锁可能还被这一款刚被取消的任务占着（启动器发删除前先结束它在跑的任务，收尾要杀子进程组）：执行锁排队最多 DELETE_LOCK_WAIT_S 秒，
+    期间照锁的排队进度说「在等『X』结束」（启动器剃刀 H2：原先锁外再套一层按报错原文每 2 秒重试 120 秒的循环，两层等待语义叠在一起）"""
+    with store_meta_quiet(c.library), c.lock("execution", wait=DELETE_LOCK_WAIT_S), c.lock():
+        gid = c.game()["id"]
+        c.begin("删除游戏与出包产物")
+        # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
+        #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
+        gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
+        if gdir and gdir.exists():
+            # 存档有内容就保留
+            saves = gdir / "saves"
+            backups = gdir / "save-backups"
+            has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+            root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
+            if has_saves:
+                for item in gdir.iterdir():
+                    if item.name not in ("saves", "save-backups"):
+                        _rm(c, root, item)
+            else:
+                _rm(c, root, gdir)
+        for p in game_caches(c, gid):
+            _rm(c, c.work_root, p)
+        drop_from_container(c, gid)
+        cat = c.catalog()
+        cat["games"] = [g for g in cat["games"] if g["id"] != gid]
+        atomic(c.library / "catalog.json", cat)
+    return {}
 
 
 def remove(c):

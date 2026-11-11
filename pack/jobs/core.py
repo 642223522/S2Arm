@@ -485,15 +485,15 @@ class Context:
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
     @contextlib.contextmanager
-    def lock(self, name="catalog"):
+    def lock(self, name="catalog", wait=None):
         """游戏库锁（启动器剃刀 H1 / H2）：拿不到就排队，最多等 lock_wait 秒（缺省 LOCK_WAIT_S），期间发进度「在等『X』结束」
-        （phase=waiting_lock、holder=占锁任务）；到上限报原句「另一个任务正在使用游戏库」，占锁者进 internal 与诊断。
-        拿到后在旁挂文件记下本任务，别的任务据此说清在等谁。报错原句不改：两端前端按它做本地化匹配"""
+        （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
+        wait 给个别作业另定上限（删除等刚取消的任务收尾）。拿到后在旁挂文件记下本任务，别的任务据此说清在等谁。报错原句不改：旧前端按它做本地化匹配"""
         self.check()
         self.require_library()
         me = dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
                   gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
-        wait = getattr(self, "lock_wait", LOCK_WAIT_S)
+        wait = getattr(self, "lock_wait", LOCK_WAIT_S) if wait is None else wait
         def waiting(info, waited):
             try:
                 self.emit("progress", "在等「" + describe_holder(info) + "」结束…", phase="waiting_lock", holder=info)
@@ -503,7 +503,7 @@ class Context:
             with filelock.held(self.library / ("." + name + ".lock"), wait_s=wait, holder=me, on_wait=waiting):
                 yield
         except filelock.Busy as busy:
-            raise Failure("另一个任务正在使用游戏库，请稍后重试。",
+            raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
                           internal=f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）") from None
 
     def catalog(self):
@@ -725,6 +725,8 @@ class Context:
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
+        if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
+            result["holder"] = failure.holder
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))

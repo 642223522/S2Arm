@@ -196,6 +196,7 @@ class QueuedLibraryLock(unittest.TestCase):
                     pass
         self.assertEqual(str(raised.exception), '另一个任务正在使用游戏库，请稍后重试。')
         self.assertIn('出包 · 0100000000010000（任务 t7）', raised.exception.internal)
+        self.assertEqual((raised.exception.code, raised.exception.holder), ('library_busy', holder))
         waits = [k for a, k in events if k.get('phase') == 'waiting_lock']
         self.assertEqual(len(waits), 1)
         self.assertEqual(waits[0]['holder'], holder)
