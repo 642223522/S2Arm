@@ -1,3 +1,6 @@
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #include "runtime.h"
 #include "host_android.h"
 #include "../dguard_android.h"
@@ -187,6 +190,15 @@ static int run_common(const struct s2a_android_runtime_request *r,
             frozen->mode == 1 ? "direct" : "generic", frozen->reason,
             frozen->counts.devices, frozen->counts.queues, frozen->counts.workers,
             frozen->counts.consumers);
+#ifdef __ANDROID__
+        // 同一行也直接写系统日志：这时 stderr 还没被泵进 logcat，发布包上这一行只会在下一局
+        // 以「prev|」回放出现（真机实测），按本局进程核对实际图形路径的工具在当局读不到它。
+        __android_log_print(ANDROID_LOG_INFO, "S2Arm",
+            "[s2a] graphics selection: %s (%s), devices=%u queues=%u workers=%u consumers=%u",
+            frozen->mode == 1 ? "direct" : "generic", frozen->reason,
+            frozen->counts.devices, frozen->counts.queues, frozen->counts.workers,
+            frozen->counts.consumers);
+#endif
         if (frozen->mode == 1) {
             if (!s2a_direct_frontend_ready || !s2a_direct_frontend_ready())
                 return failed(S2A_RUNTIME_DIRECT, S2A_DIRECT_RES_UNSUPPORTED,

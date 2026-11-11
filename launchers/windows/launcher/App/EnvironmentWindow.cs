@@ -62,7 +62,49 @@ public sealed partial class EnvironmentWindow : Window
         Closing += ClosePackAsync;
         // 欢迎页进来自动触发环境检查（回到窗口也会重查）
         Activated += (_, _) => { if (!busy && report == null) _ = CheckAsync(); };
+        DockPanel.SetDock(pageTop, Dock.Top); DockPanel.SetDock(pageBottom, Dock.Bottom);
+        pageScroll.Content = pageBody;
+        pageFrame.Children.Add(pageTop); pageFrame.Children.Add(pageBottom); pageFrame.Children.Add(pageScroll);
         Render();
+    }
+
+    // ── 页面外框（跳动根修，11-11）───────────────────────────────────────
+    // 原先每次 Render() 都 new 一个 ScrollViewer：游戏库 / 存放位置 / 环境检查等页一重画就回到顶部；出包页、批量页
+    //   事后 Post 到 Loaded 优先级再恢复滚动位置，但渲染优先级更高，中间那一帧照旧画在顶部——玩家看到整页每秒往下错一下、带重影。
+    // 现在整窗只有一套外框：顶槽 / 底槽 + 同一个 ScrollViewer，重画只换里面的内容，滚动位置由它自己保持；只在换页时回到顶部。
+    //   ScrollViewer 的直接内容也固定（pageBody）：换 ScrollViewer.Content 本身会让 Avalonia 把滚动位置归零（修前探针实测），只换 pageBody.Child。
+    private readonly DockPanel pageFrame = new() { LastChildFill = true };
+    private readonly ContentControl pageTop = new(), pageBottom = new();
+    private readonly ScrollViewer pageScroll = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+    private readonly Decorator pageBody = new();
+    private string pageScrollKey = "";
+
+    /// <summary>把这一页的内容放进固定外框。key 不同（换了页 / 换成欢迎页、添加游戏弹窗）才回到顶部。</summary>
+    private void ShowPage(string key, Control body, Control? top = null, Control? bottom = null)
+    {
+        if (key != pageScrollKey) { pageScroll.Offset = default; pageScrollKey = key; }
+        pageTop.Content = top; pageBottom.Content = bottom; pageBody.Child = body;
+        if (!ReferenceEquals(Content, pageFrame)) Content = pageFrame;
+    }
+
+    // 高频刷新（出包计时每秒、装机 / 更新进度事件）只换这些格子里的内容，不整页重画：整页重画会丢焦点、收起下拉框、重建封面。
+    //   格子在整页 Render() 时登记、下次整页 Render() 清空；结构变了（开始 / 结束、换阶段以外的状态切换）仍走 Render()。
+    private readonly List<(ContentControl Slot, Func<Control?> Build)> liveSlots = [];
+
+    private ContentControl LiveSlot(Func<Control?> build)
+    {
+        var slot = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        Fill(slot, build());
+        liveSlots.Add((slot, build));
+        return slot;
+    }
+
+    private static void Fill(ContentControl slot, Control? content) { slot.Content = content; slot.IsVisible = content is not null; }
+
+    private void RefreshLive()
+    {
+        if (importDialog?.Targeted == true) return;   // 拖放悬停时不动界面（同 RenderCore）
+        foreach (var (slot, build) in liveSlots) Fill(slot, build());
     }
 
     private string T(string key) => text.Get(key, language);
@@ -97,6 +139,7 @@ public sealed partial class EnvironmentWindow : Window
     private void RenderCore()
     {
         if (importDialog?.Targeted == true) { renderDeferred = true; return; }
+        liveSlots.Clear();
         Title = T("app.title");
         var body = new StackPanel { Spacing = 20, Margin = new Thickness(32) };
         // ── 顶栏：品牌名（左）+ 语言 / 添加游戏 / 环境检查（右）────────
@@ -120,10 +163,10 @@ public sealed partial class EnvironmentWindow : Window
             if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
             language = languages.SelectedIndex == 0 ? "zh-Hans" : "en"; Render();
         };
-        if (PhonePill() is { } phonePill) rightBar.Children.Add(phonePill);
+        rightBar.Children.Add(LiveSlot(PhonePill));   // 装机进度事件只刷新这里（IngestPhoneEvent）
         if (BatchPill() is { } batchPill) rightBar.Children.Add(batchPill);
-        if (PhoneUpdateControl() is { } phoneUpdate) rightBar.Children.Add(phoneUpdate);   // 更新 iPhone 上的 S2Arm（壳比本版旧才出现，InstallModePage.cs）
-        AddUpdateControls(rightBar);
+        rightBar.Children.Add(LiveSlot(PhoneUpdateControl));   // 更新 iPhone 上的 S2Arm（壳比本版旧才出现，InstallModePage.cs）；进度事件只刷新这里
+        rightBar.Children.Add(LiveSlot(UpdateControls));   // 启动器自更新：下载百分比只刷新这里
         rightBar.Children.Add(languages);
 
         // 游戏库：任何页面都能回去；出包还在跑就留在后台
@@ -185,25 +228,25 @@ public sealed partial class EnvironmentWindow : Window
         if (importDialog is not null)
         {
             RenderImportDialog(body);
-            Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+            ShowPage("import", body);
             return;
         }
         if (page == "library" && ShowsWelcome)
         {
             RenderWelcome(body);
-            Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+            ShowPage("welcome", body);
             return;
         }
         if (page == "storage")
         {
             RenderStorage(body);
-            Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+            ShowPage("storage", body);
             return;
         }
         if (page == "library")
         {
             RenderLibrary(body);
-            Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+            ShowPage("library", body);
             return;
         }
         body.Children.Add(Label(T("environment.title"), 23));
@@ -301,7 +344,7 @@ public sealed partial class EnvironmentWindow : Window
         var version = Muted("S2Arm " + AppVersion, 12); version.HorizontalAlignment = HorizontalAlignment.Center;
         Avalonia.Automation.AutomationProperties.SetAutomationId(version, "env.version");
         body.Children.Add(version);
-        Content = new ScrollViewer { Content = body, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+        ShowPage(page, body);
     }
 
     private async Task OpenOfficialAsync(Uri url)
