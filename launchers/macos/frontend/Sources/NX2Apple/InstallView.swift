@@ -60,7 +60,7 @@ struct InstallView: View {
                                 CardRow(loc.backend(item.title), detail: loc.backend(item.detail), dot: dot(item)) {
                                     if !item.ok, item.id == "package", let game {
                                         Button(loc.t("s2arm.action.ipa")) { dismiss(); model.exportFor = game.id }
-                                            .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                                            .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                                     }
                                     if !item.ok, item.id == "appleId" {
                                         // 团队号手填 / 引导项目收进环境检查「装到 iPhone 的方式」（v0.3.0）：这里只给一个去设置
@@ -86,7 +86,7 @@ struct InstallView: View {
                         // 只换宿主后（手机上的 S2Arm 换了新版运行层）新版不好用：装回上一版
                         Button(text("install.restore")) { showRestoreConfirm = true }
                             .buttonStyle(LauncherSecondaryButtonStyle())
-                            .disabled(model.busy)
+                            .disabled(model.busy).busyHint(model)
                             .confirmationDialog(text("install.restore_title"), isPresented: $showRestoreConfirm, titleVisibility: .visible) {
                                 Button(text("install.restore_confirm")) { model.restorePhone(game) }
                                 Button(loc.t("launch.done"), role: .cancel) {}
@@ -97,7 +97,7 @@ struct InstallView: View {
                     if let game {
                         Button(text("install.remove")) { showRemoveConfirm = true }
                             .buttonStyle(LauncherSecondaryButtonStyle())
-                            .disabled(model.busy)
+                            .disabled(model.busy).busyHint(model)
                             .confirmationDialog(text("install.remove_title"), isPresented: $showRemoveConfirm, titleVisibility: .visible) {
                                 Button(text("install.remove_confirm"), role: .destructive) { model.removeFromPhone(game) }
                                 Button(loc.t("launch.done"), role: .cancel) {}
@@ -141,6 +141,7 @@ struct InstallView: View {
                 .buttonStyle(.plain).keyboardShortcut(.defaultAction)
                 .disabled(!model.installAllowed(gameID) || model.busy)
                 .opacity(model.installAllowed(gameID) && !model.busy ? 1 : 0.45)
+                .busyHint(model)
             }
             .padding(.horizontal, 30).padding(.vertical, 16)
             }

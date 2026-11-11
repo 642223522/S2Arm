@@ -273,6 +273,7 @@ struct ExportView: View {
         }
         .buttonStyle(.plain)
         .disabled(!open || model.busy)
+        .busyHint(model, disabled: open)
         .padTarget("export." + platform.rawValue, scope: "main", radius: 16) { model.toggleExport(platform) }
         .accessibilityLabel(loc.t("s2arm.export.platform." + platform.rawValue))
         .accessibilityValue(open ? loc.t(on ? "s2arm.export.checked" : "s2arm.export.unchecked") : loc.t("s2arm.export.soon"))
@@ -343,6 +344,7 @@ struct ExportView: View {
             .buttonStyle(.plain)
             .disabled(blocker != nil)
             .opacity(blocker == nil ? 1 : 0.4)
+            .busyHint(model, disabled: blocker == .busy)   // 别的任务（非出包）在跑：说在等谁（出包在跑时这里是「排队」，不置灰）
             .keyboardShortcut(.defaultAction)
             .padTarget("export.start", scope: "main", radius: 26) { model.export(game, location: location.isEmpty ? nil : location) }
             .accessibilityLabel(count > 1 ? String(format: loc.t("s2arm.export.startCount"), count) : loc.t("s2arm.export.start"))
