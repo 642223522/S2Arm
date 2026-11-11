@@ -3513,29 +3513,8 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     }
     uint32_t cm = d->color >= 0 ? d->color_mask & 0xfu : 0xfu, sm = d->stencil ? d->stencil_mask : 0xffu;
     if (!cm || !sm) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 写掩码为 0（颜色 %#x 模板 %#x）", (unsigned)d->color_mask, (unsigned)d->stencil_mask); return; }
-    // 掩码不满的那一半画一笔带写掩码的三角形（backend_vulkan_clear.inc）；其余照旧用附件清除
-    if (d->color >= 0 && cm != 0xfu) clr_draw(c, d->color, cm, &d->value, 0, 0, d);
-    if (d->stencil && sm != 0xffu) clr_draw(c, -1, 0, NULL, sm, d->stencil_value, d);
-    if (!rc_is(c->sticky, NVN_GPU_OK)) return;
-    int plain_color = d->color >= 0 && cm == 0xfu, plain_stencil = d->stencil && sm == 0xffu;
-    if (!plain_color && !d->depth && !plain_stencil) return;
-    VkClearAttachment at[2];
-    uint32_t n = 0;
-    memset(at, 0, sizeof at);
-    if (plain_color) {   // 颜色附件在子通道里的下标 = pass_desc.color[] 的下标（make_pass 按序建）
-        at[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        at[n].colorAttachment = (uint32_t)d->color;
-        memcpy(&at[n].clearValue.color, &d->value, sizeof at[n].clearValue.color);
-        n++;
-    }
-    if (d->depth || plain_stencil) {
-        at[n].aspectMask = (d->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (plain_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
-        at[n].clearValue.depthStencil.depth = d->depth_value;
-        at[n].clearValue.depthStencil.stencil = d->stencil_value;
-        n++;
-    }
-    VkClearRect r = {{{d->x, d->y}, {d->w, d->h}}, 0, c->pass_layers};
-    vkCmdClearAttachments(c->cb, n, at, 1, &r);
+    // 一律画一笔整屏三角形（backend_vulkan_clear.inc：不用附件清除命令，理由见那里）。颜色、深度、模板同一笔做
+    clr_draw(c, d->color, cm, &d->value, d->depth != 0, d->stencil ? sm : 0, d->stencil_value, d);
 }
 
 void nvn_gpu_barrier(nvn_gpu_cmd ch, uint32_t nvn_bits) {
