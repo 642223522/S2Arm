@@ -7,9 +7,10 @@ import tempfile
 import unittest
 import unittest.mock as um
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import core
 import library
 from core import Failure
 
@@ -30,7 +31,9 @@ class MoveTests(unittest.TestCase):
     def ctx(self, library_path, **request):
         notes = []
         c = SimpleNamespace(library=library_path, private=self.private, engine=self.root / "engine", r=request, begin=lambda *a, **k: None, check=lambda: None,
-                            progress=lambda *a: None, redact=lambda s: s, diagnostic=lambda m, **k: notes.append(m), notes=notes)
+                            progress=lambda *a: None, redact=lambda s: s, diagnostic=lambda m, **k: notes.append(m), notes=notes,
+                            emit=lambda *a, **k: None, lock_wait=0.3, task="t1", operation="setup")
+        c.lock_holder, c.lock = MethodType(core.Context.lock_holder, c), MethodType(core.Context.lock, c)   # 库锁走真实现（剃刀 H2：搬家锁旧库同一语义）
         return c
 
     def old(self, name="old"):
@@ -60,6 +63,52 @@ class MoveTests(unittest.TestCase):
         self.assertEqual((old / "saves" / GID / "save.bin").read_bytes(), b"save-data-1234")
         self.assertTrue((old / "iPhone" / GID / "t.ipa").is_file()); self.assertTrue((old / ".s2arm-library.json").is_file())
         self.assertFalse((new / ".s2arm-library.json").exists()); self.assertFalse((new / ".s2arm-moving").exists())
+
+    # ---- 库路径规则只在 setup（剃刀 W19）：期望按规则手写，临时目录里真建文件夹 ----
+    def test_library_inside_or_containing_install_dir_refused(self):
+        install = self.root / "work" / "S2Arm-windows-x64"; install.mkdir(parents=True)
+        for target, what in ((install / "1", "库在启动器目录里"), (install, "库就是启动器目录"), (self.root / "work", "库包含启动器目录")):
+            with self.subTest(what), self.assertRaises(Failure) as e:
+                self.run_setup(target, installDir=str(install))
+            self.assertIn("启动器自己的文件夹", str(e.exception))
+        self.assertFalse((install / "1" / ".s2arm-library.json").exists())
+        r = self.run_setup(self.root / "work" / "S2Arm-windows-x64-lib", installDir=str(install))   # 前缀相同的兄弟目录不算
+        self.assertEqual(r["outcome"], "created")
+
+    def test_drive_root_and_home_refused(self):
+        for target in (Path(self.root.anchor), Path.home()):
+            with self.subTest(str(target)), self.assertRaises(Failure) as e:
+                self.run_setup(target)
+            self.assertIn("独立的游戏库文件夹", str(e.exception))
+
+    def test_free_default_moves_next_to_occupied_default(self):
+        lib = self.root / "S2Arm"; (lib / "Engine").mkdir(parents=True); (lib / "S2Arm.exe").write_text("x")   # 玩家把启动器解压到了缺省库同名文件夹
+        r = self.run_setup(lib, freeDefault=True)
+        self.assertEqual((r["library"], r["outcome"]), (str(self.root / "S2Arm Library"), "created"))
+        self.assertTrue((self.root / "S2Arm Library" / ".s2arm-library.json").is_file())
+        self.assertEqual(sorted(p.name for p in lib.iterdir()), ["Engine", "S2Arm.exe"])   # 原文件夹一个字节没动
+        nxt = self.root / "S2Arm Library"; (nxt / ".s2arm-library.json").unlink(); (nxt / "catalog.json").unlink(); (nxt / ".s2arm-layout.json").unlink()
+        (nxt / "note.txt").write_text("x")
+        self.assertEqual(self.run_setup(lib, freeDefault=True)["library"], str(self.root / "S2Arm Library 2"))
+
+    def test_free_default_keeps_usable_default(self):
+        empty = self.root / "S2Arm"; empty.mkdir(); (empty / "desktop.ini").write_text(""); (empty / "._x").write_text("")
+        self.assertEqual(self.run_setup(empty, freeDefault=True)["library"], str(empty))   # 只有系统文件 = 空
+        lib = self.old("S2ArmOld")
+        r = self.run_setup(lib, freeDefault=True)
+        self.assertEqual((r["library"], r["outcome"]), (str(lib), "opened"))   # 已有游戏库照常打开
+
+    def test_occupied_folder_refused_without_free_default(self):
+        lib = self.root / "S2Arm"; lib.mkdir(); (lib / "S2Arm.exe").write_text("x")
+        with self.assertRaises(Failure) as e:
+            self.run_setup(lib)   # 玩家自己选的位置不替他换
+        self.assertIn("已有别的文件", str(e.exception))
+
+    def test_setup_does_not_adopt_logs_of_a_plain_folder(self):
+        import layout
+        folder = self.root / "picked"; (folder / "logs").mkdir(parents=True); (folder / "logs" / "mine.txt").write_text("玩家自己的")
+        layout.adopt_library_logs(SimpleNamespace(library=folder, private=self.private, logs=self.private / "logs"))
+        self.assertEqual((folder / "logs" / "mine.txt").read_text(), "玩家自己的")   # 还不是游戏库：logs 是玩家自己的东西，不收
 
     def test_opens_existing_library(self):
         lib = self.old("lib")
@@ -110,6 +159,24 @@ class MoveTests(unittest.TestCase):
         with um.patch.object(library, "_same_volume", return_value=False), um.patch.object(library, "_verify_copy", corrupt), self.assertRaises(Failure) as e:
             self.run_setup(new, moveFrom=str(old))
         self.assertEqual(e.exception.code, "library_move_failed"); self.assert_untouched(old, new)
+
+    @unittest.skipIf(os.name == "nt", "占锁的子进程用 fcntl.flock")
+    def test_busy_old_library_queues_then_reports_library_busy(self):
+        # 旧库有任务（出包 t7）一直占着执行锁：排队到上限报 library_busy、带占锁者，旧库新库都不动（旧代码：当场报 library_move_failed、不说是谁）
+        import subprocess
+        old, new = self.old(), self.root / "new"
+        info = {"taskId": "t7", "operation": "build", "gameId": GID, "pid": 1, "startedAt": 1.0}
+        holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); "
+                                   "open(sys.argv[1]+'.holder','w').write(sys.argv[3]); print('ok',flush=True); sys.stdin.readline()",
+                                   str(old / ".execution.lock"), str(Path(library.__file__).parent), json.dumps(info)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            with self.assertRaises(Failure) as e:
+                self.run_setup(new, moveFrom=str(old))
+            self.assertEqual((e.exception.code, e.exception.holder), ("library_busy", info)); self.assert_untouched(old, new)
+        finally:
+            holder.stdin.write("\n"); holder.stdin.flush(); holder.communicate(timeout=5)
 
     def test_interrupted_rename_rolls_back(self):
         old, new = self.old(), self.root / "new"

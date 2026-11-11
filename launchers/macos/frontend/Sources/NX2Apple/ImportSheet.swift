@@ -76,9 +76,7 @@ struct ImportSheet: View {
 
     private func reason(_ source: ImportSource) -> String {
         if source.status == .unprocessed { return resultText("unprocessed") }
-        if source.code == "content_truncated", !source.fileName.lowercased().hasSuffix(".nsp") {
-            return resultText("incomplete")
-        }
+        // content_truncated 按码取共享规格的标题（「游戏文件不完整」，各格式通用；剃刀 M14：原先这里按扩展名另换一句）
         return source.code.flatMap { BackendText.errorTitle($0, language: language) } ??
             (source.reason.isEmpty ? resultText("unreadable") : loc.backend(source.reason))
     }

@@ -10,7 +10,6 @@ public final class GameActivity extends MainActivity {
     /** 跳板回局的控制标记：bare intent 无 s2arm.* 会被 isLaunch 当起局、替换库局被
         判 mismatch stopGame；带它在 CONTROL_EXTRAS 里 → 控制 intent、不动会话（#1474）。 */
     static final String ICON_RESUME_EXTRA = "s2arm.icon_resume";
-    static final String REVISION_EXTRA = "s2arm.experimental_revision";
 
     static Intent launch(Context context, Intent options, String titleId) {
         Intent intent = new Intent(context, GameActivity.class);

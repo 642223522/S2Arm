@@ -278,6 +278,18 @@ def main():
         lines = (product / "gl_shaders.tsv").read_text().splitlines()
         assert len(lines) == 3 and all(line.startswith("#") for line in lines) and lines[0].startswith("# s2arm-gl-lib "), lines
         assert not (product / "gl_shaders.metallib").exists()
+    # 没有 main 的片段（#518：main 里的公共头「#version … precision …」）：两阶段都只卡在「Missing entry point」，记跳过、不计失败；
+    #   只有片段时同离线一支没有（退 0、只出表头），和完整着色器同在时照常出库、退 0
+    header = out / "header.glsl"
+    header.write_text("#version 310 es\nprecision mediump float;\nuniform vec4 tint;\n")
+    only = run([sys.executable, CLI, header, out / "header-only", "--ios", out / "header-only-ios"])
+    assert "GLSL 汇总：成功 0、失败 0、跳过 1" in only.stdout, only.stdout + only.stderr
+    for product in (out / "header-only/gl", out / "header-only-ios/gl"):
+        assert (product / "gl_shaders.tsv").read_text().count("\n") == 3
+        assert not (product / "gl_shaders.metallib").exists()
+    mixed = run([sys.executable, CLI, header, FIX / "es.vert", out / "header-mixed"])
+    assert "GLSL 汇总：成功 1、失败 0、跳过 1" in mixed.stdout, mixed.stdout + mixed.stderr
+    assert (out / "header-mixed/gl/gl_shaders.metallib").stat().st_size > 0
     # 新主线必须保留输入附件和固定 / 特化工作组两种计算行为。
     extra_cases = {
         "subpass.frag": "#version 450\nlayout(input_attachment_index=0,set=0,binding=7) uniform subpassInput attachment;\nlayout(location=0) out vec4 color;\nvoid main(){color=subpassLoad(attachment);}\n",

@@ -15,11 +15,14 @@
 #define TAR_OPTIONS "--format pax --no-xattrs --no-mac-metadata"
 #define TAR_RENAME "-s ',^a.txt,x/../../逃逸.txt,'"
 #endif
-int s2a_pack_apply(const char *docs); int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb);
+int s2a_pack_apply(const char *docs); const char *s2a_pack_apply_failure(void);
+int s2a_games_repair(const char *proc_docs); const char *s2a_games_repair_detail(void); unsigned s2a_games_repair_files(void); unsigned s2a_games_repair_owner(void); int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb);
 int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char *proc_docs, char *out, size_t n); int s2a_import_state_game(const char *proc_docs, const char *gid);
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
-int s2a_img_scan(const char *proc_docs); int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
+int s2a_img_scan(const char *proc_docs);
+extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
+static uint64_t g_ph[4][2]; static int g_phn[4]; static void phase(int ph, uint64_t d, uint64_t t) { if (ph > 0 && ph < 4) { g_ph[ph][0] = d; g_ph[ph][1] = t; g_phn[ph]++; } } int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
 // 与 runtime/src/pack_apply.c 同（闸门下一步与指纹记录）
 enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_SETTLE, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
 struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
@@ -373,8 +376,60 @@ int main(void) {
       CHECK(sh(c) == 0, "⑭ 落到 games/<游戏号>/资源包/game.img、manifest 资源包号 = 头里的、index.tsv 只有 game.img、拷一半的没动");
       { char g3[1500]; snprintf(g3, sizeof g3, "%s/games/0100ABCD00000002", D3);
         CHECK(s2a_import_state(g3) == 1, "⑭ 挪好后 → 待导入（状态 %d）", s2a_import_state(g3));
+        s2a_pack_apply_phase = phase; memset(g_ph, 0, sizeof g_ph); memset(g_phn, 0, sizeof g_phn);
         CHECK(s2a_pack_apply(g3) == 0, "⑭ 应用成功");
+        s2a_pack_apply_phase = NULL;
+        // 分段进度（游戏库「安装中」蒙版）：② 从 game.img 解小文件按字节报到满（exefs/main.npdm 5000 + ctl/control.nacp 4）；③ 核对机上文件报到满；没有推送包不报 ①
+        CHECK(g_phn[2] > 0 && g_ph[2][0] == g_ph[2][1] && g_ph[2][1] == 5004, "⑭ 分段进度 ② 解小文件 %llu / %llu（期望 5004 / 5004）", (unsigned long long)g_ph[2][0], (unsigned long long)g_ph[2][1]);
+        CHECK(g_phn[3] > 0 && g_ph[3][0] == g_ph[3][1] && g_ph[3][1] >= 1, "⑭ 分段进度 ③ 核对 %llu / %llu", (unsigned long long)g_ph[3][0], (unsigned long long)g_ph[3][1]);
+        CHECK(g_phn[1] == 0, "⑭ 没有推送包不报 ①（报了 %d 次）", g_phn[1]);
         snprintf(c, sizeof c, "cmp -s '%s/src/npdm' '%s/资源包/exefs/main.npdm'", D, g3); CHECK(sh(c) == 0, "⑭ 小文件逐字节解出"); }
       CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）"); }
+    // #540：游戏目录（多款容器 Documents/games/<游戏号>/）根本不在 → unpack.log 也建不了；失败原因仍要填上，并说明日志建不了。
+    //   先跑一次成功的同名目录，核成功后原因清空（不留上一次的失败原因）
+    { char gone[1100]; snprintf(gone, sizeof gone, "%s/games/0100000000000000", T); struct stat gs;
+      CHECK(stat(gone, &gs) != 0, "夹具：游戏目录应不在");
+      CHECK(s2a_pack_apply(gone) != 0, "游戏目录不在应判失败");
+      const char *why = s2a_pack_apply_failure();
+      CHECK(why && strstr(why, "index.tsv 打不开") && strstr(why, "返回 -8"), "目录不在：期望原因含「index.tsv 打不开」「返回 -8」→ 「%s」", why ? why : "(null)");
+      CHECK(why && strstr(why, "unpack.log 建不了") && strstr(why, "No such file"), "目录不在：期望原因注明 unpack.log 建不了（No such file）→ 「%s」", why ? why : "(null)");
+      char ok[1100]; snprintf(ok, sizeof ok, "%s/ok", T); snprintf(c, sizeof c, "mkdir -p %s/资源包 && printf '{\"index_sha256\":\"aa\"}' > %s/资源包/manifest.json && : > %s/资源包/index.tsv", ok, ok, ok);
+      CHECK(sh(c) == 0, "造空包夹具失败");
+      CHECK(s2a_pack_apply(ok) == 0, "空索引的包应解开");
+      CHECK(!*s2a_pack_apply_failure(), "成功后失败原因应清空 →「%s」", s2a_pack_apply_failure()); }
+    // #569 游戏目录 App 写不进（玩家机上 games 一串归 root、0755）：解包一个包都不解、直接报目录与属主；s2a_games_repair 克隆进新树、
+    //   换名，旧的留在 .s2a-unwritable-*；全可写不动；树里有不认识的类型（命名管道）迁移失败、原样不动、新树清掉。期望按规则手写
+    if (getuid() != 0) {
+        char base[] = "/tmp/s2a_t_repair_XXXXXX"; if (!mkdtemp(base)) return 1;
+        char c[4096]; const char *gid = "0100000000ABC000";
+        snprintf(c, sizeof c, "mkdir -p '%s/games/%s/资源包/.incoming' && printf 'hello' > '%s/games/%s/资源包/romfs.img' && printf 'x' > '%s/games/%s/资源包/.incoming/a.tar'", base, gid, base, gid, base, gid); sh(c);
+        CHECK(s2a_games_repair(base) == 0, "目录都写得进：迁移不动（返回 0）");
+        char root[600]; snprintf(root, sizeof root, "%s/games/%s/资源包", base, gid); chmod(root, 0555);
+        char gd[600]; snprintf(gd, sizeof gd, "%s/games/%s", base, gid);
+        int arc = s2a_pack_apply(gd);
+        CHECK(arc != 0 && strstr(s2a_pack_apply_failure(), "目录 App 写不进") && strstr(s2a_pack_apply_failure(), "资源包") && strstr(s2a_pack_apply_failure(), "权限 555"),
+              "资源包目录写不进：解包先报目录与权限（实际 %d「%s」）", arc, s2a_pack_apply_failure());
+#if defined(__APPLE__)
+        int r = s2a_games_repair(base);
+        char ng[600]; snprintf(ng, sizeof ng, "%s/games/%s/资源包", base, gid);
+        char buf[16] = ""; char fp[700]; snprintf(fp, sizeof fp, "%s/romfs.img", ng); FILE *f = fopen(fp, "r"); if (f) { size_t k = fread(buf, 1, sizeof buf - 1, f); buf[k] = 0; fclose(f); }
+        snprintf(c, sizeof c, "ls -d '%s'/.s2a-unwritable-* >/dev/null 2>&1", base);
+        CHECK(r == 1 && s2a_games_repair_files() == 3 && !access(ng, W_OK) && !strcmp(buf, "hello") && sh(c) == 0,
+              "写不进 → 迁好：返回 1、克隆 3 个文件（romfs.img、a.tar、上一步失败写下的 unpack.log）、新资源包可写、内容一致、旧目录留在 .s2a-unwritable-*（实际 %d / %u / 内容「%s」）", r, s2a_games_repair_files(), buf);
+        CHECK(s2a_pack_apply(gd) != 0 && !strstr(s2a_pack_apply_failure(), "写不进"), "迁好后解包不再报目录写不进（这里因夹具不是真包会别的原因失败）：「%s」", s2a_pack_apply_failure());
+        CHECK(s2a_games_repair(base) == 0, "迁好后再查：都写得进（返回 0）");
+        // 迁移失败：新游戏目录放一个命名管道（不是普通文件 / 目录 / 链接）再设成写不进
+        char g2[600]; snprintf(g2, sizeof g2, "%s/games/0100000000DEF000", base); mkdir(g2, 0755);
+        char fifo[700]; snprintf(fifo, sizeof fifo, "%s/pipe", g2); mkfifo(fifo, 0644); chmod(g2, 0555);
+        int r2 = s2a_games_repair(base);
+        snprintf(c, sizeof c, "ls -d '%s'/.s2a-games-new-* >/dev/null 2>&1", base);
+        struct stat st2;
+        CHECK(r2 < 0 && strstr(s2a_games_repair_detail(), "不是普通文件") && !stat(fifo, &st2) && sh(c) != 0,
+              "迁移失败：返回负数、原因说明哪一个、原目录原样、新树清掉（实际 %d「%s」）", r2, s2a_games_repair_detail());
+        chmod(g2, 0755);
+#endif
+        chmod(root, 0755);
+        snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", base, base); sh(c);
+    }
     printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

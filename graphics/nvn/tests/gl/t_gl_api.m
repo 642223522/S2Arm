@@ -268,8 +268,8 @@ static void t_fb_query(void) {
 // ---------- E 体纹理 ----------
 static void t_volume(void) {
     printf("E 体纹理（2D 数组 / 3D）\n");
-    G(glTexImage3D, void, GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)
-    G(glTexSubImage3D, void, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *)
+    G(glTexImage3D, void, GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, uint64_t, const void *)   // 栈上参数按游戏的 8 字节一格
+    G(glTexSubImage3D, void, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, uint64_t, uint64_t, const void *)   // 栈上参数按游戏的 8 字节一格（gl_tex.m 注释）
     G(glGetTexImage, void, GLenum, GLint, GLenum, GLenum, void *)
     GLuint prog = program("api_vol"), fb = fbo_rb(8, 8, NULL); glUseProgram(prog);
     GLuint vao, vbo; glGenVertexArrays(1, &vao); glBindVertexArray(vao); glGenBuffers(1, &vbo); glBindBuffer(0x8892, vbo);
@@ -777,29 +777,40 @@ static void t_love(void) {
 // S 核心函数不回空（小丑牌 v0.2.6 iPhone 起局 5 次闪退：LÖVE 按报的 GL 4.5 取核心函数，没实现的回空，调用跳到 0 被代码签名杀掉）；
 //   GL_FRAMEBUFFER_SRGB 开关可开关可查、不置错（原先 glIsEnabled / glDisable 都置 0x500）。期望按 GL 规范与本层约定手写：
 //   核心名（结尾不是两个以上大写字母）没实现 → 非空、调用回 0；带厂商后缀的没实现 → 空；FRAMEBUFFER_SRGB 缺省关、开了查得到开、全程无错
+//   #601 起空实现按调用来源给：查表 gl_lookup 只回真实现（装载器先问直连层，层里交了空实现，游戏模块自己导出的同名函数就轮不到）；
+//   游戏运行时按名要（eglGetProcAddress）查表没有时才给空实现。所以下面空实现各项从 eglGetProcAddress 取，查表另核回空
 static void t_core_stub(void) {
-    void *core = gpa("glS2aNoSuchCore"), *ext = gpa("glS2aNoSuchFuncARB");
+    void *(*egpa)(const char *) = gpa("eglGetProcAddress"); CHECK(egpa != NULL, "eglGetProcAddress 查得到"); if (!egpa) return;
+    CHECK(gpa("glS2aNoSuchCore") == NULL, "查表（gl_lookup）对没实现的核心名回空（空实现不从查表给，#601）");
+    void *core = egpa("glS2aNoSuchCore"), *ext = egpa("glS2aNoSuchFuncARB");
     CHECK(core != NULL, "没实现的核心名拿到非空入口（空实现）");
     CHECK(core && ((uint64_t (*)(void))core)() == 0, "调用空实现不崩、回 0");
-    CHECK(core == gpa("glS2aNoSuchCore"), "同名再查拿到同一个空实现");
+    CHECK(core == egpa("glS2aNoSuchCore"), "同名再查拿到同一个空实现");
     CHECK(ext == NULL, "带厂商后缀的没实现照旧回空（程序按指针判扩展支持）");
+    // #601：「gl」后跟小写的不是 GL 函数（NVN GLSL 编译库 glslc*，由游戏模块导出）——必须回空，装载器才会去游戏模块找
+    { static const char *const glslc[] = {"glslcInitialize", "glslcSetAllocator", "glslcCompile", "glslcFinalize", "glslcGetVersion", "glslcCompilePreSpecialized"};
+      int nonnull = 0; for (int i = 0; i < 6; i++) nonnull += (gpa(glslc[i]) != NULL) + (egpa(glslc[i]) != NULL);
+      CHECK(nonnull == 0, "glslc* 六个名字全部回空（交给游戏模块），拿到非空 %d 个", nonnull); }
     // 小丑牌 v0.2.7 起局查了 854 个没实现的核心名：1000 个不同名字都要拿到各自的空实现（以前 256 个用完就回空、照样跳 0）
     int got = 0, distinct = 1; void *prev = NULL; char nm[40];
-    for (int i = 0; i < 1000; i++) { snprintf(nm, sizeof nm, "glS2aMissCore%dxyz", i); void *f = gpa(nm); got += f != NULL; if (f && f == prev) distinct = 0; prev = f; }
+    for (int i = 0; i < 1000; i++) { snprintf(nm, sizeof nm, "glS2aMissCore%dxyz", i); void *f = egpa(nm); got += f != NULL; if (f && f == prev) distinct = 0; prev = f; }
     CHECK(got == 1000 && distinct, "1000 个不同的没实现核心名全部拿到空实现、相邻两个不共用（拿到 %d）", got);
     // 编号空实现用完以后（再查 3200 个，累计超 4096）照样不回空，拿到的共用空实现调用回 0
-    int got2 = 0, ret0 = 1; for (int i = 0; i < 3200; i++) { snprintf(nm, sizeof nm, "glS2aMissMore%dxyz", i); void *f = gpa(nm); got2 += f != NULL; if (f && ((uint64_t (*)(void))f)() != 0) ret0 = 0; }
+    int got2 = 0, ret0 = 1; for (int i = 0; i < 3200; i++) { snprintf(nm, sizeof nm, "glS2aMissMore%dxyz", i); void *f = egpa(nm); got2 += f != NULL; if (f && ((uint64_t (*)(void))f)() != 0) ret0 = 0; }
     CHECK(got2 == 3200 && ret0, "超过 4096 个没实现核心名后仍全部拿到空实现、调用回 0（拿到 %d）", got2);
     GLboolean (*isen)(GLenum) = gpa("glIsEnabled"); void (*en)(GLenum) = gpa("glEnable"), (*dis)(GLenum) = gpa("glDisable");
     while (glGetError()) {}
     GLboolean a = isen(0x8DB9); GLenum e0 = glGetError(); en(0x8DB9); GLboolean b = isen(0x8DB9); GLenum e1 = glGetError(); dis(0x8DB9); GLboolean c = isen(0x8DB9); GLenum e2 = glGetError();
     CHECK(!a && b && !c && !e0 && !e1 && !e2, "GL_FRAMEBUFFER_SRGB：缺省关 / 开后查得开 / 关后查得关，全程无错（%d %d %d，错 %#x %#x %#x）", a, b, c, e0, e1, e2);
+    for (int k = 0; k < 2; k++) { GLenum cap = k ? 0x8242 : 0x92E0;   // GL_DEBUG_OUTPUT / _SYNCHRONOUS：只记开关、不报错（小丑牌 glDisable(GL_DEBUG_OUTPUT)）
+        dis(cap); GLboolean x = isen(cap); GLenum f0 = glGetError(); en(cap); GLboolean y = isen(cap); GLenum f1 = glGetError(); dis(cap); GLenum f2 = glGetError();
+        CHECK(!x && y && !f0 && !f1 && !f2, "%s：关后查得关 / 开后查得开，全程无错（%d %d，错 %#x %#x %#x）", k ? "GL_DEBUG_OUTPUT_SYNCHRONOUS" : "GL_DEBUG_OUTPUT", x, y, f0, f1, f2); }
 }
 // LÖVE 11 起局 createDefaultTexture：3D 与 2D 数组各建 1×1 不可变存储、子图写一个白像素（小丑牌 v0.2.7 崩在这里：glTexStorage3D 以前回空）
 static void t_tex_storage3d(void) {
     void (*st3)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLsizei) = gpa("glTexStorage3D");
-    void (*sub3)(GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *) = gpa("glTexSubImage3D");
-    void (*img3)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *) = gpa("glTexImage3D");
+    void (*sub3)(GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, uint64_t, uint64_t, const void *) = gpa("glTexSubImage3D");
+    void (*img3)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, uint64_t, const void *) = gpa("glTexImage3D");
     void (*getimg)(GLenum, GLint, GLenum, GLenum, void *) = gpa("glGetTexImage"); void (*gtpi)(GLenum, GLenum, GLint *) = gpa("glGetTexParameteriv");
     if (!st3 || !sub3 || !img3 || !getimg) return;
     while (glGetError()) {}
@@ -814,12 +825,62 @@ static void t_tex_storage3d(void) {
         st3(tg[i], 1, 0x8058, 1, 1, 1); GLenum e3 = glGetError(); img3(tg[i], 0, 0x8058, 1, 1, 1, 0, 0x1908, 0x1401, white); GLenum e4 = glGetError();
         CHECK(e3 == 0x502 && e4 == 0x502, "%s 不可变后再 TexStorage3D / TexImage3D 都报 INVALID_OPERATION（%#x %#x）", i ? "2D 数组" : "3D", e3, e4);
     }
+    {   // 游戏按 8 字节一格放栈上参数、高 32 位是脏的（小丑牌实测 type 读成 0x70）：宿主只取低 32 位
+        GLuint tg9; glGenTextures(1, &tg9); glBindTexture(0x806F, tg9); st3(0x806F, 1, 0x8058, 1, 1, 1); while (glGetError()) {}
+        sub3(0x806F, 0, 0, 0, 0, 1, 1, 1, 0x0000007000001908ull, 0x0000007000001401ull, white); GLenum eg = glGetError(); memset(out, 0, sizeof out); getimg(0x806F, 0, 0x1908, 0x1401, out);
+        CHECK(!eg && !memcmp(out, white, 4), "glTexSubImage3D 栈上 format / type 高 32 位脏：只取低位、写入无错、读回白（错 %#x，读回 %d %d %d %d）", eg, out[0], out[1], out[2], out[3]);
+    }
     GLuint t3; glGenTextures(1, &t3); glBindTexture(0x806F, t3); st3(0x806F, 3, 0x8058, 4, 4, 2); GLenum e5 = glGetError();
     uint8_t px[4 * 4 * 2 * 4]; memset(px, 0x40, sizeof px); sub3(0x806F, 2, 0, 0, 0, 1, 1, 1, 0x1908, 0x1401, white); GLenum e6 = glGetError();
     sub3(0x806F, 2, 0, 0, 0, 1, 1, 2, 0x1908, 0x1401, px); GLenum e7 = glGetError();
     CHECK(!e5 && !e6 && e7 == 0x501, "3D 4×4×2 三级：第 2 级是 1×1×1（写 1 片无错、写 2 片越界 INVALID_VALUE；错 %#x %#x %#x）", e5, e6, e7);
     st3(0x0DE1, 1, 0x8058, 1, 1, 1); GLenum e8 = glGetError(); CHECK(e8 == 0x500, "2D 目标给 TexStorage3D 报 INVALID_ENUM（%#x）", e8);
     glBindTexture(0x806F, 0); glBindTexture(0x8C1A, 0);
+}
+// GL_TEXTURE_SWIZZLE_*（小丑牌 / LÖVE 11 建单 / 双通道纹理时设；以前报 INVALID_ENUM、LÖVE 抛异常退出）。期望手算：texel (10,20,30,40)，
+//   换位 R←B、G←R、B←1、A←G → 采样 (30,10,255,20)；改回缺省 → (10,20,30,40)；采样器对象设它 → INVALID_ENUM
+static void t_tex_swizzle(void) {
+    printf("S2 纹理通道换位\n");
+    G(glSamplerParameteri, void, GLuint, GLenum, GLint) G(glGenSamplers, void, GLsizei, GLuint *) G(glGetTexParameteriv, void, GLenum, GLenum, GLint *)
+    GLuint prog = program("texture"), fb = fbo_rb(8, 8, NULL); (void)fb; glUseProgram(prog); glViewport(0, 0, 8, 8);
+    glUniform2f(glGetUniformLocation(prog, "uScale"), 1, 1); glUniform2f(glGetUniformLocation(prog, "uOff"), 0, 0);
+    glUniform2f(glGetUniformLocation(prog, "uUVScale"), 1, 1); glUniform2f(glGetUniformLocation(prog, "uUVOff"), 0, 0); glUniform1i(glGetUniformLocation(prog, "uTex"), 0);
+    GLuint vao, vbo; glGenVertexArrays(1, &vao); glBindVertexArray(vao); glGenBuffers(1, &vbo); glBindBuffer(0x8892, vbo);
+    const float quad[] = {-1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1}; glBufferData(0x8892, sizeof quad, quad, 0x88E4);
+    GLint ap = glGetAttribLocation(prog, "aPos"); glVertexAttribPointer((GLuint)ap, 2, 0x1406, 0, 8, 0); glEnableVertexAttribArray((GLuint)ap);
+    const uint8_t px[4] = {10, 20, 30, 40}; GLuint tex; glGenTextures(1, &tex); glActiveTexture(0x84C0); glBindTexture(0x0DE1, tex);
+    glTexParameteri(0x0DE1, 0x2801, 0x2600); glTexParameteri(0x0DE1, 0x2800, 0x2600); glTexImage2D(0x0DE1, 0, 0x8058, 1, 1, 0, 0x1908, 0x1401, px);
+    while (glGetError()) {}
+    glTexParameteri(0x0DE1, 0x8E42, 0x1905); glTexParameteri(0x0DE1, 0x8E43, 0x1903); glTexParameteri(0x0DE1, 0x8E44, 1); glTexParameteri(0x0DE1, 0x8E45, 0x1904); GLenum e0 = glGetError();
+    GLint q[4] = {0}; for (int c = 0; c < 4; c++) glGetTexParameteriv(0x0DE1, 0x8E42 + c, &q[c]);
+    CHECK(!e0 && q[0] == 0x1905 && q[1] == 0x1903 && q[2] == 1 && q[3] == 0x1904, "SWIZZLE_R/G/B/A 设置无错、查询读回（错 %#x，读回 %#x %#x %#x %#x）", e0, q[0], q[1], q[2], q[3]);
+    char s[32]; glDrawArrays(4, 0, 6); glFinish(); pxs(4, 4, s);
+    CHECK(px_is(4, 4, 30, 10, 255, 20), "换位后采样 = (30,10,255,20)（%s）", s);
+    for (int c = 0; c < 4; c++) glTexParameteri(0x0DE1, 0x8E42 + c, 0x1903 + c);
+    glDrawArrays(4, 0, 6); glFinish(); pxs(4, 4, s);
+    CHECK(px_is(4, 4, 10, 20, 30, 40) && !glGetError(), "改回缺省后采样 = 原值 (10,20,30,40)（%s）", s);
+    GLuint smp; glGenSamplers(1, &smp); glSamplerParameteri(smp, 0x8E42, 0x1903); GLenum e1 = glGetError(); glTexParameteri(0x0DE1, 0x8E42, 0x1234); GLenum e2 = glGetError();
+    CHECK(e1 == 0x500 && e2 == 0x500, "采样器对象设换位 / 非法取值 → INVALID_ENUM（%#x %#x）", e1, e2);
+    glBindTexture(0x0DE1, 0);
+}
+// bool uniform（小丑牌 / LÖVE：着色器头 #define extern uniform，Balatro 写 extern bool；SPIR-V 默认块里 bool 换成 uint，反射报 GL_UNSIGNED_INT 时
+//   LÖVE Shader:send 拒收布尔值、Lua 报错退出）。期望：类型报 GL_BOOL / GL_BOOL_VEC2；uFlag=1 → 绿，uPair=(0,1) → 蓝分量满 → (0,255,255)；uFlag=0、uPair=0 → 红
+static void t_bool_uniform(void) {
+    printf("S3 bool uniform\n");
+    G(glGetActiveUniform, void, GLuint, GLuint, GLsizei, GLsizei *, GLint *, GLenum *, GLchar *) G(glUniform2iv, void, GLint, GLsizei, const GLint *)
+    GLuint prog = program("api_bool"), fb = fbo_rb(8, 8, NULL); (void)fb; glUseProgram(prog); glViewport(0, 0, 8, 8);
+    GLenum tf = 0, tp = 0; GLint sz; char nm[64];
+    GLint n = 0; glGetProgramiv(prog, 0x8B86, &n);
+    for (GLint i = 0; i < n; i++) { GLenum t = 0; glGetActiveUniform(prog, (GLuint)i, sizeof nm, NULL, &sz, &t, nm); if (!strcmp(nm, "uFlag")) tf = t; if (!strcmp(nm, "uPair")) tp = t; }
+    CHECK(tf == 0x8B56 && tp == 0x8B57, "extern bool / bvec2 的类型报 GL_BOOL / GL_BOOL_VEC2（%#x %#x）", tf, tp);
+    GLuint vao, vbo; glGenVertexArrays(1, &vao); glBindVertexArray(vao); glGenBuffers(1, &vbo); glBindBuffer(0x8892, vbo);
+    const float quad[] = {-1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1}; glBufferData(0x8892, sizeof quad, quad, 0x88E4);
+    GLint ap = glGetAttribLocation(prog, "aPos"); glVertexAttribPointer((GLuint)ap, 2, 0x1406, 0, 8, 0); glEnableVertexAttribArray((GLuint)ap);
+    GLint lf = glGetUniformLocation(prog, "uFlag"), lp = glGetUniformLocation(prog, "uPair"); char s[32];
+    glUniform1i(lf, 1); const GLint p01[2] = {0, 1}, p00[2] = {0, 0}; glUniform2iv(lp, 1, p01); glDrawArrays(4, 0, 6); glFinish(); pxs(4, 4, s);
+    CHECK(px_is(4, 4, 0, 255, 255, 255) && !glGetError(), "uFlag=1、uPair=(0,1) → (0,255,255)（%s）", s);
+    glUniform1i(lf, 0); glUniform2iv(lp, 1, p00); glDrawArrays(4, 0, 6); glFinish(); pxs(4, 4, s);
+    CHECK(px_is(4, 4, 255, 0, 0, 255) && !glGetError(), "uFlag=0、uPair=(0,0) → 红（%s）", s);
 }
 int main(void) { alarm(120); @autoreleasepool {
 #define LOAD(name, ret, ...) name = (ret (*)(__VA_ARGS__))gpa(#name); if (!name) { printf("✗ 取不到已有入口 %s\n", #name); return 1; }
@@ -834,6 +895,6 @@ int main(void) { alarm(120); @autoreleasepool {
     g_sf = eglCreateWindowSurface(g_dpy, cfg, NULL, NULL); EGLContext ctx = eglCreateContext(g_dpy, cfg, NULL, ctx_attr);
     if (!eglMakeCurrent(g_dpy, g_sf, g_sf, ctx)) { printf("✗ 建上下文失败\n"); return 1; }
     g_tri = program("tri"); glGenVertexArrays(1, &g_tri_vao); glGenBuffers(1, &g_tri_vbo);
-    t_queries(); t_sync(); t_readback(); t_fb_query(); t_volume(); t_msaa(); t_map(); t_instanced(); t_packed_attr(); t_raster_read(); t_uniforms(); t_names_programs(); t_threads(); t_frame_storage(); t_core_stub(); t_tex_storage3d(); t_api_version(); t_map_range(); t_es300(); t_sampler_array(); t_shader_iv(); t_love();
+    t_queries(); t_sync(); t_readback(); t_fb_query(); t_volume(); t_msaa(); t_map(); t_instanced(); t_packed_attr(); t_raster_read(); t_uniforms(); t_names_programs(); t_threads(); t_frame_storage(); t_core_stub(); t_tex_storage3d(); t_tex_swizzle(); t_bool_uniform(); t_api_version(); t_map_range(); t_es300(); t_sampler_array(); t_shader_iv(); t_love();
     printf("%s t_gl_api：%d 项，失败 %d\n", fails ? "✗" : "✓", checks, fails); return fails != 0;
 }}

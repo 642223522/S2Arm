@@ -118,10 +118,10 @@ public static class PackJobClient
         return payload;
     }
 
-    public static async Task<LibraryJobOutput> RunAsync(Request request, Action<JsonElement>? onEvent, CancellationToken cancellationToken)
+    public static async Task<LibraryJobOutput> RunAsync(Request request, Action<JsonElement>? onEvent, CancellationToken cancellationToken, string? jobId = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var jobId = "win-" + Guid.NewGuid().ToString("N");
+        jobId ??= "win-" + Guid.NewGuid().ToString("N");   // 前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
         var privateRoot = Path.GetFullPath(request.PrivateRoot);
         using var file = PrivateJobRequest.Create(privateRoot, JsonSerializer.Serialize(Payload(request, jobId)));
         var info = EnvironmentProbe.StartInfo(request.Paths, file.FilePath);
@@ -181,7 +181,8 @@ public static class PackJobClient
     }
 
     // Ask the job control plane first (it verifies the journal's pid / start time), then stop only our own process tree.
-    private static async Task CancelAsync(LauncherPaths paths, string requestFile, string privateRoot, string jobId)
+    //   唯一一份取消（剃刀 W17：LibraryJobClient 原先另抄一份，#7「3 秒内跑完照真实结局」只改到这边）
+    internal static async Task CancelAsync(LauncherPaths paths, string requestFile, string privateRoot, string jobId)
     {
         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try

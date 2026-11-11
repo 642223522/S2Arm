@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -9,12 +8,12 @@ namespace S2Arm.Launcher.Protocol;
 
 /// <summary>作业层（pack/jobs）文字的英文显示（同 Mac 适配层 BackendText.swift，同一份对照表）：作业记录、事件、报错一律是中文原句，
 /// 英文界面显示时才翻。对照表 = Mac 的 Localizable.json（source → en）+ 共享体验规格里的状态 / 结局 / 画面模式标签 / 阶段名。
-/// 翻法同 Mac：整句对照 → 带 {0} 占位的句式（占位里的值再翻）→ 按「\n」「；」拆开逐句翻再拼；认不出的原样显示。纯函数、带缓存（界面每次重画都会问）。</summary>
+/// 翻法同 Mac：整句对照 → 带 {0} 占位的句式（占位里的值再翻）→ 按「\n」「；」拆开逐句翻再拼；认不出的原样显示。纯函数、不缓存（同 Mac）：
+/// 实测（剃刀 W16，11-11）一句没见过的约 6 µs、建表约 28 ms；原先的缓存不设上限，带计数的进度句每句都新记一条，长时间出包只涨不落。</summary>
 public sealed class BackendText
 {
     private readonly Dictionary<string, string> english;
     private readonly List<(Regex Regex, int[] Indices, string Replacement)> patterns = [];
-    private readonly ConcurrentDictionary<string, string> cache = new();
     private static readonly Regex Slots = new(@"\{(\d+)\}", RegexOptions.Compiled);
     private static readonly Regex Han = new(@"\p{IsCJKUnifiedIdeographs}", RegexOptions.Compiled);
 
@@ -60,7 +59,7 @@ public sealed class BackendText
     }
 
     /// <summary>一句作业层文字的英文；没有汉字或认不出就原样。</summary>
-    public string English(string text) => cache.GetOrAdd(text, t => Translate(t, 0));
+    public string English(string text) => Translate(text, 0);
 
     private string Translate(string text, int depth)
     {

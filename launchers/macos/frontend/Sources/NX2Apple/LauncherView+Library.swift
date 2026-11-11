@@ -73,7 +73,8 @@ extension LauncherView {
                     let queueable = !model.busy || model.session?.export != nil
                     if game.iphoneReady {
                         // 包已出好：主按钮是装机 / 续签，重新出包退到次要
-                        Button { installFor = game.id } label: {
+                        // 装过的款（续签 / 重装）：目标先设成当初装的那台，不换别的；要装到另一台在装机页改选
+                        Button { model.targetInstalledDevice(of: game); installFor = game.id } label: {
                             LauncherHeroActionLabel(title: txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), symbol: "iphone")
                         }
                         .buttonStyle(.plain).keyboardShortcut(.return, modifiers: []).accessibilityIdentifier("hero.install")
@@ -266,7 +267,7 @@ extension LauncherView {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
-                Button(txt("library.hero.renew")) { installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
             }
             .padding(.horizontal, 34).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
@@ -335,7 +336,9 @@ extension LauncherView {
 
     private func exportDiagnostics() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "S2Arm-diagnostics.zip"
+        // 短名：S2Arm-诊断-月日-时分（英文界面 S2Arm-diag-…），与 iOS / Windows 一致；版本、系统、提交号都在包里，不进文件名（11-11 维护者）
+        let stamp = DateFormatter(); stamp.locale = Locale(identifier: "en_US_POSIX"); stamp.dateFormat = "MMdd-HHmm"
+        panel.nameFieldStringValue = "S2Arm-\(uiLanguage == "en" ? "diag" : "诊断")-\(stamp.string(from: Date())).zip"
         if panel.runModal() == .OK, let url = panel.url { model.diagnostics(exportTo: url) }
     }
 
@@ -390,17 +393,22 @@ struct CoverFill: View {
     }
 }
 
-/// Covers decoded once per path (the library redraws on every job event while a game runs).
+/// Covers decoded once per file version (the library redraws on every job event while a game runs).
+/// 键 = 路径 + 修改时间（剃刀 M15：原先只按路径永久缓存——玩家换封面、后台查到横图写同一路径后一直显示旧图 / 一直空，要重开启动器）；
+/// 每次只做一次 stat，解码只在文件变了时做。解不开的也按同一个键记，文件一变就重试
 @MainActor final class CoverCache: ObservableObject {
     private var images: [String: NSImage] = [:]
     private var missing: Set<String> = []
     func image(_ path: String?) -> NSImage? {
         guard let path else { return nil }
-        if let image = images[path] { return image }
-        if missing.contains(path) { return nil }
+        guard let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
+        let key = path + "|" + String(stamp.timeIntervalSinceReferenceDate)
+        if let image = images[key] { return image }
+        if missing.contains(key) { return nil }
         let _ = LauncherWork.count(.artworkDecode)
-        guard let image = NSImage(contentsOfFile: path) else { missing.insert(path); return nil }
-        images[path] = image
+        guard let image = NSImage(contentsOfFile: path) else { missing.insert(key); return nil }
+        images = images.filter { !$0.key.hasPrefix(path + "|") }   // 同一张图的旧版本不留着占内存
+        images[key] = image
         return image
     }
 }
