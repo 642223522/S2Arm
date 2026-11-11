@@ -421,9 +421,25 @@ echo $HB > "$L/hb.pid"; [ -f tools/gate_reap.py ] && python3 tools/gate_reap.py 
 for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; job "$i" "$(tcw "$i" "${r1%	*}")" "${s##*	}"; }; done
 { j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
 [ ${#LJ[@]} -gt 0 ] && detwait
-wait; pkill -P $HB 2> /dev/null; kill $HB 2> /dev/null
+# 收尾限时（11-11 合入运维线：门禁机上推测批 154 步 13:24 前全出结论，主进程却在这里的 wait 上又等了 50 分钟到远端时限，
+#   结论整份被当成「门禁机不可用」扔掉、本机重跑 74 分钟）：步都出结论后，还在跑的子进程最多再等 GATE_TAIL_WAIT_S（缺省 120）秒；
+#   还不退 → 把它们的命令行列进日志（抓是谁攥着不放）、收掉、照常收尾
+tailwait() { local t0=$SECONDS k p
+  while k=$(jobs -pr); [ -n "$k" ]; do
+    if [ $((SECONDS - t0)) -ge "${GATE_TAIL_WAIT_S:-120}" ]; then
+      echo "【黄】门禁收尾：步都出结论了，还有 $(grep -c . <<< "$k") 个子进程 ${GATE_TAIL_WAIT_S:-120} 秒不退，收掉：$(for p in $k; do ps -ww -o pid=,command= -p "$p" 2> /dev/null | cut -c1-200; pgrep -P "$p" 2> /dev/null | while read -r c; do ps -ww -o pid=,command= -p "$c" 2> /dev/null | sed 's/^/  └ /' | cut -c1-200; done; done | tr '\n' '；')"
+      for p in $k; do pkill -TERM -P "$p" 2> /dev/null; kill -TERM "$p" 2> /dev/null; done; sleep 2; for p in $k; do pkill -KILL -P "$p" 2> /dev/null; kill -KILL "$p" 2> /dev/null; done; break; fi
+    sleep 1; done
+  wait 2> /dev/null; }
+tailwait; pkill -P $HB 2> /dev/null; kill $HB 2> /dev/null
 QWHY=; if [ -n "$NONCE" ] && [ "$(cat "$L/r/done" 2> /dev/null)" != "$NONCE" ]; then
   QWHY=$(grep -m1 '【红】' "$L/remote.log" 2> /dev/null | sed 's/^.*【红】\(remote：\)\{0,1\}//' | cut -c1-400); QWHY="$RHN 不可用（remote.sh rc=$(cat "$L/remote.rc" 2> /dev/null || echo ?)：${QWHY:-没有远端结果}）"
+  # 按步认（11-11 总指挥：门禁要的是每一步的结论，不是远端主进程正常退出）：远端没写 done，但拉回的结果目录里已有结论的步照用，
+  #   只把没结论的步当不可用（退回 / 环境未就绪）；全都有结论 → 整份照用
+  PM=(); m=0; for i in ${PI[@]+"${PI[@]}"}; do m=$((m + 1)); [ -f "$L/r/$m.rc" ] || PM+=("$i"); done
+  if [ ${#PI[@]} -gt 0 ] && [ ${#PM[@]} -lt ${#PI[@]} ]; then
+    echo "⤵ ${QWHY}：拉回的结果里 $(( ${#PI[@]} - ${#PM[@]} )) 步已有结论、照用，只 ${#PM[@]} 步没结论"
+    if [ ${#PM[@]} = 0 ]; then QWHY=; else PI=("${PM[@]}"); QWHY="$RHN 上 ${#PM[@]} 步没出结论（远端没正常收尾）"; fi; fi
 fi
 # 远端结果齐了、但有步自报环境未就绪（退出 75，如 gate-host 没装 docker 的 Vulkan 单测）：只把这几步退回本机补跑，其余远端结果照用（11-02）
 RDONE=; if [ -z "$QWHY" ] && [ -n "$NONCE" ] && [ "${GATE_FALLBACK_LOCAL:-1}" = 1 ]; then
@@ -437,7 +453,10 @@ fi
 # gate-host 是因为超载一直没接（维护方工具「超载等降」）→ 不退回本机（本机负载通常更高，补跑同样是假红），按环境未就绪退 75、列车留队稍后再取（10-29 维护者）
 #   只在远端没跑完时看超载：远端已跑完、只有几步自报 75（RDONE）时，排队途中出现过的「超载等降」不算——那几步照常退回本机（11-04 #1503 自检：gate-host 缺 docker 的 1 步因排队时超载过一次而没补跑，第一层 34/35）
 OVLD=; [ -n "${QWHY:-}" ] && [ -z "${RDONE:-}" ] && grep -q '超载等降' "$L/remote.log" 2> /dev/null && OVLD=1
-FBN=0; if [ -n "${QWHY:-}" ] && [ -z "$OVLD" ] && [ "${GATE_FALLBACK_LOCAL:-1}" = 1 ] && [ ${#PI[@]} -gt 0 ]; then
+# 退回上限（11-11 总指挥：154 步整份退回本机跑了 74 分钟，正是要消灭的「悄悄本机整份跑」）：要退回的步超过 GATE_FALLBACK_MAX（缺省不限；列车给 20）
+#   → 不本机补跑，按环境未就绪退 75，调用方稍后重派门禁机
+FBMAX=; [ -n "${QWHY:-}" ] && [ ${#PI[@]} -gt "${GATE_FALLBACK_MAX:-1000000}" ] && { FBMAX=1; echo "⤵ ${QWHY}：要退回本机 ${#PI[@]} 步，超过上限 ${GATE_FALLBACK_MAX}，不本机补跑，按环境未就绪退出、稍后重派 ${RHN}"; }
+FBN=0; if [ -n "${QWHY:-}" ] && [ -z "$OVLD" ] && [ -z "$FBMAX" ] && [ "${GATE_FALLBACK_LOCAL:-1}" = 1 ] && [ ${#PI[@]} -gt 0 ]; then
   echo "⤵ ${QWHY}：原派 ${RHN} 的 ${#PI[@]} 步退回本机补跑"
   LJ=(); LJN=(); tc_keys "${PI[@]}"
   for i in "${PI[@]}"; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; c=${r1%	*}; WH[$i]=回退; F75[$i]=${RDONE:-}; FBN=$((FBN + 1))
@@ -516,7 +535,7 @@ CCS=; [ -s "$L/ccache.log" ] && CCS="本机 $(s2a_ccache_sum "$L/ccache.log")"; 
 [ ${#REDN[@]} -gt 0 ] && { printf '红步'; printf '\t%s' "${REDN[@]}"; echo; }
 for f in "$L/stop" "$L/r/stop"; do [ -f "$f" ] && { echo "早停：确定性步骤「$(cat "$f")」红，其余步没跑完$([ "$f" = "$L/r/stop" ] && echo "（${RHN} 那份）")"; break; }; done
 [ ${#OTHER[@]} -gt 0 ] && echo "另一层：${OTHER[*]}"
-[ -n "${QWHY:-}" ] && echo "环境未就绪：${RHN} 的步没跑（不换 Spare-host；$([ -n "$OVLD" ] && echo "门禁机超载、本机补跑同样不可信" || echo "GATE_FALLBACK_LOCAL=0")，不退回本机）：${QWHY}"
+[ -n "${QWHY:-}" ] && echo "环境未就绪：${RHN} 的步没跑（不换 Spare-host；$([ -n "$OVLD" ] && echo "门禁机超载、本机补跑同样不可信" || { [ -n "$FBMAX" ] && echo "要退回的步超过上限 ${GATE_FALLBACK_MAX}" || echo "GATE_FALLBACK_LOCAL=0"; })，不退回本机）：${QWHY}"
 [ $FBN -gt 0 ] && echo "${RHN} 不可用，$FBN 步退回本机补跑：${FBWHY}"
 [ -s "$L/timeouts" ] && echo "超时未判（跑满步上限被杀，不算本支红，环境好了重跑）：$(tr '\n' '；' < "$L/timeouts")"
 [ ${#LQ[@]} -gt 0 ] && echo "环境未就绪：本机步自报（退出 75）：$(printf '%s；' "${LQ[@]}")"
