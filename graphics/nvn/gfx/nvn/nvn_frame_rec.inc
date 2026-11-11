@@ -539,8 +539,9 @@ int nvn_frame_replay(const char *dir) {
         uint64_t tk = nvn_be_present(pt, period, crop[2] || crop[3] ? crop : NULL);
         nvn_be_present_wait(tk); mtl_finish_gpu();
         uint64_t nd = dr1 - dr0;
-        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令%s", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
-             (unsigned long long)(c1[0] - c0[0]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "");
+        // 周期数（本线程自己跑的 CPU 周期，不含被抢占、不随别的进程起伏）：tools/frame_bench.sh 拿它比编译参数，墙钟 ms 在多会话共用的机器上波动超 3%
+        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令、%llu 个周期%s", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
+             (unsigned long long)(c1[0] - c0[0]), (unsigned long long)(c1[1] - c0[1]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "");
         if (it == 0) { int put = 0, miss = 0; snprintf(p, sizeof p, "%s/gpu.bin", dir); fr_restore_gpu(p, &put, &miss); MLOG("回放：GPU 私有贴图写回 %d 张（尺寸 / 格式对不上没写 %d 张，靠重画）", put, miss); }
     }
     for (int i = 0; i < 500 && !__atomic_load_n(&grabbed, __ATOMIC_ACQUIRE); i++) usleep(10000);
