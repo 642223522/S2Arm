@@ -176,6 +176,9 @@ def launch(c):
         from saves import recover
         recover(c, game, override=c.r.get("overrideRecovery") is True)   # 回退失败：玩家单独确认「仍要启动」才放行（同 iPhone，审计 18:00 P0-3）
         runtime = layout.image_mac(c, game["id"], create=False)
+        # 改写器修过的话：起局前按本引擎改写器核一遍这款，受影响的只换改写产物（rewrite_refresh.py；核不了不挡起局）
+        from rewrite_refresh import refresh_mac
+        refresh_mac(c, game["id"], runtime)
         c.begin("验证运行文件")
         manifest = validate_runtime(c, runtime)
         if manifest.get("gameId") != game["id"]:
@@ -635,7 +638,8 @@ def prepare(c):
             manifest = dict(identity, memoryRequirementsVersion=2,
                             memoryRequirementsSha256=digest(current / "addr_need.tsv"),
                             engine="S2Arm", gameId=game["id"], gameName=game["name"], compatibility="unverified",
-                            files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}))   # 只换宿主的判据（host_update.py）
+                            files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}),   # 只换宿主的判据（host_update.py）
+                            rewriterId=__import__("rewrite_refresh").rewriter_id(c))   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
             atomic(temporary / "manifest.json", manifest)   # v0.2.3 清理：不再紧接着全量复验——清单就是同一进程刚从这些文件量出来的
             sha = host_update.install_host(c, host)
             c.check()

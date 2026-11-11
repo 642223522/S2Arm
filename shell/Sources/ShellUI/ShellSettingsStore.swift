@@ -8,7 +8,10 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public static let suiteName = "shell-settings"
     public static let dataFolderKey = "globalDataBookmark"
     public static let cloudSavesKey = "globalCloudSavesBookmark"
-    public static let performanceHUDKey = "performanceHUD"       // true/false; a game's own row wins when set
+    /// The performance overlay: one switch for every game, the same one as the in-game gear menu (ios/vpad.m, ios/hud.m read
+    /// S2APerfHUD from the app's defaults). The shell's own key was never read by anything and is gone.
+    public static let performanceHUDKey = "S2APerfHUD"
+    static let retiredPerformanceHUDKey = "performanceHUD"
     public static let dataFolderNameKey = "globalDataFolderName"
     public static let cloudSavesNameKey = "globalCloudSavesFolderName"
     public static let touchSizeKey = "touchSize"                 // small, medium or large: DM_TOUCH_SIZE for every game
@@ -35,15 +38,16 @@ public final class ShellSettingsStore: @unchecked Sendable {
     /// The folders' names for the page, written by the host when the player picks them.
     public var dataFolderName: String? { defaults.string(forKey: Self.dataFolderNameKey) }
     public var cloudSavesFolderName: String? { defaults.string(forKey: Self.cloudSavesNameKey) }
-    public var performanceHUD: Bool? {   // nil: no shell-level choice, the game's own row decides
-        defaults.object(forKey: Self.performanceHUDKey) as? Bool
-    }
+    public var performanceHUD: Bool { UserDefaults.standard.bool(forKey: Self.performanceHUDKey) }
 
     public func storeDataFolderName(_ name: String) { defaults.set(name, forKey: Self.dataFolderNameKey) }
     public func storeCloudSavesFolderName(_ name: String) { defaults.set(name, forKey: Self.cloudSavesNameKey) }
     public func clearDataFolderName() { defaults.removeObject(forKey: Self.dataFolderNameKey) }
     public func clearCloudSavesFolderName() { defaults.removeObject(forKey: Self.cloudSavesNameKey) }
-    public func storePerformanceHUD(_ on: Bool) { defaults.set(on, forKey: Self.performanceHUDKey) }
+    public func storePerformanceHUD(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.performanceHUDKey)
+        defaults.removeObject(forKey: Self.retiredPerformanceHUDKey)
+    }
 
     /// The touch controls' size for every game: small, medium (the built-in size) or large.
     public var touchSize: String {
@@ -103,7 +107,7 @@ public final class ShellSettingsStore: @unchecked Sendable {
     /// DM_PAD_MAP is deliberately excluded. The host merges it per button at launch.
     /// The shell's value for each `DM_*` switch a game's own settings leave alone.
     public var gameDefaults: [String: String] {
-        var values = performanceHUD.map { ["DM_METAL_HUD": $0 ? "1" : "0"] } ?? [:]
+        var values: [String: String] = [:]
         if touchSize != "medium" { values["DM_TOUCH_SIZE"] = touchSize }
         if touchStick != "corner" { values["DM_TOUCH_STICK"] = touchStick }
         let layout = touchLayout.encoded

@@ -122,12 +122,12 @@ if [ "${API%%	*}" = gl ]; then
   GOK=$(sed -n 's/^GLSL 汇总：成功 \([0-9]*\)、失败 \([0-9]*\).*/\1 \2/p' "$C/gl_shaders.log" | tail -1); GMISS=0
   if [ "$grc" = 1 ] && [ "${GOK%% *}" -gt 0 ] 2> /dev/null; then GMISS=${GOK##* }
   elif [ "$grc" != 0 ]; then say "🔴 GLSL 着色器离线翻译失败 rc=${grc}（$C/gl_shaders.log）"; tail -3 "$C/gl_shaders.log"; exit 1; fi
-  # 离线一支没有（成功 0、失败 0：GameMaker 等引擎运行时才拼 GLSL，RomFS / main 里没有成形源码）：照出，只有表头、没有库，keys.tsv 为空；
+  # 离线一支没有（成功 0、失败 0：GameMaker 等引擎运行时才拼 GLSL，RomFS / main 里没有成形源码，或只有没有 main 的拼接片段、gl_shaders.py 记跳过，#518）：照出，只有表头、没有库，keys.tsv 为空；
   #   宿主库里没有的源码首遇时现场翻译（gl_prog.m 运行时兜底，按源码哈希缓存），这里记一行黄
   if [ "$grc" = 0 ] && [ "$GOK" = "0 0" ]; then
     [ -s "$OUT/gl/gl_shaders.tsv" ] || { say "🔴 没出 $OUT/gl/gl_shaders.tsv"; exit 1; }
     : > "$OUT/keys.tsv"
-    say "🟡 OpenGL 款 ${TID}：离线 0 支 GLSL（运行时拼源码的引擎），只出表头、全部运行时首遇现编（gl/gl_shaders.tsv），$((SECONDS - s)) 秒"
+    say "🟡 OpenGL 款 ${TID}：离线 0 支 GLSL（运行时拼源码的引擎；没有 main 的片段记跳过），只出表头、全部运行时首遇现编（gl/gl_shaders.tsv），$((SECONDS - s)) 秒（$(tail -1 "$C/gl_shaders.log" | cut -c1-120)）"
     exit 0
   fi
   [ -s "$OUT/gl/gl_shaders.metallib" ] && [ -s "$OUT/gl/gl_shaders.tsv" ] || { say "🔴 没出 $OUT/gl/gl_shaders.metallib / .tsv"; exit 1; }
@@ -186,7 +186,11 @@ if not os.path.lexists(b): os.rename(a, b); sys.exit(0)
 if sys.platform == "win32": os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a); sys.exit(0)   # Windows 没有目录原子互换：三步改名，换下的旧版本仍落在临时名、由 EXIT 陷阱删
 c = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 sw = getattr(c, "renamex_np", None)
-if (sw(os.fsencode(a), os.fsencode(b), ctypes.c_uint(2)) if sw else c.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), ctypes.c_uint(2))): sys.exit(f"{a} ⇄ {b}: {os.strerror(ctypes.get_errno())}")' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
+if (sw(os.fsencode(a), os.fsencode(b), ctypes.c_uint(2)) if sw else c.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), ctypes.c_uint(2))):
+    e = ctypes.get_errno()
+    if e not in (45, 95, 102): sys.exit(f"{a} ⇄ {b}: {os.strerror(e)}")
+    # exFAT 等外接盘不支持原子互换（ENOTSUP / EOPNOTSUPP）：同 Windows 三步改名
+    os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a)' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
   rm -rf "$C/logs.new" && mkdir -p "$C/logs.new" && find "$W" -maxdepth 1 -name '*.log' -exec cp {} "$C/logs.new/" \; && rm -rf "$C/logs" && mv "$C/logs.new" "$C/logs"
 }
 # ①② 抽取（10-25 维护者「抽着色器只做一次」）：共享抽取阶段（pack/stage_extract.sh）已经出好的 <产物根>/extract/（有 ok）就整份 APFS 克隆进工作目录，不重抽；

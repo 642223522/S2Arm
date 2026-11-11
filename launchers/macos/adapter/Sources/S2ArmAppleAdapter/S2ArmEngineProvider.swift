@@ -125,6 +125,7 @@ public final class S2ArmEngineProvider: EngineProvider {
             var extra: [String: Any] = ["gameId": job.gameId]
             if let target = job.deviceTarget { extra["target"] = target }
             if job.spaceOverride { extra["spaceOverride"] = true }
+            if job.followUp { extra["followUp"] = true }
             if let location = job.location { extra["location"] = location }
             let r = try await client.perform("ipa", extra: extra, events: events).result
             return BuildResult(gameId: job.gameId, target: .iPhone, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)
@@ -230,7 +231,7 @@ public final class S2ArmEngineProvider: EngineProvider {
     // MARK: iPhone 安装（设计稿协议之外）
 
     public func signingProject() async throws -> String { try await installer.signingProject() }
-    public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
+    public func installReadiness(gameId: String, device: String? = nil) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId, device: device) }
     public func devCertStatus(device: String? = nil) async throws -> DevCertStatus { try await installer.devCertStatus(device: device) }
     public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
         try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
@@ -243,15 +244,15 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
-    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
-        try await installer.updatePhone(acceptStale: acceptStale, events: events)
+    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, device: device, events: events)
     }
 
-    public func restorePhone(events: EventSink = .discard) async throws {
-        try await installer.restorePrevious(events: events)
+    public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {
+        try await installer.restorePrevious(device: device, events: events)
     }
 
-    public func removeFromPhone(gameId: String, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> RemoveResult {
-        try await installer.remove(gameId: gameId, acceptDropped: acceptDropped, events: events)
+    public func removeFromPhone(gameId: String, acceptDropped: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> RemoveResult {
+        try await installer.remove(gameId: gameId, acceptDropped: acceptDropped, device: device, events: events)
     }
 }

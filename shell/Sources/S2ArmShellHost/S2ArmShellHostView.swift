@@ -9,7 +9,11 @@ public struct S2ArmShellHostView: View {
     public var body: some View {
         LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
                     padSnapshot: model.padSnapshot)
-            .onAppear { model.startControllers(); s2a_shell_library_appeared() }
+            .onAppear {
+                model.startControllers(); s2a_shell_library_appeared()
+                // 主屏快捷操作「设置」冷启动：库界面出现后打开游戏库设置（LibraryView 已经订阅，下一拍再发）
+                if s2a_shell_take_open_settings() != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: .shellOpenSettings, object: nil) } }
+            }
             .onDisappear { model.stopControllers() }
             // 删除游戏的进度与结果（正在删除 → 已删除，释放多少 / 失败原因）：库顶上一条，点一下收起结果
             .overlay(alignment: .top) {

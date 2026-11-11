@@ -555,3 +555,6 @@
 20261110-1611-audit-1111-language-hwopus.patch
 20261111-0705-shader-subgroup-no-propagate.patch
 20261111-1524-apple-audio-real-channels.patch
+20261111-1932-apple-audio-explicit-downmix.patch
+20261111-0543-psel-nsa-offline.patch
+20261111-2243-psel-network-account-cancel.patch

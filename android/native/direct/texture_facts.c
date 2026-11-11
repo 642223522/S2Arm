@@ -152,9 +152,8 @@ static int s2a_nvn_texture_fact_compute(uint32_t nvn_format, uint32_t nvn_target
     snprintf(out->sampler_type, sizeof out->sampler_type, "%s", base);
     out->array_length = array_length;
     out->is_buffer = 0;
-    // UNORM/SNORM/浮点/压缩格式按归一化坐标采样；UINT/SINT 用整数坐标。
-    // RECTANGLE 例外：坐标空间是纹素单位，恒不归一化（TextureTarget.Texture2DRect）。
-    out->normalized = nvn_target == NVN_TEXTURE_TARGET_RECTANGLE
-        ? 0 : !(strstr(fmt, "Uint") || strstr(fmt, "Sint"));
+    // 坐标归一不归一只看有效目标（视图设了目标取视图的，否则取贴图的）：RECTANGLE 不归一，其余一律归一，与格式无关。
+    // 依据同 graphics/nvn/gfx/nvn/nvn_unnorm.inc（从游戏自带的 NVN 驱动核出来的）。整数格式的二维贴图照样用归一化坐标采样。
+    out->normalized = nvn_target != NVN_TEXTURE_TARGET_RECTANGLE;
     return 0;
 }

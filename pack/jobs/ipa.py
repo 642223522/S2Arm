@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from core import Failure, contained, read, release_version
+from core import Failure, contained, display_version, read, release_version
 import layout
 
 
@@ -153,13 +153,15 @@ def bundled_shell(c):
     return d
 
 
-def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line):
+def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line, sources=(), gid=None):
     """Windows：同一个共用解包目录交给 oneclick_win（--from-extract），产物照 Mac 一键出包交付成 <款>.ipa + <款>资源包（收尾 deliver 搬进这款的 image/ios），
-    结果事件里的 ipa / pack 改指交付件"""
+    结果事件里的 ipa / pack 改指交付件。sources / gid：游戏库里这款选中的原件与游戏号，一并交下去——
+    共用解包目录只有序号 0 那支程序，多程序合集的其余序号要 oneclick_win 从原件解（#613：原先不给原件，多程序合集直接报「改给原件」）"""
     work = out / "work"
     env = dict(env, S2A_FONTS=str(fonts))
     c.run([os.sys.executable, "-X", "utf8", "-m", "pack.orch.oneclick_win", "--from-extract", extraction, "--out", work, "--target", "ios",
-           "--shell", bundled_shell(c), "--events", events], log, env, cwd=c.engine, on_line=line)   # 按包起（模块里 from pack… 导入），从引擎根起
+           "--shell", bundled_shell(c), "--events", events, *(["--title-id", gid] if gid else []), *map(str, sources)],
+          log, env, cwd=c.engine, on_line=line)   # 按包起（模块里 from pack… 导入），从引擎根起
     res = oneclick_result(events) or {}
     if not res.get("ok"):
         return
@@ -282,7 +284,9 @@ def _build(c):
         refresh_before = _log_identity(refresh_log)
         try:
             if os.name == "nt":
-                win_oneclick(c, oneclick, extraction, fonts, out, events, ipa_log, env, line)
+                from library import source_path
+                win_oneclick(c, oneclick, extraction, fonts, out, events, ipa_log, env, line,
+                             sources=list(dict.fromkeys(source_path(c, p) for p in selected_packages(game))), gid=gid)
             else:
                 c.run(["bash", oneclick, "--from-extract", extraction, "--fonts", fonts, "--out", out, "--events", events],
                       ipa_log, env, on_line=line)
@@ -318,11 +322,10 @@ def _build(c):
     # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
-    from library import prune_build
     c.begin("清理出包中间产物")
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
-    prune_build(c, gid)
+    prune_unless_follow_up(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, **compiler_policy)
     from cache_retention import engine_installed_at, prune_tool_keys
     prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 当前引擎用不到的工具缓存旧键（NativeAOT / libvpx / opus / dav1d）
@@ -349,6 +352,16 @@ def _build(c):
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
+
+
+def prune_unless_follow_up(c, gid):
+    """出包收尾清本款解包与中间产物；请求带 followUp（同一款这次还要接着出别的平台）时先不清，留给下一个平台（pack/contracts/README.md，剃刀 M21）。返回是否清了"""
+    if c.r.get("followUp") is True:
+        c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
+        return False
+    from library import prune_build
+    prune_build(c, gid)
+    return True
 
 
 def refresh_library_ipa(c):
@@ -380,6 +393,7 @@ def deliver(c, gid, root, pack_dir, ipa):
     from library import save_container_kit, _rm
     if root is None or save_container_kit(c, gid, root) is None:
         raise Failure("一键出包结束了，但产物根里没有组装 iPhone 版要用的文件（main.npdm），请查看日志。", code="package_failed")
+    to_img(c, gid, root, pack_dir)
     want = read(Path(pack_dir) / "manifest.json", {}).get("index_sha256")
     if not want:
         raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack_dir}）：请重新打 iPhone 包。", code="package_failed")
@@ -394,8 +408,21 @@ def deliver(c, gid, root, pack_dir, ipa):
     if old.exists():
         _rm(c, managed, old)
     compat = host_update.engine_compat(c) or {}
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, **compat))
+    from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), **compat))
     Path(ipa).unlink(missing_ok=True)
+
+
+def to_img(c, gid, root, pack_dir):
+    """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
+    多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
+    c.begin("把游戏资源写成单一 IMG（game.img）")
+    log = c.logs / "img.log"
+    try:   # 走 c.run：它每秒读 S2A_PROGRESS，img.py 按已写字节报进度，出包页这一步有进度条（几十 GB 要写一两分钟）
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()], log, c.env(), cwd=c.engine)
+    except Failure as e:
+        from errors import tool_reason
+        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
 
 def current_shell_id(c):
@@ -503,7 +530,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
-               "--version", release_version(c.engine),
+               "--version", release_version(c.engine), "--display-version", display_version(c.engine),
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""

@@ -638,6 +638,7 @@ class Transaction:
         r = self.path.with_name(self.path.name + '.rb')
         own_romfs = any(p.lstrip('!') == 'romfs' or p.lstrip('!').startswith('romfs/') for p in patterns)
         self.roots._clone(current, r, self.game, own_romfs=own_romfs, env=self.env)
+        text(r / '.root_pid', f'{os.getpid()} {process_start(os.getpid())}\n')   # 重放也记持有者：外部清扫只按记录判死，没有记录的一律不碰
         try:
             for exclude in (False, True):
                 source = current if exclude else self.path

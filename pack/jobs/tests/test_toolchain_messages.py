@@ -47,7 +47,7 @@ class ToolchainMessageTests(JobCase):
                 self.assertTrue(row["ok"])
                 self.assertEqual(row["message"], expected)
                 self.assertEqual(row["help"], expected)
-                self.assertEqual(set(row), {"name", "ok", "message", "requiredFor", "group", "action", "help"})
+                self.assertEqual(set(row), {"id", "name", "ok", "message", "requiredFor", "group", "action", "help"})
                 self.assertEqual(row["requiredFor"], ["prepare"])
                 self.assertEqual(row["group"], "system")
         self.assertEqual(rows["Metal 编译组件"]["action"], "downloadMetal")
@@ -94,4 +94,5 @@ class ToolchainMessageTests(JobCase):
                 self.assertEqual(row["diagnostic"]["code"], code)
                 self.assertEqual(row["requiredFor"], ["prepare"])
                 self.assertEqual(row["group"], "system")
-                self.assertEqual(set(row), {"name", "ok", "message", "requiredFor", "group", "action", "help", "diagnostic"})
+                self.assertEqual(set(row), {"id", "name", "ok", "message", "requiredFor", "group", "action", "help", "diagnostic"})
+                self.assertEqual(row["id"], {"Metal 编译组件": "metal", "Xcode": "xcode"}[name])   # 稳定英文 id（剃刀 M11），前端按它分组，不按中文名

@@ -37,17 +37,23 @@ public struct GameDetailView: View {
                 SourceRow(symbol: "folder",
                           title: detail.dataSource.isEmpty ? ShellStrings.text("No data selected") : detail.dataSource,
                           note: detail.dataNote) {
-                    Button(ShellStrings.text("Choose…")) { actions.onPickGameData(detail.id) }
-                        .buttonStyle(ShellButtonStyle(fills: true)).accessibilityLabel(ShellStrings.text("Choose game data…"))
-                        .shellTarget("set.data") { actions.onPickGameData(detail.id) }
+                    // Only while the game has no data: the button then leads to how to bring it in. Once the host reports the
+                    // data as ready (the iOS host fills dataSource with its state and size), the row only reads.
+                    if detail.dataSource.isEmpty {
+                        Button(ShellStrings.text("Choose…")) { actions.onPickGameData(detail.id) }
+                            .buttonStyle(ShellButtonStyle(fills: true)).accessibilityLabel(ShellStrings.text("Choose game data…"))
+                            .shellTarget("set.data") { actions.onPickGameData(detail.id) }
+                    }
                     if let useAppData = actions.onUseAppData, !detail.dataSource.isEmpty && !detail.dataFromShell {
                         Button(ShellStrings.text("Use app data")) { useAppData(detail.id) }
                             .buttonStyle(ShellButtonStyle(fills: true)).shellTarget("set.appdata") { useAppData(detail.id) }
                     }
                 }
-                divider
-                Label(detail.dlc.isEmpty ? ShellStrings.text("No additional content") : detail.dlc, systemImage: "square.stack.3d.up")
-                    .shellText(14).foregroundStyle(.white.opacity(0.72)).frame(minHeight: 32)
+                if !detail.dlc.isEmpty {   // nothing to say when the host reports no additional content
+                    divider
+                    Label(detail.dlc, systemImage: "square.stack.3d.up")
+                        .shellText(14).foregroundStyle(.white.opacity(0.72)).frame(minHeight: 32)
+                }
             }
             if let pickCloud = actions.onPickCloudSaves {
                 group(ShellStrings.text("Cloud saves")) {
