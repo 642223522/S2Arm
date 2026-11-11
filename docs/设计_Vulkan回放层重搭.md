@@ -56,6 +56,8 @@
 | 线程 | 线程命名、优先级提示 | bionic | musl |
 | 开关 | `nvn_plat_flag(名字, 缺省)`：调试开关的唯一入口 | `debug.s2a.*` 系统属性 | 鸿蒙参数 |
 
+头文件现状（`graphics/nvn/replay/`）：`nvn_plat.h` v1 已有日志、开关、目录三组；`nvn_plat_vk.h` 已有实例扩展、表面、窗口尺寸三个入口（只有 Vulkan 后端 include）；显示节拍沿用 `nvn_vsync.h`。窗口租约、内存池后备、线程三组在接到对应功能时加，加之前先在本文定形状。安卓实现在 `android/native/gfx_plat/`。
+
 写跟踪（靠缺页信号发现 CPU 写了哪些页）不在图形层：共用的 `nvn_dirty` + `platform/plat.h` 的信号接口已经是单点，图形层只读「这些页脏没脏」。musl 与 bionic 的差异在 `platform/` 那一份里解决。
 
 ## 3. 施工顺序（相对原设计的改动）
@@ -86,6 +88,17 @@
 | M2 3D | 0100DCA0064A6000 进到可操作画面 | 起局 60 秒 GPU 内存稳定；截图正确；无崩溃 |
 
 每接一种命令带一条宿主用例（期望值不靠被测实现算出）。真机验证只换 APK，不重出资源。
+
+### M0 读数（11-11）
+
+| 项 | 期望 | 真结果 |
+|---|---|---|
+| 回放核心宿主单测 `make native-test-nvn_replay` | 全过；分层扫描 0 处 | 159 项检查 0 红；核心注释外图形 API / 平台专有 0 处 |
+| 负控 4 条（每次提交清状态 / 事件录到就写 / 未接命令静默跳过 / 核心里放一个 Vulkan 类型） | 各自对应的用例红 | 3 / 3 / 6 项红；分层扫描红并点名该行 |
+| `S2ARM_ANDROID_VK_BACKEND=nvk` 编 APK | 能编；库里旧层符号 0 个 | 能编；`s2a_vk_adapter_*` / `nvn_vk_first_draw*` / `s2a_record_replay` / `nvn_vk_texcache*` / `mtl_exec` 等定义 0 个 |
+| 真机起局 0100633007D48000（骁龙 8 Elite / Adreno 830 / Android 16，1 局，35 秒） | 后端在真机设备上打开；跑到未接命令并按名字报出；进程不崩 | 后端打开（Adreno 830）；进程 35 秒后仍在；未接清单 15 种：`OP_REPORT_COUNTER` `OP_SET_RT` `OP_COPY_B2T` `OP_CLEAR_COLOR` `OP_CLEAR_DS` `OP_BARRIER` `OP_COPY_B2B` `OP_UPDATE_UB` `OP_DRAW_IDX`，入口 `set_tex_pool_n` `reg_samp` `reg_tex` `tex_cpu_written` `present`，平台 `surface_attach` |
+
+这 15 项就是 M1 的工单。没接的命令不会让游戏停在第一条：全部记账后继续，一局列全。
 
 ## 6. 对鸿蒙组七条需求的落点
 
