@@ -24,7 +24,7 @@ bash tools/doctor.sh
 
 | 工具 | 版本与配置来源 |
 | --- | --- |
-| Xcode | 统一使用 Xcode 27.1，路径和部署目标见 [tools/toolchain.env](tools/toolchain.env) |
+| Xcode | 使用本机已安装的 Xcode，不限定固定版本；选择规则及 iOS SDK / Metal 能力检查见 [tools/toolchain.sh](tools/toolchain.sh)，部署目标见 [tools/toolchain.env](tools/toolchain.env) |
 | .NET SDK | 微软官方 .NET 10 SDK，具体版本与滚动策略见 [global.json](compat/tree/global.json)；Homebrew 源码构建版的 NativeAOT 链接限制见环境检查输出 |
 | Python | 3.12 或更新版本；改写器依赖见 [tools/rewriter-requirements.txt](tools/rewriter-requirements.txt) |
 | bash | 5 或更新版本；macOS 自带的 bash 3.2 不满足开发检查要求 |
