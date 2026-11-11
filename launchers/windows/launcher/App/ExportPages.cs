@@ -67,6 +67,7 @@ public sealed partial class EnvironmentWindow
     private readonly Dictionary<string, (string state, string ipa, long? ipaBytes, long? packBytes, double seconds)> finishedPacks = new(StringComparer.Ordinal);
     // install
     private InstallReadiness? readiness;
+    private string readinessRaw = "";   // 上次清单的原文：复查结果没变就不重画（CheckInstallAsync）
     /// <summary>上次装机清单认出连着的是 iPad：这几处入口写「装到 iPad」（键名加 _ipad，#487）；没认出照旧写 iPhone。</summary>
     private string PadKey(string key) => readiness?.DeviceKind == "ipad" ? key + "_ipad" : key;
     private string? readinessFor;
@@ -76,6 +77,8 @@ public sealed partial class EnvironmentWindow
     // A checklist that could not be read must not lock the player out: start and let the install job give the real reason.
     private bool InstallAllowed => readiness?.Ready == true || (readiness is null && installCheckFailed);
     private string installState = "", installMessage = "", installDiagnostics = "";
+    /// <summary>上一次装机失败的错误码（apple_session_expired 时失败页给「打开 Impactor 重新登录」，重新登录完自动再装）</summary>
+    private string? installCode;
     private string revealProblem = "";   // 「显示 IPA」「打开游戏文件夹」找不到目标时的提示（不打开空的资源管理器）
     // 当前 / 最近一次手机作业属于哪一款（#308：原先只有一份「当前安装」状态、没记是哪款，回游戏库再点别的游戏，进度会画到那款上）。
     //   installSeen：跑完后玩家回安装页看过结果没有；没看过时顶栏胶囊一直在。进度计数来自作业事件 done / total / unit（推资源包按字节，机上解包按包）
@@ -107,7 +110,7 @@ public sealed partial class EnvironmentWindow
                 installRate = (done - installRateBase) / (DateTime.UtcNow - installRateAt).TotalSeconds;
             installDone = done; installTotal = total; installUnit = unit;
         }
-        Render();
+        RefreshLive();   // 只刷新顶栏胶囊和安装页的进度格子：装大游戏的十几分钟里玩家可能在翻游戏库，整页重画会打断他
     }
 
     /// 回到正在装 / 刚装完的那一款的安装页（同一个作业，不新起安装）
@@ -152,8 +155,6 @@ public sealed partial class EnvironmentWindow
     }
     private DateTime lastCheck = DateTime.MinValue;
     private DispatcherTimer? ticker;
-    private ScrollViewer? packScroller;
-    private string packScrollerPage = "";
 
     private bool PackBusy => packRunning || installBusy;
     /// 这款现在能不能动（选、出包、移动、清缓存、删除）：游戏库作业或出包在跑时都不能；装机在跑时只锁正在装的那款（玩家装一款大游戏的十几分钟里别的照常用）
@@ -178,23 +179,10 @@ public sealed partial class EnvironmentWindow
         // 底部操作栏
         var bottomBar = RenderBottomBar();
 
-        var dock = new DockPanel { LastChildFill = true };
-        if (PhonePill() is { } pill)   // 出包 / 进度 / 装机页没有游戏库页那条顶栏：胶囊放在这些页顶部，在哪页都找得回装机（#308）
-        {
-            var top = new Border { Padding = new Thickness(32, 14, 32, 0), Child = pill, HorizontalAlignment = HorizontalAlignment.Right };
-            DockPanel.SetDock(top, Dock.Top);
-            dock.Children.Add(top);
-        }
-        DockPanel.SetDock(bottomBar, Dock.Bottom);
-        dock.Children.Add(bottomBar);
-
-        var offset = packScroller is not null && packScrollerPage == page ? packScroller.Offset : default;
-        packScroller = new ScrollViewer { Content = contentBody, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        packScrollerPage = page;
-        if (offset != default) Dispatcher.UIThread.Post(() => packScroller.Offset = offset, DispatcherPriority.Loaded);
-        dock.Children.Add(packScroller);
-
-        Content = dock;
+        // 出包 / 进度 / 装机页没有游戏库页那条顶栏：胶囊放在这些页顶部，在哪页都找得回装机（#308）；装机进度事件只刷新胶囊这一格
+        Control? top = PhonePill() is null ? null
+            : new Border { Padding = new Thickness(32, 14, 32, 0), Child = LiveSlot(PhonePill), HorizontalAlignment = HorizontalAlignment.Right };
+        ShowPage(page, contentBody, top, bottomBar);
         return true;
     }
 
@@ -249,7 +237,7 @@ public sealed partial class EnvironmentWindow
         ticker = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         ticker.Tick += (_, _) =>
         {
-            if (page is "progress" or "batch" && packRunning) Render();   // 清单页也画正在出的阶段
+            if (page is "progress" or "batch" && packRunning) RefreshLive();   // 计时 / 进度 / 当前阶段只刷新各自的格子（清单页也画正在出的阶段），不整页重画
             // The checklist changes when the player plugs a phone in or installs Impactor: re-ask every 5 s while visible and idle.
             if (page == "install" && !installBusy && !installChecking && DateTime.UtcNow - lastCheck > TimeSpan.FromSeconds(5))
                 _ = CheckInstallAsync();
@@ -607,7 +595,7 @@ public sealed partial class EnvironmentWindow
         // ---- LEFT: game info panel + disk space ----
         var leftCol = new StackPanel { Spacing = 16 };
         leftCol.Children.Add(GameInfoPanel(game));
-        if (packSpace is { } sp) leftCol.Children.Add(SpaceCard(sp));
+        leftCol.Children.Add(LiveSlot(() => packSpace is { } sp ? SpaceCard(sp) : null));   // 空间事件随时到：每秒刷新这一格
         twoCol.Children.Add(leftCol);
 
         // ---- RIGHT: heading + overall + steps / results ----
@@ -634,8 +622,9 @@ public sealed partial class EnvironmentWindow
 
         if (packRunning || packState == "")
         {
-            rightCol.Children.Add(OverallSection(estimate, elapsed));
-            rightCol.Children.Add(StepsSection(estimate));
+            // 每秒变的只有这两块：活格子，计时器只换它们（EnsureTicker）
+            rightCol.Children.Add(LiveSlot(() => OverallSection(packTrack.Estimate(Clock), packSeconds ?? (DateTime.UtcNow - packStarted).TotalSeconds)));
+            rightCol.Children.Add(LiveSlot(() => StepsSection(packTrack.Estimate(Clock))));
             // 取消和回到游戏库按钮在底栏（RenderBottomBar）
         }
         else
@@ -873,7 +862,10 @@ public sealed partial class EnvironmentWindow
                 if (estimate.StepRemainingByRate is { } sr)
                     details.Add(T("export.step.left").Replace("{0}", Duration(sr)));
                 if (packTrack.Message.Length > 0) details.Add(packTrack.Message);
-                if (details.Count > 0) content.Children.Add(Muted(string.Join(" · ", details), 12));
+                // 这一行每秒都可能变（百分比 / 剩余 / 作业消息有无、长短）：恒占一行、不换行，下面的步骤不跟着上下跳
+                var detail = Muted(details.Count > 0 ? string.Join(" · ", details) : "\u00A0", 12);
+                detail.TextWrapping = TextWrapping.NoWrap; detail.TextTrimming = TextTrimming.CharacterEllipsis;
+                content.Children.Add(detail);
             }
             Grid.SetColumn(content, 1); row.Children.Add(content);
 
@@ -1163,24 +1155,7 @@ public sealed partial class EnvironmentWindow
         else if (installState != "")
         {
             if (!installBusy) installSeen = true;   // 回到这款的安装页看过结果，顶栏胶囊收起
-            var state = new StackPanel { Spacing = 8 };
-            state.Children.Add(Label(T(installState switch
-            {
-                "running" => "install.running", "succeeded" => "install.done", "needsPlayer" => "install.needs_player", "cancelled" => "progress.cancelled",
-                "invalid" => "library.invalid_result", _ => "install.failed"
-            }), 18));
-            if (installBusy)
-            {
-                var counted = installDone is { } d && installTotal is { } t && t > 0;
-                state.Children.Add(counted
-                    ? new ProgressBar { Minimum = 0, Maximum = 1, Value = (double)installDone!.Value / installTotal!.Value, Height = 6 }
-                    : new ProgressBar { IsIndeterminate = true, Height = 4 });
-                if (PhoneProgressText() is { Length: > 0 } progress) state.Children.Add(Muted(progress));
-            }
-            if (installMessage.Length > 0) state.Children.Add(Muted(installMessage));
-            if (installState is "failed" or "invalid")
-                state.Children.Add(CopyReportButton(game.Id, ["install", "installRemove", "installRestore"], () => installMessage + "\n" + installDiagnostics));
-            body.Children.Add(Card(state));
+            body.Children.Add(LiveSlot(() => InstallStateCard(game)));   // 装机进度事件只刷新这一格（IngestPhoneEvent）
         }
         if (installDiagnostics.Length > 0)
             body.Children.Add(new Expander { Header = T("library.job_diagnostics"), IsExpanded = installState is "failed" or "invalid",
@@ -1188,24 +1163,60 @@ public sealed partial class EnvironmentWindow
                 Content = new TextBox { Text = installDiagnostics, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 260 } });
     }
 
+    /// 安装页的状态卡：标题、进度条、已推 / 剩余、作业说明、复制错误摘要
+    private Control InstallStateCard(LibraryGame game)
+    {
+        var state = new StackPanel { Spacing = 8 };
+        state.Children.Add(Label(T(installState switch
+        {
+            "running" => "install.running", "succeeded" => "install.done", "needsPlayer" => "install.needs_player", "cancelled" => "progress.cancelled",
+            "invalid" => "library.invalid_result", _ => "install.failed"
+        }), 18));
+        if (installBusy)
+        {
+            var counted = installDone is { } d && installTotal is { } t && t > 0;
+            state.Children.Add(counted
+                ? new ProgressBar { Minimum = 0, Maximum = 1, Value = (double)installDone!.Value / installTotal!.Value, Height = 6 }
+                : new ProgressBar { IsIndeterminate = true, Height = 4 });
+            if (PhoneProgressText() is { Length: > 0 } progress) state.Children.Add(Muted(progress));
+        }
+        if (installMessage.Length > 0) state.Children.Add(Muted(installMessage));
+        if (installState is "failed" && installCode == "apple_session_expired")
+        {
+            // Apple ID 登录过期（Apple 1100）：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」（上面的说明写了步骤）
+            var relogin = Action("install.relogin", OpenBundledImpactor, File.Exists(BundledImpactor) && !installBusy);
+            AutomationId(relogin, "install.relogin");
+            state.Children.Add(relogin);
+        }
+        if (installState is "failed" or "invalid")
+            state.Children.Add(CopyReportButton(game.Id, ["install", "installRemove", "installRestore"], () => installMessage + "\n" + installDiagnostics));
+        return Card(state);
+    }
+
     private async Task CheckInstallAsync()
     {
         var game = SelectedGame ?? packGame;
         if (installChecking || installBusy || game is null || connectedFolder is null || libraryId is null) return;
         installChecking = true; lastCheck = DateTime.UtcNow;
+        // 每 5 秒重查一次清单：结果和上次一样就不重画（原先每次都整页重画，玩家滚到下面会被拉一下）
+        var before = (readiness is null, readinessRaw, installCheckFailed, installDiagnostics);   // 换了一款（readiness 清空）必重画
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("installCheck", game.Id), null, CancellationToken.None);
             if (readinessFor == game.Id)
             {
-                if (job.Report.Succeeded) { readiness = InstallReadiness.Parse(job.Report.Result); installCheckFailed = false; }
+                if (job.Report.Succeeded) { readiness = InstallReadiness.Parse(job.Report.Result); readinessRaw = job.Report.Result.GetRawText(); installCheckFailed = false; }
                 else { installDiagnostics = JobDiagnostics(job); installCheckFailed = true; }
             }
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installDiagnostics = error.Message; installCheckFailed = true; }
-        finally { installChecking = false; lastCheck = DateTime.UtcNow; if (page == "install") Render(); }
+        finally
+        {
+            installChecking = false; lastCheck = DateTime.UtcNow;
+            if (page == "install" && before != (readiness is null, readinessRaw, installCheckFailed, installDiagnostics)) Render();
+        }
     }
 
     /// <summary>acceptDropped: the player confirmed games installed from another computer can't come along this time
@@ -1219,6 +1230,7 @@ public sealed partial class EnvironmentWindow
         {
             var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, DropExtra(acceptDropped)), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), CancellationToken.None);
             if (ask && JobCode(job) == "container_would_drop") dropAsk = job.Report.Message;
+            installCode = job.Report.Succeeded ? null : JobCode(job);
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;

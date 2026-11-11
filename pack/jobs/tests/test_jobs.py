@@ -32,6 +32,8 @@ def oneclick_done(args, ipa, gid="0100000000000000", pack_id="pack-" + "0" * 8, 
     ipa = Path(ipa)
     root = ipa.parent / "roots" / ("t" + gid.lower() + "@现行"); root.mkdir(parents=True, exist_ok=True); (root / "main.npdm").write_bytes(b"META")
     pack = ipa.parent / (ipa.stem + "资源包"); pack.mkdir(exist_ok=True); (pack / "manifest.json").write_text(json.dumps(dict(version=2, index_sha256=pack_id)))
+    (pack / "exefs").mkdir(exist_ok=True); (pack / "exefs" / "main.npdm").write_bytes(pack_id.encode())   # 收尾转单一 IMG（pack/img.py convert）读清单；内容随资源包号变
+    (pack / "index.tsv").write_text(f"exefs/main.npdm\t{len(pack_id)}\t{pack_id}\n")
     ev = Path(str(args[args.index("--events") + 1]))
     with ev.open("a", encoding="utf-8") as f:
         f.write(json.dumps(dict(ev="result", t=0, ok=True, ipa=str(ipa), **fields), ensure_ascii=False) + "\n")
@@ -467,7 +469,9 @@ class JobsTests(unittest.TestCase):
         self.assertEqual((r["ipa"], r["outputPath"]), ("", str(image)))   # 不再交付单款 ipa：装机时现组容器
         self.assertTrue((image / "kit" / "main.npdm").is_file()); self.assertTrue((image / "pack" / "manifest.json").is_file())
         self.assertFalse((gdir / "build" / "ios" / "x.ipa").exists())
-        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], "pack-" + "0" * 8)
+        man = json.loads((image / "pack" / "manifest.json").read_text())   # 交付转成单一 IMG 形态：game.json 记的资源包号 = 新清单的
+        self.assertEqual((man["format"], man["imgFile"], (image / "pack" / "game.img").is_file()), ("img", "game.img", True))
+        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], man["index_sha256"])
         # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
         #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
         import saves
@@ -514,8 +518,12 @@ class JobsTests(unittest.TestCase):
             r = ipa.build(self.c)
             image = layout.image_ios(self.c, "0100000000000000")
             self.assertEqual(r["buildId"], "current-123")
-            self.assertEqual(json.loads((image / "pack" / "manifest.json").read_text())["index_sha256"], "current-pack")
-            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], "current-pack")
+            man = json.loads((image / "pack" / "manifest.json").read_text())   # 本轮交付的那份（转成 IMG 后清单号按新 index.tsv 算）：exefs/main.npdm 内容是本轮的资源包号
+            self.assertEqual(man["format"], "img")
+            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], man["index_sha256"])
+            import importlib.util; spec = importlib.util.spec_from_file_location("img", ROOT / "pack/img.py"); img = importlib.util.module_from_spec(spec); spec.loader.exec_module(img)
+            g = str(image / "pack" / "game.img"); off, n = img.find(g, "exefs/main.npdm"); fh = open(g, "rb"); fh.seek(off)
+            self.assertEqual(fh.read(n), b"current-pack")
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
             self.assertEqual(direct_lib.read_bytes(), b'synthetic direct')
             self.assertFalse(direct_work.exists())
@@ -1487,7 +1495,7 @@ class JobsTests(unittest.TestCase):
             self.c.r["gameId"] = game["id"]
             worker.start()
             deadline = time.monotonic() + 10
-            while "等这款游戏在跑的任务结束" not in self.output.getvalue():
+            while '"phase": "waiting_lock"' not in self.output.getvalue():   # 锁排队进度（剃刀 H2：不再另套按报错原文重试的循环）
                 self.assertFalse(finished.wait(0.01), "delete returned before reporting the held execution lock")
                 self.assertLess(time.monotonic(), deadline, "delete did not report waiting for the held execution lock")
             self.assertFalse(finished.is_set(), "delete finished while another process still held the lock")
@@ -1505,6 +1513,27 @@ class JobsTests(unittest.TestCase):
             if worker.ident is not None:
                 worker.join(5)
             self.assertFalse(worker.is_alive(), "delete worker remained after lock-holder cleanup")
+
+    def test_lock_timeout_failure_event_is_library_busy_with_holder(self):
+        # 出包任务 t7 占着游戏库锁不放；排队上限 0.3 秒 → 失败事件 code=library_busy、holder 原样带出、下一步取 RECOVERY["library_busy"]、
+        #   上屏原句不变（旧代码：code=job_failed，占锁者只在 detail 文字里）
+        self.c.require_library()
+        lockf = self.c.library / ".catalog.lock"
+        info = dict(taskId="t7", operation="build", gameId="0100000000010000", pid=1, startedAt=1.0)
+        holder = subprocess.Popen([sys.executable, "-c", "import sys,json; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); open(sys.argv[1]+'.holder','w').write(sys.argv[3]); print('ok',flush=True); sys.stdin.readline(); filelock.unlock(f)", str(lockf), str(JOBS), json.dumps(info)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            self.c.lock_wait = 0.3
+            with self.assertRaises(Failure) as raised:
+                with self.c.lock():
+                    pass
+            event = self.c.describe_failure(raised.exception)
+            self.assertEqual((event["code"], event["holder"], event["summary"]), ("library_busy", info, "另一个任务正在使用游戏库，请稍后重试。"))
+            self.assertEqual(event["suggestion"], __import__("errors").RECOVERY["library_busy"])
+            self.assertNotIn("holder", self.c.describe_failure(Failure("别的失败")))
+        finally:
+            holder.stdin.write("release\n"); holder.stdin.flush()
+            holder.communicate(timeout=5)
 
     def test_direct_small_batch_progress_replaces_finished_translation(self):
         progress = self.root / "progress.tsv"
@@ -2051,7 +2080,7 @@ class JobsTests(unittest.TestCase):
         gid, out, _ = self.stopped_game()
         c = self.stop_context(gid)
         library.sweep_residue(c)            # 先把残留清干净
-        with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
+        with um.patch.object(type(c), "idle", side_effect=AssertionError("没有残留却去拿执行锁")):
             library.sweep_residue(c)
         self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
 

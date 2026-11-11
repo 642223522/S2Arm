@@ -37,7 +37,10 @@ source "$H/srcs.sh"; TID=$(prog_id "$CUR"); [ -n "$TID" ] || { echo "【红】$G
 source "$H/stage_keyfiles.sh"; KT=$(stage_files_key extract "$R") || exit 1
 KV=$("$VPY" -c 'import sys, lz4, numpy; print(sys.version.split()[0], lz4.__version__, numpy.__version__)' 2>&1)
 # 图形接口只按判出的类别进键（gfx_api.py 本身在 extract.tsv 归「外」）：类别变了才重抽
-K=$(printf '%s\n%s\n%s\n%s\n%s\n' "$KR" "$KT" "$KV" "$PK" "${API%%	*}" | shasum -a 256 | cut -c1-16)
+# 试跑开关 S2A_DIRECT_RUNTIME_ONLY=1（普查第②层：不抽不预编，全部着色器运行时首遇现编，9.9 万支的款几分钟起局）：开了才进键，不开时键与原先逐字节相同
+RTO=; [ "${S2A_DIRECT_RUNTIME_ONLY:-0}" = 1 ] && RTO='
+runtime-only'
+K=$(printf '%s\n%s\n%s\n%s\n%s%s\n' "$KR" "$KT" "$KV" "$PK" "${API%%	*}" "$RTO" | shasum -a 256 | cut -c1-16)
 KB=$K; K=$(stage_deps_key "$CUR" extract "$KB" "$SELF") || exit 1
 root_stage_done "$CUR" extract "$K" && { echo "🟢 $G 现行已是抽取 ${K}，跳过"; exit 0; }
 TAG=$(root_tag "$G" "ex-${K:0:8}"); W=$(root_begin "$G" "$TAG") || { root_abort "$G" "$TAG"; exit 1; }
@@ -67,7 +70,11 @@ if decoder_need "$R" "$W/romfs" || [ "$GN" = yes ]; then
       S2A_CS=$HCS bash "$R/tools/host_build.sh" --tree "$RN" ROOT="$RN" ) > "$W/host_build.log" 2>&1 || { echo "【红】$G 编译 Mac 宿主失败（$(tail -2 "$W/host_build.log" | tr '\n' ' ' | cut -c1-200)）"; root_abort "$G" "$TAG"; exit 1; }
   fi
 fi
+if [ -n "$RTO" ]; then   # 试跑：不调抽取器，按抽取缺口走（extract.sh 退 3 同一条路：下面写 direct_gap.txt，直连库阶段出运行时现编空库）
+  echo "直连库失败：试跑 S2A_DIRECT_RUNTIME_ONLY=1，不抽不预编，运行时首遇现编" > "$W/extract.log"; xrc=3
+else
 DM_GAMES_DIR="$(dirname "$PDIR")${DM_GAMES_DIR:+:$DM_GAMES_DIR}" DM_GAMES_FIRST=1 DM_GAME=$TID bash "$R/graphics/tools/direct/extract.sh" "$W" "$W/extract" > "$W/extract.log" 2>&1; xrc=$?
+fi
 # 退 3 = 只有直连用的那两份抽不出（extract.sh 头注释：Unreal 存档读不开、认不出着色器容器、运行时现编的 GLSL 没抓到输出、拆分出错……）：
 #   11-05 维护者定「直连库编不出也照出包、运行时由宿主现翻兜底」——不再作废本阶段，把原因写进 extract/direct_gap.txt 照常提交、退 0，
 #   直连库阶段（stage_direct.sh）见到它出一个合法的空库（离线 0 支），运行时每支着色器在 ProgramSetShaders 首遇现编（nvn_mtl.m s2a_dsh_compile）。

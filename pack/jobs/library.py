@@ -32,6 +32,7 @@ import sizes
 # 诊断包里的日志整份放（zip 压缩，文本约 10 倍）：一份超过 DIAGNOSTIC_LOG_LIMIT 才截，截时留开头 1/8、结尾 7/8（崩溃、存档前后的读数多在后段），
 #   中间另捞心跳行与最后一次崩溃现场，manifest.json 的 truncated 写明每份原长、留了多少、截掉多少。
 #   原先每份只留头尾各 16 KB + 心跳行，帧读数整段丢，玩家只能再传完整日志（#41）
+DELETE_LOCK_WAIT_S = 120   # 删除等执行锁的上限：启动器发删除前先取消这款在跑的任务，它杀子进程组收尾比短作业排队（core.LOCK_WAIT_S）久
 DIAGNOSTIC_LOG_LIMIT = 200 << 20     # 单份原文上限（压缩后约 20 MB）
 DIAGNOSTIC_LOG_HEAD = DIAGNOSTIC_LOG_LIMIT // 8
 DIAGNOSTIC_LOG_TAIL = DIAGNOSTIC_LOG_LIMIT - DIAGNOSTIC_LOG_HEAD
@@ -222,30 +223,11 @@ def store_todo(c, ids=None):
 STORE_QUIET_WAIT = 30.0   # 删除 / 移动 / 搬家前等后台商店查询结束的上限（秒）：它一轮联网最多 STORE_BUDGET 10 秒，加改文件夹名
 
 
-@contextlib.contextmanager
-def store_meta_quiet(library):
-    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock。
-    它正在查就等它查完（最多 STORE_QUIET_WAIT 秒，超了照常继续：它写横图在目录锁里、只写清单里还在的款并重新找文件夹，改名在执行锁里，
-    这里等是为了连它的任务记录也不写进正被删 / 搬的位置）；拿到后它再起来见锁被占就这次不查"""
-    path = Path(library) / ".store-meta.lock"
-    if not path.parent.is_dir():
-        yield
-        return
-    with path.open("a") as f:
-        held, deadline = False, time.monotonic() + STORE_QUIET_WAIT
-        while True:
-            try:
-                filelock.try_lock(f); held = True
-                break
-            except BlockingIOError:
-                if time.monotonic() > deadline:
-                    break
-                time.sleep(0.5)
-        try:
-            yield
-        finally:
-            if held:
-                filelock.unlock(f)
+def store_meta_quiet(c, library=None):
+    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock（library 缺省本任务的库）。
+    它正在查就排队等它查完（最多 STORE_QUIET_WAIT 秒，它一轮联网有 STORE_BUDGET 上限），到上限报 library_busy、说清占锁者——
+    不再「等不到就不拿锁照常继续」（启动器剃刀 H2：那等于没锁）；拿到后它再起来见锁被占就这次不查"""
+    return c.lock("store-meta", wait=STORE_QUIET_WAIT, root=library)
 
 
 def store_meta_background(c, ids=None):
@@ -316,7 +298,10 @@ def store_meta(c, ids=None, budget=STORE_BUDGET):
                     if banner:
                         d = layout.find_game(c, gid) or layout.game_dir(c, gid, english=g.get("englishName") or g.get("name") or "")
                         if not (d / "banner.jpg").is_file():
-                            os.replace(banner, d / "banner.jpg")
+                            # 临时目录在私有目录、游戏库常在外置盘：不能直接 os.replace 过去（跨卷 EXDEV），先拷进目标文件夹再原子改名
+                            part = d / ".banner.jpg.part"
+                            shutil.copyfile(banner, part)
+                            os.replace(part, d / "banner.jpg")
                 atomic(c.library / "catalog.json", cat)
         except Failure:   # 目录锁被别的任务拿着：下次再查
             return 0
@@ -699,21 +684,10 @@ def _move_pairs(c, source):
 
 
 @contextlib.contextmanager
-def _source_locked(source):
-    """搬家期间旧游戏库不能有任务在跑"""
-    handles = []
-    try:
-        for name in (".execution.lock", ".catalog.lock"):
-            f = (source / name).open("a")
-            handles.append(f)
-            try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                raise Failure("旧游戏库还有任务在跑，等它结束再搬。", code="library_move_failed") from None
+def _source_locked(c, source):
+    """搬家期间旧游戏库不能有任务在跑：旧库的执行锁、目录锁按库锁同一语义排队（剃刀 H2：原先拿不到当场报错）"""
+    with c.lock("execution", root=source), c.lock(root=source):
         yield
-    finally:
-        for f in handles:
-            f.close()
 
 
 def move_library(c, source):
@@ -724,7 +698,7 @@ def move_library(c, source):
         raise Failure("原来的位置不是可搬的游戏库。", code="library_move_failed")
     if c.library == source or c.library.is_relative_to(source) or source.is_relative_to(c.library):
         raise Failure("新位置不能在原来的游戏库里面，也不能包含它。", code="library_move_failed")
-    with store_meta_quiet(source), _source_locked(source):
+    with store_meta_quiet(c, source), _source_locked(c, source):
         pairs = _move_pairs(c, source)
         c.library.mkdir(parents=True, exist_ok=True)
         cross = [(a, b) for a, b in pairs if not _same_volume(a, c.library)]
@@ -899,8 +873,10 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
     validate_keys(keyfile)
     lines = []
     log_name = f"{c.task}-{source_id}-inspect.log" if source_id else c.task + "-inspect.log"
+    # NCZ 解压临时文件落游戏库那块盘（#612：Windows 上游戏库在别的盘、系统盘只剩百来 MB 时，读取器缺省写 %TEMP%，导入报空间不足）
+    scratch = tempfile.TemporaryDirectory(prefix=".s2a-inspect-", dir=c.library if c.library.is_dir() else c.private)
     try:
-        c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir],
+        c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir, f"--temp-dir={scratch.name}"],
               c.logs / log_name, on_line=lines.append)
     except Failure as error:
         if error.code not in ("tool_exit", "job_failed"):
@@ -916,6 +892,8 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
         if any("could not be decrypted" in line or "Check keys" in line for line in lines):
             raise Failure(KEYS_CANNOT_DECRYPT, code="content_unreadable") from None
         raise
+    finally:
+        scratch.cleanup()
     if "【内容截断】" in lines:
         raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated")
     try:
@@ -1007,8 +985,10 @@ def _pack_direct_bytes(size):
     return DIRECT_SMALL_BYTES if size < PACK_SMALL_BYTES else DIRECT_LARGE_BYTES
 
 
-def pack_need_bytes(packages, unpacked=False, windows=None):
+def pack_need_bytes(packages, unpacked=False, windows=None, image=False):
     """这次出包要多少盘；packages 已按 selected_packages 选定。unpacked：解包目录已完整在盘上。windows 不给就按当前系统。
+    image：打 iPhone 包（单一 IMG 交付）——出包最后一步把资源整份写成 game.img（真数据，克隆不了），写时解包目录、直连缓存都还在盘上，
+    再加一份原件大小（11-11 实测 0400486024DEC000：IMG 24.49 GiB ≈ 资源内容 24.47 GiB，整次峰值 57.90 GiB 出在写 IMG 时；原先没算，预留 43.9 GB < 峰值 62.2 GB）。
     直连段按原件大小分两档（_pack_direct_bytes）。11-10 删掉 #265 的「按着色器抽取量 × 系数」：抽取字节数不是直连占用的驱动量——
     抽取产物有的是压缩过的着色器档案（0100559011740000 只有 23 个、0.48 GiB），有的是原文（01008FC00D964000 1.66 GiB），两者直连编译缓存峰值
     却差不多（6.3 / 7.0 GiB），乘系数注定一款多一款少；那条分支从 #265 起读的是 v2 旧路径、从没生效过。按原件的规则在克隆感知、只量出包作业目录的
@@ -1017,7 +997,7 @@ def pack_need_bytes(packages, unpacked=False, windows=None):
     copy = size * 11 // 10
     windows = os.name == "nt" if windows is None else windows
     direct = _pack_direct_bytes(size)
-    return (0 if unpacked else copy) + (copy if windows else 0) + direct   # 单文件镜像 romfs.img 不再存进库（#329：存 romfs.files 硬链接，装机时现拼，push_pack 另核本机空间）
+    return (0 if unpacked else copy) + (copy if windows else 0) + direct + (size if image else 0)
 
 
 # 出包实测账（11-07 联合开发者01007EF00011E000：外接盘 NX 剩 45 GB，经验门槛要 4x GB 拦下）：每次 Mac 打包 / 打 iPhone 包成功后，
@@ -1199,8 +1179,9 @@ def space_budget(c, game):
     unpacked = _unpacked_on_disk(c, game)
     # P1-165：解包 / 产物写在这款的存放位置，直连缓存写在工具缓存；两块盘各按自己那份需求、自己的余量判（同卷合成一项，同原来）
     direct_need = _pack_direct_bytes(size)
-    copy_need = pack_need_bytes(packages, unpacked=unpacked) - direct_need
-    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}"
+    image = getattr(c, "operation", None) == "ipa"   # 打 iPhone 包写 game.img（写在存放位置）；Mac 打包不写
+    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image) - direct_need
+    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "")
     direct_note = f"直连着色器上限 {_gb(direct_need)}"
     loc, cache = _pack_paths(c, game)
     if loc.stat().st_dev == cache.stat().st_dev:
@@ -1544,37 +1525,37 @@ def import_games(c):
         raise Failure("所选位置没有 NSP、XCI 文件或解包好的游戏文件夹。", code="input_empty")
     if any(sources[p]["needsKeys"] for p in files) and not c.keys.is_file():
         raise Failure("请先导入 prod.keys。", code="keys_missing")
-    with c.lock():
-        cat = c.catalog()
-        verified = False
-        extract_paths = set(extracts)
-        total = len(paths) * 2
-        for idx, source in enumerate(paths):
-            c.last_log = None
-            c.last_rc = None
-            c.check()
-            c.require_library()
-            row = sources[source]
-            extracted = source in extract_paths
-            draft = deepcopy(cat)
-            diagnostics_before = len(c.job["diagnostics"])
-            try:
-                c.begin("读取游戏信息", idx * 2 + 1, total)
-                with tempfile.TemporaryDirectory(prefix="icons-", dir=c.private) as icons:
-                    if extracted:
-                        packages = extract_inspect(c, source, icons)
-                    elif row["needsKeys"]:
-                        packages = inspect(c, source, icons, source_id=row["id"])
-                    else:
-                        packages = nup_inspect(c, source, icons)
-                    row["name"] = next((p["name"] for p in packages if p.get("name")), source.name)
-                    c.begin("校验游戏文件", idx * 2 + 2, total)
-                    sha = ""
-                    if not extracted:   # 原件身份按读取器给的 content ID + 大小算，不读全文件；读取器没给才整份算（source_identity）
-                        sha = source_identity(packages, source.stat().st_size) or digest(source, c.progress)
+    # 读原件（元数据、身份）不持锁，只在记进 catalog、放封面、写 catalog.json 那一下拿目录锁（启动器剃刀 H27：原先整段持锁，导入几款大原件的几分钟里
+    #   改名 / 换封面 / 删游戏 / 移动全报「另一个任务正在使用游戏库」）。锁里重读 catalog：排队期间别的任务可能改过，判重按最新的
+    verified = False
+    extract_paths = set(extracts)
+    total = len(paths) * 2
+    for idx, source in enumerate(paths):
+        c.last_log = None
+        c.last_rc = None
+        c.check()
+        c.require_library()
+        row = sources[source]
+        extracted = source in extract_paths
+        diagnostics_before = len(c.job["diagnostics"])
+        try:
+            c.begin("读取游戏信息", idx * 2 + 1, total)
+            with tempfile.TemporaryDirectory(prefix="icons-", dir=c.private) as icons:
+                if extracted:
+                    packages = extract_inspect(c, source, icons)
+                elif row["needsKeys"]:
+                    packages = inspect(c, source, icons, source_id=row["id"])
+                else:
+                    packages = nup_inspect(c, source, icons)
+                row["name"] = next((p["name"] for p in packages if p.get("name")), source.name)
+                c.begin("校验游戏文件", idx * 2 + 2, total)
+                sha = ""
+                if not extracted:   # 原件身份按读取器给的 content ID + 大小算，不读全文件；读取器没给才整份算（source_identity）
+                    sha = source_identity(packages, source.stat().st_size) or digest(source, c.progress)
+                with c.lock():
+                    draft = deepcopy(c.catalog())
                     entries = record_import_packages(c, draft, source, packages, icons, sha, extracted)
                     c.check()
-                    c.require_library()
                     try:
                         atomic(c.library / "catalog.json", draft)
                     except OSError as error:
@@ -1582,18 +1563,17 @@ def import_games(c):
                         if failure.code == "disk_full" or not partial:   # 默认路径同 #124 之前：原始 OSError 交 explain 归码
                             raise
                         raise Failure("游戏库目录无法写入。", internal=str(error)) from error
-            except (Failure, OSError) as error:
-                import_source_failed(c, row, error)
-                if not partial or row["code"] not in IMPORT_SOURCE_ERRORS:
-                    raise
-                del c.job["diagnostics"][diagnostics_before:]
-            else:
-                cat = draft
-                results.extend(entries)
-                row["status"] = "duplicate" if all(entry["duplicate"] for entry in entries) else "imported"
-                if row["needsKeys"] and not verified:
-                    atomic(c.private / "keys/status.json", dict(ready=True, verified=True))
-                    verified = True
+        except (Failure, OSError) as error:
+            import_source_failed(c, row, error)
+            if not partial or row["code"] not in IMPORT_SOURCE_ERRORS:
+                raise
+            del c.job["diagnostics"][diagnostics_before:]
+        else:
+            results.extend(entries)
+            row["status"] = "duplicate" if all(entry["duplicate"] for entry in entries) else "imported"
+            if row["needsKeys"] and not verified:
+                atomic(c.private / "keys/status.json", dict(ready=True, verified=True))
+                verified = True
     added = {r["id"].upper() for r in results if not r["duplicate"]}
     if added:
         store_meta_background(c, added)   # 横图、英文标题：后台查（导入不等联网），查到英文名接着改文件夹名
@@ -1977,21 +1957,6 @@ def save_container_kit(c, gid, root, dest=None):
     return kit
 
 
-@contextlib.contextmanager
-def _execution_idle(c):
-    """拿得到出包执行锁才进去（有任务在跑时 yield False）。不走 c.lock：那里先查取消，被取消的任务也要能收尾。"""
-    with (c.library / ".execution.lock").open("a") as f:
-        try:
-            filelock.try_lock(f)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            filelock.unlock(f)
-
-
 def _build_entries(c, gid):
     """这款出包缓存 build/ 里能删的项：除 iPhone 出包日志 build/ios/logs 之外的全部。日志是释放空间的「保留」项（SPACE_KEPT），
     出包成功清理、清缓存、释放「旧版残留」都不删它（旧布局 iPhone/<号>/logs 同样一直留着）"""
@@ -2031,7 +1996,7 @@ def clean_after_stop(c):
         gid = c.r.get("gameId")
         if not any(g.get("id") == gid for g in read(c.library / "catalog.json", {}).get("games", [])):
             return   # 这次失败可能正因为游戏不在库里，没有东西要清，也不该多报一条
-        with _execution_idle(c) as idle:
+        with c.idle("execution") as idle:
             if idle and _residue_disposable(c, gid):
                 _keep_stage_logs(c, gid)
                 prune_build(c, gid, record=False)
@@ -2059,7 +2024,7 @@ def sweep_residue(c):
     try:
         if not _residue(c):
             return
-        with _execution_idle(c) as idle:
+        with c.idle("execution") as idle:
             if not idle:
                 return
             for gid, stale, partials in _residue(c):
@@ -2128,46 +2093,40 @@ def drop_from_container(c, gid):
 def delete(c):
     """删除这款游戏（连出包产物与缓存）：iPhone 输出整个目录（IPA / 资源包 / 中间产物）、Mac 构建缓存、game_caches，并从游戏库清单里删掉；
     保留存档（library/saves/<程序号>）与游戏原件（原地导入的不碰；旧版复制进 library/sources 的托管副本另有「删除托管 NSP 副本」）。
-    执行锁可能还被这一款刚被取消的任务占着（启动器发删除前先结束它在跑的任务，进程退出要几秒）：拿不到就每 2 秒再试，最多 120 秒"""
-    t0 = time.time()
-    while True:
-        try:
-            with store_meta_quiet(c.library), c.lock("execution"), c.lock():
-                gid = c.game()["id"]
-                c.begin("删除游戏与出包产物")
-                # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
-                #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
-                gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
-                # 先整块挪进存放位置的 .s2a-trash/（同盘改名，原子；有程序正开着里面的文件也挪得动），清单立刻去掉这款，再删挪走的那堆：
-                #   原先边删边可能撞上删不掉的文件（被占用 / 有程序在写），抛出去时清单里还留着这款、目录删了一半，界面成了「找不到游戏文件」，
-                #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
-                trashed = []
-                if gdir and gdir.exists():
-                    # 存档有内容就保留
-                    saves = gdir / "saves"
-                    backups = gdir / "save-backups"
-                    has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
-                    root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-                    for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
-                        trashed.append((root, _to_trash(c, root, item, gid)))
-                drop_from_container(c, gid)
-                cat = c.catalog()
-                cat["games"] = [g for g in cat["games"] if g["id"] != gid]
-                atomic(c.library / "catalog.json", cat)
-                left = []
-                for root, p in trashed + [(c.work_root, p) for p in game_caches(c, gid)]:
-                    try:
-                        _rm(c, root, p)
-                    except (Failure, OSError) as e:
-                        left.append(f"{p.name}（{e}）")
-                if left:
-                    c.diagnostic("这款已从游戏库删掉；有几个文件当时删不掉（可能正被别的程序打开），S2Arm 空闲时会再删：" + "；".join(left)[:400],
-                                 code="job_failed", severity="warning")
-            return {}
-        except Failure as e:
-            if "另一个任务正在使用游戏库" not in str(e) or time.time() - t0 > 120:
-                raise
-            c.begin("等这款游戏在跑的任务结束"); time.sleep(2)
+    执行锁可能还被这一款刚被取消的任务占着（启动器发删除前先结束它在跑的任务，收尾要杀子进程组）：执行锁排队最多 DELETE_LOCK_WAIT_S 秒，
+    期间照锁的排队进度说「在等『X』结束」（启动器剃刀 H2：原先锁外再套一层按报错原文每 2 秒重试 120 秒的循环，两层等待语义叠在一起）"""
+    with store_meta_quiet(c), c.lock("execution", wait=DELETE_LOCK_WAIT_S), c.lock():
+        gid = c.game()["id"]
+        c.begin("删除游戏与出包产物")
+        # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
+        #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
+        gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
+        # 先整块挪进存放位置的 .s2a-trash/（同盘改名，原子；有程序正开着里面的文件也挪得动），清单立刻去掉这款，再删挪走的那堆：
+        #   原先边删边可能撞上删不掉的文件（被占用 / 有程序在写），抛出去时清单里还留着这款、目录删了一半，界面成了「找不到游戏文件」，
+        #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
+        trashed = []
+        if gdir and gdir.exists():
+            # 存档有内容就保留
+            saves = gdir / "saves"
+            backups = gdir / "save-backups"
+            has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+            root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
+            for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
+                trashed.append((root, _to_trash(c, root, item, gid)))
+        drop_from_container(c, gid)
+        cat = c.catalog()
+        cat["games"] = [g for g in cat["games"] if g["id"] != gid]
+        atomic(c.library / "catalog.json", cat)
+        left = []
+        for root, p in trashed + [(c.work_root, p) for p in game_caches(c, gid)]:
+            try:
+                _rm(c, root, p)
+            except (Failure, OSError) as e:
+                left.append(f"{p.name}（{e}）")
+        if left:
+            c.diagnostic("这款已从游戏库删掉；有几个文件当时删不掉（可能正被别的程序打开），S2Arm 空闲时会再删：" + "；".join(left)[:400],
+                         code="job_failed", severity="warning")
+    return {}
 
 
 TRASH = ".s2a-trash"   # 每个存放位置根下：删除时先把这款整块挪进来再删（delete），删不干净的空闲时清（sweep_trash）
@@ -2655,7 +2614,7 @@ def apply_location(c, game):
 
 
 def move_game(c):
-    with store_meta_quiet(c.library), c.lock("execution"), c.lock():
+    with store_meta_quiet(c), c.lock("execution"), c.lock():
         game = c.game()
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")

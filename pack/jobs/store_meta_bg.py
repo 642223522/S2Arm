@@ -19,13 +19,12 @@ def main(argv):
     from core import Context
     import layout
     import library as lib
+    import os
+    import time
     lock = Path(library) / ".store-meta.lock"
     try:
-        with lock.open("a") as f:
-            try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                return 0   # 已有一个在查，或删游戏 / 移动 / 搬家正在进行（library.store_meta_quiet）
+        # 已有一个在查，或删游戏 / 移动 / 搬家正在进行（library.store_meta_quiet）就这次不查；拿到时记下占锁者，删游戏等它时说得清在等谁
+        with filelock.held(lock, holder=dict(taskId="store-meta", operation="storeMeta", pid=os.getpid(), startedAt=round(time.time(), 3))):
             # 起进程到拿到锁之间库可能已经搬走或换了：标识对不上就什么都不写（不建任务上下文，免得把任务记录写进已搬走的旧位置）
             marker = json.loads((Path(library) / ".s2arm-library.json").read_text(encoding="utf-8"))
             if not library_id or marker.get("id") != library_id:
@@ -34,7 +33,8 @@ def main(argv):
                              library=library, libraryId=library_id))
             lib.store_meta(c, set(ids) or None)
             layout.heal_folder_names(c)
-            filelock.unlock(f)
+    except filelock.Busy:
+        return 0
     except Exception:   # noqa: BLE001
         return 1
     return 0

@@ -103,6 +103,13 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
         result = operations[c.operation](c)
+        if c.operation in HEAL_AFTER:
+            # 英文名可能刚拿到（导入读 NACP、出包解出 control.nacp）：锁已放，空闲就把还叫游戏号的文件夹改名（剃刀 H3）。
+            #   改名只是好看，出错不把已完成的任务变成失败，原文进标准错误（随任务日志）
+            try:
+                layout.heal_folder_names(c)
+            except (OSError, ValueError) as error:
+                print(f"[s2a] 游戏文件夹改英文名没做成，下次导入 / 出包再试：{error}", file=sys.stderr, flush=True)
         # A completed save-directory swap is the commit point. A later cancel
         # signal cannot turn a committed restore into a misleading cancelled job.
         if not (c.operation == "saveRestore" and result.get("committed")):
@@ -153,6 +160,7 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
+HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
 NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
 
 

@@ -166,7 +166,10 @@ def device_list(c, timeout=60):
 def usb_idevices():
     """USB 上看得到的 iPhone / iPad 名称（devicectl 只列 Xcode 配对过的设备，没配对的要靠这里知道「其实插着」）"""
     try:
-        out = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"], capture_output=True, text=True, timeout=10).stdout
+        # IORegistry 字符串可能包含无效 UTF-8 字节；先拿原始输出，再替换解码，
+        # 不能让 USB 辅助探测中断后续安装流程。
+        raw = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"], capture_output=True, timeout=10).stdout
+        out = raw.decode("utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return []
     return re.findall(r'"USB Product Name" = "((?:iPhone|iPad)[^"]*)"', out)

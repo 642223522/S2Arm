@@ -335,11 +335,11 @@ struct ExportSessionView: View {
                 if value != nil { ProgressSweep().frame(height: 6).clipShape(Capsule()) }
             }
             .padding(.top, 6)
-            if !detail.isEmpty { Text(detail).font(.manrope(12.5, .medium)).monospacedDigit().foregroundStyle(.secondary) }
-            if !session.message.isEmpty, session.message != m.label, session.message != session.stage {
-                Text(loc.backend(session.message)).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).lineLimit(1).truncationMode(.middle)
-                    .id(session.message).transition(.opacity).animation(.easeOut(duration: 0.25), value: session.message)
-            }
+            // 这两行随作业事件有无、长短在变：恒占一行、不换行（空时透明占位），下面的步骤和日志不跟着上下跳
+            Text(detail.isEmpty ? " " : detail).font(.manrope(12.5, .medium)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+            let showMessage = !session.message.isEmpty && session.message != m.label && session.message != session.stage
+            Text(showMessage ? loc.backend(session.message) : " ").font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).lineLimit(1).truncationMode(.middle)
+                .id(session.message).transition(.opacity).animation(.easeOut(duration: 0.25), value: session.message)
         }
     }
 

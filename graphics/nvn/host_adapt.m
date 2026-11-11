@@ -464,7 +464,13 @@ int s2a_direct_device_ok(void) {
     return ok;
 }
 static _Atomic int g_suspended;
-void s2a_direct_suspend(int on) { if (s2a_gfx_mode() == S2A_GFX_DIRECT) { atomic_store(&g_suspended, on); dm_gfx_suspend(on); } }
+void s2a_direct_suspend_gate(int on) {
+    if (s2a_gfx_mode() == S2A_GFX_DIRECT) { atomic_store(&g_suspended, on); dm_gfx_suspend(on); }
+}
+void s2a_direct_suspend(int on) {
+    s2a_direct_suspend_gate(on);
+    if (on && s2a_gfx_mode() == S2A_GFX_DIRECT) dm_gfx_suspend_drain();
+}
 int s2a_direct_guest_start_hold(void) {
     if (s2a_gfx_mode() != S2A_GFX_DIRECT) return 0;
     atomic_store(&g_suspended, 1);

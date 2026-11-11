@@ -219,6 +219,7 @@ AI_NEXT = {
     'devcert_keychain': ('human', '证书密码存不进钥匙串：请玩家解锁登录钥匙串、允许 S2Arm 访问后在出包页重新导入'),
     'app_other_signer': ('human', '手机上已有用别的签名装的 S2Arm（包名相同）：请玩家二选一——继续用原签名工具更新它，或在 iPhone 上删掉它（先导出存档），然后 s2armctl install <游戏号>'),
     'bundle_id_switched': ('auto', '（警告）原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档）'),
+    'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
     'stage_timeout': ('ai', 's2armctl logs <任务号> 看卡在哪；s2armctl retry <任务号> 重试一次，还超时就 s2armctl diag export <输出.zip> 交给玩家反馈'),
@@ -312,7 +313,15 @@ def next_step(s, gid=None, target='ios'):
     if mac and g['id'] in s.get('queue', []):
         return dict(step='等待', who='ai', do=f's2armctl wait {g["id"]} --op build（或隔一会儿 {next_command}）', why='这款的 Mac 准备任务正在排队', **extra)
     if mac_ready:
-        if s.get('executionTask') or s.get('queue'):
+        execution_task = s.get('executionTask')
+        if execution_task and any(
+            t['id'] == execution_task and t['operation'] == 'launch'
+            and t.get('gameId') == g['id'] and t['state'] == 'running'
+            for t in s['tasks']
+        ):
+            return dict(step='运行中', who='human', do='请玩家查看 Mac 上的游戏窗口',
+                        why='这款游戏正在启动或运行', task=execution_task, **extra)
+        if execution_task or s.get('queue'):
             return dict(step='等待', who='ai', do=f'等当前任务结束后再 {next_command}', why='构建与游戏运行互斥', **extra)
         return dict(step='启动', who='ai', do=f's2armctl launch {g["id"]}', why='这款游戏的 Mac 版已准备好', **extra)
 
@@ -607,7 +616,11 @@ def diag_body(rest, now=None):
     if rest[:1] == ['export'] and len(rest) == 2: return {'action': 'export', 'path': os.path.abspath(os.path.expanduser(rest[1]))}
     if rest and rest != ['export']: return None
     desk = os.path.expanduser('~/Desktop'); base = desk if os.path.isdir(desk) else os.getcwd()
-    return {'action': 'export', 'path': os.path.join(base, time.strftime('S2Arm-诊断-%Y%m%d-%H%M%S.zip', time.localtime(now)))}
+    # 短名 S2Arm-诊断-月日-时分.zip（与 iOS / 启动器一致，版本信息在包里的 manifest）；同一分钟已有同名就加 -2、-3
+    stem = os.path.join(base, time.strftime('S2Arm-诊断-%m%d-%H%M', time.localtime(now)))
+    path, k = stem + '.zip', 2
+    while os.path.exists(path): path, k = f'{stem}-{k}.zip', k + 1
+    return {'action': 'export', 'path': path}
 
 def main():
     a = sys.argv[1:]

@@ -6958,5 +6958,13 @@
  {
   "source": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
   "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
+ },
+ {
+  "source": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
+  "en": "Wait for the task that is using the library to finish (or cancel it in the task list), then try again. Nothing was changed."
+ },
+ {
+  "source": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
+  "en": "Your Apple ID sign-in has expired. Sign in again, then install: on the install page click Open Impactor → Settings, select your Apple ID and click Remove Account, then Add Account and sign in with the same Apple ID (email, password and the code on your devices; switch the keyboard to English first). Come back and click Install to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
  }
 ]
