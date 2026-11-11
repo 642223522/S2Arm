@@ -35,7 +35,8 @@ docs/名单_*/*.tsv merge=s2a-reglist
 launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json merge=s2a-l10n
 launchers/macos/frontend/l10n/*.json merge=s2a-l10n
 #   11-11 合入运维线：iOS 本地化表（一行一条 "键" = "值";）与外壳的 Xcode 字符串目录同样按键合并（今天冲突退回 13 次里 5 次碰这类表）；
-#   手排格式的 launchers/shared/experience.v1.json 写不回原样，不登记
+#   launchers/shared/experience.v1.json（手排格式）按 JSON 语义合并、合完写成标准格式，revision 两边都改取增量和（11-11，tools/l10n_merge.py main_semantic）
 ios/l10n/*.lproj/*.strings merge=s2a-l10n
 ios/Settings.bundle/*.lproj/*.strings merge=s2a-l10n
 shell/Sources/ShellUI/Resources/Localizable.xcstrings merge=s2a-l10n
+launchers/shared/experience.v1.json merge=s2a-l10n
