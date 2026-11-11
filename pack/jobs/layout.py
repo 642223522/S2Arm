@@ -786,7 +786,9 @@ def adopt_library_logs(c):
     from core import TERMINAL_STATES, pid_alive, prune_jobs
     target = c.logs
     old = c.library / "logs"
-    sources = [(c.private / "jobs", target / "jobs"), (old / "jobs", target / "jobs"), (old, target)]
+    sources = [(c.private / "jobs", target / "jobs")]
+    if (c.library / ".s2arm-library.json").is_file():   # 只收游戏库自己的旧日志：setup 时玩家选的文件夹还不是库，里面的 logs 是玩家自己的东西
+        sources += [(old / "jobs", target / "jobs"), (old, target)]
     sources = [(s, d) for s, d in sources if s != d and s != target / "jobs"]
     if not any(s.is_dir() for s, _ in sources):
         return

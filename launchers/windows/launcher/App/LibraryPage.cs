@@ -621,7 +621,7 @@ public sealed partial class EnvironmentWindow
     private void ConnectTypedFolder(string? input)
     {
         if (libraryBusy) return;
-        var r = LibraryFolderInput.Normalize(input, AppContext.BaseDirectory);
+        var r = LibraryFolderInput.Normalize(input);
         if (r.Folder is null)
         {
             libraryFolder = input ?? ""; librarySummary = "library.failed"; libraryDiagnostics = T(r.ErrorKey!); Render();
@@ -634,7 +634,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>换到新位置：连上后记下来，下次启动还用它。路径同样过一遍规范（选目录 / 控制口来的也一样）。</summary>
     private void ConnectLibrary(string folder)
     {
-        var r = LibraryFolderInput.Normalize(folder, AppContext.BaseDirectory);
+        var r = LibraryFolderInput.Normalize(folder);
         if (r.Folder is null) { librarySummary = "library.failed"; libraryDiagnostics = T(r.ErrorKey!); Render(); return; }
         folder = r.Folder;
         connectedFolder = null; libraryId = null;

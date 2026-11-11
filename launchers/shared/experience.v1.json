@@ -785,8 +785,6 @@
       {"id": "library.connect", "zh-Hans": "连接或创建游戏库", "en": "Connect or create a library"},
       {"id": "library.folder_empty", "zh-Hans": "先在上面填游戏库目录，或点「选择游戏库目录」", "en": "Enter a library folder above, or choose one"},
       {"id": "library.folder_invalid", "zh-Hans": "这个目录路径不合法（含不允许的字符或太长），换一个", "en": "This folder path is not valid (bad characters or too long); pick another"},
-      {"id": "library.folder_root", "zh-Hans": "不能直接用整个盘做游戏库，请在盘里建一个文件夹", "en": "A whole drive can't be the library; create a folder on it"},
-      {"id": "library.folder_in_launcher", "zh-Hans": "游戏库不能放在 S2Arm 启动器自己的文件夹里（升级时这个文件夹会整个替换，游戏会被一起删掉），请换到别处，比如 D:\\S2Arm", "en": "The library can't live inside the S2Arm launcher folder (it is replaced on update and the games would be deleted); pick another place, e.g. D:\\S2Arm"},
       {"id": "launcher.unexpected", "zh-Hans": "刚才的操作出了意外错误，已经中断；启动器可以继续用", "en": "The last action hit an unexpected error and was stopped; the launcher is still usable"},
       {"id": "launcher.unexpected_log", "zh-Hans": "详细记录：", "en": "Details:"},
       {"id": "launcher.unexpected_dismiss", "zh-Hans": "知道了", "en": "Dismiss"},

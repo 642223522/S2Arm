@@ -781,11 +781,30 @@ def _discard(p):
         shutil.rmtree(p)
 
 
+def _within(path, parent):
+    return path == parent or parent in path.parents
+
+
+def _occupied(d):
+    """建不了游戏库的文件夹：有系统文件以外的东西，又不是游戏库（没有标识、也不像旧游戏库）"""
+    return not (d / ".s2arm-library.json").exists() and layout.has_content(d) and not _looks_like_library(d)
+
+
 def setup(c):
-    """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建"""
+    """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建。
+    库路径规则只在这里（剃刀 W19，两端前端只把玩家输入转成绝对路径）：
+      盘根 / 用户主目录 / 引擎目录不行；请求带 installDir（启动器安装目录，升级时整个替换）时，库在它里面或包含它都不行；
+      请求带 freeDefault（玩家没选过位置，用的是缺省库）而缺省位置被别的文件占着（多半是把 S2Arm 解压到了同名文件夹）：
+      换到旁边的「<名字> Library」「<名字> Library 2」…，结果里的 library 是实际用的位置，前端照它记住"""
     c.begin("创建游戏库")
     if c.library == Path(c.library.anchor) or c.library == Path.home() or c.library == c.engine:
-        raise Failure("请选择独立的游戏库文件夹。")
+        raise Failure("请选择独立的游戏库文件夹，不能直接用整个盘或用户文件夹。")
+    install = c.r.get("installDir")
+    if install and (_within(c.library, Path(install).resolve()) or _within(Path(install).resolve(), c.library)):
+        raise Failure("游戏库不能放在 S2Arm 启动器自己的文件夹里，也不能包含它（升级时这个文件夹会整个替换，库会被一起删掉）：换一个文件夹。")
+    if c.r.get("freeDefault") and _occupied(c.library):
+        c.library = next((n for n in (c.library.with_name(f"{c.library.name} Library" + (f" {i}" if i > 1 else "")) for i in range(1, 10))
+                          if not _occupied(n)), c.library)   # 都被占就原样往下走，由下面报「已有别的文件」
     require_apfs(c.library)
     require_local(c.library)
     c.library.mkdir(parents=True, exist_ok=True)
