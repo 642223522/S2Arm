@@ -41,9 +41,12 @@ typedef struct {
   A at;
   uint32_t w;
   char m[16];
+  /* r18 / tgt：全量扫描的热路径（has18、直接跳转目标）在 decode 时顺手记下，不为它们重解详情（#509 合入时补：
+   * 详情改按需重解后常规游戏改写慢 18–36%）。tgt = 详情最后一个操作数的 imm，同原 target() 读法 */
+  uint8_t valid, sp, r18, has_tgt;
   Mask rd, wr;
   uint64_t regs;
-  int valid, sp;
+  A tgt;
 } Ins;
 typedef VEC(Ins) IV;
 typedef struct {
@@ -126,6 +129,9 @@ typedef struct {
   cs_insn* one;
   DetailCache detail_cache[8];
   unsigned detail_next;
+  A one_at;   /* g->one 里现在是哪条（decode / detail 解完记下）：decode 后紧接着取详情（自旋区分析）直接拷，不重解 */
+  uint32_t one_w;
+  int one_ok;
   jmp_buf err, local;
   int guarding, android, ohos, far, below, sdk_cut, signed_jt, acq_off, rel_off;
   /* 双补丁岛（原生层 10-30）：dual = 本轮前岛（基址前）与后岛（映像后）都是候选；patch / po 是当前岛，patch2 / po2 是另一个岛（切岛 = 整体交换），
@@ -547,8 +553,10 @@ static int decode(uint32_t w, A at, Ins* out) {
   const uint8_t* p = b;
   size_t n = 4;
   uint64_t a = at;
+  g->one_ok = 0;
   if (!cs_disasm_iter(g->cs, &p, &n, &a, g->one))
     return 0;
+  g->one_ok = 1, g->one_at = at, g->one_w = w;
   cs_insn* x = g->one;
   out->valid = 1;
   out->at = at;
@@ -579,6 +587,11 @@ static int decode(uint32_t w, A at, Ins* out) {
       }
     }
   out->sp = find_word(x->op_str, "sp") != NULL || find_word(x->op_str, "wsp") != NULL;
+  out->r18 = find_word(x->op_str, "x18") != NULL || find_word(x->op_str, "w18") != NULL;
+  if (x->detail && x->detail->arm64.op_count > 0) {
+    out->has_tgt = 1;
+    out->tgt = x->detail->arm64.operands[x->detail->arm64.op_count - 1].imm;
+  }
   return 1;
 }
 static const cs_arm64* detail(const Ins* in) {
@@ -594,7 +607,16 @@ static const cs_arm64* detail(const Ins* in) {
     const uint8_t* p = b;
     size_t n = sizeof(b);
     uint64_t at = (uint64_t)in->at;
-    REQUIRE(cs_disasm_iter(g->cs, &p, &n, &at, g->one) && g->one->detail);
+    if (!(g->one_ok && g->one_at == in->at && g->one_w == in->w)) {
+      g->one_ok = 0;
+      if (!cs_disasm_iter(g->cs, &p, &n, &at, g->one)) {   /* analyze 把解不出的字按 udf #0 记、w 留原字：详情同当时存下的 udf #0 */
+        wr32(b, 0);
+        p = b, n = sizeof(b), at = (uint64_t)in->at;
+        REQUIRE(cs_disasm_iter(g->cs, &p, &n, &at, g->one));
+      } else
+        g->one_ok = 1, g->one_at = in->at, g->one_w = in->w;
+    }
+    REQUIRE(g->one->detail);
     c->d = g->one->detail->arm64;
     c->at = in->at;
     c->w = in->w;
@@ -728,7 +750,7 @@ static void sdk_addr_cut(void) {
   }
 }
 static int has18(const Ins* x) {
-  return find_word(operand_text(x), "x18") != NULL || find_word(operand_text(x), "w18") != NULL;
+  return x->r18;
 }
 static int writes(const Ins* x, int n) {
   return !!(x->wr & BIT(n));
@@ -743,8 +765,8 @@ static int direct(const Ins* x) {
   return isbr(x) && !in(x->m, "br|blr|ret");
 }
 static A target(const Ins* x) {
-  REQUIRE(detail(x)->op_count > 0);
-  return detail(x)->operands[detail(x)->op_count - 1].imm;
+  REQUIRE(x->has_tgt);
+  return x->tgt;
 }
 static void pick(uint64_t used, int* s, int* t) {
   *s = *t = -1;
