@@ -6942,5 +6942,45 @@
  {
   "source": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
   "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
+ },
+ {
+  "source": "重新打开 S2Arm（会自动修好），再从电脑推送一次。",
+  "en": "Reopen S2Arm (it fixes this automatically), then push from the computer again."
+ },
+ {
+  "source": "清出空间后点「重试」。",
+  "en": "Free up some space, then tap Retry."
+ },
+ {
+  "source": "更新 iPhone 上的 S2Arm，再打开这款游戏。",
+  "en": "Update S2Arm on the iPhone, then open the game again."
+ },
+ {
+  "source": "从电脑重新装到 iPhone，会接着已传的部分续传。",
+  "en": "Install to iPhone from the computer again; it resumes from what was already sent."
+ },
+ {
+  "source": "重新连电脑推送，会自动补齐。",
+  "en": "Connect to the computer and push again; the missing part is filled in automatically."
+ },
+ {
+  "source": "从电脑重新装到 iPhone。",
+  "en": "Install to iPhone from the computer again."
+ },
+ {
+  "source": "从电脑重新装到 iPhone。",
+  "en": "Install to iPhone from the computer again."
+ },
+ {
+  "source": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",
+  "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
+ },
+ {
+  "source": "检查文件是否拷完整，再打开 S2Arm。",
+  "en": "Check that the file was copied completely, then open S2Arm again."
+ },
+ {
+  "source": "导出诊断包发给我们。",
+  "en": "Export a diagnostics package and send it to us."
  }
 ]
