@@ -83,10 +83,11 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
 /// <summary>One registered package in the library (base / update / dlc), mirrors GamePackage in the Mac adapter.</summary>
 public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format, string Sha256 = "", long ContentBytes = 0);
 
+/// <param name="NeedsKeys">出包要不要 prod.keys：作业层 catalog 直接给（library.KEYLESS_FORMATS 一份判据；剃刀 W10：原先这里另抄一份格式名单）。</param>
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
     bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
-    GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null)
+    GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null, bool NeedsKeys = false)
 {
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
@@ -110,8 +111,6 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
     }
     /// <summary>Offline or missing games cannot be exported, moved or cleaned (mirrors the Mac card menu).</summary>
     public bool Reachable => LocationState is not ("offline" or "missing");
-    /// <summary>NSP / XCI need prod.keys; extracted folders and NUP containers do not (mirrors GameSummary.needsKeys).</summary>
-    public bool NeedsKeys => (Packages ?? []).Any(p => p.Format is not ("nup" or "dump" or "extract" or "loose"));
     /// <summary>DLC count deduplicated by title id (mirrors GameSummary.dlcCount).</summary>
     public int DlcCount => (Packages ?? []).Where(p => p.Type == "dlc")
         .Select(p => p.TitleId).Distinct(StringComparer.Ordinal).Count();
@@ -201,7 +200,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     game.TryGetProperty("customCover", out var customCover) && customCover.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("location", out var location) && location.ValueKind == JsonValueKind.Object ? GameLocation.Parse(location) : null,
                     game.TryGetProperty("iphoneRestorable", out var restorable) && restorable.ValueKind == JsonValueKind.True,
-                    game.TryGetProperty("sizes", out var sizes) && sizes.ValueKind == JsonValueKind.Object ? GameSizes.Parse(sizes) : null));
+                    game.TryGetProperty("sizes", out var sizes) && sizes.ValueKind == JsonValueKind.Object ? GameSizes.Parse(sizes) : null,
+                    game.TryGetProperty("needsKeys", out var needsKeys) && needsKeys.ValueKind == JsonValueKind.True));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),

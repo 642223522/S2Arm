@@ -358,7 +358,7 @@ public sealed partial class EnvironmentWindow
         var blocker = ExportBlocker(game);
         var reason = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         reason.Children.Add(Muted(blocker ?? T("export.hint"), 14));
-        if (blocker == T("export.block.keys")) reason.Children.Add(Action("nav.library", () => Navigate("library")));
+        if (ExportBlockerKind(game) == "keys") reason.Children.Add(Action("nav.library", () => Navigate("library")));
         bar.Children.Add(reason);
         var start = Primary(T("export.start"), () => StartPack(game), blocker is null);
         AutomationId(start, "export.start");
@@ -456,12 +456,22 @@ public sealed partial class EnvironmentWindow
     private static void AutomationId(Control control, string id) => Avalonia.Automation.AutomationProperties.SetAutomationId(control, id);
 
     /// <summary>Why export cannot start now (null = it can). Order as the Mac export page: platform → game files → keys → busy.</summary>
-    private string? ExportBlocker(LibraryGame game)
+    private string? ExportBlocker(LibraryGame game) => ExportBlockerKind(game) switch
     {
-        if (!exportIos) return T("export.block.no_platform");
-        if (game.Missing.Count > 0) return T("library.requirements") + " · " + string.Join(" / ", game.Missing);
-        if (game.NeedsKeys && catalog?.KeysReady != true) return T("export.block.keys");
-        if (BusyFor(game) || busy || batchRunning) return T("export.block.busy");   // 只锁正在装的那款（后端安装不占出包执行锁）；批量出包进行中两款之间也不插单款
+        "platform" => T("export.block.no_platform"),
+        "files" => T("library.requirements") + " · " + string.Join(" / ", game.Missing),
+        "keys" => T("export.block.keys"),
+        "busy" => T("export.block.busy"),
+        _ => null,
+    };
+
+    /// <summary>挡路的是哪一类（按种类判，不拿显示文案做字符串相等，剃刀 W10）：platform / files / keys / busy；null = 能出。</summary>
+    private string? ExportBlockerKind(LibraryGame game)
+    {
+        if (!exportIos) return "platform";
+        if (game.Missing.Count > 0) return "files";
+        if (game.NeedsKeys && catalog?.KeysReady != true) return "keys";
+        if (BusyFor(game) || busy || batchRunning) return "busy";   // 只锁正在装的那款（后端安装不占出包执行锁）；批量出包进行中两款之间也不插单款
         return null;
     }
 
