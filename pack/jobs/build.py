@@ -120,13 +120,16 @@ def runtime_env(c, game, runtime):
     env.pop("S2A_VAMM_LAYOUT", None)
     env.pop("S2A_PATCH_DIR", None)   # 补丁只在出包时读（随包 patch.tsv 在游戏数据目录里，宿主自己找）；玩家导入的在 <S2A_DOCS>/S2A/patches
     save = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "saves"))
+    # 存档位置（11-09 维护者）：这款游戏文件夹里的 SaveData/，原生存档格式，放进去下次起局就读、退出时写回（services/S2A.Services/SaveFolder.cs）。
+    #   不叫 Saves：同一文件夹里已有运行层内部的 saves/，APFS / NTFS 不分大小写会撞名；ASCII 名避开非 ASCII 路径的坑
+    save_folder = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "SaveData"))
     cache = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "shader-cache"))
     docs = contained(c.library, c.library / "temp" / game["id"])
     for p in (save, cache, docs):
         p.mkdir(parents=True, exist_ok=True)
     # S2A_SAVE_DIR is a test/import seed that clears saves at boot; launch() sets it
     # only for a save the player just imported, never for normal play. Persist the Ryujinx data root instead.
-    env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs),
+    env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs), S2A_SAVE_FOLDER=str(save_folder),
                NXGAL_SHADER_CACHE_DIR=str(cache / "shaders"), NXGAL_PSO_DEV_DIR=str(cache / "pso"),
                S2A_MACRO_DUMP=str(cache / "macros"),
                S2A_DOCKED="0" if c.r.get("docked") is False else "1",   # Mac 缺省主机模式（维护者 11-07）；只有请求明说 false 才掌机
@@ -140,6 +143,16 @@ def runtime_env(c, game, runtime):
             env["S2A_BUILD_ID"] = c.r["buildId"]   # 浮层「包」一行：启动器 Info.plist 的 S2ABuildID
     if c.r.get("metalHud"):
         env.setdefault("MTL_HUD_ENABLED", "1")
+    controller_auto_connect = c.r.get("switch2ProAutoConnect")
+    if controller_auto_connect is not None:
+        if not isinstance(controller_auto_connect, bool):
+            raise Failure("Switch 2 Pro 自动连接设置无效。")
+        env["S2A_NS2_AUTOCONNECT"] = "1" if controller_auto_connect else "0"
+    controller_relay = c.r.get("switch2ProRelaySocket")
+    if controller_relay is not None:
+        if not isinstance(controller_relay, str) or not controller_relay or "\0" in controller_relay:
+            raise Failure("Switch 2 Pro 本机通道设置无效。")
+        env["S2A_NS2_SOCKET"] = controller_relay
     # Freeze exactly what the pre-launch card showed. Never rewrite another run's snapshot.
     config = c.r.get("launchInputConfig")
     if config is None:
@@ -268,6 +281,7 @@ def compile_host(c, fingerprint, env, log_root):
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
     plist = dict(CFBundleIdentifier="org.s2arm.macos.game", CFBundleName="S2Arm Game",
                  CFBundleExecutable="s2arm-host", CFBundlePackageType="APPL", LSMinimumSystemVersion="15.0",
+                 NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",
                  NSHighResolutionCapable=True, LSSupportsGameMode=True,
                  LSApplicationCategoryType="public.app-category.games")   # 游戏模式要系统靠类别认出是游戏（11-01 调研：Mac 全屏才进游戏模式）
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
@@ -372,6 +386,16 @@ def reader_program(c, where):
     return shim
 
 
+def warn_offline_empty(c, root):
+    """直连库只能运行时现编（runtime_only_lib.sh 写 shaders/direct/runtime_only.txt，首行是原因）：出包照常算成功，但完成页要说（#470：
+    抽取红、离线 0 支，完成页却是纯绿的「出包完成」、diagnostics 为空）。Mac 包（build.prepare）与 iPhone 包（ipa.build）共用"""
+    p = Path(root) / "shaders/direct/runtime_only.txt"
+    if not p.is_file():
+        return
+    why = (p.read_text(encoding="utf-8", errors="replace").strip().splitlines() or [""])[0][:300]
+    c.diagnostic("这款的着色器离线预编 0 支，游戏能玩，但首次遇到的画面要现编、开头会卡顿" + (f"（{why}）" if why else ""), code="direct_offline_empty", severity="warning")
+
+
 def extract_nup(c, game, packages, extraction, env, logs):
     """Switch 2 NUP 容器（导入时 library.nup_inspect 记 format=nup）→ 共用解包目录：pack/ns2_nup.py --to-extract（展开 + pack/ns2_dump.py 整理，
     与一键出包 pack/oneclick/oneclick.sh / pack/orch/oneclick_win.py 同两步、同目录布局，共享解包阶段 pack/stages/unpack.sh 也走它）。
@@ -430,6 +454,7 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
             extract_folder(c, game, packages, extraction, env, logs)
         else:
             c.run(["dotnet", toolchain.reader(c), c.keys, extraction, "--aoc-index", "--title-id=" + game["id"], *paths], logs / "extract.log", env)
+        c.emit("message", "解包已完成，正在校验合并结果并写入缓存")   # 解包读满 100% 后还要校验、写缓存：说明在做什么，进度不停在「解包 100%」（社区贡献者补丁 #8）
         if not (extraction / "exefs/main.npdm").is_file() or not (extraction / "ctl/control.nacp").is_file():
             raise Failure("解包结果缺少 NPDM 或 NACP。")
         # 程序位数只走 nx_unpack --npdm-isa（全仓唯一判法，pack/nx_unpack/Inspect.cs NpdmIsa）：读不了 / unknown 退 3，同样拒
@@ -585,6 +610,7 @@ def prepare(c):
             raise Failure("着色器准备存在缺口，请查看构建日志；未替换上次成功版本。")
         if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
+        warn_offline_empty(c, current)
         ms.enter(c, "host")
         host = compile_host(c, fingerprint, env, logs)
         ms.enter(c, "install")

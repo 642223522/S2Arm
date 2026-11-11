@@ -26,6 +26,7 @@ if os.name == "nt":   # 作业主程序自己也要长路径处理：子 Python 
     from pack.orch import winlong as _winlong
     _winlong.install()
 import community
+import devcert
 import diag
 import embedded
 import install
@@ -49,6 +50,8 @@ def partial_import_result(c):
 
 
 def run_request(request_path, *, context_class=Context, operation_overrides=None):
+    # 开发者证书密码（devCert 导入那一次由启动器经环境变量给，devcert.py ⑤）：先从环境摘掉，任何子进程都拿不到；请求文件里从不放
+    devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
     winproc.prepare_child_environment()
     path = Path(request_path)
     if not winproc.request_is_private(path):
@@ -67,6 +70,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         # The job cannot even register its record (full disk, read-only volume): say why and come back non-zero instead of a traceback (J10)
         print(f"[s2a] 【红】任务记录写不进磁盘，任务未开始：{error}", file=sys.stderr, flush=True)
         return 1
+    c.devcert_password = devcert_password
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())
     ended = threading.Event()
@@ -84,9 +88,9 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
                   "diagnostics": library.diagnostics, "saveInput": library.save_input,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save}
+                  "community": community.listing, "communitySave": community.save, "devCert": devcert.operation}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -149,7 +153,7 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
-NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject")
+NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
 
 
 def parser():

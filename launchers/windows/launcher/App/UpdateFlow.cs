@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 using System.Text.Json;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -65,9 +66,9 @@ public sealed partial class EnvironmentWindow
                 case "downloading":
                     var total = e.GetProperty("total").GetInt64();
                     updateProgress = T("update.downloading").Replace("{0}", total > 0 ? (e.GetProperty("done").GetInt64() * 100 / total).ToString() : "0");
-                    Render(); break;
-                case "verifying": updateProgress = T("update.verifying"); Render(); break;
-                case "unpacking": updateProgress = T("update.unpacking"); Render(); break;
+                    RefreshLive(); break;   // 只刷新顶栏那一格（UpdateControls），不整页重画
+                case "verifying": updateProgress = T("update.verifying"); RefreshLive(); break;
+                case "unpacking": updateProgress = T("update.unpacking"); RefreshLive(); break;
             }
         }), TimeSpan.FromHours(2));
         updateProgress = "";
@@ -89,8 +90,59 @@ public sealed partial class EnvironmentWindow
         { updateFailure = "update_failed"; updateReady = null; Render(); }
     }
 
-    private void AddUpdateControls(StackPanel bar)
+    // ── 顶部公告条（v0.2.3，同 Mac LauncherView.noticeBar）：内容是数据（官方下载页上的 notice.json，取不到用随包那份，pack/jobs/updater.py notice），
+    //    代码里不写公告内容；× 关掉后同一条不再出现，换了新号的公告照常出现。取不到、起不来都不显示、不报错
+    private JsonElement? notice;
+
+    private async Task LoadNoticeAsync()
     {
+        var result = await UpdateClient.RunAsync(paths, ["notice", "--private-root", privateRoot], null, TimeSpan.FromSeconds(20));
+        if (result is { } value && value.ValueKind == JsonValueKind.Object && value.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+        { notice = value; Render(); }
+    }
+
+    private void DismissNotice()
+    {
+        if (notice is not { } value) return;
+        var id = value.GetProperty("id").GetString() ?? "";
+        notice = null; Render();   // 当场收起，再记下这条的号
+        _ = UpdateClient.RunAsync(paths, ["notice-dismiss", "--private-root", privateRoot, "--id", id], null, TimeSpan.FromSeconds(20));
+    }
+
+    private void AddNoticeBar(StackPanel body)
+    {
+        if (notice is not { } value || !value.TryGetProperty("text", out var texts) || !texts.TryGetProperty(language == "en" ? "en" : "zh-Hans", out var textValue)) return;
+        var amber = Color.Parse("#FFC73D");
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), ColumnSpacing = 10 };
+        row.Children.Add(new TextBlock { Text = "⚠", FontSize = 15, Foreground = new SolidColorBrush(amber), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top });
+        var message = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = Ink };
+        message.Inlines!.Add(new Avalonia.Controls.Documents.Run(T("notice.label") + "  ") { FontWeight = FontWeight.Bold });
+        message.Inlines.Add(new Avalonia.Controls.Documents.Run(textValue.GetString() ?? ""));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(message, "notice.text");
+        Grid.SetColumn(message, 1); row.Children.Add(message);
+        if (value.TryGetProperty("url", out var url) && Uri.TryCreate(url.GetString(), UriKind.Absolute, out var link))
+        {
+            var details = new Button { Content = T("notice.details"), Padding = new Thickness(10, 4), Background = Brushes.Transparent, Foreground = Ink,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
+            Avalonia.Automation.AutomationProperties.SetAutomationId(details, "notice.details");
+            details.Click += (_, _) => _ = OpenOfficialAsync(link);
+            Grid.SetColumn(details, 2); row.Children.Add(details);
+        }
+        var close = new Button { Content = "✕", Padding = new Thickness(8, 4), Background = Brushes.Transparent, Foreground = Ink,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        ToolTip.SetTip(close, T("notice.close"));
+        Avalonia.Automation.AutomationProperties.SetName(close, T("notice.close"));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(close, "notice.close");
+        close.Click += (_, _) => DismissNotice();
+        Grid.SetColumn(close, 3); row.Children.Add(close);
+        body.Children.Add(new Border { Child = row, Padding = new Thickness(16, 10), CornerRadius = new CornerRadius(10),
+            Background = new SolidColorBrush(amber, 0.16), BorderBrush = new SolidColorBrush(amber, 0.45), BorderThickness = new Thickness(1) });
+    }
+
+    /// <summary>顶栏的自更新状态（下载中百分比 / 重启更新 / 失败原因）；没有可显示的返回 null。是顶栏的活格子，下载进度事件只刷新它。</summary>
+    private Control? UpdateControls()
+    {
+        var bar = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
         if (updateProgress.Length > 0)
             bar.Children.Add(new TextBlock { Text = updateProgress, FontSize = 12, Foreground = Brush.Parse("#A8A6A1"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
         else if (updateReady is not null)   // 只有玩家点了才重启；作业进行中置灰并说明
@@ -105,5 +157,6 @@ public sealed partial class EnvironmentWindow
             bar.Children.Add(why);
             bar.Children.Add(Action("update.download_page", () => _ = OpenOfficialAsync(DownloadPage)));
         }
+        return bar.Children.Count > 0 ? bar : null;
     }
 }

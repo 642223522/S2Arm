@@ -29,8 +29,9 @@ public final class S2ArmShellHostModel {
     @ObservationIgnored private let now: () -> Date
     /// 这次打开 App 已经起过解包的款：解完仍是阶段 2 = 没解成，显示「安装没完成」，点重试才再起（不自动反复解）
     @ObservationIgnored private var installTried: Set<String> = []
-    /// 有款在传 / 在解、或清单里还有款没显示时每秒重判一次（只判各款自己目录下的几个小文件）：开着库时电脑才开始推的那款也要立刻出现
-    ///   （真机实测：App 先被拉起、推包随后才写传输清单，原先库里一直看不到这款）。全都能玩了就停
+    /// 库开着就每秒重判一次（只判各款自己目录下的几个小文件，每款几次 stat / 读几十字节）：电脑随时可能开始推——
+    ///   没显示的款一开始传就出现（真机实测：App 先被拉起、推包随后才写传输清单），已经能玩的款重推 / 装更新时也立刻画上蒙版
+    ///   （#399 真机验收：原先「全都能玩了就停」，开着库重推一款已装好的游戏，整个推送过程库里一直显示可玩、没有进度）。App 退到后台时计时器随之暂停
     @ObservationIgnored private var ticker: Timer?
     var watching: Bool { ticker != nil }
     /// 传输清单和它列的文件这么久都没动 = 传断了（拔线、电脑那边停了）。90 秒：电脑经 devicectl 写 ≤1 GB 的一批要写完才落盘，实测约 33 秒，留余量
@@ -81,6 +82,12 @@ public final class S2ArmShellHostModel {
         }
         self.now = now
         self.pickGameData = pickGameData ?? { id in id.withCString { s2a_shell_pick_game_data($0) } }
+        let savedOrder = stores.app.stringArray(forKey: "S2ALibraryOrder") ?? []
+        var remaining = allGames
+        allGames = savedOrder.compactMap { id in
+            guard let index = remaining.firstIndex(where: { $0.id == id }) else { return nil }
+            return remaining.remove(at: index)
+        } + remaining
         for tile in catalogue.tiles { applyIdentity(tile.id) }
         for p in catalogue.problems { NSLog("S2Arm 游戏库：%@", p) }
         refreshGameData()
@@ -126,21 +133,21 @@ public final class S2ArmShellHostModel {
         return nil
     }
 
-    /// 重判各款装机阶段（建好、回前台、解完、宿主说明里「重新检查」后，有款在传 / 在解时每秒一次）：
+    /// 重判各款装机阶段（建好、回前台、解完、宿主说明里「重新检查」后，库开着时每秒一次）：
     ///   就绪 → 清单写的状态；传着 → 按传输清单画进度（久不动 → 传输中断）；传完 → 后台解开、画解包进度（没解成 → 安装没完成）；没有 → 不显示
     public func refreshGameData() {
-        var missing = Set<String>(), arriving = false
+        var missing = Set<String>()
         defer {
             if missing != notOnDevice { notOnDevice = missing; NSLog("S2Arm 游戏库：这台设备上 %d / %d 款可显示", allGames.count - missing.count, allGames.count) }
-            arriving || !missing.isEmpty ? startTicker() : stopTicker()
+            startTicker()
         }
         for i in allGames.indices {
             let id = allGames[i].id, listed = listedStates[id] ?? allGames[i].game.state
             let want: GameState
             switch installState(id) {
             case 1: want = listed; installTried.remove(id)
-            case 2: want = .installing(unpackStage(id)); arriving = arriving || want.installPhase != .failed
-            case 3: want = .installing(transferStage(id)); arriving = true   // 断了也接着看：电脑重新插上续传时字节又涨
+            case 2: want = .installing(unpackStage(id))
+            case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default: missing.insert(id); want = listed == .playable ? .needsGameData : listed   // 不显示；Play 点到也只给导入说明，不放行
             }
             let fresh = want == .playable && isFresh(id)
@@ -201,15 +208,33 @@ public final class S2ArmShellHostModel {
         guard ticker == nil else { return }
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refreshGameData() } }
     }
-    private func stopTicker() { ticker?.invalidate(); ticker = nil }
 
     public var actions: ShellActions {
-        ShellActions(onPlay: { [weak self] id in self?.requestPlay(id) },
+        var actions = ShellActions(onPlay: { [weak self] id in self?.requestPlay(id) },
                      onChange: { [weak self] id, setting, value in self?.change(id, setting, value) },
                      onPickGameData: { [weak self] id in self?.requestGameData(id) },
                      onPickShellCloud: Self.pickCloudFolder, onClearShellCloud: Self.pickCloudFolder == nil ? nil : { CloudSaves.forget() },
                      onButtonTest: { [weak self] open in self?.buttonTest(open) },
                      onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
+        actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
+        return actions
+    }
+
+    /// Native reordering supplies stable IDs and an insertion point after the drag finishes.
+    private func reorderGames(_ sources: [String], before destination: String?) -> Bool {
+        let moving = Set(sources)
+        let visible = Set(games.map(\.id))
+        guard !sources.isEmpty, moving.count == sources.count, moving.isSubset(of: visible) else { return false }
+        if let destination {
+            guard visible.contains(destination), !moving.contains(destination) else { return false }
+        }
+        let entries = Dictionary(uniqueKeysWithValues: allGames.map { ($0.id, $0) })
+        var reordered = allGames.filter { !moving.contains($0.id) }
+        let insertion = destination.flatMap { id in reordered.firstIndex { $0.id == id } } ?? reordered.count
+        reordered.insert(contentsOf: sources.compactMap { entries[$0] }, at: insertion)
+        allGames = reordered
+        stores.app.set(allGames.map(\.id), forKey: "S2ALibraryOrder")
+        return true
     }
 
     /// 库设置「云存档 → 选择文件夹…」（iCloud 存档同步，见 CloudSaves.swift）：iOS 弹系统文件夹选择器；Mac 上跑单测时没有界面

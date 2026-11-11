@@ -126,7 +126,7 @@ MAX_DESCRIPTOR = 1 << 20
 MAX_REQUEST = 256 << 20
 MAX_INDEX = 32 << 20
 # index.tsv 的读取上限默认就是 MAX_INDEX（打包契约，所有游戏同一口径）。文件数十万的超大型 RomFS
-# （塞尔达 王国之泪 304243 个 RomFS 文件 → index.tsv 41,884,008 B）按这个上限永远出不了包，所以留一个
+# （0100F2C0115B6000 304243 个 RomFS 文件 → index.tsv 41,884,008 B）按这个上限永远出不了包，所以留一个
 # 显式开关：S2A_MAX_INDEX_BYTES=<字节数> 只抬高这一处读取上限；不设时行为逐字节不变。
 # 运行时侧没有这个上限（GamePack.java 的 read() 不带 max），这是出包工具的自设限额。
 INDEX_ENV = 'S2A_MAX_INDEX_BYTES'

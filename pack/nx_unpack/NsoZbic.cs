@@ -9,7 +9,7 @@ using System.Security.Cryptography;
 
 static class NsoZbic {
     public const uint Zbic = 0x80;
-    const uint Bit6 = 0x40;   // Switch 2 新出现、与段解码无关（Eden-NS2 加载器只认 0–5 位与 0x80；塞尔达 时之笛 main 0xff、raiders main 0x7f；同 direct_profile 等读取方，main 0e5e402c7）
+    const uint Bit6 = 0x40;   // Switch 2 新出现、与段解码无关（Eden-NS2 加载器只认 0–5 位与 0x80；0400486024DEC000 main 0xff、raiders main 0x7f；同 direct_profile 等读取方，main 0e5e402c7）
     const uint Known = 0x3F | Bit6 | Zbic;
     // 头：0x0C 标志；段头 0x10 / 0x20 / 0x30 = { 文件偏移, 内存偏移, 解压后大小 }；0x60 起三个段在文件里的（压缩）大小；0xA0 起三个段的 SHA-256
     static readonly int[] SegHdr = { 0x10, 0x20, 0x30 };

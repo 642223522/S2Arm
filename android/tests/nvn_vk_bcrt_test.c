@@ -1,6 +1,6 @@
 // BC/块压缩纹理作为渲染目标（“块=像素”影子）的字节级往返回归：纯判定 + 真 Vulkan。
 //
-// 生产契约（nvn/nvn_vk_mrt.h 的 nvn_vk_bcrt_*）：TOTK 把 32x32x32 RGTC1(BC4) 3D 纹理的每个深度
+// 生产契约（nvn/nvn_vk_mrt.h 的 nvn_vk_bcrt_*）：0100F2C0115B6000 把 32x32x32 RGTC1(BC4) 3D 纹理的每个深度
 // 切片当渲染目标，附件视图用 RGBA16UI 覆盖——一个视图像素 = 一个 8 字节 BC4 块。Vulkan 既不能把
 // 压缩格式当颜色附件，也不能建压缩↔无压缩视图，所以生产走“等尺寸 2D 影子 + 一块 buffer”：
 //   pass 前  底图(压缩) --img_to_buf--> buffer --buf_to_shadow--> 影子(视图格式, bw×bh)

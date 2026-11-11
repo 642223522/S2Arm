@@ -1,4 +1,4 @@
-// 手机自身当掌机：没有外接 NS2 Pro 时，iPhone 的陀螺仪 / 加速度当 Switch 掌机六轴，HD Rumble 走手机马达（10-26 维护者：斯普拉遁3 要倾斜瞄准，
+// 手机自身当掌机：没有外接 NS2 Pro 时，iPhone 的陀螺仪 / 加速度当 Switch 掌机六轴，HD Rumble 走手机马达（10-26 维护者：0100C2500FC20000 要倾斜瞄准，
 //   触屏玩家原先没有六轴来源、也没有震动）。controller.m 在 NS2 不可用时转到这里，C# 侧（ControllerFeedback → Ryujinx MotionInput / UpdateSixAxis）不变。
 // 六轴：CoreMotion deviceMotion 拉取（游戏启用 SixAxis 时才开传感器，200 Hz），输出与 NS2 同一约定——NS2 原始坐标、单位 g 与 度/秒。
 //   换算：NS2 原始坐标以手柄正面为基（x 右、y 上沿、z 正面法线、加速度报支撑反力），掌机正面即屏幕，raw =（屏幕右、屏幕上、出屏），
@@ -29,7 +29,7 @@ static _Atomic int g_orient = (int)UIInterfaceOrientationLandscapeRight;
 static void orient_refresh(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
-            if ([s isKindOfClass:UIWindowScene.class]) {
+            if ([s isKindOfClass:UIWindowScene.class] && ![s.session.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive]) {   // 朝向取手机屏的场景，不取外接屏的（extdisplay.m）
                 UIInterfaceOrientation o = ((UIWindowScene *)s).effectiveGeometry.interfaceOrientation;
                 if (o == UIInterfaceOrientationLandscapeLeft || o == UIInterfaceOrientationLandscapeRight) atomic_store(&g_orient, (int)o);
                 break;

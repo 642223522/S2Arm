@@ -32,7 +32,9 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "launchers/macos/Branding/AppIcon-1024.png",
           # 根 .gitignore（11-02 beta.3 走查）：出包会在快照副本里编出 bin/ obj/，没有忽略规则时 pack/ipa.sh「构建相关目录有未提交改动」
           #   把这些编译产物当成改动、拒绝出包——玩家导出 iPhone 版必死在最后一步
-          ".gitignore"]
+          ".gitignore",
+          # 启动器公告条的随包兜底（pack/jobs/updater.py notice：官方下载页上的同一份取不到时用它）
+          "docs/site/notice.json"]
 
 
 def include_source(relative):
@@ -202,6 +204,9 @@ def bundle(destination, developer_dir):
     (tools / "dsh_batch/.xfp").write_text(xfp_out + "\n", encoding="utf-8")
     (tools / "devpush").mkdir()
     shutil.copy2(ROOT / "build/devpush/release/s2a-devpush", tools / "devpush/s2a-devpush")
+    # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
+    import devcert
+    devcert.fetch_rcodesign(tools / "rcodesign", "mac")
     (tools / "gal").mkdir()
     shutil.copy2(ROOT / "build/gal/gal_xc", tools / "gal/gal_xc")
     (tools / "dsx").mkdir()   # 直连翻译库（pack/stage_direct.sh 认 dsx/libdsx.dylib，11-08 从 libnxgal 拆出）

@@ -77,7 +77,7 @@ ifeq ($(shell uname -s),Darwin)
 .PHONY: native-test-input_config_apple
 native-test-input_config_apple:
 	@mkdir -p $(BUILD)/tests
-	$(CC) $(CFLAGS) $(NATIVE_INC) -Iios -fobjc-arc -o $(BUILD)/tests/t_input_config_apple runtime/tests/t_input_config_apple.m runtime/src/input_config.c runtime/src/pad.c ios/input_config.m -framework AppKit -framework CoreGraphics -framework GameController -framework CoreHaptics -framework QuartzCore
+	$(CC) $(CFLAGS) $(NATIVE_INC) -Iios -fobjc-arc -o $(BUILD)/tests/t_input_config_apple -Iruntime/ns2pro/include runtime/tests/t_input_config_apple.m runtime/src/input_config.c runtime/src/pad.c ios/input_config.m macos/ns2_controller.c macos/joycon_imu.m $(wildcard runtime/ns2pro/*.c) runtime/ns2pro/NS2Transport.m -framework AppKit -framework CoreGraphics -framework GameController -framework CoreHaptics -framework QuartzCore -framework CoreBluetooth -framework IOKit
 	$(BUILD)/tests/t_input_config_apple
 TEST_TARGETS += native-test-input_config_apple
 endif
@@ -95,7 +95,7 @@ $(error IOS_VAMM_LAYOUT 已停用；请使用自动地址需求表重新出包)
 endif
 IOS_LIBS   += -framework GameController -framework UniformTypeIdentifiers
 # 手机自身当掌机（ios/phone_motion.m）：陀螺仪 / 加速度当六轴、Core Haptics 当震动马达
-IOS_LIBS   += -framework CoreMotion -framework CoreHaptics
+IOS_LIBS   += -framework CoreMotion -framework CoreHaptics -framework ExternalAccessory   # ExternalAccessory：GameSir G8+ MFi 有线的马达走配件协议（ios/ea_rumble.m，#462）
 # 诊断包（ios/diag.m）：MetricKit 收崩溃 / 卡顿诊断
 IOS_LIBS   += -framework MetricKit
 # 诊断包自己写 zip（文件放根目录、文件名带 UTF-8 标记；系统「为上传而读」会多套一层文件夹、中文名按 cp437 解成乱码）：deflate 用系统 zlib
@@ -193,6 +193,7 @@ ios: ios-ns2pro
 	@/usr/bin/plutil -insert LSApplicationCategoryType -string public.app-category.games $(IOS_APP)/Info.plist   # 系统靠类别认出是游戏才进游戏模式（11-01 调研：LSSupportsGameMode 之外还要类别键）
 	@/usr/bin/plutil -insert GCSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 部署目标 iOS 18.0 < 18.6：LSSupportsGameMode 18.6 起才认，18.0–18.5 靠旧键
 	@/usr/bin/plutil -insert NSLocalNetworkUsageDescription -string "Local multiplayer: find other devices on the same Wi-Fi and join the same room." $(IOS_APP)/Info.plist; /usr/bin/plutil -insert NSBonjourServices -json '["_s2arm-ldn._tcp"]' $(IOS_APP)/Info.plist   # ldn_lan.m；主值英文（开发区域 en），中文在 ios/l10n/zh-Hans.lproj/InfoPlist.strings（#316，上面 cp -R 一并拷进包）
+	@/usr/bin/plutil -insert UISupportedExternalAccessoryProtocols -json '["com.xiaoji.M2boot"]' $(IOS_APP)/Info.plist   # 配件协议白名单：没声明就开不了 EASession（ios/ea_rumble.h，#462）
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
 	@/usr/bin/plutil -insert UIApplicationSceneManifest -json '{"UIApplicationSupportsMultipleScenes":false,"UISceneConfigurations":{"UIWindowSceneSessionRoleApplication":[{"UISceneConfigurationName":"Default","UISceneDelegateClassName":"S2ASceneDelegate"}]}}' $(IOS_APP)/Info.plist   # iOS 27 场景生命周期（27.1 SDK 强制 UIScene adoption，否则启动即崩）：指向 app.m 的 S2ASceneDelegate
 	@echo "iOS App：$(IOS_APP)（$$(du -sh $(IOS_APP) | cut -f1)，包名 $(IOS_BUNDLE)，未签名）"

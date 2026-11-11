@@ -65,6 +65,9 @@ public static class PackCases
             track.Ingest(progress.RootElement, 15);
         check(track.Plan.Count == 1 && track.Current == "unpack" && track.Started["unpack"] == 10, "track: plan and step start");
         check(track.Fraction == 0.25 && track.Message == "解包 25/100", "track: real fraction and message");
+        using (var message = JsonDocument.Parse("""{"type":"message","milestone":"unpack","message":"解包已完成，正在校验"}"""))
+            track.Ingest(message.RootElement, 16);
+        check(track.Fraction is null && track.Message.Contains("校验"), "track: finalization message clears stale 100% fraction");   // 社区贡献者补丁 #8 附带的用例
         check(track.Plan[0].Measured is null, "track: no local record means no expected time");
         track.Finish(40);
         check(track.Duration("unpack") == 30, "track: last step ends at the job end");
@@ -92,6 +95,11 @@ public static class PackCases
         using (var doc = JsonDocument.Parse(checklist.Replace("\"ready\":false", "\"ready\":true")))
             check(InstallReadiness.Parse(doc.RootElement) is { Ready: true } r && r.Items.Any(i => !i.Ok), "checklist: backend ready with advisory open items is accepted");
         RejectChecklist("{}", "checklist: malformed");
+        // #487：deviceKind（后端按 USB 产品号认 iPad）；旧后端没有这个字段读成 ""
+        using (var doc = JsonDocument.Parse(checklist.Replace("\"account\":\"\"", "\"account\":\"\",\"deviceKind\":\"ipad\"")))
+            check(InstallReadiness.Parse(doc.RootElement).DeviceKind == "ipad", "checklist: deviceKind ipad kept");
+        using (var doc = JsonDocument.Parse(checklist))
+            check(InstallReadiness.Parse(doc.RootElement).DeviceKind == "", "checklist: no deviceKind reads as empty");
         // 11-07 bundled Impactor: the backend asks for a launcher-local step by name only (openImpactor), never a path or an unknown verb
         const string bundledChecklist = """
 {"gameId":"G","items":[{"id":"impactor","ok":true,"waiting":false,"title":"t","detail":"","who":"human","url":null,"action":null},
@@ -118,6 +126,25 @@ public static class PackCases
             check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (op == "install") == r.ContainsKey("shellDir"),
                 $"request: {op} carries the launcher folder (bundled Impactor); only install carries the shell");
         }
+        // 开发者证书（v0.2.4）：属于这台电脑、不属于某款游戏 → 不带 gameId；密码只走 Secrets（作业进程环境），请求体里没有
+        var cert = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "devCert", "",
+            new Dictionary<string, object?> { ["action"] = "import", ["p12Path"] = "C:/c.p12", ["profilePath"] = "C:/p.mobileprovision" },
+            new Dictionary<string, string> { ["S2A_DEVCERT_PASSWORD"] = "pw-secret" }), "win-3");
+        check((string?)cert["operation"] == "devCert" && !cert.ContainsKey("gameId") && (string?)cert["action"] == "import" &&
+              !JsonSerializer.Serialize(cert).Contains("pw-secret"),
+            "request: devCert needs no game and never carries the password");
+        // 装到 iPhone 的方式 / 更新 iPhone 上的 S2Arm（v0.3.0，install.install_mode_job / update_phone）：属于这台电脑 / 这台手机，不带 gameId；
+        //   都带随包资源（Impactor），installUpdate 还要组装容器，同 install 带预编壳
+        check(PackJobClient.Operations.Contains("installMode") && PackJobClient.Operations.Contains("installUpdate"),
+            "request: installMode / installUpdate are launcher operations");
+        var mode = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installMode", "",
+            new Dictionary<string, object?> { ["mode"] = "device" }), "win-5");
+        check((string?)mode["mode"] == "device" && !mode.ContainsKey("gameId") && !mode.ContainsKey("shellDir") &&
+              (string?)mode["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installMode needs no game, carries mode and resources");
+        var update = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installUpdate", "",
+            new Dictionary<string, object?> { ["acceptStale"] = true }), "win-6");
+        check(update["acceptStale"] is true && !update.ContainsKey("gameId") && (string?)update["shellDir"] == Path.GetFullPath(paths.Shell) &&
+              (string?)update["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installUpdate needs no game, carries acceptStale, shell and resources");
         check(PackJobClient.Operations.Contains("delete"), "request: delete (remove the whole game, saves kept) is a launcher operation since library layout v3");
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]
         {

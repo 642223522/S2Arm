@@ -61,6 +61,20 @@ class CommunityTests(unittest.TestCase):
         self.c.r = {"gameId": GID, "graphics": {"nope": True}}
         with self.assertRaises(Failure): community.save(self.c)
 
+    def test_diag_run_is_one_session_only(self):
+        # #438 诊断局：打开后下一次起局设定好的四个探针（帧号 3600 / 7200，图写这款文件夹 diagrun/），起局时就把这项从 launch.json 去掉，
+        #   第二次起局不再开；上一次诊断局的图清掉。期望值按规格手写
+        self.c.r.update(settings={"diagRun": True})
+        community.save(self.c)
+        old = layout.path(self.c, GID, "diagrun") / "shot_1.png"; old.parent.mkdir(parents=True, exist_ok=True); old.write_bytes(b"old")
+        env = community.launch_env(self.c, GID)
+        out = layout.path(self.c, GID, "diagrun")
+        self.assertEqual(env, {"DM_NVN_PASSDUMP": "3600-3601", "DM_NVN_TEXDUMP": f"3600,7200:{out}/td_%d.png",
+                               "DM_NVN_TEXSNAP": "0,4,8,12,16,20,24,28", "DM_NVN_SHOT": f"3600,7200:{out}/shot_%d.png"})
+        self.assertTrue(out.is_dir()); self.assertFalse(old.exists())
+        self.assertNotIn("diagRun", community.load_launch(self.c, GID)["settings"])
+        self.assertEqual(community.launch_env(self.c, GID), {})
+
     def test_player_pack_no_graphics(self):
         # 10-30 维护者：玩家包不带上游补丁字节（S2A_COMMUNITY_PATCHES 没设）→ 画面补丁不列、不能存；宽屏 / 60 帧（我方能力）照常
         os.environ.pop("S2A_COMMUNITY_PATCHES", None)
@@ -110,7 +124,7 @@ class MacDisplayTests(unittest.TestCase):
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = enhance fps60 widescreen widenForce docked rumble rumbleLevel motion hud
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "widescreen", "widenForce", "docked", "rumble", "rumbleLevel", "motion", "padFace", "hud"]))
+        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "widescreen", "widenForce", "docked", "rumble", "rumbleLevel", "motion", "padFace", "hud", "diagRun"]))
 
     def test_game_without_a_mac_build_says_why(self):
         m = self.mac()
@@ -163,6 +177,17 @@ class MacDisplayTests(unittest.TestCase):
         self.caps()
         self.save(docked="handheld", hud=True, rumble=False, rumbleLevel="4", motion=False)
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_DOCKED": "0", "S2A_HUD": "1", "S2A_RUMBLE": "0", "S2A_RUMBLE_SCALE": "1.8", "S2A_MOTION": "0"})
+
+    def test_max_blast_rumble_level(self):
+        # 「震爆我」(5) → 倍率 5.0；iOS ios/controller.m 的六档倍率表与定义表一致
+        self.caps()
+        self.save(rumbleLevel="5")
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_RUMBLE_SCALE"], "5.0")
+        import re
+        table = json.loads((REPO / community.SETTINGS_TABLE).read_text(encoding="utf-8"))
+        scale = next(i for i in table["items"] if i["id"] == "rumbleLevel")["scale"]
+        ios = re.search(r"gains\[6\] = \{([^}]*)\}", (REPO / "ios" / "controller.m").read_text(encoding="utf-8")).group(1)
+        self.assertEqual([float(x.strip().rstrip("f")) for x in ios.split(",")], [scale[str(i)] for i in range(6)])
 
     def test_pad_face_is_shared_by_every_game(self):
         # 全游戏共用：存数据目录 game-settings.json、不进这款 launch.json；另一款（没有 Mac 版）也读到「按位置」；起局转 S2A_PAD_FACE=position

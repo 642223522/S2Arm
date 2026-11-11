@@ -8,8 +8,8 @@ using System.Threading;
 
 namespace S2A.Services.Tests
 {
-    // audsmx:u（Switch 2 系统混音器外部流，nn::audio::sysmix）+ auddmg:u 300 / 401 / 700 / 800：时之笛 OutputStreamImpl::Open 连不上 audsmx:u 即 Abort。
-    //   报文按游戏 sdk 客户端组包函数反推的线上格式手写（时之笛 sdk 0x2b2cb0 / 0x2b30f0 / 0x2b34f0 / 0x2b3660 / 0xe5040 / 0x2adf70 / 0x2ae100 等）：
+    // audsmx:u（Switch 2 系统混音器外部流，nn::audio::sysmix）+ auddmg:u 300 / 401 / 700 / 800：0400486024DEC000 OutputStreamImpl::Open 连不上 audsmx:u 即 Abort。
+    //   报文按游戏 sdk 客户端组包函数反推的线上格式手写（0400486024DEC000 sdk 0x2b2cb0 / 0x2b30f0 / 0x2b34f0 / 0x2b3660 / 0xe5040 / 0x2adf70 / 0x2ae100 等）：
     //     audsmx:u 连上即转域；管理对象 0：pid + 复制句柄 1 个（本进程）、u32 1 @0、u64 0 @8 → 域对象 IUserSession
     //     会话 1 CreateStream：A 缓冲流名；pid；u32 设备 @0、u32 标志 @4（输出 0x24）、aruid @8、u64 工作缓冲 @0x10、u64 长 @0x18 → u32 流号 @0 + 域对象
     //     外部流 0 OpenStream：StreamFormat {格式, 声道, 采样率} @0、s32 帧数 @0xc、s32 0 @0x10、u32 0 @0x14
@@ -20,7 +20,7 @@ namespace S2A.Services.Tests
     //   401 回的延迟让 SDK 的「缓冲帧数 ≥ 延迟 × 采样率 ÷ 1e9」对 20 ms 缓冲成立；控制块 1 / 客户端控制块服务端不碰。
     public static unsafe partial class Program
     {
-        private const int SmxFrames = 960;          // 20 ms @ 48 kHz（时之笛音频框架：4 × 240 帧）
+        private const int SmxFrames = 960;          // 20 ms @ 48 kHz（0400486024DEC000音频框架：4 × 240 帧）
         private const int SmxCapacity = SmxFrames + 1;
         private const int SmxWorkSize = 0x3000;     // SDK 最小长度：(align64(961 × 4) + 0x100 + 0x1FFF) & ~0xFFF
 
@@ -141,7 +141,7 @@ namespace S2A.Services.Tests
                     "结果 0、10000000 ns、1、成立、0xCCCCCCCC",
                     $"结果 {pfr}、{latency} ns、{*(uint*)(profile + 0x220)}、{(minFrames <= SmxFrames ? "成立" : $"不成立（{minFrames}）")}、0x{*(uint*)(profile + 0x108):X}");
 
-                // 客户端先写满 960 帧（同时之笛音频框架：Start 前写 4 × 240 帧），再 700 挂上
+                // 客户端先写满 960 帧（同0400486024DEC000音频框架：Start 前写 4 × 240 帧），再 700 挂上
                 (short, short) Pattern(int i) => ((short)(i * 7 - 3000), (short)(-i * 5));
                 SmxClientWrite(work, 0, SmxFrames, Pattern);
                 Msg at = Msg.Cmif(700, Bytes((uint)streamId, 1u)); at.A.Add(((ulong)buf, (ulong)devLen));

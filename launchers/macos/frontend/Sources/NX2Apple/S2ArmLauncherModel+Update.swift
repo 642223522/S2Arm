@@ -41,6 +41,18 @@ extension S2ArmLauncherModel {
         }
     }
 
+    /// 启动时取一次公告（官方下载页上的 notice.json，取不到用随包那份；玩家关掉过的同一条不给）。内容是数据，不写在代码里
+    func loadNotice() {
+        Task { notice = await provider.client.notice() }
+    }
+
+    /// 玩家点 ×：当场收起，再记下这条的号
+    func dismissNotice() {
+        guard let id = notice?["id"] as? String else { return }
+        notice = nil
+        Task { await provider.client.noticeDismiss(id: id) }
+    }
+
     /// 启动时查一次；有新版就在后台下好，不打断玩家。查不到（没网、GitHub 不通）什么都不显示。
     func checkForUpdate() {
         guard updateState == .idle else { return }

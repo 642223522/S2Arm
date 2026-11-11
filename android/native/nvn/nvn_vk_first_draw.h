@@ -34,6 +34,15 @@ int nvn_vk_first_draw_flush(void);
 // 返回 0 = 已提交部分全部完成；1 = 尚未完成（非失败，资源/fence/命令保留）；-1 = 终态失败。
 // 不能把 1 当完成，也不能据此释放/复用资源。
 int nvn_vk_first_draw_flush_ready(int64_t budget_ns);
+// 已结束录制的命令缓冲入帧队列：三态明确区分所有权与失败。
+// NOT_TAKEN: 调用方仍拥有 cmd；ACCEPTED: 队列拥有（可能还未提交）；
+// FAILED_OWNED: 队列已接手后批次提交失败，队列持有 cmd，调用方必须报错且不可释放/重试。
+enum s2a_fq_enqueue_result {
+    S2A_FQ_ENQUEUE_NOT_TAKEN = -1,
+    S2A_FQ_ENQUEUE_ACCEPTED = 0,
+    S2A_FQ_ENQUEUE_FAILED_OWNED = 1,
+};
+int nvn_vk_first_draw_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd);
 // pass 边界（记录回放在附件变化/非绘制 GPU 操作前调用）：关闭当前 open pass；sync != 0 时
 // 还把已录制但尚未提交的前缀按队列顺序交出去并等完成，之后的 GPU 操作才有顺序保证。
 // 返回 0 = 边界已落地（sync 时有完成证明）；非 0 = 没有完成证明（帧队列进入终态并保留在途资源），
@@ -57,6 +66,8 @@ int nvn_vk_first_draw(struct s2a_vk_device *d, const struct s2a_record_draw_stat
 // 自上次调用以来进入绘制路径的 draw 数 / 其中 depth-only 数（窗口汇总用；读取即清零）。
 // 这是“本窗多少笔”，不是 pass 关闭次数；每笔明细只在 debug.s2a.draw_log 打开时打印。
 void nvn_vk_first_draw_take_counts(uint64_t *draws, uint64_t *depth_only);
+// 逐帧 TSV 用的不清零累计（与 take_counts 窗口账互不影响；记站点同口径）。
+void nvn_vk_first_draw_draw_pass_totals(uint64_t *draws, uint64_t *passes);
 // 自上次调用以来 render pass 缓存的命中/新建次数，以及建 render pass / framebuffer 的累计耗时
 // （读取即清零）。用于判断 pass 对象创建是否还是每帧成本；命中多不等于成本已经降下来。
 void nvn_vk_first_draw_take_pass_stats(uint64_t *hits, uint64_t *miss, uint64_t *create_ns,
@@ -73,6 +84,8 @@ void nvn_vk_first_draw_gpu_read(struct s2a_vk_device *d, const char *where);
 int nvn_vk_first_draw_gpu_read_frame(struct s2a_vk_device *d, int parity, const char *where);
 // 最近一次成功读到的 GPU 帧时间；0 = 还没有有效值。成功读出后才更新，不拿未知冒充 0。
 int nvn_vk_first_draw_gpu_last(double *ms, int *passes, uint64_t *frame);
+// debug.s2a.gpu_time 开关是否开（不含设备能力：能力要 device、首帧 arm 才定）。
+int nvn_vk_first_draw_gpu_on(void);
 // 延迟槽已拿到完成证明并回收的帧数（W6 资源退休账）。
 uint64_t nvn_vk_first_draw_deferred_retired(void);
 void nvn_vk_first_draw_gpu_cancel(void);
@@ -108,6 +121,9 @@ struct nvn_vk_open_window {
 };
 void nvn_vk_first_draw_take_open_window(struct nvn_vk_open_window *o);
 int nvn_vk_first_draw_retire_all(void);
+// 间接参数的权威字节（GPU 可能写过）：1 = 已从本帧可写影子读到 out（先过同步边界）；
+// 0 = guest 内存是权威，调用方自己读；-1 = 表达不了，why 写明。见 nvn_vk_first_draw.c。
+int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out, char *why, size_t why_size);
 // 当前录制帧的序号（从 1 开始，每帧/每次完整 flush 递增）：时间戳待写项按它归属到帧，
 // 退休只结算已拿到完成证明的帧。
 uint64_t nvn_vk_first_draw_frame_id(void);

@@ -1,5 +1,5 @@
 // 游戏声明触屏配置 → 自动切「仅触屏操作」（11-04 维护者定，方案第 1 条）。
-//   游戏调 hid SetTouchScreenConfiguration（声明手指 / 手写笔触屏模式）= 它自己的界面靠触屏走（脑锻炼标题页「开始」只认点按：
+//   游戏调 hid SetTouchScreenConfiguration（声明手指 / 手写笔触屏模式）= 它自己的界面靠触屏走（一款第一方益智游戏标题页「开始」只认点按：
 //   普查 c1103 / c1104 按键 25+ 下不动、点触 (120,330) 即进下一页）。普查 144 款里只有这一款调它，ActivateTouchScreen 则有 70 款开机就调、分不出真用不用。
 //   链路：Ryujinx IHidServer.SetTouchScreenConfiguration 记 Hid.Touchscreen.ConfiguredMode（补丁 hid-touch-config-mode）
 //   → 服务层 InputPump.OfferTouchConfigured 每次 HID 提交看一眼，有值就调这里的 s2a_vpad_touch_configured(模式)

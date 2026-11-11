@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Mii 资源系统数据 0100000000000802（MiiModel）的合成与校验：sysdata_mii.py synth <输出目录> | check <目录>
 # 合成（10-25 维护者 定：玩家任何情况下都不面对缺系统数据）：格式合法的最小资源——形状每个条目 3 个重合顶点（零面积，画不出东西）、贴图每个条目 1×1 全 0、
-#   变换 / 包围盒全 0。可以显示成空白，不可以崩（马车8 开局即读这份，缺了开局 Break：sysdata_need.tsv）。同输入逐字节同输出。
+#   变换 / 包围盒全 0。可以显示成空白，不可以崩（0100152000022000 开局即读这份，缺了开局 Break：sysdata_need.tsv）。同输入逐字节同输出。
 # 格式（Switch 版 FFL 资源，各部件条目数同 Wii U FFL：公开反编译 github.com/aboood40091/ffl 的 FFLiResourceHeader / FFLiResourceShape；
 #   Switch 版布局 10-25 对本机真数据逐字段核对，只取结构，不取内容）：
 #   形状 Shape{High,Mid}.dat：'NFSR'、u32 版本 1、u32 文件长、u32 各部件最大解压长 [12]、u32 对齐 [12]（4）、条目 [857] × 88 字节、

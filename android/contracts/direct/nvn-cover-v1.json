@@ -1176,7 +1176,6 @@
     "nvnCommandBufferClearColori",
     "nvnCommandBufferClearColorui",
     "nvnCommandBufferClearTextureui",
-    "nvnCommandBufferDispatchComputeIndirect",
     "nvnCommandBufferDrawElements"
    ]
   }

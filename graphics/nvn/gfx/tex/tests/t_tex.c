@@ -132,6 +132,23 @@ int main(void) {
               (unsigned long long)nvn_tex_level_offset(&d, 1), (unsigned long long)L.size);
     }
 
+    // ---------- P packaged row alignment: byte 1 of NVNpackagedTextureLayout aligns the row pitch to 2^n GOBs (levels at least that wide only) ----------
+    // 01004A4010FEA000's packaged textures almost all carry layout bytes 03 04 (block height 8 GOBs, pitch aligned to 16 GOBs). The same 1024×1024 ASTC 6×6 texture as S, not sparse:
+    // level 0 is 171 block columns = 43 GOBs → 48, level 1 86 → 22 GOBs → 32, level 2 43 → 11 GOBs (< 16, not aligned) — the same padding the sparse tiles give, so the level offsets
+    // equal S's. Read unaligned (level 1 at 0x81000), the padding's all-zero blocks are sampled and ASTC decodes them as magenta (01004A4010FEA000's character menu background)
+    printf("P packaged row alignment (layout byte 1)\n");
+    {
+        nvn_texdesc d = {1, 0x8B, 0, 0, 1024, 1024, 1, 8, 0, 4 | 5 << 8};
+        static const uint64_t off[8] = {0, 0x90000, 0xD0000, 0xDB000, 0xDE000, 0xDEC00, 0xDF000, 0xDF200};
+        static const uint32_t gobs[3] = {48, 32, 11};
+        for (unsigned l = 0; l < 8; l++) CHECK(nvn_tex_level_offset(&d, l) == off[l], "P level %u offset %#llx expected %#llx", l, (unsigned long long)nvn_tex_level_offset(&d, l), (unsigned long long)off[l]);
+        for (unsigned l = 0; l < 3; l++) CHECK(nvn_tex_level_gobs(&d, l) == gobs[l], "P level %u laid out %u GOBs wide, expected %u", l, nvn_tex_level_gobs(&d, l), gobs[l]);
+        nvn_texlayout L; nvn_tex_layout(&d, &L);
+        CHECK(L.tileH == 3, "P block height %u, expected 3 (byte 0 still read from the low byte)", L.tileH);
+        printf("  P 1024×1024 ASTC 6×6, layout 03 04: level 1 at %#llx (expected 0x90000), level 0/1/2 %u/%u/%u GOBs wide (expected 48/32/11)\n", (unsigned long long)nvn_tex_level_offset(&d, 1),
+               nvn_tex_level_gobs(&d, 0), nvn_tex_level_gobs(&d, 1), nvn_tex_level_gobs(&d, 2));
+    }
+
     // Samurai Shodown's 512×512 ASTC 6×6 sparse texture, no packaged layout (10 levels): 86 block columns / rows ≥ a 64×64-block page → level 0 is 2×2 pages = 0x40000
     //   (the size of the pre-swizzled level 0 the game uploads); level 1 (43 blocks) starts the tail: 11 GOBs × 1 block row of 8 GOBs = 0xb000, level 2 22 blocks 6 GOBs × 4 GOBs = 0x3000,
     //   level 3 3 GOBs × 2 = 0xc00, level 4 2 GOBs × 1 = 0x400, levels 5–9 one GOB each; end 0x4fa00 → 0x50000 in whole pages. The automatic 16-GOB block height gave level 1 at 0x2c000

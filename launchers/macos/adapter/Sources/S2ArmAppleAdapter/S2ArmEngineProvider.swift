@@ -151,9 +151,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     // MARK: 存放位置（游戏库结构 v3，pack/jobs/layout.py）
 
     /// 各存放位置（出包页下拉框）和上次用的位置号。
-    public func locations() async throws -> (rows: [StorageLocation], last: String) {
-        let r = try await client.perform("locations", extra: [:], events: .discard).result
-        return ((r["locations"] as? [[String: Any]] ?? []).compactMap(StorageLocation.init), r["last"] as? String ?? "")
+    /// probe：刚在「选择其他文件夹…」里选的路径，另查它所在盘会不会让解包多占数倍空间（#444）
+    public func locations(probe: String? = nil) async throws -> (rows: [StorageLocation], last: String, probeSlack: LocationSlack??) {
+        let r = try await client.perform("locations", extra: probe.map { ["probe": $0] } ?? [:], events: .discard).result
+        return ((r["locations"] as? [[String: Any]] ?? []).compactMap(StorageLocation.init), r["last"] as? String ?? "",
+                (r["probe"] as? [String: Any]).map { LocationSlack($0) })
     }
 
     /// 把这款整个搬到另一个存放位置（同一卷改名，跨卷拷完核对再删旧的；存档跟着走）。
@@ -205,10 +207,13 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     // MARK: run / control
 
-    /// 起一局：settings 只用 uiLanguage（宿主内提示的语言）；游戏语言跟系统、主机模式、宽屏 / 60 帧都由作业层定，settings.values 不读。
+    /// 起一局：settings 只用 uiLanguage 与 Switch 2 Pro 的本机转发通道；游戏语言跟系统、主机模式、宽屏 / 60 帧都由作业层定。
     /// 事件：作业事件按序转出，最后一条是这局的结局（result）。
     public func run(_ game: InstalledGame, settings s: Settings, events: EventSink) throws -> RunningGame {
-        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage,
+        var arguments: [String: Any] = [:]
+        if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
+        if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
+        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage, arguments: arguments,
                                    onEvent: { if !$0.isFinal { events.emit(EngineEvent(job: $0)) } },
                                    onFinish: { events.emit(EngineEvent(outcome: $0)) })
         return RunningGame(gameId: game.gameId, taskId: handle.id)
@@ -226,9 +231,20 @@ public final class S2ArmEngineProvider: EngineProvider {
 
     public func signingProject() async throws -> String { try await installer.signingProject() }
     public func installReadiness(gameId: String) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId) }
+    public func devCertStatus(device: String? = nil) async throws -> DevCertStatus { try await installer.devCertStatus(device: device) }
+    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
+        try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
+    }
+    public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func devCertDelete() async throws { try await installer.devCertDelete() }
 
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> InstallResult {
         try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, events: events)
+    }
+
+    public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
+    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, events: events)
     }
 
     public func restorePhone(events: EventSink = .discard) async throws {

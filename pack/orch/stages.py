@@ -112,7 +112,7 @@ def run(args, *, env=None, log=None, allowed=(0,), timeout=600):
     elif err:
         sys.stderr.write(err.decode('utf-8', errors='replace'))
     if rc not in allowed:
-        # 日志写在本阶段事务目录里，阶段失败事务整个丢弃（roots.py abort），「详见 <日志>」事后找不到（11-06 Windows 出包机马力欧高尔夫只剩一句「详见 nro_to_nso.log」）：
+        # 日志写在本阶段事务目录里，阶段失败事务整个丢弃（roots.py abort），「详见 <日志>」事后找不到（11-06 Windows 出包机0100C9C00E25C000只剩一句「详见 nro_to_nso.log」）：
         #   把工具输出最后几行带进报红，light.log / 红日志包里就有原因
         tail = [ln.strip() for ln in (out + err).decode('utf-8', errors='replace').splitlines() if ln.strip()][-4:]
         raise StageError(f'{Path(command[0]).name} 退出 {rc}；{Path(log).name if log else "stderr"} 末尾：' + (' / '.join(tail)[-600:] or '（无输出）'),
@@ -779,7 +779,7 @@ class Stages:
             return self._result('uilayout', start, current, key, skipped=True)
         # 覆盖层（11-06 出包速度线，维护者批）：现行 RomFS 不动（仍联到存储里那份不可变的身份），改动的布局文件只写进
         #   <版本>/ui_overlay/romfs/<路径>，读方（RomFS 索引、资源包 pack/pkg_srcs.py）按「覆盖层优先」叠上去。
-        #   原先为改几十个文件独占克隆整份 RomFS、提交时整份封存、修剪时再整份解封删除（王国之泪 30.5 万个文件，Windows 出包机 uilayout 1283 秒）。
+        #   原先为改几十个文件独占克隆整份 RomFS、提交时整份封存、修剪时再整份解封删除（0100F2C0115B6000 30.5 万个文件，Windows 出包机 uilayout 1283 秒）。
         tx = self.roots.begin(game, self.roots.tag(game, 'ui-w' + str(width) + '-' + key[:8]))
         try:
             base = tx.path / 'romfs'

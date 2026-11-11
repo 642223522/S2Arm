@@ -101,7 +101,7 @@ def _private_path(match):
 
 
 # 系统错误原文（strerror）：路径匹配会一直吞到行尾（路径本身可能带空格，不能按空白截断），「cp: <路径>: Operation not permitted」的原因
-#   原先跟着路径一起变成 [PRIVATE_PATH]，玩家诊断里看不出是没权限、没空间还是文件不在（11-09 旷野之息拷字体失败 7 行全是这样）。
+#   原先跟着路径一起变成 [PRIVATE_PATH]，玩家诊断里看不出是没权限、没空间还是文件不在（11-09 01007EF00011E000拷字体失败 7 行全是这样）。
 #   只认这张表里的原文（不收任意尾巴，免得把路径里冒号后的名字漏出去）：末尾是「: 原文」就只换前面的路径
 ERRNO_REASONS = ("Operation not permitted", "Permission denied", "No such file or directory", "File exists", "Read-only file system",
                  "No space left on device", "Is a directory", "Not a directory", "Input/output error", "Resource busy", "Device not configured",

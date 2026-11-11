@@ -93,7 +93,7 @@ struct s2a_record_draw_state {
     // 该槽没有给纹理；obj_magic != 'TEX0' 表示记录下来的对象在回放时仍无效（快照丢失），
     // 此时 nvn_format/尺寸都不可信，不能当“合法未绑定槽”消费。
     struct { uint64_t key; VkFormat format; uint32_t nvn_format; uint32_t width, height; int has_view;
-             uint32_t obj_magic; uint64_t obj_serial; uint32_t view_format; view_t view; } rt[8];
+             uint32_t obj_magic; uint64_t obj_serial; uint64_t storage; uint32_t view_format; view_t view; } rt[8];
     uint64_t cmd_seq, rt_seq;        // 本笔 draw 的命令序号 / 当前颜色目标那次 SetRenderTargets 的序号
     int32_t vp_first, vp_n, sc_x, sc_y, sc_w, sc_h;
     uint8_t vp_seen, sc_seen;   // 0 = 该状态从未被该命令流设置（与显式设置成空区分开）
@@ -135,6 +135,7 @@ struct s2a_record_draw_state {
     uint64_t last_ub_bytes[6][16];
     uint32_t last_ub_count[6][16];
     uint64_t depth_key;                                      // 深度/模板目标（SetRenderTarget 的真实 depth 纹理快照）
+    uint64_t depth_storage;                                  // 深度目标的存储身份（tex_t.mem；首用 steady 判定的第二键）
     uint8_t has_depth;
     uint8_t has_dview;                                       // SetRenderTargets 给了深度视图（mip/层/格式/面）
     view_t dview;                                            // 深度视图原样（附件消费用；未给时保持 0）
@@ -152,6 +153,9 @@ struct s2a_record_draw_state {
 typedef int (*s2a_record_draw_fn)(struct s2a_vk_device *device, const struct s2a_record_draw_state *state,
                                   struct s2a_record_result *result, void *opaque);
 void s2a_record_set_draw_builder(s2a_record_draw_fn draw, void *opaque);
+// 间接绘制 / 间接派发累计：[0] 解析成确定值的绘制、[1] 按 GPU 值为空而不录的绘制、
+// [2] 解析成确定值的派发、[3] 组数为 0 而不录的派发。
+void s2a_record_indirect_counts(uint64_t out[4]);
 // Compute 快照独立于 draw；keys 为 packed CS key + 5 个 inactive 零槽，
 // ubo_use 按 NVN stage 编号（只有 [5] 活跃）。program 只作参考，serial 来自绑定记录。
 // 未观察到的 pool/local memory 不等于零；消费方必须按 seen 标志拒绝缺失事实。
@@ -181,7 +185,8 @@ struct s2a_record_dispatch_state {
 // lifetimes must extend through this delayed finish. Unknown completion is not success.
 /* Diagnostic facts never confer execution success. Unknown identity is explicit. */
 enum s2a_compute_source { S2A_COMPUTE_UNKNOWN, S2A_COMPUTE_OFFLINE,
-    S2A_COMPUTE_PRIVATE, S2A_COMPUTE_LIVE, S2A_COMPUTE_MISS, S2A_COMPUTE_SOURCE_COUNT };
+    S2A_COMPUTE_PRIVATE, S2A_COMPUTE_LIVE, S2A_COMPUTE_MISS, S2A_COMPUTE_CACHED,
+    S2A_COMPUTE_SOURCE_COUNT };
 struct s2a_compute_diagnostic {
     uint64_t session, generation;
     uint8_t identity[32], identity_valid;

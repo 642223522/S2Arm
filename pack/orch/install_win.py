@@ -23,20 +23,19 @@ class Fail(Exception):
 
 
 def plumesign_path(given=None):
-    """plumesign 位置：指定 > S2A_PLUMESIGN > PATH > 玩家 Impactor 同目录 > 桌面 / 下载"""
+    """plumesign 位置：指定（发版随包那份由调用方传）> S2A_PLUMESIGN > PATH > 玩家 Impactor 同目录。
+    不再去桌面 / 下载文件夹找（11-11 装机链路审查）：那一档会执行下载目录里任何叫 plumesign* 的程序，发版本来就随包带了"""
     exe = 'plumesign.exe' if os.name == 'nt' else 'plumesign'
     cands = [given, os.environ.get('S2A_PLUMESIGN'), shutil.which('plumesign')]
     st = impactor.status()
     if st.get('path'): cands += glob.glob(os.path.join(os.path.dirname(st['path']), 'plumesign*'))
-    home = os.path.expanduser('~')
-    for d in ('Desktop', 'Downloads', os.path.join('OneDrive', 'Desktop')): cands += sorted(glob.glob(os.path.join(home, d, 'plumesign*')), reverse=True)
     for c in cands:
         if c and os.path.isfile(c) and (os.name != 'nt' or c.lower().endswith('.exe')): return c
     return None
 
 
-def mux_devices():
-    """本机设备服务列出的设备 → [(UDID, 连接方式, 设备编号)]"""
+def _mux_list():
+    """本机设备服务（usbmux）ListDevices 的原始设备表"""
     if os.name == 'nt': s = socket.create_connection(('127.0.0.1', 27015), 5)
     else: s = socket.socket(socket.AF_UNIX); s.settimeout(5); s.connect('/var/run/usbmuxd')
     with s:
@@ -49,10 +48,29 @@ def mux_devices():
             c = s.recv(n - len(b))
             if not c: break
             b += c
+    return plistlib.loads(b).get('DeviceList', [])
+
+
+def mux_devices():
+    """本机设备服务列出的设备 → [(UDID, 连接方式, 设备编号)]"""
     out = []
-    for d in plistlib.loads(b).get('DeviceList', []):
+    for d in _mux_list():
         pr = d.get('Properties', {}); out.append((pr.get('SerialNumber'), pr.get('ConnectionType'), d.get('DeviceID')))
     return out
+
+
+APPLE_PID_IPAD = 0x12AB   # 苹果 USB 产品号：iPad 0x12AB（iPhone 0x12A8，本机实测两台 iPhone 都是 0x12A8）
+
+
+def device_kind(udid):
+    """这台用数据线连着的设备是不是 iPad（#487：入口写「装到 iPad」）→ "ipad" / "iphone"；读不到产品号（只在 Wi-Fi 上、设备服务连不上）→ ""。
+    只认 USB 产品号正好是 iPad 的才算 iPad，其余照旧按 iPhone 写"""
+    if not udid:
+        return ""
+    pids = {d.get('Properties', {}).get('ProductID') for d in _mux_list()
+            if d.get('Properties', {}).get('SerialNumber') == udid and d.get('Properties', {}).get('ConnectionType') == 'USB'}
+    pids.discard(None)
+    return "" if not pids else "ipad" if APPLE_PID_IPAD in pids else "iphone"
 
 
 def device_id(udid, devs):
@@ -65,6 +83,14 @@ def bundle_id_of(ipa):
     with zipfile.ZipFile(ipa) as z:
         n = next(x for x in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/Info\.plist', x))
         return plistlib.loads(z.read(n))['CFBundleIdentifier']
+
+
+def legacy_case_bundle(bundle):
+    """容器包名的旧写法：0.2.1 及以前 Windows 由 plumesign 自己在包名后接「.大写团队号」（io.s2arm.games.<大写团队号>），0.2.2 起和 Mac 统一小写。
+    苹果的包名不分大小写，这个 Apple ID 早先注册过大写那个时，新写法去注册会被拒（9401），plumesign 查已有 App ID 却分大小写、认不出旧的。
+    不是容器包名或团队号里没有字母 → None"""
+    m = re.fullmatch(r'(io\.s2arm\.games\.)([a-z0-9]{10})', bundle or '')
+    return m[1] + m[2].upper() if m and m[2] != m[2].upper() else None
 
 
 def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None):
@@ -80,6 +106,24 @@ def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None):
         tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln][-1:] or ['（没有输出）']
         code = impactor.explain(text)
         raise Fail(f'签名装机失败（{code}）：{tail[0][-300:]}', 1, code)
+
+
+def install_signed(exe, app, udid, log):
+    """已签好的 App（开发者证书模式，pack/jobs/devcert.py 签）只装不签：plumesign device --install（同版 v2.7.2 源码 commands/device.rs：
+    给 .app 目录直接走 installation_proxy 装；--udid 比的是设备编号，同 sign_install）"""
+    if not exe: raise Fail('找不到 plumesign（随 S2Arm 附带；源码树用 --plumesign / S2A_PLUMESIGN 指定）', 75, 'impactor_missing')
+    try: devs = mux_devices()
+    except OSError as e: raise Fail(f'连不上本机苹果设备服务（{e}）：装 iTunes 或「Apple 设备」', 75, 'device_pairing_required')
+    dev = device_id(udid, devs)
+    if dev is None: raise Fail(f'设备服务里没有 {udid}：插上线并解锁', 75, 'device_not_connected')
+    p = subprocess.run([exe, 'device', '--udid', str(dev), '--install', str(app)], capture_output=True, text=True, encoding='utf-8', errors='replace',
+                       env=dict(os.environ, RUST_LOG=os.environ.get('RUST_LOG', 'info')))
+    text = p.stdout + p.stderr
+    Path(log).open('a', encoding='utf-8').write(text)
+    if p.returncode:
+        tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln][-1:] or ['（没有输出）']
+        code = impactor.explain(text)
+        raise Fail(f'装机失败（{code}）：{tail[0][-300:]}', 1, code)
 
 
 def main(argv=None):
@@ -106,7 +150,20 @@ def install_app(a, say=lambda m: print(m, flush=True)):
     log = a.log or os.path.join(os.path.dirname(os.path.abspath(a.ipa)), 'plumesign.log')
     with tempfile.TemporaryDirectory() as t:
         out = Path(t, 'signed.ipa'); say(f'签名 + 装机（设备编号 {dev}）…')
-        sign_install(exe, a.ipa, dev, a.name, log, out, getattr(a, 'bundle', None))
+        bundle = getattr(a, 'bundle', None)
+        try:
+            sign_install(exe, a.ipa, dev, a.name, log, out, bundle)
+        except Fail:
+            # 9401 = 这个包名苹果那边已被占用。本机记录里没有旧包名时（换了电脑 / 重装启动器 / 新游戏库），旧写法是唯一可能的占用者：换它重试一次，
+            #   成功后调用方把实际包名记进设备记录，下次直接用（install.WinPhone.bundle_for_signing）。两次的输出都留在日志里
+            legacy = legacy_case_bundle(bundle)
+            first = Path(log).read_text(encoding='utf-8', errors='replace') if Path(log).is_file() else ''
+            if not legacy or impactor.explain(first) != 'app_id_taken': raise
+            say(f'包名 {bundle} 被苹果拒绝（9401），改用这个 Apple ID 早先注册的写法 {legacy} 重试')
+            try:
+                sign_install(exe, a.ipa, dev, a.name, log, out, legacy)
+            finally:
+                Path(log).write_text(first + f'\n--- 9401：改用 {legacy} 重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         bid = bundle_id_of(out) if out.is_file() else None
     if not bid: raise Fail('装好了但读不到签好的 ipa 里的包名，推不了资源包', 1, 'device_install_failed')
     return bid

@@ -111,7 +111,7 @@ public sealed class MilestoneTrack
             Current = id; Fraction = null;
             started.TryAdd(id, now);
         }
-        if (type == "stage") Fraction = null;
+        if (type is "stage" or "message" or "cache") Fraction = null;   // 新的一句说明 = 上一个百分比不再代表当前在做的事（社区贡献者补丁 #8）
         if (type == "progress" && e.TryGetProperty("totalUnits", out var total) && total.ValueKind == JsonValueKind.Number && total.GetDouble() > 0 &&
             e.TryGetProperty("doneUnits", out var done) && done.ValueKind == JsonValueKind.Number)
             Fraction = Math.Min(1, Math.Max(0, done.GetDouble() / total.GetDouble()));
@@ -162,7 +162,8 @@ public sealed record InstallItem(string Id, bool Ok, bool Waiting, string Title,
     public static readonly IReadOnlySet<string> Actions = new HashSet<string>(StringComparer.Ordinal) { "openImpactor" };
 }
 
-public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Ready, string Device, string Account, string IpaPath = "")
+/// <summary>DeviceKind：连着的设备是 "ipad" / "iphone"，读不出为 ""（#487：入口写「装到 iPad」；后端按 USB 产品号认）。</summary>
+public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Ready, string Device, string Account, string IpaPath = "", string DeviceKind = "")
 {
     public static InstallReadiness Parse(JsonElement result)
     {
@@ -192,7 +193,8 @@ public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Rea
             }
             // ready is the backend's verdict: open items may be advisory (only a missing iPhone package blocks).
             return new(items.AsReadOnly(), result.GetProperty("ready").GetBoolean(), LibraryJobResult.Text(result, "device", true), LibraryJobResult.Text(result, "account", true),
-                result.TryGetProperty("ipaPath", out var ipa) && ipa.ValueKind == JsonValueKind.String ? ipa.GetString() ?? "" : "");
+                result.TryGetProperty("ipaPath", out var ipa) && ipa.ValueKind == JsonValueKind.String ? ipa.GetString() ?? "" : "",
+                result.TryGetProperty("deviceKind", out var kind) && kind.ValueKind == JsonValueKind.String ? kind.GetString() ?? "" : "");
         }
         catch (Exception error) when (error is KeyNotFoundException or InvalidOperationException)
         { throw new LibraryProtocolException("Invalid install checklist.", error); }

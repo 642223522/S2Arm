@@ -100,8 +100,8 @@ def used(exefs):
 
 
 # 程序位数只有一份判法：nx_unpack --npdm-isa（读 main.npdm 的 META 标志，pack/nx_unpack/Inspect.cs NpdmIsa；oneclick.sh 同用）。
-#   队列的「指令集」列读的是本体，更新可能把 32 位本体换成 64 位（Captain Toad 1.1.0 标 aarch32，实为 64 位），所以按解出的 main.npdm 判。
-#   马力欧卡丁车 8 豪华版那份原件（本体 1.0.0 + 更新 3.0.0）确实是 32 位：11-01 清点目录里那份是 10-15 从别的版本拷来的旧 exefs，曾误读成 64 位
+#   队列的「指令集」列读的是本体，更新可能把 32 位本体换成 64 位（01009BF0072D4000 1.1.0 标 aarch32，实为 64 位），所以按解出的 main.npdm 判。
+#   0100152000022000那份原件（本体 1.0.0 + 更新 3.0.0）确实是 32 位：11-01 清点目录里那份是 10-15 从别的版本拷来的旧 exefs，曾误读成 64 位
 _NXU = None
 def nx_unpack():
     global _NXU

@@ -104,15 +104,24 @@ namespace S2A.Services
 
             string romfs = Path.Combine(programDir, "romfs");
 
-            IStorage imageStorage = RomFsIndex.OpenImage(programDir);
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            if (imgV1 != null)
+            {
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, imgV1);
+                Native.Mark("服务：RomFS 单一 IMG\0"u8);
+            }
+            IStorage imageStorage = imgV1 != null ? null : RomFsIndex.OpenImage(programDir);
+            RomFsIndex.Source source = imgV1 != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
 
-            if (imageStorage != null)
+            if (source == RomFsIndex.Source.Image)
             {
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, imageStorage);
                 Native.Mark("服务：RomFS 单文件镜像\0"u8);
             }
-            else if (Directory.Exists(romfs))
+            else if (source == RomFsIndex.Source.Directory)
             {
+                if (File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)))
+                    Red.Report("RomFS 单文件镜像不完整（多半推到一半），这局改读 romfs/ 目录", programDir);   // 审计 P1-151：不静默改读
                 // 出包时预建的索引（RomFsIndex）优先：免去起局枚举十几万文件；没有就按目录现建（慢，打一行提示）
                 string index = Path.Combine(programDir, RomFsIndex.FileName);
                 string overlay = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
@@ -131,7 +140,7 @@ namespace S2A.Services
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, image);   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }
-            else
+            else if (imgV1 == null)
             {
                 Red.Report("游戏数据缺 romfs/", programDir);
             }
@@ -139,9 +148,11 @@ namespace S2A.Services
             Aoc.Register(gameDir);   // DLC：aoc.tsv 里的全部登记为已拥有（有数据的挂 aoc/<idx>/，仅授权的挂载时报红）
 
             Saves.SelectUser(device);
+            if (Saves.Dir() == null) SaveFolder.SelectUser(device, applicationId);   // 存档位置里记的用户号（SaveFolder.cs，审计 P1-162）：建存档之前
             Result saveResult = ProcessLoaderHelper.EnsureSaveData(device, new ApplicationId(applicationId), nacp);
             if (requireSuccess) saveResult.ThrowIfFailure();
             Saves.Seed(device, applicationId);
+            if (Saves.Dir() == null) SaveFolder.ReadIn(device, applicationId);   // 存档位置 SaveData：玩家放了新存档就读进来（SaveFolder.cs）；测试 / 导入种子局不读
             Native.Mark("服务：存档\0"u8);
 
             // Ryujinx 加载器原本做的显卡侧三步（FileSystemExtensions / ArmProcessContext）：着色器缓存按程序号、GPU 认得客体内存、宿主就绪
@@ -229,7 +240,7 @@ namespace S2A.Services
     }
 
     // 只读、按需打开的宿主文件：读时经句柄缓存取 FileStream（缓存满了关最久没用的）。
-    // 锁只管最近使用表与登记，打开文件和 pread 都在锁外（10-26 动森 Mac 满载 90 秒黑屏：全局锁包着阻塞的 pread，一次慢读让所有 RomFS 读排队）；
+    // 锁只管最近使用表与登记，打开文件和 pread 都在锁外（10-26 01006F8002326000 Mac 满载 90 秒黑屏：全局锁包着阻塞的 pread，一次慢读让所有 RomFS 读排队）；
     // _busy = 正在锁外读这个文件的线程数，淘汰时跳过它们（句柄不会在读到一半时被关）
     sealed class LazyHostFile : IFile
     {
