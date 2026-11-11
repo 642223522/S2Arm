@@ -176,7 +176,7 @@ if(ANDROID)
     # 必须在 -Wall -Wextra 之后再关：-Wextra 会把组里的告警重新打开。语义不变。
     target_compile_options(s2arm_android PRIVATE
         "$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-designated-field-initializers>")
-    target_link_libraries(s2arm_android PRIVATE s2arm_android_memory android log vulkan aaudio)
+    target_link_libraries(s2arm_android PRIVATE s2arm_android_memory android log vulkan aaudio mediandk)
     if(S2A_ANDROID_NATIVE_MODE STREQUAL "game")
         target_link_libraries(s2arm_android PRIVATE ${S2A_ANDROID_CODEC_LIBS})
     endif()
@@ -721,6 +721,13 @@ else()
     target_compile_definitions(nvn_vk_swapchain_host_test PRIVATE VK_USE_PLATFORM_ANDROID_KHR=1)
     target_compile_options(nvn_vk_swapchain_host_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
     add_test(NAME android_nvn_vk_swapchain_host COMMAND nvn_vk_swapchain_host_test)
+    # AMediaCodec 解码边界（#44 第二刀）：假 codec 状态机喂编排出图，
+    # 验证开关门 / NV12 解交织 / 平面拷贝 / 裁剪 / 有界等待 / 失败粘性。
+    add_executable(mc_host_test tests/mc_host_test.c codecs/s2a_mc.c)
+    target_include_directories(mc_host_test PRIVATE tests/hostmc codecs)
+    target_compile_definitions(mc_host_test PRIVATE S2A_MC_TESTING=1)
+    target_compile_options(mc_host_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME android_mc_host COMMAND mc_host_test)
     # B2：display_timing 计量的宿主回归（扩展替身：支持/不支持/乱序回报/丢帧 UNKNOWN）。
     add_executable(nvn_vk_dt_test tests/nvn_vk_dt_test.c native/nvn/nvn_vk_display_timing.c)
     target_include_directories(nvn_vk_dt_test PRIVATE
