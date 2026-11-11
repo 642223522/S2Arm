@@ -551,5 +551,6 @@
 20261110-1335-arm-zero-mask-quirk-flag.patch
 20261110-1349-arm-zero-mask-attachments.patch
 20261110-1902-omap-color-mask.patch
+20261110-2118-omap-pipeline-state-drawtexture.patch
 20261110-1611-audit-1111-language-hwopus.patch
 20261111-0705-shader-subgroup-no-propagate.patch

@@ -1289,6 +1289,18 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
             return componentMask & ((fragmentOutputMap >> (index * 4)) & 0xf);
         }
 
+        // S2A（#468）：DrawTexture 用宿主自己的程序画，不跑客户机片元着色器，上一个程序的输出映射对它不适用：
+        // 先恢复成寄存器掩码，再把着色器状态标脏，下一次普通绘制按当时的程序重新取映射。映射本来就是全 1 时什么都不做。
+        public void S2AClearFragmentOutputMap()
+        {
+            if (_s2aFragmentOutputMap != uint.MaxValue)
+            {
+                _s2aFragmentOutputMap = uint.MaxValue;
+                UpdateRtColorMask();
+                _updateTracker.ForceDirty(ShaderStateIndex);
+            }
+        }
+
         /// <summary>
         /// Updates host render target color masks, based on guest GPU state.
         /// This defines which color channels are written to each color buffer.
@@ -1312,10 +1324,13 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                 componentMask |= (colorMask.UnpackBlue() ? 4u : 0u);
                 componentMask |= (colorMask.UnpackAlpha() ? 8u : 0u);
 
+                // S2A（#468）：_pipeline 里留寄存器掩码。这份状态在取程序时交给着色器缓存（再进规格状态、磁盘缓存、
+                // 程序记录），那一刻记着的还是上一个程序的映射；存并过的值，同一个程序会因为之前绑的程序不同记下不同的状态。
+                colorWriteMaskSpan[index] = componentMask;
+
                 componentMask = S2AOmapColorMask(componentMask, _s2aFragmentOutputMap, index);
 
                 componentMasks[index] = componentMask;
-                colorWriteMaskSpan[index] = componentMask;
             }
 
             _context.Renderer.Pipeline.SetRenderTargetColorMasks(componentMasks);
