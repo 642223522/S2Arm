@@ -103,17 +103,37 @@ static void face_buttons(void) {
     assert(s2a_pad_kind("DualSense", 0, 1) == S2A_PAD_KIND_PLAYSTATION);
     assert(s2a_pad_kind("8BitDo Pro Controller", 0, 0) == S2A_PAD_KIND_OTHER);   // P2-213：名字里带 Pro Controller 的第三方不是任天堂
     assert(s2a_pad_kind(NULL, 0, 0) == S2A_PAD_KIND_OTHER);
+    assert(s2a_pad_kind("MFi", 0, 0) == S2A_PAD_KIND_OTHER && s2a_pad_kind("HID", 0, 0) == S2A_PAD_KIND_OTHER);
+    // 以后型号的字样未知：按片段不分大小写认（只认开头时第 1、3 个落到「认不出」→ 旧口径按位置，印 A 的右键变成 Switch B）
+    assert(s2a_pad_kind("Switch 2 Pro Controller", 0, 0) == S2A_PAD_KIND_NINTENDO);
+    assert(s2a_pad_kind("Joy-Con 2 (L)", 0, 0) == S2A_PAD_KIND_NINTENDO);
+    assert(s2a_pad_kind("NINTENDO SWITCH 2 PRO CONTROLLER", 0, 0) == S2A_PAD_KIND_NINTENDO);
+    assert(s2a_pad_kind("Switch Pro Controller", 1, 0) == S2A_PAD_KIND_XBOX);   // 手柄类型先于类别
     int o[4];
+    // 期望手算：系统 buttonA/B/X/Y（下标 0..3）在任天堂手柄上是 东/南/北/西，其余手柄是 南/东/西/北。
+    //   Switch 布局要 A/B/X/Y = 东/南/北/西，Xbox 布局要 南/东/西/北；自动 = 照字母 {0,1,2,3}
 #define ORDER(k, l, a, b, c, d) do { s2a_pad_abxy_order(k, l, o); assert(o[0] == a && o[1] == b && o[2] == c && o[3] == d); } while (0)
-    ORDER(S2A_PAD_KIND_NINTENDO, 1, 0, 1, 2, 3); ORDER(S2A_PAD_KIND_NINTENDO, 0, 0, 1, 2, 3);   // 任天堂：两种口径都同字母
-    ORDER(S2A_PAD_KIND_XBOX, 1, 0, 1, 2, 3);                                                   // Xbox 按字母：Xbox A = Switch A
-    ORDER(S2A_PAD_KIND_XBOX, 0, 1, 0, 3, 2);                                                   // Xbox 按位置：Switch A（东）= Xbox B
-    ORDER(S2A_PAD_KIND_PLAYSTATION, 1, 0, 1, 2, 3);                                            // PS 按字母（缺省）：同 Xbox 位置，× = Switch A（#466）
-    ORDER(S2A_PAD_KIND_PLAYSTATION, 0, 1, 0, 3, 2);                                            // PS 按位置：Switch A（东）= ○
-    ORDER(S2A_PAD_KIND_OTHER, 1, 1, 0, 3, 2);                                                  // 认不出类型的第三方：只按位置
+    ORDER(S2A_PAD_KIND_NINTENDO, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);       // 任天堂 自动 = Switch 布局：印 A 的右键 = A
+    ORDER(S2A_PAD_KIND_NINTENDO, S2A_PAD_LAYOUT_SWITCH, 0, 1, 2, 3);     // 东 = buttonA
+    ORDER(S2A_PAD_KIND_NINTENDO, S2A_PAD_LAYOUT_XBOX, 1, 0, 3, 2);       // 南 = buttonB（印 B 的下键确认）、西 = buttonY、北 = buttonX
+    ORDER(S2A_PAD_KIND_XBOX, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);           // Xbox 自动 = Xbox 布局：Xbox A（南）= Switch A
+    ORDER(S2A_PAD_KIND_XBOX, S2A_PAD_LAYOUT_XBOX, 0, 1, 2, 3);
+    ORDER(S2A_PAD_KIND_XBOX, S2A_PAD_LAYOUT_SWITCH, 1, 0, 3, 2);         // 东 = Xbox B、南 = Xbox A、北 = Xbox Y、西 = Xbox X
+    ORDER(S2A_PAD_KIND_PLAYSTATION, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);    // PS 自动：× = A（#466）
+    ORDER(S2A_PAD_KIND_PLAYSTATION, S2A_PAD_LAYOUT_SWITCH, 1, 0, 3, 2);  // ○ = A
+    ORDER(S2A_PAD_KIND_PLAYSTATION, S2A_PAD_LAYOUT_XBOX, 0, 1, 2, 3);
+    ORDER(S2A_PAD_KIND_OTHER, S2A_PAD_LAYOUT_AUTO, 0, 1, 2, 3);          // 认不出的（MFi 等，键帽同 Xbox）：照字母
+    ORDER(S2A_PAD_KIND_OTHER, S2A_PAD_LAYOUT_SWITCH, 1, 0, 3, 2);
+    ORDER(S2A_PAD_KIND_OTHER, S2A_PAD_LAYOUT_XBOX, 0, 1, 2, 3);
 #undef ORDER
-    unsetenv("S2A_PAD_FACE"); assert(s2a_pad_face_by_letter() == 1);   // 缺省按字母
-    s2a_pad_face_set(0); assert(s2a_pad_face_by_letter() == 0); s2a_pad_face_set(1); assert(s2a_pad_face_by_letter() == 1);
+    assert(s2a_pad_layout_parse(NULL) == S2A_PAD_LAYOUT_AUTO && s2a_pad_layout_parse("auto") == S2A_PAD_LAYOUT_AUTO);
+    assert(s2a_pad_layout_parse("letter") == S2A_PAD_LAYOUT_AUTO && s2a_pad_layout_parse("bogus") == S2A_PAD_LAYOUT_AUTO);   // 旧值「按字母」= 自动
+    assert(s2a_pad_layout_parse("switch") == S2A_PAD_LAYOUT_SWITCH && s2a_pad_layout_parse("position") == S2A_PAD_LAYOUT_SWITCH);   // 旧值「按位置」= Switch 布局
+    assert(s2a_pad_layout_parse("xbox") == S2A_PAD_LAYOUT_XBOX);
+    unsetenv("S2A_PAD_FACE"); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_AUTO);   // 缺省自动
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_XBOX); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_XBOX);
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_SWITCH); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_SWITCH);
+    s2a_pad_layout_set(99); assert(s2a_pad_layout() == S2A_PAD_LAYOUT_AUTO);
 }
 
 int main(void) {
