@@ -121,14 +121,14 @@ void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec) {
     uint64_t row = o->row_stride ? o->row_stride : (uint64_t)(((uint32_t)o->r.width + (uint32_t)bw - 1) / (uint32_t)bw) * (uint64_t)bpb;
     uint64_t rows = ((uint32_t)o->r.height + (uint32_t)bh - 1) / (uint32_t)bh, img = o->image_stride ? o->image_stride : row * rows;
     uint32_t nz = o->r.depth > 0 ? (uint32_t)o->r.depth : 1;
-    if (t->d.target == NVN_TEXTURE_TARGET_3D && nz > 1) { nvn_unimpl("tex", "b2t_3d_multi_slice", rec); return; }
     if (!in_pool(o->src, img * nz)) { nvn_unimpl("buf", "b2t_source_outside_pools", rec); return; }
     nvn_gpu_tex g = rp_tex_resolve(t, c);
     if (!g || !c) return;
     for (uint32_t z = 0; z < nz; z++) {
         NVNcopyRegion r = o->r; r.depth = 1;
-        uint32_t layer = layer0 + (uint32_t)o->r.zoffset + z;
-        if (t->d.target == NVN_TEXTURE_TARGET_3D) layer = 0; else r.zoffset = 0;
+        // 第几层 / 第几片都经 layer 交给后端（三维贴图的 layer 就是深度方向的片号；视图的起始层只对分层贴图有意义）
+        uint32_t layer = (uint32_t)o->r.zoffset + z + (t->d.target == NVN_TEXTURE_TARGET_3D ? 0 : layer0);
+        r.zoffset = 0;
         nvn_gpu_tex_upload(c, g, level, layer, &r, (const void *)(uintptr_t)(o->src + z * img), row, img);
     }
     rp_tex_mark_gpu_written(t);   // 这张贴图的内容从此不再从它自己的存储重传
