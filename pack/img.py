@@ -102,16 +102,34 @@ KEEP = ('romfs_overlay/', 'shaders/', 'romfs.s2aidx')   # 转 IMG 后照旧按�
 MAP = 'game.imgmap'   # IMG 旁的派生偏移表（services RomFsIndex.OpenImg）：格式同 romfs.imgmap，偏移是 game.img 里的绝对位置，-1 = 界面覆盖层
 
 
-def orig_romfs(root):
-    """原始 RomFS：产物根 seed.txt 记的游戏数据目录 /romfs（宽屏界面布局阶段 pack/stage_uilayout.sh 只往产物根 romfs 里换文件、原版留在这里）。
-    没有 seed.txt 时只在产物根没有界面覆盖（ui_overlay.tsv 空）才用产物根 romfs，否则报红：IMG 只装原始资源（11-11 真机对比查出产物根 romfs 是覆盖后版本）"""
-    src = next((l[4:].strip() for l in open(os.path.join(root, 'seed.txt'), encoding='utf-8') if l.startswith('src=')), '') if os.path.isfile(os.path.join(root, 'seed.txt')) else ''
-    if src and os.path.isdir(os.path.join(src, 'romfs')): return os.path.join(src, 'romfs')
-    try: ov = [l for l in open(os.path.join(root, 'ui_overlay.tsv'), encoding='utf-8') if l.strip()]
-    except FileNotFoundError: ov = []
-    if ov: raise Red(f'找不到原始 romfs（{root}/seed.txt 的 src={src or "无"}），产物根 romfs 已叠过 {len(ov)} 个界面覆盖文件，不能当原件进 IMG')
+def orig_romfs(root, work):
+    """原始 RomFS（IMG 只装原始资源）→ (目录, 用完要删的临时目录或 None)。宽屏界面布局阶段（pack/stage_uilayout.sh）只把 ui_overlay.tsv 列的文件换进产物根 romfs、
+    原版取自 seed.txt 记的游戏数据目录 /romfs；所以原件 = 产物根 romfs，但这几个文件换回数据目录里的原版。其余文件一律取产物根（与 romfs.s2aidx 天然一致；
+    11-11 实测数据目录在播种后变过：别的文件长度与产物根差 1 字节，整棵取数据目录会和索引对不上）。临时目录建在 work 下：产物根 romfs 逐文件硬链（APFS / NTFS 都行、不占盘），
+    覆盖文件换成原版。没有覆盖 → 直接用产物根 romfs；有覆盖但 seed.txt 缺或原版缺 → 报红"""
     romfs = os.path.join(root, 'romfs')
-    return romfs if os.path.isdir(romfs) else None
+    if not os.path.isdir(romfs): return None, None
+    try: ov = [l.strip() for l in open(os.path.join(root, 'ui_overlay.tsv'), encoding='utf-8') if l.strip()]
+    except FileNotFoundError: ov = []
+    if not ov: return romfs, None
+    sf = os.path.join(root, 'seed.txt')
+    src = next((l[4:].strip() for l in open(sf, encoding='utf-8') if l.startswith('src=')), '') if os.path.isfile(sf) else ''
+    lost = [r for r in ov if not os.path.isfile(os.path.join(src, 'romfs', r))] if src else ov
+    if lost: raise Red(f'产物根 romfs 叠过 {len(ov)} 个界面覆盖文件，找不到其中 {len(lost)} 个的原版（seed.txt 的 src={src or "无"}，如 {lost[:2]}），不能当原件进 IMG')
+    import shutil
+    tmp = os.path.join(work, 'romfs.orig.tmp'); shutil.rmtree(tmp, ignore_errors=True)
+    def place(s, d):
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        try: os.link(os.path.realpath(s), d)
+        except OSError: shutil.copyfile(s, d)
+    real = os.path.realpath(romfs)
+    for d, _, ns in romfs_list.walk(real):
+        for n in ns: place(os.path.join(d, n), os.path.join(tmp, os.path.relpath(os.path.join(d, n), real)))
+    for r in ov:
+        q = os.path.join(tmp, r)
+        if os.path.lexists(q): os.unlink(q)
+        place(os.path.join(src, 'romfs', r), q)
+    return tmp, tmp
 
 
 def std_files(path, base):
@@ -194,7 +212,12 @@ def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None):
         src = os.path.join(pack_dir, rel)
         if not os.path.isfile(src): raise Red(f'资源包清单里的 {rel} 不在 {pack_dir}')
         others.append((rel, src))
-    return build(orig_romfs(root), others, out_path, gid, image_id(pack_dir), romfs_index or default_romfs_index(), say=say)
+    rom, tmp = orig_romfs(root, os.path.dirname(os.path.abspath(out_path)))
+    try:
+        return build(rom, others, out_path, gid, image_id(pack_dir), romfs_index or default_romfs_index(), say=say)
+    finally:
+        if tmp:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
 
 
 def convert(root, pack_dir, progress=None, romfs_index=None, gid=None):
