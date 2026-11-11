@@ -3773,6 +3773,69 @@ static void fd_ssbo_wb_writeback(struct fd_frame_q *q) {
     }
     q->n_ssbo_wb = 0;
 }
+// 区间与一份影子里真正被可写绑定过的子区间相交吗（只读影子是 guest 的拷贝，不改变权威）。
+static int fd_ssbo_wb_dirty(const struct fd_ssbo_wb *w, uint64_t addr, uint64_t len) {
+    if (!w->writable || !w->guest) return 0;
+    for (uint32_t j = 0; j < w->nwb; j++) {
+        uint64_t lo = w->guest + w->wb[j].off, hi = lo + w->wb[j].size;
+        if (w->wb[j].size && addr < hi && lo < addr + len) return 1;
+    }
+    return 0;
+}
+// 间接参数（DrawArrays/ElementsIndirect 的参数、DispatchComputeIndirect 的组数、间接计数多重绘制的计数）
+// 的权威字节在哪：这些字节可能是 GPU 写的，回放要在录这一笔之前拿到确定值（与 Metal 几何路径
+// geo_draw 读间接参数同一思路）。本后端 GPU 写 guest 内存只有一条路——可写 storage buffer 的帧影子，
+// 帧退休时拷回 guest（计算 dispatch 是同步提交、完成即回写，不留影子）。所以：
+//   1. 区间碰到在途延迟帧的可写影子：先把在途帧收口（retire_all 等 fence 并回写），guest 才是新的；
+//   2. 区间落在本帧的可写影子里：走同步边界（pass_break(1)：关 pass、封口、提交并等完成），
+//      再从影子（host-visible coherent，fence 之后对 host 可见）读；
+//   3. 其余情况 guest 内存就是权威，由调用方经记录层的内存访问器读。
+// 返回 1 = 已从本帧影子读到 *out；0 = 调用方读 guest；-1 = 表达不了（部分落在影子里 / 同步失败），why 写明。
+// 只有真碰到影子才付同步的代价；不碰影子的间接绘制没有额外开销。
+int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out, char *why, size_t why_size) {
+    if (!addr || !len || !out) { fail(why, why_size, "indirect arguments: empty address or length"); return -1; }
+    if (addr > ~0ull - len) { fail(why, why_size, "indirect arguments: address range overflows"); return -1; }
+    for (int i = 0; i < 2; i++) {
+        const struct fd_frame_q *q = &g_slot[i].q;
+        if (!g_slot[i].used) continue;
+        for (int k = 0; k < q->n_ssbo_wb; k++) {
+            if (!fd_ssbo_wb_dirty(&q->ssbo_wb[k], addr, len)) continue;
+            if (nvn_vk_first_draw_retire_all() != 0) {
+                fail(why, why_size, "indirect arguments were written by a frame still in flight and it has no completion proof");
+                return -1;
+            }
+            static _Atomic int noted;
+            if (atomic_fetch_add(&noted, 1) < 4)
+                FD_LOG("indirect arguments at 0x%llx+%u were GPU-written by the in-flight frame: retired it before reading",
+                       (unsigned long long)addr, len);
+            i = 2;   // retire_all 已收口全部在途帧
+            break;
+        }
+    }
+    for (int k = 0; k < g_fq.n_ssbo_wb; k++) {
+        struct fd_ssbo_wb *w = &g_fq.ssbo_wb[k];
+        if (!fd_ssbo_wb_dirty(w, addr, len)) continue;
+        if (addr < w->guest || addr + len > w->guest + w->size || !w->map) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "indirect arguments 0x%llx+%u straddle a writable storage-buffer shadow "
+                     "[0x%llx,+%u) of this frame", (unsigned long long)addr, len,
+                     (unsigned long long)w->guest, w->size);
+            fail(why, why_size, msg);
+            return -1;
+        }
+        if (nvn_vk_first_draw_pass_break(1) != 0) {
+            fail(why, why_size, "indirect arguments are GPU-written in this frame and the pending work did not complete");
+            return -1;
+        }
+        memcpy(out, (const uint8_t *)w->map + (addr - w->guest), len);
+        static _Atomic int noted;
+        if (atomic_fetch_add(&noted, 1) < 4)
+            FD_LOG("indirect arguments at 0x%llx+%u are GPU-written in this frame: synced and read from the shadow",
+                   (unsigned long long)addr, len);
+        return 1;
+    }
+    return 0;
+}
 static int fd_arena_alloc(struct s2a_vk_device *d, uint64_t size, uint64_t align, uint64_t *off, VkBuffer *buf, void **map) {
     if (!g_arena_align) g_arena_align = 64;
     if (!align) align = g_arena_align;
