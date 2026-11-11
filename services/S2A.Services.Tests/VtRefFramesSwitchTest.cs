@@ -9,13 +9,14 @@ namespace S2A.Services.Tests
     //   IDR 切，首次定值（当前 0）直接定
     public static partial class Program
     {
+        private static bool SwitchNow(bool idr, int current) => VideoToolboxH264Decoder.RefFramesSwitchNow(idr, current);   // 平台例外：只验苹果 VideoToolbox 解码器换参考帧数的时机（#529），服务层单测只在 macOS 上跑
+
         [SvcCase]
         private static void VtRefFramesSwitchWaitsForIdr()
         {
-            Check("参考帧数 3 → 4、非 IDR：不当场切，等 IDR", false, VideoToolboxH264Decoder.RefFramesSwitchNow(false, 3));
-            Check("参考帧数 3 → 9、非 IDR：不当场切，等 IDR", false, VideoToolboxH264Decoder.RefFramesSwitchNow(false, 3));
-            Check("IDR 帧：切", true, VideoToolboxH264Decoder.RefFramesSwitchNow(true, 3));
-            Check("首次定值（当前 0）：直接定", true, VideoToolboxH264Decoder.RefFramesSwitchNow(false, 0));
+            Check("参考帧数 3 → 4、非 IDR：不当场切，等 IDR", false, SwitchNow(false, 3));
+            Check("IDR 帧：切", true, SwitchNow(true, 3));
+            Check("首次定值（当前 0）：直接定", true, SwitchNow(false, 0));
         }
     }
 }
