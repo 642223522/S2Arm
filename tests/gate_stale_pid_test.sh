@@ -23,7 +23,8 @@ git add -A; git commit -qm 1
 decoy() { bash -c 'exec -a "bash -c sleep 300" sleep 300' > /dev/null 2>&1 < /dev/null & d=$!; PIDS="$PIDS $d"; }
 up() {   # 起一份门禁，等 a 出结论、b 起来；回显结果目录
   rm -f $T/b.up $T/b.pg; (exec bash tools/gate.sh > $T/g.out 2>&1) & G=$!; PIDS="$PIDS $G"
-  for _ in $(seq 150); do [ -e $T/b.up ] && LD=$(dirname "$(cat $T/b.pg)") && [ -n "$LD" ] && A=$(grep -l '^a 过' "$LD"/*.log 2> /dev/null | head -1) && [ -n "$A" ] && [ -f "${A%.log}.rc" ] && break; sleep 0.2; done
+  for _ in $(seq 150); do
+    if [ -e $T/b.up ]; then LD=$(dirname "$(cat $T/b.pg)"); A=$(grep -l '^a 过' "$LD"/*.log 2> /dev/null | head -1); [ -n "$A" ] && [ -f "${A%.log}.rc" ] && break; fi; sleep 0.2; done
   AI=${A##*/}; AI=${AI%.log}; BI=$(grep -l '^b 起' "$LD"/*.log | head -1); BI=${BI##*/}; BI=${BI%.log}; }
 # ①②
 up; bt=$(cat "$LD/$BI.tp" 2> /dev/null)
