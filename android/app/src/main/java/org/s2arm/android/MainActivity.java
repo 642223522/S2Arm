@@ -1030,7 +1030,10 @@ public class MainActivity extends Activity
     private static boolean gamepadConnected() {
         for (int id : InputDevice.getDeviceIds()) {
             InputDevice device = InputDevice.getDevice(id);
-            if (device != null && !device.isVirtual() && controller(device.getSources())) return true;
+            // 只认真有手柄按键（A 键）的设备：有的手机自带一个报 JOYSTICK 来源的内置传感设备
+            // （压感 / 肩键一类，只有 X / Y 轴、没有手柄按键），算成「接了手柄」会把虚拟手柄永远藏掉。
+            if (device != null && !device.isVirtual() && controller(device.getSources())
+                    && device.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0]) return true;
         }
         return false;
     }
