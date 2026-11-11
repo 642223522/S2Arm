@@ -8,6 +8,9 @@
 #include "nvn_backend.h"
 #include "nvn_mtl.h"
 #include "nvn_hmap.h"
+
+void rp_res_tex_gone(uint64_t serial);   // rp_res.c
+void rp_res_reset(void);
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -45,8 +48,6 @@ int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
 }
 int rp_pool_count(void) { pthread_mutex_lock(&g_mu); int n = g_npool; pthread_mutex_unlock(&g_mu); return n; }
 void nvn_be_pool_addressed(const void *mem, uint64_t size) { (void)mem; (void)size; }   // 原始全局内存表：翻译器的裸地址访问接上时用
-void nvn_be_pool_gpu_written(const void *pool) { (void)pool; }                          // 首用取存储规则接上时用
-void nvn_be_alias_drop_pool(const void *pool) { (void)pool; }                           // 别名表随贴图解析一起接；现在表是空的，无事可做
 
 // ---------- 贴图：初始化只登记序号，建图在首次使用（nvn_mtl.m:2597 / :4113）----------
 static nvn_hmap g_tex_live; static int g_tex_live_inited;
@@ -65,23 +66,17 @@ void nvn_be_tex_release(tex_t *t) {
     pthread_mutex_lock(&g_mu);
     if (g_tex_live_inited) nvn_hm_del(&g_tex_live, &t->serial);
     pthread_mutex_unlock(&g_mu);
+    rp_res_tex_gone(t->serial);
 }
 int rp_tex_live_n(void) { pthread_mutex_lock(&g_mu); int n = g_tex_live_inited ? (int)g_tex_live.n : 0; pthread_mutex_unlock(&g_mu); return n; }
 void nvn_be_tex_counters(uint64_t *init, uint64_t *rel) { if (init) *init = atomic_load(&g_tex_init_n); if (rel) *rel = atomic_load(&g_tex_rel_n); }
 void nvn_be_tex_tick(uint64_t frame) { (void)frame; }
-void nvn_be_tex_cpu_written(const tex_t *t) { (void)t; UN("tex_cpu_written"); }
-int nvn_be_tex_gpu_owned(uint64_t serial) { (void)serial; UN("tex_gpu_owned"); return 0; }
-int nvn_be_tex_gpu_owned_since(uint64_t serial, uint64_t stamp) { (void)serial; (void)stamp; UN("tex_gpu_owned_since"); return 0; }
 int nvn_be_tex_from_gl(void *t, uint32_t gl_name) { (void)t; (void)gl_name; UN("tex_from_gl"); return 0; }
 void nvn_be_xv_window_tex(uint64_t serial) { (void)serial; }   // 跨提交有效性账本随通道规划接
 void nvn_be_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     (void)t; (void)level; (void)layer0; (void)r; (void)dst; (void)row; (void)img; UN("read_texels"); }
 
-// ---------- 描述符池登记、程序 ----------
-void nvn_be_reg_tex(int id, const tex_t *t, const view_t *v) { (void)id; (void)t; (void)v; UN("reg_tex"); }
-void nvn_be_unreg_tex_range(int base, int n) { (void)base; (void)n; UN("unreg_tex_range"); }
-void nvn_be_reg_samp(int id, const samp_par *p) { (void)id; (void)p; UN("reg_samp"); }
-void nvn_be_set_tex_pool_n(int n) { (void)n; UN("set_tex_pool_n"); }
+// ---------- 程序（描述符池登记、贴图内容归属在 rp_res.c）----------
 void nvn_be_prog_release(prog_t *p) { (void)p; }               // 还没有按程序的管线缓存：没有东西要释放
 void nvn_be_shader_prefetch(const uint8_t key[8]) { (void)key; }   // 预取是提速手段，不影响正确性；着色器链接上后再接
 int nvn_be_multi_draw_range(void) { return 0; }                // 0 = 前端逐条录间接计数多绘；OP_MULTI_DRAW 接上后改 1
@@ -124,7 +119,7 @@ void nvn_be_ub_present(double iv_ms) { (void)iv_ms; }
 void nvn_be_begin_session(void) {}
 int nvn_be_request_stop(void) { return 0; }
 int nvn_be_drain_session(void) { nvn_be_finish(); return 0; }
-int nvn_be_shutdown_session(void) { rp_state_reset(); return 0; }
+int nvn_be_shutdown_session(void) { rp_res_reset(); rp_state_reset(); return 0; }
 
 // ---------- Metal 侧诊断读数：新层没有对应账本，报 0 ----------
 double nvn_be_gpu_ms(uint64_t f) { (void)f; return 0; }
