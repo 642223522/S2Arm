@@ -547,7 +547,7 @@ static void test_pad_slots(void) {
 
 // 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
 //   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
-//   它的类别是「Siri Remote」，认不出类型只按位置对应（pad.c s2a_pad_abxy_order）：系统 A 在南侧 = Switch B，默认配置第 1 位（2）；
+//   它的类别是「Siri Remote」，认不出类型按缺省「自动」照字母（pad.c s2a_pad_abxy_order）：系统 A = Switch A，默认配置第 0 位（1）；
 //   方向键上是第 13 位（8192）；没按任何键是 0
 static void test_profile_only_pad(void) {
     config = default_config();
@@ -560,11 +560,37 @@ static void test_profile_only_pad(void) {
     expect(buttons == 0, "nothing pressed: no buttons");
     [c.microGamepad.buttonA setValue:1];
     sample_profile_state(c, &buttons, sticks);
-    expect(buttons == 2, "unrecognized pad: profile button A (south) maps to Switch B by position");
+    expect(buttons == 1, "unrecognized pad, automatic layout: profile button A maps to Switch A by its letter");
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_SWITCH); sample_profile_state(c, &buttons, sticks);
+    expect(buttons == 2, "Switch layout: profile button A (south) maps to Switch B by position");
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_AUTO);
     [c.microGamepad.buttonA setValue:0]; [c.microGamepad.dpad setValueForXAxis:0 yAxis:1];
     sample_profile_state(c, &buttons, sticks);
     expect(buttons == (1u << 13), "profile dpad up maps to Switch Up");
     puts("Mac profile-only pad: handler and standard-name reading passed");
+}
+
+// 手柄按键布局（11-11）：系统自带的虚拟扩展手柄（controllerWithExtendedGamepad，类别认不出 = 按 Xbox / MFi 那种排法：buttonA 在南、Y 在北）。
+//   期望手算（默认配置 东/南/北/西 = Switch A/B/X/Y = 第 0/1/2/3 位）：
+//   自动 / Xbox 布局：照字母，按 buttonA → Switch A（1）、按 buttonY → Switch Y（8）；
+//   Switch 布局：按位置，buttonA 在南 → Switch B（2）、buttonY 在北 → Switch X（4）；切换后下一次读即按新布局，不用重开
+static void test_pad_layout(void) {
+    config = default_config();
+    GCController *c = [GCController controllerWithExtendedGamepad];
+    GCExtendedGamepad *pad = c.extendedGamepad;
+    uint32_t buttons; int32_t sticks[4];
+    int layouts[3] = {S2A_PAD_LAYOUT_AUTO, S2A_PAD_LAYOUT_SWITCH, S2A_PAD_LAYOUT_XBOX};
+    uint32_t want_a[3] = {1, 2, 1}, want_y[3] = {8, 4, 8};
+    for (int i = 0; i < 3; i++) {
+        s2a_pad_layout_set(layouts[i]);
+        [pad.buttonA setValue:1]; sample_pad_state(pad, &buttons, sticks);
+        expect(buttons == want_a[i], "pad layout: button A lands on the expected Switch button");
+        [pad.buttonA setValue:0]; [pad.buttonY setValue:1]; sample_pad_state(pad, &buttons, sticks);
+        expect(buttons == want_y[i], "pad layout: button Y lands on the expected Switch button");
+        [pad.buttonY setValue:0];
+    }
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_AUTO);
+    puts("Mac pad layout: automatic / Switch / Xbox take effect on the next read passed");
 }
 
 // 手柄事件回调（A2）：handlerQueue 必须切到主队列（与 AppKit 事件串行），回调直接发布整份当前状态；
@@ -871,6 +897,7 @@ int main(int argc, const char **argv) {
         test_pad_disconnect();
         test_pad_handler_install();
         test_profile_only_pad();
+    test_pad_layout();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();
