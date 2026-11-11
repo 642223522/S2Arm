@@ -58,7 +58,7 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
 }
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
-enum { HIST_N = 4096, HIST_TEX = 4, DUMP_MAX = 12 };
+enum { HIST_N = 4096, HIST_TEX = 6, DUMP_MAX = 28 };
 static struct { uint64_t target, tex[HIST_TEX]; } g_hist[HIST_N]; static uint32_t g_hist_n;
 static void hist_note(uint64_t target, const uint64_t *tex, int ntex) {
     uint32_t i = g_hist_n++ % HIST_N; g_hist[i].target = target; memset(g_hist[i].tex, 0, sizeof g_hist[i].tex);
@@ -308,7 +308,7 @@ static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence)
     uint64_t list[DUMP_MAX]; int depth[DUMP_MAX], n = 0; list[n] = present_serial; depth[n++] = 0;
     uint32_t have = g_hist_n < HIST_N ? g_hist_n : HIST_N;
     for (int i = 0; i < n && n < DUMP_MAX; i++) {
-        if (depth[i] >= 3) continue;
+        if (depth[i] >= 6) continue;
         for (uint32_t h = 0; h < have && n < DUMP_MAX; h++) { if (g_hist[h].target != list[i]) continue;
             for (int k = 0; k < HIST_TEX && n < DUMP_MAX; k++) { uint64_t s = g_hist[h].tex[k]; if (!s) continue;
                 int seen = 0; for (int q = 0; q < n; q++) if (list[q] == s) seen = 1;
