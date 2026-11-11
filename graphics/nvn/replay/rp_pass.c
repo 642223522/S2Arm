@@ -67,7 +67,7 @@ void rp_pass_end(nvn_gpu_cmd c) { if (P.open && c) nvn_gpu_pass_end(c); P.open =
 int rp_pass_begin(nvn_gpu_cmd c) {
     if (P.open) return 1;
     if (!c || !P.has_rt) { if (c) nvn_unimpl("pass", "draw_without_target", NULL); return 0; }
-    if (P.rt.n <= 0 || P.rt.n > 8) { nvn_unimpl("gpu", "pass_depth_only", NULL); return 0; }   // 后端现在要求至少一个颜色附件
+    if (P.rt.n < 0 || P.rt.n > 8 || (!P.rt.n && !P.rt.depth)) { nvn_unimpl("pass", "no_attachment", NULL); return 0; }
     nvn_gpu_pass_desc d; memset(&d, 0, sizeof d);
     for (int i = 0; i < P.rt.n; i++) {
         const tex_t *t = P.rt.color[i];
@@ -80,6 +80,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         if (!i) level_size(t, &P.rt.cview[0], P.rt.has_cview[0], &d.w, &d.h);
     }
     d.ncolor = (uint32_t)P.rt.n; d.layers = 1;
+    if (!P.rt.n) level_size(P.rt.depth, &P.rt.dview, P.rt.has_dview, &d.w, &d.h);   // 只有深度的通道（阴影图、深度预通道）：尺寸取深度目标的
     if (P.rt.depth) {
         nvn_fmt_info fi; int ok = nvn_fmt_info_of((uint32_t)P.rt.depth->d.format, &fi);
         nvn_gpu_view v = rp_view_for(P.rt.depth, P.rt.has_dview ? &P.rt.dview : NULL, c);

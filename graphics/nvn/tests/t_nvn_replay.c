@@ -565,7 +565,14 @@ static void t_pass_switch_and_partial(void) {
     tex_t z = mk_tex(66, 0, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
     stream d = {0}; put_set_rt(&d, NULL, &z); p_clear_ds *c2 = put(&d, OP_CLEAR_DS, sizeof *c2); c2->depth_mask = 1; c2->depth = 1; end(&d);
     submit1(&d); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_npd == 0 && nvn_unimpl_count("gpu", "pass_depth_only") == 1);            // 后端还不支持纯深度通道：记账，不发非法通道
+    CHECK(g_npd == 1 && g_pd[0].ncolor == 0 && g_pd[0].w == 16 && g_pd[0].h == 16);  // 只有深度的通道：尺寸取深度目标的
+    CHECK(g_pd[0].depth.view && g_pd[0].depth.load == NVN_GPU_LOAD_CLEAR && g_pd[0].clear_depth == 1 && g_pd[0].stencil.view == g_pd[0].depth.view && g_pd[0].stencil.load == NVN_GPU_LOAD_LOAD);
+    CHECK(nvn_unimpl_kinds() == 0);
+    pass_fresh();
+    stream n0 = {0}; p_set_rt r0; memset(&r0, 0, sizeof r0); { uint8_t *ra = put(&n0, OP_SET_RT, set_rt_size(&r0)); set_rt_put(ra, &r0); }   // 一个附件都没有的目标
+    p_draw *dn0 = put(&n0, OP_DRAW, sizeof *dn0); dn0->prim = 4; dn0->count = 3; end(&n0);
+    submit1(&n0); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 0 && g_pass_ends == 0);                                           // 不发没有附件的通道
     pass_fresh();
 }
 

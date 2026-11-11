@@ -143,7 +143,9 @@ struct nvn_gpu_cmd_s {
     struct nvn_gpu_buf_s *arena;
     uint64_t arena_used, arena_cap;
     VkCommandPool pool;
-    VkDescriptorPool dpool;
+    VkDescriptorPool dpool;                  // 当前在分配的描述符池
+    VkDescriptorPool *dpools_full;           // 已经分满的池：里面的组还被已录制的命令引用，段完成时一并销毁
+    uint32_t ndpools_full, dpools_full_cap;
     struct nvn_gpu_pipe_s *pipe;
     struct pass_rec *passes;
     uint32_t npasses, passcap;
@@ -599,6 +601,8 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     free(c->passes);
     for (int i = 0; i < 6; i++) free(c->push_data[i]);
     if (c->dpool) vkDestroyDescriptorPool(g.d, c->dpool, NULL);
+    for (uint32_t i = 0; i < c->ndpools_full; i++) vkDestroyDescriptorPool(g.d, c->dpools_full[i], NULL);
+    free(c->dpools_full);
     if (c->pool) vkDestroyCommandPool(g.d, c->pool, NULL);   // pool 同时回收 command buffer
     free(c->refs);
     free(c->staging);
@@ -2130,18 +2134,20 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
         natt++;
     }
     *has_depth = 0;
-    if (d->depth.view) {
-        struct nvn_gpu_view_s *v = d->depth.view;
+    if (d->depth.view || d->stencil.view) {
+        // 深度与模板是同一个附件的两个面，各按自己的 load / store 走；描述里没给视图的那一面不关心。
+        // 只要有一面要保留原内容（LOAD），附件就必须从它现在的布局进来：从 UNDEFINED 进来等于两面都丢。
+        struct nvn_gpu_view_s *v = d->depth.view ? d->depth.view : d->stencil.view;
         struct nvn_gpu_tex_s *t = v->tex;
+        static const VkAttachmentLoadOp k_load[3] = {VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_DONT_CARE};
         memset(&att[natt], 0, sizeof att[natt]);
         att[natt].format = t->format;
         att[natt].samples = (VkSampleCountFlagBits)t->samples;
-        if (d->depth.load == NVN_GPU_LOAD_LOAD) { att[natt].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; att[natt].initialLayout = t->layout; }
-        else if (d->depth.load == NVN_GPU_LOAD_DONTCARE) { att[natt].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att[natt].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
-        else { att[natt].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; att[natt].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
-        att[natt].storeOp = d->depth.store == NVN_GPU_STORE_DONTCARE ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
-        att[natt].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        att[natt].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[natt].loadOp = d->depth.view ? k_load[d->depth.load < 3 ? d->depth.load : 2] : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[natt].stencilLoadOp = d->stencil.view ? k_load[d->stencil.load < 3 ? d->stencil.load : 2] : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[natt].initialLayout = att[natt].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD || att[natt].stencilLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD ? t->layout : VK_IMAGE_LAYOUT_UNDEFINED;
+        att[natt].storeOp = d->depth.view && d->depth.store != NVN_GPU_STORE_DONTCARE ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[natt].stencilStoreOp = d->stencil.view && d->stencil.store != NVN_GPU_STORE_DONTCARE ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
         att[natt].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         dref->attachment = natt;
         dref->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -2191,7 +2197,8 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "pass_begin 时已在通道里"); return; }
-    if (!d || !d->ncolor || !d->w || !d->h) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 参数非法"); return; }
+    if (!d || (!d->ncolor && !d->depth.view && !d->stencil.view) || !d->w || !d->h) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 参数非法（没有任何附件，或尺寸为 0）"); return; }
+    if (d->depth.view && d->stencil.view && d->depth.view != d->stencil.view) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 的深度与模板必须是同一个视图"); return; }
     for (uint32_t i = 0; i < d->ncolor && i < 8; i++)
         if (d->color[i].view && d->color[i].view->swizzled) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "颜色附件 %u 的视图带通道映射（Vulkan 附件视图必须恒等）", i); return; }
     VkImageView fb_views[9];
@@ -2240,7 +2247,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     c->pass_h = d->h;
     c->pass_ncolor = d->ncolor < 8 ? d->ncolor : 8;
     c->pass_layers = fi.layers;
-    c->pass_ds_aspect = d->depth.view ? d->depth.view->tex->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : 0;
+    c->pass_ds_aspect = (d->depth.view ? d->depth.view->tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (d->stencil.view ? d->stencil.view->tex->aspect & VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     c->pass_ntex = 0;
     for (uint32_t i = 0; i < d->ncolor && i < 8; i++) {
         if (!d->color[i].view) continue;
@@ -2249,9 +2256,10 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
         t->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         if (c->pass_ntex < 8) c->pass_tex[c->pass_ntex++] = t;
     }
-    if (d->depth.view) {
-        cmd_ref(c, d->depth.view, REF_VIEW);
-        struct nvn_gpu_tex_s *t = d->depth.view->tex;
+    if (d->depth.view || d->stencil.view) {
+        struct nvn_gpu_view_s *dsv = d->depth.view ? d->depth.view : d->stencil.view;
+        cmd_ref(c, dsv, REF_VIEW);
+        struct nvn_gpu_tex_s *t = dsv->tex;
         t->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         if (c->pass_ntex < 8) c->pass_tex[c->pass_ntex++] = t;
     }
@@ -2413,24 +2421,56 @@ void nvn_gpu_push(nvn_gpu_cmd ch, nvn_gpu_stage st, uint32_t off, const void *da
 // ---------------------------------------------------------------- 描述符池 / 绑定写入 / texel 视图
 
 // 每条 cmd 一个池：64 set（缺扩容是已知静默错 C66 的复现对象，本段不修）。
-static int ensure_dpool(struct nvn_gpu_cmd_s *c) {
-    if (c->dpool) return 1;
+// 一段命令的描述符池：一池 256 组，分满了换新池接着分（旧池留到段完成再销毁），一段里画多少笔都不设上限。
+// 池的上限按规范可以被驱动放宽也可以严格执行，所以「分满」只认分配调用返回的池耗尽 / 碎片两种结果，不自己数。
+enum { DPOOL_SETS = 256, DPOOL_PER_TYPE = 1024 };
+static int new_dpool(struct nvn_gpu_cmd_s *c) {
     VkDescriptorPoolSize ps[8] = {
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64}, {VK_DESCRIPTOR_TYPE_SAMPLER, 64},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 64},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 64}, {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 64}};
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, DPOOL_PER_TYPE}, {VK_DESCRIPTOR_TYPE_SAMPLER, DPOOL_PER_TYPE},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, DPOOL_PER_TYPE}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DPOOL_PER_TYPE},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DPOOL_PER_TYPE}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, DPOOL_PER_TYPE},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, DPOOL_PER_TYPE}, {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, DPOOL_PER_TYPE}};
     VkDescriptorPoolCreateInfo dpi;
     memset(&dpi, 0, sizeof dpi);
     dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpi.maxSets = 64;
+    dpi.maxSets = DPOOL_SETS;
     dpi.poolSizeCount = 8;
     dpi.pPoolSizes = ps;
     if (vkCreateDescriptorPool(g.d, &dpi, NULL, &c->dpool) != VK_SUCCESS) {
+        c->dpool = VK_NULL_HANDLE;
         set_sticky(c, NVN_GPU_E_OOM, "描述符池创建失败");
         return 0;
     }
     return 1;
+}
+// 给一笔绘制 / 派发分配它的 n 组描述符。0 = 失败（已记粘滞错误）
+static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl, uint32_t n, VkDescriptorSet *sets) {
+    for (int fresh = 0; fresh < 2; fresh++) {
+        if (!c->dpool && !new_dpool(c)) return 0;
+        VkDescriptorSetAllocateInfo ai;
+        memset(&ai, 0, sizeof ai);
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = c->dpool;
+        ai.descriptorSetCount = n;
+        ai.pSetLayouts = dsl;
+        VkResult r = vkAllocateDescriptorSets(g.d, &ai, sets);
+        if (r == VK_SUCCESS) return 1;
+        if (fresh || (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL)) {
+            set_sticky(c, NVN_GPU_E_OOM, "vkAllocateDescriptorSets 失败（%d%s）", (int)r, fresh ? "，新池上也分不出" : "");
+            return 0;
+        }
+        // 当前池分满：挪进「已满」表，下一轮在新池上重分这一笔
+        if (c->ndpools_full == c->dpools_full_cap) {
+            uint32_t cap = c->dpools_full_cap ? c->dpools_full_cap * 2 : 8;
+            VkDescriptorPool *np = realloc(c->dpools_full, cap * sizeof *np);
+            if (!np) { set_sticky(c, NVN_GPU_E_OOM, "描述符池表分配失败"); return 0; }
+            c->dpools_full = np;
+            c->dpools_full_cap = cap;
+        }
+        c->dpools_full[c->ndpools_full++] = c->dpool;
+        c->dpool = VK_NULL_HANDLE;
+    }
+    return 0;
 }
 
 // 把某阶段本笔绑定写进 wr/ii/bi；返回写入条数，出错置粘滞返回 -1。
@@ -2527,18 +2567,8 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         return;
     }
     if (p->nset) {
-        if (!ensure_dpool(c)) return;
-        VkDescriptorSetAllocateInfo ai;
-        memset(&ai, 0, sizeof ai);
-        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ai.descriptorPool = c->dpool;
-        ai.descriptorSetCount = p->nset;
-        ai.pSetLayouts = p->dsl;
         VkDescriptorSet sets[4] = {0};
-        if (vkAllocateDescriptorSets(g.d, &ai, sets) != VK_SUCCESS) {
-            set_sticky(c, NVN_GPU_E_OOM, "vkAllocateDescriptorSets 失败");
-            return;
-        }
+        if (!alloc_sets(c, p->dsl, p->nset, sets)) return;
         VkWriteDescriptorSet wr[6 * 64];
         VkDescriptorImageInfo ii[6 * 64];
         VkDescriptorBufferInfo bi[6 * 64];
@@ -2673,15 +2703,8 @@ void nvn_gpu_dispatch(nvn_gpu_cmd ch, nvn_gpu_pipe ph, uint32_t x, uint32_t y, u
     if (ind) { if (!buf_range(ind, off, 12)) { set_sticky(c, NVN_GPU_E_ARG, "间接 dispatch 参数越界"); return; } }
     c->pipe = p;
     if (p->nset) {
-        if (!ensure_dpool(c)) return;
-        VkDescriptorSetAllocateInfo ai;
-        memset(&ai, 0, sizeof ai);
-        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ai.descriptorPool = c->dpool;
-        ai.descriptorSetCount = p->nset;
-        ai.pSetLayouts = p->dsl;
         VkDescriptorSet sets[4] = {0};
-        if (vkAllocateDescriptorSets(g.d, &ai, sets) != VK_SUCCESS) { set_sticky(c, NVN_GPU_E_OOM, "vkAllocateDescriptorSets 失败"); return; }
+        if (!alloc_sets(c, p->dsl, p->nset, sets)) return;
         VkWriteDescriptorSet wr[64];
         VkDescriptorImageInfo ii[64];
         VkDescriptorBufferInfo bi[64];

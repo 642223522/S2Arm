@@ -37,14 +37,14 @@ static int g_tri_origin_ul;   // 1 = 按 NVN 窗口原点在左上画（视口�
 // C66 only: model a strict driver enforcing maxSets=64; all other calls
 // reach the real lavapipe entry. This is injected behaviour, not a claim about llvmpipe.
 static int g_c66_inject_pool_limit;
-static unsigned g_c66_sets_requested;
+static unsigned g_c66_sets_requested, g_c66_rejects;
 static VkDescriptorPool g_c66_pool;
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkAllocateDescriptorSets(VkDevice, const VkDescriptorSetAllocateInfo *, VkDescriptorSet *);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo *info, VkDescriptorSet *sets) {
     if (g_c66_inject_pool_limit) {
         if (g_c66_pool != info->descriptorPool) { g_c66_pool = info->descriptorPool; g_c66_sets_requested = 0; }
         g_c66_sets_requested += info->descriptorSetCount;
-        if (g_c66_sets_requested > 64) return VK_ERROR_OUT_OF_POOL_MEMORY;
+        if (g_c66_sets_requested > 64) { g_c66_rejects++; return VK_ERROR_OUT_OF_POOL_MEMORY; }
     }
     return __real_vkAllocateDescriptorSets(device, info, sets);
 }
@@ -3174,11 +3174,12 @@ static void c64_va_red(const char *dir) {
 
 // ---- D9 静默错复现（只复现不修）：断言的是当前实际行为；修好对应项后这些用例要翻期望 ----
 
-// C65 复现：ncolor=0 但带有效深度附件的 pass 被 pass_begin 判 !ncolor → E_ARG。
-// 正确语义下应绿（depth-only pass 合法）；修好后把断言改成 OK + 深度读回核对。
+// C65：只有深度附件、没有颜色附件的通道合法（阴影图、深度预通道）。清成 0.5 后读回。
+// 期望（手算）：提交成功；64×64 个 32 位浮点全是 0.5。
 static void c65_depth_only_pass(void) {
     nvn_gpu_tex t = make_tex(64, 64, NVN_FORMAT_DEPTH32F, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
     nvn_gpu_view v = make_view(t);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
     nvn_gpu_cmd c = begin_cmd();
     nvn_gpu_pass_desc p;
     memset(&p, 0, sizeof p);
@@ -3186,14 +3187,22 @@ static void c65_depth_only_pass(void) {
     p.clear_depth = 0.5f;
     p.w = 64; p.h = 64; p.layers = 1;
     nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, t, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
     nvn_gpu_err e;
     nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 111, on_done, NULL, &e);
-    CHECK(r.code == NVN_GPU_E_ARG, "C65 深度单通道 pass 当前应 E_ARG（缺陷复现），实为 %d", r.code);
+    CHECK(OK(r), "C65 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(111, 5000000000ull, &e);
+    CHECK(OK(r), "C65 wait：%d %s", r.code, e.why);
+    { const float *f = (const float *)buf_cpu(rb); int bad = -1; for (int i = 0; i < 64 * 64; i++) if (f[i] != 0.5f) { bad = i; break; }
+      CHECK(bad < 0, "C65 深度读回第 %d 个 = %g，期望 0.5", bad, bad < 0 ? 0.0 : (double)f[bad]); }
+    nvn_gpu_buf_release(rb, NULL, NULL);
     nvn_gpu_view_release(v); nvn_gpu_tex_release(t);
 }
 
-// C66 已知缺陷：当前每条 cmd 的池固定 64 set 且不扩容。使用测试链接包装器模拟
-// 严格驱动在第 65 个 set 返回 OUT_OF_POOL_MEMORY；不是声称 llvmpipe 自身拒绝。
+// C66：一段命令里的描述符组数不设上限。测试的链接包装器模拟严格执行池上限的驱动：每个池第 65 组起返回池耗尽。
+// 一段里连发 70 次派发（每次 1 组）：第 65 次在第一个池上被拒 → 后端换新池重分 → 新池上分第 65–70 次共 6 组。
+// 期望（手算）：被拒 1 次；最后一个池上累计请求 6 组；提交成功；派发的结果正确（comp.comp 把 v[i] 写成 i + 1）。
 static void c66_pool_sets(const char *dir) {
     nvn_gpu_layout_ent ce;
     memset(&ce, 0, sizeof ce);
@@ -3213,17 +3222,19 @@ static void c66_pool_sets(const char *dir) {
     memset(&b, 0, sizeof b);
     b.ent = 0; b.cls = NVN_GPU_RES_SSBO; b.u.b.buf = buf; b.u.b.off = 0; b.u.b.len = 64 * 4;
     nvn_gpu_bind(c, NVN_GPU_SH_CS, &b, 1);
-    g_c66_sets_requested = 0;
+    g_c66_sets_requested = g_c66_rejects = 0;
     g_c66_pool = VK_NULL_HANDLE;
     g_c66_inject_pool_limit = 1;
     for (int i = 0; i < 70; i++) nvn_gpu_dispatch(c, cp, 1, 1, 1, NULL, 0);
     g_c66_inject_pool_limit = 0;
     nvn_gpu_err e;
     nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 112, on_done, NULL, &e);
-    CHECK(g_c66_sets_requested == 65, "C66 模拟严格驱动应第 65 个 set 拒绝，实为 %u", g_c66_sets_requested);
-    CHECK(r.code == NVN_GPU_E_OOM, "C66 已知缺陷：模拟池满后当前应 E_OOM，实为 %d", r.code);
-    printf("C66 已知缺陷（模拟严格池上限）：分配至第 %u 项，commit=%d，期望 E_OOM=%d\n",
-           g_c66_sets_requested, r.code, NVN_GPU_E_OOM);
+    CHECK(g_c66_rejects == 1 && g_c66_sets_requested == 6, "C66 应被拒 1 次、新池上请求 6 组，实为 被拒 %u 次、%u 组", g_c66_rejects, g_c66_sets_requested);
+    CHECK(OK(r), "C66 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(112, 5000000000ull, &e);
+    CHECK(OK(r), "C66 wait：%d %s", r.code, e.why);
+    { const uint32_t *v = (const uint32_t *)buf_cpu(buf); int bad = -1; for (int i = 0; i < 16; i++) if (v[i] != (uint32_t)i + 1) { bad = i; break; }   // 一组 16 个调用
+      CHECK(bad < 0, "C66 派发结果 v[%d]=%u，期望 %d", bad, bad < 0 ? 0 : v[bad], bad + 1); }
     nvn_gpu_buf_release(buf, NULL, NULL);
     nvn_gpu_shader_release(sh);
 }
@@ -3634,7 +3645,7 @@ int main(int argc, char **argv) {
     nvn_gpu_err e17;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e17)), "C48 mismatch close：%d %s", e17.rc.code, e17.why);
     if (!open_backend()) return 1;
-    // 成功路径同会话；C58a–c / C65 / C66 预期失败提交，每个独占会话（失败段进终态，关会话重开恢复）。
+    // 成功路径同会话；C58a–c 预期失败提交，每个独占会话（失败段进终态，关会话重开恢复）。
     c56_push_fs(argv[1]);
     c57_push_cs(argv[1]);
     c58d_push_pipe_resize(argv[1]);
