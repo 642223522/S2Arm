@@ -160,6 +160,29 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
     return e;
 }
 
+// 快路径：输入跟上一次取程序时一样，就还是那个程序。下面的摘要盖住 fill_facts 与身份用到的全部回放状态
+// （游戏每笔绘制前都会重绑贴图 / 缓冲，绑的东西对编译来说通常没变；不走快路径时每笔要重填事实、编码身份、算一次 SHA-256）。
+// 调试开关 nvk_resolve_check=1：命中后仍走一遍慢路径核对，不一致报红。
+static struct { int ok; uint64_t key; uint64_t session, generation; const struct rp_prog *prog; } g_last;
+static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, uint32_t stages) {
+    uint64_t h = 1469598103934665603ull;
+    #define MIX(v) do { h ^= (uint64_t)(v); h *= 1099511628211ull; } while (0)
+    MIX(stages); MIX(q->prim); MIX(q->rt_count); for (int i = 0; i < 8; i++) MIX(q->rt_format[i]);
+    for (int st = 0; st < 2; st++) { uint64_t k; memcpy(&k, rp_S.skey[st], 8); MIX(k); }
+    MIX(rp_S.color.alpha_func); { uint32_t ar; float r = rp_S.color.alpha_func >= 1 && rp_S.color.alpha_func <= 7 ? rp_S.alpha_ref : 0.0f; memcpy(&ar, &r, 4); MIX(ar); }
+    MIX(rp_S.ms.a2c ? 1 : 0); MIX(rp_S.ms.a2c_dither ? 1 : 0);
+    { int dual = 0; for (int i = 0; i < 8; i++) if (src1(rp_S.blend[i].src_rgb) || src1(rp_S.blend[i].dst_rgb) || src1(rp_S.blend[i].src_a) || src1(rp_S.blend[i].dst_a)) dual = 1; MIX(dual); }
+    MIX(rp_depth_zero()); MIX(rp_origin_lower_left()); MIX(pc->shader_draw_parameters);
+    { int any = 0, un = 0; for (int st = 0; st < 5; st++) for (int i = 0; i < 16; i++) if (rp_S.ssbo[st][i].addr) { any = 1; if (pc->storage_buffer_offset_alignment && rp_S.ssbo[st][i].addr % pc->storage_buffer_offset_alignment) un = 1; } MIX(any); MIX(un); MIX(pc->storage_buffer_offset_alignment); }
+    MIX(rp_S.nattr); for (int i = 0; i < 16; i++) MIX(i < rp_S.nattr ? rp_S.attr[i].fmt : 0);
+    for (int st = 0; st < 6; st++) { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[st][i].size) m |= 1u << i; MIX(m); }
+    MIX(rp_S.tex_pool_n); MIX(rp_S.samp_pool_n); MIX(rp_S.tf_on); MIX(rp_S.tex_base);
+    MIX(rp_tex_fact_sig(rp_S.tex[0], 32, rp_S.tex_base, rp_S.tex_pool_n)); MIX(rp_tex_fact_sig(rp_S.tex[1], 32, rp_S.tex_base, rp_S.tex_pool_n));
+    #undef MIX
+    return h;
+}
+static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **out, const struct s2a_direct_compile_context *pcp, uint32_t stages, int nst);
+
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
     *out = NULL;
     uint32_t stages = 0; for (int st = 0; st < 5; st++) if (rp_S.bser[st]) stages |= 1u << st;
@@ -169,6 +192,20 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     if ((rp_S.skey_ok & stages) != stages) { nvn_unimpl("shader", "stage_key_missing", NULL); return -1; }
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
     if (s2a_direct_provider_compile_context(&pc) || !pc.profile_json || !pc.profile_bytes) { nvn_unimpl("shader", "no_compile_context", NULL); return -1; }
+    uint64_t key = input_sig(q, &pc, stages);
+    if (g_last.ok && g_last.key == key && g_last.session == pc.session && g_last.generation == pc.generation) {
+        *out = g_last.prog;
+        if (nvn_plat_flag("nvk_resolve_check", 0)) { const struct rp_prog *chk = NULL; int rc = resolve_slow(q, &chk, &pc, stages, nst); if (rc || chk != g_last.prog) red1("resolve_fast_path_mismatch", "快路径给的程序与慢路径不一致"); }
+        return 0;
+    }
+    int rc = resolve_slow(q, out, &pc, stages, nst);
+    g_last.ok = rc == 0; g_last.key = key; g_last.session = pc.session; g_last.generation = pc.generation; g_last.prog = *out;
+    return rc;
+}
+
+static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **out, const struct s2a_direct_compile_context *pcp, uint32_t stages, int nst) {
+    struct s2a_direct_compile_context pc = *pcp;
+    *out = NULL;
     if (!g_profile.ok || g_profile.session != pc.session || g_profile.generation != pc.generation) {
         sha256(pc.profile_json, pc.profile_bytes, g_profile.sha); g_profile.session = pc.session; g_profile.generation = pc.generation; g_profile.ok = 1; }
     static struct facts f;   // 提交线程独占；结构大，不放栈上
@@ -249,5 +286,5 @@ void rp_shader_reset(void) {
         for (int st = 0; st < 2; st++) if (e->prog.sh[st]) nvn_gpu_shader_release(e->prog.sh[st]);
         free(e); }
     free(g_progs.keys); free(g_progs.vals); nvn_hm_init(&g_progs, 32);
-    g_profile.ok = 0;
+    g_profile.ok = 0; g_last.ok = 0;
 }
