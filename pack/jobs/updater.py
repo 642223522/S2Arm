@@ -28,13 +28,19 @@ from pathlib import Path
 # 只有 check / prepare 才用到的模块在这里按需导入，apply 走不到。
 
 API = "https://api.github.com/repos/jhaizhou-ops/S2Arm/releases/latest"
+# 官网静态文件：发版时和 Release 里的 update-manifest.json / .sig 同一份字节（发版流程写入）。走 CDN、不占 GitHub 匿名查询次数（每 IP 每小时 60 次，
+#   国内共享出口很容易被限流）。安全靠清单的 Ed25519 签名，不靠来源：官网那份验签不过就当没有，回退 GitHub。
+MIRROR = "https://s2arm.com/update/latest.json"
+MIRROR_TIMEOUT = 8   # 官网是首选，连不上要尽快回退 GitHub：只试一次、不重试
+# 安装包仍从 GitHub Release 下载（下载链接不是 API，没有 60 次限制）；版本号取自签过名的清单
+RELEASE_DOWNLOAD = "https://github.com/jhaizhou-ops/S2Arm/releases/download/v{version}/{name}"
 ASSETS = {"mac": "S2Arm-mac-arm64.dmg", "windows": "S2Arm-windows-x64.zip"}
 DELTAS = {"mac": "S2Arm-mac-arm64-delta-{}.zip", "windows": "S2Arm-windows-x64-delta-{}.zip"}
 MANIFEST = "update-manifest.json"
 SIGNATURE = "update-manifest.json.sig"
 # 发版清单的 Ed25519 公钥。私钥只在发版机上（tools/sign_update_manifest.py）：Release 或发布账号被改，也改不了这份清单。
 PUBLIC_KEY = "d553da82bad575ce87bf521a080c9d0997f97d189f0d517e97f80808bafc5225"
-TRUSTED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
+TRUSTED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "s2arm.com")
 HEALTH_SECONDS = 90
 EXIT_SECONDS = 120
 CHUNK = 1 << 20
@@ -155,7 +161,7 @@ LATEST_TTL = 15 * 60   # 查版本结果在本机留 15 分钟：启动时查一
 def latest_cache(platform, current):
     """查版本结果的本机缓存（系统给本用户的临时目录）：按平台、当前版本、查询地址分开"""
     import hashlib
-    key = hashlib.sha256(f"{platform}|{current}|{os.environ.get('S2A_UPDATE_API') or API}".encode()).hexdigest()[:16]
+    key = hashlib.sha256(f"{platform}|{current}|{os.environ.get('S2A_UPDATE_API') or API}|{mirror_url()}".encode()).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"s2arm-update-latest-{key}.json"
 
 
@@ -179,26 +185,68 @@ def latest(platform, current):
     return info
 
 
+def mirror_url():
+    """验收用的本机假 Release（S2A_UPDATE_API）只认 S2A_UPDATE_MIRROR，没设就不查官网：单测不连真网"""
+    return os.environ.get("S2A_UPDATE_MIRROR", "") if os.environ.get("S2A_UPDATE_API") else MIRROR
+
+
+def mirror_manifest():
+    """官网那份签名清单 → dict；连不上、非 200、验签不过、格式不对一律 None（调用方回退 GitHub）。"""
+    url = mirror_url()
+    if not url:
+        return None
+    import http.client
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ed25519
+    try:
+        with open_url(url, MIRROR_TIMEOUT) as response:
+            raw = response.read(1 << 20)
+        with open_url(url + ".sig", MIRROR_TIMEOUT) as response:
+            signature = response.read(1024)
+        if not ed25519.verify(public_key(), raw, signature):
+            return None
+        manifest = json.loads(raw)
+    except (UpdateError, OSError, http.client.HTTPException, ValueError):
+        return None
+    return manifest if isinstance(manifest, dict) and version_tuple(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
+
+
+def offer(platform, version, mine, files, url_of):
+    """签过名的清单 files + 每个文件的下载地址（url_of(名字)，没有为 None）→ 给启动器的结果；安装包不在清单里按签名不对处理。"""
+    name = ASSETS[platform]
+    wanted = files.get(name)
+    if not isinstance(wanted, dict):
+        raise UpdateError("update_bad_signature", "签名清单里没有这个安装包，已停止，当前版本没有变化。")
+    info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
+            "asset": url_of(name), "assetName": name}
+    delta = DELTAS[platform].format(".".join(map(str, mine)))
+    entry = files.get(delta)
+    if isinstance(entry, dict) and url_of(delta):   # 差分包同样要在清单里，不在就只走整包
+        info.update(delta=url_of(delta), deltaName=delta, deltaSize=entry["size"], deltaSha256=entry["sha256"])
+    return info
+
+
 def query_latest(platform, current):
-    """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。"""
+    """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。
+    先查官网（mirror_manifest）：验签通过就以它为准——不比当前新就是没有新版，不再去问 GitHub（省下的正是限流的那 60 次）；
+    官网拿不到 / 验签不过才查 GitHub Release。"""
+    mine = version_tuple(current)
+    manifest = mirror_manifest()
+    if manifest is not None:
+        version = version_tuple(manifest["version"])
+        if not mine or version <= mine:
+            return {"available": False}
+        template = os.environ.get("S2A_UPDATE_API") and os.environ.get("S2A_UPDATE_DOWNLOAD") or RELEASE_DOWNLOAD   # 假 Release 验收时下载也指到本机
+        return offer(platform, version, mine, manifest["files"],
+                     lambda name: template.format(version=".".join(map(str, version)), name=name))
     release = json.loads(fetch(os.environ.get("S2A_UPDATE_API") or API, 15, 8 << 20))
     version = version_tuple(release.get("tag_name"))
-    mine = version_tuple(current)
     assets = {a.get("name"): a for a in release.get("assets") or [] if isinstance(a, dict)}
     package = assets.get(ASSETS[platform])
     if not version or not mine or version <= mine or not package or MANIFEST not in assets or SIGNATURE not in assets:
         return {"available": False}
     files = signed_manifest(assets, version)["files"]
-    wanted = files.get(package["name"])
-    if not isinstance(wanted, dict):
-        raise UpdateError("update_bad_signature", "签名清单里没有这个安装包，已停止，当前版本没有变化。")
-    info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
-            "asset": package["browser_download_url"], "assetName": package["name"]}
-    delta = assets.get(DELTAS[platform].format(".".join(map(str, mine))))
-    entry = files.get(delta["name"]) if delta else None
-    if isinstance(entry, dict):   # 差分包同样要在清单里，不在就只走整包
-        info.update(delta=delta["browser_download_url"], deltaName=delta["name"], deltaSize=entry["size"], deltaSha256=entry["sha256"])
-    return info
+    return offer(platform, version, mine, files, lambda name: assets[name]["browser_download_url"] if name in assets else None)
 
 
 NOTICE_URL = "https://jhaizhou-ops.github.io/S2Arm/notice.json"   # docs/site/notice.json，Pages 发布（docs/site/README.md）

@@ -9,6 +9,12 @@
 # 不做截图缓存（11-01 读数：按截图字节哈希 434 问只命中 11 次——游戏画面每帧细变；跨局复用靠自动玩家的学路线 ap_learn/<程序号>.tsv）。
 # 墙钟上限 ${S2A_VISION_TIMEOUT:-90} 秒；模型 ${S2A_VISION_MODEL:-claude-sonnet-5-5}。耗时写 <回答.json>.log。
 set -u
+# 解释器 / timeout 与出包、runtime/run_mac.sh 同口径：python3 = S2A_PY（环境 → tools/machine.local → PATH 上的 python3），timeout 用仓库 perl 版 tools/bin/timeout。
+#   原先直接调 PATH 上的 python3 / timeout：外部贡献者照套件第 1 步起 Mac 局，PATH 上是没装钉版包的系统 / Homebrew Python、又没有 tools/bin 时，
+#   驾驶员每一问 rc 1 / 127，自动玩家判「导航卡住」收局（11-10 M1 Pro 实走）。单测：bash tests/vision_env_test.sh
+_VD=$(CDPATH= cd "$(dirname "$0")" && pwd); [ -f "$_VD/../../tools/_timeout.sh" ] && . "$_VD/../../tools/_timeout.sh"
+_VPY=${S2A_PY:-$(bash "$_VD/../../tools/machine.sh" get S2A_PY 2> /dev/null)}; _VPY=${_VPY:-$(command -v python3)}
+python3() { "$_VPY" "$@"; }
 PNG=${1:?截图}; OUT=${2:?回答}; MODEL=${S2A_VISION_MODEL:-claude-sonnet-5-5}
 t0=$(date +%s)
 : > "$OUT.log"

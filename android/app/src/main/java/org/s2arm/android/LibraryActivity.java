@@ -42,12 +42,6 @@ public final class LibraryActivity extends Activity {
     private void launch(String titleId) {
         try {
             Intent options = new Intent(getIntent());
-            // 库列出的是 files/games/<titleId> 下的导入版本（revision 执行）。这种执行方式要求显式带上
-            // s2arm.experimental_revision=true，否则 GameActivity 会拒绝起局（真机现象：
-            // 「Game admission failed: revision execution is experimental …」）。
-            // 库自己知道这一局就是导入版本，应由它补上这个 opt-in；显式确认的意义仍在——
-            // 只对「从库起局的导入版本」生效，命令行/第三方 Intent 起局不带这个 extra 时照旧被拒。
-            options.putExtra("s2arm.experimental_revision", true);
             options.removeExtra(GameResume.EXTRA);
             int pid = GameActivity.runningPid(this);
             if (pid != 0) options.putExtra(GameResume.EXTRA,

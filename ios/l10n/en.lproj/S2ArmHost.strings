@@ -179,10 +179,12 @@
 "vpad.layouts.title" = "Touch layout";
 "vpad.layouts.touch.note" = "For games with their own touch controls. The on-screen buttons turn off; hold four fingers for 1.5 s to switch back.";
 "vpad.menu.editDisabled" = "No buttons to edit in touch-only mode";
-"vpad.menu.face.letter" = "Map buttons by letter";
-"vpad.menu.face.letter.note" = "Xbox A and PlayStation × are Switch A";
-"vpad.menu.face.position" = "Map buttons by position";
-"vpad.menu.face.position.note" = "Buttons follow the Switch layout";
+"vpad.menu.face.auto" = "Buttons: Automatic";
+"vpad.menu.face.auto.note" = "Follows the letters on your controller: Switch layout on Nintendo controllers, Xbox layout on Xbox controllers";
+"vpad.menu.face.switch" = "Buttons: Switch layout";
+"vpad.menu.face.switch.note" = "Switch button positions; the right button confirms";
+"vpad.menu.face.xbox" = "Buttons: Xbox layout";
+"vpad.menu.face.xbox.note" = "Xbox button positions; the bottom button confirms";
 "vpad.menu.gyro" = "Phone gyro";
 "vpad.menu.haptic.note" = "A light tap when you press a button";
 "vpad.menu.holdLock.note" = "Hold for 2 s to lock; this game only";
@@ -286,6 +288,7 @@
 "games.repair.done.body" = "The game folder belonged to a system account, so S2Arm could not write to it and installing never started. It has been moved to a new folder owned by S2Arm (%u files, sharing the original data, so no extra space). You can continue installing. S2Arm cannot delete the old folder; it is cleared the next time you connect to your computer.";
 "games.repair.failed.title" = "Couldn't repair the game folder";
 "games.repair.failed.body" = "The game folder belongs to a system account, so S2Arm cannot write to it, and moving it to a new folder also failed. Your game data was not touched. Install the game again from your computer; if that still fails, export a diagnostics bundle and send it to us.";
+"diag.fileWord" = "diag";
 "diag.error.bundleName" = "Couldn’t redact the bundle name, so no diagnostics bundle was exported";
 "diag.error.redact" = "Couldn’t redact or write the diagnostics, so no diagnostics bundle was exported";
 "diag.error.title" = "Diagnostics bundle not created";
