@@ -766,6 +766,8 @@
       {"id": "process.start_failed", "zh-Hans": "未能启动环境检查，请检查路径设置", "en": "Could not start the environment check; check the path settings"},
       {"id": "process.interrupted", "zh-Hans": "环境检查意外中断，尚不能确认就绪", "en": "The environment check was interrupted; readiness is not confirmed"},
       {"id": "library.title", "zh-Hans": "游戏库", "en": "Library"},
+      {"id": "library.inside_program", "zh-Hans": "游戏库在 S2Arm 程序文件夹里面（{0}）：删除这个文件夹、或换装安装版后清理旧的解压文件夹，会连游戏库一起删掉。请先把游戏库换到别处。", "en": "Your library is inside an S2Arm program folder ({0}). Deleting that folder, or cleaning up the old unzipped folder after moving to the installer version, would delete your library with it. Move the library somewhere else first."},
+      {"id": "library.inside_program.move", "zh-Hans": "换个位置", "en": "Move it"},
       {"id": "library.description", "zh-Hans": "连接游戏库，选择自己的游戏原件；工作产物放在所选游戏库目录", "en": "Connect a library and choose your own game files; work output goes into the library folder you pick"},
       {"id": "library.folder", "zh-Hans": "游戏库/输出目录", "en": "Library / output folder"},
       {"id": "library.choose_folder", "zh-Hans": "选择游戏库目录", "en": "Choose library folder"},
