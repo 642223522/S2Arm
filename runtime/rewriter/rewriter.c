@@ -183,6 +183,17 @@ typedef struct {
   size_t nreq;
   Pair* now;
   size_t nnow;
+  /* 活跃分析与危险函数判定的缓存（lv_get / lv_live / sp_dynamic）：随本轮 g 新建、随 g 的分配账一起释放。
+   *   不能放线程本地静态变量按 g 指针认主：每轮重试 calloc 新 g，旧 g 释放后新 g 常拿到同一地址，缓存会拿着已释放的内存（11-11 动森 SPIN 重试 abort） */
+  struct LvI* lv_tab;
+  size_t lv_cap, lv_n;
+  A* lv_sa;
+  unsigned __int128* lv_sm;
+  uint32_t* lv_sg;
+  uint32_t lv_gen;
+  A* spd_key;
+  int8_t* spd_val;
+  size_t spd_n, spd_cap;
 } RW;
 static TLS RW* g;
 static void fail(const char* fmt, ...) {
@@ -795,10 +806,7 @@ static const char* operand_text(const Ins* in);
 #define LV_BUDGET (1 << 16)   /* 只在危险函数里用（处数很少），预算放宽 */
 /* 指令摘要缓存（全程共用，按地址开放寻址）：读集 / 写集（部分写已并进读集）、种类、直接跳转目标 */
 enum { LV_SEQ, LV_CALL, LV_RET, LV_STOP, LV_B, LV_COND };
-typedef struct { A a; Mask rd, wr; A t; uint8_t k, used; } LvI;
-static TLS LvI* lv_tab;   /* 内存挂在本次改写 g 的分配账上：换了 g（同进程改下一个模块）就重建 */
-static TLS size_t lv_cap, lv_n;
-static TLS const void* lv_owner;
+typedef struct LvI { A a; Mask rd, wr; A t; uint8_t k, used; } LvI;
 static int lv_simd_partial(const Ins* x) {   /* 向量写只改一部分（按元素 / 写高半 / 累加）：当读 */
   size_t n = strlen(x->m);
   return strchr(operand_text(x), '[') || (n > 1 && x->m[n - 1] == '2') ||
@@ -806,28 +814,27 @@ static int lv_simd_partial(const Ins* x) {   /* 向量写只改一部分（按�
                   "ssra|usra|srsra|ursra|sri|sli|fcmla|bfmmla|smmla|ummla|usmmla|bfmlalb|bfmlalt|smlal|umlal|smlsl|umlsl|sqdmlal|sqdmlsl|sabal|uabal|tbx");
 }
 static const LvI* lv_get(A a) {
-  if (lv_owner != g) lv_owner = g, lv_tab = NULL, lv_cap = lv_n = 0;
-  if (lv_n * 2 >= lv_cap) {   /* 扩容重排 */
-    size_t oc = lv_cap; LvI* ot = lv_tab;
-    lv_cap = oc ? oc * 2 : (1u << 16);
-    lv_tab = zalloc(lv_cap * sizeof(LvI));
-    lv_n = 0;
+  if (g->lv_n * 2 >= g->lv_cap) {   /* 扩容重排 */
+    size_t oc = g->lv_cap; LvI* ot = g->lv_tab;
+    g->lv_cap = oc ? oc * 2 : (1u << 16);
+    g->lv_tab = zalloc(g->lv_cap * sizeof(LvI));
+    g->lv_n = 0;
     for (size_t i = 0; i < oc; i++)
       if (ot[i].used) {
-        size_t h = ((uint64_t)ot[i].a * 0x9E3779B97F4A7C15ull) >> 20 & (lv_cap - 1);
-        while (lv_tab[h].used) h = (h + 1) & (lv_cap - 1);
-        lv_tab[h] = ot[i]; lv_n++;
+        size_t h = ((uint64_t)ot[i].a * 0x9E3779B97F4A7C15ull) >> 20 & (g->lv_cap - 1);
+        while (g->lv_tab[h].used) h = (h + 1) & (g->lv_cap - 1);
+        g->lv_tab[h] = ot[i]; g->lv_n++;
       }
     if (ot) release(ot);
   }
-  size_t h = ((uint64_t)a * 0x9E3779B97F4A7C15ull) >> 20 & (lv_cap - 1);
-  while (lv_tab[h].used) {
-    if (lv_tab[h].a == a) return &lv_tab[h];
-    h = (h + 1) & (lv_cap - 1);
+  size_t h = ((uint64_t)a * 0x9E3779B97F4A7C15ull) >> 20 & (g->lv_cap - 1);
+  while (g->lv_tab[h].used) {
+    if (g->lv_tab[h].a == a) return &g->lv_tab[h];
+    h = (h + 1) & (g->lv_cap - 1);
   }
-  LvI* e = &lv_tab[h];
+  LvI* e = &g->lv_tab[h];
   e->used = 1, e->a = a, e->t = -1, e->k = LV_STOP;
-  lv_n++;
+  g->lv_n++;
   if (a < 0 || (uint64_t)a + 4 > g->text || (a & 3) || !in_code(a)) return e;
   uint32_t w = u32(g->orig + a);
   Ins x;
@@ -875,9 +882,9 @@ static Mask lv_live(A start, Mask cand, int budget0) {
   static TLS Mask callk, retk;
   if (!callk) { callk = lv_range(9, 17, 0) | lv_range(16, 31, 33); retk = lv_range(2, 17, 0) | lv_range(4, 7, 33) | lv_range(16, 31, 33); }
   enum { SEEN = 1 << 17, ST = 1024 };
-  static TLS A* sa; static TLS Mask* sm; static TLS uint32_t* sg; static TLS uint32_t gen; static TLS const void* own;
-  if (own != g) own = g, sa = zalloc(SEEN * sizeof(A)), sm = zalloc(SEEN * sizeof(Mask)), sg = zalloc(SEEN * sizeof(uint32_t)), gen = 0;
-  gen++;
+  if (!g->lv_sa) g->lv_sa = zalloc(SEEN * sizeof(A)), g->lv_sm = zalloc(SEEN * sizeof(Mask)), g->lv_sg = zalloc(SEEN * sizeof(uint32_t));
+  A* sa = g->lv_sa; Mask* sm = g->lv_sm; uint32_t* sg = g->lv_sg;
+  uint32_t gen = ++g->lv_gen;
   struct { A a; Mask u; } st[ST];
   int nst = 0, budget = budget0;
   Mask live = 0;
@@ -921,27 +928,25 @@ static int sp_dyn_word(uint32_t w) {
   if ((w & 0xffe00000u) == 0x8b200000u || (w & 0xffe00000u) == 0xcb200000u) return 1;   /* add / sub 扩展寄存器写 sp（含 sub sp, sp, xN） */
   return 0;
 }
-static TLS A* spd_key; static TLS int8_t* spd_val; static TLS size_t spd_n, spd_cap; static TLS const void* spd_owner;   /* 函数起点 → 0/1，开放寻址 */
 static Pair func_of(A at);
-static int sp_dynamic(A at) {
-  if (spd_owner != g) spd_owner = g, spd_key = NULL, spd_val = NULL, spd_n = spd_cap = 0;
+static int sp_dynamic(A at) {   /* 按函数起点缓存在 g->spd_*（开放寻址，值 1 / 2 = 否 / 是，0 = 空槽） */
   Pair f = func_of(at);
-  if (spd_n * 2 >= spd_cap) {
-    size_t oc = spd_cap; A* ok = spd_key; int8_t* ov = spd_val;
-    spd_cap = oc ? oc * 2 : 4096;
-    spd_key = zalloc(spd_cap * sizeof(A)); spd_val = zalloc(spd_cap); spd_n = 0;
+  if (g->spd_n * 2 >= g->spd_cap) {
+    size_t oc = g->spd_cap; A* ok = g->spd_key; int8_t* ov = g->spd_val;
+    g->spd_cap = oc ? oc * 2 : 4096;
+    g->spd_key = zalloc(g->spd_cap * sizeof(A)); g->spd_val = zalloc(g->spd_cap); g->spd_n = 0;
     for (size_t i = 0; i < oc; i++)
       if (ov[i]) {
-        size_t h = ((uint64_t)ok[i] * 0x9E3779B97F4A7C15ull >> 20) & (spd_cap - 1);
-        while (spd_val[h]) h = (h + 1) & (spd_cap - 1);
-        spd_key[h] = ok[i], spd_val[h] = ov[i], spd_n++;
+        size_t h = ((uint64_t)ok[i] * 0x9E3779B97F4A7C15ull >> 20) & (g->spd_cap - 1);
+        while (g->spd_val[h]) h = (h + 1) & (g->spd_cap - 1);
+        g->spd_key[h] = ok[i], g->spd_val[h] = ov[i], g->spd_n++;
       }
     if (ok) release(ok), release(ov);
   }
-  size_t h = ((uint64_t)f.a * 0x9E3779B97F4A7C15ull >> 20) & (spd_cap - 1);
-  while (spd_val[h]) {
-    if (spd_key[h] == f.a) return spd_val[h] - 1;
-    h = (h + 1) & (spd_cap - 1);
+  size_t h = ((uint64_t)f.a * 0x9E3779B97F4A7C15ull >> 20) & (g->spd_cap - 1);
+  while (g->spd_val[h]) {
+    if (g->spd_key[h] == f.a) return g->spd_val[h] - 1;
+    h = (h + 1) & (g->spd_cap - 1);
   }
   /* 危险 = 动态往下开过栈，且有一次从帧指针恢复 sp（mov / add / sub sp, x29, #k）之后不是马上返回：
    *   跳过随后的出栈（ldp …, [sp], #k / ldr …, [sp], #k / add sp, sp, #k）后下一条不是 ret / 尾调用 b，说明恢复 sp 之后代码还在走，
@@ -966,7 +971,7 @@ static int sp_dynamic(A at) {
     }
   }
   dyn = dyn && mid;
-  spd_key[h] = f.a, spd_val[h] = (int8_t)(dyn + 1), spd_n++;   /* 值存 1 / 2，0 = 空槽 */
+  g->spd_key[h] = f.a, g->spd_val[h] = (int8_t)(dyn + 1), g->spd_n++;
   return dyn;
 }
 /* 改写点 x 之后可当临时的：两个已死的通用寄存器（x2–x17，不在本指令里），或一个已死的向量寄存器（v16–v31） */
