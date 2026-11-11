@@ -55,6 +55,8 @@ OutputBaseFilename=S2Arm-windows-x64-setup
 SetupIconFile=..\launcher\App\Assets\S2Arm.ico
 WizardStyle=modern dark hidebevels includetitlebar
 WizardSmallImageFile=
+; 窗口底色同 DMG 新窗口与示意图（深黑）；设了底色后各面板透明，卡片 / 按钮 / 复选框都是自画素材（make_header.py）
+WizardBackColor=#111113
 CloseApplications=yes
 RestartApplications=no
 ShowLanguageDialog=no
@@ -67,6 +69,11 @@ Source: "header.bmp"; Flags: dontcopy
 Source: "card.bmp"; Flags: dontcopy
 Source: "bar.bmp"; Flags: dontcopy
 Source: "track.bmp"; Flags: dontcopy
+Source: "btn_install.bmp"; Flags: dontcopy
+Source: "btn_finish.bmp"; Flags: dontcopy
+Source: "btn_cancel.bmp"; Flags: dontcopy
+Source: "check_on.bmp"; Flags: dontcopy
+Source: "check_off.bmp"; Flags: dontcopy
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
@@ -92,15 +99,18 @@ Type: filesandordirs; Name: "{app}.s2arm-old"
 Type: filesandordirs; Name: "{app}.s2arm-new"
 
 [Code]
-{ 界面照 DMG 新窗口：深色底、S2ARM 字标、奶油色进度、圆角卡片、中英两句。素材由 make_header.py 生成（底色 = 内置深色样式 #2b2b2b） }
+{ 界面照 DMG 新窗口与已通过的示意图：深黑底、S2ARM 字标、奶油色进度 / 主按钮 / 勾选、圆角卡片、中英两句。素材由 make_header.py 生成（底色 #111113） }
 const
   Ink = $EBF0F2;        { #F2F0EB }
-  Muted = $A8A8A8;      { #A8A8A8 }
+  Muted = $9E9696;      { #96969E }
   Cream = $D6EAF5;      { #F5EAD6 }
   SlideMs = 3500;       { 轮播几秒换一张 }
 
 var
-  DesktopBox: TNewCheckBox;
+  DesktopOn, LaunchOn: Boolean;
+  DesktopImg, LaunchImg: TBitmapImage;
+  PrimaryImg, SecondaryImg: TBitmapImage;
+  BtnRight, BtnMid: Integer;
   WelcomePageID: Integer;
   PathText: TNewStaticText;
   SlideTitle, SlideSub, SlideDots: TNewStaticText;
@@ -114,7 +124,7 @@ function KillTimer(hWnd: LongWord; uIDEvent: LongWord): LongWord; external 'Kill
 
 function WantDesktopIcon: Boolean;
 begin
-  Result := DesktopBox.Checked;
+  Result := DesktopOn;
 end;
 
 function NewText(Parent: TWinControl; Left, Top, Width, Size: Integer; Color: Integer; Bold: Boolean; Caption: String): TNewStaticText;
@@ -145,6 +155,83 @@ begin
   Result.Top := Top;
   Result.Width := Width;
   Result.Height := Height;
+end;
+
+{ ---- 自画按钮：原按钮挪出可见区（回车 / Esc 照常由它响应，Inno 自己切文字和显隐不受影响），这里照着它同步文字、显隐，点击转给它 ---- }
+procedure PressPrimary(Sender: TObject);
+begin
+  if (WizardForm.CurPageID = wpFinished) and (WizardForm.RunList.Items.Count > 0) then
+    WizardForm.RunList.Checked[0] := LaunchOn;   { 完成页「现在打开 S2Arm」：勾选状态来自自画复选框，照旧由 [Run] postinstall 执行 }
+  WizardForm.NextButton.OnClick(WizardForm.NextButton);
+end;
+
+procedure PressSecondary(Sender: TObject);
+begin
+  WizardForm.CancelButton.OnClick(WizardForm.CancelButton);
+end;
+
+procedure SyncButtons;
+begin
+  { 按钮文字画在图里（深色样式会把叠在上面的字强制画成浅色，奶油色底上看不见）：主按钮按原按钮当前的文字选「安装」/「完成」 }
+  if Pos(SetupMessage(msgButtonFinish), WizardForm.NextButton.Caption) > 0 then
+    PrimaryImg.Bitmap.LoadFromFile(ExpandConstant('{tmp}\btn_finish.bmp'))
+  else
+    PrimaryImg.Bitmap.LoadFromFile(ExpandConstant('{tmp}\btn_install.bmp'));
+  PrimaryImg.Visible := WizardForm.NextButton.Visible;
+  SecondaryImg.Visible := WizardForm.CancelButton.Visible;
+  { 只有一个按钮时它靠右；两个时次按钮在主按钮左边 }
+  if PrimaryImg.Visible then begin
+    PrimaryImg.Left := BtnRight - PrimaryImg.Width;
+    SecondaryImg.Left := PrimaryImg.Left - ScaleX(12) - SecondaryImg.Width;
+  end else
+    SecondaryImg.Left := BtnRight - SecondaryImg.Width;
+end;
+
+procedure BuildButtons;
+var
+  N, C: TButton;
+begin
+  N := WizardForm.NextButton; C := WizardForm.CancelButton;
+  BtnRight := N.Left + N.Width;
+  BtnMid := N.Top + N.Height div 2 - ScaleY(10);   { 比原按钮略高：底边留出和示意图一样的空 }
+  ExtractTemporaryFile('btn_finish.bmp');
+  PrimaryImg := NewImage(WizardForm, 'btn_install.bmp', 0, BtnMid - ScaleY(20), ScaleX(160), ScaleY(40));
+  SecondaryImg := NewImage(WizardForm, 'btn_cancel.bmp', 0, BtnMid - ScaleY(20), ScaleX(144), ScaleY(40));
+  PrimaryImg.OnClick := @PressPrimary; PrimaryImg.Cursor := crHand;
+  SecondaryImg.OnClick := @PressSecondary; SecondaryImg.Cursor := crHand;
+  { 原按钮挪出可见区：仍是窗口的默认 / 取消按钮 }
+  N.Left := -2000; C.Left := -2000; WizardForm.BackButton.Left := -2000;
+end;
+
+{ ---- 自画复选框：图（奶油色勾 / 描边空框）+ 文字，点哪都切换 ---- }
+function CheckBitmap(On: Boolean): String;
+begin
+  if On then Result := ExpandConstant('{tmp}\check_on.bmp') else Result := ExpandConstant('{tmp}\check_off.bmp');
+end;
+
+procedure ToggleDesktop(Sender: TObject);
+begin
+  DesktopOn := not DesktopOn;
+  DesktopImg.Bitmap.LoadFromFile(CheckBitmap(DesktopOn));
+end;
+
+procedure ToggleLaunch(Sender: TObject);
+begin
+  LaunchOn := not LaunchOn;
+  LaunchImg.Bitmap.LoadFromFile(CheckBitmap(LaunchOn));
+  { 同步写回原列表：回车键（原按钮仍是默认按钮）和点自画按钮走同一个勾选状态 }
+  if WizardForm.RunList.Items.Count > 0 then WizardForm.RunList.Checked[0] := LaunchOn;
+end;
+
+function NewCheck(Parent: TWinControl; Left, Top: Integer; Caption: String; OnClick: TNotifyEvent): TBitmapImage;
+var
+  T: TNewStaticText;
+begin
+  ExtractTemporaryFile('check_off.bmp');
+  Result := NewImage(Parent, 'check_on.bmp', ScaleX(Left), ScaleY(Top), ScaleX(18), ScaleY(18));
+  Result.OnClick := OnClick; Result.Cursor := crHand;
+  T := NewText(Parent, Left + 28, Top - 1, Parent.ClientWidth - ScaleX(Left + 28), 10, Ink, False, Caption);
+  T.OnClick := OnClick; T.Cursor := crHand;
 end;
 
 { 卖点：只写已经有的功能（README / 官网），不写游戏名；中文一句、英文一句。最后一张是从压缩包版迁过来的说明 }
@@ -238,13 +325,8 @@ begin
   NewText(Page.Surface, 18, 122, W - ScaleX(36), 9, Muted, False, '安装位置 / Install location');
   PathText := NewText(Page.Surface, 18, 144, W - ScaleX(36), 10, Ink, False, '');   { 安装目录到页面显示时才定下来（CurPageChanged 填） }
   NewText(Page.Surface, 18, 170, W - ScaleX(36), 9, Muted, False, '路径短、不要管理员权限；游戏库和存档不放这里，卸载也不会动它们。');
-  DesktopBox := TNewCheckBox.Create(WizardForm);
-  DesktopBox.Parent := Page.Surface;
-  DesktopBox.Top := ScaleY(222);
-  DesktopBox.Width := W;
-  DesktopBox.Height := ScaleY(22);
-  DesktopBox.Caption := '在桌面创建 S2Arm 图标 / Create a desktop shortcut';
-  DesktopBox.Checked := True;
+  DesktopOn := True;
+  DesktopImg := NewCheck(Page.Surface, 0, 226, '在桌面创建 S2Arm 图标 / Create a desktop shortcut', @ToggleDesktop);
 end;
 
 procedure BuildInstalling;
@@ -279,6 +361,7 @@ begin
   BuildHeader;
   BuildWelcome;
   BuildInstalling;
+  BuildButtons;
 end;
 
 procedure BuildFinished;
@@ -303,7 +386,15 @@ begin
     NewText(P, 42, 188, W - ScaleX(36), 9, Muted, False, '卸载 / Uninstall');
     NewText(P, 42, 210, W - ScaleX(36), 10, Ink, False, '设置 → 应用 → 已安装的应用 → S2Arm → 卸载');
     NewText(P, 42, 236, W - ScaleX(36), 9, Muted, False, '只删程序本身；游戏库、存档、出好的 iPhone 包都保留。');
+    with NewText(P, 0, 0, 0, 9, Muted, False, 'Windows · x64') do begin   { 顶栏右边的平台标签：三步统一 }
+      AutoSize := True; WordWrap := False;
+      Left := P.ClientWidth - Width - ScaleX(28);
+      Top := Mark.Top + (Mark.Height - Height) div 2;
+    end;
+    LaunchOn := True;
+    LaunchImg := NewCheck(P, 24, 296, '现在打开 S2Arm / Launch S2Arm now', @ToggleLaunch);
   end;
+  WizardForm.RunList.Left := -2000;   { 原「现在打开」列表挪出可见区：勾选状态由自画复选框决定（PressPrimary 写回） }
   WizardForm.FinishedHeadingLabel.Caption := '装好了';
   WizardForm.FinishedHeadingLabel.Font.Name := 'Microsoft YaHei UI';
   WizardForm.FinishedHeadingLabel.Font.Size := 22;
@@ -311,9 +402,6 @@ begin
   WizardForm.FinishedHeadingLabel.Top := ScaleY(64);
   WizardForm.FinishedHeadingLabel.Width := W;
   WizardForm.FinishedHeadingLabel.Height := ScaleY(44);
-  WizardForm.RunList.Left := ScaleX(24);
-  WizardForm.RunList.Top := ScaleY(292);
-  WizardForm.RunList.Width := W;
 end;
 
 procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
@@ -324,6 +412,7 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  SyncButtons;
   if CurPageID = WelcomePageID then begin
     PathText.Caption := WizardDirValue;
     WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
