@@ -581,6 +581,17 @@ static void t_pass_switch_and_partial(void) {
     submit1(&n0); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_npd == 0 && g_pass_ends == 0);                                           // 不发没有附件的通道
     pass_fresh();
+    // 颜色槽里有空位：槽 0 空、槽 1 有图。描述里槽 0 留空，尺寸取槽 1 的
+    tex_t s1 = mk_tex(69, 0, NVN_FORMAT_RGBA8, 32, 8, 1, 0);
+    stream ns = {0}; p_set_rt r2; memset(&r2, 0, sizeof r2); r2.n = 2; r2.color[1] = &s1; { uint8_t *ra = put(&ns, OP_SET_RT, set_rt_size(&r2)); set_rt_put(ra, &r2); }
+    p_clear_color *c1 = put(&ns, OP_CLEAR_COLOR, sizeof *c1); c1->index = 1; c1->mask = 0xf; c1->rgba[0] = 0.25f;
+    c1 = put(&ns, OP_CLEAR_COLOR, sizeof *c1); c1->index = 0; c1->mask = 0xf;        // 清空位：没有目标
+    end(&ns);
+    submit1(&ns); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 1 && g_pd[0].ncolor == 2 && g_pd[0].color[0].view == NULL && g_pd[0].color[1].view != NULL && g_pd[0].w == 32 && g_pd[0].h == 8);
+    CHECK(g_pd[0].color[1].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[1].clear.f[0] == 0.25f);
+    CHECK(nvn_unimpl_count("pass", "clear_color_no_target") == 1 && nvn_unimpl_kinds() == 1);
+    pass_fresh();
 }
 
 static void t_clear_rect(void) {   // 带裁剪的清除：矩形与目标求交；整数格式换算；深度 / 模板各自按目标有的面与写掩码取舍

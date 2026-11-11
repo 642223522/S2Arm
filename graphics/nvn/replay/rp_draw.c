@@ -194,7 +194,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         pd.st[0].sh = g_prog->sh[0]; pd.st[1].sh = g_prog->sh[1];
         for (int i = 0; i < rt->n && i < 8; i++) { pd.cfmt[i] = rt->color[i] ? (uint32_t)(rt->has_cview[i] && rt->cview[i].set_format ? rt->cview[i].format : rt->color[i]->d.format) : 0; pd.lmap[i] = (uint8_t)i; }
         if (rt->depth) { nvn_fmt_info fi; uint32_t f = (uint32_t)rt->depth->d.format; int ok = nvn_fmt_info_of(f, &fi); if (!ok || fi.depth) pd.dfmt = f; if (ok && fi.stencil) pd.sfmt = f; }
-        pd.samples = rt->n && rt->color[0] ? (uint32_t)rt->color[0]->d.samples : rt->depth ? (uint32_t)rt->depth->d.samples : 0;
+        const tex_t *c0 = NULL; for (int i = 0; i < rt->n && i < 8 && !c0; i++) c0 = rt->color[i];   // 第一个有图的颜色槽
+        pd.samples = c0 ? (uint32_t)c0->d.samples : rt->depth ? (uint32_t)rt->depth->d.samples : 0;
         pd.prim = prim; pd.patch_size = (uint32_t)rp_S.patch_size; pd.prim_restart = (uint8_t)(rp_S.restart.on != 0 && !quads);   // 四边形的重启在展开时已经处理掉
         memcpy(pd.blend, rp_S.blend, sizeof pd.blend); pd.color = rp_S.color; pd.chmask = rp_S.chmask; pd.ms = rp_S.ms;
         for (int i = 0; i < rp_S.nattr && i < 16; i++) pd.attr[i] = rp_S.attr[i];
@@ -208,8 +209,11 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         rp_args_dirty[0] = rp_args_dirty[1] = 1;   // 换了管线：两个阶段的绑定都重发
     }
     uint32_t tw = 1, th = 1;
-    if (!rt->n && rt->depth) { uint32_t l = rt->has_dview && rt->dview.set_levels ? rt->dview.base_level : 0; tw = rt->depth->d.width >> l; th = rt->depth->d.height >> l; if (!tw) tw = 1; if (!th) th = 1; }
-    if (rt->n && rt->color[0]) { uint32_t l = rt->has_cview[0] && rt->cview[0].set_levels ? rt->cview[0].base_level : 0; tw = rt->color[0]->d.width >> l; th = rt->color[0]->d.height >> l; if (!tw) tw = 1; if (!th) th = 1; }
+    { int fi = -1; for (int i = 0; i < rt->n && i < 8 && fi < 0; i++) if (rt->color[i]) fi = i;   // 缺省视口的尺寸：第一个有图的颜色槽，没有就取深度目标
+      if (fi >= 0) { uint32_t l = rt->has_cview[fi] && rt->cview[fi].set_levels ? rt->cview[fi].base_level : 0; tw = rt->color[fi]->d.width >> l; th = rt->color[fi]->d.height >> l; }
+      else if (rt->depth) { uint32_t l = rt->has_dview && rt->dview.set_levels ? rt->dview.base_level : 0; tw = rt->depth->d.width >> l; th = rt->depth->d.height >> l; }
+      if (!tw) tw = 1;
+      if (!th) th = 1; }
     nvn_gpu_dyn dyn; fill_dyn(&dyn, tw, th); nvn_gpu_set_dyn(c, &dyn);
     for (int i = 0; i < 16; i++) if (streams >> i & 1) nvn_gpu_set_vbuf(c, (uint32_t)i, vb_buf[i], vb_off[i]);
     uint32_t base_instance = (uint32_t)(di ? di->base_instance : dr->base_instance);

@@ -150,7 +150,8 @@ struct nvn_gpu_cmd_s {
     struct pass_rec *passes;
     uint32_t npasses, passcap;
     uint32_t pass_w, pass_h;
-    uint32_t pass_ncolor, pass_layers;       // 当前通道的颜色附件数、层数（clear_rect 用）
+    uint32_t pass_ncolor, pass_layers;       // 当前通道的颜色槽数、层数（clear_rect 用）
+    uint32_t pass_color_mask;                // 哪些颜色槽有附件（位 i = 槽 i；空位为 0）
     VkImageAspectFlags pass_ds_aspect;       // 当前通道深度模板附件有的面（0 = 没有该附件）
     struct nvn_gpu_tex_s *pass_tex[8];
     uint32_t pass_ntex;
@@ -1543,8 +1544,10 @@ static VkRenderPass make_pipeline_pass(const nvn_gpu_pipe_desc *d) {
     VkAttachmentReference col[8];
     uint32_t natt = 0, ncol = 0;
     VkSampleCountFlagBits samples = (VkSampleCountFlagBits)(d->samples > 1 ? d->samples : 1);
-    for (uint32_t i = 0; i < 8; i++) {
-        if (!d->cfmt[i]) break;
+    uint32_t nslot = 0;   // 颜色槽个数 = 最后一个有格式的槽 + 1；中间没格式的槽是空位（VK_ATTACHMENT_UNUSED）
+    for (uint32_t i = 0; i < 8; i++) if (d->cfmt[i]) nslot = i + 1;
+    for (uint32_t i = 0; i < nslot; i++) {
+        if (!d->cfmt[i]) { col[ncol].attachment = VK_ATTACHMENT_UNUSED; col[ncol].layout = VK_IMAGE_LAYOUT_UNDEFINED; ncol++; continue; }
         VkFormat f = nvn_vk_tex_format(d->cfmt[i]);
         if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
         memset(&att[natt], 0, sizeof att[natt]);
@@ -1884,10 +1887,11 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
         return bad;
     }
     VkPipelineColorBlendAttachmentState cb[8];
-    uint32_t ncb = 0;
-    for (uint32_t i = 0; i < 8; i++) {
-        if (!d->cfmt[i]) break;
+    uint32_t ncb = 0, nslot = 0;
+    for (uint32_t i = 0; i < 8; i++) if (d->cfmt[i]) nslot = i + 1;
+    for (uint32_t i = 0; i < nslot; i++) {
         memset(&cb[ncb], 0, sizeof cb[ncb]);
+        if (!d->cfmt[i]) { ncb++; continue; }   // 空槽：占一个位置，不混合、不写
         if ((d->color.blend_en >> i) & 1u) {
             const blend_st *b = &d->blend[i];
             if (b->adv_mode) {
@@ -1915,7 +1919,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
             cb[ncb].srcColorBlendFactor = sf; cb[ncb].dstColorBlendFactor = df; cb[ncb].colorBlendOp = er;
             cb[ncb].srcAlphaBlendFactor = sa; cb[ncb].dstAlphaBlendFactor = da; cb[ncb].alphaBlendOp = ea;
         }
-        uint32_t mask = d->chmask.mask ? (d->chmask.mask >> (i * 4)) & 0xF : 0xF;
+        uint32_t mask = (d->chmask.mask >> (i * 4)) & 0xF;   // 0 = 这个目标四个通道都不写（只写深度的绘制），不是「没设」
         cb[ncb].colorWriteMask = ((mask & 1) ? VK_COLOR_COMPONENT_R_BIT : 0) | ((mask & 2) ? VK_COLOR_COMPONENT_G_BIT : 0) |
                                  ((mask & 4) ? VK_COLOR_COMPONENT_B_BIT : 0) | ((mask & 8) ? VK_COLOR_COMPONENT_A_BIT : 0);
         ncb++;
@@ -2114,7 +2118,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
     uint32_t natt = 0, ncol = 0;
     for (uint32_t i = 0; i < d->ncolor && i < 8; i++) {
         struct nvn_gpu_view_s *v = d->color[i].view;
-        if (!v) return VK_NULL_HANDLE;
+        if (!v) { col[ncol].attachment = VK_ATTACHMENT_UNUSED; col[ncol].layout = VK_IMAGE_LAYOUT_UNDEFINED; ncol++; continue; }   // 颜色槽里的空位
         struct nvn_gpu_tex_s *t = v->tex;
         memset(&att[natt], 0, sizeof att[natt]);
         att[natt].format = t->format;
@@ -2227,11 +2231,9 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     }
     VkClearValue clear[9];
     memset(clear, 0, sizeof clear);
-    for (uint32_t i = 0; i < d->ncolor && i < 8; i++) {
-        clear[i].color.float32[0] = d->color[i].clear.f[0];
-        clear[i].color.float32[1] = d->color[i].clear.f[1];
-        clear[i].color.float32[2] = d->color[i].clear.f[2];
-        clear[i].color.float32[3] = d->color[i].clear.f[3];
+    for (uint32_t i = 0, k = 0; i < d->ncolor && i < 8; i++) {   // 清除值按附件下标排：空槽不占附件
+        if (!d->color[i].view) continue;
+        memcpy(&clear[k++].color, &d->color[i].clear, sizeof clear[0].color);
     }
     if (has_depth) { clear[natt - 1].depthStencil.depth = d->clear_depth; clear[natt - 1].depthStencil.stencil = d->clear_stencil; }
     VkRenderPassBeginInfo bi;
@@ -2247,6 +2249,8 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     c->pass_w = d->w;
     c->pass_h = d->h;
     c->pass_ncolor = d->ncolor < 8 ? d->ncolor : 8;
+    c->pass_color_mask = 0;
+    for (uint32_t i = 0; i < c->pass_ncolor; i++) if (d->color[i].view) c->pass_color_mask |= 1u << i;
     c->pass_layers = fi.layers;
     c->pass_ds_aspect = (d->depth.view ? d->depth.view->tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (d->stencil.view ? d->stencil.view->tex->aspect & VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     c->pass_ntex = 0;
@@ -3480,7 +3484,7 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "clear_rect 在通道外"); return; }
     if (!d || (d->color < 0 && !d->depth && !d->stencil)) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 什么都不清"); return; }
-    if (d->color >= 0 && (uint32_t)d->color >= c->pass_ncolor) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 颜色附件 %d 越界（通道有 %u 个）", d->color, c->pass_ncolor); return; }
+    if (d->color >= 0 && ((uint32_t)d->color >= c->pass_ncolor || !(c->pass_color_mask >> d->color & 1))) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 颜色槽 %d 越界或是空位（通道有 %u 个槽）", d->color, c->pass_ncolor); return; }
     if ((d->depth && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) || (d->stencil && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_STENCIL_BIT))) {
         set_sticky(c, NVN_GPU_E_ARG, "clear_rect 要清的深度 / 模板面不在通道里"); return;
     }

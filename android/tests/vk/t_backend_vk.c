@@ -3411,6 +3411,75 @@ static void c76_vs_only_depth(const char *dir) {
     nvn_gpu_shader_release(vs);
 }
 
+// C77：颜色槽里有空位的通道（槽 0 没有附件、槽 1 有）。槽 1 清成蓝，片元着色器只写输出 1（绿），整屏画一笔。
+// 期望（手算）：槽 1 的图整屏绿。空位没处理对的话：通道 / 管线建不出来（提交失败），或者写到别处、槽 1 仍是蓝。
+// C78：颜色写掩码为 0 的绘制一个通道都不写。同一张图清成蓝后，用写掩码 0 的管线整屏画绿。期望：仍然整屏蓝。
+static void c77_null_color_slot(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "out1_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 out1_green"); return; }
+    nvn_gpu_pipe_desc pd;
+    fill_gpipe_desc(&pd, vs, fs, 0);
+    pd.cfmt[0] = 0; pd.cfmt[1] = NVN_FORMAT_RGBA8; pd.chmask.mask = 0xF0;   // 槽 1 四个通道都写
+    nvn_gpu_err e; nvn_gpu_pipe pipe = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C77 pipe：%d %s", e.rc.code, e.why);
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view ov = make_view(out);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = full_vb();
+    if (pipe) {
+        nvn_gpu_cmd c = begin_cmd();
+        nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+        p.ncolor = 2; p.color[1].view = ov; p.color[1].load = NVN_GPU_LOAD_CLEAR; p.color[1].store = NVN_GPU_STORE_STORE;
+        p.color[1].clear.f[2] = 1; p.color[1].clear.f[3] = 1;
+        p.w = 64; p.h = 64; p.layers = 1;
+        nvn_gpu_pass_begin(c, &p);
+        nvn_gpu_set_pipe(c, pipe);
+        nvn_gpu_dyn dyn; full_dyn(&dyn); nvn_gpu_set_dyn(c, &dyn);
+        nvn_gpu_set_vbuf(c, 0, vb, 0);
+        nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+        nvn_gpu_draw(c, &da);
+        nvn_gpu_pass_end(c);
+        nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+        nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 119, on_done, NULL, &e);
+        CHECK(OK(r), "C77 commit：%d %s", r.code, e.why);
+        r = nvn_gpu_fence_wait(119, 5000000000ull, &e);
+        CHECK(OK(r), "C77 wait：%d %s", r.code, e.why);
+        expect_rect(buf_cpu(rb), 0, 0, 64, 64, 0, 255, 0, "C77 槽 1（空位在槽 0）整屏绿");
+    }
+    // C78
+    nvn_gpu_shader vs2 = NULL, fs2 = NULL; void *vm2 = NULL, *fm2 = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs2, &fs2, &vm2, &fm2)) { CHECK(0, "读不到 solid_green"); return; }
+    nvn_gpu_pipe_desc pd2;
+    fill_gpipe_desc(&pd2, vs2, fs2, 0);
+    pd2.chmask.mask = 0;
+    nvn_gpu_pipe pipe2 = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd2, NVN_GPU_PIPE_SYNC, &pipe2, &e)), "C78 pipe：%d %s", e.rc.code, e.why);
+    if (pipe2) {
+        nvn_gpu_cmd c = begin_cmd();
+        nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+        p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
+        p.color[0].clear.f[2] = 1; p.color[0].clear.f[3] = 1;
+        p.w = 64; p.h = 64; p.layers = 1;
+        nvn_gpu_pass_begin(c, &p);
+        nvn_gpu_set_pipe(c, pipe2);
+        nvn_gpu_dyn dyn; full_dyn(&dyn); nvn_gpu_set_dyn(c, &dyn);
+        nvn_gpu_set_vbuf(c, 0, vb, 0);
+        nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+        nvn_gpu_draw(c, &da);
+        nvn_gpu_pass_end(c);
+        nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+        nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 120, on_done, NULL, &e);
+        CHECK(OK(r), "C78 commit：%d %s", r.code, e.why);
+        r = nvn_gpu_fence_wait(120, 5000000000ull, &e);
+        CHECK(OK(r), "C78 wait：%d %s", r.code, e.why);
+        expect_rect(buf_cpu(rb), 0, 0, 64, 64, 0, 0, 255, "C78 写掩码 0：仍是清屏的蓝");
+    }
+    nvn_gpu_view_release(ov); nvn_gpu_tex_release(out);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); nvn_gpu_shader_release(vs2); nvn_gpu_shader_release(fs2);
+    free(vm); free(fm); free(vm2); free(fm2);
+}
+
 // C74：通道内按矩形清（契约 v4 nvn_gpu_clear_rect）。通道开头整屏清成黑 / 深度 1 / 模板 0，然后三次矩形清：
 //   ① 颜色：x 8–31、y 16–47 清成红；② 只清模板：左半屏 x 0–31 写 1；③ 只清深度：右上 x 32–63、y 0–31 写 0。
 //   再整屏画一笔蓝（z = 0.5）：深度 LESS、不写深度；模板 NOTEQUAL 1、操作全 KEEP。
@@ -3700,6 +3769,7 @@ int main(int argc, char **argv) {
     c74_clear_rect(argv[1]);
     c75_depth_bias(argv[1]);
     c76_vs_only_depth(argv[1]);
+    c77_null_color_slot(argv[1]);
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;
