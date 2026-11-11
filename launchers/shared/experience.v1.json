@@ -1205,6 +1205,7 @@
       {"id": "game.delete.confirm", "zh-Hans": "删除", "en": "Delete"},
       {"id": "game.cancel", "zh-Hans": "取消", "en": "Cancel"},
       {"id": "install.done.title", "zh-Hans": "已装到 iPhone", "en": "Installed on iPhone"},
+      {"id": "install.done.open", "zh-Hans": "已传到 iPhone，打开 S2Arm 会自动完成安装。", "en": "Sent to your iPhone. Open S2Arm and it finishes installing automatically."},
       {"id": "install.done.trust", "zh-Hans": "第一次打开前，在 iPhone 的「设置 › 通用 › VPN 与设备管理」里信任你的 Apple ID。", "en": "Before opening it the first time, trust your Apple ID in Settings › General › VPN & Device Management on your iPhone."},
       {"id": "install.done.free", "zh-Hans": "免费 Apple ID 签的 App 7 天后到期，到时回到这里点「续签」就行。", "en": "Apps signed with a free Apple ID expire after 7 days. Come back and tap Renew."},
       {"id": "install.apple.open", "zh-Hans": "打开 Xcode", "en": "Open Xcode"},

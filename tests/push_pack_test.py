@@ -505,6 +505,19 @@ class GameImgResume(Base):
         self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
         self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")
 
+    def test_full_write_checks_length_on_phone(self):   # 整份写完也核机上总长（11-11「传完并校验即成功」）：短一个字节不记账、说清长度
+        dev = self.device()
+        def short_write(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()[:-1]
+        dev.put_big = short_write
+        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        self.assertIn("game.img 没传完", str(e.exception))
+        self.assertTrue(any(f"长度 {len(self.local) - 1} 字节，应为 {len(self.local)} 字节" in l for l in self.log), self.log)
+        self.assertNotIn(f"{RP}/.pushed", dev.files)   # 没记账：下次重新判断续传
+
+    def test_full_write_length_ok_completes(self):
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
+
     def test_game_img_is_direct_not_tar(self):
         self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
         self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")

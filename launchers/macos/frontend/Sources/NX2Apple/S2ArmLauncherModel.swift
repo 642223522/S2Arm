@@ -164,6 +164,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var keysRejected = false
     /// 刚装好的那款（装机弹窗显示完成页）。
     @Published var installDone: String?
+    /// 刚装完的那次是单一 IMG：成功页多写一句「打开 S2Arm 会自动完成安装」
+    @Published var installOpenToFinish = false
     /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
     /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
     @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
@@ -705,7 +707,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
         let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
         start(.install, game: game, name: game.name) { [weak self] sink in
-            do { _ = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink) }
+            do { let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink); self?.installOpenToFinish = r?.openToFinish ?? false }
             catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? ""); throw f }
             return nil
         }
