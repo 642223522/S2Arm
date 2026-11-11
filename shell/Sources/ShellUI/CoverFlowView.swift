@@ -127,6 +127,7 @@ struct CoverFlowView: View, Equatable {
                     .shellTarget("lib.settings", radius: 22, action: openSettings)
             }
             if !chipsInSideBar {
+                PlayerChip(compact: compact).fixedSize()   // S2Arm (#623): who is playing, before Controllers
                 ControllerChip(count: controllers, action: openControllers).fixedSize()
                 ShellSettingsChip(action: openShellSettings).fixedSize()
             }

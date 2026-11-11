@@ -9,6 +9,16 @@ public struct S2ArmShellHostView: View {
     public var body: some View {
         LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
                     padSnapshot: model.padSnapshot)
+            // 本地玩家（#623）：顶部玩家按钮显示这次用谁的身份玩，点开切换页
+            .environment(\.shellPlayer, ShellPlayer(name: model.currentPlayer.displayName, open: { model.openPlayers() }))
+            .overlay {
+                if model.playersOpen {
+                    S2ArmPlayersView(players: model.players, current: model.currentPlayer.uid,
+                                     select: { model.selectPlayer($0) }, add: { model.addPlayer($0) },
+                                     rename: { model.renamePlayer($0, $1) }, remove: { model.removePlayer($0) },
+                                     close: { model.closePlayers() })
+                }
+            }
             .onAppear { model.startControllers(); s2a_shell_library_appeared() }
             .onDisappear { model.stopControllers() }
         #if canImport(UIKit)

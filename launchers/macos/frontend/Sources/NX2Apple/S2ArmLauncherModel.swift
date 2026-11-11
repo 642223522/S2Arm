@@ -5,6 +5,7 @@ import Foundation
 import Combine
 import NXModel
 import S2ArmAppleAdapter
+import SaveSync
 
 /// 一次出包（勾了几个平台就几个作业，按页面顺序排队，ExportPlatform.picked）：现在做到第几个、每个平台的结局。
 struct ExportRun: Equatable {
@@ -804,6 +805,12 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
+        if let player = Self.launchPlayer() {
+            controllerArguments["playerUser"] = player.serviceUser
+            controllerArguments["playerName"] = player.name
+            controllerArguments["playerFolder"] = player.folder
+        }
         controllerGameStarted = false
         do {
             let sink = EventSink { [weak self] event in self?.ingest(event) }
@@ -818,6 +825,17 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func startControllerConnection() { controller.startIfEnabled() }
+
+    // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
+
+    /// 本机的玩家表（App 偏好，不在游戏库文件夹里）；firstDefault = 第一个玩家没改过名时显示的名字（按界面语言）
+    static func playerStore(firstDefault: String = "Player 1", defaults: UserDefaults = .standard) -> LocalPlayers {
+        LocalPlayers(defaults: defaults, firstDefault: firstDefault)
+    }
+    /// 起局要带的玩家：没建过玩家 = nil（旧行为，作业层不设玩家）
+    static func launchPlayer(_ defaults: UserDefaults = .standard) -> LocalPlayer? {
+        defaults.object(forKey: LocalPlayers.listKey) == nil ? nil : playerStore(defaults: defaults).current
+    }
     func shutdownControllerConnection() { controller.shutdown() }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
@@ -909,16 +927,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 存档位置（services/S2A.Services/SaveFolder.cs）：这款游戏文件夹里的 SaveData/，没有就建出来再在访达里打开（打开的是文件夹里面，玩家直接往里放）
+    ///   本地玩家（#623）：当前玩家的那个（第一个玩家 SaveData，其他人 SaveData-<名字>，同 iOS）
     func openSaveFolder(_ game: GameSummary) {
         guard !game.location.folder.isEmpty, FileManager.default.fileExists(atPath: game.location.folder) else { explainMissing("s2arm.reveal.folderMissing"); return }
-        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent("SaveData", isDirectory: true)
+        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent(Self.launchPlayer()?.folder ?? LocalPlayers.firstFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
     }
     /// 存档位置里放的存档上次起局没读进来的原因（服务层写在数据根 saves/savedata-problem.txt，读进来后删掉）；没有 = nil
     func saveFolderProblem(_ game: GameSummary) -> String? {
         guard !game.location.folder.isEmpty else { return nil }
-        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent("saves/savedata-problem.txt")
+        // 本地玩家（#623）：原因按玩家分文件（services SaveFolder.ProblemPath），第一个玩家仍是原文件名
+        let player = Self.launchPlayer()
+        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent(player.map { $0.isFirst ? "saves/savedata-problem.txt" : "saves/savedata-problem-\($0.uid).txt" } ?? "saves/savedata-problem.txt")
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         let why = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return why.isEmpty ? nil : why
