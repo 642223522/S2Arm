@@ -282,7 +282,8 @@ int main(void) {
       snprintf(c2, sizeof c2, "printf 'a.txt\\t3\\tx\\n' > '%s/index.tsv'", R); sh(c2);
       CHECK(s2a_import_transferring(R, why, sizeof why) == 1 && strstr(why, "manifest.json"), "⑫ 只到了 index.tsv：应判还在传、点名 manifest.json →「%s」", why);
       snprintf(c2, sizeof c2, "printf '{\"version\":2,\"index_sha256\":\"aa11\"}' > '%s/manifest.json'", R); sh(c2);
-      CHECK(s2a_import_transferring(R, why, sizeof why) == 1 && strstr(why, "上次已导入"), "⑫ 清单 = .applied（覆盖装、新清单没到）：应判还在传 →「%s」", why);
+      // iOS 装机剃刀 #24：清单的 index_sha256 = .applied、包都写完 = 同一份清单重推（推送端开推会把清单置空，新清单没到时这里读不出）→ 不算在传，交给解包
+      CHECK(s2a_import_transferring(R, why, sizeof why) == 0, "⑫ 清单 = .applied、包写完（同一份清单重推）：不应判还在传 →「%s」", why);
       snprintf(c2, sizeof c2, "printf '{\"version\":2,\"index_sha256\":\"bb22\"}' > '%s/manifest.json'", R); sh(c2);
       CHECK(s2a_import_transferring(R, why, sizeof why) == 0, "⑫ 新清单到齐、包写完：不应判还在传 →「%s」", why);
       w = (struct s2a_gate_watch){0};
@@ -350,7 +351,7 @@ int main(void) {
           IS(2, "清单读得出、没有 .applied、不在传 → 2 待解开（缺 main.npdm 由库解开时核对报出，不在这里逐文件核）");
           CHECK(s2a_game_install_state(pd, "0100C2500FC20000") == 0, "没放资源 → 0 不显示");
           snprintf(qc, sizeof qc, "printf 'abc123' > '%s/.applied'", qr); sh(qc);
-          IS(0, ".applied 等于清单但缺 main.npdm（审计 P2-212）→ 0 不显示");
+          IS(2, ".applied 等于清单但缺 main.npdm（审计 P2-212）→ 2 待解开（库解开时核对报出缺文件；原先经「新清单没到」判在传、又没有 .transfer → 0 从库里消失，剃刀 #24 / #26）");
           snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); sh(qc);
           IS(1, ".applied 等于清单、main.npdm 在 → 1 就绪");
           snprintf(qc, sizeof qc, "rm '%s/exefs/main.npdm'", qr); sh(qc);
@@ -364,9 +365,9 @@ int main(void) {
           snprintf(qc, sizeof qc, "printf '{\"version\":2,\"index_sha256\":\"abc123\"}' > '%s/manifest.json' && printf x > '%s/.incoming/1_000.tar'", qr, qr); sh(qc);
           IS(0, "有包没写完（没有归档尾）、没有传输清单 → 0");
           snprintf(qc, sizeof qc, "head -c 1024 /dev/zero > '%s/.incoming/1_000.tar' && printf 'abc123' > '%s/.applied'", qr, qr); sh(qc);
-          IS(0, "机上清单还是上次已导入的那份（新清单没到）、没有传输清单 → 0");
+          IS(2, "清单 = .applied、包写完（同一份清单重推）、没有传输清单 → 2 待解开（剃刀 #24：原先判在传 → 0 不显示）");
           snprintf(qc, sizeof qc, "printf '{}' > '%s/.transfer'", qr); sh(qc);
-          IS(3, "同上 + 推包端写了 .transfer → 3 传输中");
+          IS(2, "同上 + 推包端写了 .transfer → 仍是 2 待解开（推送已完，.transfer 在也不算传输中）");
           snprintf(qc, sizeof qc, "printf '' > '%s/manifest.json'", qr); sh(qc);
           IS(3, "清单被推送开头置空 + .transfer → 3 传输中");
           snprintf(qc, sizeof qc, "printf '{\"version\":2,\"index_sha256\":\"def456\"}' > '%s/manifest.json'", qr); sh(qc);

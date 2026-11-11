@@ -522,9 +522,11 @@ int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可
     pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); pthread_mutex_unlock(&mu); return placed;
 }
 // 资源还在传（11-02 维护者 测试设备2 暗黑3：推 21.7 GB 中途点开 App，已到的几批被解开、核对时 index.tsv 还没到，报「返回 -8」要玩家删文件夹重拷）。
-//   推送契约（tools/push_pack.sh）：各批 tar 先推进 .incoming/，index.tsv 与 manifest.json 最后推。所以有待导入的包、且下面任一条成立 = 这次推送还没完，不能开始解：
-//   ① index.tsv / manifest.json 不在（首次推送，清单还没到）；② manifest.json 的 index_sha256 就是 .applied（机上清单还是上次解开的那份，这次的新清单还没到）；
-//   ③ 有 tar 没写完（没有归档尾：不足两块、大小不是 512 的倍数、末尾 1024 字节不全零）——在写的包去解会被当截短包，连同后面的包和 .pushed 一起删。
+//   推送契约（tools/push_pack.py）：开推先把机上 manifest.json 置空，各批 tar 推进 .incoming/，index.tsv 与 manifest.json 最后推。所以下面任一条成立 = 这次推送还没完，不能开始解：
+//   ① index.tsv / manifest.json 不在或读不出 index_sha256（首次推送清单还没到 / 这次推送开头置空了）；
+//   ② 有 tar 没写完（没有归档尾：不足两块、大小不是 512 的倍数、末尾 1024 字节不全零）——在写的包去解会被当截短包，连同后面的包和 .pushed 一起删。
+//   原先另有一条「清单的 index_sha256 就是 .applied = 新清单还没到」（11-02 暗黑3，那时推送不置空清单）：置空契约后它与 ① 重复，留着只剩误判——
+//   同一份清单重推、推送端用空包盖掉残批时清单没变，永远判「还在传」解不开（iOS 装机剃刀 #24）
 //   返回 1 = 还在传，why 写一句原因（日志用）
 static int tar_done(const char *p) {
     struct stat st; if (stat(p, &st) || st.st_size < 1024 || st.st_size % 512) return 0;
@@ -534,14 +536,11 @@ static int tar_done(const char *p) {
     return ok;
 }
 int s2a_import_transferring(const char *root, char *why, size_t n) {
-    char p[2100], sha[200], ap[200] = ""; struct stat st; why[0] = 0;
+    char p[2100], sha[200]; struct stat st; why[0] = 0;
     snprintf(p, sizeof p, "%s/index.tsv", root); int idx = !stat(p, &st);
     snprintf(p, sizeof p, "%s/manifest.json", root);
     if (!idx || stat(p, &st)) { snprintf(why, n, "%s还没到", idx ? "manifest.json" : "index.tsv"); return 1; }
     if (manifest_sha(p, sha, sizeof sha)) { snprintf(why, n, "manifest.json 还没写完（读不出 index_sha256）"); return 1; }
-    snprintf(p, sizeof p, "%s/.applied", root); FILE *f = fopen(p, "r");
-    if (f) { size_t k = fread(ap, 1, sizeof ap - 1, f); ap[k] = 0; fclose(f); ap[strcspn(ap, "\r\n")] = 0; }
-    if (!strcmp(ap, sha)) { snprintf(why, n, "清单还是上次已导入的那份（%.12s），这次的新清单还没到", sha); return 1; }
     snprintf(p, sizeof p, "%s/.incoming", root); DIR *d = opendir(p); int busy = 0;
     if (d) { struct dirent *e; while (!busy && (e = readdir(d))) { if (!ends_with(e->d_name, ".tar") || !strncmp(e->d_name, "._", 2)) continue;
         char t[2400]; snprintf(t, sizeof t, "%s/%s", p, e->d_name); if (!tar_done(t)) { busy = 1; snprintf(why, n, "%s 还没写完", e->d_name); } } closedir(d); }
