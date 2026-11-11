@@ -1,0 +1,116 @@
+#include "nvk_session.h"
+#include "nvn_backend.h"
+#include "nvn_unimpl.h"
+#include "nvn_plat.h"
+#include "rp_exec.h"
+#include "direct/vk_device.h"
+#include <android/log.h>
+#include <android/native_window.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+
+#define TAG "S2Arm"
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_ready;
+static void *g_window; static uint64_t g_window_gen; static int32_t g_win_w, g_win_h;
+static char g_cache_dir[512];
+static nvn_gpu_surface g_surface;
+
+double s2a_direct_vk_display_refresh(void);   // provider_nvk.c：窗口租约公布的当前刷新率
+
+const char *nvk_session_cache_dir(void) { return g_cache_dir[0] ? g_cache_dir : NULL; }
+
+int nvk_session_open(struct s2a_vk_device *dev, const char *cache_dir, char *why, size_t why_size) {
+    pthread_mutex_lock(&g_mu);
+    if (g_ready) { pthread_mutex_unlock(&g_mu); return 0; }
+    snprintf(g_cache_dir, sizeof g_cache_dir, "%s", cache_dir ? cache_dir : "");
+    nvn_gpu_open_desc d = {0}; d.host_device = dev; d.cache_dir = nvk_session_cache_dir(); d.app_label = "s2arm";
+    nvn_gpu_err err = {0};
+    nvn_gpu_rc rc = nvn_gpu_open(&d, &err);
+    if (!nvn_gpu_ok(rc)) {
+        if (why && why_size) snprintf(why, why_size, "nvn_gpu_open %d: %s", rc.code, err.why);
+        pthread_mutex_unlock(&g_mu);
+        return -1;
+    }
+    nvn_unimpl_reset();
+    g_ready = 1;
+    nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
+    __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: backend open on %s (api %u, caps %#x)", caps.name, caps.api_version, caps.caps);
+    pthread_mutex_unlock(&g_mu);
+    return 0;
+}
+
+int nvk_session_ready(void) { pthread_mutex_lock(&g_mu); int r = g_ready; pthread_mutex_unlock(&g_mu); return r; }
+
+// 收局汇总：这一局撞到的全部「未接 / 不支持」，一项一行。普查工具按 "nvk unimpl" 前缀收。
+static void dump_unimpl(void) {
+    static char buf[16384];
+    size_t n = nvn_unimpl_dump(buf, sizeof buf);
+    __android_log_print(ANDROID_LOG_INFO, TAG, "nvk unimpl summary: %d kinds", nvn_unimpl_kinds());
+    for (char *p = buf, *e; n && (e = strchr(p, '\n')); p = e + 1) { *e = 0; __android_log_print(ANDROID_LOG_INFO, TAG, "nvk unimpl\t%s", p); }
+}
+
+int nvk_session_close(void) {
+    pthread_mutex_lock(&g_mu);
+    if (!g_ready) { pthread_mutex_unlock(&g_mu); return 0; }
+    dump_unimpl();
+    rp_present_set_surface(NULL, 0); g_surface = NULL;   // 还接着的面由 nvn_gpu_close 在在途段清空后收掉
+    { uint64_t sh = 0, dp = 0; rp_present_stats(&sh, &dp); __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: presents shown=%llu dropped=%llu", (unsigned long long)sh, (unsigned long long)dp); }
+    nvn_gpu_err err = {0};
+    nvn_gpu_rc rc = nvn_gpu_close(2000000000ull, &err);
+    if (!nvn_gpu_ok(rc)) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "【红】nvk session: backend close %d: %s", rc.code, err.why);
+        pthread_mutex_unlock(&g_mu);
+        return 1;
+    }
+    g_ready = 0; g_window = NULL; g_window_gen = 0; g_win_w = g_win_h = 0;
+    pthread_mutex_unlock(&g_mu);
+    return 0;
+}
+
+int nvk_session_attach_window(void *window, uint64_t generation, char *why, size_t why_size) {
+    if (!window) { if (why && why_size) snprintf(why, why_size, "null window"); return -1; }
+    pthread_mutex_lock(&g_mu);
+    if (!g_ready) { pthread_mutex_unlock(&g_mu); if (why && why_size) snprintf(why, why_size, "session not open"); return -1; }
+    nvn_gpu_err err = {0}; nvn_gpu_surface sf = NULL;
+    nvn_gpu_rc rc = nvn_gpu_surface_attach(window, &sf, &err);
+    if (!nvn_gpu_ok(rc)) {
+        pthread_mutex_unlock(&g_mu);
+        if (why && why_size) snprintf(why, why_size, "surface attach %d: %s", rc.code, err.why);
+        return -1;
+    }
+    g_surface = sf; g_window = window; g_window_gen = generation;
+    g_win_w = ANativeWindow_getWidth((ANativeWindow *)window); g_win_h = ANativeWindow_getHeight((ANativeWindow *)window);
+    double hz = s2a_direct_vk_display_refresh();
+    rp_present_set_surface(sf, (int)(hz + 0.5));
+    __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: surface attached gen=%llu window=%dx%d hz=%.1f", (unsigned long long)generation, g_win_w, g_win_h, hz);
+    pthread_mutex_unlock(&g_mu);
+    return 0;
+}
+
+// 0 = 已摘且最后一帧的呈现段有完成证明；非 0 = 没证明（调用方保留窗口租约）
+int nvk_session_detach_window(void) {
+    pthread_mutex_lock(&g_mu);
+    nvn_gpu_surface sf = g_surface;
+    if (!sf) { g_window = NULL; g_window_gen = 0; g_win_w = g_win_h = 0; pthread_mutex_unlock(&g_mu); return 0; }
+    rp_present_set_surface(NULL, 0);   // 返回后核心不再用这个面
+    nvn_gpu_err err = {0};
+    nvn_gpu_rc rc = nvn_gpu_surface_detach(sf, 1000000000ull, &err);
+    if (!nvn_gpu_ok(rc)) {
+        rp_present_set_surface(sf, 0);
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "【红】nvk session: surface detach %d: %s", rc.code, err.why);
+        pthread_mutex_unlock(&g_mu);
+        return 1;
+    }
+    g_surface = NULL; g_window = NULL; g_window_gen = 0; g_win_w = g_win_h = 0;
+    pthread_mutex_unlock(&g_mu);
+    return 0;
+}
+
+void nvk_session_window_size(int32_t *w, int32_t *h) {
+    pthread_mutex_lock(&g_mu);
+    if (w) *w = g_win_w;
+    if (h) *h = g_win_h;
+    pthread_mutex_unlock(&g_mu);
+}

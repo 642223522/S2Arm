@@ -53,6 +53,14 @@ def shared_extract(f):
     return wrapped
 
 
+
+def img_step(args, cwd=None, env=None):
+    """假 c.run 遇到出包收尾转单一 IMG（ipa.to_img 经 c.run 调 pack/img.py convert，好让出包页有字节进度）就真跑它；→ 是不是这一步"""
+    if "pack/img.py" not in [str(a) for a in args]: return False
+    r = subprocess.run([str(a) for a in args], cwd=cwd, env=env, capture_output=True, text=True)
+    if r.returncode: raise AssertionError(r.stdout + r.stderr)
+    return True
+
 class JobsTests(unittest.TestCase):
     def setUp(self):
         import ipa
@@ -313,8 +321,7 @@ class JobsTests(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, OUT=str(out)), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "True 乙 3 0")   # 发现断管、没抛；三条事件都进了记录；子进程照常跑完
-        built = Path(self.request["library"]) / ".s2arm-library.json"   # 库建好了任务记录在 <库>/logs/jobs，否则 <私有目录>/logs/jobs
-        jobs = Path(self.request["library"]) / "logs/jobs" if built.is_file() else self.root / "private/logs/jobs"
+        jobs = self.root / "private/logs/jobs"   # 任务记录固定在 <私有目录>/logs/jobs（剃刀 H6）
         events = (jobs / "gone.events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(l)["stage"] for l in events], ["甲", "甲", "乙"])
 
@@ -443,6 +450,7 @@ class JobsTests(unittest.TestCase):
             self.assertIn("一键安装", str(e.exception))
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(args=[str(a) for a in args], env=env)
             out = Path(args[args.index("--out") + 1]); (out / "x.ipa").write_bytes(b"ipa")
             oneclick_done(args, out / "x.ipa", build_id="abc-123", graphics_mode="direct")
@@ -482,6 +490,20 @@ class JobsTests(unittest.TestCase):
         chk = subprocess.run([sys.executable, str(ROOT / "pack/save_identity.py"), "--check", str(si)], capture_output=True, text=True)
         self.assertEqual(chk.returncode, 0, chk.stderr)
 
+    def test_ipa_follow_up_keeps_unpack_for_next_platform(self):
+        # 剃刀 M21：同一次出包后面还有平台（followUp）→ 收尾不调 prune_build；缺省 / false 照调（期望按 pack/contracts/README.md 手写）。
+        #   只测收尾判断本身（ipa.prune_unless_follow_up），不跑整份 ipa.build（会留下解包状态影响别的用例）
+        import unittest.mock as um, ipa
+        for follow, want in ((True, 0), (False, 1), (None, 1)):
+            with self.subTest(followUp=follow):
+                self.c.r.pop("followUp", None)
+                if follow is not None:
+                    self.c.r["followUp"] = follow
+                with um.patch.object(library, "prune_build") as prune:
+                    pruned = ipa.prune_unless_follow_up(self.c, "0100000000000000")
+                self.assertEqual((prune.call_count, pruned), (want, bool(want)))
+        self.c.r.pop("followUp", None)
+
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
         # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
@@ -505,6 +527,7 @@ class JobsTests(unittest.TestCase):
         import cache_retention
         lines = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "current-title.ipa").write_bytes(b"new")
             if lines.get("done", True):
                 oneclick_done(args, o / "current-title.ipa", pack_id="current-pack", build_id="current-123", graphics_mode="direct")
@@ -586,6 +609,7 @@ class JobsTests(unittest.TestCase):
         res = self.root / "res"; (res / "Fonts").mkdir(parents=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
         miss = {"v": ["DLC 套装 A.nsp", "dlc_b.nsp"]}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "g.ipa").write_bytes(b"new")
             oneclick_done(args, o / "g.ipa", graphics_mode="direct", aoc_missing=miss["v"])
         home = self.root / "dn"; (home / "sdk/10.0.403").mkdir(parents=True); (home / "dotnet").write_text("")
@@ -689,6 +713,7 @@ class JobsTests(unittest.TestCase):
         fonts = self.root / "fonts"; fonts.mkdir()
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(env=env)
             out = Path(args[args.index("--out") + 1]); (out / "synthetic.ipa").write_bytes(b"synthetic IPA fixture")
             oneclick_done(args, out / "synthetic.ipa", graphics_mode="direct")
@@ -789,6 +814,17 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
+    def test_catalog_says_whether_keys_are_needed(self):
+        # 剃刀 W10：catalog 每款带 needsKeys，判据只有 library.KEYLESS_FORMATS 一份（前端不再各算一份格式名单）。
+        #   期望手写：NSP 原件 → 要；NUP 容器 / 解包目录（extract）→ 不要；NUP 本体 + NSP 的 DLC → 要
+        self.assertTrue(library.needs_keys([dict(format="nsp")]))
+        self.assertTrue(library.needs_keys([dict()]))   # 旧记录没有 format：按加密原件算（宁可提示导入密钥，不放过）
+        self.assertFalse(library.needs_keys([dict(format="nup"), dict(format="extract")]))
+        self.assertTrue(library.needs_keys([dict(format="nup"), dict(format="nsp")]))
+        game = self.game(packages=[self.package()]); self.catalogue([game])
+        out = library.catalog(self.c)
+        self.assertEqual(out["games"][0]["needsKeys"], library.needs_keys(library.selected_packages(game)))
+
     def test_space_budget_covers_measured_peaks(self):
         # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
         #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
@@ -844,8 +880,7 @@ class JobsTests(unittest.TestCase):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
                 self.assertIsNone(space_rule.direct_check(root, cache, out))
-        self.assertEqual(space_rule.direct_bytes(int(3e9)), library._pack_direct_bytes(int(3e9)))   # 取的就是预检那一份
-        self.assertEqual(space_rule.direct_bytes(int(3e9) - 1), library._pack_direct_bytes(int(3e9) - 1))
+        self.assertIs(library.pack_direct_bytes, space_rule.pack_direct_bytes)   # 预检与开工前复核是同一个函数（剃刀 H11：只在 space_rule 定义一份）
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
@@ -2073,6 +2108,24 @@ class JobsTests(unittest.TestCase):
         library.sweep_residue(c)
         self.assertFalse((out / "roots").exists())
         self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
+
+    def test_catalog_sweeps_and_prunes_only_on_startup_refresh(self):
+        # 剃刀 H14：残留清扫与任务目录清理只在启动器打开后那次刷新（startup: true）做；之后的刷新（装机页、导入完、切回窗口）都不做。
+        #   用真残留夹具：普通刷新后残留还在、清理没调；startup 刷新后残留清掉、清理调了一次
+        import unittest.mock as um
+        gid, out, _ = self.stopped_game()
+        pruned = []
+        with um.patch.object(library, "prune_jobs", lambda *a, **k: pruned.append(1)):
+            library.catalog(self.c)
+            self.assertTrue((out / "roots").exists())
+            self.assertEqual(pruned, [])
+            self.c.r["startup"] = True
+            try:
+                library.catalog(self.c)
+            finally:
+                self.c.r.pop("startup", None)
+        self.assertFalse((out / "roots").exists())
+        self.assertEqual(pruned, [1])
 
     def test_sweep_without_residue_never_takes_execution_lock(self):
         """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""

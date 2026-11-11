@@ -28,11 +28,12 @@ internal static unsafe class Program
         catch (DirectCompileException error)
         {
             if (code != null && error.Code != code)
-                Console.Error.WriteLine($"FAIL {what}: code={error.Code} want={code} ({error.Message})");
+            { Console.Error.WriteLine($"FAIL {what}: code={error.Code} want={code} ({error.Message})"); _failures++; }
             return;
         }
-        catch (Exception error) { Console.Error.WriteLine($"FAIL {what}: {error.GetType().Name} {error.Message}"); return; }
-        Console.Error.WriteLine("FAIL " + what + ": no exception");
+        catch (Exception error) { Console.Error.WriteLine($"FAIL {what}: {error.GetType().Name} {error.Message}"); _failures++; return; }
+        // 该抛没抛也算失败（原先这三条路只打印 FAIL、不计数，整份照样报 ok）
+        Console.Error.WriteLine("FAIL " + what + ": no exception"); _failures++;
     }
 
     private const ulong Sched = 0x001F8000FC0007E0UL, Exit = 0xE30000000007000FUL;
@@ -405,7 +406,7 @@ internal static unsafe class Program
             if (kind == "graphics")
             {
                 WriteStage(w, "vs", overrideCode ?? vs, 0);
-                WriteStage(w, "fs", overrideCode ?? fs, fsCbUse);
+                if (fs != null || overrideCode != null) WriteStage(w, "fs", overrideCode ?? fs, fsCbUse);   // fs 不给 = 只有顶点阶段的程序
             }
             else
             {
@@ -737,6 +738,15 @@ internal static unsafe class Program
                 "attachment variant changes content hash");
 
         // 5) 合成 CS。
+        // 只有顶点阶段的图形程序（只写深度的绘制）：结果里一个阶段，就是 vs，带 SPIR-V
+        using (JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(
+                   RequestJson(profile, "graphics", 1, 1, "req-vs-only", Guest(false, new[] { Ald4(0), Ast4Pos(0) })))))
+        {
+            JsonElement content = doc.RootElement.GetProperty("content");
+            Check(content.GetProperty("kind").GetString() == "graphics", "vs-only kind is graphics");
+            JsonElement stages = content.GetProperty("stages");
+            Check(stages.GetArrayLength() == 1 && stages[0].GetProperty("stage").GetString() == "vs", "vs-only: exactly one stage, vs");
+        }
         byte[] computeRequest = RequestJson(profile, "compute", 2, 1, "req-compute", cs: cs);
         using (JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(computeRequest)))
         {

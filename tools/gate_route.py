@@ -21,8 +21,9 @@ import fnmatch, os, re, subprocess, sys, tempfile
 TOK = re.compile(r'(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|c|h|m|mm|cc|cpp|swift|cs|tsv|mk|json)\b')   # 带目录的写法整段取（graphics/tools/shbake/xc_key.sh），见 refs
 LOCAL = ('tools/', 'pack/', 'tests/')   # 本线目录：单测覆盖面只在这里面推
 DOC = re.compile(r'^docs/|\.md$|^\.github/ISSUE_TEMPLATE/')   # 与 tools/gate_plan.sh GATE_DOC_RE 同一条
-# 无钩子路径（过渡，11-11 维护者：旧安卓三钩子删除）：android/ 眼下没有钩子认领，改到它不选钩子、也不算表外触发全跑；
-#   安卓线新 android/gate.sh 头里「# 门禁路由：android/ …」接上时删掉这一条（单测照旧按覆盖面路由）
+# 无钩子路径（过渡，11-11 维护者：旧安卓三钩子删除）：改到 android/ 不算表外、不触发钩子全跑（文件头路由点到的钩子照常选中，
+#   如安卓新层的 android/native/gfx_plat/gate.sh）；test_wired 也跳过这里旧层单测的接线检查（清空后约 162 处没接线，多是旧图形层单测）。
+#   留到安卓线删旧层源码那一笔一并删（单测照旧按覆盖面路由）
 NOHOOK = ('android/',)
 
 # 独立测试的显式覆盖合同（#925）：已有 shell 引用推导不解析 MSBuild 项目，

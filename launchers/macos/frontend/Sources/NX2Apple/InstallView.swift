@@ -39,8 +39,9 @@ struct InstallView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(loc.backend(job.stage.isEmpty ? job.message : job.stage)).font(.manrope(16, .bold)).lineLimit(1)
                     InlineProgress(session: job)
-                    // 钥匙串授权只在申请描述文件 / 签名这两步（pack/jobs/install.py sign_and_install 第 3、4 步）会弹；推资源包时还挂着它会让玩家以为在等授权（#266）
-                    if job.kind == .install, [3, 4].contains(job.progress.index ?? 0) {
+                    // 钥匙串授权只在后端标了 keychainPrompt 的阶段会弹（Apple ID 模式申请描述文件 / 签名；开发者证书模式不弹）；
+                    //   推资源包时还挂着它会让玩家以为在等授权（#266）。原先写死第 3、4 步，开发者证书模式第 4 步是「装到 iPhone」也挂了
+                    if job.kind == .install, job.progress.keychainPrompt {
                         Text(text("install.keychain")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在装到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
@@ -54,6 +55,8 @@ struct InstallView: View {
                         Text(loc.backend(failed.message)).font(.manrope(13)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                         CopyReportButton(model: model, gameID: gameID, operations: ["install", "installRemove", "installRestore"], fallback: failed.message)
                     }
+                    // 装到哪台：和出包页同一行；选过的那台不在线时如实说、让玩家改选（清单只看这台、每次现查）
+                    TargetDeviceRow(model: model).onChange(of: model.installDeviceID) { _ in model.checkInstall(gameID) }
                     if let r = model.installReadiness {
                         CardGroup(loc.t("s2arm.install.checklist"), footnote: footnote(r)) {
                             ForEach(r.items) { item in
@@ -146,11 +149,15 @@ struct InstallView: View {
             }
         }
         .task {
-            // 开着就每几秒问一次（旧启动器装机页同此）；关掉页面 Task 自动取消
+            // 开着、且启动器在前台时每几秒问一次（玩家插手机 / 点信任后界面自己变过来）；切到别的程序就不问（剃刀 M5：原先后台也一直起作业），
+            //   切回来立刻问一次（下面 didBecomeActive）；关掉页面 Task 自动取消
             while !Task.isCancelled {
-                if installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
+                if NSApp.isActive, installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
                 try? await Task.sleep(nanoseconds: Self.pollSeconds * 1_000_000_000)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
         }
         .onAppear { if model.phoneResult?.gameID == gameID { model.phoneResult = nil } }   // 回来看过结果，顶部胶囊收起
         .frame(width: 600, height: 520)
@@ -166,7 +173,12 @@ struct InstallView: View {
     private var doneContent: some View {
         VStack(spacing: 16) {
             SuccessSeal()
-            Text(text("install.done.title")).font(.manrope(30, .heavy)).tracking(-0.8)
+            // 写实际装上的那台（装机结果的 deviceKind / deviceName），不写死 iPhone
+            Text(text("install.done.title").replacingOccurrences(of: "{0}", with: model.installedTo.isEmpty ? "iPhone / iPad" : model.installedTo))
+                .font(.manrope(30, .heavy)).tracking(-0.8).multilineTextAlignment(.center).accessibilityIdentifier("install.done.title")
+            if model.installOpenToFinish {
+                Text(text("install.done.open")).font(.manrope(15, .semibold)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
             Text(text("install.done.trust")).font(.manrope(14)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             if game?.iphoneFree == true {
                 Text(text("install.done.free")).font(.manrope(13)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)

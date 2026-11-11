@@ -17,10 +17,13 @@ endif()
 option(S2A_ANDROID_VK_ENGINE "Build the shared NVN frontend + direct provider + nvn_vk backend into the APK" OFF)
 # 前端 mtl_* 的后端实现只剩 nvn_vk（nvn_vk_* + mtl_vk_adapter + mtl_vk_shim.c）。旧值 engine
 # 已删除；传旧值直接报错，不静默回退到别的后端。
-set(S2ARM_ANDROID_VK_BACKEND "nvn_vk" CACHE STRING "NVN backend behind the shared frontend: nvn_vk")
-set_property(CACHE S2ARM_ANDROID_VK_BACKEND PROPERTY STRINGS nvn_vk)
-if(NOT S2ARM_ANDROID_VK_BACKEND STREQUAL "nvn_vk")
-    message(FATAL_ERROR "S2ARM_ANDROID_VK_BACKEND=${S2ARM_ANDROID_VK_BACKEND}: the old 'engine' backend (d2r Vulkan replay engine) was deleted; use nvn_vk")
+# nvk = 新回放层（docs/设计_Vulkan回放层重搭.md）：回放核心 graphics/nvn/replay + nvn_gpu_* Vulkan 后端 + native/gfx_plat 平台件。
+# 这个取值下构建里不含旧回放与绘制源（mtl_vk_shim / mtl_vk_adapter / vk_record / nvn_vk_first_draw / nvn_vk_texcache …）。
+# 新层达标后删除 nvn_vk 取值与旧源，这个选项又回到只有一个取值。
+set(S2ARM_ANDROID_VK_BACKEND "nvn_vk" CACHE STRING "NVN backend behind the shared frontend: nvn_vk | nvk")
+set_property(CACHE S2ARM_ANDROID_VK_BACKEND PROPERTY STRINGS nvn_vk nvk)
+if(NOT S2ARM_ANDROID_VK_BACKEND MATCHES "^(nvn_vk|nvk)$")
+    message(FATAL_ERROR "S2ARM_ANDROID_VK_BACKEND=${S2ARM_ANDROID_VK_BACKEND}: the old 'engine' backend (d2r Vulkan replay engine) was deleted; use nvn_vk or nvk")
 endif()
 set(S2A_ANDROID_VAMM_LAYOUT "alias" CACHE STRING "Guest virtual memory layout: alias or balanced")
 set_property(CACHE S2A_ANDROID_VAMM_LAYOUT PROPERTY STRINGS alias balanced)
@@ -81,24 +84,32 @@ if(ANDROID)
             # Switch 2（NVN2）：hle_nvn.c 调 nvn2_on / nvn2_key / nvn2_device_*（graphics/nvn/gfx/nvn/nvn2.c，SHA-256 走 portable.c 的 CommonCrypto 兼容层）
             ../graphics/nvn/gfx/nvn/nvn2.c
             ../graphics/nvn/gfx/nvn/nvn_fps.c
-            "${CMAKE_CURRENT_BINARY_DIR}/nvn_names_android.c" native/nvn/nvn_be_android.c
+            "${CMAKE_CURRENT_BINARY_DIR}/nvn_names_android.c"
             # App 已经提供 now_ns/guest_ns/module_of，所以用去掉这几项的探针宿主 shim
             # （frontend_test_host.c 直接编进来会 duplicate symbol）。
             native/nvn/vk_engine_host_shim.c
             native/nvn/shader_survey.c)
         # 共享前端同样不跟本仓 -Werror（格式化串/聚合初始化在 Android 上按 64 位 long 处理）。
         set_source_files_properties(${s2a_frontend_c} PROPERTIES COMPILE_OPTIONS "-Wno-error")
-        # 共享前端的后端入口名是 main 的 nvn_be_*；本线 Android 后端仍以 mtl_* 实现。
-        # 本兼容头把标识符在编译期对齐（同一批函数、同一套签名），不改任何一方的函数体。
-        target_compile_options(s2arm_android PRIVATE
-            "$<$<COMPILE_LANGUAGE:C,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/native/nvn/nvn_be_compat.h>")
-        target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
-            native/nvn/mtl_vk_shim.c
-            # 帧时统计与 longframe 归因：Vulkan 侧模块，shim 只交本帧量到的数。
-            native/nvn/nvn_vk_frame_stats.c
-            # D 接口（批次 1）：提交完成事实/令牌持有（纯状态机，不碰 Vulkan；消费者在批次 2/3 接入）。
-            native/nvn/nvn_vk_completion.c
-            native/direct/provider_vk.c native/direct/profile_compose.c)
+        if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
+            # 新回放层直接实现 nvn_be_*：没有名字转接头，没有 shim。回放核心与后端源在 LinkSources.cmake 的 nvk 清单里。
+            target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
+                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c)
+            target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_BACKEND_NVK=1)
+        else()
+            # 共享前端的后端入口名是 main 的 nvn_be_*；本线 Android 后端仍以 mtl_* 实现。
+            # 本兼容头把标识符在编译期对齐（同一批函数、同一套签名），不改任何一方的函数体。
+            target_compile_options(s2arm_android PRIVATE
+                "$<$<COMPILE_LANGUAGE:C,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/native/nvn/nvn_be_compat.h>")
+            target_sources(s2arm_android PRIVATE ${s2a_frontend_c} native/nvn/nvn_be_android.c
+                native/nvn/mtl_vk_shim.c
+                # 帧时统计与 longframe 归因：Vulkan 侧模块，shim 只交本帧量到的数。
+                native/nvn/nvn_vk_frame_stats.c
+                # D 接口（批次 1）：提交完成事实/令牌持有（纯状态机，不碰 Vulkan；消费者在批次 2/3 接入）。
+                native/nvn/nvn_vk_completion.c
+                native/direct/provider_vk.c native/direct/profile_compose.c)
+        endif()
+        # S2A_ANDROID_VK_BACKEND_NVN_VK 是历史名，代码里的含义是「不是已删除的旧引擎」（vk_device.c 的必需特性表），两个取值都定义。
         target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_ENGINE=1 S2A_ANDROID_VK_BACKEND_NVN_VK=1)
     endif()
     # The JNI ABI this library is built against (native/jni_abi.py over the Java native declarations), a

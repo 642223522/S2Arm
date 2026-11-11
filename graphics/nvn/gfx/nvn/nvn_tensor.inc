@@ -16,7 +16,17 @@
 //   输入有效宽 = c[6].x × c[6].z × 输入图宽。整张输入图交 MetalFX 时有效画面只落在输出左上、其余是输入图里没画的区域。
 //   规则：带平方的出口层、绑定恰好 1 张贴图 + 1 张图 + 1 个推常量槽 → 按本次派发的推常量给 MetalFX 设输入内容宽高；输出区域不是整张图时先放大进同尺寸临时图，
 //   再拷到输出图的起点。参数不成立（宽高 ≤ 0、步长非正 / 非有限、越出图）报红一次、照整张图做
-static uint64_t g_tensor_skip, g_tensor_up, g_tensor_red;
+static uint64_t g_tensor_skip, g_tensor_up, g_tensor_red, g_tensor_off;
+// 诊断开关 DM_NVN_TENSOR_STANDIN=0（11-11 #376 / #464：M1 主机模式 Metal 4 进场景后 GPU 挂死，顶替用的 Metal 4 版 MetalFX 空间放大是头号嫌疑）：网络照旧不派发，
+//   出口层也不做顶替（不平方、不调 MetalFX、不拷），输出图这一遍不写——画面不对，只为判挂死是不是顶替引起的。缺省（不设 / 其他值）照旧顶替，零变化
+static int g_tensor_standin_on = -1;
+static int tensor_standin_decide(const char *e) { return !(e && *e == '0'); }   // =0：关；不设或其他值：开（同 DM_NVN_GMEM）
+static int tensor_standin_enabled(void) {
+    if (g_tensor_standin_on < 0) { const char *e = getenv("DM_NVN_TENSOR_STANDIN");
+        g_tensor_standin_on = tensor_standin_decide(e);
+        MLOG("张量核网络顶替：%s（DM_NVN_TENSOR_STANDIN %s）", g_tensor_standin_on ? "开，出口层用 MetalFX 空间放大写输出图" : "关（诊断）：出口层不顶替，输出图不写", e && *e ? e : "未设"); }
+    return g_tensor_standin_on;
+}
 static NvDlss *g_tensor_fx[4];
 static id<MTLTexture> g_tensor_sq_tex[4]; static unsigned g_tensor_sq_n;
 static uint64_t g_tensor_sq_runs, g_tensor_rect_runs;
@@ -124,6 +134,7 @@ static id<MTLTexture> tensor_write_view(id<MTLTexture> v) {
 }
 // 派发一个带 HMMA 的计算程序时调（dispatch）：不派发它；它写图就把读到的低分辨率画面放大进去
 static void tensor_standin(NvShader *cs) {
+    if (!tensor_standin_enabled()) { g_tensor_off++; return; }   // 诊断关（见 g_tensor_standin_on）
     pthread_mutex_lock(&g_rmu);
     int otid = -1;
     for (int i = 0; i < cs->rf.nb && otid < 0; i++) { const nvn_rbind *b = &cs->rf.b[i]; if (b->kind == NVN_RB_IMG && b->reg < 32) { int tid = (int)(S.img[5][b->reg] & 0xfffff); if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) otid = tid; } }

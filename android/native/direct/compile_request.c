@@ -646,6 +646,13 @@ int s2a_compile_request_build(const struct s2a_compile_request_input *in,
     } else {
         (void)append_gap(gaps, gaps_size, "program.textureArrayLength", "NVN 纹理描述符池容量");
     }
+    if (in->handle_table_entries) {
+        sb_puts(&b, ",");
+        sb_json_string(&b, "textureBufferLengths");
+        sb_puts(&b, ":{");
+        sb_key_u32(&b, "2", in->handle_table_entries);
+        sb_puts(&b, "}");
+    }
     sb_puts(&b, ",");
     sb_json_string(&b, "transformFeedbackEnabled");
     sb_puts(&b, ":");

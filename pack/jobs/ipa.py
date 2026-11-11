@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from core import Failure, contained, read, release_version
+from core import Failure, contained, display_version, read, release_version
 import layout
 
 
@@ -322,11 +322,10 @@ def _build(c):
     # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
-    from library import prune_build
     c.begin("清理出包中间产物")
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
-    prune_build(c, gid)
+    prune_unless_follow_up(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, **compiler_policy)
     from cache_retention import engine_installed_at, prune_tool_keys
     prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 当前引擎用不到的工具缓存旧键（NativeAOT / libvpx / opus / dav1d）
@@ -353,6 +352,16 @@ def _build(c):
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
+
+
+def prune_unless_follow_up(c, gid):
+    """出包收尾清本款解包与中间产物；请求带 followUp（同一款这次还要接着出别的平台）时先不清，留给下一个平台（pack/contracts/README.md，剃刀 M21）。返回是否清了"""
+    if c.r.get("followUp") is True:
+        c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
+        return False
+    from library import prune_build
+    prune_build(c, gid)
+    return True
 
 
 def refresh_library_ipa(c):
@@ -408,11 +417,12 @@ def to_img(c, gid, root, pack_dir):
     """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
     多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
-    r = subprocess.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()],
-                       cwd=c.engine, env=c.env(), capture_output=True, text=True)
-    if r.returncode:
-        tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
-        raise Failure("写单一 IMG（game.img）失败：" + (tail[-1] if tail else f"退出 {r.returncode}"), code="package_failed")
+    log = c.logs / "img.log"
+    try:   # 走 c.run：它每秒读 S2A_PROGRESS，img.py 按已写字节报进度，出包页这一步有进度条（几十 GB 要写一两分钟）
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()], log, c.env(), cwd=c.engine)
+    except Failure as e:
+        from errors import tool_reason
+        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
 
 def current_shell_id(c):
@@ -520,7 +530,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
-               "--version", release_version(c.engine),
+               "--version", release_version(c.engine), "--display-version", display_version(c.engine),
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""

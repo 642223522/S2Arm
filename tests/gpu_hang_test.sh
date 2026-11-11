@@ -6,6 +6,7 @@
 #   ③ 在 $(…) 子 shell 里连续调用，偏移照样带到下一次（状态在文件里）
 #   ④ 文件变短（轮转 / 整份重写）→ 从头扫，命中新文件里的签名
 #   ⑤ 签名正好跨在上次扫到的位置（前半已扫、后半新写）→ 回看 4 KB，不漏
+#   ⑦ 不给 S2A_GPU_HANG_STATE_DIR：状态写在被扫文件旁边、TMPDIR 里不新增 s2a_gpu_hang.*（11-11：原先积了 6400 多个）
 #   ⑥ 大文件：64 MB 已扫过后只追加 1 行 → 命中；两次用时打出来看（不按耗时判）
 # 门禁覆盖：tools/gpu_hang.sh
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
@@ -37,4 +38,8 @@ t0=$(python3 -c 'import time; print(time.time())'); s2a_gpu_hang "$k" > /dev/nul
 echo "$SIG" >> "$k"; o=$(s2a_gpu_hang "$k"); r7=$?; t2=$(python3 -c 'import time; print(time.time())')
 d1=$(python3 -c "print(round($t1 - $t0, 3))"); d2=$(python3 -c "print(round($t2 - $t1, 3))")
 ck "⑥ 64 MB：首扫 ${d1} 秒、追加 1 行后再扫 ${d2} 秒（读数只打出来看；只读新增部分由 ② 按事件证明，不按耗时判，免得负载高时偶发）、命中（实 ${r7}）" '[ $r7 = 0 ]'
+# ⑦ 不给状态目录：写在被扫文件旁边，TMPDIR 不新增
+u=$T/u.log; echo 帧 > "$u"; n0=$(ls -f "${TMPDIR:-/tmp}" | grep -c '^s2a_gpu_hang\.')
+( unset S2A_GPU_HANG_STATE_DIR; s2a_gpu_hang "$u" > /dev/null; true ); n1=$(ls -f "${TMPDIR:-/tmp}" | grep -c '^s2a_gpu_hang\.')
+ck "⑦ 状态在被扫文件旁（$(ls -a $T | grep -c 'u.log.gpu_hang_pos') 个）、TMPDIR 没新增（${n0} → ${n1}）" '[ "$(ls -a $T | grep -c "u.log.gpu_hang_pos")" = 1 ] && [ "$n1" -le "$n0" ]'
 [ $bad = 0 ] && echo "gpu_hang 单测全过" || { echo "gpu_hang 单测有不通"; exit 1; }

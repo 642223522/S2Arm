@@ -72,6 +72,15 @@ def sph_stage(code):
 STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # shader_map.tsv column 3
 
 def red(msg): sys.exit('[RED] ' + msg)
+# 直连包一条记录：'BTCDBTCD' + 0x38 头（+0x28 控制段长、+0x2c 代码长）+ 代码 + 控制段。读这些记录的都按 BTCDBTCD 分记录、按头里的长度切代码 / 控制段
+#   （graphics/tools/direct/dsh/batch/PkgRead.cs Split、graphics/tools/direct/merge_extract.py、android/tools/direct_prepare.py），没有按 CTL_MAGIC 找控制段的。
+#   原先代码区里出现 CTL_MAGIC 四个字节就整批退出（为早已不在仓库里的 dmsh_build），一支着色器碰巧含这四字节，整款离线直连库就是 0 支（#477）：改成只记一行。
+#   分隔符出现在记录里仍然退出：按 BTCDBTCD 分记录的读法会真的切错
+def pkg_record(key, ctl, code):
+    rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
+    if rec.find(CTL_MAGIC) != 0x38 + len(code): print(f'[WARN] key {key}: the control magic also appears in the code area; readers cut by the header lengths, kept', flush=True)
+    if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
+    return rec
 
 def ctl_len(ctl):
     if ns2.is_nvn2(ctl): return ns2.KEY_CTL   # Switch 2: see ns2_shaders.py
@@ -1561,9 +1570,7 @@ def main():
     for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
         where, st, ctl, code = keys[key]
         name = f'{st}_{group(where)}.bin'
-        rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
-        if rec.find(CTL_MAGIC) != 0x38 + len(code): red(f'key {key}: the control magic appears in the code area, dmsh_build would split the record wrongly')
-        if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
+        rec = pkg_record(key, ctl, code)
         rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
         if st == 'cs':
             nvn2 = ns2.is_nvn2(ctl)

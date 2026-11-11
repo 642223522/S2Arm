@@ -82,9 +82,14 @@ public struct DevCertStatus: Equatable {
 /// 装好的结果。
 public struct InstallResult: Equatable {
     public let device: String
+    /// 实际装上的那台：类型「iPhone」/「iPad」与设备名（完成页、顶部胶囊写这个，不写死 iPhone；Windows 拿不到设备名时为空）
+    public var deviceKind: String = ""
+    public var deviceName: String = ""
     /// 推到手机上的资源包文件数（没推为 nil）。
     public let packFiles: Int?
     public let outputPath: String?
+    /// 这次推的全是单一 IMG：已传到手机、打开 S2Arm 会自动完成安装（作业结果 openToFinish）
+    public var openToFinish: Bool = false
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -116,15 +121,15 @@ public final class InstallService {
     public init(client: JobClient) { self.client = client }
 
     /// 装机前清单。只读：不申请描述文件、不签名、不碰设备上的 App。
-    /// device：要装的那台（连着多台时出包页选中的），和 install 带的同一台；nil = 作业层按「有线优先」挑
+    /// device：玩家选的那台（清单只看它、每次现查；不给时作业不替玩家挑，「已连上」那项不打勾）
     public func readiness(gameId: String, device: String? = nil) async throws -> InstallReadiness {
         var extra: [String: Any] = ["gameId": gameId]
-        if let device { extra["device"] = device }
+        if let device, !device.isEmpty { extra["device"] = device }
         return InstallReadiness(result: try await client.perform("installCheck", extra: extra).result)
     }
 
     /// 装。
-    /// device：要装的那台（UDID / 设备名）；不给时作业按「有线优先、只有一台」自己挑（pack/jobs/install.py _pick_device）
+    /// device：要装的那台（UDID / 设备名），必须给：作业层不替玩家挑，不给即报 device_required（pack/jobs/install.py phone）
     /// acceptDropped：玩家已确认「手机上只在别的电脑装过的游戏这次带不上」（作业层 container_would_drop 之后再点）
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
@@ -132,8 +137,8 @@ public final class InstallService {
         if let teamId, !teamId.isEmpty { extra["teamId"] = teamId }
         if let device, !device.isEmpty { extra["device"] = device }
         let r = try await client.perform("install", extra: extra, events: events).result
-        return InstallResult(device: r["device"] as? String ?? "", packFiles: (r["packFiles"] as? NSNumber)?.intValue,
-                             outputPath: r["outputPath"] as? String)
+        return InstallResult(device: r["device"] as? String ?? "", deviceKind: r["deviceKind"] as? String ?? "", deviceName: r["deviceName"] as? String ?? "",
+                             packFiles: (r["packFiles"] as? NSNumber)?.intValue, outputPath: r["outputPath"] as? String, openToFinish: r["openToFinish"] as? Bool ?? false)
     }
 
     // ---- 开发者证书（v0.2.4，pack/jobs/devcert.py）----
@@ -174,18 +179,22 @@ public final class InstallService {
 
     /// 更新 iPhone 上的 S2Arm（installUpdate 作业，install.update_phone）：本版壳 + 已有程序模块，只装 App；
     ///   有要重新出包的款且没 acceptStale → 作业以 container_stale 失败（界面先问玩家）
-    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
-        try await client.perform("installUpdate", extra: acceptStale ? ["acceptStale": true] : [:], events: events).result
+    ///   device：连着多台时装到哪台（同 install；不给 = 只连着一台）
+    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        var extra: [String: Any] = acceptStale ? ["acceptStale": true] : [:]
+        if let device { extra["device"] = device }
+        return try await client.perform("installUpdate", extra: extra, events: events).result
     }
 
     /// 装回只换宿主前的那一版手机 S2Arm（installRestore 作业，pack/jobs/install.py restore_previous）。
-    public func restorePrevious(events: EventSink = .discard) async throws {
-        _ = try await client.perform("installRestore", extra: [:], events: events)
+    public func restorePrevious(device: String? = nil, events: EventSink = .discard) async throws {
+        _ = try await client.perform("installRestore", extra: device.map { ["device": $0] } ?? [:], events: events)
     }
 
     /// 从手机容器删一款（installRemove 作业）。
-    public func remove(gameId: String, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> RemoveResult {
+    public func remove(gameId: String, acceptDropped: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> RemoveResult {
         var extra: [String: Any] = ["gameId": gameId]
+        if let device, !device.isEmpty { extra["device"] = device }
         if acceptDropped { extra["acceptDropped"] = true }
         let r = try await client.perform("installRemove", extra: extra, events: events).result
         return RemoveResult(result: r)
