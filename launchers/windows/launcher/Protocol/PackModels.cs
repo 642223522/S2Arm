@@ -173,20 +173,16 @@ public sealed record InstallReadiness(IReadOnlyList<InstallItem> Items, bool Rea
             var items = new List<InstallItem>();
             foreach (var i in result.GetProperty("items").EnumerateArray())
             {
+                // 剃刀 W7：不认识的动作、不安全的链接只忽略这一项（这一项不给按钮 / 链接），不再整份清单作废——
+                //   原先后端加一个新动作，前端就当「这次没查到手机状态」，玩家只能盲装
                 Uri? url = null;
-                if (i.TryGetProperty("url", out var u) && u.ValueKind != JsonValueKind.Null)
-                {
-                    if (u.ValueKind != JsonValueKind.String || !Uri.TryCreate(u.GetString(), UriKind.Absolute, out url) ||
-                        url.Scheme != Uri.UriSchemeHttps || url.Host.Length == 0 || url.UserInfo.Length != 0)
-                        throw new LibraryProtocolException("Invalid official download URL.");
-                }
+                if (i.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String &&
+                    Uri.TryCreate(u.GetString(), UriKind.Absolute, out var parsed) &&
+                    parsed.Scheme == Uri.UriSchemeHttps && parsed.Host.Length != 0 && parsed.UserInfo.Length == 0)
+                    url = parsed;
                 string? action = null;
-                if (i.TryGetProperty("action", out var a) && a.ValueKind != JsonValueKind.Null)
-                {
-                    if (a.ValueKind != JsonValueKind.String || !InstallItem.Actions.Contains(a.GetString()!))
-                        throw new LibraryProtocolException("Unknown checklist action.");
+                if (i.TryGetProperty("action", out var a) && a.ValueKind == JsonValueKind.String && InstallItem.Actions.Contains(a.GetString()!))
                     action = a.GetString();
-                }
                 items.Add(new(LibraryJobResult.Text(i, "id"), i.GetProperty("ok").GetBoolean(),
                     i.TryGetProperty("waiting", out var w) && w.GetBoolean(), LibraryJobResult.Text(i, "title"),
                     LibraryJobResult.Text(i, "detail", true), i.TryGetProperty("who", out var who) ? who.GetString() ?? "" : "", url, action));

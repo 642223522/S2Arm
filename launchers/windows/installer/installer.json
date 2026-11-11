@@ -1,0 +1,9 @@
+{
+  "tool": "Inno Setup",
+  "version": "6.7.4",
+  "url": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe",
+  "sha256": "a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c",
+  "signer": "Pyrsys B.V.",
+  "license": "Inno Setup License（宽松许可，可随产品分发安装程序运行部分；原文随 Inno Setup 安装在 license.txt）",
+  "note": "Windows 出包机装法：innosetup-6.7.4.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /NORESTART /NOICONS /DIR=<目录>；装前核 sha256 与 Authenticode 签名"
+}

@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Combine
 @testable import NX2AppleUI
 @testable import S2ArmAppleAdapter
 
@@ -38,6 +39,23 @@ import AppKit
         XCTAssertEqual(m.games.map(\.id), ["0100A"], "失败不清空列表")
         XCTAssertTrue(m.showingSnapshot, "失败后仍标成上次的列表")
         XCTAssertEqual(m.staleLibraryError, m.libraryError)
+    }
+
+    // 剃刀 M8：正在列时又要刷新，不再丢掉——这一轮列完再补列一次；期间挂的回调归补的那一轮。期望手写：加载开始 2 次，回调各 1 次、按先后
+    func testRefreshDuringLoadIsQueuedNotDropped() async throws {
+        // 假作业：睡 0.3 秒、不出结果就退出（列表作业真的「在列」一段时间再失败，不依赖真后端）
+        let jobs = root.appendingPathComponent("Jobs"); try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        try Data("import time\ntime.sleep(0.3)\n".utf8).write(to: jobs.appendingPathComponent("main.py"))
+        let m = try model(snapshot: false)
+        var starts = 0, order: [String] = []
+        let watch = m.$loading.sink { if $0 { starts += 1 } }
+        m.refresh { order.append("first:\(starts)") }
+        XCTAssertTrue(m.loading)
+        m.refresh { order.append("second:\(starts)") }   // 列的过程中又要刷新
+        for _ in 0..<400 where order.count < 2 || m.loading { try? await Task.sleep(nanoseconds: 25_000_000) }
+        watch.cancel()
+        XCTAssertEqual(starts, 2, "补列了一次")
+        XCTAssertEqual(order, ["first:1", "second:2"], "第二个回调等补的那一轮列完才调")
     }
 
     func testFailureWithoutSnapshotShowsNoStaleBanner() async throws {

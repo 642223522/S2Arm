@@ -124,12 +124,18 @@ def app_path(c):
     return c.private / "game-settings.json"
 
 
+# 改过取值的项：旧存档里的值照新值认（11-11 手柄按键对应「按字母 / 按位置」改成「自动 / Switch 布局 / Xbox 布局」；
+#   按字母一直就是自动的行为，按位置 = Switch 布局），不然旧值不合定义表、玩家选过的「按位置」会被当没选
+LEGACY_VALUES = {"padFace": {"letter": "auto", "position": "switch"}}
+
+
 def load_app(c):
     try:
         data = json.loads(app_path(c).read_text())
     except (OSError, ValueError):
         data = {}
     settings = data.get("settings") if isinstance(data, dict) and isinstance(data.get("settings"), dict) else {}
+    settings = {k: LEGACY_VALUES.get(k, {}).get(v, v) if isinstance(v, str) else v for k, v in settings.items()}
     return dict(schema=1, settings=settings)
 
 
@@ -301,14 +307,16 @@ def launch_env(c, gid):
         env["S2A_SCALING_FILTER"] = "MetalFX"   # 画面增强模式 = 直连上屏 MetalFX 空间放大（graphics/nvn/gfx/nvn/nvn_present_fx.inc）
     if "docked" in s:
         env["S2A_DOCKED"] = "1" if s["docked"] == "docked" else "0"
+    if s.get("language", "system") != "system":
+        env["S2A_SYSTEM_LANGUAGE"] = s["language"]   # 游戏语言：值就是宿主枚举名（services/S2A.Services/Host.cs PickLanguage）；跟随系统不设，宿主读系统首选语言
     if s.get("hud") is True:
         env["S2A_HUD"] = "1"              # S2Arm 诊断浮层：front_mac.m 绘制，hud.c 格式化
     if s.get("rumble") is False:
         env["S2A_RUMBLE"] = "0"           # 手柄震动关（macos/front_mac.m）
     if "rumbleLevel" in s:
         env["S2A_RUMBLE_SCALE"] = str(table["rumbleLevel"]["scale"][s["rumbleLevel"]])
-    if s.get("padFace") == "position":
-        env["S2A_PAD_FACE"] = "position"  # 手柄按键对应：按 Switch 的按键位置（缺省按字母；宿主口径见主线线 fix/pad-xbox-1109）
+    if s.get("padFace") in ("switch", "xbox"):
+        env["S2A_PAD_FACE"] = s["padFace"]  # 手柄按键布局：玩家手动选的 Switch / Xbox 布局（缺省自动不设；宿主 runtime/src/pad.c s2a_pad_layout）
     if s.get("motion") is False:
         env["S2A_MOTION"] = "0"           # 体感关：不开手柄六轴（macos/front_mac.m）
     if s.get("diagRun") is True:

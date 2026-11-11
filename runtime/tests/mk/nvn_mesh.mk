@@ -2,7 +2,8 @@
 NATIVE_TEST_OWN += nvn_mesh
 ifeq ($(shell uname -s),Darwin)
 # NVN2 任务 / 网格绘制（DrawMeshTasks / DrawMeshTasksIndirect，11-05 时之笛）：夹具库按 KIND 编三份（任务 / 有任务的网格 / 无任务的网格），经产品的 draw() 画到离屏目标读回列掩码。
-#   两套后端（Metal 4、NXGAL_BE=mtl3 强制 Metal 3）× 编码线程（录制回放）关 / 开 各跑一遍
+#   两套后端（Metal 4、NXGAL_BE=mtl3 强制 Metal 3）× 编码线程（录制回放）关 / 开 各跑一遍；另开 Metal 校验层（MTL_DEBUG_LAYER=1）两套后端各一遍：
+#   网格管线不得把网格函数设成顶点函数（11-11 #376：校验层在 setVertexFunction 断言中止 rc=134，挡住玩家开校验层查挂死）
 NVN_MESH_LIB := $(BUILD)/tests/mesh
 $(NVN_MESH_LIB)/1111111111111111_b.metallib: graphics/nvn/tests/t_nvn_mesh.metal
 	@mkdir -p $(dir $@)
@@ -28,5 +29,7 @@ native-test-nvn_mesh: $(BUILD)/tests/t_nvn_mesh $(NVN_MESH_LIBS)
 	DM_NVN_ENC_THREAD=1 T_MESH_LIB=$(abspath $(NVN_MESH_LIB)) timeout 120 $(BUILD)/tests/t_nvn_mesh
 	NXGAL_BE=mtl3 DM_NVN_ENC_THREAD=0 T_MESH_LIB=$(abspath $(NVN_MESH_LIB)) timeout 120 $(BUILD)/tests/t_nvn_mesh
 	NXGAL_BE=mtl3 DM_NVN_ENC_THREAD=1 T_MESH_LIB=$(abspath $(NVN_MESH_LIB)) timeout 120 $(BUILD)/tests/t_nvn_mesh
+	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=0 T_MESH_LIB=$(abspath $(NVN_MESH_LIB)) timeout 120 $(BUILD)/tests/t_nvn_mesh
+	MTL_DEBUG_LAYER=1 NXGAL_BE=mtl3 DM_NVN_ENC_THREAD=0 T_MESH_LIB=$(abspath $(NVN_MESH_LIB)) timeout 120 $(BUILD)/tests/t_nvn_mesh
 TEST_TARGETS += native-test-nvn_mesh
 endif

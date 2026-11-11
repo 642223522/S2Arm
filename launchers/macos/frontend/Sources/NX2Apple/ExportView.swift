@@ -135,7 +135,7 @@ struct ExportView: View {
                 ForEach(ExportPlatform.allCases) { platform in tile(platform) }
             }
             locationRow
-            if model.exportTargets.contains(.ios) { deviceRow; InstallModeLine(model: model) }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
+            if model.exportTargets.contains(.ios) { TargetDeviceRow(model: model); InstallModeLine(model: model) }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
             if let error = model.choiceError {
                 Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
             }
@@ -187,47 +187,6 @@ struct ExportView: View {
         if panel.runModal() == .OK, let url = panel.url { pickedLocation = url.path; location = url.path; model.loadLocations(probe: url.path) }
     }
 
-    /// 目标设备：连着手机就按它优化；没连提醒插上，也可以选机型（不挡出包）。
-    private var deviceRow: some View {
-        let device = model.selectedDevice
-        let name = (device?["model"] as? String) ?? (device?["name"] as? String) ?? ""
-        let many = model.connectedDevices.count > 1
-        return HStack(spacing: 12) {
-            Image(systemName: "iphone").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
-            Text(device == nil ? x("device.none") : many ? x("device.many") : x("device.connected").replacingOccurrences(of: "{0}", with: name))
-                .font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 12)
-            // 连着两台以上（#272）：列出每台，选中的那台用于按机型优化和装到设备，记住到下次
-            if many {
-                Picker(x("device.choose"), selection: Binding(get: { device?["id"] as? String }, set: { model.chosenDevice = $0 })) {
-                    ForEach(Array(model.connectedDevices.enumerated()), id: \.offset) { _, d in
-                        Text(deviceLabel(d)).tag(d["id"] as? String)
-                    }
-                }
-                .labelsHidden().frame(width: 300).accessibilityIdentifier("export.device")
-            }
-            if device == nil, !model.targetModels.isEmpty {
-                Picker(x("device.pick"), selection: $model.chosenModel) {
-                    Text(x("device.default")).tag(String?.none)
-                    ForEach(Array(model.targetModels.enumerated()), id: \.offset) { _, m in
-                        Text(m["name"] as? String ?? "").tag(m["productType"] as? String)
-                    }
-                }
-                .labelsHidden().frame(width: 190)
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
-        .padding(.top, 4)
-        .task { while !Task.isCancelled { await model.refreshTargets(); try? await Task.sleep(nanoseconds: 5_000_000_000) } }
-    }
-
-    /// 「名字 · 机型 · iOS 版本 · 有线 / 同一网络」
-    private func deviceLabel(_ d: [String: Any]) -> String {
-        let os = (d["os"] as? Int).map { "iOS \($0)" } ?? ""
-        let link = d["wired"] as? Bool == true ? x("device.wired") : x("device.network")
-        return [d["name"] as? String ?? "", d["model"] as? String ?? "", os, link].filter { !$0.isEmpty }.joined(separator: " · ")
-    }
 
     private func note(_ platform: ExportPlatform) -> String {
         switch platform {
@@ -302,8 +261,6 @@ struct ExportView: View {
         case .noPlatform: return loc.t("s2arm.export.block.noPlatform")
         case .game(let text): return loc.backend(text)
         case .keys: return loc.t("s2arm.export.block.keys")
-        case .checking: return loc.t("s2arm.env.checking")
-        case .environment: return loc.t("s2arm.export.block.environment")
         case .busy: return loc.t("s2arm.export.block.busy")
         case .alreadyQueued: return loc.t("s2arm.export.block.alreadyQueued")
         }
@@ -317,10 +274,6 @@ struct ExportView: View {
                 Label(reason(blocker), systemImage: "info.circle").font(.manrope(13)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("export.reason")
-                if blocker == .environment {
-                    Button(loc.t("s2arm.export.openEnvironment")) { model.showEnvironment = true }
-                        .buttonStyle(LauncherSecondaryButtonStyle())
-                }
                 if blocker == .keys {
                     Button(x("fix.keys")) { model.showKeys = true }.buttonStyle(LauncherSecondaryButtonStyle())
                 }

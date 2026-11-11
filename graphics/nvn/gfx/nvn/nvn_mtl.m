@@ -1,4 +1,5 @@
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
+// S2Arm 2026-11-09: feedback checks include distinct NVN objects sharing host texture storage.
 // 弱链接[host,ios]：mtl_tab_selftest（本文件定义；宿主与 iOS 链接行沿用原清单放行，runtime/build.mk 自动收）
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -983,12 +984,16 @@ static vis_list *vis_snapshot(void) {
 }
 // Target ranges of buffer writes (copies / inline uniform updates) already encoded in this submission but not yet executed on the GPU: reading these addresses on the CPU side at encode time yields old values (uv_proof avoids them when reading uniforms)
 // Inline updates keep where their data sits in the update ring (g_pend_upd: index + 1 into g_upd), so a bindless handle they wrote can be read as the GPU will see it (pend_read).
-// Monster Hunter Rise queues more than 256 writes in a submission (the old limit, after which every address counted as written). The writes are indexed by 4 KB page (a chain per hash
-// bucket, newest first); a write over more than PEND_SPAN pages goes to a short list that every lookup scans
-enum { PEND_MAX = 8192, PEND_HB = 2048, PEND_NODES = 16384, PEND_SPAN = 8, PEND_WIDE = 256 };
-static uint64_t g_pend_lo[PEND_MAX], g_pend_hi[PEND_MAX]; static int g_npend, g_pend_over; static uint8_t g_pend_kind[PEND_MAX]; static uint16_t g_pend_upd[PEND_MAX];   // kind: 1 inline update, 2 copy, 3 fill
+// The writes are indexed by 4 KB page (a chain per hash bucket, newest first); a write over more than PEND_SPAN pages goes to a short list that every lookup scans.
+// The list grows as a submission needs it and keeps its size for the next (pend_room). It used to stop at a fixed count (256, then 8,192), and past it the submission counted as a
+// write anywhere (g_pend_over): every partly covered uniform shadow was refused, so every draw that read one ended its render pass. One Switch 2 title's boss stage queues about
+// 11,000 writes in a submission (7 inline uniform updates before each of about 1,550 occlusion queries on a 6400x6400 map) and stayed at 1-2 fps past the old limit.
+// A write anywhere is left for a list that cannot grow (no memory) and a full wide list. Ported from nxnative 6d5ed7184 (MIT)
+enum { PEND_HB_BITS = 13, PEND_HB = 1 << PEND_HB_BITS, PEND_SPAN = 8, PEND_WIDE = 256 };
+static uint64_t *g_pend_lo, *g_pend_hi; static int g_npend, g_pend_over, g_pend_cap; static uint8_t *g_pend_kind; static uint32_t *g_pend_upd;   // kind: 1 inline update, 2 copy, 3 fill
 static int32_t g_pend_head[PEND_HB]; static uint32_t g_pend_hgen[PEND_HB], g_pend_gen = 1;   // a bucket's chain is valid when its generation is this submission's
-static struct { int32_t e, next; } g_pend_node[PEND_NODES]; static int g_npnode;
+typedef struct { int32_t e, next; } pend_node;
+static pend_node *g_pend_node; static int g_npnode, g_pnode_cap;
 static int32_t g_pend_wide[PEND_WIDE]; static int g_nwide;
 // The newest write per byte, by 4 KB page (pend_last): each page this submission wrote holds sorted, disjoint segments {lo, hi, e} of its bytes, e the newest write over them
 //   (writes are numbered in order, so a new write simply takes over its range). A lookup is a binary search plus the segments that actually overlap, instead of walking every
@@ -1025,7 +1030,20 @@ static void pseg_put(uint64_t page, unsigned lo, unsigned hi, int e) {
     memmove(&v[i + k], &v[j], sizeof(pseg) * (size_t)(n - j)); memcpy(&v[i], rep, sizeof(pseg) * (size_t)k); g_psp[h].n = n - (j - i) + k;
 }
 typedef struct { uint64_t lo; size_t off; __unsafe_unretained id<MTLBuffer> buf; } upd_ent;   // the ring block lives until this submission completes (mtl_sub_update)
-static upd_ent g_upd[PEND_MAX]; static int g_nupd;
+static upd_ent *g_upd; static int g_nupd;   // one per entry at most: sized with the entries
+static int *g_ubp_idx;   // every entry a lookup can meet (pend_since): at most one per node of the range's chains, plus the wide list
+static int pend_grow(void **p, size_t n, size_t each) { void *q = realloc(*p, n * each); if (!q) return 0; *p = q; return 1; }
+// Room for one more entry and nodes more nodes: 0 when memory runs out (the caller counts the write as one anywhere)
+static int pend_room(int nodes) {
+    if (g_npend == g_pend_cap) { if (g_pend_cap > INT_MAX / 2) return 0; int c = g_pend_cap ? g_pend_cap * 2 : 4096;
+        if (!pend_grow((void **)&g_pend_lo, c, sizeof *g_pend_lo) || !pend_grow((void **)&g_pend_hi, c, sizeof *g_pend_hi) || !pend_grow((void **)&g_pend_kind, c, sizeof *g_pend_kind)
+            || !pend_grow((void **)&g_pend_upd, c, sizeof *g_pend_upd) || !pend_grow((void **)&g_upd, c, sizeof *g_upd)) return 0;   // a grown array kept at its new size is only spare room
+        g_pend_cap = c; }
+    if (!g_pnode_cap || g_npnode + nodes > g_pnode_cap) { int c = g_pnode_cap ? g_pnode_cap : 8192; while (c < g_npnode + nodes) { if (c > INT_MAX / 2) return 0; c *= 2; }
+        if (!pend_grow((void **)&g_pend_node, c, sizeof *g_pend_node) || !pend_grow((void **)&g_ubp_idx, (size_t)c + PEND_WIDE, sizeof *g_ubp_idx)) return 0;
+        g_pnode_cap = c; }
+    return 1;
+}
 // Other writes to guest memory in this submission, which the pend list does not hold: writable storage buffers bound to a shader, texture→buffer copies, counter reports (ubp_get).
 // Kept by 4 KB page (Breath of the Wild's particle dispatches bind about ten storage buffers each, hundreds a frame): a set of pages tagged with the submission (g_pend_gen) and with what
 // wrote them. A counter report does not count against this submission's shadows: the host writes reports on the CPU when the whole submission has completed, so no draw of it reads one
@@ -1062,15 +1080,17 @@ static void sbw_note(uint64_t lo, uint64_t n, int src) {
     g_sbw_memo[m].lo = lo; g_sbw_memo[m].n = n; g_sbw_memo[m].gen = g_pend_gen; g_sbw_memo[m].src = (uint8_t)(had | src);   // only after every page went in
 }
 static int sbw_hits(uint64_t lo, uint64_t hi) { if (!g_nsbw) return 0; for (uint64_t pg = lo >> 12; pg <= (hi - 1) >> 12; pg++) { int k = sbw_slot(pg, 0); if (k >= 0 && (g_sbwp[k].src & SBW_GPU)) return 1; } return 0; }
-static inline unsigned pend_bucket(uint64_t page) { return (unsigned)((page * 0x9E3779B97F4A7C15ull) >> 53) & (PEND_HB - 1); }
+static inline unsigned pend_bucket(uint64_t page) { return (unsigned)((page * 0x9E3779B97F4A7C15ull) >> (64 - PEND_HB_BITS)); }
 static void pend_reset(void) { g_npend = g_pend_over = g_nupd = g_npnode = g_nwide = g_nsbw = g_sbw_over = g_npseg = g_pseg_over = g_npzero = 0; if (!++g_pend_gen) { memset(g_pend_hgen, 0, sizeof g_pend_hgen); memset(g_psp, 0, sizeof g_psp); memset(g_sbwp, 0, sizeof g_sbwp); memset(g_sbw_memo, 0, sizeof g_sbw_memo); g_pend_gen = 1; } }
 static void vc_gpu_write(uint64_t dst, uint64_t n);   // kept index ranges under the written range are not trusted again (ix_range)
 static void gpw_clear(uint64_t lo, uint64_t n);   // guest bytes the GPU wrote into memory itself are current again (see gpw_mark)
 static int pend_add(uint64_t dst, uint64_t n, int kind) {
     vc_gpu_write(dst, n); gpw_clear(dst, n);
-    if (g_pend_over || g_npend == PEND_MAX) { g_pend_over = 1; return -1; }
-    int e = g_npend; uint64_t p0 = dst >> 12, p1 = (dst + (n ? n : 1) - 1) >> 12;
-    if (p1 - p0 < PEND_SPAN && g_npnode + (int)(p1 - p0 + 1) <= PEND_NODES) {
+    if (g_pend_over) return -1;
+    uint64_t p0 = dst >> 12, p1 = (dst + (n ? n : 1) - 1) >> 12; int narrow = p1 - p0 < PEND_SPAN;
+    if (!pend_room(narrow ? (int)(p1 - p0 + 1) : 0)) { g_pend_over = 1; return -1; }
+    int e = g_npend;
+    if (narrow) {
         for (uint64_t pg = p0; pg <= p1; pg++) { unsigned b = pend_bucket(pg); int k = g_npnode++;
             g_pend_node[k].e = e; g_pend_node[k].next = g_pend_hgen[b] == g_pend_gen ? g_pend_head[b] : -1; g_pend_head[b] = k; g_pend_hgen[b] = g_pend_gen; }
         uint64_t end = dst + n;
@@ -1797,7 +1817,6 @@ int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and 
 // Shadows made from memory, per range. One is kept while no write is queued after it (the draws after an update bind the same block again and again); the next one for the same range starts
 // from it and lays over only the writes queued since (the game rewrites one block hundreds of times a submission). A range read whole from memory once is not read from memory again in the submission
 enum { UBP_CACHE = 16, UBP_MAX_BYTES = 65536 };
-static int g_ubp_idx[PEND_MAX + PEND_WIDE];   // every entry a lookup can meet: the chains of the range's pages hold each entry at most once after dedup, the wide list at most PEND_WIDE
 enum { UBP_DMAX = 64 };
 typedef struct { uint64_t lo, hi, gpu; uint8_t *cpu; int npend; uint32_t gen, sbw; uint64_t q, agen, pq; int nd; uint32_t d[2 * UBP_DMAX]; } ubp_ent;   // agen: g_arena_gen when made (the shadow lives in the frame scratch)   // sbw: g_sbw_gen when the other writes were last checked; q: end of the copies that fill it (g_ubq)
 //   pq / nd / d: the lineage the shadow was made with (see g_ubp_prevq below), handed out again when the kept shadow is reused: the vertex and fragment stages bind the same range,
@@ -1907,7 +1926,7 @@ void mtl_sub_update(const void *data, uint64_t dst, uint64_t n) {
         res_add(g_ubs_buf); g_ubs_off = 0;
     }
     memcpy((uint8_t *)g_ubs_buf.contents + g_ubs_off, data, n);
-    if (pi >= 0) { g_upd[g_nupd] = (upd_ent){dst, g_ubs_off, g_ubs_buf}; g_pend_upd[pi] = (uint16_t)++g_nupd; }
+    if (pi >= 0) { g_upd[g_nupd] = (upd_ent){dst, g_ubs_off, g_ubs_buf}; g_pend_upd[pi] = (uint32_t)++g_nupd; }
     if (defer) {
         ubd_add(dst, dst + n, g_ubs_buf.gpuAddress + g_ubs_off, g_ubs_off, g_ubs_buf); g_ubd_deferred++; ubd_dirty(dst, dst + n); }   // see ubd_add / ubd_shadow
     else enc_b_copy_buffer(blit_buf(0, 0, dst, dst + n), g_ubs_buf, g_ubs_off, (__bridge id<MTLBuffer>)db, dof, n);
@@ -2139,17 +2158,33 @@ static int ub_skip(const char *key) {   // Whether this phase should drop draws 
 void nvn_be_set_frame(uint64_t f) { atomic_store(&g_cur_frame, f); if (g_ub_n) ub_frame(f); }
 // GPU timing registration: gpu_tag_begin(frame) before commit, gpu_tag_done(frame, GPU start, GPU end) on completion (seconds on the CACurrentMediaTime base).
 // Old-queue command buffers go through gpu_tag_f; the Metal 4 main submission backfills in the feedback of nvn_be_sub_commit (when switching to Metal 4 all the call sites were lost and the GPU column of the timing line became empty)
-static void gpu_tag_begin(uint64_t f) {
+static double gpu_tag_begin(uint64_t f) {   // 返回提交时刻（CACurrentMediaTime）：调用方原样交给 gpu_tag_done，GPU 不可能早于它开始
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) { atomic_store(&g_gpu[k].frame, f); atomic_store(&g_gpu[k].ns, 0); atomic_store(&g_gpu[k].pending, 0); atomic_store(&g_gpu[k].t0, UINT64_MAX); atomic_store(&g_gpu[k].t1, 0); }
     atomic_fetch_add(&g_gpu[k].pending, 1);
+    return CACurrentMediaTime();
 }
 // A frame whose command buffers keep the GPU busy longer than this in all is no longer usable: the run stops (mtl_gpu_halt: GPU safe stop) before the driver's timeout recovery takes over
 //   (10-31: the Mac's kernel panicked in the GPU driver's event machine after runs whose frames took 1.5-3.3 s of GPU)
 #define S2A_GPU_FRAME_MAX_MS 1000
-static void gpu_tag_done(uint64_t f, double g0, double g1) {
+// 开始时间早于提交时刻（11-11 #647：Mac mini M4 / macOS 27.2.1，Metal 4，23 局都以本门收局，停前每帧整帧 16–24 ms 照常出帧，记到的帧 GPU
+//   每帧线性涨约一帧时长、涨过 1 秒——某个提交回报的 GPUStartTime 停在过去，跨度被一路拉长；驱动没报任何命令缓冲错误）：GPU 不可能在提交之前开始干这份活，
+//   早于提交时刻 sub 的开始按 sub 算，计数并打黄行（时间戳原样写出；本机 macOS 26.4 / 门禁机 27.0.1 的探针 900 次提交 0 次，是防线不是已证根因）。
+//   主因：同一队列上的提交按序执行，回报的跨度里含排队等前面几份的时间——一帧切成多段提交（每 64 笔一段）时各段跨度层层包含，相加就重复计；
+//   GPU 跟不上 CPU（作者 M4：帧 GPU 中位 21.8 ms，屏上约 20 帧/秒）时积压越深跨度越长。帧 GPU 时间改记每份的独占时间：
+//   结束 − max(开始, 本队列上一份结束)，每个时刻在一条队列上只算一次。真挂死（GPU 真跑满 1 秒以上）独占时间同样过门，照停、不更慢
+static _Atomic uint64_t g_gpu_start_early;
+static _Atomic uint64_t g_gpu_qend[2];   // 各队列已回报的最晚 GPU 结束（ns）：0 = 主回放 / 分段提交（g_q4 / g_q3），1 = 旧队列（gpu_tag_f）
+uint64_t mtl_gpu_start_early(void) { return atomic_load(&g_gpu_start_early); }
+static void gpu_tag_done(uint64_t f, int qi, double sub, double g0, double g1) {
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
+    if (g0 > 0 && sub > 0 && g0 < sub - 0.001) {
+        uint64_t n = atomic_fetch_add(&g_gpu_start_early, 1);
+        if (n < 4 || !(n & (n - 1))) MLOG("【黄】 GPU 开始时间早于提交 %.1f ms：帧 %llu 提交 %.3f，GPU %.3f→%.3f；按提交时刻算（第 %llu 次）",
+            (sub - g0) * 1e3, (unsigned long long)f, sub, g0, g1, (unsigned long long)n + 1);
+        g0 = sub;
+    }
     double d = g1 - g0;
     // 结束时间不可能晚于现在（GPUStart / GPUEnd 与 CACurrentMediaTime 同一时基）。11-09 M1 Pro 时之笛 S2：切出窗口再切回后，一个命令缓冲回报的跨度算出 6147890790964 ms（约 195 年），
     //   这道 1 秒门把它当成 GPU 挂死、安全停收局。这样的时间戳只打红行、不计进本帧 GPU 时间；真挂死的跨度结束在过去，照判
@@ -2160,15 +2195,18 @@ static void gpu_tag_done(uint64_t f, double g0, double g1) {
         d = 0;
     }
     if (d > 0 && g0 > 0) {   // a command buffer can complete with no start time (0, while a movie's frames upload each frame in Big Brain Academy: Brain vs. Brain), and its span would be the whole clock
-        uint64_t busy = atomic_fetch_add(&g_gpu[k].ns, (uint64_t)(d * 1e9)) + (uint64_t)(d * 1e9);
-        if (busy > S2A_GPU_FRAME_MAX_MS * 1000000ull) { char w[120]; snprintf(w, sizeof w, "frame %llu kept the GPU busy %.0f ms (limit %d ms)", (unsigned long long)f, busy / 1e6, S2A_GPU_FRAME_MAX_MS); mtl_gpu_halt(w); }
         uint64_t s0 = (uint64_t)(g0 * 1e9), s1 = (uint64_t)(g1 * 1e9), v;
+        _Atomic uint64_t *qe = &g_gpu_qend[qi & 1]; uint64_t prev = atomic_load(qe);
+        while (s1 > prev && !atomic_compare_exchange_weak(qe, &prev, s1)) {}
+        uint64_t from = s0 > prev ? s0 : prev, excl = s1 > from ? s1 - from : 0;   // 本队列上一份结束之前的那段是排队，不算
+        uint64_t busy = atomic_fetch_add(&g_gpu[k].ns, excl) + excl;
         for (v = atomic_load(&g_gpu[k].t0); s0 < v && !atomic_compare_exchange_weak(&g_gpu[k].t0, &v, s0);) {}
         for (v = atomic_load(&g_gpu[k].t1); s1 > v && !atomic_compare_exchange_weak(&g_gpu[k].t1, &v, s1);) {}
+        if (busy > S2A_GPU_FRAME_MAX_MS * 1000000ull) { char w[120]; snprintf(w, sizeof w, "frame %llu kept the GPU busy %.0f ms (limit %d ms)", (unsigned long long)f, busy / 1e6, S2A_GPU_FRAME_MAX_MS); mtl_gpu_halt(w); }
     }
     atomic_fetch_sub(&g_gpu[k].pending, 1);
 }
-static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); }]; }
+static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { double sub = gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, 1, sub, c.GPUStartTime, c.GPUEndTime); }]; }
 void gpu_tag(id<MTLCommandBuffer> cb) { gpu_tag_f(cb, atomic_load(&g_cur_frame)); }
 double nvn_be_gpu_ms(uint64_t f) {
     unsigned k = f % GRING;
@@ -2231,11 +2269,11 @@ uint64_t nvn_be_sub_commit(void) {
     id o = fb_new();
     atomic_fetch_add(&g_seg_inflight, 1);
     fb_add(o, ^(id f) { (void)f; atomic_fetch_sub(&g_seg_inflight, 1); for (dispatch_block_t block in commit_blocks) block(); });
-    uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
+    uint64_t gpu_f = atomic_load(&g_cur_frame); double gpu_sub = gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
     seg_clk *sc = g_sclk; uint32_t seg_last = g_seg; g_sclk = NULL;
     fb_add(o, ^(id<MTL4CommitFeedback> cb) {
-        gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
+        gpu_tag_done(gpu_f, 0, gpu_sub, cb.GPUStartTime, cb.GPUEndTime);
         uint64_t c0 = 0, c1 = 0; if (seg_ts()) { c0 = gpu_s_guest_ns(cb.GPUStartTime); c1 = gpu_s_guest_ns(cb.GPUEndTime); }
         if (cb.error) { atomic_store(&g_last_commit_error, 1); atomic_fetch_add(&g_commit_error_n, 1); if (mtl_gpu_halted()) mtl_gpu_cb_error(cb.error, "main replay", fence); else { static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (!victim) quar_fault(qsus, cb.error); if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】 command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】 state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】 command buffer execution error: %s", cb.error.localizedDescription.UTF8String); mtl_gpu_cb_error(cb.error, "main replay", fence); s2a_direct_gpu_error(cb.error.localizedDescription.UTF8String); } }
         for (int i = 0; i < n; i++) {
@@ -2670,7 +2708,7 @@ int nvn_be_tex_from_gl(tex_t *t, uint32_t gl_name) { @autoreleasepool {
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
 @implementation NvPkg
 - (void)dealloc { res_remove(tex); if (spare) res_remove(spare); free(ph); free(pgpu); }
@@ -4152,6 +4190,12 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (packaged) {
         NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;   // resolved as GPU-only before the CPU wrote it: dropped and rebuilt as packaged
         if (pk) {   // Already uploaded: check the covered pages only if there has been a guest write since the last check
+            // Resolve attachments and sampled views against the same guest-memory snapshot (tex_by_id).
+            // A co-located CPU write during replay must not replace a target that earlier draws wrote.
+            // Keep its dirty stamp for the next submission / WaitSync. Outside an open command buffer,
+            // direct CPU resolution must still see updates, including after a completed submission.
+            if (g_cb && g_pkg_epoch && pk->check_epoch == g_pkg_epoch) return pk->view ? pk->view : pk->tex;
+            pk->check_epoch = g_pkg_epoch;
             uint64_t now = nvn_dirty_now();
             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
             int clean = tracked && (now == pk->seen || !nvn_dirty_since_span(pk->span, t->mem, t->L.size, pk->stamp));
@@ -4211,6 +4255,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             return pk->view ? pk->view : pk->tex;
         }
         pk = [NvPkg new];
+        pk->check_epoch = g_pkg_epoch;
         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
         uint64_t *gr = NULL, gb = 0; int gn = 0; id<MTLTexture> gfrom = nil;   // turning packaged from a GPU-only texture: its texels a GPU write left stale in guest memory (carry_gpu)
         if (have && !pk->sparse && [have conformsToProtocol:@protocol(MTLTexture)]) { gfrom = have; gn = gpw_stale(t->mem, t->L.size, &gr, &gb); }
@@ -7805,7 +7850,9 @@ static id<MTLFunction> fs_atms_fn(NvShader *fs, int u, int at, int msoff) {
 }
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
-    { uint32_t pm = pso_pair_miss(vs, fs); id<MTLFunction> vf = pm ? vp_fn(vs, pm) : nil; d.vertexFunction = vf ? vf : vs->fn; }   // a pair the vertex shader needs padding for (vp_ask)
+    // vs nil: no vertex stage, the fragment half of a task / mesh pipeline (mtk_pso copies it into its mesh descriptor). Setting the mesh function as vertexFunction is what Metal's
+    //   validation layer (MTL_DEBUG_LAYER=1) aborts on (#376: the tool that checks the M1 Metal 4 hang could not be turned on)
+    if (vs) { uint32_t pm = pso_pair_miss(vs, fs); id<MTLFunction> vf = pm ? vp_fn(vs, pm) : nil; d.vertexFunction = vf ? vf : vs->fn; }   // a pair the vertex shader needs padding for (vp_ask)
     d.fragmentFunction = fsfn ? fsfn : fs ? fs->fn : nil;
     // Diagnostic DM_NVN_HILITE=fragment shader key,...: these draws use a solid-color fragment instead (keys 1–6 in order magenta / green / cyan / yellow / blue / white), to see where the geometry lands
     // Pipelines are built on several threads at once: the keys and the library are set up once (a lazy setup raced, and a thread used a library another had just replaced: Hades II, 6 keys)
@@ -7829,8 +7876,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
     if (fs && (k->at || k->msoff) && (d.fragmentFunction == fs->fn || (fs->fn_u && d.fragmentFunction == fs->fn_u))) {   // gap families 34 / 37: main0 / main0_u with the alpha test / full sample mask
         id<MTLFunction> f = fs_atms_fn(fs, d.fragmentFunction == fs->fn_u, k->at, k->msoff); if (f) d.fragmentFunction = f; }
     else if (fs && (k->at || k->msoff)) RED_ONCE(135, "fragment shader %s: alpha test %d / multisampling off %d on a variant entry point without the constants (typed / sampler-emulation / merged): drawn without them", fs->key, k->at, k->msoff);
-    if (vs->layer_out && k->fsfn != GEO_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
-    if (k->fsfn == TF_MARK || k->fsfn == GEO_MARK) { d.vertexFunction = k->fsfn == GEO_MARK ? vs->geo_fn : vs->tf_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO; }   // transform feedback capture (tf_draw)
+    if (vs && vs->layer_out && k->fsfn != GEO_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
+    if (vs && (k->fsfn == TF_MARK || k->fsfn == GEO_MARK)) { d.vertexFunction = k->fsfn == GEO_MARK ? vs->geo_fn : vs->tf_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO; }   // transform feedback capture (tf_draw)
     d.rasterSampleCount = k->samples ? k->samples : 1;
     d.alphaToCoverageEnabled = k->a2c;
     for (int i = 0; i < 8; i++) {
@@ -7854,6 +7901,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         }
     }
     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt;
+    if (!vs) return d;   // no vertex fetch
     MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
     const nvn_refl *rf = &vs->rf; int nconv = 0, on = vin_on(vs, k, k->fsfn == TF_MARK || k->fsfn == GEO_MARK);
     if (on) { d.vertexFunction = vs->vfn; g_vin_psos++; }   // the shadow-input entry point (see vin_on)
@@ -11998,7 +12046,9 @@ static void fb_prepare(NvProg *pr) {
     id<MTLTexture> cbase[4] = {nil}, csnap[4] = {nil}; NSUInteger ckey[4][4]; int ncopy = 0, settled = 0;   // ④ copies of this draw by real subresource (base, levels, slices); clears landed
     for (int i = 0; i < fs->rf.nb && g_fb_n < 4; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->reg >= 128) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff);
-        pthread_mutex_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; pthread_mutex_unlock(&g_rmu);
+        alias_key sampled;
+        pthread_mutex_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0;
+        if (ser) alias_key_of(&sampled, &g_treg[tid].t); pthread_mutex_unlock(&g_rmu);
         if (!ser) continue;
         // #387 the pass's own depth attachment sampled in the same pass. NVN reads the depth buffer as it is in memory (legal, and unchanged while depth writes are off);
         //   Metal leaves sampling a texture that is an attachment of the open pass undefined: a long pass stores tiles back mid-pass (partial renders) while later draws read them.
@@ -12035,12 +12085,24 @@ static void fb_prepare(NvProg *pr) {
             PD("N %llu same-pass depth sampling: depth attachment ser=%llu sampled at slot %d; the pass ends and this draw reads a copy", g_stat_pass, (unsigned long long)ser, b->reg);
             continue;
         }
-        for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) { if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
+        for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) {
+            const tex_t *attachment = R.rt.color[k]; if (!attachment) continue;
+            int alias = attachment->serial != ser; id<MTLTexture> attachment_storage = nil;
+            if (alias) {
+                // Serial numbers name NVN objects, not storage. Reject unrelated pool ranges
+                // cheaply, then use the same layout key as the shared-texture table.
+                if (!sampled.pool || sampled.pool != (uint64_t)(uintptr_t)attachment->pool || sampled.off != attachment->off) continue;
+                alias_key attached; alias_key_of(&attached, attachment); if (memcmp(&sampled, &attached, sizeof sampled)) continue;
+                attachment_storage = tex_mtl(attachment);
+            }
             uint64_t aser; int lv, sl; rt_sub(&R.rt, k, &aser, &lv, &sl);
             pthread_mutex_lock(&g_rmu); void *tv = NULL; tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv; pthread_mutex_unlock(&g_rmu);
             if (!t) continue;
             int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t; if (dup) continue;
             id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0;
+            // Packaged textures may have identical descriptors but independent host copies.
+            // Only an actual shared root can be feedback through a different serial.
+            if (alias && (!attachment_storage || (attachment_storage.parentTexture ?: attachment_storage) != base)) continue;
             if (tl + t.mipmapLevelCount <= (NSUInteger)lv || tl > (NSUInteger)lv) continue;   // the sampled levels do not include the attachment's level (mip generation etc.): not feedback
             MTLTextureType tt = t.textureType, vt = (MTLTextureType)b->dtt;
             // The same for layers: a view that holds only some of the base's slices and not the one being drawn (Breath of the Wild 9a08f70c2775ebe7 samples
@@ -14239,7 +14301,7 @@ static void sub_cut(void) {
     g_cut_copy = 0;
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     up_flush();
-    uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
+    uint64_t f = atomic_load(&g_cur_frame); double gpu_sub = gpu_tag_begin(f);
     uint32_t k = g_seg++; seg_clk *sc = NULL;   // reports encoded so far keep this segment's GPU times (seg_ts)
     NSArray<NSString *> *qsus = quar_take();
     uint64_t sf = arena_cut();
@@ -14248,7 +14310,7 @@ static void sub_cut(void) {
     atomic_fetch_add(&g_seg_inflight, 1);
     fb_add(o, ^(id<MTL4CommitFeedback> cb) {
         atomic_fetch_sub(&g_seg_inflight, 1);
-        gpu_tag_done(f, cb.GPUStartTime, cb.GPUEndTime);
+        gpu_tag_done(f, 0, gpu_sub, cb.GPUStartTime, cb.GPUEndTime);
         arena_seg_done(sf);
         if (sc) { if (k < SEG_CLK_N) { atomic_store(&sc->t[k][0], gpu_s_guest_ns(cb.GPUStartTime)); atomic_store(&sc->t[k][1], gpu_s_guest_ns(cb.GPUEndTime)); } seg_clk_put(sc); }
         if (cb.error) { atomic_store(&g_last_commit_error, 1); atomic_fetch_add(&g_commit_error_n, 1); if (mtl_gpu_halted()) mtl_gpu_cb_error(cb.error, "segment", f); else { static int k; if (![cb.error.description containsString:@"InnocentVictim"]) quar_fault(qsus, cb.error); if (k++ < 8) MLOG("【红】 segment command buffer execution error: %s", cb.error.description.UTF8String); mtl_gpu_cb_error(cb.error, "segment", f); s2a_direct_gpu_error(cb.error.localizedDescription.UTF8String); } }

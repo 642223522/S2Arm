@@ -129,7 +129,7 @@ static int g_src_w, g_src_h;   // 最近一帧真实出图尺寸（gameRect 里�
 //   每次现读（settings.m s2a_ios_res_scale）：设置页「立刻重启」重写环境变量后进程内重启，不能沿用上一局的倍率（审计 P1-9）
 static float g_res_scale(void) {
     static float last = 1.0f;
-    float v = s2a_ios_res_scale(NSUserDefaults.standardUserDefaults);
+    float v = s2a_ios_res_scale(s2a_ios_settings_defaults());
     if (v != last) { last = v; LOG("触屏：渲染倍率 %gx，触点空间按游戏尺寸（出图 ÷ %g）算", v, v); }
     return v;
 }
@@ -400,11 +400,17 @@ typedef BOOL (^VPFlag)(void);
         [self live:@"vp.pad.ns2pro" title:S2AL(@"vpad.menu.ns2pro") note:nil on:^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; } disabled:nil
                run:^{ [d setBool:![d boolForKey:@"S2ANS2ProAdapterEnabled"] forKey:@"S2ANS2ProAdapterEnabled"]; }],
         [self live:@"vp.pad.gyro" title:S2AL(@"vpad.menu.gyro") note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
-        // 手柄按键对应（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新口径
-        vp_inline(@[[self live:@"vp.pad.face.letter" title:S2AL(@"vpad.menu.face.letter") note:S2AL(@"vpad.menu.face.letter.note") on:^BOOL{ return ![[d stringForKey:@"padFace"] isEqualToString:@"position"]; }
-                         disabled:nil run:^{ [d setObject:@"letter" forKey:@"padFace"]; }],
-                     [self live:@"vp.pad.face.position" title:S2AL(@"vpad.menu.face.position") note:S2AL(@"vpad.menu.face.position.note") on:^BOOL{ return [[d stringForKey:@"padFace"] isEqualToString:@"position"]; }
-                         disabled:nil run:^{ [d setObject:@"position" forKey:@"padFace"]; }]])])];
+        // 手柄按键布局（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新布局；
+        //   勾选看 pad.c 解析后的值（旧值 letter / position 也落到对应一项）
+        vp_inline(@[[self live:@"vp.pad.face.auto" title:S2AL(@"vpad.menu.face.auto") note:S2AL(@"vpad.menu.face.auto.note")
+                            on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_AUTO; }
+                      disabled:nil run:^{ [d setObject:@"auto" forKey:@"padFace"]; }],
+                     [self live:@"vp.pad.face.switch" title:S2AL(@"vpad.menu.face.switch") note:S2AL(@"vpad.menu.face.switch.note")
+                            on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_SWITCH; }
+                      disabled:nil run:^{ [d setObject:@"switch" forKey:@"padFace"]; }],
+                     [self live:@"vp.pad.face.xbox" title:S2AL(@"vpad.menu.face.xbox") note:S2AL(@"vpad.menu.face.xbox.note")
+                            on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_XBOX; }
+                      disabled:nil run:^{ [d setObject:@"xbox" forKey:@"padFace"]; }]])])];
     // 画面：宽屏 / 60 帧 / 主机模式 / 补丁要按本款能力判可不可开、改完要重启，逻辑全在整页设置（app_settings.m），这里直接去那一页，不另抄一份
     UIAction *pic = vp_act(S2AL(@"vpad.menu.picture"), @"rectangle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); pic.subtitle = S2AL(@"vpad.menu.picture.note");
     [items addObject:pic];

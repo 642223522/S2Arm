@@ -230,6 +230,7 @@ class InstallWiring(unittest.TestCase):
             return "io.s2arm.games.abcde12345", {}
         with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m), \
              patch.object(devcert, "sign_app", fake_sign), patch.object(self.m.WinPhone, "backup", lambda self, g: None):
+            self.c.r["device"] = "U1"   # 装机一律带玩家选的那台（设备号贯穿所有装机入口，不带被拒 device_required）
             ph = self.m.WinPhone(self.c)
             self.assertEqual((ph.bid, ph.bundle_for_signing()), ("io.s2arm.games.abcde12345", "io.s2arm.games.abcde12345"))
             ph.install(ipa, ["0100000000000047"])

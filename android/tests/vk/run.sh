@@ -54,13 +54,14 @@ fi
 out=$(mktemp -d "${TMPDIR:-/tmp}/s2a-nvn-vk.XXXXXX")
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/shaders"
-for s in tri.vert tri.frag tri_combined.frag tri3.vert tri_solid.frag tri_invert.frag solid_green.frag solid_blue.frag quad.vert quad.frag inst.vert point.vert quad2.frag arr.frag cube.frag cubearr.frag tex3d.frag comp.comp pushc.frag pushc.comp tbuf.comp itbuf.comp itbuf_unknown.comp itbuf_unknown_read.comp img.comp tsamp.comp arr2.frag; do
+for s in tri.vert tri.frag tri_combined.frag tri3.vert tri_solid.frag tri_invert.frag solid_green.frag solid_blue.frag out1_green.frag tex_u.frag quad.vert quad.frag inst.vert point.vert quad2.frag arr.frag cube.frag cubearr.frag tex3d.frag comp.comp pushc.frag pushc.comp tbuf.comp itbuf.comp itbuf_unknown.comp itbuf_unknown_read.comp img.comp tsamp.comp arr2.frag; do
     "$glslc" --target-env=vulkan1.1 "$repo/android/tests/vk/shaders/$s" -o "$out/shaders/$s.spv"
 done
 
 inc=(-I "$repo/android/tests/vkhost"
      -I "$repo/graphics/nvn/third_party/vulkan-headers/include"
      -I "$repo/graphics/nvn"
+     -I "$repo/graphics/nvn/replay"
      -I "$repo/graphics/nvn/gfx/nvn"
      -I "$repo/graphics/nvn/gfx/nvn/include"
      -I "$repo/android/native"
@@ -169,7 +170,7 @@ if [ "$bad" -ne 0 ]; then
     exit 1
 fi
 if [ "$mode" = "--tsan" ]; then
-    echo "【绿】C01–C08 + C23/C25/C26/C27/C28/C29/C30/C31/C32/C33/C34/C35/C36-55 + 清屏/复制/深度/纹理三角形：TSan 0 报告（validation 由默认档单独跑）；设备 $(grep '^device:' "$out/log" | head -1)"
+    echo "【绿】C01–C08 + C23/C25/C26/C27/C28/C29/C30/C31/C32/C33/C34/C35/C36-55/C70/C71/C72/C73 + 清屏/复制/深度/纹理三角形：TSan 0 报告（validation 由默认档单独跑）；设备 $(grep '^device:' "$out/log" | head -1)"
 else
-    echo "【绿】C01–C08 + C23/C25/C26/C27/C28/C29/C30/C31/C32/C33/C34/C35/C36-55 + 清屏/复制/深度/纹理三角形 + BC1–BC7 逐像素解码：validation 0 条；设备 $(grep '^device:' "$out/log" | head -1)"
+    echo "【绿】C01–C08 + C23/C25/C26/C27/C28/C29/C30/C31/C32/C33/C34/C35/C36-55/C70/C71/C72/C73 + 清屏/复制/深度/纹理三角形 + BC1–BC7 逐像素解码：validation 0 条；设备 $(grep '^device:' "$out/log" | head -1)"
 fi
