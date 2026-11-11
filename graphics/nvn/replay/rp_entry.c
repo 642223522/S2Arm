@@ -147,6 +147,10 @@ void mtl_res_snapshot(mtl_res_count *out) { if (out) memset(out, 0, sizeof *out)
 void bf_want_note(const char *key) { (void)key; }
 uint64_t nvn_be_upload_bytes(void) { return 0; }
 void nvn_be_create_ns(uint64_t *lib_ns, uint64_t *pso_ns) { if (lib_ns) *lib_ns = 0; if (pso_ns) *pso_ns = 0; }
+// 前端每 300 帧交来一次常驻内存读数（hle_nvn.c dump_frame；宿主构建里编进这一段的才会调到）：打一行，别的不做
+void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
+    char b[96]; snprintf(b, sizeof b, "第 %llu 帧：常驻内存 %llu MB", frame, rss_mb); nvn_plat_log(NVN_PLAT_LOG_INFO, "mem", b);
+}
 
 // ---------- 帧率目标、帧录放 ----------
 int dm_fps_setting(void) __attribute__((weak));   // 宿主：玩家的帧率设置；宿主没给这个入口时按 60
