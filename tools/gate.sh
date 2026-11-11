@@ -64,11 +64,13 @@ fi
 # 远端那一份（GATE_PLAN 非空）把每步结果写进仓库里的 GATE_OUT（build/ 下、被忽略），本机经 维护方工具 --pull 拉回；本机那份用临时目录
 if [ -n "$PLANM" ]; then L=$R/${GATE_OUT:?远端计划要给 GATE_OUT}; rm -rf "$R/build/gate_out"; mkdir -p "$L"; trap '[ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT
 else L=$(mktemp -d); trap 'rm -rf "$L"; [ "$(cat "$GPF" 2> /dev/null)" = $$ ] && rm -f "$GPF"' EXIT; fi
-# 同一棵树的 C# 编译串行（tools/dotnet_lock.sh，11-10 判据去负载化：并行各步编同一批 compat/tree 工程共用 obj/ 互踩，MSB4018 / nupkg 被占 / CS0006）：
-#   各步大多按 ${DOTNET:-~/.dotnet/dotnet} 调，少数直接调 dotnet——两路都接到锁包装上；真 dotnet 记在 S2A_DOTNET_REAL（嵌套门禁不套两层）
-if [ -x tools/dotnet_lock.sh ] && [ "$(basename "${DOTNET:-none}")" != dotnet_lock.sh ]; then
-  export S2A_DOTNET_REAL=${S2A_DOTNET_REAL:-${DOTNET:-$HOME/.dotnet/dotnet}} DOTNET=$R/tools/dotnet_lock.sh
-  mkdir -p "$L/bin" && printf '#!/bin/bash\nexec "%s" "$@"\n' "$R/tools/dotnet_lock.sh" > "$L/bin/dotnet" && chmod +x "$L/bin/dotnet" && export PATH=$L/bin:$PATH
+# 同一棵树的 C# 编译串行（tools/dotnet_lock.c，11-10 判据去负载化：并行各步编同一批 compat/tree 工程共用 obj/ 互踩，MSB4018 / nupkg 被占 / CS0006）：
+#   开头现编到 $L/bin/dotnet，各步 DOTNET 与 PATH 都指它（各步大多按 ${DOTNET:-~/.dotnet/dotnet} 调，少数直接调 dotnet）；真 dotnet 记在 S2A_DOTNET_REAL。
+#   用编出来的程序而不是脚本：脚本解释器受 SIP 保护会清掉 DYLD_*（t_native_provider 靠 DYLD_INSERT_LIBRARIES 注入，11-11 经脚本包装后服务层红）。
+#   编不出（没有 cc）= 不接锁照跑；嵌套门禁（S2A_DOTNET_LOCK 已给）不套两层
+if [ -f tools/dotnet_lock.c ] && [ -z "${S2A_DOTNET_LOCK:-}" ] && mkdir -p "$L/bin" && cc -O2 -o "$L/bin/dotnet" tools/dotnet_lock.c 2> /dev/null; then
+  export S2A_DOTNET_REAL=${DOTNET:-$HOME/.dotnet/dotnet} S2A_DOTNET_LOCK=$R/build/.dotnet_build.lock DOTNET=$L/bin/dotnet PATH=$L/bin:$PATH
+  mkdir -p "$R/build"
 fi
 # C / ObjC / C++ 按内容编译缓存（tools/cc_cache.sh，10-30 列车线）：本机那份与 gate-host 那份各自打开，每次编译的命中情况记 $L/ccache.log（gate-host 那份随结果目录拉回）
 [ -f tools/cc_cache.sh ] && { source tools/cc_cache.sh; S2A_CCACHE_LOG=$L/ccache.log s2a_ccache_on "$R"; }
