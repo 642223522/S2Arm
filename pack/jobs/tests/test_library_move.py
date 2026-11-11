@@ -64,6 +64,52 @@ class MoveTests(unittest.TestCase):
         self.assertTrue((old / "iPhone" / GID / "t.ipa").is_file()); self.assertTrue((old / ".s2arm-library.json").is_file())
         self.assertFalse((new / ".s2arm-library.json").exists()); self.assertFalse((new / ".s2arm-moving").exists())
 
+    # ---- 库路径规则只在 setup（剃刀 W19）：期望按规则手写，临时目录里真建文件夹 ----
+    def test_library_inside_or_containing_install_dir_refused(self):
+        install = self.root / "work" / "S2Arm-windows-x64"; install.mkdir(parents=True)
+        for target, what in ((install / "1", "库在启动器目录里"), (install, "库就是启动器目录"), (self.root / "work", "库包含启动器目录")):
+            with self.subTest(what), self.assertRaises(Failure) as e:
+                self.run_setup(target, installDir=str(install))
+            self.assertIn("启动器自己的文件夹", str(e.exception))
+        self.assertFalse((install / "1" / ".s2arm-library.json").exists())
+        r = self.run_setup(self.root / "work" / "S2Arm-windows-x64-lib", installDir=str(install))   # 前缀相同的兄弟目录不算
+        self.assertEqual(r["outcome"], "created")
+
+    def test_drive_root_and_home_refused(self):
+        for target in (Path(self.root.anchor), Path.home()):
+            with self.subTest(str(target)), self.assertRaises(Failure) as e:
+                self.run_setup(target)
+            self.assertIn("独立的游戏库文件夹", str(e.exception))
+
+    def test_free_default_moves_next_to_occupied_default(self):
+        lib = self.root / "S2Arm"; (lib / "Engine").mkdir(parents=True); (lib / "S2Arm.exe").write_text("x")   # 玩家把启动器解压到了缺省库同名文件夹
+        r = self.run_setup(lib, freeDefault=True)
+        self.assertEqual((r["library"], r["outcome"]), (str(self.root / "S2Arm Library"), "created"))
+        self.assertTrue((self.root / "S2Arm Library" / ".s2arm-library.json").is_file())
+        self.assertEqual(sorted(p.name for p in lib.iterdir()), ["Engine", "S2Arm.exe"])   # 原文件夹一个字节没动
+        nxt = self.root / "S2Arm Library"; (nxt / ".s2arm-library.json").unlink(); (nxt / "catalog.json").unlink(); (nxt / ".s2arm-layout.json").unlink()
+        (nxt / "note.txt").write_text("x")
+        self.assertEqual(self.run_setup(lib, freeDefault=True)["library"], str(self.root / "S2Arm Library 2"))
+
+    def test_free_default_keeps_usable_default(self):
+        empty = self.root / "S2Arm"; empty.mkdir(); (empty / "desktop.ini").write_text(""); (empty / "._x").write_text("")
+        self.assertEqual(self.run_setup(empty, freeDefault=True)["library"], str(empty))   # 只有系统文件 = 空
+        lib = self.old("S2ArmOld")
+        r = self.run_setup(lib, freeDefault=True)
+        self.assertEqual((r["library"], r["outcome"]), (str(lib), "opened"))   # 已有游戏库照常打开
+
+    def test_occupied_folder_refused_without_free_default(self):
+        lib = self.root / "S2Arm"; lib.mkdir(); (lib / "S2Arm.exe").write_text("x")
+        with self.assertRaises(Failure) as e:
+            self.run_setup(lib)   # 玩家自己选的位置不替他换
+        self.assertIn("已有别的文件", str(e.exception))
+
+    def test_setup_does_not_adopt_logs_of_a_plain_folder(self):
+        import layout
+        folder = self.root / "picked"; (folder / "logs").mkdir(parents=True); (folder / "logs" / "mine.txt").write_text("玩家自己的")
+        layout.adopt_library_logs(SimpleNamespace(library=folder, private=self.private, logs=self.private / "logs"))
+        self.assertEqual((folder / "logs" / "mine.txt").read_text(), "玩家自己的")   # 还不是游戏库：logs 是玩家自己的东西，不收
+
     def test_opens_existing_library(self):
         lib = self.old("lib")
         r = self.run_setup(lib)

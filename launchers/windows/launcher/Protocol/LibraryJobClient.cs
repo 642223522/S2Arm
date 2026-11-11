@@ -9,7 +9,7 @@ public sealed record LibraryJobOutput(LibraryJobResult Report, ProbeOutput Outpu
 public static class LibraryJobClient
 {
     public static async Task<LibraryJobOutput> RunAsync(LauncherPaths paths, string privateRoot, string library,
-        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null, string? jobId = null, bool startup = false)
+        string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null, string? jobId = null, bool startup = false, bool freeDefault = false)
     {
         if (operation is not ("setup" or "catalog" or "keys" or "import" or "diagnostics" or "locations" or "storageOverview" or "spaceSurvey"))
             throw new ArgumentException("Unsupported library operation.", nameof(operation));
@@ -25,6 +25,13 @@ public static class LibraryJobClient
         };
         if (selectedPaths is not null) payload["paths"] = selectedPaths;
         if (moveFrom is not null) payload["moveFrom"] = Path.GetFullPath(moveFrom);
+        // 库路径规则只在作业层 setup（剃刀 W19）：带上启动器安装目录（库不能放在它里面或包含它），
+        //   freeDefault = 玩家没选过位置，缺省位置被别的文件占着时由 setup 换到旁边，结果里的 library 是实际位置
+        if (operation == "setup")
+        {
+            payload["installDir"] = Path.GetFullPath(AppContext.BaseDirectory);
+            if (freeDefault) payload["freeDefault"] = true;
+        }
         // 逐来源结果（pack/jobs/library.py import_games）：认不出的来源不挡别的，结果里带 sources（批量出包清单列出认不出的文件）
         if (partialResults && operation == "import") payload["partialResults"] = true;
         // 存放位置表另查一个刚选的文件夹所在盘会不会让解包多占数倍空间（#444，pack/jobs/library.py list_locations）

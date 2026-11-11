@@ -206,16 +206,15 @@ public sealed partial class EnvironmentWindow
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
         var defaultLib = SavedLibrary();
-        // 玩家没选过位置、缺省位置又被别的文件占着（多半是把 S2Arm 解压到了 %USERPROFILE%\S2Arm）：换到旁边的空位置并记下来，
-        //   原先 setup 拒收后整个添加游戏卡死（v0.2.8 热修，Windows 玩家反馈「一直提示还有任务在进行」）
-        rememberLibrary = !File.Exists(LibraryPreference) && LibraryPaths.FreeDefaultLibrary(defaultLib) is var free && free != defaultLib;
-        if (rememberLibrary) defaultLib = LibraryPaths.FreeDefaultLibrary(defaultLib);
+        // 玩家没选过位置：缺省位置被别的文件占着（多半是把 S2Arm 解压到了 %USERPROFILE%\S2Arm）时由作业层 setup 换到旁边（freeDefault，规则在
+        //   pack/jobs/library.py setup，剃刀 W19），连上后记住实际位置。原先 setup 拒收后整个添加游戏卡死（v0.2.8 热修，「一直提示还有任务在进行」）
+        freeDefault = !File.Exists(LibraryPreference);
         libraryFolder = defaultLib;
         libraryOperation = EnsureLibraryAsync(defaultLib, next);
     }
 
-    /// <summary>缺省库换过位置（EnsureLibrary）：连上后写进设置，下次启动直接连它</summary>
-    private bool rememberLibrary;
+    /// <summary>这次连的是缺省库、玩家没选过位置（EnsureLibrary）：setup 换了位置就写进设置，下次启动直接连它</summary>
+    private bool freeDefault;
     /// <summary>游戏库最近一次没连上的原因（建库作业的原话 / 异常）：添加游戏时显示它，不再说成「有任务在进行」</summary>
     private string libraryFailure = "";
 
@@ -227,16 +226,15 @@ public sealed partial class EnvironmentWindow
         {
             connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
             PrivateJobRequest.EnsurePrivateRoot(privateRoot);
-            Directory.CreateDirectory(folder);
-            var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, libraryMoveFrom, jobId: front.Next());
+            var free = freeDefault; freeDefault = false;   // 文件夹由 setup 建（先过库路径规则，不在启动器目录里留空文件夹）
+            var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, libraryMoveFrom, jobId: front.Next(), freeDefault: free);
             libraryMoveFrom = null;
             DisplayJob(setup);
             if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = libraryFailure = LibraryFailed(folder, setup.Report.Message); return; }
             var conn = LibraryConnection.Parse(setup.Report.Result);
             connectedFolder = conn.Folder; libraryId = conn.Id; libraryFolder = connectedFolder; libraryFailure = "";
-            if (rememberLibrary)
+            if (free && !SameFolder(connectedFolder, folder))
             {
-                rememberLibrary = false;
                 try { File.WriteAllText(LibraryPreference, connectedFolder); }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { libraryDiagnostics += "\n" + error.Message; }
             }
