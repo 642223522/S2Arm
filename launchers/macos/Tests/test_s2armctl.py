@@ -612,6 +612,18 @@ class BatchCommandTests(unittest.TestCase):
         _, code, _ = self.run_batch(["0100a"], {"total": 1, "completed": 0, "failed": 1})
         self.assertEqual(code, 1)
 
+    def test_not_started_exits_without_polling(self):   # 审计 P1-166：控制口说没开始（一款都不能出）→ 立刻退非 0，不轮询、不读上一批
+        calls = []
+        def call(method, path, body=None, **kw):
+            calls.append(path); return {"ok": False, "error": "没有能出的游戏", "skipped": [{"gameId": "0100A", "reason": "keys"}]}
+        out = io.StringIO()
+        with mock.patch.object(ctl, "call", call), mock.patch.object(ctl.time, "sleep", lambda s: None), contextlib.redirect_stdout(out), \
+             self.assertRaises(SystemExit) as caught:
+            ctl.batch(["0100a"])
+        self.assertEqual(calls, ["/batch"])
+        self.assertIn("没有能出的游戏", str(caught.exception.code))
+        self.assertIn("跳过 0100A：keys", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
