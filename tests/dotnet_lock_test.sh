@@ -2,6 +2,7 @@
 # 门禁覆盖：tools/dotnet_lock.c
 # 同一棵树 C# 编译串行（tools/dotnet_lock.c，门禁开头现编；11-10 / 11-11）：假 dotnet 也是编出来的程序（记子命令、开始 / 结束时刻、两个环境变量，睡 NAP 秒），约 15 秒
 #   期望按规则手写：① 两份 build 同时起 → 运行区间不重叠；② 别人持锁时 dotnet x.dll 不等锁、1 秒内跑完；③ 持锁的 build 被 kill -9 → 下一份 3 秒内跑完；
+#   ⑥ env -i 只给 DOTNET（S2A_DOTNET_REAL 不在）：自己按 PATH 找真 dotnet、跳过自己（启动器作业环境单测 userenv ③，11-11）
 #   ④ 真 dotnet 看到 MSBUILDDISABLENODEREUSE=1；⑤ 调用方给的 DYLD_INSERT_LIBRARIES 原样到真 dotnet（脚本包装会被 SIP 清掉，11-11 服务层 t_native_provider 红）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); trap 'kill $(jobs -p) 2> /dev/null; rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -35,4 +36,7 @@ ck "③ 持锁的 build 被 kill -9 → 下一份 3 秒内跑完（${dt} 秒）"
 printf 'int s2a_dl_test_marker(void) { return 1; }\n' > $T/e.c; cc -shared -o $T/empty.dylib $T/e.c   # 真能插入的空库（插不存在的库 dyld 直接中止）
 : > $T/log; env DYLD_INSERT_LIBRARIES=$T/empty.dylib "$D" x.dll 2> /dev/null
 ck "⑤ DYLD_INSERT_LIBRARIES 原样传到真 dotnet（$(grep -o 'dy=[^ ]*' $T/log | head -1)）" 'grep -q "dy=$T/empty.dylib" $T/log'
+mkdir -p $T/sh $T/rb $T/h; cp $T/dotnet $T/sh/dotnet; cp $T/fake $T/rb/dotnet; : > $T/log
+env -i HOME=$T/h PATH=$T/sh:$T/rb LOGF=$T/log $T/sh/dotnet x.dll; r6=$?
+ck "⑥ env -i 只给包装：PATH 上跳过自己、找到真 dotnet（rc=${r6}）" '[ $r6 = 0 ] && grep -q "^x.dll 开始" $T/log'
 [ $bad = 0 ] && echo "C# 构建锁单测全过" || { echo "C# 构建锁单测有不通"; cat $T/log; exit 1; }

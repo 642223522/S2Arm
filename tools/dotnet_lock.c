@@ -4,8 +4,9 @@
 //   为什么是 C 不是脚本（11-11）：脚本解释器 /bin/bash 受 SIP 保护，启动时清掉 DYLD_* 环境变量——services/tests/t_native_provider.sh
 //   用 env DYLD_INSERT_LIBRARIES=… "$DOTNET" 注入原生符号，经脚本包装一层就丢了、服务层单测红。编出来的程序不受 SIP 限制，DYLD_* 原样传给真 dotnet。
 //   关 MSBuild 常驻节点（MSBUILDDISABLENODEREUSE=1：常驻节点构建后仍攥着输出文件）；等锁每 30 秒打一行（免被无进展看门狗判挂死）。
-//   真 dotnet：S2A_DOTNET_REAL；锁文件：S2A_DOTNET_LOCK（tools/gate.sh 给，缺省不拿锁）
+//   真 dotnet：S2A_DOTNET_REAL，没给就找 ~/.dotnet/dotnet、再按 PATH 找（跳过自己）；锁文件：S2A_DOTNET_LOCK（tools/gate.sh 给，缺省不拿锁）
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,9 +15,23 @@
 #include <time.h>
 #include <unistd.h>
 
+static const char *find_real(const char *self, char *out) {
+    char me[PATH_MAX], c[PATH_MAX], r[PATH_MAX]; const char *home = getenv("HOME"), *path = getenv("PATH");
+    if (!realpath(self, me)) { if (strchr(self, '/')) return NULL; me[0] = 0; }
+    if (home) { snprintf(c, sizeof c, "%s/.dotnet/dotnet", home); if (access(c, X_OK) == 0 && realpath(c, r) && strcmp(r, me)) { snprintf(out, PATH_MAX, "%s", c); return out; } }
+    for (const char *p = path; p && *p; ) {
+        const char *e = strchr(p, ':'); size_t n = e ? (size_t)(e - p) : strlen(p);
+        snprintf(c, sizeof c, "%.*s/dotnet", (int)n, p);
+        if (n && access(c, X_OK) == 0 && realpath(c, r) && (!me[0] || strcmp(r, me))) { snprintf(out, PATH_MAX, "%s", c); return out; }
+        p = e ? e + 1 : NULL; }
+    return NULL; }
+
 int main(int argc, char **argv) {
     const char *real = getenv("S2A_DOTNET_REAL"), *lk = getenv("S2A_DOTNET_LOCK");
-    if (!real || !*real) { fprintf(stderr, "dotnet_lock：没有 S2A_DOTNET_REAL\n"); return 127; }
+    // 调用方用 env -i 只传 DOTNET（如启动器作业环境的单测）时 S2A_DOTNET_REAL 不在：自己找真 dotnet——~/.dotnet/dotnet，再按 PATH 找（跳过自己）
+    static char found[PATH_MAX];
+    if (!real || !*real) real = find_real(argv[0], found);
+    if (!real) { fprintf(stderr, "dotnet_lock：找不到真 dotnet（没有 S2A_DOTNET_REAL、~/.dotnet/dotnet，PATH 里也没有别的 dotnet）\n"); return 127; }
     setenv("MSBUILDDISABLENODEREUSE", "1", 1);
     static const char *verbs[] = { "build", "publish", "restore", "pack", "msbuild", "test", "clean", NULL };
     int build = 0;
