@@ -311,3 +311,11 @@ void rp_res_reset(void) {
 int rp_res_tex_built(void) { pthread_mutex_lock(&g_rmu); int n = g_built; pthread_mutex_unlock(&g_rmu); return n; }
 int rp_res_tex_serials(void) { pthread_mutex_lock(&g_rmu); int n = (int)g_by_serial.n; pthread_mutex_unlock(&g_rmu); return n; }
 uint64_t rp_res_uploads(void) { pthread_mutex_lock(&g_rmu); uint64_t n = g_uploads; pthread_mutex_unlock(&g_rmu); return n; }
+
+// 调试：序号 → 后端贴图（没建过 = NULL）。读回落盘用（rp_debug_dump_chain）
+nvn_gpu_tex rp_tex_backend_by_serial(uint64_t serial) {
+    pthread_mutex_lock(&g_rmu);
+    struct rp_tex *x = nvn_hm_get(&g_by_serial, &serial); nvn_gpu_tex g = x ? x->g : NULL;
+    pthread_mutex_unlock(&g_rmu);
+    return g;
+}

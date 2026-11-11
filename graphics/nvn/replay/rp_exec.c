@@ -99,6 +99,7 @@ uint64_t nvn_be_sub_commit(void) {
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, sub_done, s, &err))) red("提交失败：%s", err.why);
     g_fence = f;
+    rp_debug_dump_poll(&g_fence);   // 调试开关 nvk_dump：有登记才做事
     return f;
 }
 

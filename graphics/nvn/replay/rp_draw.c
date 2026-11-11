@@ -12,6 +12,7 @@
 #include "nvn_refl.h"
 #include "nvn_fmt_info.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // SupportBuffer 里现在要填的字段（翻译器产物的布局；其余保持 0）
@@ -56,6 +57,13 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
     return 1;
 }
 
+// 调试读回用的绘制历史（见文件后部 dump_chain）
+enum { HIST_N = 4096, HIST_TEX = 4, DUMP_MAX = 12 };
+static struct { uint64_t target, tex[HIST_TEX]; } g_hist[HIST_N]; static uint32_t g_hist_n;
+static void hist_note(uint64_t target, const uint64_t *tex, int ntex) {
+    uint32_t i = g_hist_n++ % HIST_N; g_hist[i].target = target; memset(g_hist[i].tex, 0, sizeof g_hist[i].tex);
+    for (int k = 0; k < ntex && k < HIST_TEX; k++) g_hist[i].tex[k] = tex[k];
+}
 static int g_log_left;   // 逐笔日志还剩几行（调试开关 nvk_drawlog：上屏每 600 帧给下一帧开一次，见 rp_draw_log_arm）
 static int skip(const char *why, const void *rec) {
     nvn_unimpl("draw", why, rec); g_skips++;
@@ -266,8 +274,58 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
                  dyn.vp[0][0], dyn.vp[0][1], dyn.vp[0][2], dyn.vp[0][3], dyn.has_sc, dyn.sc[0], dyn.sc[1], dyn.sc[2], dyn.sc[3], (int)rp_S.ds.dt, (int)rp_S.ds.st, (unsigned)rp_S.poly.cull, (unsigned)rp_S.poly.front, tl);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b);
     }
+    { uint64_t ts4[HIST_TEX]; int nt = 0;
+      for (int st = 0; st < 2; st++) for (uint32_t i = 0; i < g_prog->nent[st] && nt < HIST_TEX; i++) { const nvn_gpu_layout_ent *e = &g_prog->ent[st][i];
+          if (e->src_kind != NVN_RB_TEX || e->count > 1) continue;
+          uint64_t h = rp_S.tex[st][e->src_reg]; tex_t snap; view_t sv; int hv;
+          if (rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &snap, &sv, &hv)) ts4[nt++] = snap.serial; }
+      hist_note(rt->n && rt->color[0] ? rt->color[0]->serial : rt->depth ? rt->depth->serial : 0, ts4, nt); }
     rp_pso_dirty = rp_dss_dirty = 0; memset(rp_args_dirty, 0, sizeof rp_args_dirty);
     g_draws++;
+}
+
+// ---------- 调试：把「上屏那张图」和它上游几层的贴图读回落盘（开关 nvk_dump；rp_present 每 600 帧调一次） ----------
+// 每笔绘制记下目标序号和它采样的头几张贴图序号；从上屏的那张图往回走：画到它的那些笔采样了谁，再往上，至多 3 层、12 张。
+// 每张读第 0 级第 0 层的原始字节，写到诊断目录（没有就写缓存目录）的 nvkdump_<帧>_<层>_<序号>_<宽>x<高>_<格式>.raw。
+struct dump_job { nvn_gpu_buf buf; uint64_t bytes; char path[300]; };
+static void dump_done(void *user, const nvn_gpu_done *d) {
+    struct dump_job *j = user;
+    if (d->status != NVN_GPU_DONE_FAILED) { FILE *f = fopen(j->path, "wb"); if (f) { fwrite(nvn_gpu_buf_cpu(j->buf), 1, (size_t)j->bytes, f); fclose(f); nvn_plat_log(NVN_PLAT_LOG_INFO, "dump", j->path); } }
+    nvn_gpu_buf_release(j->buf, NULL, NULL); free(j);
+}
+// 上屏线程只登记「要读回」；真正的读回在提交线程上、一次提交收尾时做（时间线的值只有提交线程能发）
+static uint64_t g_dump_serial, g_dump_frame;
+void rp_debug_dump_request(uint64_t present_serial, uint64_t frame) { __atomic_store_n(&g_dump_frame, frame, __ATOMIC_RELEASE); __atomic_store_n(&g_dump_serial, present_serial, __ATOMIC_RELEASE); }
+static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence);
+void rp_debug_dump_poll(uint64_t *fence) {
+    uint64_t s = __atomic_exchange_n(&g_dump_serial, 0, __ATOMIC_ACQ_REL);
+    if (s) dump_chain(s, __atomic_load_n(&g_dump_frame, __ATOMIC_ACQUIRE), fence);
+}
+static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence) {
+    const char *dir = nvn_plat_dir(NVN_PLAT_DIR_DIAG); if (!dir) dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
+    if (!dir) { nvn_plat_log(NVN_PLAT_LOG_WARN, "dump", "没有可写目录，不落盘"); return; }
+    uint64_t list[DUMP_MAX]; int depth[DUMP_MAX], n = 0; list[n] = present_serial; depth[n++] = 0;
+    uint32_t have = g_hist_n < HIST_N ? g_hist_n : HIST_N;
+    for (int i = 0; i < n && n < DUMP_MAX; i++) {
+        if (depth[i] >= 3) continue;
+        for (uint32_t h = 0; h < have && n < DUMP_MAX; h++) { if (g_hist[h].target != list[i]) continue;
+            for (int k = 0; k < HIST_TEX && n < DUMP_MAX; k++) { uint64_t s = g_hist[h].tex[k]; if (!s) continue;
+                int seen = 0; for (int q = 0; q < n; q++) if (list[q] == s) seen = 1;
+                if (!seen) { list[n] = s; depth[n++] = depth[i] + 1; } } }
+    }
+    for (int i = 0; i < n; i++) {
+        nvn_gpu_tex g = rp_tex_backend_by_serial(list[i]); if (!g) continue;
+        nvn_gpu_tex_info ti; nvn_gpu_tex_info_get(g, &ti);
+        int bw = 1, bh = 1, bpb = nvn_fmt_bpb((int)ti.nvn_format, &bw, &bh);
+        if (!bpb || !ti.w || !ti.h || ti.samples > 1) continue;
+        uint64_t row = (uint64_t)((ti.w + (uint32_t)bw - 1) / (uint32_t)bw) * (uint64_t)bpb, bytes = row * ((ti.h + (uint32_t)bh - 1) / (uint32_t)bh);
+        struct dump_job *j = calloc(1, sizeof *j); nvn_gpu_err err = {0}; nvn_gpu_cmd c = NULL; nvn_gpu_cmd_desc cd = {0, "nvk dump"};
+        if (!j || !nvn_gpu_ok(nvn_gpu_buf_create(bytes, NVN_GPU_MEM_SHARED, NULL, &j->buf, &err)) || !nvn_gpu_ok(nvn_gpu_cmd_begin(&cd, &c, &err))) { if (j && j->buf) nvn_gpu_buf_release(j->buf, NULL, NULL); free(j); continue; }
+        j->bytes = bytes; snprintf(j->path, sizeof j->path, "%s/nvkdump_%llu_%d_%llu_%ux%u_%#x.raw", dir, (unsigned long long)frame, depth[i], (unsigned long long)list[i], ti.w, ti.h, ti.nvn_format);
+        nvn_gpu_copy_tex_buf(c, g, 0, 0, NULL, j->buf, 0, row, bytes);
+        *fence += 1;
+        if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, *fence, dump_done, j, &err))) nvn_plat_log(NVN_PLAT_LOG_WARN, "dump", err.why);
+    }
 }
 
 void rp_draw_stats(uint64_t *draws, uint64_t *skips) { if (draws) *draws = g_draws; if (skips) *skips = g_skips; }
