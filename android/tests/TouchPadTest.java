@@ -131,6 +131,63 @@ public final class TouchPadTest {
         pad.layout(0, 0, 2400, 1080);
         check(pad.layoutModel().identifier.equals("default") && pad.controls().size() == 15, "back to built-in");
 
+        // Editor: drag a key, the D-pad and a stick; save; the saved layout lays out where they were dropped.
+        pad.setLayout(null);
+        pad.layout(0, 0, 2400, 1080);
+        check(!pad.edited(), "fresh layout is not edited");
+        TouchPad.Control ea = find(pad, TouchPad.BUTTON, "A", 0), ed = find(pad, TouchPad.DPAD, "", 0);
+        TouchPad.Control er = find(pad, TouchPad.STICK, "", 1);
+        check(pad.controlAt(ea.x, ea.y) == ea && pad.controlAt(er.x, er.y) == er, "editor pick");
+        check(pad.controlAt(1200, 700) == null, "editor pick misses empty space");
+        float dx = ed.x, dy = ed.y, rx0 = er.x, ry0 = er.y;
+        pad.moveControl(ea, 1500, 400);
+        pad.moveControl(ed, dx + 100, dy - 80);
+        pad.moveControl(er, rx0 - 200, ry0 - 150);
+        pad.moveControl(find(pad, TouchPad.BUTTON, "ZR", 0), 9999, -50);   // clamped into the box
+        check(pad.edited() && pad.buttons() == 0, "drags change no input");
+        TouchLayout mine = pad.editedLayout(TouchLayoutStore.MINE, "My layout");
+        check(mine.identifier.equals("mine"), "saved as the player's layout");
+        pad.setLayout(mine);
+        pad.layout(0, 0, 2400, 1080);
+        TouchPad.Control na = find(pad, TouchPad.BUTTON, "A", 0), nd = find(pad, TouchPad.DPAD, "", 0);
+        TouchPad.Control nr = find(pad, TouchPad.STICK, "", 1), nz = find(pad, TouchPad.BUTTON, "ZR", 0);
+        check(Math.abs(na.x - 1500) < 0.01f && Math.abs(na.y - 400) < 0.01f, "key lands where dropped");
+        check(Math.abs(nd.x - (dx + 100)) < 0.01f && Math.abs(nd.y - (dy - 80)) < 0.01f
+                && Math.abs(nd.radius - ed.radius) < 0.01f, "D-pad moves as one");
+        check(Math.abs(nr.x - (rx0 - 200)) < 0.01f && Math.abs(nr.y - (ry0 - 150)) < 0.01f, "stick lands where dropped");
+        check(nz.x + nz.halfWidth <= 2400.01f && nz.y - nz.halfHeight >= -0.01f, "clamped key drawn inside");
+        TouchPad fresh = new TouchPad();
+        fresh.layout(0, 0, 2400, 1080);
+        TouchPad.Control nb = find(pad, TouchPad.BUTTON, "B", 0), fb = find(fresh, TouchPad.BUTTON, "B", 0);
+        check(Math.abs(nb.x - fb.x) < 0.01f && Math.abs(nb.y - fb.y) < 0.01f, "undragged key kept");
+        pad.down(7, na.x, na.y);
+        check(pad.buttons() == 1, "moved A presses A");
+        pad.up(7);
+        // Dragging the right stick onto the left one is refused (F01 regions may not overlap), model untouched.
+        TouchPad.Control nl = find(pad, TouchPad.STICK, "", 0);
+        pad.moveControl(nr, nl.x, nl.y);
+        boolean refused = false;
+        try { pad.editedLayout(TouchLayoutStore.MINE, "x"); } catch (IllegalArgumentException expected) { refused = true; }
+        check(refused && pad.layoutModel() == mine, "overlapping sticks refused");
+
+        // Store: per game file, round trip, damaged file reported, reset back to built-in.
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("s2a-touch-store");
+        TouchLayoutStore store = new TouchLayoutStore(dir.toFile(), "0100abcdef000000");
+        check(store.file().getName().equals("0100ABCDEF000000.json"), "per-game file name");
+        check(new TouchLayoutStore(dir.toFile(), "../x").file().getName().equals("app.json"), "no path from title");
+        check(store.load() == null, "nothing saved");
+        store.save(mine);
+        TouchLayout loaded = store.load();
+        check(loaded != null && java.util.Arrays.equals(loaded.jsonBytes(), mine.jsonBytes()), "store round trip");
+        check(!new java.io.File(dir.toFile(), "0100ABCDEF000000.json.tmp").exists(), "no temp file left");
+        java.nio.file.Files.write(store.file().toPath(), "{".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        boolean damaged = false;
+        try { store.load(); } catch (IllegalArgumentException expected) { damaged = true; }
+        check(damaged, "damaged file reported");
+        store.reset();
+        check(store.load() == null && !store.file().exists(), "reset");
+        store.reset();   // idempotent
+
         if (failures > 0) System.exit(1);
         System.out.println("TouchPad: ok");
     }

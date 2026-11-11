@@ -20,6 +20,7 @@ final class TouchPad {
         final int kind, bit;   // bit: Npad button (BUTTON); unused for DPAD; 0 = left, 1 = right (STICK)
         final String id, label; // id: F01 button id, "DPAD", or F01 stick id
         float x, y, radius;    // view pixels; radius = half the longer side of a BUTTON
+        float homeX, homeY;    // centre from the layout (an editor drag moves x, y only)
         float halfWidth, halfHeight, corner;   // BUTTON: F01 frame (a round key has corner == half side)
         boolean pressed;       // drawing only
         float knobX, knobY;    // STICK: deflection in [-1, 1], y down (drawing only)
@@ -91,7 +92,7 @@ final class TouchPad {
             Control c = new Control(STICK, leftStick ? 0 : 1, s.id, leftStick ? "L" : "R");
             double[] p = current.stickCentre(s.id, left, by, bw, bh);
             c.x = (float) p[0]; c.y = (float) p[1]; c.radius = (float) (s.radius * unit);
-            controls.add(c);
+            add(c);
         }
         boolean dpad = false;
         for (TouchLayout.Button b : current.buttons) {
@@ -101,7 +102,7 @@ final class TouchPad {
                 double[] d = current.dpad(left, by, bw, bh);
                 Control c = new Control(DPAD, 0, "DPAD", "");
                 c.x = (float) d[0]; c.y = (float) d[1]; c.radius = (float) d[2];
-                controls.add(c);
+                add(c);
                 continue;
             }
             String[] key = null;
@@ -112,9 +113,62 @@ final class TouchPad {
             c.x = (float) (f.x + f.width / 2); c.y = (float) (f.y + f.height / 2);
             c.corner = (float) Math.min(b.cornerRadius * unit, Math.min(f.width, f.height) / 2);
             c.radius = Math.max(c.halfWidth, c.halfHeight);
-            controls.add(c);
+            add(c);
         }
         update();
+    }
+
+    private void add(Control c) {
+        c.homeX = c.x; c.homeY = c.y;
+        controls.add(c);
+    }
+
+    /** Editor pick: keys and the D-pad first (they are small and may sit inside a stick's reach), then sticks. */
+    Control controlAt(float x, float y) {
+        for (Control c : controls) if (c.kind != STICK && c.hit(x, y)) return c;
+        for (Control c : controls) if (c.kind == STICK && c.hit(x, y)) return c;
+        return null;
+    }
+
+    /** Editor drag: move a control's centre, kept inside the pad box. Input state is not touched. */
+    void moveControl(Control c, float x, float y) {
+        c.x = Math.max(box[0], Math.min(box[0] + box[2], x));
+        c.y = Math.max(box[1], Math.min(box[1] + box[3], y));
+    }
+
+    boolean edited() {
+        for (Control c : controls) if (c.x != c.homeX || c.y != c.homeY) return true;
+        return false;
+    }
+
+    /**
+     * Editor save: the current layout with every dragged control at its new place, as a new user
+     * layout (TouchLayout.withButtonCenters). A dragged D-pad moves its four keys together; a dragged
+     * stick moves its activation region with it, kept inside the box. Throws IllegalArgumentException
+     * when the result is not a valid F01 layout (e.g. stick regions dragged onto each other).
+     */
+    TouchLayout editedLayout(String id, String name) {
+        double left = box[0], top = box[1], width = box[2], height = box[3];
+        Map<String, double[]> centres = new HashMap<>();
+        for (Control c : controls) {
+            if (c.x == c.homeX && c.y == c.homeY) continue;
+            if (c.kind == BUTTON) centres.put(c.id, new double[] {c.x, c.y});
+            else if (c.kind == DPAD)
+                for (String key : new String[] {"UP", "DOWN", "LEFT", "RIGHT"}) {
+                    TouchLayout.Rect f = current.frameForButton(key, left, top, width, height);
+                    centres.put(key, new double[] {f.x + f.width / 2 + (c.x - c.homeX), f.y + f.height / 2 + (c.y - c.homeY)});
+                }
+        }
+        TouchLayout out = current.withButtonCenters(centres, left, top, width, height, id, name);
+        for (Control c : controls) {
+            if (c.kind != STICK || (c.x == c.homeX && c.y == c.homeY)) continue;
+            TouchLayout.Stick s = out.stick(c.id);
+            TouchLayout.Rect a = s.activation;
+            double x = Math.max(0, Math.min(1 - a.width, a.x + (c.x - c.homeX) / width));
+            double y = Math.max(0, Math.min(1 - a.height, a.y + (c.y - c.homeY) / height));
+            out = out.withStick(c.id, x, y, a.width, a.height, s.radius);
+        }
+        return out;
     }
 
     void down(int id, float x, float y) {

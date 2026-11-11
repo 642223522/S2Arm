@@ -34,6 +34,9 @@ public class MainActivity extends Activity
     private TouchPadView touchPad;      // on-screen gamepad over the surface
     private String touchMode = "auto";  // auto: shown unless a physical gamepad is connected
     private boolean touchLog;           // debug: log every change of the published input
+    private TouchLayoutStore touchLayouts;   // the player's layout for this game (P11)
+    private LinearLayout touchEditBar;       // Save / Default / Cancel while dragging controls
+    private static final String PREF_TOUCH_PASSTHROUGH = "touchPassthrough.";   // + layout file name: per game
     private String lastInputLog = "";
     private int loggedLayout;
     private static final int PICK_PACKAGE = 1;
@@ -226,9 +229,15 @@ public class MainActivity extends Activity
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL);
         if (runtimeLoaded) {
-            touchPad = new TouchPadView(this, changed -> publishInput());
+            touchPad = new TouchPadView(this, new TouchPadView.Listener() {
+                @Override public void onTouchPad(TouchPad changed) { publishInput(); }
+                @Override public void onTouchMenu() { showTouchMenu(); }
+            });
             root.addView(touchPad, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+            touchLayouts = new TouchLayoutStore(new File(getFilesDir(), "touch-layouts"),
+                gameMode ? getIntent().getStringExtra(GameActivity.TITLE_EXTRA) : null);
+            loadTouchLayout();
             frameRate = new FrameRateOverlay(this);
             root.addView(frameRate, fpsLayout);
             updateFrameRate(getIntent());
@@ -360,6 +369,7 @@ public class MainActivity extends Activity
             String game = gameMode ? null : apkGame();
             if (game != null) capabilities += "\n" + game;
             status.setText(capabilities);
+            applyTouchPassthrough();
             requestDebugLifecycle(getIntent());
         } catch (LinkageError | RuntimeException e) {
             Log.e("S2Arm", "Native host startup failed", e);
@@ -1024,9 +1034,117 @@ public class MainActivity extends Activity
         }
         return false;
     }
+    private void loadTouchLayout() {
+        try {
+            TouchLayout saved = touchLayouts.load();
+            touchPad.setLayout(saved);
+            if (saved != null) Log.i("S2Arm", "Touch layout: " + touchLayouts.file().getName());
+        } catch (java.io.IOException | IllegalArgumentException error) {
+            // A damaged file must not take the pad away: built-in layout, and say so once.
+            Log.e("S2Arm", "Touch layout ignored (" + touchLayouts.file().getName() + "): " + error.getMessage());
+            android.widget.Toast.makeText(this, "Saved touch layout could not be read; using the default",
+                android.widget.Toast.LENGTH_LONG).show();
+            touchPad.setLayout(null);
+        }
+    }
+
+    private String passthroughKey() { return PREF_TOUCH_PASSTHROUGH + touchLayouts.file().getName(); }
+
+    /** The player's touch passthrough choice for this game (the old adb extra still overrides for one run). */
+    private void applyTouchPassthrough() {
+        if (touchPad == null || touchLayouts == null) return;
+        if (!getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(passthroughKey(), false)) return;
+        setTouchPassthrough(true, false);
+    }
+
+    private void setTouchPassthrough(boolean enabled, boolean remember) {
+        try {
+            touchPad.setGameTouchEnabled(enabled);
+            if (remember) getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(passthroughKey(), enabled).apply();
+            Log.i("S2Arm", "Touch passthrough " + (enabled ? "on" : "off"));
+        } catch (IllegalStateException e) {
+            Log.e("S2Arm", e.getMessage());
+            android.widget.Toast.makeText(this, e.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+        }
+        updateTouchPad();
+    }
+
+    /** Four-finger hold: the in-game touch menu (iOS: same gesture). No adb needed for any of it. */
+    private void showTouchMenu() {
+        if (touchPad == null || touchPad.editing() || isFinishing()) return;
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        if (touchPad.getVisibility() == android.view.View.VISIBLE) {
+            labels.add("Edit button positions"); actions.add(this::beginTouchEdit);
+        }
+        if (touchLayouts.file().isFile()) {
+            labels.add("Restore default layout"); actions.add(this::resetTouchLayout);
+        }
+        if (host != 0) {
+            boolean on = touchPad.gameTouchEnabled();
+            labels.add(on ? "Touch passthrough: on (tap to turn off)" : "Touch passthrough: off (tap to turn on)");
+            actions.add(() -> setTouchPassthrough(!on, true));
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Touch controls")
+            .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
+            .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
+    private void beginTouchEdit() {
+        touchPad.beginEditing();
+        touchEditBar = new LinearLayout(this);
+        touchEditBar.setOrientation(LinearLayout.HORIZONTAL);
+        touchEditBar.setBackgroundColor(0xE6101820);
+        String[] names = {"Save", "Default", "Cancel"};
+        Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }};
+        for (int i = 0; i < names.length; i++) {
+            android.widget.Button button = new android.widget.Button(this);
+            button.setText(names[i]);
+            Runnable action = actions[i];
+            button.setOnClickListener(v -> action.run());
+            touchEditBar.addView(button);
+        }
+        FrameLayout.LayoutParams bar = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL);
+        bar.topMargin = windowInsets[1];
+        root.addView(touchEditBar, bar);
+    }
+
+    private void endTouchEdit() {
+        if (touchEditBar != null) root.removeView(touchEditBar);
+        touchEditBar = null;
+        touchPad.endEditing();
+    }
+
+    private void saveTouchEdit() {
+        try {
+            TouchLayout mine = touchPad.pad().editedLayout(TouchLayoutStore.MINE, "My layout");
+            touchLayouts.save(mine);
+            endTouchEdit();
+            touchPad.setLayout(mine);
+            Log.i("S2Arm", "Touch layout saved: " + touchLayouts.file().getName());
+        } catch (IllegalArgumentException | java.io.IOException error) {
+            // Stay in the editor: the drags are kept so the player can fix them (e.g. sticks on top of each other).
+            Log.e("S2Arm", "Touch layout not saved: " + error.getMessage());
+            android.widget.Toast.makeText(this, "Layout not saved: " + error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void resetTouchLayout() {
+        try {
+            touchLayouts.reset();
+        } catch (java.io.IOException error) {
+            Log.e("S2Arm", "Touch layout reset failed: " + error.getMessage());
+        }
+        touchPad.setLayout(null);
+    }
+
     private void updateTouchPad() {
         if (touchPad == null) return;
-        boolean show = "on".equals(touchMode) || ("auto".equals(touchMode) && !gamepadConnected());
+        boolean show = "on".equals(touchMode) || ("auto".equals(touchMode) && !gamepadConnected())
+            || touchPad.editing();
         touchPad.setControlsVisible(show);
         touchPad.setVisibility(show || touchPad.gameTouchEnabled() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
