@@ -1046,7 +1046,7 @@ public class MainActivity extends Activity
         } catch (java.io.IOException | IllegalArgumentException error) {
             // A damaged file must not take the pad away: built-in layout, and say so once.
             Log.e("S2Arm", "Touch layout ignored (" + touchLayouts.file().getName() + "): " + error.getMessage());
-            android.widget.Toast.makeText(this, "Saved touch layout could not be read; using the default",
+            android.widget.Toast.makeText(this, R.string.touch_layout_load_failed,
                 android.widget.Toast.LENGTH_LONG).show();
             touchPad.setLayout(null);
         }
@@ -1079,18 +1079,18 @@ public class MainActivity extends Activity
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         if (touchPad.getVisibility() == android.view.View.VISIBLE) {
-            labels.add("Edit button positions"); actions.add(this::beginTouchEdit);
+            labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
         }
         if (touchLayouts.file().isFile()) {
-            labels.add("Restore default layout"); actions.add(this::resetTouchLayout);
+            labels.add(getString(R.string.touch_menu_restore_default)); actions.add(this::resetTouchLayout);
         }
         if (host != 0 && BuildConfig.EXPERIMENTAL_TOUCH) {   // not built in: no item that can only fail
             boolean on = touchPad.gameTouchEnabled();
-            labels.add(on ? "Touch passthrough: on (tap to turn off)" : "Touch passthrough: off (tap to turn on)");
+            labels.add(getString(on ? R.string.touch_passthrough_on : R.string.touch_passthrough_off));
             actions.add(() -> setTouchPassthrough(!on, true));
         }
         new android.app.AlertDialog.Builder(this)
-            .setTitle("Touch controls")
+            .setTitle(R.string.touch_menu_title)
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
             .setNegativeButton(android.R.string.cancel, null)
             .show();
@@ -1101,7 +1101,7 @@ public class MainActivity extends Activity
         touchEditBar = new LinearLayout(this);
         touchEditBar.setOrientation(LinearLayout.HORIZONTAL);
         touchEditBar.setBackgroundColor(0xE6101820);
-        String[] names = {"Save", "Default", "Cancel"};
+        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel)};
         Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }};
         for (int i = 0; i < names.length; i++) {
             android.widget.Button button = new android.widget.Button(this);
@@ -1156,7 +1156,8 @@ public class MainActivity extends Activity
         } catch (IllegalArgumentException | java.io.IOException error) {
             // Stay in the editor: the drags are kept so the player can fix them (e.g. sticks on top of each other).
             Log.e("S2Arm", "Touch layout not saved: " + error.getMessage());
-            android.widget.Toast.makeText(this, "Layout not saved: " + error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+            android.widget.Toast.makeText(this, getString(R.string.touch_layout_save_failed, error.getMessage()),
+                android.widget.Toast.LENGTH_LONG).show();
         }
     }
 
