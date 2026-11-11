@@ -199,6 +199,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var installReadiness: InstallReadiness?
     /// 开发者证书（v0.2.4，S2ArmLauncherModel+DevCert.swift）：现况与体检；导入弹窗开着没有
     @Published var devCert: DevCertStatus?
+    var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
     @Published private(set) var customizing = false
     @Published private(set) var customizeError: String?
@@ -624,7 +625,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func refreshTargets() async {
-        guard let probe = try? await provider.targetDevices() else { return }
+        let probe: [String: Any]
+        do { probe = try await provider.targetDevices(); readOK("s2arm.fail.targets") }
+        catch { reportFailure("s2arm.fail.targets", error, passive: true); return }   // 剃刀 M13：读失败保留上次的设备列表，报一次原因（5 秒轮询不重复弹）
         connectedDevices = probe["connected"] as? [[String: Any]] ?? []
         targetModels = probe["models"] as? [[String: Any]] ?? []
         targetOS = probe["osChoices"] as? [Int] ?? []
@@ -840,9 +843,12 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 重读各存放位置（出包页打开时调；剩余空间是当时的）。
     func loadLocations(probe: String? = nil) {
         Task { [weak self] in
-            guard let self, let r = try? await self.provider.locations(probe: probe) else { return }
-            self.locations = r.rows; self.lastLocation = r.last
-            if let probe, let slack = r.probeSlack { self.probedSlack[probe] = slack }
+            guard let self else { return }
+            do {
+                let r = try await self.provider.locations(probe: probe); self.readOK("s2arm.fail.locations")
+                self.locations = r.rows; self.lastLocation = r.last
+                if let probe, let slack = r.probeSlack { self.probedSlack[probe] = slack }
+            } catch { self.reportFailure("s2arm.fail.locations", error, passive: true) }   // 读不到就保留上次的列表
         }
     }
 
@@ -929,6 +935,18 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { explainMissing("s2arm.reveal.ipaMissing"); return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
+
+    /// 失败如实报（剃刀 G9 M12 / M13）：原先 try? 吞掉，读失败当成「没有」、切换失败界面停在旧值像点了没反应。
+    ///   弹一行原因（标题按 titleKey，正文是后端 / 系统给的原因句）；值保持原样，不拿失败当结果。
+    ///   passive（打开页面时的被动刷新）：同一类连续失败只报头一次，成功一次后复位（readOK）
+    func reportFailure(_ titleKey: String, _ error: Error, passive: Bool = false) {
+        if passive { guard failingReads.insert(titleKey).inserted else { return } }
+        let alert = NSAlert()
+        alert.messageText = Localizer().t(titleKey)
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
+    }
+    func readOK(_ titleKey: String) { failingReads.remove(titleKey) }
 
     private func explainMissing(_ key: String) {
         let alert = NSAlert()
