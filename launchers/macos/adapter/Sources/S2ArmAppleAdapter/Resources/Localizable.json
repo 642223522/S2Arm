@@ -6942,5 +6942,13 @@
  {
   "source": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
   "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
+ },
+ {
+  "source": "游戏存放位置或游戏库所在的盘不支持 S2Arm 需要的文件操作（常见于 exFAT / FAT 格式的外接盘）：把这款游戏的存放位置换到 APFS 格式的盘（Mac 内置盘就是；外接盘可在「磁盘工具」里另分一个 APFS 分区），再重试；游戏原件不用挪。",
+  "en": "The drive holding this game's storage location or the game library doesn't support the file operations S2Arm needs (common on exFAT / FAT external drives). Move this game's storage location to an APFS drive (the Mac's built-in drive is APFS; on an external drive you can add an APFS partition in Disk Utility), then try again. The original game files can stay where they are."
+ },
+ {
+  "source": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
+  "en": "Drive format not supported: this drive doesn't support the file operations exporting needs (common on exFAT / FAT external drives)."
  }
 ]
