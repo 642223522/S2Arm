@@ -1207,6 +1207,8 @@
       {"id": "welcome.win.step.pc.title", "zh-Hans": "准备这台电脑", "en": "Get this PC ready"},
       {"id": "welcome.win.step.pc.done", "zh-Hans": "这台电脑已准备好", "en": "This PC is ready"},
       {"id": "welcome.win.step.pc.doneDetail", "zh-Hans": "检查全部通过", "en": "All checks passed"},
+      {"id": "welcome.win.step.pc.unknown", "zh-Hans": "没查成，可以先继续", "en": "Couldn't check, you can go on"},
+      {"id": "welcome.win.step.pc.unknownDetail", "zh-Hans": "这次检查本身没做成，不代表缺东西。可以先往下走，真缺什么出包时会说具体原因；也可以重查，或复制错误摘要发给我们。", "en": "The check itself didn't finish, which doesn't mean anything is missing. You can go on; if something is really missing, exporting will say exactly what. Or check again, or copy the error report and send it to us."},
       {"id": "welcome.win.step.pc.what", "zh-Hans": "S2Arm 自带了大部分工具，只差下面几样。", "en": "S2Arm brings most of its tools. These few need to be installed first."},
       {"id": "welcome.win.step.pc.checking", "zh-Hans": "正在检查这台电脑…", "en": "Checking this PC…"},
       {"id": "export.win.done.installNote", "zh-Hans": "用你在 Impactor 登录的 Apple ID 签名，连上数据线就行。", "en": "Signed with the Apple ID you use in Impactor. Just plug in your iPhone."},

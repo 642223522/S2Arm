@@ -25,7 +25,9 @@ public sealed partial class EnvironmentWindow
     // 检查本身没做成不等于环境有问题：不拦玩家，真缺东西时出包会报具体原因
     private bool EnvironmentUnknown => !busy && (report is { Error: not null } ||
         (report is null && summaryKey is "process.start_failed" or "protocol.invalid_report" or "process.interrupted" or "environment.failed"));
+    // PcReady = 可以往下走（真准备好，或检查本身没做成也不拦）；绿勾和「检查全部通过」只给真准备好的（剃刀 W5：没查成也打绿勾、写全部通过，文案对不上）
     private bool PcReady => report is { Ready: true } || EnvironmentUnknown;
+    private bool PcChecked => report is { Ready: true };
     private bool GamesChosen => pendingImportPaths.Length > 0 || welcomeGameId != null;
     private bool KeysSettled => welcomeGameId != null ||
         (catalog?.KeysReady == true && !keysRejected) ||
@@ -34,7 +36,7 @@ public sealed partial class EnvironmentWindow
         !PcReady ? WelcomeStep.Pc : !GamesChosen ? WelcomeStep.Games : WelcomeStep.Keys;
     private bool WelcomeDone(WelcomeStep s) => s switch
     {
-        WelcomeStep.Pc => PcReady,
+        WelcomeStep.Pc => PcChecked,
         WelcomeStep.Games => GamesChosen,
         WelcomeStep.Keys => KeysSettled,
         _ => false
@@ -72,7 +74,7 @@ public sealed partial class EnvironmentWindow
         // ── 右列：三步 ──────────────────────────────────────────────────
         var steps = new StackPanel { Spacing = 0, Margin = new Thickness(0, 44, 48, 44) };
         steps.Children.Add(WelcomeStepRow(WelcomeStep.Pc,
-            T(PcReady ? "welcome.win.step.pc.done" : "welcome.win.step.pc.title"), false, PcContent()));
+            T(PcChecked ? "welcome.win.step.pc.done" : EnvironmentUnknown ? "welcome.win.step.pc.unknown" : "welcome.win.step.pc.title"), false, PcContent()));
         steps.Children.Add(WelcomeStepRow(WelcomeStep.Games,
             T(GamesChosen ? "welcome.step.games.done" : "welcome.step.games.title"), false, GamesContent()));
         steps.Children.Add(WelcomeStepRow(WelcomeStep.Keys,
@@ -306,7 +308,17 @@ public sealed partial class EnvironmentWindow
             panel.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4, MaxWidth = 200 });
             return panel;
         }
-        if (PcReady) { panel.Children.Add(Muted(T("welcome.win.step.pc.doneDetail"))); return panel; }
+        if (PcChecked) { panel.Children.Add(Muted(T("welcome.win.step.pc.doneDetail"))); return panel; }
+        if (EnvironmentUnknown)
+        {
+            // 没查成：说实话，可以先继续（真缺东西时出包会报具体原因），给重查 / 复制错误摘要
+            panel.Children.Add(Muted(T("welcome.win.step.pc.unknownDetail")));
+            var again = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };
+            again.Children.Add(Action("action.recheck", () => _ = CheckAsync(), !busy));
+            again.Children.Add(CopyReportButton(null, null, EnvironmentSummary));
+            panel.Children.Add(again);
+            return panel;
+        }
         if (report is null)
         {
             // 尚未检查：Activated 事件会自动触发；从压缩包里直接打开时不会有报告，要告诉玩家先解压

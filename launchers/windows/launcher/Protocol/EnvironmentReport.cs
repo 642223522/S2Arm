@@ -36,41 +36,21 @@ public sealed record EnvironmentReport(
             if (checksElement.ValueKind != JsonValueKind.Array)
                 throw new EnvironmentProtocolException("Environment checks must be an array.");
 
+            // 剃刀 W6：前端只解析、只查链接安全，不再替后端核对报告（状态白名单、ok 与状态一致、恢复字段与状态一致、
+            //   id 不重复、退出码与 ready 一致）——后端加一个新状态，前端就整页显示「格式无法核实」，再叠 W5 变成「已准备好」。
+            //   后端 winenv.py 自己有 RecoveryContractError 守着这些约定。
             var checks = new List<EnvironmentCheck>();
-            var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in checksElement.EnumerateArray())
             {
-                var id = RequiredText(item, "id");
-                if (!ids.Add(id)) throw new EnvironmentProtocolException("Duplicate environment check id.");
                 var status = RequiredText(item, "status");
-                if (status is not ("ok" or "missing" or "mismatch" or "unverified" or "error" or "user-selected"))
-                    throw new EnvironmentProtocolException("Unsupported environment check status.");
-                if (item.GetProperty("ok").GetBoolean() != (status == "ok"))
-                    throw new EnvironmentProtocolException("Environment check status disagrees with ok.");
-                var code = NullableText(item, "code");
-                var action = NullableText(item, "action");
-                if (status == "ok" ? code is not null || action is not null :
-                    string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(action))
-                    throw new EnvironmentProtocolException("Environment recovery fields disagree with status.");
-                var url = OfficialUrl(item);
-                if (status == "ok" && url is not null)
-                    throw new EnvironmentProtocolException("Successful environment check has an official action.");
-                checks.Add(new EnvironmentCheck(id, RequiredText(item, "name"), status,
-                    RequiredText(item, "message"), code, action, url,
+                checks.Add(new EnvironmentCheck(RequiredText(item, "id"), RequiredText(item, "name"), status,
+                    RequiredText(item, "message"), NullableText(item, "code"), NullableText(item, "action"), OfficialUrl(item),
                     item.TryGetProperty("blocking", out var blocking) ? blocking.GetBoolean() : status != "ok"));
             }
 
             EnvironmentError? error = null;
             if (root.TryGetProperty("error", out var errorElement))
                 error = new(RequiredText(errorElement, "code"), RequiredText(errorElement, "message"));
-
-            if (error is not null)
-            {
-                if (exitCode != 2 || ready || checks.Count != 0)
-                    throw new EnvironmentProtocolException("Invalid environment request-error envelope.");
-            }
-            else if (checks.Count == 0 || exitCode != (ready ? 0 : 1))
-                throw new EnvironmentProtocolException("Environment report disagrees with process exit or observations.");
 
             return new(ready, checks.AsReadOnly(), error);
         }
@@ -98,12 +78,11 @@ public sealed record EnvironmentReport(
     private static Uri? OfficialUrl(JsonElement item)
     {
         // The backend owns the official destination. Never infer links from recovery text.
-        if (!item.TryGetProperty("url", out var element) || element.ValueKind == JsonValueKind.Null)
-            return null;
-        if (element.ValueKind != JsonValueKind.String ||
+        // An unsafe link (not https, no host, credentials in it) is dropped for that check only (razor W6 / W7).
+        if (!item.TryGetProperty("url", out var element) || element.ValueKind != JsonValueKind.String ||
             !Uri.TryCreate(element.GetString(), UriKind.Absolute, out var url) ||
             url.Scheme != Uri.UriSchemeHttps || url.Host.Length == 0 || url.UserInfo.Length != 0)
-            throw new EnvironmentProtocolException("Invalid official download URL.");
+            return null;
         return url;
     }
 
