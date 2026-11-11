@@ -35,11 +35,7 @@ final class TouchPadView extends View {
     private TouchPad.Control dragging;
     private int dragPointer = -1;
     private float dragX, dragY;
-    private final Runnable menuHold = () -> {
-        // The four fingers may be on the game (passthrough): lift them there before the menu opens.
-        release();
-        listener.onTouchMenu();
-    };
+    private final Runnable menuHold = this::openMenu;
     void setTrace(boolean enabled) { trace = enabled; TouchInputBridge.touchTrace(enabled); }
 
     boolean gameTouchEnabled() { return gameTouch.enabled(); }
@@ -220,6 +216,12 @@ final class TouchPadView extends View {
         listener.onTouchPad(pad);
         invalidate();
         return true;
+    }
+
+    private void openMenu() {
+        // The four fingers may be on the game (passthrough): lift them there before the menu opens.
+        release();
+        listener.onTouchMenu();
     }
 
     private void watchMenuHold(MotionEvent e) {
