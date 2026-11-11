@@ -814,7 +814,9 @@ class UsageGuardTests(unittest.TestCase):
 
     def test_missing_required_argument_exits_2_without_app_call(self):
         for argv in (["install"], ["wait"], ["build"], ["snapshot"], ["keys"],
-                     ["install-check", "--json"], ["ipa", "--space-override"]):
+                     ["install-check", "--json"], ["ipa", "--space-override"],
+                     ["cloud-sync"], ["display", "--docked", "on"], ["library", "--move"], ["restore-iphone"], ["show"],
+                     ["install", "--team", "ABCDE12345"]):
             with self.subTest(argv=argv):
                 with mock.patch.object(ctl, "call") as call, \
                         mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \

@@ -610,7 +610,8 @@ def diag_body(rest, now=None):
 # 至少需要一个位置参数的命令：以前缺参数直接 IndexError，或把后面的选项当成游戏号发给控制口。
 NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare',
              'build', 'wait', 'install-check', 'logs', 'device', 'push-pack', 'snapshot', 'select',
-             'onboarding', 'target', 'keys', 'games'}
+             'onboarding', 'target', 'keys', 'games',
+             'cloud-sync', 'display', 'library', 'restore-iphone', 'show'}   # 合入时补：这几条同样直接取 rest[0]
 
 def main():
     a = sys.argv[1:]
@@ -627,7 +628,8 @@ def main():
     if any(x in ('-h', '--help') for x in rest):
         print(USAGE)
         return
-    if cmd in NEEDS_ARG and not any(not x.startswith('-') for x in rest):
+    # 这些命令都把 rest[0] 当游戏号 / 任务号 / 路径：第一个参数缺了或是选项就停（合入时改：原判「任一非选项参数」，display --docked on 的 on、install --team X 的 X 会被当成有参数）
+    if cmd in NEEDS_ARG and (not rest or rest[0].startswith('-')):
         print(USAGE); sys.exit(2)
     if cmd == 'start': start(rest[0] if rest else default_app()); return
     if cmd == 'state':
