@@ -323,6 +323,10 @@ class AndroidDeliveryTest(unittest.TestCase):
                 return mod.package(product, self.base / 'out')
         again(mod_env)
         self.assertEqual(built_variants[-1], 'debug')
+        # 第二个 release 向第一个取共用文件（game_apk.py --resources --reuse-from）；第一个没有上一版，不带这个参数
+        resource_calls = [cmd for cmd, _ in calls if '--resources' in cmd]
+        self.assertNotIn('--reuse-from', resource_calls[0])
+        self.assertEqual(resource_calls[1][resource_calls[1].index('--reuse-from') + 1], result['resources'])
         # 本次游戏构建之前留下的未优化编译命令（诊断用的默认调试构建）不算：只核本次构建写的
         tree = self.base / 'vtree'
         fresh = tree / 'android/app/.cxx/RelWithDebInfo/x/arm64-v8a/compile_commands.json'
@@ -675,6 +679,29 @@ class AndroidDeliveryTest(unittest.TestCase):
         self.assertEqual((old / 'game.apk').read_bytes(), b'previous')
         self.assertEqual([p.name for p in old.parent.iterdir()], ['old'])
         self.assertFalse(list((self.base / 'out').glob('.android-build-*')))
+
+    def test_latest_release_is_the_newest_complete_publication(self):
+        releases = self.base / 'releases'
+        releases.mkdir()
+
+        def release(parent, name, stamp, complete=True):
+            path = parent / name
+            (path / 'resources').mkdir(parents=True)
+            if complete:
+                (path / 'resources/manifest.json').write_text('{}')
+                (path / 'artifact.json').write_text('{}')
+                os.utime(path / 'artifact.json', ns=(stamp, stamp))
+            return path
+        older = release(releases, 'a' * 32, 1_000_000_000)
+        newest = release(releases, 'b' * 32, 2_000_000_000)
+        release(releases, 'c' * 32, 3_000_000_000, complete=False)   # 没发布完：缺账本与资源包清单
+        release(releases, '.android-release-tmp', 4_000_000_000)     # 出包中的暂存目录
+        (releases / 'link').symlink_to(release(self.base, 'elsewhere', 5_000_000_000))   # 软链（指向更新的外部目录）不当上一版
+        (releases / 'stray.txt').write_text('x')
+        self.assertEqual(mod.latest_release(releases), newest)
+        self.assertEqual(mod.latest_release(self.base / 'no-releases-yet'), None)
+        shutil.rmtree(newest)
+        self.assertEqual(mod.latest_release(releases), older)
 
     def test_export_contains_only_committed_sources_and_no_git_directory(self):
         repo = self.base / 'synthetic-repo'; repo.mkdir()
