@@ -552,7 +552,7 @@ class DeviceBundleTests(unittest.TestCase):
             self.assertFalse(ctl.container_match(other, bid), other)
 
     def test_device_reports_installed_team_bundle(self):
-        dev = {"hardwareProperties": {"udid": "U1"}, "deviceProperties": {"name": "测试机"}}
+        dev = {"hardwareProperties": {"udid": "U1"}, "deviceProperties": {"name": "玩家的手机"}}
         apps = {"result": {"apps": [{"bundleIdentifier": "com.example.app"}, {"bundleIdentifier": "io.s2arm.games.7r5l7ty4r7"}]}}
         def fake_dctl(args):
             out = args[args.index("--json-output") + 1]
