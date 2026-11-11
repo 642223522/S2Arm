@@ -301,14 +301,6 @@ namespace S2A.DirectCompiler
             if (f == TextureFormat.Unknown) throw Missing("QueryTextureFormat", $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot},format=Unknown");
             return Record("QueryTextureFormat", $"handle={handle},cbufSlot={cbufSlot}", f, "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
         }
-        // 采样贴图的声明数值型跟绑定视图走：事实里的格式照答（采样专用的 Unknown、没有事实的槽 = Unknown = 浮点）
-        public TextureFormat QueryS2ASampledTextureFormat(int handle, int cbufSlot = -1)
-        {
-            DirectTextureFact fact = FindTexture(handle, cbufSlot);
-            if (fact == null && cbufSlot >= 0) fact = FindTexture(handle, -1);
-            return Record("QueryS2ASampledTextureFormat", $"handle={handle},cbufSlot={cbufSlot}", fact == null ? TextureFormat.Unknown : fact.Format,
-                "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
-        }
         public int QueryTextureArrayLengthFromPool() =>
             Record("QueryTextureArrayLengthFromPool", "stage=" + _stage.Stage, _program.TextureArrayLength, "texture-pool-capacity");
         public int QuerySamplerArrayLengthFromPool() =>

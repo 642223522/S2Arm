@@ -747,26 +747,6 @@ internal static unsafe class Program
             JsonElement stages = content.GetProperty("stages");
             Check(stages.GetArrayLength() == 1 && stages[0].GetProperty("stage").GetString() == "vs", "vs-only: exactly one stage, vs");
         }
-        // 采样贴图的声明数值型跟绑定视图走：事实里是整数格式 → 片元 SPIR-V 里那张图的采样类型是 32 位无符号 / 有符号整数；
-        // 归一化格式 → 32 位浮点（Vulkan 要求被采样图像的数值型与着色器声明一致）。期望值来自格式本身，不看实现。
-        foreach (var v in new[] { (Format: "R8G8B8A8Unorm", Op: 22, Signed: -1), (Format: "R32Uint", Op: 21, Signed: 0),
-                                 (Format: "R8G8B8A8Uint", Op: 21, Signed: 0), (Format: "R32Sint", Op: 21, Signed: 1), (Format: "Unknown", Op: 22, Signed: -1) })
-        {
-            string fact = "[{\"stage\":\"fs\",\"handle\":0,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"" + v.Format + "\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
-            using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "req-sampled-" + v.Format,
-                Guest(false, new[] { Ald4(0), Ast4Pos(0) }), Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2) }), textureFacts: fact)));
-            byte[] spv = Convert.FromBase64String(doc.RootElement.GetProperty("content").GetProperty("stages")[1].GetProperty("spirv").GetString());
-            var types = new Dictionary<uint, (int Op, int Signed)>(); int images = 0, match = 0;
-            for (int i = 5; i * 4 < spv.Length;)
-            {
-                uint w0 = BitConverter.ToUInt32(spv, i * 4); int op = (int)(w0 & 0xffff), n = (int)(w0 >> 16); if (n == 0) break;
-                if (op == 21) types[BitConverter.ToUInt32(spv, (i + 1) * 4)] = (21, (int)BitConverter.ToUInt32(spv, (i + 3) * 4));
-                if (op == 22) types[BitConverter.ToUInt32(spv, (i + 1) * 4)] = (22, -1);
-                if (op == 25) { images++; if (types.TryGetValue(BitConverter.ToUInt32(spv, (i + 2) * 4), out var t) && t.Op == v.Op && t.Signed == v.Signed) match++; }
-                i += n;
-            }
-            Check(images == 1 && match == 1, "sampled texture of format " + v.Format + " declares the matching sampled type");
-        }
         byte[] computeRequest = RequestJson(profile, "compute", 2, 1, "req-compute", cs: cs);
         using (JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(computeRequest)))
         {

@@ -604,18 +604,6 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
-        /// S2A：被采样（非缓冲、非数组）贴图的绑定视图格式，只用来定声明的数值型。宿主知道它是整数格式时答该格式，
-        /// 翻译器据此声明整数采样器；不答 = Unknown = 浮点（上游行为）。
-        /// </summary>
-        /// <param name="handle">Texture handle</param>
-        /// <param name="cbufSlot">Constant buffer slot for the texture handle</param>
-        /// <returns>Format of the bound texture view, or Unknown</returns>
-        TextureFormat QueryS2ASampledTextureFormat(int handle, int cbufSlot = -1)
-        {
-            return TextureFormat.Unknown;
-        }
-
-        /// <summary>
         /// Queries transform feedback enable state.
         /// </summary>
         /// <returns>True if the shader uses transform feedback, false otherwise</returns>
