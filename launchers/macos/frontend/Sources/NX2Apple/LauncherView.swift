@@ -136,7 +136,7 @@ struct LauncherView: View {
     private var topActions: some View {
         HStack(spacing: 12) {
                 if model.loading { ProgressView().controlSize(.small) }
-                PlayerToolbarButton()   // 本地玩家（#623）：这次用谁的身份玩，点开切换 / 添加
+                PlayerToolbarButton(loc: loc)   // 本地玩家（#623）：这次用谁的身份玩，点开切换 / 添加；标题栏另起视图树、环境对象传不进去，显式给
                 exportPill
                 batchPill
                 PhoneUpdateButton(model: model, language: uiLanguage)

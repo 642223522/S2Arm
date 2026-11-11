@@ -9,7 +9,8 @@ import SaveSync
 
 /// 本地玩家（#623）：Mac 启动器顶栏的玩家按钮 + 弹出面板。玩家表存在本机 App 偏好（UserDefaults.standard，同 iOS 的键），不在游戏库文件夹里
 struct PlayerToolbarButton: View {
-    @EnvironmentObject var loc: Localizer
+    /// 显式传入：按钮放在标题栏里（UnifiedTitlebar 另起的视图树），环境对象传不进去，用 @EnvironmentObject 起 App 当场崩（11-11 实机发现）
+    @ObservedObject var loc: Localizer
     @State private var show = false
     @State private var players: [LocalPlayer] = []
     @State private var current = ""
