@@ -126,11 +126,6 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     const char *gid = getenv("S2A_LAUNCH_GAME_ID");
     NSUserDefaults *game = gid && *gid ? [[NSUserDefaults alloc] initWithSuiteName:[@"S2AGame." stringByAppendingString:@(gid)]] : nil;
     if (game) {
-        // 60 帧关 = 回游戏自己的帧率（多为 30）；开 = 不设，按缺省 / 能力清单
-        if (!getenv("S2A_FPS60") && [game objectForKey:@"S2AFps60"] && ![game boolForKey:@"S2AFps60"]) {
-            apply_environment("S2A_FPS60", @"0");
-            fprintf(stderr, "[S2A 画面设置] S2A_FPS60=0（游戏库：这款关 60 帧）\n");
-        }
         // 宽屏强制启用 = 这款按已验证开满屏（没进宽屏已验证名单也开），并压过 App 级的宽屏关；满屏自检照样兜底（拉伸 / 收窄连续两窗自动退回）
         if ([game boolForKey:@"S2AWidenForce"]) {
             if (!getenv("S2A_WIDEN_VERIFIED")) apply_environment("S2A_WIDEN_VERIFIED", @"1");
@@ -152,19 +147,19 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         apply_environment("S2A_WIDESCREEN", @"0");
         fprintf(stderr, "[S2A 画面设置] S2A_WIDESCREEN=0（本 App 设置：宽屏关）\n");
     }
-    // 60 帧（10-27 社区资源口径：表一律打进包、宿主运行时开关，缺省开）：关 = S2A_FPS60=0（回游戏自己的帧率，runtime/src/fps.c，帧率能耗线）；
-    //   启动环境显式给的优先；与 Mac 启动器（pack/jobs/community.py launch_env）同口径
-    if (!getenv("S2A_FPS60") && [defaults objectForKey:@"S2AFps60"] && ![defaults boolForKey:@"S2AFps60"]) {
-        apply_environment("S2A_FPS60", @"0");
-        fprintf(stderr, "[S2A 画面设置] S2A_FPS60=0（本 App 设置：关）\n");
-    }
-    // 包里 60 帧是关的（强信号，tools/caps_policy.py；11-02 起全引擎默认开）、玩家在设置页看过「此游戏开 60 帧有已知问题」提示后手动开了（S2AFps60Manual，
-    //   只有设置页那一下会写）：S2A_FPS60=1。放开出图间隔由清单读到 fps60 0 + 这里的 1 认出（runtime/src/caps.c s2a_fps60_display_source），图形层每局按开关读时判，
-    //   不写 DM_PRESENT_INTERVAL（审计 P1-80：那个变量压过开关）。11-02 维护者定：强信号关的款玩家可手动开。
-    //   不借 S2AFps60：它缺省开，老用户关过又开过会存着 YES，不能当成看过提示的手动开
-    else if (!getenv("S2A_FPS60") && [defaults boolForKey:@"S2AFps60Manual"] && s2a_ios_caps_value("fps60") == 0) {
-        apply_environment("S2A_FPS60", @"1");
-        fprintf(stderr, "[S2A 画面设置] S2A_FPS60=1（本 App 设置：60 帧强信号关的款玩家手动开，放开出图间隔按清单读时判）\n");
+    // 60 帧（11-11 维护者：缺省游戏原帧率、玩家手动开；速度已验证正确的款保留默认 60）：只转玩家明确的选择——开 S2A_FPS60=1、关 S2A_FPS60=0；
+    //   没选过不写，由宿主按清单原因自己定（runtime/src/caps.c：验证过的款开、其余原帧率）。没选也写 0 会把验证过的款一起关掉。
+    //   先后：启动环境显式给的 > 这款在游戏库的选择 > App 级开关 > 强信号判红的款看过提示后手动开（S2AFps60Manual，只有设置页那一下会写）；
+    //   与 Mac 启动器（pack/jobs/community.py launch_env）同口径。老用户以前存过 S2AFps60=YES 的照旧开：那是玩家明确开过
+    if (!getenv("S2A_FPS60")) {
+        NSString *pick = nil;
+        if (game && [game objectForKey:@"S2AFps60"]) pick = [game boolForKey:@"S2AFps60"] ? @"1" : @"0";
+        else if ([defaults objectForKey:@"S2AFps60"]) pick = [defaults boolForKey:@"S2AFps60"] ? @"1" : @"0";
+        else if ([defaults boolForKey:@"S2AFps60Manual"] && s2a_ios_caps_value("fps60") == 0) pick = @"1";
+        if (pick) {
+            apply_environment("S2A_FPS60", pick);
+            fprintf(stderr, "[S2A 画面设置] S2A_FPS60=%s（玩家选了 60 帧%s）\n", pick.UTF8String, [pick isEqualToString:@"1"] ? "开" : "关");
+        }
     }
     // 开发浮层 / Metal 性能浮层：建视图之前 app.m prepareGameView 已先调 s2a_ios_apply_overlay_settings 落环境变量，
     //   这里再调一次兜底（host_run 起局、建 Metal 设备之前）；启动环境显式给的优先（#153）。
