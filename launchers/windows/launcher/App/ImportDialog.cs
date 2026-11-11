@@ -91,12 +91,23 @@ public sealed partial class EnvironmentWindow
             copyError.Margin = new Thickness(0, 10, 0, 0); copyError.HorizontalAlignment = HorizontalAlignment.Left;
             panel.Children.Add(copyError);
         }
+        // 游戏库没连上（也没在连）：给两条路——按原位置重试、换一个文件夹（换了会记住）
+        if (!libraryBusy && !importBusy && (connectedFolder is null || libraryId is null))
+        {
+            var fix = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 10, 0, 0) };
+            var retry = Action("welcome.sheet.libraryRetry", () => EnsureLibrary(() => { }));
+            AutomationId(retry, "import.library.retry");
+            var change = Action("welcome.sheet.libraryChange", () => BeginPicker(ChangeLibraryAsync));
+            AutomationId(change, "import.library.change");
+            fix.Children.Add(retry); fix.Children.Add(change);
+            panel.Children.Add(fix);
+        }
 
         var footer = new StackPanel { Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0), Spacing = 8 };
         if (importBusy)
         {
-            var cancel = Action("welcome.tool.cancel", () => importCancellation?.Cancel(), !false);
+            var cancel = Action("welcome.tool.cancel", () => CancelJob(JobKind.Import), !false);
             footer.Children.Add(cancel);
         }
         else
@@ -165,9 +176,7 @@ public sealed partial class EnvironmentWindow
     }
 
     // ---- import job state ----
-    private bool importBusy;
     private string importJobName = "", importJobMessage = "", importError = "";
-    private CancellationTokenSource? importCancellation;
 
     private async Task BrowseImportAsync(ImportKind kind)
     {
@@ -199,7 +208,10 @@ public sealed partial class EnvironmentWindow
     private void AcceptImport(string[] paths, ImportKind kind)
     {
         if (importBusy) return;
-        if (connectedFolder is null || libraryId is null) { importError = T("welcome.sheet.dropBusy"); Render(); return; }
+        // 只有真的在建库 / 连库时才说「有任务在进行」；没连上就说没连上的真实原因（下面有「重试 / 换个位置」），v0.2.8 热修：
+        //   原先没连上一律报 dropBusy，缺省库建不起来的原因被盖掉，玩家一直卡在「还有任务在进行」
+        if (libraryBusy) { importError = T("welcome.sheet.dropBusy"); Render(); return; }
+        if (connectedFolder is null || libraryId is null) { importError = libraryFailure.Length > 0 ? libraryFailure : LibraryFailed(libraryFolder, ""); Render(); return; }
         if (kind == ImportKind.Keys)
             _ = RunImportKeysAsync(paths[0]);
         else
@@ -209,25 +221,24 @@ public sealed partial class EnvironmentWindow
     private async Task RunImportKeysAsync(string keyPath)
     {
         if (importBusy || connectedFolder is null || libraryId is null) return;
-        importBusy = true; importError = ""; importJobName = Path.GetFileName(keyPath); importJobMessage = "";
+        var front = BeginJob(JobKind.Import); importError = ""; importJobName = Path.GetFileName(keyPath); importJobMessage = "";
         keysRejected = false; Render();
-        using var cts = new CancellationTokenSource(); importCancellation = cts;
         try
         {
             var result = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "keys", [keyPath], cts.Token);
+                "keys", [keyPath], front.Token, jobId: front.Next());
             DisplayJob(result);
             if (!result.Report.Succeeded) { importError = result.Report.Message; return; }
             // 放好密钥后重查 catalog，接着导入悬挂的游戏
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "catalog", null, cts.Token);
+                "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             { catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers(); }
             importDialog = null;
             if (pendingImportPaths.Length > 0)
             {
                 var pending = pendingImportPaths; pendingImportPaths = [];
-                importBusy = false; importCancellation = null;
+                EndJob(front);   // 接着导入悬挂的游戏是另一个导入作业
                 _ = RunImportGamesAsync(pending);
                 return;
             }
@@ -237,19 +248,18 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         { importError = error.Message; }
-        finally { importCancellation = null; importBusy = false; Render(); }
+        finally { EndJob(front); Render(); }
     }
 
     private async Task RunImportGamesAsync(string[] filePaths)
     {
         if (importBusy || connectedFolder is null || libraryId is null) return;
-        importBusy = true; importError = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
+        var front = BeginJob(JobKind.Import); importError = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
         keysRejected = false; Render();
-        using var cts = new CancellationTokenSource(); importCancellation = cts;
         try
         {
             var result = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "import", filePaths, cts.Token, partialResults: true);
+                "import", filePaths, front.Token, partialResults: true, jobId: front.Next());
             DisplayJob(result);
             if (!result.Report.Succeeded)
             {
@@ -275,7 +285,7 @@ public sealed partial class EnvironmentWindow
             }
             // 成功：重查目录，更新欢迎页状态
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
-                "catalog", null, cts.Token);
+                "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             {
                 catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
@@ -309,7 +319,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         { importError = error.Message; }
-        finally { importCancellation = null; importBusy = false; Render(); }
+        finally { EndJob(front); Render(); }
     }
 
     private static string? GetDiagCode(LibraryJobOutput job) => DiagnosticCode(job.Report.Diagnostics);

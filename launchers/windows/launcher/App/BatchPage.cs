@@ -336,7 +336,7 @@ public sealed partial class EnvironmentWindow
     private void StopBatch()
     {
         batchStopping = true;
-        packCancellation?.Cancel();
+        packJob?.Cancellation.Cancel();
         Render();
     }
 

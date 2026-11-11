@@ -35,6 +35,7 @@ void load_modules(const char *, const char **, int);
 void load_modules_from_source(const struct s2a_loader_source *, const char **, int);
 void s2a_caps_apply(const char *);   // runtime/src/caps.c
 void s2a_fps_start(const char *);    // runtime/src/fps.c
+void s2a_ql_boot_mode(int docked);   // runtime/src/qladder_host.c
 unsigned s2a_unresolved_count(void);
 uint64_t s2a_mem_init(const char *);
 void *guest_sym(const char *);
@@ -268,6 +269,9 @@ static int run_common(const struct s2a_android_runtime_request *r,
     // 60 帧表（#48 D2）：改写器按包里 fps.tsv 打进的读槽指令要 fps.c 往键页槽里写值，没人写游戏就读到 0。
     //   表与 s2a_caps.tsv 同在游戏数据根（tools/make_pack.py）；开关 S2A_FPS60 已由上面的能力清单 / 启动环境给定。
     //   放在 VM 写入通道就绪之后：写入线程改游戏数据走 checked 写（fps_provider.c），要 writers / 跟踪已准备好。
+    // 档位梯子（#528 第 6 项）：读本机本款记下的帧率档，上限 = App 选的运行模式（console_mode 1 主机 / 0 掌机）。
+    //   要在文档根绑好之后（ladder.txt 在 S2A_DOCS 下）；换档本身在直连上屏每帧（hle_nvn.c → s2a_qp_frame → s2a_ql_host_frame）
+    s2a_ql_boot_mode(r->services.console_mode == 1);
     s2a_fps_start(r->services.game_data_dir);
     // 在执行任何 SDK 指令前解析全部必需入口。DT_INIT 仍由共享 loader 按逆依赖顺序遍历。
     static const char *const sdk[] = {"_init_libc0", "nnosInitialize", "_init_libc1",
@@ -410,7 +414,9 @@ uint64_t s2a_android_runtime_session(void) {
     return session;
 }
 // 强引用真实NativeAOT reverse-PInvoke，不能用Host.Init发生在另一线程代替附着。
+void s2a_capacity_child(void) __attribute__((weak));   // capacity_affinity.cpp（诊断探针等不带它的链接里没有）
 int s2a_android_runtime_enter_guest_thread(void) {
+    if (s2a_capacity_child) s2a_capacity_child();   // 先把继承来的窄亲和掩码放宽，再做下面的准入
     uint64_t session = s2a_android_runtime_session();
     if (!session) return S2A_RUNTIME_ARGUMENT;
     if (stop_requested()) return failed(S2A_RUNTIME_STOP, 0, "stop before managed thread attach");

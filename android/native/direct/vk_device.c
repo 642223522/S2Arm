@@ -56,6 +56,8 @@ static int has_device_extension(VkPhysicalDevice physical, const char *name) {
     return found;
 }
 
+const char *const *nvn_plat_vk_instance_exts(uint32_t *n) __attribute__((weak));
+
 int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) {
     if (!out) return fail(why, why_size, "null device");
     memset(out, 0, sizeof *out);
@@ -66,10 +68,19 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     const char *wanted[] = {
         "VK_KHR_get_physical_device_properties2", "VK_KHR_surface", "VK_KHR_android_surface",
         "VK_KHR_get_surface_capabilities2", "VK_EXT_surface_maintenance1" };
-    const char *enabled[sizeof wanted / sizeof *wanted];
+    const char *enabled[sizeof wanted / sizeof *wanted + 8];
     uint32_t enabled_count = 0;
     for (unsigned i = 0; i < sizeof wanted / sizeof *wanted; i++)
         if (has_instance_extension(wanted[i])) enabled[enabled_count++] = wanted[i];
+    // 平台件要的表面扩展（graphics/nvn/replay/nvn_plat_vk.h；鸿蒙是 VK_OHOS_surface，宿主测试是无头表面）。
+    // 上面写死的安卓名字是旧层留下的，旧层删除后这张表只留与平台无关的几项。
+    if (nvn_plat_vk_instance_exts) {
+        uint32_t pn = 0; const char *const *pe = nvn_plat_vk_instance_exts(&pn);
+        for (uint32_t i = 0; pe && i < pn && i < 8; i++) {
+            int dup = 0; for (uint32_t k = 0; k < enabled_count; k++) if (!strcmp(enabled[k], pe[i])) dup = 1;
+            if (!dup && has_instance_extension(pe[i])) enabled[enabled_count++] = pe[i];
+        }
+    }
     out->has_android_surface = has_instance_extension("VK_KHR_android_surface");
 
     VkApplicationInfo app = {0};

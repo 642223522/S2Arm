@@ -28,7 +28,6 @@ nvn_gpu_* 后端（graphics/nvn/gfx/nvn/nvn_backend.h） ← 平台专属：只�
 - **先找现成的共用件，再动手写。** 动手前查 [docs/安卓接入矩阵.md](../docs/安卓接入矩阵.md)：iOS 已有、安卓没接的模块，先接入，不重写。目前已知能直接接的有：
   - `runtime/src/fps.c`（60 帧表）；
   - `runtime/src/gclimit.c`；
-  - `qprompt`；
   - `dguard`（链进来了但没武装）；
   - `graphics/dsx` 的 SPIR-V 加固；
   - `nvn_bcdec.c` / `nvn_fmt_expand.c`。

@@ -23,6 +23,9 @@ public sealed class SharedText
         }
     }
 
+    /// <summary>规格里有没有这个键（没有时 Get 返回「[键]」原样，界面不该显示它）。</summary>
+    public bool Has(string key) => texts.ContainsKey(key);
+
     public string Get(string key, string language) =>
         texts.TryGetValue(key, out var value) && value.TryGetValue(language, out var text) ? text : $"[{key}]";
 

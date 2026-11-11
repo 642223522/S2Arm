@@ -308,7 +308,11 @@ static partial class P {
             var fs = new RomFsFileSystem(opener()); Walk(fs, "/", root, dst, opener, items);
         }
         RomfsExtraction.Result patchedRomfs = null;
-        if (!aocOnly) {
+        // 程序 NCA 没有资源段（第 1 段）的款（#620，数据全在 exefs 里的小游戏）：没有 RomFS，产出空 romfs 目录（空 RomFS 的下游同 #578），
+        //   原先照开第 1 段，抛「NCA section 1 does not exist」整次解包失败。只看本体：更新的资源段要叠在本体那段上，本体没有就无从叠
+        bool hasRomfs = new Nca(Ks, Where[baseId]()).SectionExists(NcaSectionType.Data);
+        if (!aocOnly && !hasRomfs) { Directory.CreateDirectory(Path.Combine(D, "romfs")); Console.WriteLine("程序没有资源分区（RomFS）：按空资源出包"); }
+        if (!aocOnly && hasRomfs) {
             if (patId == null) AddFs("romfs", () => RomfsOpener(IntegrityCheckLevel.ErrorOnInvalid), Path.Combine(D, "romfs"));
             else {
                 try { patchedRomfs = RomfsExtraction.Extract(RomfsOpener, Path.Combine(D, "romfs"), patched: true); }

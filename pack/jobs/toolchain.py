@@ -235,17 +235,18 @@ def preflight(c):
     c.last_log = c.logs / (c.task + "-preflight.log")
     c.last_log.parent.mkdir(parents=True, exist_ok=True)
     c.last_log.touch(mode=0o600)
-    def add(name, ok, message, scopes=("prepare",), action=None, code=None, group=None):
-        check = dict(name=name, ok=bool(ok), message=message, requiredFor=list(scopes),
+    def add(cid, name, ok, message, scopes=("prepare",), action=None, code=None, group=None):
+        # cid：稳定的英文检查项 id（剃刀 M11：前端原先按中文 name 分组判状态，这里一改名四行工具全显示「等待」）；name 只给人看
+        check = dict(id=cid, name=name, ok=bool(ok), message=message, requiredFor=list(scopes),
                      group=group or ("bundled" if name.startswith(("Python", "S2Arm")) else "system"), action=action, help=message)
         with c.last_log.open("a") as log:
             log.write(c.redact(f"{name}: {'OK' if ok else 'FAIL'}: {message}") + "\n")
         if not ok:
-            code = code or {"Apple Silicon": "architecture_unsupported", "macOS": "os_unsupported",
-                            "Python": "engine_incomplete", "S2Arm 内置引擎": "engine_incomplete",
-                            ".NET 10": "dotnet_unavailable", "Metal 编译组件": "metal_unavailable",
-                            "Xcode": "xcode_unavailable", ".NET SDK（打 iPhone 包）": "dotnet_sdk_missing",
-                            "S2Arm 内容读取工具": "reader_unavailable"}.get(name, "tool_missing")
+            code = code or {"apple_silicon": "architecture_unsupported", "macos": "os_unsupported",
+                            "python": "engine_incomplete", "engine": "engine_incomplete",
+                            "dotnet": "dotnet_unavailable", "metal": "metal_unavailable",
+                            "xcode": "xcode_unavailable", "dotnet_sdk": "dotnet_sdk_missing",
+                            "reader": "reader_unavailable"}.get(cid, "tool_missing")
             check["diagnostic"] = c.describe_failure(Failure(message, code=code))
         checks.append(check)
         c.emit("check", check=check)
@@ -256,28 +257,28 @@ def preflight(c):
         from library import LIBRARY_FORMAT_MESSAGE, volume_format
         import libloc
         fmt = volume_format(library)
-        add("游戏库所在磁盘", fmt in ("", "apfs"),
+        add("library_disk", "游戏库所在磁盘", fmt in ("", "apfs"),
             LIBRARY_FORMAT_MESSAGE.format(fmt=fmt.upper()) if fmt not in ("", "apfs") else "游戏库在 APFS 格式的磁盘上。",
             action="library", code="library_not_apfs", group="storage")
         # 云盘同步目录（11-07 启动器）：iCloud Drive / OneDrive / Dropbox 等同步目录里放游戏库，中间产物会被上传、换占位，拦下给「换游戏库」
         cloud = libloc.cloud_folder(library, system="Darwin", home=str(Path.home()), exists=os.path.exists)
-        add("游戏库所在位置", cloud is None,
+        add("library_location", "游戏库所在位置", cloud is None,
             libloc.CLOUD_MESSAGE.format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
             action="library", code="library_in_cloud", group="storage")
-    add("Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
+    add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
         "需要 Apple Silicon Mac。", ("prepare", "launch"))
-    add("macOS", platform.system() == "Darwin" and int(platform.mac_ver()[0].split(".")[0] or 0) >= 15,
+    add("macos", "macOS", platform.system() == "Darwin" and int(platform.mac_ver()[0].split(".")[0] or 0) >= 15,
         "启动器需要 macOS 15 或更新版本。", ("prepare", "launch"))
-    add("Python", sys.version_info >= (3, 11), "需要 Python 3.11 或更新版本。", ("prepare", "launch"))
+    add("python", "Python", sys.version_info >= PYTHON_MINIMUM, "需要 Python %s 或更新版本。" % ".".join(map(str, PYTHON_MINIMUM)), ("prepare", "launch"))
     try:
         c.require_source()
         source_ok = True
     except Failure:
         source_ok = False
-    add("S2Arm 内置引擎", source_ok, "应用内置 S2Arm 宿主和准备工具。", ("prepare", "launch"))
+    add("engine", "S2Arm 内置引擎", source_ok, "应用内置 S2Arm 宿主和准备工具。", ("prepare", "launch"))
     packaged = bool(c.r.get("engineBundle"))
     ok, version = probe(c, ["dotnet", "--list-runtimes" if packaged else "--list-sdks"])
-    add(".NET 10", ok and ("Microsoft.NETCore.App 10." in version if packaged else any(line.startswith("10.") for line in version.splitlines())),
+    add("dotnet", ".NET 10", ok and ("Microsoft.NETCore.App 10." in version if packaged else any(line.startswith("10.") for line in version.splitlines())),
         "应用内置 .NET 10 运行时。" if packaged else "开发构建需要 .NET 10 SDK。")
     ok, version = probe(c, ["xcrun", "--sdk", "macosx", "metal", "--version"])
     developer = Path(c.r.get("developerDir") or "")
@@ -288,7 +289,7 @@ def preflight(c):
     # Xcode's missing-component shim can return zero while printing an error.
     metal_ok = ok and "Apple metal version" in version and "error:" not in version.lower()
     first_launch = has_xcode and not metal_ok and "license" in version.lower()
-    add("Metal 编译组件", metal_ok,
+    add("metal", "Metal 编译组件", metal_ok,
         "Xcode 的 Metal 编译组件已就绪。" if metal_ok else
         "Xcode 还没完成首次设置：点「打开 Xcode」，同意许可后回来点重新检查。" if first_launch else
         "缺 Xcode 的 Metal 编译组件：点「一键下载」自动安装（约 1 GB），下完自动重新检查。" if has_xcode else
@@ -308,14 +309,14 @@ def preflight(c):
             else:
                 message = (f"Xcode 的 iOS {sdk} 平台组件还没装（新装或刚升级的 Xcode 要另下）：打 iPhone 包、装到 iPhone 都要用它。"
                            "点「一键下载」自动安装（苹果官方，约 8 GB，要些时间），下完自动重新检查。只在 Mac 上玩不需要它。")
-            add("iOS 平台组件", platform_ok, message, ("ipa",), action=platform_action, code="ios_platform_missing")
+            add("ios_platform", "iOS 平台组件", platform_ok, message, ("ipa",), action=platform_action, code="ios_platform_missing")
     if has_xcode:   # 装到 iPhone 要用；不挡打包。团队号真出现才算过（只有账号不够）
         import install as inst
         logged_in, teams = inst.xcode_account(c.env())
-        add("Apple ID 团队", bool(teams), inst.TEAM_PENDING if logged_in else inst.ACCOUNT_NONE, ("install",), action="openXcode",
+        add("apple_team", "Apple ID 团队", bool(teams), inst.TEAM_PENDING if logged_in else inst.ACCOUNT_NONE, ("install",), action="openXcode",
             code="xcode_team_pending" if logged_in else "xcode_account_missing", group="apple")
     ok, _ = probe(c, ["xcrun", "--sdk", "macosx", "--show-sdk-path"])
-    add("Xcode", has_xcode and ok,
+    add("xcode", "Xcode", has_xcode and ok,
         "已找到完整的 Xcode。" if has_xcode and ok else
         "没找到完整的 Xcode：点「去 App Store 安装」，装好打开一次后回来点重新检查；S2Arm 会自动找到它。",
         action="appStoreXcode")
@@ -330,20 +331,20 @@ def preflight(c):
         except (Failure, OSError) as e:   # 原因写进检查项和日志，不再只剩一个 FAIL（v0.2.0 前回归时查不到为什么）
             ready_tools, why = False, str(e)
             c.emit("message", "S2Arm 游戏准备工具不可用：" + why)
-        add("S2Arm 游戏准备工具", ready_tools, "应用内置着色器翻译器、资源索引器和 GAL 工具。" + ("（" + why + "）" if why else ""))
+        add("pack_tools", "S2Arm 游戏准备工具", ready_tools, "应用内置着色器翻译器、资源索引器和 GAL 工具。" + ("（" + why + "）" if why else ""))
     for module in ("capstone", "lz4", "numpy", "zstandard"):   # zstandard：读 zstd 存储的 Switch 2 .nup（pack/ns2_nup.py；内置 Python 3.12 没有 compression.zstd）
         ok, _ = probe(c, [sys.executable, "-c", "import " + module])
-        add("Python / " + module, ok, "应用内置 " + module + "；组件损坏时请重新安装完整应用。")
+        add("python_" + module.lower(), "Python / " + module, ok, "应用内置 " + module + "；组件损坏时请重新安装完整应用。")
     # timeout 实跑一次限时命令判可用（#1133：内附的 tools/bin/timeout 不认 --version、返回 125，探 --version 把可用的它判成缺）
     for command, args in (("zstd", ["--version"]), ("spirv-as", ["--version"]), ("spirv-val", ["--version"]), ("timeout", ["5", "/usr/bin/true"])):
         ok, _ = probe(c, [command, *args])
-        add(command, ok,
+        add(command.replace("-", "_"), command, ok,
             "应用内置 " + command + "。" if packaged else "构建环境缺少 " + command + "。")
     # 打 iPhone 包要现编 iOS 版 C# 库：需要 .NET 10 SDK（用户目录 ~/.dotnet，一键安装不要管理员密码）。只算「打 iPhone 包」的条件，不挡 Mac 打包和启动
     #   发版应用不要：C# 件随发版预编、iOS 壳随包（Resources/Shell），只用内置 .NET 运行时；只有源码树开发构建要
     if not packaged:
         from ipa import dotnet_sdk
-        add(".NET SDK（打 iPhone 包）", dotnet_sdk()[1] is not None,
+        add("dotnet_sdk", ".NET SDK（打 iPhone 包）", dotnet_sdk()[1] is not None,
             "打 iPhone 包需要 .NET 10 SDK：点「一键安装」，从微软官方下载装到你的用户目录（约 300 MB，不要管理员密码）。只在 Mac 上玩不需要它。",
             ("ipa",), action="installDotnet")
     try:
@@ -351,7 +352,7 @@ def preflight(c):
         ready = True
     except (Failure, OSError):
         ready = False
-    add("S2Arm 内容读取工具", ready, "应用内置 NSP/XCI 读取器；开发模式可重新编译。", action="prepareEngine" if not c.r.get("engineBundle") else None)
+    add("reader", "S2Arm 内容读取工具", ready, "应用内置 NSP/XCI 读取器；开发模式可重新编译。", action="prepareEngine" if not c.r.get("engineBundle") else None)
     supported, reason = input_interface(c)
     return dict(checks=checks, engineInfo={"inputConfig": supported, "inputConfigReason": reason},
                 canUninstallMetal=False)
@@ -370,6 +371,9 @@ def download_metal(c):
 
 SDK_SIM_MAPPING = Path.home() / "Library/Developer/Xcode/SDKToSimulatorIndexMapping.plist"   # Xcode 自己写的「iOS SDK 构建号 → 可配的模拟器运行时构建号」表
 BYTE_SCALE = {"b": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4}   # 与 ByteCountFormatter(.file) 一致，也和 xcodebuild 打印的 8.32 GB 对得上
+PYTHON_MINIMUM = (3, 11)   # 作业层要的 Python 最低版本：预检（preflight）与 Windows 环境检查（winenv 直接读这个常量）同一份
+
+
 DOWNLOAD_BYTES = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*\(([\d.]+)\s*([kmgt]?b)\s+of\s+([\d.]+)\s*([kmgt]?b)\)", re.I)
 IOS_PLATFORM_TIMEOUT = 6 * 3600    # 只防挂死：8.32 GB 在 400 KB/s 下约 6 小时，正常远快于这个上限
 IOS_PLATFORM_REGISTER_WAIT = 180   # 传输完后等 CoreSimulator 注册的上限（秒）

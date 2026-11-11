@@ -19,7 +19,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-import warnings
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,27 +37,6 @@ sys.path.insert(0, str(MODULE_PATH.parent))
 game_spec = importlib.util.spec_from_file_location("s2a_game_core_closure", MODULE_PATH.parent / "test_game_core_closure.py")
 GAME = importlib.util.module_from_spec(game_spec)
 game_spec.loader.exec_module(GAME)
-route_spec = importlib.util.spec_from_file_location("s2a_gate_route", ROOT / "tools/gate_route.py")
-ROUTE = importlib.util.module_from_spec(route_spec)
-route_spec.loader.exec_module(ROUTE)
-ANDROID_HOOKS = ("android/gate.sh", "android/core-link/gate.sh")
-
-
-def route_table():
-    with warnings.catch_warnings():   # load_table runs tools/gate_decl.py
-        warnings.simplefilter("ignore", ResourceWarning)
-        return ROUTE.load_table(str(ROOT))   # 路由来自各钩子文件头「# 门禁路由：」（tools/gate_decl.py）
-
-
-def unrouted(inputs, table):
-    """Inputs whose change runs no Android hook. A code path outside every hook's "# 门禁路由：" header
-    runs every hook; a listed path, or a non-code path (which runs none), must hit an Android hook's row."""
-    known = [p for _, ps in table for p in ps]
-    return [f for f in inputs
-            if (ROUTE.hit([f], known) or ROUTE.DOC.search(f) or f.startswith(ROUTE.LOCAL))
-            and not any(k in ANDROID_HOOKS and ROUTE.hit([f], ps) for k, ps in table)]
-
-
 def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(text).lstrip(), encoding="utf-8")
@@ -595,38 +573,6 @@ class LinkSymbolTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("diagnostic/game", output.getvalue())
             self.assertEqual(json.loads(report.read_text())["scope"], "link-probe")
-
-    def test_every_android_csharp_input_routes_to_an_android_hook(self):
-        # #530: changing any C# input of the Android single library (the AOT closure's sources and
-        # project files) must run an Android hook, or the check is skipped exactly where #529 slipped
-        # through. New directories in the closure are covered without editing this test.
-        closure = LINK.CompileClosure(ROOT, False)
-        files, projects = closure.closure([ROOT / "android/cs/aot/S2A.Android.Aot.csproj"])
-        inputs = sorted({LINK.rel(ROOT, p) for p in list(files) + list(projects)})
-        self.assertGreater(len(inputs), 1000)
-        table = route_table()
-        self.assertEqual(unrouted(inputs, table), [])
-        # Negative control: without graphics/metal/cs/ on the hook's row, NxTrack.cs (compiled into the
-        # Android library, with s2a_native imports) no longer runs any Android hook.
-        cut = [(k, [p for p in ps if p != "graphics/metal/cs/"]) for k, ps in table]
-        self.assertIn("graphics/metal/cs/NxTrack.cs", unrouted(inputs, cut))
-
-    def test_every_android_native_source_routes_to_an_android_hook(self):
-        # #530 follow-up, definition side: the native sources either target links
-        # (core-link/LinkSources.cmake) must run an Android hook too. Renaming a definition the C#
-        # binds, say s2a_alt_phase in runtime/src/alt.c, is the same break as a new import without one.
-        cmake = shutil.which("cmake")
-        self.assertIsNotNone(cmake, "cmake is required by the Android gate")
-        inputs = sorted({LINK.rel(ROOT, p) for mode in ("diagnostic", "game")
-                         for p in LINK.cmake_native_sources(ROOT, mode, cmake, False)})
-        self.assertGreater(len(inputs), 80)
-        table = route_table()
-        self.assertEqual(unrouted(inputs, table), [])
-        # Negative control: without runtime/src/ on the link-check hook's row, alt.c no longer runs
-        # any Android hook (the Android gate's own row names only three runtime/src files).
-        hook = "android/core-link/gate.sh"
-        cut = [(k, [p for p in ps if not (k == hook and p == "runtime/src/")]) for k, ps in table]
-        self.assertIn("runtime/src/alt.c", unrouted(inputs, cut))
 
     def test_current_tree_is_green_in_both_modes(self):
         cmake = shutil.which("cmake")

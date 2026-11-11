@@ -16,9 +16,6 @@ pack/stage_direct_profile.sh	同上	dev-dari	2026-11-06
 pack/stage_direct_seed.sh	同上	dev-dari	2026-11-06
 graphics/tools/direct/compiler/cli/S2A.DirectCompiler.Cli.csproj	宿主 CLI 入口工程，不进平台 AOT 闭包	dev-dari	2026-11-06
 services/S2A.Services/AssemblyInfo.cs	程序集元数据文件，无对外入口	dev-dari	2026-11-06
-runtime/src/qladder.c	档位梯子判定：依附 runtime/src/qprompt_host.c 的直连上屏每帧钩子 s2a_qp_frame，安卓该钩子未链接（基线缺口 qprompt*）；随安卓接入帧率提示 / 满屏自检时一起接	满屏补丁线	2026-11-06
-runtime/src/qladder_host.c	档位梯子宿主接线：同上，挂在 qprompt_host.c 每帧钩子上，安卓未链接该钩子；安卓档位切换另有平台入口 setConsoleMode	满屏补丁线	2026-11-06
-runtime/src/widen_remember.c	满屏自检「两次启动才记住」计数：依附 runtime/src/qprompt_host.c 每帧钩子（安卓未链接，基线缺口 qprompt*），随安卓接入满屏自检一起接	满屏补丁线	2026-11-07
 runtime/src/launchctx.c	苹果 iOS 多款容器的启动上下文（选哪款、镜像包 / 模块 / 数据根）；安卓走自己的 BootContract，host_main.c 不进安卓构建，loader.c 里引用只在 TARGET_OS_IPHONE 分支	启动器线	2026-11-07
 runtime/src/input_config.c	C03 键鼠配置 schema1，本卡范围只到 Mac / iOS；安卓键鼠消费入口未立项。清零条件：安卓侧有键位配置消费方时接线并同笔删本行	wwmogu	2026-11-07
 runtime/src/mac_slot_hold.c	macOS 宿主自拿本机 Mac 局槽（开发机显卡并发账，文件内只在 TARGET_OS_OSX 编译）；安卓无此账	合入运维线	2026-11-07

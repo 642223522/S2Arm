@@ -5,7 +5,7 @@
 //   运行模式只归玩家：梯子不改主机 / 掌机（起局不改、局中不切）。游戏按模式开关玩法（例：一款体育游戏两人以上要求 TV 模式，
 //     掌机模式下弹「请把主机放进底座」），梯子降到掌机等于替玩家关掉这些玩法。梯子只调 60 帧补丁那一半；两档款（帧率归游戏）没有可调的，不跑。
 //   档位记忆：<Documents>/ladder.txt 一行「kind=<1|2> tier=<n>」，一款一个 App、一台机一个容器 = 自然按机按款；首次从上限起。
-//     起局（s2a_ql_boot）只读记下的档，不动 S2A_DOCKED；60 帧那半在第一帧按档压回 / 放开（s2a_fps_hold，热切）。
+//     起局（苹果 s2a_ql_boot / 安卓 s2a_ql_boot_mode）只读记下的档，不动 S2A_DOCKED；60 帧那半在第一帧按档压回 / 放开（s2a_fps_hold，热切）。
 //   换档执行：60 帧当场热切（s2a_fps_hold）。三档款的底档（原「掌机 30 帧」）现在与 30 帧档效果相同：压回 30 帧、不切模式。
 //   开关：S2A_LADDER=0 关；自动化局（s2a_unattended）缺省关、S2A_LADDER=1 才开（普查 / 测量局要固定档位）。
 #include "native.h"
@@ -33,21 +33,31 @@ static void save(int kind, int tier) {
     fprintf(f, "kind=%d tier=%d\n", kind, tier); fclose(f);
     if (rename(tmp, g_path)) LOG("【红】档位梯子：记不下档位（改名失败）");
 }
-// 起局（host_main.c host_run，iOS 画面设置注入之后、服务层与宽屏装表读 S2A_DOCKED 之前）：读记下的档。
-//   此刻环境里的 S2A_DOCKED 就是玩家选的运行模式（iOS 设置页写的，缺省掌机；Mac 启动器缺省主机），当上限、也就是本局的运行模式；
-//   没有 = 主机，Mac 的缺省。记下的档只管帧率那半，不改 S2A_DOCKED。
-//   固定档位的测量局关梯子（S2A_LADDER=0，自动化局缺省关）
-void s2a_ql_boot(void) {
-    if (!ladder_on()) return;
+// 起局读档（两个入口共用）：docked = 玩家选的运行模式，当上限、也就是本局的运行模式。记下的档只管帧率那半，不改运行模式
+static void boot(int docked, const char *from) {
     s2a_docs_path(g_path, sizeof g_path, "ladder.txt");
     FILE *f = fopen(g_path, "r"); int k = 0, t = -1;
     if (f) { if (fscanf(f, "kind=%d tier=%d", &k, &t) != 2) k = 0, t = -1; fclose(f); }
     // 只认帧数档（kind=1）。旧版两档款写的 kind=2 是运行模式（主机 / 掌机），#519 起模式只归玩家：忽略，升级后回到玩家选的模式
     if (k == S2A_QL_FPS && t >= 0 && t <= 2) g_tier0 = t;
     else if (k == S2A_QL_MODE) LOG("档位梯子：ladder.txt 里旧版记的运行模式档（kind=2 tier=%d）不再认，按玩家选的模式", t);
-    const char *d = getenv("S2A_DOCKED"); g_top_docked = d ? strcmp(d, "1") == 0 : 1;
+    g_top_docked = docked;
+    LOG("档位梯子：运行模式 %s（%s），梯子不改", g_top_docked ? "主机" : "掌机", from);
+}
+// 苹果起局（host_main.c host_run，iOS 画面设置注入之后、服务层与宽屏装表读 S2A_DOCKED 之前）：
+//   此刻环境里的 S2A_DOCKED 就是玩家选的运行模式（iOS 设置页写的，缺省掌机；Mac 启动器缺省主机）；没有 = 主机，Mac 的缺省。
+//   固定档位的测量局关梯子（S2A_LADDER=0，自动化局缺省关）
+void s2a_ql_boot(void) {
+    if (!ladder_on()) return;
+    const char *d = getenv("S2A_DOCKED");
     if (!d) setenv("S2A_DOCKED", "1", 1);   // 没设 = 主机（Mac 缺省），服务层 / 宽屏装表读到的与上限一致
-    LOG("档位梯子：运行模式 %s（%s），梯子不改", g_top_docked ? "主机" : "掌机", d ? "玩家设置" : "没设，按主机");
+    boot(d ? strcmp(d, "1") == 0 : 1, d ? "玩家设置" : "没设，按主机");
+}
+// 安卓起局（android/native/runtime/runtime.c，#528 第 6 项）：运行模式由 App 经服务请求的 console_mode 给（0 掌机 / 1 主机，缺省掌机），
+//   不经环境变量 S2A_DOCKED。这里不读也不写 S2A_DOCKED：上面那个入口没设时会写成 1，安卓掌机局的服务层与宽屏装表就被带成主机
+void s2a_ql_boot_mode(int docked) {
+    if (!ladder_on()) return;
+    boot(docked != 0, "App 设置");
 }
 static const char *tier_name(int t) {   // 只有三档款跑梯子
     static const char *f[] = {"60 帧", "30 帧", "30 帧（底档）"};

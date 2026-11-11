@@ -1353,7 +1353,6 @@
   "s2arm.export.basisReuse": "其余步骤复用缓存",
   "s2arm.export.block.busy": "正在做别的任务，做完再出包。",
   "s2arm.export.block.alreadyQueued": "这款已在出包或排队，出完再点。",
-  "s2arm.export.block.environment": "这台 Mac 还缺出包要用的组件。",
   "s2arm.export.block.keys": "还没放入 prod.keys（解密游戏用的密钥），放入后才能出包。",
   "s2arm.export.block.noPlatform": "先勾选要出包的平台。",
   "s2arm.export.byRate": "按这一步当前的速度",
@@ -1747,5 +1746,14 @@
   "s2arm.cloud.busyAfterSync": "同步期间开始了别的任务，这次没开局，等它做完再点「开始游戏」",
   "s2arm.action.installPad": "装到 iPad",
   "s2arm.install.titlePad": "装到 iPad",
-  "s2arm.export.installExistingPad": "已有 iPhone / iPad 包？装到 iPad"
+  "s2arm.export.installExistingPad": "已有 iPhone / iPad 包？装到 iPad",
+  "s2arm.fail.locations": "读不到存放位置",
+  "s2arm.fail.installMode": "读不到装机方式",
+  "s2arm.fail.installModeSet": "装机方式没有切换成功",
+  "s2arm.fail.devCert": "读不到开发者证书状态",
+  "s2arm.fail.devCertUse": "签名方式没有切换成功",
+  "s2arm.fail.devCertDelete": "开发者证书没有删除成功",
+  "s2arm.fail.cloudFolder": "iCloud 存档文件夹没有设置成功",
+  "s2arm.fail.targets": "读不到连接的设备",
+  "s2arm.report.unavailable": "错误摘要没生成成功（作业层没有返回），下面是界面上显示的原因："
 }
