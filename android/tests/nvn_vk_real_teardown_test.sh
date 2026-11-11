@@ -62,6 +62,8 @@ if [ "$mode" != --neg ]; then
     "$out/probe" "$out/program.json" "$out/cache" >"$out/normal.log" 2>&1 || { cat "$out/normal.log" >&2; exit 1; }
     if grep -qiE 'validation error|VUID-|UNASSIGNED-|SYNC-HAZARD|ERROR.*VALIDATION' "$out/normal.log"; then cat "$out/normal.log" >&2; exit 1; fi
     cat "$out/normal.log"
+    # 同一校验层/驱动下验证实际 dispatch 帧队列路径；GPU 自检以宿主结果标识。
+    bash "$repo/android/tests/nvn_vk_dispatch_fq_vvl_test.sh"
     # 同一真实 Vulkan / 同步校验环境覆盖清除缓存满、临时对象退休及逐图读回。
     compile "$repo/android/tests/nvn_vk_clear_fv_vvl_test.c" -o "$out/clear-fv-probe"
     "$out/clear-fv-probe" >"$out/clear-fv.log" 2>&1 || { cat "$out/clear-fv.log" >&2; exit 1; }
