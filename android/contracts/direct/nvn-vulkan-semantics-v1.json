@@ -54,10 +54,6 @@
    "status": "executed",
    "evidence": "android/tests/vk_record_test.c: OP_BIND_PROGRAM + OP_DISPATCH -> vkCmdDispatch with registered pipeline/descriptor; device first=1 last=190 bad=0"
   },
-  "nvnCommandBufferDispatchComputeIndirect": {
-   "status": "unsupported",
-   "evidence": "indirect dispatch needs GPU-written group counts; vk_record rejects ind != 0"
-  },
   "nvnCommandBufferCopyTextureToTexture": {
    "status": "executed",
    "evidence": "android/tests/vk_record_test.c: OP_CLEAR_TEX + OP_COPY_T2T full/no-view -> vkCmdCopyImage; device pixel=255,0,0,255"

@@ -93,4 +93,13 @@ chk "⑩ 步结论已落盘、进程号被别的活进程占着 → detwait 3 �
 L=$T/n; mkdir -p "$L"; LJ=(); TKS=(); GATE_STEP_PAR=4 GATE_TOKEN_DIR=$T/tok.n job lead "sleep 5" 30
 for i in $(seq 1 50); do [ -s $L/lead.pg ] && break; sleep 0.1; done; sleep 0.3; lc=$(ps -ww -o command= -p "$(cat $L/lead.pg 2> /dev/null)" 2> /dev/null); wait "${LJ[@]}"
 chk "⑬ 组长命令行带 .pg 路径（$(bash --version | head -1 | cut -c1-30)；组长：${lc:0:60}）" 有 "$([[ "$lc" == *"$L/lead.pg"* ]] && echo 有)"
+# ⑪⑫ 步时限按无进展判（11-10 判据去负载化，tools/nostall.py）：在仓库根跑（job 找 tools/nostall.py）
+#   ⑪ 命令卡住不动（sleep 30，上限 60）、无进展上限 3 秒 → 约 3–6 秒被停、show 记「挂死」红 1（与负载无关）
+#   ⑫ 命令一直在打日志（每秒一行共 6 秒）、本步上限只有 2 秒、保底 × 10 → 不被杀、绿 0（旧版墙钟 2 秒就杀成超时）
+L=$T/m; mkdir -p "$L"; ( cd "$H" && LJ=(); TKS=(); GATE_NOSTALL_S=3 S2A_NOSTALL_POLL=1 GATE_STEP_PAR=4 GATE_TOKEN_DIR=$T/tok.m job st "sleep 30" 60; wait "${LJ[@]}" )
+r11=$(CUR=测; show "" st "单测 st" 60 > $L/st.out; echo "$? $(read -r a b < $L/st.rc; echo $a)"); s11=$(read -r a b < $L/st.rc; echo $b)
+chk "⑪ 卡住不动：rc=124、show 红 1、记「挂死」、${s11} 秒 < 20" "1 124|挂死|快" "$r11|$(grep -q 挂死 $L/st.out && echo 挂死)|$([ "${s11:-99}" -lt 20 ] && echo 快)"
+( cd "$H" && LJ=(); TKS=(); GATE_NOSTALL_S=3 S2A_NOSTALL_POLL=1 GATE_HARD_X=10 GATE_STEP_PAR=4 GATE_TOKEN_DIR=$T/tok.m job pr 'for i in 1 2 3 4 5 6; do echo x; sleep 1; done' 2; wait "${LJ[@]}" )
+r12=$(CUR=测; show "" pr "单测 pr" 2 > $L/pr.out; echo "$? $(read -r a b < $L/pr.rc; echo $a)")
+chk "⑫ 一直有输出、超过本步上限 2 秒 → 不被杀、绿" "0 0" "$r12"
 [ $bad = 0 ] && echo "门禁步数上限 / 超时未判单测全绿" || { echo "门禁步数上限 / 超时未判单测有红"; exit 1; }

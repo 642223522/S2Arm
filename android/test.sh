@@ -477,6 +477,7 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_query_terminal_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_deferred_slot_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_indirect_args_test.py"   # 间接参数的权威字节（影子同步 / 在途帧退休）+ 变异控制
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_sampler_mapping_test.py"   # P0-2 采样器映射判定表 + 变异控制
 # 真 Vulkan 收尾探针：macOS 上要 docker；门禁派 gate-host 时作为子项 vkreal 跳过、本机另跑（android/gate.sh 头注）
 [ "${S2A_ANDROID_SKIP_VKREAL:-0}" = 1 ] || s2a_gate_step bash "$android_dir/tests/nvn_vk_real_teardown_test.sh"
