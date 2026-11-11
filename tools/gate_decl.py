@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """门禁声明：路由、本机子项、手动单测都写在各自文件的文件头里，不再有中央登记表（10-30 维护者批：公用登记表就是文件锁）。
-用法：python3 tools/gate_decl.py route|local|manual|layer|inputs [仓库根]   按原表格式打到标准输出（制表符分隔）：
+用法：python3 tools/gate_decl.py route|local|manual|layer|inputs|off [仓库根]   按原表格式打到标准输出（制表符分隔）：
   route  <钩子或 ios>\t<前缀…空格分隔>        钩子 <目录>/gate.sh 头里「# 门禁路由：<前缀…>」（可多行，取并集）；tools/gate_ios.sh 头里的记作 ios
   local  <步>\t<键>\t<原因>                  钩子头里「# 门禁本机：<键> <原因>」（键 * = 整步本机跑，其余 = 该子项本机另跑）；
                                               tests/*_test.sh 头里「# 门禁本机：<原因>」= 单测 <名> 整步本机；tools/public_repo_scan.py 头里的 = 公开仓扫描
   manual <单测文件>\t<原因>                   任一单测文件头里「门禁手动：<原因>」（# / // / <!-- --> 注释）= 不进门禁、手动跑（tools/test_wired_lint.py 白名单）
   layer  <步>\t合入后[\t路由]                钩子 / tools/gate_ios.sh（步名「iOS 全量编译」）/ tests/*_test.sh（步名「单测 <名>」）头里「# 门禁层：合入后」= 列车合入前不跑、合入后跑（tools/gate.sh GATE_LAYER）；
                                               不写 = 合入前；只认「合入前 / 合入后」，写错报红退出 1（10-30 维护者：合入前门禁只证明这次改动没弄坏它影响到的东西）
+  off    <钩子>\t<原因>                     钩子头里「# 门禁停用：<原因>」= 整个钩子退役不跑（路由声明照留，改到它的路径不算表外、不触发全跑；11-11 维护者：安卓旧钩子随图形层重搭退役）
   inputs <单测文件>\t<目录或通配…>            tests/ 下单测头里「# 门禁输入：<目录或通配…>」（可多行，取并集）= 单测结果缓存（tools/test_cache.py）在路由覆盖面之外还要算进键的输入
 只读每个文件开头 HEAD 行；声明必须写在文件头（注释），不跟业务代码混。"""
 import os, re, subprocess, sys
 
 HEAD = 40
-DECL = re.compile(r'^\s*(?:#|//|<!--)\s*门禁(路由|本机|手动|层|输入)：\s*(.*?)\s*(?:-->)?\s*$')   # 注释写法：# / // / <!-- -->（.csproj 等 XML）
+DECL = re.compile(r'^\s*(?:#|//|<!--)\s*门禁(路由|本机|手动|层|输入|停用)：\s*(.*?)\s*(?:-->)?\s*$')   # 注释写法：# / // / <!-- -->（.csproj 等 XML）
 
 
 def files(root):
@@ -43,7 +44,7 @@ def hook(f):
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ''
     root = sys.argv[2] if len(sys.argv) > 2 else '.'
-    if mode not in ('route', 'local', 'manual', 'layer', 'inputs'): sys.exit(__doc__)
+    if mode not in ('route', 'local', 'manual', 'layer', 'inputs', 'off'): sys.exit(__doc__)
     fs = files(root)
     if mode == 'route':
         rows, at = [], {}
@@ -77,6 +78,11 @@ def main():
                 if v == '合入后（路由命中时合入前也跑）': print(f'{step}\t合入后\t路由'); continue   # 11-10：安卓支 / ios 头改动合入前不跑对应钩子，一天叠多处 main 红
                 if v not in ('合入前', '合入后'): sys.exit(f'【红】gate_decl：{f} 的「门禁层：{v}」只认 合入前 / 合入后 / 合入后（路由命中时合入前也跑）')
                 if v == '合入后': print(f'{step}\t合入后')
+    elif mode == 'off':
+        for f in sorted(fs):
+            if not hook(f): continue
+            for k, v in decls(root, f):
+                if k == '停用': print(f'{f}\t{v}'); break
     elif mode == 'inputs':
         rows = {}
         for f in sorted(fs):

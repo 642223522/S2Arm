@@ -206,6 +206,14 @@ def load_table(root='.'):
     return [(k, v.split()) for k, _, v in (l.partition('\t') for l in out.splitlines() if l)]
 
 
+def load_off(root='.'):
+    # 「# 门禁停用：」的钩子整个退役（11-11 维护者：安卓旧钩子随图形层重搭退役）：不进 hooks / claimed，但它的路由声明照留在表里（改到那些路径不算表外、不触发全跑）
+    dp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate_decl.py')
+    if not os.path.exists(dp): return set()
+    out = subprocess.run([sys.executable, dp, 'off', root], capture_output=True, text=True).stdout
+    return {l.split('\t')[0] for l in out.splitlines() if l}
+
+
 def hit(changed, prefixes):
     return [f for f in changed if any(f == p or f.startswith(p) or fnmatch.fnmatch(f, p) for p in prefixes)]
 
@@ -248,7 +256,8 @@ def main():
     files, by_name = index()
     tests = sorted({f for f in files if re.match(r'^tests/[^/]+_test\.sh$', f)} | (set(DECLARED_TEST_COVERAGE) & FILESET))
     table = load_table()
-    hooks_all = sorted(f for f in files if f.endswith('/gate.sh') and f != 'tools/gate.sh' and f.count('/') <= 3)
+    off = load_off()
+    hooks_all = sorted(f for f in files if f.endswith('/gate.sh') and f != 'tools/gate.sh' and f.count('/') <= 3 and f not in off)
     known = [p for _, ps in table for p in ps]
     code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',)))]   # 代码改动（本线目录与文档以外）
     unknown = [f for f in code if not hit([f], known)]   # 表里没列到的代码路径 → 钩子全跑

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 门禁停用：11-11 维护者定：安卓图形层以 iOS 为蓝本干净重搭，旧层钩子全部退役；安卓线出新钩子后接回
 # 门禁路由：runtime/src/ runtime/include/ graphics/track/ platform/plat.h platform/plat_asm.h runtime/tests/t_crash_android_fatal.c
 # 门禁路由：android/CMakeLists.txt android/native/ android/tests/ android/w4-tests/ android/core-link/ android/ctest-link/ android/codecs/ android/cs/savecommit/tests/native_host_test.c android/cs/savecommit/tests/open_read_host_test.c
 # 门禁路由：graphics/nvn/gfx/nvn/ graphics/nvn/gfx/tex/ graphics/nvn/host/ graphics/nvn/third_party/vulkan-headers/
