@@ -14,13 +14,14 @@
     <!-- 文件属性里的版本号（11-09 合入运维：曾显示 1.0.0+944ad83…）：构建时从最近的发版 tag 取，同 launchers/macos/build_app.py release_identity；不拼提交号 -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
-  <!-- 版本号来源：构建参数 S2ArmVersion=x.y.z 显式给的优先；否则取 git 最近 tag 的数字段（v0.1.7 → 0.1.7）；都没有用 0.1.0（同 Mac） -->
+  <!-- 版本号来源（同 pack/jobs/core.py release_version）：构建参数 S2ArmVersion=x.y.z 显式给的优先；HEAD 正好落在发版 tag 上用它；
+       否则取全部 v* tag 里版本号最大的（不用 git describe：热修 tag 0.2.7–0.2.9 打在热修分支上、不在 main 的祖先里，describe 在 main 上只摸到 v0.2.6）；都没有用 0.1.0 -->
   <Target Name="S2ArmVersionFromTag" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo;GenerateNuspec">
-    <Exec Condition="'$(S2ArmVersion)' == ''" Command="git describe --tags --abbrev=0" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+    <Exec Condition="'$(S2ArmVersion)' == ''" Command="git tag --list v* --sort=-v:refname" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmTag" />
     </Exec>
     <!-- 顶栏版本号（11-11 维护者，同 Mac build_app.py）：HEAD 正好是发版 tag 且没改动 = 正式版「0.3.0」；否则开发版「<版本>-dev+<短提交号>」。界面前面加 v -->
-    <Exec Command="git describe --tags --exact-match HEAD" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+    <Exec Command="git tag --points-at HEAD --list v* --sort=-v:refname" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmExactTag" />
     </Exec>
     <Exec Command="git rev-parse --short=7 HEAD" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
@@ -30,9 +31,10 @@
       <Output TaskParameter="ConsoleOutput" PropertyName="S2ArmDirty" />
     </Exec>
     <PropertyGroup>
+      <S2ArmExactVersion>$([System.Text.RegularExpressions.Regex]::Match('$(S2ArmExactTag)', '\d+(\.\d+)*').Value)</S2ArmExactVersion>
+      <S2ArmVersion Condition="'$(S2ArmVersion)' == ''">$(S2ArmExactVersion)</S2ArmVersion>
       <S2ArmVersion Condition="'$(S2ArmVersion)' == ''">$([System.Text.RegularExpressions.Regex]::Match('$(S2ArmTag)', '\d+(\.\d+)*').Value)</S2ArmVersion>
       <S2ArmVersion Condition="'$(S2ArmVersion)' == ''">0.1.0</S2ArmVersion>
-      <S2ArmExactVersion>$([System.Text.RegularExpressions.Regex]::Match('$(S2ArmExactTag)', '\d+(\.\d+)*').Value)</S2ArmExactVersion>
       <S2ArmDisplayVersion>$(S2ArmVersion)-dev+$(S2ArmCommit)</S2ArmDisplayVersion>
       <S2ArmDisplayVersion Condition="'$(S2ArmDirty)' == '' and '$(S2ArmExactVersion)' == '$(S2ArmVersion)'">$(S2ArmVersion)</S2ArmDisplayVersion>
       <S2ArmDisplayVersion Condition="'$(S2ArmCommit)' == ''">$(S2ArmVersion)</S2ArmDisplayVersion>
