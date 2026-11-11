@@ -24,6 +24,20 @@ static void apply_environment(const char *name, NSString *value) {
     settings_environment[@(name)] = value;
 }
 
+// 浮层偏好要在建视图之前落到环境变量：多款容器与单款都是先建视图（app.m prepareGameView → s2a_hud_attach），
+// host_run 里才调 s2a_ios_apply_graphics_settings；晚读会让 s2a_hud_on() 把还没设的 S2A_HUD 缓存成 0（#153）。
+// 启动环境显式给的优先；开关语义仍是「下次启动生效」。
+void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
+    if (!getenv("S2A_HUD") && [defaults boolForKey:@"S2ADevHUD"]) {
+        apply_environment("S2A_HUD", @"1");
+        fprintf(stderr, "[S2A 画面设置] S2A_HUD=1（本 App 设置：开发浮层）\n");
+    }
+    if (!getenv("MTL_HUD_ENABLED") && [defaults boolForKey:@"MetalHUDForceEnabled"]) {
+        apply_environment("MTL_HUD_ENABLED", @"1");
+        fprintf(stderr, "[S2A 画面设置] MTL_HUD_ENABLED=1（本 App 设置：Metal 性能浮层）\n");
+    }
+}
+
 // ---------- 按游戏分层的设置（见 settings.h s2a_ios_settings_defaults） ----------
 // 画面类、会因游戏而异的键：分辨率 / 抗锯齿 / 缩放滤镜 / 帧率上限 / 宽屏 / 60 帧（含手动开）/ 主机模式 / 社区补丁，
 //   以及撑不住就问玩家的「问过」与「本款原生 60 帧」记号——原先全在 App 级，一款游戏自动退回 16:9、关 60 帧会串到所有游戏
@@ -214,17 +228,9 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         apply_environment("S2A_FPS60", @"1");
         fprintf(stderr, "[S2A 画面设置] S2A_FPS60=1（本 App 设置：60 帧强信号关的款玩家手动开，放开出图间隔按清单读时判）\n");
     }
-    // 开发浮层（ios/hud.m）：开关打开 = S2A_HUD=1；启动环境显式给的优先
-    if (!getenv("S2A_HUD") && [defaults boolForKey:@"S2ADevHUD"]) {
-        apply_environment("S2A_HUD", @"1");
-        fprintf(stderr, "[S2A 画面设置] S2A_HUD=1（本 App 设置：开发浮层）\n");
-    }
-    // 系统 Metal 性能浮层（审计 P2-21：设置页只写了 MetalHUDForceEnabled，全 runtime/ 没人把它变成 MTL_HUD_ENABLED，浮层从不出现）：
-    //   开关打开 = MTL_HUD_ENABLED=1，在本函数（host_run 起局、建 Metal 设备之前）设；启动环境显式给的优先
-    if (!getenv("MTL_HUD_ENABLED") && [defaults boolForKey:@"MetalHUDForceEnabled"]) {
-        apply_environment("MTL_HUD_ENABLED", @"1");
-        fprintf(stderr, "[S2A 画面设置] MTL_HUD_ENABLED=1（本 App 设置：Metal 性能浮层）\n");
-    }
+    // 开发浮层 / Metal 性能浮层：建视图之前 app.m prepareGameView 已先调 s2a_ios_apply_overlay_settings 落环境变量，
+    //   这里再调一次兜底（host_run 起局、建 Metal 设备之前）；启动环境显式给的优先（#153）。
+    s2a_ios_apply_overlay_settings(defaults);
     // 社区补丁（runtime/src/cpatch.c）：设置里开着的补丁编号 S2ACommunityPatches（字符串数组或逗号分隔串）→ S2A_CPATCH_ON；没设过不设（按包里表的缺省开），
     //   空数组 = 全关（none）；启动环境显式给的优先。下次启动生效
     if (!getenv("S2A_CPATCH_ON")) {

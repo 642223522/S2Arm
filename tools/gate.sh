@@ -154,7 +154,7 @@ if [ "$TIER" = full ]; then
   # iOS 全量编译 + 链接（10-20 维护者：坐标探测的 mach_vm.h 弄坏过 main 的 iOS 出包，门禁只编 Mac 没拦住）；缓存构建目录，热编约 5 秒
   # 源码同步到私有镜像再编（gate_ios.sh），不和钩子的 dotnet 抢 obj / 锁，和钩子并行跑；只在进 App 的源码有改动时跑
   [ -f runtime/build.mk ] && [ -f tools/gate_ios.sh ] && { [ $RT = 0 ] || [ "$(route ios)" = yes ]; } && add "iOS 全量编译" 'bash tools/gate_ios.sh' "${GATE_IOS_S:-3600}"   # 有 iOS 构建入口的仓库才跑（列车单测的假仓库没有）
-  if [ $RT = 1 ]; then HOOKS=$(route hooks); else HOOKS=$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path './tools/*' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort); fi
+  if [ $RT = 1 ]; then HOOKS=$(route hooks); else HOOKS=$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path './tools/*' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort | { off=$(python3 tools/gate_decl.py off 2> /dev/null | cut -f1); if [ -n "$off" ]; then LC_ALL=C grep -v -x -F "$off" || true; else cat; fi; }); fi   # 「# 门禁停用：」的钩子不跑（11-11）
 fi
   # 钩子自报预算（10-21：宽屏门禁离线着色器库缓存键一变整份重建 912 秒，超固定的 600 秒）：钩子文件里有「# 门禁预算：--budget」这一行才问
   #   （不认 --budget 的钩子会把它当普通参数整份跑完），bash <钩子> --budget 打一个整数秒 → 本步墙钟上限；问不出来用缺省 GATE_HOOK_S
