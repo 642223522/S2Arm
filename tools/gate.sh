@@ -54,6 +54,18 @@ apple_step() {
 #   固定解释器 ~/.s2arm/venv 里按 tools/rewriter-requirements.txt 钉了版本、doctor.sh 预检核它）：没给 S2A_PY 且固定解释器在 → 各步统一用它
 [ -z "${S2A_PY:-}" ] && [ -x "$HOME/.s2arm/venv/bin/python3" ] && export S2A_PY=$HOME/.s2arm/venv/bin/python3
 TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_NO_LOADQ:-}   # 列车起的门禁（下文 unset 前先记下：本机预跑令牌豁免它）
+# 预跑必须按路由（11-11 维护者：各线预跑不给改动清单 → 表外代码路径按全跑算，整份 482 步、墙钟中位 1535 秒，挤占门禁机上列车的槽）：
+#   合入前层（GATE_LAYER=pre）、角色不是列车 / 热修、没给 GATE_CHANGED、不是远端那一份（GATE_PLAN，它随 --env 收本机算好的清单）、
+#   不是点名重跑（GATE_RERUN：点到的步按全量清单找，不能被路由滤成 0 步绿）时，
+#   改动清单 = merge-base(origin/main, 待测提交) 到待测提交的改动，与列车按支算的同一口径；export 让派 gate-host 那份按同一清单路由。
+#   待测提交已在 origin/main 上（merge-base = 它自己，如守望在 main 上的无缓存实跑）改动为空、照旧全跑；算不出 merge-base（假仓库没有 origin/main）同样照旧
+if [ "${GATE_LAYER:-}" = pre ] && [ -z "${GATE_CHANGED:-}" ] && [ -z "$PLANM" ] && [ -z "$RER" ]; then
+  case ${GATE_ROLE:-} in 列车|热修) ;; *)
+    _mb=$(git merge-base origin/main "${GATE_REV:-HEAD}" 2> /dev/null) \
+      && _chg=$(git -c core.quotepath=off diff --name-only "$_mb" "${GATE_REV:-HEAD}" 2> /dev/null) && _chg=${_chg//$'\n'/ } && [ -n "${_chg// /}" ] \
+      && { export GATE_CHANGED=$_chg; echo "预跑按路由：改动清单取 merge-base ${_mb:0:9} → ${GATE_REV:-HEAD}（$(wc -w <<< "$_chg" | tr -d ' ') 个文件）" >&2; }
+    unset _mb _chg;; esac
+fi
 # 与列车/自检共用 gate_tier。普通文档才降 doc；敏感文档不降档。
 # 改动集为空不改档；只允许降为 doc，保留调用者显式给的其他档位。
 CHG=${GATE_CHANGED:-$(git -c core.quotepath=off diff --name-only "origin/main...${GATE_REV:-HEAD}" 2> /dev/null)}
