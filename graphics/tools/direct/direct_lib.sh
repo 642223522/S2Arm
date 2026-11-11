@@ -186,7 +186,10 @@ if not os.path.lexists(b): os.rename(a, b); sys.exit(0)
 if sys.platform == "win32": os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a); sys.exit(0)   # Windows 没有目录原子互换：三步改名，换下的旧版本仍落在临时名、由 EXIT 陷阱删
 c = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 sw = getattr(c, "renamex_np", None)
-if (sw(os.fsencode(a), os.fsencode(b), ctypes.c_uint(2)) if sw else c.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), ctypes.c_uint(2))): sys.exit(f"{a} ⇄ {b}: {os.strerror(ctypes.get_errno())}")' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
+if (sw(os.fsencode(a), os.fsencode(b), ctypes.c_uint(2)) if sw else c.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), ctypes.c_uint(2))):
+    e = ctypes.get_errno()
+    if e not in (45, 95, 102): sys.exit(f"{a} ⇄ {b}: {os.strerror(e)}")
+    os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a)   # exFAT 等外接盘不支持原子互换（ENOTSUP / EOPNOTSUPP）：同 Windows 三步改名' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
   rm -rf "$C/logs.new" && mkdir -p "$C/logs.new" && find "$W" -maxdepth 1 -name '*.log' -exec cp {} "$C/logs.new/" \; && rm -rf "$C/logs" && mv "$C/logs.new" "$C/logs"
 }
 # ①② 抽取（10-25 维护者「抽着色器只做一次」）：共享抽取阶段（pack/stage_extract.sh）已经出好的 <产物根>/extract/（有 ok）就整份 APFS 克隆进工作目录，不重抽；
