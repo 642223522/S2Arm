@@ -66,8 +66,8 @@ git checkout -q -b f1 main~2; xnew 6 E4=四; git commit -qam f1
 git checkout -q -b f2 main~2; xold 6 ', "E5": "五"'; git commit -qam f2
 git checkout -q f1; git merge -q --no-edit f2 > /dev/null 2>&1; m11=$?
 ck "⑪ 新格式对旧格式：不冲突（rc ${m11}）、E4 E5 都在" '[ $m11 = 0 ] && python3 -c "import json;d=json.load(open(\"$XP\"));assert {\"E4\",\"E5\"}<=set(d[\"errors\"])"'
-git checkout -q -f -b g1 main~2; xold 5 ', "E1x": "甲"'; sed -i '' 's/"E1": "一"/"E1": "壹"/' $XP; git commit -qam g1
-git checkout -q -b g2 main~2; xold 5 ''; sed -i '' 's/"E1": "一"/"E1": "幺"/' $XP; git commit -qam g2
+git checkout -q -f -b g1 main~2; xold 5 ', "E1x": "甲"'; perl -pi -e 's/"E1": "一"/"E1": "壹"/' $XP; git commit -qam g1
+git checkout -q -b g2 main~2; xold 5 ''; perl -pi -e 's/"E1": "一"/"E1": "幺"/' $XP; git commit -qam g2
 git checkout -q g1; git merge -q --no-edit g2 > /dev/null 2>&1; m12=$?; git merge --abort 2> /dev/null; git checkout -q -f main
 ck "⑫ 同键 E1 两边改成不同值 → 冲突（rc ${m12}）" '[ $m12 != 0 ]'
 git checkout -q -b h1 main~2; xold 6 ', "E6": "六"'; git commit -qam h1
