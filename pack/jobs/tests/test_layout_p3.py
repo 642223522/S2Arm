@@ -307,6 +307,24 @@ class RelocateDefaultTests(unittest.TestCase):
         self.assertFalse(win.exists())
         self.assertEqual((self.target / "games" / "G" / "saves" / "s.dat").read_text(), "save")
 
+    @unittest.skipIf(os.name == "nt", "占锁的子进程用 fcntl.flock")
+    def test_relocate_lock_stuck_reports_library_busy_not_unlocked_judge(self):
+        # 搬家锁被一个卡住的作业一直占着：等到上限报 library_busy，不再「等不到就不拿锁照常判断」（剃刀 H2），旧库原样不动
+        import subprocess, sys
+        win = self.private / "DefaultLibrary"
+        os.replace(self.old, win)
+        lock = self.private / layout.RELOCATE_LOCK
+        holder = subprocess.Popen([sys.executable, "-c", "import fcntl,sys; f=open(sys.argv[1],'a'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.readline()",
+                                   str(lock)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "held")
+            with patch.object(layout, "RELOCATE_LOCK_WAIT", 0.2), self.assertRaises(layout.Failure) as raised:
+                layout.relocate_default(self.private, win)
+            self.assertEqual(raised.exception.code, "library_busy")
+            self.assertTrue(win.is_dir()); self.assertFalse(self.target.exists())
+        finally:
+            holder.stdin.write("\n"); holder.stdin.flush(); holder.communicate(timeout=5)
+
     def test_rename_refused_leaves_library_and_no_moving_marker(self):
         # 旧库里有文件被别的程序开着（Windows 上整目录改不了名）：库原样不动、照旧用旧位置，不留「正在搬」的标记，下次再试；绝不半搬
         win = self.private / "DefaultLibrary"

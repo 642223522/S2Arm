@@ -21,6 +21,9 @@ import fnmatch, os, re, subprocess, sys, tempfile
 TOK = re.compile(r'(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|c|h|m|mm|cc|cpp|swift|cs|tsv|mk|json)\b')   # 带目录的写法整段取（graphics/tools/shbake/xc_key.sh），见 refs
 LOCAL = ('tools/', 'pack/', 'tests/')   # 本线目录：单测覆盖面只在这里面推
 DOC = re.compile(r'^docs/|\.md$|^\.github/ISSUE_TEMPLATE/')   # 与 tools/gate_plan.sh GATE_DOC_RE 同一条
+# 无钩子路径（过渡，11-11 维护者：旧安卓三钩子删除）：android/ 眼下没有钩子认领，改到它不选钩子、也不算表外触发全跑；
+#   安卓线新 android/gate.sh 头里「# 门禁路由：android/ …」接上时删掉这一条（单测照旧按覆盖面路由）
+NOHOOK = ('android/',)
 
 # 独立测试的显式覆盖合同（#925）：已有 shell 引用推导不解析 MSBuild 项目，
 # 中文说明中的 .cs 名字也不是可用的路径通配。按测试消费者合同登记，不能仅凭同名猜。
@@ -119,6 +122,19 @@ def _refs(path, by_name, direct):
     return frozenset(got), txt
 
 
+# 列车入队预检（tools/train.sh pre()）固定跑的单测：shell_lint / shared_path / test_wired / shell_pyimports + 全部 tests/*lint*_test.sh。
+#   列车门禁也必须每次跑它们：11-10 feat/img-read 改 pack/img.py 带进 os.walk，文本推导没路由到 romfs_walk_lint，合进 main 后所有支的入队预检都被拒。
+#   规则与 pre() 同一条（改这里要同笔改 train.sh pre() 的 PL）
+PRECHECK_TESTS = ('shell_lint_test', 'shared_path_test', 'test_wired_test', 'shell_pyimports_test')
+
+
+def precheck_test(test):
+    n = os.path.basename(test)
+    if not (n.endswith('.sh') and os.path.dirname(test) == 'tests'): return False
+    n = n[:-3]
+    return n in PRECHECK_TESTS or fnmatch.fnmatch(n, '*lint*_test')
+
+
 def test_cover(test, files, by_name, full=False):
     """单测的覆盖面：自身 + 文本里点名的本线文件的传递闭包 + 头部「门禁覆盖」通配。
     full=True（缓存键用）：「门禁只看」不截断闭包，只并进去——路由可以窄，缓存输入只能宽（10-30：train_test「门禁只看」漏 known_red.py，
@@ -133,6 +149,7 @@ def test_cover(test, files, by_name, full=False):
         if re.match(r'#\s*门禁：每次', l): always = True
         m = re.match(r'#\s*门禁闭包：(.*)', l)   # 「门禁闭包：[--table <表>] <入口…>」：改动落在入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（含新增文件）
         if m: closures.append(m.group(1).split())
+    if precheck_test(test): always = True
     if only is not None:
         gone = [g for g in only if not re.search(r'[*?\[]', g) and g not in FILESET]   # 写错 / 改名的路径永远对不上 = 这支单测再也不跑，报红
         if gone: sys.exit(f'【红】gate_route：{test} 的「门禁只看」里 {" ".join(gone)} 不在仓库里（改名了要同笔改这行）')
@@ -206,14 +223,6 @@ def load_table(root='.'):
     return [(k, v.split()) for k, _, v in (l.partition('\t') for l in out.splitlines() if l)]
 
 
-def load_off(root='.'):
-    # 「# 门禁停用：」的钩子整个退役（11-11 维护者：安卓旧钩子随图形层重搭退役）：不进 hooks / claimed，但它的路由声明照留在表里（改到那些路径不算表外、不触发全跑）
-    dp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate_decl.py')
-    if not os.path.exists(dp): return set()
-    out = subprocess.run([sys.executable, dp, 'off', root], capture_output=True, text=True).stdout
-    return {l.split('\t')[0] for l in out.splitlines() if l}
-
-
 def hit(changed, prefixes):
     return [f for f in changed if any(f == p or f.startswith(p) or fnmatch.fnmatch(f, p) for p in prefixes)]
 
@@ -244,22 +253,24 @@ def cover_files(test, files, by_name, full=False):
 
 def main():
     mode, changed = sys.argv[1], [f for f in sys.argv[2:] if f]
+    if mode == 'nohook':   # 过渡的无钩子路径（tools/test_wired_lint.py 读：这些前缀下的单测暂无钩子接线，不报没接线）
+        if NOHOOK: print('\n'.join(NOHOOK))
+        return
     if mode == 'owns':   # 10-25 维护者：vk/wp6 改了 graphics/nvn、红在 graphics/gate.sh，列车却报「与本批无关的步」——钩子与本批有关 = 本批有文件路由到它
         h, changed = changed[0], changed[1:]; ps = dict(load_table()).get(h)
         if ps is None: own = [f for f in changed if f.startswith(os.path.dirname(h) + '/')]   # 表里没登记的钩子：每次都跑，「负责的」按它自己的目录算
         else:
             known = [p for _, q in load_table() for p in q]
-            code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',)))]
+            code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',) + NOHOOK))]
             own = hit(changed, ps) + [f for f in code if not hit([f], known) and f not in hit(changed, ps)]   # 表外代码路径让全部钩子跑，也算
         if own: print('\n'.join(own))
         return
     files, by_name = index()
     tests = sorted({f for f in files if re.match(r'^tests/[^/]+_test\.sh$', f)} | (set(DECLARED_TEST_COVERAGE) & FILESET))
     table = load_table()
-    off = load_off()
-    hooks_all = sorted(f for f in files if f.endswith('/gate.sh') and f != 'tools/gate.sh' and f.count('/') <= 3 and f not in off)
+    hooks_all = sorted(f for f in files if f.endswith('/gate.sh') and f != 'tools/gate.sh' and f.count('/') <= 3)
     known = [p for _, ps in table for p in ps]
-    code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',)))]   # 代码改动（本线目录与文档以外）
+    code = [f for f in changed if f.startswith('tests/visual/') or not (DOC.search(f) or f.startswith(LOCAL + ('scripts/',) + NOHOOK))]   # 代码改动（本线目录与文档以外）
     unknown = [f for f in code if not hit([f], known)]   # 表里没列到的代码路径 → 钩子全跑
     if mode == 'tests':
         for t in tests:
