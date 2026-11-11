@@ -32,6 +32,8 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/AudioFocusPolicy.java" \
     "$android_dir/tests/AudioFocusPolicyTest.java"
 s2a_gate_step java -ea -cp "$out/java" org.s2arm.android.AudioFocusPolicyTest
+# Diagnostic archive preflight: synthetic names and sizes only; never reads logs.
+s2a_gate_step bash "$android_dir/tests/diagnostics/run.sh"
 # Capacity selection is shared by the production Android host implementation.
 s2a_gate_step "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror "$android_dir/tests/capacity/policy_test.cpp" -o "$out/capacity-policy-test"
 s2a_gate_step "$out/capacity-policy-test"

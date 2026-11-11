@@ -289,8 +289,7 @@ public class MainActivity extends Activity
                     tryStartGame();
                 });
             }
-        }, gameMode ? getIntent().getStringExtra(GameActivity.TITLE_EXTRA) : null,
-            gameMode && getIntent().getBooleanExtra(GameActivity.REVISION_EXTRA, false));
+        }, gameMode ? getIntent().getStringExtra(GameActivity.TITLE_EXTRA) : null);
         graphicsModePreference = graphicsModeFromIntent(getIntent());
         requestOrientation(getIntent());
         updateTouchPad();
