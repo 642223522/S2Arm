@@ -330,7 +330,8 @@ static void t_alias(void) {   // 同池同偏移同描述的对象共用一份�
     nvn_gpu_tex ga = rp_tex_resolve(&a, &g_fake_cmd), gb = rp_tex_resolve(&b, &g_fake_cmd), gc = rp_tex_resolve(&c, &g_fake_cmd);
     CHECK(ga && ga == gb && gc && gc != ga);
     CHECK(g_tex_creates - c0 == 2 && rp_res_tex_built() == 2 && rp_res_tex_serials() == 3);
-    CHECK(g_nup == 0);                                              // 存储全 0：不是 CPU 内容，不上传
+    CHECK(rp_res_uploads() == 0);                                   // 存储全 0：不是 CPU 内容，不当 CPU 贴图传
+    { static const uint8_t zero[64]; CHECK(g_nup == 2 && g_up[0].img == 32 * 32 * 4 && g_up[1].img == 32 * 32 * 4 && !memcmp(g_up[0].first, zero, 64) && !memcmp(g_up[1].first, zero, 64)); }   // 新建的两份存储各清零一次（共用的那份只清一次）
     CHECK(g_last_usage & NVN_GPU_TEX_RENDER);                       // 能当附件的格式建图时就带附件用途
     tex_t sw = mk_tex(4, 0x8000, NVN_FORMAT_RGBA8, 32, 32, 1, 0); sw.set_swz = 1; sw.swz = 2 | 3 << 3 | 4 << 6 | 5 << 9;
     CHECK(rp_tex_resolve(&sw, &g_fake_cmd) != NULL && g_last_swz == 0);   // 游戏设了恒等通道映射：按「没设」交给后端
@@ -378,16 +379,34 @@ static void t_cpu_rules(void) {   // 首用判定的三条分支
     nvn_be_sub_begin();
     res_fresh();
     tex_t a = mk_tex(21, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); memset(a.mem, 0x55, a.L.size);
-    nvn_be_pool_gpu_written(&g_tp);                                 // GPU 写过的池里的未压缩贴图：当渲染目标，不取存储
-    CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && g_nup == 0);
+    nvn_be_pool_gpu_written(&g_tp);                                 // GPU 写过的池里的未压缩贴图：当渲染目标，不当 CPU 贴图；建图时存储里现有的内容只取这一次
+    { uint64_t u0 = rp_res_uploads(); int p0 = g_protects;
+      CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && g_nup == 1 && g_up[0].first[0] == 0x55 && rp_res_uploads() == u0 && g_protects == p0);
+      memset(a.mem, 0x56, a.L.size); g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+      CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && g_nup == 1); }   // 之后内存再变也不重传（不跟踪写）
     tex_t b = mk_tex(22, 0x2000, NVN_FORMAT_RGBA8, 8, 8, 1, 0); memset(b.mem, 0x66, b.L.size);
     nvn_be_tex_cpu_written(&b);                                     // 但游戏明确 WriteTexels 写过的：取存储
-    CHECK(rp_tex_resolve(&b, &g_fake_cmd) != NULL && g_nup == 1);
+    CHECK(rp_tex_resolve(&b, &g_fake_cmd) != NULL && g_nup == 2 && g_up[1].first[0] == 0x66);
     nvn_be_tex_release(&a); nvn_be_tex_release(&b); nvn_be_alias_drop_pool(&g_tp);
     res_fresh();
     tex_t d = mk_tex(23, 0, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_COMPRESSIBLE); memset(d.mem, 0x77, d.L.size);
-    CHECK(rp_tex_resolve(&d, &g_fake_cmd) != NULL && g_nup == 0);   // COMPRESSIBLE（渲染目标的标志）：不取存储
+    { uint64_t u0 = rp_res_uploads();
+      CHECK(rp_tex_resolve(&d, &g_fake_cmd) != NULL && rp_res_uploads() == u0);   // COMPRESSIBLE（渲染目标的标志）：不当 CPU 贴图
+      CHECK(g_nup == 1 && g_up[0].first[0] == 0x77); }                           // CPU 能写的池：压缩提示不是数据格式，建图时照取一次
     nvn_be_tex_release(&d); nvn_be_alias_drop_pool(&g_tp);
+    // CPU 不能访问的池（游戏把文件读进去再在上面建贴图，之后没有任何通知）：建图时取一次存储
+    res_fresh(); g_tp.flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
+    { static const uint8_t blk[8] = {0x10, 0x84, 0x00, 0x00, 0xe4, 0xe4, 0xe4, 0xe4}, zero[64];
+      tex_t e = mk_tex(24, 0, NVN_FORMAT_RGBA_DXT1, 4, 4, 1, NVN_TEXTURE_FLAGS_IMAGE); memcpy(e.mem, blk, 8);   // 4x4 的 DXT1 只有一个块：存储里就是这 8 字节
+      uint64_t u0 = rp_res_uploads();
+      CHECK(rp_tex_resolve(&e, &g_fake_cmd) != NULL && g_nup == 1 && g_up[0].img == 8 && g_up[0].pre == 1 && !memcmp(g_up[0].first, blk, 8) && rp_res_uploads() == u0);
+      tex_t f = mk_tex(25, 0x2000, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_COMPRESSIBLE); memset(f.mem, 0x33, f.L.size);
+      CHECK(rp_tex_resolve(&f, &g_fake_cmd) != NULL && g_nup == 2 && !memcmp(g_up[1].first, zero, 64));   // 这种池里带压缩提示的：内存对 CPU 没有意义，不取，清零
+      tex_t h = mk_tex(26, 0x4000, NVN_FORMAT_R11G11B10F, 8, 8, 1, 0); { uint32_t v = 0x3f000000u | 31u << 6; memcpy(h.mem, &v, 4); memset(h.mem + 4, 0x11, 16); }   // 第一个像素的 R 是 Inf
+      CHECK(rp_tex_resolve(&h, &g_fake_cmd) != NULL && g_nup == 3 && !memcmp(g_up[2].first, zero, 64));   // 这种池里浮点格式带 Inf / NaN：是别人留下的，不取，清零
+      tex_t k = mk_tex(27, 0x6000, NVN_FORMAT_DEPTH24_STENCIL8, 8, 8, 1, 0); memset(k.mem, 0x22, k.L.size);
+      CHECK(rp_tex_resolve(&k, &g_fake_cmd) != NULL && g_nup == 3);   // 深度模板：不取也不清（通道自己清）
+      nvn_be_tex_release(&e); nvn_be_tex_release(&f); nvn_be_tex_release(&h); nvn_be_tex_release(&k); nvn_be_alias_drop_pool(&g_tp); }
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
 }
 
@@ -489,17 +508,18 @@ static void t_copy_b2t(void) {   // 缓冲 → 贴图：线性行直接传；级
     o->src = (uint64_t)(uintptr_t)g_pmem + 16; o->tex = snap; o->r = (NVNcopyRegion){0, 0, 0, 4, 2, 1}; o->row_stride = 32;
     end(&a);
     nvn_be_sub_begin(); nvn_be_exec(a.b);
-    CHECK(g_nup == 2 && nvn_unimpl_count("op", "OP_COPY_B2T") == 0);
-    CHECK(g_up[0].level == 2 && g_up[0].layer == 0 && g_up[0].w == 2 && g_up[0].h == 2 && g_up[0].pitch == 8 && g_up[0].img == 16 && g_up[0].first[0] == 1);
-    CHECK(g_up[1].level == 0 && g_up[1].pitch == 32 && g_up[1].img == 64 && g_up[1].first[0] == 17);
+    CHECK(g_nup == 5 && nvn_unimpl_count("op", "OP_COPY_B2T") == 0);   // 头 3 次是新建存储的清零（三级各一次），后 2 次是两条拷贝
+    CHECK(g_up[0].level == 0 && g_up[0].img == 16 * 16 * 4 && g_up[1].level == 1 && g_up[2].level == 2 && g_up[2].img == 4 * 4 * 4 && g_up[0].first[0] == 0);
+    CHECK(g_up[3].level == 2 && g_up[3].layer == 0 && g_up[3].w == 2 && g_up[3].h == 2 && g_up[3].pitch == 8 && g_up[3].img == 16 && g_up[3].first[0] == 1);
+    CHECK(g_up[4].level == 0 && g_up[4].pitch == 32 && g_up[4].img == 64 && g_up[4].first[0] == 17);
     CHECK(nvn_be_tex_gpu_owned(51) == 1);
     // 三维贴图一次传多片：从第 1 片起传 3 片，每片 2×2（16 字节），源按片顺排
     tex_t t3 = mk_tex(52, 0x4000, NVN_FORMAT_RGBA8, 4, 4, 1, 0); t3.d.target = NVN_TEXTURE_TARGET_3D; t3.d.depth = 4; nvn_tex_layout(&t3.d, &t3.L);
     stream a3 = {0}; o = put(&a3, OP_COPY_B2T, sizeof *o + sizeof t3); snap = (tex_t *)(o + 1); *snap = t3;
     o->src = (uint64_t)(uintptr_t)g_pmem; o->tex = snap; o->r = (NVNcopyRegion){0, 0, 1, 2, 2, 3}; end(&a3);
     nvn_be_exec(a3.b);
-    CHECK(g_nup == 5 && nvn_unimpl_kinds() == 0);
-    for (int z = 0; z < 3 && g_nup == 5; z++) CHECK(g_up[2 + z].layer == (uint32_t)(1 + z) && g_up[2 + z].img == 16 && g_up[2 + z].w == 2 && g_up[2 + z].first[0] == (uint8_t)(1 + 16 * z));
+    CHECK(g_nup == 9 && nvn_unimpl_kinds() == 0 && g_up[5].img == 4 * 4 * 4 * 4 && g_up[5].first[0] == 0);   // 新建的三维存储先清零一次（4 片一起），再是 3 片
+    for (int z = 0; z < 3 && g_nup == 9; z++) CHECK(g_up[6 + z].layer == (uint32_t)(1 + z) && g_up[6 + z].img == 16 && g_up[6 + z].w == 2 && g_up[6 + z].first[0] == (uint8_t)(1 + 16 * z));
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     nvn_be_tex_release(&t3); nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&g_tp); nvn_be_pool_del(g_pmem);
 }
