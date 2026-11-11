@@ -2374,6 +2374,7 @@ void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, ui
     if (!c->in_pass && (!c->pipe || c->pipe->pass)) { set_sticky(c, NVN_GPU_E_ORDER, "bind 在通道外（非计算管线）"); return; }
     if (!c->pipe) { set_sticky(c, NVN_GPU_E_ORDER, "bind 前没有 set_pipe"); return; }
     if (!b && n) { set_sticky(c, NVN_GPU_E_ARG, "bind 表为空"); return; }
+    if (n > 64) { set_sticky(c, NVN_GPU_E_ARG, "一个阶段一次绑定 %u 项，超过上限 64（原先多出来的被悄悄丢掉）", n); return; }
     uint32_t count = 0;
     for (uint32_t i = 0; i < n && i < 64; i++) {
         if (c->pipe->stage_nent[st] && b[i].ent >= c->pipe->stage_nent[st]) {

@@ -238,7 +238,11 @@ namespace S2A.DirectCompiler
                     // 找回同一个 nvn_tex_slot（见 nvn_vk_first_draw 的 handleIndex→slot 表）。
                     // 只有该句柄有直接绑定事实时才放行；没有就直接事实的 cbuf 句柄仍是
                     // 未实现路径，不能把槽位绑到别的纹理。
-                    if (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex))
+                    // 例外：着色器按运行时下标取句柄，翻译器把它变成从驱动句柄表（c2）第 0 项起的贴图数组（BindlessToArray）。
+                    // 数组的第 k 项就是句柄表的第 k 个 8 字节项，宿主按项逐个绑（slot = 0、count = 数组长度），不需要逐句柄的事实。
+                    bool handleTableArray = binding.Kind == "texture" && resolved.CbufSlot == 2 && resolved.ArrayLength > 1 &&
+                                            resolved.HandleIndex == 0 && binding.Count == resolved.ArrayLength;
+                    if (!handleTableArray && (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex)))
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM",
                             binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented");
                 }

@@ -51,6 +51,11 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
     return 1;
 }
 
+// 贴图数组（着色器按运行时下标取句柄）的各项：每个阶段至多一个数组，至多 RP_TEXARR_MAX 项。
+// 数组第 k 项 = 驱动句柄表的第 k 个 8 字节项；贴图槽 s 的句柄在第 4 + s 项，前 4 项与没绑的槽读作池里的第 0 项（同单个贴图槽没绑时的口径）
+enum { RP_TEXARR_MAX = 64, RP_HANDLE_TABLE_FIRST_SLOT = 4 };
+static nvn_gpu_view g_av[RP_PROG_STAGES][RP_TEXARR_MAX]; static nvn_gpu_samp g_as[RP_PROG_STAGES][RP_TEXARR_MAX];
+
 static int g_log_left;   // 逐笔日志还剩几行（调试开关 nvk_drawlog：上屏每 600 帧给下一帧开一次，见 rp_draw_log_arm）
 static int skip(const char *why, const void *rec) {
     nvn_unimpl("draw", why, rec); g_skips++;
@@ -98,6 +103,17 @@ static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t 
                 if (!alloc_copy(c, ub->size, (const void *)(uintptr_t)ub->addr, &sl)) return skip("arena_alloc_failed", rec);
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = ub->size; break; }
             case NVN_RB_TEX: {
+                if (e->count > 1) {   // 贴图数组：逐项绑（视图与采样器已在开通道前取好，放在 g_av / g_as）
+                    if (n + e->count > RP_PROG_ENT_MAX) return skip("too_many_bindings", rec);
+                    for (uint32_t k = 0; k < e->count; k++) {
+                        if (!g_av[st][k]) return skip("texture_slot_unresolved", rec);
+                        if (!g_as[st][k]) return skip("sampler_slot_unresolved", rec);
+                        nvn_gpu_binding *ok = &b[n + k]; memset(ok, 0, sizeof *ok); ok->ent = (uint16_t)i; ok->cls = e->cls; ok->elem = k;
+                        ok->u.ts.view = g_av[st][k]; ok->u.ts.samp = g_as[st][k];
+                    }
+                    n += e->count - 1;   // 循环末尾再加 1
+                    break;
+                }
                 if (!tv[i]) return skip("texture_slot_unresolved", rec);
                 if (!ts[i]) return skip("sampler_slot_unresolved", rec);
                 o->u.ts.view = tv[i]; o->u.ts.samp = ts[i]; break; }
@@ -174,9 +190,20 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     } else a.first = (uint32_t)dr->first;
     static nvn_gpu_view tv[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static nvn_gpu_samp ts[RP_PROG_STAGES][RP_PROG_ENT_MAX];
     char tl[160]; size_t tn = 0; tl[0] = 0;   // 逐笔日志用：这笔采样的贴图
+    int narr[RP_PROG_STAGES] = {0, 0};
     for (int st = 0; st < 2; st++) for (uint32_t i = 0; i < g_prog->nent[st]; i++) {
         const nvn_gpu_layout_ent *e = &g_prog->ent[st][i]; tv[st][i] = NULL; ts[st][i] = NULL;
         if (e->src_kind != NVN_RB_TEX) continue;
+        if (e->count > 1) {
+            if (e->count > RP_TEXARR_MAX || narr[st]++) { skip("texture_array_unsupported_shape", rec); return; }
+            for (uint32_t k = 0; k < e->count; k++) {
+                int slot = (int)(e->src_reg + k) - RP_HANDLE_TABLE_FIRST_SLOT;
+                uint64_t hk = slot >= 0 && slot < 32 ? rp_S.tex[st][slot] : 0;
+                g_av[st][k] = rp_view_by_id(hk ? (int)(hk & 0xFFFFF) : rp_S.tex_base, c, NULL);
+                g_as[st][k] = rp_samp_by_id(hk ? (int)(hk >> 20) : rp_S.samp_base);
+            }
+            continue;
+        }
         uint64_t h = rp_S.tex[st][e->src_reg];
         const tex_t *tt = NULL;
         tv[st][i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, &tt);

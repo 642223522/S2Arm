@@ -147,6 +147,9 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
             memset(dst, 0, sizeof *dst);
             dst->set = (int)set_v; dst->binding = (int)binding_v;
             dst->slot = has_slot ? (int)slot_v : -1;   // -1：反射没有 guest 槽位
+            dst->count = 1;
+            { struct s2a_jv cnt = { NULL, 0 }; uint32_t cnt_v = 0;   // 描述符数组的长度；省略或 1 = 不是数组
+              if (!s2a_jv_obj_find(b, "count", &cnt) && !s2a_jv_u32(cnt, &cnt_v) && cnt_v > 1 && cnt_v <= 0xffff) dst->count = (uint16_t)cnt_v; }
             if (!strcmp(kind_text, "support") || !strcmp(kind_text, "uniform")) dst->kind = 0;
             else if (!strcmp(kind_text, "storage")) dst->kind = 1;
             else if (!strcmp(kind_text, "texture")) dst->kind = 2;

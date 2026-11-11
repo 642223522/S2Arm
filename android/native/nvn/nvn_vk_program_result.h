@@ -34,6 +34,7 @@ struct fd_stage {
 struct fd_binding {
     int set, binding, kind;   // kind: 0 uniform/support, 1 storage, 2 texture, 3 image
     int slot;
+    uint16_t count;           // 描述符数组长度（不是数组为 1）。kind==2 且 count>1 = 从句柄表第 slot 项起的贴图数组
     char stage[16];
     // 下面这些只由 program 内容决定，加载时算一次；逐笔 draw 不再做 strcmp / 除法。
     int8_t stage_idx;         // 0=vs 1=fs 2=gs 3=tcs 4=tes 5=cs，-1 = 其它/未知
