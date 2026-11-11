@@ -326,7 +326,10 @@ def _build(c):
     c.begin("清理出包中间产物")
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
-    prune_build(c, gid)
+    if c.r.get("followUp") is True:   # 同一款这次还要接着出别的平台：解包与中间产物留给它（pack/contracts/README.md，剃刀 M21）
+        c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
+    else:
+        prune_build(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, **compiler_policy)
     from cache_retention import engine_installed_at, prune_tool_keys
     prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 当前引擎用不到的工具缓存旧键（NativeAOT / libvpx / opus / dav1d）

@@ -483,6 +483,30 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(chk.returncode, 0, chk.stderr)
 
     @shared_extract
+    def test_ipa_follow_up_keeps_unpack_for_next_platform(self):
+        # 剃刀 M21：同一次出包后面还有平台（followUp）→ 收尾照常交付，但不调 prune_build；缺省照调（期望按 pack/contracts/README.md 手写）
+        import unittest.mock as um, ipa
+        for follow, want in ((True, 0), (None, 1)):
+            with self.subTest(followUp=follow):
+                base = self.package("base"); self.catalogue([self.game(packages=[base])])
+                self.c.r.update(gameId="0100000000000000", target={"gpuArch": "applegpu_g18p", "os": 27})
+                self.c.r.pop("followUp", None)
+                if follow is not None:
+                    self.c.r["followUp"] = follow
+                res = self.root / "res"; (res / "Fonts").mkdir(parents=True, exist_ok=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
+                layout.ios_work(self.c, "0100000000000000").mkdir(parents=True, exist_ok=True)
+                def run(args, log=None, env=None, cwd=None, on_line=None):
+                    o = Path(args[args.index("--out") + 1]); (o / "t.ipa").write_bytes(b"new")
+                    oneclick_done(args, o / "t.ipa", pack_id="p", build_id="b-1", graphics_mode="direct")
+                home = self.root / "dn"; (home / "sdk/10.0.403").mkdir(parents=True, exist_ok=True); (home / "dotnet").write_text("")
+                with um.patch.object(ipa, "dotnet_sdk", return_value=(home, home / "dotnet")), um.patch.object(self.c, "run", run), \
+                     um.patch.object(ipa, "resolve_target", return_value={"gpuArch": "applegpu_g18p", "os": 27}), \
+                     um.patch.object(self.c, "fonts_dir", return_value=res / "Fonts"), \
+                     um.patch.object(library, "check_pack_space", return_value={"compilerMinFreeBytes": 48 << 30}), \
+                     um.patch.object(library, "prune_build") as prune:
+                    ipa.build(self.c)
+                self.assertEqual(prune.call_count, want)
+
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
         # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
         import unittest.mock as um, ipa
