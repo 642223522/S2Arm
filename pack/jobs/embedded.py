@@ -65,24 +65,16 @@ def _ready(c, destination, manifest):
 
 @contextlib.contextmanager
 def _install_lock(root, timeout=1800):
-    """同一引擎目录的挪开 / 重解只许一个作业做（跨进程：flock / msvcrt，同 filelock）。等别的作业解完最多 timeout 秒（解一份几秒到一两分钟）"""
+    """同一引擎目录的挪开 / 重解只许一个作业做（跨进程：filelock.held，与库锁同一实现）。等别的作业解完最多 timeout 秒（解一份几秒到一两分钟）"""
+    import os
     import time
     import filelock
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".install.lock").open("a") as f:
-        t0 = time.time()
-        while True:
-            try:
-                filelock.try_lock(f)
-                break
-            except BlockingIOError:
-                if time.time() - t0 > timeout:
-                    raise Failure("另一个任务正在初始化内置 S2Arm 引擎，等了太久，请稍后重试。") from None
-                time.sleep(0.5)
-        try:
+    try:
+        with filelock.held(root / ".install.lock", wait_s=timeout, holder=dict(operation="prepareEngine", pid=os.getpid(), startedAt=round(time.time(), 3))):
             yield
-        finally:
-            filelock.unlock(f)
+    except filelock.Busy as busy:
+        raise Failure("另一个任务正在初始化内置 S2Arm 引擎，等了太久，请稍后重试。", internal=f"引擎安装锁占锁者：{busy.holder}") from None
 
 
 def _reinstall(c, source, manifest, root, destination, identity):

@@ -446,6 +446,23 @@ def record_sources(sources):
     return out
 
 
+LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
+OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm",
+                   "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
+                   "remove": "移出游戏库", "delete": "删除游戏", "clean": "清理空间", "spaceFree": "释放空间", "launch": "开始游戏",
+                   "moveGame": "移动游戏", "relinkGame": "重新关联原件", "forgetGame": "忘掉游戏", "setup": "设置游戏库", "keys": "导入密钥",
+                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态",
+                   "communitySave": "保存补丁设置", "diagnostics": "导出诊断"}
+
+
+def describe_holder(info):
+    """占锁任务的一句话：「出包 · 0100…（任务 t12）」；不知道是谁时「另一个任务」"""
+    if not info:
+        return "另一个任务"
+    op = OPERATION_NAMES.get(info.get("operation"), info.get("operation") or "另一个任务")
+    return op + (" · " + info["gameId"] if info.get("gameId") else "") + ("（任务 " + str(info["taskId"]) + "）" if info.get("taskId") else "")
+
+
 class Context:
     def __init__(self, request):
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
@@ -523,19 +540,43 @@ class Context:
                 raise Failure(f"游戏库所在的磁盘「{parts[2]}」没连上：插上这块盘后再试一次。")
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
+    def lock_holder(self):
+        """写进锁旁挂文件的「我是谁」：别的任务据此说清在等谁"""
+        return dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
+                    gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
+
     @contextlib.contextmanager
-    def lock(self, name="catalog"):
+    def lock(self, name="catalog", wait=None, root=None):
+        """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
+        （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
         self.check()
-        self.require_library()
-        with (self.library / ("." + name + ".lock")).open("a") as f:
+        if root is None:
+            self.require_library()
+        wait = getattr(self, "lock_wait", LOCK_WAIT_S) if wait is None else wait
+        def waiting(info, waited):
             try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                raise Failure("另一个任务正在使用游戏库，请稍后重试。") from None
-            try:
+                self.emit("progress", "在等「" + describe_holder(info) + "」结束…", phase="waiting_lock", holder=info)
+            except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
+                pass
+        try:
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
                 yield
-            finally:
-                filelock.unlock(f)
+        except filelock.Busy as busy:
+            raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
+                          internal=f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）") from None
+
+    @contextlib.contextmanager
+    def idle(self, name="execution"):
+        """「库里没任务在用这把锁才顺手做、否则这次不做」的活（清残留、改文件夹名）：拿得到 yield True（照样记占锁者），拿不到不等、yield False。
+        和 lock 同一把锁、同一个旁挂文件；不查取消：被取消的任务收尾也要能用"""
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(filelock.held(self.library / ("." + name + ".lock"), holder=self.lock_holder()))
+            except filelock.Busy:
+                yield False
+                return
+            yield True
 
     def catalog(self):
         self.require_library()
@@ -745,14 +786,27 @@ class Context:
             self._key_values = shared_redact().load_key_values([self.keys] if getattr(self, "keys", None) else [])
         return self._key_values
 
+    def failure_roots(self):
+        """explain 判「原件不见了 / 去系统设置授权」用的玩家侧路径（启动器剃刀 H8）：这次导入的路径、这款登记的原件，加游戏库根。取不到的省略"""
+        sources = [Path(p).expanduser() for p in (self.r.get("paths") or []) if isinstance(p, str)]
+        if self.r.get("gameId"):
+            try:
+                from library import selected_packages, source_path
+                sources += [source_path(self, p) for p in selected_packages(self.game())]
+            except Exception:   # 游戏没登记 / catalog 读不了：只按已有的判，判不了的落 job_failed
+                pass
+        return dict(sources=sources, library=getattr(self, "library", None))
+
     def describe_failure(self, error, severity="error", exit_code=None):
-        failure = explain(error)
+        failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
                       suggestion=recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
+        if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
+            result["holder"] = failure.holder
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))
@@ -786,7 +840,7 @@ class Context:
             pass
 
     def report_failure(self, error):
-        failure = explain(error)
+        failure = explain(error, **self.failure_roots())
         self.save_rewrite_digest(failure)
         if self.last_log is None:
             self.last_log = self.logs / (self.task + "-failure.log")

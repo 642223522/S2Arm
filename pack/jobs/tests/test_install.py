@@ -714,7 +714,7 @@ class SaveBackupTests(unittest.TestCase):
         def devicectl(c, *a, timeout=0):
             if a[:3] == ("device", "info", "apps"):
                 if apps_rc:
-                    return apps_rc, {}, "devicectl 60 秒没有响应：手机可能锁屏了或连接断开"
+                    return apps_rc, {}, "devicectl 等了 60 秒没有返回，已停止等待"
                 return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.0100c2500fc20000"}] if installed else []}}, ""
             if a[:3] == ("device", "info", "files") and list_rc:
                 return list_rc, {}, "The operation couldn’t be completed"
@@ -1213,6 +1213,17 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ApplyFailureReasonTests(unittest.TestCase):
+    """手机上解开失败（如 #569 目录 App 写不进）：tools/push_pack.py 按解包日志「解包失败：…」当场报原因，装机作业认这一句、原因原样上屏。
+    两边原句对不上会红（期望手写）"""
+    def test_job_reads_the_push_tool_sentence(self):
+        import install
+        tool = (Path(install.__file__).resolve().parents[2] / "tools/push_pack.py").read_text(encoding="utf-8")
+        self.assertIn('f"资源包推进去了，但手机上解开失败：{', tool)
+        log = "[12:00:09] 【红】资源包推进去了，但手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）\n"
+        self.assertEqual(install.APPLY_FAILED.search(log).group(1), "目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501）")
+
+
 class DevicectlTimeoutTests(unittest.TestCase):
     """#333：devicectl 超时（锁屏 / 隧道断时一直挂）转成非零返回码 124 + 人话原因，不再抛 TimeoutExpired 让装机任务裸 traceback 收场"""
     def test_timeout_becomes_rc_124(self):
@@ -1223,8 +1234,7 @@ class DevicectlTimeoutTests(unittest.TestCase):
             with um.patch.object(diag, "COREDEVICE", Path(d)), \
                  um.patch.object(diag.subprocess, "run", side_effect=subprocess.TimeoutExpired("devicectl", 120)):
                 rc, data, err = diag.devicectl(c, "device", "info", "files", timeout=120)
-        self.assertEqual((rc, data), (124, {}))
-        self.assertIn("锁屏", err)
+        self.assertEqual((rc, data, err), (124, {}, "devicectl 等了 120 秒没有返回，已停止等待"))   # 如实说超时，不猜锁屏（剃刀 H21）
 
 
 class PhoneGamesTruthTests(unittest.TestCase):

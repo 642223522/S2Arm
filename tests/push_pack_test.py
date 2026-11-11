@@ -259,6 +259,19 @@ See 'devicectl device process launch --help' for more information.
         with self.assertRaises(push.Fail) as e: self.ap(old, 1, False)
         self.assertIn("起 App 后 180 秒机上解包没有开始", str(e.exception)); self.assertEqual(len(self.dev.launches), 1)
 
+    def test_device_failure_reported_at_once_with_its_reason(self):
+        # App 起来解开、第一包前就失败（#569：目录 App 写不进）：解包日志新增「解包失败：…」→ 当场按原因报，不再等 180 秒后说「没有开始」。期望手写
+        self.dev = Fake({}); clock = [0.0]
+        def launched(d):
+            d.files["Documents/unpack.log"] = "11-11 解包失败：目录 App 写不进：资源包/.incoming（属主 uid 0、权限 755，App 是 uid 501） 返回 -9（已解 0 个包 0 个文件）\n"
+        self.dev.on_launch = launched
+        def sleep(x): clock[0] += x
+        with self.assertRaises(push.Fail) as e:
+            push.apply(self.dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        self.assertIn("手机上解开失败：目录 App 写不进：资源包/.incoming（属主 uid 0", str(e.exception))
+        self.assertNotIn("没有开始", str(e.exception))
+        self.assertLess(clock[0], 10, "当场报，不等满 180 秒")
+
     def slow(self, stop_at=None, per=60.0, n=17):
         """合成进度：起 App 后每 per 秒解完一包（第 k 包写「进度：解开 x_k.tar（k/n）」），stop_at 给了就解到第 stop_at 包后再无进展；
         n 包都解完写完成行与 .applied。返回 (结果或异常, 失败 / 完成时刻)"""
