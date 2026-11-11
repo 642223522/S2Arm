@@ -4,7 +4,9 @@
   ① 改 a.py、不登记 → 源码键变、实际读入清单的哈希变（宁可重跑）
   ② 登记等价（stage_equiv.py add a.py <改前提交>）→ 两层都回到改前（老游戏命中缓存）
   ③ 再改一次、以上一版为基线登记 → 顺着链回到最早一版（老玩家缓存里记的那一版）
-  ④ 登记了，但文件又被改成别的内容（哈希对不上登记）→ 照旧变"""
+  ④ 登记了，但文件又被改成别的内容（哈希对不上登记）→ 照旧变
+  ⑤ 证据不够（只写「测试」/「产物不变」）→ stage_equiv.py add 拒绝生成
+  ⑥ 老清单里记了算键基础设施（tools/stage_deps.py）：它改了，重算照旧沿用记录值（11-11 实测：改算键工具让同根换代码判重跑）"""
 import os, shutil, subprocess, sys, tempfile
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 bad = 0
@@ -23,7 +25,7 @@ with tempfile.TemporaryDirectory() as t:
     def key(): return subprocess.run(['bash', '-c', f'source pack/stage_keyfiles.sh; stage_files_key s "{t}"'], cwd=t, capture_output=True, text=True).stdout.strip()
     def dep(): return subprocess.run([sys.executable, 'tools/stage_deps.py', 'rehash', 'm.tsv', t], cwd=t, capture_output=True, text=True).stdout
     def eq(base):
-        row = subprocess.run([sys.executable, os.path.join(t, 'tools/stage_equiv.py'), 'add', 'a.py', base, '测试'], cwd=t, capture_output=True, text=True, check=True).stdout
+        row = subprocess.run([sys.executable, os.path.join(t, 'tools/stage_equiv.py'), 'add', 'a.py', base, '单测 stage_equiv_test：改注释，产物 1 个文件逐字节同'], cwd=t, capture_output=True, text=True, check=True).stdout
         open(os.path.join(t, 'pack/stage_inputs/equiv.tsv'), 'a').write(row); sh('git', 'add', '-A'); sh('git', 'commit', '-qm', 'eq')
     c0 = put('x = 1\n', 'v0'); open(os.path.join(t, 'm.tsv'), 'w').write('f\tR:a.py\t-\n')
     k0, d0 = key(), dep()
@@ -35,4 +37,10 @@ with tempfile.TemporaryDirectory() as t:
     ck(key() == k0 and dep() == d0, f'③ 链式登记（基线是上一版）→ 回到最早一版（键 {key()}）')
     put('x = 2\n', 'v3')
     ck(key() != k0 and dep() != d0, f'④ 又改成别的内容（与登记对不上）→ 照旧变（键 {key()}）')
+    for weak in ('测试', '产物不变'):
+        r = subprocess.run([sys.executable, os.path.join(t, 'tools/stage_equiv.py'), 'add', 'a.py', c0, weak], cwd=t, capture_output=True, text=True)
+        ck(r.returncode != 0 and '证据' in (r.stdout + r.stderr), f'⑤ 证据「{weak}」→ 拒绝生成')
+    open(os.path.join(t, 'm2.tsv'), 'w').write('f\tR:tools/stage_deps.py\tdeadbeefdeadbeef\n')
+    got = subprocess.run([sys.executable, 'tools/stage_deps.py', 'rehash', 'm2.tsv', t], cwd=t, capture_output=True, text=True).stdout
+    ck(got == 'f\tR:tools/stage_deps.py\tdeadbeefdeadbeef\n', f'⑥ 老清单里的算键工具行原样沿用（{got.strip()}）')
 print(f'stage_equiv 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)
