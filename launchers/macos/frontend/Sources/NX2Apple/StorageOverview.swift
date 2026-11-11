@@ -53,7 +53,8 @@ struct StorageOverviewSection: View {
             if let o = model.overview {
                 CardGroup(t("locations")) {
                     ForEach(o.locations) { l in
-                        CardRow(l.volume.isEmpty ? l.path : l.volume, detail: detail(l), detail2: l.path, dot: l.connected ? LauncherPalette.ready : LauncherPalette.unbuilt) {
+                        // 行首给具体路径（不再给卷名、路径缩到副行）：几行都叫「系统盘」分不清（名字同出包页下拉框 locationName）
+                        CardRow(S2ArmLauncherModel.locationName(path: l.path, volume: l.volume), detail: detail(l), dot: l.connected ? LauncherPalette.ready : LauncherPalette.unbuilt) {
                             Text(l.isDefault ? t("location.default") : "").font(.manrope(12)).foregroundStyle(.secondary)
                         }
                         if l.id != o.locations.last?.id { CardDivider() }

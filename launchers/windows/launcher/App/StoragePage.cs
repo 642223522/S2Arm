@@ -167,11 +167,11 @@ public sealed partial class EnvironmentWindow
         foreach (var l in o.Locations)
         {
             var row = new StackPanel { Spacing = 3 };
-            row.Children.Add(Label((l.Volume.Length > 0 ? l.Volume : l.Path) + (l.IsDefault ? " · " + T("storage.location.default") : ""), 15));
+            // 行首给具体路径（同 Mac 存储总览）：同一块盘上的几个位置卷名一样，几行都叫同一卷名分不清
+            row.Children.Add(Label(l.Path + (l.IsDefault ? " · " + T("storage.location.default") : ""), 15));
             row.Children.Add(Muted(l.Connected && l.TotalBytes is { } total && l.FreeBytes is { } free
                 ? T("storage.location.usage").Replace("{0}", FormatBytes(l.UsedBytes ?? 0)).Replace("{1}", FormatBytes(free)).Replace("{2}", FormatBytes(total))
                 : T("storage.location.offline")));
-            row.Children.Add(Muted(l.Path, 12));
             places.Children.Add(row);
         }
         body.Children.Add(Card(places));

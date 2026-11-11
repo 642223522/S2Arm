@@ -846,6 +846,12 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
+    /// 出包页「存放位置」下拉框一项显示什么名字（批量出包页、存储总览行首同）：具体路径（家目录缩写成 ~），不是卷名——
+    /// 同一块盘上的几个位置卷名一样（内置盘一律「系统盘」），只给卷名分不清是哪个文件夹；卷名收进来是为了在判据里明确不取它
+    nonisolated static func locationName(path: String, volume: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
+    }
+
     /// 存放位置下面那行提示（#444），只提示不拦；按原因说对：大分配单元「每个小文件至少占 N、多占数倍」/ 不是 APFS「不能克隆、多占一份」。没问题给 nil
     func locationSlackText(_ path: String, language: String) -> String? {
         let row = locations.first(where: { $0.path == path })

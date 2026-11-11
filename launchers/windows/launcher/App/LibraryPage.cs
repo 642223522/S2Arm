@@ -260,9 +260,10 @@ public sealed partial class EnvironmentWindow
             text = T("export.status.queued"); color = "#FFC857";
         }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来重读游戏库就恢复；文件夹没了 → 红字，点卡片重新指定或移除
+        // 未连接给具体路径（同出包页下拉框）：卷名会重名（系统盘都叫「系统盘」），看不出是哪个位置没连上
         else if (game.LocationState == "offline")
         {
-            text = T("library.location.offline").Replace("{0}", game.Location!.Volume.Length > 0 ? game.Location.Volume : game.Location.Path); color = "#4A4A50";
+            text = T("library.location.offline").Replace("{0}", game.Location!.Path.Length > 0 ? game.Location.Path : game.Location.Volume); color = "#4A4A50";
         }
         else if (game.LocationState == "missing")
         {

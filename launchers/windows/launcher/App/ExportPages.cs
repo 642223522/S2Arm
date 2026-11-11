@@ -393,8 +393,8 @@ public sealed partial class EnvironmentWindow
         var options = new List<(string path, string label)>();
         foreach (var r in rows)
         {
-            // 卷名重名（几个位置在同一块盘上）时用路径，免得几项分不清
-            var name = r.Volume.Length == 0 || rows.Count(o => o.Volume == r.Volume) > 1 ? r.Path : r.Volume;
+            // 显示具体路径，不显示卷名（同 Mac 出包页）：同一块盘上的几个位置卷名一样，只给卷名分不清是哪个文件夹
+            var name = r.Path;
             options.Add((r.Path, r.Connected
                 ? T("export.location.free").Replace("{0}", name).Replace("{1}", r.FreeBytes is { } free ? FormatBytes(free) : "?")
                 : T("export.location.offline").Replace("{0}", name)));
