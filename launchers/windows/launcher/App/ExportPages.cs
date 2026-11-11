@@ -79,6 +79,7 @@ public sealed partial class EnvironmentWindow
     private string installState = "", installMessage = "", installDiagnostics = "";
     /// <summary>上一次装机失败的错误码（apple_session_expired 时失败页给「打开 Impactor 重新登录」，重新登录完自动再装）</summary>
     private string? installCode;
+    private bool installOpenToFinish;   // 刚装完的那次是单一 IMG：成功卡片多写一句「打开 S2Arm 会自动完成安装」（作业结果 openToFinish）
     private string revealProblem = "";   // 「显示 IPA」「打开游戏文件夹」找不到目标时的提示（不打开空的资源管理器）
     // 当前 / 最近一次手机作业属于哪一款（#308：原先只有一份「当前安装」状态、没记是哪款，回游戏库再点别的游戏，进度会画到那款上）。
     //   installSeen：跑完后玩家回安装页看过结果没有；没看过时顶栏胶囊一直在。进度计数来自作业事件 done / total / unit（推资源包按字节，机上解包按包）
@@ -1180,6 +1181,7 @@ public sealed partial class EnvironmentWindow
                 : new ProgressBar { IsIndeterminate = true, Height = 4 });
             if (PhoneProgressText() is { Length: > 0 } progress) state.Children.Add(Muted(progress));
         }
+        if (installState == "succeeded" && installOpenToFinish) state.Children.Add(Label(T("install.done.open"), 15));
         if (installMessage.Length > 0) state.Children.Add(Muted(installMessage));
         if (installState is "failed" && installCode == "apple_session_expired")
         {
@@ -1237,6 +1239,7 @@ public sealed partial class EnvironmentWindow
             // 资源传完但电脑没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不显示「已装到 iPhone」，显示还差的一步和原因 / 办法
             if (job.Report.Succeeded && job.Report.Result.TryGetProperty("unpackPending", out var pending) && pending.ValueKind == JsonValueKind.String)
             { installState = "needsPlayer"; installMessage = pending.GetString() ?? ""; }
+            installOpenToFinish = job.Report.Succeeded && job.Report.Result.TryGetProperty("openToFinish", out var open) && open.ValueKind == JsonValueKind.True;
             installDiagnostics = JobDiagnostics(job);
         }
         catch (LibraryProtocolException error) { installState = "invalid"; installDiagnostics = error.Message; }

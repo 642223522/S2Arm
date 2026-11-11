@@ -544,10 +544,12 @@ def _send(dev, pack, work, say=print, progress=None):
                 except Fail as e:
                     say(f"  续传 {w[0]} 没成（{str(e)[-160:]}），改为整份重写"); done -= off; off = 0
                     transfer(dev.put_big, pack / w[0], rel, size=size)
-                if off and (dev.head(rel, 0) or (None,))[0] != size:   # 续写不截短：写完核机上总长，对不上不记账（App 也按头里整长判没传完）
-                    raise Fail(f"续传后机上 {w[0]} 长度不对")
             else:
                 transfer(dev.put_big, pack / w[0], rel, size=size)
+            if w[0] == "game.img":   # 写完（整份或续传）都核机上总长，对不上不记账（App 也按头里整长判没传完）；续传读不到长度算没核过，整份写读不到不算错
+                got = (dev.head(rel, 0) or (None,))[0]
+                if (got != size) if off else (got is not None and got != size):
+                    raise Fail(f"传完后机上 {w[0]} 长度 {got} 字节，应为 {size} 字节")
         except Fail as e:
             if dev.nospc(): raise Fail(f"测试设备空间不足（推 {w[0]} 时 POSIX 28）")
             again = "接着已传的部分续传" if w[0] == "game.img" else "从头重传"
