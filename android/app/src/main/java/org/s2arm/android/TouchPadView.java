@@ -194,8 +194,16 @@ final class TouchPadView extends View {
         if (!controlsVisible) return;
         for (TouchPad.Control c : pad.controls()) {
             fill.setColor(c.pressed ? 0x66FFFFFF : 0x26FFFFFF);
-            canvas.drawCircle(c.x, c.y, c.radius, fill);
-            canvas.drawCircle(c.x, c.y, c.radius, ring);
+            if (c.kind == TouchPad.BUTTON) {
+                // F01 key frame; a round key (corner == half side) draws the same disc as before.
+                canvas.drawRoundRect(c.x - c.halfWidth, c.y - c.halfHeight, c.x + c.halfWidth, c.y + c.halfHeight,
+                        c.corner, c.corner, fill);
+                canvas.drawRoundRect(c.x - c.halfWidth, c.y - c.halfHeight, c.x + c.halfWidth, c.y + c.halfHeight,
+                        c.corner, c.corner, ring);
+            } else {
+                canvas.drawCircle(c.x, c.y, c.radius, fill);
+                canvas.drawCircle(c.x, c.y, c.radius, ring);
+            }
             if (c.kind == TouchPad.STICK) {
                 fill.setColor(c.pressed ? 0xAAFFFFFF : 0x55FFFFFF);
                 canvas.drawCircle(c.x + c.knobX * c.radius, c.y + c.knobY * c.radius, c.radius * 0.45f, fill);
@@ -207,7 +215,7 @@ final class TouchPadView extends View {
                 canvas.drawText("◀", c.x - a, c.y + text.getTextSize() / 3, text);
                 canvas.drawText("▶", c.x + a, c.y + text.getTextSize() / 3, text);
             } else {
-                text.setTextSize(c.radius * 0.8f);
+                text.setTextSize(Math.min(c.halfWidth, c.halfHeight) * 0.8f);
                 canvas.drawText(c.label, c.x, c.y + text.getTextSize() / 3, text);
             }
         }
