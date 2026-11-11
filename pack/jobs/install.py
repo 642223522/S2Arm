@@ -261,7 +261,7 @@ S_MANY_NETWORK = "同一网络上有多台配对过的 iPhone / iPad：用数据
 # 装到哪台由玩家选、作业照办，不替玩家换一台（维护者 11-11：续签时玩家选的 iPhone 拔了线，旁边同网的 iPad 被装上了）
 S_DEVICE_REQUIRED = "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。"
 S_OFFLINE = "{0}「{1}」现在不在线：插上数据线，或让它和这台电脑连同一个 Wi-Fi 并解锁，再试一次。"
-S_NOT_PAIRED = "没找到要装的那台设备（{0}）：插上数据线并解锁，在设备上点「信任」。"
+S_NOT_PAIRED = "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。"
 S_TRUST = "在 iPhone 上点「信任」，再输入手机的锁屏密码。"
 S_DEV_MODE = "在 iPhone 上打开「设置 → 隐私与安全性 → 开发者模式」，按提示重启手机；重启后解锁，这里会自动打勾。"
 S_TUNNEL = "和手机建立开发连接失败：解锁手机后再试；走无线的话换成数据线。"
@@ -288,6 +288,11 @@ def _with_raw(sentence, raw):
     return sentence + ("\n" + tail[-1] if tail else "")
 
 
+def device_hint(want):
+    """上屏时怎么称呼玩家指定的那台：设备名照写；设备号只写末尾 6 位——整串会被诊断脱敏换成 [DEVICE_ID] 占位、玩家看不懂（11-11 真机验收测出）"""
+    return f"编号末尾 {want[-6:]}" if re.fullmatch(r"[0-9A-Fa-f-]{20,}", want) else f"「{want}」"
+
+
 def device_kind(d):
     """devicectl 设备 → 「iPad」或「iPhone」（文案里写实际的设备类型，不写死 iPhone）"""
     h = d.get("hardwareProperties", {})
@@ -310,7 +315,7 @@ def _pick_device(devices, want):
         known = [d for d in phones if named(d)]
         if known:
             return None, S_OFFLINE.replace("{0}", device_kind(known[0])).replace("{1}", (known[0].get("deviceProperties", {}).get("name") or "").strip())
-        return None, S_NOT_PAIRED.replace("{0}", want)
+        return None, S_NOT_PAIRED.replace("{0}", device_hint(want))
     wired = [d for d in live if _link(d).get("transportType") == "wired"]
     if len(wired) > 1:
         return None, S_MANY_WIRED
