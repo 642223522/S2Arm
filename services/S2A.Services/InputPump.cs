@@ -143,15 +143,22 @@ namespace S2A.Services
                 PlayerIndex second = _pads > 1 ? (player == PlayerIndex.Player8 ? PlayerIndex.Player1 : player + 1) : PlayerIndex.Unknown;
                 if (_pads > 1)
                 {
-                    // 多手柄：一次配满 n 格（Mac 前端按槽位各喂一只，见 macos/front_mac.m 的 s2a_vpad_read_pad）
+                    // 多手柄：一次配满 n 格（Mac 前端按槽位各喂一只，见 macos/front_mac.m 的 s2a_vpad_read_pad）。
+                    //   游戏同时收左、右单只 Joy-Con（派对类横握多人）而主手柄是单只：各格左右交替（一号右只、二号左只……），
+                    //   不配成同一种——同种两格时另一只的六轴会被盖掉（#592 lucaAce1024 实机）
+                    ControllerType styles = device.Hid.Npads.SupportedStyleSets;
+                    bool alternate = (type == ControllerType.JoyconLeft || type == ControllerType.JoyconRight)
+                                     && (styles & ControllerType.JoyconLeft) != 0 && (styles & ControllerType.JoyconRight) != 0;
+                    if (alternate) type = ControllerType.JoyconRight;
                     var many = new ControllerConfig[_pads];
                     PlayerIndex next = player;
                     for (int i = 0; i < _pads; i++)
                     {
-                        many[i] = new ControllerConfig { Player = next, Type = type };
+                        many[i] = new ControllerConfig { Player = next, Type = alternate && i % 2 == 1 ? ControllerType.JoyconLeft : type };
                         next = next == PlayerIndex.Player8 ? PlayerIndex.Player1 : next + 1;
                     }
                     device.Hid.Npads.Configure(many);
+                    if (alternate) Console.Error.WriteLine($"S2A 虚拟手柄：左右单只交替配 {_pads} 格（一号右只、二号左只）");
                 }
                 else
                     device.Hid.Npads.Configure(new ControllerConfig { Player = player, Type = type });
@@ -491,10 +498,21 @@ namespace S2A.Services
             if ((b & ControllerKeys.X) != 0) f |= right ? ControllerKeys.Y : ControllerKeys.DpadRight;
             if ((b & ControllerKeys.Y) != 0) f |= right ? ControllerKeys.B : ControllerKeys.DpadUp;
             input.Buttons = (b & ~Face) | f;
-            // 横握后的摇杆方向 (x, y) → 物理：右只顺时针转了 90°，物理 = (−y, x)；左只逆时针，物理 = (y, −x)
-            var s = input.LStick; int x = s.Dx, y = s.Dy;
-            (s.Dx, s.Dy) = right ? (-y, x) : (y, -x);
-            input.LStick = s;
+            // 横握后的摇杆方向 (x, y) → 物理：右只顺时针转了 90°，物理 = (−y, x)；左只逆时针，物理 = (y, −x)。
+            //   右只的物理摇杆是右摇杆（游戏读 AnalogStickR）：触屏 / 自动玩家写在左摇杆槽的，迁到右摇杆再转（#592 lucaAce1024 实机）
+            if (right)
+            {
+                if (input.RStick.Dx == 0 && input.RStick.Dy == 0 && (input.LStick.Dx != 0 || input.LStick.Dy != 0)) { input.RStick = input.LStick; input.LStick = default; }
+                var r = input.RStick; int rx = r.Dx, ry = r.Dy;
+                (r.Dx, r.Dy) = (-ry, rx);
+                input.RStick = r;
+            }
+            else
+            {
+                var s = input.LStick; int x = s.Dx, y = s.Dy;
+                (s.Dx, s.Dy) = (y, -x);
+                input.LStick = s;
+            }
         }
 
         // 摇杆诊断（S2A_TRACE_STICKS=1）：给入的摇杆一变就打一行，并从共享内存（游戏读的就是这块）回读当前样式与掌机 / 全键两路最新一条，两头对一下。
