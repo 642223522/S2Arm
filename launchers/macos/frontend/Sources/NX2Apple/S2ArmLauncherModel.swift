@@ -48,7 +48,7 @@ struct ExportIncomplete: Error {}
 
 /// 出包页底栏「为什么还不能出包」。
 enum ExportBlocker: Equatable {
-    case noPlatform, game(String), keys, checking, environment, busy
+    case noPlatform, game(String), keys, busy
     /// 这款已在出包或排队（同一款再点一次 / 控制口重发）：原先静默当成功、什么也不做，控制口回 ok 却没建任务
     case alreadyQueued
 }
@@ -268,6 +268,11 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     // ---- environment ----
 
+    /// 作业层「这台 Mac 缺东西」的错误码（pack/jobs/errors.py RECOVERY）：失败行据此给环境检查页入口（剃刀 M4）
+    static let environmentCodes: Set<String> = ["xcode_unavailable", "xcode_setup_required", "metal_unavailable", "ios_platform_missing",
+        "ios_platform_unregistered", "dotnet_unavailable", "dotnet_sdk_missing", "os_unsupported", "architecture_unsupported",
+        "engine_incomplete", "engine_toolchain_newer"]
+
     enum EnvironmentState { case unknown, ready, readyMac, missing }
     /// ready = 准备、启动、打 iPhone 包都齐；readyMac = Mac 上准备/启动齐了、但打 iPhone 包还缺（如 iOS 平台组件只挡 ipa）。
     var environmentState: EnvironmentState {
@@ -376,14 +381,6 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 这件事的前提没齐：打开环境检查页（还没查过就查一遍），返回 false。
-    private func environmentAllows(_ scopes: [String], ignoring: Set<String> = []) -> Bool {
-        if checks.isEmpty, environmentError != nil { return true }   // 环境检查本身失败不挡：作业自己校验并给真实原因
-        if scopes.allSatisfy({ provider.environment.ready(for: $0, ignoring: ignoring) }) { return true }
-        showEnvironment = true
-        if checks.isEmpty { checkEnvironment() }
-        return false
-    }
 
     // ---- import ----
 
@@ -526,23 +523,14 @@ public final class S2ArmLauncherModel: ObservableObject {
         do { try provider.settings.setExportTargets(exportChoice) } catch { choiceError = error.localizedDescription }
     }
 
-    /// 出这些平台要环境检查里哪几类前提（出 iPhone 包缺 .NET SDK 不挡：适配层先一键装好再接着出）。
-    private static func scopes(_ platforms: [ExportPlatform]) -> [String] {
-        platforms.contains(.ios) ? ["prepare", "ipa"] : ["prepare"]
-    }
-
-    /// 现在不能出包的原因（nil = 能出）。顺序同旧启动器导出页：没勾平台 → 游戏缺文件 → 缺 keys → 环境缺组件 → 有任务在跑。
+    /// 现在不能出包的原因（nil = 能出）。顺序同旧启动器导出页：没勾平台 → 游戏缺文件 → 缺 keys → 有任务在跑。
+    ///   环境不挡（剃刀 M4）：前端的检查结果可能是旧的（玩家在外面修好 Xcode 回来仍被挡），作业层开头自己校验环境、缺什么回真实原因
     func exportBlocker(_ game: GameSummary, platforms chosen: [ExportPlatform]? = nil) -> ExportBlocker? {
         let platforms = chosen ?? exportTargets
         if platforms.isEmpty { return .noPlatform }
         if !game.buildable { return .game(Self.requirementsText(game)) }
         if game.needsKeys, provider.library.keysReady == false { return .keys }
         if busy, session?.export == nil { return .busy }   // 别的出包在跑可以排队
-        if checks.isEmpty {
-            if checking { return .checking }
-            return environmentError != nil ? nil : .environment   // 环境检查本身失败不挡：作业自己校验并给真实原因
-        }
-        if !Self.scopes(platforms).allSatisfy({ provider.environment.ready(for: $0, ignoring: ["installDotnet"]) }) { return .environment }
         return nil
     }
 
@@ -650,35 +638,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         self.session = session
     }
 
-    /// 出包结果里的一份错误摘要（复制给别人看）：游戏、平台、原因、恢复码。
-    func errorSummary(_ platform: String, outcome: ExportRun.Outcome, game: String) -> String {
-        let g = games.first { $0.name == game }
-        let info = Bundle.main.infoDictionary ?? [:]
-        var chip = [CChar](repeating: 0, count: 128), size = 128
-        sysctlbyname("machdep.cpu.brand_string", &chip, &size, nil, 0)
-        let free = (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? 0
-        let bytes = { (n: Int64) in ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
-        let device = currentDeviceTarget.map { ($0["model"] ?? $0["name"] ?? "") as? String ?? "" } ?? ""
-        let log = (session?.log.suffix(30) ?? []).joined(separator: "\n").replacingOccurrences(of: NSHomeDirectory(), with: "~")
-        // 分段拼：一个大数组字面量里混可选链，编译器类型检查会超时
-        var lines: [String] = ["S2Arm 错误摘要", "", "【出错】", "平台：\(platform)", "原因：\(outcome.message)"]
-        if let code = outcome.code { lines.append("错误码：" + code) }
-        if !outcome.suggestion.isEmpty { lines.append("建议：" + outcome.suggestion) }
-        lines += ["", "【游戏】", "名称：\(game)"]
-        if let g {
-            let formats = Set(g.packages.map { $0.format.isEmpty ? "NSP/XCI" : $0.format }).sorted().joined(separator: ",")
-            lines += ["程序号：" + g.id, "版本：" + g.display]
-            lines.append("本体 / 更新 / DLC：\(g.version("base") ?? "-") / \(g.version("update") ?? "-") / \(g.dlcCount)")
-            lines += ["原包大小：" + bytes(g.totalBytes), "形态：" + formats]
-        }
-        let xcode = provider.client.environment.developerDir.replacingOccurrences(of: "/Contents/Developer", with: "")
-        lines += ["", "【电脑】", "S2Arm：\(info["CFBundleShortVersionString"] ?? "?") (\(info["S2ABuildID"] ?? "?"))"]
-        lines += ["系统：" + ProcessInfo.processInfo.operatingSystemVersionString, "芯片：" + String(cString: chip)]
-        lines += ["内存：" + bytes(Int64(ProcessInfo.processInfo.physicalMemory)), "可用空间：" + bytes(free), "Xcode：" + xcode]
-        if !device.isEmpty { lines.append("目标设备：" + device) }
-        if let fs = outcome.failureSummary, !fs.isEmpty { lines += ["", "【失败详情】", fs] }
-        lines += ["", "【最近日志】", log, "", "反馈：https://github.com/jhaizhou-ops/S2Arm/issues 或 X @happyjoejiang"]
-        return lines.joined(separator: "\n")
+    /// 后端错误摘要（作业层 report）拿不到时复制的内容（剃刀 M19）：原先前端另拼一份格式不同的完整摘要，反馈时分不清贴的是哪份；
+    ///   现在只留后端那一份，拿不到就明说，附界面上那句原因和错误码
+    static func reportUnavailable(_ message: String, code: String?) -> String {
+        Localizer().t("s2arm.report.unavailable") + "\n" + message + (code.map { " (\($0))" } ?? "")
     }
 
     /// 把最近一次失败作业的错误摘要放进剪贴板。正文由作业层生成（带任务号、阶段、错误码、真实日志）；没有作业记录才用 fallback。
@@ -783,8 +746,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     func play(_ game: GameSummary, uiLanguage: String?) {
         guard !busy, !cloudSyncing else { return }
         failAction(nil, game: nil)
-        // 查过且启动前提没齐才拦；还没查完不拦（launch 作业自己校验运行文件）
-        if !checks.isEmpty, !environmentAllows(["launch"]) { return }
+        // 不按前端的环境检查结果拦（剃刀 M4）：launch 作业自己校验运行文件与环境，缺什么回真实原因
         // 开了 iCloud 存档：先取回 / 处理冲突再开局（S2ArmLauncherModel+CloudSaves）；同步失败本地存档没动，照常开局、错误行写原因
         if cloudFolder != nil {
             cloudSyncing = true
