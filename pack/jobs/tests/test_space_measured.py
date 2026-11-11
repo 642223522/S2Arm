@@ -177,7 +177,8 @@ class SpaceMeasured(JobCase):
         self.assertEqual(self.need(10_000_000_000, windows=True), 11_000_000_000 * 2 + 15_000_000_000)
 
     def test_budget_splits_location_and_cache_volumes(self):
-        # P1-165：存放位置与工具缓存在两块盘时，各按自己那份需求和自己的余量判；期望手算：原件 16 GB → 存放位置 16 × 1.1 = 17.6 GB，工具缓存 15 GB（≥ 3 GB 档）
+        # P1-165：存放位置与工具缓存在两块盘时，各按自己那份需求和自己的余量判；期望手算：原件 16 GB → 存放位置 16 × 1.1 + 单一 IMG 16 = 33.6 GB
+        #   （打 iPhone 包写 game.img 在存放位置，11-11），工具缓存 15 GB（≥ 3 GB 档）
         c = self.context("ipa")
         loc, cache = Path(self.root) / "ext", Path(self.root) / "cache"
         class St:   # 两个假卷号
@@ -190,9 +191,9 @@ class SpaceMeasured(JobCase):
                 patch.object(library, "_volume", side_effect=lambda p: os.fspath(p)):
             vols = library.space_budget(c, self.game(16 * 10**9))["volumes"]
         self.assertEqual([(v["role"], v["needBytes"], v["freeBytes"], v["enough"]) for v in vols],
-                         [("library", 17_600_000_000, 20 * 10**9, True), ("cache", 15_000_000_000, 10 * 10**9, False)])
+                         [("library", 33_600_000_000, 20 * 10**9, False), ("cache", 15_000_000_000, 10 * 10**9, False)])
         # 同一块盘：合成一项，需求 = 两份之和（同原来）
-        self.assertEqual(self.budget(c, self.game(16 * 10**9))["needBytes"], 17_600_000_000 + 15_000_000_000)
+        self.assertEqual(self.budget(c, self.game(16 * 10**9))["needBytes"], 33_600_000_000 + 15_000_000_000)
 
     def test_direct_cache_follows_game_volume(self):
         # 11-10 网友：存放位置设到外接盘，系统盘仍被写满。直连缓存（含编译中的翻译中间产物）跟着游戏的存放位置走：
@@ -215,14 +216,27 @@ class SpaceMeasured(JobCase):
         c = self.context("ipa")
         self.ledger(("2026-11-07T10:00:00", GID, "ipa", "1", 16 * 10**9, 500 * 10**9, "旧账"))
         v = self.budget(c, self.game(16 * 10**9))
-        self.assertEqual((v["basis"], v["needBytes"]), ("rule", 17_600_000_000 + 15_000_000_000))
+        self.assertEqual((v["basis"], v["needBytes"]), ("rule", 33_600_000_000 + 15_000_000_000))   # 解包 17.6 + IMG 16 + 直连 15
 
     def test_rejection_names_need_and_free(self):
         with patch("shutil.disk_usage", return_value=DU(0, 0, 20 * 10**9)):
             with self.assertRaises(Failure) as e:
                 library.check_pack_space(self.context("ipa"), self.game(16 * 10**9))
         self.assertEqual(e.exception.code, "disk_full")
-        self.assertIn("要 33 GB", str(e.exception)); self.assertIn("只剩 20 GB", str(e.exception)); self.assertIn("「仍然继续」", str(e.exception))
+        self.assertIn("要 49 GB", str(e.exception));   # 16 × 1.1 + IMG 16 + 直连 15 = 48.6 → 49 GB
+        self.assertIn("只剩 20 GB", str(e.exception)); self.assertIn("「仍然继续」", str(e.exception))
+
+    def test_mac_build_has_no_image_and_ocarina_peak_is_covered(self):
+        # 单一 IMG 只在打 iPhone 包时写（Mac 打包不写）：同一款 Mac 打包少 IMG 那一份。
+        #   11-11 实测 0400486024DEC000（NUP，资源 26.27 GB）冷出 iPhone 包整次峰值 57.90 GiB（写 game.img 时）：预留须 ≥ 峰值且 ≤ 峰值 × 1.2。
+        #   手算：26.27 × 1.1 + IMG 26.27 + 直连 15 = 70.167 GB；峰值 57.90 GiB = 62.17 GB；比值 1.13
+        mac, ipa = self.budget(self.context("build"), self.game(16 * 10**9))["needBytes"], self.budget(self.context("ipa"), self.game(16 * 10**9))["needBytes"]
+        self.assertEqual(ipa - mac, 16 * 10**9)
+        need = library.pack_need_bytes([dict(size=25_622_267_860, contentBytes=26_270_000_000, sha256="b" * 64, format="nup")], windows=False, image=True)
+        self.assertEqual(need, 70_167_000_000)
+        peak = int(57.90 * 2**30)
+        self.assertGreaterEqual(need, peak)
+        self.assertLessEqual(need, peak * 1.2)
 
     def test_space_override_passes_with_warning(self):
         c = self.context("ipa", spaceOverride=True)

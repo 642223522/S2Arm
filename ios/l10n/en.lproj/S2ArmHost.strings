@@ -230,7 +230,6 @@
 "app.fpsCap.thermal" = "The phone is too hot (critical), so the game is temporarily back at its native frame rate. 60 FPS resumes automatically once it cools down.";
 "app.gpuStop.body" = "Swipe this app away in the app switcher and open the game again.";
 "app.gpuStop.title" = "Graphics error — stopped";
-"app.ladder.title" = "Graphics level";
 "app.library.broken.title" = "Game files are incomplete";
 "app.library.cantOpen" = "This game can’t be opened";
 "app.library.cantOpen.message" = "This game couldn’t be prepared to start. Swipe the app away in the app switcher and open it again; if it still fails, export diagnostics and send them to us.";
@@ -283,6 +282,7 @@
 "controller.resuming.hint" = "Restoring input from the connected controller. Tap to stop connecting";
 "controller.scanning" = "Searching, tap to cancel";
 "controller.turnOnBluetooth" = "Turn on Bluetooth and try again";
+"diag.fileWord" = "diag";
 "diag.error.bundleName" = "Couldn’t redact the bundle name, so no diagnostics bundle was exported";
 "diag.error.redact" = "Couldn’t redact or write the diagnostics, so no diagnostics bundle was exported";
 "diag.error.title" = "Diagnostics bundle not created";

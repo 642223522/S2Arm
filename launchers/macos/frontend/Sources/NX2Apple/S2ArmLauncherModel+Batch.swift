@@ -22,10 +22,10 @@ extension S2ArmLauncherModel {
     var batchItems: [[String: Any]] { (batchState?["batch"] as? [String: Any])?["items"] as? [[String: Any]] ?? [] }
     var batchSummary: [String: Any] { batchState?["summary"] as? [String: Any] ?? [:] }
     var batchPaused: String? { (batchState?["batch"] as? [String: Any])?["paused"] as? String }
-    /// 有批次、还有没出完的（取消的、失败的、暂停的都算没完）：出包页顶部提示「上次还有 N 款没出完」
+    /// 有批次、还有没出完的（还有平台没出的、取消的；暂停着时失败的也算，等「重试」）：库页顶部提示「上次还有 N 款没出完」（审计 P1-168）
     var batchUnfinished: Int {
         guard batchState != nil else { return 0 }
-        return (batchSummary["pending"] as? Int ?? 0) + (batchSummary["cancelled"] as? Int ?? 0)
+        return (batchSummary["pending"] as? Int ?? 0) + (batchSummary["cancelled"] as? Int ?? 0) + (batchPaused != nil ? batchSummary["failed"] as? Int ?? 0 : 0)
     }
 
     /// 放进来的几款列成清单（导入完调；从游戏库多选也走这里）：勾选默认跟着出包页上次勾的平台；缺东西的款写原因
@@ -50,25 +50,29 @@ extension S2ArmLauncherModel {
     }
 
     /// 点「出包（N 款）」：后端建批次，开始出第一款
-    func startBatch() {
+    func startBatch() { Task { _ = await createBatch() } }
+
+    /// 建批次并开始出第一款 → nil；没建成 → 原因（控制口 POST /batch 据此回 409，不先回成功，审计 P1-166）
+    func createBatch() async -> String? {
         let items = batchDraft.filter { $0.problem == nil && !$0.platforms.isEmpty }.map { ["gameId": $0.id, "name": $0.name, "platforms": $0.platforms] as [String: Any] }
-        guard !items.isEmpty, !busy,
-              let data = try? JSONSerialization.data(withJSONObject: ["items": items, "location": batchLocation.isEmpty ? NSNull() : batchLocation] as [String: Any]),
-              let json = String(data: data, encoding: .utf8) else { return }
-        Task {
-            guard let state = await provider.client.batch("create", ["--json", json]), state["batch"] != nil else { return }
-            batchState = state
-            batchDraft = []
-            batchRunning = true
-            advanceBatch()
-        }
+        guard !items.isEmpty else { return "没有能出的游戏" }
+        guard !busy else { return "正在出包" }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "location": batchLocation.isEmpty ? NSNull() : batchLocation] as [String: Any]),
+              let json = String(data: data, encoding: .utf8) else { return "批次清单组不出来" }
+        guard let state = await provider.client.batch("create", ["--json", json]) else { return "批次脚本起不来" }
+        guard state["batch"] != nil else { return state["error"] as? String ?? "建批次失败" }
+        batchState = state
+        batchDraft = []
+        batchRunning = true
+        advanceBatch()
+        return nil
     }
 
     /// 出下一款：后端说出谁就出谁（同一款还没出的平台一起连着出）；没有下一个 = 出完 / 暂停 / 取消了
     func advanceBatch() {
         guard batchRunning, !busy else { return }
         guard let next = batchState?["next"] as? [String: Any], let gid = next["gameId"] as? String,
-              let item = batchItems.first(where: { $0["gameId"] as? String == gid }) else { batchRunning = false; return }
+              let item = batchItems.first(where: { $0["gameId"] as? String == gid }) else { batchRunning = false; batchFinished(); return }
         let results = item["results"] as? [String: [String: Any]] ?? [:]
         let platforms = (item["platforms"] as? [String] ?? []).filter { results[$0]?["state"] as? String == "pending" }.compactMap(Self.exportPlatform)
         guard let game = games.first(where: { $0.id == gid }), !platforms.isEmpty else {

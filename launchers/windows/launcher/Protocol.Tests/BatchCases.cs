@@ -32,7 +32,7 @@ public static class BatchCases
  {"gameId":"0100BBBB00000000","name":"Beta","platforms":["iphone","mac"],"results":{"iphone":{"state":"failed","message":"磁盘空间不足","code":"disk_full"},"mac":{"state":"pending"}}},
  {"gameId":"0100CCCC00000000","name":"Gamma","platforms":["iphone"],"results":{"iphone":{"state":"pending","interrupted":true}}}]},
  "next":null,
- "summary":{"total":3,"completed":1,"failed":1,"cancelled":0,"pending":1,"done":false}}
+ "summary":{"total":3,"completed":1,"failed":0,"cancelled":0,"pending":2,"done":false}}
 """;
         var state = BatchClient.Read(Json(show)).State!;
         check(state.Items.Count == 3 && state.Location == "D:\\S2Arm Games" && state.Paused == "disk_full", "batch: items, location, paused");
@@ -40,8 +40,13 @@ public static class BatchCases
         var beta = state.Items[1].Result("iphone");
         check(beta.State == "failed" && beta.Code == "disk_full" && beta.Message == "磁盘空间不足" && state.Items[1].Any("failed"), "batch: failure with code and message");
         check(state.Items[2].Result("iphone").Interrupted && !state.Items[1].Result("mac").Interrupted, "batch: interrupted only where recover marked it");
-        check(state.Summary is { Total: 3, Completed: 1, Failed: 1, Cancelled: 0, Pending: 1, Done: false }, "batch: summary counts");
-        check(state.Unfinished == 1, "batch: unfinished = pending 1 + cancelled 0 (failed goes to retry)");
+        check(state.Summary is { Total: 3, Completed: 1, Failed: 0, Cancelled: 0, Pending: 2, Done: false }, "batch: summary counts (B still has mac pending)");
+        check(state.Unfinished == 2, "batch: unfinished = pending 2 + cancelled 0");
+        // 暂停着时失败的也算没出完（等「重试」，审计 P1-168）；没暂停时失败的不算
+        var pausedFailed = BatchClient.Read(Json(show.Replace("\"failed\":0,\"cancelled\":0,\"pending\":2", "\"failed\":1,\"cancelled\":0,\"pending\":1"))).State!;
+        check(pausedFailed.Unfinished == 2, "batch: paused counts failed as unfinished");
+        var notPaused = BatchClient.Read(Json(show.Replace("\"paused\":\"disk_full\"", "\"paused\":null").Replace("\"failed\":0,\"cancelled\":0,\"pending\":2", "\"failed\":1,\"cancelled\":0,\"pending\":1"))).State!;
+        check(notPaused.Unfinished == 1, "batch: not paused, failed goes to retry");
         check(state.Step(["iphone"]) is null, "batch: paused (next null) has no step");
 
         // 暂停解除后 next 指向 B 的 Mac；Windows 只出 iPhone → 这一步没有能出的，Mac 归「出不了」

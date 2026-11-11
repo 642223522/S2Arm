@@ -55,7 +55,7 @@ enum ExportBlocker: Equatable {
 
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。同一时刻只有一个（同旧启动器「执行位」互斥）。
 struct JobSession: Equatable {
-    enum Kind: String { case play, export, prepare, install, installRemove, installRestore, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
+    enum Kind: String { case play, export, prepare, install, installRemove, installRestore, installUpdate, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
                         keys, delete, diagnostics, moveGame, clearCache }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
@@ -138,6 +138,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var checking = false
     @Published private(set) var environmentError: String?
     @Published var showEnvironment = false
+    /// 装到 iPhone 的方式（环境检查「装到 iPhone 的方式」卡，installMode 作业）与壳比本版旧的手机（catalog phoneUpdates，库页右上角按钮）
+    @Published var installMode = InstallModeInfo()
+    @Published var phoneUpdates: [PhoneUpdate] = []
+    /// 点了更新、有要重新出包的款：三选一弹框；选「更新并重新出这几款」时更新完把它们排进批量出包（只出 iPhone），批次出完逐款装上
+    @Published var updateConfirm: PhoneUpdate?
+    var updateRepack: [String] = []
+    var batchInstallAfter = false
+    var installAfterQueue: [String] = []
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
     @Published var updateState: UpdateState = .idle
     @Published var notice: [String: Any]?   // 顶部公告条（S2ArmLauncherModel+Update.swift loadNotice）；nil = 不显示
@@ -248,6 +256,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             switch result {
             case .success(let games):
                 self.games = games; self.libraryError = nil; self.showingSnapshot = false
+                self.phoneUpdates = self.provider.library.phoneUpdates
                 if self.selectedID == nil || !games.contains(where: { $0.id == self.selectedID }) { self.selectedID = games.first?.id }
             case .failure(let error):
                 self.libraryError = error.message
@@ -566,6 +575,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             for (k, platform) in platforms.enumerated() {
                 guard let self, let target = platform.target else { return nil }
                 try Task.checkCancellation()
+                if self.batchRunning, self.batchPaused != nil { break }   // 批量出包磁盘满暂停了：同一款的下一个平台也不开（审计 P1-164，暂停只由「重试」解除）
                 await self.batchMark(game.id, platform, state: "running")
                 self.beginPlatform(k)
                 do {
@@ -715,8 +725,16 @@ public final class S2ArmLauncherModel: ObservableObject {
     struct DropConfirm { let kind: JobSession.Kind; let game: GameSummary; let message: String }
     @Published var dropConfirm: DropConfirm?
 
+    /// 环境检查「装到 iPhone 的方式」里手填的 Xcode 团队号（10 位）：一键装、不用证书时每次装机都带上（原先只在装机页点「用这个团队」那一次带）
+    static let teamCodeKey = "s2arm.enteredTeamCodeId"
+    static var enteredTeam: String? {
+        let t = (UserDefaults.standard.string(forKey: teamCodeKey) ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+        return t.count == 10 ? t : nil
+    }
+
     func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, ask: Bool = true) {
         guard !busy, installAllowed(game.id) else { return }
+        let teamId = teamId ?? Self.enteredTeam
         failAction(nil, game: nil)
         // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
         let device = device ?? (connectedDevices.count > 1 ? selectedDevice?["id"] as? String : nil)
@@ -783,7 +801,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     private func startPlay(_ game: GameSummary, uiLanguage: String?) {
         let relaySocket = controller.relaySocketForGame()
         var controllerArguments: [String: String] = [
-            "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",
+            "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
         controllerGameStarted = false
@@ -999,12 +1017,12 @@ public final class S2ArmLauncherModel: ObservableObject {
     // ---- jobs ----
 
     /// 起一个作业：body 交适配层（事件进 sink），回来的路径做完后可在访达里显示。可停（stop = 取消这个 Task，适配层请作业停）。
-    private func start(_ kind: JobSession.Kind, game: GameSummary?, name: String,
+    func start(_ kind: JobSession.Kind, game: GameSummary?, name: String,
                        _ body: @escaping @MainActor (EventSink) async throws -> String?) {
         start(JobSession(kind: kind, gameID: game?.id, name: name), body)
     }
 
-    private func start(_ fresh: JobSession, _ body: @escaping @MainActor (EventSink) async throws -> String?) {
+    func start(_ fresh: JobSession, _ body: @escaping @MainActor (EventSink) async throws -> String?) {
         session = fresh
         if Self.phoneKinds.contains(fresh.kind) { phoneResult = nil }
         let sink = EventSink { [weak self] event in self?.ingest(event) }
@@ -1079,6 +1097,8 @@ public final class S2ArmLauncherModel: ObservableObject {
             inlineFailure = (state == .failed || state == .interrupted) ? (session.kind, session.message) : nil
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
+        if session.kind == .installUpdate { phoneUpdateEnded(completed: state == .completed) }
+        if session.kind == .install, !installAfterQueue.isEmpty { Task { installNextQueued() } }
         if Self.phoneKinds.contains(session.kind), let id = session.gameID { phoneResult = (id, session.name, state == .completed) }
         // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
         if session.kind == .play, let id = session.gameID, cloudFolder != nil {

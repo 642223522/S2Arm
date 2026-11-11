@@ -32,7 +32,10 @@ public sealed partial class EnvironmentWindow
     {
         CapturePaths();
         if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
-        page = destination; Render();
+        page = destination;
+        // 环境检查页每次打开读一次装到 iPhone 的方式和开发者证书（InstallModePage.cs / DevCertPage.cs）
+        if (destination == "settings") { _ = RefreshInstallModeAsync(); if (!devCertLoading) _ = RefreshDevCertAsync(); }
+        Render();
     }
 
     /// <summary>
@@ -387,7 +390,7 @@ public sealed partial class EnvironmentWindow
     private async Task ExportDiagnosticsAsync()
     {
         if (connectedFolder is null || libraryId is null || libraryBusy) return;
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = T("game.diag"), SuggestedFileName = "S2Arm-diagnostics.zip", DefaultExtension = "zip" });
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = T("game.diag"), SuggestedFileName = $"S2Arm-{(language == "en" ? "diag" : "诊断")}-{DateTime.Now:MMdd-HHmm}.zip", DefaultExtension = "zip" });
         if (file?.TryGetLocalPath() is not { } output) return;
         libraryBusy = true; librarySummary = "library.working"; Render();
         try

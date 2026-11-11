@@ -104,8 +104,14 @@ namespace S2A.Services
 
             string romfs = Path.Combine(programDir, "romfs");
 
-            IStorage imageStorage = RomFsIndex.OpenImage(programDir);
-            RomFsIndex.Source source = RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            if (imgV1 != null)
+            {
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, imgV1);
+                Native.Mark("服务：RomFS 单一 IMG\0"u8);
+            }
+            IStorage imageStorage = imgV1 != null ? null : RomFsIndex.OpenImage(programDir);
+            RomFsIndex.Source source = imgV1 != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
 
             if (source == RomFsIndex.Source.Image)
             {
@@ -134,7 +140,7 @@ namespace S2A.Services
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, image);   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }
-            else
+            else if (imgV1 == null)
             {
                 Red.Report("游戏数据缺 romfs/", programDir);
             }

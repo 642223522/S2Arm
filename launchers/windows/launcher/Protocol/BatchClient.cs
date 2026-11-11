@@ -32,8 +32,8 @@ public sealed record BatchState(IReadOnlyList<BatchItem> Items, string? Location
     public static readonly string[] Platforms = ["iphone", "mac"];
     public static readonly string[] States = ["pending", "running", "completed", "failed", "cancelled"];
 
-    /// <summary>还没出完的款数（没开始的 + 取消的）：顶栏「上次还有 N 款没出完」。失败的走「重试」，不算在这里（同 Mac）。</summary>
-    public int Unfinished => Summary.Pending + Summary.Cancelled;
+    /// <summary>还没出完的款数（还有平台没出的 + 取消的；暂停着时失败的也算，等「重试」）：顶栏「上次还有 N 款没出完」（同 Mac，审计 P1-168）。</summary>
+    public int Unfinished => Summary.Pending + Summary.Cancelled + (Paused is not null ? Summary.Failed : 0);
 
     /// <summary>{} → null（没有批次）；形状不对抛 FormatException。</summary>
     public static BatchState? Parse(JsonElement root)

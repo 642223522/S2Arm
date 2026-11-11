@@ -53,7 +53,7 @@ IDENT = {   # 文件 → {字面量（源码里的原样，含转义）: 不改�
 }
 # ⑥ C 字面量：只进日志 / 诊断的函数（按文件登记，理由写清楚去向）
 C_SINKS = {
-    'ios/app.m': {'s2a_ios_suspend': '前后台切换原因串，只进 host.log「iOS 壳：<原因> → …」与 GPU 闸门日志', 'snprintf': '内存分区 / 客体窗口账的日志行拼接（mem_split_line 与 10 秒心跳行），只进 host.log',
+    'ios/app.m': {'s2a_ios_suspend_enqueue': '前后台切换原因串，只进 host.log「iOS 壳：<原因> → …」与 GPU 闸门日志', 'snprintf': '内存分区 / 客体窗口账的日志行拼接（mem_split_line 与 10 秒心跳行），只进 host.log',
                   'mem_split_line': '内存跳变日志行的标签', 's2a_dump_threads': '线程现场转储的原因，只进 host.log', 's2a_dguard_evidence': '直连安全网失败记录的原因，只进诊断信息（不上屏）',
                   's2a_host_shutdown': '收局原因，只进 host.log', 's2a_boot_rebase': '起局计时日志', 'BOOT_MARK': '起局计时日志', 'die': 'LOG("FATAL …") 后退出（runtime/src/native.h）'},
     'ios/controller.m': {'system_fail_on_queue': '系统手柄震动失败的步骤名，只进日志「系统手柄震动：…」'},
@@ -66,9 +66,9 @@ IDENT_C = {
     'ios/iml_probe.m': {s: '地址档名，只拼进 [IML] 首启复核日志行' for s in ('地址上限读不到', '大地址档', '小地址档')},
 }
 UI_TEXT_H = 'runtime/include/s2a_ui_text.h'
-UI_USERS = ['runtime/src/pack_apply.c', 'runtime/src/qladder_host.c', 'runtime/src/ap_host.c', 'runtime/src/hud.c']
+UI_USERS = ['runtime/src/pack_apply.c', 'runtime/src/ap_host.c', 'runtime/src/hud.c']
 UI_STRONG = {'ios/app.m': 's2a_l10n_zh()', 'macos/front_mac.m': 'NSLocale.preferredLanguages'}   # iOS 按 App 本地化；Mac 宿主不带 .lproj，按系统首选语言
-DISPLAY_CALLS = {'runtime/src/pack_apply.c': {'s2a_ios_show_notice', 's2a_ios_show_pack_help'}, 'runtime/src/qladder_host.c': {'s2a_ios_ladder_note'}}
+DISPLAY_CALLS = {'runtime/src/pack_apply.c': {'s2a_ios_show_notice', 's2a_ios_show_pack_help'}}
 DISPLAY_FUNCS = {'runtime/src/pack_apply.c': ['s2a_pack_help_detail', 'help_title', 'gate_show'], 'runtime/src/ap_host.c': ['stall_note'], 'runtime/src/hud.c': ['s2a_hud_brief']}
 SAVE_CS = 'services/S2A.Services'
 SHELL_DIR = 'shell/Sources/S2ArmShellHost'

@@ -113,7 +113,7 @@ struct JobSessionView: View {
                              p.rateText.isEmpty ? nil : p.rateText,
                              p.clock(at: timeline.date, left: loc.t("prog.eta"))]
                 Text(parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.manrope(13, .medium)).monospacedDigit().foregroundStyle(.secondary)
+                    .font(.manrope(13, .medium)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)   // 每秒变：不换行，下面不跟着跳
             }
         }
         .frame(maxWidth: 560, alignment: .leading)

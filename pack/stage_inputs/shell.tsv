@@ -85,6 +85,7 @@
 入	graphics/nvn/host
 入	graphics/nvn/host_adapt.m
 入	graphics/nvn/lib_pack.inc
+入	graphics/nvn/lib_pack_core.inc
 入	graphics/nvn/texture_extent.inc
 入	graphics/nvn/third_party/bcdec/bcdec.h
 入	graphics/nvn/third_party/vulkan-headers
@@ -220,4 +221,5 @@
 不	tests/rewriter_api_test.c
 不	tests/sync_contract_litmus.c
 不	tests/sync_publish_litmus.c
+不	tools/dotnet_lock.c
 不	tools/pipeline_timing.m

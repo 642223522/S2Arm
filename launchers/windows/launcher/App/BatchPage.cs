@@ -34,7 +34,6 @@ public sealed partial class EnvironmentWindow
     private string batchError = "";
     /// <summary>控制口 POST /batch 指定的每款平台（AI 操作同 Mac：可以要 Mac，这台出不了的记失败「这台电脑出不了这个平台的包」）；界面清单为 null，按勾选出 iPhone</summary>
     private Dictionary<string, string[]>? batchControlPlatforms;
-    private ScrollViewer? batchScroller;
 
     /// <summary>放进来的几款列成清单（导入完多于 1 款时调）：iPhone 默认跟着出包页的勾选；缺东西的款写原因。正在出一批时只回到清单页</summary>
     private void OpenBatch(IReadOnlyList<string> ids, IReadOnlyList<ImportOutcome.Unrecognized> unrecognized)
@@ -76,19 +75,9 @@ public sealed partial class EnvironmentWindow
         if (batchError.Length > 0) content.Children.Add(new TextBlock { Text = B(batchError), FontSize = 13, Foreground = Brush.Parse("#E55"), TextWrapping = TextWrapping.Wrap });
         if (batchState is null) RenderBatchDraft(content); else RenderBatchProgress(content, batchState);
 
-        var dock = new DockPanel { LastChildFill = true };
-        if (PhonePill() is { } pill)
-        {
-            var top = new Border { Padding = new Thickness(32, 14, 32, 0), Child = pill, HorizontalAlignment = HorizontalAlignment.Right };
-            DockPanel.SetDock(top, Dock.Top); dock.Children.Add(top);
-        }
-        var bar = BatchBottomBar();
-        DockPanel.SetDock(bar, Dock.Bottom); dock.Children.Add(bar);
-        var offset = batchScroller?.Offset ?? default;
-        batchScroller = new ScrollViewer { Content = content, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        if (offset != default) { var scroller = batchScroller; Dispatcher.UIThread.Post(() => scroller.Offset = offset, DispatcherPriority.Loaded); }
-        dock.Children.Add(batchScroller);
-        Content = dock;
+        Control? top = PhonePill() is null ? null
+            : new Border { Padding = new Thickness(32, 14, 32, 0), Child = LiveSlot(PhonePill), HorizontalAlignment = HorizontalAlignment.Right };
+        ShowPage("batch", content, top, BatchBottomBar());
         return true;
     }
 
@@ -165,7 +154,11 @@ public sealed partial class EnvironmentWindow
             var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
             var name = Label(item.Name, 15); name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis;
             text.Children.Add(name);
-            foreach (var p in item.Platforms) text.Children.Add(BatchPlatformLine(item.GameId, p, item.Result(p)));
+            foreach (var p in item.Platforms)   // 正在出的那行带当前阶段：活格子，计时器每秒只刷新它
+            {
+                var (gameId, platform, result) = (item.GameId, p, item.Result(p));
+                text.Children.Add(result.State == "running" ? LiveSlot(() => BatchPlatformLine(gameId, platform, result)) : BatchPlatformLine(gameId, platform, result));
+            }
             Grid.SetColumn(text, 1); line.Children.Add(text);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
             if (item.Any("failed"))
@@ -228,8 +221,9 @@ public sealed partial class EnvironmentWindow
         }
         else
         {
-            if (batchState.Summary.Failed > 0) Put(Action("batch.retry_failed", () => _ = BatchCommandAsync("retry"), !PackBusy), 0);
-            if (batchState.Summary.Cancelled > 0 || batchState.Summary.Pending > 0)
+            // 暂停着（磁盘满）只给「重试」：它解除暂停、重出失败的那个平台；「继续」不解除暂停（审计 P1-164，同 Mac）
+            if (batchState.Summary.Failed > 0 || batchState.Paused is not null) Put(Action("batch.retry_failed", () => _ = BatchCommandAsync("retry"), !PackBusy), 0);
+            if (batchState.Paused is null && (batchState.Summary.Cancelled > 0 || batchState.Summary.Pending > 0))
             {
                 var resume = Action("batch.resume", () => _ = BatchCommandAsync("resume"), !PackBusy);
                 AutomationId(resume, "batch.resume");
@@ -272,9 +266,11 @@ public sealed partial class EnvironmentWindow
         BatchRunAsync("mark", BatchClient.MarkArguments(gameId, platform, state, message, code, output));
 
     /// <summary>点「出包（N 款）」：后端建批次（一批共用出包页选的存放位置），开始出第一款</summary>
-    private async Task StartBatchAsync()
+    /// <param name="installAfter">「更新并重新出这几款」排的批：整批出完逐款装到 iPhone（InstallModePage.cs BatchFinishedAsync）</param>
+    private async Task StartBatchAsync(bool installAfter = false)
     {
         if (batchRunning || PackBusy) return;
+        batchInstallAfter = installAfter;   // 每批自己定：界面 / 控制口建的批不接着装
         var control = batchControlPlatforms; batchControlPlatforms = null;
         var entries = control is null
             ? batchDraft.Where(r => r.Problem is null && r.Iphone).Select(r => new BatchClient.Entry(r.Id, r.Name, ["iphone"])).ToList()
@@ -295,7 +291,7 @@ public sealed partial class EnvironmentWindow
             if (batchStopping) { await StopBatchAsync(); return; }
             if (packRunning) return;
             if (libraryOperation is { IsCompleted: false } reload) { await reload; continue; }   // 上一款出好后重读游戏库：读完再出下一款
-            if (batchState?.Step(BatchSupported) is not { } run) { batchRunning = false; Render(); return; }
+            if (batchState?.Step(BatchSupported) is not { } run) { batchRunning = false; Render(); _ = BatchFinishedAsync(); return; }
             var gid = run.Item.GameId;
             var marked = true;
             foreach (var p in run.Unsupported) marked &= await BatchMarkAsync(gid, p, "failed", "这台电脑出不了这个平台的包");

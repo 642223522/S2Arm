@@ -154,6 +154,12 @@ if(ANDROID)
         endforeach()
         s2a_android_game_sources(game_sources)
         target_sources(s2arm_android PRIVATE ${game_sources})
+        # 游戏 sdk 里的 SDK 主版本 / 自带驱动报的 NVN API 版本（与苹果宿主共用 nvn_drvinfo.inc）：
+        # 要装载器的模块表（game 模式才有）和共用前端（VK 引擎才编）都在，所以放在这里而不是前端源列表。
+        if(S2A_ANDROID_VK_ENGINE)
+            target_sources(s2arm_android PRIVATE native/nvn/nvn_drvinfo_android.c)
+            set_source_files_properties(native/nvn/nvn_drvinfo_android.c PROPERTIES COMPILE_OPTIONS "-Wno-error")
+        endif()
         # Bionic exposes process_vm_readv (used by crash.c's safe frame read)
         # only with GNU feature declarations; Android minSdk 29 exceeds API 23.
         set_property(SOURCE "${S2A_ANDROID_RUNTIME_ROOT}/runtime/src/crash.c" APPEND PROPERTY COMPILE_DEFINITIONS _GNU_SOURCE)
@@ -176,7 +182,7 @@ if(ANDROID)
     # 必须在 -Wall -Wextra 之后再关：-Wextra 会把组里的告警重新打开。语义不变。
     target_compile_options(s2arm_android PRIVATE
         "$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-designated-field-initializers>")
-    target_link_libraries(s2arm_android PRIVATE s2arm_android_memory android log vulkan aaudio)
+    target_link_libraries(s2arm_android PRIVATE s2arm_android_memory android log vulkan aaudio mediandk)
     if(S2A_ANDROID_NATIVE_MODE STREQUAL "game")
         target_link_libraries(s2arm_android PRIVATE ${S2A_ANDROID_CODEC_LIBS})
     endif()
@@ -550,6 +556,13 @@ else()
     target_compile_options(direct_offline_library_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(direct_offline_library_test PRIVATE pthread)
     add_test(NAME android_direct_offline_library COMMAND direct_offline_library_test)
+    # #1434：LibPack（iOS 同容器）POSIX 段读器 + _b.json→s2a-direct-program-v1 适配。
+    add_executable(libpack_vk_test tests/libpack_vk_test.c
+        native/direct/libpack_vk.c native/direct/json.c native/direct/jv.c native/nvn/nvn_vk_program_result.c)
+    target_include_directories(libpack_vk_test PRIVATE native native/direct native/nvn ../runtime/include)
+    target_compile_definitions(libpack_vk_test PRIVATE _GNU_SOURCE)
+    target_compile_options(libpack_vk_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME android_libpack_vk COMMAND libpack_vk_test)
     # W2.6：编译 provider 的登记身份——同指针幂等、换指针拒绝、Activate 冻结、销毁解绑、表满不覆盖。
     add_executable(direct_compiler_bind_test tests/direct_compiler_bind_test.c native/direct/compiler_bind.c)
     target_include_directories(direct_compiler_bind_test PRIVATE native ../runtime/include)
@@ -593,13 +606,13 @@ else()
     # 与负控；原样链接生产 parser，不另写模型。
     # compute storage 地址来源解析（NVN / UBO_PTR / UBO_ADDRESS + 来源反例 + supportReads/c0Reads null）
     add_executable(direct_nvn_compute_storage_test tests/direct_nvn_compute_storage_test.c
-        native/nvn/nvn_vk_program_result.c native/direct/json.c)
+        native/nvn/nvn_vk_program_result.c native/direct/json.c native/direct/jv.c)
     target_include_directories(direct_nvn_compute_storage_test PRIVATE native native/direct native/nvn
         ../graphics/nvn/gfx/nvn)
     target_compile_options(direct_nvn_compute_storage_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_direct_nvn_compute_storage COMMAND direct_nvn_compute_storage_test)
     add_executable(direct_nvn_program_result_test tests/direct_nvn_program_result_test.c
-        native/nvn/nvn_vk_program_result.c native/direct/json.c)
+        native/nvn/nvn_vk_program_result.c native/direct/json.c native/direct/jv.c)
     target_include_directories(direct_nvn_program_result_test PRIVATE native native/direct native/nvn)
     target_compile_options(direct_nvn_program_result_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_direct_nvn_program_result COMMAND direct_nvn_program_result_test)
@@ -675,6 +688,11 @@ else()
         ../graphics/nvn/gfx/nvn ../graphics/nvn/third_party/vulkan-headers/include)
     target_compile_options(buffer_texture_plan_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_buffer_texture_plan COMMAND buffer_texture_plan_test)
+    # 游戏 sdk 模块里的 SDK 主版本 / 自带驱动 NVN API 版本在安卓上的强定义（与苹果共用 nvn_drvinfo.inc）。
+    add_executable(nvn_drvinfo_android_test tests/nvn_drvinfo_android_test.c native/nvn/nvn_drvinfo_android.c)
+    target_include_directories(nvn_drvinfo_android_test PRIVATE .. ../runtime/include)
+    target_compile_options(nvn_drvinfo_android_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME android_nvn_drvinfo COMMAND nvn_drvinfo_android_test)
     # F4.4：有界需求编译 worker（去重/单槽/pause/Stop/超时/重启）。
     add_executable(direct_compile_worker_test tests/direct_compile_worker_test.c native/direct/compile_worker.c)
     target_include_directories(direct_compile_worker_test PRIVATE native ../runtime/include)
@@ -721,6 +739,13 @@ else()
     target_compile_definitions(nvn_vk_swapchain_host_test PRIVATE VK_USE_PLATFORM_ANDROID_KHR=1)
     target_compile_options(nvn_vk_swapchain_host_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
     add_test(NAME android_nvn_vk_swapchain_host COMMAND nvn_vk_swapchain_host_test)
+    # AMediaCodec 解码边界（#44 第二刀）：假 codec 状态机喂编排出图，
+    # 验证开关门 / NV12 解交织 / 平面拷贝 / 裁剪 / 有界等待 / 失败粘性。
+    add_executable(mc_host_test tests/mc_host_test.c codecs/s2a_mc.c)
+    target_include_directories(mc_host_test PRIVATE tests/hostmc codecs)
+    target_compile_definitions(mc_host_test PRIVATE S2A_MC_TESTING=1)
+    target_compile_options(mc_host_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME android_mc_host COMMAND mc_host_test)
     # B2：display_timing 计量的宿主回归（扩展替身：支持/不支持/乱序回报/丢帧 UNKNOWN）。
     add_executable(nvn_vk_dt_test tests/nvn_vk_dt_test.c native/nvn/nvn_vk_display_timing.c)
     target_include_directories(nvn_vk_dt_test PRIVATE

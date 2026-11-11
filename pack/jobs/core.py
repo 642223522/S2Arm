@@ -131,8 +131,61 @@ class Cancelled(Exception):
 
 
 def system_encoding():
+    """真实的系统编码（中文 Windows cp936、西文 Windows cp1252）。不用 getpreferredencoding：主作业带 -X utf8，UTF-8 模式下它回 utf-8，
+    v0.2.7 因此跳过系统编码、把 GBK 写坏的索引当 cp1252 写成了乱码（中文 Windows 实机复现）。getencoding（3.11+）不受 UTF-8 模式影响"""
     import locale
-    return locale.getpreferredencoding(False)
+    get = getattr(locale, "getencoding", None)
+    return get() if get else locale.getpreferredencoding(False)
+
+
+def _norm(enc):
+    return enc.replace("-", "").replace("_", "").lower()
+
+
+def _undo_misheal(path, value):
+    """v0.2.7 写成乱码的索引改回来：<名>.cp1252.bak 在、真实系统编码不是 cp1252、备份按系统编码严格解得开 = 当时该按系统编码解却按 cp1252 解了。
+    同一份备份分别按 cp1252（当时的乱码）与系统编码（原文）解，逐串配对，现有内容里的乱码串按表改回（之后库里新加的不动）；
+    备份改名为 <名>.<系统编码>.bak，下次不再改"""
+    bak = path.with_name(path.name + ".cp1252.bak")
+    if not bak.exists():
+        return value
+    enc = system_encoding()
+    if _norm(enc) in ("cp1252", "utf8", "windows1252"):
+        return value
+    raw = bak.read_bytes()
+    try:
+        good, bad = json.loads(raw.decode(enc)), json.loads(raw.decode("cp1252"))
+    except (UnicodeDecodeError, ValueError, LookupError):
+        return value
+    pairs = {}
+    def pair(b, g):
+        if isinstance(b, str) and isinstance(g, str):
+            if b != g:
+                pairs[b] = g
+        elif isinstance(b, list) and isinstance(g, list) and len(b) == len(g):
+            for x, y in zip(b, g):
+                pair(x, y)
+        elif isinstance(b, dict) and isinstance(g, dict) and len(b) == len(g):
+            for (kb, vb), (kg, vg) in zip(b.items(), g.items()):
+                pair(kb, kg); pair(vb, vg)
+    pair(bad, good)
+    def fix(v):
+        if isinstance(v, str):
+            return pairs.get(v, v)
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        if isinstance(v, dict):
+            return {fix(k): fix(x) for k, x in v.items()}
+        return v
+    fixed = fix(value)
+    if fixed != value:
+        atomic(path, fixed)
+    keep = path.with_name(f"{path.name}.{enc}.bak")
+    if keep.exists():
+        bak.unlink()
+    else:
+        os.replace(bak, keep)
+    return fixed
 
 
 def read(path, default=None):
@@ -146,9 +199,9 @@ def read(path, default=None):
     except (FileNotFoundError, NotADirectoryError):   # NotADirectoryError：路径中间一级是文件（遍历到 .DS_Store 再读 .DS_Store/game.json，#343）＝没有
         return default
     try:
-        return json.loads(raw.decode("utf-8"))
+        return _undo_misheal(path, json.loads(raw.decode("utf-8")))
     except UnicodeDecodeError as first:
-        for enc in dict.fromkeys(e for e in (system_encoding(), "cp1252") if e and e.replace("-", "").lower() != "utf8"):
+        for enc in dict.fromkeys(e for e in (system_encoding(), "cp1252") if e and _norm(e) != "utf8"):
             try:
                 value = json.loads(raw.decode(enc))
             except (UnicodeDecodeError, ValueError, LookupError):
@@ -563,7 +616,7 @@ class Context:
         self.job["attempts"][stage] = int(self.job["attempts"].get(stage, 0)) + 1
         self.emit("stage", stage)
 
-    def stage_progress(self, path, pos):
+    def stage_progress(self, path, pos, final=False):
         """读进度文件 pos 之后新增的整行，发一次 progress；返回新的读到位置。
         出包时几个计数器交替写（刷新各阶段 7/10、直连库 2/6、编库 n/23502、通用翻译 n/45455…），只按最后一行发会来回跳（10-26 维护者：
         「进行中的环节能看到着色器总数和编译数量的实时变化最好」）：每个计数器各记「已完成 / 总数 / 起止时刻」，
@@ -582,14 +635,22 @@ class Context:
             return pos
         end = chunk.rfind(b"\n")
         if end < 0:
-            self.stage_activity()
+            if final:   # 收尾补读没有新行：批次活动已结束，收掉，不再发脉冲
+                activity.clear()
+                self.clear_stage_activity(previous)
+            else:
+                self.stage_activity()
             return pos
         seen = getattr(self, "_counters", None)
         if seen is None:
             seen = self._counters = {}
         last, fine = None, None
-        for line in chunk[:end].decode(errors="replace").split("\n"):
+        lines = chunk[:end].decode(errors="replace").split("\n")
+        for line in lines:
             activity.accept(line)
+        if final:   # 子进程树已收完时的补读：批次活动必然已结束，只发计数、不再发「还在编」的活动脉冲
+            activity.clear()
+        for line in lines:
             f = line.split("\t")
             if len(f) != 4 or not f[2].isdigit() or not f[3].isdigit() or int(f[3]) <= 0:
                 continue
@@ -977,12 +1038,16 @@ class Context:
                         self.signal_child(p, "KILL")
                         p.wait(timeout=5)
                     self.reap(p, out)
+                    if pf: ppos = self.stage_progress(pf, ppos, final=True)   # 收完进程组再补读一次：退出前写的最后几行也发出去（同下）
                     reader.join(timeout=5)
                     self.check()
                     self.last_rc = p.returncode
                     return self.last_log
                 # 工具退出了：先收它会话里的残留进程（还占着输出管道的也在内，否则读线程等不到结束、整个任务判「输出未关闭」），再等读线程
                 self.reap(p, out)
+                # 子进程树已收完、不会再写：补读一次进度。循环只在子进程活着时每秒读，退出前那一秒写的行原先发不出去，界面停在旧读数
+                #   （失败退出也读：错误页看得到停在哪一步）
+                if pf: ppos = self.stage_progress(pf, ppos, final=True)
                 reader.join(timeout=5)
                 if reader.is_alive():
                     raise Failure("子进程输出未关闭，任务未确认完成。")
@@ -1159,6 +1224,22 @@ def describe(private, task):
                 lastEvent=events[-1] if events else None, canResume=not terminal)
 
 
+def _scan_job_record(path):
+    """Missing journals are normal while queued; bad journals stay isolated."""
+    missing = object()
+    try:
+        if path.is_symlink():
+            return None, "linked_record"
+        record = read(path, missing)
+    except (OSError, ValueError) as error:
+        return None, type(error).__name__
+    if record is missing:
+        return None, None
+    if not isinstance(record, dict) or record.get("id") != path.stem:
+        return None, "invalid_record_identity"
+    return record, None
+
+
 # 任务记录保留（游戏库结构 P3 收紧；原规则「结束超过 14 天的清掉、最新 50 条总留着」让一台维护者机器 14 天攒到 45207 条——前端每次刷新都起
 # catalog / 空间统计等短作业，一天上千条，启动器启动时整目录读一遍、诊断包整目录打包都被拖慢）：
 #   - 总量上限 KEEP_TOTAL 条 + 时间上限 keep_days 天，取更严的：超出任一条就清。2000 条约是正常玩家半年的量、高频刷新下也够看最近一两天，
@@ -1178,12 +1259,12 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
     directory is left alone. `jobs` names the directory directly (layout.adopt_private_logs prunes the private fallback before moving it)."""
     jobs = Path(jobs) if jobs is not None else jobs_dir(private, library)
     if not jobs.is_dir():
-        return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
+        return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     by_task = {}
     try:
         listed = list(jobs.iterdir())
     except FileNotFoundError:   # 并发的作业刚把这个目录收走（layout.adopt_private_logs）
-        return dict(removed=[], kept=0, skippedRunning=0, bytes=0)
+        return dict(removed=[], kept=0, skippedRunning=0, bytes=0, invalidRecords=[])
     for path in listed:
         if path.is_symlink() or not path.is_file():
             continue
@@ -1196,16 +1277,16 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
         by_task.setdefault(task, []).append(path)
     cutoff = time.time() - float(keep_days) * 86400 if keep_days else None
 
-    def record(task):
-        try:
-            value = read(jobs / (task + ".json")) or {}
-        except (OSError, ValueError):
-            value = {}
-        return value if isinstance(value, dict) else {}
+    records, invalid = {}, []
+    for task in by_task:
+        record, reason = _scan_job_record(jobs / (task + ".json"))
+        if reason:
+            invalid.append(dict(taskId=task, reason=reason))
+        else:
+            records[task] = record or {}  # No journal yet: retain the running/request-only task.
 
-    records = {t: record(t) for t in by_task}
     finished = {t for t, r in records.items() if r.get("state") in TERMINAL_STATES or bool(r.get("ended"))}
-    running = [t for t in by_task if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
+    running = [t for t in records if t not in finished]   # counted before anything is deleted: a removed record must not look like a live one
     def mtime(p):   # 列完目录后被并发的作业搬走的文件：当作不在（不再整个作业失败）
         try:
             return p.stat().st_mtime
@@ -1234,14 +1315,15 @@ def prune_jobs(private, keep_days=KEEP_DAYS, keep_count=KEEP_TOTAL, dry_run=Fals
                 p.unlink(missing_ok=True)
         removed.append(task)
         freed += size
-    return dict(removed=removed, kept=kept + len(running), skippedRunning=len(running), bytes=freed)
+    return dict(removed=removed, kept=kept + len(running) + len(invalid), skippedRunning=len(running),
+                bytes=freed, invalidRecords=invalid)
 
 
 def status(private, library=None):
     """One look at the whole job store: how many are running vs finished, how big it is, and which task last moved.
     The store is every directory a record can be read from (_job_dirs: the current one plus the private fallbacks not yet adopted)."""
     dirs = [d for d in dict.fromkeys([jobs_dir(private, library), *_job_dirs(private)]) if d.is_dir()]
-    result = dict(running=0, finished=0, interrupted=0, bytes=0, newest=None, oldest=None)
+    result = dict(running=0, finished=0, interrupted=0, bytes=0, newest=None, oldest=None, invalidRecords=[])
     newest = oldest = None
     for path in (p for d in dirs for p in d.iterdir()):
         if path.is_symlink() or not path.is_file():
@@ -1255,9 +1337,12 @@ def status(private, library=None):
     for record_path in (p for d in dirs for p in d.glob("*.json")):
         if record_path.name.endswith(".request.json") or record_path.is_symlink():
             continue
-        record = read(record_path) or {}
-        if not isinstance(record, dict) or record.get("id") != record_path.stem:
+        record, reason = _scan_job_record(record_path)
+        if reason:
+            result["invalidRecords"].append(dict(taskId=record_path.stem, reason=reason))
             continue
+        if record is None:
+            continue  # Another process removed the record after directory enumeration.
         if record.get("state") in TERMINAL_STATES or record.get("ended"):
             result["finished"] += 1
         elif pid_alive(record.get("pid")):
