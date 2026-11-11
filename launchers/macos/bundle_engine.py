@@ -80,10 +80,12 @@ def bundle_tzdata(c, destination, source_root=ROOT):
 #   静态库 + 头文件 + 许可原文 + build.txt（构建键、版本、源码与库的 sha256）放进 Binaries/Prepare/libs/<库>/<平台>/；玩家出包时 build.sh 见 S2A_PREBUILT_TOOLS
 #   就核键与 sha256、直接回这份库（services/prebuilt_lib.sh），不构建。opus、C# 库（nxaot）还在玩家机器上现编，另作一单。
 # 追加一个库：在下面的表里加一项（库名 = services/<库名>/build.sh；静态库文件名），它的 build.sh 照 vpx / dav1d 开头那三行接 services/prebuilt_lib.sh
+# S2A_DAV1D=0：本地构建不链 dav1d 软件兜底，出包时也不放预编库（仅适合所有目标机都有 AV1 硬件解码）
 PREBUILT_LIBS = [
     ("vpx", "libs2a_vpx.a"),
-    ("dav1d", "libs2a_dav1d.a"),
 ]
+if os.environ.get("S2A_DAV1D", "1") != "0":
+    PREBUILT_LIBS.append(("dav1d", "libs2a_dav1d.a"))
 PREBUILT_RIDS = ("ios-arm64", "osx-arm64")
 
 
