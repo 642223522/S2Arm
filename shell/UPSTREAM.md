@@ -35,6 +35,7 @@
    | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`GameStateView.swift`、`LibraryView.swift` | `GameState` 加 `installing(InstallStage)`（传输中 / 安装中 / 传输中断 / 安装没完成）及各处 `switch`；`CoverView` 加 `InstallMask` 灰色蒙版（`RemainingPie` / `DonePie`）；传着 / 解着时主按钮 `disabled` | v0.2.3 装机进度：App 装好就显示正在从电脑传的那款，蒙版随进度顺时针消掉，能玩了才给开始（宿主层 `S2ArmShellHostModel` 按 `s2a_shell_game_install_state` 出状态） | — |
    | `Sources/ShellUI/Resources/Localizable.xcstrings` | 装机进度加 10 条（en / zh-Hans）：Transferring – keep connected…、Installing…、Transfer stopped 等 | 同上 | — |
    | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`Resources/Localizable.xcstrings` | `InstallStage.step` 加 4（等另一款装完）、5（正在整理游戏目录）与两条文案（七种语言） | 库起解包被拒时说清在等什么（iOS 装机剃刀 #46 / #47） | — |
+   | `Sources/ShellUI/LibraryView.swift`、`PortraitLibrary.swift`、`CoverFlowView.swift`、`ShellSettingsView.swift` | 空库 / 竖屏左上角加 `LibraryVersionBadge`（与右上角按钮同高）；横屏顶栏「x / N」后加同一个；设置页底部版本行改读 `ShellVersion.display`。新增 `ShellVersion.swift` 为 S2Arm 自有实现 | 游戏库与设置页显示版本字（正式版 v0.3.0、开发版 v0.2.6-dev+ba0ef07，读 Info.plist 的 `S2ADisplayVersion`，电脑组装时由 `pack/jobs/core.py display_version` 写），玩家截图就能定版（11-11 维护者） | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
 ## catalogue（游戏目录清单 JSON）
