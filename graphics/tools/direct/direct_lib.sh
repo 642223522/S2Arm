@@ -122,12 +122,12 @@ if [ "${API%%	*}" = gl ]; then
   GOK=$(sed -n 's/^GLSL 汇总：成功 \([0-9]*\)、失败 \([0-9]*\).*/\1 \2/p' "$C/gl_shaders.log" | tail -1); GMISS=0
   if [ "$grc" = 1 ] && [ "${GOK%% *}" -gt 0 ] 2> /dev/null; then GMISS=${GOK##* }
   elif [ "$grc" != 0 ]; then say "🔴 GLSL 着色器离线翻译失败 rc=${grc}（$C/gl_shaders.log）"; tail -3 "$C/gl_shaders.log"; exit 1; fi
-  # 离线一支没有（成功 0、失败 0：GameMaker 等引擎运行时才拼 GLSL，RomFS / main 里没有成形源码）：照出，只有表头、没有库，keys.tsv 为空；
+  # 离线一支没有（成功 0、失败 0：GameMaker 等引擎运行时才拼 GLSL，RomFS / main 里没有成形源码，或只有没有 main 的拼接片段、gl_shaders.py 记跳过，#518）：照出，只有表头、没有库，keys.tsv 为空；
   #   宿主库里没有的源码首遇时现场翻译（gl_prog.m 运行时兜底，按源码哈希缓存），这里记一行黄
   if [ "$grc" = 0 ] && [ "$GOK" = "0 0" ]; then
     [ -s "$OUT/gl/gl_shaders.tsv" ] || { say "🔴 没出 $OUT/gl/gl_shaders.tsv"; exit 1; }
     : > "$OUT/keys.tsv"
-    say "🟡 OpenGL 款 ${TID}：离线 0 支 GLSL（运行时拼源码的引擎），只出表头、全部运行时首遇现编（gl/gl_shaders.tsv），$((SECONDS - s)) 秒"
+    say "🟡 OpenGL 款 ${TID}：离线 0 支 GLSL（运行时拼源码的引擎；没有 main 的片段记跳过），只出表头、全部运行时首遇现编（gl/gl_shaders.tsv），$((SECONDS - s)) 秒（$(tail -1 "$C/gl_shaders.log" | cut -c1-120)）"
     exit 0
   fi
   [ -s "$OUT/gl/gl_shaders.metallib" ] && [ -s "$OUT/gl/gl_shaders.tsv" ] || { say "🔴 没出 $OUT/gl/gl_shaders.metallib / .tsv"; exit 1; }
