@@ -53,6 +53,14 @@ def shared_extract(f):
     return wrapped
 
 
+
+def img_step(args, cwd=None, env=None):
+    """假 c.run 遇到出包收尾转单一 IMG（ipa.to_img 经 c.run 调 pack/img.py convert，好让出包页有字节进度）就真跑它；→ 是不是这一步"""
+    if "pack/img.py" not in [str(a) for a in args]: return False
+    r = subprocess.run([str(a) for a in args], cwd=cwd, env=env, capture_output=True, text=True)
+    if r.returncode: raise AssertionError(r.stdout + r.stderr)
+    return True
+
 class JobsTests(unittest.TestCase):
     def setUp(self):
         import ipa
@@ -443,6 +451,7 @@ class JobsTests(unittest.TestCase):
             self.assertIn("一键安装", str(e.exception))
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(args=[str(a) for a in args], env=env)
             out = Path(args[args.index("--out") + 1]); (out / "x.ipa").write_bytes(b"ipa")
             oneclick_done(args, out / "x.ipa", build_id="abc-123", graphics_mode="direct")
@@ -505,6 +514,7 @@ class JobsTests(unittest.TestCase):
         import cache_retention
         lines = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "current-title.ipa").write_bytes(b"new")
             if lines.get("done", True):
                 oneclick_done(args, o / "current-title.ipa", pack_id="current-pack", build_id="current-123", graphics_mode="direct")
@@ -586,6 +596,7 @@ class JobsTests(unittest.TestCase):
         res = self.root / "res"; (res / "Fonts").mkdir(parents=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
         miss = {"v": ["DLC 套装 A.nsp", "dlc_b.nsp"]}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "g.ipa").write_bytes(b"new")
             oneclick_done(args, o / "g.ipa", graphics_mode="direct", aoc_missing=miss["v"])
         home = self.root / "dn"; (home / "sdk/10.0.403").mkdir(parents=True); (home / "dotnet").write_text("")
@@ -689,6 +700,7 @@ class JobsTests(unittest.TestCase):
         fonts = self.root / "fonts"; fonts.mkdir()
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(env=env)
             out = Path(args[args.index("--out") + 1]); (out / "synthetic.ipa").write_bytes(b"synthetic IPA fixture")
             oneclick_done(args, out / "synthetic.ipa", graphics_mode="direct")
