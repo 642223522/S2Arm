@@ -351,6 +351,54 @@ int s2a_import_state(const char *docs) {
     if (img_needs_apply(root)) return S2A_IMPORT_PENDING;   // game.img 到了、小文件还没解：先解开再就绪
     return S2A_IMPORT_READY;
 }
+// ---- 玩家把 IMG 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：s2a_img_scan 扫 Documents（往下两层，跳过 games/ 与隐藏目录），
+//   认文件开头的魔数（不看扩展名，改了名也认）。长度不等于头里的整个文件长 = 还在拷，先不动下次再看；认出来就读头里的游戏号，
+//   同卷改名挪到 Documents/games/<游戏号>/资源包/game.img（文件夹不在就建，玩家不用知道程序号），写 index.tsv（game.img 一行 + 原有的直连库 / 覆盖层行）
+//   与清单 manifest.json（version 3、资源包号取头）、作废 .applied——之后就是「待导入」，游戏库 / 闸门照常解小文件（s2a_pack_apply）
+static char g_img_err[600];
+const char *s2a_img_scan_failure(void) { return g_img_err; }
+static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好了；1 = 不是 IMG / 还在拷（不动）；负数 = 失败（原样留着）
+    int fd = open(path, O_RDONLY); if (fd < 0) return 1;
+    uint8_t h[136]; struct stat st; int ok = pread(fd, h, sizeof h, 0) == (ssize_t)sizeof h && !memcmp(h, "S2AIMG01", 8) && !fstat(fd, &st); close(fd);
+    if (!ok) return 1;
+    uint64_t total; memcpy(&total, h + 128, 8); if (total != (uint64_t)st.st_size) return 1;   // 还在拷
+    uint32_t fmt; memcpy(&fmt, h + 8, 4);
+    if (fmt != 1) { snprintf(g_img_err, sizeof g_img_err, "%s 是格式号 %u 的资源包，这个 S2Arm 只认 1：请更新 S2Arm", path, fmt); return -11; }
+    char gid[17], pid[65]; memcpy(gid, h + 16, 16); gid[16] = 0; memcpy(pid, h + 32, 64); pid[64] = 0;
+    for (int i = 0; i < 16; i++) if (!((gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F'))) { snprintf(g_img_err, sizeof g_img_err, "%s 头里的游戏号不对", path); return -10; }
+    if (!pid[0]) snprintf(pid, sizeof pid, "img-%llx", (unsigned long long)total);   // 没写资源包号的（老工具）：按长度给一个，至少换了文件能触发重新应用
+    char root[1400], p[2400], old[2400]; snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid);
+    snprintf(p, sizeof p, "%s/game.img", root); if (mkdirs(p)) { snprintf(g_img_err, sizeof g_img_err, "建 %s 失败：%s", root, g_untar_err); return -4; }
+    snprintf(old, sizeof old, "%s/manifest.json", root); unlink(old); snprintf(old, sizeof old, "%s/.applied", root); unlink(old);   // 先作废：挪到一半断了不会判成就绪
+    if (rename(path, p)) { snprintf(g_img_err, sizeof g_img_err, "把 %s 挪进资源包失败：%s", path, strerror(errno)); return -4; }
+    // index.tsv：game.img 一行 + 原有 index.tsv 里的直连库 / 覆盖层行（着色器库与覆盖层是 App 管的缓存、不进 IMG；电脑推过的那部分不丢）
+    char ip[2400], tp[2500]; snprintf(ip, sizeof ip, "%s/index.tsv", root); snprintf(tp, sizeof tp, "%s.tmp", ip);
+    FILE *o = fopen(tp, "w"), *in = fopen(ip, "r"); if (!o) { if (in) fclose(in); snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); return -4; }
+    fprintf(o, "game.img\t%llu\t-\n", (unsigned long long)total);
+    if (in) { char line[4600]; while (fgets(line, sizeof line, in)) if (!strncmp(line, "shaders/", 8) || !strncmp(line, "romfs_overlay/", 14)) fputs(line, o); fclose(in); }
+    if (fclose(o) || rename(tp, ip)) { snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); return -4; }
+    char mf[600]; snprintf(mf, sizeof mf, "{\"version\": 3, \"format\": \"img\", \"imgFile\": \"game.img\", \"index_sha256\": \"%s\"}\n", pid);
+    snprintf(p, sizeof p, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s.tmp", p);
+    FILE *m = fopen(tp, "w"); if (!m || fputs(mf, m) < 0 || fclose(m) || rename(tp, p)) { snprintf(g_img_err, sizeof g_img_err, "写 manifest.json 失败：%s", strerror(errno)); return -4; }
+    LOG("资源导入：%s → games/%s/资源包/game.img（%llu MB），等游戏库解开", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, gid, (unsigned long long)(total >> 20));
+    return 0;
+}
+static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *placed) {
+    DIR *d = opendir(dir); if (!d) return 0;
+    char *names[512]; int nn = 0; struct dirent *e;
+    while ((e = readdir(d)) && nn < 512) { if (e->d_name[0] == '.') continue; if (depth == 0 && !strcmp(e->d_name, "games")) continue; names[nn++] = strdup(e->d_name); }
+    closedir(d);
+    for (int i = 0; i < nn; i++) {
+        char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
+        if (!lstat(p, &st)) {
+            if (S_ISDIR(st.st_mode) && depth < 2) img_scan_dir(proc_docs, p, depth + 1, placed);
+            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p); if (!r) (*placed)++; else if (r < 0) LOG("【红】资源导入：%s", g_img_err); }
+        }
+        free(names[i]);
+    }
+    return 0;
+}
+int s2a_img_scan(const char *proc_docs) { int placed = 0; g_img_err[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); return placed; }
 // 资源还在传（11-02 维护者 测试设备2 暗黑3：推 21.7 GB 中途点开 App，已到的几批被解开、核对时 index.tsv 还没到，报「返回 -8」要玩家删文件夹重拷）。
 //   推送契约（tools/push_pack.sh）：各批 tar 先推进 .incoming/，index.tsv 与 manifest.json 最后推。所以有待导入的包、且下面任一条成立 = 这次推送还没完，不能开始解：
 //   ① index.tsv / manifest.json 不在（首次推送，清单还没到）；② manifest.json 的 index_sha256 就是 .applied（机上清单还是上次解开的那份，这次的新清单还没到）；

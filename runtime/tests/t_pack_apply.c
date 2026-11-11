@@ -19,7 +19,7 @@ int s2a_pack_apply(const char *docs); int s2a_untar(const char *tar, const char 
 int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char *proc_docs, char *out, size_t n); int s2a_import_state_game(const char *proc_docs, const char *gid);
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
-int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
+int s2a_img_scan(const char *proc_docs); int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
 // 与 runtime/src/pack_apply.c 同（闸门下一步与指纹记录）
 enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_SETTLE, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
 struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
@@ -361,6 +361,20 @@ int main(void) {
       CHECK(sh(c) == 0, "⑬d 已在且长度对的不重写（修改时间不变）");
       snprintf(c, sizeof c, "printf '\\011' | dd of='%s/game.img' bs=1 seek=8 conv=notrunc 2>/dev/null && rm -rf '%s/exefs' && printf '' > '%s/.applied'", G, G, G); sh(c);
       CHECK(s2a_pack_apply(D) != 0, "⑬e 格式号 9 → 解包失败");
-      snprintf(c, sizeof c, "grep -q '格式号' '%s/unpack.log'", D); CHECK(sh(c) == 0, "⑬e 解包日志带「格式号」"); }
+      snprintf(c, sizeof c, "grep -q '格式号' '%s/unpack.log'", D); CHECK(sh(c) == 0, "⑬e 解包日志带「格式号」"); 
+      // ⑭ 玩家把 IMG 放进「文件」里 S2Arm 任意位置：s2a_img_scan 挪进 games/<头里的游戏号>/资源包/game.img、写 manifest（资源包号同头）与 index.tsv；
+      //   拷到一半的（长度不等于头里的整个文件长）不动；挪好后应用成功
+      char D3[1300]; snprintf(D3, sizeof D3, "%s/scan_docs", T);   // 小文件清单借 ⑬ 的夹具（exefs/main.npdm = 随机 5000 字节、ctl = NACP）
+      snprintf(c, sizeof c, "mkdir -p '%s/下载/x' && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/下载/x/某游戏.img' --gid 0100abcd00000002 --pack-id img789 > /dev/null"
+               " && head -c 20000 '%s/下载/x/某游戏.img' > '%s/半个.img'", D3, R, D, D3, D3, D3);
+      CHECK(sh(c) == 0, "⑭ 造夹具（第二层目录一个完整 IMG、根下一个拷到一半的）");
+      CHECK(s2a_img_scan(D3) == 1, "⑭ 扫到并挪好 1 个");
+      snprintf(c, sizeof c, "g='%s/games/0100ABCD00000002/资源包'; test -s \"$g/game.img\" && test ! -e '%s/下载/x/某游戏.img' && test -e '%s/半个.img' && grep -q '\"index_sha256\": \"img789\"' \"$g/manifest.json\" && test \"$(cut -f1 \"$g/index.tsv\")\" = game.img", D3, D3, D3);
+      CHECK(sh(c) == 0, "⑭ 落到 games/<游戏号>/资源包/game.img、manifest 资源包号 = 头里的、index.tsv 只有 game.img、拷一半的没动");
+      { char g3[1500]; snprintf(g3, sizeof g3, "%s/games/0100ABCD00000002", D3);
+        CHECK(s2a_import_state(g3) == 1, "⑭ 挪好后 → 待导入（状态 %d）", s2a_import_state(g3));
+        CHECK(s2a_pack_apply(g3) == 0, "⑭ 应用成功");
+        snprintf(c, sizeof c, "cmp -s '%s/src/npdm' '%s/资源包/exefs/main.npdm'", D, g3); CHECK(sh(c) == 0, "⑭ 小文件逐字节解出"); }
+      CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）"); }
     printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }
