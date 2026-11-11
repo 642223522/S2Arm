@@ -24,7 +24,8 @@ __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_
 // 写失败现场（10-20 测试设备2 巫师3 收推送连续「返回 -4」，看不出是哪个条目）：失败的那一步、路径与 errno，解包失败时写进 unpack.log
 static char g_untar_err[2400];
 static int g_untar_trunc;   // 本次解包碰到截短（读到的少于条目 / 包尾结束块）
-static void untar_err(const char *step, const char *path, int e) { snprintf(g_untar_err, sizeof g_untar_err, "%s %s：errno %d %s", step, path, e, strerror(e)); }
+static int g_fail_errno;   // 最近一次失败的 errno（只用来判「空间满」给码，s2a_install_code）
+static void untar_err(const char *step, const char *path, int e) { g_fail_errno = e; snprintf(g_untar_err, sizeof g_untar_err, "%s %s：errno %d %s", step, path, e, strerror(e)); }
 static int mkdirs(char *p) {   // 建 p 的各级父目录（p 是文件路径）；已存在但不是目录（同名文件挡路）也算失败
     for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; int r = mkdir(p, 0755), e = errno; struct stat st;
         if (r && e == EEXIST && (stat(p, &st) || !S_ISDIR(st.st_mode))) { r = -1; e = ENOTDIR; }
@@ -240,12 +241,27 @@ static int manifest_sha(const char *path, char *out, size_t n) {
 }
 // 玩家导入（s2a_import_gate）用：每批解完回调一次（已解批数、总批数），失败原因留给提示页
 void (*s2a_pack_apply_progress)(int done, int total);
-static char g_apply_fail[2400];
+static char g_apply_fail[2400], g_apply_code[48];
 const char *s2a_pack_apply_failure(void) { return g_apply_fail; }
+// 失败给码（11-11 维护者「补上说人话的原因」）：码表在 launchers/shared/experience.v1.json errors.items（下一步在 pack/jobs/errors.py RECOVERY），
+//   屏上按码显示标题 + 下一步，原文（s2a_pack_apply_failure）只进日志 / 诊断包。from_img = 失败出在从 game.img 解小文件那步。规格里没有的情形一律 ios_install_unknown
+const char *s2a_install_code(int rc, int err, int truncated, int from_img) {
+    if (!rc) return "";
+    if (rc == -12) return "ios_install_dir_unwritable";
+    if (err == ENOSPC || err == EDQUOT) return "ios_install_no_space";
+    if (truncated || rc == -2) return "ios_install_pack_truncated";   // -2：推送包头 / 校验和不对，同样是没传对，重推补齐
+    if (rc == -11) return "ios_install_img_format";
+    if (rc == -10 || (from_img && rc == -3)) return "ios_install_img_corrupt";
+    if (rc == -8) return "ios_install_files_missing";
+    if (rc == -6 || rc == -7) return "ios_install_manifest_bad";
+    if (rc == -4) return "ios_install_write_failed";
+    return "ios_install_unknown";
+}
+const char *s2a_pack_apply_code(void) { return g_apply_code; }
 // 返回进程退出码（0 成功）；docs = Documents 目录
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; snprintf(root, sizeof root, "%s/资源包", docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
-    uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0; char what[2300] = "";
+    uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0, from_img = 0; char what[2300] = ""; g_fail_errno = 0; g_untar_trunc = 0;
     // 本款目录 / 资源包 / 待解包目录 App 写不进（#569：玩家机上这一串归 root、0755，App 是 501）：一个包都不解，先把真实原因说清楚，
     //   不再去解包、报一句含糊的「解 xxx.tar」。迁到 App 自己的新目录在 s2a_games_repair（游戏库挂上时做）
     { const char *dirs[] = {docs, root, inc}; struct stat ds;
@@ -269,7 +285,7 @@ int s2a_pack_apply(const char *docs) {
             snprintf(what, sizeof what, "解 %s%s", names[i], del ? "（截短包：已删它与其后待解包、推送记录，下次部署按已应用索引补推）" : ""); }
         else { unlink(t); ntar++; if (s2a_pack_apply_progress) s2a_pack_apply_progress(i + 1, nn); PHASE(1, (uint64_t)(i + 1), (uint64_t)nn); log_line(logp, "进度：解开 %s（%u/%d）%u 个文件 %llu MB（%.1f 秒）", names[i], i + 1, nn, nf - f0, (unsigned long long)((nb - b0) >> 20), (now_ns() - t1) / 1e9); }
     }
-    if (!rc) { int r = img_extract(root, &nf, &nb); if (r) { rc = r; snprintf(what, sizeof what, "从 game.img 解小文件（%s）", r == -11 ? "格式号不认识，请更新 S2Arm" : r == -10 ? "IMG 坏或没传完" : "写失败"); } }
+    if (!rc) { int r = img_extract(root, &nf, &nb); if (r) { rc = r; from_img = 1; snprintf(what, sizeof what, "从 game.img 解小文件（%s）", r == -11 ? "格式号不认识，请更新 S2Arm" : r == -10 ? "IMG 坏或没传完" : "写失败"); } }
     if (!rc) { char ex[2200]; unsigned miss = verify_present(root, ex, sizeof ex);
         if (miss) { rc = -8; snprintf(what, sizeof what, "核对：index.tsv 里 %u 个文件机上缺或大小不符（例：%s），不记已应用，执行器下次按旧的已应用索引补推", miss, ex); } }   // 核对在清旧文件之前：核不过不删任何文件
     if (!rc) { unsigned nd = 0; uint64_t db = 0; int r2 = prune(root, &nd, &db);   // 清旧文件：资源包下不在 index.tsv 里的（旧版分卷等）
@@ -279,14 +295,14 @@ int s2a_pack_apply(const char *docs) {
     char sha[200] = "";
     if (!rc) { char mp[2100]; snprintf(mp, sizeof mp, "%s/manifest.json", root);
         if (manifest_sha(mp, sha, sizeof sha)) { rc = -6; snprintf(what, sizeof what, "读 manifest.json 的 index_sha256"); }
-        else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
-        else if (write_atomic(root, ".applied", sha)) { rc = -4; snprintf(what, sizeof what, "写 .applied"); }
+        else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
+        else if (write_atomic(root, ".applied", sha)) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "写 .applied"); }
         else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
     FILE *lf = fopen(logp, "a"); int lerr = lf ? 0 : errno;
     // 失败原因不依赖 unpack.log 打得开（#540：游戏目录 Documents/games/<游戏号>/ 不在时 unpack.log 也建不了，原先原因只在 lf 打开时才填，
     //   host.log 那一行「解开 … 没成：」后面是空的、又指去一个不存在的 unpack.log）：先填原因，日志打不开再把这一句接上
-    g_apply_fail[0] = 0;
+    g_apply_fail[0] = 0; snprintf(g_apply_code, sizeof g_apply_code, "%s", s2a_install_code(rc, g_fail_errno, g_untar_trunc, from_img));
     if (rc) { int k = snprintf(g_apply_fail, sizeof g_apply_fail, "%s（返回 %d）", what, rc);
         if (!lf && k > 0 && (size_t)k < sizeof g_apply_fail) snprintf(g_apply_fail + k, sizeof g_apply_fail - (size_t)k, "；unpack.log 建不了：%s %s", logp, strerror(lerr)); }
     if (lf) {
@@ -294,7 +310,7 @@ int s2a_pack_apply(const char *docs) {
         else fprintf(lf, "%s 解开 %u 个包 %u 个文件 %llu MB，.applied = %s（%.1f 秒）\n", ts, ntar, nf, (unsigned long long)(nb >> 20), sha, (now_ns() - t0) / 1e9);
         fclose(lf);
     }
-    if (rc) LOG("资源包收推送：失败：%s", g_apply_fail); else LOG("资源包收推送：完成");
+    if (rc) LOG("资源包收推送：失败（%s）：%s", g_apply_code, g_apply_fail); else LOG("资源包收推送：完成");
     return rc ? 1 : 0;
 }
 
@@ -462,8 +478,10 @@ int s2a_games_repair(const char *proc_docs) {
 //   认文件开头的魔数（不看扩展名，改了名也认）。长度不等于头里的整个文件长 = 还在拷，先不动下次再看；认出来就读头里的游戏号，
 //   同卷改名挪到 Documents/games/<游戏号>/资源包/game.img（文件夹不在就建，玩家不用知道程序号），写 index.tsv（game.img 一行 + 原有的直连库 / 覆盖层行）
 //   与清单 manifest.json（version 3、资源包号取头）、作废 .applied——之后就是「待导入」，游戏库 / 闸门照常解小文件（s2a_pack_apply）
-static char g_img_err[600];
+static char g_img_err[600], g_img_code[48];
 const char *s2a_img_scan_failure(void) { return g_img_err; }
+// 认领失败给码（同 s2a_install_code）：格式号不认识 = ios_install_img_format，挪 / 写时空间满 = ios_install_no_space，其余 ios_import_img_failed
+const char *s2a_img_scan_code(void) { return g_img_code; }
 static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好了；1 = 不是 IMG / 还在拷（不动）；负数 = 失败（原样留着）
     int fd = open(path, O_RDONLY); if (fd < 0) return 1;
     uint8_t h[136]; struct stat st; int ok = pread(fd, h, sizeof h, 0) == (ssize_t)sizeof h && !memcmp(h, "S2AIMG01", 8) && !fstat(fd, &st); close(fd);
@@ -499,7 +517,9 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
             if (S_ISDIR(st.st_mode) && depth < 2) img_scan_dir(proc_docs, p, depth + 1, placed);
-            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p); if (!r) (*placed)++; else if (r < 0) LOG("【红】资源导入：%s", g_img_err); }
+            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p); if (!r) (*placed)++; else if (r < 0) { int e = errno;
+                snprintf(g_img_code, sizeof g_img_code, "%s", r == -11 ? "ios_install_img_format" : r == -4 && (e == ENOSPC || e == EDQUOT) ? "ios_install_no_space" : "ios_import_img_failed");
+                LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
         }
         free(names[i]);
     }
@@ -507,7 +527,7 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *
 }
 int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可能同时调：一把锁串起来，免得两边抢着挪同一个文件
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); pthread_mutex_unlock(&mu); return placed;
+    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); pthread_mutex_unlock(&mu); return placed;
 }
 // 资源还在传（11-02 维护者 测试设备2 暗黑3：推 21.7 GB 中途点开 App，已到的几批被解开、核对时 index.tsv 还没到，报「返回 -8」要玩家删文件夹重拷）。
 //   推送契约（tools/push_pack.sh）：各批 tar 先推进 .incoming/，index.tsv 与 manifest.json 最后推。所以有待导入的包、且下面任一条成立 = 这次推送还没完，不能开始解：

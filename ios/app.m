@@ -731,7 +731,18 @@ int s2a_game_install_state(const char *proc_docs, const char *gid);   // pack_ap
 int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_game_install_state(d, gid); }
 // 库里后台解开传完的那款（装机阶段 2，s2a_shell.h）：同一条 s2a_pack_apply（解包日志、.applied、清旧文件都同起局闸门），同时只解一款；
 //   解的时候关自动锁屏（锁屏 = 挂起 = 解包停住），进度经 s2a_pack_apply_progress 记下给库画蒙版，解完回主线程让库重判
-int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void);   // pack_apply.c
+int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void); const char *s2a_pack_apply_code(void);   // pack_apply.c
+// 装机 / 导入失败按码说人话（11-11 维护者：原文和码只进诊断，不上屏）：码表 launchers/shared/experience.v1.json errors.items，
+//   「标题 + 下一步」由 launchers/shared/experience_strings.py 出包时生成进包里的 S2ArmHost.strings（键 error.<码>.title / .next，仓库表里不放）。
+//   规格里查不到的码一律按 ios_install_unknown（键是拼出来的，不走 S2AL 字面量）
+static NSString *install_error_text(const char *code) {
+    NSString *(^get)(NSString *, NSString *) = ^NSString *(NSString *c, NSString *part) {
+        NSString *k = [NSString stringWithFormat:@"error.%@.%@", c, part], *v = [NSBundle.mainBundle localizedStringForKey:k value:@"" table:@"S2ArmHost"];
+        return v.length && ![v isEqualToString:k] ? v : nil; };
+    NSString *c = code && *code ? @(code) : @"ios_install_unknown", *title = get(c, @"title"), *next = get(c, @"next");
+    if (!title || !next) { c = @"ios_install_unknown"; title = get(c, @"title"); next = get(c, @"next"); }
+    return [NSString stringWithFormat:S2AL(@"error.sentence"), title ?: c, next ?: @""];
+}
 static char g_inst_gid[32]; static atomic_int g_inst_busy, g_inst_done, g_inst_total;
 static void inst_progress(int done, int total) { atomic_store(&g_inst_done, done); atomic_store(&g_inst_total, total); }
 // 单一 IMG 的分段进度（pack_apply.c s2a_pack_apply_phase，v0.3.0）：1 解开推送包（包数）/ 2 从 game.img 解小文件（字节）/ 3 核对机上文件（文件数）。
@@ -764,8 +775,8 @@ int s2a_shell_install_game(const char *gid) {   // 主线程（s2a_shell.h 约�
         s2a_pack_apply_progress = inst_progress; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = inst_phase;
         int rc = s2a_pack_apply(docs.fileSystemRepresentation);
         s2a_pack_apply_progress = NULL; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = NULL;
-        NSString *why = rc ? @(s2a_pack_apply_failure() ?: "") : nil;
-        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, why.UTF8String); else LOG("游戏库：%s 解开了", name.UTF8String);
+        NSString *why = rc ? install_error_text(s2a_pack_apply_code()) : nil;   // 屏上一句人话；原文与码进日志
+        if (rc) LOG("【红】游戏库：解开 %s 没成（%s）：%s", name.UTF8String, s2a_pack_apply_code(), s2a_pack_apply_failure()); else LOG("游戏库：%s 解开了", name.UTF8String);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!g_inst_fail) g_inst_fail = [NSMutableDictionary new];
             if (why.length) g_inst_fail[name] = why; else [g_inst_fail removeObjectForKey:name];   // 卡片上「安装没完成」下面显示这一句，「重试」成功后清掉
@@ -787,7 +798,7 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 // 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
-const char *s2a_img_scan_failure(void);   // pack_apply.c：最近一次认领失败的原因（空串 = 没失败）
+const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
@@ -799,7 +810,7 @@ static void img_scan_report(void) {   // 主线程
     static char shown[600]; const char *why = s2a_img_scan_failure();
     if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
     strlcpy(shown, why, sizeof shown);
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.scanFailed.title") message:@(why) preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.scanFailed.title") message:install_error_text(s2a_img_scan_code()) preferredStyle:UIAlertControllerStyleAlert];   // 原文已进日志（img_scan_dir）
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
     [lib_top() presentViewController:a animated:YES completion:nil];
 }

@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <signal.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #if defined(__linux__)
@@ -20,7 +21,8 @@ int s2a_games_repair(const char *proc_docs); const char *s2a_games_repair_detail
 int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char *proc_docs, char *out, size_t n); int s2a_import_state_game(const char *proc_docs, const char *gid);
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
-int s2a_img_scan(const char *proc_docs);
+int s2a_img_scan(const char *proc_docs); const char *s2a_img_scan_failure(void);
+const char *s2a_install_code(int rc, int err, int truncated, int from_img); const char *s2a_pack_apply_code(void); const char *s2a_img_scan_code(void);
 extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
 static uint64_t g_ph[4][2]; static int g_phn[4]; static void phase(int ph, uint64_t d, uint64_t t) { if (ph > 0 && ph < 4) { g_ph[ph][0] = d; g_ph[ph][1] = t; g_phn[ph]++; } } int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
 // 与 runtime/src/pack_apply.c 同（闸门下一步与指纹记录）
@@ -75,6 +77,25 @@ static void boundary_cases(const char *T) {
 int main(void) {
     char T[] = "/tmp/s2a_t_pack_XXXXXX"; if (!mkdtemp(T)) return 1;
     boundary_cases(T);
+    // 失败给码（11-11 维护者「补上说人话的原因」）：返回码 / errno / 截短 / 是否出在 game.img 那步 → 规格码。期望按码表含义手写：
+    //   目录写不进优先（重开 App 会迁）；其次空间满（不管哪步）；截短或包头坏 = 没传完；格式号 / IMG 坏；核对缺文件；清单读不出；其余写失败；认不出的 unknown
+    { struct { int rc, err, trunc, img; const char *want; } m[] = {
+        {0, 0, 0, 0, ""}, {-12, 0, 0, 0, "ios_install_dir_unwritable"}, {-12, ENOSPC, 0, 0, "ios_install_dir_unwritable"},
+        {-4, ENOSPC, 0, 0, "ios_install_no_space"}, {-4, EDQUOT, 0, 1, "ios_install_no_space"}, {-4, ENOSPC, 1, 0, "ios_install_no_space"},
+        {-4, EIO, 1, 0, "ios_install_pack_truncated"}, {-2, 0, 0, 0, "ios_install_pack_truncated"},
+        {-11, 0, 0, 1, "ios_install_img_format"}, {-10, 0, 0, 1, "ios_install_img_corrupt"}, {-3, EINVAL, 0, 1, "ios_install_img_corrupt"},
+        {-3, 0, 0, 0, "ios_install_unknown"}, {-5, 0, 0, 0, "ios_install_unknown"}, {-8, 0, 0, 0, "ios_install_files_missing"},
+        {-6, 0, 0, 0, "ios_install_manifest_bad"}, {-7, 0, 0, 0, "ios_install_manifest_bad"}, {-4, EACCES, 0, 0, "ios_install_write_failed"},
+        {-99, 0, 0, 0, "ios_install_unknown"} };
+      for (size_t i = 0; i < sizeof m / sizeof *m; i++) { const char *got = s2a_install_code(m[i].rc, m[i].err, m[i].trunc, m[i].img);
+          CHECK(!strcmp(got, m[i].want), "给码 rc %d errno %d 截短 %d IMG %d：期望 %s，实际 %s", m[i].rc, m[i].err, m[i].trunc, m[i].img, m[i].want, got); }
+      // 引擎会给的每个码都在共用规格里（屏上文案按码从规格生成，查不到就只能显示「未知原因」）
+      char sp[1200]; snprintf(sp, sizeof sp, "%s", __FILE__); char *cut = strstr(sp, "runtime/tests/"); if (cut) *cut = 0; strlcat(sp, "launchers/shared/experience.v1.json", sizeof sp);
+      FILE *sf = fopen(sp, "r"); char spec[200000] = ""; size_t sk = sf ? fread(spec, 1, sizeof spec - 1, sf) : 0; if (sf) fclose(sf); spec[sk] = 0;
+      CHECK(sk > 0, "读共用规格 %s", sp);
+      const char *codes[] = {"ios_install_dir_unwritable", "ios_install_no_space", "ios_install_pack_truncated", "ios_install_img_format", "ios_install_img_corrupt",
+          "ios_install_files_missing", "ios_install_manifest_bad", "ios_install_write_failed", "ios_install_unknown", "ios_import_img_failed"};
+      for (size_t i = 0; i < sizeof codes / sizeof *codes; i++) { char q[80]; snprintf(q, sizeof q, "\"code\": \"%s\"", codes[i]); CHECK(strstr(spec, q) != NULL, "规格里应有码 %s", codes[i]); } }
     char c[8192];
     snprintf(c, sizeof c, "cd %s && mkdir -p src/romfs/很长的中文目录名用来超过一百个字节的老式头部限制很长的中文目录名用来超过一百个字节/子 docs/资源包/.incoming && "
         "head -c 70000 /dev/urandom > 'src/romfs/很长的中文目录名用来超过一百个字节的老式头部限制很长的中文目录名用来超过一百个字节/子/文件.bin' && : > src/空.txt && printf abc > src/a.txt && "
@@ -127,6 +148,7 @@ int main(void) {
         CHECK(sh(c) == 0, "造截短包失败（%d）", k);
         CHECK(s2a_pack_apply(docs) != 0, "截短包应判失败（%s）", k == 0 ? "截在条目边界" : "截在条目中间");
         snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '截短包：已删.*返回 -4'", T); CHECK(sh(c) == 0, "失败行应注明截短包已删、返回 -4（%d）", k);
+        CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_pack_truncated"), "截短包给码 ios_install_pack_truncated（%d，实际 %s）", k, s2a_pack_apply_code());
         snprintf(d, sizeof d, "%s/docs/资源包/.incoming/4_000.tar", T); CHECK(stat(d, &st) != 0, "截短包应已删（%d）", k);
         snprintf(d, sizeof d, "%s/docs/资源包/.incoming/4_001.tar", T); CHECK(stat(d, &st) != 0, "截短包后面的待解包也应删（%d）", k);
         snprintf(d, sizeof d, "%s/docs/资源包/.pushed", T); CHECK(stat(d, &st) != 0, "推送记录 .pushed 应删（%d）", k);
@@ -384,7 +406,14 @@ int main(void) {
         CHECK(g_phn[3] > 0 && g_ph[3][0] == g_ph[3][1] && g_ph[3][1] >= 1, "⑭ 分段进度 ③ 核对 %llu / %llu", (unsigned long long)g_ph[3][0], (unsigned long long)g_ph[3][1]);
         CHECK(g_phn[1] == 0, "⑭ 没有推送包不报 ①（报了 %d 次）", g_phn[1]);
         snprintf(c, sizeof c, "cmp -s '%s/src/npdm' '%s/资源包/exefs/main.npdm'", D, g3); CHECK(sh(c) == 0, "⑭ 小文件逐字节解出"); }
-      CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）"); }
+      CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）");
+      CHECK(!*s2a_img_scan_code(), "⑭ 认领没失败：码为空（实际 %s）", s2a_img_scan_code());
+      // 格式号 2（更新版 S2Arm 做的）：不认、原样留着，给码 ios_install_img_format
+      char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/新格式.img", D4);
+      FILE *o4 = fopen(f4, "wb"); uint8_t h4[8192] = {0}; memcpy(h4, "S2AIMG01", 8); h4[8] = 2; memcpy(h4 + 16, "0100ABCD00000000", 16); uint64_t tot = sizeof h4; memcpy(h4 + 128, &tot, 8);
+      CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 2 的 IMG");
+      CHECK(s2a_img_scan(D4) == 0 && !access(f4, F_OK) && !strcmp(s2a_img_scan_code(), "ios_install_img_format"),
+            "格式号 2：不挪、给码 ios_install_img_format（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure()); }
     // #540：游戏目录（多款容器 Documents/games/<游戏号>/）根本不在 → unpack.log 也建不了；失败原因仍要填上，并说明日志建不了。
     //   先跑一次成功的同名目录，核成功后原因清空（不留上一次的失败原因）
     { char gone[1100]; snprintf(gone, sizeof gone, "%s/games/0100000000000000", T); struct stat gs;
@@ -393,10 +422,12 @@ int main(void) {
       const char *why = s2a_pack_apply_failure();
       CHECK(why && strstr(why, "index.tsv 打不开") && strstr(why, "返回 -8"), "目录不在：期望原因含「index.tsv 打不开」「返回 -8」→ 「%s」", why ? why : "(null)");
       CHECK(why && strstr(why, "unpack.log 建不了") && strstr(why, "No such file"), "目录不在：期望原因注明 unpack.log 建不了（No such file）→ 「%s」", why ? why : "(null)");
+      CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_files_missing"), "核对缺文件（返回 -8）给码 ios_install_files_missing（实际 %s）", s2a_pack_apply_code());
       char ok[1100]; snprintf(ok, sizeof ok, "%s/ok", T); snprintf(c, sizeof c, "mkdir -p %s/资源包 && printf '{\"index_sha256\":\"aa\"}' > %s/资源包/manifest.json && : > %s/资源包/index.tsv", ok, ok, ok);
       CHECK(sh(c) == 0, "造空包夹具失败");
       CHECK(s2a_pack_apply(ok) == 0, "空索引的包应解开");
-      CHECK(!*s2a_pack_apply_failure(), "成功后失败原因应清空 →「%s」", s2a_pack_apply_failure()); }
+      CHECK(!*s2a_pack_apply_failure(), "成功后失败原因应清空 →「%s」", s2a_pack_apply_failure());
+      CHECK(!*s2a_pack_apply_code(), "成功后码应清空 →「%s」", s2a_pack_apply_code()); }
     // #569 游戏目录 App 写不进（玩家机上 games 一串归 root、0755）：解包一个包都不解、直接报目录与属主；s2a_games_repair 克隆进新树、
     //   换名，旧的留在 .s2a-unwritable-*；全可写不动；树里有不认识的类型（命名管道）迁移失败、原样不动、新树清掉。期望按规则手写
     if (getuid() != 0) {
@@ -409,6 +440,7 @@ int main(void) {
         int arc = s2a_pack_apply(gd);
         CHECK(arc != 0 && strstr(s2a_pack_apply_failure(), "目录 App 写不进") && strstr(s2a_pack_apply_failure(), "资源包") && strstr(s2a_pack_apply_failure(), "权限 555"),
               "资源包目录写不进：解包先报目录与权限（实际 %d「%s」）", arc, s2a_pack_apply_failure());
+        CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_dir_unwritable"), "目录写不进给码 ios_install_dir_unwritable（实际 %s）", s2a_pack_apply_code());
 #if defined(__APPLE__)
         int r = s2a_games_repair(base);
         char ng[600]; snprintf(ng, sizeof ng, "%s/games/%s/资源包", base, gid);
