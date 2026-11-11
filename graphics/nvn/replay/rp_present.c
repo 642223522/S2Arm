@@ -80,7 +80,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                 for (size_t i = 0; i < n; i++) if (u[i] == '\n') u[i] = ';'; else if (u[i] == '\t') u[i] = ' ';
                 snprintf(line, sizeof line, "未接计数：%s", u); nvn_plat_log(NVN_PLAT_LOG_INFO, "present", line);
             }
-            if (nvn_plat_flag("nvk_drawlog", 0)) rp_draw_log_arm(160);
+            if (nvn_plat_flag("nvk_drawlog", 0)) rp_draw_log_arm(nvn_plat_flag("nvk_drawlog", 0) > 1 ? nvn_plat_flag("nvk_drawlog", 0) : 160);
             if (nvn_plat_flag("nvk_dump", 0)) rp_debug_dump_request(t->serial, g_n_shown);   // 调试开关：把这张图和它上游的贴图读回落盘   // 调试开关：接下来的 160 笔绘制逐笔出日志
         }
     } else g_n_dropped++;
