@@ -51,7 +51,9 @@ def build(app, output):
             "files": [str(app)], "symlinks": {"Applications": "/Applications"},
             "background": str(work / "background.tiff"),
             "window_rect": ((180, 160), (LAYOUT["width"], LAYOUT["height"] + 32)),
-            "icon_locations": {name: tuple(point) for name, point in LAYOUT["iconPositions"].items()},
+            # Finder 开了「显示隐藏文件」时（AppleShowAllFiles），dmgbuild 放进卷里的背景图与卷图标会露在窗口左上角：摆到可见区外
+            "icon_locations": {**{name: tuple(point) for name, point in LAYOUT["iconPositions"].items()},
+                               **{name: (LAYOUT["width"] + 300, LAYOUT["height"] + 300) for name in (".background.tiff", ".VolumeIcon.icns", ".DS_Store", ".fseventsd", ".Trashes")}},
             "icon_size": LAYOUT["iconSize"], "text_size": 13, "label_pos": "bottom",
             "default_view": "icon-view", "include_icon_view_settings": True,
             "show_toolbar": False, "show_sidebar": False, "show_status_bar": False,

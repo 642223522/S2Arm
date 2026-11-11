@@ -45,6 +45,11 @@ func render(scale: Int, preview: Bool = false) -> NSBitmapImageRep {
             .font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: tint
         ])
     }
+    func textRight(_ value: String, _ right: CGFloat, _ y: CGFloat, _ size: CGFloat,
+                   _ weight: NSFont.Weight = .regular, _ tint: NSColor = ink) {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: tint]
+        (value as NSString).draw(at: NSPoint(x: right - (value as NSString).size(withAttributes: attributes).width, y: y), withAttributes: attributes)
+    }
     func rule(_ x1: CGFloat, _ y: CGFloat, _ x2: CGFloat, _ tint: NSColor = line) {
         let path = NSBezierPath(); path.move(to: NSPoint(x: x1, y: y)); path.line(to: NSPoint(x: x2, y: y))
         path.lineWidth = 1; tint.setStroke(); path.stroke()
@@ -62,8 +67,10 @@ func render(scale: Int, preview: Bool = false) -> NSBitmapImageRep {
 
     color(0x0b0b0c).setFill(); NSRect(origin: .zero, size: canvas).fill()
     glow(100, -40, 460, color(0x756044, 0.14))
-    let wordmark = NSImage(contentsOf: root.appendingPathComponent("docs/images/s2arm-wordmark.png"))!
-    image(wordmark, NSRect(x: 40, y: 28, width: 122, height: 36))
+    // 透明底的字标（启动器关于页同一份）：官网那张 docs/images/s2arm-wordmark.png 带黑底，在渐变背景上会露出一块黑框
+    let wordmark = NSImage(contentsOf: assets.appendingPathComponent("wordmark-transparent.png"))!
+    let markHeight: CGFloat = 30
+    image(wordmark, NSRect(x: 40, y: 31, width: markHeight * wordmark.size.width / wordmark.size.height, height: markHeight))
     round(NSRect(x: 579, y: 34, width: 141, height: 26), 13, color(0x151516), line)
     text("macOS · Apple Silicon", 593, 40, 10, .medium, cream)
     rule(40, 82, 720)
@@ -82,7 +89,7 @@ func render(scale: Int, preview: Bool = false) -> NSBitmapImageRep {
         cg.restoreGState()
         // Finder uses black labels on image backgrounds, including in Dark Mode.
         // The cream plates keep the real labels readable without changing the app.
-        round(NSRect(x: x - 88, y: y + 61, width: 176, height: 28), 14, cream)
+        round(NSRect(x: x - 88, y: y + 56, width: 176, height: 28), 14, cream)   // 真 Finder 里名称画在图标下约 y+70 处，底板居中包住它（预览图同一位置）
         text(name == "S2Arm.app" ? "01  拖动应用 / DRAG" : "02  放入文件夹 / DROP",
              x - 78, y + 100, 10, .medium, muted)
         if preview {
@@ -102,7 +109,7 @@ func render(scale: Int, preview: Bool = false) -> NSBitmapImageRep {
             }
             let label = name as NSString
             let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: color(0x1a1712)]
-            label.draw(at: NSPoint(x: x - label.size(withAttributes: attributes).width / 2, y: CGFloat(center[1]) + 64), withAttributes: attributes)
+            label.draw(at: NSPoint(x: x - label.size(withAttributes: attributes).width / 2, y: CGFloat(center[1]) + 61), withAttributes: attributes)
         }
     }
     let arrowY = CGFloat(positions["S2Arm.app"]![1])
@@ -117,7 +124,7 @@ func render(scale: Int, preview: Bool = false) -> NSBitmapImageRep {
     text("复制完成后，从「应用程序」打开 S2Arm。", 42, 430, 13, .medium)
     text("Once copied, open S2Arm from Applications.", 42, 452, 11, .regular, muted)
     text("MACOS 15+", 42, 491, 9, .semibold, muted)
-    text("安装后可推出此磁盘 / Eject this disk after installing", 441, 491, 9, .regular, muted)
+    textRight("安装后可推出此磁盘 / Eject this disk after installing", 720, 491, 9, .regular, muted)   // 与上方分隔线右端对齐
 
     let bitmap = NSBitmapImageRep(cgImage: cg.makeImage()!)
     bitmap.size = canvas
