@@ -80,17 +80,23 @@ namespace S2A.DirectCompiler
                 else
                 {
                     // 先按 VS 再 FS 解码：共享 allocator 的绑定号必须反映合同规定的 stage 顺序。
+                    // 片元阶段可以没有（只写深度的程序）：这时顶点阶段没有下一阶段，按最后一个阶段翻译。
                     DirectStage vs = program.StageOf("vs"), fs = program.StageOf("fs");
                     var vsAccessor = new DirectGpuAccessor(profile, program, vs, 1, allocator, queries);
-                    var fsAccessor = new DirectGpuAccessor(profile, program, fs, 5, allocator, queries);
-                    accessors.Add(vsAccessor); accessors.Add(fsAccessor);
+                    accessors.Add(vsAccessor);
                     TranslatorContext vsContext = ShaderCache.DecodeGraphicsShader(vsAccessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0);
-                    TranslatorContext fsContext = ShaderCache.DecodeGraphicsShader(fsAccessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0);
-                    vsContext.SetNextStage(fsContext);
-                    ShaderProgram vsShader = vsContext.Translate();
-                    ShaderProgram fsShader = fsContext.Translate();
-                    translated.Add((vs, vsShader, vsAccessor));
-                    translated.Add((fs, fsShader, fsAccessor));
+                    if (fs != null)
+                    {
+                        var fsAccessor = new DirectGpuAccessor(profile, program, fs, 5, allocator, queries);
+                        accessors.Add(fsAccessor);
+                        TranslatorContext fsContext = ShaderCache.DecodeGraphicsShader(fsAccessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0);
+                        vsContext.SetNextStage(fsContext);
+                        ShaderProgram vsShader = vsContext.Translate();
+                        ShaderProgram fsShader = fsContext.Translate();
+                        translated.Add((vs, vsShader, vsAccessor));
+                        translated.Add((fs, fsShader, fsAccessor));
+                    }
+                    else translated.Add((vs, vsContext.Translate(), vsAccessor));
                 }
             }
             catch (DirectCompileException) { throw; }
@@ -232,7 +238,11 @@ namespace S2A.DirectCompiler
                     // 找回同一个 nvn_tex_slot（见 nvn_vk_first_draw 的 handleIndex→slot 表）。
                     // 只有该句柄有直接绑定事实时才放行；没有就直接事实的 cbuf 句柄仍是
                     // 未实现路径，不能把槽位绑到别的纹理。
-                    if (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex))
+                    // 例外：着色器按运行时下标取句柄，翻译器把它变成从驱动句柄表（c2）第 0 项起的贴图数组（BindlessToArray）。
+                    // 数组的第 k 项就是句柄表的第 k 个 8 字节项，宿主按项逐个绑（slot = 0、count = 数组长度），不需要逐句柄的事实。
+                    bool handleTableArray = binding.Kind == "texture" && resolved.CbufSlot == 2 && resolved.ArrayLength > 1 &&
+                                            resolved.HandleIndex == 0 && binding.Count == resolved.ArrayLength;
+                    if (!handleTableArray && (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex)))
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM",
                             binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented");
                 }

@@ -265,6 +265,8 @@ public struct ShellActions {
     public var onButtonTest: (Bool) -> Void
     /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
     public var onDeleteGame: ((_ gameID: String, _ saves: Bool) -> Void)?
+    /// Opens the game's save management (export / import saves) before it starts. nil: no item in the card's menu.
+    public var onManageSaves: ((_ gameID: String) -> Void)?
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,
@@ -276,7 +278,7 @@ public struct ShellActions {
                 onClearShellCloud: (() -> Void)? = nil,
                 onGlobalPadMapChange: ((String, String) -> Void)? = nil,
                 onGlobalPadMapReset: (() -> Void)? = nil, onButtonTest: @escaping (Bool) -> Void = { _ in },
-                onDeleteGame: ((String, Bool) -> Void)? = nil) {
+                onDeleteGame: ((String, Bool) -> Void)? = nil, onManageSaves: ((String) -> Void)? = nil) {
         self.onSelect = onSelect
         self.onPlay = onPlay
         self.onChange = onChange
@@ -297,5 +299,6 @@ public struct ShellActions {
         self.onGlobalPadMapReset = onGlobalPadMapReset
         self.onButtonTest = onButtonTest
         self.onDeleteGame = onDeleteGame
+        self.onManageSaves = onManageSaves
     }
 }

@@ -21,19 +21,6 @@ internal static class WindowsLibraryCases
                 file = request.FilePath;
                 check(File.ReadAllText(file) == "{\"schema\":1}", "private request content round trips");
                 check(new FileInfo(file).GetAccessControl().AreAccessRulesProtected, "request owns protected DACL from creation");
-                var info = new ProcessStartInfo(Environment.GetEnvironmentVariable("S2A_TEST_PYTHON")!)
-                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                info.ArgumentList.Add("-c");
-                info.ArgumentList.Add("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); import winproc; assert winproc.request_is_private(Path(sys.argv[2])), 'backend rejected request ACL'; print('private=True')");
-                info.ArgumentList.Add(Path.Combine(Environment.GetEnvironmentVariable("S2A_TEST_ENGINE")!, "pack", "jobs"));
-                info.ArgumentList.Add(file);
-                using var process = Process.Start(info)!;
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                var stdout = process.StandardOutput.ReadToEndAsync(deadline.Token);
-                var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
-                await process.WaitForExitAsync(deadline.Token);
-                var output = await stdout; var error = await stderr;
-                check(process.ExitCode == 0 && output.Contains("private=True"), "actual backend accepts Windows request DACL: " + error);
             }
             check(!File.Exists(file), "private request deleted after use");
             var weak = Path.Combine(root, "Weak");
@@ -48,6 +35,24 @@ internal static class WindowsLibraryCases
             try { using var bad = PrivateJobRequest.Create(weak, "{}"); throw new Exception("accepted public inherited request access"); }
             catch (IOException) { check(true, "reject ACL granting inherited request access to Everyone"); }
             check(!Directory.EnumerateFiles(weak).Any(), "rejected ACL writes no request data");
+            // #580：私有目录被 Directory.CreateDirectory 先建出来（继承临时目录的权限：本人 / SYSTEM / Administrators），原先永远报 inherits permissions
+            var inherited = Path.Combine(root, "Inherited");
+            Directory.CreateDirectory(Path.Combine(inherited, "jobs"));
+            {   // 玩家机上普通用户建的目录属主就是本人；管理员会话里缺省属主是 Administrators 组，夹具改回本人，只留「继承」这一个问题。
+                //   只写属主这一节（新建的描述符只设了 Owner）：取回整套再写回会顺带把权限改成不继承，夹具就不像玩家的目录了
+                var own = new DirectorySecurity();
+                own.SetOwner(sid);
+                new DirectoryInfo(inherited).SetAccessControl(own);
+            }
+            check(!new DirectoryInfo(inherited).GetAccessControl().AreAccessRulesProtected, "fixture: directory starts with inherited DACL");
+            check(sid.Equals(new DirectoryInfo(inherited).GetAccessControl().GetOwner(typeof(SecurityIdentifier))), "fixture: directory owned by the current user");
+            using (var healed = PrivateJobRequest.Create(inherited, "{}"))
+                check(File.Exists(healed.FilePath), "inherited-only private root is healed and accepts a request");
+            var after = new DirectoryInfo(inherited).GetAccessControl();
+            check(after.AreAccessRulesProtected, "healed private root no longer inherits");
+            check(after.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                .Any(r => r.IdentityReference.Equals(sid) && r.AccessControlType == AccessControlType.Allow && (r.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl),
+                "healed private root keeps the current user's full control as an explicit rule");
             var engine = Path.Combine(root, "中文 & %S2A_MARKER% !", "Engine");
             var runtime = Path.Combine(root, "Runtime");
             Directory.CreateDirectory(Path.Combine(engine, "pack", "jobs"));

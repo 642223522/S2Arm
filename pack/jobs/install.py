@@ -258,7 +258,10 @@ S_NO_USB = "这台 Mac 的 USB 上没看到 iPhone / iPad：换一根能传数�
 S_NOT_LISTED = "这台 Mac 看到手机插着，但设备服务还没列出它：解锁手机，在弹出的框里点「信任」；还不行就拔掉重插一次。"
 S_MANY_WIRED = "连着不止一台 iPhone / iPad：只留要装的那一台。"
 S_MANY_NETWORK = "同一网络上有多台配对过的 iPhone / iPad：用数据线连上要装的那一台。"
-S_STALE_CHOICE = "之前选的设备「{0}」现在不在，可选：{1}。用数据线只连要装的那一台再试。"
+# 装到哪台由玩家选、作业照办，不替玩家换一台（维护者 11-11：续签时玩家选的 iPhone 拔了线，旁边同网的 iPad 被装上了）
+S_DEVICE_REQUIRED = "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。"
+S_OFFLINE = "{0}「{1}」现在不在线：插上数据线，或让它和这台电脑连同一个 Wi-Fi 并解锁，再试一次。"
+S_NOT_PAIRED = "没找到要装的那台设备（{0}）：插上数据线并解锁，在设备上点「信任」。"
 S_TRUST = "在 iPhone 上点「信任」，再输入手机的锁屏密码。"
 S_DEV_MODE = "在 iPhone 上打开「设置 → 隐私与安全性 → 开发者模式」，按提示重启手机；重启后解锁，这里会自动打勾。"
 S_TUNNEL = "和手机建立开发连接失败：解锁手机后再试；走无线的话换成数据线。"
@@ -285,8 +288,17 @@ def _with_raw(sentence, raw):
     return sentence + ("\n" + tail[-1] if tail else "")
 
 
+def device_kind(d):
+    """devicectl 设备 → 「iPad」或「iPhone」（文案里写实际的设备类型，不写死 iPhone）"""
+    h = d.get("hardwareProperties", {})
+    return "iPad" if h.get("platform") == "iPadOS" or (h.get("productType") or "").startswith("iPad") else "iPhone"
+
+
 def _pick_device(devices, want):
-    """要装的那台：返回 (设备, 连接环节的问题)。旧选择对不上时不算没连：只有一台就用它，多台列出来让玩家选"""
+    """要装的那台：返回 (设备, 连接环节的问题)。
+    给了 want（玩家选的那台）：只认它——在线（有线或同网）就用它；配对过但不在线 → 如实说「iPhone「名字」不在线」；没见过 → 没找到。
+    不替玩家换一台（原先 want 对不上时「只有一台就用它」：续签时 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）。
+    没给 want：只给装机前清单看（polling），有线优先挑出连着的那台供界面显示；真装机不走这里（phone() 先要求 want）"""
     phones = [d for d in devices if d.get("hardwareProperties", {}).get("reality") == "physical" and d.get("hardwareProperties", {}).get("platform") in ("iOS", "iPadOS")]
     live = [d for d in phones if _link(d).get("transportType") in ("wired", "localNetwork") or _link(d).get("tunnelState") == "connected"]
     if want:
@@ -294,9 +306,11 @@ def _pick_device(devices, want):
             return want in (d.get("identifier"), d.get("hardwareProperties", {}).get("udid"), (d.get("deviceProperties", {}).get("name") or "").strip())
         chosen = [d for d in live if named(d)]
         if chosen:
-            live = chosen
-        elif len(pool := [d for d in live if _link(d).get("transportType") == "wired"] or live) > 1:   # 有线优先，同网配对过的不列
-            return None, S_STALE_CHOICE.replace("{0}", want).replace("{1}", "、".join(dict.fromkeys((d.get("deviceProperties", {}).get("name") or "").strip() for d in pool)))
+            return chosen[0], ""
+        known = [d for d in phones if named(d)]
+        if known:
+            return None, S_OFFLINE.replace("{0}", device_kind(known[0])).replace("{1}", (known[0].get("deviceProperties", {}).get("name") or "").strip())
+        return None, S_NOT_PAIRED.replace("{0}", want)
     wired = [d for d in live if _link(d).get("transportType") == "wired"]
     if len(wired) > 1:
         return None, S_MANY_WIRED
@@ -380,13 +394,17 @@ def device_link(c, want="", polling=False):
         fresh = data.get("result") if isinstance(data, dict) else None
         props = fresh.get("deviceProperties") if isinstance(fresh, dict) else None
         if rc != 0 or not isinstance(props, dict) or fresh.get("identifier") != dev["identifier"] or props.get("developerModeStatus") not in ("enabled", "disabled"):
+            if _link(dev).get("transportType") != "wired":   # 走 Wi-Fi 的那台现查不通 = 它现在不在线（人走开 / 锁屏睡眠），如实说是哪台，原文进诊断
+                return S_OFFLINE.replace("{0}", device_kind(dev)).replace("{1}", (dev.get("deviceProperties", {}).get("name") or "").strip())
             return _with_raw(S_TUNNEL, raw)
         # list devices 可能仍留着旧值；以指定设备的详情为准，同时更新诊断快照。
         dev = fresh
         devices = [fresh if d.get("identifier") == dev["identifier"] else d for d in devices]
         return ""
-    if dev.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None) or _link(dev).get("tunnelState") != "connected" or not services_ready(dev):
-        say("正在和手机建立开发连接")
+    # 真装机（非清单轮询）对选中的那台一律现查一次详情：设备列表里「同网」只说明配对过，不说明此刻连得上（11-11 玩家实报：
+    #   没插线点续签，列表里那台标着同网，走到「读已装游戏」才报「找不到设备」）；现查不通就在开工前拦下
+    if not polling or dev.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None) or _link(dev).get("tunnelState") != "connected" or not services_ready(dev):
+        say("正在和设备建立开发连接")
         problem = refresh_details()
         if problem:
             return out(dev, "prepare", problem, devices)
@@ -423,7 +441,10 @@ def _write_link_report(c, link):
 
 def phone(c):
     import target
-    link = device_link(c, (c.r.get("device") or "").strip())
+    want = (c.r.get("device") or "").strip()
+    if not want:   # 装机一律要玩家选的那台（前端 / s2armctl 都要带 device），作业层不自己挑
+        raise Failure(S_DEVICE_REQUIRED, code="device_required")
+    link = device_link(c, want)
     if link["problem"]:
         _write_link_report(c, link)
         raise Failure(link["problem"], code="device_not_connected" if link["stage"] == "connected" else "device_not_ready")
@@ -529,6 +550,15 @@ def push_stage(c, name, done=None, total=None):
         c.emit("message", name)
 
 
+def img_pack(pack):
+    """单一 IMG 形态的资源包（manifest v3 format=img，pack/img.py convert）：传完并核过 game.img 长度即装好，不再起 App 等机上解包——
+    机上要从 game.img 解出的几个小件由玩家打开 S2Arm 时自己完成（11-11 维护者：启动器到「完整传到手机并校验通过」就结束）"""
+    try:
+        return json.loads((Path(pack) / "manifest.json").read_text(encoding="utf-8")).get("format") == "img"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     """资源包推进 App 并在机上解开：调 Mac / Windows 共用的 tools/push_pack.py run --apply（同 dev_run、Windows 一键装机、s2armctl push-pack，
     #206 / PR #470、11-06 两端合一）——按 sha256 只推机上没有 / 变了的文件（免费账号 7 天到期重装、改一点重出一版时只推几个文件），
@@ -556,11 +586,15 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     log = c.logs / (c.task + "-push" + (f"-{docs.rsplit('/', 1)[-1]}" if docs else "") + ".log")
     extra = (["--docs", docs] if docs else []) + (["--launch-ctx", ctx] if ctx else [])
     try:
-        c.run([sys.executable, "-B", c.engine / "tools/push_pack.py", "run", ident, bid, pack, "--via", "devicectl", "--apply", "--progress-lines", *extra], log, env=env, on_line=line)
+        apply = [] if img_pack(pack) else ["--apply"]   # 旧形态（多程序合集等）照旧推完起 App 等解完
+        c.run([sys.executable, "-B", c.engine / "tools/push_pack.py", "run", ident, bid, pack, "--via", "devicectl", *apply, "--progress-lines", *extra], log, env=env, on_line=line)
     except Failure as e:
         if e.code != "tool_exit":
             raise
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+        m = APPLY_FAILED.search(text)   # tools/push_pack.py apply：App 自己写的解开失败原因（如 #569 目录写不进），原样上屏，不说「推不进」「没有开始」
+        if m:
+            raise Failure(f"资源包已传到 iPhone，但手机上解开失败：{m.group(1)}", code="job_failed") from e
         m = re.search(r"资源包推进去了，但(机上解包 \d+ 秒没有新进展[^：\n]*|起 App 后 \d+ 秒机上解包没有开始)", text)   # tools/push_pack.py apply：按进度判停住（11-07）
         if m:
             raise Failure(f"资源包推进去了，但{m.group(1)}：请打开这款游戏，保持在前台等它导入完，会自动进入游戏。", code="job_failed") from e
@@ -574,6 +608,9 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
         from errors import tool_reason
         raise Failure("资源包推不进 iPhone：" + tool_reason(log), code="resource_transfer_failed") from e
     return got.get("files", 0), got.get("mb", 0) << 20
+
+
+APPLY_FAILED = re.compile(r"资源包推进去了，但手机上解开失败：([^\n]+)")   # tools/push_pack.py apply 读到解包日志「解包失败：…」时报的那句
 
 
 def pull_seen(c, ident, bid, gid, tag, docs="Documents"):
@@ -738,19 +775,24 @@ def readiness(c):
         teams = xcode_teams(c.env())
         team = (pick_team(teams) if teams else None)
         item("appleId", team, "已登录 Apple ID", "" if team else (TEAM_PENDING if xcode_account(c.env())[0] else ACCOUNT_NONE))
-    link = device_link(c, (c.r.get("device") or "").strip(), polling=True)
+    # 清单只看玩家选的那台、每次现查（11-11 玩家实报：没插线却亮「iPhone 已用数据线连上」——原先没选设备时作业自己挑了同网的 iPad 来打勾）
+    want = (c.r.get("device") or "").strip()
+    link = device_link(c, want, polling=True) if want else dict(device=None, stage="connected", problem=S_DEVICE_REQUIRED, trace=[], devices=[])
     one, stage = link["device"], link["stage"]
     cert = devcert_items(c, item, (one or {}).get("hardwareProperties", {}).get("udid") or "") if use_cert else None
     name = (one.get("deviceProperties", {}).get("name") or "").strip() if one else ""
-    item("connected", one, "iPhone 已用数据线连上", link["problem"] if stage == "connected" else "")
+    kind = device_kind(one) if one else "iPhone / iPad"
+    how = "数据线" if one and _link(one).get("transportType") == "wired" else "同一 Wi-Fi"
+    item("connected", one, "{0}「{1}」已连上（{2}）".replace("{0}", kind).replace("{1}", name).replace("{2}", how) if one else "选的设备已连上（数据线或同一 Wi-Fi）",
+         link["problem"] if stage == "connected" else "")
     paired = bool(one) and stage != "trusted"
-    item("trusted", paired, "iPhone 已信任这台 Mac", link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
+    item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
     mode_pending = paired and stage == "prepare" and one.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None)
     dev_mode = paired and stage != "developerMode" and not mode_pending
-    item("developerMode", dev_mode, "iPhone 已打开开发者模式", S_DEV_MODE, waiting=not paired or mode_pending)
-    item("deviceReady", dev_mode and stage == "", "iPhone 已准备好安装", link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
+    item("developerMode", dev_mode, "{0} 已打开开发者模式".replace("{0}", kind), S_DEV_MODE, waiting=not paired or mode_pending)
+    item("deviceReady", dev_mode and stage == "", "{0} 已准备好安装".replace("{0}", kind), link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
     account = (cert or {}).get("teamName") or "" if use_cert else (team["name"] or team["id"]) if team else ""
-    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),
+    return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, deviceKind=kind.lower() if one else "", account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),
                 signing="" if use_cert else signing_summary(c.env()), signMode="devcert" if use_cert else "appleId", devcert=cert, installMode=install_mode(c))
 
 
@@ -861,20 +903,20 @@ def win_udids(W):
 
 
 def win_udid(c, W):
-    """要装的那台：请求给的 device（UDID）> 设备服务里唯一连着的一台（同一台 USB + Wi-Fi 算一台）"""
-    want = c.r.get("device")
+    """要装的那台 = 请求给的 device（UDID，玩家选的那台），不自己挑。这台在任何连接方式上（USB 或同网）在就算在线：有线、无线都可以，
+    只要是玩家选的那台（原先有 USB 连着的就只认 USB 的，玩家选的那台走 Wi-Fi、旁边插着另一台时会被判成不在）"""
+    want = (c.r.get("device") or "").strip()
+    if not want:   # 装机一律要玩家选的那台（前端从装机前清单拿到设备号再带上）
+        raise Failure(S_DEVICE_REQUIRED, code="device_required")
     try:
-        udids = win_udids(W)
+        links = W.mux_devices()
     except OSError as e:
         raise Failure(f"连不上本机苹果设备服务（{e}）：从 Microsoft Store 装「Apple Devices」后重试。", code="device_pairing_required") from e
-    if want:
-        if want not in udids:
-            raise Failure("没找到要装的那台 iPhone：插上数据线并解锁，在手机上点「信任」。", code="device_not_connected")
-        return want
-    if len(udids) != 1:
-        raise Failure("连着不止一台 iPhone / iPad：只留要装的那一台。" if udids else
-                      "没找到 iPhone：插上数据线并解锁，在手机上点「信任」。", code="device_not_connected")
-    return udids[0]
+    if want not in {u for u, _, _ in links if u}:
+        # Windows 设备服务分不出「不在线」和「没配对过」、也给不出设备名：按设备号末尾指认那台，不换别的
+        raise Failure(f"要装的那台设备（编号末尾 {want[-6:]}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
+                      code="device_not_connected")
+    return want
 
 
 def readiness_windows(c, gid):
@@ -908,12 +950,17 @@ def readiness_windows(c, gid):
     else:
         item("impactor", st["verdict"] == "ok" and bool(W.plumesign_path()), "Impactor 已装好并登录过 Apple ID",
              recovery(st["code"] or "impactor_missing", packaged=False), url=st["download"])
+    # 清单只看要装的那台、每次现查：请求带了 device（续签 = 当初那台）就只认它（USB 或同网都算）；没带就是唯一连着的那台（前端拿它的号去装）
+    want = (c.r.get("device") or "").strip()
     try:
-        udids = win_udids(W)
+        links = W.mux_devices()
+        udids = ([want] if want in {u for u, _, _ in links if u} else []) if want else win_udids(W)
     except OSError:
-        udids = []
-    item("connected", len(udids) == 1, "iPhone 已用数据线连上",
-         "连着不止一台 iPhone / iPad：只留要装的那一台。" if len(udids) > 1 else "用数据线把 iPhone 连到这台电脑，解锁手机并点「信任」。")
+        links, udids = [], []
+    how = "数据线" if udids and any(u == udids[0] and t == "USB" for u, t, _ in links) else "同一 Wi-Fi"
+    item("connected", len(udids) == 1, "{0}已连上（{1}）".replace("{0}", "设备").replace("{1}", how) if len(udids) == 1 else "选的设备已连上（数据线或同一 Wi-Fi）",
+         (f"要装的那台设备（编号末尾 {want[-6:]}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi。" if want else
+          "连着不止一台 iPhone / iPad：只留要装的那一台。" if len(udids) > 1 else "用数据线把 iPhone / iPad 连到这台电脑，或让它和这台电脑连同一个 Wi-Fi；解锁并点「信任」。"))
     cert = devcert_items(c, item, udids[0] if len(udids) == 1 else "") if use_cert else None
     kind = ""
     if len(udids) == 1 and hasattr(W, "device_kind"):   # #487：连着的是 iPad 时入口写「装到 iPad」
@@ -947,7 +994,10 @@ class MacPhone:
         self.udid = udid if udid is not None else udid_of(c, self.dev["id"])
         self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else container_bundle_id(self.team["id"])   # 证书模式：描述文件定的包名（和 Apple ID 模式是两个 App）
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
-        self.info = dict(device=self.dev["name"], team=self.team["name"], free=self.team["free"])
+        # deviceKind / deviceName：完成页、诊断写「已装到 iPad「名字」」，不写死 iPhone
+        self.info = dict(device=self.dev["name"], deviceName=self.dev["name"],
+                         deviceKind="iPad" if (self.dev.get("productType") or "").startswith("iPad") else "iPhone",
+                         team=self.team["name"], free=self.team["free"])
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
     def backup(self, g):
@@ -993,7 +1043,14 @@ class WinPhone:
         self.key = self.udid
         self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else layout.load_device(c, self.key).get("bundleId") or None
         self.devpush = c.engine / "Binaries/Prepare/devpush/s2a-devpush.exe"
-        self.info = dict(device=self.udid)
+        # Windows 设备服务给不出设备名，类型按 USB 产品号认（同装机前清单 deviceKind）；认不出写空，前端写「iPhone / iPad」
+        kind = ""
+        if hasattr(self.W, "device_kind"):
+            try:
+                kind = {"ipad": "iPad", "iphone": "iPhone"}.get(self.W.device_kind(self.udid), "")
+            except Exception:
+                kind = ""
+        self.info = dict(device=self.udid, deviceName="", deviceKind=kind)
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
     def client(self, work):
@@ -1090,7 +1147,7 @@ class WinPhone:
     def push(self, g, pack):
         try:
             return self.W.push_pack(self.udid, self.bid, str(pack), str(self.devpush) if self.devpush.is_file() else None,
-                                    say=lambda m: self.c.emit("message", m), docs=game_docs(g), ctx=game_ctx(g), apply_after=True,
+                                    say=lambda m: self.c.emit("message", m), docs=game_docs(g), ctx=game_ctx(g), apply_after=not img_pack(pack),
                                     progress=lambda d, t, k, n: push_progress(self.c, d, t, k, n),
                                     stage=lambda name, d=None, t=None: push_stage(self.c, name, d, t))
         except self.W.Fail as e:
@@ -1110,6 +1167,17 @@ def phone_for(c):
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
+# 机上目录不存在：s2a-devpush ls 的结构化错误码 S2A_AFC_ERR 8（AFC ObjectNotFound）；旧工具 / devicectl 只有原文，兜底认
+#   「No such file」与「Object not found / ObjectNotFound」（带不带空格、大小写都认）。玩家实机（Windows 0.2.7、iOS 27.0.1）原文是
+#   「afc error: Object not found」，原先只认 ObjectNotFound，首次装机（App 在、还没有 Documents/games）被当成读不出设备挡住（v0.2.8 热修）
+AFC_NOT_FOUND = 8
+
+
+def dir_missing(out):
+    m = re.search(r"S2A_AFC_ERR (\d+)", out or "")
+    if m:
+        return int(m.group(1)) == AFC_NOT_FOUND
+    return bool(re.search(r"no such file|object\s*not\s*found", out or "", re.I))
 
 
 def phone_bid(ph):
@@ -1129,11 +1197,14 @@ def phone_games(c, ph):
         cl = devpush_client(c, ph.udid, bid, w)
         rc, out = cl.call("ls", "Documents/games")
         if rc:
-            if "No such file" in out or "ObjectNotFound" in out:   # App 在、还没装过任何一款
+            if dir_missing(out):   # App 在、还没装过任何一款（Documents/games 还没建）：当 0 款，装机照常（推资源包时自会建目录）
                 return set()
             if ph.app_missing(bid, out):
                 return None
-            raise Failure("读不出 iPhone 上已经装了哪些游戏：" + out[-200:] + "。为免把别的游戏挤掉，这次没装；手机解锁、数据线插稳后再点一次。", code="device_locked")
+            info = getattr(ph, "info", None) or {}
+            who = f"{info.get('deviceKind') or 'iPhone / iPad'}「{info.get('deviceName')}」" if info.get("deviceName") else (info.get("deviceKind") or "设备")
+            raise Failure(f"读不出{who}上已经装了哪些游戏，为免把别的游戏挤掉，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
+                          code="device_locked", internal="s2a-devpush ls：" + out[-500:])
         found = set()
         for name in out.splitlines():
             g = name.strip().rstrip("/").upper()
@@ -1192,12 +1263,16 @@ def put_game(c, gid, ph, steps=True, others=None):
     if others is None:
         others = container_others(c, ph, rec, leave=gid)   # 手机上实际有的款也带上（另一台电脑装的），带不了的先问玩家
     if steps: c.begin("把这款放进手机上的 S2Arm", 2, 6)
+    # 改写器修过的话：容器里各款按本引擎改写器核一遍，受影响的只换改写产物（不重出资源包、不推 game.img），再组进新壳（rewrite_refresh.py）
+    from rewrite_refresh import refresh_ios
+    refresh_ios(c, [g for g in ([gid] if gid else []) + list(others) if g])
     ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
     packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
     stale = [g for g in games if g == gid or pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack")]
     ph.install(ipa, games, steps=steps)
     ph.before_push({g: packs[g] for g in stale})
-    if steps: c.begin("把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
+    img = bool(stale) and all(img_pack(packs[g]) for g in stale)   # 这次推的全是单一 IMG：传完并核过长度即装好，不等机上解开
+    if steps: c.begin("把游戏推进 iPhone（只推变了的文件；第一次大游戏要几分钟）" if img else "把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
     files = size = 0
     pushed = dict((g, (rec["games"].get(g) or {}).get("pack", "")) for g in games)
     try:
@@ -1213,6 +1288,7 @@ def put_game(c, gid, ph, steps=True, others=None):
     packer.commit_phone_ipa(c, ipa, sid)
     # 资源传完但电脑没拉起 App 解开（manual_unpack_required，11-09 #336）：不算「已装好」，结果带上还差的一步，两端前端据此显示「还差最后一步」而不是「已装到 iPhone」
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
+    if img: extra["openToFinish"] = True   # 两端成功页写「已传到 iPhone，打开 S2Arm 会自动完成安装」（机上从 game.img 解出几个小件由 App 打开时完成）
     return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info, **extra)
 
 

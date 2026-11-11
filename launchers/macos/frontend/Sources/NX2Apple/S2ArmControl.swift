@@ -2,7 +2,7 @@
 //   App 自带的 s2armctl / skill（launchers/macos/skill/s2arm-operator，维护者 10-23：玩家用自己的 AI 完成移植）对缺省 App 全部连不上。
 // 收发、令牌、control.json 用适配层 ControlPort（与旧启动器同一份）；协议同旧启动器（launchers/macos/s2armctl.py 不用改）。
 // 每个命令调界面按钮背后的同一个模型方法（S2ArmLauncherModel），屏幕上的作业页照常显示；选文件的对话框改成直接给路径。
-// GET /state 的 tasks 读作业层自己写的作业记录（<游戏库>/logs/jobs/<任务>.json，库没建好时 <私有目录>/logs/jobs；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
+// GET /state 的 tasks 读作业层自己写的作业记录（固定 <私有目录>/logs/jobs/<任务>.json，剃刀 H6；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
 import AppKit
 import Foundation
 import S2ArmAppleAdapter
@@ -44,8 +44,6 @@ import S2ArmAppleAdapter
             case .noPlatform: return .bad("没选平台")
             case .game(let why): return .bad(why)
             case .keys: return .bad("还没放密钥：s2armctl keys <prod.keys>")
-            case .checking: return .bad("环境检查还在跑，几秒后再试", code: 409)
-            case .environment: return .bad("环境缺东西：看 GET /state 的 checks（ok 为 false 的项），处理后 POST /environment 重查")
             case .busy: return .bad("有作业在跑：等它结束或 cancel 再来", code: 409)
             case .alreadyQueued: return .bad("这款已在出包或排队，没有新建任务：等它结束再发", code: 409)
             }
@@ -121,14 +119,16 @@ import S2ArmAppleAdapter
             }
         case ("POST", "/installCheck"):
             guard let g = game() else { return .bad("没有这个 gameId") }
-            model.checkInstall(g.id); return .ok()
+            model.checkInstall(g.id, device: str("device")); return .ok()   // device：查哪一台（s2armctl install-check --device），不给按界面上选中的那台
         case ("POST", "/install"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
             guard model.installAllowed(g.id) else {
                 return .bad("还不能装：先 install-check \(g.id)；这款的 iPhone 版没做好时要先出包")
             }
-            model.install(g, teamId: str("teamId"), device: str("device"), acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
+            // 往设备上装东西一律要说明装到哪台（11-11：作业层不替玩家挑，控制口也不拿界面上选中的那台顶替）；s2armctl targets 列设备号
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.install(g, teamId: str("teamId"), device: device, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
@@ -142,17 +142,20 @@ import S2ArmAppleAdapter
             if !u.stale.isEmpty, !accept {
                 return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "这几款要按新版重新出包，重新出包前暂时打不开：带 acceptStale 确认（repack 为真时更新完把它们排进批量出包、出完自动装）", "stale": stale]))
             }
-            model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans")
+            model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans",
+                              device: (a["device"] as? String).flatMap { $0.isEmpty ? nil : $0 })   // 同 /install：连着多台时指定哪台
             return .object(["ok": true, "stale": stale])
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
             if let b = busy() { return b }
-            model.restorePhone(g); return .ok()
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.restorePhone(g, device: device); return .ok()
         case ("POST", "/uninstall"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
-            model.removeFromPhone(g, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.removeFromPhone(g, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false, device: device); return .ok()
         case ("POST", "/customize"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
@@ -168,8 +171,12 @@ import S2ArmAppleAdapter
             if let e = model.actionError(for: g.id) { return .bad(e) }
             return .ok()
         case ("POST", "/cancel"):
-            guard str("taskId") != nil else { return .bad("缺 taskId") }
+            // 按任务号取消（启动器剃刀 M23）：原先不管传什么都停当前那个；任务号对不上回 409，不停错作业
+            guard let id = str("taskId") else { return .bad("缺 taskId") }
             guard model.busy else { return .bad("没有在跑的作业") }
+            guard let current = model.session?.taskID, current == id else {
+                return .bad("这个 taskId 不是正在跑的作业（正在跑：\(model.session?.taskID ?? "还没拿到任务号")）", code: 409)
+            }
             model.stop(); return .ok()
         case ("POST", "/retry"):
             guard let id = str("taskId"), let t = ControlJournal.tasks(privateRoot: model.provider.client.environment.privateRoot, limit: 500).first(where: { $0["id"] as? String == id }) else {
@@ -260,6 +267,9 @@ import S2ArmAppleAdapter
     }
 
     /// 自描述：AI 先 GET /help 就知道能做什么（s2armctl help 打的就是这张表）。
+    /// 往设备上装 / 删 / 装回不带 device：拒绝（作业层也拒），告诉怎么查设备号
+    static let deviceRequired = "缺 device：说明装到哪台（s2armctl targets 列出连着的设备、设备名和设备号），不替你挑"
+
     static let endpoints: [[String: String]] = [
         ["GET /state", "当前界面状态：环境检查（checks）、密钥、游戏列表（id / 能否出包 / 缺什么）、作业页（session）、任务（tasks：作业记录，进度、里程碑、diagnostics 错误码 / 原因 / 建议 / 日志）"],
         ["GET /targets", "打 iPhone 包的目标设备：当前目标、连着的设备、可选机型、可选系统大版本（会现读一次设备）"],

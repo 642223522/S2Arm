@@ -90,6 +90,7 @@ public final class S2ArmShellHostModel {
         } + remaining
         for tile in catalogue.tiles { applyIdentity(tile.id) }
         for p in catalogue.problems { NSLog("S2Arm 游戏库：%@", p) }
+        Self.sweepDeleting(gamesRoot)
         refreshGameData()
         // 测试开关（真机自动化要 XCTest 触控 ID 授权、人不在时点不进去；同 diag.m S2A_OPEN_SETTINGS，环境变量只有 devicectl / Xcode 起 App 能给，玩家碰不到）：
         //   S2A_SHELL_OPEN_LAYOUT_EDITOR=<游戏号> 起来直接盖上这款的「调整位置」编辑页
@@ -150,6 +151,7 @@ public final class S2ArmShellHostModel {
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default: missing.insert(id); want = listed == .playable ? .needsGameData : listed   // 不显示；Play 点到也只给导入说明，不放行
             }
+            noteDataSize(i, ready: installState(id) == 1)
             let fresh = want == .playable && isFresh(id)
             if allGames[i].game.isNew != fresh { allGames[i].game.isNew = fresh }
             if allGames[i].game.state != want {
@@ -157,6 +159,45 @@ public final class S2ArmShellHostModel {
                 allGames[i].game.state = want
             }
         }
+    }
+
+    /// 游戏设置页「游戏数据」那一栏（11-11 宿主梳理：原先永远「未选择数据」、点「选择…」没反应）：资源已就绪的款显示
+    ///   「已就绪 · 本机占用 X」，只读。占用要遍历这款整个数据根（一款约 10 万文件），后台算一次、按游戏缓存；不就绪（没有 / 传着 /
+    ///   解着）就清掉缓存和显示，装好或删除后下一次重判重新算。显示「选择…」只在还没有数据时（ShellUI GameDetailView）
+    @ObservationIgnored private var dataSizes: [String: Int64] = [:]
+    @ObservationIgnored private var sizing: Set<String> = []
+    private func noteDataSize(_ i: Int, ready: Bool) {
+        let id = allGames[i].id
+        guard ready else {
+            dataSizes[id] = nil
+            if !allGames[i].dataSource.isEmpty { allGames[i].dataSource = "" }
+            return
+        }
+        if let size = dataSizes[id] {
+            let text = shellText("Ready · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) on this device")
+            if allGames[i].dataSource != text { allGames[i].dataSource = text }
+            return
+        }
+        guard !sizing.contains(id) else { return }
+        sizing.insert(id)
+        let dir = gamesRoot.appendingPathComponent(id)
+        Task { [weak self] in
+            let size = await Task.detached(priority: .utility) { Self.allocatedSize(dir) }.value
+            guard let self else { return }
+            self.sizing.remove(id); self.dataSizes[id] = size
+            self.refreshGameData()
+        }
+    }
+    /// 目录下全部文件占用的空间（按分配大小，与「设置 → 储存空间」同口径）
+    nonisolated static func allocatedSize(_ url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isDirectoryKey]
+        var total: Int64 = 0
+        guard let walk = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in true }) else { return 0 }
+        for case let file as URL in walk {
+            guard let v = try? file.resourceValues(forKeys: Set(keys)), v.isDirectory != true else { continue }
+            total += Int64(v.totalFileAllocatedSize ?? v.fileAllocatedSize ?? 0)
+        }
+        return total
     }
 
     /// 传完了：没起过就在后台解开（正在解别的款 → 排着，下一秒再试）；起过、宿主说已不在解、还是阶段 2 → 没解成
@@ -215,7 +256,8 @@ public final class S2ArmShellHostModel {
                      onPickGameData: { [weak self] id in self?.requestGameData(id) },
                      onPickShellCloud: Self.pickCloudFolder, onClearShellCloud: Self.pickCloudFolder == nil ? nil : { CloudSaves.forget() },
                      onButtonTest: { [weak self] open in self?.buttonTest(open) },
-                     onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
+                     onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) },
+                     onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         return actions
     }
@@ -247,6 +289,14 @@ public final class S2ArmShellHostModel {
     }
 
     /// 只放行可运行的那款（界面本身也只在 playable 时调 onPlay，这里再守一道）；放行前当场重判资源包（库开着时资源被删 / 换机拷走）
+    /// 长按卡片「管理存档…」（11-11 宿主梳理：原先在主屏快捷菜单里，库里不知道是哪款，一进 App 就弹退出框）：记下这一款
+    ///   「下次开局先进存档管理」（ios/save_transfer.m 同一个按游戏的键 S2ASaveManageOnOpen.<游戏号>），再照常开始这一款，起局前就进存档管理页
+    public func manageSaves(_ id: String) {
+        guard allGames.contains(where: { $0.id == id }), id.allSatisfy({ $0.isHexDigit }) else { return }
+        stores.app.set(true, forKey: "S2ASaveManageOnOpen." + id)
+        requestPlay(id)
+    }
+
     public func requestPlay(_ id: String) {
         if allGames.first(where: { $0.id == id })?.game.state.installPhase == .failed { installTried.remove(id) }   // 「安装没完成」点重试：再解一次
         refreshGameData()
@@ -263,23 +313,101 @@ public final class S2ArmShellHostModel {
     /// 存档在这款数据根下的 S2A/（Ryujinx 数据根 <文档根>/S2A/ryujinx，存档 bis/user/save，同 pack/jobs/install.py SAVE_REL）
     static let saveRoot = "S2A"
 
-    /// 删除这款的本机数据：saves = 连存档一起删（整个数据根），否则留下 S2A/（存档与用户资料）、其余（资源包、名字封面等）删掉。删完重判资源包，库里随即不显示
+    /// 删除这款的本机数据：saves = 连存档一起删（整个数据根），否则留下 S2A/（存档与用户资料）、其余（资源包、名字封面等）删掉。
+    /// v0.2.6 玩家反馈「点删除完全没反应」：原先在主线程上同步 removeItem，一款资源包约 10 万文件，删完前界面整个冻住、对话框都不关，
+    ///   失败只进日志（模拟器 10 万文件实测点下到卡片消失 17.8 秒）。现在分两步：
+    ///   ① 主线程上只把要删的东西改名挪进 <游戏根>/.deleting/<游戏号>-<随机>（同卷改名，毫秒级），随即重判，这款当场离开列表；
+    ///   ② 后台把 .deleting 里那份真删掉，边删边累计占用的空间，删完提示「已删除，释放 X」；挪不动 / 删不掉提示失败原因。
+    ///   删到一半 App 被结束：下次打开时后台接着清 .deleting（init 里 sweepDeleting）
     public func deleteGame(_ id: String, saves: Bool) {
         guard allGames.contains(where: { $0.id == id }), id.allSatisfy({ $0.isHexDigit }) else { return }
+        let title = allGames.first(where: { $0.id == id })?.game.title ?? id
         let fm = FileManager.default, dir = gamesRoot.appendingPathComponent(id)
+        let trash = gamesRoot.appendingPathComponent(Self.deletingDir).appendingPathComponent("\(id)-\(UUID().uuidString)")
+        var moved = false, moveError: Error?
         do {
+            try fm.createDirectory(at: trash, withIntermediateDirectories: true)
             if saves {
-                if fm.fileExists(atPath: dir.path) { try fm.removeItem(at: dir) }
+                if fm.fileExists(atPath: dir.path) { try fm.moveItem(at: dir, to: trash.appendingPathComponent(id)); moved = true }
             } else {
                 for item in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where item.lastPathComponent != Self.saveRoot {
-                    try fm.removeItem(at: item)
+                    try fm.moveItem(at: item, to: trash.appendingPathComponent(item.lastPathComponent)); moved = true
                 }
             }
-            NSLog("S2Arm 游戏库：已删除 %@ 的本机数据%@", id, saves ? "（含存档）" : "（存档保留）")
-        } catch {
-            NSLog("S2Arm 游戏库：删除 %@ 失败：%@", id, error.localizedDescription)
-        }
+        } catch { moveError = error }
         refreshGameData()
+        if let moveError {   // 挪了一半的照样后台删掉，提示失败原因
+            NSLog("S2Arm 游戏库：删除 %@ 失败（挪进待删目录）：%@", id, moveError.localizedDescription)
+            show(DeleteNotice(gameID: id, title: title, phase: .failed(moveError.localizedDescription)))
+        } else if moved {
+            NSLog("S2Arm 游戏库：%@ 的本机数据%@已挪进待删目录，后台删除", id, saves ? "（含存档）" : "（存档保留）")
+            show(DeleteNotice(gameID: id, title: title, phase: .deleting))
+        } else {   // 本来就没有可删的
+            show(DeleteNotice(gameID: id, title: title, phase: .done(freed: 0)))
+        }
+        let report = moveError == nil && moved
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { Self.purge(trash) }.value
+            switch result {
+            case .success(let freed): NSLog("S2Arm 游戏库：%@ 删完，释放 %lld 字节", id, freed)
+            case .failure(let error): NSLog("S2Arm 游戏库：%@ 后台删除失败：%@", id, error.localizedDescription)
+            }
+            guard report, let self else { return }
+            switch result {
+            case .success(let freed): self.show(DeleteNotice(gameID: id, title: title, phase: .done(freed: freed)))
+            case .failure(let error): self.show(DeleteNotice(gameID: id, title: title, phase: .failed(error.localizedDescription)))
+            }
+        }
+    }
+
+    /// 删除进度与结果（宿主视图在库上方画一条提示）：正在删除 → 已删除（释放多少）/ 失败原因；结果停留 4 秒后自动收起
+    public struct DeleteNotice: Equatable, Sendable {
+        public enum Phase: Equatable, Sendable { case deleting, done(freed: Int64), failed(String) }
+        public let gameID: String, title: String, phase: Phase
+    }
+    public private(set) var deleteNotice: DeleteNotice?
+    @ObservationIgnored private var noticeDismiss: Task<Void, Never>?
+    static let noticeSeconds: Double = 4
+    /// 换上新提示；结果（已删除 / 失败）停留 noticeSeconds 后收起，正在删除的一直显示到有结果
+    private func show(_ notice: DeleteNotice) {
+        deleteNotice = notice
+        noticeDismiss?.cancel()
+        guard notice.phase != .deleting else { return }
+        noticeDismiss = Task { [weak self, notice] in
+            try? await Task.sleep(for: .seconds(Self.noticeSeconds))
+            guard !Task.isCancelled, let self, self.deleteNotice == notice else { return }
+            self.deleteNotice = nil
+        }
+    }
+    public func dismissDeleteNotice() { if deleteNotice?.phase != .deleting { deleteNotice = nil } }
+
+    /// 待删目录名：点开头、不是 16 位游戏号，扫游戏根的地方（otherComputerGames、宿主按款核资源包）都不认它
+    nonisolated static let deletingDir = ".deleting"
+    /// 删掉 url 整棵树，返回删掉的文件占用的空间（字节，按分配大小算，与「设置 → 储存空间」同口径）
+    nonisolated static func purge(_ url: URL) -> Result<Int64, Error> {
+        let fm = FileManager.default
+        var freed: Int64 = 0
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isDirectoryKey]
+        if let walk = fm.enumerator(at: url, includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in true }) {
+            for case let file as URL in walk {
+                guard let v = try? file.resourceValues(forKeys: Set(keys)), v.isDirectory != true else { continue }
+                freed += Int64(v.totalFileAllocatedSize ?? v.fileAllocatedSize ?? 0)
+            }
+        }
+        do { try fm.removeItem(at: url) } catch { return .failure(error) }
+        return .success(freed)
+    }
+    /// 上次删到一半 App 被结束留下的待删条目：后台接着删（不提示）。只删此刻已在 .deleting 里的那几项、不删 .deleting 本身——
+    ///   打开 App 马上又删一款时，新挪进去的那份由它自己那次删除负责，两边不抢同一个目录
+    nonisolated static func sweepDeleting(_ gamesRoot: URL) {
+        let dir = gamesRoot.appendingPathComponent(deletingDir)
+        let leftovers = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        guard !leftovers.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            var freed: Int64 = 0
+            for item in leftovers { if case .success(let n) = purge(item) { freed += n } }
+            NSLog("S2Arm 游戏库：清掉上次没删完的 %d 项待删数据，释放 %lld 字节", leftovers.count, freed)
+        }
     }
 
     /// 「需要游戏数据」那款：交宿主给导入说明（宿主「重新检查」后经 s2a_shell_refresh 回到 refreshGameData）

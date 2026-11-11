@@ -160,28 +160,40 @@ public static class ControlJournal
     private static readonly HashSet<string> Visible = new(StringComparer.Ordinal)
         { "install", "installRemove", "installRestore", "installUpdate", "import", "keys", "ipa", "moveGame", "setup" };
 
-    // 进程被强制结束时作业层来不及写终态：记录还是 running 而进程已不在，要按中断报，否则 s2armctl 一直等
+    // 进程被强制结束时作业层来不及写终态：记录还是 running 而进程已不在，要按中断报，否则 s2armctl 一直等。
+    //   「在不在」按进程号 + 起始时刻认，同作业层 core.describe（剃刀 W9：原先只看进程号，进程号被复用时早死的作业一直报 running）
     private static JsonElement Reconcile(JsonElement task)
     {
         if (!task.TryGetProperty("state", out var state) || state.GetString() is not ("running" or "cancelling") ||
-            !task.TryGetProperty("pid", out var pid) || pid.ValueKind != JsonValueKind.Number || !pid.TryGetInt32(out var id) || Alive(id)) return task.Clone();
+            !task.TryGetProperty("pid", out var pid) || pid.ValueKind != JsonValueKind.Number || !pid.TryGetInt32(out var id) ||
+            Alive(id, task.TryGetProperty("pidStart", out var started) && started.ValueKind == JsonValueKind.String ? started.GetString() : null)) return task.Clone();
         var node = System.Text.Json.Nodes.JsonNode.Parse(task.GetRawText())!.AsObject();
         node["state"] = "interrupted"; node["message"] = "作业进程已不在";
         return JsonSerializer.SerializeToElement(node);
     }
 
-    private static bool Alive(int pid)
+    private static bool Alive(int pid, string? pidStart)
     {
-        try { using var process = System.Diagnostics.Process.GetProcessById(pid); return !process.HasExited; }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException) { return false; }
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            if (process.HasExited) return false;
+            // 作业层 winproc.pid_start 记的是 GetProcessTimes 的创建时刻（FILETIME）；对不上 = 进程号已被别的进程复用
+            return !OperatingSystem.IsWindows() || SameStart(process.StartTime.ToFileTimeUtc(), pidStart);
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
     }
 
-    /// <summary>作业记录在 LibraryPaths.JobsDir（库\logs\jobs，库没建好时 私有目录\logs\jobs）；library 不给就读设置。</summary>
-    public static List<JsonElement> Tasks(string privateRoot, int limit = 60, string? library = null)
+    /// <summary>记录里的起始时刻和这个进程号现在那个进程的对得上？记录没写起始时刻（旧记录）按对得上算，同作业层。</summary>
+    public static bool SameStart(long fileTime, string? pidStart) =>
+        string.IsNullOrEmpty(pidStart) || pidStart == fileTime.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>作业记录在 LibraryPaths.JobsDir（固定 私有目录\logs\jobs，剃刀 H6）。</summary>
+    public static List<JsonElement> Tasks(string privateRoot, int limit = 60)
     {
         var found = new List<(double Started, JsonElement Task)>();
         string[] files;
-        try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot, library), "*.json"); }
+        try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot), "*.json"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
         foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase)))
         {
