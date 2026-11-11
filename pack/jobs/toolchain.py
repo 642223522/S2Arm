@@ -268,7 +268,7 @@ def preflight(c):
         "需要 Apple Silicon Mac。", ("prepare", "launch"))
     add("macOS", platform.system() == "Darwin" and int(platform.mac_ver()[0].split(".")[0] or 0) >= 15,
         "启动器需要 macOS 15 或更新版本。", ("prepare", "launch"))
-    add("Python", sys.version_info >= (3, 11), "需要 Python 3.11 或更新版本。", ("prepare", "launch"))
+    add("Python", sys.version_info >= PYTHON_MINIMUM, "需要 Python %s 或更新版本。" % ".".join(map(str, PYTHON_MINIMUM)), ("prepare", "launch"))
     try:
         c.require_source()
         source_ok = True
@@ -370,6 +370,9 @@ def download_metal(c):
 
 SDK_SIM_MAPPING = Path.home() / "Library/Developer/Xcode/SDKToSimulatorIndexMapping.plist"   # Xcode 自己写的「iOS SDK 构建号 → 可配的模拟器运行时构建号」表
 BYTE_SCALE = {"b": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4}   # 与 ByteCountFormatter(.file) 一致，也和 xcodebuild 打印的 8.32 GB 对得上
+PYTHON_MINIMUM = (3, 11)   # 作业层要的 Python 最低版本：预检（preflight）与 Windows 环境检查（winenv 直接读这个常量）同一份
+
+
 DOWNLOAD_BYTES = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*\(([\d.]+)\s*([kmgt]?b)\s+of\s+([\d.]+)\s*([kmgt]?b)\)", re.I)
 IOS_PLATFORM_TIMEOUT = 6 * 3600    # 只防挂死：8.32 GB 在 400 KB/s 下约 6 小时，正常远快于这个上限
 IOS_PLATFORM_REGISTER_WAIT = 180   # 传输完后等 CoreSimulator 注册的上限（秒）
