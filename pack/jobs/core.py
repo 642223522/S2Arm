@@ -935,6 +935,10 @@ class Context:
         env.pop("J", None)
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
+        gid = self.r.get("gameId")
+        if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
+            import library
+            env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
