@@ -392,17 +392,22 @@ struct CoverFill: View {
     }
 }
 
-/// Covers decoded once per path (the library redraws on every job event while a game runs).
+/// Covers decoded once per file version (the library redraws on every job event while a game runs).
+/// 键 = 路径 + 修改时间（剃刀 M15：原先只按路径永久缓存——玩家换封面、后台查到横图写同一路径后一直显示旧图 / 一直空，要重开启动器）；
+/// 每次只做一次 stat，解码只在文件变了时做。解不开的也按同一个键记，文件一变就重试
 @MainActor final class CoverCache: ObservableObject {
     private var images: [String: NSImage] = [:]
     private var missing: Set<String> = []
     func image(_ path: String?) -> NSImage? {
         guard let path else { return nil }
-        if let image = images[path] { return image }
-        if missing.contains(path) { return nil }
+        guard let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
+        let key = path + "|" + String(stamp.timeIntervalSinceReferenceDate)
+        if let image = images[key] { return image }
+        if missing.contains(key) { return nil }
         let _ = LauncherWork.count(.artworkDecode)
-        guard let image = NSImage(contentsOfFile: path) else { missing.insert(path); return nil }
-        images[path] = image
+        guard let image = NSImage(contentsOfFile: path) else { missing.insert(key); return nil }
+        images = images.filter { !$0.key.hasPrefix(path + "|") }   // 同一张图的旧版本不留着占内存
+        images[key] = image
         return image
     }
 }
