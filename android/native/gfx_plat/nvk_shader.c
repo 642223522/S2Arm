@@ -112,6 +112,7 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
         if (b->is_support) e->src_kind = NVN_RB_SUPPORT;
         else if (b->slot == 0) e->src_kind = NVN_RB_DRV0;
         else if (b->slot == 1) e->src_kind = NVN_RB_C1;
+        else if (b->slot == 2) e->src_kind = NVN_RB_DRV2;   // 驱动的贴图句柄表（着色器自己从表里读句柄时才会出现）
         else if (b->slot >= 3 && b->slot - 3 < 16) { e->src_kind = NVN_RB_CBUF; e->src_reg = (uint16_t)(b->slot - 3); }
         else return 0;
         return 1;
