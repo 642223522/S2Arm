@@ -16,7 +16,8 @@ namespace S2A.Services
     //   起局（游戏开跑前，Application.Register）：存档位置的内容和 App 上次写入 / 读入时不一样 → 玩家放了新的 → 识别后整棵换掉当前存档；一样 → 不动。
     //   退出（收局，存档服务还在）：当前存档按固定结构写回 save/（账号存档，只有设备存档的游戏是设备存档）+ save_device/（两种都有时的设备存档）；
     //   这一局里存档位置被玩家动过就不写回（保住刚放进来的，下次起局读它）；起局时放进来的没认出也不写回（原样留给玩家改）。
-    //   「一样不一样」= 存档位置里所有文件的相对路径、大小、修改时间的摘要（不逐字节算哈希），记在数据根的 savedata-state.txt；
+    //   「一样不一样」= 存档位置里所有文件的相对路径、大小与内容哈希的摘要，记在数据根的 savedata-state.txt（审计 P1-163：原先用修改时间，
+    //   同大小保留时间的替换看不出来、只动了修改时间又会让本局进度不写回、下次起局被文件夹里的旧内容盖掉）；
     //   认不出的原因写数据根的 savedata-problem.txt（存档管理页读它给玩家看），读入成功就删掉。
     //   识别规则同电脑端 pack/jobs/save_formats.py（JKSV / Checkpoint / Ryujinx / yuzu / NX2Apple / 裸文件），两端都走这一份
     public static class SaveFolder
@@ -57,8 +58,9 @@ namespace S2A.Services
             var sb = new StringBuilder();
             foreach (string rel in files)
             {
-                var fi = new FileInfo(Path.Combine(dir, rel));
-                sb.Append(rel).Append('\t').Append(fi.Length).Append('\t').Append(fi.LastWriteTimeUtc.Ticks).Append('\n');
+                string f = Path.Combine(dir, rel);
+                byte[] h; using (var st = File.OpenRead(f)) h = SHA256.HashData(st);   // 按内容：修改时间被同步盘 / 拷贝工具改了不算换过，保留时间的替换也看得出来
+                sb.Append(rel).Append('\t').Append(new FileInfo(f).Length).Append('\t').Append(Convert.ToHexString(h)).Append('\n');
             }
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())));
         }
@@ -119,7 +121,7 @@ namespace S2A.Services
             if (why != null) return null;
             // ⑤ JKSV / 裸文件：路径里没有程序号。JKSV/<游戏名>/<用户名 - 时间>/：往下走到第一层有文件的目录，同层多份取最新；
             //   裸文件：外面只套着一层文件夹（拖进来的整个文件夹），且那层名字不是这款游戏自己存档里的顶层名字 → 剥掉；套着的 16 / 32 位十六进制目录也剥
-            string cur = folder;
+            string cur = folder; bool jksv = false;   // 剥过 JKSV 这层：下面的游戏名层、单份时间戳层都是 JKSV 的包装，照剥
             for (int guard = 0; guard < 8; guard++)
             {
                 var top = TopNames(cur);
@@ -130,7 +132,11 @@ namespace S2A.Services
                 {
                     string n = Path.GetFileName(dirs[0]);
                     if (n == "cheats") break;   // 只有金手指：下面判掉，不当包装层钻进去
-                    if (n == "JKSV" || Hex16.IsMatch(n) || Hex32.IsMatch(n) || !ownTop.Contains(n)) { cur = dirs[0]; continue; }
+                    // 游戏自己存档里的顶层名字先判（审计 P1-161：原先 16 / 32 位十六进制名字即使是游戏自己的目录也剥）；
+                    //   游戏还没有存档（第一次放进来，ownTop 空）时不知道这层是不是游戏自己的，只剥编号层与 JKSV，别的名字原样当存档根（剥错会让游戏读不到、退出又写回空档）
+                    if (ownTop.Contains(n)) break;
+                    if (n == "JKSV") jksv = true;
+                    if (jksv || Hex16.IsMatch(n) || Hex32.IsMatch(n) || ownTop.Count > 0) { cur = dirs[0]; continue; }
                     break;
                 }
                 // 多个子目录：全是 JKSV 时间戳目录（「用户名 - 2026.11.09 @ 12.00.00」）→ 取最新；否则这层就是存档根
@@ -142,6 +148,58 @@ namespace S2A.Services
             return [("save", cur)];
         }
 
+        // 写回换到一半被打断（审计 P2-267：先把现目录改名 .old、再把 .next 改名成现目录，中间断了下次起局会把空目录当「还没有存档」）：
+        //   .next 是写全了的本局进度，优先放回；没有 .next 才放回 .old。不放 .old 盖 .next：那样下次起局会把旧档当玩家新放的、盖掉进度
+        static void Recover(string folder)
+        {
+            string trim = folder.TrimEnd(Path.DirectorySeparatorChar), next = trim + ".next", old = trim + ".old";
+            if (Directory.Exists(folder)) return;   // 现目录在：没断在换的那一下（残留的 .old / .next 由下次写回开头清）
+            string back = Directory.Exists(next) ? next : Directory.Exists(old) ? old : null;
+            if (back == null) return;
+            Directory.Move(back, folder);
+            if (Directory.Exists(old)) Directory.Delete(old, true);
+            Console.Error.WriteLine($"S2A 存档位置：上次写回换到一半，放回{(back == next ? "写全了的本局进度" : "换之前的内容")}");
+        }
+
+        // 存档位置里的用户号（审计 P1-162：游戏把用户号记在存档里，对不上会当新玩家；原先写回丢了它、Ryujinx 导出里的也不套用）：
+        //   固定结构写回的 user 文件（32 位十六进制，同 S2A_SAVE_DIR/user），否则 Ryujinx 导出账号存档 ExtraData0 偏移 0x8 的 16 字节（这款、类型 1）
+        internal static string FolderUser(string folder, ulong programId)
+        {
+            if (folder == null || !Directory.Exists(folder)) return null;
+            string f = Path.Combine(folder, "user");
+            if (File.Exists(f)) { string hex = File.ReadAllText(f).Trim(); return Hex32.IsMatch(hex) ? hex.ToLowerInvariant() : null; }
+            foreach (string meta in Directory.EnumerateFiles(folder, "ExtraData0", SearchOption.AllDirectories))
+            {
+                if (new FileInfo(meta).Length < 0x40) continue;
+                byte[] a = new byte[0x40]; using (var s = File.OpenRead(meta)) s.ReadExactly(a);
+                if (BitConverter.ToUInt64(a, 0) != programId || a[0x20] != 1 || BitConverter.ToUInt64(a, 0x18) != 0) continue;
+                var id = new Ryujinx.HLE.HOS.Services.Account.Acc.UserId(a[0x8..0x18]);
+                if (!id.IsNull) return id.ToString();
+            }
+            return null;
+        }
+        // 建存档之前调（Application.Register，EnsureSaveData 之前；同 Saves.SelectUser）：存档位置里有用户号就以它为当前用户
+        public static void SelectUser(Switch device, ulong programId)
+        {
+            string folder = Folder();
+            if (folder == null) return;
+            try
+            {
+                Recover(folder);
+                string hex = FolderUser(folder, programId);
+                if (hex == null) return;
+                var id = new Ryujinx.HLE.HOS.Services.Account.Acc.UserId(hex);
+                var accounts = device.System.AccountManager;
+                if (accounts.LastOpenedUser.UserId.ToString() != id.ToString())
+                {
+                    accounts.AddUser("Player", Ryujinx.Common.EmbeddedResources.Read("Ryujinx.HLE/HOS/Services/Account/Acc/DefaultUserImage.jpg"), id);
+                    accounts.OpenUser(id);
+                }
+                Console.Error.WriteLine($"S2A 存档位置：当前用户 {accounts.LastOpenedUser.UserId}（存档里记的用户号）");
+            }
+            catch (Exception e) { Red.Report("存档位置：用户号没套上，沿用当前用户", e.Message); }
+        }
+
         // ---- 起局读入 ----
         public static void ReadIn(Switch device, ulong programId)
         {
@@ -150,6 +208,7 @@ namespace S2A.Services
             _programId = programId; _keep = false;
             try
             {
+                Recover(folder);
                 Directory.CreateDirectory(folder);   // 玩家第一次就能在访达 / 「文件」App 里看到这个文件夹
                 string now = Digest(folder), state = Path.Combine(DataRoot(), StateFile);
                 _atLaunch = now;
@@ -199,6 +258,8 @@ namespace S2A.Services
                 string acc = Path.Combine(snap, "account"), dev = Path.Combine(snap, "device");
                 if (Directory.Exists(acc)) Directory.Move(acc, Path.Combine(next, "save"));
                 if (Directory.Exists(dev)) Directory.Move(dev, Path.Combine(next, Directory.Exists(acc) || Directory.Exists(Path.Combine(next, "save")) ? "save_device" : "save"));
+                string user = Path.Combine(snap, "user");   // 用户号跟着写回（P1-162），下次起局 / 拷到另一台先套用它
+                if (File.Exists(user)) File.Move(user, Path.Combine(next, "user"));
                 if (Directory.Exists(folder)) Directory.Move(folder, old);
                 Directory.Move(next, folder);
                 if (Directory.Exists(old)) Directory.Delete(old, true);

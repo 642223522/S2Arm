@@ -2665,6 +2665,48 @@ namespace S2A.Services.Tests
                         Check("存档位置：认不出 → 不读、写原因、退出不写回", "原因 放进来的是金手指（cheats），不是存档、cheats/a.txt 还在、没有 save/、报红 +1",
                             $"原因 {problem}、cheats/a.txt {(File.Exists(Path.Combine(folder, "cheats/a.txt")) ? "还在" : "没了")}、{(Directory.Exists(Path.Combine(folder, "save")) ? "有" : "没有")} save/、报红 +{Red.Total - redK}");
                         File.Delete(Path.Combine(Ryujinx.Common.Configuration.AppDataManager.BaseDirPath, SaveFolder.ProblemFile));
+
+                        // 审计 P1-161：第一次放进来（游戏还没有存档、ownTop 空）不剥游戏自己的单层目录；游戏自己的十六进制顶层名也不剥（原先两种都剥）
+                        var none = new System.Collections.Generic.HashSet<string>();
+                        string sd_p1 = D("p1", ("slot0/data.bin", [1])), sd_p2 = D("p2", ("0123456789abcdef/data.bin", [1])), sd_p3 = D("p3", ("JKSV/Game/P1 - 2026.01.01 @ 10.00.00/x.bin", [1]));
+                        var hexOwn = new System.Collections.Generic.HashSet<string> { "0123456789abcdef" };
+                        Check("存档位置识别（P1-161）：首次放入单层目录不剥 / 游戏自己的十六进制顶层不剥 / 首次 JKSV 照剥",
+                            "save:. / save:. / save:JKSV/Game/P1 - 2026.01.01 @ 10.00.00",
+                            $"{K(sd_p1, SaveFolder.Detect(sd_p1, Application.ProgramId, none, out w), w)} / {K(sd_p2, SaveFolder.Detect(sd_p2, Application.ProgramId, hexOwn, out w), w)} / {K(sd_p3, SaveFolder.Detect(sd_p3, Application.ProgramId, none, out w), w)}");
+
+                        // 审计 P1-163：摘要按内容。同路径同大小同修改时间、内容不同 → 摘要不同；只改修改时间 → 摘要不变（原先两向都错）
+                        string dg = D("dg", ("save/slot.bin", [1, 2, 3, 4]));
+                        string slot = Path.Combine(dg, "save/slot.bin"); var keepT = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                        File.SetLastWriteTimeUtc(slot, keepT); string d0 = SaveFolder.Digest(dg);
+                        File.WriteAllBytes(slot, [9, 9, 9, 9]); File.SetLastWriteTimeUtc(slot, keepT); string d1 = SaveFolder.Digest(dg);
+                        File.SetLastWriteTimeUtc(slot, keepT.AddDays(3)); string d2 = SaveFolder.Digest(dg);
+                        Check("存档位置摘要（P1-163）：保留时间的同大小替换看得出 / 只动修改时间不算换过", "换了内容：不同；只改时间：相同",
+                            $"换了内容：{(d0 != d1 ? "不同" : "相同")}；只改时间：{(d1 == d2 ? "相同" : "不同")}");
+
+                        // 审计 P1-162：写回带上用户号；存档位置里的 user 文件 / Ryujinx 导出 ExtraData0 偏移 0x8 的用户号都认得出
+                        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+                        File.Delete(state);
+                        D("SaveData", ("save_device/dev.dat", [4]));
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        SaveFolder.WriteBack(Host.Device);
+                        string wantUser = Host.Device.System.AccountManager.LastOpenedUser.UserId.ToString();
+                        string userFile = Path.Combine(folder, "user");
+                        string sd_u = D("u", ("bis/user/save/0000000000000007/0/x.bin", [1]));
+                        byte[] metaU = new byte[0x40]; BitConverter.GetBytes(Application.ProgramId).CopyTo(metaU, 0); metaU[0x20] = 1;
+                        BitConverter.GetBytes(0x1122334455667788L).CopyTo(metaU, 0x8); BitConverter.GetBytes(0x0102030405060708L).CopyTo(metaU, 0x10);
+                        File.WriteAllBytes(Path.Combine(sd_u, "bis/user/save/0000000000000007/ExtraData0"), metaU);
+                        Check("存档位置用户号（P1-162）：写回带 user / 读 user 文件 / 读 Ryujinx 导出",
+                            $"user={wantUser} / {wantUser} / 11223344556677880102030405060708",
+                            $"user={(File.Exists(userFile) ? File.ReadAllText(userFile).Trim() : "缺")} / {SaveFolder.FolderUser(folder, Application.ProgramId) ?? "无"} / {SaveFolder.FolderUser(sd_u, Application.ProgramId) ?? "无"}");
+
+                        // 审计 P2-267：写回换到一半断了（现目录已改名 .old、.next 还没改回来）→ 起局放回写全了的 .next，不放 .old（放 .old 会把旧档当新放的、盖掉进度）
+                        Directory.Delete(folder, true);
+                        D("SaveData.next", ("save_device/dev.dat", [8]));
+                        D("SaveData.old", ("save_device/dev.dat", [1]));
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        string rec = File.Exists(Path.Combine(folder, "save_device/dev.dat")) ? "[" + string.Join(",", File.ReadAllBytes(Path.Combine(folder, "save_device/dev.dat"))) + "]" : "缺";
+                        Check("存档位置（P2-267）：写回中断后起局放回本局进度", "现目录 [8]、.next 没了、.old 没了",
+                            $"现目录 {rec}、.next {(Directory.Exists(folder + ".next") ? "还在" : "没了")}、.old {(Directory.Exists(folder + ".old") ? "还在" : "没了")}");
                         Environment.SetEnvironmentVariable("S2A_SAVE_FOLDER", null);
                         File.Delete(state);
                         Directory.Delete(t, true);

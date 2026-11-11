@@ -142,6 +142,7 @@ namespace S2A.Services
             Aoc.Register(gameDir);   // DLC：aoc.tsv 里的全部登记为已拥有（有数据的挂 aoc/<idx>/，仅授权的挂载时报红）
 
             Saves.SelectUser(device);
+            if (Saves.Dir() == null) SaveFolder.SelectUser(device, applicationId);   // 存档位置里记的用户号（SaveFolder.cs，审计 P1-162）：建存档之前
             Result saveResult = ProcessLoaderHelper.EnsureSaveData(device, new ApplicationId(applicationId), nacp);
             if (requireSuccess) saveResult.ThrowIfFailure();
             Saves.Seed(device, applicationId);
