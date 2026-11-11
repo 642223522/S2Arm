@@ -323,8 +323,8 @@ int s2a_pack_apply(const char *docs) {
 // 状态：先改名（Documents/资源包 不在、且恰好一个名字以「资源包」结尾的目录 → 改名成「资源包」，同卷原子；多个不猜）→ 有 .incoming/*.tar = 待导入 → 有 manifest.json = 就绪 → 否则没有资源
 enum { S2A_IMPORT_READY = 0, S2A_IMPORT_PENDING = 1, S2A_IMPORT_NONE = 2, S2A_IMPORT_BROKEN = 3 };
 // 闸门下一步（s2a_import_decide）与它的节拍：稳住 3 秒才导入、1 分钟内变过算正在拷、推送没完且 3 分钟没动算停住
-enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_SETTLE, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
-enum { S2A_GATE_SETTLE_S = 3, S2A_GATE_MOVING_S = 60, S2A_GATE_STALL_S = 180 };
+enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
+enum { S2A_GATE_MOVING_S = 60, S2A_GATE_STALL_S = 180 };
 struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
 // 资源包完整性（10-26 测试设备2：装机拷到一半被 App 改名，留下有 manifest.json、缺 ctl/control.nacp 的「资源包」，原先只凭 manifest 判就绪，
 //   游戏起来读不到数据 Break、App 退出像闪退）：按 index.tsv（路径<TAB>字节<TAB>sha256）逐个核在不在、大小对不对，返回不符个数，first 记第一个。
@@ -563,7 +563,8 @@ static uint64_t pack_fp(const char *root, int pending) {
     return g_fp_n * 0x9E3779B97F4A7C15ULL ^ g_fp_b;
 }
 // 闸门每隔几秒判一次下一步（iOS 闸门线程按它显示页面）。w 记上次的指纹、它最后变的时刻、是否真变过（首轮不算变）：
-//   就绪 → 进游戏；待导入且推送已完、指纹稳住 ≥ 3 秒 → 导入（SETTLE = 还在等这 3 秒）；推送没完 → 等（指纹 3 分钟没动 → 停住了，请回 Mac 重装）；
+//   就绪 → 进游戏；待导入且推送已完 → 导入（推送完没完由契约判，s2a_import_transferring；原先另要指纹稳住 3 秒，白等 3–6 秒，iOS 装机剃刀 #31）；
+//   推送没完 → 等（指纹 3 分钟没动 → 停住了，请回 Mac 重装）；
 //   没有 / 不完整、但指纹 1 分钟内变过（玩家正用访达拷）→ 等；否则说明页
 int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n) {
     int st = s2a_import_state(docs); why[0] = 0;
@@ -576,8 +577,7 @@ int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, ch
     long still = (long)(now - w->changed);
     if (st == S2A_IMPORT_PENDING) {
         if (busy) return still >= S2A_GATE_STALL_S ? S2A_GATE_STALLED : S2A_GATE_WAIT;
-        if (w->n >= 2 && still >= S2A_GATE_SETTLE_S) return S2A_GATE_IMPORT;
-        snprintf(why, n, "待导入的包 %ld 秒前还在变，等它稳住", still); return w->moved ? S2A_GATE_WAIT : S2A_GATE_SETTLE;
+        return S2A_GATE_IMPORT;
     }
     if (w->moved && still < S2A_GATE_MOVING_S) { snprintf(why, n, "「资源包」%ld 秒前还在变（正在拷进来）", still); return S2A_GATE_WAIT; }
     return st == S2A_IMPORT_BROKEN ? S2A_GATE_BROKEN : S2A_GATE_NONE;
@@ -642,7 +642,6 @@ void s2a_ios_keep_awake(int on);   // app.m：导入期间关自动锁屏（原�
 void s2a_front_run(void (*guest_main)(void));
 // 提示页文案（11-02 维护者：一句人话说清发生了什么 + 玩家下一步；失败原因、文件名、返回码只进 host.log / unpack.log，经「导出诊断包」带走）。
 //   「导入完」请重新打开（原生层线 10-23：不同进程内接着进游戏）。字面在 runtime/include/s2a_ui_text.h（中英两份，S2A_UI 按界面语言取）
-static void note_settle(void) { s2a_ios_show_notice("magnifyingglass", S2A_UI(S2A_UI_IMPORT_SETTLE_TITLE), S2A_UI(S2A_UI_IMPORT_SETTLE_BODY), 0, 0, 0); }
 static void note_wait(void) { s2a_ios_show_notice("arrow.down.circle.fill", S2A_UI(S2A_UI_IMPORT_WAIT_TITLE), S2A_UI(S2A_UI_IMPORT_WAIT_BODY), 0, 0, 0); }
 static void note_stalled(void) { s2a_ios_show_notice("pause.circle.fill", S2A_UI(S2A_UI_IMPORT_STALLED_TITLE), S2A_UI(S2A_UI_IMPORT_STALLED_BODY), 0, 0, 0); }
 static void note_done(void) { s2a_ios_show_notice("checkmark.circle.fill", S2A_UI(S2A_UI_IMPORT_DONE_TITLE), S2A_UI(S2A_UI_IMPORT_REOPEN_BODY), 0, 0, 0); }
@@ -661,7 +660,6 @@ static dispatch_semaphore_t g_poll_sem, g_ready_sem; static _Atomic int g_gate_w
 static void gate_recheck(void) { dispatch_semaphore_signal(g_poll_sem); }
 static void imp_progress(int done, int total) { s2a_ios_show_notice("shippingbox.fill", S2A_UI(S2A_UI_IMPORT_PROGRESS_TITLE), S2A_UI(S2A_UI_IMPORT_PROGRESS_BODY), done, total, 0); }
 static void gate_show(int act, int again) {
-    if (act == S2A_GATE_SETTLE) { note_settle(); return; }
     if (act == S2A_GATE_WAIT) { note_wait(); return; }
     if (act == S2A_GATE_STALLED) { note_stalled(); return; }
     int st = act == S2A_GATE_BROKEN ? S2A_IMPORT_BROKEN : S2A_IMPORT_NONE; char d[1024]; s2a_pack_help_detail(st, again, d, sizeof d);
@@ -696,7 +694,7 @@ static void *gate_thread(void *a) { (void)a;
         }
         if (act != last || poked) {
             if (act != last) LOG("资源导入：%s%s%s", act_name[act], why[0] ? "：" : "", why);
-            gate_show(act, poked && act == last); s2a_ios_keep_awake(act == S2A_GATE_SETTLE || act == S2A_GATE_WAIT); last = act;
+            gate_show(act, poked && act == last); s2a_ios_keep_awake(act == S2A_GATE_WAIT); last = act;
         }
         poked = !dispatch_semaphore_wait(g_poll_sem, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
     }

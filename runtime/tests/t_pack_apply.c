@@ -26,7 +26,7 @@ const char *s2a_install_code(int rc, int err, int truncated, int from_img); cons
 extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
 static uint64_t g_ph[4][2]; static int g_phn[4]; static void phase(int ph, uint64_t d, uint64_t t) { if (ph > 0 && ph < 4) { g_ph[ph][0] = d; g_ph[ph][1] = t; g_phn[ph]++; } } int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
 // 与 runtime/src/pack_apply.c 同（闸门下一步与指纹记录）
-enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_SETTLE, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
+enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
 struct s2a_gate_watch { int n, moved; uint64_t fp; time_t changed; };
 int s2a_import_transferring(const char *root, char *why, size_t n); int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n);
 static int g_pd = -1, g_pt = -1, g_pcalls; static void prog(int d, int t) { g_pd = d; g_pt = t; g_pcalls++; }
@@ -267,7 +267,7 @@ int main(void) {
       snprintf(c2, sizeof c2, "tail -1 '%s/unpack.log' | grep -q 'index.tsv 打不开'", D); CHECK(sh(c2) == 0, "⑪ 失败行应写明 index.tsv 打不开"); }
     // ⑫ 11-02 维护者 测试设备2 暗黑3：推送中途点开 App。推送契约（tools/push_pack.sh）：tar 先到、index.tsv 与 manifest.json 最后到。期望按契约手写：
     //   清单没到 / 清单还是已导入那份 / 有包没写完 → 判「还在传」，闸门只等不解（旧闸门见待导入就解 → 下面 ⑫a 复现出 维护者 那页的「index.tsv 打不开 / 返回 -8」）；
-    //   清单到齐、包都写完、指纹稳住 ≥ 3 秒才导入；推送没完且 180 秒没动 → 停住；没有 / 不完整的资源包首轮直接给说明页，1 分钟内在变（访达正拷）→ 等，拷齐 → 就绪
+    //   清单到齐、包都写完 → 当轮就导入（剃刀 #31：原先还要指纹稳住 ≥ 3 秒）；推送没完且 180 秒没动 → 停住；没有 / 不完整的资源包首轮直接给说明页，1 分钟内在变（访达正拷）→ 等，拷齐 → 就绪
     { char D[2100], R[2200], c2[4096], why[600]; struct s2a_gate_watch w = {0};
       snprintf(D, sizeof D, "%s/imp6", T); snprintf(R, sizeof R, "%s/资源包", D);
       snprintf(c2, sizeof c2, "mkdir -p '%s/.incoming' && cd %s/src && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf '%s/.incoming/1_000.tar' a.txt && printf aa11 > '%s/.applied'", R, T, R, R);
@@ -287,8 +287,8 @@ int main(void) {
       snprintf(c2, sizeof c2, "printf '{\"version\":2,\"index_sha256\":\"bb22\"}' > '%s/manifest.json'", R); sh(c2);
       CHECK(s2a_import_transferring(R, why, sizeof why) == 0, "⑫ 新清单到齐、包写完：不应判还在传 →「%s」", why);
       w = (struct s2a_gate_watch){0};
-      int a0 = s2a_import_decide(D, &w, 2000, why, sizeof why), a1 = s2a_import_decide(D, &w, 2001, why, sizeof why), a2 = s2a_import_decide(D, &w, 2003, why, sizeof why);
-      CHECK(a0 == S2A_GATE_SETTLE && a1 == S2A_GATE_SETTLE && a2 == S2A_GATE_IMPORT, "⑫ 推送已完：首轮与 1 秒时等稳住、3 秒时导入 → %d %d %d", a0, a1, a2);
+      int a0 = s2a_import_decide(D, &w, 2000, why, sizeof why), a1, a2;
+      CHECK(a0 == S2A_GATE_IMPORT, "⑫ 推送已完：首轮就导入（剃刀 #31，旧闸门要等稳住 3 秒）→ %d", a0);
       // 有包没写完（推到一半：完整包去掉末尾 1024 字节归档尾）→ 还在传；指纹 180 秒没动 → 停住；包又长了 → 回到等
       snprintf(c2, sizeof c2, "cd '%s/.incoming' && n=$(wc -c < 1_000.tar) && head -c $((n - 1024)) 1_000.tar > 1_001.tar", R); CHECK(sh(c2) == 0, "⑫ 造半截包失败");
       CHECK(s2a_import_transferring(R, why, sizeof why) == 1 && strstr(why, "1_001.tar"), "⑫ 半截包：应判还在传、点名 1_001.tar →「%s」", why);

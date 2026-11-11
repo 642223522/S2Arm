@@ -10,10 +10,6 @@ int s2a_ui_zh(void);
 #define S2A_UI(macro) (s2a_ui_zh() ? (macro) : (macro##_EN))
 
 // ---------- 资源导入提示页（runtime/src/pack_apply.c → ios/app.m s2a_ios_show_notice） ----------
-#define S2A_UI_IMPORT_SETTLE_TITLE      "正在检查游戏资源"
-#define S2A_UI_IMPORT_SETTLE_TITLE_EN   "Checking game resources"
-#define S2A_UI_IMPORT_SETTLE_BODY       "马上就好。"
-#define S2A_UI_IMPORT_SETTLE_BODY_EN    "Almost done."
 #define S2A_UI_IMPORT_WAIT_TITLE        "游戏资源还没传完"
 #define S2A_UI_IMPORT_WAIT_TITLE_EN     "Game resources are still transferring"
 #define S2A_UI_IMPORT_WAIT_BODY         "传完会自动开始导入，不用做任何操作。请让本 App 留在前台、不要锁屏。"
