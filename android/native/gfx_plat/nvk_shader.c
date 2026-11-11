@@ -178,7 +178,7 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     struct entry *e = nvn_hm_get(&g_progs, sha);
     if (!e) {
         struct s2a_source_entry_view views[2]; memset(views, 0, sizeof views);
-        for (int st = 0; st < 2; st++) if (s2a_source_get_key(rp_S.skey[st], &views[st]) || !views[st].complete) { nvn_unimpl("shader", "source_snapshot_incomplete", NULL); return -1; }
+        for (int st = 0; st < 2; st++) if (!s2a_source_get_key(rp_S.skey[st], &views[st]) || !views[st].complete)   /* get_key：1 = 命中 */ { nvn_unimpl("shader", "source_snapshot_incomplete", NULL); return -1; }
         uint8_t *bytes = NULL; size_t len = 0; char why[256] = "";
         const char *root = getenv("S2A_SHADER_REVISION_ROOT"), *cdir = getenv("S2A_DIRECT_CACHE_DIR");
         if (root && pc.profile_hash && pc.profile_hash[0] && !nvn_plat_flag("no_offline", 0)) {
