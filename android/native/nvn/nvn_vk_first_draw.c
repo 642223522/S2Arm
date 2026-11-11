@@ -1199,6 +1199,27 @@ static int fd_present_defer(void) {
     return v;
 }
 int nvn_vk_first_draw_present_deferred(void) { return fd_present_defer(); }
+// 逐帧 drain 账：本文件每一次真等 fence 都过这一站，记进与 vk_record.c submit() /
+// vk_clear.c 相同的 frame_log + frame_tsv 双账（fence_n = 每帧排空次数、fence_wait_us =
+// 累计等待时长）。门开才计时记账，关着只剩一次空指针分支；等待超时也照记——CPU 被阻塞
+// 的时长是事实，不挑结果。
+static VkResult fd_fence_wait(struct s2a_vk_device *d, VkFence fence, uint64_t timeout_ns) {
+    extern int nvn_vk_frame_log_on(void) __attribute__((weak));
+    extern void nvn_vk_frame_log_fence_wait(uint64_t) __attribute__((weak));
+    extern int nvn_vk_frame_tsv_on(void) __attribute__((weak));
+    extern void nvn_vk_frame_tsv_fence_wait(uint64_t) __attribute__((weak));
+    const int fl = nvn_vk_frame_log_on && nvn_vk_frame_log_on();
+    const int ft = nvn_vk_frame_tsv_on && nvn_vk_frame_tsv_on();
+    const int64_t t0 = (fl || ft) ? fd_now_ns() : 0;
+    VkResult r = vkWaitForFences(d->device, 1, &fence, VK_TRUE, timeout_ns);
+    if (fl || ft) {
+        const uint64_t wt_ns = (uint64_t)(fd_now_ns() - t0);
+        if (fl) nvn_vk_frame_log_fence_wait(wt_ns);
+        if (ft) nvn_vk_frame_tsv_fence_wait(wt_ns);
+    }
+    return r;
+}
+
 // 释放快照队列持有的 Vulkan 对象（不碰 arena/pool/pin：那些归帧边界处理）。
 static void fd_slot_release(struct s2a_vk_device *d, struct fd_frame_q *q) {
     if (!d || !d->device) return;
@@ -1238,9 +1259,9 @@ static int fd_slot_retire(struct s2a_vk_device *d, struct fd_slot *s) {
     struct fd_frame_q *q = &s->q;
     int bad = 0;
     for (int i = 0; i < q->nbatch_fence && !bad; i++)
-        if (q->batch_fence[i] && vkWaitForFences(d->device, 1, &q->batch_fence[i], VK_TRUE, 5000000000ull) != VK_SUCCESS) bad = 1;
-    if (!bad && q->fence && vkWaitForFences(d->device, 1, &q->fence, VK_TRUE, 5000000000ull) != VK_SUCCESS) bad = 1;
-    if (!bad && s->blit_fence && vkWaitForFences(d->device, 1, &s->blit_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS) bad = 1;
+        if (q->batch_fence[i] && fd_fence_wait(d, q->batch_fence[i], 5000000000ull) != VK_SUCCESS) bad = 1;
+    if (!bad && q->fence && fd_fence_wait(d, q->fence, 5000000000ull) != VK_SUCCESS) bad = 1;
+    if (!bad && s->blit_fence && fd_fence_wait(d, s->blit_fence, 5000000000ull) != VK_SUCCESS) bad = 1;
     if (!bad) {
         // 完成证明已在手：先把本帧每个提交批次的查询结果取走并回收页（页归属必须与 fence 同批），
         // 再释放提交资源。取不到就是准确失败（红），不写 0。
@@ -3637,12 +3658,12 @@ static void fd_arena_complete(uint64_t seq) {
 // 预算压力下：对最早的在途批次做有界等待，完成就归还它的块。
 static int fd_arena_reclaim_oldest(struct s2a_vk_device *d) {
     if (g_fq.nbatch_fence > 0) {
-        VkResult r = vkWaitForFences(d->device, 1, &g_fq.batch_fence[0], VK_TRUE, 50000000ull);
+        VkResult r = fd_fence_wait(d, g_fq.batch_fence[0], 50000000ull);
         if (r == VK_SUCCESS) { fd_arena_complete(g_fq.batch_seq[0]); return 1; }
         return 0;
     }
     if (g_fq.fence) {
-        VkResult r = vkWaitForFences(d->device, 1, &g_fq.fence, VK_TRUE, 50000000ull);
+        VkResult r = fd_fence_wait(d, g_fq.fence, 50000000ull);
         if (r == VK_SUCCESS) { fd_arena_complete(g_fq.suffix_seq); return 1; }
     }
     return 0;
@@ -3994,7 +4015,7 @@ static int fd_fq_flush_impl(int64_t budget_ns, int terminal_timeout, int defer, 
             if (s2a_qret_slot(&g_fq.batch_qid[i], fd_query_retire_cb, NULL) != 0) return -1;
             continue;
         }
-        VkResult wr = vkWaitForFences(d->device, 1, &g_fq.batch_fence[i], VK_TRUE, (uint64_t)left);
+        VkResult wr = fd_fence_wait(d, g_fq.batch_fence[i], (uint64_t)left);
         if (wr == VK_TIMEOUT) { incomplete = 1; break; }
         if (wr != VK_SUCCESS) {
             FD_LOG("frame flush: batch fence %d/%d wait result=%d", i + 1, g_fq.nbatch_fence, (int)wr);
@@ -4019,7 +4040,7 @@ static int fd_fq_flush_impl(int64_t budget_ns, int terminal_timeout, int defer, 
                 return -1;
             }
         } else {
-            VkResult wr = vkWaitForFences(d->device, 1, &g_fq.fence, VK_TRUE, (uint64_t)left);
+            VkResult wr = fd_fence_wait(d, g_fq.fence, (uint64_t)left);
             if (wr == VK_TIMEOUT) incomplete = 1;
             else if (wr == VK_SUCCESS) {
                 fd_arena_complete(g_fq.suffix_seq);
@@ -4602,7 +4623,7 @@ static int tr_image_raw(struct s2a_vk_device *d, struct fd_trace *t, const char 
     VkFence f; vkCreateFence(d->device, &fci, NULL, &f);
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO }; si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
     int ok = vkQueueSubmit(d->queue, 1, &si, f) == VK_SUCCESS &&
-             vkWaitForFences(d->device, 1, &f, VK_TRUE, 5000000000ull) == VK_SUCCESS;
+             fd_fence_wait(d, f, 5000000000ull) == VK_SUCCESS;
     vkDestroyFence(d->device, f, NULL);
     vkFreeCommandBuffers(d->device, d->command_pool, 1, &cmd);
     if (!ok) { FD_LOG("trace: %s GPU readback failed", name); return -1; }
@@ -7825,7 +7846,7 @@ int nvn_vk_first_draw(struct s2a_vk_device *d, const struct s2a_record_draw_stat
             fail(why, why_size, "vkQueueSubmit failed for the draw");
             goto done;
         }
-        if (vkWaitForFences(d->device, 1, &fence, VK_TRUE, 5000000000ull) != VK_SUCCESS) {
+        if (fd_fence_wait(d, fence, 5000000000ull) != VK_SUCCESS) {
             // 提交成功但未拿到完成证明：命令缓冲和它引用的资源仍在 GPU 上，Vulkan 禁止此时释放。
             // 保留全部在途资源（有意泄漏），返回失败，让上层知道这笔没有完成证明。
             FD_LOG("fence timeout: draw resources retained (cmd=%p)", (void *)(uintptr_t)cmd);

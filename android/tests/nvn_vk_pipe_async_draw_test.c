@@ -159,6 +159,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory(VkDevice d,VkDeviceMemory m,VkDeviceS
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice d,VkDescriptorPool p,VkDescriptorPoolResetFlags f){(void)d;(void)p;(void)f;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkResetFences(VkDevice d,uint32_t n,const VkFence*f){(void)d;(void)n;(void)f;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice d,uint32_t n,const VkFence*f,VkBool32 a,uint64_t t){(void)d;(void)n;(void)f;(void)a;(void)t;return VK_SUCCESS;}
+// fd_fence_wait 的弱账钩在本夹具里缺席（Mach-O 下 extern weak 声明不产生可空引用，
+// 不给桩就链接红；给了桩即「门恒关」，不记账）：
+int nvn_vk_frame_log_on(void){return 0;}
+void nvn_vk_frame_log_fence_wait(uint64_t ns){(void)ns;}
+int nvn_vk_frame_tsv_on(void){return 0;}
+void nvn_vk_frame_tsv_fence_wait(uint64_t ns){(void)ns;}
 
 static int fails;
 #define CHECK(cond, what) do { if (!(cond)) { printf("FAIL: %s\n", what); fails++; } } while (0)
