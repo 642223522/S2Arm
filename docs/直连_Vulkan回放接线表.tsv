@@ -7,9 +7,9 @@
 5	OP_REPORT_COUNTER	同步 / 查询	14530	mtl_sub_counter / post	未接	无	0100633007D48000
 6	OP_COPY_B2B	拷贝 / 填充	14559	mtl_sub_copy	已接（同上）	t_buf_ops	0100633007D48000
 7	OP_UPDATE_UB	拷贝 / 填充	14561	mtl_sub_update	已接（改游戏内存，使用点按页同步镜像）	t_buf_ops	0100633007D48000
-8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	未接	无	0100633007D48000
-9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	未接	无	0100633007D48000
-10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	未接	无	0100633007D48000
+8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	已接（换目标；通道在绘制时开；通道合并 / 存储前瞻未接）	t_pass_clear_fold	0100633007D48000
+9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	部分：整屏全通道折进 load 已接；带裁剪 / 部分通道未接	t_pass_clear_fold	0100633007D48000
+10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	部分：整屏折进 load 已接；带裁剪 / 部分模板掩码未接	t_pass_clear_fold	0100633007D48000
 11	OP_VIEWPORTS	状态（绘制时生效）	14631	state_op:10436	状态已记；绘制侧未接	t_state_persists	否
 12	OP_SCISSOR	状态（绘制时生效）	14629	state_op:10376	状态已记；绘制侧未接	t_state_persists	否
 13	OP_DEPTH_RANGE	状态（绘制时生效）	14631	state_op:10437	状态已记；绘制侧未接	t_jump_call	否
@@ -27,7 +27,7 @@
 25	OP_DRAW	绘制	14619	draw_top	未接	无	否
 26	OP_DRAW_IDX	绘制	14621	draw_top	未接	无	0100633007D48000
 27	OP_DISPATCH	计算	14645	dispatch	未接	无	否
-28	OP_BARRIER	同步 / 查询	14646	（就地：拆通道 + barrier_game）	未接	无	0100633007D48000
+28	OP_BARRIER	同步 / 查询	14646	（就地：拆通道 + barrier_game）	部分：位交给后端已接；通道内写图像后的拆通道未接	t_pass_clear_fold	0100633007D48000
 29	OP_SET_TEX_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
 30	OP_SET_SAMP_POOL	状态（绘制时生效）	14651	state_op:10388	状态已记；绘制侧未接	无	否
 31	OP_COPY_B2T	拷贝 / 填充	14639	copy_b2t	已接（线性行直传；3D 多片、LINEAR 贴图未接）	t_copy_b2t	0100633007D48000

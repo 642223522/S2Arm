@@ -88,6 +88,12 @@ long nvn_dirty_page_gens(const void *span, const void *addr, size_t len, uint64_
     return (long)(q - p + 1);
 }
 
+// 通道替身：记每次开通道的描述
+static nvn_gpu_pass_desc g_pd[8]; static int g_npd, g_pass_ends; static uint32_t g_barrier_bits; static int g_barrier_at;   // g_barrier_at：收到屏障时已开过几个通道
+void nvn_gpu_pass_begin(nvn_gpu_cmd c, const nvn_gpu_pass_desc *d) { (void)c; if (g_npd < 8) g_pd[g_npd] = *d; g_npd++; }
+void nvn_gpu_pass_end(nvn_gpu_cmd c) { (void)c; g_pass_ends++; }
+void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t bits) { (void)c; g_barrier_bits |= bits; g_barrier_at = g_npd; }
+
 static void fake_complete(uint32_t status) {
     for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败"; g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
     g_npend = 0;
@@ -119,18 +125,18 @@ static void t_state_persists(void) {   // 结论 B：状态跨命令缓冲、跨
 static void t_unimpl_names(void) {   // 没接的命令按命令名报出并计数，回放继续走完
     nvn_unimpl_reset(); int red0 = g_red_lines;
     stream a = {0};
-    put(&a, OP_DRAW, sizeof(p_draw)); put(&a, OP_SET_RT, 8); put(&a, OP_SET_RT, 8); put(&a, OP_COPY_T2T, sizeof(p_copy_t2t));
+    put(&a, OP_DRAW, sizeof(p_draw)); put(&a, OP_DISPATCH, sizeof(p_dispatch)); put(&a, OP_DISPATCH, sizeof(p_dispatch)); put(&a, OP_COPY_T2T, sizeof(p_copy_t2t));
     p_alpha_ref *ar = put(&a, OP_ALPHA_REF, sizeof *ar); ar->ref = 0.25f;   // 排在未接命令之后：证明没有因首个未接而停
     end(&a);
     submit1(&a); fake_complete(NVN_GPU_DONE_OK);
     CHECK(nvn_unimpl_count("op", "OP_DRAW") == 1);
-    CHECK(nvn_unimpl_count("op", "OP_SET_RT") == 2);
+    CHECK(nvn_unimpl_count("op", "OP_DISPATCH") == 2);
     CHECK(nvn_unimpl_count("op", "OP_COPY_T2T") == 1);
     CHECK(nvn_unimpl_count("op", "OP_ALPHA_REF") == 0);
     CHECK(nvn_unimpl_kinds() == 3);
     CHECK(g_red_lines - red0 == 3);   // 每种只在首次出现打一行
     char buf[256]; nvn_unimpl_dump(buf, sizeof buf);
-    CHECK(!strcmp(buf, "op\tOP_DRAW\t1\nop\tOP_SET_RT\t2\nop\tOP_COPY_T2T\t1\n"));
+    CHECK(!strcmp(buf, "op\tOP_DRAW\t1\nop\tOP_DISPATCH\t2\nop\tOP_COPY_T2T\t1\n"));
     CHECK(rp_S.alpha_ref == 0.25f);
 }
 
@@ -431,6 +437,79 @@ static void t_copy_b2t(void) {   // 缓冲 → 贴图：线性行直接传；级
     nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&g_tp); nvn_be_pool_del(g_pmem);
 }
 
+static void put_set_rt(stream *s, const tex_t *color, const tex_t *depth) {   // 紧凑记录：头、指针、（无视图）、快照
+    p_set_rt r; memset(&r, 0, sizeof r); r.n = color ? 1 : 0; r.color[0] = color; r.depth = depth;
+    uint8_t *a = put(s, OP_SET_RT, set_rt_size(&r)); p_set_rt_c *h = set_rt_put(a, &r);
+    const tex_t **pt = (const tex_t **)(h + 1); tex_t *snap = (tex_t *)(a + set_rt_snap_off(h)); uint32_t k = 0;
+    if (color) { snap[k] = *color; pt[k] = &snap[k]; k++; }
+    if (depth) { snap[k] = *depth; pt[k] = &snap[k]; }
+}
+static void pass_fresh(void) { nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); g_npd = g_pass_ends = 0; g_barrier_bits = 0; g_barrier_at = -1; }
+
+static void t_pass_clear_fold(void) {   // 整屏清除不单独编码：折进通道的 load；没有绘制时提交末为它开一个只清除的通道
+    pass_fresh();
+    tex_t a = mk_tex(61, 0, NVN_FORMAT_RGBA8, 64, 32, 1, 0), z = mk_tex(62, 0x4000, NVN_FORMAT_DEPTH24_STENCIL8, 64, 32, 1, 0);
+    stream s = {0}; put_set_rt(&s, &a, &z);
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.25f; cc->rgba[3] = 1;
+    p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 0.5f; cd->depth_mask = 1; cd->stencil = 3; cd->stencil_mask = 0xff;
+    uint8_t *b = put(&s, OP_BARRIER, 8); int32_t bits = 5; memcpy(b, &bits, 4);
+    end(&s);
+    nvn_be_sub_begin(); nvn_be_exec(s.b);
+    CHECK(g_npd == 0);                                   // 录到这里什么都没编码
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 1 && g_pass_ends == 1);
+    CHECK(g_pd[0].ncolor == 1 && g_pd[0].w == 64 && g_pd[0].h == 32 && g_pd[0].color[0].view != NULL);
+    CHECK(g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[0].store == NVN_GPU_STORE_STORE && g_pd[0].color[0].clear.f[0] == 0.25f && g_pd[0].color[0].clear.f[3] == 1);
+    CHECK(g_pd[0].depth.view && g_pd[0].depth.load == NVN_GPU_LOAD_CLEAR && g_pd[0].clear_depth == 0.5f);
+    CHECK(g_pd[0].stencil.view == g_pd[0].depth.view && g_pd[0].stencil.load == NVN_GPU_LOAD_CLEAR && g_pd[0].clear_stencil == 3);
+    CHECK(g_barrier_bits == 5 && g_barrier_at == 0);     // 屏障在开这个通道之前交给后端
+    CHECK(nvn_be_tex_gpu_owned(61) == 1 && nvn_be_tex_gpu_owned(62) == 1);
+    CHECK(nvn_unimpl_kinds() == 0);
+    // 第二次提交：没有新的清除 → 目标还绑着，但不为它开通道
+    stream e2 = {0}; end(&e2); submit1(&e2); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 1);
+}
+
+static void t_pass_target_persists(void) {   // 目标跨提交保留，且不依赖已经被复用的命令内存
+    pass_fresh();
+    tex_t a = mk_tex(63, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    stream s = {0}; put_set_rt(&s, &a, NULL); end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 0);
+    memset(s.b, 0xEE, sizeof s.b);                       // 游戏复用了那块命令内存
+    stream s2 = {0}; p_clear_color *cc = put(&s2, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[1] = 0.75f; end(&s2);
+    submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 1 && g_pd[0].w == 16 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[0].clear.f[1] == 0.75f);
+    CHECK(rp_pass_target() && rp_pass_target()->color[0]->serial == 63);
+}
+
+static void t_pass_switch_and_partial(void) {
+    pass_fresh();
+    tex_t a = mk_tex(64, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = mk_tex(65, 0x4000, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+    stream s = {0}; put_set_rt(&s, &a, NULL);
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[2] = 1;
+    put_set_rt(&s, &b, NULL);                            // 换目标：a 的待折清除先落地
+    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0x7;        // 部分通道：折不进
+    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 3; cc->mask = 0xf;        // 没有这个槽
+    p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1;          // 没有深度目标
+    p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 4; sc->h = 4;
+    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;        // 裁剪不满：折不进
+    sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 8; sc->h = 8;
+    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.5f;   // 裁剪盖满目标：可以折
+    end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 2 && g_pass_ends == 2);
+    CHECK(g_pd[0].w == 16 && g_pd[0].color[0].clear.f[2] == 1);                     // 第一个通道是 a 的
+    CHECK(g_pd[1].w == 8 && g_pd[1].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[1].color[0].clear.f[0] == 0.5f);
+    CHECK(nvn_unimpl_count("pass", "clear_color_partial") == 2 && nvn_unimpl_count("pass", "clear_color_no_target") == 1 && nvn_unimpl_count("pass", "clear_ds_no_target") == 1);
+    pass_fresh();
+    tex_t z = mk_tex(66, 0, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
+    stream d = {0}; put_set_rt(&d, NULL, &z); p_clear_ds *c2 = put(&d, OP_CLEAR_DS, sizeof *c2); c2->depth_mask = 1; c2->depth = 1; end(&d);
+    submit1(&d); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 0 && nvn_unimpl_count("gpu", "pass_depth_only") == 1);            // 后端还不支持纯深度通道：记账，不发非法通道
+    pass_fresh();
+}
+
 static void t_entry_unimpl(void) {   // 有语义而没接的入口：记账，不报假成功
     nvn_unimpl_reset();
     CHECK(nvn_be_present(NULL, 0, NULL) == 1 && nvn_be_present(NULL, 0, NULL) == 2);
@@ -454,7 +533,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_entry_unimpl();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_entry_unimpl();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

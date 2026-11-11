@@ -64,6 +64,7 @@ void nvn_be_sub_begin(void) {
 
 uint64_t nvn_be_sub_commit(void) {
     struct sub *s = g_sub; g_sub = NULL;
+    rp_pass_flush(g_cmd);   // 打开的通道与待折清除不跨提交
     if (!g_cmd) {   // 没有段：副作用无处挂，直接按失败丢弃（不写假成功）
         if (s) { free(s->p); free(s); }
         return g_fence;
@@ -115,10 +116,14 @@ void nvn_be_exec(const uint8_t *p) {
                 if (m & NVN_EV_WAIT) nvn_unimpl("op", "OP_SIGNAL_EVENT+WAIT", p);   // GPU 侧等事件：跨队列顺序接上时做
                 else post_event(val, m, v);
                 break; }
+            case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); break; }
+            case OP_CLEAR_COLOR: rp_pass_clear_color(g_cmd, a, p); break;
+            case OP_CLEAR_DS: rp_pass_clear_ds(g_cmd, a, p); break;
+            case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); rp_pass_barrier((uint32_t)bits); break; }
+            case OP_COPY_B2T: rp_pass_flush(g_cmd); rp_op_copy_b2t(g_cmd, a, p); break;   // 传输在通道外
             case OP_UPDATE_UB: rp_op_update_ub(a, p); break;
             case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
             case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
-            case OP_COPY_B2T: rp_op_copy_b2t(g_cmd, a, p); break;
             case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + 1); break; }
             default:
                 if (!rp_state_op(h.op, a, h.size)) nvn_unimpl("op", rp_op_name(h.op), p);

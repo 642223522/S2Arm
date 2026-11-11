@@ -9,6 +9,8 @@
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c);
 // 贴图号 → 视图（登记时带视图记录的按它建，否则默认视图）。t_out 可为 NULL。号没登记 / 池外 → NULL。线程：[提交]。
 nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out);
+// 贴图对象 + 视图记录（NULL = 默认视图）→ 视图：渲染目标、拷贝端点用。线程：[提交]。
+nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c);
 // 采样器号 → 后端采样器（首次取用时建）。没登记 → NULL。线程：[提交]。
 nvn_gpu_samp rp_samp_by_id(int id);
 // 这张贴图的内容从此以 GPU 为准（当了渲染目标 / 被拷贝写 / 被着色器写）：不再从游戏内存重传。

@@ -89,7 +89,7 @@ function(s2a_android_nvk_sources output)
         ../graphics/nvn/gfx/nvn/nvn_fmt_expand.c
         # 回放核心（安卓 / 鸿蒙共用）
         ../graphics/nvn/replay/rp_exec.c ../graphics/nvn/replay/rp_state.c ../graphics/nvn/replay/rp_entry.c
-        ../graphics/nvn/replay/rp_res.c ../graphics/nvn/replay/rp_buf.c
+        ../graphics/nvn/replay/rp_res.c ../graphics/nvn/replay/rp_buf.c ../graphics/nvn/replay/rp_pass.c
         ../graphics/nvn/replay/nvn_unimpl.c
         # 安卓平台件
         native/gfx_plat/nvk_session.c native/gfx_plat/plat_nvn.c native/gfx_plat/legacy_names.c

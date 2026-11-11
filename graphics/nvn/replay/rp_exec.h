@@ -27,3 +27,15 @@ void nvn_be_begin_session(void);
 int nvn_be_request_stop(void);
 int nvn_be_drain_session(void);
 int nvn_be_shutdown_session(void);   // 放掉全部后端对象、状态回到 NVN 默认值
+
+// ---------- 渲染目标与通道（rp_pass.c）----------
+void rp_pass_set_rt(nvn_gpu_cmd c, const p_set_rt *r);
+void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec);
+void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec);
+void rp_pass_barrier(uint32_t bits);
+int rp_pass_begin(nvn_gpu_cmd c);     // 绘制前调：1 = 通道开着；0 = 开不了（已记账），跳过这笔
+void rp_pass_end(nvn_gpu_cmd c);
+void rp_pass_flush(nvn_gpu_cmd c);    // 提交前 / 通道外操作前：落地待折清除并结束通道
+void rp_pass_reset(void);
+int rp_pass_is_open(void);
+const p_set_rt *rp_pass_target(void); // 当前目标（没设过 NULL）

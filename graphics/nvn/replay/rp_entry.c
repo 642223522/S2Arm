@@ -130,7 +130,7 @@ void nvn_be_ub_present(double iv_ms) { (void)iv_ms; }
 void nvn_be_begin_session(void) {}
 int nvn_be_request_stop(void) { return 0; }
 int nvn_be_drain_session(void) { nvn_be_finish(); return 0; }
-int nvn_be_shutdown_session(void) { rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }
+int nvn_be_shutdown_session(void) { rp_pass_reset(); rp_res_reset(); rp_buf_reset(); rp_state_reset(); return 0; }
 
 // ---------- Metal 侧诊断读数：新层没有对应账本，报 0 ----------
 double nvn_be_gpu_ms(uint64_t f) { (void)f; return 0; }

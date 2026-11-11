@@ -184,9 +184,38 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
     return g;
 }
 
+// ---------- 按（贴图对象，视图记录）取视图：渲染目标、拷贝端点这些不经贴图号的使用点 ----------
+enum { VF_N = 64 };
+static struct { uint64_t serial; view_t v; uint8_t has_v; nvn_gpu_view view; struct rp_tex *of; } g_vf[VF_N];
+static int g_vf_next;
+static void vf_drop_serial(uint64_t serial) {   // 持 g_rmu
+    for (int i = 0; i < VF_N; i++) if (g_vf[i].view && (!serial || g_vf[i].serial == serial)) { nvn_gpu_view_release(g_vf[i].view); memset(&g_vf[i], 0, sizeof g_vf[i]); }
+}
+nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c) {
+    nvn_gpu_tex g = rp_tex_resolve(t, c);
+    if (!g) return NULL;
+    pthread_mutex_lock(&g_rmu);
+    struct rp_tex *x = nvn_hm_get(&g_by_serial, &t->serial);
+    nvn_gpu_view out = NULL; int slot = -1;
+    for (int i = 0; i < VF_N && x; i++) if (g_vf[i].view && g_vf[i].serial == t->serial && g_vf[i].has_v == (v != NULL) && (!v || !memcmp(&g_vf[i].v, v, sizeof *v))) {
+        if (g_vf[i].of == x) out = g_vf[i].view; else slot = i;   // 序号换了存储：这一项作废重建
+        break; }
+    if (!out && x) {
+        if (slot < 0) slot = g_vf_next++ % VF_N;
+        if (g_vf[slot].view) nvn_gpu_view_release(g_vf[slot].view);
+        memset(&g_vf[slot], 0, sizeof g_vf[slot]);
+        nvn_gpu_err err = {0};
+        if (nvn_gpu_ok(nvn_gpu_view_create(x->g, v, &g_vf[slot].view, &err))) { g_vf[slot].serial = t->serial; g_vf[slot].has_v = v != NULL; if (v) g_vf[slot].v = *v; g_vf[slot].of = x; out = g_vf[slot].view; }
+        else { g_vf[slot].view = NULL; if (nvn_unimpl("gpu", "view_create", t) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); }
+    }
+    pthread_mutex_unlock(&g_rmu);
+    return out;
+}
+
 // 贴图对象 Finalize（rp_entry.c nvn_be_tex_release 调）：序号不再指向这份存储
 void rp_res_tex_gone(uint64_t serial) {
     pthread_mutex_lock(&g_rmu);
+    vf_drop_serial(serial);
     struct rp_tex *x = nvn_hm_del(&g_by_serial, &serial);
     nvn_hm_del(&g_cpu_ser, &serial);
     if (x) { tex_unref(x); g_ser_gen++; }
@@ -247,6 +276,7 @@ nvn_gpu_samp rp_samp_by_id(int id) {
 void rp_res_reset(void) {
     pthread_mutex_lock(&g_rmu);
     for (int i = 0; i < g_ntreg; i++) treg_drop_view(&g_treg[i]);
+    vf_drop_serial(0);
     for (int i = 0; i < g_nsreg; i++) if (g_sreg[i].s) nvn_gpu_samp_release(g_sreg[i].s);
     free(g_treg); g_treg = NULL; g_ntreg = 0; free(g_sreg); g_sreg = NULL; g_nsreg = 0; g_tpool_n = 0;
     // 一份存储可能同时挂在序号表（多次）和共用表里：先收集去重再放
