@@ -23,13 +23,12 @@ class Fail(Exception):
 
 
 def plumesign_path(given=None):
-    """plumesign 位置：指定 > S2A_PLUMESIGN > PATH > 玩家 Impactor 同目录 > 桌面 / 下载"""
+    """plumesign 位置：指定（发版随包那份由调用方传）> S2A_PLUMESIGN > PATH > 玩家 Impactor 同目录。
+    不再去桌面 / 下载文件夹找（11-11 装机链路审查）：那一档会执行下载目录里任何叫 plumesign* 的程序，发版本来就随包带了"""
     exe = 'plumesign.exe' if os.name == 'nt' else 'plumesign'
     cands = [given, os.environ.get('S2A_PLUMESIGN'), shutil.which('plumesign')]
     st = impactor.status()
     if st.get('path'): cands += glob.glob(os.path.join(os.path.dirname(st['path']), 'plumesign*'))
-    home = os.path.expanduser('~')
-    for d in ('Desktop', 'Downloads', os.path.join('OneDrive', 'Desktop')): cands += sorted(glob.glob(os.path.join(home, d, 'plumesign*')), reverse=True)
     for c in cands:
         if c and os.path.isfile(c) and (os.name != 'nt' or c.lower().endswith('.exe')): return c
     return None

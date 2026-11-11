@@ -123,6 +123,19 @@ namespace Ryujinx.Audio.Backends.Apple
             }
         }
 
+        // S2Arm（#189）：试建 6 声道队列的 callback 不能传 NULL——macOS 27 起 AudioQueueNewOutput 对 NULL callback
+        //   直接回 -50（kAudio_ParamError），与声道数无关（2 声道 + NULL 对照同红、2 声道 + 真实 callback 回 0），
+        //   8 声道 HDMI 设备也会因此只拿到 2 声道。空实现即可（队列不 Start，不会被调）；静态字段持住委托
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void ProbeCallback(nint userData, nint audioQueue, nint buffer);
+
+        private static readonly ProbeCallback _probeCallback = static (_, _, _) => { };
+
+        // S2Arm（#189）：试建成功不等于设备真能出 5.1——2 声道内置扬声器上 6 声道队列照样试建成功，后端就上报
+        //   6 声道，渲染器出 6 声道 PCM、运行期队列又没有声明布局，系统隐式 6→2 只复制 FL/FR，中置（对白）
+        //   与环绕整段丢失。改为读队列关联设备的真实输出声道数（kAudioQueueDeviceProperty_NumberChannels，
+        //   与 HAL 一致：DisplayPort 显示器 6、内置扬声器 2），不足 6 声道就上报立体声，由游戏 / 渲染器按
+        //   自己的系数下混；真 5.1 设备的运行期 6 声道队列声明布局在会话侧（AppleHardwareDeviceSession.CreateQueue）
         private bool TestSurroundSupport()
         {
             try
@@ -132,7 +145,7 @@ namespace Ryujinx.Audio.Backends.Apple
 
                 int result = AudioQueueNewOutput(
                     ref format,
-                    nint.Zero,
+                    Marshal.GetFunctionPointerForDelegate(_probeCallback),
                     nint.Zero,
                     nint.Zero,
                     nint.Zero,
@@ -141,6 +154,14 @@ namespace Ryujinx.Audio.Backends.Apple
 
                 if (result == 0)
                 {
+                    uint deviceChannels = 0;
+                    uint size = sizeof(uint);
+                    int channelsResult = AudioQueueGetProperty(
+                        testQueue,
+                        kAudioQueueDeviceProperty_NumberChannels,
+                        out deviceChannels,
+                        ref size);
+
                     AudioChannelLayout layout = new AudioChannelLayout
                     {
                         AudioChannelLayoutTag = kAudioChannelLayoutTag_MPEG_5_1_A,
@@ -154,15 +175,25 @@ namespace Ryujinx.Audio.Backends.Apple
                         ref layout,
                         (uint)Marshal.SizeOf<AudioChannelLayout>());
 
-                    if (layoutResult == 0)
+                    AudioQueueDispose(testQueue, true);
+
+                    if (channelsResult != 0)
                     {
-                        AudioQueueDispose(testQueue, true);
+                        Console.Error.WriteLine($"[S2A 声音] 【红】读输出设备声道数失败：{channelsResult}（按立体声上报）");
+                        return false;
+                    }
+
+                    if (deviceChannels >= 6 && layoutResult == 0)
+                    {
+                        Console.Error.WriteLine($"[S2A 声音] 输出设备 {deviceChannels} 声道：上报 5.1，运行期 6 声道会话声明 MPEG_5_1_A 布局");
                         return true;
                     }
 
-                    AudioQueueDispose(testQueue, true);
+                    Console.Error.WriteLine($"[S2A 声音] 输出设备 {deviceChannels} 声道：上报立体声，由游戏 / 渲染器按自己的系数下混（5.1 布局设置 rc={layoutResult}）");
+                    return false;
                 }
 
+                Console.Error.WriteLine($"[S2A 声音] 试建 6 声道队列失败：{result}（按立体声上报）");
                 return false;
             }
             catch
