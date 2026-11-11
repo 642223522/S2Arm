@@ -252,8 +252,8 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
-    public func updatePhone(acceptStale: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
-        try await installer.updatePhone(acceptStale: acceptStale, events: events)
+    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, device: device, events: events)
     }
 
     public func restorePhone(events: EventSink = .discard) async throws {

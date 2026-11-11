@@ -1,0 +1,55 @@
+// 回放核心内部接口（核心各文件之间用；前端只认 nvn_mtl.h / nvn_obj.h 里的 nvn_be_*）。
+#pragma once
+#include <stdint.h>
+#include "nvn_obj.h"
+#include "nvn_backend.h"
+
+const char *rp_op_name(uint32_t op);   // 录制命令名（"OP_DRAW" …）；范围外返回 "OP_?"
+int rp_pool_count(void);                // 已登记的内存池个数
+int rp_tex_live_n(void);                // 活贴图对象个数（只是登记数，不等于已建图的个数）
+int rp_depth_zero(void);                // NVN 深度模式：1 = 近平面为 0
+int rp_origin_lower_left(void);         // NVN 窗口原点：1 = 左下
+uint64_t rp_frame(void);                // 前端给的当前帧号
+
+// ---------- 内存池镜像（rp_buf.c）----------
+// 取 [addr, addr+len) 在后端的缓冲与偏移；自上次同步后写过的页在 c 这一段的 GPU 顺序里重传。0 = 地址不在任何池里（已记账）。线程：[提交]。
+int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off);
+void rp_buf_stats(uint64_t *bytes, uint64_t *runs);   // 累计同步字节数 / 段数
+int rp_buf_mirrors(void);                             // 现有镜像个数
+// 缓冲类命令（rec = 命令记录地址，只进未接日志）
+void rp_op_update_ub(const void *a, const void *rec);
+void rp_op_copy_b2b(const void *a, const void *rec);
+void rp_op_clear_buf(const p_clear_buf *cb, const void *rec);
+void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec);
+
+// 会话四件套（前端按名字调，上沿头文件里没有声明）
+void nvn_be_begin_session(void);
+int nvn_be_request_stop(void);
+int nvn_be_drain_session(void);
+int nvn_be_shutdown_session(void);   // 放掉全部后端对象、状态回到 NVN 默认值
+
+// ---------- 渲染目标与通道（rp_pass.c）----------
+void rp_pass_set_rt(nvn_gpu_cmd c, const p_set_rt *r);
+void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec);
+void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec);
+void rp_pass_barrier(uint32_t bits);
+int rp_pass_begin(nvn_gpu_cmd c);     // 绘制前调：1 = 通道开着；0 = 开不了（已记账），跳过这笔
+void rp_pass_end(nvn_gpu_cmd c);
+void rp_pass_flush(nvn_gpu_cmd c);    // 提交前 / 通道外操作前：落地待折清除并结束通道
+void rp_pass_reset(void);
+int rp_pass_is_open(void);
+const p_set_rt *rp_pass_target(void); // 当前目标（没设过 NULL）
+
+// ---------- 上屏（rp_present.c）----------
+void rp_present_set_surface(nvn_gpu_surface s, int display_hz);   // 平台件：窗口挂上（s 非空）/ 摘下（NULL）
+void rp_present_stats(uint64_t *shown, uint64_t *dropped);
+void rp_present_reset(void);
+
+// ---------- 绘制（rp_draw.c）----------
+void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
+void rp_draw_stats(uint64_t *draws, uint64_t *skips);
+void rp_draw_reset(void);
+void rp_draw_log_arm(int lines);   // 接下来的 lines 笔绘制（含被跳过的）各出一行日志；0 = 关
+
+// 资源同步用的段（见 rp_exec.c）：通常是先于主段提交的前置段；同一资源本次提交里第二次同步时结束当前通道、回到主段。
+nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub);

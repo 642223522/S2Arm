@@ -19,7 +19,7 @@
 #   合并后每步一行，标「［gate-host］」「［本机］」，拆两边的步两份都绿才绿、只算一步，「跑了 N 步 / 应跑 N 步」的 N 与本机全跑相同。
 #   待测提交 GATE_REV（缺省 HEAD；tools/ship.sh 给暂存区的临时提交）；工作树的跟踪文件与它不同、没有 维护方工具、gate-host 那份没出完整结果
 #   （连不上 / 工具链不同 / 中途断 / 排队超时 / 盘不足）→ 原派 gate-host 的步退回本机补跑（10-29 起；GATE_FALLBACK_LOCAL=0 = 旧行为：记没跑、「环境未就绪」退 75），不换 Spare-host。gate-host 忙不退回（10-22 维护者：退回本机高负载下偶发红、连环挡人）：
-#   在 维护方工具 的满核槽队列里排（列车优先级 0、预检 5；等待上限按队列长度算），排队超时 → gate-host 的步判红、写明排第几，不在本机重跑。远端工作树名 GATE_REMOTE_NAME（缺省本树目录名；列车给 train，增量编命中）。GATE_CLEAN=1：远端工作树连被忽略的构建产物一起清掉再跑（列车判假红的干净重跑；本机那份由调用方自己给干净树）。
+#   在 维护方工具 的满核槽队列里排（优先级按 GATE_ROLE：热修 0、列车 1、其余 2，先比优先级再比先后；1 号槽只给热修 / 列车；等待上限按队列长度算），排队超时 → gate-host 的步判红、写明排第几，不在本机重跑。远端工作树名 GATE_REMOTE_NAME（缺省本树目录名；列车给 train，增量编命中）。GATE_CLEAN=1：远端工作树连被忽略的构建产物一起清掉再跑（列车判假红的干净重跑；本机那份由调用方自己给干净树）。
 # 分层（10-30 维护者：合入前门禁只证明「这次改动没弄坏它影响到的东西」，目标中位 ≤5 分钟）：钩子 / tools/gate_ios.sh 文件头「# 门禁层：合入后」（tools/gate_decl.py layer 收；不写 = 合入前）。
 #   GATE_LAYER=pre（列车合入前）= 去掉声明合入后的步；post = 只跑声明合入后的步；不设 = 全跑（自检 11-05 起缺省 pre、显式空值才全跑；老单测同旧行为）。GATE_LIST=1 清单同样按层过滤；
 #   「# 门禁层：合入后（路由命中时合入前也跑）」= 合入后的步，但合入前层里按改动路由选中它时也跑（11-10：安卓支合入前不跑 android/gate.sh、ios 头改动不跑 iOS 编译，一天叠多处 main 红）
@@ -54,6 +54,18 @@ apple_step() {
 #   固定解释器 ~/.s2arm/venv 里按 tools/rewriter-requirements.txt 钉了版本、doctor.sh 预检核它）：没给 S2A_PY 且固定解释器在 → 各步统一用它
 [ -z "${S2A_PY:-}" ] && [ -x "$HOME/.s2arm/venv/bin/python3" ] && export S2A_PY=$HOME/.s2arm/venv/bin/python3
 TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_NO_LOADQ:-}   # 列车起的门禁（下文 unset 前先记下：本机预跑令牌豁免它）
+# 预跑必须按路由（11-11 维护者：各线预跑不给改动清单 → 表外代码路径按全跑算，整份 482 步、墙钟中位 1535 秒，挤占门禁机上列车的槽）：
+#   合入前层（GATE_LAYER=pre）、角色不是列车 / 热修、没给 GATE_CHANGED、不是远端那一份（GATE_PLAN，它随 --env 收本机算好的清单）、
+#   不是点名重跑（GATE_RERUN：点到的步按全量清单找，不能被路由滤成 0 步绿）时，
+#   改动清单 = merge-base(origin/main, 待测提交) 到待测提交的改动，与列车按支算的同一口径；export 让派 gate-host 那份按同一清单路由。
+#   待测提交已在 origin/main 上（merge-base = 它自己，如守望在 main 上的无缓存实跑）改动为空、照旧全跑；算不出 merge-base（假仓库没有 origin/main）同样照旧
+if [ "${GATE_LAYER:-}" = pre ] && [ -z "${GATE_CHANGED:-}" ] && [ -z "$PLANM" ] && [ -z "$RER" ]; then
+  case ${GATE_ROLE:-} in 列车|热修) ;; *)
+    _mb=$(git merge-base origin/main "${GATE_REV:-HEAD}" 2> /dev/null) \
+      && _chg=$(git -c core.quotepath=off diff --name-only "$_mb" "${GATE_REV:-HEAD}" 2> /dev/null) && _chg=${_chg//$'\n'/ } && [ -n "${_chg// /}" ] \
+      && { export GATE_CHANGED=$_chg; echo "预跑按路由：改动清单取 merge-base ${_mb:0:9} → ${GATE_REV:-HEAD}（$(wc -w <<< "$_chg" | tr -d ' ') 个文件）" >&2; }
+    unset _mb _chg;; esac
+fi
 # 与列车/自检共用 gate_tier。普通文档才降 doc；敏感文档不降档。
 # 改动集为空不改档；只允许降为 doc，保留调用者显式给的其他档位。
 CHG=${GATE_CHANGED:-$(git -c core.quotepath=off diff --name-only "origin/main...${GATE_REV:-HEAD}" 2> /dev/null)}
@@ -340,7 +352,7 @@ NONCE=; if [ ${#PI[@]} -gt 0 ]; then
     S2A_REMOTE_SLOTS=${SL0:-$([ "$h" = spare-host ] && echo 1 || echo 3)} bash "$S2A_PRIVATE_TOOLS/remote.sh" "$@" --name "$RN" $GC --rev "$REV" --timeout $((mx + 300)) --sync @gate \
       --env GATE_TIER --env GATE_SCAN_BASE --env GATE_CHANGED --env GATE_HOOK_S --env GATE_IOS_S --env GATE_IOS_WORK_S --env GATE_PLAN --env GATE_OUT --env GATE_TEST_CACHE --env GATE_ROLE \
       --pull "$OUTR=$L/r" -- bash tools/gate.sh > "$L/remote.log" 2>&1 & tp=$!; echo $tp > "$L/remote.tp"; wait $tp; echo $? > "$L/remote.rc"; echo "$h" > "$L/remote.host"; }
-  ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=${GATE_HOST_PRIO:-2}
+  ( export GATE_ROLE=$GLROLE GATE_TEST_CACHE=$TCON GATE_TIER=$TIER GATE_SCAN_BASE=${GATE_SCAN_BASE:-$(git rev-parse origin/main)} GATE_PLAN="$PLAN" GATE_OUT="$OUTR" S2A_REMOTE_PRIO=$(( TPRIO < 2 ? TPRIO : 2 ))
     rrun "$RHN" ${RHA[@]+"${RHA[@]}"} ) &
 fi
 TK=()   # TK[i] = 第 i 步（单测）的缓存键；没有 = 不走缓存

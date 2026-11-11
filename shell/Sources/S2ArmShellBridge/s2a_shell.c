@@ -36,6 +36,7 @@ __attribute__((weak)) int s2a_shell_game_install_state(const char *game_id) { (v
 __attribute__((weak)) int s2a_shell_install_game(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) int s2a_shell_install_progress(const char *game_id, int *done, int *total) { (void)game_id; (void)done; (void)total; return 0; }
 __attribute__((weak)) void s2a_shell_library_appeared(void) {}
+__attribute__((weak)) int s2a_shell_take_open_settings(void) { return 0; }
 __attribute__((weak)) void s2a_shell_pick_game_data(const char *game_id) { fprintf(stderr, "S2Arm 游戏库：要导入 %s 的游戏数据（宿主没接说明页，只记日志）\n", game_id ? game_id : ""); }
 
 // iCloud 存档同步：宿主（ios/save_transfer.m）有强定义时用它；本包单独编时不同步

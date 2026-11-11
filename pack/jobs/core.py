@@ -131,8 +131,61 @@ class Cancelled(Exception):
 
 
 def system_encoding():
+    """真实的系统编码（中文 Windows cp936、西文 Windows cp1252）。不用 getpreferredencoding：主作业带 -X utf8，UTF-8 模式下它回 utf-8，
+    v0.2.7 因此跳过系统编码、把 GBK 写坏的索引当 cp1252 写成了乱码（中文 Windows 实机复现）。getencoding（3.11+）不受 UTF-8 模式影响"""
     import locale
-    return locale.getpreferredencoding(False)
+    get = getattr(locale, "getencoding", None)
+    return get() if get else locale.getpreferredencoding(False)
+
+
+def _norm(enc):
+    return enc.replace("-", "").replace("_", "").lower()
+
+
+def _undo_misheal(path, value):
+    """v0.2.7 写成乱码的索引改回来：<名>.cp1252.bak 在、真实系统编码不是 cp1252、备份按系统编码严格解得开 = 当时该按系统编码解却按 cp1252 解了。
+    同一份备份分别按 cp1252（当时的乱码）与系统编码（原文）解，逐串配对，现有内容里的乱码串按表改回（之后库里新加的不动）；
+    备份改名为 <名>.<系统编码>.bak，下次不再改"""
+    bak = path.with_name(path.name + ".cp1252.bak")
+    if not bak.exists():
+        return value
+    enc = system_encoding()
+    if _norm(enc) in ("cp1252", "utf8", "windows1252"):
+        return value
+    raw = bak.read_bytes()
+    try:
+        good, bad = json.loads(raw.decode(enc)), json.loads(raw.decode("cp1252"))
+    except (UnicodeDecodeError, ValueError, LookupError):
+        return value
+    pairs = {}
+    def pair(b, g):
+        if isinstance(b, str) and isinstance(g, str):
+            if b != g:
+                pairs[b] = g
+        elif isinstance(b, list) and isinstance(g, list) and len(b) == len(g):
+            for x, y in zip(b, g):
+                pair(x, y)
+        elif isinstance(b, dict) and isinstance(g, dict) and len(b) == len(g):
+            for (kb, vb), (kg, vg) in zip(b.items(), g.items()):
+                pair(kb, kg); pair(vb, vg)
+    pair(bad, good)
+    def fix(v):
+        if isinstance(v, str):
+            return pairs.get(v, v)
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        if isinstance(v, dict):
+            return {fix(k): fix(x) for k, x in v.items()}
+        return v
+    fixed = fix(value)
+    if fixed != value:
+        atomic(path, fixed)
+    keep = path.with_name(f"{path.name}.{enc}.bak")
+    if keep.exists():
+        bak.unlink()
+    else:
+        os.replace(bak, keep)
+    return fixed
 
 
 def read(path, default=None):
@@ -146,9 +199,9 @@ def read(path, default=None):
     except (FileNotFoundError, NotADirectoryError):   # NotADirectoryError：路径中间一级是文件（遍历到 .DS_Store 再读 .DS_Store/game.json，#343）＝没有
         return default
     try:
-        return json.loads(raw.decode("utf-8"))
+        return _undo_misheal(path, json.loads(raw.decode("utf-8")))
     except UnicodeDecodeError as first:
-        for enc in dict.fromkeys(e for e in (system_encoding(), "cp1252") if e and e.replace("-", "").lower() != "utf8"):
+        for enc in dict.fromkeys(e for e in (system_encoding(), "cp1252") if e and _norm(e) != "utf8"):
             try:
                 value = json.loads(raw.decode(enc))
             except (UnicodeDecodeError, ValueError, LookupError):
@@ -441,6 +494,23 @@ def record_sources(sources):
     return out
 
 
+LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
+OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm",
+                   "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
+                   "remove": "移出游戏库", "delete": "删除游戏", "clean": "清理空间", "spaceFree": "释放空间", "launch": "开始游戏",
+                   "moveGame": "移动游戏", "relinkGame": "重新关联原件", "forgetGame": "忘掉游戏", "setup": "设置游戏库", "keys": "导入密钥",
+                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态",
+                   "communitySave": "保存补丁设置", "diagnostics": "导出诊断"}
+
+
+def describe_holder(info):
+    """占锁任务的一句话：「出包 · 0100…（任务 t12）」；不知道是谁时「另一个任务」"""
+    if not info:
+        return "另一个任务"
+    op = OPERATION_NAMES.get(info.get("operation"), info.get("operation") or "另一个任务")
+    return op + (" · " + info["gameId"] if info.get("gameId") else "") + ("（任务 " + str(info["taskId"]) + "）" if info.get("taskId") else "")
+
+
 class Context:
     def __init__(self, request):
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
@@ -515,19 +585,43 @@ class Context:
                 raise Failure(f"游戏库所在的磁盘「{parts[2]}」没连上：插上这块盘后再试一次。")
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
+    def lock_holder(self):
+        """写进锁旁挂文件的「我是谁」：别的任务据此说清在等谁"""
+        return dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
+                    gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
+
     @contextlib.contextmanager
-    def lock(self, name="catalog"):
+    def lock(self, name="catalog", wait=None, root=None):
+        """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
+        （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
         self.check()
-        self.require_library()
-        with (self.library / ("." + name + ".lock")).open("a") as f:
+        if root is None:
+            self.require_library()
+        wait = getattr(self, "lock_wait", LOCK_WAIT_S) if wait is None else wait
+        def waiting(info, waited):
             try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                raise Failure("另一个任务正在使用游戏库，请稍后重试。") from None
-            try:
+                self.emit("progress", "在等「" + describe_holder(info) + "」结束…", phase="waiting_lock", holder=info)
+            except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
+                pass
+        try:
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
                 yield
-            finally:
-                filelock.unlock(f)
+        except filelock.Busy as busy:
+            raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
+                          internal=f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）") from None
+
+    @contextlib.contextmanager
+    def idle(self, name="execution"):
+        """「库里没任务在用这把锁才顺手做、否则这次不做」的活（清残留、改文件夹名）：拿得到 yield True（照样记占锁者），拿不到不等、yield False。
+        和 lock 同一把锁、同一个旁挂文件；不查取消：被取消的任务收尾也要能用"""
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(filelock.held(self.library / ("." + name + ".lock"), holder=self.lock_holder()))
+            except filelock.Busy:
+                yield False
+                return
+            yield True
 
     def catalog(self):
         self.require_library()
@@ -611,7 +705,7 @@ class Context:
         self.job["attempts"][stage] = int(self.job["attempts"].get(stage, 0)) + 1
         self.emit("stage", stage)
 
-    def stage_progress(self, path, pos):
+    def stage_progress(self, path, pos, final=False):
         """读进度文件 pos 之后新增的整行，发一次 progress；返回新的读到位置。
         出包时几个计数器交替写（刷新各阶段 7/10、直连库 2/6、编库 n/23502、通用翻译 n/45455…），只按最后一行发会来回跳（10-26 维护者：
         「进行中的环节能看到着色器总数和编译数量的实时变化最好」）：每个计数器各记「已完成 / 总数 / 起止时刻」，
@@ -630,14 +724,22 @@ class Context:
             return pos
         end = chunk.rfind(b"\n")
         if end < 0:
-            self.stage_activity()
+            if final:   # 收尾补读没有新行：批次活动已结束，收掉，不再发脉冲
+                activity.clear()
+                self.clear_stage_activity(previous)
+            else:
+                self.stage_activity()
             return pos
         seen = getattr(self, "_counters", None)
         if seen is None:
             seen = self._counters = {}
         last, fine = None, None
-        for line in chunk[:end].decode(errors="replace").split("\n"):
+        lines = chunk[:end].decode(errors="replace").split("\n")
+        for line in lines:
             activity.accept(line)
+        if final:   # 子进程树已收完时的补读：批次活动必然已结束，只发计数、不再发「还在编」的活动脉冲
+            activity.clear()
+        for line in lines:
             f = line.split("\t")
             if len(f) != 4 or not f[2].isdigit() or not f[3].isdigit() or int(f[3]) <= 0:
                 continue
@@ -729,14 +831,27 @@ class Context:
             self._key_values = shared_redact().load_key_values([self.keys] if getattr(self, "keys", None) else [])
         return self._key_values
 
+    def failure_roots(self):
+        """explain 判「原件不见了 / 去系统设置授权」用的玩家侧路径（启动器剃刀 H8）：这次导入的路径、这款登记的原件，加游戏库根。取不到的省略"""
+        sources = [Path(p).expanduser() for p in (self.r.get("paths") or []) if isinstance(p, str)]
+        if self.r.get("gameId"):
+            try:
+                from library import selected_packages, source_path
+                sources += [source_path(self, p) for p in selected_packages(self.game())]
+            except Exception:   # 游戏没登记 / catalog 读不了：只按已有的判，判不了的落 job_failed
+                pass
+        return dict(sources=sources, library=getattr(self, "library", None))
+
     def describe_failure(self, error, severity="error", exit_code=None):
-        failure = explain(error)
+        failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
                       suggestion=recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
+        if failure.holder is not None:   # library_busy：占锁任务 {taskId, operation, gameId, pid, startedAt}，前端据此说「在等谁」
+            result["holder"] = failure.holder
         if self.last_log and self.last_log.is_file():
             with self.last_log.open("rb") as f:
                 f.seek(max(0, self.last_log.stat().st_size - 16000))
@@ -770,7 +885,7 @@ class Context:
             pass
 
     def report_failure(self, error):
-        failure = explain(error)
+        failure = explain(error, **self.failure_roots())
         self.save_rewrite_digest(failure)
         if self.last_log is None:
             self.last_log = self.logs / (self.task + "-failure.log")
@@ -1021,12 +1136,16 @@ class Context:
                         self.signal_child(p, "KILL")
                         p.wait(timeout=5)
                     self.reap(p, out)
+                    if pf: ppos = self.stage_progress(pf, ppos, final=True)   # 收完进程组再补读一次：退出前写的最后几行也发出去（同下）
                     reader.join(timeout=5)
                     self.check()
                     self.last_rc = p.returncode
                     return self.last_log
                 # 工具退出了：先收它会话里的残留进程（还占着输出管道的也在内，否则读线程等不到结束、整个任务判「输出未关闭」），再等读线程
                 self.reap(p, out)
+                # 子进程树已收完、不会再写：补读一次进度。循环只在子进程活着时每秒读，退出前那一秒写的行原先发不出去，界面停在旧读数
+                #   （失败退出也读：错误页看得到停在哪一步）
+                if pf: ppos = self.stage_progress(pf, ppos, final=True)
                 reader.join(timeout=5)
                 if reader.is_alive():
                     raise Failure("子进程输出未关闭，任务未确认完成。")
