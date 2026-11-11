@@ -43,6 +43,10 @@ enum s2a_fq_enqueue_result {
     S2A_FQ_ENQUEUE_FAILED_OWNED = 1,
 };
 int nvn_vk_first_draw_enqueue(struct s2a_vk_device *d, VkCommandBuffer cmd);
+// 接手时原子登记底图 pin；临时 framebuffer/view 同归队列，完成证据后销毁。
+int nvn_vk_first_draw_enqueue_clear(struct s2a_vk_device *d, VkCommandBuffer cmd,
+                                    void *native_tex, VkImage image, uint64_t generation,
+                                    VkFramebuffer fb, VkImageView view, int temporary);
 // pass 边界（记录回放在附件变化/非绘制 GPU 操作前调用）：关闭当前 open pass；sync != 0 时
 // 还把已录制但尚未提交的前缀按队列顺序交出去并等完成，之后的 GPU 操作才有顺序保证。
 // 返回 0 = 边界已落地（sync 时有完成证明）；非 0 = 没有完成证明（帧队列进入终态并保留在途资源），
@@ -121,6 +125,9 @@ struct nvn_vk_open_window {
 };
 void nvn_vk_first_draw_take_open_window(struct nvn_vk_open_window *o);
 int nvn_vk_first_draw_retire_all(void);
+// 间接参数的权威字节（GPU 可能写过）：1 = 已从本帧可写影子读到 out（先过同步边界）；
+// 0 = guest 内存是权威，调用方自己读；-1 = 表达不了，why 写明。见 nvn_vk_first_draw.c。
+int nvn_vk_first_draw_indirect_args(uint64_t addr, uint32_t len, void *out, char *why, size_t why_size);
 // 当前录制帧的序号（从 1 开始，每帧/每次完整 flush 递增）：时间戳待写项按它归属到帧，
 // 退休只结算已拿到完成证明的帧。
 uint64_t nvn_vk_first_draw_frame_id(void);

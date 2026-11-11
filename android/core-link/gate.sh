@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 门禁停用：11-11 维护者定：安卓图形层以 iOS 为蓝本干净重搭，旧层钩子全部退役；安卓线出新钩子后接回
 # 门禁路由：services/ compat/tree/src/ android/cs/ graphics/metal/cs/ graphics/tools/direct/compiler/ graphics/tools/direct/dsh/ translator/dmsh_xlate/ graphics/widen/shader/ graphics/widen/SpirvCbufUseText.cs
 # 门禁路由：runtime/src/ graphics/nvn/gfx/nvn/nvn_tex.c graphics/nvn/gfx/nvn/nvn_dirty.c graphics/nvn/gfx/nvn/nvn_first_use.c graphics/nvn/gfx/tex/nvn_deswizzle.c
 # 安卓单库链接符号核对（#530 第一层）的共用代码入口：改编进单库的共用 C#（services/、compat/tree/src/、graphics/metal/cs/ 等）

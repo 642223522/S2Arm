@@ -250,6 +250,19 @@ raise SystemExit(main.main())
         self.assertEqual(first["code"], "input_unreadable")
         self.assertEqual(second["status"], "imported")
 
+    def test_reader_temp_dir_on_library_volume(self):
+        # #612：读取游戏信息时 NCZ 解压临时文件要落游戏库那块盘（Windows 上游戏库在别的盘、系统盘只剩百来 MB 时缺省写 %TEMP% 导入失败）：
+        #   读取器拿到 --temp-dir，目录在游戏库下、读取时存在，读完删掉
+        a = self.source("a.nsp", b"temp dir fixture")
+        done = self.run_import([a])
+        self.assertEqual(done["state"], "succeeded")
+        seen = (Path(a).parent / "temp_dir_seen.txt").read_text()
+        self.assertTrue(seen, "读取器没收到 --temp-dir")
+        path, existed = seen.split("\t")
+        self.assertEqual(existed, "True")
+        self.assertTrue(Path(path).resolve().is_relative_to(self.c.library.resolve()), f"临时目录 {path} 不在游戏库 {self.c.library} 下")
+        self.assertFalse(Path(path).exists(), "读完没删")
+
     def test_reader_disk_full_is_batch_failure(self):
         a = self.source("a.nsp", b"disk full fixture")
         b = self.source("b.nsp", b"complete fixture")

@@ -153,6 +153,9 @@ struct s2a_record_draw_state {
 typedef int (*s2a_record_draw_fn)(struct s2a_vk_device *device, const struct s2a_record_draw_state *state,
                                   struct s2a_record_result *result, void *opaque);
 void s2a_record_set_draw_builder(s2a_record_draw_fn draw, void *opaque);
+// 间接绘制 / 间接派发累计：[0] 解析成确定值的绘制、[1] 按 GPU 值为空而不录的绘制、
+// [2] 解析成确定值的派发、[3] 组数为 0 而不录的派发。
+void s2a_record_indirect_counts(uint64_t out[4]);
 // Compute 快照独立于 draw；keys 为 packed CS key + 5 个 inactive 零槽，
 // ubo_use 按 NVN stage 编号（只有 [5] 活跃）。program 只作参考，serial 来自绑定记录。
 // 未观察到的 pool/local memory 不等于零；消费方必须按 seen 标志拒绝缺失事实。

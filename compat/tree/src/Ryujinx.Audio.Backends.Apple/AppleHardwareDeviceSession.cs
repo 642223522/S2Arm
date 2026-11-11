@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Runtime.Versioning;
+using Ryujinx.Audio.Backends.Apple.Native;   // 平台例外：Apple 后端平台实现内部引用本平台 Native 布局类型
 using static Ryujinx.Audio.Backends.Apple.Native.AudioToolbox;
 
 namespace Ryujinx.Audio.Backends.Apple
@@ -416,6 +417,30 @@ namespace Ryujinx.Audio.Backends.Apple
                 _audioQueue = nint.Zero;
 
                 return result;
+            }
+
+            // S2Arm（#189）：6 声道队列声明 5.1 布局（起会话与重建共用这条路径）：不声明时系统隐式 6→2 只复制
+            //   FL/FR，中置（对白）与环绕整段丢失；真 5.1 设备声明后按布局直通。设置失败按无布局继续（打出【红】，
+            //   行为同旧），真 5.1 设备探建时已验过布局可用
+            if (RequestedChannelCount == 6)
+            {
+                AudioChannelLayout layout = new AudioChannelLayout
+                {
+                    AudioChannelLayoutTag = kAudioChannelLayoutTag_MPEG_5_1_A,
+                    AudioChannelBitmap = 0,
+                    NumberChannelDescriptions = 0
+                };
+
+                int layoutResult = AudioQueueSetProperty(
+                    _audioQueue,
+                    kAudioQueueProperty_ChannelLayout,
+                    ref layout,
+                    (uint)Marshal.SizeOf<AudioChannelLayout>());
+
+                if (layoutResult != 0)
+                {
+                    Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：声明 5.1 布局失败 rc={layoutResult}（按无布局继续，中置 / 环绕可能丢失）");
+                }
             }
 
             for (int i = 0; i < NumBuffers; i++)

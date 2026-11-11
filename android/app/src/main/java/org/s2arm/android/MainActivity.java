@@ -808,14 +808,15 @@ public class MainActivity extends Activity
         frameRate.setEnabledForGame(gameMode && prefs.getBoolean("fps", false));
     }
 
-    /** 冷启动 intent：s2arm.graphics_mode=auto|generic|direct；未知值记错误并按 auto。 */
+    /** 安卓只走直连（与 iOS 对齐）：不给、auto、direct 都按直连（2）起。
+     * 原先 auto（0）在上一局直连没正常结束、或直连准备失败时会悄悄改走通用后端，问题被盖住；
+     * 现在直连出问题就按直连的失败处理（直连安全网计数与提示），不换路。generic 不再是可选项，给了记一行错误、仍按直连。 */
     private static int graphicsModeFromIntent(android.content.Intent intent) {
         String value = intent == null ? null : intent.getStringExtra("s2arm.graphics_mode");
-        if (value == null || value.isEmpty() || "auto".equals(value)) return 0;
-        if ("generic".equals(value)) return 1;
-        if ("direct".equals(value)) return 2;
-        Log.e("S2Arm", "Unknown s2arm.graphics_mode '" + value + "'; using auto");
-        return 0;
+        if (value == null || value.isEmpty() || "auto".equals(value) || "direct".equals(value)) return 2;
+        if ("generic".equals(value)) Log.e("S2Arm", "s2arm.graphics_mode=generic is no longer available on Android; using direct");
+        else Log.e("S2Arm", "Unknown s2arm.graphics_mode '" + value + "'; using direct");
+        return 2;
     }
 
     @SuppressWarnings("deprecation")
@@ -1030,7 +1031,10 @@ public class MainActivity extends Activity
     private static boolean gamepadConnected() {
         for (int id : InputDevice.getDeviceIds()) {
             InputDevice device = InputDevice.getDevice(id);
-            if (device != null && !device.isVirtual() && controller(device.getSources())) return true;
+            // 只认真有手柄按键（A 键）的设备：有的手机自带一个报 JOYSTICK 来源的内置传感设备
+            // （压感 / 肩键一类，只有 X / Y 轴、没有手柄按键），算成「接了手柄」会把虚拟手柄永远藏掉。
+            if (device != null && !device.isVirtual() && controller(device.getSources())
+                    && device.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0]) return true;
         }
         return false;
     }
@@ -1042,7 +1046,7 @@ public class MainActivity extends Activity
         } catch (java.io.IOException | IllegalArgumentException error) {
             // A damaged file must not take the pad away: built-in layout, and say so once.
             Log.e("S2Arm", "Touch layout ignored (" + touchLayouts.file().getName() + "): " + error.getMessage());
-            android.widget.Toast.makeText(this, "Saved touch layout could not be read; using the default",
+            android.widget.Toast.makeText(this, R.string.touch_layout_load_failed,
                 android.widget.Toast.LENGTH_LONG).show();
             touchPad.setLayout(null);
         }
@@ -1075,18 +1079,18 @@ public class MainActivity extends Activity
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         if (touchPad.getVisibility() == android.view.View.VISIBLE) {
-            labels.add("Edit button positions"); actions.add(this::beginTouchEdit);
+            labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
         }
         if (touchLayouts.file().isFile()) {
-            labels.add("Restore default layout"); actions.add(this::resetTouchLayout);
+            labels.add(getString(R.string.touch_menu_restore_default)); actions.add(this::resetTouchLayout);
         }
         if (host != 0 && BuildConfig.EXPERIMENTAL_TOUCH) {   // not built in: no item that can only fail
             boolean on = touchPad.gameTouchEnabled();
-            labels.add(on ? "Touch passthrough: on (tap to turn off)" : "Touch passthrough: off (tap to turn on)");
+            labels.add(getString(on ? R.string.touch_passthrough_on : R.string.touch_passthrough_off));
             actions.add(() -> setTouchPassthrough(!on, true));
         }
         new android.app.AlertDialog.Builder(this)
-            .setTitle("Touch controls")
+            .setTitle(R.string.touch_menu_title)
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
             .setNegativeButton(android.R.string.cancel, null)
             .show();
@@ -1097,7 +1101,7 @@ public class MainActivity extends Activity
         touchEditBar = new LinearLayout(this);
         touchEditBar.setOrientation(LinearLayout.HORIZONTAL);
         touchEditBar.setBackgroundColor(0xE6101820);
-        String[] names = {"Save", "Default", "Cancel"};
+        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel)};
         Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }};
         for (int i = 0; i < names.length; i++) {
             android.widget.Button button = new android.widget.Button(this);
@@ -1152,7 +1156,8 @@ public class MainActivity extends Activity
         } catch (IllegalArgumentException | java.io.IOException error) {
             // Stay in the editor: the drags are kept so the player can fix them (e.g. sticks on top of each other).
             Log.e("S2Arm", "Touch layout not saved: " + error.getMessage());
-            android.widget.Toast.makeText(this, "Layout not saved: " + error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+            android.widget.Toast.makeText(this, getString(R.string.touch_layout_save_failed, error.getMessage()),
+                android.widget.Toast.LENGTH_LONG).show();
         }
     }
 
