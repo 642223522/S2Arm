@@ -385,6 +385,10 @@ def iphone():
           and d.get('hardwareProperties', {}).get('platform') == 'iOS']
     return ds
 
+def container_match(installed, placeholder):
+    """手机上装的包名是不是这个容器：同名，或占位名 + 「.团队[.后缀]」"""
+    return installed == placeholder or installed.startswith(placeholder + '.')
+
 def device(gid):
     ipa, bid = game_bundle(gid); ds = iphone()
     if not ds: print(f'没连 iPhone：请玩家用数据线连上并解锁、在手机上点「信任」。包 {ipa}（应用身份 {bid}）'); sys.exit(2)
@@ -392,10 +396,12 @@ def device(gid):
         u = d['hardwareProperties']['udid']; name = d.get('deviceProperties', {}).get('name', u)
         import tempfile
         with tempfile.NamedTemporaryFile(suffix='.json') as f:
-            dctl(['device', 'info', 'apps', '--device', u, '--bundle-id', bid, '--json-output', f.name])
+            dctl(['device', 'info', 'apps', '--device', u, '--json-output', f.name])
             try: apps = json.load(open(f.name))['result']['apps']
             except Exception: apps = []
-        print(f'iPhone「{name}」（{u}）：{"已装" if apps else "没装"} {bid}' + ('' if apps else '——请玩家用 AltStore 装（要登录 Apple ID，AI 不代做）'))
+        # 包里的 io.s2arm.games 只是组装时的占位名：装机时换成 io.s2arm.games.<团队>（开发用还可再带后缀），按前缀认手机上实际装的（#642）
+        got = sorted(a.get('bundleIdentifier', '') for a in apps if container_match(a.get('bundleIdentifier', ''), bid))
+        print(f'iPhone「{name}」（{u}）：' + (f'已装 {"、".join(got)}' if got else f'没装 {bid}——请玩家用 AltStore 装（要登录 Apple ID，AI 不代做）'))
     sys.exit(0)
 
 def engine_root():   # 引擎目录：App 里是 Contents/Resources/Engine（bundle_engine 冻结的快照），仓库里是仓库根

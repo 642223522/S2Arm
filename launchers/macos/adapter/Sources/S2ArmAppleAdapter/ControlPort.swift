@@ -193,7 +193,7 @@ public enum ControlJournal {
         let dir = S2ArmPaths.jobsDir(privateRoot: privateRoot, library: library)
         let stamp = stat(dir.path)
         if let stamp, cache.dir == dir.path, cache.stamp == stamp, cache.limit == limit, !cache.hasLiveTaskChanged(dir: dir) {
-            return cache.result
+            return cache.result.map(orphanChecked)
         }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         if cache.dir != dir.path { cache.files = [:] }
@@ -218,8 +218,22 @@ public enum ControlJournal {
         let result = Array(out.suffix(limit))
         cache.dir = dir.path; cache.stamp = stamp; cache.limit = limit; cache.files = files; cache.result = result
         cache.live = files.filter { _, e in e.record.map { !terminalStates.contains($0["state"] as? String ?? "") } ?? false }.mapValues(\.stat)
-        return result
+        return result.map(orphanChecked)
     }
+
+    /// 没到终态、可作业进程已经不在了（被强杀 / 崩溃，来不及写终态）：快照里按「中断」报，不再一直报在跑（#642：
+    ///   装机进程没了，next 还说 install 正在进行、cancel 又说没有在跑的作业）。只改报出去的这份，不改作业记录；
+    ///   每次快照都核（缓存命中时记录文件没变，进程却可能刚没）。没记 pid 的（还没起来）照原样
+    static func orphanChecked(_ j: [String: Any]) -> [String: Any] {
+        guard !terminalStates.contains(j["state"] as? String ?? ""), j["state"] as? String != "interrupted",
+              let pid = (j["pid"] as? NSNumber)?.int32Value, pid > 0, !processAlive(pid) else { return j }
+        var out = j
+        out["state"] = "interrupted"
+        out["message"] = "作业进程已经退出、没来得及写完结果（被中断）：可以重试，已做完的阶段会先核再用。"
+        return out
+    }
+
+    static func processAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
 
     private static let terminalStates: Set<String> = ["completed", "failed", "cancelled"]
     private static let lock = NSLock()
