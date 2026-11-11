@@ -215,8 +215,8 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/CMakeLists.txt:75（S2A_ANDROID_VK_ENGINE）",
-    "wired_evidence": "文本候选（未证运行路径） android/native/direct/record_flat.c:26 android/native/direct/source_store.c:44 android/native/direct/vk_record.c:2488 等"
+    "evidence": "android/CMakeLists.txt:80（S2A_ANDROID_VK_ENGINE）",
+    "wired_evidence": "文本候选（未证运行路径） android/native/direct/record_flat.c:26 android/native/direct/source_store.c:44 android/native/direct/vk_record.c:2574 等"
    },
    "exception": false,
    "parallel": []
@@ -237,8 +237,8 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/CMakeLists.txt:76（S2A_ANDROID_VK_ENGINE）",
-    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:1227 graphics/nvn/gfx/nvn/hle_nvn.c:1230 graphics/nvn/gfx/nvn/hle_nvn.c:1320 等"
+    "evidence": "android/CMakeLists.txt:81（S2A_ANDROID_VK_ENGINE）",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:1232 graphics/nvn/gfx/nvn/hle_nvn.c:1235 graphics/nvn/gfx/nvn/hle_nvn.c:1325 等"
    },
    "exception": false,
    "parallel": []
@@ -281,8 +281,30 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/core-link/LinkSources.cmake:112",
-    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_first_draw.c:502 android/native/nvn/nvn_vk_first_draw.c:616 android/native/nvn/nvn_vk_poolahb.c:306 等"
+    "evidence": "android/core-link/LinkSources.cmake:130",
+    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_first_draw.c:504 android/native/nvn/nvn_vk_first_draw.c:618 android/native/nvn/nvn_vk_poolahb.c:306 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "graphics/nvn/gfx/nvn/nvn_first_use.c",
+   "kind": "gfx-c",
+   "layer_map": {
+    "layer": "图形后端",
+    "module": "直连前端",
+    "follow": "共用层",
+    "prefix": "graphics/nvn/gfx/nvn/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "android/CMakeLists.txt:696",
+    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_draw.c:802 android/native/nvn/nvn_vk_draw.c:809 android/native/nvn/nvn_vk_draw.c:812 等"
    },
    "exception": false,
    "parallel": []
@@ -325,8 +347,8 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/CMakeLists.txt:78（S2A_ANDROID_VK_ENGINE）",
-    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3009 graphics/nvn/gfx/nvn/hle_nvn.c:3344"
+    "evidence": "android/CMakeLists.txt:83（S2A_ANDROID_VK_ENGINE）",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3051 graphics/nvn/gfx/nvn/hle_nvn.c:3386"
    },
    "exception": false,
    "parallel": []
@@ -347,8 +369,8 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/core-link/LinkSources.cmake:109",
-    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_readback.c:175 android/native/nvn/nvn_vk_texcache.c:1451 android/native/nvn/nvn_vk_texcache.c:1457 等"
+    "evidence": "android/core-link/LinkSources.cmake:125",
+    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_readback.c:175 android/native/nvn/nvn_vk_texcache.c:1465 android/native/nvn/nvn_vk_texcache.c:1471 等"
    },
    "exception": false,
    "parallel": []
@@ -391,8 +413,8 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/core-link/LinkSources.cmake:109",
-    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_readback.c:125 android/native/nvn/nvn_vk_readback.c:141 android/native/nvn/nvn_vk_texcache.c:1534 等"
+    "evidence": "android/core-link/LinkSources.cmake:125",
+    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_vk_readback.c:125 android/native/nvn/nvn_vk_readback.c:141 android/native/nvn/nvn_vk_texcache.c:1548 等"
    },
    "exception": false,
    "parallel": []
@@ -523,7 +545,7 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/CMakeLists.txt:323",
+    "evidence": "android/CMakeLists.txt:444",
     "wired_evidence": "文本候选（未证运行路径） android/native/nvn/nvn_host_hooks.c:33 android/native/nvn/nvn_vk_poolahb.c:265 android/native/nvn/nvn_vk_poolahb.c:269 等"
    },
    "exception": false,
@@ -570,7 +592,7 @@
     "linked": false,
     "wired": true,
     "evidence": "安卓 AOT 闭包外",
-    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/MeshStage.cs:185 graphics/tools/direct/dsh/MeshStage.cs:203"
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/MeshStage.cs:191 graphics/tools/direct/dsh/MeshStage.cs:209 services/S2A.Services/Cheats.cs:186 等"
    },
    "exception": false,
    "parallel": []
@@ -900,7 +922,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） graphics/track/track.c:1228 graphics/track/track.c:1241 runtime/src/ap_host.c:205"
+    "wired_evidence": "文本候选（未证运行路径） graphics/track/track.c:1228 graphics/track/track.c:1241 runtime/src/ap_host.c:220"
    },
    "exception": false,
    "parallel": []
@@ -922,7 +944,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/mtl_vk_shim.c:765 runtime/src/lifecycle.c:83 runtime/src/session.c:186"
+    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/mtl_vk_shim.c:797 runtime/src/lifecycle.c:83 runtime/src/session.c:186"
    },
    "exception": false,
    "parallel": []
@@ -988,7 +1010,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:221 graphics/nvn/gfx/nvn/hle_nvn.c:3312"
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:235 graphics/nvn/gfx/nvn/hle_nvn.c:3354"
    },
    "exception": false,
    "parallel": []
@@ -1010,7 +1032,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:975 runtime/src/session.c:14 runtime/src/session.c:35"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/fps.c:102 runtime/src/fps.c:103 runtime/src/fps.c:104 等"
    },
    "exception": false,
    "parallel": []
@@ -1054,7 +1076,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:140 android/native/runtime/tracking/runtime.c:80 runtime/src/det.c:125 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:145 android/native/runtime/tracking/runtime.c:80 runtime/src/det.c:125 等"
    },
    "exception": false,
    "parallel": []
@@ -1076,7 +1098,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:142 runtime/src/gate.c:231 runtime/src/gate.c:248 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:147 runtime/src/gate.c:231 runtime/src/gate.c:248 等"
    },
    "exception": false,
    "parallel": []
@@ -1164,7 +1186,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1318"
+    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1347"
    },
    "exception": false,
    "parallel": []
@@ -1274,7 +1296,7 @@
     "linked": false,
     "wired": true,
     "evidence": "安卓构建清单无此源",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:1264 runtime/src/svc_mem.c:1325 runtime/src/svc_mem.c:361 等"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:1353 runtime/src/svc_mem.c:1415 runtime/src/svc_mem.c:389 等"
    },
    "exception": false,
    "parallel": []
@@ -1293,10 +1315,10 @@
     "wired": true
    },
    "android": {
-    "linked": false,
+    "linked": true,
     "wired": true,
-    "evidence": "安卓构建清单无此源",
-    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3247 graphics/nvn/gfx/nvn/hle_nvn.c:3249 graphics/nvn/gfx/nvn/hle_nvn.c:3251 等"
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:275 graphics/nvn/gfx/nvn/hle_nvn.c:3289 graphics/nvn/gfx/nvn/hle_nvn.c:3291 等"
    },
    "exception": false,
    "parallel": []
@@ -1364,7 +1386,7 @@
     "linked": false,
     "wired": true,
     "evidence": "安卓构建清单无此源",
-    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1170 android/native/bridge.cpp:55 android/native/direct_session.c:163 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1191 android/native/bridge.cpp:57 android/native/direct_session.c:163 等"
    },
    "exception": false,
    "parallel": [
@@ -1410,8 +1432,8 @@
    "android": {
     "linked": true,
     "wired": true,
-    "evidence": "android/core-link/Runtime.cmake:14",
-    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:98 runtime/src/thread.c:841"
+    "evidence": "android/core-link/Runtime.cmake:15",
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:103 runtime/src/thread.c:841"
    },
    "exception": false,
    "parallel": []
@@ -1587,7 +1609,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:296 runtime/src/svc_mem.c:348 runtime/src/svc_mem.c:350 等"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:319 runtime/src/svc_mem.c:372 runtime/src/svc_mem.c:374 等"
    },
    "exception": false,
    "parallel": []
@@ -1609,7 +1631,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:476 runtime/src/loader.c:861"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:484 runtime/src/loader.c:869"
    },
    "exception": false,
    "parallel": []
@@ -1631,7 +1653,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:51 android/native/bridge.cpp:659 android/native/bridge.cpp:681 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:53 android/native/bridge.cpp:678 android/native/bridge.cpp:700 等"
    },
    "exception": false,
    "parallel": []
@@ -1653,10 +1675,12 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/vk_engine_host_shim.c:26 android/native/runtime/runtime.c:224 android/native/runtime/runtime.c:226 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/nvn/vk_engine_host_shim.c:26 android/native/runtime/runtime.c:238 android/native/runtime/runtime.c:240 等"
    },
    "exception": false,
-   "parallel": []
+   "parallel": [
+    "android/native/s2a_native_stub.c"
+   ]
   },
   {
    "id": "runtime/src/loadprog.c",
@@ -1675,7 +1699,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:59"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/ap_host.c:63"
    },
    "exception": false,
    "parallel": []
@@ -1697,7 +1721,7 @@
     "linked": true,
     "wired": false,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "平台代码里找不到调用方"
+    "wired_evidence": "仅测试引用 android/tests/nvn_drvinfo_android_test.c"
    },
    "exception": true,
    "parallel": []
@@ -1719,7 +1743,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/lifecycle.c:172 runtime/src/os.c:100"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/lifecycle.c:175 runtime/src/os.c:107"
    },
    "exception": false,
    "parallel": []
@@ -1807,7 +1831,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:223 runtime/src/loader.c:1152 runtime/src/loader.c:360 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:237 runtime/src/loader.c:1164 runtime/src/loader.c:368 等"
    },
    "exception": false,
    "parallel": []
@@ -1851,7 +1875,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1147 android/native/bridge.cpp:1148 android/native/bridge.cpp:1149 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1166 android/native/bridge.cpp:1167 android/native/bridge.cpp:1168 等"
    },
    "exception": false,
    "parallel": []
@@ -1873,7 +1897,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:1780"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/svc_mem.c:1880"
    },
    "exception": false,
    "parallel": []
@@ -1939,7 +1963,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:973"
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/loader.c:981"
    },
    "exception": false,
    "parallel": []
@@ -2024,12 +2048,12 @@
     "wired": true
    },
    "android": {
-    "linked": false,
-    "wired": false,
-    "evidence": "安卓构建清单无此源",
-    "wired_evidence": "平台代码里找不到调用方"
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/qladder_host.c:68 runtime/src/qladder_host.c:78 runtime/src/qladder_host.c:82 等"
    },
-   "exception": true,
+   "exception": false,
    "parallel": []
   },
   {
@@ -2046,12 +2070,12 @@
     "wired": true
    },
    "android": {
-    "linked": false,
-    "wired": false,
-    "evidence": "安卓构建清单无此源",
-    "wired_evidence": "平台代码里找不到调用方"
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:274 runtime/src/qprompt_host.c:70 runtime/src/qprompt_host.c:75 等"
    },
-   "exception": true,
+   "exception": false,
    "parallel": []
   },
   {
@@ -2068,10 +2092,10 @@
     "wired": true
    },
    "android": {
-    "linked": false,
-    "wired": false,
-    "evidence": "安卓构建清单无此源",
-    "wired_evidence": "平台代码里找不到调用方"
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/qprompt_host.c:26 runtime/src/qprompt_host.c:29 runtime/src/qprompt_host.c:76 等"
    },
    "exception": false,
    "parallel": []
@@ -2090,10 +2114,10 @@
     "wired": true
    },
    "android": {
-    "linked": false,
+    "linked": true,
     "wired": true,
-    "evidence": "安卓构建清单无此源",
-    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3313 graphics/nvn/gfx/nvn/hle_nvn.c:3571"
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） graphics/nvn/gfx/nvn/hle_nvn.c:3355 graphics/nvn/gfx/nvn/hle_nvn.c:3620"
    },
    "exception": false,
    "parallel": []
@@ -2115,7 +2139,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:138"
+    "wired_evidence": "文本候选（未证运行路径） android/native/runtime/runtime.c:143"
    },
    "exception": false,
    "parallel": []
@@ -2183,7 +2207,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/direct_session.c:73 android/native/fps_provider.c:26 android/native/nvn/s2a_vp_alias.c:54 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/direct_session.c:73 android/native/fps_provider.c:27 android/native/nvn/s2a_vp_alias.c:54 等"
    },
    "exception": false,
    "parallel": [
@@ -2229,7 +2253,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/s2a_native_stub.c:98 android/native/s2a_native_stub.c:99 services/S2A.Services/Native.cs:391 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/s2a_native_stub.c:103 android/native/s2a_native_stub.c:104 services/S2A.Services/Native.cs:391 等"
    },
    "exception": false,
    "parallel": [
@@ -2253,7 +2277,7 @@
     "linked": true,
     "wired": true,
     "evidence": "android/core-link/Runtime.cmake core 名单",
-    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1151 android/native/bridge.cpp:1155 android/native/bridge.cpp:1288 等"
+    "wired_evidence": "文本候选（未证运行路径） android/native/bridge.cpp:1170 android/native/bridge.cpp:1175 android/native/bridge.cpp:1312 等"
    },
    "exception": false,
    "parallel": [
@@ -2366,12 +2390,12 @@
     "wired": true
    },
    "android": {
-    "linked": false,
-    "wired": false,
-    "evidence": "安卓构建清单无此源",
-    "wired_evidence": "平台代码里找不到调用方"
+    "linked": true,
+    "wired": true,
+    "evidence": "android/core-link/Runtime.cmake core 名单",
+    "wired_evidence": "文本候选（未证运行路径） runtime/src/qprompt_host.c:46"
    },
-   "exception": true,
+   "exception": false,
    "parallel": []
   },
   {
@@ -2699,7 +2723,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:132 services/S2A.Services/Host.cs:334"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:148 services/S2A.Services/Host.cs:334"
    },
    "exception": false,
    "parallel": []
@@ -2721,7 +2745,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Aoc.cs:91 services/S2A.Services/Exports.cs:311 services/S2A.Services/Host.cs:333 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Aoc.cs:91 services/S2A.Services/Exports.cs:312 services/S2A.Services/Host.cs:333 等"
    },
    "exception": false,
    "parallel": []
@@ -2765,7 +2789,29 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:288 services/S2A.Services/LdnRelay.cs:156 services/S2A.Services/LdnRelay.cs:171 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:289 services/S2A.Services/LdnRelay.cs:156 services/S2A.Services/LdnRelay.cs:171 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/Cheats.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） graphics/tools/direct/dsh/MeshStage.cs:191 graphics/tools/direct/dsh/MeshStage.cs:209 services/S2A.Services/Dispatcher.cs:138 等"
    },
    "exception": false,
    "parallel": []
@@ -2787,7 +2833,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/InputPump.cs:287"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/InputPump.cs:200 services/S2A.Services/InputPump.cs:319 services/S2A.Services/InputPump.cs:332"
    },
    "exception": false,
    "parallel": []
@@ -2809,7 +2855,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:145 services/S2A.Services/Exports.cs:325 services/S2A.Services/Exports.cs:364 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:163 services/S2A.Services/Cheats.cs:248 services/S2A.Services/Cheats.cs:254 等"
    },
    "exception": false,
    "parallel": []
@@ -2897,7 +2943,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:390 services/S2A.Services/Application.cs:421 services/S2A.Services/Application.cs:423 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:408 services/S2A.Services/Application.cs:439 services/S2A.Services/Application.cs:441 等"
    },
    "exception": false,
    "parallel": []
@@ -2963,7 +3009,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:91 services/S2A.Services/Exports.cs:156 services/S2A.Services/Exports.cs:420 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:91 services/S2A.Services/Exports.cs:156 services/S2A.Services/Exports.cs:422 等"
    },
    "exception": false,
    "parallel": []
@@ -3073,7 +3119,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:729 services/S2A.Services/InputPump.cs:495"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Host.cs:729 services/S2A.Services/InputPump.cs:540"
    },
    "exception": false,
    "parallel": []
@@ -3095,7 +3141,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:258 services/S2A.Services/Exports.cs:493 services/S2A.Services/Exports.cs:526 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:259 services/S2A.Services/Exports.cs:495 services/S2A.Services/Exports.cs:531 等"
    },
    "exception": false,
    "parallel": []
@@ -3161,7 +3207,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:612 services/S2A.Services/Host.cs:316 services/S2A.Services/Host.cs:711 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:617 services/S2A.Services/Host.cs:316 services/S2A.Services/Host.cs:711 等"
    },
    "exception": false,
    "parallel": []
@@ -3249,7 +3295,29 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:110 services/S2A.Services/Application.cs:116 services/S2A.Services/Application.cs:204 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:107 services/S2A.Services/Application.cs:113 services/S2A.Services/Application.cs:114 等"
+   },
+   "exception": false,
+   "parallel": []
+  },
+  {
+   "id": "services/S2A.Services/SaveFolder.cs",
+   "kind": "service-cs",
+   "layer_map": {
+    "layer": "核心",
+    "module": "服务",
+    "follow": "共用层",
+    "prefix": "services/"
+   },
+   "apple": {
+    "linked": true,
+    "wired": true
+   },
+   "android": {
+    "linked": true,
+    "wired": true,
+    "evidence": "S2A.Android.Aot ProjectReference",
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:151 services/S2A.Services/Application.cs:155 services/S2A.Services/Exports.cs:522"
    },
    "exception": false,
    "parallel": []
@@ -3403,7 +3471,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:134 services/S2A.Services/Application.cs:137 services/S2A.Services/InputPump.cs:300"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Application.cs:150 services/S2A.Services/Application.cs:151 services/S2A.Services/Application.cs:154 等"
    },
    "exception": false,
    "parallel": []
@@ -3447,7 +3515,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:274"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:275"
    },
    "exception": false,
    "parallel": []
@@ -3491,7 +3559,7 @@
     "linked": true,
     "wired": true,
     "evidence": "S2A.Android.Aot ProjectReference",
-    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:496 services/S2A.Services/Exports.cs:611 services/S2A.Services/Host.cs:750 等"
+    "wired_evidence": "文本候选（未证运行路径） services/S2A.Services/Exports.cs:498 services/S2A.Services/Exports.cs:616 services/S2A.Services/Host.cs:750 等"
    },
    "exception": false,
    "parallel": []
@@ -3623,6 +3691,15 @@
   },
   {
    "android": "android/native/s2a_native_stub.c",
+   "shared": "runtime/src/loader.c",
+   "interface": [
+    "s2a_cheats_dir",
+    "s2a_main_base",
+    "s2a_main_build_id"
+   ]
+  },
+  {
+   "android": "android/native/s2a_native_stub.c",
    "shared": "runtime/src/session.c",
    "interface": [
     "s2a_host_session_state",
@@ -3637,6 +3714,7 @@
    "android": "android/native/s2a_native_stub.c",
    "shared": "runtime/src/svc_mem.c",
    "interface": [
+    "s2a_layout_get",
     "s2a_mem_backing_alias_ref",
     "s2a_mem_backing_alias_unref",
     "s2a_mem_lockorder_vp_enter",
@@ -3787,21 +3865,6 @@
    "理由": "程序集元数据文件，无对外入口",
    "登记人": "dev-dari",
    "日期": "2026-11-06"
-  },
-  "runtime/src/qladder.c": {
-   "理由": "档位梯子判定：依附 runtime/src/qprompt_host.c 的直连上屏每帧钩子 s2a_qp_frame，安卓该钩子未链接（基线缺口 qprompt*）；随安卓接入帧率提示 / 满屏自检时一起接",
-   "登记人": "满屏补丁线",
-   "日期": "2026-11-06"
-  },
-  "runtime/src/qladder_host.c": {
-   "理由": "档位梯子宿主接线：同上，挂在 qprompt_host.c 每帧钩子上，安卓未链接该钩子；安卓档位切换另有平台入口 setConsoleMode",
-   "登记人": "满屏补丁线",
-   "日期": "2026-11-06"
-  },
-  "runtime/src/widen_remember.c": {
-   "理由": "满屏自检「两次启动才记住」计数：依附 runtime/src/qprompt_host.c 每帧钩子（安卓未链接，基线缺口 qprompt*），随安卓接入满屏自检一起接",
-   "登记人": "满屏补丁线",
-   "日期": "2026-11-07"
   },
   "runtime/src/launchctx.c": {
    "理由": "苹果 iOS 多款容器的启动上下文（选哪款、镜像包 / 模块 / 数据根）；安卓走自己的 BootContract，host_main.c 不进安卓构建，loader.c 里引用只在 TARGET_OS_IPHONE 分支",

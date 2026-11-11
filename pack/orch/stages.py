@@ -263,6 +263,29 @@ def community(env):
     return dirs, selection, cv
 
 
+def community_selection(env, pid, bid):
+    """社区补丁这一款打不打、打哪些（苹果改写阶段 rewrite_plan 与安卓 android/tools/make_pack.py 共用这一份，#48 D2）：
+    (索引目录, 缺省开的编号, 打不打)。缺省开 = graphics/cpatch/verified.tsv 本款「程序号 + main 构建号」的行 + S2A_CPATCH + 启动器玩家选择（同 stage_rewrite.sh CSEL）；
+    打 = S2A_COMMUNITY_PATCHES=1（10-30 维护者：玩家包缺省不带上游补丁字节）且有索引目录且 S2A_CPATCH 不是 none"""
+    dirs, selection, cv = community(env)
+    verified_selection = ','.join(line.split('\t')[2] for line in read(cv).splitlines()
+                                  if not line.startswith('#') and len(line.split('\t')) >= 3
+                                  and line.split('\t')[0].upper() == pid and line.split('\t')[1].lower() == bid)
+    if not selection:
+        selection = verified_selection
+    elif verified_selection and selection not in ('all', 'none'):
+        # Same CSEL rule as stage_rewrite.sh: an explicit list augments the
+        # verified defaults; all/none remain complete selections.
+        selection = verified_selection + ',' + selection
+    if env.get('S2A_COMMUNITY_SELECT'):
+        selection_json = json.loads(Path(env['S2A_COMMUNITY_SELECT']).read_text(encoding='utf-8'))
+        extra = ','.join(sorted(k for k, v in (selection_json.get('enabled') or {}).items() if v is True and k != 'ws:verified'))
+        if extra:
+            selection = selection + ',' + extra if selection and selection != 'none' else extra
+    on = env.get('S2A_COMMUNITY_PATCHES', '0') == '1' and bool(dirs) and env.get('S2A_CPATCH') != 'none'
+    return dirs, selection, on
+
+
 def rewrite_plan(game, current, deps):
     env = deps.env
     main, npdm = current / 'exefs/main', current / 'exefs/main.npdm'
@@ -279,24 +302,11 @@ def rewrite_plan(game, current, deps):
                      and len(line.split('\t')) >= 4 and line.split('\t')[0].upper() == pid
                      and line.split('\t')[1].lower() == bid and line.split('\t')[3].lower() == 'apple'), '')   # F7 #1574：苹果路线只取 apple 行
     fps = REPO / f'runtime/fps/{bid[:16]}.tsv'
-    dirs, selection, cv = community(env)
-    verified_selection = ','.join(line.split('\t')[2] for line in read(cv).splitlines()
-                                  if not line.startswith('#') and len(line.split('\t')) >= 3
-                                  and line.split('\t')[0].upper() == pid and line.split('\t')[1].lower() == bid)
-    if not selection:
-        selection = verified_selection
-    elif verified_selection and selection not in ('all', 'none'):
-        # Same CSEL rule as stage_rewrite.sh: an explicit list augments the
-        # verified defaults; all/none remain complete selections.
-        selection = verified_selection + ',' + selection
+    dirs, selection, on = community_selection(env, pid, bid)
     if env.get('S2A_COMMUNITY_SELECT'):
-        selection_json = json.loads(Path(env['S2A_COMMUNITY_SELECT']).read_text(encoding='utf-8'))
-        extra = ','.join(sorted(k for k, v in (selection_json.get('enabled') or {}).items() if v is True and k != 'ws:verified'))
-        if extra:
-            selection = selection + ',' + extra if selection and selection != 'none' else extra
         deps.record(env['S2A_COMMUNITY_SELECT'])
     ck = ''
-    if env.get('S2A_COMMUNITY_PATCHES', '0') == '1' and dirs and env.get('S2A_CPATCH') != 'none':
+    if on:
         b = (selection + '\n').encode() + (REPO / 'pack/cpatch.py').read_bytes()
         b += b''.join((d / 'INDEX.tsv').read_bytes() for d in dirs if (d / 'INDEX.tsv').is_file())
         ck = ' cpatch=' + digest(b)

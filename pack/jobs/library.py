@@ -1127,8 +1127,9 @@ def space_budget(c, game):
     unpacked = _unpacked_on_disk(c, game)
     # P1-165：解包 / 产物写在这款的存放位置，直连缓存写在工具缓存；两块盘各按自己那份需求、自己的余量判（同卷合成一项，同原来）
     direct_need = pack_direct_bytes(size)
-    copy_need = pack_need_bytes(packages, unpacked=unpacked) - direct_need
-    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}"
+    image = getattr(c, "operation", None) == "ipa"   # 打 iPhone 包写 game.img（写在存放位置）；Mac 打包不写
+    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image) - direct_need
+    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "")
     direct_note = f"直连着色器上限 {_gb(direct_need)}"
     loc, cache = _pack_paths(c, game)
     if loc.stat().st_dev == cache.stat().st_dev:

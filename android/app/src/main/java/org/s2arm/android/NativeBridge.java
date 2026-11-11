@@ -230,5 +230,12 @@ final class NativeBridge {
     static native String checkAssetModules(android.content.res.AssetManager assets, String dir);
     /** A0 apk-asset modules: maps exactly these images (paths under assetRoot) from this APK's assets. */
     static native String checkAssetModulePaths(android.content.res.AssetManager assets, String assetRoot, String[] images);
+    /** Startup-only save transport. Both arrays contain standard UTF-8 JSON, not JNI
+     * modified UTF-8. The shared service serializes with Host.Boot and rejects a
+     * running host. No UI is wired yet; callers must verify the selected runtime
+     * via load() before calling, and inspect the shared JSON error response.
+     * Diagnostic/non-service builds throw UnsupportedOperationException.
+     */
+    static native byte[] saveTransfer(byte[] request);
 }
 
