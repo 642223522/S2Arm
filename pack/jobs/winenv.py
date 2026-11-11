@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import ctypes
 import functools
 import importlib.util
@@ -30,7 +29,7 @@ PYTHON_PROBE_SECONDS = 90
 RUNTIME = "launchers/macos/requirements-runtime.txt"
 PREFLIGHT = "pack/jobs/toolchain.py"
 METAL_LOCK = "translator/dmsh_chain.lock"
-LIBRARY = "pack/jobs/library.py"
+SPACE_RULE = "pack/jobs/space_rule.py"
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?")
 PINS = re.compile(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+!-]+)")
 REQUEST_FIELDS = {"schema", "python", "targetDir", "requiredFreeBytes", "metal", "shell", "target",
@@ -104,33 +103,13 @@ def _json(text):
     return json.loads(text, object_pairs_hook=unique)
 
 
-def _function(relative, name):
-    tree = ast.parse(_text(relative))
-    found = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
-    if len(found) != 1:
-        raise ValueError("共用定义缺失或不唯一")
-    return found[0]
-
-
 def _python_minimum():
-    # Read the existing definition rather than invent a second Python version table.
-    fn = _function(PREFLIGHT, "preflight")
-    found = []
-    for node in ast.walk(fn):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "add" and len(node.args) >= 2
-                and isinstance(node.args[0], ast.Constant) and node.args[0].value == "Python"):
-            continue
-        compare = node.args[1]
-        if (isinstance(compare, ast.Compare) and len(compare.ops) == 1
-                and isinstance(compare.ops[0], ast.GtE)
-                and ast.unparse(compare.left) == "sys.version_info"):
-            value = ast.literal_eval(compare.comparators[0])
-            if isinstance(value, tuple) and value and all(type(x) is int and x >= 0 for x in value):
-                found.append(value)
-    if len(found) != 1:
-        raise ValueError("共用Python最低版本定义无法核实")
-    return found[0]
+    # 与预检同一个常量（toolchain.PYTHON_MINIMUM；剃刀 H11：原先用 AST 在 preflight 函数体里找 add("Python", …) 的比较式，那段代码一改写就抛「无法核实」）
+    jobs = str(ROOT / "pack/jobs")   # toolchain 依赖同目录的 core 等：按本文件所在源码树找，不依赖调用方的当前目录 / sys.path
+    if jobs not in sys.path:
+        sys.path.insert(0, jobs)
+    import toolchain
+    return toolchain.PYTHON_MINIMUM
 
 
 def _requirements():
@@ -783,28 +762,13 @@ def _anisette(request, probe):
     return _item("anisette", "anisette来源", status, message, "Windows installed-package metadata + #1098", detected)
 
 
-def _budget_rules():
-    # library imports Mac core/fcntl. Reuse only the fixed repository's pure
-    # definitions and original constants, without importing Mac Context/jobs.
-    tree = ast.parse(_text(LIBRARY))
-    names = {"selected_packages", "_pack_input_bytes", "_pack_direct_bytes", "pack_need_bytes"}
-    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    if any(sum(n.name == name for n in functions) != 1 for name in names):
-        raise ValueError("共用空间规则缺失或不唯一")
-    constants = {"PACK_SMALL_BYTES", "DIRECT_SMALL_BYTES", "DIRECT_LARGE_BYTES"}
-    assignments = []
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets = {n.id for target in node.targets for n in ast.walk(target) if isinstance(n, ast.Name)}
-            if targets & constants:
-                if targets != constants:
-                    raise ValueError("共用空间常量格式无法核实")
-                assignments.append(node)
-    if len(assignments) != 1:
-        raise ValueError("共用空间常量缺失或不唯一")
-    namespace = {"os": os}
-    exec(compile(ast.Module(body=assignments + functions, type_ignores=[]), LIBRARY, "exec"), namespace)
-    return namespace
+@functools.lru_cache(maxsize=1)
+def _space_rule():
+    """出包空间规则（pack/jobs/space_rule.py：常量、选包、整次出包要多少盘，与 Mac 预检同一份纯模块；剃刀 H11：原先 AST 截 library.py 片段再 exec）；按路径加载，不依赖 sys.path"""
+    spec = importlib.util.spec_from_file_location("_s2a_winenv_space_rule", ROOT / "pack/jobs/space_rule.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _catalog_budget(request):
@@ -831,11 +795,11 @@ def _catalog_budget(request):
                 or any(type(package.get(k, 0)) is not int or package.get(k, 0) < 0
                        for k in ("size", "contentBytes"))):
             raise ValueError("包元数据不可核实")
-    rules = _budget_rules()
-    packages = rules["selected_packages"](game)
+    rules = _space_rule()
+    packages = rules.selected_packages(game)
     if not packages:
         return None, "unverified", "gameId没有可选包，尚无完整出包预算。"
-    need = rules["pack_need_bytes"](packages, windows=True)
+    need = rules.pack_need_bytes(packages, windows=True)
     if type(need) is not int or need < 0:
         raise ValueError("共用空间规则结果不可核实")
     return need, None, "按共用选包与出包计划规则计算；压缩包按已登记内容大小，不读取包正文。"
@@ -853,7 +817,7 @@ def _disk(request, probe):
         status, message = None, "按调用者给定的出包计划预算比较；不足时请腾出目标卷空间或选择其它目录。"
         if budget is None:
             if request.get("catalog") or request.get("gameId"):
-                source = LIBRARY + ":selected_packages + pack_need_bytes; shutil.disk_usage"
+                source = SPACE_RULE + ":selected_packages + pack_need_bytes; shutil.disk_usage"
             budget, status, message = _catalog_budget(request)
         if status is None:
             status = "ok" if free >= budget else "mismatch"

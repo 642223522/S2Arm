@@ -625,6 +625,35 @@ class PrepareTests(Base):
                 self.prepare()
         self.assertEqual(caught.exception.code, "update_disk_full")
 
+    def test_unpack_space_uses_exact_unpacked_size_not_multiples(self):
+        # 剃刀 H17：解开前按解开后的确切大小要空间。手算：同一块盘上包 100、解开 150 → 要 max(150, 2×150−100)=200；
+        #   盘剩 210 → 过（旧规则下载前就要 4×100=400，被拒）；剩 190 → update_disk_full。不同盘：各要 150
+        free = {}
+        usage = lambda path: type("U", (), {"free": free[str(path)]})()
+        same = self.private / "updates"; same.mkdir(parents=True, exist_ok=True)
+        with patch.object(updater.shutil, "disk_usage", side_effect=usage):
+            free[str(same)] = 210
+            updater.require_unpack_space(same, same / "S2Arm", 150, 100)
+            free[str(same)] = 190
+            with self.assertRaises(updater.UpdateError) as caught:
+                updater.require_unpack_space(same, same / "S2Arm", 150, 100)
+            self.assertEqual(caught.exception.code, "update_disk_full")
+            other = self.install.resolve().parent
+            with patch.object(updater.os, "stat", side_effect=lambda p, *a, **k: type("S", (), {"st_dev": 1 if Path(p) == same else 2})()):
+                free[str(same)], free[str(other)] = 150, 150
+                updater.require_unpack_space(same, self.install, 150, 100)
+                free[str(other)] = 149
+                with self.assertRaises(updater.UpdateError):
+                    updater.require_unpack_space(same, self.install, 150, 100)
+
+    def test_download_needs_only_the_package_up_front(self):
+        # 剃刀 H17：下载前只要放得下安装包本身（旧规则 4 倍）：盘剩 = 包大小 → 照样下载、解开、就绪
+        size = len(self.zip)
+        real = updater.shutil.disk_usage
+        with patch.object(updater.shutil, "disk_usage", side_effect=lambda p: type("U", (), {"free": size if Path(p) == self.private / "updates" else real(p).free})()), \
+                patch.object(updater, "require_unpack_space"):
+            self.assertEqual(self.prepare()["state"], "ready")
+
     def test_network_failure_is_reported_by_main_and_keeps_old(self):
         before = tree(self.install)
         Handler.routes["/pkg"] = None
@@ -634,18 +663,20 @@ class PrepareTests(Base):
         self.assertEqual(json.loads(out.call_args.args[0])["state"], "failed")
         self.assertEqual(tree(self.install), before)
 
-    def test_check_then_prepare_and_retry_query_github_once(self):
-        """启动时查一次、接着下载、失败后重试：15 分钟内只调一次查版本接口（匿名每 IP 每小时 60 次，共享出口容易被限流）"""
+    def test_checks_share_cache_but_each_prepare_queries_now(self):
+        """「有没有新版」15 分钟内只调一次查版本接口（匿名每 IP 每小时 60 次，共享出口容易被限流）；真下载（prepare，玩家点了更新 / 重试）每次现查，
+        不拿缓存（剃刀 H18：热修发出后 15 分钟内查不到、查完到下载之间撤版报 update_none）。期望：check 两次 1 次 + prepare 两次各 1 次 = 3 次"""
         Handler.hits = []
         with patch.object(updater, "LATEST_TTL", 900):
             with patch("builtins.print"):
+                updater.main(["check", "--platform", "windows", "--current", "0.1.1"])
                 updater.main(["check", "--platform", "windows", "--current", "0.1.1"])
             Handler.routes["/pkg"] = None   # 第一次下载失败
             with patch("builtins.print"):
                 self.assertEqual(updater.main(["prepare", "--platform", "windows", "--current", "0.1.1", "--private-root", str(self.private), "--install", str(self.install)]), 1)
             self.publish(hashlib.sha256(self.zip).hexdigest())   # 恢复，玩家点重试
             self.assertEqual(self.prepare()["state"], "ready")
-        self.assertEqual(Handler.hits.count("/latest"), 1)
+        self.assertEqual(Handler.hits.count("/latest"), 3)
 
     def test_prepare_survives_throttled_and_cut_download_then_verifies_and_unpacks(self):
         """限速 + 每次只给五分之一就掐断连接下安装包：续传接上，校验（签名清单的 SHA-256）、解包都过，进入可重启更新"""

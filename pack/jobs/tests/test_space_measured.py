@@ -156,21 +156,21 @@ class SpaceMeasured(JobCase):
         # #444：一个压缩合集（XCZ）装本体 + 更新，原件 10 GB，两项解开各 8 GB、6 GB → 要按 14 GB 算；原先只留最后一项 → max(10, 6) = 10 GB
         shared = [dict(size=10_000_000_000, contentBytes=8_000_000_000, sha256="b" * 64),
                   dict(size=10_000_000_000, contentBytes=6_000_000_000, sha256="b" * 64)]
-        self.assertEqual(library._pack_input_bytes(shared), 14_000_000_000)
+        self.assertEqual(library.pack_input_bytes(shared), 14_000_000_000)
         # 不压缩的合集 / NUP：各项之和不超过原件 → 仍按原件；另一个原件照加
         nup = [dict(size=10_000_000_000, contentBytes=7_000_000_000, sha256="c" * 64),
                dict(size=10_000_000_000, contentBytes=2_000_000_000, sha256="c" * 64),
                dict(size=3_000_000_000, sha256="d" * 64)]
-        self.assertEqual(library._pack_input_bytes(nup), 13_000_000_000)
+        self.assertEqual(library.pack_input_bytes(nup), 13_000_000_000)
 
     def test_nup_items_overlap_take_largest(self):
         # NUP 容器内按块去重，更新是整份文件系统、和本体共用数据块：0400486024DEC000 实测文件 25.62 GB、本体与更新各 26.27 GB
         #   → 按 26.27 GB 算（取大值）；相加会成 52.54 GB（v0.2.5 的回退）。同一 sha 里只要有一项是 nup 就按这条算
         nup = [dict(size=25_622_267_860, contentBytes=26_270_000_000, sha256="e" * 64, format="nup"),
                dict(size=25_622_267_860, contentBytes=26_270_000_000, sha256="e" * 64, format="nup")]
-        self.assertEqual(library._pack_input_bytes(nup), 26_270_000_000)
+        self.assertEqual(library.pack_input_bytes(nup), 26_270_000_000)
         # 另一个原件（非 nup）照旧单独加上
-        self.assertEqual(library._pack_input_bytes(nup + [dict(size=3_000_000_000, sha256="f" * 64, format="nsp")]), 29_270_000_000)
+        self.assertEqual(library.pack_input_bytes(nup + [dict(size=3_000_000_000, sha256="f" * 64, format="nsp")]), 29_270_000_000)
 
     def test_unpacked_counts_zero_and_windows_adds_a_copy(self):
         self.assertEqual(self.need(10_000_000_000, unpacked=True, windows=False), 15_000_000_000)

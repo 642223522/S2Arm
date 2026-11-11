@@ -574,7 +574,7 @@ class EngineSnapshotCoversWinenv(unittest.TestCase):
             import bundle_engine as be
         def shipped(rel):
             return be.include_source(Path(rel)) and any(rel == top or rel.startswith(top + "/") for top in be.INPUTS)
-        reads = [we.RUNTIME, we.PREFLIGHT, we.METAL_LOCK, we.LIBRARY, "pack/jobs/errors.py", "pack/orch/oneclick_win.py"]
+        reads = [we.RUNTIME, we.PREFLIGHT, we.METAL_LOCK, we.SPACE_RULE, "pack/jobs/errors.py", "pack/orch/oneclick_win.py"]
         self.assertEqual([r for r in reads if not shipped(r)], [])
 
     def test_missing_pins_is_reinstall_not_contract_error(self):
