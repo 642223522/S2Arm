@@ -96,10 +96,11 @@ namespace Ryujinx.Graphics.Nvdec.Apple
         // 没有带外注入通道：概率增量只能走位流——真压缩头必须随帧带上（上游 Vp9CompressedHeader.Check 已拦下写不出的段）。
         public bool NeedsCompressedHeader => true;
 
-        // S2A_NVDEC_VP9_VT=0：关掉硬解（保持 libvpx 原生）；S2A_NVDEC_VP9=managed 关掉整条原生路径。
+        // 缺省关（S2A_NVDEC_VP9_VT=1 才开）：合成流里硬解只接得住 28/134 个作业，其余退到托管软件解码器（更费 CPU，宽高不是 64 倍数的流会画错），
+        //   libvpx 134/134 全对——缺省保持 libvpx 原生；S2A_NVDEC_VP9=managed 关掉整条原生路径。
         public static VideoToolboxVp9Backend TryCreate()
         {
-            if (Environment.GetEnvironmentVariable("S2A_NVDEC_VP9_VT") == "0") return null;
+            if (Environment.GetEnvironmentVariable("S2A_NVDEC_VP9_VT") != "1") return null;
             return Available() ? new VideoToolboxVp9Backend() : null;
         }
 

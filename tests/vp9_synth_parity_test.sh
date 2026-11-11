@@ -93,7 +93,7 @@ done
 vt_skip=0
 for s in adapt_720 resize fp_ragged; do
     [ "$vt_skip" = 1 ] && continue
-    rc=0; out=$(run "$s" --vt 2>&1) || rc=$?
+    rc=0; out=$(S2A_NVDEC_VP9_VT=1 run "$s" --vt 2>&1) || rc=$?   # 硬解缺省关：VT 腿显式打开
     if [ "$rc" -eq 75 ]; then vt_skip=1; echo "跳过 vt-${s}：$out"
     elif [ "$rc" -eq 0 ]; then echo "通 vt-${s}（--vt）"
     else echo "🔴 vt-${s}：VideoToolbox 硬解画面与 libvpx 参考不一致"; echo "$out"; fails=$((fails + 1)); fi

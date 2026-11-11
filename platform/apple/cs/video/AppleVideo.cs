@@ -13,7 +13,7 @@ namespace S2A.Apple.Video
             // VP9：macOS 上 VideoToolbox 硬解优先（探针＝实建一次 64x64 会话，#348 的判据；注册 API 要 macOS 11 / iOS 26.2，
             // iOS 18 部署目标没有——iOS 与探针不过的 Mac 一律 libvpx），与安卓 MediaCodec 后端（#232）同一回退链：
             //   后端探针过 → 会话 / 单作业表示不了时按 Vp9NativePath 的既有机器逐级回退（libvpx 原生段 → 托管解码器）。
-            //   S2A_NVDEC_VP9_VT=0 关掉硬解（保持 libvpx 原生）；S2A_NVDEC_VP9=managed 关掉整条原生路径。
+            //   硬解缺省关、S2A_NVDEC_VP9_VT=1 才开（缺省 libvpx 原生）；S2A_NVDEC_VP9=managed 关掉整条原生路径。
             S2AVideoDecoders.Vp9 = static () =>
                 (IVp9NativeBackend)Ryujinx.Graphics.Nvdec.Apple.VideoToolboxVp9Backend.TryCreate() ??
                 new Ryujinx.Graphics.Nvdec.Vpx.VpxVp9Backend();

@@ -12,7 +12,7 @@
 //   cannot produce), so the MV/count legs are dropped: every job it reports Decoded must have a picture equal to the
 //   reference (present) or the managed picture (device captures), at least one Decoded job, and no Error. Jobs it hands
 //   back (hidden frames, size changes, header checks) bucket by reason exactly as Vp9NativePath's fallbacks do.
-//   Probe unavailable (no system VP9 decoder / not macOS / S2A_NVDEC_VP9_VT=0) prints "vt unavailable" and exits 75.
+//   Probe unavailable (no system VP9 decoder / not macOS / S2A_NVDEC_VP9_VT not 1) prints "vt unavailable" and exits 75.
 //   S2A_VP9_PARITY_PERTURB=managed|both (negative controls, tests/vp9_synth_parity_test.sh): on jobs with a loop filter,
 //   flip the sharpness the managed decoder (or both decoders) sees.
 using System;
@@ -41,7 +41,7 @@ static unsafe class P
         {
             if (VideoToolboxVp9Backend.TryCreate() is not VideoToolboxVp9Backend hardware)
             {
-                Console.WriteLine("vt unavailable: 探针不过（没有系统 VP9 解码器 / 不是 macOS / S2A_NVDEC_VP9_VT=0）——VT 腿跳过");
+                Console.WriteLine("vt unavailable: 探针不过（没有系统 VP9 解码器 / 不是 macOS / S2A_NVDEC_VP9_VT 不是 1）——VT 腿跳过");
                 return 75;
             }
             backend = hardware;
