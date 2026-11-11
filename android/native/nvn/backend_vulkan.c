@@ -84,6 +84,7 @@ struct nvn_gpu_view_s {
     VkFormatFeatureFlags buffer_features;
     uint32_t buffer_caps;
     uint32_t nvn_format;   // 视图的有效 NVN 格式（可从贴图覆盖）；clear 的 is_int 按它判
+    VkFormat format;       // 视图自己的原生格式：当附件时渲染通道按它声明（视图换了格式，硬件就按视图的格式写，比如经 sRGB 视图写线性存储）
     uint32_t base_level, levels, base_layer, layers;
     int released, refs;
     int swizzled;   // 通道映射非恒等：只能采样，不能当附件
@@ -2130,7 +2131,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
         if (!v) { col[ncol].attachment = VK_ATTACHMENT_UNUSED; col[ncol].layout = VK_IMAGE_LAYOUT_UNDEFINED; ncol++; continue; }   // 颜色槽里的空位
         struct nvn_gpu_tex_s *t = v->tex;
         memset(&att[natt], 0, sizeof att[natt]);
-        att[natt].format = t->format;
+        att[natt].format = v->format ? v->format : t->format;   // 按视图的格式声明（对照 nvn_mtl.m attach @4883：视图换了格式就按那个格式的视图挂上去，管线格式跟着附件）
         att[natt].samples = (VkSampleCountFlagBits)t->samples;
         switch (d->color[i].load) {
         case NVN_GPU_LOAD_CLEAR: att[natt].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; att[natt].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; break;
@@ -2261,7 +2262,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     c->pass_color_mask = 0;
     memset(c->pass_cfmt, 0, sizeof c->pass_cfmt); c->pass_dsfmt = 0; c->pass_samples = 1;
     for (uint32_t i = 0; i < c->pass_ncolor; i++) if (d->color[i].view) {
-        c->pass_color_mask |= 1u << i; c->pass_cfmt[i] = d->color[i].view->tex->nvn_format; c->pass_samples = d->color[i].view->tex->samples; }
+        c->pass_color_mask |= 1u << i; c->pass_cfmt[i] = d->color[i].view->nvn_format; c->pass_samples = d->color[i].view->tex->samples; }
     if (d->depth.view || d->stencil.view) { struct nvn_gpu_tex_s *dt = (d->depth.view ? d->depth.view : d->stencil.view)->tex; c->pass_dsfmt = dt->nvn_format; c->pass_samples = dt->samples; }
     c->pass_layers = fi.layers;
     c->pass_ds_aspect = (d->depth.view ? d->depth.view->tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (d->stencil.view ? d->stencil.view->tex->aspect & VK_IMAGE_ASPECT_STENCIL_BIT : 0);
@@ -3057,6 +3058,7 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     struct nvn_gpu_view_s *o = calloc(1, sizeof *o);
     if (!o) return fail(err, NVN_GPU_E_OOM, "视图结构分配失败");
     o->nvn_format = v && v->set_format ? (uint32_t)v->format : t->nvn_format;
+    o->format = fmt;
     VkImageViewCreateInfo ci;
     memset(&ci, 0, sizeof ci);
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

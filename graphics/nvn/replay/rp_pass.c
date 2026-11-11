@@ -59,6 +59,16 @@ static void color_value(int i, const float rgba[4], void *out) {
     memcpy(out, &v, sizeof v);
 }
 static float depth_value(float d) { return isnan(d) ? 0 : d < 0 ? 0 : d > 1 ? 1 : d; }
+// 颜色槽 i 挂的图（同一级、同一层）在更靠前的槽里已经挂过。记录里是贴图对象的快照，按序号比
+static int dup_slot(int i) {
+    const tex_t *t = P.rt.color[i]; if (!t) return 0;
+    uint32_t lv = P.rt.has_cview[i] && P.rt.cview[i].set_levels ? P.rt.cview[i].base_level : 0, ly = P.rt.has_cview[i] && P.rt.cview[i].set_layers ? P.rt.cview[i].min_layer : 0;
+    for (int j = 0; j < i; j++) { const tex_t *u = P.rt.color[j]; if (!u || u->serial != t->serial) continue;
+        uint32_t lj = P.rt.has_cview[j] && P.rt.cview[j].set_levels ? P.rt.cview[j].base_level : 0, yj = P.rt.has_cview[j] && P.rt.cview[j].set_layers ? P.rt.cview[j].min_layer : 0;
+        if (lj == lv && yj == ly) return 1; }
+    return 0;
+}
+int rp_pass_slot_attached(int i) { return P.has_rt && i >= 0 && i < P.rt.n && i < 8 && P.rt.color[i] && !dup_slot(i); }
 static int pending(void) { if (P.clear_d || P.clear_s) return 1; for (int i = 0; i < 8; i++) if (P.clear_c[i]) return 1; return 0; }
 
 void rp_pass_end(nvn_gpu_cmd c) { if (P.open && c) nvn_gpu_pass_end(c); P.open = 0; }
@@ -73,6 +83,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     for (int i = 0; i < P.rt.n; i++) {
         const tex_t *t = P.rt.color[i];
         if (!t) continue;   // 颜色槽里的空位：描述里留空（view = NULL），后端按「不用的槽」处理
+        if (dup_slot(i)) continue;   // 同一张图的同一级同一层挂了两个槽：只挂前一个（nvn_mtl.m rt_dup_slot @4797）
         nvn_gpu_view v = rp_view_for(t, P.rt.has_cview[i] ? &P.rt.cview[i] : NULL, c);
         if (!v) return 0;
         d.color[i].view = v; d.color[i].store = NVN_GPU_STORE_STORE;
