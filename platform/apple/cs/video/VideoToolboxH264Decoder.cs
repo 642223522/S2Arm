@@ -186,9 +186,10 @@ namespace Ryujinx.Graphics.Nvdec.Apple
             {
                 // 中途换参数集会让 VideoToolbox 判新 SPS 不可接受（CanAcceptFormatDescription 返回 0）→ 丢会话；而 UpdateParameterSets
                 // 已经把 _gopValid 清空，失败后无法重放 → 整段重复上一张图（30fps 变体 3→9 实测 131 帧里 124 帧重复）。
-                // 是否安全只看一件事：max_num_ref_frames 的 ue 编码长度变不变。3↔4 都是 5 bit，SPS 等长，实测 260 帧 0 冻结；
-                // 3→9 是 5→7 bit，SPS 变长，实测整段冻结。变长的切换一律等 IDR（IDR 本身重建 GOP，切值不欠账）
-                if (idr || _refFrames == 0 || UeBits(target) == UeBits(_refFrames))
+                // 原先认为 ue 编码等长（3↔4 都是 5 bit）就能中途切：#529 Apple M4 / macOS 27.2 上片头第 3 帧 3→4，原会话照样判不可接受
+                //   （CanAccept = 0），新会话收到非 IDR 帧报 -12909、片头停在暗帧。等长与否不决定 VideoToolbox 接不接受：一律等 IDR
+                //   （IDR 本身重建 GOP，切值不欠账；#529 对照：维持会话初值到 IDR，片头 -12909 2 → 0 次、文字亮度 P99 16 → 254）
+                if (RefFramesSwitchNow(idr, _refFrames))
                 {
                     _refFrames = target;
                     _pendingRefFrames = 0;
@@ -450,20 +451,8 @@ namespace Ryujinx.Graphics.Nvdec.Apple
             return new string(chars);
         }
 
-        // max_num_ref_frames 在 SPS 里是 ue(v)：编码长度 = 2·floor(log2(v+1)) + 1
-        private static int UeBits(int value)
-        {
-            long n = (long)value + 1;
-            int bits = 1;
-
-            while (n > 1)
-            {
-                n >>= 1;
-                bits += 2;
-            }
-
-            return bits;
-        }
+        // 参考帧数（SPS max_num_ref_frames）换值的时机：只在 IDR 或首次定值时切；其余记成待切，等下一个 IDR（#529）
+        public static bool RefFramesSwitchNow(bool idr, int current) => idr || current == 0;
 
         private bool RepeatLast(VideoToolboxSurface surface)
         {
