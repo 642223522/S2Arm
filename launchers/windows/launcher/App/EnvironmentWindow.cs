@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+using System.Diagnostics;
 using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
@@ -17,6 +18,7 @@ public sealed partial class EnvironmentWindow : Window
     private static readonly IBrush Accent = Brush.Parse("#FFF0D6");
     private readonly SharedText text;
     private string language = "zh-Hans";
+    private bool welcomeHome;   // 点了顶栏品牌名：游戏库页先显示欢迎页（点「游戏库」或去别的页就回到平常）
     private LauncherPaths paths = LauncherPaths.Defaults(AppContext.BaseDirectory);
     private EnvironmentReport? report;
     private string summaryKey = "environment.idle";
@@ -142,32 +144,30 @@ public sealed partial class EnvironmentWindow : Window
         liveSlots.Clear();
         Title = T("app.title");
         var body = new StackPanel { Spacing = 20, Margin = new Thickness(32) };
-        // ── 顶栏：品牌名（左）+ 语言 / 添加游戏 / 环境检查（右）────────
+        // ── 顶栏：品牌名（左，点了回欢迎页）+ 游戏库 / 添加游戏 / 设置（右）。界面语言、存放位置、密钥这类低频设置都在「设置」页（入口整理）
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var brand = new TextBlock { Text = "S2Arm × NX2Apple", FontSize = 22, FontWeight = FontWeight.SemiBold,
-            Foreground = Ink, VerticalAlignment = VerticalAlignment.Center };
+        var brand = new Button
+        {
+            Content = new TextBlock { Text = "S2Arm × NX2Apple", FontSize = 22, FontWeight = FontWeight.SemiBold, Foreground = Ink },
+            Background = Brushes.Transparent, Padding = new Thickness(0), VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand)
+        };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(brand, "top.brand");
+        brand.Click += (_, _) =>   // 社区贡献者补丁 #2：点品牌名回欢迎页（同「游戏库」：出包在跑就留在后台）
+        {
+            if (packRunning) sessionHidden = true;
+            if (!libraryBusy) importDialog = null;
+            welcomeHome = true; Navigate("library");
+        };
         header.Children.Add(brand);
 
         var rightBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10,
             VerticalAlignment = VerticalAlignment.Center };
 
-        // 语言切换
-        var languages = new ComboBox
-        {
-            ItemsSource = new[] { T("language.zh-Hans"), T("language.en") },
-            SelectedIndex = language == "zh-Hans" ? 0 : 1, IsEnabled = !busy && !libraryBusy, MinWidth = 120
-        };
-        languages.SelectionChanged += (_, _) =>
-        {
-            CapturePaths();
-            if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
-            language = languages.SelectedIndex == 0 ? "zh-Hans" : "en"; Render();
-        };
         rightBar.Children.Add(LiveSlot(PhonePill));   // 装机进度事件只刷新这里（IngestPhoneEvent）
         if (BatchPill() is { } batchPill) rightBar.Children.Add(batchPill);
         rightBar.Children.Add(LiveSlot(PhoneUpdateControl));   // 更新 iPhone 上的 S2Arm（壳比本版旧才出现，InstallModePage.cs）；进度事件只刷新这里
         rightBar.Children.Add(LiveSlot(UpdateControls));   // 启动器自更新：下载百分比只刷新这里
-        rightBar.Children.Add(languages);
 
         // 游戏库：任何页面都能回去；出包还在跑就留在后台
         var libraryBtn = new Button
@@ -180,6 +180,7 @@ public sealed partial class EnvironmentWindow : Window
         {
             if (packRunning) sessionHidden = true;
             welcomeGameId = null;   // 点「游戏库」就是要看游戏库：欢迎页记的那一款不再把它盖住（社区贡献者补丁 #1）
+            welcomeHome = false;
             if (!libraryBusy) importDialog = null;   // 添加游戏弹窗开着也能直接从导航离开（同上 #3；正在导入时不关）
             Navigate("library");
         };
@@ -195,16 +196,17 @@ public sealed partial class EnvironmentWindow : Window
         addGameBtn.Click += (_, _) => OpenWelcomeGames();
         rightBar.Children.Add(addGameBtn);
 
-        // 环境检查（弹窗入口：切到 settings 页）
+        // 设置（原「环境检查」：出包环境检查是设置页里的一组卡；圆点照旧表示环境检查结果）
         var envDot = report?.Ready == true ? "● " : report is not null ? "○ " : "";
         var envCheckBtn = new Button
         {
-            Content = envDot + T("action.env_check"), IsEnabled = !busy && !libraryBusy,
+            Content = envDot + T("nav.settings"), IsEnabled = !busy && !libraryBusy,
             Padding = new Thickness(14, 8),
             Background = page == "settings" ? Accent : Brush.Parse("#29292D"),
             Foreground = page == "settings" ? Canvas : Ink,
             CornerRadius = new CornerRadius(8)
         };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(envCheckBtn, "top.settings");
         envCheckBtn.Click += (_, _) => { if (!libraryBusy) importDialog = null; Navigate(page == "settings" ? "library" : "settings"); };
         rightBar.Children.Add(envCheckBtn);
 
@@ -231,7 +233,7 @@ public sealed partial class EnvironmentWindow : Window
             ShowPage("import", body);
             return;
         }
-        if (page == "library" && ShowsWelcome)
+        if (page == "library" && (ShowsWelcome || welcomeHome))
         {
             RenderWelcome(body);
             ShowPage("welcome", body);
@@ -249,31 +251,47 @@ public sealed partial class EnvironmentWindow : Window
             ShowPage("library", body);
             return;
         }
-        body.Children.Add(Label(T("environment.title"), 23));
-        body.Children.Add(Label(T("environment.description")));
+        RenderSettings(body);
+        ShowPage(page, body);
+    }
 
-        engine = new TextBox { Text = paths.Engine, IsEnabled = !busy };
-        runtime = new TextBox { Text = paths.Runtime, IsEnabled = !busy };
-        shell = new TextBox { Text = paths.Shell, IsEnabled = !busy };
-        var settings = new StackPanel { Spacing = 8 };
-        settings.Children.Add(Label(T("settings.description")));
-        settings.Children.Add(Label(T("settings.engine"))); settings.Children.Add(engine);
-        settings.Children.Add(Label(T("settings.runtime"))); settings.Children.Add(runtime);
-        settings.Children.Add(Label(T("settings.shell"))); settings.Children.Add(shell);
-        settings.Children.Add(Action("action.save_settings", CapturePaths, !busy));
-        body.Children.Add(new Expander { Header = T("settings.title"), Content = settings,
-            HorizontalAlignment = HorizontalAlignment.Stretch });
+    /// <summary>设置页（入口整理）：界面语言 → 存放位置（游戏库 / iPhone 包 / 磁盘空间）→ 密钥 → 装机方式 → AI 操作 → 出包环境检查 → 运行路径（开发用）</summary>
+    private void RenderSettings(StackPanel body)
+    {
+        body.Children.Add(Label(T("nav.settings"), 23));
 
-        var libraryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var libraryText = new StackPanel { Spacing = 4 };
-        libraryText.Children.Add(Label(T("environment.library.title"), 16));
-        libraryText.Children.Add(Label(connectedFolder ?? libraryFolder));
-        libraryText.Children.Add(Label(T("environment.library.detail")));
-        libraryRow.Children.Add(libraryText);
-        var libraryChange = Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy);
-        libraryChange.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(libraryChange, 1); libraryRow.Children.Add(libraryChange);
-        body.Children.Add(Card(libraryRow));
+        // 界面语言（原在顶栏）
+        var languages = new ComboBox
+        {
+            ItemsSource = new[] { T("language.zh-Hans"), T("language.en") },
+            SelectedIndex = language == "zh-Hans" ? 0 : 1, IsEnabled = !busy && !libraryBusy, MinWidth = 160
+        };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(languages, "settings.language");
+        languages.SelectionChanged += (_, _) => { CapturePaths(); language = languages.SelectedIndex == 0 ? "zh-Hans" : "en"; Render(); };
+        body.Children.Add(Card(SettingRow(T("settings.language"), null, languages)));
+
+        // 存放位置：游戏库、iPhone 包、磁盘空间集中在这一处（原先游戏库页、设置页各铺一份）；单款游戏放在哪只写在游戏库那款的卡片上
+        var locations = new StackPanel { Spacing = 14 };
+        locations.Children.Add(Label(T("settings.locations"), 16));
+        var libraryButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (connectedFolder is { } openFolder) libraryButtons.Children.Add(Action("settings.open", () => OpenFolder(openFolder)));
+        libraryButtons.Children.Add(Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy));
+        locations.Children.Add(SettingRow(T("settings.locations.library"),
+            (connectedFolder ?? libraryFolder) + "\n" + T("environment.library.detail"), libraryButtons));
+        // 出 iPhone 包成功后组在游戏库根（pack/jobs/ipa.py refresh_library_ipa）
+        var ipa = connectedFolder is null ? null : Path.Combine(connectedFolder, "S2Arm.ipa");
+        var ipaReady = ipa is not null && File.Exists(ipa);
+        locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? ipa : T("settings.locations.ipa_none"),
+            ipaReady ? Action("progress.reveal_ipa", () => Reveal(ipa!)) : null));
+        locations.Children.Add(SettingRow(T("settings.locations.space"), null,
+            Action("storage.open", OpenStorage, !libraryBusy && libraryId is not null)));
+        body.Children.Add(Card(locations));
+
+        // 密钥（原在游戏库页状态卡）：状态 + 导入
+        if (catalog is not null)
+            body.Children.Add(Card(SettingRow(T("settings.keys"), catalog.KeysMessage,
+                Action("library.import_keys", () => BeginPicker(ChooseKeysAsync), !libraryBusy))));
+
         body.Children.Add(InstallModeCard());   // 装到 iPhone 的方式（v0.3.0，InstallModePage.cs）
 
         var aiRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -286,7 +304,10 @@ public sealed partial class EnvironmentWindow : Window
         Grid.SetColumn(aiToggle, 1); aiRow.Children.Add(aiToggle);
         body.Children.Add(Card(aiRow));
 
+        // 出包环境检查：设置页里的一组卡
         var summary = new StackPanel { Spacing = 12 };
+        summary.Children.Add(Label(T("environment.title"), 16));
+        summary.Children.Add(Muted(T("environment.description")));
         summary.Children.Add(Label(T(summaryKey), 18));
         var check = new Button { Content = T(report is null ? "action.check" : "action.recheck"), IsEnabled = !busy,
             Background = Accent, Foreground = Canvas, Padding = new Thickness(20, 10), CornerRadius = new CornerRadius(8) };
@@ -333,6 +354,19 @@ public sealed partial class EnvironmentWindow : Window
         }
         else body.Children.Add(Label(T("environment.no_report")));
 
+        // 运行路径（开发用）放最下面
+        engine = new TextBox { Text = paths.Engine, IsEnabled = !busy };
+        runtime = new TextBox { Text = paths.Runtime, IsEnabled = !busy };
+        shell = new TextBox { Text = paths.Shell, IsEnabled = !busy };
+        var settings = new StackPanel { Spacing = 8 };
+        settings.Children.Add(Label(T("settings.description")));
+        settings.Children.Add(Label(T("settings.engine"))); settings.Children.Add(engine);
+        settings.Children.Add(Label(T("settings.runtime"))); settings.Children.Add(runtime);
+        settings.Children.Add(Label(T("settings.shell"))); settings.Children.Add(shell);
+        settings.Children.Add(Action("action.save_settings", CapturePaths, !busy));
+        body.Children.Add(new Expander { Header = T("settings.title"), Content = settings,
+            HorizontalAlignment = HorizontalAlignment.Stretch });
+
         if (diagnostics.Length != 0)
         {
             body.Children.Add(new Expander { Header = T("diagnostics.title"),
@@ -344,7 +378,27 @@ public sealed partial class EnvironmentWindow : Window
         var version = Muted("S2Arm " + AppVersion, 12); version.HorizontalAlignment = HorizontalAlignment.Center;
         Avalonia.Automation.AutomationProperties.SetAutomationId(version, "env.version");
         body.Children.Add(version);
-        ShowPage(page, body);
+    }
+
+    /// <summary>设置页的一行：标题、说明（可空）、右侧控件（可空）</summary>
+    private Grid SettingRow(string title, string? detail, Control? right)
+    {
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
+        var left = new StackPanel { Spacing = 4 };
+        left.Children.Add(Label(title, 15));
+        if (!string.IsNullOrEmpty(detail)) left.Children.Add(Muted(detail));
+        row.Children.Add(left);
+        if (right is not null) { right.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(right, 1); row.Children.Add(right); }
+        return row;
+    }
+
+    /// <summary>资源管理器打开一个文件夹（路径作为一个参数传，不经 shell；文件夹不在就不开）</summary>
+    private void OpenFolder(string folder)
+    {
+        if (!Directory.Exists(folder)) return;
+        try { if (OperatingSystem.IsWindows()) Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { folder } })?.Dispose(); }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        { diagnostics = T("process.start_failed") + "\n" + error.Message; Render(); }
     }
 
     private async Task OpenOfficialAsync(Uri url)

@@ -33,6 +33,7 @@ public sealed partial class EnvironmentWindow
         CapturePaths();
         if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
         page = destination;
+        if (destination != "library") welcomeHome = false;   // 品牌名带去的欢迎页只管这一次回首页，去了别的页就回到平常
         // 环境检查页每次打开读一次装到 iPhone 的方式和开发者证书（InstallModePage.cs / DevCertPage.cs）
         if (destination == "settings") { _ = RefreshInstallModeAsync(); if (!devCertLoading) _ = RefreshDevCertAsync(); }
         Render();
@@ -118,7 +119,7 @@ public sealed partial class EnvironmentWindow
     private void RenderLibrary(StackPanel body)
     {
         body.Children.Add(Label(T("library.title"), 23));
-        body.Children.Add(Label(T("library.description")));
+        if (catalog is null) body.Children.Add(Label(T("library.description")));   // 「连接游戏库…」只在还没连上时说
 
         // In-progress capsule: shown when a pack is running and the session is hidden
         if (packRunning && sessionHidden)
@@ -167,9 +168,7 @@ public sealed partial class EnvironmentWindow
         AddButton("library.refresh", () => BeginLibrary("catalog"), libraryId is not null);
         connection.Children.Add(buttons);
         connection.Children.Add(Label(T("library.source_hint")));
-        if (catalog is null) body.Children.Add(Card(connection));
-        else body.Children.Add(new Expander { Header = T("library.folder") + " · " + connectedFolder,
-            HorizontalAlignment = HorizontalAlignment.Stretch, Content = Card(connection) });
+        if (catalog is null) body.Children.Add(Card(connection));   // 连上以后游戏库位置只在「设置 → 存放位置」（入口整理）
 
         var status = new StackPanel { Spacing = 8 };
         status.Children.Add(Label(T(librarySummary), 18));
@@ -177,23 +176,10 @@ public sealed partial class EnvironmentWindow
         if (librarySummary is "library.failed" or "library.invalid_result" && libraryDiagnostics.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() is { Length: > 0 } why)
             status.Children.Add(Muted(why, 14));
         if (libraryBusy) status.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4 });
-        if (catalog is not null)
-        {
-            status.Children.Add(Label(T("library.keys_status") + " · " + catalog.KeysMessage));
-            var imports = new WrapPanel { Orientation = Orientation.Horizontal };
-            foreach (var (key, handler) in new (string, Func<Task>)[] {
-                ("library.import_keys", () => ChooseFilesAsync(true)),
-                ("library.import_files", () => ChooseFilesAsync(false)),
-                ("library.import_folder", ChooseSourceFolderAsync) })
-            {
-                var button = Action(key, () => BeginPicker(handler), !libraryBusy);
-                button.Margin = new Thickness(0, 0, 10, 8); imports.Children.Add(button);
-            }
-            var storage = Action("storage.open", OpenStorage, !libraryBusy && libraryId is not null);
-            storage.Margin = new Thickness(0, 0, 10, 8); AutomationId(storage, "library.storage"); imports.Children.Add(storage);
-            status.Children.Add(imports);
-        }
-        body.Children.Add(Card(status));
+        // 状态卡只在有事时出现：还没连上 / 正在操作 / 没做成。原先卡里的密钥、导入按钮挪走了：
+        //   导入游戏统一走顶栏「添加游戏」，密钥与磁盘空间在「设置」（入口整理）
+        if (catalog is null || libraryBusy || librarySummary is "library.failed" or "library.invalid_result" or "library.interrupted")
+            body.Children.Add(Card(status));
 
         foreach (var game in games)
         {
@@ -207,6 +193,9 @@ public sealed partial class EnvironmentWindow
             // iPhone / Mac dual status line
             detail.Children.Add(GameStatusLine(game));
             detail.Children.Add(GameSizesLine(game.Sizes));   // 这款各部分大小（游戏库结构 v3「查」，StoragePage.cs）
+            // 这款放在哪：只在不在默认存放位置时写（游戏库本身的位置在「设置 → 存放位置」）
+            if (game.Location is { State: "ok", IsDefault: false } where)
+                detail.Children.Add(Muted(T("library.location.at").Replace("{0}", where.Folder.Length > 0 ? where.Folder : where.Path), 12));
             Grid.SetColumn(detail, 1); line.Children.Add(detail);
             // Primary button: if iPhone pack is ready → install; otherwise export (storage not connected → disabled, game files missing → relink / remove)
             var primaryKey = game.IphoneReady ? "library.hero.install" : "library.select";
@@ -637,21 +626,14 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { importError = error.Message; Render(); }
     }
 
-    private async Task ChooseSourceFolderAsync()
-    {
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = T("library.import_folder") });
-        if (folders.Count == 0) return;
-        await RunLibraryAsync("import", [LocalPath(folders[0])]);
-    }
-
-    private async Task ChooseFilesAsync(bool keys)
+    /// <summary>设置页「导入密钥」（游戏原件统一走顶栏「添加游戏」）</summary>
+    private async Task ChooseKeysAsync()
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions {
-            Title = T(keys ? "library.choose_keys" : "library.import_files"), AllowMultiple = !keys,
-            FileTypeFilter = [new FilePickerFileType(T(keys ? "library.import_keys" : "library.import_files"))
-                { Patterns = keys ? ["prod.keys", "*.keys"] : ["*.nsp", "*.xci", "*.nsz", "*.xcz"] }] });
+            Title = T("library.choose_keys"), AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType(T("library.import_keys")) { Patterns = ["prod.keys", "*.keys"] }] });
         if (files.Count == 0) return;
-        await RunLibraryAsync(keys ? "keys" : "import", files.Select(LocalPath).ToArray());
+        await RunLibraryAsync("keys", files.Select(LocalPath).ToArray());
     }
 
     private void BeginLibrary(string operation)
