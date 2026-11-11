@@ -564,6 +564,14 @@ public final class S2ArmLauncherModel: ObservableObject {
         return nil
     }
 
+    /// 空闲时接着做排着的事（启动器剃刀 M2）：先装批量出完的款，再出批次进行中单独点的款。批次结束、装机结束都从这里走，
+    ///   原先批次结束只看自动装机，批次期间排进 exportQueue 的单款永远「排队中」
+    func pumpQueue() {
+        guard !busy, !batchRunning else { return }
+        if !installAfterQueue.isEmpty { installNextQueued(); return }
+        if !exportQueue.isEmpty { let next = exportQueue.removeFirst(); session = nil; runExport(next) }
+    }
+
     func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
         // 同一款先出 Mac、再出 iPhone：iPhone 出包收尾会清掉这款的解包和中间产物（pack/jobs/library.prune_build），Mac 打包成功不清；
@@ -733,7 +741,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, ask: Bool = true) {
-        guard !busy, installAllowed(game.id) else { return }
+        // 不在这里再核装机页清单（启动器剃刀 M1）：装机页按钮和控制口调用前各自核过；批量出完自动装的款从没打开过装机页，原先在这里被悄悄挡掉、队列停住
+        guard !busy else { return }
         let teamId = teamId ?? Self.enteredTeam
         failAction(nil, game: nil)
         // 连着多台时装到出包页选中的那台（和按机型优化的是同一台）；控制口明说了 device 的照它
@@ -1098,7 +1107,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
         if session.kind == .installUpdate { phoneUpdateEnded(completed: state == .completed) }
-        if session.kind == .install, !installAfterQueue.isEmpty { Task { installNextQueued() } }
+        if session.kind == .install { Task { pumpQueue() } }
         if Self.phoneKinds.contains(session.kind), let id = session.gameID { phoneResult = (id, session.name, state == .completed) }
         // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
         if session.kind == .play, let id = session.gameID, cloudFolder != nil {
