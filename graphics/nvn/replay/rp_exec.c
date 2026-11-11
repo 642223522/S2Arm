@@ -271,6 +271,17 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
             case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
             case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + 2); break; }   // 本次提交主段的栅栏值
+            case OP_DISPATCH: {   // 计算派发还没接：照旧记账；头几次把它的输入列出来（调试取证：这款的派发读写什么）
+                const p_dispatch *dp = a; static int said;
+                if (said < 6 && nvn_plat_flag("nvk_drawlog", 0)) { said++; char b[700]; int o = snprintf(b, sizeof b, "计算派发 %dx%dx%d 间接 %#llx 着色器键 %02x%02x%02x%02x 有效 %d；", dp->x, dp->y, dp->z, (unsigned long long)dp->ind,
+                        rp_S.skey[5][0], rp_S.skey[5][1], rp_S.skey[5][2], rp_S.skey[5][3], rp_S.skey_ok >> 5 & 1);
+                    for (int i = 0; i < 16; i++) if (rp_S.ubo[5][i].addr) o += snprintf(b + o, sizeof b - (size_t)o, " 常量%d(%llu)", i, (unsigned long long)rp_S.ubo[5][i].size);
+                    for (int i = 0; i < 16; i++) if (rp_S.ssbo[5][i].addr) o += snprintf(b + o, sizeof b - (size_t)o, " 存储%d(%llu)", i, (unsigned long long)rp_S.ssbo[5][i].size);
+                    for (int i = 0; i < 32; i++) if (rp_S.img[5][i]) o += snprintf(b + o, sizeof b - (size_t)o, " 图像%d(#%llu)", i, (unsigned long long)(rp_S.img[5][i] & 0xFFFFF));
+                    for (int i = 0; i < 32; i++) if (rp_S.tex[5][i]) o += snprintf(b + o, sizeof b - (size_t)o, " 贴图%d(#%llu)", i, (unsigned long long)(rp_S.tex[5][i] & 0xFFFFF));
+                    nvn_plat_log(NVN_PLAT_LOG_INFO, "dispatch", b); }
+                nvn_unimpl("op", "OP_DISPATCH", p);
+                break; }
             default:
                 if (!rp_state_op(h.op, a, h.size)) nvn_unimpl("op", rp_op_name(h.op), p);
                 break;
