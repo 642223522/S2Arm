@@ -2052,7 +2052,7 @@ class JobsTests(unittest.TestCase):
         gid, out, _ = self.stopped_game()
         c = self.stop_context(gid)
         library.sweep_residue(c)            # 先把残留清干净
-        with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
+        with um.patch.object(type(c), "idle", side_effect=AssertionError("没有残留却去拿执行锁")):
             library.sweep_residue(c)
         self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
 

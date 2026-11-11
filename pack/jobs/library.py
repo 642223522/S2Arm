@@ -223,30 +223,11 @@ def store_todo(c, ids=None):
 STORE_QUIET_WAIT = 30.0   # 删除 / 移动 / 搬家前等后台商店查询结束的上限（秒）：它一轮联网最多 STORE_BUDGET 10 秒，加改文件夹名
 
 
-@contextlib.contextmanager
-def store_meta_quiet(library):
-    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock。
-    它正在查就等它查完（最多 STORE_QUIET_WAIT 秒，超了照常继续：它写横图在目录锁里、只写清单里还在的款并重新找文件夹，改名在执行锁里，
-    这里等是为了连它的任务记录也不写进正被删 / 搬的位置）；拿到后它再起来见锁被占就这次不查"""
-    path = Path(library) / ".store-meta.lock"
-    if not path.parent.is_dir():
-        yield
-        return
-    with path.open("a") as f:
-        held, deadline = False, time.monotonic() + STORE_QUIET_WAIT
-        while True:
-            try:
-                filelock.try_lock(f); held = True
-                break
-            except BlockingIOError:
-                if time.monotonic() > deadline:
-                    break
-                time.sleep(0.5)
-        try:
-            yield
-        finally:
-            if held:
-                filelock.unlock(f)
+def store_meta_quiet(c, library=None):
+    """删游戏、移动游戏、整库搬家期间不让后台商店查询（store_meta_bg.py）往游戏库里写：拿它同一把锁 .store-meta.lock（library 缺省本任务的库）。
+    它正在查就排队等它查完（最多 STORE_QUIET_WAIT 秒，它一轮联网有 STORE_BUDGET 上限），到上限报 library_busy、说清占锁者——
+    不再「等不到就不拿锁照常继续」（启动器剃刀 H2：那等于没锁）；拿到后它再起来见锁被占就这次不查"""
+    return c.lock("store-meta", wait=STORE_QUIET_WAIT, root=library)
 
 
 def store_meta_background(c, ids=None):
@@ -703,21 +684,10 @@ def _move_pairs(c, source):
 
 
 @contextlib.contextmanager
-def _source_locked(source):
-    """搬家期间旧游戏库不能有任务在跑"""
-    handles = []
-    try:
-        for name in (".execution.lock", ".catalog.lock"):
-            f = (source / name).open("a")
-            handles.append(f)
-            try:
-                filelock.try_lock(f)
-            except BlockingIOError:
-                raise Failure("旧游戏库还有任务在跑，等它结束再搬。", code="library_move_failed") from None
+def _source_locked(c, source):
+    """搬家期间旧游戏库不能有任务在跑：旧库的执行锁、目录锁按库锁同一语义排队（剃刀 H2：原先拿不到当场报错）"""
+    with c.lock("execution", root=source), c.lock(root=source):
         yield
-    finally:
-        for f in handles:
-            f.close()
 
 
 def move_library(c, source):
@@ -728,7 +698,7 @@ def move_library(c, source):
         raise Failure("原来的位置不是可搬的游戏库。", code="library_move_failed")
     if c.library == source or c.library.is_relative_to(source) or source.is_relative_to(c.library):
         raise Failure("新位置不能在原来的游戏库里面，也不能包含它。", code="library_move_failed")
-    with store_meta_quiet(source), _source_locked(source):
+    with store_meta_quiet(c, source), _source_locked(c, source):
         pairs = _move_pairs(c, source)
         c.library.mkdir(parents=True, exist_ok=True)
         cross = [(a, b) for a, b in pairs if not _same_volume(a, c.library)]
@@ -1552,37 +1522,37 @@ def import_games(c):
         raise Failure("所选位置没有 NSP、XCI 文件或解包好的游戏文件夹。", code="input_empty")
     if any(sources[p]["needsKeys"] for p in files) and not c.keys.is_file():
         raise Failure("请先导入 prod.keys。", code="keys_missing")
-    with c.lock():
-        cat = c.catalog()
-        verified = False
-        extract_paths = set(extracts)
-        total = len(paths) * 2
-        for idx, source in enumerate(paths):
-            c.last_log = None
-            c.last_rc = None
-            c.check()
-            c.require_library()
-            row = sources[source]
-            extracted = source in extract_paths
-            draft = deepcopy(cat)
-            diagnostics_before = len(c.job["diagnostics"])
-            try:
-                c.begin("读取游戏信息", idx * 2 + 1, total)
-                with tempfile.TemporaryDirectory(prefix="icons-", dir=c.private) as icons:
-                    if extracted:
-                        packages = extract_inspect(c, source, icons)
-                    elif row["needsKeys"]:
-                        packages = inspect(c, source, icons, source_id=row["id"])
-                    else:
-                        packages = nup_inspect(c, source, icons)
-                    row["name"] = next((p["name"] for p in packages if p.get("name")), source.name)
-                    c.begin("校验游戏文件", idx * 2 + 2, total)
-                    sha = ""
-                    if not extracted:   # 原件身份按读取器给的 content ID + 大小算，不读全文件；读取器没给才整份算（source_identity）
-                        sha = source_identity(packages, source.stat().st_size) or digest(source, c.progress)
+    # 读原件（元数据、身份）不持锁，只在记进 catalog、放封面、写 catalog.json 那一下拿目录锁（启动器剃刀 H27：原先整段持锁，导入几款大原件的几分钟里
+    #   改名 / 换封面 / 删游戏 / 移动全报「另一个任务正在使用游戏库」）。锁里重读 catalog：排队期间别的任务可能改过，判重按最新的
+    verified = False
+    extract_paths = set(extracts)
+    total = len(paths) * 2
+    for idx, source in enumerate(paths):
+        c.last_log = None
+        c.last_rc = None
+        c.check()
+        c.require_library()
+        row = sources[source]
+        extracted = source in extract_paths
+        diagnostics_before = len(c.job["diagnostics"])
+        try:
+            c.begin("读取游戏信息", idx * 2 + 1, total)
+            with tempfile.TemporaryDirectory(prefix="icons-", dir=c.private) as icons:
+                if extracted:
+                    packages = extract_inspect(c, source, icons)
+                elif row["needsKeys"]:
+                    packages = inspect(c, source, icons, source_id=row["id"])
+                else:
+                    packages = nup_inspect(c, source, icons)
+                row["name"] = next((p["name"] for p in packages if p.get("name")), source.name)
+                c.begin("校验游戏文件", idx * 2 + 2, total)
+                sha = ""
+                if not extracted:   # 原件身份按读取器给的 content ID + 大小算，不读全文件；读取器没给才整份算（source_identity）
+                    sha = source_identity(packages, source.stat().st_size) or digest(source, c.progress)
+                with c.lock():
+                    draft = deepcopy(c.catalog())
                     entries = record_import_packages(c, draft, source, packages, icons, sha, extracted)
                     c.check()
-                    c.require_library()
                     try:
                         atomic(c.library / "catalog.json", draft)
                     except OSError as error:
@@ -1590,18 +1560,17 @@ def import_games(c):
                         if failure.code == "disk_full" or not partial:   # 默认路径同 #124 之前：原始 OSError 交 explain 归码
                             raise
                         raise Failure("游戏库目录无法写入。", internal=str(error)) from error
-            except (Failure, OSError) as error:
-                import_source_failed(c, row, error)
-                if not partial or row["code"] not in IMPORT_SOURCE_ERRORS:
-                    raise
-                del c.job["diagnostics"][diagnostics_before:]
-            else:
-                cat = draft
-                results.extend(entries)
-                row["status"] = "duplicate" if all(entry["duplicate"] for entry in entries) else "imported"
-                if row["needsKeys"] and not verified:
-                    atomic(c.private / "keys/status.json", dict(ready=True, verified=True))
-                    verified = True
+        except (Failure, OSError) as error:
+            import_source_failed(c, row, error)
+            if not partial or row["code"] not in IMPORT_SOURCE_ERRORS:
+                raise
+            del c.job["diagnostics"][diagnostics_before:]
+        else:
+            results.extend(entries)
+            row["status"] = "duplicate" if all(entry["duplicate"] for entry in entries) else "imported"
+            if row["needsKeys"] and not verified:
+                atomic(c.private / "keys/status.json", dict(ready=True, verified=True))
+                verified = True
     added = {r["id"].upper() for r in results if not r["duplicate"]}
     if added:
         store_meta_background(c, added)   # 横图、英文标题：后台查（导入不等联网），查到英文名接着改文件夹名
@@ -1984,21 +1953,6 @@ def save_container_kit(c, gid, root, dest=None):
     return kit
 
 
-@contextlib.contextmanager
-def _execution_idle(c):
-    """拿得到出包执行锁才进去（有任务在跑时 yield False）。不走 c.lock：那里先查取消，被取消的任务也要能收尾。"""
-    with (c.library / ".execution.lock").open("a") as f:
-        try:
-            filelock.try_lock(f)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            filelock.unlock(f)
-
-
 def _build_entries(c, gid):
     """这款出包缓存 build/ 里能删的项：除 iPhone 出包日志 build/ios/logs 之外的全部。日志是释放空间的「保留」项（SPACE_KEPT），
     出包成功清理、清缓存、释放「旧版残留」都不删它（旧布局 iPhone/<号>/logs 同样一直留着）"""
@@ -2038,7 +1992,7 @@ def clean_after_stop(c):
         gid = c.r.get("gameId")
         if not any(g.get("id") == gid for g in read(c.library / "catalog.json", {}).get("games", [])):
             return   # 这次失败可能正因为游戏不在库里，没有东西要清，也不该多报一条
-        with _execution_idle(c) as idle:
+        with c.idle("execution") as idle:
             if idle and _residue_disposable(c, gid):
                 _keep_stage_logs(c, gid)
                 prune_build(c, gid, record=False)
@@ -2066,7 +2020,7 @@ def sweep_residue(c):
     try:
         if not _residue(c):
             return
-        with _execution_idle(c) as idle:
+        with c.idle("execution") as idle:
             if not idle:
                 return
             for gid, stale, partials in _residue(c):
@@ -2137,7 +2091,7 @@ def delete(c):
     保留存档（library/saves/<程序号>）与游戏原件（原地导入的不碰；旧版复制进 library/sources 的托管副本另有「删除托管 NSP 副本」）。
     执行锁可能还被这一款刚被取消的任务占着（启动器发删除前先结束它在跑的任务，收尾要杀子进程组）：执行锁排队最多 DELETE_LOCK_WAIT_S 秒，
     期间照锁的排队进度说「在等『X』结束」（启动器剃刀 H2：原先锁外再套一层按报错原文每 2 秒重试 120 秒的循环，两层等待语义叠在一起）"""
-    with store_meta_quiet(c.library), c.lock("execution", wait=DELETE_LOCK_WAIT_S), c.lock():
+    with store_meta_quiet(c), c.lock("execution", wait=DELETE_LOCK_WAIT_S), c.lock():
         gid = c.game()["id"]
         c.begin("删除游戏与出包产物")
         # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
@@ -2619,7 +2573,7 @@ def apply_location(c, game):
 
 
 def move_game(c):
-    with store_meta_quiet(c.library), c.lock("execution"), c.lock():
+    with store_meta_quiet(c), c.lock("execution"), c.lock():
         game = c.game()
         if not c.r.get("location"):
             raise Failure("没有选新的存放位置。", code="job_failed")

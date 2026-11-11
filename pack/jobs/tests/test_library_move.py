@@ -7,9 +7,10 @@ import tempfile
 import unittest
 import unittest.mock as um
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import core
 import library
 from core import Failure
 
@@ -30,7 +31,9 @@ class MoveTests(unittest.TestCase):
     def ctx(self, library_path, **request):
         notes = []
         c = SimpleNamespace(library=library_path, private=self.private, engine=self.root / "engine", r=request, begin=lambda *a, **k: None, check=lambda: None,
-                            progress=lambda *a: None, redact=lambda s: s, diagnostic=lambda m, **k: notes.append(m), notes=notes)
+                            progress=lambda *a: None, redact=lambda s: s, diagnostic=lambda m, **k: notes.append(m), notes=notes,
+                            emit=lambda *a, **k: None, lock_wait=0.3, task="t1", operation="setup")
+        c.lock_holder, c.lock = MethodType(core.Context.lock_holder, c), MethodType(core.Context.lock, c)   # 库锁走真实现（剃刀 H2：搬家锁旧库同一语义）
         return c
 
     def old(self, name="old"):
@@ -110,6 +113,24 @@ class MoveTests(unittest.TestCase):
         with um.patch.object(library, "_same_volume", return_value=False), um.patch.object(library, "_verify_copy", corrupt), self.assertRaises(Failure) as e:
             self.run_setup(new, moveFrom=str(old))
         self.assertEqual(e.exception.code, "library_move_failed"); self.assert_untouched(old, new)
+
+    @unittest.skipIf(os.name == "nt", "占锁的子进程用 fcntl.flock")
+    def test_busy_old_library_queues_then_reports_library_busy(self):
+        # 旧库有任务（出包 t7）一直占着执行锁：排队到上限报 library_busy、带占锁者，旧库新库都不动（旧代码：当场报 library_move_failed、不说是谁）
+        import subprocess
+        old, new = self.old(), self.root / "new"
+        info = {"taskId": "t7", "operation": "build", "gameId": GID, "pid": 1, "startedAt": 1.0}
+        holder = subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); "
+                                   "open(sys.argv[1]+'.holder','w').write(sys.argv[3]); print('ok',flush=True); sys.stdin.readline()",
+                                   str(old / ".execution.lock"), str(Path(library.__file__).parent), json.dumps(info)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            with self.assertRaises(Failure) as e:
+                self.run_setup(new, moveFrom=str(old))
+            self.assertEqual((e.exception.code, e.exception.holder), ("library_busy", info)); self.assert_untouched(old, new)
+        finally:
+            holder.stdin.write("\n"); holder.stdin.flush(); holder.communicate(timeout=5)
 
     def test_interrupted_rename_rolls_back(self):
         old, new = self.old(), self.root / "new"

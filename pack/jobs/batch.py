@@ -69,18 +69,11 @@ def locked(private_root):
     """一条命令读 → 改 → 写期间独占 batch.json（作业层已有的 filelock，Mac / Windows 同一套）：两个进程同时 mark 时不互相盖掉（审计 P2-270）。
     锁被占着就短等（每条命令都是毫秒级），等不到报错，不静默写"""
     root = Path(private_root); root.mkdir(parents=True, exist_ok=True)
-    with open(root / "batch.json.lock", "a+") as f:
-        for _ in range(100):
-            try:
-                filelock.try_lock(f); break
-            except BlockingIOError:
-                time.sleep(0.05)
-        else:
-            raise OSError("批次正被另一个进程改着，稍后再试")
-        try:
+    try:
+        with filelock.held(root / "batch.json.lock", wait_s=5, poll=0.05):
             yield
-        finally:
-            filelock.unlock(f)
+    except filelock.Busy:
+        raise OSError("批次正被另一个进程改着，稍后再试") from None
 
 
 def recover(batch):
