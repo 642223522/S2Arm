@@ -117,4 +117,5 @@ BackendTextCases.Run(Check);
 await WindowsLibraryCases.Run(Check);
 await WindowsProbeCases.Run(Check);
 await ControlPortCases.Run(Check);
+await UpdateClientCases.Run(Check);
 Console.WriteLine($"Launcher protocol: {assertions} assertions passed");

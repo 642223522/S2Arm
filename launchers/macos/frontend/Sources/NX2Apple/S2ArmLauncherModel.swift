@@ -187,6 +187,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var batchLocation = ""
     @Published var batchState: [String: Any]?
     @Published var batchRunning = false
+    /// 批次记录（batch.py mark / 命令）没写成的原因：整批停住、批量页显示（剃刀 M7：原先失败照样往下走，状态和真实结局分叉）；nil = 没出错
+    @Published var batchError: String?
     @Published var batchUnrecognized: [ImportSource] = []
     /// 在单款出包页又放进游戏：导入完列清单时这款排第一
     var batchSeed: String?
