@@ -155,7 +155,11 @@ static int views(void) {
 static int errors(void) {
     struct s2a_bt_input in = input(); struct s2a_bt_plan p;
 #define BAD(field, value, code) do { in = input(); in.field = value; CHECK(rejects(in, code) == 0); } while (0)
-    BAD(direction, 9, S2A_BT_INVALID); BAD(flags, 1, S2A_BT_UNSUPPORTED); BAD(flags, UINT32_MAX, S2A_BT_UNSUPPORTED);
+    BAD(direction, 9, S2A_BT_INVALID); BAD(flags, 4, S2A_BT_UNSUPPORTED); BAD(flags, UINT32_MAX, S2A_BT_UNSUPPORTED);   // mirror bits change the bytes
+    {   // LINEAR_FILTER / ENGINE_2D do not change a 1:1 buffer <-> texture copy: same plan as flags = 0
+        struct s2a_bt_plan none; in = input(); CHECK(plan(&in, &none) == 0);
+        for (uint32_t f = 1; f <= 3; f++) { in = input(); in.flags = f; CHECK(plan(&in, &p) == 0 && !memcmp(&p, &none, sizeof p)); }
+    }
     BAD(texture.width, 0, S2A_BT_INVALID); BAD(texture.width, UINT32_MAX, S2A_BT_INVALID);
     BAD(texture.levels, 0, S2A_BT_INVALID); BAD(texture.layers, 2, S2A_BT_INVALID);
     BAD(texture.depth, 2, S2A_BT_INVALID); BAD(texture.depth, 0, S2A_BT_INVALID);

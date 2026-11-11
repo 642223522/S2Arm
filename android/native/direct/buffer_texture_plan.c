@@ -54,7 +54,13 @@ int s2a_buffer_texture_plan(const struct s2a_bt_input *in, struct s2a_bt_plan *o
         (t->target == NVN_TEXTURE_TARGET_CUBEMAP && t->layers != 6) ||
         (t->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && t->layers % 6))
         return fail(S2A_BT_INVALID, why, n, "image depth/layers do not match its target");
-    if (in->flags) return fail(S2A_BT_UNSUPPORTED, why, n, "copy flags are not covered");
+    // LINEAR_FILTER (0x1) / ENGINE_2D (0x2) choose how a scaled copy is filtered and which engine runs it: a
+    // buffer <-> texture copy is 1:1, so they change nothing (Metal's copy_b2t / copy_t2b never read flags).
+    // Mirror bits would change the bytes and stay refused.
+    if (in->flags & ~0x3u) {
+        if (why && n) snprintf(why, n, "copy flags 0x%x are not covered", (unsigned)in->flags);
+        return S2A_BT_UNSUPPORTED;
+    }
     nvn_fmt_info fmt;
     if (!nvn_fmt_info_of(t->nvn_format, &fmt) || fmt.stencil || fmt.expand || !fmt.bw || !fmt.bh)
         return fail(S2A_BT_UNSUPPORTED, why, n, "unknown/stencil/converted format is not covered");
