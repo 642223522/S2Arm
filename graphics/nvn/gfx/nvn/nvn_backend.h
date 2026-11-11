@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 2   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 3   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -444,6 +444,7 @@ typedef struct {
     int32_t dst[4];                      // 核心按 nvn_present_fit.h 算好；矩形外后端清黑
     uint32_t filter;                     // 0 最近点 1 线性 2 后端的抗锯齿缩放
     double at;                           // 期望呈现时刻（主机单调秒；0 = 尽快）
+    uint8_t flip_y, _rsv[7];             // 1 = 源是自下而上存的（NVN 窗口原点在左下）：呈现时上下翻过来（v3 新增）
 } nvn_gpu_present_desc;
 enum { NVN_GPU_SHOWN_AT = 0, NVN_GPU_SHOWN_DROPPED = 1, NVN_GPU_SHOWN_UNKNOWN = 2 };
 typedef struct { uint64_t ticket; uint32_t status; double at; } nvn_gpu_shown;   // at 只在 SHOWN_AT 时有意义（主机单调秒）

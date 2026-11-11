@@ -631,9 +631,10 @@ static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口
     CHECK(nvn_be_present(&t, 0, NULL) == 2 && g_presents == 1);
     CHECK(g_last_pd.src != NULL && g_last_pd.crop[2] == 0 && g_last_pd.dst[0] == 0 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 1280 && g_last_pd.dst[3] == 720);   // 16:9 贴满 16:9
     CHECK(nvn_be_presented_time(2) == 5.0);                         // 后端没给上屏时刻：按交给呈现引擎的时刻记
-    int crop[4] = {0, 0, 320, 360};                                 // 8:9 的裁剪放进 1280x720：高贴满，宽 640，左右各 320 黑边
+    int crop[4] = {0, 0, 320, 300};                                 // 16:15 的裁剪放进 1280x720：高贴满，宽 768，左右各 256 黑边
     CHECK(nvn_be_present(&t, 0, crop) == 3 && g_presents == 2);
-    CHECK(g_last_pd.crop[0] == 0 && g_last_pd.crop[2] == 320 && g_last_pd.crop[3] == 360 && g_last_pd.dst[0] == 320 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 640 && g_last_pd.dst[3] == 720);
+    CHECK(g_last_pd.flip_y == 1 && g_last_pd.crop[1] == 60);          // 原点在左下：呈现时上下翻，裁剪的 y 从底边换成从顶边数（360 − 0 − 300）
+    CHECK(g_last_pd.crop[0] == 0 && g_last_pd.crop[2] == 320 && g_last_pd.crop[3] == 300 && g_last_pd.dst[0] == 256 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 768 && g_last_pd.dst[3] == 720);
     g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_OUTDATED;              // 交换链过期：重建一次再取
     CHECK(nvn_be_present(&t, 0, NULL) == 4 && g_rebuilds == 1 && g_presents == 3 && nvn_be_presented_time(4) == 5.0);
     g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_TIMEOUT;               // 没有空闲图：丢这一帧，不算故障

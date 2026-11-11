@@ -265,7 +265,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     if (ok) {
         VkImageBlit bl; memset(&bl, 0, sizeof bl);
         bl.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, d->src->base_level, d->src->base_layer, 1};
-        bl.srcOffsets[0] = (VkOffset3D){sx, sy, 0}; bl.srcOffsets[1] = (VkOffset3D){sx + sw, sy + sh, 1};
+        bl.srcOffsets[0] = (VkOffset3D){sx, d->flip_y ? sy + sh : sy, 0}; bl.srcOffsets[1] = (VkOffset3D){sx + sw, d->flip_y ? sy : sy + sh, 1};   // flip_y：两个 y 对调，贴出来上下翻转
         bl.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         bl.dstOffsets[0] = (VkOffset3D){dx, dy, 0}; bl.dstOffsets[1] = (VkOffset3D){dx + dw, dy + dh, 1};
         VkFilter filt = d->filter && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
