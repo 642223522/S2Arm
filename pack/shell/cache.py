@@ -42,7 +42,7 @@ def default_cache_dir():
     if explicit:
         return Path(explicit).expanduser()
     run = Path(os.environ.get("S2A_RUN_ROOT", "~/.s2arm/run")).expanduser()
-    return run / "s2arm/cache/shell"   # 与 pack/ipa.sh、tools/gc.sh、tools/shared_paths.tsv 同一个目录
+    return run / "s2arm/cache/shell"   # 与 pack/ipa.sh、tools/shared_paths.tsv 同一个目录（维护方内部清扫器也按它清）
 
 
 def _base_url(value):
