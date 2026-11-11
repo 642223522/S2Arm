@@ -132,7 +132,10 @@ class MakePackRewriterTest(unittest.TestCase):
                         "if fault=='environment':\n" +
                         " pathlib.Path(__file__+'.env.json').write_text(json.dumps({k:os.environ.get(k) for k in ('S2A_TARGET','S2A_REWRITE_SPIN','S2A_SDK_ADDR_CUT')}))\n" +
                         "if fault=='fps':\n" +
-                        " pathlib.Path(__file__+'.fps.json').write_text(json.dumps(os.environ.get('S2A_FPS_TSV')))\n")
+                        " pathlib.Path(__file__+'.fps.json').write_text(json.dumps(os.environ.get('S2A_FPS_TSV')))\n" +
+                        "if fault=='cpatch':\n" +
+                        " t=os.environ.get('S2A_CPATCH_TSV')\n" +
+                        " with open(__file__+'.cpatch.jsonl','a') as f: f.write(json.dumps([sys.argv[3], t, pathlib.Path(t).read_text() if t else None])+'\\n')\n")
         path.chmod(0o700)
         return str(path)
 
@@ -206,6 +209,78 @@ class MakePackRewriterTest(unittest.TestCase):
         out, _ = self.make(S2A_REWRITER_C=wrapper, S2A_FPS_TSV=str(stray))
         self.assertEqual(json.loads(Path(wrapper + '.fps.json').read_text()), str(table))
         self.assertEqual((out / 'fps.tsv').read_bytes(), table.read_bytes())
+
+    def community(self, *names):
+        """合成社区补丁索引（#48 D2）：对合成 main（构建号 5332412D…，代码见 android/tools/selftest_nso.py）的三份 pchtxt：
+        good = 0x200 填充字 → nop（常写 w 行）+ 0x104 ret → mov w0,#2（双路 p 行）；bad = 0x11c ret → mrs x0,tpidr_el0（补丁指令要翻译：改写器记 cpatch 缺口）；
+        data = data 段 0x4010 写 AABBCCDD（装载器写，不改代码）"""
+        build = (self.root / 'exefs/main').read_bytes()[0x40:0x4c].hex().upper()
+        le = lambda word: struct.pack('<I', word).hex().upper()
+        bodies = {'good': [f'00000200 {le(0xd503201f)}', f'00000104 {le(0x52800040)}'],
+                  'bad': [f'0000011C {le(0xd53bd040)}'],
+                  'data': ['00004010 AABBCCDD']}
+        index = self.directory / 'community' / 'gfx'
+        index.mkdir(parents=True)
+        for name in names:
+            (index / f'{name}.pchtxt').write_text(f'@nsobid-{build}\n@flag offset_shift 0x100\n@enabled\n' +
+                                                 ''.join(line + '\n' for line in bodies[name]))
+        (index / 'INDEX.tsv').write_text('title_id\tpath\tkind\tlicense\n' +
+                                         ''.join(f'0100000000ABCDEF\t{n}.pchtxt\tpchtxt\tMIT\n' for n in names))
+        uid = {n: 'gfx:' + hashlib.sha256((index / f'{n}.pchtxt').read_bytes()).hexdigest()[:16] for n in names}
+        return str(index), uid
+
+    def cpatch_calls(self, wrapper):
+        path = Path(wrapper + '.cpatch.jsonl')
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_community_patches_stay_out_unless_enabled(self):
+        # #48 D2：玩家包缺省不带上游补丁字节（S2A_COMMUNITY_PATCHES 没设）——有索引也不打、不进包；环境里漏进来的补丁行不交给改写器
+        index, _ = self.community('good', 'data')
+        stray = self.directory / 'stray-rows.tsv'
+        stray.write_text('p\tmain\t104\td65f03c0\t52800040\t0\n')
+        wrapper = self.wrapper('cpatch')
+        out, _ = self.make(S2A_REWRITER_C=wrapper, S2A_CPATCH_DIRS=index, S2A_CPATCH_TSV=str(stray))
+        self.assertEqual({m: t for m, t, _ in self.cpatch_calls(wrapper)}, {'main': None, 'sdk': None})
+        self.assertFalse((out / 'modules/cpatch.tsv').exists())
+        self.assertFalse((out / 'cpatch.tsv').exists())
+        _, result = self.make(out=self.directory / 'package-none', S2A_REWRITER_C=wrapper, S2A_CPATCH_DIRS=index,
+                              S2A_COMMUNITY_PATCHES='1', S2A_CPATCH='none')
+        self.assertFalse((self.directory / 'package-none' / 'modules/cpatch.tsv').exists())
+
+    def test_community_patches_reach_rewriter_and_package(self):
+        # #48 D2：S2A_COMMUNITY_PATCHES=1 时按安卓改写器出表（同 pack/stage_rewrite.sh 的 plan → 带补丁行改写 → prune 循环）：
+        #   bad 那份让改写器记了 cpatch 缺口 → 剔掉、重出表，good 与 data 进包；进包的装载器表与最后一轮交给改写器的补丁行是同一次 plan 出的
+        index, uid = self.community('good', 'bad', 'data')
+        plain, _ = self.make(out=self.directory / 'package-plain')
+        stray = self.directory / 'stray-rows.tsv'
+        stray.write_text('# 环境里的另一份\n')
+        wrapper = self.wrapper('cpatch')
+        out, result = self.make(S2A_REWRITER_C=wrapper, S2A_CPATCH_DIRS=index, S2A_COMMUNITY_PATCHES='1',
+                                S2A_CPATCH=uid['good'], S2A_CPATCH_TSV=str(stray))
+        calls = self.cpatch_calls(wrapper)
+        self.assertEqual([t for _, t, _ in calls[:2]], [None, None], '第一轮不带补丁行（plan 预筛要不带补丁时的改写点）')
+        rounds = [rows for _, t, rows in calls[2:] if t]
+        self.assertTrue(rounds and all(t and t != str(stray) for _, t, _ in calls[2:]))
+        self.assertIn(uid['bad'], rounds[0])
+        self.assertNotIn(uid['bad'], rounds[-1])
+        self.assertIn(f'p\tmain\t104\td65f03c0\t52800040\t0\t# {uid["good"]}', rounds[-1])
+        # 表随模块进 modules/（APK 起局 loader.c 经资源读面读 modules/cpatch.tsv），包根不再放一份
+        self.assertFalse((out / 'cpatch.tsv').exists())
+        table = [line.split('\t') for line in (out / 'modules/cpatch.tsv').read_text().splitlines()]
+        self.assertEqual(table[0][0], '编号')
+        self.assertEqual([(r[0], r[1], r[2], r[7], r[8]) for r in table[1:]],
+                         [(uid['good'], 'main', '0', '', '1'), (uid['data'], 'main', '1', '4010:00000000:aabbccdd', '0')])
+        self.assertIn('社区补丁：2 份进包，不收 1 份', result.stdout)
+        self.assertNotEqual((out / 'modules/main.patched.bin').read_bytes(), (plain / 'modules/main.patched.bin').read_bytes())
+
+    def test_community_patches_all_code_pruned_rewrites_clean(self):
+        # 带补丁行的那份全被剔了、只剩数据补丁：终稿模块必须是不带补丁行的改写（上一轮的双路字与缺口不能留在包里）
+        index, uid = self.community('bad', 'data')
+        plain, _ = self.make(out=self.directory / 'package-plain')
+        out, _ = self.make(S2A_CPATCH_DIRS=index, S2A_COMMUNITY_PATCHES='1')
+        self.assertEqual([line.split('\t')[0] for line in (out / 'modules/cpatch.tsv').read_text().splitlines()[1:]], [uid['data']])
+        for name in ('main.patched.bin', 'main.fixups.tsv', 'main.gates.tsv'):
+            self.assertEqual((out / 'modules' / name).read_bytes(), (plain / 'modules' / name).read_bytes(), name)
 
     def test_selector_and_execution_failures_preserve_previous_output(self):
         for mode, settings in [('backend',dict(backend='invalid')),('missing',dict(S2A_REWRITER_C=str(self.directory/'absent'))),

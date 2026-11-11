@@ -799,7 +799,7 @@ def _catalog_budget(request):
     packages = rules.selected_packages(game)
     if not packages:
         return None, "unverified", "gameId没有可选包，尚无完整出包预算。"
-    need = rules.pack_need_bytes(packages, windows=True)
+    need = rules.pack_need_bytes(packages, windows=True, image=True)   # Windows 只出 iPhone 包：单一 IMG 那份也算
     if type(need) is not int or need < 0:
         raise ValueError("共用空间规则结果不可核实")
     return need, None, "按共用选包与出包计划规则计算；压缩包按已登记内容大小，不读取包正文。"

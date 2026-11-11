@@ -406,15 +406,10 @@
    ]
   },
   "runtime/src/qprompt.c": {
-   "gaps": [
-    "未接线",
-    "未链接"
-   ]
+   "gaps": []
   },
   "runtime/src/qprompt_host.c": {
-   "gaps": [
-    "未链接"
-   ]
+   "gaps": []
   },
   "runtime/src/selfcheck.c": {
    "gaps": []
