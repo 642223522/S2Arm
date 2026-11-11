@@ -223,7 +223,8 @@ def rewrite(exefs, staging):
         done, _ = rewrite_all()
         table = None
         if community:
-            table = rewrite_community(work, community, rewrite_all, os.path.dirname(os.path.abspath(staging)))
+            # 表随模块进 modules/（同宽屏表、同苹果模块目录的 cpatch.tsv）：APK 起局经同一资源读面验签读它（runtime/src/loader.c）
+            table = rewrite_community(work, community, rewrite_all, staging)
     if 'main' not in done:
         sys.exit(f'no exefs/main in {exefs}')
     shutil.copy2(os.path.join(exefs, 'main.npdm'), os.path.join(staging, 'main.npdm'))
@@ -364,9 +365,8 @@ def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
             if os.path.isdir(direct): out.append(('shaders/vulkan/direct', direct))
         else:
             out += [(f'shaders/{n}', os.path.join(shaders, n)) for n in sorted(os.listdir(shaders)) if n != 'work']
-    community_table = rewrite(os.path.join(root, 'exefs'), staging)
-    if community_table:   # 社区补丁装载器表（#48 D2）：本次按安卓改写器出的那份进游戏数据根；产物根里苹果改写阶段留下的 cpatch.tsv 不进安卓包
-        out.append(('cpatch.tsv', community_table))
+    # 社区补丁装载器表（#48 D2）：本次按安卓改写器出的那份已写进 staging（随下面的 modules/ 进包）；产物根里苹果改写阶段留下的 cpatch.tsv 不进安卓包
+    rewrite(os.path.join(root, 'exefs'), staging)
     # Reuse the Apple NRO export survey, not replacement SDK implementations.
     nro_table = os.path.join(os.path.dirname(staging), 'nro_exports.tsv')
     result = subprocess.run([sys.executable, os.path.join(REPO, 'tools/nro_exports.py'),
