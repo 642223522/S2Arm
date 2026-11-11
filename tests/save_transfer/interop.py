@@ -28,6 +28,7 @@ DOTNET, DRIVER = sys.argv[1:]
 GAME_ID = "0100000000000000"
 USER = "00000000000000010000000000000000"
 OTHER_USER = "00000000000000020000000000000000"
+PLAYER2 = "5a1e0b7c3d9f4e2a8b6c1d0e9f8a7b6c"   # 本地玩家（#623）的第二个玩家：用户号由宿主按名字算，这里取一个固定值
 
 
 def write_json(path, value):
@@ -202,6 +203,30 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     shutil.rmtree(source)
     shutil.move(original, source)
     print("PASS both reject independently API-created different account owner: save_wrong_user")
+
+    # 本地玩家（#623）：一边多一个玩家（账号集合是包含关系：另一台设备还没建这个玩家、恢复建玩家之前的备份）→ 两种实现都照常检查、C# 照常恢复；
+    #   上面「各有对方没有的账号」照旧拒绝。期望手写：恢复后目标的账号就是备份里的那几个
+    two = scratch / "two-players"
+    subprocess.run([DOTNET, DRIVER, "--create", str(two), str(REPO), USER + "," + PLAYER2], check=True, timeout=60)
+    two_archive = scratch / "two.s2asave"
+    csharp_call("export", two_archive, root=two)
+    assert csharp_call("inspect", two_archive)["manifest"]["users"]["ids"] == sorted([USER, PLAYER2])
+    assert python_call("saveInspect", path=str(two_archive))["manifest"]["users"]["ids"] == sorted([USER, PLAYER2])   # 两人的备份 → 只有第一个玩家的数据根
+    original = scratch / "original"
+    shutil.move(source, original)
+    shutil.copytree(two, source)
+    python_call("saveInspect", path=str(python_archive))   # 一个人的备份 → 两个玩家的数据根
+    csharp_call("inspect", python_archive, root=two)
+    shutil.rmtree(source)
+    shutil.move(original, source)
+    one = scratch / "one-player"
+    shutil.copytree(source, one)
+    preview = csharp_call("inspect", two_archive, root=one)
+    csharp_call("restore", two_archive, root=one, archiveSha256=preview["archiveSha256"], targetFingerprint=preview["targetFingerprint"])
+    status = csharp_call("status", root=one)
+    assert status["users"]["ids"] == sorted([USER, PLAYER2]), status
+    assert len(list(one.glob("bis/user/save/*/0/readme.md"))) == 1   # 第二个玩家那份（README.md）跟着恢复进来
+    print("PASS both accept a backup and a target whose players differ by one added player (subset), C# restores both players")
 
     data = csharp_archive.read_bytes()
     # A real pipe is unseekable, so ZipFile must emit data descriptors. This

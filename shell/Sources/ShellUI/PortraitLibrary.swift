@@ -92,16 +92,19 @@ struct PortraitLibrary: View, Equatable {
             .scrollIndicators(.hidden)
             .ignoresSafeArea(edges: wide ? [.top, .bottom] : .top)
             .safeAreaInset(edge: .bottom, spacing: 0) { if !wide { bottomBar } }
-            .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
-                LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
-            }
-            .overlay(alignment: .topTrailing) {
-                if !chipsInSideBar {
-                    HStack(spacing: 10) {
+            .overlay(alignment: .top) {
+                // S2Arm: the version for screenshots, level with the chips, in one row with them so it gives way first on a
+                // narrow phone; the player (#623) before Controllers, so the name says whose saves Play opens.
+                HStack(spacing: 10) {
+                    LibraryVersionBadge().layoutPriority(-1)
+                    Spacer(minLength: 8)
+                    if !chipsInSideBar {
+                        PlayerChip()
                         ControllerChip(count: controllers, action: openControllers)
                         ShellSettingsChip(action: openShellSettings)
-                    }.padding(.top, 6).padding(.trailing, 16)
+                    }
                 }
+                .frame(minHeight: 44).padding(.top, 6).padding(.leading, 24).padding(.trailing, 16)
             }
             .onChange(of: focus.id) { _, id in
                 guard let id, id.hasPrefix("lib.tile.") || id.hasPrefix("lib.recent.") else { return }

@@ -33,8 +33,11 @@ if (args.Length == 2 && args[0] == "--request")
     Console.WriteLine(S2A.Services.SaveTransfer.Execute(File.ReadAllText(args[1])));
     return;
 }
-if (args.Length != 4 || args[0] != "--create") throw new ArgumentException("--create root repository user-id");
-string root = args[1], repository = args[2], userText = args[3];
+if (args.Length != 4 || args[0] != "--create") throw new ArgumentException("--create root repository user-id[,user-id…]");
+// 用户号可给多个（逗号分隔，#623 本地玩家）：第一个照旧建账号存档 + 设备存档，其余每人再建一份账号存档（同一款游戏几个玩家）
+string root = args[1], repository = args[2];
+string[] userTexts = args[3].Split(',');
+string userText = userTexts[0];
 Directory.CreateDirectory(root);
 var horizon = new Horizon(new HorizonConfiguration());
 using var serverClient = horizon.CreatePrivilegedHorizonClient();
@@ -66,11 +69,20 @@ Check(client.Fs.Commit("account"u8));
 Check(client.Fs.Commit("device"u8));
 client.Fs.Unmount("account"u8);
 client.Fs.Unmount("device"u8);
+foreach (string more in userTexts.Skip(1))
+{
+    var other = new UserId(Convert.ToUInt64(more[..16], 16), Convert.ToUInt64(more[16..], 16));
+    Check(client.Fs.CreateSaveData(application, other, application.Value, 0x100000, 0x100000, SaveDataFlags.None));
+    Check(client.Fs.MountSaveData("player"u8, application, other));
+    Write("player:/readme.md"u8, File.ReadAllBytes(Path.Combine(repository, "README.md")));
+    Check(client.Fs.Commit("player"u8));
+    client.Fs.Unmount("player"u8);
+}
 Directory.CreateDirectory(Path.Combine(root, "system"));
 File.WriteAllText(Path.Combine(root, "system/Profiles.json"), JsonSerializer.Serialize(new
 {
     last_opened = userText,
-    profiles = new[] { new { user_id = userText, name = "Public-file interop account" } },
+    profiles = userTexts.Select((u, i) => new { user_id = u, name = i == 0 ? "Public-file interop account" : "Public-file interop player " + (i + 1) }).ToArray(),
 }));
 Console.WriteLine("Created and committed account/device saves through LibHac; payloads are repository CONTRIBUTING.md and README.md.");
 

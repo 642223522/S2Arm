@@ -122,7 +122,11 @@ def runtime_env(c, game, runtime):
     save = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "saves"))
     # 存档位置（11-09 维护者）：这款游戏文件夹里的 SaveData/，原生存档格式，放进去下次起局就读、退出时写回（services/S2A.Services/SaveFolder.cs）。
     #   不叫 Saves：同一文件夹里已有运行层内部的 saves/，APFS / NTFS 不分大小写会撞名；ASCII 名避开非 ASCII 路径的坑
-    save_folder = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "SaveData"))
+    # 本地玩家（#623）：请求带 player {user: first | 32 位十六进制, name, folder} = 启动器顶栏选的玩家 → 服务层 S2A_PLAYER_USER / S2A_PLAYER_NAME
+    #   （services/S2A.Services/LocalPlayer.cs），存档位置换成这款文件夹里这个玩家的那个（第一个玩家仍是 SaveData）；没带 = 旧行为
+    from saves import requested_player   # 校验规则与导入社区存档共用一份（saves.py）
+    player = requested_player(c.r)
+    save_folder = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], player["folder"] if player else "SaveData"))
     cache = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "shader-cache"))
     docs = contained(c.library, c.library / "temp" / game["id"])
     for p in (save, cache, docs):
@@ -135,6 +139,10 @@ def runtime_env(c, game, runtime):
                S2A_DOCKED="0" if c.r.get("docked") is False else "1",   # Mac 缺省主机模式（维护者 11-07）；只有请求明说 false 才掌机
                S2A_AUTOPLAY="0", S2A_GAME_NAME=game["name"], S2A_GAME_ID=game["id"],
                S2A_INPUT_GUIDE_PREFS=str(c.private / "input-guides" / (game["id"] + ".json")))
+    if player:
+        env["S2A_PLAYER_USER"] = player["user"]
+        if player.get("name"):
+            env["S2A_PLAYER_NAME"] = player["name"]
     if language is not None:
         env["S2A_SYSTEM_LANGUAGE"] = LANGUAGES[language]
     if c.r.get("devHud"):

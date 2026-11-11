@@ -22,6 +22,8 @@ public struct SideBar: Equatable, Sendable {
     /// A chip in the column: this wide, and the Controllers chip a little taller for its count under the symbol.
     public static let chipWidth: CGFloat = 52
     public static let heights: [CGFloat] = [56, 44]
+    /// S2Arm (#623): the player chip above them when the host has players, its symbol over the name's first letters.
+    public static let playerHeight: CGFloat = 56
     /// The one chip at the top of the column: the game's settings, or Back.
     public static let topHeights: [CGFloat] = [44]
     public static let gap: CGFloat = 10
@@ -128,6 +130,7 @@ struct SideBarChips: View {
     let openShellSettings: () -> Void
     var body: some View {
         VStack(spacing: SideBar.gap) {
+            PlayerChip(vertical: true)   // S2Arm (#623); draws nothing without players
             ControllerChip(count: controllers, vertical: true, action: openControllers)
             ShellSettingsChip(vertical: true, action: openShellSettings)
         }
