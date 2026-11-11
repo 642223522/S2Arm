@@ -542,6 +542,31 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertEqual(posted, [("/install", {"gameId": "0100535012974000"}), ("/install", {"gameId": "0100535012974000", "acceptDropped": True}),
                                   ("/uninstall", {"gameId": "0100535012974000", "acceptDropped": True})])
 
+class DeviceBundleTests(unittest.TestCase):
+    """#642：包里是占位名 io.s2arm.games，手机上装的是 io.s2arm.games.<团队>[.后缀]，device 要按前缀认"""
+    def test_container_match(self):
+        bid = "io.s2arm.games"
+        for installed in ("io.s2arm.games", "io.s2arm.games.7r5l7ty4r7", "io.s2arm.games.abc.dev2"):
+            self.assertTrue(ctl.container_match(installed, bid), installed)
+        for other in ("io.s2arm.gamesx", "io.s2arm", "com.example.app", ""):
+            self.assertFalse(ctl.container_match(other, bid), other)
+
+    def test_device_reports_installed_team_bundle(self):
+        dev = {"hardwareProperties": {"udid": "U1"}, "deviceProperties": {"name": "测试机"}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "com.example.app"}, {"bundleIdentifier": "io.s2arm.games.7r5l7ty4r7"}]}}
+        def fake_dctl(args):
+            out = args[args.index("--json-output") + 1]
+            Path(out).write_text(json.dumps(apps))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "game_bundle", return_value=("x.ipa", "io.s2arm.games")), \
+             mock.patch.object(ctl, "iphone", return_value=[dev]), mock.patch.object(ctl, "dctl", side_effect=fake_dctl), \
+             contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            ctl.device("0100000000000000")
+        self.assertIn("已装 io.s2arm.games.7r5l7ty4r7", buf.getvalue())
+        self.assertNotIn("没装", buf.getvalue())
+
+
 class DiagCommandTests(unittest.TestCase):
     """#94：只敲 s2armctl diag 原先 IndexError；现在不给路径 = 导出到桌面，认不出的写法打用法退出 2"""
 
