@@ -357,7 +357,7 @@ static void run(void) {
         }
         if (dynamic || deactivate || focus_probe || stall_probe || flap) {
             if (focus_probe && !focus_restored) puts("UNTESTED 真实失焦/恢复未完整命中，不激活App补造条件");
-            printf("fps limit: %d/%d passed\n", checked - failed, checked); fflush(stdout);
+            printf("fps limit: %d/%d passed\n", checked - failed, checked); printf("%s t_fps_limit\n", failed ? "✗" : "✓"); fflush(stdout);
             exit(failed ? 1 : focus_probe && !focus_restored ? 2 : 0);
         }
         double link_hz = link_end_ns > link_start_ns ? (link_end_n - link_start_n) * 1e9 / (link_end_ns - link_start_ns) : 0;
@@ -403,7 +403,7 @@ static void run(void) {
                 "实际显示周期 %.3f ms / %u 次；期望 %.3f ms", shown, intervals, display_ms);
         }
         if (check_hud) hud_result();
-        printf("fps limit: %d/%d passed\n", checked - failed, checked); fflush(stdout); exit(failed ? 1 : 0);
+        printf("fps limit: %d/%d passed\n", checked - failed, checked); printf("%s t_fps_limit\n", failed ? "✗" : "✓"); fflush(stdout); exit(failed ? 1 : 0);
     }
 }
 int main(int argc, char **argv) {
