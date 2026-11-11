@@ -148,6 +148,8 @@ struct nvn_gpu_cmd_s {
     struct pass_rec *passes;
     uint32_t npasses, passcap;
     uint32_t pass_w, pass_h;
+    uint32_t pass_ncolor, pass_layers;       // 当前通道的颜色附件数、层数（clear_rect 用）
+    VkImageAspectFlags pass_ds_aspect;       // 当前通道深度模板附件有的面（0 = 没有该附件）
     struct nvn_gpu_tex_s *pass_tex[8];
     uint32_t pass_ntex;
     struct { struct nvn_gpu_tex_s *t; VkImageLayout old; } lay[64];
@@ -1848,6 +1850,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
                  : d->poly.cull == 3 ? VK_CULL_MODE_FRONT_AND_BACK : VK_CULL_MODE_NONE;
     rs.frontFace = d->poly.front ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = 1.0f;
+    rs.depthBiasEnable = d->poly.offset_en & 4 ? VK_TRUE : VK_FALSE;   // NVN 偏移开关的填充位（现在只建填充模式的管线）；三个量走动态状态
     rs.rasterizerDiscardEnable = d->rast_discard ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo ms;
@@ -1918,12 +1921,13 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     cbs.attachmentCount = ncb;
     cbs.pAttachments = cb;
 
-    VkDynamicState dyn[6] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
+    VkDynamicState dyn[7] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                             VK_DYNAMIC_STATE_DEPTH_BIAS};
     VkPipelineDynamicStateCreateInfo dyns;
     memset(&dyns, 0, sizeof dyns);
     dyns.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyns.dynamicStateCount = 6;
+    dyns.dynamicStateCount = 7;
     dyns.pDynamicStates = dyn;
 
     VkGraphicsPipelineCreateInfo gp;
@@ -2234,6 +2238,9 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     c->in_pass = 1;
     c->pass_w = d->w;
     c->pass_h = d->h;
+    c->pass_ncolor = d->ncolor < 8 ? d->ncolor : 8;
+    c->pass_layers = fi.layers;
+    c->pass_ds_aspect = d->depth.view ? d->depth.view->tex->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : 0;
     c->pass_ntex = 0;
     for (uint32_t i = 0; i < d->ncolor && i < 8; i++) {
         if (!d->color[i].view) continue;
@@ -2571,6 +2578,13 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         vkCmdSetStencilCompareMask(c->cb, face, c->has_dyn ? c->dyn.st_vmask[f] & 0xffu : 0xffu);
         vkCmdSetStencilWriteMask(c->cb, face, c->has_dyn ? c->dyn.st_wmask[f] & 0xffu : 0xffu);
         vkCmdSetStencilReference(c->cb, face, c->has_dyn ? c->dyn.st_ref[f] & 0xffu : 0u);
+    }
+    // 深度偏移（NVN SetPolygonOffsetClamp：factor 乘斜率、units 乘最小可分辨深度差、clamp 限幅）。管线没开偏移时这三个量不起作用，照发 0。
+    {
+        const p_poly_offset *po = &c->dyn.po;
+        int on = c->has_dyn && p->key.poly.offset_en & 4;
+        if (on && po->clamp != 0.0f && !g.dev->core_features.depthBiasClamp) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "深度偏移带限幅（clamp=%g），设备没有 depthBiasClamp", (double)po->clamp); return; }
+        vkCmdSetDepthBias(c->cb, on ? po->units : 0.0f, on ? po->clamp : 0.0f, on ? po->factor : 0.0f);
     }
     for (uint32_t s = 0; s < 16; s++) {
         if (!c->vbuf[s].buf) continue;
@@ -3435,6 +3449,37 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
         memcpy(sl.cpu, src, (size_t)image_bytes);
         nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);
     }
+}
+
+void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
+    if (!c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "clear_rect 在通道外"); return; }
+    if (!d || (d->color < 0 && !d->depth && !d->stencil)) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 什么都不清"); return; }
+    if (d->color >= 0 && (uint32_t)d->color >= c->pass_ncolor) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 颜色附件 %d 越界（通道有 %u 个）", d->color, c->pass_ncolor); return; }
+    if ((d->depth && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) || (d->stencil && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_STENCIL_BIT))) {
+        set_sticky(c, NVN_GPU_E_ARG, "clear_rect 要清的深度 / 模板面不在通道里"); return;
+    }
+    if (!d->w || !d->h || d->x < 0 || d->y < 0 || (uint64_t)d->x + d->w > c->pass_w || (uint64_t)d->y + d->h > c->pass_h) {
+        set_sticky(c, NVN_GPU_E_ARG, "clear_rect 矩形 %d,%d %ux%u 为空或超出通道 %ux%u", d->x, d->y, d->w, d->h, c->pass_w, c->pass_h); return;
+    }
+    VkClearAttachment at[2];
+    uint32_t n = 0;
+    memset(at, 0, sizeof at);
+    if (d->color >= 0) {   // 颜色附件在子通道里的下标 = pass_desc.color[] 的下标（make_pass 按序建）
+        at[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        at[n].colorAttachment = (uint32_t)d->color;
+        memcpy(&at[n].clearValue.color, &d->value, sizeof at[n].clearValue.color);
+        n++;
+    }
+    if (d->depth || d->stencil) {
+        at[n].aspectMask = (d->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (d->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        at[n].clearValue.depthStencil.depth = d->depth_value;
+        at[n].clearValue.depthStencil.stencil = d->stencil_value;
+        n++;
+    }
+    VkClearRect r = {{{d->x, d->y}, {d->w, d->h}}, 0, c->pass_layers};
+    vkCmdClearAttachments(c->cb, n, at, 1, &r);
 }
 
 void nvn_gpu_barrier(nvn_gpu_cmd ch, uint32_t nvn_bits) {

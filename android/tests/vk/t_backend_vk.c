@@ -3355,6 +3355,138 @@ static void c68_stencil_ops(const char *dir) {
     free(vm); free(fm);
 }
 
+// 平铺在 z = 0.5 的整屏三角形（C74 / C75 的深度测试用）
+static nvn_gpu_buf half_depth_vb(void) {
+    const float verts[3][4] = {{-1, -1, 0.5f, 1}, {3, -1, 0.5f, 1}, {-1, 3, 0.5f, 1}};
+    return make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
+}
+
+// C74：通道内按矩形清（契约 v4 nvn_gpu_clear_rect）。通道开头整屏清成黑 / 深度 1 / 模板 0，然后三次矩形清：
+//   ① 颜色：x 8–31、y 16–47 清成红；② 只清模板：左半屏 x 0–31 写 1；③ 只清深度：右上 x 32–63、y 0–31 写 0。
+//   再整屏画一笔蓝（z = 0.5）：深度 LESS、不写深度；模板 NOTEQUAL 1、操作全 KEEP。
+// 期望（手算）：左半屏模板是 1，蓝画不上 → ① 的矩形是红，其余是黑；右上深度是 0，0.5 < 0 不成立 → 黑；右下深度 1、模板 0 → 蓝。
+// ②③ 各只动一个面：② 若连深度一起清（清成 0）不影响左半结论，但 ③ 若连模板一起动、或 ② 没清到，右上 / 左半会出蓝。
+static void c74_clear_rect(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 solid_blue"); return; }
+    nvn_gpu_pipe_desc pd;
+    fill_gpipe_desc(&pd, vs, fs, NVN_FORMAT_DEPTH24_STENCIL8);
+    pd.sfmt = NVN_FORMAT_DEPTH24_STENCIL8;
+    pd.ds.dt = 1; pd.ds.dw = 0; pd.ds.df = 2;   // 深度 LESS，不写
+    pd.ds.st = 1; pd.ds.sf_f = 6; pd.ds.sf_b = 6;   // 模板 NOTEQUAL
+    pd.ds.fail_f = pd.ds.zfail_f = pd.ds.zpass_f = 1; pd.ds.fail_b = pd.ds.zfail_b = pd.ds.zpass_b = 1;   // KEEP
+    nvn_gpu_err e; nvn_gpu_pipe pipe = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C74 pipe：%d %s", e.rc.code, e.why);
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex ds = make_tex(64, 64, NVN_FORMAT_DEPTH24_STENCIL8, NVN_GPU_TEX_RENDER);
+    nvn_gpu_view ov = make_view(out), dv = make_view(ds);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = half_depth_vb();
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+    p.depth.view = dv; p.depth.load = NVN_GPU_LOAD_CLEAR; p.depth.store = NVN_GPU_STORE_STORE;
+    p.stencil.view = dv; p.stencil.load = NVN_GPU_LOAD_CLEAR; p.stencil.store = NVN_GPU_STORE_STORE;
+    p.clear_depth = 1.0f; p.clear_stencil = 0; p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_clear cl; memset(&cl, 0, sizeof cl);
+    cl.color = 0; cl.value.f[0] = 1; cl.value.f[3] = 1; cl.x = 8; cl.y = 16; cl.w = 24; cl.h = 32;
+    nvn_gpu_clear_rect(c, &cl);
+    memset(&cl, 0, sizeof cl); cl.color = -1; cl.stencil = 1; cl.stencil_value = 1; cl.depth_value = 0.25f /* 不该被用到 */; cl.x = 0; cl.y = 0; cl.w = 32; cl.h = 64;
+    nvn_gpu_clear_rect(c, &cl);
+    memset(&cl, 0, sizeof cl); cl.color = -1; cl.depth = 1; cl.depth_value = 0; cl.stencil_value = 1 /* 不该被用到 */; cl.x = 32; cl.y = 0; cl.w = 32; cl.h = 32;
+    nvn_gpu_clear_rect(c, &cl);
+    nvn_gpu_set_pipe(c, pipe);
+    nvn_gpu_dyn dyn; full_dyn(&dyn);
+    dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF; dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF; dyn.st_ref[0] = dyn.st_ref[1] = 1;
+    nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_set_vbuf(c, 0, vb, 0);
+    nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+    nvn_gpu_draw(c, &da);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 115, on_done, NULL, &e);
+    CHECK(OK(r), "C74 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(115, 5000000000ull, &e);
+    CHECK(OK(r), "C74 wait：%d %s", r.code, e.why);
+    expect_rect(buf_cpu(rb), 8, 16, 24, 32, 255, 0, 0, "C74 颜色矩形（红）");
+    expect_rect(buf_cpu(rb), 0, 0, 8, 64, 0, 0, 0, "C74 左半、矩形左侧（模板 1 挡住蓝：黑）");
+    expect_rect(buf_cpu(rb), 8, 0, 24, 16, 0, 0, 0, "C74 左半、矩形上方（黑）");
+    expect_rect(buf_cpu(rb), 8, 48, 24, 16, 0, 0, 0, "C74 左半、矩形下方（黑）");
+    expect_rect(buf_cpu(rb), 32, 0, 32, 32, 0, 0, 0, "C74 右上（深度清成 0，LESS 不过：黑）");
+    expect_rect(buf_cpu(rb), 32, 32, 32, 32, 0, 0, 255, "C74 右下（深度 1、模板 0：蓝）");
+    nvn_gpu_view_release(ov); nvn_gpu_view_release(dv); nvn_gpu_tex_release(out); nvn_gpu_tex_release(ds);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+}
+
+// C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
+static void c74b_clear_rect_oob(void) {
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view ov = make_view(out);
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
+    p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_clear cl; memset(&cl, 0, sizeof cl); cl.color = 0; cl.x = 60; cl.y = 0; cl.w = 8; cl.h = 8;   // x 60–67 超出 64
+    nvn_gpu_clear_rect(c, &cl);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_err e;
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 116, on_done, NULL, &e);
+    CHECK(r.code == NVN_GPU_E_ARG, "C74b 越界矩形应 E_ARG，实为 %d %s", r.code, e.why);
+    nvn_gpu_view_release(ov); nvn_gpu_tex_release(out);
+}
+
+// C75：深度偏移。开关（NVN 偏移开关的填充位 = 4）进管线，factor / units / clamp 走动态状态。
+//   深度整屏清成 0.5；两笔都画在 z = 0.5、深度 LESS，动态状态里都带 units = −4、factor = 1000：
+//   ① 绿，左半屏，管线没开偏移 → 0.5 < 0.5 不成立，画不上；
+//   ② 蓝，右半屏，管线开了偏移 → 平铺三角形斜率为 0，factor 那一项是 0，深度 = 0.5 − 4 个最小可分辨差 < 0.5，画上。
+// 期望（手算）：左半黑、右半蓝。偏移没进管线则右半也黑；units 与 factor 接反则偏移是 +1000 个可分辨差，右半也黑；
+// 没开偏移的管线若吃了动态量则左半出绿。
+static void c75_depth_bias(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL, vs2 = NULL, fs2 = NULL; void *vm = NULL, *fm = NULL, *vm2 = NULL, *fm2 = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 solid_green"); return; }
+    if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs2, &fs2, &vm2, &fm2)) { CHECK(0, "读不到 solid_blue"); return; }
+    nvn_gpu_pipe_desc pd, pd2;
+    fill_gpipe_desc(&pd, vs, fs, NVN_FORMAT_DEPTH24_STENCIL8); pd.ds.dt = 1; pd.ds.dw = 0; pd.ds.df = 2;
+    fill_gpipe_desc(&pd2, vs2, fs2, NVN_FORMAT_DEPTH24_STENCIL8); pd2.ds.dt = 1; pd2.ds.dw = 0; pd2.ds.df = 2; pd2.poly.offset_en = 4;
+    nvn_gpu_err e; nvn_gpu_pipe pipe = NULL, pipe2 = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C75 pipe：%d %s", e.rc.code, e.why);
+    CHECK(OK(nvn_gpu_pipe_get(&pd2, NVN_GPU_PIPE_SYNC, &pipe2, &e)), "C75 pipe2：%d %s", e.rc.code, e.why);
+    CHECK(pipe != pipe2, "C75 偏移开关不同的两份描述拿到了同一条管线");
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex ds = make_tex(64, 64, NVN_FORMAT_DEPTH24_STENCIL8, NVN_GPU_TEX_RENDER);
+    nvn_gpu_view ov = make_view(out), dv = make_view(ds);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = half_depth_vb();
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+    p.depth.view = dv; p.depth.load = NVN_GPU_LOAD_CLEAR; p.depth.store = NVN_GPU_STORE_STORE;
+    p.stencil.view = dv; p.stencil.load = NVN_GPU_LOAD_CLEAR; p.stencil.store = NVN_GPU_STORE_STORE;
+    p.clear_depth = 0.5f; p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_dyn dyn; full_dyn(&dyn);
+    dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF; dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF;
+    dyn.po.units = -4; dyn.po.factor = 1000; dyn.po.clamp = 0;
+    nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+    nvn_gpu_set_pipe(c, pipe); dyn.sc[2] = 32; nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+    nvn_gpu_set_pipe(c, pipe2); dyn.sc[0] = 32; nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 117, on_done, NULL, &e);
+    CHECK(OK(r), "C75 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(117, 5000000000ull, &e);
+    CHECK(OK(r), "C75 wait：%d %s", r.code, e.why);
+    expect_rect(buf_cpu(rb), 0, 0, 32, 64, 0, 0, 0, "C75 左半（没开偏移，0.5 < 0.5 不过：黑）");
+    expect_rect(buf_cpu(rb), 32, 0, 32, 64, 0, 0, 255, "C75 右半（偏移 −4 个可分辨差：蓝）");
+    nvn_gpu_view_release(ov); nvn_gpu_view_release(dv); nvn_gpu_tex_release(out); nvn_gpu_tex_release(ds);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); nvn_gpu_shader_release(vs2); nvn_gpu_shader_release(fs2);
+    free(vm); free(fm); free(vm2); free(fm2);
+}
+
 int main(int argc, char **argv) {
     t29_format_expand();
     char why[256] = {0};
@@ -3515,8 +3647,13 @@ int main(int argc, char **argv) {
     c64_va_red(argv[1]);
     c67_viewport_yflip(argv[1]);
     c68_stencil_ops(argv[1]);
+    c74_clear_rect(argv[1]);
+    c75_depth_bias(argv[1]);
     nvn_gpu_err e18;
-    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 成功路径 close：%d %s", e18.rc.code, e18.why);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
+    if (!open_backend()) return 1;
+    c74b_clear_rect_oob();
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C74b close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;
     c58a_push_oob_cs(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C58a close：%d %s", e18.rc.code, e18.why);
@@ -3545,7 +3682,7 @@ int main(int argc, char **argv) {
     c69_dual_src_blend(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C69 close：%d %s", e18.rc.code, e18.why);
 
-    printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
+    printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));
     s2a_vk_device_destroy(&g_dev, 1);   // 最后一个会话已在 t20 close 里证明空闲
     return g_fail ? 1 : 0;

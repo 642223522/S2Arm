@@ -4,12 +4,12 @@
 2	OP_BEGIN	控制流	14518	（不再录制，判坏记录）	已接（判坏记录）	无	否
 3	OP_CALL	控制流	14520	（递归）	已接	t_jump_call	否
 4	OP_SIGNAL_EVENT	同步 / 查询	14525	mtl_sub_event / ev_wait	部分：信号已接；等待（NVN_EV_WAIT）未接	t_event_after_done	否
-5	OP_REPORT_COUNTER	同步 / 查询	14530	mtl_sub_counter / post	未接	无	0100633007D48000
+5	OP_REPORT_COUNTER	同步 / 查询	14530	mtl_sub_counter / post	部分：时间戳类与管线统计类在段完成后写回（时间取完成时刻的游戏时钟，同一段的多条报告同值）；遮挡计数（SAMPLES_PASSED）未接	t_report_counter	0100633007D48000
 6	OP_COPY_B2B	拷贝 / 填充	14559	mtl_sub_copy	已接（同上）	t_buf_ops	0100633007D48000
 7	OP_UPDATE_UB	拷贝 / 填充	14561	mtl_sub_update	已接（改游戏内存，使用点按页同步镜像）	t_buf_ops	0100633007D48000
 8	OP_SET_RT	目标与清除	14565	（就地：换目标 / 续通道 / 切段）	已接（换目标；通道在绘制时开；通道合并 / 存储前瞻未接）	t_pass_clear_fold	0100633007D48000
-9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	部分：整屏全通道折进 load 已接；带裁剪 / 部分通道未接	t_pass_clear_fold	0100633007D48000
-10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	部分：整屏折进 load 已接；带裁剪 / 部分模板掩码未接	t_pass_clear_fold	0100633007D48000
+9	OP_CLEAR_COLOR	目标与清除	14578	（就地：折进 load 或清除三角形）	部分：整屏全通道折进 load、带裁剪的走通道内矩形清已接；只写部分通道未接	t_pass_clear_fold / t_pass_switch_and_partial / t_clear_rect	0100633007D48000
+10	OP_CLEAR_DS	目标与清除	14599	（就地：折进 load 或清除三角形）	部分：整屏折进 load、带裁剪的走通道内矩形清已接；只写部分模板位未接	t_pass_clear_fold / t_clear_rect	0100633007D48000
 11	OP_VIEWPORTS	状态（绘制时生效）	14631	state_op:10436	已接（rp_draw 在绘制时取用）	t_state_persists	否
 12	OP_SCISSOR	状态（绘制时生效）	14629	state_op:10376	已接（rp_draw 在绘制时取用）	t_state_persists	否
 13	OP_DEPTH_RANGE	状态（绘制时生效）	14631	state_op:10437	已接（rp_draw 在绘制时取用）	t_jump_call	否
@@ -23,7 +23,7 @@
 21	OP_BIND_TEX	状态（绘制时生效）	14630	state_op:10418	已接（rp_draw 在绘制时取用）	t_draw	否
 22	OP_BIND_SAMP	状态（绘制时生效）	14630	state_op:10427	已接（rp_draw 在绘制时取用）	t_draw	否
 23	OP_STENCIL	状态（绘制时生效）	14630	state_op:10429	已接（rp_draw 在绘制时取用）	t_dirty_bits	否
-24	OP_POLY_OFFSET	状态（绘制时生效）	14631	state_op:10435	已接（rp_draw 在绘制时取用）	t_draw	否
+24	OP_POLY_OFFSET	状态（绘制时生效）	14631	state_op:10435	已接（rp_draw 在绘制时取用；后端：开关进管线、三个量走动态状态）	t_draw	否
 25	OP_DRAW	绘制	14619	draw_top	已接（三角形 / 线 / 点类图元；间接、多重间接、变换反馈计数未接，遇到跳过并报名）	t_draw	否
 26	OP_DRAW_IDX	绘制	14621	draw_top	已接（同 OP_DRAW；索引缓冲走池镜像）	t_draw	0100633007D48000
 27	OP_DISPATCH	计算	14645	dispatch	未接	无	否

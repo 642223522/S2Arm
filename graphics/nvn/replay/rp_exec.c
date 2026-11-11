@@ -14,6 +14,7 @@
 
 void nvn_hle_queue_enter(void *q);   // hle_nvn.c
 void nvn_hle_piece_begun(void);
+uint64_t s2a_guest_tick(void);       // 运行时：游戏的系统计数器（与游戏自己读到的同一个钟）
 
 #define OPN(x) [x] = #x
 static const char *const k_op_name[OP_NVN2_END_] = {
@@ -34,7 +35,7 @@ _Static_assert(OP_COUNT_ == 52 && OP_NVN2_END_ == 56, "录制命令个数变了�
 const char *rp_op_name(uint32_t op) { return op < OP_NVN2_END_ && k_op_name[op] ? k_op_name[op] : "OP_?"; }
 
 // ---------- 提交 ----------
-struct post { volatile uint32_t *val; uint32_t mode, v; };   // 完成后写事件值：mode 0 写 / 1 加
+struct post { volatile uint32_t *val; uint32_t mode, v; uint64_t report; uint32_t type; };   // 完成后写事件值（mode 0 写 / 1 加）；report 非 0 = 计数器报告的写回地址
 struct sub { struct post *p; int n, cap; };
 static struct sub *g_sub;      // 当前段挂着的完成后副作用
 static nvn_gpu_cmd g_cmd;      // 当前段（NULL = 后端没给出段：本次提交只走状态，不编码）
@@ -63,6 +64,12 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
     struct sub *s = user;
     if (d->status != NVN_GPU_DONE_FAILED)   // 没执行的段不做任何成功回写
         for (int i = 0; i < s->n; i++) {
+            if (s->p[i].report) {   // 计数器记录 = {计数值, 时间}（各 8 字节）。时间取本段完成这一刻的游戏时钟；时间戳类的计数值就是时间，
+                // 其余管线统计类计数值写 0（同 nvn_mtl.m 提交完成回调里的写法）。同一段里的多条报告现在拿到同一个时间：按报告所在位置给 GPU 时间要后端出段内时间戳，没接。
+                uint64_t t = s2a_guest_tick(), rec[2] = {s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP || s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP_TOP ? t : 0, t};
+                memcpy((void *)(uintptr_t)s->p[i].report, rec, sizeof rec);
+                continue;
+            }
             if (s->p[i].mode & 1) __atomic_fetch_add((uint32_t *)s->p[i].val, s->p[i].v, __ATOMIC_SEQ_CST);
             else __atomic_store_n((uint32_t *)s->p[i].val, s->p[i].v, __ATOMIC_SEQ_CST);
         }
@@ -107,7 +114,12 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
 static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     struct sub *s = g_sub; if (!s || !val) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){val, mode, v};
+    s->p[s->n++] = (struct post){val, mode, v, 0, 0};
+}
+static void post_report(uint64_t addr, uint32_t type) {
+    struct sub *s = g_sub; if (!s || !addr) return;
+    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
+    s->p[s->n++] = (struct post){NULL, 0, 0, addr, type};
 }
 
 void nvn_be_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }     // 存储前瞻索引：通道规划接上时再建
@@ -133,6 +145,10 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
                 if (m & NVN_EV_WAIT) nvn_unimpl("op", "OP_SIGNAL_EVENT+WAIT", p);   // GPU 侧等事件：跨队列顺序接上时做
                 else post_event(val, m, v);
+                break; }
+            case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, (const uint8_t *)a + 8, 8);
+                if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) nvn_unimpl("op", "OP_REPORT_COUNTER+SAMPLES_PASSED", p);   // 遮挡计数：后端的遮挡查询没接，不写假结果
+                else post_report(ad, (uint32_t)t);
                 break; }
             case OP_DRAW: { p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); break; }
             case OP_DRAW_IDX: { p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); break; }

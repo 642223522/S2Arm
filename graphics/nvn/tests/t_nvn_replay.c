@@ -98,6 +98,10 @@ static nvn_gpu_pass_desc g_pd[8]; static int g_npd, g_pass_ends; static uint32_t
 void nvn_gpu_pass_begin(nvn_gpu_cmd c, const nvn_gpu_pass_desc *d) { (void)c; if (g_npd < 8) g_pd[g_npd] = *d; g_npd++; }
 void nvn_gpu_pass_end(nvn_gpu_cmd c) { (void)c; g_pass_ends++; }
 void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t bits) { (void)c; g_barrier_bits |= bits; g_barrier_at = g_npd; }
+static struct { nvn_gpu_clear d; int npd, ends; } g_cr[8]; static int g_ncr;   // 矩形清：记描述，以及收到时已开 / 已关过几个通道
+void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d) { (void)c; if (g_ncr < 8) { g_cr[g_ncr].d = *d; g_cr[g_ncr].npd = g_npd; g_cr[g_ncr].ends = g_pass_ends; } g_ncr++; }
+static uint64_t g_tick;   // 游戏时钟替身
+uint64_t s2a_guest_tick(void) { return g_tick; }
 
 // 上屏替身：取图结果按脚本给，呈现记下描述并按「没有上屏时刻」回调
 struct nvn_gpu_surface_s { int x; };
@@ -495,7 +499,7 @@ static void put_set_rt(stream *s, const tex_t *color, const tex_t *depth) {   //
     if (color) { snap[k] = *color; pt[k] = &snap[k]; k++; }
     if (depth) { snap[k] = *depth; pt[k] = &snap[k]; }
 }
-static void pass_fresh(void) { nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); g_npd = g_pass_ends = 0; g_barrier_bits = 0; g_barrier_at = -1; }
+static void pass_fresh(void) { nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); g_npd = g_pass_ends = g_ncr = 0; g_barrier_bits = 0; g_barrier_at = -1; }
 
 static void t_pass_clear_fold(void) {   // 整屏清除不单独编码：折进通道的 load；没有绘制时提交末为它开一个只清除的通道
     pass_fresh();
@@ -544,21 +548,69 @@ static void t_pass_switch_and_partial(void) {
     cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 3; cc->mask = 0xf;        // 没有这个槽
     p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1;          // 没有深度目标
     p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 4; sc->h = 4;
-    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;        // 裁剪不满：折不进
+    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[1] = 0.125f;   // 裁剪不满：开通道（LOAD），通道里按矩形清
     sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 8; sc->h = 8;
     cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.5f;   // 裁剪盖满目标：可以折
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_npd == 2 && g_pass_ends == 2);
+    CHECK(g_npd == 3 && g_pass_ends == 3);
     CHECK(g_pd[0].w == 16 && g_pd[0].color[0].clear.f[2] == 1);                     // 第一个通道是 a 的
-    CHECK(g_pd[1].w == 8 && g_pd[1].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[1].color[0].clear.f[0] == 0.5f);
-    CHECK(nvn_unimpl_count("pass", "clear_color_partial") == 2 && nvn_unimpl_count("pass", "clear_color_no_target") == 1 && nvn_unimpl_count("pass", "clear_ds_no_target") == 1);
+    CHECK(g_pd[1].w == 8 && g_pd[1].color[0].load == NVN_GPU_LOAD_LOAD);            // 为矩形清开的通道：原内容留着
+    CHECK(g_ncr == 1 && g_cr[0].npd == 2 && g_cr[0].ends == 1);                     // 矩形清发在第二个通道开着的时候
+    CHECK(g_cr[0].d.color == 0 && !g_cr[0].d.depth && !g_cr[0].d.stencil && g_cr[0].d.x == 0 && g_cr[0].d.y == 0 && g_cr[0].d.w == 4 && g_cr[0].d.h == 4 && g_cr[0].d.value.f[1] == 0.125f);
+    CHECK(g_pd[2].w == 8 && g_pd[2].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[2].color[0].clear.f[0] == 0.5f);   // 之后的整屏清除：结束那个通道，折进下一个
+    CHECK(nvn_unimpl_count("pass", "clear_color_chmask") == 1 && nvn_unimpl_count("pass", "clear_color_no_target") == 1 && nvn_unimpl_count("pass", "clear_ds_no_target") == 1);
+    CHECK(nvn_unimpl_kinds() == 3);
     pass_fresh();
     tex_t z = mk_tex(66, 0, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
     stream d = {0}; put_set_rt(&d, NULL, &z); p_clear_ds *c2 = put(&d, OP_CLEAR_DS, sizeof *c2); c2->depth_mask = 1; c2->depth = 1; end(&d);
     submit1(&d); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_npd == 0 && nvn_unimpl_count("gpu", "pass_depth_only") == 1);            // 后端还不支持纯深度通道：记账，不发非法通道
     pass_fresh();
+}
+
+static void t_clear_rect(void) {   // 带裁剪的清除：矩形与目标求交；整数格式换算；深度 / 模板各自按目标有的面与写掩码取舍
+    pass_fresh();
+    tex_t a = mk_tex(67, 0, NVN_FORMAT_RGBA8UI, 16, 16, 1, 0), z = mk_tex(68, 0x4000, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
+    stream s = {0}; put_set_rt(&s, &a, &z);
+    p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 4; sc->y = -2; sc->w = 20; sc->h = 8;      // 与 16×16 的交集：x 4..16、y 0..6
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 3.75f; cc->rgba[1] = -1; cc->rgba[2] = 5e9f; cc->rgba[3] = 255;
+    p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 0.5f; cd->depth_mask = 1; cd->stencil = 0x105; cd->stencil_mask = 0xff;
+    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 2; cd->depth_mask = 1; cd->stencil = 9; cd->stencil_mask = 0x0f;   // 只写低四位模板：模板那一半没接，深度照清（超界的深度值收到 1）
+    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 0; cd->stencil = 9; cd->stencil_mask = 0x0f;                  // 只剩没接的那一半：不发
+    sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 100; sc->y = 0; sc->w = 4; sc->h = 4;                 // 整个在目标外：什么都不动
+    cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;
+    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1; cd->stencil_mask = 0xff;
+    end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 1 && g_pass_ends == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD && g_pd[0].depth.load == NVN_GPU_LOAD_LOAD);   // 三次矩形清在同一个通道里
+    CHECK(g_ncr == 3);
+    for (int i = 0; i < 3 && i < g_ncr; i++) CHECK(g_cr[i].npd == 1 && g_cr[i].ends == 0 && g_cr[i].d.x == 4 && g_cr[i].d.y == 0 && g_cr[i].d.w == 12 && g_cr[i].d.h == 6);
+    CHECK(g_cr[0].d.color == 0 && g_cr[0].d.value.u[0] == 3 && g_cr[0].d.value.u[1] == 0 && g_cr[0].d.value.u[2] == 0xffffffffu && g_cr[0].d.value.u[3] == 255);
+    CHECK(g_cr[1].d.color == -1 && g_cr[1].d.depth == 1 && g_cr[1].d.stencil == 1 && g_cr[1].d.depth_value == 0.5f && g_cr[1].d.stencil_value == 5);
+    CHECK(g_cr[2].d.color == -1 && g_cr[2].d.depth == 1 && g_cr[2].d.stencil == 0 && g_cr[2].d.depth_value == 1);
+    CHECK(nvn_unimpl_count("pass", "clear_stencil_wmask") == 2 && nvn_unimpl_kinds() == 1);
+    pass_fresh();
+}
+
+static void t_report_counter(void) {   // 计数器报告：段完成后才写；时间戳类两格都是时间，统计类计数值为 0；遮挡计数没接不写；失败段不写
+    nvn_unimpl_reset();
+    uint64_t rec[4][2]; memset(rec, 0xAB, sizeof rec);
+    const uint64_t types[4] = {NVN_COUNTER_TYPE_TIMESTAMP, NVN_COUNTER_TYPE_INPUT_VERTICES, NVN_COUNTER_TYPE_TIMESTAMP_TOP, NVN_COUNTER_TYPE_SAMPLES_PASSED};
+    stream a = {0};
+    for (int i = 0; i < 4; i++) { uint8_t *r = put(&a, OP_REPORT_COUNTER, 16); uint64_t ad = (uint64_t)(uintptr_t)rec[i]; memcpy(r, &types[i], 8); memcpy(r + 8, &ad, 8); }
+    end(&a);
+    g_tick = 111; submit1(&a);
+    CHECK(rec[0][0] == 0xABABABABABABABABull);        // 已提交、未完成：没写
+    g_tick = 7777; fake_complete(NVN_GPU_DONE_OK);    // 时间取完成这一刻的游戏时钟
+    CHECK(rec[0][0] == 7777 && rec[0][1] == 7777);
+    CHECK(rec[1][0] == 0 && rec[1][1] == 7777);
+    CHECK(rec[2][0] == 7777 && rec[2][1] == 7777);
+    CHECK(rec[3][0] == 0xABABABABABABABABull && rec[3][1] == 0xABABABABABABABABull && nvn_unimpl_count("op", "OP_REPORT_COUNTER+SAMPLES_PASSED") == 1);
+    CHECK(nvn_unimpl_kinds() == 1);
+    g_tick = 9999; submit1(&a); fake_complete(NVN_GPU_DONE_FAILED);
+    CHECK(rec[0][0] == 7777 && rec[1][1] == 7777);    // 失败段：不回写
+    nvn_unimpl_reset();
 }
 
 static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管线 / 动态状态 / 顶点流 / 绑定；没变的管线不重取；取不到的资源跳过并记账
@@ -610,12 +662,23 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     di = put(&w, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; di->base_instance = 9; end(&w);
     submit1(&w); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 1 && g_fb[0][1].u.b.buf == &g_arena_buf && g_fb[0][1].u.b.len == 64 && g_last_da.base_instance == 9 && g_last_da.ioff == 3 * PG && g_last_da.itype == 1);
+    // 深度偏移：开关进管线描述，三个量进动态状态；点 / 线填充模式后端没接，照画并记账
+    stream y = {0}; p_bind_state *by = put(&y, OP_BIND_STATE, sizeof *by); by->kind = 4; poly_st py = {NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, NVN_POLYGON_OFFSET_ENABLE_FILL}; memcpy(by->bytes, &py, sizeof py);
+    p_poly_offset *pf = put(&y, OP_POLY_OFFSET, sizeof *pf); pf->factor = 1.5f; pf->units = 2; pf->clamp = 0.25f;
+    di = put(&y, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&y);
+    submit1(&y); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 2 && g_last_pdesc.poly.offset_en == NVN_POLYGON_OFFSET_ENABLE_FILL && g_last_dyn.po.factor == 1.5f && g_last_dyn.po.units == 2 && g_last_dyn.po.clamp == 0.25f);
+    CHECK(nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 0);
+    stream y2 = {0}; by = put(&y2, OP_BIND_STATE, sizeof *by); by->kind = 4; py.mode = NVN_POLYGON_MODE_LINE; memcpy(by->bytes, &py, sizeof py);
+    di = put(&y2, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&y2);
+    submit1(&y2); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 1);
     g_resolve_rc = -1;
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 1);                            // 着色器取不到：跳过
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 4 && sk_n == 3);
+    CHECK(g_gdraws == d0 + 3);                            // 着色器取不到：跳过
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 6 && sk_n == 3);
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
@@ -661,7 +724,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_draw(); t_present();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_draw(); t_present();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
