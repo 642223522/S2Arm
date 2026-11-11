@@ -19,6 +19,7 @@
 #include "direct/program_cache.h"
 #include "direct/sha256.h"
 #include "nvn/nvn_vk_program_result.h"
+#include "nvn/nvn_vk_compute_request.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -160,6 +161,31 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
     return e;
 }
 
+// 快路径：输入跟上一次取程序时一样，就还是那个程序。下面的摘要盖住 fill_facts 与身份用到的全部回放状态
+// （游戏每笔绘制前都会重绑贴图 / 缓冲，绑的东西对编译来说通常没变；不走快路径时每笔要重填事实、编码身份、算一次 SHA-256）。
+// 调试开关 nvk_resolve_check=1：命中后仍走一遍慢路径核对，不一致报红。
+// 一张小的直映射表而不是只记上一次：相邻两笔常在两三种材质之间来回换，只记一项时每次都落空。
+enum { LAST_N = 1024 };
+static struct last_ent { int ok; uint64_t key; uint64_t session, generation; const struct rp_prog *prog; } g_lasts[LAST_N];
+static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, uint32_t stages) {
+    uint64_t h = 1469598103934665603ull;
+    #define MIX(v) do { h ^= (uint64_t)(v); h *= 1099511628211ull; } while (0)
+    MIX(stages); MIX(q->prim); MIX(q->rt_count); for (int i = 0; i < 8; i++) MIX(q->rt_format[i]);
+    for (int st = 0; st < 2; st++) { uint64_t k; memcpy(&k, rp_S.skey[st], 8); MIX(k); }
+    MIX(rp_S.color.alpha_func); { uint32_t ar; float r = rp_S.color.alpha_func >= 1 && rp_S.color.alpha_func <= 7 ? rp_S.alpha_ref : 0.0f; memcpy(&ar, &r, 4); MIX(ar); }
+    MIX(rp_S.ms.a2c ? 1 : 0); MIX(rp_S.ms.a2c_dither ? 1 : 0);
+    { int dual = 0; for (int i = 0; i < 8; i++) if (src1(rp_S.blend[i].src_rgb) || src1(rp_S.blend[i].dst_rgb) || src1(rp_S.blend[i].src_a) || src1(rp_S.blend[i].dst_a)) dual = 1; MIX(dual); }
+    MIX(rp_depth_zero()); MIX(rp_origin_lower_left()); MIX(pc->shader_draw_parameters);
+    { int any = 0, un = 0; for (int st = 0; st < 5; st++) for (int i = 0; i < 16; i++) if (rp_S.ssbo[st][i].addr) { any = 1; if (pc->storage_buffer_offset_alignment && rp_S.ssbo[st][i].addr % pc->storage_buffer_offset_alignment) un = 1; } MIX(any); MIX(un); MIX(pc->storage_buffer_offset_alignment); }
+    MIX(rp_S.nattr); for (int i = 0; i < 16; i++) MIX(i < rp_S.nattr ? rp_S.attr[i].fmt : 0);
+    for (int st = 0; st < 6; st++) { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[st][i].size) m |= 1u << i; MIX(m); }
+    MIX(rp_S.tex_pool_n); MIX(rp_S.samp_pool_n); MIX(rp_S.tf_on); MIX(rp_S.tex_base);
+    MIX(rp_tex_fact_sig(rp_S.tex[0], 32, rp_S.tex_base, rp_S.tex_pool_n)); MIX(rp_tex_fact_sig(rp_S.tex[1], 32, rp_S.tex_base, rp_S.tex_pool_n));
+    #undef MIX
+    return h;
+}
+static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **out, const struct s2a_direct_compile_context *pcp, uint32_t stages, int nst);
+
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
     *out = NULL;
     uint32_t stages = 0; for (int st = 0; st < 5; st++) if (rp_S.bser[st]) stages |= 1u << st;
@@ -169,6 +195,22 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     if ((rp_S.skey_ok & stages) != stages) { nvn_unimpl("shader", "stage_key_missing", NULL); return -1; }
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
     if (s2a_direct_provider_compile_context(&pc) || !pc.profile_json || !pc.profile_bytes) { nvn_unimpl("shader", "no_compile_context", NULL); return -1; }
+    uint64_t key = input_sig(q, &pc, stages);
+    struct last_ent *le = &g_lasts[(key ^ key >> 32) & (LAST_N - 1)];
+    static int check = -1; if (check < 0) check = nvn_plat_flag("nvk_resolve_check", 0);
+    if (le->ok && le->key == key && le->session == pc.session && le->generation == pc.generation) {
+        *out = le->prog;
+        if (check) { const struct rp_prog *chk = NULL; int rc = resolve_slow(q, &chk, &pc, stages, nst); if (rc || chk != le->prog) red1("resolve_fast_path_mismatch", "快路径给的程序与慢路径不一致"); }
+        return 0;
+    }
+    int rc = resolve_slow(q, out, &pc, stages, nst);
+    le->ok = rc == 0; le->key = key; le->session = pc.session; le->generation = pc.generation; le->prog = *out;
+    return rc;
+}
+
+static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **out, const struct s2a_direct_compile_context *pcp, uint32_t stages, int nst) {
+    struct s2a_direct_compile_context pc = *pcp;
+    *out = NULL;
     if (!g_profile.ok || g_profile.session != pc.session || g_profile.generation != pc.generation) {
         sha256(pc.profile_json, pc.profile_bytes, g_profile.sha); g_profile.session = pc.session; g_profile.generation = pc.generation; g_profile.ok = 1; }
     static struct facts f;   // 提交线程独占；结构大，不放栈上
@@ -244,10 +286,110 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     return 0;
 }
 
+// ---------- 计算程序 ----------
+// 输入的构造与身份用旧层留下的零件（nvn_vk_compute_request.c：只做输入，不碰设备），结果解析用 nvn_vk_program_parse_compute。
+// 首版只认：常量缓冲（含驱动段 c0、着色器自带段 c1）、按 NVN 槽绑定的存储缓冲、组合贴图。图像、地址藏在常量缓冲里的存储缓冲：记账、取不到。
+static struct entry *build_compute(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view *src) {
+    struct entry *e = calloc(1, sizeof *e); e->prog.is_compute = 1;
+    static struct nvn_vk_compute_program cp; char why[192] = "";
+    memset(&cp, 0, sizeof cp);
+    if (nvn_vk_program_parse_compute(bytes, len, &cp, why, sizeof why)) { red1("compute_program_parse_failed", why); e->failed = 1; return e; }
+    e->prog.support_bytes = cp.support_bytes;
+    for (int i = 0; i < cp.binding_count && !e->failed; i++) {
+        const struct fd_binding *b = &cp.bindings[i];
+        if (e->prog.nent[0] == RP_PROG_ENT_MAX) { red1("too_many_bindings", "cs"); e->failed = 1; break; }
+        nvn_gpu_layout_ent *le = &e->prog.ent[0][e->prog.nent[0]]; int ok = 0;
+        if (b->kind == 1) {
+            const struct nvn_vk_compute_storage *sg = &cp.storage[i];
+            if (sg->mapping == NVK_STORAGE_NVN && sg->index < 16 && !sg->offset) {
+                memset(le, 0, sizeof *le); le->set = (uint8_t)b->set; le->binding = (uint16_t)b->binding; le->count = 1;
+                le->cls = NVN_GPU_RES_SSBO; le->access = sg->writable ? NVN_GPU_ACC_RW : NVN_GPU_ACC_R; le->src_kind = NVN_RB_SBUFP; le->src_reg = (uint16_t)sg->index; ok = 1;
+            }
+        } else ok = layout_ent(b, le);
+        if (!ok) { char nm[56]; snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0); red1(nm, "cs"); e->failed = 1; break; }
+        le->stages = 1u << NVN_GPU_SH_CS;
+        e->prog.nent[0]++;
+    }
+    if (!e->failed && !cp.stage.present) { red1("stage_missing_in_result", "cs"); e->failed = 1; }
+    if (!e->failed) {
+        nvn_gpu_layout L = {0}; L.ent = e->prog.ent[0]; L.nent = e->prog.nent[0]; L.support_bytes = cp.support_bytes; L.id_src = "s2a-direct-program-v1";
+        nvn_gpu_shader_src ss = {0}; ss.stage = NVN_GPU_SH_CS; ss.kind = NVN_GPU_BLOB_SPIRV; ss.blob = cp.stage.spirv; ss.bytes = cp.stage.spirv_bytes; ss.entry = "main"; ss.layout = &L;
+        nvn_gpu_err err = {0};
+        if (!nvn_gpu_ok(nvn_gpu_shader_load(&ss, &e->prog.sh[0], &err))) { red1("compute_shader_load_failed", err.why); e->failed = 1; }
+        if (src->c1 && src->c1_bytes >= 0x100) { memcpy(e->prog.c1[0], src->c1, 0x100); e->prog.c1_ok |= 1; }
+    }
+    nvn_vk_program_free_compute(&cp);
+    return e;
+}
+
+int rp_shader_resolve_compute(const struct rp_prog **out) {
+    *out = NULL;
+    if (!(rp_S.skey_ok >> 5 & 1)) { nvn_unimpl("shader", "compute_stage_key_missing", NULL); return -1; }
+    struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
+    if (s2a_direct_provider_compile_context(&pc) || !pc.profile_json || !pc.profile_bytes) { nvn_unimpl("shader", "no_compile_context", NULL); return -1; }
+    static struct s2a_record_dispatch_state st; memset(&st, 0, sizeof st);
+    memcpy(st.keys[0], rp_S.skey[5], 8); st.stages = 32;
+    { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[5][i].size) m |= 1u << i; st.ubo_use[5] = m << 3; }   // 用户常量缓冲从 c3 起
+    st.tex_pool_n = (uint32_t)rp_S.tex_pool_n; st.samp_pool_n = (uint32_t)rp_S.samp_pool_n; st.tex_pool_seen = rp_S.tex_pool_n > 0; st.samp_pool_seen = rp_S.samp_pool_n > 0; st.tex_pool_base = rp_S.tex_base;
+    // 贴图事实：计算阶段的 32 个组合槽，取法同图形（没绑过的槽读作池里的第 0 项）
+    static struct s2a_compile_texture_src tex[32]; static char tfmt[32][S2A_TEX_FORMAT_MAX], tsmp[32][S2A_TEX_SAMPLER_MAX]; int ntex = 0;
+    for (int slot = 0; slot < 32; slot++) {
+        uint64_t h = rp_S.tex[5][slot]; long id = h ? (long)(h & 0xFFFFF) : (long)rp_S.tex_base;
+        tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
+        if (rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
+            if (s2a_nvn_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;
+        } else {
+            int in_pool = id >= rp_S.tex_base && (uint64_t)(id - rp_S.tex_base) < (uint64_t)rp_S.tex_pool_n;
+            memset(&nf, 0, sizeof nf); snprintf(nf.format, sizeof nf.format, "Unknown");
+            snprintf(nf.sampler_type, sizeof nf.sampler_type, "%s", in_pool ? "1d" : "2d"); nf.normalized = !in_pool; nf.array_length = 1;
+        }
+        memcpy(tfmt[ntex], nf.format, sizeof tfmt[ntex]); memcpy(tsmp[ntex], nf.sampler_type, sizeof tsmp[ntex]);
+        tex[ntex] = (struct s2a_compile_texture_src){"cs", (uint32_t)(8 + 2 * slot), -1, tsmp[ntex], tfmt[ntex], nf.is_buffer, nf.normalized, 0, nf.array_length};
+        ntex++;
+    }
+    struct nvk_compute_texture_facts tf = {tex, ntex, 1};
+    int unaligned = 0;
+    for (int i = 0; i < 16; i++) if (rp_S.ssbo[5][i].addr && pc.storage_buffer_offset_alignment && rp_S.ssbo[5][i].addr % pc.storage_buffer_offset_alignment) unaligned = 1;
+    char ident[24]; { int o = 0; for (int b = 0; b < 8; b++) o += snprintf(ident + o, sizeof ident - (size_t)o, "%02x", rp_S.skey[5][b]); }
+    static struct nvk_compute_request rq; memset(&rq, 0, sizeof rq); char why[256] = "";
+    if (nvk_compute_request_prepare(&st, &pc, &tf, 1, unaligned, ident, &rq, why, sizeof why)) { red1("compute_request_failed", why); return -1; }
+    struct entry *e = nvn_hm_get(&g_progs, rq.identity);
+    if (!e) {
+        uint8_t *bytes = NULL; size_t len = 0;
+        const char *root = getenv("S2A_SHADER_REVISION_ROOT"), *cdir = getenv("S2A_DIRECT_CACHE_DIR");
+        if (root && pc.profile_hash && pc.profile_hash[0] && !nvn_plat_flag("no_offline", 0)) {
+            struct s2a_offline_request oq = {0}; memcpy(oq.identity, rq.identity, 32); oq.direct_abi = pc.direct_abi; oq.profile_hash = pc.profile_hash; oq.profile_declared = pc.offline_profile_available;
+            struct s2a_offline_program op = {0};
+            if (s2a_offline_library_fetch(root, &oq, &op, why, sizeof why) == S2A_OFFLINE_HIT) { bytes = op.bytes; len = op.len; g_n_offline++; }
+        }
+        if (!bytes && cdir && !nvn_plat_flag("no_disk_cache", 0) && s2a_program_cache_load(cdir, rq.identity, &bytes, &len, NULL, why, sizeof why) == 0) g_n_cache++;
+        if (!bytes) {
+            struct s2a_compile_outcome oc; memset(&oc, 0, sizeof oc);
+            int ran = s2a_compile_request_execute(rq.session, rq.generation, rq.json, rq.json_bytes, &oc);
+            if (ran || !oc.bytes || !oc.bytes_len) {
+                g_n_failed++; red1("compute_compile_failed", oc.summary);
+                s2a_compile_outcome_free(&oc);
+                e = calloc(1, sizeof *e); e->failed = 1; nvn_hm_put(&g_progs, rq.identity, e);
+                nvk_compute_request_release(&rq);
+                return -1;
+            }
+            bytes = oc.bytes; len = oc.bytes_len; oc.bytes = NULL; s2a_compile_outcome_free(&oc); g_n_compiled++;
+            if (cdir && !nvn_plat_flag("no_disk_cache", 0)) s2a_program_cache_store_async(cdir, rq.identity, bytes, len);
+        }
+        e = build_compute(bytes, len, &rq.source);
+        free(bytes);
+        nvn_hm_put(&g_progs, rq.identity, e);
+    }
+    nvk_compute_request_release(&rq);
+    if (e->failed) return -1;
+    *out = &e->prog;
+    return 0;
+}
+
 void rp_shader_reset(void) {
     for (uint32_t i = 0; i < g_progs.cap; i++) { struct entry *e = g_progs.vals[i]; if (!e) continue;
         for (int st = 0; st < 2; st++) if (e->prog.sh[st]) nvn_gpu_shader_release(e->prog.sh[st]);
         free(e); }
     free(g_progs.keys); free(g_progs.vals); nvn_hm_init(&g_progs, 32);
-    g_profile.ok = 0;
+    g_profile.ok = 0; memset(g_lasts, 0, sizeof g_lasts);
 }

@@ -168,6 +168,8 @@ struct nvn_gpu_cmd_s {
     uint8_t *push_data[6];        // 各阶段 push 暂存；vkCmdPushConstants 录制时拷贝入命令缓冲，段完成即放
     uint32_t push_capacity[6]; // 分配字节数，测试与管线切换共用
     uint8_t push_have[6];
+    // 遮挡查询（nvn_gpu_cmd_desc.occlusion_slots > 0 才有）：一段一个查询池，段开头整池重置；每个槽一段里只能用一次
+    VkQueryPool qpool; uint32_t qcount, qmax_used; int32_t q_active; uint8_t *q_used; uint8_t pass_occl;
     struct nvn_gpu_cmd_s *live_next;
 };
 
@@ -563,9 +565,17 @@ static void segment_done(struct vk_segment *s, int status, int code, const char 
     d.time_kind = NVN_GPU_TIME_NONE;
     d.occlusion = NULL;
     d.nocclusion = 0;
+    // 遮挡结果：段已完成，用过的槽都有结果；没用过的槽读作 0（不等待，取不到的项保持预置的 0）
+    uint64_t *occ = NULL;
+    if (status == NVN_GPU_DONE_OK && s->cmd && s->cmd->qpool && s->cmd->qmax_used && (occ = calloc(s->cmd->qcount, sizeof *occ))) {
+        for (uint32_t i = 0; i < s->cmd->qmax_used; i++)
+            if (s->cmd->q_used[i]) (void)vkGetQueryPoolResults(g.d, s->cmd->qpool, i, 1, sizeof *occ, &occ[i], sizeof *occ, VK_QUERY_RESULT_64_BIT);
+        d.occlusion = occ; d.nocclusion = s->cmd->qcount;
+    }
     g_in_callback++;
     s->done(s->user, &d);
     g_in_callback--;
+    free(occ);
 }
 
 static void detach_live(struct nvn_gpu_cmd_s *c) {
@@ -608,6 +618,8 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     if (c->dpool) vkDestroyDescriptorPool(g.d, c->dpool, NULL);
     for (uint32_t i = 0; i < c->ndpools_full; i++) vkDestroyDescriptorPool(g.d, c->dpools_full[i], NULL);
     free(c->dpools_full);
+    if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
+    free(c->q_used);
     if (c->pool) vkDestroyCommandPool(g.d, c->pool, NULL);   // pool 同时回收 command buffer
     free(c->refs);
     free(c->staging);
@@ -2259,6 +2271,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     bi.pClearValues = clear;
     vkCmdBeginRenderPass(c->cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
     c->in_pass = 1;
+    c->pass_occl = d->occlusion;
     c->pass_w = d->w;
     c->pass_h = d->h;
     c->pass_ncolor = d->ncolor < 8 ? d->ncolor : 8;
@@ -2298,6 +2311,8 @@ void nvn_gpu_pass_end(nvn_gpu_cmd ch) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c) return;
     if (!c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "pass_end 时不在通道里"); return; }
+    if (c->q_active >= 0) { vkCmdEndQuery(c->cb, c->qpool, (uint32_t)c->q_active); c->q_active = -1; }   // 查询不跨通道
+    c->pass_occl = 0;
     vkCmdEndRenderPass(c->cb);
     c->in_pass = 0;
     // 通道结束：附件从 COLOR/DEPTH 显式转回 GENERAL，写对后续采样 / 拷贝 / 再当附件可见
@@ -3544,9 +3559,18 @@ void nvn_gpu_blit(nvn_gpu_cmd c, nvn_gpu_view s, const NVNcopyRegion *sr, nvn_gp
     set_sticky((struct nvn_gpu_cmd_s *)c, NVN_GPU_E_UNSUPPORTED, "blit：未实现（不置 CAP_BLIT_SCALED）");
 }
 
-void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) {
-    (void)slot;
-    set_sticky((struct nvn_gpu_cmd_s *)c, NVN_GPU_E_UNSUPPORTED, "遮挡查询：未实现");
+// 之后的绘制计入 slot，-1 停止。只在声明了 occlusion 的通道里；一个槽一段里只能开一次（Vulkan 的查询重置后只能用一回）。
+// 设备有精确计数就要精确值，没有就只保证「有样本通过时非 0」。
+void nvn_gpu_occlusion(nvn_gpu_cmd ch, int32_t slot) {
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
+    if (!c->in_pass || !c->pass_occl) { set_sticky(c, NVN_GPU_E_ORDER, "遮挡查询只能在声明了 occlusion 的通道里开关"); return; }
+    if (!c->qpool) { set_sticky(c, NVN_GPU_E_ARG, "遮挡查询：本段开段时没声明 occlusion_slots"); return; }
+    if (slot >= 0 && ((uint32_t)slot >= c->qcount || c->q_used[slot])) { set_sticky(c, NVN_GPU_E_ARG, "遮挡查询槽 %d 越界（本段 %u 槽）或本段已用过", slot, c->qcount); return; }
+    if (c->q_active >= 0) { vkCmdEndQuery(c->cb, c->qpool, (uint32_t)c->q_active); c->q_active = -1; }
+    if (slot < 0) return;
+    vkCmdBeginQuery(c->cb, c->qpool, (uint32_t)slot, g.dev->core_features.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+    c->q_active = slot; c->q_used[slot] = 1; if ((uint32_t)slot + 1 > c->qmax_used) c->qmax_used = (uint32_t)slot + 1;
 }
 
 void nvn_gpu_label(nvn_gpu_cmd c, const char *text) { (void)c; (void)text; }
@@ -3559,7 +3583,6 @@ void nvn_gpu_tex_upload_blocklinear(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t l, ui
 // ---------------------------------------------------------------- 命令
 
 nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gpu_err *err) {
-    (void)d;
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
     if (!g_open) return fail(err, NVN_GPU_E_STOPPED, "后端未打开");
@@ -3604,9 +3627,23 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     }
     c->recording = 1;
     c->sticky = rc(NVN_GPU_OK);
+    c->q_active = -1;
+    if (d && d->occlusion_slots) {   // 查询池：整池重置只能在通道外，放在段的最开头
+        VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);
+        qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO; qi.queryType = VK_QUERY_TYPE_OCCLUSION; qi.queryCount = d->occlusion_slots;
+        c->q_used = calloc(d->occlusion_slots, 1);
+        if (!c->q_used || vkCreateQueryPool(g.d, &qi, NULL, &c->qpool) != VK_SUCCESS) {
+            free(c->q_used); vkDestroyCommandPool(g.d, c->pool, NULL); free(c);
+            return fail(err, NVN_GPU_E_OOM, "遮挡查询池（%u 槽）创建失败", d->occlusion_slots);
+        }
+        c->qcount = d->occlusion_slots;
+        vkCmdResetQueryPool(c->cb, c->qpool, 0, c->qcount);
+    }
     pthread_mutex_lock(&g_mu);
     if (g.closing) {
         pthread_mutex_unlock(&g_mu);
+        if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
+        free(c->q_used);
         vkDestroyCommandPool(g.d, c->pool, NULL);
         free(c);
         return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭");

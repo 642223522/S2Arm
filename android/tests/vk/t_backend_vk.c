@@ -3685,6 +3685,47 @@ static void c81_int_sampled(const char *dir) {
     nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
 }
 
+// C82：遮挡查询。一段声明 4 个槽：槽 0 整屏三角形（64x64 目标）、槽 1 同一个三角形裁剪到 16x16、槽 2 开了不画、槽 3 不用。
+// 期望（手算）：完成回调里各槽样本数 = 4096、256、0、0。
+static uint64_t g_c82_occ[4]; static uint32_t g_c82_n;
+static void c82_done(void *user, const nvn_gpu_done *d) { (void)user; g_c82_n = d->nocclusion; for (uint32_t i = 0; i < 4 && i < d->nocclusion && d->occlusion; i++) g_c82_occ[i] = d->occlusion[i]; on_done(NULL, d); }
+static void c82_occlusion(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 solid_green"); return; }
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view ov = make_view(out);
+    nvn_gpu_buf vb = full_vb();
+    nvn_gpu_pipe_desc pd; nvn_gpu_err e; nvn_gpu_pipe pipe = NULL;
+    fill_gpipe_desc(&pd, vs, fs, 0);
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C82 pipe：%d %s", e.rc.code, e.why);
+    nvn_gpu_cmd c = NULL; nvn_gpu_cmd_desc cd = {4, "C82"};
+    CHECK(OK(nvn_gpu_cmd_begin(&cd, &c, &e)), "C82 cmd_begin：%d %s", e.rc.code, e.why);
+    if (pipe && c) {
+        nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+        p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+        p.w = 64; p.h = 64; p.layers = 1; p.occlusion = 1;
+        nvn_gpu_pass_begin(c, &p);
+        nvn_gpu_dyn dyn; full_dyn(&dyn);
+        nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+        nvn_gpu_set_pipe(c, pipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0);
+        nvn_gpu_occlusion(c, 0); nvn_gpu_draw(c, &da);
+        dyn.sc[0] = 8; dyn.sc[1] = 8; dyn.sc[2] = 16; dyn.sc[3] = 16; nvn_gpu_set_dyn(c, &dyn);
+        nvn_gpu_occlusion(c, 1); nvn_gpu_draw(c, &da);
+        nvn_gpu_occlusion(c, 2);
+        nvn_gpu_occlusion(c, -1); nvn_gpu_draw(c, &da);   // 停了以后画的不计
+        nvn_gpu_pass_end(c);
+        g_c82_n = 0; memset(g_c82_occ, 0xff, sizeof g_c82_occ);
+        nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 125, c82_done, NULL, &e);
+        CHECK(OK(r), "C82 commit：%d %s", r.code, e.why);
+        r = nvn_gpu_fence_wait(125, 5000000000ull, &e);
+        CHECK(OK(r), "C82 wait：%d %s", r.code, e.why);
+        CHECK(g_c82_n == 4 && g_c82_occ[0] == 4096 && g_c82_occ[1] == 256 && g_c82_occ[2] == 0 && g_c82_occ[3] == 0, "C82 各槽样本数：%u 槽 %llu %llu %llu %llu（期望 4 槽 4096 256 0 0）", g_c82_n,
+              (unsigned long long)g_c82_occ[0], (unsigned long long)g_c82_occ[1], (unsigned long long)g_c82_occ[2], (unsigned long long)g_c82_occ[3]);
+    }
+    nvn_gpu_view_release(ov); nvn_gpu_tex_release(out); nvn_gpu_buf_release(vb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -3919,6 +3960,7 @@ int main(int argc, char **argv) {
     c79_masked_clear(argv[1]);
     c80_front_face(argv[1]);
     c81_int_sampled(argv[1]);
+    c82_occlusion(argv[1]);
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;

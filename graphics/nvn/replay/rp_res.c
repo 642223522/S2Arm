@@ -325,6 +325,23 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out) {
     return out;
 }
 
+// 一组贴图槽的「编译事实」摘要：每槽取绑定贴图的有效格式、有效目标、深度（没登记的槽取「在不在池范围里」）。
+// 着色器来源拿它判断「这些槽对编译来说跟上次一样」，一次加锁看完一组，不必逐槽取快照。
+uint64_t rp_tex_fact_sig(const uint64_t *handles, int n, int tex_base, int tex_pool_n) {
+    uint64_t hsh = 1469598103934665603ull;
+    #define SIG_MIX(v) do { hsh ^= (uint64_t)(v); hsh *= 1099511628211ull; } while (0)
+    pthread_mutex_lock(&g_rmu);
+    for (int i = 0; i < n; i++) {
+        long id = handles[i] ? (long)(handles[i] & 0xFFFFF) : (long)tex_base;
+        if (id >= 0 && id < g_ntreg && g_treg[id].ok) { const treg_t *r = &g_treg[id];
+            SIG_MIX(1); SIG_MIX(r->has_v && r->v.set_format ? r->v.format : r->t.d.format); SIG_MIX(r->has_v && r->v.set_target ? r->v.target : r->t.d.target); SIG_MIX(r->t.d.depth);
+        } else { SIG_MIX(2); SIG_MIX(id >= tex_base && (uint64_t)(id - tex_base) < (uint64_t)tex_pool_n); }
+    }
+    pthread_mutex_unlock(&g_rmu);
+    #undef SIG_MIX
+    return hsh;
+}
+
 // 贴图号 → 登记时的贴图描述快照（着色器编译事实用；不建图）。1 = 有
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v) {
     int ok = 0;
