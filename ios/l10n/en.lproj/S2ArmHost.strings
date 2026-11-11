@@ -284,6 +284,7 @@
 "controller.resuming.hint" = "Restoring input from the connected controller. Tap to stop connecting";
 "controller.scanning" = "Searching, tap to cancel";
 "controller.turnOnBluetooth" = "Turn on Bluetooth and try again";
+"img.scanFailed.title" = "Couldn't import the game file";
 "games.repair.done.title" = "Game folder repaired";
 "games.repair.done.body" = "The game folder belonged to a system account, so S2Arm could not write to it and installing never started. It has been moved to a new folder owned by S2Arm (%u files, sharing the original data, so no extra space). You can continue installing. S2Arm cannot delete the old folder; it is cleared the next time you connect to your computer.";
 "games.repair.failed.title" = "Couldn't repair the game folder";
