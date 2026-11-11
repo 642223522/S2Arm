@@ -37,7 +37,7 @@ def install(c):
     #   不核 .git/（_stable_files：快照自带的 Git 仓库元数据，正常使用就可能变）。
     #   完好的副本直接用、不拿锁；要挪开 / 重解时拿跨进程锁（_install_lock），拿到后重读标记、再核一次（别的作业可能刚装好）才动手——
     #   v0.2.0 前回归：启动时 preflight 与 setup 同时初始化同一份副本，一个读到另一个装到一半 / 正被收走的副本，误判「被改过」、挪走对方的
-    if c.operation in PROBES and read(destination / ".installed.json", {}).get("schema") == 2:
+    if getattr(c, "operation", None) in PROBES and read(destination / ".installed.json", {}).get("schema") == 2:   # 非作业的调用方（tools 里的假上下文）没有 operation：按非探测、照常复核
         c.engine = destination   # 只读探测（剃刀 H4）：装过就直接用，不逐文件复核、不清旧副本；出包 / 起局这类真用引擎产物的作业照旧每次复核（#304）
         return
     if not _ready(c, destination, manifest):
