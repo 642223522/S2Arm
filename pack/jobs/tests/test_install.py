@@ -627,6 +627,9 @@ class FlowTests(unittest.TestCase):
         self.assertNotIn("小平板", link["problem"])
         link, _ = self._link([[ipad]], want="旧手机")   # 没见过的设备：没找到，不装旁边唯一在线的那台
         self.assertIsNone(link["device"]); self.assertIn("没找到", link["problem"])
+        self.assertIn("「旧手机」", link["problem"]); self.assertIn("Wi-Fi", link["problem"])
+        link, _ = self._link([[ipad]], want="0000AAAA-0000-BBBB-0000BB")   # 没见过的设备号：上屏只写末尾 6 位（整串会被诊断脱敏成 [DEVICE_ID]，11-11 真机验收测出）
+        self.assertIn("编号末尾 0000BB", link["problem"]); self.assertNotIn("AAAA", link["problem"])   # 前面的部分不上屏
         link, _ = self._link([[offline_phone, ipad]], want="PAD-UDID")   # 选的是走 Wi-Fi 的 iPad：装它
         self.assertEqual(link["device"]["identifier"], "D2")
         link, _ = self._link([[self._p(name="甲", tunnel="connected"), self._p(name="乙", ident="D2", tunnel="connected")]], want="乙")

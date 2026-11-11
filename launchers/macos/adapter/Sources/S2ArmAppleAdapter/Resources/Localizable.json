@@ -6956,8 +6956,8 @@
   "en": "{0} “{1}” is offline: plug it in with a cable, or unlock it on the same Wi-Fi as this computer, then try again."
  },
  {
-  "source": "没找到要装的那台设备（{0}）：插上数据线并解锁，在设备上点「信任」。",
-  "en": "The chosen device ({0}) wasn't found: plug it in, unlock it and tap Trust on the device."
+  "source": "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。",
+  "en": "The chosen device ({0}) hasn't been paired with this computer yet: plug it in, unlock it and tap Trust on the device (after that it can also install over the same Wi-Fi)."
  },
  {
   "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
