@@ -296,6 +296,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     uint32_t base_instance = (uint32_t)(di ? di->base_instance : dr->base_instance);
     for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
     a.prim = prim; a.count = count; a.instances = (uint32_t)(di ? di->instances : dr->instances); if (!a.instances) a.instances = 1; a.base_instance = base_instance;
+    rp_occl_draw(c);
     nvn_gpu_draw(c, &a);
     if (g_log_left) {
         g_log_left--;

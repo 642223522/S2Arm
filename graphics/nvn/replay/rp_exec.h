@@ -56,6 +56,12 @@ void rp_draw_log_arm(int lines);   // 接下来的 lines 笔绘制（含被跳�
 
 // 资源同步用的段（见 rp_exec.c）：通常是先于主段提交的前置段；同一资源本次提交里第二次同步时结束当前通道、回到主段。
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub);
+// 遮挡计数（rp_exec.c）：通道与绘制那边的接入点
+int rp_occl_want(void);                 // 开通道时：要不要声明遮挡计数
+void rp_occl_pass_opened(int declared); void rp_occl_pass_closed(void);
+void rp_occl_pause(nvn_gpu_cmd c);      // 通道里按矩形清之前
+void rp_occl_draw(nvn_gpu_cmd c);       // 每笔绘制之前
+int rp_rc_skip(void);                   // 条件渲染判成不画的那一段里
 int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式
 // 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);

@@ -51,3 +51,4 @@ const s2a_nvn_profile *s2a_nvn_prof(void) {
     }
     return &p;
 }
+int s2a_nvn_render_cond(void) { return s2a_nvn_prof()->t.render_cond; }   // 回放核心问：条件渲染开没开

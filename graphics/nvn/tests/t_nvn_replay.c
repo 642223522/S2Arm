@@ -43,8 +43,13 @@ static int g_aborts;
 static int g_begins, g_commits;
 static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; } g_pend[8]; static int g_npend;
 static uint64_t g_fdone;
+static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
+int s2a_nvn_render_cond(void) { return g_rcond; }
+void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) { (void)c; if (g_nocc_log < 32) g_occ_log[g_nocc_log] = slot; g_nocc_log++; }
 nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gpu_err *err) { (void)err; g_begins++;
-    struct nvn_gpu_cmd_s *c = d && d->label && strstr(d->label, "pre") ? &g_fake_pre : &g_fake_cmd; c->live = 1; c->is_pre = c == &g_fake_pre; *out = c; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    struct nvn_gpu_cmd_s *c = d && d->label && strstr(d->label, "pre") ? &g_fake_pre : &g_fake_cmd; c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
+    if (!c->is_pre) g_occ_slots_decl = d ? d->occlusion_slots : 0;
+    return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { c->live = 0; g_aborts++; }
 nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
     (void)err; c->live = 0; g_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -141,9 +146,12 @@ void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err) { (void)c; (void)err;
     g_arena_used = (g_arena_used + align - 1) / align * align; out->buf = &g_arena_buf; out->off = g_arena_used; out->cpu = g_arena + g_arena_used; out->va = 0; g_arena_used += bytes; return (nvn_gpu_rc){NVN_GPU_OK}; }
 
+static const uint64_t *g_fake_occ; static uint32_t g_fake_nocc;   // 下一次完成时交给回调的各槽样本数
 static void fake_complete(uint32_t status) {
-    for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败"; g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
-    g_npend = 0;
+    for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败";
+        if (status != NVN_GPU_DONE_FAILED) { d.occlusion = g_fake_occ; d.nocclusion = g_fake_nocc; }
+        g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
+    g_npend = 0; g_fake_occ = NULL; g_fake_nocc = 0;
 }
 
 // ---------- 录制替身：按 nvn_obj.h 的记录格式写 ----------
@@ -644,8 +652,8 @@ static void t_clear_rect(void) {   // 带裁剪的清除：矩形与目标求交
     pass_fresh();
 }
 
-static void t_report_counter(void) {   // 计数器报告：段完成后才写；时间戳类两格都是时间，统计类计数值为 0；遮挡计数没接不写；失败段不写
-    nvn_unimpl_reset();
+static void t_report_counter(void) {   // 计数器报告：段完成后才写；时间戳类两格都是时间，统计类计数值为 0；遮挡计数写累计值（没复位没画过 = 0）；失败段不写
+    nvn_be_shutdown_session(); nvn_unimpl_reset(); g_rcond = 0;
     uint64_t rec[4][2]; memset(rec, 0xAB, sizeof rec);
     const uint64_t types[4] = {NVN_COUNTER_TYPE_TIMESTAMP, NVN_COUNTER_TYPE_INPUT_VERTICES, NVN_COUNTER_TYPE_TIMESTAMP_TOP, NVN_COUNTER_TYPE_SAMPLES_PASSED};
     stream a = {0};
@@ -657,11 +665,95 @@ static void t_report_counter(void) {   // 计数器报告：段完成后才写�
     CHECK(rec[0][0] == 7777 && rec[0][1] == 7777);
     CHECK(rec[1][0] == 0 && rec[1][1] == 7777);
     CHECK(rec[2][0] == 7777 && rec[2][1] == 7777);
-    CHECK(rec[3][0] == 0xABABABABABABABABull && rec[3][1] == 0xABABABABABABABABull && nvn_unimpl_count("op", "OP_REPORT_COUNTER+SAMPLES_PASSED") == 1);
-    CHECK(nvn_unimpl_kinds() == 1);
+    CHECK(rec[3][0] == 0 && rec[3][1] == 7777);
+    CHECK(nvn_unimpl_kinds() == 0);
     g_tick = 9999; submit1(&a); fake_complete(NVN_GPU_DONE_FAILED);
-    CHECK(rec[0][0] == 7777 && rec[1][1] == 7777);    // 失败段：不回写
-    nvn_unimpl_reset();
+    CHECK(rec[0][0] == 7777 && rec[1][1] == 7777 && rec[3][1] == 7777);    // 失败段：不回写
+    // 条件渲染开着的款：时间戳类的计数值写 0（同真机），时间那一格照写
+    g_rcond = 1; g_tick = 8888; submit1(&a); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rec[0][0] == 0 && rec[0][1] == 8888 && rec[2][0] == 0 && rec[2][1] == 8888);
+    g_rcond = 0; nvn_be_shutdown_session(); nvn_unimpl_reset();
+}
+
+// 最小的可画环境：一个不带属性、不带绑定的程序，一张 64x36 的颜色目标
+static tex_t g_qrt;
+static void q_env(stream *s) {
+    memset(&g_fprog, 0, sizeof g_fprog); g_fprog.sh[0] = &g_fsh[0]; g_fprog.sh[1] = &g_fsh[1]; g_fprog.color_out_mask = 0xffffffffu;
+    g_qrt = mk_tex(91, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0);
+    put_set_rt(s, &g_qrt, NULL);
+    p_viewports *vp = put(s, OP_VIEWPORTS, sizeof *vp); vp->n = 1; vp->v[0][2] = 64; vp->v[0][3] = 36;
+}
+static void q_draw(stream *s) { p_draw *d = put(s, OP_DRAW, sizeof *d); d->prim = 4; d->count = 3; d->instances = 1; }
+static void q_counter(stream *s, uint32_t op, uint64_t type, uint64_t *dst) { uint8_t *r = put(s, op, 16); uint64_t ad = (uint64_t)(uintptr_t)dst; memcpy(r, &type, 8); memcpy(r + 8, &ad, 8); }
+
+// 遮挡计数：通过的样本数是队列上的累计值——复位清零、之后的绘制往上加、报告写出当时的累计值。
+// 期望值手算：各槽的样本数由替身在完成时给出，报告值 = 复位之后、报告之前开过的各槽之和（跨段接着加）。
+static void t_occlusion(void) {
+    pass_fresh(); g_rcond = 0; g_gdraws = 0; g_nocc_log = 0; g_tick = 5;
+    uint64_t ra[2] = {~0ull, ~0ull}, rb[2] = {~0ull, ~0ull}, rcx[2] = {~0ull, ~0ull};
+    // 段 1：游戏第一次碰这个计数器。开段时还不知道，没声明槽：这一段里不计
+    stream s1 = {0}; q_env(&s1); q_counter(&s1, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&s1); end(&s1);
+    submit1(&s1);
+    CHECK(g_occ_slots_decl == 0 && g_nocc_log == 0 && g_gdraws == 1 && g_pd[0].occlusion == 0);
+    fake_complete(NVN_GPU_DONE_OK);
+    // 段 2：画（槽 0）、报告 A、画（槽 1）、带裁剪的清除（清除不计：先停）、画（槽 2）、复位、画（槽 3）、报告 B
+    int npd0 = g_npd;
+    stream s2 = {0}; q_draw(&s2); q_counter(&s2, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, ra); q_draw(&s2);
+    p_scissor *sc = put(&s2, OP_SCISSOR, sizeof *sc); sc->x = 4; sc->y = 4; sc->w = 8; sc->h = 8;
+    p_clear_color *cc = put(&s2, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;
+    q_draw(&s2); q_counter(&s2, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&s2); q_counter(&s2, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, rb); end(&s2);
+    submit1(&s2);
+    CHECK(g_occ_slots_decl > 0 && g_npd == npd0 + 1 && g_pd[npd0 < 8 ? npd0 : 7].occlusion == 1 && g_ncr == 1);
+    { static const int want[8] = {0, -1, 1, -1, 2, -1, 3, -1}; CHECK(g_nocc_log == 8 && !memcmp(g_occ_log, want, sizeof want)); }
+    CHECK(ra[0] == ~0ull);   // 没完成：没写
+    { static const uint64_t occ[4] = {10, 20, 30, 7}; g_fake_occ = occ; g_fake_nocc = 4; g_tick = 600; fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(ra[0] == 10 && ra[1] == 600);   // 复位在段 1；报告 A 之前只开过槽 0
+    CHECK(rb[0] == 7 && rb[1] == 600);    // 段内又复位过：只算槽 3
+    // 段 3：接着画（这一段的槽 0）再报告：跨段累计 7 + 5
+    g_nocc_log = 0;
+    stream s3 = {0}; q_draw(&s3); q_counter(&s3, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, rcx); end(&s3);
+    submit1(&s3);
+    { static const uint64_t occ[1] = {5}; g_fake_occ = occ; g_fake_nocc = 1; fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(rcx[0] == 12 && g_nocc_log == 2 && g_occ_log[0] == 0 && g_occ_log[1] == -1);
+    // 失败的段：报告不写，槽值不进累计
+    rcx[0] = ~0ull; submit1(&s3); { static const uint64_t occ[1] = {100}; g_fake_occ = occ; g_fake_nocc = 1; fake_complete(NVN_GPU_DONE_FAILED); }
+    CHECK(rcx[0] == ~0ull);
+    submit1(&s3); { static const uint64_t occ[1] = {1}; g_fake_occ = occ; g_fake_nocc = 1; fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(rcx[0] == 13 && nvn_unimpl_kinds() == 0);
+    pass_fresh();
+}
+
+// 条件渲染：判成不画的那一段里绘制和清除都丢掉；时间戳报告的计数值在回放时按 0 算；遮挡报告写过的地址当不知道、照画；新提交从「画」开始。
+static void t_render_cond(void) {
+    pass_fresh(); g_rcond = 1; g_gdraws = 0; g_tick = 9;
+    uint64_t mem[6] = {1, 0, 2, 0, 0, 0};   // 两条报告各 16 字节：计数值现在是 CPU 留下的 1 和 2（不相等）
+    stream s = {0}; q_env(&s);
+    p_render_cond *rc = put(&s, OP_RENDER_COND, sizeof *rc); rc->mode = 3;                                      // SetRenderEnable(false)
+    q_draw(&s); p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;      // 都丢
+    rc = put(&s, OP_RENDER_COND, sizeof *rc); rc->mode = 2; q_draw(&s);                                         // 恢复：画（第 1 笔）
+    rc = put(&s, OP_RENDER_COND, sizeof *rc); rc->mode = 0; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s);    // 相等才画：内存里 1 ≠ 2 → 不画
+    q_counter(&s, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_TIMESTAMP, &mem[0]); q_counter(&s, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_TIMESTAMP, &mem[2]);
+    rc = put(&s, OP_RENDER_COND, sizeof *rc); rc->mode = 0; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s);    // 两条时间戳报告在这次提交里：都按 0 → 相等 → 画（第 2 笔）
+    rc = put(&s, OP_RENDER_COND, sizeof *rc); rc->mode = 1; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s);    // 不等才画 → 不画
+    end(&s);
+    submit1(&s);
+    CHECK(g_gdraws == 2 && g_ncr == 0 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD);   // 被丢的清除没有折进通道
+    // 已提交、没完成：下一次提交里这两个地址仍按 0 算（内存里还是 1 和 2）
+    stream s2 = {0}; q_draw(&s2);                                                                                 // 新提交从「画」开始（上一次提交末尾是不画）
+    rc = put(&s2, OP_RENDER_COND, sizeof *rc); rc->mode = 1; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s2);  // 0 == 0 → 不等才画 → 不画
+    end(&s2);
+    submit1(&s2);
+    CHECK(g_gdraws == 3);
+    fake_complete(NVN_GPU_DONE_OK);
+    CHECK(mem[0] == 0 && mem[2] == 0);   // 完成：计数值写成 0
+    mem[0] = 5;                          // 完成之后 CPU 又写了：以内存为准
+    stream s3 = {0}; rc = put(&s3, OP_RENDER_COND, sizeof *rc); rc->mode = 1; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s3);   // 5 ≠ 0 → 画
+    q_counter(&s3, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, &mem[4]);                                                 // 遮挡报告写过的地址：从此当不知道
+    rc = put(&s3, OP_RENDER_COND, sizeof *rc); rc->mode = 0; rc->addr = (uint64_t)(uintptr_t)&mem[2]; q_draw(&s3);              // 比的是 mem[2] 与 mem[4]：后者不知道 → 照画
+    end(&s3);
+    submit1(&s3); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 5 && nvn_unimpl_kinds() == 0);
+    g_rcond = 0; pass_fresh();
 }
 
 static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管线 / 动态状态 / 顶点流 / 绑定；没变的管线不重取；取不到的资源跳过并记账
@@ -835,7 +927,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_draw(); t_present();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_draw(); t_present();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
