@@ -8,7 +8,7 @@
   card.bmp     卡片底（圆角、比底色亮一档、细描边），安装中的轮播与第一步的安装位置用
   bar.bmp      进度条（奶油色）；track.bmp 进度条底槽
   btn_install.bmp / btn_finish.bmp / btn_cancel.bmp   主按钮（奶油色圆角、深色字）/ 次按钮（描边圆角、浅色字）：文字画进图里——
-                 深色样式会把叠在上面的文字强制画成浅色，奶油色底上就看不见了（天眼实机截图）
+                 深色样式会把叠在上面的文字强制画成浅色，奶油色底上就看不见了（实机截图）
   check_on.bmp / check_off.bmp          复选框（奶油色勾 / 描边空框）"""
 from pathlib import Path
 from PIL import Image, ImageDraw

@@ -172,7 +172,7 @@ var
   UnlockTimer: LongWord;
 
 { 翻页不留残影：自画按钮是画在窗体上的图，Inno 换页内容和我们在 CurPageChanged 里换按钮显隐不是同一次重画，
-  中间窗体先画出「新页 + 旧按钮」那一帧（jhz 11-11 在天眼上看到「安装」按钮残留一下才消失）。
+  中间窗体先画出「新页 + 旧按钮」那一帧（11-11 实机看到「安装」按钮残留一下才消失）。
   所以点下一步时先停掉窗体重画，换完页、同步完按钮（CurPageChanged 末尾）再一次性整窗重画。
   点「完成」不锁（窗口直接关） }
 procedure UnlockRedraw;
@@ -240,7 +240,7 @@ begin
   BtnRight := N.Left + N.Width;
   BtnMid := N.Top + N.Height div 2 - ScaleY(10);   { 比原按钮略高：底边留出和示意图一样的空 }
   { 按钮放在自己的子窗口（面板）里，不直接画在窗体上：窗体上的图和页面容器（子窗口）有重叠，
-    藏图时窗体只重画自己、画不到子窗口盖住的那条，旧按钮的上沿就一直留着（天眼连帧测出的残影根因） }
+    藏图时窗体只重画自己、画不到子窗口盖住的那条，旧按钮的上沿就一直留着（实机连帧测出的残影根因） }
   BtnPanel := TPanel.Create(WizardForm);
   BtnPanel.Parent := WizardForm;
   BtnPanel.BevelOuter := bvNone;
@@ -394,7 +394,7 @@ var
   P: TWinControl;
   W, Y: Integer;
 begin
-  { 安装中：大标题 + 自己画的奶油色进度条 + 卖点轮播卡片（jhz 11-11：中间的宣传语轮播，几秒换一张、带页点）。
+  { 安装中：大标题 + 自己画的奶油色进度条 + 卖点轮播卡片（11-11 定：中间的宣传语轮播，几秒换一张、带页点）。
     轮播只是计时器换字，不挡安装；装得快时一闪而过也不影响进度 }
   P := WizardForm.InstallingPage;
   W := P.ClientWidth;
@@ -480,7 +480,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   { 装完自动翻到完成页不经过「下一步」：在装完这一步就停重画，完成页搭好（CurPageChanged）再一次性画出
-    （天眼连帧：不锁时完成页的字、复选框分两三帧陆续出来） }
+    （实机连帧：不锁时完成页的字、复选框分两三帧陆续出来） }
   if CurStep = ssPostInstall then LockRedraw;
 end;
 
@@ -498,7 +498,7 @@ begin
     SlideTimer := SetTimer(0, 0, SlideMs, CreateCallback(@OnSlideTimer));
   end else
     StopSlides;
-  { 新页内容 + 新按钮一起画出来。「准备安装」页只是去安装页路上的一站（天眼连帧：会先闪出空白页 + 旧按钮），
+  { 新页内容 + 新按钮一起画出来。「准备安装」页只是去安装页路上的一站（实机连帧：会先闪出空白页 + 旧按钮），
     不在这里放开；它真停住（要关占用文件的程序等）时由 LockRedraw 的兜底计时器放开 }
   if CurPageID <> wpPreparing then UnlockRedraw;
 end;
