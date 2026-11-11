@@ -144,7 +144,6 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
             long desiredLanguageCode = context.Device.System.State.DesiredLanguageCode;
             var process = context.Device.Processes.GetProcess(_pid);
             int supportedLanguages = (int)process.ApplicationControlProperties.SupportedLanguageFlag;
-            int firstSupported = BitOperations.TrailingZeroCount(supportedLanguages);
 
             // S2Arm: Switch 2 游戏不知道支持哪些语言（导出目录一律没有控制分区，导入时合成；或支持位为 0）→ 直接回宿主主语言（玩家显式指定的优先），不写死英语。
             //   0.2.3 起合成件只声明美式英语 / 位为 0 回美式英语（#401），所有 Switch 2 游戏在中文系统下都成了英文（#465，程序号 0400486024DEC000 原先跟系统语言显示）。
@@ -157,7 +156,7 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
                 return ResultCode.Success;
             }
 
-            if (firstSupported > (int)TitleLanguage.BrazilianPortuguese)
+            if (NoKnownLanguages(supportedLanguages))
             {
                 // 支持语言位为 0（旧版导入合成的 control.nacp 没写这一项，#401）：原样回系统语言（如 zh-Hans）时游戏判为无效语言、去读不存在的语言资源，一直黑屏。
                 // 退到美式英语，与出包合成件的缺省（只声明美式英语）同一口径，已导入的旧库不用重新导入
@@ -192,7 +191,13 @@ namespace Ryujinx.HLE.HOS.Services.Am.AppletOE.ApplicationProxyService.Applicati
 
         // S2Arm: Switch 2 游戏（程序号 04 开头）且支持哪些语言未知：支持位（0..15）全为 0，或控制数据是导入时合成的（pack/ns2_dump.py synth_nacp 把显示版本写成 "?"，真游戏不会是这个值）
         internal static bool Switch2LanguagesUnknown(ulong programId, int supportedLanguages, string displayVersion) =>
-            (programId >> 56) == 0x04 && ((supportedLanguages & 0xFFFF) == 0 || displayVersion == "?");
+            (programId >> 56) == 0x04 && (NoKnownLanguages(supportedLanguages) || displayVersion == "?");
+
+        // S2Arm: 支持位里一个已知语言（0 美式英语 … 15 巴西葡语、16 波兰语、17 泰语）都没有。原先用「最低位 > 巴西葡语」或低 16 位判，
+        //   只支持波兰语 / 泰语的款被当成没有语言（审计 P2-275）
+        private const int KnownLanguageMask = (1 << ((int)TitleLanguage.Thai + 1)) - 1;
+
+        internal static bool NoKnownLanguages(int supportedLanguages) => (supportedLanguages & KnownLanguageMask) == 0;
 
         // S2Arm: 支持语言位为 0 时回给游戏的语言码：缺省美式英语（#401）；玩家显式指定了系统语言就回它
         internal static long ZeroSupportedLanguageCode(long systemLanguageCode, bool explicitSystemLanguage) =>
