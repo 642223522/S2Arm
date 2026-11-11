@@ -19,7 +19,8 @@
 #include <string.h>
 
 struct gpu_write { uint64_t off, len, id; };   // GPU 写进镜像、还没回写到游戏内存的一段
-struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw; };   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
+struct shadow { const uint8_t *mem; uint64_t size; nvn_gpu_buf buf; uint64_t *synced, *sub; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw;
+    uint64_t seen_now, seen_map; uint8_t seen_ok; };   // 上次逐页核对时的全局写代号：代号没动 = 这之后游戏没写过任何被跟踪的页   // synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
@@ -92,6 +93,12 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
     if (!s) { pthread_mutex_unlock(&g_bmu); return 0; }
     size_t ps = nvn_dirty_page_size();
     uint64_t p = ((uintptr_t)addr - s->page0) / ps, q = ((uintptr_t)addr + len - 1 - s->page0) / ps, n = q - p + 1;
+    uint64_t now0 = nvn_dirty_now();
+    uint64_t map0 = nvn_dirty_mapping_generation();   // 跟踪的区间有增减 / 换底：代际变，快路径作废
+    if (s->seen_ok && s->seen_now == now0 && s->seen_map == map0 && !nvn_dirty_tracking_unreliable()) {   // 快路径：全局写代号没动，同步过的页一定还是干净的；只有从没同步过的页要走下面
+        int all = 1; for (uint64_t i = p; i <= q; i++) if (!s->synced[i]) { all = 0; break; }
+        if (all) { if (buf) *buf = s->buf; if (off) *off = addr - (uint64_t)(uintptr_t)mem; pthread_mutex_unlock(&g_bmu); return 1; }
+    }
     uint64_t stack[256], *gens = n <= 256 ? stack : malloc((size_t)n * sizeof *gens);
     long got = gens ? nvn_dirty_page_gens(nvn_dirty_span((const void *)(uintptr_t)addr, (size_t)len), (const void *)(uintptr_t)addr, (size_t)len, gens, (size_t)n) : -1;
     int tracked = got == (long)n;   // 没被写跟踪的池：每次使用都整段同步
@@ -111,6 +118,7 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
         i = j + 1;
     }
     if (gens != stack) free(gens);
+    s->seen_ok = (uint8_t)tracked; s->seen_now = now0; s->seen_map = map0;   // 没被写跟踪的池不走快路径（每次使用都整段同步）
     if (buf) *buf = s->buf;
     if (off) *off = addr - (uint64_t)(uintptr_t)mem;
     pthread_mutex_unlock(&g_bmu);

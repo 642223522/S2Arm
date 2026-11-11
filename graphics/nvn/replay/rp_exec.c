@@ -53,6 +53,7 @@ static struct sub *g_sub;      // 当前段挂着的完成后副作用
 static nvn_gpu_cmd g_cmd;      // 当前段（NULL = 后端没给出段：本次提交只走状态，不编码）
 static nvn_gpu_cmd g_pre;      // 前置段：本次提交里资源同步用的传输（池镜像、贴图上传），先于 g_cmd 提交。用到才开
 static uint64_t g_sub_serial;  // 第几次提交（资源按它判断「本次提交里已经用过」）
+uint64_t rp_sub_serial(void) { return g_sub_serial; }
 static uint64_t g_fence;       // 最近一次提交的栅栏值
 static int g_ret_n;            // OP_CALL 嵌套深度
 
