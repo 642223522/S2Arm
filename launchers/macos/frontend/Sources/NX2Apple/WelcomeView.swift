@@ -23,11 +23,11 @@ struct WelcomeView: View {
         var isOK: Bool { if case .ok = state { return true }; return false }
     }
 
-    private static let appleTools: Set<String> = ["Xcode", "Metal 编译组件", "iOS 平台组件", "Apple ID 团队"]
+    private static let appleTools: Set<String> = ["xcode", "metal", "ios_platform", "apple_team"]   // 检查项稳定 id（剃刀 M11）
 
     private var language: String { loc.lang == .zh ? "zh-Hans" : "en" }
     private func w(_ id: String) -> String { BackendText.launcherText("welcome." + id, language: language) }
-    private func check(_ name: String) -> ToolCheck? { model.checks.first { $0.name == name } }
+    private func check(_ id: String) -> ToolCheck? { model.checks.first { $0.id == id } }
 
     private var macReady: Bool { model.environmentState == .ready || model.environmentState == .readyMac }
     private var keysReady: Bool { model.keysReady == true && !model.keysRejected }
@@ -37,16 +37,16 @@ struct WelcomeView: View {
     private func isDone(_ s: Step) -> Bool {
         switch s { case .mac: return macReady; case .games: return gamesChosen; case .keys: return keysSettled }
     }
-    private var xcodeNotInstalled: Bool { check("Xcode")?.action == "appStoreXcode" && check("Xcode")?.ok == false }
+    private var xcodeNotInstalled: Bool { check("xcode")?.action == "appStoreXcode" && check("xcode")?.ok == false }
 
     /// Xcode 还没走完首次设置时，后端把「打开 Xcode」挂在 Metal 这一项上；对玩家这是 Xcode 的事。
     private var tools: [Tool] {
-        let xcode = check("Xcode"), metal = check("Metal 编译组件"), ios = check("iOS 平台组件")
+        let xcode = check("xcode"), metal = check("metal"), ios = check("ios_platform")
         let firstLaunch = metal?.action == "openXcode"
         let hasXcode = xcode?.ok == true || firstLaunch
         let xcodeState: Tool.State = firstLaunch ? .needs(metal!) : (xcode.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         let metalState: Tool.State = !hasXcode || firstLaunch ? .waiting : (metal.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
-        let appleState: Tool.State = !hasXcode || firstLaunch ? .waiting : (check("Apple ID 团队").map { $0.ok ? .ok : .needs($0) } ?? .waiting)
+        let appleState: Tool.State = !hasXcode || firstLaunch ? .waiting : (check("apple_team").map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         let iosState: Tool.State = !hasXcode || firstLaunch ? .waiting : (ios.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         return [
             Tool(id: "xcode", symbol: "hammer", name: w("tool.xcode.name"), what: w(firstLaunch ? "tool.xcode.open" : "tool.xcode.what"),
@@ -59,7 +59,7 @@ struct WelcomeView: View {
 
     /// 苹果工具以外还没过的项（系统版本、游戏库放在云盘等）：不常见，照后端原话列出，不藏。
     private var otherFailing: [ToolCheck] {
-        model.checks.filter { !$0.ok && !Self.appleTools.contains($0.name) && ($0.required(for: "prepare") || $0.required(for: "ipa")) }
+        model.checks.filter { !$0.ok && !Self.appleTools.contains($0.id) && ($0.required(for: "prepare") || $0.required(for: "ipa")) }
     }
 
     /// 当前步骤里唯一配主按钮的那一项：第一个要动手的、且不是「只有 iPhone 才要」的。

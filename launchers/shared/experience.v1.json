@@ -989,7 +989,6 @@
       {"id": "welcome.sheet.result.copy", "zh-Hans": "复制详情", "en": "Copy details"},
       {"id": "welcome.sheet.result.unprocessed", "zh-Hans": "尚未处理", "en": "Not processed"},
       {"id": "welcome.sheet.result.unreadable", "zh-Hans": "无法读取游戏内容", "en": "Could not read game content"},
-      {"id": "welcome.sheet.result.incomplete", "zh-Hans": "游戏文件不完整", "en": "Incomplete game file"},
       {"id": "welcome.sheet.cancel", "zh-Hans": "取消", "en": "Cancel"},
       {"id": "welcome.oneclick", "zh-Hans": "一键出包", "en": "Build now"},
       {"id": "welcome.step.keys.notNeeded", "zh-Hans": "不需要密钥", "en": "No keys needed"},
