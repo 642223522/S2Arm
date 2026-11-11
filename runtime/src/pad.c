@@ -230,3 +230,30 @@ void s2a_pad_stick(float x, float y, int32_t axes[2]) {
     axes[0] = (int32_t)lroundf(x * scale * 32767);
     axes[1] = (int32_t)lroundf(y * scale * 32767);
 }
+// 本地多手柄槽位计划（Mac macos/front_mac.m 与 iOS ios/controller.m 共用；纯逻辑，不持有对象：单测直接喂身份指针，不碰 GameController）。
+//   prev 是上一轮的槽位身份（max 项，NULL = 空槽），live 是本次在线的手柄（顺序 = 连接顺序）。
+//   slot_of[j] 写第 j 只该占的槽（-1 = 超过 max 只，不参与）；返回占用到的最高槽位 + 1（至少 1：槽 0 总留给键盘 / 鼠标）。
+//   断开的手柄下一轮不在 live 里 → 槽空出来；重连时按「最小空槽」占回去（中间没插别的就回到原槽）。
+int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of) {
+    for (int j = 0; j < count; j++) {
+        slot_of[j] = -1;
+        for (int i = 0; i < max; i++) if (prev[i] && prev[i] == live[j]) { slot_of[j] = i; break; }   // 还在原槽
+    }
+    for (int j = 0; j < count; j++) {
+        if (slot_of[j] >= 0) continue;
+        for (int i = 0; i < max; i++) {
+            int taken = 0;
+            for (int k = 0; k < count; k++) if (slot_of[k] == i) { taken = 1; break; }   // 本轮已被别人占
+            if (taken) continue;
+            if (prev[i]) {
+                int still_alive = 0;
+                for (int k = 0; k < count; k++) if (live[k] == prev[i]) { still_alive = 1; break; }
+                if (still_alive) continue;   // 原占用者还在，别抢它的槽
+            }
+            slot_of[j] = i; break;
+        }
+    }
+    int top = 1;
+    for (int j = 0; j < count; j++) if (slot_of[j] + 1 > top) top = slot_of[j] + 1;
+    return top;
+}
