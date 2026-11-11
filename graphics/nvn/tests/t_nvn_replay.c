@@ -633,13 +633,14 @@ static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口
     CHECK(nvn_be_presented_time(2) == 5.0);                         // 后端没给上屏时刻：按交给呈现引擎的时刻记
     int crop[4] = {0, 0, 320, 300};                                 // 16:15 的裁剪放进 1280x720：高贴满，宽 768，左右各 256 黑边
     CHECK(nvn_be_present(&t, 0, crop) == 3 && g_presents == 2);
-    CHECK(g_last_pd.flip_y == 1 && g_last_pd.crop[1] == 60);          // 原点在左下：呈现时上下翻，裁剪的 y 从底边换成从顶边数（360 − 0 − 300）
+    CHECK(g_last_pd.flip_y == 1 && g_last_pd.crop[1] == 0);           // 原点在左下（NVN 默认）：呈现时上下翻；裁剪按存储行号原样给
     CHECK(g_last_pd.crop[0] == 0 && g_last_pd.crop[2] == 320 && g_last_pd.crop[3] == 300 && g_last_pd.dst[0] == 256 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 768 && g_last_pd.dst[3] == 720);
+    nvn_be_set_origin_lower_left(0); nvn_be_present(&t, 0, NULL); CHECK(g_last_pd.flip_y == 0); nvn_be_set_origin_lower_left(1);   // 原点在左上：不翻
     g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_OUTDATED;              // 交换链过期：重建一次再取
-    CHECK(nvn_be_present(&t, 0, NULL) == 4 && g_rebuilds == 1 && g_presents == 3 && nvn_be_presented_time(4) == 5.0);
+    CHECK(nvn_be_present(&t, 0, NULL) == 5 && g_rebuilds == 1 && g_presents == 4 && nvn_be_presented_time(5) == 5.0);
     g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_TIMEOUT;               // 没有空闲图：丢这一帧，不算故障
-    CHECK(nvn_be_present(&t, 0, NULL) == 5 && g_presents == 3 && nvn_be_presented_time(5) == -1 && nvn_unimpl_count("present", "acquire_failed") == 0);
-    uint64_t sh = 0, dp = 0; rp_present_stats(&sh, &dp); CHECK(sh == 3 && dp == 2);
+    CHECK(nvn_be_present(&t, 0, NULL) == 6 && g_presents == 4 && nvn_be_presented_time(6) == -1 && nvn_unimpl_count("present", "acquire_failed") == 0);
+    uint64_t sh = 0, dp = 0; rp_present_stats(&sh, &dp); CHECK(sh == 4 && dp == 2);
     rp_present_set_surface(NULL, 0);
     CHECK(nvn_be_has_window() == 0);
     nvn_be_tex_release(&t); pass_fresh(); rp_present_reset();

@@ -58,11 +58,10 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     }
     nvn_gpu_present_desc d; memset(&d, 0, sizeof d);
     d.src = v; d.filter = 1;
-    // 窗口原点在左下（NVN 默认）时窗口图是自下而上存的：呈现时翻过来；游戏给的裁剪也是自下而上数的
+    // 窗口原点在左下（NVN 默认）时窗口图是自下而上存的：呈现时翻过来。裁剪按存储的行号给，不用换算
     d.flip_y = (uint8_t)(rp_origin_lower_left() != 0);
     int c[4]; int fit = pf_crop_fit(crop, t->d.width, t->d.height, c);
     if (fit >= 0) memcpy(d.crop, c, sizeof c);   // 非法裁剪：按整张显示
-    if (d.flip_y && d.crop[3] > 0) d.crop[1] = (int)t->d.height - d.crop[1] - d.crop[3];   // 裁剪的 y 从底边数起 → 换成从顶边数
     double cw = d.crop[2] > 0 ? d.crop[2] : t->d.width, ch = d.crop[3] > 0 ? d.crop[3] : t->d.height;
     pf_vp vp = pf_viewport(dr.w, dr.h, cw, ch);
     d.dst[0] = (int32_t)(vp.x + 0.5); d.dst[1] = (int32_t)(vp.y + 0.5); d.dst[2] = (int32_t)(vp.w + 0.5); d.dst[3] = (int32_t)(vp.h + 0.5);

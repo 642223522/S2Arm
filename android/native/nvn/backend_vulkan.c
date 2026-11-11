@@ -2537,6 +2537,9 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     } else {
         vp = (VkViewport){0, 0, (float)c->pass_w, (float)c->pass_h, 0.0f, 1.0f};
     }
+    // NVN 窗口原点在左上时，裁剪空间 +y 落在图的上方（行号小的一边）；Vulkan 的 +y 朝下（行号大的一边）：用负高度的视口翻过来。
+    // 原点在左下（NVN 默认）时两边的行号方向一致，不翻；那种图是自下而上存的，由呈现时翻（present_desc.flip_y）。
+    if (c->has_dyn && !c->dyn.origin_ll) { vp.y += vp.height; vp.height = -vp.height; }
     VkRect2D sc = {{0, 0}, {c->pass_w, c->pass_h}};
     if (c->has_dyn && c->dyn.has_sc)
         sc = (VkRect2D){{c->dyn.sc[0], c->dyn.sc[1]}, {(uint32_t)c->dyn.sc[2], (uint32_t)c->dyn.sc[3]}};

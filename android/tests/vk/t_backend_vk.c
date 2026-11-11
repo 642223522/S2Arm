@@ -32,6 +32,7 @@ VkResult nvn_plat_vk_surface_create(VkInstance instance, void *native, VkSurface
 }
 int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native; *w = 320; *h = 180; return 1; }
 int nvn_plat_flag(const char *name, int dflt) { (void)name; return dflt; }
+static int g_tri_origin_ul;   // 1 = 按 NVN 窗口原点在左上画（视口翻转）：期望上下对调。缺省 0 = 原点在左下（Vulkan 的自然方向）
 
 // C66 only: model a strict driver enforcing maxSets=64; all other calls
 // reach the real lavapipe entry. This is injected behaviour, not a claim about llvmpipe.
@@ -617,7 +618,7 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
     nvn_gpu_pass_begin(c, &pass);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1;
     dyn.vp[0][0] = 0; dyn.vp[0][1] = 0; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][4] = 0; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[0] = 0; dyn.sc[1] = 0; dyn.sc[2] = 64; dyn.sc[3] = 64;
@@ -650,6 +651,7 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
             float u = (x + 0.5f) / 64.0f, v = (y + 0.5f) / 64.0f;
             int tx = (int)(u * 2.0f); if (tx > 1) tx = 1;
             int ty = (int)(v * 2.0f); if (ty > 1) ty = 1;
+            if (g_tri_origin_ul) ty = 1 - ty;   // 原点在左上：同一个裁剪空间 y 落到相反的行
             const uint8_t *src = g_tri_expect ? g_tri_expect : texels + (ty * 2 + tx) * tbpp;
             // 期望：先取纹素（没有 alpha 的格式按 want_a），再按生效的通道映射手算（视图设了用视图的，否则用存储的）
             uint8_t px[4] = {src[0], src[1], src[2], (uint8_t)(tbpp == 4 ? src[3] : want_a)}, mapped[4], sw[4] = {2, 3, 4, 5};
@@ -764,6 +766,15 @@ static void c71_present(void) {
     r = nvn_gpu_surface_attach((void *)1, &sf, &e);          // 撤掉以后可以再接
     CHECK(OK(r) && nvn_gpu_surface_gen(sf) == 1, "C71 再 attach：%d %s", r.code, e.why);
     // 不 detach 直接 close：close 负责收掉还接着的面（由 main 里紧跟的 close 验）
+}
+
+// C73：NVN 窗口原点在左上时视口翻转。同一张 2x2 贴图、同一个三角形，读回的图应当上下对调（期望在 tri_impl 里按行号手算）。
+static void c73_origin_upper_left(const char *dir) {
+    static const uint8_t texels[16] = {255, 0, 0, 255,   0, 255, 0, 255,
+                                       0, 0, 255, 255,   255, 255, 255, 255};
+    g_tri_origin_ul = 1;
+    tri_impl(dir, NVN_FORMAT_RGBA8, texels, 4, 8, 255);
+    g_tri_origin_ul = 0;
 }
 
 // C72：块压缩贴图上传（一行是一排块）。BC1 一个 4x4 块：两个端点色都是纯红（565 的 0xF800）、索引全 0 → 解出来每个纹素都是不透明纯红。
@@ -961,7 +972,7 @@ static void t18_combined_sampler(const char *dir) {
     nvn_gpu_pass_begin(c, &pass);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1;
     dyn.vp[0][0] = 0; dyn.vp[0][1] = 0; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][4] = 0; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
@@ -1229,7 +1240,7 @@ static void t31_vertex_formats(const char *dir) {
         nvn_gpu_pass_begin(c, &pass);
         nvn_gpu_set_pipe(c, pipe);
         nvn_gpu_dyn dyn;
-        memset(&dyn, 0, sizeof dyn);
+        memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
         dyn.nvp = 1;
         dyn.vp[0][0] = 0; dyn.vp[0][1] = 0; dyn.vp[0][2] = 8; dyn.vp[0][3] = 8; dyn.vp[0][5] = 1;
         dyn.has_sc = 1; dyn.sc[2] = 8; dyn.sc[3] = 8;
@@ -1336,7 +1347,7 @@ static void fs_draw_tex_frag(nvn_gpu_cmd c, nvn_gpu_view view, nvn_gpu_samp samp
     nvn_gpu_buf vb = make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1;
     dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
@@ -1374,7 +1385,7 @@ static void fs_draw_solid(nvn_gpu_cmd c, const char *dir, const char *frag, cons
     nvn_gpu_buf vb = make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1;
     dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1;
@@ -1567,7 +1578,7 @@ static void run_quad(const char *dir, int inst, const void *vb, size_t vbytes,
     nvn_gpu_pass_begin(c, &p);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     nvn_gpu_set_dyn(c, &dyn);
@@ -1745,7 +1756,7 @@ static void blend_draw(nvn_gpu_pipe pipe, const float clear[4], const float vb[4
     nvn_gpu_pass_begin(c, &p);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     if (bcolor) memcpy(dyn.blend_color, bcolor, sizeof dyn.blend_color);
@@ -1876,7 +1887,7 @@ static int prim_draw(const char *dir, uint32_t prim, uint32_t count, const float
     nvn_gpu_pass_begin(c, &p);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     
@@ -1959,7 +1970,7 @@ static void blend2_draw(const char *dir, const blend_st b[2], uint8_t *out0, uin
     nvn_gpu_pass_begin(c, &p);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     
@@ -2105,7 +2116,7 @@ static int restart_draw(const char *dir, int on, uint8_t *out, uint64_t sig) {
     nvn_gpu_pass_begin(c, &p);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     nvn_gpu_set_dyn(c, &dyn);
@@ -2201,7 +2212,7 @@ static void c51_array(const char *dir) {
     pass.color[0].clear.f[3] = 1; pass.w = 64; pass.h = 64; pass.layers = 1;
     nvn_gpu_pass_begin(c, &pass);
     nvn_gpu_set_pipe(c, pipe);
-    nvn_gpu_dyn dyn; memset(&dyn, 0, sizeof dyn);
+    nvn_gpu_dyn dyn; memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     nvn_gpu_set_dyn(c, &dyn);
@@ -2279,7 +2290,7 @@ static void sample_tex(const char *dir, const char *frag, uint32_t target, uint3
     pass.color[0].clear.f[3] = 1; pass.w = 64; pass.h = 64; pass.layers = 1;
     nvn_gpu_pass_begin(c, &pass);
     nvn_gpu_set_pipe(c, pipe);
-    nvn_gpu_dyn dyn; memset(&dyn, 0, sizeof dyn);
+    nvn_gpu_dyn dyn; memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1; dyn.vp[0][2] = 64; dyn.vp[0][3] = 64; dyn.vp[0][5] = 1;
     dyn.has_sc = 1; dyn.sc[2] = 64; dyn.sc[3] = 64;
     nvn_gpu_set_dyn(c, &dyn);
@@ -2453,7 +2464,7 @@ static void fill_gpipe_desc(nvn_gpu_pipe_desc *pd, nvn_gpu_shader vs, nvn_gpu_sh
 }
 
 static void full_dyn(nvn_gpu_dyn *d) {
-    memset(d, 0, sizeof *d);
+    memset(d, 0, sizeof *d); d->origin_ll = 1;   /* 原点在左下 = Vulkan 的自然方向 */
     d->nvp = 1; d->vp[0][2] = 64; d->vp[0][3] = 64; d->vp[0][5] = 1;
     d->has_sc = 1; d->sc[2] = 64; d->sc[3] = 64;
 }
@@ -3241,7 +3252,7 @@ static void c67_viewport_yflip(const char *dir) {
     nvn_gpu_pass_begin(c, &p);
     nvn_gpu_set_pipe(c, pipe);
     nvn_gpu_dyn dyn;
-    memset(&dyn, 0, sizeof dyn);
+    memset(&dyn, 0, sizeof dyn); dyn.origin_ll = (uint8_t)!g_tri_origin_ul;   /* 原点在左下 = Vulkan 的自然方向 */
     dyn.nvp = 1;
     dyn.vp[0][0] = 0; dyn.vp[0][1] = 0; dyn.vp[0][2] = 64; dyn.vp[0][3] = 32; dyn.vp[0][4] = 0; dyn.vp[0][5] = 1;
     dyn.origin_ll = 1;
@@ -3411,6 +3422,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     c71_present();
     { nvn_gpu_err e71; CHECK(OK(nvn_gpu_close(5000000000ull, &e71)), "C71 close（面还接着）：%d %s", e71.rc.code, e71.why); }
+    if (!open_backend()) return 1;
+    c73_origin_upper_left(argv[1]);
+    { nvn_gpu_err e73; CHECK(OK(nvn_gpu_close(5000000000ull, &e73)), "C73 close：%d %s", e73.rc.code, e73.why); }
     if (!open_backend()) return 1;
     c72_bc1_upload(argv[1]);
     { nvn_gpu_err e72; CHECK(OK(nvn_gpu_close(5000000000ull, &e72)), "C72 close：%d %s", e72.rc.code, e72.why); }
