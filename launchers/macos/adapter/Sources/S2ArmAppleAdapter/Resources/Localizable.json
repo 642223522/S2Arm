@@ -7026,5 +7026,45 @@
  {
   "source": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
   "en": "Drive format not supported: this drive doesn't support the file operations exporting needs (common on exFAT / FAT external drives)."
+ },
+ {
+  "source": "批次记录（数据目录下的 batch.json）写不进：检查数据目录所在磁盘的空间与权限，处理后在批量出包页点「继续」；已出好的包都在。",
+  "en": "The batch record (batch.json in the data folder) couldn't be written: check free space and permissions on that disk, then click \"Continue\" on the batch export page. Finished games are kept."
+ },
+ {
+  "source": "批次记录没写成（batch.json：{0}）：这一批停在这里，已出好的不受影响。",
+  "en": "The batch record wasn't saved (batch.json: {0}). The batch stopped here; finished games are kept."
+ },
+ {
+  "source": "批次文件不见了或读不出（batch.json）：这一批停在这里，已出好的不受影响。",
+  "en": "The batch file (batch.json) is missing or unreadable. The batch stopped here; finished games are kept."
+ },
+ {
+  "source": "已经有一个出包在进行：等它出完或取消后再出。",
+  "en": "Another export is already running. Wait for it to finish, or cancel it, then try again."
+ },
+ {
+  "source": "没有进行中的批次：先在批量出包页建好这一批。",
+  "en": "There's no batch in progress. Set one up on the batch export page first."
+ },
+ {
+  "source": "磁盘空间不足，这一批暂停了：释放空间后点「重试」接着出，已出好的不受影响。",
+  "en": "Not enough disk space, so the batch is paused. Free up space, then click \"Retry\" to continue. Finished games are kept."
+ },
+ {
+  "source": "这一步的出包作业没有给出结局就退出了（详见这一步的日志）。",
+  "en": "This export step exited without reporting a result (see this step's log)."
+ },
+ {
+  "source": "出 {0}（{1}）",
+  "en": "Exporting {0} ({1})"
+ },
+ {
+  "source": "出包计划不完整：plan.source 只认 inline / batch。",
+  "en": "The export plan is incomplete: plan.source must be inline or batch."
+ },
+ {
+  "source": "启动器退出了，这一批停在第 {0} 款：重开启动器后点「继续剩下的」，只出还没出的。",
+  "en": "The launcher was closed, so the batch stopped at game {0}. Reopen the launcher and click \"Continue the rest\" to export only what's left."
  }
 ]
