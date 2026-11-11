@@ -4,6 +4,7 @@
 #   ① GATE_LEDGER=<文件>：每步一行 JSON；foo 那行 rc=0、host=本机、key 是十六进制缓存键、hit=0、wait 是非负整数、role=预跑（不给 GATE_ROLE；GATE_NO_LOADQ=1 也不推断成列车）、rev=本仓 HEAD 前 12 位；red 那行 rc=1
 #   ② 再跑一遍：foo 那行 hit=1（缓存命中也记）
 #   ③ GATE_ROLE=热修 → role=热修
+#   ⑥ 每份门禁末尾一行整份汇总 kind=run：结论（这份有 red 单测 = 红）、跑了几步 = 应跑几步、墙钟非负
 #   ④ 不给 GATE_LEDGER：仓库在临时目录（单测假仓库）→ 缺省台账文件不生成；⑤ GATE_LEDGER=- → 不写
 # 反证：S2A_GATE_SH=<旧版 gate.sh> 跑本单测应红（旧版没有台账）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); bad=0; GS=${S2A_GATE_SH:-$H/tools/gate.sh}
@@ -20,7 +21,7 @@ git add -A; git commit -qm 1; REV=$(git rev-parse --short=12 HEAD)
 # 取某步那行的若干字段（| 分隔）；没有该行 = 空
 fld() { python3 -c 'import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()] if __import__("os").path.exists(sys.argv[1]) else []
-r = [x for x in rows if sys.argv[2] in x["step"]][-1:] 
+r = [x for x in rows if sys.argv[2] in x.get("step", "")][-1:] 
 print("|".join(str(r[0][k]) for k in sys.argv[3:]) if r else "")' "$@"; }
 L1=$T/l.jsonl
 GATE_LEDGER=$L1 bash tools/gate.sh > $T/o1 2>&1
@@ -28,6 +29,10 @@ f=$(fld $L1 foo_test rc host hit role rev); k=$(fld $L1 foo_test key); w=$(fld $
 ck "① foo 那行 rc=0、本机、hit=0、role=预跑、rev=HEAD（真结果：${f}）" '[ "$f" = "0|本机|0|预跑|$REV" ]'
 ck "① foo 有缓存键（十六进制）、wait 非负整数（键=${k} wait=${w}）" '[[ $k =~ ^[0-9a-f]{16,}$ ]] && [[ $w =~ ^[0-9]+$ ]]'
 ck "① red 那行 rc=1（真结果：$(fld $L1 red_test rc)）" '[ "$(fld $L1 red_test rc)" = 1 ]'
+RN=$(python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]; k = [x for x in r if x.get("kind") == "run"]
+print("%d|%s|%s" % (len(k), k[-1]["verdict"], k[-1]["steps"] == k[-1]["ran"] and k[-1]["wall"] >= 0) if k else "0")' $L1)
+ck "⑥ 整份汇总一行：1 行、结论 红、跑了 = 应跑、墙钟非负（真结果：${RN}）" '[ "$RN" = "1|红|True" ]'
 GATE_LEDGER=$L1 bash tools/gate.sh > $T/o2 2>&1
 ck "② 再跑：foo 那行 hit=1（真结果：$(fld $L1 foo_test hit)）" '[ "$(fld $L1 foo_test hit)" = 1 ]'
 GATE_LEDGER=$L1 GATE_ROLE=热修 bash tools/gate.sh > $T/o3 2>&1
