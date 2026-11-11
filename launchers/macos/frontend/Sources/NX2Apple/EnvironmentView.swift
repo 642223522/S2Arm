@@ -48,7 +48,7 @@ struct EnvironmentView: View {
                     // 存放位置（社区贡献者补丁 #10）：游戏库、iPhone 包、磁盘空间集中在这一处；单款游戏放在哪看出包页的「存放位置」
                     CardGroup(s("settings.locations")) {
                         let library = model.provider.client.environment.library
-                        CardRow(s("settings.locations.library"), detail: library + "\n" + loc.t("s2arm.env.library.detail")) {
+                        CardRow(s("settings.locations.library"), detail: loc.t("s2arm.env.library.detail"), detail2: library) {   // 路径放 detail2：以 / 开头就画成可点的路径链接（PathLink）
                             HStack(spacing: 8) {
                                 Button(s("settings.open")) { NSWorkspace.shared.open(URL(fileURLWithPath: library)) }
                                     .buttonStyle(LauncherSecondaryButtonStyle()).disabled(library.isEmpty)
@@ -59,7 +59,7 @@ struct EnvironmentView: View {
                         CardDivider()
                         let ipa = (library as NSString).appendingPathComponent("S2Arm.ipa")   // 出 iPhone 包时组在游戏库根
                         let ipaReady = !library.isEmpty && FileManager.default.fileExists(atPath: ipa)
-                        CardRow(s("settings.locations.ipa"), detail: ipaReady ? ipa : s("settings.locations.ipa_none")) {
+                        CardRow(s("settings.locations.ipa"), detail: ipaReady ? "" : s("settings.locations.ipa_none"), detail2: ipaReady ? ipa : "") {
                             if ipaReady { Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }.buttonStyle(LauncherSecondaryButtonStyle()) }
                         }
                         CardDivider()

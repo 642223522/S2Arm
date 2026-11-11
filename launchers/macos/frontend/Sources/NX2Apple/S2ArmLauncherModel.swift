@@ -1152,17 +1152,12 @@ public final class S2ArmLauncherModel: ObservableObject {
         [.keys, .importGames, .install, .installRemove, .installRestore, .delete, .diagnostics].contains(s.kind) || (showsWelcome && Self.repairKinds.contains(s.kind))
     }
 
-    /// 欢迎页的「一键出包」：出 iPhone / iPad。连着手机、环境齐就直接开始；否则进出包页，那里说清缺什么、提醒插手机、可以选机型（不会悄悄换目标）。
+    /// 欢迎页的「一键出包」：进和游戏库同一张出包页（维护者 11-11：首次出包缺设置项、选不了 iPhone / Mac），
+    ///   平台、存放位置、目标设备、安装方式都在那页由玩家定；同 Windows 欢迎页（StartOneClick → 出包页）。
     func oneClickExport() {
         guard let game = welcomeGame else { return }
-        Task {
-            await refreshTargets()
-            if connectedDevices.isEmpty || export(game, platforms: [.ios]) != nil {
-                if !exportTargets.contains(.ios) { toggleExport(.ios) }   // 出包页缺省不勾（维护者 11-02），一键出包就是出 iPhone，替玩家勾上
-                exportFor = game.id
-                welcomeGameID = nil
-            }
-        }
+        exportFor = game.id
+        welcomeGameID = nil
     }
 
     func clearInlineFailure() { inlineFailure = nil }

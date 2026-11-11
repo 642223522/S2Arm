@@ -137,6 +137,9 @@ public struct LibraryView: View {
                 if layout.isCoverFlow, let selected { CoverFlowBackdrop(game: selected.game) } else { ShellPalette.background.ignoresSafeArea() }
                 if games.isEmpty {
                     EmptyLibraryView()
+                        .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
+                            LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
+                        }
                         .overlay(alignment: .topTrailing) {
                             if column == nil {
                                 HStack(spacing: 10) {

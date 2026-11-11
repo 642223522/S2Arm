@@ -276,13 +276,12 @@ public sealed partial class EnvironmentWindow : Window
         var libraryButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (connectedFolder is { } openFolder) libraryButtons.Children.Add(Action("settings.open", () => OpenFolder(openFolder)));
         libraryButtons.Children.Add(Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy));
-        locations.Children.Add(SettingRow(T("settings.locations.library"),
-            (connectedFolder ?? libraryFolder) + "\n" + T("environment.library.detail"), libraryButtons));
+        locations.Children.Add(SettingRow(T("settings.locations.library"), T("environment.library.detail"), libraryButtons, connectedFolder ?? libraryFolder));
         // 出 iPhone 包成功后组在游戏库根（pack/jobs/ipa.py refresh_library_ipa）
         var ipa = connectedFolder is null ? null : Path.Combine(connectedFolder, "S2Arm.ipa");
         var ipaReady = ipa is not null && File.Exists(ipa);
-        locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? ipa : T("settings.locations.ipa_none"),
-            ipaReady ? Action("progress.reveal_ipa", () => Reveal(ipa!)) : null));
+        locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? null : T("settings.locations.ipa_none"),
+            ipaReady ? Action("progress.reveal_ipa", () => Reveal(ipa!)) : null, ipaReady ? ipa : null));
         locations.Children.Add(SettingRow(T("settings.locations.space"), null,
             Action("storage.open", OpenStorage, !libraryBusy && libraryId is not null)));
         body.Children.Add(Card(locations));
@@ -381,11 +380,12 @@ public sealed partial class EnvironmentWindow : Window
     }
 
     /// <summary>设置页的一行：标题、说明（可空）、右侧控件（可空）</summary>
-    private Grid SettingRow(string title, string? detail, Control? right)
+    private Grid SettingRow(string title, string? detail, Control? right, string? path = null)
     {
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
         var left = new StackPanel { Spacing = 4 };
         left.Children.Add(Label(title, 15));
+        if (!string.IsNullOrEmpty(path)) left.Children.Add(PathLink(path));   // 路径：存在就做成可点的链接（LibraryPage.cs PathLink）
         if (!string.IsNullOrEmpty(detail)) left.Children.Add(Muted(detail));
         row.Children.Add(left);
         if (right is not null) { right.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(right, 1); row.Children.Add(right); }
