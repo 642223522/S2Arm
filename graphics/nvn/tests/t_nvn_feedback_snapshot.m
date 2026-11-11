@@ -146,6 +146,38 @@ static void automatic_cases(NvProg *reader, prog_t *reader_p, NvProg *self, prog
     finish(); pixels("default self-write dirty=1",a,160,160,160);
 }
 
+static void storage_alias_cases(prog_t *p, tex_t *a, tex_t *b, tex_t *out,
+                                pool_t *pool, const p_draw *triangle, int all) {
+    // Run in the process-selected policy; do not change cached production flags.
+    tex_t alias_a,alias_b;
+    make_texture(&alias_a,pool,0); make_texture(&alias_b,pool,65536);
+    REQUIRE(alias_a.serial!=a->serial && alias_b.serial!=b->serial);
+    REQUIRE(tex_mtl(&alias_a)==tex_mtl(a) && tex_mtl(&alias_b)==tex_mtl(b));
+    nvn_be_reg_tex(4,&alias_a,NULL); nvn_be_reg_tex(5,&alias_b,NULL);
+    nvn_be_sub_begin(); state_reset(); S.prog=p; S.tex[1][0]=4; S.tex[1][1]=5;
+    clear(a,0,0,0); clear(b,0,0,0); clear(out,0,0,0);
+    uint64_t copies_before=g_fb_count, hits_before=g_fb_hits;
+    targets(a,b,out); pending_clear_draw(triangle); finish();
+    pixels("different serials sharing attachment storage see pending clears",out,48,176,80);
+    CHECK(g_fb_hits-hits_before==2,"detect both aliased attachments (got %llu)",
+        (unsigned long long)(g_fb_hits-hits_before));
+    CHECK(g_fb_count-copies_before==(all?2:0),"storage aliases use policy's snapshot count (expected %d, got %llu)",
+        all?2:0,(unsigned long long)(g_fb_count-copies_before));
+
+    // Equal dimensions and format do not make disjoint pool ranges alias.
+    tex_t independent_a,independent_b;
+    make_texture(&independent_a,pool,262144); make_texture(&independent_b,pool,327680);
+    nvn_be_reg_tex(6,&independent_a,NULL); nvn_be_reg_tex(7,&independent_b,NULL);
+    nvn_be_sub_begin(); state_reset(); S.prog=p; S.tex[1][0]=6; S.tex[1][1]=7;
+    clear(&independent_a,32,64,96); clear(&independent_b,160,192,224);
+    clear(a,0,0,0); clear(b,0,0,0); clear(out,0,0,0);
+    copies_before=g_fb_count;
+    targets(a,b,out); pending_clear_draw(triangle); finish();
+    pixels("same-shape disjoint storage remains independent",out,32,160,64);
+    CHECK(g_fb_count==copies_before,"disjoint storage takes no feedback snapshots (got %llu)",
+        (unsigned long long)(g_fb_count-copies_before));
+}
+
 // #387: a draw that samples its own pass's depth attachment (NVN: legal, reads memory; Metal: undefined in the same pass). Expected by the rule, not by
 // running the implementation: the argument the production encode_args writes for that slot is a different resource from the attached depth texture,
 // one more copy is made, and the submission completes without a Metal error. Against the source before the fix the argument is the attachment itself.
@@ -252,6 +284,7 @@ int main(int argc, char **argv) {
         targets(&a,&b,&first); pending_clear_draw(&triangle); finish();
         pixels("pending ClearColor lands before feedback snapshot",&first,48,176,80);
         }
+        storage_alias_cases(&p,&a,&b,&first,pool,&triangle,all);
         unlink(map); unlink(user);
     }
     printf("%s t_nvn_feedback_snapshot %s: %u checks, %u failures\n",failures?"✗":"✓",all?"snap-all":"default",checks,failures);
