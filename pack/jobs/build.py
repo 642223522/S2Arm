@@ -121,7 +121,7 @@ def require_automatic_memory(c):
         raise Failure("启动器版本过旧，请更新后重新打包这款游戏。", code="runtime_invalid")
 
 
-def runtime_env(c, game, runtime):
+def runtime_env(c, game, runtime, input_ok=True):
     require_automatic_memory(c)
     # 游戏语言跟本机系统首选语言（维护者 11-07：不给玩家选）：请求不带 gameLanguage 就不设 S2A_SYSTEM_LANGUAGE，
     # 宿主 services/S2A.Services/Host.cs PickLanguage 读系统首选语言（游戏不支持的退简中 → 繁中 → 英语）。带了（开发 / 旧请求）照旧映射
@@ -175,11 +175,17 @@ def runtime_env(c, game, runtime):
             raise Failure("Switch 2 Pro 本机通道设置无效。")
         env["S2A_NS2_SOCKET"] = controller_relay
     # Freeze exactly what the pre-launch card showed. Never rewrite another run's snapshot.
-    config = c.r.get("launchInputConfig")
-    if config is None:
+    # input_ok = False：宿主不认键位映射（launch 判的）→ 这局不带映射、用默认键位（v0.3.1：认不出照常玩，不让玩家先去重新打包）
+    config = c.r.get("launchInputConfig") if input_ok else None
+    if config is None and input_ok:
         config = read(layout.path(c, game["id"], "input.json", create=False)) or read(c.private / "default-input.json")
     if config is not None:
-        validate_input(config)
+        try:
+            validate_input(config)
+        except Failure as e:   # 映射不合规（旧版本 / 手改坏了）：用默认键位照常起局，日志记一笔，不挡（v0.3.1 装机原则：认不出的直接做）
+            print(f"[起局] 键位映射不合规（{e}），这局用默认键位", file=sys.stderr, flush=True)
+            config = None
+    if config is not None:
         path = c.private / "runtime-input" / game["id"] / (c.task + ".json")
         atomic(path, config)
         env["S2A_INPUT_CONFIG"] = str(path)
@@ -211,11 +217,14 @@ def launch(c):
         executable = host_update.host_exe(c, host)
         if not os.access(executable, os.X_OK):
             raise Failure("S2Arm Mac 宿主不可执行。", code="permission_denied")
+        input_ok = True
         if c.r.get("launchInputConfig") is not None:
             supported, _ = toolchain.input_interface(c, executable)
-            if not supported:
-                raise Failure("此运行包的宿主未确认支持映射，请重新打包游戏后再使用键位引导。", code="runtime_invalid")
-        env = runtime_env(c, game, runtime)
+            if not supported:   # 宿主认不得键位映射：这局用默认键位照常起（v0.3.1），重新打包后映射才生效
+                print("[起局] 这款的宿主不认键位映射，这局用默认键位（重新打包后映射生效）", file=sys.stderr, flush=True)
+                c.diagnostic("这款游戏的运行包认不得自定义键位，这次先用默认键位；重新打包这款后自定义键位就会生效。", code="runtime_invalid", severity="warning")
+                input_ok = False
+        env = runtime_env(c, game, runtime, input_ok=input_ok)
         from saves import claim_seed, finish_seed
         seed = claim_seed(c, game["id"])
         if seed:
