@@ -878,9 +878,37 @@ class JobsTests(unittest.TestCase):
             # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="4.9"):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
+
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
                 self.assertIsNone(space_rule.direct_check(root, cache, out))
         self.assertIs(library.pack_direct_bytes, space_rule.pack_direct_bytes)   # 预检与开工前复核是同一个函数（剃刀 H11：只在 space_rule 定义一份）
+    def test_direct_check_shader_bound(self):
+        # 开工前复核按着色器数取大（11-11：0400A3A01EE4C000 原件 6.7 GB、99084 个着色器，复核后直连段约 41 GiB，原件那一档只记 15 GB）。
+        #   期望手算：99084 × 512 KiB = 51,948,552,192 字节 > 15e9 → 取它；1000 个 × 512 KiB = 524,288,000 < 5e9 → 取小档 5e9。
+        #   着色器数 = 抽取表第 4 列唯一键：注释行、表头行不算，同一键出现两次算一个
+        import collections
+        import space_rule
+        du = collections.namedtuple("du", "total used free")
+        def make(name, keys, dup):
+            d = self.root / name; root, cache, out = d / "root", d / "cache", d / "out"
+            for x in (root / "romfs", root / "exefs", root / "aoc", cache, out, root / "extract" / "split"): x.mkdir(parents=True)
+            rows = ["# kind: evidence", "package\tindex\tstage\tdm_ctl_sha16\tsource"] + [f"p.bin\t{i}\tpixel\t{i:016x}\t/s#{i}" for i in range(keys)] + [f"q.bin\t0\tvertex\t{0:016x}\t/dup"] * dup
+            (root / "extract" / "split" / "shader_map.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+            return root, cache, out
+        root, cache, out = make("sb_big", 99084, 3)
+        sizes = {str(root / "romfs"): int(6.0e9), str(root / "exefs"): int(0.5e9), str(root / "aoc"): int(0.2e9), str(cache): 0}
+        self.assertEqual(space_rule.shader_count(root), 99084)
+        with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, 51948552192)))
+            why = space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, 51948552191))
+            self.assertIn("磁盘空间不足", why); self.assertIn("着色器 99084 个", why)
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(15e9))))   # 修前按原件那一档 15e9 就放行了
+        root, cache, out = make("sb_small", 1000, 0)
+        sizes = {str(root / "romfs"): int(0.3e9), str(root / "exefs"): int(0.1e9), str(root / "aoc"): 0, str(cache): 0}
+        with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9))))
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9) - 1)))
+        self.assertEqual(space_rule.shader_count(self.root / "no_such_root"), 0)
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
