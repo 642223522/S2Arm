@@ -253,7 +253,8 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     nvn_gpu_rc out = rc(NVN_GPU_OK);
     nvn_gpu_shown shown = {ticket, NVN_GPU_SHOWN_DROPPED, 0.0};
     nvn_gpu_cmd ch = NULL;
-    { static uint64_t np; if (++np % 300 == 0 && nvn_plat_flag("nvk_gputime", 0)) {   // 诊断读数：见 g_oc
+    { static uint64_t np; if (np % 300 == 1) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0;
+      if (++np % 300 == 0 && g_draw_tm) {   // 诊断读数：见 g_oc
         uint64_t v[OC_N]; for (int i = 0; i < OC_N; i++) v[i] = __atomic_exchange_n(&g_oc[i], 0, __ATOMIC_RELAXED);
         char b[400]; snprintf(b, sizeof b, "对象读数（每帧，近 300 帧）：新建渲染通道 %.1f、帧缓冲 %.1f、命令池 %.1f、描述符池 %.1f；分配描述符集 %.1f 次、写描述符 %.1f 次；遮挡查询 %.1f 个；新建视图 %.1f 个；取窗口图 %.1f 毫秒",
             v[OC_RP] / 300.0, v[OC_FB] / 300.0, v[OC_CPOOL] / 300.0, v[OC_DPOOL] / 300.0, v[OC_DALLOC] / 300.0, v[OC_DWRITE] / 300.0, v[OC_QUERY] / 300.0, v[OC_VIEW] / 300.0, (double)__atomic_exchange_n(&g_acq_ns, 0, __ATOMIC_RELAXED) / 300.0 / 1e6);
@@ -264,6 +265,14 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
           for (int i = 1; i < OP_N; i++) { int k = idx[i], j = i - 1; while (j >= 0 && c[idx[j]] < c[k]) { idx[j + 1] = idx[j]; j--; } idx[j + 1] = k; }
           size_t o = (size_t)snprintf(b, sizeof b, "驱动调用（每帧，近 300 帧）：共 %.0f 次", tot / 300.0);
           for (int i = 0; i < 10 && i < OP_N && c[idx[i]] && o < sizeof b - 48; i++) if (idx[i] != OP_WRAP) o += (size_t)snprintf(b + o, sizeof b - o, "；%s %.1f", g_dq_names[idx[i]] + 5, c[idx[i]] / 300.0);   // + 5：去掉 vkCmd
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
+        { uint64_t d0 = __atomic_exchange_n(&g_draw_ns[0], 0, __ATOMIC_RELAXED), d1 = __atomic_exchange_n(&g_draw_ns[1], 0, __ATOMIC_RELAXED), d2 = __atomic_exchange_n(&g_draw_ns[2], 0, __ATOMIC_RELAXED);
+          snprintf(b, sizeof b, "后端绘制细分（每帧毫秒，近 300 帧）：描述符 %.2f、推常量与状态 %.2f、顶点索引与绘制调用 %.2f", d0 / 300.0 / 1e6, d1 / 300.0 / 1e6, d2 / 300.0 / 1e6);
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
+        { uint64_t v4[4], nwt = __atomic_exchange_n(&g_desc_nw, 0, __ATOMIC_RELAXED), nst = __atomic_exchange_n(&g_desc_sets, 0, __ATOMIC_RELAXED);
+          for (int i = 0; i < 4; i++) v4[i] = __atomic_exchange_n(&g_desc_ns[i], 0, __ATOMIC_RELAXED);
+          snprintf(b, sizeof b, "描述符细分（每帧毫秒，近 300 帧）：分配 %.2f、构造写入项 %.2f、写入 %.2f、绑定 %.2f；每帧重写 %.0f 组（其中备忘命中 %.0f 组）、写 %.0f 条描述符",
+              v4[0] / 300.0 / 1e6, v4[1] / 300.0 / 1e6, v4[2] / 300.0 / 1e6, v4[3] / 300.0 / 1e6, nst / 300.0, __atomic_exchange_n(&g_desc_hit, 0, __ATOMIC_RELAXED) / 300.0, nwt / 300.0);
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
         { uint64_t ns = __atomic_exchange_n(&g_pl_ns, 0, __ATOMIC_RELAXED), n = __atomic_exchange_n(&g_pl_n, 0, __ATOMIC_RELAXED), st = __atomic_exchange_n(&g_pl_steps, 0, __ATOMIC_RELAXED);
           snprintf(b, sizeof b, "取管线查找（每帧，近 300 帧）：%.1f 次、共 %.0f 微秒、每次比 %.1f 条", n / 300.0, ns / 300.0 / 1000.0, n ? (double)st / (double)n : 0.0);
