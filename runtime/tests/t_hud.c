@@ -15,6 +15,7 @@ const char *s2a_gfx_mode_brief(void) { return "单测"; }
 int s2a_widen_full(void) { return 0; }
 int s2a_widen_game(void) { return 0; }
 int s2a_energy_snap(s2a_esnap *s) { (void)s; return 1; }
+double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b) { (void)a; (void)b; return -1; }   // 桩：上面采样恒失败，走不到这里
 int nvn_gl_game_fps(void) { return g_gl; }   // 浮层按名字取（dlsym），这里给强定义当 GL 前端
 int nvn_game_fps(void) { return g_nv; }
 // 固定内存采样结果，验证成功和失败都不会因 Metal HUD 请求被隐藏。
