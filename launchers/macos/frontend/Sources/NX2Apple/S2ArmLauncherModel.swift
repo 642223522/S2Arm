@@ -75,6 +75,9 @@ struct JobSession: Equatable {
     var export: ExportRun?
     /// 出包前的磁盘预算（作业层 space 事件，check_pack_space）；没有为 nil。
     var space: PackSpace?
+    /// 作业层给的失败码与下一步（JobFailure 的第一条诊断）：启动页按码显示一句人话 + 下一步，原文只进「复制错误摘要」
+    var failureCode: String?
+    var suggestion = ""
     /// 正在跑的那个作业层任务号（最近一个事件的 taskId；出包一个平台一个任务）。控制口 GET /state 的 executionTask 报它（原先恒为空，s2armctl next 判不出「本游戏正在运行」）
     var taskID: String?
 }
@@ -1117,7 +1120,8 @@ public final class S2ArmLauncherModel: ObservableObject {
                 let reveal = try await body(sink)
                 self?.finish(.completed, message: "", reveal: reveal)
             } catch let failure as JobFailure {
-                self?.finish(failure.state, message: failure.errorDescription ?? "")
+                self?.finish(failure.state, message: failure.errorDescription ?? "", code: failure.code,
+                             suggestion: failure.outcome.diagnostics.first?["suggestion"] as? String ?? "")
             } catch is CancellationError {
                 self?.finish(.cancelled, message: "")
             } catch is ExportIncomplete {
@@ -1162,9 +1166,10 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     private func isFinished(_ s: JobSession) -> Bool { if case .finished = s.phase { return true }; return false }
 
-    private func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil) {
+    private func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil, code: String? = nil, suggestion: String = "") {
         guard var session = session, !isFinished(session) else { return }
         session.phase = .finished(state)
+        session.failureCode = code; session.suggestion = suggestion
         if !message.isEmpty {
             session.message = message
             if session.log.last != message { session.log.append(message) }

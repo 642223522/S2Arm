@@ -1771,5 +1771,11 @@
   "s2arm.players.name": "Name",
   "s2arm.players.error.empty": "Enter a name.",
   "s2arm.players.error.long": "Use {0} characters or fewer.",
-  "s2arm.players.error.taken": "That name is already taken."
+  "s2arm.players.error.taken": "That name is already taken.",
+  "s2arm.play.again": "Start again",
+  "s2arm.play.crashed": "Quit while running",
+  "s2arm.play.diagnostics": "Export diagnostics",
+  "s2arm.play.failedGeneric": "The game couldn't start this time",
+  "s2arm.play.starting": "Starting",
+  "s2arm.play.windowHint": "The game runs in its own window. Close it, or click Stop here, to come back to S2Arm."
 }

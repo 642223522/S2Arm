@@ -1283,6 +1283,25 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(seen, [stale])
             self.assertFalse(stale.exists())
 
+    def test_game_quitting_mid_run_reports_game_crashed_with_exit_code(self):
+        # 启动页说人话（11-11）：游戏进程自己非 0 退出（139 = 段错误）报 game_crashed、消息带退出码；别的失败照原样往上抛
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
+        self.fake_host(game["id"])
+        for raised, want in ((Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit"), "game_crashed"),
+                             (Failure("fixture other", code="permission_denied"), "permission_denied")):
+            with self.subTest(code=raised.code):
+                def run(command, log, env, **kwargs):
+                    self.c.last_rc = 139
+                    raise raised
+                with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                     patch.object(self.c, "run", side_effect=run):
+                    with self.assertRaises(Failure) as e:
+                        build.launch(self.c)
+                self.assertEqual(e.exception.code, want)
+                if want == "game_crashed":
+                    self.assertIn("退出码 139", str(e.exception))
+                    self.assertIn("fixture", e.exception.internal)   # 原文随错误摘要带走
+
     def test_launch_removes_only_its_snapshot_after_exit_failure_or_cancellation(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},

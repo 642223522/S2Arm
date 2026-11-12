@@ -5184,14 +5184,6 @@
   "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
  },
  {
-  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
-  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
- },
- {
-  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
-  "en": "Choose which iPhone or iPad to install to on the install page, then install."
- },
- {
   "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
   "en": "Check the signing error in the job log. Confirm that Xcode can sign for this iPhone with your account, or install with AltStore."
  },
@@ -6946,6 +6938,18 @@
  {
   "source": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
   "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
+ },
+ {
+  "source": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",
+  "en": "Try starting it again. If it happens again, export a diagnostics package from Environment Check and attach it to a GitHub issue so we can fix the crash."
+ },
+ {
+  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
+ },
+ {
+  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
+  "en": "Choose which iPhone or iPad to install to on the install page, then install."
  },
  {
   "source": "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。",
