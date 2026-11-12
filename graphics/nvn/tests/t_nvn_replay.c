@@ -564,6 +564,68 @@ static void t_cpu_rules(void) {   // 首用判定的三条分支
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
 }
 
+// LINEAR 图集（R8 / IMAGE|IMAGE... 字体与 UI 由 CPU 写）：首次按线性行距逐行上传，之后 CPU 更新能到下一次采样，
+// 没变化不重传；换映射代际要重传；同提交里的第二次更新排在主段。iOS 同名语义：nvn_mtl.m tex_linear @3756 / tex_linear_needs_upload @3777。
+static void t_linear_upload(void) {
+    nvn_be_sub_begin();
+    res_fresh();
+    // 3x2 R8、行距 8：每行 3 个有效字节 + 5 字节 padding（毒值）。首用前全是 0（字体引擎可以建图之后才填字形）。
+    tex_t t = mk_tex(41, 0x100, NVN_FORMAT_R8, 3, 2, 1, NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_IMAGE);
+    t.d.stride = 8; nvn_tex_layout(&t.d, &t.L); t.mem = g_tmem + t.off;
+    int n0 = g_nup, p0 = g_protects; uint64_t u0 = rp_res_uploads();
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL);
+    CHECK(g_nup == n0 + 1 && rp_res_uploads() - u0 == 1 && g_protects - p0 == 1 && g_up[n0].pre == 1);
+    CHECK(g_up[n0].level == 0 && g_up[n0].layer == 0 && g_up[n0].pitch == 3 && g_up[n0].img == 6 && g_up[n0].w == 3 && g_up[n0].h == 2);
+    { static const uint8_t zero[6]; CHECK(!memcmp(g_up[n0].first, zero, 6)); }      // 初始全零：也要有一次定义内容的上传
+    CHECK(g_last_usage & NVN_GPU_TEX_CPU_UPLOAD);
+    // 填字形：行距 8、padding 是毒值，上传缓冲只能是 3x2 的紧凑行宽
+    for (int y = 0; y < 2; y++) { t.mem[y * 8 + 0] = (uint8_t)(0x11 + y); t.mem[y * 8 + 1] = 0x22; t.mem[y * 8 + 2] = 0x33; memset(t.mem + y * 8 + 3, 0xEE, 5); }
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_nup == n0 + 2 && g_up[n0 + 1].pitch == 3 && g_up[n0 + 1].img == 6);
+    CHECK(g_up[n0 + 1].first[0] == 0x11 && g_up[n0 + 1].first[1] == 0x22 && g_up[n0 + 1].first[2] == 0x33 &&
+          g_up[n0 + 1].first[3] == 0x12 && g_up[n0 + 1].first[4] == 0x22 && g_up[n0 + 1].first[5] == 0x33);   // 逐行拷：padding 不进缓冲
+    CHECK(g_up[n0 + 1].pre == 0);                                                   // 同一提交里的第二次同步：排在主段
+    CHECK(g_protects - p0 == 2);                                                    // 每次重传前都重新保护
+    { int p1 = g_protects; uint64_t u1 = rp_res_uploads(); int ok = 1;
+      for (int i = 0; i < 100; i++) ok &= rp_tex_resolve(&t, &g_fake_cmd) != NULL;
+      CHECK(ok && g_protects == p1 && rp_res_uploads() == u1); }                    // 稳定内容：不传、不重新保护
+    // 映射换底后的失效判定（全局代际 / 范围句柄）尚未接入：换底时 nvn_dirty_replace_range 会把该范围的页代际抬到旧 stamp 之后，
+    // 常规换底已由 nvn_dirty_since 判脏；remove+add 路径的漏判留作后续（见 docs 对照表）。
+    rp_tex_mark_gpu_written(&t); g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_nup == n0 + 2);              // 内容归 GPU：不再从游戏内存传
+    nvn_be_tex_release(&t);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 线性族里第一批不收的组合：准确报红（不猜内容），初始化仍按“取不了就清零”走。
+static void t_linear_reject(void) {
+    nvn_be_sub_begin();
+    nvn_unimpl_reset();
+    res_fresh();
+    { tex_t a = mk_tex(51, 0, NVN_FORMAT_R8, 4, 4, 2, NVN_TEXTURE_FLAGS_LINEAR);   // 多级：公共布局只给单级的行距
+      int n0 = g_nup;
+      CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_mips_unsupported") == 1);
+      CHECK(g_nup == n0 + 2 && g_up[n0].pitch == 4 && g_up[n0].img == 16);          // 报红之后仍是真的清零初始化（两级各一次），不是静默错内容
+      nvn_be_tex_release(&a); }
+    res_fresh();
+    { tex_t b = mk_tex(52, 0, NVN_FORMAT_R8, 4, 4, 1, NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);   // 只有 LINEAR_RT：内容归 GPU（可能由 copy_b2t 写入），不按 CPU 内容传、不报红
+      int n0 = g_nup, u0 = g_nup; (void)u0;
+      CHECK(rp_tex_resolve(&b, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_render_target_unsupported") == 0);
+      CHECK(g_nup == n0 + 1 && g_up[n0].img == 4 * 4 * 1 && g_up[n0].first[0] == 0);   // 新建存储清零一次
+      nvn_be_tex_release(&b); }
+    res_fresh();
+    { tex_t c = mk_tex(53, (1 << 20) - 0x10, NVN_FORMAT_R8, 64, 64, 1, NVN_TEXTURE_FLAGS_LINEAR);   // 源范围出池
+      CHECK(rp_tex_resolve(&c, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_range_outside_pool") == 1);
+      nvn_be_tex_release(&c); }
+    res_fresh();
+    { tex_t d = mk_tex(54, 0, NVN_FORMAT_R8, 2, 2, 1, NVN_TEXTURE_FLAGS_LINEAR); memset(d.mem, 0x5A, 4);
+      nvn_be_tex_cpu_written(&d);   // WriteTexels 写过的线性贴图：以前打 upload_linear_or_sparse 红行，现在能传
+      int n0 = g_nup;
+      CHECK(rp_tex_resolve(&d, &g_fake_cmd) != NULL && g_nup == n0 + 1 && g_up[n0].first[0] == 0x5A);
+      nvn_be_tex_release(&d); }
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
 static void t_registry(void) {
     nvn_be_sub_begin();
     res_fresh(); nvn_unimpl_reset(); int v0 = g_view_creates, vr0 = g_view_releases, s0 = g_samp_creates, sr0 = g_samp_releases;
@@ -1287,10 +1349,6 @@ static void t_dispatch_ubop_ro_skip(void) {
     g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
-// 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
-static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
-    p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
-}
 // #659：计算阶段独立图像槽，读写属性决定 GPU 所有权；不涉及间接参数同步。
 static void t_compute_image(void) {
     pass_fresh(); res_fresh(); g_arena_used = 0;
@@ -1333,6 +1391,52 @@ static void t_compute_image(void) {
     fresh.serial = 662; fresh.d.levels = 2; nvn_tex_layout(&fresh.d, &fresh.L);
     nvn_be_reg_tex(6, &fresh, NULL); rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); pass_fresh();
+}
+
+// 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
+static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
+    p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
+}
+// P2：计算存储缓冲的两种非 NVN 槽来源——map 2 别名「用户 UBO 槽的本体」，map 3 读「UBO 内 8 字节 guest 裸指针」。
+// 两条都要能在同一提交里绑成 SSBO；指针字节按镜像（不是可能过时的 guest 内存）取，目标长度按池余量。
+static void t_compute_sources(void) {
+    pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; g_arena_used = 0; g_nbw = 0;
+    g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0;
+    for (unsigned i = 0; i < sizeof g_pmem; i++) g_pmem[i] = 0x33;
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0x33, sizeof mirror);
+    uint64_t target = base + PG + 64, ptr = target - 0x1000;   // nvn_ga2ca 替身 +0x1000
+    memcpy(g_pmem + 3 * PG + 8, &ptr, 8); memcpy(mirror + 3 * PG + 8, &ptr, 8);
+    g_buf_cpu_fake = mirror;
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 2;
+    g_cprog.ent[0][0].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][0].src_kind = NVN_RB_UBOP; g_cprog.ent[0][0].src_reg = 0; g_cprog.ent[0][0].access = NVN_GPU_ACC_RW;
+    g_cprog.ent[0][1].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][1].src_kind = NVN_RB_UBOA; g_cprog.ent[0][1].src_reg = 0; g_cprog.ent[0][1].src_off = 8; g_cprog.ent[0][1].access = NVN_GPU_ACC_R;
+    stream s = {0};
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 0; ub->addr = base + 3 * PG; ub->size = 32;
+    p_dispatch *dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 1; dp->y = 1; dp->z = 1;
+    end(&s); submit1(&s);
+    CHECK(g_cbinds == 1 && g_ncb == 2 && g_ndisp == 1);
+    CHECK(g_cb[0].cls == NVN_GPU_RES_SSBO && g_cb[0].u.b.off == 3 * PG && g_cb[0].u.b.len == 32);   // map 2：绑 UBO 槽的地址与长度
+    CHECK(g_cb[1].cls == NVN_GPU_RES_SSBO && g_cb[1].u.b.off == PG + 64 && g_cb[1].u.b.len == sizeof g_pmem - (PG + 64));   // map 3：读指针后按池余量绑
+    // 负例 1：UBO 内偏移越界 → 准确跳过，不绑错内容
+    g_cprog.ent[0][1].src_off = 32;
+    { stream t = {0}; p_bind_buf *u2 = put(&t, OP_BIND_UBO, sizeof *u2); *u2 = *ub;
+      p_dispatch *d2 = put(&t, OP_DISPATCH, sizeof *d2); d2->x = 1; d2->y = 1; d2->z = 1; end(&t); submit1(&t); }
+    CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "uniform_buffer_indirect_offset_outside") == 1);
+    // 负例 2：长度未知的可写间接来源 → 准确拒绝（回写不能扩到相邻分配）
+    g_cprog.ent[0][1].src_off = 8; g_cprog.ent[0][1].access = NVN_GPU_ACC_RW;
+    { stream t = {0}; p_bind_buf *u3 = put(&t, OP_BIND_UBO, sizeof *u3); *u3 = *ub;
+      p_dispatch *d3 = put(&t, OP_DISPATCH, sizeof *d3); d3->x = 1; d3->y = 1; d3->z = 1; end(&t); submit1(&t); }
+    CHECK(g_cresolves == 3 && g_cpipe_gets == 1);
+    CHECK(nvn_unimpl_count("draw", "uniform_buffer_unbound") == 0);
+    CHECK(nvn_unimpl_count("draw", "uniform_buffer_unresolved") == 0);
+    CHECK(nvn_unimpl_count("draw", "uniform_buffer_not_host_readable") == 0);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_outside_pools") == 0);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_indirect_empty") == 0);
+    CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "compute_storage_indirect_writable_unknown") == 1);
+    g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem);
 }
 
 static void t_copy_t2t(void) {
@@ -1671,6 +1775,8 @@ int main(int argc, char **argv) {
     t_alias();
     t_cpu_upload();
     t_cpu_rules();
+    t_linear_upload();
+    t_linear_reject();
     t_registry();
     t_buf_mirror();
     t_buf_ops();
@@ -1689,6 +1795,7 @@ int main(int argc, char **argv) {
     t_dispatch_ubop_rw();
     t_dispatch_ubop_ro_skip();
     t_compute_image();
+    t_compute_sources();
     t_copy_t2t();
     t_draw();
     t_present();
