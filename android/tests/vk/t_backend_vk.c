@@ -3982,6 +3982,31 @@ static void c84_validation_classes(void) {
     nvn_gpu_tex_release(m); if (ds) nvn_gpu_tex_release(ds); nvn_gpu_tex_release(one); if (bc) nvn_gpu_tex_release(bc); nvn_gpu_tex_release(d16); nvn_gpu_tex_release(r16); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
+// C84b（#709）：块压缩贴图与非压缩贴图之间经缓冲逐字节拷（核心的「一块当一个像素」影子就是这么拷的）。
+//   BC1 4x4（一块 8 字节）传进去 → 区域按像素 4x4 拷到缓冲（一行块 8 字节）→ 拷进 1x1 的 RG32UI（一个像素 8 字节）→ 读回。
+//   期望（手算）：读回的 8 个字节就是传进去的那一块。不能直接采样 BC 的设备上建不了这张贴图，跳过。
+static void c84b_bc_block_copy(void) {
+    if (!(nvn_gpu_format_caps(NVN_FORMAT_RGBA_DXT1) & NVN_GPU_FMT_SAMPLE)) { fprintf(stderr, "C84b：本设备不能直接采样 BC1，跳过\n"); return; }
+    nvn_gpu_tex bc = make_tex(4, 4, NVN_FORMAT_RGBA_DXT1, NVN_GPU_TEX_SAMPLED), px = make_tex(1, 1, NVN_FORMAT_RG32UI, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_buf rb = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+    const uint8_t blk[8] = {0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0};
+    nvn_gpu_err e; nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_tex_upload(c, bc, 0, 0, NULL, blk, 8, 8);
+    nvn_gpu_slice sl; nvn_gpu_rc r = nvn_gpu_arena_alloc(c, 8, 16, &sl, &e);
+    CHECK(OK(r), "C84b 暂存：%d %s", r.code, e.why);
+    NVNcopyRegion rbc = {0, 0, 0, 4, 4, 1}, rpx = {0, 0, 0, 1, 1, 1};
+    nvn_gpu_copy_tex_buf(c, bc, 0, 0, &rbc, sl.buf, sl.off, 8, 8);
+    nvn_gpu_copy_buf_tex(c, sl.buf, sl.off, 8, 8, px, 0, 0, &rpx);
+    nvn_gpu_copy_tex_buf(c, px, 0, 0, NULL, rb, 0, 8, 8);
+    r = nvn_gpu_cmd_commit(c, 128, on_done, NULL, &e);
+    CHECK(OK(r), "C84b commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(128, 5000000000ull, &e);
+    CHECK(OK(r), "C84b wait：%d %s", r.code, e.why);
+    const uint8_t *o = buf_cpu(rb);
+    CHECK(!memcmp(o, blk, 8), "C84b BC1 → 缓冲 → RG32UI：读回 %02x%02x%02x%02x%02x%02x%02x%02x，期望 123456789abcdef0", o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7]);
+    nvn_gpu_tex_release(bc); nvn_gpu_tex_release(px); nvn_gpu_buf_release(rb, NULL, NULL);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -4218,7 +4243,7 @@ int main(int argc, char **argv) {
     c81_int_sampled(argv[1]);
     c82_occlusion(argv[1]);
     c83_blit();
-    c84_validation_classes();
+    c84_validation_classes(); c84b_bc_block_copy();
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;

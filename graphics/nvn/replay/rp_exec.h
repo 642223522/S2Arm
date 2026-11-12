@@ -72,6 +72,7 @@ uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key);
 int rp_rc_skip(void);                   // 条件渲染判成不画的那一段里
 void rp_pass_note_draw(int uses_ds);   // 一笔绘制进了当前通道（uses_ds：这笔开着深度测试 / 深度写 / 模板测试）
 int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式
+void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h);   // 颜色槽 i 的视图尺寸（像素；块压缩基底配一块当一个像素的视图时按块数）
 // 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
 void rp_debug_dump_poll(uint64_t *fence);
