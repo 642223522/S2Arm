@@ -866,6 +866,32 @@ int main(int argc, const char **argv) {
     expect(pairN == 2 && pairMotion[0].gyro_x == -90 && pairMotion[0].host_timestamp_us == 1999 && pairMotion[1].gyro_x == 90 && pairMotion[1].host_timestamp_us == 2000,
            "Joy-Con 2 pair: left motion from motion_left, right from motion, left first");
     expect(s2a_pad_read_motion(&ns2Motion) && ns2Motion.gyro_x == 90, "single-source six-axis entry still reads the right Joy-Con");
+    // Joy-Con 2 光学鼠标（INPUT 包 mouse / mouse_kind）：没有鼠标读数（旧启动器）时照样报连着 Joy-Con 2、known 0
+    //   （一对 → 两侧）；有读数时 x / y / distance 原样、side 跟 mouse_kind；Pro 不报
+    s2a_pad_mouse jcMouse[2] = {{0}};
+    expect(s2a_pad_read_mouse_pair(jcMouse) == 2 && jcMouse[0].side == 0 && jcMouse[1].side == 1 && !jcMouse[0].known && !jcMouse[1].known,
+           "Joy-Con 2 pair without mouse readings: both sides still reported as Joy-Con 2, no readings");
+    ns2_relay_packet mousePacket = pairPacket; mousePacket.kind = NS2_KIND_JOYCON_L; mousePacket.mouse_kind = NS2_KIND_JOYCON_L;
+    mousePacket.mouse = (ns2_relay_mouse){.x = -5, .y = 300, .surface = 7, .distance = 0};
+    expect(send(relayClient, &mousePacket, sizeof mousePacket, 0) == sizeof mousePacket, "relay packet with mouse readings sent");
+    for (int attempt = 0; attempt < 100 && !(s2a_pad_read_mouse_pair(jcMouse) && jcMouse[0].known); attempt++) usleep(1000);
+    expect(jcMouse[0].known && jcMouse[0].side == 0 && jcMouse[1].side == 0xff && jcMouse[0].x == -5 && jcMouse[0].y == 300 && jcMouse[0].distance == 0 && jcMouse[0].host_timestamp_us != 0,
+           "Joy-Con 2 mouse readings reach the game: left side, raw x / y / distance");
+    // 拼成一对、两只都有鼠标：连接程序一包左一包右轮流（mouse_kind 标哪一只），宿主左右各存一份
+    ns2_relay_packet pairMouse = pairPacket; pairMouse.kind = NS2_KIND_JOYCON_PAIR;
+    pairMouse.mouse_kind = NS2_KIND_JOYCON_R; pairMouse.mouse = (ns2_relay_mouse){.x = 40, .y = 1};
+    expect(send(relayClient, &pairMouse, sizeof pairMouse, 0) == sizeof pairMouse, "pair relay packet with right mouse sent");
+    pairMouse.mouse_kind = NS2_KIND_JOYCON_L; pairMouse.mouse = (ns2_relay_mouse){.x = -7, .y = 2, .distance = 12};
+    expect(send(relayClient, &pairMouse, sizeof pairMouse, 0) == sizeof pairMouse, "pair relay packet with left mouse sent");
+    s2a_pad_mouse both[2] = {{0}};
+    int bothN = 0;
+    for (int attempt = 0; attempt < 100 && !((bothN = s2a_pad_read_mouse_pair(both)) == 2 && both[0].known && both[0].x == -7 && both[1].known); attempt++) usleep(1000);
+    expect(bothN == 2 && both[0].side == 0 && both[0].x == -7 && both[0].distance == 12 && both[1].side == 1 && both[1].x == 40,
+           "Joy-Con 2 pair: left and right mouse readings both reach the game (alternating packets)");
+    ns2_relay_packet proPacket = motionPacket; proPacket.kind = NS2_KIND_PRO;
+    expect(send(relayClient, &proPacket, sizeof proPacket, 0) == sizeof proPacket, "Pro relay packet sent");
+    for (int attempt = 0; attempt < 100 && s2a_pad_read_mouse_pair(jcMouse); attempt++) usleep(1000);
+    expect(!s2a_pad_read_mouse_pair(jcMouse) && !jcMouse[0].known && !jcMouse[1].known, "Pro controller: no Joy-Con 2 mouse");
     // 旧版启动器（通道 v1）：游戏端断开、不猜字段，型号回到 NONE
     ns2_relay_packet oldPacket = motionPacket; oldPacket.version = 1;
     expect(send(relayClient, &oldPacket, sizeof oldPacket, 0) == sizeof oldPacket, "relay v1 packet sent");
