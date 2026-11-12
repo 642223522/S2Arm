@@ -283,6 +283,7 @@ uint64_t nvn_vk_dbg_created(int which) { return which >= 0 && which < OC_N ? __a
 static void pc_drop_view(VkImageView v);
 static void pc_destroy_all(void);
 enum { PIPE_HT_N = 1024 };
+static uint64_t g_desc_ns[4], g_desc_nw, g_desc_sets;   // 描述符四步：分配 / 构造写入项 / 写入 / 绑定；写入的描述符条数；重写的组数
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
 static uint64_t g_pl_ns, g_pl_n, g_pl_steps;   // 取图形管线：命中查找的累计纳秒 / 次数 / 比过的条数
 static struct nvn_gpu_pipe_s *g_pipe_ht[PIPE_HT_N];   // 图形管线的散列桶（见 pipe_hash）；持 g_mu
@@ -2926,8 +2927,10 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
         pm->texel_binds = has;
     }
     if (!dirty && p->texel_binds < 0) return 1;
+    const int tm = g_draw_tm; const uint64_t t0 = tm ? now_ns() : 0;   // 诊断：这四步各用多久（nvk_gputime 开着才计）
     for (uint32_t set = 0; set < p->nset; set++)
         if (dirty & (1u << set)) if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
+    const uint64_t t1 = tm ? now_ns() : 0;
     VkWriteDescriptorSet wr[6 * 64]; VkDescriptorImageInfo ii[6 * 64]; VkDescriptorBufferInfo bi[6 * 64];
     uint32_t nw = 0;
     for (int st = compute ? NVN_GPU_SH_CS : 0; st < (compute ? NVN_GPU_SH_CS + 1 : 5); st++) {
@@ -2935,12 +2938,16 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
         if (n < 0) return 0;
         nw += (uint32_t)n;
     }
-    OC(OC_DWRITE);
-    if (nw) vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL);
+    const uint64_t t2 = tm ? now_ns() : 0;
+    if (nw) { OC(OC_DWRITE); vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL); }
+    const uint64_t t3 = tm ? now_ns() : 0;
     c->desc_dirty = 0;
-    if (!dirty) return 1;
-    if (p->nset) vkCmdBindDescriptorSets(c->cb, compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        p->layout, 0, p->nset, c->desc_sets, 0, NULL);
+    if (dirty && p->nset) vkCmdBindDescriptorSets(c->cb, compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                  p->layout, 0, p->nset, c->desc_sets, 0, NULL);
+    if (tm) { const uint64_t t4 = now_ns();
+        __atomic_fetch_add(&g_desc_ns[0], t1 - t0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_desc_ns[1], t2 - t1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_desc_ns[2], t3 - t2, __ATOMIC_RELAXED); __atomic_fetch_add(&g_desc_ns[3], t4 - t3, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_desc_nw, nw, __ATOMIC_RELAXED); __atomic_fetch_add(&g_desc_sets, (uint64_t)__builtin_popcount(dirty), __ATOMIC_RELAXED); }
     return 1;
 }
 
