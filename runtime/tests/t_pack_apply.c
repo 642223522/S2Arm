@@ -544,6 +544,26 @@ int main(void) {
         chmod(root, 0755);
         snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", base, base); sh(c);
     }
+    // iOS 27 玩家机（v0.3.3）：Library/Application Support/S2Arm 整条 App 写不进（归 root），连迁移的新树都建不出 → 资源包改放备用位置 Library/S2Arm：
+    //   读得到的搬过去（返回 1、1 个文件、内容一致），旧的原样留着，之后本款资源包根取备用位置；再查一次不再动（返回 0）。期望按规则手写（s2a_docs.h、pack_apply.c repair_pack_base）
+#if defined(__APPLE__)
+    if (getuid() != 0) {
+        char base[] = "/tmp/s2a_t_alt_XXXXXX"; if (!mkdtemp(base)) return 1;
+        char c[4096], pd[600], sup[700], gd[700], want[800], root[800]; const char *gid = "0100F8D01A06E000";
+        snprintf(pd, sizeof pd, "%s/Documents", base); snprintf(sup, sizeof sup, "%s/Library/Application Support/S2Arm", base);
+        snprintf(c, sizeof c, "mkdir -p '%s/games/%s' '%s/games/%s/资源包' && printf 'hello' > '%s/games/%s/资源包/romfs.img' && chmod -R a-w '%s'", pd, gid, sup, gid, sup, gid, sup); sh(c);
+        snprintf(gd, sizeof gd, "%s/games/%s", pd, gid);
+        int r = s2a_games_repair(pd);
+        s2a_pack_root(root, sizeof root, gd);
+        snprintf(want, sizeof want, "%s/Library/S2Arm/games/%s/资源包", base, gid);
+        char buf[16] = ""; char fp[900]; snprintf(fp, sizeof fp, "%s/romfs.img", want); FILE *f = fopen(fp, "r"); if (f) { size_t k = fread(buf, 1, sizeof buf - 1, f); buf[k] = 0; fclose(f); }
+        char old[900]; snprintf(old, sizeof old, "%s/games/%s/资源包/romfs.img", sup, gid); struct stat so;
+        CHECK(r == 1 && s2a_games_repair_files() == 1 && !strcmp(root, want) && !strcmp(buf, "hello") && !access(want, W_OK) && !stat(old, &so),
+              "主位置整条写不进 → 搬到 Library/S2Arm：返回 1、1 个文件、资源包根换到备用位置、内容一致、可写、旧的还在（实际 %d / %u /「%s」/「%s」）", r, s2a_games_repair_files(), root, buf);
+        CHECK(s2a_games_repair(pd) == 0, "搬过之后再查：不再动（返回 0）");
+        snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", base, base); sh(c);
+    }
+#endif
     // ⑮ 资源包挪出 Documents（v0.3.0）：容器形状的临时目录 <容器>/Documents/games/<游戏号>；期望按规则手写（s2a_docs.h s2a_pack_root、pack_apply.c s2a_pack_migrate_one）
     {
         char base[] = "/tmp/s2a_t_migrate_XXXXXX"; if (!mkdtemp(base)) return 1;
