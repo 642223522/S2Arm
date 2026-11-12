@@ -137,7 +137,7 @@ enum { OCC_SLOTS = 2048 };
 static int g_occ_used, g_occ_counting, g_occ_seg, g_occ_cur = -1, g_occ_pass; static uint32_t g_occ_next, g_occ_base;   // g_occ_base：当前这一段的第一个槽号（中途交段之后不是 0）
 static void occ_event(int report, uint64_t addr) {
     struct sub *s = g_sub; if (!s) return;
-    if (s->noe == s->oecap) { int cap = s->oecap ? s->oecap * 2 : 16; struct occ_ev *n = realloc(s->oe, (size_t)cap * sizeof *n); if (!n) return; s->oe = n; s->oecap = cap; }
+    if (s->noe == s->oecap) { int cap = s->oecap ? s->oecap * 2 : 16; struct occ_ev *n = realloc(s->oe, (size_t)cap * sizeof *n); if (!n) { red("%s", "遮挡计数：事件表扩不了，这条复位 / 报告丢了"); return; } s->oe = n; s->oecap = cap; }
     s->oe[s->noe++] = (struct occ_ev){g_occ_next, (uint32_t)report, addr};
 }
 static void occ_stop(nvn_gpu_cmd c) { if (g_occ_cur >= 0 && c && rp_pass_is_open()) nvn_gpu_occlusion(c, -1); g_occ_cur = -1; }
@@ -287,7 +287,7 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
 
 static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     struct sub *s = g_sub; if (!s || !val) return;
-    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
+    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
     s->p[s->n++] = (struct post){val, mode, v, 0, 0};
 }
 void rp_post_gpu_write(uint64_t addr, uint64_t len) {
@@ -298,7 +298,7 @@ void rp_post_gpu_write(uint64_t addr, uint64_t len) {
 }
 static void post_report(uint64_t addr, uint32_t type) {
     struct sub *s = g_sub; if (!s || !addr) return;
-    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
+    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
     s->p[s->n++] = (struct post){NULL, 0, 0, addr, type};
 }
 
