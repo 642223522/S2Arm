@@ -2914,8 +2914,10 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     VkImageCreateFlags iflags = 0;
     int array_compat = 0;
     switch (target) {
-    case NVN_TEXTURE_TARGET_2D: break;
+    case NVN_TEXTURE_TARGET_2D:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE: break;
     case NVN_TEXTURE_TARGET_2D_ARRAY:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY:
         layers = depth; vtype = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
     case NVN_TEXTURE_TARGET_3D:
         itype = VK_IMAGE_TYPE_3D; vtype = VK_IMAGE_VIEW_TYPE_3D;
@@ -2949,6 +2951,20 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
         usage |= nvn_vk_format_is_depth(fmt) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     if (d->usage & NVN_GPU_TEX_STORAGE) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+
+    // 在 vkCreateImage 前按真实格式/usage 查询样本数；不把非法计数送到驱动或校验层。
+    int ms_target = target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+    if (ms_target || samples > 1) {
+        if (d->d.samples <= 1 || samples > 64 || (samples & (samples - 1)) || levels != 1 || itype != VK_IMAGE_TYPE_2D ||
+            ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && !g.dev->core_features.shaderStorageImageMultisample) ||
+            (d->d.samples > 1 && (target == NVN_TEXTURE_TARGET_CUBEMAP || target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)))
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "多重采样计数/级数/目标不支持");
+        VkImageFormatProperties ip = {0};
+        VkImageCreateFlags flags = iflags | ((d->usage & NVN_GPU_TEX_VIEW_FMT) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0);
+        if (vkGetPhysicalDeviceImageFormatProperties(g.phys, fmt, itype, VK_IMAGE_TILING_OPTIMAL, usage, flags, &ip) != VK_SUCCESS ||
+            !(ip.sampleCounts & samples) || (uint32_t)d->d.width > ip.maxExtent.width || (uint32_t)d->d.height > ip.maxExtent.height || layers > ip.maxArrayLayers)
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "设备不支持该格式/usage 的 %u 重采样贴图", samples);
+    }
 
     struct nvn_gpu_tex_s *t = calloc(1, sizeof *t);
     if (!t) return fail(err, NVN_GPU_E_OOM, "贴图结构分配失败");

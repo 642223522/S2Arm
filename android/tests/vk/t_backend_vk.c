@@ -3759,35 +3759,60 @@ static void c83_blit(void) {
     nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_tex_release(f); nvn_gpu_tex_release(g2); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
-// C84：4 个红样本的平均仍为红；目标先清蓝，不能靠未写入碰巧通过。
-static void c84_resolve(void) {
-    nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_2D;
+// C84：4×标准样本 x=1/8、3/8、5/8、7/8；半像素红矩形覆盖其中2个，另2个保留蓝。
+// 解析后首列应为 (128,0,128,255)，其它列为蓝；不是只清同一种颜色。
+static void c84_resolve(const char *dir) {
+    CHECK(g_dev.properties.limits.standardSampleLocations, "C84 手算覆盖需要标准采样位置");
+    nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE;
     td.d.format = NVN_FORMAT_RGBA8; td.d.width = td.d.height = 4;
     td.d.depth = td.d.levels = 1; td.d.samples = 4; td.usage = NVN_GPU_TEX_RENDER;
     nvn_gpu_tex a = NULL; nvn_gpu_err e;
-    CHECK(OK(nvn_gpu_tex_create(&td, &a, &e)), "C84 MSAA 创建：%s", e.why);
+    CHECK(OK(nvn_gpu_tex_create(&td, &a, &e)), "C84 target5 MSAA 创建：%s", e.why);
+    if (!a) return;
+    // target6 的 depth 是数组层数，不是 VkImage 的第三维。
+    nvn_gpu_tex arr = NULL; td.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY; td.d.depth = 3;
+    CHECK(OK(nvn_gpu_tex_create(&td, &arr, &e)), "C84 target6 创建：%s", e.why);
+    if (arr) { nvn_gpu_tex_info ti = {0}; nvn_gpu_tex_info_get(arr, &ti); CHECK(ti.layers == 3 && ti.samples == 4, "C84 target6 层数/样本 %u/%u", ti.layers, ti.samples); nvn_gpu_tex_release(arr); }
+    td.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE; td.d.depth = 1; td.d.samples = 3;
+    nvn_gpu_tex bad = NULL;
+    CHECK(nvn_gpu_tex_create(&td, &bad, &e).code == NVN_GPU_E_UNSUPPORTED && !bad, "C84 非法采样数应 UNSUPPORTED");
+    td.d.samples = 64;
+    VkImageFormatProperties ip = {0};
+    VkResult ir = vkGetPhysicalDeviceImageFormatProperties(g_dev.physical, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, &ip);
+    if (ir == VK_SUCCESS && !(ip.sampleCounts & VK_SAMPLE_COUNT_64_BIT))
+        CHECK(nvn_gpu_tex_create(&td, &bad, &e).code == NVN_GPU_E_UNSUPPORTED && !bad, "C84 设备不支持64采样应 UNSUPPORTED");
+    void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
+    CHECK(load_shader_pair(dir, "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm), "C84 shader");
+    nvn_gpu_pipe_desc pd = {0}; pd.origin_ll = (uint8_t)!g_tri_origin_ul;
+    pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs; pd.cfmt[0] = NVN_FORMAT_RGBA8;
+    pd.samples = 4; pd.prim = 5; pd.chmask.mask = 0xf; pd.color.logic_op = 3;
+    pd.attr[0].fmt = pd.attr[1].fmt = NVN_FORMAT_RGBA32F; pd.attr[1].offset = 16; pd.stream[0].stride = 32;
+    nvn_gpu_pipe pipe = NULL; CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C84 MSAA管线：%s", e.why);
+    float verts[4][8] = {{-1,-1,0,1,1,0,0,1},{-1,1,0,1,1,0,0,1},{1,-1,0,1,1,0,0,1},{1,1,0,1,1,0,0,1}};
+    nvn_gpu_buf vb = make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
     nvn_gpu_tex b = make_tex(4, 4, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER);
-    nvn_gpu_view av = make_view(a), bv = make_view(b);
-    nvn_gpu_buf rb = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
-    nvn_gpu_cmd c = begin_cmd();
-    for (int i = 0; i < 2; i++) {
-        nvn_gpu_pass_desc p = {0}; p.ncolor = 1; p.w = p.h = 4; p.layers = 1;
-        p.color[0].view = i ? bv : av; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
-        p.color[0].clear.f[i ? 2 : 0] = 1; p.color[0].clear.f[3] = 1;
-        nvn_gpu_pass_begin(c, &p); nvn_gpu_pass_end(c);
-    }
-    NVNcopyRegion rr = {0, 0, 0, 4, 4, 1};
-    nvn_gpu_blit(c, av, &rr, bv, &rr, 0);
+    nvn_gpu_view av = make_view(a), bv = make_view(b); nvn_gpu_buf rb = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_cmd c = begin_cmd(); nvn_gpu_pass_desc p = {0}; p.ncolor = 1; p.w = p.h = 4; p.layers = 1;
+    p.color[0].view = av; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
+    p.color[0].clear.f[2] = p.color[0].clear.f[3] = 1;
+    nvn_gpu_pass_begin(c, &p); nvn_gpu_set_pipe(c, pipe);
+    nvn_gpu_dyn dyn = {0}; dyn.origin_ll = pd.origin_ll; dyn.nvp = 1; dyn.vp[0][2] = 0.5f; dyn.vp[0][3] = 4; dyn.vp[0][5] = 1;
+    dyn.has_sc = 1; dyn.sc[2] = dyn.sc[3] = 4; nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0);
+    nvn_gpu_draw_args da = {0}; da.prim = 5; da.count = 4; da.instances = 1; nvn_gpu_draw(c, &da); nvn_gpu_pass_end(c);
+    NVNcopyRegion rr = {0, 0, 0, 4, 4, 1}; nvn_gpu_blit(c, av, &rr, bv, &rr, 0);
     nvn_gpu_copy_tex_buf(c, b, 0, 0, NULL, rb, 0, 16, 64);
-    nvn_gpu_rc rc = nvn_gpu_cmd_commit(c, 127, on_done, NULL, &e);
-    CHECK(OK(rc), "C84 resolve commit：%d %s", rc.code, e.why);
+    nvn_gpu_rc rc = nvn_gpu_cmd_commit(c, 127, on_done, NULL, &e); CHECK(OK(rc), "C84 resolve commit：%d %s", rc.code, e.why);
     if (OK(rc)) {
         CHECK(OK(nvn_gpu_fence_wait(127, 5000000000ull, &e)), "C84 wait：%s", e.why);
-        const uint8_t *px = buf_cpu(rb); int bad = 0;
-        for (int i = 0; i < 16; i++) if (px[i*4] != 255 || px[i*4+1] || px[i*4+2] || px[i*4+3] != 255) bad++;
-        CHECK(!bad, "C84 16 像素应为 255,0,0,255，不符 %d", bad);
+        const uint8_t *px = buf_cpu(rb); int badpx = 0;
+        for (int i = 0; i < 16; i++) { int red = i % 4 == 0 ? 128 : 0, blue = i % 4 == 0 ? 128 : 255;
+            if (px[i*4] != red || px[i*4+1] || px[i*4+2] != blue || px[i*4+3] != 255) badpx++; }
+        CHECK(!badpx, "C84 混合解析16像素不符 %d，首像素 %u,%u,%u,%u", badpx, px[0], px[1], px[2], px[3]);
     }
-    nvn_gpu_view_release(av); nvn_gpu_view_release(bv); nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_view_release(av); nvn_gpu_view_release(bv); nvn_gpu_tex_release(a); nvn_gpu_tex_release(b);
+    nvn_gpu_buf_release(rb, NULL, NULL); nvn_gpu_buf_release(vb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vsm); free(fsm);
 }
 
 // 每个拒绝用例独占会话；必须在发 Vulkan 命令前拒绝。
@@ -4046,7 +4071,7 @@ int main(int argc, char **argv) {
     c81_int_sampled(argv[1]);
     c82_occlusion(argv[1]);
     c83_blit();
-    c84_resolve();
+    c84_resolve(argv[1]);
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     for (int k = 0; k < 8; k++) {
