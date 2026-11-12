@@ -6524,10 +6524,6 @@
   "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
  },
  {
-  "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。",
-  "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone; the games already on your phone are not affected."
- },
- {
   "source": "这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。",
   "en": "This game cannot share one app with the games already on your phone: remove the incompatible game from iPhone first."
  },
@@ -6686,10 +6682,6 @@
  {
   "source": "这款游戏在这台电脑上还没玩过：存档会在下次启动游戏时放进去。",
   "en": "You haven't played this game on this Mac yet. The save will be added the next time you start the game."
- },
- {
-  "source": "这款还没有做好 Mac 版，或者是旧版本做的：重新准备后可用。",
-  "en": "This game has no Mac build yet, or it was built by an older version. Available after you prepare it again."
  },
  {
   "source": "这款游戏没有可用的 60 帧方案。",
@@ -7138,5 +7130,25 @@
  {
   "source": "关掉其它占内存的程序（浏览器、游戏等）后重试；还不行就在 Windows 设置里调大虚拟内存（页面文件），或换一台内存更大的电脑出包。已做完的步骤下次会复用。",
   "en": "Close other memory-heavy apps (browsers, games, etc.) and try again. If it still fails, increase virtual memory (the page file) in Windows settings, or export on a computer with more memory. Finished steps are reused next time."
+ },
+ {
+  "source": "游戏库在 Mac OS 扩展（HFS+）格式的磁盘上：可以出包，但这种盘不能克隆，出包会多占一份资源包的空间。",
+  "en": "The library is on a Mac OS Extended (HFS+) drive. Exporting works, but this drive can't clone files, so exports take an extra copy of the resources' space."
+ },
+ {
+  "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。",
+  "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone. Or confirm to install without them this time: their saves and resources stay on the phone, and they come back once you rebuild and install them."
+ },
+ {
+  "source": "这款游戏暂不支持：程序的结构我们还不认识，多见于自制或移植的程序。",
+  "en": "This game is not supported yet. We don't recognize how this program is built yet; this is common for homebrew or ported programs."
+ },
+ {
+  "source": "可以点「仍然用这里」照用这块盘（出包会多占空间）；想省空间就从下面列出的 NTFS 盘里选一块，点「放到这里」。",
+  "en": "Choose \"Use this drive anyway\" to keep using this drive (exports take more space), or pick one of the NTFS drives listed below and choose \"Use this drive\" to save space."
+ },
+ {
+  "source": "在出包页「存放位置」换到 NTFS 格式的盘（上面列出了这台电脑上可用的），再出包；游戏原件放在哪都行。",
+  "en": "On the export page, change Storage Location to an NTFS drive (the available ones on this PC are listed above), then export again. Your game files can stay wherever they are."
  }
 ]

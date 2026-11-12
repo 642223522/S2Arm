@@ -182,6 +182,7 @@ public sealed partial class EnvironmentWindow
         // 失败时原因直接写在这里（第一行就是作业 / 输入校验给的人话），不用再展开「本次操作与处理建议」才看得到
         if (librarySummary is "library.failed" or "library.invalid_result" && libraryDiagnostics.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() is { Length: > 0 } why)
             status.Children.Add(Muted(why, 14));
+        if (LibraryDrivePicker() is { } drives) status.Children.Add(drives);   // 游戏库盘格式不对：列出能放的盘，点了就建（v0.3.1）
         if (libraryBusy) status.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4 });
         // 状态卡只在有事时出现：还没连上 / 正在操作 / 没做成。原先卡里的密钥、导入按钮挪走了：
         //   导入游戏统一走顶栏「添加游戏」，密钥与磁盘空间在「设置」（入口整理）
@@ -704,6 +705,8 @@ public sealed partial class EnvironmentWindow
                 connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
                 var folder = Path.GetFullPath(libraryFolder);
                 var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next());
+                if (await ConfirmCloudLibraryAsync(setup))   // 选在云盘同步目录里：讲清后果、玩家选「仍然继续」就带 acceptCloud 重来（v0.3.1）
+                    setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next(), acceptCloud: true);
                 DisplayJob(setup);
                 if (!setup.Report.Succeeded) { librarySummary = "library.failed"; return; }
                 var connection = LibraryConnection.Parse(setup.Report.Result);

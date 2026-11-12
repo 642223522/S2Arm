@@ -383,7 +383,7 @@ public sealed partial class EnvironmentWindow
         reason.Children.Add(Muted(blocker ?? T("export.hint"), 14));
         if (ExportBlockerKind(game) == "keys") reason.Children.Add(Action("nav.library", () => Navigate("library")));
         bar.Children.Add(reason);
-        var start = Primary(T("export.start"), () => StartPack(game), blocker is null);
+        var start = Primary(T("export.start"), () => StartPack(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
         AutomationId(start, "export.start");
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
@@ -489,6 +489,10 @@ public sealed partial class EnvironmentWindow
     };
 
     /// <summary>挡路的是哪一类（按种类判，不拿显示文案做字符串相等，剃刀 W10）：platform / files / keys / busy；null = 能出。</summary>
+    /// <summary>挡不挡开始：缺文件（files）/ 缺 keys（keys）只提示、不挡（v0.3.1「拿不准不停」，同 Mac ExportBlocker.stopsStart）——
+    /// 两项来自游戏库读数、可能是旧的；出包作业开头自己核（library.requirement_errors：input_missing / keys_missing），真缺才停</summary>
+    private bool ExportStops(LibraryGame game) => ExportBlockerKind(game) is { } kind && kind is not ("files" or "keys");
+
     private string? ExportBlockerKind(LibraryGame game)
     {
         if (!exportIos) return "platform";
@@ -505,7 +509,7 @@ public sealed partial class EnvironmentWindow
 
     private void StartPack(LibraryGame game, bool spaceOverride = false)
     {
-        if (ExportBlocker(game) is not null) return;
+        if (ExportStops(game)) return;
         // 「仍然出包」重试沿用这一款上次选的位置；出包页没读到这款时不传，后端按这款现在的位置
         if (!spaceOverride || packGame?.Id != game.Id) packLocation = locationsFor == game.Id && exportLocation.Length > 0 ? exportLocation : null;
         ResetPack(game);
@@ -1451,6 +1455,11 @@ public sealed partial class EnvironmentWindow
     {
         if (await ConfirmInstallActionAsync("install.restore")) await RunPhoneJobAsync(game, "installRestore", "install.restore");
     }
+
+    /// <summary>换游戏库的 setup 作业报 library_in_cloud（选的文件夹在云盘同步目录里）：认得出的风险，问玩家「仍然继续 / 先不」；同意返回 true，调用方带 acceptCloud 重发（同 Mac LibraryConfirm）</summary>
+    private async Task<bool> ConfirmCloudLibraryAsync(LibraryJobOutput setup) =>
+        !setup.Report.Succeeded && JobCode(setup) == "library_in_cloud" &&
+        await ConfirmInstallActionAsync("install.drop", setup.Report.Message, ConfirmTitle("library_in_cloud"));
 
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
     private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null)

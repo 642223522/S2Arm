@@ -179,6 +179,10 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (!rp_pool_find(ub->addr, ub->size, NULL, NULL)) return skip("uniform_buffer_outside_pools", rec);
                 if (!alloc_copy(c, ub->size, (const void *)(uintptr_t)ub->addr, &sl)) return skip("arena_alloc_failed", rec);
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = ub->size; break; }
+            case NVN_RB_IMG: {
+                if (st != 5 || e->cls != NVN_GPU_RES_IMAGE || e->count > 1) return skip("compute_image_shape", rec);
+                if (!tv[i]) return skip("compute_image_unresolved", rec);
+                o->u.view = tv[i]; break; }
             case NVN_RB_TEX: {
                 if (e->count > 1) {   // 贴图数组：逐项绑（视图与采样器已在开通道前取好，放在 g_av / g_as）
                     if (n + e->count > RP_PROG_ENT_MAX) return skip("too_many_bindings", rec);
@@ -367,7 +371,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     }
     uint32_t tw = 1, th = 1;
     { int fi = -1; for (int i = 0; i < rt->n && i < 8 && fi < 0; i++) if (rt->color[i]) fi = i;   // 缺省视口的尺寸：第一个有图的颜色槽，没有就取深度目标
-      if (fi >= 0) { uint32_t l = rt->has_cview[fi] && rt->cview[fi].set_levels ? rt->cview[fi].base_level : 0; tw = rt->color[fi]->d.width >> l; th = rt->color[fi]->d.height >> l; }
+      if (fi >= 0) rp_pass_slot_size(fi, &tw, &th);   // 块压缩基底配一块当一个像素的视图时是块数（#709）
       else if (rt->depth) { uint32_t l = rt->has_dview && rt->dview.set_levels ? rt->dview.base_level : 0; tw = rt->depth->d.width >> l; th = rt->depth->d.height >> l; }
       if (!tw) tw = 1;
       if (!th) th = 1; }
@@ -466,7 +470,7 @@ static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence)
 
 // ---------- 计算派发（nvn_mtl.m dispatch @13556） ----------
 // 取计算程序 → 落地待折清除并结束通道（派发在通道外，且可能读写那些目标）→ 绑定 NVN 阶段 5 的资源 → 派发。
-// 首版范围：直接给组数的派发；常量缓冲、驱动段、按槽绑定的存储缓冲、单张组合贴图。间接派发、图像、贴图数组：记账跳过。
+// 范围：直接给组数的派发；常量缓冲、驱动段、按槽绑定的存储缓冲、单张组合贴图与图像。间接派发、贴图数组：记账跳过。
 static nvn_hmap g_cpipes = {.klen = 8};   // 计算程序 → 计算管线
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     if (!c) return;
@@ -476,9 +480,29 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     int sr = rp_shader_resolve_compute(&pg);
     if (sr) { skip(sr > 0 ? "compute_program_not_ready" : "compute_program_unresolved", rec); return; }
     static nvn_gpu_view tv[RP_PROG_ENT_MAX]; static nvn_gpu_samp ts[RP_PROG_ENT_MAX];
+    const tex_t *images[RP_PROG_ENT_MAX] = {0};
+    rp_view_pin_begin();
     for (uint32_t i = 0; i < pg->nent[0]; i++) { const nvn_gpu_layout_ent *e = &pg->ent[0][i]; tv[i] = NULL; ts[i] = NULL;
+        if (e->src_kind == NVN_RB_IMG) {
+            if (e->cls != NVN_GPU_RES_IMAGE || e->count > 1 || e->src_reg >= 32) { skip("compute_image_shape", rec); goto done; }
+            uint64_t h = rp_S.img[5][e->src_reg];
+            tex_t snap; view_t view; int has_view;
+            if (!rp_tex_snap_by_id((int)(h & 0xFFFFF), &snap, &view, &has_view)) { skip("compute_image_unresolved", rec); goto done; }
+            uint32_t format = has_view && view.set_format ? (uint32_t)view.format : (uint32_t)snap.d.format;
+            if (!(snap.d.flags & NVN_TEXTURE_FLAGS_IMAGE) || !(nvn_gpu_format_caps(format) & NVN_GPU_FMT_STORAGE)) { skip("compute_image_storage_unsupported", rec); goto done; }
+            uint32_t levels = has_view && view.set_levels ? (view.nlevels ? view.nlevels : 1) : (snap.d.levels ? snap.d.levels : 1);
+            int swizzled = 0;
+            for (int ch = 0; ch < 4; ch++) {
+                uint32_t sw = has_view && view.set_swizzle ? view.swz[ch] : snap.set_swz && snap.swz ? (snap.swz >> (3 * ch) & 7) : (uint32_t)(2 + ch);
+                if (sw <= 5 && sw != (uint32_t)(2 + ch)) swizzled = 1;
+            }
+            if (levels != 1 || swizzled) { skip("compute_image_view_unsupported", rec); goto done; }
+            tv[i] = rp_view_by_id((int)(h & 0xFFFFF), c, &images[i]);
+            if (!tv[i] || !images[i]) { skip("compute_image_unresolved", rec); goto done; }
+            continue;
+        }
         if (e->src_kind != NVN_RB_TEX) continue;
-        if (e->count > 1) { skip("compute_texture_array", rec); return; }
+        if (e->count > 1) { skip("compute_texture_array", rec); goto done; }
         uint64_t h = rp_S.tex[5][e->src_reg];
         tv[i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, NULL); ts[i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
@@ -486,15 +510,18 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     uint64_t key = (uint64_t)(uintptr_t)pg; nvn_gpu_pipe cp = nvn_hm_get(&g_cpipes, &key);
     if (!cp) {
         nvn_gpu_stage_desc cs; memset(&cs, 0, sizeof cs); cs.sh = pg->sh[0]; nvn_gpu_err err = {0};
-        if (!nvn_gpu_ok(nvn_gpu_cpipe_get(&cs, NVN_GPU_PIPE_SYNC, &cp, &err)) || !cp) { if (nvn_unimpl("gpu", "compute_pipeline", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; return; }
+        if (!nvn_gpu_ok(nvn_gpu_cpipe_get(&cs, NVN_GPU_PIPE_SYNC, &cp, &err)) || !cp) { if (nvn_unimpl("gpu", "compute_pipeline", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; goto done; }
         nvn_hm_put(&g_cpipes, &key, cp);
     }
     nvn_gpu_set_pipe(c, cp);
     g_pipe = NULL; g_pipe_cmd = NULL; rp_dirty_all();   // 后端的当前管线换成了计算管线：下一笔绘制全部重发
     g_disp_dim[0] = (uint32_t)dp->x; g_disp_dim[1] = (uint32_t)dp->y; g_disp_dim[2] = (uint32_t)dp->z;
-    if (!bind_stage_at(c, pg, 0, 5, 0, tv, ts, rec)) return;
+    if (!bind_stage_at(c, pg, 0, 5, 0, tv, ts, rec)) goto done;
+    for (uint32_t i = 0; i < pg->nent[0]; i++) if (images[i] && (pg->ent[0][i].access & NVN_GPU_ACC_W)) rp_tex_mark_gpu_written(images[i]);
     nvn_gpu_dispatch(c, cp, (uint32_t)dp->x, (uint32_t)dp->y, (uint32_t)dp->z, NULL, 0);
     g_dispatches++;
+done:
+    rp_view_pin_end();
 }
 
 void rp_draw_stats(uint64_t *draws, uint64_t *skips) { if (draws) *draws = g_draws; if (skips) *skips = g_skips; }

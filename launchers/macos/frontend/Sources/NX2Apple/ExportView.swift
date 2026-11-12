@@ -298,8 +298,8 @@ struct ExportView: View {
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(blocker != nil)
-            .opacity(blocker == nil ? 1 : 0.4)
+            .disabled(blocker?.stopsStart == true)   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
+            .opacity(blocker?.stopsStart == true ? 0.4 : 1)
             .busyHint(model, disabled: blocker == .busy)   // 别的任务（非出包）在跑：说在等谁（出包在跑时这里是「排队」，不置灰）
             .keyboardShortcut(.defaultAction)
             .padTarget("export.start", scope: "main", radius: 26) { model.export(game, location: location.isEmpty ? nil : location) }

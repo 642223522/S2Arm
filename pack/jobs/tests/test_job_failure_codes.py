@@ -642,6 +642,23 @@ class LogCauses(JobCase):
                                      "【红】fixture 刷新停在 direct 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertNotEqual(error.code, "rewrite_gap")
 
+    # v0.3.1 拿不准不停 ⑪ / ⑧：物理做不下去照停，但归到说人话的码（原先落成笼统的 package_failed）。每例单独一个方法：任务日志按例累积
+    def test_profile_structure_unsupported_speaks_plainly(self):
+        error, d = self.mac_refresh(["【黄】直连缺口：配置推导不支持本款：main is not an NSO", "【红】fixture 直连单轨停在 直连配置推导：直连缺口：配置推导不支持本款（direct_profile rc=3）"])
+        self.assertEqual(error.code, "game_structure_unsupported", d)
+
+    def test_profile_graphics_api_still_wins(self):
+        error, d = self.mac_refresh(["【黄】直连缺口：配置推导不支持本款：unsupported graphics API: unknown（no NVN）", "【红】fixture 直连单轨停在 直连配置推导：直连缺口：配置推导不支持本款（direct_profile rc=3）"])
+        self.assertEqual(error.code, "graphics_api_unsupported", d)
+
+    def test_metal_none_built_is_metal_unavailable(self):
+        error, d = self.mac_refresh(["[RED] mac Metal 库一份都没出（编不过 12 支、编成 0、复用 0）：编译器在这台机器上用不了，不发布没有着色器库的包", "【红】fixture 刷新停在 direct 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "metal_unavailable", d)
+
+    def test_native_library_missing_is_tool_missing(self):
+        error, d = self.mac_refresh(["[RED] 原生库缺件（出包机环境，不是游戏内容）：DllNotFoundException（abc）", "【红】fixture 刷新停在 direct 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "tool_missing", d)
+
     def test_non_rewrite_failure_has_no_facts(self):
         error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertNotIn("facts", d)
