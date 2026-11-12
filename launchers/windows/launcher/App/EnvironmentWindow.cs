@@ -42,6 +42,7 @@ public sealed partial class EnvironmentWindow : Window
         using var reader = new StreamReader(stream);
         var experience = reader.ReadToEnd();
         text = new SharedText(experience);
+        PrivateJobRequest.Describe = (code, path) => T("private_root." + code).Replace("{0}", path);   // 私有目录用不了时的话按当前界面语言（#672）
         using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
             ?? throw new FileNotFoundException("Localization table resource is missing.");
         using var tableReader = new StreamReader(table);

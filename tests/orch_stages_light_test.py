@@ -76,6 +76,21 @@ class LightTest(unittest.TestCase):
         self.assertIn('【红】编排中止：[Errno 31] 连到系统上的设备没有发挥作用。', err.getvalue())
         self.assertIn('deep_win32_call', err.getvalue())
 
+    def test_seed_cleanup_error_keeps_cause(self):
+        # #669：播种某步失败 → 删半成品时又报 WinError 145（目录不是空的）。原先 145 盖住起因、红字又不在日志最后几行，玩家报告只剩包装层一帧。
+        #   期望手写：日志最后一行是红字，含起因「改名失败」和清理失败的附注；不再是 145 当主错误
+        def commit(self, **kw): raise OSError(13, '改名失败')
+        def abort(self): raise OSError(41, '目录不是空的。')
+        err = io.StringIO()
+        with patch.object(refresh, 'Roots', return_value=self.store), patch.object(roots.Transaction, 'commit', commit), \
+                patch.object(roots.Transaction, 'abort', abort), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = refresh.main(['原创', '--from-extract', str(self.source), '--stages', ''])
+        self.assertEqual(code, 1)
+        last = err.getvalue().strip().splitlines()[-1]
+        self.assertTrue(last.startswith('【红】编排中止：[Errno 13] 改名失败'), last)
+        self.assertIn('随后的清理 abort', last)
+        self.assertIn('目录不是空的', last)
+
     def test_seed_reports_file_progress(self):
         # #361：播种逐文件拷时写「播种 已拷 / 总数」（出包进度协议），不再让进度条停在解包 100% 像卡死。期望手写：源里 exefs 1 个 + romfs 3 个文件 →
         #   总数 4，最后一行已拷 = 4（每秒最多一行，末项必写）
