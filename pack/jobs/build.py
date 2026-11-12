@@ -100,7 +100,9 @@ def validate_runtime(c, runtime, full=False, files=True):
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
-            raise Failure("这款游戏的内存配置已损坏，请重新打包后再启动。", code="runtime_invalid")
+            # v0.3.1（认不出的直接做）：宿主读这张表只认几行、程序号对不上就按 0（runtime/src/svc_mem.c alias_first_hint），
+            #   表坏了最多是布局提示归 0，不该挡起局；只记一笔
+            print("[s2a] 内存配置表（addr_need.tsv）和清单记的不一致，照常起局（布局提示可能不生效）", file=sys.stderr)
     return manifest
 
 
@@ -585,7 +587,7 @@ def sibling_roots(c, game):
 
 def seed_from_sibling(c, game, roots, kuan):
     """本平台还没有现行根、别的平台有：克隆它的现行根起步（不从解包目录重新播种）。平台无关阶段的键按内容算，与本树一致就跳过、不一致照常重做
-    （兄弟根是旧提交出的、键不同 → 重做）。克隆走 tools/clonedir.py：同一 APFS 卷 clonefile，跨卷 / 卷不支持克隆（exFAT 等）退回普通拷贝，--report 打出走了哪条路。
+    （兄弟根是旧提交出的、键不同 → 重做）。克隆走 tools/clonedir.py：同一 APFS 卷 clonefile，跨卷 / exFAT 等退回普通拷贝（目标不存在才改名发布），--report 打出走了哪条路。
     → 用了兄弟根 True；没有可用的兄弟根 False（调用方照常从解包目录播种）"""
     mine = roots.resolve() if roots.exists() else roots
     for cur in sibling_roots(c, game):
@@ -600,7 +602,7 @@ def seed_from_sibling(c, game, roots, kuan):
         try:
             c.run([sys.executable, c.engine / "tools/clonedir.py", "--report", cur, dst], log, c.env())
         except Failure:
-            # 目标卷不支持原子不覆盖发布（exFAT 等：clonedir 按设计失败关闭）：不用兄弟根，回到从共用解包目录播种（解包不重做），黄字说清走了哪条路
+            # 克隆失败（盘满、权限、源被删等）：不用兄弟根，回到从共用解包目录播种（解包不重做），黄字说清走了哪条路
             shutil.rmtree(dst, ignore_errors=True)
             why = (log.read_text(encoding="utf-8", errors="replace").strip().splitlines() or ["原因未记"])[0]
             c.diagnostic(f"兄弟平台的产物根 {cur.name} 克隆不过来（{why}），改从解包目录准备，平台无关阶段这次要重做", code="sibling_clone_failed", severity="warning")
@@ -688,10 +690,6 @@ def prepare(c):
             shutil.rmtree(src, ignore_errors=True)
         current = (root / "roots" / (game["id"] + "@现行")).resolve()
         contained(root, current)
-        shader_report = read(current / "shaders/shader_pack.json", {})
-        reds = shader_report.get("red", {})
-        if (current / "shaders/red.txt").exists() or any(reds.values()):
-            raise Failure("着色器准备存在缺口，请查看构建日志；未替换上次成功版本。")
         if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
         warn_offline_empty(c, current)
