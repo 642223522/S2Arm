@@ -3121,11 +3121,25 @@ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image,
     up_blit_add_at(src, off, row, image, size, dst, slice, level, 0, 0);
 }
 
-static uint64_t span_hash(const uint8_t *m, size_t n) {   // 8 bytes at a time (the page check runs on every written page): a multiply-xorshift mix, then the tail bytes
-    uint64_t h = 0x9e3779b97f4a7c15ull ^ n, w; size_t i = 0;
-    for (; i + 8 <= n; i += 8) { memcpy(&w, m + i, 8); h = (h ^ w) * 0xff51afd7ed558ccdull; h ^= h >> 32; }
-    for (; i < n; i++) h = (h ^ m[i]) * 0x100000001b3ull;
-    return h;
+// 32 bytes (4 words) at a time (the page check runs on every written page: per written 16 KB page at upload / check, per marked 512 B GOB — docs/排查/帧率低与耗电高.md §6 第 3 条):
+//   four independent multiply-xorshift chains (the four words of each 32 bytes, different seeds and mix constants), folded at the end. The old single
+//   chain was one multiply-xorshift per word end to end (~7 cycles of dependency per 8 bytes); four interleaved chains overlap them. Same detection
+//   strength, every chain full 64-bit: each chain step is injective on any single word delta (xor with the word injective, multiply by an odd constant
+//   bijective mod 2^64, and x ^ (x >> 32) injective — its low 32 bits come through unchanged), so any changed 8-byte word always changes its chain's
+//   hash and the final XOR fold keeps that visible; two changed words cancel only if every chain they land in cancels — a same-chain pair at 2^-64 as
+//   the old chain, a cross-chain pair needs both (2^-128). The tail below 4 words runs on one chain (a change there moves that chain, the others stay).
+//   Values are only compared within a run (marked vs re-read), never persisted — the seeds are free to differ
+static uint64_t span_hash(const uint8_t *m, size_t n) {
+    uint64_t a = 0x9e3779b97f4a7c15ull ^ n, b = 0xbf58476d1ce4e5b9ull ^ n, c = 0x94d049bb133111ebull ^ n, d = 0x2545f4914f6cdd1dull ^ n, w; size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        memcpy(&w, m + i, 8); a = (a ^ w) * 0xff51afd7ed558ccdull; a ^= a >> 32;
+        memcpy(&w, m + i + 8, 8); b = (b ^ w) * 0x2545f4914f6cdd1dull; b ^= b >> 32;
+        memcpy(&w, m + i + 16, 8); c = (c ^ w) * 0x94d049bb133111ebull; c ^= c >> 32;
+        memcpy(&w, m + i + 24, 8); d = (d ^ w) * 0x9e3779b97f4a7c15ull; d ^= d >> 32;
+    }
+    for (; i + 8 <= n; i += 8) { memcpy(&w, m + i, 8); a = (a ^ w) * 0xff51afd7ed558ccdull; a ^= a >> 32; }
+    for (; i < n; i++) a = (a ^ m[i]) * 0x100000001b3ull;
+    return a ^ b ^ c ^ d;
 }
 // Guest storage bytes as the host can read them (P1-160): a texture's storage address is the guest's (pool->mem + off), and in a far-alias pool (runtime/src/far.c) that address is
 //   unmapped — reading it directly faults once per load into the far-fault emulation, or stops the game where an access cannot be emulated. Read the shadow instead (s2a_far_g2h, the
