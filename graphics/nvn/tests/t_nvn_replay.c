@@ -88,7 +88,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
 void nvn_gpu_samp_release(nvn_gpu_samp s) { g_samp_releases++; free(s); }
 static uint32_t g_caps_nosample = ~0u;   // 用例：这个格式在替身设备上不能直接采样（后端走计算解码的 BC 格式，能力位回 0）
 uint32_t nvn_gpu_format_caps(uint32_t f) { if (f == g_caps_nosample) return 0;
-    return f == NVN_FORMAT_RGBA8 ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER | NVN_GPU_FMT_STORAGE : f == NVN_FORMAT_R16 || f == NVN_FORMAT_RG32UI || f == NVN_FORMAT_RGBA32UI ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER : NVN_GPU_FMT_SAMPLE; }
+    return f == NVN_FORMAT_RGBA8 ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER | NVN_GPU_FMT_STORAGE : f == NVN_FORMAT_R16 || f == NVN_FORMAT_RG32UI || f == NVN_FORMAT_RGBA32UI || f == NVN_FORMAT_RGBA16UI ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER : NVN_GPU_FMT_SAMPLE; }
 void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     (void)t; if (g_nup == 16) return;
     g_up[g_nup].pre = c->is_pre; g_up[g_nup].level = level; g_up[g_nup].layer = layer; g_up[g_nup].pitch = row_bytes; g_up[g_nup].img = image_bytes; g_up[g_nup].w = r->width; g_up[g_nup].h = r->height;
@@ -1229,7 +1229,7 @@ static void t_pass_bc_shadow(void) {
     submit1(&s3); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_npd == 1 && g_pd[0].w == 4 && g_pd[0].h == 4 && g_pd[0].color[0].view && g_pd[0].color[0].view->of->d.d.format == NVN_FORMAT_RGBA32UI);
     CHECK(g_ntb == 2 && g_tb[0].row == 64 && g_tb[0].img == 256 && g_tb[1].w == 16 && g_tb[1].h == 16 && nvn_unimpl_kinds() == 0);
-    // ④ 走不了影子的，照旧当空槽记账：一个像素的字节对不上一块的字节、没有换格式的视图、基底不能直接采样（后端走计算解码）、三维贴图
+    // ④ 走不了影子的，照旧当空槽记账：一个像素的字节对不上一块的字节、没有换格式的视图、基底不能直接采样（后端走计算解码）
     pass_fresh(); g_ntb = 0;
     stream s4 = {0}; view_t vbad = v3;                                                 // BC1 一块 8 字节，RGBA32UI 一个像素 16 字节
     put_set_rt_v(&s4, &b1, &vbad); cc = put(&s4, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;
@@ -1241,11 +1241,87 @@ static void t_pass_bc_shadow(void) {
     submit1(&s5); fake_complete(NVN_GPU_DONE_OK);
     g_caps_nosample = ~0u;
     CHECK(g_npd == 0 && g_ntb == 0 && nvn_unimpl_count("pass", "color_target_compressed") == 1);
-    pass_fresh(); g_ntb = 0;
-    tex_t b3d = b1; b3d.serial = 70; b3d.d.target = NVN_TEXTURE_TARGET_3D; b3d.d.depth = 4;
-    stream s6 = {0}; put_set_rt_v(&s6, &b3d, &v); cc = put(&s6, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; end(&s6);
+    pass_fresh();
+}
+
+// 三维的块压缩基底当渲染目标（#773；对照 nvn_mtl.m bcrt_attach 的 z = depthPlane）：一个深度切片一个通道，同一套影子，影子仍是二维。
+// 视图的层号在三维贴图上是深度切片，原样当基底拷贝的 layer（后端在三维贴图上把它转成 zoffset、depth 1，见 android/tests/vk 的 C86c）。
+// 期望值手算：64x32x4 的 BC1（一块 4x4、8 字节）配 RG32UI → 影子 16x8、一个像素 8 字节 → 行 128、整张 1024；视图切片 2、第 0 级 →
+// 通道前后的基底拷贝都是 level 0 / layer 2、区域 64x32；换成切片 3：影子复用不新建、基底拷贝换成 layer 3。
+// 两级的同一张图、视图第 1 级切片 1：该级 32x16 → 影子 8x4、行 64、整张 256，基底拷贝 level 1 / layer 1、区域 32x16（按像素，不按块取整）。
+static tex_t mk_tex3d(uint64_t serial, int fmt, uint32_t w, uint32_t h, uint32_t depth, uint32_t levels) {
+    tex_t t = mk_tex(serial, 0, fmt, w, h, levels, 0); t.d.target = NVN_TEXTURE_TARGET_3D; t.d.depth = depth; nvn_tex_layout(&t.d, &t.L); return t;
+}
+static void t_pass_bc_shadow_3d(void) {
+    pass_fresh(); g_ntb = 0; g_gdraws = 0;
+    tex_t b3 = mk_tex3d(70, NVN_FORMAT_RGBA_DXT1, 64, 32, 4, 1);
+    view_t v; memset(&v, 0, sizeof v); v.set_format = 1; v.format = NVN_FORMAT_RG32UI;
+    view_t v2 = v; v2.set_layers = 1; v2.min_layer = 2; v2.nlayers = 1;
+    // ① 不清除直接画切片 2：通道前基底的切片 2 → 缓冲 → 影子；通道后影子 → 缓冲 → 基底的同一个切片
+    stream s = {0}; q_env(&s); put_set_rt_v(&s, &b3, &v2); q_draw(&s); end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_npd == 1 && g_pd[0].ncolor == 1 && g_pd[0].w == 16 && g_pd[0].h == 8 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD);
+    nvn_gpu_tex sh = g_npd >= 1 && g_pd[0].color[0].view ? g_pd[0].color[0].view->of : NULL;   // g_pd 不随 pass_fresh 清：没开通道时里面是上一个用例留下的
+    CHECK(sh && sh->d.d.target == NVN_TEXTURE_TARGET_2D && sh->d.d.format == NVN_FORMAT_RG32UI && sh->d.d.width == 16 && sh->d.d.height == 8 && (sh->d.usage & NVN_GPU_TEX_RENDER));
+    nvn_gpu_tex base = g_ntb > 0 ? g_tb[0].t : NULL;
+    CHECK(base && base != sh && base->d.d.target == NVN_TEXTURE_TARGET_3D && base->d.d.format == NVN_FORMAT_RGBA_DXT1 && base->d.d.depth == 4);
+    CHECK(g_ntb == 4 && g_tb[0].to_tex == 0 && g_tb[0].level == 0 && g_tb[0].layer == 2 && g_tb[0].w == 64 && g_tb[0].h == 32 && g_tb[0].row == 128 && g_tb[0].img == 1024);
+    CHECK(g_tb[1].to_tex == 1 && g_tb[1].t == sh && g_tb[1].layer == 0 && g_tb[1].w == 16 && g_tb[1].h == 8 && g_tb[1].row == 128 && g_tb[1].img == 1024);   // 影子是二维的，层 0
+    CHECK(g_tb[2].to_tex == 0 && g_tb[2].t == sh && g_tb[2].layer == 0 && g_tb[2].w == 16 && g_tb[2].h == 8 && g_tb[2].ended == 1);
+    CHECK(g_tb[3].to_tex == 1 && g_tb[3].t == base && g_tb[3].level == 0 && g_tb[3].layer == 2 && g_tb[3].w == 64 && g_tb[3].h == 32 && g_tb[3].row == 128 && g_tb[3].img == 1024);
+    CHECK(nvn_unimpl_count("pass", "color_target_compressed_3d") == 0 && nvn_unimpl_count("pass", "color_target_compressed") == 0 && nvn_unimpl_count("pass", "no_attachment") == 0);
+    // ② 同一张图的切片 3（另一次提交）：影子复用不新建，基底拷贝取自己的切片
+    g_ntb = 0;
+    view_t v3 = v2; v3.min_layer = 3;
+    stream s2 = {0}; q_env(&s2); put_set_rt_v(&s2, &b3, &v3); q_draw(&s2); end(&s2);
+    int tc = g_tex_creates;
+    submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && g_npd == 2 && g_pd[1].w == 16 && g_pd[1].h == 8 && g_pd[1].color[0].view && g_pd[1].color[0].view->of == sh && g_tex_creates == tc);
+    CHECK(g_ntb == 4 && g_tb[0].to_tex == 0 && g_tb[0].t == base && g_tb[0].layer == 3 && g_tb[3].to_tex == 1 && g_tb[3].t == base && g_tb[3].layer == 3);
+    // ③ 不设层号（视图只换格式）：取切片 0
+    g_ntb = 0;
+    stream s3 = {0}; q_env(&s3); put_set_rt_v(&s3, &b3, &v); q_draw(&s3); end(&s3);
+    submit1(&s3); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 3 && g_ntb == 4 && g_tb[0].layer == 0 && g_tb[3].layer == 0 && g_tb[3].t == base);
+    // ④ 同一条命令流里连着两个切片（游戏一个深度切片一个通道地循环）：各自拷进拷出，第二个通道的拷进在第一个通道的拷回之后，用的是同一个影子
+    pass_fresh(); g_ntb = 0; g_gdraws = 0;
+    stream s6 = {0}; q_env(&s6); put_set_rt_v(&s6, &b3, &v2); q_draw(&s6); put_set_rt_v(&s6, &b3, &v3); q_draw(&s6); end(&s6);
     submit1(&s6); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_npd == 0 && g_ntb == 0 && nvn_unimpl_count("pass", "color_target_compressed_3d") == 1 && nvn_unimpl_count("pass", "color_target_compressed") == 0);
+    CHECK(g_gdraws == 2 && g_npd == 2 && g_ntb == 8);
+    CHECK(g_tb[0].to_tex == 0 && g_tb[0].layer == 2 && g_tb[3].to_tex == 1 && g_tb[3].layer == 2 && g_tb[3].ended == 1);                                   // 第一个通道：切片 2 拷进、拷回
+    CHECK(g_tb[4].to_tex == 0 && g_tb[4].layer == 3 && g_tb[4].begun == 1 && g_tb[7].to_tex == 1 && g_tb[7].layer == 3 && g_tb[7].t == g_tb[0].t);          // 第二个通道：切片 3，拷进时第二个通道还没开
+    CHECK(g_tb[1].t == g_tb[5].t && g_tb[2].t == g_tb[1].t && g_tb[6].t == g_tb[1].t && g_tb[1].layer == 0 && g_tb[5].layer == 0);                         // 两个通道共用一个二维影子
+    // ⑤ 两级的三维贴图，视图第 1 级切片 1（该级 32x16x2）
+    pass_fresh(); g_ntb = 0; g_gdraws = 0;
+    tex_t bm = mk_tex3d(71, NVN_FORMAT_RGBA_DXT1, 64, 32, 4, 2);
+    view_t vm = v; vm.set_levels = 1; vm.base_level = 1; vm.nlevels = 1; vm.set_layers = 1; vm.min_layer = 1; vm.nlayers = 1;
+    stream s4 = {0}; q_env(&s4); put_set_rt_v(&s4, &bm, &vm); q_draw(&s4); end(&s4);
+    submit1(&s4); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_npd == 1 && g_pd[0].w == 8 && g_pd[0].h == 4 && g_pd[0].color[0].view && g_pd[0].color[0].view->of->d.d.width == 8 && g_pd[0].color[0].view->of->d.d.height == 4);
+    CHECK(g_ntb == 4 && g_tb[0].to_tex == 0 && g_tb[0].level == 1 && g_tb[0].layer == 1 && g_tb[0].w == 32 && g_tb[0].h == 16 && g_tb[0].row == 64 && g_tb[0].img == 256);
+    CHECK(g_tb[3].to_tex == 1 && g_tb[3].t == g_tb[0].t && g_tb[3].level == 1 && g_tb[3].layer == 1 && g_tb[3].w == 32 && g_tb[3].h == 16);
+    // ⑥ 整屏清除（裁剪矩形按块数盖满 16x8）：折成通道的 CLEAR，通道前不拷；通道后只写回切片 2
+    pass_fresh(); g_ntb = 0;
+    stream s5 = {0}; put_set_rt_v(&s5, &b3, &v2);
+    p_scissor *sc = put(&s5, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 16; sc->h = 8;
+    p_clear_color *cc = put(&s5, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; end(&s5);
+    submit1(&s5); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_npd == 1 && g_ncr == 0 && g_pd[0].w == 16 && g_pd[0].h == 8 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR);
+    CHECK(g_ntb == 2 && g_tb[0].to_tex == 0 && g_tb[0].layer == 0 && g_tb[1].to_tex == 1 && g_tb[1].layer == 2 && g_tb[1].w == 64 && g_tb[1].h == 32);
+    CHECK(nvn_unimpl_kinds() == 0);
+    // ⑦ 程序里的真实配置（#773 认领帖的验收）：32x32x32 的 BC4（RGTC1，一块 8 字节）配 RGBA16UI（一个像素 8 字节）→ 影子 8x8、行 64、整张 512；
+    //    视图切片 5 → 通道前后两次基底拷贝的 layer 都是 5、区域 32x32
+    pass_fresh(); g_ntb = 0; g_gdraws = 0;
+    tex_t b4 = mk_tex3d(72, NVN_FORMAT_RGTC1_UNORM, 32, 32, 32, 1);
+    view_t v5; memset(&v5, 0, sizeof v5); v5.set_format = 1; v5.format = NVN_FORMAT_RGBA16UI; v5.set_layers = 1; v5.min_layer = 5; v5.nlayers = 1;
+    stream s7 = {0}; q_env(&s7); put_set_rt_v(&s7, &b4, &v5); q_draw(&s7); end(&s7);
+    submit1(&s7); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_npd == 1 && g_pd[0].w == 8 && g_pd[0].h == 8 && g_pd[0].color[0].view && g_pd[0].color[0].view->of->d.d.target == NVN_TEXTURE_TARGET_2D);
+    CHECK(g_npd == 1 && g_pd[0].color[0].view->of->d.d.format == NVN_FORMAT_RGBA16UI && g_pd[0].color[0].view->of->d.d.width == 8 && g_pd[0].color[0].view->of->d.d.height == 8);
+    CHECK(g_ntb == 4 && g_tb[0].to_tex == 0 && g_tb[0].level == 0 && g_tb[0].layer == 5 && g_tb[0].w == 32 && g_tb[0].h == 32 && g_tb[0].row == 64 && g_tb[0].img == 512);
+    CHECK(g_tb[1].to_tex == 1 && g_tb[1].layer == 0 && g_tb[1].w == 8 && g_tb[1].h == 8 && g_tb[1].row == 64 && g_tb[1].img == 512 && g_tb[2].to_tex == 0 && g_tb[2].layer == 0);
+    CHECK(g_tb[3].to_tex == 1 && g_tb[3].t == g_tb[0].t && g_tb[3].level == 0 && g_tb[3].layer == 5 && g_tb[3].w == 32 && g_tb[3].h == 32 && g_tb[3].row == 64 && g_tb[3].img == 512);
+    CHECK(nvn_unimpl_count("pass", "color_target_compressed_3d") == 0 && nvn_unimpl_count("pass", "color_target_compressed") == 0 && nvn_unimpl_count("pass", "no_attachment") == 0);
     pass_fresh();
 }
 
@@ -2041,6 +2117,7 @@ int main(int argc, char **argv) {
     t_pass_clear_fold();
     t_pass_depth_shadow();
     t_pass_bc_shadow();
+    t_pass_bc_shadow_3d();
     t_autoflush();
     t_pass_target_persists();
     t_pass_switch_and_partial();
