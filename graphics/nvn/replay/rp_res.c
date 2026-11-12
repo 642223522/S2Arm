@@ -97,6 +97,13 @@ int nvn_be_tex_gpu_owned(uint64_t serial) {
     pthread_mutex_unlock(&g_rmu);
     return r;
 }
+// 只读查询：这个序号被前端标过「CPU 写过」（nvn_be_tex_cpu_written 记下的）；同步读回（rp_entry.c）判内容在不在游戏内存里用，同 nvn_mtl.m 的 tex_cpu_written
+int rp_tex_cpu_written(uint64_t serial) {
+    pthread_mutex_lock(&g_rmu);
+    int r = nvn_hm_get(&g_cpu_ser, &serial) != NULL;
+    pthread_mutex_unlock(&g_rmu);
+    return r;
+}
 // iOS 按页记 GPU 写的时刻（gpw_*，nvn_mtl.m:3560 一带）；这里先按整张贴图判，页级账随读回路径一起接
 int nvn_be_tex_gpu_owned_since(uint64_t serial, uint64_t stamp) { (void)stamp; return nvn_be_tex_gpu_owned(serial); }
 void rp_tex_mark_gpu_written(const tex_t *t) {

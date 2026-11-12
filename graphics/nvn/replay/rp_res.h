@@ -24,6 +24,8 @@ int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v);
 nvn_gpu_samp rp_samp_by_id(int id);
 // 这张贴图的内容从此以 GPU 为准（当了渲染目标 / 被拷贝写 / 被着色器写）：不再从游戏内存重传。
 void rp_tex_mark_gpu_written(const tex_t *t);
+// 只读查询：这个序号被前端标过「CPU 写过」（nvn_be_tex_cpu_written：WriteTexels、刷新范围盖到、导出等）。同步读回判内容在不在游戏内存里用。线程：任意。
+int rp_tex_cpu_written(uint64_t serial);
 // 调试：序号 → 后端贴图（没建过 = NULL）。
 nvn_gpu_tex rp_tex_backend_by_serial(uint64_t serial);
 // 会话收尾：放掉全部后端对象、清表。
