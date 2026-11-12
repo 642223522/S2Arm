@@ -572,6 +572,7 @@ static void t_buf_ops(void) {   // 缓冲类命令只改游戏内存；GPU 顺�
     nvn_be_pool_del(g_pmem);
 }
 
+static void t_copy_b2t_linear(void);
 static void t_copy_b2t(void) {   // 缓冲 → 贴图：线性行直接传；级 / 层取自视图；行距可由游戏设；之后内容归 GPU
     nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); memset(g_pmem, 0, sizeof g_pmem);
     for (int i = 0; i < 64; i++) g_pmem[i] = (uint8_t)(i + 1);
@@ -599,6 +600,30 @@ static void t_copy_b2t(void) {   // 缓冲 → 贴图：线性行直接传；级
     for (int z = 0; z < 3 && g_nup == 9; z++) CHECK(g_up[6 + z].layer == (uint32_t)(1 + z) && g_up[6 + z].img == 16 && g_up[6 + z].w == 2 && g_up[6 + z].first[0] == (uint8_t)(1 + 16 * z));
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     nvn_be_tex_release(&t3); nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&g_tp); nvn_be_pool_del(g_pmem);
+    t_copy_b2t_linear();   // 线性贴图的同一类拷贝（#734）
+}
+
+static void t_copy_b2t_linear(void) {   // 缓冲 → 线性贴图（#734）：宿主贴图不按游戏的内存布局建，拷贝这一侧和块线性的同一条路（iOS copy_b2t 不分线性）
+    nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); memset(g_pmem, 0, sizeof g_pmem);
+    for (int i = 0; i < 64; i++) g_pmem[i] = (uint8_t)(i + 1);
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    tex_t t = mk_tex(61, 0, NVN_FORMAT_RGBA8, 8, 4, 1, NVN_TEXTURE_FLAGS_LINEAR);
+    tex_t u = mk_tex(62, 0x1000, NVN_FORMAT_RGBA8, 4, 4, 1, NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);
+    stream a = {0};
+    p_copy_b2t *o = put(&a, OP_COPY_B2T, sizeof *o + sizeof t); tex_t *snap = (tex_t *)(o + 1); *snap = t;
+    o->src = (uint64_t)(uintptr_t)g_pmem; o->tex = snap; o->r = (NVNcopyRegion){1, 1, 0, 3, 2, 1};   // 紧排：行 3×4 = 12 字节，2 行 24 字节
+    o = put(&a, OP_COPY_B2T, sizeof *o + sizeof u); snap = (tex_t *)(o + 1); *snap = u;
+    o->src = (uint64_t)(uintptr_t)g_pmem + 16; o->tex = snap; o->r = (NVNcopyRegion){0, 0, 0, 4, 4, 1}; o->row_stride = 64;   // 游戏设的行距 64，4 行 256 字节
+    end(&a);
+    nvn_be_sub_begin(); nvn_be_exec(a.b);
+    CHECK(nvn_unimpl_count("tex", "b2t_linear") == 0 && nvn_unimpl_kinds() == 0);
+    CHECK(g_nup == 4);   // 每张新建存储先清零一次（线性的不从存储取初始内容），各一条拷贝
+    CHECK(g_nup == 4 && g_up[0].img == 8 * 4 * 4 && g_up[0].first[0] == 0 && g_up[2].img == 4 * 4 * 4 && g_up[2].first[0] == 0);
+    CHECK(g_nup == 4 && g_up[1].level == 0 && g_up[1].layer == 0 && g_up[1].w == 3 && g_up[1].h == 2 && g_up[1].pitch == 12 && g_up[1].img == 24 && g_up[1].first[0] == 1);
+    CHECK(g_nup == 4 && g_up[3].level == 0 && g_up[3].layer == 0 && g_up[3].w == 4 && g_up[3].h == 4 && g_up[3].pitch == 64 && g_up[3].img == 256 && g_up[3].first[0] == 17);
+    CHECK(nvn_be_tex_gpu_owned(61) == 1 && nvn_be_tex_gpu_owned(62) == 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_tex_release(&u); nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&g_tp); nvn_be_pool_del(g_pmem);
 }
 
 static void put_set_rt(stream *s, const tex_t *color, const tex_t *depth) {   // 紧凑记录：头、指针、（无视图）、快照
