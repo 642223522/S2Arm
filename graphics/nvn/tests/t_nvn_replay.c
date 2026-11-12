@@ -491,6 +491,95 @@ static void t_tex_init_registers_only(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
 }
 
+// 共用存储被新贴图占了就出表（照 iOS alias_take_over）。期望的个数由「谁还被对象指着、谁闲置够了 16 次提交」数出来：
+// 同一偏移上先后换 40 种宽高（带动态分辨率的游戏每帧换一种），旧宽高的对象都已 Finalize：表里不能越攒越多。
+static void subs_pass(int n) { for (int i = 0; i < n; i++) { nvn_be_sub_begin(); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); } }
+static void t_alias_take_over(void) {
+    res_fresh(); int c0 = g_tex_creates, r0 = g_tex_releases;
+    // ① 每换一种宽高之间隔 16 次提交：上一种闲置够了、又没有对象指着 → 被新的挤掉，表里始终只有 1 份
+    for (int i = 0; i < 40; i++) {
+        nvn_be_sub_begin();
+        tex_t t = mk_tex(100 + (uint64_t)i, 0, NVN_FORMAT_RGBA8, 64 + i, 32, 1, 0);
+        CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL);
+        nvn_be_tex_release(&t);
+        nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+        if (rp_res_tex_built() != 1) { CHECK(rp_res_tex_built() == 1); break; }
+        subs_pass(16);
+    }
+    CHECK(g_tex_creates - c0 == 40 && g_tex_releases - r0 == 39 && rp_res_tex_built() == 1);
+    nvn_be_alias_drop_pool(&g_tp); res_fresh(); c0 = g_tex_creates; r0 = g_tex_releases;
+    // ② 闲置窗口：刚用过的不挤。同一次提交里先后两种宽高（对象都 Finalize 了）→ 两份都在；隔 16 次提交再来第三种 → 前两份都放
+    nvn_be_sub_begin();
+    tex_t a = mk_tex(200, 0, NVN_FORMAT_RGBA8, 64, 64, 1, 0), b = mk_tex(201, 0, NVN_FORMAT_RGBA8, 48, 48, 1, 0);
+    CHECK(rp_tex_resolve(&a, &g_fake_cmd) && rp_tex_resolve(&b, &g_fake_cmd));
+    nvn_be_tex_release(&a); nvn_be_tex_release(&b);
+    CHECK(rp_res_tex_built() == 2 && g_tex_releases == r0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    subs_pass(16);
+    nvn_be_sub_begin();
+    tex_t c = mk_tex(202, 0, NVN_FORMAT_RGBA8, 40, 40, 1, 0);
+    CHECK(rp_tex_resolve(&c, &g_fake_cmd) != NULL);
+    CHECK(rp_res_tex_built() == 1 && g_tex_releases - r0 == 2);
+    // ③ 每帧 Finalize 再按同描述重建的目标：隔多少次提交都还是那一份（靠同描述查到，不算被占）
+    nvn_gpu_tex gc = rp_tex_resolve(&c, &g_fake_cmd);
+    nvn_be_tex_release(&c);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    subs_pass(40);
+    nvn_be_sub_begin();
+    tex_t c2 = mk_tex(203, 0, NVN_FORMAT_RGBA8, 40, 40, 1, 0);
+    CHECK(rp_tex_resolve(&c2, &g_fake_cmd) == gc && rp_res_tex_built() == 1);
+    // ④ 还有对象指着的不挤：c2 没 Finalize，闲置再久，同偏移来了别的宽高也留着
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    subs_pass(40);
+    nvn_be_sub_begin();
+    int r1 = g_tex_releases;
+    tex_t d = mk_tex(204, 0, NVN_FORMAT_RGBA8, 36, 36, 1, 0);
+    CHECK(rp_tex_resolve(&d, &g_fake_cmd) != NULL && rp_res_tex_built() == 2 && g_tex_releases == r1);
+    // ⑤ 存储不重叠的不挤：别的偏移上闲置的、没对象指着的那份留着
+    tex_t far = mk_tex(205, 0x40000, NVN_FORMAT_RGBA8, 32, 32, 1, 0);
+    CHECK(rp_tex_resolve(&far, &g_fake_cmd) != NULL);
+    nvn_be_tex_release(&far);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    subs_pass(40);
+    nvn_be_sub_begin();
+    r1 = g_tex_releases;
+    nvn_be_tex_release(&d);
+    tex_t e = mk_tex(206, 0x80000, NVN_FORMAT_RGBA8, 32, 32, 1, 0);
+    CHECK(rp_tex_resolve(&e, &g_fake_cmd) != NULL && g_tex_releases == r1 && rp_res_tex_built() == 4);   // c2、d、far、e
+    nvn_be_tex_release(&e); nvn_be_tex_release(&c2);
+    nvn_be_alias_drop_pool(&g_tp);
+    CHECK(rp_res_tex_built() == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    // ⑥ 对象还活着、但存储被别的贴图写覆盖了（动态分辨率：一批并存的对象建在同一偏移上，各一个宽高，游戏不 Finalize 它们）：
+    //    p 写过后闲置；q 建在同一偏移上、之后一直在被写；再来 r 时：p 闲置满 16 次提交、且 q 在 p 最后一次写之后写过 → p 放；q 刚写过 → 留
+    res_fresh(); c0 = g_tex_creates; r0 = g_tex_releases;
+    nvn_be_sub_begin();
+    tex_t p = mk_tex(300, 0, NVN_FORMAT_RGBA8, 64, 64, 1, 0);
+    nvn_gpu_tex gp = rp_tex_resolve(&p, &g_fake_cmd); CHECK(gp != NULL);
+    rp_tex_mark_gpu_written(&p);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    subs_pass(20);
+    nvn_be_sub_begin();
+    tex_t q = mk_tex(301, 0, NVN_FORMAT_RGBA8, 60, 60, 1, 0);
+    CHECK(rp_tex_resolve(&q, &g_fake_cmd) != NULL);
+    CHECK(rp_res_tex_built() == 2 && g_tex_releases == r0);          // q 还没写：p 没被盖，留着
+    rp_tex_mark_gpu_written(&q);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    subs_pass(20);
+    nvn_be_sub_begin();
+    rp_tex_mark_gpu_written(&q);                                      // q 一直在用
+    tex_t r = mk_tex(302, 0, NVN_FORMAT_RGBA8, 56, 56, 1, 0);
+    CHECK(rp_tex_resolve(&r, &g_fake_cmd) != NULL);
+    CHECK(rp_res_tex_built() == 2 && g_tex_releases - r0 == 1);      // p 放了（q、r 在）
+    CHECK(rp_res_tex_serials() == 2);                                 // p 的序号也出表了
+    nvn_gpu_tex gp2 = rp_tex_resolve(&p, &g_fake_cmd);                // p 的对象还活着：再用就重建
+    CHECK(gp2 != NULL && g_tex_creates - c0 == 4 && rp_res_tex_serials() == 3);
+    nvn_be_tex_release(&p); nvn_be_tex_release(&q); nvn_be_tex_release(&r);
+    nvn_be_alias_drop_pool(&g_tp);
+    CHECK(rp_res_tex_built() == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
 static void t_alias(void) {   // 同池同偏移同描述的对象共用一份存储；只差用途标志也算同一份；偏移不同是两份
     nvn_be_sub_begin();
     res_fresh(); int c0 = g_tex_creates, r0 = g_tex_releases;
@@ -2115,6 +2204,7 @@ int main(int argc, char **argv) {
     t_pools();
     t_tex_init_registers_only();
     t_alias();
+    t_alias_take_over();
     t_read_texels_guest();
     t_read_texels_gpu_owned();
     t_cpu_upload();
