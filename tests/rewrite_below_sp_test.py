@@ -8,7 +8,10 @@
 #704 一款 Switch 2 游戏 27 处挑不出临时 → 整份报红。三处放宽，各一项：
   ③ 危险函数里、恢复 sp 之前的点（数组还在 sp 以上）照旧压栈：3 处改写 0 缺口，x18_spdanger = 2（只算恢复后两处），往下写 1 条
   ④ 恢复后的点、旧候选 x2–x17 / v16–v31 全活（后面都读），x0 / x1 已死：放宽候选借 x0 / x1，0 缺口、往下写 0 条
-  ⑤ 恢复后的 cbz x18、两个去向都读遍通用寄存器：借死向量寄存器暂存（x18_deadv_cond = 1），0 缺口、往下写 0 条"""
+  ⑤ 恢复后的 cbz x18、两个去向都读遍通用寄存器：借死向量寄存器暂存（x18_deadv_cond = 1），0 缺口、往下写 0 条
+v0.3.1 拿不准不停：挑不出任何临时的点不再整份报红，退回旧写法（压栈）、记兼容写法 x18_compat：
+  ⑥ 恢复后的普通 x18 点、通用 x0–x17 / x19–x28 与向量 v0–v31 全活：退出 0、0 缺口、x18_compat = 1、往下写 1 条
+  ⑦ 同 ⑥ 但改写点是 cbz x18：退出 0、0 缺口、x18_compat = 1、往下写 1 条（v0.3.0 二者都退出 3）"""
 import os, re, struct, subprocess, sys, tempfile
 
 last = ''
@@ -130,6 +133,18 @@ rc, stat5, spdyn, down = run(f5)
 chk('⑤ 条件跳转借死向量寄存器：退出 0、需改写 1 处、0 缺口', (0, (1, 0)), (rc, stat5))
 chk('⑤ x18_deadv_cond = 1', 1, stat('x18_deadv_cond'))
 chk('⑤ 补丁区往 sp 以下写的指令', 0, down)
+
+allv = [st1x4(t) for t in (0, 4, 8, 12, 16, 20, 24, 28)]
+f6 = HEAD + [0xb9400192] + allgp + allv + [RET]   # ldr w18, [x12]；之后读遍通用与向量寄存器；ret 读 x30
+rc, stat6, spdyn, down = run(f6)
+chk('⑥ 挑不出任何临时的普通点：退出 0、需改写 1 处、0 缺口', (0, (1, 0)), (rc, stat6))
+chk('⑥ x18_compat = 1', 1, stat('x18_compat'))
+chk('⑥ 退回旧写法：补丁区往 sp 以下压栈 1 条', 1, down)
+f7 = HEAD + [0xb4000052, 0xd503201f] + allgp + allv + [RET]
+rc, stat7, spdyn, down = run(f7)
+chk('⑦ 挑不出任何临时的 cbz x18：退出 0、需改写 1 处、0 缺口', (0, (1, 0)), (rc, stat7))
+chk('⑦ x18_compat = 1', 1, stat('x18_compat'))
+chk('⑦ 退回旧写法：补丁区往 sp 以下压栈 1 条', 1, down)
 
 print(f'{"✓" if not bad else "✗"} rewrite_below_sp_test：{bad} 处不符')
 sys.exit(1 if bad else 0)
