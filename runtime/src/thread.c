@@ -637,7 +637,14 @@ static qos_class_t other_qos(void) {
 //   UTILITY 那条被排到能效核、低优先级，等这组工作线程的游戏主逻辑被拖住，>100 ms 长帧全在宿主外、GPU 只忙四成。
 //   「3 号核 = Horizon 系统核」只是 Switch 1 的约定，Switch 2 不成立，Switch 1 游戏放在 3 号核的也常是要按帧做完的活。
 //   每次现读环境（不缓存）：线程起 / 改核掩码时才调，A/B 与单测同进程切换
-static int syscore_utility(void) { const char *v = getenv("S2A_SYSCORE_QOS"); return v && !strcmp(v, "utility"); }
+//   按性能核数分（11-12 手机 A/B：Duo 上同档后帧率、p99 持平、能耗约 +5%，没有 Mac 的改善）：性能核 ≥ 4（Mac、M 系列 iPad，同 S2A_QOS_GAME_OTHER 的判法）同档，
+//   不足 4 个（iPhone）维持 UTILITY——性能核少时多一条 USER_INTERACTIVE 线程只是多抢那两个性能核。S2A_SYSCORE_QOS=utility / same 强制旧 / 新行为（A/B 用）
+static int syscore_utility(void) {
+    const char *v = getenv("S2A_SYSCORE_QOS");
+    if (v && !strcmp(v, "utility")) return 1;
+    if (v && !strcmp(v, "same")) return 0;
+    return perf_cores() < 4;
+}
 static qos_class_t guest_qos(int main_thread, uint64_t mask) {
     if (main_thread) return main_qos();
     if (mask == 1ull << 3 && syscore_utility()) return s2a_qos(S2A_QOS_GAME_SYSCORE);
@@ -941,7 +948,7 @@ uint32_t s2a_thread_main_init(void) {
     atomic_store(&g_join_verified, 0);
     atomic_fetch_add(&g_live_threads, 1);
     LOG("线程调度档：性能核 %d 个 → 游戏主线程 %s，其余游戏线程 %s", perf_cores(), main_qos() == QOS_CLASS_USER_INTERACTIVE ? "USER_INTERACTIVE" : main_qos() == QOS_CLASS_USER_INITIATED ? "USER_INITIATED" : "UTILITY", guest_qos(0, 7) == QOS_CLASS_USER_INTERACTIVE ? "USER_INTERACTIVE" : guest_qos(0, 7) == QOS_CLASS_USER_INITIATED ? "USER_INITIATED" : "UTILITY");
-    LOG("线程调度档：核掩码只含 3 号核的游戏线程 %s", syscore_utility() ? "UTILITY（S2A_SYSCORE_QOS=utility，旧行为）" : "与其余游戏线程同档（v0.3.1 缺省）");
+    { const char *v = getenv("S2A_SYSCORE_QOS"); LOG("线程调度档：核掩码只含 3 号核的游戏线程 %s（%s）", syscore_utility() ? "UTILITY" : "与其余游戏线程同档", v && (!strcmp(v, "utility") || !strcmp(v, "same")) ? "S2A_SYSCORE_QOS 强制" : perf_cores() >= 4 ? "性能核 ≥ 4 缺省" : "性能核不足 4 个缺省"); }
 #endif
     return t->handle;
 }
