@@ -14,7 +14,7 @@ def sha(b): return hashlib.sha256(b).hexdigest()
 
 class Fake:
     """内存里的 App 容器：get / put / ls / tar_ok / put_tar / listing / free / nospc 同 push.Devpush 接口"""
-    kind = "fake"; why = "假设备"; docs = "Documents"; ctx = None
+    kind = "fake"; why = "假设备"; docs = "Documents"; ctx = None; pack = None
 
     def __init__(self, files, listing=False, full_disk=False):
         self.files = dict(files); self.puts = []; self.lists = []; self.list_ok = listing; self.full_disk = full_disk
@@ -322,11 +322,29 @@ class ContainerDocs(Base):
         self.assertTrue(push.apply(self.dev, self.pk, self.w, nb, say=self.log.append, sleep=sleep, now=lambda: clock[0]))
         self.assertEqual(self.dev.launches, [{}])   # 多款容器：正常拉起到游戏库，由库解开（不用只解包模式、不直接起某一款）
 
+    def test_pack_root_separate_from_docs(self):
+        """11-11 资源包挪出 Documents：--pack-root 给了 → 探针、待解批、记账、索引、清单、.applied 都在资源包根下；解包日志仍读 <文档根>/unpack.log"""
+        P = "Library/Application Support/S2Arm/games/0100000000010000/资源包"
+        self.dev = Fake({f"{self.D}/资源包/manifest.json": '{"version": 2}', f"{self.D}/资源包/index.applied.tsv": self.row("a") + self.row("b")})   # 旧位置的账不算（调用方选了新位置）
+        self.dev.docs, self.dev.ctx, self.dev.pack = self.D, self.CTX, P
+        nb, nt, _ = push.run(self.dev, self.pk, self.w, False, say=self.log.append)
+        self.assertEqual((nb, nt), (1, 2))
+        self.assertEqual(self.dev.puts[:3], [f"{P}/{push.PROBE}", f"{P}/.transfer", f"{P}/manifest.json"])
+        self.assertTrue(self.dev.puts[3].startswith(f"{P}/.incoming/") and self.dev.puts[3].endswith("_000.tar"), self.dev.puts[3])
+        self.assertEqual(self.dev.puts[4:], [f"{P}/.pushed", f"{P}/index.tsv", f"{P}/manifest.json"])
+        def done(d):
+            d.files[f"{P}/.applied"] = "x"; d.files[f"{self.D}/unpack.log"] = "11-07 解开 1 个包 2 个文件 0 MB，.applied = x（0.1 秒）\n"
+        self.dev.on_launch = done; clock = [0.0]
+        def sleep(x): clock[0] += x
+        self.assertTrue(push.apply(self.dev, self.pk, self.w, nb, say=self.log.append, sleep=sleep, now=lambda: clock[0]))
+
     def test_device_factory_carries_docs(self):
         d = push.device("C891", "s2arm.z.games", self.w, via="devicectl", env={}, docs=self.D, ctx=self.CTX)
-        self.assertEqual((d.docs, d.ctx), (self.D, self.CTX))
+        self.assertEqual((d.docs, d.ctx, push.rp(d)), (self.D, self.CTX, f"{self.D}/资源包"))   # 没给资源包根：按文档根推
+        d = push.device("C891", "s2arm.z.games", self.w, via="devicectl", env={}, docs=self.D, ctx=self.CTX, pack="Library/Application Support/S2Arm/games/0100000000010000/资源包")
+        self.assertEqual(push.rp(d), "Library/Application Support/S2Arm/games/0100000000010000/资源包")
         d = push.device("C891", "s2arm.z.0100000000010000", self.w, via="devicectl", env={})
-        self.assertEqual((d.docs, d.ctx), ("Documents", None))   # 单款缺省不变
+        self.assertEqual((d.docs, d.ctx, push.rp(d)), ("Documents", None, "Documents/资源包"))   # 单款缺省不变
 
 
 class BigFallback(unittest.TestCase):

@@ -5406,8 +5406,8 @@
       },
       {
         "id": "install.mode.export_note",
-        "zh-Hans": "输出未签名的 S2Arm.ipa 和各款的 game.img 到文件夹。用你的签名工具覆盖安装 S2Arm；手机上的游戏、game.img、存档都不受影响。game.img 用「文件」App 放进 S2Arm 文件夹。",
-        "en": "Writes an unsigned S2Arm.ipa and each game's game.img to a folder. Install S2Arm over the old one with your own signing tool; games, game.img files and saves on the iPhone are kept. Put game.img into the S2Arm folder with the Files app."
+        "zh-Hans": "输出未签名的 S2Arm.ipa 和各款的 game.img 到文件夹。用你的签名工具覆盖安装 S2Arm；手机上的游戏、game.img、存档都不受影响。game.img 用「文件」App 放进 S2Arm 里的「放这里导入」文件夹。",
+        "en": "Writes an unsigned S2Arm.ipa and each game's game.img to a folder. Install S2Arm over the old one with your own signing tool; games, game.img files and saves on the iPhone are kept. Put game.img into the “Import Here” folder inside S2Arm with the Files app."
       },
       {
         "id": "install.mode.export_soon",

@@ -797,7 +797,7 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
 static atomic_int g_pack_checking;
 static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
 static void library_pack_help_show(NSString *gid, BOOL again, int st);
-// 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
+// 玩家把 game.img 放进「文件」里 S2Arm 的「放这里导入」文件夹（v0.3.0，自签 / 侧载玩家）：挪进本款资源包根（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
@@ -828,10 +828,31 @@ static void games_repair_report(int r) {   // 主线程
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
     [lib_top() presentViewController:a animated:YES completion:nil];
 }
+// 资源包挪出 Documents（v0.3.0，pack_apply.c s2a_pack_migrate）：#569 修复之后、认领之前，每进程第一次扫时做；迁移期间同 #569 不起解包。
+//   新位置（Library/Application Support/S2Arm）标「不进 iCloud 备份」（几十 GB 的资源包不该进备份，电脑上都有）；建好「放这里导入」文件夹（名字跟界面语言）
+int s2a_pack_migrate(const char *proc_docs, int *failed); const char *s2a_pack_migrate_failure(void);   // pack_apply.c
+extern const char *const s2a_img_import_dirs[2];   // pack_apply.c：认领扫的两个名字（中 / 英）
+static void pack_layout_prepare(const char *proc_docs) {   // 后台线程
+    int failed = 0, moved = s2a_pack_migrate(proc_docs, &failed);
+    if (moved || failed) LOG("资源包迁移：挪进 Library %d 款%s%s", moved, failed ? "，失败 " : "", failed ? s2a_pack_migrate_failure() : "");
+    char base[1100]; if (s2a_pack_base(base, sizeof base, proc_docs) > 0) {
+        NSURL *u = [NSURL fileURLWithPath:@(base) isDirectory:YES]; NSError *e = nil;
+        [NSFileManager.defaultManager createDirectoryAtURL:u withIntermediateDirectories:YES attributes:nil error:nil];
+        if (![u setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&e]) LOG("【红】资源包目录标「不进备份」没成：%s", e.localizedDescription.UTF8String);
+    }
+    // 导入文件夹：名字按界面语言取（img.importFolder，两份字符串表的值必须是 s2a_img_import_dirs 里的两个名字之一，认领才扫得到）；另一个名字的已在就不再建
+    NSString *name = S2AL(@"img.importFolder"); BOOL known = NO, exists = NO;
+    for (int i = 0; i < 2; i++) {
+        known |= [name isEqualToString:@(s2a_img_import_dirs[i])];
+        exists |= [NSFileManager.defaultManager fileExistsAtPath:[@(proc_docs) stringByAppendingPathComponent:@(s2a_img_import_dirs[i])]];
+    }
+    if (!known) LOG("【红】导入文件夹名「%s」不在认领扫的名单里（pack_apply.c s2a_img_import_dirs），不建", name.UTF8String);
+    else if (!exists) [NSFileManager.defaultManager createDirectoryAtPath:[@(proc_docs) stringByAppendingPathComponent:name] withIntermediateDirectories:YES attributes:nil error:nil];
+}
 static void img_scan_bg(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         static atomic_int checked; int r = 0;
-        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); }
+        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); pack_layout_prepare(d); }
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
         dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); if (r == 0) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说

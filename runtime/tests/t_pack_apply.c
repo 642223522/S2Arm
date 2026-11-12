@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <signal.h>
+#include "s2a_docs.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -22,6 +23,7 @@ int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char 
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
 int s2a_img_scan(const char *proc_docs); const char *s2a_img_scan_failure(void);
+int s2a_pack_migrate_one(const char *docs); int s2a_pack_migrate(const char *proc_docs, int *failed);
 const char *s2a_install_code(int rc, int err, int truncated, int from_img); const char *s2a_pack_apply_code(void); const char *s2a_img_scan_code(void);
 extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
 static uint64_t g_ph[4][2]; static int g_phn[4]; static void phase(int ph, uint64_t d, uint64_t t) { if (ph > 0 && ph < 4) { g_ph[ph][0] = d; g_ph[ph][1] = t; g_phn[ph]++; } } int s2a_import_state(const char *docs); void s2a_pack_help_detail(int st, int again, char *d, size_t n); extern void (*s2a_pack_apply_progress)(int done, int total);
@@ -328,19 +330,19 @@ int main(void) {
         c.source = S2A_LCTX_FILE;
         CHECK(s2a_import_docs_pick(&c, 1, "/proc/Documents", out, sizeof out) == 0, "单款文件来源（构造期写了 S2A_GAME_DATA）：不查（同原先）");
         CHECK(s2a_import_docs_pick(NULL, 0, "/proc/Documents", out, sizeof out) == 1 && !strcmp(out, "/proc/Documents"), "上下文不可用、没设 S2A_GAME_DATA：查进程级 Documents");
-        // 游戏库按款判：Documents/games/<游戏号>/资源包 不在 → 没有资源；放好完整资源包 → 就绪；游戏号带 / 或以 . 开头 → 按没有资源（不进路径）
+        // 游戏库按款判（多款容器，资源包在 Library/Application Support/S2Arm/games/<游戏号>/资源包，v0.3.0）：资源包不在 → 没有资源；放好完整资源包 → 就绪；游戏号带 / 或以 . 开头 → 按没有资源（不进路径）
         char h[1024], pd[1100], cmd[4096]; snprintf(h, sizeof h, "%s/home", T); snprintf(pd, sizeof pd, "%s/Documents", h);
         CHECK(s2a_import_state_game(pd, "0100FD70134FA000") == 2, "本款资源包不在 → S2A_IMPORT_NONE(2)");
-        snprintf(cmd, sizeof cmd, "mkdir -p %1$s && cd %1$s && mkdir -p Documents/games/0100FD70134FA000/资源包/exefs && printf x > Documents/games/0100FD70134FA000/资源包/exefs/main.npdm && "
-            "printf 'exefs/main.npdm\t1\tx\n' > Documents/games/0100FD70134FA000/资源包/index.tsv && printf '{}' > Documents/games/0100FD70134FA000/资源包/manifest.json", h);
+        snprintf(cmd, sizeof cmd, "mkdir -p %1$s && cd %1$s && mkdir -p 'Library/Application Support/S2Arm/games/0100FD70134FA000/资源包'/exefs && printf x > 'Library/Application Support/S2Arm/games/0100FD70134FA000/资源包'/exefs/main.npdm && "
+            "printf 'exefs/main.npdm\t1\tx\n' > 'Library/Application Support/S2Arm/games/0100FD70134FA000/资源包'/index.tsv && printf '{}' > 'Library/Application Support/S2Arm/games/0100FD70134FA000/资源包'/manifest.json", h);
         CHECK(sh(cmd) == 0, "造本款资源包失败");
         CHECK(s2a_import_state_game(pd, "0100FD70134FA000") == 0, "本款资源包完整 → S2A_IMPORT_READY(0)");
         CHECK(s2a_import_state_game(pd, "0100C2500FC20000") == 2, "另一款没放 → 不受这款影响");
         CHECK(s2a_import_state_game(NULL, "0100FD70134FA000") == 2 && s2a_import_state_game(pd, "../x") == 2 && s2a_import_state_game(pd, ".hid") == 2 && s2a_import_state_game(pd, "") == 2, "不合规游戏号 → 按没有资源");
-        snprintf(cmd, sizeof cmd, "rm %s/Documents/games/0100FD70134FA000/资源包/exefs/main.npdm", h); sh(cmd);
+        snprintf(cmd, sizeof cmd, "rm %s/'Library/Application Support/S2Arm/games/0100FD70134FA000/资源包'/exefs/main.npdm", h); sh(cmd);
         CHECK(s2a_import_state_game(pd, "0100FD70134FA000") == 3, "缺 main.npdm（Duo 那种没导完）→ S2A_IMPORT_BROKEN(3)");
         // 库界面快判：.applied 等于清单的 index_sha256 就不逐文件核（主线程上 10 万文件要几秒）；不等 / 没有 .applied 退回完整核对；非法游戏号同完整判据
-        { char qc[4096], qr[2300]; snprintf(qr, sizeof qr, "%s/games/0100FD70134FA000/资源包", pd);
+        { char qc[4096], qr[2300], qd[2300]; snprintf(qd, sizeof qd, "%s/games/0100FD70134FA000", pd); s2a_pack_root(qr, sizeof qr, qd);   // 资源包根（v0.3.0 在 Library 下）
           snprintf(qc, sizeof qc, "printf '{\"version\":2,\"index_sha256\":\"abc123\"}' > '%s/manifest.json' && printf 'abc123' > '%s/.applied'", qr, qr); CHECK(sh(qc) == 0, "造快判夹具失败");
           CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") == 3, "快判（审计 P2-212）：.applied 等于清单但缺 main.npdm → 不报就绪，退回完整核对(3)");
           CHECK(s2a_import_state_game(pd, "0100FD70134FA000") == 3, "完整判据不受影响：照旧查出缺文件(3)");
@@ -415,14 +417,15 @@ int main(void) {
       snprintf(c, sizeof c, "printf '\\011' | dd of='%s/game.img' bs=1 seek=8 conv=notrunc 2>/dev/null && rm -rf '%s/exefs' && printf '' > '%s/.applied'", G, G, G); sh(c);
       CHECK(s2a_pack_apply(D) != 0, "⑬e 格式号 9 → 解包失败");
       snprintf(c, sizeof c, "grep -q '格式号' '%s/unpack.log'", D); CHECK(sh(c) == 0, "⑬e 解包日志带「格式号」"); 
-      // ⑭ 玩家把 IMG 放进「文件」里 S2Arm 任意位置：s2a_img_scan 挪进 games/<头里的游戏号>/资源包/game.img、写 manifest（资源包号同头）与 index.tsv；
-      //   拷到一半的（长度不等于头里的整个文件长）不动；挪好后应用成功
+      // ⑭ 玩家把 IMG 放进「文件」里 S2Arm 的「放这里导入」文件夹：s2a_img_scan 挪进 games/<头里的游戏号>/资源包/game.img、写 manifest（资源包号同头）与 index.tsv；
+      //   拷到一半的（长度不等于头里的整个文件长）不动；导入文件夹以外的（Documents/下载）不扫、不动（v0.3.0）；挪好后应用成功
       char D3[1300]; snprintf(D3, sizeof D3, "%s/scan_docs", T);   // 小文件清单借 ⑬ 的夹具（exefs/main.npdm = 随机 5000 字节、ctl = NACP）
-      snprintf(c, sizeof c, "mkdir -p '%s/下载/x' && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/下载/x/某游戏.img' --gid 0100abcd00000002 --pack-id img789 > /dev/null"
-               " && head -c 20000 '%s/下载/x/某游戏.img' > '%s/半个.img'", D3, R, D, D3, D3, D3);
-      CHECK(sh(c) == 0, "⑭ 造夹具（第二层目录一个完整 IMG、根下一个拷到一半的）");
+      snprintf(c, sizeof c, "mkdir -p '%s/放这里导入/x' '%s/下载' && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/放这里导入/x/某游戏.img' --gid 0100abcd00000002 --pack-id img789 > /dev/null"
+               " && head -c 20000 '%s/放这里导入/x/某游戏.img' > '%s/放这里导入/半个.img'"
+               " && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/下载/别处.img' --gid 0100abcd00000003 --pack-id img790 > /dev/null", D3, D3, R, D, D3, D3, D3, R, D, D3);
+      CHECK(sh(c) == 0, "⑭ 造夹具（导入文件夹第二层一个完整 IMG、导入文件夹下一个拷到一半的、导入文件夹外一个完整 IMG）");
       CHECK(s2a_img_scan(D3) == 1, "⑭ 扫到并挪好 1 个");
-      snprintf(c, sizeof c, "g='%s/games/0100ABCD00000002/资源包'; test -s \"$g/game.img\" && test ! -e '%s/下载/x/某游戏.img' && test -e '%s/半个.img' && grep -q '\"index_sha256\": \"img789\"' \"$g/manifest.json\" && test \"$(cut -f1 \"$g/index.tsv\")\" = game.img", D3, D3, D3);
+      snprintf(c, sizeof c, "g='%s/games/0100ABCD00000002/资源包'; test -s \"$g/game.img\" && test ! -e '%s/放这里导入/x/某游戏.img' && test -e '%s/放这里导入/半个.img' && test -e '%s/下载/别处.img' && test ! -e '%s/games/0100ABCD00000003' && grep -q '\"index_sha256\": \"img789\"' \"$g/manifest.json\" && test \"$(cut -f1 \"$g/index.tsv\")\" = game.img", D3, D3, D3, D3, D3);
       CHECK(sh(c) == 0, "⑭ 落到 games/<游戏号>/资源包/game.img、manifest 资源包号 = 头里的、index.tsv 只有 game.img、拷一半的没动");
       { char g3[1500]; snprintf(g3, sizeof g3, "%s/games/0100ABCD00000002", D3);
         CHECK(s2a_import_state(g3) == 1, "⑭ 挪好后 → 待导入（状态 %d）", s2a_import_state(g3));
@@ -437,7 +440,8 @@ int main(void) {
       CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）");
       CHECK(!*s2a_img_scan_code(), "⑭ 认领没失败：码为空（实际 %s）", s2a_img_scan_code());
       // 格式号 2（更新版 S2Arm 做的）：不认、原样留着，给码 ios_install_img_format
-      char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/新格式.img", D4);
+      char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
+      snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
       FILE *o4 = fopen(f4, "wb"); uint8_t h4[8192] = {0}; memcpy(h4, "S2AIMG01", 8); h4[8] = 2; memcpy(h4 + 16, "0100ABCD00000000", 16); uint64_t tot = sizeof h4; memcpy(h4 + 128, &tot, 8);
       CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 2 的 IMG");
       CHECK(s2a_img_scan(D4) == 0 && !access(f4, F_OK) && !strcmp(s2a_img_scan_code(), "ios_install_img_format"),
@@ -500,6 +504,67 @@ int main(void) {
         chmod(g2, 0755);
 #endif
         chmod(root, 0755);
+        snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", base, base); sh(c);
+    }
+    // ⑮ 资源包挪出 Documents（v0.3.0）：容器形状的临时目录 <容器>/Documents/games/<游戏号>；期望按规则手写（s2a_docs.h s2a_pack_root、pack_apply.c s2a_pack_migrate_one）
+    {
+        char base[] = "/tmp/s2a_t_migrate_XXXXXX"; if (!mkdtemp(base)) return 1;
+        char P[1200], c[8192]; snprintf(P, sizeof P, "%s/Documents", base);
+        // 夹具：一款旧布局（资源包 3 个文件 + 存档 1 个），另存一份对照
+        snprintf(c, sizeof c, "set -e; d='%s/games/0100AAAA00000001'; mkdir -p \"$d/资源包/romfs/a\" \"$d/资源包/exefs\" \"$d/S2A/ryujinx/bis/user/save/1\";"
+                 " echo r1 > \"$d/资源包/romfs/a/x.bin\"; head -c 70000 /dev/urandom > \"$d/资源包/exefs/main.npdm\"; echo idx > \"$d/资源包/index.tsv\";"
+                 " echo save > \"$d/S2A/ryujinx/bis/user/save/1/data\"; mkdir -p '%s/ref'; cp -R \"$d/资源包\" '%s/ref/pack'; cp -R \"$d/S2A\" '%s/ref/S2A'", P, base, base, base);
+        CHECK(sh(c) == 0, "⑮ 造旧布局夹具");
+        char G1[1300]; snprintf(G1, sizeof G1, "%s/games/0100AAAA00000001", P);
+        char N1[1500]; snprintf(N1, sizeof N1, "%s/Library/Application Support/S2Arm/games/0100AAAA00000001/资源包", base);
+        // ① 只有旧位置 → 同盘改名挪过去：文件逐字节一样、旧位置没了、存档不动
+        CHECK(s2a_pack_migrate_one(G1) == 1, "⑮① 只有旧位置：挪（返回 1）");
+        snprintf(c, sizeof c, "diff -r '%s/ref/pack' '%s' && test ! -e '%s/资源包' && diff -r '%s/ref/S2A' '%s/S2A'", base, N1, G1, base, G1);
+        CHECK(sh(c) == 0, "⑮① 新位置文件逐字节同原来、旧位置没了、存档逐字节不变");
+        // ② 再迁一次：没有旧位置 → 0、不动
+        CHECK(s2a_pack_migrate_one(G1) == 0, "⑮② 再迁：没有旧位置，返回 0");
+        // ③ 两处都有、新位置已就绪（.applied = 清单、程序描述在）→ 删旧的重复
+        snprintf(c, sizeof c, "set -e; printf '{\"index_sha256\": \"abc\"}' > '%s/manifest.json'; printf abc > '%s/.applied'; mkdir -p '%s/资源包/romfs'; echo dup > '%s/资源包/romfs/dup'", N1, N1, G1, G1);
+        CHECK(sh(c) == 0, "⑮③ 造：新位置就绪 + 旧位置一份残留");
+        CHECK(s2a_pack_migrate_one(G1) == 1 && access(N1, F_OK) == 0, "⑮③ 新位置就绪：删旧的（返回 1），新位置还在");
+        snprintf(c, sizeof c, "test ! -e '%s/资源包' && diff -r '%s/ref/S2A' '%s/S2A'", G1, base, G1); CHECK(sh(c) == 0, "⑮③ 旧位置删掉、存档不变");
+        // ④ 两处都有、新位置没就绪 → 都不动（不丢任何一份）
+        snprintf(c, sizeof c, "set -e; rm -f '%s/.applied'; mkdir -p '%s/资源包'; echo keep > '%s/资源包/k'", N1, G1, G1); sh(c);
+        CHECK(s2a_pack_migrate_one(G1) == -1, "⑮④ 新位置没就绪：两处都留（返回 -1）");
+        snprintf(c, sizeof c, "test -s '%s/资源包/k' && test -s '%s/exefs/main.npdm'", G1, N1); CHECK(sh(c) == 0, "⑮④ 两处文件都在");
+        // ⑧ 两处都有、旧位置是老版本电脑端推的新资源包（清单不同 / 有待解包）→ 旧的换掉新位置（不删新推的那份）
+        snprintf(c, sizeof c, "set -e; rm -rf '%s/资源包'; printf q0 > '%s/.applied'; printf '{\"index_sha256\": \"q0\"}' > '%s/manifest.json';"
+                 " mkdir -p '%s/资源包'; printf '{\"index_sha256\": \"q9\"}' > '%s/资源包/manifest.json'; echo new > '%s/资源包/n'", G1, N1, N1, G1, G1, G1);
+        CHECK(sh(c) == 0, "⑮⑧ 造：新位置就绪（q0）+ 旧位置一份清单 q9 的新推送");
+        snprintf(c, sizeof c, "grep -q q9 '%s/manifest.json' && test -s '%s/n' && test ! -e '%s/资源包'", N1, N1, G1);
+        CHECK(s2a_pack_migrate_one(G1) == 1 && sh(c) == 0, "⑮⑧ 清单不同：旧位置的新推送换掉新位置（新位置清单 = q9、旧位置没了）");
+        snprintf(c, sizeof c, "set -e; printf q9 > '%s/.applied'; mkdir -p '%s/资源包/.incoming'; head -c 1024 /dev/zero > '%s/资源包/.incoming/1_000.tar'", N1, G1, G1);
+        sh(c);
+        snprintf(c, sizeof c, "test -s '%s/.incoming/1_000.tar' && test ! -e '%s/资源包'", N1, G1);
+        CHECK(s2a_pack_migrate_one(G1) == 1 && sh(c) == 0, "⑮⑧ 旧位置有待解包：换掉新位置（待解包到了新位置、旧位置没了）");
+        snprintf(c, sizeof c, "set -e; printf '{\"index_sha256\": \"abc\"}' > '%s/manifest.json'; printf abc > '%s/.applied'; mkdir -p '%s/exefs'; head -c 100 /dev/urandom > '%s/exefs/main.npdm'; rm -rf '%s/.incoming'", N1, N1, N1, N1, N1);
+        sh(c);
+        // ⑤ 迁到一半被杀：30 款，子进程迁、几毫秒后 SIGKILL，再迁一次 → 30 款都在新位置、每款 50 个文件一个不少、存档都在
+        snprintf(c, sizeof c, "set -e; for i in $(seq 10 39); do d='%s/games/0100BBBB000000'$i; mkdir -p \"$d/资源包/f\" \"$d/S2A/ryujinx/bis/user/save\"; "
+                 "for j in $(seq 1 50); do echo $i$j > \"$d/资源包/f/$j\"; done; echo s$i > \"$d/S2A/ryujinx/bis/user/save/s\"; done", P);
+        CHECK(sh(c) == 0, "⑮⑤ 造 30 款旧布局");
+        pid_t kid = fork();
+        if (kid == 0) { int f; s2a_pack_migrate(P, &f); _exit(0); }
+        usleep(2000); kill(kid, SIGKILL); waitpid(kid, NULL, 0);
+        int failed = -1; s2a_pack_migrate(P, &failed);
+        snprintf(c, sizeof c, "n=0; for i in $(seq 10 39); do d='%s/games/0100BBBB000000'$i; g='%s/Library/Application Support/S2Arm/games/0100BBBB000000'$i'/资源包';"
+                 " test ! -e \"$d/资源包\" || exit 1; test \"$(ls \"$g/f\" | wc -l | tr -d ' ')\" = 50 || exit 2; test \"$(cat \"$d/S2A/ryujinx/bis/user/save/s\")\" = s$i || exit 3; done", P, base);
+        CHECK(failed == 0 && sh(c) == 0, "⑮⑤ 杀掉后再迁：30 款都在新位置、每款 50 个文件、存档都在、旧位置没有（失败 %d 款）", failed);
+        // ⑥ 迁好后闸门 / 游戏库按新位置判：新位置就绪 → 就绪；资源包状态读的是 Library 那份
+        snprintf(c, sizeof c, "set -e; g='%s/Library/Application Support/S2Arm/games/0100BBBB00000010/资源包'; mkdir -p \"$g/exefs\"; head -c 100 /dev/urandom > \"$g/exefs/main.npdm\";"
+                 " printf '{\"index_sha256\": \"q1\"}' > \"$g/manifest.json\"; printf q1 > \"$g/.applied\"", base);
+        sh(c);
+        CHECK(s2a_import_state_game_quick(P, "0100BBBB00000010") == 0, "⑮⑥ 游戏库快判读新位置：就绪");
+        // ⑦ #569 写不进修复也管新位置：Library 那棵 games/<游戏号>/资源包 归不可写 → 克隆换上、可写
+        char lg[1500]; snprintf(lg, sizeof lg, "%s/Library/Application Support/S2Arm/games/0100BBBB00000011/资源包", base);
+        chmod(lg, 0555);
+        int r7 = s2a_games_repair(P);
+        CHECK(r7 == 1 && !access(lg, W_OK), "⑮⑦ 新位置写不进 → 修好（返回 %d、可写 %d）", r7, !access(lg, W_OK));
         snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", base, base); sh(c);
     }
     printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;

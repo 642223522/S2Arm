@@ -225,7 +225,9 @@ def pick_team(teams, want=None):
 # 多款容器（启动器线 11-07，一个 App 装多款游戏；组装见 pack/ship_ext.py container、pack/jobs/ipa.py container）：
 #   包名固定 io.s2arm.games.<团队号小写>：本来就按团队分（不会被别的团队占），不用 NX2Apple 那样「缺省包名被占 → 团队变体 → 落盘沿用」；
 #     加款 / 换款都是同一个包名覆盖安装（不卸载，Documents 保留），一个团队只占一个 App ID（免费账号 7 天 10 个的额度）。换团队 = 换包名 = 新沙盒，旧存档要迁
-#   设备侧每款文档根 Documents/games/<游戏号>（资源包 / 存档 / 直连见过的键都在它下面），起这一款的启动上下文 @bundle/Games/<游戏号>/launch.ctx——与 ship_ext 容器布局同口径
+#   设备侧每款文档根 Documents/games/<游戏号>（存档 / 直连见过的键 / unpack.log 在它下面），资源包根 Library/Application Support/S2Arm/games/<游戏号>/资源包
+#     （11-11 挪出 Documents：几万个文件让「文件」App 与文件选择器「最近项目」一直「正在加载」；旧位置 Documents/games/<游戏号>/资源包 过渡期还认，见 pack_listing），
+#   起这一款的启动上下文 @bundle/Games/<游戏号>/launch.ctx——与 ship_ext 容器布局同口径
 
 
 def container_bundle_id(team, c=None):
@@ -264,6 +266,20 @@ def container_display_name(app):
 
 def game_docs(gid):
     return f"Documents/games/{gid.upper()}"
+
+
+DOCS_GAMES = "Documents/games"
+PACK_GAMES = "Library/Application Support/S2Arm/games"   # 每款资源包放 <PACK_GAMES>/<游戏号>/资源包（设备侧宿主同口径）
+
+
+def game_pack(gid):
+    """本款设备侧资源包根（新位置，不在 Documents 里）"""
+    return f"{PACK_GAMES}/{gid.upper()}/资源包"
+
+
+def game_pack_old(gid):
+    """本款资源包旧位置（11-11 之前的宿主放在文档根下）：过渡期只读、只在新位置不在时推它（App 下次启动整个挪到新位置）"""
+    return f"{game_docs(gid)}/资源包"
 
 
 def game_ctx(gid):
@@ -583,12 +599,13 @@ def img_pack(pack):
         return False
 
 
-def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
+def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=None):
     """资源包推进 App 并在机上解开：调 Mac / Windows 共用的 tools/push_pack.py run --apply（同 dev_run、Windows 一键装机、s2armctl push-pack，
     #206 / PR #470、11-06 两端合一）——按 sha256 只推机上没有 / 变了的文件（免费账号 7 天到期重装、改一点重出一版时只推几个文件），
-    残留推送包按完整性处理、推前抽查机上实况，一批 ≤1 GB 流式写进 Documents/资源包/.incoming/；推完起一次 App 解开（单款只解包模式；多款容器拉起到游戏库、由库解开并画进度），
+    残留推送包按完整性处理、推前抽查机上实况，一批 ≤1 GB 流式写进 <资源包根>/.incoming/；推完起一次 App 解开（单款只解包模式；多款容器拉起到游戏库、由库解开并画进度），
     等机上 .applied 对上本包 index_sha256、且解包日志本次新增完成行才算装好（没推东西且 .applied 已是本包就不起 App），玩家打开就能进游戏。
-    多款容器：docs = 本款设备侧文档根 Documents/games/<游戏号>、ctx = 本款启动上下文（有它即按多款容器拉起到游戏库）。
+    多款容器：docs = 本款设备侧文档根 Documents/games/<游戏号>、pack_root = 本款设备侧资源包根（pick_pack_root 选的那处）、
+    ctx = 本款启动上下文（有它即按多款容器拉起到游戏库）。
     返回（推的文件数, 字节数）"""
     import diag
     got = {}
@@ -608,7 +625,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None):
     env = dict(c.env(), S2A_DEVICECTL=str(diag.COREDEVICE / "Resources/bin/devicectl"))
     if udid: env["S2A_PUSH_UDID"] = udid   # 有 UDID + App 内置 s2a-devpush（S2A_PREBUILT_TOOLS/devpush）→ 每批流式写手机，否则退回 devicectl（11-06）
     log = c.logs / (c.task + "-push" + (f"-{docs.rsplit('/', 1)[-1]}" if docs else "") + ".log")
-    extra = (["--docs", docs] if docs else []) + (["--launch-ctx", ctx] if ctx else [])
+    extra = (["--docs", docs] if docs else []) + (["--pack-root", pack_root] if pack_root else []) + (["--launch-ctx", ctx] if ctx else [])
     try:
         apply = [] if img_pack(pack) else ["--apply"]   # 旧形态（多程序合集等）照旧推完起 App 等解完
         c.run([sys.executable, "-B", c.engine / "tools/push_pack.py", "run", ident, bid, pack, "--via", "devicectl", *apply, "--progress-lines", *extra], log, env=env, on_line=line)
@@ -1058,14 +1075,14 @@ class MacPhone:
 
     def push(self, g, pack):
         n0 = len(self.c.job["diagnostics"])
-        r = push_pack(self.c, self.dev["id"], self.bid, pack, udid=self.udid, docs=game_docs(g), ctx=game_ctx(g))
+        r = push_pack(self.c, self.dev["id"], self.bid, pack, udid=self.udid, docs=game_docs(g), ctx=game_ctx(g), pack_root=pick_pack_root(self.c, self, g))
         hit = [d for d in self.c.job["diagnostics"][n0:] if d.get("code") == "manual_unpack_required"]   # push_pack 按「需要玩家操作」收尾时记的那条
         if hit: self.pending = hit[-1].get("summary") or ""
         return r
 
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
-            return devpush_client(self.c, self.udid, self.bid, w).rm(game_docs(g))
+            return purge_game(devpush_client(self.c, self.udid, self.bid, w), g)
 
 
 class WinPhone:
@@ -1182,6 +1199,7 @@ class WinPhone:
         try:
             return self.W.push_pack(self.udid, self.bid, str(pack), str(self.devpush) if self.devpush.is_file() else None,
                                     say=lambda m: self.c.emit("message", m), docs=game_docs(g), ctx=game_ctx(g), apply_after=not img_pack(pack),
+                                    pack_root=pick_pack_root(self.c, self, g),
                                     progress=lambda d, t, k, n: push_progress(self.c, d, t, k, n),
                                     stage=lambda name, d=None, t=None: push_stage(self.c, name, d, t))
         except self.W.Fail as e:
@@ -1193,7 +1211,7 @@ class WinPhone:
 
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
-            return self.client(w).rm(game_docs(g))
+            return purge_game(self.client(w), g)
 
 
 def phone_for(c):
@@ -1221,7 +1239,8 @@ def phone_bid(ph):
 
 def phone_games(c, ph):
     """这台手机上的 S2Arm 里有哪些游戏——真相在手机上，不在某一台电脑的设备记录里（同一台手机 Mac 装几款、Windows 再装一款时，
-    各自的记录只有自己装的）。列这个包名的 Documents/games/：只认目录名是 16 位游戏号、资源包已解开（资源包/.applied）的，别的跳过。
+    各自的记录只有自己装的）。列这个包名的资源包新旧两处游戏目录（PACK_GAMES、Documents/games）：只认目录名是 16 位游戏号、
+    pack_listing 选出的那处资源包已解开（.applied）的，别的跳过。
     进不了容器时问平台这个包名装没装（ph.app_missing）：确实没装 → None（和「装着、一款都没有」的空集分开：没装时本机记录的各款也不在手机上了，
     container_others 据此不再带）；装着却列不出（锁屏 / 断开）→ 停，不当成「手机上没有别的游戏」"""
     bid = phone_bid(ph)
@@ -1229,22 +1248,50 @@ def phone_games(c, ph):
         return set()
     with tempfile.TemporaryDirectory(dir=c.private) as w:
         cl = devpush_client(c, ph.udid, bid, w)
-        rc, out = cl.call("ls", "Documents/games")
-        if rc:
-            if dir_missing(out):   # App 在、还没装过任何一款（Documents/games 还没建）：当 0 款，装机照常（推资源包时自会建目录）
-                return set()
-            if ph.app_missing(bid, out):
-                return None
-            info = getattr(ph, "info", None) or {}
-            who = f"{info.get('deviceKind') or 'iPhone / iPad'}「{info.get('deviceName')}」" if info.get("deviceName") else (info.get("deviceKind") or "设备")
-            raise Failure(f"读不出{who}上已经装了哪些游戏，为免把别的游戏挤掉，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
-                          code="device_locked", internal="s2a-devpush ls：" + out[-500:])
-        found = set()
-        for name in out.splitlines():
-            g = name.strip().rstrip("/").upper()
-            if GID_RE.fullmatch(g) and ".applied" in (cl.ls(f"{game_docs(g)}/资源包") or []):
-                found.add(g)
-        return found
+        names = set()
+        for root in (DOCS_GAMES, PACK_GAMES):
+            rc, out = cl.call("ls", root)
+            if rc:
+                if dir_missing(out):   # 这处还没建（App 在、还没装过任何一款 / 只有新或旧一处）：这处当 0 款，装机照常（推资源包时自会建目录）
+                    continue
+                if ph.app_missing(bid, out):
+                    return None
+                raise Failure(f"读不出{_who(ph)}上已经装了哪些游戏，为免把别的游戏挤掉，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
+                              code="device_locked", internal="s2a-devpush ls：" + out[-500:])
+            names |= {n.strip().rstrip("/").upper() for n in out.splitlines()}
+        return {g for g in names if GID_RE.fullmatch(g) and ".applied" in (pack_listing(cl, g, ph)[1] or [])}
+
+
+def _who(ph):
+    info = getattr(ph, "info", None) or {}
+    return f"{info.get('deviceKind') or 'iPhone / iPad'}「{info.get('deviceName')}」" if info.get("deviceName") else (info.get("deviceKind") or "设备")
+
+
+def pack_listing(cl, gid, ph=None):
+    """本款资源包在手机上的哪一处 → (资源包根, 根下列表或 None)：新位置在 → 新位置；新位置不在、旧位置在 → 旧位置（App 下次启动整个同盘挪到新位置，
+    含推进 .incoming 的包；增量仍按旧位置的 index.applied.tsv 算，不因新位置是空的整份重推几 GB）；两处都不在（第一次装这款）→ (新位置, None)。
+    列不出（锁屏 / 断开等，不是「目录不在」）→ 停，不猜"""
+    for root in (game_pack(gid), game_pack_old(gid)):
+        rc, out = cl.call("ls", root)
+        if not rc:
+            return root, out.splitlines()
+        if not dir_missing(out):
+            raise Failure(f"读不出{_who(ph)}上这款游戏的资源放在哪，这次没装：把它解锁，插上数据线或和这台电脑连同一个 Wi-Fi，再点一次。",
+                          code="device_locked", internal=f"s2a-devpush ls {root}：" + out[-500:])
+    return game_pack(gid), None
+
+
+def pick_pack_root(c, ph, gid):
+    """推这款资源包推到哪（推送、列机上文件、判已应用都用这一处，push_pack.py --pack-root）：规则见 pack_listing"""
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        return pack_listing(devpush_client(c, ph.udid, phone_bid(ph), w), gid, ph)[0]
+
+
+def purge_game(cl, gid):
+    """删手机上这款的数据：文档根（存档 / 金手指 / 解包日志，连同旧位置的资源包）+ 新位置本款目录（资源包）。→ (都删掉?, 输出)"""
+    ok1, out1 = cl.rm(game_docs(gid))
+    ok2, out2 = cl.rm(f"{PACK_GAMES}/{gid.upper()}")
+    return ok1 and ok2, "\n".join(o for o in (out1, out2) if o)
 
 
 def phone_game_name(c, ph, gid, names):
@@ -1255,7 +1302,8 @@ def phone_game_name(c, ph, gid, names):
         import library
         with tempfile.TemporaryDirectory(dir=c.private) as w:
             dst = Path(w) / "control.nacp"
-            if devpush_client(c, ph.udid, phone_bid(ph), w).get(f"{game_docs(gid)}/资源包/ctl/control.nacp", dst):
+            cl = devpush_client(c, ph.udid, phone_bid(ph), w)
+            if any(cl.get(f"{root}/ctl/control.nacp", dst) for root in (game_pack(gid), game_pack_old(gid))):
                 dump = library.engine_tool(c, "ns2_dump")
                 n = dst.read_bytes()
                 return dump.nacp_title(n, 14) or dump.nacp_title(n, 0) or gid
@@ -1394,7 +1442,7 @@ def install(c):
 def restore_previous(c):
     """装回换壳前的那一版手机 S2Arm（默认位置根 S2Arm.previous.ipa）：新运行层在手机上不好用时的回滚。
     装上后现行与上一版对调（再点一次 = 换回来）；被换下的壳号记进这台的 failedShells，之后给这台装机不再把旧款只换宿主带进它（要按新版重出）。
-    手机 Documents 里的资源包和存档不动；换宿主之后才新装的游戏不在上一版里，App 里暂时看不到（数据还在）"""
+    手机上的资源包和存档不动；换宿主之后才新装的游戏不在上一版里，App 里暂时看不到（数据还在）"""
     import ipa as packer
     current, previous = layout.phone_ipa(c), layout.phone_ipa(c, previous=True)
     games, old_sid = packer.ipa_games(previous)
