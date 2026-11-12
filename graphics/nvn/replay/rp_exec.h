@@ -21,6 +21,7 @@ void rp_op_update_ub(const void *a, const void *rec);
 void rp_op_copy_b2b(const void *a, const void *rec);
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec);
 void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec);
+void rp_op_copy_t2b(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec);
 void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec);
 
 // 会话四件套（前端按名字调，上沿头文件里没有声明）
@@ -70,7 +71,8 @@ void rp_occl_pass_opened(int declared); void rp_occl_pass_closed(void);
 void rp_occl_pause(nvn_gpu_cmd c);      // 通道里按矩形清之前
 void rp_occl_draw(nvn_gpu_cmd c);       // 每笔绘制之前
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec);   // 计算派发（rp_draw.c）
-void rp_post_gpu_write(uint64_t addr, uint64_t len);                      // 这一段里 GPU 写了游戏内存的这一段：完成后回写（rp_exec.c）
+int rp_post_gpu_write(uint64_t addr, uint64_t len);                       // 登记单段；1 = 登记成功，段完成后回写
+int rp_post_gpu_write_rows(uint64_t addr, uint64_t row_bytes, uint64_t row_stride, uint64_t image_stride, uint32_t rows, uint32_t images);
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key); void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok);
 int rp_rc_skip(void);                   // 条件渲染判成不画的那一段里
 void rp_pass_note_draw(int uses_ds);   // 一笔绘制进了当前通道（uses_ds：这笔开着深度测试 / 深度写 / 模板测试）
