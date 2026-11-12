@@ -854,6 +854,18 @@ int main(int argc, const char **argv) {
            "relay v2 carries the controller kind to the game");
     expect(!strcmp(s2a_mac_ns2_kind_name(NS2_KIND_JOYCON_PAIR), "Joy-Con 2 (L + R)") && !strcmp(s2a_mac_ns2_kind_name(NS2_KIND_NONE), "Switch 手柄") && !strcmp(s2a_mac_ns2_kind_name(NS2_KIND_PRO), "Switch 2 Pro"),
            "kind display names: pair and not-connected fallback");
+    // Joy-Con 2 拼成一对：只有右只（motion_left_known 0，同旧启动器）时一路；INPUT 包带左只（motion_left）时左右各一路，左在前
+    s2a_pad_motion pairMotion[2] = {0};
+    expect(s2a_pad_read_motion_pair(pairMotion) == 1 && pairMotion[0].gyro_x == 90, "Joy-Con 2 pair without left motion: one source (right), as before");
+    ns2_relay_packet pairPacket = motionPacket; pairPacket.kind = NS2_KIND_JOYCON_PAIR; pairPacket.motion.host_timestamp_us = 2000;
+    pairPacket.motion_left_known = 1;
+    pairPacket.motion_left = (ns2_relay_motion_left){.acceleration_z = 1, .gyro_x = -90, .host_timestamp_us_lo = 1999};
+    expect(send(relayClient, &pairPacket, sizeof pairPacket, 0) == sizeof pairPacket, "pair relay packet with left motion sent");
+    int pairN = 0;
+    for (int attempt = 0; attempt < 100 && (pairN = s2a_pad_read_motion_pair(pairMotion)) != 2; attempt++) usleep(1000);
+    expect(pairN == 2 && pairMotion[0].gyro_x == -90 && pairMotion[0].host_timestamp_us == 1999 && pairMotion[1].gyro_x == 90 && pairMotion[1].host_timestamp_us == 2000,
+           "Joy-Con 2 pair: left motion from motion_left, right from motion, left first");
+    expect(s2a_pad_read_motion(&ns2Motion) && ns2Motion.gyro_x == 90, "single-source six-axis entry still reads the right Joy-Con");
     // 旧版启动器（通道 v1）：游戏端断开、不猜字段，型号回到 NONE
     ns2_relay_packet oldPacket = motionPacket; oldPacket.version = 1;
     expect(send(relayClient, &oldPacket, sizeof oldPacket, 0) == sizeof oldPacket, "relay v1 packet sent");

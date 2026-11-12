@@ -224,19 +224,19 @@ namespace S2A.Services
                 _motionLogged = true;
                 Console.Error.WriteLine($"[输入反馈] first motion known={known} pair={nPair} player={(int)player} timestamp_us={sample.TimestampUs} accel_g=({sample.AccelerationX},{sample.AccelerationY},{sample.AccelerationZ}) gyro_deg_s=({sample.GyroX},{sample.GyroY},{sample.GyroZ})");
             }
-            AddMotionState(player, sample, ref _motion, _orientation, pushImu: true);
-            // 左右 Joy-Con 各一路：同一 PlayerId 连续两份，UpdateSixAxis 把第二份写入右手六轴
+            // 左右 Joy-Con 各一路：同一 PlayerId 连续两份，UpdateSixAxis 把第二份写入右手六轴；Npad IMU 左只写传感器 0、右只写传感器 1（单路时 -1：左右同一份）
+            AddMotionState(player, sample, ref _motion, _orientation, imuSensor: nPair >= 2 ? 0 : -1);
             if (nPair >= 2)
-                AddMotionState(player, sampleR, ref _motionRight, _orientationRight, pushImu: false);
+                AddMotionState(player, sampleR, ref _motionRight, _orientationRight, imuSensor: 1);
             _npads.UpdateSixAxis(_motionStates);
             _motionPublished = true;
         }
 
-        private void AddMotionState(PlayerIndex player, MotionSample sample, ref MotionInput motion, float[] orientation, bool pushImu)
+        private void AddMotionState(PlayerIndex player, MotionSample sample, ref MotionInput motion, float[] orientation, int imuSensor)
         {
             Vector3 accel = new(SixAxisSensorIc.ClampAcceleration(sample.AccelerationX), SixAxisSensorIc.ClampAcceleration(sample.AccelerationY), SixAxisSensorIc.ClampAcceleration(sample.AccelerationZ));
             Vector3 gyro = new(SixAxisSensorIc.ClampAngularRate(sample.GyroX), SixAxisSensorIc.ClampAngularRate(sample.GyroY), SixAxisSensorIc.ClampAngularRate(sample.GyroZ));
-            if (pushImu) _npads.PushImu(player, accel, gyro, sample.TimestampUs);
+            _npads.PushImu(player, accel, gyro, sample.TimestampUs, imuSensor);
             if (motion != null && (sample.TimestampUs < motion.TimeStamp || sample.TimestampUs - motion.TimeStamp > 250_000))
                 motion = null;
             motion ??= new MotionInput();

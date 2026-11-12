@@ -51,6 +51,8 @@ ns2_kind ns2_get_output_kind(void);
 // 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
 // Copy the latest motion sample, clearing it after 250 ms or disconnection without accessing hardware.
 void ns2_get_motion(ns2_motion *out);
+// Joy-Con 2 左右拼成一对时左只的六轴（ns2_get_motion 给的是右只的）；不在拼对 / 没开 / 过期时全 0
+void ns2_get_motion_left(ns2_motion *out);
 typedef struct {
     uint8_t connected, ready;
     uint8_t battery_known;
