@@ -228,8 +228,11 @@ public sealed partial class EnvironmentWindow
             PrivateJobRequest.EnsurePrivateRoot(privateRoot);
             var free = freeDefault; freeDefault = false;   // 文件夹由 setup 建（先过库路径规则，不在启动器目录里留空文件夹）
             var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, libraryMoveFrom, jobId: front.Next(), freeDefault: free);
-            libraryMoveFrom = null;
+            if (await ConfirmCloudLibraryAsync(setup))   // 选在云盘同步目录里：讲清后果、玩家选「仍然继续」就带 acceptCloud 重来（v0.3.1）
+                setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, libraryMoveFrom, jobId: front.Next(), freeDefault: free, acceptCloud: true);
+            var moveFrom = libraryMoveFrom; libraryMoveFrom = null;
             DisplayJob(setup);
+            libraryFailCode = setup.Report.Succeeded ? null : JobCode(setup); libraryFailMoveFrom = moveFrom;   // 盘格式不对时给「换一个存放位置」（LibraryDrivePicker）
             if (!setup.Report.Succeeded) { librarySummary = "library.failed"; importError = libraryFailure = LibraryFailed(folder, setup.Report.Message); return; }
             var conn = LibraryConnection.Parse(setup.Report.Result);
             connectedFolder = conn.Folder; libraryId = conn.Id; libraryFolder = connectedFolder; libraryFailure = "";

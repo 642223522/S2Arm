@@ -58,6 +58,36 @@ static int has_device_extension(VkPhysicalDevice physical, const char *name) {
 
 const char *const *nvn_plat_vk_instance_exts(uint32_t *n) __attribute__((weak));
 
+// ---------- 调试：Khronos 校验层（开关 debug.s2a.vk_validation=1，默认关） ----------
+// 调试包里带了 libVkLayer_khronos_validation.so 时，应用自己在建实例那一刻启用它，报出来的每种错打一行（之后按 2 的幂再报次数）。
+// 不改手机的系统设置；包里没有这个库、或开关没开，就和平时完全一样。
+#if defined(__ANDROID__)
+static VkDebugUtilsMessengerEXT g_val_messenger;
+static struct { int32_t id; uint64_t n; } g_val_seen[128]; static int g_val_nseen;
+static VKAPI_ATTR VkBool32 VKAPI_CALL val_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
+                                             const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
+    (void)type; (void)user;
+    if (!d || sev < VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) return VK_FALSE;
+    int k = 0; for (; k < g_val_nseen; k++) if (g_val_seen[k].id == d->messageIdNumber) break;
+    if (k == g_val_nseen) { if (g_val_nseen == 128) return VK_FALSE; g_val_seen[g_val_nseen].id = d->messageIdNumber; g_val_seen[g_val_nseen].n = 0; g_val_nseen++; }
+    uint64_t n = ++g_val_seen[k].n;
+    if (n == 1) __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "【红】vk 校验（%s）%s：%.700s", sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "错" : "警告", d->pMessageIdName ? d->pMessageIdName : "?", d->pMessage ? d->pMessage : "");
+    else if (!(n & (n - 1))) __android_log_print(ANDROID_LOG_INFO, "S2Arm", "vk 校验：%s 累计 %llu 次", d->pMessageIdName ? d->pMessageIdName : "?", (unsigned long long)n);
+    return VK_FALSE;
+}
+static int val_wanted(void) {
+    char v[PROP_VALUE_MAX] = {0}, e[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("debug.s2a.debug_env", e) <= 0 || e[0] != '1') return 0;
+    if (__system_property_get("debug.s2a.vk_validation", v) <= 0 || v[0] != '1') return 0;
+    uint32_t n = 0; if (vkEnumerateInstanceLayerProperties(&n, NULL) != VK_SUCCESS || !n) return 0;
+    VkLayerProperties *lp = calloc(n, sizeof *lp); if (!lp) return 0;
+    int found = 0; if (vkEnumerateInstanceLayerProperties(&n, lp) == VK_SUCCESS || n) for (uint32_t i = 0; i < n; i++) if (!strcmp(lp[i].layerName, "VK_LAYER_KHRONOS_validation")) found = 1;
+    free(lp);
+    __android_log_print(ANDROID_LOG_INFO, "S2Arm", "vk 校验：开关开着，校验层%s", found ? "在包里，启用" : "不在包里，不启用");
+    return found;
+}
+#endif
+
 int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) {
     if (!out) return fail(why, why_size, "null device");
     memset(out, 0, sizeof *out);
@@ -68,7 +98,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     const char *wanted[] = {
         "VK_KHR_get_physical_device_properties2", "VK_KHR_surface", "VK_KHR_android_surface",
         "VK_KHR_get_surface_capabilities2", "VK_EXT_surface_maintenance1" };
-    const char *enabled[sizeof wanted / sizeof *wanted + 8];
+    const char *enabled[sizeof wanted / sizeof *wanted + 9];
     uint32_t enabled_count = 0;
     for (unsigned i = 0; i < sizeof wanted / sizeof *wanted; i++)
         if (has_instance_extension(wanted[i])) enabled[enabled_count++] = wanted[i];
@@ -92,10 +122,25 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     VkInstanceCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     info.pApplicationInfo = &app;
+#if defined(__ANDROID__)
+    static const char *const val_layers[] = {"VK_LAYER_KHRONOS_validation"};
+    int validate = val_wanted();
+    if (validate) { enabled[enabled_count++] = "VK_EXT_debug_utils"; info.enabledLayerCount = 1; info.ppEnabledLayerNames = val_layers; }
+#endif
     info.enabledExtensionCount = enabled_count;
     info.ppEnabledExtensionNames = enabled;
     if (vkCreateInstance(&info, NULL, &out->instance) != VK_SUCCESS)
         return fail(why, why_size, "vkCreateInstance failed");
+#if defined(__ANDROID__)
+    if (validate) {
+        PFN_vkCreateDebugUtilsMessengerEXT mk = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(out->instance, "vkCreateDebugUtilsMessengerEXT");
+        VkDebugUtilsMessengerCreateInfoEXT mi = {0}; mi.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        mi.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        mi.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+        mi.pfnUserCallback = val_cb;
+        if (!mk || mk(out->instance, &mi, NULL, &g_val_messenger) != VK_SUCCESS) g_val_messenger = VK_NULL_HANDLE;
+    }
+#endif
 
     uint32_t physical_count = 0;
     if (vkEnumeratePhysicalDevices(out->instance, &physical_count, NULL) != VK_SUCCESS || !physical_count)
@@ -452,6 +497,13 @@ int s2a_vk_device_destroy(struct s2a_vk_device *device, int idle_proven) {
         if (device->command_pool) vkDestroyCommandPool(device->device, device->command_pool, NULL);
         vkDestroyDevice(device->device, NULL);
     }
+#if defined(__ANDROID__)
+    if (device->instance && g_val_messenger) {
+        PFN_vkDestroyDebugUtilsMessengerEXT rm = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(device->instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (rm) rm(device->instance, g_val_messenger, NULL);
+        g_val_messenger = VK_NULL_HANDLE;
+    }
+#endif
     if (device->instance) vkDestroyInstance(device->instance, NULL);
     memset(device, 0, sizeof *device);
     return 0;

@@ -102,9 +102,18 @@ def _junction(target, link):
                      C.POINTER(W.DWORD), C.c_void_p)
             if not f(h, 0x900A4, buf, len(data), None, 0, C.byref(done), None):
                 raise C.WinError(C.get_last_error())
-    except BaseException:
-        link.rmdir()
+    except BaseException as e:
+        cleanup_after(e, link.rmdir)
         raise
+
+
+def cleanup_after(error, fn, *args):
+    """出错后的收拾（删半成品 / 改名回去）自己又出错时，不许盖住起因（#669：播种真正失败的那一步被随后删 .romfs.intern 时的
+    WinError 145 盖住，玩家报告里只剩 145）。收拾的错误记成起因上的附注，调用方随后 raise 原错误"""
+    try:
+        fn(*args)
+    except Exception as e:
+        error.add_note(f'（随后的清理 {getattr(fn, "__name__", fn)}({", ".join(map(str, args))}) 也失败：{e!r}；以上面的原错误为准）')
 
 
 def directory_link(target, link, *, relative=None):
@@ -354,8 +363,32 @@ def plain_entries(path):
     return paths
 
 
+def repair_git_skeleton(git_dir):
+    """Git 认一个目录是仓库要 HEAD、objects/、refs/ 都在。发出去的引擎快照里 refs/ 下只有空目录（引用都在 packed-refs），
+    安装 / 拷贝时空目录可能丢（11-11 维护者 Windows 覆盖安装后 Engine\\.git 只剩 info / logs / objects）→ Git 不认这个仓库。
+    HEAD 与 objects/ 都在、只缺这几个空目录时补上（不改任何内容）；→ 补了哪些"""
+    git_dir = Path(git_dir)
+    if not (git_dir / 'HEAD').is_file() or not (git_dir / 'objects').is_dir():
+        return []
+    made = []
+    for d in ('refs', 'refs/heads', 'refs/tags'):
+        if not (git_dir / d).is_dir():
+            (git_dir / d).mkdir(parents=True, exist_ok=True)
+            made.append(d)
+    return made
+
+
 def git(*args, repo=REPO, check=True):
-    result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, check=check)
+    # 钉死仓库：有自己的 .git 目录（发出去的引擎快照、普通检出）就显式 --git-dir / --work-tree，并设 GIT_CEILING_DIRECTORIES，
+    #   绝不往上认到玩家自己的仓库（11-11：Engine\\.git 缺 refs 时 git 一路往上，认到玩家主目录下的空仓库，报 HEAD 不存在）。
+    #   .git 是文件（工作树）照旧 -C
+    repo = Path(repo)
+    pin = []
+    if (repo / '.git').is_dir():
+        repair_git_skeleton(repo / '.git')
+        pin = ['--git-dir', str((repo / '.git').resolve()), '--work-tree', str(repo.resolve())]
+    env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(repo.resolve().parent))
+    result = subprocess.run(['git', '-C', str(repo), *pin, *args], capture_output=True, check=check, env=env)
     return result.stdout.decode('utf-8').strip() if check else result.returncode == 0
 
 
@@ -455,8 +488,8 @@ class Roots:
                             else:
                                 copy_file(p, tx.path / p.name)
                         tx.commit()
-                    except BaseException:
-                        tx.abort()
+                    except BaseException as e:
+                        cleanup_after(e, tx.abort)
                         raise
                     return self.cur(game, pin=pin)
             return None
@@ -564,8 +597,8 @@ class Roots:
             stages = sorted(current.glob('.stage_*')) if current else ()
             text(dest / '.root_base_stages', ''.join(f'{p.name}\t{read(p)}\n' for p in stages if p.is_file()))
             return Transaction(self, game, tag, dest, env=env)
-        except BaseException:
-            remove_owned(dest)
+        except BaseException as e:
+            cleanup_after(e, remove_owned, dest)
             raise
 
     def _intern(self, version, game):
@@ -588,11 +621,11 @@ class Roots:
             directory_link(store / identity, p, relative=f'../.romfs_store/{game}/{identity}')
             rename_dir(temp, store / identity)
             seal(store / identity)
-        except BaseException:
+        except BaseException as e:
             if is_link(p):
-                remove_owned(p)
+                cleanup_after(e, remove_owned, p)
             if temp.exists():
-                rename_dir(temp, p)
+                cleanup_after(e, rename_dir, temp, p)
             raise
 
     def _pinned(self, version):
@@ -663,8 +696,8 @@ class Transaction:
             self.roots._shards(r, 'replay·换完路径后', env=self.env)
             remove_owned(self.path)
             rename_dir(r, self.path)
-        except BaseException:
-            remove_owned(r)
+        except BaseException as e:
+            cleanup_after(e, remove_owned, r)
             raise
 
     def commit(self, *, replay=()):
@@ -698,8 +731,8 @@ class Transaction:
                     roots._resource('--root-publish', final, env=self.env)
                 roots.prune(self.game)
                 return final
-        except BaseException:
-            self.abort()
+        except BaseException as e:
+            cleanup_after(e, self.abort)
             raise
         finally:
             if os.path.lexists(activation):

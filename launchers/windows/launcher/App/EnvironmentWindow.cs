@@ -21,6 +21,7 @@ public sealed partial class EnvironmentWindow : Window
     private bool welcomeHome;   // 点了顶栏品牌名：游戏库页先显示欢迎页（点「游戏库」或去别的页就回到平常）
     private LauncherPaths paths = LauncherPaths.Defaults(AppContext.BaseDirectory);
     private EnvironmentReport? report;
+    private DateTime lastAutoCheck = DateTime.MinValue;   // 回到窗口自动重查的上一次时刻（Activated，5 秒内不重复）
     private string summaryKey = "environment.idle";
     private string unexpectedError = "";
 
@@ -41,6 +42,7 @@ public sealed partial class EnvironmentWindow : Window
         using var reader = new StreamReader(stream);
         var experience = reader.ReadToEnd();
         text = new SharedText(experience);
+        PrivateJobRequest.Describe = (code, path) => T("private_root." + code).Replace("{0}", path);   // 私有目录用不了时的话按当前界面语言（#672）
         using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
             ?? throw new FileNotFoundException("Localization table resource is missing.");
         using var tableReader = new StreamReader(table);
@@ -60,8 +62,13 @@ public sealed partial class EnvironmentWindow : Window
         };
         Closing += CloseLibraryAsync;
         Closing += ClosePackAsync;
-        // 欢迎页进来自动触发环境检查（回到窗口也会重查）
-        Activated += (_, _) => { if (!busy && report == null) _ = CheckAsync(); };
+        // 欢迎页进来自动触发环境检查；上次查出还有必需项没就绪（多半是 Metal 编译器，玩家去 Apple 官网装完切回来）时，回到窗口也重查——
+        //   原先只在还没查过时查，玩家装好切回来还显示没装，要自己点「重新检查」或重开（11-11 新用户首装实测）。5 秒内不重复查
+        Activated += (_, _) =>
+        {
+            if (busy || (report is not null && report.Ready) || DateTime.UtcNow - lastAutoCheck < TimeSpan.FromSeconds(5)) return;
+            lastAutoCheck = DateTime.UtcNow; _ = CheckAsync();
+        };
         DockPanel.SetDock(pageTop, Dock.Top); DockPanel.SetDock(pageBottom, Dock.Bottom);
         pageScroll.Content = pageBody;
         pageFrame.Children.Add(pageTop); pageFrame.Children.Add(pageBottom); pageFrame.Children.Add(pageScroll);

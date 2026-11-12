@@ -38,7 +38,7 @@ PACK = "pack/orch/oneclick_win.py:env_items"   # 出包件自检的唯一来源�
 PACK_OWN = {"python", "metal"}
 # 只有签名装机才用：不是导入和出包的前提，缺了或认不出都只提示，装机时真失败再说具体原因
 SIGNING_ONLY = {"impactor", "anisette", "apple_driver", "apple_usb"}
-OFFICIAL = {"metal": "https://developer.apple.com/metal/tools/",                 # 苹果 Metal Developer Tools for Windows
+OFFICIAL = {"metal": "https://developer.apple.com/download/all/?q=metal%20developer%20tools%20for%20windows",   # 苹果下载区里直接搜好 Metal Developer Tools for Windows（要登录 Apple 账号，免费的就行）。原先指 /metal/tools/ 总介绍页：英文、首屏是 Mac 上的 Xcode，Windows 下载藏在页面中段（11-11 新用户首装实测）
             "apple_driver": "https://apps.microsoft.com/detail/9np83lwlpz9k",    # 微软商店 Apple Devices
             "anisette": "https://apps.microsoft.com/detail/9pktq5699m62"}        # 微软商店 iCloud（本机设备信息，不用公共服务器）   # 这两项本模块核得更细（钉版依赖、Metal 版本对锁），出包件那份不重复列
 
@@ -836,8 +836,10 @@ def _library(request, probe):
         v = probe("volume", path=path)
         cloud = libloc.cloud_folder(path, system="Windows", home=v["home"], env=v["env"])
         fmt = v["format"]
-        out = [_item("library_cloud", "游戏库所在位置", "mismatch" if cloud else "ok",
-                     libloc.CLOUD_MESSAGE.format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。", source, {"cloud": cloud}),
+        accepted = bool(cloud) and libloc.cloud_accepted(path)   # 玩家换库时确认过放在云盘里也用（同 Mac toolchain）：照提示、不算要处理
+        out = [_item("library_cloud", "游戏库所在位置", "mismatch" if cloud and not accepted else "ok",
+                     (libloc.CLOUD_ACCEPTED_MESSAGE if accepted else libloc.CLOUD_MESSAGE).format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
+                     source, {"cloud": cloud}),
                _item("library_format", "游戏库所在磁盘", "ok" if libloc.format_ok(fmt, system="Windows") else "mismatch",
                      "游戏库所在磁盘格式可用。" if libloc.format_ok(fmt, system="Windows") else libloc.WIN_FORMAT_MESSAGE.format(fmt=fmt.upper()),
                      source, {"format": fmt})]
