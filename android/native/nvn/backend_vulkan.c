@@ -2214,7 +2214,7 @@ nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pip
 // 第一次当附件时另建一个，随视图销毁。建不出来回空。
 static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
     struct nvn_gpu_tex_s *t = v->tex;
-    if (v->levels == 1 && v->layers == 1 && v->type == VK_IMAGE_VIEW_TYPE_2D && v->aspect == t->aspect) return v->view;
+    if (!v->swizzled && v->levels == 1 && v->layers == 1 && v->type == VK_IMAGE_VIEW_TYPE_2D && v->aspect == t->aspect) return v->view;
     pthread_mutex_lock(&g_mu);
     int image3d = t->target == NVN_TEXTURE_TARGET_3D && t->depth > 1;
     if (!v->att && !(image3d && !t->array_compatible)) {
@@ -2327,8 +2327,6 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "pass_begin 时已在通道里"); return; }
     if (!d || (!d->ncolor && !d->depth.view && !d->stencil.view) || !d->w || !d->h) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 参数非法（没有任何附件，或尺寸为 0）"); return; }
     if (d->depth.view && d->stencil.view && d->depth.view != d->stencil.view) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 的深度与模板必须是同一个视图"); return; }
-    for (uint32_t i = 0; i < d->ncolor && i < 8; i++)
-        if (d->color[i].view && d->color[i].view->swizzled) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "颜色附件 %u 的视图带通道映射（Vulkan 附件视图必须恒等）", i); return; }
     VkImageView fb_views[9];
     VkAttachmentDescription att[9];
     VkAttachmentReference col[8];
