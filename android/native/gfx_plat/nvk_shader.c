@@ -153,7 +153,91 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     // 贴图数组：着色器按运行时下标取句柄，数组第 k 项 = 驱动句柄表的第 (src_reg + k) 个 8 字节项（核心按项逐个绑）
     if (b->kind == 2 && b->count > 1 && b->slot == 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 0; e->count = b->count; return 1; }
     if (b->kind == 2 && b->tex_slot >= 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = (uint16_t)b->tex_slot; return 1; }
-    return 0;   // 存储缓冲、图像：随对应命令接
+    // 存储缓冲：只认「NVN 存储槽」这一种来源（反射里的 nvnSlot）。地址来自 UBO 内 SbDescriptor / c1 段的要逐笔读
+    // 常量缓冲内容，首版还没接，准确报红而不是猜槽位。
+    if (b->kind == 1 && b->storage_kind == 1 && b->storage_slot >= 0 && b->storage_slot < 16) {
+        e->cls = NVN_GPU_RES_SSBO;
+        e->src_kind = NVN_RB_SBUFP;
+        e->src_reg = (uint16_t)b->storage_slot;
+        if (b->storage_writable) e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
+        return 1;
+    }
+    return 0;   // 图像、存储缓冲的其它地址来源：随对应命令接
+}
+
+// 只读组合采样贴图的声明；无法识别时保留 0，不根据绑定对象猜类型。
+static void sampled_decl(const void *blob, size_t bytes, uint32_t set, uint32_t binding, uint8_t *dtt, uint8_t *dcls) {
+    const uint32_t *w = blob;
+    if (!w || bytes < 20 || bytes % 4 || w[0] != 0x07230203u || !w[3] || w[3] > 0x100000u) return;
+    uint32_t bound = w[3]; size_t words = bytes / 4;
+    struct decl_id { size_t off; uint32_t set, binding; };
+    struct decl_id *ids = calloc(bound, sizeof *ids);
+    if (!ids) return;
+    for (uint32_t id = 0; id < bound; id++) ids[id].set = ids[id].binding = UINT32_MAX;
+    for (size_t pos = 5; pos < words;) {
+        uint32_t count = w[pos] >> 16, op = w[pos] & 0xffffu;
+        if (!count || count > words - pos) goto done;
+        const uint32_t *q = w + pos;
+        uint32_t id = 0;
+        switch (op) {
+        case 21: if (count >= 4) id = q[1]; break;   // OpTypeInt
+        case 22: if (count >= 3) id = q[1]; break;   // OpTypeFloat
+        case 25: if (count >= 9) id = q[1]; break;   // OpTypeImage
+        case 27: if (count >= 3) id = q[1]; break;   // OpTypeSampledImage
+        case 28: if (count >= 4) id = q[1]; break;   // OpTypeArray
+        case 29: if (count >= 3) id = q[1]; break;   // OpTypeRuntimeArray
+        case 32: if (count >= 4) id = q[1]; break;   // OpTypePointer
+        case 59: if (count >= 4) id = q[2]; break;   // OpVariable
+        case 71:
+            if (count >= 4 && q[1] < bound) {
+                if (q[2] == 34) ids[q[1]].set = q[3];
+                if (q[2] == 33) ids[q[1]].binding = q[3];
+            }
+            break;
+        default: break;
+        }
+        if (id && id < bound) ids[id].off = pos;
+        pos += count;
+    }
+    for (uint32_t var = 1; var < bound; var++) {
+        if (ids[var].set != set || ids[var].binding != binding || !ids[var].off) continue;
+        const uint32_t *q = w + ids[var].off;
+        if ((q[0] & 0xffffu) != 59 || q[3] != 0) continue;
+        uint32_t id = q[1];
+        if (id >= bound || !ids[id].off) continue;
+        q = w + ids[id].off;
+        if ((q[0] & 0xffffu) != 32) continue;
+        id = q[3];
+        // 限制步数，损坏的类型环不会卡住装载。
+        for (uint32_t step = 0; step < bound && id < bound && ids[id].off; step++) {
+            q = w + ids[id].off;
+            uint32_t op = q[0] & 0xffffu;
+            if (op == 28 || op == 29) { id = q[2]; continue; }
+            if (op != 27) break;
+            id = q[2];
+            if (id >= bound || !ids[id].off) break;
+            q = w + ids[id].off;
+            if ((q[0] & 0xffffu) != 25) break;
+            uint32_t type = q[2], dim = q[3], depth = q[4], arrayed = q[5], ms = q[6];
+            if (arrayed > 1 || ms > 1 || depth > 2 || type >= bound || !ids[type].off) break;
+            int target = -1;
+            if (dim == 0 && !ms) target = arrayed ? NVN_TEXTURE_TARGET_1D_ARRAY : NVN_TEXTURE_TARGET_1D;
+            else if (dim == 1) target = ms ?
+                (arrayed ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY : NVN_TEXTURE_TARGET_2D_MULTISAMPLE) :
+                (arrayed ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D);
+            else if (dim == 2 && !arrayed && !ms) target = NVN_TEXTURE_TARGET_3D;
+            else if (dim == 3 && !ms) target = arrayed ? NVN_TEXTURE_TARGET_CUBEMAP_ARRAY : NVN_TEXTURE_TARGET_CUBEMAP;
+            if (target < 0) break;
+            const uint32_t *sample = w + ids[type].off;
+            uint32_t op_type = sample[0] & 0xffffu;
+            if (op_type != 22 && (op_type != 21 || sample[3] > 1)) break;
+            *dtt = (uint8_t)(target + 1);
+            *dcls = depth == 1 ? 3 : op_type == 21 ? (sample[3] ? 2 : 1) : 0;
+            goto done;
+        }
+    }
+done:
+    free(ids);
 }
 
 // 驱动的贴图句柄表：贴图槽 s 的句柄在第 8 + 2s 个 32 位字，即第 4 + s 个 8 字节项；32 个槽 → 36 项
@@ -176,6 +260,8 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             nvn_gpu_layout_ent *le = &e->prog.ent[st][e->prog.nent[st]];
             if (!layout_ent(b, le)) { char nm[40]; snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot); red1(nm, b->stage); e->failed = 1; break; }
             le->stages = b->is_support ? (nst == 2 ? 3u : 1u) : 1u << st;
+            if (b->kind == 2) sampled_decl(fp.stage[st].spirv, fp.stage[st].spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
+                &e->prog.dtt[st][e->prog.nent[st]], &e->prog.dcls[st][e->prog.nent[st]]);
             e->prog.nent[st]++;
         }
         if (e->failed) break;
@@ -326,8 +412,8 @@ static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **ou
 
 // ---------- 计算程序 ----------
 // 输入的构造与身份用旧层留下的零件（nvn_vk_compute_request.c：只做输入，不碰设备），结果解析用 nvn_vk_program_parse_compute。
-// 首版只认：常量缓冲（含驱动段 c0、着色器自带段 c1）、存储缓冲（地址在 NVN 槽表，或在计算阶段的用户 UBO 槽表）、组合贴图。
-// 图像、地址藏在某个 UBO 内容里的存储缓冲（NVK_STORAGE_UBO_ADDRESS）：记账、取不到。
+// 存储缓冲三种来源：NVN 存储槽（SBUFP）、别名某个用户 UBO 槽的本体（map 2 / UBOP）、
+// 用户 UBO 里 8 字节裸指针（map 3 / UBOA，带字节偏移）。图像、间接派发：记账、取不到。
 static struct entry *build_compute(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view *src) {
     struct entry *e = calloc(1, sizeof *e); e->prog.is_compute = 1;
     static struct nvn_vk_compute_program cp; char why[192] = "";
@@ -340,17 +426,25 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
         nvn_gpu_layout_ent *le = &e->prog.ent[0][e->prog.nent[0]]; int ok = 0;
         if (b->kind == 1) {
             const struct nvn_vk_compute_storage *sg = &cp.storage[i];
-            // 两种来源绑出来的都是「池镜像里的一段」，只差在哪张表给地址：NVK_STORAGE_NVN 取 NVN 存储缓冲槽（NVN_RB_SBUFP）、
-            // NVK_STORAGE_UBO_PTR 取计算阶段的用户 UBO 槽（NVN_RB_UBOP，驱动段 c0 的 0x210 表）。access 一律取反射的 writable（翻译器见到写 / 原子操作才置位，
-            // 没置位的缓冲在 SPIR-V 里带 NonWritable）；核心据此决定登记不登记 GPU 写。NVK_STORAGE_UBO_ADDRESS 要先读 UBO 内容才拿得到地址，这里不接。
-            if ((sg->mapping == NVK_STORAGE_NVN || sg->mapping == NVK_STORAGE_UBO_PTR) && sg->index < 16 && !sg->offset) {
+            if (sg->index < 16) {
                 memset(le, 0, sizeof *le); le->set = (uint8_t)b->set; le->binding = (uint16_t)b->binding; le->count = 1;
                 le->cls = NVN_GPU_RES_SSBO; le->access = sg->writable ? NVN_GPU_ACC_RW : NVN_GPU_ACC_R;
-                le->src_kind = sg->mapping == NVK_STORAGE_UBO_PTR ? NVN_RB_UBOP : NVN_RB_SBUFP; le->src_reg = (uint16_t)sg->index; ok = 1;
+                if (sg->mapping == NVK_STORAGE_NVN && !sg->offset) {
+                    // NVN 存储槽：按槽取地址（核心按 NVN 阶段 5 的存储槽绑定解析）
+                    le->src_kind = NVN_RB_SBUFP; le->src_reg = (uint16_t)sg->index; ok = 1;
+                } else if (sg->mapping == NVK_STORAGE_UBO_PTR && !sg->offset) {
+                    // map 2：这条存储绑定别名「用户 UBO 槽 r 的缓冲本体」，核心按 UBO 槽的地址与长度当 SSBO 绑
+                    le->src_kind = NVN_RB_UBOP; le->src_reg = (uint16_t)sg->index; ok = 1;
+                } else if (sg->mapping == NVK_STORAGE_UBO_ADDRESS) {
+                    // map 3：UBO 槽 r 内偏移 off 处只放一个 8 字节 guest 裸指针；偏移的合法性在绑定侧按 UBO 实际长度核
+                    le->src_kind = NVN_RB_UBOA; le->src_reg = (uint16_t)sg->index; le->src_off = sg->offset; ok = 1;
+                }
             }
         } else ok = layout_ent(b, le);
         if (!ok) { char nm[56]; snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0); red1(nm, "cs"); e->failed = 1; break; }
         le->stages = 1u << NVN_GPU_SH_CS;
+        if (b->kind == 2) sampled_decl(cp.stage.spirv, cp.stage.spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
+            &e->prog.dtt[0][e->prog.nent[0]], &e->prog.dcls[0][e->prog.nent[0]]);
         e->prog.nent[0]++;
     }
     if (!e->failed && !cp.stage.present) { red1("stage_missing_in_result", "cs"); e->failed = 1; }
