@@ -78,7 +78,7 @@ class CloudFolder(unittest.TestCase):
         self.assertIsNone(libloc.cloud_folder("C:\\Users\\player\\OneDrive\\x", system="Windows", home=home, env={}))   # 没装 OneDrive：缺省目录名不算
 
     def test_format_ok(self):
-        for fmt, mac, win in (("apfs", True, False), ("APFS", True, False), ("exfat", False, False), ("msdos", False, False),
+        for fmt, mac, win in (("apfs", True, False), ("APFS", True, False), ("hfs", True, False), ("exfat", False, False), ("msdos", False, False),
                               ("ntfs", False, True), ("NTFS", False, True), ("refs", False, True), ("fat32", False, False), ("", True, True)):
             with self.subTest(fmt=fmt):
                 self.assertEqual(libloc.format_ok(fmt, system="Darwin"), mac)

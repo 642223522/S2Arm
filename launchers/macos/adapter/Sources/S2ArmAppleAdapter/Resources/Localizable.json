@@ -5856,6 +5856,10 @@
   "en": "Library Drive"
  },
  {
+  "source": "游戏库在 Mac OS 扩展（HFS+）格式的磁盘上：可以出包，但这种盘不能克隆，出包会多占一份资源包的空间。",
+  "en": "The library is on a Mac OS Extended (HFS+) drive. Exporting works, but this drive can't clone files, so exports take an extra copy of the resources' space."
+ },
+ {
   "source": "游戏库在 APFS 格式的磁盘上。",
   "en": "The library is on an APFS drive."
  },

@@ -49,7 +49,8 @@ extension S2ArmLauncherModel {
         batchDraft = ids.compactMap { id in
             guard let g = games.first(where: { $0.id == id }) else { return nil }
             let problem = !g.buildable ? Self.requirementsText(g) : (g.needsKeys && provider.library.keysReady == false) ? "keys" : nil
-            return BatchRow(id: g.id, name: g.name, iphone: problem == nil && picked.contains("iphone"), mac: problem == nil && picked.contains("mac"), problem: problem)
+            // 缺东西的款也照勾（只写原因，v0.3.1 不预先挡）：出包作业开头核实，真缺就这一款报失败、不挡后面的款
+            return BatchRow(id: g.id, name: g.name, iphone: picked.contains("iphone"), mac: picked.contains("mac"), problem: problem)
         }
         batchUnrecognized = unrecognized
         if batchLocation.isEmpty, let first = ids.compactMap({ id in games.first { $0.id == id } }).first { batchLocation = defaultLocation(for: first) }
@@ -59,7 +60,7 @@ extension S2ArmLauncherModel {
 
     /// 全选某个平台：没问题的款全勾上；已全勾就全取消
     func batchToggleAll(_ platform: String) {
-        let ok = batchDraft.indices.filter { batchDraft[$0].problem == nil }
+        let ok = Array(batchDraft.indices)
         let all = ok.allSatisfy { platform == "iphone" ? batchDraft[$0].iphone : batchDraft[$0].mac }
         for i in ok { if platform == "iphone" { batchDraft[i].iphone = !all } else { batchDraft[i].mac = !all } }
     }
@@ -69,7 +70,7 @@ extension S2ArmLauncherModel {
 
     /// 建批次并开始出 → nil；没建成 → 原因（控制口 POST /batch 据此回 409，不先回成功，审计 P1-166）
     func createBatch() async -> String? {
-        let items = batchDraft.filter { $0.problem == nil && !$0.platforms.isEmpty }.map { ["gameId": $0.id, "name": $0.name, "platforms": $0.platforms] as [String: Any] }
+        let items = batchDraft.filter { !$0.platforms.isEmpty }.map { ["gameId": $0.id, "name": $0.name, "platforms": $0.platforms] as [String: Any] }
         guard !items.isEmpty else { return "没有能出的游戏" }
         guard !busy, !batchRunning else { return "正在出包" }
         guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "location": batchLocation.isEmpty ? NSNull() : batchLocation] as [String: Any]),
