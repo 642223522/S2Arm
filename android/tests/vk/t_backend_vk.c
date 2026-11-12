@@ -63,6 +63,7 @@ VKAPI_ATTR void VKAPI_CALL __wrap_vkGetPhysicalDeviceFormatProperties(VkPhysical
 }
 
 extern uint32_t nvn_gpu_vk_test_push_capacity(nvn_gpu_cmd c, nvn_gpu_stage st);
+extern void nvn_gpu_vk_test_emit_counts(nvn_gpu_cmd c, uint32_t out[9]);   // #708：管线、视口、裁剪、混合常量、模板、深度偏移、顶点缓冲、索引缓冲、push 各录了几次
 extern void nvn_gpu_vk_test_set_fault(int mode);
 extern void nvn_gpu_vk_test_fail_fence(uint64_t signal);
 extern void nvn_gpu_vk_test_delay_segment(uint64_t signal, uint32_t ms);
@@ -4141,6 +4142,102 @@ static void c75_depth_bias(const char *dir) {
     free(vm); free(fm); free(vm2); free(fm2);
 }
 
+// C85（#708）：冗余状态消除——管线、动态状态、顶点 / 索引缓冲、push 只在和上次真正录进去的不同时才录。
+//   计数（期望值手算，下标：管线、视口、裁剪、混合常量、模板、深度偏移、顶点缓冲、索引缓冲、push）：
+//   ① 同一通道里两笔完全相同的带索引绘制 → 各录 1 次；② 第三笔只改裁剪 → 只有裁剪多 1 次；
+//   ③ 第四笔只换顶点缓冲的偏移、索引偏移 → 只有顶点缓冲、索引缓冲各多 1 次；④ 矩形清除之后同样的一笔 → 全部再录一遍；
+//   ⑤ 新通道里同样的一笔 → 全部再录一遍；⑥ push 常量：同样的字节再 push 不重发，内容变了重发。
+//   读回（维护方在 #708 要求的）：通道清黑；第一笔绿、裁剪左半（x 0–31）；第二笔只改裁剪到 x 48–63。
+//   期望：x 0–31 绿、32–47 黑、48–63 绿。第二笔的裁剪若被当成「没变」漏发，就会再画在左半，右边一条留黑。
+static void c85_redundant_state(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "读不到 solid_green"); return; }
+    nvn_gpu_pipe_desc pd; fill_gpipe_desc(&pd, vs, fs, 0);
+    nvn_gpu_err e; nvn_gpu_pipe pipe = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C85 pipe：%d %s", e.rc.code, e.why);
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view ov = make_view(out);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    const float verts[4][4] = {{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}, {-1, -1, 0, 1}};
+    nvn_gpu_buf vb = make_buf(sizeof verts, NVN_GPU_MEM_SHARED, verts);
+    const uint16_t idx[8] = {0, 1, 2, 0, 1, 2, 0, 0};
+    nvn_gpu_buf ib = make_buf(sizeof idx, NVN_GPU_MEM_SHARED, idx);
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+    p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_dyn dyn; full_dyn(&dyn); dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF; dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF;
+    nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1; da.ibuf = ib; da.itype = 1;
+    uint32_t n[9];
+#define C85_EXPECT(tag, a0, a1, a2, a3, a4, a5, a6, a7, a8) do { nvn_gpu_vk_test_emit_counts(c, n); const uint32_t x_[9] = {a0, a1, a2, a3, a4, a5, a6, a7, a8}; \
+        CHECK(!memcmp(n, x_, sizeof x_), "C85 %s：录了 管线%u 视口%u 裁剪%u 混合%u 模板%u 偏移%u 顶点%u 索引%u push%u，期望 %u %u %u %u %u %u %u %u %u", tag, \
+              n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], a0, a1, a2, a3, a4, a5, a6, a7, a8); } while (0)
+    // 计数用的一段（不读回）
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_set_pipe(c, pipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+    nvn_gpu_set_pipe(c, pipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+    C85_EXPECT("① 两笔相同", 1, 1, 1, 1, 1, 1, 1, 1, 0);
+    dyn.sc[0] = 16; nvn_gpu_set_dyn(c, &dyn); nvn_gpu_draw(c, &da);
+    C85_EXPECT("② 只改裁剪", 1, 1, 2, 1, 1, 1, 1, 1, 0);
+    nvn_gpu_set_vbuf(c, 0, vb, 16); da.ioff = 6; nvn_gpu_draw(c, &da); da.ioff = 0;
+    C85_EXPECT("③ 只换顶点 / 索引偏移", 1, 1, 2, 1, 1, 1, 2, 2, 0);
+    nvn_gpu_clear cl; memset(&cl, 0, sizeof cl); cl.color = 0; cl.color_mask = 0xf; cl.stencil_mask = 0xff; cl.x = 0; cl.y = 0; cl.w = 8; cl.h = 8;
+    nvn_gpu_clear_rect(c, &cl); nvn_gpu_set_pipe(c, pipe); nvn_gpu_draw(c, &da);
+    C85_EXPECT("④ 矩形清除之后", 2, 2, 3, 2, 2, 2, 3, 3, 0);
+    nvn_gpu_pass_end(c);
+    p.color[0].load = NVN_GPU_LOAD_LOAD; nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_set_pipe(c, pipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_draw(c, &da);
+    C85_EXPECT("⑤ 新通道", 3, 3, 4, 3, 3, 3, 4, 4, 0);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 140, on_done, NULL, &e);
+    CHECK(OK(r), "C85 commit（计数段）：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(140, 5000000000ull, &e);
+    CHECK(OK(r), "C85 wait（计数段）：%d %s", r.code, e.why);
+    // 读回用的一段：两笔只差裁剪
+    p.color[0].load = NVN_GPU_LOAD_CLEAR; full_dyn(&dyn); dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF; dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF;
+    c = begin_cmd();
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_set_pipe(c, pipe); dyn.sc[2] = 32; nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0); nvn_gpu_draw(c, &da);
+    dyn.sc[0] = 48; dyn.sc[2] = 16; nvn_gpu_set_dyn(c, &dyn); nvn_gpu_draw(c, &da);
+    C85_EXPECT("读回段", 1, 1, 2, 1, 1, 1, 1, 1, 0);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+    r = nvn_gpu_cmd_commit(c, 141, on_done, NULL, &e);
+    CHECK(OK(r), "C85 commit（读回段）：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(141, 5000000000ull, &e);
+    CHECK(OK(r), "C85 wait（读回段）：%d %s", r.code, e.why);
+    expect_rect(buf_cpu(rb), 0, 0, 32, 64, 0, 255, 0, "C85 第一笔（裁剪 x 0–31：绿）");
+    expect_rect(buf_cpu(rb), 32, 0, 16, 64, 0, 0, 0, "C85 两笔都没画到的 x 32–47（黑）");
+    expect_rect(buf_cpu(rb), 48, 0, 16, 64, 0, 255, 0, "C85 第二笔只改了裁剪（x 48–63：绿）");
+    // ⑥ push 常量（FS push 的管线，同 C56）：同样的字节再 push 一遍 → 不重发；内容变了 → 重发
+    { nvn_gpu_layout fl; memset(&fl, 0, sizeof fl); fl.push_off = 0; fl.push_bytes = 16;
+      nvn_gpu_shader pvs = NULL, pfs = NULL; void *pvm = NULL, *pfm = NULL;
+      if (!load_shader_pair(dir, "tri3.vert", "pushc.frag", NULL, &fl, &pvs, &pfs, &pvm, &pfm)) { CHECK(0, "读不到 pushc 着色器"); }
+      else {
+        nvn_gpu_pipe_desc ppd; fill_gpipe_desc(&ppd, pvs, pfs, 0); nvn_gpu_pipe ppipe = NULL;
+        CHECK(OK(nvn_gpu_pipe_get(&ppd, NVN_GPU_PIPE_SYNC, &ppipe, &e)), "C85 push pipe：%d %s", e.rc.code, e.why);
+        const float ca[4] = {0.25f, 0.5f, 0.75f, 1.0f}, cb[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+        nvn_gpu_draw_args pa = da; pa.ibuf = NULL; pa.itype = 0;
+        c = begin_cmd(); nvn_gpu_pass_begin(c, &p);
+        nvn_gpu_set_pipe(c, ppipe); nvn_gpu_set_dyn(c, &dyn); nvn_gpu_set_vbuf(c, 0, vb, 0);
+        nvn_gpu_push(c, NVN_GPU_SH_FS, 0, ca, sizeof ca); nvn_gpu_draw(c, &pa);
+        nvn_gpu_push(c, NVN_GPU_SH_FS, 0, ca, sizeof ca); nvn_gpu_draw(c, &pa);
+        C85_EXPECT("⑥ 同样的 push", 1, 1, 1, 1, 1, 1, 1, 0, 1);
+        nvn_gpu_push(c, NVN_GPU_SH_FS, 0, cb, sizeof cb); nvn_gpu_draw(c, &pa);
+        C85_EXPECT("⑥ push 内容变了", 1, 1, 1, 1, 1, 1, 1, 0, 2);
+        nvn_gpu_pass_end(c);
+        r = nvn_gpu_cmd_commit(c, 142, on_done, NULL, &e);
+        CHECK(OK(r), "C85 commit（push 段）：%d %s", r.code, e.why);
+        r = nvn_gpu_fence_wait(142, 5000000000ull, &e);
+        CHECK(OK(r), "C85 wait（push 段）：%d %s", r.code, e.why);
+        nvn_gpu_shader_release(pvs); nvn_gpu_shader_release(pfs); free(pvm); free(pfm);
+      } }
+#undef C85_EXPECT
+    nvn_gpu_view_release(ov); nvn_gpu_tex_release(out);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(ib, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+}
+
 int main(int argc, char **argv) {
     t29_format_expand();
     char why[256] = {0};
@@ -4317,6 +4414,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     c74b_clear_rect_oob();
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C74b close：%d %s", e18.rc.code, e18.why);
+    if (!open_backend()) return 1;
+    c85_redundant_state(argv[1]);   // 独占会话：时间线信号不受前后用例的排列影响
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C85 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;
     c58a_push_oob_cs(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C58a close：%d %s", e18.rc.code, e18.why);
