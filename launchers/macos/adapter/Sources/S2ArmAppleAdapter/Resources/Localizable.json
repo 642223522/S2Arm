@@ -7142,5 +7142,13 @@
  {
   "source": "这款游戏暂不支持：程序的结构我们还不认识，多见于自制或移植的程序。",
   "en": "This game is not supported yet. We don't recognize how this program is built yet; this is common for homebrew or ported programs."
+ },
+ {
+  "source": "可以点「仍然用这里」照用这块盘（出包会多占空间）；想省空间就从下面列出的 NTFS 盘里选一块，点「放到这里」。",
+  "en": "Choose \"Use this drive anyway\" to keep using this drive (exports take more space), or pick one of the NTFS drives listed below and choose \"Use this drive\" to save space."
+ },
+ {
+  "source": "在出包页「存放位置」换到 NTFS 格式的盘（上面列出了这台电脑上可用的），再出包；游戏原件放在哪都行。",
+  "en": "On the export page, change Storage Location to an NTFS drive (the available ones on this PC are listed above), then export again. Your game files can stay wherever they are."
  }
 ]

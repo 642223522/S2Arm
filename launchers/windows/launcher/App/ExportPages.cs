@@ -1456,10 +1456,21 @@ public sealed partial class EnvironmentWindow
         if (await ConfirmInstallActionAsync("install.restore")) await RunPhoneJobAsync(game, "installRestore", "install.restore");
     }
 
-    /// <summary>换游戏库的 setup 作业报 library_in_cloud（选的文件夹在云盘同步目录里）：认得出的风险，问玩家「仍然继续 / 先不」；同意返回 true，调用方带 acceptCloud 重发（同 Mac LibraryConfirm）</summary>
-    private async Task<bool> ConfirmCloudLibraryAsync(LibraryJobOutput setup) =>
-        !setup.Report.Succeeded && JobCode(setup) == "library_in_cloud" &&
-        await ConfirmInstallActionAsync("install.drop", setup.Report.Message, ConfirmTitle("library_in_cloud"));
+    /// <summary>换游戏库 setup 撞上认得出的风险 → 问玩家时带的参数（同 Mac S2ArmLauncherModel.libraryConfirmCodes）：
+    /// library_in_cloud 选的文件夹在云盘同步目录里；library_folder_not_empty 文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）</summary>
+    internal static readonly IReadOnlyDictionary<string, string> LibraryConfirmCodes = new Dictionary<string, string>
+    {
+        ["library_in_cloud"] = "acceptCloud", ["library_folder_not_empty"] = "acceptForeign",
+    };
+
+    /// <summary>setup 没成、失败码是认得出的风险、这一项还没确认过：问「仍然继续 / 先不」；同意就把对应参数加进 accept 返回 true，调用方带着它重发（参数累积）</summary>
+    private async Task<bool> ConfirmLibraryAsync(LibraryJobOutput setup, HashSet<string> accept)
+    {
+        if (setup.Report.Succeeded || JobCode(setup) is not { } code || !LibraryConfirmCodes.TryGetValue(code, out var flag) || accept.Contains(flag)) return false;
+        if (!await ConfirmInstallActionAsync("install.drop", setup.Report.Message, ConfirmTitle(code))) return false;
+        accept.Add(flag);
+        return true;
+    }
 
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
     private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null)
