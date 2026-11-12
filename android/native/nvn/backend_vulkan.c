@@ -3092,8 +3092,10 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     VkImageCreateFlags iflags = 0;
     int array_compat = 0;
     switch (target) {
-    case NVN_TEXTURE_TARGET_2D: break;
+    case NVN_TEXTURE_TARGET_2D:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE: break;
     case NVN_TEXTURE_TARGET_2D_ARRAY:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY:
         layers = depth; vtype = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
     case NVN_TEXTURE_TARGET_3D:
         itype = VK_IMAGE_TYPE_3D; vtype = VK_IMAGE_VIEW_TYPE_3D;
@@ -3127,6 +3129,20 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
         usage |= nvn_vk_format_is_depth(fmt) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     if (d->usage & NVN_GPU_TEX_STORAGE) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+
+    // 在 vkCreateImage 前按真实格式/usage 查询样本数；不把非法计数送到驱动或校验层。
+    int ms_target = target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+    if (ms_target || samples > 1) {
+        if (d->d.samples <= 1 || samples > 64 || (samples & (samples - 1)) || levels != 1 || itype != VK_IMAGE_TYPE_2D ||
+            ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && !g.dev->core_features.shaderStorageImageMultisample) ||
+            (d->d.samples > 1 && (target == NVN_TEXTURE_TARGET_CUBEMAP || target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)))
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "多重采样计数/级数/目标不支持");
+        VkImageFormatProperties ip = {0};
+        VkImageCreateFlags flags = iflags | ((d->usage & NVN_GPU_TEX_VIEW_FMT) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0);
+        if (vkGetPhysicalDeviceImageFormatProperties(g.phys, fmt, itype, VK_IMAGE_TILING_OPTIMAL, usage, flags, &ip) != VK_SUCCESS ||
+            !(ip.sampleCounts & samples) || (uint32_t)d->d.width > ip.maxExtent.width || (uint32_t)d->d.height > ip.maxExtent.height || layers > ip.maxArrayLayers)
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "设备不支持该格式/usage 的 %u 重采样贴图", samples);
+    }
 
     struct nvn_gpu_tex_s *t = calloc(1, sizeof *t);
     if (!t) return fail(err, NVN_GPU_E_OOM, "贴图结构分配失败");
@@ -3775,6 +3791,33 @@ void nvn_gpu_blit(nvn_gpu_cmd ch, nvn_gpu_view sv, const NVNcopyRegion *sr, nvn_
     if (!sv || !dv || !sv->tex || !dv->tex || !sr || !dr) { set_sticky(c, NVN_GPU_E_ARG, "blit 参数为空"); return; }
     struct nvn_gpu_tex_s *s = sv->tex, *d = dv->tex;
     if (sv->format != s->format || dv->format != d->format) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：视图换了格式（拷贝按存储的格式做）"); return; }
+    if (s->samples > 1 && d->samples == 1) {
+        nvn_fmt_info f;
+        if (linear || s->w != d->w || s->h != d->h || s->format != d->format || s->nvn_format != d->nvn_format || sv->swizzled || dv->swizzled ||
+            s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
+            !nvn_fmt_info_of(s->nvn_format, &f) || f.kind == NVN_FMT_UINT || f.kind == NVN_FMT_SINT || f.depth || f.stencil ||
+            s->target == NVN_TEXTURE_TARGET_3D || d->target == NVN_TEXTURE_TARGET_3D) {
+            set_sticky(c, NVN_GPU_E_UNSUPPORTED, "resolve：只支持同格式非整数颜色二维贴图"); return;
+        }
+        VkOffset3D so, dof; VkExtent3D se, de;
+        if (sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0 ||
+            sr->depth != 1 || dr->depth != 1 || sr->zoffset || dr->zoffset || copy_region(s, sv->base_level, sr, &so, &se) || copy_region(d, dv->base_level, dr, &dof, &de) ||
+            sv->base_layer >= s->layers || dv->base_layer >= d->layers ||
+            se.width != de.width || se.height != de.height || se.depth != 1 || de.depth != 1 || so.z || dof.z) {
+            set_sticky(c, NVN_GPU_E_ARG, "resolve：区域越界或尺寸不相同"); return;
+        }
+        full_barrier(c);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        image_barrier(c, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageResolve ir = {0};
+        ir.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, sv->base_level, sv->base_layer, 1};
+        ir.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, dv->base_level, dv->base_layer, 1};
+        ir.srcOffset = so; ir.dstOffset = dof; ir.extent = se;
+        vkCmdResolveImage(c->cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ir);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_GENERAL); image_barrier(c, d, VK_IMAGE_LAYOUT_GENERAL);
+        cmd_ref(c, s, REF_TEX); cmd_ref(c, d, REF_TEX);
+        return;
+    }
     if (s->samples > 1 || d->samples > 1 || nvn_vk_format_is_depth(s->format) || nvn_vk_format_is_depth(d->format)) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：多重采样 / 深度模板没接"); return; }
     { nvn_fmt_info a, b; int ai = nvn_fmt_info_of(s->nvn_format, &a) && (a.kind == NVN_FMT_UINT || a.kind == NVN_FMT_SINT), bi = nvn_fmt_info_of(d->nvn_format, &b) && (b.kind == NVN_FMT_UINT || b.kind == NVN_FMT_SINT);
       if (ai || bi) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：整数格式没接"); return; } }
