@@ -67,6 +67,26 @@ class RegistryTest(unittest.TestCase):
                 ds.load(write_registry(d, [scheme(), scheme(id="other")]))
 
 
+class AppLayoutTest(unittest.TestCase):
+    """发版 App：作业代码在 Resources/Jobs，引擎快照在 Resources/Engine（v0.3.3 候选导入即红的根因：按本文件位置拼出 Resources/downstream）"""
+    def test_registry_follows_engine_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = Path(d) / "Engine"
+            (engine / "pack/downstream").mkdir(parents=True)
+            write_registry(engine / "pack/downstream", [scheme()])
+            ctx = FakeContext(d); ctx.engine = engine
+            self.assertEqual(ds.registry(ctx), engine / "pack/downstream/schemes.json")
+            self.assertEqual(ds.match(dict(id="0100000000010000"), c=ctx)["id"], "demo")
+
+    def test_missing_registry_does_not_block_catalog(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctx = FakeContext(d); ctx.engine = Path(d) / "no-engine"
+            self.assertIsNone(ds.describe(ctx, dict(id=TITLE, packages=[])))   # 读库 / 导入照常（不命中下游，报红）
+            ctx.r = dict(scheme="d2r-mobile")
+            with self.assertRaises(ds.SchemeError):                            # 玩家点了下游的单子：读不到就整单失败、说原因
+                ds.requested(ctx, dict(id=TITLE))
+
+
 class EligibilityTest(unittest.TestCase):
     s = scheme(name="D2R-Mobile", needs=dict(updateVersion=2228224, updateDisplay="1.0.34.0"))
 
