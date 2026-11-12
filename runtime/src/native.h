@@ -71,8 +71,11 @@ __attribute__((format(printf, 1, 2))) static inline void s2a_log_line2(const cha
 #endif
 void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日志 / 切 fd / 起控制台副本；幂等
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
-typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
+typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms, gpu_clk_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
 int s2a_energy_snap(s2a_esnap *s);
+// 两次采样之间的 GPU 忙 ms/s：分母取 GPU 时钟差（gpu_clk_ms，已入账各帧最晚 GPU 结束），不取墙钟——GPU 忙晚 8 帧在 CPU 帧边界入账，墙钟窗口会把慢帧前的时间挤进来；
+//   读不到（没有直连层）返回 -1，这段时间没有帧入账返回 0
+double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b);
 void s2a_energy_log(void);
 int s2a_energy_capture(char *out, size_t n);
 int s2a_spin_step(const uint64_t *tid, const char *const *name, const double *cores, int n, double sec, int lim);   // 游戏线程满核空转判定（energy.c）
