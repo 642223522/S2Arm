@@ -9,7 +9,13 @@ internal static class WindowsLibraryCases
 {
     public static async Task Run(Action<bool, string> check)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows()) await RunWindows(check);
+    }
+
+    // 平台守卫放在单独的方法上：lambda 里的 ACL 调用分析器认不出外层的 IsWindows 守卫
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static async Task RunWindows(Action<bool, string> check)
+    {
         var temp = Path.GetFullPath(Path.GetTempPath());
         var root = Path.Combine(temp, "s2arm-private-test-" + Guid.NewGuid().ToString("N"));
         try
@@ -32,9 +38,28 @@ internal static class WindowsLibraryCases
             acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadData,
                 InheritanceFlags.ObjectInherit, PropagationFlags.InheritOnly, AccessControlType.Allow));
             new DirectoryInfo(weak).Create(acl);
-            try { using var bad = PrivateJobRequest.Create(weak, "{}"); throw new Exception("accepted public inherited request access"); }
-            catch (IOException) { check(true, "reject ACL granting inherited request access to Everyone"); }
-            check(!Directory.EnumerateFiles(weak).Any(), "rejected ACL writes no request data");
+            // #672：别的身份的权限就地去掉（当前账户是属主、有改权限的权利），不再拒绝；Everyone 那条规则必须没了才算修好
+            var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+            using (var healedWeak = PrivateJobRequest.Create(weak, "{}"))
+                check(File.Exists(healedWeak.FilePath), "private root granting Everyone is healed and accepts a request");
+            check(!new DirectoryInfo(weak).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                .Any(r => r.IdentityReference.Equals(everyone)), "healed private root no longer grants Everyone");
+            // #672：属主是别的身份（玩家曾以管理员身份运行 → 属主 Administrators 组）。夹具要能把属主设成 Administrators：只有管理员会话做得到，普通会话跳过并写明
+            var foreign = Path.Combine(root, "Foreign");
+            Directory.CreateDirectory(foreign);
+            var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var fixtureOk = true;
+            try { var o = new DirectorySecurity(); o.SetOwner(admins); new DirectoryInfo(foreign).SetAccessControl(o); }
+            catch (Exception e) when (e is UnauthorizedAccessException or InvalidOperationException) { fixtureOk = false; Console.WriteLine("skip foreign-owner case: this session cannot set owner to Administrators"); }
+            if (fixtureOk)
+            {
+                check(admins.Equals(new DirectoryInfo(foreign).GetAccessControl().GetOwner(typeof(SecurityIdentifier))), "fixture: private root owned by Administrators");
+                using (var taken = PrivateJobRequest.Create(foreign, "{}"))
+                    check(File.Exists(taken.FilePath), "private root owned by Administrators is taken over and accepts a request");
+                check(sid.Equals(new DirectoryInfo(foreign).GetAccessControl().GetOwner(typeof(SecurityIdentifier))), "taken-over private root is owned by the current user");
+            }
+            // 修不了时的话点名目录（玩家要知道删哪个）
+            check(PrivateJobRequest.Describe("owner", @"C:\X\private").Contains(@"C:\X\private"), "unrecoverable private root message names the folder");
             // #580：私有目录被 Directory.CreateDirectory 先建出来（继承临时目录的权限：本人 / SYSTEM / Administrators），原先永远报 inherits permissions
             var inherited = Path.Combine(root, "Inherited");
             Directory.CreateDirectory(Path.Combine(inherited, "jobs"));
