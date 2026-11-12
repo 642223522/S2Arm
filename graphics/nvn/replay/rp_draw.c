@@ -332,6 +332,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     a.prim = prim; a.count = count; a.instances = (uint32_t)(di ? di->instances : dr->instances); if (!a.instances) a.instances = 1; a.base_instance = base_instance;
     rp_occl_draw(c);
     nvn_gpu_draw(c, &a);
+    rp_pass_note_draw(rp_S.ds.dt || rp_S.ds.dw || rp_S.ds.st);
     DT(RP_PERF_D_DRAW);
     if (g_log_left) {
         g_log_left--;

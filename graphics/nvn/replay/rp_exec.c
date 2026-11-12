@@ -66,7 +66,7 @@ static void pre_done(void *user, const nvn_gpu_done *d) { (void)user; if (d->sta
 // 于是结束当前通道、录进主段（通道在下一笔绘制时重开）。last_sub：该资源上次同步所在的提交序号，由调用方持有。
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
     if (!g_cmd) return NULL;
-    if (*last_sub == g_sub_serial) { rp_pass_end(g_cmd); return g_cmd; }
+    if (*last_sub == g_sub_serial) { if (rp_pass_is_open()) pf_add(RP_PERF_P_CUT_XFER, 1); rp_pass_end(g_cmd); return g_cmd; }
     *last_sub = g_sub_serial;
     if (!g_pre) { nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {0, "nvn submit pre"};
         if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_pre, &err))) { g_pre = NULL; rp_pass_end(g_cmd); return g_cmd; } }
