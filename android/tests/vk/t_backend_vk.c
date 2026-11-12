@@ -2831,6 +2831,40 @@ static void c55_compute(const char *dir) {
     bad = 0;
     for (uint32_t i = 0; i < 64; i++) if (rd[i] != i + 1) bad++;
     CHECK(bad == 0, "C55 间接 dispatch 结果错 %d 项", bad);
+    // #659: GPU writes parameters, then native indirect dispatch consumes them
+    // in the same submission. No CPU read/patch of generated parameters.
+    memset(buf_cpu(buf), 0, sizeof rd);
+    uint32_t zeros[64] = {0};
+    uint32_t stale[4] = {99, 0, 0, 0};
+    nvn_gpu_buf generated = make_buf(sizeof zeros, NVN_GPU_MEM_SHARED, zeros);
+    nvn_gpu_buf gpu_ind = make_buf(sizeof stale, NVN_GPU_MEM_SHARED, stale);
+    nvn_gpu_buf drv = make_buf(sizeof stale, NVN_GPU_MEM_SHARED, stale);
+    nvn_gpu_binding producer = b; producer.u.b.buf = generated;
+    nvn_gpu_cmd c3 = begin_cmd();
+    nvn_gpu_set_pipe(c3, cp);
+    nvn_gpu_bind(c3, NVN_GPU_SH_CS, &producer, 1);
+    nvn_gpu_dispatch(c3, cp, 1, 1, 1, NULL, 0);
+    // Existing comp.comp produces 1..16. Assemble {2,1,1} on GPU at offset 4.
+    nvn_gpu_copy_buf(c3, generated, 4, gpu_ind, 4, 4);
+    nvn_gpu_copy_buf(c3, generated, 0, gpu_ind, 8, 4);
+    nvn_gpu_copy_buf(c3, generated, 0, gpu_ind, 12, 4);
+    // Model DRV0's group-count copy from the exact same authoritative buffer.
+    nvn_gpu_copy_buf(c3, gpu_ind, 4, drv, 4, 12);
+    nvn_gpu_barrier(c3, NVN_BARRIER_ORDER_INDIRECT_DATA_BIT | NVN_BARRIER_INVALIDATE_SHADER_BIT);
+    nvn_gpu_bind(c3, NVN_GPU_SH_CS, &b, 1);
+    nvn_gpu_dispatch(c3, cp, 0, 0, 0, gpu_ind, 4);
+    CHECK(OK(nvn_gpu_cmd_commit(c3, 19, on_done, NULL, &e)), "C55 GPU indirect commit: %d %s", e.rc.code, e.why);
+    CHECK(OK(nvn_gpu_fence_wait(19, 5000000000ull, &e)), "C55 GPU indirect wait: %d %s", e.rc.code, e.why);
+    memcpy(rd, buf_cpu(buf), sizeof rd);
+    bad = 0;
+    for (uint32_t i = 0; i < 64; i++) if (rd[i] != (i < 32 ? i + 1 : 0)) bad++;
+    CHECK(bad == 0, "C55 GPU generated indirect: %d wrong outputs", bad);
+    uint32_t counts[4]; memcpy(counts, buf_cpu(drv), sizeof counts);
+    CHECK(counts[0] == 99 && counts[1] == 2 && counts[2] == 1 && counts[3] == 1,
+          "C55 GPU DRV0 copy: %u %u %u %u", counts[0], counts[1], counts[2], counts[3]);
+    nvn_gpu_buf_release(drv, NULL, NULL);
+    nvn_gpu_buf_release(gpu_ind, NULL, NULL);
+    nvn_gpu_buf_release(generated, NULL, NULL);
     // 0 组 dispatch：空操作，命令缓冲仍应可提交
     nvn_gpu_cmd c4 = begin_cmd();
     nvn_gpu_set_pipe(c4, cp);
