@@ -266,6 +266,10 @@ struct nvn_gpu_vk {
 static struct nvn_gpu_vk g;
 static _Atomic int g_open;   // 跨线程：close 置 0 后其他线程据此拒收
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+// 诊断读数（nvk_gputime 开着时每 300 次上屏打一行）：每帧新建了多少个驱动对象、写了多少次描述符、开了多少个查询。
+enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_N };
+static uint64_t g_oc[OC_N];
+#define OC(i) __atomic_fetch_add(&g_oc[i], 1, __ATOMIC_RELAXED)
 static pthread_mutex_t g_submit_mu = PTHREAD_MUTEX_INITIALIZER; // 提交串行化：校验 signal、vkQueueSubmit、入队
 static pthread_cond_t g_cv;
 static int g_cv_ready;
@@ -1764,6 +1768,7 @@ static VkRenderPass make_pipeline_pass(const nvn_gpu_pipe_desc *d) {
     rp.dependencyCount = 2;
     rp.pDependencies = dep;
     VkRenderPass pass = VK_NULL_HANDLE;
+    OC(OC_RP);
     if (vkCreateRenderPass(g.d, &rp, NULL, &pass) != VK_SUCCESS) return VK_NULL_HANDLE;
     return pass;
 }
@@ -2380,6 +2385,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
     rp.pDependencies = dep;
     *natt_out = natt;
     VkRenderPass pass = VK_NULL_HANDLE;
+    OC(OC_RP);
     if (vkCreateRenderPass(g.d, &rp, NULL, &pass) != VK_SUCCESS) return VK_NULL_HANDLE;
     return pass;
 }
@@ -2411,6 +2417,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     fi.height = d->h;
     fi.layers = d->layers ? d->layers : 1;
     VkFramebuffer fb = VK_NULL_HANDLE;
+    OC(OC_FB);
     if (vkCreateFramebuffer(g.d, &fi, NULL, &fb) != VK_SUCCESS) {
         vkDestroyRenderPass(g.d, pass, NULL);
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "vkCreateFramebuffer 失败");
@@ -2662,6 +2669,7 @@ static int new_dpool(struct nvn_gpu_cmd_s *c) {
     dpi.maxSets = DPOOL_SETS;
     dpi.poolSizeCount = 8;
     dpi.pPoolSizes = ps;
+    OC(OC_DPOOL);
     if (vkCreateDescriptorPool(g.d, &dpi, NULL, &c->dpool) != VK_SUCCESS) {
         c->dpool = VK_NULL_HANDLE;
         set_sticky(c, NVN_GPU_E_OOM, "描述符池创建失败");
@@ -2679,6 +2687,7 @@ static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl,
         ai.descriptorPool = c->dpool;
         ai.descriptorSetCount = n;
         ai.pSetLayouts = dsl;
+        OC(OC_DALLOC);
         VkResult r = vkAllocateDescriptorSets(g.d, &ai, sets);
         if (r == VK_SUCCESS) return 1;
         if (fresh || (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL)) {
@@ -2824,6 +2833,7 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
         if (n < 0) return 0;
         nw += (uint32_t)n;
     }
+    OC(OC_DWRITE);
     if (nw) vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL);
     c->desc_dirty = 0;
     if (!dirty) return 1;
@@ -4022,6 +4032,7 @@ void nvn_gpu_occlusion(nvn_gpu_cmd ch, int32_t slot) {
     if (slot >= 0 && ((uint32_t)slot >= c->qcount || c->q_used[slot])) { set_sticky(c, NVN_GPU_E_ARG, "遮挡查询槽 %d 越界（本段 %u 槽）或本段已用过", slot, c->qcount); return; }
     if (c->q_active >= 0) { vkCmdEndQuery(c->cb, c->qpool, (uint32_t)c->q_active); c->q_active = -1; }
     if (slot < 0) return;
+    OC(OC_QUERY);
     vkCmdBeginQuery(c->cb, c->qpool, (uint32_t)slot, g.dev->core_features.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
     c->q_active = slot; c->q_used[slot] = 1; if ((uint32_t)slot + 1 > c->qmax_used) c->qmax_used = (uint32_t)slot + 1;
 }
@@ -4055,6 +4066,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pci.queueFamilyIndex = g.dev->queue_family;
+    OC(OC_CPOOL);
     if (vkCreateCommandPool(g.d, &pci, NULL, &c->pool) != VK_SUCCESS) {
         free(c);
         return fail(err, NVN_GPU_E_OOM, "vkCreateCommandPool 失败");
