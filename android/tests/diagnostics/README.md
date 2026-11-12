@@ -40,3 +40,11 @@ bash android/tests/diagnostics/run.sh
 - 共同契约 `tests/fixtures/redact_cases.tsv` 逐行比。
 - `redact_oracle.py` 用 `tools/redact.py` 算 20000 条随机合成串的期望，与 Java 对拍。注意这把 Java 版绑在 `tools/redact.py` 的全部规则上，不止共同契约那几十条：改 Python 规则要同步改 Java。
 - 安卓专有规则与打包的期望值手写（`DiagnosticRedactorTest` / `DiagnosticBundleWriterTest`）。
+
+## 导出入口（第二片）
+
+库页（`LibraryActivity`）的「导出诊断包」按钮在后台线程跑 `DiagnosticExport`：
+- 取本应用目录的几种写法、导入的 `files/keys/prod.keys`、版本与机型。key 文件不是普通文件或过大就整次拒绝，因为那样它的值无法隐去。
+- 调 `DiagnosticBundleWriter` 写到 `cache/diag`，再经系统分享面板交给玩家选的应用。
+
+`DiagnosticShareProvider` 是不导出的只读 provider，读方只能凭分享意图上的一次性授权进来。它只认 `DiagnosticBundleWriter.shareable` 接受的包名：`cache/diag` 下、本类写出的名字形状、普通文件、不是链接。应用没有 AndroidX，所以没用 FileProvider。
