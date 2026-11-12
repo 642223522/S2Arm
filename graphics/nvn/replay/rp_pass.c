@@ -143,6 +143,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     if (!c || !P.has_rt) { if (c) nvn_unimpl("pass", "draw_without_target", NULL); return 0; }
     int any_color = 0; for (int i = 0; i < P.rt.n && i < 8; i++) if (P.rt.color[i]) any_color = 1;
     if (P.rt.n < 0 || P.rt.n > 8 || (!any_color && !P.rt.depth)) { nvn_unimpl("pass", "no_attachment", NULL); return 0; }
+    rp_view_pin_begin();   // 下面取到的视图在本函数结束前不能被轮转放掉
     nvn_gpu_pass_desc d; memset(&d, 0, sizeof d);
     int nattached = 0;
     for (int i = 0; i < P.rt.n; i++) {
@@ -152,7 +153,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         uint32_t sbytes = 0; const char *why = NULL; int kind = slot_kind(i, &sbytes, &why);
         if (kind < 0) { nvn_unimpl("pass", why, t); continue; }   // 深度 / 块压缩格式的图挂在颜色槽、又走不了影子：当空槽（画到这个槽的内容丢掉）
         nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, P.clear_c[i]) : rp_view_for(t, P.rt.has_cview[i] ? &P.rt.cview[i] : NULL, c);
-        if (!v) { memset(g_shu, 0, sizeof g_shu); return 0; }
+        if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         nattached++;
         d.color[i].view = v; d.color[i].store = NVN_GPU_STORE_STORE;
         d.color[i].load = P.clear_c[i] ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD;
@@ -160,12 +161,12 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         if (!d.w) level_size(t, &P.rt.cview[i], P.rt.has_cview[i], &d.w, &d.h);   // 尺寸取第一个有图的槽
     }
     d.ncolor = (uint32_t)P.rt.n; d.layers = 1;
-    if (!nattached && !P.rt.depth) { nvn_unimpl("pass", "no_attachment", NULL); return 0; }   // 颜色槽全成了空槽、又没有深度：这个通道的绘制跳过（同 iOS）
+    if (!nattached && !P.rt.depth) { rp_view_pin_end(); nvn_unimpl("pass", "no_attachment", NULL); return 0; }   // 颜色槽全成了空槽、又没有深度：这个通道的绘制跳过（同 iOS）
     if (!d.w && P.rt.depth) level_size(P.rt.depth, &P.rt.dview, P.rt.has_dview, &d.w, &d.h);   // 只有深度的通道（阴影图、深度预通道）：尺寸取深度目标的
     if (P.rt.depth) {
         nvn_fmt_info fi; int ok = nvn_fmt_info_of((uint32_t)P.rt.depth->d.format, &fi);
         nvn_gpu_view v = rp_view_for(P.rt.depth, P.rt.has_dview ? &P.rt.dview : NULL, c);
-        if (!v) { memset(g_shu, 0, sizeof g_shu); return 0; }
+        if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         if (!ok || fi.depth) { d.depth.view = v; d.depth.store = NVN_GPU_STORE_STORE; d.depth.load = P.clear_d ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD; d.clear_depth = P.cd; }
         if (ok && fi.stencil) { d.stencil.view = v; d.stencil.store = NVN_GPU_STORE_STORE; d.stencil.load = P.clear_s ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD; d.clear_stencil = (uint32_t)P.cs & 0xff; }
     }
@@ -175,6 +176,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     for (int i = 0; i < P.rt.n && i < 8; i++) if (d.color[i].view && d.color[i].load == NVN_GPU_LOAD_LOAD) rp_perf_add(RP_PERF_P_LOADC, 1);
     rp_perf_add(RP_PERF_P_KPIX, (uint64_t)d.w * d.h / 1000);
     nvn_gpu_pass_begin(c, &d);
+    rp_view_pin_end();
     rp_occl_pass_opened(d.occlusion);
     rp_perf_add(RP_PERF_PASSES, 1);
     for (int i = 0; i < P.rt.n; i++) if (P.rt.color[i]) rp_tex_mark_gpu_written(P.rt.color[i]);

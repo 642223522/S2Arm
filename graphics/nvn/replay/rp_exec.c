@@ -211,30 +211,19 @@ static void mid_done(void *user, const nvn_gpu_done *d) {   // 中途交的段�
 // 中途先交一段：这次提交回放到这里为止录下的命令先交给 GPU 去做，回放接着往下录进新的一段。
 // 一整次提交回放完才交的话，CPU 回放时 GPU 闲着、GPU 做的时候游戏线程（多半接着就等这次提交做完）闲着，两头串着干。
 // 只在通道外、换渲染目标之后交；用了遮挡计数的提交不拆（查询池按段建）。回写、事件、同步对象都挂在最后一段上，语义不变。
-// 什么时候交：照安卓模拟器 Vulkan 后端的自动提交规则（compat/tree/src/Ryujinx.Graphics.Vulkan/AutoFlushCounter.cs，常量原样）——
-//   · 换渲染目标时：自上次交段起画了至少 10 笔、且过了 1 毫秒（ShouldFlushAttachmentChange）；
-//   · 快交模式下每笔绘制之后：至少 10 笔、且过了 1.5 毫秒（ShouldFlushDraw；要先结束通道）；
-//   · 快交模式：游戏每帧等 GPU 的时间最近 20 帧平均超过 1.5 毫秒进入、低于 0.1 毫秒退出（Present）。
-// 一笔都没画时把计时起点挪到现在。调试开关 nvk_autoflush=0 关掉（整次提交只交一段）。
-uint64_t (*rp_af_clock)(void);   // 用例换成假时钟；NULL = 单调时钟
-static uint64_t af_now(void) { return rp_af_clock ? rp_af_clock() : now_ns(); }
-static uint64_t g_af_last, g_af_wait, g_af_hist[20]; static int g_af_hi, g_af_fast;
-static int af_due(uint64_t timeout_ns) {
+// 什么时候交：换渲染目标时，自上次交段起画够了 SPLIT_DRAWS 笔。
+// 做法来自安卓模拟器 Vulkan 后端的自动提交（compat/tree/src/Ryujinx.Graphics.Vulkan/AutoFlushCounter.cs：换帧缓冲时按时间与笔数交）。
+// 它的阈值（10 笔、1 毫秒，以及「快交模式」下通道中间也交）照搬过来在真机上不行：这边交一段要把状态全部重发、另开一段，
+// 固定成本比它高，标题画面每帧交到 10–15 段、回放一度每帧 178 毫秒，进了「快交模式」每帧一百多段。
+// 按笔数、只在换渲染目标处交，是真机上量过有效的形态（3D 那款场景每帧约 2000 笔、交 7 段：12.6 → 20–23 帧）。
+// 调试开关 nvk_split 改每段的笔数，0 = 不交（整次提交只交一段）。
+int rp_split_draws = 300;   // 每段的笔数（用例改小了测）
+static void sub_split(void) {
+    int thr = nvn_plat_flag("nvk_split", rp_split_draws);
+    if (thr <= 0 || !g_cmd || !g_sub || g_mid >= SUB_STEP - 4 || rp_pass_is_open()) return;
     uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
-    if (nd - g_split_base < 10) { if (nd == g_split_base) g_af_last = af_now(); return 0; }
-    return af_now() > g_af_last + timeout_ns;
-}
-void rp_autoflush_present(void) {   // 每帧上屏时调：更新快交模式
-    g_af_hist[g_af_hi] = __atomic_exchange_n(&g_af_wait, 0, __ATOMIC_ACQ_REL); g_af_hi = (g_af_hi + 1) % 20;
-    uint64_t sum = 0; for (int i = 0; i < 20; i++) sum += g_af_hist[i];
-    uint64_t avg = sum / 20;
-    if (g_af_fast ? avg < 100000 : avg > 1500000) g_af_fast = !g_af_fast;
-}
-int rp_autoflush_fast(void) { return g_af_fast; }
-static void sub_split(uint64_t timeout_ns) {
-    if (!g_cmd || !g_sub || g_mid >= SUB_STEP - 4 || rp_pass_is_open() || !nvn_plat_flag("nvk_autoflush", 1)) return;
-    if (!af_due(timeout_ns)) return;
-    { uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns); g_split_base = nd; g_af_last = af_now(); }
+    if (nd - g_split_base < (uint64_t)thr) return;
+    g_split_base = nd;
     nvn_gpu_err err = {0};
     if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
@@ -246,11 +235,6 @@ static void sub_split(uint64_t timeout_ns) {
     nvn_gpu_cmd_desc d = {g_occ_seg ? OCC_SLOTS : 0, "nvn submit"};
     if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_cmd, &err))) { g_cmd = NULL; red("中途交段后开新段失败：%s", err.why); }
     rp_dirty_all();
-}
-
-static void af_after_draw(void) {   // 快交模式：画着画着也交（结束通道，下一笔重开）
-    if (!g_af_fast || !g_cmd || !g_sub || g_mid >= SUB_STEP - 4 || !nvn_plat_flag("nvk_autoflush", 1) || !af_due(1500000)) return;
-    rp_pass_end(g_cmd); sub_split(0);
 }
 
 uint64_t nvn_be_sub_commit(void) {
@@ -269,7 +253,7 @@ uint64_t nvn_be_sub_commit(void) {
     rc_commit(f);
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, sub_done, s, &err))) red("提交失败：%s", err.why);
     pf_add(RP_PERF_COMMIT_NS, now_ns() - t0); pf_add(RP_PERF_SUBS, 1);
-    g_fence = f; g_af_last = af_now();
+    g_fence = f;
     rp_debug_dump_poll(&g_fence);   // 调试开关 nvk_dump：有登记才做事
     return f;
 }
@@ -280,7 +264,7 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
     uint64_t t0 = now_ns();
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
-    pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); __atomic_fetch_add(&g_af_wait, now_ns() - t0, __ATOMIC_RELAXED);
+    pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1);
     // 时间线已失败：再等也不会完成。按「已结束」放行，让游戏线程不死等；失败本身已在 sub_done 报红
     return nvn_gpu_ok(r) || r.code == NVN_GPU_E_FAILED || r.code == NVN_GPU_E_DEVICE;
 }
@@ -333,9 +317,9 @@ void nvn_be_exec(const uint8_t *p) {
                 break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) occ_reset(g_cmd); break; }   // 其余计数器的报告值本来就写 0，复位无事可做
             case OP_RENDER_COND: rc_cond(a); break;
-            case OP_DRAW: { if (g_rc_skip) break; p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); af_after_draw(); break; }
-            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); af_after_draw(); break; }
-            case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); sub_split(1000000); break; }
+            case OP_DRAW: { if (g_rc_skip) break; p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); break; }
+            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); break; }
+            case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); sub_split(); break; }
             case OP_CLEAR_COLOR: if (!g_rc_skip) rp_pass_clear_color(g_cmd, a, p); break;
             case OP_CLEAR_DS: if (!g_rc_skip) rp_pass_clear_ds(g_cmd, a, p); break;
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); rp_pass_barrier((uint32_t)bits); break; }

@@ -1415,6 +1415,150 @@ static void expect_rect(const uint8_t *rb, int x0, int y0, int w, int h, uint8_t
 }
 
 
+// 非恒等采样映射的图仍能做附件：先按原始颜色清两次（第二次 LOAD），
+// 再从同一采样视图读进另一图；原始读回不换通道，采样读回按映射换通道。
+// 各变体独立会话：修前 sticky 会令该会话的时间线失败，不能污染下一用例。
+static atomic_int g_attach_done;
+static char g_attach_why[192];
+static void attach_swizzle_done(void *user, const nvn_gpu_done *done) {
+    snprintf(g_attach_why, sizeof g_attach_why, "%s", done->why ? done->why : "");
+    on_done(user, done);
+    atomic_store_explicit(&g_attach_done, 1, memory_order_release);
+}
+static void attach_swizzle_case(const char *dir, int explicit_view) {
+    nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
+    td.d.target = NVN_TEXTURE_TARGET_2D; td.d.format = NVN_FORMAT_RGBA8;
+    td.d.width = 64; td.d.height = 64; td.d.depth = 1; td.d.levels = 1;
+    td.usage = NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED;
+    td.swz = 4 | 3 << 3 | 2 << 6 | 1 << 9; // B,G,R,1
+    nvn_gpu_tex src = NULL; nvn_gpu_err e = {0};
+    nvn_gpu_rc r = nvn_gpu_tex_create(&td, &src, &e);
+    CHECK(OK(r), "attachment swizzle tex_create: %d %s", r.code, e.why);
+    if (!OK(r)) return;
+    view_t vd; memset(&vd, 0, sizeof vd);
+    if (explicit_view) { vd.set_swizzle = 1; vd.swz[0] = 0; vd.swz[1] = 2; vd.swz[2] = 5; vd.swz[3] = 3; }
+    nvn_gpu_view src_view = NULL;
+    r = nvn_gpu_view_create(src, explicit_view ? &vd : NULL, &src_view, &e);
+    CHECK(OK(r), "attachment swizzle view_create: %d %s", r.code, e.why);
+    if (!OK(r)) { nvn_gpu_tex_release(src); return; }
+    nvn_gpu_tex dst = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER);
+    nvn_gpu_view dst_view = make_view(dst);
+    uint8_t zero[64 * 64 * 4] = {0};
+    nvn_gpu_buf raw = make_buf(sizeof zero, NVN_GPU_MEM_SHARED, zero);
+    nvn_gpu_buf sampled = make_buf(sizeof zero, NVN_GPU_MEM_SHARED, zero);
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_gpu_samp sampler = NULL;
+    r = nvn_gpu_samp_create(&sp, &sampler, &e);
+    CHECK(OK(r), "attachment swizzle sampler: %d %s", r.code, e.why);
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_desc pass; memset(&pass, 0, sizeof pass);
+    pass.ncolor = 1; pass.color[0].view = src_view;
+    pass.color[0].load = NVN_GPU_LOAD_CLEAR; pass.color[0].store = NVN_GPU_STORE_STORE;
+    pass.color[0].clear.f[0] = 0.2f; pass.color[0].clear.f[1] = 0.4f;
+    pass.color[0].clear.f[2] = 0.6f; pass.color[0].clear.f[3] = 1.0f;
+    pass.w = 64; pass.h = 64; pass.layers = 1;
+    nvn_gpu_pass_begin(c, &pass); nvn_gpu_pass_end(c);
+    pass.color[0].load = NVN_GPU_LOAD_LOAD;  // 第二次消费同一附件
+    nvn_gpu_pass_begin(c, &pass); nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, src, 0, 0, NULL, raw, 0, 64 * 4, 64 * 64 * 4);
+    memset(&pass, 0, sizeof pass); pass.ncolor = 1; pass.color[0].view = dst_view;
+    pass.color[0].load = NVN_GPU_LOAD_CLEAR; pass.color[0].store = NVN_GPU_STORE_STORE;
+    pass.w = 64; pass.h = 64; pass.layers = 1;
+    nvn_gpu_pass_begin(c, &pass);
+    fs_draw_tex_frag(c, src_view, sampler, dir, "tri.frag");
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, dst, 0, 0, NULL, sampled, 0, 64 * 4, 64 * 64 * 4);
+    // 录制后立即 release：段完成前不得销毁附件或采样视图。
+    nvn_gpu_view_release(src_view); nvn_gpu_tex_release(src);
+    nvn_gpu_view_release(dst_view); nvn_gpu_tex_release(dst); nvn_gpu_samp_release(sampler);
+    atomic_store(&g_attach_done, 0); g_attach_why[0] = 0;
+    r = nvn_gpu_cmd_commit(c, 1, attach_swizzle_done, NULL, &e);
+    if (!OK(r)) CHECK(wait_until(&g_attach_done, 1, 5000), "attachment swizzle failure callback missing");
+    CHECK(OK(r), "attachment swizzle %s commit: %d %s", explicit_view ? "explicit" : "inherited", r.code, g_attach_why);
+    if (OK(r)) {
+        r = nvn_gpu_fence_wait(1, 5000000000ull, &e);
+        CHECK(OK(r), "attachment swizzle wait: %d %s", r.code, e.why);
+        const uint8_t want_raw[4] = {51, 102, 153, 255};
+        const uint8_t want_inherited[4] = {153, 102, 51, 255};
+        const uint8_t want_explicit[4] = {0, 51, 255, 102};
+        const uint8_t *want_sample = explicit_view ? want_explicit : want_inherited;
+        const uint8_t *rawp = buf_cpu(raw), *samplep = buf_cpu(sampled);
+        for (int i = 0; i < 64 * 64; i++) {
+            if (memcmp(rawp + i * 4, want_raw, 4)) { CHECK(0, "attachment raw pixel %d differs", i); break; }
+            if (memcmp(samplep + i * 4, want_sample, 4)) { CHECK(0, "attachment sampled pixel %d differs", i); break; }
+        }
+    }
+    nvn_gpu_buf_release(raw, NULL, NULL); nvn_gpu_buf_release(sampled, NULL, NULL);
+}
+
+// 数组第 1 层、多 mip 视图与 sRGB 重解释均保留精确的附件子资源与格式。
+static void attach_swizzle_subresource_case(const char *dir, int srgb) {
+    nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
+    td.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; td.d.format = NVN_FORMAT_RGBA8;
+    td.d.width = 128; td.d.height = 128; td.d.depth = 2; td.d.levels = 2;
+    td.usage = NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_VIEW_FMT;
+    td.swz = 4 | 3 << 3 | 2 << 6 | 1 << 9;
+    nvn_gpu_tex src = NULL; nvn_gpu_view view = NULL; nvn_gpu_err e = {0};
+    nvn_gpu_rc r = nvn_gpu_tex_create(&td, &src, &e);
+    CHECK(OK(r), "attachment subresource tex: %d %s", r.code, e.why);
+    if (!OK(r)) return;
+    view_t vd; memset(&vd, 0, sizeof vd);
+    vd.set_layers = 1; vd.min_layer = 1; vd.nlayers = 1;
+    vd.set_target = 1; vd.target = NVN_TEXTURE_TARGET_2D;
+    if (srgb) { vd.set_levels = 1; vd.base_level = 1; vd.nlevels = 1;
+                vd.set_format = 1; vd.format = NVN_FORMAT_RGBA8_SRGB; }
+    r = nvn_gpu_view_create(src, &vd, &view, &e);
+    CHECK(OK(r), "attachment subresource view: %d %s", r.code, e.why);
+    if (!OK(r)) { nvn_gpu_tex_release(src); return; }
+    uint8_t zero[64 * 64 * 4] = {0};
+    nvn_gpu_buf raw = make_buf(sizeof zero, NVN_GPU_MEM_SHARED, zero);
+    nvn_gpu_buf sampled = make_buf(sizeof zero, NVN_GPU_MEM_SHARED, zero);
+    nvn_gpu_tex dst = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER);
+    nvn_gpu_view dst_view = make_view(dst);
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_gpu_samp sampler = NULL;
+    r = nvn_gpu_samp_create(&sp, &sampler, &e);
+    CHECK(OK(r), "attachment subresource sampler: %d %s", r.code, e.why);
+    nvn_gpu_cmd c = begin_cmd(); nvn_gpu_pass_desc pass; memset(&pass, 0, sizeof pass);
+    pass.ncolor = 1; pass.color[0].view = view; pass.color[0].load = NVN_GPU_LOAD_CLEAR;
+    pass.color[0].store = NVN_GPU_STORE_STORE;
+    pass.color[0].clear.f[0] = srgb ? 0.25f : 0.2f;
+    pass.color[0].clear.f[1] = srgb ? 0.5f : 0.4f;
+    pass.color[0].clear.f[2] = srgb ? 0.75f : 0.6f;
+    pass.color[0].clear.f[3] = 1.0f; pass.w = 64; pass.h = 64; pass.layers = 1;
+    nvn_gpu_pass_begin(c, &pass); nvn_gpu_pass_end(c);
+    NVNcopyRegion region = {0, 0, 0, 64, 64, 1};
+    nvn_gpu_copy_tex_buf(c, src, srgb ? 1 : 0, 1, &region, raw, 0, 64 * 4, 64 * 64 * 4);
+    if (srgb) {
+        memset(&pass, 0, sizeof pass); pass.ncolor = 1; pass.color[0].view = dst_view;
+        pass.color[0].load = NVN_GPU_LOAD_CLEAR; pass.color[0].store = NVN_GPU_STORE_STORE;
+        pass.w = 64; pass.h = 64; pass.layers = 1;
+        nvn_gpu_pass_begin(c, &pass); fs_draw_tex_frag(c, view, sampler, dir, "tri.frag"); nvn_gpu_pass_end(c);
+        nvn_gpu_copy_tex_buf(c, dst, 0, 0, NULL, sampled, 0, 64 * 4, 64 * 64 * 4);
+    }
+    nvn_gpu_view_release(view); nvn_gpu_tex_release(src);
+    nvn_gpu_view_release(dst_view); nvn_gpu_tex_release(dst); nvn_gpu_samp_release(sampler);
+    atomic_store(&g_attach_done, 0); g_attach_why[0] = 0;
+    r = nvn_gpu_cmd_commit(c, 1, attach_swizzle_done, NULL, &e);
+    if (!OK(r)) CHECK(wait_until(&g_attach_done, 1, 5000), "attachment subresource callback missing");
+    CHECK(OK(r), "attachment subresource %s commit: %d %s", srgb ? "sRGB" : "multi-mip", r.code, g_attach_why);
+    if (OK(r)) {
+        r = nvn_gpu_fence_wait(1, 5000000000ull, &e);
+        CHECK(OK(r), "attachment subresource wait: %d %s", r.code, e.why);
+        const uint8_t rgba_linear[4] = {51, 102, 153, 255};
+        const uint8_t rgba_srgb[4] = {137, 188, 225, 255};
+        const uint8_t sample_srgb[4] = {191, 128, 64, 255};
+        const uint8_t *got = buf_cpu(raw), *tex = buf_cpu(sampled);
+        for (int i = 0; i < 64 * 64; i++) {
+            for (int ch = 0; ch < 4; ch++) {
+                int want = srgb ? rgba_srgb[ch] : rgba_linear[ch];
+                if (abs((int)got[i * 4 + ch] - want) > (srgb ? 1 : 0)) { CHECK(0, "attachment subresource raw pixel %d channel %d: %u vs %d", i, ch, got[i * 4 + ch], want); goto pixels_done; }
+                if (srgb && abs((int)tex[i * 4 + ch] - sample_srgb[ch]) > 1) { CHECK(0, "attachment subresource sample pixel %d channel %d: %u vs %u", i, ch, tex[i * 4 + ch], sample_srgb[ch]); goto pixels_done; }
+            }
+        }
+    pixels_done: ;
+    }
+    nvn_gpu_buf_release(raw, NULL, NULL); nvn_gpu_buf_release(sampled, NULL, NULL);
+}
+
 // C33：一个 cmd 两个通道；通道 1 清 T 红，通道 2 采样 T 画进 U，U 读回全红。
 static void t33_two_passes(const char *dir) {
     nvn_gpu_tex T = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -4081,6 +4225,18 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     c69_dual_src_blend(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C69 close：%d %s", e18.rc.code, e18.why);
+
+    for (int sw = 0; sw < 2; sw++) {
+        if (!open_backend()) return 1;
+        attach_swizzle_case(argv[1], sw);
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "attachment swizzle close：%d %s", e18.rc.code, e18.why);
+    }
+
+    for (int srgb = 0; srgb < 2; srgb++) {
+        if (!open_backend()) return 1;
+        attach_swizzle_subresource_case(argv[1], srgb);
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "attachment subresource close：%d %s", e18.rc.code, e18.why);
+    }
 
     printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));

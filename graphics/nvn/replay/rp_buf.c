@@ -236,10 +236,14 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
             view_t vs, vd; memset(&vs, 0, sizeof vs); memset(&vd, 0, sizeof vd);
             vs.set_levels = 1; vs.base_level = (int)sl; vs.nlevels = 1; vs.set_layers = 1; vs.min_layer = (int)(sz0 + (uint32_t)sr.zoffset); vs.nlayers = 1;
             vd.set_levels = 1; vd.base_level = (int)dl; vd.nlevels = 1; vd.set_layers = 1; vd.min_layer = (int)(dz0 + (uint32_t)dr.zoffset); vd.nlayers = 1;
+            // 一次取源 / 目标两个视图再 blit：同一段取用窗口，第二个不许把第一个轮转淘汰（#699）。
+            // 两笔连续取用本身最多推进一次轮转，但要和 pass 内多附件守同一条不变量。
+            rp_view_pin_begin();
             nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
-            if (!gv || !hv) return;
+            if (!gv || !hv) { rp_view_pin_end(); return; }
             NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
             nvn_gpu_blit(c, gv, &a, hv, &b, (o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0);
+            rp_view_pin_end();
             rp_tex_mark_gpu_written(d);
             return;
         }

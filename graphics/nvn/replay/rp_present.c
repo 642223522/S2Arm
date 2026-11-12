@@ -43,7 +43,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     __atomic_store(&g_shown[ticket % PT_RING], &zero, __ATOMIC_RELEASE);
     nvn_gpu_shown drop = {ticket, NVN_GPU_SHOWN_DROPPED, 0};
     if (!g_surf || !t) { on_shown(NULL, &drop); g_n_dropped++; pthread_mutex_unlock(&g_pmu); if (t) nvn_unimpl("present", "no_window", t); return ticket; }
-    nvn_gpu_view v = rp_view_for(t, NULL, NULL);
+    nvn_gpu_view v = rp_present_view(t);   // 上屏视图不走可淘汰缓存：iOS present 直接拿贴图对象
     if (!v) { on_shown(NULL, &drop); g_n_dropped++; pthread_mutex_unlock(&g_pmu); return ticket; }
     nvn_gpu_err err = {0}; nvn_gpu_drawable dr; nvn_gpu_rc r = {NVN_GPU_OK};
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -72,6 +72,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     { struct timespec p0, p1; clock_gettime(CLOCK_MONOTONIC, &p0);
       r = nvn_gpu_present(g_surf, &dr, &d, ticket, on_shown, NULL, &err);
       clock_gettime(CLOCK_MONOTONIC, &p1); rp_perf_add(RP_PERF_PRESENT_NS, (uint64_t)(p1.tv_sec - p0.tv_sec) * 1000000000ull + (uint64_t)p1.tv_nsec - (uint64_t)p0.tv_nsec); }
+    nvn_gpu_view_release(v);   // 录完就放：后端段按引用保活到段完成
     if (nvn_gpu_ok(r)) {
         {   // 分时读数：每 5 秒一行（帧率低的时候「每 600 帧」等不到）
             static uint64_t t_last, n_last, d_last; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
@@ -99,7 +100,6 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                 t_last = now; n_last = g_n_shown + 1; d_last = nd;
             }
         }
-        rp_autoflush_present();
         if (!g_n_shown++ || g_n_shown % 600 == 0) {   // 首帧一行，之后每 600 帧一行
             uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
             char b[300]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 #%llu（格式 %#x，%s）%ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）；累计绘制 %llu 笔、跳过 %llu 笔", (unsigned long long)g_n_shown,

@@ -56,7 +56,7 @@ enum ExportBlocker: Equatable {
 
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。同一时刻只有一个（同旧启动器「执行位」互斥）。
 struct JobSession: Equatable {
-    enum Kind: String { case play, export, prepare, install, installRemove, installRestore, installUpdate, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
+    enum Kind: String, CaseIterable { case play, export, prepare, install, installRemove, installRestore, installUpdate, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
                         keys, delete, diagnostics, moveGame, clearCache }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
@@ -80,6 +80,22 @@ struct JobSession: Equatable {
     var suggestion = ""
     /// 正在跑的那个作业层任务号（最近一个事件的 taskId；出包一个平台一个任务）。控制口 GET /state 的 executionTask 报它（原先恒为空，s2armctl next 判不出「本游戏正在运行」）
     var taskID: String?
+    /// 开工 / 结束的时刻：手机作业结局页的「用时」
+    var started = Date()
+    var ended: Date?
+    /// 走过的阶段（阶段事件的作业层原句，按出现顺序、不重复）：手机作业进行中页的步骤列表
+    var stages: [String] = []
+    /// 手机作业（装到手机 / 续签、删除、装回、更新手机上的 S2Arm）：结局页统一用 PhoneJobPanel
+    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate].contains(kind) }
+}
+
+/// 手机作业做完后结局页要说的事实（从作业结果读，不猜）：装到哪台、这次推了多少、哪几款被跳过
+struct PhoneOutcome: Equatable {
+    var device = ""
+    var packFiles: Int? = nil
+    var packBytes: Int64? = nil
+    var skipped: [String] = []
+    var version = ""
 }
 
 /// 排队的一次出包。
@@ -121,7 +137,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var selectedID: String?
     /// 出包平台的勾选没能写盘。
     @Published private(set) var choiceError: String?
-    @Published private(set) var session: JobSession?
+    @Published var session: JobSession?   // 批量出包时编排作业一步换一款，+Batch.swift batchStepStarted 换会话
     /// 出包页开着的那一款（nil = 游戏库）。
     @Published var exportFor: String?
     /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
@@ -159,7 +175,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
     @Published private(set) var pendingImport: [URL] = []
     /// 留在原页显示的作业没成的原因（换作业、关弹窗时清掉）。
-    @Published private(set) var inlineFailure: (kind: JobSession.Kind, message: String)?
+    @Published private(set) var inlineFailure: (kind: JobSession.Kind, message: String, suggestion: String)?
+    /// 最近一次手机作业的结局事实（PhoneJobPanel 成功页用）；每个手机作业开工时清空
+    @Published var phoneOutcome: PhoneOutcome?
+    /// 最近一次结束的手机作业（装机页的结局区读它：作业结束后 session 可能已被别的作业替换）
+    @Published private(set) var lastPhoneSession: JobSession?
     /// 欢迎页上排着队的一键下载（作业同一时刻只有一个）。
     @Published private(set) var repairQueue: [ToolCheck] = []
     /// 新手流程刚导入的那款：欢迎页留着，右下角「一键出包」（点了就回到正常的游戏库）。
@@ -193,6 +213,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var batchLocation = ""
     @Published var batchState: [String: Any]?
     @Published var batchRunning = false
+    /// 正在跑的那个批量出包编排作业（取消 = 取消它，剃刀 H13）
+    var batchWork: Task<Void, Never>?
     /// 批次记录（batch.py mark / 命令）没写成的原因：整批停住、批量页显示（剃刀 M7：原先失败照样往下走，状态和真实结局分叉）；nil = 没出错
     @Published var batchError: String?
     @Published var batchUnrecognized: [ImportSource] = []
@@ -599,7 +621,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location)
         exportFor = nil
         welcomeGameID = nil
-        if busy {   // 正在出别的：排队，出完接着出（11-08 维护者：出好一个接着出下一个）
+        if busy || batchRunning {   // 正在出别的 / 一批正在出：排队，出完接着出（11-08 维护者：出好一个接着出下一个）
             if session?.gameID == game.id || exportQueue.contains(where: { $0.game.id == game.id }) { return .alreadyQueued }
             exportQueue.append(item)
             return nil
@@ -617,41 +639,54 @@ public final class S2ArmLauncherModel: ObservableObject {
         if !exportQueue.isEmpty { let next = exportQueue.removeFirst(); session = nil; runExport(next) }
     }
 
+    /// 出一款：起一个出包编排作业（剃刀 H13，pack/jobs/export_plan.py），计划只有这一款的这几个平台、不写批次文件。
+    /// 平台顺序、iPhone 之后还有平台时先不清解包（followUp）、这台电脑出不了的平台都在作业层；这里只按它的事件画每个平台的进度与结局。
     func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
-        // 按页面顺序出；收尾清什么由作业层定（剃刀 M21）：iPhone 后面还有平台时请求带 followUp，作业层先不清解包
         let game = item.game, platforms = item.platforms
         var session = JobSession(kind: .export, gameID: game.id, name: game.name)
         session.export = ExportRun(platforms: platforms)
+        var plan: [String: Any] = ["source": "inline", "items": [["gameId": game.id, "name": game.name, "platforms": platforms.compactMap(Self.batchPlatform)]]]
+        if let location = item.location { plan["location"] = location }
+        if let target = item.target { plan["deviceTarget"] = target }
+        if item.spaceOverride { plan["spaceOverride"] = true }
         start(session) { [weak self] sink in
-            for (k, platform) in platforms.enumerated() {
-                guard let self, let target = platform.target else { return nil }
-                try Task.checkCancellation()
-                if self.batchRunning, self.batchPaused != nil { break }   // 批量出包磁盘满暂停了：同一款的下一个平台也不开（审计 P1-164，暂停只由「重试」解除）
-                await self.batchMark(game.id, platform, state: "running")
-                self.beginPlatform(k)
-                do {
-                    var job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
-                    job.followUp = target == .iPhone && k < platforms.count - 1
-                    let r = try await self.provider.build(job, events: sink)
-                    self.endPlatform(platform, ExportRun.Outcome(state: .completed, output: r.outputPath, ipa: r.ipa,
-                                                                 appBytes: ((r.raw["ipaBytes"] ?? r.raw["outputBytes"]) as? NSNumber)?.int64Value,
-                                                                 packBytes: (r.raw["packBytes"] as? NSNumber)?.int64Value))
-                } catch let failure as JobFailure {
-                    self.endPlatform(platform, ExportRun.Outcome(state: failure.state, message: failure.errorDescription ?? "", code: failure.code,
-                                                                 suggestion: failure.outcome.diagnostics.first?["suggestion"] as? String ?? "",
-                                                                 failureSummary: failure.outcome.diagnostics.last(where: { ($0["severity"] as? String) == "error" })?["failureSummary"] as? String))
-                    if failure.state == .cancelled { throw failure }
-                } catch is CancellationError {
-                    self.endPlatform(platform, ExportRun.Outcome(state: .cancelled))
-                    throw CancellationError()
-                } catch {
-                    self.endPlatform(platform, ExportRun.Outcome(state: .failed, message: error.localizedDescription))
-                }
-                await self.batchRecord(game.id, platform)   // 批量出包：这个平台出完记进批次（取消走 batchSessionEnded）
-            }
-            if self?.session?.export?.failed.isEmpty == false { throw ExportIncomplete() }
+            guard let self else { return nil }
+            do { _ = try await self.provider.export(plan: plan, hasIPhone: platforms.contains(.ios), events: self.exportSink(sink)) }
+            catch let pause as JobFailure where pause.state == .paused { throw ExportIncomplete() }   // 磁盘满：那个平台已按 stepEnded 记失败（码 disk_full），整次算没全成
+            if self.session?.export?.failed.isEmpty == false { throw ExportIncomplete() }
             return nil
+        }
+    }
+
+    /// 出包编排作业的事件 → 现有的出包会话：step 换到这个平台（批量出包时换到这一款的会话）、child 当成普通作业事件、stepEnded 记这个平台的结局
+    func exportSink(_ sink: EventSink) -> EventSink {
+        var failure: [String: Any] = [:]   // 子作业终态里的诊断（建议、失败事实），stepEnded 时并进结局
+        return EventSink { [weak self] event in
+            guard let self else { return }
+            let step = event.fields["step"] as? [String: Any] ?? [:]
+            let platform = (step["platform"] as? String).flatMap(Self.exportPlatform)
+            switch event.ev {
+            case "step":
+                if let gid = step["gameId"] as? String { self.batchStepStarted(gid) }
+                if let platform, let k = self.session?.export?.platforms.firstIndex(of: platform) { self.beginPlatform(k) }
+                failure = [:]
+            case "child":
+                guard let inner = event.fields["event"] as? [String: Any], let job = JobEvent(json: inner) else { return }
+                if job.isFinal { failure = (job.fields["diagnostics"] as? [[String: Any]] ?? []).last(where: { ($0["severity"] as? String) == "error" }) ?? [:]; return }
+                sink.emit(EngineEvent(job: job))
+            case "stepEnded":
+                guard let platform, let o = event.fields["outcome"] as? [String: Any] else { return }
+                let state = JobOutcome.State(rawValue: o["state"] as? String ?? "") ?? .failed
+                self.endPlatform(platform, ExportRun.Outcome(state: state, message: o["message"] as? String ?? "", code: o["code"] as? String,
+                                                             output: o["outputPath"] as? String ?? o["output"] as? String, ipa: o["ipa"] as? String,
+                                                             appBytes: ((o["ipaBytes"] ?? o["outputBytes"]) as? NSNumber)?.int64Value,
+                                                             packBytes: (o["packBytes"] as? NSNumber)?.int64Value,
+                                                             suggestion: failure["suggestion"] as? String ?? "", failureSummary: failure["failureSummary"] as? String))
+                if self.batchRunning { self.batchStepEnded() }
+            default:
+                sink.emit(event)
+            }
         }
     }
 
@@ -715,14 +750,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 换到第 k 个平台：进度、里程碑从头算（日志接着记）。
-    private func beginPlatform(_ k: Int) {
+    func beginPlatform(_ k: Int) {
         guard var session, var run = session.export else { return }
         run.index = k; run.platformStarted = Date()
         session.export = run; session.progress = JobProgress(); session.stage = ""
         self.session = session
     }
 
-    private func endPlatform(_ platform: ExportPlatform, _ outcome: ExportRun.Outcome) {
+    func endPlatform(_ platform: ExportPlatform, _ outcome: ExportRun.Outcome) {
         guard var session, var run = session.export else { return }
         var outcome = outcome
         outcome.seconds = Date().timeIntervalSince(run.platformStarted)
@@ -770,11 +805,6 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 能不能开始装：清单说可以，或这次清单读失败（不因探测失败把玩家关在外面，install 作业会给真实原因）。
-    func installAllowed(_ gameID: String) -> Bool {
-        installGameID == gameID && (installReadiness?.ready == true || (installReadiness == nil && installError != nil))
-    }
-
     /// 在 Xcode 打开引导项目；玩家运行一次后，装机页每 5 秒的重查会自动打勾。
     func openSigningProject() {
         Task {
@@ -785,8 +815,22 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 装机 / 删除会让手机上别的电脑装的游戏暂时不能玩（作业层 container_would_drop）：界面弹确认，确认了带 acceptDropped 重跑。
     /// ask = false（控制口发起）不弹，原样失败，由调用方带 acceptDropped 再发。
-    struct DropConfirm { let kind: JobSession.Kind; let game: GameSummary; let message: String }
+    /// 更新手机上的 S2Arm 也会撞上（v0.3.0 只换壳验收：原先这条路没接确认，界面说「确认继续再点一次」却永远过不去）：update 记着当时的参数，确认后原样带 acceptDropped 重跑
+    struct UpdateArgs { let acceptStale: Bool; let repack: [String]; let language: String; let device: String?; var accept: Set<String> = [] }
+    /// 作业层可确认继续的停装码 → 玩家点「仍然继续」后重发时带的参数（维护者 11-11 装机原则：认得出的风险让玩家确认，确认了就装）。
+    ///   结局页（PhoneJobPanel）按码在页内问「仍然继续 / 先不」，不弹散的对话框；参数累积（先确认挤掉、再撞上备份失败，第二次重发两个都带）
+    static let confirmCodes: [String: String] = ["container_would_drop": "acceptDropped", "save_backup_failed": "acceptNoBackup", "container_stale": "acceptStale"]
+    struct DropConfirm { let kind: JobSession.Kind; var game: GameSummary? = nil; let message: String; var update: UpdateArgs? = nil
+                         var code = "container_would_drop"; var accept: Set<String> = []
+                         /// 当初装到哪台：确认后原样带回（不能退回「界面选中的那台」，控制口指定的设备会被换掉）
+                         var device: String? = nil }
     @Published var dropConfirm: DropConfirm?
+    /// 上一次「更新手机上的 S2Arm」的参数：失败页「重试」按它再来
+    var lastUpdateArgs: UpdateArgs?
+    func retryPhoneUpdate() {
+        guard let a = lastUpdateArgs else { return }
+        updatePhone(acceptStale: a.acceptStale, repack: a.repack, language: a.language, device: a.device, accept: a.accept)   // 已确认过的照带
+    }
 
     /// 环境检查「装到 iPhone 的方式」里手填的 Xcode 团队号（10 位）：一键装、不用证书时每次装机都带上（原先只在装机页点「用这个团队」那一次带）
     static let teamCodeKey = "s2arm.enteredTeamCodeId"
@@ -795,7 +839,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         return t.count == 10 ? t : nil
     }
 
-    func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, ask: Bool = true) {
+    func install(_ game: GameSummary, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], ask: Bool = true) {
+        let accept = acceptDropped ? accept.union(["acceptDropped"]) : accept
         // 不在这里再核装机页清单（启动器剃刀 M1）：装机页按钮和控制口调用前各自核过；批量出完自动装的款从没打开过装机页，原先在这里被悄悄挡掉、队列停住
         guard !busy else { return }
         let teamId = teamId ?? Self.enteredTeam
@@ -803,13 +848,21 @@ public final class S2ArmLauncherModel: ObservableObject {
         // 装到玩家选的那台（控制口明说了 device 的照它；s2armctl 不带就是空，作业层拒绝）。界面发起的一律带上，不靠作业层挑
         let device = device ?? installDeviceID
         installedTo = ""
+        phoneOutcome = nil
         start(.install, game: game, name: game.name) { [weak self] sink in
             do {
-                let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, acceptDropped: acceptDropped, events: sink)
-                if let r { self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName) }
+                let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, accept: accept, events: sink)
+                if let r {
+                    self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName)
+                    self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)
+                }
                 self?.installOpenToFinish = r?.openToFinish ?? false
             }
-            catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? ""); throw f }
+            catch let f as JobFailure where ask && Self.confirmCodes[f.code ?? ""] != nil {
+                self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? "", code: f.code ?? "",
+                                                accept: accept.union([Self.confirmCodes[f.code ?? ""]!]), device: device)
+                throw f
+            }
             return nil
         }
     }
@@ -817,7 +870,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 确认框点了「仍然继续」
     func confirmDrop(_ d: DropConfirm) {
         dropConfirm = nil; clearInlineFailure()
-        if d.kind == .installRemove { removeFromPhone(d.game, acceptDropped: true) } else { install(d.game, acceptDropped: true) }
+        if let u = d.update { updatePhone(acceptStale: u.acceptStale || d.accept.contains("acceptStale"), repack: u.repack, language: u.language, device: u.device, accept: d.accept); return }
+        guard let game = d.game else { return }
+        if d.kind == .installRemove { removeFromPhone(game, acceptDropped: true, device: d.device) } else { install(game, device: d.device, accept: d.accept) }
     }
 
     /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。
@@ -825,6 +880,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy else { return }
         failAction(nil, game: nil)
         let device = device ?? game.iphoneInstallDevice ?? installDeviceID   // 装回当初那台
+        phoneOutcome = PhoneOutcome(device: installTargetLabel)
         start(.installRestore, game: game, name: game.name) { [weak self] sink in
             try await self?.provider.restorePhone(device: device, events: sink)
             return nil
@@ -835,9 +891,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy else { return }
         failAction(nil, game: nil)
         let device = device ?? game.iphoneInstallDevice ?? installDeviceID   // 从装着它的那台删
+        phoneOutcome = PhoneOutcome(device: installTargetLabel)
         start(.installRemove, game: game, name: game.name) { [weak self] sink in
             do { _ = try await self?.provider.removeFromPhone(gameId: game.id, acceptDropped: acceptDropped, device: device, events: sink) }
-            catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .installRemove, game: game, message: f.errorDescription ?? ""); throw f }
+            catch let f as JobFailure where ask && f.code == "container_would_drop" { self?.dropConfirm = DropConfirm(kind: .installRemove, game: game, message: f.errorDescription ?? "", device: device); throw f }
             return nil
         }
     }
@@ -1160,13 +1217,14 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    private func ingest(_ event: EngineEvent) {
+    func ingest(_ event: EngineEvent) {
         guard var session = session, !isFinished(session) else { return }
         if let id = event.fields["taskId"] as? String, !id.isEmpty, session.taskID != id { session.taskID = id; self.session = session }
         if event.ev == "heartbeat" { return }
         if event.ev == "space", let space = PackSpace(event.fields["space"]) { session.space = space; self.session = session; return }
         if let stage = event.stage, !stage.isEmpty {
             session.stage = stage
+            if event.ev == "stage", session.stages.last != stage { session.stages.append(stage) }
             if session.kind == .play, event.fields["stageKey"] as? String == "game_running" {   // 后端固定机读名（build.py begin key），不认中文阶段名
                 controllerGameStarted = true
                 controller.gameDidStart()
@@ -1194,7 +1252,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     private func isFinished(_ s: JobSession) -> Bool { if case .finished = s.phase { return true }; return false }
 
-    private func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil, code: String? = nil, suggestion: String = "") {
+    func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil, code: String? = nil, suggestion: String = "") {
         guard var session = session, !isFinished(session) else { return }
         session.phase = .finished(state)
         session.failureCode = code; session.suggestion = suggestion
@@ -1204,7 +1262,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
         session.reveal = reveal
         session.progress.finish()
+        session.ended = Date()
         self.session = session
+        if session.isPhoneJob { lastPhoneSession = session }
         running = nil; work = nil
         if session.kind == .play, controllerGameStarted {
             controllerGameStarted = false
@@ -1213,7 +1273,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         // 放密钥、添加游戏、欢迎页上的下载：结果留在原页（弹窗 / 欢迎页那一行），不换到日志页（11-08 维护者）；环境页发起的下载成了也直接回来
         if isInline(session) || (state == .completed && Self.repairKinds.contains(session.kind)) {
             self.session = nil
-            inlineFailure = (state == .failed || state == .interrupted) ? (session.kind, session.message) : nil
+            inlineFailure = (state == .failed || state == .interrupted) ? (session.kind, session.message, session.suggestion) : nil
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
         if session.kind == .installUpdate { phoneUpdateEnded(completed: state == .completed) }
@@ -1235,8 +1295,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if state == .completed && session.kind == .diagnostics, let reveal { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: reveal)]) }
         if session.kind == .export, let id = session.gameID {
             finishedExports[id] = session
-            if batchRunning {   // 批量出包：下一款听批次的（失败不挡后面、磁盘满暂停、取消整批停）
-                batchSessionEnded(cancelled: state == .cancelled)
+            if batchRunning {   // 批量出包：下一款由编排作业的 step 事件换（batchStepStarted），这里不管
             } else if state == .cancelled {
                 exportQueue = []
             } else if !exportQueue.isEmpty {
@@ -1285,7 +1344,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard var session = session, session.phase == .running else { return }
         session.phase = .stopping
         self.session = session
-        if session.kind == .play, let running { provider.control(running, .stop) } else { work?.cancel() }
+        if session.kind == .play, let running { provider.control(running, .stop) }
+        else if batchRunning, session.kind == .export { batchWork?.cancel() }   // 批量出包：取消整个编排作业（正在出的那步停下，已出好的保留）
+        else { work?.cancel() }
     }
 
     /// 回库：只有作业结束了才能关掉作业页。

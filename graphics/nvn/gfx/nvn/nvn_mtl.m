@@ -3138,11 +3138,25 @@ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image,
     up_blit_add_at(src, off, row, image, size, dst, slice, level, 0, 0);
 }
 
-static uint64_t span_hash(const uint8_t *m, size_t n) {   // 8 bytes at a time (the page check runs on every written page): a multiply-xorshift mix, then the tail bytes
-    uint64_t h = 0x9e3779b97f4a7c15ull ^ n, w; size_t i = 0;
-    for (; i + 8 <= n; i += 8) { memcpy(&w, m + i, 8); h = (h ^ w) * 0xff51afd7ed558ccdull; h ^= h >> 32; }
-    for (; i < n; i++) h = (h ^ m[i]) * 0x100000001b3ull;
-    return h;
+// 32 bytes (4 words) at a time (the page check runs on every written page: per written 16 KB page at upload / check, per marked 512 B GOB — docs/排查/帧率低与耗电高.md §6 第 3 条):
+//   four independent multiply-xorshift chains (the four words of each 32 bytes, different seeds and mix constants), folded at the end. The old single
+//   chain was one multiply-xorshift per word end to end (~7 cycles of dependency per 8 bytes); four interleaved chains overlap them. Same detection
+//   strength, every chain full 64-bit: each chain step is injective on any single word delta (xor with the word injective, multiply by an odd constant
+//   bijective mod 2^64, and x ^ (x >> 32) injective — its low 32 bits come through unchanged), so any changed 8-byte word always changes its chain's
+//   hash and the final XOR fold keeps that visible; two changed words cancel only if every chain they land in cancels — a same-chain pair at 2^-64 as
+//   the old chain, a cross-chain pair needs both (2^-128). The tail below 4 words runs on one chain (a change there moves that chain, the others stay).
+//   Values are only compared within a run (marked vs re-read), never persisted — the seeds are free to differ
+static uint64_t span_hash(const uint8_t *m, size_t n) {
+    uint64_t a = 0x9e3779b97f4a7c15ull ^ n, b = 0xbf58476d1ce4e5b9ull ^ n, c = 0x94d049bb133111ebull ^ n, d = 0x2545f4914f6cdd1dull ^ n, w; size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        memcpy(&w, m + i, 8); a = (a ^ w) * 0xff51afd7ed558ccdull; a ^= a >> 32;
+        memcpy(&w, m + i + 8, 8); b = (b ^ w) * 0x2545f4914f6cdd1dull; b ^= b >> 32;
+        memcpy(&w, m + i + 16, 8); c = (c ^ w) * 0x94d049bb133111ebull; c ^= c >> 32;
+        memcpy(&w, m + i + 24, 8); d = (d ^ w) * 0x9e3779b97f4a7c15ull; d ^= d >> 32;
+    }
+    for (; i + 8 <= n; i += 8) { memcpy(&w, m + i, 8); a = (a ^ w) * 0xff51afd7ed558ccdull; a ^= a >> 32; }
+    for (; i < n; i++) a = (a ^ m[i]) * 0x100000001b3ull;
+    return a ^ b ^ c ^ d;
 }
 // Guest storage bytes as the host can read them (P1-160): a texture's storage address is the guest's (pool->mem + off), and in a far-alias pool (runtime/src/far.c) that address is
 //   unmapped — reading it directly faults once per load into the far-fault emulation, or stops the game where an access cannot be emulated. Read the shadow instead (s2a_far_g2h, the
@@ -5402,6 +5416,7 @@ static void shmap_load_once(void) {
     // NVN2 task / mesh shader (json msl_entry_kind object / mesh, at stage 3 / 4; nvn_geometry.inc mesh_tasks_draw): mesh_kind 1 object 2 mesh (0 = neither); its workgroup's threads,
     //   the payload's bytes (task), a task shader feeds it (mesh), the most vertices / primitives a mesh workgroup emits (Switch2 line's interface contract, item 6)
     uint8_t mesh_kind, mesh_task; uint16_t mesh_threads, mesh_payload, mesh_maxv, mesh_maxp;
+    uint8_t mesh_relay; uint32_t mesh_relay_pw, mesh_relay_sw;   // payload past Metal's 16 KB relayed through device memory (S2A.Dsh MeshStage.Relay): relay slot, words per payload / per mesh slice
     uint32_t geo_tf_stride[4], geo_tf_n[4], geo_tf_off[4][32], geo_tf_comp[4][32];   // S2Arm: the geometry shader's transform feedback (json geometry.tf, dmsh_build.py geo_tf): bytes per vertex, entries, record word offset and components per entry
     uint8_t geo_pt;   // json geometry.passthrough: a passthrough geometry shader whose library has the fast path's _bgs<i> / _bgc (Dsh.cs GeometryFinish; nvn_geometry.inc geo_draw)
     id<MTLComputePipelineState> geo_pso; uint8_t geo_pso_bad;   // geo_pso_bad：建几何计算管线失败过，之后这支的几何绘制直接跳过、不重建（11-01 异度3 Spare-host：编译器内部错误每笔重建 13337 次）
@@ -5899,11 +5914,13 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
         if (kind != stage - 2) { MLOG("【红】 shader %s at stage %d has msl_entry_kind %s (task shaders are object functions at stage 3, mesh shaders mesh functions at stage 4)", pc.UTF8String, stage, [j[@"msl_entry_kind"] UTF8String]); return nil; }
         o->mesh_kind = (uint8_t)kind; o->mesh_task = [j[@"mesh_task"] boolValue];
         o->mesh_threads = (uint16_t)[j[@"mesh_threads"] unsignedIntValue]; o->mesh_payload = (uint16_t)[j[@"mesh_payload"] unsignedIntValue];
+        if (j[@"mesh_relay"]) { o->mesh_relay = (uint8_t)[j[@"mesh_relay"] unsignedIntValue]; o->mesh_relay_pw = [j[@"mesh_relay_payload_words"] unsignedIntValue];
+                                o->mesh_relay_sw = [j[@"mesh_relay_slice_words"] unsignedIntValue]; }
         o->mesh_maxv = (uint16_t)[j[@"max_vertices"] unsignedIntValue]; o->mesh_maxp = (uint16_t)[j[@"max_primitives"] unsignedIntValue];
         // What Metal cannot run is red here, at the load (interface contract item 9): a workgroup of no thread or past Metal's 1024, a mesh workgroup past Metal's 256 vertices /
         //   512 primitives, a payload past Metal's 16 KB, shared memory of its own (the build spills it for compute shaders only: json spill)
         const char *why = !o->mesh_threads || o->mesh_threads > 1024 ? "workgroup threads outside 1-1024" : kind == 2 && (o->mesh_maxv > 256 || o->mesh_maxp > 512) ? "more than Metal's 256 vertices / 512 primitives a mesh workgroup" :
-                          o->mesh_payload > 16384 ? "a payload past Metal's 16 KB" : [j[@"spill"] unsignedIntValue] ? "shared memory of its own" : NULL;
+                          o->mesh_payload > 16384 && (!o->mesh_relay || !o->mesh_relay_pw || (kind == 2 && !o->mesh_relay_sw)) ? "a payload past Metal's 16 KB" : [j[@"spill"] unsignedIntValue] ? "shared memory of its own" : NULL;
         if (why) { MLOG("【红】 %s shader %s: %s (threads %u, payload %u, vertices %u, primitives %u): not usable, its draws are skipped", kind == 1 ? "task" : "mesh", pc.UTF8String, why,
                         o->mesh_threads, o->mesh_payload, o->mesh_maxv, o->mesh_maxp); return nil; }
         if (kind == 2 && depth_zero) {   // the depth convention, as a vertex shader's main0 / main0_z (contract item 2)
