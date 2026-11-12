@@ -53,7 +53,11 @@ It moves forward with a few commands, and you can watch every step in the launch
 /Applications/S2Arm.app/Contents/Resources/s2armctl diag export ~/Desktop/S2Arm-diagnostics.zip   # export a diagnostic bundle if it cannot fix a problem
 ```
 
-Anything only you can do (system permission prompts, signing in with your Apple ID, tapping Trust on your phone), the AI stops and asks you to do. On Windows, use `s2armctl.cmd` in the launcher folder with the same commands; exporting a diagnostic bundle is currently Mac-only.
+Anything only you can do (system permission prompts, signing in with your Apple ID, tapping Trust on your phone), the AI stops and asks you to do. On Windows, use `s2armctl.cmd` in the launcher folder with the same commands. Windows builds iPhone / iPad packages only, so for problems inside a game export the diagnostic bundle on the phone: long-press the game screen with four fingers for 1.5 seconds and choose Export diagnostics.
+
+**Something wrong inside a game** (graphics, frame rate, stutter, crashes)? Send your AI:
+
+> Please read https://github.com/jhaizhou-ops/S2Arm/blob/main/skills/player-game-triage/SKILL.md . My S2Arm game has this problem: <describe it>. Check the settings first, then collect diagnostics; if you can change code, fix it at the root and open a PR, otherwise help me file an issue.
 
 ## Tested at scale
 

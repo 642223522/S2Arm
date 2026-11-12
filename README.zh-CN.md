@@ -53,7 +53,11 @@ Mac 和 Windows 启动器都开放了控制接口 `s2armctl`：AI 助手可以�
 /Applications/S2Arm.app/Contents/Resources/s2armctl diag export ~/Desktop/S2Arm-诊断.zip   # 修不好时导出诊断包
 ```
 
-需要你本人做的事（系统授权、登录 Apple ID、在手机上点「信任」），AI 会停下来告诉你。Windows 上用启动器文件夹里的 `s2armctl.cmd`，命令相同；诊断包导出目前只在 Mac 上提供。
+需要你本人做的事（系统授权、登录 Apple ID、在手机上点「信任」），AI 会停下来告诉你。Windows 上用启动器文件夹里的 `s2armctl.cmd`，命令相同。Windows 只出 iPhone / iPad 包，游戏里的问题请在手机上导诊断包：游戏画面上四指同时长按 1.5 秒，选「导出诊断包」。
+
+**游戏里出了问题**（画面、帧率、卡顿、闪退）？把这句话发给 AI：
+
+> 请阅读 https://github.com/jhaizhou-ops/S2Arm/blob/main/skills/player-game-triage/SKILL.md 。我在 S2Arm 里玩的游戏出了这个问题：<描述现象>。先帮我查设置、收诊断；你能改代码就按里面的方法根修并提 PR，修不了就帮我整理成 Issue。
 
 ## 经过大规模真机检验
 
