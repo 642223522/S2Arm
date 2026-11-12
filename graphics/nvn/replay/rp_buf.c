@@ -155,30 +155,32 @@ int rp_buf_mirrors(void) { pthread_mutex_lock(&g_bmu); int n = (int)g_shadow.n; 
 
 // ---------- 缓冲类命令：只改游戏内存（见文件头）----------
 static int in_pool(uint64_t a, uint64_t n) { return n && rp_pool_find(a, n, NULL, NULL); }
+// 回放时在 CPU 上改游戏缓冲内容的三个命令：改一次代号加一（rp_draw 的段内常量缓冲切片按它失效）
+uint64_t rp_cpu_write_gen;
 void rp_op_update_ub(const void *a, const void *rec) {
     uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
     if (!n) return;
     if (!in_pool(d, n)) { nvn_unimpl("buf", "update_outside_pools", rec); return; }
-    memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n);
+    memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n); rp_cpu_write_gen++;
 }
 void rp_op_copy_b2b(const void *a, const void *rec) {
     uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
     if (!n) return;
     if (!in_pool(s, n) || !in_pool(d, n)) { nvn_unimpl("buf", "copy_outside_pools", rec); return; }
-    memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n);
+    memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n); rp_cpu_write_gen++;
 }
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec) {   // 32 位样式填充（不是按字节）
     if (!cb->size) return;
     if (!in_pool(cb->addr, cb->size)) { nvn_unimpl("buf", "clear_outside_pools", rec); return; }
-    uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0;
+    uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0; rp_cpu_write_gen++;
     for (; i + 4 <= n; i += 4) memcpy(p + i, &cb->value, 4);
     if (i < n) memcpy(p + i, &cb->value, (size_t)(n - i));
 }
 
-// OP_COPY_B2T：缓冲里是线性行（行距 / 片距可由游戏设），直接从游戏内存按当前段的 GPU 顺序传进贴图（nvn_mtl.m copy_b2t @13762）
+// OP_COPY_B2T：缓冲里是线性行（行距 / 片距可由游戏设），直接从游戏内存按当前段的 GPU 顺序传进贴图（nvn_mtl.m copy_b2t @13762）。
+// 线性 / 线性渲染目标贴图走同一条路：宿主贴图不按游戏的内存布局建，拷贝只看区域、行距、片距（iOS copy_b2t 同样不分）
 void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec) {
     const tex_t *t = o->tex; if (!t) return;
-    if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) { nvn_unimpl("tex", "b2t_linear", rec); return; }
     int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     if (!bpb || o->r.width <= 0 || o->r.height <= 0) { nvn_unimpl("tex", "b2t_bad_format_or_region", rec); return; }
     uint32_t level = o->has_view && o->view.set_levels ? o->view.base_level : 0, layer0 = o->has_view && o->view.set_layers ? o->view.min_layer : 0;
