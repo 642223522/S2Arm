@@ -476,8 +476,8 @@ def volume_format(path):
 
 
 # 游戏原件放哪块盘都行（exFAT 外接盘也行）：导入只记原件的位置与内容哈希，不复制、不改、不删，出包时原地只读（11-02 维护者定）。
-# 游戏库 = S2Arm 的工作数据（清单、解包与出包产物、缓存、存档），要放 APFS：播种、发布要原子的「不覆盖改名」和克隆，exFAT / FAT 不支持。
-#   启动器选到非 APFS 的文件夹不拦：说明后游戏库放默认位置（内置盘），那块盘上的游戏照样原地导入；后端 setup 这里是最后一道（直接调接口的也拦）
+# 游戏库 = S2Arm 的工作数据（清单、解包与出包产物、缓存、存档）：Mac 上 APFS（克隆）或 exFAT（普通拷贝 + 不覆盖发布，见 tools/clonedir.py）；
+#   FAT32 等仍拦。启动器选到不支持格式的文件夹不拦：说明后游戏库放默认位置；后端 setup 这里是最后一道（直接调接口的也拦）
 from libloc import LIBRARY_FORMAT_MESSAGE   # 文案单一来源在 libloc（Mac / Windows 共用的游戏库位置检查）
 
 
@@ -547,7 +547,7 @@ def location_slack(path):
     return dict(format=fmt, clusterBytes=cluster, slackWarning=reason is not None, slackReason=reason)
 
 def require_apfs(path, accept=False, extra=(None, 0)):
-    """游戏库所在卷的格式：Mac 要 APFS（原错误码 library_not_apfs），Windows 要 NTFS / ReFS（library_bad_format，libloc.format_ok）；读不到格式不拦"""
+    """游戏库所在卷的格式：Mac 要 APFS / HFS+ / exFAT（原错误码 library_not_apfs），Windows 要 NTFS / ReFS（library_bad_format，libloc.format_ok）；读不到格式不拦"""
     import libloc
     fmt = volume_format(path)
     if os.name == "nt":
@@ -556,8 +556,9 @@ def require_apfs(path, accept=False, extra=(None, 0)):
         if not libloc.format_ok(fmt, system="Windows") and not accept:
             raise Failure(libloc.win_format_message(fmt, *extra), code="library_bad_format")
         return fmt
-    # Mac 放开 HFS+（v0.3.1「拿不准不停」，libloc.MAC_OK_FORMATS）：克隆自动退回普通拷贝（cp -c、core / clonedir / 各工具的 clonefile 都退），
-    #   不覆盖改名 RENAME_EXCL 照常（11-12 HFS+ 映像实测）；空间预算按不克隆多算一份（space_budget）。exFAT / FAT 没有出包要的原子改名，物理上做不下去，照拦
+    # Mac 放开 HFS+ 与 exFAT（v0.3.1「拿不准不停」，libloc.MAC_OK_FORMATS；exFAT 来自外部 PR #395）：克隆自动退回普通拷贝（cp -c、core / clonedir / 各工具的 clonefile 都退）；
+    #   HFS+ 有 RENAME_EXCL，exFAT 没有（11-12 映像实测 ENOTSUP）——出包链路上的发布处退回「目标不存在才改名」（tools/clonedir.py、pack/app_bundle.py 组 IPA）；
+    #   空间预算按不克隆多算一份（space_budget）。FAT32 等单文件 4 GB 上限，照拦
     if not libloc.format_ok(fmt, system="Darwin"):
         raise Failure(LIBRARY_FORMAT_MESSAGE.format(fmt=fmt.upper()), code="library_not_apfs")
     return fmt
@@ -1955,10 +1956,14 @@ def _rmdir_past_os_junk(path, error, tries=5, wait=0.2):
 def _rmtree(p):
     """删整棵目录；遇到只读目录（产物根的 RomFS 共享存储 roots/.romfs_store/ 整棵只读，pack/roots.sh）先给它加回写权限再删。
     Windows 上封存不是只读位，是 ACL 里给当前用户的拒写项（pack/orch/roots.py seal → _win_acl），chmod 解不开：
-    按 roots 同一个函数把出错的项和它的父目录解封再删（11-07 Windows 出包机：启动器出包成功后清中间产物卡在 .romfs_store，WinError 5）"""
+    按 roots 同一个函数把出错的项和它的父目录解封再删（11-07 Windows 出包机：启动器出包成功后清中间产物卡在 .romfs_store，WinError 5）。
+    exFAT 上删数据文件时 AppleDouble 附属文件（._*）会一并消失，scandir 里还挂着的名字再 unlink 得到 ENOENT——当作已删完。"""
     def unlock(func, path, err):
         error = err[1] if isinstance(err, tuple) else err   # onerror 给 exc_info、onexc 给异常本身
-        if func in (os.rmdir, os.unlink) and getattr(error, "errno", None) == errno.ENOTEMPTY:
+        errno_ = getattr(error, "errno", None)
+        if func in (os.rmdir, os.unlink) and errno_ == errno.ENOENT:
+            return
+        if func in (os.rmdir, os.unlink) and errno_ == errno.ENOTEMPTY:
             return _rmdir_past_os_junk(path, error)
         parent = os.path.dirname(path)
         if os.name == "nt":
