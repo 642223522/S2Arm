@@ -173,6 +173,7 @@ static struct rp_prog g_fprog; static int g_resolves, g_resolve_rc; static struc
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) { g_resolves++; g_last_req = *q; *out = g_resolve_rc ? NULL : &g_fprog; return g_resolve_rc; }
 // 计算：程序、管线、派发的替身
 static struct rp_prog g_cprog; static int g_cresolves, g_cresolve_rc, g_cpipe_gets, g_ndisp; static uint32_t g_disp[3]; static struct nvn_gpu_pipe_s *g_disp_pipe; static nvn_gpu_shader g_cpipe_sh;
+static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_off;
 static nvn_gpu_binding g_cb[16]; static uint32_t g_ncb; static int g_cbinds;
 int rp_shader_resolve_compute(const struct rp_prog **out) { g_cresolves++; *out = g_cresolve_rc ? NULL : &g_cprog; return g_cresolve_rc; }
 void rp_shader_reset(void) {}
@@ -185,7 +186,11 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
 void nvn_gpu_set_pipe(nvn_gpu_cmd c, nvn_gpu_pipe p) { (void)c; (void)p; g_set_pipes++; }
 static struct nvn_gpu_pipe_s g_fcpipe;
 nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; (void)err; g_cpipe_gets++; g_cpipe_sh = cs->sh; *out = &g_fcpipe; return (nvn_gpu_rc){NVN_GPU_OK}; }
-void nvn_gpu_dispatch(nvn_gpu_cmd c, nvn_gpu_pipe cp, uint32_t x, uint32_t y, uint32_t z, nvn_gpu_buf ind, uint64_t ind_off) { (void)c; (void)ind; (void)ind_off; g_ndisp++; g_disp[0] = x; g_disp[1] = y; g_disp[2] = z; g_disp_pipe = cp; }
+void nvn_gpu_copy_buf(nvn_gpu_cmd c, nvn_gpu_buf src, uint64_t soff, nvn_gpu_buf dst, uint64_t doff, uint64_t bytes) {
+    (void)c; (void)src; CHECK(dst == &g_arena_buf && g_buf_cpu_fake && bytes == 12);
+    if (dst == &g_arena_buf && g_buf_cpu_fake) memcpy(g_arena + doff, g_buf_cpu_fake + soff, (size_t)bytes);
+}
+void nvn_gpu_dispatch(nvn_gpu_cmd c, nvn_gpu_pipe cp, uint32_t x, uint32_t y, uint32_t z, nvn_gpu_buf ind, uint64_t ind_off) { (void)c; g_disp_ind = ind; g_disp_off = ind_off; g_ndisp++; g_disp[0] = x; g_disp[1] = y; g_disp[2] = z; g_disp_pipe = cp; }
 void nvn_gpu_set_dyn(nvn_gpu_cmd c, const nvn_gpu_dyn *d) { (void)c; g_set_dyns++; g_last_dyn = *d; }
 void nvn_gpu_set_vbuf(nvn_gpu_cmd c, uint32_t stream, nvn_gpu_buf b, uint64_t off) { (void)c; (void)b; if (g_nvb < 4) { g_vb[g_nvb].stream = stream; g_vb[g_nvb].off = off; } g_nvb++; }
 static int g_bind_calls[2];   // 图形两个阶段各发了几次绑定
@@ -1611,15 +1616,15 @@ static void t_dispatch(void) {
     p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 1; ub->addr = base + 3 * PG; ub->size = 32;
     p_dispatch *dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 2; dp->y = 3; dp->z = 1;
     dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 0; dp->y = 3; dp->z = 1;                        // 0 组：空操作
-    dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 1; dp->y = 1; dp->z = 1; dp->ind = base + 16;   // 间接：还没接，记账
+    dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 1; dp->y = 1; dp->z = 1; dp->ind = base + sizeof g_pmem - 8;   // 间接参数越过池尾，记账
     q_draw(&s);                                                                                    // 派发之后再画：管线全部重发
     end(&s);
     int ends0 = g_pass_ends, sp0 = g_set_pipes, pg0 = g_pipe_gets;
     submit1(&s);
-    CHECK(g_cresolves == 1 && g_cpipe_gets == 1 && g_cpipe_sh == &g_fsh[0] && g_ndisp == 1 && g_disp[0] == 2 && g_disp[1] == 3 && g_disp[2] == 1 && g_disp_pipe == &g_fcpipe);
+    CHECK(g_cresolves == 2 && g_cpipe_gets == 1 && g_cpipe_sh == &g_fsh[0] && g_ndisp == 1 && g_disp[0] == 2 && g_disp[1] == 3 && g_disp[2] == 1 && g_disp_pipe == &g_fcpipe);
     CHECK(g_pass_ends - ends0 >= 1 && g_npd == 2);                         // 派发前通道结束；之后那一笔另开一个通道
     CHECK(g_set_pipes - sp0 == 3 && g_pipe_gets - pg0 == 2);               // 图形、计算、再图形：派发之后图形管线重取重设
-    CHECK(nvn_unimpl_count("draw", "dispatch_indirect") == 1 && nvn_unimpl_kinds() == 1);
+    CHECK(nvn_unimpl_count("draw", "dispatch_indirect_unresolved") == 1);
     CHECK(g_cbinds == 1 && g_ncb == 3 && g_cb[0].cls == NVN_GPU_RES_SSBO && g_cb[0].u.b.off == PG + 64 && g_cb[0].u.b.len == 128 && g_cb[0].u.b.buf != &g_arena_buf);   // 存储缓冲绑的是池镜像里的那一段
     { const uint8_t *c0 = g_arena + g_cb[1].u.b.off; uint32_t dim[3]; uint64_t a; uint32_t n; memcpy(dim, c0 + 0x200, 12);
       CHECK(g_cb[1].u.b.buf == &g_arena_buf && dim[0] == 2 && dim[1] == 3 && dim[2] == 1);
@@ -1834,6 +1839,35 @@ static void t_compute_sources(void) {
     CHECK(nvn_unimpl_count("draw", "storage_buffer_indirect_empty") == 0);
     CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "compute_storage_indirect_writable_unknown") == 1);
     g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem);
+}
+
+// 同段GPU写参数：guest保持旧值，间接派发必须引用权威镜像，不读guest组数。
+static void t_dispatch_indirect_gpu(void) {
+    pass_fresh(); g_arena_used = 0; g_cresolve_rc = 0;
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem; nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 1; g_cprog.ent[0][0].cls = NVN_GPU_RES_UBO; g_cprog.ent[0][0].src_kind = NVN_RB_DRV0;
+    static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0, sizeof mirror); memset(g_pmem, 0, sizeof g_pmem);
+    uint32_t old[3] = {99, 99, 99}, gpu[3] = {2, 3, 4}; memcpy(g_pmem + 64, old, 12);
+    g_buf_cpu_fake = mirror; nvn_be_sub_begin(); nvn_gpu_buf args; uint64_t off;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 64, 12, &args, &off));
+    rp_post_gpu_write(base + 64, 12); memcpy(mirror + 64, gpu, 12);
+    g_dirty_written = ++g_dirty_now; // 旧guest所在页即使被轮询为脏，也不得盖GPU写区间。
+    p_dispatch dp = {.ind = base + 64}; int n = g_ndisp;
+    rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 1 && g_disp_ind == args && g_disp_off == off);
+    CHECK(g_disp[0] == 0 && g_disp[1] == 0 && g_disp[2] == 0);
+    CHECK(!memcmp(mirror + 64, gpu, 12) && !memcmp(g_pmem + 64, old, 12));
+    CHECK(g_ncb == 1 && !memcmp(g_arena + g_cb[0].u.b.off + 0x200, gpu, 12));
+    dp.ind = base + sizeof g_pmem - 8; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 1);
+    dp.ind = base + 65; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 1);
+    dp.ind = 0; dp.x = 5; dp.y = 2; dp.z = 1;
+    rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 2 && !g_disp_ind && g_disp_off == 0);
+    CHECK(g_disp[0] == 5 && g_disp[1] == 2 && g_disp[2] == 1);
+    uint32_t direct[3] = {5, 2, 1};
+    CHECK(!memcmp(g_arena + g_cb[0].u.b.off + 0x200, direct, 12));
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
 static void t_copy_t2t(void) {
@@ -2228,6 +2262,7 @@ int main(int argc, char **argv) {
     t_occlusion();
     t_render_cond();
     t_dispatch();
+    t_dispatch_indirect_gpu();
     t_dispatch_ubop_rw();
     t_dispatch_ubop_ro_skip();
     t_compute_image();

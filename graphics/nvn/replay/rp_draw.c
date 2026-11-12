@@ -136,6 +136,7 @@ void rp_draw_log_arm(int lines) { g_log_left = lines; }
 
 // 一个阶段的全部绑定。0 = 有取不到的资源（已记账），这笔不画
 // pi：程序里的阶段下标（0 顶点 / 计算，1 片元）；st：NVN 阶段号（回放状态按它取：0 顶点、1 片元、5 计算）
+static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_ind_off;
 static uint32_t g_disp_dim[3];   // 这次派发的组数（计算阶段的驱动段 c0 里要有）
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec);
 static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) { return bind_stage_at(c, pg, st, st, base_instance, tv, ts, rec); }
@@ -202,6 +203,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (!alloc_copy(c, DRV0_BYTES, NULL, &sl)) return skip("arena_alloc_failed", rec);
                 if (st == 5) {   // 计算阶段的驱动段（nvn_mtl.m @9897）：0x200 派发组数，0x210 + 16r 常量缓冲表，0x310 + 16r 存储缓冲表（各项：地址 64 位、长度 32 位）
                     memcpy(sl.cpu + 0x200, g_disp_dim, 12);
+                    if (g_disp_ind) nvn_gpu_copy_buf(c, g_disp_ind, g_disp_ind_off, sl.buf, sl.off + 0x200, 12);
                     for (int r = 0; r < 16; r++) { uint64_t a = rp_S.ubo[5][r].addr; uint32_t sz = (uint32_t)rp_S.ubo[5][r].size; memcpy(sl.cpu + 0x210 + 16 * r, &a, 8); memcpy(sl.cpu + 0x210 + 16 * r + 8, &sz, 4); }
                     for (int r = 0; r < 16; r++) { uint64_t a = rp_S.ssbo[5][r].addr; uint32_t sz = (uint32_t)rp_S.ssbo[5][r].size; memcpy(sl.cpu + 0x310 + 16 * r, &a, 8); memcpy(sl.cpu + 0x310 + 16 * r + 8, &sz, 4); }
                     o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV0_BYTES; break; }
@@ -532,12 +534,11 @@ static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence)
 
 // ---------- 计算派发（nvn_mtl.m dispatch @13556） ----------
 // 取计算程序 → 落地待折清除并结束通道（派发在通道外，且可能读写那些目标）→ 绑定 NVN 阶段 5 的资源 → 派发。
-// 范围：直接给组数的派发；常量缓冲、驱动段、按槽绑定的存储缓冲、单张组合贴图与图像。间接派发、贴图数组：记账跳过。
+// 范围：直接与池镜像参数的原生间接派发；常量缓冲、驱动段、按槽绑定的存储缓冲、单张组合贴图与图像。贴图数组：记账跳过。
 static nvn_hmap g_cpipes = {.klen = 8};   // 计算程序 → 计算管线
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     if (!c) return;
-    if (dp->ind) { skip("dispatch_indirect", rec); return; }
-    if (dp->x <= 0 || dp->y <= 0 || dp->z <= 0) return;   // 0 组：空操作
+    if (!dp->ind && (dp->x <= 0 || dp->y <= 0 || dp->z <= 0)) return;   // 0 组：空操作
     const struct rp_prog *pg = NULL;
     int sr = rp_shader_resolve_compute(&pg);
     if (sr) { skip(sr > 0 ? "compute_program_not_ready" : "compute_program_unresolved", rec); return; }
@@ -569,6 +570,8 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
         tv[i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, pg->dtt[0][i], pg->dcls[0][i], 0, c, NULL); ts[i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
     rp_pass_flush(c);
+    g_disp_ind = NULL; g_disp_ind_off = 0;
+    if (dp->ind && ((dp->ind & 3) || !rp_buf_resolve(c, dp->ind, 12, &g_disp_ind, &g_disp_ind_off))) { skip("dispatch_indirect_unresolved", rec); goto done; }
     uint64_t key = (uint64_t)(uintptr_t)pg; nvn_gpu_pipe cp = nvn_hm_get(&g_cpipes, &key);
     if (!cp) {
         nvn_gpu_stage_desc cs; memset(&cs, 0, sizeof cs); cs.sh = pg->sh[0]; nvn_gpu_err err = {0};
@@ -577,10 +580,11 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     }
     nvn_gpu_set_pipe(c, cp);
     g_pipe = NULL; g_pipe_cmd = NULL; rp_dirty_all();   // 后端的当前管线换成了计算管线：下一笔绘制全部重发
-    g_disp_dim[0] = (uint32_t)dp->x; g_disp_dim[1] = (uint32_t)dp->y; g_disp_dim[2] = (uint32_t)dp->z;
+    g_disp_dim[0] = dp->ind ? 0 : (uint32_t)dp->x; g_disp_dim[1] = dp->ind ? 0 : (uint32_t)dp->y; g_disp_dim[2] = dp->ind ? 0 : (uint32_t)dp->z;
     if (!bind_stage_at(c, pg, 0, 5, 0, tv, ts, rec)) goto done;
     for (uint32_t i = 0; i < pg->nent[0]; i++) if (images[i] && (pg->ent[0][i].access & NVN_GPU_ACC_W)) rp_tex_mark_gpu_written(images[i]);
-    nvn_gpu_dispatch(c, cp, (uint32_t)dp->x, (uint32_t)dp->y, (uint32_t)dp->z, NULL, 0);
+    if (g_disp_ind) nvn_gpu_barrier(c, NVN_BARRIER_ORDER_INDIRECT_DATA_BIT | NVN_BARRIER_INVALIDATE_SHADER_BIT);
+    nvn_gpu_dispatch(c, cp, g_disp_dim[0], g_disp_dim[1], g_disp_dim[2], g_disp_ind, g_disp_ind_off);
     g_dispatches++;
 done:
     rp_view_pin_end();
