@@ -824,6 +824,7 @@
       {"id": "settings.locations.ipa", "zh-Hans": "iPhone 包", "en": "iPhone package"},
       {"id": "settings.locations.ipa_none", "zh-Hans": "还没出过 iPhone 包；出好后在这里", "en": "No iPhone package yet; it will show here once built"},
       {"id": "settings.locations.space", "zh-Hans": "磁盘空间", "en": "Disk space"},
+      {"id": "settings.locations.not_set", "zh-Hans": "还没设置", "en": "Not set yet"},
       {"id": "settings.open", "zh-Hans": "打开", "en": "Open"},
       {"id": "settings.keys", "zh-Hans": "密钥", "en": "Keys"},
       {"id": "library.location.at", "zh-Hans": "存放在 {0}", "en": "Stored in {0}"},

@@ -3686,7 +3686,7 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     memset(&bc, 0, sizeof bc);
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
-    bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? e.height : (uint32_t)(image_bytes / row_bytes) * blk_h;
+    bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;   // 块压缩要是块高的整数倍（同 copy_buf_tex_impl）；非压缩 blk_h = 1，原样 e.height
     bc.imageSubresource = (VkImageSubresourceLayers){t->aspect, level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
     bc.imageExtent = e;
@@ -3694,6 +3694,17 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL);
     cmd_ref(c, t, REF_TEX);
     cmd_ref(c, b, REF_BUF);
+}
+
+// 压缩图的偏移按块对齐；尺寸若不足一块，只允许落在对应 mip 的边缘。
+static int copy_block_region_ok(const struct nvn_gpu_tex_s *t, uint32_t level, const VkOffset3D *o,
+                                const VkExtent3D *e, const nvn_fmt_info *fi) {
+    uint32_t w = t->w >> level, h = t->h >> level;
+    if (!w) w = 1;
+    if (!h) h = 1;
+    return (uint32_t)o->x % fi->bw == 0 && (uint32_t)o->y % fi->bh == 0 &&
+           (e->width % fi->bw == 0 || (uint64_t)(uint32_t)o->x + e->width == w) &&
+           (e->height % fi->bh == 0 || (uint64_t)(uint32_t)o->y + e->height == h);
 }
 
 void nvn_gpu_copy_tex(nvn_gpu_cmd ch, nvn_gpu_tex sh, uint32_t slevel, uint32_t slayer, const NVNcopyRegion *sr,
@@ -3704,12 +3715,21 @@ void nvn_gpu_copy_tex(nvn_gpu_cmd ch, nvn_gpu_tex sh, uint32_t slevel, uint32_t 
     struct nvn_gpu_tex_s *s = sh, *d = dh;
     // 两边同一 VkFormat 才拷；D32S8 不在 fmt_bpp 表里（每纹素两个面），同格式深度模板整面拷贝合法，
     // 一并放行（#398：D24S8 换成 D32S8 后贴图间拷贝照旧可用）。
-    const int fmt_ok = s && d && s->format == d->format && (fmt_bpp(s->format) || nvn_vk_format_is_depth(s->format));
+    nvn_fmt_info si = {0}, di = {0};
+    const int compressed = s && d && s->format == d->format && !s->bc_decoded && !d->bc_decoded &&
+        nvn_vk_format_is_compressed(s->format) && nvn_fmt_info_of(s->nvn_format, &si) &&
+        nvn_fmt_info_of(d->nvn_format, &di) && si.bw > 1 && si.bh > 1 &&
+        si.bw == di.bw && si.bh == di.bh && si.bytes == di.bytes;
+    const int fmt_ok = s && d && s->format == d->format &&
+        (fmt_bpp(s->format) || nvn_vk_format_is_depth(s->format) || compressed);
     VkOffset3D so, dof;
     VkExtent3D se, de;
-    if (!fmt_ok || slayer >= s->layers ||
-        dlayer >= d->layers || copy_region(s, slevel, sr, &so, &se) || copy_region(d, dlevel, dr, &dof, &de) ||
-        se.width != de.width || se.height != de.height || se.depth != de.depth) {
+    if (!fmt_ok || slayer >= s->layers || dlayer >= d->layers ||
+        slevel >= s->levels || dlevel >= d->levels || slevel >= 32 || dlevel >= 32 ||
+        copy_region(s, slevel, sr, &so, &se) || copy_region(d, dlevel, dr, &dof, &de) ||
+        se.width != de.width || se.height != de.height || se.depth != de.depth ||
+        (compressed && (!copy_block_region_ok(s, slevel, &so, &se, &si) ||
+                        !copy_block_region_ok(d, dlevel, &dof, &de, &di)))) {
         // 把是哪一项不合法说清楚（#690：真机上只看到这一句，定不了位）：两边的格式、级 / 层与各自的层数、图的尺寸与级数、两个区域
         const NVNcopyRegion z = {0, 0, 0, 0, 0, 0}; const NVNcopyRegion *a = sr ? sr : &z, *b = dr ? dr : &z;
         set_sticky(c, NVN_GPU_E_ARG, "copy_tex 参数非法：源 格式 %d %ux%ux%u 级 %u/%u 层 %u/%u 区域 %d,%d,%d %dx%dx%d%s；目标 格式 %d %ux%ux%u 级 %u/%u 层 %u/%u 区域 %d,%d,%d %dx%dx%d%s",

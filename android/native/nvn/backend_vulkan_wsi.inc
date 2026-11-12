@@ -39,7 +39,7 @@ static void wsi_consume_acquired(struct nvn_gpu_surface_s *s) {
         pthread_mutex_lock(&g_submit_mu);
         VkResult r = vkQueueSubmit(g.queue, 1, &si, f);
         pthread_mutex_unlock(&g_submit_mu);
-        if (r == VK_SUCCESS) vkWaitForFences(g.d, 1, &f, VK_TRUE, 2000000000ull);
+        if (r == VK_SUCCESS) s2a_vk_wait_fences(g.d, 1, &f, 2000000000ull);
         vkDestroyFence(g.d, f, NULL);
     }
     s->acquire_pending = 0;

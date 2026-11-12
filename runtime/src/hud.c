@@ -150,7 +150,7 @@ static void line_energy(char *o, size_t n, const s2a_hud_host *h) {
     if (s2a_energy_snap(&s)) snprintf(w, sizeof w, NOT_GIVEN);
     else {
         if (have && s.wall > last.wall) {
-            double sec = (s.wall - last.wall) / 1e9, cpu = (s.nj - last.nj) / 1e9 / sec, gms = s.ok_g && last.ok_g ? (s.gpu_ms - last.gpu_ms) / sec : -1;   // GPU 只有忙的时间、没有瓦数（10-30 测量口径修法 5）
+            double sec = (s.wall - last.wall) / 1e9, cpu = (s.nj - last.nj) / 1e9 / sec, gms = s2a_gpu_busy_rate(&last, &s);   // GPU 只有忙的时间、没有瓦数（10-30 测量口径修法 5）
             if (gms >= 0) snprintf(w, sizeof w, "CPU %.2f W（GPU 忙 %.0f ms/s）", cpu, gms); else snprintf(w, sizeof w, "CPU %.2f W（GPU " NOT_GIVEN "）", cpu);
         }
         last = s; have = 1;

@@ -2185,6 +2185,20 @@ static double gpu_tag_begin(uint64_t f) {   // 返回提交时刻（CACurrentMed
 // A frame whose command buffers keep the GPU busy longer than this in all is no longer usable: the run stops (mtl_gpu_halt: GPU safe stop) before the driver's timeout recovery takes over
 //   (10-31: the Mac's kernel panicked in the GPU driver's event machine after runs whose frames took 1.5-3.3 s of GPU)
 #define S2A_GPU_FRAME_MAX_MS 1000
+// 一帧过门只记黄行、不停（11-13 iPad14,8 iOS 26.6：一帧 1020 ms 就把玩家的局冻结了；单帧偶发超时的代价是一次卡顿，不是整机卡死）。
+//   要停的是持续形态：GPU 时间线上 10 秒内有 3 帧各过 1 秒（10-31 内核恐慌前就是一帧接一帧 1.5–3.3 秒）。驱动报的 Hang / PageFault 不经这里，照旧当场停
+#define S2A_GPU_OVER_N 3
+#define S2A_GPU_OVER_WINDOW_S 10.0
+static os_unfair_lock g_gpu_over_lk = OS_UNFAIR_LOCK_INIT; static double g_gpu_over_t[S2A_GPU_OVER_N]; static unsigned g_gpu_over_n;
+static void gpu_frame_over(uint64_t f, uint64_t busy, double at) {   // at = 这一份的 GPU 结束（与 CACurrentMediaTime 同一时基）
+    os_unfair_lock_lock(&g_gpu_over_lk);
+    unsigned n = ++g_gpu_over_n; g_gpu_over_t[(n - 1) % S2A_GPU_OVER_N] = at;
+    double first = g_gpu_over_t[n % S2A_GPU_OVER_N];   // 连这一帧在内最近 S2A_GPU_OVER_N 帧里最早那一帧
+    int stop = n >= S2A_GPU_OVER_N && at - first <= S2A_GPU_OVER_WINDOW_S;
+    os_unfair_lock_unlock(&g_gpu_over_lk);
+    if (stop) { char w[160]; snprintf(w, sizeof w, "frame %llu kept the GPU busy %.0f ms (limit %d ms), %d frames over the limit within %.1f s", (unsigned long long)f, busy / 1e6, S2A_GPU_FRAME_MAX_MS, S2A_GPU_OVER_N, at - first); mtl_gpu_halt(w); }
+    else MLOG("【黄】 帧 %llu GPU 忙 %.0f ms（过 %d ms 门，第 %u 次）：照常继续；10 秒内 %d 帧都过门才安全停", (unsigned long long)f, busy / 1e6, S2A_GPU_FRAME_MAX_MS, n, S2A_GPU_OVER_N);
+}
 // 开始时间早于提交时刻（11-11 #647：Mac mini M4 / macOS 27.2.1，Metal 4，23 局都以本门收局，停前每帧整帧 16–24 ms 照常出帧，记到的帧 GPU
 //   每帧线性涨约一帧时长、涨过 1 秒——某个提交回报的 GPUStartTime 停在过去，跨度被一路拉长；驱动没报任何命令缓冲错误）：GPU 不可能在提交之前开始干这份活，
 //   早于提交时刻 sub 的开始按 sub 算，计数并打黄行（时间戳原样写出；本机 macOS 26.4 / 门禁机 27.0.1 的探针 900 次提交 0 次，是防线不是已证根因）。
@@ -2220,7 +2234,7 @@ static void gpu_tag_done(uint64_t f, int qi, double sub, double g0, double g1) {
         uint64_t busy = atomic_fetch_add(&g_gpu[k].ns, excl) + excl;
         for (v = atomic_load(&g_gpu[k].t0); s0 < v && !atomic_compare_exchange_weak(&g_gpu[k].t0, &v, s0);) {}
         for (v = atomic_load(&g_gpu[k].t1); s1 > v && !atomic_compare_exchange_weak(&g_gpu[k].t1, &v, s1);) {}
-        if (busy > S2A_GPU_FRAME_MAX_MS * 1000000ull) { char w[120]; snprintf(w, sizeof w, "frame %llu kept the GPU busy %.0f ms (limit %d ms)", (unsigned long long)f, busy / 1e6, S2A_GPU_FRAME_MAX_MS); mtl_gpu_halt(w); }
+        if (busy > S2A_GPU_FRAME_MAX_MS * 1000000ull && busy - excl <= S2A_GPU_FRAME_MAX_MS * 1000000ull) gpu_frame_over(f, busy, g1);   // 这一份让本帧过门（每帧只算一次）
     }
     atomic_fetch_sub(&g_gpu[k].pending, 1);
 }
