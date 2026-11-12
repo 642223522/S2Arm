@@ -21,6 +21,7 @@ static struct {
     int clear_d, clear_s; float cd; int cs;
     int open;                 // 后端通道开着
     uint32_t barrier_bits;    // 游戏发过的屏障位：下一个通道前交给后端
+    int has_ds, ds_used, ndraw;   // 当前通道：挂了深度模板附件、有绘制 / 清除用到它、绘制笔数（读数用）
 } P;
 
 static void level_size(const tex_t *t, const view_t *v, int has_v, uint32_t *w, uint32_t *h) {
@@ -125,11 +126,13 @@ static nvn_gpu_view shadow_attach(nvn_gpu_cmd c, int i, const tex_t *t, uint32_t
     if (!cleared) shadow_copy(c, i, 0);
     return s->v;
 }
+void rp_pass_note_draw(int uses_ds) { P.ndraw++; if (uses_ds) P.ds_used = 1; }
 int rp_pass_slot_attached(int i) { return P.has_rt && i >= 0 && i < P.rt.n && i < 8 && P.rt.color[i] && !dup_slot(i) && slot_kind(i, NULL, NULL) >= 0; }
 static int pending(void) { if (P.clear_d || P.clear_s) return 1; for (int i = 0; i < 8; i++) if (P.clear_c[i]) return 1; return 0; }
 
 void rp_pass_end(nvn_gpu_cmd c) {
     if (P.open && c) { nvn_gpu_pass_end(c); for (int i = 0; i < 8; i++) if (g_shu[i].base) shadow_copy(c, i, 1); }   // 画进影子的内容拷回各自的深度贴图
+    if (P.open) { if (P.has_ds) { rp_perf_add(RP_PERF_P_DS, 1); if (!P.ds_used) rp_perf_add(RP_PERF_P_DS_IDLE, 1); } if (P.ndraw <= 1) rp_perf_add(RP_PERF_P_ONE, 1); }
     memset(g_shu, 0, sizeof g_shu);
     P.open = 0; rp_occl_pass_closed();
 }
@@ -168,6 +171,9 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     }
     if (P.barrier_bits) { nvn_gpu_barrier(c, P.barrier_bits); P.barrier_bits = 0; }
     d.occlusion = (uint8_t)rp_occl_want();
+    P.has_ds = d.depth.view || d.stencil.view; P.ds_used = P.clear_d || P.clear_s; P.ndraw = 0;
+    for (int i = 0; i < P.rt.n && i < 8; i++) if (d.color[i].view && d.color[i].load == NVN_GPU_LOAD_LOAD) rp_perf_add(RP_PERF_P_LOADC, 1);
+    rp_perf_add(RP_PERF_P_KPIX, (uint64_t)d.w * d.h / 1000);
     nvn_gpu_pass_begin(c, &d);
     rp_occl_pass_opened(d.occlusion);
     rp_perf_add(RP_PERF_PASSES, 1);
