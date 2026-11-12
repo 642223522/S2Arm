@@ -1,5 +1,5 @@
 #!/bin/bash
-# 门禁覆盖：tools/l10n_dupkeys.py .gitattributes launchers/shared/experience.v1.json launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json launchers/macos/frontend/l10n ios/l10n ios/Settings.bundle shell/Sources/ShellUI/Resources/Localizable.xcstrings
+# 门禁覆盖：tools/l10n_dupkeys.py .gitattributes launchers/shared/experience.v1.json launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json launchers/macos/frontend/l10n ios/l10n ios/Settings.bundle shell/Sources/ShellUI/Resources/Localizable.xcstrings android/app/src/main/res
 # 本地化 / 体验表内重复键（tools/l10n_dupkeys.py，11-11 合入运维线）：名字带 lint，入队确定性快检查自动跑，重复就当场拒收、点名哪张表哪个键第几项。
 #   起因：launcher/ios-error-codes 的 Localizable.json 同一个 source 写了两条，按键合并器判不了、每次合 main 冲突退回。期望按构造手写：
 #   ① 假仓库四张表都干净 → 退出 0、「重复 0 处」
@@ -8,6 +8,9 @@
 #   ④ .strings 同一个键两行 → 点名第几行
 #   ⑤ 体验表对象数组 id 重复（没登记 merge=s2a-l10n 也查）→ 点名
 #   ⑥ 真仓库：重复 0 处（上线前确认没有存量，不拦所有人）
+#   ⑦ 安卓 android/**/res/values*/strings.xml（没登记也查；11-11 #661：两支各补同 4 条，合在一起 Gradle 合并资源失败）：同文件同名 string 两次 → 退出 1、点名第几行；
+#     注释里的不算；string 与 plurals 同名不算；values/ 与 values-zh/ 各一份不算
+#   ⑧ 反证：main 623985973 上的原文件 values-zh/strings.xml → 4 处全点名（preview_title 第 21 行与第 3 行同 …）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 D=$H/tools/l10n_dupkeys.py
@@ -36,4 +39,14 @@ o=$(python3 $D $R 2>&1); r=$?
 ck "⑤ 体验表数组 id 重复（没登记也查）→ 退出 1、点名" '[ $r = 1 ] && grep -q "experience.v1.json/launcher/items：第 2 项 id 重复「a」" <<< "$o"'
 o=$(python3 $D "$H" 2>&1); r=$?
 ck "⑥ 真仓库：重复 0 处（$(tail -1 <<< "$o")）" '[ $r = 0 ]'
+A=$R/android/app/src/main/res; mkdir -p $A/values $A/values-zh
+printf '<resources>\n    <string name="t">甲</string>\n    <!-- <string name="t">旧</string> -->\n    <plurals name="t"><item quantity="other">x</item></plurals>\n    <string name="t">甲</string>\n</resources>\n' > $A/values-zh/strings.xml
+printf '<resources>\n    <string name="t">A</string>\n</resources>\n' > $A/values/strings.xml
+git -C $R add -A; o=$(python3 $D $R 2>&1); r=$?
+ck "⑦ 安卓同文件同名两次 → 退出 1、点名第 5 行；注释 / plurals / 另一个 values 目录不算" '[ $r = 1 ] && grep -q "values-zh/strings.xml：第 5 行 string「t」重复（与第 2 行同" <<< "$o" && [ "$(grep -c "strings.xml：" <<< "$o")" = 1 ]'
+O=$T/o; mkdir -p $O/android/app/src/main/res/values-zh; git init -q $O
+if git -C "$H" cat-file -e 623985973:android/app/src/main/res/values-zh/strings.xml 2> /dev/null; then
+  git -C "$H" show 623985973:android/app/src/main/res/values-zh/strings.xml > $O/android/app/src/main/res/values-zh/strings.xml; git -C $O add -A; o=$(python3 $D $O 2>&1); r=$?
+  ck "⑧ 反证 main 623985973 原文件 → 4 处全点名" '[ $r = 1 ] && [ "$(grep -c "重复（与第" <<< "$o")" = 4 ] && grep -q "第 21 行 string「preview_title」重复（与第 3 行同" <<< "$o"'
+else echo "跳 ⑧（浅克隆取不到 623985973）"; fi
 [ $bad = 0 ] && echo "l10n_dupkey_lint 单测全过" || { echo "l10n_dupkey_lint 单测有不通"; grep '【红】' <<< "$o" | head -5; exit 1; }
