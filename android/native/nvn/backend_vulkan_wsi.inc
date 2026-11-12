@@ -273,6 +273,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     }
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    image_barrier(c, st, VK_IMAGE_LAYOUT_GENERAL);   // 源图转回常驻布局（见 backend_vulkan.c「图像布局」：别的段一律按 GENERAL 用它）
     // 内部段：摘出活动表，自己提交（等取图信号量、发呈现信号量），交给完成线程只做回收
     pthread_mutex_lock(&g_mu);
     { struct nvn_gpu_cmd_s **pp = &g.live; while (*pp && *pp != c) pp = &(*pp)->live_next; if (*pp) *pp = c->live_next; }
