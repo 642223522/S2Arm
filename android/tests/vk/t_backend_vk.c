@@ -4653,6 +4653,70 @@ static void c86b_3d_slice_attach(void) {
     nvn_gpu_tex_release(t); nvn_gpu_buf_release(ib, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
+// C86c（#773）：三维块压缩贴图的深度切片经缓冲与非压缩贴图之间逐字节拷。核心把三维块压缩目标的一个深度切片当影子拷就是这么拷的
+//   （graphics/nvn/replay/rp_pass.c shadow_copy：通道前基底的切片 → 缓冲 → 二维影子，通道后影子 → 缓冲 → 基底的同一个切片；
+//   层号在三维贴图上是深度切片，后端转成 zoffset、depth 1）。影子是 RG32UI，一个像素 8 字节 = BC1 一块。
+// 期望（手算）：
+//   ① BC1 8x4x2（两块宽、一块高、两个切片）：切片 0 = A0 A1、切片 1 = B0 B1（四块互不相同，A = 0x10..0x1f、B = 0x20..0x2f、C = 0x30..0x3f）。
+//      切片 1 经 缓冲 → 2x1 的影子 → 缓冲 读回 = B0 B1（取错切片会读到 A）；
+//   ② 往影子写 C0 C1，经缓冲拷回切片 1，再读两个切片：切片 1 = C0 C1，切片 0 仍是 A0 A1（写错切片会盖掉 A）；
+//   ③ 三级的 BC1 8x8x2：第 2 级是 2x2 个纹素（一块，不是块高 4 的整数倍）。写 D（0x40..0x47）、经 1x1 的影子拷到切片 0 再读回 = D
+//      （核心按「基底那一级的像素尺寸」给拷贝区域，不按块取整，深一级的区域就是这样的）。
+//   不能直接采样 BC 的设备（后端走计算解码）建不了原生压缩的三维贴图，跳过。
+static nvn_gpu_tex make_tex_3d_levels(uint32_t w, uint32_t h, uint32_t depth, uint32_t levels, uint32_t fmt, uint32_t usage) {
+    nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
+    td.d.target = NVN_TEXTURE_TARGET_3D; td.d.format = (int)fmt; td.d.width = w; td.d.height = h;
+    td.d.depth = (int)depth; td.d.levels = (int)levels; td.d.samples = 0; td.usage = usage;
+    nvn_gpu_tex t = NULL; nvn_gpu_err e;
+    nvn_gpu_rc r = nvn_gpu_tex_create(&td, &t, &e);
+    CHECK(OK(r) && t, "tex_create 三维 %ux%ux%u 级 %u 失败：%d %s", w, h, depth, levels, r.code, e.why);
+    return t;
+}
+static void c86c_bc_3d_slice_copy(void) {
+    if ((g_dev.bc_decode_mask & (1u << (NVN_FORMAT_RGBA_DXT1 - 0x41))) || !(nvn_gpu_format_caps(NVN_FORMAT_RGBA_DXT1) & NVN_GPU_FMT_SAMPLE)) { fprintf(stderr, "C86c：BC1 非原生压缩存储，跳过三维切片原块拷贝\n"); return; }
+    nvn_gpu_tex bc = make_tex_3d_levels(8, 4, 2, 1, NVN_FORMAT_RGBA_DXT1, NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex bm = make_tex_3d_levels(8, 8, 2, 3, NVN_FORMAT_RGBA_DXT1, NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex px = make_tex(2, 1, NVN_FORMAT_RG32UI, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED), p1 = make_tex(1, 1, NVN_FORMAT_RG32UI, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    uint8_t init[64]; for (int i = 0; i < 64; i++) init[i] = (uint8_t)(0x10 + i);   // A0 A1 = 0x10..0x1f、B = 0x20..0x2f、C = 0x30..0x3f、D（第 2 级的一块）= 0x40..0x47
+    nvn_gpu_buf ib = make_buf(sizeof init, NVN_GPU_MEM_SHARED, init), rb = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+    if (!bc || !bm || !px || !p1 || !ib || !rb) return;
+    nvn_gpu_err e; nvn_gpu_cmd c = begin_cmd();
+    NVNcopyRegion rbc = {0, 0, 0, 8, 4, 1}, rpx = {0, 0, 0, 2, 1, 1};   // 基底按像素（整级 8x4），影子按块（2x1）
+    NVNcopyRegion rm = {0, 0, 0, 2, 2, 1}, r1 = {0, 0, 0, 1, 1, 1};     // 第 2 级：2x2 个纹素，影子 1x1
+    nvn_gpu_slice s1, s2, s3, s4;
+    nvn_gpu_rc r = nvn_gpu_arena_alloc(c, 16, 16, &s1, &e); CHECK(OK(r), "C86c 暂存 1：%d %s", r.code, e.why);
+    r = nvn_gpu_arena_alloc(c, 16, 16, &s2, &e); CHECK(OK(r), "C86c 暂存 2：%d %s", r.code, e.why);
+    r = nvn_gpu_arena_alloc(c, 8, 16, &s3, &e); CHECK(OK(r), "C86c 暂存 3：%d %s", r.code, e.why);
+    r = nvn_gpu_arena_alloc(c, 8, 16, &s4, &e); CHECK(OK(r), "C86c 暂存 4：%d %s", r.code, e.why);
+    nvn_gpu_copy_buf_tex(c, ib, 0, 16, 16, bc, 0, 0, &rbc);                 // 切片 0 ← A0 A1
+    nvn_gpu_copy_buf_tex(c, ib, 16, 16, 16, bc, 0, 1, &rbc);                // 切片 1 ← B0 B1
+    nvn_gpu_copy_tex_buf(c, bc, 0, 1, &rbc, s1.buf, s1.off, 16, 16);        // ① 通道前：基底的切片 1 → 缓冲
+    nvn_gpu_copy_buf_tex(c, s1.buf, s1.off, 16, 16, px, 0, 0, &rpx);        //            缓冲 → 影子
+    nvn_gpu_copy_tex_buf(c, px, 0, 0, &rpx, rb, 0, 16, 16);                 //            影子读回到 rb[0..16)
+    nvn_gpu_copy_buf_tex(c, ib, 32, 16, 16, px, 0, 0, &rpx);                // ② 「通道」往影子写 C0 C1
+    nvn_gpu_copy_tex_buf(c, px, 0, 0, &rpx, s2.buf, s2.off, 16, 16);        //    通道后：影子 → 缓冲
+    nvn_gpu_copy_buf_tex(c, s2.buf, s2.off, 16, 16, bc, 0, 1, &rbc);        //            缓冲 → 基底的同一个切片 1
+    nvn_gpu_copy_tex_buf(c, bc, 0, 0, &rbc, rb, 16, 16, 16);                //            读回切片 0 → rb[16..32)
+    nvn_gpu_copy_tex_buf(c, bc, 0, 1, &rbc, rb, 32, 16, 16);                //            读回切片 1 → rb[32..48)
+    nvn_gpu_copy_buf_tex(c, ib, 48, 8, 8, bm, 2, 0, &rm);                   // ③ 第 2 级切片 0 ← D（2x2 个纹素、一块）
+    nvn_gpu_copy_tex_buf(c, bm, 2, 0, &rm, s3.buf, s3.off, 8, 8);           //    基底第 2 级 → 缓冲
+    nvn_gpu_copy_buf_tex(c, s3.buf, s3.off, 8, 8, p1, 0, 0, &r1);           //    缓冲 → 1x1 的影子
+    nvn_gpu_copy_tex_buf(c, p1, 0, 0, &r1, s4.buf, s4.off, 8, 8);           //    影子 → 缓冲
+    nvn_gpu_copy_buf_tex(c, s4.buf, s4.off, 8, 8, bm, 2, 0, &rm);           //    缓冲 → 基底第 2 级（同一个切片）
+    nvn_gpu_copy_tex_buf(c, bm, 2, 0, &rm, rb, 48, 8, 8);                   //    读回 → rb[48..56)
+    r = nvn_gpu_cmd_commit(c, 191, on_done, NULL, &e);   // 围栏号同一会话里严格递增：取合入时的下一个空号（比前面所有用例的都大）
+    CHECK(OK(r), "C86c commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(191, 5000000000ull, &e);
+    CHECK(OK(r), "C86c wait：%d %s", r.code, e.why);
+    const uint8_t *o = buf_cpu(rb);
+    CHECK(!memcmp(o, init + 16, 16), "C86c ① 三维切片 1 经影子读回 %02x%02x%02x%02x…，期望 B0 B1 = 20212223…（读到 10111213 = 取成了切片 0）", o[0], o[1], o[2], o[3]);
+    CHECK(!memcmp(o + 16, init, 16), "C86c ② 切片 0 %02x%02x%02x%02x…，期望仍是 A0 A1 = 10111213…（被盖掉 = 写回写错了切片）", o[16], o[17], o[18], o[19]);
+    CHECK(!memcmp(o + 32, init + 32, 16), "C86c ② 切片 1 %02x%02x%02x%02x…，期望 C0 C1 = 30313233…（还是 B = 没写回）", o[32], o[33], o[34], o[35]);
+    CHECK(!memcmp(o + 48, init + 48, 8), "C86c ③ 第 2 级 %02x%02x%02x%02x…，期望 D = 40414243…", o[48], o[49], o[50], o[51]);
+    nvn_gpu_tex_release(bc); nvn_gpu_tex_release(bm); nvn_gpu_tex_release(px); nvn_gpu_tex_release(p1);
+    nvn_gpu_buf_release(ib, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+}
+
 int main(int argc, char **argv) {
     t29_format_expand();
     char why[256] = {0};
@@ -4872,6 +4936,7 @@ int main(int argc, char **argv) {
     c86_polygon_modes(argv[1]);
     c87_resolve(argv[1]);
     c86b_3d_slice_attach();
+    c86c_bc_3d_slice_copy();
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     for (int k = 0; k < 8; k++) {
