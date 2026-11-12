@@ -246,6 +246,9 @@ static void guest_file_map(void) {
           if (g_gfile_pending) g_gfile_avail = UINT64_MAX;   // 补接时这次没查到：别拿起局时那次的旧剩余数告诉玩家（审计 P2-265）
           LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
       uint64_t avail = (uint64_t)sf.f_bavail * (uint64_t)sf.f_bsize;
+      // iPhone：f_bavail 不含系统随时能清掉的空间（「设置 → 储存空间」的「可用」含它），常小好几 GB；有「重要用途」口径就取大的那个（ios/app.m）
+      { uint64_t (*important)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_free_important");
+        uint64_t imp = important ? important(td && *td ? td : "/tmp") : 0; if (imp > avail) avail = imp; }
       if (avail < need) {   // 先不接、记下「要接没接上」，开局装模块前再试一次（s2a_guest_file_retry）
           g_gfile_pending = 1; g_gfile_need = need; g_gfile_avail = avail;
           LOG("【黄】客体内存文件后备：临时目录剩余 %llu MB < 需要 %llu MB（S2A_GUEST_FILE_MIN_FREE_MB），先用匿名内存，装游戏前再查一次", (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20)); return; }
@@ -279,19 +282,10 @@ int s2a_guest_file_retry(void) {
     if (g_gfd >= 0) { LOG("客体内存文件后备：装游戏前补接上了（起局时剩余 %llu MB 不够，此刻够了）", (unsigned long long)(g_gfile_avail >> 20)); return 1; }
     if (g_gfile_pending) {
         g_gfile_pending = 0;
-        unsigned long long gb_need = (g_gfile_need + (1ull << 30) - 1) >> 30, gb_have = g_gfile_avail >> 30;
         int unknown = g_gfile_avail == UINT64_MAX;   // 这次没查到剩余空间
-        if (unknown) LOG("【红】客体内存文件后备：装游戏前查不到剩余空间，没接上文件（需要 %llu MB）；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_need >> 20));
-        else LOG("【红】客体内存文件后备：装游戏前仍不够，剩余 %llu MB < 需要 %llu MB；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_avail >> 20), (unsigned long long)(g_gfile_need >> 20));
-        void (*msg)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_show_message");
-        int (*zh)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_ui_zh");
-        char m[512];
-        if (unknown) {
-            if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间可能不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在查不到剩余空间。请确认有足够空间后重新打开，否则游戏玩一会儿可能会闪退。", gb_need);
-            else snprintf(m, sizeof m, "Free storage may be too low\nThis game needs about %llu GB of free space for its memory while running, and free space could not be checked. Make sure there is enough space and reopen it, or the game may quit after a while.", gb_need);
-        } else if (!zh || zh()) snprintf(m, sizeof m, "手机剩余空间不足\n这款游戏运行时需要约 %llu GB 空闲空间存放内存数据，现在只有 %llu GB。请删掉一些文件或应用后重新打开，否则游戏玩一会儿可能会闪退。", gb_need, gb_have);
-        else snprintf(m, sizeof m, "Not enough free storage\nThis game needs about %llu GB of free space for its memory while running; only %llu GB is free. Free up some space and reopen it, or the game may quit after a while.", gb_need, gb_have);
-        if (msg) msg(m);
+        if (unknown) LOG("【黄】客体内存文件后备：装游戏前查不到剩余空间，没接上文件（需要 %llu MB）；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_need >> 20));
+        else LOG("【黄】客体内存文件后备：装游戏前仍不够，剩余 %llu MB < 需要 %llu MB；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_avail >> 20), (unsigned long long)(g_gfile_need >> 20));
+        // 不弹窗（玩家看着像被拦）：起局本来不拦，只是退回匿名内存；日志里有这一行
     }
     return 0;
 }
