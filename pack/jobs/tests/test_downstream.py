@@ -78,13 +78,38 @@ class AppLayoutTest(unittest.TestCase):
             self.assertEqual(ds.registry(ctx), engine / "pack/downstream/schemes.json")
             self.assertEqual(ds.match(dict(id="0100000000010000"), c=ctx)["id"], "demo")
 
-    def test_missing_registry_does_not_block_catalog(self):
+    def test_missing_registry_means_no_scheme(self):
         with tempfile.TemporaryDirectory() as d:
             ctx = FakeContext(d); ctx.engine = Path(d) / "no-engine"
-            self.assertIsNone(ds.describe(ctx, dict(id=TITLE, packages=[])))   # 读库 / 导入照常（不命中下游，报红）
+            self.assertEqual(ds.load(c=ctx), {})                                     # 缺文件：空表、不抛
+            self.assertIsNone(ds.describe(ctx, dict(id=TITLE, packages=[])))         # 读库 / 导入照常（不命中下游）
             ctx.r = dict(scheme="d2r-mobile")
-            with self.assertRaises(ds.SchemeError):                            # 玩家点了下游的单子：读不到就整单失败、说原因
-                ds.requested(ctx, dict(id=TITLE))
+            self.assertIsNone(ds.requested(ctx, dict(id=TITLE)))                     # 出包也照常：按原版
+            (Path(d) / "bad.json").write_text("{坏", encoding="utf-8")
+            self.assertEqual(ds.load(Path(d) / "bad.json"), {})                      # 坏 JSON 同样当没有
+
+
+class EngineSnapshotTest(unittest.TestCase):
+    """v0.3.3 候选导入即红的回归锁：发版引擎快照（launchers/macos/bundle_engine.py，Windows bundle_win 同一份）里要有登记表，
+    按 App 布局（作业代码在 Resources/Jobs、快照在 Resources/Engine）读得到"""
+    def test_snapshot_ships_registry_and_app_layout_reads_it(self):
+        import shutil, subprocess
+        repo = JOBS.parents[1]
+        try:
+            files = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, 'launchers/macos'); import bundle_engine; "
+                                    "print('\\n'.join(map(str, bundle_engine.snapshot_files())))"],
+                                   cwd=repo, capture_output=True, text=True, check=True).stdout.split()
+        except subprocess.CalledProcessError as e:
+            self.fail(e.stderr[-800:])
+        self.assertIn("pack/downstream/schemes.json", files)
+        self.assertIn("pack/jobs/downstream.py", files)
+        with tempfile.TemporaryDirectory() as d:
+            res = Path(d) / "Resources"
+            for rel in ("pack/downstream/schemes.json",):
+                (res / "Engine" / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(repo / rel, res / "Engine" / rel)
+            ctx = FakeContext(d); ctx.engine = res / "Engine"
+            self.assertEqual(ds.match(dict(id=TITLE), c=ctx)["id"], "d2r-mobile")
 
 
 class EligibilityTest(unittest.TestCase):

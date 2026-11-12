@@ -47,11 +47,13 @@ class SchemeError(ValueError):
 # ---------- 登记表 ----------
 
 def load(path=None, c=None):
-    """读登记表 → {方案 id: 方案}。缺字段、程序号格式不对、同一程序号登记两次都抛 SchemeError（登记表是仓库文件，坏了是开发错误）"""
+    """读登记表 → {方案 id: 方案}。读不了（文件缺 / 坏）= 当没有下游方案、打一行黄，导入与出包照常走（反防御：不为附加功能挡掉所有游戏）；
+    缺字段、程序号格式不对、同一程序号登记两次抛 SchemeError（登记表是仓库文件，内容坏了是开发错误，单测拦）"""
     try:
         data = json.loads(Path(path or registry(c)).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        raise SchemeError(f"下游方案登记表读不了：{e}") from e
+        print(f"【黄】下游方案登记表读不了，按没有下游方案处理：{e}", file=sys.stderr)
+        return {}
     if data.get("schema") != 1:
         raise SchemeError("下游方案登记表 schema 不是 1")
     out, seen = {}, {}
@@ -113,11 +115,7 @@ def eligibility(scheme, game, lang="zh"):
 
 def describe(c, game, schemes=None):
     """读库时附在每款游戏上的 downstream 字段（没命中 → None）：方案、能不能选与原因、终端、确认页文案、玩家上次的选择（None = 没选过，第一次导出弹确认页）"""
-    try:
-        s = match(game, schemes, c)
-    except SchemeError as e:   # 读库 / 导入时只是附带信息：登记表坏了不挡导入（不命中下游、报红），玩家点了下游的单子才整单失败（requested）
-        print(f"【红】{e}", file=sys.stderr)
-        return None
+    s = match(game, schemes, c)
     if not s:
         return None
     ok, why = eligibility(s, game)
@@ -159,6 +157,8 @@ def requested(c, game):
     if not want:
         return None
     s = match(game, c=c)
+    if not s and not load(c=c):   # 登记表读不了：当没有下游方案，按原版出包（load 已打黄）
+        return None
     if not s or s["id"] != want:
         raise Failure("这款游戏没有这个下游方案。", code="job_failed")
     return s
