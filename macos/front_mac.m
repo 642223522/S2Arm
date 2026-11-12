@@ -466,6 +466,12 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pa
     out[0] = one;
     return 1;
 }
+// Joy-Con 2 光学鼠标（s2a_pad.h）：只有 NS2 手柄（Joy-Con 2）有；服务层写进游戏的 Jcms 缓冲
+__attribute__((visibility("default"), used)) int s2a_pad_read_mouse_pair(s2a_pad_mouse out[2]) {
+    if (!out) return 0;
+    if (s2a_mac_ns2_status() != NS2_STATUS_READY) { out[0] = out[1] = (s2a_pad_mouse){0}; return 0; }
+    return s2a_mac_ns2_read_mouse_pair(out);
+}
 // 实体手柄退出游戏（#276）：决策在 runtime/include/s2a_home_quit.h，界面（提示条、失焦、退出）在 S2AMacDelegate 后面的 home_quit_ui
 static s2a_hq_state g_hq;
 static void home_quit_ui(s2a_hq_action action);
