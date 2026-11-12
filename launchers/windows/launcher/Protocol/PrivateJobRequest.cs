@@ -17,7 +17,7 @@ public sealed class PrivateJobRequest : IDisposable
     /// （private_root.&lt;代码&gt;）；缺省英文。原先直接抛英文短句、不点名目录（#672：「Private job root is not owned by this user.」）</summary>
     public static Func<string, string, string> Describe { get; set; } = (code, path) => code switch
     {
-        "reparse" => $"S2Arm's private data folder {path} is a link (reparse point); for safety it is not used. Delete the link and reopen S2Arm.",
+        "reparse" => $"S2Arm's private data folder {path} is a link to a place this Windows account does not own (or the link is broken), so another account could change what is in it; for safety it is not used. Delete the link (or point it at a folder of your own) and reopen S2Arm; it is recreated, your game library and saves are not in it, but imported keys must be imported again.",
         "owner" => $"S2Arm's private data folder {path} belongs to another Windows account and this account cannot take it over. S2Arm works as usual, but that account can see the files in it; to lock it down, delete the folder and reopen S2Arm (it is recreated; your game library and saves are not in it, but imported keys must be imported again), or open S2Arm once with that account.",
         _ => $"S2Arm's private data folder {path} still gives another account access and this account cannot remove it. S2Arm works as usual, but that account can see the files in it; to lock it down, delete the folder and reopen S2Arm (it is recreated; your game library and saves are not in it, but imported keys must be imported again).",
     };
@@ -72,6 +72,22 @@ public sealed class PrivateJobRequest : IDisposable
         using var identity = WindowsIdentity.GetCurrent();
         var current = identity.User ?? throw new IOException("Current user SID is missing.");
         var directory = new DirectoryInfo(path);
+        if (directory.LinkTarget is not null)   // 先于 Exists：断链 Exists 为假，会被当成没有、去新建
+        {
+            // 玩家常用目录联接把数据目录挪到别的盘：指向的目录归本人（属主是本人，或本人 / 本人所在的组有完全控制）就照常用、记一笔；
+            //   指向的位置不归本人（别人能换掉里面的东西）或链接断了才拒，Describe 说清下一步
+            DirectoryInfo? target;
+            bool owned;
+            try
+            {
+                target = directory.ResolveLinkTarget(returnFinalTarget: true) as DirectoryInfo;
+                owned = target is { Exists: true } && OwnedBy(target.GetAccessControl(), identity);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)   // 断链：解析时 Windows 报「参数错误」
+            { throw new IOException(Describe("reparse", path), error); }
+            if (!owned || target is null) throw new IOException(Describe("reparse", path));
+            Note($"private root is a link to {target.FullName}, owned by this account; used as is");
+        }
         if (!directory.Exists)
         {
             var security = new DirectorySecurity();
@@ -82,8 +98,6 @@ public sealed class PrivateJobRequest : IDisposable
             directory.Create(security);
         }
         directory.Refresh();
-        if ((directory.Attributes & FileAttributes.ReparsePoint) != 0)
-            throw new IOException(Describe("reparse", path));
         var readers = FileSystemRights.ReadData | FileSystemRights.ReadAttributes | FileSystemRights.ReadExtendedAttributes |
             FileSystemRights.ReadPermissions | FileSystemRights.Write | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
@@ -149,6 +163,16 @@ public sealed class PrivateJobRequest : IDisposable
             if (!directory.GetAccessControl().AreAccessRulesProtected) throw new IOException("Private job root inherits permissions.");
         }
         return path;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool OwnedBy(DirectorySecurity acl, WindowsIdentity identity)
+    {
+        if (identity.User is { } user && user.Equals(acl.GetOwner(typeof(SecurityIdentifier)))) return true;
+        var mine = new HashSet<IdentityReference>(identity.Groups ?? new IdentityReferenceCollection()) { identity.User! };
+        var rules = acl.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Where(r => mine.Contains(r.IdentityReference)).ToList();
+        return !rules.Any(r => r.AccessControlType == AccessControlType.Deny) &&
+            rules.Any(r => r.AccessControlType == AccessControlType.Allow && (r.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl);
     }
 
     public void Dispose() => File.Delete(FilePath);
