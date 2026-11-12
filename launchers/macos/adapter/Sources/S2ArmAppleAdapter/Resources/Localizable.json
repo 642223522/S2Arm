@@ -7158,5 +7158,25 @@
  {
   "source": "这个文件夹里已有别的文件。S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；以后「搬游戏库」时它们会跟着一起搬到新位置。仍要用这个文件夹吗？不想这样就选一个空文件夹。",
   "en": "This folder already has other files. S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes them; if you move the library later, they move with it. Use this folder anyway? Otherwise choose an empty folder."
+ },
+ {
+  "source": "资源传输中断（{0}）：{1} 没传完，重新装到 iPhone 会接着已传的部分续传",
+  "en": "Resource transfer interrupted ({0}): {1} was not fully copied. Installing to the iPhone again resumes from what was already copied."
+ },
+ {
+  "source": "资源传输中断（{0}）：{1} 没传完。这款是旧版本出的包，断了只能从头传。新版已支持单一文件包和断点续传：在启动器里重新出一次这款的包，以后断了能接着传。",
+  "en": "Resource transfer interrupted ({0}): {1} was not fully copied. This game's package was made by an older version, so an interrupted transfer has to start over. The new version supports single-file packages and resumable transfers: build this game's package again in the launcher, and an interrupted transfer will pick up where it left off."
+ },
+ {
+  "source": "USB 看不到手机（没插数据线，或手机只在无线连接上）",
+  "en": "The phone is not visible over USB (no cable, or the phone is only connected wirelessly)"
+ },
+ {
+  "source": "手机锁屏了",
+  "en": "The phone is locked"
+ },
+ {
+  "source": "和手机的连接断了（数据线松了 / Wi-Fi 断开）",
+  "en": "The connection to the phone dropped (loose cable or Wi-Fi disconnected)"
  }
 ]

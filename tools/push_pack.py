@@ -593,9 +593,12 @@ def _send(dev, pack, work, say=print, progress=None):
             why = push_reason(e)
             again = "接着已传的部分续传" if w[0] == "game.img" else "从头重传"
             say(f"【红】传 {w[0]} 中断（{e}）；机上这份不完整，不会被当成可用，重新装机会{again}")
-            # 旧形态 romfs.img 没有 IMG 头，续传不了（resume_offset）；就地转 game.img 要原始 romfs（产物根），沿用的旧包一般已没有：说清怎么换成能续传的
-            tip = "；在启动器里重新出一次这款的包，以后断了能接着传" if w[0] != "game.img" else ""
-            raise Fail(f"资源传输中断（{why or str(e)[-160:]}）：{w[0]} 没传完，重新装到 iPhone 会{again}{tip}")
+            # 旧形态 romfs.img 没有 IMG 头，续传不了（resume_offset）；就地转 game.img 要原始 romfs（产物根），沿用的旧包一般已没有：说清新版能续传、怎么换。
+            #   句式在启动器中英对照表（launchers/macos/adapter/.../Localizable.json）里有登记，改字要两边一起改
+            reason = why or str(e)[-160:]
+            if w[0] == "game.img":
+                raise Fail(f"资源传输中断（{reason}）：{w[0]} 没传完，重新装到 iPhone 会接着已传的部分续传")
+            raise Fail(f"资源传输中断（{reason}）：{w[0]} 没传完。这款是旧版本出的包，断了只能从头传。新版已支持单一文件包和断点续传：在启动器里重新出一次这款的包，以后断了能接着传。")
         break
       done += size - off; nt += 1; ledger += f"{w[0]}\t{w[2]}\n"; led.write_text(ledger, encoding="utf-8"); dev.put(led, f"{rp(dev)}/.pushed")
       say(f"  直写 {w[0]}：{int(w[1]) / 1e9:.2f} GB，{time.time() - t1:.0f} 秒，{int(w[1]) / 1e6 / max(time.time() - t1, 1e-3):.1f} MB/s")
