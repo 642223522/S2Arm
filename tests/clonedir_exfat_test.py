@@ -83,7 +83,7 @@ class ExclusiveRenameFallback(unittest.TestCase):
 
 
 class LiveExFAT(unittest.TestCase):
-    """有真 exFAT 挂载时跑：export S2A_EXFAT_ROOT=/Volumes/某exFAT盘/tmp"""
+    """有真 exFAT 挂载时跑：S2A_EXFAT_ROOT 指向 exFAT 卷上的一个可写目录"""
 
     @unittest.skipUnless(os.environ.get("S2A_EXFAT_ROOT"), "设 S2A_EXFAT_ROOT 指向 exFAT 上的可写目录")
     def test_clone_on_exfat_volume(self):
