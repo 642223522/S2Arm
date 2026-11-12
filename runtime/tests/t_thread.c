@@ -1598,6 +1598,17 @@ int main(void) {
         CHECK(nt == 128 && rc == 0x10801, "传输内存上限：应同时存在 128 个后回 0x10801；实 %d 个、回 %#llx", nt, (unsigned long long)rc);
         #undef SV
     }
+    {   // 3 号核游戏线程的 QoS（v0.3.1，11-12 一款 Switch 2 游戏 0400486024DEC000 长帧）：缺省与其余游戏线程同档，S2A_SYSCORE_QOS=utility 才降 UTILITY
+        g_case = "3 号核线程 QoS";
+        qos_class_t s2a_test_guest_qos(int, uint64_t);
+        unsetenv("S2A_SYSCORE_QOS"); unsetenv("S2A_GUEST_QOS");
+        qos_class_t other = s2a_test_guest_qos(0, 0x7), core3 = s2a_test_guest_qos(0, 1ull << 3);
+        CHECK(core3 == other && core3 != QOS_CLASS_UTILITY, "缺省：3 号核线程应与其余游戏线程同档（%#x），实 %#x", other, core3);
+        setenv("S2A_SYSCORE_QOS", "utility", 1);
+        CHECK(s2a_test_guest_qos(0, 1ull << 3) == QOS_CLASS_UTILITY, "S2A_SYSCORE_QOS=utility：3 号核线程应为 UTILITY，实 %#x", s2a_test_guest_qos(0, 1ull << 3));
+        CHECK(s2a_test_guest_qos(0, 0x7) == other, "S2A_SYSCORE_QOS=utility 不该动别的核掩码（%#x），实 %#x", other, s2a_test_guest_qos(0, 0x7));
+        unsetenv("S2A_SYSCORE_QOS");
+    }
     {   // SleepThread 按时醒（10-25 数码宝贝断续：utility QoS 下 nanosleep 睡 31 ms 平均多睡 103 ms）：本线程降 utility，睡 30 ms，
         //   判挂的定时器（见 timer_ok）；实测多睡只报数。放最后：本线程 QoS 改了不影响前面各例
         g_case = "SleepThread 按时醒";
