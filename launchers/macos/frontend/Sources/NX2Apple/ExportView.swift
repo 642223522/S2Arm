@@ -161,7 +161,7 @@ struct ExportView: View {
         options.append((Self.otherFolder, x("location.other")))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: "externaldrive").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
+                LauncherRowIcon("externaldrive")
                 Text(x("location.title")).font(.manrope(13)).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
                 LauncherDropdown(options: options, selection: location, label: x("location.title"), style: .button) { value in

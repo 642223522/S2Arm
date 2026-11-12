@@ -104,7 +104,7 @@ struct BatchExportView: View {
         options.append(("__other__", BackendText.launcherText("export.location.other", language: uiLanguage)))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: "externaldrive").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
+                LauncherRowIcon("externaldrive")
                 Text(t("location")).font(.manrope(13)).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
                 LauncherDropdown(options: options, selection: model.batchLocation, label: t("location"), style: .button) { value in

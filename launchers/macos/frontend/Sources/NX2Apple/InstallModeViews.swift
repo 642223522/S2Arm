@@ -91,7 +91,7 @@ struct InstallModeLine: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "signature").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
+            LauncherRowIcon("signature")
             Text(ix(loc, "install.mode.summary").replacingOccurrences(of: "{0}", with: summary)).font(.manrope(13)).foregroundStyle(.secondary)
             Spacer(minLength: 12)
             Button(ix(loc, "install.mode.change")) { model.showEnvironment = true }
@@ -136,6 +136,14 @@ struct PhoneUpdateButton: View {
             } message: { u in
                 Text(t("update.confirm.body").replacingOccurrences(of: "{0}", with: u.stale.map(\.name).joined(separator: "」「"))
                         .replacingOccurrences(of: "{1}", with: "\(u.games.count - u.stale.count)"))
+            }
+            // 更新会让手机上别的电脑装的游戏暂时不能玩：同装机页的确认框（作业层原话列出是哪几款）
+            .alert(t("install.drop_title"), isPresented: Binding(get: { model.dropConfirm?.update != nil }, set: { if !$0 { model.dropConfirm = nil } }),
+                   presenting: model.dropConfirm) { d in
+                Button(t("install.drop_confirm"), role: .destructive) { model.confirmDrop(d) }
+                Button(t("update.confirm.cancel"), role: .cancel) {}
+            } message: { d in
+                Text(d.message)
             }
         }
     }

@@ -840,11 +840,14 @@ static void t_dispatch(void) {
     nvn_be_sub_begin();
     CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, PG, NULL, NULL) == 1);
     nvn_be_sub_commit();
-    CHECK(g_nbw == 2 && g_bw[0].off == PG && g_bw[0].len == 64 && g_bw[1].off == PG + 192 && g_bw[1].len == PG - 192);   // [PG+64, PG+192) 不传
+    // 镜像 CPU 写得到：本次提交里第一次同步直接写进镜像（不录 GPU 拷贝）；[PG+64, PG+192) 是 GPU 写过还没落地的，不盖
+    CHECK(g_nbw == 0 && !memcmp(mirror + PG, g_pmem + PG, 64) && mirror[PG + 64] == 0xEE && mirror[PG + 191] == 0xEE && !memcmp(mirror + PG + 192, g_pmem + PG + 192, PG - 192));
     fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_pmem[PG + 63] == 0x11 && g_pmem[PG + 64] == 0xEE && g_pmem[PG + 191] == 0xEE && g_pmem[PG + 192] == 0x11);   // 完成：只有那 128 字节回到游戏内存
     g_pg_gen[1] = 103; g_dirty_now = 104; g_nbw = 0;                       // 回写落地之后再脏：整页照传，不再绕
     nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, PG, NULL, NULL) == 1 && g_nbw == 0 && !memcmp(mirror + PG, g_pmem + PG, PG));
+    g_pmem[PG + 8] ^= 0x40; g_pg_gen[1] = 105; g_dirty_now = 106;          // 同一次提交里同步过又变了：这一次要排在已录的绘制之后，录成 GPU 上的拷贝
     CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, PG, NULL, NULL) == 1 && g_nbw == 1 && g_bw[0].off == PG && g_bw[0].len == PG);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     // 失败的段：不回写，登记照撤
@@ -852,9 +855,9 @@ static void t_dispatch(void) {
     stream s2 = {0}; dp = put(&s2, OP_DISPATCH, sizeof *dp); dp->x = 1; dp->y = 1; dp->z = 1; end(&s2);
     submit1(&s2); fake_complete(NVN_GPU_DONE_FAILED);
     CHECK(g_ndisp == 2 && g_cpipe_gets == 1 && g_pmem[PG + 64] == 0x22);   // 同一个程序不重建管线；失败不回写
-    g_pg_gen[1] = 105; g_dirty_now = 106; g_nbw = 0;
+    g_pg_gen[1] = 107; g_dirty_now = 108; g_nbw = 0;
     nvn_be_sub_begin();
-    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, PG, NULL, NULL) == 1 && g_nbw == 1 && g_bw[0].len == PG);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, PG, NULL, NULL) == 1 && g_nbw == 0 && mirror[PG] == 0x22 && mirror[2 * PG - 1] == 0x22);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     // 取不到程序：记账跳过，不派发
     g_cresolve_rc = -1; submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
