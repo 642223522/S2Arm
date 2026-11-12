@@ -33,7 +33,14 @@ VkResult nvn_plat_vk_surface_create(VkInstance instance, void *native, VkSurface
 }
 int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native; *w = 320; *h = 180; return 1; }
 // S2A_TEST_NVK_DQ=1：整套用例在「两级回放开」下再跑一遍（run.sh 第二遍）
-int nvn_plat_flag(const char *name, int dflt) { if (!strcmp(name, "nvk_dq") && getenv("S2A_TEST_NVK_DQ")) return 1; return dflt; }
+// S2A_TEST_NVK_DQ=1：整套用例在「两级回放开」下再跑一遍；S2A_TEST_DESC_MEMO=1：在「描述符组备忘开」下再跑一遍
+// （备忘开着时内容相同的组不再分配，按「分配了几组」写的那几条期望在这一遍里不比，像素期望照比）。
+static int g_memo_on;
+int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_dq") && getenv("S2A_TEST_NVK_DQ")) return 1;
+    if (!strcmp(name, "nvk_desc_memo") && getenv("S2A_TEST_DESC_MEMO")) { g_memo_on = 1; return 1; }
+    return dflt;
+}
 void nvn_plat_log(int level, const char *cls, const char *text) { (void)level; printf("[%s] %s\n", cls ? cls : "", text ? text : ""); }
 static int g_tri_origin_ul;   // 1 = 按 NVN 窗口原点在左上画（视口翻转）：期望上下对调。缺省 0 = 原点在左下（Vulkan 的自然方向）
 
@@ -3670,7 +3677,7 @@ static void c66_pool_sets(const char *dir) {
     g_c66_inject_pool_limit = 0;
     nvn_gpu_err e;
     nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 112, on_done, NULL, &e);
-    CHECK(g_c66_rejects == 1 && g_c66_sets_requested == 6, "C66 应被拒 1 次、新池上请求 6 组，实为 被拒 %u 次、%u 组", g_c66_rejects, g_c66_sets_requested);
+    CHECK(g_memo_on || (g_c66_rejects == 1 && g_c66_sets_requested == 6), "C66 应被拒 1 次、新池上请求 6 组，实为 被拒 %u 次、%u 组", g_c66_rejects, g_c66_sets_requested);
     CHECK(OK(r), "C66 commit：%d %s", r.code, e.why);
     r = nvn_gpu_fence_wait(112, 5000000000ull, &e);
     CHECK(OK(r), "C66 wait：%d %s", r.code, e.why);
@@ -4492,14 +4499,14 @@ static void c85_descriptor_reuse(const char *dir) {
         // 内部清除后所有组失效；重新发同绑定也必须重建两组。
         nvn_gpu_clear cl={0}; cl.color=0; cl.color_mask=0xf; cl.stencil_mask=0xff; cl.x=8; cl.w=4; cl.h=4; cl.value.f[1]=1; cl.value.f[3]=1;
         nvn_gpu_clear_rect(c,&cl); nvn_gpu_set_pipe(c,pipe); nvn_gpu_set_dyn(c,&dyn); nvn_gpu_set_vbuf(c,0,vb,0); nvn_gpu_bind(c,NVN_GPU_SH_FS,binds,2);
-        unsigned before=g_desc_sets_total; nvn_gpu_draw(c,&da); CHECK(g_desc_sets_total-before==2,"C85 clear后重建两组");
+        unsigned before=g_desc_sets_total; nvn_gpu_draw(c,&da); CHECK(g_memo_on || g_desc_sets_total-before==2,"C85 clear后重建两组");
         nvn_gpu_set_pipe(c,pipe2); nvn_gpu_bind(c,NVN_GPU_SH_FS,binds,2); da.prim=5; before=g_desc_sets_total; nvn_gpu_draw(c,&da);
         CHECK(g_desc_sets_total-before==2,"C85 layout换后重建两组");
         // 旧 stage 绑定仍保留：无组管线必须忽略它们，回来后重建全部组。
         nvn_gpu_set_pipe(c,no_sets); before=g_desc_sets_total; nvn_gpu_draw(c,&da);
         CHECK(g_desc_sets_total==before,"C85 无组管线不分配");
         nvn_gpu_set_pipe(c,pipe2); before=g_desc_sets_total; nvn_gpu_draw(c,&da);
-        CHECK(g_desc_sets_total-before==2,"C85 有组→无组→有组重建两组");
+        CHECK(g_memo_on || g_desc_sets_total-before==2,"C85 有组→无组→有组重建两组");
         nvn_gpu_pass_end(c); nvn_gpu_copy_tex_buf(c,out,0,0,NULL,rb,0,48,192);
         CHECK(OK(nvn_gpu_cmd_commit(c,130+seg,on_done,NULL,&e)),"C85 commit %s",e.why); CHECK(OK(nvn_gpu_fence_wait(130+seg,5000000000ull,&e)),"C85 wait %s",e.why);
         const uint8_t *px=buf_cpu(rb); int bad=0; for(int y=0;y<4;y++)for(int x=0;x<12;x++){const uint8_t *v=px+(y*12+x)*4;if(v[0]!=(x<8?255:0)||v[1]||v[2]!=(x<8?0:255)||v[3]!=255)bad++;}

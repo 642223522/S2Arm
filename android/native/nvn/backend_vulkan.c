@@ -139,6 +139,8 @@ enum { REF_BUF = 1, REF_TEX, REF_VIEW, REF_SAMP };
 struct vk_staging { struct nvn_gpu_buf_s *buf; };
 
 struct pass_rec { VkRenderPass rp; VkFramebuffer fb; };
+enum { DESC_MEMO_N = 2048 };
+struct desc_memo { uint64_t h1, h2; VkDescriptorSetLayout dsl; VkDescriptorSet set; };
 struct bc_temp { VkImage image; VkDeviceMemory memory; struct bc_temp *next; };
 enum { TS_PASS_MAX = 250 };   // 调试读数：一段里逐个计时的通道数上限
 
@@ -163,6 +165,8 @@ struct nvn_gpu_cmd_s {
     uint32_t ndpools_full, dpools_full_cap;
     struct nvn_gpu_pipe_s *pipe;
     struct pass_rec *passes;
+    struct desc_memo *memo;   // 这一段里写过的描述符组：内容 → 组（见 bind_descriptor_groups）；懒分配，随段释放
+    uint32_t memo_n;
     uint32_t npasses, passcap;
     uint32_t pass_w, pass_h;
     uint32_t pass_ncolor, pass_layers;       // 当前通道的颜色槽数、层数（clear_rect 用）
@@ -283,7 +287,7 @@ uint64_t nvn_vk_dbg_created(int which) { return which >= 0 && which < OC_N ? __a
 static void pc_drop_view(VkImageView v);
 static void pc_destroy_all(void);
 enum { PIPE_HT_N = 1024 };
-static uint64_t g_desc_ns[4], g_desc_nw, g_desc_sets;   // 描述符四步：分配 / 构造写入项 / 写入 / 绑定；写入的描述符条数；重写的组数
+static uint64_t g_desc_ns[4], g_desc_nw, g_desc_sets, g_desc_hit;   // 描述符四步：分配 / 构造写入项 / 写入 / 绑定；写入的描述符条数；重写的组数
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
 static uint64_t g_pl_ns, g_pl_n, g_pl_steps;   // 取图形管线：命中查找的累计纳秒 / 次数 / 比过的条数
 static struct nvn_gpu_pipe_s *g_pipe_ht[PIPE_HT_N];   // 图形管线的散列桶（见 pipe_hash）；持 g_mu
@@ -709,6 +713,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
         if (c->passes[i].rp) vkDestroyRenderPass(g.d, c->passes[i].rp, NULL);
     }
     free(c->passes);
+    free(c->memo);
     for (int i = 0; i < 6; i++) free(c->push_data[i]);
     if (c->dpool) vkDestroyDescriptorPool(g.d, c->dpool, NULL);
     for (uint32_t i = 0; i < c->ndpools_full; i++) vkDestroyDescriptorPool(g.d, c->dpools_full[i], NULL);
@@ -2928,15 +2933,57 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
     }
     if (!dirty && p->texel_binds < 0) return 1;
     const int tm = g_draw_tm; const uint64_t t0 = tm ? now_ns() : 0;   // 诊断：这四步各用多久（nvk_gputime 开着才计）
-    for (uint32_t set = 0; set < p->nset; set++)
+    // 描述符组备忘（调试开关 nvk_desc_memo，缺省关；照 d2r-mobile 安卓笔记 perf-round2 发现 4）：
+    // 同一段里内容完全相同的组（同一布局、每条描述符的绑定号 / 类型 / 资源都相同）直接用上次写好的那一组，不再分配、不再写。
+    // 一款 3D 游戏每帧重写 2800 组、1.13 万条描述符（分配 2.3 毫秒 + 写入 2.05 毫秒）。组归这一段的描述符池，段做完才销毁；
+    // 内容相同就是资源相同，资源由首次写入那笔的引用保活到段完成。
+    static int memo_cur = -1; static uint32_t memo_k;
+    if (memo_cur < 0 || !(++memo_k & 255)) memo_cur = nvn_plat_flag("nvk_desc_memo", 0) != 0;
+    const int memo = memo_cur && dirty;
+    VkDescriptorSet mark[4];   // 备忘开着时先不分配：写入项里先放记号，认出每条属于哪一组
+    if (memo) { for (uint32_t set = 0; set < 4; set++) mark[set] = (VkDescriptorSet)(uintptr_t)(0x5a0 + set); }
+    else for (uint32_t set = 0; set < p->nset; set++)
         if (dirty & (1u << set)) if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
     const uint64_t t1 = tm ? now_ns() : 0;
     VkWriteDescriptorSet wr[6 * 64]; VkDescriptorImageInfo ii[6 * 64]; VkDescriptorBufferInfo bi[6 * 64];
     uint32_t nw = 0;
     for (int st = compute ? NVN_GPU_SH_CS : 0; st < (compute ? NVN_GPU_SH_CS + 1 : 5); st++) {
-        int n = write_binds(c, p, st, dirty, c->desc_sets, wr + nw, ii + nw, bi + nw);
+        int n = write_binds(c, p, st, dirty, memo ? mark : c->desc_sets, wr + nw, ii + nw, bi + nw);
         if (n < 0) return 0;
         nw += (uint32_t)n;
+    }
+    if (memo) {
+        uint64_t h1[4], h2[4]; uint32_t hit = 0;
+        for (uint32_t set = 0; set < 4; set++) { h1[set] = 1469598103934665603ull ^ (uintptr_t)(set < p->nset ? p->dsl[set] : 0); h2[set] = 0x9E3779B97F4A7C15ull + set; }
+        for (uint32_t i = 0; i < nw; i++) {
+            const uint32_t set = (uint32_t)((uintptr_t)wr[i].dstSet - 0x5a0); if (set >= 4) continue;
+            uint64_t v[5] = {(uint64_t)wr[i].dstBinding << 32 | wr[i].dstArrayElement, (uint64_t)wr[i].descriptorType, 0, 0, 0};
+            if (wr[i].pImageInfo) { v[2] = (uint64_t)(uintptr_t)wr[i].pImageInfo->imageView; v[3] = (uint64_t)(uintptr_t)wr[i].pImageInfo->sampler; v[4] = (uint64_t)wr[i].pImageInfo->imageLayout; }
+            else if (wr[i].pBufferInfo) { v[2] = (uint64_t)(uintptr_t)wr[i].pBufferInfo->buffer; v[3] = wr[i].pBufferInfo->offset; v[4] = wr[i].pBufferInfo->range; }
+            else if (wr[i].pTexelBufferView) v[2] = (uint64_t)(uintptr_t)*wr[i].pTexelBufferView;
+            for (int k = 0; k < 5; k++) { h1[set] = (h1[set] ^ v[k]) * 1099511628211ull; h2[set] = (h2[set] + v[k]) * 0xff51afd7ed558ccdull; h2[set] ^= h2[set] >> 29; }
+        }
+        if (!c->memo) c->memo = calloc(DESC_MEMO_N, sizeof *c->memo);
+        for (uint32_t set = 0; set < p->nset; set++) {
+            if (!(dirty & (1u << set))) continue;
+            struct desc_memo *slot = NULL; int found = 0;
+            if (c->memo) for (uint32_t q = 0; q < 16; q++) {
+                struct desc_memo *m = &c->memo[(h1[set] + q) % DESC_MEMO_N];
+                if (!m->set) { slot = m; break; }
+                if (m->h1 == h1[set] && m->h2 == h2[set] && m->dsl == p->dsl[set]) { c->desc_sets[set] = m->set; found = 1; break; }
+            }
+            if (found) { hit |= 1u << set; continue; }
+            if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
+            if (slot && c->memo_n < DESC_MEMO_N * 3 / 4) { slot->h1 = h1[set]; slot->h2 = h2[set]; slot->dsl = p->dsl[set]; slot->set = c->desc_sets[set]; c->memo_n++; }
+        }
+        uint32_t keep = 0;   // 命中的组不用写：把它们的写入项去掉，其余的换上真的组
+        for (uint32_t i = 0; i < nw; i++) {
+            const uint32_t set = (uint32_t)((uintptr_t)wr[i].dstSet - 0x5a0);
+            if (set >= 4 || (hit >> set & 1)) continue;
+            wr[keep] = wr[i]; wr[keep].dstSet = c->desc_sets[set]; keep++;
+        }
+        nw = keep;
+        if (tm) __atomic_fetch_add(&g_desc_hit, (uint64_t)__builtin_popcount(hit), __ATOMIC_RELAXED);
     }
     const uint64_t t2 = tm ? now_ns() : 0;
     if (nw) { OC(OC_DWRITE); vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL); }
