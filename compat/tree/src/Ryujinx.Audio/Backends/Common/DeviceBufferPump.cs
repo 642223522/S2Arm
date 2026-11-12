@@ -29,7 +29,8 @@ namespace Ryujinx.Audio.Backends.Common
         private long _submittedSampleBytes; // S2Arm (11-02): queued-sample bytes submitted so far (internal silence excluded), see PlaybackCredit
         // S2Arm (10-22 杂音): 起播前预充的在途下限（字节）。在途凑够它之前，缓冲已排进设备但不让设备开播（pre-roll），
         // 这样一开声就有深度，不会每个游戏缓冲边界掐边欠载（输出端每 21.3 ms 插静音 = 宽频噪声）。0 = 不设下限（旧行为）。
-        private readonly long _primeFloorBytes;
+        private long _primeFloorBytes;
+        private readonly long _cushionBytes;   // S2Arm: 补垫深度固定为构造时的预充深度；SetPrimeFloor 只改起播门槛，不改补垫
         private int _primed;   // 0/1，Volatile：在途首次达下限后置 1，之后一直 1（PrimedForStart）
         // S2Arm (10-23 马车8 杂音): 欠载后重建缓冲垫。开播后连续播放中途在途归零（一次 GC 停顿 / 渲染卡顿吃光了缓冲垫），
         //   游戏之后按实时节奏产出，产多少播多少，垫子永远补不回来：设备从此零余量播，每个 IO 周期都差一点（实测每秒约 42 次
@@ -81,8 +82,27 @@ namespace Ryujinx.Audio.Backends.Common
             }
 
             _primeFloorBytes = primeFloorBytes / bytesPerFrame * bytesPerFrame;
+            _cushionBytes = _primeFloorBytes;
 
             Samples = new AudioSampleQueue(maxCopiedBytes);
+        }
+
+        /// <summary>
+        /// S2Arm: lower (or raise) the pre-roll floor before the device starts. A renderer-backed session (5 ms output,
+        /// <see cref="Ryujinx.Audio.Common.AudioBuffer.Data"/> holds the samples) does not need the audout 64 ms pre-roll;
+        /// the cushion depth is unaffected. Ignored once primed.
+        /// </summary>
+        public void SetPrimeFloor(long primeFloorBytes)
+        {
+            lock (_lock)
+            {
+                if (Volatile.Read(ref _primed) != 0)
+                {
+                    return;
+                }
+
+                _primeFloorBytes = primeFloorBytes / _bytesPerFrame * _bytesPerFrame;
+            }
         }
 
         /// <summary>
@@ -198,7 +218,7 @@ namespace Ryujinx.Audio.Backends.Common
 
                         if (late != long.MinValue && late > _clockTolFrames)
                         {
-                            int z = (int)Math.Min(_primeFloorBytes, _slotBytes) / _bytesPerFrame * _bytesPerFrame;
+                            int z = (int)Math.Min(_cushionBytes, _slotBytes) / _bytesPerFrame * _bytesPerFrame;
 
                             if (z > 0)
                             {
