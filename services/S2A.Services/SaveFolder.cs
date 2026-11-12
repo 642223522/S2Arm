@@ -68,6 +68,20 @@ namespace S2A.Services
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())));
         }
 
+        // 0.2.5 及更早写 savedata-state.txt 用的摘要（路径 + 大小 + 修改时间，P1-163 之前）：只用来认「旧版写回后没被动过」（#755），不再写这种摘要
+        internal static string LegacyDigest(string dir)
+        {
+            var files = Files(dir);
+            if (files.Count == 0) return "";
+            var sb = new StringBuilder();
+            foreach (string rel in files)
+            {
+                var fi = new FileInfo(Path.Combine(dir, rel));
+                sb.Append(rel).Append('\t').Append(fi.Length).Append('\t').Append(fi.LastWriteTimeUtc.Ticks).Append('\n');
+            }
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())));
+        }
+
         // ---- 识别：→ [(类型, 目录)]，类型 save / account / device；认不出 / 不是这款 → why 非空 ----
         static bool HasFiles(string d) => Files(d).Any(f => !RyuMeta.Contains(Path.GetFileName(f)));
         static List<string> Subdirs(string d) => Directory.EnumerateDirectories(d).Where(x => !Path.GetFileName(x).StartsWith('.')).OrderBy(x => x, StringComparer.Ordinal).ToList();
@@ -220,6 +234,10 @@ namespace S2A.Services
                 _atLaunch = now;
                 string last = File.Exists(state) ? File.ReadAllText(state).Trim() : null;
                 if (now == "" || now == last) return;   // 空的（还没写回过）/ 和上次一样：沿用当前存档
+                // 记录是 0.2.5 及更早按修改时间算的（#755：升级后第一次起局，新摘要与旧记录必然不等，原先当成「玩家放了新存档」读入，
+                //   把当前进度换成旧版最后一次正常退出时写回的那份——旧版崩溃退出不写回，那份可能更旧）：按旧算法对上 = 旧版写回后没被动过，
+                //   沿用当前存档，记录改写成新摘要
+                if (last != null && last == LegacyDigest(folder)) { File.WriteAllText(state, now); Console.Error.WriteLine("S2A 存档位置：旧版记录、写回后没被动过，沿用当前存档（记录改成新格式）"); return; }
                 var top = new HashSet<string>(OwnTop(device, programId));
                 var src = Detect(folder, programId, top, out string why);
                 if (src == null)
