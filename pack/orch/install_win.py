@@ -99,8 +99,9 @@ def plumesign_env():
     return dict(os.environ, RUST_LOG='info')
 
 
-def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None):
-    cmd = [exe, 'sign', '--package', str(ipa), '--apple-id', '--register-and-install', '--udid', str(dev_id), '-o', str(out_ipa)]
+def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=True):
+    """register=False：只签名出 out_ipa、不登记设备也不装（设备已在团队里、plumesign 却认不出时用，见 ALREADY_REGISTERED），装机另走 install_signed"""
+    cmd = [exe, 'sign', '--package', str(ipa), '--apple-id'] + (['--register-and-install', '--udid', str(dev_id)] if register else []) + ['-o', str(out_ipa)]
     if name: cmd += ['--custom-name', name]
     # 包名由调用方定（install.container_bundle_id，和 Mac 一致的小写团队号）：不给时 plumesign 自己在包里的包名后接「.大写团队号」，
     #   它查已有 App ID 分大小写，同一团队在 Mac 注册过的小写包名认不出、去新建又撞 Apple 9401（包名不分大小写已被占）。给了它就原样用、不再接团队号
@@ -108,10 +109,17 @@ def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None):
     p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', env=plumesign_env())
     text = p.stdout + p.stderr
     Path(log).write_text(text, encoding='utf-8')
-    if p.returncode or 'Installation complete' not in text:
+    if p.returncode or (register and 'Installation complete' not in text) or (not register and not Path(out_ipa).is_file()):
         tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln][-1:] or ['（没有输出）']
         code = impactor.explain(text)
         raise Fail(f'签名装机失败（{code}）：{tail[0][-300:]}', 1, code)
+
+
+# 第二次起装同一台手机（#800）：plumesign 登记设备前按设备号查团队里有没有，比较是精确字符串（同版 v2.7.2 源码
+#   crates/plume_core/src/developer/qh/devices.rs `dev.device_number == *device_udid`）。Windows 的设备服务报的是不带横线的 24 位，
+#   苹果那边存的是带横线的 25 位，永远对不上 → 每次都去登记 → 苹果回 35「already exists on this team」，签名装机整个中止（Mac 的设备号带横线，不中招）。
+#   设备其实已经在团队里了，这次签出的描述文件会带上它：认出这句就改成「只签名不登记」再用 device --install 装签好的包
+ALREADY_REGISTERED = re.compile(r'already exists on this team', re.I)
 
 
 def install_signed(exe, app, udid, log):
@@ -158,7 +166,17 @@ def install_app(a, say=lambda m: print(m, flush=True)):
         out = Path(t, 'signed.ipa'); say(f'签名 + 装机（设备编号 {dev}）…')
         bundle = getattr(a, 'bundle', None)
         try:
-            sign_install(exe, a.ipa, dev, a.name, log, out, bundle)
+            try:
+                sign_install(exe, a.ipa, dev, a.name, log, out, bundle)
+            except Fail:
+                first = Path(log).read_text(encoding='utf-8', errors='replace') if Path(log).is_file() else ''
+                if not ALREADY_REGISTERED.search(first): raise
+                say('这台手机已经登记在这个 Apple ID 的团队里（plumesign 认不出、又去登记被拒），改成只签名、再装到手机')
+                try:
+                    sign_install(exe, a.ipa, dev, a.name, log, out, bundle, register=False)
+                    install_signed(exe, out, a.udid, log)
+                finally:
+                    Path(log).write_text(first + '\n--- 设备已在团队里：只签名再装 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         except Fail:
             # 9401 = 这个包名苹果那边已被占用。本机记录里没有旧包名时（换了电脑 / 重装启动器 / 新游戏库），旧写法是唯一可能的占用者：换它重试一次，
             #   成功后调用方把实际包名记进设备记录，下次直接用（install.WinPhone.bundle_for_signing）。两次的输出都留在日志里
