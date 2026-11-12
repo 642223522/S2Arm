@@ -170,7 +170,9 @@ nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pip
 void nvn_gpu_dispatch(nvn_gpu_cmd c, nvn_gpu_pipe cp, uint32_t x, uint32_t y, uint32_t z, nvn_gpu_buf ind, uint64_t ind_off) { (void)c; (void)ind; (void)ind_off; g_ndisp++; g_disp[0] = x; g_disp[1] = y; g_disp[2] = z; g_disp_pipe = cp; }
 void nvn_gpu_set_dyn(nvn_gpu_cmd c, const nvn_gpu_dyn *d) { (void)c; g_set_dyns++; g_last_dyn = *d; }
 void nvn_gpu_set_vbuf(nvn_gpu_cmd c, uint32_t stream, nvn_gpu_buf b, uint64_t off) { (void)c; (void)b; if (g_nvb < 4) { g_vb[g_nvb].stream = stream; g_vb[g_nvb].off = off; } g_nvb++; }
+static int g_bind_calls[2];   // 图形两个阶段各发了几次绑定
 void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n) { (void)c;
+    if (st != NVN_GPU_SH_CS) g_bind_calls[st == NVN_GPU_SH_FS]++;
     if (st == NVN_GPU_SH_CS) { g_cbinds++; g_ncb = n; memcpy(g_cb, b, (n < 16 ? n : 16) * sizeof *b); return; }
     int i = st == NVN_GPU_SH_FS; g_nfb[i] = n; memcpy(g_fb[i], b, (n < 16 ? n : 16) * sizeof *b); }
 void nvn_gpu_draw(nvn_gpu_cmd c, const nvn_gpu_draw_args *a) { (void)c; g_gdraws++; g_last_da = *a; }
@@ -1249,6 +1251,48 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
+static void t_bind_reuse(void) {   // 按脏位少发绑定：没变的阶段不发；同一段里同一区间的常量缓冲只落一份暂存；回放时在 CPU 上改过缓冲内容就必须重取
+    pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem); g_arena_used = 0;
+    g_gdraws = g_resolve_rc = 0; memset(g_nfb, 0, sizeof g_nfb);
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem; nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    memset(&g_fprog, 0, sizeof g_fprog); g_fprog.sh[0] = &g_fsh[0]; g_fprog.sh[1] = &g_fsh[1]; g_fprog.support_bytes = 2608; g_fprog.attr_mask = 1; g_fprog.color_out_mask = 0xffffffffu;
+    g_fprog.nent[0] = 2; g_fprog.ent[0][0].cls = NVN_GPU_RES_UBO; g_fprog.ent[0][0].src_kind = NVN_RB_SUPPORT;
+    g_fprog.ent[0][1].cls = NVN_GPU_RES_UBO; g_fprog.ent[0][1].src_kind = NVN_RB_CBUF; g_fprog.ent[0][1].src_reg = 2;
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX; g_fprog.ent[1][0].src_reg = 5;
+    tex_t rtt = mk_tex(91, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0), tx = mk_tex(92, 0x4000, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_be_reg_tex(7, &tx, NULL); nvn_be_reg_samp(3, &sp);
+    memset(g_pmem + PG + 128, 0x11, 64); memset(g_pmem + PG + 512, 0x22, 64);   // 两块常量缓冲：甲全 0x11、乙全 0x22
+    stream s = {0}; put_set_rt(&s, &rtt, NULL);
+    p_bind_vattr *va = put(&s, OP_BIND_VATTR, sizeof *va); va->n = 1; va_st a0 = {.fmt = 0x2A, .offset = 0, .stream = 1}; memcpy(&va->st[0], &a0, 4);
+    p_bind_vstream *vs = put(&s, OP_BIND_VSTREAM, sizeof *vs); vs->n = 2; vs->st[1].stride = 16;
+    p_bind_vbuf_single *vb = put(&s, OP_BIND_VBUF, sizeof *vb); vb->first = 1; vb->size = 64; vb->addr = base + 2 * PG + 32 - 0x1000;
+    p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 5; bh->n = 1; bh->h[0] = 7 | 3 << 20;
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 0; ub->index = 2; ub->addr = base + PG + 128; ub->size = 64;   // 甲
+    p_draw *dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 4; dn->count = 3;   // ① 首笔
+    dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 4; dn->count = 3;             // ② 什么都没变
+    ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 0; ub->index = 2; ub->addr = base + PG + 512; ub->size = 64;   // 换成乙
+    dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 4; dn->count = 3;             // ③
+    ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 0; ub->index = 2; ub->addr = base + PG + 128; ub->size = 64;   // 换回甲
+    dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 4; dn->count = 3;             // ④
+    uint8_t *r = put(&s, OP_UPDATE_UB, 16 + 64); uint64_t d = base + PG + 128, n = 64; memcpy(r, &d, 8); memcpy(r + 8, &n, 8); memset(r + 16, 0x33, 64);   // 回放时把甲改成全 0x33
+    dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 4; dn->count = 3;             // ⑤ 绑定状态没动，内容变了
+    end(&s);
+    // 逐笔看：把整条流拆成五次看不到中间状态，所以在替身的绘制回调之外用「每笔之后的累计」推——这里按最终累计核，期望逐项手算：
+    //   ① 顶点、片元各发 1 次（1,1）；② 都不发（1,1）；③ 顶点换了常量缓冲发 1 次，片元不发（2,1）；④ 同上（3,1）；⑤ 回放时改过缓冲内容：两个阶段都保守重取重发（4,2）——片元那组内容其实一样，由后端按「缓冲 + 偏移 + 长度」判相等。
+    memset(g_bind_calls, 0, sizeof g_bind_calls); uint64_t a_before = g_arena_used;
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 5);
+    CHECK(g_bind_calls[0] == 4 && g_bind_calls[1] == 2);
+    // 暂存区：对齐 64。支持块 2608 → 占到 2624（41 个 64）；甲 64、乙 64、改后的甲 64。④ 回到甲时用的是 ① 那一片，不再落新的：共 2608 + 3 × 64，按 64 对齐后 2624 + 192 = 2816。
+    CHECK(g_arena_used - a_before == 2816);
+    { uint8_t want[64]; memset(want, 0x33, 64); CHECK(g_fb[0][1].u.b.len == 64 && !memcmp(g_arena + g_fb[0][1].u.b.off, want, 64)); }   // ⑤ 绑的是改过之后的内容
+    // 换一次提交：上一段的暂存不能带过来，全部重取重发
+    stream t = {0}; dn = put(&t, OP_DRAW, sizeof *dn); dn->prim = 4; dn->count = 3; end(&t);
+    memset(g_bind_calls, 0, sizeof g_bind_calls);
+    submit1(&t); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 6 && g_bind_calls[0] == 1 && g_bind_calls[1] == 1);
+}
+
 static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口时取图、按比例贴合、呈现；交换链过期先重建
     pass_fresh(); rp_present_reset(); memset(g_acq_script, 0, sizeof g_acq_script); g_acq_i = g_rebuilds = g_presents = 0;
     tex_t t = mk_tex(71, 0, NVN_FORMAT_RGBA8, 640, 360, 1, 0);
@@ -1292,6 +1336,7 @@ int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
     t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_depth_shadow(); t_pass_bc_shadow(); t_autoflush(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_dispatch(); t_compute_image(); t_copy_t2t(); t_draw(); t_present(); t_view_pin();
+    t_bind_reuse();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
