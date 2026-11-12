@@ -6708,6 +6708,10 @@
   "en": "Recording the version now on iPhone"
  },
  {
+  "source": "这款游戏暂不支持：程序的结构我们还不认识，多见于自制或移植的程序。",
+  "en": "This game is not supported yet. We don't recognize how this program is built yet; this is common for homebrew or ported programs."
+ },
+ {
   "source": "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。",
   "en": "This game is not supported yet. No official Nintendo graphics API (NVN / Vulkan / OpenGL) was found; this is common for homebrew or ported programs."
  },
