@@ -26,15 +26,20 @@ import toolchain  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def machine_py():
-    """开发机在 tools/machine.local 声明的 S2A_PY（tools/machine.sh get；同 oneclick.sh）。源码树外（App 的 Resources/Jobs）没有 tools/，返回 None"""
+def machine_get(key):
+    """开发机在 tools/machine.local 声明的值（tools/machine.sh get）。源码树外（App 的 Resources/Jobs）没有 tools/，返回 None"""
     m = ROOT / "tools/machine.sh"
     if not m.is_file():
         return None
     try:
-        return subprocess.run(["bash", str(m), "get", "S2A_PY"], capture_output=True, text=True, timeout=30).stdout.strip() or None
+        return subprocess.run(["bash", str(m), "get", key], capture_output=True, text=True, timeout=30).stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def machine_py():
+    """开发机在 tools/machine.local 声明的 S2A_PY（同 oneclick.sh）"""
+    return machine_get("S2A_PY")
 # 「装了 3.11+ 但 pip 被拒」（uv / Homebrew 的 PEP 668）时的出路；一键出包的报错用同一句
 VENV = "装不进包（externally-managed / uv 托管）就建个虚拟环境：python3 -m venv ~/s2a-venv && ~/s2a-venv/bin/python3 -m pip install -r launchers/macos/requirements-runtime.txt -r pack/fonts/requirements.txt，再 export S2A_PYTHON=~/s2a-venv/bin/python3"
 
@@ -82,7 +87,9 @@ def source_build_checks(run_path):
 
 
 def context(operation, private):
-    dev = os.environ.get("S2A_DEVELOPER_DIR") or toolchain.detect_xcode() or default_developer_dir()   # 指定的优先（同 tools/toolchain.sh）；否则同前端：装着的最新一个；都找不到 → None，预检里报没装（不写死 Xcode.app）
+    # 选 Xcode 同 tools/toolchain.sh 出壳的顺序（#449：SDK 主版本要核出壳真用的那套）：S2A_DEVELOPER_DIR（环境 → tools/machine.local）→
+    #   同前端：装着的最新一个；都找不到 → None，预检里报没装（不写死 Xcode.app）
+    dev = os.environ.get("S2A_DEVELOPER_DIR") or machine_get("S2A_DEVELOPER_DIR") or toolchain.detect_xcode() or default_developer_dir()
     req = dict(schema=1, taskId="applenv", operation=operation, privateRoot=str(private), library=str(Path(private) / "library"),
                engineDir=str(ROOT), developerDir=dev)
     return Context(req), dev
