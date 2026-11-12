@@ -506,7 +506,7 @@ int main(int argc, char **argv) {
             check(getenv("S2A_FPS60") && !strcmp(getenv("S2A_FPS60"), "0"), @"按游戏：这款没设 60 帧 → 用所有游戏的默认（关）");
             clear_environment(); [game setBool:YES forKey:@"S2AFps60"];
             s2a_ios_apply_graphics_settings(d);
-            check(getenv("S2A_FPS60") == NULL, @"按游戏：这款开 60 帧压过所有游戏的默认（关）——原先压不过");
+            check(getenv("S2A_FPS60") && !strcmp(getenv("S2A_FPS60"), "1"), @"按游戏：这款开 60 帧压过所有游戏的默认（关）——原先压不过；新约定下明确开写 1（宿主只把 1 当开）");
             [d setBool:NO forKey:@"S2AWidescreen"];
             check([game objectForKey:@"S2AWidescreen"] && ![game boolForKey:@"S2AWidescreen"] && ![app objectForKey:@"S2AWidescreen"], @"按游戏：设置页写宽屏只写这款，App 级不变");
             [d setBool:YES forKey:@"S2ADevHUD"];

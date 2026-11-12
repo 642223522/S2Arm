@@ -9,7 +9,7 @@
   画面：补丁应用层（直连线）出的 graphics/community/other_gfx.tsv：程序号 版本 编号 名称 互斥组 已验证(0/1) 来源
 玩家的选择（启动设置，11-09）存在这款游戏文件夹的 launch.json：{"schema":1,"settings":{设置项:值},"patches":{画面编号:真/假}}，
   设置项的定义（id、类型、取值、缺省、平台）只在 launchers/shared/game_settings.v1.json，Mac 启动设置页与 iOS 游戏内菜单共用；
-  只存玩家明确选过的，没选的按定义表缺省（"caps" = 按这款能力清单）。Mac 启动时由 build.launch 经 launch_env 转成宿主环境变量。
+  只存玩家明确选过的，没选的按定义表缺省（"caps" = 按这款能力清单；60 帧是清单值 1 且原因属于速度已验证正确的来源才算开，同宿主 runtime/src/caps.c）。Mac 启动时由 build.launch 经 launch_env 转成宿主环境变量。
   旧的 community.json（schema 2 / 3）第一次读时转成 launch.json 并删掉，不留两份。"""
 from __future__ import annotations
 
@@ -156,14 +156,30 @@ def chosen(c, gid, table=None):
     return picked
 
 
-def runtime_caps(c, gid):
-    """这款 Mac 运行版本的能力清单 s2a_caps.tsv（出包时生成）：{能力: 值}。没有清单 = 这款还没有 Mac 运行版本或版本太旧"""
+def runtime_caps_rows(c, gid):
+    """这款 Mac 运行版本的能力清单 s2a_caps.tsv（出包时生成）：{能力: (值, 原因)}，原因 = 值后面那一段（含 # 注释，同宿主 caps.c 读法）"""
     try:
         text = (layout.image_mac(c, gid, create=False) / "s2a_caps.tsv").read_text(encoding="utf-8")
     except (OSError, ValueError, UnicodeError):
         return {}
-    rows = (line.split("#", 1)[0].split("\t") for line in text.splitlines() if not line.startswith("#"))
-    return {r[0].strip(): r[1].strip() for r in rows if len(r) >= 2 and r[0].strip()}
+    rows = (line.split("\t") for line in text.splitlines() if not line.startswith("#"))
+    return {r[0].strip(): (r[1].split("#", 1)[0].strip(), "\t".join(r[2:]) if len(r) > 2 else r[1].partition("#")[2])
+            for r in rows if len(r) >= 2 and r[0].strip()}
+
+
+def runtime_caps(c, gid):
+    """{能力: 值}。没有清单 = 这款还没有 Mac 运行版本或版本太旧"""
+    return {k: v for k, (v, _) in runtime_caps_rows(c, gid).items()}
+
+
+# 60 帧缺省开的来源（11-11 维护者：出包默认游戏原本帧率、玩家手动开；速度已验证正确的款保留默认 60）。
+#   与宿主 runtime/src/caps.c apply_cap 同一条规则、同一组字样：清单 fps60 值 1 且原因含其一，宿主没收到玩家选择时自己开 60 帧
+FPS60_VERIFIED = ("fps.tsv", "逻辑速度同局 A/B 绿", "游戏原生 60 帧")
+
+
+def fps60_default(rows):
+    value, why = rows.get("fps60", ("", ""))
+    return value == "1" and any(mark in why for mark in FPS60_VERIFIED)
 
 
 NO_RUNTIME = "这款还没有做好 Mac 版，或者是旧版本做的：重新准备后可用。"
@@ -171,19 +187,20 @@ NO_FPS60 = "这款游戏没有可用的 60 帧方案。"
 NO_DIRECT = "这款游戏没有走直连渲染，用不了 MetalFX 放大。"
 
 
-def _default(item, caps, platform="mac"):
+def _default(item, caps, platform="mac", rows=None):
     d = item.get("default")
     if isinstance(d, dict):
         d = d.get(platform)
-    if d == "caps":   # 按能力清单：现在只有 60 帧
-        return caps.get(item["id"]) == "1"
+    if d == "caps":   # 按能力清单：现在只有 60 帧，看值和原因（fps60_default，同宿主），没给原因按值
+        return fps60_default(rows) if item["id"] == "fps60" and rows is not None else caps.get(item["id"]) == "1"
     return d
 
 
 def mac_settings(c, gid):
     """Mac 启动设置页：定义表里 Mac 有的每一项 {available, value, reason}（页面 / 补丁两类由各自的入口画，不在这里）。
     缺省跟定义表 / 能力清单走；60 帧在清单没有方案时、画面增强在没走直连时不可用"""
-    caps, table = runtime_caps(c, gid), settings_table(c)
+    rows, table = runtime_caps_rows(c, gid), settings_table(c)
+    caps = {k: v for k, (v, _) in rows.items()}
     picked = chosen(c, gid, table)
     need = {"fps60": ("fps60" in caps, NO_FPS60), "enhance": (caps.get("direct") == "1", NO_DIRECT)}
     out = {}
@@ -191,8 +208,8 @@ def mac_settings(c, gid):
         if "mac" not in item.get("platforms", []) or item["type"] not in ("bool", "choice"):
             continue
         ok, why = need.get(key, (bool(caps) or item.get("scope") == "app", ""))   # 全游戏共用的项不看这款有没有 Mac 版
-        value = picked.get(key, _default(item, caps))
-        out[key] = dict(available=ok, value=value if ok else _default(item, caps), reason="" if ok else (NO_RUNTIME if not caps else why))
+        value = picked.get(key, _default(item, caps, rows=rows))
+        out[key] = dict(available=ok, value=value if ok else _default(item, caps, rows=rows), reason="" if ok else (NO_RUNTIME if not caps else why))
     return out
 
 
@@ -294,10 +311,12 @@ def launch_env(c, gid):
     """Mac 启动时的宿主开关：只把玩家选过、且和宿主缺省不同的转成环境变量（与 iPhone 同口径）"""
     env, caps, table = {}, runtime_caps(c, gid), settings_table(c)
     s = chosen(c, gid, table)
-    if s.get("fps60") is True and caps.get("fps60") == "0":
-        env["S2A_FPS60"] = "1"            # 清单因强信号关了 60 帧，玩家手动打开（同 iPhone 设置页）
-    if s.get("fps60") is False:
-        env["S2A_FPS60"] = "0"            # 60 帧关：回游戏自己的帧率（runtime/src/fps.c）
+    # 60 帧（11-11 维护者：缺省原帧率、玩家手动开，速度已验证正确的款保留默认 60）：只转玩家明确的选择——开 1、关 0；
+    #   没选过不写，由宿主按清单原因自己定（runtime/src/caps.c：验证过的款开、其余原帧率）。没选也写 0 会把验证过的款一起关掉
+    if s.get("fps60") is True:
+        env["S2A_FPS60"] = "1"
+    elif s.get("fps60") is False:
+        env["S2A_FPS60"] = "0"
     if s.get("widenForce") is True:       # 同 iPhone「宽屏强制启用」：没验证过的也铺满，画面被拉伸会自动退回 16:9
         env["S2A_WIDEN_VERIFIED"] = "1"
         env["S2A_WIDESCREEN"] = "1"
