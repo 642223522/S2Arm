@@ -175,6 +175,10 @@ struct nvn_gpu_cmd_s {
     struct { nvn_gpu_buf buf; uint64_t off; } vbuf[16];
     struct { nvn_gpu_binding b; } binds[6][64];   // 每阶段一张表，bind 只替换该阶段
     uint32_t nbinds[6];
+    VkDescriptorSet desc_sets[4];   // 仅本命令段；旧组仍归本段的池所有，不就地覆盖在途绑定
+    VkPipelineLayout desc_layout;
+    uint32_t desc_dirty;
+
     uint8_t *push_data[6];        // 各阶段 push 暂存；vkCmdPushConstants 录制时拷贝入命令缓冲，段完成即放
     uint32_t push_capacity[6]; // 分配字节数，测试与管线切换共用
     uint8_t push_have[6];
@@ -2483,6 +2487,19 @@ static int cmd_ref_texel_view(struct nvn_gpu_cmd_s *c, nvn_gpu_view handle, uint
     return 1;
 }
 
+// 不比较 union 的未用字节 / padding；缓冲偏移、范围及数组元素都是绑定身份的一部分。
+static int binding_equal(const nvn_gpu_binding *a, const nvn_gpu_binding *b) {
+    if (a->ent != b->ent || a->elem != b->elem || a->cls != b->cls) return 0;
+    switch (a->cls) {
+    case NVN_GPU_RES_UBO: case NVN_GPU_RES_SSBO:
+        return a->u.b.buf == b->u.b.buf && a->u.b.off == b->u.b.off && a->u.b.len == b->u.b.len;
+    case NVN_GPU_RES_TEX: case NVN_GPU_RES_IMAGE: case NVN_GPU_RES_TBUF: case NVN_GPU_RES_IMAGE_TBUF: return a->u.view == b->u.view;
+    case NVN_GPU_RES_SAMP: return a->u.samp == b->u.samp;
+    case NVN_GPU_RES_TEX_SAMP: return a->u.ts.view == b->u.ts.view && a->u.ts.samp == b->u.ts.samp;
+    default: return 0;
+    }
+}
+
 void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -2490,6 +2507,17 @@ void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, ui
     if (!c->pipe) { set_sticky(c, NVN_GPU_E_ORDER, "bind 前没有 set_pipe"); return; }
     if (!b && n) { set_sticky(c, NVN_GPU_E_ARG, "bind 表为空"); return; }
     if (n > 64) { set_sticky(c, NVN_GPU_E_ARG, "一个阶段一次绑定 %u 项，超过上限 64（原先多出来的被悄悄丢掉）", n); return; }
+    if ((uint32_t)st > NVN_GPU_SH_CS) { set_sticky(c, NVN_GPU_E_ARG, "bind 阶段越界"); return; }
+    if (c->desc_layout != c->pipe->layout) c->desc_dirty = 0xfu;
+    else {
+        uint32_t max = n > c->nbinds[st] ? n : c->nbinds[st];
+        for (uint32_t i = 0; i < max; i++) {
+            const nvn_gpu_binding *old = i < c->nbinds[st] ? &c->binds[st][i].b : NULL, *next = i < n ? &b[i] : NULL;
+            if (old && next && binding_equal(old, next)) continue;
+            if (old && old->ent < c->pipe->stage_nent[st]) c->desc_dirty |= 1u << c->pipe->stage_ents[st][old->ent].set;
+            if (next && next->ent < c->pipe->stage_nent[st]) c->desc_dirty |= 1u << c->pipe->stage_ents[st][next->ent].set;
+        }
+    }
     uint32_t count = 0;
     for (uint32_t i = 0; i < n && i < 64; i++) {
         if (c->pipe->stage_nent[st] && b[i].ent >= c->pipe->stage_nent[st]) {
@@ -2681,6 +2709,34 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
     return nw;
 }
 
+// 脏组分配新对象，不能更新前一笔已经引用的组；跨阶段共用同一组时写全组。
+static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int compute) {
+    if (c->desc_layout != p->layout) {
+        c->desc_layout = p->layout; c->desc_dirty = 0xfu;
+        memset(c->desc_sets, 0, sizeof c->desc_sets);
+    }
+    // A descriptor-free pipeline ignores bindings left by the previous pipeline.
+    if (!p->nset) return 1;
+    uint32_t dirty = c->desc_dirty & ((1u << p->nset) - 1u);
+    for (uint32_t set = 0; set < p->nset; set++)
+        if (dirty & (1u << set)) if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
+    VkWriteDescriptorSet wr[6 * 64]; VkDescriptorImageInfo ii[6 * 64]; VkDescriptorBufferInfo bi[6 * 64];
+    uint32_t nw = 0;
+    for (int st = compute ? NVN_GPU_SH_CS : 0; st < (compute ? NVN_GPU_SH_CS + 1 : 5); st++) {
+        int n = write_binds(c, p, st, c->desc_sets, wr + nw, ii + nw, bi + nw);
+        if (n < 0) return 0;
+        nw += (uint32_t)n;
+    }
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < nw; i++) for (uint32_t set = 0; set < p->nset; set++)
+        if ((dirty & (1u << set)) && wr[i].dstSet == c->desc_sets[set]) { wr[keep++] = wr[i]; break; }
+    if (keep) vkUpdateDescriptorSets(g.d, keep, wr, 0, NULL);
+    c->desc_dirty = 0;
+    if (p->nset) vkCmdBindDescriptorSets(c->cb, compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        p->layout, 0, p->nset, c->desc_sets, 0, NULL);
+    return 1;
+}
+
 void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -2695,21 +2751,7 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         set_sticky(c, NVN_GPU_E_ARG, "draw prim %u 与管线拓扑 %u 不一致", a->prim, p->key.prim);
         return;
     }
-    if (p->nset) {
-        VkDescriptorSet sets[4] = {0};
-        if (!alloc_sets(c, p->dsl, p->nset, sets)) return;
-        VkWriteDescriptorSet wr[6 * 64];
-        VkDescriptorImageInfo ii[6 * 64];
-        VkDescriptorBufferInfo bi[6 * 64];
-        uint32_t nw = 0;
-        for (int bst = 0; bst < 5; bst++) {
-            int n = write_binds(c, p, bst, sets, wr + nw, ii + nw, bi + nw);
-            if (n < 0) return;
-            nw += (uint32_t)n;
-        }
-        if (nw) vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL);
-        vkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 0, p->nset, sets, 0, NULL);
-    }
+    if (!bind_descriptor_groups(c, p, 0)) return;
     for (int st = 0; st < 5; st++)
         if (c->push_have[st] && p->stage_push_bytes[st])
             vkCmdPushConstants(c->cb, p->layout, vk_shader_stage((nvn_gpu_stage)st),
@@ -2832,17 +2874,7 @@ void nvn_gpu_dispatch(nvn_gpu_cmd ch, nvn_gpu_pipe ph, uint32_t x, uint32_t y, u
     if (ind && x | y | z) { set_sticky(c, NVN_GPU_E_ARG, "间接 dispatch 与计数不能同时给"); return; }
     if (ind) { if (!buf_range(ind, off, 12)) { set_sticky(c, NVN_GPU_E_ARG, "间接 dispatch 参数越界"); return; } }
     c->pipe = p;
-    if (p->nset) {
-        VkDescriptorSet sets[4] = {0};
-        if (!alloc_sets(c, p->dsl, p->nset, sets)) return;
-        VkWriteDescriptorSet wr[64];
-        VkDescriptorImageInfo ii[64];
-        VkDescriptorBufferInfo bi[64];
-        int nw = write_binds(c, p, NVN_GPU_SH_CS, sets, wr, ii, bi);
-        if (nw < 0) return;
-        if (nw) vkUpdateDescriptorSets(g.d, (uint32_t)nw, wr, 0, NULL);
-        vkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, p->nset, sets, 0, NULL);
-    }
+    if (!bind_descriptor_groups(c, p, 1)) return;
     if (c->push_have[NVN_GPU_SH_CS] && p->stage_push_bytes[NVN_GPU_SH_CS])
         vkCmdPushConstants(c->cb, p->layout, VK_SHADER_STAGE_COMPUTE_BIT,
                            p->stage_push_off[NVN_GPU_SH_CS], p->stage_push_bytes[NVN_GPU_SH_CS],
@@ -3654,6 +3686,7 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     if (!cm || !sm) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 写掩码为 0（颜色 %#x 模板 %#x）", (unsigned)d->color_mask, (unsigned)d->stencil_mask); return; }
     // 一律画一笔整屏三角形（backend_vulkan_clear.inc：不用附件清除命令，理由见那里）。颜色、深度、模板同一笔做
     clr_draw(c, d->color, cm, &d->value, d->depth != 0, d->stencil ? sm : 0, d->stencil_value, d);
+    c->desc_layout = VK_NULL_HANDLE; c->desc_dirty = 0xfu;   // 内部清除改绑状态：下一笔全部重建
 }
 
 void nvn_gpu_barrier(nvn_gpu_cmd ch, uint32_t nvn_bits) {
@@ -3734,6 +3767,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
 
     struct nvn_gpu_cmd_s *c = calloc(1, sizeof *c);
     if (!c) return fail(err, NVN_GPU_E_OOM, "cmd 分配失败");
+    memset(c->desc_sets, 0, sizeof c->desc_sets); c->desc_layout = VK_NULL_HANDLE; c->desc_dirty = 0xfu;
     VkCommandPoolCreateInfo pci;
     memset(&pci, 0, sizeof pci);
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
