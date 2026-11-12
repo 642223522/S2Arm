@@ -101,6 +101,10 @@ struct PhoneOutcome: Equatable {
     var packBytes: Int64? = nil
     var skipped: [String] = []
     var version = ""
+    /// 导出模式：放进的文件夹、几款、多大（PhoneJobPanel 成功页改写「导出好了」+ 打开文件夹）；一键装为空
+    var exportFolder = ""
+    var exportGames = 0
+    var exportBytes: Int64? = nil
 }
 
 /// 排队的一次出包。
@@ -910,7 +914,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         start(.install, game: game, name: game.name) { [weak self] sink in
             do {
                 let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, accept: accept, events: sink)
-                if let r {
+                if let r, !r.exportFolder.isEmpty {   // 导出模式：没装手机，打开放好的文件夹
+                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes)
+                    NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder))
+                } else if let r {
                     self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName)
                     self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)
                 }
