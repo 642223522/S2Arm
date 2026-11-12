@@ -3,6 +3,8 @@
 package org.s2arm.android;
 
 import android.annotation.SuppressLint;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
@@ -38,7 +40,7 @@ final class DiagnosticExport {
         Path saves = new File(context.getFilesDir(), "user/0/saves").toPath();   // same root as BootSpecSource
         String word = Locale.getDefault().getLanguage().equals("zh") ? "诊断" : "diag";
         return DiagnosticBundleWriter.write(saves, DiagnosticShareProvider.checkedDirectory(context), redactor::redact,
-                                            info(context), word, System.currentTimeMillis(), TimeZone.getDefault()).bundle;
+                                            info(context), exits(context), word, System.currentTimeMillis(), TimeZone.getDefault()).bundle;
     }
 
     /** This app's own directories, under every spelling a log may use; the rest of each path is kept. */
@@ -57,6 +59,20 @@ final class DiagnosticExport {
         List<String[]> pairs = new ArrayList<>();
         for (Map.Entry<String, String> e : found.entrySet()) pairs.add(new String[] {e.getKey(), e.getValue()});
         return pairs;
+    }
+
+    /** How this app's processes (library, :game) ended, newest first; none before API 30. */
+    static List<Map<String, Object>> exits(Context context) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (Build.VERSION.SDK_INT < 30) return out;
+        ActivityManager am = context.getSystemService(ActivityManager.class);
+        if (am == null) return out;
+        List<ApplicationExitInfo> all = new ArrayList<>(am.getHistoricalProcessExitReasons(context.getPackageName(), 0, DiagnosticExits.MAX_RECORDS));
+        all.sort((a, b) -> Long.compare(b.getTimestamp(), a.getTimestamp()));
+        for (ApplicationExitInfo e : all)
+            out.add(DiagnosticExits.record(e.getTimestamp(), e.getProcessName(), e.getReason(), e.getStatus(), e.getImportance(),
+                                           e.getPss(), e.getRss(), e.getDescription()));
+        return out;
     }
 
     private static void add(Map<String, String> found, String path, String placeholder) {

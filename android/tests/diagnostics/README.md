@@ -48,3 +48,12 @@ bash android/tests/diagnostics/run.sh
 - 调 `DiagnosticBundleWriter` 写到 `cache/diag`，再经系统分享面板交给玩家选的应用。
 
 `DiagnosticShareProvider` 是不导出的只读 provider，读方只能凭分享意图上的一次性授权进来。它只认 `DiagnosticBundleWriter.shareable` 接受的包名：`cache/diag` 下、本类写出的名字形状、普通文件、不是链接。应用没有 AndroidX，所以没用 FileProvider。
+
+## 系统退出记录（第三片）
+
+`DiagnosticExits` 把系统给本应用各进程（库页、`:game`）记的退出记录（`ApplicationExitInfo`，API 30 起）写进 manifest 的 `exits`。最多 16 条，从新到旧，相当于 iOS 包里的 MetricKit 崩溃 / 卡死 / 退出记录。每条有：
+- 时刻、进程名；
+- 原因（名字和数值，取值对过 android-36 `android.jar` 的 `REASON_*`）、退出码或信号；
+- 重要度、PSS / RSS（KB）、系统给的说明。
+
+字符串照样过脱敏，说明在脱敏之后再截到 300 字，免得把一个秘密截成认不出的半截。不加新文件、不改 `DiagnosticBundlePolicy` 的白名单（manifest 的内容本来就不由它管）。

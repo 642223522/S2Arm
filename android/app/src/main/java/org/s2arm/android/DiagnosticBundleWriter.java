@@ -112,11 +112,22 @@ final class DiagnosticBundleWriter {
      */
     static Result write(Path savesRoot, Path outDir, Function<String, String> redactor, Map<String, Map<String, String>> info,
                         String word, long now, TimeZone zone) throws IOException {
-        return write(savesRoot, outDir, redactor, info, word, now, zone, MAX_ZIP_BYTES);
+        return write(savesRoot, outDir, redactor, info, new ArrayList<>(), word, now, zone, MAX_ZIP_BYTES);
+    }
+
+    /** {@code exits}: DiagnosticExits records, newest first; the first MAX_RECORDS go into the manifest, redacted. */
+    static Result write(Path savesRoot, Path outDir, Function<String, String> redactor, Map<String, Map<String, String>> info,
+                        List<Map<String, Object>> exits, String word, long now, TimeZone zone) throws IOException {
+        return write(savesRoot, outDir, redactor, info, exits, word, now, zone, MAX_ZIP_BYTES);
     }
 
     static Result write(Path savesRoot, Path outDir, Function<String, String> redactor, Map<String, Map<String, String>> info,
                         String word, long now, TimeZone zone, long maxZipBytes) throws IOException {
+        return write(savesRoot, outDir, redactor, info, new ArrayList<>(), word, now, zone, maxZipBytes);
+    }
+
+    static Result write(Path savesRoot, Path outDir, Function<String, String> redactor, Map<String, Map<String, String>> info,
+                        List<Map<String, Object>> exits, String word, long now, TimeZone zone, long maxZipBytes) throws IOException {
         if (!WORD.matcher(word).matches()) throw new IllegalArgumentException("bundle word");
         Files.createDirectories(outDir);
         List<SessionLog> logs = sessionLogs(savesRoot);
@@ -163,6 +174,27 @@ final class DiagnosticBundleWriter {
                     values.put(e.getKey(), redactor.apply(e.getValue() == null ? "" : e.getValue()));
                 manifest.put(section, values);
             }
+            List<Map<String, Object>> exitRecords = new ArrayList<>();
+            for (Map<String, Object> exit : exits) {
+                if (exitRecords.size() >= DiagnosticExits.MAX_RECORDS) break;
+                Map<String, Object> clean = new TreeMap<>();
+                for (Map.Entry<String, Object> e : exit.entrySet()) {
+                    Object v = e.getValue();
+                    if (v instanceof String) {
+                        String r = redactor.apply((String) v);
+                        // Cut after redaction, so a placeholder is never half of a secret; never inside a surrogate pair.
+                        if (e.getKey().equals("description") && r.length() > DiagnosticExits.MAX_DESCRIPTION) {
+                            int cut = DiagnosticExits.MAX_DESCRIPTION;
+                            if (Character.isHighSurrogate(r.charAt(cut - 1))) cut--;
+                            r = r.substring(0, cut) + "…";
+                        }
+                        v = r;
+                    }
+                    clean.put(e.getKey(), v);
+                }
+                exitRecords.add(clean);
+            }
+            manifest.put("exits", exitRecords);
             manifest.put("sessions", sessions);
             manifest.put("omitted_logs", (long) omitted);
             manifest.put("files", files);
@@ -309,7 +341,7 @@ final class DiagnosticBundleWriter {
         zip.closeEntry();
     }
 
-    private static String iso(long millis) {
+    static String iso(long millis) {
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.ROOT);
         f.setTimeZone(TimeZone.getTimeZone("UTC"));
         return f.format(new Date(millis));
