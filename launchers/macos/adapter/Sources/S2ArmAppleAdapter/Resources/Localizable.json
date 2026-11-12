@@ -7030,5 +7030,41 @@
  {
   "source": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
   "en": "Drive format not supported: this drive doesn't support the file operations exporting needs (common on exFAT / FAT external drives)."
+ },
+ {
+  "source": "重新打开 S2Arm（会自动修好），再从电脑推送一次。",
+  "en": "Reopen S2Arm (it fixes this automatically), then push from the computer again."
+ },
+ {
+  "source": "清出空间后点「重试」。",
+  "en": "Free up some space, then tap Retry."
+ },
+ {
+  "source": "更新 iPhone 上的 S2Arm，再打开这款游戏。",
+  "en": "Update S2Arm on the iPhone, then open the game again."
+ },
+ {
+  "source": "从电脑重新装到 iPhone，会接着已传的部分续传。",
+  "en": "Install to iPhone from the computer again; it resumes from what was already sent."
+ },
+ {
+  "source": "重新连电脑推送，会自动补齐。",
+  "en": "Connect to the computer and push again; the missing part is filled in automatically."
+ },
+ {
+  "source": "从电脑重新装到 iPhone。",
+  "en": "Install to iPhone from the computer again."
+ },
+ {
+  "source": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",
+  "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
+ },
+ {
+  "source": "检查文件是否拷完整，再打开 S2Arm。",
+  "en": "Check that the file was copied completely, then open S2Arm again."
+ },
+ {
+  "source": "导出诊断包发给我们。",
+  "en": "Export a diagnostics package and send it to us."
  }
 ]
