@@ -31,7 +31,18 @@ static int g_q_enter, g_piece;
 void nvn_hle_queue_enter(void *q) { (void)q; g_q_enter++; }
 void nvn_hle_piece_begun(void) { g_piece++; }
 int nvn_dpool_base(const void *pool, int tex) { return (int)(uintptr_t)pool + (tex ? 0 : 1000); }
-const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok, uint8_t stage[6]) { (void)serial; (void)keys; (void)ok; (void)stage; return NULL; }   // 宿主表里没有快照
+// 程序快照替身：宿主表默认没有快照；按阶段绑定的用例按需给出 stage_of / kok / nstage。
+static const prog_t *g_snap_prog;
+static uint8_t g_snap_ok;
+static uint8_t g_snap_keys[6][8];
+static uint8_t g_snap_stage[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok, uint8_t stage[6]) {
+    if (!g_snap_prog || g_snap_prog->serial != serial) return NULL;
+    if (keys) memcpy(keys, g_snap_keys, sizeof g_snap_keys);
+    if (ok) *ok = g_snap_ok;
+    if (stage) memcpy(stage, g_snap_stage, 6);
+    return g_snap_prog;
+}
 int dm_fps_setting(void) { return 30; }
 int s2a_nvn_rast_flip = 1;   // 建队列时窗口原点在左下（NVN 缺省）
 uint64_t nvn_ga2ca(uint64_t a) { return a + 0x1000; }   // 与恒等不同：证明延后绑定确实做了地址换算
@@ -219,18 +230,18 @@ static void t_state_persists(void) {   // 结论 B：状态跨命令缓冲、跨
 static void t_unimpl_names(void) {   // 没接的命令按命令名报出并计数，回放继续走完
     nvn_unimpl_reset(); int red0 = g_red_lines;
     stream a = {0};
-    put(&a, OP_DRAW_TEX, sizeof(p_draw_tex)); put(&a, OP_MULTI_DRAW, sizeof(p_multi_draw)); put(&a, OP_MULTI_DRAW, sizeof(p_multi_draw)); put(&a, OP_COPY_T2B, sizeof(p_copy_t2t));
+    put(&a, OP_DRAW_TEX, sizeof(p_draw_tex)); put(&a, OP_MULTI_DRAW, sizeof(p_multi_draw)); put(&a, OP_MULTI_DRAW, sizeof(p_multi_draw)); put(&a, OP_DLSS, sizeof(p_dlss));
     p_alpha_ref *ar = put(&a, OP_ALPHA_REF, sizeof *ar); ar->ref = 0.25f;   // 排在未接命令之后：证明没有因首个未接而停
     end(&a);
     submit1(&a); fake_complete(NVN_GPU_DONE_OK);
     CHECK(nvn_unimpl_count("op", "OP_DRAW_TEX") == 1);
     CHECK(nvn_unimpl_count("op", "OP_MULTI_DRAW") == 2);
-    CHECK(nvn_unimpl_count("op", "OP_COPY_T2B") == 1);
+    CHECK(nvn_unimpl_count("op", "OP_DLSS") == 1);
     CHECK(nvn_unimpl_count("op", "OP_ALPHA_REF") == 0);
     CHECK(nvn_unimpl_kinds() == 3);
     CHECK(g_red_lines - red0 == 3);   // 每种只在首次出现打一行
     char buf[256]; nvn_unimpl_dump(buf, sizeof buf);
-    CHECK(!strcmp(buf, "op\tOP_DRAW_TEX\t1\nop\tOP_MULTI_DRAW\t2\nop\tOP_COPY_T2B\t1\n"));
+    CHECK(!strcmp(buf, "op\tOP_DRAW_TEX\t1\nop\tOP_MULTI_DRAW\t2\nop\tOP_DLSS\t1\n"));
     CHECK(rp_S.alpha_ref == 0.25f);
 }
 
@@ -352,6 +363,79 @@ static void t_view_pin(void) {
     for (int i = 200; i < N; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);
     CHECK(first && was_view_released(first_id));                                   // 窗口结束：它可以被淘汰
     res_fresh();   // 本用例建的存储不留给后面的用例（它们按 live 计数做断言）
+}
+
+// 程序按阶段绑定：只绑程序实际有 shader 的阶段；VS/FS 不能被关（保留原绑定）；GS/TCS/TES 程序没有就解绑。
+// 期望值直接由输入推出：绑 0x1f、程序只有 VS+FS → 有效掩码 3；分程序组合 → VS 保留、FS 换；
+// 先绑带 GS 的程序再绑 VS+FS → GS 解绑；阶段认不出 → 旧规则（掩码照单全收）。
+static void t_program_bind_stages(void) {
+    prog_t pa, pb, pc;
+    memset(&pa, 0, sizeof pa); memset(&pb, 0, sizeof pb); memset(&pc, 0, sizeof pc);
+    pa.magic = pb.magic = pc.magic = MAGIC('P', 'R', 'O', 'G');
+    pa.serial = 31; pa.nstage = 2;   // VS + FS
+    pb.serial = 41; pb.nstage = 1;   // 只有 FS
+    pc.serial = 51; pc.nstage = 3;   // VS + FS + GS
+    static const uint8_t keyA[2][8] = {{1, 0, 0, 0, 0, 0, 0, 0}, {2, 0, 0, 0, 0, 0, 0, 0}};
+    memset(g_snap_stage, 0xff, sizeof g_snap_stage);
+    g_snap_stage[0] = 0; g_snap_stage[1] = 1;
+    memcpy(g_snap_keys, keyA, sizeof keyA); g_snap_ok = 0x3; g_snap_prog = &pa;
+    // 1) VS+FS 程序用全部图形阶段掩码绑：只绑 0 / 1，不把 0x1f 记成有效掩码。
+    stream a = {0};
+    p_bind_program_id *id = put(&a, OP_BIND_PROGRAM, sizeof *id); id->prog = &pa; id->serial = 31; id->stages = 0x1f;
+    end(&a); nvn_be_exec(a.b);
+    CHECK(rp_S.bser[0] == 31 && rp_S.bser[1] == 31);
+    CHECK(rp_S.bser[2] == 0 && rp_S.bser[3] == 0 && rp_S.bser[4] == 0);   // 修前：0x1f 全绑 → 这里红
+    CHECK(rp_shader_graphics_stages() == 3u);
+    CHECK(rp_shader_stage_key(0, NULL) == 1 && rp_shader_stage_key(1, NULL) == 1 && rp_shader_stage_key(2, NULL) == 0);
+    // 2) 只有 FS 的程序用 0x1f 绑：顶点阶段保留上一次（不能被顶掉）。
+    memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_stage[0] = 1;
+    { uint8_t k[6][8]; memset(k, 0, sizeof k); memcpy(k[0], keyA[1], 8); memcpy(g_snap_keys, k, sizeof k); }
+    g_snap_ok = 0x1; g_snap_prog = &pb;
+    stream b = {0}; id = put(&b, OP_BIND_PROGRAM, sizeof *id); id->prog = &pb; id->serial = 41; id->stages = 0x1f;
+    end(&b); nvn_be_exec(b.b);
+    CHECK(rp_S.bser[0] == 31 && rp_S.bser[1] == 41);
+    CHECK(rp_S.bser[2] == 0 && rp_S.bser[3] == 0 && rp_S.bser[4] == 0);
+    CHECK(rp_shader_graphics_stages() == 3u);
+    // 3) VS+FS+GS 程序绑上 GS。
+    memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_stage[0] = 0; g_snap_stage[1] = 1; g_snap_stage[2] = 2;
+    { uint8_t k[6][8]; memset(k, 0, sizeof k); memcpy(k[0], keyA[0], 8); memcpy(k[1], keyA[1], 8); k[2][0] = 3; memcpy(g_snap_keys, k, sizeof k); }
+    g_snap_ok = 0x7; g_snap_prog = &pc;
+    stream c = {0}; id = put(&c, OP_BIND_PROGRAM, sizeof *id); id->prog = &pc; id->serial = 51; id->stages = 0x1f;
+    end(&c); nvn_be_exec(c.b);
+    CHECK(rp_S.bser[0] == 51 && rp_S.bser[1] == 51 && rp_S.bser[2] == 51);
+    CHECK(rp_shader_graphics_stages() == 7u);
+    // 4) 再绑 VS+FS 程序：GS 必须被解绑（异度 3 的黑屏反例）。
+    g_snap_prog = &pa; memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_stage[0] = 0; g_snap_stage[1] = 1;
+    stream d = {0}; id = put(&d, OP_BIND_PROGRAM, sizeof *id); id->prog = &pa; id->serial = 31; id->stages = 0x1f;
+    end(&d); nvn_be_exec(d.b);
+    CHECK(rp_S.bser[2] == 0 && rp_shader_graphics_stages() == 3u);
+    // 5) 显式解绑：空程序只覆盖 GS 位 → GS 解绑，其余不动（NVN 按阶段绑定）。
+    g_snap_prog = &pc; memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_stage[0] = 0; g_snap_stage[1] = 1; g_snap_stage[2] = 2; g_snap_ok = 0x7;
+    stream e2 = {0}; id = put(&e2, OP_BIND_PROGRAM, sizeof *id); id->prog = &pc; id->serial = 51; id->stages = 0x1f;
+    end(&e2); nvn_be_exec(e2.b);
+    CHECK(rp_S.bser[2] == 51);
+    stream f = {0}; id = put(&f, OP_BIND_PROGRAM, sizeof *id); id->prog = NULL; id->serial = 0; id->stages = 0x4;
+    end(&f); nvn_be_exec(f.b);
+    CHECK(rp_S.bser[2] == 0 && rp_S.bser[0] == 51 && rp_S.bser[1] == 51);
+    // 6) 只有 VS 的程序用 0x1f 绑：片元阶段保留上一次（FS 不能被顶掉）。
+    g_snap_prog = &pc; memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_stage[0] = 0; g_snap_stage[1] = 1; g_snap_stage[2] = 2; g_snap_ok = 0x7;
+    { stream r = {0}; id = put(&r, OP_BIND_PROGRAM, sizeof *id); id->prog = &pc; id->serial = 51; id->stages = 0x1f; end(&r); nvn_be_exec(r.b); }
+    prog_t pd; memset(&pd, 0, sizeof pd); pd.magic = MAGIC('P', 'R', 'O', 'G'); pd.serial = 61; pd.nstage = 1;
+    memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_stage[0] = 0;
+    { uint8_t k[6][8]; memset(k, 0, sizeof k); k[0][0] = 4; memcpy(g_snap_keys, k, sizeof k); }
+    g_snap_ok = 0x1; g_snap_prog = &pd;
+    { stream s = {0}; id = put(&s, OP_BIND_PROGRAM, sizeof *id); id->prog = &pd; id->serial = 61; id->stages = 0x1f; end(&s); nvn_be_exec(s.b); }
+    CHECK(rp_S.bser[0] == 61 && rp_S.bser[1] == 51);   // VS 换新，FS 保留
+    CHECK(rp_shader_graphics_stages() == 3u);
+    // 7) 显式解绑 FS：空程序只覆盖 FS 位 → FS 解绑，VS 不动。
+    { stream v = {0}; id = put(&v, OP_BIND_PROGRAM, sizeof *id); id->prog = NULL; id->serial = 0; id->stages = 0x2; end(&v); nvn_be_exec(v.b); }
+    CHECK(rp_S.bser[1] == 0 && rp_S.bser[0] == 61 && rp_shader_graphics_stages() == 1u);
+    // 8) 阶段认不出（快照有项但 stage_of = 0xff）：旧规则，掩码照单全收，留给绘制时按名字报。
+    memset(g_snap_stage, 0xff, sizeof g_snap_stage); g_snap_ok = 0x1; g_snap_prog = &pa;
+    stream g = {0}; id = put(&g, OP_BIND_PROGRAM, sizeof *id); id->prog = &pa; id->serial = 31; id->stages = 0x1f;
+    end(&g); nvn_be_exec(g.b);
+    CHECK(rp_S.bser[2] == 31 && rp_S.bser[3] == 31 && rp_S.bser[4] == 31);
+    g_snap_prog = NULL;
 }
 
 static void t_pools(void) {
@@ -477,6 +561,68 @@ static void t_cpu_rules(void) {   // 首用判定的三条分支
       tex_t k = mk_tex(27, 0x6000, NVN_FORMAT_DEPTH24_STENCIL8, 8, 8, 1, 0); memset(k.mem, 0x22, k.L.size);
       CHECK(rp_tex_resolve(&k, &g_fake_cmd) != NULL && g_nup == 3);   // 深度模板：不取也不清（通道自己清）
       nvn_be_tex_release(&e); nvn_be_tex_release(&f); nvn_be_tex_release(&h); nvn_be_tex_release(&k); nvn_be_alias_drop_pool(&g_tp); }
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// LINEAR 图集（R8 / IMAGE|IMAGE... 字体与 UI 由 CPU 写）：首次按线性行距逐行上传，之后 CPU 更新能到下一次采样，
+// 没变化不重传；换映射代际要重传；同提交里的第二次更新排在主段。iOS 同名语义：nvn_mtl.m tex_linear @3756 / tex_linear_needs_upload @3777。
+static void t_linear_upload(void) {
+    nvn_be_sub_begin();
+    res_fresh();
+    // 3x2 R8、行距 8：每行 3 个有效字节 + 5 字节 padding（毒值）。首用前全是 0（字体引擎可以建图之后才填字形）。
+    tex_t t = mk_tex(41, 0x100, NVN_FORMAT_R8, 3, 2, 1, NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_IMAGE);
+    t.d.stride = 8; nvn_tex_layout(&t.d, &t.L); t.mem = g_tmem + t.off;
+    int n0 = g_nup, p0 = g_protects; uint64_t u0 = rp_res_uploads();
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL);
+    CHECK(g_nup == n0 + 1 && rp_res_uploads() - u0 == 1 && g_protects - p0 == 1 && g_up[n0].pre == 1);
+    CHECK(g_up[n0].level == 0 && g_up[n0].layer == 0 && g_up[n0].pitch == 3 && g_up[n0].img == 6 && g_up[n0].w == 3 && g_up[n0].h == 2);
+    { static const uint8_t zero[6]; CHECK(!memcmp(g_up[n0].first, zero, 6)); }      // 初始全零：也要有一次定义内容的上传
+    CHECK(g_last_usage & NVN_GPU_TEX_CPU_UPLOAD);
+    // 填字形：行距 8、padding 是毒值，上传缓冲只能是 3x2 的紧凑行宽
+    for (int y = 0; y < 2; y++) { t.mem[y * 8 + 0] = (uint8_t)(0x11 + y); t.mem[y * 8 + 1] = 0x22; t.mem[y * 8 + 2] = 0x33; memset(t.mem + y * 8 + 3, 0xEE, 5); }
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_nup == n0 + 2 && g_up[n0 + 1].pitch == 3 && g_up[n0 + 1].img == 6);
+    CHECK(g_up[n0 + 1].first[0] == 0x11 && g_up[n0 + 1].first[1] == 0x22 && g_up[n0 + 1].first[2] == 0x33 &&
+          g_up[n0 + 1].first[3] == 0x12 && g_up[n0 + 1].first[4] == 0x22 && g_up[n0 + 1].first[5] == 0x33);   // 逐行拷：padding 不进缓冲
+    CHECK(g_up[n0 + 1].pre == 0);                                                   // 同一提交里的第二次同步：排在主段
+    CHECK(g_protects - p0 == 2);                                                    // 每次重传前都重新保护
+    { int p1 = g_protects; uint64_t u1 = rp_res_uploads(); int ok = 1;
+      for (int i = 0; i < 100; i++) ok &= rp_tex_resolve(&t, &g_fake_cmd) != NULL;
+      CHECK(ok && g_protects == p1 && rp_res_uploads() == u1); }                    // 稳定内容：不传、不重新保护
+    // 映射换底后的失效判定（全局代际 / 范围句柄）尚未接入：换底时 nvn_dirty_replace_range 会把该范围的页代际抬到旧 stamp 之后，
+    // 常规换底已由 nvn_dirty_since 判脏；remove+add 路径的漏判留作后续（见 docs 对照表）。
+    rp_tex_mark_gpu_written(&t); g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_nup == n0 + 2);              // 内容归 GPU：不再从游戏内存传
+    nvn_be_tex_release(&t);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 线性族里第一批不收的组合：准确报红（不猜内容），初始化仍按“取不了就清零”走。
+static void t_linear_reject(void) {
+    nvn_be_sub_begin();
+    nvn_unimpl_reset();
+    res_fresh();
+    { tex_t a = mk_tex(51, 0, NVN_FORMAT_R8, 4, 4, 2, NVN_TEXTURE_FLAGS_LINEAR);   // 多级：公共布局只给单级的行距
+      int n0 = g_nup;
+      CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_mips_unsupported") == 1);
+      CHECK(g_nup == n0 + 2 && g_up[n0].pitch == 4 && g_up[n0].img == 16);          // 报红之后仍是真的清零初始化（两级各一次），不是静默错内容
+      nvn_be_tex_release(&a); }
+    res_fresh();
+    { tex_t b = mk_tex(52, 0, NVN_FORMAT_R8, 4, 4, 1, NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);   // 只有 LINEAR_RT：内容归 GPU（可能由 copy_b2t 写入），不按 CPU 内容传、不报红
+      int n0 = g_nup, u0 = g_nup; (void)u0;
+      CHECK(rp_tex_resolve(&b, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_render_target_unsupported") == 0);
+      CHECK(g_nup == n0 + 1 && g_up[n0].img == 4 * 4 * 1 && g_up[n0].first[0] == 0);   // 新建存储清零一次
+      nvn_be_tex_release(&b); }
+    res_fresh();
+    { tex_t c = mk_tex(53, (1 << 20) - 0x10, NVN_FORMAT_R8, 64, 64, 1, NVN_TEXTURE_FLAGS_LINEAR);   // 源范围出池
+      CHECK(rp_tex_resolve(&c, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_range_outside_pool") == 1);
+      nvn_be_tex_release(&c); }
+    res_fresh();
+    { tex_t d = mk_tex(54, 0, NVN_FORMAT_R8, 2, 2, 1, NVN_TEXTURE_FLAGS_LINEAR); memset(d.mem, 0x5A, 4);
+      nvn_be_tex_cpu_written(&d);   // WriteTexels 写过的线性贴图：以前打 upload_linear_or_sparse 红行，现在能传
+      int n0 = g_nup;
+      CHECK(rp_tex_resolve(&d, &g_fake_cmd) != NULL && g_nup == n0 + 1 && g_up[n0].first[0] == 0x5A);
+      nvn_be_tex_release(&d); }
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
 }
 
@@ -1203,10 +1349,6 @@ static void t_dispatch_ubop_ro_skip(void) {
     g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
-// 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
-static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
-    p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
-}
 // #659：计算阶段独立图像槽，读写属性决定 GPU 所有权；不涉及间接参数同步。
 static void t_compute_image(void) {
     pass_fresh(); res_fresh(); g_arena_used = 0;
@@ -1249,6 +1391,52 @@ static void t_compute_image(void) {
     fresh.serial = 662; fresh.d.levels = 2; nvn_tex_layout(&fresh.d, &fresh.L);
     nvn_be_reg_tex(6, &fresh, NULL); rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); pass_fresh();
+}
+
+// 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
+static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
+    p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
+}
+// P2：计算存储缓冲的两种非 NVN 槽来源——map 2 别名「用户 UBO 槽的本体」，map 3 读「UBO 内 8 字节 guest 裸指针」。
+// 两条都要能在同一提交里绑成 SSBO；指针字节按镜像（不是可能过时的 guest 内存）取，目标长度按池余量。
+static void t_compute_sources(void) {
+    pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; g_arena_used = 0; g_nbw = 0;
+    g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0;
+    for (unsigned i = 0; i < sizeof g_pmem; i++) g_pmem[i] = 0x33;
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0x33, sizeof mirror);
+    uint64_t target = base + PG + 64, ptr = target - 0x1000;   // nvn_ga2ca 替身 +0x1000
+    memcpy(g_pmem + 3 * PG + 8, &ptr, 8); memcpy(mirror + 3 * PG + 8, &ptr, 8);
+    g_buf_cpu_fake = mirror;
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 2;
+    g_cprog.ent[0][0].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][0].src_kind = NVN_RB_UBOP; g_cprog.ent[0][0].src_reg = 0; g_cprog.ent[0][0].access = NVN_GPU_ACC_RW;
+    g_cprog.ent[0][1].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][1].src_kind = NVN_RB_UBOA; g_cprog.ent[0][1].src_reg = 0; g_cprog.ent[0][1].src_off = 8; g_cprog.ent[0][1].access = NVN_GPU_ACC_R;
+    stream s = {0};
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 0; ub->addr = base + 3 * PG; ub->size = 32;
+    p_dispatch *dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 1; dp->y = 1; dp->z = 1;
+    end(&s); submit1(&s);
+    CHECK(g_cbinds == 1 && g_ncb == 2 && g_ndisp == 1);
+    CHECK(g_cb[0].cls == NVN_GPU_RES_SSBO && g_cb[0].u.b.off == 3 * PG && g_cb[0].u.b.len == 32);   // map 2：绑 UBO 槽的地址与长度
+    CHECK(g_cb[1].cls == NVN_GPU_RES_SSBO && g_cb[1].u.b.off == PG + 64 && g_cb[1].u.b.len == sizeof g_pmem - (PG + 64));   // map 3：读指针后按池余量绑
+    // 负例 1：UBO 内偏移越界 → 准确跳过，不绑错内容
+    g_cprog.ent[0][1].src_off = 32;
+    { stream t = {0}; p_bind_buf *u2 = put(&t, OP_BIND_UBO, sizeof *u2); *u2 = *ub;
+      p_dispatch *d2 = put(&t, OP_DISPATCH, sizeof *d2); d2->x = 1; d2->y = 1; d2->z = 1; end(&t); submit1(&t); }
+    CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "uniform_buffer_indirect_offset_outside") == 1);
+    // 负例 2：长度未知的可写间接来源 → 准确拒绝（回写不能扩到相邻分配）
+    g_cprog.ent[0][1].src_off = 8; g_cprog.ent[0][1].access = NVN_GPU_ACC_RW;
+    { stream t = {0}; p_bind_buf *u3 = put(&t, OP_BIND_UBO, sizeof *u3); *u3 = *ub;
+      p_dispatch *d3 = put(&t, OP_DISPATCH, sizeof *d3); d3->x = 1; d3->y = 1; d3->z = 1; end(&t); submit1(&t); }
+    CHECK(g_cresolves == 3 && g_cpipe_gets == 1);
+    CHECK(nvn_unimpl_count("draw", "uniform_buffer_unbound") == 0);
+    CHECK(nvn_unimpl_count("draw", "uniform_buffer_unresolved") == 0);
+    CHECK(nvn_unimpl_count("draw", "uniform_buffer_not_host_readable") == 0);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_outside_pools") == 0);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_indirect_empty") == 0);
+    CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "compute_storage_indirect_writable_unknown") == 1);
+    g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem);
 }
 
 static void t_copy_t2t(void) {
@@ -1580,12 +1768,15 @@ int main(int argc, char **argv) {
     t_dirty_bits();
     t_deferred_bind();
     t_program_stages();
+    t_program_bind_stages();
     // 一行一个调用：外部各支都往这里加用例，挤在一行时每两支必冲突
     t_pools();
     t_tex_init_registers_only();
     t_alias();
     t_cpu_upload();
     t_cpu_rules();
+    t_linear_upload();
+    t_linear_reject();
     t_registry();
     t_buf_mirror();
     t_buf_ops();
@@ -1604,6 +1795,7 @@ int main(int argc, char **argv) {
     t_dispatch_ubop_rw();
     t_dispatch_ubop_ro_skip();
     t_compute_image();
+    t_compute_sources();
     t_copy_t2t();
     t_draw();
     t_present();

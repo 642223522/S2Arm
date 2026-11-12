@@ -13,12 +13,15 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t relayWriteLock = PTHREAD_MUTEX_INITIALIZER;
 static ns2_state input;
 static ns2_motion relayMotion, relayMotionLeft;   // relayMotionLeft：Joy-Con 2 拼对时左只的（INPUT 包 motion_left）
+static ns2_mouse relayMouse[2];   // Joy-Con 2 光学鼠标 [0] 左只 / [1] 右只（INPUT 包 mouse，mouse_kind 标哪一只；一对时两只轮流来；旧启动器没有 → known = 0）
+static uint64_t relayMouseUs[2];   // 各侧收到的时刻（超过 250 毫秒没来就当没有）
 static ns2_kind relayKind;   // 通道 v2 带来的对外输出型号（持 lock）
 static ns2_status status;
 static int directStarted, ready, foreground, motion_requested;
@@ -107,6 +110,8 @@ static int receive_all(int fd, void *buffer, size_t length) {
     return 1;
 }
 
+static uint64_t s2a_mac_ns2_now_us(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u; }
+
 static void *relay_read_main(void *context) {
     int fd = (int)(intptr_t)context;
     ns2_relay_packet packet;
@@ -138,6 +143,12 @@ static void *relay_read_main(void *context) {
             relayMotionLeft = (ns2_motion){.known = 1, .host_timestamp_us = (uint64_t)l->host_timestamp_us_hi << 32 | l->host_timestamp_us_lo,
                 .acceleration_x = l->acceleration_x, .acceleration_y = l->acceleration_y, .acceleration_z = l->acceleration_z, .gyro_x = l->gyro_x, .gyro_y = l->gyro_y, .gyro_z = l->gyro_z};
         } else memset(&relayMotionLeft, 0, sizeof relayMotionLeft);
+        if (connected && (packet.mouse_kind == NS2_KIND_JOYCON_L || packet.mouse_kind == NS2_KIND_JOYCON_R)) {
+            const ns2_relay_mouse *m = &packet.mouse;
+            int side = packet.mouse_kind == NS2_KIND_JOYCON_R;
+            relayMouse[side] = (ns2_mouse){.known = 1, .kind = (ns2_kind)packet.mouse_kind, .x = m->x, .y = m->y, .surface = m->surface, .distance = m->distance};
+            relayMouseUs[side] = s2a_mac_ns2_now_us();
+        } else if (!connected) memset(relayMouse, 0, sizeof relayMouse);
         pthread_mutex_unlock(&lock);
     }
 
@@ -150,6 +161,7 @@ static void *relay_read_main(void *context) {
         memset(&input, 0, sizeof input);
         memset(&relayMotion, 0, sizeof relayMotion);
         memset(&relayMotionLeft, 0, sizeof relayMotionLeft);
+        memset(relayMouse, 0, sizeof relayMouse);
         relayKind = NS2_KIND_NONE;
     }
     pthread_mutex_unlock(&lock);
@@ -398,6 +410,36 @@ EXPORT int s2a_mac_ns2_read_motion_pair(s2a_pad_motion out[2]) {
     out[0] = pad_motion(&left);
     out[1] = pad_motion(&right);
     return 2;
+}
+
+
+// Joy-Con 2 光学鼠标，左右各一份：连着 Joy-Con 2（单只 / 一对）就返回有几侧（游戏靠它认 Joy-Con 2，没有鼠标读数也照报；窗口失焦也照报，
+//   免得样式来回切、游戏收到手柄重配）。out[0] 左只、out[1] 右只，side 填好；单只时只有那一侧（另一侧 side = 0xff）。
+//   读数取通道 / 直连最近一笔（各侧 250 毫秒内），失焦时不给
+EXPORT int s2a_mac_ns2_read_mouse_pair(s2a_pad_mouse out[2]) {
+    if (!out) return 0;
+    out[0] = out[1] = (s2a_pad_mouse){0};
+    ns2_mouse mouse[2] = {{0}};
+    pthread_mutex_lock(&lock);
+    int on = ready, live = ready && foreground;
+    uint64_t now = s2a_mac_ns2_now_us();
+    for (int side = 0; side < 2; side++) {
+        if (live && relayFD >= 0) { if (now - relayMouseUs[side] <= 250000) mouse[side] = relayMouse[side]; }
+        else if (live) ns2_get_mouse_side(side, &mouse[side]);
+    }
+    pthread_mutex_unlock(&lock);
+    if (!on) return 0;
+    ns2_kind kind = s2a_mac_ns2_kind();
+    int has[2] = {kind == NS2_KIND_JOYCON_L || kind == NS2_KIND_JOYCON_PAIR, kind == NS2_KIND_JOYCON_R || kind == NS2_KIND_JOYCON_PAIR};
+    int n = 0;
+    for (int side = 0; side < 2; side++) {
+        out[side].side = has[side] ? (uint8_t)side : 0xff;
+        if (!has[side]) continue;
+        n++;
+        out[side].host_timestamp_us = now;
+        if (mouse[side].known) { out[side].known = 1; out[side].x = mouse[side].x; out[side].y = mouse[side].y; out[side].distance = mouse[side].distance; }
+    }
+    return n;
 }
 
 EXPORT int s2a_mac_ns2_read_motion(s2a_pad_motion *out) {
