@@ -72,6 +72,16 @@ static void boundary_cases(const char *T) {
         if (pid > 0) { int status = 0; CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
             "pax case %u: 期望 %s 且不崩，wait status=%d", i, i == 0 ? "-2/0文件/0字节" : "0/1文件/2字节", status); }
     }
+    // v0.3.1：认不出的条目类型（软链 '2'、带数据的 'Z'）跳过、后面的文件照解：期望 rc 0、2 个文件 / 4 字节、没有链接落地
+    { char lt[1024], lr[1024]; snprintf(lt, sizeof lt, "%s/odd.tar", T); snprintf(lr, sizeof lr, "%s/odd", T); CHECK(!mkdir(lr, 0755), "建 odd 目录失败");
+      FILE *o = fopen(lt, "wb"); CHECK(o != NULL, "造 odd 包失败");
+      if (o) { tar_entry(o, "a.bin", '0', "ab", 2); tar_entry(o, "link", '2', "", 0); tar_entry(o, "weird", 'Z', "xxxxxxxxxx", 10);
+               tar_entry(o, "b.bin", '0', "cd", 2); char z[1024] = {0}; fwrite(z, 1, sizeof z, o); fclose(o);
+               unsigned nf = 0; uint64_t nb = 0; int rc = s2a_untar(lt, lr, &nf, &nb); char q[1100]; struct stat qs;
+               CHECK(rc == 0 && nf == 2 && nb == 4, "认不出的条目：期望 rc 0 / 2 文件 / 4 字节，实际 %d / %u / %llu", rc, nf, (unsigned long long)nb);
+               snprintf(q, sizeof q, "%s/b.bin", lr); CHECK(!stat(q, &qs) && qs.st_size == 2, "认不出的条目之后的 b.bin 没解出来");
+               snprintf(q, sizeof q, "%s/link", lr); CHECK(lstat(q, &qs) != 0, "认不出的软链条目不该落地");
+               snprintf(q, sizeof q, "%s/weird", lr); CHECK(lstat(q, &qs) != 0, "认不出的条目不该落地"); } }
     snprintf(path, sizeof path, "%s/abc", root); FILE *f = fopen(path, "rb"); char value[3] = {0};
     CHECK(f && fread(value, 1, 2, f) == 2 && !strcmp(value, "ok"), "合法 pax path 内容不符"); if (f) fclose(f);
 }
@@ -156,22 +166,30 @@ int main(void) {
         snprintf(d, sizeof d, "%s/docs/资源包/.pushed", T); CHECK(stat(d, &st) != 0, "推送记录 .pushed 应删（%d）", k);
         snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied && cmp -s %s/ia.bak %s/docs/资源包/index.applied.tsv", T, T, T); CHECK(sh(c) == 0, ".applied / index.applied.tsv 不应变（%d）", k);
     }
-    // 核对机上实况（10-25 测试设备2：推了 4 批、解开 0 个包却记成已应用）：index.tsv 里有、没有任何推送包送来的文件 →
-    //   期望判失败「返回 -8」、行里写明缺几个和第一个的路径；.applied / index.applied.tsv 不动（执行器下次按旧的已应用索引补推）；
-    //   核对在清旧文件之前：核不过不删任何文件（旧包的文件都还在）
+    // 核对机上实况（10-25 测试设备2：推了 4 批、解开 0 个包却记成已应用）：index.tsv 里有、没有任何推送包送来的文件。
+    //   v0.3.1 缺件照玩：缺的是核心文件（exefs/ 程序、ctl/control.nacp、game.img / romfs.img）→ 照旧判失败「返回 -8」、行里写明缺几个和第一个的路径；
+    //   .applied / index.applied.tsv 不动（执行器下次按旧的已应用索引补推）；核对在清旧文件之前：核不过不删任何文件（旧包的文件都还在）
     snprintf(c, sizeof c, "cd %s && rm -f docs/资源包/.incoming/*.tar && cp docs/资源包/index.applied.tsv ia.bak && "
-        "printf 'a.txt\\t3\\tx\\nshaders/direct/keys.tsv\\t504067\\tx\\n' > docs/资源包/index.tsv && "
+        "printf 'a.txt\\t3\\tx\\nexefs/main\\t504067\\tx\\n' > docs/资源包/index.tsv && "
         "printf '{\"version\":2,\"index_sha256\":\"deadbeef03\"}' > docs/资源包/manifest.json", T);
     CHECK(sh(c) == 0, "造缺文件夹具失败");
-    CHECK(s2a_pack_apply(docs) != 0, "索引里的文件机上不在，应判失败");
-    snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '1 个文件机上缺或大小不符（例：shaders/direct/keys.tsv（不在））.*返回 -8'", T); CHECK(sh(c) == 0, "失败行应写明缺 1 个、例 keys.tsv、返回 -8");
+    CHECK(s2a_pack_apply(docs) != 0, "索引里的核心文件机上不在，应判失败");
+    snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '1 个文件机上缺或大小不符（例：exefs/main（不在））.*返回 -8'", T); CHECK(sh(c) == 0, "失败行应写明缺 1 个、例 exefs/main、返回 -8");
     // iOS 装机剃刀 #10：这次失败在核对（不写解包现场），上一次（截短包）的现场「包被截短」不能贴到这一行上
     snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '现场'", T); CHECK(sh(c) != 0, "核对失败的行不应带现场（旧代码贴上一次截短包的现场）");
     snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied && cmp -s %s/ia.bak %s/docs/资源包/index.applied.tsv", T, T, T); CHECK(sh(c) == 0, "缺文件时 .applied / index.applied.tsv 不应变");
-    snprintf(c, sizeof c, "cd %s && printf 'a.txt\\t4\\tx\\n' > docs/资源包/index.tsv", T); sh(c);
     snprintf(d, sizeof d, "%s/docs/资源包/空.txt", T); CHECK(stat(d, &st) == 0, "核对没过不应清旧文件（空.txt 被删了）");
-    CHECK(s2a_pack_apply(docs) != 0, "大小不符应判失败");
-    snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '例：a.txt（大小不符）.*返回 -8'", T); CHECK(sh(c) == 0, "失败行应写明 a.txt 大小不符");
+    // 缺的只是非核心文件（着色器库、旧形态 romfs 散文件等）→ 部分可玩：不判失败；写 .partial（第一行 = 清单 sha），.applied / index.applied.tsv 不动
+    //   （执行器下次照样补推缺的）；unpack.log 写「缺 N 个非必需文件（例：…），部分可玩 = <sha>」（tools/push_pack.py 认这一行）
+    snprintf(c, sizeof c, "cd %s && printf 'a.txt\\t3\\tx\\nshaders/direct/keys.tsv\\t504067\\tx\\n' > docs/资源包/index.tsv && "
+        "printf '{\"version\":2,\"index_sha256\":\"deadbeef04\"}' > docs/资源包/manifest.json", T); sh(c);
+    CHECK(s2a_pack_apply(docs) == 0, "只缺非核心文件：应判部分可玩、不判失败");
+    snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '缺 1 个非必需文件（例：shaders/direct/keys.tsv（不在））.*部分可玩 = deadbeef04'", T); CHECK(sh(c) == 0, "部分可玩行应写明缺几个、例子、清单 sha");
+    snprintf(c, sizeof c, "head -1 %s/docs/资源包/.partial | grep -qx deadbeef04", T); CHECK(sh(c) == 0, ".partial 第一行应是本清单 sha");
+    snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied && cmp -s %s/ia.bak %s/docs/资源包/index.applied.tsv", T, T, T); CHECK(sh(c) == 0, "部分可玩时 .applied / index.applied.tsv 不应变（电脑照样补推）");
+    snprintf(c, sizeof c, "cd %s && printf 'a.txt\\t4\\tx\\n' > docs/资源包/index.tsv && printf '{\"version\":2,\"index_sha256\":\"deadbeef05\"}' > docs/资源包/manifest.json", T); sh(c);
+    CHECK(s2a_pack_apply(docs) == 0, "非核心文件大小不符：也是部分可玩");
+    snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '例：a.txt（大小不符）.*部分可玩 = deadbeef05'", T); CHECK(sh(c) == 0, "部分可玩行应写明 a.txt 大小不符");
     // pax 扩展头记录缺空格（11-01 审计 P2-17）：头数据 "4abc\0"（长度 5），记录「4abc」长度 4 合法、没有空格；旧代码 strchr 到 \0 得 NULL、+1 后解引用崩。
     //   期望按语义手写：判头坏「返回 -2」、不崩；unpack 级的现场串里写明是 pax 记录格式异常（这里直接调 s2a_untar，只核返回）
     { char tp[2100], r[64], root2[2100]; snprintf(tp, sizeof tp, "%s/badpax.tar", T); snprintf(root2, sizeof root2, "%s/badpax_root", T); mkdir(root2, 0755);
@@ -232,11 +250,27 @@ int main(void) {
       snprintf(c2, sizeof c2, "cp -R '%s/smg2资源包/.' '%s/资源包/'", D, D); sh(c2);
       CHECK(s2a_import_state(D) == 0, "⑦ 「资源包」里有可用内容应判就绪");
       snprintf(c2, sizeof c2, "%s/smg2资源包", D); CHECK(stat(c2, &s2) == 0, "⑦ 旁边的「smg2资源包」不应被挪");
-      // ⑧ 10-26 测试设备2：manifest.json 在、但 index.tsv 记的文件缺（拷到一半）→ 3 不完整；补齐 → 0。期望按 index.tsv 手写：ctl/control.nacp 2 字节在、romfs/x.bin 5 字节缺
+      // ⑧ 10-26 测试设备2：manifest.json 在、但 index.tsv 记的文件缺（拷到一半）。期望按 index.tsv 手写：ctl/control.nacp 2 字节在、romfs/x.bin 5 字节缺。
+      //   v0.3.1 缺件照玩：缺的 romfs/x.bin 不是核心文件 → 4 部分可玩（玩家确认后照玩）；核心文件 ctl/control.nacp 缺 → 3 不完整；补齐 → 0
       snprintf(c2, sizeof c2, "printf 'ctl/control.nacp\\t2\\tx\\nromfs/x.bin\\t5\\tx\\n' > '%s/资源包/index.tsv'", D); sh(c2);
-      CHECK(s2a_import_state(D) == 3, "⑧ index.tsv 里有文件缺应判不完整");
+      CHECK(s2a_import_state(D) == 4, "⑧ 只缺非核心文件应判部分可玩(4)");
       snprintf(c2, sizeof c2, "mkdir -p '%s/资源包/romfs' && printf 1234 > '%s/资源包/romfs/x.bin'", D, D); sh(c2);
-      CHECK(s2a_import_state(D) == 3, "⑧ 大小不对（4 ≠ 5）也应判不完整");
+      CHECK(s2a_import_state(D) == 4, "⑧ 非核心文件大小不对（4 ≠ 5）也是部分可玩(4)");
+      snprintf(c2, sizeof c2, "mv '%s/资源包/ctl/control.nacp' '%s/nacp.bak'", D, D); sh(c2);
+      CHECK(s2a_import_state(D) == 3, "⑧ 核心文件 ctl/control.nacp 缺：照旧判不完整(3)");
+      snprintf(c2, sizeof c2, "mv '%s/nacp.bak' '%s/资源包/ctl/control.nacp'", D, D); sh(c2);
+      // ⑧b 部分可玩的快判（v0.3.1）：解包时写的 .partial 第一行 = 当前清单 sha、程序描述在 → 4，不再逐文件核；闸门把它当就绪（确认在 s2a_import_gate 里问）；
+      //   清单换了（电脑补推了新的）→ .partial 失效、回到逐文件核；补齐且写了 .applied → 0
+      { char E[1300], ER[1400]; snprintf(E, sizeof E, "%s/imp_partial", T); snprintf(ER, sizeof ER, "%s/资源包", E);
+        snprintf(c2, sizeof c2, "mkdir -p '%s/exefs' && printf npdm > '%s/exefs/main.npdm' && printf '{\"version\":2,\"index_sha256\":\"p1\"}' > '%s/manifest.json' && "
+                 "printf 'exefs/main.npdm\\t4\\tx\\nromfs/gone.bin\\t9\\tx\\n' > '%s/index.tsv' && printf 'p1\\n1\\nromfs/gone.bin（不在）\\n' > '%s/.partial'", ER, ER, ER, ER, ER); sh(c2);
+        CHECK(s2a_import_state(E) == 4, "⑧b .partial = 清单 sha、程序描述在 → 部分可玩(4)");
+        struct s2a_gate_watch wp = {0}; char wy[200];
+        CHECK(s2a_import_decide(E, &wp, 1, wy, sizeof wy) == S2A_GATE_READY, "⑧b 闸门：部分可玩当就绪（玩家确认在 s2a_import_gate 里问）");
+        snprintf(c2, sizeof c2, "printf '{\"version\":2,\"index_sha256\":\"p2\"}' > '%s/manifest.json'", ER); sh(c2);
+        CHECK(s2a_import_state(E) == 4, "⑧b 清单换了：.partial 失效，逐文件核仍只缺非核心 → 4");
+        snprintf(c2, sizeof c2, "mkdir -p '%s/romfs' && printf 123456789 > '%s/romfs/gone.bin' && printf p2 > '%s/.applied'", ER, ER, ER); sh(c2);
+        CHECK(s2a_import_state(E) == 0, "⑧b 补齐且 .applied = 清单 → 就绪(0)"); }
       snprintf(c2, sizeof c2, "printf 12345 > '%s/资源包/romfs/x.bin'", D); sh(c2);
       CHECK(s2a_import_state(D) == 0, "⑧ 补齐后应判就绪");
       // ⑨ 审计 P2-2：说明页正文。按过「重新检查」还不行，开头说「刚刚查过」；首次不说（文字手写）
@@ -310,12 +344,12 @@ int main(void) {
       snprintf(c2, sizeof c2, "%s/.incoming/1_000.tar", R); struct stat s3; CHECK(stat(c2, &s3) == 0, "⑫ 等待期间不应解 / 删任何包");
       // 不完整（没在传）：直接说明页；之后文件变了也不再「当成正在拷」去等（剃刀 #33），补齐 → 就绪
       snprintf(D, sizeof D, "%s/imp7", T); snprintf(R, sizeof R, "%s/资源包", D);
-      snprintf(c2, sizeof c2, "mkdir -p '%s/romfs' && echo '{}' > '%s/manifest.json' && printf 'a.bin\\t2\\tx\\nromfs/b.bin\\t5\\tx\\n' > '%s/index.tsv' && printf 12 > '%s/a.bin'", R, R, R, R); sh(c2);
+      snprintf(c2, sizeof c2, "mkdir -p '%s/exefs' && echo '{}' > '%s/manifest.json' && printf 'exefs/main.npdm\\t2\\tx\\nexefs/main\\t5\\tx\\n' > '%s/index.tsv' && printf 12 > '%s/exefs/main.npdm'", R, R, R, R); sh(c2);   // 缺的是核心文件（v0.3.1 起非核心缺件算部分可玩）
       w = (struct s2a_gate_watch){0};
       CHECK(s2a_import_decide(D, &w, 100, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 不完整、首轮：应直接说明页");
-      snprintf(c2, sizeof c2, "printf 12 > '%s/romfs/b.bin'", R); sh(c2);
+      snprintf(c2, sizeof c2, "printf 12 > '%s/exefs/main'", R); sh(c2);
       CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 剃刀 #33：不完整、文件变了也不等，仍是说明页");
-      snprintf(c2, sizeof c2, "printf 12345 > '%s/romfs/b.bin'", R); sh(c2);
+      snprintf(c2, sizeof c2, "printf 12345 > '%s/exefs/main'", R); sh(c2);
       CHECK(s2a_import_decide(D, &w, 170, why, sizeof why) == S2A_GATE_READY, "⑫ 补齐：应就绪");
       snprintf(D, sizeof D, "%s/imp8", T); mkdir(D, 0755); w = (struct s2a_gate_watch){0};
       CHECK(s2a_import_decide(D, &w, 1, why, sizeof why) == S2A_GATE_NONE, "⑫ 没有资源包、首轮：应直接说明页"); }
@@ -542,6 +576,14 @@ int main(void) {
         sh(c);
         snprintf(c, sizeof c, "test -s '%s/.incoming/1_000.tar' && test ! -e '%s/资源包'", N1, G1);
         CHECK(s2a_pack_migrate_one(G1) == 1 && sh(c) == 0, "⑮⑧ 旧位置有待解包：换掉新位置（待解包到了新位置、旧位置没了）");
+        // ⑧c 审计 P1-169：换的时候第二步改名失败（旧位置的上级只读，删不掉旧条目）→ 新位置原样（清单 q9、待解包还在）、
+        //   不留挪开的 .s2a-old-* 副本、旧位置那份也在、返回 -2（新位置此时是上一步换进来的那份：只有待解包、没有清单）。原先先删新位置再改名：这一步失败新位置就没了
+        snprintf(c, sizeof c, "set -e; mkdir -p '%s/资源包'; printf '{\"index_sha256\": \"q7\"}' > '%s/资源包/manifest.json'; chmod 555 '%s'", G1, G1, G1);
+        CHECK(sh(c) == 0, "⑮⑧c 造：旧位置清单 q7、上级只读");
+        int r8 = s2a_pack_migrate_one(G1);
+        snprintf(c, sizeof c, "chmod 755 '%s'; test -s '%s/.incoming/1_000.tar' && test ! -e '%s/manifest.json' && ! ls -d '%s'.s2a-old-* >/dev/null 2>&1 && grep -q q7 '%s/资源包/manifest.json'", G1, N1, N1, N1, G1);
+        CHECK(r8 == -2 && sh(c) == 0, "⑮⑧c 第二步改名失败：返回 -2（实际 %d）、新位置原样（待解包在、没有清单）、没留挪开的副本、旧位置在", r8);
+        snprintf(c, sizeof c, "rm -rf '%s/资源包'", G1); sh(c);
         snprintf(c, sizeof c, "set -e; printf '{\"index_sha256\": \"abc\"}' > '%s/manifest.json'; printf abc > '%s/.applied'; mkdir -p '%s/exefs'; head -c 100 /dev/urandom > '%s/exefs/main.npdm'; rm -rf '%s/.incoming'", N1, N1, N1, N1, N1);
         sh(c);
         // ⑤ 迁到一半被杀：30 款，子进程迁、几毫秒后 SIGKILL，再迁一次 → 30 款都在新位置、每款 50 个文件一个不少、存档都在

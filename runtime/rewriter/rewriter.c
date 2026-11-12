@@ -1278,15 +1278,15 @@ static int plain_nosp(const Ins* x) {
 }
 static void plain(const Ins* x) {
   /* 只在「恢复 sp 后还用 sp 以下数据」的函数里改走死寄存器（sp_dynamic）：旧写法在这些点会盖游戏数据（受影响的款 = x18_spdyn > 0），
-   *   挑不出就记缺口报红。普通函数按 AAPCS64 sp 以下没有活数据，照旧写法——没受影响的款改写产物与旧改写器逐字节相同，改写速度不变 */
+   *   挑不出就退回旧写法、记兼容写法（x18_compat）。普通函数按 AAPCS64 sp 以下没有活数据，照旧写法——没受影响的款改写产物与旧改写器逐字节相同，改写速度不变 */
   if (!noredzone() && sp_dynamic(x->at))
     bump("x18_spdyn");
   if (!noredzone() && sp_danger(x->at)) {   /* #704：只有恢复 sp 后走得到的点才危险，恢复点之前的点照旧写法 */
     bump("x18_spdanger");
     if (plain_nosp(x))
       return;
-    fail("RuntimeError: %" PRIx64 " %s %s：x18 改写点在恢复 sp 后还用 sp 以下数据的函数里、挑不出已死的临时寄存器（不能压 sp 以下）",
-         (uint64_t)x->at, x->m, operand_text(x));
+    /* 挑不出已死的临时（v0.3.1 拿不准不停）：这一处退回旧写法（压栈），记兼容写法；只有该点恰在恢复 sp 后、sp 以下有活数据时才会踩数据 */
+    bump("x18_compat");
   }
   int S, T;
   pick(x->regs, &S, &T);
@@ -1565,6 +1565,17 @@ static void brrel(const Jump* j) {
     for (size_t k = 0; k < j->mids.n; k++) {
       uint32_t w = j->mids.v[k].w, r;
       int off;
+      if ((w & 0x1f000000u) == 0x10000000u) {   /* adr / adrp（#716：取表与 br 之间夹着 adrp x0, …）：与位置有关，按原目标在补丁区重算；adr 换成 adrp + add */
+        int d = w & 31;
+        int64_t im = (int64_t)((((w >> 5) & 0x7ffff) << 2) | ((w >> 29) & 3));
+        if (im & (1 << 20))
+          im -= 1 << 21;   /* 21 位有符号 */
+        A at = j->mids.v[k].at, t = (w >> 31) ? (at & ~4095LL) + im * 4096 : at + im;
+        emit(adrp(d, here(), t));
+        if (!(w >> 31))
+          emit(ADDI(d, d, t & 4095, 0));
+        continue;
+      }
       emit(noredzone() && j->mids.v[k].sp && sp_rebase(w, 32, &r, &off) ? r : w);   /* 安卓 / 鸿蒙块已 sub sp,#32：sp 访存偏移补回（general 里 sp_mid_ok 已核过编得出） */
     }
     emit(noredzone() ? STR(tmp1, 31, 0) : STUR(tmp1, 31, -16));
@@ -2608,7 +2619,7 @@ static int general(const IV* l, int j, Pair f, Jump* out, char* why, size_t n) {
   for (int q = k0 + 1; q < j; q++)
     if (q != ka) {
       Ins* x = l->v + q;
-      if (!midok(x) || (!strchr(operand_text(x), '[') && (pre(x->m, "ld") || pre(x->m, "st"))))
+      if ((!midok(x) && !in(x->m, "adr|adrp")) || (!strchr(operand_text(x), '[') && (pre(x->m, "ld") || pre(x->m, "st"))))   /* adr / adrp 搬过去按原目标重算（brrel） */
         BAD("中间指令不可搬移 %" PRIx64 " %s %s", (uint64_t)x->at, x->m, operand_text(x));
       /* x16 / x17 可以搬：brrel 先还原 x16 / x17 原值再执行搬来的指令，之后把它们的新值存回槽、每个落点还原后再跳（10-26 普查
        * 010095300B6A4000 / 0100C1F0051B6000：编译器把 mov/movk w16、mov w17 排在取表与 br 之间，跳转目标要读）。
@@ -3348,9 +3359,8 @@ static void gensite(Site* s) {
       int S, T, V;
       plainish = pick_dead_gp2(&x, x.at + 4, -1, LV_BUDGET, &S, &T, &V) != 0;
     }
-    if (!plainish)
-      fail("RuntimeError: %" PRIx64 " %s %s %s：改写点在恢复 sp 后还用 sp 以下数据的函数里，这类改写块会压 sp 以下",
-           (uint64_t)s->at, s->kind, x.m, operand_text(&x));
+    if (!plainish)   /* 别的生成器 / 挑不出临时：照旧写法生成（压栈），记兼容写法（v0.3.1 拿不准不停；cond / pcrel 走旧路时不另计） */
+      bump("x18_compat");
   }
   if (N == 18 && (eq(s->kind, "tpidr_r") || eq(s->kind, "tpidrro_r"))) {
     /* 目标是 x18（#52 鬼灭之刃 2 main+0x23f5ec0 mrs x18, tpidr_el0）：线程指针取到临时寄存器，写进虚拟 x18 槽（slot 0，同 plain） */
@@ -4841,8 +4851,9 @@ static int outputs(void) {
   int retry_gaps = !g->dual && g->retry_front && g->gaps.n;
   int layout_fatal = retry_gaps || (!g->gaps.n && (capacity_short || lost));
   msg("PFRW mod=%s need=%zu gaps=%zu fatal=%d\n", g->r.module, total, g->gaps.n, layout_fatal);
-  if (g->gaps.n && !retry_gaps) {
-    /* 本轮 gaps.tsv 留作诊断；上一轮运行产物不能再与新输入混用。 */
+  if (g->gaps.n && !retry_gaps && (capacity_short || lost)) {
+    /* 有缺口且补丁区放不下 / 丢了自旋回边：布局不成立，不出产物（gaps.tsv 留作诊断；上一轮产物不能与新输入混用）。
+     *   其余有缺口的照出产物（v0.3.1 拿不准不停）：缺口点的单元已回滚、原指令不动，退出码仍是 3，出包按缺口数降级继续 */
     remove_output("patched.bin");
     remove_output("fixups.tsv");
     remove_output("gates.tsv");
@@ -5023,7 +5034,7 @@ static int outputs(void) {
   if (g->log)
     hex(g->log, g->po);
   msg(" slot_refs %zu gates %zu\n", g->fixrefs, g->gates.n);
-  return 0;
+  return g->gaps.n ? 3 : 0;   /* 有缺口：产物照出、退 3（pack/stage_rewrite.sh 记降级继续；社区补丁轮按 3 认领缺口） */
 }
 static void load(void) {
   FILE* f = fopen(g->r.input, "rb");

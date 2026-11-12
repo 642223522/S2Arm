@@ -190,7 +190,7 @@ def _outcome(c, child, last):
         out = dict(state=state if state in ("completed", "failed", "cancelled") else "failed", message=last.get("message") or "")
         if out["state"] == "failed" and error.get("code"):
             out["code"] = error["code"]
-        for key in ("outputPath", "ipa", "ipaBytes", "packBytes", "outputBytes"):
+        for key in ("outputPath", "ipa", "ipaBytes", "packBytes", "outputBytes", "notes"):   # notes：降级继续的玩家提示（完成卡逐条显示）
             if result.get(key) not in (None, ""):
                 out[key] = result[key]
         if result.get("outputPath") or result.get("ipa"):

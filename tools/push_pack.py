@@ -639,6 +639,7 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
         return False
     u0 = len((read(dev, unpack_log(dev), work, "r.unpack0") or "").splitlines())
     done = re.compile(r"解开 \d+ 个包 .*\.applied = " + re.escape(want or "-"))
+    partial = re.compile(r"解开 \d+ 个包 .*缺 (\d+) 个非必需文件.*部分可玩 = " + re.escape(want or "-"))   # 手机上只缺非核心文件（v0.3.1 缺件照玩，pack_apply.c）
     # 多款容器：正常拉起到游戏库，由库在后台解开传完的这款（图块显示「安装中」和进度，S2ArmShellHostModel）。只解包模式是整屏导入页、解完进程自己退出，
     #   玩家正开着库时 App 会突然消失；拉不起时玩家手动打开也走库这同一条路。单款包照旧只解包模式
     say("拉起 App 到游戏库，由它解开这款" if dev.ctx else "起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）")
@@ -661,6 +662,9 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
         new = (read(dev, unpack_log(dev), work, "r.unpack1") or "").splitlines()[u0:]
         if applied() == want and any(done.search(l) for l in new):
             say("资源包：机上已解开（.applied = 本包）"); return True
+        part = [m for m in map(partial.search, new) if m]
+        if part:   # 解开了，但手机上缺几个非核心文件：能玩，提醒补（同「还差最后一步」口径，装机按传输成功 + 提醒收尾）
+            raise NeedsPlayer(f"资源包已传完，还差最后一步：手机上还缺 {part[-1].group(1)} 个文件，可以先玩，用到它们时可能会停；再点一次「装到 iPhone」会把缺的补上")
         failed = [m.group(1).strip() for m in map(FAILED.search, new) if m]
         if failed:   # App 已经起来解过、失败了：按它写的原因当场报（原先只看进度行，第一包前就失败时干等 stall 秒、再报「解包没有开始」，原因丢了）
             raise Fail(f"资源包推进去了，但手机上解开失败：{failed[-1][:600]}")

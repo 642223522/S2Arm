@@ -24,11 +24,14 @@ static struct {
     int has_ds, ds_used, ndraw;   // 当前通道：挂了深度模板附件、有绘制 / 清除用到它、绘制笔数（读数用）
 } P;
 
+// 视图看到的尺寸（像素）。块压缩基底配非压缩视图（一块当一个像素，见 bc_view）时按块数算：通道、整屏清除判断、清除矩形都用它
+static int bc_view(const tex_t *t, const view_t *v, int has_v, uint32_t *bw, uint32_t *bh);
 static void level_size(const tex_t *t, const view_t *v, int has_v, uint32_t *w, uint32_t *h) {
     uint32_t l = has_v && v->set_levels ? v->base_level : 0;
     *w = t->d.width >> l; *h = t->d.height >> l;
     if (!*w) *w = 1;
     if (!*h) *h = 1;
+    uint32_t bw, bh; if (bc_view(t, v, has_v, &bw, &bh)) { *w = (*w + bw - 1) / bw; *h = (*h + bh - 1) / bh; }
 }
 static int scissor_full(const tex_t *t, const view_t *v, int has_v) {
     if (!rp_R.has_sc) return 1;
@@ -71,19 +74,39 @@ static int dup_slot(int i) {
     return 0;
 }
 
-// ---------- 深度贴图经颜色视图当渲染目标：影子 ----------
+// ---------- 深度 / 块压缩贴图经颜色视图当渲染目标：影子 ----------
 // 对照 nvn_mtl.m shrt_block @4762 / bcrt_view @4778 / bcrt_attach @4801 / bcrt_flush @4792：深度格式的图不能当颜色附件，也建不了
 // 颜色格式的视图。画进一张视图格式的影子：通道前把基底那一级那一层的内容逐字节拷进影子，通道后拷回。只有视图一个像素的字节
 // 等于基底一个像素的字节、且基底的存储字节就是游戏的字节的才走（D16、D32F；D24S8 不算）。影子按槽常驻复用。
-// 块压缩格式当渲染目标（iOS 是同一套影子，一块当一个像素）还没接：那个槽当空槽并记账，不把非法的附件交给后端。
+// 块压缩格式同一套影子（#709，iOS bcrt_attach）：视图一个像素的字节等于基底一块的字节（BC1 / BC4 8 字节，其余 16），一块当一个像素，
+// 影子按块数建；基底那边拷贝区域按像素给（整级），缓冲里一行就是一行块。基底在本设备上不能直接采样（后端走计算解码，存储里已经不是
+// 游戏的字节）或是三维贴图的不走，照旧当空槽记账。
 typedef struct { nvn_gpu_tex g; nvn_gpu_view v; uint32_t fmt, w, h; } shadow_t;
 static shadow_t g_sh[8];
-static struct { nvn_gpu_tex base; uint32_t level, layer, w, h, bytes; } g_shu[8];   // 当前通道里各槽用着的影子（base 为空 = 没用）
+static struct { nvn_gpu_tex base; uint32_t level, layer, w, h, bytes, bw, bh; } g_shu[8];   // 当前通道里各槽用着的影子（base 为空 = 没用）；w、h 是影子的尺寸，bw、bh 是基底那一级的像素尺寸
+
+// 块压缩基底配「一块当一个像素」的非压缩视图：回 1 并给块的宽高。只看格式，不看能不能挂（slot_kind 判）
+static int bc_view(const tex_t *t, const view_t *v, int has_v, uint32_t *bw, uint32_t *bh) {
+    nvn_fmt_info b, f;
+    if (!has_v || !v->set_format || !nvn_fmt_info_of((uint32_t)t->d.format, &b) || (b.bw <= 1 && b.bh <= 1)) return 0;
+    if (!nvn_fmt_info_of(v->format, &f) || f.bw != 1 || f.bh != 1 || f.depth || f.stencil || f.expand || f.bytes != b.bytes) return 0;
+    *bw = b.bw; *bh = b.bh;
+    return 1;
+}
 // 颜色槽 i：0 = 照常挂；1 = 走影子（*bytes 一个像素的字节）；-1 = 挂不了（*why 记账名）
 static int slot_kind(int i, uint32_t *bytes, const char **why) {
     const tex_t *t = P.rt.color[i]; nvn_fmt_info b, v;
     if (!nvn_fmt_info_of((uint32_t)t->d.format, &b)) return 0;
-    if (b.bw > 1 || b.bh > 1) { if (why) *why = "color_target_compressed"; return -1; }
+    if (b.bw > 1 || b.bh > 1) {
+        if (why) *why = "color_target_compressed";
+        uint32_t bw, bh;
+        if (!bc_view(t, &P.rt.cview[i], P.rt.has_cview[i], &bw, &bh)) return -1;
+        if (!(nvn_gpu_format_caps((uint32_t)t->d.format) & NVN_GPU_FMT_SAMPLE)) return -1;   // 设备不能直接采样（后端走计算解码）：存储里不是游戏的字节，不能逐字节拷
+        if (t->d.target == NVN_TEXTURE_TARGET_3D) { if (why) *why = "color_target_compressed_3d"; return -1; }   // 三维的一个深度切片一个通道：首版没做
+        if (!(nvn_gpu_format_caps(P.rt.cview[i].format) & NVN_GPU_FMT_RENDER)) return -1;
+        if (bytes) *bytes = b.bytes;
+        return 1;
+    }
     if (!b.depth && !b.stencil) return 0;
     if (why) *why = "color_target_depth";
     if (b.stencil || (b.bytes != 2 && !(b.bytes == 4 && b.kind == NVN_FMT_FLOAT)) || !P.rt.has_cview[i] || !P.rt.cview[i].set_format) return -1;
@@ -93,12 +116,13 @@ static int slot_kind(int i, uint32_t *bytes, const char **why) {
     return 1;
 }
 static void shadow_copy(nvn_gpu_cmd c, int i, int back) {
-    uint64_t row = (uint64_t)g_shu[i].w * g_shu[i].bytes, img = row * g_shu[i].h;
+    uint64_t row = (uint64_t)g_shu[i].w * g_shu[i].bytes, img = row * g_shu[i].h;   // 缓冲里一行 = 影子一行 = 基底一行块
     nvn_gpu_slice sl; nvn_gpu_err e = {0};
     if (!nvn_gpu_ok(nvn_gpu_arena_alloc(c, img, 16, &sl, &e))) { nvn_unimpl("pass", "depth_target_shadow_staging", NULL); return; }
-    NVNcopyRegion r = {0, 0, 0, (int)g_shu[i].w, (int)g_shu[i].h, 1};
-    if (!back) { nvn_gpu_copy_tex_buf(c, g_shu[i].base, g_shu[i].level, g_shu[i].layer, &r, sl.buf, sl.off, row, img); nvn_gpu_copy_buf_tex(c, sl.buf, sl.off, row, img, g_sh[i].g, 0, 0, &r); }
-    else { nvn_gpu_copy_tex_buf(c, g_sh[i].g, 0, 0, &r, sl.buf, sl.off, row, img); nvn_gpu_copy_buf_tex(c, sl.buf, sl.off, row, img, g_shu[i].base, g_shu[i].level, g_shu[i].layer, &r); }
+    NVNcopyRegion r = {0, 0, 0, (int)g_shu[i].w, (int)g_shu[i].h, 1};     // 影子那边（像素 = 块）
+    NVNcopyRegion rb = {0, 0, 0, (int)g_shu[i].bw, (int)g_shu[i].bh, 1};  // 基底那边按像素：深度影子与 r 相同，块压缩是整级的像素尺寸
+    if (!back) { nvn_gpu_copy_tex_buf(c, g_shu[i].base, g_shu[i].level, g_shu[i].layer, &rb, sl.buf, sl.off, row, img); nvn_gpu_copy_buf_tex(c, sl.buf, sl.off, row, img, g_sh[i].g, 0, 0, &r); }
+    else { nvn_gpu_copy_tex_buf(c, g_sh[i].g, 0, 0, &r, sl.buf, sl.off, row, img); nvn_gpu_copy_buf_tex(c, sl.buf, sl.off, row, img, g_shu[i].base, g_shu[i].level, g_shu[i].layer, &rb); }
 }
 // 回影子的视图（当附件用）；开不了回 NULL（已记账）。cleared：这个槽开通道时整屏清除，不用先拷基底的内容
 static nvn_gpu_view shadow_attach(nvn_gpu_cmd c, int i, const tex_t *t, uint32_t bytes, int cleared) {
@@ -123,10 +147,24 @@ static nvn_gpu_view shadow_attach(nvn_gpu_cmd c, int i, const tex_t *t, uint32_t
     if (!base) return NULL;
     g_shu[i].base = base; g_shu[i].level = P.rt.cview[i].set_levels ? P.rt.cview[i].base_level : 0; g_shu[i].layer = P.rt.cview[i].set_layers ? P.rt.cview[i].min_layer : 0;
     g_shu[i].w = w; g_shu[i].h = h; g_shu[i].bytes = bytes;
+    { uint32_t l = g_shu[i].level; g_shu[i].bw = t->d.width >> l; g_shu[i].bh = t->d.height >> l;   // 基底那一级的像素尺寸（不按块取整：拷贝区域到级的边上）
+      if (!g_shu[i].bw) g_shu[i].bw = 1;
+      if (!g_shu[i].bh) g_shu[i].bh = 1; }
     if (!cleared) shadow_copy(c, i, 0);
     return s->v;
 }
+// ---------- 3D 贴图的深度切片当附件 ----------
+// NVN 视图的层号在 3D 贴图上是深度切片（nvn_mtl.m attach() 落到 depthPlane）。Vulkan 的 3D 视图起点只能是 0，深度子范围只能用 2D（阵列）视图
+//（nvn_vk_texview.h 文件头与 plan_make 的错误信息都这么说），所以 3D 附件带层号时请求 2D 阵列目标，层号、级别等其余字段原样。
+// 游戏自己设了目标的、没带层号的（首片）、不是 3D 的贴图：视图记录原样。tmp 由调用方给，生命期同这次取视图。
+static const view_t *att_view(const tex_t *t, int has_v, const view_t *v, view_t *tmp) {
+    if (!has_v) return NULL;
+    if (t->d.target != NVN_TEXTURE_TARGET_3D || !v->set_layers || v->set_target) return v;
+    *tmp = *v; tmp->set_target = 1; tmp->target = NVN_TEXTURE_TARGET_2D_ARRAY;
+    return tmp;
+}
 void rp_pass_note_draw(int uses_ds) { P.ndraw++; if (uses_ds) P.ds_used = 1; }
+void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h) { level_size(P.rt.color[i], &P.rt.cview[i], P.rt.has_cview[i], w, h); }
 int rp_pass_slot_attached(int i) { return P.has_rt && i >= 0 && i < P.rt.n && i < 8 && P.rt.color[i] && !dup_slot(i) && slot_kind(i, NULL, NULL) >= 0; }
 static int pending(void) { if (P.clear_d || P.clear_s) return 1; for (int i = 0; i < 8; i++) if (P.clear_c[i]) return 1; return 0; }
 
@@ -152,7 +190,8 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         if (dup_slot(i)) continue;   // 同一张图的同一级同一层挂了两个槽：只挂前一个（nvn_mtl.m rt_dup_slot @4797）
         uint32_t sbytes = 0; const char *why = NULL; int kind = slot_kind(i, &sbytes, &why);
         if (kind < 0) { nvn_unimpl("pass", why, t); continue; }   // 深度 / 块压缩格式的图挂在颜色槽、又走不了影子：当空槽（画到这个槽的内容丢掉）
-        nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, P.clear_c[i]) : rp_view_for(t, P.rt.has_cview[i] ? &P.rt.cview[i] : NULL, c);
+        view_t av;
+        nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, P.clear_c[i]) : rp_view_for(t, att_view(t, P.rt.has_cview[i], &P.rt.cview[i], &av), c);
         if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         nattached++;
         d.color[i].view = v; d.color[i].store = NVN_GPU_STORE_STORE;
@@ -165,7 +204,8 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     if (!d.w && P.rt.depth) level_size(P.rt.depth, &P.rt.dview, P.rt.has_dview, &d.w, &d.h);   // 只有深度的通道（阴影图、深度预通道）：尺寸取深度目标的
     if (P.rt.depth) {
         nvn_fmt_info fi; int ok = nvn_fmt_info_of((uint32_t)P.rt.depth->d.format, &fi);
-        nvn_gpu_view v = rp_view_for(P.rt.depth, P.rt.has_dview ? &P.rt.dview : NULL, c);
+        view_t av;
+        nvn_gpu_view v = rp_view_for(P.rt.depth, att_view(P.rt.depth, P.rt.has_dview, &P.rt.dview, &av), c);
         if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         if (!ok || fi.depth) { d.depth.view = v; d.depth.store = NVN_GPU_STORE_STORE; d.depth.load = P.clear_d ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD; d.clear_depth = P.cd; }
         if (ok && fi.stencil) { d.stencil.view = v; d.stencil.store = NVN_GPU_STORE_STORE; d.stencil.load = P.clear_s ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD; d.clear_stencil = (uint32_t)P.cs & 0xff; }

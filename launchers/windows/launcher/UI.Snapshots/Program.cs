@@ -129,6 +129,10 @@ SaveP("win_03_export_progress_mid", () => Navigate(pack, "progress"));
 InjectMockProgress(pack, fraction: 1.0, stepIndex: -1, running: false, state: "succeeded",
     ipaBytes: 1_200_000_000L, packBytes: 3_400_000_000L, elapsed: 247);
 SaveP("win_04_export_success", () => Navigate(pack, "progress"));
+// 降级继续（v0.3.1）：出成了，完成卡下方逐条列作业层给的玩家提示
+SetW(pack, "packNotes", (object?)new List<string> { "这款有 27 处用了兼容写法，个别场景可能不稳定，遇到请反馈", "3 支着色器首次遇到时现编，开头可能稍卡" });
+SaveP("win_04b_export_success_notes", () => Navigate(pack, "progress"));
+SetW(pack, "packNotes", (object?)new List<string>());
 
 InjectMockProgress(pack, fraction: 0.12, stepIndex: 0, running: false, state: "failed",
     summary: "磁盘空间不足，无法继续出包。");
@@ -255,6 +259,19 @@ SetW(pack, "libraryDiagnostics", "");
 SetW(pack, "report", FakeReport(true));
 SetW(pack, "summaryKey", "environment.ready");
 SaveP("tidy_01_library_connected", () => Navigate(pack, "library"));
+// 游戏库选到 exFAT 盘（setup 报 library_bad_format，v0.3.1）：原因下面列出能放游戏库的 NTFS / ReFS 盘和剩余空间，点「放到这里」就建
+SetW(pack, "catalog", null); SetW(pack, "connectedFolder", null); SetW(pack, "libraryId", null);
+SetW(pack, "librarySummary", "library.failed");
+SetW(pack, "libraryDiagnostics", "这个盘是 EXFAT，可以用，但按现有 2 款游戏算，出包会多占约 61 GB；放在 NTFS 格式的盘上更省空间。");
+SetW(pack, "libraryFailCode", "library_bad_format"); SetW(pack, "libraryFailFolder", "E:\\S2Arm Library");
+SetW(pack, "drivesOverride", (object?)new List<(string Root, string Format, long Free)> { ("C:\\", "NTFS", 212_000_000_000L), ("D:\\", "NTFS", 1_480_000_000_000L) }.OrderByDescending(d => d.Free).ToList());
+SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));   // 连不上库时游戏库页是欢迎页，原因显示在「添加游戏」弹窗里
+SetW(pack, "importError", "游戏库没连上（E:\\S2Arm Library）：这个盘是 EXFAT，可以用，但按现有 2 款游戏算，出包会多占约 61 GB；放在 NTFS 格式的盘上更省空间。");
+SaveP("win_24_library_bad_format_drives", () => Navigate(pack, "library"));
+SetW(pack, "importDialog", null); SetW(pack, "importError", "");
+SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
+SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥已就绪")); SetW(pack, "connectedFolder", tidyLib); SetW(pack, "libraryId", "mock-lib-id");
+SetW(pack, "librarySummary", "library.completed"); SetW(pack, "libraryDiagnostics", "");
 pack.Height = 2100;   // 设置页最长：装机方式 + 环境检查 + 运行路径都要在一张图里
 SaveP("tidy_02_settings", () => Navigate(pack, "settings"));
 pack.Height = 900;

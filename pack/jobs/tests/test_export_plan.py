@@ -249,6 +249,13 @@ class ExportPlanTests(JobCase):
         self.assertNotIn("child", [e["type"] for e in events])
         self.assertTrue(read_events(self.c.private, f"{task}-1") or (self.stubdir / "seen" / f"{task}-1.json").exists())
 
+    def test_outcome_carries_degrade_notes(self):
+        # v0.3.1：子作业结果里的 notes（降级继续的玩家提示）原样进 stepEnded 的 outcome，完成卡读它；没有就不带
+        last = dict(type="result", state="succeeded", message="", result=dict(ipa="/out/a.ipa", notes=["提示一", "提示二"]))
+        self.assertEqual(export_plan._outcome(self.c, None, last)["notes"], ["提示一", "提示二"])
+        last["result"].pop("notes")
+        self.assertNotIn("notes", export_plan._outcome(self.c, None, last))
+
     def test_bad_plan_rejected(self):
         task, path = self.new_request({"source": "nope"})
         self.assertEqual(self.run_inline(path), 1)

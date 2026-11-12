@@ -60,16 +60,17 @@ struct BatchExportView: View {
             ForEach($model.batchDraft) { $row in
                 HStack(spacing: 14) {
                     cover(row.id)
-                    Text(row.name).font(.manrope(15, .semibold)).lineLimit(1)
-                    Spacer(minLength: 12)
-                    if let problem = row.problem {
-                        Text(problem == "keys" ? t("keys") : loc.backend(problem)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.building).lineLimit(2)
-                    } else {
-                        Toggle("iPhone", isOn: $row.iphone).toggleStyle(.checkbox).font(.manrope(13)).frame(width: 96, alignment: .leading)
-                            .accessibilityIdentifier("batch.iphone." + row.id)
-                        Toggle("Mac", isOn: $row.mac).toggleStyle(.checkbox).font(.manrope(13)).frame(width: 70, alignment: .leading)
-                            .accessibilityIdentifier("batch.mac." + row.id)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(row.name).font(.manrope(15, .semibold)).lineLimit(1)
+                        if let problem = row.problem {   // 只提示、不挡（v0.3.1）：照样能勾，出包时作业层核实
+                            Text(problem == "keys" ? t("keys") : loc.backend(problem)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.building).lineLimit(2)
+                        }
                     }
+                    Spacer(minLength: 12)
+                    Toggle("iPhone", isOn: $row.iphone).toggleStyle(.checkbox).font(.manrope(13)).frame(width: 96, alignment: .leading)
+                        .accessibilityIdentifier("batch.iphone." + row.id)
+                    Toggle("Mac", isOn: $row.mac).toggleStyle(.checkbox).font(.manrope(13)).frame(width: 70, alignment: .leading)
+                        .accessibilityIdentifier("batch.mac." + row.id)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
@@ -213,7 +214,7 @@ struct BatchExportView: View {
     private var actionBar: some View {
         HStack(spacing: 12) {
             if model.batchState == nil {
-                let count = model.batchDraft.filter { $0.problem == nil && !$0.platforms.isEmpty }.count
+                let count = model.batchDraft.filter { !$0.platforms.isEmpty }.count
                 Spacer()
                 Button { model.startBatch() } label: {
                     HStack(spacing: 8) { Image(systemName: "shippingbox.fill"); Text(t("start").replacingOccurrences(of: "{0}", with: "\(count)")) }

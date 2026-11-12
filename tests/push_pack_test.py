@@ -157,6 +157,19 @@ class Apply(Base):
     def test_nothing_pushed_already_applied_skips(self):
         self.assertFalse(self.ap({f"{RP}/.applied": self.WANT}, 0, True)); self.assertFalse(hasattr(self.dev, "launches"))
 
+    def test_partial_line_is_needs_player_not_failure(self):
+        # v0.3.1 缺件照玩：手机解开了、只缺非核心文件，写「缺 N 个非必需文件 …部分可玩 = <本包>」（不写 .applied）→ 当场报「还差最后一步：还缺 N 个文件」，
+        #   是 NeedsPlayer（装机按传输成功 + 提醒收尾），不等 180 秒、不报失败
+        self.dev = Fake({}); clock = [0.0]
+        def done(d):
+            d.files["Documents/unpack.log"] = f"11-12 解开 1 个包 1 个文件 0 MB，缺 2 个非必需文件（例：romfs/b.bin（不在）），部分可玩 = {self.WANT}（0.1 秒）\n"
+        self.dev.on_launch = done
+        def sleep(x): clock[0] += x
+        with self.assertRaises(push.NeedsPlayer) as e:
+            push.apply(self.dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        self.assertIn("还缺 2 个文件", str(e.exception)); self.assertIn("资源包已传完，还差最后一步", str(e.exception))
+        self.assertLess(clock[0], 30)   # 当场报，不等停住
+
     def test_pushed_waits_for_new_done_line(self):
         self.assertTrue(self.ap({}, 1, True)); self.assertEqual(self.dev.launches, [{"S2A_PACK_APPLY_ONLY": "1"}])
 

@@ -519,6 +519,19 @@ class SaveTests(unittest.TestCase):
             self.backup()
         self.assertEqual(self.archive.read_bytes(), b"existing backup")
 
+    def test_backup_on_drive_without_hard_links(self):
+        # v0.3.1：存档备份放到位用硬链接（不覆盖地落盘）；exFAT / FAT32 建不了硬链接（WinError 1 / EPERM）→ 退回「核没有同名再改名」，
+        #   备份照样落盘、内容完整；已有同名备份时照旧不覆盖
+        def no_links(*a, **k):
+            raise OSError(1, "Incorrect function")
+        with patch.object(saves.os, "link", no_links):
+            self.backup()
+            self.assertTrue(self.archive.is_file() and self.archive.stat().st_size > 0)
+            before = self.archive.read_bytes()
+            with self.assertRaises(Failure):
+                self.backup()
+            self.assertEqual(self.archive.read_bytes(), before)
+
     def test_disk_shortage_and_cancellation_leave_original_intact(self):
         c = self.prepare_restore()
         from collections import namedtuple
@@ -941,9 +954,20 @@ class ExternalImportTests(unittest.TestCase):
         log.write_text("启动失败，没灌入", encoding="utf-8")
         saves.finish_seed(c, GID, log)
         self.assertEqual(saves.claim_seed(c, GID), pending)   # 没灌成功：留着，下次启动再放
-        log.write_text("S2A 带存档起局：account ← x（2 个文件，15 字节）", encoding="utf-8")
+        # 审计 P1-156：只有「当前用户」行和前一类成功行、后一类挂不上（没有全部完成那句）→ 种子留着
+        log.write_text("S2A 带存档起局：当前用户 0123\nS2A 带存档起局：account ← x（2 个文件，15 字节）\n"
+                       "带存档起局：挂 device 存档失败", encoding="utf-8")
+        saves.finish_seed(c, GID, log)
+        self.assertEqual(saves.claim_seed(c, GID), pending)
+        log.write_text("S2A 带存档起局：account ← x（2 个文件，15 字节）\nS2A 带存档起局完成：1 类全部灌入", encoding="utf-8")
         saves.finish_seed(c, GID, log)
         self.assertIsNone(saves.claim_seed(c, GID))
+
+    def test_seed_done_line_matches_service_layer(self):
+        # 审计 P1-156：作业层删种子认的那句，必须是服务层每类都灌入后才打的那句（一字不差）
+        cs = (Path(__file__).resolve().parents[3] / "services/S2A.Services/Saves.cs").read_text(encoding="utf-8")
+        self.assertIn(f'SeedAllDoneLine = "{saves.SEED_DONE_LINE}"', cs)
+        self.assertNotIn(saves.SEED_DONE_LINE, "S2A 带存档起局：当前用户 0123")
 
     def test_never_played_game_changed_since_preview_is_refused(self):
         import shutil

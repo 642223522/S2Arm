@@ -59,6 +59,8 @@ public sealed partial class EnvironmentWindow
     private string? packIpa;
     private string? packLocation;
     private long? packIpaBytes, packPackBytes;
+    /// <summary>这一单降级继续的玩家提示（作业层 notes，v0.3.1）：完成卡逐条显示</summary>
+    private IReadOnlyList<string> packNotes = [];
     private PackSpace? packSpace;
     // in-progress capsule (shown while session is hidden)
     private bool sessionHidden;
@@ -381,7 +383,7 @@ public sealed partial class EnvironmentWindow
         reason.Children.Add(Muted(blocker ?? T("export.hint"), 14));
         if (ExportBlockerKind(game) == "keys") reason.Children.Add(Action("nav.library", () => Navigate("library")));
         bar.Children.Add(reason);
-        var start = Primary(T("export.start"), () => StartPack(game), blocker is null);
+        var start = Primary(T("export.start"), () => StartPack(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
         AutomationId(start, "export.start");
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
@@ -487,6 +489,10 @@ public sealed partial class EnvironmentWindow
     };
 
     /// <summary>挡路的是哪一类（按种类判，不拿显示文案做字符串相等，剃刀 W10）：platform / files / keys / busy；null = 能出。</summary>
+    /// <summary>挡不挡开始：缺文件（files）/ 缺 keys（keys）只提示、不挡（v0.3.1「拿不准不停」，同 Mac ExportBlocker.stopsStart）——
+    /// 两项来自游戏库读数、可能是旧的；出包作业开头自己核（library.requirement_errors：input_missing / keys_missing），真缺才停</summary>
+    private bool ExportStops(LibraryGame game) => ExportBlockerKind(game) is { } kind && kind is not ("files" or "keys");
+
     private string? ExportBlockerKind(LibraryGame game)
     {
         if (!exportIos) return "platform";
@@ -503,7 +509,7 @@ public sealed partial class EnvironmentWindow
 
     private void StartPack(LibraryGame game, bool spaceOverride = false)
     {
-        if (ExportBlocker(game) is not null) return;
+        if (ExportStops(game)) return;
         // 「仍然出包」重试沿用这一款上次选的位置；出包页没读到这款时不传，后端按这款现在的位置
         if (!spaceOverride || packGame?.Id != game.Id) packLocation = locationsFor == game.Id && exportLocation.Length > 0 ? exportLocation : null;
         ResetPack(game);
@@ -523,7 +529,7 @@ public sealed partial class EnvironmentWindow
     {
         packGame = game; packState = "running"; packTrack = new(); packStarted = DateTime.UtcNow;
         packSeconds = null; packSummary = ""; packDiagnostics = ""; packIpa = null;
-        packIpaBytes = null; packPackBytes = null; packSpace = null; sessionHidden = false; packFailureCode = null;
+        packIpaBytes = null; packPackBytes = null; packNotes = []; packSpace = null; sessionHidden = false; packFailureCode = null;
         exportStepEnded = false; exportChildReport = null;
     }
 
@@ -596,7 +602,7 @@ public sealed partial class EnvironmentWindow
                 var o = ended.Outcome;
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packState = o.State == "completed" ? "succeeded" : o.State;
-                packSummary = o.Message; packIpa = o.Ipa; packIpaBytes = o.IpaBytes; packPackBytes = o.PackBytes; packFailureCode = o.Code;
+                packSummary = o.Message; packIpa = o.Ipa; packIpaBytes = o.IpaBytes; packPackBytes = o.PackBytes; packNotes = o.Notes ?? []; packFailureCode = o.Code;
                 packDiagnostics = exportChildReport is { } r
                     ? JobDiagnostics(new LibraryJobOutput(r, new ProbeOutput(r.State == "succeeded" ? 0 : r.State == "cancelled" ? 130 : 1, "", "")))
                     : o.Message;
@@ -1003,6 +1009,15 @@ public sealed partial class EnvironmentWindow
             if (packIpaBytes is { } ib) BigStat(T("export.done.ipa"), FormatBytes(ib));
             if (packPackBytes is { } pb) BigStat(T("export.done.pack"), FormatBytes(pb));
             result.Children.Add(stats);
+            if (packNotes.Count > 0)   // 降级继续的玩家提示（作业层原句）：出成了照常给按钮，这里说清哪里用了兼容做法（同 Mac ExportSessionView）
+            {
+                var notes = new StackPanel { Spacing = 6 };
+                AutomationId(notes, "progress.notes");
+                var head = new TextBlock { Text = "⚠ " + T("export.done.notes"), FontSize = 14, FontWeight = FontWeight.Bold, Foreground = Brush.Parse("#FFC857") };
+                notes.Children.Add(head);
+                foreach (var note in packNotes) notes.Children.Add(WrappedMuted(note, 13));
+                result.Children.Add(notes);
+            }
 
             // 两个大按钮
             var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
@@ -1439,6 +1454,22 @@ public sealed partial class EnvironmentWindow
     private async Task ConfirmRestoreAsync(LibraryGame game)
     {
         if (await ConfirmInstallActionAsync("install.restore")) await RunPhoneJobAsync(game, "installRestore", "install.restore");
+    }
+
+    /// <summary>换游戏库 setup 撞上认得出的风险 → 问玩家时带的参数（同 Mac S2ArmLauncherModel.libraryConfirmCodes）：
+    /// library_in_cloud 选的文件夹在云盘同步目录里；library_folder_not_empty 文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）</summary>
+    internal static readonly IReadOnlyDictionary<string, string> LibraryConfirmCodes = new Dictionary<string, string>
+    {
+        ["library_in_cloud"] = "acceptCloud", ["library_folder_not_empty"] = "acceptForeign",
+    };
+
+    /// <summary>setup 没成、失败码是认得出的风险、这一项还没确认过：问「仍然继续 / 先不」；同意就把对应参数加进 accept 返回 true，调用方带着它重发（参数累积）</summary>
+    private async Task<bool> ConfirmLibraryAsync(LibraryJobOutput setup, HashSet<string> accept)
+    {
+        if (setup.Report.Succeeded || JobCode(setup) is not { } code || !LibraryConfirmCodes.TryGetValue(code, out var flag) || accept.Contains(flag)) return false;
+        if (!await ConfirmInstallActionAsync("install.drop", setup.Report.Message, ConfirmTitle(code))) return false;
+        accept.Add(flag);
+        return true;
     }
 
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
