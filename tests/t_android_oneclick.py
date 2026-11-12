@@ -292,6 +292,7 @@ class AndroidDeliveryTest(unittest.TestCase):
         pack_calls = [(cmd, env) for cmd, env in calls if cmd[1].endswith('make_pack.py')]
         self.assertEqual(len(pack_calls), 2)
         self.assertIn('--direct-graphics', pack_calls[1][0])
+        self.assertTrue(all('--direct-vulkan' not in cmd for cmd, _ in pack_calls))   # #48 P5：不是 Vulkan 类就不带
         describe = next(cmd for cmd, _ in calls if cmd[1].endswith('direct_library.py') and 'describe' in cmd)
         identity_at = next(i for i, (cmd, _) in enumerate(calls) if cmd[1].endswith('docker/build.sh') and '--direct-identity' in cmd)
         self.assertLess(identity_at, next(i for i, (cmd, _) in enumerate(calls) if cmd is describe))
@@ -344,6 +345,89 @@ class AndroidDeliveryTest(unittest.TestCase):
             native_flags[0] = flags
             with self.assertRaisesRegex(ValueError, why):
                 again({})
+
+    def vulkan_probe(self, mapping):
+        """#48 P5：真的 android/tools/vulkan_modules.py，只把读 NSO 符号表换成给定的导入 / 导出（期望值按 vulkan_modules 的规则手写）。"""
+        sys.path.insert(0, str(ROOT / 'graphics/nvn/tools'))
+        try:
+            import nso_syms
+        finally:
+            sys.path.pop(0)
+        product = Path(tempfile.mkdtemp(dir=self.base)) / 'probe'   # 每次一个新产物根
+        if mapping is not None:
+            (product / 'exefs').mkdir(parents=True)
+            for name in mapping:
+                (product / 'exefs' / name).touch()
+        else:
+            product.mkdir()
+        rows = lambda imports=(), exports=(): [(n, False, 1) for n in imports] + [(n, True, 1) for n in exports]
+        table = {name: rows(*value) for name, value in (mapping or {}).items()}
+        with patch.object(nso_syms, 'load', side_effect=lambda path: table[Path(path).name]), \
+             patch.object(nso_syms, 'dynsyms', side_effect=lambda data: data):
+            return mod.direct_vulkan_candidate(product, ROOT / 'android/tools')
+
+    def test_direct_vulkan_candidate_follows_vulkan_modules(self):
+        self.assertEqual(self.vulkan_probe(None), (False, ''))   # 没有 exefs：不判
+        self.assertEqual(self.vulkan_probe({'main': (['nvnBootstrapLoader'],)}),
+                         (False, 'ValueError: direct Vulkan requires Vulkan main imports without NVN/EGL'))
+        vulkan = {'main': (['vkCreateInstance'],),
+                  'subsdk0': (['vk_icdGetInstanceProcAddr'], ['vkGetInstanceProcAddr']),
+                  'subsdk1': ((), ['vk_icdGetInstanceProcAddr'])}
+        self.assertEqual(self.vulkan_probe(vulkan), (True, ''))
+        # 驱动顺带给别的模块提供非 Vulkan 函数：换掉它会丢导入，不能走直连
+        helper = dict(vulkan, main=(['vkCreateInstance', 'drv_helper'],), subsdk1=((), ['vk_icdGetInstanceProcAddr', 'drv_helper']))
+        self.assertEqual(self.vulkan_probe(helper), (False, 'ValueError: driver supplies non-Vulkan imports: drv_helper'))
+
+    def pack_calls_until_describe(self, candidate):
+        """跑 package() 到第二次 make_pack 为止（之后的构建与本项无关），返回两次 make_pack 的命令行与打印。"""
+        repo = self.base / 'repo'
+        (repo / 'android/app/src/main/java/org/s2arm/android').mkdir(parents=True, exist_ok=True)
+        (repo / 'android/app/build.gradle').write_text('s2arm.nativeMode')
+        (repo / 'android/app/src/main/java/org/s2arm/android/LibraryActivity.java').touch()
+        product = self.base / 'out/roots/product'
+        (product / 'exefs').mkdir(parents=True, exist_ok=True)
+        calls = []
+        class Done(Exception):
+            pass
+        def run(args, **kwargs):
+            args = list(map(str, args))
+            if '--direct-identity' in args:
+                return subprocess.CompletedProcess(args, 0)
+            if args[1].endswith('make_pack.py'):
+                calls.append(args)
+                Path(args[2]).mkdir()
+                if len(calls) == 2:
+                    raise Done
+            elif args[1].endswith('direct_library.py'):
+                Path(args[-1]).write_text('{}')
+            return subprocess.CompletedProcess(args, 0)
+        printed = []
+        with patch.object(mod, 'ROOT', repo), \
+             patch.object(mod, 'export_sources', side_effect=lambda destination, env=None: shutil.copytree(repo, destination)), \
+             patch.object(mod, 'build_backend', return_value='docker'), \
+             patch.object(mod, 'direct_vulkan_candidate', return_value=candidate) as probe, \
+             patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))), \
+             patch.object(mod.subprocess, 'run', side_effect=run):
+            with self.assertRaises(Done):
+                mod.package(product, self.base / 'out')
+        self.assertEqual(probe.call_args[0][0], product.resolve())   # 判的是这款游戏的产物根
+        return calls, printed
+
+    def test_vulkan_game_gets_descriptor_in_both_packs(self):
+        calls, printed = self.pack_calls_until_describe((True, ''))
+        self.assertEqual(len(calls), 2)
+        # describe 读第一次的包算 gameContentRoot（含 direct-vulkan.txt 那行），第二次的包必须同样带，否则描述符与包对不上
+        self.assertTrue(all('--direct-vulkan' in cmd for cmd in calls))
+        self.assertIn('--direct-graphics', calls[1])
+        self.assertTrue(any('direct-vulkan.txt' in line for line in printed))
+
+    def test_refused_vulkan_game_packs_as_before_and_says_why(self):
+        calls, printed = self.pack_calls_until_describe((False, 'ValueError: driver supplies non-Vulkan imports: drv_helper'))
+        self.assertTrue(all('--direct-vulkan' not in cmd for cmd in calls))
+        self.assertTrue(any(line.startswith('🟡') and 'drv_helper' in line for line in printed))
+        calls, printed = self.pack_calls_until_describe((False, 'ValueError: direct Vulkan requires Vulkan main imports without NVN/EGL'))
+        self.assertTrue(all('--direct-vulkan' not in cmd for cmd in calls))
+        self.assertFalse(any('direct-vulkan' in line for line in printed))   # 普通 NVN 款不刷屏
 
     def test_linux_host_pipeline_uses_real_host_entry_and_verifies_local_apk(self):
         repo = self.base / 'repo'; app = repo / 'android/app'
