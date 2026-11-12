@@ -22,7 +22,7 @@ struct EnvironmentView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(loc.t("s2arm.env.title")).font(.manrope(26, .heavy)).tracking(-0.6)
+                    Text(s("nav.settings")).font(.manrope(26, .heavy)).tracking(-0.6)
                     Text(summary).font(.manrope(14)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -36,10 +36,36 @@ struct EnvironmentView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    CardGroup(loc.t("s2arm.env.library.group")) {
-                        CardRow(loc.t("s2arm.env.library.title"), detail: model.provider.client.environment.library + "\n" + loc.t("s2arm.env.library.detail")) {
-                            Button(loc.t("s2arm.env.library.change")) { chooseLibrary() }
-                                .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                    // 界面语言（原在顶栏，入口整理收进设置）：一键切到另一种，当场生效、记住选择
+                    CardGroup(s("settings.language")) {
+                        CardRow(s("settings.language"), detail: loc.lang == .zh ? "简体中文" : "English") {
+                            Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
+                                Label(loc.lang == .zh ? "English" : "简体中文", systemImage: "globe")
+                            }
+                            .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("settings.language")
+                        }
+                    }
+                    // 存放位置（社区贡献者补丁 #10）：游戏库、iPhone 包、磁盘空间集中在这一处；单款游戏放在哪看出包页的「存放位置」
+                    CardGroup(s("settings.locations")) {
+                        let library = model.provider.client.environment.library
+                        CardRow(s("settings.locations.library"), detail: loc.t("s2arm.env.library.detail"), detail2: library) {   // 路径放 detail2：以 / 开头就画成可点的路径链接（PathLink）
+                            HStack(spacing: 8) {
+                                Button(s("settings.open")) { NSWorkspace.shared.open(URL(fileURLWithPath: library)) }
+                                    .buttonStyle(LauncherSecondaryButtonStyle()).disabled(library.isEmpty)
+                                Button(loc.t("s2arm.env.library.change")) { chooseLibrary() }
+                                    .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                            }
+                        }
+                        CardDivider()
+                        let ipa = (library as NSString).appendingPathComponent("S2Arm.ipa")   // 出 iPhone 包时组在游戏库根
+                        let ipaReady = !library.isEmpty && FileManager.default.fileExists(atPath: ipa)
+                        CardRow(s("settings.locations.ipa"), detail: ipaReady ? "" : s("settings.locations.ipa_none"), detail2: ipaReady ? ipa : "") {
+                            if ipaReady { Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }.buttonStyle(LauncherSecondaryButtonStyle()) }
+                        }
+                        CardDivider()
+                        CardRow(s("settings.locations.space")) {
+                            Button(s("storage.open")) { model.showEnvironment = false; model.spaceRequest = model.selectedID ?? model.games.first?.id }
+                                .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.games.isEmpty)
                         }
                     }
                     InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
@@ -62,7 +88,7 @@ struct EnvironmentView: View {
                         CardRow(loc.t("s2arm.env.cloud.title"), detail: model.cloudFolder.map { $0.path + "\n" + loc.t("s2arm.env.cloud.on") } ?? loc.t("s2arm.env.cloud.off")) {
                             HStack(spacing: 8) {
                                 if model.cloudFolder != nil {
-                                    Button(loc.t("s2arm.env.cloud.turnOff")) { try? model.setCloudFolder(nil) }
+                                    Button(loc.t("s2arm.env.cloud.turnOff")) { do { try model.setCloudFolder(nil) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) } }
                                         .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.off")
                                 }
                                 Button(loc.t("s2arm.env.cloud.choose")) { chooseCloudFolder() }
@@ -144,8 +170,10 @@ struct EnvironmentView: View {
         let drive = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
         if FileManager.default.fileExists(atPath: drive.path) { panel.directoryURL = drive }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? model.setCloudFolder(url)
+        do { try model.setCloudFolder(url) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) }   // 剃刀 M13：失败报原因，不再停在旧值像没反应
     }
+
+    private func s(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang == .zh ? "zh-Hans" : "en") }
 
     private func chooseLibrary() {
         let panel = NSOpenPanel()

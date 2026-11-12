@@ -35,7 +35,7 @@ ck "④ GATE_LIST 按层过滤（不设 ${l0} / pre ${l1} / post ${l2}）" '[ "$
 r=$(GATE_LAYER=later g o5)
 ck "⑤ GATE_LAYER 写错 → 退出 1（rc=${r}）" '[ $r = 1 ]'
 d=$(cd "$H" && python3 tools/gate_decl.py layer | tr '\n' '|')
-ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 android/gate.sh	合入后	路由|钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后	路由|" ]'
+ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后	路由|" ]'
 # ⑦ 显卡独占：单测文件头「# 门禁显卡：独占」→ 经 维护方工具 prio 跑（桩记 prio 名），普通单测不经（11-06 present_settings 被并行窗口抢焦点）
 printf '#!/bin/bash\n# 门禁显卡：独占\necho z >> %s/trace\n' "$T" > tests/z_test.sh
 mkdir -p $T/priv; printf '#!/bin/bash\n[ "$1" = prio ] && echo "prio $2" >> %s/prio; shift 4; exec "$@"\n' "$T" > $T/priv/mac_slot_frozen.sh; chmod +x $T/priv/mac_slot_frozen.sh; export S2A_PRIVATE_TOOLS=$T/priv

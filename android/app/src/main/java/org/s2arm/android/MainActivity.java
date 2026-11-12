@@ -289,8 +289,7 @@ public class MainActivity extends Activity
                     tryStartGame();
                 });
             }
-        }, gameMode ? getIntent().getStringExtra(GameActivity.TITLE_EXTRA) : null,
-            gameMode && getIntent().getBooleanExtra(GameActivity.REVISION_EXTRA, false));
+        }, gameMode ? getIntent().getStringExtra(GameActivity.TITLE_EXTRA) : null);
         graphicsModePreference = graphicsModeFromIntent(getIntent());
         requestOrientation(getIntent());
         updateTouchPad();
@@ -857,21 +856,32 @@ public class MainActivity extends Activity
             //   s2a_console_mode_set → ChangeDockedModeState）；没在跑就只持久化、冷启生效——不静默。
             //   coldConsoleMode 不跟改：begin 仍拿冻结的冷启值，重进不踩「mode frozen」。
             BootSpec.ConsoleMode mode = BootSpec.ConsoleMode.forRuntime(gameMode, value);
-            prefs.edit().putString(PREF_CONSOLE, mode.value).apply();
-            if (host != 0 && gameSession != null && gameSession.attempted() && !gameStopping) {
-                int rc = NativeBridge.setConsoleMode(host, mode.nativeValue);
-                Log.i("S2Arm", rc == 0 ? "console mode switched at runtime: " + mode.value
-                    : "console mode " + mode.value + " saved; runtime switch refused (rc=" + rc
-                        + "), takes effect on cold start");
-            } else {
-                Log.i("S2Arm", "console mode " + mode.value
-                    + " saved; takes effect on cold start (no running session)");
-            }
+            applyConsoleMode(mode);
             return mode;
         }
         BootSpec.ConsoleMode mode = BootSpec.ConsoleMode.forLaunch(coldStart, gameMode, present, value);
         if (gameMode && present) prefs.edit().putString(PREF_CONSOLE, mode.value).apply();
         return mode;
+    }
+    /** Saves the player's console mode and pushes it to a running session. Returns true when the
+     *  running session took it; false means it is saved and applies on the next cold start. */
+    private boolean applyConsoleMode(BootSpec.ConsoleMode mode) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_CONSOLE, mode.value).apply();
+        if (host != 0 && gameSession != null && gameSession.attempted() && !gameStopping) {
+            int rc = NativeBridge.setConsoleMode(host, mode.nativeValue);
+            Log.i("S2Arm", rc == 0 ? "console mode switched at runtime: " + mode.value
+                : "console mode " + mode.value + " saved; runtime switch refused (rc=" + rc
+                    + "), takes effect on cold start");
+            return rc == 0;
+        }
+        Log.i("S2Arm", "console mode " + mode.value
+            + " saved; takes effect on cold start (no running session)");
+        return false;
+    }
+    /** The mode the player last chose (handheld when never chosen), for the touch menu. */
+    private BootSpec.ConsoleMode storedConsoleMode() {
+        String stored = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_CONSOLE, null);
+        return BootSpec.ConsoleMode.DOCKED.value.equals(stored) ? BootSpec.ConsoleMode.DOCKED : BootSpec.ConsoleMode.HANDHELD;
     }
     // Debug: `--ei s2arm.release_stall_ms <ms>` makes the render thread hold a released surface that long,
     // standing in for a stuck driver call: under 1000 ms surfaceDestroyed waits it out, over that the
@@ -1047,7 +1057,7 @@ public class MainActivity extends Activity
         } catch (java.io.IOException | IllegalArgumentException error) {
             // A damaged file must not take the pad away: built-in layout, and say so once.
             Log.e("S2Arm", "Touch layout ignored (" + touchLayouts.file().getName() + "): " + error.getMessage());
-            android.widget.Toast.makeText(this, "Saved touch layout could not be read; using the default",
+            android.widget.Toast.makeText(this, R.string.touch_layout_load_failed,
                 android.widget.Toast.LENGTH_LONG).show();
             touchPad.setLayout(null);
         }
@@ -1080,18 +1090,27 @@ public class MainActivity extends Activity
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         if (touchPad.getVisibility() == android.view.View.VISIBLE) {
-            labels.add("Edit button positions"); actions.add(this::beginTouchEdit);
+            labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
         }
         if (touchLayouts.file().isFile()) {
-            labels.add("Restore default layout"); actions.add(this::resetTouchLayout);
+            labels.add(getString(R.string.touch_menu_restore_default)); actions.add(this::resetTouchLayout);
         }
         if (host != 0 && BuildConfig.EXPERIMENTAL_TOUCH) {   // not built in: no item that can only fail
             boolean on = touchPad.gameTouchEnabled();
-            labels.add(on ? "Touch passthrough: on (tap to turn off)" : "Touch passthrough: off (tap to turn on)");
+            labels.add(getString(on ? R.string.touch_passthrough_on : R.string.touch_passthrough_off));
             actions.add(() -> setTouchPassthrough(!on, true));
         }
+        if (gameMode) {   // 运行模式：此前只有测试用的启动参数能切，玩家够不着
+            boolean docked = storedConsoleMode() == BootSpec.ConsoleMode.DOCKED;
+            labels.add(getString(docked ? R.string.console_mode_docked : R.string.console_mode_handheld));
+            actions.add(() -> {
+                boolean live = applyConsoleMode(docked ? BootSpec.ConsoleMode.HANDHELD : BootSpec.ConsoleMode.DOCKED);
+                android.widget.Toast.makeText(this, live ? R.string.console_mode_switched : R.string.console_mode_saved,
+                    android.widget.Toast.LENGTH_LONG).show();
+            });
+        }
         new android.app.AlertDialog.Builder(this)
-            .setTitle("Touch controls")
+            .setTitle(R.string.touch_menu_title)
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
             .setNegativeButton(android.R.string.cancel, null)
             .show();
@@ -1102,7 +1121,7 @@ public class MainActivity extends Activity
         touchEditBar = new LinearLayout(this);
         touchEditBar.setOrientation(LinearLayout.HORIZONTAL);
         touchEditBar.setBackgroundColor(0xE6101820);
-        String[] names = {"Save", "Default", "Cancel"};
+        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel)};
         Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }};
         for (int i = 0; i < names.length; i++) {
             android.widget.Button button = new android.widget.Button(this);
@@ -1157,7 +1176,8 @@ public class MainActivity extends Activity
         } catch (IllegalArgumentException | java.io.IOException error) {
             // Stay in the editor: the drags are kept so the player can fix them (e.g. sticks on top of each other).
             Log.e("S2Arm", "Touch layout not saved: " + error.getMessage());
-            android.widget.Toast.makeText(this, "Layout not saved: " + error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+            android.widget.Toast.makeText(this, getString(R.string.touch_layout_save_failed, error.getMessage()),
+                android.widget.Toast.LENGTH_LONG).show();
         }
     }
 

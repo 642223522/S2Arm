@@ -24,7 +24,7 @@ public final class GameFingerprintTest {
         return file;
     }
     private static String load(Path app, Path game) throws Exception {
-        try (GameSession session=GameSession.load(GameSessionAdmissionTest.spec(app,game),app.toFile(),null,true,true)) {
+        try (GameSession session=GameSession.load(GameSessionAdmissionTest.spec(app,game),app.toFile(),null,true)) {
             return session.resourceValidation;
         }
     }
@@ -119,7 +119,7 @@ public final class GameFingerprintTest {
             counts(load(app,game),8,0);
             check(probes[0] == 0, "disabled timing performs no replay");
             GameFingerprint.Timing timing = new GameFingerprint.Timing();
-            try (GameSession timed = GameSession.load(GameSessionAdmissionTest.spec(app,game), app.toFile(), null, true, true, timing)) {
+            try (GameSession timed = GameSession.load(GameSessionAdmissionTest.spec(app,game), app.toFile(), null, true, timing)) {
                 counts(timed.resourceValidation,8,0);
                 check(timed.bootTiming == timing, "timing is attached to the admitted session");
                 String report = String.join("\n", timing.lines());
@@ -180,14 +180,14 @@ public final class GameFingerprintTest {
             Files.write(timedReplacement, new byte[]{8});
             Files.move(timedReplacement, timedTarget, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             try {
-                GameSession.load(GameSessionAdmissionTest.spec(timedApp,timedGame),timedApp.toFile(),null,true,true,new GameFingerprint.Timing());
+                GameSession.load(GameSessionAdmissionTest.spec(timedApp,timedGame),timedApp.toFile(),null,true,new GameFingerprint.Timing());
                 throw new AssertionError("timed admission accepted corrupted content");
             } catch (IOException expected) { checks++; }
             Path coldApp=Files.createDirectory(app.resolve("cold-under"));
             Path coldGame=GameSessionAdmissionTest.fixture(coldApp);
             Files.delete(table(coldGame)); // install pre-warms; deleting forces the cold path
             GameFingerprint.Timing coldTiming=new GameFingerprint.Timing();
-            try (GameSession cold=GameSession.load(GameSessionAdmissionTest.spec(coldApp,coldGame),coldApp.toFile(),null,true,true,coldTiming)) {
+            try (GameSession cold=GameSession.load(GameSessionAdmissionTest.spec(coldApp,coldGame),coldApp.toFile(),null,true,coldTiming)) {
                 counts(cold.resourceValidation,0,8);
                 check(String.join("\n",coldTiming.lines()).contains("sample=under interval=128 count=1"),
                     "cold-boot recalculation still resolves every indexed path through under()");

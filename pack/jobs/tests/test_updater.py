@@ -1,4 +1,5 @@
 import hashlib
+import io
 import http.server
 import json
 import os
@@ -65,6 +66,26 @@ class ApplyTests(Base):
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "new")
         self.assertFalse(self.install.with_name("S2Arm.s2arm-old").exists())
         self.assertEqual(self.data(), before)
+
+    def leftovers(self):
+        """各版本的工作目录（新版解在 unpack/、上一次更新留下的）+ 不该动的 runner/ 和标记文件"""
+        u = self.private / "updates"
+        for rel in ("0.3.0/unpack/S2Arm/S2Arm.exe", "0.3.0/S2Arm-windows-x64.zip.part", "0.2.8/unpack/S2Arm/S2Arm.exe", "0.2.9/delta/x", "runner/updater.py", "notes/keep.txt"):
+            (u / rel).parent.mkdir(parents=True, exist_ok=True); (u / rel).write_text("x")
+        return u
+
+    def test_success_removes_unpacked_copies_but_keeps_runner(self):
+        """#660：换版是从 updates/<版本号>/unpack 拷进安装目录的，确认新版起来以后这份（和以前各版留下的）都删掉，不再一直占系统盘"""
+        u = self.leftovers()
+        self.assertEqual(self.run_apply(self.healthy), 0)
+        self.assertEqual(sorted(p.name for p in u.iterdir() if p.is_dir()), ["notes", "runner"])   # 版本号目录全删；runner（正在跑的更新器）和别的目录不动
+        self.assertTrue((u / "runner/updater.py").is_file())
+
+    def test_rollback_keeps_unpacked_copy(self):
+        """新版没起来、回到旧版：不删（下次同版本重试时 prepare 自己清，失败现场留着便于诊断）"""
+        u = self.leftovers()
+        self.assertEqual(self.run_apply(lambda i, a: None), 1)
+        self.assertTrue((u / "0.3.0/unpack/S2Arm/S2Arm.exe").is_file())
 
     def test_read_only_files_do_not_leave_the_old_copy_behind(self):
         locked = self.install / "Engine/pack"; locked.write_text("x"); locked.chmod(0o444)
@@ -625,6 +646,43 @@ class PrepareTests(Base):
                 self.prepare()
         self.assertEqual(caught.exception.code, "update_disk_full")
 
+    def test_unpack_space_uses_exact_unpacked_size_not_multiples(self):
+        # 剃刀 H17：解开前按解开后的确切大小要空间。手算：同一块盘上包 100、解开 150 → 要 max(150, 2×150−100)=200；
+        #   盘剩 210 → 过（旧规则下载前就要 4×100=400，被拒）；剩 190 → update_disk_full。不同盘：各要 150
+        free = {}
+        usage = lambda path: type("U", (), {"free": free[str(path)]})()
+        same = self.private / "updates"; same.mkdir(parents=True, exist_ok=True)
+        with patch.object(updater.shutil, "disk_usage", side_effect=usage):
+            free[str(same)] = 210
+            updater.require_unpack_space(same, same / "S2Arm", 150, 100)
+            free[str(same)] = 190
+            with self.assertRaises(updater.UpdateError) as caught:
+                updater.require_unpack_space(same, same / "S2Arm", 150, 100)
+            self.assertEqual(caught.exception.code, "update_disk_full")
+            other = self.install.resolve().parent
+            with patch.object(updater.os, "stat", side_effect=lambda p, *a, **k: type("S", (), {"st_dev": 1 if Path(p) == same else 2})()):
+                free[str(same)], free[str(other)] = 150, 150
+                updater.require_unpack_space(same, self.install, 150, 100)
+                free[str(other)] = 149
+                with self.assertRaises(updater.UpdateError):
+                    updater.require_unpack_space(same, self.install, 150, 100)
+
+    def test_download_needs_only_the_package_up_front(self):
+        # 剃刀 H17：下载前只要放得下安装包本身（旧规则 4 倍）：盘剩 = 包大小 → 照样下载、解开、就绪
+        size = len(self.zip)
+        real = updater.shutil.disk_usage
+        with patch.object(updater.shutil, "disk_usage", side_effect=lambda p: type("U", (), {"free": size if Path(p) == self.private / "updates" else real(p).free})()), \
+                patch.object(updater, "require_unpack_space"):
+            self.assertEqual(self.prepare()["state"], "ready")
+
+    def test_already_latest_failure_carries_message(self):
+        # 剃刀 W11：每个失败都带后端的 message（前端优先显示它；原先 Windows 前端查表，update_none 没有文案键，显示原样键名）。
+        #   当前版本 = 发布的版本 → prepare 失败事件 code=update_none、message「已经是最新版本。」
+        with patch("builtins.print") as out:
+            self.assertEqual(updater.main(["prepare", "--platform", "windows", "--current", "9.9.9", "--private-root", str(self.private), "--install", str(self.install)]), 1)
+        last = json.loads(out.call_args.args[0])
+        self.assertEqual((last["state"], last["code"], last["message"]), ("failed", "update_none", "已经是最新版本。"))
+
     def test_network_failure_is_reported_by_main_and_keeps_old(self):
         before = tree(self.install)
         Handler.routes["/pkg"] = None
@@ -634,18 +692,20 @@ class PrepareTests(Base):
         self.assertEqual(json.loads(out.call_args.args[0])["state"], "failed")
         self.assertEqual(tree(self.install), before)
 
-    def test_check_then_prepare_and_retry_query_github_once(self):
-        """启动时查一次、接着下载、失败后重试：15 分钟内只调一次查版本接口（匿名每 IP 每小时 60 次，共享出口容易被限流）"""
+    def test_checks_share_cache_but_each_prepare_queries_now(self):
+        """「有没有新版」15 分钟内只调一次查版本接口（匿名每 IP 每小时 60 次，共享出口容易被限流）；真下载（prepare，玩家点了更新 / 重试）每次现查，
+        不拿缓存（剃刀 H18：热修发出后 15 分钟内查不到、查完到下载之间撤版报 update_none）。期望：check 两次 1 次 + prepare 两次各 1 次 = 3 次"""
         Handler.hits = []
         with patch.object(updater, "LATEST_TTL", 900):
             with patch("builtins.print"):
+                updater.main(["check", "--platform", "windows", "--current", "0.1.1"])
                 updater.main(["check", "--platform", "windows", "--current", "0.1.1"])
             Handler.routes["/pkg"] = None   # 第一次下载失败
             with patch("builtins.print"):
                 self.assertEqual(updater.main(["prepare", "--platform", "windows", "--current", "0.1.1", "--private-root", str(self.private), "--install", str(self.install)]), 1)
             self.publish(hashlib.sha256(self.zip).hexdigest())   # 恢复，玩家点重试
             self.assertEqual(self.prepare()["state"], "ready")
-        self.assertEqual(Handler.hits.count("/latest"), 1)
+        self.assertEqual(Handler.hits.count("/latest"), 3)
 
     def test_prepare_survives_throttled_and_cut_download_then_verifies_and_unpacks(self):
         """限速 + 每次只给五分之一就掐断连接下安装包：续传接上，校验（签名清单的 SHA-256）、解包都过，进入可重启更新"""
@@ -952,6 +1012,30 @@ class MirrorTests(Base):
         info = updater.query_latest("windows", "0.1.1")
         self.assertEqual((info["version"], info["sha256"], info["asset"]), ("0.3.1", "c" * 64, self.base + "/gh/pkg"))
         self.assertEqual(ScriptedHandler.hits.count("/update/latest.json"), 1)   # 官网只试一次就回退
+
+    def test_site_manifest_without_this_platform_means_no_update(self):
+        """官网清单只有 Mac 包（只发了 Mac）：Windows 老用户 → 没有新版、不报错、不去问 GitHub，标准错误记一行；Mac 照常有新版"""
+        mac = updater.ASSETS["mac"]
+        raw, sig = signed("0.3.0", {mac: {"sha256": "d" * 64, "size": 5}})
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]; ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+        self.github()
+        err = io.StringIO()
+        with patch.object(sys, "stderr", err):
+            self.assertEqual(updater.query_latest("windows", "0.2.9"), {"available": False})
+        self.assertIn("签名清单里没有 S2Arm-windows-x64.zip", err.getvalue())
+        self.assertNotIn("/latest", ScriptedHandler.hits)
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]; ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+        self.assertEqual(updater.query_latest("mac", "0.2.9")["version"], "0.3.0")
+
+    def test_github_manifest_without_this_platform_means_no_update(self):
+        """GitHub 这一版的签名清单里没有本平台的包（资产里却有同名文件也不认）→ 没有新版、不报错"""
+        mac = updater.ASSETS["mac"]
+        raw, sig = signed("0.3.1", {mac: {"sha256": "e" * 64, "size": 5}})
+        release = {"tag_name": "v0.3.1", "assets": [{"name": self.pkg, "browser_download_url": self.base + "/gh/pkg"},
+                   {"name": updater.MANIFEST, "browser_download_url": self.base + "/gh/m"}, {"name": updater.SIGNATURE, "browser_download_url": self.base + "/gh/s"}]}
+        ScriptedHandler.scripts.update({"/latest": [(200, {}, json.dumps(release).encode())], "/gh/m": [(200, {}, raw)], "/gh/s": [(200, {}, sig)]})
+        with patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(updater.query_latest("windows", "0.2.9"), {"available": False})
 
     def test_site_missing_falls_back_to_github(self):
         self.github()   # 官网 404（发版流程还没写入）

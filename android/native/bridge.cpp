@@ -1487,3 +1487,18 @@ extern "C" int JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (g_exitlog_path[0]) atexit(s2a_exit_probe);
     return 0x00010006;   // JNI_VERSION_1_6
 }
+
+// P10 transport only; no UI and no independent save format or startup lock.
+#include "save_transfer.h"
+#if defined(S2A_CS_STATIC) && defined(S2A_ANDROID_GAME_RUNTIME)
+extern "C" char *S2A_SaveTransfer(const char *request);
+extern "C" void S2A_SaveTransferFree(void *response);
+#endif
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_s2arm_android_NativeBridge_saveTransfer(JNIEnv *env, jclass, jbyteArray request) {
+#if defined(S2A_CS_STATIC) && defined(S2A_ANDROID_GAME_RUNTIME)
+    return s2a::save_transfer(env, request, S2A_SaveTransfer, S2A_SaveTransferFree);
+#else
+    return s2a::save_transfer(env, request, nullptr, nullptr);
+#endif
+}

@@ -108,9 +108,16 @@ import UniformTypeIdentifiers
 @MainActor final class CloudFolderPicker: NSObject, UIDocumentPickerDelegate {
     static var current: CloudFolderPicker?
     static func present() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+        let picker = makePicker()
         let me = CloudFolderPicker(); current = me; picker.delegate = me
         topController()?.present(picker, animated: true)
+    }
+    /// 起始目录给 S2Arm 的 Documents：不给时落在「最近项目」，那一页要汇总机上所有开了文件共享的 App，被大容器拖住时一直「正在加载」，
+    ///   玩家看着像卡死（11-11 真机复现：几分钟不出内容，App 主线程空闲）。玩家要的云盘文件夹从左栏点进去
+    static func makePicker() -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+        picker.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        return picker
     }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         if let url = urls.first { NSLog("S2Arm 云存档：选了文件夹 %@（%@）", url.lastPathComponent, CloudSaves.remember(url) ? "已记住" : "【红】书签没存上") }
@@ -118,6 +125,9 @@ import UniformTypeIdentifiers
     }
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { Self.current = nil }
 }
+
+/// 测试开关 S2A_TEST_PICKER=cloud（ios/app.m test_picker）：弹出和库设置「云存档 → 选择文件夹…」同一个选择器
+@_cdecl("s2a_shell_test_cloud_picker") public func s2aShellTestCloudPicker() { MainActor.assumeIsolated { CloudFolderPicker.present() } }
 
 @MainActor func topController() -> UIViewController? {
     let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)

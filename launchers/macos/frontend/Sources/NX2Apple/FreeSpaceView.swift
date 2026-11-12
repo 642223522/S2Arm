@@ -53,7 +53,7 @@ struct FreeSpaceView: View {
                     if overviewMode {
                         StorageOverviewSection(model: model)
                     } else if let space {
-                        CardGroup(loc.t("s2arm.space.parts")) {
+                        CardGroup(loc.t("s2arm.space.parts"), footnote: space.sharedBytes > 0 ? String(format: loc.t("s2arm.space.sharedNote"), Self.size(space.sharedBytes)) : "") {
                             ForEach(space.parts) { part in
                                 CardRow(loc.backend(part.title), detail: loc.backend(part.rebuild)) {
                                     HStack(spacing: 14) {

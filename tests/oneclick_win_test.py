@@ -297,6 +297,27 @@ class MultiProgram(unittest.TestCase):   # 多程序合集（11-06 索尼克×�
         self.assertEqual([c for c in self.calls if c[0] in ('unpack', 'direct', 'product')],
                          [('unpack', 0), ('direct', 'direct'), ('product', 'product'), ('unpack', 1), ('direct', 'direct_p1'), ('product', os.path.join('product', 'programs', '1'))])
         self.assertNotIn('【红】多程序合集', buf.getvalue())
+    def from_extract_run(self, argv):   # 共用解包目录（作业层 --from-extract）里只有序号 0
+        x0 = self.t / 'shared'; x0.mkdir(exist_ok=True)
+        (x0 / 'unpack.tsv').write_text('title_id\t0100abcd00000000\nprograms\t2\nprogram_index\t0\n', encoding='utf-8')
+        saved, seen = oneclick_win.from_extract, {}
+        oneclick_win.from_extract = lambda run, d: (x0, '0100ABCD00000000', self.t / 'nosrc')
+        real_unpack = oneclick_win.unpack
+        def unpack(run, sources, title_id, program_index=0): seen[program_index] = (list(sources), title_id); return real_unpack(run, sources, title_id, program_index)
+        oneclick_win.unpack = unpack
+        import io, contextlib
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf): rc = oneclick_win.main(['--from-extract', str(x0), '--out', str(self.t / 'out'), '--target', 'mac', *argv])
+        finally: oneclick_win.from_extract = saved
+        return rc, seen, buf.getvalue()
+    def test_from_extract_with_sources(self):   # #613：作业层把原件跟在 --from-extract 后面给 → 序号 1 从这些原件解（期望手写：序号 1 收到给的原件与游戏号、不打【红】）
+        rc, seen, out = self.from_extract_run(['--title-id', '0100ABCD00000000', 'a.xci', 'b.nsp'])
+        self.assertEqual((rc, seen), (0, {1: (['a.xci', 'b.nsp'], '0100ABCD00000000')}))
+        self.assertNotIn('【红】', out)
+    def test_from_extract_without_sources(self):   # 没给原件：照旧报红说清缺什么，不解
+        rc, seen, out = self.from_extract_run([])
+        self.assertNotEqual(rc, 0); self.assertEqual(seen, {}); self.assertIn('原件没一起给', out)
 
 class SeedAoc(unittest.TestCase):   # ④ 播种与轻阶段带 S2A_SEED_AOC=1（同 oneclick.sh 私有产物根）：Switch 2 导出的 DLC 只在解包目录里
     def test_seed_env(self):
@@ -478,6 +499,14 @@ class InstallWin(unittest.TestCase):
                 with self.assertRaises(install_win.Fail) as c: install_win.run(self.ns(d, None), say=lambda m: None)
                 self.assertEqual(c.exception.code, 75)
             finally: install_win.plumesign_path = old
+
+    def test_inherited_rust_log_does_not_hide_completion(self):
+        # #585：玩家环境里 RUST_LOG=warn → info 级的「Installation complete」被压掉，装好了也判失败。假 plumesign 按 RUST_LOG 决定打不打这行
+        with tempfile.TemporaryDirectory() as d:
+            exe = self.fake(d, "import os\nif os.environ.get('RUST_LOG') in ('info', 'debug', 'trace'): print('INFO Installation complete')\n")
+            with patch.dict(os.environ, {'RUST_LOG': 'warn'}):
+                install_win.sign_install(exe, Path(d, 'x.ipa'), 7, None, Path(d, 'p.log'), Path(d, 'o.ipa'))   # 不抛 = 判成功
+            self.assertIn('Installation complete', Path(d, 'p.log').read_text(encoding='utf-8'))
 
     def run_fake(self, body):
         with tempfile.TemporaryDirectory() as d:

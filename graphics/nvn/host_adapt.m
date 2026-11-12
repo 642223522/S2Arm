@@ -174,6 +174,12 @@ UIView *s2a_ios_root_view(void) __attribute__((weak_import));
 // 出图层该挂的视图（ios/extdisplay.m，主线程）：外接显示器接着 = 外接屏窗口的视图，否则根视图。没有这个符号的壳一律根视图
 UIView *s2a_ios_present_view(void) __attribute__((weak_import));
 static UIView *present_view(void) { return s2a_ios_present_view ? s2a_ios_present_view() : s2a_ios_root_view ? s2a_ios_root_view() : nil; }
+CGRect s2a_ios_game_area(void) __attribute__((weak_import));
+// 出图层摆放的范围（#300 统一游戏区域）：挂在手机根视图上时取 App 壳给的游戏区域（分屏等），挂在外接屏窗口的视图上或壳没这个符号 / 区域为空时取视图自身
+static CGRect game_rect(UIView *v) {
+    if (s2a_ios_game_area && s2a_ios_root_view && v == s2a_ios_root_view()) { CGRect r = s2a_ios_game_area(); if (!CGRectIsEmpty(r)) return r; }
+    return v.bounds;
+}
 int s2a_screen_w(void); int s2a_screen_h(void); int s2a_widen_game(void); int s2a_widen_full(void); int s2a_screen_reaspect(void);   // runtime/src/widen.c
 int s2a_nvn_reaspect_ok(void);   // graphics/nvn/widen_glue.inc：NVN 直连的宽屏核心在跑（能运行中换屏；Vulkan / GL 层的贴图建时定宽，换不了）
 static int out_wide(void) {   // 出的是宽图：第二层，或直连第三层整套放宽（屏幕比 16:9 宽时核心才放宽，s2a_widen_init 回 OFF 时出的仍是 16:9）
@@ -193,19 +199,20 @@ static CAMetalLayer *g_layer;
 static double g_out_a;   // 出图宽高比（起局定，游戏内部按它渲染；NVN 直连换屏时跟着换，见 s2a_direct_relayout）
 // 触屏（ios/vpad.m gameRect）按这同一个比例算画面矩形（审计 P1-79：原先触点一律按屏幕宽 : 1080，宽屏没生效 / 窄屏加高时出图是 16:9 / 1920:屏高，手指落点偏）。0 = 还没挂层
 double s2a_direct_out_aspect(void) { return g_out_a; }
+CGRect s2a_direct_out_rect(void) { return g_layer ? g_layer.frame : CGRectZero; }
 // 按根视图当前尺寸摆出图层：出图比例 g_out_a 等比放进视图、居中，可画尺寸跟着变（主线程）。挂层时调一次；之后屏幕尺寸变了
 //   （10-27 Duo 合上切外屏：层仍按内屏尺寸挂，外屏只露出左上一块）由 App 壳视图控制器布局回调经 s2a_direct_relayout 再调——
 //   NVN 直连按新屏重算屏幕宽 / 高（s2a_screen_reaspect），出图比例跟着换，宽屏核心在下一个渲染遍前按新比例出图（widen_glue.inc wd_reaspect；10-27 维护者：坚持原生满屏）；
 //   Vulkan / GL 直连（贴图建时定宽）照旧：游戏仍按起局比例出图，新视图比例差 > 1% 时按出图比例居中留黑、记一行
 static void layout_layer(UIView *v, CAMetalLayer *l) {
     CGFloat s = v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale; l.contentsScale = s;
-    CGRect b = v.bounds; double a = g_out_a;
+    CGRect b = game_rect(v); double a = g_out_a;
     if (b.size.width <= 0 || b.size.height <= 0 || !(a > 0)) return;
     // 等比居中；出图比例与视图比例差 < 1% 时铺满视图（10-29：宽屏开着时出图比例来自取整后的屏幕宽，如 2346 / 1080 = 2.1722 对屏幕 2.1727，
     //   旧写法层比视图窄零点几个点，右侧露一条 ≤ 1 像素的黑缝；同 the reference port present_viewport 的 1% 容差）
     pf_vp f = pf_viewport(b.size.width, b.size.height, a, 1); CGFloat w = f.w, h = f.h;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    l.frame = CGRectMake(f.x, f.y, w, h);
+    l.frame = CGRectMake(b.origin.x + f.x, b.origin.y + f.y, w, h);
     // 出图层像素倍数（S2A_OUT_SCALE，缺省 1 = 屏幕原生；帧率能耗线 10-26 维护者要量）：最后上屏这一层按原生全分辨率画，每帧多一次整屏读写；
     //   设 0.75 时可画尺寸按 0.75 倍、图层框不变，交系统合成器放大。代价可能反过来（尺寸不符时合成器要自己缩放），真机 A/B 定生死前缺省不动；换屏重摆沿用同一倍数
     static double k = -1; if (k < 0) { const char *e = getenv("S2A_OUT_SCALE"); k = e ? atof(e) : 1.0; if (!(k >= 0.5 && k <= 1.0)) k = 1.0;
@@ -234,14 +241,14 @@ void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubvie
     int app_bg = UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
     int scene_fg = vs && (vs.activationState == UISceneActivationStateForegroundActive || vs.activationState == UISceneActivationStateForegroundInactive);
     if (pf_relayout_wait(ext, app_bg, moved, scene_fg)) { if (moved) g_relayout_due = 1; return; }
-    CGSize z = v.bounds.size; if (z.width <= 0 || z.height <= 0) return;
+    CGSize z = game_rect(v).size; if (z.width <= 0 || z.height <= 0) return;
     double a0 = g_out_a; int re = s2a_nvn_reaspect_ok() && s2a_screen_reaspect(); if (re) g_out_a = out_aspect();   // 先换出图比例再摆层
     CGSize d0 = g_layer.drawableSize; layout_layer(v, g_layer); CGSize d1 = g_layer.drawableSize;
     if (d0.width == d1.width && d0.height == d1.height && !re && !moved) return;
     double va = z.width / z.height;
     LOG("直连：屏幕尺寸变了，出图层重摆为 %.0fx%.0f 像素（视图 %.0fx%.0f 点，比例 %.3f；出图比例 %.3f → %.3f%s）", d1.width, d1.height, z.width, z.height, va, a0, g_out_a,
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
-    if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：新屏幕比例 %.3f 与出图比例 %.3f 差超过 1%%，按比例居中留黑（Vulkan / GL 直连运行中不改游戏比例）", va, g_out_a);
+    if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：可用区域比例 %.3f 与出图比例 %.3f 不同，按实际出图比例居中；固定尺寸的路径须重新启动游戏后应用新比例", va, g_out_a);
 }
 void *front_metal_layer(void) {
     static dispatch_once_t once;
@@ -412,7 +419,7 @@ void *s2a_vk_entry(const char *name) {
 }
 
 // 直连模式下装载器解析 egl* / gl* 导入（runtime/src/gfxmode.c：OpenGL 款，以及在 GL 里画一部分画面的 NVN 款）：回实现地址（重活已套切栈桩），没有回 NULL。
-void *gl_entry(const char *name);   // graphics/nvn/gfx/gl/gl_core.m：查表 + 重活套切栈桩（eglGetProcAddress 交出的也走它）
+void *gl_entry(const char *name);   // graphics/nvn/gfx/gl/gl_core.m：查表 + 重活套切栈桩，只回真实现（没实现的核心名由 s2a_gl_stub 在装载器找遍之后给）
 // 游戏第一次真正进 EGL（eglGetDisplay，graphics/nvn/gfx/gl/egl.m）时定着色器库路径（DM_MSL_DIR = <游戏数据>/shaders/direct，GL 库在其下 gl/）、起直连异常看门：
 //   同 NVN 的 direct_bootstrap、Vulkan 的 vkCreateInstance。不在重定位期做：iOS 上 S2A_GAME_DATA 由 host_main.c 在装载之后才设，
 //   重定位期读到空会误报「着色器库找不到」（10-25 测试设备2 数码宝贝 GL 直连首包）
@@ -428,6 +435,9 @@ void *s2a_gl_entry(const char *name) {
     if (fn && !hit) { hit = 1; LOG("直连：egl* / gl* 导入解析到 graphics/nvn/gfx/gl（首个 %s）", name); }
     return fn;
 }
+// 装载器找遍直连层 / 游戏模块 / libc / romfs NRO 都没定义的 gl* 导入（runtime/src/gfxmode.c s2a_direct_stub）：核心名给安全空实现，其余回 NULL
+void *gl_stub(const char *name);   // graphics/nvn/gfx/gl/gl_core.m
+void *s2a_gl_stub(const char *name) { return gl_stub(name); }
 
 // 直连帧数 / 每帧绘制数：NVN 层与 Vulkan 层各自计数，一局只有一层出帧，相加即本局的数（只数 NVN 时 Vulkan 款起局 90 秒就被看门判「没出首帧」）
 void dm_vk_stats(uint64_t *frames, uint64_t *draws, uint64_t *passes);   // graphics/nvn/gfx/vk/hle_vk.m

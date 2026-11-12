@@ -43,13 +43,15 @@ def kit_data(raw, usz):
     return bytes(out)
 
 
-def jobs(files, oodle=None, parts=64):
+def jobs(files, oodle=None, parts=64, heads=None):
     """nxsh_extract's jobs: each kit! index's entries (one per content) in about equal stored sizes. → ([(index path, entries), …], the paths taken: the indexes and their volumes,
     which are never scanned as loose files (2.4 GB of volumes)"""
     out, taken = [], set()
-    for p in files:
-        with open(p, 'rb') as f:
-            if f.read(4) != MAGIC: continue
+    for p in files:   # heads = 文件头表（nxsh_extract 从 RomFS 清单给，#606）：有就不为读魔数打开文件
+        h = heads.get(p) if heads is not None else None
+        if h is None:
+            with open(p, 'rb') as f: h = f.read(4)
+        if h[:4] != MAGIC: continue
         seen, uniq = set(), []
         for e in kit_entries(p):
             if e[5] not in seen: seen.add(e[5]); uniq.append(e)

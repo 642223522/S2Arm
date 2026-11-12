@@ -80,10 +80,12 @@ def bundle_tzdata(c, destination, source_root=ROOT):
 #   静态库 + 头文件 + 许可原文 + build.txt（构建键、版本、源码与库的 sha256）放进 Binaries/Prepare/libs/<库>/<平台>/；玩家出包时 build.sh 见 S2A_PREBUILT_TOOLS
 #   就核键与 sha256、直接回这份库（services/prebuilt_lib.sh），不构建。opus、C# 库（nxaot）还在玩家机器上现编，另作一单。
 # 追加一个库：在下面的表里加一项（库名 = services/<库名>/build.sh；静态库文件名），它的 build.sh 照 vpx / dav1d 开头那三行接 services/prebuilt_lib.sh
+# S2A_DAV1D=0：本地构建不链 dav1d 软件兜底，出包时也不放预编库（仅适合所有目标机都有 AV1 硬件解码）
 PREBUILT_LIBS = [
     ("vpx", "libs2a_vpx.a"),
-    ("dav1d", "libs2a_dav1d.a"),
 ]
+if os.environ.get("S2A_DAV1D", "1") != "0":
+    PREBUILT_LIBS.append(("dav1d", "libs2a_dav1d.a"))
 PREBUILT_RIDS = ("ios-arm64", "osx-arm64")
 
 
@@ -207,6 +209,10 @@ def bundle(destination, developer_dir):
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert
     devcert.fetch_rcodesign(tools / "rcodesign", "mac")
+    # 官方只发 universal（arm64 + x86_64，51.8 MB）；本 App 只支持 Apple 芯片，只留 arm64 那一片（各片签名各自独立，抽出来仍有效），约省一半
+    exe = tools / "rcodesign/rcodesign"
+    subprocess.run(["lipo", str(exe), "-thin", "arm64", "-output", str(exe) + ".arm64"], check=True)
+    os.replace(str(exe) + ".arm64", exe)
     (tools / "gal").mkdir()
     shutil.copy2(ROOT / "build/gal/gal_xc", tools / "gal/gal_xc")
     (tools / "dsx").mkdir()   # 直连翻译库（pack/stage_direct.sh 认 dsx/libdsx.dylib，11-08 从 libnxgal 拆出）
@@ -230,8 +236,9 @@ def write_manifest(destination, fingerprint):
     identity = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     # 壳编号（pack/shell/manifest.py current_id）：在开发树按壳输入表算好写进来，快照里的出包直接读（快照按目录挑文件、剔测试目录，重算会对不上发布的壳）
     sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
-    # 发版号（三端同号）：在开发树按最近 tag 算好写进来，快照里组装 iPhone 容器直接读（core.release_version）
-    from core import release_version
-    atomic(destination / "engine.json", dict(schema=1, id=identity, source=fingerprint, version=release_version(ROOT),
+    # 发版号（三端同号）：在开发树按最近 tag 算好写进来，快照里组装 iPhone 容器直接读（core.release_version）；
+    #   显示版本（v0.3.0 / v0.2.6-dev+ba0ef07）同理在开发树算好写进来——快照是全新单提交 Git 库，在快照里现算会得到快照自己的提交号（core.display_version）
+    from core import display_version, release_version
+    atomic(destination / "engine.json", dict(schema=1, id=identity, source=fingerprint, version=release_version(ROOT), displayVersion=display_version(ROOT),
                                            memoryRequirementsVersion=2, shellId=shell_manifest.current_id(), files=files))
     return identity

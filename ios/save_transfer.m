@@ -2,6 +2,7 @@
 // 弱链接[ios]：S2A_SaveTransferFree（释放 C# 存档迁移返回的字符串）
 #import "save_transfer.h"
 #import "s2a_l10n.h"
+#import "settings.h"
 #include "save_gate.h"
 #include "s2a_launch_ctx.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -22,10 +23,13 @@ static NSString *game_manage_key(void) {
 // 存档位置 SaveData（services/S2A.Services/SaveFolder.cs，11-09 维护者定）：本款文档根下的 SaveData（多款容器 Documents/games/<游戏号>/SaveData，
 //   单款包 Documents/SaveData），里面是原生存档格式；放进去下次开始游戏就读，退出时写回最新进度。这里按同一规则算出「文件」App 里的路径给玩家看
 //   （文件夹先建出来，「文件」App 里马上看得到），上次没读进来的原因（数据根 savedata-problem.txt，服务层写）接在后面
+//   本地玩家（#623）：存档位置是当前玩家的那个文件夹（第一个玩家 SaveData，同 settings.m s2a_ios_local_player），没读进来的原因也按玩家分文件
+//   （services/S2A.Services/SaveFolder.cs ProblemPath）；页上写明当前玩家，以及导出 / 导入 / iCloud 是这款所有玩家的存档一起
 static NSString *save_location(NSString *root) {
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSDictionary<NSString *, NSString *> *player = s2a_ios_local_player(NSUserDefaults.standardUserDefaults);
     const char *f = getenv("S2A_SAVE_FOLDER"), *d = getenv("S2A_DOCS");   // 同 ios/settings.m 起局时给服务层的那条；存档页在起局前打开时按同一规则算
-    NSString *folder = f && *f ? @(f) : [(d && *d ? @(d) : documents) stringByAppendingPathComponent:@"SaveData"];
+    NSString *folder = f && *f ? @(f) : [(d && *d ? @(d) : documents) stringByAppendingPathComponent:player ? player[@"folder"] : @"SaveData"];
     [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
     char *rd = realpath(documents.fileSystemRepresentation, NULL), *rf = realpath(folder.fileSystemRepresentation, NULL);
     NSString *base = rd ? @(rd) : documents, *full = rf ? @(rf) : folder; free(rd); free(rf);
@@ -33,7 +37,9 @@ static NSString *save_location(NSString *root) {
     NSString *path = [[[full substringFromIndex:base.length + 1] pathComponents] componentsJoinedByString:@" → "];
     NSString *name = NSBundle.mainBundle.infoDictionary[@"CFBundleDisplayName"] ?: @"S2Arm";
     NSString *text = [NSString stringWithFormat:S2AL(@"save.location"), name, path, name];
-    NSString *why = root ? [[NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"savedata-problem.txt"] encoding:NSUTF8StringEncoding error:nil]
+    if (player) text = [[NSString stringWithFormat:S2AL(@"save.players"), player[@"name"].length ? player[@"name"] : S2AL(@"save.player.first")] stringByAppendingFormat:@"\n\n%@", text];
+    NSString *problem = player && player[@"uid"].length ? [NSString stringWithFormat:@"savedata-problem-%@.txt", player[@"uid"]] : @"savedata-problem.txt";
+    NSString *why = root ? [[NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:problem] encoding:NSUTF8StringEncoding error:nil]
                                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : nil;
     return why.length ? [text stringByAppendingFormat:@"\n\n%@", [NSString stringWithFormat:S2AL(@"save.location.problem"), why]] : text;
 }

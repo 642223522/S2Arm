@@ -955,7 +955,7 @@ def work_kpka(args):   # RE 引擎 pak 的一批条目（已按补丁链取最�
         if b'\x34\x12\x76\x98' in data or data[:4] in (b'SARC', b'Yaz0', b'BAHS', b'\x28\xb5\x2f\xfd'): visit(f'kpka:{os.path.basename(p)}@{h:016x}', data, rows, blobs, stat, zl=False)
         else: undecoded(f'kpka:{os.path.basename(p)}@{h:016x}', data)   # 不进 visit 的条目（没有 NVN 魔数 / 容器魔数）也报：里面可能还有一层压缩
     flush(blobs, outdir); return rows, stat
-def scan_unity(root, files, stat):
+def scan_unity(root, files, stat, known=None):
     """Unity 资源（unity_res.py）：先读 UnityFS 资源包（Shader 带类型树，记下借给播放器数据），再读不带类型树的序列化文件。
     每个代码块条目里的着色器来源记 unity:<文件>[//<包内文件>]@<对象>#<平台>.<分段>、变体号 = 条目号（同一条目的 vs + ps = 一个程序，「# 变体组」规则配）。返回 (rows, blobs)"""
     import unity_res
@@ -965,9 +965,10 @@ def scan_unity(root, files, stat):
             r = []; _scan_blob('e', ent, r, blobs, stat)
             for k, st, _, _ in r: rows.append((k, st, f'unity:{name}@{pid:x}#{plat}.{si}', i))
     heads = {}
-    for p in files:
+    for p in files:   # known = 调用方给的文件头表（RomFS 清单前 32 字节，判下面两种文件够用）；表里没有的才读盘
+        if known is not None and p in known: heads[p] = known[p]; continue
         try:
-            with open(p, 'rb') as f: heads[p] = f.read(48)
+            with open(p, 'rb') as f: heads[p] = f.read(32)
         except OSError: pass
     for p in files:   # 资源包先（类型树在这里）
         if not unity_res.is_bundle(heads.get(p, b'')): continue
@@ -989,7 +990,7 @@ def scan_unity(root, files, stat):
         if version < 22:
             declared_size = struct.unpack_from('>I', h, 4)[0]
         else:
-            if len(h) < 48: continue
+            if len(h) < 32: continue   # 文件长在偏移 24 的 8 字节
             declared_size = struct.unpack_from('>Q', h, 24)[0]
         if declared_size != os.path.getsize(p): continue   # 头里记的文件长 = 实际长（动森 34 个文件头前几项碰巧像，这一项不像）
         try: entries(_rel(p, root), open(p, 'rb').read())
@@ -1041,6 +1042,9 @@ if __name__ == '__main__':
     for root in roots:
         # 同一次盘点走两遍（原先两次 os.walk 各盘点一次）
         tree = romfs_list.scan(root)
+        # 文件头一次取齐（romfs_list.heads：前 32 字节，并行读、按内容身份落盘，同一份 RomFS 各阶段只读一次）：厂商档案 / Unity 判魔数都查这张表，
+        #   不再各自把全部文件串行打开一遍（#606：Windows 30.4 万个文件，kitpak / hgpak / scan_unity 三遍逐个 open，停在「抽取 3/4」很久）
+        hd = {e.path: e.head for e in romfs_list.heads(tree.top, tree=tree).files() if e.error is None and e.head is not None}
         cdirs = sorted(dp for dp, dn, fn in tree.walk() if 'build_manifest.psv' in fn)   # 扁平 CASC 归档（暴雪游戏）：按清单逐条解出再扫，归档文件本身不当普通文件扫
         files = sorted(os.path.join(dp, f) for dp, dn, fn in tree.walk() if dp not in cdirs for f in fn)
         import unreal_pak as ue_pak
@@ -1070,13 +1074,13 @@ if __name__ == '__main__':
                 for r, s_ in ex.map(work_kpka, [(E[i::J * 8], outdir) for i in range(J * 8)]): rows += r; stat.update(s_)
         import kitpak, hgpak
         for m in (kitpak, hgpak):   # 带索引 / 分卷的厂商档案（11-02 着色器容器族 B 组：Unravel Two 的 kit! 索引 + 数据卷、No Man's Sky 的 HGPAK）：按条目切成任务逐条解出，档案本身不进普通文件 / 分段扫描
-            try: E, taken = m.jobs(files, pkz_oodle)
+            try: E, taken = m.jobs(files, pkz_oodle, heads=hd)
             except (ValueError, RuntimeError) as e: stat['【红】厂商档案读不了'] += 1; print(f'【红】{m.__name__}：目录读不了（{e}）', file=sys.stderr, flush=True); continue
             if not taken: continue
             files = [f for f in files if f not in taken]; stat[m.__name__] += len(taken)
             with cf.ProcessPoolExecutor(J) as ex:
                 for r, s_ in ex.map(work_members, [(root, m.__name__, e, outdir) for e in E]): rows += r; stat.update(s_)
-        ur, ub = scan_unity(root, files, stat)
+        ur, ub = scan_unity(root, files, stat, hd)
         if ur: rows += ur; flush(ub, outdir); stat['Unity 着色器条目'] += len({(r[2], r[3]) for r in ur})
         for cd in cdirs:
             E = casc_flat.entries(cd); pick = [e for e in E if 'shader' in e[0].lower()] or E   # 路径带 shader 的优先（暗黑2 164 个包）；没有就全扫

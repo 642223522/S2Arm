@@ -100,6 +100,39 @@ planned runtime log protocol in `docs/standards/logging.md`. Runtime markers and
 measurement logs retain their existing contract. Full gate/train/merge remain
 with the owning maintainer lines.
 
+## DMG installation window / 拖拽安装窗口
+
+安装窗口沿用 [GitHub Pages 下载页](../../docs/site/index.html) 的近黑底、奶油白、
+细描边卡片，以及现有玻璃 S 图标与字标。中英文安装说明常驻；两个图标由
+Finder 显示，S2Arm.app 可以实际拖入指向 `/Applications` 的快捷方式。
+背景以 1× / 2× TIFF 输出，布局尺寸与图标位置统一读取
+[`Branding/dmg-layout.json`](Branding/dmg-layout.json)。
+
+只预览设计（需要 macOS 和 Swift，无需打包依赖或完整 App）：
+
+```sh
+python3 launchers/macos/build_dmg.py --preview build/macos/dmg-preview
+```
+
+预览图为 `build/macos/dmg-preview/preview.png`，其中图标仅用于示意；
+实际背景 `background.tiff` 不含图标。传入 `--app <路径>/S2Arm.app` 可用该 App 的图标预览。
+
+正式打包使用已经完成签名、公证和钉票据的完整 App；这是 `sign_release.sh` 之后
+单独执行的发行步骤，不会自动发布或上传文件：
+
+```sh
+python3 -m venv build/dmg-venv
+build/dmg-venv/bin/python -m pip install -r launchers/macos/requirements-dmg.txt
+build/dmg-venv/bin/python launchers/macos/build_dmg.py \
+  --app build/macos/S2Arm.app --output build/macos/S2Arm-mac-arm64.dmg
+```
+
+打包不调用 Finder 或 AppleScript，不需要桌面自动化权限；严格校验输入和复制后
+App 的签名，再校验 DMG，成功后才替换目标文件。签名校验也接受本地 ad-hoc
+构建；脚本不会把它当作已公证发布包。安装说明不嵌入版本号，
+图标不隐藏 `.app` 扩展名，避免改写已签名应用的 FinderInfo。
+依赖仅供维护者打包使用，不随玩家运行环境分发。
+
 ## Build and run
 
 Apple Silicon and macOS 15+ are needed for the S2Arm app and direct-mode play on the Mac (games execute natively as arm64).
@@ -126,10 +159,12 @@ python3 launchers/macos/prepare_build.py            # add --check to only inspec
 | Apple Silicon Mac | The runtime keeps arm64 slices only | Checked |
 | Full Xcode with iOS platform and Metal Toolchain | Resolved like packaging (`tools/toolchain.sh`): `S2A_DEVELOPER_DIR` or `tools/machine.local`, then `xcode-select`. A Metal compiler version different from `translator/dmsh_chain.lock` prints a `note` only (`dmsh_chain.py --build-env` lets it through; the shader cache is keyed by compiler, so a different Xcode just recompiles) | Checked |
 | .NET SDK | Whatever `compat/tree/global.json` accepts: `version` plus `rollForward: latestFeature` (currently 10.0.403 or a later 10.0 feature band / patch). The command runs `dotnet --version` inside `compat/tree`, so .NET itself applies the rule. Install with `python3 pack/jobs/applenv.py --install dotnet` (the same path the launcher uses) | Checked |
-| Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja) | Checked; prints the `brew install` line |
+| Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja; skipped with `S2A_DAV1D=0`) | Checked; prints the `brew install` line |
 | Rust (`cargo`) | `pack/devpush` | Checked |
 | Build Python venv (default `build/venv`) | Pinned `tools/rewriter-requirements.txt`, `pack/fonts/requirements.txt` (fonttools / skia-pathops for the bundled fonts) and `launchers/macos/requirements-runtime.txt` | Created and installed |
 | C rewriter sources | Pinned Capstone / LZ4 from `runtime/rewriter/prepare_deps.py`; looked up in `S2A_REWRITER_DEPS`, then `build/rewriter-deps`, then `<S2A_RUN_ROOT>/s2arm/deps/rewriter-deps` | Downloaded to `build/rewriter-deps` when none is complete |
+
+Set `S2A_DAV1D=0` when every target Mac/iPhone has hardware AV1 decode. It skips the dav1d static library, the meson / ninja check, and the prebuilt dav1d bundle; default builds keep the software fallback for M1/M2, A16, and older devices. Do not use it for packages that may run on those devices.
 
 Then build with the interpreter the command printed:
 

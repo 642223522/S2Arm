@@ -55,7 +55,9 @@ s2armctl next --json    # 同上，给程序读：{step, who, do, why, game, tas
 
 默认目标是 iOS，流程依次是检查环境、导入密钥和游戏、导出、装到 iPhone、请玩家打开游戏。每做完一步就再运行 `next`。库里有多款游戏时，`next` 按本体大小选主游戏，其余列在 `others`。可以用 `next <游戏号>` 指定另一款。
 
-如果玩家要在这台 Mac 上玩，每次运行 `s2armctl next <游戏号> --target mac`（也可加 `--json`）。未准备的游戏会提示 `s2armctl build <游戏号> mac`，用 `s2armctl wait <游戏号> --op build` 等待。准备好后，按提示运行 `s2armctl launch <游戏号>`。Windows 只支持 `--target ios`。
+如果玩家要在这台 Mac 上玩，每次运行 `s2armctl next <游戏号> --target mac`（也可加 `--json`）。未准备的游戏会提示 `s2armctl build <游戏号> mac`，用 `s2armctl wait <游戏号> --op build` 等待。准备好后，按提示运行 `s2armctl launch <游戏号>`。如果返回「运行中」，请玩家查看游戏窗口即可。Windows 只支持 `--target ios`。
+
+`next` 收到无法识别的选项或多余的位置参数时，会打印用法并以状态码 `2` 退出。
 
 ## 各步命令
 
@@ -143,6 +145,9 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | `device_locked` | human | 请玩家解锁手机、停在主屏幕，装的过程中别锁屏 |
 | `container_would_drop` | ask | 手机上有几款是在别的电脑装的，这次会暂时不能玩（存档和资源包还在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名告诉玩家，同意了再 `install <游戏号> --accept-dropped`（删除用 `uninstall <游戏号> --accept-dropped`） |
 | `free_app_limit` | human | 这台 iPhone 上免费签名的自签 App 已满 3 个：请玩家删掉一个不玩的自签 App 再装 |
+| `app_other_signer` | human | 手机上已有用别的签名装的 S2Arm（包名相同，系统不让覆盖）：请玩家继续用原签名工具更新它，或在 iPhone 上删掉它（先导出存档）再装 |
+| `bundle_id_switched`（警告） | auto | 原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档） |
+| `apple_session_expired` | human | Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录，然后重装 |
 | `app_id_taken` | human | 包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认登录的是当初装 S2Arm 的 Apple ID，或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名 |
 | `free_appid_limit` | human | 免费 Apple ID 7 天内最多注册 10 个包名，已用满（Apple 错误 9120）；删 App 不退额度，别让玩家删：请玩家等几天（最早那批满 7 天恢复），或在 Xcode 换一个 Apple ID 登录（你不代做），或用付费开发者账号 |
 | `provisioning_expired` / `signing_failed` | ai | 再 `install` 一次（会重新申请）；还不行 `logs` 看签名哪步报错，必要时改用 AltStore（启动器「装到 iPhone」页底部有步骤，玩家本人登录） |
@@ -162,6 +167,10 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | 「这台手机暂时玩不了这款游戏」 | 机型内存不够，重装也没用：告诉玩家换内存更大的设备 |
 | 「签名快到期了」/ App 打不开（7 天到期） | 连上手机再 `install` 一次，存档和已拷的资源都还在 |
 | 「这款游戏最近几次都没能启动」/ 反复闪退 / 画面卡住 | `s2armctl diag pull` 拉回手机诊断、`s2armctl diag export ~/Desktop/S2Arm-诊断.zip` 导出诊断包，帮玩家反馈（见「反馈问题」） |
+
+## 游戏里出的问题（画面 / 帧率 / 卡顿 / 闪退）
+
+游戏已经装好、能打开，问题出在游戏里时，读 [player-game-triage](../../../../skills/player-game-triage/SKILL.md)：先做不碰源码的自查（版本、这款的启动设置、内存、签名、资源），再收诊断；你能改代码的话，按里面的分诊进对应 skill 根修、提 PR；修不了再回报。
 
 ## 反馈问题
 

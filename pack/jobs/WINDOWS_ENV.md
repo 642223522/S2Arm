@@ -86,7 +86,7 @@ RECOVERY只增加10个Windows码，已有tool_missing/device_not_connected/disk_
 共享`launchers/shared/experience.v1.json`同步中英title/detail和来源指针，revision6→7；
 next_action只指pack/jobs/errors.py，不复制恢复动作，不改Swift或出包/翻译键。
 安装入口经官方资料核对：[.NET SDK](https://learn.microsoft.com/en-us/dotnet/core/install/windows)、
-[Windows Metal开发者工具](https://developer.apple.com/metal/tools/)、
+[Windows Metal开发者工具](https://developer.apple.com/download/all/?q=metal%20developer%20tools%20for%20windows)（Apple 下载区，要用 Apple 账号登录，免费的就行）、
 [Apple Devices与iTunes](https://support.apple.com/118290)、[iCloud for Windows](https://support.apple.com/103232)。
 
 本片新增19方法，原85方法及判绿函数/NativeProbe的AST保持不变。首17方法修前35断言FAIL、0errors/skip；

@@ -460,10 +460,20 @@ extension GameState {
         case .installing(let stage):
             switch stage.phase {
             case .transferring: ShellStrings.text("Transferring – keep connected…") + Self.percent(stage.fraction)
-            case .installing: ShellStrings.text("Installing…") + Self.percent(stage.fraction)
+            case .installing: Self.stepTitle(stage.step) + Self.percent(stage.fraction)
             case .interrupted: ShellStrings.text("Transfer stopped")
             case .failed: ShellStrings.text("Install didn't finish")
             }
+        }
+    }
+    private static func stepTitle(_ step: Int) -> String {
+        switch step {
+        case 1: ShellStrings.text("Importing…")
+        case 2: ShellStrings.text("Unpacking small files…")
+        case 3: ShellStrings.text("Checking files…")
+        case 4: ShellStrings.text("Waiting for another game…")
+        case 5: ShellStrings.text("Organizing game folders…")
+        default: ShellStrings.text("Installing…")
         }
     }
     private static func percent(_ fraction: Double?) -> String { fraction.map { " \(Int(($0 * 100).rounded(.down)))%" } ?? "" }
@@ -493,7 +503,8 @@ extension GameState {
             case .transferring: ShellStrings.text("This game is being copied from your computer. Keep the cable connected.")
             case .installing: ShellStrings.text("Getting this game ready. Keep this app open.")
             case .interrupted: ShellStrings.text("Connect this iPhone to the computer again to continue.")
-            case .failed: ShellStrings.text("Tap Try again. If it still does not finish, install it again from the computer.")
+            case .failed:
+                (stage.reason.map { $0 + "\n" } ?? "") + ShellStrings.text("Tap Try again. If it still does not finish, install it again from the computer.")
             }
         }
     }

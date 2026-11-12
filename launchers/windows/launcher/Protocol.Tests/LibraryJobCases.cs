@@ -76,6 +76,17 @@ internal static class LibraryJobCases
            "games":[{"gameId":"0100A","name":"Alpha"},{"gameId":"0100B","name":""}],"stale":[{"gameId":"0100B","name":""}]},
           {"name":"no device"}]}
         """;
+        // 剃刀 W10：要不要 prod.keys 只读作业层 catalog 的 needsKeys（不按包格式另算）：NUP 款后端说要（比如带了 NSP 的 DLC）就是要，没给就是不要
+        const string keyed = """
+        {"games":[{"id":"0100A","name":"A","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100A","version":0,"display":"","size":1,"format":"nup"}],"needsKeys":true},
+                  {"id":"0100B","name":"B","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100B","version":0,"display":"","size":1,"format":"nsp"}]}],
+         "keys":{"ready":false,"message":""}}
+        """;
+        using (var document = System.Text.Json.JsonDocument.Parse(keyed))
+        {
+            var g = LibraryCatalog.Parse(document.RootElement).Games;
+            check(g[0].NeedsKeys && !g[1].NeedsKeys, "catalog: needsKeys comes from the backend field, not from package formats");
+        }
         using (var document = System.Text.Json.JsonDocument.Parse(updates))
         {
             var u = LibraryCatalog.Parse(document.RootElement).PhoneUpdates;

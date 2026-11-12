@@ -26,7 +26,7 @@ int s2a_shell_play(const char *game_id);
 void *s2a_shell_library_vc(const char *catalogue_json_path);
 
 // 本款装机阶段（11-07 Duo「游戏没能启动」：库里对资源包不在机上的款仍给 Play；v0.2.3 装机蒙版：传着的款要显示进度）：
-//   s2a_shell_game_install_state：1 就绪 / 2 传完了只等解开 / 3 传输中（推包端写的 资源包/.transfer 在、推送没完）/ 0 没有（库里不显示）。
+//   s2a_shell_game_install_state：1 就绪 / 2 传完了只等解开 / 3 传输中（推送没完：有 资源包/.transfer 按它画进度，没有按文件改动判传断了）/ 0 没有（资源包不在或是空的，库里不显示）。
 //     实现在宿主 ios/app.m（按 Documents/games/<游戏号> 跑 pack_apply.c s2a_game_install_state，同起局导入闸门判据）；本包弱定义缺省 1（Swift 单测不链宿主）
 //   s2a_shell_install_game：库在后台解开阶段 2 的那款，解完宿主调 s2a_shell_refresh；同时只解一款，正在解（或游戏号不对）返回 0。弱缺省 0
 //   s2a_shell_install_progress：正在解的是这款 → 写已解开包数 / 总包数、返回 1；否则 0。弱缺省 0
@@ -34,8 +34,18 @@ void *s2a_shell_library_vc(const char *catalogue_json_path);
 int s2a_shell_game_install_state(const char *game_id);
 int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
+// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（#569 迁移）/ 0 没有在等的事。
+//   库据此在卡片上说「等另一款装完」「正在整理游戏目录」，不再只写「安装中」（iOS 装机剃刀 #46 / #47）。主线程；弱缺省 0
+int s2a_shell_install_wait(void);
 // 库界面第一次出现（启动打点「游戏库界面可操作」）；弱定义缺省什么都不做
 void s2a_shell_library_appeared(void);
+// 单一 IMG 的分段安装进度（runtime/src/pack_apply.c s2a_pack_apply_phase）：正在解这一款时 1，*phase = 1 解开推送包 / 2 从 game.img 解小文件 /
+//   3 核对机上文件，*fraction = 这一段的完成比例（0–1，不知道总量时 < 0）；不在解这款返回 0。主线程
+int s2a_shell_install_phase(const char *game_id, int *phase, double *fraction);
+// 这一款最后一次解开失败的原因（按失败码查的「标题。下一步」一句人话，app.m install_error_text；原文与码只进日志）；没失败过 / 之后成功了返回 NULL。返回的指针到下次调用前有效。主线程
+const char *s2a_shell_install_failure(const char *game_id);
+// 主屏快捷操作「设置」冷启动时宿主记下的请求：1 = 游戏库出现时要打开游戏库设置（取走即清）；运行中宿主直接发通知 S2AShellOpenSettings
+int s2a_shell_take_open_settings(void);
 void s2a_shell_pick_game_data(const char *game_id);
 // 宿主让库界面重判各款资源包（说明里「重新检查」后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
 typedef void (*s2a_shell_refresh_fn)(void *ctx);

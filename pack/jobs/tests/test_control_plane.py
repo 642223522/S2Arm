@@ -77,14 +77,8 @@ class ControlPlaneTests(unittest.TestCase):
 
     # ---- helpers ----
     def jobs_dir(self, task=None):
-        """任务记录目录（游戏库结构 P3）：任务起跑时库已建好（有库标识）→ <库>/logs/jobs，否则 <私有目录>/logs/jobs。
-        setup 起跑时库还没建好，它的记录留在私有目录，等下一个作业收进库：给了 task 就看它在哪一边"""
-        built = self.library / "logs" / "jobs"
-        fallback = self.private / "logs" / "jobs"
-        name = (task or self.task) + ".json"
-        if (built / name).exists() or not (fallback / name).exists() and (self.library / ".s2arm-library.json").is_file():
-            return built
-        return fallback
+        """任务记录目录：固定 <私有目录>/logs/jobs（剃刀 H6；库建没建好都一样）"""
+        return self.private / "logs" / "jobs"
 
     def request(self, task=None, **extra):
         body = dict(schema=1, taskId=task or self.task, operation="setup", engineDir=str(ROOT),
@@ -480,6 +474,22 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(record["attempts"], {"导出 1/3": 1, "导出 2/3": 1})   # 只留展示用的次数
         described = json.loads(self.cli("get", "--private-root", self.private, "--task", self.task).stdout)
         self.assertNotIn("completedStages", described)
+
+    def test_stage_key_and_keychain_flag_ride_every_event_of_the_stage(self):
+        """前端认 stageKey / keychainPrompt（M9 / M10），不按中文阶段名、写死的步骤号猜；标记只在本阶段，下一次 begin 重置"""
+        import main as worker
+        def stub(c):
+            c.begin("用你的 Apple ID 签名", 4, 6, keychain=True); c.emit("progress", "签名中", done=1, total=2)
+            c.begin("游戏运行中", key="game_running")
+            c.begin("装到 iPhone", 5, 6)
+            return {}
+        self.assertEqual(worker.run_request(self.stub_request(), operation_overrides={"stub": stub}), 0)
+        events = [json.loads(x) for x in self.cli("events", "--private-root", self.private, "--task", self.task).stdout.splitlines() if x.strip()]
+        seen = [(e["stage"], e["stageKey"], e["keychainPrompt"]) for e in events if e["type"] in ("stage", "progress")]
+        self.assertIn(("用你的 Apple ID 签名", None, True), seen)
+        self.assertEqual([x for x in seen if x[0] == "用你的 Apple ID 签名"], [("用你的 Apple ID 签名", None, True)] * 2)   # 阶段事件 + 进度事件都带
+        self.assertIn(("游戏运行中", "game_running", False), seen)
+        self.assertIn(("装到 iPhone", None, False), seen)
 
     def test_a_killed_task_reports_only_the_stages_it_left_behind(self):
         child = self.start_worker(operation="build")

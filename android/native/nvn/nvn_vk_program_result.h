@@ -29,11 +29,13 @@ struct fd_stage {
     uint8_t *spirv;
     size_t spirv_bytes;
     uint32_t attr_mask;
+    uint32_t fragment_output_map;   // 片元阶段：每个颜色目标 4 位（RGBA）= 着色器写了哪些输出分量；读不到为全 1
 };
 
 struct fd_binding {
     int set, binding, kind;   // kind: 0 uniform/support, 1 storage, 2 texture, 3 image
     int slot;
+    uint16_t count;           // 描述符数组长度（不是数组为 1）。kind==2 且 count>1 = 从句柄表第 slot 项起的贴图数组
     char stage[16];
     // 下面这些只由 program 内容决定，加载时算一次；逐笔 draw 不再做 strcmp / 除法。
     int8_t stage_idx;         // 0=vs 1=fs 2=gs 3=tcs 4=tes 5=cs，-1 = 其它/未知
@@ -60,6 +62,8 @@ extern "C" {
 #endif
 int nvn_vk_program_graphics_stage_index(const char *name);
 int nvn_vk_program_parse_graphics(const uint8_t *bytes, size_t length, struct fd_program *out, char *why, size_t why_size);
+// 同上，allow_vs_only = 1 时也接受只有顶点阶段的程序（只写深度的绘制；新回放层用）。
+int nvn_vk_program_parse_graphics_stages(const uint8_t *bytes, size_t length, struct fd_program *out, int allow_vs_only, char *why, size_t why_size);
 void nvn_vk_program_free(struct fd_program *program);
 int nvn_vk_program_vertex_storage_safe(const uint8_t *bytes, size_t length, char *why, size_t why_size);
 #ifdef __cplusplus

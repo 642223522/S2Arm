@@ -30,7 +30,10 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
 
         public PerformanceCommand Initialize(ref PerformanceEntryAddresses performanceEntryAddresses, Type performanceType, int nodeId)
         {
-            if (PerformanceEntryAddresses is not null)
+            // 同一对 Start / End 命令共用一个 PerformanceEntryAddresses（CommandGenerator 取一次条目、生成两条命令），只由 End 那条在被复用时归还。
+            //   原先两条各还一次：池子每轮取 1 还 2、只涨不缩，同一对象在池里多份；不限大小的 ConcurrentBag 一路扩容，
+            //   玩几分钟到十几分钟后在 LocalPush 托管 OOM（#668，Mac 退出码 134）
+            if (PerformanceEntryAddresses is not null && PerformanceType == Type.End)
             {
                 PerformanceEntryAddresses.PerformanceEntryAddressesPool.Release(PerformanceEntryAddresses);
             }

@@ -2,7 +2,7 @@ import contextlib
 import collections
 import io
 import json
-import os
+import os, stat
 from pathlib import Path
 import shutil
 import signal
@@ -32,6 +32,8 @@ def oneclick_done(args, ipa, gid="0100000000000000", pack_id="pack-" + "0" * 8, 
     ipa = Path(ipa)
     root = ipa.parent / "roots" / ("t" + gid.lower() + "@现行"); root.mkdir(parents=True, exist_ok=True); (root / "main.npdm").write_bytes(b"META")
     pack = ipa.parent / (ipa.stem + "资源包"); pack.mkdir(exist_ok=True); (pack / "manifest.json").write_text(json.dumps(dict(version=2, index_sha256=pack_id)))
+    (pack / "exefs").mkdir(exist_ok=True); (pack / "exefs" / "main.npdm").write_bytes(pack_id.encode())   # 收尾转单一 IMG（pack/img.py convert）读清单；内容随资源包号变
+    (pack / "index.tsv").write_text(f"exefs/main.npdm\t{len(pack_id)}\t{pack_id}\n")
     ev = Path(str(args[args.index("--events") + 1]))
     with ev.open("a", encoding="utf-8") as f:
         f.write(json.dumps(dict(ev="result", t=0, ok=True, ipa=str(ipa), **fields), ensure_ascii=False) + "\n")
@@ -50,6 +52,14 @@ def shared_extract(f):
             return f(self, *args, **kwargs)
     return wrapped
 
+
+
+def img_step(args, cwd=None, env=None):
+    """假 c.run 遇到出包收尾转单一 IMG（ipa.to_img 经 c.run 调 pack/img.py convert，好让出包页有字节进度）就真跑它；→ 是不是这一步"""
+    if "pack/img.py" not in [str(a) for a in args]: return False
+    r = subprocess.run([str(a) for a in args], cwd=cwd, env=env, capture_output=True, text=True)
+    if r.returncode: raise AssertionError(r.stdout + r.stderr)
+    return True
 
 class JobsTests(unittest.TestCase):
     def setUp(self):
@@ -311,8 +321,7 @@ class JobsTests(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, OUT=str(out)), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "True 乙 3 0")   # 发现断管、没抛；三条事件都进了记录；子进程照常跑完
-        built = Path(self.request["library"]) / ".s2arm-library.json"   # 库建好了任务记录在 <库>/logs/jobs，否则 <私有目录>/logs/jobs
-        jobs = Path(self.request["library"]) / "logs/jobs" if built.is_file() else self.root / "private/logs/jobs"
+        jobs = self.root / "private/logs/jobs"   # 任务记录固定在 <私有目录>/logs/jobs（剃刀 H6）
         events = (jobs / "gone.events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(l)["stage"] for l in events], ["甲", "甲", "乙"])
 
@@ -441,6 +450,7 @@ class JobsTests(unittest.TestCase):
             self.assertIn("一键安装", str(e.exception))
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(args=[str(a) for a in args], env=env)
             out = Path(args[args.index("--out") + 1]); (out / "x.ipa").write_bytes(b"ipa")
             oneclick_done(args, out / "x.ipa", build_id="abc-123", graphics_mode="direct")
@@ -467,7 +477,9 @@ class JobsTests(unittest.TestCase):
         self.assertEqual((r["ipa"], r["outputPath"]), ("", str(image)))   # 不再交付单款 ipa：装机时现组容器
         self.assertTrue((image / "kit" / "main.npdm").is_file()); self.assertTrue((image / "pack" / "manifest.json").is_file())
         self.assertFalse((gdir / "build" / "ios" / "x.ipa").exists())
-        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], "pack-" + "0" * 8)
+        man = json.loads((image / "pack" / "manifest.json").read_text())   # 交付转成单一 IMG 形态：game.json 记的资源包号 = 新清单的
+        self.assertEqual((man["format"], man["imgFile"], (image / "pack" / "game.img").is_file()), ("img", "game.img", True))
+        self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], man["index_sha256"])
         # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
         #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
         import saves
@@ -477,6 +489,20 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(json.loads(si.read_text())["id"], "0100000000000000")
         chk = subprocess.run([sys.executable, str(ROOT / "pack/save_identity.py"), "--check", str(si)], capture_output=True, text=True)
         self.assertEqual(chk.returncode, 0, chk.stderr)
+
+    def test_ipa_follow_up_keeps_unpack_for_next_platform(self):
+        # 剃刀 M21：同一次出包后面还有平台（followUp）→ 收尾不调 prune_build；缺省 / false 照调（期望按 pack/contracts/README.md 手写）。
+        #   只测收尾判断本身（ipa.prune_unless_follow_up），不跑整份 ipa.build（会留下解包状态影响别的用例）
+        import unittest.mock as um, ipa
+        for follow, want in ((True, 0), (False, 1), (None, 1)):
+            with self.subTest(followUp=follow):
+                self.c.r.pop("followUp", None)
+                if follow is not None:
+                    self.c.r["followUp"] = follow
+                with um.patch.object(library, "prune_build") as prune:
+                    pruned = ipa.prune_unless_follow_up(self.c, "0100000000000000")
+                self.assertEqual((prune.call_count, pruned), (want, bool(want)))
+        self.c.r.pop("followUp", None)
 
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
@@ -501,6 +527,7 @@ class JobsTests(unittest.TestCase):
         import cache_retention
         lines = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "current-title.ipa").write_bytes(b"new")
             if lines.get("done", True):
                 oneclick_done(args, o / "current-title.ipa", pack_id="current-pack", build_id="current-123", graphics_mode="direct")
@@ -514,8 +541,12 @@ class JobsTests(unittest.TestCase):
             r = ipa.build(self.c)
             image = layout.image_ios(self.c, "0100000000000000")
             self.assertEqual(r["buildId"], "current-123")
-            self.assertEqual(json.loads((image / "pack" / "manifest.json").read_text())["index_sha256"], "current-pack")
-            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], "current-pack")
+            man = json.loads((image / "pack" / "manifest.json").read_text())   # 本轮交付的那份（转成 IMG 后清单号按新 index.tsv 算）：exefs/main.npdm 内容是本轮的资源包号
+            self.assertEqual(man["format"], "img")
+            self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], man["index_sha256"])
+            import importlib.util; spec = importlib.util.spec_from_file_location("img", ROOT / "pack/img.py"); img = importlib.util.module_from_spec(spec); spec.loader.exec_module(img)
+            g = str(image / "pack" / "game.img"); off, n = img.find(g, "exefs/main.npdm"); fh = open(g, "rb"); fh.seek(off)
+            self.assertEqual(fh.read(n), b"current-pack")
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
             self.assertEqual(direct_lib.read_bytes(), b'synthetic direct')
             self.assertFalse(direct_work.exists())
@@ -578,6 +609,7 @@ class JobsTests(unittest.TestCase):
         res = self.root / "res"; (res / "Fonts").mkdir(parents=True); (res / "Fonts/a.bfttf").write_bytes(b"f")
         miss = {"v": ["DLC 套装 A.nsp", "dlc_b.nsp"]}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             o = Path(args[args.index("--out") + 1]); (o / "g.ipa").write_bytes(b"new")
             oneclick_done(args, o / "g.ipa", graphics_mode="direct", aoc_missing=miss["v"])
         home = self.root / "dn"; (home / "sdk/10.0.403").mkdir(parents=True); (home / "dotnet").write_text("")
@@ -681,6 +713,7 @@ class JobsTests(unittest.TestCase):
         fonts = self.root / "fonts"; fonts.mkdir()
         seen = {}
         def run(args, log=None, env=None, cwd=None, on_line=None):
+            if img_step(args, cwd, env): return
             seen.update(env=env)
             out = Path(args[args.index("--out") + 1]); (out / "synthetic.ipa").write_bytes(b"synthetic IPA fixture")
             oneclick_done(args, out / "synthetic.ipa", graphics_mode="direct")
@@ -781,6 +814,17 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(lib["needBytes"], (6 << 30) * 11 // 10 + 15_000_000_000)
                 self.assertIn("直连着色器上限", lib["note"])
 
+    def test_catalog_says_whether_keys_are_needed(self):
+        # 剃刀 W10：catalog 每款带 needsKeys，判据只有 library.KEYLESS_FORMATS 一份（前端不再各算一份格式名单）。
+        #   期望手写：NSP 原件 → 要；NUP 容器 / 解包目录（extract）→ 不要；NUP 本体 + NSP 的 DLC → 要
+        self.assertTrue(library.needs_keys([dict(format="nsp")]))
+        self.assertTrue(library.needs_keys([dict()]))   # 旧记录没有 format：按加密原件算（宁可提示导入密钥，不放过）
+        self.assertFalse(library.needs_keys([dict(format="nup"), dict(format="extract")]))
+        self.assertTrue(library.needs_keys([dict(format="nup"), dict(format="nsp")]))
+        game = self.game(packages=[self.package()]); self.catalogue([game])
+        out = library.catalog(self.c)
+        self.assertEqual(out["games"][0]["needsKeys"], library.needs_keys(library.selected_packages(game)))
+
     def test_space_budget_covers_measured_peaks(self):
         # 11-10 冷出包实测（Mac，S2Arm.app 起作业，临时游戏库）：峰值按 library.disk_bytes（APFS 克隆共享块只算一次、同存储页与实测账口径）只量出包作业
         #   自己的目录，扣掉硬链进来的原件，不用整盘空闲下降（混进别的会话写盘、同款两次差 1 GiB）。按原件的规则必须 ≥ 峰值；
@@ -836,8 +880,7 @@ class JobsTests(unittest.TestCase):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
                 self.assertIsNone(space_rule.direct_check(root, cache, out))
-        self.assertEqual(space_rule.direct_bytes(int(3e9)), library._pack_direct_bytes(int(3e9)))   # 取的就是预检那一份
-        self.assertEqual(space_rule.direct_bytes(int(3e9) - 1), library._pack_direct_bytes(int(3e9) - 1))
+        self.assertIs(library.pack_direct_bytes, space_rule.pack_direct_bytes)   # 预检与开工前复核是同一个函数（剃刀 H11：只在 space_rule 定义一份）
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
@@ -1240,6 +1283,25 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(seen, [stale])
             self.assertFalse(stale.exists())
 
+    def test_game_quitting_mid_run_reports_game_crashed_with_exit_code(self):
+        # 启动页说人话（11-11）：游戏进程自己非 0 退出（139 = 段错误）报 game_crashed、消息带退出码；别的失败照原样往上抛
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
+        self.fake_host(game["id"])
+        for raised, want in ((Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit"), "game_crashed"),
+                             (Failure("fixture other", code="permission_denied"), "permission_denied")):
+            with self.subTest(code=raised.code):
+                def run(command, log, env, **kwargs):
+                    self.c.last_rc = 139
+                    raise raised
+                with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                     patch.object(self.c, "run", side_effect=run):
+                    with self.assertRaises(Failure) as e:
+                        build.launch(self.c)
+                self.assertEqual(e.exception.code, want)
+                if want == "game_crashed":
+                    self.assertIn("退出码 139", str(e.exception))
+                    self.assertIn("fixture", e.exception.internal)   # 原文随错误摘要带走
+
     def test_launch_removes_only_its_snapshot_after_exit_failure_or_cancellation(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},
@@ -1426,6 +1488,26 @@ class JobsTests(unittest.TestCase):
         self.assertFalse(gdir.exists())
         self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
 
+    def test_delete_with_undeletable_file_still_removes_game_from_library(self):
+        # 11-11 玩家反馈「删除有时生效有时不生效」（真 App 复现：游戏文件夹里一个文件删不掉 → 整个删除失败、目录删一半、游戏还挂在列表里成了「找不到游戏文件」）。
+        #   期望（手写）：游戏立刻从清单里去掉、原文件夹不在原处；删不掉的那个文件留在存放位置的 .s2a-trash 里，记一条黄字；
+        #   之后读游戏库（catalog → sweep_trash）文件能删了就清掉
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        gdir = layout.game_dir(self.c, game["id"])
+        locked = gdir / "image" / "ios" / "kit" / "a.tsv"; locked.parent.mkdir(parents=True); locked.write_text("x")
+        os.chflags(locked, stat.UF_IMMUTABLE)
+        self.addCleanup(lambda: [os.chflags(p, 0) for p in (self.c.library / library.TRASH).rglob("a.tsv")] if (self.c.library / library.TRASH).exists() else None)
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertFalse(gdir.exists())
+        self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+        left = list((self.c.library / library.TRASH).rglob("a.tsv"))
+        self.assertEqual(len(left), 1)
+        self.assertTrue(any(d["severity"] == "warning" and "空闲时会再删" in json.dumps(d, ensure_ascii=False) for d in self.c.job["diagnostics"]))
+        os.chflags(left[0], 0)
+        library.sweep_trash(self.c)
+        self.assertEqual(list((self.c.library / library.TRASH).iterdir()), [])
+
     def test_delete_also_drops_game_from_library_container(self):
         # 期望（#227，游戏库结构 v3）：删 A → 各台手机记录（devices/<设备>.json）里摘掉 A，B 与其余字段原样；没装 A 的那台记录不动；
         #   不装机、不碰默认位置根的 S2Arm.ipa（下次给那台装机时现组的容器就不再带 A）
@@ -1467,7 +1549,7 @@ class JobsTests(unittest.TestCase):
             self.c.r["gameId"] = game["id"]
             worker.start()
             deadline = time.monotonic() + 10
-            while "等这款游戏在跑的任务结束" not in self.output.getvalue():
+            while '"phase": "waiting_lock"' not in self.output.getvalue():   # 锁排队进度（剃刀 H2：不再另套按报错原文重试的循环）
                 self.assertFalse(finished.wait(0.01), "delete returned before reporting the held execution lock")
                 self.assertLess(time.monotonic(), deadline, "delete did not report waiting for the held execution lock")
             self.assertFalse(finished.is_set(), "delete finished while another process still held the lock")
@@ -1485,6 +1567,27 @@ class JobsTests(unittest.TestCase):
             if worker.ident is not None:
                 worker.join(5)
             self.assertFalse(worker.is_alive(), "delete worker remained after lock-holder cleanup")
+
+    def test_lock_timeout_failure_event_is_library_busy_with_holder(self):
+        # 出包任务 t7 占着游戏库锁不放；排队上限 0.3 秒 → 失败事件 code=library_busy、holder 原样带出、下一步取 RECOVERY["library_busy"]、
+        #   上屏原句不变（旧代码：code=job_failed，占锁者只在 detail 文字里）
+        self.c.require_library()
+        lockf = self.c.library / ".catalog.lock"
+        info = dict(taskId="t7", operation="build", gameId="0100000000010000", pid=1, startedAt=1.0)
+        holder = subprocess.Popen([sys.executable, "-c", "import sys,json; sys.path.insert(0,sys.argv[2]); import filelock; f=open(sys.argv[1],'a'); filelock.try_lock(f); open(sys.argv[1]+'.holder','w').write(sys.argv[3]); print('ok',flush=True); sys.stdin.readline(); filelock.unlock(f)", str(lockf), str(JOBS), json.dumps(info)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ok")
+            self.c.lock_wait = 0.3
+            with self.assertRaises(Failure) as raised:
+                with self.c.lock():
+                    pass
+            event = self.c.describe_failure(raised.exception)
+            self.assertEqual((event["code"], event["holder"], event["summary"]), ("library_busy", info, "另一个任务正在使用游戏库，请稍后重试。"))
+            self.assertEqual(event["suggestion"], __import__("errors").RECOVERY["library_busy"])
+            self.assertNotIn("holder", self.c.describe_failure(Failure("别的失败")))
+        finally:
+            holder.stdin.write("release\n"); holder.stdin.flush()
+            holder.communicate(timeout=5)
 
     def test_direct_small_batch_progress_replaces_finished_translation(self):
         progress = self.root / "progress.tsv"
@@ -1633,6 +1736,42 @@ class JobsTests(unittest.TestCase):
         self.assertTrue(complete.endswith("contact=[EMAIL] END"))
         self.assertEqual(self.c.redact(text), complete[-3000:])
         self.assertGreater(len(complete), 4000)
+
+    def test_diagnostics_export_includes_latest_phone_pull_redacted(self):
+        """先 diag pull 再 diag export：包里要有最近一次拉回的手机日志（原先导出只收 logs/ 和任务记录，玩家照说明交上来的包里没有手机日志），
+        走和 logs/ 同一套脱敏，manifest 记拉回时刻与来源机型；更早那次拉回不收；不认识的类型跳过并写明"""
+        import unittest.mock as um, diag, os, time as t
+        old = self.c.private / "diagnostics" / "0101-000000-old"; old.mkdir(parents=True)
+        (old / "stale.log").write_text("OLD PULL")
+        os.utime(old, (t.time() - 3600, t.time() - 3600))
+        devices = {"result": {"devices": [{"identifier": "D1", "hardwareProperties": {"platform": "iOS", "udid": "U1", "marketingName": "iPhone 17 Pro Max"},
+                                           "deviceProperties": {"name": "合成甲的iPhone", "osVersionNumber": "27.3"}, "connectionProperties": {"tunnelState": "connected"}}]}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "io.s2arm.games.abcde12345", "name": "S2Arm"}]}}
+        def fake(c, *args, timeout=120):
+            if args[:2] == ("list", "devices"): return 0, devices, ""
+            if args[:3] == ("device", "info", "apps"): return 0, apps, ""
+            source, target = args[args.index("--source") + 1], Path(args[args.index("--destination") + 1])
+            if source.endswith("host.log"): target.write_text("crash for synth@example.invalid DEVELOPMENT_TEAM = ABCDE12345\n"); return 0, {}, ""
+            if source.endswith("Documents/logs"): target.mkdir(); (target / "host-1.log").write_text("previous run\n"); return 0, {}, ""
+            if source.endswith("Documents/diag"): target.mkdir(); (target / "probe.json").write_text('{"ok": 1}'); (target / "blob.bin").write_bytes(b"\0\1"); return 0, {}, ""
+            return 1, {}, ""
+        with um.patch.object(diag, "devicectl", fake):
+            diag.pull(self.c)
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as archive:
+            names = archive.namelist()
+            phone = [n for n in names if n.startswith("phone/")]
+            host = [n for n in phone if n.endswith("/host.log")]
+            self.assertEqual(len(host), 1, names)
+            text = archive.read(host[0]).decode()
+            self.assertIn("crash for", text); self.assertNotIn("synth@example.invalid", text); self.assertNotIn("ABCDE12345", text)   # 同 logs/ 脱敏
+            self.assertTrue(any(n.endswith("/logs/host-1.log") for n in phone)); self.assertTrue(any(n.endswith("/diag/probe.json") for n in phone))
+            self.assertFalse(any("stale" in n for n in names))   # 只收最近一次拉回
+            m = json.loads(archive.read("manifest.json"))["phone_diagnostics"]
+            self.assertTrue(m["pulledAt"]); self.assertEqual(m["devices"][0]["model"], "iPhone 17 Pro Max"); self.assertEqual(m["devices"][0]["os"], "27.3")
+            self.assertNotIn("合成甲", json.dumps(m, ensure_ascii=False)); self.assertNotIn("U1", json.dumps(m))   # 不记设备名、设备号
+            self.assertEqual(m["files"], 3); self.assertTrue(any(x.endswith("diag/blob.bin") for x in m["skipped"]))
 
     def test_diagnostic_manifest_and_every_member_are_redacted_without_truncation(self):
         import platform
@@ -2025,13 +2164,31 @@ class JobsTests(unittest.TestCase):
         self.assertFalse((out / "roots").exists())
         self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
 
+    def test_catalog_sweeps_and_prunes_only_on_startup_refresh(self):
+        # 剃刀 H14：残留清扫与任务目录清理只在启动器打开后那次刷新（startup: true）做；之后的刷新（装机页、导入完、切回窗口）都不做。
+        #   用真残留夹具：普通刷新后残留还在、清理没调；startup 刷新后残留清掉、清理调了一次
+        import unittest.mock as um
+        gid, out, _ = self.stopped_game()
+        pruned = []
+        with um.patch.object(library, "prune_jobs", lambda *a, **k: pruned.append(1)):
+            library.catalog(self.c)
+            self.assertTrue((out / "roots").exists())
+            self.assertEqual(pruned, [])
+            self.c.r["startup"] = True
+            try:
+                library.catalog(self.c)
+            finally:
+                self.c.r.pop("startup", None)
+        self.assertFalse((out / "roots").exists())
+        self.assertEqual(pruned, [1])
+
     def test_sweep_without_residue_never_takes_execution_lock(self):
         """读游戏库（catalog）每次都扫：没有残留时不碰执行锁，否则同时开始的任务当场撞锁（11-09 main 守望红 SaveManagementTests）"""
         import unittest.mock as um
         gid, out, _ = self.stopped_game()
         c = self.stop_context(gid)
         library.sweep_residue(c)            # 先把残留清干净
-        with um.patch.object(library, "_execution_idle", side_effect=AssertionError("没有残留却去拿执行锁")):
+        with um.patch.object(type(c), "idle", side_effect=AssertionError("没有残留却去拿执行锁")):
             library.sweep_residue(c)
         self.assertEqual(sorted(p.name for p in layout.path(self.c, gid, "image").iterdir()), ["ios", "mac"])   # 半成品 mac.partial 清掉，交付件 image/ios 不动
 

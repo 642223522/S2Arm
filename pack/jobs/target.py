@@ -166,7 +166,10 @@ def device_list(c, timeout=60):
 def usb_idevices():
     """USB 上看得到的 iPhone / iPad 名称（devicectl 只列 Xcode 配对过的设备，没配对的要靠这里知道「其实插着」）"""
     try:
-        out = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"], capture_output=True, text=True, timeout=10).stdout
+        # IORegistry 字符串可能包含无效 UTF-8 字节；先拿原始输出，再替换解码，
+        # 不能让 USB 辅助探测中断后续安装流程。
+        raw = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"], capture_output=True, timeout=10).stdout
+        out = raw.decode("utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return []
     return re.findall(r'"USB Product Name" = "((?:iPhone|iPad)[^"]*)"', out)
@@ -333,8 +336,13 @@ def probe(c):
                     models=[], osChoices=[])
     env = c.env()
     try:
-        # 带上连接方式（wired / tunnel）：连着多台时出包页列出来让玩家选（#272），默认有线那台
-        return dict(connected=[] if c.r.get("quick") else connected(c, with_link=True), models=models(env["DEVELOPER_DIR"]), osChoices=os_choices(env))
+        # 带上连接方式（wired / tunnel）：连着多台时出包页列出来让玩家选（#272），默认有线那台。
+        #   读不到设备列表（超时 / 组件没装好）时 connectedError 带原因：界面说「读不到」而不是「没插」——玩家插着线却被说没看到 iPhone（11-11 玩家反馈）
+        rows, why = [], ""
+        if not c.r.get("quick"):
+            devices, why, _, _ = device_list(c)
+            rows = [_row(d, env["DEVELOPER_DIR"], True) for d in devices if _keep_device(d)]
+        return dict(connected=rows, connectedError=why, models=models(env["DEVELOPER_DIR"]), osChoices=os_choices(env))
     except TargetError as e:
         from core import Failure
         raise Failure(str(e), code=e.code) from e

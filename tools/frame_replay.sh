@@ -15,7 +15,7 @@ T0=$SECONDS
 bash "$R/tools/host_build.sh" > "$OUT/build.log" 2>&1 || { echo "🔴 宿主编不过（见 $OUT/build.log）"; tail -3 "$OUT/build.log"; exit 1; }
 TB=$SECONDS
 mkdir -p "$OUT/gal"
-env S2A_FRAME_REPLAY="$REC" S2A_GAME_DATA="$src" S2A_IN="$src" S2A_DOCS="$OUT" NXGAL_SHADER_CACHE_DIR="$OUT/gal" S2A_RYU_DATA="$OUT/ryu" \
+env DM_NVN_FIRST_SKIP=0 S2A_FRAME_REPLAY="$REC" S2A_GAME_DATA="$src" S2A_IN="$src" S2A_DOCS="$OUT" NXGAL_SHADER_CACHE_DIR="$OUT/gal" S2A_RYU_DATA="$OUT/ryu" \
   timeout "${S2A_REPLAY_TIMEOUT:-180}" "$R/build/s2arm-host" "$src" > "$OUT/host.log" 2>&1; rc=$?
 /usr/bin/grep -a "回放\|出图未满屏\|帧回放" "$OUT/host.log" | sed 's/^\[[^]]*\] //' | cut -c1-260
 echo "$( [ $rc = 0 ] && echo 🟢 || echo 🔴 ) 回放 rc=${rc}：编译 $((TB - T0)) 秒、回放 $((SECONDS - TB)) 秒；截图 $OUT/shots/replay.png$( ls "$OUT"/shots/fit_red_*.png > /dev/null 2>&1 && echo "，满屏红帧 $(ls "$OUT"/shots/fit_red_*.png | tr '\n' ' ')" )"
