@@ -171,12 +171,12 @@ public final class S2ArmShellHostModel {
             let id = allGames[i].id, listed = listedStates[id] ?? allGames[i].game.state
             let want: GameState
             switch installState(id) {
-            case 1: want = listed; installTried.remove(id)
+            case 1, 4: want = listed; installTried.remove(id)   // 4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
             case 2: want = .installing(unpackStage(id))
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default: missing.insert(id); want = listed == .playable ? .needsGameData : listed   // 不显示；Play 点到也只给导入说明，不放行
             }
-            noteDataSize(i, ready: installState(id) == 1)
+            noteDataSize(i, ready: [1, 4].contains(installState(id)))
             let fresh = want == .playable && isFresh(id)
             if allGames[i].game.isNew != fresh { allGames[i].game.isNew = fresh }
             if allGames[i].game.state != want {
