@@ -151,8 +151,9 @@ class JtX16Test(unittest.TestCase):
     def test_target_outside_function_still_gap(self):
         nso, _, _ = make_nso(CMP_W17, LDRSW_I17, [MOV_W17_W16], bad_target=True)
         rc, log, img = run(nso)
-        self.assertEqual((rc, img is None), (3, True), log)
+        self.assertEqual((rc, img is None), (3, False), log)   # v0.3.1 拿不准不停：有缺口照出产物
         self.assertIn('br_x18', log)
+        self.assertEqual(struct.unpack_from('<I', img, 0x100 + 4 * 7)[0], BR_X18, '缺口点 br x18 保持原字')
 
 
 if __name__ == '__main__':

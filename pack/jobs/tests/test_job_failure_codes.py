@@ -629,10 +629,18 @@ class LogCauses(JobCase):
                                      "GAP\t1\t0x7100001000\tldr x1, [x2, #0x10]",
                                      "GAP\t2\t0x7100002000\tldr x3, [x4, #-8]",
                                      "GAP\t3\t0x7100003000\tsvc #0x55",
+                                     "【红】fixture 改写 main：这款有程序代码需要的改写空间超过了能放下的上限，出不了包（日志 x）",
                                      "【红】fixture 刷新停在 rewrite 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(error.code, "rewrite_gap")
         self.assertEqual(d["facts"], {"module": "main", "need": 120, "gaps": 3, "fatal": 0,
                                       "gapKinds": [{"kind": "ldr _, [_, _]", "count": 2}, {"kind": "svc _", "count": 1}]})
+
+    def test_gap_line_from_a_degraded_rewrite_does_not_claim_a_later_failure(self):
+        # v0.3.1：改写有缺口照出产物、降级继续，日志里留着 PFRW gaps=3；之后直连阶段失败，不许归成 rewrite_gap（旧规则按 PFRW 认）
+        error, d = self.mac_refresh(["PFRW mod=main need=120 gaps=3 fatal=0",
+                                     "【黄】fixture 改写降级继续：没改写的缺口 3 处（svc 3）",
+                                     "【红】fixture 刷新停在 direct 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertNotEqual(error.code, "rewrite_gap")
 
     def test_non_rewrite_failure_has_no_facts(self):
         error, d = self.mac_refresh(["【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
