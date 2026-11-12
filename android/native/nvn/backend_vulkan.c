@@ -36,6 +36,7 @@
 #include "nvn_fmt_expand.h"
 #include "vk_device.h"
 #include "../capprobe/capprobe.h"
+#include "nvn_vk_dq.inc"   // 两级回放：从这里往下 vkCmd* 等名字走它的包装（调试开关 nvk_dq，缺省关）
 S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
 
 #define VK_SEG_QUEUE_INIT 16
@@ -870,6 +871,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
     memset(&g, 0, sizeof g);
     g.dev = dev;
     g.d = dev->device;
+    vk_dq_init(g.d);
     g.phys = dev->physical;
     g.queue = dev->queue;
     if (!g_cv_ready) {
