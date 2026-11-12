@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 55,
+  "revision": 57,
   "languages": [
     "zh-Hans",
     "en"
@@ -5036,8 +5036,8 @@
       },
       {
         "id": "welcome.win.metal.detail",
-        "zh-Hans": "Apple 的许可不允许随包分发，要你从官网下载安装一次，装好后回到这里重新检查。",
-        "en": "Apple's license does not allow bundling it. Download and install it once from Apple, then check again here."
+        "zh-Hans": "Apple 的许可不允许我们随包附带，要你自己下载安装一次，免费：\n1. 点「打开官方页面」，用 Apple 账号登录（免费的 Apple ID 就行）。\n2. 下载列表里找「Metal Developer Tools for Windows」，下载它的安装程序（.exe）。\n3. 双击安装，一路默认。\n4. 装好回到 S2Arm：切回这个窗口会自动重新检查，也可以点「重新检查」。",
+        "en": "Apple's license doesn't let us bundle it, so install it yourself once (it's free):\n1. Click \"Open the official page\" and sign in with an Apple Account (a free Apple ID works).\n2. In the downloads list, find \"Metal Developer Tools for Windows\" and download its installer (.exe).\n3. Run it and keep the defaults.\n4. Come back to S2Arm: switching back to this window checks again automatically, or click \"Check again\"."
       },
       {
         "id": "environment.ai.title",
@@ -5053,6 +5053,21 @@
         "id": "welcome.sheet.dropUnreadable",
         "zh-Hans": "没有读到可用的文件，请点上面的按钮选择。",
         "en": "No usable file was received. Use the button above to choose one."
+      },
+      {
+        "id": "private_root.reparse",
+        "zh-Hans": "S2Arm 的私有数据文件夹 {0} 是一个链接（重解析点），为了安全不使用它。删掉这个链接，再打开 S2Arm。",
+        "en": "S2Arm's private data folder {0} is a link (reparse point); for safety it is not used. Delete the link and reopen S2Arm."
+      },
+      {
+        "id": "private_root.owner",
+        "zh-Hans": "S2Arm 的私有数据文件夹 {0} 属于另一个 Windows 账户，当前账户接管不了。删掉这个文件夹再打开 S2Arm（会自动重建；游戏库和存档不在这里，导入过的密钥要重新导入），或者用那个账户打开一次 S2Arm。",
+        "en": "S2Arm's private data folder {0} belongs to another Windows account and this account cannot take it over. Delete the folder and reopen S2Arm (it is recreated; your game library and saves are not in it, but imported keys must be imported again), or open S2Arm once with that account."
+      },
+      {
+        "id": "private_root.others",
+        "zh-Hans": "S2Arm 的私有数据文件夹 {0} 还给别的账户开着权限，当前账户去不掉。删掉这个文件夹再打开 S2Arm（会自动重建；游戏库和存档不在这里，导入过的密钥要重新导入）。",
+        "en": "S2Arm's private data folder {0} still gives another account access and this account cannot remove it. Delete the folder and reopen S2Arm (it is recreated; your game library and saves are not in it, but imported keys must be imported again)."
       },
       {
         "id": "welcome.sheet.libraryFailed",

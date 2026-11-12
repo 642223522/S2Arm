@@ -299,6 +299,12 @@ int main(int argc, char **argv) {
     CHECK(s2a_codec_entry("_ZN2nn5codec5video10InitializeEv") && ((Result (*)(void))s2a_codec_entry("_ZN2nn5codec5video10InitializeEv"))() == 0);
     CHECK(!s2a_codec_entry("_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_15ImageTilingModeE"));
     CHECK(!s2a_codec_entry("_ZN2nn5codec21InitializeOpusDecoderEPNS0_15OpusDecoderTypeEiiPvm"));
+    // #679 nn::oe::SetGraphicsTargetFrameRate：sdk 内直接调 gs 帧长模式、碰直连档不存在的 gsv 会话。宿主接管：gs 没启动也回成功、不中止；按名字前缀认，改编名后缀不同照接
+    {
+        void *f1 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateENS0_23GraphicsTargetFrameRateE"), *f2 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateEi");
+        CHECK(f1 && f1 == f2 && !nvn2_gs_booted() && ((Result (*)(int))f1)(30) == 0 && ((Result (*)(int))f1)(60) == 0);
+        CHECK(!s2a_codec_entry("_ZN2nn2oe20SetAudioOutputPolicyENS0_17AudioOutputPolicyE"));   // 负对照：oe 的其余函数照走 sdk
+    }
     // nn::vi::GetDisplayVsyncEvent（金刚 / raiders，11-04）：nvn2.c 的 vi 表弱引用到本文件实现；挂到游戏 SystemEvent（托管、自动清除），宿主线程按 60 Hz 触发
     {
         void *nvn2_vi_entry(const char *name);

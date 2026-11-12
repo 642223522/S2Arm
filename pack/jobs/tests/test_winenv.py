@@ -1133,7 +1133,7 @@ class RecoveryMappingTests(unittest.TestCase):
 
     def test_official_page_only_when_not_ready(self):
         c = self.item(self.report(), "metal")   # 缺省夹具 metal 探测 FileNotFoundError → missing
-        self.assertEqual((c["status"], c["url"]), ("missing", "https://developer.apple.com/metal/tools/"))
+        self.assertEqual((c["status"], c["url"]), ("missing", "https://developer.apple.com/download/all/?q=metal%20developer%20tools%20for%20windows"))   # 直接到 Windows 版的下载项（要登录 Apple 账号）
         self.assertIsNone(self.item(self.report(), "host")["url"])
 
     def test_recovery_metadata_does_not_change_all_ok_ready(self):

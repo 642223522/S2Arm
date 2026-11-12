@@ -213,11 +213,15 @@ def mirror_manifest():
 
 
 def offer(platform, version, mine, files, url_of):
-    """签过名的清单 files + 每个文件的下载地址（url_of(名字)，没有为 None）→ 给启动器的结果；安装包不在清单里按签名不对处理。"""
+    """签过名的清单 files + 每个文件的下载地址（url_of(名字)，没有为 None）→ 给启动器的结果。
+    清单里没有本平台的安装包 = 这一版没给本平台出包（如只发了 Mac），按「没有新版」安静返回、标准错误记一行，不报错
+    （11-11 维护者：原先按签名不对报 update_bad_signature，只发一个平台时另一平台的老用户每次启动都看到错误）。
+    清单本身验签不过、清单与发布版本对不上、下载下来的包与清单校验值不符，仍各自报错（signed_manifest / prepare）"""
     name = ASSETS[platform]
     wanted = files.get(name)
     if not isinstance(wanted, dict):
-        raise UpdateError("update_bad_signature", "签名清单里没有这个安装包，已停止，当前版本没有变化。")
+        print(f"更新：{'.'.join(map(str, version))} 的签名清单里没有 {name}（这一版没给本平台出包），按没有新版处理", file=sys.stderr)
+        return {"available": False}
     info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
             "asset": url_of(name), "assetName": name}
     delta = DELTAS[platform].format(".".join(map(str, mine)))

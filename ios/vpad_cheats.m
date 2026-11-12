@@ -20,6 +20,17 @@ static NSURL *cheats_dir(void) {   // 文档根唯一取法（s2a_docs.h），�
     return [NSURL fileURLWithPath:@(d) isDirectory:YES];
 }
 
+// 「导入金手指」的系统文件选择器：起始目录给本款的金手指文件夹（没有就建）。不给起始目录时选择器落在「最近项目」，
+//   那一页要汇总机上所有开了文件共享的 App，被大容器拖住时一直「正在加载」，玩家看着像卡死（11-11 真机复现：几分钟不出内容，App 主线程空闲）
+UIDocumentPickerViewController *s2a_cheats_import_picker(void) {
+    UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypePlainText, UTTypeText] asCopy:YES];
+    p.allowsMultipleSelection = YES;
+    NSURL *dir = cheats_dir();
+    [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    p.directoryURL = dir;
+    return p;
+}
+
 @interface S2ACheatFile : NSObject
 @property (nonatomic, copy) NSString *file; @property (nonatomic, copy) NSArray<NSString *> *names; @property (nonatomic) BOOL bad;
 @end
@@ -95,8 +106,7 @@ static NSString *cheat_status_text(NSString *st) {
 }
 
 - (void)import {
-    UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypePlainText, UTTypeText] asCopy:YES];
-    p.allowsMultipleSelection = YES; p.delegate = self; [self presentViewController:p animated:YES completion:nil];
+    UIDocumentPickerViewController *p = s2a_cheats_import_picker(); p.delegate = self; [self presentViewController:p animated:YES completion:nil];
 }
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)c; NSFileManager *fm = NSFileManager.defaultManager; NSURL *dir = cheats_dir(); NSMutableArray *bad = [NSMutableArray array];

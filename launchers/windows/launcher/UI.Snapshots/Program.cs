@@ -76,6 +76,14 @@ SaveW("04_welcome_games_chosen", w => {
     SetW(w, "report", FakeReport(true));
     SetW(w, "pendingImportPaths", new[] { "/tmp/fe_fortune.nsz" });
 });
+// 新电脑第一次打开：别的都就绪、只差 Metal 编译器（玩家要自己去 Apple 官网装）——欢迎页第 1 步的分步说明与「打开官方页面」
+SaveW("04b_welcome_metal_missing", w => {
+    SetW(w, "catalog", null);
+    SetW(w, "report", EnvironmentReport.Parse(
+        "{\"schema\":1,\"ready\":false,\"checks\":[{\"id\":\"host\",\"name\":\"Windows 64位\",\"status\":\"ok\",\"ok\":true,\"message\":\"就绪\",\"code\":null,\"action\":null,\"blocking\":true}," +
+        "{\"id\":\"metal\",\"name\":\"官方Windows Metal编译器\",\"status\":\"missing\",\"ok\":false,\"message\":\"没装\",\"code\":\"metal_missing\",\"action\":\"install\",\"blocking\":true," +
+        "\"url\":\"https://developer.apple.com/download/all/?q=metal%20developer%20tools%20for%20windows\"}]}", 1));
+});
 SaveW("05_welcome_oneclick", w => {
     SetW(w, "report", FakeReport(true));
     SetW(w, "welcomeGameId", MockGame().Id);
@@ -232,7 +240,8 @@ static void SetW(object obj, string field, object? value)
     var fi = obj.GetType().GetField(field, BindingFlags.NonPublic | BindingFlags.Instance);
     if (fi is not null) { fi.SetValue(obj, value); return; }
     var pi = obj.GetType().GetProperty(field, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
-    if (pi is not null) { pi.SetValue(obj, value); return; }
+    // 只读属性（如 busy：剃刀锁一族后改为按作业登记算出）设不了：跳过并提示，别让后面的场景全截不出来
+    if (pi is not null) { if (pi.CanWrite) pi.SetValue(obj, value); else Console.Error.WriteLine($"跳过只读属性 {field}（场景里这一项按实际状态显示）"); return; }
     throw new MissingMemberException($"Field/property not found: {field}");
 }
 
