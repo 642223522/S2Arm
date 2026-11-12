@@ -1134,6 +1134,34 @@ static void t_pass_clear_fold(void) {   // 整屏清除不单独编码：折进�
     CHECK(g_npd == 1);
 }
 
+static int pd_zero_clear(const nvn_gpu_pass_desc *d) { static const nvn_gpu_pass_desc z; return d->color[0].load == NVN_GPU_LOAD_CLEAR && !memcmp(&d->color[0].clear, &z.color[0].clear, sizeof z.color[0].clear); }   // 刚建的目标：载入时清成零（不是折进来的清除值）
+// 刚建的单级单层颜色目标：初始的全零不在 CPU 上整张上传，由第一个通道载入时清零；之后的通道照常载入。
+// 多级的不行（一个附件视图盖不住整张图）：照旧逐级填零。已有整屏清除的：按清除值清，不被零盖掉。
+static void t_pass_fresh_zero(void) {
+    pass_fresh();
+    tex_t a = mk_tex(64, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    for (int k = 0; k < 2; k++) {
+        stream s = {0}; if (!k) put_set_rt(&s, &a, NULL);
+        p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 8; sc->h = 8;
+        p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.5f; end(&s);   // 裁剪不满：开通道、通道里按矩形清
+        g_npd = 0; submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        if (!k) CHECK(g_npd == 1 && pd_zero_clear(&g_pd[0]) && g_nup == 0);                        // 第一次：通道清零，没有一次上传
+        else CHECK(g_npd == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD && g_nup == 0);       // 第二次：原内容留着
+    }
+    pass_fresh();
+    tex_t m = mk_tex(65, 0, NVN_FORMAT_RGBA8, 16, 16, 3, 0);
+    { stream s = {0}; put_set_rt(&s, &m, NULL);
+      p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = 8; sc->h = 8;
+      p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; end(&s);
+      submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_npd == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD && g_nup == 3); }             // 三级：逐级填零，通道照常载入
+    pass_fresh();
+    tex_t f = mk_tex(66, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    { stream s = {0}; put_set_rt(&s, &f, NULL);
+      p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[1] = 0.75f; end(&s);
+      submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_npd == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[0].clear.f[1] == 0.75f && g_nup == 0); }   // 整屏清除：按它的值
+}
 static void t_pass_target_persists(void) {   // 目标跨提交保留，且不依赖已经被复用的命令内存
     pass_fresh();
     tex_t a = mk_tex(63, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
@@ -1164,7 +1192,7 @@ static void t_pass_switch_and_partial(void) {
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_npd == 3 && g_pass_ends == 3);
     CHECK(g_pd[0].w == 16 && g_pd[0].color[0].clear.f[2] == 1);                     // 第一个通道是 a 的
-    CHECK(g_pd[1].w == 8 && g_pd[1].color[0].load == NVN_GPU_LOAD_LOAD);            // 为矩形清开的通道：原内容留着
+    CHECK(g_pd[1].w == 8 && pd_zero_clear(&g_pd[1]));                               // 为矩形清开的通道：不折清除值（这张图刚建，载入时清成零）
     CHECK(g_ncr == 2 && g_cr[0].npd == 2 && g_cr[0].ends == 1 && g_cr[1].npd == 2 && g_cr[1].ends == 1);   // 两次矩形清都发在第二个通道开着的时候
     CHECK(g_cr[0].d.color == 0 && g_cr[0].d.color_mask == 0x7 && g_cr[0].d.x == 0 && g_cr[0].d.y == 0 && g_cr[0].d.w == 8 && g_cr[0].d.h == 8);   // 只写三个通道：整张目标、掩码原样交给后端
     CHECK(g_cr[1].d.color == 0 && g_cr[1].d.color_mask == 0xf && !g_cr[1].d.depth && !g_cr[1].d.stencil && g_cr[1].d.x == 0 && g_cr[1].d.y == 0 && g_cr[1].d.w == 4 && g_cr[1].d.h == 4 && g_cr[1].d.value.f[1] == 0.125f);
@@ -1210,7 +1238,7 @@ static void t_clear_rect(void) {   // 带裁剪的清除：矩形与目标求交
     cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1; cd->stencil_mask = 0xff;
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_npd == 1 && g_pass_ends == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD && g_pd[0].depth.load == NVN_GPU_LOAD_LOAD);   // 三次矩形清在同一个通道里
+    CHECK(g_npd == 1 && g_pass_ends == 1 && pd_zero_clear(&g_pd[0]) && g_pd[0].depth.load == NVN_GPU_LOAD_LOAD);   // 三次矩形清在同一个通道里
     CHECK(g_ncr == 3);
     for (int i = 0; i < 3 && i < g_ncr; i++) CHECK(g_cr[i].npd == 1 && g_cr[i].ends == 0 && g_cr[i].d.x == 4 && g_cr[i].d.y == 0 && g_cr[i].d.w == 12 && g_cr[i].d.h == 6);
     CHECK(g_cr[0].d.color == 0 && g_cr[0].d.value.u[0] == 3 && g_cr[0].d.value.u[1] == 0 && g_cr[0].d.value.u[2] == 0xffffffffu && g_cr[0].d.value.u[3] == 255);
@@ -1922,7 +1950,7 @@ static void t_render_cond(void) {
     rc = put(&s, OP_RENDER_COND, sizeof *rc); rc->mode = 1; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s);    // 不等才画 → 不画
     end(&s);
     submit1(&s);
-    CHECK(g_gdraws == 2 && g_ncr == 0 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD);   // 被丢的清除没有折进通道
+    CHECK(g_gdraws == 2 && g_ncr == 0 && pd_zero_clear(&g_pd[0]));   // 被丢的清除没有折进通道
     // 已提交、没完成：下一次提交里这两个地址仍按 0 算（内存里还是 1 和 2）
     stream s2 = {0}; q_draw(&s2);                                                                                 // 新提交从「画」开始（上一次提交末尾是不画）
     rc = put(&s2, OP_RENDER_COND, sizeof *rc); rc->mode = 1; rc->addr = (uint64_t)(uintptr_t)mem; q_draw(&s2);  // 0 == 0 → 不等才画 → 不画
@@ -1967,7 +1995,7 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     p_draw *dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 5; dn->first = 2; dn->count = 4; dn->instances = 3;            // 不带索引的条带
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == 3 && g_npd == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD);   // 三笔画在同一个通道里；没有清除 → LOAD
+    CHECK(g_gdraws == 3 && g_npd == 1 && pd_zero_clear(&g_pd[0]));   // 三笔画在同一个通道里；没有清除 → 不带清除值（刚建的目标载入时清成零）
     CHECK(nvn_unimpl_count("draw", "prim_10") == 1);
     CHECK(g_resolves == 2 && g_pipe_gets == 2);          // 第一笔取一次；第二笔没变不取；条带换了图元再取一次
     CHECK(g_last_req.prim == 5 && g_last_req.rt_count == 1 && g_last_req.rt_format[0] == NVN_FORMAT_RGBA8);
@@ -2255,6 +2283,7 @@ int main(int argc, char **argv) {
     t_pass_bc_shadow();
     t_pass_bc_shadow_3d();
     t_autoflush();
+    t_pass_fresh_zero();
     t_pass_target_persists();
     t_pass_switch_and_partial();
     t_clear_rect();

@@ -198,7 +198,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         if (kind < 0) { nvn_unimpl("pass", why, t); continue; }   // 深度 / 块压缩格式的图挂在颜色槽、又走不了影子：当空槽（画到这个槽的内容丢掉）
         view_t av;
         uint64_t sh0_ = kind ? pb_now() : 0;
-        nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, P.clear_c[i]) : rp_view_for(t, att_view(t, P.rt.has_cview[i], &P.rt.cview[i], &av), c);
+        nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, P.clear_c[i]) : rp_view_for_attach(t, att_view(t, P.rt.has_cview[i], &P.rt.cview[i], &av), c);
         if (kind) rp_perf_add(RP_PERF_PB_SHADOW, pb_now() - sh0_);
         if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         nattached++;
@@ -225,6 +225,8 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     P.has_ds = d.depth.view || d.stencil.view; P.ds_used = P.clear_d || P.clear_s; P.ndraw = 0;
     for (int i = 0; i < P.rt.n && i < 8; i++) if (d.color[i].view && d.color[i].load == NVN_GPU_LOAD_LOAD) rp_perf_add(RP_PERF_P_LOADC, 1);
     rp_perf_add(RP_PERF_P_KPIX, (uint64_t)d.w * d.h / 1000);
+    for (int i = 0; i < P.rt.n && i < 8; i++)   // 刚建、该是全零的目标：不在 CPU 上搬一整张零，这个通道载入时清成零（已有整屏清除的照它的值清）
+        if (d.color[i].view && rp_tex_take_zero(P.rt.color[i]) && d.color[i].load != NVN_GPU_LOAD_CLEAR) { d.color[i].load = NVN_GPU_LOAD_CLEAR; memset(&d.color[i].clear, 0, sizeof d.color[i].clear); }
     nvn_gpu_pass_begin(c, &d);
     PB(RP_PERF_PB_BE);
     rp_view_pin_end();

@@ -19,6 +19,7 @@ struct rp_tex {
     uint8_t gpu_written;       // 内容以 GPU 为准
     uint8_t uploaded;
     uint8_t need_init;         // 刚建的存储，初始内容还没定（init_content）
+    uint8_t zero_pending;      // 初始内容该是全零、还没填：等第一个通道用清零载入做掉（rp_view_for_attach / rp_tex_take_zero）
     uint8_t in_alias;
     uint64_t seen;             // 共用表里的：最近一次被查到 / 新建时的提交号 + 1（alias_take_over 用）
     uint64_t wrote;            // 最近一次被 GPU 写时的提交号 + 1（0 = 没写过）
@@ -226,6 +227,13 @@ static int init_from_storage(const tex_t *t) {
     if (no_cpu && fmt_nonfinite(t)) return 0;   // 游戏写不了这种池：里面的 Inf / NaN 是别人留下的，不是数据
     return 1;
 }
+static _Thread_local int g_attach_intent;   // 正在给颜色附件取视图（rp_view_for_attach）
+// 填零能不能交给第一个通道的清零载入：zero_fill 会填的格式里，只有一级一层的二维图（一个附件视图盖住整张图）
+static int zero_deferrable(const tex_t *t) {
+    int bw = 1, bh = 1; int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    if (!bpb || bw != 1 || bh != 1 || fmt_depth(t->d.format) || t->d.samples > 1) return 0;
+    return t->d.target == NVN_TEXTURE_TARGET_2D && t->d.levels <= 1 && t->L.layers <= 1;
+}
 static void zero_fill(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c) {
     int bw = 1, bh = 1; int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     if (!bpb || bw != 1 || bh != 1 || fmt_depth(t->d.format) || t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return;   // 压缩 / 深度模板 / 多重采样的不清（同 iOS）
@@ -349,9 +357,14 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
                 uint64_t i0_ = res_now(); int from = init_from_storage(t); uint64_t i1_ = res_now(); rp_perf_add(RP_PERF_RES_SCAN, i1_ - i0_);
                 int zero = !from;
                 if (from) { zero = upload_all(t, x, xc, 0); uint64_t i2_ = res_now(); rp_perf_add(RP_PERF_RES_UP, i2_ - i1_); rp_perf_add(RP_PERF_RES_UPN, 1); i1_ = i2_; }
-                if (zero) { zero_fill(t, x, xc); rp_perf_add(RP_PERF_RES_ZERO, res_now() - i1_); rp_perf_add(RP_PERF_RES_ZERON, 1); }
+                if (zero && g_attach_intent && zero_deferrable(t)) { x->zero_pending = 1; rp_perf_add(RP_PERF_RES_ZDEFER, 1); }
+                else if (zero) { zero_fill(t, x, xc); rp_perf_add(RP_PERF_RES_ZERO, res_now() - i1_); rp_perf_add(RP_PERF_RES_ZERON, 1); }
             }
         }
+    }
+    if (x->zero_pending && !g_attach_intent && c) {   // 待清零没被通道取走（开通道失败），现在有别的用途要它：照旧填零
+        nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);
+        if (xc) { x->zero_pending = 0; if (!x->gpu_written) { zero_fill(t, x, xc); rp_perf_add(RP_PERF_RES_ZERON, 1); } }
     }
     if (x->cpu && !x->gpu_written && c && t->mem && (!x->uploaded || nvn_dirty_since(t->mem, t->L.size, x->stamp))) {
         nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);   // 上传是传输：录进前置段（本次提交里第二次上传才回主段）
@@ -394,6 +407,16 @@ void rp_view_pin_end(void) {
 static void vf_drop_of(const struct rp_tex *x) { for (int i = 0; i < VF_N; i++) if (g_vf[i].view && g_vf[i].of == x) { nvn_gpu_view_release(g_vf[i].view); memset(&g_vf[i], 0, sizeof g_vf[i]); } }   // 持 g_rmu
 static void vf_drop_serial(uint64_t serial) {   // 持 g_rmu
     for (int i = 0; i < VF_N; i++) if (g_vf[i].view && (!serial || g_vf[i].serial == serial)) { nvn_gpu_view_release(g_vf[i].view); memset(&g_vf[i], 0, sizeof g_vf[i]); }
+}
+nvn_gpu_view rp_view_for_attach(const tex_t *t, const view_t *v, nvn_gpu_cmd c) { g_attach_intent = 1; nvn_gpu_view o = rp_view_for(t, v, c); g_attach_intent = 0; return o; }
+int rp_tex_take_zero(const tex_t *t) {
+    if (!t || !t->serial) return 0;
+    pthread_mutex_lock(&g_rmu);
+    struct rp_tex *x = nvn_hm_get(&g_by_serial, &t->serial);
+    int r = x && x->zero_pending;
+    if (r) x->zero_pending = 0;
+    pthread_mutex_unlock(&g_rmu);
+    return r;
 }
 nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c) {
     nvn_gpu_tex g = rp_tex_resolve(t, c);
