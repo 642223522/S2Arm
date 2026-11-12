@@ -4263,6 +4263,61 @@ static void c85_redundant_state(const char *dir) {
     nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
 }
 
+// C86：3D 贴图的深度切片当渲染目标。核心为 3D 附件请求 2D 阵列目标（graphics/nvn/replay/rp_pass.c att_view）；后端的 3D 图像带
+//   2D_ARRAY_COMPATIBLE，通用视图按「2D 阵列、base_layer = 切片号」建，开通道时另建附件视图按 att_layer 取那一片。
+// 期望（手算）：16x16x4 的 RGBA8，第 k 片初值全是 (0x40+k, 0x80, 0xC0-k, 0xFF)；
+//   ① 只把第 2 片清成绿 (0,255,0,255) → 读回：片 2 = 绿，片 0、1、3 还是各自的初值；
+//   ② 再把第 0 片清成蓝 (0,0,255,255) → 读回：片 0 = 蓝，片 2 仍是绿，片 1、3 不动。
+//   反证：同一片不请求 2D 阵列目标（视图没设 set_target）→ view_create 被拒，原因里有「depth slice 2 of 4」。
+enum { C86_W = 16, C86_H = 16, C86_D = 4, C86_SLICE = C86_W * C86_H * 4 };
+static void c86_expect(const uint8_t *px, const uint8_t want[4][4], const char *tag) {
+    for (int k = 0; k < C86_D; k++) {
+        int nbad = 0; const uint8_t *o = px + k * C86_SLICE;
+        for (int i = 0; i < C86_W * C86_H; i++) if (memcmp(o + i * 4, want[k], 4)) nbad++;
+        CHECK(!nbad, "C86 %s 第 %d 片：%d 个像素不符（首像素 %02x%02x%02x%02x，期望 %02x%02x%02x%02x）", tag, k, nbad, o[0], o[1], o[2], o[3], want[k][0], want[k][1], want[k][2], want[k][3]);
+    }
+}
+static void c86_3d_slice_attach(void) {
+    nvn_gpu_tex t = make_tex_target(C86_W, C86_H, C86_D, NVN_TEXTURE_TARGET_3D, NVN_FORMAT_RGBA8, NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_RENDER);
+    static uint8_t init[C86_D * C86_SLICE];
+    for (int k = 0; k < C86_D; k++) for (int i = 0; i < C86_W * C86_H; i++) { uint8_t *p = init + k * C86_SLICE + i * 4; p[0] = (uint8_t)(0x40 + k); p[1] = 0x80; p[2] = (uint8_t)(0xC0 - k); p[3] = 0xFF; }
+    nvn_gpu_buf ib = make_buf(sizeof init, NVN_GPU_MEM_SHARED, init), rb = make_buf(sizeof init, NVN_GPU_MEM_SHARED, NULL);
+    view_t vs; memset(&vs, 0, sizeof vs); vs.set_layers = 1; vs.min_layer = 2; vs.nlayers = 1;
+    nvn_gpu_view bad = NULL, v2 = NULL, v0 = NULL; nvn_gpu_err e; memset(&e, 0, sizeof e);
+    nvn_gpu_rc r = nvn_gpu_view_create(t, &vs, &bad, &e);
+    CHECK(!OK(r) && !bad && strstr(e.why, "depth slice 2 of 4"), "C86 不请求 2D 阵列目标的第 2 片视图应被拒：%d %s", r.code, e.why);
+    vs.set_target = 1; vs.target = NVN_TEXTURE_TARGET_2D_ARRAY;
+    r = nvn_gpu_view_create(t, &vs, &v2, &e);
+    CHECK(OK(r) && v2, "C86 第 2 片视图（2D 阵列目标）：%d %s", r.code, e.why);
+    vs.min_layer = 0;
+    r = nvn_gpu_view_create(t, &vs, &v0, &e);
+    CHECK(OK(r) && v0, "C86 第 0 片视图（2D 阵列目标）：%d %s", r.code, e.why);
+    if (v2 && v0) {
+        const float green[4] = {0, 1, 0, 1}, blue[4] = {0, 0, 1, 1};
+        const uint8_t gr[4] = {0, 255, 0, 255}, bl[4] = {0, 0, 255, 255};
+        uint8_t want[4][4] = {{0x40, 0x80, 0xC0, 0xFF}, {0x41, 0x80, 0xBF, 0xFF}, {0x42, 0x80, 0xBE, 0xFF}, {0x43, 0x80, 0xBD, 0xFF}};
+        for (int round = 0; round < 2; round++) {
+            nvn_gpu_cmd c = begin_cmd();
+            if (round == 0) for (uint32_t k = 0; k < C86_D; k++) nvn_gpu_copy_buf_tex(c, ib, k * C86_SLICE, C86_W * 4, C86_SLICE, t, 0, k, NULL);
+            nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+            p.ncolor = 1; p.color[0].view = round == 0 ? v2 : v0; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
+            memcpy(p.color[0].clear.f, round == 0 ? green : blue, sizeof green);
+            p.w = C86_W; p.h = C86_H; p.layers = 1;
+            nvn_gpu_pass_begin(c, &p); nvn_gpu_pass_end(c);
+            for (uint32_t k = 0; k < C86_D; k++) nvn_gpu_copy_tex_buf(c, t, 0, k, NULL, rb, k * C86_SLICE, C86_W * 4, C86_SLICE);
+            r = nvn_gpu_cmd_commit(c, 150 + round, on_done, NULL, &e);
+            CHECK(OK(r), "C86 commit %d：%d %s", round, r.code, e.why);
+            r = nvn_gpu_fence_wait(150 + round, 5000000000ull, &e);
+            CHECK(OK(r), "C86 wait %d：%d %s", round, r.code, e.why);
+            memcpy(want[round == 0 ? 2 : 0], round == 0 ? gr : bl, 4);
+            c86_expect(buf_cpu(rb), want, round == 0 ? "只清第 2 片后" : "再清第 0 片后");
+        }
+    }
+    if (v2) nvn_gpu_view_release(v2);
+    if (v0) nvn_gpu_view_release(v0);
+    nvn_gpu_tex_release(t); nvn_gpu_buf_release(ib, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+}
+
 int main(int argc, char **argv) {
     t29_format_expand();
     char why[256] = {0};
@@ -4434,6 +4489,7 @@ int main(int argc, char **argv) {
     c83_blit();
     c84_validation_classes(); c84b_bc_block_copy();
     c85_descriptor_reuse(argv[1]);
+    c86_3d_slice_attach();
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;
