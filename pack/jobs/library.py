@@ -1894,12 +1894,18 @@ def game_caches(c, gid, *, include_compiler=True):
     return [p for p in out if p.exists() or p.is_symlink()]
 
 
+def _direct_base(c, direct):
+    """查「沿途没有链接」从哪查起：直连缓存在工具缓存下就从工具缓存查；跟着游戏放在别的盘（这款文件夹的 direct-cache，direct_cache_dir）就从这款文件夹查。
+    #754：原先一律从工具缓存查，游戏库和数据目录不在一块盘时 relative_to 抛 ValueError，出包失败后的清理整个没做（「F:… is not in the subpath of D:…」）"""
+    return c.work_root if Path(direct).is_relative_to(c.work_root) else Path(direct).parent
+
+
 def direct_transients(c, direct):
     """Only disposable direct-build work; never remove the store (store/, logs/) or unknown layouts.
     S2Arm 11-01: the direct cache is one content-addressed store, one file per entry (C# dsh_batch build, store/dshb/); the former per-key trees
     ios/ and mac/ (b-<chain>/, cas/…) and work/ are the old layout, which direct_lib.sh deletes on its next build anyway"""
     from cache_retention import _safe_root
-    if _safe_root(c.work_root, direct) != 'safe':
+    if _safe_root(_direct_base(c, direct), direct) != 'safe':
         return []
     out = [direct / name for name in ('work', 'merged', 'mac', 'ios')]
     for path in sorted(direct.glob('*.stage.*')):
@@ -1926,7 +1932,7 @@ def direct_transients(c, direct):
 def _rm_direct_transient(c, direct, path):
     """Remove only this lexical child, without resolving its final component."""
     from cache_retention import _safe_root
-    if path.parent != direct or _safe_root(c.work_root, direct) != 'safe':
+    if path.parent != direct or _safe_root(_direct_base(c, direct), direct) != 'safe':
         return False
     # Pin the checked parent; rmtree's dir_fd implementation refuses a directory
     # replaced by a symlink instead of traversing it. Global _rm stays unchanged.
@@ -2127,6 +2133,7 @@ def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
     work = layout.ios_work(c, gid, create=False)
     roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),
+             *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
              *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
     dest = c.logs / (c.task + "-stages")
