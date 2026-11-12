@@ -435,9 +435,17 @@ def to_img(c, gid, root, pack_dir):
     多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
     log = c.logs / "img.log"
+    # 边写边删解包出来的 RomFS（#746）：出包收尾本来就清掉整个出包工作目录（prune_unless_follow_up），提前到写 IMG 时，峰值少一整份游戏大小。
+    #   同一款接着还要出别的平台（followUp）要留着解包，不删
+    consume = c.r.get("followUp") is not True
     try:   # 走 c.run：它每秒读 S2A_PROGRESS，img.py 按已写字节报进度，出包页这一步有进度条（几十 GB 要写一两分钟）
-        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()], log, c.env(), cwd=c.engine)
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper(), *(["--consume", "--work", str(layout.ios_work(c, gid))] if consume else [])],
+              log, c.env(), cwd=c.engine)
     except Failure as e:
+        if consume:   # 解包已删了一部分：清掉整个出包工作目录（同出包成功的收尾），重试从解包重做，不拿残缺的产物根接着出
+            from library import _build_entries, _rm
+            for p in _build_entries(c, gid):
+                _rm(c, layout.root_of(c, gid), p)
         from errors import tool_reason
         raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 

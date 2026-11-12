@@ -179,7 +179,10 @@ namespace S2A.Services
 
         // IMG v1 的 RomFS 段（单一 IMG 方案，v0.3.0）：把 romfsDir 的真实文件建成 Switch 标准 RomFS（LibHac RomFsBuilder，与 hactool / nxdumptool 的 romfs.bin 同一种布局），
         //   写进 outPath 的 offset 处（文件须已存在；不落临时副本）。→ 写入的字节数。文件集合与排序同 Write（清单给了就不枚举目录）
-        public static long WriteStandard(string romfsDir, string listPath, string outPath, long offset)
+        /// <summary>consume：边写边释放原件——某个文件的数据读到末尾（标准 RomFS 段按顺序整读、每个文件只读一遍）就关句柄、删掉它（#746：
+        ///   v0.3.0 起写 game.img 时解包出来的 RomFS 和 IMG 同时在盘上，峰值多一整份游戏大小，256 GB 的 Mac 出不了 40 GB 级的游戏）。
+        ///   只有出包写 IMG 用（pack/img.py convert --consume）；写到一半失败，原件已经删了一部分，调用方负责让这款下次重新解包</summary>
+        public static long WriteStandard(string romfsDir, string listPath, string outPath, long offset, bool consume = false)
         {
             string root = Path.GetFullPath(romfsDir);
             List<string> rel = new();
@@ -203,7 +206,9 @@ namespace S2A.Services
             foreach (string r in rel)
             {
                 string full = Path.Combine(root, r);
-                builder.AddFile("/" + r, new LazyHostFile(full, new FileInfo(full).Length));
+                long length = new FileInfo(full).Length;
+                LazyHostFile file = new(full, length);
+                builder.AddFile("/" + r, consume ? new ConsumingFile(file, full, length) : file);
             }
             IStorage image = builder.Build();
             image.GetSize(out long total).ThrowIfFailure();
@@ -220,6 +225,49 @@ namespace S2A.Services
             }
             LazyHostFile.CloseAll();
             return total;
+        }
+
+        /// <summary>WriteStandard consume 用：读到文件末尾就关句柄、去掉只读属性、删掉（长度 0 的文件不会被读到，留着，几乎不占空间）</summary>
+        private sealed class ConsumingFile : IFile
+        {
+            private readonly LazyHostFile _inner;
+            private readonly string _path;
+            private readonly long _size;
+            private bool _gone;
+
+            public ConsumingFile(LazyHostFile inner, string path, long size)
+            {
+                _inner = inner;
+                _path = path;
+                _size = size;
+            }
+
+            protected override Result DoRead(out long bytesRead, long offset, Span<byte> destination, in ReadOption option)
+            {
+                Result rc = _inner.Read(out bytesRead, offset, destination, option);
+                if (rc.IsSuccess() && !_gone && offset + bytesRead >= _size)
+                {
+                    _gone = true;
+                    _inner.Release();
+                    File.SetAttributes(_path, FileAttributes.Normal);
+                    File.Delete(_path);
+                }
+
+                return rc;
+            }
+
+            protected override Result DoGetSize(out long size)
+            {
+                size = _size;
+                return Result.Success;
+            }
+
+            protected override Result DoWrite(long offset, ReadOnlySpan<byte> source, in WriteOption option) => ResultFs.WriteUnpermitted.Value;
+            protected override Result DoFlush() => Result.Success;
+            protected override Result DoSetSize(long size) => ResultFs.WriteUnpermitted.Value;
+
+            protected override Result DoOperateRange(Span<byte> outBuffer, OperationId operationId, long offset, long size, ReadOnlySpan<byte> inBuffer)
+                => ResultFs.NotImplemented.Value;
         }
 
         public static IStorage Open(string romfsDir, string indexPath, string overlayDir = null) =>

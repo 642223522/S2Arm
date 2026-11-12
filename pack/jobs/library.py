@@ -1250,8 +1250,11 @@ def space_budget(c, game):
     fmt = volume_format(loc)
     clones = False if os.name != "nt" and fmt and fmt != "apfs" else None   # 读到是非 APFS（HFS+ 等）才按不克隆多算一份；读不到按 APFS（不多算、不拦）
     links = not (os.name == "nt" and fmt and fmt not in ("ntfs", "refs"))   # Windows exFAT / FAT32：建不了目录链接，多两份（space_rule）
-    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image, clones=clones, links=links) - direct_need
-    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "") + \
+    keep = getattr(c, "r", {}).get("followUp") is True   # 同一款接着还要出别的平台：解包留着，写 IMG 不边写边删（ipa.to_img）
+    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image, clones=clones, links=links, keep_unpack=keep) - direct_need
+    img_extra = image and (keep or unpacked)
+    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + \
+        (f"，单一 IMG {_gb(size)}" if img_extra else "，单一 IMG 边写边腾解包、不另占" if image else "") + \
         (f"，{fmt.upper()} 盘不能克隆、资源包另占 {_gb(size * 11 // 10)}" if clones is False else "") + \
         (f"，{fmt.upper()} 盘建不了目录链接、另占 {_gb(2 * (size * 11 // 10))}" if not links else "")
     direct_note = f"直连着色器上限 {_gb(direct_need)}"
@@ -1260,10 +1263,15 @@ def space_budget(c, game):
     else:
         parts = [("library", loc, copy_need, unpack_note), ("cache", cache, direct_need, direct_note)]
     volumes = []
+    # 这款上一次出的 iPhone 资源包（image/ios/pack）：这次出完会被新包换掉。空间不够时算进「能腾出的」，玩家点「仍然继续」后先删掉它（#746：
+    #   v0.2.x 升级上来的旧包 29 GB 一直占着、预估不抵扣）。只在写 IMG 的那块盘（存放位置）上算
+    old = layout.image_ios(c, game["id"].upper(), create=False) / layout.IOS_PACK if image and "id" in game else None
+    old_bytes = _part_bytes([old]) if old is not None and old.is_dir() else 0
     for role, path, need, note in parts:
         free = _sh.disk_usage(path).free
+        reclaim = old_bytes if role == "library" else 0
         volumes.append(dict(role=role, volume=_volume(path), needBytes=need, freeBytes=free, enough=free >= need,
-                            note=note, unknown=["shader_cache"], basis="rule"))
+                            reclaimBytes=reclaim, note=note, unknown=["shader_cache"], basis="rule"))
     return dict(gameBytes=size, volumes=volumes, unknown=[dict(u) for u in SPACE_UNKNOWN])
 
 
@@ -1333,13 +1341,22 @@ def check_pack_space(c, game, *, compiler_policy=None):
     for v in budget["volumes"]:
         if v["enough"]:
             continue
-        need, free = v["needBytes"], v["freeBytes"]
+        need, free, reclaim = v["needBytes"], v["freeBytes"], v.get("reclaimBytes", 0)
         where = "" if len(budget["volumes"]) == 1 else ("游戏存放位置所在的盘" if v["role"] == "library" else "工具缓存所在的盘")
-        head = f"磁盘空间不够：{where}这次出包预计要 {need / 1e9:.0f} GB，现在只剩 {free / 1e9:.0f} GB。"
+        # 分项（#746：原先只给一个大数，玩家不知道为什么从 48 GB 跳到 106 GB、该清什么）
+        note = f"（{v['note']}）" if v.get("note") else ""
+        head = f"磁盘空间不够：{where}这次出包预计要 {need / 1e9:.0f} GB{note}，现在只剩 {free / 1e9:.0f} GB。"
         if override:
-            c.diagnostic(head + "已按你的选择仍然继续；中途真写满会停下报错，游戏原件和存档不受影响。", code="disk_full", severity="warning")
+            if reclaim:   # 失败页说过「仍然继续会先删掉它」：旧包和新包同时在盘上的那段是峰值的一部分，先删才腾得出来
+                _rm(c, layout.root_of(c, game["id"].upper()), layout.image_ios(c, game["id"].upper(), create=False) / layout.IOS_PACK)
+                c.diagnostic(head + f"已按你的选择先删掉这款上一次的 iPhone 包，腾出 {_gb(reclaim)}。", code="disk_full", severity="warning")
+                continue
+            c.diagnostic(head + "已按你的选择仍然继续。", code="disk_full", severity="warning")
             continue
-        raise Failure(head + "清出空间后点「重试」，或点「仍然继续」（预计偏保守时可以试；真写满会停下报错，游戏原件和存档不受影响）。", code="disk_full")
+        # 确认文案只写玩家据此做选择的事（维护者 11-12）：点「仍然继续」会先删旧包、腾多少；预计偏保守可以试
+        if reclaim:
+            raise Failure(head + f"点「仍然继续」会先删掉这款上一次的 iPhone 包，腾出 {_gb(reclaim)}；也可以清出空间后点「重试」。", code="disk_full")
+        raise Failure(head + "清出空间后点「重试」；预计偏保守，也可以点「仍然继续」试试。", code="disk_full")
 
     return budget
 
