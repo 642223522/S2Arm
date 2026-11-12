@@ -924,6 +924,50 @@ static void t_dispatch(void) {
 static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
     p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
 }
+// #659：计算阶段独立图像槽，读写属性决定 GPU 所有权；不涉及间接参数同步。
+static void t_compute_image(void) {
+    pass_fresh(); res_fresh(); g_arena_used = 0;
+    tex_t t = mk_tex(659, 0, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_IMAGE);
+    nvn_be_reg_tex(3, &t, NULL); nvn_be_set_tex_pool_n(8);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 1;
+    nvn_gpu_layout_ent *e = &g_cprog.ent[0][0];
+    e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = 2; e->count = 1; e->access = NVN_GPU_ACC_R;
+    rp_S.img[5][2] = 3; rp_S.tex[5][2] = 7; // 不得误用采样贴图槽，也不需要采样器。
+    p_dispatch dp = {.x = 2, .y = 1, .z = 1};
+    int n = g_ndisp;
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 1 && g_ncb == 1 && g_cb[0].cls == NVN_GPU_RES_IMAGE && g_cb[0].u.view);
+    CHECK(!(rp_tex_debug_state(t.serial) & 4));
+    e->access = NVN_GPU_ACC_RW; rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 2 && (rp_tex_debug_state(t.serial) & 4));
+    e->src_reg = 32; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2);
+    e->src_reg = 2; e->count = 2; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2);
+    e->count = 1; rp_S.img[5][2] = 7; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2);
+    rp_S.img[5][2] = 3; e->cls = NVN_GPU_RES_TEX; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2);
+    e->cls = NVN_GPU_RES_IMAGE;
+    tex_t bad = mk_tex(660, 0x4000, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+    nvn_be_reg_tex(4, &bad, NULL); rp_S.img[5][2] = 4;
+    rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2 && !(rp_tex_debug_state(bad.serial) & 4));
+    // 图像已解析但后续绑定失败：不能把没派发的写登记为 GPU 所有。
+    g_cprog.nent[0] = 2; g_cprog.ent[0][1].src_kind = NVN_RB_CBUF; g_cprog.ent[0][1].src_reg = 15;
+    tex_t fresh = mk_tex(661, 0x8000, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_IMAGE);
+    nvn_be_reg_tex(5, &fresh, NULL); rp_S.img[5][2] = 5; rp_S.ubo[5][15].addr = 0;
+    rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2 && !(rp_tex_debug_state(fresh.serial) & 4));
+    g_cprog.nent[0] = 1; e->access = NVN_GPU_ACC_W;
+    dp.x = 0; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2 && !(rp_tex_debug_state(fresh.serial) & 4));
+    dp.x = 2; dp.ind = 1; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 2 && !(rp_tex_debug_state(fresh.serial) & 4));
+    dp.ind = 0; rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3 && (rp_tex_debug_state(fresh.serial) & 4));
+    view_t v; memset(&v, 0, sizeof v); v.set_format = 1; v.format = NVN_FORMAT_R16;
+    nvn_be_reg_tex(6, &fresh, &v); rp_S.img[5][2] = 6;
+    rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3); // 原图支持storage，重解释视图不支持。
+    v.set_format = 0; v.set_swizzle = 1; v.swz[0] = 4; v.swz[1] = 3; v.swz[2] = 2; v.swz[3] = 5;
+    nvn_be_reg_tex(6, &fresh, &v); rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3);
+    fresh.serial = 662; fresh.d.levels = 2; nvn_tex_layout(&fresh.d, &fresh.L);
+    nvn_be_reg_tex(6, &fresh, NULL); rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); pass_fresh();
+}
+
 static void t_copy_t2t(void) {
     pass_fresh(); g_nct = 0; g_nbl = 0;
     tex_t a = mk_tex(71, 0, NVN_FORMAT_RGBA8, 64, 32, 3, 0), b = mk_tex(72, 0x8000, NVN_FORMAT_RGBA8, 32, 16, 1, 0), f = mk_tex(73, 0xC000, NVN_FORMAT_R11G11B10F, 32, 16, 1, 0);
@@ -1185,7 +1229,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_depth_shadow(); t_autoflush(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_dispatch(); t_copy_t2t(); t_draw(); t_present(); t_view_pin();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_depth_shadow(); t_autoflush(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_dispatch(); t_compute_image(); t_copy_t2t(); t_draw(); t_present(); t_view_pin();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
