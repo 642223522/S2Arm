@@ -3759,6 +3759,58 @@ static void c83_blit(void) {
     nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_tex_release(f); nvn_gpu_tex_release(g2); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
+// C84：带校验层在手机上报过的几类用法各走一遍（整套用例在校验层下跑，报一条就是红），内容按手算的期望读回。
+//   ① 两级贴图的默认视图（取全部级）当颜色附件：按首级首层挂。两级先传成红，通道清成绿 → 第 0 级全绿、第 1 级还是红。
+//   ② 深度模板贴图的默认视图当深度模板附件（采样形态只取深度面，附件形态两个面都在）。
+//   ③ 暂存偏移是 4 不是 8 的时候上传 BC1（一块 8 字节）：偏移要对齐到块。
+//   ④ D16 → 缓冲 → R16 逐字节拷（核心的影子就是这么拷的）：0x8000 原样落到 R16。
+static void c84_validation_classes(void) {
+    nvn_gpu_err e; nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
+    td.d.target = NVN_TEXTURE_TARGET_2D; td.d.format = NVN_FORMAT_RGBA8; td.d.width = 8; td.d.height = 8; td.d.depth = 1; td.d.levels = 2; td.usage = NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED;
+    nvn_gpu_tex m = NULL; nvn_gpu_rc r = nvn_gpu_tex_create(&td, &m, &e);
+    CHECK(OK(r), "C84 两级贴图：%d %s", r.code, e.why);
+    nvn_gpu_view mv = make_view(m);
+    int has_ds = (nvn_gpu_format_caps(NVN_FORMAT_DEPTH24_STENCIL8) & NVN_GPU_FMT_DEPTH) != 0, has_bc = (nvn_gpu_format_caps(NVN_FORMAT_RGBA_DXT1) & NVN_GPU_FMT_SAMPLE) != 0;
+    nvn_gpu_tex ds = has_ds ? make_tex(8, 8, NVN_FORMAT_DEPTH24_STENCIL8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED) : NULL; nvn_gpu_view dv = ds ? make_view(ds) : NULL;
+    nvn_gpu_tex one = make_tex(1, 1, NVN_FORMAT_RGBA8, NVN_GPU_TEX_SAMPLED), bc = has_bc ? make_tex(4, 4, NVN_FORMAT_RGBA_DXT1, NVN_GPU_TEX_SAMPLED) : NULL;
+    nvn_gpu_tex d16 = make_tex(4, 4, NVN_FORMAT_DEPTH16, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED), r16 = make_tex(4, 4, NVN_FORMAT_R16, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_buf rb = make_buf(256 + 64 + 32, NVN_GPU_MEM_SHARED, NULL);
+    uint8_t red[8 * 8 * 4]; for (int i = 0; i < 64; i++) { red[i * 4] = 255; red[i * 4 + 1] = 0; red[i * 4 + 2] = 0; red[i * 4 + 3] = 255; }
+    uint8_t px1[4] = {1, 2, 3, 4}, blk[8] = {0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0}; uint16_t half[16]; for (int i = 0; i < 16; i++) half[i] = 0x8000;
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_tex_upload(c, one, 0, 0, NULL, px1, 4, 4);                       // 暂存用掉 4 字节
+    if (bc) nvn_gpu_tex_upload(c, bc, 0, 0, NULL, blk, 8, 8);               // ③
+    nvn_gpu_tex_upload(c, m, 0, 0, NULL, red, 32, 256);
+    nvn_gpu_tex_upload(c, m, 1, 0, NULL, red, 16, 64);
+    nvn_gpu_tex_upload(c, d16, 0, 0, NULL, half, 8, 32);
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = mv; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[1] = 1; p.color[0].clear.f[3] = 1;
+    if (dv) { p.depth.view = dv; p.depth.load = NVN_GPU_LOAD_CLEAR; p.depth.store = NVN_GPU_STORE_STORE; p.stencil = p.depth; p.clear_depth = 0.5f; }
+    p.w = 8; p.h = 8; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p); nvn_gpu_pass_end(c);                          // ① ②
+    nvn_gpu_slice sl; r = nvn_gpu_arena_alloc(c, 32, 16, &sl, &e);
+    CHECK(OK(r), "C84 暂存：%d %s", r.code, e.why);
+    NVNcopyRegion r4 = {0, 0, 0, 4, 4, 1};
+    nvn_gpu_copy_tex_buf(c, d16, 0, 0, &r4, sl.buf, sl.off, 8, 32);          // ④
+    nvn_gpu_copy_buf_tex(c, sl.buf, sl.off, 8, 32, r16, 0, 0, &r4);
+    nvn_gpu_copy_tex_buf(c, m, 0, 0, NULL, rb, 0, 32, 256);
+    nvn_gpu_copy_tex_buf(c, m, 1, 0, NULL, rb, 256, 16, 64);
+    nvn_gpu_copy_tex_buf(c, r16, 0, 0, NULL, rb, 320, 8, 32);
+    r = nvn_gpu_cmd_commit(c, 127, on_done, NULL, &e);
+    CHECK(OK(r), "C84 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(127, 5000000000ull, &e);
+    CHECK(OK(r), "C84 wait：%d %s", r.code, e.why);
+    const uint8_t *o = buf_cpu(rb); int bad = 0;
+    for (int i = 0; i < 64; i++) if (o[i * 4] != 0 || o[i * 4 + 1] != 255 || o[i * 4 + 2] != 0 || o[i * 4 + 3] != 255) bad++;
+    CHECK(!bad, "C84 ① 第 0 级：%d 个像素不是绿（首像素 %u %u %u %u）", bad, o[0], o[1], o[2], o[3]);
+    bad = 0; for (int i = 0; i < 16; i++) if (o[256 + i * 4] != 255 || o[256 + i * 4 + 1] != 0) bad++;
+    CHECK(!bad, "C84 ① 第 1 级：%d 个像素不是红（通道只该写首级）", bad);
+    bad = 0; for (int i = 0; i < 16; i++) { uint16_t v; memcpy(&v, o + 320 + i * 2, 2); if (v != 0x8000) bad++; }
+    CHECK(!bad, "C84 ④ D16 → R16：%d 个像素不是 0x8000", bad);
+    nvn_gpu_view_release(mv); if (dv) nvn_gpu_view_release(dv);
+    nvn_gpu_tex_release(m); if (ds) nvn_gpu_tex_release(ds); nvn_gpu_tex_release(one); if (bc) nvn_gpu_tex_release(bc); nvn_gpu_tex_release(d16); nvn_gpu_tex_release(r16); nvn_gpu_buf_release(rb, NULL, NULL);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -3995,6 +4047,7 @@ int main(int argc, char **argv) {
     c81_int_sampled(argv[1]);
     c82_occlusion(argv[1]);
     c83_blit();
+    c84_validation_classes();
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;
