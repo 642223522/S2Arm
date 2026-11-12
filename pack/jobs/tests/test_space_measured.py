@@ -175,6 +175,18 @@ class SpaceMeasured(JobCase):
     def test_unpacked_counts_zero_and_windows_adds_a_copy(self):
         self.assertEqual(self.need(10_000_000_000, unpacked=True, windows=False), 15_000_000_000)
         self.assertEqual(self.need(10_000_000_000, windows=True), 11_000_000_000 * 2 + 15_000_000_000)
+        # v0.3.1 Mac 放开 HFS+：不能克隆，同 Windows 多算一份（11 + 11 + 15）
+        self.assertEqual(library.pack_need_bytes([dict(size=10_000_000_000, sha256="a" * 64)], windows=False, clones=False), 11_000_000_000 * 2 + 15_000_000_000)
+
+    def test_budget_counts_extra_copy_on_hfs(self):
+        # 存放位置读到是 HFS+：预算按不克隆多算一份、说明里写清；读到 APFS / 读不到：不多算。原件 10 GB 的 Mac 出包（不写 IMG）：
+        #   APFS 11 + 15 = 26 GB；HFS+ 再加 11 = 37 GB
+        c = self.context("build")
+        for fmt, need in (("apfs", 26_000_000_000), ("", 26_000_000_000), ("hfs", 37_000_000_000)):
+            with self.subTest(fmt=fmt), patch.object(library, "volume_format", return_value=fmt):
+                b = self.budget(c, self.game(10 * 10**9))
+                self.assertEqual(b["needBytes"], need)
+                self.assertEqual("不能克隆" in b.get("note", ""), fmt == "hfs")
 
     def test_budget_splits_location_and_cache_volumes(self):
         # P1-165：存放位置与工具缓存在两块盘时，各按自己那份需求和自己的余量判；期望手算：原件 16 GB → 存放位置 16 × 1.1 + 单一 IMG 16 = 33.6 GB

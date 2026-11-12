@@ -554,7 +554,9 @@ def require_apfs(path):
         if not libloc.format_ok(fmt, system="Windows"):
             raise Failure(libloc.WIN_FORMAT_MESSAGE.format(fmt=fmt.upper()), code="library_bad_format")
         return fmt
-    if fmt and fmt != "apfs":
+    # Mac 放开 HFS+（v0.3.1「拿不准不停」，libloc.MAC_OK_FORMATS）：克隆自动退回普通拷贝（cp -c、core / clonedir / 各工具的 clonefile 都退），
+    #   不覆盖改名 RENAME_EXCL 照常（11-12 HFS+ 映像实测）；空间预算按不克隆多算一份（space_budget）。exFAT / FAT 没有出包要的原子改名，物理上做不下去，照拦
+    if not libloc.format_ok(fmt, system="Darwin"):
         raise Failure(LIBRARY_FORMAT_MESSAGE.format(fmt=fmt.upper()), code="library_not_apfs")
     return fmt
 
@@ -792,6 +794,16 @@ def _occupied(d):
 
 
 def setup(c):
+    """选游戏库（见 _setup）。请求带 acceptCloud = 玩家确认过「游戏库放在云盘同步目录里也继续用」：不拦云盘目录，并把这个选择记进游戏库标识
+    （cloudAccepted，libloc.cloud_accepted 读），环境检查之后按提示显示、不再标红（v0.3.1：认得出的风险讲清后果、让玩家选）"""
+    result = _setup(c)
+    if c.r.get("acceptCloud"):
+        marker = c.library / ".s2arm-library.json"
+        atomic(marker, dict(read(marker), cloudAccepted=True))
+    return result
+
+
+def _setup(c):
     """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建。
     库路径规则只在这里（剃刀 W19，两端前端只把玩家输入转成绝对路径）：
       盘根 / 用户主目录 / 引擎目录不行；请求带 installDir（启动器安装目录，升级时整个替换）时，库在它里面或包含它都不行；
@@ -807,7 +819,11 @@ def setup(c):
         c.library = next((n for n in (c.library.with_name(f"{c.library.name} Library" + (f" {i}" if i > 1 else "")) for i in range(1, 10))
                           if not _occupied(n)), c.library)   # 都被占就原样往下走，由下面报「已有别的文件」
     require_apfs(c.library)
-    require_local(c.library)
+    # 云盘同步目录：认得出的风险，失败码 library_in_cloud，前端问玩家「仍然继续 / 先不」，同意后带 acceptCloud 重发；
+    #   这个库确认过（标识里 cloudAccepted）就不再问——启动时连已保存的库也走 setup，否则每次打开都问一遍
+    import libloc
+    if not c.r.get("acceptCloud") and not libloc.cloud_accepted(str(c.library)):
+        require_local(c.library)
     c.library.mkdir(parents=True, exist_ok=True)
     marker = c.library / ".s2arm-library.json"
     if marker.exists():
@@ -1154,10 +1170,13 @@ def space_budget(c, game):
     # P1-165：解包 / 产物写在这款的存放位置，直连缓存写在工具缓存；两块盘各按自己那份需求、自己的余量判（同卷合成一项，同原来）
     direct_need = pack_direct_bytes(size)
     image = getattr(c, "operation", None) == "ipa"   # 打 iPhone 包写 game.img（写在存放位置）；Mac 打包不写
-    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image) - direct_need
-    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "")
-    direct_note = f"直连着色器上限 {_gb(direct_need)}"
     loc, cache = _pack_paths(c, game)
+    fmt = volume_format(loc) if os.name != "nt" else ""
+    clones = False if fmt and fmt != "apfs" else None   # 读到是非 APFS（HFS+ 等）才按不克隆多算一份；读不到按 APFS（不多算、不拦）
+    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image, clones=clones) - direct_need
+    unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "") + \
+        (f"，{fmt.upper()} 盘不能克隆、资源包另占 {_gb(size * 11 // 10)}" if clones is False else "")
+    direct_note = f"直连着色器上限 {_gb(direct_need)}"
     if loc.stat().st_dev == cache.stat().st_dev:
         parts = [("library", loc, copy_need + direct_need, f"{unpack_note}，{direct_note}")]
     else:
@@ -1224,6 +1243,11 @@ def requirements(c, game):
 
 def require_game(c, game):
     errors = requirement_errors(c, game)
+    # 缺 prod.keys：出包开头当场核（v0.3.1：前端不再按游戏库读数里的 keysReady 置灰，读数可能是旧的——刚导入完 keys 回来仍是灰的）。
+    #   加密原件没 keys 读不了，物理上做不下去：停、说清去哪导入。不进 requirement_errors：那是游戏库读数里的「缺文件」，keys 不属于这一款。
+    #   原件都还没齐时不再报（先把文件找齐，一次只说该先做的那件）
+    if not errors and needs_keys(selected_packages(game)) and not c.keys.is_file():
+        errors.append(Failure("这款游戏的原件要 prod.keys 才能读：先在「设置 → 玩家密钥」导入 prod.keys，再出包。", code="keys_missing"))
     if errors:
         for error in errors:
             c.report_failure(error)
