@@ -350,7 +350,9 @@ static void res_fresh(void);   // 定义在本文件后面
 // 窗口一结束它就该能按轮转淘汰（证明窗口只在窗口内起作用，不是永久驻留）。
 static void t_view_pin(void) {
     res_fresh();
-    enum { N = 240 };
+    // 视图表是 128 组 x 8 路（按贴图序号散列）：窗口里取 3000 个不同贴图，平均每组 23 个——first 那一组的 8 格必然被本轮钉满、
+    // 多出来的走溢出表；窗口结束后再取 3000 个，first 那一格必然被换掉。数量由表的形状推出，不依赖具体散列到哪一组。
+    enum { N = 6000, NWIN = 3000 };
     static tex_t tp[N];
     for (int i = 0; i < N; i++) { tp[i] = mk_tex(3000 + (uint64_t)i, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&tp[i]); }
     nvn_gpu_view first = NULL;
@@ -359,11 +361,21 @@ static void t_view_pin(void) {
     first = rp_view_for(&tp[0], NULL, &g_fake_cmd);
     CHECK(first != NULL);
     if (first) first_id = first->rid;
-    for (int i = 1; i < 200; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);   // 绕环三圈：钉住时不能放掉 first
+    for (int i = 1; i < NWIN; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);   // 每组都被挤满：钉住时不能放掉 first
     CHECK(first && !was_view_released(first_id));                                  // 修前：轮转把 first 放掉 → 红
     rp_view_pin_end();
-    for (int i = 200; i < N; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);
+    for (int i = NWIN; i < N; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);
     CHECK(first && was_view_released(first_id));                                   // 窗口结束：它可以被淘汰
+    res_fresh();
+    // 一帧里轮着用 300 个目标（真机一款 3D 游戏每帧一百多个通道）：第二遍取到的必须是第一遍那些视图，一个都不重建。
+    // 300 个散进 128 组、每组 8 格；数量远小于 1024 格，但会不会有一组超过 8 个取决于散列，所以只要求「重建的不超过 300 个里的 5%」
+    // （原先 64 格的环：第二遍 300 个全部重建）。
+    { enum { M = 300 }; static tex_t tm[M]; static int rid[M]; int rebuilt = 0;
+      for (int i = 0; i < M; i++) { tm[i] = mk_tex(9000 + (uint64_t)i * 7, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&tm[i]); }
+      for (int i = 0; i < M; i++) { nvn_gpu_view v = rp_view_for(&tm[i], NULL, &g_fake_cmd); rid[i] = v ? v->rid : -1; }
+      for (int i = 0; i < M; i++) { nvn_gpu_view v = rp_view_for(&tm[i], NULL, &g_fake_cmd); if (!v || v->rid != rid[i]) rebuilt++; }
+      if (rebuilt > M / 20) fprintf(stderr, "视图表：300 个目标取第二遍，重建了 %d 个（期望 ≤ %d）\n", rebuilt, M / 20);
+      CHECK(rebuilt <= M / 20); }
     res_fresh();   // 本用例建的存储不留给后面的用例（它们按 live 计数做断言）
 }
 

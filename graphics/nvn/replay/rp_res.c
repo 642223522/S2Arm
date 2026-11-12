@@ -288,14 +288,22 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
 }
 
 // ---------- 按（贴图对象，视图记录）取视图：渲染目标、拷贝端点这些不经贴图号的使用点 ----------
-enum { VF_N = 64 };
+// 表是 128 组 x 8 路：按（贴图序号，视图记录）散列到一组，只在这一组的 8 格里找和换。
+// 原先是 64 格的环、逐格比：一帧一百多个通道的附件加拷贝端点远超 64 种，环不停轮转，真机一款 3D 游戏每帧新建 228 个后端视图
+// （对象读数），后端按视图记的帧缓冲也跟着每帧重建。
+enum { VF_WAYS = 8, VF_N = 128 * VF_WAYS };
+static uint32_t vf_base(uint64_t serial, const view_t *v) {
+    uint64_t h = serial * 0x9E3779B97F4A7C15ull;
+    if (v) { const uint8_t *p = (const uint8_t *)v; for (size_t i = 0; i < sizeof *v; i++) h = (h ^ p[i]) * 0x100000001B3ull; }
+    return (uint32_t)((h >> 20) % (VF_N / VF_WAYS)) * VF_WAYS;
+}
 static struct { uint64_t serial; view_t v; uint8_t has_v; nvn_gpu_view view; struct rp_tex *of; } g_vf[VF_N];
 static int g_vf_next;
 static uint32_t g_vf_seen[VF_N];       // 本轮取用记号：等于 g_pin_token 的项已交给调用方，轮转不能放
 static uint32_t g_pin_token, g_pin_depth;
 // 窗口内取用数超过环容量时的溢出视图（生产上界：8 颜色 + 深度 + 影子 ≤ 12；这里只是防御）。
 // 不进环、由窗口结束时统一放：后端在 pass_begin 里已 cmd_ref，窗口之后不再需要核心持有。
-static struct { nvn_gpu_view view; } g_pin_tmp[256];
+static struct { nvn_gpu_view view; } g_pin_tmp[4096];
 static int g_npin_tmp;
 void rp_view_pin_begin(void) { pthread_mutex_lock(&g_rmu); if (g_pin_depth++ == 0) g_pin_token++; pthread_mutex_unlock(&g_rmu); }
 void rp_view_pin_end(void) {
@@ -316,7 +324,8 @@ nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c) {
     pthread_mutex_lock(&g_rmu);
     struct rp_tex *x = nvn_hm_get(&g_by_serial, &t->serial);
     nvn_gpu_view out = NULL; int slot = -1, hit = -1;
-    for (int i = 0; i < VF_N && x; i++) if (g_vf[i].view && g_vf[i].serial == t->serial && g_vf[i].has_v == (v != NULL) && (!v || !memcmp(&g_vf[i].v, v, sizeof *v))) {
+    const uint32_t base = vf_base(t->serial, v);
+    for (int i = (int)base; i < (int)base + VF_WAYS && x; i++) if (g_vf[i].view && g_vf[i].serial == t->serial && g_vf[i].has_v == (v != NULL) && (!v || !memcmp(&g_vf[i].v, v, sizeof *v))) {
         hit = i;
         if (g_vf[i].of == x) out = g_vf[i].view; else slot = i;   // 序号换了存储：这一项作废重建
         break; }
@@ -325,10 +334,11 @@ nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c) {
         // 没找到同项：挑一个本轮没钉住的槽（钉住 = 已交给调用方、还没交给后端）
         int ring = 1;
         if (slot < 0) {
-            uint32_t start = (uint32_t)g_vf_next; int pick = -1;
-            for (uint32_t k = 0; k < VF_N; k++) { uint32_t i = (start + k) % VF_N; if (g_pin_depth <= 0 || g_vf_seen[i] != g_pin_token) { pick = (int)i; break; } }
-            if (pick >= 0) { slot = pick; g_vf_next = (int)((pick + 1) % VF_N); }
-            else ring = 0;   // 整个环都在本轮钉住：走溢出表，不动环
+            uint32_t start = (uint32_t)g_vf_next++; int pick = -1;
+            for (uint32_t k = 0; k < VF_WAYS && pick < 0; k++) if (!g_vf[base + k].view) pick = (int)(base + k);   // 先用空格
+            for (uint32_t k = 0; k < VF_WAYS && pick < 0; k++) { uint32_t i = base + (start + k) % VF_WAYS; if (g_pin_depth <= 0 || g_vf_seen[i] != g_pin_token) pick = (int)i; }
+            if (pick >= 0) slot = pick;
+            else ring = 0;   // 这一组 8 格都在本轮钉住：走溢出表，不动表
         }
         nvn_gpu_err err = {0};
         if (!ring) {
