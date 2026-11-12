@@ -160,11 +160,12 @@ static struct rp_prog g_cprog; static int g_cresolves, g_cresolve_rc, g_cpipe_ge
 static nvn_gpu_binding g_cb[16]; static uint32_t g_ncb; static int g_cbinds;
 int rp_shader_resolve_compute(const struct rp_prog **out) { g_cresolves++; *out = g_cresolve_rc ? NULL : &g_cprog; return g_cresolve_rc; }
 void rp_shader_reset(void) {}
+static int g_pipe_rc;
 static int g_pipe_gets, g_set_pipes, g_set_dyns, g_gdraws; static nvn_gpu_pipe_desc g_last_pdesc; static nvn_gpu_dyn g_last_dyn; static nvn_gpu_draw_args g_last_da;
 static struct { uint32_t stream; uint64_t off; } g_vb[4]; static int g_nvb;
 static nvn_gpu_binding g_fb[2][16]; static uint32_t g_nfb[2];
 static _Alignas(16) uint8_t g_arena[1 << 16]; static uint64_t g_arena_used; static struct nvn_gpu_buf_s g_arena_buf;
-nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; (void)err; g_pipe_gets++; g_last_pdesc = *d; *out = &g_fpipe; return (nvn_gpu_rc){NVN_GPU_OK}; }
+nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; g_pipe_gets++; g_last_pdesc = *d; *out = g_pipe_rc ? NULL : &g_fpipe; if (err) { memset(err, 0, sizeof *err); err->rc.code = g_pipe_rc; } return (nvn_gpu_rc){g_pipe_rc}; }
 void nvn_gpu_set_pipe(nvn_gpu_cmd c, nvn_gpu_pipe p) { (void)c; (void)p; g_set_pipes++; }
 static struct nvn_gpu_pipe_s g_fcpipe;
 nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; (void)err; g_cpipe_gets++; g_cpipe_sh = cs->sh; *out = &g_fcpipe; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -1118,15 +1119,27 @@ static void t_copy_t2t(void) {
     { tex_t u = mk_tex(74, 0x10000, NVN_FORMAT_R32UI, 32, 16, 1, 0); o = put_t2t(&s, &u, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; }   // 整数格式换格式：没接
     o = put_t2t(&s, &a, &b); o->sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; o->dr = o->sr; o->flags = NVN_COPY_FLAGS_MIRROR_Y_BIT;                       // 镜像：没接
     o = put_t2t(&s, &b, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = o->sr; o->flags = (int32_t)DM_COPY_RESOLVE;                         // 降采样记录、两边采样数相同：整张拷贝
+    { tex_t ms = mk_tex(75, 0, NVN_FORMAT_RGBA8, 32, 16, 1, 0); ms.d.samples = 4; ms.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE;
+      o = put_t2t(&s, &ms, &b); o->flags = DM_COPY_RESOLVE; }
+    // 整数、深度、缩放、反向采样转换仍记账，不能误走解析。
+    for (int k = 0; k < 4; k++) {
+        tex_t ms = mk_tex(76 + k * 2, 0, k == 0 ? NVN_FORMAT_R32UI : k == 1 ? NVN_FORMAT_DEPTH32F : NVN_FORMAT_RGBA8, 32, 16, 1, 0);
+        tex_t dst = ms; dst.serial++; ms.d.samples = 4; ms.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE;
+        if (k == 2) dst.d.width = 16;
+        if (k == 3) { ms.d.samples = 1; dst.d.samples = 4; }
+        o = put_t2t(&s, &ms, &dst); o->flags = DM_COPY_RESOLVE;
+    }
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_nct == 3);
     CHECK(g_ct[0].sl == 1 && g_ct[0].sy == 2 && g_ct[0].dl == 0 && g_ct[0].dy == 0 && g_ct[0].sr.xoffset == 4 && g_ct[0].sr.width == 16 && g_ct[0].sr.depth == 1 && g_ct[0].sr.zoffset == 0 && g_ct[0].dr.xoffset == 8 && g_ct[0].dr.yoffset == 4);
     CHECK(g_ct[1].sy == 3 && g_ct[1].dy == 1 && g_ct[0].s != g_ct[0].d);
     CHECK(g_ct[2].sr.width == 32 && g_ct[2].sr.height == 16 && g_ct[2].s == g_ct[2].d);
-    CHECK(g_nbl == 2 && g_bl[0].linear == 1 && g_bl[0].sr.width == 32 && g_bl[0].dr.width == 16 && g_bl[0].dr.height == 8 && g_bl[0].s && g_bl[0].d && g_bl[0].s != g_bl[0].d);
+    CHECK(g_nbl == 3 && g_bl[0].linear == 1 && g_bl[0].sr.width == 32 && g_bl[0].dr.width == 16 && g_bl[0].dr.height == 8 && g_bl[0].s && g_bl[0].d && g_bl[0].s != g_bl[0].d);
     CHECK(g_bl[1].linear == 0 && g_bl[1].sr.width == 16 && g_bl[1].dr.width == 16);
-    CHECK(nvn_unimpl_count("tex", "t2t_format_change") == 1 && nvn_unimpl_count("tex", "t2t_mirror") == 1 && nvn_unimpl_kinds() == 2);
+    CHECK(g_bl[2].linear == 0 && g_bl[2].sr.width == 32 && g_bl[2].sr.height == 16 && g_bl[2].dr.width == 32 && g_bl[2].dr.depth == 1);
+    CHECK(nvn_unimpl_count("tex", "t2t_format_change") == 1 && nvn_unimpl_count("tex", "t2t_mirror") == 1 && nvn_unimpl_kinds() == 4);
+    CHECK(nvn_unimpl_count("tex", "t2t_multisample_resolve") == 3 && nvn_unimpl_count("tex", "t2t_downsample_case") == 1);
     CHECK(nvn_be_tex_gpu_owned(72) == 1 && nvn_be_tex_gpu_owned(73) == 1 && nvn_be_tex_gpu_owned(71) == 0);
     pass_fresh();
 }
@@ -1214,7 +1227,7 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     di = put(&w, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; di->base_instance = 9; end(&w);
     submit1(&w); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 1 && g_fb[0][1].u.b.buf == &g_arena_buf && g_fb[0][1].u.b.len == 64 && g_last_da.base_instance == 9 && g_last_da.ioff == 3 * PG && g_last_da.itype == 1);
-    // 深度偏移：开关进管线描述，三个量进动态状态；点 / 线填充模式后端没接，照画并记账
+    // 深度偏移：开关进管线描述，三个量进动态状态；点 / 线成功不误记账，明确不支持时记账并跳过
     g_fprog.color_out_mask = 0x5;
     stream y = {0}; p_bind_state *by = put(&y, OP_BIND_STATE, sizeof *by); by->kind = 4; poly_st py = {NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, NVN_POLYGON_OFFSET_ENABLE_FILL}; memcpy(by->bytes, &py, sizeof py);
     p_poly_offset *pf = put(&y, OP_POLY_OFFSET, sizeof *pf); pf->factor = 1.5f; pf->units = 2; pf->clamp = 0.25f;
@@ -1224,10 +1237,16 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     g_fprog.color_out_mask = 0xffffffffu;
     CHECK(g_gdraws == d0 + 2 && g_last_pdesc.poly.offset_en == NVN_POLYGON_OFFSET_ENABLE_FILL && g_last_dyn.po.factor == 1.5f && g_last_dyn.po.units == 2 && g_last_dyn.po.clamp == 0.25f);
     CHECK(nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 0);
-    stream y2 = {0}; by = put(&y2, OP_BIND_STATE, sizeof *by); by->kind = 4; py.mode = NVN_POLYGON_MODE_LINE; memcpy(by->bytes, &py, sizeof py);
+    stream y2 = {0}; by = put(&y2, OP_BIND_STATE, sizeof *by); by->kind = 4; py.mode = NVN_POLYGON_MODE_LINE; py.offset_en = NVN_POLYGON_OFFSET_ENABLE_LINE; memcpy(by->bytes, &py, sizeof py);
     di = put(&y2, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&y2);
     submit1(&y2); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 1);
+    CHECK(g_gdraws == d0 + 3 && g_last_pdesc.poly.mode == NVN_POLYGON_MODE_LINE && g_last_pdesc.poly.offset_en == NVN_POLYGON_OFFSET_ENABLE_LINE && nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 0);
+    stream yp = {0}; by = put(&yp, OP_BIND_STATE, sizeof *by); by->kind = 4; py.mode = NVN_POLYGON_MODE_POINT; py.offset_en = NVN_POLYGON_OFFSET_ENABLE_POINT; memcpy(by->bytes, &py, sizeof py);
+    di = put(&yp, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&yp);
+    submit1(&yp); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_last_pdesc.poly.mode == NVN_POLYGON_MODE_POINT && g_last_pdesc.poly.offset_en == NVN_POLYGON_OFFSET_ENABLE_POINT && g_gdraws == d0 + 4 && nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 0);
+    g_pipe_rc = NVN_GPU_E_UNSUPPORTED; submit1(&y2); fake_complete(NVN_GPU_DONE_OK); g_pipe_rc = 0;
+    CHECK(g_gdraws == d0 + 4 && nvn_unimpl_count("gpu", "polygon_mode_not_fill") == 1);
     // 四边形：展开成三角形列表的 32 位索引（每个四边形 0,1,2 / 0,2,3），按带索引的三角形画
     { py.mode = NVN_POLYGON_MODE_FILL; stream z = {0}; by = put(&z, OP_BIND_STATE, sizeof *by); by->kind = 4; memcpy(by->bytes, &py, sizeof py);
       dn = put(&z, OP_DRAW, sizeof *dn); dn->prim = 7; dn->first = 10; dn->count = 9;                   // 不带索引、9 个顶点：两个四边形，零头 1 个丢掉
@@ -1319,8 +1338,8 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 15);                           // 着色器取不到：跳过（前面线环 / 四边形带 / 多边形的用例画了 6 笔）
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 18 && sk_n == 3);
+    CHECK(g_gdraws == d0 + 16);   // 新拓扑6笔 + 点模式1笔成功；不支持的线模式不绘制
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 19 && sk_n == 4);
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 

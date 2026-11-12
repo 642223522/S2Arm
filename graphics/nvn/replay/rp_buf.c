@@ -219,6 +219,24 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
         nvn_plat_log(NVN_PLAT_LOG_INFO, "copy", b); } }
     if (o->flags & DM_COPY_RESOLVE) {
         int ss = s->d.samples > 1 ? s->d.samples : 1, ds = d->d.samples > 1 ? d->d.samples : 1;
+        if (ss > 1 && ds == 1 && sfmt == dfmt && sfmt == s->d.format && dfmt == d->d.format &&
+            s->d.width == d->d.width && s->d.height == d->d.height && !s3 && !d3 && sl == 0 && dl == 0) {
+            nvn_fmt_info f;
+            if (!nvn_fmt_info_of((uint32_t)sfmt, &f) || f.kind == NVN_FMT_UINT || f.kind == NVN_FMT_SINT || f.depth || f.stencil) {
+                nvn_unimpl("tex", "t2t_multisample_resolve", rec); return;
+            }
+            view_t vs = {0}, vd = {0};
+            vs.set_levels = vd.set_levels = 1; vs.nlevels = vd.nlevels = 1;
+            vs.set_layers = vd.set_layers = 1; vs.min_layer = (int)sz0; vd.min_layer = (int)dz0; vs.nlayers = vd.nlayers = 1;
+            rp_view_pin_begin();   // 连取两个视图：取第二个时不能把第一个轮转放掉
+            nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
+            if (!gv || !hv) { rp_view_pin_end(); return; }
+            NVNcopyRegion r = {0, 0, 0, s->d.width, s->d.height, 1};
+            nvn_gpu_blit(c, gv, &r, hv, &r, 0);
+            rp_view_pin_end();
+            rp_tex_mark_gpu_written(d);
+            return;
+        }
         if (ss != ds || sfmt != dfmt || s->d.width != d->d.width || s->d.height != d->d.height) { nvn_unimpl("tex", ss > 1 && ds == 1 ? "t2t_multisample_resolve" : "t2t_downsample_case", rec); return; }
         uint32_t w = (uint32_t)s->d.width >> sl, h = (uint32_t)s->d.height >> sl; if (!w) w = 1; if (!h) h = 1;
         sr = (NVNcopyRegion){0, 0, 0, (int)w, (int)h, 1}; dr = sr;
