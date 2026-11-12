@@ -129,6 +129,10 @@ SaveP("win_03_export_progress_mid", () => Navigate(pack, "progress"));
 InjectMockProgress(pack, fraction: 1.0, stepIndex: -1, running: false, state: "succeeded",
     ipaBytes: 1_200_000_000L, packBytes: 3_400_000_000L, elapsed: 247);
 SaveP("win_04_export_success", () => Navigate(pack, "progress"));
+// 降级继续（v0.3.1）：出成了，完成卡下方逐条列作业层给的玩家提示
+SetW(pack, "packNotes", (object?)new List<string> { "这款有 27 处用了兼容写法，个别场景可能不稳定，遇到请反馈", "3 支着色器首次遇到时现编，开头可能稍卡" });
+SaveP("win_04b_export_success_notes", () => Navigate(pack, "progress"));
+SetW(pack, "packNotes", (object?)new List<string>());
 
 InjectMockProgress(pack, fraction: 0.12, stepIndex: 0, running: false, state: "failed",
     summary: "磁盘空间不足，无法继续出包。");

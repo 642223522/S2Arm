@@ -855,6 +855,38 @@ class JobsTests(unittest.TestCase):
         self.assertIn("离线预编 0 支", d[0]["summary"] + d[0].get("detail", "") + str(d[0]))
         self.assertIn("没有改写模块目录", str(d[0])); self.assertNotIn("第二行不要", str(d[0]))
 
+    def test_degrade_notes_and_log(self):
+        # v0.3.1 降级继续（开发丙线约定）：产物根 degrade.<阶段>.tsv，五列 阶段 / 类别 / 处数 / 玩家提示 / 说明，# 开头是表头。
+        #   期望手写：两个阶段各一行 + 一行重复提示 → 完成卡提示两条（去重、按文件名序：direct 在 rewrite 前）；
+        #   列数不对 / 处数不是数字的行跳过、发一条消息、不报错；整表存进 <任务>-degrade.log；没有表 → 空、不写日志
+        import build
+        root = self.root / "rdeg"; root.mkdir()
+        self.assertEqual(build.collect_degrade(self.c, root), [])
+        self.assertFalse((self.c.logs / f"{self.c.task}-degrade.log").exists())
+        (root / "degrade.rewrite.tsv").write_text("# 阶段\t类别\t处数\t玩家提示\t说明\n"
+                                                  "rewrite\tx18_compat\t27\t这款有 27 处用了兼容写法\t恢复 sp 后挑不出临时寄存器\n"
+                                                  "rewrite\tbroken\n"
+                                                  "rewrite\tx\tmany\t提示\t说明\n", encoding="utf-8")
+        (root / "degrade.direct.tsv").write_text("direct\tlazy\t3\t3 支着色器首次遇到时现编\t抽不出\n"
+                                                 "direct\tlazy2\t1\t3 支着色器首次遇到时现编\t同一句\n", encoding="utf-8")
+        notes = build.collect_degrade(self.c, root)
+        self.assertEqual(notes, ["3 支着色器首次遇到时现编", "这款有 27 处用了兼容写法"])
+        log = (self.c.logs / f"{self.c.task}-degrade.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(log[0], build.DEGRADE_HEAD)
+        self.assertEqual(len(log), 4)   # 表头 + 3 条有效行
+        self.assertIn("rewrite\tx18_compat\t27\t", "\n".join(log))
+        self.assertEqual(self.c.job["diagnostics"], [])   # 降级不当错误
+
+    def test_diagnostics_degrade_summary(self):
+        # 诊断包：任务日志目录的 <任务>-degrade.log 随 logs/ 收进包，manifest 加「降级汇总」degrade_summary：任务号 → {阶段/类别: 处数}（同类别相加）
+        import zipfile
+        (self.c.logs / "t1-degrade.log").write_text("# 阶段\t类别\t处数\t玩家提示\t说明\nrewrite\tx18\t27\t提示\t说明\nrewrite\tx18\t3\t提示\t说明\ndirect\tlazy\t5\t提示\t说明\n", encoding="utf-8")
+        destination = self.root / "diag-degrade.zip"; self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as archive:
+            self.assertIn("logs/t1-degrade.log", archive.namelist())
+            self.assertEqual(json.loads(archive.read("manifest.json"))["degrade_summary"], {"t1": {"rewrite/x18": 30, "direct/lazy": 5}})
+
     def test_direct_check_counts_existing_cache_and_volume(self):
         # 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）与出包预检同一规则：游戏内容（romfs + exefs + aoc）≥ 3e9 → 15e9、小于 → 5e9；
         #   已有的同款直连缓存扣掉；期望按 library.py 的两档常量手算

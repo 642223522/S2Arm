@@ -412,6 +412,47 @@ def warn_offline_empty(c, root):
     c.diagnostic("这款的着色器离线预编 0 支，游戏能玩，但首次遇到的画面要现编、开头会卡顿" + (f"（{why}）" if why else ""), code="direct_offline_empty", severity="warning")
 
 
+DEGRADE_HEAD = "# 阶段\t类别\t处数\t玩家提示\t说明"
+
+
+def degrade_rows(text):
+    """降级表（各出包阶段降级时写在产物根的 degrade.<阶段>.tsv，开发丙线 v0.3.1 约定）→ (行, 格式不对的行号)。
+    每行 阶段 / 类别 / 处数 / 玩家提示 / 说明 五列，以 # 开头的是表头；格式不对的跳过、不报错（拿不准不停）"""
+    rows, bad = [], []
+    for i, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.split("\t")
+        if len(f) != 5 or not f[2].strip().isdigit():
+            bad.append(i)
+            continue
+        rows.append(dict(stage=f[0].strip(), kind=f[1].strip(), count=int(f[2]), hint=f[3].strip(), note=f[4].strip()))
+    return rows, bad
+
+
+def collect_degrade(c, root):
+    """出包成功收尾：读产物根的 degrade.*.tsv → 完成卡上逐条显示的玩家提示（去重、保序）。
+    同时把整表存进本任务日志目录（<任务>-degrade.log）：产物根出包后会清，诊断包只收日志目录（同 save_rewrite_digest），「降级汇总」也从这里算。
+    Mac 包（prepare）与 iPhone 包（ipa.build）共用"""
+    if not root:
+        return []
+    rows = []
+    for p in sorted(Path(root).glob("degrade.*.tsv")):
+        got, bad = degrade_rows(p.read_text(encoding="utf-8", errors="replace"))
+        rows += got
+        if bad:
+            c.emit("message", "降级表 %s 有 %d 行格式不对，已跳过（第 %s 行）" % (p.name, len(bad), "、".join(map(str, bad[:10]))))
+    if not rows:
+        return []
+    try:
+        log = c.logs / f"{c.task}-degrade.log"
+        log.write_text(DEGRADE_HEAD + "\n" + "".join("\t".join([r["stage"], r["kind"], str(r["count"]), r["hint"], r["note"]]) + "\n" for r in rows), encoding="utf-8")
+        log.chmod(0o600)
+    except OSError as e:
+        c.emit("message", f"降级表没存进日志目录（{e}），诊断包里会少这一份；出包结果不受影响")
+    return list(dict.fromkeys(r["hint"] for r in rows if r["hint"]))
+
+
 def extract_nup(c, game, packages, extraction, env, logs):
     """Switch 2 NUP 容器（导入时 library.nup_inspect 记 format=nup）→ 共用解包目录：pack/ns2_nup.py --to-extract（展开 + pack/ns2_dump.py 整理，
     与一键出包 pack/oneclick/oneclick.sh / pack/orch/oneclick_win.py 同两步、同目录布局，共享解包阶段 pack/stages/unpack.sh 也走它）。
@@ -627,6 +668,7 @@ def prepare(c):
         if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
         warn_offline_empty(c, current)
+        notes = collect_degrade(c, current)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）
         ms.enter(c, "host")
         host = compile_host(c, fingerprint, env, logs)
         ms.enter(c, "install")
@@ -680,4 +722,5 @@ def prepare(c):
             host_update.tidy(c, "删除解包目录", _rm, c, layout.root_of(c, game["id"]), unpacked)
         import sizes
         host_update.tidy(c, "刷新游戏占用大小", sizes.refresh, c, game["id"])   # 每款各部分大小写回 game.json（游戏库只读不量）
-        return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified")
+        return dict(gameId=game["id"], outputPath=str(image), outputBytes=_part_bytes([image]), target="macos-arm64", compatibility="unverified",
+                    **({"notes": notes} if notes else {}))

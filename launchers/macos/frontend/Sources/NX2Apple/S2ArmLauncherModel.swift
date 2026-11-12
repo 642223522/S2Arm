@@ -28,6 +28,8 @@ struct ExportRun: Equatable {
         var seconds: Double = 0
         /// 作业层给的失败事实（阶段、退出码、原文，英文标签）；没有为 nil。
         var failureSummary: String?
+        /// 出成了、但有阶段降级继续（v0.3.1，产物根 degrade.*.tsv 的「玩家提示」）：完成卡逐条显示
+        var notes: [String] = []
     }
     let platforms: [ExportPlatform]
     /// 正在做的那个平台（platforms 的下标）。
@@ -682,7 +684,8 @@ public final class S2ArmLauncherModel: ObservableObject {
                                                              output: o["outputPath"] as? String ?? o["output"] as? String, ipa: o["ipa"] as? String,
                                                              appBytes: ((o["ipaBytes"] ?? o["outputBytes"]) as? NSNumber)?.int64Value,
                                                              packBytes: (o["packBytes"] as? NSNumber)?.int64Value,
-                                                             suggestion: failure["suggestion"] as? String ?? "", failureSummary: failure["failureSummary"] as? String))
+                                                             suggestion: failure["suggestion"] as? String ?? "", failureSummary: failure["failureSummary"] as? String,
+                                                             notes: o["notes"] as? [String] ?? []))
                 if self.batchRunning { self.batchStepEnded() }
             default:
                 sink.emit(event)
