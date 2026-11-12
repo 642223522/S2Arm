@@ -597,6 +597,80 @@ static void t_registry(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
 }
 
+// 声明类型决定视图；期望目标、层数均直接写常量。
+static void t_decl_view(void) {
+    nvn_be_sub_begin(); res_fresh(); nvn_unimpl_reset();
+    const struct { int target; uint32_t depth; uint8_t dtt; int modified, want; uint16_t layers; } cases[] = {
+        {NVN_TEXTURE_TARGET_2D, 1, NVN_TEXTURE_TARGET_2D + 1, 0, 1, 1},
+        {NVN_TEXTURE_TARGET_2D_ARRAY, 12, NVN_TEXTURE_TARGET_2D + 1, 1, 1, 1},
+        {NVN_TEXTURE_TARGET_CUBEMAP, 6, NVN_TEXTURE_TARGET_2D_ARRAY + 1, 1, 4, 6},
+        {NVN_TEXTURE_TARGET_CUBEMAP, 6, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY + 1, 1, 9, 6},
+        {NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, 12, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 8, 6},
+        {NVN_TEXTURE_TARGET_2D_ARRAY, 12, 0, 0, 4, 12},
+    };
+    rp_view_pin_begin();
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        tex_t t = mk_tex(7000 + i, (int64_t)i * 0x1000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
+        t.d.target = cases[i].target; t.d.depth = cases[i].depth; nvn_tex_layout(&t.d, &t.L);
+        nvn_be_reg_tex((int)i, &t, NULL);
+        const tex_t *snap = NULL;
+        nvn_gpu_view v = rp_view_by_id_decl((int)i, cases[i].dtt, 0, 0, &g_fake_cmd, &snap);
+        CHECK(v && snap && snap->serial == 7000 + i);
+        CHECK(g_vw_last_has == cases[i].modified);
+        if (cases[i].modified) CHECK(g_vw_last.set_target && g_vw_last.target == cases[i].want &&
+            g_vw_last.set_layers && g_vw_last.nlayers == cases[i].layers && g_vw_last.min_layer == 0);
+        else CHECK(v == rp_view_by_id((int)i, &g_fake_cmd, NULL));
+    }
+    // 从已有子视图继续适配：保留 mip、起始层、格式与通道映射。
+    tex_t t = mk_tex(7010, 0x10000, NVN_FORMAT_RGBA8, 8, 8, 3, 0);
+    t.d.target = NVN_TEXTURE_TARGET_CUBEMAP_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L);
+    view_t sub = {0}; sub.set_layers = 1; sub.min_layer = 6; sub.nlayers = 6;
+    sub.set_levels = 1; sub.base_level = 1; sub.nlevels = 2;
+    sub.set_format = 1; sub.format = NVN_FORMAT_RGBA8; sub.set_swizzle = 1; sub.swz[0] = 3;
+    nvn_be_reg_tex(10, &t, &sub);
+    CHECK(rp_view_by_id_decl(10, NVN_TEXTURE_TARGET_2D + 1, 0, 0, &g_fake_cmd, NULL) != NULL);
+    CHECK(g_vw_last.target == 1 && g_vw_last.nlayers == 1 && g_vw_last.min_layer == 6 &&
+        g_vw_last.base_level == 1 && g_vw_last.nlevels == 2 && g_vw_last.set_format &&
+        g_vw_last.format == NVN_FORMAT_RGBA8 && g_vw_last.set_swizzle && g_vw_last.swz[0] == 3);
+    // 单层二维占位绑定 uint 零立方体；同类及数组元素共用，不报红。
+    t = mk_tex(7011, 0x14000, NVN_FORMAT_RGBA8, 4, 4, 1, 0); nvn_be_reg_tex(11, &t, NULL);
+    int creates = g_tex_creates, red = g_red_lines; g_nup = 0;
+    nvn_gpu_view z = rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL);
+    CHECK(z && z->of->d.d.width == 1 && z->of->d.d.height == 1 && z->of->d.d.depth == 6 &&
+        z->of->d.d.target == 8 && z->of->d.d.format == NVN_FORMAT_R32UI && z->has_v &&
+        g_vw_last.set_target && g_vw_last.target == 8 && g_vw_last.set_layers && g_vw_last.nlayers == 6);
+    CHECK(g_tex_creates == creates + 1 && g_nup == 6 && g_red_lines == red);
+    for (int layer = 0; layer < 6 && g_nup == 6; layer++) CHECK(g_up[layer].layer == (uint32_t)layer &&
+        g_up[layer].pitch == 4 && g_up[layer].img == 4 && g_up[layer].first[0] == 0 &&
+        g_up[layer].first[1] == 0 && g_up[layer].first[2] == 0 && g_up[layer].first[3] == 0);
+    CHECK(rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == z);
+    CHECK(rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 1, &g_fake_cmd, NULL) == z);
+    CHECK(rp_view_by_id_decl(-1, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 1, &g_fake_cmd, NULL) == z);
+    CHECK(g_tex_creates == creates + 1 && g_nup == 6 && g_red_lines == red);
+    // 不能桥接的普通组合明确记账，保持原视图。
+    nvn_gpu_view original = rp_view_by_id(11, &g_fake_cmd, NULL);
+    CHECK(rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_3D + 1, 0, 0, &g_fake_cmd, NULL) == original);
+    CHECK(nvn_unimpl_count("tex", "decl_type_mismatch") == 1);
+    // 12 层二维数组当立方体读：后端建图没带 CUBE_COMPATIBLE，必被拒绝的视图不交下去；记账并绑零贴图。
+    t = mk_tex(7012, 0x18000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
+    t.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L); nvn_be_reg_tex(12, &t, NULL);
+    int vc = g_view_creates;
+    CHECK(rp_view_by_id_decl(12, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == z);
+    CHECK(g_view_creates == vc && nvn_unimpl_count("tex", "cube_view_of_2d_array") == 1);
+    // 登记视图「层数 0 = 从起点取到底」：12 层立方体数组从第 6 层起，当二维数组读取 6 层
+    t = mk_tex(7013, 0x1c000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
+    t.d.target = NVN_TEXTURE_TARGET_CUBEMAP_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L);
+    view_t rest = {0}; rest.set_layers = 1; rest.min_layer = 6; rest.nlayers = 0; nvn_be_reg_tex(13, &t, &rest);
+    CHECK(rp_view_by_id_decl(13, NVN_TEXTURE_TARGET_2D_ARRAY + 1, 0, 0, &g_fake_cmd, NULL) != NULL);
+    CHECK(g_vw_last.target == NVN_TEXTURE_TARGET_2D_ARRAY && g_vw_last.min_layer == 6 && g_vw_last.nlayers == 6);
+    rp_view_pin_end();
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    int releases = g_tex_releases, view_releases = g_view_releases;
+    rp_res_reset();
+    // 贴图：6 例 + 7010 + 7011 + 零立方体 + 7013 = 10（7012 不建视图也不解析）；视图：未改造 2 + 改造 4 + 7010 + 7011 原样 + 零立方体 + 7013 = 10
+    CHECK(g_tex_releases == releases + 10 && g_view_releases == view_releases + 10);
+}
+
 static void t_buf_mirror(void) {   // 池镜像：首次使用建一份、按页同步；没写过的页不重传；按使用点的先后保证 GPU 顺序
     nvn_be_sub_begin();
     nvn_be_shutdown_session(); nvn_unimpl_reset(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_nbw = 0; g_dirty_now = 100;
@@ -1414,6 +1488,7 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     g_fprog.nent[0] = 2; g_fprog.ent[0][0].cls = NVN_GPU_RES_UBO; g_fprog.ent[0][0].src_kind = NVN_RB_SUPPORT;
     g_fprog.ent[0][1].cls = NVN_GPU_RES_UBO; g_fprog.ent[0][1].src_kind = NVN_RB_CBUF; g_fprog.ent[0][1].src_reg = 2;
     g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX; g_fprog.ent[1][0].src_reg = 5;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1;
     tex_t rtt = mk_tex(81, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0), tx = mk_tex(82, 0x4000, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
     samp_par sp; memset(&sp, 0, sizeof sp); nvn_be_reg_tex(7, &tx, NULL); nvn_be_reg_samp(3, &sp);
     for (int i = 0; i < 256; i++) g_pmem[PG + 128 + i] = (uint8_t)(i ^ 0x5a);
@@ -1653,6 +1728,39 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
     return 0;
 }
 
+// 三条采样绑定路径都消费程序声明，不以默认的未知声明掩盖漏接线。
+static void t_decl_sampling(void) {
+    pass_fresh(); g_arena_used = 0; g_resolve_rc = g_cresolve_rc = 0;
+    stream s = {0}; q_env(&s);
+    tex_t t = mk_tex(7020, 0x4000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
+    samp_par sp = {0}; nvn_be_reg_tex(7, &t, NULL); nvn_be_reg_samp(3, &sp);
+    g_fprog.nent[1] = 1;
+    g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX;
+    g_fprog.ent[1][0].count = 1;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_CUBEMAP + 1; g_fprog.dcls[1][0] = 1;
+    p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh);
+    bh->stage = 1; bh->first = 0; bh->n = 1; bh->h[0] = 7 | 3 << 20;
+    q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_nfb[1] == 1 && g_fb[1][0].u.ts.view != NULL);
+    nvn_gpu_view z = g_nfb[1] ? g_fb[1][0].u.ts.view : NULL;
+    CHECK(z && z->of->d.d.target == 8 && z->of->d.d.width == 1 && z->of->d.d.depth == 6 &&
+        z->of->d.d.format == NVN_FORMAT_R32UI);
+    g_fprog.ent[1][0].count = 8; rp_dirty_all();
+    stream ar = {0}; q_draw(&ar); end(&ar); submit1(&ar); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_nfb[1] == 8);
+    for (uint32_t k = 0; k < 8 && g_nfb[1] == 8; k++) CHECK(g_fb[1][k].u.ts.view == z && g_fb[1][k].u.ts.samp != NULL);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 1; g_cprog.ent[0][0].cls = NVN_GPU_RES_TEX_SAMP;
+    g_cprog.ent[0][0].src_kind = NVN_RB_TEX; g_cprog.ent[0][0].count = 1;
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_CUBEMAP + 1; g_cprog.dcls[0][0] = 1;
+    stream cs = {0}; bh = put(&cs, OP_BIND_TEX, sizeof *bh);
+    bh->stage = 5; bh->first = 0; bh->n = 1; bh->h[0] = 7 | 3 << 20;
+    put_dispatch1(&cs); end(&cs); submit1(&cs); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ncb == 1 && g_cb[0].u.ts.view == z);
+    CHECK(nvn_unimpl_kinds() == 0);
+    pass_fresh();
+}
+
 int main(int argc, char **argv) {
     t_state_persists();
     t_unimpl_names();
@@ -1672,6 +1780,7 @@ int main(int argc, char **argv) {
     t_cpu_upload();
     t_cpu_rules();
     t_registry();
+    t_decl_view();
     t_buf_mirror();
     t_buf_ops();
     t_copy_b2t();
@@ -1691,6 +1800,7 @@ int main(int argc, char **argv) {
     t_compute_image();
     t_copy_t2t();
     t_draw();
+    t_decl_sampling();
     t_present();
     t_view_pin();
     t_pass_3d_slice_view();

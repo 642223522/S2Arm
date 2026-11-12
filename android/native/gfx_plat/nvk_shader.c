@@ -156,6 +156,81 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     return 0;   // 存储缓冲、图像：随对应命令接
 }
 
+// 只读组合采样贴图的声明；无法识别时保留 0，不根据绑定对象猜类型。
+static void sampled_decl(const void *blob, size_t bytes, uint32_t set, uint32_t binding, uint8_t *dtt, uint8_t *dcls) {
+    const uint32_t *w = blob;
+    if (!w || bytes < 20 || bytes % 4 || w[0] != 0x07230203u || !w[3] || w[3] > 0x100000u) return;
+    uint32_t bound = w[3]; size_t words = bytes / 4;
+    struct decl_id { size_t off; uint32_t set, binding; };
+    struct decl_id *ids = calloc(bound, sizeof *ids);
+    if (!ids) return;
+    for (uint32_t id = 0; id < bound; id++) ids[id].set = ids[id].binding = UINT32_MAX;
+    for (size_t pos = 5; pos < words;) {
+        uint32_t count = w[pos] >> 16, op = w[pos] & 0xffffu;
+        if (!count || count > words - pos) goto done;
+        const uint32_t *q = w + pos;
+        uint32_t id = 0;
+        switch (op) {
+        case 21: if (count >= 4) id = q[1]; break;   // OpTypeInt
+        case 22: if (count >= 3) id = q[1]; break;   // OpTypeFloat
+        case 25: if (count >= 9) id = q[1]; break;   // OpTypeImage
+        case 27: if (count >= 3) id = q[1]; break;   // OpTypeSampledImage
+        case 28: if (count >= 4) id = q[1]; break;   // OpTypeArray
+        case 29: if (count >= 3) id = q[1]; break;   // OpTypeRuntimeArray
+        case 32: if (count >= 4) id = q[1]; break;   // OpTypePointer
+        case 59: if (count >= 4) id = q[2]; break;   // OpVariable
+        case 71:
+            if (count >= 4 && q[1] < bound) {
+                if (q[2] == 34) ids[q[1]].set = q[3];
+                if (q[2] == 33) ids[q[1]].binding = q[3];
+            }
+            break;
+        default: break;
+        }
+        if (id && id < bound) ids[id].off = pos;
+        pos += count;
+    }
+    for (uint32_t var = 1; var < bound; var++) {
+        if (ids[var].set != set || ids[var].binding != binding || !ids[var].off) continue;
+        const uint32_t *q = w + ids[var].off;
+        if ((q[0] & 0xffffu) != 59 || q[3] != 0) continue;
+        uint32_t id = q[1];
+        if (id >= bound || !ids[id].off) continue;
+        q = w + ids[id].off;
+        if ((q[0] & 0xffffu) != 32) continue;
+        id = q[3];
+        // 限制步数，损坏的类型环不会卡住装载。
+        for (uint32_t step = 0; step < bound && id < bound && ids[id].off; step++) {
+            q = w + ids[id].off;
+            uint32_t op = q[0] & 0xffffu;
+            if (op == 28 || op == 29) { id = q[2]; continue; }
+            if (op != 27) break;
+            id = q[2];
+            if (id >= bound || !ids[id].off) break;
+            q = w + ids[id].off;
+            if ((q[0] & 0xffffu) != 25) break;
+            uint32_t type = q[2], dim = q[3], depth = q[4], arrayed = q[5], ms = q[6];
+            if (arrayed > 1 || ms > 1 || depth > 2 || type >= bound || !ids[type].off) break;
+            int target = -1;
+            if (dim == 0 && !ms) target = arrayed ? NVN_TEXTURE_TARGET_1D_ARRAY : NVN_TEXTURE_TARGET_1D;
+            else if (dim == 1) target = ms ?
+                (arrayed ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY : NVN_TEXTURE_TARGET_2D_MULTISAMPLE) :
+                (arrayed ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D);
+            else if (dim == 2 && !arrayed && !ms) target = NVN_TEXTURE_TARGET_3D;
+            else if (dim == 3 && !ms) target = arrayed ? NVN_TEXTURE_TARGET_CUBEMAP_ARRAY : NVN_TEXTURE_TARGET_CUBEMAP;
+            if (target < 0) break;
+            const uint32_t *sample = w + ids[type].off;
+            uint32_t op_type = sample[0] & 0xffffu;
+            if (op_type != 22 && (op_type != 21 || sample[3] > 1)) break;
+            *dtt = (uint8_t)(target + 1);
+            *dcls = depth == 1 ? 3 : op_type == 21 ? (sample[3] ? 2 : 1) : 0;
+            goto done;
+        }
+    }
+done:
+    free(ids);
+}
+
 // 驱动的贴图句柄表：贴图槽 s 的句柄在第 8 + 2s 个 32 位字，即第 4 + s 个 8 字节项；32 个槽 → 36 项
 enum { HANDLE_TABLE_ENTRIES = 4 + 32 };
 
@@ -176,6 +251,8 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             nvn_gpu_layout_ent *le = &e->prog.ent[st][e->prog.nent[st]];
             if (!layout_ent(b, le)) { char nm[40]; snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot); red1(nm, b->stage); e->failed = 1; break; }
             le->stages = b->is_support ? (nst == 2 ? 3u : 1u) : 1u << st;
+            if (b->kind == 2) sampled_decl(fp.stage[st].spirv, fp.stage[st].spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
+                &e->prog.dtt[st][e->prog.nent[st]], &e->prog.dcls[st][e->prog.nent[st]]);
             e->prog.nent[st]++;
         }
         if (e->failed) break;
@@ -351,6 +428,8 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
         } else ok = layout_ent(b, le);
         if (!ok) { char nm[56]; snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0); red1(nm, "cs"); e->failed = 1; break; }
         le->stages = 1u << NVN_GPU_SH_CS;
+        if (b->kind == 2) sampled_decl(cp.stage.spirv, cp.stage.spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
+            &e->prog.dtt[0][e->prog.nent[0]], &e->prog.dcls[0][e->prog.nent[0]]);
         e->prog.nent[0]++;
     }
     if (!e->failed && !cp.stage.present) { red1("stage_missing_in_result", "cs"); e->failed = 1; }

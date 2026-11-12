@@ -335,27 +335,27 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     char tl[520]; size_t tn = 0; tl[0] = 0;   // 逐笔日志用：这笔采样的贴图
     int narr[RP_PROG_STAGES] = {0, 0};
     DT(RP_PERF_D_PREP);
+    rp_view_pin_begin();
     for (int st = 0; st < 2; st++) for (uint32_t i = 0; i < g_prog->nent[st]; i++) {
         const nvn_gpu_layout_ent *e = &g_prog->ent[st][i]; tv[st][i] = NULL; ts[st][i] = NULL;
         if (e->src_kind != NVN_RB_TEX) continue;
         if (e->count > 1) {
-            if (e->count > RP_TEXARR_MAX || narr[st]++) { skip("texture_array_unsupported_shape", rec); return; }
+            if (e->count > RP_TEXARR_MAX || narr[st]++) { skip("texture_array_unsupported_shape", rec); goto draw_done; }
             for (uint32_t k = 0; k < e->count; k++) {
                 int slot = (int)(e->src_reg + k) - RP_HANDLE_TABLE_FIRST_SLOT;
                 uint64_t hk = slot >= 0 && slot < 32 ? rp_S.tex[st][slot] : 0;
-                g_av[st][k] = rp_view_by_id(hk ? (int)(hk & 0xFFFFF) : rp_S.tex_base, c, NULL);
+                g_av[st][k] = rp_view_by_id_decl(hk ? (int)(hk & 0xFFFFF) : rp_S.tex_base, g_prog->dtt[st][i], g_prog->dcls[st][i], 1, c, NULL);
                 g_as[st][k] = rp_samp_by_id(hk ? (int)(hk >> 20) : rp_S.samp_base);
             }
-            // 取不到的项（没绑的槽、池里第 0 项不是贴图）拿数组里第一个取到的顶上：描述符数组每一项都必须是有效的，
-            // 而着色器只会按游戏绑过的槽去取，顶上的这些项不会被采样。一项都取不到才算这笔取不到贴图（绑定时报）。
+            // 已知声明的空元素直接取同类型零贴图；未知声明沿用首个有效视图。采样器仍共用首个有效项。
             { nvn_gpu_view fv = NULL; nvn_gpu_samp fs = NULL;
               for (uint32_t k = 0; k < e->count && !(fv && fs); k++) { if (!fv) fv = g_av[st][k]; if (!fs) fs = g_as[st][k]; }
-              for (uint32_t k = 0; k < e->count; k++) { if (!g_av[st][k]) g_av[st][k] = fv; if (!g_as[st][k]) g_as[st][k] = fs; } }
+              for (uint32_t k = 0; k < e->count; k++) { if (!g_av[st][k] && !g_prog->dtt[st][i]) g_av[st][k] = fv; if (!g_as[st][k]) g_as[st][k] = fs; } }
             continue;
         }
         uint64_t h = rp_S.tex[st][e->src_reg];
         const tex_t *tt = NULL;
-        tv[st][i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, &tt);
+        tv[st][i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, &tt);
         if (g_log_left && tn < sizeof tl - 56) {
             int id = h ? (int)(h & 0xFFFFF) : rp_S.tex_base;
             if (tt) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%llu(%#x %dx%d 态%x 存%08x%08x 标%#x 池%#x 包%d)", st, (unsigned)e->src_reg, (unsigned long long)tt->serial, (unsigned)tt->d.format, tt->d.width, tt->d.height, (unsigned)rp_tex_debug_state(tt->serial),
@@ -365,7 +365,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
     DT(RP_PERF_D_TEX);
-    if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); return; }
+    if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); goto draw_done; }
     g_bind_keep[0] = !rp_args_dirty[0]; g_bind_keep[1] = !rp_args_dirty[1]; g_pipe_set = 0;   // 换管线会把两个阶段都立脏，绑定状态变没变要在那之前取
     if (rp_pso_dirty || !g_pipe || g_pipe_cmd != c) {
         nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd);
@@ -401,7 +401,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             pd.poly.mode = NVN_POLYGON_MODE_FILL; memset(&err, 0, sizeof err);
             r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
         }
-        if (!nvn_gpu_ok(r)) { if (nvn_unimpl("gpu", "pipe_get", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; g_pipe = NULL; return; }
+        if (!nvn_gpu_ok(r)) { if (nvn_unimpl("gpu", "pipe_get", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; g_pipe = NULL; goto draw_done; }
         g_pipe = np; g_pipe_cmd = c;
         nvn_gpu_set_pipe(c, g_pipe); g_pipe_set = 1;
         rp_args_dirty[0] = rp_args_dirty[1] = 1;   // 换了管线：两个阶段的绑定都重发
@@ -413,12 +413,12 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
       if (!tw) tw = 1;
       if (!th) th = 1; }
     DT(RP_PERF_D_PIPE);
-    nvn_gpu_dyn dyn; if (!fill_dyn(&dyn, tw, th, rec)) return;
+    nvn_gpu_dyn dyn; if (!fill_dyn(&dyn, tw, th, rec)) goto draw_done;
     nvn_gpu_set_dyn(c, &dyn);
     for (int i = 0; i < 16; i++) if (streams >> i & 1) nvn_gpu_set_vbuf(c, (uint32_t)i, vb_buf[i], vb_off[i]);
     uint32_t base_instance = (uint32_t)(di ? di->base_instance : dr->base_instance);
     DT(RP_PERF_D_DYN);
-    for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) return;
+    for (int st = 0; st < 2; st++) if (!bind_stage(c, g_prog, st, base_instance, tv[st], ts[st], rec)) goto draw_done;
     DT(RP_PERF_D_BIND);   // 首版每笔都整组重发（support / c0 每笔在暂存区里新建）；按脏位省重发是后面的事
     a.prim = prim; a.count = count; a.instances = (uint32_t)(di ? di->instances : dr->instances); if (!a.instances) a.instances = 1; a.base_instance = base_instance;
     rp_occl_draw(c);
@@ -455,6 +455,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     rp_pso_dirty = rp_dss_dirty = 0; memset(rp_args_dirty, 0, sizeof rp_args_dirty);
     g_draws++;
     DT(RP_PERF_D_TAIL);
+draw_done:
+    rp_view_pin_end();
 }
 
 // ---------- 调试：把「上屏那张图」和它上游几层的贴图读回落盘（开关 nvk_dump；rp_present 每 600 帧调一次） ----------
@@ -541,7 +543,7 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
         if (e->src_kind != NVN_RB_TEX) continue;
         if (e->count > 1) { skip("compute_texture_array", rec); goto done; }
         uint64_t h = rp_S.tex[5][e->src_reg];
-        tv[i] = rp_view_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, c, NULL); ts[i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
+        tv[i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, pg->dtt[0][i], pg->dcls[0][i], 0, c, NULL); ts[i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
     rp_pass_flush(c);
     uint64_t key = (uint64_t)(uintptr_t)pg; nvn_gpu_pipe cp = nvn_hm_get(&g_cpipes, &key);

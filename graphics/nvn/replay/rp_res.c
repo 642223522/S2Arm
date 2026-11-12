@@ -44,6 +44,10 @@ static nvn_hmap g_pool_gpu = {.klen = 8};                   // GPU 写过的内�
 static uint64_t g_ser_gen = 1;                              // 任何「序号 → 存储」映射变了就 +1：各贴图号缓存的视图据此重验
 static int g_built; static uint64_t g_uploads;
 
+// 声明类型的零贴图与默认视图：会话内共用，不参与视图环淘汰。
+static struct { nvn_gpu_tex tex; nvn_gpu_view view; } g_zero[NVN_TEXTURE_TARGET_BUFFER + 1][4];
+static int g_zero_cube_logged;
+
 // ---------- 登记 ----------
 static void treg_drop_view(treg_t *r) { if (r->view) { nvn_gpu_view_release(r->view); r->view = NULL; } r->of = NULL; }
 void nvn_be_set_tex_pool_n(int n) { pthread_mutex_lock(&g_rmu); g_tpool_n = n; pthread_mutex_unlock(&g_rmu); }
@@ -368,6 +372,99 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out) {
     return out;
 }
 
+// 后端建图内容未定义，首次取用在前置传输段逐层上传零。
+static nvn_gpu_view decl_zero(uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c) {
+    if (!dtt || dtt > NVN_TEXTURE_TARGET_BUFFER + 1 || dcls > 3) return NULL;
+    int want = dtt - 1;
+    if (g_zero[want][dcls].view) return g_zero[want][dcls].view;
+    if (!c) return NULL;
+    uint64_t sub = 0;
+    nvn_gpu_cmd xc = rp_xfer_cmd(&sub);
+    if (!xc) return NULL;
+    nvn_gpu_tex_desc d = {0};
+    static const int formats[4] = {NVN_FORMAT_RGBA8, NVN_FORMAT_R32UI, NVN_FORMAT_R32I, NVN_FORMAT_DEPTH32F};
+    d.d.target = want; d.d.format = formats[dcls];
+    d.d.width = d.d.height = d.d.levels = 1;
+    d.d.depth = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY ? 6 : 1;
+    d.usage = NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD;
+    nvn_gpu_tex tex = NULL; nvn_gpu_view view = NULL; nvn_gpu_err err = {0};
+    if (!nvn_gpu_ok(nvn_gpu_tex_create(&d, &tex, &err))) {
+        if (nvn_unimpl("tex", "decl_zero_create", NULL) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "tex", err.why);
+        return NULL;
+    }
+    const uint32_t zero = 0;
+    NVNcopyRegion r = {0, 0, 0, 1, 1, 1};
+    for (uint32_t layer = 0; layer < d.d.depth; layer++) nvn_gpu_tex_upload(xc, tex, 0, layer, &r, &zero, 4, 4);
+    // 视图带显式目标：6 层的立方体数组存储默认会被后端按面数配成立方体，声明是立方体数组时类型就又对不上了
+    view_t zv; memset(&zv, 0, sizeof zv);
+    zv.set_target = 1; zv.target = (uint8_t)want; zv.set_layers = 1; zv.nlayers = (uint16_t)d.d.depth;
+    if (!nvn_gpu_ok(nvn_gpu_view_create(tex, &zv, &view, &err))) {
+        nvn_gpu_tex_release(tex);
+        if (nvn_unimpl("tex", "decl_zero_view", NULL) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "tex", err.why);
+        return NULL;
+    }
+    g_zero[want][dcls].tex = tex; g_zero[want][dcls].view = view;
+    return view;
+}
+
+static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, const tex_t **t_out);
+nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, const tex_t **t_out) {
+    if (!dtt) return rp_view_by_id(id, c, t_out);
+    nvn_gpu_view out = view_by_id_decl(id, dtt, dcls, c, t_out);
+    // 贴图数组里取不到的元素：描述符数组每项都要有效，用声明类型的零贴图顶上（类型与声明一致，不再拿别的元素凑）
+    if (!out && elem) out = decl_zero(dtt, dcls, c);
+    return out;
+}
+static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, const tex_t **t_out) {
+    if (t_out) *t_out = NULL;
+    pthread_mutex_lock(&g_rmu);
+    if (id < 0 || id >= g_ntreg || !g_treg[id].ok || (g_tpool_n && id >= g_tpool_n)) {
+        pthread_mutex_unlock(&g_rmu);
+        return NULL;
+    }
+    tex_t t = g_treg[id].t; view_t v = g_treg[id].v; int has_v = g_treg[id].has_v;
+    if (t_out) *t_out = &g_treg[id].t;
+    pthread_mutex_unlock(&g_rmu);
+    int want = dtt - 1, have = has_v && v.set_target ? v.target : t.d.target;
+    if (want == have) return rp_view_by_id(id, c, t_out);
+    uint32_t layers = t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 :
+        t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY ? t.d.depth : 1;
+    if (has_v && v.set_layers) layers = v.nlayers ? v.nlayers : (layers > v.min_layer ? layers - v.min_layer : 1);   // 0 = 从起点取到底（同 iOS）
+    uint32_t n = 0;
+    int layered = have == NVN_TEXTURE_TARGET_2D || have == NVN_TEXTURE_TARGET_2D_ARRAY ||
+        have == NVN_TEXTURE_TARGET_CUBEMAP || have == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    if (layered) {
+        if (want == NVN_TEXTURE_TARGET_2D) n = 1;
+        else if (want == NVN_TEXTURE_TARGET_2D_ARRAY) n = layers;
+        else if (want == NVN_TEXTURE_TARGET_CUBEMAP && layers >= 6) n = 6;
+        else if (want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && layers >= 6) n = layers / 6 * 6;
+    }
+    if ((want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY) ||
+        (want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE)) n = 1;
+    int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    if (!n && cube && (have == NVN_TEXTURE_TARGET_2D || (have == NVN_TEXTURE_TARGET_2D_ARRAY && layers < 6))) {
+        if (!g_zero_cube_logged) {
+            g_zero_cube_logged = 1;
+            nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", "声明为立方体的二维占位贴图绑定零贴图");
+        }
+        return decl_zero(dtt, dcls, c);
+    }
+    if (!n || n > UINT16_MAX) {
+        nvn_unimpl("tex", "decl_type_mismatch", NULL);
+        return rp_view_by_id(id, c, t_out);
+    }
+    if (!has_v) memset(&v, 0, sizeof v);
+    v.set_target = 1; v.target = (uint8_t)want;
+    v.set_layers = 1; v.nlayers = (uint16_t)n;
+    // 非立方体存储（≥6 层的二维数组）当立方体读：iOS 能桥，Vulkan 要建图时带 CUBE_COMPATIBLE，后端还没接。
+    // 不把必被后端拒绝的视图交下去：记账（不静默）并绑声明类型的零贴图
+    if (cube && t.d.target != NVN_TEXTURE_TARGET_CUBEMAP && t.d.target != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {
+        nvn_unimpl("tex", "cube_view_of_2d_array", NULL);
+        return decl_zero(dtt, dcls, c);
+    }
+    return rp_view_for(&t, &v, c);
+}
+
 // 一组贴图槽的「编译事实」摘要：每槽取绑定贴图的有效格式、有效目标、深度（没登记的槽取「在不在池范围里」）。
 // 着色器来源拿它判断「这些槽对编译来说跟上次一样」，一次加锁看完一组，不必逐槽取快照。
 uint64_t rp_tex_fact_sig(const uint64_t *handles, int n, int tex_base, int tex_pool_n) {
@@ -409,6 +506,11 @@ void rp_res_reset(void) {
     pthread_mutex_lock(&g_rmu);
     for (int i = 0; i < g_ntreg; i++) treg_drop_view(&g_treg[i]);
     vf_drop_serial(0);
+    for (int target = 0; target <= NVN_TEXTURE_TARGET_BUFFER; target++) for (int cls = 0; cls < 4; cls++) {
+        if (g_zero[target][cls].view) nvn_gpu_view_release(g_zero[target][cls].view);
+        if (g_zero[target][cls].tex) nvn_gpu_tex_release(g_zero[target][cls].tex);
+    }
+    memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0;
     for (int i = 0; i < g_nsreg; i++) if (g_sreg[i].s) nvn_gpu_samp_release(g_sreg[i].s);
     free(g_treg); g_treg = NULL; g_ntreg = 0; free(g_sreg); g_sreg = NULL; g_nsreg = 0; g_tpool_n = 0;
     // 一份存储可能同时挂在序号表（多次）和共用表里：先收集去重再放
