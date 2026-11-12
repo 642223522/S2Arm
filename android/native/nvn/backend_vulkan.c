@@ -567,7 +567,7 @@ static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
     c->atomic_stages |= 1u << NVN_GPU_SH_CS;
 
     // #1199：BC 不再按 textureCompressionBC 一刀切——原生全有或缺的格式能走 compute 解码就算支持。
-    if (f.textureCompressionBC || vk->dev->bc_decode_mask) c->caps |= NVN_GPU_CAP_TEX_BC;
+    if (f.textureCompressionBC) c->caps |= NVN_GPU_CAP_TEX_BC;   // 只算能直接采样的；走计算解码的本后端还建不出来（见 nvn_gpu_format_caps）
     if (f.textureCompressionASTC_LDR) c->caps |= NVN_GPU_CAP_TEX_ASTC;
     c->caps |= NVN_GPU_CAP_BLIT_SCALED;   // vkCmdBlitImage；具体格式对行不行在 nvn_gpu_blit 里逐次按格式特性判
     // B2：设备 advertise VK_GOOGLE_display_timing 且 debug.s2a.display_timing=1（默认关）才有
@@ -853,12 +853,9 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     int expand = nvn_fmt_info_of(nvn_format, &info) && info.expand;
     VkFormat f = nvn_vk_tex_format(nvn_format);
     if (f == VK_FORMAT_UNDEFINED) return 0;
-    // #1199：走 compute 解码的 BC 格式按解码后格式报能力（图像实际就是该格式）。
-    if (nvn_format >= 0x41 && nvn_format <= 0x50 && (g.dev->bc_decode_mask >> (nvn_format - 0x41)) & 1u) {
-        VkFormat dfmt = VK_FORMAT_UNDEFINED;
-        if (!nvn_vk_bcdec_route(nvn_format, NULL, &dfmt, NULL, NULL, NULL) || dfmt == VK_FORMAT_UNDEFINED) return 0;
-        f = dfmt;
-    }
+    // 设备不能直接采样、要走计算解码的 BC 格式：本后端的建图入口还没接解码（nvn_gpu_tex_create 对它回 UNSUPPORTED），
+    // 能力就如实报 0——报「能采样」而建不出来，核心和用例都会照着能力去建（no_bc 模拟档的 C72 就是这么红的）。接上解码后再按解码后的格式报。
+    if (nvn_format >= 0x41 && nvn_format <= 0x50 && (g.dev->bc_decode_mask >> (nvn_format - 0x41)) & 1u) return 0;
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(g.phys, f, &p);
     VkFormatFeatureFlags o = p.optimalTilingFeatures;
