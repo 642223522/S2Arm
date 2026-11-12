@@ -2646,6 +2646,20 @@ def diagnostics(c):
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),
                                 mac_model=probe(["/usr/sbin/sysctl", "-n", "hw.model"]),
                                 xcode_signing=signing_status())
+                # 降级汇总（v0.3.1）：出包成功收尾存进日志目录的 <任务>-degrade.log（build.collect_degrade，上面已随 logs/ 收进包），按 阶段/类别 计处数
+                from build import degrade_rows
+                degrade = {}
+                for log in sorted(c.logs.glob("*-degrade.log")):
+                    c.check()
+                    try:
+                        rows, _ = degrade_rows(log.read_text(encoding="utf-8", errors="replace"))
+                    except OSError:
+                        continue
+                    for r in rows:
+                        degrade.setdefault(log.name[:-len("-degrade.log")], {}).setdefault(r["stage"] + "/" + r["kind"], 0)
+                        degrade[log.name[:-len("-degrade.log")]][r["stage"] + "/" + r["kind"]] += r["count"]
+                if degrade:
+                    manifest["degrade_summary"] = degrade   # 任务号 → {阶段/类别: 处数}
                 if phone is not None:
                     manifest["phone_diagnostics"] = phone   # 最近一次拉回的手机诊断：拉回时刻、来源设备（机型 / 系统）、收了几份、跳过了哪些
                 manifest = redact_fields(manifest)
