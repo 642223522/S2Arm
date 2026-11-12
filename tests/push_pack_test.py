@@ -338,6 +338,31 @@ class ContainerDocs(Base):
         def sleep(x): clock[0] += x
         self.assertTrue(push.apply(self.dev, self.pk, self.w, nb, say=self.log.append, sleep=sleep, now=lambda: clock[0]))
 
+    def test_windows_install_writes_new_location(self):
+        """Windows 装机推包（pack/orch/install_win.push_pack，install.py 把 pick_pack_root 选的根作 pack_root 传进来）：走真的 push.device 的 s2a-devpush 那支
+        （Windows 没有 devicectl），只把底层读写换成内存容器 → 探针、待解批、记账、索引、清单都写进 Library 新位置，Documents 下本款资源包一个不写"""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pack/orch"))
+        import install_win
+        P = "Library/Application Support/S2Arm/games/0100000000010000/资源包"
+        exe = self.w / "s2a-devpush"; exe.write_text(""); exe.chmod(0o755)   # 工具在（不会被真调用：读写换成内存容器）
+        mem, made, real = Fake({}), [], push.device
+        def device(*a, **k):
+            d = real(*a, **k); made.append(d)
+            for m in ("get", "put", "ls", "tar_ok", "put_tar", "listing", "free", "nospc", "rm"):
+                if hasattr(mem, m): setattr(d, m, getattr(mem, m))
+            return d
+        push.device = device
+        try:
+            nt, _ = install_win.push_pack("U1", "s2arm.T.games", str(self.pk), devpush=str(exe), say=self.log.append, docs=self.D, ctx=self.CTX, pack_root=P)
+        finally:
+            push.device = real
+        self.assertEqual(nt, 2)
+        self.assertIsInstance(made[0], push.Devpush)   # Windows 那支：s2a-devpush，不是 devicectl
+        self.assertEqual((made[0].docs, made[0].pack), (self.D, P))
+        self.assertTrue(mem.puts and all(r.startswith(P + "/") for r in mem.puts), mem.puts)
+        self.assertIn(f"{P}/manifest.json", mem.files); self.assertIn(f"{P}/index.tsv", mem.files)
+        self.assertFalse([r for r in mem.files if r.startswith(f"{self.D}/资源包")])
+
     def test_device_factory_carries_docs(self):
         d = push.device("C891", "s2arm.z.games", self.w, via="devicectl", env={}, docs=self.D, ctx=self.CTX)
         self.assertEqual((d.docs, d.ctx, push.rp(d)), (self.D, self.CTX, f"{self.D}/资源包"))   # 没给资源包根：按文档根推
