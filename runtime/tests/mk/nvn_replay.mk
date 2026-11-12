@@ -10,11 +10,19 @@ NVN_REPLAY_SCAN = perl -0pe 's\#/\*.*?\*/\#\#gs; s\#//[^\n]*\#\#g' $(NVN_REPLAY_
 .PHONY: native-test-nvn_replay
 native-test-nvn_replay:
 	@mkdir -p $(BUILD)/tests
-	$(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -I. -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/gfx/tex -I$(NVN_REPLAY_DIR) \
-	  -o $(BUILD)/tests/t_nvn_replay graphics/nvn/tests/t_nvn_replay.c $(NVN_REPLAY_CORE)
+	$(CC) $(CFLAGS) -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -I. -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/gfx/tex -I$(NVN_REPLAY_DIR) \
+	  -o $(BUILD)/tests/t_nvn_replay graphics/nvn/tests/t_nvn_replay.c $(NVN_REPLAY_CORE) -lm
 	@bad=$$($(NVN_REPLAY_SCAN) | grep -nE '\b(MTL[A-Za-z0-9_]*|CAMetal[A-Za-z]*|Vk[A-Z][A-Za-z0-9]*|VK_[A-Z0-9_]+|vk[A-Z][A-Za-z]*|ANativeWindow|AHardwareBuffer|OHNativeWindow|__system_property_get|getenv)\b|#(include|import) *[<"](Metal|QuartzCore|vulkan|android|jni|hilog)' || true); \
 	  if [ -n "$$bad" ]; then echo "【红】 回放核心出现图形 API / 平台专有内容（注释外）：$$bad"; exit 1; fi; \
 	  echo "分层扫描：回放核心注释外图形 API / 平台专有 0 处"
 	timeout 30 $(BUILD)/tests/t_nvn_replay docs/直连_Vulkan回放接线表.tsv
 	@echo '✓ t_nvn_replay：回放核心状态继承 / 未接命令报名 / 一次提交一段 / 完成后回写 / 接线表与名字表一致 / 分层扫描'
 TEST_TARGETS += native-test-nvn_replay
+
+.PHONY: native-test-nvn_wait_sync
+native-test-nvn_wait_sync:
+	@mkdir -p $(BUILD)/tests
+	$(CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -I. -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/gfx/tex -I$(NVN_REPLAY_DIR) \
+	  -o $(BUILD)/tests/t_nvn_wait_sync graphics/nvn/tests/t_nvn_wait_sync.c $(NVN_REPLAY_CORE)
+	timeout 30 $(BUILD)/tests/t_nvn_wait_sync
+TEST_TARGETS += native-test-nvn_wait_sync

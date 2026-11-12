@@ -396,13 +396,15 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    /// 换游戏库：setup 作业（作业层拦非 APFS、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
+    /// 换游戏库：setup 作业（作业层拦不支持的盘格式、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
-    /// 换游戏库时作业层报 library_in_cloud（选的文件夹在云盘同步目录里）：问玩家「仍然继续 / 先不」，同意带 acceptCloud 重发（v0.3.1：认得出的风险让玩家确认）
-    struct LibraryConfirm: Equatable { let url: URL; let move: Bool; let message: String }
+    /// 换游戏库时作业层报认得出的风险（v0.3.1：认得出的风险让玩家确认）：问玩家「仍然继续 / 先不」，同意带对应参数重发，参数累积
+    ///   library_in_cloud：选的文件夹在云盘同步目录里；library_folder_not_empty：文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）
+    static let libraryConfirmCodes = ["library_in_cloud": "acceptCloud", "library_folder_not_empty": "acceptForeign"]
+    struct LibraryConfirm: Equatable { let url: URL; let move: Bool; let message: String; var code = "library_in_cloud"; var accept: Set<String> = [] }
     @Published var libraryConfirm: LibraryConfirm?
 
-    func changeLibrary(to url: URL, move: Bool = false, acceptCloud: Bool = false) {
+    func changeLibrary(to url: URL, move: Bool = false, accept: Set<String> = []) {
         guard !busy else { return }
         showEnvironment = false
         failAction(nil, game: nil)
@@ -410,9 +412,10 @@ public final class S2ArmLauncherModel: ObservableObject {
             guard let self else { return nil }
             let library: String
             do {
-                library = try await self.provider.library.change(to: url, moveFrom: move ? self.provider.client.environment.library : nil, acceptCloud: acceptCloud, events: sink)
-            } catch let f as JobFailure where !acceptCloud && f.code == "library_in_cloud" {
-                self.libraryConfirm = LibraryConfirm(url: url, move: move, message: f.errorDescription ?? "")
+                library = try await self.provider.library.change(to: url, moveFrom: move ? self.provider.client.environment.library : nil, accept: accept, events: sink)
+            } catch let f as JobFailure where Self.libraryConfirmCodes[f.code ?? ""].map({ !accept.contains($0) }) == true {
+                self.libraryConfirm = LibraryConfirm(url: url, move: move, message: f.errorDescription ?? "", code: f.code ?? "",
+                                                     accept: accept.union([Self.libraryConfirmCodes[f.code ?? ""]!]))
                 throw f
             }
             self.games = []; self.selectedID = nil; self.libraryLoaded = false

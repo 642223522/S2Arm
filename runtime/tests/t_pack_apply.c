@@ -72,6 +72,16 @@ static void boundary_cases(const char *T) {
         if (pid > 0) { int status = 0; CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
             "pax case %u: 期望 %s 且不崩，wait status=%d", i, i == 0 ? "-2/0文件/0字节" : "0/1文件/2字节", status); }
     }
+    // v0.3.1：认不出的条目类型（软链 '2'、带数据的 'Z'）跳过、后面的文件照解：期望 rc 0、2 个文件 / 4 字节、没有链接落地
+    { char lt[1024], lr[1024]; snprintf(lt, sizeof lt, "%s/odd.tar", T); snprintf(lr, sizeof lr, "%s/odd", T); CHECK(!mkdir(lr, 0755), "建 odd 目录失败");
+      FILE *o = fopen(lt, "wb"); CHECK(o != NULL, "造 odd 包失败");
+      if (o) { tar_entry(o, "a.bin", '0', "ab", 2); tar_entry(o, "link", '2', "", 0); tar_entry(o, "weird", 'Z', "xxxxxxxxxx", 10);
+               tar_entry(o, "b.bin", '0', "cd", 2); char z[1024] = {0}; fwrite(z, 1, sizeof z, o); fclose(o);
+               unsigned nf = 0; uint64_t nb = 0; int rc = s2a_untar(lt, lr, &nf, &nb); char q[1100]; struct stat qs;
+               CHECK(rc == 0 && nf == 2 && nb == 4, "认不出的条目：期望 rc 0 / 2 文件 / 4 字节，实际 %d / %u / %llu", rc, nf, (unsigned long long)nb);
+               snprintf(q, sizeof q, "%s/b.bin", lr); CHECK(!stat(q, &qs) && qs.st_size == 2, "认不出的条目之后的 b.bin 没解出来");
+               snprintf(q, sizeof q, "%s/link", lr); CHECK(lstat(q, &qs) != 0, "认不出的软链条目不该落地");
+               snprintf(q, sizeof q, "%s/weird", lr); CHECK(lstat(q, &qs) != 0, "认不出的条目不该落地"); } }
     snprintf(path, sizeof path, "%s/abc", root); FILE *f = fopen(path, "rb"); char value[3] = {0};
     CHECK(f && fread(value, 1, 2, f) == 2 && !strcmp(value, "ok"), "合法 pax path 内容不符"); if (f) fclose(f);
 }
