@@ -81,7 +81,7 @@ int main(void) {
           "w main 0x5000 i32 60 off 30\n"        // game data variable: guest-memory write
           "w main 0x5100 i32 61 *0\n", f);       // pointer chain to a target outside the window
     fclose(f);
-    unsetenv("S2A_FPS_TABLE"); unsetenv("S2A_FPS60"); unsetenv("S2A_FSTEP"); unsetenv("DM_PRESENT_INTERVAL");
+    unsetenv("S2A_FPS_TABLE"); setenv("S2A_FPS60", "1", 1); unsetenv("S2A_FSTEP"); unsetenv("DM_PRESENT_INTERVAL");
     setenv("S2A_FPS_CAP", "0", 1);
 
     s2a_fps_start(dir);   // before the fix this aborts: the key-page slot write went through the checked guest write

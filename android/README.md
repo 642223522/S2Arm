@@ -53,6 +53,10 @@ debug-only `-Ps2arm.testAppIdSuffix=.w2` for an isolated install when needed.
 The runner restores only the original FPS preference. Diagnostic samples are
 unavailable and do not certify real NVN game frame rates.
 
+The separate `android_fps_table` CTest exercises the 60 FPS patch table, not
+the overlay sampler. Its enabled scenario explicitly sets `S2A_FPS60=1`;
+leaving the variable unset preserves the game's native frame-rate policy.
+
 ## Which build path to use
 
 Docker is no longer the default way to build Android packages. The backend is
