@@ -151,7 +151,7 @@ struct ExportSessionView: View {
         let (symbol, color): (String, Color) = {
             switch outcome?.state {
             case .completed?: return ("checkmark.circle.fill", LauncherPalette.ready)
-            case .failed?, .interrupted?: return ("exclamationmark.circle.fill", LauncherPalette.danger)
+            case .failed?, .interrupted?, .paused?: return ("exclamationmark.circle.fill", LauncherPalette.danger)   // paused：平台结局不会是它（作业层 stepEnded 只给 completed / failed / cancelled）
             case .cancelled?: return ("minus.circle", LauncherPalette.unbuilt)
             case nil: return (active ? "circle.dotted" : "circle", active ? LauncherPalette.building : LauncherPalette.unbuilt)
             }

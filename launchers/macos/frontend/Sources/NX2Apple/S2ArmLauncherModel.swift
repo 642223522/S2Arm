@@ -117,7 +117,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var selectedID: String?
     /// 出包平台的勾选没能写盘。
     @Published private(set) var choiceError: String?
-    @Published private(set) var session: JobSession?
+    @Published var session: JobSession?   // 批量出包时编排作业一步换一款，+Batch.swift batchStepStarted 换会话
     /// 出包页开着的那一款（nil = 游戏库）。
     @Published var exportFor: String?
     /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
@@ -189,6 +189,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var batchLocation = ""
     @Published var batchState: [String: Any]?
     @Published var batchRunning = false
+    /// 正在跑的那个批量出包编排作业（取消 = 取消它，剃刀 H13）
+    var batchWork: Task<Void, Never>?
     /// 批次记录（batch.py mark / 命令）没写成的原因：整批停住、批量页显示（剃刀 M7：原先失败照样往下走，状态和真实结局分叉）；nil = 没出错
     @Published var batchError: String?
     @Published var batchUnrecognized: [ImportSource] = []
@@ -567,7 +569,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location)
         exportFor = nil
         welcomeGameID = nil
-        if busy {   // 正在出别的：排队，出完接着出（11-08 维护者：出好一个接着出下一个）
+        if busy || batchRunning {   // 正在出别的 / 一批正在出：排队，出完接着出（11-08 维护者：出好一个接着出下一个）
             if session?.gameID == game.id || exportQueue.contains(where: { $0.game.id == game.id }) { return .alreadyQueued }
             exportQueue.append(item)
             return nil
@@ -585,41 +587,54 @@ public final class S2ArmLauncherModel: ObservableObject {
         if !exportQueue.isEmpty { let next = exportQueue.removeFirst(); session = nil; runExport(next) }
     }
 
+    /// 出一款：起一个出包编排作业（剃刀 H13，pack/jobs/export_plan.py），计划只有这一款的这几个平台、不写批次文件。
+    /// 平台顺序、iPhone 之后还有平台时先不清解包（followUp）、这台电脑出不了的平台都在作业层；这里只按它的事件画每个平台的进度与结局。
     func runExport(_ item: QueuedExport) {
         failAction(nil, game: nil)
-        // 按页面顺序出；收尾清什么由作业层定（剃刀 M21）：iPhone 后面还有平台时请求带 followUp，作业层先不清解包
         let game = item.game, platforms = item.platforms
         var session = JobSession(kind: .export, gameID: game.id, name: game.name)
         session.export = ExportRun(platforms: platforms)
+        var plan: [String: Any] = ["source": "inline", "items": [["gameId": game.id, "name": game.name, "platforms": platforms.compactMap(Self.batchPlatform)]]]
+        if let location = item.location { plan["location"] = location }
+        if let target = item.target { plan["deviceTarget"] = target }
+        if item.spaceOverride { plan["spaceOverride"] = true }
         start(session) { [weak self] sink in
-            for (k, platform) in platforms.enumerated() {
-                guard let self, let target = platform.target else { return nil }
-                try Task.checkCancellation()
-                if self.batchRunning, self.batchPaused != nil { break }   // 批量出包磁盘满暂停了：同一款的下一个平台也不开（审计 P1-164，暂停只由「重试」解除）
-                await self.batchMark(game.id, platform, state: "running")
-                self.beginPlatform(k)
-                do {
-                    var job = BuildJob(gameId: game.id, target: target, deviceTarget: target == .iPhone ? item.target : nil, spaceOverride: item.spaceOverride, location: item.location)
-                    job.followUp = target == .iPhone && k < platforms.count - 1
-                    let r = try await self.provider.build(job, events: sink)
-                    self.endPlatform(platform, ExportRun.Outcome(state: .completed, output: r.outputPath, ipa: r.ipa,
-                                                                 appBytes: ((r.raw["ipaBytes"] ?? r.raw["outputBytes"]) as? NSNumber)?.int64Value,
-                                                                 packBytes: (r.raw["packBytes"] as? NSNumber)?.int64Value))
-                } catch let failure as JobFailure {
-                    self.endPlatform(platform, ExportRun.Outcome(state: failure.state, message: failure.errorDescription ?? "", code: failure.code,
-                                                                 suggestion: failure.outcome.diagnostics.first?["suggestion"] as? String ?? "",
-                                                                 failureSummary: failure.outcome.diagnostics.last(where: { ($0["severity"] as? String) == "error" })?["failureSummary"] as? String))
-                    if failure.state == .cancelled { throw failure }
-                } catch is CancellationError {
-                    self.endPlatform(platform, ExportRun.Outcome(state: .cancelled))
-                    throw CancellationError()
-                } catch {
-                    self.endPlatform(platform, ExportRun.Outcome(state: .failed, message: error.localizedDescription))
-                }
-                await self.batchRecord(game.id, platform)   // 批量出包：这个平台出完记进批次（取消走 batchSessionEnded）
-            }
-            if self?.session?.export?.failed.isEmpty == false { throw ExportIncomplete() }
+            guard let self else { return nil }
+            do { _ = try await self.provider.export(plan: plan, hasIPhone: platforms.contains(.ios), events: self.exportSink(sink)) }
+            catch let pause as JobFailure where pause.state == .paused { throw ExportIncomplete() }   // 磁盘满：那个平台已按 stepEnded 记失败（码 disk_full），整次算没全成
+            if self.session?.export?.failed.isEmpty == false { throw ExportIncomplete() }
             return nil
+        }
+    }
+
+    /// 出包编排作业的事件 → 现有的出包会话：step 换到这个平台（批量出包时换到这一款的会话）、child 当成普通作业事件、stepEnded 记这个平台的结局
+    func exportSink(_ sink: EventSink) -> EventSink {
+        var failure: [String: Any] = [:]   // 子作业终态里的诊断（建议、失败事实），stepEnded 时并进结局
+        return EventSink { [weak self] event in
+            guard let self else { return }
+            let step = event.fields["step"] as? [String: Any] ?? [:]
+            let platform = (step["platform"] as? String).flatMap(Self.exportPlatform)
+            switch event.ev {
+            case "step":
+                if let gid = step["gameId"] as? String { self.batchStepStarted(gid) }
+                if let platform, let k = self.session?.export?.platforms.firstIndex(of: platform) { self.beginPlatform(k) }
+                failure = [:]
+            case "child":
+                guard let inner = event.fields["event"] as? [String: Any], let job = JobEvent(json: inner) else { return }
+                if job.isFinal { failure = (job.fields["diagnostics"] as? [[String: Any]] ?? []).last(where: { ($0["severity"] as? String) == "error" }) ?? [:]; return }
+                sink.emit(EngineEvent(job: job))
+            case "stepEnded":
+                guard let platform, let o = event.fields["outcome"] as? [String: Any] else { return }
+                let state = JobOutcome.State(rawValue: o["state"] as? String ?? "") ?? .failed
+                self.endPlatform(platform, ExportRun.Outcome(state: state, message: o["message"] as? String ?? "", code: o["code"] as? String,
+                                                             output: o["outputPath"] as? String ?? o["output"] as? String, ipa: o["ipa"] as? String,
+                                                             appBytes: ((o["ipaBytes"] ?? o["outputBytes"]) as? NSNumber)?.int64Value,
+                                                             packBytes: (o["packBytes"] as? NSNumber)?.int64Value,
+                                                             suggestion: failure["suggestion"] as? String ?? "", failureSummary: failure["failureSummary"] as? String))
+                if self.batchRunning { self.batchStepEnded() }
+            default:
+                sink.emit(event)
+            }
         }
     }
 
@@ -680,14 +695,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 换到第 k 个平台：进度、里程碑从头算（日志接着记）。
-    private func beginPlatform(_ k: Int) {
+    func beginPlatform(_ k: Int) {
         guard var session, var run = session.export else { return }
         run.index = k; run.platformStarted = Date()
         session.export = run; session.progress = JobProgress(); session.stage = ""
         self.session = session
     }
 
-    private func endPlatform(_ platform: ExportPlatform, _ outcome: ExportRun.Outcome) {
+    func endPlatform(_ platform: ExportPlatform, _ outcome: ExportRun.Outcome) {
         guard var session, var run = session.export else { return }
         var outcome = outcome
         outcome.seconds = Date().timeIntervalSince(run.platformStarted)
@@ -1088,7 +1103,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    private func ingest(_ event: EngineEvent) {
+    func ingest(_ event: EngineEvent) {
         guard var session = session, !isFinished(session) else { return }
         if let id = event.fields["taskId"] as? String, !id.isEmpty, session.taskID != id { session.taskID = id; self.session = session }
         if event.ev == "heartbeat" { return }
@@ -1122,7 +1137,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     private func isFinished(_ s: JobSession) -> Bool { if case .finished = s.phase { return true }; return false }
 
-    private func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil) {
+    func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil) {
         guard var session = session, !isFinished(session) else { return }
         session.phase = .finished(state)
         if !message.isEmpty {
@@ -1158,8 +1173,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if state == .completed && session.kind == .diagnostics, let reveal { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: reveal)]) }
         if session.kind == .export, let id = session.gameID {
             finishedExports[id] = session
-            if batchRunning {   // 批量出包：下一款听批次的（失败不挡后面、磁盘满暂停、取消整批停）
-                batchSessionEnded(cancelled: state == .cancelled)
+            if batchRunning {   // 批量出包：下一款由编排作业的 step 事件换（batchStepStarted），这里不管
             } else if state == .cancelled {
                 exportQueue = []
             } else if !exportQueue.isEmpty {
@@ -1208,7 +1222,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard var session = session, session.phase == .running else { return }
         session.phase = .stopping
         self.session = session
-        if session.kind == .play, let running { provider.control(running, .stop) } else { work?.cancel() }
+        if session.kind == .play, let running { provider.control(running, .stop) }
+        else if batchRunning, session.kind == .export { batchWork?.cancel() }   // 批量出包：取消整个编排作业（正在出的那步停下，已出好的保留）
+        else { work?.cancel() }
     }
 
     /// 回库：只有作业结束了才能关掉作业页。

@@ -132,6 +132,17 @@ public final class S2ArmEngineProvider: EngineProvider {
         }
     }
 
+    /// 出包编排（剃刀 H13，pack/jobs/export_plan.py）：plan = {source: inline, items, location, deviceTarget, spaceOverride} 或 {source: batch}。
+    /// 每一步是作业层的普通子作业，事件经 sink 原样过来（step / child / stepEnded）；终态 paused 时抛 JobFailure（state = .paused，结果里有 pausedReason / stoppedAt）。
+    /// 计划里有 iPhone 时先确认 .NET SDK（同 build：玩家只点一次）
+    public func export(plan: [String: Any], hasIPhone: Bool, events: EventSink) async throws -> JobOutcome {
+        if hasIPhone, dotnetMissing {
+            _ = try await environment.repair("installDotnet", events: events)
+            if dotnetMissing { throw JobClientError(Self.dotnetRecheckFailed) }
+        }
+        return try await client.perform("export", extra: ["plan": plan], events: events)
+    }
+
     private var dotnetMissing: Bool { environment.checks?.first { $0.action == "installDotnet" }?.ok == false }
 
     // MARK: 本机控制口用到的几个作业（AI 操作，11-07；参数同旧启动器 Store 的同名动作）
