@@ -6084,10 +6084,6 @@
   "en": "Kept the current and last successful builds, removed {0} older builds"
  },
  {
-  "source": "着色器准备存在缺口，请查看构建日志；未替换上次成功版本。",
-  "en": "Shader preparation has gaps; see the build log. The last successful build was kept."
- },
- {
   "source": "Mac 着色器产物不完整。",
   "en": "Mac shader output is incomplete."
  },
@@ -7150,5 +7146,13 @@
  {
   "source": "在出包页「存放位置」换到 NTFS 格式的盘（上面列出了这台电脑上可用的），再出包；游戏原件放在哪都行。",
   "en": "On the export page, change Storage Location to an NTFS drive (the available ones on this PC are listed above), then export again. Your game files can stay wherever they are."
+ },
+ {
+  "source": "选的文件夹里已有别的文件：确认「仍然继续」就照用这个文件夹，S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；不想这样就选一个空文件夹。",
+  "en": "This folder already has other files. Choose Continue Anyway to use it: S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes the others. Otherwise choose an empty folder."
+ },
+ {
+  "source": "这个文件夹里已有别的文件。S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；以后「搬游戏库」时它们会跟着一起搬到新位置。仍要用这个文件夹吗？不想这样就选一个空文件夹。",
+  "en": "This folder already has other files. S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes them; if you move the library later, they move with it. Use this folder anyway? Otherwise choose an empty folder."
  }
 ]

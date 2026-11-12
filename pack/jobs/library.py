@@ -573,6 +573,8 @@ def require_local(path):
         raise Failure(libloc.CLOUD_MESSAGE.format(cloud=cloud), code="library_in_cloud")
 
 
+FOREIGN_MESSAGE = ("这个文件夹里已有别的文件。S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；"
+                   "以后「搬游戏库」时它们会跟着一起搬到新位置。仍要用这个文件夹吗？不想这样就选一个空文件夹。")
 MOVE_SKIP = {".DS_Store", ".catalog.lock", ".execution.lock", ".store-meta.lock", ".s2arm-moving"}   # 锁文件要留到搬完；.DS_Store 系统会再生成
 
 
@@ -885,12 +887,28 @@ def _setup(c):
     marker = c.library / ".s2arm-library.json"
     if marker.exists():
         info = read(marker)
+        if not isinstance(info, dict):
+            info = {}
         if info.get("schema") != 1 or not info.get("id"):
-            raise Failure("游戏库标识不完整。")
+            # v0.3.1（认不出的直接做）：标识读坏了不挡打开游戏库——有库号照用；没有就补一个新的（手机上按旧库号记的游戏
+            #   之后装机时会当成别的电脑装的，装机那一步本来就会问玩家）；只记一笔
+            print(f"[s2a] 游戏库标识不完整（schema={info.get('schema')!r}，有库号={bool(info.get('id'))}），已补全后照常打开", file=sys.stderr)
+            info = dict(info, schema=1, id=info.get("id") or str(uuid.uuid4()))
+            atomic(marker, info)
         return dict(library=str(c.library), libraryId=info["id"], outcome="opened")
-    if layout.has_content(c.library):   # 只有系统自动生成的文件（.DS_Store / desktop.ini / Thumbs.db）照样算空文件夹
-        if not _looks_like_library(c.library):
-            raise Failure("这个文件夹里已有别的文件：请选空文件夹，或者已有的 S2Arm 游戏库。文件都没动。")
+    foreign = layout.has_content(c.library) and not _looks_like_library(c.library)   # 只有系统自动生成的文件（.DS_Store / desktop.ini / Thumbs.db）照样算空文件夹
+    if foreign:
+        # v0.3.1（认得出的风险讲清后果、让玩家选）：原先直接拒绝。S2Arm 只在自己建的文件和子文件夹里读写，删游戏也只删它自己的文件夹；
+        #   失败码 library_folder_not_empty，前端问「仍然继续 / 先不」，同意后带 acceptForeign 重发
+        if c.r.get("acceptForeign") is not True:
+            raise Failure(FOREIGN_MESSAGE, code="library_folder_not_empty")
+        source = c.r.get("moveFrom")
+        if source:   # 搬过来的东西和这里已有的重名会盖掉玩家的文件：物理上不能做，说清是哪个
+            clash = [b.name for _, b in _move_pairs(c, Path(source).resolve()) if b.exists() or b.is_symlink()]
+            if clash:
+                raise Failure(f"这个文件夹里已有和游戏库里同名的「{'、'.join(clash[:3])}」，搬过来会盖掉它们：换一个文件夹，或者先把它们挪走。文件都没动。",
+                              code="library_move_failed")
+    elif layout.has_content(c.library):
         info = dict(schema=1, id=str(uuid.uuid4()))
         atomic(c.library / "catalog.json", _adopt_catalog(c.library))
         atomic(marker, info)
