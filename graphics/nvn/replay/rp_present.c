@@ -79,15 +79,15 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
             if (now - t_last >= 5000000000ull) {
                 uint64_t pf[RP_PERF_N], nd = 0, nsk = 0; rp_perf_take(pf); rp_draw_stats(&nd, &nsk);
                 uint64_t fr = g_n_shown + 1 - n_last; double sec = (double)(now - t_last) / 1e9, f = fr ? (double)fr : 1.0;
-                char b[440]; snprintf(b, sizeof b, "分时：%.1f 秒上屏 %llu 帧（每秒 %.1f）；每帧：绘制 %.0f 笔、队列提交 %.1f 次共 %.1f 毫秒（其中交后端 %.1f）、等围栏 %.1f 次共 %.1f 毫秒；段从提交到完成平均 %.1f 毫秒；通道 %.1f 个、交上屏 %.1f 毫秒",
+                char b[640]; snprintf(b, sizeof b, "分时：%.1f 秒上屏 %llu 帧（每秒 %.1f）；每帧：绘制 %.0f 笔、队列提交 %.1f 次共 %.1f 毫秒（其中交后端 %.1f）、等围栏 %.1f 次共 %.1f 毫秒；段从提交到完成平均 %.1f 毫秒；通道 %.1f 个、交上屏 %.1f 毫秒",
                                       sec, (unsigned long long)fr, (double)fr / sec, (double)(nd - d_last) / f, (double)pf[RP_PERF_SUBS] / f, (double)pf[RP_PERF_SUBMIT_NS] / 1e6 / f, (double)pf[RP_PERF_COMMIT_NS] / 1e6 / f,
                                       (double)pf[RP_PERF_WAIT_N] / f, (double)pf[RP_PERF_WAIT_NS] / 1e6 / f, pf[RP_PERF_DONE_N] ? (double)pf[RP_PERF_DONE_NS] / 1e6 / (double)pf[RP_PERF_DONE_N] : 0.0, (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_PRESENT_NS] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 snprintf(b, sizeof b, "分时（绘制各步，每帧毫秒）：取程序 %.1f、顶点流与索引 %.1f、取贴图视图 %.1f、开通道与取管线 %.1f、动态状态与顶点缓冲 %.1f、绑定 %.1f、后端绘制 %.1f、收尾 %.1f",
                          (double)pf[RP_PERF_D_PROG] / 1e6 / f, (double)pf[RP_PERF_D_PREP] / 1e6 / f, (double)pf[RP_PERF_D_TEX] / 1e6 / f, (double)pf[RP_PERF_D_PIPE] / 1e6 / f, (double)pf[RP_PERF_D_DYN] / 1e6 / f, (double)pf[RP_PERF_D_BIND] / 1e6 / f, (double)pf[RP_PERF_D_DRAW] / 1e6 / f, (double)pf[RP_PERF_D_TAIL] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
-                snprintf(b, sizeof b, "分时（通道，每帧）：%.1f 个，共 %.1f 百万像素；颜色附件载入 %.1f 个；挂深度模板的 %.1f 个，其中整个通道没用到它的 %.1f 个；只有 0–1 笔绘制的 %.1f 个",
-                         (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_P_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_LOADC] / f, (double)pf[RP_PERF_P_DS] / f, (double)pf[RP_PERF_P_DS_IDLE] / f, (double)pf[RP_PERF_P_ONE] / f);
+                snprintf(b, sizeof b, "分时（通道，每帧）：%.1f 个，共 %.1f 百万像素；颜色附件载入 %.1f 个；挂深度模板的 %.1f 个，其中整个通道没用到它的 %.1f 个；只有 0–1 笔绘制的 %.1f 个；开着的通道被结束的原因：换目标 %.1f、通道中途的整屏清除 %.1f、同一提交里第二次同步 %.1f",
+                         (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_P_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_LOADC] / f, (double)pf[RP_PERF_P_DS] / f, (double)pf[RP_PERF_P_DS_IDLE] / f, (double)pf[RP_PERF_P_ONE] / f, (double)pf[RP_PERF_P_CUT_RT] / f, (double)pf[RP_PERF_P_CUT_CLEAR] / f, (double)pf[RP_PERF_P_CUT_XFER] / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 {   // 写跟踪的开销：游戏写到被保护的页要走一次缺页处理，改保护要进内核
                     static uint64_t f0, p0, c0, g0, n0; uint64_t fl = 0, pr = 0, mc = 0, mpg = 0, mns = 0; nvn_dirty_stats(&fl, &pr); nvn_dirty_mp_stats(&mc, &mpg, &mns);

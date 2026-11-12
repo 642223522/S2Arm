@@ -193,6 +193,7 @@ void rp_pass_flush(nvn_gpu_cmd c) {
 }
 
 void rp_pass_set_rt(nvn_gpu_cmd c, const p_set_rt *r) {
+    if (P.open) rp_perf_add(RP_PERF_P_CUT_RT, 1);
     rp_pass_flush(c);
     P.rt = *r; P.has_rt = 1;
     // 记录里的贴图指针指向记录内的快照，记录所在的命令内存这次提交之后可能被复用：自己留一份（nvn_mtl.m rt_keep_state @4453）
@@ -214,6 +215,7 @@ void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec
         rp_dirty_all();
         return;
     }
+    if (P.open) rp_perf_add(RP_PERF_P_CUT_CLEAR, 1);
     if (P.open) rp_pass_end(c);   // 通道中的整屏清除：结束这一通道，清除挂到下一个通道开头（其余附件照常 LOAD）
     P.clear_c[i] = 1; memcpy(P.cc[i], cc->rgba, sizeof P.cc[i]);
 }
