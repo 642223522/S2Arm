@@ -3565,6 +3565,33 @@ void nvn_gpu_blit(nvn_gpu_cmd ch, nvn_gpu_view sv, const NVNcopyRegion *sr, nvn_
     if (!sv || !dv || !sv->tex || !dv->tex || !sr || !dr) { set_sticky(c, NVN_GPU_E_ARG, "blit 参数为空"); return; }
     struct nvn_gpu_tex_s *s = sv->tex, *d = dv->tex;
     if (sv->format != s->format || dv->format != d->format) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：视图换了格式（拷贝按存储的格式做）"); return; }
+    if (s->samples > 1 && d->samples == 1) {
+        nvn_fmt_info f;
+        if (linear || s->w != d->w || s->h != d->h || s->format != d->format || s->nvn_format != d->nvn_format || sv->swizzled || dv->swizzled ||
+            s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
+            !nvn_fmt_info_of(s->nvn_format, &f) || f.kind == NVN_FMT_UINT || f.kind == NVN_FMT_SINT || f.depth || f.stencil ||
+            s->target == NVN_TEXTURE_TARGET_3D || d->target == NVN_TEXTURE_TARGET_3D) {
+            set_sticky(c, NVN_GPU_E_UNSUPPORTED, "resolve：只支持同格式非整数颜色二维贴图"); return;
+        }
+        VkOffset3D so, dof; VkExtent3D se, de;
+        if (sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0 ||
+            sr->depth != 1 || dr->depth != 1 || sr->zoffset || dr->zoffset || copy_region(s, sv->base_level, sr, &so, &se) || copy_region(d, dv->base_level, dr, &dof, &de) ||
+            sv->base_layer >= s->layers || dv->base_layer >= d->layers ||
+            se.width != de.width || se.height != de.height || se.depth != 1 || de.depth != 1 || so.z || dof.z) {
+            set_sticky(c, NVN_GPU_E_ARG, "resolve：区域越界或尺寸不相同"); return;
+        }
+        full_barrier(c);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        image_barrier(c, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageResolve ir = {0};
+        ir.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, sv->base_level, sv->base_layer, 1};
+        ir.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, dv->base_level, dv->base_layer, 1};
+        ir.srcOffset = so; ir.dstOffset = dof; ir.extent = se;
+        vkCmdResolveImage(c->cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ir);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_GENERAL); image_barrier(c, d, VK_IMAGE_LAYOUT_GENERAL);
+        cmd_ref(c, s, REF_TEX); cmd_ref(c, d, REF_TEX);
+        return;
+    }
     if (s->samples > 1 || d->samples > 1 || nvn_vk_format_is_depth(s->format) || nvn_vk_format_is_depth(d->format)) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：多重采样 / 深度模板没接"); return; }
     { nvn_fmt_info a, b; int ai = nvn_fmt_info_of(s->nvn_format, &a) && (a.kind == NVN_FMT_UINT || a.kind == NVN_FMT_SINT), bi = nvn_fmt_info_of(d->nvn_format, &b) && (b.kind == NVN_FMT_UINT || b.kind == NVN_FMT_SINT);
       if (ai || bi) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：整数格式没接"); return; } }

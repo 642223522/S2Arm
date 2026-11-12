@@ -3759,6 +3759,57 @@ static void c83_blit(void) {
     nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_tex_release(f); nvn_gpu_tex_release(g2); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
+// C84：4 个红样本的平均仍为红；目标先清蓝，不能靠未写入碰巧通过。
+static void c84_resolve(void) {
+    nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_2D;
+    td.d.format = NVN_FORMAT_RGBA8; td.d.width = td.d.height = 4;
+    td.d.depth = td.d.levels = 1; td.d.samples = 4; td.usage = NVN_GPU_TEX_RENDER;
+    nvn_gpu_tex a = NULL; nvn_gpu_err e;
+    CHECK(OK(nvn_gpu_tex_create(&td, &a, &e)), "C84 MSAA 创建：%s", e.why);
+    nvn_gpu_tex b = make_tex(4, 4, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER);
+    nvn_gpu_view av = make_view(a), bv = make_view(b);
+    nvn_gpu_buf rb = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_cmd c = begin_cmd();
+    for (int i = 0; i < 2; i++) {
+        nvn_gpu_pass_desc p = {0}; p.ncolor = 1; p.w = p.h = 4; p.layers = 1;
+        p.color[0].view = i ? bv : av; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE;
+        p.color[0].clear.f[i ? 2 : 0] = 1; p.color[0].clear.f[3] = 1;
+        nvn_gpu_pass_begin(c, &p); nvn_gpu_pass_end(c);
+    }
+    NVNcopyRegion rr = {0, 0, 0, 4, 4, 1};
+    nvn_gpu_blit(c, av, &rr, bv, &rr, 0);
+    nvn_gpu_copy_tex_buf(c, b, 0, 0, NULL, rb, 0, 16, 64);
+    nvn_gpu_rc rc = nvn_gpu_cmd_commit(c, 127, on_done, NULL, &e);
+    CHECK(OK(rc), "C84 resolve commit：%d %s", rc.code, e.why);
+    if (OK(rc)) {
+        CHECK(OK(nvn_gpu_fence_wait(127, 5000000000ull, &e)), "C84 wait：%s", e.why);
+        const uint8_t *px = buf_cpu(rb); int bad = 0;
+        for (int i = 0; i < 16; i++) if (px[i*4] != 255 || px[i*4+1] || px[i*4+2] || px[i*4+3] != 255) bad++;
+        CHECK(!bad, "C84 16 像素应为 255,0,0,255，不符 %d", bad);
+    }
+    nvn_gpu_view_release(av); nvn_gpu_view_release(bv); nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_buf_release(rb, NULL, NULL);
+}
+
+// 每个拒绝用例独占会话；必须在发 Vulkan 命令前拒绝。
+static void c84_resolve_reject(int k) {
+    nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_2D;
+    td.d.format = k == 2 ? NVN_FORMAT_R32UI : k == 3 ? NVN_FORMAT_DEPTH32F : NVN_FORMAT_RGBA8;
+    td.d.width = td.d.height = 4; td.d.depth = td.d.levels = 1;
+    td.d.samples = 4; td.usage = NVN_GPU_TEX_RENDER;
+    nvn_gpu_tex a = NULL, b = NULL; nvn_gpu_err e;
+    CHECK(OK(nvn_gpu_tex_create(&td, &a, &e)), "C84 拒绝源创建：%s", e.why);
+    td.d.samples = k == 4 ? 4 : 1;
+    if (k == 1) td.d.format = NVN_FORMAT_BGRA8;
+    if (k == 7) td.d.width = 8;
+    CHECK(OK(nvn_gpu_tex_create(&td, &b, &e)), "C84 拒绝目标创建：%s", e.why);
+    nvn_gpu_view av = make_view(a), bv = make_view(b); nvn_gpu_cmd c = begin_cmd();
+    NVNcopyRegion sr = {0, 0, 0, 4, 4, 1}, dr = sr; if (k == 0) dr.width = 2; if (k == 5) dr.width = 0;
+    nvn_gpu_blit(c, av, &sr, bv, &dr, k == 6);
+    nvn_gpu_rc rc = nvn_gpu_cmd_commit(c, 1, on_done, NULL, &e);
+    CHECK(rc.code == ((k == 0 || k == 5) ? NVN_GPU_E_ARG : NVN_GPU_E_UNSUPPORTED), "C84 拒绝 %d：%d %s", k, rc.code, e.why);
+    nvn_gpu_view_release(av); nvn_gpu_view_release(bv); nvn_gpu_tex_release(a); nvn_gpu_tex_release(b);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -3995,8 +4046,14 @@ int main(int argc, char **argv) {
     c81_int_sampled(argv[1]);
     c82_occlusion(argv[1]);
     c83_blit();
+    c84_resolve();
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
+    for (int k = 0; k < 8; k++) {
+        if (!open_backend()) return 1;
+        c84_resolve_reject(k);
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C84 拒绝 close：%s", e18.why);
+    }
     if (!open_backend()) return 1;
     c74b_clear_rect_oob();
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C74b close：%d %s", e18.rc.code, e18.why);

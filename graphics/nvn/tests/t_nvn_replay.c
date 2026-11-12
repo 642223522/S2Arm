@@ -830,15 +830,27 @@ static void t_copy_t2t(void) {
     { tex_t u = mk_tex(74, 0x10000, NVN_FORMAT_R32UI, 32, 16, 1, 0); o = put_t2t(&s, &u, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; }   // 整数格式换格式：没接
     o = put_t2t(&s, &a, &b); o->sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; o->dr = o->sr; o->flags = NVN_COPY_FLAGS_MIRROR_Y_BIT;                       // 镜像：没接
     o = put_t2t(&s, &b, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = o->sr; o->flags = (int32_t)DM_COPY_RESOLVE;                         // 降采样记录、两边采样数相同：整张拷贝
+    { tex_t ms = mk_tex(75, 0, NVN_FORMAT_RGBA8, 32, 16, 1, 0); ms.d.samples = 4; ms.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE;
+      o = put_t2t(&s, &ms, &b); o->flags = DM_COPY_RESOLVE; }
+    // 整数、深度、缩放、反向采样转换仍记账，不能误走解析。
+    for (int k = 0; k < 4; k++) {
+        tex_t ms = mk_tex(76 + k * 2, 0, k == 0 ? NVN_FORMAT_R32UI : k == 1 ? NVN_FORMAT_DEPTH32F : NVN_FORMAT_RGBA8, 32, 16, 1, 0);
+        tex_t dst = ms; dst.serial++; ms.d.samples = 4; ms.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE;
+        if (k == 2) dst.d.width = 16;
+        if (k == 3) { ms.d.samples = 1; dst.d.samples = 4; }
+        o = put_t2t(&s, &ms, &dst); o->flags = DM_COPY_RESOLVE;
+    }
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_nct == 3);
     CHECK(g_ct[0].sl == 1 && g_ct[0].sy == 2 && g_ct[0].dl == 0 && g_ct[0].dy == 0 && g_ct[0].sr.xoffset == 4 && g_ct[0].sr.width == 16 && g_ct[0].sr.depth == 1 && g_ct[0].sr.zoffset == 0 && g_ct[0].dr.xoffset == 8 && g_ct[0].dr.yoffset == 4);
     CHECK(g_ct[1].sy == 3 && g_ct[1].dy == 1 && g_ct[0].s != g_ct[0].d);
     CHECK(g_ct[2].sr.width == 32 && g_ct[2].sr.height == 16 && g_ct[2].s == g_ct[2].d);
-    CHECK(g_nbl == 2 && g_bl[0].linear == 1 && g_bl[0].sr.width == 32 && g_bl[0].dr.width == 16 && g_bl[0].dr.height == 8 && g_bl[0].s && g_bl[0].d && g_bl[0].s != g_bl[0].d);
+    CHECK(g_nbl == 3 && g_bl[0].linear == 1 && g_bl[0].sr.width == 32 && g_bl[0].dr.width == 16 && g_bl[0].dr.height == 8 && g_bl[0].s && g_bl[0].d && g_bl[0].s != g_bl[0].d);
     CHECK(g_bl[1].linear == 0 && g_bl[1].sr.width == 16 && g_bl[1].dr.width == 16);
-    CHECK(nvn_unimpl_count("tex", "t2t_format_change") == 1 && nvn_unimpl_count("tex", "t2t_mirror") == 1 && nvn_unimpl_kinds() == 2);
+    CHECK(g_bl[2].linear == 0 && g_bl[2].sr.width == 32 && g_bl[2].sr.height == 16 && g_bl[2].dr.width == 32 && g_bl[2].dr.depth == 1);
+    CHECK(nvn_unimpl_count("tex", "t2t_format_change") == 1 && nvn_unimpl_count("tex", "t2t_mirror") == 1 && nvn_unimpl_kinds() == 4);
+    CHECK(nvn_unimpl_count("tex", "t2t_multisample_resolve") == 3 && nvn_unimpl_count("tex", "t2t_downsample_case") == 1);
     CHECK(nvn_be_tex_gpu_owned(72) == 1 && nvn_be_tex_gpu_owned(73) == 1 && nvn_be_tex_gpu_owned(71) == 0);
     pass_fresh();
 }
