@@ -264,8 +264,9 @@ def preflight(c):
             action="library", code="library_not_apfs", group="storage")
         # 云盘同步目录（11-07 启动器）：iCloud Drive / OneDrive / Dropbox 等同步目录里放游戏库，中间产物会被上传、换占位，拦下给「换游戏库」
         cloud = libloc.cloud_folder(library, system="Darwin", home=str(Path.home()), exists=os.path.exists)
-        add("library_location", "游戏库所在位置", cloud is None,
-            libloc.CLOUD_MESSAGE.format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
+        accepted = bool(cloud) and libloc.cloud_accepted(library)   # 玩家换库时确认过放在云盘里也用：照提示、不算要处理
+        add("library_location", "游戏库所在位置", cloud is None or accepted,
+            (libloc.CLOUD_ACCEPTED_MESSAGE if accepted else libloc.CLOUD_MESSAGE).format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
             action="library", code="library_in_cloud", group="storage")
     add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
         "需要 Apple Silicon Mac。", ("prepare", "launch"))

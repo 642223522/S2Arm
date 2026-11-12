@@ -1445,6 +1445,11 @@ public sealed partial class EnvironmentWindow
         if (await ConfirmInstallActionAsync("install.restore")) await RunPhoneJobAsync(game, "installRestore", "install.restore");
     }
 
+    /// <summary>换游戏库的 setup 作业报 library_in_cloud（选的文件夹在云盘同步目录里）：认得出的风险，问玩家「仍然继续 / 先不」；同意返回 true，调用方带 acceptCloud 重发（同 Mac LibraryConfirm）</summary>
+    private async Task<bool> ConfirmCloudLibraryAsync(LibraryJobOutput setup) =>
+        !setup.Report.Succeeded && JobCode(setup) == "library_in_cloud" &&
+        await ConfirmInstallActionAsync("install.drop", setup.Report.Message, ConfirmTitle("library_in_cloud"));
+
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
     private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null)
     {

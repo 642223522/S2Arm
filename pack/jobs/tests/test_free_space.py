@@ -133,6 +133,24 @@ class LibraryGate(JobCase):
         self.assertEqual(e.exception.code, "library_in_cloud"); self.assertIn("iCloud 云盘", str(e.exception))
         self.assertFalse(lib.exists())   # 拦在建目录之前
 
+    def test_setup_cloud_confirmed_proceeds_and_is_remembered(self):
+        # v0.3.1：云盘目录是认得出的风险——玩家确认（acceptCloud）后照建，选择记进游戏库标识（cloudAccepted）；
+        #   之后再打开同一个库（启动时连已保存的库也走 setup，不带 acceptCloud）不再问、照常打开；别的云盘目录照旧先问
+        lib = self.root / "云盘里的库"; self.c.library = lib; self.c.r["acceptCloud"] = True
+        with patch.object(libloc, "cloud_folder", return_value="iCloud 云盘"):
+            r = library.setup(self.c)
+        self.assertEqual(r["outcome"], "created")
+        self.assertTrue(libloc.cloud_accepted(str(lib)))
+        self.assertFalse(libloc.cloud_accepted(str(self.root / "别的库")))   # 没记过 / 读不到：False
+        self.c.r.pop("acceptCloud")
+        with patch.object(libloc, "cloud_folder", return_value="iCloud 云盘"):
+            self.assertEqual(library.setup(self.c)["outcome"], "opened")
+        self.assertTrue(libloc.cloud_accepted(str(lib)))
+        self.c.library = self.root / "另一个云盘里的库"
+        with patch.object(libloc, "cloud_folder", return_value="iCloud 云盘"), self.assertRaises(Failure) as e:
+            library.setup(self.c)
+        self.assertEqual(e.exception.code, "library_in_cloud")
+
     def test_require_apfs_windows_wants_ntfs(self):
         with as_windows(library):
             for fmt in ("exfat", "fat32"):
@@ -161,6 +179,11 @@ class LibraryGate(JobCase):
         self.assertEqual((row["ok"], row["group"], row["action"], row["diagnostic"]["code"]), (False, "storage", "library", "library_in_cloud"))
         row = run("/Volumes/Example/游戏库")
         self.assertTrue(row["ok"])
+        # 玩家确认过放在云盘里（游戏库标识 cloudAccepted）：照提示（已按你的选择继续用），不算要处理
+        lib = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/S2Arm"
+        with patch.object(libloc, "cloud_accepted", side_effect=lambda p: p == str(lib)):
+            row = run(str(lib))
+        self.assertTrue(row["ok"]); self.assertIn("已按你的选择继续用", str(row))
 
 
 class FreeSpace(JobCase):

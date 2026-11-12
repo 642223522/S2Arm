@@ -77,6 +77,21 @@ def slack_reason(fmt, cluster, *, system):
         return "format"
     return None
 
+CLOUD_ACCEPTED_MESSAGE = ("游戏库在「{cloud}」的同步目录里，已按你的选择继续用：出包时云盘可能上传中间文件、换成占位，"
+                          "遇到出包变慢或读不到文件，把游戏库换到本机磁盘上不同步的位置就好。")
+
+
+def cloud_accepted(library):
+    """玩家换游戏库时确认过「放在云盘同步目录里也继续用」（setup 带 acceptCloud，记进游戏库标识 .s2arm-library.json 的 cloudAccepted）。
+    读不到 / 没记 → False。环境检查据此把这一项从「要处理」改成提示（v0.3.1：认得出的风险让玩家确认，确认过不再一直标红）"""
+    import json, os
+    try:
+        with open(os.path.join(library, ".s2arm-library.json"), encoding="utf-8") as f:
+            return json.load(f).get("cloudAccepted") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 LIBRARY_FORMAT_MESSAGE = ("这个位置所在的磁盘格式是 {fmt}。游戏原件放在这块盘上没问题（S2Arm 只读、不改不删），"
                           "但导出时的工作数据（游戏库）要放在 APFS 或 Mac OS 扩展（HFS+）格式的磁盘上：请改用这台 Mac 上的默认位置（内置盘），"
                           "或选一块 APFS 格式的外接盘；外接盘可以在「磁盘工具」里另分出一个 APFS 分区（盘上要有空闲空间，原有数据不动）。")

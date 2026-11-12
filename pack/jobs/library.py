@@ -794,6 +794,16 @@ def _occupied(d):
 
 
 def setup(c):
+    """选游戏库（见 _setup）。请求带 acceptCloud = 玩家确认过「游戏库放在云盘同步目录里也继续用」：不拦云盘目录，并把这个选择记进游戏库标识
+    （cloudAccepted，libloc.cloud_accepted 读），环境检查之后按提示显示、不再标红（v0.3.1：认得出的风险讲清后果、让玩家选）"""
+    result = _setup(c)
+    if c.r.get("acceptCloud"):
+        marker = c.library / ".s2arm-library.json"
+        atomic(marker, dict(read(marker), cloudAccepted=True))
+    return result
+
+
+def _setup(c):
     """选游戏库：已有游戏库直接打开；装着旧产物的文件夹认领下来；空文件夹按 moveFrom 把现有游戏库搬过来，没给就新建。
     库路径规则只在这里（剃刀 W19，两端前端只把玩家输入转成绝对路径）：
       盘根 / 用户主目录 / 引擎目录不行；请求带 installDir（启动器安装目录，升级时整个替换）时，库在它里面或包含它都不行；
@@ -809,7 +819,11 @@ def setup(c):
         c.library = next((n for n in (c.library.with_name(f"{c.library.name} Library" + (f" {i}" if i > 1 else "")) for i in range(1, 10))
                           if not _occupied(n)), c.library)   # 都被占就原样往下走，由下面报「已有别的文件」
     require_apfs(c.library)
-    require_local(c.library)
+    # 云盘同步目录：认得出的风险，失败码 library_in_cloud，前端问玩家「仍然继续 / 先不」，同意后带 acceptCloud 重发；
+    #   这个库确认过（标识里 cloudAccepted）就不再问——启动时连已保存的库也走 setup，否则每次打开都问一遍
+    import libloc
+    if not c.r.get("acceptCloud") and not libloc.cloud_accepted(str(c.library)):
+        require_local(c.library)
     c.library.mkdir(parents=True, exist_ok=True)
     marker = c.library / ".s2arm-library.json"
     if marker.exists():
