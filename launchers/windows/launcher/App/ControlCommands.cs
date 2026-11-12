@@ -99,7 +99,7 @@ public sealed partial class EnvironmentWindow
     private ControlReply ControlExport(LibraryGame game, bool spaceOverride = false)
     {
         selectedGame = game.Id;
-        if (ExportBlocker(game) is { } why) return ControlReply.Bad(why, 409);
+        if (ExportStops(game) && ExportBlocker(game) is { } why) return ControlReply.Bad(why, 409);
         StartPack(game, spaceOverride);
         return ControlReply.Ok();
     }
