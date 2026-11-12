@@ -471,6 +471,8 @@ extension GameState {
         case 1: ShellStrings.text("Importing…")
         case 2: ShellStrings.text("Unpacking small files…")
         case 3: ShellStrings.text("Checking files…")
+        case 4: ShellStrings.text("Waiting for another game…")
+        case 5: ShellStrings.text("Organizing game folders…")
         default: ShellStrings.text("Installing…")
         }
     }

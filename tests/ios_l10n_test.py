@@ -82,7 +82,7 @@ SHELL_IDENT = {   # 文件 → {中文字面量开头: 不改的理由}
 SAVESYNC_DIR = 'launchers/shared/SaveSync/Sources/SaveSync'
 MAC_L10N = {'zh': 'launchers/macos/frontend/l10n/zh.json', 'en': 'launchers/macos/frontend/l10n/en.json'}
 MAC_CLOUD_SRC = 'launchers/macos/frontend/Sources/NX2Apple/S2ArmLauncherModel+CloudSaves.swift'
-EN_CJK = {k: '照写真实的「<游戏名>资源包」文件夹名（Mac 启动器交付的目录就叫这个，pack/jobs/ipa.py），译掉玩家就找不到' for k in ('notice.packFolder', 'notice.step.drag', 'app.library.packMissing')}
+EN_CJK = {}   # 原先「<游戏名>资源包」文件夹名照写的三条已随访达拷文件夹那条路删掉（iOS 装机剃刀 #28，11-11）
 CJK = re.compile('[㐀-䶿一-鿿　-〿！（），：；？]')
 PH = re.compile(r"%%|%(?:(\d+)\$)?([-+ #0']*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|q|L|z|j|t)?[@dDuUxXoOfeEgGcCsSpaAF])")
 

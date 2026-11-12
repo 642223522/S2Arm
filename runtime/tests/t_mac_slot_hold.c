@@ -5,6 +5,7 @@
 //   ③ 有空槽 → 拿到 0 号，holder 记的是宿主自己的 pid 和「s2arm-host <名>」；宿主正常退出后槽目录没了
 //   ④ 唯一的槽被活进程占着、排队上限 1 秒 → 宿主退 75、不往下走；别人的槽原样不动
 //   ⑤ 唯一的槽的持有者已死 → 收回，宿主拿到
+//   ⑥ 运行区是镜像：s2arm/env 软链到真运行区、仲裁副本只在真运行区 bin/ 里（镜像的 bin/ 是另一个空目录）→ 调到真运行区那份（11-11 本机帧回放就因此退出）
 #include "../src/native.h"
 #include <TargetConditionals.h>
 #include <stdio.h>
@@ -72,10 +73,20 @@ int main(void) {
     rc = child(NULL, 1, "5", &c); b[0] = 0; slurp(p2, b, sizeof b); snprintf(want, sizeof want, "%d|%d s2arm-host", (int)c, (int)c);
     CHECK(rc == 0 && !strncmp(b, want, strlen(want)), "⑤ 死持有者的槽被收回、宿主拿到（实得「%s」）", b);
     }
+    // ⑥ 镜像运行区：<T>/run/s2arm/env → <T>/real/s2arm/env（含 layout.env），<T>/real/s2arm/bin/mac_slot-now.sh 是假仲裁（留标记、回一个槽路径）
+    { char d[800], d2[800]; snprintf(d, sizeof d, "%s/real", T); mkdir(d, 0755); snprintf(d, sizeof d, "%s/real/s2arm", T); mkdir(d, 0755);
+      snprintf(d, sizeof d, "%s/real/s2arm/env", T); mkdir(d, 0755); snprintf(d, sizeof d, "%s/real/s2arm/env/layout.env", T); f = fopen(d, "w"); fclose(f);
+      snprintf(d, sizeof d, "%s/real/s2arm/bin", T); mkdir(d, 0755);
+      snprintf(d, sizeof d, "%s/real/s2arm/bin/mac_slot-now.sh", T); f = fopen(d, "w"); fprintf(f, "touch %s/real_called; echo %s/fake_slot\n", T, T); fclose(f);
+      snprintf(d, sizeof d, "%s/run", T); mkdir(d, 0755); snprintf(d, sizeof d, "%s/run/s2arm", T); mkdir(d, 0755); snprintf(d, sizeof d, "%s/run/s2arm/bin", T); mkdir(d, 0755);
+      snprintf(d, sizeof d, "%s/real/s2arm/env", T); snprintf(d2, sizeof d2, "%s/run/s2arm/env", T); if (symlink(d, d2)) {}
+      snprintf(p, sizeof p, "%s/passed", T); unlink(p);
+      rc = child(NULL, 0, "1", &c); snprintf(d, sizeof d, "%s/real_called", T);
+      CHECK(rc == 0 && access(d, F_OK) == 0 && access(p, F_OK) == 0, "⑥ 镜像运行区：调到真运行区的仲裁副本、照常往下（rc=%d）", rc); }
     char cmd[700]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", T); if (system(cmd)) {}
 #else
     printf("✓ 非 macOS：宿主不拿 Mac 局槽，跳过\n");
 #endif
-    if (bad) printf("✗ t_mac_slot_hold：%d 处不符\n", bad); else printf("✓ t_mac_slot_hold：0 处不符（共 %d 项%s）\n", have_ms ? 5 : 2, have_ms ? "" : "，③④⑤ 未覆盖");   // runtime/gate.sh 按「✓ / ✗ t_」行判组
+    if (bad) printf("✗ t_mac_slot_hold：%d 处不符\n", bad); else printf("✓ t_mac_slot_hold：0 处不符（共 %d 项%s）\n", have_ms ? 6 : 3, have_ms ? "" : "，③④⑤ 未覆盖");   // runtime/gate.sh 按「✓ / ✗ t_」行判组
     return bad ? 1 : 0;
 }

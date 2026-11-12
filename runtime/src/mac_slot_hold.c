@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <spawn.h>
+#include <limits.h>
 #include <sys/wait.h>
 extern char **environ;
 // 本机用显卡的活一本账（11-07 维护者：09:48 本机显卡驱动 panic 时有个 1.6 GB 的 s2arm-host 不经 Mac 局槽直接起，属主查不到）：
@@ -23,7 +24,11 @@ void s2a_mac_slot_hold(const char *what) {
     char root[900], bin[1024], le[1024], pid[16], nm[300], out[1024]; size_t got = 0; ssize_t r; int fd[2], st = 0; pid_t c;
     if (rr && *rr) strlcpy(root, rr, sizeof root); else snprintf(root, sizeof root, "%s/.s2arm/run", home ? home : "");
     if (b && *b) strlcpy(bin, b, sizeof bin);
-    else { snprintf(le, sizeof le, "%s/s2arm/env/layout.env", root); if (access(le, F_OK)) return; snprintf(bin, sizeof bin, "%s/s2arm/bin/mac_slot-now.sh", root); }
+    else {   // 仲裁副本按 layout.env 的真实路径找：运行区可以是逐项软链到真运行区的镜像（11-11 本机 ~/.s2arm/run/s2arm/env → ~/nx2ios/run/s2arm/env，
+             //   bin 却是镜像里另建的真目录，按镜像拼路径找不到 mac_slot-now.sh，帧回放 / 直接起宿主一律报红退出）
+        snprintf(le, sizeof le, "%s/s2arm/env/layout.env", root); if (access(le, F_OK)) return;
+        char real[PATH_MAX], *e; if (realpath(le, real) && (e = strstr(real, "/env/layout.env")) && !e[15]) *e = 0; else snprintf(real, sizeof real, "%s/s2arm", root);
+        snprintf(bin, sizeof bin, "%s/bin/mac_slot-now.sh", real); }
     if (access(bin, R_OK)) die("【红】Mac 局槽：我方机器缺运行区仲裁副本 %s，不起局", bin);
     snprintf(pid, sizeof pid, "%d", (int)getpid()); snprintf(nm, sizeof nm, "s2arm-host %s", what);
     if (pipe(fd)) die("【红】Mac 局槽：pipe 失败（errno %d）", errno);
