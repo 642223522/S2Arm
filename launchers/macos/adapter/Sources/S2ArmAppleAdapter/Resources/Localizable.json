@@ -7138,5 +7138,9 @@
  {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。",
   "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone. Or confirm to install without them this time: their saves and resources stay on the phone, and they come back once you rebuild and install them."
+ },
+ {
+  "source": "这款游戏暂不支持：程序的结构我们还不认识，多见于自制或移植的程序。",
+  "en": "This game is not supported yet. We don't recognize how this program is built yet; this is common for homebrew or ported programs."
  }
 ]
