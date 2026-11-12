@@ -100,7 +100,9 @@ def validate_runtime(c, runtime, full=False, files=True):
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
-            raise Failure("这款游戏的内存配置已损坏，请重新打包后再启动。", code="runtime_invalid")
+            # v0.3.1（认不出的直接做）：宿主读这张表只认几行、程序号对不上就按 0（runtime/src/svc_mem.c alias_first_hint），
+            #   表坏了最多是布局提示归 0，不该挡起局；只记一笔
+            print("[s2a] 内存配置表（addr_need.tsv）和清单记的不一致，照常起局（布局提示可能不生效）", file=sys.stderr)
     return manifest
 
 
@@ -688,10 +690,6 @@ def prepare(c):
             shutil.rmtree(src, ignore_errors=True)
         current = (root / "roots" / (game["id"] + "@现行")).resolve()
         contained(root, current)
-        shader_report = read(current / "shaders/shader_pack.json", {})
-        reds = shader_report.get("red", {})
-        if (current / "shaders/red.txt").exists() or any(reds.values()):
-            raise Failure("着色器准备存在缺口，请查看构建日志；未替换上次成功版本。")
         if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
         warn_offline_empty(c, current)

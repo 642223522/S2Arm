@@ -6072,10 +6072,6 @@
   "en": "Kept the current and last successful builds, removed {0} older builds"
  },
  {
-  "source": "着色器准备存在缺口，请查看构建日志；未替换上次成功版本。",
-  "en": "Shader preparation has gaps; see the build log. The last successful build was kept."
- },
- {
   "source": "Mac 着色器产物不完整。",
   "en": "Mac shader output is incomplete."
  },
@@ -7154,5 +7150,13 @@
  {
   "source": "游戏原件放哪块盘都行，导出时的工作数据（游戏库）要放在 APFS 或 exFAT 格式的磁盘上：在「设置 → 游戏库与玩家数据」改用这台 Mac 上的默认位置（内置盘），或选一块 APFS / exFAT 外接盘，再重试；FAT32 等格式不适合做游戏库。游戏原件不用挪。",
   "en": "Game files can be on any drive, but the working data for exporting (the game library) must be on an APFS or exFAT drive. In Settings → Library & Player Data, switch to the default location on this Mac (built-in drive), or choose an APFS / exFAT external drive, then try again. FAT32 and similar formats are not suitable for the library. Your game files don't need to move."
+ },
+ {
+  "source": "选的文件夹里已有别的文件：确认「仍然继续」就照用这个文件夹，S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；不想这样就选一个空文件夹。",
+  "en": "This folder already has other files. Choose Continue Anyway to use it: S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes the others. Otherwise choose an empty folder."
+ },
+ {
+  "source": "这个文件夹里已有别的文件。S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；以后「搬游戏库」时它们会跟着一起搬到新位置。仍要用这个文件夹吗？不想这样就选一个空文件夹。",
+  "en": "This folder already has other files. S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes them; if you move the library later, they move with it. Use this folder anyway? Otherwise choose an empty folder."
  }
 ]
