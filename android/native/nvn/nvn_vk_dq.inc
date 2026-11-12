@@ -27,7 +27,7 @@
 #define DQ_SYNC(X) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkAllocateCommandBuffers) X(vkResetCommandPool) X(vkQueueSubmit) X(vkQueuePresentKHR) X(vkQueueWaitIdle) X(vkDeviceWaitIdle) \
     X(vkDestroyCommandPool) X(vkFreeCommandBuffers) X(vkResetCommandBuffer)
 #define DQ_REAL(f) static PFN_##f r_##f;
-DQ_CMDS(DQ_REAL) DQ_SYNC(DQ_REAL)
+DQ_CMDS(DQ_REAL)   // 命令缓冲之外的那几个入口（提交、呈现、池）直接调符号：它们没有版本 / 扩展的问题，宿主用例对其中几个打了桩
 #define DQ_OP(f) OP_##f,
 enum { OP_WRAP, DQ_CMDS(DQ_OP) OP_N };
 
@@ -320,17 +320,17 @@ static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdEndQuery(VkCommandBuffer cb, VkQue
 
 // 占着命令池或队列的调用：先等队列里的调用全做完
 static void dq_poll(void);
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo *bi) { vk_dq_drain(); return r_vkBeginCommandBuffer(cb, bi); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkEndCommandBuffer(VkCommandBuffer cb) { vk_dq_drain(); return r_vkEndCommandBuffer(cb); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkAllocateCommandBuffers(VkDevice d, const VkCommandBufferAllocateInfo *ai, VkCommandBuffer *cb) { vk_dq_drain(); return r_vkAllocateCommandBuffers(d, ai, cb); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkResetCommandPool(VkDevice d, VkCommandPool p, VkCommandPoolResetFlags f) { vk_dq_drain(); return r_vkResetCommandPool(d, p, f); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFence f) { vk_dq_drain(); dq_poll(); return r_vkQueueSubmit(q, n, si, f); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkQueuePresentKHR(VkQueue q, const VkPresentInfoKHR *pi) { vk_dq_drain(); return r_vkQueuePresentKHR(q, pi); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkQueueWaitIdle(VkQueue q) { vk_dq_drain(); return r_vkQueueWaitIdle(q); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkDeviceWaitIdle(VkDevice d) { vk_dq_drain(); return r_vkDeviceWaitIdle(d); }
-static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkDestroyCommandPool(VkDevice d, VkCommandPool p, const VkAllocationCallbacks *a) { vk_dq_drain(); r_vkDestroyCommandPool(d, p, a); }
-static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkFreeCommandBuffers(VkDevice d, VkCommandPool p, uint32_t n, const VkCommandBuffer *cb) { vk_dq_drain(); r_vkFreeCommandBuffers(d, p, n, cb); }
-static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkResetCommandBuffer(VkCommandBuffer cb, VkCommandBufferResetFlags f) { vk_dq_drain(); return r_vkResetCommandBuffer(cb, f); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo *bi) { vk_dq_drain(); return vkBeginCommandBuffer(cb, bi); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkEndCommandBuffer(VkCommandBuffer cb) { vk_dq_drain(); return vkEndCommandBuffer(cb); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkAllocateCommandBuffers(VkDevice d, const VkCommandBufferAllocateInfo *ai, VkCommandBuffer *cb) { vk_dq_drain(); return vkAllocateCommandBuffers(d, ai, cb); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkResetCommandPool(VkDevice d, VkCommandPool p, VkCommandPoolResetFlags f) { vk_dq_drain(); return vkResetCommandPool(d, p, f); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFence f) { vk_dq_drain(); dq_poll(); return vkQueueSubmit(q, n, si, f); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkQueuePresentKHR(VkQueue q, const VkPresentInfoKHR *pi) { vk_dq_drain(); return vkQueuePresentKHR(q, pi); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkQueueWaitIdle(VkQueue q) { vk_dq_drain(); return vkQueueWaitIdle(q); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkDeviceWaitIdle(VkDevice d) { vk_dq_drain(); return vkDeviceWaitIdle(d); }
+static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkDestroyCommandPool(VkDevice d, VkCommandPool p, const VkAllocationCallbacks *a) { vk_dq_drain(); vkDestroyCommandPool(d, p, a); }
+static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkFreeCommandBuffers(VkDevice d, VkCommandPool p, uint32_t n, const VkCommandBuffer *cb) { vk_dq_drain(); vkFreeCommandBuffers(d, p, n, cb); }
+static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkResetCommandBuffer(VkCommandBuffer cb, VkCommandBufferResetFlags f) { vk_dq_drain(); return vkResetCommandBuffer(cb, f); }
 
 // 开关（调试属性 nvk_dq，缺省关）：在提交处读——那里队列刚清空；别的线程这时还有没做完的记录也没关系，它之后的直接调用会先清空队列。
 static void dq_poll(void) {
@@ -341,7 +341,7 @@ static void dq_poll(void) {
 // 设备建好之后、第一处 Vulkan 命令之前调一次。取不到环内存就一直按「关」走。
 static void vk_dq_init(VkDevice dev) {
 #define DQ_GET(f) r_##f = (PFN_##f)vkGetDeviceProcAddr(dev, #f);
-    DQ_CMDS(DQ_GET) DQ_SYNC(DQ_GET)
+    DQ_CMDS(DQ_GET)
     if (g_dq_ring) return;   // 会话重开：队列和线程沿用
     pthread_spin_init(&g_dq_pl, PTHREAD_PROCESS_PRIVATE);
     uint8_t *ring = malloc(dq_RING);
