@@ -72,7 +72,13 @@ env ${GC[@]+"${GC[@]}"} "DM_UE_SHADERS=$X/ue_shaders" "DM_OODLE_LOG_DIR=$X" "$PY
 ts=$((SECONDS - s)); s=$SECONDS
 prog "抽取着色器（S2Arm，${JX} 路，开头已在后台起）"
 wait "$SXP"; sxrc=$?; SXP=
-[ $sxrc = 0 ] || { say "🔴 S2Arm 抽取失败（$X/s2x.log）"; tail -3 "$X/s2x.log"; exit 1; }
+# S2Arm 抽取没跑成（v0.3.1 拿不准不停；#711 Windows MemoryError 原先就停在这里）：只用直连抽取的结果往下走，S2Arm 那份置空、记一笔
+if [ $sxrc != 0 ]; then
+  sw=$(grep -a '\[RED\]\|【红】\|Error' "$X/s2x.log" 2> /dev/null | tail -1 | cut -c1-200); [ -n "$sw" ] || sw=$(grep -a . "$X/s2x.log" 2> /dev/null | tail -1 | cut -c1-200); [ -n "$sw" ] || sw="退出码 ${sxrc}"
+  say "🟡 S2Arm 抽取没跑成（${sw}；$X/s2x.log），只用直连抽取的结果"; tail -3 "$X/s2x.log"
+  mkdir -p "$X/s2x/src" && printf '# 键\t阶段\t来源\t变体号\n' > "$X/s2x/rows.tsv" && printf '# 键\t阶段\t首个来源\t变体号\n' > "$X/s2x/index.tsv" || exit 1
+  printf 'extract\ts2x_failed\t1\t\tS2Arm 抽取没跑成（%s），只用直连抽取的结果\n' "$sw" > "$X/s2x/degrade.tsv"
+fi
 tx=$((SECONDS - sx))
 # 两边合起来 0 支（直连库并集为空，direct_lib.sh 出到最后换库核验「一个键都没出」）：本款这次出不了直连库，按内容缺口退 3、红行写清缺口类别，通用包照出（同上面直连抽取失败）
 nsp=$(grep -cv -e '^#' -e '^package	' "$X/split/shader_map.tsv" 2> /dev/null); nsx=$(grep -cv '^#' "$X/s2x/rows.tsv" 2> /dev/null)
