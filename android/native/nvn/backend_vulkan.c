@@ -28,6 +28,7 @@
 #include <time.h>
 
 #include "nvn_backend.h"
+#include "nvn_plat.h"   // 调试开关与一行日志（上屏段的调试色、GPU 时间读数）
 #include "nvn_vk_format.h"
 #include "nvn_vk_texview.h"
 #include "nvn_vk_bcdec.h"
@@ -160,6 +161,7 @@ struct nvn_gpu_cmd_s {
     uint32_t pass_color_mask;                // 哪些颜色槽有附件（位 i = 槽 i；空位为 0）
     uint32_t pass_cfmt[8], pass_dsfmt, pass_samples;   // 当前通道各槽的 NVN 格式（空位 0）、深度模板格式、采样数（带掩码的清除建管线用）
     VkImageAspectFlags pass_ds_aspect;       // 当前通道深度模板附件有的面（0 = 没有该附件）
+    VkQueryPool tsq;                         // 调试读数 nvk_gputime：段首尾各一个 GPU 时间戳（没开就是空）
     VkCommandBuffer init_cb;                 // 本段提交时带上的「新建图像转 GENERAL」命令缓冲（没有就是空）
     struct nvn_gpu_tex_s **newimg;           // 上面那个命令缓冲转的图像（各持一份引用，段完成时归还；段没执行则放回待转表）
     uint32_t n_newimg;
@@ -652,7 +654,8 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     if (c->dpool) vkDestroyDescriptorPool(g.d, c->dpool, NULL);
     for (uint32_t i = 0; i < c->ndpools_full; i++) vkDestroyDescriptorPool(g.d, c->dpools_full[i], NULL);
     free(c->dpools_full);
-    if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
+    if (c->tsq) vkDestroyQueryPool(g.d, c->tsq, NULL);
+        if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
     free(c->q_used);
     if (c->pool) vkDestroyCommandPool(g.d, c->pool, NULL);   // pool 同时回收 command buffer
     free(c->refs);
@@ -695,6 +698,20 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
             code = rc(r == VK_ERROR_DEVICE_LOST ? NVN_GPU_E_DEVICE : NVN_GPU_E_FAILED);
             why = r == VK_ERROR_DEVICE_LOST ? "设备丢失" : "等待栅栏失败";
         } else {
+            if (s->cmd && s->cmd->tsq && !s->internal) {   // 调试读数：这一段在 GPU 上首尾相隔多久；相邻两段之间 GPU 空了多久
+                static double period; static uint64_t n, sum, mx, last_end, gap, t_first;
+                if (period == 0) { VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(g.phys, &pp); period = pp.limits.timestampPeriod > 0 ? pp.limits.timestampPeriod : 1; }
+                uint64_t ts[2] = {0, 0};
+                if (vkGetQueryPoolResults(vk->d, s->cmd->tsq, 0, 2, sizeof ts, ts, sizeof ts[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ts[1] >= ts[0]) {
+                    uint64_t d = (uint64_t)((double)(ts[1] - ts[0]) * period), b = (uint64_t)((double)ts[0] * period), e = (uint64_t)((double)ts[1] * period);
+                    if (!n) t_first = b;
+                    if (last_end && b > last_end) gap += b - last_end;
+                    last_end = e; n++; sum += d; if (d > mx) mx = d;
+                    if (n == 400) { char line[300]; snprintf(line, sizeof line, "GPU 时间：%llu 段，段内首尾平均 %.2f 毫秒、最长 %.2f 毫秒；这些段前后共 %.0f 毫秒，其中 GPU 在段内 %.0f 毫秒、段与段之间空着 %.0f 毫秒",
+                                                         (unsigned long long)n, (double)sum / 1e6 / (double)n, (double)mx / 1e6, (double)(e - t_first) / 1e6, (double)sum / 1e6, (double)gap / 1e6);
+                                    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line); n = 0; sum = mx = gap = 0; }
+                }
+            }
             // 前面的段已经把时间线打进失败终态时，本段即使执行完也不许发布成功（A4）。
             pthread_mutex_lock(&g_mu);
             int terminal = vk->failed && s->signal >= vk->failed;
@@ -3729,6 +3746,15 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     c->recording = 1;
     c->sticky = rc(NVN_GPU_OK);
     c->q_active = -1;
+    {   // 调试读数（debug 开关 nvk_gputime）：段首尾各写一个 GPU 时间戳，完成时算这一段在 GPU 上从开始到结束用了多久
+        static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_gputime", 0);
+        VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);
+        qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = 2;
+        if (on && vkCreateQueryPool(g.d, &qi, NULL, &c->tsq) == VK_SUCCESS) {
+            vkCmdResetQueryPool(c->cb, c->tsq, 0, 2);
+            vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, c->tsq, 0);
+        } else c->tsq = VK_NULL_HANDLE;
+    }
     if (d && d->occlusion_slots) {   // 查询池：整池重置只能在通道外，放在段的最开头
         VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);
         qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO; qi.queryType = VK_QUERY_TYPE_OCCLUSION; qi.queryCount = d->occlusion_slots;
@@ -3743,6 +3769,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     pthread_mutex_lock(&g_mu);
     if (g.closing) {
         pthread_mutex_unlock(&g_mu);
+        if (c->tsq) vkDestroyQueryPool(g.d, c->tsq, NULL);
         if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
         free(c->q_used);
         vkDestroyCommandPool(g.d, c->pool, NULL);
@@ -3908,6 +3935,7 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
     // 段末：让本段的所有 GPU 写对主机可见（fence 只保证执行完，不保证主机可见）。
     mem_barrier(c, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                 VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
+    if (c->tsq) vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, c->tsq, 1);
     // 结束录制并提交。
     VkResult r = vkEndCommandBuffer(c->cb);
     if (r == VK_SUCCESS) {
