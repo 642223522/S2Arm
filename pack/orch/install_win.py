@@ -183,20 +183,21 @@ def run(a, say=lambda m: print(m, flush=True)):
     return bid
 
 
-def push_pack(udid, bid, pack, devpush=None, full=False, say=lambda m: print(m, flush=True), docs=None, ctx=None, apply_after=False, progress=None, stage=None, pack_root=None):
+def push_pack(udid, bid, pack, devpush=None, full=False, say=lambda m: print(m, flush=True), docs=None, ctx=None, apply_after=False, progress=None, stage=None, pack_root=None, accept_low_space=False):
     """推资源包到已装 App（Windows 没有 devicectl：s2a-devpush 走本机苹果设备服务 usbmuxd + house_arrest + AFC）→ (文件数, 字节数)；失败抛 Fail。
     容器：docs / ctx = 本款设备侧文档根 / 启动上下文，pack_root = 本款设备侧资源包根（pack/jobs/install.py pick_pack_root；不给按 <docs>/资源包）；apply_after = 推完起一次 App 只解包并等解完（同 Mac --apply）"""
     sys.path.insert(0, str(R / 'tools')); import push_pack as P   # Mac / Windows 共用的推资源包 tools/push_pack.py（11-06 两端合一）
     with tempfile.TemporaryDirectory(dir=os.environ.get('S2A_PUSH_TMP')) as w:
         try:
             dev = P.device(udid, bid, w, udid, devpush, 'devpush', say=say, **({'docs': docs, 'ctx': ctx} if docs else {}), pack=pack_root)
-            nb, nt, nbytes = P.run(dev, Path(pack), Path(w), full, say, progress=progress, stage=stage)   # progress(已传, 本次待传总量, 批, 总批)：装机作业转成计数（#266 / #308）；stage：准备子阶段
+            nb, nt, nbytes = P.run(dev, Path(pack), Path(w), full, say, progress=progress, stage=stage, accept_low_space=accept_low_space)   # progress(已传, 本次待传总量, 批, 总批)：装机作业转成计数（#266 / #308）；stage：准备子阶段
             if apply_after:
                 try: P.apply(dev, Path(pack), Path(w), nb, say)
                 except P.NeedsPlayer as e:   # 传输是成功的：带上传了多少，装机作业按提醒收尾（#192）
                     need = Fail(str(e), 0, 'manual_unpack_required'); need.transferred = (nt, nbytes); raise need
         except P.Fail as e:   # 推之前探针写不进 = 锁屏 / 断开：单独报 device_locked（#333）
-            raise Fail(f'推资源包失败：{e}', 1, getattr(e, 'code', None) or 'device_install_failed')
+            code = getattr(e, 'code', None)
+            raise Fail(str(e) if code in ('device_space_low', 'ios_install_no_space') else f'推资源包失败：{e}', 1, code or 'device_install_failed')
     return nt, nbytes
 
 

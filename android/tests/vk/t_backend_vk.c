@@ -154,6 +154,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice d, uint32_t n, const VkF
     if (g_bc_early_n > 0 && n == 1) { g_bc_early_n--; g_bc_early_seen++; return VK_TIMEOUT; }   // 提前返回（#697）：不等、立刻报超时
     return real(d, n, f, all, timeout);
 }
+// 呈现「次优」注入（C199）：呈现照常做，结果改报 VK_SUBOPTIMAL_KHR；g_wsi_rotated 让表面的当前方向报成转了 90 度。
+static int g_wsi_subopt, g_wsi_rotated;
+VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue q, const VkPresentInfoKHR *pi) {
+    PFN_vkQueuePresentKHR real = (PFN_vkQueuePresentKHR)vkGetDeviceProcAddr(g_dev.device, "vkQueuePresentKHR");
+    VkResult r = real(q, pi);
+    return r == VK_SUCCESS && g_wsi_subopt ? VK_SUBOPTIMAL_KHR : r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice pd, VkSurfaceKHR sf, VkSurfaceCapabilitiesKHR *caps) {
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR real = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)vkGetInstanceProcAddr(g_dev.instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    VkResult r = real(pd, sf, caps);
+    if (r == VK_SUCCESS && g_wsi_rotated) caps->currentTransform = VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR;
+    return r;
+}
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice d, VkImageView view, const VkAllocationCallbacks *a) {
     PFN_vkDestroyImageView real = (PFN_vkDestroyImageView)vkGetDeviceProcAddr(d, "vkDestroyImageView");
     if (g_bc_unproven && view) g_bc_early_destroy++;
@@ -829,6 +842,31 @@ static void c71_present(void) {
     g_shown_n = 0;
     r = nvn_gpu_present(sf, &nd, &pd, 46, on_shown, NULL, &e);
     CHECK(OK(r) && g_shown_n == 1, "C71 重建后 present：%d %s", r.code, e.why);
+
+    // C199：呈现回「次优」但表面的方向和尺寸没变（安卓横屏的常态）→ 不重建，下一帧照常取图；表面真转了 → 30 次以内标过期
+    { uint64_t gen0 = nvn_gpu_surface_gen(sf); int bad = 0;
+      g_wsi_subopt = 1;
+      for (int i = 0; i < 40; i++) {
+          nvn_gpu_drawable q; memset(&q, 0, sizeof q);
+          nvn_gpu_rc ra = nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &q, &e);
+          if (!OK(ra)) { bad++; break; }
+          if (!OK(nvn_gpu_present(sf, &q, &pd, 100 + (uint64_t)i, on_shown, NULL, &e))) bad++;
+      }
+      CHECK(!bad && nvn_gpu_surface_gen(sf) == gen0, "C199 表面没变、连着 40 帧「次优」：期望每帧取图和呈现都成、不换代 → 失败 %d 次、代 %llu（原 %llu）：%s", bad, (unsigned long long)nvn_gpu_surface_gen(sf), (unsigned long long)gen0, e.why);
+      g_wsi_rotated = 1;
+      int outdated_at = -1;
+      for (int i = 0; i < 31 && outdated_at < 0; i++) {
+          nvn_gpu_drawable q; memset(&q, 0, sizeof q);
+          nvn_gpu_rc ra = nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &q, &e);
+          if (ra.code == NVN_GPU_E_OUTDATED) { outdated_at = i; break; }
+          if (!OK(ra)) break;
+          nvn_gpu_present(sf, &q, &pd, 200 + (uint64_t)i, on_shown, NULL, &e);
+      }
+      CHECK(outdated_at >= 0, "C199 表面转了 90 度：期望 31 帧以内取图报过期（要重建）→ 没报");
+      g_wsi_subopt = g_wsi_rotated = 0;
+      r = nvn_gpu_surface_rebuild(sf, &e);
+      CHECK(OK(r), "C199 rebuild：%d %s", r.code, e.why);
+    }
 
     nvn_gpu_view_release(view); nvn_gpu_tex_release(tex);
     r = nvn_gpu_surface_detach(sf, 5000000000ull, &e);

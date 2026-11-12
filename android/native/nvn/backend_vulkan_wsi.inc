@@ -23,7 +23,22 @@ struct nvn_gpu_surface_s {
     int held;                                   // 取了没呈现、留作下次取图结果的那张（没有就是 -1）
     uint32_t held_sem;
     uint64_t presents;
+    VkSurfaceTransformFlagBitsKHR built_transform;   // 建这一代交换链时表面的方向与尺寸：判「次优」是不是真的变了（见 wsi_suboptimal_stale）
+    VkExtent2D built_cur;
+    uint32_t subopt_n;
 };
+
+// 取图 / 呈现回「次优」（VK_SUBOPTIMAL_KHR）时要不要重建交换链。
+// 安卓上交换链按不旋转建（preTransform = IDENTITY，由系统的显示引擎去转），横屏时表面的当前方向是转过的，于是**每一次**呈现都回「次优」。
+// 原先见「次优」就标过期、下一帧整条重建——重建前还要等在途的段全做完——等于每帧排空一次显卡再建一次交换链
+// （真机：一局 7800 帧里「建交换链」7579 次；游戏不等显卡的时候，等待原样出现在呈现里 11–14 毫秒）。
+// 「次优」只在表面的方向或尺寸相对建链时真的变了才值得重建；没变就照用。每 30 次「次优」问一次表面（第一次就问）。
+static int wsi_suboptimal_stale(struct nvn_gpu_surface_s *s) {
+    if (s->subopt_n++ % 30) return 0;
+    VkSurfaceCapabilitiesKHR caps;
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g.phys, s->surface, &caps) != VK_SUCCESS) return 1;
+    return caps.currentTransform != s->built_transform || caps.currentExtent.width != s->built_cur.width || caps.currentExtent.height != s->built_cur.height;
+}
 static struct nvn_gpu_surface_s *g_surface;    // 一个后端同时只接一个面
 
 // 取图发过而没被等掉的信号量不能直接销毁（VUID-vkDestroySemaphore-semaphore-05149）：提交一个只等它的空批次把它消费掉
@@ -135,6 +150,7 @@ static nvn_gpu_rc wsi_build(struct nvn_gpu_surface_s *s, nvn_gpu_err *err) {
     for (uint32_t i = 0; i < ni + 1; i++) if (!s->acquire[i] && vkCreateSemaphore(g.d, &si, NULL, &s->acquire[i]) != VK_SUCCESS) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "信号量创建失败"); }
     for (uint32_t i = 0; i < ni; i++) if (!s->rendered[i] && vkCreateSemaphore(g.d, &si, NULL, &s->rendered[i]) != VK_SUCCESS) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "信号量创建失败"); }
     s->held = -1; s->outdated = 0; s->acquire_next = 0; s->acquire_pending = 0;
+    s->built_transform = caps.currentTransform; s->built_cur = caps.currentExtent; s->subopt_n = 0;
     return rc(NVN_GPU_OK);
 }
 
@@ -208,7 +224,7 @@ nvn_gpu_rc nvn_gpu_drawable_acquire(nvn_gpu_surface s, uint64_t timeout_ns, void
         if (r == VK_ERROR_OUT_OF_DATE_KHR) { s->outdated = 1; return fail(err, NVN_GPU_E_OUTDATED, "交换链已过期"); }
         if (r == VK_ERROR_SURFACE_LOST_KHR) { s->gen = 0; return fail(err, NVN_GPU_E_REVOKED, "表面已丢失"); }
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return fail(err, r == VK_ERROR_DEVICE_LOST ? NVN_GPU_E_DEVICE : NVN_GPU_E_UNSUPPORTED, "vkAcquireNextImageKHR 失败（%d）", (int)r);
-        if (r == VK_SUBOPTIMAL_KHR) s->outdated = 2;   // 这张还能用，呈现之后要重建
+        if (r == VK_SUBOPTIMAL_KHR && wsi_suboptimal_stale(s)) s->outdated = 2;   // 表面真变了：这张还能用，呈现之后要重建
         s->acquire_pending |= 1u << sem;
         s->acquire_next = (s->acquire_next + 1) % (s->nimages + 1);
     }
@@ -324,7 +340,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     s->presents++;
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
         shown.status = NVN_GPU_SHOWN_UNKNOWN;   // 交给了呈现引擎，但没有实际上屏时刻（没有 CAP_SHOWN_TIME）
-        if (r == VK_SUBOPTIMAL_KHR || s->outdated == 2) s->outdated = 1;
+        if ((r == VK_SUBOPTIMAL_KHR && wsi_suboptimal_stale(s)) || s->outdated == 2) s->outdated = 1;
     } else if (r == VK_ERROR_OUT_OF_DATE_KHR) { s->outdated = 1; out = fail(err, NVN_GPU_E_OUTDATED, "呈现时交换链已过期"); }
     else if (r == VK_ERROR_SURFACE_LOST_KHR) { s->gen = 0; out = fail(err, NVN_GPU_E_REVOKED, "表面已丢失"); }
     else out = fail(err, r == VK_ERROR_DEVICE_LOST ? NVN_GPU_E_DEVICE : NVN_GPU_E_UNSUPPORTED, "vkQueuePresentKHR 失败（%d）", (int)r);
