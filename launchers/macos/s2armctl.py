@@ -788,7 +788,7 @@ def main():
 def simple_body(cmd, rest):
     if cmd == 'install':
         r = rest
-        return {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {}), **({'acceptDropped': True} if '--accept-dropped' in r else {}), **({'acceptNoBackup': True} if '--accept-no-backup' in r else {})}
+        return {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {}), **({'acceptDropped': True} if '--accept-dropped' in r else {}), **({'acceptNoBackup': True} if '--accept-no-backup' in r else {}), **({'acceptStale': True} if '--accept-stale' in r else {})}
     raise KeyError(cmd)
 
 def space_flag(args): return {'spaceOverride': True} if '--space-override' in args else {}
