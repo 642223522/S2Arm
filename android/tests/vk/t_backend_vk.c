@@ -32,6 +32,7 @@ VkResult nvn_plat_vk_surface_create(VkInstance instance, void *native, VkSurface
 }
 int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native; *w = 320; *h = 180; return 1; }
 int nvn_plat_flag(const char *name, int dflt) { (void)name; return dflt; }
+void nvn_plat_log(int level, const char *cls, const char *text) { (void)level; printf("[%s] %s\n", cls ? cls : "", text ? text : ""); }
 static int g_tri_origin_ul;   // 1 = 按 NVN 窗口原点在左上画（视口翻转）：期望上下对调。缺省 0 = 原点在左下（Vulkan 的自然方向）
 
 // C66 only: model a strict driver enforcing maxSets=64; all other calls
