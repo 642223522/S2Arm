@@ -55,7 +55,7 @@ enum { PROF_RING = 1 << 16 };
 static uintptr_t g_prof_ring[PROF_RING]; static _Atomic uint64_t g_prof_w;
 static void prof_sig(int sig, siginfo_t *si, void *uc) {
     (void)sig; (void)si;
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)   // 苹果芯片的宿主上也会编这个文件（宿主单测）：那边的信号上下文是另一种布局，取不到就记 0
     uintptr_t pc = (uintptr_t)((ucontext_t *)uc)->uc_mcontext.pc;
 #else
     uintptr_t pc = 0; (void)uc;
