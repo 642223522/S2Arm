@@ -139,6 +139,20 @@ namespace S2A.Services.Tests
             npads.SupportedStyleSets = supportedBefore;
             npads.Configure();
 
+            // ⑥f 合入时补：Joy-Con 2 连着、游戏只声明一代样式（Switch 1 游戏）→ 样式值保持一代原样 JoyDual（0x4），不带它不认识的 bit 12；
+            //   游戏随后声明加上 bit 12 → 重配一遍、样式 = JoyDual | bit 12（0x1004）
+            npads.SupportedStyleSets = ControllerType.Handheld | ControllerType.JoyconPair;
+            npads.Configure(new ControllerConfig { Player = PlayerIndex.Player1, Type = ControllerType.JoyconPair });
+            npads.SetJoycon2(true);
+            uint oldGame = (uint)npads.StyleOf(PlayerIndex.Player1);
+            npads.SupportedStyleSets = ControllerType.Handheld | ControllerType.JoyconPair | (ControllerType)(1 << 12);
+            uint newGame = (uint)npads.StyleOf(PlayerIndex.Player1);
+            npads.SetJoycon2(false);
+            Check("NpadJcms ⑥f Joy-Con 2 连着：只声明一代样式的游戏看到一代原样；声明了 bit 12 才带上",
+                "样式 0x4 → 0x1004", $"样式 0x{oldGame:X} → 0x{newGame:X}");
+            npads.SupportedStyleSets = supportedBefore;
+            npads.Configure();
+
             // ⑦
             long red0 = Red.Total;
             Reply fin = Call(hid, Msg.Cmif(3111, Bytes(1L)));
