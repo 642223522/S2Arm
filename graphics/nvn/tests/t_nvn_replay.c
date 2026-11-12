@@ -974,12 +974,12 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     p_viewports *vp = put(&s, OP_VIEWPORTS, sizeof *vp); vp->n = 1; vp->v[0][2] = 64; vp->v[0][3] = 36;
     p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 6; di->base_vertex = 3; di->instances = 0; di->ibuf = base + 3 * PG + 8;
     di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG + 8;   // 第二笔：什么都没变
-    di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 8; di->itype = 1; di->count = 4; di->ibuf = base + 3 * PG;        // 四边形带：还没接
+    di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 0xa; di->itype = 1; di->count = 4; di->ibuf = base + 3 * PG;      // 邻接线：还没接
     p_draw *dn = put(&s, OP_DRAW, sizeof *dn); dn->prim = 5; dn->first = 2; dn->count = 4; dn->instances = 3;            // 不带索引的条带
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 3 && g_npd == 1 && g_pd[0].color[0].load == NVN_GPU_LOAD_LOAD);   // 三笔画在同一个通道里；没有清除 → LOAD
-    CHECK(nvn_unimpl_count("draw", "prim_8") == 1);
+    CHECK(nvn_unimpl_count("draw", "prim_10") == 1);
     CHECK(g_resolves == 2 && g_pipe_gets == 2);          // 第一笔取一次；第二笔没变不取；条带换了图元再取一次
     CHECK(g_last_req.prim == 5 && g_last_req.rt_count == 1 && g_last_req.rt_format[0] == NVN_FORMAT_RGBA8);
     CHECK(g_last_pdesc.st[0].sh == &g_fsh[0] && g_last_pdesc.st[1].sh == &g_fsh[1] && g_last_pdesc.cfmt[0] == NVN_FORMAT_RGBA8 && g_last_pdesc.dfmt == 0);
@@ -1036,6 +1036,37 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
       CHECK(g_gdraws == g0 + 2 && g_last_da.count == 12 && g_last_da.itype == 2 && g_last_da.base_vertex == 2 && g_last_pdesc.prim_restart == 0);
       { const uint32_t exp2[12] = {5, 6, 7, 5, 7, 8, 20, 21, 22, 20, 22, 23}; CHECK(!memcmp(g_arena + g_last_da.ioff, exp2, sizeof exp2)); }
       nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); }
+    // 线环（2）、四边形带（8）、多边形（9）（#710）：期望的图元号与索引序列都是按定义手算的，不跑被测的展开函数
+    { int g0 = g_gdraws; stream q = {0}; p_prim_restart *pr;
+      // ① 线环、不带索引、3 个点：线段列表 (0,1)(1,2)(2,0)，首点进 base vertex
+      dn = put(&q, OP_DRAW, sizeof *dn); dn->prim = 2; dn->first = 4; dn->count = 3; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 1 && g_last_da.prim == 1 && g_last_pdesc.prim == 1 && g_last_pdesc.prim_restart == 0 && g_last_da.itype == 2 && g_last_da.ibuf == &g_arena_buf && g_last_da.base_vertex == 4 && g_last_da.count == 6);
+      { const uint32_t e[6] = {0, 1, 1, 2, 2, 0}; CHECK(g_last_da.count == 6 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); }
+      // ② 线环、带索引 + 重启：三段 [3,4,5] [7] [9,10]——第一段闭合成 3 条线，单点段不画，两点段来回各一条
+      uint16_t li[8] = {3, 4, 5, 0xffff, 7, 0xffff, 9, 10}; memcpy(g_pmem + 3 * PG + 1024, li, sizeof li);
+      q.n = 0; pr = put(&q, OP_PRIM_RESTART, sizeof *pr); pr->on = 1; pr->index = 0xffff;
+      di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 2; di->itype = 1; di->count = 8; di->base_vertex = 1; di->ibuf = base + 3 * PG + 1024; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 2 && g_last_da.prim == 1 && g_last_pdesc.prim_restart == 0 && g_last_da.itype == 2 && g_last_da.base_vertex == 1);
+      { const uint32_t e[10] = {3, 4, 4, 5, 5, 3, 9, 10, 10, 9}; CHECK(g_last_da.count == 10 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); }
+      // ③ 四边形带、带索引 + 重启：两段 [0..5]（两个四边形）与 [10..14]（一个四边形，零头 1 个丢掉），按三角带的顶点序展开成三角形列表
+      uint16_t si[12] = {0, 1, 2, 3, 4, 5, 0xffff, 10, 11, 12, 13, 14}; memcpy(g_pmem + 3 * PG + 1280, si, sizeof si);
+      q.n = 0; di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 8; di->itype = 1; di->count = 12; di->ibuf = base + 3 * PG + 1280; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 3 && g_last_da.prim == 4 && g_last_pdesc.prim == 4 && g_last_pdesc.prim_restart == 0 && g_last_da.itype == 2);
+      { const uint32_t e[18] = {0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 10, 11, 12, 11, 13, 12}; CHECK(g_last_da.count == 18 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); }
+      // ④ 多边形、带索引 + 重启：当三角扇画，索引与重启原样交给后端
+      q.n = 0; di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 9; di->itype = 1; di->count = 5; di->ibuf = base + 3 * PG + 1280; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 4 && g_last_da.prim == 6 && g_last_pdesc.prim == 6 && g_last_pdesc.prim_restart == 1 && g_last_da.itype == 1 && g_last_da.count == 5 && g_last_da.ioff == 3 * PG + 1280);
+      // ⑤ 关掉重启：四边形带不带索引、7 个点 → 三角带 6 个点（零头 1 个丢掉，不多画一个三角形），不展开
+      q.n = 0; pr = put(&q, OP_PRIM_RESTART, sizeof *pr); pr->on = 0;
+      dn = put(&q, OP_DRAW, sizeof *dn); dn->prim = 8; dn->first = 2; dn->count = 7; dn->instances = 2; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 5 && g_last_da.prim == 5 && g_last_pdesc.prim == 5 && g_last_da.ibuf == NULL && g_last_da.first == 2 && g_last_da.count == 6 && g_last_da.instances == 2);
+      // ⑥ 多边形不带索引：三角扇，首点与实例原样传
+      q.n = 0; dn = put(&q, OP_DRAW, sizeof *dn); dn->prim = 9; dn->first = 3; dn->count = 5; dn->instances = 4; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 6 && g_last_da.prim == 6 && g_last_da.ibuf == NULL && g_last_da.first == 3 && g_last_da.count == 5 && g_last_da.instances == 4);
+      // ⑦ 画不出东西的：四边形带不足 4 个点、线环只有 1 个点——不发绘制，也不记账
+      q.n = 0; dn = put(&q, OP_DRAW, sizeof *dn); dn->prim = 8; dn->count = 3;
+      dn = put(&q, OP_DRAW, sizeof *dn); dn->prim = 2; dn->count = 1; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 6 && nvn_unimpl_count("draw", "prim_2") == 0 && nvn_unimpl_count("draw", "prim_8") == 0 && nvn_unimpl_count("draw", "prim_9") == 0); }
     // 贴图数组（着色器按运行时下标取句柄）：数组第 k 项 = 驱动句柄表第 k 个 8 字节项 = 贴图槽 k − 4；前 4 项与没绑的槽读作池里的第 0 项
     { tex_t tb = mk_tex(83, 0x8000, NVN_FORMAT_RGBA8, 4, 4, 1, 0); nvn_be_reg_tex(0, &tb, NULL); nvn_be_reg_samp(0, &sp);   // 池基号在这份用例里是 0：池的第 0 项 = 贴图 0 / 采样器 0
       g_fprog.ent[1][0].count = 10; g_fprog.ent[1][0].src_reg = 0;       // 片元阶段那一项改成从句柄表第 0 项起、10 项的数组
@@ -1077,8 +1108,8 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 9);                            // 着色器取不到：跳过
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 12 && sk_n == 3);
+    CHECK(g_gdraws == d0 + 15);                           // 着色器取不到：跳过（前面线环 / 四边形带 / 多边形的用例画了 6 笔）
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 18 && sk_n == 3);
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
