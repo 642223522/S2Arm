@@ -15,9 +15,9 @@
   - 子作业的事件原样转发到标准输出（type child，step = {gameId, platform, task}，event = 子作业那条原样），不进本作业的事件记录（子作业自己有）；
     每步开始 / 结束各一条 step / stepEnded 事件（step = {gameId, platform, task, index, count}，stepEnded 另带 outcome），进记录
   - 取消：本作业收到 TERM → Context.run 把 TERM 转给子作业的进程组、等它收尾 → 正在出的和没开始的都记「已取消」，已出好的保留 → 本作业以 cancelled 结束
-  - 磁盘满（batch.PAUSE_CODES）：记账后批次暂停 → 不起下一步，本作业以独立终态 paused 结束（11-11 总指挥定：不并进 completed，前端只认机读字段）
+  - 磁盘满（batch.PAUSE_CODES）：记账后批次暂停 → 不起下一步，本作业以独立终态 paused 结束（不并进 completed，前端只认机读字段）
   - 启动器退出（请求带 parentPid，main.py supervise 见它没了）：同样以 paused 结束，pausedReason = launcher_exit；正在出的那步重新排队（batch.recover），
-    没开始的不动、已出好的保留，重开启动器起 source=batch 的编排就只出剩下的（11-11 总指挥定：退出即停，不在后台悄悄跑）
+    没开始的不动、已出好的保留，重开启动器起 source=batch 的编排就只出剩下的（退出即停，不在后台悄悄跑）
 同一时刻只许一个编排在跑（数据目录下 export.lock，filelock 与库锁同一实现）：第二个直接报 library_busy 并说清占着的是谁。
 """
 from __future__ import annotations
