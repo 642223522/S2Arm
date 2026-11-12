@@ -697,6 +697,32 @@ def _work_root_of(c, library):
     return c.private if library.is_relative_to(c.private) else library / ".s2arm-work"
 
 
+def _rename_library_path(c, source, target):
+    """同盘搬库的一次改名（外部 PR #363）：Windows 上资源管理器 / 杀软 / 下载工具开着里面的文件时改名报 WinError 5 / 32，扫完会放开——
+    按 pack/orch/roots.rename_dir 同一套退避（DIR_RENAME_RETRIES，合计约 1 分钟）重试；等的时候在界面上说在等什么、等了多久，能取消（不静默卡住）。
+    仍不行报人话，原游戏库保留在原位置。其它错误（盘满等）立即报"""
+    from pack.orch.roots import DIR_RENAME_RETRIES
+    delays = DIR_RENAME_RETRIES if os.name == "nt" else ()
+    waited = 0.0
+    for delay in (*delays, None):
+        try:
+            os.rename(source, target)
+            return
+        except PermissionError as error:
+            if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32):
+                raise
+            if delay is None:
+                raise Failure(
+                    f"Windows 重试约 1 分钟后，游戏库项目“{Path(source).name}”仍被占用，无法改名。"
+                    "请关闭正在访问游戏库的资源管理器窗口、杀毒扫描或下载工具后重试；原游戏库仍保留在原位置。",
+                    code="library_move_failed",
+                ) from error
+            c.emit(message=f"游戏库里的「{Path(source).name}」正被别的程序占用（资源管理器、杀毒扫描或下载工具），等它放开再搬（已等 {int(waited)} 秒）")
+            c.check()
+            time.sleep(delay)
+            waited += delay
+
+
 def _move_pairs(c, source):
     """要搬的 (旧, 新)：游戏库里的每一项，加上放在库外的工作目录（缺省游戏库在私有目录里时，着色器缓存在私有目录的 cache / run 下）。marker 排最后：有它才算搬完"""
     old_work, new_work = _work_root_of(c, source), _work_root_of(c, c.library)
@@ -751,7 +777,7 @@ def move_library(c, source):
             staged = {a: stage / str(n) for n, (a, _) in enumerate(cross)}
             for a, b in pairs:
                 b.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(staged.get(a, a), b)
+                _rename_library_path(c, staged.get(a, a), b)
                 done.append((a, b))
             for root in (c.library, _work_root_of(c, c.library)):
                 _retarget_links(root, source, c.library)
@@ -762,13 +788,13 @@ def move_library(c, source):
                 if a in staged:
                     _discard(b)
                 else:
-                    os.rename(b, a)
+                    _rename_library_path(c, b, a)
             _discard(stage)
             with contextlib.suppress(OSError):
                 (c.library / ".s2arm-work").rmdir()   # 回滚后别留下搬的时候建的空目录
             raise
         _discard(stage)
-        for a, _ in cross:
+        for a in staged:
             try:
                 _discard(a)
             except OSError as error:
