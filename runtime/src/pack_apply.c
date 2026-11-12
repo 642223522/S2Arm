@@ -35,7 +35,7 @@ static int mkdirs(char *p) {   // 建 p 的各级父目录（p 是文件路径�
 static uint64_t oct(const char *s, int n) { uint64_t v = 0; for (int i = 0; i < n && s[i]; i++) if (s[i] >= '0' && s[i] <= '7') v = v * 8 + (uint64_t)(s[i] - '0'); return v; }
 static int safe(const char *p) { return *p && *p != '/' && !strstr(p, "../") && strcmp(p, "..") && !(strlen(p) >= 3 && !strcmp(p + strlen(p) - 3, "/..")); }
 
-// 解一个 tar 到 root；返回 0 成功，负数 = 失败码（-1 读不了 -2 头坏 -3 路径不安全 -4 写失败 -5 条目类型不支持）；*nf / *nb 累计文件数与字节
+// 解一个 tar 到 root；返回 0 成功，负数 = 失败码（-1 读不了 -2 头坏 -3 路径不安全 -4 写失败；认不出的条目类型跳过、不算失败）；*nf / *nb 累计文件数与字节
 int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb) {
     g_untar_trunc = 0; g_untar_err[0] = 0;   // 每次从空现场开始：不写现场的失败不能贴上一次的（iOS 装机剃刀 #10）
     int fd = open(tar, O_RDONLY); if (fd < 0) { untar_err("打开包", tar, errno); return -1; }
@@ -74,7 +74,13 @@ int s2a_untar(const char *tar, const char *root, unsigned *nf, uint64_t *nb) {
         pax_path[0] = 0; pax_size = (uint64_t)-1;
         if (!strncmp(name, "./", 2)) memmove(name, name + 2, strlen(name + 2) + 1);
         if (type == '5') { if (!*name) continue; if (!safe(name)) { untar_err("路径不安全", name, EINVAL); rc = -3; break; } char p[8192]; snprintf(p, sizeof p, "%s/%s/x", root, name); if (mkdirs(p)) { rc = -4; break; } continue; }
-        if (type != '0' && type != 0) { LOG("【红】解包：%s 条目类型 %c 不支持", name, type); untar_err("条目类型不支持", name, EINVAL); rc = -5; break; }
+        // 普通文件 / 目录 / pax 头以外的条目（链接、设备等）：执行器打的包里没有，v0.3.1 起认不出的不挡整次解包——跳过它的数据、记一笔，
+        //   真缺了什么由后面 index.tsv 核对按缺文件 / 部分可玩处理（原先返回 -5，整个资源包「安装没完成」）
+        if (type != '0' && type != 0) {
+            LOG("【黄】解包：%s 条目类型 %c 认不出，跳过（%llu 字节）", name, type, (unsigned long long)size);
+            if (lseek(fd, (off_t)(size + pad), SEEK_CUR) < 0) { untar_err("跳过认不出的条目", name, errno); rc = -2; break; }
+            continue;
+        }
         if (!safe(name)) { LOG("【红】解包：路径不安全 %s", name); untar_err("路径不安全", name, EINVAL); rc = -3; break; }
         char p[8192], tmp[8300]; snprintf(p, sizeof p, "%s/%s", root, name); snprintf(tmp, sizeof tmp, "%s.part", p);
         if (mkdirs(p)) { rc = -4; break; }
