@@ -206,6 +206,25 @@ static void guest_file_map(void);
 static int g_gfile_pending; static uint64_t g_gfile_need, g_gfile_avail;
 static void guest_file_attach_(void);
 static void guest_file_attach(void) { g_attach_phase = 1; guest_file_attach_(); g_attach_phase = 0; }
+// 测试开关 S2A_TEST_BALLAST_MB=<N>（11-12，小内存机型问题在大内存设备上复现用；缺省不设 = 不占）：模拟给 App 少 N MB 内存的机型（#807 6 GB 机型约 4 GB）。
+//   分两步：① 起局判文件后备时，离单进程上限的余量先扣掉 N MB（判定结果同小内存机型）；② 布局排完、装游戏模块之前（host_main.c load_session_modules）
+//   才真占住并逐页写满 N MB 匿名内存、整局不还（实占与系统可用内存都少这么多，内存吃紧时内核换出文件后备脏页的时机也接近）。
+//   不在起局时就占：那时地址窗口刚占好、布局还没排，几 GB 匿名映射会挤掉布局要的地址（11-12 实测：报「地址窗口连模块段都放不下」）。
+//   只认环境变量，玩家从图标启动不带它
+static uint64_t test_ballast_bytes(void) { const char *e = getenv("S2A_TEST_BALLAST_MB"); return e && *e ? strtoull(e, NULL, 10) << 20 : 0; }
+void s2a_test_ballast_commit(void) {
+    static int done; uint64_t n = test_ballast_bytes(); if (!n || done++) return;
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); uint8_t *p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED) { LOG("【红】测试压舱：占 %llu MB 匿名内存失败（errno=%d）", (unsigned long long)(n >> 20), errno); return; }
+    for (uint64_t o = 0; o < n; o += 16384) p[o] = (uint8_t)(o >> 14 | 1);   // 每页写一字节：页真提交、算进实占（全零页会被压缩，写非零）
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+    uint64_t room = os_proc_available_memory();
+#else
+    uint64_t room = 0;
+#endif
+    LOG("【黄】测试压舱：装模块前占住并写满 %llu MB 匿名内存（%.1f 秒），此刻离单进程内存上限还剩 %llu MB（S2A_TEST_BALLAST_MB，只给测试局）",
+        (unsigned long long)(n >> 20), (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9, (unsigned long long)(room >> 20));
+}
 static void guest_file_attach_(void) {
     // 池：s2a_app_pool（layout.c；Switch 3285 MiB、Switch 2 9 GiB）。此刻已定：上一步 need_from_npdm → s2a_npdm_window_need → npdm_read 认出 Switch 2 时就设了 9 GiB。
     //   它是游戏能向系统要的内存总量（SetHeapSize 上限 = 池 − 映像），客体脏页最多涨到这么多；窗口跨度（几十 GB 地址）不是内存，堆区随池定，game.tsv 的 app_pool 是图形层的、要到图形初始化才读。
@@ -214,9 +233,10 @@ static void guest_file_attach_(void) {
     uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool"); uint64_t pool = poolf ? poolf() : 0;
     if (g_ctr && g_ctr_pool > pool) pool = g_ctr_pool;   // 多款容器：不按缺省池判，否则 Switch 2 款进局后内存超单进程上限被杀（#103）
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
-    uint64_t room = os_proc_available_memory();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
+    uint64_t room = os_proc_available_memory(), ballast = test_ballast_bytes();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
     // 宿主开销估计缺省 2560 MB（DOOM Eternal 实测约 2258 MB，往上取整）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
     // 宿主开销估计缺省 2048 MB（11-07 真机实测分布，见 s2a_guest_file_wanted3）、余量 512 MB；S2A_GUEST_FILE_HOST_MB / S2A_GUEST_FILE_MARGIN_MB 可改
+    if (ballast) { room = room > ballast ? room - ballast : 1; LOG("【黄】测试压舱：文件后备判定按余量少 %llu MB 算（S2A_TEST_BALLAST_MB，装模块前才真占）", (unsigned long long)(ballast >> 20)); }
     uint64_t host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen();
     int died = room && s2a_guest_run_died();
     int on = s2a_guest_file_wanted4(e, pool, room, seen, host, margin, died);
