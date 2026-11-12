@@ -42,7 +42,7 @@ public sealed partial class EnvironmentWindow
             {
                 var problem = g.Missing.Count > 0 ? T("library.requirements") + " · " + string.Join(" / ", g.Missing)
                     : g.NeedsKeys && catalog?.KeysReady != true ? T("batch.keys") : null;
-                return new BatchRow(g.Id, g.Name, problem is null && exportIos, problem);
+                return new BatchRow(g.Id, g.Name, exportIos, problem);   // 缺东西的款也照勾（只写原因，v0.3.1 不预先挡）：作业层核实，真缺就这一款失败、不挡后面
             }).ToList();
         batchUnrecognized = unrecognized;
         batchState = null; batchError = "";   // 新清单出包时 create 会盖掉上一批；没出包就退出时重读回来（CloseBatchDraft）
@@ -87,7 +87,7 @@ public sealed partial class EnvironmentWindow
     private void RenderBatchDraft(StackPanel content)
     {
         if (batchDraft.FirstOrDefault() is { } first && BatchGame(first.Id) is { } firstGame) content.Children.Add(LocationRow(firstGame, "batch.location"));
-        var ok = batchDraft.Where(r => r.Problem is null).ToList();
+        var ok = batchDraft.ToList();
         var head = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), ColumnSpacing = 10, Margin = new Thickness(14, 6, 14, 0) };
         head.Children.Add(Muted(T("batch.game")));
         var allIphone = Action("batch.all", () =>
@@ -114,12 +114,15 @@ public sealed partial class EnvironmentWindow
             line.Children.Add(BatchCover(row.Id));
             var name = Label(row.Name, 15); name.VerticalAlignment = VerticalAlignment.Center; name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis;
             Grid.SetColumn(name, 1); line.Children.Add(name);
-            if (row.Problem is { } problem)
+            if (row.Problem is { } problem)   // 只提示、不挡（v0.3.1）：原因写在名字下面，照样能勾
             {
-                var why = Muted(problem); why.Foreground = Brush.Parse("#FFC857"); why.VerticalAlignment = VerticalAlignment.Center; why.MaxWidth = 360;
-                Grid.SetColumn(why, 2); Grid.SetColumnSpan(why, 2); line.Children.Add(why);
+                line.Children.Remove(name);
+                var named = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+                named.Children.Add(name);
+                var why = Muted(problem); why.Foreground = Brush.Parse("#FFC857"); why.TextWrapping = TextWrapping.Wrap;
+                named.Children.Add(why);
+                Grid.SetColumn(named, 1); line.Children.Add(named);
             }
-            else
             {
                 var iphone = new CheckBox { Content = "iPhone", IsChecked = row.Iphone, IsEnabled = !batchRunning, MinWidth = 96, VerticalAlignment = VerticalAlignment.Center };
                 AutomationId(iphone, "batch.iphone." + row.Id);
@@ -209,7 +212,7 @@ public sealed partial class EnvironmentWindow
         void Put(Control c, int column) { Grid.SetColumn(c, column); inner.Children.Add(c); }
         if (batchState is null)
         {
-            var count = batchDraft.Count(r => r.Problem is null && r.Iphone);
+            var count = batchDraft.Count(r => r.Iphone);
             var start = Primary(T("batch.start").Replace("{0}", count.ToString()), () => _ = StartBatchAsync(), count > 0 && !PackBusy && !libraryBusy && !batchRunning);
             AutomationId(start, "batch.start");
             Put(start, 3);
@@ -271,8 +274,8 @@ public sealed partial class EnvironmentWindow
         batchInstallAfter = installAfter;   // 每批自己定：界面 / 控制口建的批不接着装
         var control = batchControlPlatforms; batchControlPlatforms = null;
         var entries = control is null
-            ? batchDraft.Where(r => r.Problem is null && r.Iphone).Select(r => new BatchClient.Entry(r.Id, r.Name, ["iphone"])).ToList()
-            : batchDraft.Where(r => r.Problem is null && control.ContainsKey(r.Id)).Select(r => new BatchClient.Entry(r.Id, r.Name, control[r.Id])).ToList();
+            ? batchDraft.Where(r => r.Iphone).Select(r => new BatchClient.Entry(r.Id, r.Name, ["iphone"])).ToList()
+            : batchDraft.Where(r => control.ContainsKey(r.Id)).Select(r => new BatchClient.Entry(r.Id, r.Name, control[r.Id])).ToList();
         if (entries.Count == 0) return;
         var location = locationsFor == batchDraft[0].Id && exportLocation.Length > 0 ? exportLocation : null;
         if (!await BatchRunAsync("create", ["--json", BatchClient.CreateJson(entries, location)]) || batchState is null) { Render(); return; }

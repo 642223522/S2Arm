@@ -54,6 +54,9 @@ enum ExportBlocker: Equatable {
     case noPlatform, game(String), keys, busy
     /// 这款已在出包或排队（同一款再点一次 / 控制口重发）：原先静默当成功、什么也不做，控制口回 ok 却没建任务
     case alreadyQueued
+    /// 挡不挡开始：缺文件 / 缺 keys 只提示、不挡（v0.3.1 维护者「拿不准不停」）——这两项来自游戏库读数，可能是旧的（刚插上盘、刚导入 keys），
+    ///   出包作业开头自己核（library.requirement_errors：找不到原件 input_missing、缺 prod.keys keys_missing），真缺才停、说清怎么办
+    var stopsStart: Bool { switch self { case .game, .keys: return false; default: return true } }
 }
 
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。同一时刻只有一个（同旧启动器「执行位」互斥）。
@@ -395,13 +398,23 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 换游戏库：setup 作业（作业层拦非 APFS、云盘同步目录、非空的生文件夹）→ 写回偏好、重读游戏库、重新检查环境。
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
-    func changeLibrary(to url: URL, move: Bool = false) {
+    /// 换游戏库时作业层报 library_in_cloud（选的文件夹在云盘同步目录里）：问玩家「仍然继续 / 先不」，同意带 acceptCloud 重发（v0.3.1：认得出的风险让玩家确认）
+    struct LibraryConfirm: Equatable { let url: URL; let move: Bool; let message: String }
+    @Published var libraryConfirm: LibraryConfirm?
+
+    func changeLibrary(to url: URL, move: Bool = false, acceptCloud: Bool = false) {
         guard !busy else { return }
         showEnvironment = false
         failAction(nil, game: nil)
         start(.setupLibrary, game: nil, name: url.lastPathComponent) { [weak self] sink in
             guard let self else { return nil }
-            let library = try await self.provider.library.change(to: url, moveFrom: move ? self.provider.client.environment.library : nil, events: sink)
+            let library: String
+            do {
+                library = try await self.provider.library.change(to: url, moveFrom: move ? self.provider.client.environment.library : nil, acceptCloud: acceptCloud, events: sink)
+            } catch let f as JobFailure where !acceptCloud && f.code == "library_in_cloud" {
+                self.libraryConfirm = LibraryConfirm(url: url, move: move, message: f.errorDescription ?? "")
+                throw f
+            }
             self.games = []; self.selectedID = nil; self.libraryLoaded = false
             self.checks = (try? await self.provider.environment.check()) ?? self.checks
             return library
@@ -619,7 +632,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// platforms 不给 = 出包页勾的；本机控制口（AI 操作）按命令给一个平台，deviceTarget 只用于 iPhone 出包（提示地址窗口）。
     @discardableResult
     func export(_ game: GameSummary, platforms chosen: [ExportPlatform]? = nil, deviceTarget: [String: Any]? = nil, spaceOverride: Bool = false, location: String? = nil) -> ExportBlocker? {
-        if let blocker = exportBlocker(game, platforms: chosen) { return blocker }
+        if let blocker = exportBlocker(game, platforms: chosen), blocker.stopsStart { return blocker }
         let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location)
         exportFor = nil
         welcomeGameID = nil

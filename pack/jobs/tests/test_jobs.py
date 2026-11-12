@@ -103,6 +103,10 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(self.c.env().get("S2A_PATCH_DIR"), str(res / "Patches"))
         self.assertNotIn("S2A_PATCH_DIR", build.runtime_env(self.c, self.game(), self.root / "runtime"))
 
+    def player_keys(self):
+        """玩家已导入 prod.keys（加密原件出包要它，library.require_game 开头核）"""
+        self.c.keys.parent.mkdir(parents=True, exist_ok=True); self.c.keys.write_text("header_key = " + "0" * 64 + "\n")
+
     def game(self, tid="0100000000000000", packages=None):
         return dict(id=tid, name="Test title", display="1.0", hidden=False, packages=packages or [])
 
@@ -433,6 +437,7 @@ class JobsTests(unittest.TestCase):
     @shared_extract
     def test_ipa_calls_oneclick_with_player_keys_fonts_and_ios(self):
         # 打 iPhone 包：没 SDK → 提示一键安装；有 SDK → 调引擎里的 oneclick.sh，带应用字体、iOS 平台、出到这款文件夹的 build/ios；交付件搬进 image/ios，单款 ipa 不留
+        self.player_keys()   # 加密原件出包开头要 prod.keys（library.require_game，v0.3.1）
         import unittest.mock as um, ipa
         base = self.package("base")
         self.catalogue([self.game(packages=[base])])
@@ -507,6 +512,7 @@ class JobsTests(unittest.TestCase):
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
         # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
+        self.player_keys()   # 加密原件出包开头要 prod.keys（library.require_game，v0.3.1）
         import unittest.mock as um, ipa
         base = self.package("base"); self.catalogue([self.game(packages=[base])])
         self.c.r.update(gameId="0100000000000000", target={"gpuArch": "applegpu_g18p", "os": 27})
@@ -603,6 +609,7 @@ class JobsTests(unittest.TestCase):
     @shared_extract
     def test_ipa_aoc_missing_becomes_warning(self):
         # 审计 P1-74：追加内容没解出，本体照常出（不挡），但结果事件的 aoc_missing 要成一条黄字 aoc_missing，任务记「完成（有警告）」、完成页不画完成章
+        self.player_keys()   # 加密原件出包开头要 prod.keys（library.require_game，v0.3.1）
         import unittest.mock as um, ipa
         base = self.package("base"); self.catalogue([self.game(packages=[base])])
         self.c.r.update(gameId="0100000000000000", target={"gpuArch": "applegpu_g18p", "os": 27})
@@ -687,6 +694,7 @@ class JobsTests(unittest.TestCase):
 
     @shared_extract
     def test_dotnet_wrapper_fallback_and_ipa_environment(self):
+        self.player_keys()   # 加密原件出包开头要 prod.keys（library.require_game，v0.3.1）
         import unittest.mock as um, ipa, shlex
         home = self.root / "user home"; home.mkdir()
         sdk_root = self.root / "actual SDK root"
@@ -1009,6 +1017,7 @@ class JobsTests(unittest.TestCase):
 
     def test_mac_prepare_space_rejection_keeps_previous_runtime(self):
         # Mac 打包：空间不够在建缓存 / 解包之前就拦；上次成功的运行版本与 current 链接原样保留，也不发计划
+        self.player_keys()   # 加密原件出包开头要 prod.keys（library.require_game，v0.3.1）
         import collections
         import unittest.mock as um
         base = dict(self.package("base"), size=1 << 30)
@@ -1117,6 +1126,18 @@ class JobsTests(unittest.TestCase):
         with self.assertRaises(Failure):
             library.setup(c)
         self.assertEqual((other / ".nsmac-library.json").read_text(), "original")
+
+    def test_export_checks_keys_at_start_not_in_catalog(self):
+        # v0.3.1：前端不再按 keysReady 置灰出包，出包开头（require_game）当场核：加密原件、没有 prod.keys → keys_missing 停；
+        #   导入 keys 后同一款照常过这一关；游戏库读数里的「缺文件」（requirements）不含 keys 这一条
+        game = self.game(packages=[self.package()])
+        self.c.keys.unlink(missing_ok=True)
+        self.assertEqual(library.requirements(self.c, game), [])
+        with self.assertRaises(Failure) as got:
+            library.require_game(self.c, game)
+        self.assertEqual(got.exception.code, "keys_missing")
+        self.c.keys.parent.mkdir(parents=True, exist_ok=True); self.c.keys.write_text("dummy = 00\n")
+        library.require_game(self.c, game)
 
     def test_missing_base_and_aarch32_are_not_buildable(self):
         update = self.package("update", 2)

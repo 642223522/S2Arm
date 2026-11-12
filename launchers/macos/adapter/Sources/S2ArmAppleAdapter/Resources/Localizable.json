@@ -6688,10 +6688,6 @@
   "en": "You haven't played this game on this Mac yet. The save will be added the next time you start the game."
  },
  {
-  "source": "这款还没有做好 Mac 版，或者是旧版本做的：重新准备后可用。",
-  "en": "This game has no Mac build yet, or it was built by an older version. Available after you prepare it again."
- },
- {
   "source": "这款游戏没有可用的 60 帧方案。",
   "en": "No 60 FPS option is available for this game."
  },
@@ -7138,5 +7134,9 @@
  {
   "source": "关掉其它占内存的程序（浏览器、游戏等）后重试；还不行就在 Windows 设置里调大虚拟内存（页面文件），或换一台内存更大的电脑出包。已做完的步骤下次会复用。",
   "en": "Close other memory-heavy apps (browsers, games, etc.) and try again. If it still fails, increase virtual memory (the page file) in Windows settings, or export on a computer with more memory. Finished steps are reused next time."
+ },
+ {
+  "source": "游戏库在 Mac OS 扩展（HFS+）格式的磁盘上：可以出包，但这种盘不能克隆，出包会多占一份资源包的空间。",
+  "en": "The library is on a Mac OS Extended (HFS+) drive. Exporting works, but this drive can't clone files, so exports take an extra copy of the resources' space."
  }
 ]
