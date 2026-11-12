@@ -229,7 +229,9 @@ else X=$W/x; prog "抽取着色器（${J} 路）"; bash "$R/graphics/tools/direc
 # 翻译编译开工前复核盘（pack/jobs/space_rule.py，#265：预检放过、编到一半写满，十几分钟白编；Mac / Windows 两条链都过这里）：与出包预检同一规则，
 #   按产物根里的游戏内容大小（原件那一档）记、扣掉已有的同款缓存。玩家点过「仍然继续」（S2A_SPACE_OVERRIDE=1）只打黄。原话「磁盘空间不足」pack/jobs/errors.py 归 disk_full
 "$PY" "$R/pack/jobs/space_rule.py" direct-check "$ROOT" "$C" "$OUT"; src=$?   # 退 1 = 空间不够；别的非 0 = 复核本身没跑成（缺脚本 / Python 出错），不冒充空间问题
-[ "$src" = 0 ] || { [ "$src" = 1 ] && say "🔴 直连库开工前空间不足，没开始编" || say "🔴 直连库开工前的空间复核没跑成（pack/jobs/space_rule.py 退 ${src}）"; exit 1; }
+[ "$src" = 1 ] && { say "🔴 直连库开工前空间不足，没开始编"; exit 1; }   # 估不够：玩家点过「仍然继续」会带 S2A_SPACE_OVERRIDE 过这一关（space_rule.py）
+# 复核本身没跑成（缺脚本 / Python 出错）：拿不准就不停（v0.3.1 ⑫），打黄照编；真写满时写盘报 ENOSPC，那才是物理停（disk_full）
+[ "$src" = 0 ] || [ "$src" = 1 ] || say "🟡 直连库开工前的空间复核没跑成（pack/jobs/space_rule.py 退 ${src}），照常开编；真写满时会按盘满停"
 CPC=-c; [ "$(uname -s)" = Darwin ] || CPC=   # macOS cp -c = APFS 克隆；Linux（安卓出包机）的 GNU cp 没有 -c，普通拷贝
 rm -rf "$W/pkg" && cp $CPC -R "$X/pkg" "$X/split" "$X/s2x" "$W/" && cp $CPC "$X/split.log" "$X/s2x.log" "$W/" || { say "🔴 抽取结果克隆进工作目录失败（${X} → ${W}）"; exit 1; }
 PROF_ONLY=$("$PY" - "$W/split" "$W/profile/$TID" <<'PYEOF'
