@@ -72,10 +72,10 @@ def _sdk_ok(version, req):
     return have == want
 
 
-def dotnet_sdk():
+def _listed_sdks():
+    """各候选 dotnet 的 --list-sdks 里的 10.x 行：(exe, 版本号, SDK 目录)"""
     # The host may be a Homebrew shell wrapper; --list-sdks supplies the actual SDK root.
     probe_env = {k: v for k, v in os.environ.items() if k != 'DOTNET_ROOT' and not k.startswith('DOTNET_ROOT_')}
-    req = _sdk_requirement()
     for exe in _dotnet_candidates():
         try:
             if not exe.is_file() or not os.access(exe, os.X_OK):
@@ -90,14 +90,28 @@ def dotnet_sdk():
         for line in result.stdout.splitlines():
             sdk = re.fullmatch(r'10\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)? \[([^\r\n]+)\]', line.strip())
             if sdk:
-                sdk_path = Path(sdk.group(1))
-                version = line.strip().split(' ', 1)[0]
-                # 版本按 compat/tree/global.json 判（10.0.1xx 编不了要 ≥10.0.403 的 Ryujinx 部分，认成「有 SDK」会到编 C# 时才失败）
-                if not _sdk_ok(version, req):
-                    continue
-                if sdk_path.is_absolute() and sdk_path.name == 'sdk' and (sdk_path / version).is_dir():
-                    return sdk_path.parent, exe
+                yield exe, line.strip().split(' ', 1)[0], Path(sdk.group(1))
+
+
+def dotnet_sdk():
+    req = _sdk_requirement()
+    for exe, version, sdk_path in _listed_sdks():
+        # 版本按 compat/tree/global.json 判（10.0.1xx 编不了要 ≥10.0.403 的 Ryujinx 部分，认成「有 SDK」会到编 C# 时才失败）
+        if not _sdk_ok(version, req):
+            continue
+        if sdk_path.is_absolute() and sdk_path.name == 'sdk' and (sdk_path / version).is_dir():
+            return sdk_path.parent, exe
     return None, None
+
+
+def dotnet_missing():
+    """dotnet_sdk() 没找到时给人看的原因（applenv.py 与一键出包开跑自检同一句，#449）：装着 10.x 但低于 global.json 的报「太旧」，不报「没有」"""
+    req = _sdk_requirement()
+    old = list(dict.fromkeys(f"{version}（{exe}）" for exe, version, _ in _listed_sdks() if not _sdk_ok(version, req)))
+    fix = "python3 pack/jobs/applenv.py --install dotnet（装到 ~/.dotnet，不要管理员密码）"
+    if old and req:
+        return f".NET SDK 版本太旧：装着 {'、'.join(old)}，要 {req[0]} 起（rollForward {req[1]}，compat/tree/global.json）：{fix}"
+    return f"没有 .NET 10 SDK：{fix}"
 
 
 def _iml_device_hint(c, tgt, gid):
