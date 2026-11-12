@@ -18,10 +18,6 @@
     <string name="touch_layout_save_failed">布局未保存：%1$s</string>
 
     <!-- 主界面与运行模式 -->
-    <string name="preview_title">S2Arm Android 预览</string>
-    <string name="preview_description">安卓宿主调试构建，尚未接入游戏运行。</string>
-    <string name="native_unavailable">原生宿主无法启动，详情见 S2Arm 日志。</string>
-    <string name="import_game">导入游戏包…</string>
     <string name="console_mode_handheld">运行模式：掌机（点按切到主机）</string>
     <string name="console_mode_docked">运行模式：主机（点按切到掌机）</string>
     <string name="console_mode_switched">运行模式已切换。</string>

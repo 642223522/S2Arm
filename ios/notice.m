@@ -103,17 +103,18 @@ UIView *s2a_notice_help_page(CGRect f, NSString *title, NSString *detail, NSStri
     UIView *content, *page = backdrop(f, &content);
     UIStackView *pic = [[UIStackView alloc] initWithArrangedSubviews:@[glyph(@"laptopcomputer", @"Mac"), arrow(), glyph(@"cable.connector", S2AL(@"notice.cable")), arrow(), glyph(@"iphone.gen3", app)]];
     pic.spacing = 10; pic.alignment = UIStackViewAlignmentCenter;
-    UIImageView *folder = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"folder.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular]]];
+    // 两条路（11-11 维护者拍板，v0.3.0 起单一 IMG 交付）：电脑上点「装到 iPhone」；或把 game.img 放进「文件」App（游戏库启动 / 回前台 / 重新检查时认领，ios/app.m img_scan）。
+    //   原先的第三条「用访达把『<游戏名>资源包』文件夹拷进来」连同宿主里认这种文件夹的改名 / 等拷完逻辑一起删了（iOS 装机剃刀 #28 / #20 / #33）
+    UIImageView *folder = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular]]];
     folder.tintColor = s2a_notice_accent();
-    UILabel *fl = label(15, UIFontWeightMedium, UIColor.labelColor); fl.text = [NSString stringWithFormat:S2AL(@"notice.packFolder"), app];
+    UILabel *fl = label(15, UIFontWeightMedium, UIColor.labelColor); fl.text = @"game.img";   // 文件名照写，不翻译
     UIStackView *fr = [[UIStackView alloc] initWithArrangedSubviews:@[folder, fl]]; fr.spacing = 8; fr.alignment = UIStackViewAlignmentCenter;
     UIStackView *left = [[UIStackView alloc] initWithArrangedSubviews:@[pic, fr]]; left.axis = UILayoutConstraintAxisVertical; left.spacing = 20; left.alignment = UIStackViewAlignmentCenter;
     UILabel *t = label(24, UIFontWeightBold, UIColor.labelColor); t.text = title;
     UILabel *d = label(16, UIFontWeightRegular, UIColor.secondaryLabelColor); d.text = detail;
     NSArray *steps = @[
         S2AL(@"notice.step.auto"),
-        [NSString stringWithFormat:S2AL(@"notice.step.manual"), app],
-        [NSString stringWithFormat:S2AL(@"notice.step.drag"), app, app]];
+        [NSString stringWithFormat:S2AL(@"notice.step.img"), app, app]];
     NSMutableArray *rows = [NSMutableArray arrayWithObjects:t, d, nil];
     for (NSUInteger i = 0; i < steps.count; i++) {
         UILabel *n = label(13, UIFontWeightBold, UIColor.whiteColor); n.text = [NSString stringWithFormat:@"%lu", (unsigned long)i + 1]; n.textAlignment = NSTextAlignmentCenter;

@@ -703,6 +703,21 @@ def holds_copy(path):
         return False
 
 
+VERSION_DIR = re.compile(r"\d+(?:\.\d+)+")
+
+
+def drop_version_dirs(updates):
+    """新版确认起来以后：删掉 updates/ 下各版本的工作目录（解开的新版 unpack/、增量 delta/、下载的包）。
+    swap 是从 unpack 拷进安装目录的（copytree），拷完源一直留着，每次更新在系统盘多占一整份（#660）；早先版本留下的也一起清。
+    只删按版本号命名的目录：runner/（正在跑的就是它）、pending.json / health.ok / last_failure.json 不动。删不掉（被占用）就留到下次"""
+    for d in updates.iterdir():
+        if d.is_dir() and not d.is_symlink() and VERSION_DIR.fullmatch(d.name):
+            try:
+                remove_tree(d)
+            except OSError:
+                pass
+
+
 def swap(staged, install, backup, new):
     """staged → install；失败时安装目录保持或恢复旧版，异常往外抛。"""
     if new.exists():
@@ -781,6 +796,7 @@ def apply(staged, install, pid, private, args=(), launch=default_launch, health_
     if health.exists():
         remove_tree(backup)
         (updates / "pending.json").unlink(missing_ok=True)
+        drop_version_dirs(updates)
         return 0
     # 新版没能启动：装回旧版
     try:

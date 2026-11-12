@@ -19,6 +19,7 @@
 #include <os/proc.h>   // os_proc_available_memory: for the memory readout line
 #endif
 #include "nvn_mtl.h"
+#include "nvn_pfview.h"   // mtl_pf_bytes / mtl_pfv_compatible: never hand Metal an incompatible texture view (it aborts)
 #include "../../../metal/mtl_slot.h"   // machine-wide Metal client slot
 #include "nvn_fps.h"
 #include "nvn_link_backoff.h"   // 低频链路档降档退避（link_sync）
@@ -2383,7 +2384,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[183];   // RED_ONCE keys 0..182 (182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: unused since 11-07 (a not-loaded color attachment written: g_noload_wrong, first 8 lines); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[186];   // RED_ONCE keys 0..185 (183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: unused since 11-07 (a not-loaded color attachment written: g_noload_wrong, first 8 lines); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -3350,19 +3351,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
 // Zero newly created non-packaged textures: a new Metal texture's content is undefined, while a freshly mapped memory pool on the Switch reads as 0. Games depend on it: SMBW's fountain water surface uses a 512×1 RGBA16F wave texture
 // that every frame is "read last frame → render into a render target → copy back" and is never cleared; the undefined initial value keeps swinging through the feedback and pushes the water vertices to the top of the screen (the tall panels above the fountain).
 // Copied level by level / slice by slice from one shared all-zero buffer, executed with the upload batch (ordered before this replay). Multisample, depth / stencil and block-compressed formats are not cleared (games always clear them before use, and they cannot be copied into anyway).
-static size_t mtl_pf_bytes(MTLPixelFormat pf) {
-    switch ((int)pf) {
-        case 10: case 11: case 12: case 13: case 14: return 1;                                   // R8
-        case 20: case 22: case 23: case 24: case 25: case 30: case 31: case 32: case 33: case 34: return 2;   // R16 / RG8
-        case 40: case 41: case 42: case 43: return 2;                                            // packed 16-bit colour
-        case 53: case 54: case 55: case 60: case 62: case 63: case 64: case 65:
-        case 70: case 71: case 72: case 73: case 74: case 80: case 81:
-        case 90: case 91: case 92: case 93: case 94: return 4;                                   // R32 / RG16 / RGBA8 / BGRA8 / 10-10-10-2 / 11-11-10 / 9-9-9-5
-        case 103: case 104: case 105: case 110: case 112: case 113: case 114: case 115: return 8;   // RG32 / RGBA16
-        case 123: case 124: case 125: return 16;                                                 // RGBA32
-    }
-    return 0;
-}
+// mtl_pf_bytes 与 mtl_pfv_compatible 在 nvn_pfview.h（本文件开头 include），单测单独编这个头文件。
 // Shared all-zero buffer (for zeroing new textures and scissored zero clears): replaced by a bigger one when too small; the old one is released after in-flight submissions finish
 static id<MTLBuffer> fill_buf(size_t need, int poison) {   // bytes of 0, or of 0x3c (S2A_WIDEN_POISON)
     static id<MTLBuffer> zb[2]; static size_t zn[2];
@@ -4832,6 +4821,15 @@ static MTLPixelFormat rt_view_fmt(id<MTLTexture> base, const view_t *v, int has_
     if (!base || !has_v || !v->set_format) return base.pixelFormat;
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(v->format, &pf, swz) || !pf || pf == (uint32_t)base.pixelFormat) return base.pixelFormat;
+    // Metal aborts the process when a format view is not compatible (4 B/px → 16 B/px and the like), it does
+    // not just return nil. On a GPU without BC the game's BC3 texture is stored decoded as RGBA8Unorm while
+    // its "one texel = one BC block" RGBA32Uint view is still requested; that pair used to reach attach().
+    // Falling back to the base format keeps the pass descriptor and the pipeline key in agreement (both read
+    // rt_view_fmt / the attached texture), so the draw is either built or skipped — never an abort.
+    if (!mtl_pfv_compatible(base.pixelFormat, (MTLPixelFormat)pf)) {
+        RED_ONCE(183, "render target view format %#x (Metal %u) is not compatible with base texture Metal format %lu: attached in the base format (a BC texture decoded on a GPU without BC?)", v->format, pf, (unsigned long)base.pixelFormat);
+        return base.pixelFormat;
+    }
     if (tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) return base.pixelFormat;
     return (MTLPixelFormat)pf;
 }
@@ -4936,7 +4934,11 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
     // attaching the base texture instead stored the linear values as they were and the whole picture came out dark (every value decoded from sRGB once more, on the Mac and the iPhone). The view lives until this submission completes
     if (base && has_v && v->set_format) {
         MTLPixelFormat pf = rt_view_fmt(base, v, has_v);
-        if (pf != base.pixelFormat) {
+        // Defence in depth: rt_view_fmt already filters incompatible pairs, but a new caller must never let
+        // one through — newTextureViewWithPixelFormat aborts the whole process instead of returning nil.
+        if (pf != base.pixelFormat && !mtl_pfv_compatible(base.pixelFormat, pf)) {
+            RED_ONCE(184, "render target view %#x → Metal %u over base %lu is not compatible: drawing in the base format", v->format, (unsigned)pf, (unsigned long)base.pixelFormat);
+        } else if (pf != base.pixelFormat) {
             id<MTLTexture> vw = [base newTextureViewWithPixelFormat:pf];
             if (vw) { a.texture = vw; defer_obj_unref(vw); }
             else RED_ONCE(67, "cannot create the render target view: format %#x (base texture Metal format %lu)", v->format, (unsigned long)base.pixelFormat);
@@ -4956,15 +4958,11 @@ static void bare_dims(NSUInteger *w, NSUInteger *h);
 // S2Arm first-use skip (after LASRecomp / MeloNX): a draw whose pipeline is being compiled in the background is skipped instead of making the submit thread
 //   wait for it (mhrise 10-26: a fresh install's first run built 111 such pipelines on the submit thread); the draw after it is ready takes it as before. Only where losing it costs
 //   no more than a frame: every colour / depth target was attached in the last two frames too (drawn every frame: a one-off bake target waits), and neither shader writes storage
-//   (MeloNX allowAsyncCompileSkip). On by default on iOS; the Mac keeps waiting (replays and gates compare pixels) unless DM_NVN_FIRST_SKIP=1. DM_NVN_FIRST_SKIP=0 turns it off
+//   (MeloNX allowAsyncCompileSkip). On by default on every platform (a Mac play session stalled 14 s on one frame's first uses, #187); DM_NVN_FIRST_SKIP=0 waits instead, which frame replay sets because it compares pixels
 static int first_skip_on(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("DM_NVN_FIRST_SKIP");
-#if TARGET_OS_IPHONE
         v = !(e && !strcmp(e, "0"));
-#else
-        v = e && !strcmp(e, "1");
-#endif
         MLOG("first-use skip %s: draws whose pipeline compiles in the background %s (DM_NVN_FIRST_SKIP)", v ? "on" : "off", v ? "are skipped until it is ready" : "wait for it"); }
     return v;
 }
@@ -5377,7 +5375,7 @@ static void shmap_load_once(void) {
     id<MTLFunction> fn, tf_fn, fn_u, geo_fn;   // fn_u: the integer-output entry point (dmsh_build.py fs_uint), for pipelines whose unsigned integer attachments are exactly u_mask (pso_desc)
     uint8_t s_rec, warm_claimed;   // submit-thread first-use / prewarm handoff counters
     uint8_t gmem_use;   // 0 未判 / 1 不绑原始内存池表 / 2 绑（gmem_uses：动态占比计数用）
-    uint8_t tensor, tensor_log;   // S2Arm 11-05: compute shader with tensor-core matrix multiplies (Ampere HMMA): 1 = yes (stood in, nvn_tensor.inc), 2 = checked, none; 0 = not checked
+    uint8_t tensor, tensor_log;   // HMMA: 1 = spatial stand-in, 2 = none, 3 = native SIMD-group matrix ABI 1; 0 = not checked
     uint16_t tensor_sq;   // S2Arm 11-05: such a shader's HMUL2 Rd, Ra, |Ra| (nvn2_hsq_count): its output is the signed square of what it reads plus the network's residual, the stand-in squares its input (nvn_tensor.inc)
     id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff) on demand (fs_atms_fn)
     int load_depth_zero;   // captured with the identity, also used by its layer variant
@@ -5742,6 +5740,17 @@ static const char *fb_xfp(void) {
     return x;
 }
 static int fb_json_current(NSDictionary *j) { const char *x = fb_xfp(); return x && [j[@"chain"] isEqual:@DMSH_CHAIN] && [j[@"xfp"] isEqual:@(x)]; }
+// Only newly lowered libraries may execute the network. Old scalar libraries retain the stand-in.
+// The override is process-wide and diagnostic, so A/B differs by one variable for the whole network.
+// Off unless asked (DM_NVN_TENSOR_NATIVE=2: newly lowered libraries that carry the flag; =1: always): a repacked game's default picture must not change
+//   on one still-scene reading; turn the default on once frame-time and picture A/B across games are in.
+static int tensor_native_json(NSDictionary *j) {
+    static int enabled = -1;
+    if (enabled < 0) { const char *e = getenv("DM_NVN_TENSOR_NATIVE"); enabled = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "2") ? 2 : 0; }
+    lp_pack *pack = lp_pack_get(); uint32_t flags = 0; if (pack) memcpy(&flags, pack->idx + 20, 4);
+    return enabled && (enabled == 1 || (flags & 1)) && [j[@"tensor_mma_abi"] intValue] == 1 && [j[@"tensor_mma_count"] intValue] > 0
+        && [g_dev supportsFamily:MTLGPUFamilyApple7];
+}
 static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero) {
     NSError *e = nil;
     // S2Arm: a key missing from the library is looked up in DM_MSL_FALLBACK (the on-device fallback translation writes <key>_b.metal + .json there; iOS cannot store a metallib built at runtime)
@@ -5757,7 +5766,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
         return o;
     }
     if (stage == 2 && !j) return nil;   // missing geometry translation: the caller's red line says so
-    if (t_refl_only && stage == 5 && j && [j[@"chain"] isEqual:@DMSH_CHAIN]) {   // a tensor-core network program (t_refl_only): its reflection, no library
+    if (t_refl_only && stage == 5 && j && [j[@"chain"] isEqual:@DMSH_CHAIN] && !tensor_native_json(j)) {   // old tensor libraries: reflection only
         NvShader *o = [NvShader new]; o->gs_loc = o->lay_loc = -1; o->stage = 5; o->tensor = 1; strlcpy(o->key, pc.UTF8String, sizeof o->key);
         o->fnpfx = [j[@"fn_prefix"] isKindOfClass:[NSString class]] ? j[@"fn_prefix"] : @"";
         char err[160]; if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】 shader %s reflection conversion failed: %s", pc.UTF8String, err); return nil; }
@@ -5816,6 +5825,10 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
             o->geo_tf_stride[b] = [e[0] unsignedIntValue]; o->geo_tf_n[b] = (uint32_t)ent.count;
             for (NSUInteger k = 0; k < ent.count; k++) { o->geo_tf_off[b][k] = [ent[k][0] unsignedIntValue]; o->geo_tf_comp[b][k] = [ent[k][1] unsignedIntValue]; } } }
     o->fn = [lib newFunctionWithName:fnn(o, entry)]; o->stage = stage; o->load_depth_zero = depth_zero; strlcpy(o->key, pc.UTF8String, sizeof o->key); o->ventry = entry;
+    if (stage == 5 && tensor_native_json(j)) {
+        o->tensor = 3;
+        MLOG("compute shader %s: native HMMA.16816 F16 (%d instructions, SIMD-group matrix ABI 1)", pc.UTF8String, [j[@"tensor_mma_count"] intValue]);
+    }
     if (!o->fn) { MLOG("【红】 shader %s: no entry point %s in its library", pc.UTF8String, entry.UTF8String); return nil; }
     // writes the layer (render_target_array_index, named in the library's metadata): its passes are layered and its pipelines get an input class (pso_desc). A library with layer entry points
     // names it for those alone: its main0 / main0_z write no layer
@@ -6158,7 +6171,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
         t_refl_only = 0;
         if (sh) o->sh[st] = sh; else MLOG("【红】 shader %s (%s) failed to load: build the shaders with dm/gfx/tools/dmsh_build.py first", k.UTF8String, stage.UTF8String);
         if (sh && st == 5 && nh) sh->tensor_sq = (uint16_t)MIN(nsq, 0xffffu);
-        if (sh && st == 5 && sh->tensor != 1) {
+        if (sh && st == 5 && sh->tensor != 1 && sh->tensor != 3) {
             if (nh) MLOG("compute shader %s: %u tensor-core matrix multiplies (HMMA): the game's own upscaling network, stood in (nvn_tensor.inc)", sh->key, nh);
             if (!sh->tensor || nh) sh->tensor = nh ? 1 : 2;   // a full build of the same key (an earlier prewarm) is still never dispatched
         }
@@ -10549,7 +10562,7 @@ static void pso_predict_rest_(void) {
         if (hq.op == OP_SET_RT) {
             p_set_rt rb; const p_set_rt *r = set_rt_rec(aq, hq.size, &rb); memset(cf, 0, sizeof cf); dfull = sfull = 0; samples = 1;
             g_tex_peek = 1;   // 只取格式 / 采样数（见 g_tex_peek）
-            for (int i = 0; i < r->n && i < 8; i++) { id<MTLTexture> t = r->color[i] && !rt_dup_slot(r, i) ? tex_mtl(r->color[i]) : nil; if (t && nvn_fmt_bc(r->color[i]->d.format)) t = nil; if (t) { cf[i] = (uint32_t)rt_view_fmt(t, &r->cview[i], r->has_cview[i]); samples = (uint32_t)t.sampleCount; } }   // BC targets are never attached (see attach)
+            for (int i = 0; i < r->n && i < 8; i++) { id<MTLTexture> t = r->color[i] && !rt_dup_slot(r, i) ? tex_mtl(r->color[i]) : nil; if (t && nvn_fmt_bc(r->color[i]->d.format) && mtl_fmt_block(t.pixelFormat)) t = nil; if (t) { cf[i] = (uint32_t)rt_view_fmt(t, &r->cview[i], r->has_cview[i]); samples = (uint32_t)t.sampleCount; } }   // compressed BC targets are never attached (see attach); on a GPU without BC the storage is decoded and IS attached, so predict its real format
             id<MTLTexture> dt = r->depth ? tex_mtl(r->depth) : nil;
             g_tex_peek = 0;
             if (dt) { MTLPixelFormat f = dt.pixelFormat; samples = (uint32_t)dt.sampleCount;
@@ -13575,6 +13588,7 @@ static void img_wr_prescan(NvShader *sh, int nvn_stage) {
     pthread_mutex_unlock(&g_rmu);
 }
 static void tensor_standin(NvShader *cs);   // nvn_tensor.inc
+static uint64_t g_tensor_native_runs;
 static void dispatch(const p_dispatch *dp) {
     geo_run_flush();
     zskip_clear();
@@ -13685,6 +13699,10 @@ static void dispatch(const p_dispatch *dp) {
         if (!own) g_gp_disp++;
         enc_c_dispatch_indirect(ce, ig, MTLSizeMake(tg[0], tg[1], tg[2]));
     } else { if (!own) g_gp_disp++; enc_c_dispatch(ce, MTLSizeMake(gx, gy, dp->z), MTLSizeMake(tg[0], tg[1], tg[2])); }
+    if (cs->tensor == 3) {
+        g_tensor_native_runs++;
+        if (!(cs->tensor_log & 16)) { cs->tensor_log |= 16; MLOG("native neural super-resolution dispatch: %s, groups %ux%ux%d, local %ux%ux%u", cs->key, gx, gy, dp->z, tg[0], tg[1], tg[2]); }
+    }
     if (own) enc_c_end(ce);
 }
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, layer stride from SetCopyImageStride, 0 = tightly packed)
@@ -14196,8 +14214,12 @@ static void clear_tex(const p_clear_tex *c) {
     if (c->has_view && c->view.set_format) {   // View with changed format: the clear value is interpreted in the view format (all 5 of the game's calls are the ui version with an integer view), and the clear is done on a view of the same format
         uint32_t vpf = 0; uint8_t swz[4];
         if (!nvn_fmt_to_mtl(c->view.format, &vpf, swz) || !vpf) { RED_ONCE(42, "texture clear view format %#x has no equivalent", c->view.format); return; }
-        if (tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf) && !(t.usage & MTLTextureUsagePixelFormatView)) t = tex_upgrade_pfv(c->tex, t, (MTLPixelFormat)vpf);
-        if (tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf)) {
+        // Same Metal validation rule as attach(): an incompatible view aborts the process. A no-BC BC texture
+        // cleared through a 16-byte block view is one such case; clear in the base format instead.
+        int compat = mtl_pfv_compatible(t.pixelFormat, (MTLPixelFormat)vpf);
+        if (!compat) RED_ONCE(185, "texture clear view format %#x (Metal %u) is not compatible with base texture Metal format %lu: cleared in the base format", c->view.format, vpf, (unsigned long)t.pixelFormat);
+        if (compat && tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf) && !(t.usage & MTLTextureUsagePixelFormatView)) t = tex_upgrade_pfv(c->tex, t, (MTLPixelFormat)vpf);
+        if (compat && tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf)) {
             id<MTLTexture> v = [t newTextureViewWithPixelFormat:(MTLPixelFormat)vpf];
             if (!v) { RED_ONCE(43, "texture clear: cannot create the view: format %lu → %u", (unsigned long)t.pixelFormat, vpf); return; }
             t = v; defer_obj_unref(v);

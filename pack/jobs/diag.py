@@ -18,6 +18,7 @@ from core import Failure
 
 PREFIXES = ("io.s2arm.", "io.s2arm-exp.", "local.s2arm.", "s2arm.")
 # 只拉这些（相对 App 数据目录；Documents/logs = os.c 每局一份的往局日志 host-<起局时刻>.log）；存档（bis/user/save）、资源包、密钥都不碰
+PULL_RECORD = "pull.json"   # 每次拉回的目录里：拉回时刻、来源设备（机型 / 系统）、各款文件数
 ITEMS = ("Documents/diag", "Documents/host.log", "Documents/logs", "Documents/frames.tsv",
          "Documents/threads.txt", "Documents/unpack.log", "Documents/metrickit")
 
@@ -93,11 +94,15 @@ def pull(c):
     parent = c.private / "diagnostics"
     parent.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=stamp + "-", dir=parent))
-    pulled = []
+    pulled, sources = [], []
     c.begin("找 S2Arm 打的游戏 App", 2, 3)
     for d in devices:
         dev = d["identifier"]
-        name = re.sub(r"[^\w.-]+", "_", d.get("hardwareProperties", {}).get("marketingName") or d.get("hardwareProperties", {}).get("productType") or "iPhone")
+        hw = d.get("hardwareProperties", {})
+        name = re.sub(r"[^\w.-]+", "_", hw.get("marketingName") or hw.get("productType") or "iPhone")
+        # 来源设备只记机型和系统，不记设备号、不记玩家给设备起的名字（诊断包要交到公开帖子里）
+        sources.append(dict(model=hw.get("marketingName") or hw.get("productType") or "", platform=hw.get("platform") or "",
+                            os=d.get("deviceProperties", {}).get("osVersionNumber") or ""))
         rc, apps, _ = devicectl(c, "device", "info", "apps", "--device", dev)
         for app in apps.get("result", {}).get("apps", []):
             bid = app.get("bundleIdentifier", "")
@@ -136,4 +141,7 @@ def pull(c):
                 iml_hint(c, dest / "diag" / "iml_probe.json", app.get("name") or bid)
     if not pulled:
         raise Failure("连着的设备上没找到 S2Arm 打的游戏 App，或者这些 App 还没运行过、没有日志。")
+    # 这次拉回的来源与时刻：诊断包导出（library.diagnostics）收最近一次拉回的内容时写进 manifest
+    (root / PULL_RECORD).write_text(json.dumps(dict(pulledAt=time.strftime("%Y-%m-%d %H:%M:%S %z"), devices=sources,
+                                                    apps=[dict(app=p["app"], files=p["files"]) for p in pulled]), ensure_ascii=False), encoding="utf-8")
     return dict(outputPath=str(root), apps=pulled)

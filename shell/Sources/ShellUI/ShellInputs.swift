@@ -30,7 +30,8 @@ public struct InstallStage: Equatable, Sendable {
     public var phase: Phase
     public var fraction: Double?
     /// While installing, which part is under way (single-file game data): 1 unpacking what was sent, 2 taking the small files
-    /// out of the game data file, 3 checking the files on this device. 0: not told, shown as plain Installing.
+    /// out of the game data file, 3 checking the files on this device; 4 waiting for another game to finish installing, 5 the host is
+    /// organizing the game folders (S2Arm). 0: not told, shown as plain Installing.
     public var step: Int
     /// Why the install did not finish, in one plain sentence from the host; nil: the general explanation.
     public var reason: String?

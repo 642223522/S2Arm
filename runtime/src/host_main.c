@@ -47,7 +47,8 @@ extern void S2A_Init(void) __attribute__((weak_import));
 extern int S2A_InitSession(void) __attribute__((weak_import));
 extern int s2a_autoplay_on(void) __attribute__((weak_import));
 extern double s2a_autoplay_wait_s(void) __attribute__((weak_import));   // 自动玩家累计等视觉模型的秒数：局时顺延用（S2A_RUN_EXTEND_MAX）   // 测试层通用自动玩家（S2A_CS=1 时链进来）：开不开见 tests/autoplay/ap_default.h
-__attribute__((weak)) void s2a_front_run(void (*start_host)(void)) { (void)start_host; }   // 前端占主线程时覆盖；iOS 预热传延后启动宿主的续体，其余传 NULL
+__attribute__((weak)) void s2a_front_run(void (*start_host)(void)) { (void)start_host; }
+__attribute__((weak)) int s2a_front_is_running(void) { return 0; }   // iOS 壳 app.m 覆盖：界面已在主线程跑着（s2a_front_run 会立即返回）   // 前端占主线程时覆盖；iOS 预热传延后启动宿主的续体，其余传 NULL
 #include "s2a_lan_discovery.h"
 // Hosts without a discovery implementation leave LAN unavailable explicitly.
 __attribute__((weak)) const s2a_lan_discovery_v1 *s2a_ldn_lan_provider(void) { return NULL; }

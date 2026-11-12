@@ -26,6 +26,7 @@ public final class S2ArmShellHostModel {
     @ObservationIgnored private let installState: (String) -> Int32
     /// 在后台解开阶段 2 的那款（同时只解一款；正在解别的返回 false）；正在解的这款的进度（已解开包数, 总包数）
     @ObservationIgnored private let installGame: (String) -> Bool
+    @ObservationIgnored private let installWait: () -> Int32
     @ObservationIgnored private let installProgress: (String) -> (Int, Int)?
     /// 单一 IMG 的分段进度（宿主 s2a_shell_install_phase）：正在解这款时 (阶段 1/2/3，这一段的比例，不知道总量为 nil)，否则 nil
     @ObservationIgnored private let installPhase: (String) -> (Int, Double?)?
@@ -70,7 +71,7 @@ public final class S2ArmShellHostModel {
     public init(catalogue: Catalogue, play: ((String) -> Void)? = nil, stores: S2ArmGameSettings.Stores = .live,
                 layoutState: @escaping (String) -> S2ArmGameSettings.LayoutState = S2ArmGameSettings.layoutState,
                 installState: ((String) -> Int32)? = nil, installGame: ((String) -> Bool)? = nil, installProgress: ((String) -> (Int, Int)?)? = nil,
-                installPhase: ((String) -> (Int, Double?)?)? = nil, installFailure: ((String) -> String?)? = nil,
+                installPhase: ((String) -> (Int, Double?)?)? = nil, installFailure: ((String) -> String?)? = nil, installWait: (() -> Int32)? = nil,
                 now: @escaping () -> Date = Date.init, pickGameData: ((String) -> Void)? = nil, identityStore: GameIdentityStore = .live,
                 gamesRoot: URL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/games")) {
         self.gamesRoot = gamesRoot
@@ -89,6 +90,7 @@ public final class S2ArmShellHostModel {
         self.play = play ?? { id in _ = id.withCString { s2a_shell_play($0) } }
         self.installState = installState ?? { id in id.withCString { s2a_shell_game_install_state($0) } }
         self.installGame = installGame ?? { id in id.withCString { s2a_shell_install_game($0) } != 0 }
+        self.installWait = installWait ?? { s2a_shell_install_wait() }
         self.installProgress = installProgress ?? { id in
             var done: Int32 = 0, total: Int32 = 0
             return id.withCString { s2a_shell_install_progress($0, &done, &total) } != 0 ? (Int(done), Int(total)) : nil
@@ -226,7 +228,8 @@ public final class S2ArmShellHostModel {
         if let (phase, fraction) = installPhase(id), phase > 0 { return InstallStage(.installing, fraction: fraction, step: phase) }
         if let (done, total) = installProgress(id) { return InstallStage(.installing, fraction: total > 0 ? Double(done) / Double(total) : nil) }
         if installTried.contains(id) { return InstallStage(.failed, reason: installFailure(id)) }
-        guard installGame(id) else { return InstallStage(.installing) }
+        // 宿主拒了：说清在等什么（4 等另一款装完 / 5 正在整理游戏目录，ShellUI GameState installLabel），下一秒再试
+        guard installGame(id) else { let wait = installWait(); return InstallStage(.installing, step: wait == 2 ? 5 : wait == 1 ? 4 : 0) }
         installTried.insert(id)
         return InstallStage(.installing, fraction: 0)
     }
@@ -242,6 +245,13 @@ public final class S2ArmShellHostModel {
         }
         guard let data = try? Data(contentsOf: list), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let total = (json["total"] as? NSNumber)?.int64Value, total > 0, let files = json["files"] as? [[Any]], let listed = info(list) else {
+            // 没有传输清单（老电脑端推的、被删了）或读不出：看不了进度，但照样按资源包里这几样最新的改动判传断了（iOS 装机剃刀 #41：原先永远「传输中」）。
+            //   一样都看不到时只能说在传
+            let incoming = pack.appendingPathComponent(".incoming")
+            let tars = (try? fm.contentsOfDirectory(at: incoming, includingPropertiesForKeys: nil)) ?? []
+            let seen = ([pack, incoming, list, pack.appendingPathComponent("manifest.json"), pack.appendingPathComponent("index.tsv"),
+                         pack.appendingPathComponent("game.img")] + tars).compactMap { info($0)?.1 }
+            if let latest = seen.max(), now().timeIntervalSince(latest) > Self.transferStall { return InstallStage(.interrupted) }
             return InstallStage(.transferring)
         }
         var got: Int64 = 0, latest = listed.1

@@ -35,6 +35,7 @@ void s2a_shell_refresh(void) { if (g_refresh) g_refresh(g_refresh_ctx); }
 __attribute__((weak)) int s2a_shell_game_install_state(const char *game_id) { (void)game_id; return 1; }
 __attribute__((weak)) int s2a_shell_install_game(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) int s2a_shell_install_progress(const char *game_id, int *done, int *total) { (void)game_id; (void)done; (void)total; return 0; }
+__attribute__((weak)) int s2a_shell_install_wait(void) { return 0; }
 __attribute__((weak)) void s2a_shell_library_appeared(void) {}
 __attribute__((weak)) int s2a_shell_install_phase(const char *game_id, int *phase, double *fraction) { (void)game_id; (void)phase; (void)fraction; return 0; }
 __attribute__((weak)) const char *s2a_shell_install_failure(const char *game_id) { (void)game_id; return NULL; }

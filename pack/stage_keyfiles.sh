@@ -12,7 +12,15 @@ stage_files_key() {
   out=$(env -u DEVELOPER_DIR git -C "$r" ls-tree HEAD -- $f) || { echo "【红】取不到 $st 输入文件的对象号（git ls-tree）" >&2; return 1; }
   [ "$(printf '%s\n' "$out" | grep -c .)" = "$(printf '%s\n' "$f" | grep -c .)" ] \
     || { echo "【红】$t 里有文件不在 HEAD：$(printf '%s\n' "$f" | while read -r p; do grep -qF "	$p" < <(printf '%s\n' "$out") || printf '%s ' "$p"; done)（改名 / 删除要同笔改本表）" >&2; return 1; }
-  printf '%s\n' "$out" | awk '{ print $3, $4 }' | shasum -a 256 | cut -c1-16
+  # 产物等价（pack/stage_inputs/equiv.tsv，11-11）：「入」文件当前内容登记过「≡ 旧版本」就按旧版本的对象号进键——只提速 / 重构、不改产物的改动不让老游戏重跑
+  local eq=$r/pack/stage_inputs/equiv.tsv mode typ obj path h
+  printf '%s\n' "$out" | while IFS=$' \t' read -r mode typ obj path; do
+    if [ -f "$eq" ] && grep -q "^$path	" "$eq"; then
+      h=$(shasum -a 256 < "$r/$path" | cut -c1-16)
+      obj=$(LC_ALL=C awk -F'\t' -v p="$path" -v h="$h" -v o="$obj" '$1 == p && $2 == h { o = $3 } END { print o }' "$eq")
+    fi
+    printf '%s %s\n' "$obj" "$path"
+  done | shasum -a 256 | cut -c1-16
 }
 
 # 实际读入进判跳过（10-30 出包线根修，tools/stage_deps.py）：声明的输入算阶段键（各阶段原样，存进 .stage_<阶段>），实际读入另存清单 .stage_<阶段>.deps
