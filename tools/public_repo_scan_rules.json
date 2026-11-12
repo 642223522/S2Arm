@@ -195,7 +195,7 @@
       ],
       "regex": "^[A-Za-z0-9_]+@[A-Za-z0-9_]+\\.dll$",
       "line_regex": "external '",
-      "reason": "Inno Setup 脚本里的外部函数声明（如 SetTimer@user32.dll），形似邮箱、不是邮箱；只认 installer 目录下 .iss、整条命中为「名字@名字.dll」且所在行有 external 声明。"
+      "reason": "Inno Setup 脚本里从系统库导入函数的外部声明（函数名、at 号、user32.dll 这样连写），形似邮箱、不是邮箱；只认 installer 目录下 .iss、整条命中为「名字@名字.dll」且所在行有 external 声明。"
     },
     {
       "id": "own_ui_docs",
