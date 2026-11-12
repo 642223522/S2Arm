@@ -10,7 +10,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from jobcase import JobCase, ROOT
+from jobcase import JobCase, ROOT, as_windows
 from core import Context, Failure
 import layout
 import library
@@ -177,6 +177,17 @@ class SpaceMeasured(JobCase):
         self.assertEqual(self.need(10_000_000_000, windows=True), 11_000_000_000 * 2 + 15_000_000_000)
         # v0.3.1 Mac 放开 HFS+：不能克隆，同 Windows 多算一份（11 + 11 + 15）
         self.assertEqual(library.pack_need_bytes([dict(size=10_000_000_000, sha256="a" * 64)], windows=False, clones=False), 11_000_000_000 * 2 + 15_000_000_000)
+
+    def test_windows_exfat_location_counts_two_more_copies(self):
+        # v0.3.1：Windows 存放位置在 exFAT / FAT32（建不了目录链接，实目录模式 + 工作根整份拷）：再多两份。原件 10 GB 的 iPhone 包：
+        #   NTFS = 解包 11 + Windows 不克隆 11 + 直连 15 + IMG 10 = 47 GB；exFAT 再加 22 = 69 GB
+        c = self.context("ipa")
+        for fmt, need in (("ntfs", 47_000_000_000), ("exfat", 69_000_000_000)):
+            import space_rule
+            with self.subTest(fmt=fmt), as_windows(library, space_rule), patch.object(library, "volume_format", return_value=fmt):
+                b = self.budget(c, self.game(10 * 10**9))
+                self.assertEqual(b["needBytes"], need)
+                self.assertEqual("建不了目录链接" in b.get("note", ""), fmt == "exfat")
 
     def test_budget_counts_extra_copy_on_hfs(self):
         # 存放位置读到是 HFS+：预算按不克隆多算一份、说明里写清；读到 APFS / 读不到：不多算。原件 10 GB 的 Mac 出包（不写 IMG）：

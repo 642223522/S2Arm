@@ -7,13 +7,15 @@ using Avalonia.Media;
 
 namespace S2Arm.Launcher;
 
-// 游戏库选到 exFAT / FAT32 盘（作业层 setup 报 library_bad_format）：Windows 出包要在游戏文件夹里建目录联接，只有 NTFS / ReFS 能建，
-//   物理上做不下去、照拦；但不只报一句不能用（v0.3.1 维护者）——原因下面列出本机能放游戏库的盘和剩余空间，点一下就在那块盘上建游戏库
-//   （这次本来要搬现有游戏库的，照样搬过去）。游戏库页的状态卡和添加游戏弹窗里都显示（同一个失败，两处入口）。
+// 游戏库选到 exFAT / FAT32 盘（作业层 setup 报 library_bad_format，v0.3.1）：认得出的风险——这种盘建不了目录链接，出包多占空间、断电时产物可能要重出。
+//   给「仍然用这里」（带 acceptFormat 重来），下面列出本机 NTFS / ReFS 盘和剩余空间作推荐，点一下就在那块盘上建游戏库（这次本来要搬现有游戏库的，照样搬过去）。
+//   游戏库页的状态卡和添加游戏弹窗里都显示（同一个失败，两处入口）。
 public sealed partial class EnvironmentWindow
 {
     /// <summary>最近一次建库 / 换库没成的失败码，和那次要不要搬现有游戏库（WelcomePage.EnsureLibraryAsync 记）</summary>
-    private string? libraryFailCode, libraryFailMoveFrom;
+    private string? libraryFailCode, libraryFailMoveFrom, libraryFailFolder;
+    /// <summary>下一次建库带 acceptFormat（「仍然用这里」点了一次，EnsureLibraryAsync 用掉就清）</summary>
+    private bool acceptFormatOnce;
     /// <summary>界面快照用：不读本机磁盘，按给的盘画（UI.Snapshots；null = 读本机）</summary>
     private IReadOnlyList<(string Root, string Format, long Free)>? drivesOverride = null;
 
@@ -57,9 +59,21 @@ public sealed partial class EnvironmentWindow
         if (libraryFailCode != "library_bad_format" || libraryBusy) return null;
         var panel = new StackPanel { Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
         AutomationId(panel, "library.drives");
+        // exFAT / FAT32 可以照用（v0.3.1：多占空间、断电时产物可能要重出，作业层实目录模式 + 联接退回拷贝）：先给「仍然用这里」，NTFS 盘列在下面作推荐
+        if (libraryFailFolder is { Length: > 0 } here)
+        {
+            var keep = Primary(T("library.format.keep"), () =>
+            {
+                libraryMoveFrom = libraryFailMoveFrom; libraryFailCode = null; acceptFormatOnce = true;
+                ConnectLibrary(here);
+            }, !libraryBusy);
+            AutomationId(keep, "library.format.keep");
+            keep.HorizontalAlignment = HorizontalAlignment.Left;
+            panel.Children.Add(keep);
+        }
         var drives = LibraryDrives();
         panel.Children.Add(new TextBlock { Text = T(drives.Count > 0 ? "library.drives.title" : "library.drives.none"), FontSize = 14, FontWeight = FontWeight.Bold,
-            Foreground = Ink, TextWrapping = TextWrapping.Wrap });
+            Foreground = Ink, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) });
         foreach (var (root, format, free) in drives)
         {
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 12 };

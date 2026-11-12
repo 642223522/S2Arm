@@ -546,13 +546,15 @@ def location_slack(path):
     reason = libloc.slack_reason(fmt, cluster, system="Windows" if os.name == "nt" else "Darwin")
     return dict(format=fmt, clusterBytes=cluster, slackWarning=reason is not None, slackReason=reason)
 
-def require_apfs(path):
+def require_apfs(path, accept=False, extra=(None, 0)):
     """游戏库所在卷的格式：Mac 要 APFS（原错误码 library_not_apfs），Windows 要 NTFS / ReFS（library_bad_format，libloc.format_ok）；读不到格式不拦"""
     import libloc
     fmt = volume_format(path)
     if os.name == "nt":
-        if not libloc.format_ok(fmt, system="Windows"):
-            raise Failure(libloc.WIN_FORMAT_MESSAGE.format(fmt=fmt.upper()), code="library_bad_format")
+        # exFAT / FAT32：建不了目录链接，产物根走实目录模式、联接退回拷贝（pack/orch/roots.py links_supported），多占空间、断电时产物可能要重出——
+        #   认得出的风险，玩家确认（accept）就照用（v0.3.1）；FAT32 单个文件超 4 GB 才是真做不下去，出包开头按 IMG 大小判（require_fat32_fits）
+        if not libloc.format_ok(fmt, system="Windows") and not accept:
+            raise Failure(libloc.win_format_message(fmt, *extra), code="library_bad_format")
         return fmt
     # Mac 放开 HFS+（v0.3.1「拿不准不停」，libloc.MAC_OK_FORMATS）：克隆自动退回普通拷贝（cp -c、core / clonedir / 各工具的 clonefile 都退），
     #   不覆盖改名 RENAME_EXCL 照常（11-12 HFS+ 映像实测）；空间预算按不克隆多算一份（space_budget）。exFAT / FAT 没有出包要的原子改名，物理上做不下去，照拦
@@ -633,11 +635,25 @@ def copy_tree_links(src, dst):
     目标仍指旧位置；放到新位置后由 _retarget_links 改指"""
     src, dst = Path(src), Path(dst)
     isjunction = getattr(os.path, "isjunction", lambda _: False)
+    def materialize(a, b):
+        """目标盘建不了链接（exFAT / FAT32，v0.3.1 玩家确认过照用）：把链接指向的目录整份拷过来。产物根的「<款>@现行」拷成真目录，
+        版本名记进 .root_tag（pack/orch/roots.py 实目录模式按它认）"""
+        target = Path(os.path.realpath(a))
+        copy(target, b)
+        if a.name.endswith("@现行"):
+            (b / ".root_tag").write_text(target.name + "\n", encoding="utf-8")
     def copy(a, b):
         if isjunction(a):
-            subprocess.run(["cmd", "/c", "mklink", "/J", str(b), os.readlink(a).removeprefix("\\\\?\\")], check=True, capture_output=True)
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(b), os.readlink(a).removeprefix("\\\\?\\")], capture_output=True)
+            if r.returncode != 0:
+                materialize(a, b)
         elif a.is_symlink():
-            os.symlink(os.readlink(a), b, target_is_directory=a.is_dir())
+            try:
+                os.symlink(os.readlink(a), b, target_is_directory=a.is_dir())
+            except OSError:
+                if not a.is_dir():
+                    raise
+                materialize(a, b)
         elif a.is_dir():
             b.mkdir()
             for child in a.iterdir():
@@ -823,10 +839,25 @@ def setup(c):
     """选游戏库（见 _setup）。请求带 acceptCloud = 玩家确认过「游戏库放在云盘同步目录里也继续用」：不拦云盘目录，并把这个选择记进游戏库标识
     （cloudAccepted，libloc.cloud_accepted 读），环境检查之后按提示显示、不再标红（v0.3.1：认得出的风险讲清后果、让玩家选）"""
     result = _setup(c)
+    marker = c.library / ".s2arm-library.json"
     if c.r.get("acceptCloud"):
-        marker = c.library / ".s2arm-library.json"
         atomic(marker, dict(read(marker), cloudAccepted=True))
+    if c.r.get("acceptFormat"):   # Windows 游戏库在 exFAT / FAT32 上（library_bad_format）也继续用：同上记下，之后不再问
+        atomic(marker, dict(read(marker), formatAccepted=True))
     return result
+
+
+def _no_links_extra(c):
+    """游戏库放到建不了目录链接的盘（Windows exFAT / FAT32）会多占多少：按要搬过来的库（moveFrom）或这个文件夹里已有游戏库的款算，
+    每款多两份解包大小（space_rule.pack_need_bytes links=False）→ (字节, 款数)；读不到 / 没有游戏给 (None, 0)，文案按每款说"""
+    for folder in (c.r.get("moveFrom"), c.library):
+        try:
+            games = [g for g in json.loads((Path(folder) / "catalog.json").read_text(encoding="utf-8")).get("games", []) if not g.get("hidden")] if folder else []
+        except (OSError, ValueError):
+            continue
+        if games:
+            return sum(2 * (pack_input_bytes(selected_packages(g)) * 11 // 10) for g in games), len(games)
+    return None, 0
 
 
 def _setup(c):
@@ -844,10 +875,10 @@ def _setup(c):
     if c.r.get("freeDefault") and _occupied(c.library):
         c.library = next((n for n in (c.library.with_name(f"{c.library.name} Library" + (f" {i}" if i > 1 else "")) for i in range(1, 10))
                           if not _occupied(n)), c.library)   # 都被占就原样往下走，由下面报「已有别的文件」
-    require_apfs(c.library)
+    import libloc
+    require_apfs(c.library, accept=bool(c.r.get("acceptFormat")) or libloc.format_accepted(str(c.library)), extra=_no_links_extra(c))
     # 云盘同步目录：认得出的风险，失败码 library_in_cloud，前端问玩家「仍然继续 / 先不」，同意后带 acceptCloud 重发；
     #   这个库确认过（标识里 cloudAccepted）就不再问——启动时连已保存的库也走 setup，否则每次打开都问一遍
-    import libloc
     if not c.r.get("acceptCloud") and not libloc.cloud_accepted(str(c.library)):
         require_local(c.library)
     c.library.mkdir(parents=True, exist_ok=True)
@@ -1197,11 +1228,13 @@ def space_budget(c, game):
     direct_need = pack_direct_bytes(size)
     image = getattr(c, "operation", None) == "ipa"   # 打 iPhone 包写 game.img（写在存放位置）；Mac 打包不写
     loc, cache = _pack_paths(c, game)
-    fmt = volume_format(loc) if os.name != "nt" else ""
-    clones = False if fmt and fmt != "apfs" else None   # 读到是非 APFS（HFS+ 等）才按不克隆多算一份；读不到按 APFS（不多算、不拦）
-    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image, clones=clones) - direct_need
+    fmt = volume_format(loc)
+    clones = False if os.name != "nt" and fmt and fmt != "apfs" else None   # 读到是非 APFS（HFS+ 等）才按不克隆多算一份；读不到按 APFS（不多算、不拦）
+    links = not (os.name == "nt" and fmt and fmt not in ("ntfs", "refs"))   # Windows exFAT / FAT32：建不了目录链接，多两份（space_rule）
+    copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image, clones=clones, links=links) - direct_need
     unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + (f"，单一 IMG {_gb(size)}" if image else "") + \
-        (f"，{fmt.upper()} 盘不能克隆、资源包另占 {_gb(size * 11 // 10)}" if clones is False else "")
+        (f"，{fmt.upper()} 盘不能克隆、资源包另占 {_gb(size * 11 // 10)}" if clones is False else "") + \
+        (f"，{fmt.upper()} 盘建不了目录链接、另占 {_gb(2 * (size * 11 // 10))}" if not links else "")
     direct_note = f"直连着色器上限 {_gb(direct_need)}"
     if loc.stat().st_dev == cache.stat().st_dev:
         parts = [("library", loc, copy_need + direct_need, f"{unpack_note}，{direct_note}")]
@@ -1215,9 +1248,47 @@ def space_budget(c, game):
     return dict(gameBytes=size, volumes=volumes, unknown=[dict(u) for u in SPACE_UNKNOWN])
 
 
+FAT32_FILE_LIMIT = (4 << 30) - 1   # FAT32 单个文件上限（4 GiB − 1 字节）
+
+
+def ntfs_drives():
+    """Windows 本机能放游戏库 / 存放位置的盘（NTFS / ReFS）：[(盘根, 格式, 剩余字节)]，剩余大的在前；不是 Windows 给空"""
+    if os.name != "nt":
+        return []
+    import ctypes, string
+    out = []
+    mask = ctypes.windll.kernel32.GetLogicalDrives()
+    for i, letter in enumerate(string.ascii_uppercase):
+        if not mask >> i & 1:
+            continue
+        root = f"{letter}:\\"
+        fmt = _win_volume_format(root)
+        if fmt in ("ntfs", "refs"):
+            try:
+                out.append((root, fmt.upper(), shutil.disk_usage(root).free))
+            except OSError:
+                pass
+    return sorted(out, key=lambda d: -d[2])
+
+
+def require_fat32_fits(c, game, loc):
+    """FAT32 存放位置：单个文件不能超过 4 GB。打 iPhone 包最后写一个单一 IMG（约等于游戏内容大小），写之前就能算出来——超了物理上做不下去，
+    出包开头就停，列出本机 NTFS 盘让玩家换存放位置（v0.3.1：不等写到一半才失败）；没超照常出"""
+    if os.name != "nt" or getattr(c, "operation", None) != "ipa" or volume_format(loc) not in ("fat32", "fat", "fat16"):
+        return
+    size = pack_input_bytes(selected_packages(game))
+    if size <= FAT32_FILE_LIMIT:
+        return
+    drives = "、".join(f"{root}（{fmt}，剩余 {_gb(free)}）" for root, fmt, free in ntfs_drives()[:4])
+    raise Failure(f"这款游戏的 iPhone 资源包要写成一个约 {_gb(size)} 的文件，存放位置所在的 FAT32 盘单个文件最多 4 GB：在出包页「存放位置」换到 NTFS 格式的盘"
+                  + (f"（这台电脑上可用：{drives}）" if drives else "（这台电脑上没找到 NTFS 盘：接上一块 NTFS 盘，或把一块盘格式化成 NTFS——会清空那块盘）") + "，再出包。",
+                  code="fat32_file_too_large")
+
+
 def check_pack_space(c, game, *, compiler_policy=None):
     """打包前的磁盘预检（Mac 打包与打 iPhone 包共用）：IPA 可先按已有保留规则尝试回收；发最终 space 事件（存任务文件），再按预算拦。
     请求带 spaceOverride: true（玩家在失败页点「仍然继续」）：不拦，只记一条警告；真写满由出包中途的磁盘写满识别报错"""
+    require_fat32_fits(c, game, _pack_paths(c, game)[0])
     budget = space_budget(c, game)
     cache_result = None
     if compiler_policy is not None:
