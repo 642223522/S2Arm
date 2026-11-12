@@ -270,6 +270,14 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_N };
 static uint64_t g_oc[OC_N];
 #define OC(i) __atomic_fetch_add(&g_oc[i], 1, __ATOMIC_RELAXED)
+// ---- 通道对象缓存：渲染通道对象与帧缓冲跨帧保留 ----
+// 原先每开一个通道都 vkCreateRenderPass + vkCreateFramebuffer、所在的段做完再销毁；一帧一百多个通道，目标就那么十几组，每帧重复建销。
+// 做法照 d2r-mobile 安卓笔记 perf-round2 的发现 3：渲染通道对象按「附件描述」记（与具体图像无关，会话结束才销毁）；
+// 帧缓冲按「渲染通道 + 各附件视图 + 尺寸」记，直到其中任何一个视图销毁。视图要等引用它的段都做完才会销毁（cmd_ref 保活），
+// 所以那时用到这个帧缓冲的命令也都做完了，可以当场销毁。表满了的那一个照旧路走（记在段上、段做完销毁）。
+// 调试开关 nvk_pass_cache=0 关掉（缺省开）。
+static void pc_drop_view(VkImageView v);
+static void pc_destroy_all(void);
 static pthread_mutex_t g_submit_mu = PTHREAD_MUTEX_INITIALIZER; // 提交串行化：校验 signal、vkQueueSubmit、入队
 static pthread_cond_t g_cv;
 static int g_cv_ready;
@@ -392,6 +400,7 @@ static void destroy_tex_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_tex_s *t) {
     struct nvn_gpu_tex_s **pp = &vk->texs;
     while (*pp && *pp != t) pp = &(*pp)->all_next;
     if (*pp) *pp = t->all_next;
+    pc_drop_view(t->view);
     if (t->view) vkDestroyImageView(vk->d, t->view, NULL);
     if (t->image) vkDestroyImage(vk->d, t->image, NULL);
     if (t->memory) vkFreeMemory(vk->d, t->memory, NULL);
@@ -402,6 +411,7 @@ static void destroy_view_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_view_s *v)
     struct nvn_gpu_view_s **pp = &vk->views;
     while (*pp && *pp != v) pp = &(*pp)->all_next;
     if (*pp) *pp = v->all_next;
+    pc_drop_view(v->att); pc_drop_view(v->view);
     if (v->att) vkDestroyImageView(vk->d, v->att, NULL);
     if (v->view) vkDestroyImageView(vk->d, v->view, NULL);
     if (v->buffer_view) vkDestroyBufferView(vk->d, v->buffer_view, NULL);
@@ -1038,6 +1048,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         free(sp);
         sp = sn;
     }
+    pc_destroy_all();
     struct nvn_gpu_view_s *vw = g.views;
     g.views = NULL;
     while (vw) {
@@ -2302,6 +2313,62 @@ static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
     return r;
 }
 
+static pthread_mutex_t g_pc_mu = PTHREAD_MUTEX_INITIALIZER;
+static int pc_on(void) { static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_pass_cache", 1) != 0; return on; }
+struct pc_rp { uint32_t natt, ncol; int has_depth; VkAttachmentDescription att[9]; VkAttachmentReference col[8], dref; VkRenderPass rp; };
+static struct pc_rp *g_pc_rp; static uint32_t g_pc_nrp, g_pc_rpcap;
+enum { PC_FB_N = 2048, PC_FB_PROBE = 24 };
+struct pc_fb { VkRenderPass rp; uint32_t natt, w, h, layers; VkImageView v[9]; VkFramebuffer fb; int tomb; };
+static struct pc_fb g_pc_fb[PC_FB_N];
+static VkRenderPass pc_pass(const VkRenderPassCreateInfo *ci, const VkAttachmentDescription *att, uint32_t natt, const VkAttachmentReference *col, uint32_t ncol, const VkAttachmentReference *dref) {
+    VkRenderPass pass = VK_NULL_HANDLE;
+    if (!pc_on() || natt > 9 || ncol > 8) { OC(OC_RP); return vkCreateRenderPass(g.d, ci, NULL, &pass) == VK_SUCCESS ? pass : VK_NULL_HANDLE; }
+    struct pc_rp k; memset(&k, 0, sizeof k); k.natt = natt; k.ncol = ncol; k.has_depth = dref != NULL;
+    memcpy(k.att, att, natt * sizeof *att); memcpy(k.col, col, ncol * sizeof *col); if (dref) k.dref = *dref;
+    pthread_mutex_lock(&g_pc_mu);
+    for (uint32_t i = 0; i < g_pc_nrp; i++) if (!memcmp(&g_pc_rp[i], &k, offsetof(struct pc_rp, rp))) { pass = g_pc_rp[i].rp; pthread_mutex_unlock(&g_pc_mu); return pass; }
+    OC(OC_RP);
+    if (vkCreateRenderPass(g.d, ci, NULL, &pass) != VK_SUCCESS) { pthread_mutex_unlock(&g_pc_mu); return VK_NULL_HANDLE; }
+    if (g_pc_nrp == g_pc_rpcap) { uint32_t cap = g_pc_rpcap ? g_pc_rpcap * 2 : 64; struct pc_rp *n = realloc(g_pc_rp, cap * sizeof *n); if (n) { g_pc_rp = n; g_pc_rpcap = cap; } }
+    if (g_pc_nrp < g_pc_rpcap) { k.rp = pass; g_pc_rp[g_pc_nrp++] = k; }   // 记不下（内存不够）：这个对象留到会话结束也没人销毁；只在分配失败时发生
+    pthread_mutex_unlock(&g_pc_mu);
+    return pass;
+}
+static VkFramebuffer pc_fb(const VkFramebufferCreateInfo *fi, int *cached) {
+    VkFramebuffer fb = VK_NULL_HANDLE; *cached = 0;
+    if (!pc_on() || fi->attachmentCount > 9) { OC(OC_FB); return vkCreateFramebuffer(g.d, fi, NULL, &fb) == VK_SUCCESS ? fb : VK_NULL_HANDLE; }
+    uint64_t h = (uint64_t)(uintptr_t)fi->renderPass * 0x9E3779B97F4A7C15ull ^ ((uint64_t)fi->width << 40 | (uint64_t)fi->height << 16 | fi->layers);
+    for (uint32_t i = 0; i < fi->attachmentCount; i++) h = (h ^ (uint64_t)(uintptr_t)fi->pAttachments[i]) * 0x100000001B3ull;
+    pthread_mutex_lock(&g_pc_mu);
+    int slot = -1;
+    for (uint32_t p = 0; p < PC_FB_PROBE; p++) {
+        struct pc_fb *e = &g_pc_fb[(h + p) % PC_FB_N];
+        if (!e->fb) { if (slot < 0) slot = (int)((h + p) % PC_FB_N); if (!e->tomb) break; continue; }
+        if (e->rp == fi->renderPass && e->natt == fi->attachmentCount && e->w == fi->width && e->h == fi->height && e->layers == fi->layers &&
+            !memcmp(e->v, fi->pAttachments, fi->attachmentCount * sizeof(VkImageView))) { fb = e->fb; *cached = 1; pthread_mutex_unlock(&g_pc_mu); return fb; }
+    }
+    OC(OC_FB);
+    if (vkCreateFramebuffer(g.d, fi, NULL, &fb) != VK_SUCCESS) { pthread_mutex_unlock(&g_pc_mu); return VK_NULL_HANDLE; }
+    if (slot >= 0) { struct pc_fb *e = &g_pc_fb[slot]; memset(e, 0, sizeof *e); e->rp = fi->renderPass; e->natt = fi->attachmentCount; e->w = fi->width; e->h = fi->height; e->layers = fi->layers;
+        memcpy(e->v, fi->pAttachments, fi->attachmentCount * sizeof(VkImageView)); e->fb = fb; *cached = 1; }
+    pthread_mutex_unlock(&g_pc_mu);
+    return fb;
+}
+static void pc_drop_view(VkImageView v) {
+    if (!v) return;
+    pthread_mutex_lock(&g_pc_mu);
+    for (uint32_t i = 0; i < PC_FB_N; i++) { struct pc_fb *e = &g_pc_fb[i]; if (!e->fb) continue;
+        for (uint32_t k = 0; k < e->natt; k++) if (e->v[k] == v) { vkDestroyFramebuffer(g.d, e->fb, NULL); memset(e, 0, sizeof *e); e->tomb = 1; break; } }
+    pthread_mutex_unlock(&g_pc_mu);
+}
+static void pc_destroy_all(void) {
+    pthread_mutex_lock(&g_pc_mu);
+    for (uint32_t i = 0; i < PC_FB_N; i++) if (g_pc_fb[i].fb) vkDestroyFramebuffer(g.d, g_pc_fb[i].fb, NULL);
+    memset(g_pc_fb, 0, sizeof g_pc_fb);
+    for (uint32_t i = 0; i < g_pc_nrp; i++) vkDestroyRenderPass(g.d, g_pc_rp[i].rp, NULL);
+    free(g_pc_rp); g_pc_rp = NULL; g_pc_nrp = g_pc_rpcap = 0;
+    pthread_mutex_unlock(&g_pc_mu);
+}
 static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9], VkAttachmentDescription att[9],
                               VkAttachmentReference col[8], VkAttachmentReference *dref, uint32_t *natt_out, int *has_depth) {
     VkAttachmentReference stencil_ref;
@@ -2384,10 +2451,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
     rp.dependencyCount = 2;
     rp.pDependencies = dep;
     *natt_out = natt;
-    VkRenderPass pass = VK_NULL_HANDLE;
-    OC(OC_RP);
-    if (vkCreateRenderPass(g.d, &rp, NULL, &pass) != VK_SUCCESS) return VK_NULL_HANDLE;
-    return pass;
+    return pc_pass(&rp, att, natt, col, ncol, *has_depth ? dref : NULL);
 }
 
 static void image_barrier(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, VkImageLayout to);
@@ -2416,10 +2480,10 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     fi.width = d->w;
     fi.height = d->h;
     fi.layers = d->layers ? d->layers : 1;
-    VkFramebuffer fb = VK_NULL_HANDLE;
-    OC(OC_FB);
-    if (vkCreateFramebuffer(g.d, &fi, NULL, &fb) != VK_SUCCESS) {
-        vkDestroyRenderPass(g.d, pass, NULL);
+    int fb_cached = 0;
+    VkFramebuffer fb = pc_fb(&fi, &fb_cached);
+    if (!fb) {
+        if (!pc_on()) vkDestroyRenderPass(g.d, pass, NULL);
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "vkCreateFramebuffer 失败");
         return;
     }
@@ -2466,11 +2530,12 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     if (c->npasses == c->passcap) {
         uint32_t cap = c->passcap ? c->passcap * 2 : 8;
         struct pass_rec *np = realloc(c->passes, cap * sizeof *np);
-        if (!np) { vkDestroyFramebuffer(g.d, fb, NULL); vkDestroyRenderPass(g.d, pass, NULL); set_sticky(c, NVN_GPU_E_OOM, "通道列表分配失败"); return; }
+        if (!np) { if (!fb_cached) vkDestroyFramebuffer(g.d, fb, NULL); if (!pc_on()) vkDestroyRenderPass(g.d, pass, NULL); set_sticky(c, NVN_GPU_E_OOM, "通道列表分配失败"); return; }
         c->passes = np;
         c->passcap = cap;
     }
-    c->passes[c->npasses++] = (struct pass_rec){pass, fb};
+    // 记在段上的只有「段做完要销毁」的：没进缓存的帧缓冲、缓存关着时的渲染通道对象
+    if (!fb_cached || !pc_on()) c->passes[c->npasses++] = (struct pass_rec){pc_on() ? VK_NULL_HANDLE : pass, fb_cached ? VK_NULL_HANDLE : fb};
 }
 
 void nvn_gpu_pass_end(nvn_gpu_cmd ch) {
@@ -3294,6 +3359,7 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     pthread_mutex_lock(&g_mu);
     if (!newimg_add_locked(t)) {
         pthread_mutex_unlock(&g_mu);
+        pc_drop_view(t->view);
         vkDestroyImageView(g.d, t->view, NULL);
         vkFreeMemory(g.d, t->memory, NULL);
         vkDestroyImage(g.d, t->image, NULL);
