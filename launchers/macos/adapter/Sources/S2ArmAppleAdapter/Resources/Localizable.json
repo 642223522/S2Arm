@@ -7158,5 +7158,13 @@
  {
   "source": "这个文件夹里已有别的文件。S2Arm 只在自己建的文件和子文件夹里读写，不改也不删它们；以后「搬游戏库」时它们会跟着一起搬到新位置。仍要用这个文件夹吗？不想这样就选一个空文件夹。",
   "en": "This folder already has other files. S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes them; if you move the library later, they move with it. Use this folder anyway? Otherwise choose an empty folder."
+ },
+ {
+  "source": "深度优化方案",
+  "en": "Optimized port"
+ },
+ {
+  "source": "更改",
+  "en": "Change"
  }
 ]
