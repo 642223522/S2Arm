@@ -94,7 +94,7 @@ if [ $xrc != 0 ]; then mkdir -p "$S2A_ROOTS/.failed" && cp "$W/extract.log" "$S2
   echo "【红】$G 抽取失败（$(grep '抽取\]' "$S2A_ROOTS/.failed/${G}_extract.log" | tail -1 | sed "s#$W/extract/#$S2A_ROOTS/.failed/${G}_extract.d/#g" | cut -c1-240)）"; exit 1; fi   # 路径换成留下来的那份（临时根随 root_abort 删了，10-30 塞尔达照红行找日志以为丢了）
 # 降级汇总（v0.3.1）：离线 0 支（direct_gap.txt）、S2Arm 抽取没跑成 / 跳过读不了的部分（extract/s2x/degrade.tsv）→ 产物根 degrade.extract.tsv
 #   （格式同 degrade.rewrite.tsv：阶段 / 类别 / 处数 / 玩家提示 / 说明；出包作业收尾读它上屏、诊断包收它）；没有降级就删掉旧表
-{ rows=$(cat "$W/extract/s2x/degrade.tsv" 2> /dev/null)
+{ rows=$(cat "$W/extract/s2x/degrade.tsv" "$W/extract/split/degrade.tsv" 2> /dev/null)
   [ -s "$W/extract/direct_gap.txt" ] && rows="${rows:+$rows
 }extract	offline_zero	1	这款的着色器没能提前编好，第一次进新场景会卡一下，遇到请反馈	$(head -1 "$W/extract/direct_gap.txt")"
   if [ -n "$rows" ]; then n=$(printf '%s\n' "$rows" | grep -c .)
