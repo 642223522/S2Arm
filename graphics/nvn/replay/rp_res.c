@@ -308,11 +308,15 @@ static void alias_take_over(const alias_key *nk, uint64_t nsize) {
     }
 }
 
+static uint64_t res_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
     if (!t || !t->serial) return NULL;
+    uint64_t r0_ = res_now();
     pthread_mutex_lock(&g_rmu);
+    uint64_t r1_ = res_now(); rp_perf_add(RP_PERF_RES_LOCK, r1_ - r0_);
     struct rp_tex *x = nvn_hm_get(&g_by_serial, &t->serial);
     if (!x) {
+        rp_perf_add(RP_PERF_RES_NEW, 1);
         int cpu = cpu_content(t);
         alias_key k; alias_key_of(&k, t);
         if (!cpu && t->pool) { x = nvn_hm_get(&g_alias, &k); if (x) x->seen = rp_sub_serial() + 1; }   // 同存储同描述的另一个对象已经建过：共用
@@ -339,6 +343,7 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
         if (xc) upload_all(t, x, xc, 1);
     }
     nvn_gpu_tex g = x->g;
+    rp_perf_add(RP_PERF_RES_INIT, res_now() - r1_);   // 持锁做的全部事（查表 / 新建 / 初始化 / 上传）
     pthread_mutex_unlock(&g_rmu);
     return g;
 }
@@ -405,6 +410,7 @@ nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c) {
         } else {
         if (g_vf[slot].view) nvn_gpu_view_release(g_vf[slot].view);
         memset(&g_vf[slot], 0, sizeof g_vf[slot]);
+        rp_perf_add(RP_PERF_RES_VIEWMAKE, 1);
         if (nvn_gpu_ok(nvn_gpu_view_create(x->g, v, &g_vf[slot].view, &err))) { g_vf[slot].serial = t->serial; g_vf[slot].has_v = v != NULL; if (v) g_vf[slot].v = *v; g_vf[slot].of = x; out = g_vf[slot].view; if (g_pin_depth > 0) g_vf_seen[slot] = g_pin_token; }
         else { g_vf[slot].view = NULL; if (nvn_unimpl("gpu", "view_create", t) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); }
         }

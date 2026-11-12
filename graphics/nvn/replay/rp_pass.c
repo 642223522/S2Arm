@@ -197,7 +197,9 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         uint32_t sbytes = 0; const char *why = NULL; int kind = slot_kind(i, &sbytes, &why);
         if (kind < 0) { nvn_unimpl("pass", why, t); continue; }   // 深度 / 块压缩格式的图挂在颜色槽、又走不了影子：当空槽（画到这个槽的内容丢掉）
         view_t av;
+        uint64_t sh0_ = kind ? pb_now() : 0;
         nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, P.clear_c[i]) : rp_view_for(t, att_view(t, P.rt.has_cview[i], &P.rt.cview[i], &av), c);
+        if (kind) rp_perf_add(RP_PERF_PB_SHADOW, pb_now() - sh0_);
         if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         nattached++;
         d.color[i].view = v; d.color[i].store = NVN_GPU_STORE_STORE;
