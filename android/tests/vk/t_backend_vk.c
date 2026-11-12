@@ -1490,6 +1490,32 @@ static void attach_swizzle_case(const char *dir, int explicit_view) {
     nvn_gpu_buf_release(raw, NULL, NULL); nvn_gpu_buf_release(sampled, NULL, NULL);
 }
 
+// 9000 的建视图崩溃参数：12 层 cube-array 图、只取第 0 层和第 0 级。
+// 修前 vkCreateImageView 收到 CUBE_ARRAY + 1 层，VVL 报 viewType-02961。
+static void cube_array_one_face(void) {
+    CHECK(g_dev.core_features.imageCubeArray, "cube-array probe requires imageCubeArray");
+    if (!g_dev.core_features.imageCubeArray) return;
+    nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    td.d.format = NVN_FORMAT_R11G11B10F; td.d.width = 128; td.d.height = 128;
+    td.d.depth = 12; td.d.levels = 8;
+    td.usage = NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_VIEW_FMT;
+    td.swz = 2 | 3 << 3 | 4 << 6 | 1 << 9; // R,G,B,ONE
+    nvn_gpu_tex t = NULL; nvn_gpu_err e = {0};
+    nvn_gpu_rc r = nvn_gpu_tex_create(&td, &t, &e);
+    CHECK(OK(r), "cube-array tex: %d %s", r.code, e.why);
+    if (!OK(r)) return;
+    const int layers[] = {1, 6, 12};
+    for (size_t i = 0; i < sizeof layers / sizeof layers[0]; i++) {
+        view_t vd = {0}; vd.set_levels = 1; vd.base_level = 0; vd.nlevels = 1;
+        vd.set_layers = 1; vd.min_layer = 0; vd.nlayers = (uint16_t)layers[i];
+        nvn_gpu_view v = NULL;
+        r = nvn_gpu_view_create(t, &vd, &v, &e);
+        CHECK(OK(r), "cube-array view %d layers: %d %s", layers[i], r.code, e.why);
+        if (v) nvn_gpu_view_release(v);
+    }
+    nvn_gpu_tex_release(t);
+}
+
 // 数组第 1 层、多 mip 视图与 sRGB 重解释均保留精确的附件子资源与格式。
 static void attach_swizzle_subresource_case(const char *dir, int srgb) {
     nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
@@ -4225,6 +4251,10 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     c69_dual_src_blend(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C69 close：%d %s", e18.rc.code, e18.why);
+
+    if (!open_backend()) return 1;
+    cube_array_one_face();
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "cube-array view close：%d %s", e18.rc.code, e18.why);
 
     for (int sw = 0; sw < 2; sw++) {
         if (!open_backend()) return 1;
