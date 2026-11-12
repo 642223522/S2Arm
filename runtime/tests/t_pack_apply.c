@@ -527,15 +527,19 @@ int main(void) {
               "写不进 → 迁好：返回 1、克隆 3 个文件（romfs.img、a.tar、上一步失败写下的 unpack.log）、新资源包可写、内容一致、旧目录留在 .s2a-unwritable-*（实际 %d / %u / 内容「%s」）", r, s2a_games_repair_files(), buf);
         CHECK(s2a_pack_apply(gd) != 0 && !strstr(s2a_pack_apply_failure(), "写不进"), "迁好后解包不再报目录写不进（这里因夹具不是真包会别的原因失败）：「%s」", s2a_pack_apply_failure());
         CHECK(s2a_games_repair(base) == 0, "迁好后再查：都写得进（返回 0）");
-        // 迁移失败：新游戏目录放一个命名管道（不是普通文件 / 目录 / 链接）再设成写不进
+        // 反防御：读不到的项跳过、读得到的照搬——写不进的游戏目录里放一个命名管道（不是普通文件 / 目录 / 链接）、一个谁都读不了的文件（000）、一个正常文件：
+        //   迁好（返回 1），正常文件搬过去（1 个），管道与读不了的文件跳过（不在新树里），新目录可写、没有残留的 .s2a-games-new-*
         char g2[600]; snprintf(g2, sizeof g2, "%s/games/0100000000DEF000", base); mkdir(g2, 0755);
-        char fifo[700]; snprintf(fifo, sizeof fifo, "%s/pipe", g2); mkfifo(fifo, 0644); chmod(g2, 0555);
+        char fifo[700]; snprintf(fifo, sizeof fifo, "%s/pipe", g2); mkfifo(fifo, 0644);
+        char locked[700]; snprintf(locked, sizeof locked, "%s/locked.bin", g2); { FILE *lf = fopen(locked, "w"); if (lf) { fputs("x", lf); fclose(lf); } } chmod(locked, 0);
+        char okf[700]; snprintf(okf, sizeof okf, "%s/ok.bin", g2); { FILE *of = fopen(okf, "w"); if (of) { fputs("ok", of); fclose(of); } }
+        chmod(g2, 0555);
         int r2 = s2a_games_repair(base);
         snprintf(c, sizeof c, "ls -d '%s'/.s2a-games-new-* >/dev/null 2>&1", base);
         struct stat st2;
-        CHECK(r2 < 0 && strstr(s2a_games_repair_detail(), "不是普通文件") && !stat(fifo, &st2) && sh(c) != 0,
-              "迁移失败：返回负数、原因说明哪一个、原目录原样、新树清掉（实际 %d「%s」）", r2, s2a_games_repair_detail());
-        chmod(g2, 0755);
+        CHECK(r2 == 1 && !stat(okf, &st2) && stat(fifo, &st2) && stat(locked, &st2) && !access(g2, W_OK) && sh(c) != 0,
+              "读不到的跳过、读得到的照搬：返回 1、ok.bin 在新目录、管道与 000 文件不在、新目录可写、新树没残留（实际 %d「%s」）", r2, s2a_games_repair_detail());
+        snprintf(c, sizeof c, "chmod -R u+rw '%s'/.s2a-unwritable-* 2>/dev/null", base); sh(c);
 #endif
         chmod(root, 0755);
         snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", base, base); sh(c);
