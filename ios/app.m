@@ -33,6 +33,7 @@ static void img_scan_if_library(void);   // 下面游戏库段：回前台时认
 void *s2a_shell_library_vc(const char *catalogue_json_path) __attribute__((weak_import));
 void s2a_shell_set_play_handler(void (*fn)(const char *game_id, void *ctx), void *ctx) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_refresh
+// 弱链接[ios]：s2a_shell_test_cloud_picker
 void s2a_shell_refresh(void) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_cloud_sync_vc
 void *s2a_shell_cloud_sync_vc(const char *game_id, void (*done)(void *ctx), void *ctx) __attribute__((weak_import));
@@ -798,9 +799,11 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
 //   超过 0.3 秒还没核完就先弹「正在检查…」（快判成立时几毫秒就回来，不闪这一下）。同时只核一款，核着时再点不重复起
 static atomic_int g_pack_checking;
 static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
-// 测试开关 S2A_TEST_PICKER=cheats|saves（复现「点金手指导入 / 存档导入就卡死」）：库界面可操作后自动弹出同样配置的系统文件选择器
-//   （cheats = vpad_cheats.m 那个：文本、多选、不设起始目录；saves = save_transfer.m 导入那个：任意数据、起始目录 Documents），
+// 测试开关 S2A_TEST_PICKER=cheats|saves|cloud（复现 / 复验「点金手指导入、云存档选文件夹就卡死」）：库界面可操作后自动弹出和按钮同一个系统文件选择器
+//   （cheats = vpad_cheats.m s2a_cheats_import_picker、cloud = 壳 CloudSaves.swift 同一个、saves = save_transfer.m 导入那个配置），
 //   日志记弹出 / 弹完的时刻，60 秒内主线程每卡住 200 ms 以上记一行（看门狗线程每 100 ms 往主线程投一次）。不设开关时什么都不做
+UIDocumentPickerViewController *s2a_cheats_import_picker(void);   // vpad_cheats.m
+void s2a_shell_test_cloud_picker(void) __attribute__((weak_import));   // 壳 CloudSaves.swift（缺省出壳不带库界面时没有）
 @interface S2ATestPickerDelegate : NSObject <UIDocumentPickerDelegate> @end
 @implementation S2ATestPickerDelegate
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls { LOG("测试选择器：选了 %lu 个", (unsigned long)urls.count); }
@@ -810,7 +813,6 @@ static void test_picker(void) {
     const char *kind = getenv("S2A_TEST_PICKER");
     if (!kind || !*kind) return;
     static S2ATestPickerDelegate *delegate; delegate = [S2ATestPickerDelegate new];
-    static _Atomic double last_beat; last_beat = CFAbsoluteTimeGetCurrent();
     double t0 = CFAbsoluteTimeGetCurrent();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // 看门狗：主线程多久没回应
         for (int i = 0; i < 600; i++) {
@@ -827,13 +829,18 @@ static void test_picker(void) {
         LOG("测试选择器：看门狗 60 秒结束");
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!strcmp(kind, "cloud")) {
+            if (!s2a_shell_test_cloud_picker) { LOG("测试选择器：这个壳没带库界面，没有云存档选择器"); return; }
+            LOG("测试选择器：弹出 cloud（库可操作后 %.1f 秒）", CFAbsoluteTimeGetCurrent() - t0);
+            s2a_shell_test_cloud_picker();
+            return;
+        }
         UIDocumentPickerViewController *p;
         if (!strcmp(kind, "saves")) {
             p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
             p.directoryURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
         } else {
-            p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypePlainText, UTTypeText] asCopy:YES];
-            p.allowsMultipleSelection = YES;
+            p = s2a_cheats_import_picker();
         }
         p.delegate = delegate;
         double t1 = CFAbsoluteTimeGetCurrent();
