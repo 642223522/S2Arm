@@ -32,7 +32,8 @@ VkResult nvn_plat_vk_surface_create(VkInstance instance, void *native, VkSurface
     return vkCreateHeadlessSurfaceEXT(instance, &ci, NULL, out);
 }
 int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native; *w = 320; *h = 180; return 1; }
-int nvn_plat_flag(const char *name, int dflt) { (void)name; return dflt; }
+// S2A_TEST_NVK_DQ=1：整套用例在「两级回放开」下再跑一遍（run.sh 第二遍）
+int nvn_plat_flag(const char *name, int dflt) { if (!strcmp(name, "nvk_dq") && getenv("S2A_TEST_NVK_DQ")) return 1; return dflt; }
 void nvn_plat_log(int level, const char *cls, const char *text) { (void)level; printf("[%s] %s\n", cls ? cls : "", text ? text : ""); }
 static int g_tri_origin_ul;   // 1 = 按 NVN 窗口原点在左上画（视口翻转）：期望上下对调。缺省 0 = 原点在左下（Vulkan 的自然方向）
 
@@ -5202,5 +5203,8 @@ int main(int argc, char **argv) {
     printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));
     s2a_vk_device_destroy(&g_dev, 1);   // 最后一个会话已在 t20 close 里证明空闲
+    { extern uint64_t nvn_vk_dbg_dq_recs(void); uint64_t n = nvn_vk_dbg_dq_recs();
+      if (getenv("S2A_TEST_NVK_DQ")) { CHECK(n > 1000, "两级回放开着跑完整套：期望交给录制线程的调用远多于 1000 条 → %llu 条", (unsigned long long)n); printf("两级回放：交给录制线程 %llu 条调用\n", (unsigned long long)n); }
+      else CHECK(n == 0, "两级回放关着：期望没有调用进队列 → %llu 条", (unsigned long long)n); }
     return g_fail ? 1 : 0;
 }
