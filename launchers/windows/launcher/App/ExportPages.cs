@@ -509,69 +509,108 @@ public sealed partial class EnvironmentWindow
         packOperation = RunPackAsync(game, spaceOverride);
     }
 
-    /// 开始出一款前清掉上一款的出包状态（出包页「开始出包」与批量出包 StartBatchPack 共用）
+    /// 开始出一款前清掉上一款的出包状态，并登记这次出包的作业（出包页「开始出包」）
     private void ResetPack(LibraryGame game)
     {
-        packGame = game; packJob = BeginJob(JobKind.Pack, game.Id); packState = "running"; packTrack = new(); packStarted = DateTime.UtcNow;
-        packSeconds = null; packSummary = ""; packDiagnostics = ""; packIpa = null;
-        packIpaBytes = null; packPackBytes = null; packSpace = null; sessionHidden = false; packFailureCode = null;
+        ResetPackView(game);
+        packJob = BeginJob(JobKind.Pack, game.Id);
     }
 
-    private async Task RunPackAsync(LibraryGame game, bool spaceOverride)
+    /// 只清显示：批量出包时编排作业一步换一款，作业登记一批只有一份（BatchPage.cs RunBatchExport）
+    private void ResetPackView(LibraryGame game)
+    {
+        packGame = game; packState = "running"; packTrack = new(); packStarted = DateTime.UtcNow;
+        packSeconds = null; packSummary = ""; packDiagnostics = ""; packIpa = null;
+        packIpaBytes = null; packPackBytes = null; packSpace = null; sessionHidden = false; packFailureCode = null;
+        exportStepEnded = false; exportChildReport = null;
+    }
+
+    /// <summary>出包页单款：同批量出包走出包编排作业（剃刀 H13），计划只有这一款的 iPhone、不写批次文件</summary>
+    private Task RunPackAsync(LibraryGame game, bool spaceOverride) =>
+        RunExportAsync(ExportStream.InlinePlan(game.Id, game.Name, ["iphone"], packLocation, spaceOverride), batch: false);
+
+    // 这一步收到 stepEnded 没有（没收到 = 编排作业在第一步前就结束了：被拒、已有一个在出、取消）；子作业的终态（失败页的原因 / 建议从这里读）
+    private bool exportStepEnded;
+    private LibraryJobResult? exportChildReport;
+
+    /// <summary>跑一个出包编排作业：每一步的开始 / 子作业事件 / 结局都由 OnExportEvent 显示；取消 = 取消这个作业（它把正在出的那步停下）</summary>
+    private async Task RunExportAsync(Dictionary<string, object?> plan, bool batch)
     {
         var front = packJob!;
+        LibraryJobOutput? job = null;
+        string? error = null, endState = null;
         try
         {
-            var extra = new Dictionary<string, object?>();
-            if (spaceOverride) extra["spaceOverride"] = true;
-            if (packLocation is not null) extra["location"] = packLocation;   // pack/jobs/library.py apply_location：在别的位置就先整个搬过去
-            var job = await PackJobClient.RunAsync(PackRequest("ipa", game.Id, extra),
-                e => Dispatcher.UIThread.Post(() =>
-                {
-                    packTrack.Ingest(e, Clock);
-                    // space event: { "type": "space", "space": { "volumes": [...] } }
-                    if (e.TryGetProperty("type", out var et) && et.GetString() == "space" &&
-                        e.TryGetProperty("space", out var sp))
-                        packSpace = PackSpace.TryParse(sp);
-                }), front.Token, front.Next());
-            packState = job.Report.State;
-            packSummary = job.Report.Message;
-            packDiagnostics = JobDiagnostics(job);
-            packFailureCode = job.Report.Succeeded ? null : DiagnosticCode(job.Report.Diagnostics);
-            if (job.Report.Succeeded)
-            {
-                if (job.Report.Result.TryGetProperty("ipa", out var ipa) && ipa.ValueKind == JsonValueKind.String)
-                    packIpa = ipa.GetString();
-                if (job.Report.Result.TryGetProperty("ipaBytes", out var ib) && ib.ValueKind == JsonValueKind.Number)
-                    packIpaBytes = ib.GetInt64();
-                if (job.Report.Result.TryGetProperty("packBytes", out var pb) && pb.ValueKind == JsonValueKind.Number)
-                    packPackBytes = pb.GetInt64();
-            }
+            job = await PackJobClient.RunAsync(PackRequest("export", "", new Dictionary<string, object?> { ["plan"] = plan }),
+                e => Dispatcher.UIThread.Post(() => OnExportEvent(e, batch)), front.Token, front.Next());
         }
-        catch (LibraryProtocolException error) { packState = "invalid"; packDiagnostics = error.Message; }
-        catch (OperationCanceledException) { packState = "cancelled"; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
+        catch (LibraryProtocolException e) { endState = "invalid"; error = e.Message; }
+        catch (OperationCanceledException) { endState = "cancelled"; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             PlatformNotSupportedException or System.ComponentModel.Win32Exception)
-        { packState = "failed"; packDiagnostics = error.Message; }
+        { endState = "failed"; error = e.Message; }
         finally
         {
-            // Posted events may still be queued: finish the track after them.
+            // 事件还在排队：排在它们后面收尾
             Dispatcher.UIThread.Post(() =>
             {
-                packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
+                if (!exportStepEnded && packGame is not null && !batch)
+                {
+                    // 第一步还没结束编排作业就停了：整个作业的结局就是这一款的结局（被拒、已有一个在出、取消、起不来）
+                    packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
+                    packState = endState ?? (job!.Report.State == "succeeded" ? "failed" : job.Report.State);
+                    packSummary = job?.Report.Message ?? "";
+                    packDiagnostics = job is not null ? JobDiagnostics(job) : error ?? "";
+                    packFailureCode = job is not null ? DiagnosticCode(job.Report.Diagnostics) : null;
+                }
                 EndJob(front); if (packJob == front) packJob = null;
-                // 换了存放位置 / 第一次建文件夹：游戏库里这款的位置变了（搬到一半失败也可能已经动了），重读游戏库，出包页下次重读位置表
-                // 出好了（卡片上的 iPhone 就绪状态要更新）或换了存放位置：重读游戏库（社区贡献者补丁 #7：原先只有换位置才重读，卡片停在旧状态）
-                if (packState == "succeeded" || packLocation is not null && !SameFolder(packLocation, game.Location?.Path ?? "")) { locationsFor = null; _ = RefreshLibraryAsync(); }   // 在忙就补刷（剃刀 W8）
+                Render();
+                if (batch) _ = BatchExportEndedAsync(job?.Report, error);
+            });
+        }
+    }
+
+    /// <summary>编排作业的一条事件（UI 线程）：step 换到这一款、child 喂进度、stepEnded 记这一款的结局</summary>
+    private void OnExportEvent(JsonElement e, bool batch)
+    {
+        ExportStream.Event? ev;
+        try { ev = ExportStream.Read(e); }
+        catch (LibraryProtocolException error) { if (batch) batchError = error.Message; else packDiagnostics = error.Message; return; }
+        switch (ev)
+        {
+            case ExportStream.Started started:
+                if (batch && BatchGame(started.Where.GameId) is { } next) { packLocation = batchState?.Location; ResetPackView(next); sessionHidden = true; }
+                exportStepEnded = false; exportChildReport = null;
+                if (batch) _ = ReloadBatchAsync(); else Render();
+                break;
+            case ExportStream.Child child:
+                packTrack.Ingest(child.Inner, Clock);
+                // space event: { "type": "space", "space": { "volumes": [...] } }
+                if (child.Inner.TryGetProperty("type", out var et) && et.GetString() == "space" && child.Inner.TryGetProperty("space", out var sp))
+                    packSpace = PackSpace.TryParse(sp);
+                if (ExportStream.ChildResult(child.Inner) is { } report) exportChildReport = report;
+                break;
+            case ExportStream.Ended ended:
+                var o = ended.Outcome;
+                packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
+                packState = o.State == "completed" ? "succeeded" : o.State;
+                packSummary = o.Message; packIpa = o.Ipa; packIpaBytes = o.IpaBytes; packPackBytes = o.PackBytes; packFailureCode = o.Code;
+                packDiagnostics = exportChildReport is { } r
+                    ? JobDiagnostics(new LibraryJobOutput(r, new ProbeOutput(r.State == "succeeded" ? 0 : r.State == "cancelled" ? 130 : 1, "", "")))
+                    : o.Message;
+                exportStepEnded = true;
+                // 出好了（卡片上的 iPhone 就绪状态要更新）或换了存放位置：重读游戏库，出包页下次重读位置表（社区贡献者补丁 #7）
+                var game = BatchGame(ended.Where.GameId);
+                if (packState == "succeeded" || packLocation is not null && game is not null && !SameFolder(packLocation, game.Location?.Path ?? ""))
+                { locationsFor = null; _ = RefreshLibraryAsync(); }   // 在忙就补刷（剃刀 W8）
                 if (packState == "succeeded")
                 {
                     readinessFor = null;
-                    if (packGame is not null)
-                        finishedPacks[packGame.Id] = (packState, packIpa ?? "", packIpaBytes, packPackBytes, packSeconds ?? 0);
+                    if (packGame is not null) finishedPacks[packGame.Id] = (packState, packIpa ?? "", packIpaBytes, packPackBytes, packSeconds ?? 0);
                 }
+                if (batch) _ = ReloadBatchAsync();
                 Render();
-                if (batchRunning) _ = BatchPackEndedAsync(game);   // 批量出包：记这款的结果、接着出下一款（BatchPage.cs）
-            });
+                break;
         }
     }
 

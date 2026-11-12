@@ -208,10 +208,6 @@
   "en": "Not measured"
  },
  {
-  "source": "在等「{0}」结束…",
-  "en": "Waiting for \u201c{0}\u201d to finish…"
-},
-{
   "source": "本机历史 · {0} 次记录",
   "en": "Local history · {0} records"
  },
@@ -5188,6 +5184,14 @@
   "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
  },
  {
+  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
+  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
+ },
+ {
+  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
+  "en": "Choose which iPhone or iPad to install to on the install page, then install."
+ },
+ {
   "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
   "en": "Check the signing error in the job log. Confirm that Xcode can sign for this iPhone with your account, or install with AltStore."
  },
@@ -6944,28 +6948,12 @@
   "en": "The game still runs; it just stutters briefly the first few times it reaches a new scene (shaders compile on first use and are remembered). Please export diagnostics and send them to us; after the fix, packaging again prebuilds them."
  },
  {
-  "source": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",
-  "en": "Try starting it again. If it happens again, export a diagnostics package from Environment Check and attach it to a GitHub issue so we can fix the crash."
- },
- {
-  "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
-  "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
- },
- {
-  "source": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
-  "en": "Choose which iPhone or iPad to install to on the install page, then install."
- },
- {
   "source": "没说要装到哪台设备：在装机页选好 iPhone / iPad 再装。",
   "en": "No device chosen: choose an iPhone or iPad on the install page, then install."
  },
  {
   "source": "{0}「{1}」现在不在线：插上数据线，或让它和这台电脑连同一个 Wi-Fi 并解锁，再试一次。",
   "en": "{0} “{1}” is offline: plug it in with a cable, or unlock it on the same Wi-Fi as this computer, then try again."
- },
- {
-  "source": "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。",
-  "en": "The chosen device ({0}) hasn't been paired with this computer yet: plug it in, unlock it and tap Trust on the device (after that it can also install over the same Wi-Fi)."
  },
  {
   "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
@@ -7034,6 +7022,58 @@
  {
   "source": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
   "en": "Drive format not supported: this drive doesn't support the file operations exporting needs (common on exFAT / FAT external drives)."
+ },
+ {
+  "source": "批次记录（数据目录下的 batch.json）写不进：检查数据目录所在磁盘的空间与权限，处理后在批量出包页点「继续」；已出好的包都在。",
+  "en": "The batch record (batch.json in the data folder) couldn't be written: check free space and permissions on that disk, then click \"Continue\" on the batch export page. Finished games are kept."
+ },
+ {
+  "source": "批次记录没写成（batch.json：{0}）：这一批停在这里，已出好的不受影响。",
+  "en": "The batch record wasn't saved (batch.json: {0}). The batch stopped here; finished games are kept."
+ },
+ {
+  "source": "批次文件不见了或读不出（batch.json）：这一批停在这里，已出好的不受影响。",
+  "en": "The batch file (batch.json) is missing or unreadable. The batch stopped here; finished games are kept."
+ },
+ {
+  "source": "已经有一个出包在进行：等它出完或取消后再出。",
+  "en": "Another export is already running. Wait for it to finish, or cancel it, then try again."
+ },
+ {
+  "source": "没有进行中的批次：先在批量出包页建好这一批。",
+  "en": "There's no batch in progress. Set one up on the batch export page first."
+ },
+ {
+  "source": "磁盘空间不足，这一批暂停了：释放空间后点「重试」接着出，已出好的不受影响。",
+  "en": "Not enough disk space, so the batch is paused. Free up space, then click \"Retry\" to continue. Finished games are kept."
+ },
+ {
+  "source": "这一步的出包作业没有给出结局就退出了（详见这一步的日志）。",
+  "en": "This export step exited without reporting a result (see this step's log)."
+ },
+ {
+  "source": "出 {0}（{1}）",
+  "en": "Exporting {0} ({1})"
+ },
+ {
+  "source": "出包计划不完整：plan.source 只认 inline / batch。",
+  "en": "The export plan is incomplete: plan.source must be inline or batch."
+ },
+ {
+  "source": "启动器退出了，这一批停在第 {0} 款：重开启动器后点「继续剩下的」，只出还没出的。",
+  "en": "The launcher was closed, so the batch stopped at game {0}. Reopen the launcher and click \"Continue the rest\" to export only what's left."
+ },
+ {
+  "source": "在等「{0}」结束…",
+  "en": "Waiting for “{0}” to finish…"
+ },
+ {
+  "source": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",
+  "en": "Try starting it again. If it happens again, export a diagnostics package from Environment Check and attach it to a GitHub issue so we can fix the crash."
+ },
+ {
+  "source": "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。",
+  "en": "The chosen device ({0}) hasn't been paired with this computer yet: plug it in, unlock it and tap Trust on the device (after that it can also install over the same Wi-Fi)."
  },
  {
   "source": "重新打开 S2Arm（会自动修好），再从电脑推送一次。",

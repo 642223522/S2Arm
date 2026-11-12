@@ -26,7 +26,7 @@ struct JobSessionView: View {
         case .stopping: return loc.t(play ? "s2arm.play.stopping" : "s2arm.job.stopping")
         case .finished(.completed): return loc.t(play ? "s2arm.play.completed" : "s2arm.job.done." + session.kind.rawValue)
         case .finished(.cancelled): return loc.t(play ? "s2arm.play.cancelled" : "s2arm.job.cancelled")
-        case .finished(.failed): return loc.t(play ? "s2arm.play.failed" : "s2arm.job.failed")
+        case .finished(.failed), .finished(.paused): return loc.t(play ? "s2arm.play.failed" : "s2arm.job.failed")   // paused：出包会话按「没全成」收尾，不会停在它
         case .finished(.interrupted): return loc.t(play ? "s2arm.play.interrupted" : "s2arm.job.interrupted")
         }
     }
