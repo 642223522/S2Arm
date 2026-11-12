@@ -92,7 +92,7 @@ Some games have a deep port made specially by the community. S2Arm recognizes th
 
 | Route | Project | Devices | Contract |
 |---|---|---|---|
-| D2R-Mobile | [jhaizhou-ops/d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) | iPhone / iPad (Android and HarmonyOS in progress) | [docs/S2ARM.md](https://github.com/jhaizhou-ops/d2r-mobile/blob/main/docs/S2ARM.md) |
+| D2R-Mobile | [jhaizhou-ops/d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) | iPhone / iPad (iOS 26 and later; Android and HarmonyOS in progress) | [docs/S2ARM.md](https://github.com/jhaizhou-ops/d2r-mobile/blob/main/docs/S2ARM.md) |
 
 ## Getting started
 

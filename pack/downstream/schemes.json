@@ -32,14 +32,16 @@
         "zh": {
           "title": "这款有专门的深度优化方案",
           "body": "用原版方案出的包，这款播完开场动画后会报「验证失败」，进不了主菜单。推荐用 D2R-Mobile 方案：专为这款做的移植，离线单机、60 帧、整套触屏操作。",
-          "points": ["只支持 1.0.34.0 更新", "手机上会多一个独立 App（免费 Apple ID 最多装 3 个 App）", "游戏资源约 5.6 GB，第一次装到手机要推一次"],
+          "points": ["只支持 1.0.34.0 更新",
+            "手机要 iOS 26 及以上", "手机上会多一个独立 App（免费 Apple ID 最多装 3 个 App）", "游戏资源约 5.6 GB，第一次装到手机要推一次"],
           "recommend": "用 D2R-Mobile 方案（推荐）",
           "original": "仍用原版方案"
         },
         "en": {
           "title": "This game has a dedicated, deeply optimized port",
           "body": "With the standard route, this game shows \"verification failed\" after the opening cinematic and never reaches the main menu. We recommend the D2R-Mobile route: a port made for this game, fully offline, 60 fps, with complete touch controls.",
-          "points": ["Supports update 1.0.34.0 only", "Your phone gets one more separate app (a free Apple ID can install at most 3 apps)", "About 5.6 GB of game resources are copied to the phone once"],
+          "points": ["Supports update 1.0.34.0 only",
+            "The phone needs iOS 26 or later", "Your phone gets one more separate app (a free Apple ID can install at most 3 apps)", "About 5.6 GB of game resources are copied to the phone once"],
           "recommend": "Use D2R-Mobile (recommended)",
           "original": "Keep the standard route"
         }
