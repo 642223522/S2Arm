@@ -57,6 +57,12 @@ The separate `android_fps_table` CTest exercises the 60 FPS patch table, not
 the overlay sampler. Its enabled scenario explicitly sets `S2A_FPS60=1`;
 leaving the variable unset preserves the game's native frame-rate policy.
 
+The protected device runner requires a POSIX host (`fcntl`, `fork`, and
+process-exit monitoring); native Windows Python cannot provide this lock.
+Its `getprop` preflight accepts multiline property values, including boot
+history, while still rejecting malformed, duplicate, or incomplete records.
+This does not bypass debug-property admission or installation-state protection.
+
 ## Which build path to use
 
 Docker is no longer the default way to build Android packages. The backend is

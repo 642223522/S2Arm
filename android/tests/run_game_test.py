@@ -2211,6 +2211,14 @@ class RunGameTest(unittest.TestCase):
         st = json.loads((self.tmp / "state.json").read_text())
         self.assertEqual("1", st["props_at_launch"]["debug.s2a.mem_shared"])
 
+    def test_debug_props_multiline_values(self):
+        device = mock.Mock(argv=["adb"])
+        raw = (b"[persist.sys.boot.reason.history]: [shutdown,battery,123\n"
+               b"reboot,userrequested,456]\n[debug.s2a.query_wait]: [1]\n")
+        with mock.patch.object(run_game.subprocess, "run", return_value=
+                               subprocess.CompletedProcess([], 0, raw, b"")):
+            self.assertEqual({"debug.s2a.query_wait": "1"}, run_game.read_debug_props(device))
+
     def test_debug_prop_preflight_getprop_failure(self):
         for kind, fault in (("rc", {"getprop_all_fail": True}),
                             ("stderr", {"getprop_all_stderr": True}),

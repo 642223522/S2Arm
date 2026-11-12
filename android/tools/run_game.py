@@ -1410,14 +1410,18 @@ def read_debug_props(device):
         raise Refuse("getprop 全量输出为空或不完整")
     props = {}
     seen = set()
-    for line in data.splitlines():
-        match = re.fullmatch(r"\[([^]\r\n]+)\]: \[(.*)\]", line)
-        if not match or match.group(1) in seen:
-            raise Refuse(f"getprop 全量输出格式错误或键重复：{line!r}")
+    position = 0
+    for match in re.finditer(r"\[([^]\r\n]+)\]: \[(.*?)\]\r?\n", data, re.DOTALL):
         key, value = match.groups()
+        if (match.start() != position or key in seen
+                or re.search(r"\n\[[^]\r\n]+\]: \[", value)):
+            raise Refuse("getprop 全量输出格式错误或键重复")
+        position = match.end()
         seen.add(key)
         if key.startswith("debug.s2a."):
             props[key] = value
+    if position != len(data):
+        raise Refuse("getprop 全量输出格式错误或不完整")
     return props
 
 
