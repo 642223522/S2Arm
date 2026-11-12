@@ -1085,6 +1085,7 @@
       {"id": "export.done.time", "zh-Hans": "用时", "en": "Time"},
       {"id": "export.done.ipa", "zh-Hans": "安装包", "en": "App"},
       {"id": "export.done.pack", "zh-Hans": "资源包", "en": "Resources"},
+      {"id": "export.done.notes", "zh-Hans": "出好了，有几处用了兼容做法", "en": "Done, with a few compatibility workarounds"},
       {"id": "export.done.macSize", "zh-Hans": "运行版本", "en": "Game files"},
       {"id": "export.done.install", "zh-Hans": "一键装到 iPhone", "en": "Install on iPhone"},
       {"id": "export.done.install_ipad", "zh-Hans": "一键装到 iPad", "en": "Install on iPad"},

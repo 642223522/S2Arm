@@ -392,6 +392,15 @@ struct ExportSessionView: View {
                 if platform == .ios, let bytes = o.packBytes { bigStat(x("done.pack"), size(bytes)) }
                 Spacer(minLength: 0)
             }
+            if !o.notes.isEmpty {   // 降级继续的玩家提示（作业层原句）：出成了照常给按钮，这里说清哪里用了兼容做法
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(x("done.notes"), systemImage: "exclamationmark.triangle.fill").font(.manrope(14, .bold)).foregroundStyle(LauncherPalette.building)
+                    ForEach(o.notes, id: \.self) { note in
+                        Text(note).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .combine).accessibilityIdentifier("result.\(platform == .ios ? "ios" : "mac").notes")
+            }
             HStack(spacing: 14) {
                 if platform == .ios {
                     Button { install(session.gameID ?? "") } label: { LauncherHeroActionLabel(title: x("done.install"), symbol: "iphone") }
