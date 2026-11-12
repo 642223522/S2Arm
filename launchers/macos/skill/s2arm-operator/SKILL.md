@@ -168,6 +168,10 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | 「签名快到期了」/ App 打不开（7 天到期） | 连上手机再 `install` 一次，存档和已拷的资源都还在 |
 | 「这款游戏最近几次都没能启动」/ 反复闪退 / 画面卡住 | `s2armctl diag pull` 拉回手机诊断、`s2armctl diag export ~/Desktop/S2Arm-诊断.zip` 导出诊断包，帮玩家反馈（见「反馈问题」） |
 
+## 游戏里出的问题（画面 / 帧率 / 卡顿 / 闪退）
+
+游戏已经装好、能打开，问题出在游戏里时，读 [player-game-triage](../../../../skills/player-game-triage/SKILL.md)：先做不碰源码的自查（版本、这款的启动设置、内存、签名、资源），再收诊断；你能改代码的话，按里面的分诊进对应 skill 根修、提 PR；修不了再回报。
+
 ## 反馈问题
 
 解决不了时帮玩家整理反馈：
