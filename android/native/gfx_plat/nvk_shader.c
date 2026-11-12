@@ -18,6 +18,8 @@
 #include "direct/offline_library.h"
 #include "direct/program_cache.h"
 #include "direct/sha256.h"
+#include "direct/jv.h"
+#include "s2a_direct_host.h"
 #include "nvn/nvn_vk_program_result.h"
 #include "nvn/nvn_vk_compute_request.h"
 #include <stdio.h>
@@ -28,18 +30,101 @@ struct entry { struct rp_prog prog; int failed; };
 static nvn_hmap g_progs = {.klen = 32};   // 内容身份（SHA-256）→ struct entry *
 static struct { uint64_t session, generation; uint8_t sha[32]; int ok; } g_profile;
 static uint64_t g_n_offline, g_n_cache, g_n_compiled, g_n_failed;
-static int g_texpool_logged, g_texpool_last_over_limit;
+static int g_texpool_logged, g_texpool_last_over_limit, g_texpool_diag;
+static uint64_t g_pool_programs, g_pool_attempts, g_pool_compiled, g_pool_rejected, g_pool_unsupported;
+static uint64_t g_pool_request_rejected, g_pool_request_facts, g_pool_request_other;
+static struct { char name[80]; uint64_t count; } g_pool_reasons[64];
+static unsigned g_pool_reason_count;
 
 static void sha256(const void *p, size_t n, uint8_t out[32]) { s2a_sha256 c; s2a_sha256_init(&c); s2a_sha256_update(&c, p, n); s2a_sha256_final(&c, out); }
 static void red1(const char *name, const char *why) { if (nvn_unimpl("shader", name, NULL) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "shader", why); }
+static void pool_stats(const char *phase) {
+    if (!g_texpool_diag) return;
+    char line[320];
+    snprintf(line, sizeof line, "texture_pool_program_stats phase=%s programs=%llu compile_attempts=%llu compile_successes=%llu compile_rejected=%llu array_unsupported=%llu request_rejected=%llu",
+        phase, (unsigned long long)g_pool_programs, (unsigned long long)g_pool_attempts,
+        (unsigned long long)g_pool_compiled, (unsigned long long)g_pool_rejected,
+        (unsigned long long)g_pool_unsupported, (unsigned long long)g_pool_request_rejected);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    for (unsigned i = 0; i < g_pool_reason_count; i++) {
+        snprintf(line, sizeof line, "texture_pool_compile_reject reason=%s count=%llu", g_pool_reasons[i].name,
+                 (unsigned long long)g_pool_reasons[i].count);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    }
+    if (g_pool_request_facts) {
+        snprintf(line, sizeof line, "texture_pool_request_reject reason=descriptor_pool_facts count=%llu", (unsigned long long)g_pool_request_facts);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    }
+    if (g_pool_request_other) {
+        snprintf(line, sizeof line, "texture_pool_request_reject reason=other count=%llu", (unsigned long long)g_pool_request_other);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    }
+}
+/* The normal Android process exit calls this after services/GPU stop. It does
+ * not pass through rp_shader_reset, which belongs to session retirement. */
+static void pool_final_summary(int normal) {
+    if (normal && (g_pool_programs || g_pool_request_rejected)) pool_stats("final");
+}
+/* The producer's failure summary embeds its s2a-direct-error-v1 JSON. Missing,
+ * truncated or malformed errors stay explicitly unclassified. */
+static void compiler_rejected(const char *summary) {
+    if (!g_texpool_diag) return;
+    char code[64] = "", message[256] = "", schema[48] = "", reason[80] = "unclassified";
+    const char *p = strstr(summary, " 原因=");
+    if (p) {
+        p += strlen(" 原因=");
+        struct s2a_jv doc = {p, strlen(p)}, v;
+        if (s2a_jv_is_object(doc) && !s2a_jv_obj_find(doc, "schema", &v) && !s2a_jv_str(v, schema, sizeof schema) &&
+            !strcmp(schema, "s2a-direct-error-v1") && !s2a_jv_obj_find(doc, "code", &v) && !s2a_jv_str(v, code, sizeof code) &&
+            !s2a_jv_obj_find(doc, "message", &v) && !s2a_jv_str(v, message, sizeof message)) {
+            size_t n = strspn(code, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+            if (n && n == strlen(code)) snprintf(reason, sizeof reason, "%s", code);
+            if (!strcmp(code, "UNSUPPORTED_PROGRAM") && strstr(message, "texture handle from cbuf slot "))
+                snprintf(reason, sizeof reason, "cbuf_handle_unsupported");
+            else if (!strcmp(code, "UNSUPPORTED_PROGRAM") && strstr(message, "separate sampler slot is not implemented"))
+                snprintf(reason, sizeof reason, "separate_sampler_unsupported");
+            else if (!strcmp(code, "MISSING_FACT")) {
+                snprintf(reason, sizeof reason, "MISSING_FACT.unclassified");
+                size_t method = strspn(message, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_");
+                if (method && method < 64 && ((message[0] >= 'A' && message[0] <= 'Z') ||
+                    (message[0] >= 'a' && message[0] <= 'z')) &&
+                    !strncmp(message + method, " has no source (", strlen(" has no source (")))
+                    snprintf(reason, sizeof reason, "MISSING_FACT.%.*s", (int)method, message);
+                else if (strstr(message, ": control segment is shorter than 0x758"))
+                    snprintf(reason, sizeof reason, "MISSING_FACT.control_segment");
+                else if (!strncmp(message, "control section for stage ", strlen("control section for stage ")))
+                    snprintf(reason, sizeof reason, "MISSING_FACT.control_section");
+                else if (!strncmp(message, "request.program.textures[", strlen("request.program.textures[")) &&
+                         strstr(message, "].format is not a TextureFormat name"))
+                    snprintf(reason, sizeof reason, "MISSING_FACT.texture_format");
+            }
+        }
+    }
+    unsigned i = 0;
+    for (; i < g_pool_reason_count; i++) if (!strcmp(g_pool_reasons[i].name, reason)) break;
+    if (i == 63 && i == g_pool_reason_count) snprintf(reason, sizeof reason, "other");
+    if (i == g_pool_reason_count) {
+        if (i == 64) i = 63;
+        else { snprintf(g_pool_reasons[i].name, sizeof g_pool_reasons[i].name, "%s", reason); g_pool_reason_count++; }
+    }
+    g_pool_reasons[i].count++; g_pool_rejected++;
+    if (g_pool_rejected == 1 || !(g_pool_rejected % 50)) pool_stats("progress");
+}
+static void array_unsupported(const char *why) {
+    nvn_unimpl("shader", "texture_pool_array_unsupported", NULL);
+    nvn_plat_log(NVN_PLAT_LOG_RED, "shader", why);
+    if (g_texpool_diag) { g_pool_unsupported++; pool_stats("progress"); }
+}
 
-// 编译器 DirectProgram 的 program.textureArrayLength 合同：1..65536。
+// 编译器 DirectProgram 的 program.textureArrayLength 合同：1..1048576。
 // 不修改池值；零/负数是没有有效绑定，超限的真实值必须留在错误里。
 static int shader_texture_pool_ready(void) {
     const int n = rp_S.tex_pool_n;
     if (n > 0 && !g_texpool_logged) {
         g_texpool_logged = 1;
-        if (nvn_plat_flag("nvk_texpool_log", 0)) {
+        g_texpool_diag = nvn_plat_flag("nvk_texpool_log", 0);
+        if (g_texpool_diag) {
+            s2a_direct_summary_register(pool_final_summary);
             char line[160];
             snprintf(line, sizeof line, "texture_pool_capacity=%d sampler_pool_capacity=%d", n, rp_S.samp_pool_n);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
@@ -50,10 +135,10 @@ static int shader_texture_pool_ready(void) {
         red1("texture_pool_missing", why);
         return 0;
     }
-    if (n > 65536) {
+    if (n > 1048576) {
         uint64_t count = nvn_unimpl("shader", "texture_pool_over_limit", NULL);
         if (count == 1 || g_texpool_last_over_limit != n) {
-            char why[128]; snprintf(why, sizeof why, "贴图池容量 %d 超过编译器上限 65536", n);
+            char why[128]; snprintf(why, sizeof why, "贴图池容量 %d 超过编译器上限 1048576", n);
             nvn_plat_log(NVN_PLAT_LOG_RED, "shader", why);
             g_texpool_last_over_limit = n;
         }
@@ -247,7 +332,11 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
     struct entry *e = calloc(1, sizeof *e);
     struct fd_program fp; char why[192] = "";
     memset(&fp, 0, sizeof fp);
-    if (nvn_vk_program_parse_graphics_stages(bytes, len, &fp, nst == 1, why, sizeof why)) { red1("program_parse_failed", why); e->failed = 1; return e; }
+    int parsed = nvn_vk_program_parse_graphics_stages(bytes, len, &fp, nst == 1, why, sizeof why);
+    if (parsed) {
+        if (parsed == NVK_PROGRAM_ARRAY_UNSUPPORTED) array_unsupported(why); else red1("program_parse_failed", why);
+        nvn_vk_program_free(&fp); e->failed = 1; return e;
+    }
     e->prog.support_bytes = fp.support_bytes; e->prog.attr_mask = fp.stage[0].attr_mask;
     e->prog.color_out_mask = nst == 2 && fp.stage[1].present ? fp.stage[1].fragment_output_map : 0xffffffffu;
     { static int said; if (nst == 2 && said < 40 && nvn_plat_flag("nvk_drawlog", 0)) { said++; char m[96]; snprintf(m, sizeof m, "片元输出映射 %#x（片元代码 %zu 字节）", (unsigned)e->prog.color_out_mask, fp.stage[1].spirv_bytes); nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", m); } }
@@ -357,6 +446,7 @@ static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **ou
     if (!e) {
         struct s2a_source_entry_view views[2]; memset(views, 0, sizeof views);
         for (int st = 0; st < nst; st++) if (!s2a_source_get_key(stage_key((unsigned)st), &views[st]) || !views[st].complete)   /* get_key：1 = 命中 */ { nvn_unimpl("shader", "source_snapshot_incomplete", NULL); return -1; }
+        if (g_texpool_diag) g_pool_programs++;
         uint8_t *bytes = NULL; size_t len = 0; char why[256] = "";
         const char *root = getenv("S2A_SHADER_REVISION_ROOT"), *cdir = getenv("S2A_DIRECT_CACHE_DIR");
         if (root && pc.profile_hash && pc.profile_hash[0] && !nvn_plat_flag("no_offline", 0)) {
@@ -386,15 +476,17 @@ static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **ou
             char *json = NULL; size_t jl = 0; char gaps[1024] = "";
             if (s2a_compile_request_build(&in, &json, &jl, gaps, sizeof gaps)) { red1("request_build_failed", gaps); return -1; }
             struct s2a_compile_outcome oc; memset(&oc, 0, sizeof oc);
+            if (g_texpool_diag) g_pool_attempts++;
             int ran = s2a_compile_request_execute(in.session, in.generation, json, jl, &oc);
             free(json);
             if (ran || !oc.bytes || !oc.bytes_len) {
-                g_n_failed++; red1("compile_failed", oc.summary);
+                g_n_failed++; red1("compile_failed", oc.summary); compiler_rejected(oc.summary);
                 s2a_compile_outcome_free(&oc);
                 e = calloc(1, sizeof *e); e->failed = 1; nvn_hm_put(&g_progs, sha, e);   // 同一份输入不再反复编
                 return -1;
             }
             bytes = oc.bytes; len = oc.bytes_len; oc.bytes = NULL; s2a_compile_outcome_free(&oc); g_n_compiled++;
+            if (g_texpool_diag) { g_pool_compiled++; if (g_pool_attempts == 1 || !(g_pool_attempts % 50)) pool_stats("progress"); }
             if (cdir && !nvn_plat_flag("no_disk_cache", 0)) s2a_program_cache_store_async(cdir, sha, bytes, len);
         }
         e = build(bytes, len, views, nst);
@@ -418,7 +510,11 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
     struct entry *e = calloc(1, sizeof *e); e->prog.is_compute = 1;
     static struct nvn_vk_compute_program cp; char why[192] = "";
     memset(&cp, 0, sizeof cp);
-    if (nvn_vk_program_parse_compute(bytes, len, &cp, why, sizeof why)) { red1("compute_program_parse_failed", why); e->failed = 1; return e; }
+    int parsed = nvn_vk_program_parse_compute(bytes, len, &cp, why, sizeof why);
+    if (parsed) {
+        if (parsed == NVK_PROGRAM_ARRAY_UNSUPPORTED) array_unsupported(why); else red1("compute_program_parse_failed", why);
+        e->failed = 1; return e;
+    }
     e->prog.support_bytes = cp.support_bytes;
     for (int i = 0; i < cp.binding_count && !e->failed; i++) {
         const struct fd_binding *b = &cp.bindings[i];
@@ -490,9 +586,19 @@ int rp_shader_resolve_compute(const struct rp_prog **out) {
     for (int i = 0; i < 16; i++) if (rp_S.ssbo[5][i].addr && pc.storage_buffer_offset_alignment && rp_S.ssbo[5][i].addr % pc.storage_buffer_offset_alignment) unaligned = 1;
     char ident[24]; { int o = 0; for (int b = 0; b < 8; b++) o += snprintf(ident + o, sizeof ident - (size_t)o, "%02x", rp_S.skey[5][b]); }
     static struct nvk_compute_request rq; memset(&rq, 0, sizeof rq); char why[256] = "";
-    if (nvk_compute_request_prepare(&st, &pc, &tf, 1, unaligned, ident, &rq, why, sizeof why)) { red1("compute_request_failed", why); return -1; }
+    if (nvk_compute_request_prepare(&st, &pc, &tf, 1, unaligned, ident, &rq, why, sizeof why)) {
+        red1("compute_request_failed", why);
+        if (g_texpool_diag) {
+            g_pool_request_rejected++;
+            if (!strcmp(why, "missing or out-of-range descriptor-pool facts")) g_pool_request_facts++;
+            else g_pool_request_other++;
+            if (g_pool_request_rejected == 1 || !(g_pool_request_rejected % 50)) pool_stats("progress");
+        }
+        return -1;
+    }
     struct entry *e = nvn_hm_get(&g_progs, rq.identity);
     if (!e) {
+        if (g_texpool_diag) g_pool_programs++;
         uint8_t *bytes = NULL; size_t len = 0;
         const char *root = getenv("S2A_SHADER_REVISION_ROOT"), *cdir = getenv("S2A_DIRECT_CACHE_DIR");
         if (root && pc.profile_hash && pc.profile_hash[0] && !nvn_plat_flag("no_offline", 0)) {
@@ -503,15 +609,17 @@ int rp_shader_resolve_compute(const struct rp_prog **out) {
         if (!bytes && cdir && !nvn_plat_flag("no_disk_cache", 0) && s2a_program_cache_load(cdir, rq.identity, &bytes, &len, NULL, why, sizeof why) == 0) g_n_cache++;
         if (!bytes) {
             struct s2a_compile_outcome oc; memset(&oc, 0, sizeof oc);
+            if (g_texpool_diag) g_pool_attempts++;
             int ran = s2a_compile_request_execute(rq.session, rq.generation, rq.json, rq.json_bytes, &oc);
             if (ran || !oc.bytes || !oc.bytes_len) {
-                g_n_failed++; red1("compute_compile_failed", oc.summary);
+                g_n_failed++; red1("compute_compile_failed", oc.summary); compiler_rejected(oc.summary);
                 s2a_compile_outcome_free(&oc);
                 e = calloc(1, sizeof *e); e->failed = 1; nvn_hm_put(&g_progs, rq.identity, e);
                 nvk_compute_request_release(&rq);
                 return -1;
             }
             bytes = oc.bytes; len = oc.bytes_len; oc.bytes = NULL; s2a_compile_outcome_free(&oc); g_n_compiled++;
+            if (g_texpool_diag) { g_pool_compiled++; if (g_pool_attempts == 1 || !(g_pool_attempts % 50)) pool_stats("progress"); }
             if (cdir && !nvn_plat_flag("no_disk_cache", 0)) s2a_program_cache_store_async(cdir, rq.identity, bytes, len);
         }
         e = build_compute(bytes, len, &rq.source);
@@ -525,10 +633,14 @@ int rp_shader_resolve_compute(const struct rp_prog **out) {
 }
 
 void rp_shader_reset(void) {
+    if (g_pool_programs || g_pool_request_rejected) pool_stats("reset");
     for (uint32_t i = 0; i < g_progs.cap; i++) { struct entry *e = g_progs.vals[i]; if (!e) continue;
         for (int st = 0; st < 2; st++) if (e->prog.sh[st]) nvn_gpu_shader_release(e->prog.sh[st]);
         free(e); }
     free(g_progs.keys); free(g_progs.vals); nvn_hm_init(&g_progs, 32);
     g_profile.ok = 0; memset(g_lasts, 0, sizeof g_lasts);
-    g_texpool_logged = g_texpool_last_over_limit = 0;
+    g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0;
+    g_pool_programs = g_pool_attempts = g_pool_compiled = g_pool_rejected = g_pool_unsupported = 0;
+    g_pool_request_rejected = g_pool_request_facts = g_pool_request_other = 0;
+    g_pool_reason_count = 0; memset(g_pool_reasons, 0, sizeof g_pool_reasons);
 }

@@ -381,7 +381,12 @@ def prune_unless_follow_up(c, gid):
         c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
         return False
     from library import prune_build
-    prune_build(c, gid)
+    try:
+        prune_build(c, gid)
+    except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
+        #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
+        c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")
+        return False
     return True
 
 

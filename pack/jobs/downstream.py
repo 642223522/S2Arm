@@ -28,7 +28,14 @@ import zipfile
 
 from core import Failure, atomic, contained, read
 
-REGISTRY = Path(__file__).resolve().parents[1] / "downstream" / "schemes.json"
+REGISTRY = Path(__file__).resolve().parents[1] / "downstream" / "schemes.json"   # 源码树里作业代码就在 pack/jobs 下时的位置（单测 / 开发）
+
+
+def registry(c=None):
+    """登记表按引擎目录取（同其余作业模块读仓库数据的口径 c.engine / …）：发版 App 里作业代码单独拷在 Resources/Jobs，
+    按本文件位置拼会落到 Resources/downstream（v0.3.3 候选导入即红：FileNotFoundError），引擎快照里是 Engine/pack/downstream/schemes.json"""
+    engine = getattr(c, "engine", None) if c is not None else None
+    return Path(engine) / "pack" / "downstream" / "schemes.json" if engine else REGISTRY
 REQUIRED = ("id", "name", "repo", "license", "titleIds", "needs", "bundle", "targets", "copy")
 CHOICE = "downstream.json"   # 这款文件夹里记玩家的选择：{"scheme": 方案 id 或 ""（原版）, "at": 时刻}
 
@@ -39,12 +46,14 @@ class SchemeError(ValueError):
 
 # ---------- 登记表 ----------
 
-def load(path=None):
-    """读登记表 → {方案 id: 方案}。缺字段、程序号格式不对、同一程序号登记两次都抛 SchemeError（登记表是仓库文件，坏了是开发错误）"""
+def load(path=None, c=None):
+    """读登记表 → {方案 id: 方案}。读不了（文件缺 / 坏）= 当没有下游方案、打一行黄，导入与出包照常走（反防御：不为附加功能挡掉所有游戏）；
+    缺字段、程序号格式不对、同一程序号登记两次抛 SchemeError（登记表是仓库文件，内容坏了是开发错误，单测拦）"""
     try:
-        data = json.loads(Path(path or REGISTRY).read_text(encoding="utf-8"))
+        data = json.loads(Path(path or registry(c)).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        raise SchemeError(f"下游方案登记表读不了：{e}") from e
+        print(f"【黄】下游方案登记表读不了，按没有下游方案处理：{e}", file=sys.stderr)
+        return {}
     if data.get("schema") != 1:
         raise SchemeError("下游方案登记表 schema 不是 1")
     out, seen = {}, {}
@@ -67,10 +76,10 @@ def load(path=None):
     return out
 
 
-def match(game, schemes=None):
+def match(game, schemes=None, c=None):
     """这款游戏命中的下游方案；没有返回 None"""
     gid = (game.get("id") or "").upper()
-    for s in (load() if schemes is None else schemes).values():
+    for s in (load(c=c) if schemes is None else schemes).values():
         if gid in (t.upper() for t in s["titleIds"]):
             return s
     return None
@@ -106,7 +115,7 @@ def eligibility(scheme, game, lang="zh"):
 
 def describe(c, game, schemes=None):
     """读库时附在每款游戏上的 downstream 字段（没命中 → None）：方案、能不能选与原因、终端、确认页文案、玩家上次的选择（None = 没选过，第一次导出弹确认页）"""
-    s = match(game, schemes)
+    s = match(game, schemes, c)
     if not s:
         return None
     ok, why = eligibility(s, game)
@@ -147,7 +156,9 @@ def requested(c, game):
         want = (choice or {}).get("scheme") or "" if isinstance(choice, dict) else ""
     if not want:
         return None
-    s = match(game)
+    s = match(game, c=c)
+    if not s and not load(c=c):   # 登记表读不了：当没有下游方案，按原版出包（load 已打黄）
+        return None
     if not s or s["id"] != want:
         raise Failure("这款游戏没有这个下游方案。", code="job_failed")
     return s

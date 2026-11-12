@@ -3116,8 +3116,8 @@
   "en": "Mouse buttons only"
  },
  {
-  "source": "在「转动视角」模式下，点击游戏画面锁定鼠标视角；鼠标锁定时 Esc 只释放，不触发映射的游戏按键。释放后再次按 Esc 才触发映射；窗口失焦时释放鼠标并清空输入。",
-  "en": "In Camera mode, click the game view to capture mouse look. While captured, Esc only releases the mouse and does not send its mapped game button. Press Esc again after release to use that binding. Losing focus releases the mouse and clears input."
+  "source": "在「转动视角」模式下，点击游戏画面锁定鼠标视角；鼠标锁定时 Esc 只释放，不触发映射的游戏按键。释放后再次按 Esc 才触发映射；窗口失焦时释放鼠标并清空输入。全屏时按 Esc 退出全屏；Esc 映射了游戏按键时，短按照常给游戏，按住 1 秒退出全屏。⌃⌘F 和菜单「显示 → 退出全屏幕」也能退出。",
+  "en": "In Camera mode, click the game view to capture mouse look. While captured, Esc only releases the mouse and does not send its mapped game button. Press Esc again after release to use that binding. Losing focus releases the mouse and clears input. In full screen, Esc leaves full screen; if Esc is mapped to a game button, a short press still goes to the game and holding it for 1 second leaves full screen. ⌃⌘F and View → Exit Full Screen also work."
  },
  {
   "source": "S2Arm 引擎、Mac 宿主和 NSP/XCI 读取器随应用内置。游戏准备仍需要完整 Xcode、Metal 编译组件、Python 3.11+ 和 .NET 10 SDK。Python 需要 capstone、lz4、numpy；着色器工具需要 zstd、SPIRV-Tools，timeout 随应用提供。共享字体由玩家提供，设置为包含 .bfttf 的目录后重新检查。原始游戏、更新、DLC 和 prod.keys 均由玩家自行导入。",

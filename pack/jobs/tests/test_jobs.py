@@ -509,6 +509,16 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual((prune.call_count, pruned), (want, bool(want)))
         self.c.r.pop("followUp", None)
 
+    def test_ipa_prune_failure_after_success_is_only_a_warning(self):
+        # #793 / #796：包已经出好，收尾清中间产物删不掉（游戏库在 Xbox App 管的文件夹，PermissionError）→ 只记一条警告、不抛，出包照算成功
+        import unittest.mock as um, ipa
+        notes = []
+        with um.patch.object(library, "prune_build", side_effect=PermissionError(13, "Access is denied", "x.bin")), \
+             um.patch.object(self.c, "diagnostic", lambda msg, **k: notes.append((msg, k.get("severity")))):
+            pruned = ipa.prune_unless_follow_up(self.c, "0100000000000000")
+        self.assertFalse(pruned)
+        self.assertEqual(len(notes), 1); self.assertIn("清理中间产物没有完成", notes[0][0]); self.assertEqual(notes[0][1], "warning")
+
     @shared_extract
     def test_ipa_result_is_the_delivered_file_not_the_newest_in_output(self):
         # #67 qidian99 反证：输出目录里有修改时间更「新」（2100 年）的旧 IPA 和资源包，本轮交付的是 current-title.ipa → 搬进 image/ios 的必须是本轮的资源包，不按 mtime 挑
@@ -691,6 +701,17 @@ class JobsTests(unittest.TestCase):
         self.assertTrue(ipa._sdk_ok("10.0.100", None))
         self.assertFalse(ipa._sdk_ok("9.0.100", None))
         self.assertEqual(ipa._sdk_requirement(), req)
+
+    def test_host_crash_quiet_for_helpers_not_for_player_launch(self):
+        # 出包类作业起的 s2arm-host 是辅助运行：S2A_CRASH_QUIET=1（runtime/src/native.h，出错只写日志、不弹 macOS「意外退出」框）；
+        #   玩家起局（launch）不静默，只有启动器是 --control 测试实例（S2ARM_CONTROL=1）时也静默（期望按 core.env 注释手写）
+        import unittest.mock as um
+        for op, control, want in (("ipa", None, "1"), ("build", None, "1"), ("launch", None, None), ("launch", "1", "1")):
+            with self.subTest(op=op, control=control):
+                c = Context(dict(self.request, operation=op))
+                with um.patch.dict(os.environ, {"S2ARM_CONTROL": control} if control else {}, clear=False):
+                    if not control: os.environ.pop("S2ARM_CONTROL", None)
+                    self.assertEqual(c.env().get("S2A_CRASH_QUIET"), want)
 
     @shared_extract
     def test_dotnet_wrapper_fallback_and_ipa_environment(self):
