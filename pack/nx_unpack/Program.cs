@@ -84,11 +84,26 @@ static partial class P {
     // 任何没被专门接住的异常翻译成「能照做的红字 + 分类码」。分类码是给普查 / 日志聚合看的，不参与成功判定。
     //   异常链里每一个（含并行读包 AggregateException 的全部 inner）各分一次类，按 Prio 取最具体的那个（#772 F-nxunpack-leaf-first：
     //   原先只顺着第一条 inner 走到底，缺密钥 / 容器坏排在第二条时记成 internal，普查和「内部错误」混在一起）
-    static readonly string[] Prio = { "disk_full", "ticket_missing", "keys_missing", "hash_mismatch", "container_invalid", "out_of_range", "io", "oom", "hresult", "source", "usage", "internal" };
+    static readonly string[] Prio = { "disk_full", "access_denied", "ticket_missing", "keys_missing", "hash_mismatch", "container_invalid", "out_of_range", "io", "oom", "hresult", "source", "usage", "internal" };
     static (string Code, string Message) Explain(Exception e) {
         (string Code, string Message) best = ExplainOne(e); int bi = Array.IndexOf(Prio, best.Code);
         foreach (Exception x in Chain(e)) { var r = ExplainOne(x); int i = Array.IndexOf(Prio, r.Code); if (i < bi) { best = r; bi = i; } }
         return best;
+    }
+    // #792：访问被拒（Windows 上目录改名 / 建文件被拦时是 IOException 带 E_ACCESSDENIED，不一定是 UnauthorizedAccessException）。
+    //   原先落进 io「读源文件失败、文件被截断」，玩家去换源文件；被拒的其实多是我们自己的解包工作目录（受控文件夹访问 / 杀毒软件拦写入）
+    static bool AccessDenied(Exception x) => x is UnauthorizedAccessException ||
+        x is IOException && (x.HResult == unchecked((int)0x80070005) || x.HResult == 13 || (x.Message ?? "").StartsWith("Access to the path", StringComparison.Ordinal));
+    internal static string OutDir;   // 本次输出目录（Run 里赋值）：被拒路径在它下面 = 我们自己的工作目录
+    internal static string DeniedMessage(Exception x, string first) {
+        var m = System.Text.RegularExpressions.Regex.Match(x.Message ?? "", "'([^']+)'");
+        string path = m.Success ? m.Groups[1].Value : null;
+        bool ours = path != null && OutDir != null && Path.GetFullPath(path).StartsWith(Path.GetFullPath(OutDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        string what = path == null ? "这个路径" : ours ? "S2Arm 自己的解包工作目录（不是游戏源文件）" : "源文件";
+        string fix = OperatingSystem.IsWindows()
+            ? "常见原因是 Windows 安全中心的「受控文件夹访问」或杀毒软件拦了写入（游戏库放在「文档」「桌面」「图片」这类受保护文件夹里最常见）：把游戏库换到这些文件夹以外，或在安全中心的拦截记录里允许 S2Arm，再重试"
+            : "检查这个文件夹的读写权限（访达「显示简介」→ 共享与权限），或把游戏库换到别的文件夹再重试";
+        return $"访问被拒绝（{first}）：被拒的是{what}。{fix}";
     }
     // .NET preserves Unix errno and wraps Windows filesystem errors in HRESULTs.
     static bool DiskFull(IOException error) => OperatingSystem.IsWindows()
@@ -114,6 +129,8 @@ static partial class P {
                 return ("out_of_range", $"读越界（{first}）：源文件被截断（NCZ 声明的长度比实际数据长），或内容号对不上；文件不完整就换一份完整的");
             case IOException io when DiskFull(io):
                 return ("disk_full", "写入内容所需的磁盘空间不足");
+            case UnauthorizedAccessException or IOException when AccessDenied(x):
+                return ("access_denied", DeniedMessage(x, first));
             case IOException io:   // 含 EndOfStreamException（NCZ 临时文件 / zstd 流提前结束）
                 return ("io", $"读源文件失败（{first}）：文件被截断或读不动（外置盘掉线？），换一份完整的");
             case OutOfMemoryException:
@@ -197,7 +214,10 @@ static partial class P {
         if (a.Length >= 3 && a[1] == "--inspect") return Inspect(a);
         if (a.Length < 3) { Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] <xci/nsp…>"); return 2; }
         var t0 = DateTime.UtcNow;
-        Ks = ExternalKeyReader.ReadKeyFile(a[0]); string D = a[1]; bool nacpOnly = false, aocOnly = false, aocIndex = false, exefsOnly = false;
+        Ks = ExternalKeyReader.ReadKeyFile(a[0]); string D = a[1]; OutDir = D; bool nacpOnly = false, aocOnly = false, aocIndex = false, exefsOnly = false;
+        // 单测注入（tests/nx_unpack_fail_test.sh，#792）：Windows 目录改名被拦的原样异常（IOException + E_ACCESSDENIED），被拒路径在输出目录里 / 外
+        if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") is "denied-out" or "denied-src")
+            throw new IOException($"Access to the path '{(Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "denied-out" ? Path.Combine(D, "build", "extract", ".romfs-extract-40b3") : Path.Combine(Path.GetTempPath(), "src.xci"))}' is denied.", unchecked((int)0x80070005));
         var srcs = new List<string>(); ulong? selectedTitle = null; string titleKeys = null; int programIndex = 0;
         for (int i = 2; i < a.Length; i++) {
             if (a[i] == "--nacp-only") nacpOnly = true;
