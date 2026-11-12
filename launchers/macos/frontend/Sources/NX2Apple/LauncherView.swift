@@ -95,6 +95,7 @@ struct LauncherView: View {
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
             InstallView(model: model, gameID: target.id).environmentObject(loc)
         }
+        .onChange(of: model.spaceRequest) { id in if let id { spaceFor = id; model.spaceRequest = nil } }   // 设置页「磁盘空间」
         .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: { spaceFor = $0?.id })) { target in
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
         }
@@ -156,7 +157,11 @@ struct LauncherView: View {
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            Text(brand).font(.manrope(22, .bold)).tracking(-0.6).lineLimit(1).fixedSize()
+            // 点品牌名回欢迎页（社区贡献者补丁 #2）
+            Button { installFor = nil; model.goToLibrary(); model.welcomeHome = true } label: {
+                Text(brand).font(.manrope(22, .bold)).tracking(-0.6).lineLimit(1).fixedSize()
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("top.brand")
             // 版本号（11-11 维护者：玩家截图时我们一眼看出是哪一版）：正式版 v0.3.0，开发版 v0.2.9-dev+短提交号（build_app.py 写进 Info.plist）
             Text(verbatim: Self.displayVersion).font(.manrope(12.5, .semibold)).monospacedDigit().foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize().textSelection(.enabled).accessibilityIdentifier("topbar.version")
@@ -180,12 +185,6 @@ struct LauncherView: View {
                 ControllerToolbarButton(controller: model.controller, show: $showController,
                                         simplifiedChinese: loc.lang == .zh)
                 updateButton
-                // 界面语言：一键切到另一种（同旧启动器 LanguageSwitch，维护者 10-23「不让玩家先选」）；当场生效、记住选择，不用重启（11-07 维护者 验收）
-                Button { loc.choose(loc.lang == .zh ? Lang.en.code : Lang.zh.code) } label: {
-                    Label(loc.lang == .zh ? "English" : "简体中文", systemImage: "globe").font(.manrope(12.5, .semibold))
-                }
-                .buttonStyle(LauncherSecondaryButtonStyle())
-                .accessibilityIdentifier("top.language")
                 Button { installFor = nil; model.goToLibrary() } label: {
                     Label(loc.t("s2arm.nav.library"), systemImage: "square.grid.2x2").font(.manrope(12.5, .semibold))
                 }
@@ -198,7 +197,7 @@ struct LauncherView: View {
                 Button { model.showEnvironment = true } label: {
                     HStack(spacing: 7) {
                         Circle().fill(environmentColor).frame(width: 7, height: 7)
-                        Text(loc.t("s2arm.env.title")).font(.manrope(12.5, .semibold))
+                        Text(BackendText.launcherText("nav.settings", language: uiLanguage)).font(.manrope(12.5, .semibold))   // 设置：语言 / 存放位置 / 装机方式 / 环境检查（入口整理）
                     }
                 }
                 .buttonStyle(LauncherSecondaryButtonStyle())

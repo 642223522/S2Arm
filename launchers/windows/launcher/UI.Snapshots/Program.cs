@@ -199,6 +199,29 @@ SetW(pack, "batchState", BatchClient.Read(JsonDocument.Parse("""
 """).RootElement.Clone()).State);
 SaveP("win_13_batch_done_mixed", () => Navigate(pack, "batch"));
 
+// 入口整理对照：已连库的游戏库页（一款在默认位置、一款在外接盘，后者卡片写「存放在 …」）、设置页（库根有 S2Arm.ipa），窗口拉高看全
+SetW(pack, "batchState", null);
+pack.Height = 1500;
+var tidyLib = Path.Combine(Path.GetTempPath(), "s2a-snap-" + Guid.NewGuid().ToString("N"), "S2Arm");
+Directory.CreateDirectory(tidyLib);
+File.WriteAllBytes(Path.Combine(tidyLib, "S2Arm.ipa"), []);
+var atDefault = MockGame(true) with { Location = new GameLocation("ok", tidyLib, Path.Combine(tidyLib, "games", "Fortune's Weave"), "", true) };
+var elsewhere = MockGame(true) with { Id = "010024B00F9D0000", Name = "泰拉瑞亚", IphoneInstalledAt = null,
+    Location = new GameLocation("ok", "D:\\S2Arm Games", "D:\\S2Arm Games\\games\\Terraria", "移动硬盘 (D:)", false) };
+SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥已就绪"));
+SetW(pack, "selectedGame", null);
+SetW(pack, "connectedFolder", tidyLib);
+SetW(pack, "libraryFolder", tidyLib);
+SetW(pack, "libraryId", "mock-lib-id");
+SetW(pack, "librarySummary", "library.completed");
+SetW(pack, "libraryDiagnostics", "");
+SetW(pack, "report", FakeReport(true));
+SetW(pack, "summaryKey", "environment.ready");
+SaveP("tidy_01_library_connected", () => Navigate(pack, "library"));
+pack.Height = 2100;   // 设置页最长：装机方式 + 环境检查 + 运行路径都要在一张图里
+SaveP("tidy_02_settings", () => Navigate(pack, "settings"));
+pack.Height = 900;
+
 pack.Close();
 Dispatcher.UIThread.RunJobs();
 Console.WriteLine("done.");

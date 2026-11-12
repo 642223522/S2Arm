@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 54,
+  "revision": 55,
   "languages": [
     "zh-Hans",
     "en"
@@ -3808,6 +3808,51 @@
         "id": "nav.settings",
         "zh-Hans": "设置",
         "en": "Settings"
+      },
+      {
+        "id": "settings.language",
+        "zh-Hans": "界面语言",
+        "en": "Language"
+      },
+      {
+        "id": "settings.locations",
+        "zh-Hans": "存放位置",
+        "en": "Where things are stored"
+      },
+      {
+        "id": "settings.locations.library",
+        "zh-Hans": "游戏库",
+        "en": "Library"
+      },
+      {
+        "id": "settings.locations.ipa",
+        "zh-Hans": "iPhone 包",
+        "en": "iPhone package"
+      },
+      {
+        "id": "settings.locations.ipa_none",
+        "zh-Hans": "还没出过 iPhone 包；出好后在这里",
+        "en": "No iPhone package yet; it will show here once built"
+      },
+      {
+        "id": "settings.locations.space",
+        "zh-Hans": "磁盘空间",
+        "en": "Disk space"
+      },
+      {
+        "id": "settings.open",
+        "zh-Hans": "打开",
+        "en": "Open"
+      },
+      {
+        "id": "settings.keys",
+        "zh-Hans": "密钥",
+        "en": "Keys"
+      },
+      {
+        "id": "library.location.at",
+        "zh-Hans": "存放在 {0}",
+        "en": "Stored in {0}"
       },
       {
         "id": "environment.title",

@@ -201,7 +201,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var sessionHidden = false
     @Published private(set) var finishedExports: [String: JobSession] = [:]
     @Published var viewingResult: JobSession?
-    var showsWelcome: Bool { games.isEmpty || welcomeGameID != nil }
+    var showsWelcome: Bool { games.isEmpty || welcomeGameID != nil || welcomeHome }
+    /// 点了顶栏品牌名：游戏库页先显示欢迎页（社区贡献者补丁 #2；点「游戏库」回到列表）
+    @Published var welcomeHome = false
+    /// 设置页「磁盘空间」：关掉设置、给这款打开磁盘空间面板（LauncherView 收到就开）
+    @Published var spaceRequest: String?
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
@@ -1275,7 +1279,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 回库：只有作业结束了才能关掉作业页。
     /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
     func goToLibrary() {
-        exportFor = nil; viewingResult = nil; showEnvironment = false
+        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false
         guard let current = session else { return }
         if isFinished(current) { session = nil } else { sessionHidden = true }
     }
