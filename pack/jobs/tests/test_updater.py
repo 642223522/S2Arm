@@ -66,6 +66,26 @@ class ApplyTests(Base):
         self.assertFalse(self.install.with_name("S2Arm.s2arm-old").exists())
         self.assertEqual(self.data(), before)
 
+    def leftovers(self):
+        """各版本的工作目录（新版解在 unpack/、上一次更新留下的）+ 不该动的 runner/ 和标记文件"""
+        u = self.private / "updates"
+        for rel in ("0.3.0/unpack/S2Arm/S2Arm.exe", "0.3.0/S2Arm-windows-x64.zip.part", "0.2.8/unpack/S2Arm/S2Arm.exe", "0.2.9/delta/x", "runner/updater.py", "notes/keep.txt"):
+            (u / rel).parent.mkdir(parents=True, exist_ok=True); (u / rel).write_text("x")
+        return u
+
+    def test_success_removes_unpacked_copies_but_keeps_runner(self):
+        """#660：换版是从 updates/<版本号>/unpack 拷进安装目录的，确认新版起来以后这份（和以前各版留下的）都删掉，不再一直占系统盘"""
+        u = self.leftovers()
+        self.assertEqual(self.run_apply(self.healthy), 0)
+        self.assertEqual(sorted(p.name for p in u.iterdir() if p.is_dir()), ["notes", "runner"])   # 版本号目录全删；runner（正在跑的更新器）和别的目录不动
+        self.assertTrue((u / "runner/updater.py").is_file())
+
+    def test_rollback_keeps_unpacked_copy(self):
+        """新版没起来、回到旧版：不删（下次同版本重试时 prepare 自己清，失败现场留着便于诊断）"""
+        u = self.leftovers()
+        self.assertEqual(self.run_apply(lambda i, a: None), 1)
+        self.assertTrue((u / "0.3.0/unpack/S2Arm/S2Arm.exe").is_file())
+
     def test_read_only_files_do_not_leave_the_old_copy_behind(self):
         locked = self.install / "Engine/pack"; locked.write_text("x"); locked.chmod(0o444)
         self.assertEqual(self.run_apply(self.healthy), 0)
