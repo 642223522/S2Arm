@@ -155,22 +155,24 @@ int rp_buf_mirrors(void) { pthread_mutex_lock(&g_bmu); int n = (int)g_shadow.n; 
 
 // ---------- 缓冲类命令：只改游戏内存（见文件头）----------
 static int in_pool(uint64_t a, uint64_t n) { return n && rp_pool_find(a, n, NULL, NULL); }
+// 回放时在 CPU 上改游戏缓冲内容的三个命令：改一次代号加一（rp_draw 的段内常量缓冲切片按它失效）
+uint64_t rp_cpu_write_gen;
 void rp_op_update_ub(const void *a, const void *rec) {
     uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
     if (!n) return;
     if (!in_pool(d, n)) { nvn_unimpl("buf", "update_outside_pools", rec); return; }
-    memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n);
+    memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n); rp_cpu_write_gen++;
 }
 void rp_op_copy_b2b(const void *a, const void *rec) {
     uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
     if (!n) return;
     if (!in_pool(s, n) || !in_pool(d, n)) { nvn_unimpl("buf", "copy_outside_pools", rec); return; }
-    memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n);
+    memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n); rp_cpu_write_gen++;
 }
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec) {   // 32 位样式填充（不是按字节）
     if (!cb->size) return;
     if (!in_pool(cb->addr, cb->size)) { nvn_unimpl("buf", "clear_outside_pools", rec); return; }
-    uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0;
+    uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0; rp_cpu_write_gen++;
     for (; i + 4 <= n; i += 4) memcpy(p + i, &cb->value, 4);
     if (i < n) memcpy(p + i, &cb->value, (size_t)(n - i));
 }
