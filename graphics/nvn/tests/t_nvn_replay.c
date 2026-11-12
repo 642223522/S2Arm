@@ -239,7 +239,7 @@ static void t_event_after_done(void) {   // 事件值只在段完成后可见；
     end(&a);
     uint64_t f0 = nvn_be_last_fence();
     submit1(&a);
-    CHECK(nvn_be_last_fence() == f0 + 2);             // 每次提交：前置段占 +1（没用到就空着），主段 +2
+    CHECK(nvn_be_last_fence() == f0 + 64);             // 每次提交：前置段占 +1（没用到就空着），主段 +2
     CHECK(ev == 0);                                   // 已提交、未完成
     CHECK(nvn_be_wait(f0 + 2, 0) == 0);
     fake_complete(NVN_GPU_DONE_OK);
@@ -255,7 +255,7 @@ static void t_fence_sync(void) {
     uint8_t *r = put(&a, OP_FENCE_SYNC, 8); sync_t *ps = &s; memcpy(r, &ps, 8); end(&a);
     uint64_t f0 = nvn_be_last_fence();
     submit1(&a); fake_complete(NVN_GPU_DONE_OK);
-    uint64_t got = 0; CHECK(sync_published(&s, &got) == 1 && got == f0 + 2 && nvn_be_last_fence() == f0 + 2);
+    uint64_t got = 0; CHECK(sync_published(&s, &got) == 1 && got == f0 + 64 && nvn_be_last_fence() == f0 + 64);
 }
 
 static void t_jump_call(void) {
