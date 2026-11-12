@@ -887,8 +887,10 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     int expand = nvn_fmt_info_of(nvn_format, &info) && info.expand;
     VkFormat f = nvn_vk_tex_format(nvn_format);
     if (f == VK_FORMAT_UNDEFINED) return 0;
+    int bcdec = 0;   // 这个块压缩格式在本设备上走计算解码
     if (nvn_format >= 0x41 && nvn_format <= 0x50 && (g.dev->bc_decode_mask >> (nvn_format - 0x41)) & 1u) {
         if (!nvn_vk_bcdec_route(nvn_format, NULL, &f, NULL, NULL, NULL)) return 0;
+        bcdec = 1;
     }
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(g.phys, f, &p);
@@ -911,6 +913,9 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
         if (sf != VK_FORMAT_UNDEFINED) vkGetPhysicalDeviceFormatProperties(g.phys, sf, &sp);
         if (!(sp.optimalTilingFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) out &= ~NVN_GPU_FMT_VERTEX;
     }
+    // 走计算解码的块压缩格式：能力是照「解码后的格式」查的，但它只能被采样——建图入口不收渲染 / 存储用途。
+    // 把解码后格式的「可存储」原样报出去，核心会给带 IMAGE 标志的压缩贴图加存储用途，建图就被拒（#697：Mali 上 5 种格式的贴图全建不出来，背景全黑）。
+    if (bcdec) out &= NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_FILTER;
     return out;
 }
 
