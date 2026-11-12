@@ -632,13 +632,14 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
     """推完起一次 App 只解包（S2A_PACK_APPLY_ONLY=1，runtime/src/pack_apply.c）并等它解完：机上 .applied = 本包 index_sha256，且解包日志
     本次新增完成行「解开 N 个包 … .applied = <本包>」（只看 .applied 不够：同包重推时推之前就对得上，11-06 对照实测）。
     等待按进度：本次新增的进度行「进度：解开 <包>（k/n）」k 涨了就重新计时、打一行「机上解包 k/n」（装机作业据此发进度事件，pack/jobs/install.py）；
-    连续 stall 秒 k 没涨 → 判失败。没推东西且 .applied 已是本包 → 不起 App。失败抛 Fail"""
+    连续 stall 秒 k 没涨 → 抛 NeedsPlayer（传输成功、提醒玩家打开 App 接着装）。没推东西且 .applied 已是本包 → 不起 App。机上解开失败抛 Fail"""
     want = json.loads((Path(pack) / "manifest.json").read_text(encoding="utf-8")).get("index_sha256")
     def applied(): return (read(dev, f"{rp(dev)}/.applied", work, "r.applied") or "").strip()
     if not nb and applied() == want:
         return False
     u0 = len((read(dev, unpack_log(dev), work, "r.unpack0") or "").splitlines())
     done = re.compile(r"解开 \d+ 个包 .*\.applied = " + re.escape(want or "-"))
+    partial = re.compile(r"解开 \d+ 个包 .*缺 (\d+) 个非必需文件.*部分可玩 = " + re.escape(want or "-"))   # 手机上只缺非核心文件（v0.3.1 缺件照玩，pack_apply.c）
     # 多款容器：正常拉起到游戏库，由库在后台解开传完的这款（图块显示「安装中」和进度，S2ArmShellHostModel）。只解包模式是整屏导入页、解完进程自己退出，
     #   玩家正开着库时 App 会突然消失；拉不起时玩家手动打开也走库这同一条路。单款包照旧只解包模式
     say("拉起 App 到游戏库，由它解开这款" if dev.ctx else "起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）")
@@ -661,6 +662,9 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
         new = (read(dev, unpack_log(dev), work, "r.unpack1") or "").splitlines()[u0:]
         if applied() == want and any(done.search(l) for l in new):
             say("资源包：机上已解开（.applied = 本包）"); return True
+        part = [m for m in map(partial.search, new) if m]
+        if part:   # 解开了，但手机上缺几个非核心文件：能玩，提醒补（同「还差最后一步」口径，装机按传输成功 + 提醒收尾）
+            raise NeedsPlayer(f"资源包已传完，还差最后一步：手机上还缺 {part[-1].group(1)} 个文件，可以先玩，用到它们时可能会停；再点一次「装到 iPhone」会把缺的补上")
         failed = [m.group(1).strip() for m in map(FAILED.search, new) if m]
         if failed:   # App 已经起来解过、失败了：按它写的原因当场报（原先只看进度行，第一包前就失败时干等 stall 秒、再报「解包没有开始」，原因丢了）
             raise Fail(f"资源包推进去了，但手机上解开失败：{failed[-1][:600]}")
@@ -673,8 +677,9 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
     if cant_open:
         why = LOCKED_WHY if was_locked else NO_DEVMODE_WHY if any(k in cant_open for k in DEVMODE_SIGNS) else CANT_OPEN_WHY
         raise NeedsPlayer(f"资源包已传完，还差最后一步：{why}{OPEN_BY_HAND}（电脑这边打不开手机上的 App：{cant_open}）")
-    raise Fail(f"资源包推进去了，但机上解包 {stall} 秒没有新进展（停在第 {seen} 包）：打开这款游戏、保持在前台等它导入完" if seen else
-               f"资源包推进去了，但起 App 后 {stall} 秒机上解包没有开始：打开这款游戏、保持在前台等它导入完")
+    # 解包停住（装机原则 11-11）：资源已经全在手机上，玩家打开 App 会接着装——和拉不起 App 同一口径（传输成功 + 提醒），不报装机失败
+    raise NeedsPlayer(f"资源包已传完，还差最后一步：机上解包 {stall} 秒没有新进展（停在第 {seen} 包）。{OPEN_BY_HAND}" if seen else
+                      f"资源包已传完，还差最后一步：起 App 后 {stall} 秒机上解包没有开始。{OPEN_BY_HAND}")
 
 
 PROBE = ".s2a-write-probe"   # 推之前写的几字节探针（资源包目录下，下次覆盖）

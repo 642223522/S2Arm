@@ -151,7 +151,7 @@ struct ExportSessionView: View {
         let (symbol, color): (String, Color) = {
             switch outcome?.state {
             case .completed?: return ("checkmark.circle.fill", LauncherPalette.ready)
-            case .failed?, .interrupted?: return ("exclamationmark.circle.fill", LauncherPalette.danger)
+            case .failed?, .interrupted?, .paused?: return ("exclamationmark.circle.fill", LauncherPalette.danger)   // paused：平台结局不会是它（作业层 stepEnded 只给 completed / failed / cancelled）
             case .cancelled?: return ("minus.circle", LauncherPalette.unbuilt)
             case nil: return (active ? "circle.dotted" : "circle", active ? LauncherPalette.building : LauncherPalette.unbuilt)
             }
@@ -391,6 +391,15 @@ struct ExportSessionView: View {
                 if let bytes = o.appBytes { bigStat(x(platform == .ios ? "done.ipa" : "done.macSize"), size(bytes)) }
                 if platform == .ios, let bytes = o.packBytes { bigStat(x("done.pack"), size(bytes)) }
                 Spacer(minLength: 0)
+            }
+            if !o.notes.isEmpty {   // 降级继续的玩家提示（作业层原句）：出成了照常给按钮，这里说清哪里用了兼容做法
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(x("done.notes"), systemImage: "exclamationmark.triangle.fill").font(.manrope(14, .bold)).foregroundStyle(LauncherPalette.building)
+                    ForEach(o.notes, id: \.self) { note in
+                        Text(note).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .combine).accessibilityIdentifier("result.\(platform == .ios ? "ios" : "mac").notes")
             }
             HStack(spacing: 14) {
                 if platform == .ios {

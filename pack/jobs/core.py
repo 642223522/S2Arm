@@ -131,6 +131,13 @@ class Cancelled(Exception):
     pass
 
 
+class Paused(Exception):
+    """作业停在一个要玩家处理的点上（批量出包磁盘满，剃刀 H13）：以独立终态 paused 结束，不算完成也不算失败。result 随终态带回"""
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result or {}
+
+
 def system_encoding():
     """真实的系统编码（中文 Windows cp936、西文 Windows cp1252）。不用 getpreferredencoding：主作业带 -X utf8，UTF-8 模式下它回 utf-8，
     v0.2.7 因此跳过系统编码、把 GBK 写坏的索引当 cp1252 写成了乱码（中文 Windows 实机复现）。getencoding（3.11+）不受 UTF-8 模式影响"""
@@ -670,9 +677,10 @@ class Context:
                     extra.setdefault("unit", self.job["unit"])
             self.seq += 1
             state = extra.pop("state", self.job["state"])
+            transient = extra.pop("transient", False)   # 只给标准输出、不进事件记录（出包编排转发子作业事件：子作业自己的记录里已有，剃刀 H13）
             if kind == "plan":
                 self.overall.plan(extra.get("milestones"))
-            overall = self.overall.feed(kind, now - self.t0, getattr(self, "milestone", None), state)
+            overall = self.overall.feed(kind, now - self.t0, getattr(self, "milestone", None), state, self.number, self.count, done, total)
             if overall is not None:
                 extra["overall"] = overall
                 self.job["overall"] = overall
@@ -701,7 +709,7 @@ class Context:
             try:
                 # 剃刀 H5：心跳只给标准输出（前端据此知道作业还活着），不落盘；进度追加进事件文件、不 fsync，任务记录最多隔 JOURNAL_PROGRESS_S 重写一次；
                 #   阶段 / 诊断 / 终态等每条都重写任务记录并 fsync（被杀时不丢最后一个阶段，J10）。原先每条事件（含每秒心跳）都整份重写 + 两次 fsync
-                if self.recorded and kind != "heartbeat":
+                if self.recorded and kind != "heartbeat" and not transient:
                     durable = kind != "progress"
                     if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
                         atomic(self.jobpath, self.job)
@@ -1255,7 +1263,7 @@ class Context:
 # Everything below only reads the journal the worker already writes, or signals a worker it recorded. The Mac launcher and the CLI reach a job the
 # same way: a task id plus the private root. No daemon, no second state store, and a job that never wrote a terminal event is reported as such
 # instead of being mistaken for a finished one.
-TERMINAL_STATES = ("completed", "failed", "cancelled", "succeeded")
+TERMINAL_STATES = ("completed", "failed", "cancelled", "succeeded", "paused")   # paused：出包编排磁盘满停下（剃刀 H13）
 
 
 def request_path(private, task):

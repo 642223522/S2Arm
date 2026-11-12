@@ -205,9 +205,17 @@ static int prune(const char *root, unsigned *nd, uint64_t *db) {
 //   返回缺 / 不符的个数，ex 记第一个（「路径（不在 / 大小不符 / 不是文件）」，进日志）；progress = 1 时报「校验文件」阶段进度（解包那步）。
 //   解包核对与闸门 s2a_pack_check 共用这一份（iOS 装机剃刀 #14：原先两份，闸门那份不查是不是普通文件，同名目录占位时两边结论相反）。
 //   逐个 stat，九款最大索引约 39 万行、本机约 1 秒
-static unsigned index_check(const char *root, char *ex, size_t exn, int progress) {
+// 起局离不了的核心文件（v0.3.1 缺件照玩）：程序（exefs/）、标题信息、单一 IMG / 旧 romfs 镜像。缺它们照旧不放行（物理上起不来）；
+//   缺别的（旧形态的 romfs 散文件、着色器库、系统数据等）让玩家确认后照玩，真读到时游戏 Break → s2a_pack_help_on_break 说人话
+int s2a_pack_core_path(const char *rel) {
+    return !strncmp(rel, "exefs/", 6) || !strcmp(rel, "ctl/control.nacp") || !strcmp(rel, "game.img") || !strcmp(rel, "romfs.img");
+}
+static unsigned index_check_core(const char *root, char *ex, size_t exn, int progress, unsigned *core);
+static unsigned index_check(const char *root, char *ex, size_t exn, int progress) { return index_check_core(root, ex, exn, progress, NULL); }
+static unsigned index_check_core(const char *root, char *ex, size_t exn, int progress, unsigned *core) {
     char ip[2100]; snprintf(ip, sizeof ip, "%s/index.tsv", root); FILE *f = fopen(ip, "r");
-    if (!f) { if (exn) snprintf(ex, exn, "index.tsv 打不开：%s", errno == ENOENT ? "不在" : strerror(errno)); return 1; }   // 审计 P2-7：原先只记缺 1 个、例子为空
+    if (core) *core = 0;
+    if (!f) { if (exn) snprintf(ex, exn, "index.tsv 打不开：%s", errno == ENOENT ? "不在" : strerror(errno)); if (core) *core = 1; return 1; }   // 审计 P2-7：原先只记缺 1 个、例子为空
     char line[4600], p[6800]; unsigned miss = 0; struct stat st; if (exn) ex[0] = 0;
     uint64_t total = 0, done = 0;
     if (progress) { while (fgets(line, sizeof line, f)) total++; rewind(f); PHASE(3, 0, total); }
@@ -216,9 +224,10 @@ static unsigned index_check(const char *root, char *ex, size_t exn, int progress
         char *t = strchr(line, '\t'); if (!t) continue; *t = 0; long long want = atoll(t + 1);
         snprintf(p, sizeof p, "%s/%s", root, line);
         int gone = stat(p, &st) != 0;
-        if (gone || !S_ISREG(st.st_mode) || st.st_size != want) { if (!miss++ && exn) snprintf(ex, exn, "%s（%s）", line, gone ? "不在" : !S_ISREG(st.st_mode) ? "不是文件" : "大小不符"); }
+        if (gone || !S_ISREG(st.st_mode) || st.st_size != want) { if (!miss++ && exn) snprintf(ex, exn, "%s（%s）", line, gone ? "不在" : !S_ISREG(st.st_mode) ? "不是文件" : "大小不符");
+            if (core && s2a_pack_core_path(line)) (*core)++; }
     }
-    if (ferror(f)) { if (exn) snprintf(ex, exn, "index.tsv 读失败：%s", strerror(errno)); miss++; }
+    if (ferror(f)) { if (exn) snprintf(ex, exn, "index.tsv 读失败：%s", strerror(errno)); miss++; if (core) (*core)++; }
     fclose(f); return miss;
 }
 // root/src 整份拷成 root/dst（先写 dst.tmp 再改名）；返回 0 成功
@@ -294,8 +303,10 @@ int s2a_pack_apply(const char *docs) {
         else { unlink(t); ntar++; if (s2a_pack_apply_progress) s2a_pack_apply_progress(i + 1, nn); PHASE(1, (uint64_t)(i + 1), (uint64_t)nn); log_line(logp, "进度：解开 %s（%u/%d）%u 个文件 %llu MB（%.1f 秒）", names[i], i + 1, nn, nf - f0, (unsigned long long)((nb - b0) >> 20), (now_ns() - t1) / 1e9); }
     }
     if (!rc) { int r = img_extract(root, &nf, &nb); if (r) { rc = r; from_img = 1; snprintf(what, sizeof what, "从 game.img 解小文件（%s）", r == -11 ? "格式号不认识，请更新 S2Arm" : r == -10 ? "IMG 坏或没传完" : "写失败"); } }
-    if (!rc) { char ex[2200]; unsigned miss = index_check(root, ex, sizeof ex, 1);
-        if (miss) { rc = -8; snprintf(what, sizeof what, "核对：index.tsv 里 %u 个文件机上缺或大小不符（例：%s），不记已应用，执行器下次按旧的已应用索引补推", miss, ex); } }   // 核对在清旧文件之前：核不过不删任何文件
+    unsigned partial = 0; char pex[2200] = "";
+    if (!rc) { char ex[2200]; unsigned core = 0, miss = index_check_core(root, ex, sizeof ex, 1, &core);
+        if (miss && !core) { partial = miss; snprintf(pex, sizeof pex, "%s", ex); }   // v0.3.1 缺件照玩：只缺非核心文件 → 记部分可玩（.partial），不记已应用，执行器下次照样补推
+        else if (miss) { rc = -8; snprintf(what, sizeof what, "核对：index.tsv 里 %u 个文件机上缺或大小不符（例：%s），不记已应用，执行器下次按旧的已应用索引补推", miss, ex); } }   // 核对在清旧文件之前：核不过不删任何文件
     if (!rc) { unsigned nd = 0; uint64_t db = 0; int r2 = prune(root, &nd, &db);   // 清旧文件：资源包下不在 index.tsv 里的（旧版分卷等）
         if (r2) { rc = r2; snprintf(what, sizeof what, "清旧文件（读 index.tsv）"); }
         else if (nd) log_line(logp, "进度：清掉不在 index.tsv 里的旧文件 %u 个 %llu MB", nd, (unsigned long long)(db >> 20)); }
@@ -304,9 +315,13 @@ int s2a_pack_apply(const char *docs) {
     char sha[200] = "";
     if (!rc) { char mp[2100]; snprintf(mp, sizeof mp, "%s/manifest.json", root);
         if (manifest_sha(mp, sha, sizeof sha)) { rc = -6; snprintf(what, sizeof what, "读 manifest.json 的 index_sha256"); }
+        else if (partial) {   // 部分可玩：不存 index.applied.tsv（它说「机上都有」，执行器会以为齐了、不再补推缺的）、不写 .applied；写 .partial = 清单 sha、缺几个、例子
+            char pv[2600]; snprintf(pv, sizeof pv, "%s\n%u\n%s\n", sha, partial, pex);
+            if (write_atomic(root, ".partial", pv)) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "写 .partial"); }
+            else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }
         else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
         else if (write_atomic(root, ".applied", sha)) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "写 .applied"); }
-        else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度
+        else { char tp[2100], pp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); snprintf(pp, sizeof pp, "%s/.partial", root); unlink(pp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度；齐了就撤掉部分可玩标记
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
     FILE *lf = fopen(logp, "a"); int lerr = lf ? 0 : errno;
     // 失败原因不依赖 unpack.log 打得开（#540：游戏目录 Documents/games/<游戏号>/ 不在时 unpack.log 也建不了，原先原因只在 lf 打开时才填，
@@ -316,6 +331,7 @@ int s2a_pack_apply(const char *docs) {
         if (!lf && k > 0 && (size_t)k < sizeof g_apply_fail) snprintf(g_apply_fail + k, sizeof g_apply_fail - (size_t)k, "；unpack.log 建不了：%s %s", logp, strerror(lerr)); }
     if (lf) {
         if (rc) fprintf(lf, "%s 解包失败：%s 返回 %d（已解 %u 个包 %u 个文件）%s%s\n", ts, what, rc, ntar, nf, g_untar_err[0] ? "；现场：" : "", g_untar_err);
+        else if (partial) fprintf(lf, "%s 解开 %u 个包 %u 个文件 %llu MB，缺 %u 个非必需文件（例：%s），部分可玩 = %s（%.1f 秒）\n", ts, ntar, nf, (unsigned long long)(nb >> 20), partial, pex, sha, (now_ns() - t0) / 1e9);
         else fprintf(lf, "%s 解开 %u 个包 %u 个文件 %llu MB，.applied = %s（%.1f 秒）\n", ts, ntar, nf, (unsigned long long)(nb >> 20), sha, (now_ns() - t0) / 1e9);
         fclose(lf);
     }
@@ -325,7 +341,7 @@ int s2a_pack_apply(const char *docs) {
 
 // ---- 玩家首次打开时从「文件」导入资源（用户体验线 10-23，原生层线审：后台线程解包、解完提示重新打开、不同进程内接着进游戏）----
 // 状态：先改名（Documents/资源包 不在、且恰好一个名字以「资源包」结尾的目录 → 改名成「资源包」，同卷原子；多个不猜）→ 有 .incoming/*.tar = 待导入 → 有 manifest.json = 就绪 → 否则没有资源
-enum { S2A_IMPORT_READY = 0, S2A_IMPORT_PENDING = 1, S2A_IMPORT_NONE = 2, S2A_IMPORT_BROKEN = 3 };
+enum { S2A_IMPORT_READY = 0, S2A_IMPORT_PENDING = 1, S2A_IMPORT_NONE = 2, S2A_IMPORT_BROKEN = 3, S2A_IMPORT_PARTIAL = 4 };   // 4：只缺非核心文件，玩家确认后照玩（v0.3.1）
 // 闸门下一步（s2a_import_decide）与它的节拍：稳住 3 秒才导入、1 分钟内变过算正在拷、推送没完且 3 分钟没动算停住
 enum { S2A_GATE_READY, S2A_GATE_IMPORT, S2A_GATE_WAIT, S2A_GATE_STALLED, S2A_GATE_NONE, S2A_GATE_BROKEN };
 enum { S2A_GATE_STALL_S = 90 };   // 停住：同游戏库 transferStall（S2ArmShellHostModel.swift，iOS 装机剃刀 #32：原先闸门 180 秒、库 90 秒两套）
@@ -338,11 +354,12 @@ static int g_pack_bad; static char g_pack_first[512];
 void s2a_pack_help_detail(int st, int again, char *d, size_t n) {
     const char *pre = again ? S2A_UI(S2A_UI_PACK_AGAIN) : "";
     // 缺哪个文件（g_pack_first）只进日志（s2a_import_state 已打），不上屏（11-02 维护者：index.tsv 这类内部词玩家看不懂）
-    snprintf(d, n, "%s%s", pre, st == S2A_IMPORT_BROKEN ? S2A_UI(S2A_UI_PACK_BROKEN_DETAIL) : S2A_UI(S2A_UI_PACK_NONE_DETAIL));
+    snprintf(d, n, "%s%s", pre, st == S2A_IMPORT_PARTIAL ? S2A_UI(S2A_UI_PACK_PARTIAL_DETAIL) : st == S2A_IMPORT_BROKEN ? S2A_UI(S2A_UI_PACK_BROKEN_DETAIL) : S2A_UI(S2A_UI_PACK_NONE_DETAIL));
 }
 int s2a_pack_check(const char *root, char *first, size_t n) { return (int)index_check(root, first, first ? n : 0, 0); }
 static int ends_with(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !strcmp(s + a - b, t); }
 static int applied_ready(const char *root);
+static int partial_ready(const char *root);
 int s2a_import_state(const char *docs) {
     char root[2048]; struct stat st; s2a_pack_root(root, sizeof root, docs);
     int have = !stat(root, &st) && S_ISDIR(st.st_mode);
@@ -353,13 +370,15 @@ int s2a_import_state(const char *docs) {
     //   原先闸门先看 .incoming、库先看 .applied，顺序相反：机上留一个包且清单没变时库说能玩、闸门判待导入 + 在传，等到「停住了」进不去；
     //   每次起局还要对同一目录逐文件核一遍（Play 时主线程 s2a_import_needs_ui 再核一遍）。逐文件核只留在没有 .applied 的路径与游戏 Break 时（iOS 装机剃刀 #27 / #38 / #39）
     if (applied_ready(root)) return S2A_IMPORT_READY;
+    if (partial_ready(root)) return S2A_IMPORT_PARTIAL;
     char inc[2100]; snprintf(inc, sizeof inc, "%s/.incoming", root); int ntar = 0;
     DIR *d = opendir(inc); if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar")) ntar++; closedir(d); }
     if (ntar) return S2A_IMPORT_PENDING;
     char mf[2100]; snprintf(mf, sizeof mf, "%s/manifest.json", root);
     if (stat(mf, &st)) return S2A_IMPORT_NONE;
-    g_pack_bad = s2a_pack_check(root, g_pack_first, sizeof g_pack_first);
-    if (g_pack_bad) { LOG("资源导入：资源包不完整，缺 / 不对 %d 个文件（如 %s）", g_pack_bad, g_pack_first); return S2A_IMPORT_BROKEN; }
+    unsigned core = 0; g_pack_bad = (int)index_check_core(root, g_pack_first, sizeof g_pack_first, 0, &core);
+    if (g_pack_bad && !core) { LOG("资源导入：缺 %d 个非必需文件（如 %s），部分可玩：玩家确认后照玩", g_pack_bad, g_pack_first); return S2A_IMPORT_PARTIAL; }
+    if (g_pack_bad) { LOG("资源导入：资源包不完整，缺 / 不对 %d 个文件（如 %s，其中核心 %u 个）", g_pack_bad, g_pack_first, core); return S2A_IMPORT_BROKEN; }
     if (img_needs_apply(root)) return S2A_IMPORT_PENDING;   // game.img 到了、小文件还没解：先解开再就绪
     return S2A_IMPORT_READY;
 }
@@ -650,7 +669,7 @@ static uint64_t pack_fp(const char *root) {
 //   推送没完 → 等（指纹 90 秒没动 → 停住了，请回电脑重装）；没有 / 不完整 → 说明页（原先 1 分钟内变过算「正在用访达拷」再等，随那条路删了）
 int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n) {
     int st = s2a_import_state(docs); why[0] = 0;
-    if (st == S2A_IMPORT_READY) return S2A_GATE_READY;
+    if (st == S2A_IMPORT_READY || st == S2A_IMPORT_PARTIAL) return S2A_GATE_READY;   // 部分可玩：资源可用，玩家确认在 s2a_import_gate 里问
     char root[2048]; s2a_pack_root(root, sizeof root, docs);
     if (st != S2A_IMPORT_PENDING) return st == S2A_IMPORT_BROKEN ? S2A_GATE_BROKEN : S2A_GATE_NONE;
     if (!s2a_import_transferring(root, why, n)) return S2A_GATE_IMPORT;
@@ -686,6 +705,14 @@ static int applied_ready(const char *root) {   // 资源包目录 root：.applie
     // 快判也核程序描述 exefs/main.npdm 在、是普通文件（审计 P2-212：只认 .applied 时删掉它库里仍显示可玩，点开始才报缺）；只 stat 一个文件，不逐文件核
     return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
 }
+// 部分可玩（v0.3.1）：解包时只缺非核心文件写的 .partial 第一行 = 当前清单 sha、程序描述在
+static int partial_ready(const char *root) {
+    char mf[2300], pp[2300], np[2300], want[200], got[2700] = ""; struct stat ns;
+    snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(pp, sizeof pp, "%s/.partial", root); snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
+    FILE *f = fopen(pp, "r"); if (!f) return 0;
+    size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
+}
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
     if (proc_docs && *proc_docs && gid && *gid && !strchr(gid, '/') && gid[0] != '.') {
         char root[2200], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
@@ -704,6 +731,7 @@ int s2a_game_install_state(const char *proc_docs, const char *gid) {
     char root[2200], mf[2300], want[200], why[256], gdocs[1200];
     snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs); snprintf(mf, sizeof mf, "%s/manifest.json", root);
     if (applied_ready(root)) return 1;
+    if (partial_ready(root)) return 4;   // 部分可玩：库里显示可玩，点开始时闸门问一次（v0.3.1）
     if (manifest_sha(mf, want, sizeof want) || s2a_import_transferring(root, why, sizeof why)) {
         DIR *d = opendir(root); int any = 0;   // 资源包里有没有东西（. 开头的也算：.incoming / .transfer / .applied）
         if (d) { struct dirent *e; while (!any && (e = readdir(d))) any = strcmp(e->d_name, ".") && strcmp(e->d_name, ".."); closedir(d); }
@@ -714,6 +742,14 @@ int s2a_game_install_state(const char *proc_docs, const char *gid) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #include <CoreFoundation/CoreFoundation.h>
 #include <pthread.h>
+// 只有 iOS 起局闸门问「仍要启动」用它（安卓没有这一问，放外面会 -Werror=unused-function）。玩家对这份部分可玩的资源包点过「仍要启动」：.partial_ok = 当时的清单 sha（同一份资源包以后不再问；电脑补推齐了 / 换了包就失效）
+static int partial_confirmed(const char *root) {
+    char mf[2300], ok[2300], want[200], got[200] = "";
+    snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(ok, sizeof ok, "%s/.partial_ok", root);
+    FILE *f = fopen(ok, "r"); if (!f) return 0;
+    size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want);
+}
 #include <dispatch/dispatch.h>
 #include <stdatomic.h>
 void s2a_ios_show_notice(const char *symbol, const char *title, const char *body, int done, int total, int diag);   // app.m：整屏提示页（notice.m 画）
@@ -727,7 +763,7 @@ static void note_done(void) { s2a_ios_show_notice("checkmark.circle.fill", S2A_U
 static void note_entering(void) { s2a_ios_show_notice("checkmark.circle.fill", S2A_UI(S2A_UI_IMPORT_DONE_TITLE), S2A_UI(S2A_UI_IMPORT_ENTERING_BODY), 0, 0, 0); }   // 有人等（预热路径）：导入完当场接着起游戏
 static void note_ready_reopen(void) { s2a_ios_show_notice("checkmark.circle.fill", S2A_UI(S2A_UI_IMPORT_READY_TITLE), S2A_UI(S2A_UI_IMPORT_REOPEN_BODY), 0, 0, 0); }
 static void note_fail(void) { s2a_ios_show_notice("exclamationmark.triangle.fill", S2A_UI(S2A_UI_IMPORT_FAIL_TITLE), S2A_UI(S2A_UI_IMPORT_FAIL_BODY), 0, 0, 1); }
-static const char *help_title(int st) { return st == S2A_IMPORT_BROKEN ? S2A_UI(S2A_SELFCHECK_PKG_TITLE) : S2A_UI(S2A_UI_PACK_MISSING_TITLE); }   // 说明页标题
+static const char *help_title(int st) { return st == S2A_IMPORT_BROKEN || st == S2A_IMPORT_PARTIAL ? S2A_UI(S2A_SELFCHECK_PKG_TITLE) : S2A_UI(S2A_UI_PACK_MISSING_TITLE); }   // 说明页标题
 static char g_imp_docs[1024], g_imp_name[256];
 // 缺资源包 / 资源包不全的说明页（app.m s2a_ios_show_pack_help：示意图 + 三步 + 「我已放好，重新检查」）。10-26 维护者：「壳上做好说明别闪退，
 //   打开发现缺资源包就告诉用户把启动器导出的资源包导到手机上指定位置」
@@ -786,6 +822,18 @@ static int imp_docs(char *out, size_t n) {   // 本局资源包闸门的文档�
     return s2a_import_docs_pick(s2a_launch_ctx_get(), getenv("S2A_GAME_DATA") != NULL, proc, out, n);
 }
 int s2a_import_gate_applies(void) { char d[1024]; return imp_docs(d, sizeof d); }
+// 资源包只缺非核心文件（v0.3.1 缺件照玩）：问玩家「仍要启动」。同一份资源包点过一次就记下（.partial_ok），不再问。
+//   本线程等玩家点（s2a_ios_ask_continue 只在宿主工作线程上能等）；返回 1 = 放行，0 = 问不了（主线程上，调用方照旧走闸门）
+int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body, const char *go);   // ios/app.m
+static int partial_ask(void) {
+    char root[2048], mf[2300], sha[200]; s2a_pack_root(root, sizeof root, g_imp_docs);
+    if (partial_confirmed(root)) { LOG("资源导入：缺 %d 个非必需文件，这份资源包玩家已确认过，照常起局", g_pack_bad); return 1; }
+    if (!s2a_ios_ask_continue("exclamationmark.triangle.fill", S2A_UI(S2A_UI_PACK_PARTIAL_TITLE), S2A_UI(S2A_UI_PACK_PARTIAL_ASK), S2A_UI(S2A_UI_PACK_PARTIAL_GO))) return 0;
+    snprintf(mf, sizeof mf, "%s/manifest.json", root);
+    if (!manifest_sha(mf, sha, sizeof sha) && write_atomic(root, ".partial_ok", sha)) LOG("【黄】资源导入：记不下「已确认」（%s），下次还会再问", strerror(errno));
+    LOG("资源导入：缺 %d 个非必需文件（如 %s），玩家点了「仍要启动」，照常起局；真读到缺的文件时游戏 Break → 说明页", g_pack_bad, g_pack_first);
+    return 1;
+}
 int s2a_import_gate(void) {
     if (!imp_docs(g_imp_docs, sizeof g_imp_docs)) return 0;
     s2a_pack_migrate_one(g_imp_docs);   // 直接起这款（没经过游戏库）也先把旧位置的资源包挪过去（v0.3.0）
@@ -793,6 +841,7 @@ int s2a_import_gate(void) {
     if (!dn || !CFStringGetCString(dn, g_imp_name, sizeof g_imp_name, kCFStringEncodingUTF8)) strlcpy(g_imp_name, "S2Arm", sizeof g_imp_name);
     int st = s2a_import_state(g_imp_docs);
     if (st == S2A_IMPORT_READY) return 0;
+    if (st == S2A_IMPORT_PARTIAL && s2a_front_is_running() && partial_ask()) return 0;   // 只缺非核心文件：问一次「仍要启动」，点了照常起局
     LOG("资源导入：资源没就绪（状态 %d），起闸门线程每 3 秒判一次（UIKit 先起来，免得被启动看门狗杀）", st);
     g_poll_sem = dispatch_semaphore_create(0); g_ready_sem = dispatch_semaphore_create(0);
     // 有没有人等：界面已在跑（预热路径）→ 下面 s2a_front_run 立即返回、本线程等闸门；否则 s2a_front_run 进 UIApplicationMain 不返回，没人等
@@ -800,6 +849,7 @@ int s2a_import_gate(void) {
     pthread_t th; if (pthread_create(&th, NULL, gate_thread, NULL)) die("资源导入线程起不来");
     s2a_front_run(NULL);
     dispatch_semaphore_wait(g_ready_sem, DISPATCH_TIME_FOREVER); atomic_store(&g_gate_waiting, 0);
+    if (s2a_import_state(g_imp_docs) == S2A_IMPORT_PARTIAL) partial_ask();   // 当场解开后发现只缺非核心文件：同样先问
     return 1;
 }
 // main() 起 UIKit 前问：资源包没就绪（要显示说明页 / 导入进度）就走延后启动，闸门在宿主线程上等「重新检查」
