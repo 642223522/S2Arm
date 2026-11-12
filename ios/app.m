@@ -780,6 +780,7 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
         return;
     }
     atomic_store(&g_game_picked, 1);
+    [NSUserDefaults.standardUserDefaults setObject:@(gid) forKey:@"S2ALastGameId"];   // 诊断包在库里导出时认这一款（diag.m last_container_game_root）
     s2a_boot_rebase("点 Play（多款容器选了游戏、启动上下文已冻结）");   // 起局计时从这里算，库界面停留不计
     LOG("游戏库：选了 %s，%s", gid, s2a_host_pre_ui_checks());
     [sd enterGame];
