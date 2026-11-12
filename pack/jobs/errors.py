@@ -75,6 +75,7 @@ RECOVERY = {
     "engine_incomplete": "重新安装完整的 S2Arm，然后点「重新检查」。",
     "engine_toolchain_newer": "把 S2Arm 更新到最新版（新版认得你的 Xcode），然后再点一次。",
     "graphics_api_unsupported": "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。",   # #222：同人移植把图形库静态链进程序，判不出图形接口   # 11-07 联合开发者：beta.4 遇 Xcode 27.2（metal 比锁新）直连库「链号前后不一」
+    "game_structure_unsupported": "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。",   # v0.3.1：直连配置推导不认这款的程序结构（⑪ 照停、说人话）
     "tool_missing": "重新安装完整的 S2Arm，点「重新检查」后重试。",
     "target_unsupported": "这台设备的 GPU 或系统不在当前支持范围内，重试无法解决；需要 A14 / M1 或更新芯片及 iOS / iPadOS 18 或更新系统。",
     "xcode_sdk_too_old": "把 Xcode 更新到最新版，装好打开一次，回来点「重新检查」，再打 iPhone 包。",
@@ -136,7 +137,7 @@ RECOVERY = {
     'save_recovery': '存档回退没完成：事务记录与副本都保留着。可以先在存档页备份当前存档；确认可能丢掉没做完的导入 / 恢复后，可选「仍要启动」。不要删除事务目录。',
     'container_would_drop': '确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。',
     'save_backup_failed': '确认后再点一次就照装：存档没备份，万一覆盖出问题可能丢档；想先备份就把手机解锁、数据线插稳后再点一次。',
-    'container_stale': '先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；手机上现有的游戏不受影响。',
+    'container_stale': '先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。',
     'container_incompatible': '这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。',
     'container_purge_failed': '手机解锁、数据线插稳后再删一次；不影响其他游戏。',
     'keychain_prompt': '在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「装到 iPhone」。',
@@ -239,6 +240,7 @@ PLAYER_REASON = {
     "ios_platform_missing": "缺少 iOS 平台组件：Xcode 的 iOS 平台还没装，打不了 iPhone 包。",
     "engine_toolchain_newer": "这版 S2Arm 不认识你的 Xcode：你的 Xcode 比这版 S2Arm 新。",
     "graphics_api_unsupported": "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。",
+    "game_structure_unsupported": "这款游戏暂不支持：程序的结构我们还不认识，多见于自制或移植的程序。",
     "tool_missing": "缺少工具：这条链上有个工具没装。",
     "content_invalid": "文件内容不对：文件结构校验没通过，可能没下完整。",
     "volume_ops_unsupported": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",
@@ -276,6 +278,12 @@ LOG_CAUSES = (
     # 直连配置推导判不出图形接口（graphics/nvn/tools/direct_profile.py；gfx_api.py 只认动态导入的 NVN / Vulkan / EGL）：
     #   同人移植多把 deko3d / Mesa 静态链进程序（#222 程序号 05F4…，不是官方 0100 段），通用 GPU 模拟路径已拆（11-07 只有直连），这类按现行设计不支持
     (r"unsupported graphics API: unknown", "graphics_api_unsupported"),
+    # v0.3.1 拿不准不停 ⑪ / ⑧：物理做不下去的照停，但要说人话。直连配置推导不认本款的程序结构（main 不是 NSO / 动态符号表 / RomFS 符号链接等；图形接口那类上一行先认）
+    (r"配置推导不支持本款", "game_structure_unsupported"),
+    # 直连库 Metal 一份都没出（Build.cs Metal.Tally）：这台机器上的 Metal 编译器用不了
+    (r"Metal 库一份都没出", "metal_unavailable"),
+    # 直连库原生库缺导出 / 缺库（Build.cs）：S2Arm 安装不全，不是游戏内容
+    (r"原生库缺件（出包机环境", "tool_missing"),
     # 改写停住：v0.3.1 起有缺口照出产物、降级继续（pack/stage_rewrite.sh 记 degrade.rewrite.tsv），日志里留着「PFRW … gaps=N」不再说明失败在改写；
     #   只有缺口加上补丁区放不下（stage_rewrite.sh 这句红行）才是改写停住。按 PFRW 认会把之后别的阶段的失败错归成改写缺口
     (r"需要的改写空间超过了能放下的上限", "rewrite_gap"),
