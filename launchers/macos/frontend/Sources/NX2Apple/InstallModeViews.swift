@@ -91,7 +91,7 @@ struct InstallModeLine: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "signature").font(.system(size: 16, weight: .light)).foregroundStyle(LauncherPalette.cream)
+            LauncherRowIcon("signature")
             Text(ix(loc, "install.mode.summary").replacingOccurrences(of: "{0}", with: summary)).font(.manrope(13)).foregroundStyle(.secondary)
             Spacer(minLength: 12)
             Button(ix(loc, "install.mode.change")) { model.showEnvironment = true }
