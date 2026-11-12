@@ -11666,14 +11666,21 @@ static int uv_proof(NvShader *vs, int locn, const p_draw *dw, const p_draw_idx *
 //   这里核运行时的另一半：视口正好覆盖整个目标（同 uv_proof 的映射约定）；没走几何 / 曲面阶段、不写图层（只证了 main0 / main0_z）；宽屏外推参数为零（外推块会改 P.x）。
 //   push_late：外推参数此刻还没算（fb_tile_try 在 draw_widen 之前判）——不在这里拒带外推块的程序，改由 draw() 在 draw_widen 之后核：走了 ⑤ 的笔外推参数非零就不外推这一笔
 //   （fb_tile_unpush）。11-02 塞尔达：⑤ 被「宽屏 + 带外推块」一刀切拒了 430 次 / 帧，这些笔算出的外推参数 405/405 全是 0
-static int scr_proof(NvProg *pr, NvShader *vs, int locn, int push_late) {
+//   att（fb_tile_try 传本笔读的附件，跨遍合并传 NULL）：满屏加宽了它的存储（画布比游戏尺寸大），而这一笔的视口仍是游戏尺寸、原点在左上角——
+//   同样是「视口覆盖游戏画的那块」，屏幕坐标与存储纹素一一对应，也算成立（11-12 Mac 1920×1350 满屏局：画布 1600×1125、视口 1600×900，原先一律拒，⑤ 为 0）。
+//   这一笔片上读的是本像素瓦片，像素对不对由 DM_NVN_FB_TILE_CHECK 双画逐字节比核
+static uint64_t g_fb_l5wd;   // ⑤ 里靠「满屏加宽、视口 = 游戏尺寸」放行的次数（fb_report）
+static int scr_proof(NvProg *pr, NvShader *vs, int locn, int push_late, const tex_t *att) {
     if (!vs || locn < 0 || locn >= 32 || !(vs->rf.scr_uv >> locn & 1)) return 0;
     for (int st = 2; st < 6; st++) if (pr->sh[st]) return 0;
     if (vs->layer_out || (!push_late && g_wd > 0 && vs->push)) return 0;
     if (!vp_y_upper_left()) return 0;   // y 约定只在左上角原点、视口不 swizzle 时成立（画面线审 10-30）
     NSUInteger W = g_pass.cw, H = g_pass.ch;   // canvas units, as the viewport (internal resolution)
-    if (!W || !H || !S.has_vp || !(S.vp[0][0] == 0 && S.vp[0][1] == 0 && S.vp[0][2] == (float)W && S.vp[0][3] == (float)H)) return 0;
-    return 1;
+    if (!W || !H || !S.has_vp || S.vp[0][0] != 0 || S.vp[0][1] != 0) return 0;
+    if (S.vp[0][2] == (float)W && S.vp[0][3] == (float)H) return 1;
+    if (att && g_wd > 0 && g_pass.rs == 1.0 && S.vp[0][2] == (float)MAX(att->d.width, 1u) && S.vp[0][3] == (float)MAX(att->d.height, 1u)
+        && (att->d.width < W || att->d.height < H)) { g_fb_l5wd++; return 1; }
+    return 0;
 }
 // One draw of the later pass: verify and produce the specialization. Returns 0 = cannot be proven (the caller ends the merged render pass and reopens with the original targets)
 static int swz_ident_for(MTLPixelFormat f, MTLTextureSwizzleChannels s);   // 下面 fb_tile_try 前定义
@@ -11706,7 +11713,7 @@ static int fz_p2_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint8_
                     PD("F %llu not provable: slot %d sampled view is not the attachment itself (level / layer / format / channel mapping differ)", g_stat_pass, b->reg); return 0; } }
             int any = 0;
             for (int c = 0; c < fs->rf.nfc; c++) if (fs->rf.fc_reg[c] == b->reg) {
-                if ((fs->rf.fc_proj >> c & 1) ? !scr_proof(pr, vs, fs->rf.fc_locn[c], 0) : !uv_proof(vs, fs->rf.fc_locn[c], dw, di)) { PD("F %llu not provable: slot %d sample coordinate is not this pixel (interpolated output %d)", g_stat_pass, b->reg, fs->rf.fc_locn[c]); return 0; }
+                if ((fs->rf.fc_proj >> c & 1) ? !scr_proof(pr, vs, fs->rf.fc_locn[c], 0, NULL) : !uv_proof(vs, fs->rf.fc_locn[c], dw, di)) { PD("F %llu not provable: slot %d sample coordinate is not this pixel (interpolated output %d)", g_stat_pass, b->reg, fs->rf.fc_locn[c]); return 0; }
                 fx[c] = j; fbmask |= (uint8_t)(1u << j); any = 1; }
             if (!any) { PD("F %llu not provable: slot %d sample is not in the rewritable table", g_stat_pass, b->reg); return 0; } } }
     memset(lmap, 0xff, 8);
@@ -12007,7 +12014,7 @@ static int fb_tile_try(NvProg *pr, NvShader *fs, int k, int reg, id<MTLTexture> 
     if (fs->rf.fc_mixed[reg >> 6] >> (reg & 63) & 1) return 0;   // 同一张纹理还有别的读法（如读邻像素）：只能结束遍
     int fx[32]; memcpy(fx, g_fbt.on ? g_fbt.fx : (int[32]){[0 ... 31] = -1}, sizeof fx); int any = 0;
     for (int c = 0; c < fs->rf.nfc; c++) if (fs->rf.fc_reg[c] == reg) {
-        if (!(fs->rf.fc_proj >> c & 1) || !scr_proof(pr, vs, fs->rf.fc_locn[c], 1)) return 0;
+        if (!(fs->rf.fc_proj >> c & 1) || !scr_proof(pr, vs, fs->rf.fc_locn[c], 1, R.rt.color[k])) return 0;
         fx[c] = k; any = 1; }
     if (!any) return 0;
     uint64_t s_; int lv, sl; rt_sub(&R.rt, k, &s_, &lv, &sl);
@@ -12017,7 +12024,11 @@ static int fb_tile_try(NvProg *pr, NvShader *fs, int k, int reg, id<MTLTexture> 
         if (g_wd > 0) return 0;
         for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (MAX(R.rt.color[i]->d.width, 1u) != w0 || MAX(R.rt.color[i]->d.height, 1u) != h0)) return 0;
         if (R.rt.depth && (MAX(R.rt.depth->d.width, 1u) != w0 || MAX(R.rt.depth->d.height, 1u) != h0)) return 0;
-    } else if (MAX(R.rt.color[k]->d.width, 1u) != g_pass.cw || MAX(R.rt.color[k]->d.height, 1u) != g_pass.ch) return 0;
+    } else {   // 遍已开：附件 k 的画布（canvas 单位：内部分辨率按游戏尺寸、满屏按加宽后的存储，tex_extent_at）要正好是这一遍的画布，同像素由 scr_proof 证。
+        //   原先比游戏尺寸 d.width / d.height：满屏加宽了存储、画布跟着变宽 / 变高，永远不等，⑤ 一律被拒（11-12 Duo 一款开放世界游戏：13.3 万次自采样全走快照、累计拷 372 GB、每帧 412 遍）
+        id<MTLTexture> at = tex_mtl(R.rt.color[k]); if (!at) return 0;
+        tex_extent ex = tex_extent_at(R.rt.color[k], at, 0, 0);
+        if (MAX(ex.canvas.width, 1u) != g_pass.cw || MAX(ex.canvas.height, 1u) != g_pass.ch) return 0; }
     {   // 采样的视图必须就是附件本身（同 fz_p2_draw：起始级 / 层 0、单级、格式同附件实际格式、通道顺序恒等、单采样）
         uint32_t apf_ = tv.parentTexture ? (uint32_t)tv.parentTexture.pixelFormat : (uint32_t)tv.pixelFormat; uint8_t swz_[4];
         if (R.rt.has_cview[k] && R.rt.cview[k].set_format && !(nvn_fmt_to_mtl(R.rt.cview[k].format, &apf_, swz_) && apf_)) return 0;
@@ -12078,9 +12089,9 @@ static void fb_report(uint64_t frame) {   // every 300 frames: hits per layer an
     static uint64_t h0, a0, b0, c0, d0, y0;
     if (g_fb_hits == h0) return;
     static uint64_t e0, f0;
-    MLOG("same-pass feedback sampling up to frame %llu: %llu draws sampled their own pass's attachment: ① narrowed view %llu, ② read memory as it was %llu, ③ pass ended first %llu, ④ snapshot %llu (%.1f MB copied), ⑤ read on-chip, pass kept %llu (of them before the pass drew the slot, read as loaded %llu; widen push dropped on %llu)",
+    MLOG("same-pass feedback sampling up to frame %llu: %llu draws sampled their own pass's attachment: ① narrowed view %llu, ② read memory as it was %llu, ③ pass ended first %llu, ④ snapshot %llu (%.1f MB copied), ⑤ read on-chip, pass kept %llu (of them before the pass drew the slot, read as loaded %llu; widen push dropped on %llu; widened canvas, game-size viewport %llu)",
          (unsigned long long)frame, (unsigned long long)(g_fb_hits - h0), (unsigned long long)(g_fb_l1 - a0), (unsigned long long)(g_fb_l2 - b0), (unsigned long long)(g_fb_l3 - c0),
-         (unsigned long long)(g_fb_count - d0), (g_fb_bytes - y0) / 1048576.0, (unsigned long long)(g_fb_l5 - e0), (unsigned long long)(g_fb_l5ld - f0), (unsigned long long)g_fb_l5_unpush);
+         (unsigned long long)(g_fb_count - d0), (g_fb_bytes - y0) / 1048576.0, (unsigned long long)(g_fb_l5 - e0), (unsigned long long)(g_fb_l5ld - f0), (unsigned long long)g_fb_l5_unpush, (unsigned long long)g_fb_l5wd);
     h0 = g_fb_hits; a0 = g_fb_l1; b0 = g_fb_l2; c0 = g_fb_l3; d0 = g_fb_count; y0 = g_fb_bytes; e0 = g_fb_l5; f0 = g_fb_l5ld;
 }
 // Called before the draw opens its render pass: if a snapshot is needed, end the current render pass, copy the snapshot and register the substitution (used by this draw's argument encoding)
