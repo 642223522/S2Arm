@@ -465,7 +465,26 @@ class PushReason(unittest.TestCase):
             with self.assertRaises(push.Fail) as cm: push.send(dev, pk, w, say=log.append)
             m = str(cm.exception)
             self.assertTrue(m.startswith("资源传输中断（USB 看不到手机"), m)
-            self.assertIn("romfs.img 没传完", m); self.assertIn("重新出一次这款的包", m)
+            self.assertIn("romfs.img 没传完", m); self.assertIn("新版已支持单一文件包和断点续传", m); self.assertIn("重新出一次这款的包", m)
+            self.assertTrue(localized(m), f"启动器中英对照表里没有对得上这句的句式：{m}")
+
+    def test_resumable_message_is_localized(self):
+        m = "资源传输中断（" + push.push_reason("找不到设备 x") + "）：game.img 没传完，重新装到 iPhone 会接着已传的部分续传"
+        self.assertTrue(localized(m), m)
+
+
+def localized(text):
+    """同启动器 BackendText 的句式匹配（{n} 占位 = 非贪婪任意串，整句锚定），占位里的值也要能翻（原因一类是整句对照）"""
+    import re
+    table = json.loads((Path(__file__).resolve().parents[1] / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json").read_text(encoding="utf-8"))
+    exact = {e["source"] for e in table}
+    for e in table:
+        parts = re.split(r"\{\d+\}", e["source"])
+        if len(parts) < 2: continue
+        m = re.fullmatch("(.*?)".join(map(re.escape, parts)), text, re.S)
+        if m and all(g in exact or not re.search(r"[\u4e00-\u9fff]", g) or g.endswith(".img") for g in m.groups()):
+            return True
+    return False
 
 
 class SpaceNeed(Base):
