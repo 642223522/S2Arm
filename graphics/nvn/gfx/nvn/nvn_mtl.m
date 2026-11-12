@@ -4956,15 +4956,11 @@ static void bare_dims(NSUInteger *w, NSUInteger *h);
 // S2Arm first-use skip (after LASRecomp / MeloNX): a draw whose pipeline is being compiled in the background is skipped instead of making the submit thread
 //   wait for it (mhrise 10-26: a fresh install's first run built 111 such pipelines on the submit thread); the draw after it is ready takes it as before. Only where losing it costs
 //   no more than a frame: every colour / depth target was attached in the last two frames too (drawn every frame: a one-off bake target waits), and neither shader writes storage
-//   (MeloNX allowAsyncCompileSkip). On by default on iOS; the Mac keeps waiting (replays and gates compare pixels) unless DM_NVN_FIRST_SKIP=1. DM_NVN_FIRST_SKIP=0 turns it off
+//   (MeloNX allowAsyncCompileSkip). On by default on every platform (a Mac play session stalled 14 s on one frame's first uses, #187); DM_NVN_FIRST_SKIP=0 waits instead, which frame replay sets because it compares pixels
 static int first_skip_on(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("DM_NVN_FIRST_SKIP");
-#if TARGET_OS_IPHONE
         v = !(e && !strcmp(e, "0"));
-#else
-        v = e && !strcmp(e, "1");
-#endif
         MLOG("first-use skip %s: draws whose pipeline compiles in the background %s (DM_NVN_FIRST_SKIP)", v ? "on" : "off", v ? "are skipped until it is ready" : "wait for it"); }
     return v;
 }
