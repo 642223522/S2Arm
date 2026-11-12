@@ -206,6 +206,10 @@ def _build(c):
     if not game:
         raise Failure("游戏库里没有这款游戏。")
     require_game(c, game)
+    import downstream
+    scheme = downstream.requested(c, game)   # 玩家选了下游深度方案（确认页）：出包最后一步改用下游的做包工具，见 pack/jobs/downstream.py
+    if scheme:
+        return downstream.build_ios(c, game, scheme)
     from library import apply_location
     apply_location(c, game)   # 出包页选的存放位置（游戏库结构 v3）
     from library import check_pack_space
