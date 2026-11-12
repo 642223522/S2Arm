@@ -268,8 +268,9 @@ static _Atomic int g_open;   // 跨线程：close 置 0 后其他线程据此拒
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 // 诊断读数（nvk_gputime 开着时每 300 次上屏打一行）：每帧新建了多少个驱动对象、写了多少次描述符、开了多少个查询。
 enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_N };
-static uint64_t g_oc[OC_N];
-#define OC(i) __atomic_fetch_add(&g_oc[i], 1, __ATOMIC_RELAXED)
+static uint64_t g_oc[OC_N], g_oc_total[OC_N];
+#define OC(i) (__atomic_fetch_add(&g_oc[i], 1, __ATOMIC_RELAXED), __atomic_fetch_add(&g_oc_total[i], 1, __ATOMIC_RELAXED))
+uint64_t nvn_vk_dbg_created(int which) { return which >= 0 && which < OC_N ? __atomic_load_n(&g_oc_total[which], __ATOMIC_RELAXED) : 0; }   // 用例读：会话以来新建的各类对象数（0 渲染通道 1 帧缓冲 …，见上面的枚举）
 // ---- 通道对象缓存：渲染通道对象与帧缓冲跨帧保留 ----
 // 原先每开一个通道都 vkCreateRenderPass + vkCreateFramebuffer、所在的段做完再销毁；一帧一百多个通道，目标就那么十几组，每帧重复建销。
 // 做法照 d2r-mobile 安卓笔记 perf-round2 的发现 3：渲染通道对象按「附件描述」记（与具体图像无关，会话结束才销毁）；
