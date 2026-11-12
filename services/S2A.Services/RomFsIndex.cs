@@ -249,7 +249,8 @@ namespace S2A.Services
 
         // 单一 IMG v1（pack/img.py，v0.3.0）：<程序目录>/game.img。头：0 "S2AIMG01" | 8 u32 格式号 | 96/104 RomFS 段偏移 / 长 | 112/120 目录表偏移 / 长 | 128 整个文件长。
         //   RomFS 段是 Switch 标准 RomFS，LibHac 原生读。没有界面覆盖层 → 直接交这段（零额外开销）；有覆盖层 → 按目录表里的 romfs.list 重建虚拟 RomFS，
-        //   被覆盖的文件读覆盖层（同旧镜像的覆盖层语义）。文件不在 → null；长度不等于头里的整个文件长（推到一半）→ null（调用方照旧退回）；
+        //   被覆盖的文件读覆盖层（同旧镜像的覆盖层语义）。文件不在 → null；长度不等于头里的整个文件长（推到一半）→ 旁边有 romfs/ 时 null（调用方退回读目录），
+        //   没有就抛（资源没传完，起局失败、宿主说「请重新装到 iPhone」；审计 P1-170）；
         //   魔数 / 格式号不认识 → 抛（起局失败、说清原因，不读坏数据）。格式号只在布局真变时加一，新壳必须保留读旧号的分支
         public const string ImgName = "game.img";
         // IMG 旁的派生偏移表（pack/img.py convert 写）：格式同 romfs.imgmap（"S2ARIM01" | i64 镜像长 = game.img 整个文件长 | i32 条数 | 条数 × i64），
@@ -267,7 +268,14 @@ namespace S2A.Services
             uint fmt = BitConverter.ToUInt32(hdr, 8);
             if (fmt != 1) { h.Dispose(); throw new InvalidDataException($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1：请更新 S2Arm（{path}）"); }
             long ro = BitConverter.ToInt64(hdr, 96), rl = BitConverter.ToInt64(hdr, 104), to = BitConverter.ToInt64(hdr, 112), tl = BitConverter.ToInt64(hdr, 120), total = BitConverter.ToInt64(hdr, 128);
-            if (RandomAccess.GetLength(h) != total || rl <= 0) { h.Dispose(); return null; }
+            if (RandomAccess.GetLength(h) != total || rl <= 0)
+            {
+                long have = RandomAccess.GetLength(h); h.Dispose();
+                // 推到一半（审计 P1-170）：旁边还有旧形态的 romfs/ 目录就退回读它（同单文件镜像不完整时）；没有就是资源确实没传完，
+                //   物理上起不了：抛错让会话失败，宿主按事实归到「游戏文件缺失，请在电脑上重新装到 iPhone」（init_fail.c），不再报「缺 romfs/」后照样起空数据
+                if (Directory.Exists(Path.Combine(programDir, "romfs"))) { Red.Report($"资源包 IMG 不完整（{have} / {total} 字节，多半推到一半），这局改读 romfs/ 目录", path); return null; }
+                throw new InvalidDataException($"资源包 IMG 没传完（{have} / {total} 字节）：请在电脑上的 S2Arm 里对这款游戏重新「装到 iPhone」（{path}）");
+            }
             Dictionary<string, string> overlay = OverlayFiles(Path.Combine(programDir, ImageOverlayDir));
             string map = Path.Combine(programDir, ImgMapName), index = Path.Combine(programDir, FileName);
             if (File.Exists(map) && File.Exists(index))
