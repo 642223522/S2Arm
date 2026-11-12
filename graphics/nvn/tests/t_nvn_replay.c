@@ -1085,6 +1085,93 @@ static void t_dispatch(void) {
     g_cresolve_rc = 0; g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
+// 计算阶段「用户 UBO 当存储缓冲」（反射映射 NVK_STORAGE_UBO_PTR → 核心来源 NVN_RB_UBOP，#725）：
+// 取址的表是统一缓冲槽表 rp_S.ubo[5][r]，不是存储缓冲槽表 rp_S.ssbo[5][r]；其余同 SBUFP——绑池镜像里的那一段。
+// 这一项被着色器写不写由布局项的 access 定（来自反射的 rw）：写的登记一次 GPU 写（完成后回写游戏内存），只读的不登记。期望值手算。
+// 池 g_pmem 起手全 0x11；「GPU 写了镜像」的替身是整块镜像 = 0xEE；诱饵 = 同槽号、绑在存储缓冲槽表里的另一段（取错表就会取到它）。
+static void ubop_fresh(void) {
+    pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; g_arena_used = 0; g_nbw = 0; g_buf_cpu_fake = NULL;
+    g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0;
+    memset(g_pmem, 0x11, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+}
+static unsigned pmem_diff(uint8_t v) { unsigned n = 0; for (unsigned i = 0; i < sizeof g_pmem; i++) n += g_pmem[i] != v; return n; }   // 池里不等于 v 的字节数
+static int pmem_all(unsigned from, unsigned to, uint8_t v) { for (unsigned i = from; i < to; i++) if (g_pmem[i] != v) return 0; return 1; }   // [from, to) 全是 v
+static void ubop_ent(int i, uint8_t src_kind, uint16_t reg, uint8_t access) {
+    g_cprog.ent[0][i].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][i].src_kind = src_kind; g_cprog.ent[0][i].src_reg = reg; g_cprog.ent[0][i].access = access;
+}
+static void put_bind(stream *s, uint32_t op, int stage, int index, uint64_t addr, uint64_t size) {
+    p_bind_buf *b = put(s, op, sizeof *b); b->stage = stage; b->index = index; b->addr = addr; b->size = size;
+}
+static void put_dispatch1(stream *s) { p_dispatch *dp = put(s, OP_DISPATCH, sizeof *dp); dp->x = 1; dp->y = 1; dp->z = 1; }
+
+// 可写：绑统一缓冲槽 2 的那一段；完成后只有登记的那些字节回到游戏内存；失败的段不回写、登记照撤。同一程序里还有一项 SBUFP（两种来源并存，各取各的表）
+static void t_dispatch_ubop_rw(void) {
+    ubop_fresh();
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    g_cprog.nent[0] = 2; ubop_ent(0, NVN_RB_UBOP, 2, NVN_GPU_ACC_RW); ubop_ent(1, NVN_RB_SBUFP, 0, NVN_GPU_ACC_RW);
+    stream s = {0};
+    put_bind(&s, OP_BIND_UBO, 5, 2, base + 2 * PG + 32, 96);    // 统一缓冲槽 2：项 0 真正的来源
+    put_bind(&s, OP_BIND_SSBO, 5, 2, base + PG, 64);            // 存储缓冲槽 2：诱饵
+    put_bind(&s, OP_BIND_SSBO, 5, 0, base + 3 * PG + 16, 48);   // 存储缓冲槽 0：项 1 的来源
+    put_dispatch1(&s); end(&s);
+    submit1(&s);
+    CHECK(g_cresolves == 1 && g_ndisp == 1 && g_cbinds == 1 && g_ncb == 2 && nvn_unimpl_kinds() == 0);
+    CHECK(g_cb[0].ent == 0 && g_cb[0].cls == NVN_GPU_RES_SSBO && g_cb[0].u.b.off == 2 * PG + 32 && g_cb[0].u.b.len == 96 && g_cb[0].u.b.buf != &g_arena_buf);   // 项 0：池镜像里的 [2*PG+32, +96)，不是诱饵的 PG / 64
+    CHECK(g_cb[1].ent == 1 && g_cb[1].cls == NVN_GPU_RES_SSBO && g_cb[1].u.b.off == 3 * PG + 16 && g_cb[1].u.b.len == 48 && g_cb[1].u.b.buf == g_cb[0].u.b.buf);   // 项 1：同一个池、同一份镜像里的 [3*PG+16, +48)
+    static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0xEE, sizeof mirror); g_buf_cpu_fake = mirror;
+    CHECK(pmem_diff(0x11) == 0);                                                                                   // 完成之前：游戏内存不动
+    fake_complete(NVN_GPU_DONE_OK);
+    CHECK(pmem_all(2 * PG + 32, 2 * PG + 128, 0xEE) && pmem_all(3 * PG + 16, 3 * PG + 64, 0xEE));                 // 登记的两段（96 + 48 字节）回到游戏内存
+    CHECK(g_pmem[2 * PG + 31] == 0x11 && g_pmem[2 * PG + 128] == 0x11 && g_pmem[3 * PG + 15] == 0x11 && g_pmem[3 * PG + 64] == 0x11);   // 两段紧邻的字节不动
+    CHECK(pmem_all(PG, PG + 64, 0x11) && pmem_diff(0x11) == 96 + 48);                                              // 诱饵段不动；池里别处一字节没变
+    // 失败的段：不回写，登记照撤（撤了，下一次镜像同步才不会绕开那两段）
+    memset(g_pmem + 2 * PG, 0x22, 2 * PG); memset(mirror, 0x77, sizeof mirror);
+    stream f = {0}; put_dispatch1(&f); end(&f);
+    submit1(&f); fake_complete(NVN_GPU_DONE_FAILED);
+    CHECK(g_ndisp == 2 && pmem_all(2 * PG, 4 * PG, 0x22));                                                         // 派发了、这一段失败：游戏内存还是游戏自己的
+    g_pg_gen[2] = g_pg_gen[3] = 101; g_dirty_now = 102; g_nbw = 0;                                                 // 游戏又写了这两页
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 2 * PG, 2 * PG, NULL, NULL) == 1 && g_nbw == 0 && mirror[2 * PG + 32] == 0x22 && mirror[2 * PG + 127] == 0x22 && mirror[3 * PG + 16] == 0x22 && mirror[3 * PG + 63] == 0x22);   // 两段都重传了：登记已撤
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
+}
+
+// 只读不登记；没绑 / 槽号越界 / 地址不在池里：各记一笔账、整笔不派发（沿用存储缓冲的原因名，不拆开未接清单的计数）
+static void t_dispatch_ubop_ro_skip(void) {
+    ubop_fresh();
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    g_cprog.nent[0] = 2; ubop_ent(0, NVN_RB_UBOP, 2, NVN_GPU_ACC_R); ubop_ent(1, NVN_RB_SBUFP, 0, NVN_GPU_ACC_RW);   // 只读的统一缓冲 + 可写的存储缓冲
+    stream s = {0};
+    put_bind(&s, OP_BIND_UBO, 5, 2, base + 2 * PG + 32, 96);
+    put_bind(&s, OP_BIND_SSBO, 5, 2, base + PG, 64);            // 诱饵
+    put_bind(&s, OP_BIND_SSBO, 5, 0, base + 3 * PG + 16, 48);
+    put_dispatch1(&s); end(&s);
+    submit1(&s);
+    CHECK(g_ndisp == 1 && g_ncb == 2 && nvn_unimpl_kinds() == 0 && g_cb[0].cls == NVN_GPU_RES_SSBO && g_cb[0].u.b.off == 2 * PG + 32 && g_cb[0].u.b.len == 96 && g_cb[1].u.b.off == 3 * PG + 16 && g_cb[1].u.b.len == 48);
+    static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0xEE, sizeof mirror); g_buf_cpu_fake = mirror;
+    fake_complete(NVN_GPU_DONE_OK);
+    CHECK(pmem_all(3 * PG + 16, 3 * PG + 64, 0xEE) && pmem_diff(0x11) == 48);                                      // 只有可写的那一项回写；只读的统一缓冲段（镜像里同样是 0xEE）一字节没动
+    CHECK(pmem_all(2 * PG + 32, 2 * PG + 128, 0x11));
+    // 跳过的三种：统一缓冲槽没绑 / 槽号越界 / 绑的地址越过池尾
+    int n0 = g_ndisp, b0 = g_cbinds;
+    g_cprog.nent[0] = 1; g_cprog.ent[0][0].src_reg = 5;         // ① 统一缓冲槽 5 没绑：同号的存储缓冲槽 5 绑着，也不能拿来顶
+    stream u = {0}; put_bind(&u, OP_BIND_SSBO, 5, 5, base + PG, 64);
+    put_bind(&u, OP_BIND_UBO, 5, 0, base + 3 * PG, 64); put_bind(&u, OP_BIND_SSBO, 0, 0, base + 3 * PG, 64);   // 给 ② 备的有效段：槽 16 回绕成槽 0、或越界读到 ubo 数组后面紧跟的 ssbo[0][0]，都会取到它们
+    put_dispatch1(&u); end(&u);
+    submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_unbound") == 1 && g_ndisp == n0 && g_cbinds == b0);
+    g_cprog.ent[0][0].src_reg = 16;                             // ② 槽号越界：统一缓冲只有 0..15（槽 0 与 ssbo[0][0] 都绑着有效段：回绕或越界读都会派发出去）
+    submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_unbound") == 2 && g_ndisp == n0 && g_cbinds == b0);
+    g_cprog.ent[0][0].src_reg = 2;                              // ③ 统一缓冲槽 2 换成一段越过池尾的地址
+    stream v = {0}; put_bind(&v, OP_BIND_UBO, 5, 2, base + sizeof g_pmem - 4, 8); put_dispatch1(&v); end(&v);
+    submit1(&v); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_unresolved") == 1 && nvn_unimpl_count("buf", "address_outside_pools") == 1 && g_ndisp == n0 && g_cbinds == b0);
+    CHECK(nvn_unimpl_count("draw", "binding_source_unknown") == 0 && nvn_unimpl_kinds() == 3);                      // UBOP 是认得的来源：不落到「来源不明」
+    g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
+}
+
 // 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
 static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
     p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
@@ -1483,6 +1570,8 @@ int main(int argc, char **argv) {
     t_occlusion();
     t_render_cond();
     t_dispatch();
+    t_dispatch_ubop_rw();
+    t_dispatch_ubop_ro_skip();
     t_compute_image();
     t_copy_t2t();
     t_draw();
