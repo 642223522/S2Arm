@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 52,
+  "revision": 53,
   "languages": [
     "zh-Hans",
     "en"
@@ -4656,8 +4656,8 @@
       },
       {
         "id": "welcome.sheet.games.what",
-        "zh-Hans": "NSP、XCI 文件、游戏文件夹，或解包好的游戏文件夹都可以，一次放多个也行。",
-        "en": "NSP or XCI files, game folders or extracted game folders. Add as many as you like."
+        "zh-Hans": "NSP、XCI、NUP 文件、游戏文件夹，或解包好的游戏文件夹都可以，一次放多个也行。",
+        "en": "NSP, XCI or NUP files, game folders or extracted game folders. Add as many as you like."
       },
       {
         "id": "welcome.sheet.games.drop",
@@ -6476,8 +6476,8 @@
       },
       {
         "id": "welcome.step.games.what",
-        "zh-Hans": "NSP、XCI 文件或解包好的游戏文件夹都可以。",
-        "en": "NSP or XCI files and extracted game folders all work."
+        "zh-Hans": "NSP、XCI、NUP 文件或解包好的游戏文件夹都可以。",
+        "en": "NSP, XCI or NUP files and extracted game folders all work."
       }
     ]
   },
