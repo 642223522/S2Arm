@@ -1785,5 +1785,12 @@
   "s2arm.job.title.installRestore": "Restoring the previous version",
   "s2arm.job.title.installUpdate": "Updating S2Arm on iPhone",
   "s2arm.job.title.moveGame": "Moving a game",
-  "s2arm.job.title.play": "Running"
+  "s2arm.job.title.play": "Running",
+  "s2arm.notice.delete.running": "Deleting {0}…",
+  "s2arm.notice.delete.done": "Deleted {0}. Saves and the original game files are kept.",
+  "s2arm.notice.delete.failed": "Couldn't delete {0}: {1}",
+  "s2arm.notice.clearCache.running": "Clearing the cache of {0}…",
+  "s2arm.notice.clearCache.done": "Cleared the cache of {0}.",
+  "s2arm.notice.clearCache.failed": "Couldn't clear the cache of {0}: {1}",
+  "s2arm.notice.waitBusy.failed": "{1} is still running. Try {0} again after it finishes."
 }

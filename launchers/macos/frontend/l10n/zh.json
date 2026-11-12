@@ -1786,5 +1786,12 @@
   "s2arm.job.title.installRestore": "装回上一版",
   "s2arm.job.title.installUpdate": "更新 iPhone 上的 S2Arm",
   "s2arm.job.title.moveGame": "搬移游戏",
-  "s2arm.job.title.play": "运行"
+  "s2arm.job.title.play": "运行",
+  "s2arm.notice.delete.running": "正在删除「{0}」…",
+  "s2arm.notice.delete.done": "已删除「{0}」。存档和原始游戏文件都还在。",
+  "s2arm.notice.delete.failed": "删除「{0}」没成功：{1}",
+  "s2arm.notice.clearCache.running": "正在清除「{0}」的缓存…",
+  "s2arm.notice.clearCache.done": "已清除「{0}」的缓存。",
+  "s2arm.notice.clearCache.failed": "清除「{0}」的缓存没成功：{1}",
+  "s2arm.notice.waitBusy.failed": "「{1}」还在进行，等它结束再操作「{0}」。"
 }

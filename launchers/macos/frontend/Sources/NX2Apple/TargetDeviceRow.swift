@@ -23,7 +23,8 @@ struct TargetDeviceRow: View {
         return HStack(spacing: 12) {
             Image(systemName: offline ? "iphone.slash" : "iphone").font(.system(size: 16, weight: .light))
                 .foregroundStyle(offline ? LauncherPalette.danger : LauncherPalette.cream)
-            Text(offline ? x("device.offline") : device == nil ? x("device.none") : many ? x("device.many") : x("device.connected").replacingOccurrences(of: "{0}", with: name))
+            Text(offline ? x("device.offline") : device == nil ? (model.deviceProbeError.map { loc.backend($0) } ?? x("device.none"))   // 读不到设备列表：说原因，不说没插（玩家反馈 11-11）
+                 : many ? x("device.many") : x(device?["wired"] as? Bool == true ? "device.connected" : "device.connected_network").replacingOccurrences(of: "{0}", with: name))   // 只靠同一网络连着：明说
                 .font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("device.status")
             Spacer(minLength: 12)
