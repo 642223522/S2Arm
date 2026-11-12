@@ -1626,9 +1626,48 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 }
 
 int main(int argc, char **argv) {
-    t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
-    t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_depth_shadow(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_dispatch(); t_compute_sources(); t_copy_t2t(); t_draw(); t_present(); t_view_pin();
+    t_state_persists();
+    t_unimpl_names();
+    t_one_commit_per_submit();
+    t_event_after_done();
+    t_fence_sync();
+    t_jump_call();
+    t_bad_record();
+    t_dirty_bits();
+    t_deferred_bind();
+    t_program_stages();
+    t_program_bind_stages();
+    // 一行一个调用：外部各支都往这里加用例，挤在一行时每两支必冲突
+    t_pools();
+    t_tex_init_registers_only();
+    t_alias();
+    t_cpu_upload();
+    t_cpu_rules();
+    t_linear_upload();
+    t_linear_reject();
+    t_registry();
+    t_buf_mirror();
+    t_buf_ops();
+    t_copy_b2t();
+    t_pass_clear_fold();
+    t_pass_depth_shadow();
+    t_pass_bc_shadow();
+    t_autoflush();
+    t_pass_target_persists();
+    t_pass_switch_and_partial();
+    t_clear_rect();
+    t_report_counter();
+    t_occlusion();
+    t_render_cond();
+    t_dispatch();
+    t_compute_sources();
+    t_copy_t2t();
+    t_draw();
+    t_present();
+    t_view_pin();
+    t_pass_3d_slice_view();
+    t_bind_reuse();
+    t_begin_fail();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
