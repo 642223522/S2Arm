@@ -125,7 +125,7 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
         if (m) { sync_write(NULL, m, s, a - (uintptr_t)mem, b - (uintptr_t)mem); last = rp_sub_serial(); }
         else { nvn_gpu_cmd xc = rp_xfer_cmd(&last); if (xc) sync_write(xc, NULL, s, a - (uintptr_t)mem, b - (uintptr_t)mem); }
         for (uint64_t k = i; k <= j; k++) { s->synced[k] = st; s->sub[k] = last; }
-        g_sync_bytes += b - a; g_sync_runs++;
+        g_sync_bytes += b - a; g_sync_runs++; rp_perf_add(RP_PERF_BUF_SYNC_KB, (b - a) / 1024);
         i = j + 1;
     }
     if (gens != stack) free(gens);
