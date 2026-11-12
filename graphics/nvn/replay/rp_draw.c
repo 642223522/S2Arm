@@ -359,7 +359,11 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         pd.depth_clamp = (uint8_t)(rp_S.depth_clamp != 0);
         nvn_gpu_pipe np = NULL; nvn_gpu_err err = {0};
         nvn_gpu_rc r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
-        if (r.code == NVN_GPU_E_UNSUPPORTED && rp_S.poly.mode != NVN_POLYGON_MODE_FILL) nvn_unimpl("gpu", "polygon_mode_not_fill", rec);   // 后端明确不支持时才记账，不把已支持的点 / 线绘制误报成未实现
+        if (r.code == NVN_GPU_E_UNSUPPORTED && rp_S.poly.mode != NVN_POLYGON_MODE_FILL) {   // 设备没有点 / 线填充模式：记一笔，照旧按填充画（不让这笔绘制消失）
+            nvn_unimpl("gpu", "polygon_mode_not_fill", rec);
+            pd.poly.mode = NVN_POLYGON_MODE_FILL; memset(&err, 0, sizeof err);
+            r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
+        }
         if (!nvn_gpu_ok(r)) { if (nvn_unimpl("gpu", "pipe_get", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; g_pipe = NULL; return; }
         g_pipe = np; g_pipe_cmd = c;
         nvn_gpu_set_pipe(c, g_pipe);
