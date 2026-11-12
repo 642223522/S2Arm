@@ -99,6 +99,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                 t_last = now; n_last = g_n_shown + 1; d_last = nd;
             }
         }
+        rp_autoflush_present();
         if (!g_n_shown++ || g_n_shown % 600 == 0) {   // 首帧一行，之后每 600 帧一行
             uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
             char b[300]; snprintf(b, sizeof b, "第 %llu 帧已交给呈现：源 #%llu（格式 %#x，%s）%ux%u 裁剪 %d,%d %dx%d → 屏 %ux%u 的 %d,%d %dx%d（丢 %llu）；累计绘制 %llu 笔、跳过 %llu 笔", (unsigned long long)g_n_shown,
