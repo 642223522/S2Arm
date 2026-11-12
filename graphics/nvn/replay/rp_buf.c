@@ -126,7 +126,9 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
         // 游戏在提交前把这次提交要用的内容写好，这一条本来就成立（原先录进前置段，也是先于本次提交的全部通道）。
         // 真机读数（3D 那款场景，同一局里来回切）：每帧约 27 MB、100 次带全局屏障的 GPU 拷贝改成直写，帧率 11.0 → 12.9。
         // 同一次提交里已经同步过又变了的，必须排在已录的绘制之后：照旧结束通道、录进主段。镜像 CPU 读不到的后端也照旧。
-        uint8_t *m = last != rp_sub_serial() ? nvn_gpu_buf_cpu(s->buf) : NULL;
+        // 还要此前的提交都已经做完：显卡还在执行上一次提交时，镜像里的旧内容它可能还没读，直接写会让上一帧画到这一帧的数据。
+        // 游戏每帧等显卡做完（Finish / 等同步）时这个条件总成立；不等的游戏退回按序拷。
+        uint8_t *m = last != rp_sub_serial() && rp_prev_subs_done() ? nvn_gpu_buf_cpu(s->buf) : NULL;
         if (m) { sync_write(NULL, m, s, a - (uintptr_t)mem, b - (uintptr_t)mem); last = rp_sub_serial(); }
         else { nvn_gpu_cmd xc = rp_xfer_cmd(&last); if (xc) sync_write(xc, NULL, s, a - (uintptr_t)mem, b - (uintptr_t)mem); }
         for (uint64_t k = i; k <= j; k++) { s->synced[k] = st; s->sub[k] = last; }

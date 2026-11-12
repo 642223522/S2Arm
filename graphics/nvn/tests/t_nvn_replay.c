@@ -1090,8 +1090,9 @@ static void t_dispatch(void) {
     nvn_be_sub_begin();
     CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, PG, NULL, NULL) == 1);
     nvn_be_sub_commit();
-    // 镜像 CPU 写得到：本次提交里第一次同步直接写进镜像（不录 GPU 拷贝）；[PG+64, PG+192) 是 GPU 写过还没落地的，不盖
-    CHECK(g_nbw == 0 && !memcmp(mirror + PG, g_pmem + PG, 64) && mirror[PG + 64] == 0xEE && mirror[PG + 191] == 0xEE && !memcmp(mirror + PG + 192, g_pmem + PG + 192, PG - 192));
+    // 上一次提交（那次派发）显卡还没做完：镜像里的旧内容它可能还没读，这次同步不能直接写镜像，按序录成 GPU 上的拷贝；
+    // [PG+64, PG+192) 是 GPU 写过还没落地的，绕开 → 前后两段（64 字节、PG−192 字节），镜像内存一个字节都没被 CPU 动
+    CHECK(g_nbw == 2 && mirror[PG] == 0xEE && mirror[PG + 64] == 0xEE && mirror[PG + 192] == 0xEE);
     fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_pmem[PG + 63] == 0x11 && g_pmem[PG + 64] == 0xEE && g_pmem[PG + 191] == 0xEE && g_pmem[PG + 192] == 0x11);   // 完成：只有那 128 字节回到游戏内存
     g_pg_gen[1] = 103; g_dirty_now = 104; g_nbw = 0;                       // 回写落地之后再脏：整页照传，不再绕
