@@ -183,7 +183,10 @@ class WaitTests(unittest.TestCase):
         for argv, body in [(["install", "G", "--no-wait"], {"gameId": "G"}),
                            (["install", "G", "--team", "ABCDE12345", "--no-wait"], {"gameId": "G", "teamId": "ABCDE12345"}),
                            (["install", "G", "--device", "测试 iPhone", "--team", "ABCDE12345", "--no-wait"],
-                            {"gameId": "G", "teamId": "ABCDE12345", "device": "测试 iPhone"})]:
+                            {"gameId": "G", "teamId": "ABCDE12345", "device": "测试 iPhone"}),
+                           # 三个确认开关各自进请求体（--accept-stale 原先只在帮助里有、请求体漏了）
+                           (["install", "G", "--accept-dropped", "--accept-no-backup", "--accept-stale", "--no-wait"],
+                            {"gameId": "G", "acceptDropped": True, "acceptNoBackup": True, "acceptStale": True})]:
             with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)

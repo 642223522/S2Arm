@@ -64,7 +64,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     d.flip_y = (uint8_t)(rp_origin_lower_left() != 0);
     int c[4]; int fit = pf_crop_fit(crop, t->d.width, t->d.height, c);
     if (fit >= 0) memcpy(d.crop, c, sizeof c);   // 非法裁剪：按整张显示
-    double cw = d.crop[2] > 0 ? d.crop[2] : t->d.width, ch = d.crop[3] > 0 ? d.crop[3] : t->d.height;
+    double cw = d.crop[2] > 0 ? (double)d.crop[2] : (double)t->d.width, ch = d.crop[3] > 0 ? (double)d.crop[3] : (double)t->d.height;
     pf_vp vp = pf_viewport(dr.w, dr.h, cw, ch);
     d.dst[0] = (int32_t)(vp.x + 0.5); d.dst[1] = (int32_t)(vp.y + 0.5); d.dst[2] = (int32_t)(vp.w + 0.5); d.dst[3] = (int32_t)(vp.h + 0.5);
     if (d.dst[0] + d.dst[2] > (int32_t)dr.w) d.dst[2] = (int32_t)dr.w - d.dst[0];
