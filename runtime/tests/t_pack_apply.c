@@ -576,6 +576,14 @@ int main(void) {
         sh(c);
         snprintf(c, sizeof c, "test -s '%s/.incoming/1_000.tar' && test ! -e '%s/资源包'", N1, G1);
         CHECK(s2a_pack_migrate_one(G1) == 1 && sh(c) == 0, "⑮⑧ 旧位置有待解包：换掉新位置（待解包到了新位置、旧位置没了）");
+        // ⑧c 审计 P1-169：换的时候第二步改名失败（旧位置的上级只读，删不掉旧条目）→ 新位置原样（清单 q9、待解包还在）、
+        //   不留挪开的 .s2a-old-* 副本、旧位置那份也在、返回 -2（新位置此时是上一步换进来的那份：只有待解包、没有清单）。原先先删新位置再改名：这一步失败新位置就没了
+        snprintf(c, sizeof c, "set -e; mkdir -p '%s/资源包'; printf '{\"index_sha256\": \"q7\"}' > '%s/资源包/manifest.json'; chmod 555 '%s'", G1, G1, G1);
+        CHECK(sh(c) == 0, "⑮⑧c 造：旧位置清单 q7、上级只读");
+        int r8 = s2a_pack_migrate_one(G1);
+        snprintf(c, sizeof c, "chmod 755 '%s'; test -s '%s/.incoming/1_000.tar' && test ! -e '%s/manifest.json' && ! ls -d '%s'.s2a-old-* >/dev/null 2>&1 && grep -q q7 '%s/资源包/manifest.json'", G1, N1, N1, N1, G1);
+        CHECK(r8 == -2 && sh(c) == 0, "⑮⑧c 第二步改名失败：返回 -2（实际 %d）、新位置原样（待解包在、没有清单）、没留挪开的副本、旧位置在", r8);
+        snprintf(c, sizeof c, "rm -rf '%s/资源包'", G1); sh(c);
         snprintf(c, sizeof c, "set -e; printf '{\"index_sha256\": \"abc\"}' > '%s/manifest.json'; printf abc > '%s/.applied'; mkdir -p '%s/exefs'; head -c 100 /dev/urandom > '%s/exefs/main.npdm'; rm -rf '%s/.incoming'", N1, N1, N1, N1, N1);
         sh(c);
         // ⑤ 迁到一半被杀：30 款，子进程迁、几毫秒后 SIGKILL，再迁一次 → 30 款都在新位置、每款 50 个文件一个不少、存档都在
