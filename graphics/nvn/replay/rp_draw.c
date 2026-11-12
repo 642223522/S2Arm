@@ -367,7 +367,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     }
     uint32_t tw = 1, th = 1;
     { int fi = -1; for (int i = 0; i < rt->n && i < 8 && fi < 0; i++) if (rt->color[i]) fi = i;   // 缺省视口的尺寸：第一个有图的颜色槽，没有就取深度目标
-      if (fi >= 0) { uint32_t l = rt->has_cview[fi] && rt->cview[fi].set_levels ? rt->cview[fi].base_level : 0; tw = rt->color[fi]->d.width >> l; th = rt->color[fi]->d.height >> l; }
+      if (fi >= 0) rp_pass_slot_size(fi, &tw, &th);   // 块压缩基底配一块当一个像素的视图时是块数（#709）
       else if (rt->depth) { uint32_t l = rt->has_dview && rt->dview.set_levels ? rt->dview.base_level : 0; tw = rt->depth->d.width >> l; th = rt->depth->d.height >> l; }
       if (!tw) tw = 1;
       if (!th) th = 1; }
