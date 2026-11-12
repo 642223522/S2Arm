@@ -122,7 +122,14 @@ void rp_tex_mark_gpu_written(const tex_t *t) {
 
 static int fmt_compressed(int f) { nvn_fmt_info i; return nvn_fmt_info_of((uint32_t)f, &i) && (i.bw > 1 || i.bh > 1); }
 static int fmt_depth(int f) { nvn_fmt_info i; return nvn_fmt_info_of((uint32_t)f, &i) && (i.depth || i.stencil); }
-static int mem_any(const uint8_t *p, uint64_t n) { for (uint64_t i = 0; i < n; i++) if (p[i]) return 1; return 0; }
+static uint64_t res_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
+// 有没有非零字节。按 8 字节一比：新建的渲染目标每张都要扫一遍自己的存储（常是几兆全 0），逐字节扫在真机上是每帧毫秒级。
+static int mem_any(const uint8_t *p, uint64_t n) {
+    uint64_t i = 0;
+    for (; i + 8 <= n; i += 8) { uint64_t v; memcpy(&v, p + i, 8); if (v) return 1; }
+    for (; i < n; i++) if (p[i]) return 1;
+    return 0;
+}
 
 // LINEAR 贴图（CPU 写入的字体 / UI 图集；iOS 同名语义见 nvn_mtl.m tex_linear @3756 / tex_linear_needs_upload @3777）。
 // 返回 0 = 不是线性族；1 = 第一批准入（走 CPU 内容路径）；-1 = 线性族但第一批不收（*why 是未接名，调用方记账）。
@@ -308,7 +315,6 @@ static void alias_take_over(const alias_key *nk, uint64_t nsize) {
     }
 }
 
-static uint64_t res_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
     if (!t || !t->serial) return NULL;
     uint64_t r0_ = res_now();
@@ -323,7 +329,8 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
         if (!x) {
             nvn_gpu_tex_desc d = {0}; d.d = t->d; d.usage = usage_of(t, cpu); d.swz = t->set_swz && t->swz != SWZ_IDENTITY ? t->swz : 0; d.stencil_view = t->stencil;
             nvn_gpu_tex g = NULL; nvn_gpu_err err = {0};
-            if (!nvn_gpu_ok(nvn_gpu_tex_create(&d, &g, &err))) {
+            uint64_t mk0_ = res_now(); nvn_gpu_rc mkr_ = nvn_gpu_tex_create(&d, &g, &err); rp_perf_add(RP_PERF_RES_MAKE, res_now() - mk0_);
+            if (!nvn_gpu_ok(mkr_)) {
                 pthread_mutex_unlock(&g_rmu);
                 char name[48]; snprintf(name, sizeof name, "tex_create_fmt_%#x_target_%d", (unsigned)t->d.format, t->d.target); if (nvn_unimpl("gpu", name, t) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);   // 首次：带上后端给的原因
                 return NULL;
@@ -336,7 +343,15 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
     }
     if (x->need_init && c) {   // 刚建的存储：CPU 贴图走下面的上传；其余的取一次存储里现有的内容，取不了的清零
         x->need_init = 0;
-        if (!x->cpu && !x->gpu_written) { nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub); if (xc && (!init_from_storage(t) || upload_all(t, x, xc, 0))) zero_fill(t, x, xc); }
+        if (!x->cpu && !x->gpu_written) {
+            nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);
+            if (xc) {   // 三段分别计时：扫存储定来源 / 整张上传 / 整张填零
+                uint64_t i0_ = res_now(); int from = init_from_storage(t); uint64_t i1_ = res_now(); rp_perf_add(RP_PERF_RES_SCAN, i1_ - i0_);
+                int zero = !from;
+                if (from) { zero = upload_all(t, x, xc, 0); uint64_t i2_ = res_now(); rp_perf_add(RP_PERF_RES_UP, i2_ - i1_); rp_perf_add(RP_PERF_RES_UPN, 1); i1_ = i2_; }
+                if (zero) { zero_fill(t, x, xc); rp_perf_add(RP_PERF_RES_ZERO, res_now() - i1_); rp_perf_add(RP_PERF_RES_ZERON, 1); }
+            }
+        }
     }
     if (x->cpu && !x->gpu_written && c && t->mem && (!x->uploaded || nvn_dirty_since(t->mem, t->L.size, x->stamp))) {
         nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);   // 上传是传输：录进前置段（本次提交里第二次上传才回主段）
