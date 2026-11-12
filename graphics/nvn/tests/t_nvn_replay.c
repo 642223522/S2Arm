@@ -46,8 +46,11 @@ static uint64_t g_fdone;
 static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
 int s2a_nvn_render_cond(void) { return g_rcond; }
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) { (void)c; if (g_nocc_log < 32) g_occ_log[g_nocc_log] = slot; g_nocc_log++; }
+static int g_begin_fail_at;   // 第几次开主段失败（1 = 下一次；0 = 都成功）
 nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gpu_err *err) { (void)err; g_begins++;
-    struct nvn_gpu_cmd_s *c = d && d->label && strstr(d->label, "pre") ? &g_fake_pre : &g_fake_cmd; c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
+    struct nvn_gpu_cmd_s *c = d && d->label && strstr(d->label, "pre") ? &g_fake_pre : &g_fake_cmd;
+    if (c == &g_fake_cmd && g_begin_fail_at && !--g_begin_fail_at) { *out = NULL; if (err) err->why[0] = 0; return (nvn_gpu_rc){NVN_GPU_E_OOM}; }
+    c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
     if (!c->is_pre) g_occ_slots_decl = d ? d->occlusion_slots : 0;
     return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { c->live = 0; g_aborts++; }
@@ -986,6 +989,33 @@ static void t_pass_3d_slice_view(void) {
 
 // 遮挡计数：通过的样本数是队列上的累计值——复位清零、之后的绘制往上加、报告写出当时的累计值。
 // 期望值手算：各槽的样本数由替身在完成时给出，报告值 = 复位之后、报告之前开过的各槽之和（跨段接着加）。
+// 开段失败（审计 P1-174）：时间线照走一格，不回放出任何绘制；中途交段之后开新段失败时，已经交出去的段完成回调不能碰到放掉的提交。
+static void t_begin_fail(void) {
+    // ① 一上来就开不了段：这次提交一笔都没交，返回的栅栏值 = 原值 + 64；下一次正常提交用的是再 + 64，两次的值不重
+    pass_fresh(); g_gdraws = 0; uint64_t f0 = nvn_be_last_fence(); int c0 = g_main_commits; g_npend = 0;
+    static stream s; memset(&s, 0, sizeof s); q_env(&s); q_draw(&s); end(&s);
+    g_begin_fail_at = 1; nvn_be_sub_begin(); nvn_be_exec(s.b); uint64_t f1 = nvn_be_sub_commit();
+    CHECK(f1 == f0 + 64 && nvn_be_last_fence() == f0 + 64 && g_main_commits == c0 && g_gdraws == 0 && g_begin_fail_at == 0);
+    nvn_be_sub_begin(); nvn_be_exec(s.b); uint64_t f2 = nvn_be_sub_commit();
+    CHECK(f2 == f0 + 128 && g_main_commits == c0 + 1 && g_npend && g_pend[g_npend - 1].signal == f0 + 128);
+    fake_complete(NVN_GPU_DONE_OK);
+    // ② 带遮挡计数、画 13 笔（每段 12 笔）：中途交出一段之后开新段失败。主段只交了那一个中途段（值 = 原值 + 1 或 + 2：前面可能有一个前置段），
+    //    提交返回原值 + 64；随后那个中途段完成，回调要往所属提交里攒结果——这时那份提交必须还活着（用地址消毒器跑这条用例看得出来）。
+    int keep = rp_split_draws; rp_split_draws = 12; pass_fresh();
+    { uint64_t rep_[2] = {0, 0}; stream w = {0}; q_env(&w); q_counter(&w, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&w); q_counter(&w, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, rep_); end(&w); submit1(&w); fake_complete(NVN_GPU_DONE_OK); }   // 先让计数器被用过一次：之后的段才声明遮挡槽
+    g_gdraws = 0; f0 = nvn_be_last_fence(); c0 = g_main_commits; g_npend = 0;
+    tex_t A = mk_tex(121, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), B = mk_tex(122, 0x4000, NVN_FORMAT_RGBA8, 16, 16, 1, 0); const tex_t *a_[1] = {&A}, *b_[1] = {&B};
+    static stream t; memset(&t, 0, sizeof t); q_env(&t); q_counter(&t, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); put_set_rt_n(&t, a_, 1, NULL);
+    for (int i = 0; i < 13; i++) q_draw(&t);
+    put_set_rt_n(&t, b_, 1, NULL); q_draw(&t); end(&t);
+    nvn_be_sub_begin(); CHECK(g_occ_slots_decl != 0); g_begin_fail_at = 1; nvn_be_exec(t.b); uint64_t f3 = nvn_be_sub_commit();
+    CHECK(g_begin_fail_at == 0 && g_main_commits == c0 + 1 && f3 == f0 + 64 && g_gdraws == 13);   // 第 14 笔在开不出来的新段里：不画
+    static uint64_t occ[4] = {7, 0, 0, 0}; g_fake_occ = occ; g_fake_nocc = 1;
+    fake_complete(NVN_GPU_DONE_OK); g_fake_occ = NULL; g_fake_nocc = 0;
+    nvn_be_sub_begin(); nvn_be_exec(s.b); CHECK(nvn_be_sub_commit() == f0 + 128); fake_complete(NVN_GPU_DONE_OK);   // 之后照常
+    rp_split_draws = keep; pass_fresh();
+}
+
 static void t_occlusion(void) {
     pass_fresh(); g_rcond = 0; g_gdraws = 0; g_nocc_log = 0; g_tick = 5;
     uint64_t ra[2] = {~0ull, ~0ull}, rb[2] = {~0ull, ~0ull}, rcx[2] = {~0ull, ~0ull};
@@ -1579,6 +1609,7 @@ int main(int argc, char **argv) {
     t_view_pin();
     t_pass_3d_slice_view();
     t_bind_reuse();
+    t_begin_fail();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
