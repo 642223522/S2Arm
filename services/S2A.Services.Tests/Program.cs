@@ -2671,9 +2671,25 @@ namespace S2A.Services.Tests
                         var none = new System.Collections.Generic.HashSet<string>();
                         string sd_p1 = D("p1", ("slot0/data.bin", [1])), sd_p2 = D("p2", ("0123456789abcdef/data.bin", [1])), sd_p3 = D("p3", ("JKSV/Game/P1 - 2026.01.01 @ 10.00.00/x.bin", [1]));
                         var hexOwn = new System.Collections.Generic.HashSet<string> { "0123456789abcdef" };
-                        Check("存档位置识别（P1-161）：首次放入单层目录不剥 / 游戏自己的十六进制顶层不剥 / 首次 JKSV 照剥",
-                            "save:. / save:. / save:JKSV/Game/P1 - 2026.01.01 @ 10.00.00",
-                            $"{K(sd_p1, SaveFolder.Detect(sd_p1, Application.ProgramId, none, out w), w)} / {K(sd_p2, SaveFolder.Detect(sd_p2, Application.ProgramId, hexOwn, out w), w)} / {K(sd_p3, SaveFolder.Detect(sd_p3, Application.ProgramId, none, out w), w)}");
+                        // 余项：首次放入（ownTop 空）的单层 16 / 32 位十六进制目录也不剥——十六进制编号层只在已认出的 Ryujinx / yuzu 结构里剥（上面 ② ③）
+                        string sd_p4 = D("p4", ("0123456789abcdef/data.bin", [1])), sd_p5 = D("p5", ("0123456789abcdef0123456789abcdef/data.bin", [1]));
+                        Check("存档位置识别（P1-161）：首次放入单层目录不剥 / 游戏自己的十六进制顶层不剥 / 首次 JKSV 照剥 / 首次放入单层十六进制目录不剥（16 / 32 位）",
+                            "save:. / save:. / save:JKSV/Game/P1 - 2026.01.01 @ 10.00.00 / save:. / save:.",
+                            $"{K(sd_p1, SaveFolder.Detect(sd_p1, Application.ProgramId, none, out w), w)} / {K(sd_p2, SaveFolder.Detect(sd_p2, Application.ProgramId, hexOwn, out w), w)} / {K(sd_p3, SaveFolder.Detect(sd_p3, Application.ProgramId, none, out w), w)}"
+                            + $" / {K(sd_p4, SaveFolder.Detect(sd_p4, Application.ProgramId, none, out w), w)} / {K(sd_p5, SaveFolder.Detect(sd_p5, Application.ProgramId, none, out w), w)}");
+
+                        // 审计 P1-178：恢复只含部分本地玩家的备份时，目标里有、备份里没有的玩家 = 要清掉「上次读写摘要」的人；手写期望：
+                        //   目标 账号组 {U1, U2} + 设备组 {全 0}，备份 账号组 {U1} → {U2}；备份里有、目标没有的 U3 不算；全 0 不算；完全相同 → 空
+                        {
+                            string p178_u1 = "0123456789abcdef0123456789abcdef", p178_u2 = "1111111111111111aaaaaaaaaaaaaaaa", p178_u3 = "2222222222222222bbbbbbbbbbbbbbbb", p178_z = new string('0', 32);
+                            var p178_tgt = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<string>> {
+                                ["0100000000001000/account"] = new() { p178_u1, p178_u2 }, ["0100000000001000/device"] = new() { p178_z } };
+                            var p178_bak = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<string>> {
+                                ["0100000000001000/account"] = new() { p178_u1, p178_u3 }, ["0100000000001000/device"] = new() { p178_z } };
+                            string p178_d1 = string.Join(",", SaveTransfer.DroppedUsers(p178_tgt, p178_bak).Order());
+                            string p178_d2 = string.Join(",", SaveTransfer.DroppedUsers(p178_tgt, p178_tgt).Order());
+                            Check("存档恢复（P1-178）：备份里没有的本地玩家 / 两边相同", $"{p178_u2} / （空）", $"{p178_d1} / {(p178_d2.Length == 0 ? "（空）" : p178_d2)}");
+                        }
 
                         // 审计 P1-163：摘要按内容。同路径同大小同修改时间、内容不同 → 摘要不同；只改修改时间 → 摘要不变（原先两向都错）
                         string dg = D("dg", ("save/slot.bin", [1, 2, 3, 4]));

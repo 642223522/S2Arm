@@ -123,7 +123,7 @@ namespace S2A.Services
             }
             if (why != null) return null;
             // ⑤ JKSV / 裸文件：路径里没有程序号。JKSV/<游戏名>/<用户名 - 时间>/：往下走到第一层有文件的目录，同层多份取最新；
-            //   裸文件：外面只套着一层文件夹（拖进来的整个文件夹），且那层名字不是这款游戏自己存档里的顶层名字 → 剥掉；套着的 16 / 32 位十六进制目录也剥
+            //   裸文件：外面只套着一层文件夹（拖进来的整个文件夹），且游戏已有存档、那层名字不是它自己存档里的顶层名字 → 剥掉
             string cur = folder; bool jksv = false;   // 剥过 JKSV 这层：下面的游戏名层、单份时间戳层都是 JKSV 的包装，照剥
             for (int guard = 0; guard < 8; guard++)
             {
@@ -136,10 +136,11 @@ namespace S2A.Services
                     string n = Path.GetFileName(dirs[0]);
                     if (n == "cheats") break;   // 只有金手指：下面判掉，不当包装层钻进去
                     // 游戏自己存档里的顶层名字先判（审计 P1-161：原先 16 / 32 位十六进制名字即使是游戏自己的目录也剥）；
-                    //   游戏还没有存档（第一次放进来，ownTop 空）时不知道这层是不是游戏自己的，只剥编号层与 JKSV，别的名字原样当存档根（剥错会让游戏读不到、退出又写回空档）
+                    //   游戏还没有存档（第一次放进来，ownTop 空）时不知道这层是不是游戏自己的，只剥 JKSV，别的名字（含十六进制名，余项）原样当存档根
+                    //   （剥错会让游戏读不到、退出又写回空档）；十六进制编号层只在上面已认出的 Ryujinx / yuzu 结构里剥
                     if (ownTop.Contains(n)) break;
                     if (n == "JKSV") jksv = true;
-                    if (jksv || Hex16.IsMatch(n) || Hex32.IsMatch(n) || ownTop.Count > 0) { cur = dirs[0]; continue; }
+                    if (jksv || ownTop.Count > 0) { cur = dirs[0]; continue; }
                     break;
                 }
                 // 多个子目录：全是 JKSV 时间戳目录（「用户名 - 2026.11.09 @ 12.00.00」）→ 取最新；否则这层就是存档根

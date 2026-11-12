@@ -511,8 +511,17 @@ int s2a_pack_migrate_one(const char *docs) {
         FILE *f = fopen(nap, "r"); if (f) { size_t k = fread(nsha, 1, sizeof nsha - 1, f); fclose(f); nsha[k] = 0; nsha[strcspn(nsha, "\r\n")] = 0; }
         int differs = !manifest_sha(omf, osha, sizeof osha) && strcmp(osha, nsha);
         if (pending || differs) {
-            remove_tree(neu);
-            if (rename(old, neu)) { snprintf(g_migrate_why, sizeof g_migrate_why, "把旧位置的新推送 %s 换到 %s：%s", old, neu, strerror(errno)); LOG("【红】资源包迁移：%s", g_migrate_why); return -2; }
+            // 三步改名（同 repair_tree；审计 P1-169：原先先删新位置再改名，改名失败或删到一半被杀，已经能玩的新位置就缺了文件）：
+            //   ① 新位置改名挪开留作退路 ② 旧位置改名进来 ③ 成功后才删挪开的那份；② 失败就把 ① 改回原名，两处都不丢
+            char keep[2300]; snprintf(keep, sizeof keep, "%s.s2a-old-%llu", neu, (unsigned long long)now_ns());
+            if (rename(neu, keep)) { snprintf(g_migrate_why, sizeof g_migrate_why, "把新位置 %s 挪开（换成旧位置的新推送前）：%s", neu, strerror(errno)); LOG("【红】资源包迁移：%s", g_migrate_why); return -2; }
+            if (rename(old, neu)) {
+                int e = errno, back = rename(keep, neu);
+                snprintf(g_migrate_why, sizeof g_migrate_why, "把旧位置的新推送 %s 换到 %s：%s%s", old, neu, strerror(e),
+                         back ? "；新位置原来那份也没能改回原名（在 .s2a-old-* 里，文件都在）" : "；新位置原来那份已改回原名");
+                LOG("【红】资源包迁移：%s", g_migrate_why); return -2;
+            }
+            remove_tree(keep);
             LOG("资源包迁移：旧位置是一次新推送（%s），换掉新位置的旧资源包", pending ? "有待解包" : "清单不同");
             return 1;
         }

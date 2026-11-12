@@ -18,6 +18,13 @@ typedef enum {
     NS2_RELAY_DISCONNECT = 5,
 } ns2_relay_type;
 
+// 左只六轴（拼对时）：单位同 ns2_motion（g、度/秒，设备轴序），时间戳拆成两个 32 位（全 4 字节对齐：放进联合体不改包内偏移）
+typedef struct {
+    float acceleration_x, acceleration_y, acceleration_z;
+    float gyro_x, gyro_y, gyro_z;
+    uint32_t host_timestamp_us_lo, host_timestamp_us_hi;
+} ns2_relay_motion_left;
+
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -30,11 +37,21 @@ typedef struct {
     uint8_t motion_known;
     uint8_t enabled;
     uint8_t kind;   // ns2_kind；只在 INPUT 包里有意义
-    uint8_t reserved[3];
-    ns2_vibration vibration[2];
-    uint32_t duration_ms;
-    uint32_t reserved2;
+    uint8_t motion_left_known;   // INPUT 包：motion_left 有值（Joy-Con 2 左右拼成一对时左只的六轴；motion 是右只的）。旧启动器发 0，宿主照旧只用 motion
+    uint8_t reserved[2];
+    union {
+        struct {   // RUMBLE 包（宿主 → 启动器）
+            ns2_vibration vibration[2];
+            uint32_t duration_ms;
+            uint32_t reserved2;
+        };
+        struct {   // INPUT 包（启动器 → 宿主）：同一段 40 字节带 Joy-Con 2 自身功能的附加读数，不改包长、不升版本（旧宿主不读这段）
+            ns2_relay_motion_left motion_left;   // 32 字节
+            uint8_t input_reserved[8];           // 留给以后的 Joy-Con 2 读数（例如鼠标位移）
+        };
+    };
 } ns2_relay_packet;
+_Static_assert(sizeof(ns2_relay_packet) == 144, "relay packet size is the v2 wire format: an old launcher / host reads exactly this many bytes");
 
 
 #endif

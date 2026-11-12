@@ -36,11 +36,12 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         // S2Arm：Switch 2 Npad IMU 缓冲（hid 320 / 321，见 NpadImu.cs）；读数与六轴同源，由宿主的体感读取一并写入
         public readonly NpadImu Imu = new();
 
-        public void PushImu(PlayerIndex player, System.Numerics.Vector3 accelerationG, System.Numerics.Vector3 angularVelocityDegrees, ulong timestampUs)
+        // sensor：双 Joy-Con 左右各有读数时 0 = 左只、1 = 右只；-1 = 单一体感源（NpadImu.Push）
+        public void PushImu(PlayerIndex player, System.Numerics.Vector3 accelerationG, System.Numerics.Vector3 angularVelocityDegrees, ulong timestampUs, int sensor = -1)
         {
             bool joyDual = player <= PlayerIndex.Handheld && _device.Hid.SharedMemory.Npads[(int)player].InternalState.StyleSet == NpadStyleTag.JoyDual;
 
-            Imu.Push(player, joyDual, accelerationG, angularVelocityDegrees, timestampUs);
+            Imu.Push(player, joyDual, accelerationG, angularVelocityDegrees, timestampUs, sensor);
         }
 
         public void SetSixAxisActive(long userId, int handle, bool active)

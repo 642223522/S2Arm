@@ -35,12 +35,17 @@ static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     nvn_gpu_buf b = NULL; nvn_gpu_err err = {0};
     if (!nvn_gpu_ok(nvn_gpu_buf_create(size, NVN_GPU_MEM_SHARED, NULL, &b, &err))) { nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
     size_t ps = nvn_dirty_page_size();
-    s = calloc(1, sizeof *s); s->mem = mem; s->size = size; s->buf = b;
+    s = calloc(1, sizeof *s);
+    if (!s) { nvn_gpu_buf_release(b, NULL, NULL); nvn_unimpl("gpu", "pool_mirror_alloc_failed", mem); return NULL; }
+    s->mem = mem; s->size = size; s->buf = b;
     s->page0 = (uintptr_t)mem & ~(uintptr_t)(ps - 1);
     s->npages = ((uintptr_t)mem + size - s->page0 + ps - 1) / ps;
     s->synced = calloc(s->npages ? s->npages : 1, sizeof *s->synced);
     s->sub = calloc(s->npages ? s->npages : 1, sizeof *s->sub);   // 各页上次同步所在的提交序号
     s->checked = calloc(s->npages ? s->npages : 1, sizeof *s->checked);
+    if (!s->synced || !s->sub || !s->checked) {   // 页表没分出来：不把半张表放进镜像表（之后每次使用都会读它），这一笔按取不到缓冲处理
+        free(s->synced); free(s->sub); free(s->checked); free(s); nvn_gpu_buf_release(b, NULL, NULL);
+        nvn_unimpl("gpu", "pool_mirror_alloc_failed", mem); return NULL; }
     nvn_hm_put(&g_shadow, &k, s);
     return s;
 }

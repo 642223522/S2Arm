@@ -162,6 +162,12 @@ static void send_snapshot(void) {
     packet = snapshot;
     pthread_mutex_unlock(&relayLock);
     if (fd < 0) return;
+    // Joy-Con 2 拼成一对：左只的六轴放进 INPUT 包的 motion_left（motion 是右只的，ns2_relay.h）
+    ns2_motion left = {0};
+    if (packet.ready) ns2_get_motion_left(&left);
+    packet.motion_left_known = left.known ? 1 : 0;
+    if (left.known) packet.motion_left = (ns2_relay_motion_left){left.acceleration_x, left.acceleration_y, left.acceleration_z, left.gyro_x, left.gyro_y, left.gyro_z,
+        (uint32_t)left.host_timestamp_us, (uint32_t)(left.host_timestamp_us >> 32)};
 
     ssize_t sent = send(fd, &packet, sizeof packet, MSG_DONTWAIT);
     if (sent != (ssize_t)sizeof packet) drop_client(fd);
