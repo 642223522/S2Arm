@@ -154,6 +154,7 @@ def diagnostic_log_excerpt(source, size, head=None, tail=None):
 
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20
+PHONE_TEXT = (".log", ".txt", ".tsv", ".json", ".ips", ".csv")   # 拉回的手机诊断里按文本脱敏收的类型（host.log、logs/、frames.tsv、threads.txt、diag/*.json、metrickit 等）
 DIAG_RUN_FILE_LIMIT = 4 << 20    # 诊断局 PNG：单张上限
 DIAG_RUN_TOTAL_LIMIT = 40 << 20  # 诊断局 PNG：总量上限（#438 定）
 
@@ -2470,6 +2471,54 @@ def diagnostics(c):
                             write_file(directory_fd, name, "logs/" + member)
                 if roots["logs"] is not None:
                     logs(roots["logs"])
+                # 手机诊断（s2armctl diag pull / 设置页「拉回 iPhone 诊断」，pack/jobs/diag.py pull）：拉回在 <私有目录>/diagnostics/<时刻>-…/，
+                #   原先导出不收，照「反复闪退：先 diag pull 再 diag export」做的玩家交上来的包里没有手机日志。只收最近一次拉回的那份；
+                #   文本走和 logs/ 同一套脱敏（拉回的是没脱敏的原始文件），渲染出的 PNG 同诊断局读数原样收、限大小，别的类型跳过并在 manifest 里写明
+                step = "读手机诊断"
+                phone = None
+                pulls = c.private / "diagnostics"
+                latest = max((d for d in pulls.iterdir() if d.is_dir() and not d.is_symlink()), key=lambda d: d.stat().st_mtime, default=None) \
+                    if pulls.is_dir() and not pulls.is_symlink() else None
+                if latest is not None:
+                    phone = dict(folder=latest.name, files=0, skipped=[])
+                    try:
+                        phone.update({k: v for k, v in json.loads((latest / "pull.json").read_text(encoding="utf-8")).items() if k in ("pulledAt", "devices", "apps")})
+                    except (OSError, ValueError):
+                        phone["pulledAt"] = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(latest.stat().st_mtime)) + "（按目录修改时间，旧版拉回没有记录）"
+                    pulls_fd = winproc.open_dir_nofollow("diagnostics", home_fd) if os.name == "nt" else os.open("diagnostics", flags, dir_fd=home_fd)
+                    descriptors.append(pulls_fd)
+                    latest_fd = winproc.open_dir_nofollow(latest.name, pulls_fd) if os.name == "nt" else os.open(latest.name, flags, dir_fd=pulls_fd)
+                    descriptors.append(latest_fd)
+
+                    def pulled(directory_fd, relative=""):
+                        for name in sorted(winproc.listdir(directory_fd) if os.name == "nt" else os.listdir(directory_fd)):
+                            c.check()
+                            info = winproc.stat_at(name, directory_fd) if os.name == "nt" else os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                            member = relative + name
+                            if not relative and name == "pull.json":
+                                continue   # 拉回记录进 manifest，不另收
+                            if stat.S_ISDIR(info.st_mode):
+                                child = winproc.open_dir_nofollow(name, directory_fd) if os.name == "nt" else os.open(name, flags, dir_fd=directory_fd)
+                                try:
+                                    opened = child.info if os.name == "nt" else os.fstat(child)
+                                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                                        raise Failure("诊断目录在导出期间发生变化，请重试。")
+                                    pulled(child, member + "/")
+                                finally:
+                                    winproc.close(child) if os.name == "nt" else os.close(child)
+                            elif not stat.S_ISREG(info.st_mode):
+                                continue
+                            elif os.path.splitext(name)[1].lower() in PHONE_TEXT:
+                                write_file(directory_fd, name, "phone/" + member)
+                                phone["files"] += 1
+                            elif name.lower().endswith(".png") and 0 < info.st_size <= DIAG_RUN_FILE_LIMIT:
+                                with (winproc.open_file(name, directory_fd) if os.name == "nt"
+                                      else os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd), "rb")) as f:
+                                    archive.writestr("phone/" + "/".join(redact_member_component(x) for x in member.split("/")), f.read())
+                                phone["files"] += 1
+                            else:
+                                phone["skipped"].append(member)
+                    pulled(latest_fd)
                 # 诊断局（#438，community.diag_run_env）的读数：各款游戏文件夹 diagrun/ 里的 PNG（出图画面与颜色目标，渲染出来的图、不含游戏数据），
                 #   原样放 diagrun/<游戏号>_<原名>。单张超过 4 MB 跳过、总量至多 40 MB；链接不跟（不越出游戏文件夹）
                 step = "读诊断局读数"
@@ -2493,6 +2542,8 @@ def diagnostics(c):
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),
                                 mac_model=probe(["/usr/sbin/sysctl", "-n", "hw.model"]),
                                 xcode_signing=signing_status())
+                if phone is not None:
+                    manifest["phone_diagnostics"] = phone   # 最近一次拉回的手机诊断：拉回时刻、来源设备（机型 / 系统）、收了几份、跳过了哪些
                 manifest = redact_fields(manifest)
                 # These names have already been sanitized; redacting them again
                 # would hide task UUIDs and break the archive index.

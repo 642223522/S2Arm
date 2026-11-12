@@ -1717,6 +1717,42 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(self.c.redact(text), complete[-3000:])
         self.assertGreater(len(complete), 4000)
 
+    def test_diagnostics_export_includes_latest_phone_pull_redacted(self):
+        """先 diag pull 再 diag export：包里要有最近一次拉回的手机日志（原先导出只收 logs/ 和任务记录，玩家照说明交上来的包里没有手机日志），
+        走和 logs/ 同一套脱敏，manifest 记拉回时刻与来源机型；更早那次拉回不收；不认识的类型跳过并写明"""
+        import unittest.mock as um, diag, os, time as t
+        old = self.c.private / "diagnostics" / "0101-000000-old"; old.mkdir(parents=True)
+        (old / "stale.log").write_text("OLD PULL")
+        os.utime(old, (t.time() - 3600, t.time() - 3600))
+        devices = {"result": {"devices": [{"identifier": "D1", "hardwareProperties": {"platform": "iOS", "udid": "U1", "marketingName": "iPhone 17 Pro Max"},
+                                           "deviceProperties": {"name": "合成甲的iPhone", "osVersionNumber": "27.3"}, "connectionProperties": {"tunnelState": "connected"}}]}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "io.s2arm.games.abcde12345", "name": "S2Arm"}]}}
+        def fake(c, *args, timeout=120):
+            if args[:2] == ("list", "devices"): return 0, devices, ""
+            if args[:3] == ("device", "info", "apps"): return 0, apps, ""
+            source, target = args[args.index("--source") + 1], Path(args[args.index("--destination") + 1])
+            if source.endswith("host.log"): target.write_text("crash for synth@example.invalid DEVELOPMENT_TEAM = ABCDE12345\n"); return 0, {}, ""
+            if source.endswith("Documents/logs"): target.mkdir(); (target / "host-1.log").write_text("previous run\n"); return 0, {}, ""
+            if source.endswith("Documents/diag"): target.mkdir(); (target / "probe.json").write_text('{"ok": 1}'); (target / "blob.bin").write_bytes(b"\0\1"); return 0, {}, ""
+            return 1, {}, ""
+        with um.patch.object(diag, "devicectl", fake):
+            diag.pull(self.c)
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as archive:
+            names = archive.namelist()
+            phone = [n for n in names if n.startswith("phone/")]
+            host = [n for n in phone if n.endswith("/host.log")]
+            self.assertEqual(len(host), 1, names)
+            text = archive.read(host[0]).decode()
+            self.assertIn("crash for", text); self.assertNotIn("synth@example.invalid", text); self.assertNotIn("ABCDE12345", text)   # 同 logs/ 脱敏
+            self.assertTrue(any(n.endswith("/logs/host-1.log") for n in phone)); self.assertTrue(any(n.endswith("/diag/probe.json") for n in phone))
+            self.assertFalse(any("stale" in n for n in names))   # 只收最近一次拉回
+            m = json.loads(archive.read("manifest.json"))["phone_diagnostics"]
+            self.assertTrue(m["pulledAt"]); self.assertEqual(m["devices"][0]["model"], "iPhone 17 Pro Max"); self.assertEqual(m["devices"][0]["os"], "27.3")
+            self.assertNotIn("合成甲", json.dumps(m, ensure_ascii=False)); self.assertNotIn("U1", json.dumps(m))   # 不记设备名、设备号
+            self.assertEqual(m["files"], 3); self.assertTrue(any(x.endswith("diag/blob.bin") for x in m["skipped"]))
+
     def test_diagnostic_manifest_and_every_member_are_redacted_without_truncation(self):
         import platform
         logs = self.c.logs; logs.mkdir(exist_ok=True)
