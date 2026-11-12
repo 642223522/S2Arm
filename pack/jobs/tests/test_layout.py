@@ -26,10 +26,76 @@ class FolderNameTests(unittest.TestCase):
             (("Hades", B, ("hades",)), "Hades [0000]"),                                                              # 重名（不分大小写）→ 加号后 4 位
             (("Hades", "01000000000ABCD0", ("Hades",)), "Hades [BCD0]"),
             (("", A.lower(), ()), A),                                                                                # 游戏号统一大写
+            (("塞尔达传说", A, (A, A + " [" + A[-4:] + "]")), A + " (2)"),                                          # #765：游戏号与「号后 4 位」都被占 → 加序号（原先回游戏号、mkdir 撞 File exists）
         ]
         for args, want in cases:
             with self.subTest(args=args):
                 self.assertEqual(layout.folder_name(*args), want)
+
+
+class GameDirExistsTests(JobCase):
+    """#765：games/<游戏号> 已有同名项时添加游戏报 [Errno 17] File exists。期望按规则手写：空壳文件夹沿用；文件 / 断链挪开再建；
+    游戏号与「号后 4 位」都被别款占着 → 「游戏号 (2)」。全中文名 → 文件夹名退回游戏号"""
+    def games(self):
+        g = self.c.library / "games"; g.mkdir(parents=True, exist_ok=True); return g
+
+    def test_empty_shell_folder_is_reused(self):
+        g = self.games(); (g / A).mkdir()   # 上次添加到一半留下的空文件夹（没有 game.json）
+        d = layout.game_dir(self.c, A, english="塞尔达传说")
+        self.assertEqual(d, g / A); self.assertEqual(json.loads((d / layout.GAME_JSON).read_text())["id"], A)
+
+    def test_file_in_the_way_is_moved_aside(self):
+        g = self.games(); (g / A).write_text("不是文件夹")
+        d = layout.game_dir(self.c, A, english="塞尔达传说")
+        self.assertTrue(d.is_dir() and d == g / A)
+        moved = [p for p in g.iterdir() if p.name.startswith(A + ".s2a-moved-")]
+        self.assertEqual(len(moved), 1); self.assertEqual(moved[0].read_text(), "不是文件夹")   # 挪开，不删
+
+    def test_broken_link_in_the_way_is_moved_aside(self):
+        g = self.games(); (g / A).symlink_to(self.root / "不存在的地方")
+        d = layout.game_dir(self.c, A, english="塞尔达传说")
+        self.assertTrue(d.is_dir() and not d.is_symlink())
+
+    def test_both_names_taken_by_other_games_gets_numbered_name(self):
+        g = self.games()
+        for n, owner in ((A, "0100000000099990"), (A + " [" + A[-4:] + "]", "0100000000099991")):
+            (g / n).mkdir(); atomic(g / n / layout.GAME_JSON, dict(schema=1, id=owner))
+        d = layout.game_dir(self.c, A, english="塞尔达传说")
+        self.assertEqual(d.name, A + " (2)"); self.assertEqual(json.loads((d / layout.GAME_JSON).read_text())["id"], A)
+
+
+class GameDirRaceTests(JobCase):
+    """#765：按已占用名单选好名字之后、mkdir 之前，同名文件夹被别处建出来（只建一次）——是这款就沿用，是别款就换名，都不报 File exists"""
+    OTHER = "0100000000099990"
+
+    def setUp(self):
+        super().setUp()
+        d = self.c.library / "games" / "Hades"; d.mkdir(parents=True)   # 首选名被别款占着，逼进「按名单另取」那一步
+        atomic(d / layout.GAME_JSON, dict(schema=1, id="0100000000088880"))
+
+    def _race(self, owner):
+        real, fired = layout.folder_name, []
+        def racing(english, gid, taken=()):
+            name = real(english, gid, taken)
+            if taken and not fired:
+                fired.append(name)
+                d = self.c.library / "games" / name; d.mkdir()
+                atomic(d / layout.GAME_JSON, dict(schema=1, id=owner))
+            return name
+        return patch.object(layout, "folder_name", racing)
+
+    def test_same_game_created_meanwhile_is_reused(self):
+        with self._race(A):
+            d = layout.game_dir(self.c, A, english="Hades")
+        self.assertEqual(d.name, "Hades [" + A[-4:] + "]")
+        self.assertEqual(json.loads((d / layout.GAME_JSON).read_text())["id"], A)
+
+    def test_other_game_created_meanwhile_gets_another_name(self):
+        with self._race(self.OTHER):
+            d = layout.game_dir(self.c, A, english="Hades")
+        self.assertEqual(d.name, A)   # 英文名与「号后 4 位」都被占 → 游戏号
+        self.assertEqual(json.loads((d / layout.GAME_JSON).read_text())["id"], A)
+        self.assertEqual(json.loads((self.c.library / "games" / ("Hades [" + A[-4:] + "]") / layout.GAME_JSON).read_text())["id"], self.OTHER)
 
 
 class MigrateTests(JobCase):
