@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #import "s2a_l10n.h"
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "controller.h"
 #include "input_config.h"
 #include "root_ready.h"
@@ -727,7 +728,8 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
 static __weak UIWindow *g_lib_window;
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);   // pack_apply.c
 static int game_pack_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_import_state_game_quick(d, gid); }
-void s2a_shell_library_appeared(void) { static int once; if (!once++) BOOT_MARK("游戏库界面可操作"); }
+static void test_picker(void);
+void s2a_shell_library_appeared(void) { static int once; if (!once++) { BOOT_MARK("游戏库界面可操作"); test_picker(); } }
 int s2a_game_install_state(const char *proc_docs, const char *gid);   // pack_apply.c
 int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_game_install_state(d, gid); }
 // 库里后台解开传完的那款（装机阶段 2，s2a_shell.h）：同一条 s2a_pack_apply（解包日志、.applied、清旧文件都同起局闸门），同时只解一款；
@@ -796,6 +798,49 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
 //   超过 0.3 秒还没核完就先弹「正在检查…」（快判成立时几毫秒就回来，不闪这一下）。同时只核一款，核着时再点不重复起
 static atomic_int g_pack_checking;
 static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
+// 测试开关 S2A_TEST_PICKER=cheats|saves（复现「点金手指导入 / 存档导入就卡死」）：库界面可操作后自动弹出同样配置的系统文件选择器
+//   （cheats = vpad_cheats.m 那个：文本、多选、不设起始目录；saves = save_transfer.m 导入那个：任意数据、起始目录 Documents），
+//   日志记弹出 / 弹完的时刻，60 秒内主线程每卡住 200 ms 以上记一行（看门狗线程每 100 ms 往主线程投一次）。不设开关时什么都不做
+@interface S2ATestPickerDelegate : NSObject <UIDocumentPickerDelegate> @end
+@implementation S2ATestPickerDelegate
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls { LOG("测试选择器：选了 %lu 个", (unsigned long)urls.count); }
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)c { LOG("测试选择器：取消"); }
+@end
+static void test_picker(void) {
+    const char *kind = getenv("S2A_TEST_PICKER");
+    if (!kind || !*kind) return;
+    static S2ATestPickerDelegate *delegate; delegate = [S2ATestPickerDelegate new];
+    static _Atomic double last_beat; last_beat = CFAbsoluteTimeGetCurrent();
+    double t0 = CFAbsoluteTimeGetCurrent();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // 看门狗：主线程多久没回应
+        for (int i = 0; i < 600; i++) {
+            double sent = CFAbsoluteTimeGetCurrent();
+            __block _Atomic int back = 0;
+            dispatch_async(dispatch_get_main_queue(), ^{ back = 1; });
+            usleep(100000);
+            if (!back) {
+                while (!back) usleep(10000);
+                double stall = (CFAbsoluteTimeGetCurrent() - sent) * 1000;
+                if (stall >= 200) LOG("测试选择器：主线程卡住 %.0f ms（弹出后 %.1f 秒起）", stall, sent - t0);
+            }
+        }
+        LOG("测试选择器：看门狗 60 秒结束");
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIDocumentPickerViewController *p;
+        if (!strcmp(kind, "saves")) {
+            p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+            p.directoryURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        } else {
+            p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypePlainText, UTTypeText] asCopy:YES];
+            p.allowsMultipleSelection = YES;
+        }
+        p.delegate = delegate;
+        double t1 = CFAbsoluteTimeGetCurrent();
+        LOG("测试选择器：弹出 %s（库可操作后 %.1f 秒）", kind, t1 - t0);
+        [lib_top() presentViewController:p animated:YES completion:^{ LOG("测试选择器：弹完 %.0f ms", (CFAbsoluteTimeGetCurrent() - t1) * 1000); }];
+    });
+}
 static void library_pack_help_show(NSString *gid, BOOL again, int st);
 // 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
