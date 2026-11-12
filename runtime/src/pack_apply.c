@@ -713,14 +713,6 @@ static int partial_ready(const char *root) {
     size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
     return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
 }
-// 玩家对这份部分可玩的资源包点过「仍要启动」：.partial_ok = 当时的清单 sha（同一份资源包以后不再问；电脑补推齐了 / 换了包就失效）
-static int partial_confirmed(const char *root) {
-    char mf[2300], ok[2300], want[200], got[200] = "";
-    snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(ok, sizeof ok, "%s/.partial_ok", root);
-    FILE *f = fopen(ok, "r"); if (!f) return 0;
-    size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
-    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want);
-}
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
     if (proc_docs && *proc_docs && gid && *gid && !strchr(gid, '/') && gid[0] != '.') {
         char root[2200], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
@@ -750,6 +742,14 @@ int s2a_game_install_state(const char *proc_docs, const char *gid) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #include <CoreFoundation/CoreFoundation.h>
 #include <pthread.h>
+// 只有 iOS 起局闸门问「仍要启动」用它（安卓没有这一问，放外面会 -Werror=unused-function）。玩家对这份部分可玩的资源包点过「仍要启动」：.partial_ok = 当时的清单 sha（同一份资源包以后不再问；电脑补推齐了 / 换了包就失效）
+static int partial_confirmed(const char *root) {
+    char mf[2300], ok[2300], want[200], got[200] = "";
+    snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(ok, sizeof ok, "%s/.partial_ok", root);
+    FILE *f = fopen(ok, "r"); if (!f) return 0;
+    size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want);
+}
 #include <dispatch/dispatch.h>
 #include <stdatomic.h>
 void s2a_ios_show_notice(const char *symbol, const char *title, const char *body, int done, int total, int diag);   // app.m：整屏提示页（notice.m 画）

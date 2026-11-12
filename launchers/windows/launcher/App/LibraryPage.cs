@@ -704,9 +704,10 @@ public sealed partial class EnvironmentWindow
             {
                 connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
                 var folder = Path.GetFullPath(libraryFolder);
+                var accept = new HashSet<string>();
                 var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next());
-                if (await ConfirmCloudLibraryAsync(setup))   // 选在云盘同步目录里：讲清后果、玩家选「仍然继续」就带 acceptCloud 重来（v0.3.1）
-                    setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next(), acceptCloud: true);
+                while (await ConfirmLibraryAsync(setup, accept))   // 认得出的风险（云盘目录 / 有别的文件）：讲清后果、玩家选「仍然继续」就带上对应参数重来（v0.3.1）
+                    setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next(), accept: accept);
                 DisplayJob(setup);
                 if (!setup.Report.Succeeded) { librarySummary = "library.failed"; return; }
                 var connection = LibraryConnection.Parse(setup.Report.Result);
