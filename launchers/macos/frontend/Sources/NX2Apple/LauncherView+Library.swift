@@ -107,7 +107,7 @@ extension LauncherView {
                     HStack(spacing: 10) {
                         Text(txt("library.hostUpdate.incompatible")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Button(txt("library.hostUpdate.prepare")) { model.exportFor = game.id }
-                            .buttonStyle(.link).disabled(model.busy).accessibilityIdentifier("hero.hostUpdate")
+                            .buttonStyle(.link).disabled(model.busy).busyHint(model).accessibilityIdentifier("hero.hostUpdate")
                     }
                 }
                 if let error = model.actionError(for: game.id) {
@@ -128,7 +128,7 @@ extension LauncherView {
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.14)))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain).disabled(model.busy && !enabled).help(label).accessibilityLabel(label).accessibilityIdentifier(id)
+        .buttonStyle(.plain).disabled(model.busy && !enabled).help(label).busyHint(model, disabled: !enabled).accessibilityLabel(label).accessibilityIdentifier(id)
         .padTarget(id, scope: "main", radius: 24, activate: action)
     }
 

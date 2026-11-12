@@ -1778,5 +1778,13 @@
   "s2arm.play.diagnostics": "导出诊断包",
   "s2arm.play.failedGeneric": "这次没能开始游戏",
   "s2arm.play.starting": "正在启动",
-  "s2arm.play.windowHint": "游戏在单独的窗口里运行。关掉游戏窗口，或在这里点「停止」，就回到 S2Arm。"
+  "s2arm.play.windowHint": "游戏在单独的窗口里运行。关掉游戏窗口，或在这里点「停止」，就回到 S2Arm。",
+  "s2arm.busy.game": "《{0}》",
+  "s2arm.busy.hint": "正在{0}{1}。所有游戏都装在同一个 S2Arm App 里，同一时间只能做一件事，等它完成就能操作。",
+  "s2arm.job.title.clearCache": "清理缓存",
+  "s2arm.job.title.installRemove": "从 iPhone 删除",
+  "s2arm.job.title.installRestore": "装回上一版",
+  "s2arm.job.title.installUpdate": "更新 iPhone 上的 S2Arm",
+  "s2arm.job.title.moveGame": "搬移游戏",
+  "s2arm.job.title.play": "运行"
 }

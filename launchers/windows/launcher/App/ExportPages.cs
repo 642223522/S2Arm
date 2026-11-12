@@ -163,6 +163,16 @@ public sealed partial class EnvironmentWindow
     private DispatcherTimer? ticker;
 
     private bool PackBusy => packRunning || installBusy;
+
+    /// 因为「有任务在跑」而置灰的按钮：悬停说明在等哪个任务、为什么（维护者 11-11：同一时间只跑一个任务是单壳方案的特点，不改，但要说清）。
+    ///   置灰的控件缺省不弹提示，所以打开 ShowOnDisabled；不忙时什么都不挂
+    private void BusyHint(Control c)
+    {
+        if (!PackBusy) return;
+        var (action, name) = packRunning ? (T("busy.export"), packGame?.Name) : (T("busy.install"), installGameName);
+        var hint = T("busy.hint").Replace("{0}", action).Replace("{1}", string.IsNullOrEmpty(name) ? "" : T("busy.game").Replace("{0}", name));
+        ToolTip.SetTip(c, hint); ToolTip.SetShowOnDisabled(c, true);
+    }
     /// 这款现在能不能动（选、出包、移动、清缓存、删除）：只问作业登记（JobSlots.cs FrontJob.Blocks）——游戏库 / 导入 / 出包 / 释放空间在跑时都不能；
     /// 装机在跑时只锁正在装的那款（玩家装一款大游戏的十几分钟里别的照常用）。原先漏了导入：导入中还能点出包（启动器剃刀 W20）
     private bool BusyFor(LibraryGame game) => jobs.Any(j => j.Blocks(game.Id));
@@ -1136,6 +1146,7 @@ public sealed partial class EnvironmentWindow
         AutomationId(remove, "install.remove_game");
         remove.Click += (_, _) => _ = ConfirmRemoveAsync(game);
         buttons.Children.Add(remove);
+        BusyHint(start); BusyHint(remove);   // 出包 / 装机在跑时置灰：悬停说在等谁、为什么（同 Mac BusyHint.swift）
         if (game.IphoneRestorable)
         {
             // 手机上的 S2Arm 换了新版运行层（只换宿主）后不好用：装回上一版（installRestore，同 Mac 装机页）
@@ -1145,6 +1156,7 @@ public sealed partial class EnvironmentWindow
                 VerticalAlignment = VerticalAlignment.Center };
             AutomationId(restore, "install.restore");
             restore.Click += (_, _) => _ = ConfirmRestoreAsync(game);
+            BusyHint(restore);
             buttons.Children.Add(restore);
         }
         if (readiness is { IpaPath.Length: > 0 } located)   // 装机时组装的那份（默认位置根 S2Arm.ipa），还没装过就没有
