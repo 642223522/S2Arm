@@ -10,12 +10,13 @@ import S2ArmAppleAdapter
 
 struct DownstreamConfirmSheet: View {
     @ObservedObject var model: S2ArmLauncherModel
-    @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     let gameID: String
+    /// 界面语言（挂弹页处从 Localizer 取；单测离屏渲染时直接给）
+    let zh: Bool
 
     private var game: GameSummary? { model.games.first { $0.id == gameID } }
-    private var lang: String { loc.lang == .zh ? "zh" : "en" }
+    private var lang: String { zh ? "zh" : "en" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -56,7 +57,7 @@ struct DownstreamPromptHost: View {
     var body: some View {
         Color.clear.frame(width: 0, height: 0)
             .sheet(item: Binding(get: { model.downstreamPromptFor.map(Target.init) }, set: { if $0 == nil { model.downstreamPromptFor = nil } })) { target in
-                DownstreamConfirmSheet(model: model, gameID: target.id).environmentObject(loc)
+                DownstreamConfirmSheet(model: model, gameID: target.id, zh: loc.lang == .zh)
             }
     }
 }
