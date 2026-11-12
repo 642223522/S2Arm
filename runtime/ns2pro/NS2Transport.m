@@ -88,7 +88,7 @@ static dispatch_source_t mailboxWake;
 static char queueKey;
 static float rumbleGain = 2;
 static ns2_info deviceInfo;
-static ns2_motion latestMotion;
+static ns2_motion latestMotion, latestMotionLeft;   // latestMotionLeft：拼对时左只的六轴（latestMotion 是右只的），只经 ns2_get_motion_left 读
 static BOOL motionRequested;
 static ns2_state_callback stateCallback;
 static ns2_status_callback statusCallback;
@@ -177,13 +177,13 @@ static void refresh_locked(void) {
 static void reset_global_locked(void) {
     ready = NO; wantedMask = submittedMask = stopMask = 0;
     rumbleRequests = quantizedSilentRequests = 0;
-    memset(&latestMotion, 0, sizeof latestMotion);
+    memset(&latestMotion, 0, sizeof latestMotion); memset(&latestMotionLeft, 0, sizeof latestMotionLeft);
     memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
 }
 // 输出形态在单只 / 拼对之间切换：震动归属变了，丢掉未发的请求、已提交有效幅码的侧安排停止包，运动样本作废；游戏的下一次请求照常进来。
 static void reroute_locked(void) {
     memset(wanted, 0, sizeof wanted); wantedMask = 0; stopMask |= submittedMask;
-    memset(&latestMotion, 0, sizeof latestMotion);
+    memset(&latestMotion, 0, sizeof latestMotion); memset(&latestMotionLeft, 0, sizeof latestMotionLeft);
 }
 // 一条链路失效 / 重新开始握手：断线后立即丢弃旧物理连接的输入和震动数值。
 // 另一条没有在用时等同改前的 reset_state（Pro 永远走这一支）；另一条在用而这条刚才也在用，说明拼对拆开，改走 reroute。
@@ -652,14 +652,20 @@ static NS2Bridge *bridge;
     // 拼对时单路六轴只用右只的、不转向；否则（Pro / 单只）同改前
     BOOL paired = pair_locked();
     ns2_motion motion = {0};
-    BOOL publishMotion = motionCallback && motionRequested && imuEnabled && !motionCommand && active && linkShared[slot].ready && !terminal &&
-        (!paired || kind == NS2_KIND_JOYCON_R);
+    BOOL motionOn = motionRequested && imuEnabled && !motionCommand && active && linkShared[slot].ready && !terminal;
+    BOOL publishMotion = motionCallback && motionOn && (!paired || kind == NS2_KIND_JOYCON_R);
     if (publishMotion && ns2_decode_report05_motion(data.bytes, data.length, &motion)) {
         // 部分固件的设备时钟不可靠；对外用接收时的单调时钟，设备值保留用于诊断。
         // Some firmware has unreliable device timestamps; export monotonic arrival time and retain the device value for diagnostics.
         motion.host_timestamp_us = now_ns() / 1000;
         if (!paired) ns2_joycon_sideways_motion(kind, &motion);   // 单只 Joy-Con 2：换成横握视角；Pro 不动
         latestMotion = motion;
+    }
+    // 拼对时左只的六轴另存（不经回调、不转向）：Mac 启动器通道 INPUT 包的 motion_left 带给宿主，游戏的左手传感器用它（手柄当车把左右一起倾斜时，左右两只坐标相反，
+    //   只给右只的读数会被游戏当成两只反向转、互相抵消）
+    else if (paired && kind == NS2_KIND_JOYCON_L && motionOn) {
+        ns2_motion left = {0};
+        if (ns2_decode_report05_motion(data.bytes, data.length, &left)) { left.host_timestamp_us = now_ns() / 1000; latestMotionLeft = left; }
     }
     pthread_mutex_unlock(&stateMu);
     if (headsetChanged) LOG("NS2 Pro BLE 耳机插入：%s（仅插入检测，未实现音频流）", headsetConnected ? "是" : "否");
@@ -1037,7 +1043,7 @@ static NS2Bridge *bridge;
     if (scanRequested || scanDeadline) [self stopScanning];   // 给单只找另一侧的扫描一并停掉（Pro 连着时本来就没在扫）
     pthread_mutex_lock(&stateMu);
     active = NO;
-    memset(&latestMotion, 0, sizeof latestMotion);
+    memset(&latestMotion, 0, sizeof latestMotion); memset(&latestMotionLeft, 0, sizeof latestMotionLeft);
     memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual); wantedMask = 0;
     pthread_mutex_unlock(&stateMu);
     if (keepA) [a beginPause];
@@ -1250,7 +1256,7 @@ int ns2_start_with_motion(ns2_state_callback state, ns2_status_callback status, 
         rumbleRequests = quantizedSilentRequests = 0;
         memset(linkShared, 0, sizeof linkShared);
         memset(&deviceInfo, 0, sizeof deviceInfo);
-        memset(&latestMotion, 0, sizeof latestMotion);
+        memset(&latestMotion, 0, sizeof latestMotion); memset(&latestMotionLeft, 0, sizeof latestMotionLeft);
         motionRequested = motion != NULL;
         memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual); rumbleGain = gainValue;
         pthread_mutex_unlock(&stateMu);
@@ -1265,7 +1271,7 @@ void ns2_set_motion_enabled(int enabled) {
     BOOL next = enabled && !terminal;
     if (motionRequested != next) {
         motionRequested = next;
-        memset(&latestMotion, 0, sizeof latestMotion);
+        memset(&latestMotion, 0, sizeof latestMotion); memset(&latestMotionLeft, 0, sizeof latestMotionLeft);
         if (mailboxWake) dispatch_source_merge_data(mailboxWake, 1);
     }
     pthread_mutex_unlock(&stateMu);
@@ -1277,7 +1283,7 @@ void ns2_set_active(int enabled) {
         BOOL changed = active != next;
         active = next;
         if (changed) {
-            memset(&latestMotion, 0, sizeof latestMotion);
+            memset(&latestMotion, 0, sizeof latestMotion); memset(&latestMotionLeft, 0, sizeof latestMotionLeft);
             memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
             wantedMask = 0; stopMask |= submittedMask;
         }
@@ -1365,6 +1371,14 @@ void ns2_get_motion(ns2_motion *out) {
     pthread_mutex_lock(&stateMu);
     *out = latestMotion;
     if (!ready || !active || !motionRequested || terminal || now_ns() / 1000 - out->host_timestamp_us > 250000)
+        memset(out, 0, sizeof *out);
+    pthread_mutex_unlock(&stateMu);
+}
+void ns2_get_motion_left(ns2_motion *out) {   // 拼对时左只的六轴；没拼对、没开、超过 250 毫秒没更新 → 全 0（同 ns2_get_motion）
+    if (!out) return;
+    pthread_mutex_lock(&stateMu);
+    *out = latestMotionLeft;
+    if (!ready || !active || !motionRequested || terminal || !pair_locked() || now_ns() / 1000 - out->host_timestamp_us > 250000)
         memset(out, 0, sizeof *out);
     pthread_mutex_unlock(&stateMu);
 }

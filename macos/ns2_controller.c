@@ -18,7 +18,7 @@
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t relayWriteLock = PTHREAD_MUTEX_INITIALIZER;
 static ns2_state input;
-static ns2_motion relayMotion;
+static ns2_motion relayMotion, relayMotionLeft;   // relayMotionLeft：Joy-Con 2 拼对时左只的（INPUT 包 motion_left）
 static ns2_kind relayKind;   // 通道 v2 带来的对外输出型号（持 lock）
 static ns2_status status;
 static int directStarted, ready, foreground, motion_requested;
@@ -132,6 +132,12 @@ static void *relay_read_main(void *context) {
         relayKind = connected ? (ns2_kind)packet.kind : NS2_KIND_NONE;
         if (packet.motion_known) relayMotion = packet.motion;
         else memset(&relayMotion, 0, sizeof relayMotion);
+        // 拼对时左只的六轴（ns2_relay.h motion_left；旧启动器发 0 → 只有右只，照旧）
+        if (packet.motion_known && packet.motion_left_known) {
+            const ns2_relay_motion_left *l = &packet.motion_left;
+            relayMotionLeft = (ns2_motion){.known = 1, .host_timestamp_us = (uint64_t)l->host_timestamp_us_hi << 32 | l->host_timestamp_us_lo,
+                .acceleration_x = l->acceleration_x, .acceleration_y = l->acceleration_y, .acceleration_z = l->acceleration_z, .gyro_x = l->gyro_x, .gyro_y = l->gyro_y, .gyro_z = l->gyro_z};
+        } else memset(&relayMotionLeft, 0, sizeof relayMotionLeft);
         pthread_mutex_unlock(&lock);
     }
 
@@ -143,6 +149,7 @@ static void *relay_read_main(void *context) {
         epoch++;
         memset(&input, 0, sizeof input);
         memset(&relayMotion, 0, sizeof relayMotion);
+        memset(&relayMotionLeft, 0, sizeof relayMotionLeft);
         relayKind = NS2_KIND_NONE;
     }
     pthread_mutex_unlock(&lock);
@@ -372,6 +379,27 @@ EXPORT void s2a_mac_ns2_set_motion_enabled(int enabled) {
     }
 }
 
+static s2a_pad_motion pad_motion(const ns2_motion *m) {
+    return (s2a_pad_motion){m->host_timestamp_us, m->acceleration_x, m->acceleration_y, m->acceleration_z, m->gyro_x, m->gyro_y, m->gyro_z};
+}
+
+// Joy-Con 2 左右拼成一对：out[0] 左只、out[1] 右只，返回 2；只有一路（Pro / 单只 / 旧启动器）时 out[0] 是它、返回 1；没有返回 0
+EXPORT int s2a_mac_ns2_read_motion_pair(s2a_pad_motion out[2]) {
+    ns2_motion left = {0}, right = {0};
+    pthread_mutex_lock(&lock);
+    if (ready && foreground && motion_requested) {
+        if (relayFD >= 0) { right = relayMotion; left = relayMotionLeft; }
+        else { ns2_get_motion(&right); ns2_get_motion_left(&left); }
+    }
+    pthread_mutex_unlock(&lock);
+    out[0] = out[1] = (s2a_pad_motion){0};
+    if (!right.known) return 0;
+    if (!left.known) { out[0] = pad_motion(&right); return 1; }
+    out[0] = pad_motion(&left);
+    out[1] = pad_motion(&right);
+    return 2;
+}
+
 EXPORT int s2a_mac_ns2_read_motion(s2a_pad_motion *out) {
     ns2_motion sample = {0};
     pthread_mutex_lock(&lock);
@@ -382,8 +410,6 @@ EXPORT int s2a_mac_ns2_read_motion(s2a_pad_motion *out) {
     pthread_mutex_unlock(&lock);
     *out = (s2a_pad_motion){0};
     if (!sample.known) return 0;
-    *out = (s2a_pad_motion){sample.host_timestamp_us,
-        sample.acceleration_x, sample.acceleration_y, sample.acceleration_z,
-        sample.gyro_x, sample.gyro_y, sample.gyro_z};
+    *out = pad_motion(&sample);
     return 1;
 }
