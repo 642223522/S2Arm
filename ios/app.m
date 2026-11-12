@@ -267,6 +267,7 @@ static void s2a_ios_suspend_enqueue(int on, const char *why) {
 // 提示 / 出错页（notice.m 画；11-02 维护者：满屏、一句人话 + 下一步、和加载页同一套样子、技术细节进诊断包不上屏）。窗口还没建时只记下，建窗口时显示
 static NSString *g_msg;   // 正在屏上（或待显示）的提示，s2a_ios_clear_message 按它认
 static NSArray *g_note;   // 待显示 / 正显示的提示页参数：@[符号, 标题, 正文, 进度, 进度小字, 是否给「导出诊断包」]
+static NSArray *g_note_go;   // 提示页上的「仍要启动」这类继续按钮：@[按钮字, 点了调的块]（s2a_ios_ask_continue 设，别的提示页清掉）
 static UIView *g_note_view;
 static UIView *g_help; static NSArray *g_help_args; static void (*g_help_recheck)(void);   // 缺资源包说明页（见 s2a_ios_show_pack_help）
 void s2a_diag_export(void);
@@ -274,6 +275,7 @@ static void note_build(void) {
     [g_note_view removeFromSuperview]; g_note_view = nil;
     if (!g_root || !g_note) return;
     NSMutableArray *bs = [NSMutableArray array];
+    if (g_note_go) { void (^go)(void) = g_note_go[1]; [bs addObject:s2a_notice_button(g_note_go[0], YES, ^(UIButton *b) { b.enabled = NO; go(); })]; }
     if (g_note.count > 6) { NSString *text = g_note[6];   // 「复制诊断」（初启失败页）：诊断文本放进剪贴板，玩家直接粘贴发给我们
         [bs addObject:s2a_notice_button(S2APICK(S2A_INIT_FAIL_COPY), YES, ^(UIButton *b) { UIPasteboard.generalPasteboard.string = text; [b setTitle:S2APICK(S2A_INIT_FAIL_COPIED) forState:UIControlStateNormal]; LOG("初启失败页：诊断已复制到剪贴板"); })]; }
     if ([g_note[5] boolValue]) [bs addObject:s2a_notice_button(S2AL(@"diag.export"), NO, ^(UIButton *b) { (void)b; s2a_diag_export(); })];
@@ -288,6 +290,7 @@ static const char *host_text(const char *s) {
         {S2A_SELFCHECK_PKG_TITLE, S2A_SELFCHECK_PKG_TITLE_EN}, {S2A_SELFCHECK_PKG_BODY, S2A_SELFCHECK_PKG_BODY_EN},
         {S2A_SELFCHECK_DEVICE_TITLE, S2A_SELFCHECK_DEVICE_TITLE_EN}, {S2A_SELFCHECK_DEVICE_BODY, S2A_SELFCHECK_DEVICE_BODY_EN},
         {S2A_SELFCHECK_AS_TITLE, S2A_SELFCHECK_AS_TITLE_EN}, {S2A_SELFCHECK_AS32_BODY, S2A_SELFCHECK_AS32_BODY_EN},
+        {S2A_SELFCHECK_MEM_BODY, S2A_SELFCHECK_MEM_BODY_EN}, {S2A_SELFCHECK_GO, S2A_SELFCHECK_GO_EN},
         {S2A_INIT_FAIL_MSG_SERVICE, S2A_INIT_FAIL_MSG_SERVICE_EN}, {S2A_INIT_FAIL_MSG_RUNTIME, S2A_INIT_FAIL_MSG_RUNTIME_EN},
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
         {S2A_INIT_FAIL_MSG_FILES, S2A_INIT_FAIL_MSG_FILES_EN}, {S2A_INIT_FAIL_NEXT, S2A_INIT_FAIL_NEXT_EN},
@@ -302,8 +305,24 @@ void s2a_ios_show_notice(const char *symbol, const char *title, const char *body
     title = host_text(title); body = host_text(body);
     NSString *sy = @(symbol), *t = @(title), *b = @(body ?: ""), *key = [NSString stringWithFormat:@"%@\n\n%@", t, b];
     NSArray *n = @[sy, t, b, @(total > 0 ? (float)done / total : -1.0f), total > 0 ? [NSString stringWithFormat:S2AL(@"notice.batch"), done < total ? done + 1 : total, total] : @"", @(diag != 0)];
-    void (^show)(void) = ^{ g_msg = key; g_note = n; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build(); };
+    void (^show)(void) = ^{ g_msg = key; g_note = n; g_note_go = nil; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build(); };
     if (NSThread.isMainThread) show(); else dispatch_async(dispatch_get_main_queue(), show);
+}
+// 带「继续」按钮的提示页，调用线程等玩家点（v0.3.1：起局自检只差内存上限时「仍要启动」）。只在宿主工作线程上用（游戏库已在主线程跑 UIKit）：
+//   主线程上等就把界面卡死了，返回 0（调用方照旧只给提示）。玩家点了 → 收起提示页、返回 1；不点就一直停在提示页（同原先）
+int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body, const char *go) {
+    if (NSThread.isMainThread) return 0;
+    title = host_text(title); body = host_text(body); go = host_text(go);
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSString *sy = @(symbol), *t = @(title), *b = @(body ?: ""), *label = @(go), *key = [NSString stringWithFormat:@"%@\n\n%@", t, b];
+    NSArray *n = @[sy, t, b, @(-1.0f), @"", @YES];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_msg = key; g_note = n; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil;
+        g_note_go = @[label, ^{ g_note_go = nil; g_note = nil; g_msg = nil; [g_note_view removeFromSuperview]; g_note_view = nil; dispatch_semaphore_signal(done); }];
+        note_build();
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return 1;
 }
 // 老入口（停帧看门 ap_host.c 经 dlsym 调）：第一段当标题、其余当正文
 void s2a_ios_show_message(const char *m) {
