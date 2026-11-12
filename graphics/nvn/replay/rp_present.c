@@ -85,7 +85,10 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                                       (double)pf[RP_PERF_WAIT_N] / f, (double)pf[RP_PERF_WAIT_NS] / 1e6 / f, pf[RP_PERF_DONE_N] ? (double)pf[RP_PERF_DONE_NS] / 1e6 / (double)pf[RP_PERF_DONE_N] : 0.0, (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_PRESENT_NS] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 snprintf(b, sizeof b, "分时（绘制各步，每帧毫秒）：取程序 %.1f、顶点流与索引 %.1f、取贴图视图 %.1f、开通道与取管线 %.1f、动态状态与顶点缓冲 %.1f、绑定 %.1f、后端绘制 %.1f、收尾 %.1f",
-                         (double)pf[RP_PERF_D_PROG] / 1e6 / f, (double)pf[RP_PERF_D_PREP] / 1e6 / f, (double)pf[RP_PERF_D_TEX] / 1e6 / f, (double)pf[RP_PERF_D_PIPE] / 1e6 / f, (double)pf[RP_PERF_D_DYN] / 1e6 / f, (double)pf[RP_PERF_D_BIND] / 1e6 / f, (double)pf[RP_PERF_D_DRAW] / 1e6 / f, (double)pf[RP_PERF_D_TAIL] / 1e6 / f);
+                         (double)pf[RP_PERF_D_PROG] / 1e6 / f, (double)pf[RP_PERF_D_PREP] / 1e6 / f, (double)pf[RP_PERF_D_TEX] / 1e6 / f, (double)(pf[RP_PERF_D_PASS] + pf[RP_PERF_D_PIPE]) / 1e6 / f, (double)pf[RP_PERF_D_DYN] / 1e6 / f, (double)pf[RP_PERF_D_BIND] / 1e6 / f, (double)pf[RP_PERF_D_DRAW] / 1e6 / f, (double)pf[RP_PERF_D_TAIL] / 1e6 / f);
+                nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+                snprintf(b, sizeof b, "分时（开通道与取管线细分，每帧毫秒）：开通道 %.2f、取管线 %.2f（其中后端取与设 %.2f）",
+                         (double)pf[RP_PERF_D_PASS] / 1e6 / f, (double)pf[RP_PERF_D_PIPE] / 1e6 / f, (double)pf[RP_PERF_D_PGET] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 snprintf(b, sizeof b, "分时（通道，每帧）：%.1f 个，共 %.1f 百万像素；颜色附件载入 %.1f 个；挂深度模板的 %.1f 个，其中整个通道没用到它的 %.1f 个；只有 0–1 笔绘制的 %.1f 个；开着的通道被结束的原因：换目标 %.1f、通道中途的整屏清除 %.1f、同一提交里第二次同步 %.1f",
                          (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_P_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_LOADC] / f, (double)pf[RP_PERF_P_DS] / f, (double)pf[RP_PERF_P_DS_IDLE] / f, (double)pf[RP_PERF_P_ONE] / f, (double)pf[RP_PERF_P_CUT_RT] / f, (double)pf[RP_PERF_P_CUT_CLEAR] / f, (double)pf[RP_PERF_P_CUT_XFER] / f);

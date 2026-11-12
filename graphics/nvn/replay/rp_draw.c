@@ -389,6 +389,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     }
     DT(RP_PERF_D_TEX);
     if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); goto draw_done; }
+    DT(RP_PERF_D_PASS);   // 开通道单独记；打印时与取管线合成原来那一项，另出一行细分
     g_bind_keep[0] = !rp_args_dirty[0]; g_bind_keep[1] = !rp_args_dirty[1]; g_pipe_set = 0;   // 换管线会把两个阶段都立脏，绑定状态变没变要在那之前取
     if (rp_pso_dirty || !g_pipe || g_pipe_cmd != c) {
         nvn_gpu_pipe_desc pd; memset(&pd, 0, sizeof pd);
@@ -418,6 +419,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         pd.origin_ll = (uint8_t)(rp_origin_lower_left() != 0);
         pd.depth_clamp = (uint8_t)(rp_S.depth_clamp != 0);
         nvn_gpu_pipe np = NULL; nvn_gpu_err err = {0};
+        const uint64_t pg0_ = dt_now();
         nvn_gpu_rc r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
         if (r.code == NVN_GPU_E_UNSUPPORTED && rp_S.poly.mode != NVN_POLYGON_MODE_FILL) {   // 设备没有点 / 线填充模式：记一笔，照旧按填充画（不让这笔绘制消失）
             nvn_unimpl("gpu", "polygon_mode_not_fill", rec);
@@ -427,6 +429,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (!nvn_gpu_ok(r)) { if (nvn_unimpl("gpu", "pipe_get", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; g_pipe = NULL; goto draw_done; }
         g_pipe = np; g_pipe_cmd = c;
         nvn_gpu_set_pipe(c, g_pipe); g_pipe_set = 1;
+        rp_perf_add(RP_PERF_D_PGET, dt_now() - pg0_);   // 后端取管线 + 设管线（含在取管线那一项里）
         rp_args_dirty[0] = rp_args_dirty[1] = 1;   // 换了管线：两个阶段的绑定都重发
     }
     uint32_t tw = 1, th = 1;
