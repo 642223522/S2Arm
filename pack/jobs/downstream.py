@@ -138,8 +138,13 @@ def set_choice(c):
 
 
 def requested(c, game):
-    """这一单走不走下游：请求带 scheme（启动器按玩家选择填）且这款命中同一方案 → 方案；不带 → None（原版）"""
-    want = c.r.get("scheme") or ""
+    """这一单走不走下游：请求带 scheme 键就按它（"" = 原版）；不带就按玩家在确认页记下的选择（这款文件夹 downstream.json）。
+    这样各个前端（两版 Mac 启动器、出包编排的子作业、s2armctl）只管弹确认页记选择，出包 / 装机请求不用各自加字段。→ 方案或 None（原版）"""
+    if "scheme" in c.r:
+        want = c.r.get("scheme") or ""
+    else:
+        choice = read(_choice_path(c, game.get("id", ""), create=False), None) if game.get("id") else None
+        want = (choice or {}).get("scheme") or "" if isinstance(choice, dict) else ""
     if not want:
         return None
     s = match(game)

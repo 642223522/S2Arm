@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 
 JOBS = Path(__file__).resolve().parents[1]
@@ -89,8 +90,24 @@ class EligibilityTest(unittest.TestCase):
 
 
 class RequestTest(unittest.TestCase):
-    def test_no_scheme_is_original_route(self):
-        self.assertIsNone(ds.requested(FakeContext("/nonexistent"), dict(id=TITLE)))
+    def stored(self, d, choice):
+        p = Path(d) / "downstream.json"
+        if choice is not None:
+            p.write_text(json.dumps(dict(scheme=choice, at=0)), encoding="utf-8")
+        return unittest.mock.patch.object(ds, "_choice_path", lambda c, gid, create=True: p)
+
+    def test_no_scheme_and_nothing_stored_is_original_route(self):
+        with tempfile.TemporaryDirectory() as d, self.stored(d, None):
+            self.assertIsNone(ds.requested(FakeContext(d), dict(id=TITLE)))
+
+    def test_stored_choice_is_used_when_request_says_nothing(self):
+        # 出包编排的子作业、新版前端都不带 scheme：按玩家在确认页记下的选择走
+        with tempfile.TemporaryDirectory() as d, self.stored(d, "d2r-mobile"):
+            self.assertEqual(ds.requested(FakeContext(d), dict(id=TITLE))["id"], "d2r-mobile")
+
+    def test_request_overrides_stored_choice(self):
+        with tempfile.TemporaryDirectory() as d, self.stored(d, "d2r-mobile"):
+            self.assertIsNone(ds.requested(FakeContext(d, dict(scheme="")), dict(id=TITLE)))
 
     def test_scheme_must_match_game(self):
         with self.assertRaises(Failure):
