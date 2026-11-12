@@ -2700,6 +2700,26 @@ namespace S2A.Services.Tests
                         Check("存档位置摘要（P1-163）：保留时间的同大小替换看得出 / 只动修改时间不算换过", "换了内容：不同；只改时间：相同",
                             $"换了内容：{(d0 != d1 ? "不同" : "相同")}；只改时间：{(d1 == d2 ? "相同" : "不同")}");
 
+                        // #755：0.2.5 及更早写的记录（按修改时间算的旧摘要）。升级后第一次起局：存档位置自旧版写回后没动过 → 不读入、沿用当前进度、记录改成新摘要；
+                        //   旧记录之后玩家真换了文件 → 照常读入。期望按规则手写（原先两种都读入：当前进度被换成旧版写回的那份）
+                        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+                        D("SaveData", ("save_device/dev.dat", [5, 6]));
+                        string nine755 = D("nine755", ("dev.dat", [9]));
+                        Saves.SeedFrom(Host.Device, Application.ProgramId, [("device", nine755)]);
+                        File.WriteAllText(state, SaveFolder.LegacyDigest(folder));
+                        long red755 = Red.Total;
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        byte[] kept755 = ReadDeviceSave("/dev.dat");
+                        bool rec755 = File.ReadAllText(state).Trim() == SaveFolder.Digest(folder);
+                        File.WriteAllText(state, SaveFolder.LegacyDigest(folder));
+                        string dev755 = Path.Combine(folder, "save_device/dev.dat");
+                        File.WriteAllBytes(dev755, [7, 7]); File.SetLastWriteTimeUtc(dev755, DateTime.UtcNow.AddDays(1));
+                        SaveFolder.ReadIn(Host.Device, Application.ProgramId);
+                        byte[] read755 = ReadDeviceSave("/dev.dat");
+                        Check("存档位置（#755）：旧版记录、没动过 → 沿用当前进度并升级记录 / 旧版记录之后换了 → 读入",
+                            "设备仍 [9]、记录改成新摘要；换了之后设备 [7,7]、报红 +0",
+                            $"设备仍 {(kept755 == null ? "缺" : "[" + string.Join(",", kept755) + "]")}、记录{(rec755 ? "改成新摘要" : "没改")}；换了之后设备 {(read755 == null ? "缺" : "[" + string.Join(",", read755) + "]")}、报红 +{Red.Total - red755}");
+
                         // 审计 P1-162：写回带上用户号；存档位置里的 user 文件 / Ryujinx 导出 ExtraData0 偏移 0x8 的用户号都认得出
                         if (Directory.Exists(folder)) Directory.Delete(folder, true);
                         File.Delete(state);
