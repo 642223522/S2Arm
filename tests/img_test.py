@@ -177,4 +177,61 @@ finally:
     img.os = real_os
     shutil.rmtree(T, ignore_errors=True)
 
+# ⑨ #746 边写边腾解包（convert consume）：夹具按出包现场搭——产物根 romfs 是指向 RomFS 共享存储身份的软链（身份整棵只读）、存储里还有一个旧身份、
+#   seed.txt 记的解包目录 src/romfs、资源包清单里的 RomFS 行与 romfs.files。期望：RomFS 段按公开格式读出的文件 = 原件（字节相同）；
+#   写完之后这些各份一个文件都不剩（只留目录也算腾空）；不带 consume 时原样都在
+def files_under(d):
+    return sorted(str(p.relative_to(d)) for p in Path(d).rglob('*') if p.is_file()) if os.path.isdir(d) else []
+def scene(base):
+    import stat
+    roots = base / 'roots'; store = roots / '.romfs_store' / 'kuan'
+    data = {'a/x.bin': b'x' * 3000, 'b/y.txt': b'hello' * 99, 'z.dat': os.urandom(70000)}
+    for ident in ('id0', 'id1'):
+        for r, b in data.items(): (store / ident / r).parent.mkdir(parents=True, exist_ok=True); (store / ident / r).write_bytes(b)
+    for d, _, _ in os.walk(store): os.chmod(d, stat.S_IRUSR | stat.S_IXUSR)   # 同 pack/roots.sh：身份整棵只读
+    root = roots / 'kuan@v1'; root.mkdir(parents=True); os.symlink('../.romfs_store/kuan/id1', root / 'romfs')
+    src = base / 'extract'
+    for r, b in data.items(): (src / 'romfs' / r).parent.mkdir(parents=True, exist_ok=True); (src / 'romfs' / r).write_bytes(b)
+    (root / 'seed.txt').write_text(f'src={src}\n', encoding='utf-8')
+    (root / 'unpack.tsv').write_text('title_id\t0100F43008C44000\n', encoding='utf-8')
+    pk = base / 'pack'; (pk / 'exefs').mkdir(parents=True); (pk / 'exefs' / 'main').write_bytes(b'M' * 500)
+    rows = [('exefs/main', 500)] + [('romfs/' + r, len(b)) for r, b in data.items()]
+    for r, b in data.items(): (pk / 'romfs' / r).parent.mkdir(parents=True, exist_ok=True); (pk / 'romfs' / r).write_bytes(b)
+    (pk / 'romfs.files' / 'a').mkdir(parents=True); (pk / 'romfs.files' / 'a' / 'x.bin').write_bytes(data['a/x.bin'])
+    (pk / 'index.tsv').write_text(''.join(f'{r}\t{n}\th\n' for r, n in rows), encoding='utf-8')
+    return root, pk, store, src, data
+if shutil.which('dotnet') or os.path.exists(os.path.expanduser('~/.dotnet/dotnet')):
+    for consume in (True, False):
+        T = Path(tempfile.mkdtemp(prefix='img test 9 '))
+        try:
+            root, pk, store, src, data = scene(T)
+            out = img.convert(str(root), str(pk), consume=consume)
+            h = img.header(out); got = std_romfs(out, h['romfs'][0])
+            ck(got == data, f'⑨ consume={consume}：RomFS 段文件 = 原件（{sorted(got)}）')
+            left = dict(store=files_under(store), src=files_under(src / 'romfs'), pack=[f for f in files_under(pk) if f.startswith('romfs')])
+            if consume:
+                ck(all(not v for v in left.values()), f'⑨ consume：写完存储各身份 / 解包目录 / 资源包 RomFS 行与 romfs.files 一个文件都不剩（剩 {left}）')
+            else:
+                ck(len(left['store']) == 6 and len(left['src']) == 3, f'⑨ 不带 consume：存储两个身份、解包目录原样都在（{len(left["store"])} / {len(left["src"])}）')
+        finally:
+            for d, _, _ in os.walk(T): os.chmod(d, 0o755)
+            shutil.rmtree(T, ignore_errors=True)
+    # ⑨b 玩家原件与工作目录外的解包目录任何时候都不删（11-12）：原件（xci）放在工作目录外，seed.txt 指向工作目录外的解包目录（命令行 --from-extract 的用法）；
+    #   consume 写完：原件 SHA-256 不变、外面解包目录的文件一个不少；工作目录里共享存储的另一身份照删
+    T = Path(tempfile.mkdtemp(prefix='img test 9b ')); X = Path(tempfile.mkdtemp(prefix='img test 9b ext '))
+    try:
+        root, pk, store, src, data = scene(T / 'work')
+        orig = X / 'sources' / 'game.xci'; orig.parent.mkdir(parents=True); orig.write_bytes(os.urandom(200000)); h0 = hashlib.sha256(orig.read_bytes()).hexdigest()
+        shutil.copytree(src, X / 'extract'); (root / 'seed.txt').write_text(f'src={X / "extract"}\n', encoding='utf-8')
+        img.convert(str(root), str(pk), consume=True, work=str(T / 'work'))
+        ck(hashlib.sha256(orig.read_bytes()).hexdigest() == h0, '⑨b consume：工作目录外的玩家原件（xci）字节不变')
+        ck(len(files_under(X / 'extract' / 'romfs')) == len(data), f'⑨b consume：工作目录外的解包目录一个不删（剩 {len(files_under(X / "extract" / "romfs"))} / {len(data)}）')
+        ck(not files_under(store), f'⑨b consume：工作目录里的共享存储照删（剩 {files_under(store)}）')
+    finally:
+        for top in (T, X):
+            for d, _, _ in os.walk(top): os.chmod(d, 0o755)
+            shutil.rmtree(top, ignore_errors=True)
+else:
+    print('跳过 ⑨：没有 dotnet，编不了 services/romfs_index')
+
 print(f'img 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)
