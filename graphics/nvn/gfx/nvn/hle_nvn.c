@@ -1859,10 +1859,9 @@ static int sh_intern(cmd_t *o, srec *r) {   // g_sh_mu held: 1 = r dropped, hand
 static void sh_end(cmd_t *o) {
     srec *r = o->rec; sh_piece(o);
     uint64_t h = r->rbytes + OP_RESERVE + sizeof(sblk); o->hint = (uint32_t)(h < 256 ? 256 : h > (1u << 20) ? (1u << 20) : h);
-    pthread_mutex_lock(&g_sh_mu); int shared = sh_intern(o, r); pthread_mutex_unlock(&g_sh_mu);
-    if (shared) { o->rec = NULL; return; }
-    sh_anchor_empty(o, r);
-    pthread_mutex_lock(&g_sh_mu); r->open = 0;
+    pthread_mutex_lock(&g_sh_mu);
+    if (sh_intern(o, r)) { pthread_mutex_unlock(&g_sh_mu); o->rec = NULL; return; }
+    sh_anchor_empty(o, r); r->open = 0;
     uint64_t un = 0; if (r->niv) sh_index(r); else un = ++g_sh_unanchored;
     pthread_mutex_unlock(&g_sh_mu);
     if (un && (un == 1 || un % 1024 == 0)) LOG("【黄】[nvn] command recording without any of the game's memory: its host blocks stay until the session ends (%llu so far)", (unsigned long long)un);
