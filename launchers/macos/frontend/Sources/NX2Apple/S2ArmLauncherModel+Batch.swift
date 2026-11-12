@@ -29,6 +29,20 @@ extension S2ArmLauncherModel {
         return (batchSummary["pending"] as? Int ?? 0) + (batchSummary["cancelled"] as? Int ?? 0) + (batchPaused != nil ? batchSummary["failed"] as? Int ?? 0 : 0)
     }
 
+    /// 重开启动器后说「上次停在第几款」（从 1 数）：被打断的那款（启动器退出时正在出、作业层重新排队并记 interrupted）；
+    /// 没有被打断的就是第一款还有平台排着队的；都没有是 0（同 Windows BatchState.StoppedAt）
+    var batchStoppedAt: Int {
+        func first(_ hit: ([String: Any]) -> Bool) -> Int {
+            for (n, item) in batchItems.enumerated() {
+                let results = item["results"] as? [String: [String: Any]] ?? [:]
+                if (item["platforms"] as? [String] ?? []).contains(where: { results[$0].map(hit) ?? false }) { return n + 1 }
+            }
+            return 0
+        }
+        let interrupted = first { $0["state"] as? String == "pending" && $0["interrupted"] as? Bool == true }
+        return interrupted > 0 ? interrupted : first { ["pending", "running"].contains($0["state"] as? String ?? "") }
+    }
+
     /// 放进来的几款列成清单（导入完调；从游戏库多选也走这里）：勾选默认跟着出包页上次勾的平台；缺东西的款写原因
     func openBatch(_ ids: [String], unrecognized: [ImportSource] = []) {
         let picked = Set(exportTargets.compactMap(Self.batchPlatform))

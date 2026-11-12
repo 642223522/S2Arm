@@ -34,6 +34,21 @@ import S2ArmAppleAdapter
         XCTAssertEqual(plan["source"] as? String, "inline")
         XCTAssertEqual(((plan["items"] as? [[String: Any]])?.first?["platforms"] as? [String]), ["iphone", "mac"])
     }
+
+    // 重开启动器后「上次停在第几款」：被打断的那款优先，其次第一款还有排队的；都没有是 0（同 Windows BatchState.StoppedAt）
+    func testBatchStoppedAt() {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-stopped-" + UUID().uuidString)
+        let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root, library: root.path, libraryId: "x")))
+        func item(_ gid: String, _ r: [String: Any]) -> [String: Any] { ["gameId": gid, "platforms": ["iphone"], "results": ["iphone": r]] }
+        let done = ["state": "completed"], pending = ["state": "pending"], interrupted: [String: Any] = ["state": "pending", "interrupted": true]
+        model.batchState = ["batch": ["items": [item("A", done), item("B", ["state": "failed"]), item("C", pending), item("D", interrupted)]]]
+        XCTAssertEqual(model.batchStoppedAt, 4, "被打断的那款（启动器退出时正在出）")
+        model.batchState = ["batch": ["items": [item("A", done), item("B", pending), item("C", pending)]]]
+        XCTAssertEqual(model.batchStoppedAt, 2, "没有被打断的：第一款排着队的")
+        model.batchState = ["batch": ["items": [item("A", ["state": "cancelled"])]]]
+        XCTAssertEqual(model.batchStoppedAt, 0)
+    }
 }
 
 private final class ExportRunner: JobProcessRunner {

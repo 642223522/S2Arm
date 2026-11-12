@@ -136,6 +136,9 @@ struct BatchExportView: View {
             Text(text).font(.manrope(15, .semibold))
             if model.batchPaused == "disk_full" {
                 Text(t("paused")).font(.manrope(13)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true)
+            } else if !model.batchRunning, model.batchStoppedAt > 0 {   // 上次没出完（启动器退出 / 取消）：停在第几款，「继续」只出还没出的（剃刀 H13）
+                Text(t("stopped_at").replacingOccurrences(of: "{0}", with: "\(model.batchStoppedAt)")).font(.manrope(13)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let error = model.batchError {
                 Text(t("stopped").replacingOccurrences(of: "{0}", with: error)).font(.manrope(13)).foregroundStyle(LauncherPalette.building)
