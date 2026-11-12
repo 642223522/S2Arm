@@ -20,6 +20,7 @@ struct rp_tex {
     uint8_t uploaded;
     uint8_t need_init;         // 刚建的存储，初始内容还没定（init_content）
     uint8_t in_alias;
+    uint64_t seen;             // 共用表里的：最近一次被查到 / 新建时的提交号 + 1（alias_take_over 用）
     uint64_t stamp;            // 最近一次上传取的脏页代号
     uint64_t up_sub;           // 最近一次上传所在的提交序号
     const uint8_t *mem; uint64_t size;
@@ -42,7 +43,7 @@ static nvn_hmap g_alias = {.klen = sizeof(alias_key)};      // 键 → struct rp
 static nvn_hmap g_cpu_ser = {.klen = 8};                    // 游戏用 WriteTexels 写过的序号（可能早于首次使用）
 static nvn_hmap g_pool_gpu = {.klen = 8};                   // GPU 写过的内存池
 static uint64_t g_ser_gen = 1;                              // 任何「序号 → 存储」映射变了就 +1：各贴图号缓存的视图据此重验
-static int g_built; static uint64_t g_uploads;
+static int g_built; static uint64_t g_uploads, g_alias_taken;   // g_alias_taken：被新贴图占了存储而出表的共用存储数
 
 // 声明类型的零贴图与默认视图：会话内共用，不参与视图环淘汰。
 static struct { nvn_gpu_tex tex; nvn_gpu_view view; } g_zero[NVN_TEXTURE_TARGET_BUFFER + 1][4];
@@ -252,6 +253,35 @@ static void tex_unref(struct rp_tex *x) {
     nvn_gpu_tex_release(x->g); g_built--; free(x);
 }
 
+// 新的共用存储占了同一段池内存：同池、区间重叠、描述不同的旧条目，如果已经没有贴图对象指着（users == 0）并且闲置了 ALIAS_IDLE 次提交，
+// 就出表放掉。照 iOS nvn_mtl.m 的 alias_take_over：在 NVN 上那段内存现在归新贴图，旧的那张只是没人再能叫到的一份拷贝。
+// 不搬这条的后果（真机，一款带动态分辨率的 3D 游戏）：十来个渲染目标在同一批偏移上每帧换一个宽高（1617x910、1604x902、1607x904…），
+// 每个宽高是一个新条目，表只进不出——标题画面一分钟后端贴图 297 → 2299 张、显存 8.7 GB，手机内存被吃光、游戏被杀。
+// 闲置窗口保住「每帧 Finalize 再按同描述重建」的瞬态目标（它们靠同描述再查到同一份；共用一段存储的几个目标不能每帧互相挤掉）。
+// 还有对象指着的（users > 0）这里不动：iOS 另有「闲置且被别的贴图写覆盖才放」的规则，等真遇到再搬。持 g_rmu。
+enum { ALIAS_IDLE = 16 };
+static void vf_drop_of(const struct rp_tex *x);   // 按目标取视图的表里指着这份存储的项（定义在那张表后面）
+static void alias_take_over(const alias_key *nk, uint64_t nsize) {
+    if (!nsize) return;
+    const int64_t lo = nk->off, hi = nk->off + (int64_t)nsize;
+    const uint64_t now = rp_sub_serial() + 1;
+    for (int again = 1; again;) {
+        again = 0;
+        for (uint32_t i = 0; i < g_alias.cap; i++) {
+            struct rp_tex *x = g_alias.vals[i];
+            if (!x) continue;
+            alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+            if (k.pool != nk->pool || !memcmp(&k, nk, sizeof k) || k.off >= hi || k.off + (int64_t)x->size <= lo) continue;
+            if (x->users > 0 || (x->seen && now - x->seen < ALIAS_IDLE)) continue;
+            nvn_hm_del(&g_alias, &k);   // 删除会挪动别的格：从头再扫
+            vf_drop_of(x);
+            for (int r = 0; r < g_ntreg; r++) if (g_treg[r].of == x) treg_drop_view(&g_treg[r]);
+            nvn_gpu_tex_release(x->g); g_built--; free(x); g_ser_gen++; g_alias_taken++;
+            again = 1; break;
+        }
+    }
+}
+
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
     if (!t || !t->serial) return NULL;
     pthread_mutex_lock(&g_rmu);
@@ -259,7 +289,7 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
     if (!x) {
         int cpu = cpu_content(t);
         alias_key k; alias_key_of(&k, t);
-        if (!cpu && t->pool) x = nvn_hm_get(&g_alias, &k);   // 同存储同描述的另一个对象已经建过：共用
+        if (!cpu && t->pool) { x = nvn_hm_get(&g_alias, &k); if (x) x->seen = rp_sub_serial() + 1; }   // 同存储同描述的另一个对象已经建过：共用
         if (!x) {
             nvn_gpu_tex_desc d = {0}; d.d = t->d; d.usage = usage_of(t, cpu); d.swz = t->set_swz && t->swz != SWZ_IDENTITY ? t->swz : 0; d.stencil_view = t->stencil;
             nvn_gpu_tex g = NULL; nvn_gpu_err err = {0};
@@ -269,7 +299,7 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
                 return NULL;
             }
             x = calloc(1, sizeof *x); x->g = g; x->cpu = (uint8_t)cpu; x->mem = t->mem; x->size = t->L.size; x->need_init = 1; g_built++;
-            if (!cpu && t->pool) { nvn_hm_put(&g_alias, &k, x); x->in_alias = 1; }
+            if (!cpu && t->pool) { alias_take_over(&k, t->L.size); nvn_hm_put(&g_alias, &k, x); x->in_alias = 1; x->seen = rp_sub_serial() + 1; }
         }
         x->users++;
         nvn_hm_put(&g_by_serial, &t->serial, x); g_ser_gen++;
@@ -307,6 +337,7 @@ void rp_view_pin_end(void) {
     }
     pthread_mutex_unlock(&g_rmu);
 }
+static void vf_drop_of(const struct rp_tex *x) { for (int i = 0; i < VF_N; i++) if (g_vf[i].view && g_vf[i].of == x) { nvn_gpu_view_release(g_vf[i].view); memset(&g_vf[i], 0, sizeof g_vf[i]); } }   // 持 g_rmu
 static void vf_drop_serial(uint64_t serial) {   // 持 g_rmu
     for (int i = 0; i < VF_N; i++) if (g_vf[i].view && (!serial || g_vf[i].serial == serial)) { nvn_gpu_view_release(g_vf[i].view); memset(&g_vf[i], 0, sizeof g_vf[i]); }
 }
