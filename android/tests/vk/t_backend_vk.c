@@ -142,11 +142,15 @@ static nvn_gpu_open_desc g_desc;
 // 保守故障注入：不等 fence 就返回 TIMEOUT，记录完成证明前的视图销毁；其余调用走真实 Vulkan。
 static int g_bc_inject_wait, g_bc_unproven, g_bc_early_destroy;
 static VkFence g_bc_injected_fence;
+static int g_bc_early_n, g_bc_early_seen;
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t timeout) {
     PFN_vkWaitForFences real = (PFN_vkWaitForFences)vkGetDeviceProcAddr(d, "vkWaitForFences");
-    if (g_bc_inject_wait && n == 1) {
-        g_bc_inject_wait = 0; g_bc_unproven = 1; g_bc_injected_fence = f[0]; return VK_TIMEOUT;
+    if (g_bc_inject_wait && n == 1) {   // 真超时：睡满调用方给的时限再报超时（等栅栏的包装按墙钟判，不睡满它会接着等）
+        g_bc_inject_wait = 0; g_bc_unproven = 1; g_bc_injected_fence = f[0];
+        struct timespec ts = {(time_t)(timeout / 1000000000ull), (long)(timeout % 1000000000ull)}; nanosleep(&ts, NULL);
+        return VK_TIMEOUT;
     }
+    if (g_bc_early_n > 0 && n == 1) { g_bc_early_n--; g_bc_early_seen++; return VK_TIMEOUT; }   // 提前返回（#697）：不等、立刻报超时
     return real(d, n, f, all, timeout);
 }
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice d, VkImageView view, const VkAllocationCallbacks *a) {
@@ -171,6 +175,11 @@ static void bc_timeout_lifetime(void) {
     vr = vkBindImageMemory(d, image, memory, 0); CHECK(vr == VK_SUCCESS, "BC timeout 绑定：%d", vr); if (vr != VK_SUCCESS) goto done;
     int br = nvn_vk_bcdec_create(&g_dev, &bc, why, sizeof why); CHECK(br == 0, "BC timeout 解码器：%s", why); if (br) goto done;
     { static const uint8_t block[8] = {0,0xf8,0,0xf8,0,0,0,0};
+      // #697：驱动的等待被信号打断、提前报超时（这里连着 3 次立刻返回 VK_TIMEOUT）→ 没到墙钟时限必须接着等，解码照常成功
+      g_bc_early_n = 3; g_bc_early_seen = 0;
+      br = nvn_vk_bcdec_decode(bc, &g_dev, image, NVN_FORMAT_RGBA_DXT1, 4, 4, 0, 0, block, sizeof block, why, sizeof why);
+      CHECK(br == 0 && g_bc_early_seen == 3 && g_bc_early_n == 0, "BC 等待提前返回 3 次：期望接着等、解码成功（0）且 3 次都被消耗 → 返回 %d、消耗 %d 次 %s", br, g_bc_early_seen, why);
+      g_bc_early_n = 0;
       g_bc_inject_wait = 1; g_bc_unproven = g_bc_early_destroy = 0; g_bc_injected_fence = VK_NULL_HANDLE;
       br = nvn_vk_bcdec_decode(bc, &g_dev, image, NVN_FORMAT_RGBA_DXT1, 4, 4, 0, 0, block, sizeof block, why, sizeof why);
       CHECK(br == -2 && g_bc_injected_fence, "BC timeout 应报告未证明完成，实得 %d %s", br, why);
