@@ -3726,6 +3726,39 @@ static void c82_occlusion(const char *dir) {
     nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
 }
 
+// C83：带缩放 / 换格式的贴图拷贝。
+// 期望（手算）：① 8x8 的 RGBA8 左半红右半蓝，最近点缩到 4x4 → 左两列红、右两列蓝；
+//   ② 2x2 的 R11G11B10F 全是 (0.5, 0.25, 1.0)（位模式 R 0x380、G 0x340、B 0x1E0），线性拷到 2x2 的 RGBA8 → (127 或 128, 64 ± 1, 255, 255)。
+static void c83_blit(void) {
+    nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
+    CHECK(caps.caps & NVN_GPU_CAP_BLIT_SCALED, "C83 后端声明原生缩放拷贝");
+    nvn_gpu_tex a = make_tex(8, 8, NVN_FORMAT_RGBA8, NVN_GPU_TEX_SAMPLED), b = make_tex(4, 4, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex f = make_tex(2, 2, NVN_FORMAT_R11G11B10F, NVN_GPU_TEX_SAMPLED), g2 = make_tex(2, 2, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_view av = make_view(a), bv = make_view(b), fv = make_view(f), gv = make_view(g2);
+    nvn_gpu_buf rb = make_buf(4 * 4 * 4 + 2 * 2 * 4, NVN_GPU_MEM_SHARED, NULL);
+    uint8_t px[8 * 8 * 4]; for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { uint8_t *p = px + (y * 8 + x) * 4; p[0] = x < 4 ? 255 : 0; p[1] = 0; p[2] = x < 4 ? 0 : 255; p[3] = 255; }
+    uint32_t fw[4]; for (int i = 0; i < 4; i++) fw[i] = 0x380u | 0x340u << 11 | 0x1E0u << 22;
+    nvn_gpu_err e; nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_tex_upload(c, a, 0, 0, NULL, px, 32, sizeof px);
+    nvn_gpu_tex_upload(c, f, 0, 0, NULL, fw, 8, 16);
+    NVNcopyRegion r8 = {0, 0, 0, 8, 8, 1}, r4 = {0, 0, 0, 4, 4, 1}, r2 = {0, 0, 0, 2, 2, 1};
+    nvn_gpu_blit(c, av, &r8, bv, &r4, 0);
+    nvn_gpu_blit(c, fv, &r2, gv, &r2, 1);
+    nvn_gpu_copy_tex_buf(c, b, 0, 0, NULL, rb, 0, 16, 64);
+    nvn_gpu_copy_tex_buf(c, g2, 0, 0, NULL, rb, 64, 8, 16);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 126, on_done, NULL, &e);
+    CHECK(OK(r), "C83 commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(126, 5000000000ull, &e);
+    CHECK(OK(r), "C83 wait：%d %s", r.code, e.why);
+    const uint8_t *o = buf_cpu(rb); int bad = 0;
+    for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) { const uint8_t *p = o + (y * 4 + x) * 4; if (p[0] != (x < 2 ? 255 : 0) || p[1] != 0 || p[2] != (x < 2 ? 0 : 255) || p[3] != 255) bad++; }
+    CHECK(!bad, "C83 缩到 4x4：%d 个像素不符（期望左两列红、右两列蓝）", bad);
+    bad = 0; for (int i = 0; i < 4; i++) { const uint8_t *p = o + 64 + i * 4; if (p[0] < 127 || p[0] > 128 || p[1] < 63 || p[1] > 65 || p[2] != 255 || p[3] != 255) bad++; }
+    CHECK(!bad, "C83 R11G11B10F → RGBA8：%d 个像素不符，首像素 %u %u %u %u（期望 127–128, 63–65, 255, 255）", bad, o[64], o[65], o[66], o[67]);
+    nvn_gpu_view_release(av); nvn_gpu_view_release(bv); nvn_gpu_view_release(fv); nvn_gpu_view_release(gv);
+    nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_tex_release(f); nvn_gpu_tex_release(g2); nvn_gpu_buf_release(rb, NULL, NULL);
+}
+
 // C74b：矩形超出通道范围 → 粘滞 E_ARG，整段不提交（原生的矩形清越界是未定义行为，不能放过去）。独占会话。
 static void c74b_clear_rect_oob(void) {
     nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
@@ -3961,6 +3994,7 @@ int main(int argc, char **argv) {
     c80_front_face(argv[1]);
     c81_int_sampled(argv[1]);
     c82_occlusion(argv[1]);
+    c83_blit();
     nvn_gpu_err e18;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C56–C68 / C74 / C75 成功路径 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;

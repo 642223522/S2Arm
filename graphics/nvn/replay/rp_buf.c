@@ -11,6 +11,7 @@
 #include "nvn_unimpl.h"
 #include "nvn_plat.h"
 #include "nvn_hmap.h"
+#include "nvn_fmt_info.h"
 #include "nvn_dirty.h"
 #include "nvn_mtl.h"
 #include <pthread.h>
@@ -194,4 +195,58 @@ void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec) {
         nvn_gpu_tex_upload(c, g, level, layer, &r, (const void *)(uintptr_t)(o->src + z * img), row, img);
     }
     rp_tex_mark_gpu_written(t);   // 这张贴图的内容从此不再从它自己的存储重传
+}
+
+// 贴图 → 贴图的拷贝（nvn_mtl.m copy_t2t_ @14049）。源 / 目标各按自己视图的级与起始层；同尺寸、同格式、不镜像的逐层直接拷（三维的一次拷若干片）；
+// 降采样记录（DM_COPY_RESOLVE）在两边采样数、格式、尺寸都相同时就是整张拷贝。缩放、换格式、镜像、多重采样解析：iOS 是画出来 / 解析出来的，这里还没接，分开记账。
+void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
+    const tex_t *s = o->src, *d = o->dst; if (!s || !d || !c) return;
+    uint32_t sl = o->has_sv && o->sv.set_levels ? o->sv.base_level : 0, dl = o->has_dv && o->dv.set_levels ? o->dv.base_level : 0;
+    uint32_t sz0 = o->has_sv && o->sv.set_layers ? o->sv.min_layer : 0, dz0 = o->has_dv && o->dv.set_layers ? o->dv.min_layer : 0;
+    int sfmt = o->has_sv && o->sv.set_format ? o->sv.format : s->d.format, dfmt = o->has_dv && o->dv.set_format ? o->dv.format : d->d.format;
+    int s3 = s->d.target == NVN_TEXTURE_TARGET_3D, d3 = d->d.target == NVN_TEXTURE_TARGET_3D;
+    NVNcopyRegion sr = o->sr, dr = o->dr;
+    if (nvn_plat_flag("nvk_drawlog", 0)) { static int said; if (said < 8) { said++; char b[260];
+        snprintf(b, sizeof b, "贴图拷贝 #%llu(%#x %dx%d 采样 %d 级 %u 层 %u) %d,%d %dx%dx%d → #%llu(%#x %dx%d 采样 %d 级 %u 层 %u) %d,%d %dx%dx%d 标志 %#x", (unsigned long long)s->serial, (unsigned)sfmt, s->d.width, s->d.height, s->d.samples, sl, sz0,
+                 sr.xoffset, sr.yoffset, sr.width, sr.height, sr.depth, (unsigned long long)d->serial, (unsigned)dfmt, d->d.width, d->d.height, d->d.samples, dl, dz0, dr.xoffset, dr.yoffset, dr.width, dr.height, dr.depth, (unsigned)o->flags);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "copy", b); } }
+    if (o->flags & DM_COPY_RESOLVE) {
+        int ss = s->d.samples > 1 ? s->d.samples : 1, ds = d->d.samples > 1 ? d->d.samples : 1;
+        if (ss != ds || sfmt != dfmt || s->d.width != d->d.width || s->d.height != d->d.height) { nvn_unimpl("tex", ss > 1 && ds == 1 ? "t2t_multisample_resolve" : "t2t_downsample_case", rec); return; }
+        uint32_t w = (uint32_t)s->d.width >> sl, h = (uint32_t)s->d.height >> sl; if (!w) w = 1; if (!h) h = 1;
+        sr = (NVNcopyRegion){0, 0, 0, (int)w, (int)h, 1}; dr = sr;
+    } else {
+        int nz = sr.depth > 0 ? sr.depth : 1, dnz = dr.depth > 0 ? dr.depth : 1;
+        if (o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_MIRROR_Z_BIT)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
+        if (sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
+            // 缩放 / 换格式（iOS 是画出来的，copy_t2t_draw；这边后端有原生的缩放拷贝）：只做二维、单层、单采样、两边都不是整数 / 深度模板格式的
+            nvn_fmt_info fa, fb; int ia = !nvn_fmt_info_of((uint32_t)sfmt, &fa) || fa.kind == NVN_FMT_UINT || fa.kind == NVN_FMT_SINT || fa.depth || fa.stencil;
+            int ib = !nvn_fmt_info_of((uint32_t)dfmt, &fb) || fb.kind == NVN_FMT_UINT || fb.kind == NVN_FMT_SINT || fb.depth || fb.stencil;
+            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ia || ib) { nvn_unimpl("tex", sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
+            nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
+            if (!(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) { nvn_unimpl("tex", "t2t_scaled_no_native_blit", rec); return; }
+            // 视图只取级与层：拷贝按存储的格式做
+            view_t vs, vd; memset(&vs, 0, sizeof vs); memset(&vd, 0, sizeof vd);
+            vs.set_levels = 1; vs.base_level = (int)sl; vs.nlevels = 1; vs.set_layers = 1; vs.min_layer = (int)(sz0 + (uint32_t)sr.zoffset); vs.nlayers = 1;
+            vd.set_levels = 1; vd.base_level = (int)dl; vd.nlevels = 1; vd.set_layers = 1; vd.min_layer = (int)(dz0 + (uint32_t)dr.zoffset); vd.nlayers = 1;
+            nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
+            if (!gv || !hv) return;
+            NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
+            nvn_gpu_blit(c, gv, &a, hv, &b, (o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0);
+            rp_tex_mark_gpu_written(d);
+            return;
+        }
+        if (nz != dnz) { nvn_unimpl("tex", "t2t_scaled", rec); return; }
+        if (s3 != d3) { nvn_unimpl("tex", "t2t_3d_mismatch", rec); return; }
+    }
+    if (sr.width <= 0 || sr.height <= 0) return;
+    nvn_gpu_tex gs = rp_tex_resolve(s, c), gd = rp_tex_resolve(d, c);
+    if (!gs || !gd) return;
+    int nz = sr.depth > 0 ? sr.depth : 1;
+    if (s3) nvn_gpu_copy_tex(c, gs, sl, 0, &sr, gd, dl, 0, &dr);   // 三维：片在区域的深度方向上，一次拷完
+    else for (int z = 0; z < nz; z++) {
+        NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
+        nvn_gpu_copy_tex(c, gs, sl, sz0 + (uint32_t)sr.zoffset + (uint32_t)z, &a, gd, dl, dz0 + (uint32_t)dr.zoffset + (uint32_t)z, &b);
+    }
+    rp_tex_mark_gpu_written(d);   // 目标的内容从此以 GPU 为准
 }
