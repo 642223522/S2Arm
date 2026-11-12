@@ -12,7 +12,8 @@
 #   版本标签 rw-<不含实际读入部分的键前 10 位>（非苹果再带 -<平台>），现行根记的键相同就跳过。
 #   S2A_TARGET 决定改写器出的补丁代码（如鸿蒙线程槽取法），不进键会让一个平台的产物被当成另一个平台的现行产物复用；缺省 apple 时键与原先相同。
 # 改写有缺口（退出码 3、产物照出）→ 降级继续：缺口点保持原指令，按类汇总进产物根 degrade.rewrite.tsv、打【黄】（v0.3.1 拿不准不停）；
-#   退出码 3 却没产物（补丁区放不下 / 丢自旋回边）与其余失败 → 中止新版本、现行不动、报红。单模块墙钟 ≤ 600 秒。
+#   退出码 3 却没产物（补丁区放不下 / 丢自旋回边）与其余失败 → 中止新版本、现行不动、报红。单模块按无进展看门狗停（tools/nostall.py：CPU 在涨 / 在写就不停，连续 S2A_NOSTALL_S 秒〔缺省 600〕没进展才停；
+#   v0.3.1 拿不准不停：原先固定墙钟 timeout 600，满载机上正常慢的大模块会被当挂死杀掉）。
 set -u
 G=${1:?款}; H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/.." && pwd); source "$H/roots.sh"
 # 扫描器与本阶段各 Python 工具的解释器钉死一个（tools/rewriter-requirements.txt：capstone / lz4 版本固定，宽屏扫描器用；10-22 gate-host 的 /usr/bin/python3 没有 capstone，门禁改写全失败）
@@ -161,12 +162,12 @@ for f in "$W"/exefs/* "$W"/nroexe/nro*; do
   #   （11-02 普查 010020D01B890000 exefs 有 486 字节文本 main.moduleconfig「VIA_MODULE_AUDIORENDER;…」，原先按「不是 rtld / *.npdm」当模块改写 → 断言 NSO0 失败、整款出包红）
   m=$(basename "$f"); case $f in "$W"/exefs/*) case $m in main|sdk|subsdk[0-9]) ;; *) continue;; esac;; esac
   while [ "$(jobs -rp | wc -l)" -ge "$NJ" ]; do wait -n; done
-  ( env -u S2A_DEPS_OUT timeout 600 "${REWRITE[@]}" "$f" "$W" "$m" "$W/widen_sites.tsv" > "$W/$m.rewrite.log" 2>&1; echo $? > "$RC/$m" ) & MS+=("$m")
+  ( env -u S2A_DEPS_OUT "$PY" "$R/tools/nostall.py" "${S2A_NOSTALL_S:-600}" -- "${REWRITE[@]}" "$f" "$W" "$m" "$W/widen_sites.tsv" > "$W/$m.rewrite.log" 2>&1; echo $? > "$RC/$m" ) & MS+=("$m")
 done; wait
 for m in ${MS[@]+"${MS[@]}"}; do rc=$(cat "$RC/$m" 2> /dev/null || echo 9)
   if [ "$rc" = 3 ] && [ -f "$W/$m.patched.bin" ]; then R3+=("$m"); n=$((n + 1)); continue; fi
   [ "$rc" = 3 ] && { echo "【红】$G 改写 ${m}：这款有程序代码需要的改写空间超过了能放下的上限，出不了包（日志 $S2A_ROOTS/.failed/${G}_$m.log）"; mkdir -p "$S2A_ROOTS/.failed"; cp "$W/$m.rewrite.log" "$S2A_ROOTS/.failed/${G}_$m.log"; rm -rf "$RC"; root_abort "$G" "$TAG"; exit 1; }
-  [ "$rc" = 0 ] || { echo "【红】$G 改写 $m 失败（rc=${rc}：$([ "$rc" = 124 ] && echo "超过 600 秒被停" || tail -1 "$W/$m.rewrite.log" | cut -c1-160)；日志 $S2A_ROOTS/.failed/${G}_$m.log）"; mkdir -p "$S2A_ROOTS/.failed"; cp "$W/$m.rewrite.log" "$S2A_ROOTS/.failed/${G}_$m.log"; rm -rf "$RC"; root_abort "$G" "$TAG"; exit 1; }
+  [ "$rc" = 0 ] || { echo "【红】$G 改写 $m 失败（rc=${rc}：$([ "$rc" = 124 ] && echo "${S2A_NOSTALL_S:-600} 秒没有进展被停" || tail -1 "$W/$m.rewrite.log" | cut -c1-160)；日志 $S2A_ROOTS/.failed/${G}_$m.log）"; mkdir -p "$S2A_ROOTS/.failed"; cp "$W/$m.rewrite.log" "$S2A_ROOTS/.failed/${G}_$m.log"; rm -rf "$RC"; root_abort "$G" "$TAG"; exit 1; }
   n=$((n + 1))
 done; rm -rf "$RC"
 }
