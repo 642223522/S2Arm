@@ -191,6 +191,25 @@ def refs_same_volume(source, dest):
     return fs.value.upper() == 'REFS'
 
 
+def links_supported(path):
+    """这个卷能不能建目录链接（软链 / junction）：Windows 上只有 NTFS / ReFS 能（exFAT / FAT32 没有重解析点，11-12 exFAT 虚拟盘实测
+    软链、junction、硬链接三样都报 WinError 1；改名、覆盖替换照常）。读不到卷格式按能（不凭空降级）。S2A_ROOTS_PLAIN=1 强制按不能（单测在 Mac 上走这条）"""
+    if os.environ.get('S2A_ROOTS_PLAIN') == '1':
+        return False
+    if os.name != 'nt':
+        return True
+    getpath = _api('kernel32', 'GetVolumePathNameW', W.BOOL, W.LPCWSTR, W.LPWSTR, W.DWORD)
+    root = C.create_unicode_buffer(1024)
+    if not getpath(long_path(str(Path(path).absolute())), root, len(root)):
+        return True
+    fs = C.create_unicode_buffer(64)
+    getinfo = _api('kernel32', 'GetVolumeInformationW', W.BOOL, W.LPCWSTR,
+                   W.LPWSTR, W.DWORD, C.c_void_p, C.c_void_p, C.c_void_p, W.LPWSTR, W.DWORD)
+    if not getinfo(root.value, None, 0, None, None, None, fs, len(fs)):
+        return True
+    return fs.value.upper() in ('NTFS', 'REFS')
+
+
 def copy_file(source, dest):
     source, dest = Path(source), Path(dest)
     if is_link(source) or not source.is_file():
@@ -422,6 +441,10 @@ class Roots:
         self.repo = Path(repo)
         self.shared = self.path == self.shared_path if shared is None else shared
         self.path.mkdir(parents=True, exist_ok=True)
+        # 实目录模式（游戏库在 exFAT / FAT32 上，v0.3.1 玩家确认后照用）：卷上建不了目录链接——「<款>@现行」就是当前版本那个真目录
+        #   （版本名记在里面的 .root_tag），换版本靠两次改名；RomFS 留在各版本里、不进 .romfs_store。代价是每个版本各占一份 RomFS，
+        #   两次改名之间断电会丢「现行」（下次重出）；空间预算按多一份算（space_rule）
+        self.plain = not links_supported(self.path)
 
     def _guard(self, game):
         if not self.shared:
@@ -469,6 +492,8 @@ class Roots:
         if override:
             return Path(override).resolve(strict=True)
         link = self.path / f'{game}@现行'
+        if not os.path.lexists(link) and self._heal(game):
+            return self.cur(game, pin=pin)
         if not os.path.lexists(link):
             if not os.environ.get('S2A_ROOTS_NO_BOOT') and self.private_path in self.path.parents:
                 shared = Roots(self.shared_path, shared=True, repo=self.repo)
@@ -493,6 +518,15 @@ class Roots:
                         raise
                     return self.cur(game, pin=pin)
             return None
+        if self.plain:
+            if is_link(link) or not link.is_dir():
+                raise UnsafeRoot('实目录模式的现行必须是真目录')
+            if not (link / '.root_tag').is_file():   # 版本名记录丢了（自愈）：补一个新名字，往后换版本时旧现行停到这个名字下
+                text(link / '.root_tag', f'{game}@{self.tag(game, "recovered-" + str(time.time_ns()))}\n')
+                print(f'【黄】{game} 现行的版本名记录丢了，已补记', file=sys.stderr)
+            if pin:
+                text(self.path / f'.pin.{link.name}.{os.getpid()}', f'{os.getpid()} {process_start(os.getpid())}\n')
+            return link
         if not is_link(link):
             raise UnsafeRoot('现行必须是目录链接')
         current = link_target(link)
@@ -501,6 +535,38 @@ class Roots:
         if pin:
             text(self.path / f'.pin.{current.name}.{os.getpid()}', f'{os.getpid()} {process_start(os.getpid())}\n')
         return current
+
+    def _heal(self, game):
+        """现行没了（换版本中途进程被杀、现行链接 / 目录被删）而本款还有提交过的版本：自愈，不让下次出包从头来。
+        实目录模式先找换到一半的事务（<款>@…tmp 里已写 .root_tag = 已校验、正在换上），没有就取最新的已提交版本；链接模式取最新的已提交版本重建现行链接。
+        没有可用版本返回 False（照旧：从共享根引导或从头出）"""
+        live = self.path / f'{game}@现行'
+        versions = [p for p in self.path.glob(f'{game}@*') if p.name != live.name and p.is_dir() and not is_link(p)]
+        pending = [p for p in versions if p.name.endswith('.tmp') and (p / '.root_tag').is_file()] if self.plain else []
+        done = [p for p in versions if not p.name.endswith(('.tmp', '.tmp.rb'))]
+        pick = max(pending or done, key=lambda p: p.stat().st_mtime_ns, default=None)
+        if pick is None:
+            return False
+        print(f'【黄】{game} 没有现行（上次换版本中途中断？），按 {pick.name} 自愈', file=sys.stderr)
+        if self.plain:
+            if not (pick / '.root_tag').is_file():
+                text(pick / '.root_tag', pick.name + '\n')
+            rename_dir(pick, live)
+        else:
+            activation = self.path / f'.{game}.current-{uuid.uuid4().hex}'
+            try:
+                directory_link(pick, activation, relative=pick.name)
+                replace_link(activation, live)
+            finally:
+                if os.path.lexists(activation):
+                    remove_owned(activation)
+        return True
+
+    def version_name(self, version):
+        """版本身份（事务比对「现行前进没有」用）：平常就是目录名；实目录模式的现行目录名固定是 <款>@现行，身份记在 .root_tag"""
+        if self.plain and version.name.endswith('@现行'):
+            return read(version / '.root_tag') or version.name
+        return version.name
 
     def tag(self, game, value):
         component(game); component(value)
@@ -591,7 +657,7 @@ class Roots:
                 self._clone(current, dest, game, own_romfs=own_romfs, env=env)
             else:
                 dest.mkdir()
-            text(dest / '.root_base', (current.name if current else '无') + '\n')
+            text(dest / '.root_base', (self.version_name(current) if current else '无') + '\n')
             text(dest / '.root_src', git('rev-parse', 'HEAD', repo=self.repo) + '\n')
             text(dest / '.root_pid', f'{os.getpid()} {process_start(os.getpid())}\n')
             stages = sorted(current.glob('.stage_*')) if current else ()
@@ -603,7 +669,7 @@ class Roots:
 
     def _intern(self, version, game):
         p = version / 'romfs'
-        if not p.is_dir() or is_link(p):
+        if self.plain or not p.is_dir() or is_link(p):   # 实目录模式：RomFS 留在版本里（建不了指向存储的链接）
             return
         store = self.path / '.romfs_store' / game
         for directory in (store.parent, store):
@@ -692,13 +758,33 @@ class Transaction:
             ms, ns = read(self.path / '.root_src'), read(current / '.root_src')
             if not ns or (ms and git('merge-base', '--is-ancestor', ns, ms, repo=self.roots.repo, check=False)):
                 text(r / '.root_src', ms + '\n')
-            text(r / '.root_base', current.name + '\n')
+            text(r / '.root_base', self.roots.version_name(current) + '\n')
             self.roots._shards(r, 'replay·换完路径后', env=self.env)
             remove_owned(self.path)
             rename_dir(r, self.path)
         except BaseException as e:
             cleanup_after(e, remove_owned, r)
             raise
+
+    def _activate_plain(self, current):
+        """实目录模式换现行：旧现行改回 <款>@<它的版本名>，本事务目录改名成 <款>@现行（版本名写进 .root_tag）。两次改名，第二次失败就把旧的改回去；
+        两次之间断电只会没有现行（下次出包从头来），不会把半成品当现行"""
+        roots, live = self.roots, self.roots.path / f'{self.game}@现行'
+        text(self.path / '.root_tag', f'{self.game}@{self.tag}\n')
+        parked = None
+        if current is not None:
+            old = roots.version_name(current)
+            parked = roots.path / (old if old != live.name else f'{self.game}@{roots.tag(self.game, "old")}')
+            if os.path.lexists(parked):
+                parked = roots.path / f'{self.game}@{roots.tag(self.game, old.split("@", 1)[-1])}'
+            rename_dir(live, parked)
+        try:
+            rename_dir(self.path, live)
+        except BaseException as e:
+            if parked is not None:
+                cleanup_after(e, rename_dir, parked, live)
+            raise
+        return live
 
     def commit(self, *, replay=()):
         if self.closed or not self.path.is_dir():
@@ -710,7 +796,7 @@ class Transaction:
             with roots.locked(self.game):
                 current = roots.cur(self.game, pin=False)
                 base = read(self.path / '.root_base')
-                now = current.name if current else '无'
+                now = roots.version_name(current) if current else '无'
                 if base != now:
                     if not replay or not current:
                         raise Conflict('现行已前进；未声明重放路径，中止')
@@ -723,9 +809,12 @@ class Transaction:
                     self._replay(current, tuple(replay))
                 roots._validate(self.path, self.game)
                 roots._intern(self.path, self.game)
-                rename_dir(self.path, final)
-                directory_link(final, activation, relative=final.name)
-                replace_link(activation, roots.path / f'{self.game}@现行')
+                if roots.plain:
+                    final = self._activate_plain(current)
+                else:
+                    rename_dir(self.path, final)
+                    directory_link(final, activation, relative=final.name)
+                    replace_link(activation, roots.path / f'{self.game}@现行')
                 self.closed = True
                 if os.environ.get('S2A_RESOURCE_KEY_ONCE_FILE'):
                     roots._resource('--root-publish', final, env=self.env)

@@ -117,9 +117,9 @@ struct LauncherView: View {
             Button(txt("library.missing.forget"), role: .destructive) { if let g = missingFor { model.forgetGame(g) }; missingFor = nil }
             Button(txt("game.cancel"), role: .cancel) { missingFor = nil }
         } message: { Text(txt("library.missing.body")) }
-        // 换游戏库选到云盘同步目录（作业层 library_in_cloud）：讲清后果，玩家选「仍然继续」带 acceptCloud 重来（v0.3.1）
-        .alert(BackendText.errorTitle("library_in_cloud", language: uiLanguage) ?? "", isPresented: Binding(get: { model.libraryConfirm != nil }, set: { if !$0 { model.libraryConfirm = nil } })) {
-            Button(txt("install.drop_confirm")) { if let c = model.libraryConfirm { model.libraryConfirm = nil; model.changeLibrary(to: c.url, move: c.move, acceptCloud: true) } }
+        // 换游戏库撞上认得出的风险（云盘同步目录 / 有别的文件的文件夹，S2ArmLauncherModel.libraryConfirmCodes）：讲清后果，玩家选「仍然继续」带上对应参数重来（v0.3.1）
+        .alert(BackendText.errorTitle(model.libraryConfirm?.code ?? "library_in_cloud", language: uiLanguage) ?? txt("install.drop_title"), isPresented: Binding(get: { model.libraryConfirm != nil }, set: { if !$0 { model.libraryConfirm = nil } })) {
+            Button(txt("install.drop_confirm")) { if let c = model.libraryConfirm { model.libraryConfirm = nil; model.changeLibrary(to: c.url, move: c.move, accept: c.accept) } }
             Button(txt("phone.drop.cancel"), role: .cancel) { model.libraryConfirm = nil }
         } message: { Text(loc.backend(model.libraryConfirm?.message ?? "")) }
         .sheet(isPresented: $model.showAddGames) { ImportSheet(model: model, kind: .games).environmentObject(loc) }

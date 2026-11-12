@@ -117,6 +117,7 @@ struct nvn_gpu_pipe_s {
     uint32_t nset;
     nvn_gpu_layout_ent *stage_ents[6];
     VkFormat *stage_tfmt[6];
+    int8_t texel_binds;   // 有没有纹素缓冲类的绑定项：0 还没数，1 有，-1 没有（见 bind_descriptor_groups）
     uint32_t stage_nent[6];
     uint32_t stage_push_off[6], stage_push_bytes[6];
     nvn_gpu_pipe_desc key;
@@ -180,6 +181,7 @@ struct nvn_gpu_cmd_s {
     VkDescriptorSet desc_sets[4];   // 仅本命令段；旧组仍归本段的池所有，不就地覆盖在途绑定
     VkPipelineLayout desc_layout;
     uint32_t desc_dirty;
+    uint8_t desc_point;             // 当前这几组绑在哪个绑定点：0 还没绑，1 图形，2 计算
 
     uint8_t *push_data[6];        // 各阶段 push 暂存；vkCmdPushConstants 录制时拷贝入命令缓冲，段完成即放
     uint32_t push_capacity[6]; // 分配字节数，测试与管线切换共用
@@ -1767,6 +1769,10 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
     if (!d) return fail(err, NVN_GPU_E_ARG, "管线描述为空");
+    // NVN POINT=0 / LINE=1 / FILL=2；完整 poly 已由 same_pipe_desc 纳入缓存键。
+    if (d->poly.mode > 2) return fail(err, NVN_GPU_E_ARG, "未知多边形填充模式 %u", (unsigned)d->poly.mode);
+    if (d->poly.mode != 2 && !g.dev->core_features.fillModeNonSolid)
+        return fail(err, NVN_GPU_E_UNSUPPORTED, "非填充多边形需要已启用的 fillModeNonSolid");
     // 片元阶段可以没有：只写深度的管线（深度预通道、阴影图），颜色附件上没有输出
     if (!d->st[NVN_GPU_SH_VS].sh)
         return fail(err, NVN_GPU_E_ARG, "图形管线至少需要顶点阶段");
@@ -1963,7 +1969,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     VkPipelineRasterizationStateCreateInfo rs;
     memset(&rs, 0, sizeof rs);
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.polygonMode = d->poly.mode == 0 ? VK_POLYGON_MODE_POINT : d->poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     rs.cullMode = d->poly.cull == 1 ? VK_CULL_MODE_FRONT_BIT : d->poly.cull == 2 ? VK_CULL_MODE_BACK_BIT
                  : d->poly.cull == 3 ? VK_CULL_MODE_FRONT_AND_BACK : VK_CULL_MODE_NONE;
     // 正面绕序（契约 v6）：poly.front 是 y 朝上的规范化设备坐标里的绕序。Vulkan 在帧缓冲坐标（y 朝下）里判正面：
@@ -1972,7 +1978,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
       rs.frontFace = ccw_fb ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE; }
     rs.lineWidth = 1.0f;
     rs.depthClampEnable = d->depth_clamp ? VK_TRUE : VK_FALSE;   // 设备特性 depthClamp 是必需项（vk_device.c）
-    rs.depthBiasEnable = d->poly.offset_en & 4 ? VK_TRUE : VK_FALSE;   // NVN 偏移开关的填充位（现在只建填充模式的管线）；三个量走动态状态
+    rs.depthBiasEnable = (d->poly.offset_en & (1u << d->poly.mode)) ? VK_TRUE : VK_FALSE;   // NVN 点 / 线 / 填充偏移位分别为 1 / 2 / 4
     rs.rasterizerDiscardEnable = d->rast_discard ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo ms;
@@ -2655,7 +2661,9 @@ static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl,
 
 // 把某阶段本笔绑定写进 wr/ii/bi；返回写入条数，出错置粘滞返回 -1。
 // 缺成员的新类别（IMAGE / TBUF / IMAGE_TBUF）报 E_LAYOUT；老类别保持 NULL 句柄空资源写法不变。
-static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int st,
+// 只写 dirty 里的组（没变的组沿用上一笔的描述符集对象，不重写）。纹素缓冲的格式核对取决于管线，
+// 组没变、管线换了也要核，所以这两类不在脏组里也走一遍核对，只是不写。
+static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int st, uint32_t dirty,
                        const VkDescriptorSet *sets, VkWriteDescriptorSet *wr,
                        VkDescriptorImageInfo *ii, VkDescriptorBufferInfo *bi) {
     int nw = 0;
@@ -2663,6 +2671,8 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
         const nvn_gpu_binding *b = &c->binds[st][i].b;
         if (!p->stage_nent[st]) { set_sticky(c, NVN_GPU_E_LAYOUT, "阶段 %d 没有布局项却给了绑定", st); return -1; }
         const nvn_gpu_layout_ent *e = &p->stage_ents[st][b->ent];
+        const int live = (int)(dirty >> e->set & 1u);
+        if (!live && e->cls != NVN_GPU_RES_TBUF && e->cls != NVN_GPU_RES_IMAGE_TBUF) continue;
         VkWriteDescriptorSet *w = &wr[nw];
         memset(w, 0, sizeof *w);
         w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2729,34 +2739,43 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             set_sticky(c, NVN_GPU_E_UNSUPPORTED, "绑定类别 %u：本段未实现", e->cls);
             return -1;
         }
-        nw++;
+        if (live) nw++;
     }
     return nw;
 }
 
 // 脏组分配新对象，不能更新前一笔已经引用的组；跨阶段共用同一组时写全组。
 static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int compute) {
-    if (c->desc_layout != p->layout) {
-        c->desc_layout = p->layout; c->desc_dirty = 0xfu;
+    const uint8_t point = compute ? 2 : 1;
+    if (c->desc_layout != p->layout || c->desc_point != point) {
+        c->desc_layout = p->layout; c->desc_point = point; c->desc_dirty = 0xfu;
         memset(c->desc_sets, 0, sizeof c->desc_sets);
     }
     // A descriptor-free pipeline ignores bindings left by the previous pipeline.
     if (!p->nset) return 1;
     uint32_t dirty = c->desc_dirty & ((1u << p->nset) - 1u);
+    // 哪一组都没变、布局和绑定点也没换：命令缓冲里绑着的就是这几组，不用重写也不用重绑。
+    // 纹素缓冲的格式核对随管线变（见 write_binds），有这类绑定的管线不走这条近路。
+    struct nvn_gpu_pipe_s *pm = (struct nvn_gpu_pipe_s *)(uintptr_t)p;
+    if (!pm->texel_binds) {
+        int8_t has = -1;
+        for (int st = 0; st <= NVN_GPU_SH_CS; st++) for (uint32_t i = 0; i < p->stage_nent[st]; i++)
+            if (p->stage_ents[st][i].cls == NVN_GPU_RES_TBUF || p->stage_ents[st][i].cls == NVN_GPU_RES_IMAGE_TBUF) has = 1;
+        pm->texel_binds = has;
+    }
+    if (!dirty && p->texel_binds < 0) return 1;
     for (uint32_t set = 0; set < p->nset; set++)
         if (dirty & (1u << set)) if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
     VkWriteDescriptorSet wr[6 * 64]; VkDescriptorImageInfo ii[6 * 64]; VkDescriptorBufferInfo bi[6 * 64];
     uint32_t nw = 0;
     for (int st = compute ? NVN_GPU_SH_CS : 0; st < (compute ? NVN_GPU_SH_CS + 1 : 5); st++) {
-        int n = write_binds(c, p, st, c->desc_sets, wr + nw, ii + nw, bi + nw);
+        int n = write_binds(c, p, st, dirty, c->desc_sets, wr + nw, ii + nw, bi + nw);
         if (n < 0) return 0;
         nw += (uint32_t)n;
     }
-    uint32_t keep = 0;
-    for (uint32_t i = 0; i < nw; i++) for (uint32_t set = 0; set < p->nset; set++)
-        if ((dirty & (1u << set)) && wr[i].dstSet == c->desc_sets[set]) { wr[keep++] = wr[i]; break; }
-    if (keep) vkUpdateDescriptorSets(g.d, keep, wr, 0, NULL);
+    if (nw) vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL);
     c->desc_dirty = 0;
+    if (!dirty) return 1;
     if (p->nset) vkCmdBindDescriptorSets(c->cb, compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         p->layout, 0, p->nset, c->desc_sets, 0, NULL);
     return 1;
@@ -2829,7 +2848,7 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     // 深度偏移（NVN SetPolygonOffsetClamp：factor 乘斜率、units 乘最小可分辨深度差、clamp 限幅）。管线没开偏移时这三个量不起作用，照发 0。
     {
         const p_poly_offset *po = &c->dyn.po;
-        int on = c->has_dyn && p->key.poly.offset_en & 4;
+        int on = c->has_dyn && (p->key.poly.offset_en & (1u << p->key.poly.mode));
         if (on && po->clamp != 0.0f && !g.dev->core_features.depthBiasClamp) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "深度偏移带限幅（clamp=%g），设备没有 depthBiasClamp", (double)po->clamp); return; }
         const float db[3] = {on ? po->units : 0.0f, on ? po->clamp : 0.0f, on ? po->factor : 0.0f};
         if (!c->es.db_ok || memcmp(c->es.db, db, sizeof db)) { vkCmdSetDepthBias(c->cb, db[0], db[1], db[2]); memcpy(c->es.db, db, sizeof db); c->es.db_ok = 1; c->es_count[ES_DB]++; }
@@ -3088,8 +3107,10 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     VkImageCreateFlags iflags = 0;
     int array_compat = 0;
     switch (target) {
-    case NVN_TEXTURE_TARGET_2D: break;
+    case NVN_TEXTURE_TARGET_2D:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE: break;
     case NVN_TEXTURE_TARGET_2D_ARRAY:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY:
         layers = depth; vtype = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
     case NVN_TEXTURE_TARGET_3D:
         itype = VK_IMAGE_TYPE_3D; vtype = VK_IMAGE_VIEW_TYPE_3D;
@@ -3123,6 +3144,20 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
         usage |= nvn_vk_format_is_depth(fmt) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     if (d->usage & NVN_GPU_TEX_STORAGE) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+
+    // 在 vkCreateImage 前按真实格式/usage 查询样本数；不把非法计数送到驱动或校验层。
+    int ms_target = target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+    if (ms_target || samples > 1) {
+        if (d->d.samples <= 1 || samples > 64 || (samples & (samples - 1)) || levels != 1 || itype != VK_IMAGE_TYPE_2D ||
+            ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && !g.dev->core_features.shaderStorageImageMultisample) ||
+            (d->d.samples > 1 && (target == NVN_TEXTURE_TARGET_CUBEMAP || target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)))
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "多重采样计数/级数/目标不支持");
+        VkImageFormatProperties ip = {0};
+        VkImageCreateFlags flags = iflags | ((d->usage & NVN_GPU_TEX_VIEW_FMT) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0);
+        if (vkGetPhysicalDeviceImageFormatProperties(g.phys, fmt, itype, VK_IMAGE_TILING_OPTIMAL, usage, flags, &ip) != VK_SUCCESS ||
+            !(ip.sampleCounts & samples) || (uint32_t)d->d.width > ip.maxExtent.width || (uint32_t)d->d.height > ip.maxExtent.height || layers > ip.maxArrayLayers)
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "设备不支持该格式/usage 的 %u 重采样贴图", samples);
+    }
 
     struct nvn_gpu_tex_s *t = calloc(1, sizeof *t);
     if (!t) return fail(err, NVN_GPU_E_OOM, "贴图结构分配失败");
@@ -3771,6 +3806,33 @@ void nvn_gpu_blit(nvn_gpu_cmd ch, nvn_gpu_view sv, const NVNcopyRegion *sr, nvn_
     if (!sv || !dv || !sv->tex || !dv->tex || !sr || !dr) { set_sticky(c, NVN_GPU_E_ARG, "blit 参数为空"); return; }
     struct nvn_gpu_tex_s *s = sv->tex, *d = dv->tex;
     if (sv->format != s->format || dv->format != d->format) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：视图换了格式（拷贝按存储的格式做）"); return; }
+    if (s->samples > 1 && d->samples == 1) {
+        nvn_fmt_info f;
+        if (linear || s->w != d->w || s->h != d->h || s->format != d->format || s->nvn_format != d->nvn_format || sv->swizzled || dv->swizzled ||
+            s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
+            !nvn_fmt_info_of(s->nvn_format, &f) || f.kind == NVN_FMT_UINT || f.kind == NVN_FMT_SINT || f.depth || f.stencil ||
+            s->target == NVN_TEXTURE_TARGET_3D || d->target == NVN_TEXTURE_TARGET_3D) {
+            set_sticky(c, NVN_GPU_E_UNSUPPORTED, "resolve：只支持同格式非整数颜色二维贴图"); return;
+        }
+        VkOffset3D so, dof; VkExtent3D se, de;
+        if (sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0 ||
+            sr->depth != 1 || dr->depth != 1 || sr->zoffset || dr->zoffset || copy_region(s, sv->base_level, sr, &so, &se) || copy_region(d, dv->base_level, dr, &dof, &de) ||
+            sv->base_layer >= s->layers || dv->base_layer >= d->layers ||
+            se.width != de.width || se.height != de.height || se.depth != 1 || de.depth != 1 || so.z || dof.z) {
+            set_sticky(c, NVN_GPU_E_ARG, "resolve：区域越界或尺寸不相同"); return;
+        }
+        full_barrier(c);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        image_barrier(c, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageResolve ir = {0};
+        ir.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, sv->base_level, sv->base_layer, 1};
+        ir.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, dv->base_level, dv->base_layer, 1};
+        ir.srcOffset = so; ir.dstOffset = dof; ir.extent = se;
+        vkCmdResolveImage(c->cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ir);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_GENERAL); image_barrier(c, d, VK_IMAGE_LAYOUT_GENERAL);
+        cmd_ref(c, s, REF_TEX); cmd_ref(c, d, REF_TEX);
+        return;
+    }
     if (s->samples > 1 || d->samples > 1 || nvn_vk_format_is_depth(s->format) || nvn_vk_format_is_depth(d->format)) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：多重采样 / 深度模板没接"); return; }
     { nvn_fmt_info a, b; int ai = nvn_fmt_info_of(s->nvn_format, &a) && (a.kind == NVN_FMT_UINT || a.kind == NVN_FMT_SINT), bi = nvn_fmt_info_of(d->nvn_format, &b) && (b.kind == NVN_FMT_UINT || b.kind == NVN_FMT_SINT);
       if (ai || bi) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：整数格式没接"); return; } }
