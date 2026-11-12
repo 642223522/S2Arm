@@ -7166,5 +7166,13 @@
  {
   "source": "更改",
   "en": "Change"
+ },
+ {
+  "source": "这个下游方案只支持某一版更新（上面写了是哪一版）：导入那一版更新后再导出；不换更新就在确认页选「仍用原版方案」。",
+  "en": "This downstream route supports one update version only (named above): import that update and export again; to keep your update, choose \"Keep the standard route\" on the confirmation page."
+ },
+ {
+  "source": "检查这台电脑的网络（能打开 s2arm.com）后再点一次；下了一半的不会被当成好的用。",
+  "en": "Check this computer's network (that s2arm.com opens) and click again; a partial download is never used as a good one."
  }
 ]
