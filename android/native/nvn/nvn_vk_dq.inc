@@ -30,6 +30,11 @@
 DQ_CMDS(DQ_REAL)   // 命令缓冲之外的那几个入口（提交、呈现、池）直接调符号：它们没有版本 / 扩展的问题，宿主用例对其中几个打了桩
 #define DQ_OP(f) OP_##f,
 enum { OP_WRAP, DQ_CMDS(DQ_OP) OP_N };
+// 诊断读数：每类调用经过包装多少次（不管开关开没开）。backend_vulkan_wsi.inc 随「对象读数」每 300 帧打一行。
+#define DQ_NAME(f) #f,
+static const char *const g_dq_names[OP_N] = { "wrap", DQ_CMDS(DQ_NAME) };
+static uint64_t g_dq_cnt[OP_N];
+#define DQ_COUNT(op) __atomic_fetch_add(&g_dq_cnt[op], 1, __ATOMIC_RELAXED)
 
 // ---- the queue: one producer, one consumer; positions count bytes since the start (the ring index is position % dq_RING), records 16-byte aligned ----
 enum { dq_RING = 32 << 20 };
@@ -199,7 +204,7 @@ static void *dq_recorder_main(void *arg) {
 
 // ---- the wrappers (the producer) ----
 #define DQ_DIRECT(f, ...) do { vk_dq_drain(); g_dq_direct++; r_##f(__VA_ARGS__); } while (0)
-#define DQ_BEGIN(op, T, extra) uint8_t *base_ = g_dq_on ? dq_rec_begin(op, cb, sizeof(T) + (extra)) : NULL; if (!base_) goto direct; T *a = (T *)base_; uint8_t *at_ = base_ + sizeof(T)
+#define DQ_BEGIN(op, T, extra) DQ_COUNT(op); uint8_t *base_ = g_dq_on ? dq_rec_begin(op, cb, sizeof(T) + (extra)) : NULL; if (!base_) goto direct; T *a = (T *)base_; uint8_t *at_ = base_ + sizeof(T)
 static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkDependencyFlags dep, uint32_t nm, const VkMemoryBarrier *m,
                                                          uint32_t nb, const VkBufferMemoryBarrier *b, uint32_t ni, const VkImageMemoryBarrier *im) {
     for (uint32_t i = 0; i < nm; i++) if (m[i].pNext) goto direct;
@@ -259,7 +264,7 @@ static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdBeginRendering(VkCommandBuffer cb,
       dq_put(&at_, ri->pColorAttachments, DQ_ARR(VkRenderingAttachmentInfo, ri->pColorAttachments, ri->colorAttachmentCount)); dq_rec_end(base_); return; }
 direct: DQ_DIRECT(vkCmdBeginRendering, cb, ri);
 }
-#define W_NOARG(f) static DQ_U VKAPI_ATTR void VKAPI_CALL w_##f(VkCommandBuffer cb) { void *a = g_dq_on ? dq_rec_begin(OP_##f, cb, 0) : NULL; if (!a) { DQ_DIRECT(f, cb); return; } dq_rec_end(a); }
+#define W_NOARG(f) static DQ_U VKAPI_ATTR void VKAPI_CALL w_##f(VkCommandBuffer cb) { DQ_COUNT(OP_##f); void *a = g_dq_on ? dq_rec_begin(OP_##f, cb, 0) : NULL; if (!a) { DQ_DIRECT(f, cb); return; } dq_rec_end(a); }
 W_NOARG(vkCmdEndRenderPass) W_NOARG(vkCmdEndRendering)
 static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline pl) {
     { DQ_BEGIN(OP_vkCmdBindPipeline, a_bindpipe, 0); *a = (a_bindpipe){bp, pl}; (void)at_; dq_rec_end(base_); return; } direct: DQ_DIRECT(vkCmdBindPipeline, cb, bp, pl); }

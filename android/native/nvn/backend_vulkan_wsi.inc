@@ -257,7 +257,14 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
         uint64_t v[OC_N]; for (int i = 0; i < OC_N; i++) v[i] = __atomic_exchange_n(&g_oc[i], 0, __ATOMIC_RELAXED);
         char b[400]; snprintf(b, sizeof b, "对象读数（每帧，近 300 帧）：新建渲染通道 %.1f、帧缓冲 %.1f、命令池 %.1f、描述符池 %.1f；分配描述符集 %.1f 次、写描述符 %.1f 次；遮挡查询 %.1f 个；新建视图 %.1f 个；取窗口图 %.1f 毫秒",
             v[OC_RP] / 300.0, v[OC_FB] / 300.0, v[OC_CPOOL] / 300.0, v[OC_DPOOL] / 300.0, v[OC_DALLOC] / 300.0, v[OC_DWRITE] / 300.0, v[OC_QUERY] / 300.0, v[OC_VIEW] / 300.0, (double)__atomic_exchange_n(&g_acq_ns, 0, __ATOMIC_RELAXED) / 300.0 / 1e6);
-        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); } }
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+        // 驱动调用数（每帧）：经过两级回放包装的各类 vkCmd*，按次数从多到少列前 10 类和总数
+        { uint64_t c[OP_N], tot = 0; int idx[OP_N];
+          for (int i = 0; i < OP_N; i++) { c[i] = __atomic_exchange_n(&g_dq_cnt[i], 0, __ATOMIC_RELAXED); tot += c[i]; idx[i] = i; }
+          for (int i = 1; i < OP_N; i++) { int k = idx[i], j = i - 1; while (j >= 0 && c[idx[j]] < c[k]) { idx[j + 1] = idx[j]; j--; } idx[j + 1] = k; }
+          size_t o = (size_t)snprintf(b, sizeof b, "驱动调用（每帧，近 300 帧）：共 %.0f 次", tot / 300.0);
+          for (int i = 0; i < 10 && i < OP_N && c[idx[i]] && o < sizeof b - 48; i++) if (idx[i] != OP_WRAP) o += (size_t)snprintf(b + o, sizeof b - o, "；%s %.1f", g_dq_names[idx[i]] + 5, c[idx[i]] / 300.0);   // + 5：去掉 vkCmd
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); } } }
     if (!s || !dr || !d || !d->src || !d->src->tex) { out = fail(err, NVN_GPU_E_ARG, "present 参数为空"); goto done; }
     if (!s->gen) { out = fail(err, NVN_GPU_E_REVOKED, "面已撤销"); goto done; }
     if (dr->gen != s->gen || !(dr->token >> 16)) { out = fail(err, NVN_GPU_E_OUTDATED, "drawable 不属于当前交换链"); goto done; }
