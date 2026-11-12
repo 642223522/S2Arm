@@ -39,7 +39,8 @@ const char *rp_op_name(uint32_t op) { return op < OP_NVN2_END_ && k_op_name[op] 
 struct post { volatile uint32_t *val; uint32_t mode, v; uint64_t report; uint32_t type; };   // 完成后写事件值（mode 0 写 / 1 加）；report 非 0 = 计数器报告的写回地址
 struct occ_ev { uint32_t pos; uint32_t report; uint64_t addr; };   // 遮挡计数的事件：发生时本段已经开过 pos 个槽；report 0 = 复位、1 = 报告（写回 addr）
 struct gw_ev { uint64_t pool_key, id; };   // 本段里 GPU 写进池的一段（rp_buf_gpu_write_note 的登记）
-struct sub { struct post *p; int n, cap; uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; struct gw_ev *gw; int ngw, gwcap;
+struct sub { uint32_t mids, freed; uint8_t orphan;   /* mids：还没完成的中途段里有几个指着这份提交；orphan：最后一段没交成，由最后一个中途段的完成回调来放（见 sub_orphan） */
+             struct post *p; int n, cap; uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; struct gw_ev *gw; int ngw, gwcap;
     uint64_t *oc; uint32_t noc, occ_base; };   // oc：中途交过段的提交，各段的遮挡槽结果按整次提交的槽号攒在这里（没拆过为 NULL）；occ_base：最后一段的第一个槽号
 // 分时读数（上屏那边每 5 秒取走一次清零）：一次队列提交里回放花的、交给后端花的、游戏等围栏花的、段从提交到完成隔了多久
 static uint64_t now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
@@ -115,6 +116,17 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
     if (s->fence) { uint64_t f = __atomic_load_n(&g_done_fence, __ATOMIC_RELAXED); if (s->fence > f) __atomic_store_n(&g_done_fence, s->fence, __ATOMIC_RELEASE); }
     for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
     free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
+}
+// 最后一段没交成的提交（开段失败）：它的回写、事件、计数器都不做（同「提交段失败」），登记过的 GPU 写按失败落地。
+// 中途交出去的段还指着它（mid_done 要往它的 oc 里攒遮挡结果），所以不能当场放：谁最后一个松手谁放，两边可能同时到，用 freed 抢一次。
+static void sub_release(struct sub *s) {
+    if (__atomic_exchange_n(&s->freed, 1, __ATOMIC_ACQ_REL)) return;
+    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, 0);
+    free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
+}
+static void sub_orphan(struct sub *s) {
+    __atomic_store_n(&s->orphan, 1, __ATOMIC_RELEASE);
+    if (!__atomic_load_n(&s->mids, __ATOMIC_ACQUIRE)) sub_release(s);
 }
 
 // ---------- 遮挡计数（NVN_COUNTER_TYPE_SAMPLES_PASSED；nvn_mtl.m @950 一带） ----------
@@ -206,6 +218,7 @@ static void mid_done(void *user, const nvn_gpu_done *d) {   // 中途交的段�
     if (d->status == NVN_GPU_DONE_FAILED) red("中途交的段失败：%s", d->why ? d->why : "?");
     else if (m && m->s->oc && d->occlusion) { for (uint32_t i = 0; i < d->nocclusion && m->base + i < 2048; i++) m->s->oc[m->base + i] = d->occlusion[i];
         uint32_t end = m->base + d->nocclusion < 2048 ? m->base + d->nocclusion : 2048; if (end > m->s->noc) m->s->noc = end; }
+    if (m && !__atomic_sub_fetch(&m->s->mids, 1, __ATOMIC_ACQ_REL) && __atomic_load_n(&m->s->orphan, __ATOMIC_ACQUIRE)) sub_release(m->s);
     free(m);
 }
 // 中途先交一段：这次提交回放到这里为止录下的命令先交给 GPU 去做，回放接着往下录进新的一段。
@@ -228,7 +241,7 @@ static void sub_split(void) {
     if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     struct mid *m = NULL;
-    if (g_occ_seg) { m = calloc(1, sizeof *m); if (!g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc); if (m) { m->s = g_sub; m->base = g_occ_base; } }
+    if (g_occ_seg) { m = calloc(1, sizeof *m); if (!g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc); if (m) { m->s = g_sub; m->base = g_occ_base; __atomic_add_fetch(&g_sub->mids, 1, __ATOMIC_ACQ_REL); } }
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, g_fence + ++g_mid, mid_done, m, &err))) red("中途交段失败：%s", err.why);
     pf_add(RP_PERF_SUBS, 1);
     g_occ_base = g_occ_next; g_occ_cur = -1; g_seg_serial++;
@@ -240,9 +253,12 @@ static void sub_split(void) {
 uint64_t nvn_be_sub_commit(void) {
     struct sub *s = g_sub; g_sub = NULL;
     rp_pass_flush(g_cmd);   // 打开的通道与待折清除不跨提交
-    if (!g_cmd) {   // 没有段：副作用无处挂，直接按失败丢弃（不写假成功）
-        if (s) { free(s->p); free(s); }
+    if (!g_cmd) {   // 没有段（开段失败，或中途交段之后开新段失败）：副作用无处挂，按失败丢弃（不写假成功）
+        if (s) sub_orphan(s);
         if (g_pre) { nvn_gpu_cmd_abort(g_pre); g_pre = NULL; }
+        // 时间线照样往前走一格：这次提交里的同步对象已经按 g_fence + SUB_STEP 发布（OP_FENCE_SYNC），中途交出去的段也已经用掉了这一格里的中间值。
+        // 不走的话，下一次提交会把同一批值再用一遍（后端要求严格递增），而等这一格的游戏线程要到下一次提交做完才被放行。
+        g_fence += SUB_STEP;
         return g_fence;
     }
     nvn_gpu_err err = {0}; uint64_t f = g_fence + SUB_STEP;
