@@ -97,8 +97,31 @@ LIBRARY_FORMAT_MESSAGE = ("这个位置所在的磁盘格式是 {fmt}。游戏�
                           "或选一块 APFS 格式的外接盘；外接盘可以在「磁盘工具」里另分出一个 APFS 分区（盘上要有空闲空间，原有数据不动）。")
 CLOUD_MESSAGE = ("游戏库在「{cloud}」的同步目录里。出包时游戏库里会写几十 GB 的中间文件，云盘会把它们上传、换成占位文件，"
                  "出包中途读不到文件或变得很慢。请把游戏库换到本机磁盘上不同步的位置（例如默认位置）。游戏原件放在哪都行，不受影响。")
-WIN_FORMAT_MESSAGE = ("这个位置所在的磁盘格式是 {fmt}。游戏原件放在这块盘上没问题（S2Arm 只读、不改不删），"
-                      "但导出时的工作数据（游戏库）要放在 NTFS 格式的磁盘上：请改用这台电脑上的默认位置，或选一块 NTFS 格式的盘。")
+# 只写玩家会碰到、能据此做选择的后果（11-12 维护者：断电之类的小概率风险不进界面）
+WIN_FORMAT_MESSAGE = "这个盘是 {fmt}，可以用，但{extra}；放在 NTFS 格式的盘上更省空间。"
+WIN_FORMAT_FAT32 = "FAT32 盘上单个文件最多 4 GB，超过 4 GB 的游戏在这里出不了。"
+WIN_FORMAT_ACCEPTED_MESSAGE = "游戏库在 {fmt} 格式的磁盘上，已按你的选择继续用（出包会多占空间）。"
+
+
+def win_format_message(fmt, extra_bytes=None, games=0):
+    """Windows 游戏库在 exFAT / FAT32 上的确认文案：多占多少（按游戏库里现有的款算，没有就按每款说），FAT32 另说 4 GB 上限"""
+    fmt = (fmt or "").upper()
+    if extra_bytes:
+        gb = extra_bytes / 1e9
+        extra = f"按现有 {games} 款游戏算，出包会多占约 {gb:.0f} GB" if gb >= 10 else f"按现有 {games} 款游戏算，出包会多占约 {gb:.1f} GB"
+    else:
+        extra = "每出一款游戏会多占大约两份游戏内容的空间"
+    return WIN_FORMAT_MESSAGE.format(fmt=fmt, extra=extra) + (WIN_FORMAT_FAT32 if fmt.startswith("FAT") else "")
+
+
+def format_accepted(library):
+    """玩家换游戏库时确认过「这块 exFAT / FAT32 盘也继续用」（setup 带 acceptFormat，记进游戏库标识的 formatAccepted；同 cloud_accepted）"""
+    import json, os
+    try:
+        with open(os.path.join(library, ".s2arm-library.json"), encoding="utf-8") as f:
+            return json.load(f).get("formatAccepted") is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def problems(path, *, system, home, fmt, env=None, exists=None):
@@ -110,7 +133,7 @@ def problems(path, *, system, home, fmt, env=None, exists=None):
         out.append(dict(code="library_in_cloud", message=CLOUD_MESSAGE.format(cloud=cloud)))
     if not format_ok(fmt, system=system):
         if system == "Windows":
-            out.append(dict(code="library_bad_format", message=WIN_FORMAT_MESSAGE.format(fmt=fmt.upper())))
+            out.append(dict(code="library_bad_format", message=win_format_message(fmt)))
         else:
             out.append(dict(code="library_not_apfs", message=LIBRARY_FORMAT_MESSAGE.format(fmt=fmt.upper())))
     return out
