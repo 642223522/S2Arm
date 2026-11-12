@@ -1,4 +1,5 @@
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
+// S2Arm 2026-11-09: feedback checks include distinct NVN objects sharing host texture storage.
 // 弱链接[host,ios]：mtl_tab_selftest（本文件定义；宿主与 iOS 链接行沿用原清单放行，runtime/build.mk 自动收）
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -2707,7 +2708,7 @@ int nvn_be_tex_from_gl(tex_t *t, uint32_t gl_name) { @autoreleasepool {
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
 @implementation NvPkg
 - (void)dealloc { res_remove(tex); if (spare) res_remove(spare); free(ph); free(pgpu); }
@@ -4189,6 +4190,12 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (packaged) {
         NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;   // resolved as GPU-only before the CPU wrote it: dropped and rebuilt as packaged
         if (pk) {   // Already uploaded: check the covered pages only if there has been a guest write since the last check
+            // Resolve attachments and sampled views against the same guest-memory snapshot (tex_by_id).
+            // A co-located CPU write during replay must not replace a target that earlier draws wrote.
+            // Keep its dirty stamp for the next submission / WaitSync. Outside an open command buffer,
+            // direct CPU resolution must still see updates, including after a completed submission.
+            if (g_cb && g_pkg_epoch && pk->check_epoch == g_pkg_epoch) return pk->view ? pk->view : pk->tex;
+            pk->check_epoch = g_pkg_epoch;
             uint64_t now = nvn_dirty_now();
             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
             int clean = tracked && (now == pk->seen || !nvn_dirty_since_span(pk->span, t->mem, t->L.size, pk->stamp));
@@ -4248,6 +4255,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             return pk->view ? pk->view : pk->tex;
         }
         pk = [NvPkg new];
+        pk->check_epoch = g_pkg_epoch;
         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
         uint64_t *gr = NULL, gb = 0; int gn = 0; id<MTLTexture> gfrom = nil;   // turning packaged from a GPU-only texture: its texels a GPU write left stale in guest memory (carry_gpu)
         if (have && !pk->sparse && [have conformsToProtocol:@protocol(MTLTexture)]) { gfrom = have; gn = gpw_stale(t->mem, t->L.size, &gr, &gb); }
@@ -12038,7 +12046,9 @@ static void fb_prepare(NvProg *pr) {
     id<MTLTexture> cbase[4] = {nil}, csnap[4] = {nil}; NSUInteger ckey[4][4]; int ncopy = 0, settled = 0;   // ④ copies of this draw by real subresource (base, levels, slices); clears landed
     for (int i = 0; i < fs->rf.nb && g_fb_n < 4; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->reg >= 128) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff);
-        pthread_mutex_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; pthread_mutex_unlock(&g_rmu);
+        alias_key sampled;
+        pthread_mutex_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0;
+        if (ser) alias_key_of(&sampled, &g_treg[tid].t); pthread_mutex_unlock(&g_rmu);
         if (!ser) continue;
         // #387 the pass's own depth attachment sampled in the same pass. NVN reads the depth buffer as it is in memory (legal, and unchanged while depth writes are off);
         //   Metal leaves sampling a texture that is an attachment of the open pass undefined: a long pass stores tiles back mid-pass (partial renders) while later draws read them.
@@ -12075,12 +12085,24 @@ static void fb_prepare(NvProg *pr) {
             PD("N %llu same-pass depth sampling: depth attachment ser=%llu sampled at slot %d; the pass ends and this draw reads a copy", g_stat_pass, (unsigned long long)ser, b->reg);
             continue;
         }
-        for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) { if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
+        for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) {
+            const tex_t *attachment = R.rt.color[k]; if (!attachment) continue;
+            int alias = attachment->serial != ser; id<MTLTexture> attachment_storage = nil;
+            if (alias) {
+                // Serial numbers name NVN objects, not storage. Reject unrelated pool ranges
+                // cheaply, then use the same layout key as the shared-texture table.
+                if (!sampled.pool || sampled.pool != (uint64_t)(uintptr_t)attachment->pool || sampled.off != attachment->off) continue;
+                alias_key attached; alias_key_of(&attached, attachment); if (memcmp(&sampled, &attached, sizeof sampled)) continue;
+                attachment_storage = tex_mtl(attachment);
+            }
             uint64_t aser; int lv, sl; rt_sub(&R.rt, k, &aser, &lv, &sl);
             pthread_mutex_lock(&g_rmu); void *tv = NULL; tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv; pthread_mutex_unlock(&g_rmu);
             if (!t) continue;
             int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t; if (dup) continue;
             id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0;
+            // Packaged textures may have identical descriptors but independent host copies.
+            // Only an actual shared root can be feedback through a different serial.
+            if (alias && (!attachment_storage || (attachment_storage.parentTexture ?: attachment_storage) != base)) continue;
             if (tl + t.mipmapLevelCount <= (NSUInteger)lv || tl > (NSUInteger)lv) continue;   // the sampled levels do not include the attachment's level (mip generation etc.): not feedback
             MTLTextureType tt = t.textureType, vt = (MTLTextureType)b->dtt;
             // The same for layers: a view that holds only some of the base's slices and not the one being drawn (Breath of the Wild 9a08f70c2775ebe7 samples

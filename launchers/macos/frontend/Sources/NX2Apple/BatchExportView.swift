@@ -96,7 +96,7 @@ struct BatchExportView: View {
     private var locationRow: some View {
         var options: [(value: String, label: String)] = model.locations.map { l in
             let free = l.freeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "?"
-            return (l.path, (l.volume.isEmpty ? (l.path as NSString).lastPathComponent : l.volume) + " · " + free)
+            return (l.path, S2ArmLauncherModel.locationName(path: l.path, volume: l.volume) + " · " + free)
         }
         if !model.batchLocation.isEmpty, !options.contains(where: { $0.value == model.batchLocation }) {
             options.append((model.batchLocation, (model.batchLocation as NSString).abbreviatingWithTildeInPath))
@@ -136,6 +136,10 @@ struct BatchExportView: View {
             Text(text).font(.manrope(15, .semibold))
             if model.batchPaused == "disk_full" {
                 Text(t("paused")).font(.manrope(13)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = model.batchError {
+                Text(t("stopped").replacingOccurrences(of: "{0}", with: error)).font(.manrope(13)).foregroundStyle(LauncherPalette.building)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

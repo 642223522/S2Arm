@@ -15,17 +15,20 @@ DEVELOPER_DIR := $(or $(S2A_DEVELOPER_DIR),$(_S2A_ENV_DD),$(shell S2A_TC_QUIET=1
 export DEVELOPER_DIR MACOSX_DEPLOYMENT_TARGET MSBUILDDISABLENODEREUSE   # iOS 下限不导出（两个都导出时不带 -target 的宿主编译会当成 iOS，见 tools/toolchain.sh）
 BUILD   ?= build
 CC      ?= clang
-CFLAGS  ?= -O1 -g -Wall -Wextra -Wno-unused-parameter
+CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
 HOST_SRCS :=
 HOST_LIBS :=
 TEST_TARGETS :=
+# dav1d 是 AV1 软件兜底（只有没有 AV1 硬件解码的目标机才用到）：默认编入；确认所有目标机都有 AV1 硬件解码的本地构建可设 0，
+#   同时跳过 meson / ninja 依赖与 dav1d 静态库（见 services/build.mk、launchers/macos/prepare_build.py）
+S2A_DAV1D ?= 1
 .DEFAULT_GOAL := host
 -include $(sort $(wildcard */build.mk))
 
 # 宿主依赖在全部 build.mk 读完之后才写：规则的依赖在读入那一刻展开，写在 runtime/build.mk 里时按字母序排在后面的 services/、tests/ 追加的源文件
 # （自动玩家等）不在依赖里，改了 make host 不重编（10-20 服务接入线实测作废两局暗黑2、原生层一局八方2）。
-# 构建配置戳：S2A_CS / CC / CFLAGS 变了也要重编（先不带 C# 编、再带 C# 编之类）；内容不变就不改写，不触发重编
-HOST_CFG     := S2A_CS=$(S2A_CS) S2A_MAC_FRONTEND=$(S2A_MAC_FRONTEND) CC=$(CC) CFLAGS=$(CFLAGS)
+# 构建配置戳：S2A_CS / S2A_DAV1D / CC / CFLAGS 变了也要重编（先不带 C# 编、再带 C# 编之类）；内容不变就不改写，不触发重编
+HOST_CFG     := S2A_CS=$(S2A_CS) S2A_DAV1D=$(S2A_DAV1D) S2A_MAC_FRONTEND=$(S2A_MAC_FRONTEND) CC=$(CC) CFLAGS=$(CFLAGS)
 HOST_CFG_STAMP := $(BUILD)/.host_cfg
 $(shell mkdir -p $(BUILD); [ "$$(cat $(HOST_CFG_STAMP) 2>/dev/null)" = '$(HOST_CFG)' ] || printf '%s' '$(HOST_CFG)' > $(HOST_CFG_STAMP))
 $(BUILD)/s2arm-host: $(HOST_SRCS) $(wildcard $(addsuffix *.h,$(sort $(dir $(HOST_SRCS)))) runtime/include/*.h) $(HOST_CFG_STAMP) Makefile $(wildcard */build.mk)

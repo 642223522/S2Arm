@@ -89,7 +89,7 @@ struct LauncherView: View {
         .tint(LauncherPalette.cream)
         .font(.manrope(13))
         .frame(minWidth: 900, idealWidth: 1280, minHeight: 680, idealHeight: 900)
-        .onAppear { model.refresh(); model.checkEnvironment(); model.startControl(); model.finishPendingUpdate(); model.checkForUpdate(); model.loadNotice(); model.recoverBatch(); model.startControllerConnection() }
+        .onAppear { model.startup() }
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
             InstallView(model: model, gameID: target.id).environmentObject(loc)
         }
@@ -121,9 +121,18 @@ struct LauncherView: View {
         }
     }
 
+    static var displayVersion: String {
+        let info = Bundle.main.infoDictionary
+        if let shown = info?["S2ADisplayVersion"] as? String, !shown.isEmpty { return shown }
+        return (info?["CFBundleShortVersionString"] as? String).map { "v" + $0 + "-dev" } ?? "dev"   // swift run 等不经 build_app 的开发构建
+    }
+
     private var topBar: some View {
         HStack(spacing: 12) {
             Text(brand).font(.manrope(22, .bold)).tracking(-0.6).lineLimit(1).fixedSize()
+            // 版本号（11-11 维护者：玩家截图时我们一眼看出是哪一版）：正式版 v0.3.0，开发版 v0.2.9-dev+短提交号（build_app.py 写进 Info.plist）
+            Text(verbatim: Self.displayVersion).font(.manrope(12.5, .semibold)).monospacedDigit().foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize().textSelection(.enabled).accessibilityIdentifier("topbar.version")
             Spacer()
         }
         .padding(.leading, 90).padding(.trailing, 24)   // the window's traffic lights sit in the transparent title bar
@@ -136,6 +145,7 @@ struct LauncherView: View {
     private var topActions: some View {
         HStack(spacing: 12) {
                 if model.loading { ProgressView().controlSize(.small) }
+                PlayerToolbarButton(loc: loc)   // 本地玩家（#623）：这次用谁的身份玩，点开切换 / 添加；标题栏另起视图树、环境对象传不进去，显式给
                 exportPill
                 batchPill
                 PhoneUpdateButton(model: model, language: uiLanguage)
@@ -311,7 +321,7 @@ struct LauncherView: View {
                 Button { installFor = id } label: {
                     HStack(spacing: 7) {
                         ProgressView().controlSize(.mini)
-                        Text(txt("install.pill.running").replacingOccurrences(of: "{0}", with: s.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                        Text(txt("install.pill.running").replacingOccurrences(of: "{0}", with: s.name).replacingOccurrences(of: "{1}", with: model.installTargetLabel)).font(.manrope(12.5, .semibold)).lineLimit(1)
                         if let f = s.progress.fraction { Text("\(Int(f * 100))%").font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary) }
                     }
                 }
@@ -320,7 +330,8 @@ struct LauncherView: View {
                 Button { installFor = r.gameID } label: {
                     HStack(spacing: 7) {
                         Image(systemName: r.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(r.ok ? LauncherPalette.ready : LauncherPalette.danger)
-                        Text(txt(r.ok ? "install.pill.done" : "install.pill.failed").replacingOccurrences(of: "{0}", with: r.name)).font(.manrope(12.5, .semibold)).lineLimit(1)
+                        Text(txt(r.ok ? "install.pill.done" : "install.pill.failed").replacingOccurrences(of: "{0}", with: r.name)
+                             .replacingOccurrences(of: "{1}", with: r.ok && !model.installedTo.isEmpty ? model.installedTo : model.installTargetLabel)).font(.manrope(12.5, .semibold)).lineLimit(1)
                     }
                 }
                 .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.pill")

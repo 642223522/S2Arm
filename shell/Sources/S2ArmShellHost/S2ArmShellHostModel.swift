@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import S2ArmShellBridge
+import SaveSync
 import ShellControllers
 import ShellUI
 
@@ -60,6 +61,11 @@ public final class S2ArmShellHostModel {
     @ObservationIgnored private var listedBanners: [String: URL] = [:]
     /// 编辑页底图：游戏号 → 封面文件
     public private(set) var bannerURLs: [String: URL]
+    /// 本地玩家（#623，LocalPlayers.swift）：表与当前玩家（存在 App 偏好 stores.app）；切换页开着时 playersOpen
+    @ObservationIgnored private let playerStore: LocalPlayers
+    public private(set) var players: [LocalPlayer]
+    public private(set) var currentPlayer: LocalPlayer
+    public private(set) var playersOpen = false
 
     /// play 缺省走 C 出口；单测可换
     public init(catalogue: Catalogue, play: ((String) -> Void)? = nil, stores: S2ArmGameSettings.Stores = .live,
@@ -70,6 +76,8 @@ public final class S2ArmShellHostModel {
                 gamesRoot: URL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/games")) {
         self.gamesRoot = gamesRoot
         self.stores = stores; self.layoutState = layoutState; bannerURLs = catalogue.bannerURLs
+        playerStore = LocalPlayers(shellDefaults: stores.app)
+        players = playerStore.all; currentPlayer = playerStore.current
         self.identityStore = identityStore
         listedTiles = Dictionary(catalogue.tiles.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         listedBanners = catalogue.bannerURLs
@@ -486,6 +494,39 @@ public final class S2ArmShellHostModel {
             }
         }
         allGames[i].game = tile
+    }
+
+    // MARK: 本地玩家（#623）
+
+    /// 游戏库顶部玩家按钮：开切换页。开着时停手柄监听（页只用触屏），不然按 A 会落到背后库界面的 Play 上
+    public func openPlayers() { playersOpen = true; stopControllers() }
+    public func closePlayers() { guard playersOpen else { return }; playersOpen = false; startControllers() }
+    /// 换玩家：下一局按这个玩家起（宿主 ios/settings.m 起局时读），关页
+    public func selectPlayer(_ uid: String) {
+        playerStore.select(uid); reloadPlayers()
+        NSLog("S2Arm 游戏库：本地玩家切换为 %@", currentPlayer.isFirst ? "第一个玩家" : currentPlayer.uid)
+        closePlayers()
+    }
+    /// 加玩家并选上；名字不行回给玩家看的原因（nil = 成了）
+    public func addPlayer(_ name: String) -> String? {
+        do { let p = try playerStore.add(name); reloadPlayers(); NSLog("S2Arm 游戏库：新建本地玩家 %@（存档位置 %@）", p.uid, p.folder); return nil }
+        catch { return Self.reason(error) }
+    }
+    public func renamePlayer(_ uid: String, _ name: String) -> String? {
+        do { try playerStore.rename(uid, to: name); reloadPlayers(); return nil } catch { return Self.reason(error) }
+    }
+    /// 从表里拿掉（存档不删）
+    public func removePlayer(_ uid: String) {
+        playerStore.remove(uid); reloadPlayers()
+        NSLog("S2Arm 游戏库：拿掉本地玩家 %@（存档留在各款数据里）", uid)
+    }
+    private func reloadPlayers() { players = playerStore.all; currentPlayer = playerStore.current }
+    static func reason(_ error: LocalPlayers.NameError) -> String {
+        switch error {
+        case .empty: shellText("Enter a name.")
+        case .tooLong: shellText("Use \(String(LocalPlayers.nameLimit)) characters or fewer.")
+        case .taken: shellText("That name is already taken.")
+        }
     }
 
     public func startControllers() {

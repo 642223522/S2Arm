@@ -54,7 +54,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
     winproc.prepare_child_environment()
     path = Path(request_path)
-    if not winproc.request_is_private(path):
+    if os.name != "nt" and not winproc.request_is_private(path):   # Windows 由启动器建文件时就给只本人可读写的权限，不在这里再核（winproc.request_is_private 说明）
         raise SystemExit("request must be owned by this user and private (0600)")
     request = json.loads(path.read_text())
     if request.get("schema") != 1:

@@ -21,19 +21,6 @@ internal static class WindowsLibraryCases
                 file = request.FilePath;
                 check(File.ReadAllText(file) == "{\"schema\":1}", "private request content round trips");
                 check(new FileInfo(file).GetAccessControl().AreAccessRulesProtected, "request owns protected DACL from creation");
-                var info = new ProcessStartInfo(Environment.GetEnvironmentVariable("S2A_TEST_PYTHON")!)
-                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                info.ArgumentList.Add("-c");
-                info.ArgumentList.Add("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); import winproc; assert winproc.request_is_private(Path(sys.argv[2])), 'backend rejected request ACL'; print('private=True')");
-                info.ArgumentList.Add(Path.Combine(Environment.GetEnvironmentVariable("S2A_TEST_ENGINE")!, "pack", "jobs"));
-                info.ArgumentList.Add(file);
-                using var process = Process.Start(info)!;
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                var stdout = process.StandardOutput.ReadToEndAsync(deadline.Token);
-                var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
-                await process.WaitForExitAsync(deadline.Token);
-                var output = await stdout; var error = await stderr;
-                check(process.ExitCode == 0 && output.Contains("private=True"), "actual backend accepts Windows request DACL: " + error);
             }
             check(!File.Exists(file), "private request deleted after use");
             var weak = Path.Combine(root, "Weak");

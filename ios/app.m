@@ -834,7 +834,7 @@ static void img_scan_bg(void) {
         if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); }
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
-        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); img_scan_report(); });
+        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); if (r == 0) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
     });
 }
 static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }

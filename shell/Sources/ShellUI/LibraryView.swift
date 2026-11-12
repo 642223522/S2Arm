@@ -88,6 +88,8 @@ public struct LibraryView: View {
     /// The side column of iPhone Duo (#622): the captures set it, otherwise the system's values from SideBarProbe.
     @Environment(\.shellSideBar) private var sideBarOverride
     @State private var probedSideBar = SideBar(edge: nil)
+    /// S2Arm (#623): the player chip, when the host has players; it takes a place in the side column too.
+    @Environment(\.shellPlayer) private var shellPlayer
 
     public init(games: [GameDetail], controllers: [ControllerInfo] = [], actions: ShellActions = ShellActions(),
                 input: ShellInputLog = ShellInputLog(), initialSelection: String? = nil, initialDetailOpen: Bool = false,
@@ -131,22 +133,24 @@ public struct LibraryView: View {
             let panelOverLibrary = settingsOpen && floating
             // The chips go into the side column where the system has one. At the accessibility text sizes they stay in the header.
             let side = typeSize.isAccessibilitySize ? nil : (sideBarOverride ?? probedSideBar)
-                .place(screen: whole, insets: insets, top: games.isEmpty ? [] : SideBar.topHeights)
+                .place(screen: whole, insets: insets, bottom: shellPlayer == nil ? SideBar.heights : [SideBar.playerHeight] + SideBar.heights,
+                       top: games.isEmpty ? [] : SideBar.topHeights)
             let column = side?.bottom
             ZStack(alignment: .topLeading) {
                 if layout.isCoverFlow, let selected { CoverFlowBackdrop(game: selected.game) } else { ShellPalette.background.ignoresSafeArea() }
                 if games.isEmpty {
                     EmptyLibraryView()
-                        .overlay(alignment: .topLeading) {   // S2Arm: the version for screenshots, level with the chips
-                            LibraryVersionBadge().frame(minHeight: 44).padding(.top, 6).padding(.leading, 24)
-                        }
-                        .overlay(alignment: .topTrailing) {
-                            if column == nil {
-                                HStack(spacing: 10) {
+                        .overlay(alignment: .top) {   // S2Arm: the version for screenshots and the player (#623), level with the chips
+                            HStack(spacing: 10) {
+                                LibraryVersionBadge().layoutPriority(-1)
+                                Spacer(minLength: 8)
+                                if column == nil {
+                                    PlayerChip()
                                     ControllerChip(count: controllers.count, action: openControllers)
                                     ShellSettingsChip(action: openShellSettings)
-                                }.padding(.top, 6).padding(.trailing, 16)
+                                }
                             }
+                            .frame(minHeight: 44).padding(.top, 6).padding(.leading, 24).padding(.trailing, 16)
                         }
                     if let column { sideChips(column, insets: insets) }
                 } else if let selected {

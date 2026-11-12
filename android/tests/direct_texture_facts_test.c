@@ -28,8 +28,7 @@ int main(void) {
         CHECK(s2a_nvn_texture_fact(nvn, NVN_TEXTURE_TARGET_2D, 1, &f, why, sizeof why) == 0, "mapped format yields a fact");
         CHECK(f.array_length == 1 && !f.is_buffer, "2D fact is a single non-buffer layer");
         CHECK(!strcmp(f.sampler_type, "2d"), "2D sampler type");
-        int want_norm = !(strstr(name, "Uint") || strstr(name, "Sint"));
-        CHECK(f.normalized == want_norm, "normalized follows the integer/float format class");
+        CHECK(f.normalized == 1, "a 2D texture is sampled with normalized coordinates whatever its format (the target alone decides)");
     }
     CHECK(n >= 35, "the mapping table covers every format in the compiler TextureFormat enum");
 
@@ -47,7 +46,7 @@ int main(void) {
     CHECK(s2a_nvn_texture_fact(NVN_FORMAT_RGBA_DXT1, NVN_TEXTURE_TARGET_2D_ARRAY, 3, &f, why, sizeof why) == 0 &&
           !strcmp(f.format, "Unknown") && !strcmp(f.sampler_type, "2d-array") && f.array_length == 3, "BC array keeps sampler type and layers");
     CHECK(s2a_nvn_texture_fact(NVN_FORMAT_RGBA8UI, NVN_TEXTURE_TARGET_2D, 1, &f, why, sizeof why) == 0 &&
-          f.normalized == 0, "integer format is not normalized");
+          f.normalized == 1 && !strcmp(f.format, "R8G8B8A8Uint"), "integer 2d texture is still sampled with normalized coordinates (only the target decides)");
     CHECK(s2a_nvn_texture_fact(NVN_FORMAT_RGBA8, NVN_TEXTURE_TARGET_2D_ARRAY, 0, &f, why, sizeof why) == 0 &&
           f.array_length == 1, "array with no declared layers falls back to 1, not 0");
     CHECK(s2a_nvn_texture_fact(NVN_FORMAT_RGBA8, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, 12, &f, why, sizeof why) == 0 &&

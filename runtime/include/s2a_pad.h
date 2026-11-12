@@ -34,6 +34,11 @@ int s2a_pad_layout_parse(const char *value);   // 定义表 / 环境变量的值
 // 把系统的 buttonA/B/X/Y（下标 0/1/2/3）排成 Nintendo 位序 A、B、X、Y：out[i] = 第 i 位该读系统的哪个键
 void s2a_pad_abxy_order(int kind, int layout, int out[4]);
 
+// 本地多手柄槽位（Mac 与 iOS 共用一份规则）：prev 上一轮各槽的手柄身份（max 项，NULL = 空槽），live 本次在线的手柄（连接顺序）。
+//   slot_of[j] 写第 j 只占的槽（-1 = 超过 max 只，丢弃）；返回占到的最高槽位 + 1（至少 1：槽 0 留给键盘 / 鼠标 / 触屏）。
+//   还在线的保留原槽；新来的占最小空槽，所以断开后重连、中间没插别的就回原槽
+int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of);
+
 // 原子快照，固定 56 字节。epoch 在切源/前后台切换时变化，旧短按不得跨 epoch 回放。
 typedef struct {
     uint64_t notification_seq, input_epoch, host_timestamp_us, read_timestamp_us;

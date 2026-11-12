@@ -139,13 +139,13 @@ if [ -z "$SHELL_DIR" ]; then
   if [ ! -f "$SHELL_DIR/manifest.json" ] || [ -n "$STALE" ]; then mkdir -p "$SC" || fail "建不了壳缓存目录 $SC"
     [ "$(uname -s)" = Darwin ] || fail "本机没有壳 ${SID}，也没给发布源 S2A_SHELL_SOURCE（只有 Mac 能现出壳）"
     ST=$SC/.tmp.$SID.$$; tmk "出壳（本提交第一次）" "$TL" -- bash "$H/shell_build.sh" "$ST" >> "$W/pkg/build.log" 2>&1 || { rm -rf "${ST:?}"; fail "出壳失败（$(grep -a '【红】' "$W/pkg/build.log" | tail -1)）"; }
-    if [ -n "$STALE" ] && ! mv "$SHELL_DIR" "$SC/.tmp.stale.$SID.$$" 2> /dev/null; then   # 旧编译器出的那份挪开（.tmp.* 由 tools/gc.sh 两小时后删）
+    if [ -n "$STALE" ] && ! mv "$SHELL_DIR" "$SC/.tmp.stale.$SID.$$" 2> /dev/null; then   # 旧编译器出的那份挪开（.tmp.* 两小时后可清：维护方内部清扫器定期删，手动清要确认无出包在跑）
       [ ! -e "$SHELL_DIR" ] || fail "旧编译器出的壳 $SHELL_DIR 挪不开（不挪开新壳会被套进它里面）"; fi   # 别的单已先挪走 = 不在了，照常
     if ! mv "$ST" "$SHELL_DIR" 2> /dev/null; then rm -rf "${ST:?}"; fi   # 两单同时出同一提交的壳：先到的发布，后到的丢自己那份（内容相同）
     s2a_tc_fp > "$SC/.$SID.toolchain" || fail "记不下壳的工具链版本（$SC/.$SID.toolchain）"
   fi
 fi
-touch "$SHELL_DIR" 2> /dev/null   # 目录时间 = 最近使用（tools/gc.sh 按它清壳缓存）
+touch "$SHELL_DIR" 2> /dev/null   # 目录时间 = 最近使用（维护方内部清扫器按它清壳缓存）
 [ -f "$SHELL_DIR/root/S2AShell.tables" ] && [ -f "$SHELL_DIR/manifest.json" ] || fail "壳目录 $SHELL_DIR 不完整（要 root/S2AShell.tables 与 manifest.json，pack/shell_build.sh 出）"
 # 出包收尾（组装 → 存档身份 → 图标 → Info.plist → 签名 → 提高内存上限权限核实 → 打 ipa → 进包核对 → 资源包 → 资源包核对）：唯一实现在 pack/ipa_tail.py，
 #   Windows 的 Python 编排调同一份（#1100，11-04）。包号 / 着色器目标 / 画面模式 / 资源包要件的判法都在那里

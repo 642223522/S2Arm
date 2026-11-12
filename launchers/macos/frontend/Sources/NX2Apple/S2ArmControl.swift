@@ -2,7 +2,7 @@
 //   App 自带的 s2armctl / skill（launchers/macos/skill/s2arm-operator，维护者 10-23：玩家用自己的 AI 完成移植）对缺省 App 全部连不上。
 // 收发、令牌、control.json 用适配层 ControlPort（与旧启动器同一份）；协议同旧启动器（launchers/macos/s2armctl.py 不用改）。
 // 每个命令调界面按钮背后的同一个模型方法（S2ArmLauncherModel），屏幕上的作业页照常显示；选文件的对话框改成直接给路径。
-// GET /state 的 tasks 读作业层自己写的作业记录（<游戏库>/logs/jobs/<任务>.json，库没建好时 <私有目录>/logs/jobs；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
+// GET /state 的 tasks 读作业层自己写的作业记录（固定 <私有目录>/logs/jobs/<任务>.json，剃刀 H6；S2ArmPaths.jobsDir），新界面没有任务表也照样有据。
 import AppKit
 import Foundation
 import S2ArmAppleAdapter
@@ -119,14 +119,16 @@ import S2ArmAppleAdapter
             }
         case ("POST", "/installCheck"):
             guard let g = game() else { return .bad("没有这个 gameId") }
-            model.checkInstall(g.id); return .ok()
+            model.checkInstall(g.id, device: str("device")); return .ok()   // device：查哪一台（s2armctl install-check --device），不给按界面上选中的那台
         case ("POST", "/install"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
             guard model.installAllowed(g.id) else {
                 return .bad("还不能装：先 install-check \(g.id)；这款的 iPhone 版没做好时要先出包")
             }
-            model.install(g, teamId: str("teamId"), device: str("device"), acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
+            // 往设备上装东西一律要说明装到哪台（11-11：作业层不替玩家挑，控制口也不拿界面上选中的那台顶替）；s2armctl targets 列设备号
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.install(g, teamId: str("teamId"), device: device, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
@@ -147,11 +149,13 @@ import S2ArmAppleAdapter
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
             if let b = busy() { return b }
-            model.restorePhone(g); return .ok()
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.restorePhone(g, device: device); return .ok()
         case ("POST", "/uninstall"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
-            model.removeFromPhone(g, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false); return .ok()
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.removeFromPhone(g, acceptDropped: a["acceptDropped"] as? Bool ?? false, ask: false, device: device); return .ok()
         case ("POST", "/customize"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
@@ -167,8 +171,12 @@ import S2ArmAppleAdapter
             if let e = model.actionError(for: g.id) { return .bad(e) }
             return .ok()
         case ("POST", "/cancel"):
-            guard str("taskId") != nil else { return .bad("缺 taskId") }
+            // 按任务号取消（启动器剃刀 M23）：原先不管传什么都停当前那个；任务号对不上回 409，不停错作业
+            guard let id = str("taskId") else { return .bad("缺 taskId") }
             guard model.busy else { return .bad("没有在跑的作业") }
+            guard let current = model.session?.taskID, current == id else {
+                return .bad("这个 taskId 不是正在跑的作业（正在跑：\(model.session?.taskID ?? "还没拿到任务号")）", code: 409)
+            }
             model.stop(); return .ok()
         case ("POST", "/retry"):
             guard let id = str("taskId"), let t = ControlJournal.tasks(privateRoot: model.provider.client.environment.privateRoot, limit: 500).first(where: { $0["id"] as? String == id }) else {
@@ -259,6 +267,9 @@ import S2ArmAppleAdapter
     }
 
     /// 自描述：AI 先 GET /help 就知道能做什么（s2armctl help 打的就是这张表）。
+    /// 往设备上装 / 删 / 装回不带 device：拒绝（作业层也拒），告诉怎么查设备号
+    static let deviceRequired = "缺 device：说明装到哪台（s2armctl targets 列出连着的设备、设备名和设备号），不替你挑"
+
     static let endpoints: [[String: String]] = [
         ["GET /state", "当前界面状态：环境检查（checks）、密钥、游戏列表（id / 能否出包 / 缺什么）、作业页（session）、任务（tasks：作业记录，进度、里程碑、diagnostics 错误码 / 原因 / 建议 / 日志）"],
         ["GET /targets", "打 iPhone 包的目标设备：当前目标、连着的设备、可选机型、可选系统大版本（会现读一次设备）"],
@@ -291,7 +302,7 @@ import S2ArmAppleAdapter
         let privateRoot = m.provider.client.environment.privateRoot
         let keys = m.keysReady
         let rd: Any = m.installReadiness.map { r -> [String: Any] in
-            ["gameId": m.installGameID ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
+            ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
              "items": r.items.map { ["id": $0.id, "ok": $0.ok, "waiting": $0.waiting, "title": $0.title, "detail": $0.detail, "who": $0.who] }]
         } ?? NSNull()
         let session: Any = m.session.map { s -> [String: Any] in

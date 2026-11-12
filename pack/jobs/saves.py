@@ -805,6 +805,58 @@ def save_top(read, files, dirs, game):
     }
 
 
+# 本地玩家（#623）：启动器顶栏选的玩家。起局（build.runtime_env）与导入社区存档都按它定用户号，规则同服务层
+#   services/S2A.Services/LocalPlayer.cs：其他玩家 = 请求里的用户号；第一个玩家 = 他的存档位置 SaveData 里记的用户号
+#   （SaveFolder.FolderUser：user 文件，否则 Ryujinx 导出的 ExtraData0），都没有 = Ryujinx 缺省用户
+FIRST_PLAYER = "first"
+DEFAULT_USER = "00000000000000010000000000000000"   # Ryujinx AccountManager.DefaultUserId
+
+
+def requested_player(r):
+    """请求里的 player {user: first | 32 位小写十六进制, name, folder: SaveData | SaveData-…}；没带 = None（没建过玩家，旧行为）"""
+    player = r.get("player")
+    if player is None:
+        return None
+    if not (
+        isinstance(player, dict)
+        and isinstance(player.get("name", ""), str)
+        and (player.get("user") == FIRST_PLAYER or re.fullmatch(r"(?!0{32})[0-9a-f]{32}", str(player.get("user", ""))))
+        and re.fullmatch(r"SaveData(-[^/\\:]{1,120})?", str(player.get("folder", "")))
+        and (player["user"] == FIRST_PLAYER) == (player["folder"] == "SaveData")
+    ):
+        raise Failure("玩家设置无效。")
+    return player
+
+
+def folder_user(folder, program):
+    """存档位置里记的用户号（同 services SaveFolder.FolderUser）；没有 = None"""
+    with contextlib.suppress(OSError):
+        hint = (folder / "user").read_text(encoding="utf-8").strip()
+        return hint.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", hint) else None
+    if not folder.is_dir():
+        return None
+    for meta in sorted(folder.rglob("ExtraData0")):
+        with contextlib.suppress(OSError):
+            data = meta.read_bytes()[:0x40]
+            if len(data) < 0x40:
+                continue
+            owner, high, low, static = struct.unpack_from("<4Q", data)
+            if owner == program and data[0x20] == 1 and static == 0 and (high or low):
+                return f"{high:016x}{low:016x}"
+    return None
+
+
+def player_user(c, game, player):
+    """这个玩家起局时用的用户号"""
+    if player["user"] != FIRST_PLAYER:
+        return player["user"]
+    try:
+        folder = safe_path(_lay.root_of(c, game["id"]), _lay.path(c, game["id"], "SaveData", create=False))
+    except ValueError:
+        fail(c, "存档目录包含链接，已停止操作。", "unsafe_path")
+    return folder_user(folder, int(game["id"], 16)) or DEFAULT_USER
+
+
 def import_notice(c, game, root, source):
     """只跑识别、不写归档：取这个来源该不该提示「目录结构存疑」。早于提示小文件的缓存补算这一句用。
     补算失败只少一句提示，绝不挡导入。"""
@@ -831,7 +883,9 @@ def external_archive(c, game, root, source):
     与归档同时写进缓存旁的小文件，缓存命中时不必重跑识别也能取回。
     """
     try:
-        key = hashlib.sha256((source_digest(c, source) + fingerprint(c, root)).encode()).hexdigest()[:32]
+        player = requested_player(c.r)
+        user = player_user(c, game, player) if player else ""   # 换个玩家导同一份来源 = 另一份转换结果
+        key = hashlib.sha256((source_digest(c, source) + fingerprint(c, root) + user).encode()).hexdigest()[:32]
         cache = safe_path(_lay.root_of(c, game["id"]), _lay.root_of(c, game["id"]) / "save-imports" / game["id"])
     except ValueError:
         fail(c, "存档目录包含链接，已停止操作。", "unsafe_path")
@@ -869,6 +923,11 @@ def external_archive(c, game, root, source):
                 for e in save_entries(read, files, dirs)
                 if e["programId"] == game["id"].lower() and (kind is None or e["type"] == kind)
             ]
+            if user:   # 本地玩家：账号存档只认这个玩家的；这款有别人的账号存档、没有他的 = 他还没玩过，不往别人或设备存档里放
+                others = [e for e in entries if e["type"] == "account" and e["userId"] != user]
+                entries = [e for e in entries if e not in others]
+                if others and kind != "device" and not any(e["type"] == "account" for e in entries):
+                    fail(c, "这位玩家还没有这款游戏的存档。请先选这位玩家运行一次游戏并存档，再导入。", "no_target")
             if kind is None and len(entries) > 1:   # 同时有账户存档和设备存档的游戏：没说明类型的来源按账户存档
                 entries = [e for e in entries if e["type"] == "account"] or entries
             if len(entries) != 1:
@@ -941,7 +1000,9 @@ def checked_archive(c, game, root):
                         save_entries(lambda name: (root / name).read_bytes(), files, dirs)
                     )
                     incoming = ownership(manifest["saveEntries"])
-                    if any(target[key] != incoming[key] for key in target.keys() & incoming.keys()):
+                    # 本地玩家（#623）：账号集合是包含关系（一边多了 / 少了玩家）照常恢复，各有对方没有的才拒绝（同 SaveTransferArchive.cs Identity）
+                    if any(not (target[key] <= incoming[key] or incoming[key] <= target[key])
+                           for key in target.keys() & incoming.keys()):
                         fail(c, "备份用户与当前存档用户不符，已拒绝恢复。", "wrong_user")
         if before != hash_file(c, source):
             fail(c, "备份已变化，请重新检查。", "changed")

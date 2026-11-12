@@ -22,16 +22,14 @@ public sealed partial class EnvironmentWindow : Window
     private string summaryKey = "environment.idle";
     private string unexpectedError = "";
 
-    /// <summary>Program.cs 全局兜底接住界面线程上没处理的异常后调：在顶部报出来，忙碌标记复位（出错的那个操作已经中断），启动器继续可用。</summary>
+    /// <summary>Program.cs 全局兜底接住界面线程上没处理的异常后调：只在顶部报出来，不碰作业登记（启动器剃刀 W3）——
+    /// 原先这里把忙碌标记清掉，正在跑的游戏库作业「看起来空闲」，玩家能再起一个并发作业。作业登记只由作业自己收尾时撤（JobSlots.cs EndJob）。</summary>
     internal void ReportUnexpected(Exception error, string logPath)
     {
         unexpectedError = error.GetType().Name + ": " + error.Message + "\n" + T("launcher.unexpected_log") + " " + logPath;
-        busy = false; libraryBusy = false;
         try { Render(); } catch (Exception again) { LauncherCrash.Log(again, "render after unexpected"); }
     }
     private string diagnostics = "";
-    private bool busy;
-    private CancellationTokenSource? active;
     private TextBox engine = new(), runtime = new(), shell = new();
 
     public EnvironmentWindow()
@@ -49,7 +47,7 @@ public sealed partial class EnvironmentWindow : Window
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
-        Closed += (_, _) => { active?.Cancel(); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
+        Closed += (_, _) => { CancelJob(JobKind.Environment); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
         Opened += (_, _) =>
         {
             StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
@@ -166,6 +164,9 @@ public sealed partial class EnvironmentWindow : Window
         foreach (var (slot, build) in liveSlots) Fill(slot, build());
     }
 
+    private static readonly string DisplayVersion = "v" + (typeof(EnvironmentWindow).Assembly
+        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.1.0");
+
     private string T(string key) => text.Get(key, language);
     private readonly BackendText backend;
     /// <summary>作业层来的中文原句（报错、阶段、检查项、进度说明）在英文界面下的显示；T() 的文案本来就是英文，原样通过。#361</summary>
@@ -205,7 +206,11 @@ public sealed partial class EnvironmentWindow : Window
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var brand = new TextBlock { Text = "S2Arm × NX2Apple", FontSize = 22, FontWeight = FontWeight.SemiBold,
             Foreground = Ink, VerticalAlignment = VerticalAlignment.Center };
-        header.Children.Add(brand);
+        // 版本号（11-11 维护者：玩家截图时我们一眼看出是哪一版）：正式版 v0.3.0，开发版 v0.2.9-dev+短提交号（S2Arm.csproj 构建时算好）
+        var versionLabel = new TextBlock { Text = DisplayVersion, FontSize = 12.5, FontWeight = FontWeight.SemiBold, Foreground = Brush.Parse("#8C8A85"),
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 4, 0, 0) };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(versionLabel, "topbar.version");
+        header.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { brand, versionLabel } });
 
         var rightBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10,
             VerticalAlignment = VerticalAlignment.Center };
@@ -425,13 +430,12 @@ public sealed partial class EnvironmentWindow : Window
         if (busy) return;
         CapturePaths(); report = null; diagnostics = "";
         if (EnvironmentProbe.BundleIncomplete(paths)) { summaryKey = "environment.unzip_first"; Render(); return; }
-        busy = true;
+        var job = BeginJob(JobKind.Environment);
+        job.Cancellation.CancelAfter(TimeSpan.FromMinutes(2));
         summaryKey = "environment.checking"; Render();
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        active = cancellation;
         try
         {
-            var output = await EnvironmentProbe.RunAsync(paths, cancellation.Token);
+            var output = await EnvironmentProbe.RunAsync(paths, job.Token);
             diagnostics = T("diagnostics.exit_code") + ": " + output.ExitCode + "\n" + output.StandardError;
             report = EnvironmentReport.Parse(output.StandardOutput, output.ExitCode);
             if (report.Error is not null)
@@ -455,7 +459,7 @@ public sealed partial class EnvironmentWindow : Window
         }
         finally
         {
-            active = null; busy = false; Render();
+            EndJob(job); Render();
         }
     }
 }

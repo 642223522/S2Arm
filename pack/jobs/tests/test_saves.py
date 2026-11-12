@@ -987,5 +987,81 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(len(list((self.directory / "library/save-imports" / GID).glob("*.s2asave"))), 1)
 
 
+class LocalPlayerImportTests(unittest.TestCase):
+    """本地玩家（#623）：社区存档导入进当前玩家（请求的 player 字段，同起局）那个用户号的账号存档，别人的不动。
+    期望手写：第一个玩家 = 存档位置 SaveData 里记的用户号（user 文件，或 Ryujinx 导出的 ExtraData0），都没有 = Ryujinx 缺省用户 USER；
+    其他玩家 = 请求里的用户号（同 services/S2A.Services/LocalPlayer.cs 起局选用户的规则）"""
+
+    setUp = SaveTests.setUp
+    context = SaveTests.context
+    put = SaveTests.put
+    community = ExternalImportTests.community
+
+    HONG = "d7a43a96495d0a594e615dd88587b6bf"
+    THIRD = "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb"
+
+    def players(self, *extra):
+        """账号存档：USER → 存档 1（setUp 已有 checkpoint-one），HONG → 3，extra 里的 → 4、5…"""
+        rows = [(1, GID, 1, USER), (3, GID, 1, self.HONG)] + [(4 + i, GID, 1, u) for i, u in enumerate(extra)]
+        self.put(saves.SAVE_INDEX, synthetic_index(rows))
+        for sid, _, _, user in rows[1:]:
+            self.put("bis/user/save/%016x/0/progress.bin" % sid, b"own-" + user[:4].encode())
+
+    def import_as(self, player, data=b"community"):
+        src = self.community("JKSV-" + uuid.uuid4().hex[:6], {"Synthetic game/Player - 2026-10-20/progress.bin": data})
+        with patch.object(saves.save_formats, "detect", return_value=[]):
+            preview = saves.inspect(self.context(operation="saveInspect", path=str(src), player=player))
+            return saves.restore(self.context(operation="saveRestore", path=str(src), player=player, **preview))
+
+    def slots(self, *sids):
+        return [(self.root / ("bis/user/save/%016x/0/progress.bin" % sid)).read_bytes() for sid in sids]
+
+    def test_second_player_gets_the_import_and_the_first_keeps_his(self):
+        self.players()
+        self.assertTrue(self.import_as(dict(user=self.HONG, name="Hong", folder="SaveData-Hong"))["committed"])
+        self.assertEqual(self.slots(1, 3), [b"checkpoint-one", b"community"])
+
+    def test_first_player_without_a_recorded_user_is_the_default_user(self):
+        self.players()
+        self.assertTrue(self.import_as(dict(user="first", name="", folder="SaveData"))["committed"])
+        self.assertEqual(self.slots(1, 3), [b"community", b"own-d7a4"])
+
+    def test_first_player_follows_the_user_recorded_in_his_save_folder(self):
+        self.players(self.THIRD)
+        folder = self.root.parent / "SaveData"
+        folder.mkdir()
+        (folder / "user").write_text(self.THIRD.upper() + "\n")
+        self.import_as(dict(user="first", name="Ming", folder="SaveData"), b"by-user-file")
+        self.assertEqual(self.slots(1, 3, 4), [b"checkpoint-one", b"own-d7a4", b"by-user-file"])
+        # 没有 user 文件、只有 Ryujinx 导出的 ExtraData0（程序号 @0，用户号两段小端 @0x8 / @0x10，类型 1 @0x20）
+        (folder / "user").unlink()
+        meta = struct.pack("<4Q", int(GID, 16), 0xAAAAAAAAAAAAAAAA, 0xBBBBBBBBBBBBBBBB, 0) + bytes([1]) + bytes(0x1F)
+        (folder / "export/0000000000000004").mkdir(parents=True)
+        (folder / "export/0000000000000004/ExtraData0").write_bytes(meta)
+        self.import_as(dict(user="first", name="Ming", folder="SaveData"), b"by-extra-data")
+        self.assertEqual(self.slots(1, 3, 4), [b"checkpoint-one", b"own-d7a4", b"by-extra-data"])
+
+    def test_player_without_a_save_for_this_game_is_told_to_play_first(self):
+        self.put(saves.SAVE_INDEX, synthetic_index([(1, GID, 1, USER)]))
+        with self.assertRaises(Failure) as e:
+            self.import_as(dict(user=self.HONG, name="Hong", folder="SaveData-Hong"))
+        self.assertEqual(e.exception.code, "save_no_target")
+        self.assertIn("这位玩家", str(e.exception))
+        self.assertEqual(self.slots(1), [b"checkpoint-one"])
+
+    def test_without_a_player_several_users_still_cannot_be_told_apart(self):
+        self.players()
+        with self.assertRaises(Failure) as e:
+            self.import_as(None)
+        self.assertIn("多个用户", str(e.exception))
+        self.assertEqual(self.slots(1, 3), [b"checkpoint-one", b"own-d7a4"])
+
+    def test_bad_player_is_rejected(self):
+        self.players()
+        with self.assertRaises(Failure):
+            self.import_as(dict(user=self.HONG, name="Hong", folder="../SaveData"))
+        self.assertEqual(self.slots(1, 3), [b"checkpoint-one", b"own-d7a4"])
+
+
 if __name__ == "__main__":
     unittest.main()
