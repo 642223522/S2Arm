@@ -7,6 +7,7 @@
 #include "nvn_plat.h"
 #include "nvn_backend.h"
 #include "nvn_mtl.h"   // 上沿声明（nvn_be_* 与 NVN_EV_WAIT；文件名是历史名，内容与 Metal 无关）
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,6 +84,8 @@ nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
 static void sub_done(void *user, const nvn_gpu_done *d) {
     struct sub *s = user;
     if (s->t_commit) { pf_add(RP_PERF_DONE_NS, now_ns() - s->t_commit); pf_add(RP_PERF_DONE_N, 1); }
+    // 先落 GPU 写，再发布事件和完成序号：等待事件的 CPU 不能先看见旧内存。
+    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
     if (d->status != NVN_GPU_DONE_FAILED)   // 没执行的段不做任何成功回写
         for (int i = 0; i < s->n; i++) {
             if (s->p[i].report) {   // 计数器记录 = {计数值, 时间}（各 8 字节）。时间取本段完成这一刻的游戏时钟；时间戳类的计数值就是时间，
@@ -114,7 +117,6 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
       }
       g_occ_acc = acc; }
     if (s->fence) { uint64_t f = __atomic_load_n(&g_done_fence, __ATOMIC_RELAXED); if (s->fence > f) __atomic_store_n(&g_done_fence, s->fence, __ATOMIC_RELEASE); }
-    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
     free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
 }
 // 最后一段没交成的提交（开段失败）：它的回写、事件、计数器都不做（同「提交段失败」），登记过的 GPU 写按失败落地。
@@ -291,12 +293,33 @@ static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
     s->p[s->n++] = (struct post){val, mode, v, 0, 0};
 }
-void rp_post_gpu_write(uint64_t addr, uint64_t len) {
-    struct sub *s = g_sub; if (!s) return;
-    uint64_t key = 0, id = rp_buf_gpu_write_note(addr, len, &key); if (!id) return;
-    if (s->ngw == s->gwcap) { int cap = s->gwcap ? s->gwcap * 2 : 4; struct gw_ev *n = realloc(s->gw, (size_t)cap * sizeof *n); if (!n) { rp_buf_gpu_write_land(key, id, 0); return; } s->gw = n; s->gwcap = cap; }
-    s->gw[s->ngw++] = (struct gw_ev){key, id};
+// 一笔读回可有多行与多个层：先全登记，再交给后端；失败撤销本笔全部登记。
+// 仅登记真正写到的行，不把行间 / 片间填充覆盖回游戏内存。
+int rp_post_gpu_write_rows(uint64_t addr, uint64_t bytes, uint64_t row, uint64_t image, uint32_t rows, uint32_t images) {
+    struct sub *s = g_sub; uint64_t count = (uint64_t)rows * images;
+    if (!s || !bytes || !count || count > (uint64_t)(INT_MAX - s->ngw)) return 0;
+    int start = s->ngw, need = start + (int)count;
+    if (need > s->gwcap) {
+        int cap = s->gwcap ? s->gwcap : 4;
+        while (cap < need && cap <= INT_MAX / 2) cap *= 2;
+        if (cap < need) cap = need;
+        if ((size_t)cap > SIZE_MAX / sizeof *s->gw) return 0;
+        struct gw_ev *n = realloc(s->gw, (size_t)cap * sizeof *n);
+        if (!n) return 0;
+        s->gw = n; s->gwcap = cap;
+    }
+    for (uint32_t z = 0; z < images; z++) for (uint32_t y = 0; y < rows; y++) {
+        uint64_t key = 0, id = rp_buf_gpu_write_note(addr + (uint64_t)z * image + (uint64_t)y * row, bytes, &key);
+        if (!id) {
+            while (s->ngw > start) { struct gw_ev v = s->gw[--s->ngw]; rp_buf_gpu_write_land(v.pool_key, v.id, 0); }
+            return 0;
+        }
+        s->gw[s->ngw++] = (struct gw_ev){key, id};
+    }
+    return 1;
 }
+int rp_post_gpu_write(uint64_t addr, uint64_t len) { return rp_post_gpu_write_rows(addr, len, len, len, 1, 1); }
+
 static void post_report(uint64_t addr, uint32_t type) {
     struct sub *s = g_sub; if (!s || !addr) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
@@ -340,6 +363,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_CLEAR_COLOR: if (!g_rc_skip) rp_pass_clear_color(g_cmd, a, p); break;
             case OP_CLEAR_DS: if (!g_rc_skip) rp_pass_clear_ds(g_cmd, a, p); break;
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); rp_pass_barrier((uint32_t)bits); break; }
+            case OP_COPY_T2B: rp_pass_flush(g_cmd); rp_op_copy_t2b(g_cmd, a, p); break;
             case OP_COPY_B2T: rp_pass_flush(g_cmd); rp_op_copy_b2t(g_cmd, a, p); break;   // 传输在通道外
             case OP_COPY_T2T: rp_pass_flush(g_cmd); rp_op_copy_t2t(g_cmd, a, p); break;   // 先落地待折清除：拷贝可能读写那些目标
             case OP_UPDATE_UB: rp_op_update_ub(a, p); break;
