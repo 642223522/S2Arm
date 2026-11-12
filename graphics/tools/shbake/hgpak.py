@@ -85,13 +85,15 @@ def shader(b):
     return b[co:co + nctl], b[go:go + ncode]
 
 
-def jobs(files, oodle, parts=64):
+def jobs(files, oodle, parts=64, heads=None):
     """nxsh_extract's jobs: each HGPAK's files (the path list read once here) in about equal sizes. → ([(path, files), …], the archive paths taken)"""
     import mmap
     out, taken = [], set()
-    for p in files:
+    for p in files:   # heads = 文件头表（nxsh_extract 从 RomFS 清单给，#606）：魔数不对的不打开
+        h = heads.get(p) if heads is not None else None
+        if h is not None and h[:8] != MAGIC: continue
         with open(p, 'rb') as f:
-            if f.read(8) != MAGIC: continue
+            if h is None and f.read(8) != MAGIC: continue
             with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d: fl = Hgpak(d, oodle).files()
         taken.add(p)
         step, cur, size = sum(x[2] for x in fl) / parts, [], 0
