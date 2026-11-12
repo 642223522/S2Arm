@@ -138,7 +138,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 uint32_t flags = (rp_depth_zero() ? 0u : 1u) | 2u;   // 位 0：深度 −1..1；位 1：base vertex / instance 取内建（后端基线要求 shaderDrawParameters）
                 // 这块内容只取决于长度与这两位：同一次提交的同一段里填过一份就接着用（每笔每阶段新建一份 2.6 KB 是回放里的固定开销）
                 static struct { nvn_gpu_cmd c; uint64_t sub; uint32_t bytes, flags; nvn_gpu_slice sl; } sup[4]; static int sup_next;
-                { int hit = -1; uint64_t sub = rp_sub_serial();
+                { int hit = -1; uint64_t sub = rp_seg_serial();
                   for (int k = 0; k < 4; k++) if (sup[k].c == c && sup[k].sub == sub && sup[k].bytes == pg->support_bytes && sup[k].flags == flags) hit = k;
                   if (hit >= 0) { o->u.b.buf = sup[hit].sl.buf; o->u.b.off = sup[hit].sl.off; o->u.b.len = pg->support_bytes; break; } }
                 if (!alloc_copy(c, pg->support_bytes, NULL, &sl)) return skip("arena_alloc_failed", rec);
@@ -149,7 +149,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                     if (SB_RENDER_SCALE + k * 16 + 4 <= pg->support_bytes) memcpy(sl.cpu + SB_RENDER_SCALE + k * 16, &one, 4);
                     if (SB_RENDER_SCALE_Y + k * 16 + 4 <= pg->support_bytes) memcpy(sl.cpu + SB_RENDER_SCALE_Y + k * 16, &one, 4);
                 }
-                sup[sup_next].c = c; sup[sup_next].sub = rp_sub_serial(); sup[sup_next].bytes = pg->support_bytes; sup[sup_next].flags = flags; sup[sup_next].sl = sl; sup_next = (sup_next + 1) & 3;
+                sup[sup_next].c = c; sup[sup_next].sub = rp_seg_serial(); sup[sup_next].bytes = pg->support_bytes; sup[sup_next].flags = flags; sup[sup_next].sl = sl; sup_next = (sup_next + 1) & 3;
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = pg->support_bytes; break; }
             case NVN_RB_DRV0: {
                 if (!alloc_copy(c, DRV0_BYTES, NULL, &sl)) return skip("arena_alloc_failed", rec);

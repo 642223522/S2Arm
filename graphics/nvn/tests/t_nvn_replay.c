@@ -41,7 +41,7 @@ struct nvn_gpu_cmd_s { int live, is_pre; };
 static struct nvn_gpu_cmd_s g_fake_cmd, g_fake_pre;   // 主段 / 前置段各一个替身
 static int g_aborts;
 static int g_begins, g_commits;
-static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; } g_pend[8]; static int g_npend;
+static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; } g_pend[8]; static int g_npend, g_main_commits;   // g_main_commits：不算前置段
 static uint64_t g_fdone;
 static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
 int s2a_nvn_render_cond(void) { return g_rcond; }
@@ -52,7 +52,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { c->live = 0; g_aborts++; }
 nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
-    (void)err; c->live = 0; g_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    (void)err; c->live = 0; g_commits++; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)timeout_ns; (void)err; return (nvn_gpu_rc){v <= g_fdone ? NVN_GPU_OK : NVN_GPU_E_TIMEOUT}; }
 // 贴图 / 视图 / 采样器 / 上传：只记账
 struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; }; struct nvn_gpu_samp_s { int x; };
@@ -241,7 +241,7 @@ static void t_event_after_done(void) {   // 事件值只在段完成后可见；
     end(&a);
     uint64_t f0 = nvn_be_last_fence();
     submit1(&a);
-    CHECK(nvn_be_last_fence() == f0 + 2);             // 每次提交：前置段占 +1（没用到就空着），主段 +2
+    CHECK(nvn_be_last_fence() == f0 + 64);             // 每次提交：前置段占 +1（没用到就空着），主段 +2
     CHECK(ev == 0);                                   // 已提交、未完成
     CHECK(nvn_be_wait(f0 + 2, 0) == 0);
     fake_complete(NVN_GPU_DONE_OK);
@@ -257,7 +257,7 @@ static void t_fence_sync(void) {
     uint8_t *r = put(&a, OP_FENCE_SYNC, 8); sync_t *ps = &s; memcpy(r, &ps, 8); end(&a);
     uint64_t f0 = nvn_be_last_fence();
     submit1(&a); fake_complete(NVN_GPU_DONE_OK);
-    uint64_t got = 0; CHECK(sync_published(&s, &got) == 1 && got == f0 + 2 && nvn_be_last_fence() == f0 + 2);
+    uint64_t got = 0; CHECK(sync_published(&s, &got) == 1 && got == f0 + 64 && nvn_be_last_fence() == f0 + 64);
 }
 
 static void t_jump_call(void) {
@@ -789,6 +789,36 @@ static void t_pass_depth_shadow(void) {
     pass_fresh();
 }
 
+static void put_set_rt_n(stream *s, const tex_t *const *color, int n, const tex_t *depth) {   // 多个颜色槽（可以有空位）+ 深度，都不带视图
+    p_set_rt r; memset(&r, 0, sizeof r); r.n = n; for (int i = 0; i < n; i++) r.color[i] = color[i]; r.depth = depth;
+    uint8_t *a = put(s, OP_SET_RT, set_rt_size(&r)); p_set_rt_c *h = set_rt_put(a, &r);
+    const tex_t **pt = (const tex_t **)(h + 1); tex_t *snap = (tex_t *)(a + set_rt_snap_off(h)); uint32_t k = 0;
+    for (int i = 0; i < n; i++) if (color[i]) { snap[k] = *color[i]; pt[k] = &snap[k]; k++; }
+    if (depth) { snap[k] = *depth; pt[k] = &snap[k]; }
+}
+// 中途交段：换渲染目标时，自上次交段起画够了 300 笔，就把已经录下的命令先交给后端，回放接着录进新的一段；
+// 回写、同步对象的栅栏值都在最后一段上。用例把每段的笔数改成 12（手工拼的命令流放不下三百笔）：13 笔 → 交一次（主段 2 个）；11 笔 → 不交。
+static int af_run(int draws, uint64_t *last_sig, uint64_t *f0) {
+    pass_fresh(); g_gdraws = 0; *f0 = nvn_be_last_fence();   // 会话重开后栅栏值重新起算
+    tex_t A = mk_tex(111, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), B = mk_tex(112, 0x4000, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    const tex_t *a_[1] = {&A}, *b_[1] = {&B};
+    static stream s; memset(&s, 0, sizeof s); q_env(&s); put_set_rt_n(&s, a_, 1, NULL);
+    for (int i = 0; i < draws; i++) q_draw(&s);
+    put_set_rt_n(&s, b_, 1, NULL); q_draw(&s); end(&s);
+    int c0 = g_main_commits; g_npend = 0;
+    nvn_be_sub_begin(); nvn_be_exec(s.b); nvn_be_sub_commit();
+    int n = g_main_commits - c0; *last_sig = g_npend ? g_pend[g_npend - 1].signal : 0;
+    fake_complete(NVN_GPU_DONE_OK);
+    return n;
+}
+static void t_autoflush(void) {
+    uint64_t f0, b; int keep = rp_split_draws; rp_split_draws = 12;
+    // 返回的是主段数（目标贴图第一次用要清零，各带一个前置段，不算在内）；中间的段依次取 +1、+2…，最后一段 +64
+    CHECK(af_run(13, &b, &f0) == 2 && b == f0 + 64 && nvn_be_last_fence() == f0 + 64 && g_gdraws == 14 && g_npd == 2);   // 中途一段 + 最后一段；两个通道各在一段里
+    CHECK(af_run(11, &b, &f0) == 1 && b == f0 + 64 && g_gdraws == 12);      // 不足一段的笔数：整次提交一段
+    rp_split_draws = keep; pass_fresh();
+}
+
 // 遮挡计数：通过的样本数是队列上的累计值——复位清零、之后的绘制往上加、报告写出当时的累计值。
 // 期望值手算：各槽的样本数由替身在完成时给出，报告值 = 复位之后、报告之前开过的各槽之和（跨段接着加）。
 static void t_occlusion(void) {
@@ -1155,7 +1185,7 @@ static int t_table(const char *tsv) {   // 接线表与名字表一致：值、�
 int main(int argc, char **argv) {
     t_state_persists(); t_unimpl_names(); t_one_commit_per_submit(); t_event_after_done(); t_fence_sync();
     t_jump_call(); t_bad_record(); t_dirty_bits(); t_deferred_bind(); t_program_stages();
-    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_depth_shadow(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_dispatch(); t_copy_t2t(); t_draw(); t_present(); t_view_pin();
+    t_pools(); t_tex_init_registers_only(); t_alias(); t_cpu_upload(); t_cpu_rules(); t_registry(); t_buf_mirror(); t_buf_ops(); t_copy_b2t(); t_pass_clear_fold(); t_pass_depth_shadow(); t_autoflush(); t_pass_target_persists(); t_pass_switch_and_partial(); t_clear_rect(); t_report_counter(); t_occlusion(); t_render_cond(); t_dispatch(); t_copy_t2t(); t_draw(); t_present(); t_view_pin();
     if (argc > 1 && t_table(argv[1])) g_fail++;
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
