@@ -109,7 +109,7 @@ static id<MTLRenderPipelineState> geo_capture_pso(NvShader *vs) {
 enum { MESH_FIRST_SLOT = 29 };
 _Static_assert(VB_SLOT(13) == MESH_FIRST_SLOT, "slot 29 of the vertex table is vertex stream 13's: a mesh draw writes it through enc_r_vbuf so the next vertex draw rebinds the stream (see above)");
 static struct { int on, miss; NvShader *ts, *ms; uint32_t first, count; uint64_t ind; } g_mtk;   // the draw being encoded (on: draw() is drawing it)
-typedef struct { pso_key k; const void *ts; } mtk_key;   // pso_key with the mesh shader in its vertex place, and the task shader (the pipeline's third function)
+typedef struct { pso_key k; const void *ts; uint32_t pad; } mtk_key;   // pso_key with the mesh shader in its vertex place, the task shader (the pipeline's third function), and the user(locn) mask of the padded mesh variant used (0 = none)
 static nvn_hmap g_pso_mtk = {.klen = sizeof(mtk_key)}; static os_unfair_lock g_pso_mtk_lock = OS_UNFAIR_LOCK_INIT;
 static NSObject *g_pso_mtk_building; static dispatch_queue_t g_mtk_q; static dispatch_group_t g_mtk_group;
 static uint64_t g_mtk_n, g_mtk_ind_n, g_mtk_wait, g_mtk_skip;   // drawn (of them indirect), skipped while the pipeline was built, skipped as not drawable (red)
@@ -122,18 +122,24 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     if (g_pso_fc && !merged && !g_pso_fsfn && fs && !pso_fout_need(k, fs, 0)) k->fc = (uint8_t)g_pso_fc;
     g_pso_color_round = pso_color_round_mask(k, fs, merged);
     mk.ts = (__bridge void *)ts;
+    // #674: a fragment shader the game pairs at run time with a mesh shader that does not write a user(locn) it reads (Metal refuses the pipeline). Mesh shaders carry no user_out in
+    //   their json, so the miss is known from the refusal: then the padded mesh variant for every location the fragment reads is asked for (vp_ask, dm_shader_vpad → dm_mesh_pad_src:
+    //   only the locations the mesh does not write get (0,0,0,1)); until it is ready the pair's draws are skipped as before, then the pipeline is built with it (its own cache entry)
+    uint32_t want = fs && (fs->rf.has_user & 2) ? fs->rf.user_in : 0; id<MTLFunction> pf = want ? vp_fn(ms, want) : nil;
+    if (pf) mk.pad = want;
     os_unfair_lock_lock(&g_pso_mtk_lock); __unsafe_unretained id ps = hm_get_id(&g_pso_mtk, &mk);
     if (!ps) { if (!g_pso_mtk_building) g_pso_mtk_building = [NSObject new]; hm_put_id(&g_pso_mtk, &mk, g_pso_mtk_building); }
     os_unfair_lock_unlock(&g_pso_mtk_lock);
+    if (ps == NSNull.null && !mk.pad && want) vp_ask(S.prog, ms, want);   // refused unpadded: ask for the padded variant (once; a variant that cannot be made stays failed)
     if (ps) return ps == NSNull.null || ps == g_pso_mtk_building ? nil : ps;
     MTLRenderPipelineDescriptor *d = pso_desc(k, nil, fs, g_pso_fsfn, merged);   // the fragment function variant and the attachments, as a vertex draw's (no vertex stage)
     MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
-    m.meshFunction = ms->fn; m.fragmentFunction = d.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
+    m.meshFunction = pf ?: ms->fn; m.fragmentFunction = d.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
     if (ts) { m.objectFunction = ts->fn; m.payloadMemoryLength = ((NSUInteger)ts->mesh_payload + 15) & ~(NSUInteger)15; m.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; }
     m.rasterSampleCount = d.rasterSampleCount; m.alphaToCoverageEnabled = d.alphaToCoverageEnabled;
     for (int i = 0; i < 8; i++) m.colorAttachments[i] = d.colorAttachments[i];
     m.depthAttachmentPixelFormat = d.depthAttachmentPixelFormat; m.stencilAttachmentPixelFormat = d.stencilAttachmentPixelFormat;
-    NSString *names = [NSString stringWithFormat:@"task %s mesh %s fragment %s", ts ? ts->key : "-", ms->key, fs ? fs->key : "-"]; mtk_key kk = mk;
+    NSString *names = [NSString stringWithFormat:@"task %s mesh %s%s fragment %s", ts ? ts->key : "-", ms->key, pf ? " (padded)" : "", fs ? fs->key : "-"]; mtk_key kk = mk;
     if (!g_mtk_q) { g_mtk_q = dispatch_queue_create("dm.nvn.mesh", s2a_qos_queue_attr(DISPATCH_QUEUE_SERIAL, S2A_QOS_SHADER_VARIANT)); g_mtk_group = dispatch_group_create(); }
     dispatch_group_async(g_mtk_group, g_mtk_q, ^{ @autoreleasepool {
         NSError *e = nil; uint64_t t0 = bp_now();
