@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 55,
+  "revision": 56,
   "languages": ["zh-Hans", "en"],
   "source_language": "zh-Hans",
   "note": "四端（Mac / iOS / Android / 鸿蒙）启动器的「一套体验」规格。状态、文案、错误码、任务事件到界面的映射只在这里定义一次；各端只负责画，不另写一套措辞。错误码的「下一步」不在本文件里写第二份：一律指向 pack/jobs/errors.py 的 RECOVERY（口径见 README.md）。口径号 revision 改动规则见 README.md。",
@@ -1028,7 +1028,7 @@
       {"id": "welcome.win.metal.pick", "zh-Hans": "已经装了但没识别到？手动指定安装文件夹", "en": "Installed but not detected? Choose the install folder"},
       {"id": "welcome.win.metal.pick_title", "zh-Hans": "选择 Metal Developer Tools 的安装文件夹", "en": "Choose the Metal Developer Tools install folder"},
       {"id": "welcome.win.metal.pick_missing", "zh-Hans": "「{0}」里没找到 metal.exe（找过：{1}）。请选 Metal Developer Tools 的安装文件夹，默认在 C:\\Program Files\\Metal Developer Tools。", "en": "No metal.exe in \"{0}\" (looked at: {1}). Choose the Metal Developer Tools install folder; the default is C:\\Program Files\\Metal Developer Tools."},
-      {"id": "welcome.win.metal.detail", "zh-Hans": "Apple 的许可不允许随包分发，要你从官网下载安装一次，装好后回到这里重新检查。", "en": "Apple's license does not allow bundling it. Download and install it once from Apple, then check again here."},
+      {"id": "welcome.win.metal.detail", "zh-Hans": "Apple 的许可不允许我们随包附带，要你自己下载安装一次，免费：\n1. 点「打开官方页面」，用 Apple 账号登录（免费的 Apple ID 就行）。\n2. 下载列表里找「Metal Developer Tools for Windows」，下载它的安装程序（.exe）。\n3. 双击安装，一路默认。\n4. 装好回到 S2Arm：切回这个窗口会自动重新检查，也可以点「重新检查」。", "en": "Apple's license doesn't let us bundle it, so install it yourself once (it's free):\n1. Click \"Open the official page\" and sign in with an Apple Account (a free Apple ID works).\n2. In the downloads list, find \"Metal Developer Tools for Windows\" and download its installer (.exe).\n3. Run it and keep the defaults.\n4. Come back to S2Arm: switching back to this window checks again automatically, or click \"Check again\"."},
       {"id": "environment.ai.title", "zh-Hans": "允许 AI 操作 S2Arm", "en": "Let AI operate S2Arm"},
       {"id": "environment.ai.detail", "zh-Hans": "打开后，你自己的 AI 助手可以在这台电脑上替你操作启动器，每一步都显示在窗口里。", "en": "When on, your own AI assistant can operate the launcher on this PC, with every step shown in this window."},
       {"id": "welcome.sheet.dropUnreadable", "zh-Hans": "没有读到可用的文件，请点上面的按钮选择。", "en": "No usable file was received. Use the button above to choose one."},
