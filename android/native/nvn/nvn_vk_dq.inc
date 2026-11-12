@@ -45,7 +45,7 @@ static uint64_t g_dq_recs, g_dq_drains, g_dq_direct;   // records queued, drains
 static void dq_wake(void) { if (atomic_load(&g_dq_sleeping)) { pthread_mutex_lock(&g_dq_mu); pthread_cond_signal(&g_dq_cv); pthread_mutex_unlock(&g_dq_mu); } }
 static void vk_dq_drain(void) {
     if (!g_dq_ring) return;
-    pthread_spin_lock(&g_dq_pl); uint64_t w = g_dq_w; pthread_spin_unlock(&g_dq_pl);   // the records queued so far (another producer may add more meanwhile)
+    uint64_t w = atomic_load(&g_dq_pub);   // 到此刻已经写完的记录（原文在自旋锁里读写位置；这里读已发布的位置，免得开关关着时每个调用都过一次锁。别的线程正写到一半的那条不算，它那次调用还没返回）
     if (atomic_load_explicit(&g_dq_rd, memory_order_acquire) >= w) return;
     g_dq_drains++; dq_wake();
     for (int i = 0; i < 2000 && atomic_load_explicit(&g_dq_rd, memory_order_acquire) < w; i++) sched_yield();   // the recorder is usually a few calls behind
