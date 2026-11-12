@@ -13,7 +13,8 @@ public static class ExportStream
     public sealed record Step(string GameId, string Platform, string Task, int Index, int Count);
 
     /// <summary>一步的结局（stepEnded.outcome）：State = completed / failed / cancelled</summary>
-    public sealed record Outcome(string State, string Message, string? Code, string? Output, string? Ipa, long? IpaBytes, long? PackBytes);
+    /// <param name="Notes">出成了、但有阶段降级继续（v0.3.1，产物根 degrade.*.tsv 的「玩家提示」）：完成卡逐条显示；没有为空</param>
+    public sealed record Outcome(string State, string Message, string? Code, string? Output, string? Ipa, long? IpaBytes, long? PackBytes, IReadOnlyList<string>? Notes = null);
 
     public abstract record Event(Step Where);
     public sealed record Started(Step Where) : Event(Where);
@@ -37,7 +38,7 @@ public static class ExportStream
             default:
                 if (!e.TryGetProperty("outcome", out var o) || o.ValueKind != JsonValueKind.Object || Text(o, "state") is not ("completed" or "failed" or "cancelled") || Text(o, "state") is not { } state)
                     throw new LibraryProtocolException("export stepEnded without a known outcome state");
-                return new Ended(where, new Outcome(state, Text(o, "message") ?? "", Text(o, "code"), Text(o, "output"), Text(o, "ipa"), Long(o, "ipaBytes"), Long(o, "packBytes")));
+                return new Ended(where, new Outcome(state, Text(o, "message") ?? "", Text(o, "code"), Text(o, "output"), Text(o, "ipa"), Long(o, "ipaBytes"), Long(o, "packBytes"), Strings(o, "notes")));
         }
     }
 
@@ -75,5 +76,9 @@ public static class ExportStream
     private static string? Text(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } t ? t : null;
     private static int? Number(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+    private static IReadOnlyList<string> Strings(JsonElement e, string key) =>
+        e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array
+            ? v.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList() : [];
+
     private static long? Long(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : null;
 }

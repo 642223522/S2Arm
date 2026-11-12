@@ -138,6 +138,8 @@ struct vk_staging { struct nvn_gpu_buf_s *buf; };
 struct pass_rec { VkRenderPass rp; VkFramebuffer fb; };
 enum { TS_PASS_MAX = 250 };   // 调试读数：一段里逐个计时的通道数上限
 
+// 冗余状态消除的计数下标（见 nvn_gpu_cmd_s.es）
+enum { ES_PIPE, ES_VP, ES_SC, ES_BC, ES_ST, ES_DB, ES_VB, ES_IB, ES_PUSH, ES_KINDS };
 struct nvn_gpu_cmd_s {
     VkCommandBuffer cb;
     int recording;
@@ -182,10 +184,26 @@ struct nvn_gpu_cmd_s {
     uint8_t *push_data[6];        // 各阶段 push 暂存；vkCmdPushConstants 录制时拷贝入命令缓冲，段完成即放
     uint32_t push_capacity[6]; // 分配字节数，测试与管线切换共用
     uint8_t push_have[6];
+    uint32_t push_gen[6];         // 各阶段 push 内容的代号：nvn_gpu_push 写进的字节与原先不同才加一（发命令时据此判断要不要重发）
+    // 冗余状态消除（#708）：上次真正录进命令缓冲的绘制状态。只在发命令那一刻和它比，相同就不再录；
+    // ok 位为 0 = 不知道命令缓冲里现在是什么（命令对象新建时全 0；通道开始、矩形清除、计算派发之后整份作废）。
+    // 只管管线、动态状态、顶点 / 索引缓冲、push 常量；描述符组不在这里（#657）。
+    struct {
+        VkPipeline gpipe;                                  // 绑着的图形管线（空 = 不知道）
+        uint8_t vp_ok, sc_ok, bc_ok, st_ok, db_ok, ib_ok;
+        VkViewport vp; VkRect2D sc; float bc[4]; uint32_t st[2][3]; float db[3];
+        uint16_t vb_ok; VkBuffer vb[16]; VkDeviceSize vboff[16];
+        VkBuffer ib; VkDeviceSize ioff; VkIndexType it;
+        uint8_t push_ok[6]; VkPipelineLayout push_layout[6]; uint32_t push_off[6], push_bytes[6], push_gen[6];
+    } es;
+    uint32_t es_count[ES_KINDS];   // 实际录了几次（测试读数：nvn_gpu_vk_test_emit_counts）
     // 遮挡查询（nvn_gpu_cmd_desc.occlusion_slots > 0 才有）：一段一个查询池，段开头整池重置；每个槽一段里只能用一次
     VkQueryPool qpool; uint32_t qcount, qmax_used; int32_t q_active; uint8_t *q_used; uint8_t pass_occl;
     struct nvn_gpu_cmd_s *live_next;
 };
+
+// 冗余状态消除：影子整份作废（之后每一项第一次用到都照发）
+static void es_reset(struct nvn_gpu_cmd_s *c) { memset(&c->es, 0, sizeof c->es); }
 
 struct vk_segment {
     struct vk_segment *next;
@@ -2326,6 +2344,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "pass_begin 时已在通道里"); return; }
+    es_reset(c);   // 冗余状态消除：新通道先保守地全部重发（#708）
     if (!d || (!d->ncolor && !d->depth.view && !d->stencil.view) || !d->w || !d->h) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 参数非法（没有任何附件，或尺寸为 0）"); return; }
     if (d->depth.view && d->stencil.view && d->depth.view != d->stencil.view) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 的深度与模板必须是同一个视图"); return; }
     VkImageView fb_views[9];
@@ -2546,6 +2565,12 @@ void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, ui
     c->nbinds[st] = count;
 }
 
+// 测试读数：各类状态命令实际录了几次（下标同 ES_*：管线、视口、裁剪、混合常量、模板、深度偏移、顶点缓冲、索引缓冲、push）
+void nvn_gpu_vk_test_emit_counts(nvn_gpu_cmd ch, uint32_t out[9]) {
+    struct nvn_gpu_cmd_s *c = ch;
+    for (int i = 0; i < 9; i++) out[i] = c && i < ES_KINDS ? c->es_count[i] : 0;
+}
+
 // Test-only observation of the real allocation; never reads or writes push bytes.
 uint32_t nvn_gpu_vk_test_push_capacity(nvn_gpu_cmd ch, nvn_gpu_stage st) {
     struct nvn_gpu_cmd_s *c = ch;
@@ -2569,7 +2594,7 @@ void nvn_gpu_push(nvn_gpu_cmd ch, nvn_gpu_stage st, uint32_t off, const void *da
     uint64_t end = (uint64_t)po + pb;
     if (end > UINT32_MAX) { set_sticky(c, NVN_GPU_E_ARG, "push 范围溢出"); return; }
     if (!ensure_push_capacity(c, st, (uint32_t)end)) return;
-    memcpy(c->push_data[st] + off, data, bytes);
+    if (!c->push_have[st] || memcmp(c->push_data[st] + off, data, bytes)) { memcpy(c->push_data[st] + off, data, bytes); c->push_gen[st]++; }
     c->push_have[st] = 1;
 }
 
@@ -2752,12 +2777,20 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         return;
     }
     if (!bind_descriptor_groups(c, p, 0)) return;
+    // 以下各项只在和上次真正录进去的不同时才录（#708；影子见 nvn_gpu_cmd_s.es）
     for (int st = 0; st < 5; st++)
-        if (c->push_have[st] && p->stage_push_bytes[st])
+        if (c->push_have[st] && p->stage_push_bytes[st]) {
+            if (c->es.push_ok[st] && c->es.push_layout[st] == p->layout && c->es.push_off[st] == p->stage_push_off[st] &&
+                c->es.push_bytes[st] == p->stage_push_bytes[st] && c->es.push_gen[st] == c->push_gen[st]) continue;
             vkCmdPushConstants(c->cb, p->layout, vk_shader_stage((nvn_gpu_stage)st),
                                p->stage_push_off[st], p->stage_push_bytes[st], c->push_data[st] + p->stage_push_off[st]);
+            c->es.push_ok[st] = 1; c->es.push_layout[st] = p->layout; c->es.push_off[st] = p->stage_push_off[st];
+            c->es.push_bytes[st] = p->stage_push_bytes[st]; c->es.push_gen[st] = c->push_gen[st]; c->es_count[ES_PUSH]++;
+        }
     if (c->has_dyn && (c->dyn.origin_ll != 0) != (p->key.origin_ll != 0)) { set_sticky(c, NVN_GPU_E_ARG, "绘制时的窗口原点（左下 = %d）与管线描述里的不一致", (int)c->dyn.origin_ll); return; }
-    vkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipe);
+    // 换游戏管线不动动态状态：所有游戏管线声明的动态状态是同一组（见建管线处的 dyn[7]），按规范切换时保留；
+    // 只声明了一部分的管线（矩形清除的）用过之后整份影子作废（nvn_gpu_clear_rect）。
+    if (!c->es.gpipe || c->es.gpipe != p->pipe) { vkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipe); c->es.gpipe = p->pipe; c->es_count[ES_PIPE]++; }
     VkViewport vp;
     if (c->has_dyn && c->dyn.nvp) {
         vp = (VkViewport){c->dyn.vp[0][0], c->dyn.vp[0][1], c->dyn.vp[0][2], c->dyn.vp[0][3], c->dyn.vp[0][4], c->dyn.vp[0][5]};
@@ -2770,29 +2803,44 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     VkRect2D sc = {{0, 0}, {c->pass_w, c->pass_h}};
     if (c->has_dyn && c->dyn.has_sc)
         sc = (VkRect2D){{c->dyn.sc[0], c->dyn.sc[1]}, {(uint32_t)c->dyn.sc[2], (uint32_t)c->dyn.sc[3]}};
-    vkCmdSetViewport(c->cb, 0, 1, &vp);
-    vkCmdSetScissor(c->cb, 0, 1, &sc);
+    // 浮点按位比（memcmp）：-0 与 +0、NaN 各按自己的位，宁可多发不漏发
+    if (!c->es.vp_ok || memcmp(&c->es.vp, &vp, sizeof vp)) { vkCmdSetViewport(c->cb, 0, 1, &vp); c->es.vp = vp; c->es.vp_ok = 1; c->es_count[ES_VP]++; }
+    if (!c->es.sc_ok || memcmp(&c->es.sc, &sc, sizeof sc)) { vkCmdSetScissor(c->cb, 0, 1, &sc); c->es.sc = sc; c->es.sc_ok = 1; c->es_count[ES_SC]++; }
     const float bc[4] = {c->dyn.blend_color[0], c->dyn.blend_color[1], c->dyn.blend_color[2], c->dyn.blend_color[3]};
-    vkCmdSetBlendConstants(c->cb, bc);
+    if (!c->es.bc_ok || memcmp(c->es.bc, bc, sizeof bc)) { vkCmdSetBlendConstants(c->cb, bc); memcpy(c->es.bc, bc, sizeof bc); c->es.bc_ok = 1; c->es_count[ES_BC]++; }
     // 模板的三个动态量：下标 0 = 正面、1 = 背面（NVN 的面位）。没发过动态状态时用 NVN 缺省（掩码全开、参考值 0）
-    for (int f = 0; f < 2; f++) {
-        VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
-        vkCmdSetStencilCompareMask(c->cb, face, c->has_dyn ? c->dyn.st_vmask[f] & 0xffu : 0xffu);
-        vkCmdSetStencilWriteMask(c->cb, face, c->has_dyn ? c->dyn.st_wmask[f] & 0xffu : 0xffu);
-        vkCmdSetStencilReference(c->cb, face, c->has_dyn ? c->dyn.st_ref[f] & 0xffu : 0u);
+    {
+        uint32_t stv[2][3];
+        for (int f = 0; f < 2; f++) {
+            stv[f][0] = c->has_dyn ? c->dyn.st_vmask[f] & 0xffu : 0xffu;
+            stv[f][1] = c->has_dyn ? c->dyn.st_wmask[f] & 0xffu : 0xffu;
+            stv[f][2] = c->has_dyn ? c->dyn.st_ref[f] & 0xffu : 0u;
+        }
+        if (!c->es.st_ok || memcmp(c->es.st, stv, sizeof stv)) {
+            for (int f = 0; f < 2; f++) {
+                VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
+                vkCmdSetStencilCompareMask(c->cb, face, stv[f][0]);
+                vkCmdSetStencilWriteMask(c->cb, face, stv[f][1]);
+                vkCmdSetStencilReference(c->cb, face, stv[f][2]);
+            }
+            memcpy(c->es.st, stv, sizeof stv); c->es.st_ok = 1; c->es_count[ES_ST]++;
+        }
     }
     // 深度偏移（NVN SetPolygonOffsetClamp：factor 乘斜率、units 乘最小可分辨深度差、clamp 限幅）。管线没开偏移时这三个量不起作用，照发 0。
     {
         const p_poly_offset *po = &c->dyn.po;
         int on = c->has_dyn && p->key.poly.offset_en & 4;
         if (on && po->clamp != 0.0f && !g.dev->core_features.depthBiasClamp) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "深度偏移带限幅（clamp=%g），设备没有 depthBiasClamp", (double)po->clamp); return; }
-        vkCmdSetDepthBias(c->cb, on ? po->units : 0.0f, on ? po->clamp : 0.0f, on ? po->factor : 0.0f);
+        const float db[3] = {on ? po->units : 0.0f, on ? po->clamp : 0.0f, on ? po->factor : 0.0f};
+        if (!c->es.db_ok || memcmp(c->es.db, db, sizeof db)) { vkCmdSetDepthBias(c->cb, db[0], db[1], db[2]); memcpy(c->es.db, db, sizeof db); c->es.db_ok = 1; c->es_count[ES_DB]++; }
     }
     for (uint32_t s = 0; s < 16; s++) {
         if (!c->vbuf[s].buf) continue;
         VkBuffer vb = c->vbuf[s].buf->buffer;
         VkDeviceSize off = c->vbuf[s].off;
+        if ((c->es.vb_ok >> s & 1) && c->es.vb[s] == vb && c->es.vboff[s] == off) continue;
         vkCmdBindVertexBuffers(c->cb, s, 1, &vb, &off);
+        c->es.vb[s] = vb; c->es.vboff[s] = off; c->es.vb_ok |= (uint16_t)(1u << s); c->es_count[ES_VB]++;
     }
     uint32_t inst = a->instances ? a->instances : 1;
     uint32_t draws = a->max_draws ? a->max_draws : 1;
@@ -2833,7 +2881,10 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
             }
         }
         cmd_ref(c, a->ibuf, REF_BUF);
-        vkCmdBindIndexBuffer(c->cb, ib, ioff, it);
+        if (!c->es.ib_ok || c->es.ib != ib || c->es.ioff != ioff || c->es.it != it) {
+            vkCmdBindIndexBuffer(c->cb, ib, ioff, it);
+            c->es.ib = ib; c->es.ioff = ioff; c->es.it = it; c->es.ib_ok = 1; c->es_count[ES_IB]++;
+        }
         if (a->ind) {
             cmd_ref(c, a->ind, REF_BUF);
             uint32_t stride = a->stride ? a->stride : (uint32_t)sizeof(VkDrawIndexedIndirectCommand);
@@ -2868,6 +2919,7 @@ void nvn_gpu_dispatch(nvn_gpu_cmd ch, nvn_gpu_pipe ph, uint32_t x, uint32_t y, u
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!ind && (!x || !y || !z)) return;   // 0 组：空操作，不录、不置错（对齐 Ryujinx）
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "dispatch 在通道内"); return; }
+    es_reset(c);   // push 常量的范围按管线布局、不分绑定点：保守起见计算派发之后图形这边全部重发（#708）
     if (ph && c->pipe && ph != c->pipe) { set_sticky(c, NVN_GPU_E_ARG, "dispatch 管线与 bind 时的管线不一致"); return; }
     struct nvn_gpu_pipe_s *p = c->pipe;
     if (!p || p->pass) { set_sticky(c, NVN_GPU_E_ORDER, "dispatch 缺计算管线"); return; }
@@ -3685,6 +3737,7 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "clear_rect 在通道外"); return; }
+    es_reset(c);   // 内部画一笔整屏三角形：换管线（只声明了部分动态状态）、改视口裁剪与模板、写 push；下一笔绘制全部重发（#708）
     if (!d || (d->color < 0 && !d->depth && !d->stencil)) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 什么都不清"); return; }
     if (d->color >= 0 && ((uint32_t)d->color >= c->pass_ncolor || !(c->pass_color_mask >> d->color & 1))) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 颜色槽 %d 越界或是空位（通道有 %u 个槽）", d->color, c->pass_ncolor); return; }
     if ((d->depth && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) || (d->stencil && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_STENCIL_BIT))) {

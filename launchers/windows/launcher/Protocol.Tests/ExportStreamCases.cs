@@ -24,6 +24,12 @@ public static class ExportStreamCases
  "outcome":{"state":"completed","message":"操作完成","output":"D:\\x.ipa","ipa":"D:\\x.ipa","ipaBytes":1234,"packBytes":5678}}
 """));
         check(ended is ExportStream.Ended { Outcome: { State: "completed", Ipa: "D:\\x.ipa", IpaBytes: 1234, PackBytes: 5678, Code: null } }, "export: stepEnded outcome");
+        check(ended is ExportStream.Ended { Outcome.Notes.Count: 0 }, "export: no notes → empty");
+        var noted = ExportStream.Read(Json("""
+{"type":"stepEnded","state":"running","step":{"gameId":"G1","platform":"iphone","task":"exp-1-2","index":2,"count":3},
+ "outcome":{"state":"completed","message":"","notes":["这款有 27 处用了兼容写法",3,""]}}
+"""));
+        check(noted is ExportStream.Ended { Outcome.Notes: ["这款有 27 处用了兼容写法"] }, "export: degrade notes kept, non-strings and blanks dropped");
         check(ExportStream.Read(Json("""{"type":"heartbeat","state":"running"}""")) is null && ExportStream.Read(Json("""{"type":"stage","state":"running"}""")) is null, "export: own events ignored");
         Rejects(() => ExportStream.Read(Json("""{"type":"stepEnded","step":{"gameId":"G1","platform":"iphone"},"outcome":{"state":"queued"}}""")), "export: unknown outcome state rejected", check);
         Rejects(() => ExportStream.Read(Json("""{"type":"step","step":{"platform":"iphone"}}""")), "export: step without game rejected", check);
