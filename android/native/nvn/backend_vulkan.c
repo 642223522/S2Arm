@@ -267,7 +267,7 @@ static struct nvn_gpu_vk g;
 static _Atomic int g_open;   // 跨线程：close 置 0 后其他线程据此拒收
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 // 诊断读数（nvk_gputime 开着时每 300 次上屏打一行）：每帧新建了多少个驱动对象、写了多少次描述符、开了多少个查询。
-enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_N };
+enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_VIEW, OC_N };
 static uint64_t g_oc[OC_N], g_oc_total[OC_N];
 static uint64_t g_acq_ns;   // 取窗口图（vkAcquireNextImageKHR）累计用时，随对象读数那一行打
 #define OC(i) (__atomic_fetch_add(&g_oc[i], 1, __ATOMIC_RELAXED), __atomic_fetch_add(&g_oc_total[i], 1, __ATOMIC_RELAXED))
@@ -2308,6 +2308,7 @@ static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
         ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         ci.format = v->format ? v->format : t->format;
         ci.subresourceRange = (VkImageSubresourceRange){t->aspect, v->base_level, 1, image3d ? v->att_layer : v->base_layer, 1};
+        OC(OC_VIEW);
         if (vkCreateImageView(g.d, &ci, NULL, &v->att) != VK_SUCCESS) v->att = VK_NULL_HANDLE;
     }
     VkImageView r = v->att;
@@ -2316,7 +2317,9 @@ static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
 }
 
 static pthread_mutex_t g_pc_mu = PTHREAD_MUTEX_INITIALIZER;
-static int pc_on(void) { static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_pass_cache", 1) != 0; return on; }
+// 开关每 128 个通道重读一次（真机上同一局里来回切着比）；一个通道从头到尾用开头读到的那个值（g_pc_use，只在回放线程上动）
+static int g_pc_use = 1;
+static int pc_on(void) { static int on = -1; static uint32_t n; if (on < 0 || !(++n & 127)) on = nvn_plat_flag("nvk_pass_cache", 1) != 0; return on; }
 struct pc_rp { uint32_t natt, ncol; int has_depth; VkAttachmentDescription att[9]; VkAttachmentReference col[8], dref; VkRenderPass rp; };
 static struct pc_rp *g_pc_rp; static uint32_t g_pc_nrp, g_pc_rpcap;
 enum { PC_FB_N = 2048, PC_FB_PROBE = 24 };
@@ -2324,7 +2327,7 @@ struct pc_fb { VkRenderPass rp; uint32_t natt, w, h, layers; VkImageView v[9]; V
 static struct pc_fb g_pc_fb[PC_FB_N];
 static VkRenderPass pc_pass(const VkRenderPassCreateInfo *ci, const VkAttachmentDescription *att, uint32_t natt, const VkAttachmentReference *col, uint32_t ncol, const VkAttachmentReference *dref) {
     VkRenderPass pass = VK_NULL_HANDLE;
-    if (!pc_on() || natt > 9 || ncol > 8) { OC(OC_RP); return vkCreateRenderPass(g.d, ci, NULL, &pass) == VK_SUCCESS ? pass : VK_NULL_HANDLE; }
+    if (!g_pc_use || natt > 9 || ncol > 8) { OC(OC_RP); return vkCreateRenderPass(g.d, ci, NULL, &pass) == VK_SUCCESS ? pass : VK_NULL_HANDLE; }
     struct pc_rp k; memset(&k, 0, sizeof k); k.natt = natt; k.ncol = ncol; k.has_depth = dref != NULL;
     memcpy(k.att, att, natt * sizeof *att); memcpy(k.col, col, ncol * sizeof *col); if (dref) k.dref = *dref;
     pthread_mutex_lock(&g_pc_mu);
@@ -2338,7 +2341,7 @@ static VkRenderPass pc_pass(const VkRenderPassCreateInfo *ci, const VkAttachment
 }
 static VkFramebuffer pc_fb(const VkFramebufferCreateInfo *fi, int *cached) {
     VkFramebuffer fb = VK_NULL_HANDLE; *cached = 0;
-    if (!pc_on() || fi->attachmentCount > 9) { OC(OC_FB); return vkCreateFramebuffer(g.d, fi, NULL, &fb) == VK_SUCCESS ? fb : VK_NULL_HANDLE; }
+    if (!g_pc_use || fi->attachmentCount > 9) { OC(OC_FB); return vkCreateFramebuffer(g.d, fi, NULL, &fb) == VK_SUCCESS ? fb : VK_NULL_HANDLE; }
     uint64_t h = (uint64_t)(uintptr_t)fi->renderPass * 0x9E3779B97F4A7C15ull ^ ((uint64_t)fi->width << 40 | (uint64_t)fi->height << 16 | fi->layers);
     for (uint32_t i = 0; i < fi->attachmentCount; i++) h = (h ^ (uint64_t)(uintptr_t)fi->pAttachments[i]) * 0x100000001B3ull;
     pthread_mutex_lock(&g_pc_mu);
@@ -2471,6 +2474,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     VkAttachmentReference dref = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     uint32_t natt = 0;
     int has_depth = 0;
+    g_pc_use = pc_on();
     VkRenderPass pass = make_pass(d, fb_views, att, col, &dref, &natt, &has_depth);
     if (!pass) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "渲染通道创建失败（附件格式 / 采样数）"); return; }
     VkFramebufferCreateInfo fi;
@@ -2485,7 +2489,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     int fb_cached = 0;
     VkFramebuffer fb = pc_fb(&fi, &fb_cached);
     if (!fb) {
-        if (!pc_on()) vkDestroyRenderPass(g.d, pass, NULL);
+        if (!g_pc_use) vkDestroyRenderPass(g.d, pass, NULL);
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "vkCreateFramebuffer 失败");
         return;
     }
@@ -2532,12 +2536,12 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     if (c->npasses == c->passcap) {
         uint32_t cap = c->passcap ? c->passcap * 2 : 8;
         struct pass_rec *np = realloc(c->passes, cap * sizeof *np);
-        if (!np) { if (!fb_cached) vkDestroyFramebuffer(g.d, fb, NULL); if (!pc_on()) vkDestroyRenderPass(g.d, pass, NULL); set_sticky(c, NVN_GPU_E_OOM, "通道列表分配失败"); return; }
+        if (!np) { if (!fb_cached) vkDestroyFramebuffer(g.d, fb, NULL); if (!g_pc_use) vkDestroyRenderPass(g.d, pass, NULL); set_sticky(c, NVN_GPU_E_OOM, "通道列表分配失败"); return; }
         c->passes = np;
         c->passcap = cap;
     }
     // 记在段上的只有「段做完要销毁」的：没进缓存的帧缓冲、缓存关着时的渲染通道对象
-    if (!fb_cached || !pc_on()) c->passes[c->npasses++] = (struct pass_rec){pc_on() ? VK_NULL_HANDLE : pass, fb_cached ? VK_NULL_HANDLE : fb};
+    if (!fb_cached || !g_pc_use) c->passes[c->npasses++] = (struct pass_rec){g_pc_use ? VK_NULL_HANDLE : pass, fb_cached ? VK_NULL_HANDLE : fb};
 }
 
 void nvn_gpu_pass_end(nvn_gpu_cmd ch) {
@@ -3460,6 +3464,7 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
         }
         if (!o->swizzled) memset(&ci.components, 0, sizeof ci.components);   // 恒等：留 IDENTITY，附件可用
     }
+    OC(OC_VIEW);
     if (vkCreateImageView(g.d, &ci, NULL, &o->view) != VK_SUCCESS) {
         free(o);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreateImageView 拒绝（格式 / 范围）");
