@@ -5,6 +5,11 @@
 services-build-ios-test:
 	bash tests/services_build_ios_test.sh
 TEST_TARGETS += services-build-ios-test
+# S2A_DAV1D=0（仅适合所有目标机都有 AV1 硬件解码的本地构建）：host/iOS 不链 dav1d，启动器不再要求 meson/ninja，预编库清单不含 dav1d
+.PHONY: dav1d-optional-test
+dav1d-optional-test:
+	bash tests/dav1d_optional_test.sh
+TEST_TARGETS += dav1d-optional-test
 .PHONY: ios-layer-test
 ios-layer-test:
 	bash tests/ios_layer_test.sh

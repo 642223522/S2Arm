@@ -39,8 +39,9 @@ struct InstallView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(loc.backend(job.stage.isEmpty ? job.message : job.stage)).font(.manrope(16, .bold)).lineLimit(1)
                     InlineProgress(session: job)
-                    // 钥匙串授权只在申请描述文件 / 签名这两步（pack/jobs/install.py sign_and_install 第 3、4 步）会弹；推资源包时还挂着它会让玩家以为在等授权（#266）
-                    if job.kind == .install, [3, 4].contains(job.progress.index ?? 0) {
+                    // 钥匙串授权只在后端标了 keychainPrompt 的阶段会弹（Apple ID 模式申请描述文件 / 签名；开发者证书模式不弹）；
+                    //   推资源包时还挂着它会让玩家以为在等授权（#266）。原先写死第 3、4 步，开发者证书模式第 4 步是「装到 iPhone」也挂了
+                    if job.kind == .install, job.progress.keychainPrompt {
                         Text(text("install.keychain")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在装到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
@@ -62,7 +63,7 @@ struct InstallView: View {
                                 CardRow(loc.backend(item.title), detail: loc.backend(item.detail), dot: dot(item)) {
                                     if !item.ok, item.id == "package", let game {
                                         Button(loc.t("s2arm.action.ipa")) { dismiss(); model.exportFor = game.id }
-                                            .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                                            .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                                     }
                                     if !item.ok, item.id == "appleId" {
                                         // 团队号手填 / 引导项目收进环境检查「装到 iPhone 的方式」（v0.3.0）：这里只给一个去设置
@@ -88,7 +89,7 @@ struct InstallView: View {
                         // 只换宿主后（手机上的 S2Arm 换了新版运行层）新版不好用：装回上一版
                         Button(text("install.restore")) { showRestoreConfirm = true }
                             .buttonStyle(LauncherSecondaryButtonStyle())
-                            .disabled(model.busy)
+                            .disabled(model.busy).busyHint(model)
                             .confirmationDialog(text("install.restore_title"), isPresented: $showRestoreConfirm, titleVisibility: .visible) {
                                 Button(text("install.restore_confirm")) { model.restorePhone(game) }
                                 Button(loc.t("launch.done"), role: .cancel) {}
@@ -99,7 +100,7 @@ struct InstallView: View {
                     if let game {
                         Button(text("install.remove")) { showRemoveConfirm = true }
                             .buttonStyle(LauncherSecondaryButtonStyle())
-                            .disabled(model.busy)
+                            .disabled(model.busy).busyHint(model)
                             .confirmationDialog(text("install.remove_title"), isPresented: $showRemoveConfirm, titleVisibility: .visible) {
                                 Button(text("install.remove_confirm"), role: .destructive) { model.removeFromPhone(game) }
                                 Button(loc.t("launch.done"), role: .cancel) {}
@@ -110,7 +111,7 @@ struct InstallView: View {
                 }
                 .padding(.horizontal, 30).padding(.bottom, 24)
             }
-            .alert(text("install.drop_title"), isPresented: Binding(get: { model.dropConfirm != nil }, set: { if !$0 { model.dropConfirm = nil } }), presenting: model.dropConfirm) { d in
+            .alert(text("install.drop_title"), isPresented: Binding(get: { model.dropConfirm != nil && model.dropConfirm?.update == nil }, set: { if !$0 { model.dropConfirm = nil } }), presenting: model.dropConfirm) { d in
                 Button(text("install.drop_confirm"), role: .destructive) { model.confirmDrop(d) }
                 Button(loc.t("launch.done"), role: .cancel) {}
             } message: { d in
@@ -143,6 +144,7 @@ struct InstallView: View {
                 .buttonStyle(.plain).keyboardShortcut(.defaultAction)
                 .disabled(!model.installAllowed(gameID) || model.busy)
                 .opacity(model.installAllowed(gameID) && !model.busy ? 1 : 0.45)
+                .busyHint(model)
             }
             .padding(.horizontal, 30).padding(.vertical, 16)
             }

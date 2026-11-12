@@ -448,6 +448,40 @@ int main(int argc, char **argv) {
             check(getenv("DM_NVN_PASSDUMP") == NULL, @"诊断局：第二次起局不再开");
             unsetenv("S2A_DOCS"); [NSFileManager.defaultManager removeItemAtPath:docs error:nil];
         }
+        // 本地玩家（#623）：游戏库写的玩家表（shell LocalPlayers.swift 的格式）→ 起局环境与这个玩家的存档位置，走真实入口 s2a_ios_load_graphics_settings。期望手写：
+        //   ⓐ 没建过玩家 → 不给玩家、SaveData（旧行为）；ⓑ 当前是第一个玩家 → first、SaveData、没改过名不给名字；ⓒ 当前是 Hong → 她的用户号、SaveData-Hong、名字；
+        //   ⓓ 当前 uid 不在表里 → 第一个玩家；ⓔ 文件夹名想跳出本款文档根（../x）→ 按用户号起名；ⓕ 启动环境显式给的玩家优先
+        {   NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
+            NSString *docs = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+            setenv("S2A_DOCS", docs.fileSystemRepresentation, 1);
+            NSString *hong = @"d7a43a96495d0a594e615dd88587b6bf";
+            NSArray *table = @[@{@"uid": @"", @"name": @"", @"folder": @"SaveData"}, @{@"uid": hong, @"name": @"Hong", @"folder": @"SaveData-Hong"}];
+            NSArray *escape = @[@{@"uid": @"", @"name": @"Ming", @"folder": @"SaveData"}, @{@"uid": hong, @"name": @"Hong", @"folder": @"../x"}];
+            struct { NSString *what; NSArray *list; NSString *current; const char *preset; NSString *want; } cases[] = {
+                {@"ⓐ 没建过玩家", nil, nil, NULL, @"玩家=未设 名字=未设 存档位置=SaveData"},
+                {@"ⓑ 第一个玩家", table, @"", NULL, @"玩家=first 名字=未设 存档位置=SaveData"},
+                {@"ⓒ 第二个玩家", table, hong, NULL, [NSString stringWithFormat:@"玩家=%@ 名字=Hong 存档位置=SaveData-Hong", hong]},
+                {@"ⓓ 当前不在表里", table, @"ffffffffffffffffffffffffffffffff", NULL, @"玩家=first 名字=未设 存档位置=SaveData"},
+                {@"ⓔ 文件夹名跳出文档根", escape, hong, NULL, [NSString stringWithFormat:@"玩家=%@ 名字=Hong 存档位置=SaveData-%@", hong, hong]},
+                {@"ⓔ' 改过名的第一个玩家", escape, @"", NULL, @"玩家=first 名字=Ming 存档位置=SaveData"},
+                {@"ⓕ 启动环境显式给的优先（整个不套游戏库的）", table, hong, "first", @"玩家=first 名字=未设 存档位置=SaveData"},
+            };
+            for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+                unsetenv("S2A_SAVE_FOLDER"); unsetenv("S2A_PLAYER_USER"); unsetenv("S2A_PLAYER_NAME");
+                if (cases[k].preset) setenv("S2A_PLAYER_USER", cases[k].preset, 1);
+                if (cases[k].list) [std setObject:cases[k].list forKey:@"S2ALocalPlayers"]; else [std removeObjectForKey:@"S2ALocalPlayers"];
+                if (cases[k].current) [std setObject:cases[k].current forKey:@"S2ALocalPlayer"]; else [std removeObjectForKey:@"S2ALocalPlayer"];
+                s2a_ios_load_graphics_settings();
+                const char *u = getenv("S2A_PLAYER_USER"), *n = getenv("S2A_PLAYER_NAME"), *f = getenv("S2A_SAVE_FOLDER");
+                NSString *folder = f ? @(f) : @"未设";
+                if ([folder hasPrefix:[docs stringByAppendingString:@"/"]]) folder = [folder substringFromIndex:docs.length + 1];
+                NSString *got = [NSString stringWithFormat:@"玩家=%@ 名字=%@ 存档位置=%@", u ? @(u) : @"未设", n ? @(n) : @"未设", folder];
+                check([got isEqual:cases[k].want], [NSString stringWithFormat:@"本地玩家%@：期望 %@ → 真结果 %@", cases[k].what, cases[k].want, got]);
+            }
+            [std removeObjectForKey:@"S2ALocalPlayers"]; [std removeObjectForKey:@"S2ALocalPlayer"];
+            unsetenv("S2A_SAVE_FOLDER"); unsetenv("S2A_PLAYER_USER"); unsetenv("S2A_PLAYER_NAME"); unsetenv("S2A_DOCS");
+            clear_environment();
+        }
         // 画面设置按游戏存（11-11）：多款容器选了游戏后 s2a_ios_settings_defaults 是分层的——画面键读「这款 → 所有游戏的默认（App 级）」、
         //   写只写这款；非画面键原样走 App 级；没有游戏号就是 App 级本身。一次性迁移清掉 App 级里自动写下的「宽屏关 + 问过」与原生 60 帧记号，
         //   玩家自己选的留作默认。期望按这条规则手写
@@ -472,7 +506,7 @@ int main(int argc, char **argv) {
             check(getenv("S2A_FPS60") && !strcmp(getenv("S2A_FPS60"), "0"), @"按游戏：这款没设 60 帧 → 用所有游戏的默认（关）");
             clear_environment(); [game setBool:YES forKey:@"S2AFps60"];
             s2a_ios_apply_graphics_settings(d);
-            check(getenv("S2A_FPS60") == NULL, @"按游戏：这款开 60 帧压过所有游戏的默认（关）——原先压不过");
+            check(getenv("S2A_FPS60") && !strcmp(getenv("S2A_FPS60"), "1"), @"按游戏：这款开 60 帧压过所有游戏的默认（关）——原先压不过；新约定下明确开写 1（宿主只把 1 当开）");
             [d setBool:NO forKey:@"S2AWidescreen"];
             check([game objectForKey:@"S2AWidescreen"] && ![game boolForKey:@"S2AWidescreen"] && ![app objectForKey:@"S2AWidescreen"], @"按游戏：设置页写宽屏只写这款，App 级不变");
             [d setBool:YES forKey:@"S2ADevHUD"];

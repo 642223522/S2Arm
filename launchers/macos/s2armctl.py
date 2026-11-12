@@ -38,10 +38,10 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   batch <游戏号>[:mac,iphone] … [--location 文件夹]
                                     批量出包：几款一起，每款可指定平台（缺省 iphone；同一款先 Mac 后 iPhone，解包只做一次）、一批共用一个存放位置；
                                     一款接一款地出，失败不挡后面、磁盘满暂停；等到出完，打印每款结果和汇总，有失败退出码 1
-  install-check <游戏号> [--json]    装到 iPhone 前的清单：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
+  install-check <游戏号> [--device UDID或设备名] [--json]    装到 iPhone 前的清单（--device：查哪一台，同 install --device；s2armctl targets 列设备号）：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
   restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   show environment|library|export [游戏号]   打开环境检查 / 回游戏库 / 打开这款的出包页（同点对应按钮）
-  update-phone [--ask | --accept-stale [--repack]] [--device UDID或设备名]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
+  update-phone [--ask | --accept-stale [--repack]] [--device UDID或设备名] [--accept-dropped]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
                                     有要按新版重新出包的款时不带 --accept-stale 退 1 并列出它们；--repack 更新完把它们排进批量出包、出完自动装
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
@@ -210,7 +210,7 @@ AI_NEXT = {
     'device_not_connected': ('ask', '要装的那台设备不在线：请玩家插上数据线，或让它和电脑连同一个 Wi-Fi 并解锁（第一次还要点「信任」、打开开发者模式），连好后 s2armctl install <游戏号> --device <那台的设备号>'),
     'device_required': ('ai', '没说装到哪台：先 s2armctl targets 看连着的设备和设备号，再 s2armctl install <游戏号> --device <设备号>（不替玩家挑）'),
     'device_locked': ('human', 'iPhone 锁屏了：请玩家解锁手机、停在主屏幕，然后重试 s2armctl install'),
-    'container_would_drop': ('ask', '手机上有几款是在别的电脑上装的，这次装会让它们暂时不能玩（存档和资源包留在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名念给玩家，玩家同意了再 s2armctl install <游戏号> --accept-dropped（删除用 uninstall <游戏号> --accept-dropped）'),
+    'container_would_drop': ('ask', '手机上有几款是在别的电脑上装的，这次装会让它们暂时不能玩（存档和资源包留在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名念给玩家，玩家同意了再 s2armctl install <游戏号> --accept-dropped（删除用 uninstall <游戏号> --accept-dropped，更新手机上的 S2Arm 用 update-phone --accept-dropped）'),
     'free_app_limit': ('human', '这台 iPhone 上免费签名的自签 App 已满 3 个：请玩家在 iPhone 上删掉一个不玩的自签 App 再试，或改用付费 Apple 开发者账号（AltStore 同样受这个上限）'),
     'free_appid_limit': ('human', '免费 Apple ID 7 天内最多注册 10 个包名，已用满（Apple 错误 9120），删 App 不会退额度、别让玩家删：请玩家等几天（最早那批满 7 天就恢复），或在 Xcode 里换一个 Apple ID 登录（要输密码，AI 不代做）后 s2armctl install <游戏号>，或改用付费 Apple 开发者账号'),
     'devcert_password': ('human', '开发者证书密码不对或 .p12 坏了：请玩家在出包页重新导入并输入密码（密码只能玩家本人输，AI 不代做）'),
@@ -218,6 +218,8 @@ AI_NEXT = {
     'devcert_mismatch': ('human', '证书和描述文件不配套：请玩家在开发者网站重新生成含这张证书的描述文件，再在出包页重新导入'),
     'devcert_missing': ('human', '开发者证书不完整：请玩家在出包页重新导入，或切回 Apple ID 签名后 s2armctl install <游戏号>'),
     'devcert_keychain': ('human', '证书密码存不进钥匙串：请玩家解锁登录钥匙串、允许 S2Arm 访问后在出包页重新导入'),
+    'app_other_signer': ('human', '手机上已有用别的签名装的 S2Arm（包名相同）：请玩家二选一——继续用原签名工具更新它，或在 iPhone 上删掉它（先导出存档），然后 s2armctl install <游戏号>'),
+    'bundle_id_switched': ('auto', '（警告）原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档）'),
     'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
@@ -597,12 +599,13 @@ def errors(game=None):
     if logs:
         print(f'--- {logs[-1]} 末尾 ---'); print(''.join(open(logs[-1], errors='replace').readlines()[-40:]).rstrip())
 
-def install_check(gid, as_json, limit=40):
-    """POST /installCheck 后等 /state 里出现这款的 installReadiness（启动器后台查，几秒）"""
-    call('POST', '/installCheck', {'gameId': gid}); t0 = time.time()
+def install_check(gid, as_json, limit=40, device=None):
+    """POST /installCheck 后等 /state 里出现这款的 installReadiness（启动器后台查，几秒）；device：查哪一台（同 install --device），不给按启动器里选中的那台"""
+    call('POST', '/installCheck', {'gameId': gid, **({'device': device} if device else {})}); t0 = time.time()
     while time.time() - t0 < limit:
         rd = call('GET', '/state').get('installReadiness')
-        if rd and rd.get('gameId') == gid:
+        # 带了 --device：等到给这台查的那份（checkedDevice）；同一款上一台的清单还挂在 state 里，不能拿它当这台的（11-11 真机验收测出）
+        if rd and rd.get('gameId') == gid and (not device or rd.get('checkedDevice') == device):
             if as_json: print(json.dumps(rd, ensure_ascii=False, indent=1)); return
             for i in rd['items']:
                 mark = '✓' if i['ok'] else ('…' if i['waiting'] else '✗')
@@ -693,9 +696,11 @@ def main():
     if cmd == 'targets':
         t = call('GET', '/targets')
         if '--json' in rest: print(json.dumps(t, ensure_ascii=False, indent=1)); return
-        lab = lambda d: f'{d["model"]}（{d["productType"]}，{d["gpuArch"]}）· iOS {d.get("os") or "?"}' + (f'，设备名「{d["deviceName"]}」' if d.get('deviceName') else '')
+        lab = lambda d: f'{d["model"]}（{d["productType"]}，{d["gpuArch"]}）· iOS {d.get("os") or "?"}' + (f'，设备名「{d["name"]}」' if d.get('name') else '')
+        # 连着的设备带设备号与连接方式：install / install-check --device 要它（两台同型号时只看机型分不出是哪台）
+        dev = lambda d: lab(d) + (f'，设备号 {d["udid"]}' if d.get('udid') else '') + ('，数据线' if d.get('wired') else '，同一 Wi-Fi' if 'wired' in d else '')
         print('当前目标：' + (lab(t['current']) + ('（已连接，自动选的）' if t['current'].get('connected') else '（玩家选的）') if t['current'] else '没有（连上设备，或用 target <机型号> <系统大版本> 选）'))
-        print(f'连着的设备 {len(t["connected"])} 台' + ''.join('\n  - ' + lab(d) for d in t['connected']))
+        print(f'连着的设备 {len(t["connected"])} 台' + ''.join('\n  - ' + dev(d) for d in t['connected']))
         print('可选系统大版本：' + '、'.join(map(str, t['osChoices'])) + f'；可选机型 {len(t["models"])} 种' + ('：' if '--models' in rest else '（加 --models 列全）'))
         if '--models' in rest: [print(f'  {m["productType"]:12} {m["model"]}（{m["gpuArch"]}）') for m in t['models']]
         return
@@ -718,7 +723,7 @@ def main():
         before = {t['id'] for t in call('GET', '/state')['tasks']}
         call('POST', '/library', {'path': os.path.abspath(os.path.expanduser(rest[0])), 'move': '--move' in rest}); wait_op('setup', before); return
     if cmd == 'errors': errors(rest[0] if rest else None); return
-    if cmd == 'install-check': install_check(rest[0], '--json' in rest); return
+    if cmd == 'install-check': install_check(rest[0], '--json' in rest, device=rest[rest.index('--device') + 1] if '--device' in rest else None); return
     if cmd == 'build':
         args = [a for a in rest if a != '--space-override']
         target = args[1] if len(args) > 1 else 'ios'
@@ -758,7 +763,8 @@ def main():
     if cmd == 'update-phone':
         before = {t['id'] for t in call('GET', '/state')['tasks'] if t['operation'] == 'installUpdate'}
         body = {**({'acceptStale': True} if '--accept-stale' in rest else {}), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {}),
-                **({'device': rest[rest.index('--device') + 1]} if '--device' in rest else {})}   # 连着多台时指定哪台（同 install --device）
+                **({'device': rest[rest.index('--device') + 1]} if '--device' in rest else {}),   # 连着多台时指定哪台（同 install --device）
+                **({'acceptDropped': True} if '--accept-dropped' in rest else {})}   # 同 install --accept-dropped：玩家同意让别的电脑装的款这次带不上
         r = call('POST', '/update-phone', body); print(json.dumps(r, ensure_ascii=False), flush=True)   # 409（已是本版 / 有要重出的款没确认）在 call 里带原因退非 0
         if r.get('asked'): print('窗口里弹了三选一，等玩家选'); return   # --ask：同点按钮，有要重出的款时由玩家在窗口里选
         wait_op('installUpdate', before, 3600); return

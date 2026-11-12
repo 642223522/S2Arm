@@ -5,6 +5,7 @@ import Foundation
 import Combine
 import NXModel
 import S2ArmAppleAdapter
+import SaveSync
 
 /// 一次出包（勾了几个平台就几个作业，按页面顺序排队，ExportPlatform.picked）：现在做到第几个、每个平台的结局。
 struct ExportRun: Equatable {
@@ -74,6 +75,9 @@ struct JobSession: Equatable {
     var export: ExportRun?
     /// 出包前的磁盘预算（作业层 space 事件，check_pack_space）；没有为 nil。
     var space: PackSpace?
+    /// 作业层给的失败码与下一步（JobFailure 的第一条诊断）：启动页按码显示一句人话 + 下一步，原文只进「复制错误摘要」
+    var failureCode: String?
+    var suggestion = ""
     /// 正在跑的那个作业层任务号（最近一个事件的 taskId；出包一个平台一个任务）。控制口 GET /state 的 executionTask 报它（原先恒为空，s2armctl next 判不出「本游戏正在运行」）
     var taskID: String?
 }
@@ -199,7 +203,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var sessionHidden = false
     @Published private(set) var finishedExports: [String: JobSession] = [:]
     @Published var viewingResult: JobSession?
-    var showsWelcome: Bool { games.isEmpty || welcomeGameID != nil }
+    var showsWelcome: Bool { games.isEmpty || welcomeGameID != nil || welcomeHome }
+    /// 点了顶栏品牌名：游戏库页先显示欢迎页（社区贡献者补丁 #2；点「游戏库」回到列表）
+    @Published var welcomeHome = false
+    /// 设置页「磁盘空间」：关掉设置、给这款打开磁盘空间面板（LauncherView 收到就开）
+    @Published var spaceRequest: String?
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
@@ -208,8 +216,25 @@ public final class S2ArmLauncherModel: ObservableObject {
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
     @Published private(set) var customizing = false
+    /// 非会话作业（换封面 / 改名、释放空间、存档）在等库锁时作业层的原句「在等「…」结束…」（phase=waiting_lock）；拿到锁或做完清空。
+    /// 剃刀 M3：原先这几处只转圈，别的任务占着库时最长等 120 秒，玩家不知道在等什么
+    @Published var lockWaitNote: String?
+
+    /// 交给作业的事件去处：只认等锁进度，其余丢弃
+    func lockWaitSink() -> EventSink {
+        EventSink { [weak self] e in
+            guard e.ev == "progress" else { return }
+            let note = e.fields["phase"] as? String == "waiting_lock" ? e.message : nil
+            Task { @MainActor in self?.lockWaitNote = note }
+        }
+    }
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
+    /// 当前这份装机前清单是给哪台设备查的（控制口 GET /state 的 installReadiness.checkedDevice）：换了设备先清掉旧清单，
+    ///   s2armctl install-check --device 等到这台的结果才读（11-11 真机验收：连查两台，第二台读到了第一台的清单）
+    @Published private(set) var installReadinessDevice: String?
+    /// 正在查时又来了另一台（或另一款）的请求：记下，这次查完接着查它（原先直接丢掉）
+    private var pendingInstallCheck: (game: String, device: String?)?
     @Published private(set) var installError: String?
     private(set) var installGameID: String?
     // 释放空间（spaceSurvey / spaceFree，FreeSpaceView）：只看一款
@@ -220,6 +245,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 上一次释放了多少（字节）；换一款或重新打开时清掉。
     @Published private(set) var spaceFreed: Int64?
     private var spaceGameID: String?
+    /// 游戏库页顶部一条操作提示（删除游戏 / 清除缓存）：点下就有「正在…」，结束换成「已…」或失败原因；有别的作业在跑时说清楚在等什么
+    struct LibraryNotice: Equatable { enum Kind { case running, done, failed }; let kind: Kind; let key: String; let name: String; var detail: String = "" }
+    @Published var libraryNotice: LibraryNotice?
+    /// 读不到设备列表的原因（targetDevice 的 connectedError / 探测出错）：出包页设备那一行显示它，而不是「把 iPhone 插上」
+    @Published var deviceProbeError: String?
     // 存储总览（storageOverview，FreeSpaceView 的「总览」）
     @Published private(set) var overview: StorageOverview?
     @Published private(set) var overviewLoading = false
@@ -374,6 +404,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     func loadSpace(_ gameID: String) {
         if spaceGameID != gameID { spaceGameID = gameID; space = nil; spaceFreed = nil }
         spaceError = nil
+        // 还在读上一款：读完按现在要的这款再读（原先直接返回，上一款的结果因游戏号对不上被丢，这一款永远读不出来，「释放」按钮一直灰着）
         guard !spaceLoading else { return }
         spaceLoading = true
         Task {
@@ -384,6 +415,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 if spaceGameID == gameID { spaceError = error.localizedDescription }
             }
             spaceLoading = false
+            if let want = spaceGameID, want != gameID { loadSpace(want) }
         }
     }
 
@@ -395,12 +427,12 @@ public final class S2ArmLauncherModel: ObservableObject {
         let ordered = (space?.parts.map(\.id) ?? []).filter { parts.contains($0) }
         Task {
             do {
-                let freed = try await provider.space.free(gameId: gameID, parts: ordered)
+                let freed = try await provider.space.free(gameId: gameID, parts: ordered, events: lockWaitSink())
                 if spaceGameID == gameID { spaceFreed = freed.freedBytes }
             } catch {
                 if spaceGameID == gameID { spaceError = error.localizedDescription }
             }
-            spaceFreeing = false
+            spaceFreeing = false; lockWaitNote = nil
             loadSpace(gameID)
             refresh()   // 删了 Mac 运行版本，这款要重新准备
             if overview != nil { loadOverview() }
@@ -686,10 +718,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func refreshTargets() async {
+        // 读失败 = 设备状态不明，不留上一次的列表（原先保留旧值：拔了手机还显示已插入，11-11 玩家反馈）；原因照实显示在设备行（deviceProbeError），
+        //   并按剃刀 M13 只报一次（5 秒轮询不重复弹）
         let probe: [String: Any]
         do { probe = try await provider.targetDevices(); readOK("s2arm.fail.targets") }
-        catch { reportFailure("s2arm.fail.targets", error, passive: true); return }   // 剃刀 M13：读失败保留上次的设备列表，报一次原因（5 秒轮询不重复弹）
+        catch { connectedDevices = []; deviceProbeError = error.localizedDescription; reportFailure("s2arm.fail.targets", error, passive: true); return }
         connectedDevices = probe["connected"] as? [[String: Any]] ?? []
+        deviceProbeError = (probe["connectedError"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         targetModels = probe["models"] as? [[String: Any]] ?? []
         targetOS = probe["osChoices"] as? [Int] ?? []
     }
@@ -731,18 +766,22 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
-    func checkInstall(_ gameID: String) {
-        if installGameID != gameID { installGameID = gameID; installReadiness = nil; installError = nil }
-        guard !installChecking else { return }
+    func checkInstall(_ gameID: String, device: String? = nil) {
+        let target = device ?? installDeviceID
+        if installGameID != gameID || installReadinessDevice != target {   // 换了款或换了设备：旧清单不能当这台的
+            installGameID = gameID; installReadinessDevice = target; installReadiness = nil; installError = nil
+        }
+        if installChecking { pendingInstallCheck = (gameID, target); return }
         installChecking = true
         Task {
             do {
-                let readiness = try await provider.installReadiness(gameId: gameID, device: installDeviceID)
-                if installGameID == gameID { installReadiness = readiness; installError = nil }
+                let readiness = try await provider.installReadiness(gameId: gameID, device: target)
+                if installGameID == gameID && installReadinessDevice == target { installReadiness = readiness; installError = nil }
             } catch {
-                if installGameID == gameID { installError = error.localizedDescription }
+                if installGameID == gameID && installReadinessDevice == target { installError = error.localizedDescription }
             }
             installChecking = false
+            if let next = pendingInstallCheck { pendingInstallCheck = nil; checkInstall(next.game, device: next.device) }
         }
     }
 
@@ -761,7 +800,9 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 装机 / 删除会让手机上别的电脑装的游戏暂时不能玩（作业层 container_would_drop）：界面弹确认，确认了带 acceptDropped 重跑。
     /// ask = false（控制口发起）不弹，原样失败，由调用方带 acceptDropped 再发。
-    struct DropConfirm { let kind: JobSession.Kind; let game: GameSummary; let message: String }
+    /// 更新手机上的 S2Arm 也会撞上（v0.3.0 只换壳验收：原先这条路没接确认，界面说「确认继续再点一次」却永远过不去）：update 记着当时的参数，确认后原样带 acceptDropped 重跑
+    struct UpdateArgs { let acceptStale: Bool; let repack: [String]; let language: String; let device: String? }
+    struct DropConfirm { let kind: JobSession.Kind; var game: GameSummary? = nil; let message: String; var update: UpdateArgs? = nil }
     @Published var dropConfirm: DropConfirm?
 
     /// 环境检查「装到 iPhone 的方式」里手填的 Xcode 团队号（10 位）：一键装、不用证书时每次装机都带上（原先只在装机页点「用这个团队」那一次带）
@@ -793,7 +834,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 确认框点了「仍然继续」
     func confirmDrop(_ d: DropConfirm) {
         dropConfirm = nil; clearInlineFailure()
-        if d.kind == .installRemove { removeFromPhone(d.game, acceptDropped: true) } else { install(d.game, acceptDropped: true) }
+        if let u = d.update { updatePhone(acceptStale: u.acceptStale, repack: u.repack, language: u.language, device: u.device, acceptDropped: true); return }
+        guard let game = d.game else { return }
+        if d.kind == .installRemove { removeFromPhone(game, acceptDropped: true) } else { install(game, acceptDropped: true) }
     }
 
     /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。
@@ -850,6 +893,12 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
+        if let player = Self.launchPlayer() {
+            controllerArguments["playerUser"] = player.serviceUser
+            controllerArguments["playerName"] = player.name
+            controllerArguments["playerFolder"] = player.folder
+        }
         controllerGameStarted = false
         do {
             let sink = EventSink { [weak self] event in self?.ingest(event) }
@@ -864,6 +913,21 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     func startControllerConnection() { controller.startIfEnabled() }
+
+    // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
+
+    /// 本机的玩家表（App 偏好，不在游戏库文件夹里）；firstDefault = 第一个玩家没改过名时显示的名字（按界面语言）
+    static func playerStore(firstDefault: String = "Player 1", defaults: UserDefaults = .standard) -> LocalPlayers {
+        LocalPlayers(defaults: defaults, firstDefault: firstDefault)
+    }
+    /// 起局要带的玩家：没建过玩家 = nil（旧行为，作业层不设玩家）
+    static func launchPlayer(_ defaults: UserDefaults = .standard) -> LocalPlayer? {
+        defaults.object(forKey: LocalPlayers.listKey) == nil ? nil : playerStore(defaults: defaults).current
+    }
+    /// 作业请求里的 player 字段（起局 pack/jobs/build.py、导入社区存档 saves.py 都按 saves.requested_player 校验）；没建过玩家 = nil
+    static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
+        launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
+    }
     func shutdownControllerConnection() { controller.shutdown() }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
@@ -893,6 +957,12 @@ public final class S2ArmLauncherModel: ObservableObject {
                 if let probe, let slack = r.probeSlack { self.probedSlack[probe] = slack }
             } catch { self.reportFailure("s2arm.fail.locations", error, passive: true) }   // 读不到就保留上次的列表
         }
+    }
+
+    /// 出包页「存放位置」下拉框一项显示什么名字（批量出包页、存储总览行首同）：具体路径（家目录缩写成 ~），不是卷名——
+    /// 同一块盘上的几个位置卷名一样（内置盘一律「系统盘」），只给卷名分不清是哪个文件夹；卷名收进来是为了在判据里明确不取它
+    nonisolated static func locationName(path: String, volume: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
     }
 
     /// 存放位置下面那行提示（#444），只提示不拦；按原因说对：大分配单元「每个小文件至少占 N、多占数倍」/ 不是 APFS「不能克隆、多占一份」。没问题给 nil
@@ -925,8 +995,9 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 清除缓存（出包缓存 + 运行时着色器缓存；镜像、存档不动）。
     func clearCache(_ game: GameSummary) {
-        guard !busy else { return }
+        guard !busy else { libraryNotice = LibraryNotice(kind: .failed, key: "s2arm.notice.waitBusy", name: game.name, detail: session?.name ?? ""); return }
         failAction(nil, game: nil)
+        libraryNotice = LibraryNotice(kind: .running, key: "s2arm.notice.clearCache", name: game.name)
         start(.clearCache, game: game, name: game.name) { [weak self] sink in
             try await self?.provider.clearCache(game.id, events: sink)
             return nil
@@ -958,16 +1029,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 存档位置（services/S2A.Services/SaveFolder.cs）：这款游戏文件夹里的 SaveData/，没有就建出来再在访达里打开（打开的是文件夹里面，玩家直接往里放）
+    ///   本地玩家（#623）：当前玩家的那个（第一个玩家 SaveData，其他人 SaveData-<名字>，同 iOS）
     func openSaveFolder(_ game: GameSummary) {
         guard !game.location.folder.isEmpty, FileManager.default.fileExists(atPath: game.location.folder) else { explainMissing("s2arm.reveal.folderMissing"); return }
-        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent("SaveData", isDirectory: true)
+        let url = URL(fileURLWithPath: game.location.folder).appendingPathComponent(Self.launchPlayer()?.folder ?? LocalPlayers.firstFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
     }
     /// 存档位置里放的存档上次起局没读进来的原因（服务层写在数据根 saves/savedata-problem.txt，读进来后删掉）；没有 = nil
     func saveFolderProblem(_ game: GameSummary) -> String? {
         guard !game.location.folder.isEmpty else { return nil }
-        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent("saves/savedata-problem.txt")
+        // 本地玩家（#623）：原因按玩家分文件（services SaveFolder.ProblemPath），第一个玩家仍是原文件名
+        let player = Self.launchPlayer()
+        let file = URL(fileURLWithPath: game.location.folder).appendingPathComponent(player.map { $0.isFirst ? "saves/savedata-problem.txt" : "saves/savedata-problem-\($0.uid).txt" } ?? "saves/savedata-problem.txt")
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         let why = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return why.isEmpty ? nil : why
@@ -999,8 +1073,9 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 删这款（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留）。
     func deleteGame(_ game: GameSummary) {
-        guard !busy else { return }
+        guard !busy else { libraryNotice = LibraryNotice(kind: .failed, key: "s2arm.notice.waitBusy", name: game.name, detail: session?.name ?? ""); return }
         failAction(nil, game: nil)
+        libraryNotice = LibraryNotice(kind: .running, key: "s2arm.notice.delete", name: game.name)
         start(.delete, game: game, name: game.name) { [weak self] sink in
             try await self?.provider.deleteGame(game.id, events: sink)
             if self?.selectedID == game.id { self?.selectedID = nil }
@@ -1013,9 +1088,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy, !customizing else { return }
         customizing = true; customizeError = nil
         Task {
-            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath); refresh() }
+            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath, events: lockWaitSink()); refresh() }
             catch { customizeError = error.localizedDescription }
-            customizing = false
+            customizing = false; lockWaitNote = nil
         }
     }
 
@@ -1092,7 +1167,8 @@ public final class S2ArmLauncherModel: ObservableObject {
                 let reveal = try await body(sink)
                 self?.finish(.completed, message: "", reveal: reveal)
             } catch let failure as JobFailure {
-                self?.finish(failure.state, message: failure.errorDescription ?? "")
+                self?.finish(failure.state, message: failure.errorDescription ?? "", code: failure.code,
+                             suggestion: failure.outcome.diagnostics.first?["suggestion"] as? String ?? "")
             } catch is CancellationError {
                 self?.finish(.cancelled, message: "")
             } catch is ExportIncomplete {
@@ -1110,7 +1186,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if event.ev == "space", let space = PackSpace(event.fields["space"]) { session.space = space; self.session = session; return }
         if let stage = event.stage, !stage.isEmpty {
             session.stage = stage
-            if session.kind == .play, stage == "游戏运行中" {
+            if session.kind == .play, event.fields["stageKey"] as? String == "game_running" {   // 后端固定机读名（build.py begin key），不认中文阶段名
                 controllerGameStarted = true
                 controller.gameDidStart()
             }
@@ -1137,9 +1213,10 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     private func isFinished(_ s: JobSession) -> Bool { if case .finished = s.phase { return true }; return false }
 
-    func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil) {
+    func finish(_ state: JobOutcome.State, message: String, reveal: String? = nil, code: String? = nil, suggestion: String = "") {
         guard var session = session, !isFinished(session) else { return }
         session.phase = .finished(state)
+        session.failureCode = code; session.suggestion = suggestion
         if !message.isEmpty {
             session.message = message
             if session.log.last != message { session.log.append(message) }
@@ -1160,6 +1237,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         if state == .completed && session.kind == .install { installDone = session.gameID }
         if session.kind == .installUpdate { phoneUpdateEnded(completed: state == .completed) }
         if session.kind == .install { Task { pumpQueue() } }
+        if [.delete, .clearCache].contains(session.kind), let n = libraryNotice, n.kind == .running {   // 删除 / 清缓存的结果写进游戏库页顶部那条提示
+            libraryNotice = LibraryNotice(kind: state == .completed ? .done : .failed, key: n.key, name: n.name,
+                                          detail: state == .completed ? "" : (session.message.isEmpty ? JobOutcome.interruptedMessage : session.message))
+        }
         if Self.phoneKinds.contains(session.kind), let id = session.gameID { phoneResult = (id, session.name, state == .completed) }
         // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
         if session.kind == .play, let id = session.gameID, cloudFolder != nil {
@@ -1205,7 +1286,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 这个作业的进度留在原页（弹窗 / 欢迎页），不换到作业日志页。
     func isInline(_ s: JobSession) -> Bool {
-        [.keys, .importGames, .install, .installRemove, .installRestore, .delete, .diagnostics].contains(s.kind) || (showsWelcome && Self.repairKinds.contains(s.kind))
+        [.keys, .importGames, .install, .installRemove, .installRestore, .delete, .clearCache, .diagnostics].contains(s.kind) || (showsWelcome && Self.repairKinds.contains(s.kind))
     }
 
     /// 欢迎页的「一键出包」：进和游戏库同一张出包页（维护者 11-11：首次出包缺设置项、选不了 iPhone / Mac），
@@ -1230,7 +1311,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 回库：只有作业结束了才能关掉作业页。
     /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
     func goToLibrary() {
-        exportFor = nil; viewingResult = nil; showEnvironment = false
+        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false
         guard let current = session else { return }
         if isFinished(current) { session = nil } else { sessionHidden = true }
     }

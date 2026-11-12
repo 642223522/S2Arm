@@ -102,9 +102,18 @@ def _junction(target, link):
                      C.POINTER(W.DWORD), C.c_void_p)
             if not f(h, 0x900A4, buf, len(data), None, 0, C.byref(done), None):
                 raise C.WinError(C.get_last_error())
-    except BaseException:
-        link.rmdir()
+    except BaseException as e:
+        cleanup_after(e, link.rmdir)
         raise
+
+
+def cleanup_after(error, fn, *args):
+    """出错后的收拾（删半成品 / 改名回去）自己又出错时，不许盖住起因（#669：播种真正失败的那一步被随后删 .romfs.intern 时的
+    WinError 145 盖住，玩家报告里只剩 145）。收拾的错误记成起因上的附注，调用方随后 raise 原错误"""
+    try:
+        fn(*args)
+    except Exception as e:
+        error.add_note(f'（随后的清理 {getattr(fn, "__name__", fn)}({", ".join(map(str, args))}) 也失败：{e!r}；以上面的原错误为准）')
 
 
 def directory_link(target, link, *, relative=None):
@@ -455,8 +464,8 @@ class Roots:
                             else:
                                 copy_file(p, tx.path / p.name)
                         tx.commit()
-                    except BaseException:
-                        tx.abort()
+                    except BaseException as e:
+                        cleanup_after(e, tx.abort)
                         raise
                     return self.cur(game, pin=pin)
             return None
@@ -564,8 +573,8 @@ class Roots:
             stages = sorted(current.glob('.stage_*')) if current else ()
             text(dest / '.root_base_stages', ''.join(f'{p.name}\t{read(p)}\n' for p in stages if p.is_file()))
             return Transaction(self, game, tag, dest, env=env)
-        except BaseException:
-            remove_owned(dest)
+        except BaseException as e:
+            cleanup_after(e, remove_owned, dest)
             raise
 
     def _intern(self, version, game):
@@ -588,11 +597,11 @@ class Roots:
             directory_link(store / identity, p, relative=f'../.romfs_store/{game}/{identity}')
             rename_dir(temp, store / identity)
             seal(store / identity)
-        except BaseException:
+        except BaseException as e:
             if is_link(p):
-                remove_owned(p)
+                cleanup_after(e, remove_owned, p)
             if temp.exists():
-                rename_dir(temp, p)
+                cleanup_after(e, rename_dir, temp, p)
             raise
 
     def _pinned(self, version):
@@ -663,8 +672,8 @@ class Transaction:
             self.roots._shards(r, 'replay·换完路径后', env=self.env)
             remove_owned(self.path)
             rename_dir(r, self.path)
-        except BaseException:
-            remove_owned(r)
+        except BaseException as e:
+            cleanup_after(e, remove_owned, r)
             raise
 
     def commit(self, *, replay=()):
@@ -698,8 +707,8 @@ class Transaction:
                     roots._resource('--root-publish', final, env=self.env)
                 roots.prune(self.game)
                 return final
-        except BaseException:
-            self.abort()
+        except BaseException as e:
+            cleanup_after(e, self.abort)
             raise
         finally:
             if os.path.lexists(activation):

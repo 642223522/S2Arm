@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #import "s2a_l10n.h"
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "controller.h"
 #include "input_config.h"
 #include "root_ready.h"
@@ -32,6 +33,7 @@ static void img_scan_if_library(void);   // 下面游戏库段：回前台时认
 void *s2a_shell_library_vc(const char *catalogue_json_path) __attribute__((weak_import));
 void s2a_shell_set_play_handler(void (*fn)(const char *game_id, void *ctx), void *ctx) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_refresh
+// 弱链接[ios]：s2a_shell_test_cloud_picker
 void s2a_shell_refresh(void) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_cloud_sync_vc
 void *s2a_shell_cloud_sync_vc(const char *game_id, void (*done)(void *ctx), void *ctx) __attribute__((weak_import));
@@ -727,29 +729,67 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
 static __weak UIWindow *g_lib_window;
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);   // pack_apply.c
 static int game_pack_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_import_state_game_quick(d, gid); }
-void s2a_shell_library_appeared(void) { static int once; if (!once++) BOOT_MARK("游戏库界面可操作"); }
+static void test_picker(void);
+void s2a_shell_library_appeared(void) { static int once; if (!once++) { BOOT_MARK("游戏库界面可操作"); test_picker(); } }
 int s2a_game_install_state(const char *proc_docs, const char *gid);   // pack_apply.c
 int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_game_install_state(d, gid); }
 // 库里后台解开传完的那款（装机阶段 2，s2a_shell.h）：同一条 s2a_pack_apply（解包日志、.applied、清旧文件都同起局闸门），同时只解一款；
 //   解的时候关自动锁屏（锁屏 = 挂起 = 解包停住），进度经 s2a_pack_apply_progress 记下给库画蒙版，解完回主线程让库重判
-int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void);   // pack_apply.c
+int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void); const char *s2a_pack_apply_code(void);   // pack_apply.c
+// 装机 / 导入失败按码说人话（11-11 维护者：原文和码只进诊断，不上屏）：码表 launchers/shared/experience.v1.json errors.items，
+//   「标题 + 下一步」由 launchers/shared/experience_strings.py 出包时生成进包里的 S2ArmHost.strings（键 error.<码>.title / .next，仓库表里不放）。
+//   规格里查不到的码一律按 ios_install_unknown（键是拼出来的，不走 S2AL 字面量）
+static NSString *install_error_text(const char *code) {
+    NSString *(^get)(NSString *, NSString *) = ^NSString *(NSString *c, NSString *part) {
+        NSString *k = [NSString stringWithFormat:@"error.%@.%@", c, part], *v = [NSBundle.mainBundle localizedStringForKey:k value:@"" table:@"S2ArmHost"];
+        return v.length && ![v isEqualToString:k] ? v : nil; };
+    NSString *c = code && *code ? @(code) : @"ios_install_unknown", *title = get(c, @"title"), *next = get(c, @"next");
+    if (!title || !next) { c = @"ios_install_unknown"; title = get(c, @"title"); next = get(c, @"next"); }
+    return [NSString stringWithFormat:S2AL(@"error.sentence"), title ?: c, next ?: @""];
+}
 static char g_inst_gid[32]; static atomic_int g_inst_busy, g_inst_done, g_inst_total;
 static void inst_progress(int done, int total) { atomic_store(&g_inst_done, done); atomic_store(&g_inst_total, total); }
+// 单一 IMG 的分段进度（pack_apply.c s2a_pack_apply_phase，v0.3.0）：1 解开推送包（包数）/ 2 从 game.img 解小文件（字节）/ 3 核对机上文件（文件数）。
+//   弱引用：引擎还没有这个回调时（旧 pack_apply.c）不挂，库照旧按 s2a_pack_apply_progress 画一段进度
+extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total) __attribute__((weak_import));
+static atomic_int g_inst_phase; static _Atomic uint64_t g_inst_pdone, g_inst_ptotal;
+static void inst_phase(int phase, uint64_t done, uint64_t total) { atomic_store(&g_inst_phase, phase); atomic_store(&g_inst_pdone, done); atomic_store(&g_inst_ptotal, total); }
+static NSMutableDictionary<NSString *, NSString *> *g_inst_fail;   // 主线程：游戏号 → 最后一次解开失败的原因（成功后清掉）
+int s2a_shell_install_phase(const char *gid, int *phase, double *fraction) {   // 主线程
+    if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
+    int p = atomic_load(&g_inst_phase); uint64_t done = atomic_load(&g_inst_pdone), total = atomic_load(&g_inst_ptotal);
+    if (!p) { done = (uint64_t)atomic_load(&g_inst_done); total = (uint64_t)atomic_load(&g_inst_total); }
+    *phase = p; *fraction = total ? (double)done / (double)total : -1; return 1;
+}
+const char *s2a_shell_install_failure(const char *gid) {   // 主线程
+    static char out[600]; NSString *why = gid ? g_inst_fail[@(gid)] : nil;
+    if (!why.length) return NULL;
+    strlcpy(out, why.UTF8String, sizeof out); return out;
+}
 static atomic_int g_games_repairing = 1;   // 游戏目录 App 写不进时的迁移（#569，img_scan_bg）：第一次扫完之前算「在查」：冷启动库先于扫描出现时也不抢着解
 int s2a_shell_install_game(const char *gid) {   // 主线程（s2a_shell.h 约定）
     if (atomic_load(&g_games_repairing)) return 0;   // 还在查 / 迁游戏目录（#569）：先不解，库下一秒重判再起
     if (!gid || strlen(gid) != 16 || strchr(gid, '/') || atomic_exchange(&g_inst_busy, 1)) return 0;
     strlcpy(g_inst_gid, gid, sizeof g_inst_gid); atomic_store(&g_inst_done, 0); atomic_store(&g_inst_total, 0);
+    atomic_store(&g_inst_phase, 0); atomic_store(&g_inst_pdone, 0); atomic_store(&g_inst_ptotal, 0);
     char d[1024]; s2a_container_docs(d, sizeof d);
     NSString *docs = [NSString stringWithFormat:@"%s/games/%s", d, gid], *name = @(gid);
     LOG("游戏库：后台解开 %s", gid); s2a_ios_keep_awake(1);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        s2a_pack_apply_progress = inst_progress; int rc = s2a_pack_apply(docs.fileSystemRepresentation); s2a_pack_apply_progress = NULL;
-        if (rc) LOG("【红】游戏库：解开 %s 没成：%s", name.UTF8String, s2a_pack_apply_failure()); else LOG("游戏库：%s 解开了", name.UTF8String);
-        dispatch_async(dispatch_get_main_queue(), ^{ s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh(); });
+        s2a_pack_apply_progress = inst_progress; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = inst_phase;
+        int rc = s2a_pack_apply(docs.fileSystemRepresentation);
+        s2a_pack_apply_progress = NULL; if (&s2a_pack_apply_phase) s2a_pack_apply_phase = NULL;
+        NSString *why = rc ? install_error_text(s2a_pack_apply_code()) : nil;   // 屏上一句人话；原文与码进日志
+        if (rc) LOG("【红】游戏库：解开 %s 没成（%s）：%s", name.UTF8String, s2a_pack_apply_code(), s2a_pack_apply_failure()); else LOG("游戏库：%s 解开了", name.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!g_inst_fail) g_inst_fail = [NSMutableDictionary new];
+            if (why.length) g_inst_fail[name] = why; else [g_inst_fail removeObjectForKey:name];   // 卡片上「安装没完成」下面显示这一句，「重试」成功后清掉
+            s2a_ios_keep_awake(0); g_inst_gid[0] = 0; atomic_store(&g_inst_busy, 0); s2a_shell_refresh();
+        });
     });
     return 1;
 }
+int s2a_shell_install_wait(void) { return atomic_load(&g_games_repairing) ? 2 : atomic_load(&g_inst_busy) ? 1 : 0; }   // 主线程（s2a_shell.h）
 int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // 主线程
     if (!atomic_load(&g_inst_busy) || !gid || strcmp(gid, g_inst_gid)) return 0;
     *done = atomic_load(&g_inst_done); *total = atomic_load(&g_inst_total); return 1;
@@ -759,15 +799,74 @@ int s2a_shell_install_progress(const char *gid, int *done, int *total) {   // �
 //   超过 0.3 秒还没核完就先弹「正在检查…」（快判成立时几毫秒就回来，不闪这一下）。同时只核一款，核着时再点不重复起
 static atomic_int g_pack_checking;
 static UIViewController *lib_top(void) { UIViewController *top = g_lib_window.rootViewController; while (top.presentedViewController) top = top.presentedViewController; return top; }
+// 测试开关 S2A_TEST_PICKER=cheats|saves|cloud（复现 / 复验「点金手指导入、云存档选文件夹就卡死」）：库界面可操作后自动弹出和按钮同一个系统文件选择器
+//   （cheats = vpad_cheats.m s2a_cheats_import_picker、cloud = 壳 CloudSaves.swift 同一个、saves = save_transfer.m 导入那个配置），
+//   日志记弹出 / 弹完的时刻，60 秒内主线程每卡住 200 ms 以上记一行（看门狗线程每 100 ms 往主线程投一次）。不设开关时什么都不做
+UIDocumentPickerViewController *s2a_cheats_import_picker(void);   // vpad_cheats.m
+void s2a_shell_test_cloud_picker(void) __attribute__((weak_import));   // 壳 CloudSaves.swift（缺省出壳不带库界面时没有）
+@interface S2ATestPickerDelegate : NSObject <UIDocumentPickerDelegate> @end
+@implementation S2ATestPickerDelegate
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls { LOG("测试选择器：选了 %lu 个", (unsigned long)urls.count); }
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)c { LOG("测试选择器：取消"); }
+@end
+static void test_picker(void) {
+    const char *kind = getenv("S2A_TEST_PICKER");
+    if (!kind || !*kind) return;
+    static S2ATestPickerDelegate *delegate; delegate = [S2ATestPickerDelegate new];
+    double t0 = CFAbsoluteTimeGetCurrent();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // 看门狗：主线程多久没回应
+        for (int i = 0; i < 600; i++) {
+            double sent = CFAbsoluteTimeGetCurrent();
+            __block _Atomic int back = 0;
+            dispatch_async(dispatch_get_main_queue(), ^{ back = 1; });
+            usleep(100000);
+            if (!back) {
+                while (!back) usleep(10000);
+                double stall = (CFAbsoluteTimeGetCurrent() - sent) * 1000;
+                if (stall >= 200) LOG("测试选择器：主线程卡住 %.0f ms（弹出后 %.1f 秒起）", stall, sent - t0);
+            }
+        }
+        LOG("测试选择器：看门狗 60 秒结束");
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!strcmp(kind, "cloud")) {
+            if (!s2a_shell_test_cloud_picker) { LOG("测试选择器：这个壳没带库界面，没有云存档选择器"); return; }
+            LOG("测试选择器：弹出 cloud（库可操作后 %.1f 秒）", CFAbsoluteTimeGetCurrent() - t0);
+            s2a_shell_test_cloud_picker();
+            return;
+        }
+        UIDocumentPickerViewController *p;
+        if (!strcmp(kind, "saves")) {
+            p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+            p.directoryURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        } else {
+            p = s2a_cheats_import_picker();
+        }
+        p.delegate = delegate;
+        double t1 = CFAbsoluteTimeGetCurrent();
+        LOG("测试选择器：弹出 %s（库可操作后 %.1f 秒）", kind, t1 - t0);
+        [lib_top() presentViewController:p animated:YES completion:^{ LOG("测试选择器：弹完 %.0f ms", (CFAbsoluteTimeGetCurrent() - t1) * 1000); }];
+    });
+}
 static void library_pack_help_show(NSString *gid, BOOL again, int st);
-// 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
+// 玩家把 game.img 放进「文件」里 S2Arm 的「放这里导入」文件夹（v0.3.0，自签 / 侧载玩家）：挪进本款资源包根（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
+const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
     if (n > 0) LOG("资源导入：从「文件」里认出并放好 %d 个游戏资源包（game.img）", n);
     return n;
+}
+// 认领失败（格式号不认识、挪不动等，pack_apply.c s2a_img_scan_failure）：在游戏库上弹一次原因。同一句只弹一次，回前台重扫不刷屏
+static void img_scan_report(void) {   // 主线程
+    static char shown[600]; const char *why = s2a_img_scan_failure();
+    if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
+    strlcpy(shown, why, sizeof shown);
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.scanFailed.title") message:install_error_text(s2a_img_scan_code()) preferredStyle:UIAlertControllerStyleAlert];   // 原文已进日志（img_scan_dir）
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+    [lib_top() presentViewController:a animated:YES completion:nil];
 }
 // 游戏目录 App 写不进时迁到新目录（#569，pack_apply.c s2a_games_repair）：本进程第一次扫之前做一次，迁移期间不起解包（s2a_shell_install_game 拒绝，
 //   库照旧显示「安装中」、下一秒重判再起）；结果用界面语言在库上说一次：迁好了 / 没迁成和原因（不悄悄绕路，玩家知道发生了什么）
@@ -781,13 +880,34 @@ static void games_repair_report(int r) {   // 主线程
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
     [lib_top() presentViewController:a animated:YES completion:nil];
 }
+// 资源包挪出 Documents（v0.3.0，pack_apply.c s2a_pack_migrate）：#569 修复之后、认领之前，每进程第一次扫时做；迁移期间同 #569 不起解包。
+//   新位置（Library/Application Support/S2Arm）标「不进 iCloud 备份」（几十 GB 的资源包不该进备份，电脑上都有）；建好「放这里导入」文件夹（名字跟界面语言）
+int s2a_pack_migrate(const char *proc_docs, int *failed); const char *s2a_pack_migrate_failure(void);   // pack_apply.c
+extern const char *const s2a_img_import_dirs[2];   // pack_apply.c：认领扫的两个名字（中 / 英）
+static void pack_layout_prepare(const char *proc_docs) {   // 后台线程
+    int failed = 0, moved = s2a_pack_migrate(proc_docs, &failed);
+    if (moved || failed) LOG("资源包迁移：挪进 Library %d 款%s%s", moved, failed ? "，失败 " : "", failed ? s2a_pack_migrate_failure() : "");
+    char base[1100]; if (s2a_pack_base(base, sizeof base, proc_docs) > 0) {
+        NSURL *u = [NSURL fileURLWithPath:@(base) isDirectory:YES]; NSError *e = nil;
+        [NSFileManager.defaultManager createDirectoryAtURL:u withIntermediateDirectories:YES attributes:nil error:nil];
+        if (![u setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&e]) LOG("【红】资源包目录标「不进备份」没成：%s", e.localizedDescription.UTF8String);
+    }
+    // 导入文件夹：名字按界面语言取（img.importFolder，两份字符串表的值必须是 s2a_img_import_dirs 里的两个名字之一，认领才扫得到）；另一个名字的已在就不再建
+    NSString *name = S2AL(@"img.importFolder"); BOOL known = NO, exists = NO;
+    for (int i = 0; i < 2; i++) {
+        known |= [name isEqualToString:@(s2a_img_import_dirs[i])];
+        exists |= [NSFileManager.defaultManager fileExistsAtPath:[@(proc_docs) stringByAppendingPathComponent:@(s2a_img_import_dirs[i])]];
+    }
+    if (!known) LOG("【红】导入文件夹名「%s」不在认领扫的名单里（pack_apply.c s2a_img_import_dirs），不建", name.UTF8String);
+    else if (!exists) [NSFileManager.defaultManager createDirectoryAtPath:[@(proc_docs) stringByAppendingPathComponent:name] withIntermediateDirectories:YES attributes:nil error:nil];
+}
 static void img_scan_bg(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         static atomic_int checked; int r = 0;
-        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); }
+        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); pack_layout_prepare(d); }
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
-        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); });
+        dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); if (r == 0) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
     });
 }
 static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }
@@ -819,7 +939,7 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st) {   // 主
     LOG("游戏库：%s 资源包%s，给导入说明%s", gid.UTF8String, broken ? "不完整" : "不在机上", again ? "（重新检查后仍不行）" : "");
     NSString *body = broken
         ? S2AL(@"app.library.packBroken")
-        : [NSString stringWithFormat:S2AL(@"app.library.packMissing"), gid];
+        : S2AL(@"app.library.packMissing");
     if (again) body = [S2AL(@"app.library.stillMissing") stringByAppendingString:body];
     UIViewController *top = lib_top();
     if (!top) { LOG("【红】游戏库：没有窗口，导入说明画不出来"); return; }
@@ -973,6 +1093,8 @@ static void cloud_sync_done(void *ctx) {
     pthread_detach(th);
 }
 @end
+// 界面（UIKit）已在主线程跑着 = 预热路径：s2a_front_run 会立即返回、调用的宿主线程接着往下走（资源导入闸门据此在起线程前就定「有没有人等」）
+int s2a_front_is_running(void) { return atomic_load(&g_front_running); }
 void s2a_front_run(void (*start_host)(void)) {
     // 预热路径已在主线程运行 UIKit；宿主工作线程的提示页 / 导入 / 正常收尾不能再次进入 UIApplicationMain。
     if (atomic_exchange(&g_front_running, 1)) return;

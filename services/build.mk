@@ -21,12 +21,15 @@ $(error services/vpx/build.sh 失败（全文 build/cs/vpx_osx.err）)
 endif
 HOST_LIBS += $(S2A_VPX_LIB)
 # dav1d AV1 软件解码（Switch 2 直连档 nn::codec AV1 解码器在 VideoToolbox 不支持 AV1 时用，graphics/nvn/gfx/nvn/nvn2_codec.c）：dav1d + 垫片合成的静态库
+# S2A_DAV1D=0：不链软件兜底（仅适合确认所有目标机都有 AV1 硬件解码的本地构建；默认 1）
+ifneq ($(S2A_DAV1D),0)
 S2A_DAV1D_LIB := $(shell bash services/dav1d/build.sh osx-arm64 2>build/cs/dav1d_osx.err | tail -1)
 ifeq ($(S2A_DAV1D_LIB),)
 $(info $(shell tail -8 build/cs/dav1d_osx.err | tr '\n' '|'))
 $(error services/dav1d/build.sh 失败（全文 build/cs/dav1d_osx.err）)
 endif
 HOST_LIBS += $(S2A_DAV1D_LIB)
+endif
 # libopus 解码（Horizon hwopus，DirectPInvoke s2a_opus）：libopus + 垫片合成的静态库
 S2A_OPUS_LIB := $(shell bash services/opus/build.sh osx-arm64 2>build/cs/opus_osx.err | tail -1)
 ifeq ($(S2A_OPUS_LIB),)
@@ -52,7 +55,9 @@ endef
 S2A_CS_IOS_LDFLAGS = $(call s2a_ios_lib,S2A_CS_IOS_LDFLAGS,services/nxaot.sh,nxaot)
 S2A_VPX_IOS_LIB = $(call s2a_ios_lib,S2A_VPX_IOS_LIB,services/vpx/build.sh,vpx)
 S2A_OPUS_IOS_LIB = $(call s2a_ios_lib,S2A_OPUS_IOS_LIB,services/opus/build.sh,opus)
+ifneq ($(S2A_DAV1D),0)
 S2A_DAV1D_IOS_LIB = $(call s2a_ios_lib,S2A_DAV1D_IOS_LIB,services/dav1d/build.sh,dav1d)
+endif
 IOS_LIBS += -Wl,-force_load,$(firstword $(S2A_CS_IOS_LDFLAGS)) $(wordlist 2,999,$(S2A_CS_IOS_LDFLAGS)) $(S2A_VPX_IOS_LIB) $(S2A_OPUS_IOS_LIB) $(S2A_DAV1D_IOS_LIB)
 
 .PHONY: services-test ryujinx-verify

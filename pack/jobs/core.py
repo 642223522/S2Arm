@@ -10,6 +10,7 @@ import datetime
 import errno
 import filelock
 import winproc
+import overall as overall_progress
 import hashlib
 import json
 import os
@@ -551,11 +552,13 @@ class Context:
         self.keys = self.private / "keys/prod.keys"
         self.t0 = time.monotonic()
         self.stage = ""
+        self.stage_key, self.keychain_prompt = None, False   # 本阶段的机读标记（begin 设）：前端认这两个，不按中文阶段名 / 步骤号猜
         self.number = self.count = self.seq = 0
         self.cancelled = False
         self.children = set()
         self.guard = threading.RLock()
         self.last_progress = 0
+        self.overall = overall_progress.Overall()   # 整单进度（每条事件的 overall，只增不减；pack/jobs/overall.py）
         self.last_log = None
         self.frontend_gone = False
         self.recorded = self.operation not in PROBES
@@ -675,12 +678,19 @@ class Context:
             self.seq += 1
             state = extra.pop("state", self.job["state"])
             transient = extra.pop("transient", False)   # 只给标准输出、不进事件记录（出包编排转发子作业事件：子作业自己的记录里已有，剃刀 H13）
+            if kind == "plan":
+                self.overall.plan(extra.get("milestones"))
+            overall = self.overall.feed(kind, now - self.t0, getattr(self, "milestone", None), state)
+            if overall is not None:
+                extra["overall"] = overall
+                self.job["overall"] = overall
             event = dict(schema=1, jobId=self.task, taskId=self.task, seq=self.seq,
                          timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(), type=kind,
                          operation=self.operation, gameId=self.r.get("gameId"), stage=self.stage,
                          stageIndex=self.number, stageCount=self.count, state=state,
                          doneUnits=done, totalUnits=total, done=done, total=total,
-                         elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None), **extra)
+                         elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None),
+                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt, **extra)
             if kind == "stage":
                 self.job.update(done=None, total=None, unit=None)
             elif kind == "progress":
@@ -727,7 +737,10 @@ class Context:
                     except OSError:
                         pass
 
-    def begin(self, stage, number=1, count=1):
+    def begin(self, stage, number=1, count=1, key=None, keychain=False):
+        """key：本阶段的固定机读名（前端按它认，中文阶段名只给人看、随时会改）；keychain：本阶段可能弹出钥匙串授权（前端据此挂提示）。
+        两者都随本阶段的每条事件发（stageKey / keychainPrompt），下一次 begin 重置"""
+        self.stage_key, self.keychain_prompt = key, bool(keychain)
         # Deliberately no "completed stages" list (维护方 10-25 口径): whether a stage is done has exactly one judge, its product key in the product
         # root (.stage_<阶段>, pack/refresh.sh). A second copy in the journal would disagree the moment a kill lands between committing a stage and
         # writing the journal. What this journal does keep — attempts / previousStage — is for display and diagnosis only and never decides a skip.

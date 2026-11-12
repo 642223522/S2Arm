@@ -107,7 +107,7 @@ extension LauncherView {
                     HStack(spacing: 10) {
                         Text(txt("library.hostUpdate.incompatible")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Button(txt("library.hostUpdate.prepare")) { model.exportFor = game.id }
-                            .buttonStyle(.link).disabled(model.busy).accessibilityIdentifier("hero.hostUpdate")
+                            .buttonStyle(.link).disabled(model.busy).busyHint(model).accessibilityIdentifier("hero.hostUpdate")
                     }
                 }
                 if let error = model.actionError(for: game.id) {
@@ -128,7 +128,7 @@ extension LauncherView {
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.14)))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain).disabled(model.busy && !enabled).help(label).accessibilityLabel(label).accessibilityIdentifier(id)
+        .buttonStyle(.plain).disabled(model.busy && !enabled).help(label).busyHint(model, disabled: !enabled).accessibilityLabel(label).accessibilityIdentifier(id)
         .padTarget(id, scope: "main", radius: 24, activate: action)
     }
 
@@ -201,7 +201,7 @@ extension LauncherView {
     func cardTargeted(_ id: String) -> Binding<Bool> {
         Binding(get: { dropCard == id }, set: { dropCard = $0 ? id : (dropCard == id ? nil : dropCard) })
     }
-    static let gameFileTypes: Set<String> = ["nsp", "xci", "nsz", "xcz"]
+    static let gameFileTypes: Set<String> = ["nsp", "xci", "nsz", "xcz", "nup"]   // 同后端 pack/jobs/library.py SOURCE_SUFFIXES（#611：漏了 Switch 2 的 .nup，拖到卡片上会被当成存档）
     func dropOnCard(_ urls: [URL], game: GameSummary) {
         guard let first = urls.first else { return }
         let ext = first.pathExtension.lowercased()
@@ -349,7 +349,11 @@ extension LauncherView {
         }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来自动恢复；文件夹没了 → 红字，点卡片重新指定或移除
-        if game.location.state == "offline" { return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: game.location.volume), LauncherPalette.unbuilt) }
+        // 未连接给具体路径（同出包页下拉框）：卷名会重名（内置盘一律「系统盘」），看不出是哪个位置没连上
+        if game.location.state == "offline" {
+            let place = game.location.path.isEmpty ? game.location.volume : (game.location.path as NSString).abbreviatingWithTildeInPath
+            return (txt("library.location.offline").replacingOccurrences(of: "{0}", with: place), LauncherPalette.unbuilt)
+        }
         if game.location.state == "missing" { return (txt("library.location.missing"), LauncherPalette.danger) }
         var parts: [String] = []
         var expired = false

@@ -32,6 +32,7 @@ static int p_rows(const char *path) {
 
 int main(void) {
     @autoreleasepool {
+        setenv("DM_NVN_FIRST_SKIP", "0", 1);   // 测的是等管线这条路径，不走首遇跳过
         char user[] = "/tmp/t_pairguard_XXXXXX"; int fd = mkstemp(user); REQUIRE(fd >= 0); close(fd); setenv("DM_PSO_USER", user, 1);
         char map[] = "/tmp/t_pairguard_map_XXXXXX"; fd = mkstemp(map); REQUIRE(fd >= 0); close(fd); setenv("DM_NVN_SHMAP", map, 1);
         mtl_init();

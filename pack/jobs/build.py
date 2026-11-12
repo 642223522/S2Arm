@@ -122,7 +122,11 @@ def runtime_env(c, game, runtime):
     save = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "saves"))
     # 存档位置（11-09 维护者）：这款游戏文件夹里的 SaveData/，原生存档格式，放进去下次起局就读、退出时写回（services/S2A.Services/SaveFolder.cs）。
     #   不叫 Saves：同一文件夹里已有运行层内部的 saves/，APFS / NTFS 不分大小写会撞名；ASCII 名避开非 ASCII 路径的坑
-    save_folder = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "SaveData"))
+    # 本地玩家（#623）：请求带 player {user: first | 32 位十六进制, name, folder} = 启动器顶栏选的玩家 → 服务层 S2A_PLAYER_USER / S2A_PLAYER_NAME
+    #   （services/S2A.Services/LocalPlayer.cs），存档位置换成这款文件夹里这个玩家的那个（第一个玩家仍是 SaveData）；没带 = 旧行为
+    from saves import requested_player   # 校验规则与导入社区存档共用一份（saves.py）
+    player = requested_player(c.r)
+    save_folder = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], player["folder"] if player else "SaveData"))
     cache = contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "shader-cache"))
     docs = contained(c.library, c.library / "temp" / game["id"])
     for p in (save, cache, docs):
@@ -135,6 +139,10 @@ def runtime_env(c, game, runtime):
                S2A_DOCKED="0" if c.r.get("docked") is False else "1",   # Mac 缺省主机模式（维护者 11-07）；只有请求明说 false 才掌机
                S2A_AUTOPLAY="0", S2A_GAME_NAME=game["name"], S2A_GAME_ID=game["id"],
                S2A_INPUT_GUIDE_PREFS=str(c.private / "input-guides" / (game["id"] + ".json")))
+    if player:
+        env["S2A_PLAYER_USER"] = player["user"]
+        if player.get("name"):
+            env["S2A_PLAYER_NAME"] = player["name"]
     if language is not None:
         env["S2A_SYSTEM_LANGUAGE"] = LANGUAGES[language]
     if c.r.get("devHud"):
@@ -206,14 +214,16 @@ def launch(c):
         env["S2A_RETURN_MARKER"] = str(marker)
         back = False
         try:
-            c.begin("游戏运行中")
+            c.begin("游戏运行中", key="game_running")
             log = c.logs / (c.task + "-game.log")
             started = time.monotonic()
             try:
                 c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"])
-            except Failure:
+            except Failure as f:
                 if trial:   # 新宿主试玩：TRIAL_OK_SECONDS 内异常退出 = 不认这款，下次退回原来的；玩过这么久才崩不怪宿主
                     host_update.settle(c, game["id"], host, ok=time.monotonic() - started >= host_update.TRIAL_OK_SECONDS)
+                if f.code == "tool_exit":   # 游戏进程自己非 0 退出（多为崩溃，139 = 段错误）：给启动页一个说人话的码，原文与退出码随错误摘要带走
+                    raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。", code="game_crashed", internal=str(f)) from None
                 raise
             if trial:
                 host_update.settle(c, game["id"], host, ok=True)
@@ -268,9 +278,12 @@ def compile_host(c, fingerprint, env, log_root):
         c.emit("cache", "已校验并复用 S2Arm Mac 宿主（含地址窗口护栏库）", cacheHit=True)
         ms.reuse(c, "host")
         return app
-    c.run(["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
-           "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]],
-          log_root / "host.log", env)
+    args = ["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
+            "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
+    dav1d = os.environ.get("S2A_DAV1D")   # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 1 不用带）
+    if dav1d in ("0", "1"):
+        args.append("S2A_DAV1D=" + dav1d)
+    c.run(args, log_root / "host.log", env)
     binary = host_root / "build/s2arm-host"
     if not binary.is_file():
         raise Failure("S2Arm Mac 宿主未生成。")

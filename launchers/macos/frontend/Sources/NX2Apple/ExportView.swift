@@ -90,6 +90,9 @@ struct ExportView: View {
                             .buttonStyle(.plain).font(.manrope(12.5)).foregroundStyle(.secondary).underline()
                             .disabled(model.busy || model.customizing).accessibilityIdentifier("export.cover.reset")
                     }
+                    if model.customizing, let note = model.lockWaitNote {
+                        Text(loc.backend(note)).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     if let failed = model.customizeError {
                         Text(loc.backend(failed)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     }
@@ -148,7 +151,7 @@ struct ExportView: View {
     private var locationRow: some View {
         var options: [(value: String, label: String)] = model.locations.map { l in
             let free = l.freeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
-            let name = l.volume.isEmpty ? (l.path as NSString).lastPathComponent : l.volume
+            let name = S2ArmLauncherModel.locationName(path: l.path, volume: l.volume)
             return (l.path, l.connected ? x("location.free").replacingOccurrences(of: "{0}", with: name).replacingOccurrences(of: "{1}", with: free ?? "?")
                                         : x("location.offline").replacingOccurrences(of: "{0}", with: name))
         }
@@ -232,6 +235,7 @@ struct ExportView: View {
         }
         .buttonStyle(.plain)
         .disabled(!open || model.busy)
+        .busyHint(model, disabled: open)
         .padTarget("export." + platform.rawValue, scope: "main", radius: 16) { model.toggleExport(platform) }
         .accessibilityLabel(loc.t("s2arm.export.platform." + platform.rawValue))
         .accessibilityValue(open ? loc.t(on ? "s2arm.export.checked" : "s2arm.export.unchecked") : loc.t("s2arm.export.soon"))
@@ -296,6 +300,7 @@ struct ExportView: View {
             .buttonStyle(.plain)
             .disabled(blocker != nil)
             .opacity(blocker == nil ? 1 : 0.4)
+            .busyHint(model, disabled: blocker == .busy)   // 别的任务（非出包）在跑：说在等谁（出包在跑时这里是「排队」，不置灰）
             .keyboardShortcut(.defaultAction)
             .padTarget("export.start", scope: "main", radius: 26) { model.export(game, location: location.isEmpty ? nil : location) }
             .accessibilityLabel(count > 1 ? String(format: loc.t("s2arm.export.startCount"), count) : loc.t("s2arm.export.start"))

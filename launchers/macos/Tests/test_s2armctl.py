@@ -188,6 +188,16 @@ class WaitTests(unittest.TestCase):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)
 
+    def test_update_phone_passes_accept_dropped_only_when_given(self):
+        # 同 install --accept-dropped：玩家同意让别的电脑装的款这次带不上（v0.3.0 只换壳验收：原先 update-phone 没有这个入口，永远过不去）
+        for argv, body in [(["update-phone", "--accept-stale", "--ask"], {"acceptStale": True, "ask": True}),
+                           (["update-phone", "--accept-stale", "--device", "测试 iPhone", "--accept-dropped", "--ask"],
+                            {"acceptStale": True, "ask": True, "device": "测试 iPhone", "acceptDropped": True})]:
+            with mock.patch.object(ctl, "call", side_effect=[{"tasks": []}, {"ok": True, "asked": True}]) as call, \
+                    mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
+                ctl.main()
+            call.assert_called_with("POST", "/update-phone", body)
+
     def run_install(self, after):
         """install 默认等这次作业结束：发命令前已有一个上次成功的装机任务 old，之后出现的才是这次的"""
         old = {"id": "old", "gameId": "G", "operation": "install", "state": "completed", "started": 1, "ended": 2}
@@ -582,6 +592,43 @@ class DeviceBundleTests(unittest.TestCase):
             ctl.device("0100000000000000")
         self.assertIn("已装 io.s2arm.games.7r5l7ty4r7", buf.getvalue())
         self.assertNotIn("没装", buf.getvalue())
+
+
+class DeviceChoiceTests(unittest.TestCase):
+    """设备号贯穿（11-11 真机验收测出）：install-check 能带 --device；targets 列出设备名、设备号与连接方式（两台同型号时只看机型分不出）"""
+    def test_install_check_sends_device(self):
+        sent = []
+        def call(method, path, body=None, **kw):
+            if method == "POST": sent.append((path, body)); return {"ok": True}
+            return {"installReadiness": {"gameId": "G", "checkedDevice": "U-1", "ready": True, "items": []}}
+        with mock.patch.object(ctl, "call", side_effect=call), contextlib.redirect_stdout(io.StringIO()):
+            for kw in (dict(device="U-1"), {}):
+                with self.assertRaises(SystemExit): ctl.install_check("G", False, **kw)   # 查完按 ready 退出
+        self.assertEqual(sent, [("/installCheck", {"gameId": "G", "device": "U-1"}), ("/installCheck", {"gameId": "G"})])
+
+    def test_install_check_waits_for_the_requested_device(self):
+        """同一款上一台的清单还挂在 state 里：带 --device 时等到给这台查的那份才读，不拿上一台的（11-11 真机验收：连查两台，第二台读到第一台的结果）"""
+        states = iter([{"gameId": "G", "checkedDevice": "U-OLD", "ready": False, "items": [{"ok": False, "waiting": False, "title": "旧", "detail": "旧那台没找到", "who": "human"}]},
+                       {"gameId": "G", "checkedDevice": "U-NEW", "ready": True, "items": [{"ok": True, "waiting": False, "title": "新那台已连上", "detail": "", "who": "human"}]}])
+        def call(method, path, body=None, **kw):
+            return {"ok": True} if method == "POST" else {"installReadiness": next(states)}
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "call", side_effect=call), mock.patch.object(ctl.time, "sleep"), contextlib.redirect_stdout(buf), \
+             self.assertRaises(SystemExit) as done:
+            ctl.install_check("G", False, device="U-NEW")
+        self.assertEqual(done.exception.code, 0)
+        self.assertIn("新那台已连上", buf.getvalue()); self.assertNotIn("旧那台没找到", buf.getvalue())
+
+    def test_targets_lists_name_udid_and_link(self):
+        t = {"current": None, "osChoices": [27], "models": [], "connected": [
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "甲", "udid": "U-1", "wired": True},
+            {"model": "iPhone 17 Pro Max", "productType": "iPhone18,2", "gpuArch": "g18p", "os": 27, "name": "乙", "udid": "U-2", "wired": False}]}
+        buf = io.StringIO()
+        with mock.patch.object(ctl, "call", return_value=t), mock.patch.object(sys, "argv", ["s2armctl", "targets"]), contextlib.redirect_stdout(buf):
+            ctl.main()
+        out = buf.getvalue()
+        self.assertIn("设备名「甲」，设备号 U-1，数据线", out)
+        self.assertIn("设备名「乙」，设备号 U-2，同一 Wi-Fi", out)
 
 
 class DiagCommandTests(unittest.TestCase):

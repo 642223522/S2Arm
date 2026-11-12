@@ -30,6 +30,7 @@ struct FreeSpaceView: View {
                     Text(game?.name ?? space?.name ?? gameID).font(.manrope(14)).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if model.spaceFreeing, let note = model.lockWaitNote { Text(loc.backend(note)).font(.manrope(12)).foregroundStyle(.secondary) }
                 if model.spaceLoading || model.spaceFreeing || model.overviewLoading { ProgressView().controlSize(.small) }
                 Picker("", selection: $overviewMode) {
                     Text(game?.name ?? space?.name ?? gameID).tag(false)
@@ -53,7 +54,7 @@ struct FreeSpaceView: View {
                     if overviewMode {
                         StorageOverviewSection(model: model)
                     } else if let space {
-                        CardGroup(loc.t("s2arm.space.parts")) {
+                        CardGroup(loc.t("s2arm.space.parts"), footnote: space.sharedBytes > 0 ? String(format: loc.t("s2arm.space.sharedNote"), Self.size(space.sharedBytes)) : "") {
                             ForEach(space.parts) { part in
                                 CardRow(loc.backend(part.title), detail: loc.backend(part.rebuild)) {
                                     HStack(spacing: 14) {

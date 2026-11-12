@@ -107,10 +107,15 @@ public sealed partial class EnvironmentWindow
             }
             var kept = g.GetProperty("kept").EnumerateArray().Select(k => T("space.kept." + k.GetProperty("id").GetString()) + " " + FormatBytes(k.GetProperty("bytes").GetInt64()));
             row.Children.Add(Muted(T("space.kept") + " · " + string.Join(" · ", kept), 12));
+            if (g.TryGetProperty("sharedBytes", out var sh) && sh.TryGetInt64(out var sharedBytes) && sharedBytes > 0)
+                row.Children.Add(Muted(T("space.sharedNote").Replace("{0}", FormatBytes(sharedBytes)), 12));
             if (parts.Count == 0) row.Children.Add(Muted(T("space.nothing"), 12));
             else
             {
-                var total = parts.Where(p => chosen.Contains(p.Id)).Sum(p => p.Bytes);
+                // 合计按作业层的组合账查（library.freeable：几项共用的块只在都勾上时算）；没有组合账退回各项相加
+                var key = string.Join("+", chosen.Where(id => parts.Any(p => p.Id == id)).OrderBy(id => id, StringComparer.Ordinal));
+                var total = g.TryGetProperty("combos", out var combos) && key.Length > 0 && combos.TryGetProperty(key, out var c) && c.TryGetInt64(out var cb)
+                    ? cb : parts.Where(p => chosen.Contains(p.Id)).Sum(p => p.Bytes);
                 var free = Action("space.free", () => _ = FreeAsync(gid, name, parts.Where(p => chosen.Contains(p.Id)).Select(p => p.Id).ToList(), total),
                     chosen.Count > 0 && !freeing);
                 AutomationId(free, "space.free." + gid);
@@ -166,11 +171,15 @@ public sealed partial class EnvironmentWindow
         foreach (var l in o.Locations)
         {
             var row = new StackPanel { Spacing = 3 };
-            row.Children.Add(Label((l.Volume.Length > 0 ? l.Volume : l.Path) + (l.IsDefault ? " · " + T("storage.location.default") : ""), 15));
+            // 行首给具体路径（同 Mac 存储总览）：同一块盘上的几个位置卷名一样，几行都叫同一卷名分不清；
+            //   路径可点开（PathLink，界面路径一律可点），不再在行尾另起一行重复同一路径
+            var pathRow = new StackPanel { Orientation = Orientation.Horizontal };
+            pathRow.Children.Add(PathLink(l.Path, 15));
+            if (l.IsDefault) pathRow.Children.Add(Label(" · " + T("storage.location.default"), 15));
+            row.Children.Add(pathRow);
             row.Children.Add(Muted(l.Connected && l.TotalBytes is { } total && l.FreeBytes is { } free
                 ? T("storage.location.usage").Replace("{0}", FormatBytes(l.UsedBytes ?? 0)).Replace("{1}", FormatBytes(free)).Replace("{2}", FormatBytes(total))
                 : T("storage.location.offline")));
-            row.Children.Add(PathLink(l.Path));
             places.Children.Add(row);
         }
         body.Children.Add(Card(places));

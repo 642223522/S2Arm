@@ -10,10 +10,6 @@ int s2a_ui_zh(void);
 #define S2A_UI(macro) (s2a_ui_zh() ? (macro) : (macro##_EN))
 
 // ---------- 资源导入提示页（runtime/src/pack_apply.c → ios/app.m s2a_ios_show_notice） ----------
-#define S2A_UI_IMPORT_SETTLE_TITLE      "正在检查游戏资源"
-#define S2A_UI_IMPORT_SETTLE_TITLE_EN   "Checking game resources"
-#define S2A_UI_IMPORT_SETTLE_BODY       "马上就好。"
-#define S2A_UI_IMPORT_SETTLE_BODY_EN    "Almost done."
 #define S2A_UI_IMPORT_WAIT_TITLE        "游戏资源还没传完"
 #define S2A_UI_IMPORT_WAIT_TITLE_EN     "Game resources are still transferring"
 #define S2A_UI_IMPORT_WAIT_BODY         "传完会自动开始导入，不用做任何操作。请让本 App 留在前台、不要锁屏。"
@@ -39,15 +35,15 @@ int s2a_ui_zh(void);
 #define S2A_UI_IMPORT_PROGRESS_BODY     "第一次要几分钟，请让本 App 留在前台、不要锁屏。"
 #define S2A_UI_IMPORT_PROGRESS_BODY_EN  "The first time takes a few minutes. Keep this app open and don’t lock the screen."
 // ---------- 缺资源包说明页（pack_apply.c s2a_pack_help_detail / s2a_ios_show_pack_help；标题「游戏资源不完整」复用 s2a_selfcheck_page.h 的 S2A_SELFCHECK_PKG_TITLE） ----------
-//   「资源包」是启动器交付的真实文件夹名（<游戏名>资源包），英文照写
+//   只教两条路：电脑上「装到 iPhone」、「文件」App 里放 game.img（11-11 维护者拍板；原先的「拷『<游戏名>资源包』文件夹」那条已删）
 #define S2A_UI_PACK_MISSING_TITLE       "还缺游戏资源"
 #define S2A_UI_PACK_MISSING_TITLE_EN    "Game resources are missing"
 #define S2A_UI_PACK_AGAIN               "刚刚查过，还是没有完整的资源包。\n\n"
 #define S2A_UI_PACK_AGAIN_EN            "Checked just now — the complete resources still aren’t there.\n\n"
-#define S2A_UI_PACK_BROKEN_DETAIL       "资源包里有一部分文件没拷全，多半是拷到一半断了。请在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上；也可以把「资源包」文件夹重新整个拷一次。拷好后这里会自动继续。"
-#define S2A_UI_PACK_BROKEN_DETAIL_EN    "Some files in the resources weren’t fully copied — the copy was probably interrupted. In S2Arm on your computer, click “Install on iPhone” for this game again to add what’s missing, or copy the whole “资源包” folder again. This continues automatically once it’s copied."
-#define S2A_UI_PACK_NONE_DETAIL         "这个 App 只是游戏的「外壳」，游戏本身在电脑上 S2Arm 打包得到的「资源包」里，手机上还没找到它。照下面做，放好后这里会自动继续。"
-#define S2A_UI_PACK_NONE_DETAIL_EN      "This app is only the game’s “shell”. The game itself is in the “资源包” folder that S2Arm on your computer packaged, and it isn’t on the phone yet. Follow the steps below; this continues automatically once it’s in place."
+#define S2A_UI_PACK_BROKEN_DETAIL       "游戏数据有一部分没传全，多半是传到一半断了。请在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上，补好后这里会自动继续。"
+#define S2A_UI_PACK_BROKEN_DETAIL_EN    "Some of the game’s data didn’t finish copying — the transfer was probably interrupted. In S2Arm on your computer, click “Install on iPhone” for this game again to add what’s missing. This continues automatically once it’s done."
+#define S2A_UI_PACK_NONE_DETAIL         "这个 App 只是游戏的「外壳」，游戏本身的数据还不在手机上。照下面任选一种做。"
+#define S2A_UI_PACK_NONE_DETAIL_EN      "This app is only the game’s “shell”; the game’s data isn’t on the phone yet. Do either of the steps below."
 
 // ---------- 画面停住提示（runtime/src/ap_host.c → ios/app.m s2a_ios_show_message：第一段当标题） ----------
 #define S2A_UI_STALL_EXIT               "游戏画面卡住了\n\n请从后台划掉本 App，再重新打开。还是卡住的话，四指长按屏幕打开设置，导出诊断包发给我们。"

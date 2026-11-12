@@ -17,7 +17,8 @@
 // 解码：VP9 / VP8 用仓库现成的 libvpx（services/vpx/build.sh，垫片 s2a_vp9.c / s2a_vp8.c，与服务层 Nvdec 同源）；AV1 用 VideoToolbox 硬件解码
 //   VP9 默认 libvpx；S2A_VP9_SYSTEM=1（仅 macOS）时整帧改走 VideoToolbox（关键帧解析 → vpcC，420v/420f → I420，失败自动回退 libvpx）
 //   （火纹 82 支片头全是 AV1：2560x1440 78 支、1920x1080 4 支），VideoToolbox 不支持 AV1 的机器（M1 / M2、A16 及更早）用 dav1d 软件解码
-//   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。H.264 宿主还没接：初始化回失败并打红行（游戏的播放库随即中止），
+//   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。确认所有目标机都有 AV1 硬件解码的本地构建可设
+//   S2A_DAV1D=0 不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）。H.264 宿主还没接：初始化回失败并打红行（游戏的播放库随即中止），
 //   不出假画面。
 // 原生图像：main 拿帧的原生图像句柄（movie::VideoFrame::GetNativeImageHandle）经 nvnNativeImage* 建 NVN 纹理（火纹 main+0x1900d80：格式 0x38 RGBA8_SRGB）。
 //   宿主把这张图像的内存当成一个 CPU 可写的 NVN 内存池、纹理建成线性（LINEAR，行距 = 图像行距）：Metal 端是池缓冲上的零拷贝线性纹理（nvn_mtl.m tex_linear），
@@ -239,6 +240,11 @@ static void gs_alloc_shutdown(void) { nvn2_gs_set_allocator(NULL, NULL, NULL, NU
 // 帧节奏模式（oe::SetGraphicsTargetFrameRate 经它告诉 gs 服务）：宿主按窗口的交换间隔定节奏，GPU 时间片 / 重启模式无处可设——记下
 static void gs_frame_mode(int mode) { static _Atomic int last = -1; if (atomic_exchange(&last, mode) != mode) LOG("gs：帧长模式 %d（0 自动、1 30 帧、2 60 帧、3 120 帧）：宿主按 NVN 交换间隔定节奏，只记下", mode); }
 static void gs_frame_knob(int mode) { (void)mode; }
+// nn::oe::SetGraphicsTargetFrameRate（新版 sdk，#679）：sdk 里它在模块内直接调 gs::sdk::SetGraphicsFrameLengthMode，不经导入表，上面那个接管碰不到；
+//   原版去用 gsv 会话，直连档 gs 不启动、会话不存在，首帧后中止。主程序经导入调它，在这一层接住：同帧长模式，宿主按 NVN 交换间隔定节奏，只记、回成功。
+//   参数是目标帧率的枚举 / 数值（各 sdk 的改编名后缀不一定相同，按名字前缀认），只用来打日志
+#define OE_TARGET_RATE "_ZN2nn2oe26SetGraphicsTargetFrameRateE"
+static Result oe_target_rate(int rate) { static _Atomic int last = -1; if (atomic_exchange(&last, rate) != rate) LOG("oe：目标帧率设置 %d：宿主按 NVN 交换间隔定节奏，只记（直连档不启动 gs，不转给 gs 服务）", rate); return RES_OK; }
 
 // ---------- 图像池与原生图像句柄 ----------
 enum { IMG_NONE, IMG_NV12, IMG_RGBA, IMG_HDR };
@@ -696,7 +702,7 @@ static _Atomic unsigned long long g_vp9_vt_frames;
 unsigned long long nvn2_vp9_vt_frames(void) { return atomic_load(&g_vp9_vt_frames); }
 static void cv_soft_open(cvdec *d, const char *why) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (!s2a_av1_open) die("Switch 2 视频：宿主没链 dav1d 垫片（services/dav1d），解不了 AV1（%dx%d）", d->w, d->h);
+    if (!s2a_av1_open) die("Switch 2 视频：%s；宿主没链 dav1d 垫片（services/dav1d，S2A_DAV1D=0 的构建不链），解不了 AV1（%dx%d）", why, d->w, d->h);
     if (!(d->av1 = s2a_av1_open(n >= 8 ? 6 : (int)n))) die("Switch 2 视频：dav1d 建不出 AV1 解码器（%dx%d）", d->w, d->h);
     if (!d->av1_soft++) LOG("Switch 2 视频：AV1 %dx%d 走 dav1d 软件解码（%s）", d->w, d->h, why);
 }
@@ -1284,6 +1290,7 @@ void *s2a_codec_entry(const char *name) {
     if (!name || !nvn2_on()) return NULL;
     for (unsigned i = 0; i < sizeof g_cv_names / sizeof *g_cv_names; i++)
         if (!strcmp(name, g_cv_names[i].n)) return g_cv_names[i].f ? g_cv_names[i].f : (void *)cv_lib_ok;
+    if (!strncmp(name, OE_TARGET_RATE, sizeof OE_TARGET_RATE - 1)) return (void *)oe_target_rate;
     for (unsigned i = 0; i < sizeof g_ni_names / sizeof *g_ni_names; i++) if (!strcmp(name, g_ni_names[i].n)) return g_ni_names[i].f;
     int fam = cv_video(name) || !strncmp(name, "_ZN2nn6syncpt", 13) || !strncmp(name, "_ZNK2nn6syncpt", 14) || !strncmp(name, "_ZN2nn2gs", 9) || !strncmp(name, "_ZNK2nn2gs", 10)
         || (!strncmp(name, "_Z", 2) && (strstr(name, "nvnNativeImage") || strstr(name, "FromNativeImage") || strstr(name, "3nvn11NativeImage") || strstr(name, "3nvn18NativeImageBuilder")

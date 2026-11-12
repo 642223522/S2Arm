@@ -154,6 +154,7 @@ def diagnostic_log_excerpt(source, size, head=None, tail=None):
 
 
 DIAGNOSTIC_JOB_LIMIT = 4 << 20
+PHONE_TEXT = (".log", ".txt", ".tsv", ".json", ".ips", ".csv")   # 拉回的手机诊断里按文本脱敏收的类型（host.log、logs/、frames.tsv、threads.txt、diag/*.json、metrickit 等）
 DIAG_RUN_FILE_LIMIT = 4 << 20    # 诊断局 PNG：单张上限
 DIAG_RUN_TOTAL_LIMIT = 40 << 20  # 诊断局 PNG：总量上限（#438 定）
 
@@ -1642,6 +1643,7 @@ def catalog(c):
     startup = c.r.get("startup") is True   # 启动器打开后的第一次刷新（两端前端带 startup: true）
     if startup:
         sweep_residue(c)   # 崩溃 / 断电 / 被杀留下的解包与中间产物：启动时扫一次（剃刀 H14：原先每次刷新都扫两遍；正常失败与取消由 clean_after_stop 当场清）
+        sweep_trash(c)   # 删除时挪进 .s2a-trash 而当时没删干净的：同在启动时清一次（玩家反馈 11-11 删除先挪再删）
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
     for game in cat["games"]:
@@ -2088,25 +2090,62 @@ def delete(c):
         # 上次删到一半（目录删不空）时 game.json 可能已被删掉、find_game 认不出：按索引找回同一个文件夹接着删，
         #   不能当成「已经没有了」只把条目从清单里去掉、留下残留目录（#433）
         gdir = layout.find_game(c, gid) or layout.indexed_dir(c, gid)
+        # 先整块挪进存放位置的 .s2a-trash/（同盘改名，原子；有程序正开着里面的文件也挪得动），清单立刻去掉这款，再删挪走的那堆：
+        #   原先边删边可能撞上删不掉的文件（被占用 / 有程序在写），抛出去时清单里还留着这款、目录删了一半，界面成了「找不到游戏文件」，
+        #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
+        trashed = []
         if gdir and gdir.exists():
             # 存档有内容就保留
             saves = gdir / "saves"
             backups = gdir / "save-backups"
             has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
             root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-            if has_saves:
-                for item in gdir.iterdir():
-                    if item.name not in ("saves", "save-backups"):
-                        _rm(c, root, item)
-            else:
-                _rm(c, root, gdir)
-        for p in game_caches(c, gid):
-            _rm(c, c.work_root, p)
+            for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
+                trashed.append((root, _to_trash(c, root, item, gid)))
         drop_from_container(c, gid)
         cat = c.catalog()
         cat["games"] = [g for g in cat["games"] if g["id"] != gid]
         atomic(c.library / "catalog.json", cat)
+        left = []
+        for root, p in trashed + [(c.work_root, p) for p in game_caches(c, gid)]:
+            try:
+                _rm(c, root, p)
+            except (Failure, OSError) as e:
+                left.append(f"{p.name}（{e}）")
+        if left:
+            c.diagnostic("这款已从游戏库删掉；有几个文件当时删不掉（可能正被别的程序打开），S2Arm 空闲时会再删：" + "；".join(left)[:400],
+                         code="job_failed", severity="warning")
     return {}
+
+
+TRASH = ".s2a-trash"   # 每个存放位置根下：删除时先把这款整块挪进来再删（delete），删不干净的空闲时清（sweep_trash）
+
+
+def _to_trash(c, root, item, gid):
+    """把 root 下的 item 改名挪进 root/.s2a-trash/<游戏号>-<毫秒>-<原名>（同盘改名）→ 新路径；挪不动（权限 / 只读盘）照实报"""
+    root, item = Path(os.path.abspath(root)), Path(os.path.abspath(item))
+    if root not in item.parents or _is_link(item):   # 不在这个存放位置里的、链接都不碰（同 _rm 的托管目录检查）
+        raise Failure("操作路径不属于托管目录。")
+    dest = root / TRASH / f"{gid}-{int(time.time() * 1000)}-{item.name}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(item, dest)
+    except OSError as e:
+        raise Failure(f"删不掉「{item.name}」：{e.strerror or e}。确认这块盘没被设成只读、文件没被别的程序锁住，再删一次。", code="job_failed") from e
+    return dest
+
+
+def sweep_trash(c):
+    """删掉各存放位置 .s2a-trash/ 里上次没删干净的（delete 挪进来的、已不在游戏库里）；删不掉下次再试，不影响读游戏库"""
+    for _, root, ok in layout.locations(c):
+        t = root / TRASH
+        if not ok or not t.is_dir():
+            continue
+        for p in t.iterdir():
+            try:
+                _rm(c, root, p)
+            except (Failure, OSError):
+                pass
 
 
 def remove(c):
@@ -2194,6 +2233,69 @@ def _part_bytes(paths):
     return sum(disk_bytes(v, dev) for dev, v in by_dev.items())
 
 
+def freeable(parts):
+    """{部件 id: [路径…]} → {勾选组合键: 删掉这几项真能腾出的字节}，组合键是排好序的部件 id 用「+」连（全部非空组合都给）。
+    只按目录各自量再相加会多算（玩家报：一款游戏 Mac 运行版本 15.45 GB、iPhone 包 15.13 GB，可两份 romfs 是同一组 APFS 克隆块，
+    单删 iPhone 包实际只腾出约 1.5 GB）。按「腾出单位」算：
+      · 每个 inode 的独占字节（克隆文件取 ATTR_CMNEXT_PRIVATESIZE，否则 st_blocks）——它的硬链接（st_nlink 份）全在勾选里才腾出；
+      · 每个克隆族的共享块（各份 已分配 − 独占 取最大）——族里的份数（CLONE_REFCNT）全在勾选里才腾出。
+    族里还有份在别处（别的部件没勾、解包目录、别款）就不算腾出。同卷才算（不跟软链、不跨卷，同 disk_bytes）；Windows 没有克隆，只剩硬链接这条"""
+    units, seen_inodes = {}, {}   # 单位键 → [字节, 要几份, {部件: 已见份数}]
+    def hold(key, size, need, part):
+        u = units.setdefault(key, [0, need, {}])
+        u[0] = max(u[0], size); u[2][part] = u[2].get(part, 0) + 1
+    for part, roots in parts.items():
+        visited = set()   # 本部件走过的目录（按 inode）和文件（按路径）：根互相包含只记一次；同一 inode 的两条硬链接各算一份
+        for root in roots:
+            try:
+                device = Path(root).lstat().st_dev
+            except OSError:
+                continue
+            stack = [os.fspath(root)]
+            while stack:
+                path = stack.pop()
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    continue
+                if st.st_dev != device or stat.S_ISLNK(st.st_mode):
+                    continue
+                key = ("inode", st.st_dev, st.st_ino)
+                mark = key if stat.S_ISDIR(st.st_mode) else os.path.normpath(path)
+                if mark in visited:
+                    continue
+                visited.add(mark)
+                blocks = getattr(st, "st_blocks", None)
+                alloc = blocks * 512 if blocks is not None else st.st_size
+                if stat.S_ISDIR(st.st_mode):
+                    hold(key, alloc, 1, part)
+                    try:
+                        with os.scandir(path) as it:
+                            stack.extend(e.path for e in it)
+                    except OSError:
+                        pass
+                    continue
+                clone = _CloneInfo.get(path) if stat.S_ISREG(st.st_mode) and alloc else None
+                if clone and clone[2] >= 2 and 0 <= clone[0] <= alloc:
+                    hold(key, clone[0], max(1, st.st_nlink), part)
+                    if key not in seen_inodes.setdefault(clone[1], set()):   # 族里的份数按 inode 数（硬链接不算多一份）
+                        seen_inodes[clone[1]].add(key)
+                        hold(("clone", st.st_dev, clone[1]), alloc - clone[0], clone[2], part)
+                else:
+                    hold(key, alloc, max(1, st.st_nlink), part)
+    ids = sorted(parts)
+    out = {}
+    for mask in range(1, 1 << len(ids)):
+        chosen = {ids[i] for i in range(len(ids)) if mask >> i & 1}
+        out["+".join(sorted(chosen))] = sum(size for size, need, held in units.values() if sum(n for p, n in held.items() if p in chosen) >= need)
+    return out
+
+
+def space_key(ids):
+    """勾选组合 → freeable 的键"""
+    return "+".join(sorted(ids))
+
+
 def space_survey(c):
     """每款（gameId 给了只这一款）按部件的占用（字节，按所在卷实测）：parts 可勾选删除，kept 只报不删"""
     games = c.catalog()["games"]
@@ -2207,8 +2309,12 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
+        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]]   # 没有旧版残留就不显示
+        combos = freeable({k: parts[k] for k, _, _ in shown})
+        # 每行是「只删这一项」腾出的字节；几项共用的克隆块只在都勾上时算进合计（combos），sharedBytes = 全勾比各项单删相加多出的部分
         rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
-                         parts=[dict(id=k, title=t, rebuild=r, bytes=_part_bytes(parts[k])) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]],   # 没有旧版残留就不显示
+                         parts=[dict(id=k, title=t, rebuild=r, bytes=combos[k]) for k, t, r in shown],
+                         combos=combos, sharedBytes=combos[space_key(k for k, _, _ in shown)] - sum(combos[k] for k, _, _ in shown),
                          kept=[dict(id=k, bytes=_part_bytes(parts[k])) for k in SPACE_KEPT]))
     return dict(games=rows)
 
@@ -2228,15 +2334,14 @@ def space_free(c):
             if root is not None and not (layout.ios_kit(c, gid) / "main.npdm").is_file():
                 save_container_kit(c, gid, root)
         parts = space_parts(c, gid)
-        freed, done = 0, []
+        # 腾出多少按删前的组合账算（同 space_survey 的合计）：逐项「删前 − 删后」会把共用克隆块记在最后删的那项上、单项又各算一遍
+        combos = freeable({k: parts[k] for k, _, _ in SPACE_PARTS})
+        freed, done = combos[space_key(want)], []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
-            before = _part_bytes(parts[k])
             for p in parts[k]:
                 root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
                 _rm(c, root, p)
-            after = _part_bytes([p for p in parts[k] if p.exists() or p.is_symlink()])
-            freed += before - after
-            done.append(dict(id=k, bytes=before - after))
+            done.append(dict(id=k, bytes=combos[k]))
         sizes.refresh(c, gid)
         return dict(gameId=gid, parts=done, freedBytes=freed)
 
@@ -2470,6 +2575,54 @@ def diagnostics(c):
                             write_file(directory_fd, name, "logs/" + member)
                 if roots["logs"] is not None:
                     logs(roots["logs"])
+                # 手机诊断（s2armctl diag pull / 设置页「拉回 iPhone 诊断」，pack/jobs/diag.py pull）：拉回在 <私有目录>/diagnostics/<时刻>-…/，
+                #   原先导出不收，照「反复闪退：先 diag pull 再 diag export」做的玩家交上来的包里没有手机日志。只收最近一次拉回的那份；
+                #   文本走和 logs/ 同一套脱敏（拉回的是没脱敏的原始文件），渲染出的 PNG 同诊断局读数原样收、限大小，别的类型跳过并在 manifest 里写明
+                step = "读手机诊断"
+                phone = None
+                pulls = c.private / "diagnostics"
+                latest = max((d for d in pulls.iterdir() if d.is_dir() and not d.is_symlink()), key=lambda d: d.stat().st_mtime, default=None) \
+                    if pulls.is_dir() and not pulls.is_symlink() else None
+                if latest is not None:
+                    phone = dict(folder=latest.name, files=0, skipped=[])
+                    try:
+                        phone.update({k: v for k, v in json.loads((latest / "pull.json").read_text(encoding="utf-8")).items() if k in ("pulledAt", "devices", "apps")})
+                    except (OSError, ValueError):
+                        phone["pulledAt"] = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(latest.stat().st_mtime)) + "（按目录修改时间，旧版拉回没有记录）"
+                    pulls_fd = winproc.open_dir_nofollow("diagnostics", home_fd) if os.name == "nt" else os.open("diagnostics", flags, dir_fd=home_fd)
+                    descriptors.append(pulls_fd)
+                    latest_fd = winproc.open_dir_nofollow(latest.name, pulls_fd) if os.name == "nt" else os.open(latest.name, flags, dir_fd=pulls_fd)
+                    descriptors.append(latest_fd)
+
+                    def pulled(directory_fd, relative=""):
+                        for name in sorted(winproc.listdir(directory_fd) if os.name == "nt" else os.listdir(directory_fd)):
+                            c.check()
+                            info = winproc.stat_at(name, directory_fd) if os.name == "nt" else os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                            member = relative + name
+                            if not relative and name == "pull.json":
+                                continue   # 拉回记录进 manifest，不另收
+                            if stat.S_ISDIR(info.st_mode):
+                                child = winproc.open_dir_nofollow(name, directory_fd) if os.name == "nt" else os.open(name, flags, dir_fd=directory_fd)
+                                try:
+                                    opened = child.info if os.name == "nt" else os.fstat(child)
+                                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                                        raise Failure("诊断目录在导出期间发生变化，请重试。")
+                                    pulled(child, member + "/")
+                                finally:
+                                    winproc.close(child) if os.name == "nt" else os.close(child)
+                            elif not stat.S_ISREG(info.st_mode):
+                                continue
+                            elif os.path.splitext(name)[1].lower() in PHONE_TEXT:
+                                write_file(directory_fd, name, "phone/" + member)
+                                phone["files"] += 1
+                            elif name.lower().endswith(".png") and 0 < info.st_size <= DIAG_RUN_FILE_LIMIT:
+                                with (winproc.open_file(name, directory_fd) if os.name == "nt"
+                                      else os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd), "rb")) as f:
+                                    archive.writestr("phone/" + "/".join(redact_member_component(x) for x in member.split("/")), f.read())
+                                phone["files"] += 1
+                            else:
+                                phone["skipped"].append(member)
+                    pulled(latest_fd)
                 # 诊断局（#438，community.diag_run_env）的读数：各款游戏文件夹 diagrun/ 里的 PNG（出图画面与颜色目标，渲染出来的图、不含游戏数据），
                 #   原样放 diagrun/<游戏号>_<原名>。单张超过 4 MB 跳过、总量至多 40 MB；链接不跟（不越出游戏文件夹）
                 step = "读诊断局读数"
@@ -2493,6 +2646,8 @@ def diagnostics(c):
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),
                                 mac_model=probe(["/usr/sbin/sysctl", "-n", "hw.model"]),
                                 xcode_signing=signing_status())
+                if phone is not None:
+                    manifest["phone_diagnostics"] = phone   # 最近一次拉回的手机诊断：拉回时刻、来源设备（机型 / 系统）、收了几份、跳过了哪些
                 manifest = redact_fields(manifest)
                 # These names have already been sanitized; redacting them again
                 # would hide task UUIDs and break the archive index.

@@ -50,15 +50,24 @@ class CommunityTests(unittest.TestCase):
         self.assertEqual((g["gfx:noblur"]["enabled"], g["gfx:res1080"]["enabled"], g["gfx:fov"]["relocate"]), (True, False, True))
 
     def test_save_and_launch_env(self):
-        self.assertEqual(community.launch_env(self.c, GID), {})                             # 缺省都开：不设
+        self.assertEqual(community.launch_env(self.c, GID), {})                             # 没选过都不设：宽屏缺省开、60 帧由宿主按清单原因定
         self.c.r.update(settings={"widescreen": False, "fps60": False}, graphics={"gfx:res1080": True})
         community.save(self.c)
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDESCREEN": "0", "S2A_FPS60": "0"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDESCREEN": "0", "S2A_FPS60": "0"})   # 玩家明确关：写 0
         self.c.r = {"gameId": GID, "graphics": {"gfx:res900": True}}
         r = community.save(self.c); g = {it["id"]: it for it in r["graphics"]}
         self.assertEqual((g["gfx:res900"]["enabled"], g["gfx:res1080"]["enabled"]), (True, False))   # 互斥组单选
         self.assertEqual((r["widescreen"]["enabled"], r["fps60"]["enabled"]), (False, False))       # 没带的项不变
         self.c.r = {"gameId": GID, "graphics": {"nope": True}}
+        with self.assertRaises(Failure): community.save(self.c)
+
+    def test_game_language(self):
+        # 游戏语言（启动设置页）：跟随系统不设变量（宿主读系统首选语言）；选了哪种就把宿主枚举名交给 S2A_SYSTEM_LANGUAGE；不在表里的值拒收
+        self.c.r.update(settings={"language": "system"}); community.save(self.c)
+        self.assertNotIn("S2A_SYSTEM_LANGUAGE", community.launch_env(self.c, GID))
+        self.c.r = {"gameId": GID, "settings": {"language": "Japanese"}}; community.save(self.c)
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_SYSTEM_LANGUAGE"], "Japanese")
+        self.c.r = {"gameId": GID, "settings": {"language": "Klingon"}}
         with self.assertRaises(Failure): community.save(self.c)
 
     def test_diag_run_is_one_session_only(self):
@@ -114,17 +123,26 @@ class MacDisplayTests(unittest.TestCase):
     def test_defaults_follow_the_caps(self):
         self.caps()
         m = self.mac()
-        self.assertEqual((m["fps60"]["available"], m["fps60"]["value"]), (True, True))
+        self.assertEqual((m["fps60"]["available"], m["fps60"]["value"]), (True, False))   # 清单 1 但原因不是已验证来源：缺省原帧率（同宿主）
         self.assertEqual((m["widenForce"]["available"], m["widenForce"]["value"]), (True, False))
         self.assertEqual((m["enhance"]["available"], m["enhance"]["value"]), (True, False))
         self.assertEqual((m["docked"]["value"], m["rumble"]["value"], m["rumbleLevel"]["value"], m["motion"]["value"], m["hud"]["value"]),
                          ("docked", True, "2", True, False))   # 定义表缺省：Mac 主机模式、震动开标准档、体感开、浮层关
         self.assertEqual(community.launch_env(self.c, GID), {})
 
+    def test_fps60_default_follows_the_verified_reason_like_the_host(self):
+        # 同宿主 runtime/src/caps.c：清单 fps60 1 且原因含「fps.tsv」「逻辑速度同局 A/B 绿」「游戏原生 60 帧」之一才缺省开；值 0 / 别的原因都是原帧率
+        for line, want in (("fps60\t1\t# fps.tsv 登记 60 帧\n", True), ("fps60\t1\t# 逻辑速度同局 A/B 绿\n", True),
+                           ("fps60\t1\t# 游戏原生 60 帧\n", True), ("fps60\t1\t# 全引擎档\n", False), ("fps60\t0\t# fps.tsv 判红\n", False)):
+            with self.subTest(line=line):
+                self.caps(line + "direct\t1\n")
+                self.assertEqual(self.mac()["fps60"]["value"], want)
+                self.assertEqual(community.launch_env(self.c, GID), {})   # 没选过：不写，宿主自己按同一条规则开 / 不开
+
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = enhance fps60 widescreen widenForce docked rumble rumbleLevel motion hud
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "widescreen", "widenForce", "docked", "rumble", "rumbleLevel", "motion", "padFace", "hud", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "widescreen", "widenForce", "docked", "language", "rumble", "rumbleLevel", "motion", "padFace", "hud", "diagRun"]))
 
     def test_game_without_a_mac_build_says_why(self):
         m = self.mac()
@@ -157,8 +175,10 @@ class MacDisplayTests(unittest.TestCase):
     def test_fps60_off_and_manual_on_over_a_red_game(self):
         self.caps()
         self.save(fps60=False)
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "0"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "0"})             # 玩家明确关：写 0
         self.assertFalse(self.mac()["fps60"]["value"])
+        self.save(fps60=True)                                                               # 清单开的款玩家开：也要明确传 1（宿主不再看清单）
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "1"})
         self.caps("fps60\t0\t# 判红\ndirect\t1\n")
         self.save(fps60=True)
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "1"})

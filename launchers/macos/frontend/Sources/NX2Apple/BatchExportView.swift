@@ -96,7 +96,7 @@ struct BatchExportView: View {
     private var locationRow: some View {
         var options: [(value: String, label: String)] = model.locations.map { l in
             let free = l.freeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "?"
-            return (l.path, (l.volume.isEmpty ? (l.path as NSString).lastPathComponent : l.volume) + " · " + free)
+            return (l.path, S2ArmLauncherModel.locationName(path: l.path, volume: l.volume) + " · " + free)
         }
         if !model.batchLocation.isEmpty, !options.contains(where: { $0.value == model.batchLocation }) {
             options.append((model.batchLocation, (model.batchLocation as NSString).abbreviatingWithTildeInPath))
@@ -189,16 +189,16 @@ struct BatchExportView: View {
         HStack(spacing: 8) {
             if platforms.contains(where: { state($0) == "failed" }) {
                 if results.values.contains(where: { $0["code"] as? String == "disk_full" }) {
-                    Button(t("free")) { freeSpace(gid) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                    Button(t("free")) { freeSpace(gid) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                 }
-                Button(t("retry")) { model.retryBatch(gid) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                Button(t("retry")) { model.retryBatch(gid) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                     .accessibilityIdentifier("batch.retry." + gid)
             }
             if state("iphone") == "completed" {
-                Button(t("install")) { install(gid) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                Button(t("install")) { install(gid) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
             }
             if state("mac") == "completed", let game = model.games.first(where: { $0.id == gid }) {
-                Button(t("play")) { model.play(game, uiLanguage: uiLanguage) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                Button(t("play")) { model.play(game, uiLanguage: uiLanguage) }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
             }
         }
     }
@@ -220,7 +220,7 @@ struct BatchExportView: View {
                         .font(.manrope(16, .bold)).foregroundStyle(.black).padding(.horizontal, 26).frame(height: 48)
                         .background(LauncherPalette.cream, in: Capsule()).contentShape(Capsule())
                 }
-                .buttonStyle(.plain).disabled(count == 0 || model.busy).opacity(count == 0 || model.busy ? 0.4 : 1)
+                .buttonStyle(.plain).disabled(count == 0 || model.busy).opacity(count == 0 || model.busy ? 0.4 : 1).busyHint(model)
                 .keyboardShortcut(.defaultAction).accessibilityIdentifier("batch.start")
             } else {
                 let s = model.batchSummary
@@ -230,10 +230,10 @@ struct BatchExportView: View {
                 } else {
                     // 暂停着（磁盘满）只给「重试」：它解除暂停、重出失败的那个平台；「继续」不解除暂停（审计 P1-164）
                     if (s["failed"] as? Int ?? 0) > 0 || model.batchPaused != nil {
-                        Button(t("retry_failed")) { model.retryBatch() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                        Button(t("retry_failed")) { model.retryBatch() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                     }
                     if model.batchPaused == nil, (s["cancelled"] as? Int ?? 0) > 0 || (s["pending"] as? Int ?? 0) > 0 {
-                        Button(t("resume")) { model.resumeBatch() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                        Button(t("resume")) { model.resumeBatch() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                             .accessibilityIdentifier("batch.resume")
                     }
                     Spacer()

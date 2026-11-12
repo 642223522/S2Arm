@@ -9,6 +9,20 @@
 GAL_MTL4_ZONE_BEGIN   // Metal 4 可用性区（gal_internal.h）
 #if TARGET_OS_IPHONE
 UIView *s2a_ios_root_view(void) __attribute__((weak_import));
+CGRect s2a_ios_game_area(void) __attribute__((weak_import));
+static CAMetalLayer *g_ios_layer;
+// 主线程布局，不接触游戏纹理；渲染线程经已有 SetSize 锁读取新 drawable 尺寸。
+NXGAL_API void nxgal_window_relayout_ios(void) {
+    UIView *v=g_ios_layer && s2a_ios_root_view ? s2a_ios_root_view() : nil;
+    if (!v || UIApplication.sharedApplication.applicationState==UIApplicationStateBackground) return;
+    CGRect b=s2a_ios_game_area ? s2a_ios_game_area() : v.bounds;
+    if (CGRectIsEmpty(b)) b=v.bounds;
+    CGFloat s=v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    g_ios_layer.frame=b; g_ios_layer.contentsScale=s;
+    [CATransaction commit];
+    nxgal_window_set_size((int32_t)round(b.size.width*s),(int32_t)round(b.size.height*s));
+}
 // Optional host hook: wait on the render thread, before dispatching UIKit work.
 int s2a_ios_wait_root_view(int timeout_ms) __attribute__((weak_import));
 void s2a_ios_render_init_failed(void) __attribute__((weak_import));
@@ -25,8 +39,10 @@ NXGAL_API int32_t nxgal_window_attach_ios(void) {
     void (^mk)(void) = ^{
         UIView *v = s2a_ios_root_view(); if (!v) return;
         L = [CAMetalLayer layer]; CGFloat s = v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale;
-        L.frame = v.bounds; L.contentsScale = s; px = CGSizeMake(v.bounds.size.width * s, v.bounds.size.height * s);
+        CGRect b=s2a_ios_game_area ? s2a_ios_game_area() : v.bounds; if (CGRectIsEmpty(b)) b=v.bounds;
+        L.frame = b; L.contentsScale = s; px = CGSizeMake(round(b.size.width * s), round(b.size.height * s));
         L.drawableSize = px;
+        g_ios_layer=L;
         // 出图层不透明：整屏游戏画面（黑边也由本层自己画），合成器不必与下面的根视图混合
         L.opaque = YES;
         [v.layer insertSublayer:L atIndex:0];   // Keep virtual controls and diagnostic UI above the game.
@@ -38,6 +54,7 @@ NXGAL_API int32_t nxgal_window_attach_ios(void) {
     return 0;
 }
 #else
+NXGAL_API void nxgal_window_relayout_ios(void) { }
 NXGAL_API int32_t nxgal_window_attach_ios(void) { return -1; }
 NXGAL_API void nxgal_window_attach_failed_ios(void) { }
 #endif

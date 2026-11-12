@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import S2ArmShellBridge
-import ShellUI
+@testable import ShellUI
 @testable import S2ArmShellHost
 
 // 期望值按 Fixtures/catalogue.json 手算：8 条里重复的 Alpha 丢弃 → 7 条；状态按字段逐条对位
@@ -59,6 +59,36 @@ import ShellUI
     delete(b, true)
     #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(b).path))
     #expect(model.games.isEmpty)
+}
+
+// v0.3.0 资源包挪出 Documents：游戏根是 <家>/Documents/games 时资源包在 <家>/Library/Application Support/S2Arm/games/<游戏号>/资源包（同宿主 s2a_pack_root）。
+//   只在新位置的别处电脑款照样认出；还没迁的老位置照样认；删除（不留存档）把新位置的资源包一起挪走、存档留在 Documents。期望按目录手写
+@MainActor @Test func packInLibraryIsFoundAndDeleted() throws {
+    let fm = FileManager.default, home = fm.temporaryDirectory.appendingPathComponent("s2a-home-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: home) }
+    let games = home.appendingPathComponent("Documents/games"), packs = home.appendingPathComponent("Library/Application Support/S2Arm/games")
+    let derived = S2ArmShellHostModel.packGamesRoot(for: games, home: home)?.standardizedFileURL.path
+    #expect(derived == packs.standardizedFileURL.path)
+    #expect(S2ArmShellHostModel.packGamesRoot(for: home.appendingPathComponent("x"), home: home) == nil)
+    let (a, newStray, oldStray) = ("0100000000010000", "0100000000060000", "0100000000070000")
+    let placed: [(URL, String)] = [(packs, a), (packs, newStray), (games, oldStray)]
+    for item in placed {
+        let pack = item.0.appendingPathComponent(item.1).appendingPathComponent("资源包")
+        try fm.createDirectory(at: pack, withIntermediateDirectories: true)
+        try Data("sha".utf8).write(to: pack.appendingPathComponent(".applied"))
+    }
+    try fm.createDirectory(at: games.appendingPathComponent("\(a)/S2A/ryujinx/bis/user/save"), withIntermediateDirectories: true)
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), installState: { _ in 1 }, gamesRoot: games, packGamesRoot: packs)
+    #expect(model.games.map(\.id) == [a, newStray, oldStray])
+    let oldDir: String = S2ArmShellHostModel.packDir(oldStray, games: games, packs: packs).path
+    let newDir: String = S2ArmShellHostModel.packDir(a, games: games, packs: packs).path
+    #expect(oldDir == games.appendingPathComponent(oldStray).appendingPathComponent("资源包").path)
+    #expect(newDir == packs.appendingPathComponent(a).appendingPathComponent("资源包").path)
+    let delete = try #require(model.actions.onDeleteGame)
+    delete(a, false)
+    #expect(!fm.fileExists(atPath: packs.appendingPathComponent(a).path))
+    #expect(try fm.contentsOfDirectory(atPath: games.appendingPathComponent(a).path) == ["S2A"])
 }
 
 // v0.2.6「点删除没反应」：删除不在主线程同步做，点下当场离开列表、提示「正在删除」，后台删完提示释放了多少；挪不动提示原因、游戏留着；
@@ -321,15 +351,41 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(model.games.first?.game.state == .installing(InstallStage(.transferring, fraction: 750.0 / 900)))
 }
 
-// 正在解别的款（宿主拒绝起第二个）：这款排着显示「安装中」，不算没解成，下一次刷新再试
+// iOS 装机剃刀 #41：没有传输清单（老电脑端推的）也要能判传断了。夹具：资源包里只有一个没写完的包，宿主报阶段 3。
+//   期望按时钟手写：刚改过 → 传输中；过了 transferStall + 5 秒没动 → 传输中断（原先永远「传输中」）；包又长了、时钟回到现在 → 又是传输中
+@MainActor @Test func transferWithoutListStillDetectsStall() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("s2a-nolist-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    let id = "0100000000010000", pack = root.appendingPathComponent("\(id)/资源包")
+    try fm.createDirectory(at: pack.appendingPathComponent(".incoming"), withIntermediateDirectories: true)
+    try Data(count: 30).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    var clock = Date()
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")), installState: { _ in 3 },
+                                    now: { clock }, gamesRoot: root)
+    #expect(model.games.first?.game.state.installPhase == .transferring)
+    clock = clock.addingTimeInterval(S2ArmShellHostModel.transferStall + 5); model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .interrupted)
+    try Data(count: 60).write(to: pack.appendingPathComponent(".incoming/1_000.tar"))
+    clock = Date(); model.refreshGameData()
+    #expect(model.games.first?.game.state.installPhase == .transferring)
+}
+
+// 正在解别的款（宿主拒绝起第二个）：这款排着，卡片说在等什么（iOS 装机剃刀 #46 / #47：宿主答 1 另一款在解 → 第 4 步「等另一款装完」，
+//   2 在整理游戏目录 → 第 5 步；原先一律只写「安装中」），不算没解成，下一次刷新再试
 @MainActor @Test func secondUnpackWaitsItsTurn() {
-    var accept = false, installs = 0
+    var accept = false, installs = 0, wait: Int32 = 1
     let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
     let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
-                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return accept }, installProgress: { _ in nil })
-    #expect(model.games.first?.game.state == .installing(InstallStage(.installing)) && installs == 1)
+                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return accept }, installProgress: { _ in nil },
+                                    installWait: { wait })
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, step: 4)) && installs == 1)
+    wait = 2; model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, step: 5)) && installs == 2)
+    wait = 0; model.refreshGameData()
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing)) && installs == 3)
     accept = true; model.refreshGameData()
-    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)) && installs == 2)
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0)) && installs == 4)
 }
 
 // 开着库时电脑才开始推（真机实测：库里一直看不到这款）：每秒重判，它一开始传就出现；全都能玩了也不停——
@@ -368,3 +424,21 @@ nonisolated(unsafe) private var lastPlayed = ""
     model.refreshGameData(); #expect(model.games.first?.game.isNew == true)   // 再装一版
 }
 
+
+// 单一 IMG 的「安装中」蒙版（v0.3.0）：解开时宿主报阶段 1 / 2 / 3 与这一段比例，卡片写正在做哪一步、圈按这一段画；
+//   解完仍是阶段 2（没解成）→「安装没完成」，说明里带宿主给的那句原因。期望按 ShellUI 文案手写（英文界面）
+@MainActor @Test func imgInstallShowsStepAndFailureReason() {
+    var phase: (Int, Double?)? = (2, 0.37), installs = 0
+    let why = "Unpacking small files from game.img (unknown format, please update S2Arm)"
+    let data = Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8)
+    let model = S2ArmShellHostModel(catalogue: Catalogue.parse(data, baseDirectory: URL(fileURLWithPath: "/")),
+                                    installState: { _ in 2 }, installGame: { _ in installs += 1; return true }, installProgress: { _ in nil },
+                                    installPhase: { _ in phase }, installFailure: { _ in why }, gamesRoot: URL(fileURLWithPath: "/nonexistent"))
+    #expect(model.games.first?.game.state == .installing(InstallStage(.installing, fraction: 0.37, step: 2)))
+    #expect(["Unpacking small files… 37%", "解出小文件… 37%"].contains(model.games.first?.game.state.title ?? ""))
+    phase = nil; model.refreshGameData()   // 第一次刷新时宿主已在解（报了阶段），这里不再起：installTried 里没有它 → 起一次
+    phase = nil; model.refreshGameData()   // 起过、宿主说已不在解、还是阶段 2 → 没解成
+    let state = model.games.first?.game.state
+    #expect(state == .installing(InstallStage(.failed, reason: why)))
+    #expect(state?.explanation.hasPrefix(why + "\n") == true)
+}

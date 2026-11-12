@@ -17,6 +17,8 @@ int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v);
 nvn_gpu_samp rp_samp_by_id(int id);
 // 这张贴图的内容从此以 GPU 为准（当了渲染目标 / 被拷贝写 / 被着色器写）：不再从游戏内存重传。
 void rp_tex_mark_gpu_written(const tex_t *t);
+// 调试：序号 → 后端贴图（没建过 = NULL）。
+nvn_gpu_tex rp_tex_backend_by_serial(uint64_t serial);
 // 会话收尾：放掉全部后端对象、清表。
 void rp_res_reset(void);
 // 读数（单测 / 内存账）
@@ -26,3 +28,5 @@ uint64_t rp_res_uploads(void);   // 累计上传次数（每张贴图每次同�
 // 前端按名字调、但上沿头文件里没有声明的两个入口（hle_nvn.c 里就地 extern）
 void nvn_be_pool_gpu_written(const void *pool);                    // 这个池里录到了 GPU 写
 int nvn_be_tex_gpu_owned_since(uint64_t serial, uint64_t stamp);   // 脏页轮询：这张贴图的内容自 stamp 起是否归 GPU
+int rp_tex_debug_state(uint64_t serial);   // 调试取证（逐笔日志用）
+uint64_t rp_tex_fact_sig(const uint64_t *handles, int n, int tex_base, int tex_pool_n);   // 一组贴图槽的编译事实摘要（着色器来源的快路径用）

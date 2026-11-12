@@ -8,6 +8,16 @@ from pathlib import Path
 
 
 RECOVERY = {
+    "ios_install_dir_unwritable": "重新打开 S2Arm（会自动修好），再从电脑推送一次。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_no_space": "清出空间后点「重试」。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_img_format": "更新 iPhone 上的 S2Arm，再打开这款游戏。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_img_corrupt": "从电脑重新装到 iPhone，会接着已传的部分续传。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_pack_truncated": "重新连电脑推送，会自动补齐。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_files_missing": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_manifest_bad": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_write_failed": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_import_img_failed": "检查文件是否拷完整，再打开 S2Arm。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_unknown": "导出诊断包发给我们。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "rewrite_gap": "这款游戏有一处程序代码暂不支持，建议反馈让我们补上：点「复制错误摘要」并发给我们。",
     "update_failed": "检查网络后重试；还是不行就到下载页下载新版覆盖安装，当前版本和存档不受影响。",
     "glslc_windows_unavailable": "这款游戏的着色器编译目前只能在 Mac 上完成，Windows 版暂不支持；请改用 Mac 版 S2Arm 出包。",
@@ -27,6 +37,7 @@ RECOVERY = {
     "ipa_needs_repack": "这个包是旧版 S2Arm 出的（zip64 或中文显示名），侧载工具读不了：更新 S2Arm 后重新出包再装。",   # Windows 签装交给玩家自装的 Impactor（11-04 维护者）；引导 pack/jobs/impactor_guide.json
     "job_failed": "查看本任务的具体日志，修复提示的问题后重试；反馈时复制已脱敏的错误摘要。",
     "tool_exit": "查看本任务日志和失败阶段，按提示修复后重试；反馈时复制错误摘要。",
+    "game_crashed": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",   # Mac 起局：游戏进程中途非 0 退出（build.launch）
     "keys_missing": "在「设置 → 玩家密钥」导入自行导出的 prod.keys，然后重新导入游戏。",
     "keys_invalid": "重新选择完整的 prod.keys 文本文件，不要手工补写密钥值；原有密钥保持不变。",
     "content_unreadable": "检查文件和票据是否完整；若另行确认 Switch 密钥版本不足，可重新导出并到「设置 → 玩家密钥」重新导入。",
@@ -78,6 +89,8 @@ RECOVERY = {
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
     "free_appid_limit": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或在 Xcode / Impactor 里换一个 Apple ID 登录后再装；或改用付费 Apple 开发者账号（没有这个限制）。",   # Apple 错误 9120；与 free_app_limit（设备上同时 3 个）是两件事，删 App 无效
     "app_id_taken": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",   # Apple 错误 9401；Windows 装机先用大小写两种包名各试一次（install_win.install_app），都被拒才报这个码
+    "app_other_signer": "手机上已经有一个用别的签名装的 S2Arm（包名相同、签名不同），系统不让覆盖。二选一：继续用你原来的签名工具更新它；或者在 iPhone 上长按 S2Arm 删掉它（里面的存档会一起删，先在 S2Arm 里导出存档），再点「装到 iPhone」。",   # 玩家先自签装过同包名的 S2Arm（11-11 反馈）：installation_proxy MismatchedApplicationIdentifierEntitlement
+    "bundle_id_switched": "这个包名之前被别的签名用过（多半是你自己签名装 S2Arm 时用了同一个包名），这次已自动换成新包名装好。手机上可能有两个 S2Arm：新装的这个里有这台电脑装的游戏；旧的那个不再需要的话可以删掉（先导出存档）。",   # 包名被占（9401）时 Mac 自动换 <包名>.s2 装好（install.MacPhone.install），黄字说明
     "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
     "direct_offline_empty": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",

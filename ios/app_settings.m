@@ -262,6 +262,8 @@ static UILabel *textLabel(UIFontTextStyle style) {
         BOOL enabled = ((UISwitch *)action.sender).on;
         if ([key isEqualToString:@"S2A.touchHud"]) s2a_vpad_set_touch_hud(enabled);
         else [s2a_ios_settings_defaults() setBool:enabled forKey:key];
+        // 60 帧：开关这一下是玩家明确的选择，记进 S2AFps60Manual（settings.m 只认它算「开」；老版本缺省存着的 S2AFps60=YES 不算）；同一层存储（按款 / 所有游戏）
+        if ([key isEqualToString:@"S2AFps60"]) [s2a_ios_settings_defaults() setBool:enabled forKey:@"S2AFps60Manual"];
     }] forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = control; return cell;
 }

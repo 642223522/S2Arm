@@ -29,7 +29,15 @@ public struct InstallStage: Equatable, Sendable {
     }
     public var phase: Phase
     public var fraction: Double?
-    public init(_ phase: Phase, fraction: Double? = nil) { self.phase = phase; self.fraction = fraction.map { min(1, max(0, $0)) } }
+    /// While installing, which part is under way (single-file game data): 1 unpacking what was sent, 2 taking the small files
+    /// out of the game data file, 3 checking the files on this device; 4 waiting for another game to finish installing, 5 the host is
+    /// organizing the game folders (S2Arm). 0: not told, shown as plain Installing.
+    public var step: Int
+    /// Why the install did not finish, in one plain sentence from the host; nil: the general explanation.
+    public var reason: String?
+    public init(_ phase: Phase, fraction: Double? = nil, step: Int = 0, reason: String? = nil) {
+        self.phase = phase; self.fraction = fraction.map { min(1, max(0, $0)) }; self.step = step; self.reason = reason
+    }
 }
 
 public struct GameTile: Identifiable, Equatable, Sendable {

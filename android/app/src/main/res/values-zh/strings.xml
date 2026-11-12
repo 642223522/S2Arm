@@ -16,4 +16,10 @@
     <string name="touch_edit_cancel">取消</string>
     <string name="touch_layout_load_failed">已保存的触屏布局读取失败，暂时使用默认布局</string>
     <string name="touch_layout_save_failed">布局未保存：%1$s</string>
+
+    <!-- 主界面与运行模式 -->
+    <string name="console_mode_handheld">运行模式：掌机（点按切到主机）</string>
+    <string name="console_mode_docked">运行模式：主机（点按切到掌机）</string>
+    <string name="console_mode_switched">运行模式已切换。</string>
+    <string name="console_mode_saved">运行模式已保存，下次启动游戏时生效。</string>
 </resources>

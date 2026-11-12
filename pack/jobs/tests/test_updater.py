@@ -1,4 +1,5 @@
 import hashlib
+import io
 import http.server
 import json
 import os
@@ -65,6 +66,26 @@ class ApplyTests(Base):
         self.assertEqual((self.install / "S2Arm.exe").read_text(), "new")
         self.assertFalse(self.install.with_name("S2Arm.s2arm-old").exists())
         self.assertEqual(self.data(), before)
+
+    def leftovers(self):
+        """各版本的工作目录（新版解在 unpack/、上一次更新留下的）+ 不该动的 runner/ 和标记文件"""
+        u = self.private / "updates"
+        for rel in ("0.3.0/unpack/S2Arm/S2Arm.exe", "0.3.0/S2Arm-windows-x64.zip.part", "0.2.8/unpack/S2Arm/S2Arm.exe", "0.2.9/delta/x", "runner/updater.py", "notes/keep.txt"):
+            (u / rel).parent.mkdir(parents=True, exist_ok=True); (u / rel).write_text("x")
+        return u
+
+    def test_success_removes_unpacked_copies_but_keeps_runner(self):
+        """#660：换版是从 updates/<版本号>/unpack 拷进安装目录的，确认新版起来以后这份（和以前各版留下的）都删掉，不再一直占系统盘"""
+        u = self.leftovers()
+        self.assertEqual(self.run_apply(self.healthy), 0)
+        self.assertEqual(sorted(p.name for p in u.iterdir() if p.is_dir()), ["notes", "runner"])   # 版本号目录全删；runner（正在跑的更新器）和别的目录不动
+        self.assertTrue((u / "runner/updater.py").is_file())
+
+    def test_rollback_keeps_unpacked_copy(self):
+        """新版没起来、回到旧版：不删（下次同版本重试时 prepare 自己清，失败现场留着便于诊断）"""
+        u = self.leftovers()
+        self.assertEqual(self.run_apply(lambda i, a: None), 1)
+        self.assertTrue((u / "0.3.0/unpack/S2Arm/S2Arm.exe").is_file())
 
     def test_read_only_files_do_not_leave_the_old_copy_behind(self):
         locked = self.install / "Engine/pack"; locked.write_text("x"); locked.chmod(0o444)
@@ -991,6 +1012,30 @@ class MirrorTests(Base):
         info = updater.query_latest("windows", "0.1.1")
         self.assertEqual((info["version"], info["sha256"], info["asset"]), ("0.3.1", "c" * 64, self.base + "/gh/pkg"))
         self.assertEqual(ScriptedHandler.hits.count("/update/latest.json"), 1)   # 官网只试一次就回退
+
+    def test_site_manifest_without_this_platform_means_no_update(self):
+        """官网清单只有 Mac 包（只发了 Mac）：Windows 老用户 → 没有新版、不报错、不去问 GitHub，标准错误记一行；Mac 照常有新版"""
+        mac = updater.ASSETS["mac"]
+        raw, sig = signed("0.3.0", {mac: {"sha256": "d" * 64, "size": 5}})
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]; ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+        self.github()
+        err = io.StringIO()
+        with patch.object(sys, "stderr", err):
+            self.assertEqual(updater.query_latest("windows", "0.2.9"), {"available": False})
+        self.assertIn("签名清单里没有 S2Arm-windows-x64.zip", err.getvalue())
+        self.assertNotIn("/latest", ScriptedHandler.hits)
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]; ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+        self.assertEqual(updater.query_latest("mac", "0.2.9")["version"], "0.3.0")
+
+    def test_github_manifest_without_this_platform_means_no_update(self):
+        """GitHub 这一版的签名清单里没有本平台的包（资产里却有同名文件也不认）→ 没有新版、不报错"""
+        mac = updater.ASSETS["mac"]
+        raw, sig = signed("0.3.1", {mac: {"sha256": "e" * 64, "size": 5}})
+        release = {"tag_name": "v0.3.1", "assets": [{"name": self.pkg, "browser_download_url": self.base + "/gh/pkg"},
+                   {"name": updater.MANIFEST, "browser_download_url": self.base + "/gh/m"}, {"name": updater.SIGNATURE, "browser_download_url": self.base + "/gh/s"}]}
+        ScriptedHandler.scripts.update({"/latest": [(200, {}, json.dumps(release).encode())], "/gh/m": [(200, {}, raw)], "/gh/s": [(200, {}, sig)]})
+        with patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(updater.query_latest("windows", "0.2.9"), {"available": False})
 
     def test_site_missing_falls_back_to_github(self):
         self.github()   # 官网 404（发版流程还没写入）

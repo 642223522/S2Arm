@@ -6956,10 +6956,6 @@
   "en": "{0} “{1}” is offline: plug it in with a cable, or unlock it on the same Wi-Fi as this computer, then try again."
  },
  {
-  "source": "没找到要装的那台设备（{0}）：插上数据线并解锁，在设备上点「信任」。",
-  "en": "The chosen device ({0}) wasn't found: plug it in, unlock it and tap Trust on the device."
- },
- {
   "source": "要装的那台设备（编号末尾 {0}）现在不在线：插上数据线并解锁，或让它和这台电脑连同一个 Wi-Fi，再试一次。",
   "en": "The chosen device (ID ending {0}) is offline: plug it in and unlock it, or put it on the same Wi-Fi as this computer, then try again."
  },
@@ -7066,5 +7062,69 @@
  {
   "source": "启动器退出了，这一批停在第 {0} 款：重开启动器后点「继续剩下的」，只出还没出的。",
   "en": "The launcher was closed, so the batch stopped at game {0}. Reopen the launcher and click \"Continue the rest\" to export only what's left."
+ },
+ {
+  "source": "在等「{0}」结束…",
+  "en": "Waiting for “{0}” to finish…"
+ },
+ {
+  "source": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",
+  "en": "Try starting it again. If it happens again, export a diagnostics package from Environment Check and attach it to a GitHub issue so we can fix the crash."
+ },
+ {
+  "source": "没找到要装的那台设备（{0}）：它还没和这台电脑配对过——插上数据线并解锁，在设备上点「信任」（配对过以后也可以连同一个 Wi-Fi 装）。",
+  "en": "The chosen device ({0}) hasn't been paired with this computer yet: plug it in, unlock it and tap Trust on the device (after that it can also install over the same Wi-Fi)."
+ },
+ {
+  "source": "重新打开 S2Arm（会自动修好），再从电脑推送一次。",
+  "en": "Reopen S2Arm (it fixes this automatically), then push from the computer again."
+ },
+ {
+  "source": "清出空间后点「重试」。",
+  "en": "Free up some space, then tap Retry."
+ },
+ {
+  "source": "更新 iPhone 上的 S2Arm，再打开这款游戏。",
+  "en": "Update S2Arm on the iPhone, then open the game again."
+ },
+ {
+  "source": "从电脑重新装到 iPhone，会接着已传的部分续传。",
+  "en": "Install to iPhone from the computer again; it resumes from what was already sent."
+ },
+ {
+  "source": "重新连电脑推送，会自动补齐。",
+  "en": "Connect to the computer and push again; the missing part is filled in automatically."
+ },
+ {
+  "source": "从电脑重新装到 iPhone。",
+  "en": "Install to iPhone from the computer again."
+ },
+ {
+  "source": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",
+  "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
+ },
+ {
+  "source": "检查文件是否拷完整，再打开 S2Arm。",
+  "en": "Check that the file was copied completely, then open S2Arm again."
+ },
+ {
+  "source": "导出诊断包发给我们。",
+  "en": "Export a diagnostics package and send it to us."
+ },
+ {
+  "source": "手机上已经有一个用别的签名装的 S2Arm（包名相同、签名不同），系统不让覆盖。二选一：继续用你原来的签名工具更新它；或者在 iPhone 上长按 S2Arm 删掉它（里面的存档会一起删，先在 S2Arm 里导出存档），再点「装到 iPhone」。",
+  "en": "Your iPhone already has an S2Arm installed with a different signature (same app ID, different signer), and iOS won't replace it. Either keep updating it with your own signing tool, or long-press S2Arm on the iPhone and delete it (its saves go with it, so export them in S2Arm first), then click Install to iPhone again."
+ },
+ {
+  "source": "这个包名之前被别的签名用过（多半是你自己签名装 S2Arm 时用了同一个包名），这次已自动换成新包名装好。手机上可能有两个 S2Arm：新装的这个里有这台电脑装的游戏；旧的那个不再需要的话可以删掉（先导出存档）。",
+  "en": "This app ID was already used by another signature (most likely when you signed S2Arm yourself with the same app ID), so it was installed under a new app ID automatically. You may see two S2Arm apps on your iPhone: the new one has the games from this computer; delete the old one if you no longer need it (export its saves first)."
+ },
+ {
+  "source": "iPhone 通过同一网络连着（没插数据线）",
+  "en": "iPhone connected over the same network (no cable)"
+ },
+ {
+  "source": "能装，但网络传资源包慢、容易断：插上数据线再装更稳。",
+  "en": "Installing works, but sending game data over the network is slow and can drop. Plug in a cable for a steadier install."
  }
 ]

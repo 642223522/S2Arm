@@ -7,6 +7,7 @@
 #         ④ 末块补满 0x20000 压的：解码器拒收（ValueError）后按整块长再解
 #         ⑤ 不压缩（没有块表）：偏移就是文件内偏移；⑥ 表尾与数据起点对不上：ValueError
 #         ⑥b .nvb 按头取：控制段在 +0x60、机器码离控制段尾 0x20 字节（同真件；相邻扫描配不上这种），偏移越界 ValueError，不是 .nvb 的返回 None
+#   ⑧ #606 给文件头表时魔数不对的文件不打开，结果同不给表
 #   端到端 ⑦ kit! 条目是 PhyreEngine 集群（RYHP，三支「机器码紧贴在控制段之前」背靠背：两支带头片元、一支无头计算；第一支控制段后面紧跟的是第二支带头的机器码，
 #         scan_adj 旧规则按正向带头把它切成第一支的机器码、配出幽灵键并丢了真片元；现按这段字节里「只有一头像」的控制段多数定方向）、HGPAK 里一个 .nvb（0x20 头 + 填充 + 控制段 + 间隔 + 带头机器码 + 尾巴）：
 #         nxsh_extract.work_members 出的键 = 按「控制段 + 机器码」sha256 手算的 4 个键，阶段 ps / ps / cs / vs，来源 <档案>//<条目名>，不多出幽灵
@@ -133,6 +134,29 @@ class ContainerB(unittest.TestCase):
         self.assertIsNone(hgpak.shader(BLOB))
         bad = bytearray(NVB); struct.pack_into('<Q', bad, 8, len(NVB))   # 机器码偏移越过文件尾
         with self.assertRaises(ValueError): hgpak.shader(bytes(bad))
+
+    def test_8_heads_skip_open(self):
+        # ⑧ #606：给文件头表（nxsh_extract 从 RomFS 清单取的前 32 字节）时，魔数不对的文件一次都不为读魔数打开；认出的档案与任务和不给表时相同
+        import builtins
+        with tempfile.TemporaryDirectory() as tmp:
+            p = kit(tmp, [(0xa1, 0, b'plain', b'plain')])
+            q = os.path.join(tmp, 'NMSARC.t.pak'); open(q, 'wb').write(hgpak_bytes(FILES))
+            junk = []
+            for i in range(300):
+                j = os.path.join(tmp, f'junk{i}.bin'); open(j, 'wb').write(os.urandom(64)); junk.append(j)
+            files = sorted([p, q] + junk)
+            heads = {f: open(f, 'rb').read(32) for f in files}
+            opened = []
+            real = builtins.open
+            def counting(f, *a, **k): opened.append(os.fspath(f)); return real(f, *a, **k)
+            for m in (kitpak, hgpak):
+                with self.subTest(m=m.__name__):
+                    base = m.jobs(files, fake_oodle([]))
+                    opened.clear(); m.open = counting
+                    try: got = m.jobs(files, fake_oodle([]), heads=heads)
+                    finally: del m.open
+                    self.assertEqual([o for o in opened if 'junk' in o], [])
+                    self.assertEqual((got[1], [(jp, len(es)) for jp, es in got[0]]), (base[1], [(jp, len(es)) for jp, es in base[0]]))
 
     def test_7_extract(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:

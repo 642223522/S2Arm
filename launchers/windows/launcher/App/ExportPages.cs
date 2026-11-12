@@ -163,6 +163,16 @@ public sealed partial class EnvironmentWindow
     private DispatcherTimer? ticker;
 
     private bool PackBusy => packRunning || installBusy;
+
+    /// 因为「有任务在跑」而置灰的按钮：悬停说明在等哪个任务、为什么（维护者 11-11：同一时间只跑一个任务是单壳方案的特点，不改，但要说清）。
+    ///   置灰的控件缺省不弹提示，所以打开 ShowOnDisabled；不忙时什么都不挂
+    private void BusyHint(Control c)
+    {
+        if (!PackBusy) return;
+        var (action, name) = packRunning ? (T("busy.export"), packGame?.Name) : (T("busy.install"), installGameName);
+        var hint = T("busy.hint").Replace("{0}", action).Replace("{1}", string.IsNullOrEmpty(name) ? "" : T("busy.game").Replace("{0}", name));
+        ToolTip.SetTip(c, hint); ToolTip.SetShowOnDisabled(c, true);
+    }
     /// 这款现在能不能动（选、出包、移动、清缓存、删除）：只问作业登记（JobSlots.cs FrontJob.Blocks）——游戏库 / 导入 / 出包 / 释放空间在跑时都不能；
     /// 装机在跑时只锁正在装的那款（玩家装一款大游戏的十几分钟里别的照常用）。原先漏了导入：导入中还能点出包（启动器剃刀 W20）
     private bool BusyFor(LibraryGame game) => jobs.Any(j => j.Blocks(game.Id));
@@ -390,8 +400,8 @@ public sealed partial class EnvironmentWindow
         var options = new List<(string path, string label)>();
         foreach (var r in rows)
         {
-            // 卷名重名（几个位置在同一块盘上）时用路径，免得几项分不清
-            var name = r.Volume.Length == 0 || rows.Count(o => o.Volume == r.Volume) > 1 ? r.Path : r.Volume;
+            // 显示具体路径，不显示卷名（同 Mac 出包页）：同一块盘上的几个位置卷名一样，只给卷名分不清是哪个文件夹
+            var name = r.Path;
             options.Add((r.Path, r.Connected
                 ? T("export.location.free").Replace("{0}", name).Replace("{1}", r.FreeBytes is { } free ? FormatBytes(free) : "?")
                 : T("export.location.offline").Replace("{0}", name)));
@@ -783,7 +793,7 @@ public sealed partial class EnvironmentWindow
     private Control OverallSection(MilestoneEstimate estimate, double elapsed)
     {
         var plan = packTrack.Plan;
-        var fraction = OverallFraction(estimate, plan);
+        var fraction = OverallFraction(estimate, plan, packTrack.Overall);
         var section = new StackPanel { Spacing = 12 };
 
         // Big %
@@ -835,8 +845,10 @@ public sealed partial class EnvironmentWindow
         return section;
     }
 
-    private static double OverallFraction(MilestoneEstimate estimate, IReadOnlyList<Milestone> plan)
+    /// <summary>作业层给了整单进度就用它（只增不减）；没有时照旧按各步估计</summary>
+    private static double OverallFraction(MilestoneEstimate estimate, IReadOnlyList<Milestone> plan, double? overall)
     {
+        if (overall is { } o) return o;
         if (plan.Count == 0) return 0;
         var weights = Weights(plan); var total = weights.Sum();
         var thisPlatform = total > 0 ? plan.Select((m, k) => estimate.Fill(k) * weights[k]).Sum() / total : 0;
@@ -853,6 +865,14 @@ public sealed partial class EnvironmentWindow
 
     // ---- segmented bar with sweep — 铺满父容器宽度 ----
 
+    /// <summary>第 k 段的填充：有整单进度就按同一套权重从它切出这一段（各段与大百分比一致、只增不减），否则照旧按估计</summary>
+    private double SegmentFill(MilestoneEstimate estimate, IReadOnlyList<Milestone> plan, int k)
+    {
+        if (packTrack.Overall is not { } o) return estimate.Fill(k);
+        var w = Weights(plan); var total = w.Sum(); var before = w.Take(k).Sum();
+        return k < w.Length && w[k] > 0 && total > 0 ? Math.Clamp((o * total - before) / w[k], 0, 1) : 0;
+    }
+
     private Control SegmentedBar(MilestoneEstimate estimate, IReadOnlyList<Milestone> plan)
     {
         var weights = Weights(plan); var total = Math.Max(weights.Sum(), 1);
@@ -861,7 +881,7 @@ public sealed partial class EnvironmentWindow
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions(colDefs), Height = 10, ColumnSpacing = 3 };
         for (var k = 0; k < plan.Count; k++)
         {
-            var fill = estimate.Fill(k);
+            var fill = SegmentFill(estimate, plan, k);
             var active = k == estimate.Index && packRunning;
             var seg = new Grid();
             seg.ColumnDefinitions = new ColumnDefinitions($"{fill}*,{Math.Max(0, 1 - fill)}*");
@@ -1175,6 +1195,7 @@ public sealed partial class EnvironmentWindow
         AutomationId(remove, "install.remove_game");
         remove.Click += (_, _) => _ = ConfirmRemoveAsync(game);
         buttons.Children.Add(remove);
+        BusyHint(start); BusyHint(remove);   // 出包 / 装机在跑时置灰：悬停说在等谁、为什么（同 Mac BusyHint.swift）
         if (game.IphoneRestorable)
         {
             // 手机上的 S2Arm 换了新版运行层（只换宿主）后不好用：装回上一版（installRestore，同 Mac 装机页）
@@ -1184,6 +1205,7 @@ public sealed partial class EnvironmentWindow
                 VerticalAlignment = VerticalAlignment.Center };
             AutomationId(restore, "install.restore");
             restore.Click += (_, _) => _ = ConfirmRestoreAsync(game);
+            BusyHint(restore);
             buttons.Children.Add(restore);
         }
         if (readiness is { IpaPath.Length: > 0 } located)   // 装机时组装的那份（默认位置根 S2Arm.ipa），还没装过就没有

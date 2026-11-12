@@ -5,6 +5,7 @@ extern "C" {
 #endif
 void s2a_capacity_enter(int role);
 void s2a_capacity_leave(int role);
+void s2a_capacity_child(void);   // 新建的游戏线程进游戏代码前：继承来的若是某个角色收窄后的掩码，放回原来的宽掩码
 void s2a_capacity_foreground(int foreground);
 void s2a_capacity_check(void);
 void s2a_capacity_stop(void);

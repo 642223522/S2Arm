@@ -1,12 +1,12 @@
 #!/bin/bash
 # 门禁：每次
 #   （11-01：手册引用的是仓库任意路径，任何删改都可能让它红；原先只在改 docs/排查/* 时跑，b1ded6e87 删了 9 个被引用的工具没触发，main 无缓存实跑才红。约 8 秒）
-# 排查手册自检：docs/排查/ 下全部手册 + skills/native-triage/SKILL.md 里，
+# 排查手册自检：docs/排查/ 下全部手册 + skills/native-triage/SKILL.md + skills/player-game-triage/SKILL.md 里，
 #   ① 相对链接（](...)）和反引号里的仓库路径（`runtime/src/far.c:318` 去掉 :行号）都存在；带 * 或 <占位> 的路径模式不查
 #   ② 反引号里引用的 host.log 红行（含【红】）在源码里搜得到：去掉【红】，截到第一个占位（单个字母 N / A / r、<…>、…、（、0x、%）之前的前缀，
 #      在 native / services / gfx / tools / ryujinx / platforms / pack 的 .c .m .h .cs .py .sh 里按原文搜（源码里【红】常由 Red.Report 统一加，所以不带它搜）
 #   ③ 负对照：一份合成手册写不存在的路径、坏链接和源码里没有的红行，必须报出 3 处
-# 门禁覆盖：docs/排查/* skills/native-triage/* tests/triage_docs_test.sh
+# 门禁覆盖：docs/排查/* skills/native-triage/* skills/player-game-triage/* tests/triage_docs_test.sh
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cat > "$T/check.py" << 'EOF'
 import os, re, sys
@@ -61,7 +61,7 @@ print(f'扫 {len(docs)} 份手册：路径 {paths} 个、红行 {reds} 条；不
 sys.exit(1 if bad else 0)
 EOF
 rc=0
-shopt -s nullglob; D=("$H"/docs/排查/*.md "$H"/skills/native-triage/SKILL.md)
+shopt -s nullglob; D=("$H"/docs/排查/*.md "$H"/skills/native-triage/SKILL.md "$H"/skills/player-game-triage/SKILL.md)
 python3 "$T/check.py" "$H" "${D[@]}" || rc=1
 mkdir -p "$T/docs/排查" && cat > "$T/docs/排查/坏.md" << 'EOF'
 见 `runtime/src/没有这个文件.c:12`、[另一份](不存在.md)，日志里会有 `【红】这一行源码里没有 N 次`。真有的：`runtime/src/far.c`、`【红】CRASH 信号 N 地址 A`。

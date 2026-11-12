@@ -214,19 +214,21 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         apply_environment("S2A_WIDESCREEN", @"0");
         fprintf(stderr, "[S2A 画面设置] S2A_WIDESCREEN=0（宽屏关：%s）\n", game && [game objectForKey:@"S2AWidescreen"] ? "这款" : "所有游戏的默认");
     }
-    // 60 帧（10-27 社区资源口径：表一律打进包、宿主运行时开关，缺省开）：关 = S2A_FPS60=0（回游戏自己的帧率，runtime/src/fps.c，帧率能耗线）；
-    //   启动环境显式给的优先；与 Mac 启动器（pack/jobs/community.py launch_env）同口径
-    if (!getenv("S2A_FPS60") && [defaults objectForKey:@"S2AFps60"] && ![defaults boolForKey:@"S2AFps60"]) {
-        apply_environment("S2A_FPS60", @"0");
-        fprintf(stderr, "[S2A 画面设置] S2A_FPS60=0（60 帧关：%s）\n", game && [game objectForKey:@"S2AFps60"] ? "这款" : "所有游戏的默认");
-    }
-    // 包里 60 帧是关的（强信号，tools/caps_policy.py；11-02 起全引擎默认开）、玩家在设置页看过「此游戏开 60 帧有已知问题」提示后手动开了（S2AFps60Manual，
-    //   只有设置页那一下会写）：S2A_FPS60=1。放开出图间隔由清单读到 fps60 0 + 这里的 1 认出（runtime/src/caps.c s2a_fps60_display_source），图形层每局按开关读时判，
-    //   不写 DM_PRESENT_INTERVAL（审计 P1-80：那个变量压过开关）。11-02 维护者定：强信号关的款玩家可手动开。
-    //   不借 S2AFps60：它缺省开，老用户关过又开过会存着 YES，不能当成看过提示的手动开
-    else if (!getenv("S2A_FPS60") && [defaults boolForKey:@"S2AFps60Manual"] && s2a_ios_caps_value("fps60") == 0) {
-        apply_environment("S2A_FPS60", @"1");
-        fprintf(stderr, "[S2A 画面设置] S2A_FPS60=1（本 App 设置：60 帧强信号关的款玩家手动开，放开出图间隔按清单读时判）\n");
+    // 60 帧（11-11 维护者：缺省游戏原帧率、玩家手动开；速度已验证正确的款保留默认 60）：只转玩家明确的选择——开 S2A_FPS60=1、关 S2A_FPS60=0；
+    //   没选过不写，由宿主按清单原因自己定（runtime/src/caps.c：验证过的款开、其余原帧率）。没选也写 0 会把验证过的款一起关掉。
+    //   先后：启动环境显式给的 > 这款在游戏库的选择 > App 级开关关 > 玩家在设置页手动开（S2AFps60Manual，只有设置页开关会写）；
+    //   与 Mac 启动器（pack/jobs/community.py launch_env）同口径。按款的游戏库键开 / 关都认；App 级老键只认关（见下）
+    if (!getenv("S2A_FPS60")) {
+        NSString *pick = nil;
+        if (game && [game objectForKey:@"S2AFps60"]) pick = [game boolForKey:@"S2AFps60"] ? @"1" : @"0";
+        // App 级老键 S2AFps60：老口径缺省开，存着 YES 只代表「沿用缺省」，不算玩家明确开（不然强信号判红、已知会变速的款也被开成 60 帧）；只认 NO = 关
+        else if ([defaults objectForKey:@"S2AFps60"] && ![defaults boolForKey:@"S2AFps60"]) pick = @"0";
+        // 玩家明确开：设置页 60 帧开关打开时都会写 S2AFps60Manual（强信号款看过提示后开、普通款直接开），与老键是不是 YES 无关
+        else if ([defaults boolForKey:@"S2AFps60Manual"]) pick = @"1";
+        if (pick) {
+            apply_environment("S2A_FPS60", pick);
+            fprintf(stderr, "[S2A 画面设置] S2A_FPS60=%s（玩家选了 60 帧%s）\n", pick.UTF8String, [pick isEqualToString:@"1"] ? "开" : "关");
+        }
     }
     // 开发浮层 / Metal 性能浮层：建视图之前 app.m prepareGameView 已先调 s2a_ios_apply_overlay_settings 落环境变量，
     //   这里再调一次兜底（host_run 起局、建 Metal 设备之前）；启动环境显式给的优先（#153）。
@@ -308,6 +310,39 @@ void s2a_ios_apply_diag_run(NSUserDefaults *defaults) {
     fprintf(stderr, "[S2A 诊断局] 本局开逐通道读数（第 3600 / 7200 次出图），读数写 %s，下一局自动关\n", dir.fileSystemRepresentation);
 }
 
+// 本地玩家（#623，维护者 11-11）：游戏库（shell/Sources/S2ArmShellHost/LocalPlayers.swift）把玩家表写在 App 偏好 S2ALocalPlayers
+//   （数组，每项 {uid, name, folder}；第一项 uid 空串 = 第一个玩家）、当前玩家的 uid 写在 S2ALocalPlayer。按本机存，不在游戏数据目录里，删游戏不丢。
+//   这里只读、校验：表里没有当前那个 / 字段不对 → 第一个玩家；文件夹名只认一层、不以 . 开头、不含 /（防拼出本款文档根以外的路径），不对就按用户号起名
+static BOOL player_folder_ok(id v) {
+    if (![v isKindOfClass:NSString.class]) return NO;
+    NSString *s = v;
+    return s.length > 0 && s.length <= 120 && ![s hasPrefix:@"."] && [s rangeOfString:@"/"].location == NSNotFound && [s rangeOfString:@":"].location == NSNotFound;
+}
+static BOOL player_uid_ok(NSString *uid) {
+    if (uid.length != 32) return NO;
+    NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
+    return [uid rangeOfCharacterFromSet:bad].location == NSNotFound && ![uid isEqualToString:[@"" stringByPaddingToLength:32 withString:@"0" startingAtIndex:0]];
+}
+NSDictionary<NSString *, NSString *> *s2a_ios_local_player(NSUserDefaults *defaults) {
+    id list = [defaults objectForKey:@"S2ALocalPlayers"];
+    if (![list isKindOfClass:NSArray.class] || ![(NSArray *)list count]) return nil;
+    NSString *want = [defaults stringForKey:@"S2ALocalPlayer"] ?: @"";
+    NSDictionary *hit = nil;
+    for (id p in (NSArray *)list) {
+        if (![p isKindOfClass:NSDictionary.class] || ![p[@"uid"] isKindOfClass:NSString.class]) continue;
+        if (want.length && [p[@"uid"] isEqualToString:want] && player_uid_ok(want)) { hit = p; break; }
+    }
+    NSString *name = @"";
+    if (!hit) {   // 第一个玩家：表里 uid 空串那项的名字
+        for (id p in (NSArray *)list)
+            if ([p isKindOfClass:NSDictionary.class] && [p[@"uid"] isEqual:@""] && [p[@"name"] isKindOfClass:NSString.class]) { name = p[@"name"]; break; }
+        return @{@"uid": @"", @"name": name, @"folder": @"SaveData"};
+    }
+    if ([hit[@"name"] isKindOfClass:NSString.class]) name = hit[@"name"];
+    NSString *folder = player_folder_ok(hit[@"folder"]) && ![hit[@"folder"] isEqualToString:@"SaveData"] ? hit[@"folder"] : [@"SaveData-" stringByAppendingString:want];
+    return @{@"uid": want, @"name": name, @"folder": folder};
+}
+
 void s2a_ios_load_graphics_settings(void) {
     @autoreleasepool {
         // 先套用户设置、再读包内能力清单（在 App 包顶层）：两边都只在环境变量未设时写，先写的赢 → 启动环境 > 用户设置 > 清单
@@ -317,10 +352,19 @@ void s2a_ios_load_graphics_settings(void) {
         s2a_ios_publish_bundle_info(NSBundle.mainBundle.infoDictionary ?: @{}, NSUserDefaults.standardUserDefaults);
         // 存档位置 SaveData（services/S2A.Services/SaveFolder.cs 读 S2A_SAVE_FOLDER，共享层不判平台）：本款文档根下的 SaveData。
         //   这里在服务层起来之前跑，多款容器选游戏后 S2A_DOCS 已是 Documents/games/<游戏号>（runtime/src/launchctx.c）；单款包没有 S2A_DOCS = Documents。启动环境显式给的优先
+        //   本地玩家（#623）：每个玩家一个存档位置（第一个玩家仍是 SaveData），当前玩家给服务层（services/S2A.Services/LocalPlayer.cs 读
+        //   S2A_PLAYER_USER = first / 用户号、S2A_PLAYER_NAME）；没建过玩家什么都不设（旧行为）。启动环境显式给了玩家就整个不套游戏库的（存档位置也不按它）
+        NSDictionary<NSString *, NSString *> *player = getenv("S2A_PLAYER_USER") ? nil : s2a_ios_local_player(NSUserDefaults.standardUserDefaults);
         if (!getenv("S2A_SAVE_FOLDER")) {
             const char *d = getenv("S2A_DOCS");
             NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:@"SaveData"].fileSystemRepresentation, 0);
+            setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:player ? player[@"folder"] : @"SaveData"].fileSystemRepresentation, 0);
+        }
+        if (player) {
+            setenv("S2A_PLAYER_USER", player[@"uid"].length ? player[@"uid"].UTF8String : "first", 0);
+            if (player[@"name"].length && !getenv("S2A_PLAYER_NAME")) setenv("S2A_PLAYER_NAME", player[@"name"].UTF8String, 0);
+            fprintf(stderr, "[S2A 本地玩家] %s（%s），存档位置 %s\n", player[@"uid"].length ? player[@"uid"].UTF8String : "第一个玩家",
+                    player[@"name"].length ? player[@"name"].UTF8String : "没改过名", getenv("S2A_SAVE_FOLDER"));
         }
         s2a_ios_apply_diag_run(NSUserDefaults.standardUserDefaults);
     }

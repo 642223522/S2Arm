@@ -21,6 +21,7 @@ void rp_op_update_ub(const void *a, const void *rec);
 void rp_op_copy_b2b(const void *a, const void *rec);
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec);
 void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec);
+void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec);
 
 // 会话四件套（前端按名字调，上沿头文件里没有声明）
 void nvn_be_begin_session(void);
@@ -48,8 +49,29 @@ void rp_present_reset(void);
 // ---------- 绘制（rp_draw.c）----------
 void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
 void rp_draw_stats(uint64_t *draws, uint64_t *skips);
+// 分时读数：自上次取走以来的累计（纳秒 / 次数），取走即清零
+enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_PERF_WAIT_N, RP_PERF_DONE_NS, RP_PERF_DONE_N, RP_PERF_PASSES, RP_PERF_PRESENT_NS,
+       RP_PERF_D_PROG, RP_PERF_D_PREP, RP_PERF_D_TEX, RP_PERF_D_PIPE, RP_PERF_D_DYN, RP_PERF_D_BIND, RP_PERF_D_DRAW, RP_PERF_D_TAIL,
+       RP_PERF_P_DS, RP_PERF_P_DS_IDLE, RP_PERF_P_LOADC, RP_PERF_P_KPIX, RP_PERF_P_ONE, RP_PERF_P_CUT_XFER, RP_PERF_P_CUT_CLEAR, RP_PERF_P_CUT_RT, RP_PERF_P_CUT_OP, RP_PERF_N };   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
+void rp_perf_add(int i, uint64_t v);
+uint64_t rp_sub_serial(void);   // 第几次提交（一次提交内可复用的暂存内容按它判）
+void rp_perf_take(uint64_t out[RP_PERF_N]);
 void rp_draw_reset(void);
 void rp_draw_log_arm(int lines);   // 接下来的 lines 笔绘制（含被跳过的）各出一行日志；0 = 关
 
 // 资源同步用的段（见 rp_exec.c）：通常是先于主段提交的前置段；同一资源本次提交里第二次同步时结束当前通道、回到主段。
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub);
+// 遮挡计数（rp_exec.c）：通道与绘制那边的接入点
+int rp_occl_want(void);                 // 开通道时：要不要声明遮挡计数
+void rp_occl_pass_opened(int declared); void rp_occl_pass_closed(void);
+void rp_occl_pause(nvn_gpu_cmd c);      // 通道里按矩形清之前
+void rp_occl_draw(nvn_gpu_cmd c);       // 每笔绘制之前
+void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec);   // 计算派发（rp_draw.c）
+void rp_post_gpu_write(uint64_t addr, uint64_t len);                      // 这一段里 GPU 写了游戏内存的这一段：完成后回写（rp_exec.c）
+uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key); void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok);
+int rp_rc_skip(void);                   // 条件渲染判成不画的那一段里
+void rp_pass_note_draw(int uses_ds);   // 一笔绘制进了当前通道（uses_ds：这笔开着深度测试 / 深度写 / 模板测试）
+int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式
+// 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
+void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
+void rp_debug_dump_poll(uint64_t *fence);

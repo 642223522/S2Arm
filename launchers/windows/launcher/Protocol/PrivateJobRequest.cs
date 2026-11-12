@@ -13,6 +13,15 @@ public sealed class PrivateJobRequest : IDisposable
     public string FilePath { get; }
     private PrivateJobRequest(string path) => FilePath = path;
 
+    /// <summary>私有目录用不了时给玩家看的话：(原因代码, 目录) → 一句话。协议层没有本地化，启动器起来时换成体验规格里的中 / 英文案
+    /// （private_root.&lt;代码&gt;）；缺省英文。原先直接抛英文短句、不点名目录（#672：「Private job root is not owned by this user.」）</summary>
+    public static Func<string, string, string> Describe { get; set; } = (code, path) => code switch
+    {
+        "reparse" => $"S2Arm's private data folder {path} is a link (reparse point); for safety it is not used. Delete the link and reopen S2Arm.",
+        "owner" => $"S2Arm's private data folder {path} belongs to another Windows account and this account cannot take it over. Delete the folder and reopen S2Arm (it is recreated; your game library and saves are not in it, but imported keys must be imported again), or open S2Arm once with that account.",
+        _ => $"S2Arm's private data folder {path} still gives another account access and this account cannot remove it. Delete the folder and reopen S2Arm (it is recreated; your game library and saves are not in it, but imported keys must be imported again).",
+    };
+
     // 必须先于私有目录下的任何子目录调用：Directory.CreateDirectory 顺带建出的父目录带继承权限，之后的作业会被权限校验拒绝。
     public static void EnsurePrivateRoot(string privateRoot)
     {
@@ -67,20 +76,50 @@ public sealed class PrivateJobRequest : IDisposable
         }
         directory.Refresh();
         if ((directory.Attributes & FileAttributes.ReparsePoint) != 0)
-            throw new IOException("Private job root cannot be a reparse point.");
-        var acl = directory.GetAccessControl();
-        if (!current.Equals(acl.GetOwner(typeof(SecurityIdentifier))))
-            throw new IOException("Private job root is not owned by this user.");
+            throw new IOException(Describe("reparse", path));
         var readers = FileSystemRights.ReadData | FileSystemRights.ReadAttributes | FileSystemRights.ReadExtendedAttributes |
             FileSystemRights.ReadPermissions | FileSystemRights.Write | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-        foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+        bool Trusted(IdentityReference who) => who.Equals(current) || who.Equals(system) || who.Equals(administrators);
+        bool Others(DirectorySecurity a) => a.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+            .Any(rule => rule.AccessControlType == AccessControlType.Allow && (rule.FileSystemRights & readers) != 0 && !Trusted(rule.IdentityReference));
+        var acl = directory.GetAccessControl();
+        // 自愈（#672 / #669）：属主是别的账户（以前用别的账户或「以管理员身份运行」建的）、或还给别的账户开着权限（从上级继承了另一个本地账户的完全控制）。
+        //   当前账户对这个目录有接管属主 / 改权限的权利时（通常有：完全控制里就含这两项），先把属主拿回本人——之后别人就没法再把权限改回去——
+        //   再改成不继承、只留本人 / SYSTEM / Administrators。只收紧、不放宽；改不动（没有这两项权利）才报错，并点名目录、说怎么恢复
+        if (!current.Equals(acl.GetOwner(typeof(SecurityIdentifier))))
         {
-            if (rule.AccessControlType != AccessControlType.Allow) continue;
-            if ((rule.FileSystemRights & readers) != 0 && !rule.IdentityReference.Equals(current) &&
-                !rule.IdentityReference.Equals(system) && !rule.IdentityReference.Equals(administrators))
-                throw new IOException("Private job root grants another identity access.");
+            try
+            {
+                var owner = new DirectorySecurity();
+                owner.SetOwner(current);
+                directory.SetAccessControl(owner);   // 只写属主一节
+            }
+            catch (Exception error) when (error is UnauthorizedAccessException or InvalidOperationException or PrivilegeNotHeldException)
+            {
+                throw new IOException(Describe("owner", path), error);
+            }
+            directory.Refresh(); acl = directory.GetAccessControl();
+            if (!current.Equals(acl.GetOwner(typeof(SecurityIdentifier)))) throw new IOException(Describe("owner", path));
+        }
+        if (Others(acl))
+        {
+            try
+            {
+                acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);   // 先把继承来的转成显式规则，下面才删得掉
+                directory.SetAccessControl(acl);
+                directory.Refresh(); acl = directory.GetAccessControl();
+                foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToList())
+                    if (!Trusted(rule.IdentityReference)) acl.RemoveAccessRuleSpecific(rule);
+                directory.SetAccessControl(acl);
+            }
+            catch (Exception error) when (error is UnauthorizedAccessException or InvalidOperationException)
+            {
+                throw new IOException(Describe("others", path), error);
+            }
+            directory.Refresh(); acl = directory.GetAccessControl();
+            if (Others(acl)) throw new IOException(Describe("others", path));
         }
         if (!acl.AreAccessRulesProtected)
         {

@@ -2,7 +2,7 @@ import contextlib
 import collections
 import io
 import json
-import os
+import os, stat
 from pathlib import Path
 import shutil
 import signal
@@ -878,9 +878,37 @@ class JobsTests(unittest.TestCase):
             # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="4.9"):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
+
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="999"):
                 self.assertIsNone(space_rule.direct_check(root, cache, out))
         self.assertIs(library.pack_direct_bytes, space_rule.pack_direct_bytes)   # 预检与开工前复核是同一个函数（剃刀 H11：只在 space_rule 定义一份）
+    def test_direct_check_shader_bound(self):
+        # 开工前复核按着色器数取大（11-11：0400A3A01EE4C000 原件 6.7 GB、99084 个着色器，复核后直连段约 41 GiB，原件那一档只记 15 GB）。
+        #   期望手算：99084 × 512 KiB = 51,948,552,192 字节 > 15e9 → 取它；1000 个 × 512 KiB = 524,288,000 < 5e9 → 取小档 5e9。
+        #   着色器数 = 抽取表第 4 列唯一键：注释行、表头行不算，同一键出现两次算一个
+        import collections
+        import space_rule
+        du = collections.namedtuple("du", "total used free")
+        def make(name, keys, dup):
+            d = self.root / name; root, cache, out = d / "root", d / "cache", d / "out"
+            for x in (root / "romfs", root / "exefs", root / "aoc", cache, out, root / "extract" / "split"): x.mkdir(parents=True)
+            rows = ["# kind: evidence", "package\tindex\tstage\tdm_ctl_sha16\tsource"] + [f"p.bin\t{i}\tpixel\t{i:016x}\t/s#{i}" for i in range(keys)] + [f"q.bin\t0\tvertex\t{0:016x}\t/dup"] * dup
+            (root / "extract" / "split" / "shader_map.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+            return root, cache, out
+        root, cache, out = make("sb_big", 99084, 3)
+        sizes = {str(root / "romfs"): int(6.0e9), str(root / "exefs"): int(0.5e9), str(root / "aoc"): int(0.2e9), str(cache): 0}
+        self.assertEqual(space_rule.shader_count(root), 99084)
+        with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, 51948552192)))
+            why = space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, 51948552191))
+            self.assertIn("磁盘空间不足", why); self.assertIn("着色器 99084 个", why)
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(15e9))))   # 修前按原件那一档 15e9 就放行了
+        root, cache, out = make("sb_small", 1000, 0)
+        sizes = {str(root / "romfs"): int(0.3e9), str(root / "exefs"): int(0.1e9), str(root / "aoc"): 0, str(cache): 0}
+        with unittest.mock.patch("space_rule.tree_bytes", side_effect=lambda p: sizes[str(p)]):
+            self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9))))
+            self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9) - 1)))
+        self.assertEqual(space_rule.shader_count(self.root / "no_such_root"), 0)
 
     def test_space_budget_uses_unpacked_bytes_for_compressed_packages(self):
         # nsz / xcz（10-26）：文件比解出来小得多，按 inspect 的 contentBytes（清单里原始 NCA 大小之和）与文件字节的大值算；没有 contentBytes 的老记录照旧按文件字节
@@ -1283,6 +1311,25 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(seen, [stale])
             self.assertFalse(stale.exists())
 
+    def test_game_quitting_mid_run_reports_game_crashed_with_exit_code(self):
+        # 启动页说人话（11-11）：游戏进程自己非 0 退出（139 = 段错误）报 game_crashed、消息带退出码；别的失败照原样往上抛
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
+        self.fake_host(game["id"])
+        for raised, want in ((Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit"), "game_crashed"),
+                             (Failure("fixture other", code="permission_denied"), "permission_denied")):
+            with self.subTest(code=raised.code):
+                def run(command, log, env, **kwargs):
+                    self.c.last_rc = 139
+                    raise raised
+                with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                     patch.object(self.c, "run", side_effect=run):
+                    with self.assertRaises(Failure) as e:
+                        build.launch(self.c)
+                self.assertEqual(e.exception.code, want)
+                if want == "game_crashed":
+                    self.assertIn("退出码 139", str(e.exception))
+                    self.assertIn("fixture", e.exception.internal)   # 原文随错误摘要带走
+
     def test_launch_removes_only_its_snapshot_after_exit_failure_or_cancellation(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},
@@ -1468,6 +1515,26 @@ class JobsTests(unittest.TestCase):
         library.delete(self.c)
         self.assertFalse(gdir.exists())
         self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+
+    def test_delete_with_undeletable_file_still_removes_game_from_library(self):
+        # 11-11 玩家反馈「删除有时生效有时不生效」（真 App 复现：游戏文件夹里一个文件删不掉 → 整个删除失败、目录删一半、游戏还挂在列表里成了「找不到游戏文件」）。
+        #   期望（手写）：游戏立刻从清单里去掉、原文件夹不在原处；删不掉的那个文件留在存放位置的 .s2a-trash 里，记一条黄字；
+        #   之后读游戏库（catalog → sweep_trash）文件能删了就清掉
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        gdir = layout.game_dir(self.c, game["id"])
+        locked = gdir / "image" / "ios" / "kit" / "a.tsv"; locked.parent.mkdir(parents=True); locked.write_text("x")
+        os.chflags(locked, stat.UF_IMMUTABLE)
+        self.addCleanup(lambda: [os.chflags(p, 0) for p in (self.c.library / library.TRASH).rglob("a.tsv")] if (self.c.library / library.TRASH).exists() else None)
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertFalse(gdir.exists())
+        self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+        left = list((self.c.library / library.TRASH).rglob("a.tsv"))
+        self.assertEqual(len(left), 1)
+        self.assertTrue(any(d["severity"] == "warning" and "空闲时会再删" in json.dumps(d, ensure_ascii=False) for d in self.c.job["diagnostics"]))
+        os.chflags(left[0], 0)
+        library.sweep_trash(self.c)
+        self.assertEqual(list((self.c.library / library.TRASH).iterdir()), [])
 
     def test_delete_also_drops_game_from_library_container(self):
         # 期望（#227，游戏库结构 v3）：删 A → 各台手机记录（devices/<设备>.json）里摘掉 A，B 与其余字段原样；没装 A 的那台记录不动；
@@ -1697,6 +1764,42 @@ class JobsTests(unittest.TestCase):
         self.assertTrue(complete.endswith("contact=[EMAIL] END"))
         self.assertEqual(self.c.redact(text), complete[-3000:])
         self.assertGreater(len(complete), 4000)
+
+    def test_diagnostics_export_includes_latest_phone_pull_redacted(self):
+        """先 diag pull 再 diag export：包里要有最近一次拉回的手机日志（原先导出只收 logs/ 和任务记录，玩家照说明交上来的包里没有手机日志），
+        走和 logs/ 同一套脱敏，manifest 记拉回时刻与来源机型；更早那次拉回不收；不认识的类型跳过并写明"""
+        import unittest.mock as um, diag, os, time as t
+        old = self.c.private / "diagnostics" / "0101-000000-old"; old.mkdir(parents=True)
+        (old / "stale.log").write_text("OLD PULL")
+        os.utime(old, (t.time() - 3600, t.time() - 3600))
+        devices = {"result": {"devices": [{"identifier": "D1", "hardwareProperties": {"platform": "iOS", "udid": "U1", "marketingName": "iPhone 17 Pro Max"},
+                                           "deviceProperties": {"name": "合成甲的iPhone", "osVersionNumber": "27.3"}, "connectionProperties": {"tunnelState": "connected"}}]}}
+        apps = {"result": {"apps": [{"bundleIdentifier": "io.s2arm.games.abcde12345", "name": "S2Arm"}]}}
+        def fake(c, *args, timeout=120):
+            if args[:2] == ("list", "devices"): return 0, devices, ""
+            if args[:3] == ("device", "info", "apps"): return 0, apps, ""
+            source, target = args[args.index("--source") + 1], Path(args[args.index("--destination") + 1])
+            if source.endswith("host.log"): target.write_text("crash for synth@example.invalid DEVELOPMENT_TEAM = ABCDE12345\n"); return 0, {}, ""
+            if source.endswith("Documents/logs"): target.mkdir(); (target / "host-1.log").write_text("previous run\n"); return 0, {}, ""
+            if source.endswith("Documents/diag"): target.mkdir(); (target / "probe.json").write_text('{"ok": 1}'); (target / "blob.bin").write_bytes(b"\0\1"); return 0, {}, ""
+            return 1, {}, ""
+        with um.patch.object(diag, "devicectl", fake):
+            diag.pull(self.c)
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as archive:
+            names = archive.namelist()
+            phone = [n for n in names if n.startswith("phone/")]
+            host = [n for n in phone if n.endswith("/host.log")]
+            self.assertEqual(len(host), 1, names)
+            text = archive.read(host[0]).decode()
+            self.assertIn("crash for", text); self.assertNotIn("synth@example.invalid", text); self.assertNotIn("ABCDE12345", text)   # 同 logs/ 脱敏
+            self.assertTrue(any(n.endswith("/logs/host-1.log") for n in phone)); self.assertTrue(any(n.endswith("/diag/probe.json") for n in phone))
+            self.assertFalse(any("stale" in n for n in names))   # 只收最近一次拉回
+            m = json.loads(archive.read("manifest.json"))["phone_diagnostics"]
+            self.assertTrue(m["pulledAt"]); self.assertEqual(m["devices"][0]["model"], "iPhone 17 Pro Max"); self.assertEqual(m["devices"][0]["os"], "27.3")
+            self.assertNotIn("合成甲", json.dumps(m, ensure_ascii=False)); self.assertNotIn("U1", json.dumps(m))   # 不记设备名、设备号
+            self.assertEqual(m["files"], 3); self.assertTrue(any(x.endswith("diag/blob.bin") for x in m["skipped"]))
 
     def test_diagnostic_manifest_and_every_member_are_redacted_without_truncation(self):
         import platform

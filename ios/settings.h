@@ -40,4 +40,8 @@ float s2a_ios_res_scale(NSUserDefaults *defaults);
 void s2a_ios_reapply_graphics_settings(NSUserDefaults *defaults);
 // 把包内 Info.plist 的画面模式 / 直连库版本 / 出包时间发布成设置页「关于本包」的只读文本（#377 F09）
 void s2a_ios_publish_bundle_info(NSDictionary *info, NSUserDefaults *defaults);
+@class NSString;
+// 本地玩家（#623）：游戏库顶部选的「谁在玩」。没建过玩家回 nil（旧行为）；否则 @{uid, name, folder}：
+//   uid 空串 = 第一个玩家（升级前那份进度），否则 32 位小写十六进制；name 可空（第一个玩家没改过名）；folder = 本款文档根下这个玩家的存档位置文件夹名
+NSDictionary<NSString *, NSString *> *s2a_ios_local_player(NSUserDefaults *defaults);
 #endif
