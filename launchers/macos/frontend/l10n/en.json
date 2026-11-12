@@ -1792,5 +1792,6 @@
   "s2arm.notice.clearCache.running": "Clearing the cache of {0}…",
   "s2arm.notice.clearCache.done": "Cleared the cache of {0}.",
   "s2arm.notice.clearCache.failed": "Couldn't clear the cache of {0}: {1}",
-  "s2arm.notice.waitBusy.failed": "{1} is still running. Try {0} again after it finishes."
+  "s2arm.notice.waitBusy.failed": "{1} is still running. Try {0} again after it finishes.",
+  "s2arm.space.sharedNote": "%@ is shared between the items above: deleting just one of them won't free it, only checking all of them will. Each size shows what deleting that item alone frees."
 }

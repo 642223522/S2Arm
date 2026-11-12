@@ -1793,5 +1793,6 @@
   "s2arm.notice.clearCache.running": "正在清除「{0}」的缓存…",
   "s2arm.notice.clearCache.done": "已清除「{0}」的缓存。",
   "s2arm.notice.clearCache.failed": "清除「{0}」的缓存没成功：{1}",
-  "s2arm.notice.waitBusy.failed": "「{1}」还在进行，等它结束再操作「{0}」。"
+  "s2arm.notice.waitBusy.failed": "「{1}」还在进行，等它结束再操作「{0}」。",
+  "s2arm.space.sharedNote": "有 %@ 是上面几项共用的文件：只删其中一项腾不出来，把共用的几项都勾上才会腾出。每项右边是只删这一项能腾出的大小。"
 }
