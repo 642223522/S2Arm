@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+from pack.orch import roots   # 搬库改名重试与产物根改名同一套退避（DIR_RENAME_RETRIES）
 import unittest.mock as um
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -162,7 +164,7 @@ class MoveTests(unittest.TestCase):
              um.patch.object(library.time, "sleep", sleeps.append):
             r = self.run_setup(new, moveFrom=str(old))
         self.assertEqual(failures, [1])
-        self.assertEqual(sleeps, [library._LIBRARY_RENAME_RETRIES[0]])
+        self.assertEqual(sleeps, [roots.DIR_RENAME_RETRIES[0]])
         self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
         self.assert_moved(old, new)
         self.assertFalse(old.exists())
@@ -189,8 +191,8 @@ class MoveTests(unittest.TestCase):
         self.assertIn("重试约 1 分钟", str(caught.exception))
         self.assertIn("资源管理器", str(caught.exception))
         self.assertIn("原游戏库仍保留在原位置", str(caught.exception))
-        self.assertEqual(refusals, [len(library._LIBRARY_RENAME_RETRIES) + 1])
-        self.assertEqual(sleeps, list(library._LIBRARY_RENAME_RETRIES))
+        self.assertEqual(refusals, [len(roots.DIR_RENAME_RETRIES) + 1])
+        self.assertEqual(sleeps, list(roots.DIR_RENAME_RETRIES))
         self.assert_untouched(old, new)
         self.assertEqual(list(new.iterdir()), [])
 
@@ -249,7 +251,7 @@ class MoveTests(unittest.TestCase):
         finally:
             close_handle(handle)
         self.assertTrue(errors and errors[0] in (5, 32), errors)
-        self.assertEqual(len(errors), len(library._LIBRARY_RENAME_RETRIES) + 1)
+        self.assertEqual(len(errors), len(roots.DIR_RENAME_RETRIES) + 1)
         self.assertIn("资源管理器", str(caught.exception))
         self.assert_untouched(old, new)
         self.assertEqual(list(new.iterdir()), [])
