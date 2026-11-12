@@ -180,11 +180,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 改游戏显示名 / 封面：nil 不动，空字符串恢复默认。
-    public func customizeGame(_ gameId: String, name: String?, coverPath: String?) async throws {
+    public func customizeGame(_ gameId: String, name: String?, coverPath: String?, events: EventSink = .discard) async throws {
         var extra: [String: Any] = ["gameId": gameId]
         if let name { extra["name"] = name }
         if let coverPath { extra["coverPath"] = coverPath }
-        _ = try await client.perform("customize", extra: extra, events: .discard)
+        _ = try await client.perform("customize", extra: extra, events: events)
     }
 
     /// Mac 端诊断包写到 path（diagnostics 作业）。

@@ -208,6 +208,10 @@
   "en": "Not measured"
  },
  {
+  "source": "在等「{0}」结束…",
+  "en": "Waiting for \u201c{0}\u201d to finish…"
+},
+{
   "source": "本机历史 · {0} 次记录",
   "en": "Local history · {0} records"
  },

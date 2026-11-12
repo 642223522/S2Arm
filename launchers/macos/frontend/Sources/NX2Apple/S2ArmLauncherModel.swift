@@ -214,6 +214,18 @@ public final class S2ArmLauncherModel: ObservableObject {
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
     @Published private(set) var customizing = false
+    /// 非会话作业（换封面 / 改名、释放空间、存档）在等库锁时作业层的原句「在等「…」结束…」（phase=waiting_lock）；拿到锁或做完清空。
+    /// 剃刀 M3：原先这几处只转圈，别的任务占着库时最长等 120 秒，玩家不知道在等什么
+    @Published var lockWaitNote: String?
+
+    /// 交给作业的事件去处：只认等锁进度，其余丢弃
+    func lockWaitSink() -> EventSink {
+        EventSink { [weak self] e in
+            guard e.ev == "progress" else { return }
+            let note = e.fields["phase"] as? String == "waiting_lock" ? e.message : nil
+            Task { @MainActor in self?.lockWaitNote = note }
+        }
+    }
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
     /// 当前这份装机前清单是给哪台设备查的（控制口 GET /state 的 installReadiness.checkedDevice）：换了设备先清掉旧清单，
@@ -413,12 +425,12 @@ public final class S2ArmLauncherModel: ObservableObject {
         let ordered = (space?.parts.map(\.id) ?? []).filter { parts.contains($0) }
         Task {
             do {
-                let freed = try await provider.space.free(gameId: gameID, parts: ordered)
+                let freed = try await provider.space.free(gameId: gameID, parts: ordered, events: lockWaitSink())
                 if spaceGameID == gameID { spaceFreed = freed.freedBytes }
             } catch {
                 if spaceGameID == gameID { spaceError = error.localizedDescription }
             }
-            spaceFreeing = false
+            spaceFreeing = false; lockWaitNote = nil
             loadSpace(gameID)
             refresh()   // 删了 Mac 运行版本，这款要重新准备
             if overview != nil { loadOverview() }
@@ -1057,9 +1069,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy, !customizing else { return }
         customizing = true; customizeError = nil
         Task {
-            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath); refresh() }
+            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath, events: lockWaitSink()); refresh() }
             catch { customizeError = error.localizedDescription }
-            customizing = false
+            customizing = false; lockWaitNote = nil
         }
     }
 

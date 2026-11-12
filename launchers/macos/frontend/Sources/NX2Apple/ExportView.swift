@@ -90,6 +90,9 @@ struct ExportView: View {
                             .buttonStyle(.plain).font(.manrope(12.5)).foregroundStyle(.secondary).underline()
                             .disabled(model.busy || model.customizing).accessibilityIdentifier("export.cover.reset")
                     }
+                    if model.customizing, let note = model.lockWaitNote {
+                        Text(loc.backend(note)).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     if let failed = model.customizeError {
                         Text(loc.backend(failed)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     }
