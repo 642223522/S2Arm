@@ -76,6 +76,14 @@ SaveW("04_welcome_games_chosen", w => {
     SetW(w, "report", FakeReport(true));
     SetW(w, "pendingImportPaths", new[] { "/tmp/fe_fortune.nsz" });
 });
+// 新电脑第一次打开：别的都就绪、只差 Metal 编译器（玩家要自己去 Apple 官网装）——欢迎页第 1 步的分步说明与「打开官方页面」
+SaveW("04b_welcome_metal_missing", w => {
+    SetW(w, "catalog", null);
+    SetW(w, "report", EnvironmentReport.Parse(
+        "{\"schema\":1,\"ready\":false,\"checks\":[{\"id\":\"host\",\"name\":\"Windows 64位\",\"status\":\"ok\",\"ok\":true,\"message\":\"就绪\",\"code\":null,\"action\":null,\"blocking\":true}," +
+        "{\"id\":\"metal\",\"name\":\"官方Windows Metal编译器\",\"status\":\"missing\",\"ok\":false,\"message\":\"没装\",\"code\":\"metal_missing\",\"action\":\"install\",\"blocking\":true," +
+        "\"url\":\"https://developer.apple.com/download/all/?q=metal%20developer%20tools%20for%20windows\"}]}", 1));
+});
 SaveW("05_welcome_oneclick", w => {
     SetW(w, "report", FakeReport(true));
     SetW(w, "welcomeGameId", MockGame().Id);
@@ -199,6 +207,29 @@ SetW(pack, "batchState", BatchClient.Read(JsonDocument.Parse("""
 """).RootElement.Clone()).State);
 SaveP("win_13_batch_done_mixed", () => Navigate(pack, "batch"));
 
+// 入口整理对照：已连库的游戏库页（一款在默认位置、一款在外接盘，后者卡片写「存放在 …」）、设置页（库根有 S2Arm.ipa），窗口拉高看全
+SetW(pack, "batchState", null);
+pack.Height = 1500;
+var tidyLib = Path.Combine(Path.GetTempPath(), "s2a-snap-" + Guid.NewGuid().ToString("N"), "S2Arm");
+Directory.CreateDirectory(tidyLib);
+File.WriteAllBytes(Path.Combine(tidyLib, "S2Arm.ipa"), []);
+var atDefault = MockGame(true) with { Location = new GameLocation("ok", tidyLib, Path.Combine(tidyLib, "games", "Fortune's Weave"), "", true) };
+var elsewhere = MockGame(true) with { Id = "010024B00F9D0000", Name = "泰拉瑞亚", IphoneInstalledAt = null,
+    Location = new GameLocation("ok", "D:\\S2Arm Games", "D:\\S2Arm Games\\games\\Terraria", "移动硬盘 (D:)", false) };
+SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥已就绪"));
+SetW(pack, "selectedGame", null);
+SetW(pack, "connectedFolder", tidyLib);
+SetW(pack, "libraryFolder", tidyLib);
+SetW(pack, "libraryId", "mock-lib-id");
+SetW(pack, "librarySummary", "library.completed");
+SetW(pack, "libraryDiagnostics", "");
+SetW(pack, "report", FakeReport(true));
+SetW(pack, "summaryKey", "environment.ready");
+SaveP("tidy_01_library_connected", () => Navigate(pack, "library"));
+pack.Height = 2100;   // 设置页最长：装机方式 + 环境检查 + 运行路径都要在一张图里
+SaveP("tidy_02_settings", () => Navigate(pack, "settings"));
+pack.Height = 900;
+
 pack.Close();
 Dispatcher.UIThread.RunJobs();
 Console.WriteLine("done.");
@@ -209,7 +240,8 @@ static void SetW(object obj, string field, object? value)
     var fi = obj.GetType().GetField(field, BindingFlags.NonPublic | BindingFlags.Instance);
     if (fi is not null) { fi.SetValue(obj, value); return; }
     var pi = obj.GetType().GetProperty(field, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
-    if (pi is not null) { pi.SetValue(obj, value); return; }
+    // 只读属性（如 busy：剃刀锁一族后改为按作业登记算出）设不了：跳过并提示，别让后面的场景全截不出来
+    if (pi is not null) { if (pi.CanWrite) pi.SetValue(obj, value); else Console.Error.WriteLine($"跳过只读属性 {field}（场景里这一项按实际状态显示）"); return; }
     throw new MissingMemberException($"Field/property not found: {field}");
 }
 

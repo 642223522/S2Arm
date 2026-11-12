@@ -824,6 +824,23 @@ static int pool_find(uint64_t addr, uint64_t len) {
     for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) return g_plast = i;
     return -1;
 }
+// 地址不在任何池里时，它前后最近的两个池（11-11 #674：顶点缓冲槽读零那条红行只报地址，玩家的日志分不清是宿主的池登记有缺口——地址紧挨一个池的尾巴或在两个池的缝里——
+//   还是游戏用了一块没经 NVN 登记的内存——离所有池都远）。→ 写进 out 的一句：前一个池（结束不晚于 addr、结束最晚）与后一个池（开始晚于 addr、开始最早）的基址、长度、相距字节；
+//   addr 落在某个池里回 0（不写），否则回 1（英文，同本文件其余日志行）。线性扫全表：只在出错时调。调用方持有池表的锁（同 pool_find）
+int mtl_pool_near(uint64_t addr, char *out, size_t n) {
+    int before = -1, after = -1;
+    for (int i = 0; i < g_npool; i++) {
+        const pool_ent *p = &g_pools[i];
+        if (addr >= p->lo && addr < p->hi) return 0;
+        if (p->hi <= addr && (before < 0 || p->hi > g_pools[before].hi)) before = i;
+        if (p->lo > addr && (after < 0 || p->lo < g_pools[after].lo)) after = i;
+    }
+    char b1[96] = "no pool before it", b2[96] = "no pool after it";
+    if (before >= 0) snprintf(b1, sizeof b1, "previous pool %#lx size %#lx (ends %#llx before it)", (unsigned long)g_pools[before].lo, (unsigned long)(g_pools[before].hi - g_pools[before].lo), (unsigned long long)(addr - g_pools[before].hi));
+    if (after >= 0) snprintf(b2, sizeof b2, "next pool %#lx size %#lx (starts %#llx after it)", (unsigned long)g_pools[after].lo, (unsigned long)(g_pools[after].hi - g_pools[after].lo), (unsigned long long)(g_pools[after].lo - addr));
+    snprintf(out, n, "%s, %s; %d pools", b1, b2, g_npool);
+    return 1;
+}
 // An address no pool holds may lie in a virtual pool's pages that cannot be aliased (mapped at 4 KB, not on a host page): hle_nvn.c then makes copies of them from its page table
 //   and registers them as a pool (审计 #1592 P1-112; textures read the page table themselves), and the lookup is made once more: len bytes must be covered, up to want are copied
 //   where pages are mapped (a binding looked up by its first byte, as before, still gets its whole range copied)
@@ -7124,8 +7141,13 @@ static void bind_vbufs(id<MTL4RenderCommandEncoder> en) {
         else {
             void *mb; uint64_t mo; g_vbuf_resolve++;
             // Not in any pool (审计 #1534 P1-112 读数缺口): the slot used to keep the previous draw's address, so the draw read another buffer silently;
-            //   now it reads the zero buffer and says so (the address and slot of the first case)
-            uint64_t pav; if (!gpu_addr_want(addr, 1, S.vbuf[s].size, &mb, &mo, &gpu, &pav)) { RED_ONCE(162, "vertex buffer slot %d address %#llx is in no memory pool: the slot reads zeros (first case)", s, (unsigned long long)addr); vbuf_zero(en, s); continue; }
+            //   now it reads the zero buffer and says so: the address, the nearest pools on either side (mtl_pool_near: a gap in the host's registration, or memory the game never gave NVN)
+            //   and the running count (draws whose slot read zeros), the first 4 times and then at powers of two
+            uint64_t pav; if (!gpu_addr_want(addr, 1, S.vbuf[s].size, &mb, &mo, &gpu, &pav)) {
+                static uint64_t nz; uint64_t k = ++nz;
+                if (k <= 4 || !(k & (k - 1))) { char near[300] = ""; mtl_pool_near(nvn_ga2ca(addr), near, sizeof near);
+                    MLOG("【红】 vertex buffer slot %d address %#llx (%llu bytes) is in no memory pool: the slot reads zeros (%llu so far); %s", s, (unsigned long long)addr, (unsigned long long)S.vbuf[s].size, (unsigned long long)k, near); }
+                vbuf_zero(en, s); continue; }
             cache[s].addr = addr; cache[s].gpu = gpu; cache[s].gen = gen;
         }
         enc_r_vbuf(en, VB_SLOT(s), gpu);

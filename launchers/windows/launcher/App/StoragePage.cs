@@ -107,10 +107,15 @@ public sealed partial class EnvironmentWindow
             }
             var kept = g.GetProperty("kept").EnumerateArray().Select(k => T("space.kept." + k.GetProperty("id").GetString()) + " " + FormatBytes(k.GetProperty("bytes").GetInt64()));
             row.Children.Add(Muted(T("space.kept") + " · " + string.Join(" · ", kept), 12));
+            if (g.TryGetProperty("sharedBytes", out var sh) && sh.TryGetInt64(out var sharedBytes) && sharedBytes > 0)
+                row.Children.Add(Muted(T("space.sharedNote").Replace("{0}", FormatBytes(sharedBytes)), 12));
             if (parts.Count == 0) row.Children.Add(Muted(T("space.nothing"), 12));
             else
             {
-                var total = parts.Where(p => chosen.Contains(p.Id)).Sum(p => p.Bytes);
+                // 合计按作业层的组合账查（library.freeable：几项共用的块只在都勾上时算）；没有组合账退回各项相加
+                var key = string.Join("+", chosen.Where(id => parts.Any(p => p.Id == id)).OrderBy(id => id, StringComparer.Ordinal));
+                var total = g.TryGetProperty("combos", out var combos) && key.Length > 0 && combos.TryGetProperty(key, out var c) && c.TryGetInt64(out var cb)
+                    ? cb : parts.Where(p => chosen.Contains(p.Id)).Sum(p => p.Bytes);
                 var free = Action("space.free", () => _ = FreeAsync(gid, name, parts.Where(p => chosen.Contains(p.Id)).Select(p => p.Id).ToList(), total),
                     chosen.Count > 0 && !freeing);
                 AutomationId(free, "space.free." + gid);

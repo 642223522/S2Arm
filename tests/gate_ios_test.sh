@@ -59,4 +59,21 @@ o=$(run env GATE_IOS_MODS="$T/empty-npdm" TRACE="$T/trace" 2>&1); rc=$?
 ck "空 npdm → 编译前报红" '[ "$rc" != 0 ] && grep -q "非空 main.npdm" <<< "$o" && [ ! -e "$T/trace" ]'
 o=$(run env S2A_ROOTS_SHARED="$T/no-roots" TRACE="$T/trace" 2>&1); rc=$?
 ck "无自动候选 → 报红，给显式目录用法，不调用 make" '[ "$rc" != 0 ] && grep -q "GATE_IOS_MODS=<现有改写产物目录>" <<< "$o" && [ ! -e "$T/trace" ]'
+# 出壳输入闭包（11-11：新增出壳输入漏登 shell.tsv 第三次，razor1 让 make ios 读体验规格，门禁不查、到发版出壳才红）：
+#   小仓库加上 pack/shell/closure.py 与输入表（只登记 ios/a.txt），假 make 按 READ 读镜像里的一个文件。
+#   READ=ios/a.txt（登记了）→ 绿、日志有「壳输入闭包」行；READ=ios/b.txt（没登记）→ 红、点名 ios/b.txt、说明编译链接本身通过
+mkdir -p $T/repo/pack/shell $T/repo/pack/stage_inputs; cp $H/pack/shell/closure.py $T/repo/pack/shell/; cp $H/tools/gate_ios.sh $T/repo/tools/
+printf '入\tios/a.txt\n入\tios/embed.py\n入\tios/macho_dylib.py\n入\ttools\n' > $T/repo/pack/stage_inputs/shell.tsv; echo a > $T/repo/ios/a.txt; echo b > $T/repo/ios/b.txt
+git -C $T/repo add -A && git -C $T/repo -c user.email=t@t -c user.name=t commit -qm closure
+cat > $T/bin/make <<'MK'
+#!/bin/bash
+for a in "$@"; do case $a in BUILD=*) B=${a#*=};; esac; done; S=; prev=; for a in "$@"; do [ "$prev" = -C ] && S=$a; prev=$a; done
+[ -n "${READ:-}" ] && cat "$S/$READ" > /dev/null
+mkdir -p "$B/ios/S2Arm.app" && printf '#!/bin/sh\n' > "$B/ios/S2Arm.app/S2Arm" && chmod +x "$B/ios/S2Arm.app/S2Arm"
+MK
+chmod +x $T/bin/make; mods $T/roots/acnh@pkg-old
+o=$(run env READ=ios/a.txt 2>&1); rc=$?
+ck "闭包：读登记过的 ios/a.txt → 绿（rc=${rc}）、日志有壳输入闭包结论" '[ "$rc" = 0 ] && grep -q "壳输入闭包：出壳读到" <<< "$o"'
+o=$(run env READ=ios/b.txt 2>&1); rc=$?
+ck "闭包：读没登记的 ios/b.txt → 红（rc=${rc}）、点名 ios/b.txt、说明编译链接本身通过" '[ "$rc" != 0 ] && grep -q "没登记的 1 个文件.*ios/b.txt" <<< "$o" && grep -q "出壳闭包漏登记（编译链接本身通过）" <<< "$o"'
 rm -rf $T; [ $bad = 0 ] && echo "gate_ios 单测全过" || { echo "gate_ios 单测有不通"; exit 1; }

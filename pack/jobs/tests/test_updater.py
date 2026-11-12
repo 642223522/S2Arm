@@ -1,4 +1,5 @@
 import hashlib
+import io
 import http.server
 import json
 import os
@@ -1011,6 +1012,30 @@ class MirrorTests(Base):
         info = updater.query_latest("windows", "0.1.1")
         self.assertEqual((info["version"], info["sha256"], info["asset"]), ("0.3.1", "c" * 64, self.base + "/gh/pkg"))
         self.assertEqual(ScriptedHandler.hits.count("/update/latest.json"), 1)   # 官网只试一次就回退
+
+    def test_site_manifest_without_this_platform_means_no_update(self):
+        """官网清单只有 Mac 包（只发了 Mac）：Windows 老用户 → 没有新版、不报错、不去问 GitHub，标准错误记一行；Mac 照常有新版"""
+        mac = updater.ASSETS["mac"]
+        raw, sig = signed("0.3.0", {mac: {"sha256": "d" * 64, "size": 5}})
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]; ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+        self.github()
+        err = io.StringIO()
+        with patch.object(sys, "stderr", err):
+            self.assertEqual(updater.query_latest("windows", "0.2.9"), {"available": False})
+        self.assertIn("签名清单里没有 S2Arm-windows-x64.zip", err.getvalue())
+        self.assertNotIn("/latest", ScriptedHandler.hits)
+        ScriptedHandler.scripts["/update/latest.json"] = [(200, {}, raw)]; ScriptedHandler.scripts["/update/latest.json.sig"] = [(200, {}, sig)]
+        self.assertEqual(updater.query_latest("mac", "0.2.9")["version"], "0.3.0")
+
+    def test_github_manifest_without_this_platform_means_no_update(self):
+        """GitHub 这一版的签名清单里没有本平台的包（资产里却有同名文件也不认）→ 没有新版、不报错"""
+        mac = updater.ASSETS["mac"]
+        raw, sig = signed("0.3.1", {mac: {"sha256": "e" * 64, "size": 5}})
+        release = {"tag_name": "v0.3.1", "assets": [{"name": self.pkg, "browser_download_url": self.base + "/gh/pkg"},
+                   {"name": updater.MANIFEST, "browser_download_url": self.base + "/gh/m"}, {"name": updater.SIGNATURE, "browser_download_url": self.base + "/gh/s"}]}
+        ScriptedHandler.scripts.update({"/latest": [(200, {}, json.dumps(release).encode())], "/gh/m": [(200, {}, raw)], "/gh/s": [(200, {}, sig)]})
+        with patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(updater.query_latest("windows", "0.2.9"), {"available": False})
 
     def test_site_missing_falls_back_to_github(self):
         self.github()   # 官网 404（发版流程还没写入）

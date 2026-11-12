@@ -38,7 +38,7 @@ PACK = "pack/orch/oneclick_win.py:env_items"   # 出包件自检的唯一来源�
 PACK_OWN = {"python", "metal"}
 # 只有签名装机才用：不是导入和出包的前提，缺了或认不出都只提示，装机时真失败再说具体原因
 SIGNING_ONLY = {"impactor", "anisette", "apple_driver", "apple_usb"}
-OFFICIAL = {"metal": "https://developer.apple.com/metal/tools/",                 # 苹果 Metal Developer Tools for Windows
+OFFICIAL = {"metal": "https://developer.apple.com/download/all/?q=metal%20developer%20tools%20for%20windows",   # 苹果下载区里直接搜好 Metal Developer Tools for Windows（要登录 Apple 账号，免费的就行）。原先指 /metal/tools/ 总介绍页：英文、首屏是 Mac 上的 Xcode，Windows 下载藏在页面中段（11-11 新用户首装实测）
             "apple_driver": "https://apps.microsoft.com/detail/9np83lwlpz9k",    # 微软商店 Apple Devices
             "anisette": "https://apps.microsoft.com/detail/9pktq5699m62"}        # 微软商店 iCloud（本机设备信息，不用公共服务器）   # 这两项本模块核得更细（钉版依赖、Metal 版本对锁），出包件那份不重复列
 

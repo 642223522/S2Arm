@@ -47,6 +47,9 @@ ALLOW = {
         "不给清单时的现枚举只给运行期 / 单测（安卓 core-runtime 单测直接调 Write(目录, 输出)）；出包期 romfsidx 阶段一律带 --list（romfs_list.py sizes 盘点）",
     ("services/S2A.Services/Application.cs", "*"):
         "运行期（起局）：没有预建索引时现建 RomFS 镜像，要在设备上枚举游戏目录；出包期不经这里",
+    ("pack/jobs/library.py", "freeable:scandir"):
+        "不是出包步骤：释放空间页按玩家勾的部件（可能含解包 / 运行版本里的 RomFS 副本）量「删掉真能腾出多少」，要逐文件 lstat 块数与 APFS 克隆独占量"
+        "（romfs_list 只给路径 / 大小，给不了已分配块与克隆族），只走玩家勾选的目录、不进出包流程",
     ("services/S2A.Services/Host.cs", "*"):
         "运行期（宿主服务）：设备上读游戏数据目录，不是出包步骤",
 }

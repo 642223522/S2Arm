@@ -201,7 +201,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var sessionHidden = false
     @Published private(set) var finishedExports: [String: JobSession] = [:]
     @Published var viewingResult: JobSession?
-    var showsWelcome: Bool { games.isEmpty || welcomeGameID != nil }
+    var showsWelcome: Bool { games.isEmpty || welcomeGameID != nil || welcomeHome }
+    /// 点了顶栏品牌名：游戏库页先显示欢迎页（社区贡献者补丁 #2；点「游戏库」回到列表）
+    @Published var welcomeHome = false
+    /// 设置页「磁盘空间」：关掉设置、给这款打开磁盘空间面板（LauncherView 收到就开）
+    @Published var spaceRequest: String?
     var welcomeGame: GameSummary? { games.first { $0.id == welcomeGameID } }
     // 装到 iPhone 前的清单
     @Published private(set) var installReadiness: InstallReadiness?
@@ -210,6 +214,18 @@ public final class S2ArmLauncherModel: ObservableObject {
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
     @Published private(set) var customizing = false
+    /// 非会话作业（换封面 / 改名、释放空间、存档）在等库锁时作业层的原句「在等「…」结束…」（phase=waiting_lock）；拿到锁或做完清空。
+    /// 剃刀 M3：原先这几处只转圈，别的任务占着库时最长等 120 秒，玩家不知道在等什么
+    @Published var lockWaitNote: String?
+
+    /// 交给作业的事件去处：只认等锁进度，其余丢弃
+    func lockWaitSink() -> EventSink {
+        EventSink { [weak self] e in
+            guard e.ev == "progress" else { return }
+            let note = e.fields["phase"] as? String == "waiting_lock" ? e.message : nil
+            Task { @MainActor in self?.lockWaitNote = note }
+        }
+    }
     @Published private(set) var customizeError: String?
     @Published private(set) var installChecking = false
     /// 当前这份装机前清单是给哪台设备查的（控制口 GET /state 的 installReadiness.checkedDevice）：换了设备先清掉旧清单，
@@ -409,12 +425,12 @@ public final class S2ArmLauncherModel: ObservableObject {
         let ordered = (space?.parts.map(\.id) ?? []).filter { parts.contains($0) }
         Task {
             do {
-                let freed = try await provider.space.free(gameId: gameID, parts: ordered)
+                let freed = try await provider.space.free(gameId: gameID, parts: ordered, events: lockWaitSink())
                 if spaceGameID == gameID { spaceFreed = freed.freedBytes }
             } catch {
                 if spaceGameID == gameID { spaceError = error.localizedDescription }
             }
-            spaceFreeing = false
+            spaceFreeing = false; lockWaitNote = nil
             loadSpace(gameID)
             refresh()   // 删了 Mac 运行版本，这款要重新准备
             if overview != nil { loadOverview() }
@@ -1053,9 +1069,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !busy, !customizing else { return }
         customizing = true; customizeError = nil
         Task {
-            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath); refresh() }
+            do { try await provider.customizeGame(game.id, name: name, coverPath: coverPath, events: lockWaitSink()); refresh() }
             catch { customizeError = error.localizedDescription }
-            customizing = false
+            customizing = false; lockWaitNote = nil
         }
     }
 
@@ -1275,7 +1291,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 回库：只有作业结束了才能关掉作业页。
     /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
     func goToLibrary() {
-        exportFor = nil; viewingResult = nil; showEnvironment = false
+        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false
         guard let current = session else { return }
         if isFinished(current) { session = nil } else { sessionHidden = true }
     }

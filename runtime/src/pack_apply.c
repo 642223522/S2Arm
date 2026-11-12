@@ -265,7 +265,7 @@ const char *s2a_install_code(int rc, int err, int truncated, int from_img) {
 const char *s2a_pack_apply_code(void) { return g_apply_code; }
 // 返回进程退出码（0 成功）；docs = Documents 目录
 int s2a_pack_apply(const char *docs) {
-    char root[2048], inc[2100], logp[2100]; snprintf(root, sizeof root, "%s/资源包", docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
+    char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0, from_img = 0; char what[2300] = ""; g_fail_errno = 0; g_untar_trunc = 0; g_untar_err[0] = 0;
     // 本款目录 / 资源包 / 待解包目录 App 写不进（#569：玩家机上这一串归 root、0755，App 是 501）：一个包都不解，先把真实原因说清楚，
     //   不再去解包、报一句含糊的「解 xxx.tar」。迁到 App 自己的新目录在 s2a_games_repair（游戏库挂上时做）
@@ -344,7 +344,7 @@ int s2a_pack_check(const char *root, char *first, size_t n) { return (int)index_
 static int ends_with(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !strcmp(s + a - b, t); }
 static int applied_ready(const char *root);
 int s2a_import_state(const char *docs) {
-    char root[2048]; struct stat st; snprintf(root, sizeof root, "%s/资源包", docs);
+    char root[2048]; struct stat st; s2a_pack_root(root, sizeof root, docs);
     int have = !stat(root, &st) && S_ISDIR(st.st_mode);
     // 「资源包」不在 = 没有资源。原先还会把 Documents 下唯一一个「<游戏名>资源包」改名成「资源包」、把空的「资源包」挪开（玩家用访达拷整个文件夹那条路，
     //   10-26）：v0.3.0 起单一 IMG 交付、单款壳不出，说明页只教「装到 iPhone」与「文件」里放 game.img，这条路连同查询里的改名副作用一起删（iOS 装机剃刀 #28）
@@ -424,9 +424,8 @@ static void remove_tree(const char *p) {   // 只删自己刚建的新树（归 
         char c[2400]; snprintf(c, sizeof c, "%s/%s", p, e->d_name); remove_tree(c); } closedir(d); } rmdir(p); }
     else unlink(p);
 }
-// 0 = 都写得进（没动）；1 = 迁好了；负数 = 迁移失败（原样留着）。结果细节经上面三个函数取
-int s2a_games_repair(const char *proc_docs) {
-    g_repair_why[0] = 0; g_repair_uid = 0; g_repair_files = 0;
+// 修一棵树：parent/games 往下写不进 → 克隆成新树换上。0 = 都写得进（没动）；1 = 迁好了；负数 = 迁移失败（原样留着）
+static int repair_tree(const char *proc_docs) {
     char games[2048], bad[2400] = ""; struct stat bs; snprintf(games, sizeof games, "%s/games", proc_docs);
     if (!games_unwritable(games, bad, sizeof bad, &bs)) return 0;
     LOG("【红】游戏目录：%s App 写不进（属主 uid %u、权限 %o，App 是 uid %u），迁到新目录", bad, (unsigned)bs.st_uid, (unsigned)(bs.st_mode & 07777), (unsigned)getuid());
@@ -449,10 +448,79 @@ int s2a_games_repair(const char *proc_docs) {
     LOG("游戏目录：迁好了：%u 个文件 %llu MB 克隆进新目录（%.1f 秒），旧的改名为 %s", files, (unsigned long long)(bytes >> 20), (now_ns() - t0) / 1e9, keep);
     return 1;
 }
+// 0 = 都写得进（没动）；1 = 迁好了；负数 = 迁移失败（原样留着）。结果细节经上面三个函数取。
+//   两棵树都修：进程级 Documents/games（存档、旧位置的资源包）与新位置 Library/Application Support/S2Arm/games（v0.3.0 起的资源包，电脑端推包也写这里）
+int s2a_games_repair(const char *proc_docs) {
+    g_repair_why[0] = 0; g_repair_uid = 0; g_repair_files = 0;
+    int a = repair_tree(proc_docs);
+    char base[2048]; if (s2a_pack_base(base, sizeof base, proc_docs) < 0) return a;
+    char why_a[sizeof g_repair_why]; unsigned uid_a = g_repair_uid, files_a = g_repair_files; snprintf(why_a, sizeof why_a, "%s", g_repair_why);
+    int b = repair_tree(base);
+    if (a < 0) { snprintf(g_repair_why, sizeof g_repair_why, "%s", why_a); g_repair_uid = uid_a; g_repair_files = files_a; return a; }   // 先报 Documents 那棵的失败
+    if (b) return b;
+    if (a) { snprintf(g_repair_why, sizeof g_repair_why, "%s", why_a); g_repair_uid = uid_a; g_repair_files = files_a; }
+    return a;
+}
 
-// ---- 玩家把 IMG 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：s2a_img_scan 扫 Documents（往下两层，跳过 games/ 与隐藏目录），
+// ---- 资源包挪出 Documents（v0.3.0，11-11 真机复现：Documents 里几万个资源包文件拖住「文件」App 与系统选择器的「最近项目」，一直「正在加载」）：
+//   每款 Documents/games/<游戏号>/资源包 → Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root）。
+//   同一个容器同一个卷：rename(2) 一次挪整个目录，不拷贝不重写，几毫秒；rename 是原子的，迁到一半被杀 = 这一款要么还在旧位置要么已在新位置，下次再判接着迁。
+//   存档（S2A/ryujinx）、金手指、unpack.log 都在本款文档根别处，不在挪动范围里。
+//   新位置已有（电脑端先推了新位置、或上次迁过）：旧位置是一次新推送（老版本电脑端推的：有待解包 / 清单不同）→ 换掉新位置；
+//   否则新位置已就绪（.applied 对得上清单）→ 旧位置是重复的，删掉；新位置没就绪 → 两处都不动、下次再判（不丢任何一份）。
+//   docs = 本款文档根 Documents/games/<游戏号>。返回 1 = 挪了 / 删了旧的；0 = 没有旧位置或不是多款容器的文档根；-1 = 新位置没就绪、两处都留着；-2 = 挪失败（原样留着）
+static int applied_ready(const char *root);
+static char g_migrate_why[600];
+const char *s2a_pack_migrate_failure(void) { return g_migrate_why; }
+int s2a_pack_migrate_one(const char *docs) {
+    char old[2200], neu[2200]; struct stat st;
+    s2a_pack_legacy_root(old, sizeof old, docs);
+    if (s2a_pack_root(neu, sizeof neu, docs) >= (int)sizeof neu || !strcmp(old, neu)) return 0;   // 单款兼容 / Mac：资源包本来就在文档根下
+    if (lstat(old, &st) || !S_ISDIR(st.st_mode)) return 0;
+    if (!lstat(neu, &st)) {
+        // 两处都有：旧位置若是一次「新推送」（老版本电脑端推到了旧位置：.incoming 里有包，或清单不是新位置已应用的那份）→ 它新，换掉新位置；
+        //   否则旧位置是重复 / 删到一半的残留：新位置已就绪 → 删旧的；新位置没就绪 → 两处都不动、下次再判（不丢任何一份）
+        char inc[2300], omf[2300], nap[2300], osha[200] = "", nsha[200] = ""; snprintf(inc, sizeof inc, "%s/.incoming", old);
+        snprintf(omf, sizeof omf, "%s/manifest.json", old); snprintf(nap, sizeof nap, "%s/.applied", neu);
+        int pending = 0; DIR *d = opendir(inc); if (d) { struct dirent *e; while (!pending && (e = readdir(d))) pending = ends_with(e->d_name, ".tar"); closedir(d); }
+        FILE *f = fopen(nap, "r"); if (f) { size_t k = fread(nsha, 1, sizeof nsha - 1, f); fclose(f); nsha[k] = 0; nsha[strcspn(nsha, "\r\n")] = 0; }
+        int differs = !manifest_sha(omf, osha, sizeof osha) && strcmp(osha, nsha);
+        if (pending || differs) {
+            remove_tree(neu);
+            if (rename(old, neu)) { snprintf(g_migrate_why, sizeof g_migrate_why, "把旧位置的新推送 %s 换到 %s：%s", old, neu, strerror(errno)); LOG("【红】资源包迁移：%s", g_migrate_why); return -2; }
+            LOG("资源包迁移：旧位置是一次新推送（%s），换掉新位置的旧资源包", pending ? "有待解包" : "清单不同");
+            return 1;
+        }
+        if (!applied_ready(neu)) { LOG("资源包迁移：%s 新旧两处都有、新位置还没就绪，都不动，下次再判", docs); return -1; }
+        remove_tree(old);
+        LOG("资源包迁移：新位置已就绪，删掉旧位置的重复资源包 %s", old);
+        return 1;
+    }
+    char parent[2200]; snprintf(parent, sizeof parent, "%s", neu);
+    if (mkdirs(parent)) { snprintf(g_migrate_why, sizeof g_migrate_why, "建 %s 的上级目录失败：%s", neu, g_untar_err); LOG("【红】资源包迁移：%s", g_migrate_why); return -2; }   // 只建到上一级：rename 要目标本身不存在
+    uint64_t t0 = now_ns();
+    if (rename(old, neu)) { snprintf(g_migrate_why, sizeof g_migrate_why, "把 %s 改名到 %s：%s", old, neu, strerror(errno)); LOG("【红】资源包迁移：%s", g_migrate_why); return -2; }
+    LOG("资源包迁移：%s → %s（同盘改名 %.1f ms）", old, neu, (now_ns() - t0) / 1e6);
+    return 1;
+}
+// 进程级 Documents 下每一款都迁：返回挪了几款（失败的计在 *failed）。游戏库挂上时（app.m img_scan_bg）在 #569 修复之后、认领 IMG 之前做
+int s2a_pack_migrate(const char *proc_docs, int *failed) {
+    char games[2048]; snprintf(games, sizeof games, "%s/games", proc_docs); if (failed) *failed = 0;
+    DIR *d = opendir(games); if (!d) return 0;
+    int moved = 0; struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char docs[2300]; snprintf(docs, sizeof docs, "%s/%s", games, e->d_name);
+        int r = s2a_pack_migrate_one(docs);
+        if (r > 0) moved++; else if (r == -2 && failed) (*failed)++;
+    }
+    closedir(d);
+    return moved;
+}
+
+// ---- 玩家把 IMG 放进「文件」里 S2Arm 的「放这里导入」文件夹（v0.3.0，自签 / 侧载玩家）：s2a_img_scan 扫这个文件夹（往下两层，跳过隐藏目录），
 //   认文件开头的魔数（不看扩展名，改了名也认）。长度不等于头里的整个文件长 = 还在拷，先不动下次再看；认出来就读头里的游戏号，
-//   同卷改名挪到 Documents/games/<游戏号>/资源包/game.img（文件夹不在就建，玩家不用知道程序号），写 index.tsv（game.img 一行 + 原有的直连库 / 覆盖层行）
+//   同卷改名挪到本款资源包根 Library/Application Support/S2Arm/games/<游戏号>/资源包/game.img（s2a_pack_root；文件夹不在就建，玩家不用知道程序号），写 index.tsv（game.img 一行 + 原有的直连库 / 覆盖层行）
 //   与清单 manifest.json（version 3、资源包号取头）、作废 .applied——之后就是「待导入」，游戏库 / 闸门照常解小文件（s2a_pack_apply）
 static char g_img_err[600], g_img_code[48];
 const char *s2a_img_scan_failure(void) { return g_img_err; }
@@ -468,7 +536,7 @@ static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好�
     char gid[17], pid[65]; memcpy(gid, h + 16, 16); gid[16] = 0; memcpy(pid, h + 32, 64); pid[64] = 0;
     for (int i = 0; i < 16; i++) if (!((gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F'))) { snprintf(g_img_err, sizeof g_img_err, "%s 头里的游戏号不对", path); return -10; }
     if (!pid[0]) snprintf(pid, sizeof pid, "img-%llx", (unsigned long long)total);   // 没写资源包号的（老工具）：按长度给一个，至少换了文件能触发重新应用
-    char root[1400], p[2400], old[2400]; snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid);
+    char root[1400], p[2400], old[2400], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
     snprintf(p, sizeof p, "%s/game.img", root); if (mkdirs(p)) { snprintf(g_img_err, sizeof g_img_err, "建 %s 失败：%s", root, g_untar_err); return -4; }
     snprintf(old, sizeof old, "%s/manifest.json", root); unlink(old); snprintf(old, sizeof old, "%s/.applied", root); unlink(old);   // 先作废：挪到一半断了不会判成就绪
     if (rename(path, p)) { snprintf(g_img_err, sizeof g_img_err, "把 %s 挪进资源包失败：%s", path, strerror(errno)); return -4; }
@@ -481,7 +549,7 @@ static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好�
     char mf[600]; snprintf(mf, sizeof mf, "{\"version\": 3, \"format\": \"img\", \"imgFile\": \"game.img\", \"index_sha256\": \"%s\"}\n", pid);
     snprintf(p, sizeof p, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s.tmp", p);
     FILE *m = fopen(tp, "w"); if (!m || fputs(mf, m) < 0 || fclose(m) || rename(tp, p)) { snprintf(g_img_err, sizeof g_img_err, "写 manifest.json 失败：%s", strerror(errno)); return -4; }
-    LOG("资源导入：%s → games/%s/资源包/game.img（%llu MB），等游戏库解开", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, gid, (unsigned long long)(total >> 20));
+    LOG("资源导入：%s → %s/game.img（%llu MB），等游戏库解开", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, root, (unsigned long long)(total >> 20));
     return 0;
 }
 static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *placed) {
@@ -501,9 +569,13 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *
     }
     return 0;
 }
+// 认领只扫 Documents 下的导入文件夹（v0.3.0 起，原先扫整个 Documents）：名字按界面语言建（app.m），两种都认，切了语言照样认
+const char *const s2a_img_import_dirs[2] = {"放这里导入", "Import Here"};
 int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可能同时调：一把锁串起来，免得两边抢着挪同一个文件
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; img_scan_dir(proc_docs, proc_docs, 0, &placed); pthread_mutex_unlock(&mu); return placed;
+    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0;
+    for (int i = 0; i < 2; i++) { char dir[2200]; snprintf(dir, sizeof dir, "%s/%s", proc_docs, s2a_img_import_dirs[i]); img_scan_dir(proc_docs, dir, 0, &placed); }
+    pthread_mutex_unlock(&mu); return placed;
 }
 // 资源还在传（11-02 维护者 测试设备2 暗黑3：推 21.7 GB 中途点开 App，已到的几批被解开、核对时 index.tsv 还没到，报「返回 -8」要玩家删文件夹重拷）。
 //   推送契约（tools/push_pack.py）：开推先把机上 manifest.json 置空，各批 tar 推进 .incoming/，index.tsv 与 manifest.json 最后推。所以下面任一条成立 = 这次推送还没完，不能开始解：
@@ -579,7 +651,7 @@ static uint64_t pack_fp(const char *root) {
 int s2a_import_decide(const char *docs, struct s2a_gate_watch *w, time_t now, char *why, size_t n) {
     int st = s2a_import_state(docs); why[0] = 0;
     if (st == S2A_IMPORT_READY) return S2A_GATE_READY;
-    char root[2048]; snprintf(root, sizeof root, "%s/资源包", docs);
+    char root[2048]; s2a_pack_root(root, sizeof root, docs);
     if (st != S2A_IMPORT_PENDING) return st == S2A_IMPORT_BROKEN ? S2A_GATE_BROKEN : S2A_GATE_NONE;
     if (!s2a_import_transferring(root, why, n)) return S2A_GATE_IMPORT;
     uint64_t fp = pack_fp(root);
@@ -616,7 +688,7 @@ static int applied_ready(const char *root) {   // 资源包目录 root：.applie
 }
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
     if (proc_docs && *proc_docs && gid && *gid && !strchr(gid, '/') && gid[0] != '.') {
-        char root[2200]; snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid);
+        char root[2200], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
         if (applied_ready(root)) return S2A_IMPORT_READY;
     }
     return s2a_import_state_game(proc_docs, gid);
@@ -629,8 +701,8 @@ int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
 //   0 没有（不显示）——只给「资源包」不在或是空的。原先清单读不出 / 在传又没有 .transfer 也给 0，有数据的款从库里静默消失（iOS 装机剃刀 #26 / #45）
 int s2a_game_install_state(const char *proc_docs, const char *gid) {
     if (!proc_docs || !*proc_docs || !gid || !*gid || strchr(gid, '/') || gid[0] == '.') return 0;
-    char root[2200], mf[2300], want[200], why[256];
-    snprintf(root, sizeof root, "%s/games/%s/资源包", proc_docs, gid); snprintf(mf, sizeof mf, "%s/manifest.json", root);
+    char root[2200], mf[2300], want[200], why[256], gdocs[1200];
+    snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs); snprintf(mf, sizeof mf, "%s/manifest.json", root);
     if (applied_ready(root)) return 1;
     if (manifest_sha(mf, want, sizeof want) || s2a_import_transferring(root, why, sizeof why)) {
         DIR *d = opendir(root); int any = 0;   // 资源包里有没有东西（. 开头的也算：.incoming / .transfer / .applied）
@@ -693,7 +765,7 @@ static void *gate_thread(void *a) { (void)a;
             //   页面也分两路：有人等就说「正在进入游戏」，「划掉重开」只留给没人等的老路径（11-02 用户体验线：成功路径先闪一句叫玩家划掉，紧接着游戏自己进去了）
             if (!rc) { LOG("资源导入：完成，再判一次就绪（有人等就接着起游戏）"); if (atomic_load(&g_gate_waiting)) note_entering(); else note_done(); w = (struct s2a_gate_watch){0}; last = -1; continue; }
             // 解到一半又来了新推送（执行器重推 / 又拷进一份）：回去等它传完再试，不报失败
-            char root[2048], w2[600]; snprintf(root, sizeof root, "%s/资源包", g_imp_docs);
+            char root[2048], w2[600]; s2a_pack_root(root, sizeof root, g_imp_docs);
             if (s2a_import_state(g_imp_docs) == S2A_IMPORT_PENDING && s2a_import_transferring(root, w2, sizeof w2)) {
                 LOG("资源导入：这次没解成（%s），但又有资源在传（%s）：等传完自动重试", s2a_pack_apply_failure(), w2); w = (struct s2a_gate_watch){0}; last = -1; continue; }
             s2a_ios_keep_awake(0); note_fail(); LOG("【红】资源导入：失败 %s", s2a_pack_apply_failure());
@@ -716,6 +788,7 @@ static int imp_docs(char *out, size_t n) {   // 本局资源包闸门的文档�
 int s2a_import_gate_applies(void) { char d[1024]; return imp_docs(d, sizeof d); }
 int s2a_import_gate(void) {
     if (!imp_docs(g_imp_docs, sizeof g_imp_docs)) return 0;
+    s2a_pack_migrate_one(g_imp_docs);   // 直接起这款（没经过游戏库）也先把旧位置的资源包挪过去（v0.3.0）
     CFStringRef dn = CFBundleGetValueForInfoDictionaryKey(CFBundleGetMainBundle(), CFSTR("CFBundleDisplayName"));
     if (!dn || !CFStringGetCString(dn, g_imp_name, sizeof g_imp_name, kCFStringEncodingUTF8)) strlcpy(g_imp_name, "S2Arm", sizeof g_imp_name);
     int st = s2a_import_state(g_imp_docs);
@@ -732,6 +805,7 @@ int s2a_import_gate(void) {
 // main() 起 UIKit 前问：资源包没就绪（要显示说明页 / 导入进度）就走延后启动，闸门在宿主线程上等「重新检查」
 int s2a_import_needs_ui(void) {
     char docs[1024]; if (!imp_docs(docs, sizeof docs)) return 0;
+    s2a_pack_migrate_one(docs);   // 起 UIKit 前判就绪：先迁（同 s2a_import_gate），免得旧位置有资源被判成「没有」
     return s2a_import_state(docs) != S2A_IMPORT_READY;
 }
 // 游戏中途因缺数据 Break（lifecycle.c 收局前问）：资源包这时核不过 = 是缺资源，不退出，弹同一页；游戏线程已坏、接不上，重新检查就绪后请玩家重新打开。

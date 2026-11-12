@@ -50,7 +50,10 @@ struct TargetDeviceRow: View {
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
         .padding(.top, 4)
-        .task { while !Task.isCancelled { await model.refreshTargets(); try? await Task.sleep(nanoseconds: 5_000_000_000) } }
+        // 设备列表每 5 秒问一次（插拔手机、点信任后界面自己变过来），只在启动器在前台时问；切回来立刻问一次。
+        //   剃刀 M17：原先切到别的程序也一直每 5 秒起一次设备探测（devicectl 子进程），同 M5 装机清单（32d91e49）
+        .task { while !Task.isCancelled { if NSApp.isActive { await model.refreshTargets() }; try? await Task.sleep(nanoseconds: 5_000_000_000) } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await model.refreshTargets() } }
     }
 
     /// 「名字 · 机型 · iOS 版本 · 有线 / 同一网络」
