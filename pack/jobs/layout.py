@@ -15,6 +15,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import shutil
 import time
 from pathlib import Path
@@ -187,6 +188,10 @@ def indexed_dir(c, gid):
     if not entry or not entry.get("folder") or root is None or not root.is_dir():
         return None
     d = games_root(c, root) / entry["folder"]
+    other = str(read(d / GAME_JSON, {}).get("id", "") or gid).upper()   # game.json 删没了（删到一半）照认；写着别款的号就不是这款的
+    if other != gid.upper():
+        print(f"[s2a] {gid.upper()}：索引记的文件夹 {d.name} 是另一款 {other} 的，不当这款的删", file=sys.stderr)
+        return None
     return d if d.is_dir() else None
 
 
