@@ -117,6 +117,7 @@ struct nvn_gpu_pipe_s {
     uint32_t nset;
     nvn_gpu_layout_ent *stage_ents[6];
     VkFormat *stage_tfmt[6];
+    int8_t texel_binds;   // 有没有纹素缓冲类的绑定项：0 还没数，1 有，-1 没有（见 bind_descriptor_groups）
     uint32_t stage_nent[6];
     uint32_t stage_push_off[6], stage_push_bytes[6];
     nvn_gpu_pipe_desc key;
@@ -180,6 +181,7 @@ struct nvn_gpu_cmd_s {
     VkDescriptorSet desc_sets[4];   // 仅本命令段；旧组仍归本段的池所有，不就地覆盖在途绑定
     VkPipelineLayout desc_layout;
     uint32_t desc_dirty;
+    uint8_t desc_point;             // 当前这几组绑在哪个绑定点：0 还没绑，1 图形，2 计算
 
     uint8_t *push_data[6];        // 各阶段 push 暂存；vkCmdPushConstants 录制时拷贝入命令缓冲，段完成即放
     uint32_t push_capacity[6]; // 分配字节数，测试与管线切换共用
@@ -2659,7 +2661,9 @@ static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl,
 
 // 把某阶段本笔绑定写进 wr/ii/bi；返回写入条数，出错置粘滞返回 -1。
 // 缺成员的新类别（IMAGE / TBUF / IMAGE_TBUF）报 E_LAYOUT；老类别保持 NULL 句柄空资源写法不变。
-static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int st,
+// 只写 dirty 里的组（没变的组沿用上一笔的描述符集对象，不重写）。纹素缓冲的格式核对取决于管线，
+// 组没变、管线换了也要核，所以这两类不在脏组里也走一遍核对，只是不写。
+static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int st, uint32_t dirty,
                        const VkDescriptorSet *sets, VkWriteDescriptorSet *wr,
                        VkDescriptorImageInfo *ii, VkDescriptorBufferInfo *bi) {
     int nw = 0;
@@ -2667,6 +2671,8 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
         const nvn_gpu_binding *b = &c->binds[st][i].b;
         if (!p->stage_nent[st]) { set_sticky(c, NVN_GPU_E_LAYOUT, "阶段 %d 没有布局项却给了绑定", st); return -1; }
         const nvn_gpu_layout_ent *e = &p->stage_ents[st][b->ent];
+        const int live = (int)(dirty >> e->set & 1u);
+        if (!live && e->cls != NVN_GPU_RES_TBUF && e->cls != NVN_GPU_RES_IMAGE_TBUF) continue;
         VkWriteDescriptorSet *w = &wr[nw];
         memset(w, 0, sizeof *w);
         w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2733,34 +2739,43 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             set_sticky(c, NVN_GPU_E_UNSUPPORTED, "绑定类别 %u：本段未实现", e->cls);
             return -1;
         }
-        nw++;
+        if (live) nw++;
     }
     return nw;
 }
 
 // 脏组分配新对象，不能更新前一笔已经引用的组；跨阶段共用同一组时写全组。
 static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int compute) {
-    if (c->desc_layout != p->layout) {
-        c->desc_layout = p->layout; c->desc_dirty = 0xfu;
+    const uint8_t point = compute ? 2 : 1;
+    if (c->desc_layout != p->layout || c->desc_point != point) {
+        c->desc_layout = p->layout; c->desc_point = point; c->desc_dirty = 0xfu;
         memset(c->desc_sets, 0, sizeof c->desc_sets);
     }
     // A descriptor-free pipeline ignores bindings left by the previous pipeline.
     if (!p->nset) return 1;
     uint32_t dirty = c->desc_dirty & ((1u << p->nset) - 1u);
+    // 哪一组都没变、布局和绑定点也没换：命令缓冲里绑着的就是这几组，不用重写也不用重绑。
+    // 纹素缓冲的格式核对随管线变（见 write_binds），有这类绑定的管线不走这条近路。
+    struct nvn_gpu_pipe_s *pm = (struct nvn_gpu_pipe_s *)(uintptr_t)p;
+    if (!pm->texel_binds) {
+        int8_t has = -1;
+        for (int st = 0; st <= NVN_GPU_SH_CS; st++) for (uint32_t i = 0; i < p->stage_nent[st]; i++)
+            if (p->stage_ents[st][i].cls == NVN_GPU_RES_TBUF || p->stage_ents[st][i].cls == NVN_GPU_RES_IMAGE_TBUF) has = 1;
+        pm->texel_binds = has;
+    }
+    if (!dirty && p->texel_binds < 0) return 1;
     for (uint32_t set = 0; set < p->nset; set++)
         if (dirty & (1u << set)) if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
     VkWriteDescriptorSet wr[6 * 64]; VkDescriptorImageInfo ii[6 * 64]; VkDescriptorBufferInfo bi[6 * 64];
     uint32_t nw = 0;
     for (int st = compute ? NVN_GPU_SH_CS : 0; st < (compute ? NVN_GPU_SH_CS + 1 : 5); st++) {
-        int n = write_binds(c, p, st, c->desc_sets, wr + nw, ii + nw, bi + nw);
+        int n = write_binds(c, p, st, dirty, c->desc_sets, wr + nw, ii + nw, bi + nw);
         if (n < 0) return 0;
         nw += (uint32_t)n;
     }
-    uint32_t keep = 0;
-    for (uint32_t i = 0; i < nw; i++) for (uint32_t set = 0; set < p->nset; set++)
-        if ((dirty & (1u << set)) && wr[i].dstSet == c->desc_sets[set]) { wr[keep++] = wr[i]; break; }
-    if (keep) vkUpdateDescriptorSets(g.d, keep, wr, 0, NULL);
+    if (nw) vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL);
     c->desc_dirty = 0;
+    if (!dirty) return 1;
     if (p->nset) vkCmdBindDescriptorSets(c->cb, compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         p->layout, 0, p->nset, c->desc_sets, 0, NULL);
     return 1;
