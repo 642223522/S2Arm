@@ -2665,8 +2665,8 @@ static __unsafe_unretained id tex_get(uint64_t k) {
     pthread_mutex_unlock(&g_smu);
     return o;
 }
-static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external textures (mtl_ext_tex), never initialized by the game
-    pthread_mutex_lock(&g_smu);
+static void tex_put_locked(uint64_t k, id o) {   // caller owns g_smu
+    // Serials from 2^62 up are external textures, never initialized by the game.
     int live = k >= (1ull << 62) || nvn_hm_get(&g_tex_live, &k);
     id active = live ? nil : hm_get_id(&g_ghost_active, &k);
     nvn_hmap *m = live ? &g_by_serial : active && !hm_get_id(&g_ghost, &k) ? &g_ghost_active : &g_ghost;   // evicted from the ring earlier in this submission: replaced where it is held
@@ -2679,6 +2679,10 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
     }
     hm_put_id(m, &k, o); g_ser_gen++;
     if (m == &g_ghost && (active || (g_cb && on_sub_thread()))) hm_put_id(&g_ghost_active, &k, o);
+}
+static void tex_put(uint64_t k, id o) {
+    pthread_mutex_lock(&g_smu);
+    tex_put_locked(k, o);
     pthread_mutex_unlock(&g_smu);
 }
 // End of the submission's encoding (nvn_be_sub_commit, before its fence is taken): finalized textures the ring no longer holds are dropped behind this submission's fence, the rest stay in the ring.
@@ -4493,7 +4497,17 @@ void mtl_vc_drop(uint64_t ser);
 void nvn_be_tex_release(tex_t *t) {
     if (!t->serial) return;
     atomic_fetch_add(&g_tex_rel_n, 1);
-    pthread_mutex_lock(&g_smu); nvn_hm_del(&g_tex_live, &t->serial); pthread_mutex_unlock(&g_smu);
+    pthread_mutex_lock(&g_smu);
+    nvn_hm_del(&g_tex_live, &t->serial);
+    id holder = hm_get_id(&g_by_serial, &t->serial);
+    if ([holder isKindOfClass:[NvPkg class]]) {
+        // #778 (reporter shengyifan's minimal repro): a texture the GPU wrote (NvPkg) is finalized while recorded commands still sample it by this serial
+        //   (late / in flight). Dropping it from g_by_serial made tex_get re-create it from the all-zero guest storage (BotW's 100x56 / 400x225 R8 masks:
+        //   one-frame light / dark flashes on iPad). Keep the GPU result under the existing bounded ghost-ring lifetime instead, as tex_put does for evicted ones
+        tex_put_locked(t->serial, holder);
+        hm_del_id(&g_by_serial, &t->serial);
+    }
+    pthread_mutex_unlock(&g_smu);
     serial_del(t->serial);
     mtl_vc_drop(t->serial);
     gpw_forget(t->serial);

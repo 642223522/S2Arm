@@ -514,6 +514,54 @@ class HealFolderNamesTests(JobCase):
         self.assertEqual(names, {A: None, B: None, C: "Hades"})
 
 
+class FolderIdentityTests(JobCase):
+    """出包、重解包、清理、删除取这款的文件夹，都要核文件夹里 game.json 的游戏号等于这一款；对不上就按程序号重认（没有就新建这款自己的），
+    绝不往别款的文件夹里写 / 删（v0.3.0 Windows 玩家：织梦岛出包的解包目录落在叫「…Breath of the Wild」的文件夹下）。期望按规则手写"""
+    LA, BOTW = "01006BB00C6F0000", "01007EF00011E000"
+
+    def fresh(self):
+        self.c._layout_idx = None
+        return self.c
+
+    def folder(self, name, gid):
+        d = self.c.library / "games" / name
+        d.mkdir(parents=True)
+        if gid:
+            atomic(d / "game.json", dict(schema=1, id=gid))
+        (d / "keep.bin").write_bytes(name.encode())
+        return d
+
+    def point_index(self, gid, name):
+        idx = layout.load_index(self.fresh())
+        idx["games"][gid] = dict(location=layout.default_id(self.c), folder=name)
+        layout.save_index(self.c)
+
+    def test_index_pointing_at_another_games_folder_finds_own_folder(self):
+        botw = self.folder("The Legend of Zelda Breath of the Wild", self.BOTW)
+        la = self.folder("The Legend of Zelda Links Awakening", self.LA)
+        self.point_index(self.LA, botw.name)
+        self.assertEqual(layout.find_game(self.fresh(), self.LA), la)
+        self.assertEqual(layout.build_dir(self.fresh(), self.LA), la / "build")
+        self.assertEqual(layout.indexed_dir(self.fresh(), self.LA), la)   # 重认后索引也改过来了
+
+    def test_folder_with_another_games_id_is_never_used_or_deleted(self):
+        botw = self.folder("The Legend of Zelda Breath of the Wild", self.BOTW)
+        self.point_index(self.LA, botw.name)   # 这款自己的文件夹不在了，索引还指着别款的
+        self.assertIsNone(layout.find_game(self.fresh(), self.LA))
+        self.assertIsNone(layout.indexed_dir(self.fresh(), self.LA))   # 删除重试（#433）不拿它当这款的删
+        d = layout.game_dir(self.fresh(), self.LA, english="The Legend of Zelda: Link's Awakening")
+        self.assertNotEqual(d, botw)
+        self.assertEqual(json.loads((d / "game.json").read_text())["id"], self.LA)
+        self.assertEqual(json.loads((botw / "game.json").read_text())["id"], self.BOTW)
+        self.assertEqual(sorted(p.name for p in botw.iterdir()), ["game.json", "keep.bin"])
+
+    def test_half_deleted_own_folder_still_found_for_retry(self):
+        # 删到一半 game.json 没了（#433）：索引记的还是这款自己的文件夹，照旧找回来接着删
+        la = self.folder("The Legend of Zelda Links Awakening", None)
+        self.point_index(self.LA, la.name)
+        self.assertEqual(layout.indexed_dir(self.fresh(), self.LA), la)
+
+
 class StoreMetaTests(JobCase):
     """游戏库的商店元数据（library.store_meta）：商品页一次请求取横图 + 英文标题，存进游戏库，各平台出包只读这一份。打桩替掉 banner_fetch，零联网。
     期望按规则手写：B「泰拉瑞亚」（NACP 没有英文标题、文件夹是游戏号）拿到 Terraria + 横图 → catalog 记 englishName、横图进文件夹、
