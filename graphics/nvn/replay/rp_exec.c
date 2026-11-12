@@ -277,6 +277,7 @@ uint64_t nvn_be_sub_commit(void) {
 }
 
 uint64_t nvn_be_last_fence(void) { return g_fence; }
+int rp_prev_subs_done(void) { return __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE) >= g_fence; }   // 此前交出去的提交是否都做完了（g_fence 在本次提交交出最后一段时才前进）
 
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
