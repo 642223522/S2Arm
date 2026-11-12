@@ -246,6 +246,9 @@ static void guest_file_map(void) {
           if (g_gfile_pending) g_gfile_avail = UINT64_MAX;   // 补接时这次没查到：别拿起局时那次的旧剩余数告诉玩家（审计 P2-265）
           LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
       uint64_t avail = (uint64_t)sf.f_bavail * (uint64_t)sf.f_bsize;
+      // iPhone：f_bavail 不含系统随时能清掉的空间（「设置 → 储存空间」的「可用」含它），常小好几 GB；有「重要用途」口径就取大的那个（ios/app.m）
+      { uint64_t (*important)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_free_important");
+        uint64_t imp = important ? important(td && *td ? td : "/tmp") : 0; if (imp > avail) avail = imp; }
       if (avail < need) {   // 先不接、记下「要接没接上」，开局装模块前再试一次（s2a_guest_file_retry）
           g_gfile_pending = 1; g_gfile_need = need; g_gfile_avail = avail;
           LOG("【黄】客体内存文件后备：临时目录剩余 %llu MB < 需要 %llu MB（S2A_GUEST_FILE_MIN_FREE_MB），先用匿名内存，装游戏前再查一次", (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20)); return; }

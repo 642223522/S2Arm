@@ -326,6 +326,13 @@ int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body
     return 1;
 }
 // 老入口（停帧看门 ap_host.c 经 dlsym 调）：第一段当标题、其余当正文
+// 可用空间按「重要用途」口径（含系统随时能清掉的空间，同「设置 → 储存空间」里的「可用」）：statfs 的 f_bavail 不含这部分，常小好几 GB，
+//   拿它判「空间不够」会冤枉玩家（runtime/src/vawin.c 客体内存文件后备经 dlsym 调）。取不到回 0
+uint64_t s2a_ios_free_important(const char *path) {
+    NSNumber *n = nil;
+    [[NSURL fileURLWithPath:@(path)] getResourceValue:&n forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
+    return n.longLongValue > 0 ? (uint64_t)n.longLongValue : 0;
+}
 void s2a_ios_show_message(const char *m) {
     if (atomic_load(&g_gpu_stopped)) return;   // GPU 安全停页在屏上：不盖掉
     const char *nl = strchr(m, '\n'); char t[512]; size_t k = nl ? (size_t)(nl - m) : strlen(m); if (k >= sizeof t) k = sizeof t - 1;
