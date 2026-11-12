@@ -8939,6 +8939,7 @@ enum { POOL_FRAME_BYTES = 32u << 20, POOL_REQ_BYTES = 128u << 20 };
 static uint64_t g_walk_frame = ~0ull, g_walk_spent, g_walk_req;
 static uint64_t pool_tex_size(const tex_t *t) { return t->L.size ? t->L.size : 1; }
 static uint64_t pool_budget(void) { return g_dev.recommendedMaxWorkingSetSize / 20; }
+uint64_t s2a_gpu_alloc_bytes(void) { return g_dev ? (uint64_t)g_dev.currentAllocatedSize : 0; }   // 浮层「GPU 已分配」（runtime/src/hud.c 弱定义）
 static void pool_walk_frame(void) { uint64_t f = atomic_load(&g_cur_frame); if (f != g_walk_frame) { g_walk_frame = f; g_walk_spent = 0; g_walk_req = 0; } }
 static uint64_t pool_room(void) {   // what may still be made up front this frame
     pool_walk_frame();
