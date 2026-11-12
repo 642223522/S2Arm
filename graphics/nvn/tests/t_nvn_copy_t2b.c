@@ -49,9 +49,16 @@ static void test_layered_complete(void) {
     CHECK(g_pmem[64] == 0x11 && g_pmem[112] == 0x11);  // 尚未收到 GPU 完成，不回写。
     g_pmem[76] = 0x42; g_pmem[100] = 0x43;   // 进行中 CPU 写的是行 / 片填充，完成时不能被旧镜像覆盖。
     g_pg_gen[0] = ++g_dirty_now; g_dirty_now++;
-    nvn_be_sub_begin();
+    nvn_be_sub_begin(); g_nbw = 0;
     CHECK(rp_buf_resolve(&g_fake_cmd, (uint64_t)(uintptr_t)g_pmem + 64, 96, NULL, NULL));
-    CHECK(mirror[76] == 0x42 && mirror[100] == 0x43);   // 后续使用点也要同步填充，不能被在途行误挡。
+    // 后续使用点也要同步填充，不能被在途行误挡。上一次提交显卡还没做完，这次同步不直接写镜像、按序录成 GPU 上的拷贝
+    // （主线「池镜像只在此前的提交都做完时直写」）：录下的片段要盖到两处填充（偏移 76、100），不能盖到在途的行（首字节 64、80、112、128）。
+    { int c76 = 0, c100 = 0, hit_row = 0;
+      for (int i = 0; i < g_nbw; i++) { uint64_t lo = g_bw[i].off, hi = lo + g_bw[i].len;
+          if (lo <= 76 && 76 < hi) c76 = 1;
+          if (lo <= 100 && 100 < hi) c100 = 1;
+          if ((lo <= 64 && 64 < hi) || (lo <= 80 && 80 < hi) || (lo <= 112 && 112 < hi) || (lo <= 128 && 128 < hi)) hit_row = 1; }
+      CHECK(g_nbw > 0 && c76 && c100 && !hit_row && mirror[76] != 0x42); }
     nvn_be_sub_commit();
     for (int z = 0; z < g_ncopy && z < 2; z++) for (int y = 0; y < 2; y++)
         memset(mirror + g_copy[z].off + y * g_copy[z].row, 0xa0 + z, 12);
