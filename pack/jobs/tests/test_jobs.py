@@ -1362,6 +1362,31 @@ class JobsTests(unittest.TestCase):
                     self.assertIn("退出码 139", str(e.exception))
                     self.assertIn("fixture", e.exception.internal)   # 原文随错误摘要带走
 
+    def test_launch_quick_checks_then_explains_broken_files_after_crash(self):
+        # v0.3.1：起局前只核主程序 / 程序描述（validate_runtime files=False），不逐个核 6 万个文件；游戏非 0 退出后再完整核一遍：
+        #   有缺 / 坏的运行文件 → runtime_invalid、消息点名例子并说「重新出一次 Mac 版」；都好 → 照旧 game_crashed
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
+        self.fake_host(game["id"])
+        runtime = layout.image_mac(self.c, game["id"], create=False)
+        runtime.mkdir(parents=True, exist_ok=True); (runtime / "ok.bin").write_bytes(b"12")
+        manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {"ok.bin": [2, ""], "romfs/gone.bin": [9, ""]}}
+        calls = []
+        def quick(c, rt, full=False, files=True):
+            calls.append(files); return manifest
+        def crash(command, log, env, **kwargs):
+            self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
+        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+            with self.assertRaises(Failure) as e:
+                build.launch(self.c)
+        self.assertEqual(calls, [False])   # 起局只做快核
+        self.assertEqual(e.exception.code, "runtime_invalid")
+        self.assertIn("romfs/gone.bin", str(e.exception)); self.assertIn("重新出一次 Mac 版", str(e.exception))
+        (runtime / "romfs").mkdir(exist_ok=True); (runtime / "romfs/gone.bin").write_bytes(b"123456789")
+        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+            with self.assertRaises(Failure) as e:
+                build.launch(self.c)
+        self.assertEqual(e.exception.code, "game_crashed")   # 文件都好：是真崩溃
+
     def test_launch_removes_only_its_snapshot_after_exit_failure_or_cancellation(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], inputGuideHandled=True,
             launchInputConfig=dict(schema=1, keyboard={"A": {"code": 14}}, mouse={}, gamepad={}, axes={},
