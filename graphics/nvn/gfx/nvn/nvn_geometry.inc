@@ -511,7 +511,7 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     // a write queued in this submission (pend), a storage write in it (sbw), or a GPU write of an earlier submission still running (gw); the same test as ubp_get. Waiting on every
     // indexed draw made Xenoblade 3 (95bfab6122539993, hundreds of indexed geometry draws a frame) take 0.4-2 s a frame on the submit thread
     uint64_t ilo = di0 ? di.ibuf : 0, ihi = di0 ? di.ibuf + ((uint64_t)di.count << di.itype) : 0;
-    int wait = ind != 0 || (di0 && (pend_hits(ilo, ihi - ilo) || g_sbw_over || sbw_hits(ilo, ihi) || gw_live(ilo, ihi)));
+    int wait = ind != 0 || (di0 && (pend_hits(ilo, ihi - ilo) || g_sbw_over || sbw_hits(ilo, ihi) || gw_live(ilo, ihi) || ifw_hits(ilo, ihi)));
     for (int i = 0; i < 16; i++) if (S.vbuf[i].size && pend_hits(S.vbuf[i].address, S.vbuf[i].size)) wait = 1;
     for (int i = 0; i < vs->rf.nv; i++) if (vconv_wanted(&vs->rf, i, NULL, 0)) wait = 1;
     geo_gml_snap();   // 本笔各阶段的原始池表写按这一份预测（geo_fs_writes / geo_stage_ranges）
