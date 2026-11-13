@@ -45,6 +45,10 @@ int main(void) {
     CK(!ns2_parse_bt_address("00-00-00-00-00-00", le) && !ns2_parse_bt_address("11-22-33-44-55", le) && !ns2_parse_bt_address("11-22-33-44-55-66x", le) &&
        !ns2_parse_bt_address("11 22 33 44 55 66", le) && !ns2_parse_bt_address(NULL, le),
        "⑭ 负对照：全 0 / 少一段 / 尾巴多字 / 空格分隔 / 空 → 0（读不到地址就不绑定）");
+    CK(ns2_rearm_after_disconnect(1, 0) && !ns2_rearm_after_disconnect(0, 0) && !ns2_rearm_after_disconnect(1, 1),
+       "⑮ 断线后接回：用着的手柄断开就挂直连（绑定与否都挂）；还没握手完 / 握手失败断开的不挂");
+    CK(ns2_link_idle(1, 0, 0) && !ns2_link_idle(1, 0, 1) && !ns2_link_idle(1, 1, 1) && !ns2_link_idle(0, 0, 0),
+       "⑯ 挂着等的链路：系统还没连上才算不占位；已连上在握手 / 已就绪 / 普通 30 秒直连都占位");
     printf(bad ? "\n%d 项不通过\n" : "\n全部通过\n", bad);
     return bad != 0;
 }
