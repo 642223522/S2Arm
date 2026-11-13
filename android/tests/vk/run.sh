@@ -409,6 +409,21 @@ if [ "$rc" -ne 0 ] || [ "$bad" -ne 0 ] || ! grep -q "E697 isolated failures=0" "
     exit 1
 fi
 
+# 生产回放的普通间接绘制与单次 DRV0（#941）：隔离用例（真 rp_draw / rp_buf + 真后端），同一容器里两级回放关 / 开各跑一遍
+for dq in 0 1; do
+    set +e
+    if [ "$dq" = 1 ]; then export S2A_REPLAY_INDIRECT_DQ=1 S2A_TEST_NVK_DQ=1; else unset S2A_REPLAY_INDIRECT_DQ S2A_TEST_NVK_DQ; fi
+    S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer" GLSLC="$glslc" timeout 300 bash "$repo/android/tests/vk/run.sh" --indirect-core 2>&1 | tee "$out/log_indirect_$dq"
+    rc=${PIPESTATUS[0]}
+    set -e
+    unset S2A_REPLAY_INDIRECT_DQ S2A_TEST_NVK_DQ
+    bad=$(grep -cE "Validation Error|VUID-" "$out/log_indirect_$dq" || true)
+    if [ "$rc" -ne 0 ] || [ "$bad" -ne 0 ] || ! grep -q "pixel-failures0" "$out/log_indirect_$dq"; then
+        echo "【红】间接绘制隔离用例（#941，两级回放 $dq）：rc=${rc}，validation 报错 $bad 条" >&2
+        exit 1
+    fi
+done
+
 # BC1–BC7 compute 解码逐像素用例（#1199）：16 格式 × 2 尺寸 + 反证；同一 validation 环境。
 # S2A_BCDEC_HOST_TEST 使 S2A_VK_BC_DECODE=force 在主机用例里生效（等同 debug 构建门）。
 cc "${cflags[@]}" -DS2A_BCDEC_HOST_TEST "${inc[@]}" "${bc_src[@]}" -lvulkan -lpthread -lm -o "$out/t_bc_decode"
