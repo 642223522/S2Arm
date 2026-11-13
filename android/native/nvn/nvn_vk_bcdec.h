@@ -30,3 +30,13 @@ int nvn_vk_bcdec_decode(struct nvn_vk_bcdec *bc, struct s2a_vk_device *d,
                         VkImage dst, uint32_t nvn_format, uint32_t w, uint32_t h,
                         uint32_t mip, uint32_t layer, const void *blocks, size_t bytes,
                         char *why, size_t why_size);
+
+// 录进调用方命令缓冲的解码（#697：游戏把压缩字节从 GPU 缓冲拷进 BC 贴图，字节往往是同一段里前面的命令刚写的，
+// 录制时 CPU 上拿不到，不能走上面那条一次性提交）。src 处是紧凑排布的 bw×bh 块（bb 字节/块），偏移须按 16 对齐；
+// 调用方保证 src 在 cb 里此前的写已对 TRANSFER_READ 可见。录完后 dst 该子资源处于 GENERAL、写已对后续
+// SHADER_READ / TRANSFER_READ 可见。rec 里的临时资源要等 cb 执行完才能 nvn_vk_bcdec_rec_free；返回非 0 时 rec 已清空。
+struct nvn_vk_bcdec_rec { VkImage in; VkDeviceMemory in_mem; VkImageView in_view, out_view; VkDescriptorPool pool; };
+int nvn_vk_bcdec_record(struct nvn_vk_bcdec *bc, struct s2a_vk_device *d, VkCommandBuffer cb,
+                        VkImage dst, uint32_t nvn_format, uint32_t w, uint32_t h, uint32_t mip, uint32_t layer,
+                        VkBuffer src, VkDeviceSize src_off, struct nvn_vk_bcdec_rec *rec, char *why, size_t why_size);
+void nvn_vk_bcdec_rec_free(struct s2a_vk_device *d, struct nvn_vk_bcdec_rec *rec);

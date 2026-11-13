@@ -5663,6 +5663,52 @@ static void c697_bc4_3d(void) {
         if (!bad) printf("C697 BC4 回读：整片 / 带行距 / 下一级局部补丁 / 局部区域 四种按原压缩字节读回，160 字节已核对\n");
         nvn_gpu_buf_release(rb2, NULL, NULL);
     }
+    {   // 缓冲 → BC 现解贴图（#697 第二步，Mali 机上回读之后撞到的下一处）：同一段里先把 bc 的 0 级切片 1 回读进缓冲，
+        // 紧接着把这块缓冲拷进另一张 16x8 的 BC4 贴图左半；右半的源是 CPU 填好的块、行距 24（每行后 8 字节是填充）。
+        // 期望全部手算：两端点相同的 BC4 块解出来整块就是端点值（c697_bc4_block）。左半 = bc 切片 1 的块值，见上面回读期望。
+        nvn_gpu_tex bc2 = make_tex(16, 8, NVN_FORMAT_RGTC1_UNORM, NVN_GPU_TEX_SAMPLED);
+        nvn_gpu_tex pl2 = make_tex(16, 8, NVN_FORMAT_R8, NVN_GPU_TEX_SAMPLED);
+        uint8_t src[96]; memset(src, 0xee, sizeof src);
+        for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) c697_bc4_block(src + 48 + y * 24 + x * 8, (uint8_t)(100 + (y * 2 + x) * 7));
+        nvn_gpu_buf sb = make_buf(sizeof src, NVN_GPU_MEM_SHARED, src);
+        nvn_gpu_buf pix = make_buf(128, NVN_GPU_MEM_SHARED, NULL), cmp = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+        if (!bc2 || !pl2 || !sb || !pix || !cmp) { CHECK(0, "C697 缓冲→BC 建资源失败"); goto c697b_done; }
+        c = begin_cmd();
+        nvn_gpu_copy_tex_buf(c, bc, 0, 1, NULL, sb, 0, 16, 32);                   // 回读：sb[0,32) 被 GPU 写成 bc 切片 1 的原块
+        NVNcopyRegion left = {0, 0, 0, 8, 8, 1}, right = {8, 0, 0, 8, 8, 1}, all = {0, 0, 0, 16, 8, 1};
+        nvn_gpu_copy_buf_tex(c, sb, 0, 16, 32, bc2, 0, 0, &left);                 // 同一段里刚写的字节 → BC 贴图
+        nvn_gpu_copy_buf_tex(c, sb, 48, 24, 40, bc2, 0, 0, &right);               // CPU 填的块，带行距
+        nvn_gpu_copy_tex(c, bc2, 0, 0, &all, pl2, 0, 0, &all);                    // 解出来的像素
+        nvn_gpu_copy_tex_buf(c, pl2, 0, 0, &all, pix, 0, 16, 128);
+        nvn_gpu_copy_tex_buf(c, bc2, 0, 0, NULL, cmp, 0, 32, 64);                 // 再按压缩字节读回
+        rc = nvn_gpu_cmd_commit(c, 4, c697_bc4_done, NULL, &e);
+        CHECK(OK(rc), "C697 缓冲→BC commit：%d %s", rc.code, e.why);
+        if (OK(rc)) rc = nvn_gpu_fence_wait(4, 5000000000ull, &e);
+        CHECK(OK(rc), "C697 缓冲→BC wait：%s", e.why);
+        if (OK(rc)) {
+            const uint8_t *px = buf_cpu(pix), *cb = buf_cpu(cmp);
+            int bad = 0;
+            for (int y = 0; y < 8; y++) for (int x = 0; x < 16; x++) {
+                int by = y / 4;
+                uint8_t want = x < 4 ? (uint8_t)(60 + by * 10) : x < 8 ? (uint8_t)(211 + by * 3) : (uint8_t)(100 + (by * 2 + (x - 8) / 4) * 7);
+                if (px[y * 16 + x] != want && bad++ < 4) CHECK(0, "C697 缓冲→BC 像素 (%d,%d)：%u，期望 %u", x, y, px[y * 16 + x], want);
+            }
+            uint8_t wantc[64];
+            for (int by = 0; by < 2; by++) {
+                c697_bc4_block(wantc + by * 32 + 0, (uint8_t)(60 + by * 10)); c697_bc4_block(wantc + by * 32 + 8, (uint8_t)(211 + by * 3));
+                c697_bc4_block(wantc + by * 32 + 16, (uint8_t)(100 + by * 14)); c697_bc4_block(wantc + by * 32 + 24, (uint8_t)(107 + by * 14));
+            }
+            for (int i = 0; i < 64; i++) if (cb[i] != wantc[i] && bad++ < 8) CHECK(0, "C697 缓冲→BC 压缩回读字节 %d：%u，期望 %u", i, cb[i], wantc[i]);
+            CHECK(!bad, "C697 缓冲→BC：%d 处不符", bad);
+            if (!bad) printf("C697 缓冲→BC：同段回读字节与带行距 CPU 块拷入现解贴图，128 像素与 64 压缩字节已核对\n");
+        }
+    c697b_done:
+        if (bc2) nvn_gpu_tex_release(bc2);
+        if (pl2) nvn_gpu_tex_release(pl2);
+        if (sb) nvn_gpu_buf_release(sb, NULL, NULL);
+        if (pix) nvn_gpu_buf_release(pix, NULL, NULL);
+        if (cmp) nvn_gpu_buf_release(cmp, NULL, NULL);
+    }
 done:
     if (bc) nvn_gpu_tex_release(bc);
     if (plain) nvn_gpu_tex_release(plain);
