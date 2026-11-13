@@ -2901,20 +2901,20 @@ static void bc_note(uint32_t f, const char *where) {   // the first decode of ea
     static _Atomic uint32_t seen; uint32_t bit = f >= 0x41 && f <= 0x50 ? 1u << (f - 0x41) : 0;
     if (bit && !(atomic_fetch_or(&seen, bit) & bit)) MLOG("no BC: first texture in NVN format %#x decoded (%s)", f, where);
 }
-// No BC: BC1–5 are decompressed on the GPU (A16 logs in MacNativeGames: CPU deswizzle + CPU decompression took over 300 ms in one frame). Ported from MacNativeGames (MIT, commit 84eebcd0985c,
+// No BC: BC1–5 and BC7 are decompressed on the GPU (A16 logs in MacNativeGames: CPU deswizzle + CPU decompression took over 300 ms in one frame). Ported from MacNativeGames (MIT, commit 84eebcd0985c,
 // nvn_mtl.m k_bcd_msl / bcd_fmt / bcd_pso / up_dec): the GPU deswizzle writes the compressed blocks into the staging area; at flush the kernel bcd decodes them into the texture, one thread per block,
-// through a 2D view in the decompressed format (an sRGB texture is written with its raw values through an RGBA8Unorm view). BC6H / BC7 / 3D textures stay on the CPU (nvn_bcdec.c).
-// The kernel decodes in float like the hardware does, so a texel may differ from bcdec by one level (t_bcd_gpu measures it)
+// through a 2D view in the decompressed format (an sRGB texture is written with its raw values through an RGBA8Unorm view). BC6H / 3D textures stay on the CPU (nvn_bcdec.c).
+// The kernel decodes BC1–5 in float like the hardware does, so a texel may differ from bcdec by one level; BC7 is integer and equals bcdec (S2Arm #582; t_bcd_gpu measures both)
 #include "../tex/nvn_bcd_msl.h"   // k_bcd_msl: the kernel bcd (one header shared with graphics/nvn/tests/t_bcd_gpu.m)
-static int bcd_fmt(uint32_t f) {   // NVN format → the kernel's fmt; 0 = not decoded on the GPU (BC6H / BC7 / not BC)
+static int bcd_fmt(uint32_t f) {   // NVN format → the kernel's fmt; 0 = not decoded on the GPU (BC6H / not BC)
     switch (f) { case 0x41: case 0x42: case 0x45: case 0x46: return 1; case 0x43: case 0x47: return 2; case 0x44: case 0x48: return 3;
-                 case 0x49: return 4; case 0x4a: return 5; case 0x4b: return 6; case 0x4c: return 7; default: return 0; }
+                 case 0x49: return 4; case 0x4a: return 5; case 0x4b: return 6; case 0x4c: return 7; case 0x4d: case 0x4e: return 8; default: return 0; }
 }
 static id<MTLComputePipelineState> bcd_pso(void) {
     static id<MTLComputePipelineState> ps; static int failed;
     if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bcd_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd"] : nil;
         ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
-        if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–5 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–5 are decompressed on the GPU"); }
+        if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–5 and BC7 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–5 and BC7 are decompressed on the GPU"); }
     return ps;
 }
 // GPU decompression applies (the texture is made shader-writable with format views; the upload still needs pool-backed storage, otherwise it decodes on the CPU)
@@ -3432,7 +3432,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // a cube array's depth counts layer-faces (tex_desc)
     uint32_t upf; int ubpp = 0, unp = fmt_unpack(t->d.format, &upf, &ubpp);   // stored in another format (fmt_unpack: BC on a GPU without BC, or expanded): deswizzle, then convert on the CPU; the staging area is sized for the converted data
-    int gdec = unp && bc_gpu_dec(t);   // no BC, BC1–5: GPU deswizzle + GPU decompression (bcd); the staging area then holds the compressed blocks (ctotal)
+    int gdec = unp && bc_gpu_dec(t);   // no BC, BC1–5 / BC7: GPU deswizzle + GPU decompression (bcd); the staging area then holds the compressed blocks (ctotal)
     size_t total = 0, ctotal = 0;
     for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
