@@ -96,10 +96,35 @@ static nvn_gpu_view g_av[RP_PROG_STAGES][RP_TEXARR_MAX]; static nvn_gpu_samp g_a
 // 每次取一遍能力表就是 3700 次加锁（和提交完成线程抢同一把锁）。这里取一次就记住，会话重开（rp_draw_reset）再取。
 static nvn_gpu_caps g_caps_c; static int g_caps_ok;
 static const nvn_gpu_caps *caps_cached(void) { if (!g_caps_ok) { nvn_gpu_caps_get(&g_caps_c); g_caps_ok = 1; } return &g_caps_c; }
+// Bounded per-session first-cause detail; bytes do not split one cause into repeated messages.
+enum { ARENA_REASON_MAX = 8 };
+static struct { int rc; char why[sizeof ((nvn_gpu_err *)0)->why]; } g_arena_reasons[ARENA_REASON_MAX];
+static unsigned g_arena_reason_n;
+static int g_arena_reason_full;
+static void arena_fail_detail(nvn_gpu_rc rc, const nvn_gpu_err *err, uint64_t bytes) {
+    const char *why = err->why[0] ? err->why : nvn_gpu_ok(rc) ? "CPU mapping unavailable" : "missing backend detail";
+    for (unsigned i = 0; i < g_arena_reason_n; i++)
+        if (g_arena_reasons[i].rc == rc.code && !strcmp(g_arena_reasons[i].why, why)) return;
+    if (g_arena_reason_n == ARENA_REASON_MAX) {
+        if (!g_arena_reason_full) {
+            g_arena_reason_full = 1;
+            nvn_plat_log(NVN_PLAT_LOG_RED, "draw", "arena_alloc_failed：后续不同原因详情省略（最多8）");
+        }
+        return;
+    }
+    g_arena_reasons[g_arena_reason_n].rc = rc.code;
+    snprintf(g_arena_reasons[g_arena_reason_n++].why, sizeof g_arena_reasons[0].why, "%s", why);
+    char line[256];
+    snprintf(line, sizeof line, "arena_alloc_failed rc=%d bytes=%llu why=%.160s", rc.code,
+             (unsigned long long)bytes, why);
+    nvn_plat_log(NVN_PLAT_LOG_RED, "draw", line);
+}
+
 static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice *sl) {
     const uint32_t align = caps_cached()->min_ubo_align ? caps_cached()->min_ubo_align : 256;
     nvn_gpu_err err = {0};
-    if (!nvn_gpu_ok(nvn_gpu_arena_alloc(c, n, align, sl, &err)) || !sl->cpu) return 0;
+    nvn_gpu_rc rc = nvn_gpu_arena_alloc(c, n, align, sl, &err);
+    if (!nvn_gpu_ok(rc) || !sl->cpu) { arena_fail_detail(rc, &err, n); return 0; }
     if (src) memcpy(sl->cpu, src, (size_t)n); else memset(sl->cpu, 0, (size_t)n);
     return 1;
 }
@@ -564,7 +589,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (di && !rp_pool_find(di->ibuf, (uint64_t)count * isz, NULL, NULL)) { skip("index_buffer_unresolved", rec); return; }
         uint64_t cap = quads == EXP_QUADS ? (uint64_t)(count / 4) * 6 : quads == EXP_LOOP ? (uint64_t)count * 2 : (uint64_t)count * 3;   // 展开后最多几个索引
         nvn_gpu_slice sl; nvn_gpu_err err = {0};
-        if (!nvn_gpu_ok(nvn_gpu_arena_alloc(c, cap * 4, 4, &sl, &err)) || !sl.cpu) { skip("arena_alloc_failed", rec); return; }
+        nvn_gpu_rc rc = nvn_gpu_arena_alloc(c, cap * 4, 4, &sl, &err);
+        if (!nvn_gpu_ok(rc) || !sl.cpu) { arena_fail_detail(rc, &err, cap * 4); skip("arena_alloc_failed", rec); return; }
         const uint8_t *src = di ? (const uint8_t *)(uintptr_t)di->ibuf : NULL; int64_t rv = restart ? (int64_t)rp_S.restart.index : -1; uint32_t *dst = (uint32_t *)(void *)sl.cpu;
         uint32_t n = quads == EXP_QUADS ? quad_expand(src, isz, count, rv, dst) : quads == EXP_LOOP ? loop_expand(src, isz, count, rv, dst) : qstrip_expand(src, isz, count, rv, dst);
         if (!n) return;
@@ -874,5 +900,5 @@ done:
 }
 
 void rp_draw_stats(uint64_t *draws, uint64_t *skips) { if (draws) *draws = g_draws; if (skips) *skips = g_skips; }
-void rp_draw_reset(void) { g_caps_ok = 0;   // 会话重开：能力表重新取
+void rp_draw_reset(void) { g_caps_ok = 0; g_arena_reason_n = 0; g_arena_reason_full = 0;   // 会话重开：能力表重新取
     free(g_cpipes.keys); free(g_cpipes.vals); nvn_hm_init(&g_cpipes, 8); g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; g_quads = -1; g_face = -1; }

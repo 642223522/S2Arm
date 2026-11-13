@@ -644,8 +644,17 @@ static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_c
         return decl_zero(dtt, dcls, c);
     }
     if (!n || n > UINT16_MAX) {
-        nvn_unimpl("tex", "decl_type_mismatch", NULL);
-        return rp_view_by_id(id, c, t_out);
+        // 不同维度的组合（如 3D 贴图被声明成二维数组读，#936）：Vulkan 不许这种视图，原样绑下去是未定义行为（Maleoon 上整片黑斑）。
+        // 同 iOS 层（nvn_mtl.m tex_fit 之后）与 Ryujinx（Texture.GetTargetTexture 对非同维目标返回 null、槽位读作未绑定）：绑声明类型的零贴图。
+        // 记账照旧；零贴图建不出时才退回原视图（描述符必须有效）
+        if (nvn_unimpl("tex", "decl_type_mismatch", NULL) == 1) {
+            char m[160];
+            snprintf(m, sizeof m, "贴图类型不符：着色器声明目标 %d，贴图是 %d（%ux%ux%u）：按 iOS / Ryujinx 绑声明类型的零贴图", want, have,
+                     (unsigned)t.d.width, (unsigned)t.d.height, (unsigned)t.d.depth);
+            nvn_plat_log(NVN_PLAT_LOG_WARN, "tex", m);
+        }
+        nvn_gpu_view z = decl_zero(dtt, dcls, c);
+        return z ? z : rp_view_by_id(id, c, t_out);
     }
     if (!has_v) memset(&v, 0, sizeof v);
     v.set_target = 1; v.target = (uint8_t)want;

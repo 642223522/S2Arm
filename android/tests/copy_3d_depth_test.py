@@ -19,6 +19,7 @@ def function(signature):
 preamble = r'''
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #define NVN_TEXTURE_TARGET_3D 3
@@ -55,6 +56,15 @@ static int buf_range(struct nvn_gpu_buf_s *b, uint64_t off, uint64_t n) { return
 static void full_barrier(struct nvn_gpu_cmd_s *c) { (void)c; }
 static void image_barrier(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, int l) { (void)c; (void)t; (void)l; }
 static void cmd_ref(struct nvn_gpu_cmd_s *c, void *p, int type) { (void)c; (void)p; (void)type; }
+/* 现解 BC 贴图的回读 / 拷入（#697）：本测试的贴图都不是 bc_decoded，走不到；走到了就是生产代码分支判错，当场报红退出 */
+static void bc_readback(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                        struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes) {
+    (void)c; (void)t; (void)level; (void)layer; (void)r; (void)b; (void)off; (void)row_bytes; (void)image_bytes;
+    fprintf(stderr, "FAIL: bc_readback reached for a non-bc_decoded texture\n"); exit(1); }
+static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                             struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes) {
+    (void)c; (void)t; (void)level; (void)layer; (void)r; (void)b; (void)off; (void)row_bytes; (void)image_bytes;
+    fprintf(stderr, "FAIL: bc_copy_from_buf reached for a non-bc_decoded texture\n"); exit(1); }
 static void vkCmdCopyBufferToImage(int cb, int b, int i, int layout, uint32_t n, const VkBufferImageCopy *r) { (void)cb; (void)b; (void)i; (void)layout; (void)n; copies++; last=*r; }
 static void vkCmdCopyImageToBuffer(int cb, int i, int layout, int b, uint32_t n, const VkBufferImageCopy *r) { (void)cb; (void)i; (void)layout; (void)b; (void)n; copies++; last=*r; }
 '''

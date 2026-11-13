@@ -75,30 +75,32 @@ static void test_pick(void) {
 }
 
 static void test_gates(void) {
-    // 门：不在前台 / 没有显示面 / 已停 / 省电 / 热到 severe 以上，任何模式都不托底
+    // 门：不在前台 / 没有显示面 / 已停，任何模式都不托底
     for (int mode = S2A_FLOOR_ALWAYS; mode <= S2A_FLOOR_AUTO; mode++) {
         struct sim s;
-        for (int g = 0; g < 6; g++) {
+        for (int g = 0; g < 3; g++) {
             sim_init(&s, mode, PERIOD30);
             if (g == 0) s.in.foreground = 0;
             if (g == 1) s.in.surface = 0;
             if (g == 2) s.in.stopped = 1;
-            if (g == 3) s.in.low_power = 1;
-            if (g == 4) s.in.thermal = 2;
-            if (g == 5) s.in.thermal = 3;
             CHECK(sim_first_on(&s, 10.0, 80) == 0);   // 慢到什么程度都不行（一次都不能托：托了再被自检松开也不行）
         }
-        // 热状态 -1 = 没读到、1 = 轻 / 中度：放行（不拦认不出的情况）
-        sim_init(&s, mode, PERIOD30); s.in.thermal = -1;
-        CHECK(mode == S2A_FLOOR_ALWAYS ? sim_tick(&s, 10.0) == 1 : sim_first_on(&s, 10.0, 40) != 0);
-        sim_init(&s, mode, PERIOD30); s.in.thermal = 1;
-        CHECK(mode == S2A_FLOOR_ALWAYS ? sim_tick(&s, 10.0) == 1 : sim_first_on(&s, 10.0, 40) != 0);
+        // 热状态（没读到 / 轻 / severe / 危急）与省电模式都不拦（不设自己挡自己的闸）
+        for (int g = 0; g < 5; g++) {
+            sim_init(&s, mode, PERIOD30);
+            if (g == 0) s.in.thermal = -1;
+            if (g == 1) s.in.thermal = 1;
+            if (g == 2) s.in.thermal = 2;
+            if (g == 3) s.in.thermal = 3;
+            if (g == 4) s.in.low_power = 1;
+            CHECK(mode == S2A_FLOOR_ALWAYS ? sim_tick(&s, 10.0) == 1 : sim_first_on(&s, 10.0, 40) != 0);
+        }
     }
     // 托底中门一关立刻松开，门再开不记得旧账（重新数）
     struct sim s; sim_init(&s, S2A_FLOOR_AUTO, PERIOD30);
     CHECK(sim_first_on(&s, 17.0, 40) != 0);
-    s.in.thermal = 2; CHECK(sim_tick(&s, 17.0) == 0);
-    s.in.thermal = 0;
+    s.in.surface = 0; CHECK(sim_tick(&s, 17.0) == 0);
+    s.in.surface = 1;
     unsigned n = sim_first_on(&s, 17.0, 40);
     CHECK(n >= 13 && n <= 14);   // 窗口、连续慢窗口数都从零重数
     // 关闭模式：什么都不做
@@ -332,7 +334,7 @@ static void test_cap_drop(void) {
     // 本局不再出手：帧率慢到什么程度、慢多久都不再托（原因 = 已停用）
     CHECK(sim_run(&s, 17.0, 400) == 0 && s.st.block == S2A_FLOOR_BLOCK_LATCHED);
     // 门开关、前后台切换不洗掉它
-    s.in.thermal = 2; CHECK(sim_tick(&s, 17.0) == 0); s.in.thermal = 0;
+    s.in.surface = 0; CHECK(sim_tick(&s, 17.0) == 0); s.in.surface = 1;
     s.in.foreground = 0; CHECK(sim_tick(&s, 17.0) == 0); s.in.foreground = 1;
     CHECK(sim_run(&s, 17.0, 400) == 0 && s.st.latched);
     // 开关显式切到 0（A/B / 调试重来）：连停用一起忘，切回自适应就能再出手
@@ -425,7 +427,7 @@ static void test_no_gain(void) {
     sim_init(&s, S2A_FLOOR_AUTO, PERIOD30);
     CHECK(sim_first_on(&s, 17.0, 40) == 13 && sim_run(&s, 17.0, 60) == 0 && s.st.nogain_backoff_ns == 60 * SEC);
     const uint64_t until = s.st.nogain_until_ns;
-    s.in.thermal = 2; CHECK(sim_tick(&s, 17.0) == 0); s.in.thermal = 0;
+    s.in.surface = 0; CHECK(sim_tick(&s, 17.0) == 0); s.in.surface = 1;
     s.in.foreground = 0; CHECK(sim_tick(&s, 17.0) == 0); s.in.foreground = 1;
     CHECK(s.st.nogain_until_ns == until && s.st.nogain_backoff_ns == 60 * SEC && !s.st.latched);
     CHECK(sim_run(&s, 17.0, 4 * 20) == 0 && s.st.block == S2A_FLOOR_BLOCK_BACKOFF);
@@ -494,7 +496,7 @@ static void test_no_gain(void) {
     s.in.mode = S2A_FLOOR_OFF; CHECK(sim_tick(&s, 17.0) == 0 && s.st.why == S2A_FLOOR_WHY_MODE);
     // 门关了：松开，原因 = 门关了
     sim_init(&s, S2A_FLOOR_AUTO, PERIOD30); CHECK(sim_first_on(&s, 17.0, 40) == 13);
-    s.in.low_power = 1; CHECK(sim_tick(&s, 17.0) == 0 && s.st.why == S2A_FLOOR_WHY_GATE);
+    s.in.surface = 0; CHECK(sim_tick(&s, 17.0) == 0 && s.st.why == S2A_FLOOR_WHY_GATE);
     // 托底中时钟倒退：起点跟着重设，不会因为「已过很久」立刻松开
     engage_with_headroom(&s); CHECK(sim_run(&s, 24.0, 20) == 1);
     s.in.now_ns -= 100 * SEC;

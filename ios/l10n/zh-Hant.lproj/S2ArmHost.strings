@@ -11,7 +11,7 @@
 "cheats.import" = "匯入 txt";
 "cheats.import.badItem" = "%@（%@）";
 "cheats.import.failed" = "有檔案未匯入";
-"cheats.import.failed.message" = "%@\n\n不是 Atmosphere 格式的金手指文字（需要有 [項目名稱] 和指令行）。";
+"cheats.import.failed.message" = "%@";
 "cheats.status.active" = "生效中";
 "cheats.status.addressNotReady" = "位址尚未就緒";
 "cheats.status.badFormat" = "格式不正確";
@@ -121,7 +121,6 @@
 "vpad.layout.err.buttonCount" = "需要完整的 14 個按鍵，可另外提供 LS/RS";
 "vpad.layout.err.buttonFields" = "按鍵欄位、範圍或編號無效，且編號不可重複";
 "vpad.layout.err.buttonMissing" = "缺少必要按鍵";
-"vpad.layout.err.exists" = "已有相同 id 的配置，請先更換 JSON 中的 id；原方案未被覆寫";
 "vpad.layout.err.file" = "配置必須是 64 KiB 以內的一般 JSON 檔案";
 "vpad.layout.err.fileName" = "檔名必須與配置 id 一致";
 "vpad.layout.err.id" = "配置 id 無效";
@@ -130,11 +129,9 @@
 "vpad.layout.err.pickFile" = "請選擇 64 KiB 以內的一般 JSON 檔案";
 "vpad.layout.err.schema" = "配置版本或頂層欄位無效（需要 schemaVersion 1）";
 "vpad.layout.err.sensitivity" = "靈敏度須為 0.5–2";
-"vpad.layout.err.size" = "配置檔案不能超過 64 KiB";
 "vpad.layout.err.stickCount" = "需要 left 與 right 兩個浮動搖桿";
 "vpad.layout.err.stickFields" = "搖桿欄位、區域或半徑無效";
 "vpad.layout.err.stickOffscreen" = "搖桿位置超出螢幕";
-"vpad.layout.err.stickOverlap" = "左右搖桿的觸發區域不能重疊";
 "vpad.layout.err.stickValues" = "死區須為 0–0.4，外圈飽和須為 0.5–1，回應指數須為 0.5–3";
 "vpad.layout.err.theme" = "沒有這個配色";
 "vpad.layout.error" = "%@：%@";
@@ -227,9 +224,7 @@
 
 /* 宿主其余界面（#316 第二轮）：设置页、提示页 / 加载页、存档管理、手柄连接、诊断、联机、文字输入等 */
 "app.fpsCap.ladder" = "這台裝置目前無法穩定跑 60 幀，已回到原生幀率；穩定後會自動再嘗試 60 幀。";
-"app.fpsCap.lowPower" = "低耗電模式已開啟，已暫時回到原生幀率，關閉低耗電模式後會自動恢復。";
 "app.fpsCap.restored" = "60 幀已恢復。";
-"app.fpsCap.thermal" = "手機溫度過高（危急），已暫時回到原生幀率，降溫後會自動恢復。";
 "app.gpuStop.body" = "請從背景滑掉本 App，再重新開啟遊戲。\nPlease reopen the game.";
 "app.gpuStop.title" = "畫面發生錯誤，已停止\nGraphics error — stopped";
 "app.library.broken.title" = "遊戲資源不完整";
@@ -452,7 +447,8 @@
 "settings.toggle.metalHud" = "顯示 Metal 效能浮層";
 "settings.toggle.phoneHaptics" = "手機震動";
 "settings.toggle.touchHud" = "觸控診斷資訊";
-"settings.widen.blocked" = "本遊戲的全螢幕有已知問題，暫時無法開啟";
+"settings.widen.blocked" = "本遊戲的全螢幕有已知問題，仍可開啟";
+"settings.widen.blocked.message" = "下次啟動遊戲時生效。畫面拉伸或被裁切時會自動退回 16:9，也可以再關閉。";
 "textinput.header" = "輸入";
 "textinput.min" = "至少 %ld 個字";
 "textinput.ok" = "確定";

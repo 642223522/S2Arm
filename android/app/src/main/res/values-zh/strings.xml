@@ -30,4 +30,15 @@
     <string name="export_diagnostics_running">正在导出诊断包…</string>
     <string name="export_diagnostics_done">诊断包已生成：%1$s</string>
     <string name="export_diagnostics_failed">诊断包导出失败：%1$s</string>
+    <string name="touch_menu_import">导入布局…</string>
+    <string name="touch_menu_export">导出布局…</string>
+    <string name="touch_layout_imported">布局已导入</string>
+    <string name="touch_layout_exported">布局已导出</string>
+    <string name="touch_layout_import_failed">布局未导入：%1$s</string>
+    <string name="touch_layout_export_failed">布局未导出：%1$s</string>
+    <string name="touch_layout_err_size">文件超过 64 KiB，不是触屏布局文件。请选择从 S2Arm 导出的布局文件（.json）。</string>
+    <string name="touch_layout_err_invalid">文件内容不是有效的触屏布局。请选择从 S2Arm 导出的布局文件（.json）。</string>
+    <string name="touch_layout_err_read">读不到这个文件。请先把它存到本机，或从别的位置选择。</string>
+    <string name="touch_layout_err_write">选的位置写不进去。请换一个保存位置。</string>
+    <string name="touch_layout_document_unavailable">无法打开文件</string>
 </resources>
