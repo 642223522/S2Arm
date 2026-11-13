@@ -1069,6 +1069,7 @@ public sealed partial class EnvironmentWindow
                 buttons.Children.Add(copy);
             }
             result.Children.Add(buttons);
+            if (packState == "failed") result.Children.Add(ReportHintText());
             var feedback = new WrapPanel { Orientation = Orientation.Horizontal };
             feedback.Children.Add(Muted(T("export.fail.feedback"), 12));
             var gh = new Button { Content = T("export.fail.github"), Background = Transparent,

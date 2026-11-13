@@ -7,7 +7,9 @@
   ⑥ 诊断包 manifest.json 带 "schema": 1（服务端收件规则，没有判 not_diag）
   ⑦ 成功结果带预填新帖链接：模板 问题回报.yml、logs = 短码、platform 是模板下拉里逐字存在的选项、标题前缀「[问题] 」
   ④ 包超过 30 MB 上限 → 不传，diag_upload_failed
-  ⑤ 没有作业记录的失败（环境检查）：界面交来的 summary 正文脱敏后放进 logs/error-summary.log（家目录换成 ~）"""
+  ⑤ 没有作业记录的失败（环境检查）：界面交来的 summary 正文脱敏后放进 logs/error-summary.log（家目录换成 ~）
+  ⑧ 顶栏全局「故障报修」（不带 gameId / operations / summary）：有失败的作业 → 自动附最近一次失败的错误摘要；没有就不附、照传
+  ⑨ 没选游戏库（库路径是还没建的目录、不带 libraryId）、库里一款游戏都没有：走真 worker 照样传成、拿到短码"""
 import http.server
 import io
 import json
@@ -162,3 +164,28 @@ class DiagUploadTests(JobCase):
             self.assertEqual(q["template"], ["问题回报.yml"])
             self.assertEqual((q["logs"], q["version"], q["title"]), (["D-7K3Q"], ["0.3.5"], ["[问题] "]))
             self.assertIn(q["platform"][0], options, plat)
+
+    def test_global_button_attaches_latest_failure(self):   # ⑧
+        svc = FakeService()
+        try:
+            with mock.patch.dict(os.environ, {"S2A_DIAG_UPLOAD_URL": svc.url}):
+                diag_upload.upload(self.c)   # 还没有失败的作业：不附
+                self.failed_record()
+                diag_upload.upload(self.c)   # 有了：附最近一次
+        finally:
+            svc.close()
+        first, second = (zipfile.ZipFile(io.BytesIO(d)).namelist() for _, d in svc.got)
+        self.assertNotIn("logs/error-summary.log", first)
+        self.assertIn("logs/error-summary.log", second)
+        self.assertIn("S2Arm 错误摘要", zipfile.ZipFile(io.BytesIO(svc.got[1][1])).read("logs/error-summary.log").decode())
+
+    def test_upload_without_library(self):   # ⑨
+        svc = FakeService()
+        try:
+            with mock.patch.dict(os.environ, {"S2A_DIAG_UPLOAD_URL": svc.url}):
+                _, terminal = self.worker("diagnosticsUpload", library=str(self.root / "never-set-up"), libraryId=None)
+        finally:
+            svc.close()
+        self.assertEqual(terminal["state"], "succeeded", terminal)
+        self.assertEqual(terminal["result"]["code"], "D-7K3Q")
+        self.assertEqual(len(svc.got), 1)
