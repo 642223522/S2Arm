@@ -5054,17 +5054,27 @@ static void c74b_clear_rect_oob(void) {
 
 // C937：release 之后再录制使用 → 粘滞 E_ARG，报错要带句柄类型和录制位置（真机长局里只有这一行能定位，#937）。
 //   同一段里先 use 一次让段持有引用（缓冲 release 后不会被回收，指针仍有效），release，再 use：第二次必须报。独占会话。
+// 粘滞错误的原因不进 commit 的 err，随段交给完成回调（真机日志「提交段失败…：原因」就是这里来的）：从回调里取。
+static char g_c937_why[256];
+static int g_c937_ready;   // 回调写完原因后再置位（release），主线程见位后再读（acquire）
+static void c937_done(void *u, const nvn_gpu_done *d) {
+    (void)u; snprintf(g_c937_why, sizeof g_c937_why, "%s", d->why ? d->why : "");
+    __atomic_store_n(&g_c937_ready, 1, __ATOMIC_RELEASE);
+}
 static void c937_use_after_release(void) {
     nvn_gpu_buf b = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
     nvn_gpu_cmd c = begin_cmd();
     nvn_gpu_buf_use(c, b);
     nvn_gpu_buf_release(b, NULL, NULL);
     nvn_gpu_buf_use(c, b);
-    nvn_gpu_err e;
-    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 117, on_done, NULL, &e);
-    CHECK(r.code == NVN_GPU_E_ARG, "C937 release 后再用应 E_ARG，实为 %d %s", r.code, e.why);
-    CHECK(strstr(e.why, "release 之后仍在使用句柄（buf ") && strstr(e.why, "录制于 nvn_gpu_buf_use:"),
-          "C937 报错应带类型与录制位置：%s", e.why);
+    nvn_gpu_err e; g_c937_why[0] = 0; __atomic_store_n(&g_c937_ready, 0, __ATOMIC_RELEASE);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 117, c937_done, NULL, &e);
+    CHECK(r.code == NVN_GPU_E_ARG, "C937 release 后再用应 E_ARG，实为 %d", r.code);
+    nvn_gpu_fence_wait(117, 5000000000ull, &e);   // 失败段也走完成回调；回调可能在别的线程上稍后才到，最多再等 2 秒
+    for (int i = 0; i < 200 && !__atomic_load_n(&g_c937_ready, __ATOMIC_ACQUIRE); i++) { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }
+    CHECK(__atomic_load_n(&g_c937_ready, __ATOMIC_ACQUIRE), "C937 失败段 2 秒内没走完成回调");
+    CHECK(strstr(g_c937_why, "release 之后仍在使用句柄（buf ") && strstr(g_c937_why, "录制于 nvn_gpu_buf_use:"),
+          "C937 报错应带类型与录制位置：%s", g_c937_why);
 }
 
 // C75：深度偏移。开关（NVN 偏移开关的填充位 = 4）进管线，factor / units / clamp 走动态状态。
