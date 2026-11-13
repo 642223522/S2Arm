@@ -43,7 +43,7 @@ void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
 //   以及撑不住就问玩家的「问过」与「本款原生 60 帧」记号——原先全在 App 级，一款游戏自动退回 16:9、关 60 帧会串到所有游戏
 NSArray *s2a_ios_per_game_keys(void) {
     return @[@"S2AResolutionScale", @"S2AAntiAliasing", @"S2AScalingFilter", @"S2AFrameRateLimit", @"S2AWidescreen", @"S2AFps60",
-             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60"];
+             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AWidenForce"];
 }
 @interface S2AGameLayeredDefaults : NSUserDefaults
 - (instancetype)initWithGame:(NSUserDefaults *)game app:(NSUserDefaults *)app keys:(NSSet<NSString *> *)keys;
@@ -176,11 +176,13 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         // 60 帧不在这里单独读：defaults 是按游戏分层的（s2a_ios_settings_defaults），下面 60 帧那段读到的就是「这款 → 所有游戏的默认」。
         //   原先这里只在这款「关」时写，这款「开」压不过 App 级的「关」（11-11 宿主梳理：库里按款开 60 帧不生效）
         // 宽屏强制启用 = 这款按已验证开满屏（没进宽屏已验证名单也开），并压过 App 级的宽屏关；满屏自检照样兜底（拉伸 / 收窄连续两窗自动退回）
-        if ([game boolForKey:@"S2AWidenForce"]) {
-            if (!getenv("S2A_WIDEN_VERIFIED")) apply_environment("S2A_WIDEN_VERIFIED", @"1");
-            if (!getenv("S2A_WIDESCREEN")) apply_environment("S2A_WIDESCREEN", @"1");
-            fprintf(stderr, "[S2A 画面设置] 宽屏强制启用（游戏库：这款）\n");
-        }
+    }
+    // 宽屏强制启用也认游戏里设置页写的（11-13 维护者「不许堵门」：包里满屏标了已知问题，设置页原先锁灰不让开；现在提示后照开，记同一个键）。
+    //   按游戏分层：这款 → 所有游戏的默认；单款壳没有游戏号，就是 App 级
+    if ([s2a_ios_settings_defaults() boolForKey:@"S2AWidenForce"]) {
+        if (!getenv("S2A_WIDEN_VERIFIED")) apply_environment("S2A_WIDEN_VERIFIED", @"1");
+        if (!getenv("S2A_WIDESCREEN")) apply_environment("S2A_WIDESCREEN", @"1");
+        fprintf(stderr, "[S2A 画面设置] 宽屏强制启用（%s）\n", game && [game objectForKey:@"S2AWidenForce"] ? "这款" : "所有游戏的默认");
     }
     // 宽屏（runtime/src/widen.c widen_setting_on）：设置关了 = S2A_WIDESCREEN=0，下次启动整局 16:9；没设过 / 开着不设（缺省开）；启动环境显式给的优先
     // 一次性清记忆（11-06 满屏自检改「两次启动都触发才记住」）：之前单次触发就写下的「宽屏关 + 问过」清掉，下次起局重新试满屏、重新自检。

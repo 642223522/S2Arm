@@ -566,7 +566,6 @@ public final class S2ArmShellHostModel {
     static func reason(_ error: LocalPlayers.NameError) -> String {
         switch error {
         case .empty: shellText("Enter a name.")
-        case .tooLong: shellText("Use \(String(LocalPlayers.nameLimit)) characters or fewer.")
         case .taken: shellText("That name is already taken.")
         }
     }

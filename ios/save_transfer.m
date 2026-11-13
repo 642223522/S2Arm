@@ -326,8 +326,9 @@ int s2a_ios_save_management_requested(void) {
     [self presentViewController:picker animated:YES completion:nil];
 }
 - (void)exportSave {
+    // 11-13 维护者「不许堵门」：上次的临时副本删不掉不挡这次（新副本用新名字，互不冲突）；只记一行日志，下次再清
     NSString *warning = [self clearExport];
-    if (warning) { [self showError:warning]; return; }
+    if (warning) fprintf(stderr, "[S2A 存档] 上次的临时副本没删掉，照常继续：%s\n", warning.UTF8String);
     NSString *name = [NSString stringWithFormat:@"%@-%@.s2asave", self.game[@"id"], NSUUID.UUID.UUIDString];
     NSString *path = [[[self.dataRoot stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"save-exports"] stringByAppendingPathComponent:name];
     NSError *error = nil;
@@ -339,8 +340,9 @@ int s2a_ios_save_management_requested(void) {
 }
 - (void)exportBackup { if (self.backupPath.length) [self presentExport:self.backupPath]; }
 - (void)importSave {
+    // 11-13 维护者「不许堵门」：上次的临时副本删不掉不挡这次（新副本用新名字，互不冲突）；只记一行日志，下次再清
     NSString *warning = [self clearImport];
-    if (warning) { [self showError:warning]; return; }
+    if (warning) fprintf(stderr, "[S2A 存档] 上次的临时副本没删掉，照常继续：%s\n", warning.UTF8String);
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
     picker.directoryURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     picker.allowsMultipleSelection = NO; picker.delegate = self;

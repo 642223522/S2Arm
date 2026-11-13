@@ -1791,7 +1791,6 @@
   "s2arm.players.now": "正在玩",
   "s2arm.players.name": "名字",
   "s2arm.players.error.empty": "请输入名字。",
-  "s2arm.players.error.long": "名字最多 {0} 个字。",
   "s2arm.players.error.taken": "这个名字已经有人用了。",
   "s2arm.play.again": "再启动一次",
   "s2arm.play.crashed": "运行中退出",

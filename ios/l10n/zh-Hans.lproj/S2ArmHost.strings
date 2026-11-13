@@ -11,7 +11,7 @@
 "cheats.import" = "导入 txt";
 "cheats.import.badItem" = "%@（%@）";
 "cheats.import.failed" = "有文件没导入";
-"cheats.import.failed.message" = "%@\n\n不是 Atmosphere 格式的金手指文本（要有 [条目名] 和指令行）。";
+"cheats.import.failed.message" = "%@";
 "cheats.status.active" = "生效中";
 "cheats.status.addressNotReady" = "地址未就绪";
 "cheats.status.badFormat" = "格式不对";
@@ -121,7 +121,6 @@
 "vpad.layout.err.buttonCount" = "需要完整的 14 个按键，可额外提供 LS/RS";
 "vpad.layout.err.buttonFields" = "按键字段、范围或编号无效，不允许重复编号";
 "vpad.layout.err.buttonMissing" = "缺少必需按键";
-"vpad.layout.err.exists" = "同 id 布局已存在，请先更换 JSON 中的 id；原方案未覆盖";
 "vpad.layout.err.file" = "布局必须是 64 KiB 以内的普通 JSON 文件";
 "vpad.layout.err.fileName" = "文件名必须与布局 id 一致";
 "vpad.layout.err.id" = "布局 id 无效";
@@ -130,11 +129,9 @@
 "vpad.layout.err.pickFile" = "请选择 64 KiB 以内的普通 JSON 文件";
 "vpad.layout.err.schema" = "布局版本或顶层字段无效（需要 schemaVersion 1）";
 "vpad.layout.err.sensitivity" = "灵敏度须为 0.5–2";
-"vpad.layout.err.size" = "布局文件不能超过 64 KiB";
 "vpad.layout.err.stickCount" = "需要 left 与 right 两个浮动摇杆";
 "vpad.layout.err.stickFields" = "摇杆字段、区域或半径无效";
 "vpad.layout.err.stickOffscreen" = "摇杆位置超出屏幕";
-"vpad.layout.err.stickOverlap" = "左右摇杆激活区域不能重叠";
 "vpad.layout.err.stickValues" = "死区须为 0–0.4，外圈饱和须为 0.5–1，响应指数须为 0.5–3";
 "vpad.layout.err.theme" = "没有这个配色";
 "vpad.layout.error" = "%@：%@";
@@ -452,7 +449,8 @@
 "settings.toggle.metalHud" = "显示 Metal 性能浮层";
 "settings.toggle.phoneHaptics" = "手机震动";
 "settings.toggle.touchHud" = "触屏诊断信息";
-"settings.widen.blocked" = "本款满屏有已知问题，暂不可开";
+"settings.widen.blocked" = "本款满屏有已知问题，仍可打开";
+"settings.widen.blocked.message" = "下次启动游戏时生效。画面拉伸或被裁时会自动退回 16:9，也可以再关掉。";
 "textinput.header" = "输入";
 "textinput.min" = "至少 %ld 个字";
 "textinput.ok" = "确定";
