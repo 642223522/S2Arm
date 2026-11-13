@@ -231,7 +231,7 @@ namespace S2A.Services
 
             // R5 键盘区：宿主喂的原始键态（runtime/src/pad.c s2a_kb_read：HID usage 位图 + 修饰键字段，macos/front_mac.m 喂）。
             //   iOS / 安卓没喂过恒为空 → 键盘区同改前（Activate 时的空状态）。单测经此注入替身
-            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_kb_read", out nint kb))
+            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_kb_read", out nint kb))   // 平台例外：runtime/src/pad.c 只进苹果宿主（安卓不编），同手柄读口按符号查、没有即键盘区同改前
                 _kbRead = (delegate* unmanaged<ulong*, uint*, void>)kb;
 
             // iOS 壳的触屏虚拟手柄（ios/vpad.m）：同样按符号查，有就接到 InputHook（Mac 宿主没有这个导出，保持为空）
