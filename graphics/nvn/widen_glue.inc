@@ -897,6 +897,7 @@ static void wd_present(const tex_t *t, int crop[4]) {   // 上屏：核心定下
     if (crop[2] || crop[3]) { c.left = crop[0]; c.right = crop[0] + crop[2]; c.top = crop[1]; c.bottom = crop[1] + crop[3]; }
     else { c.right = (int32_t)t->d.width; c.bottom = (int32_t)t->d.height; }
     s2a_widen_crop c_in = c; int pr = s2a_widen_present((uint32_t)t->serial, &c), pil = pr == 1 || pr == 2 || pr == 5 ? pr : g_wd == S2A_WIDEN_UI && !wd_s3d_has(t->serial) ? 4 : 0; g_p2_fb = pr == 5; atomic_store(&g_fit_pillar, pil);
+    { static int last = -1, n; if (pil != last && n < 64) { n++; MLOG("[画] 满屏判据免判种类 %d → %d（第 %llu 次出图起，上屏贴图 ser=%llu %ux%u；4 = 游戏自己出宽图且上屏内容没有 3D 来历）", last, pil, (unsigned long long)g_wd_frame, (unsigned long long)t->serial, (unsigned)t->d.width, (unsigned)t->d.height); } last = pil; }
     if (wd_tr_on()) MLOG("S2Arm widen trace: frame %llu present tex %llu %ux%u crop [%d,%d) -> [%d,%d) rows [%d,%d)", (unsigned long long)g_wd_frame, (unsigned long long)t->serial, (unsigned)t->d.width, (unsigned)t->d.height, c_in.left, c_in.right, c.left, c.right, c.top, c.bottom);
     g_wd_frame++;
     if (crop[2] || crop[3] || pr == 5) { crop[0] = c.left; crop[2] = c.right - c.left; crop[1] = c.top; crop[3] = c.bottom - c.top; }   // 竖向：窄屏加高的出图按加高换算行（宽屏时核心原样返回）；回退（5）收了裁剪框的游戏没给也要交
