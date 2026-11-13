@@ -1,7 +1,7 @@
 #!/bin/bash
 # 门禁手动：要联网：把截图发中转站（缺省）/ 本机 claude CLI / OpenRouter 视觉模型，开发期自动玩家用
 # 视觉驾驶员（只在 Mac 开发测试里用，产品包不带）：bash tests/autoplay/vision.sh <截图.png> <回答.json>
-# 后端 S2A_VISION_BACKEND：relay（缺省，11-13 维护者：自动玩家一律走中转站；vision_or.py，钥匙 ~/.s2arm/.secrets/relay.key、地址 S2A_VISION_RELAY_URL 或 ~/.s2arm/.secrets/relay.url）
+# 后端 S2A_VISION_BACKEND：不设 = 自动选（有中转站钥匙和地址走 relay，没有走 cli）/ relay（中转站，11-13 维护者：自动玩家一律走中转站；vision_or.py，钥匙 ~/.s2arm/.secrets/relay.key、地址 S2A_VISION_RELAY_URL 或 ~/.s2arm/.secrets/relay.url）
 #   / cli（本机 claude CLI 直连，用这台机器上 CLI 自己的登录）/ or（vision_or.py，OpenRouter，要仓库外钥匙）/ jev（先问 vision_jev.py，不够再问 cli）。
 #   11-12 曾因中转站停用改缺省 cli（#788：没设地址时每问 0.3 秒退 1、自动玩家当「没答」连问 3 次收局）；恢复后缺地址 / 钥匙一律按「不可用」红停，不再静默退。
 #   后端不可用（中转站没钥匙或没地址 / 本机没有 claude CLI / CLI 没登录 / OpenRouter 没钥匙或额度用完）= 打【红】、答案 JSON 带 "unavailable":true 与原因、退出 3：
@@ -27,7 +27,14 @@ t0=$(date +%s)
 #   11-01 去掉「不够就再问一次」：普查 + 体验线 439 次第二问里答案只变了 39 次，合计多花 922 秒
 # S2A_VISION_ESCALATE=1（自动玩家：回到问过的同一页还卡着）：跳过 Jev 直接问升级后端，题面说明前面的答案没走出这一页
 # OpenRouter 回过 402（额度用完；11-02 维护者：不再充值，中转站做主力）：永久标记（or402.py，直到删标记或换钥匙）→ 显式选了 Jev 也跳过，不白撞 402
-BACKEND=${S2A_VISION_BACKEND:-relay}; export S2A_VISION_BACKEND=$BACKEND   # vision_or.py 按它选中转站 / OpenRouter
+# 没设 S2A_VISION_BACKEND = 自动选（11-13：外部贡献者没有中转站钥匙，缺省不该一上来就红停）：有中转站钥匙和地址走 relay（维护方机器都有，照样走中转站），没有走本机 cli；
+#   日志写一行走的是哪个。显式设了就照设的走（不认的名字照旧不可用红停）
+BACKEND=${S2A_VISION_BACKEND:-}
+if [ -z "$BACKEND" ]; then
+  if [ -r "${S2A_VISION_RELAY_KEY:-$HOME/.s2arm/.secrets/relay.key}" ] && { [ -n "${S2A_VISION_RELAY_URL:-}" ] || [ -r "$HOME/.s2arm/.secrets/relay.url" ]; }; then BACKEND=relay; echo "后端自动选：relay（有中转站钥匙和地址）" >> "$OUT.log"
+  else BACKEND=cli; echo "后端自动选：cli（没有中转站钥匙或地址，走本机 claude CLI）" >> "$OUT.log"; fi
+fi
+export S2A_VISION_BACKEND=$BACKEND   # vision_or.py 按它选中转站 / OpenRouter
 # 后端不可用：答案 JSON 带 unavailable + 原因（远程信箱经桥原样推回手机）、日志与标准错误各一行【红】、退出 3
 unavail() {
   echo "【红】看屏驾驶员不可用：$1" >> "$OUT.log"; echo "【红】看屏驾驶员不可用：$1" >&2
