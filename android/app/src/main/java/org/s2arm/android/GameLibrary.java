@@ -154,20 +154,45 @@ final class GameLibrary {
                 ContentResolver cr = context.getContentResolver();
                 Map<String, String> ids = new HashMap<>();
                 walk(cr, tree, ids);
-                if (!ids.containsKey("manifest.json"))
-                    throw new GamePack.BadPack("the picked folder has no manifest.json (pick the package folder itself)");
-                GameInstall.Result r = GameInstall.install(gamesDir, checkedImportSource(path -> {
-                    String id = ids.get(path);
-                    return id == null ? null : cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, id));
-                }, context.getPackageName(),
-                    (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
-                    DebugGate.open()), progress());
-                status("Game " + outcome(r));
+                // 选了包所在的上一级（或放着几款游戏的文件夹）不挡：在里面找出所有游戏包逐个导入，一个失败不影响其他（不堵门）
+                List<String> roots = packageRoots(ids.keySet());
+                if (roots.isEmpty())
+                    throw new GamePack.BadPack("no game package (a folder with manifest.json) anywhere in the picked folder;"
+                        + " pick the folder you copied the package into");
+                for (String root : roots) {
+                    try {
+                        GameInstall.Result r = GameInstall.install(gamesDir, checkedImportSource(path -> {
+                            String id = ids.get(root + path);
+                            return id == null ? null : cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, id));
+                        }, context.getPackageName(),
+                            (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                            DebugGate.open()), progress());
+                        status("Game " + outcome(r));
+                    } catch (GamePack.BadPack | BootContract.BadGame | IOException | RuntimeException e) {
+                        status("Game import refused" + (root.isEmpty() ? "" : " (" + root.substring(0, root.length() - 1) + ")") + ": " + e.getMessage());
+                    }
+                }
             } catch (GamePack.BadPack | BootContract.BadGame | IOException | RuntimeException e) {
                 status("Game import refused: " + e.getMessage());
             }
             status(describe());
         });
+    }
+
+    /** Package roots under a picked tree ("" = the tree itself, else "dir/…/"): every folder holding manifest.json,
+     *  except one nested inside another package (a game's own files may carry that name). */
+    static List<String> packageRoots(java.util.Collection<String> paths) {
+        if (paths.contains("manifest.json")) return java.util.Collections.singletonList("");
+        List<String> found = new ArrayList<>();
+        for (String p : paths) if (p.endsWith("/manifest.json")) found.add(p.substring(0, p.length() - "manifest.json".length()));
+        java.util.Collections.sort(found);
+        List<String> roots = new ArrayList<>();
+        for (String r : found) {
+            boolean nested = false;
+            for (String outer : roots) if (r.startsWith(outer)) { nested = true; break; }
+            if (!nested) roots.add(r);
+        }
+        return roots;
     }
 
     static GameInstall.Source checkedImportSource(GameInstall.Source source, String installedPackage,

@@ -129,6 +129,11 @@ public class ImportProbe {
  static void stage(Path p) throws Exception {Files.createDirectories(p.getParent()); Method m=GameInstallTest.class.getDeclaredMethod("pack",String.class);m.setAccessible(true);Files.move(((File)m.invoke(null,p.toString())).toPath(),p);}
  static boolean retained(Path p){return Files.exists(p.resolve("manifest.json"));}
  public static void main(String[] args) throws Exception {
+  // 选了上一级文件夹不挡：根上有包只取根；没有就取所有含 manifest.json 的子目录，嵌在别的包里的不算；一个都没有才是空
+  demand(GameLibrary.packageRoots(java.util.List.of("manifest.json","romfs/manifest.json")).equals(java.util.List.of("")),"package at the picked root");
+  demand(GameLibrary.packageRoots(java.util.List.of("x.txt","g1/manifest.json","g1/romfs/manifest.json","g2/sub/manifest.json"))
+      .equals(java.util.List.of("g1/","g2/sub/")),"packages found below the picked folder, nested ones skipped");
+  demand(GameLibrary.packageRoots(java.util.List.of("a/b.txt")).isEmpty(),"no package anywhere");
   Path root=Paths.get(args[0]); Path imports=root.resolve("external/import"),priv=root.resolve("internal/import");
   Path own=imports.resolve("same"),privateOwn=priv.resolve("same"),other=imports.resolve("other");
   stage(own);stage(privateOwn);stage(other);
