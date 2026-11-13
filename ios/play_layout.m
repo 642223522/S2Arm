@@ -83,7 +83,7 @@ UIInterfaceOrientationMask s2a_ios_play_orientations(void) {
 //   输入工作台（ios/lab）只编本文件、不编 extdisplay.m，App 里 extdisplay.m 的正式实现链接时盖过它
 __attribute__((weak)) double s2a_ios_ext_ratio(void) { return 0; }
 static double screen_ratio(void) {
-    double x=s2a_ios_ext_ratio(); if (x>0) return x;
+    double x = s2a_ios_ext_ratio(); if (x > 0) return x;
     double r=atomic_load(&g_view_ratio);
     if (!(r>0) && !NSThread.isMainThread) for (int i=0;i<500 && !((r=atomic_load(&g_view_ratio))>0);i++) usleep(10000);
     if (r>0) return r;
