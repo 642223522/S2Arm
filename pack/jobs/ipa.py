@@ -617,11 +617,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
         if e.code == "tool_exit" and "地址空间类型不一致" in text:
             raise Failure("这款和手机上已有的游戏地址空间类型不同，放不进同一个 App。", code="container_incompatible") from e
         raise
-    stamp_container(app)   # #845：内容摘要进 Info.plist，装机据此判手机上的 App 是不是同一个（install.same_app）
-    # 签名放在写摘要之后（v0.3.6 候选 ⑥：原先组装时就 ad-hoc 签好、再改 Info.plist，codesign --verify 判「plist or signature have been modified」）
-    #   Mac ad-hoc；Windows 不签（侧载工具重签），同原口径
-    if os.name != "nt":
-        c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "sign", "--app", app, "--sign", "adhoc", "--bundle-id", CONTAINER_BUNDLE], log, c.env())
+    finish_container(c, app, log)
     write_container_ipa(c, app, ipa, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
     if gid and gid not in games:
@@ -644,6 +640,20 @@ def ipa_games(ipa):
         return [], ""
 
 
+def finish_container(c, app, log):
+    """组好 / 改过的容器 App 收尾：先写内容摘要（#845，装机据此判手机上的 App 是不是同一个：install.same_app），再签名。
+    签名放在写摘要之后（v0.3.6 候选 ⑥：先签再改 Info.plist，codesign --verify 判「plist or signature have been modified」）；
+    Mac ad-hoc，Windows 不签（侧载工具重签），同原口径。assemble 与 drop_from_ipa 都经这里：摘掉一款后内容变了，摘要必须重算，
+    否则 Info.plist 里还是整套的旧值，之后再装回整套时 same_app 误判相同、跳过重装，摘掉的那款回不到手机上"""
+    stamp_container(app)
+    sign_container(c, app, log)
+
+
+def sign_container(c, app, log):
+    if os.name != "nt":
+        c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "sign", "--app", app, "--sign", "adhoc", "--bundle-id", CONTAINER_BUNDLE], log, c.env())
+
+
 def drop_from_ipa(c, ipa, gid):
     """从装机产物里摘掉一款（其余各款逐字节不变、不换壳：升级后还没重出的款也能删）→ (临时 ipa, 剩下的款, 壳号)"""
     tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
@@ -655,6 +665,7 @@ def drop_from_ipa(c, ipa, gid):
         shutil.rmtree(tmp, ignore_errors=True)
         raise Failure("手机上的 S2Arm 在游戏库里的那份读不了：先给手机上的游戏各「打 iPhone 包」一次，再删。", code="container_stale")
     c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container-drop", "--base", base, "--game", gid, "--out", tmp / "S2Arm.app"], log, c.env())
+    finish_container(c, tmp / "S2Arm.app", log)
     write_container_ipa(c, tmp / "S2Arm.app", tmp / "S2Arm.ipa", log)
     cat = json.loads((tmp / "S2Arm.app/s2a_catalogue.json").read_text(encoding="utf-8"))
     return tmp / "S2Arm.ipa", [g["title_id"] for g in cat["games"]], cat.get("shell_id") or ""
