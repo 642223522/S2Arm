@@ -5398,10 +5398,10 @@ static void shmap_load_once(void) {
     if (g_shmap) return;
     NSString *path = shmap_path();   // default: the current game profile folder (Mac: dm/games/<id>; on iOS main.m sets DM_NVN_SHMAP)
     NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-    // Switch 2 bring-up (nvn2.h): the Ampere shader library is not built yet; an absent map is an empty one (every shader reported missing, its draws skipped) so the device,
-    //   window and frame loop still run. Switch 1 keeps the fatal stop
-    if (!txt && nvn2_on()) { MLOG("【红】 Switch 2: no shader map %s yet: every shader is missing and its draws are skipped", path.UTF8String); txt = @""; }
-    if (!txt) MDIE("cannot read the shader map %s (DM_NVN_SHMAP can name another)", path.UTF8String);
+    // An absent map is an empty one: a key missing from the map is compiled on the device at its first use (dm_shader_miss, graphics/nvn/host/dsh_miss.inc), so the game still runs,
+    //   only with first-use compiles. #786: a game classified OpenGL at packing (EGL + GLSL, also importing NVN) got no NVN library and no map, yet drew through NVN -- the fatal
+    //   stop here ended every launch at its first shader. Switch 2 (nvn2.h, no Ampere library yet) takes the same path
+    if (!txt) { MLOG("【黄】 no shader map %s (DM_NVN_SHMAP can name another): every shader is compiled on this device at its first use", path.UTF8String); txt = @""; }
     g_shmap = [NSMutableDictionary dictionary];
     for (NSString *ln in [txt componentsSeparatedByString:@"\n"]) {
         if (!ln.length || [ln hasPrefix:@"#"] || [ln hasPrefix:@"package"]) continue;
