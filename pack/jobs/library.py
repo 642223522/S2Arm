@@ -1448,10 +1448,15 @@ def wait_readable(c, paths, poll=5.0):
             raise Failure(f"读不了游戏文件 {path.name}：{e}", code="input_unreadable")
 
 
+def lacks_base(game):
+    """只有更新 / DLC、没有本体（出包的 input_base_missing 与添加时的提示同一个判据，#797）"""
+    return not any(p["type"] == "base" for p in selected_packages(game))
+
+
 def requirement_errors(c, game):
     missing = []
     selected = selected_packages(game)
-    if not any(p["type"] == "base" for p in selected):
+    if lacks_base(game):
         missing.append(Failure("缺游戏本体：只放了更新或 DLC，把本体的 NSP / XCI 也放进来", code="input_base_missing"))
     if guest_isa(selected) == "aarch32":
         missing.append(Failure("这款游戏是 32 位程序，S2Arm 暂时只支持 64 位游戏，打不了包", code="guest_isa_unsupported"))
@@ -1704,6 +1709,12 @@ def import_games(c):
             if row["needsKeys"] and not verified:
                 atomic(c.private / "keys/status.json", dict(ready=True, verified=True))
                 verified = True
+    # #797：只放了更新 / DLC、库里也还没有这款的本体：添加完当场标出来（missingBase），前端在添加窗口里就说缺本体，不等到出包「检查游戏输入」才报。
+    #   按整批加完后的游戏库判：同一批里先读到更新、后读到本体不算缺
+    if results:
+        nobase = {g["id"].upper() for g in c.catalog()["games"] if lacks_base(g)}
+        for entry in results:
+            entry["missingBase"] = entry["id"].upper() in nobase
     added = {r["id"].upper() for r in results if not r["duplicate"]}
     if added:
         store_meta_background(c, added)   # 横图、英文标题：后台查（导入不等联网），查到英文名接着改文件夹名

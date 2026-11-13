@@ -1089,6 +1089,7 @@
       {"id": "welcome.sheet.result.pendingMany", "zh-Hans": "{0} 个文件需要处理。", "en": "{0} files need attention."},
       {"id": "welcome.sheet.result.inLibrary", "zh-Hans": "已导入的游戏可以在库中查看。", "en": "Imported games are available in your library."},
       {"id": "welcome.sheet.result.view", "zh-Hans": "查看详情", "en": "View details"},
+      {"id": "import.noBase", "zh-Hans": "「{0}」只放了更新或 DLC，还缺游戏本体：把这款的本体 NSP / XCI 也添加进来才能出包。", "en": "\"{0}\" has only an update or DLC; the base game is missing. Add its base NSP / XCI too before exporting."},
       {"id": "welcome.sheet.result.back", "zh-Hans": "返回", "en": "Back"},
       {"id": "welcome.sheet.result.retry", "zh-Hans": "重试", "en": "Retry"},
       {"id": "welcome.sheet.result.fileName", "zh-Hans": "文件名", "en": "File name"},
