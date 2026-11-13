@@ -944,6 +944,9 @@ def _setup(c):
 
 
 def validate_keys(path):
+    # 玩家把游戏原件当密钥选了进来（诊断 D-HZF3：同一位玩家连选 4 次 .nsp / .nsz，只看到「过大」「格式无效」）：认得出就直说
+    if Path(path).suffix.lower() in SOURCE_SUFFIXES:
+        raise Failure("选的是游戏文件，不是密钥：这里要的是 prod.keys 文本文件（通常几十 KB）；游戏请从「添加游戏」导入。", code="keys_invalid")
     if Path(path).stat().st_size > 1 << 20:
         raise Failure("密钥文件过大。", code="keys_invalid")
     entries = {}
