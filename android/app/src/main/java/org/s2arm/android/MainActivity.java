@@ -40,6 +40,8 @@ public class MainActivity extends Activity
     private String lastInputLog = "";
     private int loggedLayout;
     private static final int PICK_PACKAGE = 1;
+    private static final int PICK_TOUCH_LAYOUT = 2, EXPORT_TOUCH_LAYOUT = 3;
+    private byte[] touchExport;
     private GameLibrary library;   // installed game packages (import + verification)
     private HostKeyboard hostKeyboard;
     private LegacyTextInput legacyTextInput;
@@ -104,6 +106,7 @@ public class MainActivity extends Activity
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        if (state != null) touchExport = state.getByteArray("touchLayoutExport");
         DebugGate.scrub(getIntent());   // 调试参数两道门（DebugGate）：门没开，后面一律读不到
         gameMode = this instanceof GameActivity;
         if (gameMode) {
@@ -735,8 +738,38 @@ public class MainActivity extends Activity
         super.onLowMemory();
         dguardMemoryWarning();   // 旧接口仍可能派到前台告警，同一条证据
     }
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if (touchExport != null) state.putByteArray("touchLayoutExport", touchExport);
+    }
+
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PICK_TOUCH_LAYOUT || request == EXPORT_TOUCH_LAYOUT) {
+            byte[] exported = touchExport;
+            touchExport = null;
+            if (result != RESULT_OK || data == null || data.getData() == null) return;
+            try {
+                if (request == PICK_TOUCH_LAYOUT) {
+                    byte[] bytes;
+                    try (java.io.InputStream input = getContentResolver().openInputStream(data.getData())) {
+                        bytes = TouchLayoutStore.readImport(input);
+                    }
+                    touchPad.setLayout(touchLayouts.importLayout(bytes));
+                } else {
+                    if (exported == null) exported = touchLayouts.exportBytes(touchPad.pad().layoutModel());
+                    try (java.io.OutputStream output = getContentResolver().openOutputStream(data.getData(), "wt")) {
+                        if (output == null) throw new java.io.IOException(getString(R.string.touch_layout_document_unavailable));
+                        output.write(exported);
+                    }
+                }
+                android.widget.Toast.makeText(this, request == PICK_TOUCH_LAYOUT
+                    ? R.string.touch_layout_imported : R.string.touch_layout_exported, android.widget.Toast.LENGTH_LONG).show();
+            } catch (java.io.IOException | IllegalArgumentException | SecurityException error) {
+                touchTransferFailed(request == PICK_TOUCH_LAYOUT, error);
+            }
+            return;
+        }
         if (runtimeLoaded && request == PICK_PACKAGE && result == RESULT_OK && data != null && data.getData() != null)
             library.importTree(data.getData());
     }
@@ -1096,6 +1129,8 @@ public class MainActivity extends Activity
         if (touchPad.getVisibility() == android.view.View.VISIBLE) {
             labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
         }
+        labels.add(getString(R.string.touch_menu_import)); actions.add(() -> pickTouchLayout(true));
+        labels.add(getString(R.string.touch_menu_export)); actions.add(() -> pickTouchLayout(false));
         if (touchLayouts.file().isFile()) {
             labels.add(getString(R.string.touch_menu_restore_default)); actions.add(this::resetTouchLayout);
         }
@@ -1118,6 +1153,35 @@ public class MainActivity extends Activity
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
             .setNegativeButton(android.R.string.cancel, null)
             .show();
+    }
+
+    private void touchTransferFailed(boolean importing, Exception error) {
+        Log.e("S2Arm", "Touch layout transfer failed", error);
+        android.widget.Toast.makeText(this, getString(importing ? R.string.touch_layout_import_failed
+            : R.string.touch_layout_export_failed, error.getMessage()), android.widget.Toast.LENGTH_LONG).show();
+    }
+
+    private void pickTouchLayout(boolean importing) {
+        android.content.Intent intent = new android.content.Intent(importing
+            ? android.content.Intent.ACTION_OPEN_DOCUMENT : android.content.Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        try {
+            if (!importing) {
+                touchExport = touchLayouts.exportBytes(touchPad.pad().layoutModel());
+                intent.putExtra(android.content.Intent.EXTRA_TITLE, TouchLayoutStore.exportFilename(touchExport));
+            }
+            try {
+                startActivityForResult(intent, importing ? PICK_TOUCH_LAYOUT : EXPORT_TOUCH_LAYOUT);
+            } catch (android.content.ActivityNotFoundException missingJsonPicker) {
+                intent.setType("*/*");
+                startActivityForResult(intent, importing ? PICK_TOUCH_LAYOUT : EXPORT_TOUCH_LAYOUT);
+            }
+        } catch (java.io.IOException | IllegalArgumentException | SecurityException
+                | android.content.ActivityNotFoundException error) {
+            touchExport = null;
+            touchTransferFailed(importing, error);
+        }
     }
 
     private void beginTouchEdit() {

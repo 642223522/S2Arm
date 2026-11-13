@@ -30,4 +30,11 @@
     <string name="export_diagnostics_running">正在导出诊断包…</string>
     <string name="export_diagnostics_done">诊断包已生成：%1$s</string>
     <string name="export_diagnostics_failed">诊断包导出失败：%1$s</string>
+    <string name="touch_menu_import">导入布局…</string>
+    <string name="touch_menu_export">导出布局…</string>
+    <string name="touch_layout_imported">布局已导入</string>
+    <string name="touch_layout_exported">布局已导出</string>
+    <string name="touch_layout_import_failed">布局未导入：%1$s。请选择有效的 F01 JSON 文件后重试。</string>
+    <string name="touch_layout_export_failed">布局未导出：%1$s。请选择其他保存位置后重试。</string>
+    <string name="touch_layout_document_unavailable">无法打开文件</string>
 </resources>
