@@ -3980,9 +3980,9 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         VkBuffer ib = a->ibuf->buffer;
         VkDeviceSize ioff = a->ioff;
         uint32_t first = a->first;
-        static int force_expand = -1;   // getenv 对每笔绘制都是系统调用级开销：只读一次
-        if (force_expand < 0) force_expand = getenv("S2A_VK_FORCE_INDEX_U8_EXPAND") != NULL;
-        if (a->itype == 0 && (!g.dev->index_type_uint8_enabled || force_expand)) {
+        // getenv 只在 u8 索引这一种（极少数）绘制上读：u16 / u32 的每笔绘制不再付这份开销（#950 的本意），
+        //   又不把测试开关冻成首次读到的值（缓存成静态量后 C42 中途设的强制展开不生效）
+        if (a->itype == 0 && (!g.dev->index_type_uint8_enabled || getenv("S2A_VK_FORCE_INDEX_U8_EXPAND") != NULL)) {
             if (a->ind) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "u8 间接索引无 CPU 展开回退"); return; }
             if (!a->ibuf->mapped || !a->count) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "u8 索引展开需要可映射索引缓冲"); return; }
             if (ioff > a->ibuf->bytes || (uint64_t)first + a->count > (a->ibuf->bytes - ioff)) {
