@@ -460,7 +460,8 @@ def plan(dev, pack, work, full=False, say=print):
         if cut and not bad: say(f"上次收推送撞到截短包（{(unpack or '').strip().splitlines()[-1][:60]}…）：不信 .pushed，按已应用索引补推")
         idx = None
         mf = read(dev, f"{rp(dev)}/manifest.json", work, "r.manifest")
-        if jver(mf) == 2 or (mf is not None and not mf.strip()):   # 空清单 = v2 推送开头置空、没推完（send），已应用索引照信，只补推缺的（不整包重推）
+        # v3（单一 IMG）机上同样有 index.applied.tsv：原先只认 v2，IMG 款每次装机都把镜像外的文件整批重推、game.img 再核一遍、App 再解一次包（11-13 实测：同一个包第二次装仍推 37 个文件）
+        if jver(mf) in (2, 3) or (mf is not None and not mf.strip()):   # 空清单 = 推送开头置空、没推完（send），已应用索引照信，只补推缺的（不整包重推）
             idx = read(dev, f"{rp(dev)}/index.applied.tsv", work, "r.index")
             if not idx and not cut: idx = read(dev, f"{rp(dev)}/index.tsv", work, "r.index")
         have = rows(idx, 3)
