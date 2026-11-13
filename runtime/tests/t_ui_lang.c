@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "s2a_ui_lang.h"
+#include "s2a_t_result.h"
 static int bad, n;
 static void ck(const char *what, const char *want, const char *got) { n++; int ok = !strcmp(want, got); if (!ok) bad++; printf("%s %s：期望 %s → 实际 %s\n", ok ? "通" : "不通", what, want, got); }
 int main(void) {
@@ -25,6 +26,6 @@ int main(void) {
     ck("选跟随系统 · 系统德语", "en", s2a_ui_lang_pick("system", "de-DE"));
     ck("存值空串 · 系统简中", "zh-Hans", s2a_ui_lang_pick("", "zh-Hans-CN"));
     ck("存值认不出 ja · 系统简中", "zh-Hans", s2a_ui_lang_pick("ja", "zh-Hans-CN"));
-    printf("%s ui_lang：%d 项，%d 项不通\n", bad ? "✗" : "✓", n, bad);
-    return bad != 0;
+    printf("共 %d 项\n", n);
+    return S2A_T_RESULT("t_ui_lang", bad);
 }
