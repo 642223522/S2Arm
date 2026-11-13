@@ -266,6 +266,7 @@ struct ImportSheet: View {
                 Text(loc.backend(failure)).font(.manrope(13)).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 12)
                 CopyReportButton(model: model, gameID: nil, operations: ["import", "keys", "setup"], fallback: failure).padding(.top, 8)
+                ReportHint().padding(.top, 4)
             }
         }
     }
@@ -372,6 +373,15 @@ struct InlineProgress: View {
 /// 「上传给开发者」（11-13 诊断一键上传，取代原来的「复制错误摘要 / 导出诊断包」两个入口）：点了先说清传什么、不传什么，玩家确认才传。
 ///   作业层打一份和「导出诊断包」相同的脱敏包，带上这次失败的错误摘要（operations 为 nil = 没有作业记录的失败，如环境检查，带 fallback 正文），
 ///   传完只给一个短码、只复制码。上传没成（服务没开通 / 没网 / 被拒收）就说明原因、退回「导出诊断包」，玩家照旧手动发
+/// 报错页统一的一句指引（11-13 全局「故障报修」）：凡有「上传给开发者」/ 失败下一步的地方都挂它（tests/report_hint_test.py 核）
+struct ReportHint: View {
+    @EnvironmentObject var loc: Localizer
+    var body: some View {
+        Text(loc.reportHint).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("report.hint")
+    }
+}
+
 struct CopyReportButton: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
