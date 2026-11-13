@@ -434,9 +434,10 @@ final class GameSession implements AutoCloseable {
         Files.createDirectories(save);
         File[] old = save.toFile().listFiles();
         if (old == null) throw new IOException("cannot inspect save root");
+        // 存档根目录里的其他东西（玩家放进来的原生格式存档、旧版布局）不挡起局：原样留着、不迁移不覆盖，只记日志（不堵门）
         for (File entry : old)
             if (!entry.getName().equals("ryujinx-android"))
-                throw new IOException("save root contains an existing layout; no automatic migration");
+                System.err.println("S2Arm: save root keeps an existing entry untouched (no migration): " + entry.getName());
         Path state = save.resolve("ryujinx-android");
         if (Files.isSymbolicLink(state) || (Files.exists(state, LinkOption.NOFOLLOW_LINKS)
                 && !Files.isDirectory(state, LinkOption.NOFOLLOW_LINKS)))

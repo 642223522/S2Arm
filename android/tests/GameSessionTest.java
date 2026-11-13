@@ -132,9 +132,9 @@ public final class GameSessionTest {
         Path legacyAlias = link.resolve("legacy-app");
         Path legacySave = Files.createDirectories(Path.of(spec(legacyApp).saveRoot));
         Path old = legacySave.resolve("save.bin"); Files.write(old, contents);
-        rejects(() -> new GameSession(spec(legacyAlias), legacyAlias.toFile()), "legacy layout under trusted alias rejected");
+        new GameSession(spec(legacyAlias), legacyAlias.toFile());   // 旧文件不挡起局（不堵门）
         check(Arrays.equals(contents, Files.readAllBytes(old))
-            && !Files.exists(legacySave.resolve("ryujinx-android")), "legacy content untouched without migration");
+            && Files.isDirectory(legacySave.resolve("ryujinx-android")), "legacy content kept untouched; session state created beside it");
     }
 
     private static void frozenCases(Path root) throws Exception {
