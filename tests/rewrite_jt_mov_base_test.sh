@@ -4,8 +4,10 @@
 # 门禁覆盖：runtime/rewriter/*
 # 形态取自玩家贴的反汇编：cmp w15,#n / b.hi / adrp x18 + add x18,#lo / mov x0,x18（基址拷进别的寄存器）/ ldrsw x18,[x0,x15,lsl#2] /
 #   add x18,x18,x0 / 中间夹 adrp x0、mov w16、add x0（编译器排在取表与 br 之间）/ br x18；第二处把基址拷进 x23（0xbd210c）。
-# 合成代码段从 0x100 起、一个 FDE 覆盖；表在 ro 0x800（映像 0x1800），项 = 目标 − 表基址，第 4 项放出函数的哨兵。
-# 判据（手算）：苹果 / 安卓退出码 0、缺口 0；两处分派目标都 = 0x140,0x148,0x150。改前（chain 只认同一寄存器 adrp+add）两处各记一个 br_x18 缺口、退出码 3
+# 合成代码段从 0x100 起、一个 FDE 覆盖；表在 ro 0x800（映像 0x1800），项 = 目标 − 表基址；表后到 data 段尾全是按本表基址落在函数里的项（同 #716 两张表首尾相接、
+#   后面还有表），只有界检查 cmp w15,#2 / b.hi 定得出 3 项。
+# 判据（手算）：苹果 / 安卓退出码 0、缺口 0；两处分派目标都 = 0x140,0x148,0x150。改前（有界识别 jt_targets 只认同一寄存器 adrp+add、
+#   跟拷贝的 jt_open 不设界读满 1024 项放弃）两处各记一个 br_x18 缺口、退出码 3
 # 指令用 clang 汇编（与被测改写器无关）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -58,8 +60,10 @@ struct.pack_into('<BBBBiIii', ro, EH, 1, 0x1B, 0x03, 0x3B, (0x1000 + EF) - (0x10
 cie = struct.pack('<II', 0x14, 0) + bytes([1]) + b'zR\0' + bytes([4, 0x78, 30, 1, 0x1B]) + bytes(7)
 ro[EF:EF + 0x18] = cie; f = 0x1000 + EF + 0x18
 struct.pack_into('<IIii', ro, EF + 0x18, 0x10, (f + 4) - (0x1000 + EF), 0x100 - (f + 8), 4 * len(code))
-struct.pack_into('<4i', ro, 0x800, 0x140 - 0x1800, 0x148 - 0x1800, 0x150 - 0x1800, 0x7ffffff0)
-text, ro, data = bytes(text), bytes(ro), bytes(0x1000)
+struct.pack_into('<3i', ro, 0x800, 0x140 - 0x1800, 0x148 - 0x1800, 0x150 - 0x1800)
+# 表后紧挨着别的表（#716 0x1482a40 + 20 项 = 0x1482a90 又是一张）：后面 1500 多项按本表基址算都落在函数里，不设界读不到头
+filler = struct.pack('<i', 0x140 - 0x1800); ro[0x80c:] = filler * ((0x1000 - 0x80c) // 4); data = filler * (0x1000 // 4)
+text, ro = bytes(text), bytes(ro)
 h = bytearray(0x100); h[:4] = b'NSO0'; fo = 0x100
 for k, (mo, seg) in enumerate(((0, text), (0x1000, ro), (0x2000, data))):
     struct.pack_into('<III', h, 0x10 + 0x10 * k, fo + 0x1000 * k, mo, len(seg)); struct.pack_into('<I', h, 0x60 + 4 * k, len(seg))
