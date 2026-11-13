@@ -3371,7 +3371,6 @@ static uint64_t span_hash(const uint8_t *m, size_t n) {
 //   unmapped — reading it directly faults once per load into the far-fault emulation, or stops the game where an access cannot be emulated. Read the shadow instead (s2a_far_g2h, the
 //   one address map). Valid for a span inside one host page (a GOB, a page_span piece): the shadow's 2 MiB blocks are page-aligned. Outside the far region the guest address is the host's
 static const uint8_t *host_rd(const uint8_t *g) { const uint8_t *h = s2a_far_g2h((uint64_t)(uintptr_t)g); return h ? h : g; }
-static uint64_t gob_hash(uint64_t g) { return span_hash(host_rd((const uint8_t *)(uintptr_t)(g << 9)), 512); }
 // 宿主能读的存储字节数（#819）：普通池里的贴图截到池尾。按稀疏规则排布的贴图（SPARSE 标志、整页对齐）放进比它小的普通池时，算出的存储（64 KB）越过池尾，
 //   越过的那段是补齐、游戏从不放数据，真机 GPU 也只读贴图真用到的地址；按全长读（逐页哈希 / 写保护 / GPU 去混排源）会读进池后没映射的内存，iPad 上 SIGBUS
 //   （贴图 64×64 ASTC 4×4 7 级、存储 +65536、池 8192）。稀疏池（按页表取）与不在池里的照旧
@@ -3729,13 +3728,36 @@ typedef struct { uint64_t bits[8]; uint64_t h[512]; } gpw_blk;   // 256 KB of gu
 typedef struct { uint64_t gen; uint32_t n; uint64_t bits[]; } gpw_dd;   // a texture's subresources (level × layer) already marked whole since generation gen
 static nvn_hmap g_gpw = {.klen = 8}, g_gpw_ser = {.klen = 8};   // guest address >> 18 → gpw_blk *; serial → gpw_dd *
 static pthread_mutex_t g_gpw_mu = PTHREAD_MUTEX_INITIALIZER; static uint64_t g_gpw_skips, g_gpw_gen = 1; static _Atomic uint64_t g_gpw_nblk;
+// 记账和核对时取 GOB 的哈希，不读游戏从没碰过的页（同 mem_any_touched 的判据：匿名页 mincore 两位都是 0 = 没写过，内容一定是 0，哈希就是 512 个 0 的哈希）。
+//   11-13 0400486024DEC000 Mac 读档进场景：新建的渲染目标存储游戏没写过，标记时逐 GOB 读一遍：一帧 553 次标记读 154 MB、在提交线程上 52 ms，
+//   另一帧 63 次标记读 320 MB；两帧的页 9,602 / 9,997 和 20,478 / 20,482 没碰过，每页缺页一次，读过的零页还都计进进程实占。
+//   mincore 按段查（gob_win 缓存一段的结果，GOB 顺着走），查不了的页照读；客体内存文件后备时一律照读（写回文件后丢掉的页两位也是 0，内容在文件里）
+typedef struct { uint64_t a, n; int off; unsigned char v[256]; } gob_win;   // 宿主页 [a, a + n 页) 的 mincore 结果；off = 不查、一律照读
+static uint64_t g_gob_untouched, g_gob_untouched_n;   // 没读的未触碰 GOB 数、有这种 GOB 的记账次数（under g_gpw_mu；诊断行，首 4 次后按 2 的幂）
+static uint64_t gob_zero_hash(void) { static uint64_t h; static dispatch_once_t o; dispatch_once(&o, ^{ static const uint8_t z[512]; h = span_hash(z, sizeof z); }); return h; }
+static gob_win gob_win_new(void) { return (gob_win){.off = s2a_guest_fd() >= 0}; }
+static uint64_t gob_hash_w(gob_win *w, uint64_t g, uint64_t ge) {   // = gob_hash(g)；ge：调用方这一趟走到哪个 GOB 为止（决定往前查多少页）
+    const uint8_t *h = host_rd((const uint8_t *)(uintptr_t)(g << 9));
+    if (w->off) return span_hash(h, 512);
+    uint64_t pg = (uint64_t)getpagesize(), p = (uint64_t)(uintptr_t)h & ~(pg - 1);
+    if (p < w->a || p >= w->a + w->n * pg) {
+        uint64_t n = MIN(((ge - g) * 512 + pg - 1) / pg + 1, (uint64_t)sizeof w->v);
+        if (mincore((void *)(uintptr_t)p, (size_t)(n * pg), (char *)w->v) && (n = 1, mincore((void *)(uintptr_t)p, (size_t)pg, (char *)w->v))) w->v[0] = MINCORE_INCORE;   // 查不了：当碰过、照读
+        w->a = p; w->n = n;
+    }
+    if (!(w->v[(p - w->a) / pg] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) { g_gob_untouched++; return gob_zero_hash(); }
+    return span_hash(h, 512);
+}
 static void gpw_add(void *u, uint64_t lo, uint64_t hi) {   // under g_gpw_mu; u = the texture's storage base: [lo, hi) are offsets from it
-    uint64_t base = (uint64_t)(uintptr_t)u;
+    uint64_t base = (uint64_t)(uintptr_t)u, u0 = g_gob_untouched; gob_win w = gob_win_new();
     for (uint64_t g = (base + lo) >> 9, ge = (base + hi + 511) >> 9; g < ge; g++) {
         uint64_t k = g >> 9; gpw_blk *b = nvn_hm_get(&g_gpw, &k);
         if (!b) { if (!(b = calloc(1, sizeof *b))) MDIE("stale-byte table allocation failed"); nvn_hm_put(&g_gpw, &k, b); atomic_fetch_add(&g_gpw_nblk, 1); }
-        unsigned i = (unsigned)(g & 511); b->bits[i >> 6] |= 1ull << (i & 63); b->h[i] = gob_hash(g);
+        unsigned i = (unsigned)(g & 511); b->bits[i >> 6] |= 1ull << (i & 63); b->h[i] = gob_hash_w(&w, g, ge);
     }
+    if (g_gob_untouched != u0) { uint64_t k = ++g_gob_untouched_n;
+        if (k <= 4 || !(k & (k - 1))) MLOG("stale-byte ledger: GPU write over %p+%#llx, %llu KB of it never touched by the game and not read (%llu marks, %llu MB so far)", (void *)u, (unsigned long long)lo,
+                                         (unsigned long long)((g_gob_untouched - u0) >> 1), (unsigned long long)k, (unsigned long long)(g_gob_untouched >> 11)); }
 }
 static void gpw_unmark(uint64_t g) {   // under g_gpw_mu: GOB g is current again
     uint64_t k = g >> 9; gpw_blk *b = nvn_hm_get(&g_gpw, &k); unsigned i = (unsigned)(g & 511);
@@ -3929,11 +3951,11 @@ static void gpw_forget(uint64_t serial) {   // the texture is gone: its bytes st
 static int gpw_stale(const uint8_t *mem, uint64_t size, uint64_t **runs, uint64_t *bytes) {
     uint64_t a = (uint64_t)(uintptr_t)mem, e = a + size, *r = NULL; int n = 0, cap = 0; *runs = NULL; *bytes = 0;
     if (!atomic_load_explicit(&g_gpw_nblk, memory_order_relaxed)) return 0;
-    pthread_mutex_lock(&g_gpw_mu);
+    pthread_mutex_lock(&g_gpw_mu); gob_win w = gob_win_new();
     for (uint64_t g = a >> 9, ge = (e + 511) >> 9; g < ge; g++) {
         uint64_t k = g >> 9; gpw_blk *b = nvn_hm_get(&g_gpw, &k); if (!b) { g = (k << 9) + 511; continue; }
         unsigned i = (unsigned)(g & 511); if (!(b->bits[i >> 6] >> (i & 63) & 1)) continue;
-        if (gob_hash(g) != b->h[i]) { gpw_unmark(g); continue; }   // rewritten since (by the CPU or anything else that writes guest memory)
+        if (gob_hash_w(&w, g, ge) != b->h[i]) { gpw_unmark(g); continue; }   // rewritten since (by the CPU or anything else that writes guest memory)
         uint64_t lo = MAX(g << 9, a) - a, hi = MIN((g + 1) << 9, e) - a;
         if (n && r[2 * n - 1] == lo) r[2 * n - 1] = hi;
         else { if (n == cap) { cap = cap ? cap * 2 : 16; if (!(r = realloc(r, (size_t)cap * 2 * sizeof *r))) MDIE("stale run list allocation failed"); } r[2 * n] = lo; r[2 * n + 1] = hi; n++; }
