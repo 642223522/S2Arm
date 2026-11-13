@@ -5849,17 +5849,24 @@ static FILE *pso_user_file(void) {
     if (path) g_pso_user = fopen(path.fileSystemRepresentation, "a");
     return g_pso_user;
 }
+// The lines already recorded (the seed manifest beside the shader map, then this machine's pso_user.tsv): read once. warm_start reads them on a background queue,
+//   so the first pipeline the submit thread records no longer reads them there (1 MB / 2280 lines took 5 ms on an M5 Max, 10 MB 43 ms; 11-13). A record before
+//   that read is done waits for it in dispatch_once, as it read them itself before
+static dispatch_once_t g_pso_user_seen_once;
+static void pso_user_seen_load(void) {
+    dispatch_once(&g_pso_user_seen_once, ^{ @autoreleasepool {
+        NSMutableSet<NSString *> *seen = [NSMutableSet set];
+        NSString *seed = g_shmap_path ? [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"] : nil;
+        NSMutableArray<NSString *> *paths = [NSMutableArray array]; if (seed) [paths addObject:seed]; NSString *user = pso_user_path(); if (user) [paths addObject:user];
+        for (NSString *path in paths) { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [seen addObject:old]; }
+        g_pso_user_seen = seen; } });
+}
 static void pso_user_record(const char *fmt, ...) {
     FILE *f = pso_user_file();
     if (!f) return;
     char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
-    if (!g_pso_user_seen) {
-        g_pso_user_seen = [NSMutableSet set];
-        NSString *seed = g_shmap_path ? [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"] : nil;
-        NSMutableArray<NSString *> *paths = [NSMutableArray array]; if (seed) [paths addObject:seed]; NSString *user = pso_user_path(); if (user) [paths addObject:user];
-        for (NSString *path in paths) { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-            for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_user_seen addObject:old]; }
-    }
+    pso_user_seen_load();
     size_t ll = strlen(line); NSString *s = [[NSString alloc] initWithBytes:line length:ll && line[ll - 1] == '\n' ? ll - 1 : ll encoding:NSUTF8StringEncoding];   // Compared with the manifest file line by line (without the newline)
     if (!s || [g_pso_user_seen containsObject:s]) return;
     [g_pso_user_seen addObject:s]; fputs(line, f); fflush(f);
@@ -9025,6 +9032,7 @@ static void warm_announce(void) {
 }
 static void warm_start(void) {
     if (g_warm_started++) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ pso_user_seen_load(); });   // the record's dedupe set, off the submit thread (pso_user_seen_load)
     NSArray<NSString *> *paths = warm_paths(1);
     if (!paths) return;
     if (!g_warm_items) g_warm_items = [NSMutableArray array];
