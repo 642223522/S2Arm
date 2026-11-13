@@ -272,19 +272,15 @@ static void test_spin_kind(void) {
 }
 
 static void test_power_gates(void) {
+    // 热状态 / 省电模式不再关托底（11-13 维护者「不读电量、不设自己挡自己的闸」）：只进日志
     world_reset(); atomic_store(&prop_mode, "1"); start_game();
     CHECK(WAIT_UNTIL(s2a_cpu_floor_test_active()));
-    s2a_android_power_set(3, 0);                    // SEVERE → 共用口径 2：松开
-    advance(250 * MS); CHECK(WAIT_UNTIL(!s2a_cpu_floor_test_active())); CHECK(quiet());
-    CHECK(log_has("托底关 mode=always 原因=门关了 fg=1 surface=1 thermal=2 low_power=0"));
-    s2a_android_power_set(2, 0);                    // MODERATE → 1：放行
-    advance(250 * MS); CHECK(WAIT_UNTIL(s2a_cpu_floor_test_active()));
-    s2a_android_power_set(0, 1);                    // 省电模式：松开
-    advance(250 * MS); CHECK(WAIT_UNTIL(!s2a_cpu_floor_test_active())); CHECK(quiet());
-    s2a_android_power_set(-1, 0);                   // 热状态读不到：放行
-    advance(250 * MS); CHECK(WAIT_UNTIL(s2a_cpu_floor_test_active()));
-    s2a_android_power_set(5, 0);                    // EMERGENCY → 3：松开
-    advance(250 * MS); CHECK(WAIT_UNTIL(!s2a_cpu_floor_test_active()));
+    s2a_android_power_set(3, 0);                    // SEVERE：照旧托
+    { unsigned long long t = s2a_cpu_floor_test_ticks(); advance(250 * MS); CHECK(WAIT_UNTIL(s2a_cpu_floor_test_ticks() > t)); CHECK(s2a_cpu_floor_test_active()); }
+    s2a_android_power_set(5, 0);                    // EMERGENCY：照旧托
+    { unsigned long long t = s2a_cpu_floor_test_ticks(); advance(250 * MS); CHECK(WAIT_UNTIL(s2a_cpu_floor_test_ticks() > t)); CHECK(s2a_cpu_floor_test_active()); }
+    s2a_android_power_set(0, 1);                    // 省电模式：照旧托
+    { unsigned long long t = s2a_cpu_floor_test_ticks(); advance(250 * MS); CHECK(WAIT_UNTIL(s2a_cpu_floor_test_ticks() > t)); CHECK(s2a_cpu_floor_test_active()); }
     s2a_cpu_floor_stop(); s2a_android_power_set(0, 0);
 }
 
