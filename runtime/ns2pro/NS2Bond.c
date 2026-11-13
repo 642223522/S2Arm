@@ -55,3 +55,7 @@ int ns2_parse_bt_address(const char *text, uint8_t le[6]) {
     for (unsigned i = 0; i < 6; i++) { le[i] = (uint8_t)v[5 - i]; any |= v[i]; }   // 文本是大端（aa:bb:…），广播与指令里是小端
     return any != 0;
 }
+
+int ns2_rearm_after_disconnect(int stream_ready, int session_failed) { return stream_ready && !session_failed; }
+
+int ns2_link_idle(int waits_for_wake, int stream_ready, int connected) { return waits_for_wake && !stream_ready && !connected; }

@@ -313,6 +313,8 @@ static NS2Bridge *bridge;
     return owner && (owner->links[0] == self || owner->links[1] == self);
 }
 - (BOOL)canKeep { return streamReady && !sessionFailed && device.state == CBPeripheralStateConnected; }
+// 只是挂着等手柄回来（不设期限的直连，系统还没连上）：不占位——照样能扫描、能接别的手柄（ns2_link_idle）
+- (BOOL)idle { return ns2_link_idle(waitsForWake, streamReady, device.state == CBPeripheralStateConnected); }
 - (void)attach:(CBPeripheral *)peripheral name:(NSString *)name RSSI:(NSNumber *)rssi {
     // 断线后的异步 stop 可能晚于 resetLink；新连接握手前丢弃旧 mailbox。
     // A disconnect's asynchronous stop may follow resetLink; discard the old mailbox before a new handshake.
@@ -954,9 +956,13 @@ static NS2Bridge *bridge;
     return nil;
 }
 // 接下来还接不接设备：一台都没有时什么都接；只有一只 Joy-Con 时只接另一侧；Pro 连着或已凑齐两只就不再接（Pro 优先，一次只服务一台 Pro 或一对 / 一只 Joy-Con）。
+// 占位的链路：挂着等手柄回来的不算（见 NS2Link idle）
+- (NS2Link *)activeLink:(unsigned)i { NS2Link *link = links[i]; return link && ![link idle] ? link : nil; }
 - (BOOL)accepts:(ns2_kind)found peripheral:(CBPeripheral *)peripheral {
     if (found == NS2_KIND_NONE) return NO;
-    NS2Link *a = links[0], *b = links[1];
+    // 挂着等的就是这一台：交给那条直连，系统看到它可连的广播会自己连上
+    for (unsigned i = 0; i < 2; i++) if (links[i] && [links[i] idle] && [links[i]->device.identifier isEqual:peripheral.identifier]) return NO;
+    NS2Link *a = [self activeLink:0], *b = [self activeLink:1];
     if (!a && !b) return YES;
     if (a && b) return NO;
     NS2Link *only = a ?: b;
@@ -966,7 +972,7 @@ static NS2Bridge *bridge;
 // 能否（继续）扫描：没有链路，或只有一只 Joy-Con（已就绪或还在连）缺另一侧。
 //   还在连也要扫：重连记住的那只时它可能没开机（直连要等 30 秒才超时），这段时间另一侧照样能被找到；accepts 只收缺的那一侧
 - (BOOL)wantsAnotherDevice {
-    NS2Link *a = links[0], *b = links[1];
+    NS2Link *a = [self activeLink:0], *b = [self activeLink:1];
     if (!a && !b) return YES;
     if ([self bondUpgradePending]) return YES;
     if (a && b) return NO;
@@ -1092,7 +1098,8 @@ static NS2Bridge *bridge;
 }
 - (int)rescan {
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
-    if (self != bridge || stopped || links[0] || links[1]) return 0;
+    // 只剩挂着等手柄回来的链路时照样能重新扫描（换一台、或那台已改连别的主机要长按 SYNC），等着的直连不撤
+    if (self != bridge || stopped || [self activeLink:0] || [self activeLink:1]) return 0;
     if (central.state != CBManagerStatePoweredOn && central.state != CBManagerStateUnknown && central.state != CBManagerStateResetting) {
         emit_status(NS2_STATUS_UNAVAILABLE, [NSString stringWithFormat:NS2Localized(@"Bluetooth unavailable (state %ld). Check Bluetooth power and permission."), (long)central.state]);
         return 0;
@@ -1250,6 +1257,14 @@ static NS2Bridge *bridge;
     if (![self accepts:found peripheral:peripheral]) return;   // 已有一只 Joy-Con 时只接另一侧
     NSNumber *connectable = advertisement[CBAdvertisementDataIsConnectable];
     if (connectable && !connectable.boolValue) return;
+    // 扫到要接的另一台：撤掉挂着等的直连、腾出槽位（玩家换了手柄）。Joy-Con 只撤同侧的，另一侧照样等
+    for (unsigned i = 0; i < 2; i++) {
+        NS2Link *waiting = links[i];
+        if (!waiting || ![waiting idle] || (is_joycon(found) && is_joycon(waiting->kind) && waiting->kind != found)) continue;
+        LOG("NS2 Pro BLE 扫到另一台手柄：不再等 id=%s", waiting->device.identifier.UUIDString.UTF8String);
+        [self dropLink:waiting];
+        if (self != bridge) return;
+    }
     [retryAfter removeObjectForKey:peripheral.identifier];
     [self connectPeripheral:peripheral name:peripheral.name ?: advertisement[CBAdvertisementDataLocalNameKey] RSSI:rssi kind:found wake:wake];
 }
@@ -1306,10 +1321,11 @@ static NS2Bridge *bridge;
     LOG("%sNS2 Pro BLE 断开 mono_ms=%.3f soft=%u pause_elapsed_ms=%.3f domain=%s code=%ld：%s；输入和震动状态已丢弃",
         error ? "【红】" : "", disconnectedAt / 1e6, link->softState, link->pauseStarted ? (disconnectedAt - link->pauseStarted) / 1e6 : 0,
         error.domain.UTF8String ?: "none", (long)error.code, error.localizedDescription.UTF8String ?: "连接结束");
-    // 用着的手柄断开（休眠、走远、关机）且绑定过本机：重新挂上不设期限的直连，玩家按任一键就接回（#521）。
+    // 用着的手柄断开（休眠、走远、关机、信号断）：重新挂上不设期限的直连，手柄回来（绑定过本机的按任一键）系统就连上，不用玩家再点连接。
+    //   没绑定过本机的也挂（以前只挂绑定过的）：链路掉了但手柄还开着、回到范围内就接回；挂着等不占位，玩家照样能重新扫描或换一台。
     //   握手失败（fail 主动断开，sessionFailed）不重挂，免得反复连上又失败
     ns2_kind lostKind = link->kind;
-    BOOL rearm = link->streamReady && !link->sessionFailed && bonded_here(peripheral.identifier);
+    BOOL rearm = ns2_rearm_after_disconnect(link->streamReady, link->sessionFailed);
     BOOL wasPair = [self removeLink:link];
     if (self != bridge) return;
     [self report:NS2_STATUS_DISCONNECTED message:error.localizedDescription ?: NS2Localized(@"Controller disconnected") from:link];
@@ -1317,9 +1333,12 @@ static NS2Bridge *bridge;
     if (wasPair) { [self pairBroke]; if (self != bridge) return; }
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (rearm && !stopped && ![self linkForPeripheral:peripheral]) {
-        LOG("NS2 Pro BLE 已绑定本机的手柄断开：继续等它按键唤醒");
+        BOOL bonded = bonded_here(peripheral.identifier);
+        LOG("NS2 Pro BLE 用着的手柄断开：挂上直连等它回来%s", bonded ? "（已绑定本机：按任一键即接回）" : "（没绑定本机：回到范围内即接回；关机后要长按 SYNC）");
         [self connectPeripheral:peripheral name:peripheral.name RSSI:nil kind:lostKind];
         if (self != bridge) return;
+        NS2Link *again = [self linkForPeripheral:peripheral];
+        if (again && !again->waitsForWake) { again->waitsForWake = YES; again->deadline = 0; again->waitingFor = "controller return"; }
     }
     [self scheduleTimer];
 }

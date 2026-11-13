@@ -75,6 +75,10 @@ size_t ns2_bond_command(unsigned step, const uint8_t host[6], const uint8_t key1
 int ns2_bond_reply(const uint8_t *reply, size_t length);
 //   "aa:bb:cc:dd:ee:ff" / "aa-bb-…" → 小端 6 字节；格式不对或全 0 返回 0
 int ns2_parse_bt_address(const char *text, uint8_t le[6]);
+// 断线后接回（NS2Bond.c）：用着（握手完成、没失败）的手柄断开就重新挂上不设期限的直连，绑定与否都挂；
+//   挂着等（waits_for_wake 且还没握手、系统没连上）的链路不占位：照样能扫描、能接别的手柄
+int ns2_rearm_after_disconnect(int stream_ready, int session_failed);
+int ns2_link_idle(int waits_for_wake, int stream_ready, int connected);
 // 开启绑定：start 之前调；host 是本机蓝牙地址（小端），NULL 关闭。开启后：
 //   - 配对广播（长按 SYNC）连上的手柄，握手后写入绑定（失败只记日志，连接照常可用）；
 //   - 绑定过的手柄直连不设期限、断开后自动重新等待，玩家按任一键即可连上。
