@@ -27,6 +27,7 @@
 #include "../runtime/include/s2a_gfx_mode.h"
 #include "../runtime/include/s2a_hud.h"
 #include "../runtime/include/s2a_home_quit.h"
+#include "../runtime/include/s2a_mac_focus.h"
 #include "../runtime/include/s2a_ui_text.h"
 // 界面语言（runtime/include/s2a_ui_text.h，#316），盖过 runtime/src 各 .c 返回 1 的弱缺省。Mac 宿主程序不带 .lproj、主 bundle 首选本地化
 //   总是开发区域，判不出玩家语言，所以按系统首选语言以 zh 开头判（目前 Mac 上没有显示路径用到它）
@@ -58,6 +59,12 @@ static void display_focus_publish_ex(BOOL active, BOOL may_freeze) {
     else if ((active || !may_freeze) && focus_frozen) { focus_frozen = NO; s2a_guest_freeze(0); guest_clock_freeze_for(3, 0); fprintf(stderr, "[s2a] Mac 回到焦点 / 收尾：放开客机\n"); }
 }
 static void display_focus_publish(BOOL active) { display_focus_publish_ex(active, YES); }
+// 游戏窗口对游戏算不算前台（#279）：我们自己挂在游戏窗口上的系统输入框是 key window 时照旧算前台，否则游戏收到失焦会把输入当取消
+int s2a_text_input_mac_is_input_window(NSWindow *w);   // macos/textinput_mac.m
+static BOOL game_window_focused(NSWindow *game) {
+    NSWindow *key = NSApp.keyWindow;
+    return s2a_mac_game_focused(NSApp.isActive, game && game.isKeyWindow, s2a_text_input_mac_is_input_window(key), game && key.sheetParent == game);
+}
 static _Atomic uint32_t input_seq, input_buttons;
 static _Atomic int32_t input_sticks[4];
 static NSMutableSet<NSNumber *> *keys, *mouse;
@@ -1268,10 +1275,11 @@ static __weak S2AMacDelegate *g_delegate;
 - (void)windowWillEnterFullScreen:(NSNotification *)note { (void)note; self.windowedFrame = self.window.frame; }
 - (void)windowDidExitFullScreen:(NSNotification *)note { (void)note; esc_hold_cancel(); if (!NSIsEmptyRect(self.windowedFrame)) [self.window setFrame:self.windowedFrame display:YES]; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender { (void)sender; [self shutdown]; return NSTerminateCancel; }
-- (void)windowDidBecomeKey:(NSNotification *)note { (void)note; display_focus_publish(NSApp.isActive && self.window.isKeyWindow); if (mouse_release_pending) set_mouse_capture(NO); focused = YES; input_mute_refresh(); s2a_pad_set_active(1); reset_input(); }
-- (void)windowDidResignKey:(NSNotification *)note { (void)note; display_focus_publish(NO); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(0); reset_input(); }
+- (void)windowDidBecomeKey:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); if (mouse_release_pending) set_mouse_capture(NO); focused = YES; input_mute_refresh(); s2a_pad_set_active(1); reset_input(); }
+// 失去 key：本机键鼠照旧停喂、复位；报给游戏的焦点看 key window 落到哪（AppKit 发这条通知时 NSApp.keyWindow 已是新窗口，sheet 也一样）
+- (void)windowDidResignKey:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(0); reset_input(); }
 - (void)applicationDidResignActive:(NSNotification *)note { (void)note; display_focus_publish(NO); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(0); reset_input(); }
-- (void)applicationDidBecomeActive:(NSNotification *)note { (void)note; display_focus_publish(NSApp.isActive && self.window.isKeyWindow); focused = self.window.isKeyWindow; input_mute_refresh(); }
+- (void)applicationDidBecomeActive:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); focused = self.window.isKeyWindow; input_mute_refresh(); }
 @end
 
 // 确认条：打开时游戏失焦（同 Switch 的 HOME 菜单）、不收手柄输入；A / 点「退出」走关窗同一条收尾（等存档写完），B / Home / 点「回到游戏」/ 30 秒没理会收起
@@ -1282,11 +1290,11 @@ static void home_quit_ui(s2a_hq_action action) {
         case S2A_HQ_OPEN:
             fprintf(stderr, "[s2a] 手柄按住 Home：弹出退出确认\n");
             display_focus_publish(NO);
-            d.banner.onAnswer = ^(BOOL accept) { s2a_hq_close(&g_hq); input_mute_refresh(); if (accept) [g_delegate shutdown]; else display_focus_publish(NSApp.isActive && g_delegate.window.isKeyWindow); };
+            d.banner.onAnswer = ^(BOOL accept) { s2a_hq_close(&g_hq); input_mute_refresh(); if (accept) [g_delegate shutdown]; else display_focus_publish(game_window_focused(g_delegate.window)); };
             [d.banner showTitle:@S2A_DPROMPT_HOME_QUIT_TITLE body:@S2A_DPROMPT_HOME_QUIT_BODY accept:@S2A_DPROMPT_HOME_QUIT_ACCEPT decline:@S2A_DPROMPT_HOME_QUIT_DECLINE seconds:30];
             break;
         case S2A_HQ_QUIT: [g_delegate shutdown]; d.banner.onAnswer = nil; d.banner.hidden = YES; fprintf(stderr, "[s2a] 手柄按 A：退出游戏\n"); break;
-        case S2A_HQ_CANCEL: d.banner.onAnswer = nil; d.banner.hidden = YES; display_focus_publish(NSApp.isActive && d.window.isKeyWindow); break;
+        case S2A_HQ_CANCEL: d.banner.onAnswer = nil; d.banner.hidden = YES; display_focus_publish(game_window_focused(d.window)); break;
         default: break;
     }
 }
@@ -1411,7 +1419,7 @@ void s2a_front_run(void (*guest_main)(void)) {
         [app activateIgnoringOtherApps:YES]; focused = YES; input_mute_refresh();
         s2a_pad_set_active(1);
         install_pad_handlers();
-        display_focus_publish(app.isActive && window.isKeyWindow);
+        display_focus_publish(game_window_focused(window));
         delegate.inputGuide = [[S2AMacInputGuide alloc] initWithName:window.title gameID:gameIdentity[@"gameId"] mapping:config gameWindow:window];
         controls.target = delegate.inputGuide;
         delegate.timer = [NSTimer scheduledTimerWithTimeInterval:1.0/120 repeats:YES block:^(NSTimer *t) { (void)t; poll_input(); }];
