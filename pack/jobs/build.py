@@ -637,7 +637,8 @@ def prune_runtime_extras(root):
         if extra.is_symlink() or extra.is_file():
             extra.unlink(missing_ok=True)
         elif extra.is_dir():
-            shutil.rmtree(extra, ignore_errors=True)
+            from library import _rmtree
+            _rmtree(extra)   # 走统一删除：pkg/pack/romfs 克隆自产物根，可能带只读目录；删不掉要报出来，不能悄悄留半棵进运行版本
 
 
 def prepare(c):

@@ -99,6 +99,22 @@ class BuildTests(JobCase):
         self.assertEqual(keep.read_bytes(), b"must survive")
         self.assertEqual(sorted(p.name for p in root.iterdir()), ["romfs"])
 
+    def test_runtime_extras_removes_read_only_packaging_dirs(self):
+        # pkg/pack/romfs 克隆自产物根，可能带只读目录（产物根 RomFS 共享存储整棵只读）。期望整个 pkg/ 删掉，不留半棵进运行版本
+        import build
+        root = self.root / "product"
+        (root / "romfs").mkdir(parents=True)
+        sealed = root / "pkg" / "pack" / "romfs" / "sealed"
+        sealed.mkdir(parents=True)
+        (sealed / "data.bin").write_bytes(b"cloned")
+        sealed.chmod(0o555)
+        try:
+            build.prune_runtime_extras(root)
+        finally:
+            if sealed.exists():
+                sealed.chmod(0o755)
+        self.assertEqual(sorted(p.name for p in root.iterdir()), ["romfs"])
+
 
 if __name__ == "__main__":
     unittest.main()
