@@ -53,6 +53,15 @@ int main(void) {
           "VK_INCOMPLETE consumes partial records exactly once before next batch");
     wsi_timing_report(&t, 6000000000ull);
     CHECK(strstr(logline, "帧率=100.00") && strstr(logline, "间隔P99=10.00ms") && strstr(logline, "样本=20"), "actual sample statistics");
+    // 上一窗口末尾那帧的记录在本窗口才回收（真机每窗都有）：只计迟到，本窗口照常出数
+    t.start = 6000000000ull;
+    uint32_t prev = wsi_timing_id(&t); wsi_timing_submitted(&t, prev); queue_record(VK_NULL_HANDLE, prev, 5990000000ull);
+    for (uint32_t i = 1; i <= 20; i++) {
+        uint32_t id2 = wsi_timing_id(&t); wsi_timing_submitted(&t, id2); queue_record(VK_NULL_HANDLE, id2, 6000000000ull + i * 10000000ull);
+    }
+    fake_now = 6500000000ull; wsi_timing_poll(&t, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    wsi_timing_report(&t, 11000000000ull);
+    CHECK(strstr(logline, "帧率=100.00") && strstr(logline, "样本=20") && strstr(logline, "迟到=1"), "late carry-over record counted, window still reports");
     VkSwapchainKHR old_sc = (VkSwapchainKHR)(uintptr_t)1, new_sc = (VkSwapchainKHR)(uintptr_t)2;
     uint32_t old = wsi_timing_id(&t); wsi_timing_submitted(&t, old);
     queue_record(old_sc, old, 7100000000ull);

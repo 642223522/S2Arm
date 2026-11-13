@@ -74,7 +74,8 @@ static void wsi_timing_report(struct wsi_timing *t, uint64_t now) {
     char b[512];
     const char *reason = t->reason;
     if (!reason && !t->next_id) reason = "呈现 ID 耗尽";
-    if (!reason && (t->lost || t->invalid || t->late)) reason = "记录不完整";
+    // 迟到 = 上一窗口末尾几帧的上屏记录，回收要晚几帧，窗口切换时必然有；照计数、不算本窗口不完整（真机每窗 3 条左右）。
+    if (!reason && (t->lost || t->invalid)) reason = "记录不完整";
     if (!reason && t->nsamples < 2) reason = "样本不足";
     if (reason) {
         snprintf(b, sizeof b, "分时（实际上屏）：帧率= 间隔中位= 间隔P99= 间隔最大=；原因=%s 样本=%u 待回收=%u 迟到=%u 丢失=%u 异常=%u",
@@ -86,10 +87,10 @@ static void wsi_timing_report(struct wsi_timing *t, uint64_t now) {
         uint64_t span = t->samples[t->nsamples - 1] - t->samples[0];
         qsort(gaps, ng, sizeof gaps[0], wsi_timing_cmp_u64);
         if (!span) snprintf(b, sizeof b, "分时（实际上屏）：帧率= 间隔中位= 间隔P99= 间隔最大=；原因=时间戳相同 样本=%u 待回收=%u", t->nsamples, t->pending_count);
-        else snprintf(b, sizeof b, "分时（实际上屏，已回收样本）：帧率=%.2f 间隔中位=%.2fms 间隔P99=%.2fms 间隔最大=%.2fms；样本=%u 待回收=%u",
+        else snprintf(b, sizeof b, "分时（实际上屏，已回收样本）：帧率=%.2f 间隔中位=%.2fms 间隔P99=%.2fms 间隔最大=%.2fms；样本=%u 待回收=%u 迟到=%u",
                       (double)ng * 1e9 / (double)span, (double)gaps[(ng - 1) / 2] / 1e6,
                       (double)gaps[((uint64_t)ng * 99 + 99) / 100 - 1] / 1e6,
-                      (double)gaps[ng - 1] / 1e6, t->nsamples, t->pending_count);
+                      (double)gaps[ng - 1] / 1e6, t->nsamples, t->pending_count, t->late);
     }
     nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
     t->start = now; t->nsamples = t->late = t->invalid = t->lost = 0;
