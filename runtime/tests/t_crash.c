@@ -57,6 +57,12 @@ int main(void) {
     eq("② 第 3 帧在不可读页：打前 2 帧后停、不二次缺页", 2, frames_logged((uint64_t)&st[0], log, sizeof log));
     munmap(pg, 0x4000);
     eq("③ 第 1 帧就在已卸掉的地址：0 行", 0, frames_logged((uint64_t)pg + 0x200, log, sizeof log));
+    // ⑥ 指令原文（#368）：手写 5 个指令字，取中间那条前 2 后 2 → 原样 5 个、中间带 [ ]；地址在不可读页 → 「读不到」、不二次缺页
+    { void s2a_code_words(uint64_t, int, int, char *, size_t); static uint32_t code[5] = {0xd503201f, 0xaa0003e1, 0xf9000c1f, 0x94000002, 0xd65f03c0};
+      char w[256]; s2a_code_words((uint64_t)&code[2], 2, 2, w, sizeof w);
+      eq("⑥ 指令原文照写、中间那条带括号", 1, strcmp(w, "d503201f aa0003e1 [f9000c1f] 94000002 d65f03c0") == 0);
+      uint8_t *np = mmap(NULL, 0x4000, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+      s2a_code_words((uint64_t)np + 0x100, 2, 2, w, sizeof w); eq("⑥ 不可读页：读不到", 1, strcmp(w, "读不到") == 0); munmap(np, 0x4000); }
     // ④ 两段式：子进程装崩溃处理后读空指针。期望第一段（只用 write）原始现场行（信号 0xb）、寄存器行、帧链行都在，
     //   且排在第二段完整报告（「CRASH 信号」行）之前
     { char path[] = "/tmp/t_crash_raw_XXXXXX"; int fd = mkstemp(path);
