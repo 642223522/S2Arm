@@ -93,9 +93,11 @@ final class GameSession implements AutoCloseable {
             Map<String, Object> artifact = Json.object(Json.parse(new String(Files.readAllBytes(
                 BootContract.under(revision, game.artifact, "artifact").toPath()), java.nio.charset.StandardCharsets.UTF_8)), "artifact");
             Map<String, Object> toolchain = Json.object(artifact.get("toolchain"), "toolchain");
+            // 改写 ABI 已在 BootContract（artifact rewriteAbi + 每个模块 fixups 头）核过；这里的工具链标签和运行时版本号只是标签，
+            // 不同只记日志、不挡起局（不堵门）
             if (!("runtime/rewriter@" + BootContract.REWRITE_ABI).equals(toolchain.get("rewriter")))
-                throw new IOException("artifact rewriter identity is not supported");
-            if (!"0.1.0".equals(game.runtimeVersion)) throw new IOException("artifact runtime version is not supported");
+                System.err.println("S2Arm: artifact rewriter label " + toolchain.get("rewriter") + " differs; ABI " + BootContract.REWRITE_ABI + " verified");
+            if (!"0.1.0".equals(game.runtimeVersion)) System.err.println("S2Arm: artifact runtime version " + game.runtimeVersion + " (built for 0.1.0)");
             GameFingerprint.Timing.end(timing, "artifact_checks", phase);
             phase = GameFingerprint.Timing.start(timing);
             byte[] index = GamePack.read(BootContract.under(revision, "index.tsv", "index"));

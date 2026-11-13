@@ -135,7 +135,11 @@ public final class GameSessionAdmissionTest {
             refuses(app,"bad-abi",(a,g)->artifact(g,s->s.replace("\"rewriteAbi\":\"android-sp-safe-v1\"", "\"rewriteAbi\":\"wrong-abi\"")));
             refuses(app,"bad-rewriter",(a,g)->artifact(g,s->s.replace("runtime/rewriter@android-sp-safe-v1", "other/rewriter@android-sp-safe-v1")));
             refuses(app,"missing-rewriter",(a,g)->artifact(g,s->s.replace("\"toolchain\":{\"rewriter\":\"runtime/rewriter@android-sp-safe-v1\"},", "")));
-            refuses(app,"bad-runtime",(a,g)->artifact(g,s->s.replace("0.1.0", "99.0.0")));
+            {   // 运行时版本号只是标签（ABI 另有核对）：不同照常准入（不堵门）
+                Path other = Files.createDirectories(app.resolve("other-runtime-version")); Path otherGame = fixture(other, true);
+                artifact(otherGame, s -> s.replace("0.1.0", "99.0.0"));
+                try (GameSession ignored = GameSession.load(spec(other, otherGame), other.toFile(), null, true)) { checks++; }
+            }
             refuses(app,"unindexed-module",(a,g)-> {
                 Path revision = g.resolve(BootContract.readCurrent(g.toFile()).revisionDir);
                 Files.createDirectory(revision.resolve("outside"));
