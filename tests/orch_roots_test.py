@@ -7,6 +7,7 @@ import contextlib
 import errno
 import io
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -217,13 +218,27 @@ class RootsTest(unittest.TestCase):
         self.assertIsNone(self.store.cur('原创'))
 
     def test_romfs_is_physically_readonly(self):
-        first = self.seed()
+        # 开发 / 门禁机（S2A_ROMFS_SEAL=1）：共享存储物理只读，阶段误写当场失败
+        with patch.dict(os.environ, {'S2A_ROMFS_SEAL': '1'}):
+            first = self.seed()
         probe = 'from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b"BAD")'
         result = subprocess.run([sys.executable, '-c', probe, str(first / 'romfs/data')], capture_output=True)
         if os.name != 'nt' and hasattr(os, 'geteuid') and os.geteuid() == 0:
             self.skipTest('root bypasses POSIX permission bits; normal-user check required')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((first / 'romfs/data').read_bytes(), b'original resource\x00')
+
+    def test_romfs_player_writable(self):
+        # 玩家机（不设 S2A_ROMFS_SEAL）：存储在玩家看得见的游戏库里，不许只读——玩家手动删旧产物不能被挡
+        with patch.dict(os.environ, {'S2A_ROMFS_SEAL': ''}):
+            first = self.seed()
+        target = (first / 'romfs').resolve()
+        if os.name == 'nt':
+            probe = 'from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(Path(sys.argv[1]).read_bytes())'
+            self.assertEqual(subprocess.run([sys.executable, '-c', probe, str(target / 'data')]).returncode, 0)
+        else:
+            stuck = [p for p in [target, *target.rglob('*')] if not p.is_symlink() and not os.stat(p).st_mode & stat.S_IWUSR]
+            self.assertEqual(stuck, [])
 
     def test_realcopy_warns_and_bytes_match(self):
         src = self.home / 'source'
