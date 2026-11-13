@@ -108,7 +108,10 @@ function(s2a_android_nvk_sources output)
 endfunction()
 
 function(s2a_android_direct_sources output)
-    if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
+    # 新回放层的源清单要 NVN 前端（hle_nvn.c 等，只在开了 S2A_ANDROID_VK_ENGINE 时编进来）才链得上；
+    # 没开引擎的单库（缺省的诊断 assembleDebug、android/test.sh 的诊断链接）只编直连核心给窗口探测用，
+    # 继续用下面这份能独立链接的清单。后端缺省改成 nvk 之后，这里不看引擎开关会让诊断单库链接失败。
+    if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk" AND S2A_ANDROID_VK_ENGINE)
         s2a_android_nvk_sources(sources)
         set(${output} "${sources}" PARENT_SCOPE)
         return()
