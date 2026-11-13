@@ -37,6 +37,8 @@ int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *siz
 
 static void mirror_free(struct mirror *m) { if (m->buf) nvn_gpu_buf_release(m->buf, NULL, NULL); free(m->synced); free(m->sub); free(m->checked); memset(m, 0, sizeof *m); }
 static void shadow_free(struct shadow *s) { mirror_free(&s->m[0]); mirror_free(&s->m[1]); free(s->gw); free(s); }
+// 镜像映射代号：新建镜像、换镜像都会让「同一段地址解析出的 (缓冲, 偏移)」变掉。回放核心的解析结果缓存按它作废。
+
 static int mirror_make(struct shadow *s, int i) {
     struct mirror *m = &s->m[i];
     nvn_gpu_buf b = NULL; nvn_gpu_err err = {0};
@@ -83,6 +85,8 @@ static struct mirror *mirror_pick(struct shadow *s, uint64_t off, uint64_t len, 
     if (mi) *mi = i;
     return m;
 }
+
+// 这一段受不受写跟踪：不受跟踪的池每次使用都要整段同步，解析结果不能缓存（真机上的硬约束，见 rp_buf_resolve 注释）
 void rp_buf_frame_flip(void) { pthread_mutex_lock(&g_bmu); g_mirror_cur ^= 1; pthread_mutex_unlock(&g_bmu); }
 
 // 把游戏内存的 [a, b)（池内偏移）传进镜像，绕开 GPU 写过、还没回写落地的那些段：
@@ -205,23 +209,22 @@ uint64_t rp_cpu_write_gen;
 // 写入区间日志（开关 nvk_slc_gen 用）：只记这三个命令改写过的 [a, b)，给「暂存片还能不能用」逐区间判定。
 // 用全局写代号判会让所有区间一起作废；按区间判的话，每帧固定的那几块常量缓冲（内容没变）就能一直用同一片暂存。
 enum { WL_N = 128 };
-static struct { uint64_t seq, a, b; } g_wl[WL_N];
+static struct wl_ent { uint64_t seq, a, b; } g_wl[WL_N];
 static uint64_t g_wl_seq, g_wl_put;
 uint64_t rp_write_mark(void) { return g_wl_seq; }
 void rp_write_note(uint64_t a, uint64_t n) { g_wl[g_wl_put].seq = ++g_wl_seq; g_wl[g_wl_put].a = a; g_wl[g_wl_put].b = a + n; g_wl_put = (g_wl_put + 1) % WL_N; }
-// mark 之后有没有人写过和 [a, a+n) 重叠的区间（日志被覆盖掉太多时按「写过」处理，宁多重拷一次）
+// mark 之后有没有人写过和 [a, a+n) 重叠的区间。只顺着记号扫「mark 之后的那几条」——
+// 一帧要问 8000 次左右，扫满 128 条就是一百万次比较（实测这样做的缓存反而更慢）。
+// 日志绕一圈（mark 太旧、记录已被覆盖）时保守当作写过。
 int rp_write_touched(uint64_t mark, uint64_t a, uint64_t n) {
-    if (mark == g_wl_seq) return 0;
+    const uint64_t seq = __atomic_load_n(&g_wl_seq, __ATOMIC_RELAXED);
+    if (mark == seq) return 0;
+    if (seq - mark > WL_N) return 1;
     const uint64_t b = a + n;
-    for (uint32_t k = 0; k < WL_N; k++) {
-        const struct wl_ent { uint64_t seq, a, b; } *w = (const struct wl_ent *)&g_wl[k];
-        if (!w->seq || w->seq <= mark) continue;
-        if (w->a < b && a < w->b) return 1;
+    for (uint64_t s = mark + 1; s <= seq; s++) {   // 第 s 次写入放在下标 (s-1)%WL_N（rp_write_note 的写法）
+        const struct wl_ent *w = &g_wl[(s - 1) % WL_N];
+        if (w->seq == s && w->a < b && a < w->b) return 1;
     }
-    // 日志绕一圈了的：mark 太旧，链上已没有那些记录，保守当作写过
-    const uint64_t head = g_wl_put ? g_wl_put : WL_N;
-    const uint64_t oldest = g_wl[head % WL_N].seq;
-    if (oldest && mark + 1 < oldest) return 1;
     return 0;
 }
 void rp_op_update_ub(const void *a, const void *rec) {
