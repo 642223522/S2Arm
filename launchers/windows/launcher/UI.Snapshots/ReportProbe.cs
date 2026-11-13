@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
-// 顶栏「故障报修」验收（11-13 jhz：任何页面同一位置都能报修）：全新窗口在各页 / 各引导状态下渲染，
+// 顶栏「故障报修」验收（11-13：任何页面同一位置都能报修）：全新窗口在各页 / 各引导状态下渲染，
 // 每一页都要找得到 AutomationId top.report 的按钮，且它在顶栏右侧那一排的最后一个（同一位置）；每页存一张帧图。
 // 任何一页找不到、位置不对、渲染抛异常都算不通；调用方核退出码 0 和末行「✓」。
 using System.Reflection;

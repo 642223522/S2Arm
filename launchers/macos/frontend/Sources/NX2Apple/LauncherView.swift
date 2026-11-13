@@ -221,7 +221,7 @@ struct LauncherView: View {
                     }
                 }
                 .buttonStyle(LauncherSecondaryButtonStyle())
-                // 故障报修（11-13 jhz）：任何页面同一位置（顶栏最右，Windows 同位），点开就是全局「上传给开发者」弹窗（不针对某款，
+                // 故障报修（11-13）：任何页面同一位置（顶栏最右，Windows 同位），点开就是全局「上传给开发者」弹窗（不针对某款，
                 //   作业层自动附最近一次失败的错误摘要）；报错页的指引 ReportHint 指的就是它
                 Button { model.diagUploadFor = "" } label: {
                     Label(BackendText.launcherText("report.button", language: uiLanguage), systemImage: "exclamationmark.bubble").font(.manrope(12.5, .semibold))

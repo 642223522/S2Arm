@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""顶栏「故障报修」与报错页指引（11-13 jhz）：Mac / Windows 两端同一位置一个全局按钮，报错页统一一句指引。只读源码与共享规格，标准库。
+"""顶栏「故障报修」与报错页指引（11-13）：Mac / Windows 两端同一位置一个全局按钮，报错页统一一句指引。只读源码与共享规格，标准库。
 期望（按需求手写）：
   ① 共享规格 launcher.items 有 report.button / report.hint，zh-Hans / en 都有；指引里用 {button} 引用按钮名（两份不会写岔），中文写「右上角」、英文写 top right
   ② 指引文字只在一处生成：两端各只有一个函数读 report.hint（Mac BackendText.reportHint、Windows SharedText.ReportHint），别处不手抄、不直接读
