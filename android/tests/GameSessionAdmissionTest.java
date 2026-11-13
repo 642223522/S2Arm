@@ -133,7 +133,11 @@ public final class GameSessionAdmissionTest {
                 artifact(g,s->s.replace("\"indexSha256\":\""+hash+"\"", "\"indexSha256\":\""+"00".repeat(32)+"\""));
             });
             refuses(app,"bad-abi",(a,g)->artifact(g,s->s.replace("\"rewriteAbi\":\"android-sp-safe-v1\"", "\"rewriteAbi\":\"wrong-abi\"")));
-            refuses(app,"bad-rewriter",(a,g)->artifact(g,s->s.replace("runtime/rewriter@android-sp-safe-v1", "other/rewriter@android-sp-safe-v1")));
+            {   // 工具链标签不同、ABI 相同：照常准入（不堵门；ABI 不同见上面 bad-abi，照旧拒）
+                Path other = Files.createDirectories(app.resolve("other-rewriter-label")); Path otherGame = fixture(other, true);
+                artifact(otherGame, s -> s.replace("runtime/rewriter@android-sp-safe-v1", "other/rewriter@android-sp-safe-v1"));
+                try (GameSession ignored = GameSession.load(spec(other, otherGame), other.toFile(), null, true)) { checks++; }
+            }
             refuses(app,"missing-rewriter",(a,g)->artifact(g,s->s.replace("\"toolchain\":{\"rewriter\":\"runtime/rewriter@android-sp-safe-v1\"},", "")));
             {   // 运行时版本号只是标签（ABI 另有核对）：不同照常准入（不堵门）
                 Path other = Files.createDirectories(app.resolve("other-runtime-version")); Path otherGame = fixture(other, true);
