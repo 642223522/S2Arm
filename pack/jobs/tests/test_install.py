@@ -1,5 +1,5 @@
 """装到 iPhone（pack/jobs/install.py，10-26）：选团队、包名、报错分类、整条流程（签名 / 装机 / 拷资源包打桩，IPA 夹具用 ditto 真解）。期望按规则手写"""
-import json, os, plistlib, shutil, subprocess, sys, tempfile, types, unittest, zipfile
+import json, os, plistlib, shutil, subprocess, sys, tempfile, time, types, unittest, zipfile
 import unittest.mock as um
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1186,6 +1186,73 @@ class AssembleTests(unittest.TestCase):
         with um.patch.object(install.devcert, "active", lambda c: True), self.assertRaises(Failure) as e:
             ph.install("x.ipa", ["0100A"])
         self.assertEqual((e.exception.code, installed), ("app_id_taken", []))
+
+    def test_stamp_container_digest(self):
+        """#845 S2AContainerDigest：内容相同 → 摘要相同；只差 _CodeSignature/ 或 Info.plist 里摘要键本身 → 相同；改一个文件 / Info.plist 别的键 → 不同；
+        写进 Info.plist（保留原格式）、打成 ipa 后 ipa_digest 读回同一个值"""
+        import ipa as packer
+        def app(root, extra=b"", sig=b"s1", key=None, ver="1"):
+            a = Path(root) / "S2Arm.app"; (a / "Games/X").mkdir(parents=True); (a / "_CodeSignature").mkdir()
+            (a / "Games/X/kit.bin").write_bytes(b"kit" + extra); (a / "_CodeSignature/CodeResources").write_bytes(sig)
+            info = {"CFBundleIdentifier": "io.s2arm.games", "CFBundleVersion": ver}
+            if key: info[packer.CONTAINER_DIGEST_KEY] = key
+            (a / "Info.plist").write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY)); return a
+        with tempfile.TemporaryDirectory() as t:
+            d = [packer.stamp_container(app(Path(t) / n, **kw)) for n, kw in (("a", {}), ("b", dict(sig=b"other", key="old")), ("c", dict(extra=b"!")), ("d", dict(ver="2")))]
+            self.assertEqual(len(d[0]), 24)
+            self.assertEqual(d[0], d[1], "只差签名与摘要键本身：相同")
+            self.assertNotEqual(d[0], d[2], "改了一个文件：不同"); self.assertNotEqual(d[0], d[3], "Info.plist 别的键变了：不同")
+            raw = (Path(t) / "a/S2Arm.app/Info.plist").read_bytes(); self.assertTrue(raw.startswith(b"bplist"), "保留二进制格式")
+            self.assertEqual(plistlib.loads(raw)[packer.CONTAINER_DIGEST_KEY], d[0])
+            ipa = Path(t) / "x.ipa"
+            with zipfile.ZipFile(ipa, "w") as z: z.writestr("Payload/S2Arm.app/Info.plist", raw)
+            self.assertEqual(packer.ipa_digest(ipa), d[0])
+
+    def test_put_game_skips_signing_when_phone_has_same_app(self):
+        """#845：手机上的 S2Arm 的 S2AContainerDigest = 这次组出的、两天前签过（免费账号，3 天内）→ 不调 ph.install，资源照推（这款照推、变了的推），
+        签名时间不刷新；同样条件但签名是 4 天前 → 照常装；手机上的摘要不同（别的电脑装过）→ 照常装"""
+        A, B = self.A, self.B
+        self._library((A, "甲"), (B, "乙"))
+        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, pack="pb")
+        import ipa as packer, host_update
+        self.sid = "SID1"
+        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
+        base = self._run([])
+        def run(args, log=None, env=None, cwd=None, on_line=None):   # 替身组的容器另带一份 Info.plist（真壳都有），stamp_container 才写摘要
+            args = [str(a) for a in args]
+            if any(a.endswith("ship_ext.py") for a in args) and "container" in args:
+                o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
+                (o / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "x"}))
+            r = base(args, log, env, cwd, on_line)
+            if "write_ipa" in args:   # 真 write_ipa 整目录打包：把 App 里 stamp_container 写过摘要的 Info.plist 换进替身 zip
+                z0 = Path(args[-1]); items = {n: zipfile.ZipFile(z0).read(n) for n in zipfile.ZipFile(z0).namelist()}
+                items["Payload/S2Arm.app/Info.plist"] = (Path(args[-2]) / "Info.plist").read_bytes()
+                with zipfile.ZipFile(z0, "w") as z:
+                    for n, b in items.items(): z.writestr(n, b)
+            return r
+        for age, phone_same, want_install in ((2 * 86400, True, False), (4 * 86400, True, True), (2 * 86400, False, True)):
+            at = time.time() - age
+            layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="pb")}, shellId="SID1", bundleId="io.s2arm.games.team1",
+                                                     signed=dict(at=at, free=True, device="d")))
+            ph, pushed, signed = self._phone(); ph.udid = "UDID1"
+            seen = {}
+            class Cl:
+                def call(self_, *a):
+                    seen["args"] = a; return 0, (seen["want"] if phone_same else "aaaaaaaaaaaaaaaaaaaaaaaa") + "\n"
+            orig_digest = packer.ipa_digest
+            def digest(ipa):
+                d = orig_digest(ipa); seen["want"] = d; return d
+            with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
+                 um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
+                 um.patch.object(packer, "ipa_digest", digest), um.patch.object(install, "devpush_client", lambda *a: Cl()):
+                install.put_game(self.c, A, ph)
+            self.assertEqual(len(seen["want"]), 24, "组出的容器带 24 位摘要")
+            self.assertEqual(seen.get("args"), ("app-attr", "S2AContainerDigest") if age < 3 * 86400 else None)   # 签名过了 3 天：不必问手机，直接照常装
+            self.assertEqual(bool(signed), want_install, (age, phone_same))
+            self.assertEqual(pushed, [A])   # 乙资源包号没变：两种情况都不推
+            rec = layout.load_device(self.c, "dev1")
+            if want_install: self.assertGreater(rec["signed"]["at"], at)
+            else: self.assertEqual(rec["signed"]["at"], at)   # 没重签：到期时间照旧
 
     def test_put_game_pushes_all_when_bundle_changed(self):
         """装上的包名和记录里的不同（换过包名 / 签名方式）= 手机上是另一个 App：资源包号没变的款也推"""
