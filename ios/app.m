@@ -41,6 +41,8 @@ void s2a_shell_set_play_handler(void (*fn)(const char *game_id, void *ctx), void
 void s2a_shell_refresh(void) __attribute__((weak_import));
 // 弱链接[ios]：s2a_shell_cloud_sync_vc
 void *s2a_shell_cloud_sync_vc(const char *game_id, void (*done)(void *ctx), void *ctx) __attribute__((weak_import));
+// 弱链接[ios]：s2a_shell_cloud_upload_background
+void s2a_shell_cloud_upload_background(const char *game_id) __attribute__((weak_import));
 void s2a_boot_rebase(const char *why);   // boot.c：起局计时起点改为此刻（多款容器点 Play；不进 native.h——它在抽取阶段键里，改它冷全库）
 const char *s2a_host_pre_ui_checks(void);   // host_main.c：起 UIKit 前读游戏相关值的检查（多款容器在选游戏之后调）
 #include <stdatomic.h>
@@ -1133,6 +1135,14 @@ static void cloud_sync_done(void *ctx) {
 - (void)windowScene:(UIWindowScene *)windowScene performActionForShortcutItem:(UIApplicationShortcutItem *)item completionHandler:(void (^)(BOOL))done {
     (void)windowScene; UIViewController *top = self.window.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
     home_shortcut(item.type, NO, top); done(YES);
+}
+// 游戏进行中切到后台：开了云存档、本机进度比云端新就上传（S2ArmShellHost 要后台收尾时间、只上传不下载；云端更新 / 冲突留给下次起局前同步）。
+//   宿主还没起（游戏库 / 起局前同步页 / 存档管理页）不传：那时存档没动过
+- (void)sceneDidEnterBackground:(UIScene *)scene {
+    (void)scene;
+    if (s2a_host_boot_pending() || self.cloudSyncing || self.managingSaves || !s2a_shell_cloud_upload_background) return;
+    const s2a_launch_ctx *lc = s2a_launch_ctx_get();
+    s2a_shell_cloud_upload_background(lc && lc->game_id[0] ? lc->game_id : "");
 }
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     (void)scene;
