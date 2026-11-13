@@ -1415,6 +1415,7 @@
       {"id": "game.delete", "zh-Hans": "删除这款游戏", "en": "Delete this game"},
       {"id": "game.delete.title", "zh-Hans": "删除「{0}」？", "en": "Delete {0}?"},
       {"id": "game.delete.body", "zh-Hans": "会删除这款的安装包、资源包和缓存。存档和你的游戏原文件都会保留。", "en": "Removes this game's app, resources and caches. Your saves and original game files are kept."},
+      {"id": "game.delete.onPhone", "zh-Hans": "这款装在手机上：删掉后，下次往这台手机装游戏时，手机上的这款会打不开（存档和资源包保留）。", "en": "This game is on a phone. After you delete it, the next time you install a game on that phone, this game will no longer open there (its saves and resources are kept)."},
       {"id": "game.delete.confirm", "zh-Hans": "删除", "en": "Delete"},
       {"id": "game.cancel", "zh-Hans": "取消", "en": "Cancel"},
       {"id": "install.done.title", "zh-Hans": "已装到 {0}", "en": "Installed on {0}"},

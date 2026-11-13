@@ -1925,13 +1925,34 @@ class PhoneGamesTruthTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 install.container_others(self.c, self.ph(), rec, leave=self.D)
             self.assertEqual(e.exception.code, "container_would_drop")
-            self.assertIn("1 款", str(e.exception)); self.assertIn("乙游戏", str(e.exception))
+            self.assertIn("它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：「乙游戏」", str(e.exception))
+            self.assertNotIn("游戏库删除", str(e.exception))
             self.c.r["acceptDropped"] = True
             self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.C])
+
+    def test_recorded_on_phone_but_deleted_from_library_asks_first(self):
+        # 本机记录 A、B 装在手机上；玩家在游戏库里删了 B（库里只剩 A）。原先 B 被静默不带、手机上 B 打不开却没人说。
+        #   期望：没确认 → container_would_drop，说明「已从这台电脑的游戏库删除」并点名 B，不说「别的电脑」；确认后只带 A。
+        #   手机上的游戏目录读不出（phone_games 按「这处没有别的游戏」给空集）时同样问——依据是这台电脑的记录
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲")]))
+        rec = dict(games={self.A: {}, self.B: {}})
+        for on_phone in ({self.A, self.B}, set()):
+            self.c.r.pop("acceptDropped", None)
+            with self.subTest(on_phone=sorted(on_phone)), um.patch.object(install, "phone_games", lambda c, ph, s=on_phone: s), \
+                 um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "乙游戏"):
+                with self.assertRaises(Failure) as e:
+                    install.container_others(self.c, self.ph(), rec, leave=self.D)
+                msg = str(e.exception)
+                self.assertEqual((e.exception.code, e.exception.internal), ("container_would_drop", self.B))
+                self.assertIn("它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：「乙游戏」", msg)
+                self.assertNotIn("别的电脑", msg)
+                self.c.r["acceptDropped"] = True
+                self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A])
 
     def test_app_gone_stops_carrying_this_computers_record(self):
         # 本机记录 A、B。玩家在手机上删了整个 S2Arm（平台确认这个包名没装）→ A、B 也不在手机上，一款都不带。
         # App 还在的两种照旧按本机记录带：还没有 games 目录；只有 A 解开了（B 可能在 App 里、资源包还没解开）
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲"), dict(id=self.B, name="乙")]))   # 两款都在游戏库（库里删掉的另走确认，见上一条）
         rec = dict(games={self.A: {}, self.B: {}})
         gone = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
         with um.patch.object(install, "devpush_client", gone):
