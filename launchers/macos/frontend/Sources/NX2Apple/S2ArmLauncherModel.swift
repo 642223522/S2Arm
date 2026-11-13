@@ -782,14 +782,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 正在装 / 要装的那台的称呼（进度胶囊用）：选中且连着 → 类型 + 名字；否则「iPhone / iPad」
     var installTargetLabel: String {
         guard let d = selectedDevice else { return "iPhone / iPad" }
-        let pad = (d["productType"] as? String)?.hasPrefix("iPad") == true
+        let pad = Self.padLike(d["productType"] as? String)
         return Self.deviceLabel(kind: pad ? "iPad" : "iPhone", name: d["name"] as? String ?? "")
     }
 
     var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
 
     /// 选中的设备是 iPad 时，「装到 iPhone」这几处入口文字换成「装到 iPad」（#487）；没连设备照旧写 iPhone
-    var installTargetIsPad: Bool { (selectedDevice?["productType"] as? String)?.hasPrefix("iPad") == true }
+    var installTargetIsPad: Bool { Self.padLike(selectedDevice?["productType"] as? String) }
+    /// iPad，以及按 iPad 兼容装的 Apple Vision Pro（机型号 RealityDevice*；理论支持、未真机验证）：入口和文案写 iPad
+    static func padLike(_ productType: String?) -> Bool {
+        guard let t = productType else { return false }
+        return t.hasPrefix("iPad") || t.hasPrefix("RealityDevice")
+    }
     /// 入口文字的键：iPad 版键名 = 原键 + "Pad"（zh / en 两份 l10n 同步）
     func installKey(_ key: String) -> String { installTargetIsPad ? key + "Pad" : key }
 
