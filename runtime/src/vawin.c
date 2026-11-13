@@ -206,9 +206,8 @@ static void guest_pressure_watch(void) {
 }
 #endif
 static void guest_file_map(void);
-// 判了要接文件、空间检查没过（#483 时之笛 iPhone：进程一起来就判，那一刻 App 正在同一进程里解刚推上来的 2.5 GB 资源包，剩余 2367 MB < 12288 MB，
-//   退回匿名内存，池 9 GB 装不下，6 分钟后涨到系统上限被收掉；同一台手机解完包重开那局空间够、接上了）：记下来，装游戏模块前再查一次
-static int g_gfile_pending; static uint64_t g_gfile_need, g_gfile_avail;
+// 装游戏前要整段换成文件（s2a_guest_file_retry）：只由下面多款容器「装游戏前按本款再判」判开时置位（剩余空间不再拦，见 guest_file_map）
+static int g_gfile_pending;
 // 多款容器起局时还没选游戏（程序号 0，读不到本款实测 / 「在跑」标记）：先用匿名内存、记下起局时的剩余，装游戏模块前按本款再判一次（s2a_guest_file_retry，#783）
 static int g_gfile_late; static uint64_t g_gfile_room0;
 static void guest_file_attach_(void);
@@ -280,20 +279,19 @@ static void guest_file_attach_(void) {
 // 整段窗口换成临时文件的 MAP_SHARED 映射（判了开之后；iOS / Mac 共用）
 static void guest_file_map(void) {
     const char *td = getenv("TMPDIR"); char path[1024]; snprintf(path, sizeof path, "%s/s2a_guest_%d.bin", td && *td ? td : "/tmp", (int)getpid());
-    // 起局前查闪存剩余空间（11-05 能耗线）：文件稀疏，只占内核写回的块，最坏涨到游戏弄脏的客体内存总量（Switch 2 是 12 GB）。
-    //   不够就不接文件、照旧用匿名内存（等于开关关），打一行黄；门槛 S2A_GUEST_FILE_MIN_FREE_MB（缺省 12288）
+    // 闪存剩余空间只记、不拦（11-13 #894：门槛原是 12 GB「游戏写满整个池」的最坏情况，iPhone 15 Pro Max 剩 9 GB 就退回匿名内存——
+    //   走到这里都是判了要接文件（实测装不下 / 上一局在前台死掉 / 显式要），匿名内存必定涨过单进程上限被系统收掉（一款 Switch 2 游戏开场过场后闪退、无崩溃报告）；
+    //   接文件只有真把剩余空间写满才出事。文件稀疏，只占内核写回的块，最多涨到游戏弄脏的客体内存总量。剩余低于 S2A_GUEST_FILE_MIN_FREE_MB（缺省 12288）只打一行黄
     { const char *m = getenv("S2A_GUEST_FILE_MIN_FREE_MB"); uint64_t need = (m && *m ? strtoull(m, NULL, 10) : 12288ull) << 20; struct statfs sf;
-      if (statfs(td && *td ? td : "/tmp", &sf)) {
-          if (g_gfile_pending) g_gfile_avail = UINT64_MAX;   // 补接时这次没查到：别拿起局时那次的旧剩余数告诉玩家（审计 P2-265）
-          LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照旧用匿名内存", errno); return; }
-      uint64_t avail = (uint64_t)sf.f_bavail * (uint64_t)sf.f_bsize;
-      // iPhone：f_bavail 不含系统随时能清掉的空间（「设置 → 储存空间」的「可用」含它），常小好几 GB；有「重要用途」口径就取大的那个（ios/app.m）
-      { uint64_t (*important)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_free_important");
-        uint64_t imp = important ? important(td && *td ? td : "/tmp") : 0; if (imp > avail) avail = imp; }
-      if (avail < need) {   // 先不接、记下「要接没接上」，开局装模块前再试一次（s2a_guest_file_retry）
-          g_gfile_pending = 1; g_gfile_need = need; g_gfile_avail = avail;
-          LOG("【黄】客体内存文件后备：临时目录剩余 %llu MB < 需要 %llu MB（S2A_GUEST_FILE_MIN_FREE_MB），先用匿名内存，装游戏前再查一次", (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20)); return; }
-      g_gfile_pending = 0; }
+      if (statfs(td && *td ? td : "/tmp", &sf)) LOG("【黄】客体内存文件后备：查不了临时目录剩余空间（errno=%d），照样接文件", errno);
+      else {
+          uint64_t avail = (uint64_t)sf.f_bavail * (uint64_t)sf.f_bsize;
+          // iPhone：f_bavail 不含系统随时能清掉的空间（「设置 → 储存空间」的「可用」含它），常小好几 GB；有「重要用途」口径就取大的那个（ios/app.m）
+          { uint64_t (*important)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_free_important");
+            uint64_t imp = important ? important(td && *td ? td : "/tmp") : 0; if (imp > avail) avail = imp; }
+          if (avail < need) LOG("【黄】客体内存文件后备：临时目录剩余 %llu MB < 游戏最坏会写脏的 %llu MB（S2A_GUEST_FILE_MIN_FREE_MB）：照样接文件（匿名内存一定超单进程上限被系统收掉）；真写满剩余空间时这局会因写不进退出，腾出空间更稳",
+                                (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20));
+      } }
     int fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
     if (fd < 0) { LOG("【红】客体内存文件后备：建不了临时文件（errno=%d），照旧用匿名内存", errno); return; }
     unlink(path);
@@ -308,6 +306,9 @@ static void guest_file_map(void) {
 // 开局装模块前（host_main.c load_session_modules）：起局时判了要接文件、但空间不够的，此刻（解包已完）再查一次、够了就接上。
 //   只在窗口还原封不动（整段一块 PROT_NONE 的匿名保留）时才换：换成文件是整段 MAP_FIXED，窗口里已经有东西就会被抹掉，那种情形不换、照旧匿名。
 //   还是不够：报红，并在屏幕上告诉玩家差多少空间（不然这款几分钟后涨到单进程上限被系统收掉，没有崩溃报告，玩家只看到闪退）
+#ifdef S2A_UNIT_TEST
+void s2a_guest_file_test_pending(void) { g_gfile_pending = 1; }   // 单测（t_guest_file_retry）：造「装游戏前要换成文件」的状态（真机只由多款容器按本款再判置位，Mac 上 room 0 走不到）
+#endif
 int s2a_guest_file_retry(void) {
     if (g_gfile_late && g_gfd < 0 && g_ok) {   // 多款容器：此刻已选定游戏，按本款实测 / 「在跑」标记再判（剩余用起局时那一刻的，和单款同口径）
         g_gfile_late = 0;
@@ -317,7 +318,7 @@ int s2a_guest_file_retry(void) {
             died ? "上一局在前台时死掉" : seen == UINT64_MAX ? "实测记录读不出（坏记录），保守开" : seen ? (on ? "实测峰值 + 余量大于剩余，装不下" : "实测峰值 + 余量不大于剩余，装得下")
             : "没有本款实测，先用匿名内存、记下实占", (unsigned long long)(g_gfile_room0 >> 20), (unsigned long long)(seen == UINT64_MAX ? 0 : seen >> 20));
         if (!on) return 0;
-        g_gfile_pending = 1;   // 下面同「空间不够没接上」的补接：窗口原封不动才整段换成文件
+        g_gfile_pending = 1;   // 下面整段换成文件：窗口原封不动才换
     }
     if (!g_gfile_pending || g_gfd >= 0 || !g_ok) return 0;
     // 窗口起局后分成几段保留（构造时就不止一段），逐段看：全部仍是 PROT_NONE、非共享 = 还没放开过、没有内容
@@ -330,14 +331,8 @@ int s2a_guest_file_retry(void) {
         a = ra + sz;
     }
     guest_file_map();
-    if (g_gfd >= 0) { LOG("客体内存文件后备：装游戏前补接上了（起局时剩余 %llu MB 不够，此刻够了）", (unsigned long long)(g_gfile_avail >> 20)); return 1; }
-    if (g_gfile_pending) {
-        g_gfile_pending = 0;
-        int unknown = g_gfile_avail == UINT64_MAX;   // 这次没查到剩余空间
-        if (unknown) LOG("【黄】客体内存文件后备：装游戏前查不到剩余空间，没接上文件（需要 %llu MB）；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_need >> 20));
-        else LOG("【黄】客体内存文件后备：装游戏前仍不够，剩余 %llu MB < 需要 %llu MB；这款内存池装不进单进程上限，玩一会儿会被系统收掉", (unsigned long long)(g_gfile_avail >> 20), (unsigned long long)(g_gfile_need >> 20));
-        // 不弹窗（玩家看着像被拦）：起局本来不拦，只是退回匿名内存；日志里有这一行
-    }
+    g_gfile_pending = 0;
+    if (g_gfd >= 0) { LOG("客体内存文件后备：装游戏前按本款判开，接上了"); return 1; }
     return 0;
 }
 // 窗口外也要文件后备的一段（远端影子区堆区余量用完、改从宿主任意空闲地址分时，far.c）：文件往后接长，按新偏移映射到内核挑的地址（同匿名的落点规则，不多占窗口外地址）。
