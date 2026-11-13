@@ -1110,6 +1110,22 @@ class AssembleTests(unittest.TestCase):
             p.start(); self.addCleanup(p.stop)
         return ph, pushed, signed
 
+    def test_update_phone_offline_target_but_connected_one_is_current(self):
+        """#900：更新要找的那台（dev1，壳旧）不在线，连着的另一台（dev2）已是本版壳 → 说清是两台、连着的这台不用更新，码仍是 device_not_connected；
+        连着的那台也是旧壳 / 没有别的在线设备 → 照原来的「不在线」原文"""
+        self._update(device="dev1")
+        layout.save_device(self.c, "dev2", dict(games={}, shellId="SID2"))
+        offline = Failure("要装的那台设备（编号末尾 dev1）现在不在线：……", code="device_not_connected")
+        with um.patch.object(install, "phone_for", side_effect=offline), um.patch.object(install, "online_devices", return_value={"dev2"}):
+            with self.assertRaises(Failure) as e:
+                install.update_phone(self.c)
+        self.assertEqual(e.exception.code, "device_not_connected")
+        self.assertIn("要更新的是另一台设备（编号末尾 dev1）", str(e.exception)); self.assertIn("（编号末尾 dev2）已经是新版 S2Arm，不用更新", str(e.exception))
+        with um.patch.object(install, "phone_for", side_effect=offline), um.patch.object(install, "online_devices", return_value=set()):
+            with self.assertRaises(Failure) as e:
+                install.update_phone(self.c)
+        self.assertEqual(str(e.exception), str(offline))
+
     def test_update_phone_lists_games_needing_repack_and_stops(self):
         """新壳认不得乙：没确认就停下报 container_stale 点名乙，不签不装、设备记录不动"""
         _, pushed, signed = self._update()
