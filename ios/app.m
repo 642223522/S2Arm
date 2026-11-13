@@ -621,14 +621,15 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
 // 静音键下照样出声（#789，系统设置「静音模式下也播放声音」S2APlayInSilentMode，缺省关 = 跟随静音键）：音频会话类别开 = Playback（不跟静音键），
 //   关 = SoloAmbient（系统缺省，原先一直是它）。启动和每次回前台各设一次（玩家去「设置」改完切回来就生效）；放后台队列，
 //   不在主线程启动早期抢 AVAudioSession（phone_motion.m：真机首次抢会话卡约 2 秒）。类别没变不重设
+//   「与其他 App 混音」（#896，S2AMixWithOthers，缺省关）开 = Ambient：别的 App 的音乐 / 播客照放、和游戏混在一起，静音键只静音游戏；优先于「静音键下照样出声」
 static void audio_category_apply(void) {
-    BOOL play = [NSUserDefaults.standardUserDefaults boolForKey:@"S2APlayInSilentMode"];
+    BOOL play = [NSUserDefaults.standardUserDefaults boolForKey:@"S2APlayInSilentMode"], mix = [NSUserDefaults.standardUserDefaults boolForKey:@"S2AMixWithOthers"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         AVAudioSession *s = AVAudioSession.sharedInstance;
-        NSString *want = play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient;
+        NSString *want = mix ? AVAudioSessionCategoryAmbient : play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient;
         if ([s.category isEqualToString:want]) return;
         NSError *e = nil; BOOL ok = [s setCategory:want error:&e];
-        LOG("[声] 音频会话类别 → %s（%s）%s%s", play ? "Playback" : "SoloAmbient", play ? "静音键下照样出声" : "跟随静音键",
+        LOG("[声] 音频会话类别 → %s（%s）%s%s", mix ? "Ambient" : play ? "Playback" : "SoloAmbient", mix ? "与其他 App 混音、静音键只静音游戏" : play ? "静音键下照样出声" : "跟随静音键",
             ok ? "" : "，设不上：", ok ? "" : e.localizedDescription.UTF8String ?: "?");
     });
 }
