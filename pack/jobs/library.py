@@ -23,7 +23,7 @@ import time
 import uuid
 import zipfile
 from errors import explain
-from core import Failure, atomic, contained, digest, prune_jobs, read
+from core import Failure, atomic, contained, digest, prune_jobs, read, task_of_log
 import toolchain
 import winproc
 import filelock
@@ -633,10 +633,11 @@ def _verify_copy(src, dst, strict):
             raise Failure(f"拷到新位置后校验不一致：{rel}", code="library_move_failed")
 
 
-def copy_tree_links(src, dst):
+def copy_tree_links(src, dst, check=None):
     """跨盘拷一棵目录，链接拷链接本身、不钻进去：软链照拷；Windows 的 junction（Python 里不算软链，shutil.copytree 会钻进去展开成普通目录，
     产物根的「现行」随之失效、出包报「现行必须是目录链接」——#214 整库搬家与 v3 移动游戏同一处）重建成指向同一目标的 junction。
-    目标仍指旧位置；放到新位置后由 _retarget_links 改指"""
+    目标仍指旧位置；放到新位置后由 _retarget_links 改指。
+    check：每个目录 / 文件之前调一次（作业的取消检查，#924：原先整个大目录拷完才看一次取消，玩家点了取消还要等几分钟）"""
     src, dst = Path(src), Path(dst)
     isjunction = getattr(os.path, "isjunction", lambda _: False)
     def materialize(a, b):
@@ -647,6 +648,8 @@ def copy_tree_links(src, dst):
         if a.name.endswith("@现行"):
             (b / ".root_tag").write_text(target.name + "\n", encoding="utf-8")
     def copy(a, b):
+        if check:
+            check()
         if isjunction(a):
             r = subprocess.run(["cmd", "/c", "mklink", "/J", str(b), os.readlink(a).removeprefix("\\\\?\\")], capture_output=True)
             if r.returncode != 0:
@@ -774,7 +777,15 @@ def move_library(c, source):
                 target = stage / str(n)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if a.is_dir() and not _is_link(a):
-                    copy_tree_links(a, target)
+                    try:
+                        copy_tree_links(a, target, check=c.check)
+                    except FileNotFoundError as error:
+                        # #924：拷到一半新位置的临时目录被删了（玩家手动清掉 .s2arm-moving）：说人话；下面的回滚照常把一切放回原样
+                        if not stage.is_dir():
+                            raise Failure("换库途中，新位置的临时文件夹（.s2arm-moving）被删掉了，这次换库已停下：游戏库还在原来的位置，"
+                                          "没有任何改动。要换库就再点一次「换游戏库」；想中途停下请用「取消」，不用手动删文件夹。",
+                                          code="library_move_failed") from error
+                        raise
                 else:
                     shutil.copy2(a, target, follow_symlinks=False)
                 _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
@@ -1419,6 +1430,8 @@ def wait_writable(c, path, poll=5.0):
         finally: f.unlink(missing_ok=True)
     e = _wait_probe(c, f"写 {path.name}", probe, poll)
     if isinstance(e, PermissionError):
+        if os.name == "nt":   # D-4MAH：Windows 没有「系统设置 › 隐私与安全性」，下一步见 errors.WINDOWS_RECOVERY
+            raise Failure(f"系统不让 S2Arm 往游戏库所在的磁盘写（{path}）", code="permission_denied")
         raise Failure(f"系统不让 S2Arm 往游戏库所在的磁盘写（{path}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"
                       "（外接盘看「可移除的宗卷」）里打开 S2Arm，再点一次", code="permission_denied")
     if e is not None:
@@ -1446,6 +1459,8 @@ def wait_readable(c, paths, poll=5.0):
         e = _wait_probe(c, f"读 {path.name}", probe, poll)
         if e is not None:
             if isinstance(e, PermissionError):
+                if os.name == "nt":   # D-4MAH：同上，Windows 的下一步见 errors.WINDOWS_RECOVERY
+                    raise Failure(f"系统不让 S2Arm 读 {path.name}（{path.parent}）", code="input_permission")
                 raise Failure(f"系统不让 S2Arm 读 {path.name}（{path.parent}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"
                               "或「完全磁盘访问权限」里打开 S2Arm，再点一次", code="input_permission")
             raise Failure(f"读不了游戏文件 {path.name}：{e}", code="input_unreadable")
@@ -1726,6 +1741,7 @@ def import_games(c):
 
 
 JOB_LIST_LIMIT = 200
+DIAG_JOBS = 50   # 诊断包只带最近这么多个任务（记录 + 各自的日志），外加还没结束的（上传服务单包 1000 个文件上限；11-13）
 
 
 def _mtime(path):
@@ -1817,6 +1833,8 @@ def catalog(c):
         unseal_builds(c)   # 旧版本留下的只读 RomFS 共享存储：每款一次加回写权限，玩家手动删旧产物不再被挡
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
+    # 设备记录里装在某台手机上的款：删除确认框据此多写一句「下次往这台手机装游戏时，手机上的这款会打不开」（容器现组时游戏库里没有它就带不进）
+    on_phone = {g.upper() for _, r in layout.devices(c) if isinstance(r, dict) for g in (r.get("games") or {})}
     for game in cat["games"]:
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
@@ -1835,6 +1853,7 @@ def catalog(c):
         game["downstream"] = downstream.describe(c, game)   # 下游深度方案（pack/downstream/schemes.json）：命中时启动器弹确认页
         game["iphoneRestorable"] = layout.phone_ipa(c, previous=True).is_file()   # 换壳后可装回上一版（install.restore_previous）
         game["iphoneInstall"] = layout.install_record(c, game["id"])
+        game["onPhone"] = game["id"].upper() in on_phone
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
         game_info = layout.game_info(c, game["id"])
         host_mac = game_info.get("hostMac")
@@ -2717,27 +2736,43 @@ def diagnostics(c):
         c.begin("导出脱敏诊断")
 
         step = "在所选位置建临时文件"
+        destination.parent.mkdir(parents=True, exist_ok=True)   # #917：命令行给的路径上一级还不存在（玩家指定的就是要放那里）：建好再写，不报错不回落桌面
         fd, name = tempfile.mkstemp(prefix="." + destination.name + ".", suffix=".partial", dir=destination.parent)
         temporary = Path(name)
         with os.fdopen(fd, "w+b") as output:
             created = os.fstat(output.fileno())
             with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
                 def write_file(parent_fd, name, member, job=False):
-                    c.check()
-                    info = winproc.stat_at(name, parent_fd) if os.name == "nt" else os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                    if not stat.S_ISREG(info.st_mode):
-                        return
-                    if os.name == "nt":
-                        source_file = winproc.open_file(name, parent_fd)
-                    else:
-                        file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
-                        source_file = os.fdopen(file_fd, "rb")
-                    with source_file as source:
+                    # #917：在跑的作业（含这次导出自己）一直原子替换自己的任务记录，查名字到打开之间换了一份（inode 变）很常见；
+                    #   原先整包报「发生变化，请重试」不生成，重试照样撞上。改为重查名字再开，三次都在换就跳过这一份、记进 manifest changed
+                    for _ in range(3):
+                        c.check()
+                        try:
+                            info = winproc.stat_at(name, parent_fd) if os.name == "nt" else os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            return   # 列目录后被删（作业收尾清理）：没有可收的
+                        if not stat.S_ISREG(info.st_mode):
+                            return
+                        try:
+                            if os.name == "nt":
+                                source_file = winproc.open_file(name, parent_fd)
+                            else:
+                                file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+                                source_file = os.fdopen(file_fd, "rb")
+                        except FileNotFoundError:
+                            return
+                        held = contextlib.ExitStack()
+                        source = held.enter_context(source_file)
                         opened = winproc.file_info(source) if os.name == "nt" else os.fstat(source.fileno())
+                        if (opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino):
+                            break
+                        held.close()
+                    else:
+                        changed.append(member)
+                        return
+                    with held:
                         if not stat.S_ISREG(opened.st_mode):
                             return
-                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                            raise Failure("诊断文件在导出期间发生变化，请重试。")
                         stem, suffix = os.path.splitext(member)
                         # Archive separators are known structure, not email local-part characters.
                         public_stem = "/".join(redact_member_component(part) for part in stem.split("/"))
@@ -2748,12 +2783,12 @@ def diagnostics(c):
                             n += 1
                             public_member = f"{public_stem} ({n}){suffix}"
                         if job:
+                            # 超过单份上限的任务记录（长局 / AI 连续操作攒下的事件）：留前 4 MiB、记进 manifest truncated，不再整包拒绝（#917）
                             limit = DIAGNOSTIC_JOB_LIMIT
-                            if opened.st_size > limit:
-                                raise Failure("诊断任务文件超过 4 MiB 上限，未生成诊断包。")
                             data = source.read(limit + 1)
                             if len(data) > limit:
-                                raise Failure("诊断任务文件超过 4 MiB 上限，未生成诊断包。")
+                                truncated.append(dict(file=public_member, bytes=opened.st_size, kept=limit, omitted=max(opened.st_size, len(data)) - limit))
+                                data = data[:limit]
                             # These allowlisted job/log files are text. Invalid UTF-8 is
                             # replaced, never copied as raw bytes around redaction.
                             archive.writestr(public_member, redact(data.decode(errors="replace")))
@@ -2781,10 +2816,28 @@ def diagnostics(c):
 
                 step = "读日志与任务记录"
                 truncated = []
+                changed = []   # 导出期间一直在换、跳过的（#917）
+                # 只带最近 DIAG_JOBS 个任务（按记录改动时间）+ 还没结束的：任务记录 / 各任务日志原先整目录收，用久了上万个文件，
+                #   超过上传服务 1000 个文件上限（「文件数超过 1000 个」）、打包也慢（11-13 维护者机器 703 个任务 + 12296 个任务日志）
+                picked, job_total, included = set(), 0, 0
                 if roots["jobs"] is not None:
-                    for name in sorted(winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
-                        if name.endswith(".json"):
-                            write_file(roots["jobs"], name, "jobs/" + name[:-5] + ".txt", job=True)
+                    records = []
+                    for name in (winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
+                        if name.endswith(".json") and not name.endswith(".request.json"):
+                            try:
+                                info = winproc.stat_at(name, roots["jobs"]) if os.name == "nt" else os.stat(name, dir_fd=roots["jobs"], follow_symlinks=False)
+                            except OSError:
+                                continue
+                            records.append((info.st_mtime, name))
+                    records.sort(reverse=True)
+                    job_total = len(records)
+                    for rank, (_, name) in enumerate(records):
+                        task = name[:-5]
+                        if rank < DIAG_JOBS or (read(c.jobpath.parent / name, {}) or {}).get("state") in ("queued", "running"):
+                            picked.add(task.lower()); included += 1
+                            write_file(roots["jobs"], name, "jobs/" + task + ".txt", job=True)
+                picked.add(c.task.lower())   # 本次导出自己
+                skipped_logs = [0]
 
                 def logs(directory_fd, relative=""):
                     for name in sorted(winproc.listdir(directory_fd) if os.name == "nt" else os.listdir(directory_fd)):
@@ -2793,12 +2846,17 @@ def diagnostics(c):
                         member = relative + name
                         if not relative and name == "jobs":
                             continue   # 任务记录上面已按 jobs/ 收过
+                        owner = task_of_log(name) if not relative else None
+                        if owner and owner not in picked:   # 没选进来的任务的日志（<任务>.log、<任务>-install.log、<任务>/…）：不收，只计数
+                            skipped_logs[0] += 1
+                            continue
                         if stat.S_ISDIR(info.st_mode):
                             child = winproc.open_dir_nofollow(name, directory_fd) if os.name == "nt" else os.open(name, flags, dir_fd=directory_fd)
                             try:
                                 opened = child.info if os.name == "nt" else os.fstat(child)
                                 if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                                    raise Failure("诊断目录在导出期间发生变化，请重试。")
+                                    changed.append(member + "/")   # 列到打开之间被换掉的目录：跳过、记一笔（#917）
+                                    continue
                                 logs(child, member + "/")
                             finally:
                                 winproc.close(child) if os.name == "nt" else os.close(child)
@@ -2898,7 +2956,9 @@ def diagnostics(c):
                 # These names have already been sanitized; redacting them again
                 # would hide task UUIDs and break the archive index.
                 manifest["files"] = sorted(archive.namelist() + ["manifest.json"])
-                manifest["truncated"] = truncated   # 超过单份上限被截的日志：原长、留下、截掉的字节（空 = 全部整份）
+                manifest["truncated"] = truncated   # 超过单份上限被截的日志 / 任务记录：原长、留下、截掉的字节（空 = 全部整份）
+                manifest["changed"] = changed   # 导出期间一直在被替换、没收进来的（#917；空 = 全收到）
+                manifest["jobs"] = dict(total=job_total, included=included, limit=DIAG_JOBS, omittedLogs=skipped_logs[0])   # 任务记录共几个、收了几个（含没结束的）、省掉的任务日志数
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             # 身份在写完、落盘后再取（仍握着句柄，防调包不变）：exFAT / FAT 上新文件写入数据分到存储后 inode 号会变，
             #   建文件时取的身份必然对不上（诊断包存到 exFAT 盘上一律报「临时文件在导出期间发生变化」）
