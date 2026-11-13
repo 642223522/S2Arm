@@ -849,6 +849,28 @@ public final class S2ArmLauncherModel: ObservableObject {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// 游戏库层的「上传给开发者」弹窗（LauncherView 挂）：游戏库「更多」菜单与控制口 /diagnostics {action: upload} 打开；"" = 不针对某款
+    @Published var diagUploadFor: String?
+    /// 控制口替玩家点弹窗里的按钮（send / copy / close）：弹窗收到就照点、清掉（UploadDiagnosticsSheet.onReceive）
+    struct DiagUploadCommand: Equatable { let id = UUID(); let action: String }
+    @Published var diagUploadCommand: DiagUploadCommand?
+
+    /// 上传给开发者（diagnosticsUpload 作业）→ 短码。错误摘要的附加信息同 copyErrorReport（App 版本、目标设备、环境检查未过项）；
+    ///   operations 为 nil（没有作业记录的失败，如环境检查）时把界面上的 fallback 正文交给作业放进包里。失败抛作业的原因（界面退回导出）
+    func uploadDiagnostics(gameID: String?, operations: [String]?, fallback: String) async throws -> String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        var extra: [String: Any] = ["app": info["CFBundleShortVersionString"] as? String ?? "", "build": info["S2ABuildID"] as? String ?? "",
+                                    "checks": checks.filter { !$0.ok }.map { ["name": $0.name, "message": $0.message] }]
+        if let device = currentDeviceTarget.flatMap({ ($0["model"] ?? $0["name"]) as? String }) { extra["device"] = device }
+        var request: [String: Any] = ["extra": extra]
+        if let gameID { request["gameId"] = gameID }
+        if let operations { request["operations"] = operations } else if !fallback.isEmpty { request["summary"] = fallback }
+        let outcome = try await provider.client.perform("diagnosticsUpload", extra: request)
+        guard let code = outcome.result["code"] as? String, !code.isEmpty else { throw UploadNoCode() }
+        return code
+    }
+    struct UploadNoCode: LocalizedError { var errorDescription: String? { Localizer().t("s2arm.diagUpload.noCode") } }
+
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
     func checkInstall(_ gameID: String, device: String? = nil) {
         let target = device ?? installDeviceID
