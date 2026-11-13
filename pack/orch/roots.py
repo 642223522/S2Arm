@@ -210,7 +210,11 @@ def links_supported(path):
     return fs.value.upper() in ('NTFS', 'REFS')
 
 
-def copy_file(source, dest):
+def copy_file(source, dest, link_ok=False):
+    """克隆优先（Mac clonefile / Linux FICLONE / Windows ReFS 块克隆，写时复制）；都没有时实拷。
+    link_ok（#291，只给播种 RomFS 用）：Windows 上同卷非 ReFS（NTFS）先建硬链接，不逐文件实拷——RomFS 按设计不可变（没有阶段原地改它，
+    门禁机上还封成拒写），写单一 IMG 时边写边腾删的是产物根里的这个名字，共用解包目录里的那份数据不受影响。
+    11-13 Windows NTFS 读数：18 万个文件的 RomFS 逐个实拷播种 1042 秒，8 万个的 433 秒。建不了（跨卷、FAT 类卷）照旧实拷"""
     source, dest = Path(source), Path(dest)
     if is_link(source) or not source.is_file():
         raise UnsafeRoot(f'不复制链接/特殊文件：{source}')
@@ -247,7 +251,14 @@ def copy_file(source, dest):
             raise OSError(rc, 'ReFS CopyFile2 失败；不悄悄转实拷')
         _win_acl(dest, False)
     elif not cloned:
-        print(f'【黄】非 ReFS 同卷克隆：实拷 {source.name}', file=sys.stderr)
+        if link_ok and sys.platform == 'win32':
+            try:
+                os.link(long_path(str(source)), long_path(str(dest)))
+                return   # 同一份数据：不改属性（copystat / 可写位会连带改到解包目录里那份）
+            except OSError as error:
+                print(f'【黄】硬链接不可用（{error.strerror or error}）：实拷 {source.name}', file=sys.stderr)
+        else:
+            print(f'【黄】非 ReFS 同卷克隆：实拷 {source.name}', file=sys.stderr)
         with source.open('rb') as src, dest.open('xb') as dst:
             shutil.copyfileobj(src, dst, 1024 * 1024)
     shutil.copystat(source, dest, follow_symlinks=False)
@@ -623,7 +634,7 @@ class Roots:
         self._resource('--root-clone', source, dest, env=env)
         self._shards(dest, '克隆现行(root_begin)', env=env)
 
-    def _copy_tree(self, source, dest, tick=None):
+    def _copy_tree(self, source, dest, tick=None, link_ok=False):
         if is_link(source):
             raise UnsafeRoot('克隆拒绝未批准的链接')
         dest.mkdir(parents=True)
@@ -632,7 +643,7 @@ class Roots:
             if p.is_dir():
                 output.mkdir(parents=True, exist_ok=True)
             else:
-                copy_file(p, output)
+                copy_file(p, output, link_ok=link_ok)
                 if tick:
                     tick()
 
