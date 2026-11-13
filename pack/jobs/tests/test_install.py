@@ -221,7 +221,8 @@ class FlowTests(unittest.TestCase):
                     for d, k in ((0, 0), (1 << 20, 1), (3 << 20, 2)): on_line(f"S2A_PUSH_PROGRESS {d} {3 << 20} {k} 2")
                 if locked:   # #333：推之前写探针就写不进（探针在推送之前，和带不带 --apply 无关）
                     Path(log).parent.mkdir(parents=True, exist_ok=True)
-                    Path(log).write_text("【红】iPhone 写不进资源包：多半是手机锁屏了或数据线松了。解锁手机、保持亮屏，插稳数据线后再点一次。\n", encoding="utf-8")
+                    Path(log).write_text("【红】" + ("iPhone 写不进资源包（Operation timed out; abandoned）。手机没有锁屏，是电脑和手机的连接出了问题：拔下数据线重新插好，再点一次。"
+                                                    if locked == "conn" else "iPhone 写不进资源包：手机锁屏了。解锁手机、保持亮屏，再点一次。") + "\n", encoding="utf-8")
                     raise install.Failure("tool", code="tool_exit")
                 on_line(f"[12:00:00] 资源包：推 {pushed} 个文件 3 MB，分 1 批 + 索引 + 清单（1 秒）")
                 if "--apply" in args and not (pushed == 0 and state["applied"] == "cafe01"):
@@ -273,6 +274,14 @@ class FlowTests(unittest.TestCase):
             self._install(gid, pushed=2, applied_before="", locked=True)
         self.assertEqual(e.exception.code, "device_locked")
         self.assertIn("锁屏", str(e.exception))
+
+    def test_probe_write_failure_unlocked_is_not_device_locked(self):   # 11-13：手机没锁、探针写不进（devicectl 超时）→ 连接问题带原文，不报 device_locked
+        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
+        with self.assertRaises(install.Failure) as e:
+            self._install(gid, pushed=2, applied_before="", locked="conn")
+        self.assertEqual(e.exception.code, "resource_transfer_failed")
+        self.assertIn("Operation timed out", str(e.exception))
+        self.assertNotIn("锁屏了", str(e.exception))
 
     def test_img_pack_is_done_once_transferred(self):   # 11-11：单一 IMG 形态传完并核过长度即装好，不带 --apply、不起 App 等机上解开，结果带 openToFinish
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
