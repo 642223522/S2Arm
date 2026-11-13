@@ -1221,5 +1221,6 @@ int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
 int s2a_ui_zh(void) { return s2a_l10n_zh(); }
 // 游戏语言缺省跟宿主界面语言（维护者 11-13）：进程一起来就把界面实际显示的语言（zh-Hans / zh-Hant / en）交给服务层（S2A_UI_LANGUAGE → Host.cs PickLanguage →
 //   SystemLocale.FromUi）。构造期写：此时只有主线程、服务层还没读环境；已给的（开发 / 判定局）不覆盖。玩家在启动设置里单独指定的语言走 S2A_SYSTEM_LANGUAGE，优先于它
-__attribute__((constructor)) static void s2a_ui_language_env(void) { @autoreleasepool { setenv("S2A_UI_LANGUAGE", s2a_l10n_lang().UTF8String, 0); } }
+//   界面语言玩家选过（App 设置「界面语言」，S2AUILanguageKey）：同一处先把本 App 的 AppleLanguages 设成它（字符串表 / 游戏库 / 系统弹框随之），跟随系统就清掉覆盖
+__attribute__((constructor)) static void s2a_ui_language_env(void) { @autoreleasepool { setenv("S2A_UI_LANGUAGE", s2a_l10n_apply_choice().UTF8String, 0); } }
 int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0; }
