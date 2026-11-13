@@ -18,6 +18,22 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 mode=${1:-}
+# Isolated production replay indirect test. Exit before every legacy test path.
+if [ "$mode" = "--indirect-core" ]; then
+    out="$repo/build/vk-indirect-core"; mkdir -p "$out/shaders"
+    glslc_bin=${GLSLC:-glslc}
+    : "${S2A_LAVAPIPE_ICD:?set S2A_LAVAPIPE_ICD for isolated replay test}"
+    : "${S2A_VK_LAYER_DIR:?set S2A_VK_LAYER_DIR for isolated replay test}"
+    for shader in quad.vert quad.frag count_args.comp replay_drv0.vert replay_drv0.frag replay_drv0_args.comp; do
+        "$glslc_bin" --target-env=vulkan1.1 "$repo/android/tests/vk/shaders/$shader" -o "$out/shaders/$shader.spv"
+    done
+    inc=(); for d in android/tests/vkhost graphics/nvn/third_party/vulkan-headers/include graphics/nvn graphics/nvn/replay graphics/nvn/gfx/nvn graphics/nvn/gfx/nvn/include android/native android/native/nvn android/native/direct runtime/include; do inc+=(-I "$repo/$d"); done
+    src=("$repo/android/tests/vk/t_replay_indirect.c")
+    for f in graphics/nvn/replay/rp_draw.c graphics/nvn/replay/rp_buf.c graphics/nvn/replay/rp_state.c graphics/nvn/replay/nvn_unimpl.c android/native/nvn/backend_vulkan.c android/native/direct/vk_device.c android/native/direct/gs_path.c android/native/capprobe/capprobe_host.c android/native/nvn/nvn_vk_format.c graphics/nvn/gfx/nvn/nvn_fmt_expand.c android/native/nvn/nvn_vk_bcdec.c android/native/nvn/nvn_vk_driver_cache.c android/native/direct/sha256.c; do src+=("$repo/$f"); done
+    cc -D_POSIX_C_SOURCE=200809L -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter -ffunction-sections -fdata-sections -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 "${inc[@]}" "${src[@]}" -Wl,--gc-sections -Wl,--wrap=nvn_gpu_draw -lvulkan -lpthread -lm -o "$out/replay-indirect"
+    export VK_ICD_FILENAMES="$S2A_LAVAPIPE_ICD" VK_LAYER_PATH="$S2A_VK_LAYER_DIR" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+    exec "$out/replay-indirect" "$out/shaders"
+fi
 if [ "$(uname -s)" = Darwin ]; then
     export S2A_VULKAN_CACHE="$repo/build/vulkan-cache"
     if [ -z "$mode" ]; then python3 "$repo/android/tests/gs_compiler_chain_test.py"; fi
