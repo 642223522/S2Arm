@@ -581,3 +581,4 @@
 20261113-0515-svc-gaps-resolver13-applet170-auddmg-input.patch
 20261113-2332-audio-dsp-neon-biquad-adpcm-sink.patch
 20261113-0659-hle-host-junk-filter.patch
+20261113-1107-am-cache-storage-max.patch
