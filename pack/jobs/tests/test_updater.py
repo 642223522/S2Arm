@@ -3,6 +3,7 @@ import io
 import http.server
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -56,6 +57,27 @@ class Base(unittest.TestCase):
 class ApplyTests(Base):
     def run_apply(self, launch, **options):
         return updater.apply(self.staged, self.install, 2147483646, self.private, launch=launch, health_seconds=options.pop("health", 1), **options)
+
+    def test_failure_logged_when_run_from_runner_with_only_updater_py(self):
+        """#828：替换进程跑在 updates/runner/（只拷 updater.py）。原先 record_failure 要 import core，必然失败、被吞，换版失败从没进 update.log"""
+        runner = self.root / "runner"; runner.mkdir(); shutil.copy2(updater.__file__, runner / "updater.py")
+        run = __import__("subprocess").run([sys.executable, "-B", "-I", str(runner / "updater.py"), "apply", "--staged", str(self.root / "没有这个目录"),
+                                            "--install", str(self.install), "--pid", "2147483646", "--private-root", str(self.private)],
+                                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        log = (self.private / "logs" / "update.log").read_text(encoding="utf-8")
+        self.assertIn("update_swap_failed", log)
+        self.assertIn("apply 开始", (self.private / "updates" / "apply.log").read_text(encoding="utf-8"))
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
+
+    def test_apply_that_cannot_get_the_lock_relaunches_old_and_records(self):
+        launched = []
+        with updater.UpdateLock(self.private / "updates"), patch.object(updater.UpdateLock.__init__, "__defaults__", (0.3,)):
+            rc = self.run_apply(lambda install, args: launched.append(install))
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads((self.private / "updates" / "last_failure.json").read_text())["code"], "update_busy")
+        self.assertEqual(launched, [self.install])                     # 旧版被拉起来（启动器已退）
+        self.assertEqual((self.install / "S2Arm.exe").read_text(), "old")
 
     def healthy(self, install, args):
         (self.private / "updates/health.ok").write_text("ok")
@@ -609,6 +631,38 @@ class PrepareTests(Base):
                         self.assertEqual(caught.exception.code, "update_checksum_mismatch")
                 self.assertEqual(len(attempts), 2)
                 self.assertEqual(tree(self.install), before)
+
+    # ---- #828（11-13）：prepare / apply 一把锁、同版本复用、换版失败有记录、手动装新版后清残留 ----
+    def test_second_prepare_reuses_ready_version_without_downloading(self):
+        first = self.prepare()
+        self.assertEqual(first["state"], "ready")
+        runner = Path(first["python"]); mtime = runner.stat().st_mtime_ns
+        with patch.object(updater, "fetch_package", side_effect=AssertionError("不该重下")):
+            second = self.prepare()
+        self.assertEqual((second["state"], second["staged"], second["python"]), ("ready", first["staged"], first["python"]))
+        self.assertEqual(runner.stat().st_mtime_ns, mtime)   # runner/ 没重建（apply 可能正用着它）
+
+    def test_prepare_waits_for_the_lock_then_reports_busy(self):
+        with updater.UpdateLock(self.private / "updates"), patch.object(updater, "PREPARE_LOCK_WAIT", 0.3):
+            # 锁在同一进程里另开描述符取：flock 按打开的文件算，同进程两次打开照样互斥
+            with self.assertRaises(updater.UpdateError) as caught:
+                with patch.object(updater.UpdateLock.__init__, "__defaults__", (0.3,)):
+                    self.prepare()
+        self.assertEqual(caught.exception.code, "update_busy")
+        self.assertEqual(self.prepare()["state"], "ready")   # 放锁后照常
+
+    def test_stale_pending_cleared_only_when_not_newer_and_not_locked(self):
+        u = self.private / "updates"
+        def setup(version):
+            (u / "pending.json").write_text(json.dumps({"version": version})); (u / version / "unpack").mkdir(parents=True, exist_ok=True)
+        setup("9.9.9")
+        self.assertFalse(updater.clear_stale_pending(self.private, "0.1.1"))   # 待换的是更新的版本：留着
+        self.assertTrue((u / "pending.json").exists())
+        with updater.UpdateLock(u):
+            self.assertFalse(updater.clear_stale_pending(self.private, "9.9.9"))   # 有更新在跑：不动
+        self.assertTrue((u / "9.9.9").exists())
+        self.assertTrue(updater.clear_stale_pending(self.private, "9.9.9"))   # 手动装好了同版本：清
+        self.assertFalse((u / "pending.json").exists()); self.assertFalse((u / "9.9.9").exists())
 
     def test_runs_the_way_the_launcher_starts_it(self):
         """两端都用 python -I 直接跑 updater.py：同目录的模块要自己能找到。"""

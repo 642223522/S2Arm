@@ -743,9 +743,23 @@ def prepare(platform, current, private, install, protect):
     updates = Path(private) / "updates"
     updates.mkdir(parents=True, exist_ok=True)
     check_paths(install, protect)
+    with UpdateLock(updates):
+        _prepare(platform, current, updates, install)
+
+
+def _prepare(platform, current, updates, install):
     info = latest(platform, current, fresh=True)
     if not info["available"]:
         raise UpdateError("update_none", "已经是最新版本。")
+    # 同一版本上一次已经准备好（pending.json 记着解开的位置、替换进程的 Python 都还在）：直接交回，不重下、不重建 runner/
+    try:
+        done = json.loads((updates / "pending.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        done = {}
+    #   同一版本号重新发布过（签名清单里的整包校验值变了）不算准备好，照常重下重验
+    if done.get("version") == info["version"] and done.get("sha256") == info.get("sha256") and all(done.get(k) and Path(done[k]).exists() for k in ("staged", "python", "updater")):
+        emit(state="ready", via=done.get("via", "full"), version=info["version"], staged=done["staged"], python=done["python"], updater=done["updater"])
+        return
     work = updates / info["version"]
     if work.exists():
         # 同一版本重试：只留整包没下完的 .part 接着下（download 续传），其余（解包、增量）清掉重来
@@ -784,8 +798,9 @@ def prepare(platform, current, private, install, protect):
         raise UpdateError("update_bad_package", "更新程序在这台电脑上起不来，已停止，旧版没有变化。")
     if info.get("notes"):   # 换上新版后第一次打开要弹「这版更新了什么」：说明随下载记在本机，不再联网（updates/notes/ 不按版本号命名，drop_version_dirs 不删）
         save_json(updates / "notes" / f"{info['version']}.json", info["notes"])
-    (updates / "pending.json").write_text(json.dumps({"version": info["version"], "time": time.time()}))
-    emit(state="ready", via=via, version=info["version"], staged=str(staged), python=str(python), updater=str(runner / "updater.py"))
+    ready = {"via": via, "version": info["version"], "staged": str(staged), "python": str(python), "updater": str(runner / "updater.py")}
+    (updates / "pending.json").write_text(json.dumps(dict(ready, time=time.time(), sha256=info.get("sha256"))))
+    emit(state="ready", **ready)
 
 
 def pid_alive(pid):
@@ -885,6 +900,75 @@ def drop_version_dirs(updates):
                 pass
 
 
+LOCK_NAME = ".update.lock"
+PREPARE_LOCK_WAIT = 600   # 另一个 prepare / apply 在跑时最多等这么久（下载大包要几分钟）
+
+
+class UpdateLock:
+    """prepare 与 apply 共用一把锁（updates/.update.lock，内核文件锁，进程没了自动放）。
+    11-13 #828：同一台机器上两个 prepare 同时跑（启动时自动下载 + 手动查更新 / s2armctl update），互相清对方的版本目录——
+      本机复现：一个报 FileExistsError（unpack 已在），另一个解到一半被删、验签不过；玩家 11-12 的「.part 改名时目标没了」同因。
+    等不到 = UpdateError update_busy（不是网络错）"""
+    def __init__(self, updates, wait=PREPARE_LOCK_WAIT):
+        self.path, self.wait, self.fd = Path(updates) / LOCK_NAME, wait, None
+
+    @staticmethod
+    def _try(fd):
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, 0); msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + self.wait
+        while not self._try(self.fd):
+            if time.monotonic() >= deadline:
+                os.close(self.fd); self.fd = None
+                raise UpdateError("update_busy", "另一个更新正在进行，这次没有开始。请稍后再试。")
+            time.sleep(0.5)
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            if os.name == "nt":
+                import msvcrt
+                try:
+                    os.lseek(self.fd, 0, 0); msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            os.close(self.fd); self.fd = None   # posix：关掉即放锁
+
+
+def clear_stale_pending(private_root, current):
+    """启动时：pending.json 记的版本不比当前新（玩家手动装好了新版 / 换版早已完成），又没有更新在跑，就清掉它和各版本工作目录。
+    11-13 #828：手动覆盖安装后 pending.json 与解开的整份新版一直留着，下次还当成待换版。返回是否清了"""
+    updates = Path(private_root) / "updates"
+    pending = updates / "pending.json"
+    try:
+        version = json.loads(pending.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return False
+    mine, theirs = version_tuple(current), version_tuple(version)
+    if not mine or (theirs and theirs > mine):
+        return False
+    try:
+        with UpdateLock(updates, wait=0):
+            pending.unlink(missing_ok=True)
+            (updates / "health.ok").unlink(missing_ok=True)
+            drop_version_dirs(updates)
+    except UpdateError:   # 有 prepare / apply 正在跑：不动
+        return False
+    return True
+
+
 def swap(staged, install, backup, new):
     """staged → install；失败时安装目录保持或恢复旧版，异常往外抛。"""
     if new.exists():
@@ -906,7 +990,30 @@ def default_launch(install, args):
 
 
 def apply(staged, install, pid, private, args=(), launch=default_launch, health_seconds=HEALTH_SECONDS, exit_seconds=EXIT_SECONDS):
-    """返回 0 = 换上新版并确认起来了；1 = 已留在 / 回到旧版，原因写进 updates/last_failure.json。"""
+    """返回 0 = 换上新版并确认起来了；1 = 已留在 / 回到旧版，原因写进 updates/last_failure.json。
+    持更新锁换版：换版期间别的 prepare 不会清掉解开的新版 / 替换进程用的 runner/（#828）"""
+    updates = Path(private) / "updates"
+    # 先在锁外等旧版退出：等待期间别的 prepare 能拿到锁、看到同版本已准备好就直接复用返回，不会陪着等两分钟；
+    #   等不到由 _apply 照旧报 update_app_busy
+    deadline = time.monotonic() + exit_seconds
+    while pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    try:
+        with UpdateLock(updates):
+            return _apply(staged, install, pid, private, args, launch, health_seconds, max(0.0, deadline - time.monotonic()))
+    except UpdateError as error:   # 等不到锁（别的 prepare 一直占着）：旧版没动，照失败收尾——记原因、把旧版拉起来（启动器已经退了，不拉玩家就什么都看不到）
+        (updates / "last_failure.json").write_text(json.dumps({"code": error.code, "message": str(error), "time": time.time()}, ensure_ascii=False), encoding="utf-8")
+        record_failure(types.SimpleNamespace(private_root=str(private)), error.code, str(error))
+        while pid_alive(pid):
+            time.sleep(0.5)
+        try:
+            launch(Path(install), list(args))
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return 1
+
+
+def _apply(staged, install, pid, private, args, launch, health_seconds, exit_seconds):
     install, staged = Path(install), Path(staged)
     updates = Path(private) / "updates"
     backup, new = install.with_name(install.name + ".s2arm-old"), install.with_name(install.name + ".s2arm-new")
@@ -984,9 +1091,9 @@ def record_failure(args, code, message, detail=""):
     if not root:
         return
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from core import logs_root
-        log = logs_root(root) / "update.log"
+        # 与 core.logs_root 同一条规则（<私有目录>/logs）。不 import core：替换进程跑在 updates/runner/，那里只有 updater.py，
+        #   原先 from core import logs_root 在换版时必然 ImportError、被下面吞掉——换版失败从没写进过 update.log（#828）
+        log = Path(root).expanduser().resolve() / "logs" / "update.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as out:
             out.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {code} {message}\n{str(detail or '').strip()[-2000:]}\n")
@@ -1016,8 +1123,20 @@ def main(argv=None):
     p.add_argument("--staged", required=True); p.add_argument("--install", required=True); p.add_argument("--pid", required=True, type=int)
     p.add_argument("--private-root", required=True); p.add_argument("--arg", action="append", default=[])
     a = ap.parse_args(argv)
+    if a.command == "apply":
+        # 启动器起替换进程时把标准输出 / 错误都接到了空设备（JobClient.updateApply）：没接住的异常、Python 自己的报错都留到这里（#828 换版失败零痕迹）
+        try:
+            (Path(a.private_root) / "updates").mkdir(parents=True, exist_ok=True)
+            sys.stderr = open(Path(a.private_root) / "updates" / "apply.log", "a", encoding="utf-8", buffering=1)
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} apply 开始：{a.staged} → {a.install}（等 pid {a.pid} 退出）", file=sys.stderr)
+        except OSError:
+            pass
     # 打开时要看什么（inbox）：查版本、取公告都可能失败，失败不走下面的更新失败记录（不写 update.log），查不到就当没有新版、没有公告，界面照常
     if a.command == "inbox":
+        try:
+            clear_stale_pending(a.private_root, a.current)
+        except OSError:
+            pass
         try:
             check = latest(a.platform, a.current)
         except (UpdateError, OSError, ValueError, KeyError, __import__("http.client").client.HTTPException) as error:
