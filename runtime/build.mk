@@ -195,7 +195,6 @@ ios: ios-ns2pro
 	@/usr/bin/plutil -insert LSSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 声明支持系统游戏模式（10-20 维护者二分：动森整机 5.88 → 3.37 W、30 帧不变，性能核 3.9 → 2.2 GHz；旧 S2A 包有此键、S2Arm 漏了）
 	@/usr/bin/plutil -insert LSApplicationCategoryType -string public.app-category.games $(IOS_APP)/Info.plist   # 系统靠类别认出是游戏才进游戏模式（11-01 调研：LSSupportsGameMode 之外还要类别键）
 	@/usr/bin/plutil -insert GCSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 部署目标 iOS 18.0 < 18.6：LSSupportsGameMode 18.6 起才认，18.0–18.5 靠旧键
-	@/usr/bin/plutil -insert CADisableMinimumFrameDurationOnPhone -bool YES $(IOS_APP)/Info.plist   # iPhone 上没有这个键，显示链接最高只给 60 Hz（iPad 不受限）；有了它，请求 120 Hz 的节拍模式才拿得到 120 Hz。缺省节拍请求的仍是 60 Hz，行为不变
 	@/usr/bin/plutil -insert NSLocalNetworkUsageDescription -string "Local multiplayer: find other devices on the same Wi-Fi and join the same room." $(IOS_APP)/Info.plist; /usr/bin/plutil -insert NSBonjourServices -json '["_s2arm-ldn._tcp"]' $(IOS_APP)/Info.plist   # ldn_lan.m；主值英文（开发区域 en），中文在 ios/l10n/zh-Hans.lproj/InfoPlist.strings（#316，上面 cp -R 一并拷进包）
 	@/usr/bin/plutil -insert UISupportedExternalAccessoryProtocols -json '["com.xiaoji.M2boot"]' $(IOS_APP)/Info.plist   # 配件协议白名单：没声明就开不了 EASession（ios/ea_rumble.h，#462）
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
