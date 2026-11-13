@@ -53,7 +53,8 @@ extension LauncherView {
 
     func hero(_ game: GameSummary, width: CGFloat, height: CGFloat) -> some View {
         ZStack(alignment: .bottomLeading) {
-            if let image = covers.image(game.cover) {
+            // 顶部大图（#378）：玩家换的封面 → 已下载的商店横图 → 游戏图标；原先直接用 cover，横图下好了也把 256×256 的图标放大
+            if let image = covers.image(game.customCover ? game.cover : (game.banner ?? game.cover)) {
                 CoverFill(image: image).frame(width: width, height: height).clipped()
             } else {
                 LauncherPalette.surface
