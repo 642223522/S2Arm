@@ -14,7 +14,7 @@
 // goes on; one worker makes them in the same order (a shadow may start from the previous one). The GPU reads shadows only after its command buffer is committed, and every commit first
 // waits for the copies queued before it (ubc_wait, from the encode thread when Metal encoding is deferred); a CPU read of a shadow waits for its own copies. DM_NVN_UB_COPY_THREAD=0
 // copies on the submit thread as before
-// Hand-off (ported from nxnative, MIT): the copy thread sleeps on g_ubc_head and a waiter on g_ubc_done (os_sync_wait_on_address: the kernel compares the word, so a change before the
+// Hand-off (ported from nxnative, MIT): the copy thread sleeps on g_ubc_head and a waiter on g_ubc_done (os_sync_wait_on_address via host/addr_wait.h: the kernel compares the word, so a change before the
 // sleep is not lost), each woken only by the thread that advanced that word, after it did. A waker never clears the sleeper's flag; the sleeper does, once awake. A push whose wake call
 // comes late can meet the flag the thread set for its next sleep, on a word that already includes that push: had the call taken the flag, the thread would sleep with it clear, the next
 // push would not wake it and every later wait would hang. Waiters are counted for the same reason. No mutex: before, ubc_wait locked a mutex and signalled a condition on every spin
@@ -33,7 +33,7 @@ static _Atomic uint64_t g_ubc_wakes;   // wake calls made, both ways (t_nvn_ubc_
 static int ubc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_UB_COPY_THREAD"); v = !(e && !strcmp(e, "0")); } return v; }
 // Wake the copy thread if it sleeps; only ubc_push, after its store to g_ubc_head (pushes between the wake and the thread clearing its flag make a call each, harmless)
 static inline void ubc_kick(void) {
-    if (atomic_load(&g_ubc_sleeping)) { atomic_fetch_add_explicit(&g_ubc_wakes, 1, memory_order_relaxed); os_sync_wake_by_address_any((void *)&g_ubc_head, sizeof g_ubc_head, OS_SYNC_WAKE_BY_ADDRESS_NONE); }
+    if (atomic_load(&g_ubc_sleeping)) { atomic_fetch_add_explicit(&g_ubc_wakes, 1, memory_order_relaxed); addr_wake_one64((void *)&g_ubc_head); }
 }
 static void *ubc_thread(void *arg) {
     (void)arg; pthread_setname_np("dm-ub-copy"); s2a_qos_set_self(S2A_QOS_UB_COPY);
@@ -44,14 +44,14 @@ static void *ubc_thread(void *arg) {
             atomic_store(&g_ubc_sleeping, 1);
             if ((h = atomic_load(&g_ubc_head)) != t) break;
             UBC_T_SLEEPING();
-            os_sync_wait_on_address((void *)&g_ubc_head, t, sizeof g_ubc_head, OS_SYNC_WAIT_ON_ADDRESS_NONE);   // returns at once if the word is no longer t; EINTR and spurious returns loop
+            addr_wait64((void *)&g_ubc_head, t);   // returns at once if the word is no longer t; EINTR and spurious returns loop
             atomic_store(&g_ubc_sleeping, 0);   // awake: set again before the next sleep's look at the word
             h = atomic_load(&g_ubc_head);
         }
         atomic_store_explicit(&g_ubc_sleeping, 0, memory_order_relaxed);   // also when the look found a push
         for (; t < h; t++) { const ubc_op *o = &g_ubc[t % UBC_N]; memcpy(o->d, o->s, o->n); }
         atomic_store(&g_ubc_done, t);
-        if (atomic_load(&g_ubc_waiting)) { atomic_fetch_add_explicit(&g_ubc_wakes, 1, memory_order_relaxed); os_sync_wake_by_address_all((void *)&g_ubc_done, sizeof g_ubc_done, OS_SYNC_WAKE_BY_ADDRESS_NONE); }
+        if (atomic_load(&g_ubc_waiting)) { atomic_fetch_add_explicit(&g_ubc_wakes, 1, memory_order_relaxed); addr_wake_all64((void *)&g_ubc_done); }
     }
     return NULL;
 }
@@ -62,7 +62,7 @@ static void ubc_wait(uint64_t seq) {
         if (spin < UBC_SPIN) { __builtin_arm_yield(); if (atomic_load_explicit(&g_ubc_done, memory_order_acquire) >= seq) break; continue; }
         atomic_fetch_add(&g_ubc_waiting, 1);   // counted first, then the word (as the copy thread's store and count load): it sees this waiter or this sees its store
         uint64_t d = atomic_load(&g_ubc_done);
-        if (d < seq) os_sync_wait_on_address((void *)&g_ubc_done, d, sizeof g_ubc_done, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+        if (d < seq) addr_wait64((void *)&g_ubc_done, d);
         atomic_fetch_sub(&g_ubc_waiting, 1);
         if (atomic_load_explicit(&g_ubc_done, memory_order_acquire) >= seq) break;
     }
