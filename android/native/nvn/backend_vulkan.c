@@ -3018,7 +3018,8 @@ static VkFramebuffer pc_fb(const VkFramebufferCreateInfo *fi, int *cached, int *
       __atomic_fetch_add(&g_fb_create_ns, (uint64_t)(f1.tv_sec - f0.tv_sec) * 1000000000ull + (uint64_t)f1.tv_nsec - (uint64_t)f0.tv_nsec, __ATOMIC_RELAXED); }
     if (slot >= 0) { struct pc_fb *e = &g_pc_fb[slot]; memset(e, 0, sizeof *e); e->rp = fi->renderPass; e->natt = fi->attachmentCount; e->w = fi->width; e->h = fi->height; e->layers = fi->layers;
         memcpy(e->v, fi->pAttachments, fi->attachmentCount * sizeof(VkImageView)); e->fb = fb; e->gen = ++g_fb_gen; *cached = 1;
-        if (slot_out) *slot_out = slot; if (gen_out) *gen_out = e->gen; }
+        if (slot_out) { *slot_out = slot; }
+        if (gen_out) { *gen_out = e->gen; } }
     pthread_mutex_unlock(&g_pc_mu);
     return fb;
 }
