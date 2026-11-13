@@ -1539,7 +1539,7 @@ def phone_game_name(c, ph, gid, names):
 def container_others(c, ph, rec, leave=None):
     """现组容器要带的别的款：这台电脑记录的 + 手机上实际有的（phone_games）。手机上有、这台电脑没记录、游戏库里也没有的，带不进去
     （App 里的游戏程序读不回电脑）：没带 acceptDropped 就停下报 container_would_drop，列出这几款，玩家确认后再装；确认了就不带它们——
-    它们的存档和资源包还在手机上，在原来那台电脑上再装一次就回来。
+    它们的存档和资源包还在手机上，在原来那台电脑上再装一次就回来。这台电脑记录装在手机上、但玩家已从游戏库删掉的款同样带不进，同样先问。
     手机上这个 App 已经不在（玩家在手机上删了，phone_games → None）：这台电脑记录的各款也跟着没了，一款都不带——原先照带，
     其中换壳后重出不了的报 container_stale 挡住这次装机，能带的也只进程序、资源包按记录不重推"""
     known = set(rec.get("games", {}))
@@ -1548,12 +1548,18 @@ def container_others(c, ph, rec, leave=None):
         known = on_phone = set()
     names = {g["id"].upper(): g.get("name") or "" for g in c.catalog()["games"]}
     candidates = sorted((known | on_phone) - {leave})
-    lost = [g for g in candidates if g in on_phone and g not in known and g not in names]
+    # 带不进的两种：手机上有、这台电脑没记录也没有（别的电脑装的）；这台电脑记录装在手机上、游戏库里已删（玩家删了这款）——
+    #   后者原先在 ipa.assemble 里按「已删」静默不带，手机上这款就悄悄打不开了；现在同样先问
+    lost = [g for g in candidates if g not in names and (g in on_phone or g in known)]
     if lost and c.r.get("acceptDropped") is not True:
-        shown = [phone_game_name(c, ph, g, names) for g in lost]
-        raise Failure(f"这次会让手机上的 {len(lost)} 款游戏暂时不能玩：" + "、".join(shown)
-                      + "。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「装到 iPhone」就能回来。确认继续再点一次。",
-                      code="container_would_drop", internal=" ".join(lost))
+        elsewhere = "".join("「" + phone_game_name(c, ph, g, names) + "」" for g in lost if g not in known)
+        deleted = "".join("「" + phone_game_name(c, ph, g, names) + "」" for g in lost if g in known)
+        # 每行一个固定句式（游戏名进 {0} 占位），两端界面按 Localizable.json 逐行翻
+        lines = ["这次装完，手机上这几款游戏会打不开（存档和资源包都还在手机上）。"] \
+            + (["它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：" + elsewhere] if elsewhere else []) \
+            + (["它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：" + deleted] if deleted else []) \
+            + ["确认继续再点一次。"]
+        raise Failure("\n".join(lines), code="container_would_drop", internal=" ".join(lost))
     return [g for g in candidates if g not in lost]
 
 

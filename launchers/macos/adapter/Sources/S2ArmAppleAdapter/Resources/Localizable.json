@@ -7148,6 +7148,26 @@
   "en": "Confirm to install without them this time. Their saves and resources stay on the phone, and they come back once you build them for iPhone and install again. After you agree once, this phone won't ask about them again on this S2Arm version."
  },
  {
+  "source": "这次装完，手机上这几款游戏会打不开（存档和资源包都还在手机上）。",
+  "en": "After this install, these games on the phone won't open (their saves and resources stay on the phone)."
+ },
+ {
+  "source": "它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：{0}",
+  "en": "Installed from another computer; they come back once you \"Install on iPhone\" again from that computer: {0}"
+ },
+ {
+  "source": "它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：{0}",
+  "en": "Deleted from this computer's library; they come back once you add them again, \"Build for iPhone\" and install: {0}"
+ },
+ {
+  "source": "确认继续再点一次。",
+  "en": "Confirm and try again to continue."
+ },
+ {
+  "source": "确认后再点一次：点名的游戏会暂时打不开（存档和资源包留在手机上）。别的电脑装的，到那台电脑上再「装到 iPhone」一次就回来；已从游戏库删除的，重新加回、「打 iPhone 包」再装就回来。不想这样就先别装。",
+  "en": "Confirm and try again: the games named won't open for now (their saves and resources stay on the phone). Ones installed from another computer come back once you \"Install on iPhone\" again from that computer; ones deleted from the library come back once you add them again, \"Build for iPhone\" and install. If you don't want that, don't install yet."
+ },
+ {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。",
   "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone. Or confirm to install without them this time: their saves and resources stay on the phone, and they come back once you rebuild and install them."
  },

@@ -1200,6 +1200,14 @@ class JobsTests(unittest.TestCase):
         packages[2]["sha256"] = "b" * 64
         self.assertNotEqual(identity, library.input_identity(game))
 
+    def test_catalog_marks_games_recorded_on_a_phone(self):
+        # 删除确认框据 onPhone 多写一句「下次往这台手机装游戏时，手机上的这款会打不开」：哪台设备记录里有这款就是 True，没有的 False
+        on, off = self.game(tid="0100000000AA0000", packages=[self.package(tid="0100000000AA0000")]), self.game(tid="0100000000BB0000", packages=[self.package(tid="0100000000BB0000")])
+        self.catalogue([on, off])
+        layout.save_device(self.c, "dev1", dict(games={on["id"].lower(): dict(pack="p")}))   # 记录里的游戏号大小写不一也认
+        got = {g["id"]: g["onPhone"] for g in library.catalog(self.c)["games"]}
+        self.assertEqual(got, {on["id"]: True, off["id"]: False})
+
     def test_catalogue_keeps_unsupported_and_unverified_distinct(self):
         game = self.game(packages=[self.package()])
         self.catalogue([game])

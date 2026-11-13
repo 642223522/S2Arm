@@ -211,7 +211,7 @@ AI_NEXT = {
     'device_not_connected': ('ask', '要装的那台设备不在线：请玩家插上数据线，或让它和电脑连同一个 Wi-Fi 并解锁（第一次还要点「信任」、打开开发者模式），连好后 s2armctl install <游戏号> --device <那台的设备号>'),
     'device_required': ('ai', '没说装到哪台：先 s2armctl targets 看连着的设备和设备号，再 s2armctl install <游戏号> --device <设备号>（不替玩家挑）'),
     'device_locked': ('human', 'iPhone 锁屏了：请玩家解锁手机、停在主屏幕，然后重试 s2armctl install'),
-    'container_would_drop': ('ask', '手机上有几款是在别的电脑上装的，这次装会让它们暂时不能玩（存档和资源包留在手机上，回原来那台电脑再装一次就回来）：把报错里列的游戏名念给玩家，玩家同意了再 s2armctl install <游戏号> --accept-dropped（删除用 uninstall <游戏号> --accept-dropped，更新手机上的 S2Arm 用 update-phone --accept-dropped）'),
+    'container_would_drop': ('ask', '手机上有几款这次带不进去（别的电脑装的，或已从这台电脑的游戏库删除），这次装会让它们暂时打不开（存档和资源包留在手机上）：把报错里列的游戏名念给玩家，玩家同意了再 s2armctl install <游戏号> --accept-dropped（删除用 uninstall <游戏号> --accept-dropped，更新手机上的 S2Arm 用 update-phone --accept-dropped）'),
     'save_backup_failed': ('ask', '这次装机前没能先备份手机上的存档（存档没备份，万一覆盖出问题可能丢档）：先请玩家解锁手机、插稳数据线重试；玩家明确同意不备份照装，再 s2armctl install <游戏号> --accept-no-backup（更新手机上的 S2Arm 用 update-phone --accept-no-backup）'),
     'free_app_limit': ('human', '这台 iPhone 上免费签名的自签 App 已满 3 个：请玩家在 iPhone 上删掉一个不玩的自签 App 再试，或改用付费 Apple 开发者账号（AltStore 同样受这个上限）'),
     'free_appid_limit': ('human', '免费 Apple ID 7 天内最多注册 10 个包名，已用满（Apple 错误 9120），删 App 不会退额度、别让玩家删：请玩家等几天（最早那批满 7 天就恢复），或在 Xcode 里换一个 Apple ID 登录（要输密码，AI 不代做）后 s2armctl install <游戏号>，或改用付费 Apple 开发者账号'),
