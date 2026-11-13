@@ -105,7 +105,7 @@ if ($Kill) {
         & "$env:SystemRoot\System32\taskkill.exe" /F /T /PID $id *> $null
         $killed += $id
     }
-    # 等被结束的进程真正退出再复查（最多 15 秒）：taskkill 返回时进程常还没退干净，原先固定等 1.5 秒，天眼实测复查仍列出刚结束的 S2Arm、报「没能关掉」
+    # 等被结束的进程真正退出再复查（最多 15 秒）：taskkill 返回时进程常还没退干净，原先固定等 1.5 秒，Windows 实机实测复查仍列出刚结束的 S2Arm、报「没能关掉」
     $deadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $deadline -and @($killed | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }).Count -gt 0) { Start-Sleep -Milliseconds 250 }
 }
