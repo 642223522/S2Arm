@@ -5181,7 +5181,14 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
 // clear_only: a pass opened only to land pending clears, attaching only the attachments that have clears - the other attachments are not touched by this pass, and attaching them costs a pointless load and store on TBDR
 // (Mac character select screen: the color-clear pass drags along a 400x225 depth load and store)
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
-static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
+// The render area of the open pass (0: its whole attachments; ported from nxnative c8521eeb, MIT). A draw pass on a very large target that loads what it keeps stops at the far corner of its scissor:
+// the GPU then does not load and store what lies beyond, which keeps its contents (Metal keeps what lies outside the area). Only from targets of 16 M pixels, only when the area is at most half of it,
+// only the draw path opens such a pass; a draw whose scissor leaves the area, and anything else that needs the pass (rp_begin, DrawTexture), ends it first. A 6400x6400 ink map stamped one
+// scissored draw a pass: upstream measured about 0.95 → 0.32 ms a pass. DM_NVN_RP_AREA=0 turns it off
+static NSUInteger g_rp_aw, g_rp_ah; static int g_rp_whole;   // g_rp_whole: the pass about to open must cover the whole target
+static int rpa_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RP_AREA"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_RP_AREA=0: passes on very large targets cover the whole target"); } return v; }
+static void rt_dims(NSUInteger *tw, NSUInteger *th);
+static id<MTL4RenderCommandEncoder> rp_begin(void) { if (g_enc && g_rp_aw) rp_end(); g_rp_whole = 1; id<MTL4RenderCommandEncoder> e = rp_begin_ex(0); g_rp_whole = 0; return e; }   // the callers draw anywhere in the target
 static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) { AP_B; id<MTL4RenderCommandEncoder> e = rp_begin_ex_(clear_only); AP_E(1); return e; }
 static void bare_dims(NSUInteger *w, NSUInteger *h);
@@ -5396,6 +5403,15 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         }
         return nil;
     }
+    g_rp_aw = g_rp_ah = 0;   // the render area (see g_rp_aw): no clears in this pass (a clear covers the whole target), no layered pass, not the TBDR modes
+    if (rpa_on() && !g_rp_whole && !clear_only && R.has_sc && !g_rp_layered && !tbdr_on() && !R.clear_d && !R.clear_s) {
+        int cl = 0; for (int i = 0; i < 8; i++) cl |= R.clear_c[i];
+        NSUInteger tw = 0, th = 0; if (!cl) rt_dims(&tw, &th);
+        if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX((long)R.sc.x + R.sc.w, 1)), h = MIN(th, (NSUInteger)MAX((long)R.sc.y + R.sc.h, 1));
+            if (w * h * 2 <= tw * th) { pd.renderTargetWidth = w; pd.renderTargetHeight = h; g_rp_aw = w; g_rp_ah = h;
+                static int once; if (!once++) MLOG("render area: a pass on a %lux%lu target opened at %lux%lu, its scissor's far corner (first case pass %llu; DM_NVN_RP_AREA=0 turns it off)",
+                                                   (unsigned long)tw, (unsigned long)th, (unsigned long)w, (unsigned long)h, g_stat_pass + 1);
+                PD("A %llu render area %lux%lu of %lux%lu", g_stat_pass + 1, (unsigned long)w, (unsigned long)h, (unsigned long)tw, (unsigned long)th); } } }
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && zskip_zero_clear(i) && !bcrt_is(pd.colorAttachments[i].texture)) {
         g_zskip_cand_ok[i] = 1; g_zskip_cand[i] = (zskip_zero){R.rt.color[i]->serial, (uint16_t)(R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0), (uint16_t)(R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0)};
     }
@@ -13488,8 +13504,8 @@ static void draw_tex(const p_draw_tex *t) {
     float r[4] = {t->src[0] / gw, t->src[2] / gw, t->src[1] / gh, t->src[3] / gh};
     if (x1 < x0) { float q = r[0]; r[0] = r[1]; r[1] = q; }   // a mirrored destination walks the source the other way (Ryujinx)
     if (y1 < y0) { float q = r[2]; r[2] = r[3]; r[3] = q; }
-    if (g_enc && g_pass.layered) rp_end();
-    id en = rp_begin_ex(0);   // plain id as in draw(): the encoder is a Metal 3 one on NXGAL_BE=mtl3 (mtl4_count ratchet)
+    if (g_enc && (g_pass.layered || g_rp_aw)) rp_end();   // DrawTexture opens a whole-target pass (see g_rp_aw)
+    g_rp_whole = 1; id en = rp_begin_ex(0); g_rp_whole = 0;   // plain id as in draw(): the encoder is a Metal 3 one on NXGAL_BE=mtl3 (mtl4_count ratchet)
     if (!en) return;   // rp_begin_ex said why
     if (pf_int_kind((MTLPixelFormat)g_pass.cfmt[0]) || !g_pass.cfmt[0]) {
         if (!once[2]++) MLOG("【红】 DrawTexture: target 0 is %s (format %u): not drawn (first case)", g_pass.cfmt[0] ? "an integer target" : "not bound", g_pass.cfmt[0]);
@@ -13627,6 +13643,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static int once3; if (!once3++) MLOG("readable-tile pass merge: a draw of the later pass is not provable; back to separate passes (first case pass %llu)", g_stat_pass);
         g_fz_fallback++; rp_end(); }
 
+    if (g_enc && g_rp_aw && (!R.has_sc || (long)R.sc.x + R.sc.w > (long)g_rp_aw || (long)R.sc.y + R.sc.h > (long)g_rp_ah)) rp_end();   // leaves the pass's render area (see g_rp_aw)
 
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
     if (R.has_sc && !g_enc) {
