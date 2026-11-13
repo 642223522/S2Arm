@@ -4,8 +4,9 @@
 check    查 GitHub 最新 Release，打印一行 JSON。
 prepare  验清单签名后后台下载官方包、核对清单里的校验值、解开并校验到数据目录下的 updates/，逐行打印进度。不碰正在用的安装目录。
          有 from 当前版本的差分包就先试差分（按文件替换，整棵目录核对清单），任何一步失败退回整包。
-notice   启动器顶部公告条：取官方下载页上的 notice.json（取不到用随包那份），玩家关掉过的同一条不再给；打印一行 JSON（没有要显示的打 {}）。
-notice-dismiss  记下玩家关掉的公告号（数据目录下 notice_dismissed.txt）。
+inbox    启动器打开时要给玩家看什么（两端共用）：查版本 + 取公告（notice.json，取不到用随包那份），按「永远只给最新一期」算出
+         最多一个弹窗（这版更新了什么 / 有新版）、横幅（最新一条重要公告）、消息列表与未读数；打印一行 JSON。只读。
+inbox-seen  玩家关掉了：记进数据目录 updates/seen.json（--update 版本 / --after 版本 / --notice 最新看过的公告号）。
 apply    启动器退出后，由 prepare 备好的独立 Python 运行：原地替换安装目录、重启；新版起不来就回滚到旧版。
 
 玩家的数据（游戏库、密钥、存档备份、任务记录、缓存）都在安装目录之外；prepare 先核实这一点，
@@ -213,7 +214,7 @@ def mirror_manifest():
     return manifest if isinstance(manifest, dict) and version_tuple(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
 
 
-def offer(platform, version, mine, files, url_of):
+def offer(platform, version, mine, files, url_of, notes=None):
     """签过名的清单 files + 每个文件的下载地址（url_of(名字)，没有为 None）→ 给启动器的结果。
     清单里没有本平台的安装包 = 这一版没给本平台出包（如只发了 Mac），按「没有新版」安静返回、标准错误记一行，不报错
     （11-11 维护者：原先按签名不对报 update_bad_signature，只发一个平台时另一平台的老用户每次启动都看到错误）。
@@ -225,6 +226,8 @@ def offer(platform, version, mine, files, url_of):
         return {"available": False}
     info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
             "asset": url_of(name), "assetName": name}
+    if notes_valid(notes):   # 这版给玩家看的更新说明（签过名的清单里带的，见 notes_from_markdown）
+        info["notes"] = notes_valid(notes)
     delta = DELTAS[platform].format(".".join(map(str, mine)))
     entry = files.get(delta)
     if isinstance(entry, dict) and url_of(delta):   # 差分包同样要在清单里，不在就只走整包
@@ -244,7 +247,7 @@ def query_latest(platform, current):
             return {"available": False}
         template = os.environ.get("S2A_UPDATE_API") and os.environ.get("S2A_UPDATE_DOWNLOAD") or RELEASE_DOWNLOAD   # 假 Release 验收时下载也指到本机
         v = ".".join(map(str, version))
-        info = offer(platform, version, mine, manifest["files"], lambda name: template.format(version=v, name=name))
+        info = offer(platform, version, mine, manifest["files"], lambda name: template.format(version=v, name=name), manifest.get("notes"))
         # 安装包先走官方域名（R2）、GitHub 当退路；假 Release 验收只认 S2A_UPDATE_R2，没设就不走（单测不连真网）
         r2 = os.environ.get("S2A_UPDATE_R2", "") if os.environ.get("S2A_UPDATE_API") else R2_DOWNLOAD
         if info.get("available") and r2:
@@ -256,8 +259,8 @@ def query_latest(platform, current):
     package = assets.get(ASSETS[platform])
     if not version or not mine or version <= mine or not package or MANIFEST not in assets or SIGNATURE not in assets:
         return {"available": False}
-    files = signed_manifest(assets, version)["files"]
-    return offer(platform, version, mine, files, lambda name: assets[name]["browser_download_url"] if name in assets else None)
+    manifest = signed_manifest(assets, version)
+    return offer(platform, version, mine, manifest["files"], lambda name: assets[name]["browser_download_url"] if name in assets else None, manifest.get("notes"))
 
 
 NOTICE_URL = "https://jhaizhou-ops.github.io/S2Arm/notice.json"   # docs/site/notice.json，Pages 发布（docs/site/README.md）
@@ -290,7 +293,7 @@ def notice_valid(data):
 
 
 def notice_remote(timeout=5):
-    """官方下载页上的 notice.json → (取到了没有, 内容)。取到但内容无效 / 已撤 = (True, None)：照撤，不退回随包那份"""
+    """官方下载页上的 notice.json → (取到了没有, 原文)。取到但内容无效 / 已撤照撤（notice_messages 给空列表），不退回随包那份"""
     import urllib.request
     url = os.environ.get("S2A_NOTICE_URL") or NOTICE_URL
     try:
@@ -300,38 +303,176 @@ def notice_remote(timeout=5):
     except (OSError, ValueError, __import__("http.client").client.HTTPException, subprocess.SubprocessError):
         return False, None
     try:
-        return True, notice_valid(json.loads(body))
+        return True, json.loads(body)
     except ValueError:
         return False, None   # 拿到的不是 JSON（门户页、被劫持的网络）：当没取到
 
 
-def notice(private_root, remote=None, bundled=None):
-    """→ 要显示的公告或 None：先官方下载页，取不到用随包那份；玩家关掉过的同一条（id 一样）不给"""
-    # 调用时才取 notice_remote（不写成默认参数）：默认参数在定义时就绑死，测试 patch updater.notice_remote 换不掉，单测会真联网取官方页
-    got, item = (remote or notice_remote)()
-    if not got:
-        try:
-            item = notice_valid(json.loads((bundled or notice_file()).read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            item = None
-    if item is None:
+NOTE_ITEMS, NOTE_TEXT = 40, 600
+
+
+def _note_item(item):
+    if not isinstance(item, dict):
         return None
+    zh, en = item.get("zh-Hans"), item.get("en")
+    if not (isinstance(zh, str) and zh.strip() and len(zh) <= NOTE_TEXT):
+        return None
+    out = {"zh-Hans": zh.strip()}
+    if isinstance(en, str) and en.strip() and len(en) <= NOTE_TEXT * 2:
+        out["en"] = en.strip()
+    return out
+
+
+def notes_valid(notes):
+    """清单里的 notes → {highlights: [项], sections: [{title, items: [项]}]}（项 = {zh-Hans, en?}，纯文本）；不对就 None（= 只显示版本号，不挡更新）"""
+    if not isinstance(notes, dict):
+        return None
+    highlights = [x for x in map(_note_item, notes.get("highlights") or [])][:NOTE_ITEMS] if isinstance(notes.get("highlights"), list) else []
+    sections = []
+    for sec in notes.get("sections") or [] if isinstance(notes.get("sections"), list) else []:
+        if isinstance(sec, dict) and isinstance(sec.get("title"), str) and sec["title"].strip() and isinstance(sec.get("items"), list):
+            items = [x for x in map(_note_item, sec["items"]) if x][:NOTE_ITEMS]
+            if items:
+                sections.append({"title": sec["title"].strip()[:80], "items": items})
+    highlights = [x for x in highlights if x]
+    return {"highlights": highlights, "sections": sections} if highlights or sections else None
+
+
+def notes_from_markdown(text):
+    """发版说明 notes/vX.Y.Z.md → 清单里的 notes（tools/sign_update_manifest.py --notes 调）。
+    「## 小节」→ sections；每条「- 」开头的中文行取加粗那句（没有加粗取整行，去掉 Markdown 记号），紧跟的缩进斜体行当英文；
+    「## 亮点」一节只进 highlights（更新后第一次打开弹「这版更新了什么」只认它，程序不替人挑）"""
+    def plain(line):
+        line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        line = re.sub(r"(?<!\w)[*_](.+?)[*_](?!\w)", r"\1", line)
+        return re.sub(r"`([^`]*)`", r"\1", line).strip()
+    sections, current = [], None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        m = re.match(r"##\s+(.+)", line)
+        if m:
+            current = {"title": plain(m.group(1)), "items": []}
+            sections.append(current)
+            continue
+        if current is None:
+            continue
+        m = re.match(r"\s*[-*]\s+(.+)", line)
+        if m and not raw.startswith((" ", "\t")):
+            bold = re.match(r"\*\*(.+?)\*\*", m.group(1).strip())
+            current["items"].append({"zh-Hans": plain(bold.group(1) if bold else m.group(1))})
+            continue
+        m = re.match(r"\s+\*(.+)\*\s*$", line)
+        if m and current["items"] and "en" not in current["items"][-1]:
+            current["items"][-1]["en"] = plain(m.group(1))
+    highlights = [i for s in sections if s["title"] == "亮点" for i in s["items"]]
+    return notes_valid({"highlights": highlights, "sections": [s for s in sections if s["title"] != "亮点"]})
+
+
+PLATFORMS = ("mac", "windows")
+
+
+def notice_messages(data, platform):
+    """notice.json → 本平台的公告列表，最新的在前：[{id, level, text, url?}]。
+    新版读 messages 数组（每条 id / level important|info / platforms / text / url，数组按最新在前排）；没有 messages 时把顶层那条（旧版也认）当一条全平台「重要」。
+    platforms 不写 = 全平台；写了只给列着的平台（11-12：Mac 上不再看到 Windows 的公告）"""
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        return []
+    rows = data.get("messages") if isinstance(data.get("messages"), list) else None
+    if rows is None:
+        top = notice_valid(data)
+        return [dict(top, level="important")] if top else []
+    out = []
+    for row in rows[:50]:
+        item = notice_valid(dict(row, schema=1)) if isinstance(row, dict) else None
+        platforms = row.get("platforms") if isinstance(row, dict) else None
+        if item is None or (platforms is not None and (not isinstance(platforms, list) or platform not in platforms)):
+            continue
+        item["level"] = "important" if row.get("level") == "important" else "info"
+        out.append(item)
+    return out
+
+
+def notice_data(remote=None, bundled=None):
+    """先官方下载页，取不到用随包那份 → notice.json 原文 dict（没有就 {}）"""
+    got, raw = (remote or notice_remote)()
+    if got:
+        return raw if isinstance(raw, dict) else {}
     try:
-        if (Path(private_root) / "notice_dismissed.txt").read_text(encoding="utf-8").strip() == item["id"]:
-            return None
-    except OSError:
-        pass
-    return item
+        return json.loads((bundled or notice_file()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
-def notice_dismiss(private_root, ident):
-    """玩家点了 ×：记下这条的号（只记最近一条；换了新号的公告照常出现）"""
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", ident or ""):
-        raise ValueError("公告号不对")
-    root = Path(private_root); root.mkdir(parents=True, exist_ok=True)
-    tmp = root / "notice_dismissed.txt.tmp"
-    tmp.write_text(ident + "\n", encoding="utf-8")
-    tmp.replace(root / "notice_dismissed.txt")
+def save_json(path, data):
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def seen_path(private_root):
+    return Path(private_root) / "updates" / "seen.json"
+
+
+def seen_state(private_root):
+    try:
+        data = json.loads(seen_path(private_root).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def installed_notes(private_root, version):
+    try:
+        return notes_valid(json.loads((Path(private_root) / "updates" / "notes" / f"{version}.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def inbox(platform, current, private_root, check=None, notices=None):
+    """启动器打开时要给玩家看什么（两端共用，11-13 维护者定：永远只给最新一期，不叠加、不补弹）→
+      popup：最多一个。「这版更新了什么」（刚换上新版、这版说明里有「亮点」、没关过）优先，其次「有新版」（这一版没提示过）；
+             跳过的版本不补弹——只看当前版本和最新那一版。
+      banner：本平台最新一条「重要」公告，玩家没看过才给；更旧的重要公告不再出横幅。
+      messages：公告（最新在前）+ 更新说明（最新版 / 当前版），只在「消息」里列着；unread 只算最新那条公告没看过。
+    「看过」按最新一条公告的号记（seen.json noticeSeen）：列表里排在它后面（更旧）的都算看过，跳过的几期自然不补。
+    check：本次查版本的结果（latest()）；notices：本平台公告列表（notice_messages）。只读，不改 seen.json（玩家关掉时 inbox_seen 才记）"""
+    seen = seen_state(private_root)
+    check = check if isinstance(check, dict) else {"available": False}
+    notices = notices or []
+    seen_at = next((i for i, n in enumerate(notices) if n["id"] == seen.get("noticeSeen")), None)
+    def is_seen(i):
+        return seen_at is not None and i >= seen_at
+    for i, n in enumerate(notices):
+        n["unread"] = not is_seen(i) and i == 0
+    popup = None
+    # 这版的说明只在「从旧版里点更新、换上这一版」时记在本机（prepare 写 updates/notes/<版本>.json），有它就说明是刚更新上来的；手动装的新版没有，不弹
+    mine = installed_notes(private_root, current)
+    if mine and mine.get("highlights") and seen.get("afterShown") != current:
+        popup = {"kind": "afterUpdate", "version": current, "notes": mine}
+    elif check.get("available") and check.get("version") and seen.get("updatePrompted") != check["version"]:
+        popup = {"kind": "update", "version": check["version"], "notes": check.get("notes")}
+    important = next(((i, n) for i, n in enumerate(notices) if n.get("level") == "important"), None)
+    banner = important[1] if important and not is_seen(important[0]) else None
+    messages = [dict(n, kind="notice") for n in notices]
+    if check.get("available") and check.get("version"):
+        messages.append({"kind": "update", "version": check["version"], "notes": check.get("notes"), "installed": False})
+    if mine:
+        messages.append({"kind": "update", "version": current, "notes": mine, "installed": True})
+    return {"popup": popup, "banner": banner, "messages": messages, "unread": sum(1 for n in notices if n["unread"]), "update": check}
+
+
+def inbox_seen(private_root, update=None, after=None, notice=None):
+    """玩家关掉了：update = 「有新版」那一版（以后再说）；after = 「这版更新了什么」那一版；notice = 看过的最新一条公告号（关横幅 / 打开消息）"""
+    seen = seen_state(private_root)
+    for key, value, pattern in (("updatePrompted", update, r"\d+\.\d+\.\d+"), ("afterShown", after, r"\d+\.\d+\.\d+"),
+                                ("noticeSeen", notice, r"[A-Za-z0-9._-]{1,80}")):
+        if value is not None:
+            if not re.fullmatch(pattern, value):
+                raise ValueError(f"{key} 不对")
+            seen[key] = value
+    save_json(seen_path(private_root), seen)
+    return seen
 
 
 def inside(child, parent):
@@ -641,6 +782,8 @@ def prepare(platform, current, private, install, protect):
     check = subprocess.run([str(python), "-B", "-I", str(runner / "updater.py"), "selfcheck"], capture_output=True, timeout=120)
     if check.returncode:
         raise UpdateError("update_bad_package", "更新程序在这台电脑上起不来，已停止，旧版没有变化。")
+    if info.get("notes"):   # 换上新版后第一次打开要弹「这版更新了什么」：说明随下载记在本机，不再联网（updates/notes/ 不按版本号命名，drop_version_dirs 不删）
+        save_json(updates / "notes" / f"{info['version']}.json", info["notes"])
     (updates / "pending.json").write_text(json.dumps({"version": info["version"], "time": time.time()}))
     emit(state="ready", via=via, version=info["version"], staged=str(staged), python=str(python), updater=str(runner / "updater.py"))
 
@@ -865,23 +1008,29 @@ def main(argv=None):
             p.add_argument("--install", required=True)
             p.add_argument("--protect", action="append", default=[])
     sub.add_parser("selfcheck")
-    p = sub.add_parser("notice"); p.add_argument("--private-root", required=True)
-    p = sub.add_parser("notice-dismiss"); p.add_argument("--private-root", required=True); p.add_argument("--id", required=True)
+    p = sub.add_parser("inbox"); p.add_argument("--private-root", required=True); p.add_argument("--platform", required=True, choices=sorted(ASSETS))
+    p.add_argument("--current", required=True)
+    p = sub.add_parser("inbox-seen"); p.add_argument("--private-root", required=True)
+    p.add_argument("--update"); p.add_argument("--after"); p.add_argument("--notice")
     p = sub.add_parser("apply")
     p.add_argument("--staged", required=True); p.add_argument("--install", required=True); p.add_argument("--pid", required=True, type=int)
     p.add_argument("--private-root", required=True); p.add_argument("--arg", action="append", default=[])
     a = ap.parse_args(argv)
-    # 公告与更新无关：失败不走下面的更新失败记录（不写 update.log、不报「更新没有完成」）。取不到、读不了都不报错，打 {}，界面什么都不显示
-    if a.command == "notice":
-        print(json.dumps(notice(a.private_root) or {}, ensure_ascii=False))
-        return 0
-    if a.command == "notice-dismiss":
+    # 打开时要看什么（inbox）：查版本、取公告都可能失败，失败不走下面的更新失败记录（不写 update.log），查不到就当没有新版、没有公告，界面照常
+    if a.command == "inbox":
         try:
-            notice_dismiss(a.private_root, a.id)
+            check = latest(a.platform, a.current)
+        except (UpdateError, OSError, ValueError, KeyError, __import__("http.client").client.HTTPException) as error:
+            check = {"available": False, "error": getattr(error, "code", type(error).__name__)}
+        print(json.dumps(inbox(a.platform, a.current, a.private_root, check, notice_messages(notice_data(), a.platform)), ensure_ascii=False))
+        return 0
+    if a.command == "inbox-seen":
+        try:
+            inbox_seen(a.private_root, a.update, a.after, a.notice)
         except (OSError, ValueError) as error:
             print(json.dumps({"error": str(error)}, ensure_ascii=False))
             return 1
-        print(json.dumps({"dismissed": a.id}))
+        print(json.dumps({"ok": True}))
         return 0
     try:
         if a.command == "selfcheck":
