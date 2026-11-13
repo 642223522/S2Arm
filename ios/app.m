@@ -624,17 +624,19 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
 // 静音键下照样出声（#789，系统设置「静音模式下也播放声音」S2APlayInSilentMode，缺省关 = 跟随静音键）：音频会话类别开 = Playback（不跟静音键），
 //   关 = SoloAmbient（系统缺省，原先一直是它）。启动和每次回前台各设一次（玩家去「设置」改完切回来就生效）；放后台队列，
 //   不在主线程启动早期抢 AVAudioSession（phone_motion.m：真机首次抢会话卡约 2 秒）。类别没变不重设
-//   游戏库设置页（S2ArmShellHost ShellSettingsView「声音」）也能改：库与游戏同一进程，改完不经过回前台，听偏好变更即设（只在这个值真变了才设）
-static atomic_int g_audio_play = -1;   // 上次按哪个值设的（-1 = 还没设过）
+//   「与其他 App 混音」（#896，S2AMixWithOthers，缺省关）开 = Ambient：别的 App 的音乐 / 播客照放、和游戏混在一起，静音键只静音游戏；优先于「静音键下照样出声」
+//   游戏库设置页（S2ArmShellHost ShellSettingsView「声音」）也能改：库与游戏同一进程，改完不经过回前台，听偏好变更即设（只在这两个值真变了才设）
+static atomic_int g_audio_play = -1;   // 上次按哪组值设的（静音键下出声 | 混音 << 1；-1 = 还没设过）
+static int audio_choice(void) { NSUserDefaults *d = NSUserDefaults.standardUserDefaults; return [d boolForKey:@"S2APlayInSilentMode"] | [d boolForKey:@"S2AMixWithOthers"] << 1; }
 static void audio_category_apply(void) {
-    BOOL play = [NSUserDefaults.standardUserDefaults boolForKey:@"S2APlayInSilentMode"];
-    atomic_store(&g_audio_play, play);
+    int choice = audio_choice(); BOOL play = choice & 1, mix = (choice >> 1) & 1;
+    atomic_store(&g_audio_play, choice);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         AVAudioSession *s = AVAudioSession.sharedInstance;
-        NSString *want = play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient;
+        NSString *want = mix ? AVAudioSessionCategoryAmbient : play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient;
         if ([s.category isEqualToString:want]) return;
         NSError *e = nil; BOOL ok = [s setCategory:want error:&e];
-        LOG("[声] 音频会话类别 → %s（%s）%s%s", play ? "Playback" : "SoloAmbient", play ? "静音键下照样出声" : "跟随静音键",
+        LOG("[声] 音频会话类别 → %s（%s）%s%s", mix ? "Ambient" : play ? "Playback" : "SoloAmbient", mix ? "与其他 App 混音、静音键只静音游戏" : play ? "静音键下照样出声" : "跟随静音键",
             ok ? "" : "，设不上：", ok ? "" : e.localizedDescription.UTF8String ?: "?");
     });
 }
@@ -652,7 +654,7 @@ static void audio_category_apply(void) {
     // 测试层契约第 4 节：每分钟一行「[电] 电量 <N>%，<充电中|已充满|未充电>」（只是读数：能耗记录用；11-13 起不再据此挡局）
     audio_category_apply();
     [NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n;
-        if ((int)[NSUserDefaults.standardUserDefaults boolForKey:@"S2APlayInSilentMode"] != atomic_load(&g_audio_play)) audio_category_apply(); }];   // 游戏库设置页里改的
+        if (audio_choice() != atomic_load(&g_audio_play)) audio_category_apply(); }];   // 游戏库设置页里改的
     { void s2a_diag_boot(void); s2a_diag_boot(); }   // 导出诊断包（diag.m）：订阅 MetricKit、设置页开关回前台时检查
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
     void (^battery)(NSTimer *) = ^(NSTimer *t) { (void)t; UIDevice *d = UIDevice.currentDevice; UIDeviceBatteryState st = d.batteryState;
