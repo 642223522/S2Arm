@@ -1724,6 +1724,29 @@ static VkBlendOp vk_blend_op(uint32_t e) {
     default: return VK_BLEND_OP_MAX_ENUM;
     }
 }
+// 逐项表达 NVN 语义，不依赖与 Vulkan 枚举编号碰巧一致。
+static VkLogicOp vk_logic_op(uint32_t op) {
+    switch (op) {
+    case NVN_LOGIC_OP_CLEAR: return VK_LOGIC_OP_CLEAR;
+    case NVN_LOGIC_OP_AND: return VK_LOGIC_OP_AND;
+    case NVN_LOGIC_OP_AND_REVERSE: return VK_LOGIC_OP_AND_REVERSE;
+    case NVN_LOGIC_OP_COPY: return VK_LOGIC_OP_COPY;
+    case NVN_LOGIC_OP_AND_INVERTED: return VK_LOGIC_OP_AND_INVERTED;
+    case NVN_LOGIC_OP_NOOP: return VK_LOGIC_OP_NO_OP;
+    case NVN_LOGIC_OP_XOR: return VK_LOGIC_OP_XOR;
+    case NVN_LOGIC_OP_OR: return VK_LOGIC_OP_OR;
+    case NVN_LOGIC_OP_NOR: return VK_LOGIC_OP_NOR;
+    case NVN_LOGIC_OP_EQUIV: return VK_LOGIC_OP_EQUIVALENT;
+    case NVN_LOGIC_OP_INVERT: return VK_LOGIC_OP_INVERT;
+    case NVN_LOGIC_OP_OR_REVERSE: return VK_LOGIC_OP_OR_REVERSE;
+    case NVN_LOGIC_OP_COPY_INVERTED: return VK_LOGIC_OP_COPY_INVERTED;
+    case NVN_LOGIC_OP_OR_INVERTED: return VK_LOGIC_OP_OR_INVERTED;
+    case NVN_LOGIC_OP_NAND: return VK_LOGIC_OP_NAND;
+    case NVN_LOGIC_OP_SET: return VK_LOGIC_OP_SET;
+    default: return VK_LOGIC_OP_MAX_ENUM;
+    }
+}
+
 static VkStencilOp vk_stencil_op(uint32_t op) {   // NVN_STENCIL_OP_*：1 KEEP … 8 DECR_WRAP
     switch (op) {
     case 2: return VK_STENCIL_OP_ZERO;
@@ -2422,8 +2445,15 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
         ds.back = (VkStencilOpState){vk_stencil_op(d->ds.fail_b), vk_stencil_op(d->ds.zpass_b), vk_stencil_op(d->ds.zfail_b), vk_depth_func(d->ds.sf_b), 0xff, 0xff, 0};
     }
 
-    if (d->color.logic_op != 0x3) {   // NVN 缺省 COPY=0x3；其余逻辑操作未实现
-        nvn_gpu_rc bad = fail(err, NVN_GPU_E_UNSUPPORTED, "逻辑操作 %u：本段未实现（只支持缺省 COPY）", d->color.logic_op);
+    VkLogicOp logic_op = vk_logic_op(d->color.logic_op);
+    if (logic_op == VK_LOGIC_OP_MAX_ENUM) {
+        nvn_gpu_rc bad = fail(err, NVN_GPU_E_ARG, "逻辑操作 %u 非法", d->color.logic_op);
+        destroy_pipe_objects(p);
+        return bad;
+    }
+    int logic_enabled = d->color.logic_op != NVN_LOGIC_OP_COPY;
+    if (logic_enabled && !g.dev->core_features.logicOp) {
+        nvn_gpu_rc bad = fail(err, NVN_GPU_E_UNSUPPORTED, "逻辑操作 %u：设备未启用 logicOp", d->color.logic_op);
         destroy_pipe_objects(p);
         return bad;
     }
@@ -2435,7 +2465,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
         if (!d->cfmt[i]) { ncb++; continue; }   // 空槽：占一个位置，不混合、不写
         // 整数格式的目标从不混合（硬件忽略它的混合状态；Vulkan 上整数附件开混合非法）
         nvn_fmt_info cfi; int is_int = nvn_fmt_info_of(d->cfmt[i], &cfi) && (cfi.kind == NVN_FMT_UINT || cfi.kind == NVN_FMT_SINT);
-        if (((d->color.blend_en >> i) & 1u) && !is_int) {
+        if (!logic_enabled && ((d->color.blend_en >> i) & 1u) && !is_int) {
             const blend_st *b = &d->blend[i];
             if (b->adv_mode) {
                 nvn_gpu_rc bad = fail(err, NVN_GPU_E_UNSUPPORTED, "高级混合（adv_mode）：本段未实现（target %u）", i);
@@ -2470,6 +2500,9 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     VkPipelineColorBlendStateCreateInfo cbs;
     memset(&cbs, 0, sizeof cbs);
     cbs.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    // COPY 保留原混合路径；其余操作取代混合。Vulkan 对 float / sRGB 附件自动跳过逻辑运算。
+    cbs.logicOpEnable = logic_enabled ? VK_TRUE : VK_FALSE;
+    cbs.logicOp = logic_op;
     cbs.attachmentCount = ncb;
     cbs.pAttachments = cb;
 
