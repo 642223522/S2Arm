@@ -98,6 +98,7 @@ struct nvn_gpu_view_s {
     VkImageAspectFlags aspect;   // 这个视图取的面（深度模板格式的采样视图只取一个面）
     uint32_t att_layer;          // 当附件时取的层 / 3D 深度切片（视图没设层范围 = 0）
     VkImageView att;             // 附件形态（一级一层的 2D 视图），第一次当附件时建（view_attachment）
+    VkImageView img;             // 图像形态（恒等通道映射），第一次当存储图像时建：存储图像视图必须恒等映射（view_image_form）
     struct nvn_gpu_view_s *all_next;
 };
 
@@ -590,8 +591,9 @@ static void destroy_view_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_view_s *v)
     while (*pp && *pp != v) pp = &(*pp)->all_next;
     if (*pp) *pp = v->all_next;
     LIFE_T0;
-    pc_drop_view(v->att); pc_drop_view(v->view); LIFE_ADD(6);
+    pc_drop_view(v->att); pc_drop_view(v->img); pc_drop_view(v->view); LIFE_ADD(6);
     if (v->att) vkDestroyImageView(vk->d, v->att, NULL);
+    if (v->img) vkDestroyImageView(vk->d, v->img, NULL);
     if (v->view) vkDestroyImageView(vk->d, v->view, NULL);
     LIFE_ADD(5);
     if (v->buffer_view) vkDestroyBufferView(vk->d, v->buffer_view, NULL);
@@ -2715,6 +2717,27 @@ static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
     return r;
 }
 
+// 图像形态的视图：存储图像视图必须用恒等通道映射（Vulkan 规定 image 视图不参与通道映射），而采样视图可能带着
+// 通道映射（游戏设的，或没有 alpha 的格式把 a 钉成 ONE）。第一次当存储图像时另建一个，随视图销毁。
+static VkImageView view_image_form(struct nvn_gpu_view_s *v) {
+    if (!v->swizzled) return v->view;
+    pthread_mutex_lock(&g_mu);
+    if (!v->img) {
+        VkImageViewCreateInfo ci;
+        memset(&ci, 0, sizeof ci);
+        ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        ci.image = v->tex->image;
+        ci.viewType = v->type;
+        ci.format = v->format;
+        ci.subresourceRange = (VkImageSubresourceRange){v->aspect, v->base_level, v->levels, v->base_layer, v->layers};
+        OC(OC_VIEW);
+        { LIFE_T0; if (vkCreateImageView(g.d, &ci, NULL, &v->img) != VK_SUCCESS) v->img = VK_NULL_HANDLE; LIFE_ADD(4); }
+    }
+    VkImageView r = v->img;
+    pthread_mutex_unlock(&g_mu);
+    return r;
+}
+
 static pthread_mutex_t g_pc_mu = PTHREAD_MUTEX_INITIALIZER;
 // 开关每 128 个通道重读一次（真机上同一局里来回切着比）；一个通道从头到尾用开头读到的那个值（g_pc_use，只在回放线程上动）
 static int g_pc_use = 1;
@@ -3227,7 +3250,7 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
         case NVN_GPU_RES_IMAGE:
             if (!b->u.view) { set_sticky(c, NVN_GPU_E_LAYOUT, "IMAGE 绑定缺 view"); return -1; }
             memset(im, 0, sizeof *im);
-            im->imageView = b->u.view->view;
+            im->imageView = view_image_form(b->u.view);   // 带通道映射的视图不能当存储图像用：另建恒等形态
             im->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             w->pImageInfo = im;
             break;
@@ -3866,6 +3889,22 @@ void nvn_gpu_tex_release(nvn_gpu_tex th) {
     pthread_mutex_unlock(&g_mu);
 }
 
+// NVN 里第 4 通道读作 1 的格式（RGBX / BGRX / RGB5 / BGR5 / RGB_DXT1）：这些格式的存储没有 alpha，
+// 分量 a 由硬件供给常数 1。宿主格式是同位宽的 RGBA（Vulkan 没有 RGBX），直接采样会把 X 位当 alpha 读出来
+// （0100F2C0115B6000 的光照合成逐层变暗就是这么来的：片元 alpha 读成 0 附近的垃圾值，目标因子 SRC_ALPHA 把已有光照乘小）。
+// 与 Metal 侧同一张表（graphics/nvn/gfx/tex/nvn_fmt_mtl.c 的 noalpha：nvn_fmt_to_mtl 把 a 解析成 ONE）。
+static int nvn_fmt_alpha_reads_one(uint32_t f) {
+    switch (f) {
+    case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_RGB_DXT1: case NVN_FORMAT_RGB_DXT1_SRGB: case NVN_FORMAT_RGB5:
+    case NVN_FORMAT_RGBX8: case NVN_FORMAT_RGBX8SN: case NVN_FORMAT_RGBX8UI: case NVN_FORMAT_RGBX8I:
+    case NVN_FORMAT_RGBX16F: case NVN_FORMAT_RGBX16: case NVN_FORMAT_RGBX16SN: case NVN_FORMAT_RGBX16UI: case NVN_FORMAT_RGBX16I:
+    case NVN_FORMAT_RGBX32F: case NVN_FORMAT_RGBX32UI: case NVN_FORMAT_RGBX32I:
+    case NVN_FORMAT_BGR5: case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB:
+        return 1;
+    default: return 0;
+    }
+}
+
 nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *out, nvn_gpu_err *err) {
     if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
@@ -3918,8 +3957,10 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
         if (v && v->set_swizzle) memcpy(sw, v->swz, 4);
         else if (t->swz) for (int ch = 0; ch < 4; ch++) sw[ch] = (uint8_t)(t->swz >> (3 * ch) & 7);
         VkComponentSwizzle *comp[4] = {&ci.components.r, &ci.components.g, &ci.components.b, &ci.components.a};
+        int a_one = nvn_fmt_alpha_reads_one(o->nvn_format);   // 没有 alpha 的格式：不管映射到哪一档，读到 a 都是 1
         for (int ch = 0; ch < 4; ch++) {
             if (sw[ch] > 5) sw[ch] = (uint8_t)(2 + ch);
+            if (a_one && sw[ch] == 5) sw[ch] = 1;
             *comp[ch] = sw[ch] == 0 ? VK_COMPONENT_SWIZZLE_ZERO : sw[ch] == 1 ? VK_COMPONENT_SWIZZLE_ONE : (VkComponentSwizzle)(VK_COMPONENT_SWIZZLE_R + (sw[ch] - 2));
             if (sw[ch] != 2 + ch) o->swizzled = 1;
         }
@@ -4524,10 +4565,11 @@ void nvn_gpu_blit(nvn_gpu_cmd ch, nvn_gpu_view sv, const NVNcopyRegion *sr, nvn_
     if (sv->format != s->format || dv->format != d->format) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：视图换了格式（拷贝按存储的格式做）"); return; }
     if (s->samples > 1 && d->samples == 1) {
         nvn_fmt_info f;
-        if (linear || s->w != d->w || s->h != d->h || s->format != d->format || s->nvn_format != d->nvn_format || sv->swizzled || dv->swizzled ||
+        if (linear || s->w != d->w || s->h != d->h || s->format != d->format || s->nvn_format != d->nvn_format ||
             s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
             !nvn_fmt_info_of(s->nvn_format, &f) || f.kind == NVN_FMT_UINT || f.kind == NVN_FMT_SINT || f.depth || f.stencil ||
             s->target == NVN_TEXTURE_TARGET_3D || d->target == NVN_TEXTURE_TARGET_3D) {
+            // resolve 直接用 VkImage + 子资源范围画，不用采样视图的通道映射：视图带映射（游戏设的 / 没有 alpha 的格式把 a 钉成 ONE）不影响
             set_sticky(c, NVN_GPU_E_UNSUPPORTED, "resolve：只支持同格式非整数颜色二维贴图"); return;
         }
         VkOffset3D so, dof; VkExtent3D se, de;
