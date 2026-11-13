@@ -503,6 +503,26 @@ typedef struct { uintptr_t lo, hi; uintptr_t base; __unsafe_unretained id<MTLBuf
     // gslot: its bit in the access bitmap + 1 (0: none); gout: times it was taken out for not being reached; gseen: the frame its bit was last seen; gfence: the submission after which the last taking out lets it go
 static pool_ent *g_pools; static int g_npool, g_cap;
 static int g_pidx_ok, g_plast = -1;   // whether the address→pool index is valid, the last hit (pool_find)
+static int *g_pidx; static int g_pidx_cap;   // pool indices sorted by start address (pool_find)
+static int pidx_cmp(const void *a, const void *b) { uintptr_t x = g_pools[*(const int *)a].lo, y = g_pools[*(const int *)b].lo; return x < y ? -1 : x > y; }
+// The index follows one registration or one removal in place instead of being re-sorted whole at the next lookup: a game that keeps some 1,760 pools and makes or frees one or two
+//   a frame re-sorted all of them each time (qsort under pool_find: 48 of the submit thread's 1,452 samples in 10 s). Both leave the index invalid (the next lookup re-sorts) when
+//   it is not current or the entry is not where the order says. Caller holds g_mu
+static int pidx_pos(uintptr_t lo, int n) { int a = 0, b = n; while (a < b) { int m = (a + b) / 2; if (g_pools[g_pidx[m]].lo < lo) a = m + 1; else b = m; } return a; }   // the first of n entries starting at lo or after
+static int pidx_of(int pool, int n) { int p = pidx_pos(g_pools[pool].lo, n); while (p < n && g_pidx[p] != pool && g_pools[g_pidx[p]].lo == g_pools[pool].lo) p++; return p < n && g_pidx[p] == pool ? p : -1; }
+static void pidx_added(void) {   // g_pools[g_npool - 1] is the new pool
+    if (!g_pidx_ok) return;
+    if (g_pidx_cap < g_npool) { g_pidx_ok = 0; return; }
+    int n = g_npool - 1, p = pidx_pos(g_pools[n].lo, n);
+    memmove(g_pidx + p + 1, g_pidx + p, (size_t)(n - p) * sizeof *g_pidx); g_pidx[p] = n;
+}
+static void pidx_removing(int i) {   // before g_pools[i] = g_pools[--g_npool]: i's entry goes, the last pool's entry is renamed to i
+    if (!g_pidx_ok) return;
+    int n = g_npool, last = n - 1, p = pidx_of(i, n);
+    if (p < 0) { g_pidx_ok = 0; return; }
+    memmove(g_pidx + p, g_pidx + p + 1, (size_t)(n - 1 - p) * sizeof *g_pidx);
+    if (i != last) { int q = pidx_of(last, n - 1); if (q < 0) { g_pidx_ok = 0; return; } g_pidx[q] = i; }
+}
 static NSMutableArray *g_keep;                  // Holds the buffer references (pool_ent has non-owning pointers)
 static uint64_t g_pool_adds;
 static int g_pool_res_n;   // registered pools already in the residency set (for the memory readout; under g_mu)
@@ -786,8 +806,8 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64;
         if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) { pthread_mutex_unlock(&g_mu); MLOG("【红】 memory pool %p+%#llx not registered: its addresses resolve to nothing (draws using it are skipped)", mem, (unsigned long long)size); return; }
         g_cap = c; }
-    g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);   // the address index and the per-thread caches are invalid (pool_find, pc_get)
-    g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, mem, 0, ha};   // not in the residency set yet: put in the first time it is addressed (pool_res)
+    g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);   // the last hit and the per-thread caches are invalid (pool_find, pc_get)
+    g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, mem, 0, ha}; pidx_added();   // not in the residency set yet: put in the first time it is addressed (pool_res)
     g_pool_adds++;
     [g_keep addObject:buf];
     pthread_mutex_unlock(&g_mu);
@@ -804,15 +824,13 @@ static void nvn_be_pool_del_body(const void *mem) {
         if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; defer_obj_release(b); if (g_pools[i].res) g_pool_res_n--;
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
             gslot_put(i);
-            [g_dead_pools addObject:b]; g_pools[i] = g_pools[--g_npool]; if (i < g_npool && g_pools[i].gslot) g_gslot_pool[g_pools[i].gslot - 1] = i;   // the moved pool's bit follows it
-            g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); break; }
+            [g_dead_pools addObject:b]; pidx_removing(i); g_pools[i] = g_pools[--g_npool]; if (i < g_npool && g_pools[i].gslot) g_gslot_pool[g_pools[i].gslot - 1] = i;   // the moved pool's bit follows it
+            g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); break; }
     pthread_mutex_unlock(&g_mu);
 }
 
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
-// The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is re-sorted when next used. Caller holds g_mu
-static int *g_pidx; static int g_pidx_cap;
-static int pidx_cmp(const void *a, const void *b) { uintptr_t x = g_pools[*(const int *)a].lo, y = g_pools[*(const int *)b].lo; return x < y ? -1 : x > y; }
+// The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). The index is sorted the first time it is used and then follows each registration / removal in place (pidx_added / pidx_removing). Caller holds g_mu
 static int pool_find(uint64_t addr, uint64_t len) {
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].lo && addr + len <= g_pools[g_plast].hi) return g_plast;
     if (!g_pidx_ok) {
