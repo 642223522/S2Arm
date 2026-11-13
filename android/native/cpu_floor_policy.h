@@ -118,9 +118,10 @@ static inline void s2a_floor_reset_run(struct s2a_floor_state *st) {
     st->latched = latched; st->nogain_until_ns = until; st->nogain_backoff_ns = backoff;
 }
 
-// 门：这些条件任何一条不满足，不托底（热状态没读到按放行：认不出的不拦）。
+// 门：只看物理上托不了的（不在前台 / 没有显示面 / 已停）。热状态与省电模式不进门（11-13 维护者「不读电量、不设自己挡自己的闸」）：
+//   真热到系统压频，「上限被压本局停用」那条照样会接住；两个读数只进日志
 static inline int s2a_floor_gate_ok(const struct s2a_floor_in *in) {
-    return in->foreground && in->surface && !in->stopped && !in->low_power && in->thermal <= 1;
+    return in->foreground && in->surface && !in->stopped;
 }
 
 static inline void s2a_floor_open_window(struct s2a_floor_state *st, const struct s2a_floor_in *in) {
