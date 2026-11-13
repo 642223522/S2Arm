@@ -290,6 +290,12 @@ def _win_acl(path, sealed):
         raise C.WinError(C.get_last_error())
 
 
+def sealing():
+    """RomFS 共享存储设不设只读：只在开发 / 门禁机（S2A_ROMFS_SEAL=1，tools/gate.sh 设）。玩家机上存储在玩家看得见的游戏库里，
+    只读（Windows 是拒写的访问控制项）会让玩家在资源管理器里删不掉旧产物——玩家可见目录不能用权限做保护（同 pack/roots.sh）"""
+    return os.environ.get('S2A_ROMFS_SEAL') == '1'
+
+
 def seal(path, readonly=True):
     path = Path(path)
     if is_link(path):
@@ -612,7 +618,7 @@ class Roots:
                 self._copy_tree(p, dest / p.name)
             else:
                 copy_file(p, dest / p.name)
-        if not own_romfs and (dest / 'romfs').is_dir() and not target:
+        if not own_romfs and (dest / 'romfs').is_dir() and not target and sealing():
             seal(dest / 'romfs')
         self._resource('--root-clone', source, dest, env=env)
         self._shards(dest, '克隆现行(root_begin)', env=env)
@@ -704,6 +710,8 @@ class Roots:
                 e.add_note(f'（撤回也失败：{undo!r}；以上面的原错误为准）')
                 raise e
             print(f'【黄】RomFS 没收进共享存储（{e!r}），已撤回、留在本版本里照常出包', file=sys.stderr)
+            return
+        if not sealing():   # 玩家机：存储在玩家看得见的游戏库里，不设只读（同 pack/roots.sh _root_romfs_lock）
             return
         try:
             seal(store / identity)
