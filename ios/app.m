@@ -344,7 +344,7 @@ uint64_t s2a_ios_free_important(const char *path) {
 //   电脑端推包前读它（tools/push_pack.py free_from_phone）。读不到的项写 0
 static void free_note(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        char p[1024]; snprintf(p, sizeof p, "%s/Documents/s2a_free.tsv", NSHomeDirectory().fileSystemRepresentation);   // 固定在容器 Documents 下（多款容器也是这一份：可用空间是整机的）
+        char p[1024], d[1000]; s2a_container_docs(d, sizeof d); snprintf(p, sizeof p, "%s/s2a_free.tsv", d);   // 固定在容器 Documents 下（多款容器也是这一份：可用空间是整机的）
         NSURL *u = [NSURL fileURLWithPath:NSHomeDirectory()]; NSNumber *imp = nil, *opp = nil;
         [u getResourceValue:&imp forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
         [u getResourceValue:&opp forKey:NSURLVolumeAvailableCapacityForOpportunisticUsageKey error:nil];
