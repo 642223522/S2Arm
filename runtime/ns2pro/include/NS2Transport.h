@@ -46,6 +46,22 @@ int ns2_link_failure_stops_scan(ns2_kind failed);
 // 对外输出形态（纯函数）：两条链路都在出输入且一左一右 → 一对；否则取在出输入的那条的型号；都没有 → NONE。
 //   与 NS2Transport.m 的 pair_locked / 单只横握判断同一条规则，宿主据此显示型号、选手柄样式（#520）
 ns2_kind ns2_output_kind(ns2_kind a, int a_present, ns2_kind b, int b_present);
+// 连上就别自己断（NS2Keep.c）：没有应答也能往下走的握手步骤、校准缺省值、输入长度、应答匹配、震动能不能写、保活节奏
+enum { NS2_CAL_DEFAULT_CENTER = 2048, NS2_CAL_DEFAULT_TRAVEL = 1200, NS2_INPUT_MIN = 63, NS2_INPUT_MAX = 80 };
+#define NS2_KEEPALIVE_NS (3ull * 1000000000ull)
+// 握手第 step 步没有应答时是否只能断开：只有功能位设定 / 开启（第 4、6 步）；其余步骤跳过、记日志
+int ns2_step_required(unsigned step);
+int ns2_calibration_valid(const unsigned center[2], const unsigned above[2], const unsigned below[2]);
+void ns2_calibration_default(unsigned center[2], unsigned above[2], unsigned below[2]);
+// 输入通知（report05 / report09）的合理长度；更长的是同一特征上的音频包，更短的解不出来，都跳过不断开
+int ns2_input_length_ok(size_t length);
+// 应答属于这条指令：指令号与子指令号相同。ns2_ack_usual：方向 / 传输 / 第 5 字节是常见值（不是也照收，只记日志）
+int ns2_ack_matches(const uint8_t *reply, size_t length, const uint8_t *request, size_t request_length);
+int ns2_ack_usual(const uint8_t *reply, size_t length);
+// 震动特征在、单次写入放得下 42 字节的震动包才写震动；否则这只手柄不震，输入照常
+int ns2_rumble_writable(int has_characteristic, size_t max_write);
+// 上次写入之后过了 NS2_KEEPALIVE_NS：写一次玩家灯，免得主机长时间不写入时手柄自己断开
+int ns2_keepalive_due(uint64_t last_write_ns, uint64_t now_ns);
 // 当前对外输出形态（线程安全，读传输层两条链路的现状）
 ns2_kind ns2_get_output_kind(void);
 // 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
