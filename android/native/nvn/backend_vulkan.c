@@ -414,6 +414,61 @@ static void newimg_del_locked(struct nvn_gpu_tex_s *t) {
     for (uint32_t i = 0; i < g_newimg_n; i++) if (g_newimg[i] == t) { g_newimg[i] = g_newimg[--g_newimg_n]; return; }
 }
 
+// 命令段用完的命令池（带它那一个命令缓冲）和描述符池留下来给后面的段用，不再每段新建、段完成就销毁。
+// 真机取样（一款 3D 游戏，每帧 9 个命令段）：回放线程约 14% 的时间在驱动向内核要显存（kgsl_sharedmem_alloc → ioctl + mmap），
+// 开命令段 nvn_gpu_cmd_begin 一项占 6%；每帧新建 9.2 个命令池、5.0 个描述符池。
+// 段做完后：命令池 vkResetCommandPool、描述符池 vkResetDescriptorPool，各放进一张空闲表；开段 / 要描述符池时先从表里取。
+// 重置之后上一段分出去的描述符组句柄全部失效——段内的影子（desc_sets、备忘表）都随段对象一起没了，不会带到下一段。
+// 表有上限（多出来的照旧销毁），会话收尾全部销毁。诊断开关 nvk_seg_reuse=0 关掉（同一局里对照用），缺省开。
+enum { SEGPOOL_CMD_N = 32, SEGPOOL_DESC_N = 64 };
+static struct { VkCommandPool pool; VkCommandBuffer cb; } g_seg_cmd[SEGPOOL_CMD_N];
+static VkDescriptorPool g_seg_desc[SEGPOOL_DESC_N];
+static uint32_t g_seg_ncmd, g_seg_ndesc; static uint64_t g_seg_hit_cmd, g_seg_hit_desc;
+static int g_seg_closed;   // 会话收尾已经清过表：之后再还回来的一律直接销毁（持 g_seg_mu 读写）
+static pthread_mutex_t g_seg_mu = PTHREAD_MUTEX_INITIALIZER;
+static int seg_reuse_on(void) { static int cur = -1; static uint32_t k; if (cur < 0 || !(++k & 63)) cur = nvn_plat_flag("nvk_seg_reuse", 1) != 0; return cur; }
+static int seg_take_cmd(VkCommandPool *pool, VkCommandBuffer *cb) {
+    int ok = 0;
+    pthread_mutex_lock(&g_seg_mu);
+    if (g_seg_ncmd) { g_seg_ncmd--; *pool = g_seg_cmd[g_seg_ncmd].pool; *cb = g_seg_cmd[g_seg_ncmd].cb; g_seg_hit_cmd++; ok = 1; }
+    pthread_mutex_unlock(&g_seg_mu);
+    return ok;
+}
+static void seg_give_cmd(VkCommandPool pool, VkCommandBuffer cb) {   // 这一段已经做完（或被放弃），池里没有在用的命令缓冲
+    if (!pool) return;
+    int kept = 0;
+    if (cb && seg_reuse_on() && vkResetCommandPool(g.d, pool, 0) == VK_SUCCESS) {
+        pthread_mutex_lock(&g_seg_mu);
+        if (!g_seg_closed && g_seg_ncmd < SEGPOOL_CMD_N) { g_seg_cmd[g_seg_ncmd].pool = pool; g_seg_cmd[g_seg_ncmd].cb = cb; g_seg_ncmd++; kept = 1; }
+        pthread_mutex_unlock(&g_seg_mu);
+    }
+    if (!kept) vkDestroyCommandPool(g.d, pool, NULL);   // 池同时回收它的命令缓冲
+}
+static VkDescriptorPool seg_take_desc(void) {
+    VkDescriptorPool p = VK_NULL_HANDLE;
+    pthread_mutex_lock(&g_seg_mu);
+    if (g_seg_ndesc) { p = g_seg_desc[--g_seg_ndesc]; g_seg_hit_desc++; }
+    pthread_mutex_unlock(&g_seg_mu);
+    return p;
+}
+static void seg_give_desc(VkDescriptorPool p) {
+    if (!p) return;
+    int kept = 0;
+    if (seg_reuse_on() && vkResetDescriptorPool(g.d, p, 0) == VK_SUCCESS) {
+        pthread_mutex_lock(&g_seg_mu);
+        if (!g_seg_closed && g_seg_ndesc < SEGPOOL_DESC_N) { g_seg_desc[g_seg_ndesc++] = p; kept = 1; }
+        pthread_mutex_unlock(&g_seg_mu);
+    }
+    if (!kept) vkDestroyDescriptorPool(g.d, p, NULL);
+}
+static void seg_drain(void) {
+    pthread_mutex_lock(&g_seg_mu);
+    for (uint32_t i = 0; i < g_seg_ncmd; i++) vkDestroyCommandPool(g.d, g_seg_cmd[i].pool, NULL);
+    for (uint32_t i = 0; i < g_seg_ndesc; i++) vkDestroyDescriptorPool(g.d, g_seg_desc[i], NULL);
+    g_seg_ncmd = g_seg_ndesc = 0; g_seg_closed = 1;
+    pthread_mutex_unlock(&g_seg_mu);
+}
+
 // 贴图显存块的小池。动态分辨率的游戏每帧换渲染目标的宽高，每张新图都向驱动要一块显存、旧图拆的时候还回去：
 // 一款 3D 游戏每帧 10 张时「要显存并绑定」1.24 毫秒 + 拆 0.41 毫秒（直接计时）。拆贴图时把显存块留在池里，
 // 新图要的大小落在某块的 [块的 4/5, 块] 之间、内存类型相同就直接绑它（图已经拆了的显存块可以再绑给别的图）。
@@ -768,8 +823,8 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     free(c->passes);
     free(c->memo);
     for (int i = 0; i < 6; i++) free(c->push_data[i]);
-    if (c->dpool) vkDestroyDescriptorPool(g.d, c->dpool, NULL);
-    for (uint32_t i = 0; i < c->ndpools_full; i++) vkDestroyDescriptorPool(g.d, c->dpools_full[i], NULL);
+    seg_give_desc(c->dpool);
+    for (uint32_t i = 0; i < c->ndpools_full; i++) seg_give_desc(c->dpools_full[i]);
     free(c->dpools_full);
     if (c->tsq) vkDestroyQueryPool(g.d, c->tsq, NULL);
         if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
@@ -780,7 +835,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
         if (b->memory) vkFreeMemory(g.d, b->memory, NULL);
         free(b);
     }
-    if (c->pool) vkDestroyCommandPool(g.d, c->pool, NULL);   // pool 同时回收 command buffer
+    seg_give_cmd(c->pool, c->cb);
     free(c->refs);
     free(c->staging);
     free(c);
@@ -953,6 +1008,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
     if (pthread_create(&g.worker, NULL, worker_main, &g) != 0)
         return fail(err, NVN_GPU_E_DEVICE, "worker 线程创建失败");
     g.worker_started = 1;
+    pthread_mutex_lock(&g_seg_mu); g_seg_closed = 0; pthread_mutex_unlock(&g_seg_mu);
     g_open = 1;
     return rc(NVN_GPU_OK);
 }
@@ -1139,6 +1195,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         tx = tn;
     }
     texmem_drain(g.d);
+    seg_drain();
     if (g.bc) nvn_vk_bcdec_destroy(g.dev, g.bc);
     free(g.submitted);
     g.submitted = NULL;
@@ -2831,6 +2888,7 @@ static int new_dpool(struct nvn_gpu_cmd_s *c) {
     dpi.maxSets = DPOOL_SETS;
     dpi.poolSizeCount = 8;
     dpi.pPoolSizes = ps;
+    if (seg_reuse_on() && (c->dpool = seg_take_desc()) != VK_NULL_HANDLE) return 1;
     OC(OC_DPOOL);
     if (vkCreateDescriptorPool(g.d, &dpi, NULL, &c->dpool) != VK_SUCCESS) {
         c->dpool = VK_NULL_HANDLE;
@@ -4288,6 +4346,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pci.queueFamilyIndex = g.dev->queue_family;
+    if (!seg_reuse_on() || !seg_take_cmd(&c->pool, &c->cb)) {   // 空闲表里没有：新建一个池和它的命令缓冲
     OC(OC_CPOOL);
     if (vkCreateCommandPool(g.d, &pci, NULL, &c->pool) != VK_SUCCESS) {
         free(c);
@@ -4303,6 +4362,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
         vkDestroyCommandPool(g.d, c->pool, NULL);
         free(c);
         return fail(err, NVN_GPU_E_OOM, "vkAllocateCommandBuffers 失败");
+    }
     }
     VkCommandBufferBeginInfo bi;
     memset(&bi, 0, sizeof bi);
