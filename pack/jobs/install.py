@@ -1659,6 +1659,31 @@ def phone_updates(c):
     return out
 
 
+def online_devices(c):
+    """现在连着的设备号（Windows 设备服务里 USB 或同网的都算）；Mac / 读不到 → 空集（不影响更新本身，只少一句说明）"""
+    if os.name != "nt":
+        return set()
+    try:
+        return {u for u, _, _ in win_install_mod(c).mux_devices() if u}
+    except OSError:
+        return set()
+
+
+def other_device_current(c, want):
+    """#900：「更新手机上的 S2Arm」要找的那台（壳旧了的设备记录）不在线，而现在连着的另一台已经是本版壳 → 说清是两台、连着的这台不用更新；
+    否则 None（照原来的「不在线」说）。玩家从游戏库推送时连着的那台已顺带换上新壳，更新按钮指的是游戏库里另一台旧设备的记录"""
+    import ipa as packer
+    if not want:
+        return None
+    online = online_devices(c)
+    sid = packer.current_shell_id(c)
+    fresh = [k for k, r in layout.devices(c) if k != want and k in online and isinstance(r, dict) and r.get("shellId") == sid]
+    if not fresh:
+        return None
+    return (f"要更新的是另一台设备（编号末尾 {want[-6:]}），它现在不在线；现在连着的这台（编号末尾 {fresh[0][-6:]}）已经是新版 S2Arm，不用更新。"
+            f"那台以后要用时连上它再点更新；不再用了的话，删掉游戏库文件夹 devices 里名字以 {want[-6:]} 结尾的那个文件，这个更新提醒就不再出现。")
+
+
 def update_phone(c):
     """「更新 iPhone 上的 S2Arm」：用本版壳 + 手机上各款已有的程序模块组新容器 → 签名 → 只装 App；资源包（IMG）、直连库只推变了的（通常一个都不推），
     手机上的游戏库、存档不动。新壳认不得的款（要按新版重新出包）：没带 acceptStale 就停下报 container_stale 列出它们，玩家确认后不带它们装
@@ -1667,7 +1692,13 @@ def update_phone(c):
     if wants_export(c):   # 导出模式的「导出新版 S2Arm」：本版壳带上游戏库里能带的各款出到文件夹，玩家自己覆盖安装
         return dict(export_phone(c), updated=True)
     c.begin("找签名账号与 iPhone", 1, 6)
-    ph = phone_for(c)
+    try:
+        ph = phone_for(c)
+    except Failure as e:
+        hint = e.code == "device_not_connected" and other_device_current(c, c.r.get("device") or "")
+        if hint:
+            raise Failure(hint, code="device_not_connected") from e
+        raise
     rec = layout.load_device(c, ph.key)
     others = container_others(c, ph, rec)
     sid = packer.current_shell_id(c)
