@@ -2390,57 +2390,6 @@ static void thr_counts_lv(thsc_lv lv[2]) {
 static int render_qos_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RENDER_QOS"); v = !(e && !strcmp(e, "0")); } return v; }
 static _Atomic uint32_t g_sub_qos_seen;   // the submit thread's QoS as last checked (summary line)
 #endif
-// 提交线程的实时声明。取画面的线程早就有声明（set_time_constraint，在 nvnWindowAcquireTexture 里），但回放整帧的是调 nvnQueueSubmitCommands 的线程：
-//   两者是同一条线程的游戏（主线程自己提交）靠那份声明上了性能核；渲染线程另起的游戏，重活那条线程只有普通调度档，iPhone 上被留在能效核低频
-//   （一款这样的游戏：提交每帧 15–17 ms、平均 1.3 GHz、0% 在性能核，同机另一款同线程的游戏 100% 在性能核）。这里给它同样的声明：
-//   周期 = 取画面线程发布的出图周期，计算量 = 它自己每帧 CPU 时间的 max(1.25 × p90, 1.1 × 峰值)，上限 0.9 × 周期，每 120 帧核一次、差 15% 以上才重设；
-//   先看 120 帧再定（见 submit_rt_tick）。取画面线程自己不重复设。安卓不做。
-//   缺省：iPhone / iPad 开（真机同局交替两局：帧率 +12% / +20%，长帧不增），Mac 关（没量）。DM_SUBMIT_RT=1 开、0 关；alt:<N> = 每 N 帧在关 / 开之间换（偶数段关、奇数段开）
-#if !defined(__ANDROID__)
-#include <mach/mach.h>
-#include <mach/mach_time.h>
-#include <mach/thread_policy.h>
-#include <TargetConditionals.h>
-#include "nvn_submit_rt.h"
-static int dcmp(const void *a, const void *b);
-static _Atomic uint64_t g_rt_period_pub;   // 取画面线程当前声明的周期（纳秒）；0 = 还没声明
-static __thread int t_acquire_thread;      // 本线程是取画面线程（已有声明）
-static int submit_rt_want(void) {
-    static int mode = -1, alt; if (mode < 0) { const char *e = getenv("DM_SUBMIT_RT"); mode = e && *e ? !strcmp(e, "1") : TARGET_OS_IPHONE; if (e && !strncmp(e, "alt:", 4)) alt = atoi(e + 4); }
-    return alt > 0 ? (int)((dm_nvn_frame_count() / (uint64_t)alt) & 1) : mode;
-}
-static void submit_rt_set(uint64_t period_ns, double comp_ms) {
-    static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
-    uint64_t comp_ns = (uint64_t)(comp_ms * 1e6);
-    thread_time_constraint_policy_data_t p = {.period = (uint32_t)(period_ns * tb.denom / tb.numer), .computation = (uint32_t)(comp_ns * tb.denom / tb.numer), .constraint = (uint32_t)(period_ns * tb.denom / tb.numer), .preemptible = 1};
-    kern_return_t kr = thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
-    static _Atomic int n; if (atomic_fetch_add(&n, 1) < 24) LOG("[nvn] submit thread time-constraint policy (period %.3f ms, computation %.3f ms) %s", period_ns / 1e6, comp_ms, kr == KERN_SUCCESS ? "set" : "failed to set");
-}
-// 每次提交末尾调，sub_cpu_ns = 这次提交调用里本线程花的 CPU。一帧多次提交按帧号合并记账。
-//   只给「提交是它的主要工作」的线程声明：最近 120 帧里它每帧花在提交里的 CPU 中位不低于周期的十分之一。偶尔提交几条命令的线程（游戏的主线程、资源线程）
-//   不声明——按它那点 CPU 声明成实时线程，哪一帧多做了点就会超支被系统卡住几十毫秒。已经声明的线程跌到门槛以下就撤回
-static void submit_rt_tick(uint64_t sub_cpu_ns) {
-    static __thread uint64_t lastf = ~0ull, lastc, period, sub_acc; static __thread double win[120], swin[120], declared; static __thread int n, on;
-    if (t_acquire_thread) return;
-    sub_acc += sub_cpu_ns;
-    uint64_t f = dm_nvn_frame_count(); if (f == lastf) return;
-    int want = submit_rt_want(); uint64_t per = atomic_load_explicit(&g_rt_period_pub, memory_order_relaxed);
-    uint64_t c = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID); double ms = lastf != ~0ull ? (double)(c - lastc) / 1e6 : 0, sms = (double)sub_acc / 1e6; lastf = f; lastc = c; sub_acc = 0;
-    if (!want || !per) {
-        if (on) { thread_standard_policy_data_t sp = {0}; thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_STANDARD_POLICY, (thread_policy_t)&sp, THREAD_STANDARD_POLICY_COUNT); on = 0; declared = 0; }
-        n = 0; return; }
-    win[n] = ms; swin[n++] = sms; if (n < 120) return;
-    double v[120], sv[120]; memcpy(v, win, sizeof v); memcpy(sv, swin, sizeof sv); qsort(v, 120, sizeof *v, dcmp); qsort(sv, 120, sizeof *sv, dcmp); n = 0;
-    double comp = 0; int act = nvn_submit_rt_decide(v, sv, 120, per / 1e6, on ? declared : 0, &comp);
-    if (act == SUBMIT_RT_KEEP && on && period != per) { act = SUBMIT_RT_DECLARE; comp = fmin(declared, per * 0.9 / 1e6); }   // 周期变了：同一计算量按新周期重设
-    if (act == SUBMIT_RT_WITHDRAW) {
-        thread_standard_policy_data_t sp = {0}; thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_STANDARD_POLICY, (thread_policy_t)&sp, THREAD_STANDARD_POLICY_COUNT); on = 0; declared = 0;
-        LOG("[nvn] submit thread time-constraint policy withdrawn: %.2f ms a frame in submits (median), under a tenth of the period", sv[60]);
-    } else if (act == SUBMIT_RT_DECLARE) { on = 1; period = per; declared = comp; submit_rt_set(per, declared); }
-}
-#else
-static void submit_rt_tick(uint64_t sub_cpu_ns) { (void)sub_cpu_ns; }
-#endif
 static void render_thread_qos(void) {
 #if !defined(__ANDROID__)
     static __thread uint32_t n;
@@ -2837,7 +2786,6 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     uint64_t dw = now_ns() - t0;
     atomic_fetch_add(&g_nvn_ns, dw); atomic_fetch_add(&g_sub_wall_ns, dw);
     uint64_t i1, y1; thr_counts(&i1, &y1); uint64_t dc = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - c0, di = i1 - i0;
-    submit_rt_tick(dc);
     atomic_fetch_add(&g_cum_sub_cyc, y1 - y0); atomic_fetch_add(&g_cum_sub_sys_ns, thr_sys_ns() - s0); atomic_fetch_add(&g_cum_sub_wall_ns, dw);
     atomic_fetch_add(&g_sub_cpu_ns, dc); atomic_fetch_add(&g_cum_sub_cpu_ns, dc);
     atomic_fetch_add(&g_sub_instr, di); atomic_fetch_add(&g_cum_sub_instr, di);
@@ -3073,9 +3021,6 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     uint64_t at = *idx < 4 ? o->avail[*idx] : 0, now = dm_detclock_enabled() ? guest_ns() : now_ns(), wait = at > now ? at - now : 0, pace_ns = 0;
     if (!dm_detclock_enabled()) {   // Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
         static uint64_t rt_period; uint64_t period = present_period(o), rtp = rt_period_ns(o, period);
-#if !defined(__ANDROID__)
-        t_acquire_thread = 1; if (rtp) atomic_store_explicit(&g_rt_period_pub, rtp, memory_order_relaxed);
-#endif
         if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
         rt_comp_tick(rtp);
         uint64_t p0 = now_ns();
