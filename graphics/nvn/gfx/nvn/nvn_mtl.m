@@ -588,6 +588,7 @@ static void udc_selftest(void) {
         MLOG("UDC self-check %s %s %lux%lu first value %08x, values differing from it %lu / %lu", g_dev.name.UTF8String, depth ? "Depth32F_S8" : "RGBA8", (unsigned long)w, (unsigned long)h, px[0], (unsigned long)bad, (unsigned long)(w * h));
     }
 }
+static void bcd_prewarm(void);   // no BC: start building the decompression pipeline (defined with bcd_pso)
 void mtl_init(void) {
     if (g_dev) return;
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
@@ -689,6 +690,7 @@ void mtl_init(void) {
     MLOG("Metal device %s", g_dev.name.UTF8String);
     udc_selftest();
     warm_announce();
+    bcd_prewarm();   // S2Arm #582: no BC, the decompression pipeline is built in the background (see bcd_ready)
 }
 
 
@@ -2939,8 +2941,14 @@ static id<MTLComputePipelineState> bcd_pso(void) {
         if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–7 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–7 are decompressed on the GPU"); }
     return ps;
 }
+// S2Arm #582: bcd_pso compiles k_bcd_msl from source (newLibraryWithSource, about 230 ms on an M4 each launch, the system shader cache does not keep it); built at first use it sat on the
+//   upload of the first BC texture. On a GPU without BC mtl_init starts the build in the background (bcd_prewarm); a use waits for it (bcd_ready), so ps / failed are only written on that queue
+//   and only read after the wait. With BC (or before mtl_init) nothing is started and bcd_ready is bcd_pso
+static dispatch_group_t g_bcd_pre;   // the background build, NULL = not started
+static void bcd_prewarm(void) { if (!no_bc() || g_bcd_pre) return; g_bcd_pre = dispatch_group_create(); dispatch_group_async(g_bcd_pre, s2a_qos_global(S2A_QOS_SHADER_PREFETCH), ^{ (void)bcd_pso(); }); }
+static id<MTLComputePipelineState> bcd_ready(void) { if (g_bcd_pre) dispatch_group_wait(g_bcd_pre, DISPATCH_TIME_FOREVER); return bcd_pso(); }
 // GPU decompression applies (the texture is made shader-writable with format views; the upload still needs pool-backed storage, otherwise it decodes on the CPU)
-static int bc_gpu_dec(const tex_t *t) { uint32_t upf; int ubpp; return fmt_unpack(t->d.format, &upf, &ubpp) && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_pso(); }
+static int bc_gpu_dec(const tex_t *t) { uint32_t upf; int ubpp; return fmt_unpack(t->d.format, &upf, &ubpp) && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_ready(); }
 typedef struct { __unsafe_unretained id<MTLBuffer> src, params; size_t poff; uint32_t bw, bh; __unsafe_unretained id<MTLTexture> view, base; } up_dec;   // view / base: held by g_up_texs within the batch, the view afterwards by defer_obj_unref until the GPU finishes
 static up_dec *g_up_decs; static int g_nup_decs, g_up_deccap;
 #include "nvn_rscale.inc"   // S2Arm internal resolution (S2A_RES_SCALE): state, eligibility, canvas sizes
@@ -3153,7 +3161,7 @@ static void up_flush(void) {
     if (g_nup_decs) {   // no BC, GPU decompression (up_dec): after the deswizzles that wrote the blocks; the decoded textures take no copy, so this runs before the copies' encoder
         id e = [g_up_cb computeCommandEncoder]; g_up_ce = e;
         if (g_m3) m3_wait(e, 0, 0); else { enc_full_barrier_begin(e); [e setArgumentTable:g_up_ct]; }
-        [e setComputePipelineState:bcd_pso()];
+        [e setComputePipelineState:bcd_ready()];
         for (int i = 0; i < g_nup_decs; i++) { up_dec *x = &g_up_decs[i];
             if (g_m3) { [(id<MTLComputeCommandEncoder>)e setBuffer:x->src offset:0 atIndex:0]; [(id<MTLComputeCommandEncoder>)e setBuffer:x->params offset:x->poff atIndex:1]; [(id<MTLComputeCommandEncoder>)e setTexture:x->view atIndex:0]; }
             else { [g_up_ct setAddress:x->src.gpuAddress atIndex:0]; [g_up_ct setAddress:x->params.gpuAddress + x->poff atIndex:1]; [(id<MTL4ArgumentTable>)g_up_ct setTexture:x->view.gpuResourceID atIndex:0]; }
@@ -14364,7 +14372,7 @@ static void copy_t2t_(const p_copy_t2t *c);
 static void dlss_eval(const p_dlss *d, uint32_t size);   // nvn_dlss.inc
 static void copy_t2t(const p_copy_t2t *c) {
     // GPU 写出的贴图拷到别处，目标也是 GPU 内容，不当 16:9 原比例页的来源（核心按 src 判：CPU 供图拷来拷去仍是图片；10-26 八方2 场景图）
-    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
+    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); wd_s3d_copied(c->dst->serial, c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
     if (rs_on() && c->dst && (c->flags & DM_COPY_RESOLVE) && rs_state(tex_mtl(c->dst)) == RS_SCALED) rs_rescale(tex_mtl(c->dst), 0, "多重采样解析的目标");   // S2Arm internal resolution: a resolve needs equal sizes (multisample storages are never scaled)
     if ((c->flags & DM_COPY_RESOLVE) && c->src && c->dst) wd_widen_resolve_dst(c->src, c->dst);   // S2Arm widen: a widened multisample target resolves into a destination widened the same
     // S2Arm widen: the same copied the same way between two textures of one game size (11-02 Mario & Sonic Tokyo 2020: each frame copies its widened 1920x1080 canvas, drawn in the
@@ -15067,7 +15075,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
                 if (g_rc_skip) { PD("c %llu color clear skipped by conditional rendering slot%d", g_stat_pass, c->index); break; }
-                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial);   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
+                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) { s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial); if (!R.has_sc) { pthread_mutex_lock(&g_wd_mu); wd_s3d_cleared(R.rt.color[c->index]->serial); pthread_mutex_unlock(&g_wd_mu); } }   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
                 // A scissored clear to 0 outside a pass with all channels (SMBW clears pyramid levels as sub-rectangles of 480×272 and other targets): copy from the zero buffer into the scissor rectangle in the replay stream
                 int p2w = g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index] && wd_p2_is_world(R.rt.color[c->index]->serial);   // S2Arm widen: per-path clear counts on the fallback world target (status line, widen_glue.inc)
                 if (!g_enc && c->mask == 0xf && !c->rgba[0] && !c->rgba[1] && !c->rgba[2] && !c->rgba[3] && R.has_sc && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]

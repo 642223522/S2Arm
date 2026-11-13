@@ -1852,6 +1852,8 @@ def catalog(c):
         game["name"] = custom["name"] or game["name"]
         # 封面三级：玩家换的 → 游戏包自带图标（导入时从控制分区 icon_*.dat 取，cover.jpg）→ 商店横图（store_meta，banner.jpg）→ 空（界面用 S2Arm 标志）
         game["cover"] = str(custom["cover"] or (cover if cover.is_file() else banner if banner.is_file() else "")) if custom["cover"] or cover.is_file() or banner.is_file() else ""
+        # 已下载的商店横图另给一份（#378）：Mac 游戏库顶部大图按「玩家换的 → 横图 → 封面」取，不把 256×256 的图标放大；列表卡片照旧用 cover
+        game["banner"] = str(banner) if banner.is_file() else ""
         choices = [p for p in selected_packages(game) if p["type"] in ("base", "update")]
         if choices:
             game["display"] = max(choices, key=lambda p: p["version"])["display"]
