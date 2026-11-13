@@ -14303,7 +14303,7 @@ static void copy_t2t_(const p_copy_t2t *c);
 static void dlss_eval(const p_dlss *d, uint32_t size);   // nvn_dlss.inc
 static void copy_t2t(const p_copy_t2t *c) {
     // GPU 写出的贴图拷到别处，目标也是 GPU 内容，不当 16:9 原比例页的来源（核心按 src 判：CPU 供图拷来拷去仍是图片；10-26 八方2 场景图）
-    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
+    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); wd_s3d_copied(c->dst->serial, c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
     if (rs_on() && c->dst && (c->flags & DM_COPY_RESOLVE) && rs_state(tex_mtl(c->dst)) == RS_SCALED) rs_rescale(tex_mtl(c->dst), 0, "多重采样解析的目标");   // S2Arm internal resolution: a resolve needs equal sizes (multisample storages are never scaled)
     if ((c->flags & DM_COPY_RESOLVE) && c->src && c->dst) wd_widen_resolve_dst(c->src, c->dst);   // S2Arm widen: a widened multisample target resolves into a destination widened the same
     // S2Arm widen: the same copied the same way between two textures of one game size (11-02 Mario & Sonic Tokyo 2020: each frame copies its widened 1920x1080 canvas, drawn in the
@@ -15006,7 +15006,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
                 if (g_rc_skip) { PD("c %llu color clear skipped by conditional rendering slot%d", g_stat_pass, c->index); break; }
-                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial);   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
+                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) { s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial); if (!R.has_sc) { pthread_mutex_lock(&g_wd_mu); wd_s3d_cleared(R.rt.color[c->index]->serial); pthread_mutex_unlock(&g_wd_mu); } }   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
                 // A scissored clear to 0 outside a pass with all channels (SMBW clears pyramid levels as sub-rectangles of 480×272 and other targets): copy from the zero buffer into the scissor rectangle in the replay stream
                 int p2w = g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index] && wd_p2_is_world(R.rt.color[c->index]->serial);   // S2Arm widen: per-path clear counts on the fallback world target (status line, widen_glue.inc)
                 if (!g_enc && c->mask == 0xf && !c->rgba[0] && !c->rgba[1] && !c->rgba[2] && !c->rgba[3] && R.has_sc && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]
