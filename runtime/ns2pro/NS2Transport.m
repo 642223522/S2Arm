@@ -116,6 +116,8 @@ static void on_queue(dispatch_block_t block) {
     if (dispatch_get_specific(&queueKey)) block(); else dispatch_sync(bleQueue, block);
 }
 
+// 玩家 1 灯（09/07 bitmask）：握手第 7 步与运行中保活共用
+static const uint8_t ledPlayer1[16] = {9, 0x91, 1, 7, 0, 8, 0, 0, 1};
 typedef struct { unsigned center[2], above[2], below[2]; } ns2_calibration;
 static void unpack12(const uint8_t *p, unsigned out[2]) {
     out[0] = p[0] | (p[1] & 15u) << 8; out[1] = p[1] >> 4 | (unsigned)p[2] << 4;
@@ -258,6 +260,9 @@ static NS2Bridge *bridge;
     NSData *pendingCommand;
     BOOL awaitingAck, subscribedResponse, streamReady, sessionFailed, preferReport09, imuEnabled, motionCommand, shutdownSent, shutdownEntered;
     uint64_t deadline, linkStarted, lastRumble, reports, reports09, rumblePackets, effectivePackets, stopPackets;
+    // 连上就别自己断（NS2Keep.c）：lastWrite 最近一次写手柄（指令 / 震动 / 保活）；rumbleOff 这只不写震动；oddLengths 跳过的异常长度通知数
+    uint64_t lastWrite, oddLengths;
+    BOOL rumbleOff;
     const char *waitingFor;
     NS2SoftState softState;
     BOOL pauseWanted, pauseStopPending, resumeCounterKnown, powerSubscribePending;
@@ -329,6 +334,7 @@ static NS2Bridge *bridge;
     softState = NS2SoftRunning; pauseWanted = pauseStopPending = resumeCounterKnown = powerSubscribePending = NO;
     pauseStarted = resumeStarted = 0;
     deadline = linkStarted = lastRumble = reports = reports09 = rumblePackets = effectivePackets = stopPackets = 0; waitingFor = NULL; step = 0; sequence = 0;
+    lastWrite = oddLengths = 0; rumbleOff = NO;
     memset(calibration, 0, sizeof calibration);
     if (affected) emit_state((ns2_state){0});
 }
@@ -447,14 +453,16 @@ static NS2Bridge *bridge;
         if (uuid_is(ch.UUID, commandUUID)) command = ch;
         if (uuid_is(ch.UUID, responseUUID)) response = ch;
     }
+    // 输入、指令、应答三个特征缺一个手柄就出不了输入，只能断开；震动特征缺失或单次写入放不下 42 字节只停震动，输入照常
     if (!input || !(input.properties & CBCharacteristicPropertyNotify) ||
         !response || !(response.properties & CBCharacteristicPropertyNotify) ||
-        !command || !(command.properties & CBCharacteristicPropertyWriteWithoutResponse) ||
-        !vibration || !(vibration.properties & CBCharacteristicPropertyWriteWithoutResponse)) {
-        [self fail:NS2Localized(@"The Pro rumble characteristic or required input/command properties are missing")]; return;
+        !command || !(command.properties & CBCharacteristicPropertyWriteWithoutResponse)) {
+        [self fail:NS2Localized(@"The controller's input or command characteristics are missing")]; return;
     }
-    if ([peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse] < 42) {
-        [self fail:NS2Localized(@"BLE writes without response support fewer than 42 bytes. Rumble reports cannot be split.")]; return;
+    size_t maxWrite = [peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse];
+    if (!ns2_rumble_writable(vibration && (vibration.properties & CBCharacteristicPropertyWriteWithoutResponse), maxWrite)) {
+        rumbleOff = YES;
+        LOG("【红】NS2 Pro BLE 这只手柄不震动（震动特征%s，单次写入 %zu 字节，震动包要 42 字节）；按键、摇杆、体感照常", vibration ? "在" : "缺失", maxWrite);
     }
     LOG("NS2 Pro BLE 特征发现完成，write MTU=%lu，订阅命令响应", (unsigned long)[peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse]);
     deadline = now_ns() + 15ull * NSEC_PER_SEC; waitingFor = "response subscription";
@@ -485,7 +493,7 @@ static NS2Bridge *bridge;
             break;
         // 玩家1常亮；采用已公开且在冷启动有效的 09/07 bitmask 命令。
         // Player1 steady light, using the documented 09/07 bitmask command that works on cold start.
-        case 7: bytes[0] = 9; bytes[3] = 7; bytes[5] = 8; bytes[8] = 1; length = 16; break;
+        case 7: memcpy(bytes, ledPlayer1, sizeof ledPlayer1); length = sizeof ledPlayer1; break;
         // 固件内置的连接成功音型，只播放一次；不建立持续震动任务。
         // Play firmware connection sample 3 once, without starting a rumble loop.
         case 8: bytes[0] = 0x0a; bytes[3] = 2; bytes[5] = 4; bytes[8] = 3; length = 12; break;
@@ -561,8 +569,9 @@ static NS2Bridge *bridge;
 - (void)receiveAck:(NSData *)data {
     if (!awaitingAck || data.length < 8) return;
     const uint8_t *p = data.bytes, *request = pendingCommand.bytes;
-    if (p[0] != request[0] || p[3] != request[3]) return;
-    if (p[1] != 1 || p[2] != 1 || (p[5] & 0x7f) != 0x78) { [self fail:NS2Localized(@"Invalid command response direction, transport or acknowledgement")]; return; }
+    if (!ns2_ack_matches(p, data.length, request, pendingCommand.length)) return;
+    // 参考实现认应答只看指令号；方向 / 传输 / 第 5 字节不是常见值也照收，记一笔（以前这里直接断开）
+    if (!ns2_ack_usual(p, data.length)) LOG("NS2 Pro BLE 应答字节不常见 cmd=%02x/%02x b1=%02x b2=%02x b5=%02x，照常继续", p[0], p[3], p[1], p[2], p[5]);
     if (motionCommand) {
         imuEnabled = request[3] == 4;
         LOG("NS2 Pro BLE IMU %s：运行时命令已确认", imuEnabled ? "开启" : "关闭");
@@ -570,20 +579,24 @@ static NS2Bridge *bridge;
         [self tick]; return;
     }
     if (step == 1 || step == 2) {
+        // 长度 / 地址对不上：多半是上一次读取迟到的应答，不当成这次的，接着等（等不到由超时补缺省校准）
         if (data.length < 80 || le32(p + 8) != 0x40 || le32(p + 12) != le32(request + 12)) {
-            [self fail:NS2Localized(@"The factory calibration response length or read address does not match")]; return;
+            LOG("NS2 Pro BLE 校准应答对不上（len=%lu addr=%08x），忽略这条接着等", (unsigned long)data.length, data.length >= 16 ? le32(p + 12) : 0); return;
         }
         ns2_calibration *cal = &calibration[step - 1]; const uint8_t *record = p + 16 + 0x28;
         unpack12(record, cal->center); unpack12(record + 3, cal->above); unpack12(record + 6, cal->below);
-        for (unsigned axis = 0; axis < 2; axis++) if (!cal->center[axis] || !cal->above[axis] || !cal->below[axis] ||
-            cal->center[axis] + cal->above[axis] > 4095 || cal->below[axis] > cal->center[axis]) {
-            [self fail:NS2Localized(@"Factory stick calibration is invalid. Estimated centers and ranges are not used.")]; return;
-        }
-        LOG("NS2 Pro BLE calibration side=%lu center=%u,%u above=%u,%u below=%u,%u", (unsigned long)step - 1,
+        if (!ns2_calibration_valid(cal->center, cal->above, cal->below)) {
+            LOG("【红】NS2 Pro BLE 工厂摇杆校准不合格 side=%lu center=%u,%u above=%u,%u below=%u,%u：改用缺省中心 %u、行程 %u，照常连接", (unsigned long)step - 1,
+                cal->center[0], cal->center[1], cal->above[0], cal->above[1], cal->below[0], cal->below[1], NS2_CAL_DEFAULT_CENTER, NS2_CAL_DEFAULT_TRAVEL);
+            ns2_calibration_default(cal->center, cal->above, cal->below);
+        } else LOG("NS2 Pro BLE calibration side=%lu center=%u,%u above=%u,%u below=%u,%u", (unsigned long)step - 1,
             cal->center[0], cal->center[1], cal->above[0], cal->above[1], cal->below[0], cal->below[1]);
     }
     LOG("NS2 Pro BLE ACK step=%lu cmd=%02x/%02x len=%lu", (unsigned long)step, p[0], p[3], (unsigned long)data.length);
     if (step == 6) imuEnabled = (request[8] & 4) != 0;
+    [self nextStep];
+}
+- (void)nextStep {
     step++; awaitingAck = NO; pendingCommand = nil; deadline = 0;
     if (step == 2 && [self joycon]) { calibration[1] = calibration[0]; step = 3; }   // Joy-Con 2 左右都只有主校准（0x13080），不读 0x130C0（右只读它会校验失败）
     if (step == [self initializationSteps]) {
@@ -591,6 +604,14 @@ static NS2Bridge *bridge;
         [device setNotifyValue:YES forCharacteristic:input]; [bridge scheduleTimer];
     }
     else [self tick];
+}
+// 握手这一步等不到应答：不是必需的步骤就跳过往下走（校准读取用缺省值），只记日志；参考实现不发这些也能用
+- (void)skipStep {
+    const uint8_t *cmd = pendingCommand.length >= 4 ? pendingCommand.bytes : (const uint8_t[4]){0};
+    LOG("【红】NS2 Pro BLE 握手第 %lu 步（%02x/%02x）没有应答：跳过，照常连接%s", (unsigned long)step, cmd[0], cmd[3],
+        step == 1 || step == 2 ? "（这根摇杆用缺省校准）" : "");
+    if (step == 1 || step == 2) ns2_calibration_default(calibration[step - 1].center, calibration[step - 1].above, calibration[step - 1].below);
+    [self nextStep];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)ch error:(NSError *)error {
     NS2Link *hold __attribute__((objc_precise_lifetime)) = self; (void)hold;
@@ -618,12 +639,16 @@ static NS2Bridge *bridge;
         if (streamReady) [self publishInput:powerData report:9];
         return;
     }
-    if (error) { [self fail:[NSString stringWithFormat:NS2Localized(@"Notification read failed: %@"), error.localizedDescription]]; return; }
+    // 单条通知读错 / 为空 / 长度不对只跳过这一条（更长的是同一特征上的音频包），不断开整只手柄
+    if (error) { LOG("NS2 Pro BLE 通知读取出错，跳过这一条：%s", error.localizedDescription.UTF8String ?: "unknown"); return; }
     NSData *data = ch.value;
-    if (!data) { [self fail:NS2Localized(@"Notification data is empty")]; return; }
+    if (!data) return;
     if (ch == response) { [self receiveAck:data]; return; }
     if (ch != input || !streamReady) return;
-    if (data.length < 63) { [self fail:[NSString stringWithFormat:NS2Localized(@"Report05 has %lu bytes; at least 63 are required"), (unsigned long)data.length]]; return; }
+    if (!ns2_input_length_ok(data.length)) {
+        if (oddLengths++ % 500 == 0) LOG("NS2 Pro BLE 跳过长度 %lu 的输入通知（只认 %u..%u 字节），累计 %llu 条", (unsigned long)data.length, NS2_INPUT_MIN, NS2_INPUT_MAX, (unsigned long long)oddLengths);
+        return;
+    }
     if (softState == NS2SoftFreshInput) {
         uint32_t counter = le32(data.bytes);
         if (!resumeCounterKnown) {
@@ -679,15 +704,14 @@ static NS2Bridge *bridge;
     if (headsetChanged) LOG("NS2 Pro BLE 耳机插入：%s（仅插入检测，未实现音频流）", headsetConnected ? "是" : "否");
     if (publishMotion && motion.known) motionCallback(&motion, callbackContext);
     if (![self live]) return;
-    if (!valid) {
-        [self fail:NS2Localized(@"Report05 battery fields could not be decoded")]; return;
-    }
+    if (!valid) LOG("NS2 Pro BLE report05 电量字段解不出，照常出输入");
     if (!preferReport09) [self publishInput:data report:5];
 }
 - (void)publishInput:(NSData *)data report:(unsigned)reportID {
     ns2_raw_input decoded;
     if (!ns2_decode_input_report(reportID, data.bytes, data.length, &decoded)) {
-        [self fail:[NSString stringWithFormat:NS2Localized(@"Report%02x input has %lu bytes; at least 63 are required"), reportID, (unsigned long)data.length]]; return;
+        if (oddLengths++ % 500 == 0) LOG("NS2 Pro BLE report%02x 解不出（%lu 字节），跳过这一条", reportID, (unsigned long)data.length);
+        return;
     }
     if (reportID == 9 && !preferReport09) {
         preferReport09 = YES;
@@ -724,6 +748,8 @@ static NS2Bridge *bridge;
 // 本链路对下次计时的贡献（调用方持有 stateMu）：握手期限之外，只有活动震动与停止 / 关闭零包需要定时。
 - (void)rumbleDueLocked:(uint64_t *)next now:(uint64_t)now {
     if (!streamReady || sessionFailed) return;
+    // 保活到点（条件同 processEvents，不可写 / 指令在途时不排，免得过期的到点时刻让计时器空转；可写回调与应答会再 tick）
+    if (softState == NS2SoftRunning && !terminal && !awaitingAck && !pendingCommand && device.canSendWriteWithoutResponse) { uint64_t keep = lastWrite + NS2_KEEPALIVE_NS; if (!*next || keep < *next) *next = keep; }
     unsigned owned = owned_sides_locked(slot);
     BOOL repeating = (wantedMask & owned) != 0;
     for (unsigned side = 0; side < 2; side++)
@@ -738,6 +764,8 @@ static NS2Bridge *bridge;
     if (![self live]) return;
     uint64_t now = now_ns();
     if (sessionFailed) return;
+    BOOL handshaking = !streamReady && subscribedResponse && !motionCommand && step < [self initializationSteps] && pendingCommand;
+    if (deadline && now >= deadline && handshaking && !ns2_step_required((unsigned)step)) { [self skipStep]; return; }
     if (deadline && now >= deadline) {
         [self fail:[NSString stringWithFormat:@"Timed out waiting for %s (peripheral state %ld, command step %lu)", waitingFor ?: "initialization", (long)device.state, (unsigned long)step]];
         return;
@@ -746,10 +774,12 @@ static NS2Bridge *bridge;
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (!streamReady) {
         if (stopped || !subscribedResponse || awaitingAck || step >= [self initializationSteps]) return;
-        if (!pendingCommand) { pendingCommand = [self commandForStep]; deadline = now + NSEC_PER_SEC; waitingFor = "command write readiness"; }
+        // 每条握手指令等 2 秒（参考实现同为 2 秒；原来 1 秒）
+        if (!pendingCommand) { pendingCommand = [self commandForStep]; deadline = now + 2 * NSEC_PER_SEC; waitingFor = "command write readiness"; }
         if (!device.canSendWriteWithoutResponse) return;
         [device writeValue:pendingCommand forCharacteristic:command type:CBCharacteristicWriteWithoutResponse];
-        awaitingAck = YES; deadline = now + NSEC_PER_SEC; waitingFor = "command acknowledgement"; return;
+        lastWrite = now;
+        awaitingAck = YES; deadline = now + 2 * NSEC_PER_SEC; waitingFor = "command acknowledgement"; return;
     }
     if (!stopped) [self advanceSoftState];
     if (![self live]) return;
@@ -765,8 +795,15 @@ static NS2Bridge *bridge;
         }
         if (device.canSendWriteWithoutResponse) {
             [device writeValue:pendingCommand forCharacteristic:command type:CBCharacteristicWriteWithoutResponse];
+            lastWrite = now;
             awaitingAck = YES; deadline = pauseWanted ? 0 : now + (softState == NS2SoftDraining ? 15ull * NSEC_PER_SEC : NSEC_PER_SEC); waitingFor = "IMU command acknowledgement";
         }
+    }
+    // 保活：运行中空闲 NS2_KEEPALIVE_NS 没写过手柄，就写一次玩家 1 灯（同握手第 7 步）。参考实现记录主机约 10 秒不写入链路就断，
+    //   它每秒写一次玩家灯；本传输不震动时原本完全不写。应答不占指令通道（awaitingAck 不置），迟到的应答按指令号对不上会被忽略
+    if (!stopped && softState == NS2SoftRunning && !awaitingAck && !pendingCommand && device.canSendWriteWithoutResponse && ns2_keepalive_due(lastWrite, now)) {
+        [device writeValue:[NSData dataWithBytes:ledPlayer1 length:sizeof ledPlayer1] forCharacteristic:command type:CBCharacteristicWriteWithoutResponse];
+        lastWrite = now;
     }
     pthread_mutex_lock(&stateMu);
     // 本链路只处理自己负责的侧（Pro / 单只是两侧，与改前相同）。
@@ -796,7 +833,8 @@ static NS2Bridge *bridge;
     for (unsigned side = 0; side < 2; side++)
         if ((stopping & (1u << side)) || !(owned & (1u << side)) || !active || terminal) values[side] = (ns2_vibration){0};
     uint8_t packet[42]; ns2_encode_rumble_for(kind, values, sequence, rumbleGain, packet);
-    [device writeValue:[NSData dataWithBytes:packet length:sizeof packet] forCharacteristic:vibration type:CBCharacteristicWriteWithoutResponse];
+    // rumbleOff：这只手柄写不了震动包，节奏、停止和关闭的记账照走（关闭等的零包按「已交出」销账），只是不写
+    if (!rumbleOff) { [device writeValue:[NSData dataWithBytes:packet length:sizeof packet] forCharacteristic:vibration type:CBCharacteristicWriteWithoutResponse]; lastWrite = now; }
     ns2_rumble_amplitudes left = ns2_rumble_amplitude_codes(values[0], rumbleGain);
     ns2_rumble_amplitudes right = ns2_rumble_amplitude_codes(values[1], rumbleGain);
     unsigned submitted = (left.low || left.high ? 1u : 0u) | (right.low || right.high ? 2u : 0u);

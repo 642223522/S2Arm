@@ -8,4 +8,6 @@ native-test-ns2pro:
 	$(BUILD)/tests/ns2_rumble_codec
 	$(CC) $(CFLAGS) -Iruntime/ns2pro/include runtime/ns2pro/tests/test_joycon.c $(NS2_CODECS) -o $(BUILD)/tests/ns2_joycon
 	$(BUILD)/tests/ns2_joycon
+	$(CC) $(CFLAGS) -Iruntime/ns2pro/include runtime/ns2pro/tests/test_keep.c $(NS2_CODECS) -o $(BUILD)/tests/ns2_keep
+	$(BUILD)/tests/ns2_keep
 TEST_TARGETS += native-test-ns2pro
