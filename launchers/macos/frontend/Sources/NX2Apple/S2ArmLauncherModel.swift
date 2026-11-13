@@ -214,6 +214,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
     /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
     @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
+    /// 控制口 /show install：打开这款的装机窗（同点顶栏「查看结果」/ 游戏的「装到 iPhone」）；界面接到后清空
+    @Published var showInstallFor: String?
     static let phoneKinds: Set<JobSession.Kind> = [.install, .installRemove, .installRestore]
     /// 连着的手机、可选机型（出包页用）；玩家选的机型（productType）。
     @Published private(set) var connectedDevices: [[String: Any]] = []
@@ -327,6 +329,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 不碰游戏库的（控制口、更新、公告、手柄中继）照常一起起。
     func startup() {
         startControl(); finishPendingUpdate(); loadInbox(); startControllerConnection()
+        refreshInstallMode(silent: true)   // 装法启动时就读（原先只在设置页 / 装机页出现时读）：控制口 /install 按它判断导出模式要不要 device，界面顶栏也按它
         refresh { [weak self] in self?.recoverBatch { self?.checkEnvironment() } }
     }
 

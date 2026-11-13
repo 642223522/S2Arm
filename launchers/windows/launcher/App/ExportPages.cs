@@ -134,7 +134,7 @@ public sealed partial class EnvironmentWindow
     private Button? PhonePill()
     {
         if (installGameId is null || (!installBusy && installSeen) || (page == "install" && SelectedGame?.Id == installGameId)) return null;
-        var key = installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed";
+        var key = installBusy ? "install.pill.running" : installState == "succeeded" ? (installTrack.ExportFolder.Length > 0 ? "install.pill.exported" : "install.pill.done") : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed";
         var text = T(key).Replace("{0}", installGameName ?? installGameId).Replace("{1}", InstallTargetLabel);
         if (installBusy && installDone is { } d && installTotal is { } t && t > 0) text += " · " + (100 * d / t) + "%";
         var pill = new Button { Content = text, Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(16),
@@ -1244,7 +1244,7 @@ public sealed partial class EnvironmentWindow
         {
             // 正在装 / 刚装完的是另一款：这里不画它的进度（原先会画到当前这款上），给一个回去的入口
             var other = new StackPanel { Spacing = 8 };
-            other.Children.Add(Muted(T(installBusy ? "install.pill.running" : installState == "succeeded" ? "install.pill.done" : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed").Replace("{0}", installGameName ?? installGameId).Replace("{1}", InstallTargetLabel)));
+            other.Children.Add(Muted(T(installBusy ? "install.pill.running" : installState == "succeeded" ? (installTrack.ExportFolder.Length > 0 ? "install.pill.exported" : "install.pill.done") : installState == "needsPlayer" ? "install.pill.needs_player" : "install.pill.failed").Replace("{0}", installGameName ?? installGameId).Replace("{1}", InstallTargetLabel)));
             other.Children.Add(Action("install.pill.open", OpenPhoneJob));
             body.Children.Add(Card(other));
         }

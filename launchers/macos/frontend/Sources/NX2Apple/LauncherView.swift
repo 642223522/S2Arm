@@ -169,7 +169,9 @@ struct LauncherView: View {
         return (info?["CFBundleShortVersionString"] as? String).map { "v" + $0 + "-dev" } ?? "dev"   // swift run 等不经 build_app 的开发构建
     }
 
-    private var topBar: some View {
+    private var topBar: some View { topBarRow.onChange(of: model.showInstallFor) { id in if let id { installFor = id; model.showInstallFor = nil } } }   // 控制口 /show install（单独一层：挂在 body 长链上编译器类型检查超时）
+
+    private var topBarRow: some View {
         HStack(spacing: 12) {
             // 点品牌名回欢迎页（社区贡献者补丁 #2）
             Button { installFor = nil; model.goToLibrary(); model.welcomeHome = true } label: {
@@ -389,7 +391,7 @@ struct LauncherView: View {
                 Button { installFor = r.gameID } label: {
                     HStack(spacing: 7) {
                         Image(systemName: r.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(r.ok ? LauncherPalette.ready : LauncherPalette.danger)
-                        Text(txt(r.ok ? "install.pill.done" : "install.pill.failed").replacingOccurrences(of: "{0}", with: r.name)
+                        Text(txt(!r.ok ? "install.pill.failed" : (model.phoneOutcome?.exportFolder ?? "").isEmpty ? "install.pill.done" : "install.pill.exported").replacingOccurrences(of: "{0}", with: r.name)
                              .replacingOccurrences(of: "{1}", with: r.ok && !model.installedTo.isEmpty ? model.installedTo : model.installTargetLabel)).font(.manrope(12.5, .semibold)).lineLimit(1)
                     }
                 }

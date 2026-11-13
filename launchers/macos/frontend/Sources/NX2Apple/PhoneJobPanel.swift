@@ -161,9 +161,14 @@ struct PhoneJobPanel: View {
         if let b = o.exportBytes { stats.append((t("phone.stat.size"), ByteCountFormatter.string(fromByteCount: b, countStyle: .file))) }
         var lines = [t("phone.fact.export")]
         if !o.skipped.isEmpty { lines.append(t("phone.fact.export_skipped").replacingOccurrences(of: "{0}", with: o.skipped.joined(separator: "、"))) }
-        return VStack(alignment: .leading, spacing: 26) {
-            headline(seal: AnyView(SuccessSeal()), title: t("phone.headline.export"),
-                     subtitle: t("phone.done.export").replacingOccurrences(of: "{0}", with: o.exportFolder))
+        // 紧凑排：勾与大字同一行、路径家目录写成 ~（装机窗 600×520，原先几款 / 多大 / 打开文件夹都被挤到第一屏下面）
+        return VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 18) {
+                SuccessSeal()
+                Text(t("phone.headline.export")).font(.manrope(44, .heavy)).tracking(-1.4).accessibilityIdentifier("phone.title")
+            }
+            Text(t("phone.done.export").replacingOccurrences(of: "{0}", with: (o.exportFolder as NSString).abbreviatingWithTildeInPath))
+                .font(.manrope(16)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             HStack(alignment: .top, spacing: 52) {
                 ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
                     VStack(alignment: .leading, spacing: 6) {
