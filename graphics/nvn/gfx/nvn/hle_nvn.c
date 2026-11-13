@@ -3359,7 +3359,6 @@ __attribute__((weak)) int s2a_fps_cap_reason(void) { return 0; }
 // runtime/src/fps.c：帧率表键页槽的当前值（每 300 帧那行带出）；Metal 后端 nvn_mtl.m：本窗口最大渲染目标。别的后端 / 单测替身没有就报空 / 0
 __attribute__((weak)) void s2a_fps_slots_note(char *buf, size_t n) { (void)n; buf[0] = 0; }
 __attribute__((weak)) void nvn_be_rt_window(uint32_t *w, uint32_t *h, uint32_t *fmt) { *w = *h = *fmt = 0; }
-__attribute__((weak)) void s2a_fps_cap_watch(void) {}
 static int g_hz = -1, g_display_mode;
 static _Atomic int g_game_itv = 1;   // when pacing by the game's interval, the interval the game currently sets (in game mode 2 = 30 fps; nvn_game_fps reports it to the graphics layer, which sets the display link from it)
 void nvn_present_config(int hz, int display_mode) { g_hz = hz; g_display_mode = display_mode; }
@@ -3413,7 +3412,6 @@ static void present_cfg(const win_t *o) {
     // with the same save and the same input, the UI message streams of the two modes match message by message. Proof (before character select): r9 game / display 60 ×3 / display 120 ×2, 6 groups in total, uicmp consistent
     // (the save indicator is exempted as a timing race), and the timing differences of key messages are within game mode's own noise band; proof after entering a run is still missing, pending action script coverage
     const char *m = getenv("DM_PRESENT_INTERVAL"); g_display_mode = m ? !strcmp(m, "display") : DM_GAME_PRESENT_DISPLAY;
-    if (g_display_mode) s2a_fps_cap_watch();   // display 模式跑在游戏自己的帧率之上：热 / 低电量时退回游戏间隔，降档判定统一在帧率表（runtime/src/fps.c s2a_fps_cap_tick）
     const char *src = m ? "DM_PRESENT_INTERVAL 环境变量" : DM_GAME_PRESENT_DISPLAY ? "推导（引擎标记 + L3 判定）或显式 game.tsv" : "缺省（game）";
     LOG("[nvn] present tick %d Hz, interval mode %s（依据：%s；游戏设 interval %d；%s）", g_hz, g_display_mode ? "display（每个显示节拍一帧）" : "game（按游戏设的间隔）",
         src, o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");
