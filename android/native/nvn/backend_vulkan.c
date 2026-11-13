@@ -77,6 +77,7 @@ struct nvn_gpu_tex_s {
     uint32_t w, h, depth, levels, layers, samples, nvn_format, target;
     int array_compatible;
     int view_fmt, released, refs, bc_decoded;
+    VkBuffer bc_sbuf; VkDeviceMemory bc_smem;   // bc_decoded 贴图的压缩原数据影子（GPU 缓冲，按级、按层 / 3D 切片、行紧排；见 bc_shadow_layout）
     uint16_t swz;   // 存储自带的通道映射（tex_builder_t.swz 打包法，0 = 恒等）：视图没自己设映射时用它
     struct nvn_gpu_tex_s *all_next;
 };
@@ -582,6 +583,8 @@ static void destroy_tex_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_tex_s *t) {
     if (t->image) vkDestroyImage(vk->d, t->image, NULL);
     texmem_give(vk->d, t->memory, t->mem_size, t->mem_type);
     LIFE_ADD(7);
+    if (t->bc_sbuf) vkDestroyBuffer(vk->d, t->bc_sbuf, NULL);
+    if (t->bc_smem) vkFreeMemory(vk->d, t->bc_smem, NULL);
     free(t);
 }
 
@@ -1394,6 +1397,8 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         if (tx->view) vkDestroyImageView(g.d, tx->view, NULL);
         if (tx->image) vkDestroyImage(g.d, tx->image, NULL);
         if (tx->memory) vkFreeMemory(g.d, tx->memory, NULL);
+        if (tx->bc_sbuf) vkDestroyBuffer(g.d, tx->bc_sbuf, NULL);   // 现解贴图的压缩影子（同 destroy_tex_locked）
+        if (tx->bc_smem) vkFreeMemory(g.d, tx->bc_smem, NULL);
         free(tx);
         tx = tn;
     }
@@ -4108,6 +4113,8 @@ void nvn_gpu_samp_release(nvn_gpu_samp sh) {
     pthread_mutex_unlock(&g_mu);
 }
 
+static void bc_readback(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                        struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes);   // 见 bc_upload 前
 // 线性内容上传 / 缓冲 ↔ 贴图拷贝。全部在通道外，按 GPU 顺序执行。
 // depth_f32：#398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面。
 static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
@@ -4182,10 +4189,7 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     struct nvn_gpu_tex_s *t = th;
     struct nvn_gpu_buf_s *b = bh;
-    if (t && t->bc_decoded) {
-        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "BC 解码贴图不能按压缩字节回读（0x%x）", t->nvn_format);
-        return;
-    }
+    if (t && t->bc_decoded) { bc_readback(c, t, level, layer, r, b, off, row_bytes, image_bytes); return; }   // 按上传时留下的压缩原字节回读
     nvn_fmt_info fi;
     if (t && nvn_fmt_info_of(t->nvn_format, &fi) && fi.expand) {
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "展开格式回读未实现（0x%x）", t->nvn_format);
@@ -4342,6 +4346,88 @@ void nvn_gpu_clear_view(nvn_gpu_cmd ch, nvn_gpu_view vh, const float rgba[4], co
 }
 
 // 同步解码只写私有临时图：目标的修改仍由当前段在指定位置执行，abort 不改目标。
+// 现解贴图（bc_decoded）的压缩原数据影子：显存里存的是解码后的格式，游戏按压缩字节回读（贴图 → 缓冲拷贝）时要的是原字节。
+// 这种贴图不能当渲染目标、不能当存储图像，也不接受压缩字节直拷（见 tex_create / copy_buf_tex_impl），内容只来自 bc_upload，
+// 所以在上传时留一份原字节就是准确的回读来源，不用重新压缩。影子是一块 GPU 缓冲，写它和读它都录在同一条命令流里：
+// 和贴图本身一样按 GPU 顺序生效，命令被放弃（abort）时一起作废。布局：逐级相接；每级内按层（3D 按该级的切片）相接，每层按块行紧排。
+static int bc_shadow_layout(const struct nvn_gpu_tex_s *t, uint32_t bb, uint32_t level,
+                            uint64_t *level_off, uint64_t *row_pitch, uint64_t *slice_pitch, uint32_t *slices, uint64_t *total) {
+    uint64_t at = 0;
+    for (uint32_t l = 0; l < t->levels; l++) {
+        uint32_t w = t->w >> l, h = t->h >> l, d = t->target == NVN_TEXTURE_TARGET_3D ? t->depth >> l : t->layers;
+        if (!w) w = 1;
+        if (!h) h = 1;
+        if (!d) d = 1;
+        uint64_t row = (uint64_t)((w + 3) / 4) * bb, slice = row * ((h + 3) / 4);
+        if (l == level) { *level_off = at; *row_pitch = row; *slice_pitch = slice; *slices = d; }
+        if (slice && d > (UINT64_MAX - at) / slice) return 0;
+        at += slice * d;
+    }
+    *total = at;
+    return level < t->levels;
+}
+
+// 现解贴图的贴图 → 缓冲拷贝：从压缩影子取原字节，按调用方的行距写进目标缓冲（在 GPU 流里按序：暂存区 + 拷贝）。
+// 没上传过的区域回零（原机上是未定义内容）。3D 贴图按 copy_tex_buf 的约定 layer 是切片、区域深度为 1。
+static int bc_shadow_ensure(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint64_t total);
+static void bc_readback(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                        struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes) {
+    VkOffset3D o; VkExtent3D e; int bb = 0; NVNcopyRegion rr;
+    int is3d = t->target == NVN_TEXTURE_TARGET_3D;
+    if (is3d) { memset(&rr, 0, sizeof rr); if (r) rr = *r; if (rr.depth > 1) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "BC 解码贴图回读一次只读一个切片"); return; }
+                rr.depth = 1; rr.zoffset = (int)layer; r = &rr; }
+    if (!b || level >= t->levels || (!is3d && layer >= t->layers) || copy_region(t, level, r, &o, &e) || !e.width || !e.height ||
+        !nvn_vk_bcdec_route(t->nvn_format, NULL, NULL, NULL, NULL, &bb) || bb <= 0) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 解码贴图回读：子资源或区域非法"); return;
+    }
+    uint32_t mw = t->w >> level, mh = t->h >> level; if (!mw) mw = 1; if (!mh) mh = 1;
+    if ((o.x & 3) || (o.y & 3) || ((e.width & 3) && (uint32_t)o.x + e.width != mw) || ((e.height & 3) && (uint32_t)o.y + e.height != mh)) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 解码贴图回读：区域未按压缩块对齐"); return;
+    }
+    uint64_t bw = ((uint64_t)e.width + 3) / 4, bh = ((uint64_t)e.height + 3) / 4, packed_row = bw * (uint32_t)bb;
+    if (row_bytes < packed_row || (bh > 1 && row_bytes > (UINT64_MAX - packed_row) / (bh - 1)) ||
+        image_bytes < (bh - 1) * row_bytes + packed_row || !buf_range(b, off, (bh - 1) * row_bytes + packed_row)) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 解码贴图回读：目标行距 / 长度非法"); return;
+    }
+    uint64_t loff = 0, rp = 0, sp = 0, total = 0; uint32_t slices = 0;
+    uint32_t slice = is3d ? (uint32_t)o.z : layer;
+    if (!bc_shadow_layout(t, (uint32_t)bb, level, &loff, &rp, &sp, &slices, &total) || slice >= slices) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 解码贴图回读：切片越界"); return;
+    }
+    if (!bc_shadow_ensure(c, t, total)) return;   // 一次都没上传过：影子建出来是全零（原机上是未定义内容）
+    VkBufferCopy *rg = calloc((size_t)bh, sizeof *rg);
+    if (!rg) { set_sticky(c, NVN_GPU_E_OOM, "BC 解码贴图回读：拷贝表分配失败"); return; }
+    uint64_t src = loff + (uint64_t)slice * sp + (uint64_t)(o.y / 4) * rp + (uint64_t)(o.x / 4) * (uint32_t)bb;
+    for (uint64_t y = 0; y < bh; y++) rg[y] = (VkBufferCopy){src + y * rp, off + y * row_bytes, packed_row};
+    full_barrier(c);
+    vkCmdCopyBuffer(c->cb, t->bc_sbuf, b->buffer, (uint32_t)bh, rg);
+    free(rg);
+    cmd_ref(c, b, REF_BUF);
+    cmd_ref(c, t, REF_TEX);
+}
+
+// 第一次上传时建压缩影子缓冲（大小按 bc_shadow_layout 的总长）。失败置粘滞。
+static int bc_shadow_ensure(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint64_t total) {
+    if (t->bc_sbuf) return 1;
+    VkBufferCreateInfo bi = {0}; bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; bi.size = total ? total : 4;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkMemoryRequirements req;
+    if (vkCreateBuffer(g.d, &bi, NULL, &buf) != VK_SUCCESS) { set_sticky(c, NVN_GPU_E_OOM, "BC 上传：压缩影子缓冲建不出（%llu 字节）", (unsigned long long)total); return 0; }
+    vkGetBufferMemoryRequirements(g.d, buf, &req);
+    uint32_t type = s2a_vk_memory_type(g.dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, NULL);
+    if (type == UINT32_MAX) type = s2a_vk_memory_type(g.dev, req.memoryTypeBits, 0, NULL);
+    VkMemoryAllocateInfo ai = {0}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type;
+    if (type == UINT32_MAX || vkAllocateMemory(g.d, &ai, NULL, &mem) != VK_SUCCESS || vkBindBufferMemory(g.d, buf, mem, 0) != VK_SUCCESS) {
+        if (mem) vkFreeMemory(g.d, mem, NULL);
+        vkDestroyBuffer(g.d, buf, NULL);
+        set_sticky(c, NVN_GPU_E_OOM, "BC 上传：压缩影子显存分配失败（%llu 字节）", (unsigned long long)total); return 0;
+    }
+    t->bc_sbuf = buf; t->bc_smem = mem;
+    full_barrier(c);
+    vkCmdFillBuffer(c->cb, buf, 0, VK_WHOLE_SIZE, 0);   // 没上传过的区域回读为零，不留上一块显存的旧内容
+    return 1;
+}
+
 static void bc_upload(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer,
                       const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     VkOffset3D off; VkExtent3D ext; int bb = 0;
@@ -4371,6 +4457,11 @@ static void bc_upload(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t
         image_bytes < (uint64_t)(ext.depth - 1) * slice_stride + last_slice) {
         set_sticky(c, NVN_GPU_E_ARG, "BC 上传源体积长度非法"); return;
     }
+    uint64_t sh_loff = 0, sh_rp = 0, sh_sp = 0, sh_total = 0; uint32_t sh_slices = 0;
+    if (!bc_shadow_layout(t, (uint32_t)bb, level, &sh_loff, &sh_rp, &sh_sp, &sh_slices, &sh_total)) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 上传：压缩影子布局溢出"); return;
+    }
+    if (!bc_shadow_ensure(c, t, sh_total)) return;
     size_t bytes = (size_t)(packed_row * bh); uint8_t *packed = malloc(bytes);
     struct bc_temp *tmp = NULL;
     if (!packed) { set_sticky(c, NVN_GPU_E_OOM, "BC 上传暂存分配失败"); return; }
@@ -4378,6 +4469,21 @@ static void bc_upload(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t
         tmp = calloc(1, sizeof *tmp);
         if (!tmp) goto fail;
         for (uint64_t y = 0; y < bh; y++) memcpy(packed + y * packed_row, (const uint8_t *)src + (uint64_t)z * slice_stride + y * row_bytes, (size_t)packed_row);
+        {   // 同一份原字节按序录进压缩影子缓冲（回读用，见 bc_readback）
+            uint32_t s = t->target == NVN_TEXTURE_TARGET_3D ? (uint32_t)off.z + z : layer;
+            nvn_gpu_slice ss; nvn_gpu_err se; VkBufferCopy *rg;
+            if (s >= sh_slices) { set_sticky(c, NVN_GPU_E_ARG, "BC 上传：切片越过压缩影子"); free(packed); free(tmp); return; }
+            if (!rc_is(nvn_gpu_arena_alloc(c, bytes, 4, &ss, &se), NVN_GPU_OK) || !(rg = calloc((size_t)bh, sizeof *rg))) {
+                if (rc_is(c->sticky, NVN_GPU_OK)) set_sticky(c, NVN_GPU_E_OOM, "BC 上传：压缩影子暂存分配失败");
+                free(packed); free(tmp); return;
+            }
+            memcpy(ss.cpu, packed, bytes);
+            uint64_t dst = sh_loff + (uint64_t)s * sh_sp + (uint64_t)(off.y / 4) * sh_rp + (uint64_t)(off.x / 4) * (uint32_t)bb;
+            for (uint64_t y = 0; y < bh; y++) rg[y] = (VkBufferCopy){ss.off + y * packed_row, dst + y * sh_rp, packed_row};
+            full_barrier(c);
+            vkCmdCopyBuffer(c->cb, ss.buf->buffer, t->bc_sbuf, (uint32_t)bh, rg);
+            free(rg);
+        }
         VkImageCreateInfo ci = {0}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ci.imageType = VK_IMAGE_TYPE_2D; ci.format = t->format; ci.extent = (VkExtent3D){ext.width, ext.height, 1};
         ci.mipLevels = ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
