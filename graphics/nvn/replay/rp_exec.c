@@ -269,7 +269,7 @@ uint64_t nvn_be_sub_commit(void) {
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
     uint64_t t0 = now_ns(); if (s) { s->t_commit = t0; s->fence = f; s->occ_base = g_occ_base; }
-    if (s && (s->n || s->noe || s->ngw)) g_effect_fence = f;   // 这次提交做完时有东西要写回游戏内存（事件、计数器报告、遮挡结果、GPU 写的缓冲）
+    if (s && (s->n || s->noe || s->ngw)) { g_effect_fence = f; pf_add(RP_PERF_FX_SUBS, 1); pf_add(RP_PERF_FX_OCC, (uint64_t)s->noe); pf_add(RP_PERF_FX_GW, (uint64_t)s->ngw); }   // 这次提交做完时有东西要写回游戏内存（事件、计数器报告、遮挡结果、GPU 写的缓冲）
     rc_commit(f);
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, sub_done, s, &err))) red("提交失败：%s", err.why);
     pf_add(RP_PERF_COMMIT_NS, now_ns() - t0); pf_add(RP_PERF_SUBS, 1);
@@ -309,10 +309,12 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     return nvn_gpu_ok(r) || r.code == NVN_GPU_E_FAILED || r.code == NVN_GPU_E_DEVICE;
 }
 
+static uint64_t g_fx_types;
+uint64_t rp_fx_report_types(void) { return __atomic_exchange_n(&g_fx_types, 0, __ATOMIC_RELAXED); }
 static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     struct sub *s = g_sub; if (!s || !val) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){val, mode, v, 0, 0};
+    s->p[s->n++] = (struct post){val, mode, v, 0, 0}; pf_add(RP_PERF_FX_EVENT, 1);
 }
 // 一笔读回可有多行与多个层：先全登记，再交给后端；失败撤销本笔全部登记。
 // 仅登记真正写到的行，不把行间 / 片间填充覆盖回游戏内存。
@@ -344,7 +346,7 @@ int rp_post_gpu_write(uint64_t addr, uint64_t len) { return rp_post_gpu_write_ro
 static void post_report(uint64_t addr, uint32_t type) {
     struct sub *s = g_sub; if (!s || !addr) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){NULL, 0, 0, addr, type};
+    s->p[s->n++] = (struct post){NULL, 0, 0, addr, type}; pf_add(RP_PERF_FX_REPORT, 1); __atomic_fetch_or(&g_fx_types, 1ull << (type & 63), __ATOMIC_RELAXED);
 }
 
 void nvn_be_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }     // 存储前瞻索引：通道规划接上时再建
