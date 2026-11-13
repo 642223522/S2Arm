@@ -1745,9 +1745,15 @@ static void t_frame_overlap(void) {
       CHECK(nvn_be_finish_publish() == nvn_be_last_fence());
       submit1(&e1); g_flag_finish_lag = 2; CHECK(nvn_be_finish_publish() < nvn_be_last_fence()); g_flag_finish_lag = 1;
       fake_complete(NVN_GPU_DONE_OK); CHECK(ev == 7); }
+    // 只有时间戳报告的提交不算「有东西要写回」：1 档照样放行；别的计数器（这里用图元数）要等
+    { static uint64_t ts[2], pr[2]; stream c1 = {0}; q_counter(&c1, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_TIMESTAMP, ts); end(&c1); submit1(&c1);
+      CHECK(nvn_be_finish_publish() < nvn_be_last_fence());
+      stream c2 = {0}; q_counter(&c2, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_PRIMITIVES_GENERATED, pr); end(&c2); submit1(&c2);
+      CHECK(nvn_be_finish_publish() == nvn_be_last_fence());
+      fake_complete(NVN_GPU_DONE_OK); }
     // 关掉开关：Finish 照旧等到最后一次提交，镜像不再换
     g_flag_finish_lag = 0; CHECK(nvn_be_finish_publish() == nvn_be_last_fence());
-    nvn_be_sub_begin(); CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &bx, NULL) == 1 && bx == b0); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);   // 前面一共放行 4 次：停在第一份
+    nvn_be_sub_begin(); CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &bx, NULL) == 1 && bx == b1); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);   // 前面一共放行 5 次：停在第二份
     int rel0 = g_buf_releases; nvn_be_pool_del(g_pmem); CHECK(g_buf_releases - rel0 == 2);   // 池销毁：两份都放
     g_buf_cpu_auto = 0; pass_fresh();
 }
