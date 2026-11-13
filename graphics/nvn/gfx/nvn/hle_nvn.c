@@ -782,7 +782,11 @@ static uint64_t nvrm_color_game(int f) {
     return nvn_drv_nvrm_recode(nvrm_color(f), drv);
 }
 static int32_t pool_nvmap(pool_t *p) {
-    if (!p || !p->mem || (p->flags & 0x200)) return 0;   // a virtual pool's storage belongs to a physical pool
+    // 句柄 0：NvRmSurface 的 hMem 为 0，游戏的 nvgr_import_nvrmsurface 随后 NvMap GetId / FromId 失败、导入失败（010045B018EC2000 的影片播放器不查返回值，照样 NvBlit 那块已释放的缓冲：sdk 内 SIGSEGV）。
+    //   三支都还没有实现（虚拟池的存储是物理池的页、没有单一 nvmap 句柄），按铁律报红；仍回 0，不另开句柄
+    if (!p) { LOG("【红】 nvnTextureGetNvRmSurfaceNVX: 纹理没有内存池，NvRmSurface 的 nvmap 句柄给 0（游戏导入会失败）"); return 0; }
+    if (p->flags & 0x200) { LOG("【红】 nvnTextureGetNvRmSurfaceNVX: 池 %p 是虚拟池（flags %#x 尺寸 %#llx），存储是物理池的页、本层不给虚拟池开 nvmap 句柄，句柄给 0（游戏导入会失败）", (void *)p, p->flags, (unsigned long long)p->size); return 0; }
+    if (!p->mem) { LOG("【红】 nvnTextureGetNvRmSurfaceNVX: 池 %p 池没有存储（flags %#x 尺寸 %#llx），句柄给 0（游戏导入会失败）", (void *)p, p->flags, (unsigned long long)p->size); return 0; }
     int32_t h = __atomic_load_n(&p->nvmap, __ATOMIC_ACQUIRE);
     if (h) return h;
     static int (*mk)(uint64_t, uint32_t); static int looked;
