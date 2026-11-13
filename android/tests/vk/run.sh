@@ -300,7 +300,9 @@ if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_copy_t2b.sh"; 
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_clear_tex.sh"; fi
 
 set +e
-timeout 180 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log"
+# 整套三遍的超时只用来发现卡死，不量性能：负载高的机器（列车机同时跑多份同类用例，软件渲染）上单遍已接近原先的 180 / 240 秒，
+# 主线自己也会被误判超时。放到 600 秒。
+timeout 600 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log"
 rc=${PIPESTATUS[0]}
 set -e
 
@@ -322,7 +324,7 @@ fi
 
 # 同一套用例在「两级回放开」（vkCmd* 调用交给录制线程）下再跑一遍：像素期望和校验层判据不变。
 set +e
-S2A_TEST_NVK_DQ=1 timeout 240 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log_dq"
+S2A_TEST_NVK_DQ=1 timeout 600 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log_dq"
 rc=${PIPESTATUS[0]}
 set -e
 if [ "$rc" -ne 0 ]; then
@@ -338,7 +340,7 @@ fi
 
 # 描述符组备忘开着（开关 nvk_desc_memo）再跑一遍：像素期望不变、校验层 0 条。
 set +e
-S2A_TEST_DESC_MEMO=1 timeout 240 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log_memo"
+S2A_TEST_DESC_MEMO=1 timeout 600 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log_memo"
 rc=${PIPESTATUS[0]}
 set -e
 bad=$(grep -cE "Validation Error|VUID-" "$out/log_memo" || true)
