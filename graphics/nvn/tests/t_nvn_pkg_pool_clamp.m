@@ -19,6 +19,11 @@ int main(void) { @autoreleasepool {
     uint64_t h = 0; size_t tot = 0;
     for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t len; page_span(&t, k, &lo, &len); h ^= span_hash(lo, len); tot += len; }
     VERIFY(tot == 8192 && h != 0, "① 逐页哈希只读池内 %zu 字节、没碰池后的不可访问页", tot);
+    // ⑤ 后台首次上传的逐页哈希（ph_hash_pages，#956）按 tex_rd_size 给的长度读：同样只读池内、与提交线程逐页算的同值；
+    //   按 L.size 全长给它会读进池后不可访问的页、进程直接崩（反证：传 t.L.size 即崩在这里）
+    { uint64_t hb[8] = {0}, hs = 0; ph_hash_pages(t.mem, tex_rd_size(&t), n, hb);
+      for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t len; page_span(&t, k, &lo, &len); hs ^= span_hash(lo, len) ^ hb[k]; }
+      VERIFY(n <= 8 && hs == 0, "⑤ 后台逐页哈希只读池内、与提交线程算的逐页同值"); }
     t.L.size = 4096; VERIFY(tex_rd_size(&t) == 4096, "② 池内没越界：%llu（期望 4096）", (unsigned long long)tex_rd_size(&t));
     t.L.size = 65536; t.pool = NULL; VERIFY(tex_rd_size(&t) == 65536, "③ 没有池：%llu（期望 65536）", (unsigned long long)tex_rd_size(&t));
     pool_t other = {0}; uint8_t buf[64]; other.mem = buf; other.size = sizeof buf; t.pool = &other;
