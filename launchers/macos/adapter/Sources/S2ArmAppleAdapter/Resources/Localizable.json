@@ -7302,5 +7302,9 @@
  {
   "source": "系统不让 S2Arm 往游戏库所在的磁盘写（{0}）",
   "en": "The system did not let S2Arm write to the drive holding the library ({0})"
+ },
+ {
+  "source": "选的是游戏文件，不是密钥：这里要的是 prod.keys 文本文件（通常几十 KB）；游戏请从「添加游戏」导入。",
+  "en": "That's a game file, not your keys. This needs the prod.keys text file (usually a few dozen KB); add games with \"Add games\" instead."
  }
 ]
