@@ -21,7 +21,8 @@ def main():
     gfx = ROOT / 'graphics/nvn'
     ndk = link_symbols.find_ndk()
     if ndk is None:
-        raise RuntimeError('requires pinned NDK 29 headers')
+        raise RuntimeError('requires pinned NDK 29.0.14206865 headers (no download or skip): set ANDROID_NDK_HOME to it, '
+                           'or install it at $ANDROID_HOME/ndk/29.0.14206865 or ~/Android/Sdk/ndk/29.0.14206865')
     host = 'darwin-x86_64' if sys.platform == 'darwin' else 'linux-x86_64'
     sysinc = ndk/'toolchains/llvm/prebuilt'/host/'sysroot/usr/include'
     if not (sysinc/'vulkan/vulkan.h').is_file():
@@ -40,6 +41,11 @@ def main():
     strip = '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections'
     base = [os.environ.get('CC', 'cc'), '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',
             '-Wno-unused-parameter', '-ffunction-sections', '-fdata-sections', '-pthread']
+    # glibc 在 -std=c11 下不暴露 POSIX.1-2008 声明（O_CLOEXEC / openat / fstatat / strdup 等），
+    # host_link 自动补链的 offline_library.c、program_cache.c 要用。宏只加在测试侧、只加给非 macOS：
+    # 这两个文件还要给 NDK 和苹果宿主编，在源文件里定义会改变 macOS 上的可见声明；macOS 的参数与原来逐字相同。
+    if sys.platform != 'darwin':
+        base.append('-D_POSIX_C_SOURCE=200809L')
     base += ['-I'+str(p) for p in inc]
     original = native/'gfx_plat/nvk_shader.c'
 

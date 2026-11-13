@@ -369,7 +369,13 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("--host-abi") + 1], str(host_update.HOST_ABI))
             self.assertEqual(cmd[cmd.index("--version") + 1], "9.8.7")   # 三端同号：电脑上 S2Arm 的发版号写进容器
             self.assertEqual(cmd[cmd.index("--display-version") + 1], "v9.8.7-dev+abc1234")   # 界面版本字同一来源
-            self.assertEqual((cmd[cmd.index("--sign") + 1], cmd[cmd.index("--shell") + 1]), ("adhoc", str(shell)))
+            # 组装时不签，写完容器摘要（#845，改 Info.plist）再统一 ad-hoc 签：签完再改会破坏签名（v0.3.6 候选 ⑥ codesign 不过）
+            self.assertEqual((cmd[cmd.index("--sign") + 1], cmd[cmd.index("--shell") + 1]), ("none", str(shell)))
+        signs = [i for i, a in enumerate(runs) if len(a) > 5 and a[5] == "sign"]
+        conts = [i for i, a in enumerate(runs) if len(a) > 5 and a[5] == "container"]
+        self.assertEqual(len(signs), 2)   # 每次组装签一次，排在各自的 container 之后
+        for ci, si in zip(conts, signs):
+            self.assertLess(ci, si); self.assertEqual(runs[si][runs[si].index("--sign") + 1], "adhoc")
         self.assertEqual([c1[i + 1] for i, x in enumerate(c1) if x == "--game"], [str(kits[A].resolve())])
         self.assertEqual([c2[i + 1] for i, x in enumerate(c2) if x == "--game"], [str(kits[A].resolve()), str(kits[B].resolve())])
         self.assertEqual((games1, games2, sid1, sid2), ([A], [A, B], "SID1", "SID1"))
@@ -1561,6 +1567,40 @@ class ExportPhoneTests(unittest.TestCase):
 def install_ipa_games(ipa):
     import ipa as packer
     return packer.ipa_games(ipa)
+
+
+class DropRestampTests(unittest.TestCase):
+    """#845 摘掉一款后重算容器摘要（ipa.finish_container）：摘之前整套的摘要写在 Info.plist 里；摘掉一款后内容变了，
+    新 ipa 里的摘要必须非空、且不等于整套的旧值——否则之后再装回整套时 same_app 误判相同、跳过重装，摘掉的那款回不到手机上"""
+
+    def test_drop_restamps_digest(self):
+        import ipa as packer
+        t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: shutil.rmtree(t, ignore_errors=True))
+        app = t / "build" / "Payload" / "S2Arm.app"
+        A, B = "0100000000010000", "0100000000020000"
+        for g in (A, B):
+            (app / "Games" / g).mkdir(parents=True); (app / "Games" / g / "main.npdm").write_bytes(g.encode() + bytes(16))
+            (app / "Frameworks").mkdir(exist_ok=True); (app / f"Frameworks/S2AImages-{g}.dylib").write_bytes(g.encode())
+        (app / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "SID1", "games": [{"title_id": A}, {"title_id": B}]}))
+        (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games"}))
+        full = packer.stamp_container(app)
+        ipa = t / "S2Arm.ipa"
+        with zipfile.ZipFile(ipa, "w") as z:
+            for f in sorted((t / "build").rglob("*")):
+                if f.is_file(): z.write(f, f.relative_to(t / "build").as_posix())
+        self.assertEqual(packer.ipa_digest(ipa), full)
+        lib = t / "lib"; lib.mkdir()
+        c = types.SimpleNamespace(library=lib, logs=t, task="drop", engine=Path(packer.__file__).resolve().parents[2],
+                                  env=lambda: dict(os.environ), run=lambda args, log, env, **kw: subprocess.run([str(a) for a in args], check=True, capture_output=True))
+        def zip_app(c, a, out, log):   # 写 ipa 的完整校验（app_bundle write_ipa）不在这里核：照原样打包
+            with zipfile.ZipFile(out, "w") as z:
+                for f in sorted(Path(a).rglob("*")):
+                    if f.is_file(): z.write(f, "Payload/S2Arm.app/" + f.relative_to(a).as_posix())
+        with um.patch.object(packer, "sign_container", lambda *a, **k: None), um.patch.object(packer, "write_container_ipa", zip_app):   # 签名要 codesign，这里只核摘要
+            new, left, _ = packer.drop_from_ipa(c, ipa, A)
+        self.assertEqual(left, [B])
+        got = packer.ipa_digest(new)
+        self.assertTrue(got); self.assertNotEqual(got, full)
 
 
 class ShipExtContainerDropTests(unittest.TestCase):
