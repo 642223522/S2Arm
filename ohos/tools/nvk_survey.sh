@@ -98,7 +98,7 @@ g 'nvk session: backend open' | grep -q . || note 'No backend-open evidence: thi
   echo '## 截图'
   echo "$shot"
   echo '## 进程与崩溃'
-  echo "进程状态：$alive。若采集了 crash.txt，它只是故障文件目录，不代表已证明无崩溃；由采集者补充本进程对应日志。"
+  echo "进程状态：${alive}。若采集了 crash.txt，它只是故障文件目录，不代表已证明无崩溃；由采集者补充本进程对应日志。"
   echo '## 提示'
   cat "$notes"
   echo '发布前人工检查本页：删除本机路径、设备标识、程序名称及敏感信息。原始日志和截图仅留本地。'
