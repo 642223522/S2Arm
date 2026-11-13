@@ -28,6 +28,7 @@ if [ "$mode" = "--shown-only" ] && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
     mkdir -p "$repo/build/c883-ndk"
     cp -R "$header_dir" "$repo/build/c883-ndk/"
     cp -R "$(dirname "$header_dir")/vk_video" "$repo/build/c883-ndk/"
+fi
 # Isolated production replay indirect test. Exit before every legacy test path.
 if [ "$mode" = "--indirect-core" ]; then
     out="$repo/build/vk-indirect-core"; mkdir -p "$out/shaders"
