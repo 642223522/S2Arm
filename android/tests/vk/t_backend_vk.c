@@ -2693,25 +2693,105 @@ static void c46_blend_const(const char *dir) {
 }
 
 
+// #863: expected bytes are a hand-calculated truth table for S=0x96, D=0x3c.
+// Vulkan framebuffer-logicop excludes floating-point and sRGB attachments.
+static void c47_case(const char *dir, unsigned op, unsigned fmt, unsigned mask,
+                     int mixed, uint8_t expected, uint64_t serial) {
+    void *vm=NULL,*fm=NULL; nvn_gpu_shader vs=NULL,fs=NULL;
+    const int integer = fmt == NVN_FORMAT_RGBA8UI;
+    CHECK(load_shader_pair(dir,"quad.vert",integer ? (mixed ? "logic_uint_mrt.frag" : "logic_uint.frag") : (mixed ? "logic_float_mrt.frag" : "logic_float.frag"),
+                           NULL,NULL,&vs,&fs,&vm,&fm), "C47 shader");
+    nvn_gpu_pipe_desc pd={0}; pd.poly.mode=NVN_POLYGON_MODE_FILL;
+    pd.origin_ll=(uint8_t)!g_tri_origin_ul; pd.color.logic_op=op;
+    pd.st[NVN_GPU_SH_VS].sh=vs; pd.st[NVN_GPU_SH_FS].sh=fs;
+    pd.cfmt[0]=fmt; if(mixed) pd.cfmt[1]=NVN_FORMAT_RGBA32F;
+    pd.samples=1; pd.prim=5; pd.chmask.mask=mask | (mixed ? 0xf0 : 0);
+    // Deliberately enabled: non-COPY logic must override blending, even on float targets.
+    pd.color.blend_en=integer ? (mixed ? 2 : 0) : (mixed ? 3 : 1);
+    for(int j=0;j<2;j++) { pd.blend[j].src_rgb=2;pd.blend[j].dst_rgb=2;
+        pd.blend[j].src_a=2;pd.blend[j].dst_a=2;pd.blend[j].eq_rgb=1;pd.blend[j].eq_a=1; }
+    pd.attr[0].fmt=NVN_FORMAT_RGBA32F;pd.attr[1].fmt=NVN_FORMAT_RGBA32F;
+    pd.attr[1].offset=16;pd.stream[0].stride=32;
+    // Reuse the exact shader objects and descriptor; change only logic_op XOR -> OR -> XOR.
+    // This detects pipeline cache aliasing, rather than giving each op fresh shader keys.
+    const unsigned original_op=op;
+    const uint8_t original_expected=expected;
+    const unsigned rounds=(op==6 && fmt==NVN_FORMAT_RGBA8 && mask==15 && !mixed)?3:1;
+    for(unsigned round=0;round<rounds;round++) {
+    op=round==1?7:original_op; expected=round==1?0xbe:original_expected;
+    pd.color.logic_op=op;
+    nvn_gpu_pipe pipe=NULL;nvn_gpu_err e={0};nvn_gpu_rc rc=nvn_gpu_pipe_get(&pd,NVN_GPU_PIPE_SYNC,&pipe,&e);
+    CHECK(OK(rc),"C47 op=%u fmt=%u pipeline: %d %s",op,fmt,rc.code,e.why);
+    if(!OK(rc)) goto done;
+    nvn_gpu_tex t=make_tex(64,64,fmt,NVN_GPU_TEX_RENDER), ft=NULL;
+    nvn_gpu_view v=make_view(t),fv=NULL;
+    if(mixed){ft=make_tex(64,64,NVN_FORMAT_RGBA32F,NVN_GPU_TEX_RENDER);fv=make_view(ft);}
+    uint8_t zero[64*64*16]={0};
+    nvn_gpu_buf rb=make_buf(64*64*4,NVN_GPU_MEM_SHARED,zero),fr=NULL;
+    if(mixed)fr=make_buf(sizeof zero,NVN_GPU_MEM_SHARED,zero);
+    float verts[4][8]={{-1,-1,0,1,0,0,0,1},{-1,1,0,1,0,0,0,1},{1,-1,0,1,0,0,0,1},{1,1,0,1,0,0,0,1}};
+    nvn_gpu_buf vb=make_buf(sizeof verts,NVN_GPU_MEM_SHARED,verts);
+    nvn_gpu_cmd c=begin_cmd();nvn_gpu_pass_desc pass={0};pass.ncolor=mixed?2:1;
+    pass.color[0].view=v;pass.color[0].load=NVN_GPU_LOAD_CLEAR;pass.color[0].store=NVN_GPU_STORE_STORE;
+    for(int j=0;j<4;j++){if(integer)pass.color[0].clear.u[j]=0x3c;else pass.color[0].clear.f[j]=60.0f/255.0f;}
+    if(mixed){pass.color[1].view=fv;pass.color[1].load=NVN_GPU_LOAD_CLEAR;pass.color[1].store=NVN_GPU_STORE_STORE;
+        for(int j=0;j<4;j++)pass.color[1].clear.f[j]=0.25f;}
+    pass.w=64;pass.h=64;pass.layers=1;nvn_gpu_pass_begin(c,&pass);nvn_gpu_set_pipe(c,pipe);
+    nvn_gpu_dyn dyn={0};dyn.origin_ll=(uint8_t)!g_tri_origin_ul;dyn.nvp=1;dyn.vp[0][2]=64;dyn.vp[0][3]=64;dyn.vp[0][5]=1;
+    nvn_gpu_set_dyn(c,&dyn);nvn_gpu_set_vbuf(c,0,vb,0);
+    nvn_gpu_draw_args draw={0};draw.prim=5;draw.count=4;draw.instances=1;nvn_gpu_draw(c,&draw);nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c,t,0,0,NULL,rb,0,256,16384);
+    if(mixed)nvn_gpu_copy_tex_buf(c,ft,0,0,NULL,fr,0,1024,65536);
+    rc=nvn_gpu_cmd_commit(c,serial+round,on_done,NULL,&e);CHECK(OK(rc),"C47 commit: %d %s",rc.code,e.why);
+    if(OK(rc)){rc=nvn_gpu_fence_wait(serial+round,5000000000ull,&e);CHECK(OK(rc),"C47 wait");}
+    if(OK(rc)){const uint8_t *out=buf_cpu(rb);for(int i=0;i<64*64*4;i++){
+        uint8_t want=(mask & (1u<<(i%4)))?expected:0x3c;
+        if(fmt==NVN_FORMAT_RGBA8_SRGB && i%4==3) want=150; // alpha is not sRGB encoded
+        if(out[i]!=want){CHECK(0,"C47 op=%u fmt=%u mask=%x byte%d=%02x expected=%02x",op,fmt,mask,i,out[i],want);break;}}
+        if(mixed){const float *f=(const float *)buf_cpu(fr);for(int i=0;i<64*64*4;i++)if(f[i]!=0.5f){CHECK(0,"C47 float attachment logic/blend must not apply: %g",(double)f[i]);break;}}}
+    nvn_gpu_view_release(v);nvn_gpu_tex_release(t);nvn_gpu_buf_release(rb,NULL,NULL);nvn_gpu_buf_release(vb,NULL,NULL);
+    if(mixed){nvn_gpu_view_release(fv);nvn_gpu_tex_release(ft);nvn_gpu_buf_release(fr,NULL,NULL);}
+    }
+    if(rounds==3) printf("C47 same-shader XOR/OR/XOR cache sequence verified\n");
+done:
+    nvn_gpu_shader_release(vs);nvn_gpu_shader_release(fs);free(vm);free(fm);
+}
 static void c47_logic(const char *dir) {
-    void *vsm = NULL, *fsm = NULL; nvn_gpu_shader vs = NULL, fs = NULL;
-    CHECK(load_shader_pair(dir, "quad.vert", "quad.frag", NULL, NULL, &vs, &fs, &vsm, &fsm), "C47 shader");
-    nvn_gpu_pipe_desc pd;
-    memset(&pd, 0, sizeof pd); pd.poly.mode=NVN_POLYGON_MODE_FILL; pd.origin_ll = (uint8_t)!g_tri_origin_ul;
-    pd.st[NVN_GPU_SH_VS].sh = vs; pd.st[NVN_GPU_SH_FS].sh = fs;
-    pd.cfmt[0] = NVN_FORMAT_RGBA8; pd.samples = 1; pd.prim = 4; pd.chmask.mask = 0xF;
-    pd.attr[0].fmt = NVN_FORMAT_RGBA32F; pd.attr[0].offset = 0; pd.attr[0].stream = 0;
-    pd.attr[1].fmt = NVN_FORMAT_RGBA32F; pd.attr[1].offset = 16; pd.attr[1].stream = 0;
-    pd.stream[0].stride = 32;
-    nvn_gpu_pipe p = NULL;
-    nvn_gpu_err e;
-    pd.color.logic_op = 0;   // NVN_LOGIC_OP_CLEAR
-    nvn_gpu_rc r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &p, &e);
-    CHECK(r.code == NVN_GPU_E_UNSUPPORTED, "C47 CLEAR 逻辑操作应 UNSUPPORTED，实为 %d", r.code);
-    pd.color.logic_op = 3;   // 缺省 COPY
-    r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &p, &e);
-    CHECK(OK(r), "C47 缺省 COPY 应可建管线：%d %s", r.code, e.why);
-    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vsm); free(fsm);
+    // CLEAR, AND, AND_REVERSE, COPY, AND_INVERTED, NOOP, XOR, OR,
+    // NOR, EQUIVALENT, INVERT, OR_REVERSE, COPY_INVERTED, OR_INVERTED, NAND, SET.
+    static const uint8_t truth[16]={0x00,0x14,0x82,0x96,0x28,0x3c,0xaa,0xbe,0x41,0x55,0xc3,0xd7,0x69,0x7d,0xeb,0xff};
+    const int enabled = g_dev.core_features.logicOp != VK_FALSE;
+    printf("C47 logicOp feature=%d; integer/UNORM 16-op truth tables%s\n",enabled,enabled?"":" unavailable on this device");
+    uint64_t seq=400;
+    if(enabled) {
+    for(unsigned op=0;op<16;op++){
+        c47_case(dir,op,NVN_FORMAT_RGBA8UI,15,0,truth[op],(seq+=3));
+        // COPY deliberately preserves additive blend, so S+D = 0xd2 instead of raw COPY.
+        c47_case(dir,op,NVN_FORMAT_RGBA8,15,0,op==3?0xd2:truth[op],(seq+=3));
+    }
+    c47_case(dir,6,NVN_FORMAT_RGBA8,5,0,0xaa,(seq+=3));
+    c47_case(dir,6,NVN_FORMAT_RGBA8UI,10,1,0xaa,(seq+=3));
+    c47_case(dir,6,NVN_FORMAT_RGBA8,15,1,0xaa,(seq+=3));
+    // sRGB excludes logic ops, and non-COPY disables blend: linear 150/255 -> sRGB 202.
+    c47_case(dir,6,NVN_FORMAT_RGBA8_SRGB,15,0,202,(seq+=3));
+    }
+    nvn_gpu_err reset={0};
+    CHECK(OK(nvn_gpu_close(5000000000ull,&reset)),"C47 close before capability negative");
+    if(!open_backend())return; // empty pipeline cache: negative must not hit a previously compiled pipeline
+    void *vm=NULL,*fm=NULL;nvn_gpu_shader vs=NULL,fs=NULL;
+    CHECK(load_shader_pair(dir,"quad.vert","logic_float.frag",NULL,NULL,&vs,&fs,&vm,&fm),"C47 negative shader");
+    nvn_gpu_pipe_desc pd={0};pd.poly.mode=NVN_POLYGON_MODE_FILL;pd.origin_ll=(uint8_t)!g_tri_origin_ul;
+    pd.st[NVN_GPU_SH_VS].sh=vs;pd.st[NVN_GPU_SH_FS].sh=fs;pd.cfmt[0]=NVN_FORMAT_RGBA8;
+    pd.samples=1;pd.prim=5;pd.chmask.mask=15;pd.attr[0].fmt=pd.attr[1].fmt=NVN_FORMAT_RGBA32F;pd.attr[1].offset=16;pd.stream[0].stride=32;
+    nvn_gpu_pipe pipe=NULL;nvn_gpu_err e={0};
+    // logic_op is a 4-bit public field: no invalid enumerant is representable.
+    VkBool32 saved=g_dev.core_features.logicOp;g_dev.core_features.logicOp=VK_FALSE;
+    pd.color.logic_op=6;CHECK(nvn_gpu_pipe_get(&pd,NVN_GPU_PIPE_SYNC,&pipe,&e).code==NVN_GPU_E_UNSUPPORTED,"C47 disabled feature must UNSUPPORTED");
+    pd.color.logic_op=3;CHECK(OK(nvn_gpu_pipe_get(&pd,NVN_GPU_PIPE_SYNC,&pipe,&e)),"C47 COPY without logicOp remains supported");
+    g_dev.core_features.logicOp=saved;
+    nvn_gpu_shader_release(vs);nvn_gpu_shader_release(fs);free(vm);free(fm);
+    CHECK(OK(nvn_gpu_close(5000000000ull,&reset)),"C47 close after capability negative");
+    CHECK(open_backend(),"C47 reopen for next test fence sequence");
 }
 
 
@@ -5185,13 +5265,21 @@ static void c86c_bc_3d_slice_copy(void) {
 }
 
 int main(int argc, char **argv) {
-    t29_format_expand();
+    if (!getenv("S2A_TEST_LOGICOP_ONLY")) t29_format_expand();
     char why[256] = {0};
     if (s2a_vk_device_create(&g_dev, why, sizeof why) != 0) {
         printf("SKIP? 建 Vulkan 设备失败：%s\n", why);
         return 2;   // 不静默跳过：run.sh 把 2 当红
     }
     printf("device: %s (%s)\n", g_dev.properties.deviceName, g_dev.driver_name);
+    if (getenv("S2A_TEST_LOGICOP_ONLY")) {
+        if(argc < 2) return 2;
+        memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="logic-only";
+        if(!open_backend())return 1;
+        c47_logic(argv[1]);
+        nvn_gpu_err le={0}; CHECK(OK(nvn_gpu_close(5000000000ull,&le)),"logic close"); s2a_vk_device_destroy(&g_dev, 1);
+        printf("logicOp-only failures=%d\n",g_fail); return g_fail ? 1 : 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "--gs-no-cap")) {
         memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "gs-no-cap";
         if (!open_backend()) return 1;
@@ -5207,7 +5295,7 @@ int main(int argc, char **argv) {
         CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "GS no-cap close"); s2a_vk_device_destroy(&g_dev, 1);
         return g_fail ? 1 : 0;
     }
-    bc_timeout_lifetime();
+    if (!getenv("S2A_TEST_LOGICOP_ONLY")) bc_timeout_lifetime();
     // 机型模拟档（android/tests/vk/sim_tiers.sh）按这行核对模拟层确实藏掉了对应能力。
     printf("sim caps: vertexPipelineStoresAndAtomics=%u dualSrcBlend=%u calibrated_timestamps=%d（0 = 无校准扩展，走完成点兜底）\n",
            (unsigned)g_dev.core_features.vertexPipelineStoresAndAtomics, (unsigned)g_dev.core_features.dualSrcBlend,
