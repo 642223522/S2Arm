@@ -50,6 +50,8 @@ public sealed partial class EnvironmentWindow : Window
             ?? throw new FileNotFoundException("Localization table resource is missing.");
         using var tableReader = new StreamReader(table);
         backend = new BackendText(tableReader.ReadToEnd(), experience);
+        // 界面语言：设置里选过的优先，否则跟随系统（LauncherLanguage，同 Mac / iOS 规则）
+        language = LauncherLanguage.Resolve(privateRoot, System.Globalization.CultureInfo.CurrentUICulture.Name);
         MetalFolder.Load(privateRoot);   // 上次手动指定的 Metal 文件夹：设进本进程环境，环境检查 / 出包子进程继承
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
@@ -356,13 +358,24 @@ public sealed partial class EnvironmentWindow : Window
         body.Children.Add(Label(T("nav.settings"), 23));
 
         // 界面语言（原在顶栏）
+        // 跟随系统 / 简体中文 / English：选了某种就记住（以后不再跟系统），选「跟随系统」回到按系统（11-13，LauncherLanguage）
+        string?[] choices = [null, "zh-Hans", "en"];
+        var system = LauncherLanguage.FromCulture(System.Globalization.CultureInfo.CurrentUICulture.Name);
         var languages = new ComboBox
         {
-            ItemsSource = new[] { T("language.zh-Hans"), T("language.en") },
-            SelectedIndex = language == "zh-Hans" ? 0 : 1, IsEnabled = !busy && !libraryBusy, MinWidth = 160
+            ItemsSource = new[] { T("language.system") + " · " + T("language." + system), T("language.zh-Hans"), T("language.en") },
+            SelectedIndex = Array.IndexOf(choices, LauncherLanguage.Saved(privateRoot)), IsEnabled = !busy && !libraryBusy, MinWidth = 160
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(languages, "settings.language");
-        languages.SelectionChanged += (_, _) => { CapturePaths(); language = languages.SelectedIndex == 0 ? "zh-Hans" : "en"; Render(); };
+        languages.SelectionChanged += (_, _) =>
+        {
+            CapturePaths();
+            var code = choices[Math.Max(0, languages.SelectedIndex)];
+            try { PrivateJobRequest.EnsurePrivateRoot(privateRoot); LauncherLanguage.Save(privateRoot, code); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { LauncherCrash.Log(null, "界面语言没记住：" + error.Message); }
+            language = code ?? system;
+            Render();
+        };
         body.Children.Add(Card(SettingRow(T("settings.language"), null, languages)));
 
         // 存放位置：游戏库、iPhone 包、磁盘空间集中在这一处（原先游戏库页、设置页各铺一份）；单款游戏放在哪只写在游戏库那款的卡片上

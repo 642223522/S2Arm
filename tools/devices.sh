@@ -7,11 +7,11 @@
 #   单测设 S2A_DEVICES_NO_LOCAL=1，强制用下面的占位标识。占位取全 0 的 UDID 形状（不用中文代号：dev_run.sh 按 [0-9A-Fa-f-] 取 devicectl 报的
 #   硬件 UDID，中文代号取不到，单测就测不到白名单真路径）；没有 machine.local 时选中的也是占位，devicectl 找不到设备、当场红。
 # 选中后导出：SW_DEVICE（CoreDevice 标识，devicectl 用）、SW_IOS_UDID（硬件 UDID，ideviceinfo 用）、DEVNAME、
-#   SW_DEVLOCK_DIR / SW_DEVLOCK_QUEUE / SW_DEVBATTERY_LOCKS / DEVBATTERY_DIR（该机的锁与电量闸目录）。
+#   SW_DEVLOCK_DIR / SW_DEVLOCK_QUEUE / SW_DEVBATTERY_LOCKS / DEVBATTERY_DIR（该机的锁与设备状态目录；后两个是历史名，11-13 电量闸已删，不再读电量）。
 # 锁目录沿用旧库 / 研究员正在用的那两把（10-19 核过 维护方工具），新旧工具同时上机也互斥：
 #   测试设备1 在本机：~/sw-work/run/ios/device.lock；测试设备2 在 gate-host：~/.s2arm/run/devq2/device2.lock。
 # 选机前核 devicectl 看得到（11-12 维护者：测试设备2 只走局域网（devicectl：connected / localNetwork），idevice_id -l 看不到它，原先「必须在本机 USB 上」让它永远挑不中）：
-#   USB 或局域网都算，devicectl list devices 里这台是 available / connected 即可；电量闸读不到电量时只记一行、照跑（tools/devbattery.sh）。S2A_DEVICE_NO_USB_CHECK=1 跳过（单测用）；
+#   USB 或局域网都算，devicectl list devices 里这台是 available / connected 即可（11-13 电量闸已删：设备只看在不在线，不读电量）。S2A_DEVICE_NO_USB_CHECK=1 跳过（单测用）；
 #   S2A_DEVICECTL_LIST=<命令> 换掉 devicectl 列表（单测用）
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/machine.sh"
 _S2A_DEV_CODE_PHONE=00000000-0000000000000000
@@ -118,7 +118,7 @@ PY
     IFS='|' read -r name udid cd <<< "$r"
     if [ "$udid" = "$S2A_DAILY_PHONE" ] || [ "$cd" = "$S2A_DAILY_PHONE" ]; then echo "【红】${want}（${udid}）是日常手机，不碰" >&2; return 1; fi
     command -v idevice_id > /dev/null && ! idevice_id -l 2>/dev/null | grep -qx "$udid" && echo "【黄】${name}（${udid}）不在本机 USB 上：局照跑，功耗读数（pw*.plist）要 USB 连接才有" >&2
-    command -v idevice_id > /dev/null || echo "【黄】本机缺 libimobiledevice（brew install libimobiledevice）：局照跑，功耗读数（pw*.plist）和电量闸读不到" >&2
+    command -v idevice_id > /dev/null || echo "【黄】本机缺 libimobiledevice（brew install libimobiledevice）：局照跑，功耗读数（pw*.plist）读不到" >&2
     local reg; reg=$(_s2a_own_root)/$udid/registered.tsv
     if [ -s "$reg" ]; then   # 登记过的测试设备：沿用名单那把锁（见 _s2a_own_note）
       IFS=$'\t' read -r lock bdir < "$reg"; echo "【黄】${name}（${udid}）是登记过的测试设备：沿用它的设备锁 ${lock}，不另起一把" >&2
