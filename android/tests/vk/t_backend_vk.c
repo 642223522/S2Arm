@@ -1144,14 +1144,24 @@ static void c192_bc_order(void) {
     nvn_gpu_tex_release(bc); nvn_gpu_tex_release(a); nvn_gpu_tex_release(b); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
+// C193：现解贴图按压缩块回读：给上传时的原字节（不是解码后的颜色）；没上传过的区域给零。
 static void c193_bc_readback_rejected(void) {
-    nvn_gpu_tex bc = make_tex(4, 4, NVN_FORMAT_RGBA_DXT1, NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD);
-    nvn_gpu_buf rb = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_tex bc = make_tex(8, 4, NVN_FORMAT_RGBA_DXT1, NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD);
+    uint8_t init[64]; memset(init, 0x5a, sizeof init);
+    nvn_gpu_buf rb = make_buf(64, NVN_GPU_MEM_SHARED, init);
     if (!bc || !rb) return;
+    static const uint8_t blk[8] = {0x11, 0xf8, 0x22, 0x07, 0x33, 0x44, 0x55, 0x66};
     nvn_gpu_cmd c = begin_cmd(); nvn_gpu_err e;
-    nvn_gpu_copy_tex_buf(c, bc, 0, 0, NULL, rb, 0, 8, 8);
+    nvn_gpu_copy_tex_buf(c, bc, 0, 0, NULL, rb, 0, 16, 16);              // ① 一次都没上传：两块都是零
+    NVNcopyRegion right = {4, 0, 0, 4, 4, 1};
+    nvn_gpu_tex_upload(c, bc, 0, 0, &right, blk, 8, 8);                  // 只传右边那块
+    nvn_gpu_copy_tex_buf(c, bc, 0, 0, NULL, rb, 32, 16, 16);             // ② 左块零、右块原字节
     nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 1, on_done, NULL, &e);
-    CHECK(r.code == NVN_GPU_E_UNSUPPORTED, "C193 解码贴图按压缩块回读应 UNSUPPORTED，实得 %d", r.code);
+    CHECK(OK(r), "C193 解码贴图按压缩块回读 commit：%d %s", r.code, e.why);
+    CHECK(OK(nvn_gpu_fence_wait(1, 5000000000ull, &e)), "C193 wait：%s", e.why);
+    uint8_t want[64]; memcpy(want, init, sizeof want);
+    memset(want, 0, 16); memset(want + 32, 0, 8); memcpy(want + 40, blk, 8);
+    CHECK(memcmp(buf_cpu(rb), want, sizeof want) == 0, "C193 解码贴图回读应给原压缩字节（没上传过的为零）");
     nvn_gpu_tex_release(bc); nvn_gpu_buf_release(rb, NULL, NULL);
 }
 
@@ -5627,6 +5637,32 @@ static void c697_bc4_3d(void) {
     for (int i = 0; i < 12; i++) CHECK(out[420 + i] == (i < 6 ? 171 : 191), "C697 BC4 mip1 像素%d：%u", i, out[420 + i]);
     CHECK(out[432] == 251, "C697 BC4 mip2 1x1x1：%u", out[432]);
     printf("C697 BC4 3D：三份全深度快照420纹素、mip1 12纹素、mip2 1纹素已核对\n");
+    {   // 按压缩字节回读（贴图 → 缓冲）：Mali 等非原生 BC 设备上游戏会做这种拷贝，显存里是解码后的 R8，回读要给上传时的原字节。
+        // 期望值按上传的原块手工拼（c697_bc4_block：前两字节是端点、其余 0）；当前内容 = 第 1 次提交的结果（之后的整片重传都被放弃）。
+        uint8_t init[160]; memset(init, 0x5a, sizeof init);
+        nvn_gpu_buf rb2 = make_buf(sizeof init, NVN_GPU_MEM_SHARED, init);
+        if (!rb2) goto done;
+        c = begin_cmd();
+        nvn_gpu_copy_tex_buf(c, bc, 0, 1, NULL, rb2, 0, 16, 32);                 // ① 0 级切片 1 整片：列 0 原块，列 1 是补丁
+        nvn_gpu_copy_tex_buf(c, bc, 0, 3, NULL, rb2, 64, 24, 40);                // ② 0 级切片 3，行距 24：每行后 8 字节不许动
+        nvn_gpu_copy_tex_buf(c, bc, 1, 1, NULL, rb2, 112, 8, 8);                 // ③ 1 级切片 1：局部补丁盖过的那块
+        NVNcopyRegion col1 = {4, 0, 0, 3, 5, 1};
+        nvn_gpu_copy_tex_buf(c, bc, 0, 2, &col1, rb2, 128, 8, 16);               // ④ 0 级切片 2 只读块列 1
+        rc = nvn_gpu_cmd_commit(c, 3, c697_bc4_done, NULL, &e);
+        CHECK(OK(rc), "C697 BC4 回读 commit：%d %s", rc.code, e.why);
+        if (OK(rc)) rc = nvn_gpu_fence_wait(3, 5000000000ull, &e);
+        CHECK(OK(rc), "C697 BC4 回读 wait：%s", e.why);
+        const uint8_t *rd = buf_cpu(rb2);
+        uint8_t want[160]; memcpy(want, init, sizeof want);
+        for (int y = 0; y < 2; y++) { c697_bc4_block(want + y * 16, (uint8_t)(20 + 40 + y * 10)); c697_bc4_block(want + y * 16 + 8, (uint8_t)(211 + y * 3)); }
+        for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) c697_bc4_block(want + 64 + y * 24 + x * 8, (uint8_t)(20 + 3 * 40 + y * 10 + x * 5));
+        c697_bc4_block(want + 112, 191);
+        for (int y = 0; y < 2; y++) c697_bc4_block(want + 128 + y * 8, (uint8_t)(211 + 10 + y * 3));
+        int bad = 0; for (int i = 0; i < 160; i++) if (rd[i] != want[i]) { if (bad++ < 4) CHECK(0, "C697 BC4 回读字节 %d：%u，期望 %u", i, rd[i], want[i]); }
+        CHECK(!bad, "C697 BC4 回读：%d 字节不符", bad);
+        if (!bad) printf("C697 BC4 回读：整片 / 带行距 / 下一级局部补丁 / 局部区域 四种按原压缩字节读回，160 字节已核对\n");
+        nvn_gpu_buf_release(rb2, NULL, NULL);
+    }
 done:
     if (bc) nvn_gpu_tex_release(bc);
     if (plain) nvn_gpu_tex_release(plain);
@@ -5819,6 +5855,7 @@ static int c658_main(int argc,char **argv) {
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);   // 经 tee 的管道默认整块缓冲：超时被杀时最后一行不是卡点；按行刷新才看得出卡在哪
     if (getenv("S2A_TEST_COUNT_ONLY")) return c658_main(argc, argv);
     if (!getenv("S2A_TEST_LOGICOP_ONLY")) t29_format_expand();
     char why[256] = {0};
