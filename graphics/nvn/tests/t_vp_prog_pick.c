@@ -89,5 +89,7 @@ int main(void) {
         reset(&vertex);
     }
     printf("%d checks, %d failed\n", checks, bad);
+    if (bad) printf("✗ t_vp_prog_pick：%d 项不通（共 %d 项）\n", bad, checks);
+    else printf("✓ t_vp_prog_pick：%d 项全过\n", checks);   // 列车按结论行判（tests/t_result_lint）
     return bad != 0;
 }
