@@ -33,13 +33,14 @@ struct Switch2ProConnectionPopover: View {
 
             Divider().opacity(0.3)
 
+            // 系统手柄只多一行说明；Switch 2 Pro 的开关和按钮照常在（同时有 DualSense 和 Switch 2 Pro 的玩家仍要能连 Switch 2 Pro）
             if controller.hasSystemController {
-                Text(zh ? "连接与断开由 macOS 管理。如需重新配对，请打开系统设置中的「蓝牙」。"
-                        : "macOS manages this connection. To pair again, open Bluetooth in System Settings.")
+                Text(zh ? "这只手柄的连接与断开由 macOS 管理，如需重新配对，请打开系统设置中的「蓝牙」。要连 Switch 2 Pro，用下面的开关和按钮。"
+                        : "macOS manages this controller's connection. To pair it again, open Bluetooth in System Settings. To connect a Switch 2 Pro, use the switches and buttons below.")
                     .font(.manrope(11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
+            }
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(zh ? "开启 S2Arm 时自动连接手柄" : "Connect controller when S2Arm opens")
@@ -119,7 +120,6 @@ struct Switch2ProConnectionPopover: View {
                 .font(.manrope(11.3))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            }
         }
         .padding(18)
         .frame(width: 350)

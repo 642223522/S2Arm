@@ -37,7 +37,6 @@ final class NS2LauncherControllerTests: XCTestCase {
         controller.startIfEnabled()
         XCTAssertEqual(controller.title(simplifiedChinese: true), "DualSense Wireless Controller")
         XCTAssertEqual(controller.buttonStatus, "已连接")
-        XCTAssertFalse(controller.hasConnectionProcess, "系统已连接的手柄不用启动 Switch 蓝牙扫描")
         controller.gameDidStart()
         controller.gameDidExit()
         XCTAssertEqual(controller.buttonStatus, "已连接", "关闭游戏不能把系统仍连接的手柄显示成断开")

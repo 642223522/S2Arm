@@ -121,7 +121,7 @@ final class NS2LauncherController: ObservableObject {
     var hasConnectionProcess: Bool { process != nil }
 
     func startIfEnabled() {
-        guard !hasSystemController else { return }
+        // 系统手柄连着也照玩家的「开启 S2Arm 时自动连接」走：Switch 2 Pro 系统认不到，两只都在时要靠它连
         guard autoConnectOnOpen else {
             phase = .off
             helperDetail = "手柄未连接。需要时可在上方手动连接。"
