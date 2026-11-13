@@ -55,6 +55,6 @@ int main(void) { @autoreleasepool {
     CHECK(verify(&lookups) <= 1 && verify(&lookups) == 0, "填满 1024 格（索引扩容）后查找仍全部正确");
     for (int s = 0; s < SLOTS; s += 2) { nvn_be_pool_del(base + (size_t)s * SLOT); used[s] = 0; }
     CHECK(verify(&lookups) == 0, "隔一个注销一个（512 次）后查找全部正确、索引仍有效");
-    printf("%u 项，失败 %u\n", checks, failures);
-    return failures ? 1 : 0;
+    if (failures) printf("✗ t_nvn_pool_index：%u 项不符（共 %u 项）\n", failures, checks); else printf("✓ t_nvn_pool_index：池地址索引就地维护，%u 项全过\n", checks);
+    return failures != 0;
 } }
