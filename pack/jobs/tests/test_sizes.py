@@ -186,6 +186,17 @@ class Sizes(JobCase):
         self.assertEqual(layout.state(c, OTHER), ("none", None))         # 不再认到上一个库里的那份
         self.assertNotIn(OTHER, layout.load_index(c)["games"])
 
+    def test_location_rows_last_only_points_to_connected(self):
+        """#922：last 指着已不存在的位置（换库后常见）→ 位置表的 last 给默认位置；指着连着的外接盘 → 照给"""
+        disk = self.root / "外接盘"; lid = layout.register_location(self.c, disk)
+        idx = layout.load_index(self.c); idx["last"] = "gone-location"; layout.save_index(self.c)
+        self.assertEqual(library.location_rows(self.c)["last"], layout.default_id(self.c))
+        idx["last"] = lid; layout.save_index(self.c)
+        self.assertEqual(library.location_rows(self.c)["last"], lid)
+        import shutil; shutil.rmtree(disk)   # 外接盘拔了：不再给它
+        self.c._layout_idx = None
+        self.assertEqual(library.location_rows(self.context("locations"))["last"], layout.default_id(self.c))
+
     def test_catalog_job_returns_sizes(self):
         sizes.refresh(self.c, GID)
         result, event = self.worker("catalog")

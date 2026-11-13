@@ -2932,7 +2932,10 @@ def location_rows(c):
         free = shutil.disk_usage(root).free if ok else None
         rows.append(dict(id=lid, path=str(root), volume=_volume(root), connected=ok, freeBytes=free, default=root == c.library,
                          **(location_slack(root) if ok else {})))
-    return dict(locations=rows, last=layout.load_index(c).get("last") or layout.default_id(c))
+    # last 只给还在、连着的位置（#922：换库后 last 还指着已不存在的旧位置，界面默认选中一个空目录）；不然给默认位置
+    last = layout.load_index(c).get("last")
+    ok = {r["id"] for r in rows if r["connected"]}
+    return dict(locations=rows, last=last if last in ok else layout.default_id(c))
 
 
 def list_locations(c):
