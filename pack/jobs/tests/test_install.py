@@ -221,7 +221,8 @@ class FlowTests(unittest.TestCase):
                     for d, k in ((0, 0), (1 << 20, 1), (3 << 20, 2)): on_line(f"S2A_PUSH_PROGRESS {d} {3 << 20} {k} 2")
                 if locked:   # #333：推之前写探针就写不进（探针在推送之前，和带不带 --apply 无关）
                     Path(log).parent.mkdir(parents=True, exist_ok=True)
-                    Path(log).write_text("【红】iPhone 写不进资源包：多半是手机锁屏了或数据线松了。解锁手机、保持亮屏，插稳数据线后再点一次。\n", encoding="utf-8")
+                    Path(log).write_text("【红】" + ("iPhone 写不进资源包（Operation timed out; abandoned）。手机没有锁屏，是电脑和手机的连接出了问题：拔下数据线重新插好，再点一次。"
+                                                    if locked == "conn" else "iPhone 写不进资源包：手机锁屏了。解锁手机、保持亮屏，再点一次。") + "\n", encoding="utf-8")
                     raise install.Failure("tool", code="tool_exit")
                 on_line(f"[12:00:00] 资源包：推 {pushed} 个文件 3 MB，分 1 批 + 索引 + 清单（1 秒）")
                 if "--apply" in args and not (pushed == 0 and state["applied"] == "cafe01"):
@@ -273,6 +274,14 @@ class FlowTests(unittest.TestCase):
             self._install(gid, pushed=2, applied_before="", locked=True)
         self.assertEqual(e.exception.code, "device_locked")
         self.assertIn("锁屏", str(e.exception))
+
+    def test_probe_write_failure_unlocked_is_not_device_locked(self):   # 11-13：手机没锁、探针写不进（devicectl 超时）→ 连接问题带原文，不报 device_locked
+        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
+        with self.assertRaises(install.Failure) as e:
+            self._install(gid, pushed=2, applied_before="", locked="conn")
+        self.assertEqual(e.exception.code, "resource_transfer_failed")
+        self.assertIn("Operation timed out", str(e.exception))
+        self.assertNotIn("锁屏了", str(e.exception))
 
     def test_img_pack_is_done_once_transferred(self):   # 11-11：单一 IMG 形态传完并核过长度即装好，不带 --apply、不起 App 等机上解开，结果带 openToFinish
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
@@ -1477,9 +1486,9 @@ class ExportPhoneTests(unittest.TestCase):
         self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b"); ios_fixture(self.c, C)
         (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
         r = self._export(dict(gameId=A))
-        out = self.c.library / install.EXPORT_DIR
+        out = self.c.library / install.EXPORT_DIRS["zh"]
         self.assertEqual((r["exported"], r["outputPath"], r["games"], r["skipped"]), (True, str(out), [A, B], ["丙"]))
-        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", install.EXPORT_README]))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", install.EXPORT_READMES["zh"]]))
         # 一款一个文件：原资源包的其余文件段 + 着色器库进了目录表（手机认领后照常解出来）；原 game.img 不动
         img = img_module()
         for f, gid, data in (("甲.img", A, b"S2AIMG01-a"), ("乙.img", B, b"S2AIMG01-b")):
@@ -1489,7 +1498,7 @@ class ExportPhoneTests(unittest.TestCase):
                 self.assertEqual((rd("exefs/main"), rd("shaders/direct/lib.bin"), img.header(str(out / f))["gid"]), (data, b"LIB" + gid.encode(), gid))
             self.assertNotIn("shaders/direct/lib.bin", {p for p, _, _ in img.entries(str(library_pack(self.c, gid) / "game.img"))})
         self.assertEqual(install_ipa_games(out / "S2Arm.ipa"), ([A, B], "SID1"))
-        readme = (out / install.EXPORT_README).read_text(encoding="utf-8-sig")
+        readme = (out / install.EXPORT_READMES["zh"]).read_text(encoding="utf-8-sig")
         self.assertIn("甲.img（甲）", readme); self.assertIn("乙.img（乙）", readme); self.assertIn("放这里导入", readme)
         self.assertEqual(r["exportBytes"], sum(p.stat().st_size for p in out.iterdir()))
         self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])   # 临时目录收干净
@@ -1497,10 +1506,26 @@ class ExportPhoneTests(unittest.TestCase):
     def test_export_replaces_whole_folder(self):
         """再导出一次：文件夹整个换新（上次的、玩家放进去的别的文件都不在了）"""
         self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
-        out = self.c.library / install.EXPORT_DIR; out.mkdir(); (out / "旧.img").write_bytes(b"old")
+        out = self.c.library / install.EXPORT_DIRS["zh"]; out.mkdir(); (out / "旧.img").write_bytes(b"old")
         self._export(dict(gameId=self.A, mode="export"))
         self.assertFalse((out / "旧.img").exists())
         self.assertTrue((out / "甲.img").is_file())
+
+    def test_export_names_follow_ui_language(self):
+        """i18n：英文界面（uiLanguage = en）→ 文件夹「S2Arm Self-Sign Export」、说明「How to install on iPhone.txt」（英文正文：Import Here、
+        Settings → General → VPN & Device Management）；之后换回中文再导出 → 「S2Arm 自签导出」+「怎么装到 iPhone.txt」，英文名的旧导出删掉，只留一份"""
+        self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
+        en, zh = self.c.library / "S2Arm Self-Sign Export", self.c.library / "S2Arm 自签导出"
+        r = self._export(dict(gameId=self.A, mode="export", uiLanguage="en"))
+        self.assertEqual(sorted(p.name for p in en.iterdir()), sorted(["S2Arm.ipa", "甲.img", "How to install on iPhone.txt"]))
+        self.assertEqual((r["outputPath"], r["readme"]), (str(en), str(en / "How to install on iPhone.txt")))
+        text = (en / "How to install on iPhone.txt").read_text(encoding="utf-8-sig")
+        for want in ("甲.img (甲)", "Import Here", "Settings → General → VPN & Device Management"): self.assertIn(want, text)
+        self.assertNotIn("放这里导入", text); self.assertFalse(zh.exists())
+        self._export(dict(gameId=self.A, mode="export", uiLanguage="zh-Hans"))
+        self.assertEqual(sorted(p.name for p in zh.iterdir()), sorted(["S2Arm.ipa", "甲.img", "怎么装到 iPhone.txt"]))
+        self.assertFalse(en.exists(), "换回中文：英文名的旧导出删掉")
+        self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])
 
     def test_export_requested_old_format_is_named(self):
         """点的这款还是旧格式资源包：导出不了单个 game.img，报 pack_missing 说要重新打 iPhone 包"""
