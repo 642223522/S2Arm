@@ -633,10 +633,11 @@ def _verify_copy(src, dst, strict):
             raise Failure(f"拷到新位置后校验不一致：{rel}", code="library_move_failed")
 
 
-def copy_tree_links(src, dst):
+def copy_tree_links(src, dst, check=None):
     """跨盘拷一棵目录，链接拷链接本身、不钻进去：软链照拷；Windows 的 junction（Python 里不算软链，shutil.copytree 会钻进去展开成普通目录，
     产物根的「现行」随之失效、出包报「现行必须是目录链接」——#214 整库搬家与 v3 移动游戏同一处）重建成指向同一目标的 junction。
-    目标仍指旧位置；放到新位置后由 _retarget_links 改指"""
+    目标仍指旧位置；放到新位置后由 _retarget_links 改指。
+    check：每个目录 / 文件之前调一次（作业的取消检查，#924：原先整个大目录拷完才看一次取消，玩家点了取消还要等几分钟）"""
     src, dst = Path(src), Path(dst)
     isjunction = getattr(os.path, "isjunction", lambda _: False)
     def materialize(a, b):
@@ -647,6 +648,8 @@ def copy_tree_links(src, dst):
         if a.name.endswith("@现行"):
             (b / ".root_tag").write_text(target.name + "\n", encoding="utf-8")
     def copy(a, b):
+        if check:
+            check()
         if isjunction(a):
             r = subprocess.run(["cmd", "/c", "mklink", "/J", str(b), os.readlink(a).removeprefix("\\\\?\\")], capture_output=True)
             if r.returncode != 0:
@@ -774,7 +777,15 @@ def move_library(c, source):
                 target = stage / str(n)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if a.is_dir() and not _is_link(a):
-                    copy_tree_links(a, target)
+                    try:
+                        copy_tree_links(a, target, check=c.check)
+                    except FileNotFoundError as error:
+                        # #924：拷到一半新位置的临时目录被删了（玩家手动清掉 .s2arm-moving）：说人话；下面的回滚照常把一切放回原样
+                        if not stage.is_dir():
+                            raise Failure("换库途中，新位置的临时文件夹（.s2arm-moving）被删掉了，这次换库已停下：游戏库还在原来的位置，"
+                                          "没有任何改动。要换库就再点一次「换游戏库」；想中途停下请用「取消」，不用手动删文件夹。",
+                                          code="library_move_failed") from error
+                        raise
                 else:
                     shutil.copy2(a, target, follow_symlinks=False)
                 _verify_copy(a, target, strict=a.name in ("saves", "catalog.json", ".s2arm-library.json"))
