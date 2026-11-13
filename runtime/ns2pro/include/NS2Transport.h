@@ -64,6 +64,21 @@ int ns2_rumble_writable(int has_characteristic, size_t max_write);
 int ns2_keepalive_due(uint64_t last_write_ns, uint64_t now_ns);
 // 当前对外输出形态（线程安全，读传输层两条链路的现状）
 ns2_kind ns2_get_output_kind(void);
+// 主机绑定（「记住这台设备」，NS2Bond.c；协议依据见该文件开头）：
+//   广播里手柄要唤醒的主机：PAIRING = 长按 SYNC 的配对广播（主机全 0）、US = 唤醒 our_host、OTHER = 唤醒别的主机、UNKNOWN = 厂商数据不够 18 字节或不是认得出的手柄型号
+typedef enum { NS2_WAKE_UNKNOWN, NS2_WAKE_PAIRING, NS2_WAKE_US, NS2_WAKE_OTHER } ns2_wake;
+ns2_wake ns2_advert_wake(const uint8_t *manufacturer, size_t length, const uint8_t *our_host);
+enum { NS2_BOND_STEPS = 4, NS2_BOND_COMMAND_MAX = 25 };
+//   第 step（0..3）条绑定指令：01 主机地址、04 钥匙一、02 钥匙二、03 结束；返回帧长，参数不对返回 0
+size_t ns2_bond_command(unsigned step, const uint8_t host[6], const uint8_t key1[16], const uint8_t key2[16], uint8_t out[NS2_BOND_COMMAND_MAX]);
+//   是不是绑定指令（0x15）的应答
+int ns2_bond_reply(const uint8_t *reply, size_t length);
+//   "aa:bb:cc:dd:ee:ff" / "aa-bb-…" → 小端 6 字节；格式不对或全 0 返回 0
+int ns2_parse_bt_address(const char *text, uint8_t le[6]);
+// 开启绑定：start 之前调；host 是本机蓝牙地址（小端），NULL 关闭。开启后：
+//   - 配对广播（长按 SYNC）连上的手柄，握手后写入绑定（失败只记日志，连接照常可用）；
+//   - 绑定过的手柄直连不设期限、断开后自动重新等待，玩家按任一键即可连上。
+void ns2_set_bond_host(const uint8_t *host);
 // 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
 // Copy the latest motion sample, clearing it after 250 ms or disconnection without accessing hardware.
 void ns2_get_motion(ns2_motion *out);
