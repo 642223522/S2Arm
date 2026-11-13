@@ -146,7 +146,7 @@ def assemble(a):
     al = os.path.join(pkg, 'archive.log')   # 打 ipa 自己的输出（原先直接落进调用方的 tail.out，失败时随临时产物根一起删掉）
     app = os.path.join(w, 'build', 'ios', 'S2Arm.app')
     if os.path.lexists(os.path.join(w, 'build')): shutil.rmtree(os.path.join(w, 'build'), onerror=_writable)   # 上次组装的临时 App（重跑 / 失败残留）
-    icon = os.path.join(R, 'launchers/macos/Branding/AppIcon-1024.png')   # 宿主 App 永远用 S2Arm 自己的图标；游戏图标只给库里的入局入口（11-08 维护者）
+    icon = os.path.join(R, 'launchers/macos/Branding/AppIcon-iOS.png')   # iPhone 用鲜艳版玻璃 S（11-13 维护者：Mac 不动）；宿主 App 永远用 S2Arm 自己的图标；游戏图标只给库里的入局入口（11-08 维护者）
     if not os.path.isfile(icon): raise Red(f'引擎里缺 S2Arm 图标（{icon}）')
     if step(tl, '组装（预编壳）', [PY, os.path.join(H, 'ship_ext.py'), 'build', '--shell', a.shell, '--root', w, '--out', app,
                                    '--bundle-id', a.bundle_id, '--suffix', a.suffix, '--icon', icon], bl):

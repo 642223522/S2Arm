@@ -466,3 +466,11 @@
 /* Duo shared layout settings and split touch editor */
 "vpad.layouts.split.title" = "分屏触屏布局";
 "vpad.layouts.split.footer" = "编辑分屏下半区；位置与普通布局分别保存，键 / 触模式和手感共用。";
+"settings.group.language" = "界面语言";
+"settings.footer.language" = "S2Arm 菜单的语言。「跟随系统」按手机的语言（中文系统用中文，其他语言显示英文）。游戏默认也用这个语言，除非在这款游戏的启动设置里单独选了。";
+"settings.language" = "界面语言";
+"settings.language.system" = "跟随系统";
+"settings.language.zhHans" = "简体中文";
+"settings.language.zhHant" = "繁體中文";
+"settings.language.en" = "English";
+"settings.language.restart" = "关掉 S2Arm 再重新打开后生效。";
