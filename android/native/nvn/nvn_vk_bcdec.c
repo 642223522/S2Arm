@@ -353,22 +353,18 @@ void nvn_vk_bcdec_rec_free(struct s2a_vk_device *d, struct nvn_vk_bcdec_rec *rec
     memset(rec, 0, sizeof *rec);
 }
 
-// 输入图：16 字节块用 RGBA32_UINT；8 字节块用 RG32_UINT（一个纹素正好一块，不用像一次性提交那条路那样补零到 16 字节）。
-// S3TC（BC1）/ RGTC（BC4）的 8 字节块着色器只读 payload.xy，zw 读到的 (0, 1) 不参与解码。
 // 描述符池每次一个：段完成前集不能回收，模块共用的 8 个集的池会被同一段里的多次拷贝用光。
-int nvn_vk_bcdec_record(struct nvn_vk_bcdec *bc, struct s2a_vk_device *d, VkCommandBuffer cb,
-                        VkImage dst, uint32_t nvn_format, uint32_t w, uint32_t h, uint32_t mip, uint32_t layer,
-                        VkBuffer src, VkDeviceSize src_off, struct nvn_vk_bcdec_rec *rec, char *why, size_t why_size) {
+int nvn_vk_bcdec_prepare(struct nvn_vk_bcdec *bc, struct s2a_vk_device *d, VkImage dst, uint32_t nvn_format,
+                         uint32_t w, uint32_t h, uint32_t mip, uint32_t layer, struct nvn_vk_bcdec_rec *rec, char *why, size_t why_size) {
     memset(rec, 0, sizeof *rec);
     VkFormat view_fmt; const char *family; int bb;
     if (!bc || !nvn_vk_bcdec_route(nvn_format, &view_fmt, NULL, NULL, &family, &bb)) {
         snprintf(why, why_size, "bcdec: no route for nvn format 0x%02x", nvn_format); return -1;
     }
-    if (!w || !h || (src_off & 15)) { snprintf(why, why_size, "bcdec: %s record: empty extent or unaligned source", family); return -1; }
+    if (!w || !h) { snprintf(why, why_size, "bcdec: %s prepare: empty extent", family); return -1; }
     int vi = variant_index(&ROUTES[nvn_format].v);
     uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
     VkFormat in_fmt = bb == 8 ? VK_FORMAT_R32G32_UINT : VK_FORMAT_R32G32B32A32_UINT;
-    VkDescriptorSet ds = VK_NULL_HANDLE;
 
     VkImageCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     ici.imageType = VK_IMAGE_TYPE_2D; ici.format = in_fmt; ici.extent = (VkExtent3D){bw, bh, 1};
@@ -395,50 +391,20 @@ int nvn_vk_bcdec_record(struct nvn_vk_bcdec *bc, struct s2a_vk_device *d, VkComm
     if (vkCreateDescriptorPool(d->device, &dpi, NULL, &rec->pool) != VK_SUCCESS) goto fail;
     VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     dai.descriptorPool = rec->pool; dai.descriptorSetCount = 1; dai.pSetLayouts = &bc->dsl;
-    if (vkAllocateDescriptorSets(d->device, &dai, &ds) != VK_SUCCESS) goto fail;
+    if (vkAllocateDescriptorSets(d->device, &dai, &rec->ds) != VK_SUCCESS) goto fail;
     VkDescriptorImageInfo oi = { VK_NULL_HANDLE, rec->out_view, VK_IMAGE_LAYOUT_GENERAL };
     VkDescriptorImageInfo ii = { VK_NULL_HANDLE, rec->in_view, VK_IMAGE_LAYOUT_GENERAL };
     VkWriteDescriptorSet wr[2] = {0};
-    wr[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wr[0].dstSet = ds; wr[0].dstBinding = 0;
+    wr[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wr[0].dstSet = rec->ds; wr[0].dstBinding = 0;
     wr[0].descriptorCount = 1; wr[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; wr[0].pImageInfo = &oi;
-    wr[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wr[1].dstSet = ds; wr[1].dstBinding = 1;
+    wr[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wr[1].dstSet = rec->ds; wr[1].dstBinding = 1;
     wr[1].descriptorCount = 1; wr[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; wr[1].pImageInfo = &ii;
     vkUpdateDescriptorSets(d->device, 2, wr, 0, NULL);
 
-    // 源缓冲 → 输入图（源的写对 TRANSFER_READ 可见由调用方保证）
-    VkImageMemoryBarrier b = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = rec->in; b.subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-    VkBufferImageCopy cp = {0};
-    cp.bufferOffset = src_off;
-    cp.imageSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    cp.imageExtent = (VkExtent3D){bw, bh, 1};
-    vkCmdCopyBufferToImage(cb, src, rec->in, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-    // dst 整个子资源被覆写：UNDEFINED → GENERAL（同一次性提交那条路）
-    VkImageMemoryBarrier db = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    db.image = dst; db.subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, layer, 1};
-    db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; db.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    db.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &db);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bc->pipe[vi]);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bc->pl, 0, 1, &ds, 0, NULL);
-    int32_t res[2] = { (int32_t)w, (int32_t)h };
-    vkCmdPushConstants(cb, bc->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, res);
-    vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
-    db.oldLayout = VK_IMAGE_LAYOUT_GENERAL; db.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    db.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    db.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &db);
+    rec->pipe = bc->pipe[vi]; rec->pl = bc->pl; rec->bw = bw; rec->bh = bh;
     return 0;
 fail:
-    snprintf(why, why_size, "bcdec: %s record resource setup failed", family);
+    snprintf(why, why_size, "bcdec: %s prepare resource setup failed", family);
     nvn_vk_bcdec_rec_free(d, rec);
     return -1;
 }
