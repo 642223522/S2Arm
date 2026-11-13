@@ -4,5 +4,5 @@ NATIVE_TEST_OWN += diag_upload
 native-test-diag_upload:
 	@mkdir -p $(BUILD)/tests
 	$(CC) $(CFLAGS) -Iios -o $(BUILD)/tests/t_diag_upload runtime/tests/t_diag_upload.c
-	$(BUILD)/tests/t_diag_upload ios/diag.m
+	$(BUILD)/tests/t_diag_upload ios/diag.m .github/ISSUE_TEMPLATE/问题回报.yml
 TEST_TARGETS += native-test-diag_upload

@@ -14,6 +14,7 @@
 #import "s2a_l10n.h"
 #import <MetricKit/MetricKit.h>
 #import <Metal/Metal.h>
+#import <CoreTelephony/CTCellularData.h>   // 上传断网时认「无线数据」授权被拒（国行 iPhone）
 #import "vpad.h"
 #import "app_settings.h"
 #include <sys/sysctl.h>
@@ -345,6 +346,17 @@ void s2a_diag_export(void) {
 // ---------- 上传给开发者（诊断一键上传，11-13）：传完给玩家一个短码，玩家只要把码贴到帖子里 ----------
 //   服务端 diag.s2arm.com（只用这个域名，*.workers.dev 国内不通）收件后 7 天自动删；不合规的包服务端直接拒收不落盘。
 //   失败（没网、服务不可达、包被拒、限频）一律说清原因并退回「导出诊断包」，玩家照旧能手动发
+// 预填好诊断码的 GitHub 新帖页（格式见 diag_upload.h；各值按 URL 查询值编码：只留字母数字和 -._~）
+static NSURL *issue_url(NSString *code) {
+    NSMutableCharacterSet *ok = [NSMutableCharacterSet alphanumericCharacterSet]; [ok addCharactersInString:@"-._~"];
+    NSString *(^enc)(NSString *) = ^(NSString *v) { return [v stringByAddingPercentEncodingWithAllowedCharacters:ok] ?: @""; };
+    NSString *ver = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    NSString *plat = @(s2a_diag_issue_platform(UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad));
+    NSMutableString *u = [NSMutableString stringWithFormat:@"%s?template=%@&logs=%@", S2A_DIAG_ISSUE_NEW, enc(@S2A_DIAG_ISSUE_TEMPLATE), enc(code)];
+    if (ver.length) [u appendFormat:@"&version=%@", enc(ver)];   // 拿不到版本就省掉
+    [u appendFormat:@"&platform=%@&title=%@", enc(plat), enc(@S2A_DIAG_ISSUE_TITLE)];
+    return [NSURL URLWithString:u];
+}
 static void post_zip(NSURL *zip, int attempt, void (^done)(NSString *code, NSString *fail)) {
     NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://diag.s2arm.com/v1/upload"]];
     rq.HTTPMethod = @"POST"; rq.timeoutInterval = 120;
@@ -357,7 +369,7 @@ static void post_zip(NSURL *zip, int attempt, void (^done)(NSString *code, NSStr
         NSString *code = [d[@"code"] isKindOfClass:NSString.class] ? d[@"code"] : nil, *why = [d[@"error"] isKindOfClass:NSString.class] ? d[@"error"] : @"";
         s2a_up_verdict v = s2a_diag_up_verdict(status, e != nil, attempt, code.UTF8String);
         if (v == S2A_UP_OK) {
-            LOG("诊断包：已上传，短码 %s（第 %d 次）", code.UTF8String, attempt + 1);
+            LOG("诊断包：已上传，短码 %s（第 %d 次），发帖页 %s", code.UTF8String, attempt + 1, issue_url(code).absoluteString.UTF8String);
             dispatch_async(dispatch_get_main_queue(), ^{ done(code, nil); }); return;
         }
         if (v == S2A_UP_RETRY) {
@@ -366,7 +378,9 @@ static void post_zip(NSURL *zip, int attempt, void (^done)(NSString *code, NSStr
         }
         // 给玩家的原因：服务端 message 是中文一句、可直接给玩家看（中文界面用它），英文界面按错误种类给本地一句
         NSString *msg = [d[@"message"] isKindOfClass:NSString.class] ? d[@"message"] : nil, *fail;
-        if (e) fail = [NSString stringWithFormat:S2AL(@"diag.upload.fail.network"), e.localizedDescription];
+        static CTCellularData *cell; static dispatch_once_t once; dispatch_once(&once, ^{ cell = [CTCellularData new]; });
+        if (e && s2a_diag_net_denied((int)e.code, (int)cell.restrictedState)) fail = S2AL(@"diag.upload.fail.denied");
+        else if (e) fail = [NSString stringWithFormat:S2AL(@"diag.upload.fail.network"), e.localizedDescription];
         else if (status == 429) fail = S2AL(@"diag.upload.fail.busy");
         else if (status == 400 || status == 413) fail = s2a_l10n_zh() && msg.length ? msg : [NSString stringWithFormat:S2AL(@"diag.upload.fail.rejected"), why];
         else fail = [NSString stringWithFormat:S2AL(@"diag.upload.fail.server"), status];
@@ -383,7 +397,10 @@ static void upload_zip(UIViewController *host, NSURL *zip) {
         busy_done();
         UIAlertController *a;
         if (code) {
-            a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.done.title") message:[NSString stringWithFormat:S2AL(@"diag.upload.done.message"), code] preferredStyle:UIAlertControllerStyleAlert];
+            a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.done.title") message:[NSString stringWithFormat:S2AL(@"diag.upload.done.message"), code, @S2A_DIAG_REPO] preferredStyle:UIAlertControllerStyleAlert];
+            UIAlertAction *post = [UIAlertAction actionWithTitle:S2AL(@"diag.upload.post") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
+                LOG("诊断包：打开 GitHub 发帖页（短码 %s）", code.UTF8String); [UIApplication.sharedApplication openURL:issue_url(code) options:@{} completionHandler:nil]; }];
+            [a addAction:post]; a.preferredAction = post;   // 主按钮
             [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.copy") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; UIPasteboard.generalPasteboard.string = code; LOG("诊断包：短码已复制"); }]];
             [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
         } else {

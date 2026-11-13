@@ -28,4 +28,18 @@ static inline s2a_up_verdict s2a_diag_up_verdict(int status, bool net_error, int
     if (attempt == 0 && (net_error || status >= 500)) return S2A_UP_RETRY;
     return S2A_UP_FAIL;
 }
+
+// 短码页「去 GitHub 发帖」（方案「短码页链接格式」，Mac / Windows 同一格式）：
+//   https://github.com/jhaizhou-ops/S2Arm/issues/new?template=问题回报.yml&logs=<短码>&version=<版本>&platform=<平台选项原文>&title=[问题] （各值 URL 编码）
+//   platform 必须与 .github/ISSUE_TEMPLATE/问题回报.yml 的下拉选项逐字相同，GitHub 才预选；单测核对
+#define S2A_DIAG_REPO "github.com/jhaizhou-ops/S2Arm"
+#define S2A_DIAG_ISSUE_NEW "https://github.com/jhaizhou-ops/S2Arm/issues/new"
+#define S2A_DIAG_ISSUE_TEMPLATE "问题回报.yml"
+#define S2A_DIAG_ISSUE_TITLE "[问题] "
+static inline const char *s2a_diag_issue_platform(bool ipad) { return ipad ? "iPad" : "iPhone"; }
+
+// 上传断网时是不是「无线数据」授权挡的（国行 iPhone：第一次联网系统弹「允许 S2Arm 使用无线数据？」，点了「不允许」就一直断网）。
+//   url_error：NSURLError 码（-1009 = NSURLErrorNotConnectedToInternet）；restricted：CTCellularData.restrictedState（0 未知 / 1 受限 / 2 不受限）。
+//   只有系统明说「受限」才判授权；未知（弹框还没答）照普通断网说，那句里也提了弹框
+static inline bool s2a_diag_net_denied(int url_error, int restricted) { return url_error == -1009 && restricted == 1; }
 #endif
