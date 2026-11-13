@@ -63,6 +63,10 @@ HDC_TARGET='<target>' NVK_HOST_LOG='<sandbox-session-log>' \
 ```
 
 Set `HDC` for an executable outside PATH. `NVK_BUNDLE` defaults to the probe package.
+Set `NVK_SESSION_PID` to the launched session's PID to avoid counting a restarted
+process as survival. Host logs use file transfer: a device run returned only
+137742 bytes through shell output from a 209986-byte closed log; file transfer
+matched the complete log byte-for-byte, including its fatal-signal tail.
 The collector does not install, launch, change debug settings, clear log buffers or
 delete data. It observes the running session, reads hilog as context, collects a
 local screenshot and writes the seven survey items. Missing readings remain
@@ -70,6 +74,8 @@ unknown, including an empty unimplemented list. System-wide hilog and fault file
 listings are not attributed to this session as proof. Stop the session and restore
 debug settings in the host harness afterwards. Never upload screenshots or raw logs;
 review/redact report text before publication.
+The last presentation timing can predate a stalled renderer. Check the recent
+host frame-progress samples and fatal signals as well as process existence.
 
 For offline parser checks, set `NVK_INPUT_LOG` to a local session log and pass a
 duration of 0. Device fields are explicitly unknown in this mode. A report without

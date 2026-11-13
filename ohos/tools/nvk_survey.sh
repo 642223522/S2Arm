@@ -52,7 +52,20 @@ else
   if collect pid-after.txt shell pidof "$bundle"; then
     if grep -Eq '^[0-9]+( [0-9]+)*\r?$' "$out/pid-after.txt"; then alive=yes; else alive=no; fi
   fi
-  collect host.log shell -b "$bundle" "cat $NVK_HOST_LOG" || true
+  if [[ -n ${NVK_SESSION_PID:-} ]]; then
+    [[ $NVK_SESSION_PID =~ ^[0-9]+$ ]] || exit 2
+    if [[ $alive != unknown ]] && ! tr -d '\r' < "$out/pid-after.txt" | tr ' ' '\n' | grep -qx "$NVK_SESSION_PID"; then
+      alive=no
+      note 'Expected session PID is absent; another process does not establish session survival.'
+    fi
+  fi
+  # Shell output may be truncated by hdc even with a successful exit status.
+  # Use the file-transfer channel for the evidence that drives this report.
+  if ! h file recv -b "$bundle" "$NVK_HOST_LOG" "$out/host.log" > "$out/host-transfer.txt" 2>&1 ||
+    grep -aq '\[Fail\]' "$out/host-transfer.txt" || [[ ! -s $out/host.log ]]; then
+    note 'Collection failed: host.log (see host-transfer.txt).'
+    : > "$out/host.log"
+  fi
   # System buffers can contain other sessions. They are local context, never the report's counters.
   collect hilog.txt shell hilog -x || true
   collect crash.txt shell ls -lt /data/log/faultlog/faultlogger || true
@@ -74,6 +87,8 @@ g() { grep -a "$@" "$out/current.log" || true; }
 session=$(g -E 'nvk session: backend open|graphics selection' | tail -2)
 unimpl=$(g -E 'nvk unimpl|未接：')
 red=$(g '【红】' | grep -v '未接：' | sort | uniq -c || true)
+fatal=$(g -E 'fatal signal|Fatal signal|SIGABRT|SIGSEGV')
+progress=$(g -F '[OHOS fpslog]' | tail -3)
 present=$(g -E 'nvk present: 分时：|nvk session: presents' | tail -1)
 [[ -n $present ]] || present=$(g 'nvk present:' | tail -1)
 g 'nvk session: backend open' | grep -q . || note 'No backend-open evidence: this report does not establish that the new backend ran.'
@@ -84,12 +99,14 @@ g 'nvk session: backend open' | grep -q . || note 'No backend-open evidence: thi
   echo '|---|---|'
   printf '| 机型 | %s |\n| 芯片 | %s |\n| 系统 | %s |\n| 刷新率 | %s |\n' "${model:-unknown}" "${chip:-unknown}" "${system:-unknown}" "${refresh:-unknown}"
   printf '| 程序号 | %s |\n| 观察秒数 | %s |\n| 进程还在 | %s |\n' "$title" "$seconds" "$alive"
-  for section in session unimpl red present; do
+  for section in session unimpl red fatal present progress; do
     case $section in
       session) echo '## 选路与会话';;
       unimpl) echo '## 未接清单（没有行不等于零种）';;
       red) echo '## 其它红行';;
+      fatal) echo '## 本会话致命信号（没有行不等于没有崩溃）';;
       present) echo '## 最后一行呈现读数';;
+      progress) echo '## 最近宿主帧进展（用于识别停止上屏后的旧读数）';;
     esac
     echo '```'
     printf '%s\n' "${!section:-未取得读数}"
