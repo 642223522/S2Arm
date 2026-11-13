@@ -1176,7 +1176,7 @@
       {"id": "install.mode.device", "zh-Hans": "一键装到 iPhone", "en": "Install to iPhone in one click"},
       {"id": "install.mode.device_note", "zh-Hans": "数据线连着手机，S2Arm 签名并装好，资源包自动推进去。", "en": "With your iPhone connected by cable, S2Arm signs, installs and pushes the game data for you."},
       {"id": "install.mode.export", "zh-Hans": "导出，自己签名安装", "en": "Export and sign it yourself"},
-      {"id": "install.mode.export_note", "zh-Hans": "输出未签名的 S2Arm.ipa 和每款游戏一个 .img 文件，放在游戏库里的「S2Arm 自签导出」文件夹，里面附安装说明。用你的签名工具覆盖安装 S2Arm；手机上的游戏和存档都不受影响。.img 用「文件」App 放进 S2Arm 里的「放这里导入」文件夹。", "en": "Writes an unsigned S2Arm.ipa and one .img file per game to the “S2Arm 自签导出” folder in your game library, with installation instructions inside. Install S2Arm over the old one with your own signing tool; games and saves on the iPhone are kept. Put each .img into the “Import Here” folder inside S2Arm with the Files app."},
+      {"id": "install.mode.export_note", "zh-Hans": "输出未签名的 S2Arm.ipa 和每款游戏一个 .img 文件，放在游戏库里的「S2Arm 自签导出」文件夹，里面附安装说明。用你的签名工具覆盖安装 S2Arm；手机上的游戏和存档都不受影响。.img 用「文件」App 放进 S2Arm 里的「放这里导入」文件夹。", "en": "Writes an unsigned S2Arm.ipa and one .img file per game to the “S2Arm Self-Sign Export” folder in your game library, with installation instructions inside. Install S2Arm over the old one with your own signing tool; games and saves on the iPhone are kept. Put each .img into the “Import Here” folder inside S2Arm with the Files app."},
       {"id": "install.mode.export_soon", "zh-Hans": "下一版提供", "en": "Coming in the next version"},
       {"id": "install.mode.identity", "zh-Hans": "签名身份", "en": "Signing identity"},
       {"id": "install.mode.identity_xcode", "zh-Hans": "Xcode 账号", "en": "Xcode account"},

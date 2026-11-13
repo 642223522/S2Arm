@@ -827,13 +827,20 @@ def install_mode_job(c):
 
 # 导出给自签玩家（v0.3.1，维护者 11-12「导出，自己签名安装」）：游戏库根下这个文件夹放未签名 S2Arm.ipa + 各款 <游戏名>.img + 一份说明。
 #   每次导出整个换新（先在同盘临时目录写好再对调），里面只有这次导出的东西
-EXPORT_DIR = "S2Arm 自签导出"
-EXPORT_README = "怎么装到 iPhone.txt"
+#   文件夹名与说明跟启动器界面语言（请求 uiLanguage，两端每个作业都带；11-13 维护者「i18n 要做好」）：中文 / 英文各一个定名（iOS 端文案同步用这两个名字）。
+#   换了语言再导出：新名字的写好后把另一种语言名字的旧导出删掉，游戏库根只留一份
+EXPORT_DIRS = {"zh": "S2Arm 自签导出", "en": "S2Arm Self-Sign Export"}
+EXPORT_READMES = {"zh": "怎么装到 iPhone.txt", "en": "How to install on iPhone.txt"}
 _BAD_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
+def ui_lang(c):
+    """玩家看得到的文件名 / 说明用哪种语言：请求 uiLanguage = en 用英文，其余（zh-Hans、没带）用中文"""
+    return "en" if c.r.get("uiLanguage") == "en" else "zh"
+
+
 def export_dir(c):
-    return c.library / EXPORT_DIR
+    return c.library / EXPORT_DIRS[ui_lang(c)]
 
 
 def wants_export(c):
@@ -865,7 +872,7 @@ def _export_img(c, pack, dst):
         raise Failure("写导出用的游戏文件失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
 
-def export_readme(games):
+def _readme_zh(games):
     names = "\n".join(f"  · {g['file']}（{g['name']}）" for g in games)
     return f"""S2Arm 自签安装说明
 
@@ -891,9 +898,39 @@ def export_readme(games):
 """
 
 
+def _readme_en(games):
+    names = "\n".join(f"  · {g['file']} ({g['name']})" for g in games)
+    return f"""S2Arm self-sign install guide
+
+This folder contains:
+  · S2Arm.ipa: S2Arm, unsigned (it carries the programs of the games below)
+  · One .img file per game:
+{names}
+
+1. Install S2Arm
+  Sign and install S2Arm.ipa with the sideloading tool you use (for example Sideloadly or AltStore).
+  If S2Arm is already installed, install over it: the games, .img files and saves on the iPhone are kept.
+  After the first install, trust your developer account in Settings → General → VPN & Device Management, then open S2Arm once.
+
+2. Add the games
+  In the Files app on the iPhone, open On My iPhone → S2Arm → Import Here and copy the .img files into it.
+  You can get them onto the phone with AirDrop, a cable (file sharing in the Mac Finder or a Windows tool) or a cloud drive, then move them into this folder in the Files app.
+  The file names do not matter: S2Arm recognises each game by its contents. Games already on the phone that you have not rebuilt for iPhone do not need to be added again.
+
+3. Play
+  Go back to S2Arm: the games appear in the library, tap one to play. If an .img is still being copied, S2Arm waits for it to finish before importing.
+
+This folder is replaced as a whole on every export.
+"""
+
+
+def export_readme(games, lang="zh"):
+    return _readme_en(games) if lang == "en" else _readme_zh(games)
+
+
 def export_phone(c, gid=None):
     """导出，自己签名安装：本版壳 + 游戏库里能放进本壳、已出成单一 IMG 的各款组一个容器（ipa.assemble，同一键装），
-    出未签名 S2Arm.ipa + 每款一个 <游戏名>.img + 说明到游戏库根「S2Arm 自签导出」。不连手机、不签名。
+    出未签名 S2Arm.ipa + 每款一个 <游戏名>.img + 说明到游戏库根「S2Arm 自签导出」（英文界面「S2Arm Self-Sign Export」）。不连手机、不签名。
     gid：这次点的那款（必须带上，放不进就报真实原因）；None = 「导出新版 S2Arm」（只换壳，带上能带的各款）。
     放不进本壳（要按新版重新出包）/ 还不是单一 IMG 形态的别的款不带，结果 skipped 点名"""
     import ipa as packer
@@ -934,18 +971,22 @@ def export_phone(c, gid=None):
             _export_img(c, layout.ios_pack(c, g), out / f)
             listed.append(dict(gameId=g, name=names.get(g, g), file=f))
         c.begin("写安装说明", 4, 4)
-        (out / EXPORT_README).write_text(export_readme(listed), encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+        lang = ui_lang(c); readme = EXPORT_READMES[lang]
+        (out / readme).write_text(export_readme(listed, lang), encoding="utf-8-sig" if os.name == "nt" else "utf-8")
         dest = export_dir(c)
         old = work / "old"
         if dest.exists():
             os.replace(dest, old)
         os.replace(out, dest)
+        for other, name in EXPORT_DIRS.items():   # 换过界面语言：另一种语言名字的旧导出挪进临时目录随它删，游戏库根只留这一份
+            if other != lang and (c.library / name).exists():
+                os.replace(c.library / name, work / ("old-" + other))
     finally:
         shutil.rmtree(work, ignore_errors=True)
     size = sum(p.stat().st_size for p in dest.iterdir() if p.is_file())
     if skipped:
         c.diagnostic("这几款没放进这次导出（要按新版重新「打 iPhone 包」）：" + "、".join(skipped), code="container_stale", severity="warning")
-    return dict(exported=True, outputPath=str(dest), ipa=str(dest / "S2Arm.ipa"), readme=str(dest / EXPORT_README),
+    return dict(exported=True, outputPath=str(dest), ipa=str(dest / "S2Arm.ipa"), readme=str(dest / readme),
                 games=[x["gameId"] for x in listed], files=listed, skipped=skipped, exportBytes=size)
 
 
