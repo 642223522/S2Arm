@@ -75,7 +75,9 @@ src=("$repo/android/tests/vk/t_backend_vk.c"
      "$repo/android/native/direct/gs_path.c"
      "$repo/android/native/nvn/nvn_vk_format.c"
      "$repo/graphics/nvn/gfx/nvn/nvn_fmt_expand.c"
-     "$repo/android/native/nvn/nvn_vk_bcdec.c")
+     "$repo/android/native/nvn/nvn_vk_bcdec.c"
+     "$repo/android/native/nvn/nvn_vk_driver_cache.c"
+     "$repo/android/native/direct/sha256.c")
 bc_src=("$repo/android/tests/vk/t_bc_decode.c"
      "$repo/android/native/nvn/nvn_vk_bcdec.c"
      "$repo/android/native/direct/vk_device.c"
@@ -92,7 +94,10 @@ esac
 
 echo "lavapipe: $icd"
 echo "validation: $layer"
-cc "${cflags[@]}" "${inc[@]}" "${src[@]}" -Wl,--wrap=vkAllocateDescriptorSets -Wl,--wrap=vkGetPhysicalDeviceFormatProperties -lvulkan -lpthread -lm -o "$out/t_backend_vk"
+cc "${cflags[@]}" "${inc[@]}" "${src[@]}" -Wl,--wrap=vkAllocateDescriptorSets -Wl,--wrap=vkGetPhysicalDeviceFormatProperties \
+    -Wl,--wrap=vkCreatePipelineCache -Wl,--wrap=vkGetPipelineCacheData \
+    -Wl,--wrap=vkCreateGraphicsPipelines -Wl,--wrap=vkCreateComputePipelines \
+    -lvulkan -lpthread -lm -o "$out/t_backend_vk"
 
 export VK_DRIVER_FILES=$icd
 export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0}
