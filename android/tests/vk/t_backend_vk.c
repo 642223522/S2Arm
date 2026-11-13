@@ -5873,6 +5873,7 @@ static void c907_retained_flush(const char *sdir) {
     CHECK(a.saves == b.saves + 1 && a.ok == b.ok + 1 && a.failed == b.failed, "C907 ② 应交后台写 1 次且成功 → saves +%llu ok +%llu failed +%llu",
           (unsigned long long)(a.saves - b.saves), (unsigned long long)(a.ok - b.ok), (unsigned long long)(a.failed - b.failed));
     CHECK(d1.nreg == 1 && d1.nother == 0 && d1.size > 0, "C907 ② 目录里应恰好 1 个正式文件、无临时文件 → 正式 %d 个、其他 %d 个、%ld 字节", d1.nreg, d1.nother, d1.size);
+    c89_sleep_ms(20);   // 后台写线程先记成功、再清「在飞」：留一点时间让它清完，第二次调用不因「在飞」被跳过
     nvn_gpu_vk_pipe_cache_flush();
     struct c89_st a2 = c89_stats();
     struct c89_dir d2 = c89_scan(dir);

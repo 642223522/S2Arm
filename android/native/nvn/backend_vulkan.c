@@ -1240,6 +1240,10 @@ static void plc_save_midrun_impl(int force) {
                 plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：局中取数据失败（VkResult %d），这次不落盘", (int)vr);
                 free(buf);
                 buf = NULL;
+            } else if (got == g_plc_size_saved && !__atomic_load_n(&g_plcw_failed, __ATOMIC_ACQUIRE)) {
+                // 查询给的大小可以是上界（lavapipe 就比实际取到的大），上面按查询大小比不出「没变」：按实际取到的字节数再比一次
+                __atomic_fetch_add(&g_plcw_same, 1, __ATOMIC_RELAXED);
+                plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：局中检查：本局经缓存建管线 %llu 条，数据 %zu 字节与上次保存一致，不写", (unsigned long long)made, got);
             } else {
                 size = got;
                 struct plcw_job *j = (struct plcw_job *)calloc(1, sizeof *j);
