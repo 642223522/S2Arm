@@ -24,7 +24,15 @@ static int g_fail, g_checks;
 static int g_red_lines; static char g_last_red[200];
 void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
-int nvn_plat_flag(const char *name, int dflt) { if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag; return dflt; }
+static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
+int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag;
+    if (!strcmp(name, "nvk_state_keep")) return g_flag_state_keep;
+    if (!strcmp(name, "nvk_rt_cont")) return g_flag_rt_cont;
+    if (!strcmp(name, "nvk_clear_park")) return g_flag_clear_park;
+    if (!strcmp(name, "nvk_pass_area")) return g_flag_pass_area;
+    return dflt;
+}
 const char *nvn_plat_dir(int which) { (void)which; return NULL; }
 static int g_safepoints; void nvn_plat_safepoint(void) { g_safepoints++; }   // 平台安全点：数回放循环过了几次
 
@@ -1205,9 +1213,10 @@ static void t_pass_switch_and_partial(void) {
     end(&s);
     submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_npd == 3 && g_pass_ends == 3);
-    CHECK(g_pd[0].w == 16 && g_pd[0].color[0].clear.f[2] == 1);                     // 第一个通道是 a 的
-    CHECK(g_pd[1].w == 8 && pd_zero_clear(&g_pd[1]));                               // 为矩形清开的通道：不折清除值（这张图刚建，载入时清成零）
-    CHECK(g_ncr == 2 && g_cr[0].npd == 2 && g_cr[0].ends == 1 && g_cr[1].npd == 2 && g_cr[1].ends == 1);   // 两次矩形清都发在第二个通道开着的时候
+    // a 的整屏清除挂起（换目标不再为它开纯清除通道），所以第一个通道是 b 的矩形清；提交收尾按挂起先后落地 a、b 的清除
+    CHECK(g_pd[0].w == 8 && pd_zero_clear(&g_pd[0]));                               // 为矩形清开的通道：不折清除值（这张图刚建，载入时清成零）
+    CHECK(g_pd[1].w == 16 && g_pd[1].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[1].color[0].clear.f[2] == 1);   // a 的整屏清除
+    CHECK(g_ncr == 2 && g_cr[0].npd == 1 && g_cr[0].ends == 0 && g_cr[1].npd == 1 && g_cr[1].ends == 0);   // 两次矩形清都发在第一个通道开着的时候
     CHECK(g_cr[0].d.color == 0 && g_cr[0].d.color_mask == 0x7 && g_cr[0].d.x == 0 && g_cr[0].d.y == 0 && g_cr[0].d.w == 8 && g_cr[0].d.h == 8);   // 只写三个通道：整张目标、掩码原样交给后端
     CHECK(g_cr[1].d.color == 0 && g_cr[1].d.color_mask == 0xf && !g_cr[1].d.depth && !g_cr[1].d.stencil && g_cr[1].d.x == 0 && g_cr[1].d.y == 0 && g_cr[1].d.w == 4 && g_cr[1].d.h == 4 && g_cr[1].d.value.f[1] == 0.125f);
     CHECK(g_pd[2].w == 8 && g_pd[2].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[2].color[0].clear.f[0] == 0.5f);   // 之后的整屏清除：结束那个通道，折进下一个
@@ -1295,6 +1304,162 @@ static void q_env(stream *s) {
     p_viewports *vp = put(s, OP_VIEWPORTS, sizeof *vp); vp->n = 1; vp->v[0][2] = 64; vp->v[0][3] = 36;
 }
 static void q_draw(stream *s) { p_draw *d = put(s, OP_DRAW, sizeof *d); d->prim = 4; d->count = 3; d->instances = 1; }
+
+// ---------- 通道边界（同目标续接 / 状态保持 / 待折清除）----------
+// 对齐 nvn_mtl.m:10955 rt_same 与 :15060 的续接：通道边界不再等于状态边界。这些用例都要真的画出东西，所以放在绘制替身之后。
+static void put_set_rt_v(stream *s, const tex_t *color, const view_t *cv);   // 定义在本文件后面（带视图记录的目标）
+static void t_pass_rt_continue(void) {   // 同目标续接：通道开着、没有待折清除、目标与当前一致 → 只换逻辑目标，不结束 / 不重开通道
+    pass_fresh(); g_flag_rt_cont = 1; g_resolve_rc = g_cresolve_rc = 0;
+    int d0 = g_gdraws, npd0 = g_npd, ends0 = g_pass_ends;
+    stream s = {0}; q_env(&s);                        // 目标 91（64×36 RGBA8）
+    q_draw(&s);                                       // 第一笔：开通道
+    put_set_rt(&s, &g_qrt, NULL);                     // 同一组目标再设一次（游戏每帧反复重设同一组目标）
+    q_draw(&s);                                       // 第二笔：还在同一个通道里
+    end(&s);
+    uint64_t p0[RP_PERF_N]; rp_perf_take(p0);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t p1[RP_PERF_N]; rp_perf_take(p1);
+    CHECK(g_gdraws - d0 == 2);
+    CHECK(g_npd - npd0 == 1 && g_pass_ends - ends0 == 1);       // 只开一个通道、只结束一次（修前：两个通道、两次结束）
+    CHECK(p1[RP_PERF_PASSES] == 1 && p1[RP_PERF_P_CONT] == 1);  // 续接命中一次
+    // 负对照：同一个开关关掉 → 每次重设目标都是一次通道边界
+    g_flag_rt_cont = 0;
+    int npd1 = g_npd;
+    stream s2 = {0}; q_env(&s2); q_draw(&s2); put_set_rt(&s2, &g_qrt, NULL); q_draw(&s2); end(&s2);
+    uint64_t p2[RP_PERF_N]; rp_perf_take(p2);
+    submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t p3[RP_PERF_N]; rp_perf_take(p3);
+    CHECK(g_gdraws - d0 == 4 && g_npd - npd1 == 2 && p3[RP_PERF_P_CONT] == 0);
+    g_flag_rt_cont = 1; pass_fresh();
+}
+
+static void t_pass_state_keep(void) {   // 通道边界不再等于状态边界（开关 nvk_state_keep）：跨两个不同目标的通道，新通道第一笔不重发管线与绑定
+    int second[2] = {-1, -1}, first = -1;
+    for (int keep = 0; keep <= 1; keep++) {
+        pass_fresh(); g_flag_state_keep = keep; g_resolve_rc = g_cresolve_rc = 0;
+        tex_t b = mk_tex(92, 0x4000, NVN_FORMAT_RGBA8, 64, 36, 1, 0);   // 与 91 同格式同尺寸：管线形状没变，只有目标换了
+        stream s = {0}; q_env(&s);                        // 目标 91
+        q_draw(&s);                                        // 第一笔：通道 1
+        size_t off = s.n;                                  // 第二个通道从这里开始
+        put_set_rt(&s, &b, NULL); q_draw(&s);              // 换目标 92：通道 2 的第一笔
+        end(&s);
+        memset(g_bind_calls, 0, sizeof g_bind_calls);
+        uint8_t save[8]; memcpy(save, s.b + off, 8); op_hdr eh = {OP_END, 8}; memcpy(s.b + off, &eh, 8);
+        int pg0 = g_pipe_gets;
+        nvn_be_sub_begin(); nvn_be_exec(s.b);              // 回放到通道 1 结束
+        first = g_bind_calls[0] + g_bind_calls[1] + g_bind_calls[2];
+        memcpy(s.b + off, save, 8);
+        nvn_be_exec(s.b + off);                            // 再回放通道 2 的第一笔
+        nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+        second[keep] = g_bind_calls[0] + g_bind_calls[1] + g_bind_calls[2] - first;
+        CHECK(g_npd == 2);                                 // 换目标照旧是通道边界
+        CHECK(g_pipe_gets - pg0 == (keep ? 1 : 2));        // 形状没变：开关 1 不重取管线，开关 0 每个通道都重取
+    }
+    CHECK(first == 3);                                     // 第一笔：三个图形阶段各发一次（程序只有顶点 + 片元，几何阶段发零条）
+    CHECK(second[1] == 0 && second[0] == first);           // 开关 1：新通道第一笔一次绑定都不发；开关 0：与第一笔同样多（各阶段重发）
+    // 负对照：换目标时附件格式变了（管线对象绑着渲染通道的格式）→ 新通道第一笔必须重取管线、重发绑定
+    pass_fresh(); g_flag_state_keep = 1; g_resolve_rc = g_cresolve_rc = 0;
+    tex_t c16 = mk_tex(93, 0x8000, NVN_FORMAT_RGBA16UI, 64, 36, 1, 0);   // 与 91 同尺寸、不同格式
+    { stream s = {0}; q_env(&s); q_draw(&s); put_set_rt(&s, &c16, NULL); q_draw(&s); end(&s);
+      int pg0 = g_pipe_gets; memset(g_bind_calls, 0, sizeof g_bind_calls);
+      submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_npd == 2 && g_pipe_gets - pg0 == 2 && g_bind_calls[0] == 2); }   // 两笔各取一次管线、各发一次顶点阶段绑定
+    g_flag_state_keep = 1; pass_fresh();
+}
+
+static void t_pass_clear_park(void) {   // 待折清除跨目标挂起（开关 nvk_clear_park）：清除不马上落地，等下一个把它当附件的通道吃掉
+    pass_fresh(); g_flag_clear_park = 1; g_flag_rt_cont = 1; g_resolve_rc = g_cresolve_rc = 0;
+    int g0 = g_gdraws;
+    tex_t a = mk_tex(74, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = mk_tex(75, 0x4000, NVN_FORMAT_RGBA8, 32, 8, 1, 0);
+    stream s = {0};
+    put_set_rt(&s, &a, NULL);
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.25f;   // 清 A：挂起
+    put_set_rt(&s, &b, NULL); q_draw(&s);              // 换目标 B 画一笔：不为 A 开纯清除通道
+    put_set_rt(&s, &a, NULL); q_draw(&s);              // 回到 A 画一笔：A 的清除被这个通道吃掉（load = CLEAR）
+    end(&s);
+    uint64_t p0[RP_PERF_N]; rp_perf_take(p0);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t p1[RP_PERF_N]; rp_perf_take(p1);
+    CHECK(g_npd == 2 && g_pass_ends == 2);             // 两个通道：B、A（修前：A 的纯清除 + B + A 三个）
+    CHECK(g_pd[0].w == 32 && g_pd[0].h == 8 && pd_zero_clear(&g_pd[0]));   // B 刚建：载入时清成零
+    CHECK(g_pd[1].w == 16 && g_pd[1].h == 16 && g_pd[1].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[1].color[0].clear.f[0] == 0.25f);
+    CHECK(g_gdraws - g0 == 2 && p1[RP_PERF_P_PARK] == 1 && p1[RP_PERF_P_CLEARONLY] == 0);   // 一个纯清除通道都没有
+    // 负对照：开关关掉 → 换目标时先为 A 落地（纯清除通道），再 B、再 A：三个通道
+    g_flag_clear_park = 0;
+    int npd0 = g_npd; g_gdraws = 0;
+    stream s2 = {0};
+    put_set_rt(&s2, &a, NULL);
+    cc = put(&s2, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.25f;
+    put_set_rt(&s2, &b, NULL); q_draw(&s2);
+    put_set_rt(&s2, &a, NULL); q_draw(&s2);
+    end(&s2);
+    uint64_t p2[RP_PERF_N]; rp_perf_take(p2);
+    submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t p3[RP_PERF_N]; rp_perf_take(p3);
+    CHECK(g_npd - npd0 == 3 && g_gdraws == 2 && p3[RP_PERF_P_CLEARONLY] == 1 && p3[RP_PERF_P_PARK] == 1);   // 关着时清除照样进表，只是换目标就落地
+    g_flag_clear_park = 1; pass_fresh();
+}
+
+static void t_pass_clear_park_tail(void) {   // 挂起到提交收尾：清 A 后再不碰 A → 收尾一个纯清除通道（颜色 + 深度模板一起）
+    pass_fresh(); g_flag_clear_park = 1; g_resolve_rc = g_cresolve_rc = 0;
+    tex_t a = mk_tex(76, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), z = mk_tex(77, 0x4000, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
+    stream s = {0}; put_set_rt(&s, &a, &z);
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[2] = 1;
+    p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth = 0.5f; cd->depth_mask = 1;                      // 只清深度
+    cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->stencil = 7; cd->stencil_mask = 0xff;                             // 再清模板：同一张图两面合成一项
+    end(&s);
+    uint64_t p0[RP_PERF_N]; rp_perf_take(p0);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t p1[RP_PERF_N]; rp_perf_take(p1);
+    CHECK(g_npd == 1 && g_pass_ends == 1);             // 收尾一个纯清除通道：同一次 SET_RT 的清除合成一组
+    CHECK(g_pd[0].w == 16 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[0].clear.f[2] == 1);
+    CHECK(g_pd[0].depth.view && g_pd[0].depth.load == NVN_GPU_LOAD_CLEAR && g_pd[0].clear_depth == 0.5f &&
+          g_pd[0].stencil.view && g_pd[0].stencil.load == NVN_GPU_LOAD_CLEAR && g_pd[0].clear_stencil == 7);
+    CHECK(p1[RP_PERF_P_CLEARONLY] == 1 && p1[RP_PERF_P_PARK] == 3);   // 颜色一条 + 深度 / 模板两条（后一条不能把前一条的面清掉）
+    // 同一张图的不同级是两个子资源（身份 = 序号 + 级 + 层 + 类别）：各挂一项、不会互相覆盖；被当附件的那一级先吃掉，另一级收尾落地
+    pass_fresh(); g_flag_clear_park = 1;
+    tex_t m = mk_tex(84, 0, NVN_FORMAT_RGBA8, 16, 16, 2, 0);   // 两级：第 1 级 8×8
+    view_t v0; memset(&v0, 0, sizeof v0); v0.set_levels = 1; v0.base_level = 0; v0.nlevels = 1;
+    view_t v1 = v0; v1.base_level = 1;
+    stream s2 = {0};
+    put_set_rt_v(&s2, &m, &v1); cc = put(&s2, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.25f;   // 清第 1 级
+    put_set_rt_v(&s2, &m, &v0); cc = put(&s2, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[1] = 0.75f;   // 清第 0 级
+    q_draw(&s2); end(&s2);                                     // 画第 0 级：只吃掉第 0 级那一项
+    uint64_t q0[RP_PERF_N]; rp_perf_take(q0);
+    submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t q1[RP_PERF_N]; rp_perf_take(q1);
+    CHECK(g_npd == 2);                                         // 绘制通道（第 0 级，清成 0.75）+ 收尾落地第 1 级
+    CHECK(g_pd[0].w == 16 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[0].clear.f[1] == 0.75f);
+    CHECK(g_pd[1].w == 8 && g_pd[1].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[1].color[0].clear.f[0] == 0.25f);
+    CHECK(q1[RP_PERF_P_PARK] == 2 && q1[RP_PERF_P_CLEARONLY] == 1);
+    pass_fresh();
+}
+
+static void t_pass_clear_park_read(void) {   // 被读之前必须落地（正确性红线）：清 A 后把 A 当采样贴图用，绘制路径先落地再开通道
+    pass_fresh(); g_flag_clear_park = 1; g_flag_rt_cont = 1; g_resolve_rc = g_cresolve_rc = 0;
+    int g0 = g_gdraws;
+    tex_t a = mk_tex(78, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = mk_tex(79, 0x4000, NVN_FORMAT_RGBA8, 64, 36, 1, 0);
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_be_reg_tex(7, &a, NULL); nvn_be_reg_samp(3, &sp);
+    stream s = {0}; q_env(&s);                        // 程序（顶点 + 片元）与视口；目标 91
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX; g_fprog.ent[1][0].src_reg = 5;   // 片元采样句柄表第 5 项
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1;
+    put_set_rt(&s, &a, NULL);
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.5f;   // 清 A：挂起
+    put_set_rt(&s, &b, NULL);                          // 换目标 B
+    p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 5; bh->n = 1; bh->h[0] = 7 | 3 << 20;   // 片元采样 A（登记序号 7）
+    q_draw(&s);                                        // 画到 B、采样 A：读之前 A 的清除必须先落地（rp_draw 在开通道之前调 rp_pass_land_reads）
+    q_draw(&s);                                        // 第二笔：挂起表已空，不再拆通道
+    end(&s);
+    uint64_t p0[RP_PERF_N]; rp_perf_take(p0);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    uint64_t p1[RP_PERF_N]; rp_perf_take(p1);
+    CHECK(g_gdraws - g0 == 2 && nvn_unimpl_kinds() == 0);
+    CHECK(g_npd == 2 && g_pass_ends == 2);             // ① A 的纯清除（读之前落地）② B 的两笔绘制
+    CHECK(g_pd[0].w == 16 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[0].color[0].clear.f[0] == 0.5f);   // 落地通道在绘制通道之前
+    CHECK(g_pd[1].w == 64 && g_pd[1].h == 36 && pd_zero_clear(&g_pd[1]) && g_pd[1].color[0].view != NULL);
+    CHECK(p1[RP_PERF_P_PARK] == 1 && p1[RP_PERF_P_CLEARONLY] == 1);
+    pass_fresh();
+}
 // GS 资源变化必须重新取变体；需要拆分的图元不能当原生 GS 输入。
 static void t_gs_dirty_and_topology(void) {
     pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0;
@@ -1476,8 +1641,9 @@ static void t_pass_bc_shadow(void) {
     put_set_rt_v(&s4, &b1, &vbad); cc = put(&s4, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf;
     put_set_rt_v(&s4, &b1, NULL); cc = put(&s4, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; end(&s4);
     submit1(&s4); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_npd == 0 && g_ntb == 0 && nvn_unimpl_count("pass", "color_target_compressed") == 2);
-    pass_fresh(); g_ntb = 0; g_caps_nosample = NVN_FORMAT_RGBA_DXT1;   // 每种情况各自从干净的会话起（待折清除开不了通道时会留到下一次提交，见 rp_pass_flush）
+    // 两条清除是同一个子资源（序号 + 级 + 层 + 类别相同，只是视图记录不同）：挂起表按这个身份合成一项，所以只记账一次
+    CHECK(g_npd == 0 && g_ntb == 0 && nvn_unimpl_count("pass", "color_target_compressed") == 1);
+    pass_fresh(); g_ntb = 0; g_caps_nosample = NVN_FORMAT_RGBA_DXT1;   // 每种情况各自从干净的会话起（待折清除落地时开不了通道就丢掉，见 rp_pass_flush）
     stream s5 = {0}; put_set_rt_v(&s5, &b1, &v); cc = put(&s5, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; end(&s5);
     submit1(&s5); fake_complete(NVN_GPU_DONE_OK);
     g_caps_nosample = ~0u;
@@ -2553,6 +2719,11 @@ int main(int argc, char **argv) {
     t_tex_fact_gens();
     t_pass_target_persists();
     t_pass_switch_and_partial();
+    t_pass_rt_continue();
+    t_pass_state_keep();
+    t_pass_clear_park();
+    t_pass_clear_park_tail();
+    t_pass_clear_park_read();
     t_clear_rect();
     t_report_counter();
     t_occlusion();

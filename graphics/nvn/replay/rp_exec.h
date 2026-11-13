@@ -36,7 +36,12 @@ void rp_pass_set_rt(nvn_gpu_cmd c, const p_set_rt *r);
 void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec);
 void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec);
 void rp_pass_barrier(uint32_t bits);
+void rp_pass_prepare_draw(nvn_gpu_cmd c);   // 绘制前调：把这一笔要求的像素区域交给下一步开通道（超出当前通道区域就收通道重开）
 int rp_pass_begin(nvn_gpu_cmd c);     // 绘制前调：1 = 通道开着；0 = 开不了（已记账），跳过这笔
+// 被读之前必须落地（rp_pass.c）：ts 里这些贴图要以「采样贴图 / 图像 / 拷贝端点 / 上屏」身份被用到之前先调一次，
+// 把还挂着它们的待折清除落地（挂起见 rp_pass.c 的 park）。按贴图序号匹配：读的是整张图，级 / 层不参与匹配。
+void rp_pass_land_reads(nvn_gpu_cmd c, const tex_t *const *ts, int n);
+int rp_pass_parked(void);   // 现在挂着几条待折清除（绘制路径的快路门：0 = 不必为读路径收集贴图）
 void rp_pass_end(nvn_gpu_cmd c);
 void rp_pass_flush(nvn_gpu_cmd c);    // 提交前 / 通道外操作前：落地待折清除并结束通道
 void rp_pass_reset(void);
@@ -55,7 +60,12 @@ void rp_draw_stats(uint64_t *draws, uint64_t *skips);
 enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_PERF_WAIT_N, RP_PERF_DONE_NS, RP_PERF_DONE_N, RP_PERF_PASSES, RP_PERF_PRESENT_NS,
        RP_PERF_D_PROG, RP_PERF_D_PREP, RP_PERF_D_TEX, RP_PERF_D_PIPE, RP_PERF_D_DYN, RP_PERF_D_BIND, RP_PERF_D_DRAW, RP_PERF_D_TAIL, RP_PERF_D_PASS, RP_PERF_D_PGET, RP_PERF_PB_VIEW, RP_PERF_PB_BAR, RP_PERF_PB_BE, RP_PERF_PB_MARK, RP_PERF_RES_LOCK, RP_PERF_RES_NEW, RP_PERF_RES_INIT, RP_PERF_RES_VIEWMAKE, RP_PERF_PB_SHADOW, RP_PERF_RES_SCAN, RP_PERF_RES_UP, RP_PERF_RES_UPN, RP_PERF_RES_ZERO, RP_PERF_RES_ZERON, RP_PERF_RES_MAKE, RP_PERF_RES_ZDEFER, RP_PERF_BIND_SLICE_HIT, RP_PERF_BIND_SKIP,   // 绑定：段内切片表命中的块数、整组沿用没发的阶段数
       
-       RP_PERF_P_DS, RP_PERF_P_DS_IDLE, RP_PERF_P_LOADC, RP_PERF_P_KPIX, RP_PERF_P_ONE, RP_PERF_P_CUT_XFER, RP_PERF_P_CUT_CLEAR, RP_PERF_P_CUT_RT, RP_PERF_P_CUT_OP, RP_PERF_TEX_UP_N, RP_PERF_TEX_UP_KB, RP_PERF_BUF_SYNC_KB, RP_PERF_BUF_SYNC_DIRECT_KB, RP_PERF_FX_SUBS, RP_PERF_FX_EVENT, RP_PERF_FX_REPORT, RP_PERF_FX_OCC, RP_PERF_FX_GW, RP_PERF_FIN_SKIP, RP_PERF_N };   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
+       RP_PERF_P_DS, RP_PERF_P_DS_IDLE, RP_PERF_P_LOADC, RP_PERF_P_KPIX, RP_PERF_P_ONE, RP_PERF_P_CUT_XFER, RP_PERF_P_CUT_CLEAR, RP_PERF_P_CUT_RT, RP_PERF_P_CUT_OP, RP_PERF_TEX_UP_N, RP_PERF_TEX_UP_KB, RP_PERF_BUF_SYNC_KB, RP_PERF_BUF_SYNC_DIRECT_KB, RP_PERF_FX_SUBS, RP_PERF_FX_EVENT, RP_PERF_FX_REPORT, RP_PERF_FX_OCC, RP_PERF_FX_GW, RP_PERF_FIN_SKIP,
+       RP_PERF_P_CONT, RP_PERF_P_CLEARONLY, RP_PERF_P_PARK, RP_PERF_BIND_FAST, RP_PERF_BIND_CONT, RP_PERF_TEX_EPOCH, RP_PERF_PC_HIT, RP_PERF_PC_MISS, RP_PERF_WAIT_FIN_N, RP_PERF_WAIT_FIN_NS, RP_PERF_WAIT_SYNC_N, RP_PERF_WAIT_SYNC_NS,
+       RP_PERF_P_TINY_DS, RP_PERF_P_TINY_NODS, RP_PERF_P_TINY_KPIX,   // 0–1 笔通道里：挂深度模板的、不挂的、它们的百万像素和（看通道碎片化构成）
+       RP_PERF_P_AREA, RP_PERF_P_AREA_KPIX,   // 用了缩小渲染区域的通道数、这些区域的千像素和（面积优化到底有没有真的缩下来）
+       RP_PERF_SUB_PRE_NS, RP_PERF_SUB_EXEC_NS, RP_PERF_SUB_POST_NS, RP_PERF_WAIT_ALREADY_N, RP_PERF_GPU_BUSY_NS,   // 提交三段耗时 / 进等待时已完成 / GPU 忙区间
+       RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
 uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
 uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）

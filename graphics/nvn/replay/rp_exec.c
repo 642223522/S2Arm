@@ -49,6 +49,22 @@ static uint64_t g_pf[RP_PERF_N];
 void rp_perf_take(uint64_t out[RP_PERF_N]) { for (int i = 0; i < RP_PERF_N; i++) out[i] = __atomic_exchange_n(&g_pf[i], 0, __ATOMIC_ACQ_REL); }
 static void pf_add(int i, uint64_t v) { __atomic_fetch_add(&g_pf[i], v, __ATOMIC_RELAXED); }
 void rp_perf_add(int i, uint64_t v) { pf_add(i, v); }
+// GPU 忙时估算：每段完成时按完成顺序累计「显卡真正在跑」的区间（判 GPU 到底忙多久、是不是墙）。
+// busy += done_i - max(commit_i, done_{i-1})（第一段：done_0 - commit_0）。commit 在提交前取，done 在完成回调里取；
+// 完成回调线程与提交线程都碰 g_busy_last_done，用一把锁串起来（每段一次，量级可忽略）。
+static pthread_mutex_t g_busy_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_busy_last_done;   // 上一段的完成时刻（按完成顺序；只在 g_busy_mu 里动）
+static void busy_done(uint64_t commit, uint64_t done) {
+    if (!commit || done <= commit) return;   // 没记到提交时刻 / 时钟异常：这一段不计
+    pthread_mutex_lock(&g_busy_mu);
+    uint64_t start = commit > g_busy_last_done ? commit : g_busy_last_done, busy = done > start ? done - start : 0;
+    if (done > g_busy_last_done) g_busy_last_done = done;
+    pthread_mutex_unlock(&g_busy_mu);
+    if (busy) pf_add(RP_PERF_GPU_BUSY_NS, busy);
+}
+// 前置段的提交时刻：提交前分配，由完成回调 pre_done 带上、在回调里释放（失败段也恰好回调一次，见 nvn_backend.h 的提交契约）。
+struct pre_note { uint64_t t_commit; };
+static struct pre_note *pre_note_make(void) { struct pre_note *p = malloc(sizeof *p); if (p) p->t_commit = now_ns(); return p; }
 static uint64_t g_done_fence;  // 已完成的最大围栏值（完成回调写，提交线程读）
 static uint64_t g_occ_acc;     // 遮挡计数：自上次复位以来已完成的各槽之和（只在完成回调里动）
 int s2a_nvn_render_cond(void);  // 宿主：这一款的条件渲染开没开（每款参数 render_cond）
@@ -67,7 +83,12 @@ static uint64_t g_split_base;  // 上次中途交段时的累计绘制笔数
 static int g_ret_n;            // OP_CALL 嵌套深度
 
 static void red(const char *fmt, const char *why) { char b[256]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
-static void pre_done(void *user, const nvn_gpu_done *d) { (void)user; if (d->status == NVN_GPU_DONE_FAILED) red("前置段失败：%s", d->why ? d->why : "?"); }
+static void pre_done(void *user, const nvn_gpu_done *d) {
+    struct pre_note *p = user;
+    if (d->status == NVN_GPU_DONE_FAILED) red("前置段失败：%s", d->why ? d->why : "?");
+    else if (p) busy_done(p->t_commit, now_ns());
+    free(p);
+}
 
 // 资源同步该录进哪一段。传输不能出现在渲染通道里，所以同步一律录进前置段，它在 GPU 上先于本次提交的全部通道执行。
 // 前提是「同步的内容对本次提交里每个使用点都成立」：回放发生在游戏提交之后，游戏对池内存的写在提交前已经做完，这个前提成立；
@@ -84,7 +105,9 @@ nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
 
 static void sub_done(void *user, const nvn_gpu_done *d) {
     struct sub *s = user;
-    if (s->t_commit) { pf_add(RP_PERF_DONE_NS, now_ns() - s->t_commit); pf_add(RP_PERF_DONE_N, 1); }
+    uint64_t t_done = now_ns();
+    if (s->t_commit) { pf_add(RP_PERF_DONE_NS, t_done - s->t_commit); pf_add(RP_PERF_DONE_N, 1); }
+    if (d->status != NVN_GPU_DONE_FAILED) busy_done(s->t_commit, t_done);   // 失败段没执行：不算显卡忙
     // 先落 GPU 写，再发布事件和完成序号：等待事件的 CPU 不能先看见旧内存。
     for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
     if (d->status != NVN_GPU_DONE_FAILED)   // 没执行的段不做任何成功回写
@@ -215,13 +238,14 @@ void nvn_be_sub_begin(void) {
     rp_dirty_all();   // 新段：已发给后端的状态全部重发；rp_S / rp_R 不动
 }
 
-struct mid { struct sub *s; uint32_t base; };
+struct mid { struct sub *s; uint32_t base; uint8_t counted; uint64_t t_commit; };   // counted：这次中途段记进了 s->mids（完成回调里才减）；t_commit：提交时刻（算 GPU 忙）
 static void mid_done(void *user, const nvn_gpu_done *d) {   // 中途交的段完成：遮挡槽的结果先攒进所属提交（它的最后一段还没完成：段按提交顺序完成）
     struct mid *m = user;
     if (d->status == NVN_GPU_DONE_FAILED) red("中途交的段失败：%s", d->why ? d->why : "?");
-    else if (m && m->s->oc && d->occlusion) { for (uint32_t i = 0; i < d->nocclusion && m->base + i < 2048; i++) m->s->oc[m->base + i] = d->occlusion[i];
-        uint32_t end = m->base + d->nocclusion < 2048 ? m->base + d->nocclusion : 2048; if (end > m->s->noc) m->s->noc = end; }
-    if (m && !__atomic_sub_fetch(&m->s->mids, 1, __ATOMIC_ACQ_REL) && __atomic_load_n(&m->s->orphan, __ATOMIC_ACQUIRE)) sub_release(m->s);
+    else { if (m) busy_done(m->t_commit, now_ns());
+        if (m && m->s->oc && d->occlusion) { for (uint32_t i = 0; i < d->nocclusion && m->base + i < 2048; i++) m->s->oc[m->base + i] = d->occlusion[i];
+            uint32_t end = m->base + d->nocclusion < 2048 ? m->base + d->nocclusion : 2048; if (end > m->s->noc) m->s->noc = end; } }
+    if (m && m->counted && !__atomic_sub_fetch(&m->s->mids, 1, __ATOMIC_ACQ_REL) && __atomic_load_n(&m->s->orphan, __ATOMIC_ACQUIRE)) sub_release(m->s);
     free(m);
 }
 // 中途先交一段：这次提交回放到这里为止录下的命令先交给 GPU 去做，回放接着往下录进新的一段。
@@ -241,10 +265,11 @@ static void sub_split(void) {
     if (nd - g_split_base < (uint64_t)thr) return;
     g_split_base = nd;
     nvn_gpu_err err = {0};
-    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
+    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, pre_note_make(), &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
-    struct mid *m = NULL;
-    if (g_occ_seg) { m = calloc(1, sizeof *m); if (!g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc); if (m) { m->s = g_sub; m->base = g_occ_base; __atomic_add_fetch(&g_sub->mids, 1, __ATOMIC_ACQ_REL); } }
+    struct mid *m = calloc(1, sizeof *m);   // 每个中途段都带一份提交时刻（算 GPU 忙用）；分配失败只是这一段不计，语义不变
+    if (m) { m->s = g_sub; m->base = g_occ_base; m->t_commit = now_ns(); }
+    if (g_occ_seg) { if (!g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc); if (m) { __atomic_add_fetch(&g_sub->mids, 1, __ATOMIC_ACQ_REL); m->counted = 1; } }
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, g_fence + ++g_mid, mid_done, m, &err))) red("中途交段失败：%s", err.why);
     pf_add(RP_PERF_SUBS, 1);
     g_occ_base = g_occ_next; g_occ_cur = -1; g_seg_serial++;
@@ -265,7 +290,7 @@ uint64_t nvn_be_sub_commit(void) {
         return g_fence;
     }
     nvn_gpu_err err = {0}; uint64_t f = g_fence + SUB_STEP;
-    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
+    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, pre_note_make(), &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
     uint64_t t0 = now_ns(); if (s) { s->t_commit = t0; s->fence = f; s->occ_base = g_occ_base; }
@@ -302,11 +327,22 @@ uint64_t nvn_be_finish_publish(void) {
     if (t < last) { rp_buf_frame_flip(); pf_add(RP_PERF_FIN_SKIP, (last - t) / SUB_STEP); }   // 有提交没等：它可能还在读当前这份镜像
     return t;
 }
-void nvn_be_finish_wait(uint64_t fence) { if (fence) nvn_be_wait(fence, 5000000000ull); }
+// Finish 的等待单独记账：WAIT_* 记的是游戏主动等同步对象（nvnSyncWait 等），FINISH 记 QueueFinish。
+// 分开才知道每帧 27–38 毫秒的等围栏里各占多少——两条路的根治法不一样（见 nvn_be_finish_publish 的开关说明）。
+void nvn_be_finish_wait(uint64_t fence) {
+    if (!fence) return;
+    uint64_t t0 = now_ns();
+    nvn_gpu_rc r = nvn_gpu_fence_wait(fence, 5000000000ull, NULL);
+    pf_add(RP_PERF_WAIT_FIN_N, 1); pf_add(RP_PERF_WAIT_FIN_NS, now_ns() - t0);
+    (void)r;   // 时间线已失败时这里也等不到：失败本身已在 sub_done 报红，Finish 不因此卡游戏线程
+}
 
+// WAIT_* 记的是游戏主动等同步对象的次数 / 耗时。入口先看这段活是不是早就做完（rp_fence_done）：是的话不必再下去等，
+// 但仍照旧记一次 WAIT_N / WAIT_NS（耗时只含这次判定），另记一个 WAIT_ALREADY_N——它不为 0 说明我们把已完成的等待也当成了阻塞在等。
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
     uint64_t t0 = now_ns();
+    if (rp_fence_done(fence)) { pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_ALREADY_N, 1); return 1; }
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
     pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1);
     // 时间线已失败：再等也不会完成。按「已结束」放行，让游戏线程不死等；失败本身已在 sub_done 报红
@@ -430,10 +466,16 @@ void nvn_be_exec(const uint8_t *p) {
 void nvn_be_submit(void *q, const uint64_t *h, int n) {
     nvn_hle_queue_enter(q);
     uint64_t t0 = now_ns();
+    // 一次提交拆三段记账（SUBMIT_NS 仍是含三段的整段）：开段（cmd_begin + 状态重发） / 主回放循环 / 收尾交后端
+    // （收尾里含 rp_pass_flush、前置段与主段的 nvn_gpu_cmd_commit）。三段加起来与 SUBMIT_NS 的差额是取时刻本身的开销。
     nvn_be_sub_begin(); nvn_hle_piece_begun();
+    uint64_t t1 = now_ns();
     nvn_be_sub_index(h, n);
     for (int i = 0; i < n; i++) { nvn_be_exec_rest(h + i + 1, n - i - 1); nvn_be_exec((const uint8_t *)(uintptr_t)h[i]); }
     nvn_be_exec_rest(NULL, 0);
+    uint64_t t2 = now_ns();
     nvn_be_sub_commit();
-    pf_add(RP_PERF_SUBMIT_NS, now_ns() - t0);
+    uint64_t t3 = now_ns();
+    pf_add(RP_PERF_SUB_PRE_NS, t1 - t0); pf_add(RP_PERF_SUB_EXEC_NS, t2 - t1); pf_add(RP_PERF_SUB_POST_NS, t3 - t2);
+    pf_add(RP_PERF_SUBMIT_NS, t3 - t0);
 }

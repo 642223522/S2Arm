@@ -2928,6 +2928,16 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     bi.renderPass = pass;
     bi.framebuffer = fb;
     bi.renderArea.extent = (VkExtent2D){d->w, d->h};
+    // 渲染区域：核心按这一遍会碰到的像素给出（0 宽高 = 整个目标）。附件只在区域内载入 / 保存，区域外保持原内容（Vulkan renderArea 语义），
+    // 小目标小遍就不必按整张附件算载入与保存。裁到帧缓冲范围里，越界的区域是无效参数。
+    if (d->area_w && d->area_h) {
+        int32_t rx = d->area_x, ry = d->area_y; uint32_t rw = d->area_w, rh = d->area_h;
+        if (rx < 0) { rw = (uint32_t)((int32_t)rw + rx); rx = 0; }
+        if (ry < 0) { rh = (uint32_t)((int32_t)rh + ry); ry = 0; }
+        if ((uint32_t)rx > d->w) rw = 0; else if ((uint32_t)rx + rw > d->w) rw = d->w - (uint32_t)rx;
+        if ((uint32_t)ry > d->h) rh = 0; else if ((uint32_t)ry + rh > d->h) rh = d->h - (uint32_t)ry;
+        if (rw && rh) { bi.renderArea.offset = (VkOffset2D){rx, ry}; bi.renderArea.extent = (VkExtent2D){rw, rh}; }
+    }
     bi.clearValueCount = natt;
     bi.pClearValues = clear;
     if (c->tsq && c->ntsp < TS_PASS_MAX) {

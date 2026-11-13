@@ -116,7 +116,26 @@ static int slc_get(nvn_gpu_cmd c, uint64_t k0, uint64_t k1, const void *src, nvn
     g_slc[i].c = c; g_slc[i].seg = sg; g_slc[i].gen = rp_cpu_write_gen; g_slc[i].k0 = k0; g_slc[i].k1 = k1; g_slc[i].sl = *sl;
     return 1;
 }
-static struct { nvn_gpu_cmd c; uint64_t seg, gen, reg_gen; const struct rp_prog *pg; uint32_t base_instance, n; int ok; nvn_gpu_binding b[RP_PROG_ENT_MAX]; } g_lb[RP_PROG_STAGES];
+static struct { nvn_gpu_cmd c; uint64_t seg, gen, reg_gen; const struct rp_prog *pg; uint32_t base_instance, n; int ok; uint16_t bof[RP_PROG_ENT_MAX]; nvn_gpu_binding b[RP_PROG_ENT_MAX]; } g_lb[RP_PROG_STAGES];
+
+// B3：驱动段暂存的按内容缓存。DRV0（2.5 KB）/ DRV2（0.29 KB）的整段内容只由下面这些输入决定，
+// 同一段里内容相同就复用同一片 slice，省掉每笔每阶段的 memset + 拷贝。段号（rp_seg_serial）进键：段内暂存随段回收，跨段不能复用。
+// 键按内容整份存下来逐字节比（不用哈希）：驱动段是贴着后端 ABI 的常量，一次碰撞就是内容错，不值得为省几字节冒这个险。
+typedef struct { nvn_gpu_cmd c; uint64_t seg; uint32_t st, base_instance; uint64_t sb[16][2], ub[16][2]; uint32_t dim[3]; uint8_t has_ub; } drv0_key;
+typedef struct { nvn_gpu_cmd c; uint64_t seg; uint32_t st; uint64_t h[32]; } drv2_key;
+enum { DRV_CACHE_N = 8 };
+static struct { drv0_key k; nvn_gpu_slice sl; } g_drv0c[DRV_CACHE_N]; static int g_drv0c_next;
+static struct { drv2_key k; nvn_gpu_slice sl; } g_drv2c[DRV_CACHE_N]; static int g_drv2c_next;
+static int drv0_lookup(const drv0_key *k, nvn_gpu_slice *sl) {
+    for (int i = 0; i < DRV_CACHE_N; i++) if (!memcmp(&g_drv0c[i].k, k, sizeof *k)) { *sl = g_drv0c[i].sl; return 1; }
+    return 0;
+}
+static void drv0_store(const drv0_key *k, const nvn_gpu_slice *sl) { memcpy(&g_drv0c[g_drv0c_next].k, k, sizeof *k); g_drv0c[g_drv0c_next].sl = *sl; g_drv0c_next = (g_drv0c_next + 1) % DRV_CACHE_N; }
+static int drv2_lookup(const drv2_key *k, nvn_gpu_slice *sl) {
+    for (int i = 0; i < DRV_CACHE_N; i++) if (!memcmp(&g_drv2c[i].k, k, sizeof *k)) { *sl = g_drv2c[i].sl; return 1; }
+    return 0;
+}
+static void drv2_store(const drv2_key *k, const nvn_gpu_slice *sl) { memcpy(&g_drv2c[g_drv2c_next].k, k, sizeof *k); g_drv2c[g_drv2c_next].sl = *sl; g_drv2c_next = (g_drv2c_next + 1) % DRV_CACHE_N; }
 static int g_bind_keep[RP_PROG_STAGES], g_pipe_set;   // 这一笔：阶段的绑定状态没变（rp_draw 在换管线之前取）；这一笔重设过管线
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
@@ -141,15 +160,77 @@ static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_ind_off;
 static nvn_gpu_buf g_sb_buf[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static uint64_t g_sb_off[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 static uint8_t g_sb_ok[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 static uint32_t g_disp_dim[3];   // 这次派发的组数（计算阶段的驱动段 c0 里要有）
+
+// 两个省重开关（缺省开；正式包里 nvn_plat_flag 只返回缺省值）：
+//   nvk_bind_fast：同一段里同程序 / 同 base_instance / 参数没变时整组沿用上一笔的绑定，不重建；
+//   nvk_drv_memo：驱动段（DRV0 / DRV2）暂存按内容命中，不重复落 2.5 KB / 0.29 KB。
+// 每 256 次重读一次，照后端 nvk_desc_memo 的读法。
+static int flag_read(const char *name) {
+    static struct { const char *n; int v; } f[4]; static int nf, k;
+    if (!(++k & 255)) { for (int i = 0; i < nf; i++) f[i].v = -1; }
+    for (int i = 0; i < nf; i++) if (!strcmp(f[i].n, name)) { if (f[i].v < 0) f[i].v = nvn_plat_flag(name, 1) != 0; return f[i].v; }
+    if (nf < 4) { f[nf].n = name; f[nf].v = nvn_plat_flag(name, 1) != 0; return f[nf++].v; }
+    return nvn_plat_flag(name, 1) != 0;
+}
+
+// B1 快路的前置检查：这个阶段的布局里有没有「每笔都必须在本笔重做」的项。
+//   · 可写存储缓冲：每笔要 rp_post_gpu_write 登记 GPU 写回，跳过就不回写了；
+//   · 间接寻址存储缓冲（UBOA）：每笔要读 UBO 里的指针、解析目标范围，内容可能刚变；
+//   · 取不到的资源：完整构造会按原来的名字记账并跳过这一笔，快路不能把这一笔画出去。
+static int fast_items_ok(const struct rp_prog *pg, int pi, int st, const nvn_gpu_view *tv, const nvn_gpu_samp *ts) {
+    for (uint32_t i = 0; i < pg->nent[pi]; i++) {
+        const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
+        switch (e->src_kind) {
+        case NVN_RB_SBUFP: case NVN_RB_UBOP:
+            if (e->access & NVN_GPU_ACC_W) return 0;
+            if (i >= RP_PROG_ENT_MAX || !g_sb_ok[st][i]) return 0;
+            break;
+        case NVN_RB_UBOA: return 0;
+        case NVN_RB_TEX: {
+            // 这一笔刚解析出来的视图 / 采样器必须与上一组里的逐项相同：视图被轮转重建过就交给完整构造重发。
+            const uint32_t cnt = e->count > 1 ? e->count : 1;
+            if (e->count > RP_TEXARR_MAX || i >= RP_PROG_ENT_MAX) return 0;
+            const uint32_t at = g_lb[pi].bof[i];
+            if ((uint64_t)at + cnt > g_lb[pi].n || at >= RP_PROG_ENT_MAX) return 0;
+            const nvn_gpu_binding *pb = &g_lb[pi].b[at];
+            if (e->count > 1) { for (uint32_t k = 0; k < cnt; k++) if (!g_av[pi][k] || !g_as[pi][k] || pb[k].u.ts.view != g_av[pi][k] || pb[k].u.ts.samp != g_as[pi][k]) return 0; }
+            else if (!tv[i] || !ts[i] || pb->u.ts.view != tv[i] || pb->u.ts.samp != ts[i]) return 0;
+            break; }
+        case NVN_RB_IMG: {
+            if (!tv[i] || i >= RP_PROG_ENT_MAX) return 0;
+            const uint32_t at = g_lb[pi].bof[i];
+            if ((uint64_t)at + 1 > g_lb[pi].n || at >= RP_PROG_ENT_MAX || g_lb[pi].b[at].u.view != tv[i]) return 0;
+            break; }
+        default: break;
+        }
+    }
+    return 1;
+}
+
+// B2：两个程序在某个图形阶段的绑定布局是否等同（后端按各阶段布局的 set / binding / 类别 / 数量合并管线布局）。
+// 等同 = 换管线不用把这个阶段的绑定重立脏；程序本身变了由 g_lb[pi].pg 让 keep 失效，照样完整重建。
+static int prog_layout_same(const struct rp_prog *a, const struct rp_prog *b, int st) {
+    if (!a || !b || a->nent[st] != b->nent[st]) return 0;
+    for (uint32_t i = 0; i < a->nent[st]; i++) {
+        const nvn_gpu_layout_ent *x = &a->ent[st][i], *y = &b->ent[st][i];
+        if (x->set != y->set || x->binding != y->binding || x->cls != y->cls || x->count != y->count) return 0;
+    }
+    return 1;
+}
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec);
 static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) { return bind_stage_at(c, pg, st, st, base_instance, tv, ts, rec); }
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) {
     nvn_gpu_binding b[RP_PROG_ENT_MAX]; uint32_t n = 0;
     // 沿用上一笔：只限图形两个阶段；存储缓冲（要同步镜像、登记 GPU 写）和贴图（视图会轮转）每笔照取
     const int keep = st < RP_PROG_STAGES && g_bind_keep[pi] && g_lb[pi].ok && g_lb[pi].c == c && g_lb[pi].seg == rp_seg_serial() && g_lb[pi].gen == rp_cpu_write_gen && g_lb[pi].reg_gen == rp_tex_reg_gen() && g_lb[pi].pg == pg && g_lb[pi].base_instance == base_instance;
+    // B1 快路：上一笔交给后端的这一组就是这一笔要的，不重建 b[]（省掉每笔每阶段的驱动段暂存拷贝与整轮贴图视图取用）。
+    // 不能沿用的：可写存储缓冲（每笔要登记 GPU 写回）、间接寻址存储缓冲（每笔要读指针重新解析）、取不到的资源（交给完整构造去记账跳过）。
+    // 贴图视图由 fast_items_ok 逐项与本笔刚解析的结果比对：视图被轮转重建过就不走快路。
+    if (keep && !g_pipe_set && flag_read("nvk_bind_fast") && fast_items_ok(pg, pi, st, tv, ts)) { rp_perf_add(RP_PERF_BIND_FAST, 1); return 1; }
     if (st < RP_PROG_STAGES) g_lb[pi].ok = 0;
     for (uint32_t i = 0; i < pg->nent[pi]; i++) {
         const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
+        if (st < RP_PROG_STAGES) g_lb[pi].bof[i] = (uint16_t)n;   // 上一组的布局项 → b[] 起始下标（B1 快路逐项比对贴图视图用）
         nvn_gpu_binding *o = &b[n]; memset(o, 0, sizeof *o); o->ent = (uint16_t)i; o->cls = e->cls;
         nvn_gpu_slice sl;
         if (keep && e->src_kind != NVN_RB_SBUFP && e->src_kind != NVN_RB_TEX && e->src_kind != NVN_RB_IMG) { *o = g_lb[pi].b[n]; n++; continue; }
@@ -204,21 +285,44 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 sup[sup_next].c = c; sup[sup_next].sub = rp_seg_serial(); sup[sup_next].bytes = pg->support_bytes; sup[sup_next].flags = flags; sup[sup_next].sl = sl; sup_next = (sup_next + 1) & 3;
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = pg->support_bytes; break; }
             case NVN_RB_DRV0: {
-                if (!alloc_copy(c, DRV0_BYTES, NULL, &sl)) return skip("arena_alloc_failed", rec);
+                drv0_key k; memset(&k, 0, sizeof k);
+                k.c = c; k.seg = rp_seg_serial(); k.st = (uint32_t)st; k.base_instance = base_instance;
+                for (int r = 0; r < 16; r++) { k.sb[r][0] = rp_S.ssbo[st][r].addr; k.sb[r][1] = rp_S.ssbo[st][r].size; }
+                int cacheable = 1;
                 if (st == 5) {   // 计算阶段的驱动段（nvn_mtl.m @9897）：0x200 派发组数，0x210 + 16r 常量缓冲表，0x310 + 16r 存储缓冲表（各项：地址 64 位、长度 32 位）
+                    if (g_disp_ind) cacheable = 0;   // 间接派发：0x200 是从缓冲里拷过来的，不能复用旧内容
+                    else { k.has_ub = 1;
+                        for (int r = 0; r < 16; r++) { k.ub[r][0] = rp_S.ubo[5][r].addr; k.ub[r][1] = rp_S.ubo[5][r].size; }
+                        memcpy(k.dim, g_disp_dim, sizeof k.dim); }
+                }
+                if (cacheable && flag_read("nvk_drv_memo") && drv0_lookup(&k, &sl)) {   // 同一段里内容相同：复用上次那片
+                    rp_perf_add(RP_PERF_BIND_SLICE_HIT, 1);
+                    o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV0_BYTES; break;
+                }
+                if (!alloc_copy(c, DRV0_BYTES, NULL, &sl)) return skip("arena_alloc_failed", rec);
+                if (st == 5) {
                     memcpy(sl.cpu + 0x200, g_disp_dim, 12);
                     if (g_disp_ind) nvn_gpu_copy_buf(c, g_disp_ind, g_disp_ind_off, sl.buf, sl.off + 0x200, 12);
                     for (int r = 0; r < 16; r++) { uint64_t a = rp_S.ubo[5][r].addr; uint32_t sz = (uint32_t)rp_S.ubo[5][r].size; memcpy(sl.cpu + 0x210 + 16 * r, &a, 8); memcpy(sl.cpu + 0x210 + 16 * r + 8, &sz, 4); }
                     for (int r = 0; r < 16; r++) { uint64_t a = rp_S.ssbo[5][r].addr; uint32_t sz = (uint32_t)rp_S.ssbo[5][r].size; memcpy(sl.cpu + 0x310 + 16 * r, &a, 8); memcpy(sl.cpu + 0x310 + 16 * r + 8, &sz, 4); }
-                    o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV0_BYTES; break; }
-                for (int r = 0; r < 16; r++) { const p_bind_buf *sb = &rp_S.ssbo[st][r]; if (!sb->addr) continue;
-                    uint64_t a = sb->addr; uint32_t sz = (uint32_t)sb->size; memcpy(sl.cpu + k_drv0_base[st] + 16 * r, &a, 8); memcpy(sl.cpu + k_drv0_base[st] + 16 * r + 8, &sz, 4); }
-                float max_point = 2047.0f; memcpy(sl.cpu + 0x610, &max_point, 4); memcpy(sl.cpu + 0x644, &base_instance, 4);
+                } else {
+                    for (int r = 0; r < 16; r++) { const p_bind_buf *sb = &rp_S.ssbo[st][r]; if (!sb->addr) continue;
+                        uint64_t a = sb->addr; uint32_t sz = (uint32_t)sb->size; memcpy(sl.cpu + k_drv0_base[st] + 16 * r, &a, 8); memcpy(sl.cpu + k_drv0_base[st] + 16 * r + 8, &sz, 4); }
+                    float max_point = 2047.0f; memcpy(sl.cpu + 0x610, &max_point, 4); memcpy(sl.cpu + 0x644, &base_instance, 4);
+                }
+                if (cacheable && flag_read("nvk_drv_memo")) drv0_store(&k, &sl);
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV0_BYTES; break; }
             case NVN_RB_DRV2: {   // 驱动的贴图句柄表：贴图槽 s 的句柄（贴图号 | 采样器号 << 20）在第 4 + s 个 8 字节项
                 enum { DRV2_BYTES = (RP_HANDLE_TABLE_FIRST_SLOT + 32) * 8 };
+                drv2_key k; memset(&k, 0, sizeof k); k.c = c; k.seg = rp_seg_serial(); k.st = (uint32_t)st;
+                for (int s = 0; s < 32; s++) k.h[s] = rp_S.tex[st][s];
+                if (flag_read("nvk_drv_memo") && drv2_lookup(&k, &sl)) {
+                    rp_perf_add(RP_PERF_BIND_SLICE_HIT, 1);
+                    o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV2_BYTES; break;
+                }
                 if (!alloc_copy(c, DRV2_BYTES, NULL, &sl)) return skip("arena_alloc_failed", rec);
                 for (int s = 0; s < 32; s++) { uint64_t h = rp_S.tex[st][s]; memcpy(sl.cpu + (RP_HANDLE_TABLE_FIRST_SLOT + s) * 8, &h, 8); }
+                if (flag_read("nvk_drv_memo")) drv2_store(&k, &sl);
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV2_BYTES; break; }
             case NVN_RB_C1: {
                 if (!(pg->c1_ok >> pi & 1)) return skip("c1_segment_not_captured", rec);
@@ -418,6 +522,27 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         } else ts[st][i] = rp_samp_by_id(h ? (int)(h >> 20) : rp_S.samp_base);
     }
     DT(RP_PERF_D_TEX);
+    // 这一笔要采样的贴图里，有还挂着待折清除的：先让它落地（rp_pass_land_reads），否则采到的是没清过的旧内容。
+    // 稳态下挂起表是空的（rp_pass_parked() == 0），这条近路不收集、不加锁；只有这一笔真遇到挂起项才走一次。
+    if (rp_pass_parked()) {
+        static tex_t rdsnap[2 * RP_TEXARR_MAX]; static const tex_t *rd[2 * RP_TEXARR_MAX];
+        int nr = 0;
+        for (int st = 0; st < RP_PROG_STAGES; st++)
+            for (uint32_t i = 0; i < g_prog->nent[st] && nr < (int)(sizeof rd / sizeof rd[0]); i++) {
+                const nvn_gpu_layout_ent *e = &g_prog->ent[st][i];
+                if (e->src_kind != NVN_RB_TEX) continue;
+                uint32_t cnt = e->count > 1 ? e->count : 1;
+                for (uint32_t k = 0; k < cnt && nr < (int)(sizeof rd / sizeof rd[0]); k++) {
+                    int slot = (int)e->src_reg + (e->count > 1 ? (int)k - RP_HANDLE_TABLE_FIRST_SLOT : 0);
+                    if (slot < 0 || slot >= 32) continue;
+                    uint64_t h = rp_S.tex[st][slot];
+                    if (!rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &rdsnap[nr], NULL, NULL)) continue;
+                    rd[nr] = &rdsnap[nr]; nr++;
+                }
+            }
+        if (nr) rp_pass_land_reads(c, rd, nr);
+    }
+    rp_pass_prepare_draw(c);   // 把这一笔的像素区域（裁剪矩形）交给开通道：小区域的目标只在区域里载入 / 保存
     if (!rp_pass_begin(c)) { skip("pass_begin_failed", rec); goto draw_done; }
     DT(RP_PERF_D_PASS);   // 开通道单独记；打印时与取管线合成原来那一项，另出一行细分
     for (int st = 0; st < RP_PROG_STAGES; st++) g_bind_keep[st] = !rp_args_dirty[st];
@@ -470,7 +595,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         g_pipe = np; g_pipe_cmd = c;
         nvn_gpu_set_pipe(c, g_pipe); g_pipe_set = 1;
         rp_perf_add(RP_PERF_D_PGET, dt_now() - pg0_);   // 后端取管线 + 设管线（含在取管线那一项里）
-        for (int st = 0; st < RP_PROG_STAGES; st++) rp_args_dirty[st] = 1;   // 换了管线：两个阶段的绑定都重发
+        // 换管线：只有绑定布局（set / binding / 类别 / 数量）变了的阶段才立脏重发；布局没变时后端按管线布局自己判描述符组归属。
+        for (int st = 0; st < RP_PROG_STAGES; st++) if (!prog_layout_same(g_lb[st].ok ? g_lb[st].pg : NULL, g_prog, st)) rp_args_dirty[st] = 1;
     }
     uint32_t tw = 1, th = 1;
     { int fi = -1; for (int i = 0; i < rt->n && i < 8 && fi < 0; i++) if (rt->color[i]) fi = i;   // 缺省视口的尺寸：第一个有图的颜色槽，没有就取深度目标
