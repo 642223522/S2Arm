@@ -419,7 +419,7 @@ public final class GameInstallTest {
                 GameInstall.importDirectory(internal, GameInstall.importDirectories(internal, external),
                     new File(internal, "import/private-update").getAbsolutePath(), null,
                     new GameInstall.ImportListener() {
-                        public void installed(File source, GameInstall.Result result) { }
+                        public void installed(File source, GameInstall.Result result) { System.out.println("INSTALLED " + result.contentRoot); }
                         public void refused(File source, Exception error) {
                             if (String.valueOf(error.getMessage()).contains("busy")) { System.out.println("BUSY"); System.exit(2); }
                             System.out.println("REFUSED " + error);
