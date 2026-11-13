@@ -3387,6 +3387,11 @@ static void page_span(const tex_t *t, size_t k, const uint8_t **lo, size_t *n) {
     uintptr_t b = MAX(a, p0 + k * pg), c = MIN(e, p0 + (k + 1) * pg); *lo = (const uint8_t *)b; *n = c > b ? c - b : 0;
 }
 static uint32_t page_count(const tex_t *t) { uintptr_t pg = nvn_dirty_page_size(), a = (uintptr_t)t->mem; uint64_t n = tex_rd_size(t); return n ? (uint32_t)(((a + n - 1) & ~(pg - 1)) - (a & ~(pg - 1))) / (uint32_t)pg + 1 : 0; }
+// 存储 [mem, mem + size) 逐宿主页哈希进 h[0..n)（后台首次上传哈希用，#956）：size 由调用方给（tex_rd_size，已截到池尾），这里不再看池
+static void ph_hash_pages(const uint8_t *mem, uint64_t size, uint32_t n, uint64_t *h) {
+    tex_t pt = {0}; pt.mem = (uint8_t *)mem; pt.L.size = size;   // page_span reads only these two (no pool: tex_rd_size returns size as given)
+    for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t m; page_span(&pt, k, &lo, &m); h[k] = span_hash(host_rd(lo), m); }
+}
 static unsigned tex_layers(const tex_t *t) { return (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1; }   // as pkg_upload_ (a cube array's depth counts layer-faces)
 // Block-linear storage (Tegra X1): each layer holds its levels one after another; a level is rows of blocks, a block 2^tileH GOBs tall and one GOB (64 bytes x 8 rows of format blocks) wide,
 // laid out GOB column after GOB column. So a byte range of one block row is a run of GOB columns: a texel rectangle. fn gets (level, layer, x, y, w, h) in texels for every rectangle [lo, hi)
@@ -3509,10 +3514,10 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
             uint32_t n = page_count(t); uint64_t *h = malloc(((size_t)n + 1) * sizeof *h);   // + 1: the state word (see NvPkg ph); *ph comes in NULL (a new record or a re-upload's own array)
             if (h && bg_hash) {   // the first upload: hashed on ph_queue (see NvPkg ph)
                 atomic_store_explicit(ph_state(h, n), PH_PEND, memory_order_relaxed);
-                const uint8_t *mem = t->mem; uint64_t size = t->L.size, st = *stamp; const void *span = nvn_dirty_span(mem, size);
+                // 长度用 tex_rd_size（截到池尾，#819）：后台块里没有池，按 L.size 全长读会读进池后没映射的内存，iPad 上 SIGBUS（与写保护、页数同一个长度）
+                const uint8_t *mem = t->mem; uint64_t size = tex_rd_size(t), st = *stamp; const void *span = nvn_dirty_span(mem, size);
                 dispatch_async(ph_queue(), ^{
-                    tex_t pt = {0}; pt.mem = (uint8_t *)mem; pt.L.size = size;   // page_span reads only these two
-                    for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t m; page_span(&pt, k, &lo, &m); h[k] = span_hash(host_rd(lo), m); }
+                    ph_hash_pages(mem, size, n, h);
                     atomic_thread_fence(memory_order_seq_cst);   // the bytes read above, then the generations: a write the hash saw has its page's generation raised before it
                     atomic_store_explicit(ph_state(h, n), nvn_dirty_since_span(span, mem, size, st) ? PH_BAD : PH_OK, memory_order_release);
                 });
