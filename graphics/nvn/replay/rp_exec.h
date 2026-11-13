@@ -64,9 +64,17 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_P_CONT, RP_PERF_P_CLEARONLY, RP_PERF_P_PARK, RP_PERF_BIND_FAST, RP_PERF_BIND_CONT, RP_PERF_TEX_EPOCH, RP_PERF_PC_HIT, RP_PERF_PC_MISS, RP_PERF_WAIT_FIN_N, RP_PERF_WAIT_FIN_NS, RP_PERF_WAIT_SYNC_N, RP_PERF_WAIT_SYNC_NS,
        RP_PERF_P_TINY_DS, RP_PERF_P_TINY_NODS, RP_PERF_P_TINY_KPIX,   // 0–1 笔通道里：挂深度模板的、不挂的、它们的百万像素和（看通道碎片化构成）
        RP_PERF_P_AREA, RP_PERF_P_AREA_KPIX,   // 用了缩小渲染区域的通道数、这些区域的千像素和（面积优化到底有没有真的缩下来）
+       RP_PERF_P_SHADOW,   // 影子附件的通道数（深度 / 块压缩图经颜色视图当渲染目标，拷贝通道是我们加的）
+       RP_PERF_EXEC_DRAW_NS, RP_PERF_EXEC_OTHER_NS,   // 回放循环里绘制类命令 / 其余命令各花多久（开关 nvk_exec_tm）
+       RP_PERF_DISP_N, RP_PERF_DISP_NS,               // 计算派发次数与耗时（其余命令里最贵的一项之一）
+       RP_PERF_SETRT_N, RP_PERF_SETRT_END_NS,         // 换目标次数、其中收通道（rp_pass_end）用了多久
+       RP_PERF_PASSEND_N,                             // 收通道次数（含换目标、通道中途的清除、提交收尾）
+       RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
        RP_PERF_SUB_PRE_NS, RP_PERF_SUB_EXEC_NS, RP_PERF_SUB_POST_NS, RP_PERF_WAIT_ALREADY_N, RP_PERF_GPU_BUSY_NS,   // 提交三段耗时 / 进等待时已完成 / GPU 忙区间
+       RP_PERF_WAIT_FAKED_N,   // 实验开关 nvk_sync_lag 下「没真等」的等待次数（量重叠上限用，画面可能错）
        RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
+void rp_exec_dump_ops(char *b, size_t n);   // 逐命令类型耗时前几名（开关 nvk_exec_tm；窗口末尾取一次即清零）
 uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
 uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）
 int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建贴图的宽高有几种（最多数到 64，取完清零）

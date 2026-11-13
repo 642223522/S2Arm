@@ -374,6 +374,7 @@ void rp_pass_land_reads(nvn_gpu_cmd c, const tex_t *const *ts, int n) {
 }
 
 void rp_pass_end(nvn_gpu_cmd c) {
+    if (P.open) rp_perf_add(RP_PERF_PASSEND_N, 1);
     if (P.open && c) { nvn_gpu_pass_end(c); for (int i = 0; i < 8; i++) if (g_shu[i].base) shadow_copy(c, i, 1); }   // 画进影子的内容拷回各自的深度贴图
     if (P.open) { if (P.has_ds) { rp_perf_add(RP_PERF_P_DS, 1); if (!P.ds_used) rp_perf_add(RP_PERF_P_DS_IDLE, 1); } if (P.ndraw <= 1) rp_perf_add(RP_PERF_P_ONE, 1);
                   if (!P.ndraw) rp_perf_add(RP_PERF_P_CLEARONLY, 1);
@@ -424,7 +425,7 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         view_t av;
         uint64_t sh0_ = kind ? pb_now() : 0;
         nvn_gpu_view v = kind ? shadow_attach(c, i, t, sbytes, pk >= 0) : rp_view_for_attach(t, att_view(t, P.rt.has_cview[i], &P.rt.cview[i], &av), c);
-        if (kind) rp_perf_add(RP_PERF_PB_SHADOW, pb_now() - sh0_);
+        if (kind) { rp_perf_add(RP_PERF_PB_SHADOW, pb_now() - sh0_); rp_perf_add(RP_PERF_P_SHADOW, 1); }   // 影子附件（深度/块压缩图经颜色视图当目标）：拷贝通道是我们加的，单独计数
         if (!v) { memset(g_shu, 0, sizeof g_shu); rp_view_pin_end(); return 0; }
         nattached++;
         d.color[i].view = v; d.color[i].store = NVN_GPU_STORE_STORE;
@@ -541,8 +542,12 @@ void rp_pass_set_rt(nvn_gpu_cmd c, const p_set_rt *r) {
         return;
     }
     if (P.open) rp_perf_add(RP_PERF_P_CUT_RT, 1);
-    // 开关开着（缺省）：只收当前通道，待折清除挂起（等下一个把它当附件的通道吃掉，见 park 段）；关着 = 旧行为：先落地再换目标
-    if (park_on()) rp_pass_end(c); else rp_pass_flush(c);
+    rp_perf_add(RP_PERF_SETRT_N, 1);
+    { struct timespec ts0; clock_gettime(CLOCK_MONOTONIC, &ts0); uint64_t s0 = (uint64_t)ts0.tv_sec * 1000000000ull + (uint64_t)ts0.tv_nsec;
+      // 开关开着（缺省）：只收当前通道，待折清除挂起（等下一个把它当附件的通道吃掉，见 park 段）；关着 = 旧行为：先落地再换目标
+      if (park_on()) rp_pass_end(c); else rp_pass_flush(c);
+      struct timespec ts1; clock_gettime(CLOCK_MONOTONIC, &ts1); uint64_t s1 = (uint64_t)ts1.tv_sec * 1000000000ull + (uint64_t)ts1.tv_nsec;
+      rp_perf_add(RP_PERF_SETRT_END_NS, s1 - s0); }
     P.rt = *r; P.has_rt = 1;
     // 记录里的贴图指针指向记录内的快照，记录所在的命令内存这次提交之后可能被复用：自己留一份（nvn_mtl.m rt_keep_state @4453）
     for (int i = 0; i < 8; i++) if (P.rt.color[i]) { P.kept[i] = *P.rt.color[i]; P.rt.color[i] = &P.kept[i]; }

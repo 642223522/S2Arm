@@ -707,6 +707,7 @@ static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence)
 static nvn_hmap g_cpipes = {.klen = 8};   // 计算程序 → 计算管线
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     if (!c) return;
+    rp_perf_add(RP_PERF_DISP_N, 1);   // 派发次数（其余命令里最贵的一项，看它到底多少次）
     if (!dp->ind && (dp->x <= 0 || dp->y <= 0 || dp->z <= 0)) return;   // 0 组：空操作
     const struct rp_prog *pg = NULL;
     int sr = rp_shader_resolve_compute(&pg);

@@ -343,6 +343,17 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
     uint64_t t0 = now_ns();
     if (rp_fence_done(fence)) { pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_ALREADY_N, 1); return 1; }
+    {   // 开关 debug.s2a.nvk_sync_lag（缺省 0 = 旧行为：真等）：
+        //   1 = 允许「最多一次提交还在显卡上飞」：等的时候若这一栅栏只领先已完成值一格就不真等（返回已满足），
+        //       下一次提交前换一份池镜像（照 nvk_finish_lag 的做法，见 rp_buf_frame_flip），让 CPU 回放与显卡执行重叠。
+        //       代价：游戏在这之后读 GPU 回写的内存最多晚一次提交看到。两份镜像决定了这里只能放行一格。
+        //   2 = 诊断档：一律不等（量重叠上限；池镜像只有两份，可能读错内容，不用于出货）。
+        static int lag = -1; if (lag < 0) lag = nvn_plat_flag("nvk_sync_lag", 0);
+        if (lag > 0) {
+            uint64_t done = __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE);
+            uint64_t ahead = fence > done ? (fence - done + SUB_STEP - 1) / SUB_STEP : 0;
+            if ((uint64_t)lag >= ahead || lag >= 2) { rp_buf_frame_flip(); pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); return 1; }
+        } }
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
     pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1);
     // 时间线已失败：再等也不会完成。按「已结束」放行，让游戏线程不死等；失败本身已在 sub_done 报红
@@ -395,13 +406,32 @@ void nvn_be_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 // ---------- 主循环 ----------
 static int rec_bad(op_hdr h) { return h.size < 8 || (h.size & 7) || h.op >= OP_NVN2_END_ || h.op == OP_BEGIN; }
 
+// 逐命令类型的耗时（开关 nvk_exec_tm 打开时才记）：窗口末尾由 rp_exec_dump_ops 取前几名，看「其余」那部分到底是哪些命令占的。
+static uint64_t g_op_ns[64];
+void rp_exec_dump_ops(char *b, size_t n) {
+    if (!n || !b) return;
+    size_t o = 0; b[0] = 0;
+    for (int r = 0; r < 6; r++) {
+        int best = -1;
+        for (int i = 0; i < 64; i++) if (g_op_ns[i] && (best < 0 || g_op_ns[i] > g_op_ns[best])) best = i;
+        if (best < 0) break;
+        o += (size_t)snprintf(b + o, n - o, "%s%s %.1f 毫秒", r ? "、" : "", rp_op_name((uint32_t)best), (double)g_op_ns[best] / 1e6);
+        g_op_ns[best] = 0;
+        if (o >= n) break;
+    }
+}
 void nvn_be_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; rp_state_reset(); }
     if (!p) return;
+    // 回放耗时按命令类别分（开关 debug.s2a.nvk_exec_tm，缺省 0）：绘制类 vs 其余（传输 / 整屏清除 / 派发 / 状态），
+    // 用来判「回放总时长里有多少不在 rp_draw 的各步上」。取时刻本身有开销，只在量的时候开。
+    static int tm = -1;
+    if (tm < 0) tm = nvn_plat_flag("nvk_exec_tm", 0) != 0;
     for (;;) {
         nvn_plat_safepoint();   // 一次提交可连续回放数秒：让平台的停世界事务在命令之间越过本线程（nvn_plat.h）
         op_hdr h; memcpy(&h, p, sizeof h);
         if (rec_bad(h)) { nvn_unimpl("rec", "bad_record", p); return; }   // 按这条列表的 END 处理
+        uint64_t t_cmd = tm ? now_ns() : 0;
         const void *a = p + 8;
         switch (h.op) {
             case OP_END: return;
@@ -457,6 +487,11 @@ void nvn_be_exec(const uint8_t *p) {
             default:
                 if (!rp_state_op(h.op, a, h.size)) nvn_unimpl("op", rp_op_name(h.op), p);
                 break;
+        }
+        // OP_CALL 不记：它里面那批记录各自会记（记了就把同一段算两遍）
+        if (tm && h.op != OP_CALL) {
+            uint64_t dns = now_ns() - t_cmd;
+            if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) pf_add(RP_PERF_EXEC_DRAW_NS, dns); else { pf_add(RP_PERF_EXEC_OTHER_NS, dns); if (h.op < 64) __atomic_fetch_add(&g_op_ns[h.op], dns, __ATOMIC_RELAXED); }
         }
         p += h.size;
     }
