@@ -1330,6 +1330,33 @@ static void t_gs_bind(void) {
     } else CHECK(0);
     g_snap_prog = NULL; pass_fresh();
 }
+// 上一笔的程序有片元阶段并带一条绑定，这一笔换成只有顶点阶段的程序：片元阶段要收到一次零条的绑定（清掉旧的），
+// 否则后端拿旧的片元绑定去配没有片元布局的管线
+static void t_stage_dropped_clears_binds(void) {
+    pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0;
+    memset(g_bind_calls, 0, sizeof g_bind_calls); memset(g_nfb, 0, sizeof g_nfb);
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    prog_t pa, pb; memset(&pa, 0, sizeof pa); pa.magic = MAGIC('P','R','O','G'); pa.serial = 994; pa.nstage = 2; pb = pa; pb.serial = 995; pb.nstage = 1;
+    stream s = {0}; q_env(&s);                                   // q_env 会把假程序复位成「顶点 + 片元、没有布局项」
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_UBO; g_fprog.ent[1][0].src_kind = NVN_RB_CBUF;
+    g_snap_prog = &pa; g_snap_ok = 3; memset(g_snap_keys, 0, sizeof g_snap_keys); memset(g_snap_stage, 0xff, sizeof g_snap_stage);
+    for (int i = 0; i < 2; i++) { g_snap_stage[i] = (uint8_t)i; g_snap_keys[i][0] = (uint8_t)(i + 0x21); }
+    p_bind_program_id *id = put(&s, OP_BIND_PROGRAM, sizeof *id); id->prog = &pa; id->serial = pa.serial; id->stages = 0x1f;
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 0; ub->addr = base + PG; ub->size = 64;
+    q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_nfb[NVN_GPU_SH_FS] == 1);
+    int fs_calls = g_bind_calls[NVN_GPU_SH_FS];
+    g_fprog.sh[1] = NULL; g_fprog.nent[1] = 0;                   // 第二个程序：只有顶点阶段
+    g_snap_prog = &pb; g_snap_ok = 1; g_snap_stage[1] = 0xff; g_snap_keys[0][0] = 0x31;
+    stream t = {0};
+    id = put(&t, OP_BIND_PROGRAM, sizeof *id); id->prog = &pb; id->serial = pb.serial; id->stages = 0x1f;
+    q_draw(&t); end(&t); submit1(&t); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && g_last_pdesc.st[NVN_GPU_SH_FS].sh == NULL);
+    CHECK(g_bind_calls[NVN_GPU_SH_FS] == fs_calls + 1 && g_nfb[NVN_GPU_SH_FS] == 0);
+    g_fprog.sh[1] = &g_fsh[1];
+    g_snap_prog = NULL; pass_fresh();
+}
 static void q_counter(stream *s, uint32_t op, uint64_t type, uint64_t *dst) { uint8_t *r = put(s, op, 16); uint64_t ad = (uint64_t)(uintptr_t)dst; memcpy(r, &type, 8); memcpy(r + 8, &ad, 8); }
 
 static void put_set_rt_v(stream *s, const tex_t *color, const view_t *cv) {   // 一个颜色槽，带视图
@@ -2433,7 +2460,7 @@ int main(int argc, char **argv) {
     t_copy_t2t();
     t_draw();
     t_gs_dirty_and_topology();
-    t_gs_bind();
+    t_gs_bind(); t_stage_dropped_clears_binds();
     t_decl_sampling();
     t_present();
     t_view_pin();
