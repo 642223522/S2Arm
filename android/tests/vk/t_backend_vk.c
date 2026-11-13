@@ -37,6 +37,7 @@ int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native;
 // S2A_TEST_NVK_DQ=1：整套用例在「两级回放开」下再跑一遍；S2A_TEST_DESC_MEMO=1：在「描述符组备忘开」下再跑一遍
 // （备忘开着时内容相同的组不再分配，按「分配了几组」写的那几条期望在这一遍里不比，像素期望照比）。
 static int g_memo_on;
+void nvn_plat_safepoint(void) {}
 int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_dq") && getenv("S2A_TEST_NVK_DQ")) return 1;
     if (!strcmp(name, "nvk_desc_memo") && getenv("S2A_TEST_DESC_MEMO")) { g_memo_on = 1; return 1; }
