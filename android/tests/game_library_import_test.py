@@ -363,7 +363,7 @@ class GameLibraryImportTest(unittest.TestCase):
     def test_only_explicit_absolute_target_is_consumed(self):
         result = self.run_contract()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 30 checks', result.stdout)
+        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 33 checks', result.stdout)
 
     def test_missing_fingerprint_negative_control(self):
         result = self.run_contract(missing_fingerprint=True)
