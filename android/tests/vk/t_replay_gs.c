@@ -53,6 +53,12 @@ const p_set_rt *rp_pass_target(void) { return &target; }
 int rp_pass_slot_attached(int i) { return i == 0; }
 void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h) { (void)i; *w = *h = 4; }
 void rp_pass_note_draw(int d) { (void)d; }
+// #950 新增的回放核心依赖：替身取保守中性值（写日志恒报「写过」= 不让暂存命中；没有待折清除、不缩渲染区域）
+uint64_t rp_write_mark(void) { return 0; }
+int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len) { (void)mark; (void)addr; (void)len; return 1; }
+void rp_pass_prepare_draw(nvn_gpu_cmd c) { (void)c; }
+void rp_pass_land_reads(nvn_gpu_cmd c, const tex_t *const *ts, int n) { (void)c; (void)ts; (void)n; }
+int rp_pass_parked(void) { return 0; }
 int rp_pass_begin(nvn_gpu_cmd c) {
     nvn_gpu_pass_desc pass = {0}; pass.ncolor = 1; pass.color[0].view = target_view;
     pass.color[0].load = NVN_GPU_LOAD_CLEAR; pass.color[0].store = NVN_GPU_STORE_STORE;
