@@ -34,12 +34,16 @@ else
   h() { "$hdc" -t "$HDC_TARGET" "$@" < /dev/null; }
   collect() {
     local file=$1; shift
-    if ! h "$@" > "$out/$file" 2>&1 || grep -aq '\[Fail\]' "$out/$file"; then
+    if ! h "$@" > "$out/$file" 2>&1 || grep -aqE '\[Fail\]|Permission denied' "$out/$file"; then
       note "Collection failed: $file (see local raw output)."
       return 1
     fi
   }
-  prop() { h shell param get "$1" 2>/dev/null | tr -d '\r' || true; }
+  prop() {
+    local value
+    value=$(h shell param get "$1" 2>/dev/null | tr -d '\r' || true)
+    if [[ -z $value || $value == *'fail!'* ]]; then printf 'unknown'; else printf '%s' "$value"; fi
+  }
   model=$(prop const.product.model)
   chip=$(prop const.product.hardware)
   system=$(prop const.ohos.fullname)
@@ -70,8 +74,9 @@ g() { grep -a "$@" "$out/current.log" || true; }
 session=$(g -E 'nvk session: backend open|graphics selection' | tail -2)
 unimpl=$(g -E 'nvk unimpl|未接：')
 red=$(g '【红】' | grep -v '未接：' | sort | uniq -c || true)
-present=$(g -E 'nvk present:|nvk session: presents' | tail -1)
-[[ -n $session ]] || note 'No backend-open evidence: this report does not establish that the new backend ran.'
+present=$(g -E 'nvk present: 分时：|nvk session: presents' | tail -1)
+[[ -n $present ]] || present=$(g 'nvk present:' | tail -1)
+g 'nvk session: backend open' | grep -q . || note 'No backend-open evidence: this report does not establish that the new backend ran.'
 {
   echo '# 新图形层设备普查（OHOS）'
   echo
