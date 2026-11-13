@@ -174,6 +174,11 @@ static void drv2_store(const drv2_key *k, const nvn_gpu_slice *sl) {
     g_drv2c[i].k = *k; g_drv2c[i].h = h; g_drv2c[i].ok = 1; g_drv2c[i].sl = *sl;
 }
 static int g_bind_keep[RP_PROG_STAGES], g_pipe_set;   // 这一笔：阶段的绑定状态没变（rp_draw 在换管线之前取）；这一笔重设过管线
+// 读数（随 nvk_gputime）：整组重建分两块——[0] 含暂存与构造的总时间、[1] 其中交给后端 nvn_gpu_bind 的时间、[2] 重建次数
+static uint64_t dt_now(void);   // 计时器（定义在文件后部）
+static uint64_t g_bt[6];   // [0] 总 [1] 交后端 [2] 次数 [3] 驱动段 DRV0/DRV2 [4] 常量缓冲 [5] 其它
+void rp_bind_tm_take(uint64_t *tot, uint64_t *backend, uint64_t *n) { *tot = g_bt[0]; *backend = g_bt[1]; *n = g_bt[2]; g_bt[0] = g_bt[1] = g_bt[2] = 0; }
+void rp_bind_tm_take2(uint64_t *drv, uint64_t *buf, uint64_t *rest) { *drv = g_bt[3]; *buf = g_bt[4]; *rest = g_bt[5]; g_bt[3] = g_bt[4] = g_bt[5] = 0; }
 
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
@@ -284,6 +289,8 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
         if (fast_items_ok(pg, pi, st, tv, ts)) { if (g_pipe_set) rp_perf_add(RP_PERF_KEEP_F_PIPESET, 1); rp_perf_add(RP_PERF_BIND_FAST, 1); return 1; }
         rp_perf_add(RP_PERF_KEEP_F_ITEMS, 1);
     }
+    static int btm = -1; static unsigned btk; if (btm < 0 || !(++btk & 255)) btm = nvn_plat_flag("nvk_bind_tm", 0) != 0;
+    const uint64_t btm0 = btm ? dt_now() : 0;
     if (st < RP_PROG_STAGES) g_lb[pi].ok = 0;
     for (uint32_t i = 0; i < pg->nent[pi]; i++) {
         const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
@@ -342,6 +349,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 sup[sup_next].c = c; sup[sup_next].sub = rp_seg_serial(); sup[sup_next].bytes = pg->support_bytes; sup[sup_next].flags = flags; sup[sup_next].sl = sl; sup_next = (sup_next + 1) & 3;
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = pg->support_bytes; break; }
             case NVN_RB_DRV0: {
+                const uint64_t drv0_t0 = btm ? dt_now() : 0;
                 drv0_key k; memset(&k, 0, sizeof k);
                 k.c = c; k.seg = rp_seg_serial(); k.st = (uint32_t)st; k.base_instance = base_instance;
                 for (int r = 0; r < 16; r++) { k.sb[r][0] = rp_S.ssbo[st][r].addr; k.sb[r][1] = rp_S.ssbo[st][r].size; }
@@ -368,7 +376,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                     float max_point = 2047.0f; memcpy(sl.cpu + 0x610, &max_point, 4); memcpy(sl.cpu + 0x644, &base_instance, 4);
                 }
                 if (cacheable && flag_read("nvk_drv_memo")) drv0_store(&k, &sl);
-                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV0_BYTES; break; }
+                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = DRV0_BYTES; if (btm) g_bt[3] += dt_now() - drv0_t0; break; }
             case NVN_RB_DRV2: {   // 驱动的贴图句柄表：贴图槽 s 的句柄（贴图号 | 采样器号 << 20）在第 4 + s 个 8 字节项
                 enum { DRV2_BYTES = (RP_HANDLE_TABLE_FIRST_SLOT + 32) * 8 };
                 drv2_key k; memset(&k, 0, sizeof k); k.c = c; k.seg = rp_seg_serial(); k.st = (uint32_t)st;
@@ -386,6 +394,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (!slc_get(c, (uint64_t)(uintptr_t)pg ^ (uint64_t)(pi + 1) << 60, 0x100, pg->c1[pi], &sl)) return skip("arena_alloc_failed", rec);
                 o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = 0x100; break; }
             case NVN_RB_CBUF: {
+                const uint64_t cbuf_t0 = btm ? dt_now() : 0;
                 const p_bind_buf *ub = &rp_S.ubo[st][e->src_reg];
                 if (!ub->addr || !ub->size) return skip("uniform_buffer_unbound", rec);
                 // 常量缓冲一律拷进本段的暂存区再绑：就是编码这一刻的内容（按序的 OP_UPDATE_UB 之后再用自然是新值），
@@ -393,7 +402,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (!rp_pool_find(ub->addr, ub->size, NULL, NULL)) return skip("uniform_buffer_outside_pools", rec);
                 if (ub->size > 0xffffffffull) return skip("uniform_buffer_too_large", rec);
                 if (!slc_get(c, ub->addr, ub->size, (const void *)(uintptr_t)ub->addr, &sl)) return skip("arena_alloc_failed", rec);
-                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = ub->size; break; }
+                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = ub->size; if (btm) g_bt[4] += dt_now() - cbuf_t0; break; }
             case NVN_RB_IMG: {
                 if (st != 5 || e->cls != NVN_GPU_RES_IMAGE || e->count > 1) return skip("compute_image_shape", rec);
                 if (!tv[i]) return skip("compute_image_unresolved", rec);
@@ -424,7 +433,9 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
         if (same) { rp_perf_add(RP_PERF_BIND_SKIP, 1); return 1; }
         memcpy(g_lb[pi].b, b, (size_t)n * sizeof *b);
     }
-    nvn_gpu_bind(c, st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st, b, n);
+    { const uint64_t bb = btm ? dt_now() : 0;
+      nvn_gpu_bind(c, st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st, b, n);
+      if (btm) { const uint64_t be = dt_now(); g_bt[1] += be - bb; g_bt[2]++; g_bt[0] += be - btm0; } }
     return 1;
 }
 

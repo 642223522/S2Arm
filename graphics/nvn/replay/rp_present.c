@@ -148,6 +148,12 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                          (double)pf[RP_PERF_KEEP_F_CMD] / f, (double)pf[RP_PERF_KEEP_F_SEG] / f, (double)pf[RP_PERF_KEEP_F_GEN] / f, (double)pf[RP_PERF_KEEP_F_REG] / f,
                          (double)pf[RP_PERF_KEEP_F_PG] / f, (double)pf[RP_PERF_KEEP_F_BI] / f, (double)pf[RP_PERF_KEEP_F_PIPESET] / f, (double)pf[RP_PERF_KEEP_F_ITEMS] / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+                { uint64_t bt_tot = 0, bt_be = 0, bt_n = 0; rp_bind_tm_take(&bt_tot, &bt_be, &bt_n);
+                  uint64_t bt_drv = 0, bt_buf = 0, bt_rest = 0; rp_bind_tm_take2(&bt_drv, &bt_buf, &bt_rest);
+                  snprintf(b, sizeof b, "分时（绑定重建，每帧）：重建 %.0f 次共 %.2f 毫秒（交后端 %.2f；暂存与构造 %.2f，其中驱动段 %.2f、常量缓冲与支持块 %.2f、其它 %.2f）",
+                           (double)bt_n / f, (double)bt_tot / 1e6 / f, (double)bt_be / 1e6 / f, (double)(bt_tot - bt_be) / 1e6 / f,
+                           (double)bt_drv / 1e6 / f, (double)bt_buf / 1e6 / f, (double)bt_rest / 1e6 / f);
+                  nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b); }
                 { uint64_t hb[5]; rp_frame_gap_take(hb); uint64_t ht = hb[0] + hb[1] + hb[2] + hb[3] + hb[4]; if (!ht) ht = 1;
                   snprintf(b, sizeof b, "分时（上屏间隔分布）：不到 29 毫秒 %.0f%%、29–37.5 毫秒 %.0f%%、37.5–46 毫秒 %.0f%%、46–54 毫秒 %.0f%%、更长 %.0f%%",
                            100.0 * (double)hb[0] / (double)ht, 100.0 * (double)hb[1] / (double)ht, 100.0 * (double)hb[2] / (double)ht, 100.0 * (double)hb[3] / (double)ht, 100.0 * (double)hb[4] / (double)ht);
