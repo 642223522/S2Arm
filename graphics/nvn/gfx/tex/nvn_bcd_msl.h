@@ -1,10 +1,10 @@
-// 无 BC 显卡上 BC1–5 与 BC7 的 GPU 解压核 bcd（nvn_mtl.m 上传冲刷时派发；单测 graphics/nvn/tests/t_bcd_gpu.m 对 bcdec 逐纹素比）。
-// 来源：MacNativeGames（https://github.com/ly05010419/MacNativeGames，MIT）games/wonder/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m 的 k_bcd_msl，提交 84eebcd0985c，原样带入（只去掉 3D 版 bcd3）；BC7 段（S2Arm #582）照 bcdec_bc7 移植。
-// The kernel bcd that decompresses BC1–5 and BC7 on GPUs without BC (dispatched at upload flush in nvn_mtl.m; graphics/nvn/tests/t_bcd_gpu.m compares it texel by texel with bcdec).
+// 无 BC 显卡上 BC1–5、BC6H 与 BC7 的 GPU 解压核 bcd（nvn_mtl.m 上传冲刷时派发；单测 graphics/nvn/tests/t_bcd_gpu.m 对 bcdec 逐纹素比）。
+// 来源：MacNativeGames（https://github.com/ly05010419/MacNativeGames，MIT）games/wonder/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m 的 k_bcd_msl，提交 84eebcd0985c，原样带入（只去掉 3D 版 bcd3）；BC7 / BC6H 段（S2Arm #582）照 bcdec_bc7 / bcdec_bc6h_half 移植。
+// The kernel bcd that decompresses BC1–5, BC6H and BC7 on GPUs without BC (dispatched at upload flush in nvn_mtl.m; graphics/nvn/tests/t_bcd_gpu.m compares it texel by texel with bcdec).
 #pragma once
 static const char k_bcd_msl[] =
 "#include <metal_stdlib>\nusing namespace metal;\n"
-"struct P { uint off, pitch, w, h, fmt, z; };\n"   // fmt: 1 BC1, 2 BC2, 3 BC3, 4 BC4, 5 BC4 signed, 6 BC5, 7 BC5 signed, 8 BC7
+"struct P { uint off, pitch, w, h, fmt, z; };\n"   // fmt: 1 BC1, 2 BC2, 3 BC3, 4 BC4, 5 BC4 signed, 6 BC5, 7 BC5 signed, 8 BC7, 9 BC6H, 10 BC6H signed
 "static float3 c565(uint c) { return float3((c >> 11) & 31, (c >> 5) & 63, c & 31) / float3(31, 63, 31); }\n"
 "static void col(device const uchar *b, thread float4 *o, bool four) {\n"
 "  uint c0 = b[0] | (b[1] << 8), c1 = b[2] | (b[3] << 8), ix = b[4] | (b[5] << 8) | (b[6] << 16) | (b[7] << 24); float3 e0 = c565(c0), e1 = c565(c1); float4 p[4];\n"
@@ -67,6 +67,48 @@ static const char k_bcd_msl[] =
 "    uint r = lerp7(e[2 * s][0], e[2 * s + 1][0], wt(cn, ci)), g = lerp7(e[2 * s][1], e[2 * s + 1][1], wt(cn, ci)), bl = lerp7(e[2 * s][2], e[2 * s + 1][2], wt(cn, ci)), a = lerp7(e[2 * s][3], e[2 * s + 1][3], wt(an, ai)), x;\n"
 "    if (rot == 1) { x = a; a = r; r = x; } else if (rot == 2) { x = a; a = g; g = x; } else if (rot == 3) { x = a; a = bl; bl = x; }\n"
 "    o[t] = float4(r, g, bl, a) / 255.0; } }\n"
+// BC6H (fmt 9 无符号 / 10 有符号): bcdec_bc6h_half 移植为整数运算，出的半精度位与 bcdec 完全一致；各模式端点位的排布由 bcdec 的 14 个 case 生成成表 k_h6
+// （每项 = 目标 | 左移 << 4 | 位数 << 8 | 倒序 << 12；目标 0–11 = 端点 i 的分量 c 在 i×3+c，12 = 分区号），分区表与 BC7 两分区的前 32 个相同
+// BC6H (fmt 9 unsigned / 10 signed): bcdec_bc6h_half ported with the same integer arithmetic, so the half-float bits equal bcdec; the endpoint bit layout of each mode is generated from
+// bcdec's 14 cases into k_h6 (entry = target | shift << 4 | bits << 8 | reversed << 12; target 0–11 = component c of endpoint i at i×3+c, 12 = partition); its partitions are BC7's first 32 two-subset ones
+"constant ushort k_h6[14][24] = {\n"
+"  {0x147, 0x148, 0x14b, 0xa00, 0xa01, 0xa02, 0x503, 0x14a, 0x407, 0x504, 0x10b, 0x40a, 0x505, 0x11b, 0x408, 0x506, 0x12b, 0x509, 0x13b, 0x50c, 0, 0, 0, 0},\n"
+"  {0x157, 0x14a, 0x15a, 0x700, 0x10b, 0x11b, 0x148, 0x701, 0x158, 0x12b, 0x147, 0x702, 0x13b, 0x15b, 0x14b, 0x603, 0x407, 0x604, 0x40a, 0x605, 0x408, 0x606, 0x609, 0x50c},\n"
+"  {0xa00, 0xa01, 0xa02, 0x503, 0x1a0, 0x407, 0x404, 0x1a1, 0x10b, 0x40a, 0x405, 0x1a2, 0x11b, 0x408, 0x506, 0x12b, 0x509, 0x13b, 0x50c, 0, 0, 0, 0, 0},\n"
+"  {0xa00, 0xa01, 0xa02, 0x403, 0x1a0, 0x14a, 0x407, 0x504, 0x1a1, 0x40a, 0x405, 0x1a2, 0x11b, 0x408, 0x406, 0x10b, 0x12b, 0x409, 0x147, 0x13b, 0x50c, 0, 0, 0},\n"
+"  {0xa00, 0xa01, 0xa02, 0x403, 0x1a0, 0x148, 0x407, 0x404, 0x1a1, 0x10b, 0x40a, 0x505, 0x1a2, 0x408, 0x406, 0x11b, 0x12b, 0x409, 0x14b, 0x13b, 0x50c, 0, 0, 0},\n"
+"  {0x900, 0x148, 0x901, 0x147, 0x902, 0x14b, 0x503, 0x14a, 0x407, 0x504, 0x10b, 0x40a, 0x505, 0x11b, 0x408, 0x506, 0x12b, 0x509, 0x13b, 0x50c, 0, 0, 0, 0},\n"
+"  {0x800, 0x14a, 0x148, 0x801, 0x12b, 0x147, 0x802, 0x13b, 0x14b, 0x603, 0x407, 0x504, 0x10b, 0x40a, 0x505, 0x11b, 0x408, 0x606, 0x609, 0x50c, 0, 0, 0, 0},\n"
+"  {0x800, 0x10b, 0x148, 0x801, 0x157, 0x147, 0x802, 0x15a, 0x14b, 0x503, 0x14a, 0x407, 0x604, 0x40a, 0x505, 0x11b, 0x408, 0x506, 0x12b, 0x509, 0x13b, 0x50c, 0, 0},\n"
+"  {0x800, 0x11b, 0x148, 0x801, 0x158, 0x147, 0x802, 0x15b, 0x14b, 0x503, 0x14a, 0x407, 0x504, 0x10b, 0x40a, 0x605, 0x408, 0x506, 0x12b, 0x509, 0x13b, 0x50c, 0, 0},\n"
+"  {0x600, 0x14a, 0x10b, 0x11b, 0x148, 0x601, 0x157, 0x158, 0x12b, 0x147, 0x602, 0x15a, 0x13b, 0x15b, 0x14b, 0x603, 0x407, 0x604, 0x40a, 0x605, 0x408, 0x606, 0x609, 0x50c},\n"
+"  {0xa00, 0xa01, 0xa02, 0xa03, 0xa04, 0xa05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},\n"
+"  {0xa00, 0xa01, 0xa02, 0x903, 0x1a0, 0x904, 0x1a1, 0x905, 0x1a2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},\n"
+"  {0xa00, 0xa01, 0xa02, 0x803, 0x12a0, 0x804, 0x12a1, 0x805, 0x12a2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},\n"
+"  {0xa00, 0xa01, 0xa02, 0x403, 0x16a0, 0x404, 0x16a1, 0x405, 0x16a2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}\n"
+"};\n"
+"constant uchar k_h6n[14] = {20, 24, 19, 21, 21, 20, 20, 22, 22, 24, 6, 9, 9, 9};\n"
+"constant uchar k_h6m[32] = {255, 255, 2, 10, 255, 255, 3, 11, 255, 255, 4, 12, 255, 255, 5, 13, 255, 255, 6, 255, 255, 255, 7, 255, 255, 255, 8, 255, 255, 255, 9, 255};\n"
+"constant uchar k_h6b[4][14] = {{10, 7, 11, 11, 11, 9, 8, 8, 8, 6, 10, 11, 12, 16}, {5, 6, 5, 4, 4, 5, 6, 5, 5, 6, 10, 9, 8, 4}, {5, 6, 4, 5, 4, 5, 5, 6, 5, 6, 10, 9, 8, 4}, {5, 6, 4, 4, 5, 5, 5, 5, 6, 6, 10, 9, 8, 4}};\n"
+"static int sx(int v, uint n) { return int(uint(v) << (32 - n)) >> (32 - n); }\n"
+"static int uq6(int v, uint n, bool sg) {\n"
+"  if (!sg) return n >= 15 ? v : !v ? 0 : v == (1 << n) - 1 ? 0xffff : ((v << 16) + 0x8000) >> n;\n"
+"  if (n >= 16) return v; bool s = v < 0; if (s) v = -v; int u = !v ? 0 : v >= (1 << (n - 1)) - 1 ? 0x7fff : ((v << 15) + 0x4000) >> (n - 1); return s ? -u : u; }\n"
+"static float fq6(int v, bool sg) { ushort h; if (!sg) h = ushort((v * 31) >> 6); else { v = v < 0 ? -(((-v) * 31) >> 5) : (v * 31) >> 5; h = v < 0 ? ushort(0x8000 | -v) : ushort(v); } return float(as_type<half>(h)); }\n"
+"static void bc6(device const uchar *b, thread float4 *o, bool sg) {\n"
+"  uint q[4]; for (int i = 0; i < 4; i++) q[i] = b[4 * i] | (b[4 * i + 1] << 8) | (b[4 * i + 2] << 16) | (b[4 * i + 3] << 24);\n"
+"  uint pos = 0, c = rb(q, pos, 2); if (c > 1) c |= rb(q, pos, 3) << 2; uint m = c < 2 ? c : k_h6m[c];\n"
+"  if (m > 13) { for (int i = 0; i < 16; i++) o[i] = float4(0, 0, 0, 1); return; }\n"
+"  int e[13] = {0}; for (uint i = 0; i < k_h6n[m]; i++) { uint s = k_h6[m][i], n = (s >> 8) & 15, v = rb(q, pos, n); if (s >> 12) v = reverse_bits(v) >> (32 - n); e[s & 15] |= int(v << ((s >> 4) & 15)); }\n"
+"  uint ne = m >= 10 ? 2 : 4, w0 = k_h6b[0][m], part = uint(e[12]);\n"
+"  if (sg) for (uint k = 0; k < 3; k++) e[k] = sx(e[k], w0);\n"
+"  if ((m != 9 && m != 10) || sg) for (uint i = 1; i < ne; i++) for (uint k = 0; k < 3; k++) e[i * 3 + k] = sx(e[i * 3 + k], k_h6b[1 + k][m]);\n"
+"  if (m != 9 && m != 10) for (uint i = 1; i < ne; i++) for (uint k = 0; k < 3; k++) { int v = (e[i * 3 + k] + e[k]) & ((1 << w0) - 1); e[i * 3 + k] = sg ? sx(v, w0) : v; }\n"
+"  for (uint i = 0; i < ne; i++) for (uint k = 0; k < 3; k++) e[i * 3 + k] = uq6(e[i * 3 + k], w0, sg);\n"
+"  uint ib = m >= 10 ? 4 : 3, pp = m >= 10 ? 0 : k_p2[part], fx = m >= 10 ? 1 : k_f2[part];\n"
+"  for (uint t = 0; t < 16; t++) { uint ix = rb(q, pos, ib - ((fx >> t) & 1)), s = (pp >> (2 * t)) & 3; int w = int(wt(ib, ix)); float3 r;\n"
+"    for (uint k = 0; k < 3; k++) r[k] = fq6((e[2 * s * 3 + k] * (64 - w) + e[(2 * s + 1) * 3 + k] * w + 32) >> 6, sg);\n"
+"    o[t] = float4(r, 1); } }\n"
 "static void dec(device const uchar *src, device const P &p, uint2 g, thread float4 *o) {\n"
 "  uint bb = (p.fmt == 1 || p.fmt == 4 || p.fmt == 5) ? 8 : 16; device const uchar *b = src + p.off + g.y * p.pitch + g.x * bb; float a[16], c[16];\n"
 "  if (p.fmt == 1) col(b, o, false);\n"
@@ -74,6 +116,7 @@ static const char k_bcd_msl[] =
 "  else if (p.fmt == 3) { col(b + 8, o, true); a8(b, a, false); for (int i = 0; i < 16; i++) o[i].a = a[i]; }\n"
 "  else if (p.fmt == 4 || p.fmt == 5) { a8(b, a, p.fmt == 5); for (int i = 0; i < 16; i++) o[i] = float4(a[i], 0, 0, 1); }\n"
 "  else if (p.fmt == 8) bc7(b, o);\n"
+"  else if (p.fmt == 9 || p.fmt == 10) bc6(b, o, p.fmt == 10);\n"
 "  else { a8(b, a, p.fmt == 7); a8(b + 8, c, p.fmt == 7); for (int i = 0; i < 16; i++) o[i] = float4(a[i], c[i], 0, 1); } }\n"
 "kernel void bcd(device const uchar *src [[buffer(0)]], device const P &p [[buffer(1)]], texture2d<float, access::write> dst [[texture(0)]], uint2 g [[thread_position_in_grid]]) {\n"
 "  if (g.x >= (p.w + 3) / 4 || g.y >= (p.h + 3) / 4) return; float4 o[16]; dec(src, p, g, o);\n"
