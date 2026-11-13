@@ -330,9 +330,10 @@ def device_hint(want):
 
 
 def device_kind(d):
-    """devicectl 设备 → 「iPad」或「iPhone」（文案里写实际的设备类型，不写死 iPhone）"""
+    """devicectl 设备 → 「iPad」或「iPhone」（文案里写实际的设备类型，不写死 iPhone）；Apple Vision Pro 按 iPad 兼容装，写 iPad"""
+    from diag import is_vision
     h = d.get("hardwareProperties", {})
-    return "iPad" if h.get("platform") == "iPadOS" or (h.get("productType") or "").startswith("iPad") else "iPhone"
+    return "iPad" if h.get("platform") == "iPadOS" or (h.get("productType") or "").startswith("iPad") or is_vision(d) else "iPhone"
 
 
 def _pick_device(devices, want):
@@ -340,7 +341,8 @@ def _pick_device(devices, want):
     给了 want（玩家选的那台）：只认它——在线（有线或同网）就用它；配对过但不在线 → 如实说「iPhone「名字」不在线」；没见过 → 没找到。
     不替玩家换一台（原先 want 对不上时「只有一台就用它」：续签时 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）。
     没给 want：只给装机前清单看（polling），有线优先挑出连着的那台供界面显示；真装机不走这里（phone() 先要求 want）"""
-    phones = [d for d in devices if d.get("hardwareProperties", {}).get("reality") == "physical" and d.get("hardwareProperties", {}).get("platform") in ("iOS", "iPadOS")]
+    from diag import is_mobile
+    phones = [d for d in devices if d.get("hardwareProperties", {}).get("reality") == "physical" and is_mobile(d)]
     live = [d for d in phones if _link(d).get("transportType") in ("wired", "localNetwork") or _link(d).get("tunnelState") == "connected"]
     if want:
         def named(d):
@@ -1109,7 +1111,8 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             devcert.sign_app(c, app, log)
             devcert.export_ipa(c, stage / "Payload")
         else:
-            sign_with_apple_id(c, app, team, bid, ents, udid, log, steps)
+            from diag import is_vision
+            sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=is_vision(dev))
         if steps: c.begin("装到 iPhone", 5, 6)
         from diag import devicectl
         for g in games:
@@ -1125,11 +1128,14 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def sign_with_apple_id(c, app, team, bid, ents, udid, log, steps):
-    """Apple ID 模式：按玩家 Xcode 账号申请开发描述文件（ensure_profile.sh）再用钥匙串身份签（dev_sign.py）"""
+def sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=False):
+    """Apple ID 模式：按玩家 Xcode 账号申请开发描述文件（ensure_profile.sh）再用钥匙串身份签（dev_sign.py）。
+    vision：目标是 Apple Vision Pro（按 iPad 兼容装）——申请描述文件的目标写 id=<UDID>，让 Xcode 自己认平台与「Designed for iPad」变体、登记这台设备
+    （原样写 platform=iOS 会找不到这台；理论支持、未真机验证）"""
     if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6, keychain=True)   # 用 Xcode 账号申请：可能弹钥匙串授权
     try:
-        c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log)
+        env = dict(c.env(), S2A_PROFILE_DEST=f"id={udid}") if vision and udid else None
+        c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log, env)
         if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)   # codesign 用钥匙串里的签名身份：可能弹授权（开发者证书模式读 p12，不弹）
         c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log)
     except Failure as e:
@@ -1247,7 +1253,7 @@ class MacPhone:
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
         # deviceKind / deviceName：完成页、诊断写「已装到 iPad「名字」」，不写死 iPhone
         self.info = dict(device=self.dev["name"], deviceName=self.dev["name"],
-                         deviceKind="iPad" if (self.dev.get("productType") or "").startswith("iPad") else "iPhone",
+                         deviceKind="iPad" if (self.dev.get("productType") or "").startswith(("iPad", "RealityDevice")) else "iPhone",   # Apple Vision Pro 按 iPad 兼容装
                          team=self.team["name"], free=self.team["free"])
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 

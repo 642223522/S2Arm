@@ -52,6 +52,27 @@ def devicectl(c, *args, timeout=120):
     return p.returncode, data, (p.stderr or p.stdout).strip()
 
 
+# Apple Vision Pro（visionOS）：按 iPad 兼容 App 装（「Designed for iPad」），走和 iPad 同一条路——理论支持、未真机验证（没有实物）。
+#   机型号以 RealityDevice 开头（本机 Xcode 的 XROS.platform 设备特征库：RealityDevice14,1 = Apple Vision Pro、17,1 = M5 款）；
+#   devicectl 给它报的 platform 写法没有公开资料，visionOS / xrOS 两种都认，机型号前缀兜底
+VISION_PLATFORMS = ("visionOS", "xrOS")
+
+
+def _hw(d):
+    """devicectl 设备（hardwareProperties 下）或 target 行（顶层 productType / platform）都认"""
+    return d.get("hardwareProperties") or d
+
+
+def is_vision(d):
+    h = _hw(d)
+    return (h.get("productType") or "").startswith("RealityDevice") or h.get("platform") in VISION_PLATFORMS
+
+
+def is_mobile(d):
+    """能装 iPhone / iPad 版 S2Arm 的设备：iPhone、iPad，以及按 iPad 兼容装的 Apple Vision Pro"""
+    return _hw(d).get("platform") in ("iOS", "iPadOS") or is_vision(d)
+
+
 def reachable(d):
     """连着线或隧道已通。数据线连着、已配对时隧道空闲是 disconnected，devicectl 用到会自己拉起（10-26 测试设备2 插着线被判「没连 iPhone」）"""
     cp = d.get("connectionProperties", {})
@@ -85,7 +106,7 @@ def pull(c):
         raise Failure("读不到设备列表：需要完整的 Xcode（devicectl）。" + (err.splitlines()[-1] if err else ""))
     want = (c.r.get("device") or "").strip()
     devices = [d for d in data.get("result", {}).get("devices", [])
-               if d.get("hardwareProperties", {}).get("platform") in ("iOS", "iPadOS")
+               if is_mobile(d)
                and reachable(d)
                and (not want or want in (d.get("identifier"), d.get("hardwareProperties", {}).get("udid"), d.get("deviceProperties", {}).get("name")))]
     if not devices:
