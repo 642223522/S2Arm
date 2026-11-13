@@ -50,6 +50,9 @@ namespace S2A.Services
         private static readonly int EnvPads = Environment.GetEnvironmentVariable("S2A_AP_PADS") == "2" ? 2 : 1;
         private static volatile int _pads = EnvPads;
         private static volatile PlayerIndex _second = PlayerIndex.Unknown;
+        // 手柄设置小程序最近一次给的人数上限（缺省 4）：真机上多连的手柄不分给游戏，直到下次小程序放宽或这局结束。
+        //   #809：游戏要 1 人、连着两个手柄时原先仍配两格，小程序重验「已连 2 > 上限 1」不过、反复重开（一局 2780 次）
+        private static volatile int _padCap = 4;
 
         public static PlayerIndex Player => _player;
         public static PlayerIndex SecondPlayer => _second;
@@ -122,10 +125,20 @@ namespace S2A.Services
         public static void SetPads(Switch device, int n)
         {
             if (n > 4) Red.Report($"游戏要 {n} 个手柄，虚拟手柄最多 4 个");
-            n = Math.Min(n, 4);
+            n = Math.Min(n, Math.Min(4, _padCap));   // 小程序给过的人数上限也不超（多连的手柄 / 自动玩家要的二号都不分给游戏）
             if (n <= _pads) return;
             _pads = n;
             Console.Error.WriteLine($"S2A 虚拟手柄：开到 {n} 个（Mac 前端按连接顺序各给一只，二号起不再镜像一号）");
+            SetPrimary(device, _player, _type);
+        }
+
+        // 手柄设置小程序给的人数上限（PlayerCountMax；≤ 0 当不限）：记下，已开的格数超了就收回到上限、按当前主手柄重配（同真机：只留选中的那几只）
+        public static void CapPads(Switch device, int max)
+        {
+            _padCap = max <= 0 ? 4 : Math.Min(max, 4);
+            if (_pads <= _padCap) return;
+            Console.Error.WriteLine($"S2A 虚拟手柄：游戏这次最多收 {_padCap} 人，从 {_pads} 个收回到 {_padCap} 个（多连的手柄不分给游戏）");
+            _pads = _padCap;
             SetPrimary(device, _player, _type);
         }
 
@@ -272,6 +285,7 @@ namespace S2A.Services
             _player = PlayerIndex.Handheld;
             _type = ControllerType.Handheld;
             _pads = EnvPads;
+            _padCap = 4;   // 上一局小程序给的上限不带进下一局
             _second = PlayerIndex.Unknown;
             _lastSticks = default;
             _movedOffHandheld = false;   // 审计 P1-94：上一局「挪出掌机格」不带进下一局（同进程重启）
