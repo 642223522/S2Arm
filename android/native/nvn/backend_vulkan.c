@@ -1336,7 +1336,10 @@ static void plc_close(uint64_t deadline) {
                 size_t want = size;
                 vr = vkGetPipelineCacheData(g.d, pc, &size, buf);
                 uint64_t t1 = now_ns();
-                if (vr == VK_SUCCESS && size > 0 && size <= want) {
+                if (vr == VK_SUCCESS && size > 0 && size <= want && size == g_plc_size_saved && !__atomic_load_n(&g_plcw_failed, __ATOMIC_ACQUIRE)) {
+                    // 查询大小可以是上界（同局中补写）：按实际取到的字节数再判一次「没变」
+                    plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：本局没有新增（取到 %zu 字节，与上次保存 / 读入时一致），不重写；本局经缓存建管线 %llu 条", size, made);
+                } else if (vr == VK_SUCCESS && size > 0 && size <= want) {
                     char why[96] = "";
                     plc_ensure_dir(g_plc_dir);
                     int w = nvk_driver_cache_write(g_plc_dir, g_plc_uuid, buf, size, why, sizeof why);
