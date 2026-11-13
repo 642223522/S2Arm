@@ -100,6 +100,7 @@ int main(void) { @autoreleasepool {
 
     printf("t_ubc_wait: sleeping-thread wait p50 %.1f us p99 %.1f us, %.2f wake calls a wait (max %d); 64 MB copy %.1f ms, %d wakes; stress %d pushes %llu+%llu waits %.0f ms, %llu wake calls; %d checks, %d failed\n",
            n1 ? lat[n1 / 2] / 1e3 : 0, n1 ? lat[n1 * 99 / 100] / 1e3 : 0, n1 ? (double)sumw / n1 : 0, maxw, big_ns / 1e6, bigw, NS * ROUNDS, (unsigned long long)waits, (unsigned long long)side, stress_ns / 1e6, (unsigned long long)sw, checks, failed);
+    if (failed) printf("✗ t_nvn_ubc_wait：%d 项里 %d 项不符\n", checks, failed); else printf("✓ t_nvn_ubc_wait：%d 项全过\n", checks);
     fflush(stdout);
     _exit(failed != 0);
 }}
