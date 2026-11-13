@@ -45,6 +45,37 @@ static int s2a_frames(uint64_t fp, uint64_t *lr, int max) {
     while (k < max && fp && !(fp & 7) && frame_read(fp, rec) && rec[1]) { lr[k++] = rec[1]; if (rec[0] <= fp) break; fp = rec[0]; }   // 返回地址 0 = 链尾（不可读页经内核读出全 0 也落在这里）
     return k;
 }
+// 指令原文（#368：没有原件的款崩在游戏代码里，日志只有地址，定不了空指针是哪次调用的返回值、写的哪个字段）：
+//   a 前 before 条、后 after 条 32 位指令字（内存里的，即改写后真正跑的那份），a 那条用 [ ] 标出；经内核读（同 frame_read），不可读写「读不到」。
+//   离线用任意 AArch64 反汇编器就能读，不需要游戏原件；每处几十字节，不是游戏内容。信号里可调（不分配、不取锁）
+void s2a_code_words(uint64_t a, int before, int after, char *b, size_t n) {
+    uint32_t w[32]; int k = before + after + 1; size_t o = 0; b[0] = 0;
+    if (before < 0 || after < 0 || k > 32 || (a & 3)) { snprintf(b, n, "（参数不对）"); return; }
+    uint64_t from = a - 4ull * (uint64_t)before;
+#if defined(__APPLE__)
+    vm_size_t got = 0;
+    int ok = vm_read_overwrite(mach_task_self(), (vm_address_t)from, 4 * (vm_size_t)k, (vm_address_t)w, &got) == KERN_SUCCESS && got == 4 * (vm_size_t)k;
+#else
+    struct iovec l = {w, 4 * (size_t)k}, r = {(void *)(uintptr_t)from, 4 * (size_t)k};
+    int ok = process_vm_readv(getpid(), &l, 1, &r, 1, 0) == (ssize_t)(4 * k);
+#endif
+    if (!ok) { snprintf(b, n, "读不到"); return; }
+    for (int i = 0; i < k && o + 12 < n; i++)
+        o += (size_t)snprintf(b + o, n - o, i == before ? "%s[%08x]" : "%s%08x", i ? " " : "", w[i]);
+}
+#if defined(__APPLE__)
+// 崩溃完整报告里的指令原文（只 Mac / iOS 的完整报告调；安卓走 crash_android_fatal.inc）：pc 前 8 条后 2 条；
+//   帧链里落在游戏模块的前 8 个返回地址，各取调用那条（返回地址 −4）前 3 条到它本身
+static void code_note(uint64_t pc, uint64_t fp) {
+    char b[400], at[160];
+    where(pc, at, sizeof at); s2a_code_words(pc & ~3ull, 8, 2, b, sizeof b); LOG("指令 pc %s：%s", at, b);
+    uint64_t lr[32]; int k = s2a_frames(fp, lr, 32), shown = 0;
+    for (int i = 0; i < k && shown < 8; i++) {
+        if (!module_of((void *)(uintptr_t)lr[i])) continue;
+        where(lr[i] - 4, at, sizeof at); s2a_code_words((lr[i] - 4) & ~3ull, 3, 0, b, sizeof b); LOG("指令 #%d 调用点 %s：%s", i, at, b); shown++;
+    }
+}
+#endif
 void s2a_backtrace(uint64_t fp) {
     uint64_t lr[32]; int k = s2a_frames(fp, lr, 32);
     for (int i = 0; i < k; i++) { char b[160]; where(lr[i], b, sizeof b); LOG("  #%d %s", i, b); }
@@ -292,6 +323,7 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
     LOG("【红】CRASH 信号 %d 地址 %p pc %s lr %s sp %#llx", sig, si->si_addr, bp, bl, (unsigned long long)uc->uc_mcontext->__ss.__sp);
     for (int i = 0; i < 29; i += 4) LOG("  x%-2d %016llx %016llx %016llx %016llx", i, uc->uc_mcontext->__ss.__x[i], uc->uc_mcontext->__ss.__x[i + 1], i + 2 < 29 ? uc->uc_mcontext->__ss.__x[i + 2] : 0, i + 3 < 29 ? uc->uc_mcontext->__ss.__x[i + 3] : 0);
     s2a_backtrace(fp);
+    code_note(pc, fp);
     fault_region_note(sig, si, uc);
     { uint64_t ht, hl, fs, fh; int fn; s2a_low_holes(&ht, &hl); s2a_fd_usage(&fn, &fs, &fh);   // 资源耗尽类崩溃先看这两样：低区地址 / 文件句柄
       LOG("崩溃时余量：低区空洞合计 %llu MB、最大一块 %llu MB；文件句柄已开 %d 个，软上限 %llu、硬上限 %llu", (unsigned long long)(ht >> 20), (unsigned long long)(hl >> 20), fn, (unsigned long long)fs, (unsigned long long)fh); }
