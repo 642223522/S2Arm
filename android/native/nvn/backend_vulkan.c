@@ -663,12 +663,17 @@ static void ref_drop(void *obj, int type) {
     }
 }
 
-static void cmd_ref(struct nvn_gpu_cmd_s *c, void *obj, int type) {
+// 录制点（函数名 + 行号）随报错带出：「release 之后仍在使用」只在真机长局里出现（#937），
+// 光凭一句话分不清是哪类句柄、哪条录制路径，普查报告里这一行就要能定位。
+#define cmd_ref(c, obj, type) cmd_ref_at((c), (obj), (type), __func__, __LINE__)
+static void cmd_ref_at(struct nvn_gpu_cmd_s *c, void *obj, int type, const char *fn, int line) {
     if (!obj) return;
     pthread_mutex_lock(&g_mu);
     if (ref_released(obj, type)) {   // release 之后再录制使用 = 契约违规（粘滞 E_ARG）
         pthread_mutex_unlock(&g_mu);
-        set_sticky(c, NVN_GPU_E_ARG, "release 之后仍在使用句柄");
+        static const char *const names[] = {"?", "buf", "tex", "view", "samp"};
+        set_sticky(c, NVN_GPU_E_ARG, "release 之后仍在使用句柄（%s %p，录制于 %s:%d）",
+                   type >= REF_BUF && type <= REF_SAMP ? names[type - REF_BUF + 1] : names[0], obj, fn, line);
         return;
     }
     ref_bump(obj, type);
