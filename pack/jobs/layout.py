@@ -106,6 +106,8 @@ def _drop_other_libraries(c, idx, want):
     gone = {l.get("id") for l in stale} - {want}
     idx["locations"] = [l for l in idx["locations"] if l not in stale]
     idx["games"] = {g: e for g, e in idx["games"].items() if e.get("location") not in gone}
+    if idx.get("last") in gone:
+        idx.pop("last")   # 上次用的是别的库根：不再当默认（#922）
 
 
 def default_id(c):
