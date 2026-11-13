@@ -11,6 +11,7 @@ namespace S2A.Services.Tests
     //      非 IPv4 = EAI_FAMILY 5；主机名缓冲放不下 = EAI_OVERFLOW 14
     //   ② ILibraryAppletAccessor 170：无入参、回 1 个复制句柄（事件读端、不触发），重复调回同一句柄；原先只回成功、不带句柄
     //   ③ auddmg:u IUserSession 0 列输入设备（功能 2）：宿主不收音，回 0 个、结果 0；原先报红
+    //   ④ vi IApplicationDisplayService 2103（21.0.0+，无名）：无入参、出 0x18 字节；回成功、出参全 0（TLS 先填 0xCC，看 0x18 字节确实被写成 0）；原先报未实现
     public static unsafe partial class Program
     {
         [SvcCase]
@@ -88,6 +89,22 @@ namespace S2A.Services.Tests
             Check("ILibraryAppletAccessor 170：再调回同一个事件", "同一个", r2.Copy.Count == 1 && FakeNative.CookieOf(r2.Copy[0]) == FakeNative.CookieOf(h) ? "同一个" : "不同");
 
             FakeNative.HandleClose(oe); FakeNative.HandleClose(sm);
+        }
+
+        [SvcCase]
+        private static void SvcGapsViCmd2103()
+        {
+            Encoding.ASCII.GetBytes("sm:\0").CopyTo(new Span<byte>(_game, 4));
+            uint sm = (uint)Svc(0x1F, 0, 0, (ulong)_game).Item2[1];
+            Reply gvi = Call(sm, Msg.Cmif(1, Name8("vi:u")));
+            uint viu = gvi.Move.Count == 1 ? gvi.Move[0] : 0;
+            Reply gds = Call(viu, Msg.Cmif(0, Bytes(0u)));                         // GetDisplayService
+            uint ids = gds.Move.Count == 1 ? gds.Move[0] : 0;
+            new Span<byte>(_tlr, 0x100).Fill(0xCC);
+            Reply r = Call(ids, Msg.Cmif(2103));
+            bool zero = r.Result == 0 && new ReadOnlySpan<byte>(r.Data, 0x18).IndexOfAnyExcept((byte)0) < 0;
+            Check("vi IApplicationDisplayService 2103：回成功、出 0x18 字节全 0", "结果 0、全 0", $"结果 {r.Result}、{(zero ? "全 0" : "不是全 0")}");
+            FakeNative.HandleClose(ids); FakeNative.HandleClose(viu); FakeNative.HandleClose(sm);
         }
     }
 }
