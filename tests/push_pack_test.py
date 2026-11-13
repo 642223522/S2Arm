@@ -672,6 +672,15 @@ class GameImgResume(Base):
         self.dev = Fake({}); push.plan(self.dev, self.pk, self.w, full=True, say=self.log.append)
         self.assertEqual((self.w / "direct_img.tsv").read_text().split("\t")[0], "game.img")
 
+    def test_v3_applied_on_phone_pushes_nothing(self):   # 11-13：机上已解开同一个 v3 包（manifest v3、index.applied.tsv 全对、.applied 非空）→ 一个文件都不推（原先只信 v2 的已应用索引，整批重推）
+        (self.pk / "manifest.json").write_text('{"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "x"}')
+        rows = (self.pk / "index.tsv").read_text()
+        files = {f"{RP}/manifest.json": '{"version": 3, "format": "img"}', f"{RP}/index.applied.tsv": rows, f"{RP}/.applied": "x"}
+        files.update({f"{RP}/{l.split(chr(9))[0]}": (self.pk / l.split(chr(9))[0]).read_bytes() for l in rows.splitlines()})
+        self.dev = Fake(files)
+        self.assertEqual(push.plan(self.dev, self.pk, self.w, say=self.log.append), (0, 0, 0))
+        self.assertEqual((self.w / "direct_img.tsv").read_text(), "")
+
     def test_full_write_checks_length_on_phone(self):   # 整份写完也核机上总长（11-11「传完并校验即成功」）：短一个字节不记账、说清长度
         dev = self.device()
         def short_write(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()[:-1]
