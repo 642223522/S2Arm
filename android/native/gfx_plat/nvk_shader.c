@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct entry { struct rp_prog prog; int failed; };
 static nvn_hmap g_progs = {.klen = 32};   // 内容身份（SHA-256）→ struct entry *
@@ -390,9 +391,42 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
 // 快路径：输入跟上一次取程序时一样，就还是那个程序。下面的摘要盖住 fill_facts 与身份用到的全部回放状态
 // （游戏每笔绘制前都会重绑贴图 / 缓冲，绑的东西对编译来说通常没变；不走快路径时每笔要重填事实、编码身份、算一次 SHA-256）。
 // 调试开关 nvk_resolve_check=1：命中后仍走一遍慢路径核对，不一致报红。
-// 一张小的直映射表而不是只记上一次：相邻两笔常在两三种材质之间来回换，只记一项时每次都落空。
-enum { LAST_N = 1024 };
-static struct last_ent { int ok; uint64_t key; uint64_t session, generation; const struct rp_prog *prog; } g_lasts[LAST_N];
+// 表是「512 个桶 × 4 路」而不是只记上一次：相邻两笔常在两三种材质之间来回换，只记一项时每次都落空；同桶 4 路让
+// 几种材质共存，桶内轮转淘汰（桶内热点不超过 4 个时就与 LRU 等价）。取不到程序的那次结果不占位：它本来也不会命中，
+// 只会把有用的项挤掉（同一份输入再进来时由 g_progs 里的失败项挡掉重复编译）。只在提交线程上用。
+enum { LAST_BUCKETS = 512, LAST_WAYS = 4 };
+static struct last_ent { uint64_t key, session, generation; const struct rp_prog *prog; } g_lasts[LAST_BUCKETS][LAST_WAYS];
+static uint8_t g_lasts_next[LAST_BUCKETS];
+static struct last_ent *last_find(uint64_t key, uint64_t session, uint64_t generation) {
+    struct last_ent *b = g_lasts[(key ^ (key >> 32)) & (LAST_BUCKETS - 1)];
+    for (int i = 0; i < LAST_WAYS; i++)
+        if (b[i].prog && b[i].key == key && b[i].session == session && b[i].generation == generation) return &b[i];
+    return NULL;
+}
+static void last_put(uint64_t key, uint64_t session, uint64_t generation, const struct rp_prog *prog) {
+    const unsigned b = (unsigned)((key ^ (key >> 32)) & (LAST_BUCKETS - 1)), w = g_lasts_next[b];
+    g_lasts_next[b] = (uint8_t)((w + 1) & (LAST_WAYS - 1));
+    g_lasts[b][w] = (struct last_ent){key, session, generation, prog};
+}
+// 快路读数（平台件读不到回放核心的 rp_perf）：开关 nvk_shader_cache_log=1 时每 4096 次取程序打一行，真机 A/B 看命中率
+// 与两条路的平均耗时。计时只在开关打开时做（此时那点 clock_gettime 相对 3.5µs 可忽略）。
+static uint64_t g_cache_calls, g_cache_hits, g_cache_misses, g_cache_hit_ns, g_cache_miss_ns, g_sig_recomp;
+static uint64_t g_mark_calls, g_mark_hits, g_mark_misses, g_mark_hit_ns, g_mark_miss_ns, g_mark_sig;   // 上一窗读数：打的是每 4096 次这一窗，不累加
+static int g_cache_log = -1;
+static uint64_t now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
+static void cache_log(void) {
+    const uint64_t calls = g_cache_calls - g_mark_calls, hits = g_cache_hits - g_mark_hits, misses = g_cache_misses - g_mark_misses;
+    const uint64_t hit_ns = g_cache_hit_ns - g_mark_hit_ns, miss_ns = g_cache_miss_ns - g_mark_miss_ns;
+    char line[208];
+    // sig = 这一窗重算组合槽事实摘要的次数（每个它 = 32 次随机访存 + 一次取锁）：它不随笔数涨就说明摘要缓存命中了。
+    snprintf(line, sizeof line, "shader_cache window calls=%llu hits=%llu misses=%llu hit_permille=%llu sig=%llu hit_ns=%llu miss_ns=%llu",
+        (unsigned long long)calls, (unsigned long long)hits, (unsigned long long)misses,
+        (unsigned long long)(calls ? hits * 1000 / calls : 0), (unsigned long long)(g_sig_recomp - g_mark_sig),
+        (unsigned long long)(hits ? hit_ns / hits : 0), (unsigned long long)(misses ? miss_ns / misses : 0));
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    g_mark_calls = g_cache_calls; g_mark_hits = g_cache_hits; g_mark_misses = g_cache_misses;
+    g_mark_hit_ns = g_cache_hit_ns; g_mark_miss_ns = g_cache_miss_ns; g_mark_sig = g_sig_recomp;
+}
 // 阶段键一律经核心导出接口取（rp_shader_stage_key）：没绑定 / 键缺失给全 0，不读可能过期的核心内部分量。
 static const uint8_t *stage_key(unsigned st) {
     static uint8_t k[3][8];
@@ -413,6 +447,25 @@ static uint64_t sep_fact_sig(int st) {
     c[st].sg = sg; c[st].rg = rg; c[st].base = (int)rp_S.tex_base; c[st].pn = (int)rp_S.tex_pool_n; c[st].ok = 1;
     return c[st].sig;
 }
+
+// 组合贴图槽（每阶段 0..31 格）的编译事实摘要，带缓存（做法同上一条）：input_sig 每笔绘制都要这一份，
+// 不缓存的话一笔要逐槽查一遍登记表 —— 两个阶段共 64 次随机访存 + 两次取锁，一帧 1114 笔就是 7 万次。
+// 摘要只取决于这 32 格的句柄、它们在登记表里的内容（登记 / 注销 / 清空会推进 rp_tex_reg_gen）、池的起点和大小：
+// 句柄逐个记下，代号与起点容量都对得上就沿用上次算的。代号先读、再比句柄：算的中途登记表变了，下次代号对不上
+// 会重算，不会把旧摘要配到新代号上。只在提交线程上用。
+struct comb_sig { uint64_t h[32], rg, sig; int base, pn; uint8_t ok; };
+static struct comb_sig g_comb_sig[3];
+static uint64_t combined_fact_sig(int st) {
+    struct comb_sig *c = &g_comb_sig[st];
+    const uint64_t rg = rp_tex_reg_gen();
+    if (c->ok && c->rg == rg && c->base == (int)rp_S.tex_base && c->pn == (int)rp_S.tex_pool_n &&
+        !memcmp(c->h, rp_S.tex[st], sizeof c->h)) return c->sig;
+    g_sig_recomp++;
+    c->sig = rp_tex_fact_sig(rp_S.tex[st], 32, rp_S.tex_base, rp_S.tex_pool_n);
+    memcpy(c->h, rp_S.tex[st], sizeof c->h);
+    c->rg = rg; c->base = (int)rp_S.tex_base; c->pn = (int)rp_S.tex_pool_n; c->ok = 1;
+    return c->sig;
+}
 static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, uint32_t stages) {
     uint64_t h = 1469598103934665603ull;
     #define MIX(v) do { h ^= (uint64_t)(v); h *= 1099511628211ull; } while (0)
@@ -428,8 +481,9 @@ static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct
     MIX(rp_S.nattr); for (int i = 0; i < 16; i++) MIX(i < rp_S.nattr ? rp_S.attr[i].fmt : 0);
     for (int st = 0; st < 6; st++) { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[st][i].size) m |= 1u << i; MIX(m); }
     MIX(rp_S.tex_pool_n); MIX(rp_S.samp_pool_n); MIX(rp_S.tf_on); MIX(rp_S.tex_base);
-    MIX(rp_tex_fact_sig(rp_S.tex[0], 32, rp_S.tex_base, rp_S.tex_pool_n)); MIX(rp_tex_fact_sig(rp_S.tex[1], 32, rp_S.tex_base, rp_S.tex_pool_n));
+    MIX(combined_fact_sig(0)); MIX(combined_fact_sig(1));
     MIX(sep_fact_sig(0)); MIX(sep_fact_sig(1));
+    // 几何阶段（VS|FS|GS）在重场景里极少出现，不进上面那张小表：直接算这 32 格的摘要（省下每次比 32 个句柄）。
     if (stages & 4u) MIX(rp_tex_fact_sig(rp_S.tex[2], 32, rp_S.tex_base, rp_S.tex_pool_n));
     if (stages & 4u) MIX(sep_fact_sig(2));
     #undef MIX
@@ -439,6 +493,8 @@ static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **ou
 
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
     *out = NULL;
+    if (g_cache_log < 0) g_cache_log = nvn_plat_flag("nvk_shader_cache_log", 0);   // 只读一次：平台开关在进程内不变
+    const uint64_t t0 = g_cache_log ? now_ns() : 0;
     uint32_t stages = rp_shader_graphics_stages();
     // 认两种：顶点 + 片元；只有顶点（只写深度的绘制：深度预通道、阴影图）。几何 / 细分阶段还没接
     if (stages != 7u && stages != 3u && stages != 1u) { char nm[32]; snprintf(nm, sizeof nm, "stages_%#x_not_vs_fs", stages); nvn_unimpl("shader", nm, NULL); return -1; }
@@ -453,15 +509,20 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
     if (s2a_direct_provider_compile_context(&pc) || !pc.profile_json || !pc.profile_bytes) { nvn_unimpl("shader", "no_compile_context", NULL); return -1; }
     uint64_t key = input_sig(q, &pc, stages);
-    struct last_ent *le = &g_lasts[(key ^ key >> 32) & (LAST_N - 1)];
     static int check = -1; if (check < 0) check = nvn_plat_flag("nvk_resolve_check", 0);
-    if (le->ok && le->key == key && le->session == pc.session && le->generation == pc.generation) {
+    g_cache_calls++;
+    struct last_ent *le = last_find(key, pc.session, pc.generation);
+    if (le) {
         *out = le->prog;
         if (check) { const struct rp_prog *chk = NULL; int rc = resolve_slow(q, &chk, &pc, stages, nst); if (rc || chk != le->prog) red1("resolve_fast_path_mismatch", "快路径给的程序与慢路径不一致"); }
+        g_cache_hits++;
+        if (g_cache_log) { g_cache_hit_ns += now_ns() - t0; if (!(g_cache_calls & 4095)) cache_log(); }
         return 0;
     }
     int rc = resolve_slow(q, out, &pc, stages, nst);
-    le->ok = rc == 0; le->key = key; le->session = pc.session; le->generation = pc.generation; le->prog = *out;
+    if (!rc) last_put(key, pc.session, pc.generation, *out);
+    g_cache_misses++;
+    if (g_cache_log) { g_cache_miss_ns += now_ns() - t0; if (!(g_cache_calls & 4095)) cache_log(); }
     return rc;
 }
 
@@ -599,8 +660,33 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
     return e;
 }
 
+// 计算程序的快路：照图形那条（g_lasts）的做法，按键直接返回上次得到的 rp_prog*。
+// 为什么值得：本款一帧 20 多个计算派发（GPU 剔除 / 后处理），每次派发都走完整请求——32 + 128 个组合贴图槽逐槽加锁取快照、
+// 建编译请求、算身份、查表，真机上一帧 2.5 毫秒（分时里「派发」共 3.7 毫秒，取资源循环只占 0.0）。
+// 键 = 计算阶段状态里真正影响编译的那些：阶段键、用户常量缓冲与存储缓冲的地址/长度、160 个贴图槽的句柄、池起点与容量，
+// 再加登记代号 rp_tex_reg_gen()（贴图登记/注销/改视图都会推进它，和图形那条快路的前提一致）。
+struct cs_fast_key {
+    uint64_t reg_gen; int32_t tex_base, tex_pool_n, samp_pool_n; uint8_t skey[8]; uint32_t skey_ok;
+    uint64_t ubo[16][2], ssbo[16][2], tex[160];
+};
+enum { CS_FAST_N = 8 };
+static struct { struct cs_fast_key k; const struct rp_prog *pg; int ok; } g_csfast[CS_FAST_N];
+static int g_csfast_next;
+static uint64_t g_csfast_hits, g_csfast_misses;   // 读数：快路命中 / 未命中（开关 nvk_shader_cache_log 时打进窗口行）
+static void cs_fast_key(struct cs_fast_key *k) {
+    memset(k, 0, sizeof *k);
+    k->reg_gen = rp_tex_reg_gen(); k->tex_base = rp_S.tex_base; k->tex_pool_n = rp_S.tex_pool_n; k->samp_pool_n = rp_S.samp_pool_n;
+    memcpy(k->skey, rp_S.skey[5], 8); k->skey_ok = rp_S.skey_ok;
+    for (int i = 0; i < 16; i++) { k->ubo[i][0] = rp_S.ubo[5][i].addr; k->ubo[i][1] = rp_S.ubo[5][i].size; }
+    for (int i = 0; i < 16; i++) { k->ssbo[i][0] = rp_S.ssbo[5][i].addr; k->ssbo[i][1] = rp_S.ssbo[5][i].size; }
+    for (int i = 0; i < 160; i++) k->tex[i] = rp_S.tex[5][i];
+}
 int rp_shader_resolve_compute(const struct rp_prog **out) {
     *out = NULL;
+    {   // 快路：键一样就直接返回上次的程序（不清任何状态：调用方只用 *out）
+        struct cs_fast_key k; cs_fast_key(&k);
+        for (int i = 0; i < CS_FAST_N; i++) if (g_csfast[i].ok && !memcmp(&g_csfast[i].k, &k, sizeof k)) { g_csfast_hits++; *out = g_csfast[i].pg; return 0; }
+    }
     if (!(rp_S.skey_ok >> 5 & 1)) { nvn_unimpl("shader", "compute_stage_key_missing", NULL); return -1; }
     if (!shader_texture_pool_ready()) return -1;
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
@@ -683,6 +769,9 @@ int rp_shader_resolve_compute(const struct rp_prog **out) {
     nvk_compute_request_release(&rq);
     if (e->failed) return -1;
     *out = &e->prog;
+    { struct cs_fast_key k; cs_fast_key(&k);   // 记进快路：下次同样的计算状态直接返回
+      g_csfast[g_csfast_next].k = k; g_csfast[g_csfast_next].pg = &e->prog; g_csfast[g_csfast_next].ok = 1;
+      g_csfast_next = (g_csfast_next + 1) % CS_FAST_N; g_csfast_misses++; }
     return 0;
 }
 
@@ -692,7 +781,14 @@ void rp_shader_reset(void) {
         for (int st = 0; st < RP_PROG_STAGES; st++) if (e->prog.sh[st]) nvn_gpu_shader_release(e->prog.sh[st]);
         free(e); }
     free(g_progs.keys); free(g_progs.vals); nvn_hm_init(&g_progs, 32);
-    g_profile.ok = 0; memset(g_lasts, 0, sizeof g_lasts);
+    g_profile.ok = 0;
+    // 快路的两张表都随会话清空：里面存的是 rp_prog*，跨会话留着就是悬空指针。
+    memset(g_lasts, 0, sizeof g_lasts); memset(g_lasts_next, 0, sizeof g_lasts_next);
+    memset(g_comb_sig, 0, sizeof g_comb_sig);
+    memset(g_csfast, 0, sizeof g_csfast); g_csfast_next = 0;   // 计算快路同样存 rp_prog*，跨会话必须清
+    g_csfast_hits = g_csfast_misses = 0;
+    g_cache_calls = g_cache_hits = g_cache_misses = g_cache_hit_ns = g_cache_miss_ns = 0; g_sig_recomp = 0;
+    g_mark_calls = g_mark_hits = g_mark_misses = g_mark_hit_ns = g_mark_miss_ns = g_mark_sig = 0;
     g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0;
     g_pool_programs = g_pool_attempts = g_pool_compiled = g_pool_rejected = g_pool_unsupported = 0;
     g_pool_request_rejected = g_pool_request_facts = g_pool_request_other = 0;

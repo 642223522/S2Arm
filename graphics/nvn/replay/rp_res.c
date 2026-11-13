@@ -21,10 +21,16 @@ struct rp_tex {
     uint8_t need_init;         // 刚建的存储，初始内容还没定（init_content）
     uint8_t zero_pending;      // 初始内容该是全零、还没填：等第一个通道用清零载入做掉（rp_view_for_attach / rp_tex_take_zero）
     uint8_t in_alias;
+    uint8_t check_dirty;       // 上次核对内容时判过脏、但没能传（没有段 / 上传失败）：下一次必须重查
+    uint8_t _rsv[3];
     uint64_t seen;             // 共用表里的：最近一次被查到 / 新建时的提交号 + 1（alias_take_over 用）
     uint64_t wrote;            // 最近一次被 GPU 写时的提交号 + 1（0 = 没写过）
     uint64_t stamp;            // 最近一次上传取的脏页代号
     uint64_t up_sub;           // 最近一次上传所在的提交序号
+    uint64_t check_epoch;      // 上次核对内容时的全局写代号（nvn_dirty_now）：等于当前值 = 那之后没有任何被跟踪的页被写过
+    uint64_t check_seg;        // 上次核对所在的段号：换段（新一次提交）必重核一次
+    uint64_t check_map;        // 上次核对时的映射代际（换底 / 重新登记后句柄与保护状态都要重验）
+    const void *span;          // 跟踪区间句柄（nvn_dirty_span）：NULL = 这段内存没被写跟踪，只能每次保守查
     const uint8_t *mem; uint64_t size;
 };
 // 同存储共用表的键：内存池 + 偏移 + 描述（去掉只表示用途、不影响存储布局的标志）
@@ -96,6 +102,13 @@ void nvn_be_reg_samp(int id, const samp_par *p) {
     pthread_mutex_unlock(&g_rmu);
 }
 
+// 开关 nvk_tex_epoch（缺省开）：贴图内容检查按全局写代号只做一次。照后端的每 256 次重读形态（nvn_plat_flag 在正式包里只返回缺省值）。
+static int tex_epoch_on(void) {
+    static int v = -1; static unsigned k;
+    if (v < 0 || !(++k & 255)) v = nvn_plat_flag("nvk_tex_epoch", 1) != 0;
+    return v;
+}
+
 // ---------- 内容归属 ----------
 void nvn_be_pool_gpu_written(const void *pool) { uint64_t k = (uint64_t)(uintptr_t)pool; pthread_mutex_lock(&g_rmu); nvn_hm_put(&g_pool_gpu, &k, (void *)1); pthread_mutex_unlock(&g_rmu); }
 void nvn_be_tex_cpu_written(const tex_t *t) {
@@ -103,7 +116,7 @@ void nvn_be_tex_cpu_written(const tex_t *t) {
     pthread_mutex_lock(&g_rmu);
     nvn_hm_put(&g_cpu_ser, &t->serial, (void *)1);
     struct rp_tex *x = nvn_hm_get(&g_by_serial, &t->serial);
-    if (x) { x->cpu = 1; x->gpu_written = 0; x->uploaded = 0; }   // 游戏刚用 CPU 写了它：下次使用整张重传
+    if (x) { x->cpu = 1; x->gpu_written = 0; x->uploaded = 0; x->check_epoch = 0; x->check_seg = 0; x->check_dirty = 1; }   // 游戏刚用 CPU 写了它：下次使用整张重传（纪元清零 = 强制重查）
     pthread_mutex_unlock(&g_rmu);
 }
 // 调试取证：这个序号的存储现在的归属（位 0 当 CPU 贴图、位 1 传过、位 2 GPU 写过、位 3 有存储），没建过 = 0
@@ -196,7 +209,7 @@ static int upload_all(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c, int track
     int bw = 1, bh = 1; int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     if (!bpb) { nvn_unimpl("fmt", "upload_unknown_format", t); return -1; }
     uint64_t st = 0;
-    if (track) { nvn_dirty_protect(t->mem, t->L.size); st = nvn_dirty_now(); }   // 先保护、取代号、再读：取代号之后的写下次查得到
+    if (track) { nvn_dirty_protect(t->mem, t->L.size); st = nvn_dirty_now(); x->span = nvn_dirty_span(t->mem, t->L.size); }   // 先保护、取代号、再读：取代号之后的写下次查得到
     uint32_t levels = t->d.levels ? t->d.levels : 1, layers = t->L.layers ? t->L.layers : 1;
     int is3d = t->d.target == NVN_TEXTURE_TARGET_3D;
     uint8_t *tmp = NULL; size_t cap = 0; int rc = 0;
@@ -384,9 +397,22 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
         nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);
         if (xc) { x->zero_pending = 0; if (!x->gpu_written) { zero_fill(t, x, xc); rp_perf_add(RP_PERF_RES_ZERON, 1); } }
     }
-    if (x->cpu && !x->gpu_written && c && t->mem && (!x->uploaded || nvn_dirty_since(t->mem, t->L.size, x->stamp))) {
-        nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);   // 上传是传输：录进前置段（本次提交里第二次上传才回主段）
-        if (xc) upload_all(t, x, xc, 1);
+    if (x->cpu && !x->gpu_written && c && t->mem) {
+        // 内容核对按「全局写代号」只做一次（同 rp_buf.c 的页核对快路）：代号没动 = 上次核对之后游戏没写过任何被跟踪的页。
+        // 段号进键：换段（新一次提交）必重核一次——「一次提交里游戏不能改 GPU 正在读的贴图」只对一次提交成立。
+        // 映射代际进键：换底 / 重新登记后旧句柄与保护状态都不作数（同 rp_buf 的 seen_map）。
+        const uint64_t now0 = nvn_dirty_now(), map0 = nvn_dirty_mapping_generation(), seg0 = rp_seg_serial();
+        if (tex_epoch_on() && x->uploaded && x->span && !x->check_dirty && x->check_epoch == now0 && x->check_seg == seg0 && x->check_map == map0
+            && !nvn_dirty_tracking_unreliable()) {
+            rp_perf_add(RP_PERF_TEX_EPOCH, 1);
+        } else {
+            x->span = nvn_dirty_span(t->mem, t->L.size);   // 换底 / 重新登记后重取句柄（NULL = 不再被跟踪，照旧每次都查）
+            if (!x->uploaded || x->check_dirty || nvn_dirty_since(t->mem, t->L.size, x->stamp)) {
+                nvn_gpu_cmd xc = rp_xfer_cmd(&x->up_sub);   // 上传是传输：录进前置段（本次提交里第二次上传才回主段）
+                if (xc && upload_all(t, x, xc, 1) == 0) { x->check_epoch = now0; x->check_seg = seg0; x->check_map = map0; x->check_dirty = 0; }
+                else x->check_dirty = 1;
+            } else { x->check_epoch = now0; x->check_seg = seg0; x->check_map = map0; x->check_dirty = 0; }
+        }
     }
     nvn_gpu_tex g = x->g;
     rp_perf_add(RP_PERF_RES_INIT, res_now() - r1_);   // 持锁做的全部事（查表 / 新建 / 初始化 / 上传）
