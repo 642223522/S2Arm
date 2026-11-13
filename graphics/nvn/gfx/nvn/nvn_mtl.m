@@ -7890,8 +7890,10 @@ static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss) {   // the padded vari
 }
 // Make the variant and load it: S2A.Dsh writes it from the guest code / control (code 0: none to make it from). → the shader's entry point in it, nil with why
 static id<MTLFunction> vp_build(NvShader *vs, const uint8_t md[8], uint64_t code, const void *ctl, uint32_t mask, char *why, size_t n) {
-    if (!code) { snprintf(why, n, "the game no longer holds its control section to translate it"); return nil; }
-    char path[1200]; int rc = dm_shader_vpad(md, code, ctl, mask, path, sizeof path);
+    char path[1200]; int rc;
+    if (!code && vs->mesh_kind == 2) rc = dm_shader_vpad_cached_mesh(md, mask, path, sizeof path);
+    else if (!code) { snprintf(why, n, "the game no longer holds its control section to translate it"); return nil; }
+    else rc = dm_shader_vpad(md, code, ctl, mask, path, sizeof path);
     if (rc) { snprintf(why, n, "%s", rc == 3 ? "its translation already writes those outputs (or has no main0_out to add them to)" : "the device could not make it"); return nil; }
     NSString *src = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
     if (!src || ![src hasPrefix:@"// s2a:vs-pad 1 "]) { snprintf(why, n, "%s %s", path, src ? "is of another format" : "is unreadable"); return nil; }
@@ -7915,7 +7917,12 @@ static int vp_ask(const prog_t *p, NvShader *vs, uint32_t miss) {
     int st = vs->vp_st; uint32_t want = (st == SE_READY ? vs->vp_mask : 0) | miss;
     if (st == SE_BUSY || st == SE_FAIL || (st == SE_READY && (vs->vp_mask & miss) == miss)) { pthread_mutex_unlock(&g_vp_mu); return st != SE_FAIL; }
     vs->vp_st = SE_BUSY; pthread_mutex_unlock(&g_vp_mu);
-    uint8_t md[8] = {0}; int at = p ? prog_stage_of(p, vs->key, md) : -1; uint64_t t0 = bp_now();
+    // The library shader's key remains valid after the guest reuses its program/control section.
+    // prog_stage_of only supplies live guest inputs; on a miss it may leave md at zero or at
+    // another stage's key. The cached mesh source must always be looked up by vs->key.
+    uint8_t md[8] = {0}, live[8];
+    for (int i = 0; i < 8; i++) { unsigned b = 0; if (sscanf(vs->key + 2 * i, "%2x", &b) != 1) break; md[i] = (uint8_t)b; }
+    int at = p ? prog_stage_of(p, vs->key, live) : -1; uint64_t t0 = bp_now();
     if (se_sync()) { char why[300] = ""; id<MTLFunction> f = vp_build(vs, md, at < 0 ? 0 : p->sd[at].data, at < 0 ? NULL : p->sd[at].control, want, why, sizeof why); vp_done(vs, f, want, why, t0, "同步现编"); return f != nil; }
     uint64_t code = 0; const void *ctl = NULL; void *snap = at < 0 ? NULL : dm_shader_snap(p->sd[at].data, p->sd[at].control, &code, &ctl); uint64_t key; memcpy(&key, md, 8);
     fprintf(stderr, "[s2a] 顶点补齐变体：程序号 %s 顶点 %.16s 首遇缺 user(locn) 掩码 %#x，后台编，编好前这对的绘制照旧跳过\n", s2a_nvn_game_id(), vs->key, want);
