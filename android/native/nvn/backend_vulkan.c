@@ -3122,7 +3122,7 @@ static int pass_reopen(struct nvn_gpu_cmd_s *c, const struct reopen_fix *fx, uin
 static uint64_t g_pbp_ns[6], g_pbp_n;
 static void pass_prof(int i, uint64_t t0) {
     static int on = -1; static unsigned k;
-    if (on < 0 || !(++k & 255)) on = nvn_plat_flag("nvk_pass_prof", 0) != 0;
+    if (on < 0 || !(++k & 255)) on = nvn_plat_flag("nvk_pass_prof", 1) != 0;
     if (!on) return;
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
     if (i >= 0) g_pbp_ns[i] += now - t0;
