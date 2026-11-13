@@ -65,7 +65,15 @@ void s2a_android_frame_note(void);
 typedef struct { _Atomic uint64_t cnt; void *fn; } nvn_slot_t;
 nvn_slot_t nvn_slot[NVN_NFUNC];                 // The thunk accesses it by i*16; the layout must not change
 _Static_assert(sizeof(nvn_slot_t) == 16, "the trampolines are addressed in 16-byte steps");
-extern void *nvn_thunk[NVN_NFUNC];
+extern void *nvn_thunk[NVN_NFUNC], *nvn_thunk_fast[NVN_NFUNC];
+// Call counts (the counting trampolines nvn_thunk, nvn_thunks.S) only when asked for: DM_NVN_COUNT=1, or the per-frame table DM_NVN_TSV with its call rows (DM_NVN_TSV_CALLS=0 writes only
+// timing). Each count is an atomic add on a cache line every recording thread shares; otherwise the game gets the uncounted trampolines nvn_thunk_fast and the per-frame call lines are
+// not written (ported from nxnative e250bb8b, MIT: there the trampolines of nvnBufferGetAddress / BindUniformBuffer took about 25 times the time of the functions they lead to)
+static int nvn_counting(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_NVN_COUNT"), *c = getenv("DM_NVN_TSV_CALLS"); v = (e && atoi(e)) || (getenv("DM_NVN_TSV") && !(c && !atoi(c))); }
+    return v;
+}
 extern const char *nvn_names[NVN_NFUNC];
 extern void nvn_unimpl_entry(void);
 extern void nvn_prof_entry(void);
@@ -133,7 +141,7 @@ static void *nvn_lookup(const char *name) {
 #if defined(__ANDROID__)
             return nvn_slot[i].fn;   // Android 直接返回强类型实现，避免 Apple 汇编 thunk
 #else
-            return nvn_thunk[i];
+            return nvn_counting() ? nvn_thunk[i] : nvn_thunk_fast[i];
 #endif
         }
     LOG("【红】 NVN address lookup of an unknown name: %s", name ? name : "(null)");
@@ -792,7 +800,14 @@ static int32_t pool_nvmap(pool_t *p) {
     int32_t h = __atomic_load_n(&p->nvmap, __ATOMIC_ACQUIRE);
     if (h) return h;
     static int (*mk)(uint64_t, uint32_t); static int looked;
+#if defined(__ANDROID__)
+    // 安卓：服务层 NativeAOT 与本文件静态并入同一个 libs2arm_android.so，链接带 --exclude-libs,ALL，导出不进动态表，
+    //   dlsym(RTLD_DEFAULT) 恒为 NULL（010045B018EC2000：每局句柄 0，影片播放器 NvBlit 已释放的缓冲崩在 sdk 内）。
+    //   改成链接期弱引用：出包的单库里由归档解析（core-link 审计：归档定义的导出在库里仍未解析就失败）；不带服务层的门禁链接（gfx_plat/gate.sh，-z defs）里为空，走下面的报红
+    { extern int S2A_NvMapFromGuest(uint64_t address, uint32_t size) __attribute__((weak)); if (!looked) { mk = S2A_NvMapFromGuest; looked = 1; } }
+#else
     if (!looked) { mk = (int (*)(uint64_t, uint32_t))dlsym(RTLD_DEFAULT, "S2A_NvMapFromGuest"); looked = 1; }
+#endif
     if (!mk || p->size > UINT32_MAX) { static int once; if (!once++) LOG("【红】 nvnTextureGetNvRmSurfaceNVX: no nvmap handle for pool %p size %#llx (%s)", (void *)p, (unsigned long long)p->size, mk ? "pool over 4 GB" : "no service layer: S2A_NvMapFromGuest missing"); return 0; }
     h = mk((uint64_t)(uintptr_t)p->mem, (uint32_t)p->size);
     int32_t z = 0;
@@ -3084,19 +3099,21 @@ static void dump_frame(void) {
         static char tp[1024]; const char *t = nvn_diag_path(getenv("DM_NVN_TSV"), tp, sizeof tp); if (t && !(g_tsv = fopen(t, "w"))) LOG("【红】 cannot open %s", t);   // iOS: relative path under Documents
         if (g_tsv) fprintf(g_tsv, "# kind: nvn-per-frame  value = call count when name is an NVN function name; names starting with @ are timing probes (ms / count)\nframe\tname\tvalue\n");
     }
-    uint64_t total = 0; unsigned nfn = 0;
-    char line[8192]; size_t o = 0; line[0] = 0;
-    for (unsigned i = 0; i < NVN_NFUNC; i++) {
-        uint64_t c = atomic_load(&nvn_slot[i].cnt), d = c - g_prev[i];
-        g_prev[i] = c;
-        if (!d) continue;
-        total += d; nfn++;
-        if (g_tsv && calls) fprintf(g_tsv, "%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
-        if (g_frame <= (uint64_t)nframes && o < sizeof line - 96) o += snprintf(line + o, sizeof line - o, " %s=%llu", nvn_names[i] + 3, d);
-    }
-    if (g_tsv) fflush(g_tsv);
-    if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu: %u functions %llu calls |%s", g_frame ? "frame" : "init", g_frame, nfn, total, line);
-    else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions %llu calls", g_frame, nfn, total);
+    if (nvn_counting()) {   // the call counts exist only with the counting trampolines (nvn_counting)
+        uint64_t total = 0; unsigned nfn = 0;
+        char line[8192]; size_t o = 0; line[0] = 0;
+        for (unsigned i = 0; i < NVN_NFUNC; i++) {
+            uint64_t c = atomic_load(&nvn_slot[i].cnt), d = c - g_prev[i];
+            g_prev[i] = c;
+            if (!d) continue;
+            total += d; nfn++;
+            if (g_tsv && calls) fprintf(g_tsv, "%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
+            if (g_frame <= (uint64_t)nframes && o < sizeof line - 96) o += snprintf(line + o, sizeof line - o, " %s=%llu", nvn_names[i] + 3, d);
+        }
+        if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu: %u functions %llu calls |%s", g_frame ? "frame" : "init", g_frame, nfn, total, line);
+        else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions %llu calls", g_frame, nfn, total);
+    } else if (!g_frame) LOG("[nvn] call counts off (DM_NVN_COUNT=1 turns them on)");
+    if (g_tsv) fflush(g_tsv);   // the @ timing rows too, with or without call counts
     if (g_frame && g_frame % 300 == 0) {   // 审计 #1534 P1-23 采样：累计值，0 也打；首次、变了、或满 3000 帧打一行
         static uint64_t lf, l0, l1; static int any; uint64_t n0 = __atomic_load_n(&g_nvn_qws_n, __ATOMIC_RELAXED), n1 = __atomic_load_n(&g_nvn_qws_unfenced, __ATOMIC_RELAXED);
         if (!any || n0 != l0 || n1 != l1 || g_frame - lf >= 3000) { any = 1; lf = g_frame; l0 = n0; l1 = n1;
