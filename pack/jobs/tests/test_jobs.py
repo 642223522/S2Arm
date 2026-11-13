@@ -303,7 +303,8 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(str(e.exception), "S2Arm 工具退出，当前阶段未完成。")
 
     def test_connected_counts_wired_paired_with_idle_tunnel(self):
-        # 10-26 测试设备2：数据线连着、已配对，隧道空闲 disconnected → 算连着；无线且隧道没通、没配对的不算
+        # 10-26 测试设备2：数据线连着、已配对，隧道空闲 disconnected → 算连着。11-13 起（维护者：插着手机别说识别不了）：
+        #   无线且隧道没通的（N）、插着线还没配对的（U）也列出来给玩家选——在不在线、配没配对由各行连接状态显示，装的那一步会去配对
         import unittest.mock as um, diag, target
         devices = {"result": {"devices": [
             {"identifier": "W", "hardwareProperties": {"reality": "physical", "platform": "iOS", "productType": "iPhone18,2"}, "deviceProperties": {"name": "测试设备2", "osVersionNumber": "27.1"},
@@ -311,7 +312,7 @@ class JobsTests(unittest.TestCase):
             {"identifier": "N", "hardwareProperties": {"reality": "physical", "platform": "iOS"}, "connectionProperties": {"tunnelState": "unavailable", "transportType": None, "pairingState": "paired"}},
             {"identifier": "U", "hardwareProperties": {"reality": "physical", "platform": "iOS"}, "connectionProperties": {"tunnelState": "disconnected", "transportType": "wired", "pairingState": "unpaired"}}]}}
         with um.patch.object(diag, "devicectl", lambda c, *a, timeout=120: (0, devices, "")), um.patch.object(target, "gpu_arch", lambda *a: "g18"):
-            self.assertEqual([d["id"] for d in target.connected(self.c)], ["W"])
+            self.assertEqual([d["id"] for d in target.connected(self.c)], ["W", "N", "U"])
 
     def test_emit_survives_frontend_gone(self):
         # 10-26：启动器（读作业标准输出的一端）没了，作业不能因写断掉的管道而死；事件照写记录，之后起的子进程标准输出指向 /dev/null
@@ -2528,6 +2529,19 @@ class JobsTests(unittest.TestCase):
         with self.assertRaises(Failure):
             library.keys(self.c)
         self.assertIn("a" * 64, self.c.keys.read_text())
+
+    def test_game_file_picked_as_keys_is_named(self):
+        # 诊断 D-HZF3：玩家在导入密钥处连选 4 次游戏原件（.nsp / .nsz），只看到「过大」「格式无效」。期望手写：
+        #   原件扩展名（大小写不论）一律说「选的是游戏文件」、码 keys_invalid、原有密钥不动；真密钥照旧导入
+        self.c.keys.parent.mkdir(parents=True)
+        self.c.keys.write_text("header_key = " + "a" * 64)
+        for name, body in (("Game [0100000000000000][v0].NSP", b"PFS0" + b"\0" * (2 << 20)), ("Game.nsz", b"PFS0")):
+            with self.subTest(name=name):
+                f = self.root / name; f.write_bytes(body); self.c.r["path"] = str(f)
+                with self.assertRaises(Failure) as e:
+                    library.keys(self.c)
+                self.assertTrue(str(e.exception).startswith("选的是游戏文件"), str(e.exception)); self.assertEqual(e.exception.code, "keys_invalid")
+                self.assertIn("a" * 64, self.c.keys.read_text())
 
     def test_mapping_rejects_malformed_native_values_and_duplicate_axes(self):
         config = dict(schema=1, keyboard={"A": {"code":14}}, mouse={}, gamepad={}, axes={}, deadzone=.15,

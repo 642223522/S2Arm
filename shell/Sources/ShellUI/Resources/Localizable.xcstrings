@@ -1,6 +1,38 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Couldn’t read this picture: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t read this picture: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读不了这张图：%@"
+          }
+        }
+      }
+    },
+    "Photos didn’t hand over this picture. Try another one.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos didn’t hand over this picture. Try another one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "照片没有把这张图交过来，换一张试试。"
+          }
+        }
+      }
+    },
     "Sound": {
       "localizations": {
         "en": {
@@ -29,6 +61,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "静音模式下也播放声音"
+          }
+        }
+      }
+    },
+    "This file isn’t a picture the cover can use. Try another one.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file isn’t a picture the cover can use. Try another one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个文件不是封面能用的图片，换一张试试。"
+          }
+        }
+      }
+    },
+    "This picture couldn’t be converted for the cover. Try another one.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This picture couldn’t be converted for the cover. Try another one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这张图转不成封面，换一张试试。"
           }
         }
       }
@@ -12609,52 +12673,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个名字已经有人用了。"
-          }
-        }
-      }
-    },
-    "Use %@ characters or fewer.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Höchstens %@ Zeichen."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use %@ characters or fewer."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ caractères maximum."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Massimo %@ caratteri."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 文字以内にしてください。"
-          }
-        },
-        "sv": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Högst %@ tecken."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "名字最多 %@ 个字。"
           }
         }
       }

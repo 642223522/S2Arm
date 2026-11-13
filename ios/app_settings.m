@@ -250,8 +250,20 @@ static UILabel *textLabel(UIFontTextStyle style) {
         cell.accessoryView = control; return cell; }
     // 包里 60 帧是关的（强信号：逻辑速度红 / 崩溃 / 卡死 / 帧率达不到；11-02 起全引擎默认开，只有强信号才关）：开关显示玩家手动开没开（S2AFps60Manual，缺省关、不跟 S2AFps60 的缺省开），打开时先提示（11-02 维护者 / 维护者 定的文案）；下次启动生效（settings.m）
     // 包里满屏是关的（强信号：满屏画面坏 / 崩溃归因，tools/caps_policy.py）：设置开关改不动，如实显示关、置灰、写原因（不再缺省显示开、按了没用）
+    // 11-13 维护者「不许堵门」：原先锁灰不让开；现在开关照常可按，显示的是玩家有没有强制开（S2AWidenForce），打开时提示已知问题，下次启动生效
     if ([key isEqualToString:@"S2AWidescreen"] && s2a_ios_caps_value("widen") == 0) {
-        control.on = NO; control.enabled = NO; cell.detailTextLabel.text = S2AL(@"settings.widen.blocked"); control.accessibilityValue = cell.detailTextLabel.text;
+        NSUserDefaults *d = s2a_ios_settings_defaults();
+        control.on = [d boolForKey:@"S2AWidenForce"]; cell.detailTextLabel.text = S2AL(@"settings.widen.blocked"); control.accessibilityValue = cell.detailTextLabel.text;
+        __weak S2ASettingsController *weakSelf = self;
+        [control addAction:[UIAction actionWithHandler:^(UIAction *action) {
+            BOOL on = ((UISwitch *)action.sender).on;
+            [d setBool:on forKey:@"S2AWidenForce"];
+            if (on) [d setBool:YES forKey:@"S2AWidescreen"];   // 先前关过宽屏（存着 NO）会压过强制开
+            if (!on) return;
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:cell.textLabel.text message:S2AL(@"settings.widen.blocked.message") preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf.navigationController.topViewController presentViewController:alert animated:YES completion:nil];
+        }] forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = control; return cell; }
     if ([key isEqualToString:@"S2AFps60"] && s2a_ios_caps_value("fps60") == 0) {
         NSUserDefaults *d = s2a_ios_settings_defaults();
@@ -427,7 +439,8 @@ static UILabel *textLabel(UIFontTextStyle style) {
 @end
 
 void s2a_settings_present(UIViewController *presenter) {
-    if (!presenter || presenter.presentedViewController) return;
+    if (!presenter) return;
+    presenter = s2a_top_presenter(presenter);
     s2a_vpad_set_settings_open(YES);
     S2ASettingsNavigation *navigation = [[S2ASettingsNavigation alloc] initWithRootViewController:[S2ASettingsController new]];
     navigation.modalPresentationStyle = UIModalPresentationOverFullScreen; navigation.modalInPresentation = YES;

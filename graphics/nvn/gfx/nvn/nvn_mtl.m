@@ -85,6 +85,7 @@ static uint64_t c2_handle(int stage, unsigned b);   // the handle c2 holds at by
 #include <errno.h>
 #include <execinfo.h>
 #include <os/lock.h>
+#include "../../host/addr_wait.h"   // the uniform copy hand-off (nvn_rec.h ubc_wait)
 // Function parameters in this file are never retained again in the callee (the caller / global tables already hold them, and lifetime is guaranteed by defer_obj_release): saves a retain / release pair per call on the hot path
 #pragma clang attribute push(__attribute__((objc_externally_retained)), apply_to = function)
 
@@ -589,6 +590,7 @@ static void udc_selftest(void) {
     }
 }
 static void bcd_prewarm(void);   // no BC: start building the decompression pipeline (defined with bcd_pso)
+static void ixc_prewarm(void); static void tensor_sq_prewarm(void);   // Switch 2: start building the indirect conversion / tensor stand-in kernels (defined with ixc_run / tensor_sq_pass)
 void mtl_init(void) {
     if (g_dev) return;
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
@@ -691,6 +693,7 @@ void mtl_init(void) {
     udc_selftest();
     warm_announce();
     bcd_prewarm();   // S2Arm #582: no BC, the decompression pipeline is built in the background (see bcd_ready)
+    ixc_prewarm(); tensor_sq_prewarm();   // S2Arm #674: Switch 2, the two kernels compiled from source are built in the background (see ixc_ready / tensor_sq_ready)
 }
 
 
@@ -3773,6 +3776,8 @@ typedef struct bcal_e {
     _Atomic uint64_t wser, lgen[16], maxgen;          // 各层最近一次写的代数（0 = 没写过）、其中最大的
     _Atomic int seen;                    // 这段存储上解析过 BC 贴图：再写时 g_ser_gen 前进（③）
     _Atomic uint64_t s_ser, s_gen; const void *_Atomic s_r;   // 最近一次同步：哪张 BC 贴图、同步到的代数、它当时解析成的 Metal 贴图（无锁的「已是最新」判定）
+    void *wtex;                          // 写入者的 Metal 贴图（CFBridgingRetain，g_bcal_mu 下换）：游戏画完就把那张未压缩贴图 Finalize 了，字节只在 GPU 上，按序号 / 共享表都取不到时从这里拷
+                                         //   （11-13 #951：菜单缩略图 320×270 写完即释放，BC 贴图读成全黑）
     struct bcal_e *next_free;
 } bcal_e;
 typedef struct { const void *dst; uint64_t lgen[16]; } bcal_s;   // 一张 BC 贴图已同步到的各层代数：目标 Metal 贴图变了（整张重新上传）就从头来
@@ -3787,6 +3792,7 @@ static int bcal_writer(const tex_t *t) {
     int bw = 1, bh = 1, b = t->mem && !fmt_compressed(t->d.format) ? nvn_fmt_bpb(t->d.format, &bw, &bh) : 0;
     return (b == 8 || b == 16) && bw == 1 && bh == 1 && t->d.target == NVN_TEXTURE_TARGET_2D && t->d.samples <= 1 && t->d.levels <= 16;
 }
+static id<MTLTexture> bcal_src(const tex_t *w);
 static void bcal_note(const tex_t *t, unsigned level) {
     if (g_bcal_off || level >= 16 || !bcal_writer(t)) return;
     uint64_t k = (uint64_t)(uintptr_t)t->mem, sh = bcal_shape(t); unsigned h = bcal_h(k);
@@ -3800,6 +3806,7 @@ static void bcal_note(const tex_t *t, unsigned level) {
         }
         if (e->wser && (e->wpool != t->pool || e->wshape != sh)) { for (int l = 0; l < 16; l++) atomic_store(&e->lgen[l], 0); }   // 另一种形状占了这段存储：之前各层的写不再按它的形状算
         atomic_fetch_add(&e->seq, 1); e->w = *t; e->wpool = t->pool; e->wshape = sh; atomic_store(&e->wser, t->serial); atomic_fetch_add(&e->seq, 1);
+        { id<MTLTexture> m = bcal_src(t); void *old = e->wtex; e->wtex = m ? (void *)CFBridgingRetain(m) : NULL; if (old) CFRelease(old); }   // 换写入者：留住新的那张
         atomic_store_explicit(&g_bcal_wc[h], e, memory_order_release);
         pthread_mutex_unlock(&g_bcal_mu);
     }
@@ -3831,7 +3838,7 @@ static int bcal_has(const tex_t *t) {
 static void bcal_drop_pool(const void *pool) {   // 内存池 Finalize：这段存储上的记账作废（记账进空闲表复用，不释放：无锁读者手里的指针按 key 核对）
     pthread_mutex_lock(&g_bcal_mu);
     for (uint32_t i = 0; i < g_bcal.cap;) { bcal_e *e = g_bcal.vals[i]; uint64_t k; memcpy(&k, g_bcal.keys + (size_t)i * 8, 8);
-        if (e && (const void *)e->wpool == pool) { nvn_hm_del(&g_bcal, &k); e->key = 0; e->next_free = g_bcal_free; g_bcal_free = e; atomic_fetch_sub(&g_bcal_n, 1); } else i++; }
+        if (e && (const void *)e->wpool == pool) { nvn_hm_del(&g_bcal, &k); if (e->wtex) { CFRelease(e->wtex); e->wtex = NULL; } e->key = 0; e->next_free = g_bcal_free; g_bcal_free = e; atomic_fetch_sub(&g_bcal_n, 1); } else i++; }
     for (uint32_t i = 0; i < g_bcal_seen.cap;) { uint64_t k; memcpy(&k, g_bcal_seen.keys + (size_t)i * 8, 8);
         if (g_bcal_seen.vals[i] == pool) nvn_hm_del(&g_bcal_seen, &k); else i++; }
     for (unsigned h = 0; h < BCAL_C; h++) { atomic_store(&g_bcal_wc[h], NULL); atomic_store(&g_bcal_neg[h], 0); atomic_store(&g_bcal_seen_c[h], 0); }
@@ -4303,8 +4310,12 @@ static bcal_e *bcal_find(uint64_t k) {   // 这段存储的记账：正向缓存
     pthread_mutex_unlock(&g_bcal_mu); return e;
 }
 // 按层「未压缩贴图 → 缓冲 → BC 贴图」：todo 里的 n 层，拷过的记进 s（g_bcal_mu 下）
-static void bcal_copy(const tex_t *t, id<MTLTexture> dst, NvPkg *pk, const tex_t *ew, const uint64_t elg[16], const unsigned *todo, unsigned n, bcal_s *s) {
+static void bcal_copy(const tex_t *t, id<MTLTexture> dst, NvPkg *pk, const tex_t *ew, const uint64_t elg[16], const unsigned *todo, unsigned n, bcal_s *s, id<MTLTexture> kept) {
     id<MTLTexture> src = bcal_src(ew);
+    // 写入者的贴图对象已经 Finalize（按序号 / 共享表取不到）：用记账时留住的那张。它已移出驻留集：本次提交里重新常驻，提交做完再移出（引用仍由记账留着）
+    if (!src && kept) { src = kept; res_add(src); defer_obj_release(src);
+        static uint64_t nk; if (!nk++) MLOG("block-compressed texture ser=%llu: the uncompressed texture ser=%llu the GPU wrote its storage through is already finalized; its bytes are taken from the Metal texture kept since that write (first case)",
+                                           (unsigned long long)t->serial, (unsigned long long)ew->serial); }
     // 两种取不到分开报，带写入者的格式与尺寸（#472 DQ7 重制光源贴图错：日志只有一句，分不清是哪种，本机按「写入贴图先释放」复现不出）
     if (!src) { RED_ONCE(175, "block-compressed texture ser=%llu: the uncompressed texture ser=%llu (format %#x %ux%u) the GPU wrote its storage through has no host texture, its bytes are not taken", (unsigned long long)t->serial, (unsigned long long)ew->serial, ew->d.format, ew->d.width, ew->d.height); return; }
     if (src.pixelFormat == dst.pixelFormat) { RED_ONCE(182, "block-compressed texture ser=%llu (format %#x %ux%u): the texture ser=%llu (format %#x %ux%u) the GPU wrote its storage through resolved to the same Metal format %lu, not a byte copy; its bytes are not taken", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, (unsigned long long)ew->serial, ew->d.format, ew->d.width, ew->d.height, (unsigned long)src.pixelFormat); return; }
@@ -4346,8 +4357,9 @@ static void bcal_sync(const tex_t *t, id<MTLTexture> r) {
     if (!(s = nvn_hm_get(&g_bcal_sync, &t->serial))) { if (!(s = calloc(1, sizeof *s))) MDIE("block-compressed alias table allocation failed"); nvn_hm_put(&g_bcal_sync, &t->serial, s); }
     if (s->dst != (__bridge const void *)dst) { memset(s->lgen, 0, sizeof s->lgen); s->dst = (__bridge const void *)dst; }
     for (unsigned l = 0; l < 16; l++) if (elg[l] > s->lgen[l] && bcal_level_ok(&ew, t, l)) todo[n++] = l;
+    id<MTLTexture> kept = n && pe->wtex && atomic_load(&pe->wser) == ew.serial ? (__bridge id<MTLTexture>)pe->wtex : nil;   // 锁下取强引用（换写入者也在锁下释放旧的）
     pthread_mutex_unlock(&g_bcal_mu);
-    if (n) bcal_copy(t, dst, pk, &ew, elg, todo, n, s);   // 拷不成（没有来源贴图 / 暂存缓冲）也记成已看过：不在每次解析时重试
+    if (n) bcal_copy(t, dst, pk, &ew, elg, todo, n, s, kept);   // 拷不成（没有来源贴图 / 暂存缓冲）也记成已看过：不在每次解析时重试
     atomic_store(&pe->s_ser, t->serial); atomic_store(&pe->s_r, (__bridge const void *)r); atomic_store(&pe->s_gen, mg);   // mg 取在拷之前：其间的新写下次再看
 }
 static id<MTLTexture> tex_mtl(const tex_t *ct) { AP_B; g_tex_mtl_n++; id<MTLTexture> r = tex_mtl_(ct); if (r && ct && fmt_compressed(ct->d.format)) bcal_sync(ct, r); AP_E(4); return r; }
@@ -5190,7 +5202,14 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
 // clear_only: a pass opened only to land pending clears, attaching only the attachments that have clears - the other attachments are not touched by this pass, and attaching them costs a pointless load and store on TBDR
 // (Mac character select screen: the color-clear pass drags along a 400x225 depth load and store)
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
-static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
+// The render area of the open pass (0: its whole attachments; ported from nxnative c8521eeb, MIT). A draw pass on a very large target that loads what it keeps stops at the far corner of its scissor:
+// the GPU then does not load and store what lies beyond, which keeps its contents (Metal keeps what lies outside the area). Only from targets of 16 M pixels, only when the area is at most half of it,
+// only the draw path opens such a pass; a draw whose scissor leaves the area, and anything else that needs the pass (rp_begin, DrawTexture), ends it first. A 6400x6400 ink map stamped one
+// scissored draw a pass: upstream measured about 0.95 → 0.32 ms a pass. DM_NVN_RP_AREA=0 turns it off
+static NSUInteger g_rp_aw, g_rp_ah; static int g_rp_whole;   // g_rp_whole: the pass about to open must cover the whole target
+static int rpa_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RP_AREA"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_RP_AREA=0: passes on very large targets cover the whole target"); } return v; }
+static void rt_dims(NSUInteger *tw, NSUInteger *th);
+static id<MTL4RenderCommandEncoder> rp_begin(void) { if (g_enc && g_rp_aw) rp_end(); g_rp_whole = 1; id<MTL4RenderCommandEncoder> e = rp_begin_ex(0); g_rp_whole = 0; return e; }   // the callers draw anywhere in the target
 static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) { AP_B; id<MTL4RenderCommandEncoder> e = rp_begin_ex_(clear_only); AP_E(1); return e; }
 static void bare_dims(NSUInteger *w, NSUInteger *h);
@@ -5405,6 +5424,15 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         }
         return nil;
     }
+    g_rp_aw = g_rp_ah = 0;   // the render area (see g_rp_aw): no clears in this pass (a clear covers the whole target), no layered pass, not the TBDR modes
+    if (rpa_on() && !g_rp_whole && !clear_only && R.has_sc && !g_rp_layered && !tbdr_on() && !R.clear_d && !R.clear_s) {
+        int cl = 0; for (int i = 0; i < 8; i++) cl |= R.clear_c[i];
+        NSUInteger tw = 0, th = 0; if (!cl) rt_dims(&tw, &th);
+        if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX((long)R.sc.x + R.sc.w, 1)), h = MIN(th, (NSUInteger)MAX((long)R.sc.y + R.sc.h, 1));
+            if (w * h * 2 <= tw * th) { pd.renderTargetWidth = w; pd.renderTargetHeight = h; g_rp_aw = w; g_rp_ah = h;
+                static int once; if (!once++) MLOG("render area: a pass on a %lux%lu target opened at %lux%lu, its scissor's far corner (first case pass %llu; DM_NVN_RP_AREA=0 turns it off)",
+                                                   (unsigned long)tw, (unsigned long)th, (unsigned long)w, (unsigned long)h, g_stat_pass + 1);
+                PD("A %llu render area %lux%lu of %lux%lu", g_stat_pass + 1, (unsigned long)w, (unsigned long)h, (unsigned long)tw, (unsigned long)th); } } }
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && zskip_zero_clear(i) && !bcrt_is(pd.colorAttachments[i].texture)) {
         g_zskip_cand_ok[i] = 1; g_zskip_cand[i] = (zskip_zero){R.rt.color[i]->serial, (uint16_t)(R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0), (uint16_t)(R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0)};
     }
@@ -5821,17 +5849,24 @@ static FILE *pso_user_file(void) {
     if (path) g_pso_user = fopen(path.fileSystemRepresentation, "a");
     return g_pso_user;
 }
+// The lines already recorded (the seed manifest beside the shader map, then this machine's pso_user.tsv): read once. warm_start reads them on a background queue,
+//   so the first pipeline the submit thread records no longer reads them there (1 MB / 2280 lines took 5 ms on an M5 Max, 10 MB 43 ms; 11-13). A record before
+//   that read is done waits for it in dispatch_once, as it read them itself before
+static dispatch_once_t g_pso_user_seen_once;
+static void pso_user_seen_load(void) {
+    dispatch_once(&g_pso_user_seen_once, ^{ @autoreleasepool {
+        NSMutableSet<NSString *> *seen = [NSMutableSet set];
+        NSString *seed = g_shmap_path ? [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"] : nil;
+        NSMutableArray<NSString *> *paths = [NSMutableArray array]; if (seed) [paths addObject:seed]; NSString *user = pso_user_path(); if (user) [paths addObject:user];
+        for (NSString *path in paths) { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [seen addObject:old]; }
+        g_pso_user_seen = seen; } });
+}
 static void pso_user_record(const char *fmt, ...) {
     FILE *f = pso_user_file();
     if (!f) return;
     char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
-    if (!g_pso_user_seen) {
-        g_pso_user_seen = [NSMutableSet set];
-        NSString *seed = g_shmap_path ? [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"] : nil;
-        NSMutableArray<NSString *> *paths = [NSMutableArray array]; if (seed) [paths addObject:seed]; NSString *user = pso_user_path(); if (user) [paths addObject:user];
-        for (NSString *path in paths) { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-            for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_user_seen addObject:old]; }
-    }
+    pso_user_seen_load();
     size_t ll = strlen(line); NSString *s = [[NSString alloc] initWithBytes:line length:ll && line[ll - 1] == '\n' ? ll - 1 : ll encoding:NSUTF8StringEncoding];   // Compared with the manifest file line by line (without the newline)
     if (!s || [g_pso_user_seen containsObject:s]) return;
     [g_pso_user_seen addObject:s]; fputs(line, f); fflush(f);
@@ -8078,8 +8113,10 @@ static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss) {   // the padded vari
 }
 // Make the variant and load it: S2A.Dsh writes it from the guest code / control (code 0: none to make it from). → the shader's entry point in it, nil with why
 static id<MTLFunction> vp_build(NvShader *vs, const uint8_t md[8], uint64_t code, const void *ctl, uint32_t mask, char *why, size_t n) {
-    if (!code) { snprintf(why, n, "the game no longer holds its control section to translate it"); return nil; }
-    char path[1200]; int rc = dm_shader_vpad(md, code, ctl, mask, path, sizeof path);
+    char path[1200]; int rc;
+    if (!code && vs->mesh_kind == 2) rc = dm_shader_vpad_cached_mesh(md, mask, path, sizeof path);
+    else if (!code) { snprintf(why, n, "the game no longer holds its control section to translate it"); return nil; }
+    else rc = dm_shader_vpad(md, code, ctl, mask, path, sizeof path);
     if (rc) { snprintf(why, n, "%s", rc == 3 ? "its translation already writes those outputs (or has no main0_out to add them to)" : "the device could not make it"); return nil; }
     NSString *src = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
     if (!src || ![src hasPrefix:@"// s2a:vs-pad 1 "]) { snprintf(why, n, "%s %s", path, src ? "is of another format" : "is unreadable"); return nil; }
@@ -8111,8 +8148,11 @@ static int vp_ask(const prog_t *p, NvShader *vs, uint32_t miss) {
     int st = vs->vp_st; uint32_t want = (st == SE_READY ? vs->vp_mask : 0) | miss;
     if (st == SE_BUSY || st == SE_FAIL || (st == SE_READY && (vs->vp_mask & miss) == miss)) { pthread_mutex_unlock(&g_vp_mu); return st != SE_FAIL; }
     vs->vp_st = SE_BUSY; pthread_mutex_unlock(&g_vp_mu);
-    uint8_t md[8] = {0}; int at = -1; uint64_t t0 = bp_now();
-    const prog_t *gp = (const prog_t *)vp_pick_prog(p, vp_bst_at, 5, vs->key, md, vp_stage_of_at, NULL, &at);
+    // The library shader's key stays valid after the guest reuses its program / control section: md always comes from vs->key
+    //   (the cached mesh source is looked up by it); vp_pick_prog only supplies live guest inputs and leaves its own key copy at zero on a miss.
+    uint8_t md[8] = {0}, live[8]; int at = -1; uint64_t t0 = bp_now();
+    for (int i = 0; i < 8; i++) { unsigned b = 0; if (sscanf(vs->key + 2 * i, "%2x", &b) != 1) break; md[i] = (uint8_t)b; }
+    const prog_t *gp = (const prog_t *)vp_pick_prog(p, vp_bst_at, 5, vs->key, live, vp_stage_of_at, NULL, &at);
     if (at < 0) { static unsigned n; if (!n++ || !(n & (n - 1))) MLOG("顶点补齐变体：%s 在绘制 program 与 5 个按阶段绑定的 program 里都没有有效控制段（%u 次）", vs->key, n); }
     if (se_sync()) { char why[300] = ""; id<MTLFunction> f = vp_build(vs, md, at < 0 ? 0 : gp->sd[at].data, at < 0 ? NULL : gp->sd[at].control, want, why, sizeof why); vp_done(vs, f, want, why, t0, "同步现编"); return f != nil; }
     uint64_t code = 0; const void *ctl = NULL; void *snap = at < 0 ? NULL : dm_shader_snap(gp->sd[at].data, gp->sd[at].control, &code, &ctl); uint64_t key; memcpy(&key, md, 8);
@@ -8992,6 +9032,7 @@ static void warm_announce(void) {
 }
 static void warm_start(void) {
     if (g_warm_started++) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ pso_user_seen_load(); });   // the record's dedupe set, off the submit thread (pso_user_seen_load)
     NSArray<NSString *> *paths = warm_paths(1);
     if (!paths) return;
     if (!g_warm_items) g_warm_items = [NSMutableArray array];
@@ -12614,12 +12655,24 @@ static const ixc_ent *ixc_find(const p_draw *dw, const p_draw_idx *di) {
 static void ixc_take(const p_draw *dw, const p_draw_idx *di) {
     if (g_ixc_n < IXC_MAX && !ixc_find(dw, di)) g_ixc[g_ixc_n++] = (ixc_ent){dw ? dw->ind : di->ind, dw ? 0 : di->ibuf, dw ? dw->prim : di->prim, dw ? -1 : di->itype, 0, 0, 0};
 }
+// S2Arm #674: k_ixc_msl is compiled from source (newLibraryWithSource). Built at the first such draw (a Switch 2 game's indirect task / mesh draws, in its first 3D scene) it held the
+//   submit thread 24-160 ms whenever the system's compile cache missed (the first launch of a new build, or the entry evicted), under 1 ms when it hit. On Switch 2 mtl_init starts the
+//   build in the background (ixc_prewarm); the first use waits for it (ixc_ready), so g_ixc_ps / g_ixc_err are written on that queue only and read after the wait. Elsewhere (or before
+//   mtl_init) nothing is started and the first use builds as before
+static id<MTLComputePipelineState> g_ixc_ps[2]; static NSError *g_ixc_err;
+static dispatch_group_t g_ixc_pre;   // the background build, NULL = not started
+static void ixc_build(void) {
+    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_ixc_msl) options:nil error:&e];
+    for (int k = 0; k < 2 && lib; k++) { id<MTLFunction> f = [lib newFunctionWithName:k ? @"ixc_expand" : @"ixc_arrays"]; g_ixc_ps[k] = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil; }
+    g_ixc_err = e;
+}
+static void ixc_prewarm(void) { if (!nvn2_on() || g_ixc_pre) return; g_ixc_pre = dispatch_group_create(); dispatch_group_async(g_ixc_pre, s2a_qos_global(S2A_QOS_SHADER_PREFETCH), ^{ @autoreleasepool { ixc_build(); } }); }
+static int ixc_ready(void) { if (g_ixc_pre) dispatch_group_wait(g_ixc_pre, DISPATCH_TIME_FOREVER); else ixc_build(); return g_ixc_ps[0] && g_ixc_ps[1]; }   // once: ixc_run keeps the table
 static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
-    static id<MTLComputePipelineState> ps[2]; static id at; static int failed;
+    static id at; static int failed;
     if (failed) return;
-    if (!at) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_ixc_msl) options:nil error:&e];
-        for (int k = 0; k < 2 && lib; k++) { id<MTLFunction> f = [lib newFunctionWithName:k ? @"ixc_expand" : @"ixc_arrays"]; ps[k] = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil; }
-        at = ps[0] && ps[1] ? rec_table(tab_new(1, 0, 0, &e)) : nil;
+    if (!at) { NSError *e = nil;
+        if (ixc_ready()) at = rec_table(tab_new(1, 0, 0, &e)); else e = g_ixc_err;
         if (!at) { failed = 1; MLOG("【红】 indirect draw conversion: cannot create the compute pipeline %s (indirect draws of quads / fans / 8-bit indices are skipped)", e.localizedDescription.UTF8String); return; } }
     if (g_ixc_epoch != g_wr_epoch || g_ixc_sub != g_arena_gen || g_ixc_n > IXC_MAX - 8) { g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_arena_gen; }
     int n0 = g_ixc_n; ixc_take(dw, di);
@@ -12656,13 +12709,13 @@ static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
             id<MTLBuffer> ob; size_t oo = arena_alloc(IXC_CAP * 4 + sizeof(ejob), &ob);
             ejob *j = (ejob *)((uint8_t *)ob.contents + oo + IXC_CAP * 4);
             *j = (ejob){rec, ib, ob.gpuAddress + oo, ag + 32 * (uint64_t)i, (uint32_t)e->prim, e->itype == 0 ? 1u : e->itype == 1 ? 2u : 4u, (uint32_t)MIN(((__bridge id<MTLBuffer>)mb).length - mo, 0xffffffffull), IXC_CAP};
-            tab_buf(at, ob, oo + IXC_CAP * 4, 0); [ce setComputePipelineState:ps[1]];
+            tab_buf(at, ob, oo + IXC_CAP * 4, 0); [ce setComputePipelineState:g_ixc_ps[1]];
             enc_c_dispatch(ce, MTLSizeMake(IXC_CAP / 64, 1, 1), MTLSizeMake(64, 1, 1));
             e->ixb = ob.gpuAddress + oo; e->ixlen = IXC_CAP * 4; e->args = ag + 32 * (uint64_t)i;
             { static int once; if (!once++) MLOG("indirect indexed draw (primitive %d, %d-byte indices) expanded to 32-bit indices on the GPU, at most %d", e->prim, e->itype == 0 ? 1 : e->itype == 1 ? 2 : 4, IXC_CAP); }
         }
     }
-    if (na) { tab_addr(at, ag + (uint64_t)n * 32, 0); [ce setComputePipelineState:ps[0]]; enc_c_dispatch(ce, MTLSizeMake((NSUInteger)na, 1, 1), MTLSizeMake(1, 1, 1)); }
+    if (na) { tab_addr(at, ag + (uint64_t)n * 32, 0); [ce setComputePipelineState:g_ixc_ps[0]]; enc_c_dispatch(ce, MTLSizeMake((NSUInteger)na, 1, 1), MTLSizeMake(1, 1, 1)); }
     enc_c_end(ce);
     args_dirty_all();
     if (!g_ixc_runs++) MLOG("indirect draw conversion: first time, %d draws (records for quads / fans / 8-bit indices become indexed indirect arguments in a compute pass before the render pass)", n);
@@ -13497,8 +13550,8 @@ static void draw_tex(const p_draw_tex *t) {
     float r[4] = {t->src[0] / gw, t->src[2] / gw, t->src[1] / gh, t->src[3] / gh};
     if (x1 < x0) { float q = r[0]; r[0] = r[1]; r[1] = q; }   // a mirrored destination walks the source the other way (Ryujinx)
     if (y1 < y0) { float q = r[2]; r[2] = r[3]; r[3] = q; }
-    if (g_enc && g_pass.layered) rp_end();
-    id en = rp_begin_ex(0);   // plain id as in draw(): the encoder is a Metal 3 one on NXGAL_BE=mtl3 (mtl4_count ratchet)
+    if (g_enc && (g_pass.layered || g_rp_aw)) rp_end();   // DrawTexture opens a whole-target pass (see g_rp_aw)
+    g_rp_whole = 1; id en = rp_begin_ex(0); g_rp_whole = 0;   // plain id as in draw(): the encoder is a Metal 3 one on NXGAL_BE=mtl3 (mtl4_count ratchet)
     if (!en) return;   // rp_begin_ex said why
     if (pf_int_kind((MTLPixelFormat)g_pass.cfmt[0]) || !g_pass.cfmt[0]) {
         if (!once[2]++) MLOG("【红】 DrawTexture: target 0 is %s (format %u): not drawn (first case)", g_pass.cfmt[0] ? "an integer target" : "not bound", g_pass.cfmt[0]);
@@ -13636,6 +13689,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static int once3; if (!once3++) MLOG("readable-tile pass merge: a draw of the later pass is not provable; back to separate passes (first case pass %llu)", g_stat_pass);
         g_fz_fallback++; rp_end(); }
 
+    if (g_enc && g_rp_aw && (!R.has_sc || (long)R.sc.x + R.sc.w > (long)g_rp_aw || (long)R.sc.y + R.sc.h > (long)g_rp_ah)) rp_end();   // leaves the pass's render area (see g_rp_aw)
 
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
     if (R.has_sc && !g_enc) {

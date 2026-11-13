@@ -177,7 +177,7 @@
             <key>Title</key>
             <string>Sound</string>
             <key>FooterText</key>
-            <string>When on, game sound keeps playing while the iPhone is in Silent Mode. When off, S2Arm follows Silent Mode like other games. Takes effect when you switch back to the app.</string>
+            <string>Play Sound in Silent Mode: game sound keeps playing while the iPhone is in Silent Mode. Mix with Other Apps: music and podcasts from other apps keep playing alongside the game, and the Silent switch mutes only the game. Changes take effect when you switch back to the app.</string>
         </dict>
         <dict>
             <key>Type</key>
@@ -186,6 +186,16 @@
             <string>Play Sound in Silent Mode</string>
             <key>Key</key>
             <string>S2APlayInSilentMode</string>
+            <key>DefaultValue</key>
+            <false/>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSToggleSwitchSpecifier</string>
+            <key>Title</key>
+            <string>Mix with Other Apps</string>
+            <key>Key</key>
+            <string>S2AMixWithOthers</string>
             <key>DefaultValue</key>
             <false/>
         </dict>

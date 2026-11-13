@@ -65,7 +65,15 @@ void s2a_android_frame_note(void);
 typedef struct { _Atomic uint64_t cnt; void *fn; } nvn_slot_t;
 nvn_slot_t nvn_slot[NVN_NFUNC];                 // The thunk accesses it by i*16; the layout must not change
 _Static_assert(sizeof(nvn_slot_t) == 16, "the trampolines are addressed in 16-byte steps");
-extern void *nvn_thunk[NVN_NFUNC];
+extern void *nvn_thunk[NVN_NFUNC], *nvn_thunk_fast[NVN_NFUNC];
+// Call counts (the counting trampolines nvn_thunk, nvn_thunks.S) only when asked for: DM_NVN_COUNT=1, or the per-frame table DM_NVN_TSV with its call rows (DM_NVN_TSV_CALLS=0 writes only
+// timing). Each count is an atomic add on a cache line every recording thread shares; otherwise the game gets the uncounted trampolines nvn_thunk_fast and the per-frame call lines are
+// not written (ported from nxnative e250bb8b, MIT: there the trampolines of nvnBufferGetAddress / BindUniformBuffer took about 25 times the time of the functions they lead to)
+static int nvn_counting(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_NVN_COUNT"), *c = getenv("DM_NVN_TSV_CALLS"); v = (e && atoi(e)) || (getenv("DM_NVN_TSV") && !(c && !atoi(c))); }
+    return v;
+}
 extern const char *nvn_names[NVN_NFUNC];
 extern void nvn_unimpl_entry(void);
 extern void nvn_prof_entry(void);
@@ -133,7 +141,7 @@ static void *nvn_lookup(const char *name) {
 #if defined(__ANDROID__)
             return nvn_slot[i].fn;   // Android 直接返回强类型实现，避免 Apple 汇编 thunk
 #else
-            return nvn_thunk[i];
+            return nvn_counting() ? nvn_thunk[i] : nvn_thunk_fast[i];
 #endif
         }
     LOG("【红】 NVN address lookup of an unknown name: %s", name ? name : "(null)");
@@ -792,7 +800,14 @@ static int32_t pool_nvmap(pool_t *p) {
     int32_t h = __atomic_load_n(&p->nvmap, __ATOMIC_ACQUIRE);
     if (h) return h;
     static int (*mk)(uint64_t, uint32_t); static int looked;
+#if defined(__ANDROID__)
+    // 安卓：服务层 NativeAOT 与本文件静态并入同一个 libs2arm_android.so，链接带 --exclude-libs,ALL，导出不进动态表，
+    //   dlsym(RTLD_DEFAULT) 恒为 NULL（010045B018EC2000：每局句柄 0，影片播放器 NvBlit 已释放的缓冲崩在 sdk 内）。
+    //   改成链接期弱引用：出包的单库里由归档解析（core-link 审计：归档定义的导出在库里仍未解析就失败）；不带服务层的门禁链接（gfx_plat/gate.sh，-z defs）里为空，走下面的报红
+    { extern int S2A_NvMapFromGuest(uint64_t address, uint32_t size) __attribute__((weak)); if (!looked) { mk = S2A_NvMapFromGuest; looked = 1; } }
+#else
     if (!looked) { mk = (int (*)(uint64_t, uint32_t))dlsym(RTLD_DEFAULT, "S2A_NvMapFromGuest"); looked = 1; }
+#endif
     if (!mk || p->size > UINT32_MAX) { static int once; if (!once++) LOG("【红】 nvnTextureGetNvRmSurfaceNVX: no nvmap handle for pool %p size %#llx (%s)", (void *)p, (unsigned long long)p->size, mk ? "pool over 4 GB" : "no service layer: S2A_NvMapFromGuest missing"); return 0; }
     h = mk((uint64_t)(uintptr_t)p->mem, (uint32_t)p->size);
     int32_t z = 0;
@@ -1291,6 +1306,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     int npin = 0;
 #endif
     for (int i = 0; i < n; i++) {
+        dm_shader_mesh_hold(sd[i].data, sd[i].control);   // NVN2 keys are deferred, but control + code are valid here; retain only mesh inputs
         if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
         else { uint8_t early[8]; if (keys_hash_early(&sd[i], early)) nvn_be_shader_prefetch(early); }   // S2Arm #674: Switch 2 stages, keyed at first use
 #if defined(__ANDROID__)   // Android 直连的阶段 / 源快照 / 按 serial 记 key；Apple 回放不读这些，保持 main 原行为
@@ -2068,6 +2084,13 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
     stages = nvn2_stage_bits(stages);   // NVN2 任务 / 网格位 0x40 / 0x80 → 宿主阶段 3 / 4 的位（nvn2_cmd.h）
     *REC(c, OP_BIND_PROGRAM, p_bind_program_id) = (p_bind_program_id){o, o ? o->serial : 0, stages, 0};
     if (!o) return;
+    // NVN2's code bytes can change after SetShaders, so its key is deliberately first computed here.
+    // Snapshot only mesh inputs under that final key; SetShaders' mapped=1 key path intentionally skips NVN2.
+    if (nvn2_on()) for (unsigned i = 0; i < o->nstage && i < 6; i++) {
+        const void *ctl = o->sd[i].control; uint8_t md[8];
+        if (ctl && (uintptr_t)ctl < (1ull << 47) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
+            prog_key(o, i, md)) dm_shader_mesh_hold_key(md, o->sd[i].data, ctl);
+    }
     prog_t snap; memcpy(&snap, o, sizeof snap);
     uint8_t keys[6][8], kok = 0, stage[6]; memset(keys, 0, sizeof keys); memset(stage, 0xff, sizeof stage);
     prog_keys_t *k = pk_get(p, 0);
@@ -3076,19 +3099,21 @@ static void dump_frame(void) {
         static char tp[1024]; const char *t = nvn_diag_path(getenv("DM_NVN_TSV"), tp, sizeof tp); if (t && !(g_tsv = fopen(t, "w"))) LOG("【红】 cannot open %s", t);   // iOS: relative path under Documents
         if (g_tsv) fprintf(g_tsv, "# kind: nvn-per-frame  value = call count when name is an NVN function name; names starting with @ are timing probes (ms / count)\nframe\tname\tvalue\n");
     }
-    uint64_t total = 0; unsigned nfn = 0;
-    char line[8192]; size_t o = 0; line[0] = 0;
-    for (unsigned i = 0; i < NVN_NFUNC; i++) {
-        uint64_t c = atomic_load(&nvn_slot[i].cnt), d = c - g_prev[i];
-        g_prev[i] = c;
-        if (!d) continue;
-        total += d; nfn++;
-        if (g_tsv && calls) fprintf(g_tsv, "%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
-        if (g_frame <= (uint64_t)nframes && o < sizeof line - 96) o += snprintf(line + o, sizeof line - o, " %s=%llu", nvn_names[i] + 3, d);
-    }
-    if (g_tsv) fflush(g_tsv);
-    if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu: %u functions %llu calls |%s", g_frame ? "frame" : "init", g_frame, nfn, total, line);
-    else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions %llu calls", g_frame, nfn, total);
+    if (nvn_counting()) {   // the call counts exist only with the counting trampolines (nvn_counting)
+        uint64_t total = 0; unsigned nfn = 0;
+        char line[8192]; size_t o = 0; line[0] = 0;
+        for (unsigned i = 0; i < NVN_NFUNC; i++) {
+            uint64_t c = atomic_load(&nvn_slot[i].cnt), d = c - g_prev[i];
+            g_prev[i] = c;
+            if (!d) continue;
+            total += d; nfn++;
+            if (g_tsv && calls) fprintf(g_tsv, "%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
+            if (g_frame <= (uint64_t)nframes && o < sizeof line - 96) o += snprintf(line + o, sizeof line - o, " %s=%llu", nvn_names[i] + 3, d);
+        }
+        if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu: %u functions %llu calls |%s", g_frame ? "frame" : "init", g_frame, nfn, total, line);
+        else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions %llu calls", g_frame, nfn, total);
+    } else if (!g_frame) LOG("[nvn] call counts off (DM_NVN_COUNT=1 turns them on)");
+    if (g_tsv) fflush(g_tsv);   // the @ timing rows too, with or without call counts
     if (g_frame && g_frame % 300 == 0) {   // 审计 #1534 P1-23 采样：累计值，0 也打；首次、变了、或满 3000 帧打一行
         static uint64_t lf, l0, l1; static int any; uint64_t n0 = __atomic_load_n(&g_nvn_qws_n, __ATOMIC_RELAXED), n1 = __atomic_load_n(&g_nvn_qws_unfenced, __ATOMIC_RELAXED);
         if (!any || n0 != l0 || n1 != l1 || g_frame - lf >= 3000) { any = 1; lf = g_frame; l0 = n0; l1 = n1;
@@ -3359,7 +3384,6 @@ __attribute__((weak)) int s2a_fps_cap_reason(void) { return 0; }
 // runtime/src/fps.c：帧率表键页槽的当前值（每 300 帧那行带出）；Metal 后端 nvn_mtl.m：本窗口最大渲染目标。别的后端 / 单测替身没有就报空 / 0
 __attribute__((weak)) void s2a_fps_slots_note(char *buf, size_t n) { (void)n; buf[0] = 0; }
 __attribute__((weak)) void nvn_be_rt_window(uint32_t *w, uint32_t *h, uint32_t *fmt) { *w = *h = *fmt = 0; }
-__attribute__((weak)) void s2a_fps_cap_watch(void) {}
 static int g_hz = -1, g_display_mode;
 static _Atomic int g_game_itv = 1;   // when pacing by the game's interval, the interval the game currently sets (in game mode 2 = 30 fps; nvn_game_fps reports it to the graphics layer, which sets the display link from it)
 void nvn_present_config(int hz, int display_mode) { g_hz = hz; g_display_mode = display_mode; }
@@ -3413,7 +3437,6 @@ static void present_cfg(const win_t *o) {
     // with the same save and the same input, the UI message streams of the two modes match message by message. Proof (before character select): r9 game / display 60 ×3 / display 120 ×2, 6 groups in total, uicmp consistent
     // (the save indicator is exempted as a timing race), and the timing differences of key messages are within game mode's own noise band; proof after entering a run is still missing, pending action script coverage
     const char *m = getenv("DM_PRESENT_INTERVAL"); g_display_mode = m ? !strcmp(m, "display") : DM_GAME_PRESENT_DISPLAY;
-    if (g_display_mode) s2a_fps_cap_watch();   // display 模式跑在游戏自己的帧率之上：热 / 低电量时退回游戏间隔，降档判定统一在帧率表（runtime/src/fps.c s2a_fps_cap_tick）
     const char *src = m ? "DM_PRESENT_INTERVAL 环境变量" : DM_GAME_PRESENT_DISPLAY ? "推导（引擎标记 + L3 判定）或显式 game.tsv" : "缺省（game）";
     LOG("[nvn] present tick %d Hz, interval mode %s（依据：%s；游戏设 interval %d；%s）", g_hz, g_display_mode ? "display（每个显示节拍一帧）" : "game（按游戏设的间隔）",
         src, o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");

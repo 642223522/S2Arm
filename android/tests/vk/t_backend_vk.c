@@ -5764,7 +5764,15 @@ static struct c89_st c89_wait_done(const struct c89_st *base, unsigned want, int
     return s;
 }
 
-struct c89_dir { int nreg, nother; char name[256]; long size; ino_t ino; struct timespec mtim; };
+// 「没被重写」按名字 + 大小 + 修改时间 + 内容判，不比 inode：Mac 上 colima 的 virtiofs 在虚拟机丢页缓存（每 16 秒一次 drop_caches）后，
+// 同一个没动过的文件会换 inode 号（实测 7237 → 7238），按 inode 判会把「原样」误报成「重写」
+struct c89_dir { int nreg, nother; char name[256]; long size; uint64_t sum; struct timespec mtim; };
+static uint64_t c89_file_sum(const char *path) {   // FNV-1a；读不出算 0（与任何真内容的和都不相等的概率可忽略）
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    uint64_t h = 1469598103934665603ull; int c;
+    while ((c = fgetc(f)) != EOF) { h ^= (uint64_t)(unsigned char)c; h *= 1099511628211ull; }
+    fclose(f); return h;
+}
 
 // 数目录：正式文件（普通文件、名字里没有 .tmp.）记名字 / 大小 / inode / 修改时间；其余（临时文件、管道、子目录）都算 nother。
 static struct c89_dir c89_scan(const char *dir) {
@@ -5778,7 +5786,7 @@ static struct c89_dir c89_scan(const char *dir) {
         snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
         if (!strstr(de->d_name, ".tmp.") && stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
             o.nreg++; snprintf(o.name, sizeof o.name, "%s", de->d_name);
-            o.size = (long)st.st_size; o.ino = st.st_ino; o.mtim = st.st_mtim;
+            o.size = (long)st.st_size; o.sum = c89_file_sum(p); o.mtim = st.st_mtim;
         } else o.nother++;
     }
     closedir(d);
@@ -5786,7 +5794,7 @@ static struct c89_dir c89_scan(const char *dir) {
 }
 
 static int c89_same_file(const struct c89_dir *a, const struct c89_dir *b) {
-    return a->nreg == 1 && b->nreg == 1 && a->ino == b->ino && a->size == b->size &&
+    return a->nreg == 1 && b->nreg == 1 && a->sum == b->sum && a->size == b->size &&
            a->mtim.tv_sec == b->mtim.tv_sec && a->mtim.tv_nsec == b->mtim.tv_nsec && !strcmp(a->name, b->name);
 }
 
@@ -5938,6 +5946,45 @@ static void *c89_thr_main(void *arg) {
     return NULL;
 }
 
+// C907：停局但会话保留到进程退出（#860 / #907 Stop 不关后端，走不到 close 的收尾写）时，nvn_gpu_vk_pipe_cache_flush 把驱动管线缓存落盘。
+//  ① 阈值调到不会触发局中补写、建 3 条管线：调用前目录为空（负对照：没有这次调用就没有文件）；
+//  ② 调用后后台写完成 1 次、目录里恰好 1 个正式文件、无残留临时文件；会话仍开着（之后还能建管线）；
+//  ③ 再调一次、没有新管线：记「与上次一致没写」，文件原样。
+void nvn_gpu_vk_pipe_cache_flush(void);
+static void c907_retained_flush(const char *sdir) {
+    char tmpl[512];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(tmpl, sizeof tmpl, "%s/s2a-plc907.XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
+    char *dir = mkdtemp(tmpl);
+    CHECK(dir != NULL, "C907 建不出临时目录");
+    if (!dir) return;
+    size_t keep_extra = g_plc_extra, keep_per = g_plc_per_pipe; int keep_strip = g_plc_strip_tail;
+    g_plc_extra = 0; g_plc_per_pipe = 0; g_plc_strip_tail = 0;
+    nvn_gpu_err e;
+    CHECK(c89_open(dir, 1000000, 3600000, 3600000), "C907 open");
+    c88_make_pipes(sdir);
+    struct c89_dir before = c89_scan(dir);
+    CHECK(before.nreg == 0 && before.nother == 0, "C907 ① 调用前目录应为空（局中补写不该触发）→ 正式 %d 个、其他 %d 个", before.nreg, before.nother);
+    struct c89_st b = c89_stats();
+    nvn_gpu_vk_pipe_cache_flush();
+    struct c89_st a = c89_wait_done(&b, 1, 5000);
+    struct c89_dir d1 = c89_scan(dir);
+    CHECK(a.saves == b.saves + 1 && a.ok == b.ok + 1 && a.failed == b.failed, "C907 ② 应交后台写 1 次且成功 → saves +%llu ok +%llu failed +%llu",
+          (unsigned long long)(a.saves - b.saves), (unsigned long long)(a.ok - b.ok), (unsigned long long)(a.failed - b.failed));
+    CHECK(d1.nreg == 1 && d1.nother == 0 && d1.size > 0, "C907 ② 目录里应恰好 1 个正式文件、无临时文件 → 正式 %d 个、其他 %d 个、%ld 字节", d1.nreg, d1.nother, d1.size);
+    c89_sleep_ms(20);   // 后台写线程先记成功、再清「在飞」：留一点时间让它清完，第二次调用不因「在飞」被跳过
+    nvn_gpu_vk_pipe_cache_flush();
+    struct c89_st a2 = c89_stats();
+    struct c89_dir d2 = c89_scan(dir);
+    CHECK(a2.saves == a.saves && a2.same == a.same + 1, "C907 ③ 没有新管线：不该再写、应记一次「一致没写」→ saves +%llu same +%llu",
+          (unsigned long long)(a2.saves - a.saves), (unsigned long long)(a2.same - a.same));
+    CHECK(c89_same_file(&d1, &d2), "C907 ③ 文件应原样不动");
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C907 close：%d %s", e.rc.code, e.why);
+    g_plc_extra = keep_extra; g_plc_per_pipe = keep_per; g_plc_strip_tail = keep_strip;
+    c89_rm_tree(dir);
+    printf("C907 保留路径管线缓存落盘：已核对（%ld 字节）\n", d1.size);
+}
+
 static void c89_midrun_save(const char *sdir) {
     char tmpl[512];
     const char *tmp = getenv("TMPDIR");
@@ -5969,7 +6016,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(mid1 > C89_X1 && a1.size == (long)mid1 + C89_HDR, "C89 ① 文件大小应 = 文件头 %d + 局中取出的 %zu 字节（> 填充 %d）→ %ld", C89_HDR, mid1, C89_X1, a1.size);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ① close：%d %s", e.rc.code, e.why);
     struct c89_dir a1b = c89_scan(d1);
-    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → inode / 大小 / 修改时间不变");
+    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → 大小 / 修改时间 / 内容不变");
     struct c89_st r1 = c89_readback(d1);
     CHECK(r1.loaded == mid1 && r1.rejected == 0, "C89 ① 下一局读回 %llu 字节（期望 %zu）、rejected=%llu（期望 0）", (unsigned long long)r1.loaded, mid1, (unsigned long long)r1.rejected);
 
@@ -6033,7 +6080,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(s3c.saves == b3.saves && s3c.same == b3.same + 2, "C89 ③ 检查过之后再建 3 条：应再检查 1 次（共 2 次）而不是每条都查 → 写 +%llu 次、「没变」+%llu 次（期望 0 / 2）", (unsigned long long)(s3c.saves - b3.saves), (unsigned long long)(s3c.same - b3.same));
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ③ close：%d %s", e.rc.code, e.why);
     struct c89_dir a3 = c89_scan(d1);
-    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（inode / 大小 / 修改时间不变）");
+    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（大小 / 修改时间 / 内容不变）");
     // ③ 对照：只把驱动数据变大（S2），其余同上 → 这回要写
     g_plc_extra = C89_X2;
     CHECK(c89_open(d1, 3, 0, 0), "C89 ③ 对照 open");
@@ -6154,7 +6201,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(ms6 >= 150.0 && ms6 < 3000.0, "C89 ⑥ close 应等了后台写（算进 200 ms 截止时间）又没挂住 → 用了 %.0f ms（期望 150–3000）", ms6);
     atomic_store(&ub.go, 1);
     struct c89_dir x6 = c89_scan(d6);
-    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（inode / 大小 / 修改时间不变）");
+    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（大小 / 修改时间 / 内容不变）");
     if (ubt_ok) pthread_join(ubt, NULL);
     CHECK(c89_wait_gone(pre6, 5000), "C89 ⑥ 放开管道后后台写应自己失败收尾、清掉临时文件");
     size_t n6b = 0; void *now6 = read_file(f6, &n6b);
@@ -6379,6 +6426,52 @@ static void c697_bc4_3d(void) {
         if (!bad) printf("C697 BC4 回读：整片 / 带行距 / 下一级局部补丁 / 局部区域 四种按原压缩字节读回，160 字节已核对\n");
         nvn_gpu_buf_release(rb2, NULL, NULL);
     }
+    {   // 缓冲 → BC 现解贴图（#697 第二步，Mali 机上回读之后撞到的下一处）：同一段里先把 bc 的 0 级切片 1 回读进缓冲，
+        // 紧接着把这块缓冲拷进另一张 16x8 的 BC4 贴图左半；右半的源是 CPU 填好的块、行距 24（每行后 8 字节是填充）。
+        // 期望全部手算：两端点相同的 BC4 块解出来整块就是端点值（c697_bc4_block）。左半 = bc 切片 1 的块值，见上面回读期望。
+        nvn_gpu_tex bc2 = make_tex(16, 8, NVN_FORMAT_RGTC1_UNORM, NVN_GPU_TEX_SAMPLED);
+        nvn_gpu_tex pl2 = make_tex(16, 8, NVN_FORMAT_R8, NVN_GPU_TEX_SAMPLED);
+        uint8_t src[96]; memset(src, 0xee, sizeof src);
+        for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) c697_bc4_block(src + 48 + y * 24 + x * 8, (uint8_t)(100 + (y * 2 + x) * 7));
+        nvn_gpu_buf sb = make_buf(sizeof src, NVN_GPU_MEM_SHARED, src);
+        nvn_gpu_buf pix = make_buf(128, NVN_GPU_MEM_SHARED, NULL), cmp = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+        if (!bc2 || !pl2 || !sb || !pix || !cmp) { CHECK(0, "C697 缓冲→BC 建资源失败"); goto c697b_done; }
+        c = begin_cmd();
+        nvn_gpu_copy_tex_buf(c, bc, 0, 1, NULL, sb, 0, 16, 32);                   // 回读：sb[0,32) 被 GPU 写成 bc 切片 1 的原块
+        NVNcopyRegion left = {0, 0, 0, 8, 8, 1}, right = {8, 0, 0, 8, 8, 1}, all = {0, 0, 0, 16, 8, 1};
+        nvn_gpu_copy_buf_tex(c, sb, 0, 16, 32, bc2, 0, 0, &left);                 // 同一段里刚写的字节 → BC 贴图
+        nvn_gpu_copy_buf_tex(c, sb, 48, 24, 40, bc2, 0, 0, &right);               // CPU 填的块，带行距
+        nvn_gpu_copy_tex(c, bc2, 0, 0, &all, pl2, 0, 0, &all);                    // 解出来的像素
+        nvn_gpu_copy_tex_buf(c, pl2, 0, 0, &all, pix, 0, 16, 128);
+        nvn_gpu_copy_tex_buf(c, bc2, 0, 0, NULL, cmp, 0, 32, 64);                 // 再按压缩字节读回
+        rc = nvn_gpu_cmd_commit(c, 4, c697_bc4_done, NULL, &e);
+        CHECK(OK(rc), "C697 缓冲→BC commit：%d %s", rc.code, e.why);
+        if (OK(rc)) rc = nvn_gpu_fence_wait(4, 5000000000ull, &e);
+        CHECK(OK(rc), "C697 缓冲→BC wait：%s", e.why);
+        if (OK(rc)) {
+            const uint8_t *px = buf_cpu(pix), *cb = buf_cpu(cmp);
+            int bad = 0;
+            for (int y = 0; y < 8; y++) for (int x = 0; x < 16; x++) {
+                int by = y / 4;
+                uint8_t want = x < 4 ? (uint8_t)(60 + by * 10) : x < 8 ? (uint8_t)(211 + by * 3) : (uint8_t)(100 + (by * 2 + (x - 8) / 4) * 7);
+                if (px[y * 16 + x] != want && bad++ < 4) CHECK(0, "C697 缓冲→BC 像素 (%d,%d)：%u，期望 %u", x, y, px[y * 16 + x], want);
+            }
+            uint8_t wantc[64];
+            for (int by = 0; by < 2; by++) {
+                c697_bc4_block(wantc + by * 32 + 0, (uint8_t)(60 + by * 10)); c697_bc4_block(wantc + by * 32 + 8, (uint8_t)(211 + by * 3));
+                c697_bc4_block(wantc + by * 32 + 16, (uint8_t)(100 + by * 14)); c697_bc4_block(wantc + by * 32 + 24, (uint8_t)(107 + by * 14));
+            }
+            for (int i = 0; i < 64; i++) if (cb[i] != wantc[i] && bad++ < 8) CHECK(0, "C697 缓冲→BC 压缩回读字节 %d：%u，期望 %u", i, cb[i], wantc[i]);
+            CHECK(!bad, "C697 缓冲→BC：%d 处不符", bad);
+            if (!bad) printf("C697 缓冲→BC：同段回读字节与带行距 CPU 块拷入现解贴图，128 像素与 64 压缩字节已核对\n");
+        }
+    c697b_done:
+        if (bc2) nvn_gpu_tex_release(bc2);
+        if (pl2) nvn_gpu_tex_release(pl2);
+        if (sb) nvn_gpu_buf_release(sb, NULL, NULL);
+        if (pix) nvn_gpu_buf_release(pix, NULL, NULL);
+        if (cmp) nvn_gpu_buf_release(cmp, NULL, NULL);
+    }
 done:
     if (bc) nvn_gpu_tex_release(bc);
     if (plain) nvn_gpu_tex_release(plain);
@@ -6422,8 +6515,209 @@ static int c697_bc4_3d_run(void) {
     return open_backend();
 }
 
+// #658: isolated native GPU-count truth tests; no NVN command expansion.
+static nvn_gpu_pipe c658_producer(const char *dir) {
+    char path[512]; size_t len=0;
+    snprintf(path,sizeof path,"%s/count_args.comp.spv",dir); void *blob=read_file(path,&len);
+    CHECK(blob != NULL,"C658 producer SPIR-V"); if(!blob)return NULL;
+    nvn_gpu_layout_ent ent={0}; ent.cls=NVN_GPU_RES_SSBO;ent.access=NVN_GPU_ACC_RW;
+    ent.binding=0;ent.count=1;ent.stages=1u<<NVN_GPU_SH_CS;
+    nvn_gpu_layout layout={0};layout.ent=&ent;layout.nent=1;
+    nvn_gpu_shader_src src={0};src.stage=NVN_GPU_SH_CS;src.kind=NVN_GPU_BLOB_SPIRV;
+    src.entry="main";src.blob=blob;src.bytes=len;src.layout=&layout;
+    nvn_gpu_shader sh=NULL;nvn_gpu_pipe pipe=NULL;nvn_gpu_err err={0};
+    nvn_gpu_rc r=nvn_gpu_shader_load(&src,&sh,&err);CHECK(OK(r),"C658 producer load %d %s",r.code,err.why);
+    if(OK(r)){nvn_gpu_stage_desc sd={0};sd.sh=sh;r=nvn_gpu_cpipe_get(&sd,NVN_GPU_PIPE_SYNC,&pipe,&err);CHECK(OK(r),"C658 producer pipe %d %s",r.code,err.why);}
+    if(sh) nvn_gpu_shader_release(sh);
+    free(blob);return pipe;
+}
+// Separate from mode8's g_retired oracle; static storage remains valid on timeout.
+static atomic_int c658_cleanup_retired;
+static int c658_cleanup_submitted; // Only the test thread changes this target.
+static void c658_cleanup_done(void *u) {
+    (void)u;
+    atomic_fetch_add(&c658_cleanup_retired,1);
+}
+static void c658_case(const char *dir,unsigned count,int indexed,int mode) {
+    int saved_enabled=g_dev.draw_indirect_count_enabled;
+    if(mode==7)g_dev.draw_indirect_count_enabled=0;
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="count-only";
+    if(!open_backend()){g_dev.draw_indirect_count_enabled=saved_enabled;return;}
+    nvn_gpu_caps caps;nvn_gpu_caps_get(&caps);
+    CHECK((!!(caps.caps & NVN_GPU_CAP_INDIRECT_COUNT))==(mode!=7),"C658 actual enabled count capability mode=%d",mode);
+    nvn_gpu_pipe gp=color_pipe(dir,0),cp=c658_producer(dir);
+    if(!gp||!cp){nvn_gpu_err err={0};nvn_gpu_close(5000000000ull,&err);g_dev.draw_indirect_count_enabled=saved_enabled;return;}
+    float verts[24][8]; const unsigned corners[6]={0,1,2,2,1,3};
+    for(unsigned region=0;region<4;region++)for(unsigned j=0;j<6;j++){
+        unsigned k=corners[j];float *v=verts[region*6+j];memset(v,0,8*sizeof *v);
+        v[0]=-1.0f+region*0.5f+((k&2)?0.5f:0.0f);v[1]=(k&1)?1.0f:-1.0f;v[3]=v[7]=1;
+        v[4+(region<3?region:0)]=1;
+    }
+    uint32_t initial[48];for(unsigned i=0;i<48;i++)initial[i]=0xA5A5A5A5u;
+    initial[0]=count;initial[4]=count?0:3; // Opposite CPU poison count, overwritten on GPU.
+    for(unsigned i=0;i<5;i++){unsigned b=8+i*8;initial[b]=6;initial[b+1]=1;initial[b+2]=18;initial[b+3]=initial[b+4]=0;}
+    uint32_t indices[24];for(unsigned i=0;i<24;i++)indices[i]=i;
+    nvn_gpu_buf args=make_buf(sizeof initial,NVN_GPU_MEM_SHARED,initial);
+    uint32_t count_initial[8]={0};count_initial[4]=count?0:3;
+    nvn_gpu_buf separate_count=mode==8?make_buf(sizeof count_initial,NVN_GPU_MEM_SHARED,count_initial):NULL;
+    nvn_gpu_buf vb=make_buf(sizeof verts,NVN_GPU_MEM_SHARED,verts);
+    nvn_gpu_buf ib=indexed?make_buf(sizeof indices,NVN_GPU_MEM_SHARED,indices):NULL;
+    nvn_gpu_buf rb=make_buf(64*64*4,NVN_GPU_MEM_SHARED,NULL);
+    nvn_gpu_tex tex=make_tex(64,64,NVN_FORMAT_RGBA8,NVN_GPU_TEX_RENDER);nvn_gpu_view view=make_view(tex);
+    uint64_t signal=1;int retire_base=atomic_load(&g_retired);
+    nvn_gpu_err err={0};
+    nvn_gpu_cmd cmd=begin_cmd();nvn_gpu_binding binding={0};binding.cls=NVN_GPU_RES_SSBO;
+    binding.u.b.buf=args;binding.u.b.len=sizeof initial;
+    nvn_gpu_set_pipe(cmd,cp);nvn_gpu_bind(cmd,NVN_GPU_SH_CS,&binding,1);nvn_gpu_dispatch(cmd,cp,1,1,1,NULL,0);
+    if(separate_count)nvn_gpu_copy_buf(cmd,args,16,separate_count,16,4);
+    nvn_gpu_barrier(cmd,NVN_BARRIER_ORDER_INDIRECT_DATA_BIT|NVN_BARRIER_INVALIDATE_SHADER_BIT);
+    if(mode==8){
+        nvn_gpu_rc prep=nvn_gpu_cmd_commit(cmd,1,on_done,NULL,&err);
+        CHECK(OK(prep),"C658 producer commit %d %s",prep.code,err.why);
+        if(!OK(prep))goto c658_cleanup;
+        // Waiting for a following empty segment proves the producer's retained
+        // references were retired, not merely that its fence was published.
+        nvn_gpu_cmd drain=begin_cmd();prep=nvn_gpu_cmd_commit(drain,2,on_done,NULL,&err);
+        CHECK(OK(prep),"C658 producer drain commit %d %s",prep.code,err.why);
+        if(!OK(prep))goto c658_cleanup;
+        prep=nvn_gpu_fence_wait(2,5000000000ull,&err);
+        CHECK(OK(prep),"C658 producer drain wait %d %s",prep.code,err.why);
+        if(!OK(prep))goto c658_cleanup;
+        cmd=begin_cmd();signal=3;
+    }
+
+    nvn_gpu_pass_desc pass={0};pass.ncolor=1;pass.color[0].view=view;
+    pass.color[0].load=NVN_GPU_LOAD_CLEAR;pass.color[0].store=NVN_GPU_STORE_STORE;pass.color[0].clear.f[3]=1;
+    pass.w=pass.h=64;pass.layers=1;nvn_gpu_pass_begin(cmd,&pass);nvn_gpu_set_pipe(cmd,gp);
+    nvn_gpu_dyn dyn={0};dyn.origin_ll=1;dyn.nvp=1;dyn.vp[0][2]=dyn.vp[0][3]=64;dyn.vp[0][5]=1;
+    dyn.has_sc=1;dyn.sc[2]=dyn.sc[3]=64;nvn_gpu_set_dyn(cmd,&dyn);nvn_gpu_set_vbuf(cmd,0,vb,0);
+    nvn_gpu_draw_args draw={0};draw.prim=4;draw.instances=1;draw.ind=args;draw.ind_off=32;
+    draw.first=draw.count=UINT32_MAX; // CPU direct-draw fields are stale, not GPU indirect authority.
+    draw.cnt=separate_count?separate_count:args;draw.cnt_off=16;draw.max_draws=mode==1?0:3;draw.stride=32;draw.ibuf=ib;draw.itype=2;
+    if(mode==2)draw.cnt_off=18;
+    if(mode==3)draw.ind_off=34;
+    if(mode==4)draw.stride=18;
+    if(mode==5)draw.ind_off=160; // max span exceeds 192-byte buffer despite valid actual count
+    if(mode==6)draw.cnt_off=192;
+    nvn_gpu_draw(cmd,&draw);
+    if(separate_count){nvn_gpu_buf_release(separate_count,on_retire,NULL);separate_count=NULL;
+        CHECK(atomic_load(&g_retired)==retire_base,"C658 distinct count retired before draw submission");
+        if(atomic_load(&g_retired)!=retire_base){nvn_gpu_cmd_abort(cmd);goto c658_cleanup;}
+    }
+    nvn_gpu_pass_end(cmd);nvn_gpu_copy_tex_buf(cmd,tex,0,0,NULL,rb,0,256,16384);
+    nvn_gpu_rc r=nvn_gpu_cmd_commit(cmd,signal,on_done,NULL,&err);
+    int expected_rc=mode==7?NVN_GPU_E_UNSUPPORTED:(mode>=2&&mode<=6?NVN_GPU_E_ARG:NVN_GPU_OK);
+    CHECK(r.code==expected_rc,"C658 count=%u indexed=%d mode=%d commit %d expected=%d %s",count,indexed,mode,r.code,expected_rc,err.why);
+    if(OK(r)){
+        r=nvn_gpu_fence_wait(signal,5000000000ull,&err);CHECK(OK(r),"C658 wait %d %s",r.code,err.why);
+        if(OK(r)){
+            const uint8_t *pixels=buf_cpu(rb);unsigned expected=mode==1?0:(count<3?count:3);
+            for(unsigned region=0;region<4;region++){
+                const uint8_t *p=pixels+(32*64+region*16+8)*4;
+                unsigned red=region<expected && region==0?255:0,green=region<expected && region==1?255:0,blue=region<expected && region==2?255:0;
+                CHECK(p[0]==red&&p[1]==green&&p[2]==blue&&p[3]==255,"C658 count=%u indexed=%d region=%u got %u/%u/%u/%u expected %u/%u/%u/255",count,indexed,region,p[0],p[1],p[2],p[3],red,green,blue);
+            }
+            const uint32_t *audit=(const uint32_t*)buf_cpu(args);
+            CHECK(audit[4]==count,"C658 GPU count audit %u expected %u",audit[4],count);
+            for(unsigned i=0;i<5;i++){unsigned b=8+i*8;
+                CHECK(audit[b]==6&&audit[b+1]==1&&audit[b+2]==6*(i<3?i:3)&&audit[b+3]==0&&audit[b+4]==0,"C658 GPU args audit draw %u",i);
+                CHECK(audit[b+5]==0xA5A5A5A5u&&audit[b+6]==0xA5A5A5A5u&&audit[b+7]==0xA5A5A5A5u,"C658 padded stride guard draw %u",i);
+            }
+        }
+    }
+    if(mode==8)CHECK(wait_until(&g_retired,retire_base+1,2000),"C658 distinct count did not retire after consumption");
+c658_cleanup:
+    nvn_gpu_view_release(view);nvn_gpu_tex_release(tex);
+    nvn_gpu_buf cleanup_bufs[]={separate_count,args,vb,ib,rb};
+    for(unsigned i=0;i<sizeof cleanup_bufs/sizeof cleanup_bufs[0];i++)if(cleanup_bufs[i]){
+        ++c658_cleanup_submitted;
+        nvn_gpu_buf_release(cleanup_bufs[i],c658_cleanup_done,NULL);
+    }
+    CHECK(wait_until(&c658_cleanup_retired,c658_cleanup_submitted,2000),"C658 cleanup buffers did not retire");
+    CHECK(OK(nvn_gpu_close(5000000000ull,&err)),"C658 close %s",err.why);
+    g_dev.draw_indirect_count_enabled=saved_enabled;
+}
+static void c658_suite(const char *dir,int strict) {
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="count-cap";
+    if(!open_backend())return;
+    nvn_gpu_caps caps;nvn_gpu_caps_get(&caps);nvn_gpu_err err={0};
+    CHECK(OK(nvn_gpu_close(5000000000ull,&err)),"C658 capability close");
+    int can_run=(caps.caps & NVN_GPU_CAP_INDIRECT_COUNT) && g_dev.properties.limits.maxDrawIndirectCount>=5;
+    if(strict)CHECK(can_run,"C658 isolated positive matrix requires enabled native count and device max >=5");
+    if(can_run || strict){
+        const unsigned values[]={0,1,3,5};
+        for(int indexed=0;indexed<2;indexed++)for(unsigned i=0;i<4;i++)c658_case(dir,values[i],indexed,0);
+        for(int indexed=0;indexed<2;indexed++)for(unsigned i=0;i<4;i++)c658_case(dir,values[i],indexed,8);
+        for(int indexed=0;indexed<2;indexed++)for(int mode=1;mode<=6;mode++)c658_case(dir,3,indexed,mode);
+    } else printf("C658 positive matrix unavailable on this device; checking unsupported path only\n");
+    for(int indexed=0;indexed<2;indexed++)c658_case(dir,3,indexed,7);
+}
+static int c658_main(int argc,char **argv) {
+    if(argc!=2){fprintf(stderr,"count-only: shader directory required\n");return 2;}
+    char why[256]={0};if(s2a_vk_device_create(&g_dev,why,sizeof why)!=0){fprintf(stderr,"count-only device: %s\n",why);return 2;}
+    printf("count-only device=%s maxDrawIndirectCount=%u\n",g_dev.properties.deviceName,g_dev.properties.limits.maxDrawIndirectCount);
+    if(g_dev.properties.limits.maxDrawIndirectCount<5){fprintf(stderr,"count-only needs device limit >=5\n");s2a_vk_device_destroy(&g_dev,1);return 2;}
+    c658_suite(argv[1],1);
+    {extern uint64_t nvn_vk_dbg_dq_recs(void);uint64_t n=nvn_vk_dbg_dq_recs();
+     CHECK(getenv("S2A_TEST_NVK_DQ")?n>0:n==0,"C658 DQ recording count=%llu",(unsigned long long)n);}
+    s2a_vk_device_destroy(&g_dev,1);printf("count-only failures=%d\n",g_fail);return g_fail?1:0;
+}
+
+// #697 A: no shaders or unrelated tests; copy callback-owned text before publishing completion.
+struct error697_done { atomic_int calls; uint64_t signal; int code; uint32_t status; char why[256]; };
+static void error697_callback(void *u, const nvn_gpu_done *d) {
+    struct error697_done *o=u;
+    o->signal=d->signal; o->code=d->rc.code; o->status=d->status;
+    snprintf(o->why,sizeof o->why,"%s",d->why?d->why:"");
+    atomic_fetch_add_explicit(&o->calls,1,memory_order_release);
+}
+static void error697_expect(struct error697_done *o, uint64_t signal, nvn_gpu_rc rc,
+                            const nvn_gpu_err *err, int code, const char *why) {
+    CHECK(rc.code==code && err->rc.code==code,"E697 synchronous rc=%d err=%d expected=%d",rc.code,err->rc.code,code);
+    CHECK(strstr(err->why,why)!=NULL,"E697 first reason missing: %s",err->why);
+    if(!wait_until(&o->calls,1,5000)){CHECK(0,"E697 callback timeout");return;}
+    CHECK(atomic_load_explicit(&o->calls,memory_order_acquire)==1,"E697 exactly one callback");
+    CHECK(o->signal==signal && o->code==code && o->status==NVN_GPU_DONE_FAILED,"E697 asynchronous result mismatch");
+    CHECK(!strcmp(o->why,err->why),"E697 synchronous/asynchronous reason mismatch: %s / %s",err->why,o->why);
+}
+static int error697_only(void) {
+    char why[256]={0};
+    if(s2a_vk_device_create(&g_dev,why,sizeof why)!=0){fprintf(stderr,"E697 device: %s\n",why);return 2;}
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="error697-only";
+    for(int mode=0;mode<3;mode++) {
+        if(!open_backend())return 1;
+        uint8_t zeros[16]={0};nvn_gpu_buf b=make_buf(16,NVN_GPU_MEM_SHARED,zeros);
+        nvn_gpu_cmd first=begin_cmd(),second=begin_cmd();
+        nvn_gpu_err e; memset(&e,0,sizeof e);e.rc.code=123;strcpy(e.why,"stale sentinel");
+        struct error697_done d1={0},d2={0};nvn_gpu_rc rc;
+        if(mode==0) {
+            nvn_gpu_fill_buf(first,b,0,6,0xdeadbeef); // first ARG: misaligned size
+            nvn_gpu_fill_buf(first,b,99,4,0xffffffff); // later bounds error must not overwrite it
+        } else nvn_gpu_fill_buf(first,b,0,16,0xdeadbeef);
+        nvn_gpu_fill_buf(second,b,0,16,0xffffffff);
+        if(mode==1)nvn_gpu_vk_test_set_fault(1);
+        uint64_t signal=mode==2?0:1;
+        rc=nvn_gpu_cmd_commit(first,signal,error697_callback,&d1,&e);
+        error697_expect(&d1,signal,rc,&e,mode==1?NVN_GPU_E_DEVICE:NVN_GPU_E_ARG,
+                        mode==0?"bytes=6":mode==1?"测试注入":"signal 0");
+        memset(&e,0,sizeof e);e.rc.code=123;strcpy(e.why,"second stale sentinel");
+        rc=nvn_gpu_cmd_commit(second,2,error697_callback,&d2,&e);
+        error697_expect(&d2,2,rc,&e,NVN_GPU_E_FAILED,"时间线已失败");
+        CHECK(nvn_gpu_fence_done()==0 && nvn_gpu_fence_failed()==1,"E697 timeline changed");
+        CHECK(nvn_gpu_fence_wait(2,0,&e).code==NVN_GPU_E_FAILED,"E697 failed wait");
+        for(int i=0;i<16;i++)CHECK(buf_cpu(b)[i]==0,"E697 failed command wrote buffer");
+        nvn_gpu_cmd blocked=NULL;CHECK(nvn_gpu_cmd_begin(NULL,&blocked,&e).code==NVN_GPU_E_FAILED,"E697 terminal begin");
+        nvn_gpu_buf_release(b,NULL,NULL);
+        CHECK(OK(nvn_gpu_close(5000000000ull,&e)),"E697 close");
+        CHECK(atomic_load(&d1.calls)==1 && atomic_load(&d2.calls)==1,"E697 duplicate callback after close");
+    }
+    s2a_vk_device_destroy(&g_dev,1);printf("E697 isolated failures=%d\n",g_fail);return g_fail?1:0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   // 经 tee 的管道默认整块缓冲：超时被杀时最后一行不是卡点；按行刷新才看得出卡在哪
+    if (getenv("S2A_TEST_COUNT_ONLY")) return c658_main(argc, argv);
+    if (getenv("S2A_TEST_ERROR697_ONLY")) return error697_only();
     if (!getenv("S2A_TEST_LOGICOP_ONLY")) t29_format_expand();
     char why[256] = {0};
     if (s2a_vk_device_create(&g_dev, why, sizeof why) != 0) {
@@ -6817,6 +7111,8 @@ int main(int argc, char **argv) {
 
     c88_pipe_cache(argv[1]);   // 每个会话自己开 / 关（带不同的 cache_dir）
     c89_midrun_save(argv[1]);  // 同上；还会起子进程（被 SIGKILL 的那一局）
+    c658_suite(argv[1],0);   // Independently opens/closes; absent count capability is a negative control.
+    c907_retained_flush(argv[1]);   // 停局保留会话时的管线缓存落盘（#907 合入补）
 
     printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75/C88/C89 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));

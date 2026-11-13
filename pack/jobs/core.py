@@ -831,7 +831,9 @@ class Context:
         if active:
             message += "（" + activity.describe(data) + "）"
             activity.sent()
-        self.emit(message=message, done=main["done"], total=main["total"], unit="项", counters=counters,
+        # 编批库的计数是源码 MB（Build.cs Ticker「直连库·编批库（MB）」）：单位照实写，原先一律「项」，界面显示「1894 / 64490 项」（#944）
+        unit = "MB" if main["name"].endswith("（MB）") else "项"
+        self.emit(message=message, done=main["done"], total=main["total"], unit=unit, counters=counters,
                   **({"activity": data} if active else {}))
 
     def stage_activity(self):

@@ -29,7 +29,6 @@
 "When on, you can connect a Switch 2 Pro Controller in game and use its buttons, HD rumble and motion controls. Hold the SYNC button on top of the controller to connect. This setting applies only to this app." = "開啟後可在遊戲中連接 Switch 2 Pro 手把，使用按鍵、HD 震動和體感操作。連接時需長按手把頂部的 SYNC 鍵。此設定只對本 App 生效。";
 "Enable Switch 2 Pro Controller Support" = "啟用 Switch 2 Pro 手把支援";
 "Sound" = "聲音";
-"When on, game sound keeps playing while the iPhone is in Silent Mode. When off, S2Arm follows Silent Mode like other games. Takes effect when you switch back to the app." = "開啟後，iPhone 處於靜音模式時遊戲仍會發出聲音；關閉時和其他遊戲一樣跟隨靜音模式。切回 App 後立即生效。";
 "Play Sound in Silent Mode" = "靜音模式下也播放聲音";
 "Saves" = "存檔";
 "Save in the game first, then close and reopen the app. Save management opens before the game starts, where you can export a backup or import a .s2asave file from a Mac. Your current save is kept before restoring. The switch turns off once the game starts." = "請先在遊戲內儲存，再關閉並重新開啟 App。存檔管理會在遊戲啟動前開啟，可匯出備份或匯入 Mac 的 .s2asave 檔案。回復前會保留原本的存檔。開始遊戲後開關會自動關閉。";
@@ -56,3 +55,5 @@
 "On" = "開啟";
 "Landscape" = "橫向";
 "Portrait" = "直向";
+"Play Sound in Silent Mode: game sound keeps playing while the iPhone is in Silent Mode. Mix with Other Apps: music and podcasts from other apps keep playing alongside the game, and the Silent switch mutes only the game. Changes take effect when you switch back to the app." = "「靜音模式下也播放聲音」：iPhone 處於靜音模式時遊戲仍會發出聲音。「與其他 App 混音」：其他 App 的音樂、Podcast 和遊戲一起播放，靜音鍵只靜音遊戲。切回 App 後立即生效。";
+"Mix with Other Apps" = "與其他 App 混音";
