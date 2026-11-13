@@ -2016,6 +2016,10 @@
   "en": "The game is not registered in the current library."
  },
  {
+  "source": "选的是游戏文件，不是密钥：这里要的是 prod.keys 文本文件（通常几十 KB）；游戏请从「添加游戏」导入。",
+  "en": "That's a game file, not your keys. This needs the prod.keys text file (usually a few dozen KB); add games with \"Add games\" instead."
+ },
+ {
   "source": "密钥文件过大，请选择 prod.keys 文本文件。",
   "en": "The key file is too large. Select the prod.keys text file."
  },

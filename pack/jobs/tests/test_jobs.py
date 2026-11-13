@@ -2521,6 +2521,19 @@ class JobsTests(unittest.TestCase):
             library.keys(self.c)
         self.assertIn("a" * 64, self.c.keys.read_text())
 
+    def test_game_file_picked_as_keys_is_named(self):
+        # 诊断 D-HZF3：玩家在导入密钥处连选 4 次游戏原件（.nsp / .nsz），只看到「过大」「格式无效」。期望手写：
+        #   原件扩展名（大小写不论）一律说「选的是游戏文件」、码 keys_invalid、原有密钥不动；真密钥照旧导入
+        self.c.keys.parent.mkdir(parents=True)
+        self.c.keys.write_text("header_key = " + "a" * 64)
+        for name, body in (("Game [0100000000000000][v0].NSP", b"PFS0" + b"\0" * (2 << 20)), ("Game.nsz", b"PFS0")):
+            with self.subTest(name=name):
+                f = self.root / name; f.write_bytes(body); self.c.r["path"] = str(f)
+                with self.assertRaises(Failure) as e:
+                    library.keys(self.c)
+                self.assertTrue(str(e.exception).startswith("选的是游戏文件"), str(e.exception)); self.assertEqual(e.exception.code, "keys_invalid")
+                self.assertIn("a" * 64, self.c.keys.read_text())
+
     def test_mapping_rejects_malformed_native_values_and_duplicate_axes(self):
         config = dict(schema=1, keyboard={"A": {"code":14}}, mouse={}, gamepad={}, axes={}, deadzone=.15,
                       mouseOptions=dict(mode="camera", sensitivityX=1, sensitivityY=1, invertX=False, invertY=False, recenter=True))
