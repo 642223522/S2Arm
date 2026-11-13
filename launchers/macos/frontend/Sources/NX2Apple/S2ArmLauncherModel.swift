@@ -176,7 +176,16 @@ public final class S2ArmLauncherModel: ObservableObject {
     var installAfterQueue: [String] = []
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
     @Published var updateState: UpdateState = .idle
-    @Published var notice: [String: Any]?   // 顶部公告条（S2ArmLauncherModel+Update.swift loadNotice）；nil = 不显示
+    @Published var notice: [String: Any]?   // 顶部公告条：最新一条没看过的重要公告（S2ArmLauncherModel+Update.swift loadInbox）；nil = 不显示
+    /// 打开时最多一个弹窗：{kind: update | afterUpdate, version, notes?}（11-13 维护者：永远只给最新一期，看过不再弹）
+    @Published var updatePopup: [String: Any]?
+    /// 「消息」列表（公告最新在前 + 更新说明）与未读数（只算最新那条公告）
+    @Published var messages: [[String: Any]] = []
+    @Published var unreadMessages = 0
+    /// 有新版时的那一版 {version, notes?}：顶栏「有新版 vX」点开回到弹窗
+    @Published var availableUpdate: [String: Any]?
+    /// 点「现在更新并重启」时有局 / 任务在跑：先拦下说明（文案号 update.gate.playing / update.gate.busy）
+    @Published var updateGate: String?
     var updateReady: [String: Any]?
     @Published var showAddGames = false
     @Published var showKeys = false
@@ -313,7 +322,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 原先 onAppear 一次并发起这几个作业，每个作业开头都做迁移 / 收日志：两个作业同时收私有目录日志、老库搬家时旧库目录被建回来（坑记录）。
     /// 不碰游戏库的（控制口、更新、公告、手柄中继）照常一起起。
     func startup() {
-        startControl(); finishPendingUpdate(); checkForUpdate(); loadNotice(); startControllerConnection()
+        startControl(); finishPendingUpdate(); loadInbox(); startControllerConnection()
         refresh { [weak self] in self?.recoverBatch { self?.checkEnvironment() } }
     }
 
