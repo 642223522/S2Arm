@@ -318,6 +318,20 @@ public final class GameInstallTest {
         return hashes;
     }
 
+    private static void expectNoopImportProcess(File internal, File external) throws Exception {
+        Process child = new ProcessBuilder(new File(System.getProperty("java.home"), "bin/java").getPath(),
+            "-cp", System.getProperty("java.class.path"), GameInstallTest.class.getName(),
+            "--locked-import-child", internal.getPath(), external.getPath()).redirectErrorStream(true).start();
+        if (!child.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
+            child.destroyForcibly();
+            throw new AssertionError("competing import process did not exit within 15 seconds");
+        }
+        String output = new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        check(child.exitValue() == 0 && output.lines().anyMatch("SCANNED"::equals)
+            && output.lines().noneMatch(l -> l.startsWith("INSTALLED") || l.startsWith("REFUSED")),
+            "locked queues: a consumed target is a no-op for a competing real JVM import, got " + child.exitValue() + " " + output);
+    }
+
     private static void expectBusyImportProcess(File internal, File external) throws Exception {
         Process child = new ProcessBuilder(new File(System.getProperty("java.home"), "bin/java").getPath(),
             "-cp", System.getProperty("java.class.path"), GameInstallTest.class.getName(),
@@ -357,8 +371,9 @@ public final class GameInstallTest {
                     activated.add(result.contentRoot);
                     check(!source.exists(), "locked queues: successful source cleanup precedes callback");
                     check(result.contentRoot.equals(current(game)), "locked queues: callback observes actual activation");
+                    // 锁按款、只覆盖 install 本身（不堵门）：回调时锁已放、源包已消费，并发的子进程找不到目标、什么都不装、正常退出
                     try {
-                        expectBusyImportProcess(internal, external);
+                        expectNoopImportProcess(internal, external);
                     } catch (Exception error) { throw new AssertionError("child import probe failed", error); }
                     if (events[0] == 1) {
                         check(result.contentRoot.equals(privateRoot) && oldRoot.equals(result.previousContentRoot)
