@@ -85,6 +85,8 @@ class PickTests(unittest.TestCase):
         self.assertEqual(install.classify("The maximum number of apps for free development profiles has been reached."), "free_app_limit")   # 较早 iOS 的装机原文：说的是装上的 apps
         self.assertEqual(install.classify("This device has reached the maximum number of installed apps using a free developer profile"), "free_app_limit")   # 11-06 iOS 27 原文
         self.assertEqual(install.classify('error: No Account for Team "TEAM1".'), "xcode_account_missing")
+        # #897 免费个人团队申请了付费团队才有的权限（Xcode 原文，第一条 error；后面跟的「No profiles … were found」不该盖过它）
+        self.assertEqual(install.classify('error: Cannot create a iOS App Development provisioning profile for "io.s2arm.ds.x". Personal development teams, including "T", do not support the Extended Virtual Addressing capability.'), "free_team_capability")
         self.assertEqual(install.classify("error: something else"), "signing_failed")
 
     FAKE_TEAM = "ABCDE" + "12345"
@@ -833,6 +835,25 @@ class SaveBackupTests(unittest.TestCase):
         self.assertEqual((d / "0000000000000001/0/save.dat").read_text(), "内容:" + got[0])
         self.assertEqual(d.parent, self.c.library / "games/0100C2500FC20000/save_backup")
 
+    def test_list_entry_without_relative_path_asks_not_crash(self):
+        # #908：Xcode 16.0 的 devicectl 有条目不带 relativePath，原先 KeyError 让整个装机作业崩成「本地任务失败」。
+        #   path 字段照认、照备份；两种都没有 → 停在「备份不了存档」确认（save_backup_failed），玩家确认后照装
+        import diag
+        def run(entries):
+            def devicectl(c, *a, timeout=0):
+                if a[:3] == ("device", "info", "files"):
+                    return 0, {"result": {"files": entries}}, ""
+                Path(a[a.index("--destination") + 1]).write_text("x"); return 0, {}, ""
+            with um.patch.object(diag, "devicectl", devicectl):
+                return install.backup_saves(self.c, "C891", "s2arm.z.0100c2500fc20000", "0100C2500FC20000")
+        d = run([dict(path="0000000000000001/0/save.dat", resources=dict(isDirectory=False))])
+        self.assertTrue((d / "0000000000000001/0/save.dat").is_file())
+        with self.assertRaises(Failure) as e:
+            run([dict(name="save.dat", resources=dict(isDirectory=False))])
+        self.assertEqual(e.exception.code, "save_backup_failed"); self.assertIn("读不懂 iPhone 返回的存档文件清单", e.exception.internal)
+        self._accept()
+        self.assertIsNone(run([dict(name="save.dat", resources=dict(isDirectory=False))]))
+
     def test_nothing_on_device(self):
         self.assertEqual(self._run([])[0], None)                       # 第一次装：机上没有存档，不备份不报错
 
@@ -1109,6 +1130,22 @@ class AssembleTests(unittest.TestCase):
                   um.patch.object(install, "phone_for", lambda c: ph)):
             p.start(); self.addCleanup(p.stop)
         return ph, pushed, signed
+
+    def test_update_phone_offline_target_but_connected_one_is_current(self):
+        """#900：更新要找的那台（dev1，壳旧）不在线，连着的另一台（dev2）已是本版壳 → 说清是两台、连着的这台不用更新，码仍是 device_not_connected；
+        连着的那台也是旧壳 / 没有别的在线设备 → 照原来的「不在线」原文"""
+        self._update(device="dev1")
+        layout.save_device(self.c, "dev2", dict(games={}, shellId="SID2"))
+        offline = Failure("要装的那台设备（编号末尾 dev1）现在不在线：……", code="device_not_connected")
+        with um.patch.object(install, "phone_for", side_effect=offline), um.patch.object(install, "online_devices", return_value={"dev2"}):
+            with self.assertRaises(Failure) as e:
+                install.update_phone(self.c)
+        self.assertEqual(e.exception.code, "device_not_connected")
+        self.assertIn("要更新的是另一台设备（编号末尾 dev1）", str(e.exception)); self.assertIn("（编号末尾 dev2）已经是新版 S2Arm，不用更新", str(e.exception))
+        with um.patch.object(install, "phone_for", side_effect=offline), um.patch.object(install, "online_devices", return_value=set()):
+            with self.assertRaises(Failure) as e:
+                install.update_phone(self.c)
+        self.assertEqual(str(e.exception), str(offline))
 
     def test_update_phone_lists_games_needing_repack_and_stops(self):
         """新壳认不得乙：没确认就停下报 container_stale 点名乙，不签不装、设备记录不动"""

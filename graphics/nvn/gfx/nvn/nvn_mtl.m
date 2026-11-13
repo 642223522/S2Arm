@@ -130,6 +130,9 @@ static id<MTLFence> g_fence3;   // Metal 3: orders the encoders of g_q3, across 
 static dispatch_queue_t g_feedback_q;
 static _Atomic uint32_t g_present_qos;
 #define ALLOC_MAX 8
+enum { ALLOC_SHARE = 64 };   // submissions one allocator serves before the next takes another (see g_alloc_frame)
+// The most submissions nvn_be_sub_begin lets stand uncompleted: ALLOC_MAX allocators of ALLOC_SHARE submissions each. It sizes what is held per submission in flight (VIS_RING)
+enum { SUB_FLIGHT_MAX = ALLOC_MAX * ALLOC_SHARE };
 static id<MTL4CommandAllocator> g_alloc4[ALLOC_MAX]; static int g_alloc_n, g_alloc_cur;   // Command allocator pool of the main submission: at start pick one the GPU has finished with, create a new one if there is none (wait only at the cap)
 static id<MTL4CommandAllocator> g_up_alloc4[3];
 static id<MTL4CommandAllocator> g_present_alloc4[3];
@@ -584,6 +587,7 @@ static void udc_selftest(void) {
         MLOG("UDC self-check %s %s %lux%lu first value %08x, values differing from it %lu / %lu", g_dev.name.UTF8String, depth ? "Depth32F_S8" : "RGBA8", (unsigned long)w, (unsigned long)h, px[0], (unsigned long)bad, (unsigned long)(w * h));
     }
 }
+static void bcd_prewarm(void);   // no BC: start building the decompression pipeline (defined with bcd_pso)
 void mtl_init(void) {
     if (g_dev) return;
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
@@ -685,6 +689,7 @@ void mtl_init(void) {
     MLOG("Metal device %s", g_dev.name.UTF8String);
     udc_selftest();
     warm_announce();
+    bcd_prewarm();   // S2Arm #582: no BC, the decompression pipeline is built in the background (see bcd_ready)
 }
 
 
@@ -995,8 +1000,11 @@ typedef struct { void *buf; uint32_t slot; uint64_t fence; } vis_slot;
 typedef struct { int n; uint64_t base; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
 typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
-// One visibility buffer per submission in flight, as many as command allocators: with 4, Age of Calamity (about twelve submissions a frame) waited in nvn_be_sub_begin for the previous frame's GPU work; its first battle went from 18.0 to 16.9 ms a frame on the Mac
-enum { VIS_RING = ALLOC_MAX };
+// One visibility buffer per counting submission in flight. It was one per allocator, taken at every submission's start: with 4, Age of Calamity (about twelve submissions a frame) waited in nvn_be_sub_begin for the previous frame's GPU work; its first battle went from 18.0 to 16.9 ms a frame on the Mac
+// Since a frame's submissions share a command allocator (g_alloc_frame), more submissions are in flight than allocators, so the ring holds one for every submission that can be
+// in flight and a submission takes one only at its first pass that counts samples (vis_take): most count none (a compute piece, a copy, a piece between two waits). It grows on
+// demand, each buffer kept resident and reused once its submission's fence passes (SUB_FLIGHT_MAX x 64 KiB = 32 MiB at most). Ported from nxnative (MIT)
+enum { VIS_RING = SUB_FLIGHT_MAX };
 static vis_buf g_vis_ring[VIS_RING]; static int g_vis_ring_n, g_vis_ring_i = -1;
 static id<MTLBuffer> g_vis; static uint32_t g_vis_n;   // This submission's visibility buffer and number of slots used
 static int vis_in_ring(id<MTLBuffer> b) { for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].buf == b) return 1; return 0; }
@@ -1007,6 +1015,20 @@ static uint64_t g_cnt_report[32], g_cnt_reset[32];       // Report / reset count
 static void vis_clear(void) { for (int i = 0; i < g_nvs; i++) CFRelease(g_vs[i].buf); g_nvs = 0; g_vis_base = 0; g_vis_cur = -1; }
 // Fold the slots whose submission has completed into g_vis_base (encode thread; g_done read without the lock as elsewhere: a stale value only folds less).
 // Called before a report snapshots the table and before a ring visibility buffer is reused (sub begin), so a slot is never read after its buffer was handed to a new submission.
+static void vis_fold(void);
+// A submission's visibility buffer, taken from the ring at its first pass that counts samples. The ring holds one for every submission that can be in flight (VIS_RING), so one is
+// always free; were none, the pass takes a buffer of its own (rp_begin), retired after the submission as an overflow buffer is, rather than wait for the GPU inside it
+static void vis_take(void) {
+    if (g_vis_ring_i >= 0) return;
+    int pick = -1;
+    for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
+    if (pick < 0 && g_vis_ring_n < VIS_RING) pick = g_vis_ring_n++;
+    if (pick < 0) return;
+    vis_fold();   // the picked buffer's submission has completed: its slots still in the table are read now, before this submission overwrites them
+    g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
+    if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
+    g_vis = g_vis_ring[pick].buf; g_vis_n = 0;
+}
 static void vis_fold(void) {
     uint64_t done = g_done; int j = 0;
     for (int i = 0; i < g_nvs; i++) {
@@ -1193,6 +1215,11 @@ enum { GSR_N = 16384 };
 static struct { uint64_t fence, lo, hi; } g_gsr[GSR_N]; static uint64_t g_gsr_n; static int g_gml_on;
 static pthread_mutex_t g_gsr_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc_grown;
+// The submissions of one frame share an allocator: Metal lets an allocator serve command buffers one after another and asks only that all of them are complete before its reset,
+// which is what its fence, the last one's, says. So the pool holds an allocator per frame in flight, not per submission. The queue replays a guest submission in pieces, so a game
+// makes many small ones a frame (Ocarina of Time 28-37): the pool's 8 ran out about once a frame and the submit thread waited for the GPU (real device: 1,600-7,500 waits a run).
+// ALLOC_SHARE bounds an allocator's memory while no frame ends (a loading screen): after that many submissions the next takes another. Ported from nxnative (MIT)
+static uint64_t g_alloc_frame, g_alloc_shared, g_alloc_shares; static int g_alloc_used;   // the current allocator: the frame it was taken in, the submissions it has served since its reset; submissions that shared one so far
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns);
 static void up_flush(void);
 // The upload batch belongs only to the submit thread (the thread that called nvn_be_sub_begin): the batch's encoder cannot be used across threads. Every entry point asserts current thread == submit thread,
@@ -1254,14 +1281,17 @@ void nvn_be_sub_begin(void) {
     // pick an allocator the GPU has finished with; if all are in use create a new one; only at the cap wait for the oldest one. How far ahead it runs is bounded by the wait where the game acquires the swapchain texture, same as the old interface.
     // Metal 3 has no allocators: every submission takes a fresh command buffer (m3_cb)
     if (!g_m3) {
-        int alloc_i = -1; uint64_t done = g_done;
-        for (int i = 0; i < g_alloc_n; i++) if (g_alloc_fence[i] <= done) { alloc_i = i; break; }
+        int alloc_i = -1; uint64_t done = g_done, alloc_frame = atomic_load(&g_cur_frame);
+        int alloc_share = g_alloc_used && g_alloc_frame == alloc_frame && g_alloc_shared < ALLOC_SHARE;
+        if (alloc_share) alloc_i = g_alloc_cur;
+        for (int i = 0; alloc_i < 0 && i < g_alloc_n; i++) if (g_alloc_fence[i] <= done) { alloc_i = i; break; }
         if (alloc_i < 0 && g_alloc_n < ALLOC_MAX) { NSError *ae = nil; MTL4CommandAllocatorDescriptor *ad = [MTL4CommandAllocatorDescriptor new];
             g_alloc4[g_alloc_n] = [g_dev newCommandAllocatorWithDescriptor:ad error:&ae]; if (!g_alloc4[g_alloc_n]) MDIE("failed to create a new MTL4CommandAllocator: %s", ae.localizedDescription.UTF8String);
             alloc_i = g_alloc_n++; g_alloc_grown++; }
         if (alloc_i < 0) { alloc_i = 0; for (int i = 1; i < g_alloc_n; i++) if (g_alloc_fence[i] < g_alloc_fence[alloc_i]) alloc_i = i; g_alloc_waits++; nvn_be_wait(g_alloc_fence[alloc_i], UINT64_MAX); }
         g_alloc_cur = alloc_i;
-        [g_alloc4[alloc_i] reset];
+        if (alloc_share) { g_alloc_shared++; g_alloc_shares++; }
+        else { [g_alloc4[alloc_i] reset]; g_alloc_frame = alloc_frame; g_alloc_shared = 1; g_alloc_used = 1; }
         [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
     }
     ts_sub_begin(); sub_cut_begin();
@@ -1270,14 +1300,7 @@ void nvn_be_sub_begin(void) {
     if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis);
     g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; pend_reset();
     zskip_clear(); g_zskip_count = 0;
-    int pick = -1;
-    for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
-    if (pick < 0 && g_vis_ring_n < VIS_RING) pick = g_vis_ring_n++;
-    if (pick < 0) { uint64_t oldest = UINT64_MAX; for (int i = 0; i < VIS_RING; i++) if (g_vis_ring[i].fence < oldest) { oldest = g_vis_ring[i].fence; pick = i; } if (oldest > g_done) nvn_be_wait(oldest, UINT64_MAX); }
-    vis_fold();   // the picked buffer's submission has completed: its slots still in the table are read now, before the new submission overwrites them
-    g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
-    if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
-    g_vis = g_vis_ring[pick].buf;
+    g_vis_ring_i = -1;   // its visibility buffer is taken by its first pass that counts samples (vis_take)
     void arena_begin(void); arena_begin();
 }
 
@@ -2536,7 +2559,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[187];   // RED_ONCE keys 0..186 (186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: unused since 11-07 (a not-loaded color attachment written: g_noload_wrong, first 8 lines); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[188];   // RED_ONCE keys 0..187 (187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: unused since 11-07 (a not-loaded color attachment written: g_noload_wrong, first 8 lines); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -2917,11 +2940,29 @@ static id<MTLComputePipelineState> bcd_pso(void) {
         if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–7 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–7 are decompressed on the GPU"); }
     return ps;
 }
+// S2Arm #582: bcd_pso compiles k_bcd_msl from source (newLibraryWithSource, about 230 ms on an M4 each launch, the system shader cache does not keep it); built at first use it sat on the
+//   upload of the first BC texture. On a GPU without BC mtl_init starts the build in the background (bcd_prewarm); a use waits for it (bcd_ready), so ps / failed are only written on that queue
+//   and only read after the wait. With BC (or before mtl_init) nothing is started and bcd_ready is bcd_pso
+static dispatch_group_t g_bcd_pre;   // the background build, NULL = not started
+static void bcd_prewarm(void) { if (!no_bc() || g_bcd_pre) return; g_bcd_pre = dispatch_group_create(); dispatch_group_async(g_bcd_pre, s2a_qos_global(S2A_QOS_SHADER_PREFETCH), ^{ (void)bcd_pso(); }); }
+static id<MTLComputePipelineState> bcd_ready(void) { if (g_bcd_pre) dispatch_group_wait(g_bcd_pre, DISPATCH_TIME_FOREVER); return bcd_pso(); }
 // GPU decompression applies (the texture is made shader-writable with format views; the upload still needs pool-backed storage, otherwise it decodes on the CPU)
-static int bc_gpu_dec(const tex_t *t) { uint32_t upf; int ubpp; return fmt_unpack(t->d.format, &upf, &ubpp) && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_pso(); }
+static int bc_gpu_dec(const tex_t *t) { uint32_t upf; int ubpp; return fmt_unpack(t->d.format, &upf, &ubpp) && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_ready(); }
 typedef struct { __unsafe_unretained id<MTLBuffer> src, params; size_t poff; uint32_t bw, bh; __unsafe_unretained id<MTLTexture> view, base; } up_dec;   // view / base: held by g_up_texs within the batch, the view afterwards by defer_obj_unref until the GPU finishes
 static up_dec *g_up_decs; static int g_nup_decs, g_up_deccap;
 #include "nvn_rscale.inc"   // S2Arm internal resolution (S2A_RES_SCALE): state, eligibility, canvas sizes
+// Multisample count the GPU can make: NVN games ask for 8x (a novel game's render targets on an iPhone 13 Pro Max, #903), which Apple's A15 and earlier iPhone GPUs do not
+//   support (they take 1 / 2 / 4); an unsupported count is a Metal validation assertion that aborts the process. Step down to the largest supported count not above the
+//   request. Render passes, pipelines and resolves already take the count from the Metal texture (g_pass.samples), so they follow; a shader reading sample index >= the
+//   new count reads an undefined sample (logged once)
+static NSUInteger mtl_samples_supported(const tex_t *t) {
+    NSUInteger want = t->d.samples ? t->d.samples : 1, n = want;
+    while (n > 1 && ![g_dev supportsTextureSampleCount:n]) n >>= 1;
+    if (n != want) RED_ONCE(187, "multisample count %lu not supported by this GPU: created with %lu samples (first case ser=%llu %u×%u)", (unsigned long)want, (unsigned long)n,
+                            (unsigned long long)t->serial, t->d.width, t->d.height);
+    return n;
+}
+
 #include "../../texture_extent.inc"
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
@@ -2941,8 +2982,8 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 2: d.textureType = MTLTextureType3D; d.depth = t->d.depth; break;
         case 3: d.textureType = MTLTextureType2DArray; d.arrayLength = t->d.height; d.height = 1; break;
         case 4: d.textureType = MTLTextureType2DArray; d.arrayLength = t->d.depth; break;
-        case 5: d.textureType = MTLTextureType2DMultisample; d.sampleCount = t->d.samples; d.mipmapLevelCount = 1; break;
-        case 6: d.textureType = MTLTextureType2DMultisampleArray; d.sampleCount = t->d.samples; d.arrayLength = t->d.depth; d.mipmapLevelCount = 1; break;
+        case 5: d.textureType = MTLTextureType2DMultisample; d.sampleCount = mtl_samples_supported(t); d.mipmapLevelCount = 1; break;
+        case 6: d.textureType = MTLTextureType2DMultisampleArray; d.sampleCount = mtl_samples_supported(t); d.arrayLength = t->d.depth; d.mipmapLevelCount = 1; break;
         // Cube textures are created as 6-layer 2D arrays and sampled through cube / cube array views made by tex_fit: Metal only allows cube array views of a 2D array base texture (not of a cube base).
         // The Legend of Zelda: Breath of the Wild has 1512 shaders that sample the environment light probes as a cube array while a single cube texture is bound (texture ID 1064 onwards): with mismatched types the reads are undefined, and every lit surface came out black
         case 8: d.textureType = MTLTextureType2DArray; d.arrayLength = 6; break;
@@ -3131,7 +3172,7 @@ static void up_flush(void) {
     if (g_nup_decs) {   // no BC, GPU decompression (up_dec): after the deswizzles that wrote the blocks; the decoded textures take no copy, so this runs before the copies' encoder
         id e = [g_up_cb computeCommandEncoder]; g_up_ce = e;
         if (g_m3) m3_wait(e, 0, 0); else { enc_full_barrier_begin(e); [e setArgumentTable:g_up_ct]; }
-        [e setComputePipelineState:bcd_pso()];
+        [e setComputePipelineState:bcd_ready()];
         for (int i = 0; i < g_nup_decs; i++) { up_dec *x = &g_up_decs[i];
             if (g_m3) { [(id<MTLComputeCommandEncoder>)e setBuffer:x->src offset:0 atIndex:0]; [(id<MTLComputeCommandEncoder>)e setBuffer:x->params offset:x->poff atIndex:1]; [(id<MTLComputeCommandEncoder>)e setTexture:x->view atIndex:0]; }
             else { [g_up_ct setAddress:x->src.gpuAddress atIndex:0]; [g_up_ct setAddress:x->params.gpuAddress + x->poff atIndex:1]; [(id<MTL4ArgumentTable>)g_up_ct setTexture:x->view.gpuResourceID atIndex:0]; }
@@ -5417,6 +5458,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     }
     if (g_vis_on) {
         // Slots used up (one submission exceeds VIS_SLOTS counting passes): continue in a new overflow buffer. A ring buffer must not be retired (it is still used in rotation, and retiring removes it from the residency set); only a previous overflow buffer is
+        if (!g_vis) vis_take();
         if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
         pd.visibilityResultBuffer = g_vis;
     }
@@ -14331,7 +14373,7 @@ static void copy_t2t_(const p_copy_t2t *c);
 static void dlss_eval(const p_dlss *d, uint32_t size);   // nvn_dlss.inc
 static void copy_t2t(const p_copy_t2t *c) {
     // GPU 写出的贴图拷到别处，目标也是 GPU 内容，不当 16:9 原比例页的来源（核心按 src 判：CPU 供图拷来拷去仍是图片；10-26 八方2 场景图）
-    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
+    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); wd_s3d_copied(c->dst->serial, c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
     if (rs_on() && c->dst && (c->flags & DM_COPY_RESOLVE) && rs_state(tex_mtl(c->dst)) == RS_SCALED) rs_rescale(tex_mtl(c->dst), 0, "多重采样解析的目标");   // S2Arm internal resolution: a resolve needs equal sizes (multisample storages are never scaled)
     if ((c->flags & DM_COPY_RESOLVE) && c->src && c->dst) wd_widen_resolve_dst(c->src, c->dst);   // S2Arm widen: a widened multisample target resolves into a destination widened the same
     // S2Arm widen: the same copied the same way between two textures of one game size (11-02 Mario & Sonic Tokyo 2020: each frame copies its widened 1920x1080 canvas, drawn in the
@@ -15034,7 +15076,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
                 if (g_rc_skip) { PD("c %llu color clear skipped by conditional rendering slot%d", g_stat_pass, c->index); break; }
-                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial);   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
+                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) { s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial); if (!R.has_sc) { pthread_mutex_lock(&g_wd_mu); wd_s3d_cleared(R.rt.color[c->index]->serial); pthread_mutex_unlock(&g_wd_mu); } }   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
                 // A scissored clear to 0 outside a pass with all channels (SMBW clears pyramid levels as sub-rectangles of 480×272 and other targets): copy from the zero buffer into the scissor rectangle in the replay stream
                 int p2w = g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index] && wd_p2_is_world(R.rt.color[c->index]->serial);   // S2Arm widen: per-path clear counts on the fallback world target (status line, widen_glue.inc)
                 if (!g_enc && c->mask == 0xf && !c->rgba[0] && !c->rgba[1] && !c->rgba[2] && !c->rgba[3] && R.has_sc && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]

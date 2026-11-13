@@ -312,10 +312,8 @@ struct CloudSyncView: View {
     }
 }
 
-/// app.m 用的 C 入口（声明在 S2ArmShellBridge/include/s2a_shell.h）
-@MainActor @_cdecl("s2a_shell_cloud_sync_vc")
-public func s2a_shell_cloud_sync_vc(_ gameID: UnsafePointer<CChar>?, _ done: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?,
-                                    _ ctx: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer? {
+/// 本款的同步引擎与显示名：没开云存档 / 没有存档身份或服务 / 游戏号无效时回 nil（原因已记日志）
+@MainActor func cloudEngine(_ gameID: UnsafePointer<CChar>?) -> (SaveSyncEngine, String)? {
     guard ShellSettingsStore.current.cloudSavesBookmark != nil else { return nil }   // 没开云存档
     guard let folder = CloudSaves.folder() else { return nil }
     guard let raw = s2a_shell_save_context() else { NSLog("S2Arm 云存档：本款没有存档身份或存档服务，不同步"); return nil }
@@ -329,8 +327,46 @@ public func s2a_shell_cloud_sync_vc(_ gameID: UnsafePointer<CChar>?, _ done: (@c
     let engine = SaveSyncEngine(folder: CloudSaveFolder(root: folder, gameID: gameID), device: CloudSaves.deviceID(), deviceName: UIDevice.current.name, platform: UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone",
                                 work: work, ports: CloudSaves.ports(context),
                                 loadBase: { UserDefaults.standard.string(forKey: key) }, storeBase: { UserDefaults.standard.set($0, forKey: key) })
+    return (engine, (context["game"] as? [String: Any])?["name"] as? String ?? gameID)
+}
+
+/// app.m 用的 C 入口（声明在 S2ArmShellBridge/include/s2a_shell.h）
+@MainActor @_cdecl("s2a_shell_cloud_sync_vc")
+public func s2a_shell_cloud_sync_vc(_ gameID: UnsafePointer<CChar>?, _ done: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?,
+                                    _ ctx: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer? {
+    guard let (engine, name) = cloudEngine(gameID) else { return nil }
     nonisolated(unsafe) let ctx = ctx
-    let vc = CloudSyncController(engine: engine, game: (context["game"] as? [String: Any])?["name"] as? String ?? gameID) { done?(ctx) }
+    let vc = CloudSyncController(engine: engine, game: name) { done?(ctx) }
     return Unmanaged.passRetained(vc as UIViewController).toOpaque()
+}
+
+/// 游戏进行中切到后台：本机存档比云端新就上传（同 D2R-Mobile：切后台向系统要后台收尾时间，传完再交还）。
+///   只上传：云端有更新或有冲突时不动，留给下次起局前的同步。上一次还没传完（后台任务还在）时不叠一次
+@MainActor enum CloudBackgroundUpload {
+    static var task = UIBackgroundTaskIdentifier.invalid
+    static func finish() {
+        guard task != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(task); task = .invalid
+    }
+}
+@MainActor @_cdecl("s2a_shell_cloud_upload_background")
+public func s2a_shell_cloud_upload_background(_ gameID: UnsafePointer<CChar>?) {
+    guard CloudBackgroundUpload.task == .invalid, let (engine, _) = cloudEngine(gameID) else { return }
+    CloudBackgroundUpload.task = UIApplication.shared.beginBackgroundTask(withName: "s2a.cloud") {
+        NSLog("S2Arm 云存档：【红】切后台上传：系统给的后台时间到了，没传完（下次起局前同步会补上）")
+        MainActor.assumeIsolated { CloudBackgroundUpload.finish() }
+    }
+    Task.detached {
+        do {
+            switch try await engine.uploadIfAhead() {
+            case .uploaded?: NSLog("S2Arm 云存档：切后台，已把本机进度传到 iCloud")
+            case nil: NSLog("S2Arm 云存档：切后台，云端有别的设备的新进度，这次不传，下次起局前同步处理")
+            default: NSLog("S2Arm 云存档：切后台，存档已是最新")
+            }
+        } catch {
+            NSLog("S2Arm 云存档：【红】切后台上传失败：%@（下次起局前同步会再试）", CloudSaves.message(error))
+        }
+        await MainActor.run { CloudBackgroundUpload.finish() }
+    }
 }
 #endif
