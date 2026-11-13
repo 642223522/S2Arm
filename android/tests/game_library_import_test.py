@@ -275,7 +275,7 @@ public class W2ImportProbe {
     }
     checks++;
    } finally {if(library!=null)library.close();}
-   try(GameStorage lease=GameStorage.acquire(root.resolve("internal").toFile())) {checks++;}
+   try(GameStorage lease=GameStorage.acquire(root.resolve("internal").toFile(),"0100000000ABCDEF")) {checks++;}
   }
   System.out.println("PASS W2 explicit import: "+checks+" checks");
  }

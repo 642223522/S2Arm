@@ -62,10 +62,8 @@ final class GameLibrary {
         for (File inbox : importDirs) inbox.mkdirs();
         gamesDir.mkdirs();
         if (selectedTitle == null) worker.execute(() -> {
-            try (GameStorage storage = GameStorage.acquire(context.getFilesDir())) {
-                int swept = GameInstall.sweep(gamesDir);
-                if (swept > 0) Log.i("S2Arm", "Removed " + swept + " unfinished game install(s)");
-            } catch (IOException e) { status("Library cleanup deferred: " + e.getMessage()); }
+            int swept = GameInstall.sweep(gamesDir);   // 逐款取锁，忙的那款跳过
+            if (swept > 0) Log.i("S2Arm", "Removed " + swept + " unfinished game install(s)");
         });
     }
 
@@ -150,7 +148,7 @@ final class GameLibrary {
     /** Copy a package folder chosen with ACTION_OPEN_DOCUMENT_TREE. */
     void importTree(Uri tree) {
         worker.execute(() -> {
-            try (GameStorage storage = GameStorage.acquire(context.getFilesDir())) {
+            try {   // 不取整库锁：每个包装进去时只锁它那一款
                 ContentResolver cr = context.getContentResolver();
                 Map<String, String> ids = new HashMap<>();
                 walk(cr, tree, ids);

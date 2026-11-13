@@ -377,7 +377,7 @@ final class BootContract {
             }
             out.add(new Module(name, source, image, fixups, gates, widen, buildId));
         }
-        checkModuleOrder(out, artifactRel);
+        orderModules(out, artifactRel);
 
         Graphics graphics = null;
         Map<String, Object> extensions = art.containsKey("extensions")
@@ -447,15 +447,21 @@ final class BootContract {
         return 0;
     }
 
-    private static void checkModuleOrder(List<Module> modules, String artifactRel) throws BadGame {
-        if (!"main".equals(modules.get(0).name))
-            throw new BadGame(artifactRel + ".modules[0] is not main (Horizon load order is main, subsdk0..N, sdk)");
-        for (int i = 1; i < modules.size(); i++) {
-            String prev = modules.get(i - 1).name, cur = modules.get(i).name;
-            if (moduleOrderCompare(prev, cur) > 0)
-                throw new BadGame(artifactRel + ".modules is not in Horizon load order (main, subsdk0..N, sdk): "
-                    + prev + " precedes " + cur);
-        }
+    // 顺序不对（旧字母序包 main → sdk → subsdk* 等）不拒收：按 Horizon 装载序排好再交给原生装载器（它照这个列表装、
+    //   s2a_module_order_ok 只是复核），记日志（不堵门）。没有 main 才是物理上起不来
+    private static void orderModules(List<Module> modules, String artifactRel) throws BadGame {
+        boolean hasMain = false;
+        for (Module m : modules) if ("main".equals(m.name)) hasMain = true;
+        if (!hasMain) throw new BadGame(artifactRel + ".modules has no main module");
+        List<Module> sorted = new ArrayList<>(modules);
+        sorted.sort((x, y) -> moduleOrderCompare(x.name, y.name));
+        boolean same = true;
+        for (int i = 0; i < sorted.size(); i++) if (sorted.get(i) != modules.get(i)) same = false;
+        if (same) return;
+        StringBuilder was = new StringBuilder();
+        for (Module m : modules) was.append(was.length() == 0 ? "" : ",").append(m.name);
+        System.err.println("S2Arm: " + artifactRel + ".modules reordered to Horizon load order (was " + was + ")");
+        modules.clear(); modules.addAll(sorted);
     }
 
     private static Map<String, Object> json(File file, String what) throws BadGame, IOException {
