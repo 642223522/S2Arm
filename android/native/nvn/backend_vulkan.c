@@ -5080,9 +5080,10 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
         s->rc = rc(NVN_GPU_E_ARG);
         snprintf(s->why, sizeof s->why, "signal %llu 未严格大于上一次合法提交 %llu（F=%llu）",
                  (unsigned long long)signal, (unsigned long long)last, (unsigned long long)f);
+        nvn_gpu_rc result = fail(err, NVN_GPU_E_ARG, "%s", s->why);
         enqueue_segment(&g, s);
         pthread_mutex_unlock(&g_submit_mu);
-        return fail(err, NVN_GPU_E_ARG, "%s", s->why);
+        return result;   // worker owns s after enqueue; never read its why here
     }
 
     if (c->in_pass) set_sticky(c, NVN_GPU_E_ORDER, "commit 时通道还开着");
@@ -5095,6 +5096,7 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
         s->failed = 1;
         s->rc = code;
         snprintf(s->why, sizeof s->why, "%s", why);
+        fail(err, code.code, "%s", s->why);   // preserve the first cause before worker takes ownership
         publish_signal(signal, 1);
         enqueue_segment(&g, s);
         pthread_mutex_unlock(&g_submit_mu);
