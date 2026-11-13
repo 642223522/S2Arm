@@ -34,8 +34,12 @@
     <string name="touch_menu_export">Export layout…</string>
     <string name="touch_layout_imported">Layout imported</string>
     <string name="touch_layout_exported">Layout exported</string>
-    <string name="touch_layout_import_failed">Layout not imported. Choose a layout file exported from S2Arm (.json) and try again.</string>
-    <string name="touch_layout_export_failed">Layout not exported. Choose another destination and try again.</string>
+    <string name="touch_layout_import_failed">Layout not imported: %1$s</string>
+    <string name="touch_layout_export_failed">Layout not exported: %1$s</string>
+    <string name="touch_layout_err_size">the file is larger than 64 KiB, so it is not a touch layout. Choose a layout file exported from S2Arm (.json).</string>
+    <string name="touch_layout_err_invalid">the file is not a valid touch layout. Choose a layout file exported from S2Arm (.json).</string>
+    <string name="touch_layout_err_read">the file could not be read. Save it to this device first, or choose it from another location.</string>
+    <string name="touch_layout_err_write">the chosen location could not be written. Choose another location.</string>
     <string name="touch_layout_document_unavailable">Document could not be opened</string>
 </resources>
 

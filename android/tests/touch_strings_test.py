@@ -15,6 +15,10 @@ KEYS = [
     "touch_layout_import_failed",
     "touch_layout_export_failed",
     "touch_layout_document_unavailable",
+    "touch_layout_err_size",
+    "touch_layout_err_invalid",
+    "touch_layout_err_read",
+    "touch_layout_err_write",
 
     "touch_menu_title",
     "touch_menu_edit_positions",

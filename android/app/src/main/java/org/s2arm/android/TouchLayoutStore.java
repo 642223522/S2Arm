@@ -64,8 +64,9 @@ final class TouchLayoutStore {
     /** Import into Android's one saved slot; keep the document identity for sharing. */
     TouchLayout importLayout(byte[] data) throws IOException {
         TouchLayout layout = TouchLayout.read(data);
+        // 内置布局的保留名（default / touch）不拒：换一个新名字照常导入（同导出时的做法），玩家拿到的是同一份布局
         if ("default".equals(layout.identifier) || "touch".equals(layout.identifier))
-            throw new IllegalArgumentException("F01: reserved built-in identity");
+            layout = layout.copyAs("layout-" + java.util.UUID.randomUUID(), layout.name);
         save(layout);
         return layout;
     }

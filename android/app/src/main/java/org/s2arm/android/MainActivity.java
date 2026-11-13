@@ -1158,8 +1158,13 @@ public class MainActivity extends Activity
 
     private void touchTransferFailed(boolean importing, Exception error) {
         Log.e("S2Arm", "Touch layout transfer failed", error);
+        // 报真原因 + 下一步（中英各一份）；异常原文是内部英文，进日志
+        String message = error.getMessage() != null ? error.getMessage() : "";
+        int reason = error instanceof IllegalArgumentException
+            ? (message.contains("64 KiB") ? R.string.touch_layout_err_size : R.string.touch_layout_err_invalid)
+            : importing ? R.string.touch_layout_err_read : R.string.touch_layout_err_write;
         android.widget.Toast.makeText(this, getString(importing ? R.string.touch_layout_import_failed
-            : R.string.touch_layout_export_failed), android.widget.Toast.LENGTH_LONG).show();   // 原因是内部英文文案，只进日志
+            : R.string.touch_layout_export_failed, getString(reason)), android.widget.Toast.LENGTH_LONG).show();
     }
 
     private void pickTouchLayout(boolean importing) {

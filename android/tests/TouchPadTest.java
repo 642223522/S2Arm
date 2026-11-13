@@ -224,8 +224,6 @@ public final class TouchPadTest {
             java.util.Arrays.copyOf(boundary, 65537),
             "{".getBytes(java.nio.charset.StandardCharsets.UTF_8),
             badUtf8,
-            text.replace("classic-reference", "default").getBytes(java.nio.charset.StandardCharsets.UTF_8),
-            text.replace("classic-reference", "touch").getBytes(java.nio.charset.StandardCharsets.UTF_8),
             text.replace("0.944", "1.944").getBytes(java.nio.charset.StandardCharsets.UTF_8),
             text.replace("\"schemaVersion\": 1", "\"schemaVersion\": true").getBytes(java.nio.charset.StandardCharsets.UTF_8),
             (text + "false").getBytes(java.nio.charset.StandardCharsets.UTF_8)
@@ -240,6 +238,15 @@ public final class TouchPadTest {
             check(failed, "invalid transfer rejected " + i);
             check(java.util.Arrays.equals(before, java.nio.file.Files.readAllBytes(store.file().toPath())),
                     "failed import preserves bytes " + i);
+        }
+        // 内置保留名不挡：换新名字照常导入，按键位置与原文件一致（玩家拿到的是同一份布局）
+        for (String reserved : new String[] {"default", "touch"}) {
+            TouchLayoutStore renamed = new TouchLayoutStore(dir.toFile(), "00000000000000" + (reserved.equals("default") ? "0A" : "0B"));
+            TouchLayout got = renamed.importLayout(text.replace("classic-reference", reserved).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            check(got.identifier.startsWith("layout-") && renamed.load() != null
+                    && renamed.load().identifier.equals(got.identifier), "reserved identity " + reserved + " imported under a new name");
+            check(java.util.Arrays.equals(got.copyAs("classic-reference", got.name).jsonBytes(),
+                    TouchLayout.read(classic).copyAs("classic-reference", got.name).jsonBytes()), "renamed import keeps the layout " + reserved);
         }
         java.io.File blockedTemp = new java.io.File(dir.toFile(), store.file().getName() + ".tmp");
         check(blockedTemp.mkdir(), "simulate unavailable temporary output");
