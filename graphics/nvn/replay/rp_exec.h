@@ -67,6 +67,8 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_P_SHADOW,   // 影子附件的通道数（深度 / 块压缩图经颜色视图当渲染目标，拷贝通道是我们加的）
        RP_PERF_EXEC_DRAW_NS, RP_PERF_EXEC_OTHER_NS,   // 回放循环里绘制类命令 / 其余命令各花多久（开关 nvk_exec_tm）
        RP_PERF_DISP_N, RP_PERF_DISP_NS,               // 计算派发次数与耗时（其余命令里最贵的一项之一）
+       RP_PERF_DISP_TOT_NS, RP_PERF_DISP_FLUSH_NS,    // 派发一次的总耗时、其中 rp_pass_flush（收通道 + 落地挂起清除）占多少
+       RP_PERF_DISP_BIND_NS,                          // 派发里取管线 + 发绑定 + 交后端那一段（总耗时减去它和 flush 就是入口取资源循环）
        RP_PERF_SETRT_N, RP_PERF_SETRT_END_NS,         // 换目标次数、其中收通道（rp_pass_end）用了多久
        RP_PERF_PASSEND_N,                             // 收通道次数（含换目标、通道中途的清除、提交收尾）
        RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
