@@ -790,6 +790,14 @@ static void *read_file(const char *path, size_t *n) {
 // 原创纹理三角形：全屏三角形 + 2x2 纹理 + nearest 采样；逐像素用 CPU 手算真值。
 // 通道映射用例的旋钮（缺省全 0 = 不设）：存储自带映射、视图映射（NVN 取值 0 零 / 1 一 / 2 R / 3 G / 4 B / 5 A）
 static uint16_t g_tri_swz; static int g_tri_vsw_on; static uint8_t g_tri_vsw[4];
+static uint32_t g_tri_view_fmt;   // 非 0：建一个设了格式的视图（视图格式覆盖存储格式），用来验「按视图的有效格式判 alpha」
+// 没有 alpha 的 NVN 格式（硬件把 a 供给常数 1）：RGBX / BGRX / RGB5 / BGR5 / RGB_DXT1 及其变体
+static int tri_alpha_reads_one(uint32_t f) {
+    return f == NVN_FORMAT_RGBX8 || f == NVN_FORMAT_RGBX8_SRGB || f == NVN_FORMAT_BGRX8 || f == NVN_FORMAT_BGRX8_SRGB ||
+           f == NVN_FORMAT_RGB5 || f == NVN_FORMAT_BGR5 || f == NVN_FORMAT_RGB_DXT1 || f == NVN_FORMAT_RGB_DXT1_SRGB ||
+           (f >= NVN_FORMAT_RGBX8SN && f <= NVN_FORMAT_RGBX8I) || (f >= NVN_FORMAT_RGBX16F && f <= NVN_FORMAT_RGBX16I) ||
+           (f >= NVN_FORMAT_RGBX32F && f <= NVN_FORMAT_RGBX32I);
+}
 static const uint8_t *g_tri_expect;   // 非空：整张图期望都是这 4 个字节（压缩格式用，纹素不是按像素摆的）
 static int g_tri_tol;
 static uint64_t g_tri_signal = 5;
@@ -851,15 +859,17 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
     {
         nvn_gpu_tex_desc td; memset(&td, 0, sizeof td);
         td.d.target = NVN_TEXTURE_TARGET_2D; td.d.format = (int)tex_fmt; td.d.width = 2; td.d.height = 2; td.d.depth = 1; td.d.levels = 1;
-        td.usage = NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD; td.swz = g_tri_swz;
+        td.usage = NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD | (g_tri_view_fmt ? NVN_GPU_TEX_VIEW_FMT : 0); td.swz = g_tri_swz;
         r = nvn_gpu_tex_create(&td, &tex, &e);
         CHECK(OK(r), "tex_create（swz=%#x）：%d %s", g_tri_swz, r.code, e.why);
     }
     nvn_gpu_view tview = NULL;
-    if (g_tri_vsw_on) {
-        view_t vw; memset(&vw, 0, sizeof vw); vw.set_swizzle = 1; memcpy(vw.swz, g_tri_vsw, 4);
+    if (g_tri_vsw_on || g_tri_view_fmt) {
+        view_t vw; memset(&vw, 0, sizeof vw);
+        if (g_tri_vsw_on) { vw.set_swizzle = 1; memcpy(vw.swz, g_tri_vsw, 4); }
+        if (g_tri_view_fmt) { vw.set_format = 1; vw.format = (int)g_tri_view_fmt; }
         r = nvn_gpu_view_create(tex, &vw, &tview, &e);
-        CHECK(OK(r), "view_create（带通道映射）：%d %s", r.code, e.why);
+        CHECK(OK(r), "view_create（带通道映射 / 视图格式）：%d %s", r.code, e.why);
     } else tview = make_view(tex);
     samp_par sp;
     memset(&sp, 0, sizeof sp);   // nearest / clamp
@@ -925,7 +935,10 @@ static void tri_impl(const char *shader_dir, uint32_t tex_fmt, const uint8_t *te
             if (g_tri_origin_ul) ty = 1 - ty;   // 原点在左上：同一个裁剪空间 y 落到相反的行
             const uint8_t *src = g_tri_expect ? g_tri_expect : texels + (ty * 2 + tx) * tbpp;
             // 期望：先取纹素（没有 alpha 的格式按 want_a），再按生效的通道映射手算（视图设了用视图的，否则用存储的）
-            uint8_t px[4] = {src[0], src[1], src[2], (uint8_t)(tbpp == 4 ? src[3] : want_a)}, mapped[4], sw[4] = {2, 3, 4, 5};
+            // 没有 alpha 的 NVN 格式（RGBX / BGRX / RGB5 / BGR5 / RGB_DXT1）：硬件把 a 读作 1，与存储的第 4 个字节无关；
+            // 判定按「视图的有效格式」——视图换格式时以视图格式为准（与硬件一致）
+            int noalpha = tri_alpha_reads_one(g_tri_view_fmt ? g_tri_view_fmt : tex_fmt);
+            uint8_t px[4] = {src[0], src[1], src[2], (uint8_t)(tbpp == 4 && !noalpha ? src[3] : want_a)}, mapped[4], sw[4] = {2, 3, 4, 5};
             if (g_tri_vsw_on) memcpy(sw, g_tri_vsw, 4);
             else if (g_tri_swz) for (int ch = 0; ch < 4; ch++) sw[ch] = (uint8_t)(g_tri_swz >> (3 * ch) & 7);
             for (int ch = 0; ch < 4; ch++) mapped[ch] = sw[ch] == 0 ? 0 : sw[ch] == 1 ? 255 : px[sw[ch] - 2];
@@ -957,6 +970,19 @@ static void t14_textured_triangle(const char *dir) {
 
 // C70：通道映射。存储自带映射 B G R 一（红蓝对调、alpha 恒 1）；视图映射 零 R A G 取代存储的（不是叠加）。
 // 纹素的四个通道互不相同，哪一路映射错了都读得出来。期望在 tri_impl 里按 NVN 取值手算。
+// C200：没有 alpha 的 NVN 格式，采样到的 a 必须是 1（RGBX8 的 X 字节摆 0 也一样），有 alpha 的格式照读。
+// NVN/Maxwell 的输出合成都按 alpha 参与混合，读错这一位就是深色场景光照逐层变暗的直接原因。
+// 每个变体自己一个会话：tri_impl 的提交序号固定（见 C70 / C195 的同一处理）。
+static void c200_alpha_reads_one(const char *dir, int k) {
+    static const uint8_t t4[16] = {255, 0, 0, 0,   0, 255, 0, 0,   0, 0, 255, 0,   255, 255, 255, 0};   // 四个纹素的第 4 字节全 0
+    switch (k) {
+    case 0: tri_impl(dir, NVN_FORMAT_RGBX8, t4, 4, 8, 255); break;                        // 宿主 RGBA8：X 字节不能当 alpha
+    case 1: tri_impl(dir, NVN_FORMAT_RGBA8, t4, 4, 8, 0); break;                         // 负控：有 alpha 的格式照读 0
+    case 2: g_tri_view_fmt = NVN_FORMAT_RGBA8; tri_impl(dir, NVN_FORMAT_RGBX8, t4, 4, 8, 0); g_tri_view_fmt = 0; break;   // 视图有 alpha：按视图格式照读存储的第 4 字节
+    default: g_tri_view_fmt = NVN_FORMAT_RGBX8; tri_impl(dir, NVN_FORMAT_RGBA8, t4, 4, 8, 255); g_tri_view_fmt = 0; break; // 视图没有 alpha：a 读作 1
+    }
+}
+
 static void c70_swizzle(const char *dir, int view_overrides) {
     static const uint8_t texels[16] = {10, 60, 110, 200,   20, 70, 120, 210,
                                        30, 80, 130, 220,   40, 90, 140, 230};
@@ -6613,6 +6639,12 @@ int main(int argc, char **argv) {
         c70_swizzle(argv[1], k);
         nvn_gpu_err e70;
         CHECK(OK(nvn_gpu_close(5000000000ull, &e70)), "C70 close：%d %s", e70.rc.code, e70.why);
+    }
+    for (int k = 0; k < 4; k++) {   // C200：四张各一个会话（tri_impl 的提交序号固定）
+        if (!open_backend()) return 1;
+        c200_alpha_reads_one(argv[1], k);
+        nvn_gpu_err e200;
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e200)), "C200 close：%d %s", e200.rc.code, e200.why);
     }
     if (!open_backend()) return 1;
     t31_vertex_formats(argv[1]);
