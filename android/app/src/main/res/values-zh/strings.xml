@@ -34,7 +34,7 @@
     <string name="touch_menu_export">导出布局…</string>
     <string name="touch_layout_imported">布局已导入</string>
     <string name="touch_layout_exported">布局已导出</string>
-    <string name="touch_layout_import_failed">布局未导入：%1$s。请选择有效的 F01 JSON 文件后重试。</string>
-    <string name="touch_layout_export_failed">布局未导出：%1$s。请选择其他保存位置后重试。</string>
+    <string name="touch_layout_import_failed">布局未导入。请选择从 S2Arm 导出的布局文件（.json）后重试。</string>
+    <string name="touch_layout_export_failed">布局未导出。请选择其他保存位置后重试。</string>
     <string name="touch_layout_document_unavailable">无法打开文件</string>
 </resources>
