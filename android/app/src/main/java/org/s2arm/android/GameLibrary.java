@@ -172,7 +172,7 @@ final class GameLibrary {
                         status("Game import refused" + (root.isEmpty() ? "" : " (" + root.substring(0, root.length() - 1) + ")") + ": " + e.getMessage());
                     }
                 }
-            } catch (GamePack.BadPack | BootContract.BadGame | IOException | RuntimeException e) {
+            } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 status("Game import refused: " + e.getMessage());
             }
             status(describe());
