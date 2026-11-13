@@ -120,23 +120,61 @@ static struct { nvn_gpu_cmd c; uint64_t seg, gen, reg_gen; const struct rp_prog 
 
 // B3：驱动段暂存的按内容缓存。DRV0（2.5 KB）/ DRV2（0.29 KB）的整段内容只由下面这些输入决定，
 // 同一段里内容相同就复用同一片 slice，省掉每笔每阶段的 memset + 拷贝。段号（rp_seg_serial）进键：段内暂存随段回收，跨段不能复用。
-// 键按内容整份存下来逐字节比（不用哈希）：驱动段是贴着后端 ABI 的常量，一次碰撞就是内容错，不值得为省几字节冒这个险。
+// 键仍按内容整份存下来逐字节比（碰撞不会错内容）；上面那层 64 位摘要只是先筛一遍，省掉线性扫多格时的大块比较。
 typedef struct { nvn_gpu_cmd c; uint64_t seg; uint32_t st, base_instance; uint64_t sb[16][2], ub[16][2]; uint32_t dim[3]; uint8_t has_ub; } drv0_key;
 typedef struct { nvn_gpu_cmd c; uint64_t seg; uint32_t st; uint64_t h[32]; } drv2_key;
-enum { DRV_CACHE_N = 8 };
-static struct { drv0_key k; nvn_gpu_slice sl; } g_drv0c[DRV_CACHE_N]; static int g_drv0c_next;
-static struct { drv2_key k; nvn_gpu_slice sl; } g_drv2c[DRV_CACHE_N]; static int g_drv2c_next;
+// 表按 64 格两路探测；键里再放一个按字段算的 64 位摘要，先比摘要再比整键。
+// 真机上每帧 2292 次 DRV0 查询，原先线性扫 8 格 × 552 字节整键比较 ≈ 4.4 KB/次（一帧 10 MB 比较）。
+enum { DRV_CACHE_N = 64, DRV_CACHE_WAYS = 2 };
+static uint64_t drv_mix(uint64_t h, uint64_t v) { h ^= v; h *= 0x100000001B3ull; return h ^ (h >> 29); }
+static uint64_t drv0_hash(const drv0_key *k) {   // 按字段算（不整块读键）：~80 次乘加
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)k->c;
+    h = drv_mix(h, k->seg); h = drv_mix(h, (uint64_t)k->st << 32 | k->base_instance); h = drv_mix(h, k->has_ub);
+    for (int r = 0; r < 16; r++) { h = drv_mix(h, k->sb[r][0]); h = drv_mix(h, k->sb[r][1]); }
+    for (int r = 0; r < 16; r++) { h = drv_mix(h, k->ub[r][0]); h = drv_mix(h, k->ub[r][1]); }
+    for (int r = 0; r < 3; r++) h = drv_mix(h, k->dim[r]);
+    return h;
+}
+static uint64_t drv2_hash(const drv2_key *k) {
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)k->c;
+    h = drv_mix(h, k->seg); h = drv_mix(h, k->st);
+    for (int r = 0; r < 32; r++) h = drv_mix(h, k->h[r]);
+    return h;
+}
+static struct { drv0_key k; uint64_t h; uint8_t ok; nvn_gpu_slice sl; } g_drv0c[DRV_CACHE_N]; static int g_drv0c_next;
+static struct { drv2_key k; uint64_t h; uint8_t ok; nvn_gpu_slice sl; } g_drv2c[DRV_CACHE_N]; static int g_drv2c_next;
 static int drv0_lookup(const drv0_key *k, nvn_gpu_slice *sl) {
-    for (int i = 0; i < DRV_CACHE_N; i++) if (!memcmp(&g_drv0c[i].k, k, sizeof *k)) { *sl = g_drv0c[i].sl; return 1; }
+    uint64_t h = drv0_hash(k); uint32_t base = (uint32_t)(h % (DRV_CACHE_N / DRV_CACHE_WAYS)) * DRV_CACHE_WAYS;
+    for (int w = 0; w < DRV_CACHE_WAYS; w++) {
+        const uint32_t i = base + (uint32_t)w;
+        if (g_drv0c[i].ok && g_drv0c[i].h == h && !memcmp(&g_drv0c[i].k, k, sizeof *k)) { *sl = g_drv0c[i].sl; return 1; }
+    }
     return 0;
 }
-static void drv0_store(const drv0_key *k, const nvn_gpu_slice *sl) { memcpy(&g_drv0c[g_drv0c_next].k, k, sizeof *k); g_drv0c[g_drv0c_next].sl = *sl; g_drv0c_next = (g_drv0c_next + 1) % DRV_CACHE_N; }
+static void drv0_store(const drv0_key *k, const nvn_gpu_slice *sl) {
+    uint64_t h = drv0_hash(k); uint32_t base = (uint32_t)(h % (DRV_CACHE_N / DRV_CACHE_WAYS)) * DRV_CACHE_WAYS;
+    for (int w = 0; w < DRV_CACHE_WAYS; w++) if (!g_drv0c[base + w].ok || !memcmp(&g_drv0c[base + w].k, k, sizeof *k)) {
+        g_drv0c[base + w].k = *k; g_drv0c[base + w].h = h; g_drv0c[base + w].ok = 1; g_drv0c[base + w].sl = *sl; return; }
+    uint32_t i = (uint32_t)(g_drv0c_next++ % DRV_CACHE_N);   // 这一组都占了：轮转替换
+    g_drv0c[i].k = *k; g_drv0c[i].h = h; g_drv0c[i].ok = 1; g_drv0c[i].sl = *sl;
+}
 static int drv2_lookup(const drv2_key *k, nvn_gpu_slice *sl) {
-    for (int i = 0; i < DRV_CACHE_N; i++) if (!memcmp(&g_drv2c[i].k, k, sizeof *k)) { *sl = g_drv2c[i].sl; return 1; }
+    uint64_t h = drv2_hash(k); uint32_t base = (uint32_t)(h % (DRV_CACHE_N / DRV_CACHE_WAYS)) * DRV_CACHE_WAYS;
+    for (int w = 0; w < DRV_CACHE_WAYS; w++) {
+        const uint32_t i = base + (uint32_t)w;
+        if (g_drv2c[i].ok && g_drv2c[i].h == h && !memcmp(&g_drv2c[i].k, k, sizeof *k)) { *sl = g_drv2c[i].sl; return 1; }
+    }
     return 0;
 }
-static void drv2_store(const drv2_key *k, const nvn_gpu_slice *sl) { memcpy(&g_drv2c[g_drv2c_next].k, k, sizeof *k); g_drv2c[g_drv2c_next].sl = *sl; g_drv2c_next = (g_drv2c_next + 1) % DRV_CACHE_N; }
+static void drv2_store(const drv2_key *k, const nvn_gpu_slice *sl) {
+    uint64_t h = drv2_hash(k); uint32_t base = (uint32_t)(h % (DRV_CACHE_N / DRV_CACHE_WAYS)) * DRV_CACHE_WAYS;
+    for (int w = 0; w < DRV_CACHE_WAYS; w++) if (!g_drv2c[base + w].ok || !memcmp(&g_drv2c[base + w].k, k, sizeof *k)) {
+        g_drv2c[base + w].k = *k; g_drv2c[base + w].h = h; g_drv2c[base + w].ok = 1; g_drv2c[base + w].sl = *sl; return; }
+    uint32_t i = (uint32_t)(g_drv2c_next++ % DRV_CACHE_N);
+    g_drv2c[i].k = *k; g_drv2c[i].h = h; g_drv2c[i].ok = 1; g_drv2c[i].sl = *sl;
+}
 static int g_bind_keep[RP_PROG_STAGES], g_pipe_set;   // 这一笔：阶段的绑定状态没变（rp_draw 在换管线之前取）；这一笔重设过管线
+
 
 // 调试读回用的绘制历史（见文件后部 dump_chain）
 enum { HIST_N = 4096, HIST_TEX = 12, DUMP_MAX = 48 };
@@ -381,7 +419,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
     }
     if (st < RP_PROG_STAGES) {
         // 和上一笔逐项相同、管线也没重设：后端手里的就是这一组，不用再发
-        const int same = keep && !g_pipe_set && g_lb[pi].n == n && !memcmp(g_lb[pi].b, b, (size_t)n * sizeof *b);
+        const int same = keep && g_lb[pi].n == n && !memcmp(g_lb[pi].b, b, (size_t)n * sizeof *b);
         g_lb[pi].c = c; g_lb[pi].seg = rp_seg_serial(); g_lb[pi].gen = rp_cpu_write_gen; g_lb[pi].reg_gen = rp_tex_reg_gen(); g_lb[pi].pg = pg; g_lb[pi].base_instance = base_instance; g_lb[pi].n = n; g_lb[pi].ok = 1;
         if (same) { rp_perf_add(RP_PERF_BIND_SKIP, 1); return 1; }
         memcpy(g_lb[pi].b, b, (size_t)n * sizeof *b);
