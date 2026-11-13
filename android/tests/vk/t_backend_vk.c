@@ -5686,6 +5686,13 @@ static nvn_gpu_pipe c658_producer(const char *dir) {
     if(sh) nvn_gpu_shader_release(sh);
     free(blob);return pipe;
 }
+// Separate from mode8's g_retired oracle; static storage remains valid on timeout.
+static atomic_int c658_cleanup_retired;
+static int c658_cleanup_submitted; // Only the test thread changes this target.
+static void c658_cleanup_done(void *u) {
+    (void)u;
+    atomic_fetch_add(&c658_cleanup_retired,1);
+}
 static void c658_case(const char *dir,unsigned count,int indexed,int mode) {
     int saved_enabled=g_dev.draw_indirect_count_enabled;
     if(mode==7)g_dev.draw_indirect_count_enabled=0;
@@ -5775,9 +5782,13 @@ static void c658_case(const char *dir,unsigned count,int indexed,int mode) {
     }
     if(mode==8)CHECK(wait_until(&g_retired,retire_base+1,2000),"C658 distinct count did not retire after consumption");
 c658_cleanup:
-    if(separate_count)nvn_gpu_buf_release(separate_count,NULL,NULL);
-    nvn_gpu_view_release(view);nvn_gpu_tex_release(tex);nvn_gpu_buf_release(args,NULL,NULL);
-    nvn_gpu_buf_release(vb,NULL,NULL);if(ib)nvn_gpu_buf_release(ib,NULL,NULL);nvn_gpu_buf_release(rb,NULL,NULL);
+    nvn_gpu_view_release(view);nvn_gpu_tex_release(tex);
+    nvn_gpu_buf cleanup_bufs[]={separate_count,args,vb,ib,rb};
+    for(unsigned i=0;i<sizeof cleanup_bufs/sizeof cleanup_bufs[0];i++)if(cleanup_bufs[i]){
+        ++c658_cleanup_submitted;
+        nvn_gpu_buf_release(cleanup_bufs[i],c658_cleanup_done,NULL);
+    }
+    CHECK(wait_until(&c658_cleanup_retired,c658_cleanup_submitted,2000),"C658 cleanup buffers did not retire");
     CHECK(OK(nvn_gpu_close(5000000000ull,&err)),"C658 close %s",err.why);
     g_dev.draw_indirect_count_enabled=saved_enabled;
 }
