@@ -1477,9 +1477,9 @@ class ExportPhoneTests(unittest.TestCase):
         self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b"); ios_fixture(self.c, C)
         (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
         r = self._export(dict(gameId=A))
-        out = self.c.library / install.EXPORT_DIR
+        out = self.c.library / install.EXPORT_DIRS["zh"]
         self.assertEqual((r["exported"], r["outputPath"], r["games"], r["skipped"]), (True, str(out), [A, B], ["丙"]))
-        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", install.EXPORT_README]))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", install.EXPORT_READMES["zh"]]))
         # 一款一个文件：原资源包的其余文件段 + 着色器库进了目录表（手机认领后照常解出来）；原 game.img 不动
         img = img_module()
         for f, gid, data in (("甲.img", A, b"S2AIMG01-a"), ("乙.img", B, b"S2AIMG01-b")):
@@ -1489,7 +1489,7 @@ class ExportPhoneTests(unittest.TestCase):
                 self.assertEqual((rd("exefs/main"), rd("shaders/direct/lib.bin"), img.header(str(out / f))["gid"]), (data, b"LIB" + gid.encode(), gid))
             self.assertNotIn("shaders/direct/lib.bin", {p for p, _, _ in img.entries(str(library_pack(self.c, gid) / "game.img"))})
         self.assertEqual(install_ipa_games(out / "S2Arm.ipa"), ([A, B], "SID1"))
-        readme = (out / install.EXPORT_README).read_text(encoding="utf-8-sig")
+        readme = (out / install.EXPORT_READMES["zh"]).read_text(encoding="utf-8-sig")
         self.assertIn("甲.img（甲）", readme); self.assertIn("乙.img（乙）", readme); self.assertIn("放这里导入", readme)
         self.assertEqual(r["exportBytes"], sum(p.stat().st_size for p in out.iterdir()))
         self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])   # 临时目录收干净
@@ -1497,10 +1497,26 @@ class ExportPhoneTests(unittest.TestCase):
     def test_export_replaces_whole_folder(self):
         """再导出一次：文件夹整个换新（上次的、玩家放进去的别的文件都不在了）"""
         self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
-        out = self.c.library / install.EXPORT_DIR; out.mkdir(); (out / "旧.img").write_bytes(b"old")
+        out = self.c.library / install.EXPORT_DIRS["zh"]; out.mkdir(); (out / "旧.img").write_bytes(b"old")
         self._export(dict(gameId=self.A, mode="export"))
         self.assertFalse((out / "旧.img").exists())
         self.assertTrue((out / "甲.img").is_file())
+
+    def test_export_names_follow_ui_language(self):
+        """i18n：英文界面（uiLanguage = en）→ 文件夹「S2Arm Self-Sign Export」、说明「How to install on iPhone.txt」（英文正文：Import Here、
+        Settings → General → VPN & Device Management）；之后换回中文再导出 → 「S2Arm 自签导出」+「怎么装到 iPhone.txt」，英文名的旧导出删掉，只留一份"""
+        self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
+        en, zh = self.c.library / "S2Arm Self-Sign Export", self.c.library / "S2Arm 自签导出"
+        r = self._export(dict(gameId=self.A, mode="export", uiLanguage="en"))
+        self.assertEqual(sorted(p.name for p in en.iterdir()), sorted(["S2Arm.ipa", "甲.img", "How to install on iPhone.txt"]))
+        self.assertEqual((r["outputPath"], r["readme"]), (str(en), str(en / "How to install on iPhone.txt")))
+        text = (en / "How to install on iPhone.txt").read_text(encoding="utf-8-sig")
+        for want in ("甲.img (甲)", "Import Here", "Settings → General → VPN & Device Management"): self.assertIn(want, text)
+        self.assertNotIn("放这里导入", text); self.assertFalse(zh.exists())
+        self._export(dict(gameId=self.A, mode="export", uiLanguage="zh-Hans"))
+        self.assertEqual(sorted(p.name for p in zh.iterdir()), sorted(["S2Arm.ipa", "甲.img", "怎么装到 iPhone.txt"]))
+        self.assertFalse(en.exists(), "换回中文：英文名的旧导出删掉")
+        self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])
 
     def test_export_requested_old_format_is_named(self):
         """点的这款还是旧格式资源包：导出不了单个 game.img，报 pack_missing 说要重新打 iPhone 包"""
