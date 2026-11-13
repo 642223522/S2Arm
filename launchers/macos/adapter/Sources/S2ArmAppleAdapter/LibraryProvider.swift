@@ -54,6 +54,8 @@ public struct DownstreamOffer: Equatable {
 }
 
 public struct GameSummary: Identifiable, Equatable {
+    /// 已下载的商店横图（1920×1080，banner.jpg；#378 游戏库顶部大图用，列表卡片照旧用 cover）；没有为 nil
+    public var banner: String? = nil
     public let id: String
     public let name: String
     /// 导入版本（catalog 的 display），不宣称为当前运行版本。
@@ -112,6 +114,7 @@ public struct GameSummary: Identifiable, Equatable {
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
         self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
+        self.banner = (g["banner"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.downstream = (g["downstream"] as? [String: Any]).flatMap(DownstreamOffer.init(catalog:))
     }
 
