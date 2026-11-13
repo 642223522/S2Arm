@@ -366,7 +366,8 @@ public final class BootContractTest {
         replaceArtifact(graphicsNoFeature, artifact(BootContract.REWRITE_ABI, "modules/main.patched.bin", "modules/main.fixups.tsv")
             .replaceFirst("\\{", "{\"extensions\": {\"org.s2arm.graphics.v1\": {\"manifest\": \"shaders/vulkan/direct/graphics.v1.json\", "
                 + "\"sha256\": \"" + graphicsHash + "\", \"bytes\": " + descriptor.length + "}}, "));
-        expectBad(graphicsNoFeature, "graphics extension without required feature");
+        BootContract.Game noFeature = BootContract.open(graphicsNoFeature);   // 扩展在、只是没登记：照常接受并用上（不堵门）
+        check(noFeature.graphics != null && noFeature.graphics.sha256.equals(graphicsHash), "graphics extension without required feature still used");
 
         File graphicsWrongHash = valid();
         write(graphicsWrongHash, graphicsPath, descriptor);
