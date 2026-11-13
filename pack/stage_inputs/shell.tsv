@@ -172,6 +172,7 @@
 入	launchers/macos/build.mk
 入	launchers/shared/experience.v1.json
 入	launchers/shared/experience_strings.py
+入	launchers/shared/experience_zh_hant.json
 入	platform/plat.h
 入	platform/plat_asm.h
 入	compat

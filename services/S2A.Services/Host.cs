@@ -296,7 +296,7 @@ namespace S2A.Services
                 return l;
             }
 
-            SystemLanguage d = SystemLocale.FromPreferred(SystemLocale.Preferred(), out string why);
+            SystemLanguage d = SystemLocale.FromUi(Environment.GetEnvironmentVariable("S2A_UI_LANGUAGE"), SystemLocale.Preferred(), out string why);
             Console.Error.WriteLine($"[S2A 语言] 系统语言 {d}（依据：{why}）");
             return d;
         }
