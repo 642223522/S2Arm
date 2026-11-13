@@ -1162,14 +1162,11 @@ extern "C" __attribute__((visibility("default"))) long long s2a_android_copy_ass
 #endif
 }
 
-// 接口 v2.15（缺口扫描族 1，#1228）：前后台转给服务层。平台壳写焦点 / 睡眠（onPause → 失焦 + 睡眠，
-//   onResume → 唤醒 + 焦点，与 iOS s2a_ios_suspend 同一时机）；安卓不像 iOS 整体冻结客机——失焦且游戏
-//   开着「失焦就暂停」（s2a_focus_suspend，缺省开）时按 Mac display_focus_publish_ex 冻客机与游戏时钟，
+// 接口 v2.15（缺口扫描族 1，#1228）：前后台转给服务层。平台壳写焦点（onPause → 失焦，onResume → 焦点；不发睡眠，
+//   见 setForeground）；退后台一律冻客机与游戏时钟（同 iOS 后台整体冻结，#855），
 //   时钟原因位 4 是安卓专属（1=后台会话、2=系统键盘、3=Mac 失焦），回前台放开；停机路径不冻、冻着先放开，
 //   stopGame 之后迟到的 onPause 也不再冻结（stop_started；收尾要等客机应答，冻回去会卡到硬预算）。
 extern "C" void s2a_host_focus_set(int focused);                   // runtime/src/os.c
-extern "C" int  s2a_focus_suspend(void);                           // runtime/src/os.c
-extern "C" void s2a_host_sleep_set(int sleeping);                  // runtime/src/os.c
 extern "C" void guest_clock_freeze_for(int reason, int on);        // runtime/src/os.c
 extern "C" void s2a_guest_freeze(int on) __attribute__((weak));    // runtime/src/thread.c：诊断目标不链它
 extern "C" void s2a_android_link_stop(void) __attribute__((weak)); // nvn/nvn_vsync_android.c：只在直连源里，诊断目标不链
@@ -1301,16 +1298,16 @@ Java_org_s2arm_android_NativeBridge_setForeground(JNIEnv *, jclass, jlong handle
     // 退后台停显示节拍源（直连 vsync 拍；前台回时由 acquire 路径按需懒重启）
     if (!foreground && s2a_android_link_stop) s2a_android_link_stop();
     host->window.set_foreground(foreground);
-    if (foreground) { s2a_host_sleep_set(0); s2a_host_focus_set(1); }
-    else            { s2a_host_focus_set(0); s2a_host_sleep_set(1); }
+    // 退后台只算失焦、不算睡眠（同 Mac 切窗口；Switch 按 HOME 也只是失焦）：系统选文件框、通知栏、切应用都会走到这里，
+    // 不是熄屏休眠。客机由下面的冻结停住（#855）。
+    s2a_host_focus_set(foreground ? 1 : 0);
     // 停机已开始的迟到 onPause 只报焦点 / 睡眠，不再冻结：stopGame 已经放开过，收尾线程要等客机
     // 应答与客机线程退出，再冻回去只能卡到硬预算（Home 路径 finishAndRemoveTask 还有 10 秒延迟）。
     bool stop_started = false;
 #ifdef S2A_ANDROID_GAME_RUNTIME
     stop_started = host->stop_started.load();
 #endif
-    switch (s2a_android_foreground_action(foreground != JNI_FALSE, stop_started, s_foreground_frozen,
-                                          s2a_focus_suspend())) {
+    switch (s2a_android_foreground_action(foreground != JNI_FALSE, stop_started, s_foreground_frozen)) {
     case S2A_ANDROID_FOREGROUND_FREEZE:
         if (s2a_guest_freeze) {
             s_foreground_frozen = true; guest_clock_freeze_for(4, 1); s2a_guest_freeze(1);
