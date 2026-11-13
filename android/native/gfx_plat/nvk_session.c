@@ -86,6 +86,13 @@ int nvk_session_open(struct s2a_vk_device *dev, const char *cache_dir, char *why
     return 0;
 }
 
+// 会话保留到进程退出时的管线缓存落盘（#860 / #907）：取数据在本线程，写盘在后端的后台线程，不拖停局。
+void nvk_session_flush_pipe_cache(void) {
+    extern void nvn_gpu_vk_pipe_cache_flush(void);
+    if (!nvk_session_ready()) return;
+    nvn_gpu_vk_pipe_cache_flush();
+}
+
 int nvk_session_ready(void) { pthread_mutex_lock(&g_mu); int r = g_ready; pthread_mutex_unlock(&g_mu); return r; }
 
 // 收局汇总：这一局撞到的全部「未接 / 不支持」，一项一行。普查工具按 "nvk unimpl" 前缀收。

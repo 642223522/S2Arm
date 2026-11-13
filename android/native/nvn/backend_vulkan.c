@@ -1200,13 +1200,15 @@ static void *plcw_main(void *arg) {
 
 // 触发检查已过（条数够了、时间到了）：在这条线程上取一份驱动数据，交给后台线程写。线程：任意建管线的线程（可能还持着清屏管线的锁 g_clr_mu）。
 // 拿不到 g_plc_mu（别的线程正在取数据，或收尾在销毁缓存）/ 上一次写还在飞 → 直接跳过，下次建管线再碰，不排队、不等。
-static void plc_save_midrun(void) {
+// force = 1：不看条数 / 时间阈值（停局保留会话时用，见 nvn_gpu_vk_pipe_cache_flush），其余照旧：数据没变不写、写在飞就跳过。
+static void plc_save_midrun_impl(int force) {
     if (__atomic_load_n(&g_plcw_busy, __ATOMIC_ACQUIRE)) return;
     if (pthread_mutex_trylock(&g_plc_mu) != 0) return;
     VkPipelineCache pc = g_plc;
     uint64_t t = now_ns(), made = __atomic_load_n(&g_plc_made, __ATOMIC_RELAXED), ts = __atomic_load_n(&g_plc_t_saved, __ATOMIC_RELAXED);
-    int due = pc && !g.device_lost && made >= __atomic_load_n(&g_plc_made_saved, __ATOMIC_RELAXED) + g_plc_thr_new &&
-              (ts ? t - ts >= g_plc_every_ns : t - g_plc_t_open >= g_plc_first_ns);
+    int due = pc && g_plc_dir[0] && !g.device_lost &&
+              (force || (made >= __atomic_load_n(&g_plc_made_saved, __ATOMIC_RELAXED) + g_plc_thr_new &&
+                         (ts ? t - ts >= g_plc_every_ns : t - g_plc_t_open >= g_plc_first_ns)));
     int claimed = 0;   // 抢到「在飞」标记 = 这一刻没有别的写，也轮到本线程来写
     if (due) {
         int expect = 0;
@@ -1269,6 +1271,15 @@ static void plc_save_midrun(void) {
     free(buf);
     if (!started) __atomic_store_n(&g_plcw_busy, 0, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_plc_mu);
+}
+
+static void plc_save_midrun(void) { plc_save_midrun_impl(0); }
+
+// 停局但会话保留到进程退出（#860：前端没停稳就不关后端，也就走不到 plc_close 的收尾写）：把驱动当前缓存取一份交后台线程写盘，
+// 不销毁缓存、不等写完——写盘是临时文件 + 原子替换，进程中途退出旧文件原样。调用方线程只花取数据的时间（真机约 0.5 ms）。线程：任意。
+void nvn_gpu_vk_pipe_cache_flush(void) {
+    if (!g_open) return;
+    plc_save_midrun_impl(1);
 }
 
 // 一条管线刚经缓存建好：记账；够触发局中补写的条数、时间也到了就试一次。线程：任意建管线的线程（图形 / 计算 / 清屏）。

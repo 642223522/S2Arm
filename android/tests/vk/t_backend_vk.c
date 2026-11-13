@@ -5847,6 +5847,44 @@ static void *c89_thr_main(void *arg) {
     return NULL;
 }
 
+// C907：停局但会话保留到进程退出（#860 / #907 Stop 不关后端，走不到 close 的收尾写）时，nvn_gpu_vk_pipe_cache_flush 把驱动管线缓存落盘。
+//  ① 阈值调到不会触发局中补写、建 3 条管线：调用前目录为空（负对照：没有这次调用就没有文件）；
+//  ② 调用后后台写完成 1 次、目录里恰好 1 个正式文件、无残留临时文件；会话仍开着（之后还能建管线）；
+//  ③ 再调一次、没有新管线：记「与上次一致没写」，文件原样。
+void nvn_gpu_vk_pipe_cache_flush(void);
+static void c907_retained_flush(const char *sdir) {
+    char tmpl[512];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(tmpl, sizeof tmpl, "%s/s2a-plc907.XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
+    char *dir = mkdtemp(tmpl);
+    CHECK(dir != NULL, "C907 建不出临时目录");
+    if (!dir) return;
+    size_t keep_extra = g_plc_extra, keep_per = g_plc_per_pipe; int keep_strip = g_plc_strip_tail;
+    g_plc_extra = 0; g_plc_per_pipe = 0; g_plc_strip_tail = 0;
+    nvn_gpu_err e;
+    CHECK(c89_open(dir, 1000000, 3600000, 3600000), "C907 open");
+    c88_make_pipes(sdir);
+    struct c89_dir before = c89_scan(dir);
+    CHECK(before.nreg == 0 && before.nother == 0, "C907 ① 调用前目录应为空（局中补写不该触发）→ 正式 %d 个、其他 %d 个", before.nreg, before.nother);
+    struct c89_st b = c89_stats();
+    nvn_gpu_vk_pipe_cache_flush();
+    struct c89_st a = c89_wait_done(&b, 1, 5000);
+    struct c89_dir d1 = c89_scan(dir);
+    CHECK(a.saves == b.saves + 1 && a.ok == b.ok + 1 && a.failed == b.failed, "C907 ② 应交后台写 1 次且成功 → saves +%llu ok +%llu failed +%llu",
+          (unsigned long long)(a.saves - b.saves), (unsigned long long)(a.ok - b.ok), (unsigned long long)(a.failed - b.failed));
+    CHECK(d1.nreg == 1 && d1.nother == 0 && d1.size > 0, "C907 ② 目录里应恰好 1 个正式文件、无临时文件 → 正式 %d 个、其他 %d 个、%ld 字节", d1.nreg, d1.nother, d1.size);
+    nvn_gpu_vk_pipe_cache_flush();
+    struct c89_st a2 = c89_stats();
+    struct c89_dir d2 = c89_scan(dir);
+    CHECK(a2.saves == a.saves && a2.same == a.same + 1, "C907 ③ 没有新管线：不该再写、应记一次「一致没写」→ saves +%llu same +%llu",
+          (unsigned long long)(a2.saves - a.saves), (unsigned long long)(a2.same - a.same));
+    CHECK(c89_same_file(&d1, &d2), "C907 ③ 文件应原样不动");
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C907 close：%d %s", e.rc.code, e.why);
+    g_plc_extra = keep_extra; g_plc_per_pipe = keep_per; g_plc_strip_tail = keep_strip;
+    c89_rm_tree(dir);
+    printf("C907 保留路径管线缓存落盘：已核对（%ld 字节）\n", d1.size);
+}
+
 static void c89_midrun_save(const char *sdir) {
     char tmpl[512];
     const char *tmp = getenv("TMPDIR");
@@ -6740,6 +6778,7 @@ int main(int argc, char **argv) {
 
     c88_pipe_cache(argv[1]);   // 每个会话自己开 / 关（带不同的 cache_dir）
     c89_midrun_save(argv[1]);  // 同上；还会起子进程（被 SIGKILL 的那一局）
+    c907_retained_flush(argv[1]);   // 停局保留会话时的管线缓存落盘（#907 合入补）
 
     printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75/C88/C89 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));

@@ -629,6 +629,7 @@ static int32_t request_stop_impl(void *context) {
         g_retained_context = ctx;
         pthread_mutex_unlock(&g_window_mu);
         (void)nvk_session_wait_compiles();
+        nvk_session_flush_pipe_cache();   // 不走 close 就没有收尾写：保留路径上照样把驱动管线缓存交后台落盘（#856 的收益不丢）
         __android_log_print(ANDROID_LOG_INFO, TAG, "direct stop: %s", ctx->reason);
         return S2A_DIRECT_RES_RETIREMENT;
     }
@@ -795,6 +796,7 @@ static int32_t destroy_impl(void *context) {
         g_retained_context = ctx;
         pthread_mutex_unlock(&g_window_mu);
         (void)nvk_session_wait_compiles();
+        nvk_session_flush_pipe_cache();   // 同 request_stop：保留路径上把驱动管线缓存交后台落盘
         __android_log_print(ANDROID_LOG_INFO, TAG,
                             "direct destroy: frontend retirement unproven; session/device retained until process exit");
         return S2A_DIRECT_RES_RETIREMENT;
