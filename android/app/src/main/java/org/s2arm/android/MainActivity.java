@@ -106,8 +106,8 @@ public class MainActivity extends Activity
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        if (state != null) touchExport = state.getByteArray("touchLayoutExport");
         DebugGate.scrub(getIntent());   // 调试参数两道门（DebugGate）：门没开，后面一律读不到
+        if (state != null) touchExport = state.getByteArray("touchLayoutExport");
         gameMode = this instanceof GameActivity;
         if (gameMode) {
             if (GameActivity.libraryRoute(getIntent(), GameSession.running())) {
