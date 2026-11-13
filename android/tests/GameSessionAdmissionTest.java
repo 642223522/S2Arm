@@ -144,10 +144,10 @@ public final class GameSessionAdmissionTest {
                 artifact(g,s->s.replace("modules/main.","outside/main."));
             });
             {   // 版本目录根上留着换 artifact 时没删掉的旧 artifact：游戏读不到它，照常准入（不堵门）
-                Path stale = Files.createDirectories(app.resolve("stale-root-artifact")); Path game = fixture(stale, true);
-                Path revision = game.resolve(BootContract.readCurrent(game.toFile()).revisionDir);
-                Files.writeString(revision.resolve("game-build-artifact.0000000000000000.json"), "{}");
-                try (GameSession ignored = GameSession.load(spec(stale, game), stale.toFile(), null, true)) { checks++; }
+                Path stale = Files.createDirectories(app.resolve("stale-root-artifact")); Path staleGame = fixture(stale, true);
+                Path staleRev = staleGame.resolve(BootContract.readCurrent(staleGame.toFile()).revisionDir);
+                Files.writeString(staleRev.resolve("game-build-artifact.0000000000000000.json"), "{}");
+                try (GameSession ignored = GameSession.load(spec(stale, staleGame), stale.toFile(), null, true)) { checks++; }
             }
             refuses(app,"unindexed-romfs",(a,g)-> {
                 Path revision = g.resolve(BootContract.readCurrent(g.toFile()).revisionDir);
