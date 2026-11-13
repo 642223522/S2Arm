@@ -7,5 +7,7 @@ $(BUILD)/tests/t_ro_lazy: runtime/tests/t_ro_lazy.c $(NVN_TEST_HOST_OBJS)
 native-test-ro_lazy: $(BUILD)/tests/t_ro_lazy
 	python3 runtime/tests/ro_lazy/prepare.py $(BUILD)/tests/ro_lazy
 	$(BUILD)/tests/t_ro_lazy $(BUILD)/tests/ro_lazy
+	python3 runtime/tests/ro_lazy/prepare.py $(BUILD)/tests/ro_lazy_old old   # 老 SDK 形态（单数 RestoreFunction、+0xb0）
+	$(BUILD)/tests/t_ro_lazy $(BUILD)/tests/ro_lazy_old
 TEST_TARGETS += native-test-ro_lazy
 endif
