@@ -72,10 +72,10 @@ def _sdk_ok(version, req):
     return have == want
 
 
-def dotnet_sdk():
+def _listed_sdks():
+    """各候选 dotnet 的 --list-sdks 里的 10.x 行：(exe, 版本号, SDK 目录)"""
     # The host may be a Homebrew shell wrapper; --list-sdks supplies the actual SDK root.
     probe_env = {k: v for k, v in os.environ.items() if k != 'DOTNET_ROOT' and not k.startswith('DOTNET_ROOT_')}
-    req = _sdk_requirement()
     for exe in _dotnet_candidates():
         try:
             if not exe.is_file() or not os.access(exe, os.X_OK):
@@ -90,14 +90,28 @@ def dotnet_sdk():
         for line in result.stdout.splitlines():
             sdk = re.fullmatch(r'10\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)? \[([^\r\n]+)\]', line.strip())
             if sdk:
-                sdk_path = Path(sdk.group(1))
-                version = line.strip().split(' ', 1)[0]
-                # 版本按 compat/tree/global.json 判（10.0.1xx 编不了要 ≥10.0.403 的 Ryujinx 部分，认成「有 SDK」会到编 C# 时才失败）
-                if not _sdk_ok(version, req):
-                    continue
-                if sdk_path.is_absolute() and sdk_path.name == 'sdk' and (sdk_path / version).is_dir():
-                    return sdk_path.parent, exe
+                yield exe, line.strip().split(' ', 1)[0], Path(sdk.group(1))
+
+
+def dotnet_sdk():
+    req = _sdk_requirement()
+    for exe, version, sdk_path in _listed_sdks():
+        # 版本按 compat/tree/global.json 判（10.0.1xx 编不了要 ≥10.0.403 的 Ryujinx 部分，认成「有 SDK」会到编 C# 时才失败）
+        if not _sdk_ok(version, req):
+            continue
+        if sdk_path.is_absolute() and sdk_path.name == 'sdk' and (sdk_path / version).is_dir():
+            return sdk_path.parent, exe
     return None, None
+
+
+def dotnet_missing():
+    """dotnet_sdk() 没找到时给人看的原因（applenv.py 与一键出包开跑自检同一句，#449）：装着 10.x 但低于 global.json 的报「太旧」，不报「没有」"""
+    req = _sdk_requirement()
+    old = list(dict.fromkeys(f"{version}（{exe}）" for exe, version, _ in _listed_sdks() if not _sdk_ok(version, req)))
+    fix = "python3 pack/jobs/applenv.py --install dotnet（装到 ~/.dotnet，不要管理员密码）"
+    if old and req:
+        return f".NET SDK 版本太旧：装着 {'、'.join(old)}，要 {req[0]} 起（rollForward {req[1]}，compat/tree/global.json）：{fix}"
+    return f"没有 .NET 10 SDK：{fix}"
 
 
 def _iml_device_hint(c, tgt, gid):
@@ -192,6 +206,10 @@ def _build(c):
     if not game:
         raise Failure("游戏库里没有这款游戏。")
     require_game(c, game)
+    import downstream
+    scheme = downstream.requested(c, game)   # 玩家选了下游深度方案（确认页）：出包最后一步改用下游的做包工具，见 pack/jobs/downstream.py
+    if scheme:
+        return downstream.build_ios(c, game, scheme)
     from library import apply_location
     apply_location(c, game)   # 出包页选的存放位置（游戏库结构 v3）
     from library import check_pack_space
@@ -316,9 +334,11 @@ def _build(c):
     if missing:
         c.diagnostic("追加内容 %d 份没解出，包里不含（%s）" % (len(missing), "、".join(missing[:5]) + (" 等" if len(missing) > 5 else "")), code="aoc_missing", severity="warning")
     root = product_root(c, gid)
+    notes = []
     if root:
-        from build import warn_offline_empty
+        from build import warn_offline_empty, collect_degrade
         warn_offline_empty(c, root)   # 离线 0 支（#470）：照常交付，完成页带黄字
+        notes = collect_degrade(c, root)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）；清理会删产物根，先读
     # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
@@ -339,7 +359,8 @@ def _build(c):
             cache_result['freeBytes'], cache_result['minFreeBytes'], cache_result['pressureRemaining']))
     from library import _part_bytes
     image = layout.image_ios(c, gid)
-    result = dict(compilerCache=cache_result, outputPath=str(image), ipa="", ipaBytes=0, packBytes=_part_bytes([image / layout.IOS_PACK]), buildId=res.get("build_id") or "", target=tgt, graphicsMode=res.get("graphics_mode") or "unknown")
+    result = dict(compilerCache=cache_result, outputPath=str(image), ipa="", ipaBytes=0, packBytes=_part_bytes([image / layout.IOS_PACK]), buildId=res.get("build_id") or "", target=tgt, graphicsMode=res.get("graphics_mode") or "unknown",
+                  **({"notes": notes} if notes else {}))
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))
@@ -360,7 +381,12 @@ def prune_unless_follow_up(c, gid):
         c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
         return False
     from library import prune_build
-    prune_build(c, gid)
+    try:
+        prune_build(c, gid)
+    except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
+        #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
+        c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")
+        return False
     return True
 
 
@@ -418,9 +444,17 @@ def to_img(c, gid, root, pack_dir):
     多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
     log = c.logs / "img.log"
+    # 边写边删解包出来的 RomFS（#746）：出包收尾本来就清掉整个出包工作目录（prune_unless_follow_up），提前到写 IMG 时，峰值少一整份游戏大小。
+    #   同一款接着还要出别的平台（followUp）要留着解包，不删
+    consume = c.r.get("followUp") is not True
     try:   # 走 c.run：它每秒读 S2A_PROGRESS，img.py 按已写字节报进度，出包页这一步有进度条（几十 GB 要写一两分钟）
-        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper()], log, c.env(), cwd=c.engine)
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "convert", str(root), str(pack_dir), "--gid", gid.upper(), *(["--consume", "--work", str(layout.ios_work(c, gid))] if consume else [])],
+              log, c.env(), cwd=c.engine)
     except Failure as e:
+        if consume:   # 解包已删了一部分：清掉整个出包工作目录（同出包成功的收尾），重试从解包重做，不拿残缺的产物根接着出
+            from library import _build_entries, _rm
+            for p in _build_entries(c, gid):
+                _rm(c, layout.root_of(c, gid), p)
         from errors import tool_reason
         raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
@@ -508,8 +542,15 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
         roots[g] = usable_kit(c, g, sid, failed)
         if roots[g] is None:
             stale.append(names.get(g, g))
+    stale_ids = [g for g in roots if roots[g] is None]
+    if stale and c.r.get("acceptStale") is not True:   # 认得出的风险（v0.3.1 装机原则）：问玩家，确认后这次先不带它们照装，不替他拒
+        raise Failure("S2Arm 更新过，手机上的「" + "」「".join(stale) + "」要按新版重新出包才能放进同一个 App。确认继续的话，这次先不带它们照装这款："
+                      "它们的存档和资源都留在手机上，之后给它们各「打 iPhone 包」再装一次就回来。不想这样就先给它们重新出包。", code="container_stale",
+                      internal=" ".join(stale_ids))
     if stale:
-        raise Failure("S2Arm 更新过，手机上的「" + "」「".join(stale) + "」新版运行层认不得：同一个 App 里的游戏要能用同一版，先给它们各「打 iPhone 包」一次，再装这款（手机上现有的不受影响）。", code="container_stale")
+        for g in stale_ids: roots.pop(g)
+        c.diagnostic("「" + "」「".join(stale) + "」这次没放进新版 S2Arm（要按新版重新出包）；手机上的存档和资源都还在，给它们各「打 iPhone 包」再装一次就回来。",
+                      code="container_stale", severity="warning")
     if deleted:
         c.diagnostic("「" + "」「".join(deleted) + "」已从游戏库删除，新版 S2Arm 里不再包含它们；手机上的存档还在。", code="job_failed", severity="warning")
     if not roots:
@@ -539,8 +580,11 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
         raise
     write_container_ipa(c, app, ipa, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
-    if gid and gid not in games:   # 产物根 main.npdm 的程序号和游戏库的不一致：设备侧目录按程序号，对不上就推错地方
-        raise Failure(f"这款的产物根程序号和游戏库不一致（游戏库 {gid}，组装结果 {' '.join(games)}）。", code="job_failed")
+    if gid and gid not in games:
+        # 程序文件（main.npdm 的程序号）和游戏包（导入时 CNMT 的发行号）对不上：游戏文件被改过、或混进了别的游戏的程序
+        #   （玩家实报：把别的游戏的程序换进了这款的包里）。设备侧目录按程序号，放过去就推错地方，这道核对保留，只把原因说清
+        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
+                      code="game_files_mismatch")
     shutil.rmtree(app, ignore_errors=True)
     return ipa, games, sid
 

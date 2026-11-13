@@ -1,9 +1,11 @@
 // 状态类命令的落地（对齐 nvn_mtl.m state_op @10374、state_reset @7222、bind_stages @7177、bb_fresh / bh_fresh @6478）。
 #include "rp_state.h"
+#include "rp_shader.h"
 #include "nvn_unimpl.h"
 #include <string.h>
 
 struct rp_state rp_S;
+uint64_t rp_tex_sep_gen[6];
 struct rp_target rp_R;
 uint8_t rp_pso_dirty, rp_dss_dirty, rp_args_dirty[6];
 static uint64_t g_push_seq;
@@ -13,8 +15,20 @@ int nvn_dpool_base(const void *pool, int tex);   // hle_nvn.c：描述符池的�
 static void args_dirty_all(void) { memset(rp_args_dirty, 1, sizeof rp_args_dirty); }
 void rp_dirty_all(void) { rp_pso_dirty = rp_dss_dirty = 1; args_dirty_all(); }
 
+// 着色器来源消费的「当前有效图形阶段」与各阶段的键：OP_BIND_PROGRAM 按阶段窄化后的结果。
+uint32_t rp_shader_graphics_stages(void) {
+    uint32_t m = 0;
+    for (int st = 0; st < 5; st++) if (rp_S.bser[st]) m |= 1u << st;
+    return m;
+}
+int rp_shader_stage_key(unsigned st, uint8_t key[8]) {
+    if (st > 4 || !rp_S.bser[st] || !(rp_S.skey_ok >> st & 1)) return 0;
+    if (key) memcpy(key, rp_S.skey[st], 8);
+    return 1;
+}
+
 void rp_state_reset(void) {
-    memset(&rp_S, 0, sizeof rp_S); memset(&rp_R, 0, sizeof rp_R);
+    memset(&rp_S, 0, sizeof rp_S); memset(&rp_R, 0, sizeof rp_R); for (int i = 0; i < 6; i++) rp_tex_sep_gen[i]++;
     for (int i = 0; i < 8; i++) rp_S.blend[i] = (blend_st){.target = (unsigned)i, .src_rgb = NVN_BLEND_FUNC_ONE, .dst_rgb = NVN_BLEND_FUNC_ZERO, .src_a = NVN_BLEND_FUNC_ONE, .dst_a = NVN_BLEND_FUNC_ZERO, .eq_rgb = NVN_BLEND_EQUATION_ADD, .eq_a = NVN_BLEND_EQUATION_ADD};
     rp_S.color = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; rp_S.chmask.mask = 0xffffffffu;
     rp_S.ms.enable = 1;
@@ -70,6 +84,18 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             return 1; }
         case OP_BIND_PROGRAM: { p_bind_program t; const p_bind_program *bp = bind_program_rec(a, size, &t);
             const prog_t *p = prog_is(bp->prog, bp->snap.serial) ? bp->prog : NULL; uint64_t ser = bp->prog ? bp->snap.serial : 0;
+            // 程序实际有哪些阶段的着色器：快照的 stage_of[]（同旧 vk_record.c 的取法），nstage 是着色器项数。
+            // 取不到（快照缺 / 有认不出的阶段）时 known=0，沿用旧规则（本次掩码照单全收），留给绘制时按名字报。
+            uint32_t prog_st = 0; int prog_known = 0;
+            if (bp->snap.nstage > 0) {
+                uint32_t m = 0; int ok = 1;
+                for (uint32_t i = 0; i < bp->snap.nstage && i < 6u; i++) {
+                    unsigned st = bp->stage_of[i];
+                    if (st > 5) { ok = 0; break; }
+                    m |= 1u << st;
+                }
+                if (ok) { prog_st = m; prog_known = 1; }
+            }
             // 各阶段的着色器键：记录里的 keys 按程序的着色器数组序，stage_of 给出每一项是哪个 NVN 阶段
             for (int i = 0; i < 6; i++) { unsigned st = bp->stage_of[i]; if (st > 5 || !(bp->stages >> st & 1)) continue;
                 if (bp->kok >> i & 1) { memcpy(rp_S.skey[st], bp->keys[i], 8); rp_S.skey_ok |= (uint8_t)(1u << st); } else rp_S.skey_ok &= (uint8_t)~(1u << st); }
@@ -77,7 +103,17 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             if (bp->stages & 0x20) { if (rp_S.cser != ser) args_dirty_all(); rp_S.cprog = p; rp_S.cser = ser; }
             if (bp->stages & 0x1f) {
                 int ch = 0;
-                for (int st = 0; st < 5; st++) if (bp->stages >> st & 1) { if (rp_S.bser[st] != ser) ch = 1; rp_S.bst[st] = p; rp_S.bser[st] = ser; }
+                for (int st = 0; st < 5; st++) {
+                    if (!(bp->stages >> st & 1)) continue;   // 本次掩码没覆盖的阶段：保留原绑定（NVN 按阶段绑定）
+                    if (prog_known && !(prog_st >> st & 1)) {
+                        if (st < 2) continue;   // 顶点 / 片元不能被关：程序没有就保留原绑定（同 iOS bind_stages，太鼓达人）
+                        if (rp_S.bser[st]) ch = 1;   // 几何 / 细分：程序没有就解绑旧程序（同 iOS，异度 3）
+                        rp_S.bst[st] = NULL; rp_S.bser[st] = 0; rp_S.skey_ok &= (uint8_t)~(1u << st);
+                        continue;
+                    }
+                    if (rp_S.bser[st] != ser) ch = 1;
+                    rp_S.bst[st] = p; rp_S.bser[st] = ser;
+                }
                 if (ch) { rp_pso_dirty = 1; args_dirty_all(); }
             }
             stage_sweep();
@@ -115,7 +151,8 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             if (b->n < 0 || b->n > 32) { nvn_unimpl("rec", "bind_tex_count_overwritten", a); return 1; }
             bh_fresh(b);
             if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= RP_NTEX && memcmp(&rp_S.tex[b->stage][b->first], b->h, 8 * (size_t)b->n)) {
-                memcpy(&rp_S.tex[b->stage][b->first], b->h, 8 * (size_t)b->n); rp_args_dirty[b->stage] = 1; }
+                memcpy(&rp_S.tex[b->stage][b->first], b->h, 8 * (size_t)b->n); rp_args_dirty[b->stage] = 1;
+                if (b->first + b->n > 128) rp_tex_sep_gen[b->stage]++; }   // 分离贴图槽（128 起）变了
             return 1; }
         case OP_BIND_SAMP: { const p_bind_handles *b = a; if (b->n < 0 || b->n > 32) return 1; bh_fresh(b);
             if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= 128 && memcmp(&rp_S.samp[b->stage][b->first], b->h, 8 * (size_t)b->n)) {
@@ -132,7 +169,8 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             return 1; }
         case OP_POLY_OFFSET: rp_S.po = *(const p_poly_offset *)a; return 1;
         case OP_VIEWPORTS: { const p_viewports *b = a; if (b->first < 0 || b->n < 0 || b->first + b->n > 16) return 1;
-            for (int i = 0; i < b->n; i++) memcpy(rp_S.vp[b->first + i], b->v[i], 16); rp_S.has_vp = 1; return 1; }
+            for (int i = 0; i < b->n; i++) { memcpy(rp_S.vp[b->first + i], b->v[i], 16); }
+            rp_S.has_vp = 1; return 1; }
         case OP_DEPTH_RANGE: { const p_depth_range *b = a; rp_S.dr[0] = b->n; rp_S.dr[1] = b->f; return 1; }
         case OP_DEPTH_CLAMP: { int on = ((const p_depth_clamp *)a)->on; if ((on != 0) != (rp_S.depth_clamp != 0)) rp_pso_dirty = 1;   // 原生接口里深度夹取是管线状态
             rp_S.depth_clamp = on; return 1; }

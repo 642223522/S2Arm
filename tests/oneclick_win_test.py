@@ -218,6 +218,20 @@ class StepRc(unittest.TestCase):
             run.timing.close()
 
 
+class LogReason(unittest.TestCase):
+    # #754：子步骤失败时原因以 Python 异常那一行开头、保住它；后面的附注（清理也失败）放得下就带上。原先取末 3 行末 300 字，附注把原异常挤掉
+    def test_exception_line_kept_before_notes(self):
+        tb = ('Traceback (most recent call last):\n  File "x.py", line 1, in <module>\n'
+              "OSError: [WinError 145] 目录不是空的。: 'C:\\w\\v.tmp\\.romfs.intern\\arc'\n"
+              + ''.join(f"（随后的清理 rename_dir(a, b) 也失败：FileExistsError(17, '当文件已存在时，无法创建该文件。')；以上面的原错误为准）\n" for _ in range(3)))
+        got = oneclick_win.log_reason(tb)
+        self.assertTrue(got.startswith("OSError: [WinError 145] 目录不是空的。"), got)
+        self.assertIn("也失败：FileExistsError", got)
+
+    def test_no_exception_keeps_last_three_lines(self):
+        self.assertEqual(oneclick_win.log_reason("a\nb\nc\nd\n"), "b / c / d")
+
+
 class Product(unittest.TestCase):
     def test_links_not_copies(self):
         with tempfile.TemporaryDirectory() as t:
@@ -568,6 +582,29 @@ class InstallWin(unittest.TestCase):
         finally:
             self.ns = old_ns
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'app_id_taken'); self.assertNotIn('push', got)
+
+    def test_already_registered_device_signs_then_installs(self):
+        # #800：Windows 设备号不带横线、苹果存的带横线，plumesign 精确比较认不出已登记的这台 → 再登记被拒 35「already exists on this team」。
+        #   期望（手写）：认出这句改成只签名（命令里没有 --register-and-install / --udid）、再 device --install 装签好的包，照常推资源、回包名；
+        #   两段输出都在日志里。假 plumesign：带登记参数就报 35；只签名时写出 -o；device --install 打装好
+        body = ("print('args', a)\n"
+                "if a[0] == 'device': print('INFO Installation complete!'); sys.exit(0)\n"
+                "if '--register-and-install' in a:\n"
+                "    print(\"Error: Developer API error 35 (HTTP Some(200)): A device with number '00000000-0000000000000000' already exists on this team.\"); sys.exit(1)\n"
+                "z = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', b'<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>a.b.TEAM</string></dict></plist>')\nz.close()\n")
+        bid, got, log = self.run_fake(body)
+        self.assertEqual(bid, 'a.b.TEAM')
+        self.assertEqual(got['push'][:2], ['U1', 'a.b.TEAM'])
+        self.assertIn('already exists on this team', log)
+        self.assertIn("'device', '--udid', '42', '--install'", log)
+        second = log.split('只签名再装', 1)[1]
+        self.assertIn("'sign'", second); self.assertNotIn('--register-and-install', second.split("'device'")[0])
+
+    def test_other_sign_failure_is_not_retried(self):
+        body = "print('Error: Developer API error 1100: Your session has expired.')\nsys.exit(1)\n"
+        e, got, _ = self.run_fake(body)
+        self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'apple_session_expired'); self.assertNotIn('push', got)
 
     def test_legacy_case_bundle(self):
         self.assertEqual(install_win.legacy_case_bundle('io.s2arm.games.abcde12345'), 'io.s2arm.games.ABCDE12345')

@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+from pack.orch import roots   # 搬库改名重试与产物根改名同一套退避（DIR_RENAME_RETRIES）
 import unittest.mock as um
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -98,11 +100,40 @@ class MoveTests(unittest.TestCase):
         r = self.run_setup(lib, freeDefault=True)
         self.assertEqual((r["library"], r["outcome"]), (str(lib), "opened"))   # 已有游戏库照常打开
 
-    def test_occupied_folder_refused_without_free_default(self):
+    def test_occupied_folder_asks_then_uses_it_and_leaves_files_alone(self):
+        # v0.3.1：玩家自己选的位置有别的文件 → 不替他换、先问（library_folder_not_empty）；确认后照建游戏库，原有文件不动
         lib = self.root / "S2Arm"; lib.mkdir(); (lib / "S2Arm.exe").write_text("x")
         with self.assertRaises(Failure) as e:
-            self.run_setup(lib)   # 玩家自己选的位置不替他换
+            self.run_setup(lib)
+        self.assertEqual(e.exception.code, "library_folder_not_empty")
         self.assertIn("已有别的文件", str(e.exception))
+        self.assertEqual(sorted(p.name for p in lib.iterdir()), ["S2Arm.exe"])   # 问之前什么都没写
+        r = self.run_setup(lib, acceptForeign=True)
+        self.assertEqual((r["library"], r["outcome"]), (str(lib), "created"))
+        self.assertEqual((lib / "S2Arm.exe").read_text(), "x")
+        self.assertEqual(self.run_setup(lib)["outcome"], "opened")   # 建好以后再打开不再问
+
+    def test_occupied_folder_move_stops_on_same_name_without_touching_anything(self):
+        old = self.old(); new = self.root / "picked"; new.mkdir(); (new / "saves").write_text("玩家自己的")
+        with self.assertRaises(Failure) as e:
+            self.run_setup(new, moveFrom=str(old), acceptForeign=True)
+        self.assertEqual(e.exception.code, "library_move_failed"); self.assertIn("saves", str(e.exception))
+        self.assertEqual((new / "saves").read_text(), "玩家自己的")
+        self.assertTrue((old / "saves" / GID / "save.bin").is_file())
+        (new / "saves").unlink(); (new / "mine.txt").write_text("留着")
+        self.run_setup(new, moveFrom=str(old), acceptForeign=True)
+        self.assert_moved(old, new); self.assertEqual((new / "mine.txt").read_text(), "留着")
+
+    def test_broken_library_marker_opens_with_id_kept_or_new(self):
+        # v0.3.1：标识坏了不挡打开——有库号照用、补正 schema；没库号补一个新的
+        lib = self.old("lib")
+        (lib / ".s2arm-library.json").write_text(json.dumps({"schema": 7, "id": "library-id"}))
+        self.assertEqual(self.run_setup(lib)["libraryId"], "library-id")
+        self.assertEqual(json.loads((lib / ".s2arm-library.json").read_text())["schema"], 1)
+        (lib / ".s2arm-library.json").write_text(json.dumps({"schema": 1}))
+        r = self.run_setup(lib)
+        self.assertEqual(r["outcome"], "opened"); self.assertTrue(r["libraryId"])
+        self.assertEqual(json.loads((lib / ".s2arm-library.json").read_text())["id"], r["libraryId"])
 
     def test_setup_does_not_adopt_logs_of_a_plain_folder(self):
         import layout
@@ -143,6 +174,135 @@ class MoveTests(unittest.TestCase):
         self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
         self.assert_moved(old, new)
         self.assertFalse(old.exists())
+
+    def test_rename_imports_pack_like_the_job_runner(self):
+        """#812：作业主程序 pack/jobs/main.py 只把 pack/jobs 放进 sys.path（本文件开头导入了 pack.orch.roots，进程内跑测不出来）。
+        换一个干净的解释器（-I，只放 pack/jobs）调搬库最后那一步改名：期望先确认 pack 确实导入不了，再照常改名成功——
+        main 上这里报 ModuleNotFoundError: No module named 'pack'、目录没搬"""
+        import subprocess
+        jobs, engine = Path(library.__file__).resolve().parent, Path(library.__file__).resolve().parents[2]
+        a, b = self.root / "old" / "games", self.root / "new" / "games"
+        a.mkdir(parents=True); (a / "catalog.json").write_text("{}"); b.parent.mkdir()
+        probe = ("import importlib.util, sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; from types import SimpleNamespace\n"
+                 "assert importlib.util.find_spec('pack') is None, 'pack 不该在作业进程的 sys.path 上'\n"
+                 "import library\n"
+                 "c = SimpleNamespace(engine=Path(sys.argv[2]), emit=lambda **k: None, check=lambda: None)\n"
+                 "library._rename_library_path(c, sys.argv[3], sys.argv[4])\n")
+        run = subprocess.run([sys.executable, "-I", "-c", probe, str(jobs), str(engine), str(a), str(b)],
+                             cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse(a.exists())
+        self.assertEqual((b / "catalog.json").read_text(), "{}")
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing errors")
+    def test_same_volume_rename_retries_after_temporary_lock(self):
+        old, new = self.old(), self.root / "new"
+        real, failures, sleeps = os.rename, [0], []
+
+        def locked_once(src, dst):
+            if Path(src) == old / "games" and not failures[0]:
+                failures[0] += 1
+                error = PermissionError(13, "Access is denied", str(src))
+                error.winerror = 5
+                raise error
+            return real(src, dst)
+
+        with um.patch.object(library, "_same_volume", return_value=True), \
+             um.patch.object(library.os, "rename", locked_once), \
+             um.patch.object(library.time, "sleep", sleeps.append):
+            r = self.run_setup(new, moveFrom=str(old))
+        self.assertEqual(failures, [1])
+        self.assertEqual(sleeps, [roots.DIR_RENAME_RETRIES[0]])
+        self.assertEqual((r["outcome"], r["libraryId"]), ("moved", "library-id"))
+        self.assert_moved(old, new)
+        self.assertFalse(old.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing errors")
+    def test_same_volume_persistent_lock_times_out_and_preserves_source(self):
+        old, new = self.old(), self.root / "new"
+        real, refusals, sleeps = os.rename, [0], []
+
+        def always_locked(src, dst):
+            if Path(src) == old / "games":
+                refusals[0] += 1
+                error = PermissionError(13, "Access is denied", str(src))
+                error.winerror = 32
+                raise error
+            return real(src, dst)
+
+        with um.patch.object(library, "_same_volume", return_value=True), \
+             um.patch.object(library.os, "rename", always_locked), \
+             um.patch.object(library.time, "sleep", sleeps.append), \
+             self.assertRaises(Failure) as caught:
+            self.run_setup(new, moveFrom=str(old))
+        self.assertEqual(caught.exception.code, "library_move_failed")
+        self.assertIn("重试约 1 分钟", str(caught.exception))
+        self.assertIn("资源管理器", str(caught.exception))
+        self.assertIn("原游戏库仍保留在原位置", str(caught.exception))
+        self.assertEqual(refusals, [len(roots.DIR_RENAME_RETRIES) + 1])
+        self.assertEqual(sleeps, list(roots.DIR_RENAME_RETRIES))
+        self.assert_untouched(old, new)
+        self.assertEqual(list(new.iterdir()), [])
+
+    def test_nonretryable_no_space_rename_fails_immediately_and_preserves_source(self):
+        old, new = self.old(), self.root / "new"
+        real, failed, sleeps = os.rename, [0], []
+
+        def no_space(src, dst):
+            if Path(src) == old / "games":
+                failed[0] += 1
+                raise OSError(28, "No space left on device", str(src))
+            return real(src, dst)
+
+        with um.patch.object(library, "_same_volume", return_value=True), \
+             um.patch.object(library.os, "rename", no_space), \
+             um.patch.object(library.time, "sleep", sleeps.append), \
+             self.assertRaises(OSError) as caught:
+            self.run_setup(new, moveFrom=str(old))
+        self.assertEqual(caught.exception.errno, 28)
+        self.assertEqual(failed, [1])
+        self.assertEqual(sleeps, [])
+        self.assert_untouched(old, new)
+        self.assertEqual(list(new.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle sharing semantics")
+    def test_windows_directory_handle_times_out_without_moving_source(self):
+        import ctypes
+        from ctypes import wintypes
+
+        old, new = self.old(), self.root / "new"
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = create_file(str(old / "games"), 0x80000000, 0x1 | 0x2, None, 3, 0x02000000, None)
+        self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+        errors = []
+        real = os.rename
+
+        def observe_rename(src, dst):
+            try:
+                return real(src, dst)
+            except PermissionError as error:
+                errors.append(getattr(error, "winerror", None))
+                raise
+
+        try:
+            with um.patch.object(library.os, "rename", observe_rename), \
+                 um.patch.object(library.time, "sleep", lambda _: None), \
+                 self.assertRaises(Failure) as caught:
+                self.run_setup(new, moveFrom=str(old))
+        finally:
+            close_handle(handle)
+        self.assertTrue(errors and errors[0] in (5, 32), errors)
+        self.assertEqual(len(errors), len(roots.DIR_RENAME_RETRIES) + 1)
+        self.assertIn("资源管理器", str(caught.exception))
+        self.assert_untouched(old, new)
+        self.assertEqual(list(new.iterdir()), [])
 
     def test_cross_volume_move(self):
         old, new = self.old(), self.root / "new"

@@ -21,7 +21,9 @@ void rp_op_update_ub(const void *a, const void *rec);
 void rp_op_copy_b2b(const void *a, const void *rec);
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec);
 void rp_op_copy_b2t(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec);
+void rp_op_copy_t2b(nvn_gpu_cmd c, const p_copy_b2t *o, const void *rec);
 void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec);
+void rp_op_clear_tex(nvn_gpu_cmd c, const p_clear_tex *o, const void *rec);
 
 // 会话四件套（前端按名字调，上沿头文件里没有声明）
 void nvn_be_begin_session(void);
@@ -51,8 +53,16 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
 void rp_draw_stats(uint64_t *draws, uint64_t *skips);
 // 分时读数：自上次取走以来的累计（纳秒 / 次数），取走即清零
 enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_PERF_WAIT_N, RP_PERF_DONE_NS, RP_PERF_DONE_N, RP_PERF_PASSES, RP_PERF_PRESENT_NS,
-       RP_PERF_D_PROG, RP_PERF_D_PREP, RP_PERF_D_TEX, RP_PERF_D_PIPE, RP_PERF_D_DYN, RP_PERF_D_BIND, RP_PERF_D_DRAW, RP_PERF_D_TAIL, RP_PERF_N };   // D_*：一笔绘制里各步（见 rp_draw.c）
+       RP_PERF_D_PROG, RP_PERF_D_PREP, RP_PERF_D_TEX, RP_PERF_D_PIPE, RP_PERF_D_DYN, RP_PERF_D_BIND, RP_PERF_D_DRAW, RP_PERF_D_TAIL, RP_PERF_D_PASS, RP_PERF_D_PGET, RP_PERF_PB_VIEW, RP_PERF_PB_BAR, RP_PERF_PB_BE, RP_PERF_PB_MARK, RP_PERF_RES_LOCK, RP_PERF_RES_NEW, RP_PERF_RES_INIT, RP_PERF_RES_VIEWMAKE, RP_PERF_PB_SHADOW, RP_PERF_RES_SCAN, RP_PERF_RES_UP, RP_PERF_RES_UPN, RP_PERF_RES_ZERO, RP_PERF_RES_ZERON, RP_PERF_RES_MAKE, RP_PERF_RES_ZDEFER, RP_PERF_BIND_SLICE_HIT, RP_PERF_BIND_SKIP,   // 绑定：段内切片表命中的块数、整组沿用没发的阶段数
+      
+       RP_PERF_P_DS, RP_PERF_P_DS_IDLE, RP_PERF_P_LOADC, RP_PERF_P_KPIX, RP_PERF_P_ONE, RP_PERF_P_CUT_XFER, RP_PERF_P_CUT_CLEAR, RP_PERF_P_CUT_RT, RP_PERF_P_CUT_OP, RP_PERF_TEX_UP_N, RP_PERF_TEX_UP_KB, RP_PERF_BUF_SYNC_KB, RP_PERF_BUF_SYNC_DIRECT_KB, RP_PERF_FX_SUBS, RP_PERF_FX_EVENT, RP_PERF_FX_REPORT, RP_PERF_FX_OCC, RP_PERF_FX_GW, RP_PERF_FIN_SKIP, RP_PERF_N };   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
+uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
+uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）
+int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建贴图的宽高有几种（最多数到 64，取完清零）
+int rp_fence_done(uint64_t f);       // 栅栏值 f 及之前交出去的活显卡都做完了
+extern int rp_split_draws;       // 中途交段：每段的笔数（见 rp_exec.c）
+uint64_t rp_seg_serial(void);   // 第几个后端段：段里的暂存内容（arena 切片）只在同一段里能复用
 uint64_t rp_sub_serial(void);   // 第几次提交（一次提交内可复用的暂存内容按它判）
 void rp_perf_take(uint64_t out[RP_PERF_N]);
 void rp_draw_reset(void);
@@ -66,10 +76,13 @@ void rp_occl_pass_opened(int declared); void rp_occl_pass_closed(void);
 void rp_occl_pause(nvn_gpu_cmd c);      // 通道里按矩形清之前
 void rp_occl_draw(nvn_gpu_cmd c);       // 每笔绘制之前
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec);   // 计算派发（rp_draw.c）
-void rp_post_gpu_write(uint64_t addr, uint64_t len);                      // 这一段里 GPU 写了游戏内存的这一段：完成后回写（rp_exec.c）
+int rp_post_gpu_write(uint64_t addr, uint64_t len);                       // 登记单段；1 = 登记成功，段完成后回写
+int rp_post_gpu_write_rows(uint64_t addr, uint64_t row_bytes, uint64_t row_stride, uint64_t image_stride, uint32_t rows, uint32_t images);
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key); void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok);
 int rp_rc_skip(void);                   // 条件渲染判成不画的那一段里
+void rp_pass_note_draw(int uses_ds);   // 一笔绘制进了当前通道（uses_ds：这笔开着深度测试 / 深度写 / 模板测试）
 int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式
+void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h);   // 颜色槽 i 的视图尺寸（像素；块压缩基底配一块当一个像素的视图时按块数）
 // 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
 void rp_debug_dump_poll(uint64_t *fence);

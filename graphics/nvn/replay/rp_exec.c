@@ -7,6 +7,7 @@
 #include "nvn_plat.h"
 #include "nvn_backend.h"
 #include "nvn_mtl.h"   // 上沿声明（nvn_be_* 与 NVN_EV_WAIT；文件名是历史名，内容与 Metal 无关）
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +40,9 @@ const char *rp_op_name(uint32_t op) { return op < OP_NVN2_END_ && k_op_name[op] 
 struct post { volatile uint32_t *val; uint32_t mode, v; uint64_t report; uint32_t type; };   // 完成后写事件值（mode 0 写 / 1 加）；report 非 0 = 计数器报告的写回地址
 struct occ_ev { uint32_t pos; uint32_t report; uint64_t addr; };   // 遮挡计数的事件：发生时本段已经开过 pos 个槽；report 0 = 复位、1 = 报告（写回 addr）
 struct gw_ev { uint64_t pool_key, id; };   // 本段里 GPU 写进池的一段（rp_buf_gpu_write_note 的登记）
-struct sub { struct post *p; int n, cap; uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; struct gw_ev *gw; int ngw, gwcap; };
+struct sub { uint32_t mids, freed; uint8_t orphan;   /* mids：还没完成的中途段里有几个指着这份提交；orphan：最后一段没交成，由最后一个中途段的完成回调来放（见 sub_orphan） */
+             struct post *p; int n, cap, nfx; /* nfx：p 里时间戳报告以外的条数 */ uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; struct gw_ev *gw; int ngw, gwcap;
+    uint64_t *oc; uint32_t noc, occ_base; };   // oc：中途交过段的提交，各段的遮挡槽结果按整次提交的槽号攒在这里（没拆过为 NULL）；occ_base：最后一段的第一个槽号
 // 分时读数（上屏那边每 5 秒取走一次清零）：一次队列提交里回放花的、交给后端花的、游戏等围栏花的、段从提交到完成隔了多久
 static uint64_t now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
 static uint64_t g_pf[RP_PERF_N];
@@ -54,7 +57,13 @@ static nvn_gpu_cmd g_cmd;      // 当前段（NULL = 后端没给出段：本次
 static nvn_gpu_cmd g_pre;      // 前置段：本次提交里资源同步用的传输（池镜像、贴图上传），先于 g_cmd 提交。用到才开
 static uint64_t g_sub_serial;  // 第几次提交（资源按它判断「本次提交里已经用过」）
 uint64_t rp_sub_serial(void) { return g_sub_serial; }
+static uint64_t g_seg_serial;  // 第几个后端段（一次提交中途交过段就不止一个）。段里的暂存内容随段回收，按它判能不能复用
+uint64_t rp_seg_serial(void) { return g_seg_serial; }
 static uint64_t g_fence;       // 最近一次提交的栅栏值
+static uint64_t g_effect_fence, g_finish_prev;   // 见 nvn_be_finish_publish
+enum { SUB_STEP = 64 };       // 一次提交在时间线上占 64 个值：最后一段（带回写）取 g_fence + 64，它前面的前置段 / 中途先交的段依次取 +1、+2…
+static uint32_t g_mid;         // 这次提交已经用掉几个中间值
+static uint64_t g_split_base;  // 上次中途交段时的累计绘制笔数
 static int g_ret_n;            // OP_CALL 嵌套深度
 
 static void red(const char *fmt, const char *why) { char b[256]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
@@ -66,7 +75,7 @@ static void pre_done(void *user, const nvn_gpu_done *d) { (void)user; if (d->sta
 // 于是结束当前通道、录进主段（通道在下一笔绘制时重开）。last_sub：该资源上次同步所在的提交序号，由调用方持有。
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
     if (!g_cmd) return NULL;
-    if (*last_sub == g_sub_serial) { rp_pass_end(g_cmd); return g_cmd; }
+    if (*last_sub == g_sub_serial) { if (rp_pass_is_open()) pf_add(RP_PERF_P_CUT_XFER, 1); rp_pass_end(g_cmd); return g_cmd; }
     *last_sub = g_sub_serial;
     if (!g_pre) { nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {0, "nvn submit pre"};
         if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_pre, &err))) { g_pre = NULL; rp_pass_end(g_cmd); return g_cmd; } }
@@ -76,6 +85,8 @@ nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
 static void sub_done(void *user, const nvn_gpu_done *d) {
     struct sub *s = user;
     if (s->t_commit) { pf_add(RP_PERF_DONE_NS, now_ns() - s->t_commit); pf_add(RP_PERF_DONE_N, 1); }
+    // 先落 GPU 写，再发布事件和完成序号：等待事件的 CPU 不能先看见旧内存。
+    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
     if (d->status != NVN_GPU_DONE_FAILED)   // 没执行的段不做任何成功回写
         for (int i = 0; i < s->n; i++) {
             if (s->p[i].report) {   // 计数器记录 = {计数值, 时间}（各 8 字节）。时间取本段完成这一刻的游戏时钟；时间戳类的计数值就是时间，
@@ -92,18 +103,33 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
     // 遮挡计数：自上次复位以来通过的样本数是队列上的累计值。按槽号顺序把本段各槽加进累计；复位 / 报告事件落在「它发生时已经开过的槽」之后。
     // 段按提交顺序完成，累计值只在这里（完成回调）动。失败的段：槽值当 0，报告不写。
     { uint64_t acc = g_occ_acc; uint32_t n = d->status != NVN_GPU_DONE_FAILED && d->occlusion ? d->nocclusion : 0; int e = 0;
+      const uint64_t *occ = d->occlusion;
+      if (s->oc && d->status != NVN_GPU_DONE_FAILED) {   // 拆过的提交：把最后一段的结果并进去，按整次提交的槽号走
+          for (uint32_t i = 0; i < n && s->occ_base + i < 2048; i++) s->oc[s->occ_base + i] = d->occlusion[i];
+          if (s->occ_base + n > s->noc) s->noc = s->occ_base + n < 2048 ? s->occ_base + n : 2048;
+          occ = s->oc; n = s->noc; }
       for (uint32_t i = 0; i <= n || e < s->noe; i++) {
           for (; e < s->noe && s->oe[e].pos <= i; e++) {
               if (!s->oe[e].report) acc = 0;
               else if (d->status != NVN_GPU_DONE_FAILED) { uint64_t rec[2] = {acc, s2a_guest_tick()}; memcpy((void *)(uintptr_t)s->oe[e].addr, rec, sizeof rec); }
           }
-          if (i < n) acc += d->occlusion[i];
+          if (i < n) acc += occ[i];
           if (i >= n && e >= s->noe) break;
       }
       g_occ_acc = acc; }
     if (s->fence) { uint64_t f = __atomic_load_n(&g_done_fence, __ATOMIC_RELAXED); if (s->fence > f) __atomic_store_n(&g_done_fence, s->fence, __ATOMIC_RELEASE); }
-    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
-    free(s->gw); free(s->oe); free(s->p); free(s);
+    free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
+}
+// 最后一段没交成的提交（开段失败）：它的回写、事件、计数器都不做（同「提交段失败」），登记过的 GPU 写按失败落地。
+// 中途交出去的段还指着它（mid_done 要往它的 oc 里攒遮挡结果），所以不能当场放：谁最后一个松手谁放，两边可能同时到，用 freed 抢一次。
+static void sub_release(struct sub *s) {
+    if (__atomic_exchange_n(&s->freed, 1, __ATOMIC_ACQ_REL)) return;
+    for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, 0);
+    free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
+}
+static void sub_orphan(struct sub *s) {
+    __atomic_store_n(&s->orphan, 1, __ATOMIC_RELEASE);
+    if (!__atomic_load_n(&s->mids, __ATOMIC_ACQUIRE)) sub_release(s);
 }
 
 // ---------- 遮挡计数（NVN_COUNTER_TYPE_SAMPLES_PASSED；nvn_mtl.m @950 一带） ----------
@@ -111,10 +137,10 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
 // 做法同 iOS：计数期间每个通道用一个新槽（不指望跨通道累加），报告之后换新槽；各槽的值在段完成时按顺序加起来（sub_done）。
 // 游戏第一次碰这个计数器的那一段没有声明槽（开段时还不知道）：那一段里复位之后的绘制不计，只这一次。
 enum { OCC_SLOTS = 2048 };
-static int g_occ_used, g_occ_counting, g_occ_seg, g_occ_cur = -1, g_occ_pass; static uint32_t g_occ_next;
+static int g_occ_used, g_occ_counting, g_occ_seg, g_occ_cur = -1, g_occ_pass; static uint32_t g_occ_next, g_occ_base;   // g_occ_base：当前这一段的第一个槽号（中途交段之后不是 0）
 static void occ_event(int report, uint64_t addr) {
     struct sub *s = g_sub; if (!s) return;
-    if (s->noe == s->oecap) { int cap = s->oecap ? s->oecap * 2 : 16; struct occ_ev *n = realloc(s->oe, (size_t)cap * sizeof *n); if (!n) return; s->oe = n; s->oecap = cap; }
+    if (s->noe == s->oecap) { int cap = s->oecap ? s->oecap * 2 : 16; struct occ_ev *n = realloc(s->oe, (size_t)cap * sizeof *n); if (!n) { red("%s", "遮挡计数：事件表扩不了，这条复位 / 报告丢了"); return; } s->oe = n; s->oecap = cap; }
     s->oe[s->noe++] = (struct occ_ev){g_occ_next, (uint32_t)report, addr};
 }
 static void occ_stop(nvn_gpu_cmd c) { if (g_occ_cur >= 0 && c && rp_pass_is_open()) nvn_gpu_occlusion(c, -1); g_occ_cur = -1; }
@@ -125,7 +151,7 @@ void rp_occl_pause(nvn_gpu_cmd c) { occ_stop(c); }                              
 void rp_occl_draw(nvn_gpu_cmd c) {                                                   // 每笔绘制之前
     if (g_occ_cur >= 0 || !g_occ_pass || !g_occ_counting) return;
     if (g_occ_next >= OCC_SLOTS) { nvn_unimpl("occl", "slots_exhausted", NULL); return; }
-    g_occ_cur = (int)g_occ_next++; nvn_gpu_occlusion(c, g_occ_cur);
+    g_occ_cur = (int)g_occ_next++; nvn_gpu_occlusion(c, g_occ_cur - (int)g_occ_base);
 }
 static void occ_reset(nvn_gpu_cmd c) { g_occ_used = 1; occ_stop(c); g_occ_counting = 1; occ_event(0, 0); }
 static void occ_report(nvn_gpu_cmd c, uint64_t addr) { g_occ_used = 1; occ_stop(c); occ_event(1, addr); }
@@ -182,26 +208,69 @@ void rp_exec_reset(void) {   // 会话收尾：遮挡计数与条件渲染的账
 void nvn_be_sub_begin(void) {
     g_sub = calloc(1, sizeof *g_sub);
     rc_retire(); g_rc_npend = 0; g_rc_skip = 0;
-    g_occ_seg = g_occ_used; g_occ_next = 0; g_occ_cur = -1; g_occ_pass = 0;
+    g_occ_seg = g_occ_used; g_occ_next = 0; g_occ_base = 0; g_occ_cur = -1; g_occ_pass = 0;
     nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {g_occ_seg ? OCC_SLOTS : 0, "nvn submit"};
-    g_cmd = NULL; g_pre = NULL; g_sub_serial++;
+    g_cmd = NULL; g_pre = NULL; g_sub_serial++; g_seg_serial++; g_mid = 0; { uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns); g_split_base = nd; }
     if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_cmd, &err))) { g_cmd = NULL; static int said; if (!said++) red("开提交段失败（之后同样的失败不再逐条报）：%s", err.why); }
     rp_dirty_all();   // 新段：已发给后端的状态全部重发；rp_S / rp_R 不动
+}
+
+struct mid { struct sub *s; uint32_t base; };
+static void mid_done(void *user, const nvn_gpu_done *d) {   // 中途交的段完成：遮挡槽的结果先攒进所属提交（它的最后一段还没完成：段按提交顺序完成）
+    struct mid *m = user;
+    if (d->status == NVN_GPU_DONE_FAILED) red("中途交的段失败：%s", d->why ? d->why : "?");
+    else if (m && m->s->oc && d->occlusion) { for (uint32_t i = 0; i < d->nocclusion && m->base + i < 2048; i++) m->s->oc[m->base + i] = d->occlusion[i];
+        uint32_t end = m->base + d->nocclusion < 2048 ? m->base + d->nocclusion : 2048; if (end > m->s->noc) m->s->noc = end; }
+    if (m && !__atomic_sub_fetch(&m->s->mids, 1, __ATOMIC_ACQ_REL) && __atomic_load_n(&m->s->orphan, __ATOMIC_ACQUIRE)) sub_release(m->s);
+    free(m);
+}
+// 中途先交一段：这次提交回放到这里为止录下的命令先交给 GPU 去做，回放接着往下录进新的一段。
+// 一整次提交回放完才交的话，CPU 回放时 GPU 闲着、GPU 做的时候游戏线程（多半接着就等这次提交做完）闲着，两头串着干。
+// 只在通道外、换渲染目标之后交；用了遮挡计数的提交不拆（查询池按段建）。回写、事件、同步对象都挂在最后一段上，语义不变。
+// 什么时候交：换渲染目标时，自上次交段起画够了 SPLIT_DRAWS 笔。
+// 做法来自安卓模拟器 Vulkan 后端的自动提交（compat/tree/src/Ryujinx.Graphics.Vulkan/AutoFlushCounter.cs：换帧缓冲时按时间与笔数交）。
+// 它的阈值（10 笔、1 毫秒，以及「快交模式」下通道中间也交）照搬过来在真机上不行：这边交一段要把状态全部重发、另开一段，
+// 固定成本比它高，标题画面每帧交到 10–15 段、回放一度每帧 178 毫秒，进了「快交模式」每帧一百多段。
+// 按笔数、只在换渲染目标处交，是真机上量过有效的形态（3D 那款场景每帧约 2000 笔、交 7 段：12.6 → 20–23 帧）。
+// 调试开关 nvk_split 改每段的笔数，0 = 不交（整次提交只交一段）。
+int rp_split_draws = 300;   // 每段的笔数（用例改小了测）
+static void sub_split(void) {
+    int thr = nvn_plat_flag("nvk_split", rp_split_draws);
+    if (thr <= 0 || !g_cmd || !g_sub || g_mid >= SUB_STEP - 4 || rp_pass_is_open()) return;
+    uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
+    if (nd - g_split_base < (uint64_t)thr) return;
+    g_split_base = nd;
+    nvn_gpu_err err = {0};
+    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
+    nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
+    struct mid *m = NULL;
+    if (g_occ_seg) { m = calloc(1, sizeof *m); if (!g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc); if (m) { m->s = g_sub; m->base = g_occ_base; __atomic_add_fetch(&g_sub->mids, 1, __ATOMIC_ACQ_REL); } }
+    if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, g_fence + ++g_mid, mid_done, m, &err))) red("中途交段失败：%s", err.why);
+    pf_add(RP_PERF_SUBS, 1);
+    g_occ_base = g_occ_next; g_occ_cur = -1; g_seg_serial++;
+    nvn_gpu_cmd_desc d = {g_occ_seg ? OCC_SLOTS : 0, "nvn submit"};
+    if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_cmd, &err))) { g_cmd = NULL; red("中途交段后开新段失败：%s", err.why); }
+    rp_dirty_all();
 }
 
 uint64_t nvn_be_sub_commit(void) {
     struct sub *s = g_sub; g_sub = NULL;
     rp_pass_flush(g_cmd);   // 打开的通道与待折清除不跨提交
-    if (!g_cmd) {   // 没有段：副作用无处挂，直接按失败丢弃（不写假成功）
-        if (s) { free(s->p); free(s); }
+    if (!g_cmd) {   // 没有段（开段失败，或中途交段之后开新段失败）：副作用无处挂，按失败丢弃（不写假成功）
+        if (s) sub_orphan(s);
         if (g_pre) { nvn_gpu_cmd_abort(g_pre); g_pre = NULL; }
+        // 时间线照样往前走一格：这次提交里的同步对象已经按 g_fence + SUB_STEP 发布（OP_FENCE_SYNC），中途交出去的段也已经用掉了这一格里的中间值。
+        // 不走的话，下一次提交会把同一批值再用一遍（后端要求严格递增），而等这一格的游戏线程要到下一次提交做完才被放行。
+        g_fence += SUB_STEP;
         return g_fence;
     }
-    nvn_gpu_err err = {0}; uint64_t f = g_fence + 2;   // 前置段占 +1（没开就空着：时间线的值只要求递增），主段 +2
-    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + 1, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
+    nvn_gpu_err err = {0}; uint64_t f = g_fence + SUB_STEP;
+    if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, NULL, &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
-    uint64_t t0 = now_ns(); if (s) { s->t_commit = t0; s->fence = f; }
+    uint64_t t0 = now_ns(); if (s) { s->t_commit = t0; s->fence = f; s->occ_base = g_occ_base; }
+    if (s && (s->nfx || s->noe || s->ngw)) g_effect_fence = f;   // 这次提交做完时有东西要写回游戏内存（事件、时间戳以外的计数器报告、遮挡结果、GPU 写的缓冲）
+    if (s && (s->n || s->noe || s->ngw)) { pf_add(RP_PERF_FX_SUBS, 1); pf_add(RP_PERF_FX_OCC, (uint64_t)s->noe); pf_add(RP_PERF_FX_GW, (uint64_t)s->ngw); }   // 这次提交做完时有东西要写回游戏内存（事件、计数器报告、遮挡结果、GPU 写的缓冲）
     rc_commit(f);
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, sub_done, s, &err))) red("提交失败：%s", err.why);
     pf_add(RP_PERF_COMMIT_NS, now_ns() - t0); pf_add(RP_PERF_SUBS, 1);
@@ -211,6 +280,29 @@ uint64_t nvn_be_sub_commit(void) {
 }
 
 uint64_t nvn_be_last_fence(void) { return g_fence; }
+uint64_t rp_sub_fence(void) { return g_fence + SUB_STEP; }   // 正在回放的这次提交最后一段的栅栏值（它中途先交的段取的值都比这个小）
+int rp_fence_done(uint64_t f) { return __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE) >= f; }
+// 游戏调 QueueFinish 时要等到哪个栅栏值（前端在提交锁里取值，出了锁再等）。
+// 真机上 Finish 等的是「显卡把已提交的都做完」。游戏能观察到的只有两样：做完时写回它内存的东西，和它之后再提交的活排在后面。
+// 有的游戏每帧呈现前都调一次：回放完一帧之后在这里再等显卡把这一帧做完，显卡这一帧的活和下一帧的回放完全串着。
+// 开关 nvk_finish_lag（缺省 1；0 = 照旧等到最后一次提交）：
+//   缺省开的依据：一款每帧都调 Finish 的 3D 游戏真机同局对照，稳定场景 28.2 → 29.2–29.6 帧，画面一致、别的回写一样不少；
+//   项目定的顺序是先把目标帧率做到、再压能耗。哪一款因为时间戳晚一帧出问题，用这个开关关掉来确认。
+//   1 = 只等到「上一次 Finish 时的最后一次提交」和「最近一次有东西要写回的提交」里靠后的那个，显卡上最多压着一帧的活，
+//       下一帧的回放与这一帧的显卡工作重叠。「有东西要写回」不算时间戳报告：它是测量值，游戏 Finish 之后读到的是上一帧的时间戳
+//       （用它调动态分辨率的游戏晚一帧得到反馈）；事件、遮挡结果、别的计数器、显卡写的缓冲照等，一样不少；
+//   2 = 诊断档：什么回写都不等。回写照常在提交做完时落地，游戏最多晚一帧看到。只用来量上限，不是产品行为。
+// 配套在 rp_buf.c：每次这样放行一帧，池镜像换到另一份（rp_buf_frame_flip），这一帧直接写的那份显卡已经不读了。
+void rp_buf_frame_flip(void);
+uint64_t nvn_be_finish_publish(void) {
+    uint64_t last = g_fence; int lag = nvn_plat_flag("nvk_finish_lag", 1);
+    if (!lag) { g_finish_prev = last; return last; }
+    uint64_t t = lag == 2 || g_finish_prev > g_effect_fence ? g_finish_prev : g_effect_fence;
+    g_finish_prev = last;
+    if (t < last) { rp_buf_frame_flip(); pf_add(RP_PERF_FIN_SKIP, (last - t) / SUB_STEP); }   // 有提交没等：它可能还在读当前这份镜像
+    return t;
+}
+void nvn_be_finish_wait(uint64_t fence) { if (fence) nvn_be_wait(fence, 5000000000ull); }
 
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
@@ -221,21 +313,44 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     return nvn_gpu_ok(r) || r.code == NVN_GPU_E_FAILED || r.code == NVN_GPU_E_DEVICE;
 }
 
+static uint64_t g_fx_types;
+uint64_t rp_fx_report_types(void) { return __atomic_exchange_n(&g_fx_types, 0, __ATOMIC_RELAXED); }
 static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     struct sub *s = g_sub; if (!s || !val) return;
-    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){val, mode, v, 0, 0};
+    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
+    s->p[s->n++] = (struct post){val, mode, v, 0, 0}; s->nfx++; pf_add(RP_PERF_FX_EVENT, 1);
 }
-void rp_post_gpu_write(uint64_t addr, uint64_t len) {
-    struct sub *s = g_sub; if (!s) return;
-    uint64_t key = 0, id = rp_buf_gpu_write_note(addr, len, &key); if (!id) return;
-    if (s->ngw == s->gwcap) { int cap = s->gwcap ? s->gwcap * 2 : 4; struct gw_ev *n = realloc(s->gw, (size_t)cap * sizeof *n); if (!n) { rp_buf_gpu_write_land(key, id, 0); return; } s->gw = n; s->gwcap = cap; }
-    s->gw[s->ngw++] = (struct gw_ev){key, id};
+// 一笔读回可有多行与多个层：先全登记，再交给后端；失败撤销本笔全部登记。
+// 仅登记真正写到的行，不把行间 / 片间填充覆盖回游戏内存。
+int rp_post_gpu_write_rows(uint64_t addr, uint64_t bytes, uint64_t row, uint64_t image, uint32_t rows, uint32_t images) {
+    struct sub *s = g_sub; uint64_t count = (uint64_t)rows * images;
+    if (!s || !bytes || !count || count > (uint64_t)(INT_MAX - s->ngw)) return 0;
+    int start = s->ngw, need = start + (int)count;
+    if (need > s->gwcap) {
+        int cap = s->gwcap ? s->gwcap : 4;
+        while (cap < need && cap <= INT_MAX / 2) cap *= 2;
+        if (cap < need) cap = need;
+        if ((size_t)cap > SIZE_MAX / sizeof *s->gw) return 0;
+        struct gw_ev *n = realloc(s->gw, (size_t)cap * sizeof *n);
+        if (!n) return 0;
+        s->gw = n; s->gwcap = cap;
+    }
+    for (uint32_t z = 0; z < images; z++) for (uint32_t y = 0; y < rows; y++) {
+        uint64_t key = 0, id = rp_buf_gpu_write_note(addr + (uint64_t)z * image + (uint64_t)y * row, bytes, &key);
+        if (!id) {
+            while (s->ngw > start) { struct gw_ev v = s->gw[--s->ngw]; rp_buf_gpu_write_land(v.pool_key, v.id, 0); }
+            return 0;
+        }
+        s->gw[s->ngw++] = (struct gw_ev){key, id};
+    }
+    return 1;
 }
+int rp_post_gpu_write(uint64_t addr, uint64_t len) { return rp_post_gpu_write_rows(addr, len, len, len, 1, 1); }
+
 static void post_report(uint64_t addr, uint32_t type) {
     struct sub *s = g_sub; if (!s || !addr) return;
-    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) return; s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){NULL, 0, 0, addr, type};
+    if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
+    s->p[s->n++] = (struct post){NULL, 0, 0, addr, type}; if (type != NVN_COUNTER_TYPE_TIMESTAMP && type != NVN_COUNTER_TYPE_TIMESTAMP_TOP) s->nfx++; pf_add(RP_PERF_FX_REPORT, 1); __atomic_fetch_or(&g_fx_types, 1ull << (type & 63), __ATOMIC_RELAXED);
 }
 
 void nvn_be_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }     // 存储前瞻索引：通道规划接上时再建
@@ -271,16 +386,26 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_RENDER_COND: rc_cond(a); break;
             case OP_DRAW: { if (g_rc_skip) break; p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); break; }
             case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); break; }
-            case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); break; }
+            case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); sub_split(); break; }
             case OP_CLEAR_COLOR: if (!g_rc_skip) rp_pass_clear_color(g_cmd, a, p); break;
             case OP_CLEAR_DS: if (!g_rc_skip) rp_pass_clear_ds(g_cmd, a, p); break;
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); rp_pass_barrier((uint32_t)bits); break; }
+            case OP_COPY_T2B: rp_pass_flush(g_cmd); rp_op_copy_t2b(g_cmd, a, p); break;
+            case OP_CLEAR_TEX: rp_pass_flush(g_cmd); rp_op_clear_tex(g_cmd, a, p); break;
             case OP_COPY_B2T: rp_pass_flush(g_cmd); rp_op_copy_b2t(g_cmd, a, p); break;   // 传输在通道外
             case OP_COPY_T2T: rp_pass_flush(g_cmd); rp_op_copy_t2t(g_cmd, a, p); break;   // 先落地待折清除：拷贝可能读写那些目标
             case OP_UPDATE_UB: rp_op_update_ub(a, p); break;
             case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
             case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
-            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + 2); break; }   // 本次提交主段的栅栏值
+            case OP_WAIT_SYNC: {
+                const sync_t *s; void *ev; uint64_t v;
+                memcpy(&s, a, sizeof s);
+                if (!s || !sync_published(s, NULL)) nvn_unimpl("sync", "wait_sync_unpublished", p);
+                else if (sync_ext(s, &ev, &v)) nvn_unimpl("sync", "wait_sync_external", p);
+                // 已发布的 NVN 栅栏在同一后端队列上，之前的工作按提交顺序执行；无需 CPU 等待。
+                break;
+            }
+            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) sync_publish(s, g_fence + SUB_STEP); break; }   // 本次提交主段的栅栏值
             case OP_DISPATCH: {
                 const p_dispatch *dp = a; static int said;   // 调试开关 nvk_drawlog：头几次把它的输入列出来
                 if (said < 6 && nvn_plat_flag("nvk_drawlog", 0)) { said++; char b[700]; int o = snprintf(b, sizeof b, "计算派发 %dx%dx%d 间接 %#llx 着色器键 %02x%02x%02x%02x 有效 %d；", dp->x, dp->y, dp->z, (unsigned long long)dp->ind,

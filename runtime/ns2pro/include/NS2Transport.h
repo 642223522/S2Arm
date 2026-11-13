@@ -46,11 +46,61 @@ int ns2_link_failure_stops_scan(ns2_kind failed);
 // 对外输出形态（纯函数）：两条链路都在出输入且一左一右 → 一对；否则取在出输入的那条的型号；都没有 → NONE。
 //   与 NS2Transport.m 的 pair_locked / 单只横握判断同一条规则，宿主据此显示型号、选手柄样式（#520）
 ns2_kind ns2_output_kind(ns2_kind a, int a_present, ns2_kind b, int b_present);
+// 连上就别自己断（NS2Keep.c）：没有应答也能往下走的握手步骤、校准缺省值、输入长度、应答匹配、震动能不能写、保活节奏
+enum { NS2_CAL_DEFAULT_CENTER = 2048, NS2_CAL_DEFAULT_TRAVEL = 1200, NS2_INPUT_MIN = 63, NS2_INPUT_MAX = 80 };
+#define NS2_KEEPALIVE_NS (3ull * 1000000000ull)
+// 握手第 step 步没有应答时是否只能断开：只有功能位设定 / 开启（第 4、6 步）；其余步骤跳过、记日志
+int ns2_step_required(unsigned step);
+int ns2_calibration_valid(const unsigned center[2], const unsigned above[2], const unsigned below[2]);
+void ns2_calibration_default(unsigned center[2], unsigned above[2], unsigned below[2]);
+// 输入通知（report05 / report09）的合理长度；更长的是同一特征上的音频包，更短的解不出来，都跳过不断开
+int ns2_input_length_ok(size_t length);
+// 应答属于这条指令：指令号与子指令号相同。ns2_ack_usual：方向 / 传输 / 第 5 字节是常见值（不是也照收，只记日志）
+int ns2_ack_matches(const uint8_t *reply, size_t length, const uint8_t *request, size_t request_length);
+int ns2_ack_usual(const uint8_t *reply, size_t length);
+// 震动特征在、单次写入放得下 42 字节的震动包才写震动；否则这只手柄不震，输入照常
+int ns2_rumble_writable(int has_characteristic, size_t max_write);
+// 上次写入之后过了 NS2_KEEPALIVE_NS：写一次玩家灯，免得主机长时间不写入时手柄自己断开
+int ns2_keepalive_due(uint64_t last_write_ns, uint64_t now_ns);
 // 当前对外输出形态（线程安全，读传输层两条链路的现状）
 ns2_kind ns2_get_output_kind(void);
+// 主机绑定（「记住这台设备」，NS2Bond.c；协议依据见该文件开头）：
+//   广播里手柄要唤醒的主机：PAIRING = 长按 SYNC 的配对广播（主机全 0）、US = 唤醒 our_host、OTHER = 唤醒别的主机、UNKNOWN = 厂商数据不够 18 字节或不是认得出的手柄型号
+typedef enum { NS2_WAKE_UNKNOWN, NS2_WAKE_PAIRING, NS2_WAKE_US, NS2_WAKE_OTHER } ns2_wake;
+ns2_wake ns2_advert_wake(const uint8_t *manufacturer, size_t length, const uint8_t *our_host);
+enum { NS2_BOND_STEPS = 4, NS2_BOND_COMMAND_MAX = 25 };
+//   第 step（0..3）条绑定指令：01 主机地址、04 钥匙一、02 钥匙二、03 结束；返回帧长，参数不对返回 0
+size_t ns2_bond_command(unsigned step, const uint8_t host[6], const uint8_t key1[16], const uint8_t key2[16], uint8_t out[NS2_BOND_COMMAND_MAX]);
+//   是不是绑定指令（0x15）的应答
+int ns2_bond_reply(const uint8_t *reply, size_t length);
+//   "aa:bb:cc:dd:ee:ff" / "aa-bb-…" → 小端 6 字节；格式不对或全 0 返回 0
+int ns2_parse_bt_address(const char *text, uint8_t le[6]);
+// 断线后接回（NS2Bond.c）：用着（握手完成、没失败）的手柄断开就重新挂上不设期限的直连，绑定与否都挂；
+//   挂着等（waits_for_wake 且还没握手、系统没连上）的链路不占位：照样能扫描、能接别的手柄
+int ns2_rearm_after_disconnect(int stream_ready, int session_failed);
+int ns2_link_idle(int waits_for_wake, int stream_ready, int connected);
+// 开启绑定：start 之前调；host 是本机蓝牙地址（小端），NULL 关闭。开启后：
+//   - 配对广播（长按 SYNC）连上的手柄，握手后写入绑定（失败只记日志，连接照常可用）；
+//   - 绑定过的手柄直连不设期限、断开后自动重新等待，玩家按任一键即可连上。
+void ns2_set_bond_host(const uint8_t *host);
 // 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
 // Copy the latest motion sample, clearing it after 250 ms or disconnection without accessing hardware.
 void ns2_get_motion(ns2_motion *out);
+// Joy-Con 2 左右拼成一对时左只的六轴（ns2_get_motion 给的是右只的）；不在拼对 / 没开 / 过期时全 0
+void ns2_get_motion_left(ns2_motion *out);
+// Joy-Con 2 光学鼠标（report05 0x10–0x17，功能位 0x10）：x / y 是绝对坐标（16 位、会回绕，用的一方自己求差），
+//   surface 未知含义（研究资料写「表面质量？」），distance = 离开桌面的距离（0x17 一个字节，0 = 贴在桌面上）。kind 是读数来自哪一只（左 / 右）
+typedef struct {
+    uint8_t known;
+    ns2_kind kind;
+    int16_t x, y;
+    uint16_t surface, distance;
+    uint64_t host_timestamp_us;
+} ns2_mouse;
+// https://github.com/ndeadly/switch2_controller_research/blob/master/hid_reports.md#input-report-0x05
+int ns2_decode_report05_mouse(const uint8_t *bytes, size_t length, ns2_mouse *out);
+// 指定一侧（0 左、1 右，拼成一对时两只各一份）最近一笔 Joy-Con 2 鼠标读数；Pro / 断开 / 那一侧没有 / 超过 250 毫秒没更新 → 全 0
+void ns2_get_mouse_side(int side, ns2_mouse *out);
 typedef struct {
     uint8_t connected, ready;
     uint8_t battery_known;

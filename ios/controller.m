@@ -511,7 +511,8 @@ static void pad_face_sync(void) {
         if (previous == self->_adapterEnabled) return;
         if (self->_adapterEnabled) [self reloadRecord];
         [self selectSystem];
-        if (self->_adapterEnabled && !self->_hasSystem && self->_bleWanted) [self resumeBLE];
+        // 玩家刚打开适配（设置页或齿轮菜单）：直接开始连接，不用再点一次连接按钮；记得手柄就直连它，否则扫描配对广播
+        if (self->_adapterEnabled && !self->_hasSystem) { if (self->_bleWanted) [self resumeBLE]; else [self startBLE]; }
         [self updateVisibility];
     });
 }
@@ -632,7 +633,7 @@ static void pad_face_sync(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             S2AController *inner = weakSelf;
             if (!inner) return;
-            inner->_hasSystem = hasSystem;
+            [inner systemPresence:hasSystem];
             [inner updateVisibility];
         });
     });
@@ -684,9 +685,19 @@ static void pad_face_sync(void) {
         [self selectSystemLocked:foreground mayClear:NO];
         hasSystem = self->_system != nil;
     });
-    _hasSystem = hasSystem;
+    [self systemPresence:hasSystem];
     if (_foreground && _hasSystem) [self stopBLE:"system controller selected"];
     [self updateVisibility];
+}
+// 系统手柄在不在（主线程）：系统手柄接入时 NS2 链路会停（selectSystem），它走了以后原来连着的 NS2 手柄要自己接回来——
+//   以前只有切前后台才会再连，玩家拔掉 / 关掉系统手柄后 NS2 手柄一直不出输入
+- (void)systemPresence:(BOOL)hasSystem {
+    BOOL resume = s2a_ble_resume_after_system(_hasSystem, hasSystem, _foreground, _adapterEnabled, _bleWanted, _bleStarted);
+    _hasSystem = hasSystem;
+    if (resume) {
+        LOG("NS2 Pro：系统手柄已断开，重新连接记住的 NS2 手柄");
+        [self resumeBLE];
+    }
 }
 // 诊断（#456）：列出 GameController 枚举到的全部设备与 profile。只有带 extendedGamepad 的才会被选成系统手柄并打「接入」，
 //   第三方手柄的 Switch 模式若被枚举成只有 micro / 没有标准 profile，或根本没被枚举，原先日志里一片空白，分不清卡在系统层还是 App 层
@@ -794,6 +805,7 @@ static void log_controllers(int why) {   // why：0 启动时、1 连接通知�
     [self updateVisibility];
 }
 - (void)setForeground:(BOOL)foreground {
+    S2A_MAIN_ONLY("-[S2AController setForeground:]");
     if (_foreground == foreground) { if (foreground) [self settingsChanged:nil]; return; }
     _foreground = foreground;
     pthread_mutex_lock(&g_feedback_mu);
@@ -865,7 +877,15 @@ void s2a_controller_attach(UIView *root, void (^touchEnabled)(BOOL)) {
     watch.cancelsTouchesInView = NO; watch.delaysTouchesBegan = NO; watch.delaysTouchesEnded = NO;
     [root addGestureRecognizer:watch];
 }
-void s2a_controller_set_foreground(int foreground) { [g_controller setForeground:foreground != 0]; }
+// 前后台切换会改手柄 / 虚拟手柄的 UIKit 状态（selectSystem → updateVisibility、S2AVPadView setInputEnabled → clearTouches），只许在主线程做。
+//   v0.3.0 起挂起 / 恢复在串行队列 s2a.ios-lifecycle 上跑（app.m s2a_ios_suspend），从那里直接调会在 UIImageView setHidden 处触发 UIKit 主线程断言、
+//   整个 App 被系统中止（11-11 真机：局中一失焦就崩，崩溃报告 EXC_BREAKPOINT，队列 s2a.ios-lifecycle）。不在主线程就排到主队列：
+//   用 async 不用 sync——调用方可能正持着主线程要等的东西；主队列先进先出，前后台的先后顺序不变
+void s2a_controller_set_foreground(int foreground) {
+    BOOL fg = foreground != 0;
+    if (NSThread.isMainThread) { [g_controller setForeground:fg]; return; }
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_controller setForeground:fg]; });
+}
 
 // 多手柄槽位（服务层 InputPump 按符号查，协议同 macos/front_mac.m）：count = 占到的最高槽位 + 1；
 //   read_pad 读槽 1–3。槽 0（玩家 1）服务层走 s2a_pad_read_ex，这里不代读——那次读会清掉 pad.c 的短按锁存，回零

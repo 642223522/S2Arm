@@ -168,6 +168,18 @@ class SaveTests(unittest.TestCase):
             self.assertNotIn("payload/system/prod.keys", z.namelist())
         self.assertFalse(list((self.directory / "library/save-transactions").glob("*.json")))
 
+    def test_scan_skips_os_junk_files(self):
+        """exFAT / FAT 上 macOS 给每个带扩展属性的文件生成 ._<名>（AppleDouble），访达写 .DS_Store：不是存档。
+        期望按构造写死：只剩 a.bin 与 sub/b.bin 两个文件、sub 一个目录；修前 ._a.bin、.DS_Store、sub/._b.bin 也进了备份清单"""
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t) / "saves"; (root / "sub").mkdir(parents=True)
+            (root / "a.bin").write_bytes(b"a"); (root / "sub" / "b.bin").write_bytes(b"b")
+            (root / "._a.bin").write_bytes(b"\x00\x05\x16\x07\x00\x02\x00\x00\x09\x00"); (root / ".DS_Store").write_bytes(b"Bud1"); (root / "sub" / "._b.bin").write_bytes(b"\x00\x05")
+            files, dirs = saves.scan(SimpleNamespace(check=lambda: None), root)
+            self.assertEqual(list(files), ["a.bin", "sub/b.bin"])
+            self.assertEqual(dirs, ["sub"])
+
     def test_export_manifest_lists_exact_files_without_keys(self):
         self.backup()
         result = self.preview()
@@ -518,6 +530,19 @@ class SaveTests(unittest.TestCase):
         with self.assertRaises(Failure):
             self.backup()
         self.assertEqual(self.archive.read_bytes(), b"existing backup")
+
+    def test_backup_on_drive_without_hard_links(self):
+        # v0.3.1：存档备份放到位用硬链接（不覆盖地落盘）；exFAT / FAT32 建不了硬链接（WinError 1 / EPERM）→ 退回「核没有同名再改名」，
+        #   备份照样落盘、内容完整；已有同名备份时照旧不覆盖
+        def no_links(*a, **k):
+            raise OSError(1, "Incorrect function")
+        with patch.object(saves.os, "link", no_links):
+            self.backup()
+            self.assertTrue(self.archive.is_file() and self.archive.stat().st_size > 0)
+            before = self.archive.read_bytes()
+            with self.assertRaises(Failure):
+                self.backup()
+            self.assertEqual(self.archive.read_bytes(), before)
 
     def test_disk_shortage_and_cancellation_leave_original_intact(self):
         c = self.prepare_restore()
@@ -941,9 +966,20 @@ class ExternalImportTests(unittest.TestCase):
         log.write_text("启动失败，没灌入", encoding="utf-8")
         saves.finish_seed(c, GID, log)
         self.assertEqual(saves.claim_seed(c, GID), pending)   # 没灌成功：留着，下次启动再放
-        log.write_text("S2A 带存档起局：account ← x（2 个文件，15 字节）", encoding="utf-8")
+        # 审计 P1-156：只有「当前用户」行和前一类成功行、后一类挂不上（没有全部完成那句）→ 种子留着
+        log.write_text("S2A 带存档起局：当前用户 0123\nS2A 带存档起局：account ← x（2 个文件，15 字节）\n"
+                       "带存档起局：挂 device 存档失败", encoding="utf-8")
+        saves.finish_seed(c, GID, log)
+        self.assertEqual(saves.claim_seed(c, GID), pending)
+        log.write_text("S2A 带存档起局：account ← x（2 个文件，15 字节）\nS2A 带存档起局完成：1 类全部灌入", encoding="utf-8")
         saves.finish_seed(c, GID, log)
         self.assertIsNone(saves.claim_seed(c, GID))
+
+    def test_seed_done_line_matches_service_layer(self):
+        # 审计 P1-156：作业层删种子认的那句，必须是服务层每类都灌入后才打的那句（一字不差）
+        cs = (Path(__file__).resolve().parents[3] / "services/S2A.Services/Saves.cs").read_text(encoding="utf-8")
+        self.assertIn(f'SeedAllDoneLine = "{saves.SEED_DONE_LINE}"', cs)
+        self.assertNotIn(saves.SEED_DONE_LINE, "S2A 带存档起局：当前用户 0123")
 
     def test_never_played_game_changed_since_preview_is_refused(self):
         import shutil

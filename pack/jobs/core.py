@@ -10,6 +10,7 @@ import datetime
 import errno
 import filelock
 import winproc
+import overall as overall_progress
 import hashlib
 import json
 import os
@@ -128,6 +129,13 @@ def direct_space_recheck(context, counters, now=None):
 
 class Cancelled(Exception):
     pass
+
+
+class Paused(Exception):
+    """作业停在一个要玩家处理的点上（批量出包磁盘满，剃刀 H13）：以独立终态 paused 结束，不算完成也不算失败。result 随终态带回"""
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result or {}
 
 
 def system_encoding():
@@ -550,6 +558,7 @@ class Context:
         self.children = set()
         self.guard = threading.RLock()
         self.last_progress = 0
+        self.overall = overall_progress.Overall()   # 整单进度（每条事件的 overall，只增不减；pack/jobs/overall.py）
         self.last_log = None
         self.frontend_gone = False
         self.recorded = self.operation not in PROBES
@@ -668,6 +677,13 @@ class Context:
                     extra.setdefault("unit", self.job["unit"])
             self.seq += 1
             state = extra.pop("state", self.job["state"])
+            transient = extra.pop("transient", False)   # 只给标准输出、不进事件记录（出包编排转发子作业事件：子作业自己的记录里已有，剃刀 H13）
+            if kind == "plan":
+                self.overall.plan(extra.get("milestones"))
+            overall = self.overall.feed(kind, now - self.t0, getattr(self, "milestone", None), state, self.number, self.count, done, total)
+            if overall is not None:
+                extra["overall"] = overall
+                self.job["overall"] = overall
             event = dict(schema=1, jobId=self.task, taskId=self.task, seq=self.seq,
                          timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(), type=kind,
                          operation=self.operation, gameId=self.r.get("gameId"), stage=self.stage,
@@ -693,7 +709,7 @@ class Context:
             try:
                 # 剃刀 H5：心跳只给标准输出（前端据此知道作业还活着），不落盘；进度追加进事件文件、不 fsync，任务记录最多隔 JOURNAL_PROGRESS_S 重写一次；
                 #   阶段 / 诊断 / 终态等每条都重写任务记录并 fsync（被杀时不丢最后一个阶段，J10）。原先每条事件（含每秒心跳）都整份重写 + 两次 fsync
-                if self.recorded and kind != "heartbeat":
+                if self.recorded and kind != "heartbeat" and not transient:
                     durable = kind != "progress"
                     if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
                         atomic(self.jobpath, self.job)
@@ -763,7 +779,8 @@ class Context:
         if seen is None:
             seen = self._counters = {}
         last, fine = None, None
-        lines = chunk[:end].decode(errors="replace").split("\n")
+        # 行尾 \r\n 也认（协议是 LF；Windows 上用文本模式写的工具会写成 CRLF，末列带 \r 就整行判成不是数字、进度丢掉）
+        lines = [line.rstrip("\r") for line in chunk[:end].decode(errors="replace").split("\n")]
         for line in lines:
             activity.accept(line)
         if final:   # 子进程树已收完时的补读：批次活动必然已结束，只发计数、不再发「还在编」的活动脉冲
@@ -966,6 +983,11 @@ class Context:
         env.pop("DEVELOPER_DIR", None)
         # GUI 不接受继承的通用 J；抽取与直连分别由 cores.sh 的阶段预算决定。
         env.pop("J", None)
+        # 宿主静默崩溃（runtime/src/native.h s2a_crash_quiet）：出包类作业里起的 s2arm-host 都是辅助运行（游戏 GLSLC / Oodle 工具模式、管线归档），
+        #   出错只写日志、按退出码交回，不按信号死、不弹 macOS「意外退出」框（玩家看到系统崩溃框、出包却成功）。起局（launch）是玩家真在玩：
+        #   照旧交给系统；只有启动器按 --control 测试实例起（S2ARM_CONTROL=1）时也静默
+        if getattr(self, "operation", None) != "launch" or os.environ.get("S2ARM_CONTROL") == "1":
+            env["S2A_CRASH_QUIET"] = "1"
         if self.r.get("spaceOverride") is True:   # 玩家点过「仍然继续」：直连阶段开工前的空间复核也只打黄（pack/jobs/space_rule.py）
             env["S2A_SPACE_OVERRIDE"] = "1"
         gid = self.r.get("gameId")
@@ -1247,7 +1269,7 @@ class Context:
 # Everything below only reads the journal the worker already writes, or signals a worker it recorded. The Mac launcher and the CLI reach a job the
 # same way: a task id plus the private root. No daemon, no second state store, and a job that never wrote a terminal event is reported as such
 # instead of being mistaken for a finished one.
-TERMINAL_STATES = ("completed", "failed", "cancelled", "succeeded")
+TERMINAL_STATES = ("completed", "failed", "cancelled", "succeeded", "paused")   # paused：出包编排磁盘满停下（剃刀 H13）
 
 
 def request_path(private, task):

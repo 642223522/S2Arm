@@ -34,6 +34,11 @@ AppUpdatesURL=https://s2arm.com
 VersionInfoVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\S2Arm
 PrivilegesRequired=lowest
+; Inno Setup 6.7 起缺省给 Setup 自己开 Windows 的 RedirectionGuard（不让穿过普通用户建的目录联接 / 符号链接），
+;   PrivilegesRequired=lowest 时会被 [Run] postinstall 拉起的进程继承（官方 whatsnew 写明，Inno 7 才修）：从完成页「现在打开 S2Arm」打开的
+;   启动器和它起的出包作业都带着它，出包走的短路径入口（%LOCALAPPDATA%\S2A\j 下的目录联接）一碰就 WinError 448，每次出 iPhone 包必红。
+;   我们按用户安装、不提权，这个防护防的提权攻击与我们无关；Setup 本来也不给装出来的应用开它，这里只关掉继承的副作用
+RedirectionGuard=no
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
@@ -75,6 +80,7 @@ Source: "btn_cancel.bmp"; Flags: dontcopy
 Source: "check_on.bmp"; Flags: dontcopy
 Source: "check_off.bmp"; Flags: dontcopy
 Source: "bg.bmp"; Flags: dontcopy
+Source: "dir_holders.ps1"; Flags: dontcopy
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
@@ -501,6 +507,71 @@ begin
   { 新页内容 + 新按钮一起画出来。「准备安装」页只是去安装页路上的一站（实机连帧：会先闪出空白页 + 旧按钮），
     不在这里放开；它真停住（要关占用文件的程序等）时由 LockRedraw 的兜底计时器放开 }
   if CurPageID <> wpPreparing then UnlockRedraw;
+end;
+
+{ ---- 开装前关掉在跑的 S2Arm（11-11 维护者覆盖安装：Impactor 一直在跑、文件被占，装到一半弹英文「DeleteFile failed; code 5」；
+  CloseApplications=yes 的重启管理器没把它关掉，删旧 Engine 时 refs 空目录跟着丢了）。可执行文件在安装目录下的进程（S2Arm、Impactor、plumesign……）
+  在真正开始装（含 InstallDelete 删旧目录）之前找出来：问一句、一键关掉（连子进程一起），关不掉就点名、让玩家手动关，不在复制文件时才报错 ---- }
+{ 占着安装目录的进程：调 dir_holders.ps1（只在安装时解到临时目录用，不装进安装目录）。
+  Pids 返回进程号，函数值是给玩家看的名单（每行一个，空 = 没有）。KillPids 非空时先结束这些进程、再查一遍。
+  查不了（PowerShell 起不来）返回空：不挡安装，后面还有 Inno 自己的重启管理器兜底。 }
+function DirHolders(KillPids: String; var Pids: TArrayOfString): String;
+var
+  Script, OutFile, Params, Line: String;
+  Lines: TArrayOfString;
+  I, Tab, Code: Integer;
+begin
+  Result := '';
+  SetArrayLength(Pids, 0);
+  ExtractTemporaryFile('dir_holders.ps1');
+  Script := ExpandConstant('{tmp}\dir_holders.ps1');
+  OutFile := ExpandConstant('{tmp}\dir_holders.tsv');
+  DeleteFile(OutFile);
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + Script + '" -Dir "' + RemoveBackslashUnlessRoot(WizardDirValue) + '" -Out "' + OutFile + '"';
+  if KillPids <> '' then Params := Params + ' -Kill "' + KillPids + '"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code) then exit;
+  if not LoadStringsFromFile(OutFile, Lines) then exit;
+  for I := 0 to GetArrayLength(Lines) - 1 do begin
+    Line := Lines[I];
+    Tab := Pos(#9, Line);
+    if Tab = 0 then continue;
+    SetArrayLength(Pids, GetArrayLength(Pids) + 1);
+    Pids[GetArrayLength(Pids) - 1] := Copy(Line, 1, Tab - 1);
+    Line := Copy(Line, Tab + 1, Length(Line));
+    Tab := Pos(#9, Line);
+    if Tab > 0 then Line := Copy(Line, 1, Tab - 1);
+    Result := Result + '    ' + Line + #13#10;
+  end;
+end;
+
+function JoinPids(Pids: TArrayOfString): String;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 0 to GetArrayLength(Pids) - 1 do begin
+    if Result <> '' then Result := Result + ',';
+    Result := Result + Pids[I];
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Pids: TArrayOfString;
+  Names: String;
+begin
+  Result := '';
+  Names := DirHolders('', Pids);
+  if Names = '' then exit;
+  if SuppressibleMsgBox('S2Arm 还在运行，要先关掉才能安装：' + #13#10#13#10 + Names + #13#10 +
+       '点「确定」帮你关掉它们（正在进行的出包、装到手机会中断），点「取消」退出安装。',
+       mbConfirmation, MB_OKCANCEL, IDOK) <> IDOK then begin
+    Result := '安装已取消：S2Arm 还在运行。关掉 S2Arm（以及 Impactor）后再运行安装程序。';
+    exit;
+  end;
+  Names := DirHolders(JoinPids(Pids), Pids);
+  if Names <> '' then
+    Result := '这些程序没能关掉，请在任务管理器里手动结束后，再运行安装程序：' + #13#10#13#10 + Names;
 end;
 
 procedure DeinitializeSetup;

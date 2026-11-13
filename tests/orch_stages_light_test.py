@@ -76,6 +76,21 @@ class LightTest(unittest.TestCase):
         self.assertIn('【红】编排中止：[Errno 31] 连到系统上的设备没有发挥作用。', err.getvalue())
         self.assertIn('deep_win32_call', err.getvalue())
 
+    def test_seed_cleanup_error_keeps_cause(self):
+        # #669：播种某步失败 → 删半成品时又报 WinError 145（目录不是空的）。原先 145 盖住起因、红字又不在日志最后几行，玩家报告只剩包装层一帧。
+        #   期望手写：日志最后一行是红字，含起因「改名失败」和清理失败的附注；不再是 145 当主错误
+        def commit(self, **kw): raise OSError(13, '改名失败')
+        def abort(self): raise OSError(41, '目录不是空的。')
+        err = io.StringIO()
+        with patch.object(refresh, 'Roots', return_value=self.store), patch.object(roots.Transaction, 'commit', commit), \
+                patch.object(roots.Transaction, 'abort', abort), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = refresh.main(['原创', '--from-extract', str(self.source), '--stages', ''])
+        self.assertEqual(code, 1)
+        last = err.getvalue().strip().splitlines()[-1]
+        self.assertTrue(last.startswith('【红】编排中止：[Errno 13] 改名失败'), last)
+        self.assertIn('随后的清理 abort', last)
+        self.assertIn('目录不是空的', last)
+
     def test_seed_reports_file_progress(self):
         # #361：播种逐文件拷时写「播种 已拷 / 总数」（出包进度协议），不再让进度条停在解包 100% 像卡死。期望手写：源里 exefs 1 个 + romfs 3 个文件 →
         #   总数 4，最后一行已拷 = 4（每秒最多一行，末项必写）
@@ -213,6 +228,31 @@ class LightTest(unittest.TestCase):
         overlay = self.home / 'overlays' / ('原创_' + bytes(16).hex()) / ('ui_w2346_' + tv + '_' + stages.layout_source_identity(self.source / 'romfs'))
         (overlay / 'romfs/Layout').mkdir(parents=True)
         return overlay, tv
+
+    def test_layout_ignores_seed_source_of_another_game(self):
+        # v0.3.0 Windows 玩家实报：seed.txt 记的解包目录指到了别的款（unpack.tsv 程序号不同、里面有同名布局文件）。期望：不拿它当原版，
+        #   改用现行产物根的 romfs（本款原版）——用的覆盖缓存按本款原版的身份找到、覆盖层是本款的；打一行黄字说明
+        (self.source / 'unpack.tsv').write_text('title_id\t0100AAAA00000000\n', encoding='utf-8')
+        (self.source / 'romfs/Layout').mkdir(); (self.source / 'romfs/Layout/one').write_bytes(b'ours one')
+        refresh.seed(self.store, '原创', self.source)
+        other = self.home / 'other-game-extract'; (other / 'romfs/Layout').mkdir(parents=True)
+        (other / 'romfs/Layout/one').write_bytes(b'THEIRS one!'); (other / 'unpack.tsv').write_text('title_id\t01007EF00011E000\n', encoding='utf-8')
+        tx = self.store.begin('原创', self.store.tag('原创', 'wrong-seed'))
+        roots.text(tx.path / 'seed.txt', f'src={other}\n'); tx.commit()
+        current = self.store.cur('原创')
+        generator = stages.REPO / 'graphics/widen/scan/ui_lyt.py'
+        files = ('graphics/widen/scan/ui_lyt.py', 'graphics/widen/scan/yaz0enc.c',
+                 'graphics/nvn/tools/romfs_list.py', 'graphics/tools/nxfmt.py', 'graphics/tools/yaz0dec.c')
+        tv = hashlib.sha256(b''.join((stages.REPO / q).read_bytes() for q in files)).hexdigest()[:12]
+        overlay = self.home / 'overlays' / ('原创_' + bytes(16).hex()) / ('ui_w2346_' + tv + '_' + stages.layout_source_identity(current / 'romfs'))
+        (overlay / 'romfs/Layout').mkdir(parents=True); (overlay / 'romfs/Layout/one').write_bytes(b'widen ours')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            stages.Stages(self.store).execute('原创', 'uilayout')
+        current = self.store.cur('原创')
+        self.assertEqual((current / 'ui_overlay/romfs/Layout/one').read_bytes(), b'widen ours')
+        self.assertEqual((current / 'romfs/Layout/one').read_bytes(), b'ours one')
+        self.assertIn('是另一款 01007EF00011E000 的', err.getvalue())
 
     def test_layout_exact_key_restore_index_invalidation_and_original_unchanged(self):
         layout = self.source / 'romfs/Layout'

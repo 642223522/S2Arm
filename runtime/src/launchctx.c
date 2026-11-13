@@ -2,6 +2,7 @@
 //   各读者（host_main.c / loader.c / vawin.c / ios/settings.m）取冻结后的结构，C# 与其余原生读者经 S2A_GAME_DATA / S2A_DOCS / S2A_RYU_DATA 取。
 #include "native.h"
 #include "s2a_launch_ctx.h"
+#include "s2a_docs.h"   // 多款容器每款资源包根（s2a_pack_root）
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -144,7 +145,9 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", gid);
     if (join(c->images, b, rel) || !is_file(c->images)) { WHY("游戏 %s 的镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
     char hd[S2A_LCTX_PATH]; snprintf(rel, sizeof rel, "games/%s", gid);
-    if (join(hd, home, "Documents") || join(c->docs, hd, rel) || join(c->game_data, c->docs, "资源包") || join(c->ryu_data, c->docs, "S2A/ryujinx")
+    // 资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
+    if (join(hd, home, "Documents") || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data
+        || join(c->ryu_data, c->docs, "S2A/ryujinx")
         || put(c->caps_dir, c->module_dir) || put(c->bundle_dir, b) || put(c->log_dir, hd)) { WHY("HOME 或 App 包目录太长"); memset(c, 0, sizeof *c); return -1; }
     strcpy(c->game_id, gid);
     c->source = S2A_LCTX_CONTAINER;
@@ -195,20 +198,23 @@ const char *s2a_launch_ctx_error(void) { return s2a_launch_ctx_get() ? NULL : g_
 int s2a_launch_ctx_container(void) { pthread_once(&g_once, decide); return g_container; }
 const char *s2a_launch_ctx_bundle_dir(void) { pthread_once(&g_once, decide); return g_bundle; }
 
+static int g_sel_kind;   // 上一次 s2a_launch_ctx_select 被拒的类别（S2A_SELECT_*）：库界面按它给玩家说人话，原文只进日志
+int s2a_launch_ctx_select_kind(void) { return g_sel_kind; }
 const char *s2a_launch_ctx_select(const char *gid) {
     static char why[700];
     pthread_once(&g_once, decide);
+    g_sel_kind = S2A_SELECT_OTHER;
     if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json 与 Games/，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
     pthread_mutex_lock(&g_sel_mu);
     const char *r = NULL;
     if (g_selected) { snprintf(why, sizeof why, "本进程已经选过游戏 %s，同一进程不再起第二款：请关掉 App 重新打开", g_ctx.game_id); r = why; goto out; }
     s2a_launch_ctx c; char w[600];
-    if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w)) { snprintf(why, sizeof why, "%s", w); r = why; goto out; }
+    if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w)) { snprintf(why, sizeof why, "%s", w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好
     for (char *q = c.docs + 1; ; q++) {
         if (*q && *q != '/') continue;
         char k = *q; *q = 0; int bad = mkdir(c.docs, 0755) && errno != EEXIST; *q = k;
-        if (bad) { snprintf(why, sizeof why, "建不了游戏 %s 的文档根 %s（errno %d）", c.game_id, c.docs, errno); r = why; goto out; }
+        if (bad) { snprintf(why, sizeof why, "建不了游戏 %s 的文档根 %s（errno %d）", c.game_id, c.docs, errno); g_sel_kind = S2A_SELECT_STORAGE; r = why; goto out; }
         if (!k) break;
     }
     g_ctx = c;

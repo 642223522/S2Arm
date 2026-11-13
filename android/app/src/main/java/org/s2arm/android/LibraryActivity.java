@@ -39,6 +39,10 @@ public final class LibraryActivity extends Activity {
                 display.edit().putBoolean("fps", checked).apply();
         });
         rows.addView(fpsOverlay);
+        // #528 item 15: works without any game; the bundle goes to whatever app the player picks.
+        Button exportButton = new Button(this); exportButton.setText(R.string.export_diagnostics);
+        exportButton.setOnClickListener(v -> exportDiagnostics(exportButton));
+        rows.addView(exportButton);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this); scroll.addView(rows); setContentView(scroll);
         library = new GameLibrary(getApplicationContext(), new GameLibrary.Listener() {
             @Override public void onStatus(String text) { runOnUiThread(() -> { if (!isDestroyed()) status.setText(text); }); }
@@ -62,6 +66,37 @@ public final class LibraryActivity extends Activity {
             status.setTextColor(0xFFFF5252);
             status.setText("Game launch refused: " + error.getMessage());
         }
+    }
+
+    private void exportDiagnostics(Button button) {
+        button.setEnabled(false);
+        status.setText(R.string.export_diagnostics_running);
+        android.content.Context app = getApplicationContext();
+        new Thread(() -> {
+            java.nio.file.Path bundle = null;
+            String error = null;
+            try {
+                bundle = DiagnosticExport.run(app);
+            } catch (java.io.IOException | RuntimeException e) {
+                error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            }
+            java.nio.file.Path done = bundle;
+            String failure = error;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                button.setEnabled(true);
+                if (done == null) {
+                    status.setText(getString(R.string.export_diagnostics_failed, failure));
+                    return;
+                }
+                android.net.Uri uri = DiagnosticShareProvider.uri(this, done);
+                Intent send = new Intent(Intent.ACTION_SEND).setType("application/zip")
+                    .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                send.setClipData(android.content.ClipData.newRawUri(done.getFileName().toString(), uri));
+                status.setText(getString(R.string.export_diagnostics_done, done.getFileName().toString()));
+                startActivity(Intent.createChooser(send, getString(R.string.export_diagnostics)));
+            });
+        }, "s2a-diag-export").start();
     }
 
     @Override protected void onResume() {

@@ -33,7 +33,7 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           # 根 .gitignore（11-02 beta.3 走查）：出包会在快照副本里编出 bin/ obj/，没有忽略规则时 pack/ipa.sh「构建相关目录有未提交改动」
           #   把这些编译产物当成改动、拒绝出包——玩家导出 iPhone 版必死在最后一步
           ".gitignore",
-          # 启动器公告条的随包兜底（pack/jobs/updater.py notice：官方下载页上的同一份取不到时用它）
+          # 启动器公告的随包兜底（pack/jobs/updater.py inbox：官方下载页上的同一份取不到时用它）
           "docs/site/notice.json"]
 
 
@@ -48,6 +48,12 @@ def include_source(relative):
         return True
     return not any(p in ("test", "tests", "androidTest", "testFixtures") or p.endswith("-tests")
                    for p in directories)
+
+
+def snapshot_files(root=ROOT):
+    """引擎快照收的文件（仓库相对路径，排好序）：INPUTS 下 git 跟踪 / 未忽略的文件，去掉 include_source 排除的测试树。bundle 与单测共用"""
+    names = subprocess.check_output(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z", "--", *INPUTS]).split(b"\0")
+    return [Path(os.fsdecode(n)) for n in sorted(set(names) - {b""}) if include_source(Path(os.fsdecode(n)))]
 
 
 def source_fingerprint(root):
@@ -158,11 +164,7 @@ def bundle(destination, developer_dir):
     c.run(["clang", "-ffile-prefix-map=%s=." % ROOT, "-fobjc-arc", "-O1", ROOT / "graphics/tools/shbake/gpu_arch.m", "-o", prepare / "gpu_arch",
            "-framework", "Metal", "-framework", "Foundation"], c.logs / "gpu-arch.log")
     destination.mkdir(parents=True)
-    names = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-co", "--exclude-standard", "-z", "--", *INPUTS]).split(b"\0")
-    for name in sorted(set(names) - {b""}):
-        relative = Path(os.fsdecode(name))
-        if not include_source(relative):
-            continue
+    for relative in snapshot_files():
         source = ROOT / relative
         if source.is_symlink():
             raise RuntimeError("Engine source symlinks must be resolved explicitly: " + str(relative))

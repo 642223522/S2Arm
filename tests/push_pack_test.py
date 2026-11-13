@@ -1,7 +1,8 @@
 """推资源包（tools/push_pack.py，Mac / Windows 共用，11-06 两端合一）：假设备（内存里的 App 容器）上核口径。期望按文件头规则手写，不跑被测实现推导。
 Mac 的整条 dev_run 推包回归（假 devicectl）在 tests/dev_run_test.sh，本文件只核规则本身与 Windows 那支（原 tests/oneclick_win_test.py 推包几组搬来）"""
-import hashlib, json, os, struct, sys, tempfile, unittest
+import hashlib, json, os, struct, sys, tempfile, time, unittest
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import push_pack as push
 
@@ -14,7 +15,7 @@ def sha(b): return hashlib.sha256(b).hexdigest()
 
 class Fake:
     """内存里的 App 容器：get / put / ls / tar_ok / put_tar / listing / free / nospc 同 push.Devpush 接口"""
-    kind = "fake"; why = "假设备"; docs = "Documents"; ctx = None
+    kind = "fake"; why = "假设备"; docs = "Documents"; ctx = None; pack = None
 
     def __init__(self, files, listing=False, full_disk=False):
         self.files = dict(files); self.puts = []; self.lists = []; self.list_ok = listing; self.full_disk = full_disk
@@ -157,6 +158,19 @@ class Apply(Base):
     def test_nothing_pushed_already_applied_skips(self):
         self.assertFalse(self.ap({f"{RP}/.applied": self.WANT}, 0, True)); self.assertFalse(hasattr(self.dev, "launches"))
 
+    def test_partial_line_is_needs_player_not_failure(self):
+        # v0.3.1 缺件照玩：手机解开了、只缺非核心文件，写「缺 N 个非必需文件 …部分可玩 = <本包>」（不写 .applied）→ 当场报「还差最后一步：还缺 N 个文件」，
+        #   是 NeedsPlayer（装机按传输成功 + 提醒收尾），不等 180 秒、不报失败
+        self.dev = Fake({}); clock = [0.0]
+        def done(d):
+            d.files["Documents/unpack.log"] = f"11-12 解开 1 个包 1 个文件 0 MB，缺 2 个非必需文件（例：romfs/b.bin（不在）），部分可玩 = {self.WANT}（0.1 秒）\n"
+        self.dev.on_launch = done
+        def sleep(x): clock[0] += x
+        with self.assertRaises(push.NeedsPlayer) as e:
+            push.apply(self.dev, self.pk, self.w, 1, say=self.log.append, sleep=sleep, now=lambda: clock[0])
+        self.assertIn("还缺 2 个文件", str(e.exception)); self.assertIn("资源包已传完，还差最后一步", str(e.exception))
+        self.assertLess(clock[0], 30)   # 当场报，不等停住
+
     def test_pushed_waits_for_new_done_line(self):
         self.assertTrue(self.ap({}, 1, True)); self.assertEqual(self.dev.launches, [{"S2A_PACK_APPLY_ONLY": "1"}])
 
@@ -258,6 +272,8 @@ See 'devicectl device process launch --help' for more information.
         old = {f"{RP}/.applied": self.WANT, "Documents/unpack.log": f"10-01 解开 3 个包 9 个文件 1 MB，.applied = {self.WANT}（0.2 秒）\n"}
         with self.assertRaises(push.Fail) as e: self.ap(old, 1, False)
         self.assertIn("起 App 后 180 秒机上解包没有开始", str(e.exception)); self.assertEqual(len(self.dev.launches), 1)
+        # 装机原则（11-11）：解包停住 = 资源已全在手机上，报 NeedsPlayer（装机按「传输成功 + 提醒打开 App 接着装」收尾），不是装机失败
+        self.assertIsInstance(e.exception, push.NeedsPlayer); self.assertIn("资源包已传完，还差最后一步", str(e.exception))
 
     def test_device_failure_reported_at_once_with_its_reason(self):
         # App 起来解开、第一包前就失败（#569：目录 App 写不进）：解包日志新增「解包失败：…」→ 当场按原因报，不再等 180 秒后说「没有开始」。期望手写
@@ -322,17 +338,60 @@ class ContainerDocs(Base):
         self.assertTrue(push.apply(self.dev, self.pk, self.w, nb, say=self.log.append, sleep=sleep, now=lambda: clock[0]))
         self.assertEqual(self.dev.launches, [{}])   # 多款容器：正常拉起到游戏库，由库解开（不用只解包模式、不直接起某一款）
 
+    def test_pack_root_separate_from_docs(self):
+        """11-11 资源包挪出 Documents：--pack-root 给了 → 探针、待解批、记账、索引、清单、.applied 都在资源包根下；解包日志仍读 <文档根>/unpack.log"""
+        P = "Library/Application Support/S2Arm/games/0100000000010000/资源包"
+        self.dev = Fake({f"{self.D}/资源包/manifest.json": '{"version": 2}', f"{self.D}/资源包/index.applied.tsv": self.row("a") + self.row("b")})   # 旧位置的账不算（调用方选了新位置）
+        self.dev.docs, self.dev.ctx, self.dev.pack = self.D, self.CTX, P
+        nb, nt, _ = push.run(self.dev, self.pk, self.w, False, say=self.log.append)
+        self.assertEqual((nb, nt), (1, 2))
+        self.assertEqual(self.dev.puts[:3], [f"{P}/{push.PROBE}", f"{P}/.transfer", f"{P}/manifest.json"])
+        self.assertTrue(self.dev.puts[3].startswith(f"{P}/.incoming/") and self.dev.puts[3].endswith("_000.tar"), self.dev.puts[3])
+        self.assertEqual(self.dev.puts[4:], [f"{P}/.pushed", f"{P}/index.tsv", f"{P}/manifest.json"])
+        def done(d):
+            d.files[f"{P}/.applied"] = "x"; d.files[f"{self.D}/unpack.log"] = "11-07 解开 1 个包 2 个文件 0 MB，.applied = x（0.1 秒）\n"
+        self.dev.on_launch = done; clock = [0.0]
+        def sleep(x): clock[0] += x
+        self.assertTrue(push.apply(self.dev, self.pk, self.w, nb, say=self.log.append, sleep=sleep, now=lambda: clock[0]))
+
+    def test_windows_install_writes_new_location(self):
+        """Windows 装机推包（pack/orch/install_win.push_pack，install.py 把 pick_pack_root 选的根作 pack_root 传进来）：走真的 push.device 的 s2a-devpush 那支
+        （Windows 没有 devicectl），只把底层读写换成内存容器 → 探针、待解批、记账、索引、清单都写进 Library 新位置，Documents 下本款资源包一个不写"""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pack/orch"))
+        import install_win
+        P = "Library/Application Support/S2Arm/games/0100000000010000/资源包"
+        exe = self.w / "s2a-devpush"; exe.write_text(""); exe.chmod(0o755)   # 工具在（不会被真调用：读写换成内存容器）
+        mem, made, real = Fake({}), [], push.device
+        def device(*a, **k):
+            d = real(*a, **k); made.append(d)
+            for m in ("get", "put", "ls", "tar_ok", "put_tar", "listing", "free", "nospc", "rm"):
+                if hasattr(mem, m): setattr(d, m, getattr(mem, m))
+            return d
+        push.device = device
+        try:
+            nt, _ = install_win.push_pack("U1", "s2arm.T.games", str(self.pk), devpush=str(exe), say=self.log.append, docs=self.D, ctx=self.CTX, pack_root=P)
+        finally:
+            push.device = real
+        self.assertEqual(nt, 2)
+        self.assertIsInstance(made[0], push.Devpush)   # Windows 那支：s2a-devpush，不是 devicectl
+        self.assertEqual((made[0].docs, made[0].pack), (self.D, P))
+        self.assertTrue(mem.puts and all(r.startswith(P + "/") for r in mem.puts), mem.puts)
+        self.assertIn(f"{P}/manifest.json", mem.files); self.assertIn(f"{P}/index.tsv", mem.files)
+        self.assertFalse([r for r in mem.files if r.startswith(f"{self.D}/资源包")])
+
     def test_device_factory_carries_docs(self):
         d = push.device("C891", "s2arm.z.games", self.w, via="devicectl", env={}, docs=self.D, ctx=self.CTX)
-        self.assertEqual((d.docs, d.ctx), (self.D, self.CTX))
+        self.assertEqual((d.docs, d.ctx, push.rp(d)), (self.D, self.CTX, f"{self.D}/资源包"))   # 没给资源包根：按文档根推
+        d = push.device("C891", "s2arm.z.games", self.w, via="devicectl", env={}, docs=self.D, ctx=self.CTX, pack="Library/Application Support/S2Arm/games/0100000000010000/资源包")
+        self.assertEqual(push.rp(d), "Library/Application Support/S2Arm/games/0100000000010000/资源包")
         d = push.device("C891", "s2arm.z.0100000000010000", self.w, via="devicectl", env={})
-        self.assertEqual((d.docs, d.ctx), ("Documents", None))   # 单款缺省不变
+        self.assertEqual((d.docs, d.ctx, push.rp(d)), ("Documents", None, "Documents/资源包"))   # 单款缺省不变
 
 
 class BigFallback(unittest.TestCase):
     """#641：流式写失败后，大于上限的文件不交给 devicectl 整份拷（CoreDeviceService 会把整个文件读进内存、拖垮整机）；小文件照旧退回"""
-    def run_put_big(self, size, cap):
-        with tempfile.TemporaryDirectory() as t:
+    def run_put_big(self, size, cap, mem=0):
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(push, "avail_mem", lambda: mem):
             src = Path(t) / "game.img"; src.write_bytes(b"\0" * size)
             d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": str(cap)})
             class Stream:
@@ -359,6 +418,74 @@ class BigFallback(unittest.TestCase):
     def test_default_cap_is_two_gib(self):
         self.assertEqual(push.DC_FALLBACK_MAX, 2 << 30)
 
+    def test_fits_in_half_of_free_memory_falls_back(self):
+        # 11-12：上限按「固定上限与本机可用内存一半取大」——4096 字节的文件，固定上限 1024、可用内存 10000（一半 5000 ≥ 4096）→ 交给 devicectl
+        err, copied, _ = self.run_put_big(4096, 1024, mem=10000)
+        self.assertIsNone(err)
+        self.assertEqual(copied, ["Documents/资源包/game.img"])
+
+    def test_more_than_half_of_free_memory_does_not(self):
+        err, copied, _ = self.run_put_big(4096, 1024, mem=8000)   # 一半 4000 < 4096
+        self.assertEqual(copied, [])
+        self.assertIn("本机可用内存", err)
+
+
+class PushReason(unittest.TestCase):
+    """推送失败的原文 → 摘要里一眼看得懂的一类（11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出是哪种）。期望按 s2a-devpush / devicectl 的报错特征手写"""
+    def test_kinds(self):
+        self.assertIn("USB 看不到手机", push.push_reason("找不到设备 00008140-0001：DeviceNotFound"))
+        self.assertIn("手机锁屏", push.push_reason("取不到 io.s2arm.games.t 的容器（App 装着，可能锁屏 / 不是开发签名）：device socket io failed"))
+        self.assertIn("连接断了", push.push_reason("90 秒没有任何进展：和手机的连接可能断了"))
+        self.assertIn("连接断了", push.push_reason("写文件失败：device socket io failed"))
+        self.assertEqual(push.push_reason("别的原因"), "")
+
+    def make_pack(self, t):
+        pk, w = Path(t) / "pack", Path(t) / "work"; pk.mkdir(); w.mkdir()
+        (pk / "romfs.img").write_bytes(b"IMAGE"); (pk / "index.tsv").write_text(f"romfs.img\t5\t{sha(b'IMAGE')}\n")
+        (pk / "manifest.json").write_text('{"version": 2}')
+        return pk, w
+
+    def test_direct_write_retried_once(self):
+        with tempfile.TemporaryDirectory() as t:
+            pk, w = self.make_pack(t); dev = Fake({}); calls = []
+            def flaky(src, rel):
+                calls.append(rel)
+                if len(calls) == 1: raise push.Fail("写文件失败：device socket io failed")
+            dev.put_big = flaky; log = []
+            push.plan(dev, pk, w, full=True, say=log.append); push.send(dev, pk, w, say=log.append)
+            self.assertEqual(calls, [f"{RP}/romfs.img", f"{RP}/romfs.img"])
+            self.assertTrue(any("原地再试一次" in l for l in log))
+
+    def test_two_failures_name_the_reason_and_the_way_out(self):
+        with tempfile.TemporaryDirectory() as t:
+            pk, w = self.make_pack(t); dev = Fake({}); log = []
+            def gone(src, rel): raise push.Fail("找不到设备 00008140-0001：DeviceNotFound")
+            dev.put_big = gone
+            push.plan(dev, pk, w, full=True, say=log.append)
+            with self.assertRaises(push.Fail) as cm: push.send(dev, pk, w, say=log.append)
+            m = str(cm.exception)
+            self.assertTrue(m.startswith("资源传输中断（USB 看不到手机"), m)
+            self.assertIn("romfs.img 没传完", m); self.assertIn("新版已支持单一文件包和断点续传", m); self.assertIn("重新出一次这款的包", m)
+            self.assertTrue(localized(m), f"启动器中英对照表里没有对得上这句的句式：{m}")
+
+    def test_resumable_message_is_localized(self):
+        m = "资源传输中断（" + push.push_reason("找不到设备 x") + "）：game.img 没传完，重新装到 iPhone 会接着已传的部分续传"
+        self.assertTrue(localized(m), m)
+
+
+def localized(text):
+    """同启动器 BackendText 的句式匹配（{n} 占位 = 非贪婪任意串，整句锚定），占位里的值也要能翻（原因一类是整句对照）"""
+    import re
+    table = json.loads((Path(__file__).resolve().parents[1] / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json").read_text(encoding="utf-8"))
+    exact = {e["source"] for e in table}
+    for e in table:
+        parts = re.split(r"\{\d+\}", e["source"])
+        if len(parts) < 2: continue
+        m = re.fullmatch("(.*?)".join(map(re.escape, parts)), text, re.S)
+        if m and all(g in exact or not re.search(r"[\u4e00-\u9fff]", g) or g.endswith(".img") for g in m.groups()):
+            return True
+    return False
+
 
 class SpaceNeed(Base):
     def batches(self, *sizes):
@@ -379,9 +506,49 @@ class SpaceNeed(Base):
     def test_exact_need_passes(self):
         self.assertEqual(self.run_with_free(8198)[2], 3)
 
-    def test_one_byte_short_reports(self):
-        with self.assertRaises(push.Fail) as e: self.run_with_free(8197)
-        self.assertIn("空间不足", str(e.exception)); self.assertEqual(self.dev.puts, [f"{RP}/{push.PROBE}"])   # 只写了探针（#333），资源一个没推
+    # 估算不够（手机报的空闲不含系统可清除空间，偏小）：认得出的风险让玩家确认——没确认停下报 device_space_low、只写了探针；确认过照推、打一行黄
+    def test_one_byte_short_asks(self):
+        with self.assertRaises(push.LowSpace) as e: self.run_with_free(8197)
+        self.assertEqual(e.exception.code, "device_space_low"); self.assertIn("仍然继续", str(e.exception))
+        self.assertEqual(self.dev.puts, [f"{RP}/{push.PROBE}"])   # 只写了探针（#333），资源一个没推
+
+    def test_one_byte_short_accepted_pushes(self):
+        self.dev = Fake({}); self.dev.free = lambda: 8197
+        self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0", "S2A_PUSH_ACCEPT_LOW_SPACE": "1"})[2], 3)
+        self.assertTrue(any(m.startswith("🟡 iPhone 剩余空间看起来不够") for m in self.log))
+
+    # 真写满：推失败后再量、空闲 < 256 MB → 报 ios_install_no_space，说清要传多少、手机还剩多少；空闲还多 = 别的原因，照原样往上抛
+    def test_real_full_says_how_much(self):
+        frees = iter([10**9, 5 << 20])
+        self.dev = Fake({}, full_disk=True); self.dev.free = lambda: next(frees)
+        with self.assertRaises(push.SpaceFull) as e: push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0"})
+        self.assertEqual(e.exception.code, "ios_install_no_space"); self.assertIn("只剩 5 MB", str(e.exception))
+        frees = iter([10**9, 10**9])
+        self.dev = Fake({}, full_disk=True); self.dev.free = lambda: next(frees)
+        with self.assertRaises(push.Fail) as e: push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0"})
+        self.assertNotIsInstance(e.exception, push.SpaceFull)
+
+    # 手机上的 App 记的「重要用途」可用（Documents/s2a_free.tsv，含可清除空间）比电脑端读到的空闲大：按它判（玩家反馈：设置里剩 70 多 GB，一键安装说只剩 2 GB）
+    def phone(self, imp, afc):
+        self.dev = Fake({push.PHONE_FREE: f"{imp}\t0\t{afc}\t{int(time.time()) - 120}\n"}); self.dev.free = lambda: afc
+
+    def test_phone_important_enough_pushes(self):   # 电脑端空闲 100 字节、手机记 8198（正好够）→ 不问照推，日志说按哪个口径
+        self.phone(8198, 100)
+        self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0"})[2], 3)
+        self.assertTrue(any("重要用途" in m and "2 分钟前" in m for m in self.log), self.log)
+
+    def test_phone_important_short_asks_without_purgeable_claim(self):   # 手机记的也差 1 字节 → 照样问；不再说「实际多半放得下」（已含可清除空间）
+        self.phone(8197, 100)
+        with self.assertRaises(push.LowSpace) as e: push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0"})
+        self.assertIn("含系统随时能清掉的空间", str(e.exception)); self.assertNotIn("多半放得下", str(e.exception)); self.assertIn("仍然继续", str(e.exception))
+
+    def test_phone_smaller_than_afc_ignored(self):   # 手机记的（旧的）比电脑端读到的还小 → 用电脑端的
+        self.phone(100, 8198)
+        self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0"})[2], 3)
+        self.assertFalse(any("重要用途" in m for m in self.log))
+
+    def test_phone_file_garbage_is_none(self):
+        self.dev = Fake({push.PHONE_FREE: "坏\n"}); self.assertEqual(push.phone_free(self.dev, self.w), (None, None))
 
     def test_devpush_free_parses_or_none(self):
         d = push.Devpush("exe", "U", "b", self.w)
@@ -509,7 +676,8 @@ class GameImgResume(Base):
         dev = self.device()
         def short_write(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()[:-1]
         dev.put_big = short_write
-        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        # 直写失败会原地再试一次（11-12），这里两次都整份写短（不走续传），看长度核对本身
+        with mock.patch.object(push, "resume_offset", lambda *a: 0), self.assertRaises(push.Fail) as e: self.push_it(dev)
         self.assertIn("game.img 没传完", str(e.exception))
         self.assertTrue(any(f"长度 {len(self.local) - 1} 字节，应为 {len(self.local)} 字节" in l for l in self.log), self.log)
         self.assertNotIn(f"{RP}/.pushed", dev.files)   # 没记账：下次重新判断续传
@@ -721,7 +889,7 @@ sys.exit(0 if pathlib.Path(sys.argv[-1]).exists() else 1)
         dev.put_big = put_big
         with self.assertRaises(push.Fail):
             push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
-        self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1)])
+        self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (40, 100, 0, 1)])   # 直写失败原地再试一次（11-12）：第二次又报到 40，仍不报满
         self.assertNotIn(f"{RP}/.pushed", dev.files)
         self.assertIsNone(dev.progress)
 

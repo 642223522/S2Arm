@@ -8,6 +8,8 @@ enum { RP_PROG_STAGES = 2, RP_PROG_ENT_MAX = 128 };   // 首版契约：顶点 +
 struct rp_prog {
     nvn_gpu_shader sh[RP_PROG_STAGES];                        // 0 顶点 1 片元
     nvn_gpu_layout_ent ent[RP_PROG_STAGES][RP_PROG_ENT_MAX];  // 与交给后端装载的布局同一份：核心按 src_kind / src_reg 逐项绑定
+    uint8_t dtt[RP_PROG_STAGES][RP_PROG_ENT_MAX];             // 声明目标 + 1；0 = 未知，沿用登记视图
+    uint8_t dcls[RP_PROG_STAGES][RP_PROG_ENT_MAX];            // 0 float，1 uint，2 sint，3 depth 比较
     uint32_t nent[RP_PROG_STAGES];
     uint32_t support_bytes;                                   // NVN_RB_SUPPORT 那一项的缓冲长度
     uint32_t attr_mask;                                       // 顶点着色器实际读的属性位
@@ -20,6 +22,10 @@ struct rp_shader_req {
     int rt_count;               // 当前颜色目标个数
     uint32_t rt_format[8];      // 各颜色目标的 NVN 格式（视图改了格式的取视图的）；0 = 空槽
 };
+// 当前绘制生效的图形阶段（bit = NVN 阶段 0..4）与各阶段的着色器键。核心按「程序实际有哪些阶段」
+// 窄化后的结果（同 iOS bind_stages：VS/FS 不能被关，GS/TCS/TES 程序没有就解绑）；着色器来源只消费这份结果。
+uint32_t rp_shader_graphics_stages(void);
+int rp_shader_stage_key(unsigned st, uint8_t key[8]);   // 1 = 该阶段已绑定且有键；0 = 没绑定 / 键缺失
 // 取当前回放状态（rp_S）下这笔绘制的程序。0 = 得到；1 = 还没好，跳过这笔；-1 = 取不到（已记账）。线程：[提交]。
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out);
 // 取当前回放状态下计算阶段（NVN 阶段 5）绑着的程序。返回值同上。

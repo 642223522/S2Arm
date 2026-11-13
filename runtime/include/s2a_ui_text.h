@@ -40,6 +40,15 @@ int s2a_ui_zh(void);
 #define S2A_UI_PACK_MISSING_TITLE_EN    "Game resources are missing"
 #define S2A_UI_PACK_AGAIN               "刚刚查过，还是没有完整的资源包。\n\n"
 #define S2A_UI_PACK_AGAIN_EN            "Checked just now — the complete resources still aren’t there.\n\n"
+// 只缺非核心文件（v0.3.1 缺件照玩）：起局前问一次；玩到一半真读到缺的文件、游戏 Break 时的说明页正文（pack_apply.c）
+#define S2A_UI_PACK_PARTIAL_TITLE       "游戏资源缺了几个文件"
+#define S2A_UI_PACK_PARTIAL_TITLE_EN    "A few game files are missing"
+#define S2A_UI_PACK_PARTIAL_ASK         "这款游戏的资源缺了几个文件，多半是上次传到一半断了。可以先点「仍要启动」玩，玩到用到它们的地方可能会停；在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，会把缺的补上。"
+#define S2A_UI_PACK_PARTIAL_ASK_EN      "A few of this game’s files are missing — the last transfer was probably interrupted. You can tap “Start Anyway” to play; it may stop when the game needs one of them. In S2Arm on your computer, click “Install on iPhone” for this game again to add what’s missing."
+#define S2A_UI_PACK_PARTIAL_GO          "仍要启动"
+#define S2A_UI_PACK_PARTIAL_GO_EN       "Start Anyway"
+#define S2A_UI_PACK_PARTIAL_DETAIL      "游戏刚才要读的资源文件不在手机上（这款的资源缺了几个文件）。请在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，补上后重新打开就能接着玩。"
+#define S2A_UI_PACK_PARTIAL_DETAIL_EN   "The game just needed a file that isn’t on this iPhone (a few of this game’s files are missing). In S2Arm on your computer, click “Install on iPhone” for this game again, then reopen it to keep playing."
 #define S2A_UI_PACK_BROKEN_DETAIL       "游戏数据有一部分没传全，多半是传到一半断了。请在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上，补好后这里会自动继续。"
 #define S2A_UI_PACK_BROKEN_DETAIL_EN    "Some of the game’s data didn’t finish copying — the transfer was probably interrupted. In S2Arm on your computer, click “Install on iPhone” for this game again to add what’s missing. This continues automatically once it’s done."
 #define S2A_UI_PACK_NONE_DETAIL         "这个 App 只是游戏的「外壳」，游戏本身的数据还不在手机上。照下面任选一种做。"
@@ -56,6 +65,18 @@ int s2a_ui_zh(void);
 #define S2A_UI_HUD_BRIEF_EN             "%llu FPS · %s"
 #define S2A_UI_HUD_MEM_FAIL             "内存读取失败"
 #define S2A_UI_HUD_MEM_FAIL_EN          "Memory unavailable"
+// 两本账一起写（11-13 玩家复盘：GPU 已分配撞上系统上限报 OutOfMemory，浮层只写进程实占 0.9 GB，看着像内存没吃多少）
+#define S2A_UI_HUD_MEM_GPU              "进程 %.1f GB · GPU %.1f GB"
+#define S2A_UI_HUD_MEM_GPU_EN           "App %.1f GB · GPU %.1f GB"
+// ---------- GPU 卡住暂停页（graphics/nvn host_adapt.m s2a_gpu_stuck → ios/app.m、macos/front_mac.m）：连续几帧每帧几秒才出现，玩家自己选 ----------
+#define S2A_GPU_STUCK_TITLE             "画面卡住了"
+#define S2A_GPU_STUCK_TITLE_EN          "The game is stuck"
+#define S2A_GPU_STUCK_BODY              "显卡连续几秒都没画完一帧，游戏已暂停。可以继续玩（可能还会卡），或者退出。"
+#define S2A_GPU_STUCK_BODY_EN           "The GPU has taken several seconds per frame, so the game is paused. You can keep playing (it may stall again) or quit."
+#define S2A_GPU_STUCK_GO                "继续玩"
+#define S2A_GPU_STUCK_GO_EN             "Keep playing"
+#define S2A_GPU_STUCK_QUIT              "退出"
+#define S2A_GPU_STUCK_QUIT_EN           "Quit"
 #ifdef __cplusplus
 }
 #endif

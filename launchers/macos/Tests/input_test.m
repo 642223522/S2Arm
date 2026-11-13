@@ -248,6 +248,71 @@ static NSEvent *right_mouse_event(CGEventType type) {
     NSEvent *e = [NSEvent eventWithCGEvent:cg]; CFRelease(cg); return e;
 }
 static NSUInteger mouse_buttons_state(void) { return fake_mouse_buttons; }
+// R5：键盘区原始键态（HID usage 位图 + 修饰键字段；服务层 InputPump 照 s2a_kb_read 这份写键盘区共享内存）。
+//   键码表对拍：W=13→0x1A、F5=96→0x3E、Esc=53→0x29、小键盘Enter=76→0x58、Z=6→0x1D；修饰键 shift 56→0xE1、
+//   ctrl 59→0xE0、option 58→0xE2（0xE0–0xE2 落在位图第 4 个 64 位段）+ 字段位（Shift=2、Control=1、LeftAlt=4）；
+//   CapsLock 只走 flagsChanged（位图 0x39 + 字段 bit8）；失焦发全零、按住的键不丢；keyUp 清位；粘键核对删键跟着清；复位全清
+static void test_keyboard_hid(void) {
+    config = default_config(); reset_input(); focused = YES;
+    read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys);
+    uint64_t k[4]; uint32_t m;
+    s2a_kb_read(k, &m);
+    expect(k[0] == 0 && k[1] == 0 && k[2] == 0 && k[3] == 0 && m == 0, "keyboard bitmap starts empty");
+    S2AMetalView *view = [[S2AMetalView alloc] initWithFrame:NSZeroRect];
+    [view keyDown:key_event(NSEventTypeKeyDown, 13, NO)];   // W
+    s2a_kb_read(k, &m);
+    expect(k[0] == (1UL << 0x1A) && !k[1] && !k[2] && !k[3] && m == 0, "W lands on its HID usage bit");
+    [view keyDown:key_event(NSEventTypeKeyDown, 96, NO)];   // F5
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x3E)) && (k[0] & (1UL << 0x1A)), "F5 lands beside W");
+    [view keyDown:key_event(NSEventTypeKeyDown, 76, NO)];   // 小键盘 Enter
+    s2a_kb_read(k, &m);
+    expect((k[1] & (1UL << (0x58 - 64))) && (k[0] & (1UL << 0x3E)), "keypad Enter lands on usage 0x58");
+    [view keyUp:key_event(NSEventTypeKeyUp, 13, NO)];
+    s2a_kb_read(k, &m);
+    expect(!(k[0] & (1UL << 0x1A)) && (k[0] & (1UL << 0x3E)), "keyUp clears only its own bit");
+    [view keyDown:key_event(NSEventTypeKeyDown, 53, NO)];   // Esc（窗口非全屏、没锁鼠标：照常进键盘区）
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x29)) != 0, "Esc lands on usage 0x29");   // 位号 ≥ 32 的单项判空要显式 != 0：int 截断会把高位清零
+    [view flagsChanged:flags_event(56, NSEventModifierFlagShift)];
+    s2a_kb_read(k, &m);
+    expect((k[3] & (1UL << (0xE1 & 63))) && m == (1u << 1), "shift lands on usage 0xE1 and the Shift field bit");
+    // flagsChanged 的 modifierFlags 反映全量状态（与真机一致），合成事件按累积传
+    [view flagsChanged:flags_event(59, NSEventModifierFlagShift | NSEventModifierFlagControl)];
+    [view flagsChanged:flags_event(58, NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption)];
+    s2a_kb_read(k, &m);
+    expect((k[3] & (1UL << (0xE0 & 63))) && (k[3] & (1UL << (0xE2 & 63))) && m == ((1u << 1) | 1u | (1u << 2)),
+           "control and option land with their usages and field bits");
+    [view flagsChanged:flags_event(56, NSEventModifierFlagControl | NSEventModifierFlagOption)];   // 松 shift：其余还在
+    [view flagsChanged:flags_event(59, NSEventModifierFlagOption)];
+    [view flagsChanged:flags_event(58, 0)];
+    s2a_kb_read(k, &m);
+    expect(!(k[3] & (7UL << 32)) && m == 0, "releasing modifiers clears bitmap and field");
+    [view flagsChanged:flags_event(57, NSEventModifierFlagCapsLock)];
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x39)) && m == (1u << 8), "CapsLock lands on usage 0x39 and the CapsLock field bit");
+    [view flagsChanged:flags_event(57, 0)];
+    s2a_kb_read(k, &m);
+    expect(!(k[0] & (1UL << 0x39)) && m == 0, "CapsLock release clears both");
+    focused = NO; sample_input();
+    s2a_kb_read(k, &m);
+    expect(!k[0] && !k[1] && !k[2] && !k[3] && m == 0, "unfocused publishes an all-zero bitmap");
+    focused = YES; sample_input();
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x29)) && (k[1] & (1UL << (0x58 - 64))), "refocus re-publishes held keys, like pads");
+    [view keyDown:key_event(NSEventTypeKeyDown, 6, NO)];   // Z
+    physical_keys[6] = YES;   // 粘键核对的 is_down 桩：Z 还按着，先不清
+    poll_stale();
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x1D)), "Z lands on usage 0x1D while the system still reports it held");
+    physical_keys[6] = NO; poll_stale();   // 系统报松开满防抖次数 → 删键（keyUp 被别的响应者吃掉的兜底），位图跟着清
+    s2a_kb_read(k, &m);
+    expect(!(k[0] & (1UL << 0x1D)), "stale-key reconciliation clears the bitmap without a keyUp");
+    reset_input();
+    s2a_kb_read(k, &m);
+    expect(!k[0] && !k[1] && !k[2] && !k[3] && m == 0, "reset clears the keyboard bitmap");
+    puts("Mac keyboard: HID usage bitmap, modifiers, caps, focus and reconciliation passed");
+}
 static void test_mouse_lost_release(void) {
     config = default_config(); reset_input(); focused = YES;
     read_key_state = key_state; read_mouse_buttons = mouse_buttons_state;
@@ -359,6 +424,40 @@ static void test_capture_held_key(BOOL system_state_matches) {
     puts("Mac mouse: held W across capture/Esc/recapture, first-click Y isolation and focus passed");
 }
 
+// 全屏 Esc（玩家反馈进了全屏回不到窗口）：期望按规则手写——Esc 没映射：全屏下按一次就退全屏（鼠标锁着一并释放），不发游戏键；不是全屏不退；
+//   Esc 映射了 PLUS：短按照常发 PLUS、1 秒内松开不退；按住满 1 秒退全屏一次、PLUS 随之松开
+static BOOL fake_fullscreen; static int fake_toggles;
+static BOOL fake_window_fullscreen(NSWindow *w) { (void)w; return fake_fullscreen; }
+static void fake_fullscreen_toggle(NSWindow *w) { (void)w; fake_toggles++; fake_fullscreen = !fake_fullscreen; }
+static void run_loop_for(double seconds) { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]]; }
+static void test_fullscreen_esc(void) {
+    window_fullscreen = fake_window_fullscreen; fullscreen_toggle = fake_fullscreen_toggle;
+    S2AMetalView *view = [S2AMetalView new]; int32_t sticks[4];
+    config = default_config(); reset_input(); focused = YES;
+    expect(!esc_mapped(), "default keyboard leaves Esc unmapped");
+    fake_fullscreen = NO; fake_toggles = 0;
+    [view keyDown:capture_key_event(NSEventTypeKeyDown, 53, NO)]; [view keyUp:capture_key_event(NSEventTypeKeyUp, 53, NO)];
+    expect(fake_toggles == 0, "windowed Esc does not toggle full screen");
+    fake_fullscreen = YES; config = @{@"keyboard": @{@"A": @{@"code": @14}}, @"mouse": @{}, @"gamepad": @{}, @"axes": @{}, @"deadzone": @0.15, @"mouseOptions": @{@"mode": @"camera"}};
+    set_mouse_capture(YES);
+    [view keyDown:capture_key_event(NSEventTypeKeyDown, 53, NO)];
+    expect(fake_toggles == 1 && !fake_fullscreen && !mouse_captured && s2a_vpad_read(sticks) == 0, "unmapped Esc leaves full screen at once and releases the mouse");
+    [view keyUp:capture_key_event(NSEventTypeKeyUp, 53, NO)];
+    config = @{@"keyboard": @{@"PLUS": @{@"code": @53}}, @"mouse": @{}, @"gamepad": @{}, @"axes": @{}, @"deadzone": @0.15, @"mouseOptions": @{@"mode": @"camera"}};
+    reset_input(); fake_fullscreen = YES; fake_toggles = 0;
+    physical_keys[53] = YES; [view keyDown:capture_key_event(NSEventTypeKeyDown, 53, NO)];
+    expect(s2a_vpad_read(sticks) == (1u << 10) && fake_toggles == 0, "mapped Esc short press sends PLUS and stays full screen");
+    run_loop_for(0.4); physical_keys[53] = NO; [view keyUp:capture_key_event(NSEventTypeKeyUp, 53, NO)];
+    run_loop_for(0.9);
+    expect(fake_toggles == 0 && fake_fullscreen && s2a_vpad_read(sticks) == 0, "released before 1 s: no full-screen change");
+    physical_keys[53] = YES; [view keyDown:capture_key_event(NSEventTypeKeyDown, 53, NO)];
+    run_loop_for(1.2);
+    expect(fake_toggles == 1 && !fake_fullscreen && s2a_vpad_read(sticks) == 0, "mapped Esc held 1 s leaves full screen once and releases PLUS");
+    physical_keys[53] = NO; [view keyUp:capture_key_event(NSEventTypeKeyUp, 53, NO)];
+    window_fullscreen = window_fullscreen_now; fullscreen_toggle = window_fullscreen_toggle;
+    reset_input(); config = default_config();
+    puts("Mac full screen: Esc exits when unmapped, short press to game / hold 1 s exits when mapped");
+}
 static void test_capture_key_order(void) {
     config = @{@"keyboard": @{@"PLUS": @{@"code": @53}, @"A": @{@"code": @14}},
                @"mouse": @{}, @"gamepad": @{}, @"axes": @{}, @"deadzone": @0.15,
@@ -854,6 +953,44 @@ int main(int argc, const char **argv) {
            "relay v2 carries the controller kind to the game");
     expect(!strcmp(s2a_mac_ns2_kind_name(NS2_KIND_JOYCON_PAIR), "Joy-Con 2 (L + R)") && !strcmp(s2a_mac_ns2_kind_name(NS2_KIND_NONE), "Switch 手柄") && !strcmp(s2a_mac_ns2_kind_name(NS2_KIND_PRO), "Switch 2 Pro"),
            "kind display names: pair and not-connected fallback");
+    // Joy-Con 2 拼成一对：只有右只（motion_left_known 0，同旧启动器）时一路；INPUT 包带左只（motion_left）时左右各一路，左在前
+    s2a_pad_motion pairMotion[2] = {0};
+    expect(s2a_pad_read_motion_pair(pairMotion) == 1 && pairMotion[0].gyro_x == 90, "Joy-Con 2 pair without left motion: one source (right), as before");
+    ns2_relay_packet pairPacket = motionPacket; pairPacket.kind = NS2_KIND_JOYCON_PAIR; pairPacket.motion.host_timestamp_us = 2000;
+    pairPacket.motion_left_known = 1;
+    pairPacket.motion_left = (ns2_relay_motion_left){.acceleration_z = 1, .gyro_x = -90, .host_timestamp_us_lo = 1999};
+    expect(send(relayClient, &pairPacket, sizeof pairPacket, 0) == sizeof pairPacket, "pair relay packet with left motion sent");
+    int pairN = 0;
+    for (int attempt = 0; attempt < 100 && (pairN = s2a_pad_read_motion_pair(pairMotion)) != 2; attempt++) usleep(1000);
+    expect(pairN == 2 && pairMotion[0].gyro_x == -90 && pairMotion[0].host_timestamp_us == 1999 && pairMotion[1].gyro_x == 90 && pairMotion[1].host_timestamp_us == 2000,
+           "Joy-Con 2 pair: left motion from motion_left, right from motion, left first");
+    expect(s2a_pad_read_motion(&ns2Motion) && ns2Motion.gyro_x == 90, "single-source six-axis entry still reads the right Joy-Con");
+    // Joy-Con 2 光学鼠标（INPUT 包 mouse / mouse_kind）：没有鼠标读数（旧启动器）时照样报连着 Joy-Con 2、known 0
+    //   （一对 → 两侧）；有读数时 x / y / distance 原样、side 跟 mouse_kind；Pro 不报
+    s2a_pad_mouse jcMouse[2] = {{0}};
+    expect(s2a_pad_read_mouse_pair(jcMouse) == 2 && jcMouse[0].side == 0 && jcMouse[1].side == 1 && !jcMouse[0].known && !jcMouse[1].known,
+           "Joy-Con 2 pair without mouse readings: both sides still reported as Joy-Con 2, no readings");
+    ns2_relay_packet mousePacket = pairPacket; mousePacket.kind = NS2_KIND_JOYCON_L; mousePacket.mouse_kind = NS2_KIND_JOYCON_L;
+    mousePacket.mouse = (ns2_relay_mouse){.x = -5, .y = 300, .surface = 7, .distance = 0};
+    expect(send(relayClient, &mousePacket, sizeof mousePacket, 0) == sizeof mousePacket, "relay packet with mouse readings sent");
+    for (int attempt = 0; attempt < 100 && !(s2a_pad_read_mouse_pair(jcMouse) && jcMouse[0].known); attempt++) usleep(1000);
+    expect(jcMouse[0].known && jcMouse[0].side == 0 && jcMouse[1].side == 0xff && jcMouse[0].x == -5 && jcMouse[0].y == 300 && jcMouse[0].distance == 0 && jcMouse[0].host_timestamp_us != 0,
+           "Joy-Con 2 mouse readings reach the game: left side, raw x / y / distance");
+    // 拼成一对、两只都有鼠标：连接程序一包左一包右轮流（mouse_kind 标哪一只），宿主左右各存一份
+    ns2_relay_packet pairMouse = pairPacket; pairMouse.kind = NS2_KIND_JOYCON_PAIR;
+    pairMouse.mouse_kind = NS2_KIND_JOYCON_R; pairMouse.mouse = (ns2_relay_mouse){.x = 40, .y = 1};
+    expect(send(relayClient, &pairMouse, sizeof pairMouse, 0) == sizeof pairMouse, "pair relay packet with right mouse sent");
+    pairMouse.mouse_kind = NS2_KIND_JOYCON_L; pairMouse.mouse = (ns2_relay_mouse){.x = -7, .y = 2, .distance = 12};
+    expect(send(relayClient, &pairMouse, sizeof pairMouse, 0) == sizeof pairMouse, "pair relay packet with left mouse sent");
+    s2a_pad_mouse both[2] = {{0}};
+    int bothN = 0;
+    for (int attempt = 0; attempt < 100 && !((bothN = s2a_pad_read_mouse_pair(both)) == 2 && both[0].known && both[0].x == -7 && both[1].known); attempt++) usleep(1000);
+    expect(bothN == 2 && both[0].side == 0 && both[0].x == -7 && both[0].distance == 12 && both[1].side == 1 && both[1].x == 40,
+           "Joy-Con 2 pair: left and right mouse readings both reach the game (alternating packets)");
+    ns2_relay_packet proPacket = motionPacket; proPacket.kind = NS2_KIND_PRO;
+    expect(send(relayClient, &proPacket, sizeof proPacket, 0) == sizeof proPacket, "Pro relay packet sent");
+    for (int attempt = 0; attempt < 100 && s2a_pad_read_mouse_pair(jcMouse); attempt++) usleep(1000);
+    expect(!s2a_pad_read_mouse_pair(jcMouse) && !jcMouse[0].known && !jcMouse[1].known, "Pro controller: no Joy-Con 2 mouse");
     // 旧版启动器（通道 v1）：游戏端断开、不猜字段，型号回到 NONE
     ns2_relay_packet oldPacket = motionPacket; oldPacket.version = 1;
     expect(send(relayClient, &oldPacket, sizeof oldPacket, 0) == sizeof oldPacket, "relay v1 packet sent");
@@ -918,6 +1055,7 @@ int main(int argc, const char **argv) {
         test_focus_suspend();
         test_untrusted_key_state();
         test_modifier_false_release();
+        test_keyboard_hid();
         test_mouse_lost_release();
         test_mouse_touch();
         test_mouse_touch_declared();
@@ -981,6 +1119,7 @@ int main(int argc, const char **argv) {
         expect(!mouse_captured && !mouse_release_pending && cursor_hides == 1, "failed capture does not hide cursor");
         association_error = kCGErrorSuccess;
         test_capture_key_order();
+        test_fullscreen_esc();
         test_capture_held_key(YES);
         test_capture_held_key(NO);
         associate_mouse = CGAssociateMouseAndMouseCursorPosition; set_mouse_visible = cursor_visibility;

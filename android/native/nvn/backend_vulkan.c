@@ -28,6 +28,7 @@
 #include <time.h>
 
 #include "nvn_backend.h"
+#include "nvn_plat.h"   // 调试开关与一行日志（上屏段的调试色、GPU 时间读数）
 #include "nvn_vk_format.h"
 #include "nvn_vk_texview.h"
 #include "nvn_vk_bcdec.h"
@@ -35,6 +36,7 @@
 #include "nvn_fmt_expand.h"
 #include "vk_device.h"
 #include "../capprobe/capprobe.h"
+#include "nvn_vk_dq.inc"   // 两级回放：从这里往下 vkCmd* 等名字走它的包装（调试开关 nvk_dq，缺省关）
 S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
 
 #define VK_SEG_QUEUE_INIT 16
@@ -64,13 +66,14 @@ struct nvn_gpu_buf_s {
 struct nvn_gpu_tex_s {
     VkImage image;
     VkDeviceMemory memory;
+    VkDeviceSize mem_size; uint32_t mem_type;   // 这块显存向驱动要的大小和内存类型（还回 texmem 池时用）
     VkImageView view;
-    VkFormat format;
+    VkFormat format, sample_format;
     VkImageAspectFlags aspect;
     VkImageLayout layout;
     uint32_t w, h, depth, levels, layers, samples, nvn_format, target;
     int array_compatible;
-    int view_fmt, released, refs;
+    int view_fmt, released, refs, bc_decoded;
     uint16_t swz;   // 存储自带的通道映射（tex_builder_t.swz 打包法，0 = 恒等）：视图没自己设映射时用它
     struct nvn_gpu_tex_s *all_next;
 };
@@ -116,10 +119,12 @@ struct nvn_gpu_pipe_s {
     uint32_t nset;
     nvn_gpu_layout_ent *stage_ents[6];
     VkFormat *stage_tfmt[6];
+    int8_t texel_binds;   // 有没有纹素缓冲类的绑定项：0 还没数，1 有，-1 没有（见 bind_descriptor_groups）
     uint32_t stage_nent[6];
     uint32_t stage_push_off[6], stage_push_bytes[6];
     nvn_gpu_pipe_desc key;
     struct nvn_gpu_pipe_s *all_next;
+    struct nvn_gpu_pipe_s *hnext;   // 图形管线的散列桶链（g_pipe_ht）
 };
 
 struct nvn_gpu_samp_s {
@@ -135,9 +140,16 @@ enum { REF_BUF = 1, REF_TEX, REF_VIEW, REF_SAMP };
 struct vk_staging { struct nvn_gpu_buf_s *buf; };
 
 struct pass_rec { VkRenderPass rp; VkFramebuffer fb; };
+enum { DESC_MEMO_N = 2048 };
+struct desc_memo { uint64_t h1, h2; VkDescriptorSetLayout dsl; VkDescriptorSet set; };
+struct bc_temp { VkImage image; VkDeviceMemory memory; struct bc_temp *next; };
+enum { TS_PASS_MAX = 250 };   // 调试读数：一段里逐个计时的通道数上限
 
+// 冗余状态消除的计数下标（见 nvn_gpu_cmd_s.es）
+enum { ES_PIPE, ES_VP, ES_SC, ES_BC, ES_ST, ES_DB, ES_VB, ES_IB, ES_PUSH, ES_KINDS };
 struct nvn_gpu_cmd_s {
     VkCommandBuffer cb;
+    struct bc_temp *bc_temps;
     int recording;
     int in_pass;
     nvn_gpu_rc sticky;
@@ -154,12 +166,17 @@ struct nvn_gpu_cmd_s {
     uint32_t ndpools_full, dpools_full_cap;
     struct nvn_gpu_pipe_s *pipe;
     struct pass_rec *passes;
+    struct desc_memo *memo;   // 这一段里写过的描述符组：内容 → 组（见 bind_descriptor_groups）；懒分配，随段释放
+    uint32_t memo_n;
     uint32_t npasses, passcap;
     uint32_t pass_w, pass_h;
     uint32_t pass_ncolor, pass_layers;       // 当前通道的颜色槽数、层数（clear_rect 用）
     uint32_t pass_color_mask;                // 哪些颜色槽有附件（位 i = 槽 i；空位为 0）
     uint32_t pass_cfmt[8], pass_dsfmt, pass_samples;   // 当前通道各槽的 NVN 格式（空位 0）、深度模板格式、采样数（带掩码的清除建管线用）
     VkImageAspectFlags pass_ds_aspect;       // 当前通道深度模板附件有的面（0 = 没有该附件）
+    VkQueryPool tsq;                         // 调试读数 nvk_gputime：段首尾各一个 GPU 时间戳，后面每个通道首尾各一个（没开就是空）
+    struct { uint16_t w, h, draws; uint8_t ncol, ds; } tsp[TS_PASS_MAX];
+    uint32_t ntsp;
     VkCommandBuffer init_cb;                 // 本段提交时带上的「新建图像转 GENERAL」命令缓冲（没有就是空）
     struct nvn_gpu_tex_s **newimg;           // 上面那个命令缓冲转的图像（各持一份引用，段完成时归还；段没执行则放回待转表）
     uint32_t n_newimg;
@@ -170,13 +187,34 @@ struct nvn_gpu_cmd_s {
     struct { nvn_gpu_buf buf; uint64_t off; } vbuf[16];
     struct { nvn_gpu_binding b; } binds[6][64];   // 每阶段一张表，bind 只替换该阶段
     uint32_t nbinds[6];
+    VkDescriptorSet desc_sets[4];   // 仅本命令段；旧组仍归本段的池所有，不就地覆盖在途绑定
+    VkPipelineLayout desc_layout;
+    uint32_t desc_dirty;
+    uint8_t desc_point;             // 当前这几组绑在哪个绑定点：0 还没绑，1 图形，2 计算
+
     uint8_t *push_data[6];        // 各阶段 push 暂存；vkCmdPushConstants 录制时拷贝入命令缓冲，段完成即放
     uint32_t push_capacity[6]; // 分配字节数，测试与管线切换共用
     uint8_t push_have[6];
+    uint32_t push_gen[6];         // 各阶段 push 内容的代号：nvn_gpu_push 写进的字节与原先不同才加一（发命令时据此判断要不要重发）
+    // 冗余状态消除（#708）：上次真正录进命令缓冲的绘制状态。只在发命令那一刻和它比，相同就不再录；
+    // ok 位为 0 = 不知道命令缓冲里现在是什么（命令对象新建时全 0；通道开始、矩形清除、计算派发之后整份作废）。
+    // 只管管线、动态状态、顶点 / 索引缓冲、push 常量；描述符组不在这里（#657）。
+    struct {
+        VkPipeline gpipe;                                  // 绑着的图形管线（空 = 不知道）
+        uint8_t vp_ok, sc_ok, bc_ok, st_ok, db_ok, ib_ok;
+        VkViewport vp; VkRect2D sc; float bc[4]; uint32_t st[2][3]; float db[3];
+        uint16_t vb_ok; VkBuffer vb[16]; VkDeviceSize vboff[16];
+        VkBuffer ib; VkDeviceSize ioff; VkIndexType it;
+        uint8_t push_ok[6]; VkPipelineLayout push_layout[6]; uint32_t push_off[6], push_bytes[6], push_gen[6];
+    } es;
+    uint32_t es_count[ES_KINDS];   // 实际录了几次（测试读数：nvn_gpu_vk_test_emit_counts）
     // 遮挡查询（nvn_gpu_cmd_desc.occlusion_slots > 0 才有）：一段一个查询池，段开头整池重置；每个槽一段里只能用一次
     VkQueryPool qpool; uint32_t qcount, qmax_used; int32_t q_active; uint8_t *q_used; uint8_t pass_occl;
     struct nvn_gpu_cmd_s *live_next;
 };
+
+// 冗余状态消除：影子整份作废（之后每一项第一次用到都照发）
+static void es_reset(struct nvn_gpu_cmd_s *c) { memset(&c->es, 0, sizeof c->es); }
 
 struct vk_segment {
     struct vk_segment *next;
@@ -196,6 +234,8 @@ struct vk_segment {
 
 struct nvn_gpu_vk {
     struct s2a_vk_device *dev;
+    struct nvn_vk_bcdec *bc;
+    struct bc_temp *bc_pending;  // 解码已提交但未证明完成，不能随失败的命令段释放
     VkDevice d;
     VkPhysicalDevice phys;
     VkQueue queue;
@@ -233,6 +273,31 @@ struct nvn_gpu_vk {
 static struct nvn_gpu_vk g;
 static _Atomic int g_open;   // 跨线程：close 置 0 后其他线程据此拒收
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+// 诊断读数（nvk_gputime 开着时每 300 次上屏打一行）：每帧新建了多少个驱动对象、写了多少次描述符、开了多少个查询。
+enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_VIEW, OC_N };
+static uint64_t g_oc[OC_N], g_oc_total[OC_N];
+static uint64_t g_acq_ns;   // 取窗口图（vkAcquireNextImageKHR）累计用时，随对象读数那一行打
+#define OC(i) (__atomic_fetch_add(&g_oc[i], 1, __ATOMIC_RELAXED), __atomic_fetch_add(&g_oc_total[i], 1, __ATOMIC_RELAXED))
+uint64_t nvn_vk_dbg_created(int which) { return which >= 0 && which < OC_N ? __atomic_load_n(&g_oc_total[which], __ATOMIC_RELAXED) : 0; }   // 用例读：会话以来新建的各类对象数（0 渲染通道 1 帧缓冲 …，见上面的枚举）
+// ---- 通道对象缓存：渲染通道对象与帧缓冲跨帧保留 ----
+// 原先每开一个通道都 vkCreateRenderPass + vkCreateFramebuffer、所在的段做完再销毁；一帧一百多个通道，目标就那么十几组，每帧重复建销。
+// 做法照 d2r-mobile 安卓笔记 perf-round2 的发现 3：渲染通道对象按「附件描述」记（与具体图像无关，会话结束才销毁）；
+// 帧缓冲按「渲染通道 + 各附件视图 + 尺寸」记，直到其中任何一个视图销毁。视图要等引用它的段都做完才会销毁（cmd_ref 保活），
+// 所以那时用到这个帧缓冲的命令也都做完了，可以当场销毁。表满了的那一个照旧路走（记在段上、段做完销毁）。
+// 调试开关 nvk_pass_cache=0 关掉（缺省开）。
+static void pc_drop_view(VkImageView v);
+static void pc_destroy_all(void);
+enum { PIPE_HT_N = 1024 };
+static uint64_t g_desc_ns[4], g_desc_nw, g_desc_sets, g_desc_hit;   // 描述符四步：分配 / 构造写入项 / 写入 / 绑定；写入的描述符条数；重写的组数
+// 诊断读数（nvk_gputime 开着才计）：贴图 / 视图 / 帧缓冲的建与拆各用多久、各几次。
+// 0 vkCreateImage，1 要显存并绑定，2 默认视图，3 帧缓冲，4 附件视图，5 拆视图，6 从帧缓冲表里摘（pc_drop_view），7 拆贴图（视图 + 图 + 还显存）
+static uint64_t g_life_ns[8], g_life_n[8];
+#define LIFE_T0 uint64_t lt_ = g_draw_tm ? now_ns() : 0
+#define LIFE_ADD(i) do { if (g_draw_tm) { uint64_t ln_ = now_ns(); __atomic_fetch_add(&g_life_ns[i], ln_ - lt_, __ATOMIC_RELAXED); __atomic_fetch_add(&g_life_n[i], 1, __ATOMIC_RELAXED); lt_ = ln_; } } while (0)
+static uint64_t now_ns(void);
+static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
+static uint64_t g_pl_ns, g_pl_n, g_pl_steps;   // 取图形管线：命中查找的累计纳秒 / 次数 / 比过的条数
+static struct nvn_gpu_pipe_s *g_pipe_ht[PIPE_HT_N];   // 图形管线的散列桶（见 pipe_hash）；持 g_mu
 static pthread_mutex_t g_submit_mu = PTHREAD_MUTEX_INITIALIZER; // 提交串行化：校验 signal、vkQueueSubmit、入队
 static pthread_cond_t g_cv;
 static int g_cv_ready;
@@ -349,15 +414,159 @@ static void newimg_del_locked(struct nvn_gpu_tex_s *t) {
     for (uint32_t i = 0; i < g_newimg_n; i++) if (g_newimg[i] == t) { g_newimg[i] = g_newimg[--g_newimg_n]; return; }
 }
 
+// 命令段用完的命令池（带它那一个命令缓冲）和描述符池留下来给后面的段用，不再每段新建、段完成就销毁。
+// 真机取样（一款 3D 游戏，每帧 9 个命令段）：回放线程约 14% 的时间在驱动向内核要显存（kgsl_sharedmem_alloc → ioctl + mmap），
+// 开命令段 nvn_gpu_cmd_begin 一项占 6%；每帧新建 9.2 个命令池、5.0 个描述符池。
+// 段做完后：命令池、描述符池各放进一张空闲表；开段 / 要描述符池时先从表里取，取出来再重置（vkResetCommandPool / vkResetDescriptorPool）。
+// 重置之后上一段分出去的描述符组句柄全部失效——段内的影子（desc_sets、备忘表）都随段对象一起没了，不会带到下一段。
+// 表有上限（多出来的照旧销毁），会话收尾全部销毁。诊断开关 nvk_seg_reuse=0 关掉（同一局里对照用），缺省开。
+enum { SEGPOOL_CMD_N = 32, SEGPOOL_DESC_N = 64 };
+static struct { VkCommandPool pool; VkCommandBuffer cb; } g_seg_cmd[SEGPOOL_CMD_N];
+static VkDescriptorPool g_seg_desc[SEGPOOL_DESC_N];
+static uint32_t g_seg_ncmd, g_seg_ndesc; static uint64_t g_seg_hit_cmd, g_seg_hit_desc;
+static int g_seg_closed;   // 会话收尾已经清过表：之后再还回来的一律直接销毁（持 g_seg_mu 读写）
+static pthread_mutex_t g_seg_mu = PTHREAD_MUTEX_INITIALIZER;
+static int seg_reuse_on(void) { static int cur = -1; static uint32_t k; if (cur < 0 || !(++k & 63)) cur = nvn_plat_flag("nvk_seg_reuse", 1) != 0; return cur; }
+static int seg_take_cmd(VkCommandPool *pool, VkCommandBuffer *cb) {
+    int ok = 0;
+    pthread_mutex_lock(&g_seg_mu);
+    if (g_seg_ncmd) { g_seg_ncmd--; *pool = g_seg_cmd[g_seg_ncmd].pool; *cb = g_seg_cmd[g_seg_ncmd].cb; g_seg_hit_cmd++; ok = 1; }
+    pthread_mutex_unlock(&g_seg_mu);
+    // 重置放在取用的这一刻、由要用它的线程做：放回时（完成线程）就重置的话，两条线程会在驱动里抢同一把锁，
+    // 真机上「交后端」从 0.4 涨到 1.5–2.2 毫秒 / 帧
+    if (ok && vkResetCommandPool(g.d, *pool, 0) != VK_SUCCESS) { vkDestroyCommandPool(g.d, *pool, NULL); *pool = VK_NULL_HANDLE; *cb = VK_NULL_HANDLE; ok = 0; }
+    return ok;
+}
+static void seg_give_cmd(VkCommandPool pool, VkCommandBuffer cb) {   // 这一段已经做完（或被放弃），池里没有在用的命令缓冲
+    if (!pool) return;
+    int kept = 0;
+    if (cb && seg_reuse_on()) {
+        pthread_mutex_lock(&g_seg_mu);
+        if (!g_seg_closed && g_seg_ncmd < SEGPOOL_CMD_N) { g_seg_cmd[g_seg_ncmd].pool = pool; g_seg_cmd[g_seg_ncmd].cb = cb; g_seg_ncmd++; kept = 1; }
+        pthread_mutex_unlock(&g_seg_mu);
+    }
+    if (!kept) vkDestroyCommandPool(g.d, pool, NULL);   // 池同时回收它的命令缓冲
+}
+static VkDescriptorPool seg_take_desc(void) {
+    VkDescriptorPool p = VK_NULL_HANDLE;
+    pthread_mutex_lock(&g_seg_mu);
+    if (g_seg_ndesc) { p = g_seg_desc[--g_seg_ndesc]; g_seg_hit_desc++; }
+    pthread_mutex_unlock(&g_seg_mu);
+    if (p && vkResetDescriptorPool(g.d, p, 0) != VK_SUCCESS) { vkDestroyDescriptorPool(g.d, p, NULL); p = VK_NULL_HANDLE; }   // 同上：取用时重置
+    return p;
+}
+static void seg_give_desc(VkDescriptorPool p) {
+    if (!p) return;
+    int kept = 0;
+    if (seg_reuse_on()) {
+        pthread_mutex_lock(&g_seg_mu);
+        if (!g_seg_closed && g_seg_ndesc < SEGPOOL_DESC_N) { g_seg_desc[g_seg_ndesc++] = p; kept = 1; }
+        pthread_mutex_unlock(&g_seg_mu);
+    }
+    if (!kept) vkDestroyDescriptorPool(g.d, p, NULL);
+}
+// 同一张回收的账里再加两样（真机取样：池回收之后回放线程还有约 4.5% 在 nvn_gpu_buf_create → vkAllocateMemory、约 2.5% 在 vkCreateQueryPool）：
+// · 命令段的暂存缓冲（arena 的块，多数是 VK_ARENA_MIN 那么大）：整个缓冲对象留下，大小相同的直接再用。它一直留在 g.bufs 链里，
+//   会话收尾遍历那条链时一起销毁，所以清表只清计数。暂存区是先写后用的，旧内容不用清。
+// · 遮挡查询池：槽数相同的再用；开段时照旧整池重置。
+enum { SEGPOOL_STG_N = 32, SEGPOOL_Q_N = 16 };
+static struct nvn_gpu_buf_s *g_seg_stg[SEGPOOL_STG_N]; static uint32_t g_seg_nstg;
+static struct { VkQueryPool q; uint32_t n; } g_seg_q[SEGPOOL_Q_N]; static uint32_t g_seg_nq;
+static struct nvn_gpu_buf_s *seg_take_stg(uint64_t bytes) {
+    struct nvn_gpu_buf_s *b = NULL;
+    pthread_mutex_lock(&g_seg_mu);
+    for (uint32_t i = 0; i < g_seg_nstg; i++) if (g_seg_stg[i]->bytes == bytes) { b = g_seg_stg[i]; g_seg_stg[i] = g_seg_stg[--g_seg_nstg]; break; }
+    pthread_mutex_unlock(&g_seg_mu);
+    return b;
+}
+static int seg_give_stg(struct nvn_gpu_buf_s *b) {   // 1 = 留下了；0 = 没留，调用方照旧销毁
+    int kept = 0;
+    if (!seg_reuse_on() || !b->mapped) return 0;
+    pthread_mutex_lock(&g_seg_mu);
+    if (!g_seg_closed && g_seg_nstg < SEGPOOL_STG_N) { g_seg_stg[g_seg_nstg++] = b; kept = 1; }
+    pthread_mutex_unlock(&g_seg_mu);
+    return kept;
+}
+static VkQueryPool seg_take_q(uint32_t n) {
+    VkQueryPool q = VK_NULL_HANDLE;
+    pthread_mutex_lock(&g_seg_mu);
+    for (uint32_t i = 0; i < g_seg_nq; i++) if (g_seg_q[i].n == n) { q = g_seg_q[i].q; g_seg_q[i] = g_seg_q[--g_seg_nq]; break; }
+    pthread_mutex_unlock(&g_seg_mu);
+    return q;
+}
+static void seg_give_q(VkQueryPool q, uint32_t n) {
+    if (!q) return;
+    int kept = 0;
+    if (n && seg_reuse_on()) {
+        pthread_mutex_lock(&g_seg_mu);
+        if (!g_seg_closed && g_seg_nq < SEGPOOL_Q_N) { g_seg_q[g_seg_nq].q = q; g_seg_q[g_seg_nq].n = n; g_seg_nq++; kept = 1; }
+        pthread_mutex_unlock(&g_seg_mu);
+    }
+    if (!kept) vkDestroyQueryPool(g.d, q, NULL);
+}
+static void seg_drain(void) {
+    pthread_mutex_lock(&g_seg_mu);
+    for (uint32_t i = 0; i < g_seg_ncmd; i++) vkDestroyCommandPool(g.d, g_seg_cmd[i].pool, NULL);
+    for (uint32_t i = 0; i < g_seg_ndesc; i++) vkDestroyDescriptorPool(g.d, g_seg_desc[i], NULL);
+    for (uint32_t i = 0; i < g_seg_nq; i++) vkDestroyQueryPool(g.d, g_seg_q[i].q, NULL);
+    g_seg_ncmd = g_seg_ndesc = 0; g_seg_nq = 0; g_seg_nstg = 0; g_seg_closed = 1;   // 暂存缓冲在 g.bufs 链里，由收尾遍历销毁
+    pthread_mutex_unlock(&g_seg_mu);
+}
+
+// 贴图显存块的小池。动态分辨率的游戏每帧换渲染目标的宽高，每张新图都向驱动要一块显存、旧图拆的时候还回去：
+// 一款 3D 游戏每帧 10 张时「要显存并绑定」1.24 毫秒 + 拆 0.41 毫秒（直接计时）。拆贴图时把显存块留在池里，
+// 新图要的大小落在某块的 [块的 4/5, 块] 之间、内存类型相同就直接绑它（图已经拆了的显存块可以再绑给别的图）。
+// 池按先进先出，最多 TEXMEM_N 块、TEXMEM_BYTES 字节，超了把最老的还给驱动；会话收尾全部还掉。
+// 诊断开关 nvk_texmem=0 关掉（同一局里对照用），缺省开。
+enum { TEXMEM_N = 48 };
+#define TEXMEM_BYTES (256ull << 20)
+static struct { VkDeviceMemory m; VkDeviceSize size; uint32_t type; } g_texmem[TEXMEM_N];
+static uint32_t g_texmem_n; static VkDeviceSize g_texmem_bytes; static uint64_t g_texmem_hit, g_texmem_miss;
+static pthread_mutex_t g_texmem_mu = PTHREAD_MUTEX_INITIALIZER;
+static int texmem_on(void) { static int cur = -1; static uint32_t k; if (cur < 0 || !(++k & 63)) cur = nvn_plat_flag("nvk_texmem", 1) != 0; return cur; }
+static VkDeviceMemory texmem_take(VkDeviceSize need, uint32_t type, VkDeviceSize *size) {
+    VkDeviceMemory m = VK_NULL_HANDLE; int best = -1;
+    pthread_mutex_lock(&g_texmem_mu);
+    for (uint32_t i = 0; i < g_texmem_n; i++)
+        if (g_texmem[i].type == type && g_texmem[i].size >= need && g_texmem[i].size - g_texmem[i].size / 5 <= need &&
+            (best < 0 || g_texmem[i].size < g_texmem[best].size)) best = (int)i;
+    if (best >= 0) { m = g_texmem[best].m; *size = g_texmem[best].size; g_texmem_bytes -= g_texmem[best].size;
+        memmove(&g_texmem[best], &g_texmem[best + 1], (g_texmem_n - (uint32_t)best - 1) * sizeof g_texmem[0]); g_texmem_n--; g_texmem_hit++; }
+    else g_texmem_miss++;
+    pthread_mutex_unlock(&g_texmem_mu);
+    return m;
+}
+static void texmem_give(VkDevice d, VkDeviceMemory m, VkDeviceSize size, uint32_t type) {
+    if (!m) return;
+    if (!size || size > TEXMEM_BYTES / 4 || !texmem_on()) { vkFreeMemory(d, m, NULL); return; }
+    VkDeviceMemory out[TEXMEM_N + 1]; uint32_t nout = 0;
+    pthread_mutex_lock(&g_texmem_mu);
+    while (g_texmem_n && (g_texmem_n == TEXMEM_N || g_texmem_bytes + size > TEXMEM_BYTES)) {   // 最老的在前
+        out[nout++] = g_texmem[0].m; g_texmem_bytes -= g_texmem[0].size;
+        memmove(&g_texmem[0], &g_texmem[1], (g_texmem_n - 1) * sizeof g_texmem[0]); g_texmem_n--; }
+    g_texmem[g_texmem_n].m = m; g_texmem[g_texmem_n].size = size; g_texmem[g_texmem_n].type = type; g_texmem_n++; g_texmem_bytes += size;
+    pthread_mutex_unlock(&g_texmem_mu);
+    for (uint32_t i = 0; i < nout; i++) vkFreeMemory(d, out[i], NULL);
+}
+static void texmem_drain(VkDevice d) {
+    pthread_mutex_lock(&g_texmem_mu);
+    for (uint32_t i = 0; i < g_texmem_n; i++) vkFreeMemory(d, g_texmem[i].m, NULL);
+    g_texmem_n = 0; g_texmem_bytes = 0;
+    pthread_mutex_unlock(&g_texmem_mu);
+}
+
 // 调用方持 g_mu。贴图 / 视图没有 retired 回调，最后一次引用结束即可销毁。
 static void destroy_tex_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_tex_s *t) {
     newimg_del_locked(t);
     struct nvn_gpu_tex_s **pp = &vk->texs;
     while (*pp && *pp != t) pp = &(*pp)->all_next;
     if (*pp) *pp = t->all_next;
+    LIFE_T0;
+    pc_drop_view(t->view); LIFE_ADD(6);
     if (t->view) vkDestroyImageView(vk->d, t->view, NULL);
     if (t->image) vkDestroyImage(vk->d, t->image, NULL);
-    if (t->memory) vkFreeMemory(vk->d, t->memory, NULL);
+    texmem_give(vk->d, t->memory, t->mem_size, t->mem_type);
+    LIFE_ADD(7);
     free(t);
 }
 
@@ -365,8 +574,11 @@ static void destroy_view_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_view_s *v)
     struct nvn_gpu_view_s **pp = &vk->views;
     while (*pp && *pp != v) pp = &(*pp)->all_next;
     if (*pp) *pp = v->all_next;
+    LIFE_T0;
+    pc_drop_view(v->att); pc_drop_view(v->view); LIFE_ADD(6);
     if (v->att) vkDestroyImageView(vk->d, v->att, NULL);
     if (v->view) vkDestroyImageView(vk->d, v->view, NULL);
+    LIFE_ADD(5);
     if (v->buffer_view) vkDestroyBufferView(vk->d, v->buffer_view, NULL);
     struct nvn_gpu_tex_s *t = v->tex;
     struct nvn_gpu_buf_s *b = v->buf;
@@ -541,8 +753,13 @@ static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
     c->min_ubo_align = (uint32_t)l->minUniformBufferOffsetAlignment;
     c->min_ssbo_align = (uint32_t)l->minStorageBufferOffsetAlignment;
     c->max_ubo_range = l->maxUniformBufferRange;
-    c->max_ssbo_range = l->maxStorageBufferRange;
-    c->max_buf_bytes = l->maxStorageBufferRange;
+    c->max_ssbo_range = l->maxStorageBufferRange;   // 描述符「范围」上限（不等于单次分配上限）
+    // 单次分配上限来自 VkPhysicalDeviceMaintenance3Properties.maxMemoryAllocationSize（Vulkan 1.1）；
+    // 以前这里错用了 maxStorageBufferRange，于是任何大于 128 MiB 的池镜像都建不出来。
+    { VkPhysicalDeviceMaintenance3Properties m3; memset(&m3, 0, sizeof m3); m3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
+      VkPhysicalDeviceProperties2 p2; memset(&p2, 0, sizeof p2); p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; p2.pNext = &m3;
+      vkGetPhysicalDeviceProperties2(vk->phys, &p2);
+      c->max_buf_bytes = m3.maxMemoryAllocationSize ? m3.maxMemoryAllocationSize : (uint64_t)l->maxStorageBufferRange; }
     c->max_stage_res[NVN_GPU_RES_UBO] = l->maxPerStageDescriptorUniformBuffers;
     c->max_stage_res[NVN_GPU_RES_SSBO] = l->maxPerStageDescriptorStorageBuffers;
     c->max_stage_res[NVN_GPU_RES_TEX] = l->maxPerStageDescriptorSampledImages;
@@ -635,6 +852,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     for (uint32_t i = 0; i < c->nstaging; i++) {
         struct nvn_gpu_buf_s *b = c->staging[i].buf;
         if (!b) continue;
+        if (seg_give_stg(b)) continue;
         pthread_mutex_lock(&g_mu);
         unlink_buf_locked(&g, b);
         pthread_mutex_unlock(&g_mu);
@@ -648,13 +866,21 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
         if (c->passes[i].rp) vkDestroyRenderPass(g.d, c->passes[i].rp, NULL);
     }
     free(c->passes);
+    free(c->memo);
     for (int i = 0; i < 6; i++) free(c->push_data[i]);
-    if (c->dpool) vkDestroyDescriptorPool(g.d, c->dpool, NULL);
-    for (uint32_t i = 0; i < c->ndpools_full; i++) vkDestroyDescriptorPool(g.d, c->dpools_full[i], NULL);
+    seg_give_desc(c->dpool);
+    for (uint32_t i = 0; i < c->ndpools_full; i++) seg_give_desc(c->dpools_full[i]);
     free(c->dpools_full);
-    if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
+    if (c->tsq) vkDestroyQueryPool(g.d, c->tsq, NULL);
+        seg_give_q(c->qpool, c->qcount);
     free(c->q_used);
-    if (c->pool) vkDestroyCommandPool(g.d, c->pool, NULL);   // pool 同时回收 command buffer
+    while (c->bc_temps) {
+        struct bc_temp *b = c->bc_temps; c->bc_temps = b->next;
+        if (b->image) vkDestroyImage(g.d, b->image, NULL);
+        if (b->memory) vkFreeMemory(g.d, b->memory, NULL);
+        free(b);
+    }
+    seg_give_cmd(c->pool, c->cb);
     free(c->refs);
     free(c->staging);
     free(c);
@@ -695,6 +921,36 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
             code = rc(r == VK_ERROR_DEVICE_LOST ? NVN_GPU_E_DEVICE : NVN_GPU_E_FAILED);
             why = r == VK_ERROR_DEVICE_LOST ? "设备丢失" : "等待栅栏失败";
         } else {
+            if (s->cmd && s->cmd->tsq && !s->internal) {   // 调试读数：这一段在 GPU 上首尾相隔多久；相邻两段之间 GPU 空了多久
+                static double period; static uint64_t n, sum, mx, last_end, gap, t_first;
+                if (period == 0) { VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(g.phys, &pp); period = pp.limits.timestampPeriod > 0 ? pp.limits.timestampPeriod : 1; }
+                uint64_t ts[2] = {0, 0};
+                if (vkGetQueryPoolResults(vk->d, s->cmd->tsq, 0, 2, sizeof ts, ts, sizeof ts[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ts[1] >= ts[0]) {
+                    uint64_t d = (uint64_t)((double)(ts[1] - ts[0]) * period), b = (uint64_t)((double)ts[0] * period), e = (uint64_t)((double)ts[1] * period);
+                    if (!n) t_first = b;
+                    if (last_end && b > last_end) gap += b - last_end;
+                    last_end = e; n++; sum += d; if (d > mx) mx = d;
+                    {   // 逐通道：按尺寸归拢（同尺寸的算一类），每 400 段报耗时最多的 6 类
+                        static struct { uint32_t key, n, draws, ds; uint64_t ns; } bk[48]; static int nbk;
+                        static uint64_t pts[2 * TS_PASS_MAX];
+                        uint32_t np = s->cmd->ntsp;
+                        if (np && vkGetQueryPoolResults(vk->d, s->cmd->tsq, 2, 2 * np, sizeof pts[0] * 2 * np, pts, sizeof pts[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+                            for (uint32_t i = 0; i < np; i++) { uint32_t key = (uint32_t)s->cmd->tsp[i].w << 16 | s->cmd->tsp[i].h; int k = 0;
+                                while (k < nbk && bk[k].key != key) k++;
+                                if (k == nbk) { if (nbk == 48) continue; bk[nbk++].key = key; bk[k].n = bk[k].draws = bk[k].ds = 0; bk[k].ns = 0; }
+                                bk[k].n++; bk[k].draws += s->cmd->tsp[i].draws; bk[k].ds += s->cmd->tsp[i].ds;
+                                if (pts[2 * i + 1] >= pts[2 * i]) bk[k].ns += (uint64_t)((double)(pts[2 * i + 1] - pts[2 * i]) * period); }
+                        if (n == 400) { char l2[420]; size_t o = 0; l2[0] = 0;
+                            for (int r = 0; r < 6 && r < nbk; r++) { int best = r; for (int k = r + 1; k < nbk; k++) if (bk[k].ns > bk[best].ns) best = k;
+                                if (best != r) { __typeof__(bk[0]) t = bk[r]; bk[r] = bk[best]; bk[best] = t; }
+                                o += (size_t)snprintf(l2 + o, sizeof l2 - o, "%s%ux%u：%u 个通道（带深度 %u）%u 笔 %.0f 毫秒", r ? "；" : "", bk[r].key >> 16, bk[r].key & 0xffff, bk[r].n, bk[r].ds, bk[r].draws, (double)bk[r].ns / 1e6); if (o >= sizeof l2) break; }
+                            char l3[480]; snprintf(l3, sizeof l3, "GPU 时间（按通道尺寸，同样这 400 段）：%s", l2); nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l3); nbk = 0; }
+                    }
+                    if (n == 400) { char line[300]; snprintf(line, sizeof line, "GPU 时间：%llu 段，段内首尾平均 %.2f 毫秒、最长 %.2f 毫秒；这些段前后共 %.0f 毫秒，其中 GPU 在段内 %.0f 毫秒、段与段之间空着 %.0f 毫秒",
+                                                         (unsigned long long)n, (double)sum / 1e6 / (double)n, (double)mx / 1e6, (double)(e - t_first) / 1e6, (double)sum / 1e6, (double)gap / 1e6);
+                                    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line); n = 0; sum = mx = gap = 0; }
+                }
+            }
             // 前面的段已经把时间线打进失败终态时，本段即使执行完也不许发布成功（A4）。
             pthread_mutex_lock(&g_mu);
             int terminal = vk->failed && s->signal >= vk->failed;
@@ -779,6 +1035,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
     memset(&g, 0, sizeof g);
     g.dev = dev;
     g.d = dev->device;
+    vk_dq_init(g.d);
     g.phys = dev->physical;
     g.queue = dev->queue;
     if (!g_cv_ready) {
@@ -796,6 +1053,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
     if (pthread_create(&g.worker, NULL, worker_main, &g) != 0)
         return fail(err, NVN_GPU_E_DEVICE, "worker 线程创建失败");
     g.worker_started = 1;
+    pthread_mutex_lock(&g_seg_mu); g_seg_closed = 0; pthread_mutex_unlock(&g_seg_mu);
     g_open = 1;
     return rc(NVN_GPU_OK);
 }
@@ -817,11 +1075,10 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     int expand = nvn_fmt_info_of(nvn_format, &info) && info.expand;
     VkFormat f = nvn_vk_tex_format(nvn_format);
     if (f == VK_FORMAT_UNDEFINED) return 0;
-    // #1199：走 compute 解码的 BC 格式按解码后格式报能力（图像实际就是该格式）。
+    int bcdec = 0;   // 这个块压缩格式在本设备上走计算解码
     if (nvn_format >= 0x41 && nvn_format <= 0x50 && (g.dev->bc_decode_mask >> (nvn_format - 0x41)) & 1u) {
-        VkFormat dfmt = VK_FORMAT_UNDEFINED;
-        if (!nvn_vk_bcdec_route(nvn_format, NULL, &dfmt, NULL, NULL, NULL) || dfmt == VK_FORMAT_UNDEFINED) return 0;
-        f = dfmt;
+        if (!nvn_vk_bcdec_route(nvn_format, NULL, &f, NULL, NULL, NULL)) return 0;
+        bcdec = 1;
     }
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(g.phys, f, &p);
@@ -844,6 +1101,9 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
         if (sf != VK_FORMAT_UNDEFINED) vkGetPhysicalDeviceFormatProperties(g.phys, sf, &sp);
         if (!(sp.optimalTilingFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) out &= ~NVN_GPU_FMT_VERTEX;
     }
+    // 走计算解码的块压缩格式：能力是照「解码后的格式」查的，但它只能被采样——建图入口不收渲染 / 存储用途。
+    // 把解码后格式的「可存储」原样报出去，核心会给带 IMAGE 标志的压缩贴图加存储用途，建图就被拒（#697：Mali 上 5 种格式的贴图全建不出来，背景全黑）。
+    if (bcdec) out &= NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_FILTER;
     return out;
 }
 
@@ -893,6 +1153,23 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         deadline_after(&ts, deadline - now);
         pthread_cond_timedwait(&g_cv, &g_mu, &ts);
     }
+    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_submit_mu);
+    uint64_t now = now_ns();
+    int bc_wait = nvn_vk_bcdec_wait(g.dev, g.bc, now < deadline ? deadline - now : 0);
+    if (bc_wait != 0) {
+        pthread_mutex_unlock(&g_submit_mu);
+        pthread_mutex_lock(&g_mu); g.close_active = 0; pthread_mutex_unlock(&g_mu);
+        return fail(err, NVN_GPU_E_TIMEOUT, "close 时限内 BC 解码未证明完成（保留资源，可再调一次）");
+    }
+    while (g.bc_pending) {
+        struct bc_temp *b = g.bc_pending; g.bc_pending = b->next;
+        if (b->image) vkDestroyImage(g.d, b->image, NULL);
+        if (b->memory) vkFreeMemory(g.d, b->memory, NULL);
+        free(b);
+    }
+    pthread_mutex_unlock(&g_submit_mu);
+    pthread_mutex_lock(&g_mu);
     g.stop = 1;
     pthread_cond_broadcast(&g_cv);
     pthread_mutex_unlock(&g_mu);
@@ -916,6 +1193,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     clr_close();
     struct nvn_gpu_pipe_s *p = g.pipes;
     g.pipes = NULL;
+    memset(g_pipe_ht, 0, sizeof g_pipe_ht);
     while (p) {
         struct nvn_gpu_pipe_s *pn = p->all_next;
         destroy_pipe_objects(p);
@@ -940,6 +1218,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         free(sp);
         sp = sn;
     }
+    pc_destroy_all();
     struct nvn_gpu_view_s *vw = g.views;
     g.views = NULL;
     while (vw) {
@@ -960,6 +1239,9 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         free(tx);
         tx = tn;
     }
+    texmem_drain(g.d);
+    seg_drain();
+    if (g.bc) nvn_vk_bcdec_destroy(g.dev, g.bc);
     free(g.submitted);
     g.submitted = NULL;
     g.nsub = g.capsub = 0;
@@ -989,7 +1271,9 @@ nvn_gpu_rc nvn_gpu_buf_create(uint64_t bytes, int mem, const void *init, nvn_gpu
     int closing = g.closing;
     pthread_mutex_unlock(&g_mu);
     if (closing) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭");
-    if (bytes == 0 || bytes > g.caps.max_buf_bytes) return fail(err, NVN_GPU_E_ARG, "bytes 非法：%llu", (unsigned long long)bytes);
+    if (bytes == 0 || bytes > g.caps.max_buf_bytes)
+        return fail(err, NVN_GPU_E_ARG, "申请 %llu 字节：超出单次分配上限 %llu（maxMemoryAllocationSize；SSBO 描述符范围上限 %llu 是另一项）",
+                    (unsigned long long)bytes, (unsigned long long)g.caps.max_buf_bytes, (unsigned long long)g.caps.max_ssbo_range);
     if (mem != NVN_GPU_MEM_SHARED && mem != NVN_GPU_MEM_DEVICE) return fail(err, NVN_GPU_E_ARG, "mem 非法");
     if (mem == NVN_GPU_MEM_DEVICE && init) return fail(err, NVN_GPU_E_ARG, "DEVICE 内存不能带 init");
 
@@ -1094,8 +1378,8 @@ void nvn_gpu_buf_use(nvn_gpu_cmd ch, nvn_gpu_buf bh) {
 
 static struct nvn_gpu_buf_s *new_staging(struct nvn_gpu_cmd_s *c, uint64_t cap) {
     nvn_gpu_err e;
-    nvn_gpu_buf b = NULL;
-    if (!rc_is(nvn_gpu_buf_create(cap, NVN_GPU_MEM_SHARED, NULL, &b, &e), NVN_GPU_OK)) return NULL;
+    nvn_gpu_buf b = seg_reuse_on() ? seg_take_stg(cap) : NULL;
+    if (!b && !rc_is(nvn_gpu_buf_create(cap, NVN_GPU_MEM_SHARED, NULL, &b, &e), NVN_GPU_OK)) return NULL;
     if (c->nstaging == c->scap) {
         uint32_t n = c->scap ? c->scap * 2 : 4;
         struct vk_staging *p = realloc(c->staging, (size_t)n * sizeof *p);
@@ -1667,6 +1951,7 @@ static VkRenderPass make_pipeline_pass(const nvn_gpu_pipe_desc *d) {
     rp.dependencyCount = 2;
     rp.pDependencies = dep;
     VkRenderPass pass = VK_NULL_HANDLE;
+    OC(OC_RP);
     if (vkCreateRenderPass(g.d, &rp, NULL, &pass) != VK_SUCCESS) return VK_NULL_HANDLE;
     return pass;
 }
@@ -1674,6 +1959,20 @@ static VkRenderPass make_pipeline_pass(const nvn_gpu_pipe_desc *d) {
 static int same_spec(const nvn_gpu_stage_desc *a, const nvn_gpu_stage_desc *b) {
     if (a->sh != b->sh || a->nspec != b->nspec) return 0;
     return a->nspec == 0 || memcmp(a->spec, b->spec, (size_t)a->nspec * sizeof *a->spec) == 0;
+}
+
+// 图形管线按描述散列成桶。原先在全部管线的一条链表里逐条比：一款 3D 游戏几百条管线、每帧取 513 次，
+// 真机上管线数翻一倍「开通道与取管线」每帧就多 1.3 毫秒（同一局里两种写法的管线并存时量到的）。
+// 散列只取描述里一部分字段（都是 same_pipe_desc 逐字节 / 逐值比的），相等与否仍由 same_pipe_desc 定。
+static uint32_t pipe_hash(const nvn_gpu_pipe_desc *d) {
+    uint64_t h = 1469598103934665603ull;
+#define PH(p, n) do { const uint8_t *q_ = (const uint8_t *)(p); for (size_t i_ = 0; i_ < (size_t)(n); i_++) h = (h ^ q_[i_]) * 1099511628211ull; } while (0)
+    for (int i = 0; i < 5; i++) { uintptr_t sh = (uintptr_t)d->st[i].sh; PH(&sh, sizeof sh); }
+    uint32_t v[4] = {(uint32_t)d->prim, (uint32_t)d->dfmt, (uint32_t)d->sfmt, (uint32_t)d->samples}; PH(v, sizeof v);
+    PH(d->cfmt, sizeof d->cfmt); PH(d->blend, sizeof d->blend); PH(&d->color, sizeof d->color); PH(&d->chmask, sizeof d->chmask);
+    PH(&d->ds, sizeof d->ds); PH(&d->poly, sizeof d->poly);
+#undef PH
+    return (uint32_t)(h ^ h >> 32);
 }
 
 static int same_pipe_desc(const nvn_gpu_pipe_desc *a, const nvn_gpu_pipe_desc *b) {
@@ -1712,6 +2011,10 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
     if (!d) return fail(err, NVN_GPU_E_ARG, "管线描述为空");
+    // NVN POINT=0 / LINE=1 / FILL=2；完整 poly 已由 same_pipe_desc 纳入缓存键。
+    if (d->poly.mode > 2) return fail(err, NVN_GPU_E_ARG, "未知多边形填充模式 %u", (unsigned)d->poly.mode);
+    if (d->poly.mode != 2 && !g.dev->core_features.fillModeNonSolid)
+        return fail(err, NVN_GPU_E_UNSUPPORTED, "非填充多边形需要已启用的 fillModeNonSolid");
     // 片元阶段可以没有：只写深度的管线（深度预通道、阴影图），颜色附件上没有输出
     if (!d->st[NVN_GPU_SH_VS].sh)
         return fail(err, NVN_GPU_E_ARG, "图形管线至少需要顶点阶段");
@@ -1721,9 +2024,17 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     for (int i = 2; i < 5; i++)
         if (d->st[i].sh) return fail(err, NVN_GPU_E_UNSUPPORTED, "几何 / 细分阶段：本段未实现");
 
+    const uint32_t hb = pipe_hash(d) % PIPE_HT_N;
     pthread_mutex_lock(&g_mu);
-    for (struct nvn_gpu_pipe_s *q = g.pipes; q; q = q->all_next) {
+    static int scan = -1; static uint32_t scan_n;   // 诊断开关 nvk_pipe_scan=1：走原来的整表逐条比（同一局里对比用），每 256 次取管线读一次
+    if (scan < 0 || !(++scan_n & 255)) scan = nvn_plat_flag("nvk_pipe_scan", 0) != 0;
+    struct timespec lk0; clock_gettime(CLOCK_MONOTONIC, &lk0); uint32_t steps = 0;
+    for (struct nvn_gpu_pipe_s *q = scan ? g.pipes : g_pipe_ht[hb]; q; q = scan ? q->all_next : q->hnext) {
+        steps++;
         if (same_pipe_desc(&q->key, d)) {
+            { struct timespec lk1; clock_gettime(CLOCK_MONOTONIC, &lk1);   // 诊断读数：查找这一段用了多久、比了多少条（随对象读数那几行打）
+              __atomic_fetch_add(&g_pl_ns, (uint64_t)(lk1.tv_sec - lk0.tv_sec) * 1000000000ull + (uint64_t)lk1.tv_nsec - (uint64_t)lk0.tv_nsec, __ATOMIC_RELAXED);
+              __atomic_fetch_add(&g_pl_n, 1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_pl_steps, steps, __ATOMIC_RELAXED); }
             pthread_mutex_unlock(&g_mu);
             *out = q;   // 后端缓存持有，核心不 release
             return rc(NVN_GPU_OK);
@@ -1908,7 +2219,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     VkPipelineRasterizationStateCreateInfo rs;
     memset(&rs, 0, sizeof rs);
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.polygonMode = d->poly.mode == 0 ? VK_POLYGON_MODE_POINT : d->poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     rs.cullMode = d->poly.cull == 1 ? VK_CULL_MODE_FRONT_BIT : d->poly.cull == 2 ? VK_CULL_MODE_BACK_BIT
                  : d->poly.cull == 3 ? VK_CULL_MODE_FRONT_AND_BACK : VK_CULL_MODE_NONE;
     // 正面绕序（契约 v6）：poly.front 是 y 朝上的规范化设备坐标里的绕序。Vulkan 在帧缓冲坐标（y 朝下）里判正面：
@@ -1917,7 +2228,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
       rs.frontFace = ccw_fb ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE; }
     rs.lineWidth = 1.0f;
     rs.depthClampEnable = d->depth_clamp ? VK_TRUE : VK_FALSE;   // 设备特性 depthClamp 是必需项（vk_device.c）
-    rs.depthBiasEnable = d->poly.offset_en & 4 ? VK_TRUE : VK_FALSE;   // NVN 偏移开关的填充位（现在只建填充模式的管线）；三个量走动态状态
+    rs.depthBiasEnable = (d->poly.offset_en & (1u << d->poly.mode)) ? VK_TRUE : VK_FALSE;   // NVN 点 / 线 / 填充偏移位分别为 1 / 2 / 4
     rs.rasterizerDiscardEnable = d->rast_discard ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo ms;
@@ -2052,6 +2363,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     pthread_mutex_lock(&g_mu);
     p->all_next = g.pipes;
     g.pipes = p;
+    p->hnext = g_pipe_ht[hb]; g_pipe_ht[hb] = p;
     pthread_mutex_unlock(&g_mu);
     *out = p;
     return rc(NVN_GPU_OK);
@@ -2178,7 +2490,7 @@ nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pip
 // 第一次当附件时另建一个，随视图销毁。建不出来回空。
 static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
     struct nvn_gpu_tex_s *t = v->tex;
-    if (v->levels == 1 && v->layers == 1 && v->type == VK_IMAGE_VIEW_TYPE_2D && v->aspect == t->aspect) return v->view;
+    if (!v->swizzled && v->levels == 1 && v->layers == 1 && v->type == VK_IMAGE_VIEW_TYPE_2D && v->aspect == t->aspect) return v->view;
     pthread_mutex_lock(&g_mu);
     int image3d = t->target == NVN_TEXTURE_TARGET_3D && t->depth > 1;
     if (!v->att && !(image3d && !t->array_compatible)) {
@@ -2189,13 +2501,72 @@ static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
         ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         ci.format = v->format ? v->format : t->format;
         ci.subresourceRange = (VkImageSubresourceRange){t->aspect, v->base_level, 1, image3d ? v->att_layer : v->base_layer, 1};
-        if (vkCreateImageView(g.d, &ci, NULL, &v->att) != VK_SUCCESS) v->att = VK_NULL_HANDLE;
+        OC(OC_VIEW);
+        { LIFE_T0; if (vkCreateImageView(g.d, &ci, NULL, &v->att) != VK_SUCCESS) v->att = VK_NULL_HANDLE; LIFE_ADD(4); }
     }
     VkImageView r = v->att;
     pthread_mutex_unlock(&g_mu);
     return r;
 }
 
+static pthread_mutex_t g_pc_mu = PTHREAD_MUTEX_INITIALIZER;
+// 开关每 128 个通道重读一次（真机上同一局里来回切着比）；一个通道从头到尾用开头读到的那个值（g_pc_use，只在回放线程上动）
+static int g_pc_use = 1;
+static int pc_on(void) { static int on = -1; static uint32_t n; if (on < 0 || !(++n & 127)) on = nvn_plat_flag("nvk_pass_cache", 1) != 0; return on; }
+struct pc_rp { uint32_t natt, ncol; int has_depth; VkAttachmentDescription att[9]; VkAttachmentReference col[8], dref; VkRenderPass rp; };
+static struct pc_rp *g_pc_rp; static uint32_t g_pc_nrp, g_pc_rpcap;
+enum { PC_FB_N = 2048, PC_FB_PROBE = 24 };
+struct pc_fb { VkRenderPass rp; uint32_t natt, w, h, layers; VkImageView v[9]; VkFramebuffer fb; int tomb; };
+static struct pc_fb g_pc_fb[PC_FB_N];
+static VkRenderPass pc_pass(const VkRenderPassCreateInfo *ci, const VkAttachmentDescription *att, uint32_t natt, const VkAttachmentReference *col, uint32_t ncol, const VkAttachmentReference *dref) {
+    VkRenderPass pass = VK_NULL_HANDLE;
+    if (!g_pc_use || natt > 9 || ncol > 8) { OC(OC_RP); return vkCreateRenderPass(g.d, ci, NULL, &pass) == VK_SUCCESS ? pass : VK_NULL_HANDLE; }
+    struct pc_rp k; memset(&k, 0, sizeof k); k.natt = natt; k.ncol = ncol; k.has_depth = dref != NULL;
+    memcpy(k.att, att, natt * sizeof *att); memcpy(k.col, col, ncol * sizeof *col); if (dref) k.dref = *dref;
+    pthread_mutex_lock(&g_pc_mu);
+    for (uint32_t i = 0; i < g_pc_nrp; i++) if (!memcmp(&g_pc_rp[i], &k, offsetof(struct pc_rp, rp))) { pass = g_pc_rp[i].rp; pthread_mutex_unlock(&g_pc_mu); return pass; }
+    OC(OC_RP);
+    if (vkCreateRenderPass(g.d, ci, NULL, &pass) != VK_SUCCESS) { pthread_mutex_unlock(&g_pc_mu); return VK_NULL_HANDLE; }
+    if (g_pc_nrp == g_pc_rpcap) { uint32_t cap = g_pc_rpcap ? g_pc_rpcap * 2 : 64; struct pc_rp *n = realloc(g_pc_rp, cap * sizeof *n); if (n) { g_pc_rp = n; g_pc_rpcap = cap; } }
+    if (g_pc_nrp < g_pc_rpcap) { k.rp = pass; g_pc_rp[g_pc_nrp++] = k; }   // 记不下（内存不够）：这个对象留到会话结束也没人销毁；只在分配失败时发生
+    pthread_mutex_unlock(&g_pc_mu);
+    return pass;
+}
+static VkFramebuffer pc_fb(const VkFramebufferCreateInfo *fi, int *cached) {
+    VkFramebuffer fb = VK_NULL_HANDLE; *cached = 0;
+    if (!g_pc_use || fi->attachmentCount > 9) { OC(OC_FB); return vkCreateFramebuffer(g.d, fi, NULL, &fb) == VK_SUCCESS ? fb : VK_NULL_HANDLE; }
+    uint64_t h = (uint64_t)(uintptr_t)fi->renderPass * 0x9E3779B97F4A7C15ull ^ ((uint64_t)fi->width << 40 | (uint64_t)fi->height << 16 | fi->layers);
+    for (uint32_t i = 0; i < fi->attachmentCount; i++) h = (h ^ (uint64_t)(uintptr_t)fi->pAttachments[i]) * 0x100000001B3ull;
+    pthread_mutex_lock(&g_pc_mu);
+    int slot = -1;
+    for (uint32_t p = 0; p < PC_FB_PROBE; p++) {
+        struct pc_fb *e = &g_pc_fb[(h + p) % PC_FB_N];
+        if (!e->fb) { if (slot < 0) slot = (int)((h + p) % PC_FB_N); if (!e->tomb) break; continue; }
+        if (e->rp == fi->renderPass && e->natt == fi->attachmentCount && e->w == fi->width && e->h == fi->height && e->layers == fi->layers &&
+            !memcmp(e->v, fi->pAttachments, fi->attachmentCount * sizeof(VkImageView))) { fb = e->fb; *cached = 1; pthread_mutex_unlock(&g_pc_mu); return fb; }
+    }
+    OC(OC_FB);
+    { LIFE_T0; VkResult fr_ = vkCreateFramebuffer(g.d, fi, NULL, &fb); LIFE_ADD(3); if (fr_ != VK_SUCCESS) { pthread_mutex_unlock(&g_pc_mu); return VK_NULL_HANDLE; } }
+    if (slot >= 0) { struct pc_fb *e = &g_pc_fb[slot]; memset(e, 0, sizeof *e); e->rp = fi->renderPass; e->natt = fi->attachmentCount; e->w = fi->width; e->h = fi->height; e->layers = fi->layers;
+        memcpy(e->v, fi->pAttachments, fi->attachmentCount * sizeof(VkImageView)); e->fb = fb; *cached = 1; }
+    pthread_mutex_unlock(&g_pc_mu);
+    return fb;
+}
+static void pc_drop_view(VkImageView v) {
+    if (!v) return;
+    pthread_mutex_lock(&g_pc_mu);
+    for (uint32_t i = 0; i < PC_FB_N; i++) { struct pc_fb *e = &g_pc_fb[i]; if (!e->fb) continue;
+        for (uint32_t k = 0; k < e->natt; k++) if (e->v[k] == v) { vkDestroyFramebuffer(g.d, e->fb, NULL); memset(e, 0, sizeof *e); e->tomb = 1; break; } }
+    pthread_mutex_unlock(&g_pc_mu);
+}
+static void pc_destroy_all(void) {
+    pthread_mutex_lock(&g_pc_mu);
+    for (uint32_t i = 0; i < PC_FB_N; i++) if (g_pc_fb[i].fb) vkDestroyFramebuffer(g.d, g_pc_fb[i].fb, NULL);
+    memset(g_pc_fb, 0, sizeof g_pc_fb);
+    for (uint32_t i = 0; i < g_pc_nrp; i++) vkDestroyRenderPass(g.d, g_pc_rp[i].rp, NULL);
+    free(g_pc_rp); g_pc_rp = NULL; g_pc_nrp = g_pc_rpcap = 0;
+    pthread_mutex_unlock(&g_pc_mu);
+}
 static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9], VkAttachmentDescription att[9],
                               VkAttachmentReference col[8], VkAttachmentReference *dref, uint32_t *natt_out, int *has_depth) {
     VkAttachmentReference stencil_ref;
@@ -2278,9 +2649,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
     rp.dependencyCount = 2;
     rp.pDependencies = dep;
     *natt_out = natt;
-    VkRenderPass pass = VK_NULL_HANDLE;
-    if (vkCreateRenderPass(g.d, &rp, NULL, &pass) != VK_SUCCESS) return VK_NULL_HANDLE;
-    return pass;
+    return pc_pass(&rp, att, natt, col, ncol, *has_depth ? dref : NULL);
 }
 
 static void image_barrier(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, VkImageLayout to);
@@ -2289,16 +2658,16 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "pass_begin 时已在通道里"); return; }
+    es_reset(c);   // 冗余状态消除：新通道先保守地全部重发（#708）
     if (!d || (!d->ncolor && !d->depth.view && !d->stencil.view) || !d->w || !d->h) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 参数非法（没有任何附件，或尺寸为 0）"); return; }
     if (d->depth.view && d->stencil.view && d->depth.view != d->stencil.view) { set_sticky(c, NVN_GPU_E_ARG, "pass_begin 的深度与模板必须是同一个视图"); return; }
-    for (uint32_t i = 0; i < d->ncolor && i < 8; i++)
-        if (d->color[i].view && d->color[i].view->swizzled) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "颜色附件 %u 的视图带通道映射（Vulkan 附件视图必须恒等）", i); return; }
     VkImageView fb_views[9];
     VkAttachmentDescription att[9];
     VkAttachmentReference col[8];
     VkAttachmentReference dref = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     uint32_t natt = 0;
     int has_depth = 0;
+    g_pc_use = pc_on();
     VkRenderPass pass = make_pass(d, fb_views, att, col, &dref, &natt, &has_depth);
     if (!pass) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "渲染通道创建失败（附件格式 / 采样数）"); return; }
     VkFramebufferCreateInfo fi;
@@ -2310,9 +2679,10 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     fi.width = d->w;
     fi.height = d->h;
     fi.layers = d->layers ? d->layers : 1;
-    VkFramebuffer fb = VK_NULL_HANDLE;
-    if (vkCreateFramebuffer(g.d, &fi, NULL, &fb) != VK_SUCCESS) {
-        vkDestroyRenderPass(g.d, pass, NULL);
+    int fb_cached = 0;
+    VkFramebuffer fb = pc_fb(&fi, &fb_cached);
+    if (!fb) {
+        if (!g_pc_use) vkDestroyRenderPass(g.d, pass, NULL);
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "vkCreateFramebuffer 失败");
         return;
     }
@@ -2331,6 +2701,10 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     bi.renderArea.extent = (VkExtent2D){d->w, d->h};
     bi.clearValueCount = natt;
     bi.pClearValues = clear;
+    if (c->tsq && c->ntsp < TS_PASS_MAX) {
+        c->tsp[c->ntsp].w = (uint16_t)d->w; c->tsp[c->ntsp].h = (uint16_t)d->h; c->tsp[c->ntsp].draws = 0; c->tsp[c->ntsp].ncol = (uint8_t)(has_depth ? natt - 1 : natt); c->tsp[c->ntsp].ds = (uint8_t)has_depth;
+        vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, c->tsq, 2 + 2 * c->ntsp);
+    }
     vkCmdBeginRenderPass(c->cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
     c->in_pass = 1;
     c->pass_occl = d->occlusion;
@@ -2355,11 +2729,12 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     if (c->npasses == c->passcap) {
         uint32_t cap = c->passcap ? c->passcap * 2 : 8;
         struct pass_rec *np = realloc(c->passes, cap * sizeof *np);
-        if (!np) { vkDestroyFramebuffer(g.d, fb, NULL); vkDestroyRenderPass(g.d, pass, NULL); set_sticky(c, NVN_GPU_E_OOM, "通道列表分配失败"); return; }
+        if (!np) { if (!fb_cached) vkDestroyFramebuffer(g.d, fb, NULL); if (!g_pc_use) vkDestroyRenderPass(g.d, pass, NULL); set_sticky(c, NVN_GPU_E_OOM, "通道列表分配失败"); return; }
         c->passes = np;
         c->passcap = cap;
     }
-    c->passes[c->npasses++] = (struct pass_rec){pass, fb};
+    // 记在段上的只有「段做完要销毁」的：没进缓存的帧缓冲、缓存关着时的渲染通道对象
+    if (!fb_cached || !g_pc_use) c->passes[c->npasses++] = (struct pass_rec){g_pc_use ? VK_NULL_HANDLE : pass, fb_cached ? VK_NULL_HANDLE : fb};
 }
 
 void nvn_gpu_pass_end(nvn_gpu_cmd ch) {
@@ -2370,6 +2745,7 @@ void nvn_gpu_pass_end(nvn_gpu_cmd ch) {
     c->pass_occl = 0;
     vkCmdEndRenderPass(c->cb);
     c->in_pass = 0;
+    if (c->tsq && c->ntsp < TS_PASS_MAX) { vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, c->tsq, 3 + 2 * c->ntsp); c->ntsp++; }
     // 附件全程 GENERAL，不用转布局；写对后续采样 / 拷贝 / 再当附件可见由通道的出边依赖（make_pass dep[1]）保证
     // render pass / framebuffer 被已录制的命令引用，等 cmd 真正完成后再销毁（finish_cmd）。
 }
@@ -2447,6 +2823,19 @@ static int cmd_ref_texel_view(struct nvn_gpu_cmd_s *c, nvn_gpu_view handle, uint
     return 1;
 }
 
+// 不比较 union 的未用字节 / padding；缓冲偏移、范围及数组元素都是绑定身份的一部分。
+static int binding_equal(const nvn_gpu_binding *a, const nvn_gpu_binding *b) {
+    if (a->ent != b->ent || a->elem != b->elem || a->cls != b->cls) return 0;
+    switch (a->cls) {
+    case NVN_GPU_RES_UBO: case NVN_GPU_RES_SSBO:
+        return a->u.b.buf == b->u.b.buf && a->u.b.off == b->u.b.off && a->u.b.len == b->u.b.len;
+    case NVN_GPU_RES_TEX: case NVN_GPU_RES_IMAGE: case NVN_GPU_RES_TBUF: case NVN_GPU_RES_IMAGE_TBUF: return a->u.view == b->u.view;
+    case NVN_GPU_RES_SAMP: return a->u.samp == b->u.samp;
+    case NVN_GPU_RES_TEX_SAMP: return a->u.ts.view == b->u.ts.view && a->u.ts.samp == b->u.ts.samp;
+    default: return 0;
+    }
+}
+
 void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -2454,6 +2843,17 @@ void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, ui
     if (!c->pipe) { set_sticky(c, NVN_GPU_E_ORDER, "bind 前没有 set_pipe"); return; }
     if (!b && n) { set_sticky(c, NVN_GPU_E_ARG, "bind 表为空"); return; }
     if (n > 64) { set_sticky(c, NVN_GPU_E_ARG, "一个阶段一次绑定 %u 项，超过上限 64（原先多出来的被悄悄丢掉）", n); return; }
+    if ((uint32_t)st > NVN_GPU_SH_CS) { set_sticky(c, NVN_GPU_E_ARG, "bind 阶段越界"); return; }
+    if (c->desc_layout != c->pipe->layout) c->desc_dirty = 0xfu;
+    else {
+        uint32_t max = n > c->nbinds[st] ? n : c->nbinds[st];
+        for (uint32_t i = 0; i < max; i++) {
+            const nvn_gpu_binding *old = i < c->nbinds[st] ? &c->binds[st][i].b : NULL, *next = i < n ? &b[i] : NULL;
+            if (old && next && binding_equal(old, next)) continue;
+            if (old && old->ent < c->pipe->stage_nent[st]) c->desc_dirty |= 1u << c->pipe->stage_ents[st][old->ent].set;
+            if (next && next->ent < c->pipe->stage_nent[st]) c->desc_dirty |= 1u << c->pipe->stage_ents[st][next->ent].set;
+        }
+    }
     uint32_t count = 0;
     for (uint32_t i = 0; i < n && i < 64; i++) {
         if (c->pipe->stage_nent[st] && b[i].ent >= c->pipe->stage_nent[st]) {
@@ -2482,6 +2882,12 @@ void nvn_gpu_bind(nvn_gpu_cmd ch, nvn_gpu_stage st, const nvn_gpu_binding *b, ui
     c->nbinds[st] = count;
 }
 
+// 测试读数：各类状态命令实际录了几次（下标同 ES_*：管线、视口、裁剪、混合常量、模板、深度偏移、顶点缓冲、索引缓冲、push）
+void nvn_gpu_vk_test_emit_counts(nvn_gpu_cmd ch, uint32_t out[9]) {
+    struct nvn_gpu_cmd_s *c = ch;
+    for (int i = 0; i < 9; i++) out[i] = c && i < ES_KINDS ? c->es_count[i] : 0;
+}
+
 // Test-only observation of the real allocation; never reads or writes push bytes.
 uint32_t nvn_gpu_vk_test_push_capacity(nvn_gpu_cmd ch, nvn_gpu_stage st) {
     struct nvn_gpu_cmd_s *c = ch;
@@ -2505,7 +2911,7 @@ void nvn_gpu_push(nvn_gpu_cmd ch, nvn_gpu_stage st, uint32_t off, const void *da
     uint64_t end = (uint64_t)po + pb;
     if (end > UINT32_MAX) { set_sticky(c, NVN_GPU_E_ARG, "push 范围溢出"); return; }
     if (!ensure_push_capacity(c, st, (uint32_t)end)) return;
-    memcpy(c->push_data[st] + off, data, bytes);
+    if (!c->push_have[st] || memcmp(c->push_data[st] + off, data, bytes)) { memcpy(c->push_data[st] + off, data, bytes); c->push_gen[st]++; }
     c->push_have[st] = 1;
 }
 
@@ -2527,6 +2933,8 @@ static int new_dpool(struct nvn_gpu_cmd_s *c) {
     dpi.maxSets = DPOOL_SETS;
     dpi.poolSizeCount = 8;
     dpi.pPoolSizes = ps;
+    if (seg_reuse_on() && (c->dpool = seg_take_desc()) != VK_NULL_HANDLE) return 1;
+    OC(OC_DPOOL);
     if (vkCreateDescriptorPool(g.d, &dpi, NULL, &c->dpool) != VK_SUCCESS) {
         c->dpool = VK_NULL_HANDLE;
         set_sticky(c, NVN_GPU_E_OOM, "描述符池创建失败");
@@ -2544,6 +2952,7 @@ static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl,
         ai.descriptorPool = c->dpool;
         ai.descriptorSetCount = n;
         ai.pSetLayouts = dsl;
+        OC(OC_DALLOC);
         VkResult r = vkAllocateDescriptorSets(g.d, &ai, sets);
         if (r == VK_SUCCESS) return 1;
         if (fresh || (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL)) {
@@ -2566,7 +2975,9 @@ static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl,
 
 // 把某阶段本笔绑定写进 wr/ii/bi；返回写入条数，出错置粘滞返回 -1。
 // 缺成员的新类别（IMAGE / TBUF / IMAGE_TBUF）报 E_LAYOUT；老类别保持 NULL 句柄空资源写法不变。
-static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int st,
+// 只写 dirty 里的组（没变的组沿用上一笔的描述符集对象，不重写）。纹素缓冲的格式核对取决于管线，
+// 组没变、管线换了也要核，所以这两类不在脏组里也走一遍核对，只是不写。
+static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int st, uint32_t dirty,
                        const VkDescriptorSet *sets, VkWriteDescriptorSet *wr,
                        VkDescriptorImageInfo *ii, VkDescriptorBufferInfo *bi) {
     int nw = 0;
@@ -2574,6 +2985,8 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
         const nvn_gpu_binding *b = &c->binds[st][i].b;
         if (!p->stage_nent[st]) { set_sticky(c, NVN_GPU_E_LAYOUT, "阶段 %d 没有布局项却给了绑定", st); return -1; }
         const nvn_gpu_layout_ent *e = &p->stage_ents[st][b->ent];
+        const int live = (int)(dirty >> e->set & 1u);
+        if (!live && e->cls != NVN_GPU_RES_TBUF && e->cls != NVN_GPU_RES_IMAGE_TBUF) continue;
         VkWriteDescriptorSet *w = &wr[nw];
         memset(w, 0, sizeof *w);
         w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2618,6 +3031,17 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             bf->buffer = b->u.b.buf ? b->u.b.buf->buffer : VK_NULL_HANDLE;
             bf->offset = b->u.b.off;
             bf->range = b->u.b.len;
+            if (e->cls == NVN_GPU_RES_UBO && b->u.b.len > g.caps.max_ubo_range) {   // UBO 没有 WHOLE_SIZE 例外：超过范围上限只能准确拒绝
+                set_sticky(c, NVN_GPU_E_ARG, "常量缓冲范围 %llu 超过 maxUniformBufferRange %llu", (unsigned long long)b->u.b.len, (unsigned long long)g.caps.max_ubo_range);
+                return -1; }
+            if (e->cls == NVN_GPU_RES_SSBO && b->u.b.len > g.caps.max_ssbo_range) {
+                // Vulkan 的存储缓冲范围上限管的是「范围」而不是缓冲大小：超过上限的绑定用 VK_WHOLE_SIZE
+                // （规范只约束非 WHOLE_SIZE 的 range），有效范围变成 offset 到缓冲尾。这是平台分叉，报一次红行。
+                static int said; if (!said++) {
+                    char m[160]; snprintf(m, sizeof m, "存储缓冲范围 %llu 超过 maxStorageBufferRange %llu：按 VK_WHOLE_SIZE 绑定（Vulkan 无更大范围）",
+                                          (unsigned long long)b->u.b.len, (unsigned long long)g.caps.max_ssbo_range);
+                    nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", m); }
+                bf->range = VK_WHOLE_SIZE; }
             w->pBufferInfo = bf;
             break;
         case NVN_GPU_RES_TBUF:
@@ -2640,15 +3064,103 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             set_sticky(c, NVN_GPU_E_UNSUPPORTED, "绑定类别 %u：本段未实现", e->cls);
             return -1;
         }
-        nw++;
+        if (live) nw++;
     }
     return nw;
 }
 
+// 脏组分配新对象，不能更新前一笔已经引用的组；跨阶段共用同一组时写全组。
+static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int compute) {
+    const uint8_t point = compute ? 2 : 1;
+    if (c->desc_layout != p->layout || c->desc_point != point) {
+        c->desc_layout = p->layout; c->desc_point = point; c->desc_dirty = 0xfu;
+        memset(c->desc_sets, 0, sizeof c->desc_sets);
+    }
+    // A descriptor-free pipeline ignores bindings left by the previous pipeline.
+    if (!p->nset) return 1;
+    uint32_t dirty = c->desc_dirty & ((1u << p->nset) - 1u);
+    // 哪一组都没变、布局和绑定点也没换：命令缓冲里绑着的就是这几组，不用重写也不用重绑。
+    // 纹素缓冲的格式核对随管线变（见 write_binds），有这类绑定的管线不走这条近路。
+    struct nvn_gpu_pipe_s *pm = (struct nvn_gpu_pipe_s *)(uintptr_t)p;
+    if (!pm->texel_binds) {
+        int8_t has = -1;
+        for (int st = 0; st <= NVN_GPU_SH_CS; st++) for (uint32_t i = 0; i < p->stage_nent[st]; i++)
+            if (p->stage_ents[st][i].cls == NVN_GPU_RES_TBUF || p->stage_ents[st][i].cls == NVN_GPU_RES_IMAGE_TBUF) has = 1;
+        pm->texel_binds = has;
+    }
+    if (!dirty && p->texel_binds < 0) return 1;
+    const int tm = g_draw_tm; const uint64_t t0 = tm ? now_ns() : 0;   // 诊断：这四步各用多久（nvk_gputime 开着才计）
+    // 描述符组备忘（调试开关 nvk_desc_memo，缺省关；照 d2r-mobile 安卓笔记 perf-round2 发现 4）：
+    // 同一段里内容完全相同的组（同一布局、每条描述符的绑定号 / 类型 / 资源都相同）直接用上次写好的那一组，不再分配、不再写。
+    // 一款 3D 游戏每帧重写 2800 组、1.13 万条描述符（分配 2.3 毫秒 + 写入 2.05 毫秒）。组归这一段的描述符池，段做完才销毁；
+    // 内容相同就是资源相同，资源由首次写入那笔的引用保活到段完成。
+    static int memo_cur = -1; static uint32_t memo_k;
+    if (memo_cur < 0 || !(++memo_k & 255)) memo_cur = nvn_plat_flag("nvk_desc_memo", 0) != 0;
+    const int memo = memo_cur && dirty;
+    VkDescriptorSet mark[4];   // 备忘开着时先不分配：写入项里先放记号，认出每条属于哪一组
+    if (memo) { for (uint32_t set = 0; set < 4; set++) mark[set] = (VkDescriptorSet)(uintptr_t)(0x5a0 + set); }
+    else for (uint32_t set = 0; set < p->nset; set++)
+        if (dirty & (1u << set)) if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
+    const uint64_t t1 = tm ? now_ns() : 0;
+    VkWriteDescriptorSet wr[6 * 64]; VkDescriptorImageInfo ii[6 * 64]; VkDescriptorBufferInfo bi[6 * 64];
+    uint32_t nw = 0;
+    for (int st = compute ? NVN_GPU_SH_CS : 0; st < (compute ? NVN_GPU_SH_CS + 1 : 5); st++) {
+        int n = write_binds(c, p, st, dirty, memo ? mark : c->desc_sets, wr + nw, ii + nw, bi + nw);
+        if (n < 0) return 0;
+        nw += (uint32_t)n;
+    }
+    if (memo) {
+        uint64_t h1[4], h2[4]; uint32_t hit = 0;
+        for (uint32_t set = 0; set < 4; set++) { h1[set] = 1469598103934665603ull ^ (uintptr_t)(set < p->nset ? p->dsl[set] : 0); h2[set] = 0x9E3779B97F4A7C15ull + set; }
+        for (uint32_t i = 0; i < nw; i++) {
+            const uint32_t set = (uint32_t)((uintptr_t)wr[i].dstSet - 0x5a0); if (set >= 4) continue;
+            uint64_t v[5] = {(uint64_t)wr[i].dstBinding << 32 | wr[i].dstArrayElement, (uint64_t)wr[i].descriptorType, 0, 0, 0};
+            if (wr[i].pImageInfo) { v[2] = (uint64_t)(uintptr_t)wr[i].pImageInfo->imageView; v[3] = (uint64_t)(uintptr_t)wr[i].pImageInfo->sampler; v[4] = (uint64_t)wr[i].pImageInfo->imageLayout; }
+            else if (wr[i].pBufferInfo) { v[2] = (uint64_t)(uintptr_t)wr[i].pBufferInfo->buffer; v[3] = wr[i].pBufferInfo->offset; v[4] = wr[i].pBufferInfo->range; }
+            else if (wr[i].pTexelBufferView) v[2] = (uint64_t)(uintptr_t)*wr[i].pTexelBufferView;
+            for (int k = 0; k < 5; k++) { h1[set] = (h1[set] ^ v[k]) * 1099511628211ull; h2[set] = (h2[set] + v[k]) * 0xff51afd7ed558ccdull; h2[set] ^= h2[set] >> 29; }
+        }
+        if (!c->memo) c->memo = calloc(DESC_MEMO_N, sizeof *c->memo);
+        for (uint32_t set = 0; set < p->nset; set++) {
+            if (!(dirty & (1u << set))) continue;
+            struct desc_memo *slot = NULL; int found = 0;
+            if (c->memo) for (uint32_t q = 0; q < 16; q++) {
+                struct desc_memo *m = &c->memo[(h1[set] + q) % DESC_MEMO_N];
+                if (!m->set) { slot = m; break; }
+                if (m->h1 == h1[set] && m->h2 == h2[set] && m->dsl == p->dsl[set]) { c->desc_sets[set] = m->set; found = 1; break; }
+            }
+            if (found) { hit |= 1u << set; continue; }
+            if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set)) return 0;
+            if (slot && c->memo_n < DESC_MEMO_N * 3 / 4) { slot->h1 = h1[set]; slot->h2 = h2[set]; slot->dsl = p->dsl[set]; slot->set = c->desc_sets[set]; c->memo_n++; }
+        }
+        uint32_t keep = 0;   // 命中的组不用写：把它们的写入项去掉，其余的换上真的组
+        for (uint32_t i = 0; i < nw; i++) {
+            const uint32_t set = (uint32_t)((uintptr_t)wr[i].dstSet - 0x5a0);
+            if (set >= 4 || (hit >> set & 1)) continue;
+            wr[keep] = wr[i]; wr[keep].dstSet = c->desc_sets[set]; keep++;
+        }
+        nw = keep;
+        if (tm) __atomic_fetch_add(&g_desc_hit, (uint64_t)__builtin_popcount(hit), __ATOMIC_RELAXED);
+    }
+    const uint64_t t2 = tm ? now_ns() : 0;
+    if (nw) { OC(OC_DWRITE); vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL); }
+    const uint64_t t3 = tm ? now_ns() : 0;
+    c->desc_dirty = 0;
+    if (dirty && p->nset) vkCmdBindDescriptorSets(c->cb, compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                  p->layout, 0, p->nset, c->desc_sets, 0, NULL);
+    if (tm) { const uint64_t t4 = now_ns();
+        __atomic_fetch_add(&g_desc_ns[0], t1 - t0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_desc_ns[1], t2 - t1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_desc_ns[2], t3 - t2, __ATOMIC_RELAXED); __atomic_fetch_add(&g_desc_ns[3], t4 - t3, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_desc_nw, nw, __ATOMIC_RELAXED); __atomic_fetch_add(&g_desc_sets, (uint64_t)__builtin_popcount(dirty), __ATOMIC_RELAXED); }
+    return 1;
+}
+
 void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
+    const int dtm = g_draw_tm; const uint64_t dt0 = dtm ? now_ns() : 0;   // 诊断：这笔绘制各段用时（nvk_gputime 开着才计）
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!c->in_pass || !c->pipe || !a) { set_sticky(c, NVN_GPU_E_ORDER, "draw 缺通道 / 管线 / 参数"); return; }
+    if (c->tsq && c->ntsp < TS_PASS_MAX) c->tsp[c->ntsp].draws++;
     if (a->cnt) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "带计数缓冲的间接多绘（cnt）：本段未实现"); return; }
     if (a->prim != 0x0 && a->prim != 0x1 && a->prim != 0x3 && a->prim != 0x4 && a->prim != 0x5 && a->prim != 0x6) {
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "图元 %u 未实现（线环 / quads 等）", a->prim); return;
@@ -2658,27 +3170,22 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         set_sticky(c, NVN_GPU_E_ARG, "draw prim %u 与管线拓扑 %u 不一致", a->prim, p->key.prim);
         return;
     }
-    if (p->nset) {
-        VkDescriptorSet sets[4] = {0};
-        if (!alloc_sets(c, p->dsl, p->nset, sets)) return;
-        VkWriteDescriptorSet wr[6 * 64];
-        VkDescriptorImageInfo ii[6 * 64];
-        VkDescriptorBufferInfo bi[6 * 64];
-        uint32_t nw = 0;
-        for (int bst = 0; bst < 5; bst++) {
-            int n = write_binds(c, p, bst, sets, wr + nw, ii + nw, bi + nw);
-            if (n < 0) return;
-            nw += (uint32_t)n;
-        }
-        if (nw) vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL);
-        vkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 0, p->nset, sets, 0, NULL);
-    }
+    if (!bind_descriptor_groups(c, p, 0)) return;
+    const uint64_t dt1 = dtm ? now_ns() : 0;
+    // 以下各项只在和上次真正录进去的不同时才录（#708；影子见 nvn_gpu_cmd_s.es）
     for (int st = 0; st < 5; st++)
-        if (c->push_have[st] && p->stage_push_bytes[st])
+        if (c->push_have[st] && p->stage_push_bytes[st]) {
+            if (c->es.push_ok[st] && c->es.push_layout[st] == p->layout && c->es.push_off[st] == p->stage_push_off[st] &&
+                c->es.push_bytes[st] == p->stage_push_bytes[st] && c->es.push_gen[st] == c->push_gen[st]) continue;
             vkCmdPushConstants(c->cb, p->layout, vk_shader_stage((nvn_gpu_stage)st),
                                p->stage_push_off[st], p->stage_push_bytes[st], c->push_data[st] + p->stage_push_off[st]);
+            c->es.push_ok[st] = 1; c->es.push_layout[st] = p->layout; c->es.push_off[st] = p->stage_push_off[st];
+            c->es.push_bytes[st] = p->stage_push_bytes[st]; c->es.push_gen[st] = c->push_gen[st]; c->es_count[ES_PUSH]++;
+        }
     if (c->has_dyn && (c->dyn.origin_ll != 0) != (p->key.origin_ll != 0)) { set_sticky(c, NVN_GPU_E_ARG, "绘制时的窗口原点（左下 = %d）与管线描述里的不一致", (int)c->dyn.origin_ll); return; }
-    vkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipe);
+    // 换游戏管线不动动态状态：所有游戏管线声明的动态状态是同一组（见建管线处的 dyn[7]），按规范切换时保留；
+    // 只声明了一部分的管线（矩形清除的）用过之后整份影子作废（nvn_gpu_clear_rect）。
+    if (!c->es.gpipe || c->es.gpipe != p->pipe) { vkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipe); c->es.gpipe = p->pipe; c->es_count[ES_PIPE]++; }
     VkViewport vp;
     if (c->has_dyn && c->dyn.nvp) {
         vp = (VkViewport){c->dyn.vp[0][0], c->dyn.vp[0][1], c->dyn.vp[0][2], c->dyn.vp[0][3], c->dyn.vp[0][4], c->dyn.vp[0][5]};
@@ -2691,29 +3198,45 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     VkRect2D sc = {{0, 0}, {c->pass_w, c->pass_h}};
     if (c->has_dyn && c->dyn.has_sc)
         sc = (VkRect2D){{c->dyn.sc[0], c->dyn.sc[1]}, {(uint32_t)c->dyn.sc[2], (uint32_t)c->dyn.sc[3]}};
-    vkCmdSetViewport(c->cb, 0, 1, &vp);
-    vkCmdSetScissor(c->cb, 0, 1, &sc);
+    // 浮点按位比（memcmp）：-0 与 +0、NaN 各按自己的位，宁可多发不漏发
+    if (!c->es.vp_ok || memcmp(&c->es.vp, &vp, sizeof vp)) { vkCmdSetViewport(c->cb, 0, 1, &vp); c->es.vp = vp; c->es.vp_ok = 1; c->es_count[ES_VP]++; }
+    if (!c->es.sc_ok || memcmp(&c->es.sc, &sc, sizeof sc)) { vkCmdSetScissor(c->cb, 0, 1, &sc); c->es.sc = sc; c->es.sc_ok = 1; c->es_count[ES_SC]++; }
     const float bc[4] = {c->dyn.blend_color[0], c->dyn.blend_color[1], c->dyn.blend_color[2], c->dyn.blend_color[3]};
-    vkCmdSetBlendConstants(c->cb, bc);
+    if (!c->es.bc_ok || memcmp(c->es.bc, bc, sizeof bc)) { vkCmdSetBlendConstants(c->cb, bc); memcpy(c->es.bc, bc, sizeof bc); c->es.bc_ok = 1; c->es_count[ES_BC]++; }
     // 模板的三个动态量：下标 0 = 正面、1 = 背面（NVN 的面位）。没发过动态状态时用 NVN 缺省（掩码全开、参考值 0）
-    for (int f = 0; f < 2; f++) {
-        VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
-        vkCmdSetStencilCompareMask(c->cb, face, c->has_dyn ? c->dyn.st_vmask[f] & 0xffu : 0xffu);
-        vkCmdSetStencilWriteMask(c->cb, face, c->has_dyn ? c->dyn.st_wmask[f] & 0xffu : 0xffu);
-        vkCmdSetStencilReference(c->cb, face, c->has_dyn ? c->dyn.st_ref[f] & 0xffu : 0u);
+    {
+        uint32_t stv[2][3];
+        for (int f = 0; f < 2; f++) {
+            stv[f][0] = c->has_dyn ? c->dyn.st_vmask[f] & 0xffu : 0xffu;
+            stv[f][1] = c->has_dyn ? c->dyn.st_wmask[f] & 0xffu : 0xffu;
+            stv[f][2] = c->has_dyn ? c->dyn.st_ref[f] & 0xffu : 0u;
+        }
+        if (!c->es.st_ok || memcmp(c->es.st, stv, sizeof stv)) {
+            for (int f = 0; f < 2; f++) {
+                VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
+                vkCmdSetStencilCompareMask(c->cb, face, stv[f][0]);
+                vkCmdSetStencilWriteMask(c->cb, face, stv[f][1]);
+                vkCmdSetStencilReference(c->cb, face, stv[f][2]);
+            }
+            memcpy(c->es.st, stv, sizeof stv); c->es.st_ok = 1; c->es_count[ES_ST]++;
+        }
     }
     // 深度偏移（NVN SetPolygonOffsetClamp：factor 乘斜率、units 乘最小可分辨深度差、clamp 限幅）。管线没开偏移时这三个量不起作用，照发 0。
     {
         const p_poly_offset *po = &c->dyn.po;
-        int on = c->has_dyn && p->key.poly.offset_en & 4;
+        int on = c->has_dyn && (p->key.poly.offset_en & (1u << p->key.poly.mode));
         if (on && po->clamp != 0.0f && !g.dev->core_features.depthBiasClamp) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "深度偏移带限幅（clamp=%g），设备没有 depthBiasClamp", (double)po->clamp); return; }
-        vkCmdSetDepthBias(c->cb, on ? po->units : 0.0f, on ? po->clamp : 0.0f, on ? po->factor : 0.0f);
+        const float db[3] = {on ? po->units : 0.0f, on ? po->clamp : 0.0f, on ? po->factor : 0.0f};
+        if (!c->es.db_ok || memcmp(c->es.db, db, sizeof db)) { vkCmdSetDepthBias(c->cb, db[0], db[1], db[2]); memcpy(c->es.db, db, sizeof db); c->es.db_ok = 1; c->es_count[ES_DB]++; }
     }
+    const uint64_t dt2 = dtm ? now_ns() : 0;
     for (uint32_t s = 0; s < 16; s++) {
         if (!c->vbuf[s].buf) continue;
         VkBuffer vb = c->vbuf[s].buf->buffer;
         VkDeviceSize off = c->vbuf[s].off;
+        if ((c->es.vb_ok >> s & 1) && c->es.vb[s] == vb && c->es.vboff[s] == off) continue;
         vkCmdBindVertexBuffers(c->cb, s, 1, &vb, &off);
+        c->es.vb[s] = vb; c->es.vboff[s] = off; c->es.vb_ok |= (uint16_t)(1u << s); c->es_count[ES_VB]++;
     }
     uint32_t inst = a->instances ? a->instances : 1;
     uint32_t draws = a->max_draws ? a->max_draws : 1;
@@ -2754,7 +3277,10 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
             }
         }
         cmd_ref(c, a->ibuf, REF_BUF);
-        vkCmdBindIndexBuffer(c->cb, ib, ioff, it);
+        if (!c->es.ib_ok || c->es.ib != ib || c->es.ioff != ioff || c->es.it != it) {
+            vkCmdBindIndexBuffer(c->cb, ib, ioff, it);
+            c->es.ib = ib; c->es.ioff = ioff; c->es.it = it; c->es.ib_ok = 1; c->es_count[ES_IB]++;
+        }
         if (a->ind) {
             cmd_ref(c, a->ind, REF_BUF);
             uint32_t stride = a->stride ? a->stride : (uint32_t)sizeof(VkDrawIndexedIndirectCommand);
@@ -2779,6 +3305,7 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     } else {
         vkCmdDraw(c->cb, a->count, inst, a->first, a->base_instance);
     }
+    if (dtm) { const uint64_t dt3 = now_ns(); __atomic_fetch_add(&g_draw_ns[0], dt1 - dt0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[1], dt2 - dt1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[2], dt3 - dt2, __ATOMIC_RELAXED); }
 }
 
 // 本段未实现的区域：一律粘滞 UNSUPPORTED / 返回 UNSUPPORTED，不空实现。
@@ -2789,23 +3316,14 @@ void nvn_gpu_dispatch(nvn_gpu_cmd ch, nvn_gpu_pipe ph, uint32_t x, uint32_t y, u
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!ind && (!x || !y || !z)) return;   // 0 组：空操作，不录、不置错（对齐 Ryujinx）
     if (c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "dispatch 在通道内"); return; }
+    es_reset(c);   // push 常量的范围按管线布局、不分绑定点：保守起见计算派发之后图形这边全部重发（#708）
     if (ph && c->pipe && ph != c->pipe) { set_sticky(c, NVN_GPU_E_ARG, "dispatch 管线与 bind 时的管线不一致"); return; }
     struct nvn_gpu_pipe_s *p = c->pipe;
     if (!p || p->pass) { set_sticky(c, NVN_GPU_E_ORDER, "dispatch 缺计算管线"); return; }
     if (ind && x | y | z) { set_sticky(c, NVN_GPU_E_ARG, "间接 dispatch 与计数不能同时给"); return; }
     if (ind) { if (!buf_range(ind, off, 12)) { set_sticky(c, NVN_GPU_E_ARG, "间接 dispatch 参数越界"); return; } }
     c->pipe = p;
-    if (p->nset) {
-        VkDescriptorSet sets[4] = {0};
-        if (!alloc_sets(c, p->dsl, p->nset, sets)) return;
-        VkWriteDescriptorSet wr[64];
-        VkDescriptorImageInfo ii[64];
-        VkDescriptorBufferInfo bi[64];
-        int nw = write_binds(c, p, NVN_GPU_SH_CS, sets, wr, ii, bi);
-        if (nw < 0) return;
-        if (nw) vkUpdateDescriptorSets(g.d, (uint32_t)nw, wr, 0, NULL);
-        vkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, p->nset, sets, 0, NULL);
-    }
+    if (!bind_descriptor_groups(c, p, 1)) return;
     if (c->push_have[NVN_GPU_SH_CS] && p->stage_push_bytes[NVN_GPU_SH_CS])
         vkCmdPushConstants(c->cb, p->layout, VK_SHADER_STAGE_COMPUTE_BIT,
                            p->stage_push_off[NVN_GPU_SH_CS], p->stage_push_bytes[NVN_GPU_SH_CS],
@@ -2967,8 +3485,10 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     VkImageCreateFlags iflags = 0;
     int array_compat = 0;
     switch (target) {
-    case NVN_TEXTURE_TARGET_2D: break;
+    case NVN_TEXTURE_TARGET_2D:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE: break;
     case NVN_TEXTURE_TARGET_2D_ARRAY:
+    case NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY:
         layers = depth; vtype = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
     case NVN_TEXTURE_TARGET_3D:
         itype = VK_IMAGE_TYPE_3D; vtype = VK_IMAGE_VIEW_TYPE_3D;
@@ -2989,12 +3509,16 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     }
     VkFormat fmt = nvn_vk_tex_format((uint32_t)d->d.format);
     if (fmt == VK_FORMAT_UNDEFINED) return fail(err, NVN_GPU_E_UNSUPPORTED, "NVN 格式 0x%x 无 Vulkan 映射", d->d.format);
-    // #1199：需要 compute 解码的 BC 格式走 guest 纹理缓存路径；nvn_gpu_tex 侧不静默支持，报红。
-    if (d->d.format >= 0x41 && d->d.format <= 0x50 && (g.dev->bc_decode_mask >> ((uint32_t)d->d.format - 0x41)) & 1u)
-        return fail(err, NVN_GPU_E_UNSUPPORTED, "BC format 0x%x needs compute decode: only guest texture-cache path is bridged", d->d.format);
+    int bc_decoded = d->d.format >= 0x41 && d->d.format <= 0x50 &&
+                     ((g.dev->bc_decode_mask >> ((uint32_t)d->d.format - 0x41)) & 1u);
+    VkFormat sample_fmt = fmt;
+    if (bc_decoded && (!nvn_vk_bcdec_route((uint32_t)d->d.format, NULL, &sample_fmt, &fmt, NULL, NULL) ||
+                       itype != VK_IMAGE_TYPE_2D || (d->usage & (NVN_GPU_TEX_RENDER | NVN_GPU_TEX_STORAGE))))
+        return fail(err, NVN_GPU_E_UNSUPPORTED, "BC format 0x%x decode: 不支持此用途或维度", d->d.format);
     if (!d->d.width || !d->d.height) return fail(err, NVN_GPU_E_ARG, "尺寸为 0");
     uint32_t levels = d->d.levels ? (uint32_t)d->d.levels : 1;
     uint32_t samples = d->d.samples > 1 ? (uint32_t)d->d.samples : 1;
+    if (bc_decoded && samples != 1) return fail(err, NVN_GPU_E_UNSUPPORTED, "BC 计算解码不支持多重采样");
 
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (d->usage & NVN_GPU_TEX_SAMPLED) usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -3003,9 +3527,25 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     }
     if (d->usage & NVN_GPU_TEX_STORAGE) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 
+    // 在 vkCreateImage 前按真实格式/usage 查询样本数；不把非法计数送到驱动或校验层。
+    int ms_target = target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+    if (ms_target || samples > 1) {
+        if (d->d.samples <= 1 || samples > 64 || (samples & (samples - 1)) || levels != 1 || itype != VK_IMAGE_TYPE_2D ||
+            ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && !g.dev->core_features.shaderStorageImageMultisample) ||
+            (d->d.samples > 1 && (target == NVN_TEXTURE_TARGET_CUBEMAP || target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)))
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "多重采样计数/级数/目标不支持");
+        VkImageFormatProperties ip = {0};
+        VkImageCreateFlags flags = iflags | ((d->usage & NVN_GPU_TEX_VIEW_FMT) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0);
+        if (vkGetPhysicalDeviceImageFormatProperties(g.phys, fmt, itype, VK_IMAGE_TILING_OPTIMAL, usage, flags, &ip) != VK_SUCCESS ||
+            !(ip.sampleCounts & samples) || (uint32_t)d->d.width > ip.maxExtent.width || (uint32_t)d->d.height > ip.maxExtent.height || layers > ip.maxArrayLayers)
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "设备不支持该格式/usage 的 %u 重采样贴图", samples);
+    }
+
     struct nvn_gpu_tex_s *t = calloc(1, sizeof *t);
     if (!t) return fail(err, NVN_GPU_E_OOM, "贴图结构分配失败");
     t->format = fmt;
+    t->sample_format = sample_fmt;
+    t->bc_decoded = bc_decoded;
     t->aspect = fmt_aspect(fmt);
     t->w = d->d.width;
     t->h = d->d.height;
@@ -3034,11 +3574,13 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     ci.usage = usage;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (t->view_fmt) ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    if (t->view_fmt || sample_fmt != fmt) ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    LIFE_T0;
     if (vkCreateImage(g.d, &ci, NULL, &t->image) != VK_SUCCESS) {
         free(t);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreateImage 拒绝（格式 0x%x / usage 0x%x / %ux%u）", d->d.format, usage, d->d.width, d->d.height);
     }
+    LIFE_ADD(0);
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(g.d, t->image, &req);
     uint32_t type = s2a_vk_memory_type(g.dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, NULL);
@@ -3048,19 +3590,22 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = type;
-    if (type == UINT32_MAX || vkAllocateMemory(g.d, &ai, NULL, &t->memory) != VK_SUCCESS ||
+    t->mem_size = req.size; t->mem_type = type;
+    if (type != UINT32_MAX && texmem_on()) t->memory = texmem_take(req.size, type, &t->mem_size);
+    if (type == UINT32_MAX || (!t->memory && vkAllocateMemory(g.d, &ai, NULL, &t->memory) != VK_SUCCESS) ||
         vkBindImageMemory(g.d, t->image, t->memory, 0) != VK_SUCCESS) {
         if (t->memory) vkFreeMemory(g.d, t->memory, NULL);
         vkDestroyImage(g.d, t->image, NULL);
         free(t);
         return fail(err, NVN_GPU_E_OOM, "贴图显存分配失败（%ux%u，%u 级）", d->d.width, d->d.height, levels);
     }
+    LIFE_ADD(1);
     VkImageViewCreateInfo vi;
     memset(&vi, 0, sizeof vi);
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image = t->image;
     vi.viewType = vtype;
-    vi.format = fmt;
+    vi.format = sample_fmt;
     vi.subresourceRange = (VkImageSubresourceRange){(t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect, 0, levels, 0, itype == VK_IMAGE_TYPE_3D ? 1 : layers};   // 深度模板格式：采样只取深度面
     if (vkCreateImageView(g.d, &vi, NULL, &t->view) != VK_SUCCESS) {
         vkFreeMemory(g.d, t->memory, NULL);
@@ -3068,9 +3613,11 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
         free(t);
         return fail(err, NVN_GPU_E_OOM, "默认贴图视图创建失败");
     }
+    LIFE_ADD(2);
     pthread_mutex_lock(&g_mu);
     if (!newimg_add_locked(t)) {
         pthread_mutex_unlock(&g_mu);
+        pc_drop_view(t->view);
         vkDestroyImageView(g.d, t->view, NULL);
         vkFreeMemory(g.d, t->memory, NULL);
         vkDestroyImage(g.d, t->image, NULL);
@@ -3117,12 +3664,13 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     struct nvn_gpu_tex_s *t = th;
     if (!t) return fail(err, NVN_GPU_E_ARG, "贴图为空");
     uint32_t base_level = 0, levels = t->levels, base_layer = 0, layers = t->layers;
-    VkFormat fmt = t->format;
+    VkFormat fmt = t->sample_format;
     VkImageViewType type = VK_IMAGE_VIEW_TYPE_2D;
     if (v) {
         if (v->set_levels) { base_level = v->base_level; levels = v->nlevels ? v->nlevels : 1; }
         if (v->set_layers) { base_layer = v->min_layer; layers = v->nlayers ? v->nlayers : 1; }
         if (v->set_format && (uint32_t)v->format != t->nvn_format) {
+            if (t->bc_decoded) return fail(err, NVN_GPU_E_UNSUPPORTED, "BC 解码贴图的不同格式视图未实现");
             VkFormat of = nvn_vk_tex_format((uint32_t)v->format);
             if (of == VK_FORMAT_UNDEFINED) return fail(err, NVN_GPU_E_ARG, "视图格式 0x%x 无映射", v->format);
             fmt = of;
@@ -3133,7 +3681,7 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     if (!plan.ok) return fail(err, NVN_GPU_E_ARG, "%s", plan.why);
     base_level = plan.base_level; levels = plan.nlevels;
     base_layer = plan.base_layer; layers = plan.nlayers; type = plan.type;
-    if (fmt != t->format && !t->view_fmt)
+    if (fmt != t->sample_format && !t->view_fmt)
         return fail(err, NVN_GPU_E_UNSUPPORTED, "不同格式的视图需要创建时声明 NVN_GPU_TEX_VIEW_FMT");
 
     struct nvn_gpu_view_s *o = calloc(1, sizeof *o);
@@ -3168,6 +3716,7 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
         }
         if (!o->swizzled) memset(&ci.components, 0, sizeof ci.components);   // 恒等：留 IDENTITY，附件可用
     }
+    OC(OC_VIEW);
     if (vkCreateImageView(g.d, &ci, NULL, &o->view) != VK_SUCCESS) {
         free(o);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreateImageView 拒绝（格式 / 范围）");
@@ -3359,6 +3908,10 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     struct nvn_gpu_tex_s *t = th;
     struct nvn_gpu_buf_s *b = bh;
+    if (t && t->bc_decoded) {
+        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "BC 解码贴图不能直接拷入压缩字节（0x%x）", t->nvn_format);
+        return;
+    }
     if (t && !depth_f32 && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）的缓冲字节不能直接拷（0x%x），走 nvn_gpu_tex_upload", t->nvn_format);
         return;
@@ -3420,6 +3973,10 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     struct nvn_gpu_tex_s *t = th;
     struct nvn_gpu_buf_s *b = bh;
+    if (t && t->bc_decoded) {
+        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "BC 解码贴图不能按压缩字节回读（0x%x）", t->nvn_format);
+        return;
+    }
     nvn_fmt_info fi;
     if (t && nvn_fmt_info_of(t->nvn_format, &fi) && fi.expand) {
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "展开格式回读未实现（0x%x）", t->nvn_format);
@@ -3430,6 +3987,13 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
         return;
     }
     uint32_t bpp = t ? fmt_bpp(t->format) : 0;
+    // 块信息（同 copy_buf_tex_impl）：压缩格式一行是一排块（blk_w x blk_h 纹素、blk 字节），区域按纹素给、偏移要落在块边上；
+    // 没列进 fmt_bpp 的非压缩格式按 NVN 格式表的每纹素字节数。原先这里对压缩格式一律拒绝（核心把块压缩贴图逐字节拷进影子要用它）。
+    uint32_t blk_w = 1, blk_h = 1, blk = bpp;
+    if (t && !bpp) {
+        nvn_fmt_info bi;
+        if (nvn_fmt_info_of(t->nvn_format, &bi) && !nvn_fmt_expand_target(t->nvn_format, NULL, NULL)) { blk_w = bi.bw; blk_h = bi.bh; blk = bi.bytes; bpp = blk; }
+    }
     VkOffset3D o;
     VkExtent3D e;
     NVNcopyRegion rr;
@@ -3443,8 +4007,12 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     }
     if (!t || !b || !bpp || (t->target != NVN_TEXTURE_TARGET_3D && layer >= t->layers) || (off & 3) ||
         !buf_range(b, off, image_bytes) ||
-        check_copy_params(t, level, r, row_bytes, image_bytes, bpp, &o, &e)) {
-        set_sticky(c, NVN_GPU_E_ARG, "copy_tex_buf 参数非法（越界 / 行宽 / 偏移未 4 对齐）");
+        (blk_w == 1 && blk_h == 1 ? check_copy_params(t, level, r, row_bytes, image_bytes, bpp, &o, &e)
+                            : (level >= t->levels || copy_region(t, level, r, &o, &e) || !row_bytes || (off % blk) ||
+                               row_bytes < (uint64_t)((e.width + blk_w - 1) / blk_w) * blk || image_bytes < row_bytes * ((e.height + blk_h - 1) / blk_h) ||
+                               (o.x % (int32_t)blk_w) || (o.y % (int32_t)blk_h)))) {
+        set_sticky(c, NVN_GPU_E_ARG, "copy_tex_buf 参数非法（格式 0x%x 级 %u：越界 / 行宽 %llu / 总 %llu / 偏移 %llu 没对齐）", t ? t->nvn_format : 0, level,
+                   (unsigned long long)row_bytes, (unsigned long long)image_bytes, (unsigned long long)off);
         return;
     }
     full_barrier(c);
@@ -3452,8 +4020,8 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     VkBufferImageCopy bc;
     memset(&bc, 0, sizeof bc);
     bc.bufferOffset = off;
-    bc.bufferRowLength = (uint32_t)(row_bytes / bpp);
-    bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? e.height : (uint32_t)(image_bytes / row_bytes);
+    bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
+    bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;   // 块压缩要是块高的整数倍（同 copy_buf_tex_impl）；非压缩 blk_h = 1，原样 e.height
     bc.imageSubresource = (VkImageSubresourceLayers){t->aspect, level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
     bc.imageExtent = e;
@@ -3461,6 +4029,17 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL);
     cmd_ref(c, t, REF_TEX);
     cmd_ref(c, b, REF_BUF);
+}
+
+// 压缩图的偏移按块对齐；尺寸若不足一块，只允许落在对应 mip 的边缘。
+static int copy_block_region_ok(const struct nvn_gpu_tex_s *t, uint32_t level, const VkOffset3D *o,
+                                const VkExtent3D *e, const nvn_fmt_info *fi) {
+    uint32_t w = t->w >> level, h = t->h >> level;
+    if (!w) w = 1;
+    if (!h) h = 1;
+    return (uint32_t)o->x % fi->bw == 0 && (uint32_t)o->y % fi->bh == 0 &&
+           (e->width % fi->bw == 0 || (uint64_t)(uint32_t)o->x + e->width == w) &&
+           (e->height % fi->bh == 0 || (uint64_t)(uint32_t)o->y + e->height == h);
 }
 
 void nvn_gpu_copy_tex(nvn_gpu_cmd ch, nvn_gpu_tex sh, uint32_t slevel, uint32_t slayer, const NVNcopyRegion *sr,
@@ -3471,13 +4050,26 @@ void nvn_gpu_copy_tex(nvn_gpu_cmd ch, nvn_gpu_tex sh, uint32_t slevel, uint32_t 
     struct nvn_gpu_tex_s *s = sh, *d = dh;
     // 两边同一 VkFormat 才拷；D32S8 不在 fmt_bpp 表里（每纹素两个面），同格式深度模板整面拷贝合法，
     // 一并放行（#398：D24S8 换成 D32S8 后贴图间拷贝照旧可用）。
-    const int fmt_ok = s && d && s->format == d->format && (fmt_bpp(s->format) || nvn_vk_format_is_depth(s->format));
+    nvn_fmt_info si = {0}, di = {0};
+    const int compressed = s && d && s->format == d->format && !s->bc_decoded && !d->bc_decoded &&
+        nvn_vk_format_is_compressed(s->format) && nvn_fmt_info_of(s->nvn_format, &si) &&
+        nvn_fmt_info_of(d->nvn_format, &di) && si.bw > 1 && si.bh > 1 &&
+        si.bw == di.bw && si.bh == di.bh && si.bytes == di.bytes;
+    const int fmt_ok = s && d && s->format == d->format &&
+        (fmt_bpp(s->format) || nvn_vk_format_is_depth(s->format) || compressed);
     VkOffset3D so, dof;
     VkExtent3D se, de;
-    if (!fmt_ok || slayer >= s->layers ||
-        dlayer >= d->layers || copy_region(s, slevel, sr, &so, &se) || copy_region(d, dlevel, dr, &dof, &de) ||
-        se.width != de.width || se.height != de.height || se.depth != de.depth) {
-        set_sticky(c, NVN_GPU_E_ARG, "copy_tex 参数非法（格式 / 尺寸 / 范围）");
+    if (!fmt_ok || slayer >= s->layers || dlayer >= d->layers ||
+        slevel >= s->levels || dlevel >= d->levels || slevel >= 32 || dlevel >= 32 ||
+        copy_region(s, slevel, sr, &so, &se) || copy_region(d, dlevel, dr, &dof, &de) ||
+        se.width != de.width || se.height != de.height || se.depth != de.depth ||
+        (compressed && (!copy_block_region_ok(s, slevel, &so, &se, &si) ||
+                        !copy_block_region_ok(d, dlevel, &dof, &de, &di)))) {
+        // 把是哪一项不合法说清楚（#690：真机上只看到这一句，定不了位）：两边的格式、级 / 层与各自的层数、图的尺寸与级数、两个区域
+        const NVNcopyRegion z = {0, 0, 0, 0, 0, 0}; const NVNcopyRegion *a = sr ? sr : &z, *b = dr ? dr : &z;
+        set_sticky(c, NVN_GPU_E_ARG, "copy_tex 参数非法：源 格式 %d %ux%ux%u 级 %u/%u 层 %u/%u 区域 %d,%d,%d %dx%dx%d%s；目标 格式 %d %ux%ux%u 级 %u/%u 层 %u/%u 区域 %d,%d,%d %dx%dx%d%s",
+                   s ? (int)s->format : -1, s ? s->w : 0, s ? s->h : 0, s ? s->depth : 0, slevel, s ? s->levels : 0, slayer, s ? s->layers : 0, a->xoffset, a->yoffset, a->zoffset, a->width, a->height, a->depth, sr ? "" : "（整级）",
+                   d ? (int)d->format : -1, d ? d->w : 0, d ? d->h : 0, d ? d->depth : 0, dlevel, d ? d->levels : 0, dlayer, d ? d->layers : 0, b->xoffset, b->yoffset, b->zoffset, b->width, b->height, b->depth, dr ? "" : "（整级）");
         return;
     }
     full_barrier(c);
@@ -3540,6 +4132,71 @@ void nvn_gpu_clear_view(nvn_gpu_cmd ch, nvn_gpu_view vh, const float rgba[4], co
     cmd_ref(c, t, REF_TEX);
 }
 
+// 同步解码只写私有临时图：目标的修改仍由当前段在指定位置执行，abort 不改目标。
+static void bc_upload(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer,
+                      const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
+    VkOffset3D off; VkExtent3D ext; int bb = 0;
+    if (level >= t->levels || layer >= t->layers || copy_region(t, level, r, &off, &ext) ||
+        !nvn_vk_bcdec_route(t->nvn_format, NULL, NULL, NULL, NULL, &bb)) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 上传子资源或区域非法"); return;
+    }
+    uint32_t mw = t->w >> level, mh = t->h >> level; if (!mw) mw = 1; if (!mh) mh = 1;
+    if ((off.x & 3) || (off.y & 3) || ((ext.width & 3) && (uint32_t)off.x + ext.width != mw) ||
+        ((ext.height & 3) && (uint32_t)off.y + ext.height != mh)) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 上传区域未按压缩块对齐"); return;
+    }
+    uint64_t bw = ((uint64_t)ext.width + 3) / 4, bh = ((uint64_t)ext.height + 3) / 4;
+    uint64_t packed_row = bw * (uint32_t)bb;
+    if (row_bytes < packed_row || bh > SIZE_MAX / packed_row ||
+        (bh > 1 && row_bytes > (UINT64_MAX - packed_row) / (bh - 1)) || image_bytes < (bh - 1) * row_bytes + packed_row) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 上传源行距或长度非法"); return;
+    }
+    size_t bytes = (size_t)(packed_row * bh); uint8_t *packed = malloc(bytes);
+    struct bc_temp *tmp = calloc(1, sizeof *tmp);
+    if (!packed || !tmp) { free(packed); free(tmp); set_sticky(c, NVN_GPU_E_OOM, "BC 上传暂存分配失败"); return; }
+    for (uint64_t y = 0; y < bh; y++) memcpy(packed + y * packed_row, (const uint8_t *)src + y * row_bytes, (size_t)packed_row);
+    VkImageCreateInfo ci = {0}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = t->format; ci.extent = (VkExtent3D){ext.width, ext.height, 1};
+    ci.mipLevels = ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    VkMemoryRequirements mr; VkMemoryAllocateInfo ai = {0}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    if (vkCreateImage(g.d, &ci, NULL, &tmp->image) != VK_SUCCESS) goto fail;
+    vkGetImageMemoryRequirements(g.d, tmp->image, &mr);
+    ai.allocationSize = mr.size; ai.memoryTypeIndex = s2a_vk_memory_type(g.dev, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, NULL);
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(g.d, &ai, NULL, &tmp->memory) != VK_SUCCESS ||
+        vkBindImageMemory(g.d, tmp->image, tmp->memory, 0) != VK_SUCCESS) goto fail;
+    char why[192] = {0}; int result = -1;
+    pthread_mutex_lock(&g_submit_mu);
+    if (g.bc || nvn_vk_bcdec_create(g.dev, &g.bc, why, sizeof why) == 0)
+        result = nvn_vk_bcdec_decode(g.bc, g.dev, tmp->image, t->nvn_format, ext.width, ext.height, 0, 0, packed, bytes, why, sizeof why);
+    if (result == -2) { tmp->next = g.bc_pending; g.bc_pending = tmp; }
+    pthread_mutex_unlock(&g_submit_mu);
+    free(packed); packed = NULL;
+    if (result != 0) {
+        set_sticky(c, NVN_GPU_E_DEVICE, "BC 解码失败：%s", why);
+        if (result == -2) return; // 临时图转交会话，close 取得完成证明后释放
+        goto fail;
+    }
+    tmp->next = c->bc_temps; c->bc_temps = tmp;
+    VkImageMemoryBarrier b = {0}; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = tmp->image;
+    b.subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    image_barrier(c, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy cp = {0}; cp.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    cp.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1}; cp.dstOffset = off; cp.extent = ext;
+    vkCmdCopyImage(c->cb, tmp->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL); cmd_ref(c, t, REF_TEX);
+    return;
+fail:
+    free(packed); if (tmp->image) vkDestroyImage(g.d, tmp->image, NULL);
+    if (tmp->memory) vkFreeMemory(g.d, tmp->memory, NULL);
+    free(tmp);
+    set_sticky(c, NVN_GPU_E_OOM, "BC 临时图或解码初始化失败");
+}
+
 void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                         const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
@@ -3548,6 +4205,7 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
     if (!src) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload src 为空"); return; }
     struct nvn_gpu_tex_s *t = th;
     if (!t) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload 贴图为空"); return; }
+    if (t->bc_decoded) { bc_upload(c, t, level, layer, r, src, row_bytes, image_bytes); return; }
     int ebpp = 0;
     int expand = nvn_fmt_expand_target(t->nvn_format, NULL, &ebpp);
     uint32_t ew = r ? (uint32_t)r->width : (t->w >> level);
@@ -3605,6 +4263,7 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!c->in_pass) { set_sticky(c, NVN_GPU_E_ORDER, "clear_rect 在通道外"); return; }
+    es_reset(c);   // 内部画一笔整屏三角形：换管线（只声明了部分动态状态）、改视口裁剪与模板、写 push；下一笔绘制全部重发（#708）
     if (!d || (d->color < 0 && !d->depth && !d->stencil)) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 什么都不清"); return; }
     if (d->color >= 0 && ((uint32_t)d->color >= c->pass_ncolor || !(c->pass_color_mask >> d->color & 1))) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 颜色槽 %d 越界或是空位（通道有 %u 个槽）", d->color, c->pass_ncolor); return; }
     if ((d->depth && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) || (d->stencil && !(c->pass_ds_aspect & VK_IMAGE_ASPECT_STENCIL_BIT))) {
@@ -3617,6 +4276,7 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     if (!cm || !sm) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 写掩码为 0（颜色 %#x 模板 %#x）", (unsigned)d->color_mask, (unsigned)d->stencil_mask); return; }
     // 一律画一笔整屏三角形（backend_vulkan_clear.inc：不用附件清除命令，理由见那里）。颜色、深度、模板同一笔做
     clr_draw(c, d->color, cm, &d->value, d->depth != 0, d->stencil ? sm : 0, d->stencil_value, d);
+    c->desc_layout = VK_NULL_HANDLE; c->desc_dirty = 0xfu;   // 内部清除改绑状态：下一笔全部重建
 }
 
 void nvn_gpu_barrier(nvn_gpu_cmd ch, uint32_t nvn_bits) {
@@ -3637,6 +4297,33 @@ void nvn_gpu_blit(nvn_gpu_cmd ch, nvn_gpu_view sv, const NVNcopyRegion *sr, nvn_
     if (!sv || !dv || !sv->tex || !dv->tex || !sr || !dr) { set_sticky(c, NVN_GPU_E_ARG, "blit 参数为空"); return; }
     struct nvn_gpu_tex_s *s = sv->tex, *d = dv->tex;
     if (sv->format != s->format || dv->format != d->format) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：视图换了格式（拷贝按存储的格式做）"); return; }
+    if (s->samples > 1 && d->samples == 1) {
+        nvn_fmt_info f;
+        if (linear || s->w != d->w || s->h != d->h || s->format != d->format || s->nvn_format != d->nvn_format || sv->swizzled || dv->swizzled ||
+            s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
+            !nvn_fmt_info_of(s->nvn_format, &f) || f.kind == NVN_FMT_UINT || f.kind == NVN_FMT_SINT || f.depth || f.stencil ||
+            s->target == NVN_TEXTURE_TARGET_3D || d->target == NVN_TEXTURE_TARGET_3D) {
+            set_sticky(c, NVN_GPU_E_UNSUPPORTED, "resolve：只支持同格式非整数颜色二维贴图"); return;
+        }
+        VkOffset3D so, dof; VkExtent3D se, de;
+        if (sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0 ||
+            sr->depth != 1 || dr->depth != 1 || sr->zoffset || dr->zoffset || copy_region(s, sv->base_level, sr, &so, &se) || copy_region(d, dv->base_level, dr, &dof, &de) ||
+            sv->base_layer >= s->layers || dv->base_layer >= d->layers ||
+            se.width != de.width || se.height != de.height || se.depth != 1 || de.depth != 1 || so.z || dof.z) {
+            set_sticky(c, NVN_GPU_E_ARG, "resolve：区域越界或尺寸不相同"); return;
+        }
+        full_barrier(c);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        image_barrier(c, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageResolve ir = {0};
+        ir.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, sv->base_level, sv->base_layer, 1};
+        ir.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, dv->base_level, dv->base_layer, 1};
+        ir.srcOffset = so; ir.dstOffset = dof; ir.extent = se;
+        vkCmdResolveImage(c->cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ir);
+        image_barrier(c, s, VK_IMAGE_LAYOUT_GENERAL); image_barrier(c, d, VK_IMAGE_LAYOUT_GENERAL);
+        cmd_ref(c, s, REF_TEX); cmd_ref(c, d, REF_TEX);
+        return;
+    }
     if (s->samples > 1 || d->samples > 1 || nvn_vk_format_is_depth(s->format) || nvn_vk_format_is_depth(d->format)) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：多重采样 / 深度模板没接"); return; }
     { nvn_fmt_info a, b; int ai = nvn_fmt_info_of(s->nvn_format, &a) && (a.kind == NVN_FMT_UINT || a.kind == NVN_FMT_SINT), bi = nvn_fmt_info_of(d->nvn_format, &b) && (b.kind == NVN_FMT_UINT || b.kind == NVN_FMT_SINT);
       if (ai || bi) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "blit：整数格式没接"); return; } }
@@ -3670,6 +4357,7 @@ void nvn_gpu_occlusion(nvn_gpu_cmd ch, int32_t slot) {
     if (slot >= 0 && ((uint32_t)slot >= c->qcount || c->q_used[slot])) { set_sticky(c, NVN_GPU_E_ARG, "遮挡查询槽 %d 越界（本段 %u 槽）或本段已用过", slot, c->qcount); return; }
     if (c->q_active >= 0) { vkCmdEndQuery(c->cb, c->qpool, (uint32_t)c->q_active); c->q_active = -1; }
     if (slot < 0) return;
+    OC(OC_QUERY);
     vkCmdBeginQuery(c->cb, c->qpool, (uint32_t)slot, g.dev->core_features.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
     c->q_active = slot; c->q_used[slot] = 1; if ((uint32_t)slot + 1 > c->qmax_used) c->qmax_used = (uint32_t)slot + 1;
 }
@@ -3697,11 +4385,14 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
 
     struct nvn_gpu_cmd_s *c = calloc(1, sizeof *c);
     if (!c) return fail(err, NVN_GPU_E_OOM, "cmd 分配失败");
+    memset(c->desc_sets, 0, sizeof c->desc_sets); c->desc_layout = VK_NULL_HANDLE; c->desc_dirty = 0xfu;
     VkCommandPoolCreateInfo pci;
     memset(&pci, 0, sizeof pci);
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pci.queueFamilyIndex = g.dev->queue_family;
+    if (!seg_reuse_on() || !seg_take_cmd(&c->pool, &c->cb)) {   // 空闲表里没有：新建一个池和它的命令缓冲
+    OC(OC_CPOOL);
     if (vkCreateCommandPool(g.d, &pci, NULL, &c->pool) != VK_SUCCESS) {
         free(c);
         return fail(err, NVN_GPU_E_OOM, "vkCreateCommandPool 失败");
@@ -3717,6 +4408,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
         free(c);
         return fail(err, NVN_GPU_E_OOM, "vkAllocateCommandBuffers 失败");
     }
+    }
     VkCommandBufferBeginInfo bi;
     memset(&bi, 0, sizeof bi);
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -3729,11 +4421,21 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     c->recording = 1;
     c->sticky = rc(NVN_GPU_OK);
     c->q_active = -1;
+    {   // 调试读数（debug 开关 nvk_gputime）：段首尾各写一个 GPU 时间戳，完成时算这一段在 GPU 上从开始到结束用了多久
+        static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_gputime", 0);
+        VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);
+        qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = 2 + 2 * TS_PASS_MAX;
+        if (on && vkCreateQueryPool(g.d, &qi, NULL, &c->tsq) == VK_SUCCESS) {
+            vkCmdResetQueryPool(c->cb, c->tsq, 0, 2 + 2 * TS_PASS_MAX);
+            vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, c->tsq, 0);
+        } else c->tsq = VK_NULL_HANDLE;
+    }
     if (d && d->occlusion_slots) {   // 查询池：整池重置只能在通道外，放在段的最开头
         VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);
         qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO; qi.queryType = VK_QUERY_TYPE_OCCLUSION; qi.queryCount = d->occlusion_slots;
         c->q_used = calloc(d->occlusion_slots, 1);
-        if (!c->q_used || vkCreateQueryPool(g.d, &qi, NULL, &c->qpool) != VK_SUCCESS) {
+        if (c->q_used && seg_reuse_on()) c->qpool = seg_take_q(d->occlusion_slots);
+        if (!c->q_used || (!c->qpool && vkCreateQueryPool(g.d, &qi, NULL, &c->qpool) != VK_SUCCESS)) {
             free(c->q_used); vkDestroyCommandPool(g.d, c->pool, NULL); free(c);
             return fail(err, NVN_GPU_E_OOM, "遮挡查询池（%u 槽）创建失败", d->occlusion_slots);
         }
@@ -3743,6 +4445,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     pthread_mutex_lock(&g_mu);
     if (g.closing) {
         pthread_mutex_unlock(&g_mu);
+        if (c->tsq) vkDestroyQueryPool(g.d, c->tsq, NULL);
         if (c->qpool) vkDestroyQueryPool(g.d, c->qpool, NULL);
         free(c->q_used);
         vkDestroyCommandPool(g.d, c->pool, NULL);
@@ -3908,6 +4611,7 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
     // 段末：让本段的所有 GPU 写对主机可见（fence 只保证执行完，不保证主机可见）。
     mem_barrier(c, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                 VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
+    if (c->tsq) vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, c->tsq, 1);
     // 结束录制并提交。
     VkResult r = vkEndCommandBuffer(c->cb);
     if (r == VK_SUCCESS) {

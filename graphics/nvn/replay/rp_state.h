@@ -34,6 +34,7 @@ extern struct rp_state rp_S;
 extern struct rp_target rp_R;
 // 脏位：只决定绘制时要不要重新取管线 / 深度模板状态 / 重发某阶段的绑定。值没变不标脏。
 extern uint8_t rp_pso_dirty, rp_dss_dirty, rp_args_dirty[6];
+extern uint64_t rp_tex_sep_gen[6];   // 各阶段分离贴图槽（rp_S.tex[阶段][128..]）的代号：有一格变了就加一；整份状态复位时也加
 
 void rp_state_reset(void);                                    // NVN 默认值
 int rp_state_op(uint32_t op, const void *a, uint32_t size);   // 状态类命令：1 = 已处理；0 = 不是状态类命令

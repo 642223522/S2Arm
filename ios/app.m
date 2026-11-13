@@ -3,16 +3,19 @@
 #import "s2a_l10n.h"
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <AVFAudio/AVFAudio.h>
 #import "controller.h"
 #include "input_config.h"
 #include "root_ready.h"
 #import "vpad.h"
 #import "save_transfer.h"
 #import "app_settings.h"
+#import "play_layout.h"
 #import "notice.h"
 #include "s2a_session.h"
 #include "s2a_dguard.h"
 #include "s2a_init_fail.h"   // 初启失败页的标题 / 按钮文案（与 launchers/shared/experience.v1.json init_fail_page 逐字一致；中英按 App 语言取，S2APICK）
+#include "s2a_ui_text.h"   // GPU 卡住暂停页文案（S2A_GPU_STUCK_*，与 macos/front_mac.m 同一套）
 #include "s2a_direct_prompt.h"   // 「切换游戏」确认框文案（规格 prompts，S2APICK）
 #include "s2a_selfcheck_page.h"   // 起局自检提示页文案：C 层（selfcheck.c）递中文原宏，这里按 App 语言换成 <宏>_EN（host_text）
 void s2a_loadpage_attach(UIView *root); void s2a_loadpage_front(void);   // loadpage.m：首次加载页 / 简短启动画面
@@ -23,6 +26,7 @@ void s2a_brightness_hold_log(void);   // 亮度保持（S2A_BRIGHTNESS）：心�
 #include "s2a_pad.h"
 #include "s2a_boot.h"
 #include "s2a_launch_ctx.h"
+#include <sys/mount.h>   // statfs（free_note）
 #include "s2a_docs.h"   // s2a_container_docs：游戏库按款核资源包的进程级 Documents
 #include "settings.h"   // 浮层开关要在建视图 / Metal 设备之前先落环境变量（#153）
 // 游戏库界面（shell 的 S2ArmShellHost，C 边界同 Sources/S2ArmShellBridge/include/s2a_shell.h）：make ios S2A_SHELLUI=1 才链进来，
@@ -167,6 +171,7 @@ static void mem_split_start(void) {
 }
 static UIView *g_root;
 static _Atomic int g_render_failed;
+static _Atomic int g_gpu_stuck_page;   // GPU 卡住暂停页在屏上（s2a_ios_gpu_stuck）：回前台不解冻游戏线程，等玩家在页上选
 static _Atomic int g_gpu_stopped;   // GPU 挂死安全停页在屏上（s2a_ios_gpu_stopped 置位）：停帧看门的提示不盖掉它
 void s2a_guest_freeze(int on);                   // thread.c
 void s2a_host_focus_set(int focused);            // os.c（接口 v2.15）
@@ -220,7 +225,8 @@ static void s2a_ios_suspend(int on, const char *why) {
     // A failed render startup is terminal for this session. Foregrounding must
     // not restart the guest behind the error page.
     if (atomic_load(&g_render_failed)) { s2a_controller_set_foreground(0); s2a_guest_freeze(1); s2a_session_background_end(); return; }
-    s2a_controller_set_foreground(!on);
+    int stuck = atomic_load(&g_gpu_stuck_page);   // GPU 卡住暂停页在屏上：回前台照常恢复图形与时钟，但游戏线程留在冻结、手柄不接，等玩家在页上选
+    s2a_controller_set_foreground(!on && !stuck);
     // 焦点报给服务层（接口 v2.15，缺口扫描族 1）：服务层把它转成游戏的焦点消息（失焦 / 回到前台）；进后台的消息在回前台解冻后游戏才读到
     s2a_host_focus_set(!on); s2a_host_sleep_set(on);   // iOS 后台同时算睡眠（psc 休眠 / 唤醒请求）
     // 直连模式进出后台（双轨 §12.2，s2a_direct_suspend 在直连图形层 graphics/nvn/host_adapt.m）：运行时取符号，没链直连层的构建取不到就不调；通用模式下它是空操作
@@ -229,7 +235,7 @@ static void s2a_ios_suspend(int on, const char *why) {
     // 游戏时钟（#495）：进后台最先冻、回前台最后放——解冻瞬间先跑的线程看到的是停住的时钟，不会看到后台那段时间
     if (on) { guest_clock_freeze_for(1, 1); s2a_guest_freeze(1); nxgal_gpu_hold(1, why); atomic_store(&g_bg, 1); LOG("iOS 壳：%s → 游戏时钟与线程冻结、GPU 停止提交", why); }
     else {
-        uint64_t t1 = now_ns(); nxgal_gpu_hold(0, why); uint64_t t2 = now_ns(); s2a_guest_freeze(0); guest_clock_freeze_for(1, 0); uint64_t t3 = now_ns();
+        uint64_t t1 = now_ns(); nxgal_gpu_hold(0, why); uint64_t t2 = now_ns(); if (!stuck) s2a_guest_freeze(0); guest_clock_freeze_for(1, 0); uint64_t t3 = now_ns();
         s2a_clock_catchup();   // 游戏日历（#863）：后台那段（含锁屏睡眠）补进 Ryujinx 稳态时钟；计数器仍从冻结那一刻接着走（#495）
         if (atomic_exchange(&g_bg, 0)) {   // 从后台回来的第一次（回前台 / 获得焦点两条通知都会到这里）：打恢复时间线（ap_host.c）
             uint64_t t0 = atomic_load(&g_fg_note); if (!t0 || t0 > t_ds) t0 = t_ds;
@@ -267,6 +273,8 @@ static void s2a_ios_suspend_enqueue(int on, const char *why) {
 // 提示 / 出错页（notice.m 画；11-02 维护者：满屏、一句人话 + 下一步、和加载页同一套样子、技术细节进诊断包不上屏）。窗口还没建时只记下，建窗口时显示
 static NSString *g_msg;   // 正在屏上（或待显示）的提示，s2a_ios_clear_message 按它认
 static NSArray *g_note;   // 待显示 / 正显示的提示页参数：@[符号, 标题, 正文, 进度, 进度小字, 是否给「导出诊断包」]
+static NSArray *g_note_alt;   // 第二个按钮：@[按钮字, 点了调的块]（GPU 卡住页的「退出」；别的提示页清掉）
+static NSArray *g_note_go;   // 提示页上的「仍要启动」这类继续按钮：@[按钮字, 点了调的块]（s2a_ios_ask_continue 设，别的提示页清掉）
 static UIView *g_note_view;
 static UIView *g_help; static NSArray *g_help_args; static void (*g_help_recheck)(void);   // 缺资源包说明页（见 s2a_ios_show_pack_help）
 void s2a_diag_export(void);
@@ -274,6 +282,8 @@ static void note_build(void) {
     [g_note_view removeFromSuperview]; g_note_view = nil;
     if (!g_root || !g_note) return;
     NSMutableArray *bs = [NSMutableArray array];
+    if (g_note_go) { void (^go)(void) = g_note_go[1]; [bs addObject:s2a_notice_button(g_note_go[0], YES, ^(UIButton *b) { b.enabled = NO; go(); })]; }
+    if (g_note_alt) { void (^alt)(void) = g_note_alt[1]; [bs addObject:s2a_notice_button(g_note_alt[0], NO, ^(UIButton *b) { b.enabled = NO; alt(); })]; }
     if (g_note.count > 6) { NSString *text = g_note[6];   // 「复制诊断」（初启失败页）：诊断文本放进剪贴板，玩家直接粘贴发给我们
         [bs addObject:s2a_notice_button(S2APICK(S2A_INIT_FAIL_COPY), YES, ^(UIButton *b) { UIPasteboard.generalPasteboard.string = text; [b setTitle:S2APICK(S2A_INIT_FAIL_COPIED) forState:UIControlStateNormal]; LOG("初启失败页：诊断已复制到剪贴板"); })]; }
     if ([g_note[5] boolValue]) [bs addObject:s2a_notice_button(S2AL(@"diag.export"), NO, ^(UIButton *b) { (void)b; s2a_diag_export(); })];
@@ -288,6 +298,7 @@ static const char *host_text(const char *s) {
         {S2A_SELFCHECK_PKG_TITLE, S2A_SELFCHECK_PKG_TITLE_EN}, {S2A_SELFCHECK_PKG_BODY, S2A_SELFCHECK_PKG_BODY_EN},
         {S2A_SELFCHECK_DEVICE_TITLE, S2A_SELFCHECK_DEVICE_TITLE_EN}, {S2A_SELFCHECK_DEVICE_BODY, S2A_SELFCHECK_DEVICE_BODY_EN},
         {S2A_SELFCHECK_AS_TITLE, S2A_SELFCHECK_AS_TITLE_EN}, {S2A_SELFCHECK_AS32_BODY, S2A_SELFCHECK_AS32_BODY_EN},
+        {S2A_SELFCHECK_MEM_BODY, S2A_SELFCHECK_MEM_BODY_EN}, {S2A_SELFCHECK_GO, S2A_SELFCHECK_GO_EN},
         {S2A_INIT_FAIL_MSG_SERVICE, S2A_INIT_FAIL_MSG_SERVICE_EN}, {S2A_INIT_FAIL_MSG_RUNTIME, S2A_INIT_FAIL_MSG_RUNTIME_EN},
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
         {S2A_INIT_FAIL_MSG_FILES, S2A_INIT_FAIL_MSG_FILES_EN}, {S2A_INIT_FAIL_NEXT, S2A_INIT_FAIL_NEXT_EN},
@@ -302,12 +313,51 @@ void s2a_ios_show_notice(const char *symbol, const char *title, const char *body
     title = host_text(title); body = host_text(body);
     NSString *sy = @(symbol), *t = @(title), *b = @(body ?: ""), *key = [NSString stringWithFormat:@"%@\n\n%@", t, b];
     NSArray *n = @[sy, t, b, @(total > 0 ? (float)done / total : -1.0f), total > 0 ? [NSString stringWithFormat:S2AL(@"notice.batch"), done < total ? done + 1 : total, total] : @"", @(diag != 0)];
-    void (^show)(void) = ^{ g_msg = key; g_note = n; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build(); };
+    void (^show)(void) = ^{ g_msg = key; g_note = n; g_note_go = nil; g_note_alt = nil; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build(); };
     if (NSThread.isMainThread) show(); else dispatch_async(dispatch_get_main_queue(), show);
 }
+// 带「继续」按钮的提示页，调用线程等玩家点（v0.3.1：起局自检只差内存上限时「仍要启动」）。只在宿主工作线程上用（游戏库已在主线程跑 UIKit）：
+//   主线程上等就把界面卡死了，返回 0（调用方照旧只给提示）。玩家点了 → 收起提示页、返回 1；不点就一直停在提示页（同原先）
+int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body, const char *go) {
+    if (NSThread.isMainThread) return 0;
+    title = host_text(title); body = host_text(body); go = host_text(go);
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSString *sy = @(symbol), *t = @(title), *b = @(body ?: ""), *label = @(go), *key = [NSString stringWithFormat:@"%@\n\n%@", t, b];
+    NSArray *n = @[sy, t, b, @(-1.0f), @"", @YES];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_msg = key; g_note = n; g_note_alt = nil; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil;
+        g_note_go = @[label, ^{ g_note_go = nil; g_note = nil; g_msg = nil; [g_note_view removeFromSuperview]; g_note_view = nil; dispatch_semaphore_signal(done); }];
+        note_build();
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return 1;
+}
 // 老入口（停帧看门 ap_host.c 经 dlsym 调）：第一段当标题、其余当正文
+// 可用空间按「重要用途」口径（含系统随时能清掉的空间，同「设置 → 储存空间」里的「可用」）：statfs 的 f_bavail 不含这部分，常小好几 GB，
+//   拿它判「空间不够」会冤枉玩家（runtime/src/vawin.c 客体内存文件后备经 dlsym 调）。取不到回 0
+uint64_t s2a_ios_free_important(const char *path) {
+    NSNumber *n = nil;
+    [[NSURL fileURLWithPath:@(path)] getResourceValue:&n forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
+    return n.longLongValue > 0 ? (uint64_t)n.longLongValue : 0;
+}
+// 手机可用空间记给电脑端（v0.3.4，玩家反馈：「设置」里剩 70 多 GB，一键安装说只剩 2 GB）：电脑端经 AFC / lockdown 读到的空闲不含系统随时能清掉的空间，
+//   只有手机上的 App 读得到「重要用途」口径。每次启动在后台读一次写进 Documents/s2a_free.tsv，一行：重要用途 \t 可选用途 \t statfs 空闲 \t 写入时刻（Unix 秒），字节数；
+//   电脑端推包前读它（tools/push_pack.py free_from_phone）。读不到的项写 0
+static void free_note(void) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        char p[1024], d[1000]; s2a_container_docs(d, sizeof d); snprintf(p, sizeof p, "%s/s2a_free.tsv", d);   // 固定在容器 Documents 下（多款容器也是这一份：可用空间是整机的）
+        NSURL *u = [NSURL fileURLWithPath:NSHomeDirectory()]; NSNumber *imp = nil, *opp = nil;
+        [u getResourceValue:&imp forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
+        [u getResourceValue:&opp forKey:NSURLVolumeAvailableCapacityForOpportunisticUsageKey error:nil];
+        struct statfs sf; unsigned long long av = statfs(NSHomeDirectory().fileSystemRepresentation, &sf) ? 0 : (unsigned long long)sf.f_bavail * sf.f_bsize;
+        char t[1100]; snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); if (!f) return;
+        fprintf(f, "%lld\t%lld\t%llu\t%ld\n", imp.longLongValue > 0 ? imp.longLongValue : 0, opp.longLongValue > 0 ? opp.longLongValue : 0, av, (long)time(NULL)); fclose(f);
+        if (rename(t, p)) unlink(t);
+        LOG("可用空间（记给电脑端 s2a_free.tsv）：重要用途 %lld MB、可选用途 %lld MB、statfs 空闲 %llu MB", imp.longLongValue >> 20, opp.longLongValue >> 20, av >> 20);
+    });
+}
 void s2a_ios_show_message(const char *m) {
-    if (atomic_load(&g_gpu_stopped)) return;   // GPU 安全停页在屏上：不盖掉
+    if (atomic_load(&g_gpu_stopped) || atomic_load(&g_gpu_stuck_page)) return;   // GPU 安全停页 / 卡住暂停页在屏上：不盖掉（卡住页冻了游戏，停帧看门照样会到点）
     const char *nl = strchr(m, '\n'); char t[512]; size_t k = nl ? (size_t)(nl - m) : strlen(m); if (k >= sizeof t) k = sizeof t - 1;
     memcpy(t, m, k); t[k] = 0; const char *b = nl ? nl : ""; while (*b == '\n') b++;
     s2a_ios_show_notice("info.circle.fill", t, b, 0, 0, 0);
@@ -396,6 +446,35 @@ void s2a_ios_render_init_failed(void) {
     { int s2a_dump_threads(const char *why); s2a_dump_threads("iOS 出图层挂接失败"); }
     s2a_logcon_flush();
 }
+// GPU 卡住暂停页（11-13；graphics/nvn/host_adapt.m s2a_gpu_stuck 经 dlsym 调，Metal 完成回调线程）：连续 3 帧各过 3 秒，判据在 nvn_mtl.m gpu_frame_stuck。
+//   冻游戏线程（不再往 GPU 送新活，已交的跑完）、手柄不接，盖「继续玩 / 退出」：继续 → 收页、解冻、清判据（s2a_gpu_stuck_resume）；
+//   退出 → 同「切换游戏」收尾退出，下次打开回到游戏库。驱动报挂死的安全停页（下面）是终局、不给继续，在屏上时这页不盖它
+void s2a_ios_gpu_stuck(const char *why) {
+    (void)why;   // 原文已打进 host.log（nvn_mtl.m gpu_frame_stuck），不上屏
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (atomic_load(&g_gpu_stopped)) return;
+        atomic_store(&g_gpu_stuck_page, 1);
+        s2a_controller_set_foreground(0); s2a_guest_freeze(1);
+        NSString *t = S2APICK(S2A_GPU_STUCK_TITLE), *b = S2APICK(S2A_GPU_STUCK_BODY);
+        g_msg = [NSString stringWithFormat:@"%@\n\n%@", t, b]; g_note = @[@"hourglass", t, b, @(-1.0f), @"", @YES];
+        g_note_go = @[S2APICK(S2A_GPU_STUCK_GO), ^{
+            g_note_go = nil; g_note_alt = nil; g_note = nil; g_msg = nil; [g_note_view removeFromSuperview]; g_note_view = nil;
+            void (*resume)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_gpu_stuck_resume"); if (resume) resume();
+            atomic_store(&g_gpu_stuck_page, 0); s2a_guest_freeze(0);
+            if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) s2a_controller_set_foreground(1);
+            LOG("GPU 卡住暂停页：玩家选继续玩，游戏线程解冻");
+        }];
+        g_note_alt = @[S2APICK(S2A_GPU_STUCK_QUIT), ^{
+            LOG("GPU 卡住暂停页：玩家选退出，收尾退出，下次打开回到游戏库");
+            void s2a_host_shutdown(const char *why);
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("GPU 卡住，玩家选退出"); });
+        }];
+        [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build();
+        if (g_note_view) [g_root bringSubviewToFront:g_note_view];
+        LOG("【红】iOS 壳：GPU 卡住 → 冻结游戏线程、显示「继续玩 / 退出」页（%s）", g_note_view ? "已显示" : "窗口还没建，建好窗口再画");
+    });
+    s2a_logcon_flush();
+}
 // GPU 挂死安全停页（11-07 Switch2 线 84；graphics/nvn/host_adapt.m s2a_gpu_safe_stop 经 dlsym 调，Metal 完成回调线程）：GPU 已在 nvn_mtl.m 那道门停交，这里冻游戏线程、
 //   盖一张 UIKit 原生错误页（不经 Metal：上屏本身也是 GPU 提交），停在这页。复用渲染失败的终局标记：回前台不恢复游戏、不碰 GPU 闸门 / 后台排空（s2a_ios_suspend 早返），
 //   之后停帧看门的提示（s2a_ios_show_message / clear_message）不盖掉它。玩家从后台划掉再开 = 新进程，唯一干净的重置
@@ -408,6 +487,7 @@ void s2a_ios_gpu_stopped(const char *why) {
         s2a_controller_set_foreground(0); s2a_guest_freeze(1);
         NSString *t = S2AL(@"app.gpuStop.title"), *b = S2AL(@"app.gpuStop.body");
         g_msg = [NSString stringWithFormat:@"%@\n\n%@", t, b]; g_note = @[@"exclamationmark.triangle.fill", t, b, @(-1.0f), @"", @YES];
+        g_note_go = nil; g_note_alt = nil; atomic_store(&g_gpu_stuck_page, 0);   // 终局页盖过卡住页：不留「继续玩」
         [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build();
         if (g_note_view) [g_root bringSubviewToFront:g_note_view];
         LOG("GPU 挂死安全停页：%s", g_note_view ? "已显示" : "窗口还没建，建好窗口再画");
@@ -505,40 +585,22 @@ void s2a_ios_qprompt(int kind, int secs) {   // 文案 维护者 11-02 定：「
 }
 // 资源导入期间不让系统自动锁屏（锁屏后 App 被挂起、解包停住）；任意线程可调
 void s2a_ios_keep_awake(int on) { dispatch_async(dispatch_get_main_queue(), ^{ UIApplication.sharedApplication.idleTimerDisabled = on ? YES : NO; }); }
-// 宽屏用的屏幕宽（游戏 1080 高对应的宽）：横屏 = 1080 × 长边 ÷ 短边，取偶（iOS 壳锁横屏，进程内不变）
-// 屏幕比例取 App 根视图实际所在的那块屏（视图控制器每次布局记下长边 ÷ 短边）：10-27 Duo 上 UIScreen.mainScreen.nativeBounds 一直报外屏 2034×1398（1.455），
-//   内屏起局（视图 951×669 点，1.422）也按外屏比例出图、内屏上下留黑。视图还没布局时退回主屏原生尺寸。读的一方（runtime/src/widen.c）首次读后缓存，进程内不变
-static _Atomic double g_view_ratio;
-//   宽屏装载（模块装载后 0.15 秒、游戏线程）比场景连上早：非主线程第一次问时等场景记下比例，至多 5 秒；等不到 / 主线程上问才退回主屏原生尺寸（记红）
-//   外接屏接着（ios/extdisplay.m）：画面出在外接屏上，比例按外接屏
-double s2a_ios_ext_ratio(void);
-static double screen_ratio(void) {
-    double x = s2a_ios_ext_ratio(); if (x > 0) return x;
-    double r = g_view_ratio;
-    if (!(r > 0) && !NSThread.isMainThread) for (int i = 0; i < 500 && !((r = g_view_ratio) > 0); i++) usleep(10000);
-    if (r > 0) return r;
-    CGSize z = UIScreen.mainScreen.nativeBounds.size; double a = fmax(z.width, z.height), b = fmin(z.width, z.height);
-    return b > 0 ? a / b : 16.0 / 9.0;
-}
-int s2a_ios_screen_known(void) { return g_view_ratio > 0; }   // 窗口场景已连上、比例取自实际所在的屏（runtime/src/widen.c 到这时才缓存屏幕高）
-int s2a_ios_screen_w(void) { double r = screen_ratio(); return ((int)(1080.0 * r)) & ~1; }
-int s2a_ios_screen_h(void) { double r = screen_ratio(); return r * 9 < 16 ? ((int)(1920.0 / r)) & ~1 : 1080; }   // 比 16:9 窄的屏（Duo 内屏 951×669 点 → 1350）
-// 游戏画面根控制器：只许横屏（Info.plist 同声明）；画面铺满全屏，四边系统边缘手势延后一拍（贴边控件一拖不退出游戏）、底部横条自动隐藏、状态栏隐藏（照旧库 SwGameVC）
+// 根控制器共用方向 / 铰链 / 分屏区域；游戏层、触点、宽屏都读 play_layout 的同一份区域（屏幕比例与外接屏比例见 ios/play_layout.m screen_ratio）。
 id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接屏场景配件（iOS 27 起系统靠它才给外接屏场景）
-@interface S2AGameVC : UIViewController
+@interface S2AGameVC : S2APlayViewController
 @property (strong, nonatomic) id extDisplay;   // 外接屏场景配件的登记，跟本控制器同寿
 @end
 @implementation S2AGameVC
 - (void)viewDidLoad { [super viewDidLoad]; self.extDisplay = s2a_ios_ext_register(self); }
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (void)viewDidLayoutSubviews {   // 屏幕尺寸变了（10-27 Duo 合上切外屏、展开回内屏）：记下当前屏的比例；直连出图层按新尺寸重摆（graphics/nvn/host_adapt.m；通用模式没有这个符号）
     [super viewDidLayoutSubviews];
-    CGSize z = self.view.bounds.size; double a = fmax(z.width, z.height), b = fmin(z.width, z.height); if (b > 0) g_view_ratio = a / b;
     void s2a_direct_relayout(void) __attribute__((weak_import));
     if (s2a_direct_relayout) s2a_direct_relayout();
+    void nxgal_window_relayout_ios(void) __attribute__((weak_import));
+    if (nxgal_window_relayout_ios) nxgal_window_relayout_ios();
 }
 - (void)viewSafeAreaInsetsDidChange {   // 方向与视图尺寸记进日志（真机验横屏用）
     [super viewSafeAreaInsetsDidChange]; UIEdgeInsets i = self.view.safeAreaInsets; CGSize z = self.view.bounds.size; CGSize n = UIScreen.mainScreen.nativeBounds.size;
@@ -546,14 +608,7 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
     LOG("iOS 壳：朝向 %s（%ld），视图 %.0fx%.0f 点，屏幕 %.0fx%.0f 像素，屏幕宽（1080 高对应）%d；安全区 上 %.1f 左 %.1f 下 %.1f 右 %.1f",
         UIInterfaceOrientationIsLandscape(o) ? "横屏" : UIInterfaceOrientationIsPortrait(o) ? "竖屏" : "未知", (long)o, z.width, z.height, fmax(n.width, n.height), fmin(n.width, n.height),
         s2a_ios_screen_w(), i.top, i.left, i.bottom, i.right);
-    // 横屏判据看落定后的朝向：每次变化后等 1 秒，那时仍不是横屏才报红。LiveContainer 里 UIKit 读的是 LC 本体的 Info.plist（竖屏排第一、没声明全屏），
-    //   场景先以竖屏起、本类只许横屏随即转过来（10-30 测试设备1：视图 440x956 → 956x440，画面最终横屏满屏），转的那一下不是缺陷；原生安装起手就是横屏
-    static unsigned gen; unsigned g = ++gen; __weak UIViewController *wself = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        UIViewController *s = wself; if (!s || g != gen) return;   // 1 秒内又变过：以最后一次为准
-        UIInterfaceOrientation now = s.view.window.windowScene.interfaceOrientation;
-        if (!UIInterfaceOrientationIsLandscape(now) && now != UIInterfaceOrientationUnknown) LOG("【红】iOS 壳：画面不是横屏（落定 1 秒后朝向 %ld）", (long)now);
-    });
+
 }
 @end
 @interface S2AAppDelegate : UIResponder <UIApplicationDelegate>
@@ -561,8 +616,23 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
 - (void)startMonitoring;
 @end
 @implementation S2AAppDelegate
+// 静音键下照样出声（#789，系统设置「静音模式下也播放声音」S2APlayInSilentMode，缺省关 = 跟随静音键）：音频会话类别开 = Playback（不跟静音键），
+//   关 = SoloAmbient（系统缺省，原先一直是它）。启动和每次回前台各设一次（玩家去「设置」改完切回来就生效）；放后台队列，
+//   不在主线程启动早期抢 AVAudioSession（phone_motion.m：真机首次抢会话卡约 2 秒）。类别没变不重设
+static void audio_category_apply(void) {
+    BOOL play = [NSUserDefaults.standardUserDefaults boolForKey:@"S2APlayInSilentMode"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        AVAudioSession *s = AVAudioSession.sharedInstance;
+        NSString *want = play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient;
+        if ([s.category isEqualToString:want]) return;
+        NSError *e = nil; BOOL ok = [s setCategory:want error:&e];
+        LOG("[声] 音频会话类别 → %s（%s）%s%s", play ? "Playback" : "SoloAmbient", play ? "静音键下照样出声" : "跟随静音键",
+            ok ? "" : "，设不上：", ok ? "" : e.localizedDescription.UTF8String ?: "?");
+    });
+}
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     display_focus_publish(app.applicationState == UIApplicationStateActive);
+    free_note();
     if (!s2a_host_boot_deferred()) [self startMonitoring];
     return YES;
 }
@@ -572,6 +642,7 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
     // _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption 启动即崩）：窗口 / 根视图 / 虚拟手柄挪到
     // S2ASceneDelegate 的 scene:willConnectToSession 里建（见下）。这里只留 App 级的电量 / 前后台 / 心跳 / 热。
     // 测试层契约第 4 节：每分钟一行「[电] 电量 <N>%，<充电中|已充满|未充电>」（拔电时电量闸 / 局中停局用）
+    audio_category_apply();
     { void s2a_diag_boot(void); s2a_diag_boot(); }   // 导出诊断包（diag.m）：订阅 MetricKit、设置页开关回前台时检查
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
     void (^battery)(NSTimer *) = ^(NSTimer *t) { (void)t; UIDevice *d = UIDevice.currentDevice; UIDeviceBatteryState st = d.batteryState;
@@ -593,9 +664,30 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
         display_focus_publish(NO);
         atomic_store(&g_fg_note, now_ns()); s2a_dguard_background(0, now_ns());
         img_scan_if_library();   // 多款容器挂着库：玩家可能刚在「文件」里拷进 game.img
+        audio_category_apply();   // 玩家可能刚在「设置」里改了静音键下出声
         // 回前台时可能停在失焦（浮层还在），等不到「获得焦点」：主线程下一拍状态已离开后台就放开
         dispatch_async(dispatch_get_main_queue(), ^{ if (UIApplication.sharedApplication.applicationState != UIApplicationStateBackground) s2a_ios_suspend_enqueue(0, "回前台"); }); }];
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(UIApplication.sharedApplication.applicationState == UIApplicationStateActive); { void s2a_diag_session_fg(int); s2a_diag_session_fg(1); } s2a_ios_suspend_enqueue(0, "获得焦点"); s2a_guest_run_mark(1); }];
+    // 测试开关 S2A_TEST_LIFECYCLE=<秒>（宿主生命周期自测，11-11 v0.3.0 局中失焦崩溃之后加；环境变量只有 devicectl / Xcode 起 App 能给，玩家碰不到）：
+    //   启动后这么多秒（起局、虚拟手柄已显示），在主线程上按真机顺序发系统的前后台通知——失去焦点 → 获得焦点（短暂失焦，如下拉横幅）→
+    //   进后台 → 回前台 → 获得焦点，走的是上面同一套处理函数与生命周期队列（s2a_ios_suspend_enqueue）。同时设 S2A_STRICT_MAIN=1：
+    //   任何只许主线程的 UIKit 入口（S2A_MAIN_ONLY）在后台线程被调就当场中止。每步打「生命周期自测：…」，走完打「生命周期自测：完成」
+    {
+        const char *e = getenv("S2A_TEST_LIFECYCLE"); double after = e ? atof(e) : 0;
+        if (after > 0) {
+            setenv("S2A_STRICT_MAIN", "1", 1);
+            NSArray<NSNotificationName> *steps = @[UIApplicationWillResignActiveNotification, UIApplicationDidBecomeActiveNotification,
+                                                  UIApplicationDidEnterBackgroundNotification, UIApplicationWillEnterForegroundNotification,
+                                                  UIApplicationDidBecomeActiveNotification];
+            LOG("生命周期自测：%.0f 秒后开始，共 %d 步（S2A_STRICT_MAIN=1）", after, (int)steps.count);
+            for (NSUInteger k = 0; k <= steps.count; k++)
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((after + 3.0 * k) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (k == steps.count) { LOG("生命周期自测：完成（%d 步都走完，进程还在）", (int)steps.count); return; }
+                    LOG("生命周期自测：第 %d 步 %s", (int)k + 1, k == 0 ? "失去焦点" : k == 2 ? "进后台" : k == 3 ? "回前台" : "获得焦点");
+                    [nc postNotificationName:steps[k] object:UIApplication.sharedApplication];
+                });
+        }
+    }
     // 心跳：每 10 秒一行，被系统直接杀（SIGKILL 不进崩溃处理）时也能看到死前最后的帧号 / 热状态 / 内存（10-20 维护者 一款第一方动作冒险游戏闪退，日志 12 秒后无一行）
     // 低区余量（10-21 巫师3 玩约 2 分钟低区耗尽、Metal 申请失败崩溃）：每行带上，局中能看到往下掉的过程
     [NSTimer scheduledTimerWithTimeInterval:10 repeats:YES block:^(NSTimer *t) { (void)t;
@@ -632,7 +724,7 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
     [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n;
         LOG("[热] 热状态变为 %ld（0 正常 1 一般 2 严重 3 危急），帧 %llu", (long)NSProcessInfo.processInfo.thermalState, (unsigned long long)s2a_ap_frames()); }];
 }
-- (UIInterfaceOrientationMask)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)w { return UIInterfaceOrientationMaskLandscape; }
+- (UIInterfaceOrientationMask)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)w { return UIInterfaceOrientationMaskAllButUpsideDown; }
 - (void)applicationWillTerminate:(UIApplication *)app {
     s2a_guest_run_mark(0);   // 正常终止不算「前台死掉」
     if (s2a_host_boot_pending()) return;
@@ -716,9 +808,15 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
         top_alert(sd.window, S2AL(@"app.library.reopen.title"), S2AL(@"app.library.reopen.message")); return;
     }
     const char *why = s2a_launch_ctx_select(gid);
-    // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：中文 App 照旧显示原文；英文 App 显示通用一句（#316）
-    if (why) { top_alert(sd.window, S2AL(@"app.library.cantOpen"), s2a_l10n_zh() ? @(why) : S2AL(@"app.library.cantOpen.message")); return; }
+    // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：屏上按类别说人话 + 下一步，原文只进日志 / 诊断（v0.3.1）
+    if (why) {
+        int kind = s2a_launch_ctx_select_kind();
+        top_alert(sd.window, S2AL(@"app.library.cantOpen"), kind == S2A_SELECT_APP_INCOMPLETE ? S2AL(@"app.library.cantOpen.incomplete")
+                  : kind == S2A_SELECT_STORAGE ? S2AL(@"app.library.cantOpen.storage") : S2AL(@"app.library.cantOpen.message"));
+        return;
+    }
     atomic_store(&g_game_picked, 1);
+    [NSUserDefaults.standardUserDefaults setObject:@(gid) forKey:@"S2ALastGameId"];   // 诊断包在库里导出时认这一款（diag.m last_container_game_root）
     s2a_boot_rebase("点 Play（多款容器选了游戏、启动上下文已冻结）");   // 起局计时从这里算，库界面停留不计
     LOG("游戏库：选了 %s，%s", gid, s2a_host_pre_ui_checks());
     [sd enterGame];
@@ -849,7 +947,7 @@ static void test_picker(void) {
     });
 }
 static void library_pack_help_show(NSString *gid, BOOL again, int st);
-// 玩家把 game.img 放进「文件」里 S2Arm 的任意位置（v0.3.0，自签 / 侧载玩家）：挪进 games/<游戏号>/资源包（pack_apply.c s2a_img_scan）。
+// 玩家把 game.img 放进「文件」里 S2Arm 的「放这里导入」文件夹（v0.3.0，自签 / 侧载玩家）：挪进本款资源包根（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
@@ -880,10 +978,31 @@ static void games_repair_report(int r) {   // 主线程
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
     [lib_top() presentViewController:a animated:YES completion:nil];
 }
+// 资源包挪出 Documents（v0.3.0，pack_apply.c s2a_pack_migrate）：#569 修复之后、认领之前，每进程第一次扫时做；迁移期间同 #569 不起解包。
+//   新位置（Library/Application Support/S2Arm）标「不进 iCloud 备份」（几十 GB 的资源包不该进备份，电脑上都有）；建好「放这里导入」文件夹（名字跟界面语言）
+int s2a_pack_migrate(const char *proc_docs, int *failed); const char *s2a_pack_migrate_failure(void);   // pack_apply.c
+extern const char *const s2a_img_import_dirs[2];   // pack_apply.c：认领扫的两个名字（中 / 英）
+static void pack_layout_prepare(const char *proc_docs) {   // 后台线程
+    int failed = 0, moved = s2a_pack_migrate(proc_docs, &failed);
+    if (moved || failed) LOG("资源包迁移：挪进 Library %d 款%s%s", moved, failed ? "，失败 " : "", failed ? s2a_pack_migrate_failure() : "");
+    char base[1100]; if (s2a_pack_base(base, sizeof base, proc_docs) > 0) {
+        NSURL *u = [NSURL fileURLWithPath:@(base) isDirectory:YES]; NSError *e = nil;
+        [NSFileManager.defaultManager createDirectoryAtURL:u withIntermediateDirectories:YES attributes:nil error:nil];
+        if (![u setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&e]) LOG("【红】资源包目录标「不进备份」没成：%s", e.localizedDescription.UTF8String);
+    }
+    // 导入文件夹：名字按界面语言取（img.importFolder，两份字符串表的值必须是 s2a_img_import_dirs 里的两个名字之一，认领才扫得到）；另一个名字的已在就不再建
+    NSString *name = S2AL(@"img.importFolder"); BOOL known = NO, exists = NO;
+    for (int i = 0; i < 2; i++) {
+        known |= [name isEqualToString:@(s2a_img_import_dirs[i])];
+        exists |= [NSFileManager.defaultManager fileExistsAtPath:[@(proc_docs) stringByAppendingPathComponent:@(s2a_img_import_dirs[i])]];
+    }
+    if (!known) LOG("【红】导入文件夹名「%s」不在认领扫的名单里（pack_apply.c s2a_img_import_dirs），不建", name.UTF8String);
+    else if (!exists) [NSFileManager.defaultManager createDirectoryAtPath:[@(proc_docs) stringByAppendingPathComponent:name] withIntermediateDirectories:YES attributes:nil error:nil];
+}
 static void img_scan_bg(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         static atomic_int checked; int r = 0;
-        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); }
+        if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d); r = s2a_games_repair(d); pack_layout_prepare(d); }
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
         dispatch_async(dispatch_get_main_queue(), ^{ if ((n > 0 || r > 0) && s2a_shell_refresh) s2a_shell_refresh(); games_repair_report(r); if (r == 0) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
@@ -975,7 +1094,6 @@ static void cloud_sync_done(void *ctx) {
       if (b >= 0 && b <= 1) { ws.screen.brightness = b; LOG("屏幕亮度设为 %.2f（S2A_BRIGHTNESS）", b); brightness_hold(ws.screen, b); } }
     g_brightness = ws.screen.brightness;
     self.window = [[UIWindow alloc] initWithWindowScene:ws];
-    { CGSize z = self.window.bounds.size; double a = fmax(z.width, z.height), b = fmin(z.width, z.height); if (b > 0) g_view_ratio = a / b; }   // 当前屏的比例（宽屏装载在等它，见 screen_ratio）
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) {   // 多款容器：先出游戏库，不建游戏界面、不挂加载页
         [self showLibrary];
         { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else self.window.hidden = NO; }
@@ -1000,6 +1118,7 @@ static void cloud_sync_done(void *ctx) {
     UIViewController *vc = self.window.rootViewController;
     // 浮层开关要赶在 s2a_hud_attach 与建 Metal 设备之前生效；host_run 里按同口径还会再兜底一次（#153）。
     s2a_ios_apply_overlay_settings(NSUserDefaults.standardUserDefaults);
+    [vc.view setNeedsUpdateConstraints]; [vc.view layoutIfNeeded];
     settings_attach_runtime();
     if (!g_msg) { s2a_vpad_attach(vc.view); void s2a_dprompt_attach(UIView *root); s2a_dprompt_attach(vc.view); }   // 触屏虚拟手柄（vpad.m）；游戏内提示条（dprompt.m）
     // 四指长按 1.5 秒打开设置；提示页（缺资源 / 导入失败）保留诊断按钮。

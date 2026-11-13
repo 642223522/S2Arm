@@ -67,6 +67,41 @@ static NSUInteger system_mouse_buttons(void) { return NSEvent.pressedMouseButton
 // 系统当前按下的鼠标键（第 n 位 = 按钮 n），单测可替换（审计 P2-34）
 static NSUInteger (*read_mouse_buttons)(void) = system_mouse_buttons;
 static NSUInteger modifiers;
+// R5：HID 键盘区的原始键态（游戏读键盘区原先只有 ActivateKeyboard 时的 17 条空条目，读键盘区的游戏按什么都没反应）。
+//   Mac 键码（HIToolbox kVK_*）→ HID usage：键码与 usage 都是物理键身份，与键盘布局无关。0 = 不进键盘区
+//   （Command 组合键 keyDown: 已交系统、音量 / 亮度键系统消费、fn 无 usage、英数 / 假名只切输入法）。
+//   右修饰键在 flagsChanged 已并成左键码（键位编辑器同款约定），表里的右侧值只是备用
+static const uint8_t mac_key_hid[128] = {
+    [0x00] = 0x04, [0x01] = 0x16, [0x02] = 0x07, [0x03] = 0x09,   // A S D F
+    [0x04] = 0x0B, [0x05] = 0x0A, [0x06] = 0x1D, [0x07] = 0x1B,   // H G Z X
+    [0x08] = 0x06, [0x09] = 0x19, [0x0B] = 0x05, [0x0C] = 0x14,   // C V B Q
+    [0x0D] = 0x1A, [0x0E] = 0x08, [0x0F] = 0x15, [0x10] = 0x1C,   // W E R Y
+    [0x11] = 0x17, [0x12] = 0x1E, [0x13] = 0x1F, [0x14] = 0x20,   // T 1 2 3
+    [0x15] = 0x21, [0x16] = 0x23, [0x17] = 0x22, [0x18] = 0x2E,   // 4 6 5 =
+    [0x19] = 0x26, [0x1A] = 0x24, [0x1B] = 0x2D, [0x1C] = 0x25,   // 9 7 - 8
+    [0x1D] = 0x27, [0x1E] = 0x30, [0x1F] = 0x12, [0x20] = 0x18,   // 0 ] O U
+    [0x21] = 0x2F, [0x22] = 0x0C, [0x23] = 0x13, [0x24] = 0x28,   // [ I P Return
+    [0x25] = 0x0F, [0x26] = 0x0D, [0x27] = 0x34, [0x28] = 0x0E,   // L J ' K
+    [0x29] = 0x33, [0x2A] = 0x31, [0x2B] = 0x36, [0x2C] = 0x38,   // ; \ , /
+    [0x2D] = 0x11, [0x2E] = 0x10, [0x2F] = 0x37, [0x30] = 0x2B,   // N M . Tab
+    [0x31] = 0x2C, [0x32] = 0x35, [0x33] = 0x2A, [0x35] = 0x29,   // Space ` 退格 Esc
+    [0x36] = 0xE7, [0x37] = 0xE3, [0x38] = 0xE1, [0x3A] = 0xE0,   // 右⌘ 左⌘（组合键 keyDown: 已交系统，备用）⇧ ⌃
+    [0x3B] = 0xE2, [0x3C] = 0xE5, [0x3D] = 0xE6, [0x3E] = 0xE4,   // ⌥ 右⇧ 右⌥ 右⌃
+    [0x40] = 0x6C, [0x41] = 0x63, [0x43] = 0x55, [0x45] = 0x57,   // F17 小键盘. 小键盘* 小键盘+
+    [0x47] = 0x53, [0x4B] = 0x54, [0x4C] = 0x58, [0x4E] = 0x56,   // 小键盘Clear 小键盘/ 小键盘Enter 小键盘-
+    [0x4F] = 0x6D, [0x50] = 0x6E, [0x51] = 0x67, [0x52] = 0x62,   // F18 F19 小键盘= 小键盘0
+    [0x53] = 0x59, [0x54] = 0x5A, [0x55] = 0x5B, [0x56] = 0x5C,   // 小键盘1 2 3 4
+    [0x57] = 0x5D, [0x58] = 0x5E, [0x59] = 0x5F, [0x5A] = 0x6F,   // 小键盘5 6 7 F20
+    [0x5B] = 0x60, [0x5C] = 0x61, [0x5D] = 0x89, [0x5F] = 0x85,   // 小键盘8 9 JIS円 JIS小键盘,
+    [0x60] = 0x3E, [0x61] = 0x3F, [0x62] = 0x40, [0x63] = 0x3C,   // F5 F6 F7 F3
+    [0x64] = 0x41, [0x65] = 0x42, [0x67] = 0x44, [0x69] = 0x68,   // F8 F9 F11 F13
+    [0x6A] = 0x6B, [0x6B] = 0x69, [0x6D] = 0x43, [0x6F] = 0x45,   // F16 F14 F10 F12
+    [0x71] = 0x6A, [0x72] = 0x49, [0x73] = 0x4A, [0x74] = 0x4B,   // F15 Help(=Insert) Home PageUp
+    [0x75] = 0x4C, [0x76] = 0x3D, [0x77] = 0x4D, [0x78] = 0x3B,   // ForwardDelete F4 End F2
+    [0x79] = 0x4E, [0x7A] = 0x3A, [0x7B] = 0x50, [0x7C] = 0x4F,   // PageDown F1 ← →
+    [0x7D] = 0x51, [0x7E] = 0x52,                                  // ↓ ↑
+};
+static BOOL caps_locked;   // CapsLock 只走 flagsChanged（NSEventModifierFlagCapsLock），不进 keys
 // Main thread collects relative motion; only the HID reader consumes it.
 // Frontend timer/keyboard publications must not erase mouse packets between HID reads.
 static _Atomic int64_t mouse_dx, mouse_dy;
@@ -195,6 +230,7 @@ static void reset_input(void) {
     atomic_store_explicit(&mouse_dy, 0, memory_order_relaxed);
     atomic_store(&hold_x, 0); atomic_store(&hold_y, 0);
     int32_t sticks[4] = {0}; publish_input(0, sticks);
+    uint64_t kb_none[4] = {0}; s2a_kb_update(kb_none, 0);   // R5：键盘区一并复位（失焦 / 关窗，按着的键全清）
     touch_end();   // 失焦 / 关窗：按着的触点补一帧 End（定义在下面鼠标触屏段）
 }
 static void sample_input(void);
@@ -451,6 +487,7 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_mot
 // 左右 Joy-Con 各一路；只有 GCMotion 时退回单源写在 out[0]
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pad_motion out[2]) {
     if (!out) return 0;
+    if (s2a_mac_ns2_status() == NS2_STATUS_READY) return s2a_mac_ns2_read_motion_pair(out);   // NS2 手柄（启动器通道）：Joy-Con 2 拼对时左右各一路（ns2_relay.h motion_left）
     s2a_pad_motion l = {0}, r = {0};
     int mask = s2a_joycon_imu_read(&l, &r);
     if (mask) {
@@ -464,6 +501,12 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pa
     if (!s2a_pad_read_motion(&one)) return 0;
     out[0] = one;
     return 1;
+}
+// Joy-Con 2 光学鼠标（s2a_pad.h）：只有 NS2 手柄（Joy-Con 2）有；服务层写进游戏的 Jcms 缓冲
+__attribute__((visibility("default"), used)) int s2a_pad_read_mouse_pair(s2a_pad_mouse out[2]) {
+    if (!out) return 0;
+    if (s2a_mac_ns2_status() != NS2_STATUS_READY) { out[0] = out[1] = (s2a_pad_mouse){0}; return 0; }
+    return s2a_mac_ns2_read_mouse_pair(out);
 }
 // 实体手柄退出游戏（#276）：决策在 runtime/include/s2a_home_quit.h，界面（提示条、失焦、退出）在 S2AMacDelegate 后面的 home_quit_ui
 static s2a_hq_state g_hq;
@@ -707,6 +750,23 @@ static void sample_profile_state(GCController *c, uint32_t *out_buttons, int32_t
     map_pad_inputs(all, @{@"leftX": @(ls.xAxis.value), @"leftY": @(ls.yAxis.value), @"rightX": @(rs.xAxis.value), @"rightY": @(rs.yAxis.value)}, out_buttons, sticks);
 }
 // 槽位计划 s2a_slot_plan 在 runtime/src/pad.c（iOS ios/controller.m 共用同一份规则）
+// R5：原始键态 → HID 键盘区（s2a_kb_update，键码表 mac_key_hid）。位图是 (keys, modifiers, caps_locked, muted) 的
+//   纯函数、每次全量重排：粘键核对删键 / 恢复、失焦复位、keyUp 被别的响应者吃掉都自然跟着对，不会漂。
+//   muted（失焦 / 退出确认条）发全零，同手柄口径。修饰键也按 usage 进位图（0xE0–0xE2），同 Ryujinx 键盘路径
+static void publish_keyboard(BOOL muted) {
+    uint64_t bits[4] = {0, 0, 0, 0}; uint32_t mods = 0;
+    if (!muted) {
+        for (NSNumber *code in keys) {
+            unsigned usage = code.unsignedIntValue < 128 ? mac_key_hid[code.unsignedIntValue] : 0;
+            if (usage) bits[usage >> 6] |= 1ULL << (usage & 63);
+        }
+        if (caps_locked) { bits[0x39 >> 6] |= 1ULL << (0x39 & 63); mods |= 1u << 8; }   // CapsLock：位图 0x39 + 字段 bit8（真机 HID 键盘两处都报）
+        if (modifiers & 1) mods |= 1u << 1;    // Shift → KeyboardModifier.Shift
+        if (modifiers & 2) mods |= 1u << 0;    // Control
+        if (modifiers & 4) mods |= 1u << 2;    // Option → LeftAlt
+    }
+    s2a_kb_update(bits, mods);
+}
 static void sample_input(void) {
     int32_t kbd_sticks[4] = {0}; uint32_t kbd_buttons = 0;
     uint32_t slot_buttons[S2A_MAX_PADS] = {0};
@@ -775,6 +835,7 @@ static void sample_input(void) {
         for (int i = 0; i < 4; i++) atomic_store(&pad_sticks[s][i], slot_sticks[s][i]);
     }
     publish_input(slot_buttons[0], slot_sticks[0]);   // 玩家 1：旧 ABI + 事件驱动 ABI（含鼠标视角）
+    publish_keyboard(muted);   // R5：键盘区原始键态（先落键态再唤醒，泵醒来读到同一拍）
 }
 // 多手柄槽位（服务层 InputPump 按符号查；没导出时退回旧的单手柄 ABI）
 __attribute__((visibility("default"), used)) int s2a_vpad_pad_count(void) { return atomic_load(&pad_live); }
@@ -859,18 +920,67 @@ static void screen_fps_note(NSWindow *w) {
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
 - (BOOL)isFlipped { return YES; }
+// 出图层可画尺寸（#575）：缺省跟「视图尺寸 × backingScaleFactor」走。
+//   S2A_OUT_W / S2A_OUT_H（两个都给、各 64–8192 像素）：可画尺寸钉在这个值，层内容在窗口里等比居中、余边留黑，拖窗口 / 全屏 / 系统恢复 frame 都不改渲染尺寸；
+//   S2A_OUT_SCALE（0.5–1.0，同 iOS graphics/nvn/host_adapt.m layout_layer）：可画尺寸按倍数缩，交系统合成器放大。两者都给时固定尺寸优先
+static int g_out_w = -1, g_out_h; static double g_out_k = 1;
+static void out_cfg(void) {
+    if (g_out_w >= 0) return;
+    const char *w = getenv("S2A_OUT_W"), *h = getenv("S2A_OUT_H"), *k = getenv("S2A_OUT_SCALE");
+    long ww = w ? atol(w) : 0, hh = h ? atol(h) : 0; double kk = k ? atof(k) : 1;
+    g_out_w = 0; g_out_h = 0; g_out_k = kk >= 0.5 && kk <= 1.0 ? kk : 1.0;
+    if (ww >= 64 && ww <= 8192 && hh >= 64 && hh <= 8192) { g_out_w = (int)ww; g_out_h = (int)hh; fprintf(stderr, "[s2a] 出图层可画尺寸固定 %dx%d（S2A_OUT_W / S2A_OUT_H），窗口里等比居中、余边留黑\n", g_out_w, g_out_h); }
+    else if (w || h) fprintf(stderr, "[s2a] S2A_OUT_W / S2A_OUT_H 要两个都给、各 64–8192（读到 %s / %s），出图层照旧跟窗口\n", w ? w : "-", h ? h : "-");
+    if (!g_out_w && g_out_k != 1.0) fprintf(stderr, "[s2a] 出图层可画尺寸按 %.2f 倍（S2A_OUT_SCALE），交系统合成器放大\n", g_out_k);
+    else if (k && g_out_k == 1.0 && kk != 1.0) fprintf(stderr, "[s2a] S2A_OUT_SCALE 要 0.5–1.0（读到 %s），按 1\n", k);
+}
 - (void)layout {
     [super layout];
     CAMetalLayer *metal = (CAMetalLayer *)self.layer;
     metal.contentsScale = self.window.backingScaleFactor ?: 1;
     CGSize size = CGSizeMake(self.bounds.size.width * metal.contentsScale, self.bounds.size.height * metal.contentsScale);
+    out_cfg();
+    if (g_out_w) { size = CGSizeMake(g_out_w, g_out_h); metal.contentsGravity = kCAGravityResizeAspect; }
+    else if (g_out_k != 1.0) size = CGSizeMake(floor(size.width * g_out_k), floor(size.height * g_out_k));
     if (size.width >= 1 && size.height >= 1) metal.drawableSize = size;   // 直连模式没有 NxGal 跟窗口尺寸，层的可画尺寸在这里跟上
     nxgal_window_set_size((int32_t)size.width, (int32_t)size.height);
     // 宽屏跟窗口比例（审计 P1-83：原先从不换屏幕宽，拉宽 / 全屏后逻辑分辨率仍 1920×1080、两侧黑；维护者 任何比例都满屏）：同 iOS 口径换屏，
     //   直连第三层下一个渲染遍前按新比例重出图（runtime/src/widen.c s2a_screen_fit，钉了原生 16:9 / 环境变量给定屏幕时不跟）
     if (size.width >= 1 && size.height >= 1) s2a_screen_fit((int)size.width, (int)size.height);
 }
+// 全屏时的 Esc（玩家反馈：进了全屏回不到窗口）：Esc 没映射游戏按键就直接退全屏（鼠标锁着一并释放）；映射了就照常给游戏，按住 1 秒退全屏。
+//   ⌃⌘F、菜单「显示 → 退出全屏幕」、顶部绿色按钮走系统原生全屏，退出后回到进全屏前的窗口大小和位置（S2AMacDelegate windowDidExitFullScreen:）
+static NSTimer *esc_hold;
+static BOOL window_fullscreen_now(NSWindow *w) { return w && (w.styleMask & NSWindowStyleMaskFullScreen); }
+static void window_fullscreen_toggle(NSWindow *w) { [w toggleFullScreen:nil]; }
+static BOOL (*window_fullscreen)(NSWindow *) = window_fullscreen_now;   // 单测换桩（launchers/macos/Tests/input_test.m）
+static void (*fullscreen_toggle)(NSWindow *) = window_fullscreen_toggle;
+static BOOL esc_mapped(void) {
+    NSDictionary *keyboard = config[@"keyboard"];
+    for (NSString *name in keyboard) if ([keyboard[name][@"code"] intValue] == 53) return YES;
+    return NO;
+}
+static void esc_hold_cancel(void) { [esc_hold invalidate]; esc_hold = nil; }
+static void esc_hold_start(NSWindow *window) {
+    esc_hold_cancel();
+    __weak NSWindow *w = window;
+    esc_hold = [NSTimer scheduledTimerWithTimeInterval:1 repeats:NO block:^(NSTimer *t) { (void)t;
+        esc_hold = nil;
+        if (!window_fullscreen(w) || !read_key_state(kCGEventSourceStateCombinedSessionState, 53)) return;
+        [keys removeObject:@53]; [stale_keys removeObject:@53]; [key_up_polls removeObjectForKey:@53]; sample_input();   // 游戏那边松开这个键
+        fprintf(stderr, "[s2a] Mac 全屏：按住 Esc 1 秒，退出全屏\n");
+        fullscreen_toggle(w);
+    }];
+}
 - (void)keyDown:(NSEvent *)e {
+    if (e.keyCode == 53 && !e.isARepeat && window_fullscreen(self.window)) {
+        if (!esc_mapped()) {
+            if (mouse_captured || mouse_release_pending) set_mouse_capture(NO);
+            fprintf(stderr, "[s2a] Mac 全屏：Esc 退出全屏\n");
+            fullscreen_toggle(self.window); return;
+        }
+        esc_hold_start(self.window);
+    }
     if (e.keyCode == 53 && (mouse_captured || mouse_release_pending)) { set_mouse_capture(NO); return; }
     if (e.modifierFlags & NSEventModifierFlagCommand) { [super keyDown:e]; return; }
     if (!focused) return;
@@ -881,8 +991,9 @@ static void screen_fps_note(NSWindow *w) {
     }
     [stale_keys removeObject:@(e.keyCode)]; [keys addObject:@(e.keyCode)]; sample_input();
 }
-- (void)keyUp:(NSEvent *)e { [keys removeObject:@(e.keyCode)]; [stale_keys removeObject:@(e.keyCode)]; [key_up_polls removeObjectForKey:@(e.keyCode)]; sample_input(); }
+- (void)keyUp:(NSEvent *)e { if (e.keyCode == 53) esc_hold_cancel(); [keys removeObject:@(e.keyCode)]; [stale_keys removeObject:@(e.keyCode)]; [key_up_polls removeObjectForKey:@(e.keyCode)]; sample_input(); }
 - (void)flagsChanged:(NSEvent *)e {
+    caps_locked = (e.modifierFlags & NSEventModifierFlagCapsLock) != 0;   // R5：键盘区随 modifiers 一并由 sample_input 发布
     modifiers = ((e.modifierFlags & NSEventModifierFlagShift) ? 1 : 0) |
                 ((e.modifierFlags & NSEventModifierFlagControl) ? 2 : 0) |
                 ((e.modifierFlags & NSEventModifierFlagOption) ? 4 : 0);
@@ -996,6 +1107,7 @@ static NSString *lan_warning(void) {
 @property(strong) NSMenuItem *controllerStatus;
 @property BOOL ns2ReconnectPending;
 @property BOOL ns2RelayDisconnectNoticeShown;
+@property NSRect windowedFrame;   // 进全屏前的窗口位置大小，退全屏时放回
 @end
 static __weak S2AMacDelegate *g_delegate;
 @implementation S2AMacDelegate
@@ -1071,6 +1183,14 @@ static __weak S2AMacDelegate *g_delegate;
     [self shutdown];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender { (void)sender; [self shutdown]; return NO; }
+- (void)toggleFullScreenItem:(id)sender { (void)sender; fullscreen_toggle(self.window); }
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(toggleFullScreenItem:))
+        item.title = window_fullscreen(self.window) ? (s2a_ui_zh() ? @"退出全屏幕" : @"Exit Full Screen") : (s2a_ui_zh() ? @"进入全屏幕" : @"Enter Full Screen");
+    return YES;
+}
+- (void)windowWillEnterFullScreen:(NSNotification *)note { (void)note; self.windowedFrame = self.window.frame; }
+- (void)windowDidExitFullScreen:(NSNotification *)note { (void)note; esc_hold_cancel(); if (!NSIsEmptyRect(self.windowedFrame)) [self.window setFrame:self.windowedFrame display:YES]; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender { (void)sender; [self shutdown]; return NSTerminateCancel; }
 - (void)windowDidBecomeKey:(NSNotification *)note { (void)note; display_focus_publish(NSApp.isActive && self.window.isKeyWindow); if (mouse_release_pending) set_mouse_capture(NO); focused = YES; s2a_pad_set_active(1); reset_input(); }
 - (void)windowDidResignKey:(NSNotification *)note { (void)note; display_focus_publish(NO); set_mouse_capture(NO); focused = NO; s2a_pad_set_active(0); reset_input(); }
@@ -1159,15 +1279,23 @@ void s2a_front_run(void (*guest_main)(void)) {
         disconnect.target = delegate;
         NSMenuItem *rumble = [inputMenu addItemWithTitle:@"测试手柄震动" action:@selector(testNS2Rumble:) keyEquivalent:@""];
         rumble.target = delegate;
-        inputRoot.submenu = inputMenu; [menu addItem:inputRoot]; app.mainMenu = menu;
+        inputRoot.submenu = inputMenu; [menu addItem:inputRoot];
+        // 「显示」菜单的全屏项（原先没有：⌃⌘F 和菜单都退不出全屏）；系统不再自动插一份重复的
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"NSFullScreenMenuItemEverywhere"];
+        NSMenuItem *viewRoot = [NSMenuItem new]; NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:s2a_ui_zh() ? @"显示" : @"View"];
+        NSMenuItem *fullScreen = [viewMenu addItemWithTitle:s2a_ui_zh() ? @"进入全屏幕" : @"Enter Full Screen" action:@selector(toggleFullScreenItem:) keyEquivalent:@"f"];
+        fullScreen.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand; fullScreen.target = delegate;
+        NSMenuItem *escHint = [viewMenu addItemWithTitle:s2a_ui_zh() ? @"全屏时 Esc 退出（Esc 映射了游戏按键时按住 1 秒）" : @"In full screen, Esc exits (hold 1 s if Esc is mapped to a game button)" action:NULL keyEquivalent:@""];
+        escHint.enabled = NO;
+        viewRoot.submenu = viewMenu; [menu addItem:viewRoot]; app.mainMenu = menu;
         NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered defer:NO];
         NSDictionary *gameIdentity = s2a_mac_guide_identity();
         window.title = gameIdentity[@"name"];
-        window.contentMinSize = NSMakeSize(640, 360); window.delegate = delegate;
+        window.contentMinSize = NSMakeSize(640, 360); window.delegate = delegate; window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
         S2AMetalView *view = [[S2AMetalView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
-        view.wantsLayer = YES; CAMetalLayer *layer = [CAMetalLayer layer]; layer.opaque = YES;
+        view.wantsLayer = YES; CAMetalLayer *layer = [CAMetalLayer layer]; layer.opaque = YES; layer.backgroundColor = NSColor.blackColor.CGColor;   // 固定出图尺寸时等比居中的余边（#575）
         view.layer = layer; window.contentView = view; window.acceptsMouseMovedEvents = YES;
         delegate.window = window;
         screen_fps_note(window);
@@ -1202,6 +1330,8 @@ void s2a_front_run(void (*guest_main)(void)) {
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
+        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口
+        { const char *fs = getenv("S2A_FULLSCREEN"); if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（S2A_FULLSCREEN=1）\n"); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
         [app activateIgnoringOtherApps:YES]; focused = YES;
         s2a_pad_set_active(1);
         install_pad_handlers();
@@ -1224,4 +1354,27 @@ void s2a_front_run(void (*guest_main)(void)) {
         display_focus_publish_ex(NO, NO);
         set_mouse_capture(NO); focused = NO; reset_input(); s2a_mac_ns2_detach(); front_layer_detach();
     }
+}
+// GPU 卡住暂停（11-13；graphics/nvn/host_adapt.m s2a_gpu_stuck 经 dlsym 调，Metal 完成回调线程）：连续 3 帧各过 3 秒。冻游戏线程（不再往 GPU 送新活，已交的跑完），
+//   弹「继续玩 / 退出」：继续 → 清判据（s2a_gpu_stuck_resume）、解冻；退出 → 收尾（同关窗）。文案与 iOS 同一套（runtime/include/s2a_ui_text.h）
+void s2a_mac_gpu_stuck(const char *why) {
+    (void)why;   // 原文已打进 host.log
+    s2a_guest_freeze(1);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        int zh = s2a_ui_zh();
+        NSAlert *a = [NSAlert new];
+        a.messageText = zh ? @S2A_GPU_STUCK_TITLE : @S2A_GPU_STUCK_TITLE_EN;
+        a.informativeText = zh ? @S2A_GPU_STUCK_BODY : @S2A_GPU_STUCK_BODY_EN;
+        [a addButtonWithTitle:zh ? @S2A_GPU_STUCK_GO : @S2A_GPU_STUCK_GO_EN];
+        [a addButtonWithTitle:zh ? @S2A_GPU_STUCK_QUIT : @S2A_GPU_STUCK_QUIT_EN];
+        fprintf(stderr, "[s2a] 【红】Mac 壳：GPU 卡住 → 冻结游戏线程、弹「继续玩 / 退出」\n");
+        if ([a runModal] == NSAlertFirstButtonReturn) {
+            void (*resume)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_gpu_stuck_resume"); if (resume) resume();   // 直连层 host_adapt.m：按名取（不链直连层的构建 / 输入单测里没有它）
+            s2a_guest_freeze(0);
+            fprintf(stderr, "[s2a] GPU 卡住暂停：玩家选继续玩，游戏线程解冻\n");
+        } else {
+            fprintf(stderr, "[s2a] GPU 卡住暂停：玩家选退出，收尾\n");
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("GPU 卡住，玩家选退出"); });
+        }
+    });
 }

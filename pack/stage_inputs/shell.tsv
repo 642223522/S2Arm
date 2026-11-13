@@ -134,8 +134,10 @@
 入	ios
 入	runtime/ns2pro/LICENSE
 入	runtime/ns2pro/NS2Accessories.c
+入	runtime/ns2pro/NS2Bond.c
 入	runtime/ns2pro/NS2Input.c
 入	runtime/ns2pro/NS2JoyCon.c
+入	runtime/ns2pro/NS2Keep.c
 入	runtime/ns2pro/NS2Module.m
 入	runtime/ns2pro/NS2Motion.c
 入	runtime/ns2pro/NS2Rumble.c

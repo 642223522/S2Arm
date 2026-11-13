@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 #import <Foundation/Foundation.h>
+#import <IOBluetooth/IOBluetooth.h>
 #include "ns2_relay.h"
 #include "ns2_parent_watch.h"
 #include <errno.h>
@@ -162,6 +163,22 @@ static void send_snapshot(void) {
     packet = snapshot;
     pthread_mutex_unlock(&relayLock);
     if (fd < 0) return;
+    // Joy-Con 2 拼成一对：左只的六轴放进 INPUT 包的 motion_left（motion 是右只的，ns2_relay.h）
+    ns2_motion left = {0};
+    if (packet.ready) ns2_get_motion_left(&left);
+    packet.motion_left_known = left.known ? 1 : 0;
+    if (left.known) packet.motion_left = (ns2_relay_motion_left){left.acceleration_x, left.acceleration_y, left.acceleration_z, left.gyro_x, left.gyro_y, left.gyro_z,
+        (uint32_t)left.host_timestamp_us, (uint32_t)(left.host_timestamp_us >> 32)};
+
+    // Joy-Con 2 光学鼠标：放进 INPUT 包的 mouse（ns2_relay.h；旧宿主不读这段）。只有一份位置：拼成一对、两只都有读数时一包左一包右轮流
+    //   （mouse_kind 标是哪一只；坐标是绝对值，宿主按一侧各自求差，轮流只是每侧取样减半）
+    static unsigned mouseTurn;
+    ns2_mouse mouse = {0}, sides[2] = {{0}};
+    if (packet.ready) { ns2_get_mouse_side(0, &sides[0]); ns2_get_mouse_side(1, &sides[1]); }
+    if (sides[0].known && sides[1].known) mouse = sides[mouseTurn++ & 1];
+    else mouse = sides[1].known ? sides[1] : sides[0];
+    packet.mouse_kind = mouse.known ? (uint8_t)mouse.kind : 0;
+    if (mouse.known) packet.mouse = (ns2_relay_mouse){mouse.x, mouse.y, mouse.surface, mouse.distance};
 
     ssize_t sent = send(fd, &packet, sizeof packet, MSG_DONTWAIT);
     if (sent != (ssize_t)sizeof packet) drop_client(fd);
@@ -230,6 +247,22 @@ static void start_relay(const char *path) {
     dispatch_resume(relayTimer);
 }
 
+// 启动器「记住这台设备」（#521）：S2A_NS2_REMEMBER_DEVICE=1 时取本机蓝牙地址交给传输层，长按 SYNC 连上的手柄会记住这台 Mac。
+//   绑定写在真正持有 BLE 连接的这个进程里。读不到地址就跳过绑定、照旧可用，记一行日志
+static void configure_bonding(void) {
+    const char *wanted = getenv("S2A_NS2_REMEMBER_DEVICE");
+    if (!wanted || strcmp(wanted, "1")) return;
+    uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    NSString *text = IOBluetoothHostController.defaultController.addressAsString;   // "aa-bb-cc-dd-ee-ff"
+    uint8_t host[6];
+    if (!ns2_parse_bt_address(text.UTF8String, host)) {
+        fprintf(stderr, "[NS2 Relay] 记住这台设备：读不到本机蓝牙地址（%s），这次不写入绑定，手柄照常可用\n", text.UTF8String ?: "空");
+        return;
+    }
+    fprintf(stderr, "[NS2 Relay] 记住这台设备：本机蓝牙地址已取得（%.0f ms）\n", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6);
+    ns2_set_bond_host(host);
+}
+
 static dispatch_source_t install_shutdown_signal(int signo) {
     dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, signo, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(source, ^{
@@ -264,6 +297,7 @@ int main(void) {
         if (!pthread_create(&parentWatch, NULL, parent_watch_main, (void *)(intptr_t)getppid()))
             pthread_detach(parentWatch);
         start_relay(socketPath);
+        configure_bonding();
         if (!ns2_start_with_motion(receive_input, emit_status, receive_motion, NULL)) {
             emit_status(NS2_STATUS_ERROR, "Could not start the controller connection", NULL);
             close(listenFD);

@@ -42,6 +42,8 @@ public sealed partial class EnvironmentWindow : Window
         using var reader = new StreamReader(stream);
         var experience = reader.ReadToEnd();
         text = new SharedText(experience);
+        PrivateJobRequest.Describe = (code, path) => T("private_root." + code).Replace("{0}", path);   // 私有目录用不了时的话按当前界面语言（#672）
+        PrivateJobRequest.Note = note => LauncherCrash.Log(null, note);   // 私有目录自愈 / 收不紧记一笔（#754）
         using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
             ?? throw new FileNotFoundException("Localization table resource is missing.");
         using var tableReader = new StreamReader(table);
@@ -53,7 +55,7 @@ public sealed partial class EnvironmentWindow : Window
         Closed += (_, _) => { CancelJob(JobKind.Environment); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
         Opened += (_, _) =>
         {
-            StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = CheckForUpdateAsync(); _ = LoadNoticeAsync();
+            StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = LoadInboxAsync();
             _ = RecoverBatchAsync();   // 上次没出完的批量出包读回来（BatchPage.cs）
             // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
             //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
@@ -238,6 +240,7 @@ public sealed partial class EnvironmentWindow : Window
         if (BatchPill() is { } batchPill) rightBar.Children.Add(batchPill);
         rightBar.Children.Add(LiveSlot(PhoneUpdateControl));   // 更新 iPhone 上的 S2Arm（壳比本版旧才出现，InstallModePage.cs）；进度事件只刷新这里
         rightBar.Children.Add(LiveSlot(UpdateControls));   // 启动器自更新：下载百分比只刷新这里
+        rightBar.Children.Add(MessagesButton());   // 消息：公告和更新说明（旧的只在这里）
 
         // 游戏库：任何页面都能回去；出包还在跑就留在后台
         var libraryBtn = new Button
@@ -303,6 +306,18 @@ public sealed partial class EnvironmentWindow : Window
             ShowPage("import", body);
             return;
         }
+        if (updatePopup is not null)   // 打开时最多一个更新弹窗，只给最新一期（UpdateFlow.cs）
+        {
+            RenderUpdatePopup(body);
+            ShowPage("update", body);
+            return;
+        }
+        if (messagesOpen)
+        {
+            RenderMessages(body);
+            ShowPage("messages", body);
+            return;
+        }
         if (page == "library" && (ShowsWelcome || welcomeHome))
         {
             RenderWelcome(body);
@@ -346,14 +361,17 @@ public sealed partial class EnvironmentWindow : Window
         var libraryButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (connectedFolder is { } openFolder) libraryButtons.Children.Add(Action("settings.open", () => OpenFolder(openFolder)));
         libraryButtons.Children.Add(Action("environment.library.change", () => BeginPicker(ChangeLibraryAsync), !libraryBusy && !PackBusy));
-        locations.Children.Add(SettingRow(T("settings.locations.library"), T("environment.library.detail"), libraryButtons, connectedFolder ?? libraryFolder));
+        // 还没连游戏库（引导页阶段）：照样能进设置页，没有的项写「还没设置」，不灰掉、不藏起整行
+        var libraryPath = connectedFolder ?? (string.IsNullOrEmpty(libraryFolder) ? null : libraryFolder);
+        locations.Children.Add(SettingRow(T("settings.locations.library"), T("environment.library.detail") + (libraryPath is null ? "\n" + T("settings.locations.not_set") : ""), libraryButtons, libraryPath));
         // 出 iPhone 包成功后组在游戏库根（pack/jobs/ipa.py refresh_library_ipa）
         var ipa = connectedFolder is null ? null : Path.Combine(connectedFolder, "S2Arm.ipa");
         var ipaReady = ipa is not null && File.Exists(ipa);
         locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? null : T("settings.locations.ipa_none"),
             ipaReady ? Action("progress.reveal_ipa", () => Reveal(ipa!)) : null, ipaReady ? ipa : null));
-        locations.Children.Add(SettingRow(T("settings.locations.space"), null,
-            Action("storage.open", OpenStorage, !libraryBusy && libraryId is not null)));
+        locations.Children.Add(SettingRow(T("settings.locations.space"), libraryId is null ? T("settings.locations.not_set") : null,
+            libraryId is null ? null : Action("storage.open", OpenStorage, !libraryBusy)));   // 没库时存储总览只有空页，先写「还没设置」，建好库再给按钮
+        if (PrivateJobRequest.Warning is { } privateWarning) locations.Children.Add(Muted(privateWarning));   // 私有目录收不紧：照常用，这里说一句（#754）
         body.Children.Add(Card(locations));
 
         // 密钥（原在游戏库页状态卡）：状态 + 导入

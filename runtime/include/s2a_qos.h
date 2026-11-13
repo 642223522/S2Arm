@@ -7,6 +7,9 @@
 //      进程 CPU 0% 在性能核、提交线程平均 1.49 GHz、提交 CPU 13.8 ms/帧 → 提交线程按角色提到 USER_INTERACTIVE（hle_nvn.c render_thread_qos）；
 //   ② 卡顿线三臂实测：后台编管线线程 UTILITY → DEFAULT 同样活快约 4 倍（2 路 179.7 s → 45.6 s），加线程基本没用（UTILITY 被排到能效核）；
 //      那处由卡顿线 perf/warm-bg-qos-default ca6a6bc99 在 nvn_mtl.m WARM_BG_QOS 落地，本表不重复设置。
+//   ③ 2 个性能核的手机上不给提交线程做实时声明（11-12，同机整局对照 5 局，机器已热、系统在压 GPU 的状态）：声明后提交线程 100% 落在性能核，
+//      进程 CPU 0.57–0.76 W、30–39 帧且逐窗口下降；不声明时它 1%–12% 在性能核，CPU 0.34–0.45 W、42–47 帧。手机稳态总功率是定的，
+//      CPU 多花的功率由系统从 GPU 上扣回去。这类功率预算的效应要几十秒才显现，同一局里按帧交替开关量不出来（当初就是这样量出「有益」才加的），要整局对照。
 // 取值原则：一帧关键路径上、别的线程会等它的 → USER_INTERACTIVE；首遇时绘制会等 / 会少画几笔的现编 → USER_INITIATED；
 //   预取 / 预热这类「越早做完卡顿越少」的后台活 → DEFAULT（不放 UTILITY：能效核上慢约 4 倍）；纯 I/O、诊断、收尾 → UTILITY。
 //
@@ -20,7 +23,7 @@ typedef enum {
     S2A_QOS_GAME_MAIN,         // 游戏主线程（runtime/src/thread.c）：USER_INTERACTIVE（S2A_GAME_MAIN_QOS 可改，能耗对照用）
     S2A_QOS_GAME_OTHER,        // 其余游戏线程：性能核 ≥ 4（Mac）USER_INTERACTIVE；< 4（iPhone）USER_INITIATED，排在渲染关键线程之后（S2A_GUEST_QOS 可改）。
                                //   其中提交 NVN 的那一个按 S2A_QOS_SUBMIT 另提
-    S2A_QOS_GAME_SYSCORE,      // 核掩码只给 Switch 系统核（3 号）的游戏线程：UTILITY（Horizon 留给系统 / 后台）
+    S2A_QOS_GAME_SYSCORE,      // 核掩码只给 3 号核的游戏线程：性能核不足 4 个（或 S2A_SYSCORE_QOS=utility）时 UTILITY，性能核 ≥ 4 与其余游戏线程同档（见 thread.c syscore_utility）
     S2A_QOS_SUBMIT,            // NVN 提交线程（hle_nvn.c nvnQueueSubmitCommands）：USER_INTERACTIVE（依据 ①）
     S2A_QOS_ENCODE,            // Metal 编码线程 dm-encode（nvn_rec.h）：USER_INTERACTIVE，提交线程每次提交末尾等它
     S2A_QOS_UB_COPY,           // 统一缓冲影子拷贝线程 dm-ub-copy（nvn_rec.h）：USER_INTERACTIVE，提交前等它

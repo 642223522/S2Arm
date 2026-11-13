@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import time
 
-from .roots import Conflict, Roots, UnsafeRoot, copy_file, directory_link, is_link, plain_entries, remove_owned, remove_patterns, rename_dir, text
+from .roots import Conflict, Roots, UnsafeRoot, cleanup_after, copy_file, directory_link, is_link, plain_entries, remove_owned, remove_patterns, rename_dir, text
 from .stages import ENTRY, LIGHT_ORDER, REWRITE_OUTPUTS, StageError, Stages
 
 
@@ -51,7 +51,8 @@ def seed(roots, game, source, *, move_romfs=False):
                 src = source / name
                 # move_romfs（只给一键出包自己的解包目录，下次解包整目录重建）：同卷就把 RomFS 整目录改名搬进来（一次操作），不逐文件克隆
                 #   （11-06 出包速度线：0100F2C0115B6000 30.5 万个文件，Windows 出包机播种 1253 秒，逐文件克隆约 1 毫秒一个）；提交后原处留联接指向存储里的这份
-                if name == 'romfs' and move_romfs and not is_link(src) and os.stat(src).st_dev == os.stat(w).st_dev:
+                # 实目录模式（exFAT 等建不了链接）不搬：搬走后原处没法留联接回指，界面布局等后续阶段要读原处
+                if name == 'romfs' and move_romfs and not roots.plain and not is_link(src) and os.stat(src).st_dev == os.stat(w).st_dev:
                     rename_dir(src, w / 'romfs'); moved = src
                     tick.step(sum(1 for e in plain_entries(w / 'romfs') if not e.is_dir()))
                 else:
@@ -79,8 +80,8 @@ def seed(roots, game, source, *, move_romfs=False):
         if moved is not None:   # 原处（seed.txt 记的 src/romfs，界面布局读原版）联到存储里这份不可变的身份
             directory_link(roots._romfs(final, game), moved)
         return final
-    except BaseException:
-        tx.abort()
+    except BaseException as e:
+        cleanup_after(e, tx.abort)   # 删半成品再出错（#669 WinError 145）不许盖住起因
         raise
 
 
@@ -117,10 +118,11 @@ def main(argv=None):
         print(('【黄】' if error.code in (3, 75) else '【红】') + str(error), file=sys.stderr)
         return error.code
     except (OSError, ValueError, Conflict) as error:
-        print('【红】编排中止：' + str(error), file=sys.stderr)
         if isinstance(error, (OSError, ValueError)):   # 系统调用层的错误只带系统消息（11-05 Windows 出包机无人深空「[WinError 31] 连到系统上的设备没有发挥作用」原样重跑不复现、定不了是哪一处）：调用栈一并写进日志
             import traceback
             print(''.join('  ' + l for l in traceback.format_exception(error)[-12:]), file=sys.stderr, end='')
+        # 红字放最后：出包摘要取日志最后几行（pack/orch/oneclick_win.py sh），原先最后几行是调用栈末帧（winlong 包装层），起因和附注都看不见（#669）
+        print('【红】编排中止：' + ' '.join([str(error), *getattr(error, '__notes__', ())]), file=sys.stderr)
         return 1
 
 

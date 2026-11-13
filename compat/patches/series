@@ -560,3 +560,16 @@
 20261111-2243-psel-network-account-cancel.patch
 20261111-1804-audio-perf-entry-double-release.patch
 20261111-1514-audio-renderer-preroll.patch
+20261110-1325-vp9-intra-coded-bounds.patch
+20261112-1530-joycon-pair-imu-sides.patch
+20261112-1813-joycon2-mouse-jcms.patch
+20261112-0345-joycon2-style-bits-only-when-declared.patch
+20261112-0704-nim-shop-async-object-only.patch
+20261112-0915-save-size-fallback.patch
+20261112-0935-maxwell-fmz.patch
+20261112-1144-ast-propagate-occurrences.patch
+20261112-2013-apple-audio-renderer-update-wake.patch
+20261112-2051-apple-audio-callback-slot-map.patch
+20261111-2123-audio-dsp-arm-fast-on.patch
+20261111-2225-vp9-native-backend-neutral.patch
+20261112-2225-armeilleure-pointer-auth.patch

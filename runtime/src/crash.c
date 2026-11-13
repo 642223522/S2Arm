@@ -182,6 +182,27 @@ static void crash_raw(int sig, siginfo_t *si, ucontext_t *uc, int other) {
         raw_end(&l);
     }
 }
+// 出事那块内存（#523 / #815：游戏装完 NRO 后 SIGBUS 落在主程序 +0x579508，日志只有地址，定不了是只读还是没映射）：
+//   缺页类信号（SIGBUS / SIGSEGV）打一行——读还是写（ESR 的 WnR 位）、地址所在（或之后第一块）映射的起止、当前 / 最大权限、标签、共享方式，块起点换成「模块+偏移」。
+//   只用 Mach 调用和 LOG，不分配
+static void fault_region_note(int sig, siginfo_t *si, ucontext_t *uc) {
+    if (sig != SIGBUS && sig != SIGSEGV) return;
+    uint64_t fa = (uint64_t)(uintptr_t)si->si_addr, esr = uc->uc_mcontext->__es.__esr; const char *rw = (esr >> 6 & 1) ? "写" : "读";
+    vm_address_t r = (vm_address_t)fa; vm_size_t sz = 0; natural_t depth = 0; vm_region_submap_info_data_64_t info; mach_msg_type_number_t cnt;
+    for (;;) {
+        cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (vm_region_recurse_64(mach_task_self(), &r, &sz, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS) {
+            LOG("出事那块内存：%s %#llx（ESR %#llx），这个地址及之后都没有映射", rw, (unsigned long long)fa, (unsigned long long)esr); return; }
+        if (!info.is_submap) break;
+        depth++;
+    }
+    char ws[160]; where((uint64_t)r, ws, sizeof ws);
+    int p = info.protection, m = info.max_protection, in = fa >= (uint64_t)r && fa < (uint64_t)r + sz;
+    LOG("出事那块内存：%s %#llx（ESR %#llx）%s [%#llx, %#llx) %llu KB，权限 当前 %c%c%c / 最大 %c%c%c，标签 %u，共享方式 %u，子映射深 %u；块起点 %s",
+        rw, (unsigned long long)fa, (unsigned long long)esr, in ? "落在映射块" : "没有映射，之后第一块是", (unsigned long long)r, (unsigned long long)(r + sz), (unsigned long long)(sz >> 10),
+        p & VM_PROT_READ ? 'r' : '-', p & VM_PROT_WRITE ? 'w' : '-', p & VM_PROT_EXECUTE ? 'x' : '-', m & VM_PROT_READ ? 'r' : '-', m & VM_PROT_WRITE ? 'w' : '-', m & VM_PROT_EXECUTE ? 'x' : '-',
+        info.user_tag, info.share_mode, depth, ws);
+}
 // 写现场的线程（第一条崩的）。原先 `static int once; if (once++) _exit()`：第二条几乎同时崩的线程直接退出整个进程，
 //   第一条的现场写到一半（10-29 1-2-Switch：host.log 断在一行中间、rc=138），且 once++ 不是原子的。现在：
 //   第一条照旧写完两段再 _exit；它自己在第二段里又崩 = 立即 _exit（第一段已落盘，同原先）；
@@ -196,7 +217,9 @@ static void crash_other_wait(int sig) {
 //   （控制台「崩溃报告」/ ~/Library/Logs/DiagnosticReports），iOS 进系统崩溃日志——原先 _exit(128 + sig) 是正常退出，系统不出报告。
 //   处理函数里本信号是屏蔽的，先放开再抛；万一没结束（不该发生）照旧 _exit(128 + sig)。
 //   读退出码的地方：shell 里被信号结束的 $? 仍是 128 + sig；作业层 Context.run 把 Python 的负返回码折回 128 + sig（pack/jobs/core.py）
+static int g_crash_quiet;   // s2a_crash_install 时取（信号处理里不读环境）：native.h s2a_crash_quiet
 static void crash_reraise(int sig) {
+    if (g_crash_quiet) _exit(128 + sig);   // 辅助运行 / 静默起局：现场已写进日志，不按信号死（不弹系统「意外退出」框）
     signal(sig, SIG_DFL);
     sigset_t m; sigemptyset(&m); sigaddset(&m, sig); pthread_sigmask(SIG_UNBLOCK, &m, NULL);
     raise(sig);
@@ -269,6 +292,7 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
     LOG("【红】CRASH 信号 %d 地址 %p pc %s lr %s sp %#llx", sig, si->si_addr, bp, bl, (unsigned long long)uc->uc_mcontext->__ss.__sp);
     for (int i = 0; i < 29; i += 4) LOG("  x%-2d %016llx %016llx %016llx %016llx", i, uc->uc_mcontext->__ss.__x[i], uc->uc_mcontext->__ss.__x[i + 1], i + 2 < 29 ? uc->uc_mcontext->__ss.__x[i + 2] : 0, i + 3 < 29 ? uc->uc_mcontext->__ss.__x[i + 3] : 0);
     s2a_backtrace(fp);
+    fault_region_note(sig, si, uc);
     { uint64_t ht, hl, fs, fh; int fn; s2a_low_holes(&ht, &hl); s2a_fd_usage(&fn, &fs, &fh);   // 资源耗尽类崩溃先看这两样：低区地址 / 文件句柄
       LOG("崩溃时余量：低区空洞合计 %llu MB、最大一块 %llu MB；文件句柄已开 %d 个，软上限 %llu、硬上限 %llu", (unsigned long long)(ht >> 20), (unsigned long long)(hl >> 20), fn, (unsigned long long)fs, (unsigned long long)fh); }
     s2a_lowva_crash_note();   // 低区账（各家账面、保留量、拦不到的）
@@ -296,6 +320,7 @@ void s2a_crash_thread_init(void) {
 void s2a_crash_install(void) {
     int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE, SIGABRT};   // SIGABRT：die() 与 C# FailFast 都走 abort，要现场
     g_dsh_crash_dump = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_dsh_crash_dump");
+    g_crash_quiet = s2a_crash_quiet();
     for (size_t i = 0; i < sizeof sigs / sizeof *sigs; i++) {
         int e = plat_fault_install(sigs[i], on_crash, PLAT_FAULT_ONSTACK);
         if (e) LOG("【红】崩溃：安装信号 %d 失败 errno=%d", sigs[i], e);

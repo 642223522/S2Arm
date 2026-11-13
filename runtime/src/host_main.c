@@ -6,6 +6,7 @@
 // 弱链接[host]：nvn_pso_harvest（直连层 graphics/nvn 提供；链接行按这行放行未定义，runtime/build.mk 自动收）
 // 弱链接[host,ios,nvntest,touchtest]：s2a_autoplay_on（自动玩家（C#）提供；链接行按这行放行未定义，runtime/build.mk 自动收）
 // 弱链接[host,ios,nvntest,touchtest]：s2a_autoplay_wait_s（自动玩家累计等模型秒数；同上）
+#include "s2a_selfcheck_page.h"   // 自检「仍要启动」按钮文案
 #include "native.h"
 #include "dev_facilities.h"
 #include "guest_main.h"
@@ -138,6 +139,7 @@ static void load_session_modules(void *unused) {
     (void)unused;
     switch_program_modules();
 #if defined(__APPLE__)
+    { void s2a_test_ballast_commit(void); s2a_test_ballast_commit(); }   // 测试压舱（S2A_TEST_BALLAST_MB，vawin.c）：布局排完、装模块前才真占
     { int s2a_guest_file_retry(void); s2a_guest_file_retry(); }   // 起局时空间不够没接上文件后备的，解包完、装模块前再试一次（vawin.c，#483）
 #endif
     load_modules(g_module_dir, (const char **)g_module_names, g_module_count);
@@ -286,7 +288,11 @@ static int host_run(int argc, char **argv) {
       if (!s2a_selfcheck()) {
 #if TARGET_OS_IPHONE
           const char *t, *b; s2a_selfcheck_page(&t, &b);   // 细节（地址上限、内存上限）已在 host.log「【红】自检不过」，随诊断包带走
-          s2a_ios_show_notice("exclamationmark.triangle.fill", t, b, 0, 0, 1); s2a_front_run(NULL); for (;;) pause();   // 画面上给提示，不起游戏
+          int s2a_selfcheck_can_continue(void); int s2a_ios_ask_continue(const char *, const char *, const char *, const char *);
+          // 只差内存上限：提示页多一个「仍要启动」，玩家点了就照常起局（v0.3.1 装机原则）；物理上起不来的照旧只给提示、不起游戏
+          if (s2a_selfcheck_can_continue() && s2a_ios_ask_continue("exclamationmark.triangle.fill", t, b, S2A_SELFCHECK_GO))
+              LOG("自检：只差内存上限，玩家点了「仍要启动」，照常起局（大游戏可能被系统结束）");
+          else { s2a_ios_show_notice("exclamationmark.triangle.fill", t, b, 0, 0, 1); s2a_front_run(NULL); for (;;) pause(); }   // 画面上给提示，不起游戏
 #endif
       } }
 #if TARGET_OS_IPHONE
@@ -297,7 +303,8 @@ static int host_run(int argc, char **argv) {
     //   早于图形模式落定与服务层初始化（审计 P1-106：原先要等下次打开才生效）
     //   查不查、查哪个文档根由 s2a_import_docs_pick 按启动上下文定（多款容器 = 本款 Documents/games/<游戏号>；11-07 原先按「S2A_GAME_DATA 没设」判，容器选游戏总会设它 → 漏查）
     { int s2a_import_gate(void); int s2a_ios_reload_graphics_settings(void);
-      if (s2a_import_gate() && s2a_ios_reload_graphics_settings()) die("【红】资源导入后重读画面设置 / 随包补丁失败（见上一行【红】）"); }
+      // v0.3.1（认不出的直接做）：重读失败最多是这局画面设置 / 随包补丁按缺省走（下次打开照常读），不该让 App 直接退出——记一笔照常起局
+      if (s2a_import_gate() && s2a_ios_reload_graphics_settings()) LOG("【黄】资源导入后重读画面设置 / 随包补丁失败（见上一行），这局按缺省画面设置起，下次打开照常读"); }
     // 模块目录先定下（启动上下文 main 开头已冻结）：放行之后谁先调 s2a_gfx_mode() 谁就落定图形模式与程序号（gfxmode.c decide 读 <模块目录>/main.npdm）。
     //   原先 iOS 要到装模块（loader.c load_modules）才设目录，放行与装载之间若有人先问——上次没正常收尾时开局弹诊断提示，关掉后 App 重新激活，
     //   恢复回调 s2a_direct_suspend 问图形模式——程序号读成 0 并锁死整局：wire/<程序号> 的现编缓存、跑局知识落到 wire/0000000000000000，

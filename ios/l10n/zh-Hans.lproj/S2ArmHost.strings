@@ -157,7 +157,7 @@
 "vpad.layouts.error" = "布局操作失败";
 "vpad.layouts.export" = "导出当前布局";
 "vpad.layouts.footer.broken" = "错误文件保留原样；修正后重新导入或从“文件”中的本 App / VPadLayouts 管理。";
-"vpad.layouts.footer.choose" = "切换立即保存并生效";
+"vpad.layouts.footer.choose" = "编辑普通布局；位置与分屏布局分别保存。切换立即生效。";
 "vpad.layouts.footer.display" = "停止操作 3 秒后保留的按键透明度。0% 时停手后完全看不见，手指按下仍有效、按键随即重新显示；默认 25%。触感反馈在按键新按下、每根摇杆每次按住期间首次到边时轻震一次；不改变游戏本身的震动。";
 "vpad.layouts.footer.stick" = "左右摇杆共用。死区过滤中心微动；外圈饱和越小，越早推满；响应指数大于 1 时中心更细，小于 1 时更灵敏。松手保存，下次推杆生效；默认 8% / 100% / 1.00。";
 "vpad.layouts.holdLock.note" = "按住 2 秒锁定，再点一下解锁；只对这款游戏生效";
@@ -235,9 +235,11 @@
 "app.library.broken.title" = "游戏资源不完整";
 "app.library.cantOpen" = "这款游戏打不开";
 "app.library.cantOpen.message" = "启动这款游戏前的准备没做完。请从后台划掉 App 后重新打开再试；还是不行的话，导出诊断包发给我们。";
+"app.library.cantOpen.incomplete" = "这款游戏在手机上的 S2Arm 里不完整。请在电脑上的 S2Arm 里把它重新「装到 iPhone」一次；存档不受影响。";
+"app.library.cantOpen.storage" = "手机上没法给这款游戏建存放目录，多半是存储空间满了。请在「设置 → 通用 → iPhone 储存空间」腾出空间后，从后台划掉 App 再打开。";
 "app.library.missing.title" = "还缺游戏资源";
 "app.library.packBroken" = "这款游戏的资源只拷了一部分，多半是拷到一半断了。请在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上。补好后点「重新检查」。";
-"app.library.packMissing" = "这款游戏的资源还不在手机上。请在电脑上的 S2Arm 里对这款游戏点「装到 iPhone」，资源会自动拷进来；也可以把这款的 game.img 文件放进「文件」App 里本 App 的任意位置。放好后点「重新检查」。";
+"app.library.packMissing" = "这款游戏的资源还不在手机上。请在电脑上的 S2Arm 里对这款游戏点「装到 iPhone」，资源会自动拷进来；也可以把这款的 game.img 文件放进「文件」App 里本 App 的「放这里导入」文件夹。放好后点「重新检查」。";
 "app.library.reopen.message" = "同一次打开只能玩一款游戏。请从后台划掉 App 后重新打开，再选这款。";
 "app.library.reopen.title" = "请关掉 App 重新打开";
 "app.library.stillMissing" = "刚刚查过，还是没有完整的资源包。\n\n";
@@ -285,6 +287,7 @@
 "controller.scanning" = "正在查找，轻点取消";
 "controller.turnOnBluetooth" = "打开蓝牙后重试";
 "error.sentence" = "%@。%@";
+"img.importFolder" = "放这里导入";
 "img.scanFailed.title" = "没能导入游戏文件";
 "games.repair.done.title" = "游戏文件夹已修好";
 "games.repair.done.body" = "游戏文件夹之前归系统账户，S2Arm 写不进去，安装一直开始不了。已自动迁到 S2Arm 自己的新文件夹（%u 个文件，和原文件共享数据，不多占空间），可以接着安装。旧文件夹 S2Arm 删不掉，下次连电脑时会清掉。";
@@ -346,7 +349,7 @@
 "loadpage.subtitle" = "首次启动，正在为你的设备做一次性准备";
 "notice.batch" = "第 %d / %d 批";
 "notice.cable" = "数据线";
-"notice.step.img" = "或者把这款游戏的 game.img 文件放进「文件」App 里「%@」的任意位置，再重新打开「%@」，它会自动认出来。";
+"notice.step.img" = "或者把这款游戏的 game.img 文件放进「文件」App 里「%@」的「放这里导入」文件夹，再重新打开「%@」，它会自动认出来。";
 "notice.step.auto" = "在电脑上的 S2Arm 里点这款游戏的「装到 iPhone」，资源会自动拷进来——最省事。";
 "save.blocked" = "%@\n\n先把数据拷走再决定：打开“文件”App →“我的 iPhone”（iPad 为“我的 iPad”）→“%@”，把整个“S2A”文件夹拷到别处；未完成的操作记录在 S2A/save-transfer/save-transactions 里。也可以用 Mac 访达选中这台设备 →“文件”，把这个 App 下的“S2A”拖出来。\n\n拷好后，可以重新打包安装再试，或点“仍要开始游戏…”。";
 "save.busy" = "上一项存档操作还在进行，请等它完成后再试。";
@@ -404,7 +407,7 @@
 "settings.footer.controls" = "未连接手柄时，可使用手机陀螺仪和震动。";
 "settings.footer.dev" = "下次启动生效。\nS2Arm 浮层：显示目标帧率、慢帧比例、图形模式、首次编译、音频状态和包号。\nMetal 性能浮层：显示帧率、GPU 时间和帧间隔曲线。仅供开发设备上手动观察；开启时不使用截图、存帧、自动玩家或满屏判定。";
 "settings.footer.diag" = "包含近期运行日志和诊断信息，不含游戏文件、密钥或存档。\n下次打开或切回游戏时导出，随后自动关闭此选项。";
-"settings.footer.graphics" = "重新启动游戏后生效。游戏运行时，完成设置可选择立刻重启；请先在游戏内保存进度。\n主机模式对应 Switch 连接底座时的模式，关闭时使用掌机模式。实际分辨率和画质由游戏决定；与兼容 / 高性能运行模式分别设置。\n宽屏和 60 帧需资源包支持，开启后可能增加负载和耗电。";
+"settings.footer.graphics" = "重新启动游戏后生效。游戏运行时，完成设置可选择立刻重启；请先在游戏内保存进度。\n主机模式对应 Switch 连接底座时的模式，关闭时使用掌机模式。实际分辨率和画质由游戏决定；与兼容 / 高性能运行模式分别设置。\n宽屏和 60 帧需资源包支持，开启后可能增加负载和耗电。\n帧率上限低于游戏原本的帧率时，游戏速度会随之变慢。";
 "settings.footer.saves" = "请先在游戏内保存进度，退出并重新打开后管理存档。";
 "settings.fps.capLowPower" = "已暂时回到原生帧率（低电量模式）";
 "settings.fps.capThermal" = "已暂时回到原生帧率（手机发热）";
@@ -435,3 +438,15 @@
 "textinput.min" = "至少 %ld 个字";
 "textinput.ok" = "确定";
 "textinput.range" = "%ld–%ld 个字";
+"play.group" = "屏幕布局";
+"play.footer" = "所有游戏共用，立即调整布局。自动分屏仅在设备半折叠时开启；无法读取折叠状态时保持关闭。自动方向在分屏时使用竖屏，否则使用横屏。\n部分游戏需重新启动后才能按新区域应用宽屏比例。";
+"play.split" = "上下分屏";
+"play.orientation" = "屏幕方向";
+"play.auto" = "自动";
+"play.on" = "开启";
+"play.off" = "关闭";
+"play.landscape" = "横屏";
+"play.portrait" = "竖屏";
+/* Duo shared layout settings and split touch editor */
+"vpad.layouts.split.title" = "分屏触屏布局";
+"vpad.layouts.split.footer" = "编辑分屏下半区；位置与普通布局分别保存，键 / 触模式和手感共用。";

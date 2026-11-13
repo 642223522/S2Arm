@@ -27,6 +27,7 @@ public sealed partial class EnvironmentWindow
     private string[] pendingImportPaths = [];
     private bool keysRejected;
     private ImportDialogState? importDialog;
+    private string importNotice = "";   // #797：添加成功但这款只有更新 / DLC、缺本体：弹窗不自动关，黄字说缺本体，玩家可以当场把本体拖进来
     private bool renderDeferred;   // 拖动途中到来的刷新，等松手或拖走再做
 
     private void RenderImportDialog(StackPanel body)
@@ -82,6 +83,9 @@ public sealed partial class EnvironmentWindow
             panel.Children.Add(new TextBlock { Text = T("welcome.keys.unusable"), FontSize = 13,
                 Foreground = Brush.Parse("#E55"), TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 12, 0, 0) });
+        if (importNotice.Length > 0 && !importBusy)
+            panel.Children.Add(new TextBlock { Text = importNotice, FontSize = 13, Foreground = Brush.Parse("#FFC857"), TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 12, 0, 0) });
         if (importError.Length > 0)
         {
             panel.Children.Add(new TextBlock { Text = importError, FontSize = 13,
@@ -90,6 +94,7 @@ public sealed partial class EnvironmentWindow
             var copyError = CopyReportButton(null, ["import", "keys", "setup"], () => importError);
             copyError.Margin = new Thickness(0, 10, 0, 0); copyError.HorizontalAlignment = HorizontalAlignment.Left;
             panel.Children.Add(copyError);
+            if (LibraryDrivePicker() is { } drives) panel.Children.Add(drives);   // 游戏库盘格式不对：列出能放的盘，点了就建（v0.3.1）
         }
         // 游戏库没连上（也没在连）：给两条路——按原位置重试、换一个文件夹（换了会记住）
         if (!libraryBusy && !importBusy && (connectedFolder is null || libraryId is null))
@@ -183,7 +188,7 @@ public sealed partial class EnvironmentWindow
 
     private void CloseImportDialog()
     {
-        importDialog = null; importError = ""; keysRejected = false;
+        importDialog = null; importError = ""; importNotice = ""; keysRejected = false;
         pendingImportPaths = [];
         Render();
     }
@@ -274,7 +279,7 @@ public sealed partial class EnvironmentWindow
     private async Task RunImportGamesAsync(string[] filePaths)
     {
         if (importBusy || connectedFolder is null || libraryId is null) return;
-        var front = BeginJob(JobKind.Import); importError = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
+        var front = BeginJob(JobKind.Import); importError = ""; importNotice = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
         keysRejected = false; Render();
         try
         {
@@ -330,6 +335,13 @@ public sealed partial class EnvironmentWindow
                     return;
                 }
                 importError = string.Join("\n", failed.Select(f => f.FileName + "：" + B(f.Reason)));
+                return;
+            }
+            // #797：只放了更新 / DLC、库里也没有本体：不自动关，当场说缺本体（原先要到出包「检查游戏输入」才报）
+            var noBase = ImportOutcome.MissingBase(result.Report.Result);
+            if (noBase.Count > 0)
+            {
+                importNotice = string.Join("\n", noBase.Select(id => T("import.noBase").Replace("{0}", catalog?.Games.FirstOrDefault(g => string.Equals(g.Id, id, StringComparison.OrdinalIgnoreCase))?.Name ?? id)));
                 return;
             }
             importDialog = null;   // 成功自动关

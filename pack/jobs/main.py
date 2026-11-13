@@ -11,6 +11,7 @@ Subcommands (J10 / #186):
 """
 from __future__ import annotations
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -25,10 +26,13 @@ if os.name == "nt":   # 作业主程序自己也要长路径处理：子 Python 
     sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
     from pack.orch import winlong as _winlong
     _winlong.install()
+import awake
 import community
 import devcert
 import diag
+import downstream
 import embedded
+import export_plan
 import install
 import ipa
 import layout
@@ -38,7 +42,7 @@ import saves
 import sizes
 import target
 import toolchain
-from core import (KEEP_DAYS, KEEP_FAILED_PER_OPERATION, KEEP_PER_OPERATION, KEEP_TOTAL, Cancelled, Context, Failure, TERMINAL_STATES, cancel, describe, journal, pid_alive, prune_jobs,
+from core import (KEEP_DAYS, KEEP_FAILED_PER_OPERATION, KEEP_PER_OPERATION, KEEP_TOTAL, Cancelled, Context, Failure, Paused, TERMINAL_STATES, cancel, describe, journal, pid_alive, prune_jobs,
                   read_events, request_path, status)
 
 import build
@@ -78,6 +82,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         while not ended.wait(1):
             parent = request.get("parentPid")
             if parent and not pid_alive(parent):   # 启动器没了：停本任务（Windows 不能用 os.kill(pid, 0) 探活，见 core.pid_alive）
+                c.parent_gone = True   # 出包编排据此把停下记成 paused（启动器退出），不是玩家取消（剃刀 H13）
                 c.stop()
             if not c.cancelled:
                 c.emit("heartbeat")
@@ -88,9 +93,9 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
                   "diagnostics": library.diagnostics, "saveInput": library.save_input,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "devCert": devcert.operation}
+                  "community": community.listing, "communitySave": community.save, "devCert": devcert.operation, "export": export_plan.export}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -98,11 +103,12 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             raise Failure("不支持的任务类型。")
         if c.operation == "import" and c.r.get("partialResults") is True:   # 默认路径不带 sources（结果与任务记录同 #124 之前）
             c.import_result = library.initial_import_result(c)
-        if c.operation not in saves.OPERATIONS:
+        if c.operation not in saves.OPERATIONS and c.operation not in ORCHESTRATION:
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
-        result = operations[c.operation](c)
+        with awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
+            result = operations[c.operation](c)
         if c.operation in HEAL_AFTER:
             # 英文名可能刚拿到（导入读 NACP、出包解出 control.nacp）：锁已放，空闲就把还叫游戏号的文件夹改名（剃刀 H3）。
             #   改名只是好看，出错不把已完成的任务变成失败，原文进标准错误（随任务日志）
@@ -117,6 +123,10 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         ended.set()
         c.finish("completed", "操作完成", result)
         # The operation is done, but a job whose record never reached the disk must not come back as success (J10)
+        return 0 if not getattr(c, "journal_broken", False) else 1
+    except Paused as pause:   # 出包编排磁盘满停下：独立终态，不算完成也不算失败（剃刀 H13）
+        ended.set()
+        c.finish("paused", str(pause), pause.result)
         return 0 if not getattr(c, "journal_broken", False) else 1
     except (Cancelled, KeyboardInterrupt):
         ended.set()
@@ -160,8 +170,10 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
+KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
 HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
-NO_LIBRARY = ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
+ORCHESTRATION = ("export",)   # 只起子作业的编排：引擎副本、游戏库结构由每一步的子作业自己核（剃刀 H13）
+NO_LIBRARY = ORCHESTRATION + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
 
 
 def parser():

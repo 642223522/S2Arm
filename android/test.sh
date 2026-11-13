@@ -113,6 +113,8 @@ s2a_gate_step "$PY" "$android_dir/tests/direct_framelog_test.py"
 # 局目录被 tools/quality_check.py 安卓分支判读。
 s2a_gate_step "$PY" "$android_dir/tests/device_lock_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/run_game_test.py"
+# run_game_test 的用例收场后不留临时目录（通过 / 失败 / setUp 中途出错三种收场）。
+s2a_gate_step "$PY" "$android_dir/tests/run_game_tmp_cleanup_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_game_mode_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_refresh_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_touch_generation_test.py"
@@ -311,6 +313,9 @@ s2a_gate_step "$PY" "$android_dir/tests/direct_prepare_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/host_link_test.py"   # 宿主单测链接闭包：自动补链 / 弱引用放行 / 无提供方点名红 / 替身优先
 # Graphics REQUEST: real producer/canonical identity/writer -> unchanged importer, synthetic host only.
 s2a_gate_step "$PY" "$android_dir/tests/graphics_request_name_test.py"
+# 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
 # W2 compute: real C components with synthetic input / Vulkan mocks, never GPU or device evidence.
 s2a_gate_step "$PY" "$android_dir/tests/direct_compute_identity_test.py"
 # P0-3：constantBufferUse 宽掩码的 S2AI1 v3/v4 分叉现由计算与图形共用——正例 + 两处撤改必红（纯宿主 C 编译，秒级）。

@@ -71,17 +71,27 @@ __attribute__((format(printf, 1, 2))) static inline void s2a_log_line2(const cha
 #endif
 void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日志 / 切 fd / 起控制台副本；幂等
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
-typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
+typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms, gpu_clk_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
 int s2a_energy_snap(s2a_esnap *s);
+// 两次采样之间的 GPU 忙 ms/s：分母取 GPU 时钟差（gpu_clk_ms，已入账各帧最晚 GPU 结束），不取墙钟——GPU 忙晚 8 帧在 CPU 帧边界入账，墙钟窗口会把慢帧前的时间挤进来；
+//   读不到（没有直连层）返回 -1，这段时间没有帧入账返回 0
+double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b);
 void s2a_energy_log(void);
 int s2a_energy_capture(char *out, size_t n);
 int s2a_spin_step(const uint64_t *tid, const char *const *name, const double *cores, int n, double sec, int lim);   // 游戏线程满核空转判定（energy.c）
 void s2a_spin_test_reset(void);
 // 初始启动/运行时仍按原规则中止。重启的纯 C 装载事务可以回到失败
 // 边界，保留失败现场并通知壳；该边界不包住 C#、GPU 或客体执行。
+// 静默致命退出：出包期的辅助运行（游戏 GLSLC / Oodle 工具模式、管线归档、帧回放）与作业层标了 S2A_CRASH_QUIET=1 的起局，
+//   出错只写日志、以退出码交回调用方，不 abort / 不按信号死——按信号死 macOS 会给 App 弹「意外退出」系统框，玩家看到的却是出包成功
+static inline int s2a_crash_quiet(void) {
+    const char *q = getenv("S2A_CRASH_QUIET");
+    return (q && q[0] == '1') || getenv("DM_GLSLC_JOB") || getenv("DM_OODLE_SERVE") || getenv("S2A_PSO_HARVEST") || getenv("S2A_FRAME_REPLAY");
+}
 __attribute__((noreturn)) static inline void s2a_native_fatal(void) {
     void (*boot_abort)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_session_abort_boot");
     if (boot_abort) boot_abort();
+    if (s2a_crash_quiet()) _exit(70);
     abort();
 }
 #define die(...) do { LOG("FATAL " __VA_ARGS__); s2a_native_fatal(); } while (0)
@@ -129,6 +139,9 @@ int   s2a_tail_has(const void *p);
 void  s2a_tail_note(char *o, size_t cap);
 void s2a_fd_usage(int *open_n, uint64_t *soft, uint64_t *hard);   // 已开文件句柄数（探到 min(软上限, 4096)）+ RLIMIT_NOFILE 软 / 硬上限
 int s2a_gc_limit_pick(uint64_t largest); void s2a_gc_limit_apply(void);   // GC 上限自适应三档（gclimit.c）：0 不设 / 1 总 2 GB / 2 分堆
+uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned);   // vawin.c：放不下标准布局时窗口下方留给宿主多少（按学到的跨度，#783）
+uint64_t s2a_window_span_seen(uint64_t pid);                        // vawin.c：本款本机学到的地址跨度（wire/<程序号>/span_peak；没有 = 0）
+uint64_t s2a_mem_span_now(void);                                     // svc_mem.c：本局已碰到的地址跨度（碰到的最高地址 − 窗口基址）
 void s2a_low_holes(uint64_t *total, uint64_t *largest);   // 4 GB 到窗口底之间的空洞合计 / 最大块           // 布局只用前 size 字节时把尾部还给系统        // 打一行窗口探测：窗口内除自己的占位外还有没有别人的映射
 void s2a_lowva_start(void);   // 低区统一记账（lowva.c，接口 runtime/include/s2a_lowva.h）：起巡检线程
 int  s2a_lowva_tick(void);    // 巡检一拍，返回下一拍间隔秒数（单测直接调）

@@ -36,6 +36,8 @@ public struct ImportSource: Decodable, Identifiable {
 public struct ImportBatchResult {
     public let games: [GameInfo]
     public let sources: [ImportSource]
+    /// #797：这次放进来、但游戏库里只有更新 / DLC 没有本体的游戏号（作业结果 imports[].missingBase，按整批加完后的库判）
+    public let missingBase: [String]
 }
 
 public final class S2ArmEngineProvider: EngineProvider {
@@ -85,7 +87,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         if partialResults { extra["partialResults"] = true }
         let result = try await client.perform("import", extra: extra, events: events).result
         let games = partialResults ? await importedGames(in: result) : try await resolveImportedGames(in: result)
-        return ImportBatchResult(games: games, sources: ImportSource.rows(in: result))
+        var missingBase: [String] = []
+        for item in result["imports"] as? [[String: Any]] ?? [] where item["missingBase"] as? Bool == true {
+            if let id = item["id"] as? String, !id.isEmpty, !missingBase.contains(id) { missingBase.append(id) }
+        }
+        return ImportBatchResult(games: games, sources: ImportSource.rows(in: result), missingBase: missingBase)
     }
 
     public func importedGames(in result: [String: Any]) async -> [GameInfo] {
@@ -130,6 +136,22 @@ public final class S2ArmEngineProvider: EngineProvider {
             let r = try await client.perform("ipa", extra: extra, events: events).result
             return BuildResult(gameId: job.gameId, target: .iPhone, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)
         }
+    }
+
+    /// 记玩家对这款的下游深度方案选择（scheme = 方案 id；"" = 仍用原版）。之后的出包 / 装机作业按它走（pack/jobs/downstream.py requested）
+    public func setDownstreamChoice(gameId: String, scheme: String, events: EventSink) async throws {
+        _ = try await client.perform("downstreamChoice", extra: ["gameId": gameId, "scheme": scheme], events: events)
+    }
+
+    /// 出包编排（剃刀 H13，pack/jobs/export_plan.py）：plan = {source: inline, items, location, deviceTarget, spaceOverride} 或 {source: batch}。
+    /// 每一步是作业层的普通子作业，事件经 sink 原样过来（step / child / stepEnded）；终态 paused 时抛 JobFailure（state = .paused，结果里有 pausedReason / stoppedAt）。
+    /// 计划里有 iPhone 时先确认 .NET SDK（同 build：玩家只点一次）
+    public func export(plan: [String: Any], hasIPhone: Bool, events: EventSink) async throws -> JobOutcome {
+        if hasIPhone, dotnetMissing {
+            _ = try await environment.repair("installDotnet", events: events)
+            if dotnetMissing { throw JobClientError(Self.dotnetRecheckFailed) }
+        }
+        return try await client.perform("export", extra: ["plan": plan], events: events)
     }
 
     private var dotnetMissing: Bool { environment.checks?.first { $0.action == "installDotnet" }?.ok == false }
@@ -180,11 +202,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 改游戏显示名 / 封面：nil 不动，空字符串恢复默认。
-    public func customizeGame(_ gameId: String, name: String?, coverPath: String?) async throws {
+    public func customizeGame(_ gameId: String, name: String?, coverPath: String?, events: EventSink = .discard) async throws {
         var extra: [String: Any] = ["gameId": gameId]
         if let name { extra["name"] = name }
         if let coverPath { extra["coverPath"] = coverPath }
-        _ = try await client.perform("customize", extra: extra, events: .discard)
+        _ = try await client.perform("customize", extra: extra, events: events)
     }
 
     /// Mac 端诊断包写到 path（diagnostics 作业）。
@@ -248,20 +270,20 @@ public final class S2ArmEngineProvider: EngineProvider {
     public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
     public func devCertDelete() async throws { try await installer.devCertDelete() }
 
-    public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, events: EventSink = .discard) async throws -> InstallResult {
-        try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, events: events)
+    public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], events: EventSink = .discard) async throws -> InstallResult {
+        try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, accept: accept, events: events)
     }
 
     public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
-    public func updatePhone(acceptStale: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
-        try await installer.updatePhone(acceptStale: acceptStale, device: device, events: events)
+    public func updatePhone(acceptStale: Bool = false, acceptDropped: Bool = false, accept: Set<String> = [], device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+        try await installer.updatePhone(acceptStale: acceptStale, acceptDropped: acceptDropped, accept: accept, device: device, events: events)
     }
 
     public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {
         try await installer.restorePrevious(device: device, events: events)
     }
 
-    public func removeFromPhone(gameId: String, acceptDropped: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> RemoveResult {
-        try await installer.remove(gameId: gameId, acceptDropped: acceptDropped, device: device, events: events)
+    public func removeFromPhone(gameId: String, acceptDropped: Bool = false, accept: Set<String> = [], device: String? = nil, events: EventSink = .discard) async throws -> RemoveResult {
+        try await installer.remove(gameId: gameId, acceptDropped: acceptDropped, accept: accept, device: device, events: events)
     }
 }

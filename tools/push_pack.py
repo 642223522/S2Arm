@@ -6,7 +6,10 @@
 放在 tools/ 而不是 pack/jobs/：调度把 tools/ 整份单独拷到 gate-host 跑 dev_run（tools/sched.sh git archive tools），tools 树要自成一体（11-06 列车 sched_test / ssh_argv_test 退回）。
 
 口径（手机端 runtime/src/pack_apply.c 不变）：
-  ① 机上已有什么按 <文档根>/资源包/index.applied.tsv 认（文档根缺省 Documents，多款容器每款 Documents/games/<游戏号>）（App 解包成功时写；老 App 没有它才退回 index.tsv）
+  ① 机上已有什么按 <资源包根>/index.applied.tsv 认（App 解包成功时写；老 App 没有它才退回 index.tsv）。
+     资源包根：单款 App 缺省 <文档根>/资源包 = Documents/资源包；多款容器由调用方 --pack-root 给（pack/jobs/install.py pick_pack_root：
+     Library/Application Support/S2Arm/games/<游戏号>/资源包，过渡期新位置不在而旧位置 Documents/games/<游戏号>/资源包 在时给旧位置）；
+     解包日志总在 <文档根>/unpack.log（文档根缺省 Documents，多款容器每款 Documents/games/<游戏号>）
   ② .incoming 里本工具推的包（<时刻>_<三位序号>.tar）逐个核完整性（s2a-devpush tar-ok：512 整倍、末尾 1024 字节全零）：
      完整的留着（推完、还没起 App 解的批：出包重叠早推的、上次推完没起 App 的），其里的文件按 .pushed 算机上已有；
      不完整或核不了（Mac 没有 s2a-devpush / UDID）的用同名空 tar（1024 字节全零）盖掉，不信 .pushed、按已应用索引补推（10-26 截短残批）
@@ -26,7 +29,8 @@
 用法：
   python3 tools/push_pack.py run   <设备> <包名> <资源包目录> [--full] [--udid U] [--devpush P] [--work 目录] [--apply]   一条龙（启动器 / Windows / 手动装机）；
       --apply：推完起一次 App 只解包并等解完（.applied = 本包且解包日志本次新增完成行）
-  各子命令都收 --docs <设备侧文档根>（缺省 Documents；多款容器每款 Documents/games/<游戏号>，资源包 / 解包日志都在它下面）
+  各子命令都收 --docs <设备侧文档根>（缺省 Documents；多款容器每款 Documents/games/<游戏号>，解包日志在它下面）、
+      --pack-root <设备侧资源包根>（缺省 <文档根>/资源包；多款容器每款 Library/Application Support/S2Arm/games/<游戏号>/资源包）
       与 --launch-ctx <值>（多款容器：推完正常拉起 App 到游戏库、由库解开这款（值本身已不再传给 App））
   python3 tools/push_pack.py plan  <设备> <包名> <资源包目录> --work O [--full] [--udid U]   算待推批次（dev_run 用：之后它按推送量放大看门、腾空间）
   python3 tools/push_pack.py free  <设备> <包名> <资源包目录> --work O [--udid U]           机上可写字节（读不到不打印）
@@ -58,12 +62,33 @@ IMG = re.compile(r"(^|.*/)romfs\.img$|game\.img")   # 单文件镜像（旧形�
 #   CoreDeviceService 内存（#641 实测 12.2 GiB 的资源包：服务涨到约 20 GB、整机换页 10 GB 并卡死，下一次流式写在 0 字节就失败）。
 #   批次 tar（≤1 GB）照旧可以退回
 DC_FALLBACK_MAX = 2 << 30
+
+
+def push_reason(text):
+    """推送失败的原文 → 玩家一眼看得懂的一类（摘要第一条要能看出是哪种，11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出原因）：
+    USB 看不到手机 / 手机锁屏 / 连接断了；认不出就空串（照原文报）。按 s2a-devpush 与 devicectl 的报错特征认，不看英文全文"""
+    t = str(text or "")
+    if "找不到设备" in t or "No device" in t or "usbmuxd" in t.lower() and "connect" in t.lower(): return "USB 看不到手机（没插数据线，或手机只在无线连接上）"
+    if "锁屏" in t or "locked" in t.lower() or "passcode" in t.lower(): return "手机锁屏了"
+    if "没有任何进展" in t or "socket io failed" in t or "Broken pipe" in t or "Connection reset" in t or "disconnected" in t.lower(): return "和手机的连接断了（数据线松了 / Wi-Fi 断开）"
+    return ""
+
+
+def avail_mem():
+    """本机现在能腾出来的内存（字节）：Mac 读 vm_stat（空闲 + 不活跃 + 可回收），读不到 0"""
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    page = int(re.search(r"page size of (\d+)", out).group(1)) if re.search(r"page size of (\d+)", out) else 16384
+    n = sum(int(m) for k in ("Pages free", "Pages inactive", "Pages speculative") for m in re.findall(rf"{k}:\s+(\d+)", out))
+    return n * page
 IMG_PAGE = 16384   # 单一 IMG 的页（pack/img.py PAGE）：第 0 页是头，续传按页向下取整接着写
 IMG_PACK_ID = slice(32, 96)   # 头里的资源包号（ASCII，可空）：空 = 认不出是不是同一份，不续传
 DOCS = "Documents"   # 设备侧文档根（单款 App）；多款容器每款 Documents/games/<游戏号>（pack/ship_ext.py 容器布局），设备对象的 docs 属性
 
 
-def rp(dev): return f"{dev.docs}/资源包"
+def rp(dev): return dev.pack or f"{dev.docs}/资源包"   # 设备侧资源包根：设备对象的 pack 属性（--pack-root），没给按文档根推（单款 App）
 def inc(dev): return rp(dev) + "/.incoming"
 def unpack_log(dev): return f"{dev.docs}/unpack.log"   # runtime/src/pack_apply.c：<文档根>/unpack.log
 STALE = re.compile(r"\d+_\d{3}\.tar")
@@ -77,6 +102,23 @@ class Fail(Exception):
 class DeviceLocked(Fail):
     """推之前写探针就写不进（多半是锁屏 / 数据线松了 / 隧道断了）：调用方报 device_locked，不推（#333）"""
     code = "device_locked"
+
+
+class LowSpace(Fail):
+    """推之前估算手机空间不够（估算值偏小：AFC 报的空闲不含 iOS 随时能清掉的空间，「设置 → 储存空间」里的「可用」含它）：
+    认得出的风险让玩家确认——调用方报 device_space_low，界面「仍然继续」带 acceptLowSpace 重来就照推，真写满了才停"""
+    code = "device_space_low"
+
+
+class SpaceFull(Fail):
+    """推的时候手机真写满了（推失败后再量，空闲已近 0）：说清这次要多少、手机此刻还剩多少"""
+    code = "ios_install_no_space"
+
+
+FULL_LEFT = 256 << 20   # 推失败后手机空闲低于它 = 写满了（按写满报，不报成传输失败）
+
+
+def gb1(n): return f"{n / 2**30:.1f}"
 
 
 class NeedsPlayer(Fail):
@@ -96,7 +138,7 @@ def devpush_path(given=None, env=None):
 class Devpush:
     """s2a-devpush（pack/devpush）：经 usbmuxd（USBMUXD_SOCKET_ADDRESS 可指别的机器）连手机，house_arrest 进 App 容器、AFC 读写"""
     kind = "devpush"
-    docs, ctx = DOCS, None
+    docs, ctx, pack = DOCS, None, None
     progress = None   # 当前文件 / 批次的有效载荷字节；不代表 .pushed 已提交
 
     def __init__(self, exe, udid, bid, work, env=None):
@@ -204,7 +246,7 @@ class Devicectl:
     """Mac：xcrun devicectl（口径同 tools/dev_run.sh：一律用 devicectl 自带 --timeout，外层 timeout 只在它自己卡死时兜底；拷贝按大小定超时、挂了重试一次）。
     有 s2a-devpush + UDID 时流式写批次、核待解批完整性借它（手机只在 CoreDevice 无线隧道上、usbmuxd 看不到时那批退回 devicectl）"""
     kind = "devicectl"
-    docs, ctx = DOCS, None
+    docs, ctx, pack = DOCS, None, None
 
     def __init__(self, device, bid, work, udid=None, devpush=None, env=None):
         self.device, self.bid, self.work, self.udid, self.env = device, bid, Path(work), udid, env
@@ -254,10 +296,12 @@ class Devicectl:
             try:
                 return self.dp.put(src, rel)
             except Fail as e:
-                size, cap = Path(src).stat().st_size, int((self.env or os.environ).get("S2A_DC_FALLBACK_MAX") or DC_FALLBACK_MAX)
+                # devicectl 会把整个文件读进系统设备服务的内存（#641）：本机可用内存的一半装得下才交给它（至少放行 S2A_DC_FALLBACK_MAX / 2 GiB）
+                size, mem = Path(src).stat().st_size, avail_mem()
+                cap = max(int((self.env or os.environ).get("S2A_DC_FALLBACK_MAX") or DC_FALLBACK_MAX), mem // 2)
                 if size > cap:
-                    raise Fail(f"流式写 {Path(rel).name} 中断（{str(e)[-160:]}）。这份有 {size / 2**30:.1f} GB，不改走 devicectl（它会把整个文件读进内存、"
-                               "拖垮系统的设备服务）：换一根数据线或换个接口、手机保持解锁，再装一次") from None
+                    raise Fail(f"流式写 {Path(rel).name} 中断（{str(e)[-160:]}）。这份有 {size / 2**30:.1f} GB，本机可用内存 {mem / 2**30:.1f} GB，"
+                               "交给 devicectl 会把整份读进内存、拖垮系统的设备服务，不改走 devicectl") from None
                 self.say(f"流式写 {Path(rel).name} 没成（{str(e)[-160:]}），改走 devicectl")
         self.put(src, rel)
 
@@ -337,15 +381,15 @@ class Devicectl:
     say = staticmethod(lambda m: None)
 
 
-def device(dev, bid, work, udid=None, devpush=None, via=None, env=None, say=print, docs=DOCS, ctx=None):
+def device(dev, bid, work, udid=None, devpush=None, via=None, env=None, say=print, docs=DOCS, ctx=None, pack=None):
     """按平台挑设备操作：Windows（没有 devicectl）或 via=devpush → s2a-devpush（dev 就是 UDID）；Mac → devicectl（有工具 + UDID 时借 s2a-devpush 流式）"""
     env = dict(os.environ) if env is None else env
     udid = udid or env.get("S2A_PUSH_UDID") or env.get("SW_IOS_UDID") or None
     exe = devpush_path(devpush, env)
     if via == "devpush" or (via is None and os.name == "nt"):
         if not exe: raise Fail("没有 s2a-devpush（cargo build --release --manifest-path pack/devpush/Cargo.toml --target-dir build/devpush）")
-        d = Devpush(exe, udid or dev, bid, work, env); d.why = f"工具 {exe}"; d.docs, d.ctx = docs, ctx; return d
-    d = Devicectl(dev, bid, work, udid, exe, env); d.say = say; d.docs, d.ctx = docs, ctx
+        d = Devpush(exe, udid or dev, bid, work, env); d.why = f"工具 {exe}"; d.docs, d.ctx, d.pack = docs, ctx, pack; return d
+    d = Devicectl(dev, bid, work, udid, exe, env); d.say = say; d.docs, d.ctx, d.pack = docs, ctx, pack
     d.why = "没有 s2a-devpush" if not exe else "不知道手机 UDID（S2A_PUSH_UDID）" if not udid else f"工具 {exe}"
     return d
 
@@ -472,9 +516,30 @@ def need_bytes(work, nbytes, env=None):
     return nbytes + biggest + files * 4096 + spare * (1 << 30)
 
 
-def space(dev, nbytes, work, env=None):
-    """→ (可写字节或 None, 要的字节)"""
-    return dev.free(), need_bytes(work, nbytes, env)
+PHONE_FREE = "Documents/s2a_free.tsv"   # 手机上的 App 每次启动记的可用空间（ios/app.m free_note）：重要用途 \t 可选用途 \t statfs 空闲 \t 写入时刻
+
+
+def phone_free(dev, work):
+    """手机上的 App 上次启动时记的「重要用途」可用字节（含系统随时能清掉的空间，同「设置 → 通用 → iPhone 储存空间」的「可用」）和它记了多少秒：
+    电脑端经 AFC / lockdown 读到的空闲不含可清除空间（玩家反馈：「设置」里剩 70 多 GB，一键安装说只剩 2 GB）。没装过 / 没打开过 / 读不到 → (None, None)"""
+    dst = Path(work) / "s2a_free.tsv"
+    try:
+        if not dev.get(PHONE_FREE, str(dst), 30): return None, None
+        f = dst.read_text().split()
+        imp, at = int(f[0]), int(f[3])
+    except (OSError, ValueError, IndexError, Fail):
+        return None, None
+    return (imp, max(0, int(time.time()) - at)) if imp > 0 else (None, None)
+
+
+def space(dev, nbytes, work, env=None, say=print):
+    """→ (可写字节或 None, 要的字节, 是否手机记的重要用途口径)：AFC / lockdown 报的空闲与手机上的 App 记的「重要用途」可用取大的。
+    手机记的是 App 上次启动那一刻的：之后又装了东西会偏大——只用来决定要不要先问玩家，真写满了推送照样停下说明（SpaceFull）"""
+    fb = dev.free(); imp, age = phone_free(dev, work)
+    if imp is not None and (fb is None or imp > fb):
+        say(f"手机可用空间按 App 记的「重要用途」口径算：{gb1(imp)} GB（{age // 60} 分钟前记的；电脑端读到的空闲 {gb1(fb) if fb is not None else '读不到'} GB，不含可清除空间）")
+        return imp, need_bytes(work, nbytes, env), True
+    return fb, need_bytes(work, nbytes, env), False
 
 
 PROGRESS_PREFIX = "S2A_PUSH_PROGRESS"   # --progress-lines 打的机器读行：S2A_PUSH_PROGRESS <已传字节> <本次待传总字节> <已完成批次> <总批次>
@@ -541,6 +606,7 @@ def _send(dev, pack, work, say=print, progress=None):
         try: dev.put(e, f"{rp(dev)}/.applied")
         finally: e.unlink(missing_ok=True)
     for w in direct:
+      for attempt in (1, 2):   # 直写失败先原地再试一次（线缆抖一下、隧道重连）：game.img 接着已传的续传，旧形态从头写；两次都不成才停
         t1 = time.time(); size, rel = int(w[1]), f"{rp(dev)}/{w[0]}"
         off = resume_offset(dev, pack / w[0], rel, size)
         try:
@@ -560,13 +626,22 @@ def _send(dev, pack, work, say=print, progress=None):
                     raise Fail(f"传完后机上 {w[0]} 长度 {got} 字节，应为 {size} 字节")
         except Fail as e:
             if dev.nospc(): raise Fail(f"测试设备空间不足（推 {w[0]} 时 POSIX 28）")
+            if attempt == 1:
+                say(f"【黄】传 {w[0]} 中断（{str(e)[-200:]}），原地再试一次"); done -= off; continue
+            why = push_reason(e)
             again = "接着已传的部分续传" if w[0] == "game.img" else "从头重传"
             say(f"【红】传 {w[0]} 中断（{e}）；机上这份不完整，不会被当成可用，重新装机会{again}")
-            raise Fail(f"资源传输中断：{w[0]} 没传完，重新装到 iPhone 会{again}")
-        done += size - off; nt += 1; ledger += f"{w[0]}\t{w[2]}\n"; led.write_text(ledger, encoding="utf-8"); dev.put(led, f"{rp(dev)}/.pushed")
-        say(f"  直写 {w[0]}：{int(w[1]) / 1e9:.2f} GB，{time.time() - t1:.0f} 秒，{int(w[1]) / 1e6 / max(time.time() - t1, 1e-3):.1f} MB/s")
-        step += 1
-        if progress: progress(done, total, step, steps)
+            # 旧形态 romfs.img 没有 IMG 头，续传不了（resume_offset）；就地转 game.img 要原始 romfs（产物根），沿用的旧包一般已没有：说清新版能续传、怎么换。
+            #   句式在启动器中英对照表（launchers/macos/adapter/.../Localizable.json）里有登记，改字要两边一起改
+            reason = why or str(e)[-160:]
+            if w[0] == "game.img":
+                raise Fail(f"资源传输中断（{reason}）：{w[0]} 没传完，重新装到 iPhone 会接着已传的部分续传")
+            raise Fail(f"资源传输中断（{reason}）：{w[0]} 没传完。这款是旧版本出的包，断了只能从头传。新版已支持单一文件包和断点续传：在启动器里重新出一次这款的包，以后断了能接着传。")
+        break
+      done += size - off; nt += 1; ledger += f"{w[0]}\t{w[2]}\n"; led.write_text(ledger, encoding="utf-8"); dev.put(led, f"{rp(dev)}/.pushed")
+      say(f"  直写 {w[0]}：{int(w[1]) / 1e9:.2f} GB，{time.time() - t1:.0f} 秒，{int(w[1]) / 1e6 / max(time.time() - t1, 1e-3):.1f} MB/s")
+      step += 1
+      if progress: progress(done, total, step, steps)
     for k, b in enumerate(batches):
         lst = work / "push.lst"; lst.write_text("".join(w[0] + "\n" for w in b), encoding="utf-8")
         tn = f"{ts}_{k:03d}.tar"
@@ -628,13 +703,14 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
     """推完起一次 App 只解包（S2A_PACK_APPLY_ONLY=1，runtime/src/pack_apply.c）并等它解完：机上 .applied = 本包 index_sha256，且解包日志
     本次新增完成行「解开 N 个包 … .applied = <本包>」（只看 .applied 不够：同包重推时推之前就对得上，11-06 对照实测）。
     等待按进度：本次新增的进度行「进度：解开 <包>（k/n）」k 涨了就重新计时、打一行「机上解包 k/n」（装机作业据此发进度事件，pack/jobs/install.py）；
-    连续 stall 秒 k 没涨 → 判失败。没推东西且 .applied 已是本包 → 不起 App。失败抛 Fail"""
+    连续 stall 秒 k 没涨 → 抛 NeedsPlayer（传输成功、提醒玩家打开 App 接着装）。没推东西且 .applied 已是本包 → 不起 App。机上解开失败抛 Fail"""
     want = json.loads((Path(pack) / "manifest.json").read_text(encoding="utf-8")).get("index_sha256")
     def applied(): return (read(dev, f"{rp(dev)}/.applied", work, "r.applied") or "").strip()
     if not nb and applied() == want:
         return False
     u0 = len((read(dev, unpack_log(dev), work, "r.unpack0") or "").splitlines())
     done = re.compile(r"解开 \d+ 个包 .*\.applied = " + re.escape(want or "-"))
+    partial = re.compile(r"解开 \d+ 个包 .*缺 (\d+) 个非必需文件.*部分可玩 = " + re.escape(want or "-"))   # 手机上只缺非核心文件（v0.3.1 缺件照玩，pack_apply.c）
     # 多款容器：正常拉起到游戏库，由库在后台解开传完的这款（图块显示「安装中」和进度，S2ArmShellHostModel）。只解包模式是整屏导入页、解完进程自己退出，
     #   玩家正开着库时 App 会突然消失；拉不起时玩家手动打开也走库这同一条路。单款包照旧只解包模式
     say("拉起 App 到游戏库，由它解开这款" if dev.ctx else "起一次 App 解开推送包（S2A_PACK_APPLY_ONLY=1）")
@@ -657,6 +733,9 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
         new = (read(dev, unpack_log(dev), work, "r.unpack1") or "").splitlines()[u0:]
         if applied() == want and any(done.search(l) for l in new):
             say("资源包：机上已解开（.applied = 本包）"); return True
+        part = [m for m in map(partial.search, new) if m]
+        if part:   # 解开了，但手机上缺几个非核心文件：能玩，提醒补（同「还差最后一步」口径，装机按传输成功 + 提醒收尾）
+            raise NeedsPlayer(f"资源包已传完，还差最后一步：手机上还缺 {part[-1].group(1)} 个文件，可以先玩，用到它们时可能会停；再点一次「装到 iPhone」会把缺的补上")
         failed = [m.group(1).strip() for m in map(FAILED.search, new) if m]
         if failed:   # App 已经起来解过、失败了：按它写的原因当场报（原先只看进度行，第一包前就失败时干等 stall 秒、再报「解包没有开始」，原因丢了）
             raise Fail(f"资源包推进去了，但手机上解开失败：{failed[-1][:600]}")
@@ -669,8 +748,9 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
     if cant_open:
         why = LOCKED_WHY if was_locked else NO_DEVMODE_WHY if any(k in cant_open for k in DEVMODE_SIGNS) else CANT_OPEN_WHY
         raise NeedsPlayer(f"资源包已传完，还差最后一步：{why}{OPEN_BY_HAND}（电脑这边打不开手机上的 App：{cant_open}）")
-    raise Fail(f"资源包推进去了，但机上解包 {stall} 秒没有新进展（停在第 {seen} 包）：打开这款游戏、保持在前台等它导入完" if seen else
-               f"资源包推进去了，但起 App 后 {stall} 秒机上解包没有开始：打开这款游戏、保持在前台等它导入完")
+    # 解包停住（装机原则 11-11）：资源已经全在手机上，玩家打开 App 会接着装——和拉不起 App 同一口径（传输成功 + 提醒），不报装机失败
+    raise NeedsPlayer(f"资源包已传完，还差最后一步：机上解包 {stall} 秒没有新进展（停在第 {seen} 包）。{OPEN_BY_HAND}" if seen else
+                      f"资源包已传完，还差最后一步：起 App 后 {stall} 秒机上解包没有开始。{OPEN_BY_HAND}")
 
 
 PROBE = ".s2a-write-probe"   # 推之前写的几字节探针（资源包目录下，下次覆盖）
@@ -686,8 +766,9 @@ def probe(dev, work):
         raise DeviceLocked("iPhone 写不进资源包：多半是手机锁屏了或数据线松了。解锁手机、保持亮屏，插稳数据线后再点一次。") from e
 
 
-def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress=None, stage=None):
-    """一条龙：探针（写不进就停）→ 算 → 核空间（不够报红；读不到提示后照推：探针已证明手机可写）→ 推 → (推了几批, 文件数, 字节数)。
+def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress=None, stage=None, accept_low_space=False):
+    """一条龙：探针（写不进就停）→ 算 → 核空间（估算不够：没确认过就停下问玩家 LowSpace，确认过 accept_low_space / S2A_PUSH_ACCEPT_LOW_SPACE=1 打黄照推；
+    读不到提示后照推：探针已证明手机可写）→ 推（真写满了停下 SpaceFull，说清缺多少）→ (推了几批, 文件数, 字节数)。
     stage(名字, 已做, 总量)：推之前的准备步骤报给装机页（核对手机上的文件 / 检查手机空间 / 准备资源（拼镜像）按字节），每一刻都看得到在做什么"""
     stage = stage or (lambda name, done=None, total=None: None)
     stage(STAGE_CHECK)
@@ -696,15 +777,32 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
     if on_plan: on_plan(nb, nt, nbytes)
     if nbytes:
         stage(STAGE_SPACE)
-        fb, need = space(dev, nbytes, work, env)
+        fb, need, imp = space(dev, nbytes, work, env, say)
+        accept = accept_low_space or (env or os.environ).get("S2A_PUSH_ACCEPT_LOW_SPACE") == "1"
         if fb is None: say(f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
         elif fb < need:
-            say(f"【红】测试设备剩余空间不足：可写 {fb >> 30} GB < 要 {need >> 30} GB（待推 {nbytes >> 30} GB + 解开时最大一批 + 余量）；先卸掉机上不用的包")
-            raise Fail("测试设备空间不足")
-    send(dev, pack, work, say, progress, stage)
+            # 手机报的空闲（AFC）不含系统随时能清掉的空间，比「设置 → 储存空间」里的「可用」小，常差好几 GB：估算不够不等于放不下
+            head = (f"iPhone 剩余空间看起来不够：这次要传约 {gb1(nbytes)} GB，连同解开时临时多占的约要 {gb1(need)} GB，"
+                    + (f"手机可用约 {gb1(fb)} GB（含系统随时能清掉的空间）。" if imp else f"手机报的空闲约 {gb1(fb)} GB。"))
+            if not accept:
+                raise LowSpace(head + ("可以先在「设置 → 通用 → iPhone 储存空间」腾出一些，或者" if imp else
+                                       "「设置 → 通用 → iPhone 储存空间」里的「可用」还包括系统随时能清掉的空间，实际多半放得下；")
+                               + "点「仍然继续」照传，真写满了会停下并说明还差多少。")
+            say("🟡 " + head + "已按你的选择仍然继续；真写满了会停下并说明还差多少")
+    try:
+        send(dev, pack, work, say, progress, stage)
+    except (DeviceLocked, NeedsPlayer):
+        raise
+    except Fail as e:
+        left = dev.free() if nbytes else None
+        if left is not None and left < FULL_LEFT:
+            raise SpaceFull(f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，手机现在只剩 {left >> 20} MB。"
+                            f"在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。") from e
+        raise
     return nb, nt, nbytes
 
 
+CODE_PREFIX = "S2A_PUSH_CODE"   # 失败的机器读行：S2A_PUSH_CODE <码>\t<给玩家的话>（device_space_low / ios_install_no_space / device_locked）
 STAGE_CHECK, STAGE_SPACE, STAGE_IMAGE = "核对手机上的文件", "检查手机空间", "准备资源（拼镜像）"   # 装机页的准备子阶段（作业层原样上屏）
 STAGE_PREFIX = "S2A_PUSH_STAGE"   # --progress-lines 打的机器读行：S2A_PUSH_STAGE <名字>\t<已做字节>\t<总字节>（没有字节的两栏为空）
 
@@ -746,7 +844,7 @@ def main(argv=None):
     ap.add_argument("--work"); ap.add_argument("--full", action="store_true"); ap.add_argument("--udid"); ap.add_argument("--devpush")
     ap.add_argument("--via", choices=("devpush", "devicectl")); ap.add_argument("--apply", action="store_true")
     ap.add_argument("--progress-lines", action="store_true")   # 推送进度另打机器读的行「PROGRESS_PREFIX 已传 总量 批 总批」（Mac 装机作业 pack/jobs/install.py 解析成作业计数）
-    ap.add_argument("--docs", default=DOCS); ap.add_argument("--launch-ctx")   # 多款容器：本款设备侧文档根 Documents/games/<游戏号>、推完正常拉起 App 到游戏库由它解开   # run 推完等机上解开（s2armctl push-pack / Windows 装机）
+    ap.add_argument("--docs", default=DOCS); ap.add_argument("--pack-root"); ap.add_argument("--launch-ctx")   # 多款容器：本款设备侧文档根 Documents/games/<游戏号>、推完正常拉起 App 到游戏库由它解开   # run 推完等机上解开（s2armctl push-pack / Windows 装机）
     a = ap.parse_args(argv)
     pack = Path(a.pack)
     if not (pack / "index.tsv").is_file():
@@ -759,7 +857,7 @@ def main(argv=None):
     else: ap.error(f"{a.op} 要 --work")
     state = work / "push.state"
     try:
-        dev = device(a.device, a.bundle_id, work, a.udid, a.devpush, a.via, say=say, docs=a.docs.rstrip("/"), ctx=a.launch_ctx)
+        dev = device(a.device, a.bundle_id, work, a.udid, a.devpush, a.via, say=say, docs=a.docs.rstrip("/"), ctx=a.launch_ctx, pack=a.pack_root.rstrip("/") if a.pack_root else None)
         if a.op == "free":
             fb = dev.free(); print(fb if fb is not None else "", flush=True); return 0
         if a.op == "need":   # plan 之后：机上要的可写字节（tools/push_pack.sh）
@@ -777,7 +875,9 @@ def main(argv=None):
         return 0
     except Fail as e:
         state.write_text(f"FAIL {e}\n")
-        if stamp: print(f"【红】{e}"); print(f"RESULT=push out= reason={e}")
+        if stamp:
+            print(f"【红】{e}"); print(f"RESULT=push out= reason={e}")
+            if getattr(e, "code", None): print(f"{CODE_PREFIX} {e.code}\t{e}", flush=True)   # 装机作业按码收尾（pack/jobs/install.py push_pack）
         return 1
     finally:
         if tmp: tmp.cleanup()

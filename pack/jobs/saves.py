@@ -132,6 +132,8 @@ def scan(c, root):
     for parent, children, leaves in os.walk(root, followlinks=False):
         for name in sorted(children + leaves):
             c.check()
+            if _lay.os_junk(name):   # 系统自动生成的附属文件（exFAT / FAT 上的 ._<名>、访达 .DS_Store 等）不是存档：不备份、不导入、不算「存档变了」
+                continue
             p = Path(parent) / name
             rel = p.relative_to(root).as_posix()
             path_name(rel)
@@ -374,7 +376,14 @@ def write_archive(c, game, root, destination):
             if checked != manifest:
                 raise ValueError("backup validation failed")
         c.check()
-        os.link(temporary, destination)
+        try:
+            os.link(temporary, destination)   # 不覆盖地放到位：目标已在就失败
+        except FileExistsError:
+            raise
+        except OSError:   # 盘上建不了硬链接（exFAT / FAT32，v0.3.1 玩家确认过照用）：先核没有同名，再改名放到位
+            if os.path.lexists(destination):
+                raise FileExistsError(destination)
+            os.replace(temporary, destination)
         fsync_dir(destination.parent)
     finally:
         temporary.unlink(missing_ok=True)
@@ -1012,7 +1021,9 @@ def checked_archive(c, game, root):
 
 
 SEED_NOTICE = "这款游戏在这台电脑上还没玩过：存档会在下次启动游戏时放进去。"
-SEED_DONE_LINE = "S2A 带存档起局："
+# 服务层 SeedFrom 每一类都灌入后才打这一句（services/S2A.Services/Saves.cs SeedAllDoneLine，两边一字不差；审计 P1-156：
+#   原先认「S2A 带存档起局：」，它在真正灌入前的「当前用户」行和每一类成功行都有，前一类成功、后一类失败也删了种子）
+SEED_DONE_LINE = "S2A 带存档起局完成："
 
 
 def pending_seed(c, gid):
@@ -1108,7 +1119,7 @@ def claim_seed(c, gid):
 
 
 def finish_seed(c, gid, log):
-    """一局结束后：运行时报了灌入成功才删；没成功留着，下次启动再放"""
+    """一局结束后：运行时报了每一类都灌入成功才删；没全成功留着，下次启动再放"""
     pending = pending_seed(c, gid)
     with contextlib.suppress(OSError):
         if SEED_DONE_LINE in Path(log).read_text(encoding="utf-8", errors="replace"):
