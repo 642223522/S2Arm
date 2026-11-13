@@ -266,6 +266,19 @@ final class DiagnosticBundleWriter {
         return candidate;
     }
 
+    private static final Pattern SHAREABLE = Pattern.compile("S2Arm-(?:[A-Za-z]{1,16}|诊断)-[0-9]{4}-[0-9]{4}(?:-[0-9]{1,4})?\\.zip");
+
+    /**
+     * The bundle a share URI may name: only a file this class wrote (its exact name shape), directly
+     * in outDir, a regular file and not a link. Anything else, including "..", is null.
+     */
+    static Path shareable(Path outDir, String name) {
+        if (name == null || !SHAREABLE.matcher(name).matches()) return null;
+        Path p = outDir.resolve(name);
+        if (!p.getParent().equals(outDir) || !Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)) return null;
+        return p;
+    }
+
     /** Keeps the newest KEEP_BUNDLES bundles (the one just written always stays) and clears leftovers. */
     private static void prune(Path outDir, Path keep) throws IOException {
         List<Path> bundles = new ArrayList<>();

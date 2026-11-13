@@ -38,7 +38,7 @@ public final class DiagnosticBundleWriterTest {
 
     private static void expect(String what, Object want, Object got) {
         checks++;
-        if (!want.equals(got)) {
+        if (!java.util.Objects.equals(want, got)) {
             fails++;
             System.out.println("【红】" + what + "\n  期望 " + want + "\n  真结果 " + got);
         }
@@ -180,6 +180,16 @@ public final class DiagnosticBundleWriterTest {
         expect("只留最新 3 个、清掉残片、不碰别的文件",
                Arrays.asList("S2Arm-diag-1112-0123-2.zip", "S2Arm-diag-1112-0123.zip", "S2Arm-诊断-1102-0000.zip", "keep-me.txt"),
                names(out));
+
+        // ---- 2b. What the share provider may hand out: our bundle names in that directory, nothing else.
+        expect("可分享：刚写的包", out.resolve("S2Arm-diag-1112-0123-2.zip"), DiagnosticBundleWriter.shareable(out, "S2Arm-diag-1112-0123-2.zip"));
+        expect("可分享：中文名的包", out.resolve("S2Arm-诊断-1102-0000.zip"), DiagnosticBundleWriter.shareable(out, "S2Arm-诊断-1102-0000.zip"));
+        Files.createSymbolicLink(out.resolve("S2Arm-diag-0101-0000.zip"), outside);
+        write(root.resolve("cache/S2Arm-diag-0101-0001.zip"), "one level up", T0);
+        for (String bad : new String[] {"S2Arm-diag-0101-0000.zip", "../S2Arm-diag-0101-0001.zip", "S2Arm-diag-1112-0123.zip/..",
+                                        "keep-me.txt", ".partial-1.zip", "S2Arm-diag-9999-9999.zip", "S2Arm-../x-0101-0000.zip", null})
+            expect("不可分享：" + bad, null, DiagnosticBundleWriter.shareable(out, bad));
+        Files.delete(out.resolve("S2Arm-diag-0101-0000.zip"));
 
         // ---- 3. No logs at all (nothing played yet): a manifest-only bundle.
         Path empty = root.resolve("empty");
