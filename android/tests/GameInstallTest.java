@@ -422,6 +422,7 @@ public final class GameInstallTest {
                         public void installed(File source, GameInstall.Result result) { }
                         public void refused(File source, Exception error) {
                             if (String.valueOf(error.getMessage()).contains("busy")) { System.out.println("BUSY"); System.exit(2); }
+                            System.out.println("REFUSED " + error);
                         }
                     });
                 System.out.println("SCANNED");
