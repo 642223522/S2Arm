@@ -10,6 +10,7 @@
 #import "vpad.h"
 #import "save_transfer.h"
 #import "app_settings.h"
+#import "play_layout.h"
 #import "notice.h"
 #include "s2a_session.h"
 #include "s2a_dguard.h"
@@ -584,40 +585,22 @@ void s2a_ios_qprompt(int kind, int secs) {   // 文案 维护者 11-02 定：「
 }
 // 资源导入期间不让系统自动锁屏（锁屏后 App 被挂起、解包停住）；任意线程可调
 void s2a_ios_keep_awake(int on) { dispatch_async(dispatch_get_main_queue(), ^{ UIApplication.sharedApplication.idleTimerDisabled = on ? YES : NO; }); }
-// 宽屏用的屏幕宽（游戏 1080 高对应的宽）：横屏 = 1080 × 长边 ÷ 短边，取偶（iOS 壳锁横屏，进程内不变）
-// 屏幕比例取 App 根视图实际所在的那块屏（视图控制器每次布局记下长边 ÷ 短边）：10-27 Duo 上 UIScreen.mainScreen.nativeBounds 一直报外屏 2034×1398（1.455），
-//   内屏起局（视图 951×669 点，1.422）也按外屏比例出图、内屏上下留黑。视图还没布局时退回主屏原生尺寸。读的一方（runtime/src/widen.c）首次读后缓存，进程内不变
-static _Atomic double g_view_ratio;
-//   宽屏装载（模块装载后 0.15 秒、游戏线程）比场景连上早：非主线程第一次问时等场景记下比例，至多 5 秒；等不到 / 主线程上问才退回主屏原生尺寸（记红）
-//   外接屏接着（ios/extdisplay.m）：画面出在外接屏上，比例按外接屏
-double s2a_ios_ext_ratio(void);
-static double screen_ratio(void) {
-    double x = s2a_ios_ext_ratio(); if (x > 0) return x;
-    double r = g_view_ratio;
-    if (!(r > 0) && !NSThread.isMainThread) for (int i = 0; i < 500 && !((r = g_view_ratio) > 0); i++) usleep(10000);
-    if (r > 0) return r;
-    CGSize z = UIScreen.mainScreen.nativeBounds.size; double a = fmax(z.width, z.height), b = fmin(z.width, z.height);
-    return b > 0 ? a / b : 16.0 / 9.0;
-}
-int s2a_ios_screen_known(void) { return g_view_ratio > 0; }   // 窗口场景已连上、比例取自实际所在的屏（runtime/src/widen.c 到这时才缓存屏幕高）
-int s2a_ios_screen_w(void) { double r = screen_ratio(); return ((int)(1080.0 * r)) & ~1; }
-int s2a_ios_screen_h(void) { double r = screen_ratio(); return r * 9 < 16 ? ((int)(1920.0 / r)) & ~1 : 1080; }   // 比 16:9 窄的屏（Duo 内屏 951×669 点 → 1350）
-// 游戏画面根控制器：只许横屏（Info.plist 同声明）；画面铺满全屏，四边系统边缘手势延后一拍（贴边控件一拖不退出游戏）、底部横条自动隐藏、状态栏隐藏（照旧库 SwGameVC）
+// 根控制器共用方向 / 铰链 / 分屏区域；游戏层、触点、宽屏都读 play_layout 的同一份区域（屏幕比例与外接屏比例见 ios/play_layout.m screen_ratio）。
 id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接屏场景配件（iOS 27 起系统靠它才给外接屏场景）
-@interface S2AGameVC : UIViewController
+@interface S2AGameVC : S2APlayViewController
 @property (strong, nonatomic) id extDisplay;   // 外接屏场景配件的登记，跟本控制器同寿
 @end
 @implementation S2AGameVC
 - (void)viewDidLoad { [super viewDidLoad]; self.extDisplay = s2a_ios_ext_register(self); }
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (void)viewDidLayoutSubviews {   // 屏幕尺寸变了（10-27 Duo 合上切外屏、展开回内屏）：记下当前屏的比例；直连出图层按新尺寸重摆（graphics/nvn/host_adapt.m；通用模式没有这个符号）
     [super viewDidLayoutSubviews];
-    CGSize z = self.view.bounds.size; double a = fmax(z.width, z.height), b = fmin(z.width, z.height); if (b > 0) g_view_ratio = a / b;
     void s2a_direct_relayout(void) __attribute__((weak_import));
     if (s2a_direct_relayout) s2a_direct_relayout();
+    void nxgal_window_relayout_ios(void) __attribute__((weak_import));
+    if (nxgal_window_relayout_ios) nxgal_window_relayout_ios();
 }
 - (void)viewSafeAreaInsetsDidChange {   // 方向与视图尺寸记进日志（真机验横屏用）
     [super viewSafeAreaInsetsDidChange]; UIEdgeInsets i = self.view.safeAreaInsets; CGSize z = self.view.bounds.size; CGSize n = UIScreen.mainScreen.nativeBounds.size;
@@ -625,14 +608,7 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
     LOG("iOS 壳：朝向 %s（%ld），视图 %.0fx%.0f 点，屏幕 %.0fx%.0f 像素，屏幕宽（1080 高对应）%d；安全区 上 %.1f 左 %.1f 下 %.1f 右 %.1f",
         UIInterfaceOrientationIsLandscape(o) ? "横屏" : UIInterfaceOrientationIsPortrait(o) ? "竖屏" : "未知", (long)o, z.width, z.height, fmax(n.width, n.height), fmin(n.width, n.height),
         s2a_ios_screen_w(), i.top, i.left, i.bottom, i.right);
-    // 横屏判据看落定后的朝向：每次变化后等 1 秒，那时仍不是横屏才报红。LiveContainer 里 UIKit 读的是 LC 本体的 Info.plist（竖屏排第一、没声明全屏），
-    //   场景先以竖屏起、本类只许横屏随即转过来（10-30 测试设备1：视图 440x956 → 956x440，画面最终横屏满屏），转的那一下不是缺陷；原生安装起手就是横屏
-    static unsigned gen; unsigned g = ++gen; __weak UIViewController *wself = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        UIViewController *s = wself; if (!s || g != gen) return;   // 1 秒内又变过：以最后一次为准
-        UIInterfaceOrientation now = s.view.window.windowScene.interfaceOrientation;
-        if (!UIInterfaceOrientationIsLandscape(now) && now != UIInterfaceOrientationUnknown) LOG("【红】iOS 壳：画面不是横屏（落定 1 秒后朝向 %ld）", (long)now);
-    });
+
 }
 @end
 @interface S2AAppDelegate : UIResponder <UIApplicationDelegate>
@@ -748,7 +724,7 @@ static void audio_category_apply(void) {
     [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n;
         LOG("[热] 热状态变为 %ld（0 正常 1 一般 2 严重 3 危急），帧 %llu", (long)NSProcessInfo.processInfo.thermalState, (unsigned long long)s2a_ap_frames()); }];
 }
-- (UIInterfaceOrientationMask)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)w { return UIInterfaceOrientationMaskLandscape; }
+- (UIInterfaceOrientationMask)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)w { return UIInterfaceOrientationMaskAllButUpsideDown; }
 - (void)applicationWillTerminate:(UIApplication *)app {
     s2a_guest_run_mark(0);   // 正常终止不算「前台死掉」
     if (s2a_host_boot_pending()) return;
@@ -1118,7 +1094,6 @@ static void cloud_sync_done(void *ctx) {
       if (b >= 0 && b <= 1) { ws.screen.brightness = b; LOG("屏幕亮度设为 %.2f（S2A_BRIGHTNESS）", b); brightness_hold(ws.screen, b); } }
     g_brightness = ws.screen.brightness;
     self.window = [[UIWindow alloc] initWithWindowScene:ws];
-    { CGSize z = self.window.bounds.size; double a = fmax(z.width, z.height), b = fmin(z.width, z.height); if (b > 0) g_view_ratio = a / b; }   // 当前屏的比例（宽屏装载在等它，见 screen_ratio）
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) {   // 多款容器：先出游戏库，不建游戏界面、不挂加载页
         [self showLibrary];
         { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else self.window.hidden = NO; }
@@ -1143,6 +1118,7 @@ static void cloud_sync_done(void *ctx) {
     UIViewController *vc = self.window.rootViewController;
     // 浮层开关要赶在 s2a_hud_attach 与建 Metal 设备之前生效；host_run 里按同口径还会再兜底一次（#153）。
     s2a_ios_apply_overlay_settings(NSUserDefaults.standardUserDefaults);
+    [vc.view setNeedsUpdateConstraints]; [vc.view layoutIfNeeded];
     settings_attach_runtime();
     if (!g_msg) { s2a_vpad_attach(vc.view); void s2a_dprompt_attach(UIView *root); s2a_dprompt_attach(vc.view); }   // 触屏虚拟手柄（vpad.m）；游戏内提示条（dprompt.m）
     // 四指长按 1.5 秒打开设置；提示页（缺资源 / 导入失败）保留诊断按钮。
