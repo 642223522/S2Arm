@@ -316,7 +316,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     public init(client: JobClient) {
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
-            socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"))
+            socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
         exportChoice = provider.settings.exportTargets
     }
 
