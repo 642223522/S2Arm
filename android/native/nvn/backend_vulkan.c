@@ -308,12 +308,28 @@ static struct nvn_gpu_pipe_s *g_pipe_ht[PIPE_HT_N];   // 图形管线的散列�
 // （魔数 + 版本 + SHA-256、临时文件 fsync 后原子替换、坏了当没有、64 MiB 封顶）。
 // 缓存只是加速，不是前提：读 / 建 / 取数据 / 写，任何一步失败都只记一行日志，管线照旧能建（不拦用户）。
 // 调试开关 nvk_pipe_cache=0 关掉（缺省开）：不建缓存、不读不写盘，管线照旧不带缓存建。
+// 局中补写（#868，「收尾时写」之外的第二个时机）：被系统杀掉 / 崩掉的局走不到收尾，驱动编出来的结果就白丢了——所以建管线累计够多、隔得够久时，
+// 在局中取一份驱动缓存交给后台线程落盘，每次落盘仍是整份原子替换（见下面 plc_save_midrun）。不是逐帧写盘：缺省最多 30 秒一次，数据没变不写。
 static VkPipelineCache g_plc;                // VK_NULL_HANDLE = 没有（开关关了 / 驱动建不出）：建管线时照传，空句柄就是不带缓存
 static char g_plc_dir[480];                  // 落盘目录副本；空 = 不落盘（只在本局内复用，收尾不写）
 static uint8_t g_plc_uuid[VK_UUID_SIZE];     // 设备 + 驱动的管线缓存标识（文件名里带它，换驱动不互读）
 static size_t g_plc_loaded;                  // 开会话时读到并交给驱动的字节数（0 = 没读到）
 static uint64_t g_plc_rejected;              // 本会话里旧文件读不出 / 驱动不收、被丢掉的次数
 static uint64_t g_plc_made;                  // 本会话经缓存建出的管线条数（图形 + 计算 + 清屏）
+// ---- 局中补写的状态。触发：g_plc_made 比上次保存时多 ≥ N 条（nvk_plc_new，缺省 64），且头一次距开会话 ≥ F 毫秒（nvk_plc_first_ms，10000）、
+// 之后距上次保存 ≥ E 毫秒（nvk_plc_every_ms，30000）；取到的数据大小与上次保存（或开局读入）的一致就不写。
+// 分工：取数据（vkGetPipelineCacheData，真机约 0.5 ms）在触发的那条线程上做；写盘（临时文件 + fsync + 原子替换，真机十几毫秒、慢盘更久）在后台线程做，
+// 后台线程只拿自己的缓冲区和路径，不碰任何 Vulkan 句柄、不碰会话全局。同一时刻最多一次写在飞（进程级、不排队：在飞时新的触发直接跳过）。
+// 收尾：等在飞的写算进 close 的截止时间，到点没写完就放弃——不再写最终份、不再等它，旧文件原样；写失败 / 设备丢失只记日志。
+static uint64_t g_plc_t_open;                // 开会话的时刻（单调时钟 ns）
+static uint64_t g_plc_t_saved;               // 上一次局中保存（含「取了数据发现没变」）的时刻；0 = 本局还没有过。原子读写
+static uint64_t g_plc_made_saved;            // 那一次的 g_plc_made。原子读写
+static size_t g_plc_size_saved;              // 上一次落盘（或开局读入）的数据字节数：取到的数据与它一致就不写。持 g_plc_mu
+static uint64_t g_plc_first_ns, g_plc_every_ns, g_plc_thr_new;   // 触发的三个阈值：开会话时读一次
+static pthread_mutex_t g_plc_mu = PTHREAD_MUTEX_INITIALIZER;     // 护 g_plc 的销毁与 g_plc_size_saved：触发取数据 vs 收尾；触发用 trylock，拿不到就让给别人
+static int g_plcw_busy;                      // 后台写在飞（进程级，跨会话；原子读写）
+static int g_plcw_failed;                    // 最近一次后台写失败了：收尾时即使大小没变也再写一次。原子读写
+static uint64_t g_plcw_started, g_plcw_ok, g_plcw_fail, g_plcw_same;   // 读数（进程累计，不随会话清零）：交给后台写的次数 / 成功 / 失败 / 与上次一致没写
 static pthread_mutex_t g_submit_mu = PTHREAD_MUTEX_INITIALIZER; // 提交串行化：校验 signal、vkQueueSubmit、入队
 static pthread_cond_t g_cv;
 static int g_cv_ready;
@@ -1084,10 +1100,21 @@ static void plc_open(const char *dir) {
     g_plc_loaded = 0;
     g_plc_rejected = 0;
     g_plc_made = 0;
+    g_plc_t_open = now_ns();
+    __atomic_store_n(&g_plc_t_saved, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_plc_made_saved, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_plcw_failed, 0, __ATOMIC_RELAXED);
+    g_plc_size_saved = 0;
     memcpy(g_plc_uuid, g.dev->properties.pipelineCacheUUID, sizeof g_plc_uuid);
     if (!nvn_plat_flag("nvk_pipe_cache", 1)) {
         plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：开关 nvk_pipe_cache=0，管线不带缓存建");
         return;
+    }
+    {   // 局中补写的阈值（缺省值见 g_plc_made 一节；条数至少 1，毫秒不取负）
+        int n = nvn_plat_flag("nvk_plc_new", 64), f = nvn_plat_flag("nvk_plc_first_ms", 10000), e = nvn_plat_flag("nvk_plc_every_ms", 30000);
+        g_plc_thr_new = n < 1 ? 1u : (uint64_t)n;
+        g_plc_first_ns = (uint64_t)(f < 0 ? 0 : f) * 1000000ull;
+        g_plc_every_ns = (uint64_t)(e < 0 ? 0 : e) * 1000000ull;
     }
     void *blob = NULL;
     size_t bytes = 0;
@@ -1133,16 +1160,150 @@ static void plc_open(const char *dir) {
         return;
     }
     g_plc_loaded = bytes;
+    g_plc_size_saved = bytes;   // 盘上现有的、驱动也收下了的数据大小；驱动不收旧数据时 bytes 已清零 → 取到的任何数据都比它「新」，收尾会换掉旧文件
+}
+
+// ---- 局中补写（#868）：后台写盘线程 + 触发 ----
+
+// 交给后台线程的一份活：数据缓冲区、落盘目录、缓存标识都是自己的副本——后台线程不碰任何 Vulkan 句柄，也不碰会话全局。
+struct plcw_job {
+    void *data;
+    size_t size;
+    char dir[sizeof g_plc_dir];
+    uint8_t uuid[VK_UUID_SIZE];
+    unsigned long long made;   // 触发时本局经缓存建管线的条数（只用于日志）
+    double get_ms;             // 触发线程上花的毫秒：查大小 + 取数据 + 拷字节（只用于日志）
+};
+
+// 后台写盘线程（分离线程）：写一份、收尾、清「在飞」标记（最后一步，收尾那边靠它判断写完没有）。写失败只记日志，收尾时会再试一次。
+static void *plcw_main(void *arg) {
+    struct plcw_job *j = (struct plcw_job *)arg;
+    char why[96] = "";
+    uint64_t t0 = now_ns();
+    plc_ensure_dir(j->dir);
+    int w = nvk_driver_cache_write(j->dir, j->uuid, j->data, j->size, why, sizeof why);
+    double ms = plc_ms(t0, now_ns());
+    if (w == 0) {
+        __atomic_store_n(&g_plcw_failed, 0, __ATOMIC_RELEASE);
+        __atomic_fetch_add(&g_plcw_ok, 1, __ATOMIC_RELAXED);
+        plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：局中写出 %zu 字节（本局经缓存建管线 %llu 条；触发线程用时 %.1f ms，后台写盘 %.1f ms）", j->size, j->made, j->get_ms, ms);
+    } else {
+        __atomic_store_n(&g_plcw_failed, 1, __ATOMIC_RELEASE);
+        __atomic_fetch_add(&g_plcw_fail, 1, __ATOMIC_RELAXED);
+        plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：局中写盘没写成（%s）。收尾时会再试一次，本局不受影响", why);
+    }
+    free(j->data);
+    free(j);
+    __atomic_store_n(&g_plcw_busy, 0, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+// 触发检查已过（条数够了、时间到了）：在这条线程上取一份驱动数据，交给后台线程写。线程：任意建管线的线程（可能还持着清屏管线的锁 g_clr_mu）。
+// 拿不到 g_plc_mu（别的线程正在取数据，或收尾在销毁缓存）/ 上一次写还在飞 → 直接跳过，下次建管线再碰，不排队、不等。
+static void plc_save_midrun(void) {
+    if (__atomic_load_n(&g_plcw_busy, __ATOMIC_ACQUIRE)) return;
+    if (pthread_mutex_trylock(&g_plc_mu) != 0) return;
+    VkPipelineCache pc = g_plc;
+    uint64_t t = now_ns(), made = __atomic_load_n(&g_plc_made, __ATOMIC_RELAXED), ts = __atomic_load_n(&g_plc_t_saved, __ATOMIC_RELAXED);
+    int due = pc && !g.device_lost && made >= __atomic_load_n(&g_plc_made_saved, __ATOMIC_RELAXED) + g_plc_thr_new &&
+              (ts ? t - ts >= g_plc_every_ns : t - g_plc_t_open >= g_plc_first_ns);
+    int claimed = 0;   // 抢到「在飞」标记 = 这一刻没有别的写，也轮到本线程来写
+    if (due) {
+        int expect = 0;
+        claimed = __atomic_compare_exchange_n(&g_plcw_busy, &expect, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    }
+    if (!claimed) { pthread_mutex_unlock(&g_plc_mu); return; }
+    // 到点了。基线先推进到现在：这次取不到数据 / 数据没变 / 起不了线程，都要等再多 N 条、再隔 E 才重试，别每建一条管线就来一遍。
+    __atomic_store_n(&g_plc_made_saved, made, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_plc_t_saved, t, __ATOMIC_RELAXED);
+    uint64_t tg0 = now_ns();   // 触发线程在这里花的时间从这儿算起：查大小 + 取数据 + 拷字节（带 fsync 的写盘不在这条线程上）
+    size_t size = 0;
+    VkResult vr = vkGetPipelineCacheData(g.d, pc, &size, NULL);
+    void *buf = NULL;
+    int started = 0;   // 后台线程已接手（之后「在飞」标记由它清）；没接手的路径在函数末尾自己清
+    if (vr != VK_SUCCESS || size == 0) {
+        plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：局中取不到驱动数据（VkResult %d，%zu 字节），这次不落盘", (int)vr, size);
+    } else if (size == g_plc_size_saved && !__atomic_load_n(&g_plcw_failed, __ATOMIC_ACQUIRE)) {
+        __atomic_fetch_add(&g_plcw_same, 1, __ATOMIC_RELAXED);
+        plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：局中检查：本局经缓存建管线 %llu 条，数据 %zu 字节与上次保存一致，不写", (unsigned long long)made, size);
+    } else {
+        size_t cap = size + size / 4 + 4096;   // 留余量：取大小之后别的线程又建了管线，数据可能已经变大（VK_INCOMPLETE 的半份数据不能落盘）
+        buf = malloc(cap);
+        if (!buf) {
+            plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：内存不够取数据（%zu 字节），这次不落盘", cap);
+        } else {
+            size_t got = cap;
+            vr = vkGetPipelineCacheData(g.d, pc, &got, buf);
+            if (vr != VK_SUCCESS || got == 0 || got > cap) {
+                plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：局中取数据失败（VkResult %d），这次不落盘", (int)vr);
+                free(buf);
+                buf = NULL;
+            } else {
+                size = got;
+                struct plcw_job *j = (struct plcw_job *)calloc(1, sizeof *j);
+                if (j) {
+                    j->data = buf; j->size = size; j->made = (unsigned long long)made; j->get_ms = plc_ms(tg0, now_ns());
+                    memcpy(j->dir, g_plc_dir, sizeof j->dir);
+                    memcpy(j->uuid, g_plc_uuid, sizeof j->uuid);
+                    pthread_attr_t at;
+                    pthread_t th;
+                    if (pthread_attr_init(&at) == 0) {
+                        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+                        pthread_attr_setstacksize(&at, 256 * 1024);
+                        __atomic_fetch_add(&g_plcw_started, 1, __ATOMIC_RELAXED);   // 先记再起：后台线程一旦跑完，读数里「成功 + 失败」不会比「次数」多
+                        started = pthread_create(&th, &at, plcw_main, j) == 0;
+                        if (!started) __atomic_fetch_sub(&g_plcw_started, 1, __ATOMIC_RELAXED);
+                        pthread_attr_destroy(&at);
+                    }
+                    if (started) {
+                        g_plc_size_saved = size;
+                        buf = NULL;   // 缓冲区和 j 都归后台线程了
+                    } else {
+                        free(j);
+                    }
+                }
+                if (!started) plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：起不了后台写盘线程，这次不落盘");
+            }
+        }
+    }
+    free(buf);
+    if (!started) __atomic_store_n(&g_plcw_busy, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_plc_mu);
+}
+
+// 一条管线刚经缓存建好：记账；够触发局中补写的条数、时间也到了就试一次。线程：任意建管线的线程（图形 / 计算 / 清屏）。
+static void plc_created(void) {
+    if (!g_plc) return;
+    uint64_t made = __atomic_add_fetch(&g_plc_made, 1, __ATOMIC_RELAXED);
+    if (!g_plc_dir[0] || made < __atomic_load_n(&g_plc_made_saved, __ATOMIC_RELAXED) + g_plc_thr_new) return;
+    uint64_t ts = __atomic_load_n(&g_plc_t_saved, __ATOMIC_RELAXED), t = now_ns();
+    if (ts ? t - ts < g_plc_every_ns : t - g_plc_t_open < g_plc_first_ns) return;
+    plc_save_midrun();
+}
+
+// 等在飞的后台写收尾，最多等到 deadline（now_ns 时钟）。返回 1 = 已经没有在飞的写，0 = 到点了还没写完。
+static int plcw_wait(uint64_t deadline) {
+    while (__atomic_load_n(&g_plcw_busy, __ATOMIC_ACQUIRE)) {
+        if (now_ns() >= deadline) return 0;
+        struct timespec ts = {0, 1000000};   // 1 ms 一查：写盘通常十几毫秒，不值得为它再配一套条件变量
+        nanosleep(&ts, NULL);
+    }
+    return 1;
 }
 
 // 收尾时（所有段都完成之后、销毁管线之前）：把驱动当前的缓存数据写盘，再销毁缓存。线程：与 close 同。
-// 本局没新增（大小与读入时一致）就不重写；设备丢了不取数据；写失败只记日志（下一局照旧慢一次，本局不受影响）。
-static void plc_close(void) {
-    if (!g_plc) return;
+// 先等在飞的局中写（等多久算进 close 的 deadline；到点没写完 = 放弃这次收尾写：两边写同一个临时文件，不能并行，也不拖 close）。
+// 数据大小与上次保存 / 读入时一致就不重写；设备丢了不取数据；写失败只记日志（下一局照旧慢一次，本局不受影响）。
+static void plc_close(uint64_t deadline) {
+    pthread_mutex_lock(&g_plc_mu);   // 与局中触发互斥：拿到之后不会再有线程拿 g_plc 去取数据
     VkPipelineCache pc = g_plc;
     g_plc = VK_NULL_HANDLE;
+    pthread_mutex_unlock(&g_plc_mu);
+    if (!pc) return;
     unsigned long long made = (unsigned long long)__atomic_load_n(&g_plc_made, __ATOMIC_RELAXED);
-    if (g_plc_dir[0] && g.device_lost) {
+    if (!plcw_wait(deadline)) {
+        plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：close 时限内局中写盘还没写完，放弃收尾这次写（旧文件原样，下一局照常读）");
+    } else if (g_plc_dir[0] && g.device_lost) {
         plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：设备已丢失，不取数据、不落盘");
     } else if (g_plc_dir[0]) {
         uint64_t t0 = now_ns();
@@ -1150,8 +1311,8 @@ static void plc_close(void) {
         VkResult vr = vkGetPipelineCacheData(g.d, pc, &size, NULL);
         if (vr != VK_SUCCESS || size == 0) {
             plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：取不到驱动数据（VkResult %d，%zu 字节），不落盘", (int)vr, size);
-        } else if (size == g_plc_loaded) {
-            plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：本局没有新增（%zu 字节，与读入时一致），不重写；本局经缓存建管线 %llu 条", size, made);
+        } else if (size == g_plc_size_saved && !__atomic_load_n(&g_plcw_failed, __ATOMIC_ACQUIRE)) {
+            plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：本局没有新增（%zu 字节，与上次保存 / 读入时一致），不重写；本局经缓存建管线 %llu 条", size, made);
         } else {
             void *buf = malloc(size);
             if (!buf) {
@@ -1335,7 +1496,8 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     g.worker_started = 0;
 
     // 在途段都完成了、不会再有新管线：把驱动管线缓存写盘（失败只记日志）再销毁它。放在销毁管线之前，后面的拆除出事也不丢这一局的编译结果。
-    plc_close();
+    // 在飞的局中写（#868）要先等它收尾，等多久算进这次 close 的截止时间；到点没写完就放弃收尾这次写，不拖 close。
+    plc_close(deadline);
 
     // ⑤ 销毁所有仍活着的后端对象；已 release 的 retired 已由 worker 调完。
     pthread_mutex_lock(&g_mu);
@@ -2541,7 +2703,7 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
         destroy_pipe_objects(p);
         return bad;
     }
-    if (g_plc) __atomic_fetch_add(&g_plc_made, 1, __ATOMIC_RELAXED);
+    plc_created();
     for (int st = 0; st < 5; st++) {
         struct nvn_gpu_shader_s *sh = d->st[st].sh;
         if (!sh) continue;
@@ -2667,7 +2829,7 @@ nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pip
         destroy_pipe_objects(p);
         return fail(err, NVN_GPU_E_COMPILE, "vkCreateComputePipelines 失败");
     }
-    if (g_plc) __atomic_fetch_add(&g_plc_made, 1, __ATOMIC_RELAXED);
+    plc_created();
     p->stage_nent[NVN_GPU_SH_CS] = sh->nent;
     p->stage_push_off[NVN_GPU_SH_CS] = sh->push_off;
     p->stage_push_bytes[NVN_GPU_SH_CS] = sh->push_bytes;
@@ -5092,6 +5254,11 @@ void nvn_gpu_stats(nvn_gpu_stat_fn fn, void *user, int take) {
     fn(user, "pipe_cache_loaded_bytes", g_plc_loaded);                              // 开会话时读到并交给驱动的字节数（0 = 没读到）
     fn(user, "pipe_cache_rejected", g_plc_rejected);                                // 旧文件读不出 / 驱动不收、被丢掉的次数
     fn(user, "pipes_created", __atomic_load_n(&g_plc_made, __ATOMIC_RELAXED));      // 经缓存建出的管线条数（图形 + 计算 + 清屏）
+    // 局中补写（#868）；进程累计，不随会话清零（后台写可能跨过 close 才收尾）
+    fn(user, "pipe_cache_saves", __atomic_load_n(&g_plcw_started, __ATOMIC_RELAXED));         // 交给后台写盘的次数
+    fn(user, "pipe_cache_saves_ok", __atomic_load_n(&g_plcw_ok, __ATOMIC_RELAXED));           // 其中写成功的
+    fn(user, "pipe_cache_saves_failed", __atomic_load_n(&g_plcw_fail, __ATOMIC_RELAXED));     // 其中写失败的（只记日志；收尾时会再试）
+    fn(user, "pipe_cache_saves_same", __atomic_load_n(&g_plcw_same, __ATOMIC_RELAXED));       // 触发了但数据大小与上次保存一致、没写的次数
 }
 
 // 测试钩子：让某个 signal 的段在 fence 等待时报失败（走真实的失败终止路径）。

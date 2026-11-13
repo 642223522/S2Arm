@@ -7,13 +7,17 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
+#include <spawn.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -42,8 +46,13 @@ int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native;
 static int g_memo_on;
 void nvn_plat_safepoint(void) {}
 static int g_plc_flag_off;   // C88：1 = 调试开关 nvk_pipe_cache 读成 0（管线缓存关）
+// C89（局中补写）：-1 = 用后端缺省；>= 0 = 把对应的调试开关读成这个值（后端在开会话时读一次，所以要在 open 之前设、open 之后撤）。
+static int g_plc_thr_new = -1, g_plc_thr_first_ms = -1, g_plc_thr_every_ms = -1;
 int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_pipe_cache") && g_plc_flag_off) return 0;
+    if (!strcmp(name, "nvk_plc_new") && g_plc_thr_new >= 0) return g_plc_thr_new;
+    if (!strcmp(name, "nvk_plc_first_ms") && g_plc_thr_first_ms >= 0) return g_plc_thr_first_ms;
+    if (!strcmp(name, "nvk_plc_every_ms") && g_plc_thr_every_ms >= 0) return g_plc_thr_every_ms;
     if (!strcmp(name, "nvk_dq") && getenv("S2A_TEST_NVK_DQ")) return 1;
     if (!strcmp(name, "nvk_desc_memo") && getenv("S2A_TEST_DESC_MEMO")) { g_memo_on = 1; return 1; }
     return dflt;
@@ -78,31 +87,61 @@ struct plc_rec {
     unsigned gp, gp_cached, cp, cp_cached;
 };
 static struct plc_rec g_plc_rec;
+// C89（局中补写）：lavapipe 的缓存数据恒为 32 字节文件头，不随建管线变大，「数据变没变」这类判断在它上面看不出区别。
+// 所以把「驱动的缓存数据有多大」交给用例定：取数据时在真数据后面补 g_plc_extra + g_plc_per_pipe × 自 g_plc_pipe_base 起建的管线数 个填充字节
+// （模拟真驱动的缓存随管线变大）；下一局读回时（带着填充）建缓存前把填充去掉再交给 lavapipe（g_plc_strip_tail）。
+// 三个值缺省全 0 = 原样转给真函数，C88 等其余用例不受影响。
+static size_t g_plc_extra, g_plc_per_pipe;
+static unsigned g_plc_pipe_base;
+static int g_plc_strip_tail;
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkCreatePipelineCache(VkDevice, const VkPipelineCacheCreateInfo *, const VkAllocationCallbacks *, VkPipelineCache *);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkCreatePipelineCache(VkDevice device, const VkPipelineCacheCreateInfo *ci, const VkAllocationCallbacks *a, VkPipelineCache *out) {
     g_plc_rec.cache_creates++;
     g_plc_rec.last_initial = ci->initialDataSize;
     if (g_plc_rec.reject_initial && ci->initialDataSize) { g_plc_rec.reject_initial--; return VK_ERROR_INITIALIZATION_FAILED; }
+    VkPipelineCacheCreateInfo ci2;
+    if (g_plc_strip_tail && ci->pInitialData && ci->initialDataSize > 4) {   // 文件头第一个 u32 = 头长度（VkPipelineCacheHeaderVersionOne = 32）
+        uint32_t hs; memcpy(&hs, ci->pInitialData, sizeof hs);
+        if (hs >= 16 && hs < ci->initialDataSize) { ci2 = *ci; ci2.initialDataSize = hs; ci = &ci2; }
+    }
     VkResult r = __real_vkCreatePipelineCache(device, ci, a, out);
     if (r == VK_SUCCESS) g_plc_rec.last_cache = *out;
     return r;
 }
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkGetPipelineCacheData(VkDevice, VkPipelineCache, size_t *, void *);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkGetPipelineCacheData(VkDevice device, VkPipelineCache cache, size_t *size, void *data) {
-    VkResult r = __real_vkGetPipelineCacheData(device, cache, size, data);
-    if (data && r == VK_SUCCESS) g_plc_rec.last_data = *size;
-    return r;
+    size_t extra = g_plc_extra;
+    if (g_plc_per_pipe)
+        extra += g_plc_per_pipe * (size_t)(__atomic_load_n(&g_plc_rec.gp, __ATOMIC_RELAXED) + __atomic_load_n(&g_plc_rec.cp, __ATOMIC_RELAXED) - g_plc_pipe_base);
+    VkResult r;
+    if (!extra) {
+        r = __real_vkGetPipelineCacheData(device, cache, size, data);
+        if (data && r == VK_SUCCESS) __atomic_store_n(&g_plc_rec.last_data, *size, __ATOMIC_RELAXED);   // C89：局中补写在建管线的线程里取数据，两个线程同时建管线时这里会并发
+        return r;
+    }
+    size_t rs = 0;   // 真数据大小
+    r = __real_vkGetPipelineCacheData(device, cache, &rs, NULL);
+    if (r != VK_SUCCESS) return r;
+    if (!data) { *size = rs + extra; return VK_SUCCESS; }
+    size_t cap = *size, w = cap < rs ? cap : rs;
+    r = __real_vkGetPipelineCacheData(device, cache, &w, data);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) return r;
+    size_t fill = 0;
+    if (w == rs) { fill = cap - w < extra ? cap - w : extra; memset((char *)data + rs, 0xA5, fill); }
+    *size = w + fill;
+    if (w == rs && fill == extra) { __atomic_store_n(&g_plc_rec.last_data, *size, __ATOMIC_RELAXED); return VK_SUCCESS; }
+    return VK_INCOMPLETE;   // 容量不够（取大小之后又有新管线）：按规范只写放得下的部分
 }
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkCreateGraphicsPipelines(VkDevice, VkPipelineCache, uint32_t, const VkGraphicsPipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache cache, uint32_t n, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *a, VkPipeline *out) {
-    g_plc_rec.gp += n;
-    if (cache != VK_NULL_HANDLE && cache == g_plc_rec.last_cache) g_plc_rec.gp_cached += n;
+    __atomic_fetch_add(&g_plc_rec.gp, n, __ATOMIC_RELAXED);   // C89 ⑩：两个线程同时建管线
+    if (cache != VK_NULL_HANDLE && cache == g_plc_rec.last_cache) __atomic_fetch_add(&g_plc_rec.gp_cached, n, __ATOMIC_RELAXED);
     return __real_vkCreateGraphicsPipelines(device, cache, n, ci, a, out);
 }
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkCreateComputePipelines(VkDevice, VkPipelineCache, uint32_t, const VkComputePipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkCreateComputePipelines(VkDevice device, VkPipelineCache cache, uint32_t n, const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *a, VkPipeline *out) {
-    g_plc_rec.cp += n;
-    if (cache != VK_NULL_HANDLE && cache == g_plc_rec.last_cache) g_plc_rec.cp_cached += n;
+    __atomic_fetch_add(&g_plc_rec.cp, n, __ATOMIC_RELAXED);
+    if (cache != VK_NULL_HANDLE && cache == g_plc_rec.last_cache) __atomic_fetch_add(&g_plc_rec.cp_cached, n, __ATOMIC_RELAXED);
     return __real_vkCreateComputePipelines(device, cache, n, ci, a, out);
 }
 
@@ -5564,6 +5603,592 @@ static void c88_pipe_cache(const char *sdir) {
     rmdir(dir); unlink(notdir); rmdir(root);
 }
 
+// ---- C89：驱动管线缓存的局中补写（#868）----
+// 契约（backend_vulkan.c「局中补写」一节）：给了缓存目录，建管线累计「新增 ≥ N 条」，且头一次距会话开始 ≥ F、之后距上一次保存 ≥ E 时，
+// 后端取一份驱动缓存数据交给后台线程落盘（沿用 nvk_driver_cache_write：临时文件 + fsync + 原子替换），被系统杀掉的局也给下一局留下缓存。
+// 缺省 N=64 条 / F=10 秒 / E=30 秒；宿主用例用调试开关 nvk_plc_new / nvk_plc_first_ms / nvk_plc_every_ms 改成 3 条 / 0 / 0。
+// 驱动缓存数据的大小由用例定（见 g_plc_extra 一段）：lavapipe 的数据恒为文件头，不随管线变，看不出「变没变」。下面「数据 X 字节」= lavapipe 真数据 + 用例补的填充。
+// 期望（手算，不取自被测实现；C88 那组 3 条管线 = 2 图形 + 1 计算，阈值 3 条时第 3 条建完的那一刻触发）：
+//  ① 空目录、数据 S1：建完 3 条（不 close）→ 交给后台写 1 次（统计 pipe_cache_saves +1，建完即可见）；后台写成功 1 次后，目录里恰好 1 个合规文件、
+//     没有临时文件，大小 = 文件头 48 字节 + S1；close 不重写（inode、修改时间都不变：数据大小与上次保存一致就不写）；下一局读回 S1 字节、rejected = 0；
+//  ② 负对照（各只改一处、其余同①）：条数没到（阈值 4）/ 头一次的等待没到（1000000 ms）/ 开关 nvk_pipe_cache=0 / 不给目录 → 不触发，close 前目录里没有文件；
+//     头一次的等待 1500 ms 的对照：开会话后立刻建够 3 条 → 不触发；光是时间到了也不触发；到点之后再建管线 → 触发、写成；
+//  ③ 目录里已有①写完的文件（数据 S1），同样 3 条管线、驱动数据仍是 S1 → 触发了，但与上次一致：不写（saves_same +1、saves 不变），文件原样；
+//     检查过之后再建 3 条 → 再检查 1 次（共 2 次，不是每条都查）；
+//     对照：驱动数据变大（S2 > S1，只改这一处）→ 写 1 次、文件变成 48 + S2；
+//  ④ 第二次保存：头一次之后驱动数据变大、再建 3 条新管线——间隔没到（1000000 ms）→ 不再触发（saves、saves_same 都不动）；间隔 0 → 再触发 1 次、文件变大；
+//  ⑤ 写失败只记日志：目录在会话中途被换成普通文件 → 后台写失败 1 次，会话照开、管线照建、close 返回 OK；
+//     失败只是这一次：临时文件路径被一个目录占着 → 局中写失败 1 次、目录里没有正式文件；放开后 close，数据大小虽与「上次保存」一致也要再写一次 → 目录里有了恰好 1 个合规文件；
+//  ⑥ 后台写途中收局：把临时文件路径占成一个没人读的管道，后台写卡在开文件上；close(200 ms) 返回 OK，用时 ≥ 150 ms（等了后台写，算进截止时间）
+//     且 < 3 s（到期放弃，不挂住）；旧文件原样；写还卡着时数据又变大、再建 3 条新管线 → 不再起新的写（同一时刻最多一次、不排队）；
+//     放开管道后后台写自己失败收尾、把临时文件清掉；下一局读回旧文件、rejected = 0；
+//  ⑦ 被杀（不经关局）：子进程建完管线、等局中写完，自己 SIGKILL；目录里恰好 1 个合规文件，下一局读回、rejected = 0；
+//  ⑧ 被杀在写盘途中：子进程的后台写卡在管道上时 SIGKILL；旧文件逐字节不变，残留的临时文件不碍事：下一局照常开、读回旧文件、rejected = 0（读了管道会卡死）；
+//  ⑨ 临时文件残留：<文件名>.tmp.<pid> 里是垃圾——没有正式文件时下一局 loaded = 0 且 rejected = 0（残留不当坏文件）、收尾照常写出正式文件；有正式文件时读回正式文件；残留原样不动；
+//     负对照：同样的垃圾放在正式文件名上 → rejected = 1（证明上面的 rejected = 0 不是计数坏了）；
+//  ⑩ 两个线程同时建管线、驱动数据随管线数变大 → 局中写盘与建管线并行（校验层 0 条由 run.sh 统一核）：每次触发的写都成功、目录里恰好 1 个合规文件，下一局读回、rejected = 0；
+//  ⑪ 缓存目录和它的上一层都还不存在（真机头一局的常态）→ 局中写盘由后台线程补出目录，写完（还没 close）目录里就有 1 个合规文件。
+#define C89_HDR 48   // 文件头：魔数 4 + 版本 4 + 长度 8 + SHA-256 32（nvn_vk_driver_cache.c）
+#define C89_X1 64    // 驱动数据的填充（字节）：数据 S1 = lavapipe 真数据 + 64
+#define C89_X2 128   // 驱动数据「变大」后的填充：S2 = lavapipe 真数据 + 128
+#define C89_X3 192   // 再变大一次：S3
+
+struct c89_st { uint64_t saves, ok, failed, same, loaded, rejected, made; int seen; };
+
+static void c89_stat_cb(void *u, const char *name, uint64_t v) {
+    struct c89_st *o = (struct c89_st *)u;
+    if (!strcmp(name, "pipe_cache_saves")) { o->saves = v; o->seen++; }
+    else if (!strcmp(name, "pipe_cache_saves_ok")) { o->ok = v; o->seen++; }
+    else if (!strcmp(name, "pipe_cache_saves_failed")) { o->failed = v; o->seen++; }
+    else if (!strcmp(name, "pipe_cache_saves_same")) { o->same = v; o->seen++; }
+    else if (!strcmp(name, "pipe_cache_loaded_bytes")) { o->loaded = v; o->seen++; }
+    else if (!strcmp(name, "pipe_cache_rejected")) { o->rejected = v; o->seen++; }
+    else if (!strcmp(name, "pipes_created")) { o->made = v; o->seen++; }
+}
+
+static struct c89_st c89_stats(void) {
+    struct c89_st o; memset(&o, 0, sizeof o);
+    nvn_gpu_stats(c89_stat_cb, &o, 0);
+    return o;
+}
+
+static void c89_sleep_ms(int ms) { struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L}; nanosleep(&ts, NULL); }
+
+static double c89_now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6; }
+
+// 开会话：cache_dir 与三个阈值（-1 = 缺省）只在这一次 open 里生效。
+static int c89_open(const char *dir, int nnew, int first_ms, int every_ms) {
+    g_plc_thr_new = nnew; g_plc_thr_first_ms = first_ms; g_plc_thr_every_ms = every_ms;
+    g_desc.cache_dir = dir;
+    int ok = open_backend();
+    g_desc.cache_dir = NULL;
+    g_plc_thr_new = g_plc_thr_first_ms = g_plc_thr_every_ms = -1;
+    return ok;
+}
+
+// 等后台写收尾（成功或失败都算）：比基线多 want 次，最多等 timeout_ms。
+static struct c89_st c89_wait_done(const struct c89_st *base, unsigned want, int timeout_ms) {
+    struct c89_st s = c89_stats();
+    for (int i = 0; i < timeout_ms / 2 && (s.ok + s.failed) - (base->ok + base->failed) < want; i++) { c89_sleep_ms(2); s = c89_stats(); }
+    return s;
+}
+
+struct c89_dir { int nreg, nother; char name[256]; long size; ino_t ino; struct timespec mtim; };
+
+// 数目录：正式文件（普通文件、名字里没有 .tmp.）记名字 / 大小 / inode / 修改时间；其余（临时文件、管道、子目录）都算 nother。
+static struct c89_dir c89_scan(const char *dir) {
+    struct c89_dir o; memset(&o, 0, sizeof o);
+    DIR *d = opendir(dir);
+    if (!d) { o.nreg = -1; return o; }
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        char p[900]; struct stat st;
+        snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
+        if (!strstr(de->d_name, ".tmp.") && stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
+            o.nreg++; snprintf(o.name, sizeof o.name, "%s", de->d_name);
+            o.size = (long)st.st_size; o.ino = st.st_ino; o.mtim = st.st_mtim;
+        } else o.nother++;
+    }
+    closedir(d);
+    return o;
+}
+
+static int c89_same_file(const struct c89_dir *a, const struct c89_dir *b) {
+    return a->nreg == 1 && b->nreg == 1 && a->ino == b->ino && a->size == b->size &&
+           a->mtim.tv_sec == b->mtim.tv_sec && a->mtim.tv_nsec == b->mtim.tv_nsec && !strcmp(a->name, b->name);
+}
+
+// 再建 n 条新的图形管线：颜色写掩码 first_mask.. 依次不同（1..14）、图元 prim 给定 → 每条都是新管线；每条之后歇 gap_ms 毫秒（0 = 不歇）。
+static void c89_more_pipes_with(nvn_gpu_shader vs, nvn_gpu_shader fs, unsigned first_mask, unsigned n, unsigned prim, unsigned gap_ms) {
+    for (unsigned i = 0; i < n; i++) {
+        nvn_gpu_pipe_desc pd; nvn_gpu_pipe p = NULL; nvn_gpu_err e;
+        fill_gpipe_desc(&pd, vs, fs, 0);
+        pd.chmask.mask = (first_mask + i) & 0xF;
+        pd.prim = prim;
+        CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &p, &e)) && p, "C89 追加管线 mask=%u prim=%u：%d %s", first_mask + i, prim, e.rc.code, e.why);
+        if (gap_ms) c89_sleep_ms((int)gap_ms);
+    }
+}
+
+static void c89_more_pipes(const char *sdir, unsigned n) {
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(sdir, "tri3.vert", "out1_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "C89 读不到 out1_green"); return; }
+    c89_more_pipes_with(vs, fs, 1, n, 4, 0);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+}
+
+// 只建 1 条图形管线（solid_green）的会话：给后面几例铺一个「上一局写完的旧文件」。默认阈值，收尾写盘。
+static int c89_seed(const char *sdir, const char *dir) {
+    if (!c89_open(dir, -1, -1, -1)) return 0;
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    int ok = load_shader_pair(sdir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm);
+    if (ok) {
+        nvn_gpu_pipe_desc pd; nvn_gpu_pipe p = NULL; nvn_gpu_err e;
+        fill_gpipe_desc(&pd, vs, fs, 0);
+        ok = OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &p, &e)) && p;
+        nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+    }
+    nvn_gpu_err e2;
+    int closed = OK(nvn_gpu_close(5000000000ull, &e2));
+    return ok && closed;
+}
+
+// 下一局：默认阈值，不建管线，读统计后关。返回读到的字节数与 rejected。
+static struct c89_st c89_readback(const char *dir) {
+    struct c89_st z; memset(&z, 0, sizeof z);
+    if (!c89_open(dir, -1, -1, -1)) { CHECK(0, "C89 读回会话 open 失败"); return z; }
+    struct c89_st s = c89_stats();
+    nvn_gpu_err e;
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 读回会话 close：%d %s", e.rc.code, e.why);
+    return s;
+}
+
+// 放开被占成管道的临时文件路径：读端打开让后台写的 open 返回，再把它写来的字节读掉，直到它自己失败收尾（管道上 fsync 不成，临时文件被它自己清掉）。
+// 读端必须一直开着到路径消失：后台写在本进程里，读端早关了它再 write 就是 SIGPIPE。read 返回 0 只表示「此刻没有写端」，不是收尾。
+struct c89_unblock { const char *fifo; atomic_int go; };
+static void *c89_unblock_main(void *arg) {
+    struct c89_unblock *u = (struct c89_unblock *)arg;
+    for (int i = 0; i < 350 && !atomic_load(&u->go); i++) c89_sleep_ms(10);   // 最多等 3.5 s：close 要是挂住了，到点也放开，免得整个用例卡死
+    int fd = open(u->fifo, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd >= 0) {
+        static char buf[65536];
+        for (int i = 0; i < 2000; i++) {   // 最多 10 s
+            ssize_t n = read(fd, buf, sizeof buf);
+            if (n > 0) continue;
+            struct stat st;
+            if (stat(u->fifo, &st) != 0) break;   // 路径已被后台写清掉
+            c89_sleep_ms(5);
+        }
+        close(fd);
+    }
+    return NULL;
+}
+
+static int c89_wait_gone(const char *path, int timeout_ms) {
+    struct stat st;
+    for (int i = 0; i < timeout_ms / 5; i++) { if (stat(path, &st) != 0) return 1; c89_sleep_ms(5); }
+    return stat(path, &st) != 0;
+}
+
+// 子进程：被 SIGKILL 的那一局。argv = <exe> <着色器目录> --c89-child <缓存目录> <开工信号文件> <kill-after-ok | kill-after-start>
+// 等 parent 摆好现场（开工信号文件出现）→ 开会话（阈值 3 / 0 / 0）→ 建 3 条管线 → 等到局中写完（ok）或后台写已交出去（start）→ 自己 SIGKILL，不 close。
+static int c89_child_main(char **argv) {
+    const char *sdir = argv[1], *dir = argv[3], *gate = argv[4], *mode = argv[5];
+    setvbuf(stdout, NULL, _IONBF, 0);   // 被杀时不丢日志
+    for (int i = 0; i < 3000 && access(gate, F_OK) != 0; i++) c89_sleep_ms(10);
+    if (access(gate, F_OK) != 0) { printf("C89 子进程等不到开工信号\n"); return 3; }
+    memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "c89-child";
+    g_plc_strip_tail = 1;
+    g_plc_extra = !strcmp(mode, "kill-after-start") ? C89_X2 : C89_X1;   // 写盘途中被杀那局：驱动数据比旧文件里的大，后端才会真去写
+    if (!c89_open(dir, 3, 0, 0)) return 3;
+    struct c89_st b = c89_stats();
+    c88_make_pipes(sdir);
+    if (g_fail) return 4;
+    int want_ok = !strcmp(mode, "kill-after-ok");
+    for (int i = 0; i < 5000; i++) {   // 最多 10 s
+        struct c89_st s = c89_stats();
+        if (want_ok ? s.ok > b.ok : s.saves > b.saves) { fflush(stdout); kill(getpid(), SIGKILL); }
+        c89_sleep_ms(2);
+    }
+    printf("C89 子进程等不到局中写（%s）\n", mode);
+    return 5;
+}
+
+extern char **environ;
+// 起子进程（还是这个可执行文件，Linux 下用 /proc/self/exe，不依赖 argv[0] 怎么写的）；返回 pid（失败 -1）。
+static pid_t c89_spawn_child(const char *sdir, const char *dir, const char *gate, const char *mode) {
+    char *args[] = {(char *)"t_backend_vk", (char *)sdir, (char *)"--c89-child", (char *)dir, (char *)gate, (char *)mode, NULL};
+    pid_t pid = -1;
+    fflush(stdout);
+    if (posix_spawn(&pid, "/proc/self/exe", NULL, NULL, args, environ) != 0) return -1;
+    return pid;
+}
+
+// 等子进程收尾（最多 60 s，到点补一刀）；返回 waitpid 的状态，-1 = 没等到。
+static int c89_reap(pid_t pid) {
+    int st = 0;
+    for (int i = 0; i < 6000; i++) {
+        pid_t r = waitpid(pid, &st, WNOHANG);
+        if (r == pid) return st;
+        if (r < 0) return -1;
+        c89_sleep_ms(10);
+    }
+    kill(pid, SIGKILL); waitpid(pid, &st, 0);
+    return -1;
+}
+
+static int c89_touch(const char *path, const void *bytes, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    if (n) fwrite(bytes, 1, n, f);
+    fclose(f);
+    return 1;
+}
+
+static void c89_rm_tree(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        char p[900]; snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
+        unlink(p);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+// 一个建管线的线程：三种图元（三角形 / 条带 / 扇）× 颜色写掩码 1..14 = 42 条新管线，每条之后歇 1 ms（让局中写盘在建管线的同时一直在发生）。
+struct c89_thr { nvn_gpu_shader vs, fs; };
+static void *c89_thr_main(void *arg) {
+    struct c89_thr *t = (struct c89_thr *)arg;
+    for (unsigned prim = 4; prim <= 6; prim++) c89_more_pipes_with(t->vs, t->fs, 1, 14, prim, 1);
+    return NULL;
+}
+
+static void c89_midrun_save(const char *sdir) {
+    char tmpl[512];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(tmpl, sizeof tmpl, "%s/s2a-plc89.XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
+    char *root = mkdtemp(tmpl);
+    CHECK(root != NULL, "C89 建不出临时目录");
+    if (!root) return;
+    nvn_gpu_err e;
+    // 先确认后端有局中补写的统计项：老后端没有它，整个 C89 就地报红（不往下跑，免得老实现上的管道用例卡死在收尾写盘上）。
+    CHECK(c89_open(NULL, -1, -1, -1), "C89 open");
+    struct c89_st probe = c89_stats();
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 probe close：%d %s", e.rc.code, e.why);
+    CHECK(probe.seen == 7, "C89 后端应报出局中补写的统计项（pipe_cache_saves / _ok / _failed / _same）→ 读到 %d 项（期望 7 项）", probe.seen);
+    if (probe.seen != 7) { rmdir(root); return; }
+    g_plc_strip_tail = 1; g_plc_extra = C89_X1;   // 驱动数据 S1 = lavapipe 真数据 + 64 字节填充（见 g_plc_extra 一段）
+
+    // ① 空目录：局中写盘、close 不重写、下一局读回
+    char d1[600]; snprintf(d1, sizeof d1, "%s/c1", root); CHECK(mkdir(d1, 0700) == 0, "C89 建不出 c1");
+    CHECK(c89_open(d1, 3, 0, 0), "C89 ① open");
+    struct c89_st b1 = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st s1 = c89_stats();
+    size_t mid1 = g_plc_rec.last_data;
+    CHECK(s1.saves == b1.saves + 1, "C89 ① 建完 3 条应触发 1 次局中保存 → 触发 %llu 次", (unsigned long long)(s1.saves - b1.saves));
+    struct c89_st w1 = c89_wait_done(&b1, 1, 5000);
+    CHECK(w1.ok == b1.ok + 1 && w1.failed == b1.failed, "C89 ① 后台写应成功 1 次 → 成功 +%llu、失败 +%llu", (unsigned long long)(w1.ok - b1.ok), (unsigned long long)(w1.failed - b1.failed));
+    struct c89_dir a1 = c89_scan(d1);
+    CHECK(a1.nreg == 1 && c88_name_ok(a1.name) && a1.nother == 0, "C89 ① 局中写完（还没 close）目录里应恰好 1 个合规文件、没有临时文件 → 文件 %d、其它 %d、名字 %s", a1.nreg, a1.nother, a1.name);
+    CHECK(mid1 > C89_X1 && a1.size == (long)mid1 + C89_HDR, "C89 ① 文件大小应 = 文件头 %d + 局中取出的 %zu 字节（> 填充 %d）→ %ld", C89_HDR, mid1, C89_X1, a1.size);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ① close：%d %s", e.rc.code, e.why);
+    struct c89_dir a1b = c89_scan(d1);
+    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → inode / 大小 / 修改时间不变");
+    struct c89_st r1 = c89_readback(d1);
+    CHECK(r1.loaded == mid1 && r1.rejected == 0, "C89 ① 下一局读回 %llu 字节（期望 %zu）、rejected=%llu（期望 0）", (unsigned long long)r1.loaded, mid1, (unsigned long long)r1.rejected);
+
+    // ② 负对照：各只改一处
+    static const struct { const char *what; int nnew, first, every, off, nodir; int want_final; } neg[] = {
+        {"条数没到（阈值 4 条，只建 3 条）", 4, 0, 0, 0, 0, 1},
+        {"头一次的等待没到（1000000 ms）", 3, 1000000, 0, 0, 0, 1},
+        {"开关 nvk_pipe_cache=0", 3, 0, 0, 1, 0, 0},
+        {"不给缓存目录", 3, 0, 0, 0, 1, 0},
+    };
+    for (int k = 0; k < 4; k++) {
+        char dn[600]; snprintf(dn, sizeof dn, "%s/n%d", root, k); CHECK(mkdir(dn, 0700) == 0, "C89 建不出 n%d", k);
+        g_plc_flag_off = neg[k].off;
+        int op = c89_open(neg[k].nodir ? NULL : dn, neg[k].nnew, neg[k].first, neg[k].every);
+        g_plc_flag_off = 0;
+        CHECK(op, "C89 ② %s：open", neg[k].what);
+        if (!op) continue;
+        struct c89_st nb = c89_stats();
+        c88_make_pipes(sdir);
+        struct c89_st ns = c89_stats();
+        CHECK(ns.saves == nb.saves && ns.same == nb.same, "C89 ② %s：不应触发 → 触发 %llu 次、「没变」%llu 次", neg[k].what, (unsigned long long)(ns.saves - nb.saves), (unsigned long long)(ns.same - nb.same));
+        struct c89_dir an = c89_scan(dn);
+        CHECK(an.nreg == 0 && an.nother == 0, "C89 ② %s：close 前目录里不应有文件 → 文件 %d、其它 %d", neg[k].what, an.nreg, an.nother);
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ② %s：close：%d %s", neg[k].what, e.rc.code, e.why);
+        struct c89_dir af = c89_scan(dn);
+        CHECK(af.nreg == neg[k].want_final && af.nother == 0, "C89 ② %s：close 后目录里应有 %d 个正式文件（收尾写盘照旧）→ %d 个、其它 %d", neg[k].what, neg[k].want_final, af.nreg, af.nother);
+        c89_rm_tree(dn);
+    }
+    {   // ② 对照：「头一次的等待」只差时间这一个变量——开会话后没到点不触发；到点之后再建管线才触发（只在建管线时检查，光是时间到了不触发）
+        char dt[600]; snprintf(dt, sizeof dt, "%s/c2t", root); CHECK(mkdir(dt, 0700) == 0, "C89 建不出 c2t");
+        double ta = c89_now_ms();
+        int opt = c89_open(dt, 3, 1500, 0);
+        double tb = c89_now_ms();   // 后端的「开会话时刻」落在 [ta, tb] 之间
+        CHECK(opt, "C89 ②t open");
+        if (opt) {
+            struct c89_st bt = c89_stats();
+            c88_make_pipes(sdir);
+            double tc = c89_now_ms();
+            struct c89_st st = c89_stats();
+            if (tc - ta < 1400) CHECK(st.saves == bt.saves && st.same == bt.same, "C89 ②t 开会话 %.0f ms 时已建够 3 条、等待 1500 ms 还没到：不应触发 → 触发 %llu 次、「没变」%llu 次", tc - ta, (unsigned long long)(st.saves - bt.saves), (unsigned long long)(st.same - bt.same));
+            else printf("C89 ②t 本机太慢（开会话到建完 3 条用了 %.0f ms），「没到点不触发」这半条跳过\n", tc - ta);
+            while (c89_now_ms() - tb < 1600) c89_sleep_ms(20);   // 从 open 返回算起也已过 1.5 s：后端那边一定到点了
+            struct c89_st mt = c89_stats();
+            CHECK(mt.saves == st.saves, "C89 ②t 光是时间到了不应触发（触发只在建管线时检查）→ 多触发 %llu 次", (unsigned long long)(mt.saves - st.saves));
+            c89_more_pipes(sdir, 3);
+            struct c89_st wt = c89_wait_done(&bt, 1, 5000);
+            CHECK(wt.saves == bt.saves + 1 && wt.ok == bt.ok + 1, "C89 ②t 到点之后再建管线应触发并写成 1 次 → 触发 +%llu、成功 +%llu", (unsigned long long)(wt.saves - bt.saves), (unsigned long long)(wt.ok - bt.ok));
+            CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ②t close：%d %s", e.rc.code, e.why);
+        }
+        c89_rm_tree(dt);
+    }
+
+    // ③ 旧文件是完整的（①留下的，数据 S1），同样 3 条管线、驱动数据仍是 S1 → 触发了但与上次一致：不写
+    CHECK(c89_open(d1, 3, 0, 0), "C89 ③ open");
+    struct c89_st b3 = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st s3 = c89_stats();
+    CHECK(s3.saves == b3.saves && s3.same == b3.same + 1, "C89 ③ 数据与上次一致：应触发检查 1 次但不写 → 写 +%llu 次、「没变」+%llu 次（期望 0 / 1）", (unsigned long long)(s3.saves - b3.saves), (unsigned long long)(s3.same - b3.same));
+    c89_more_pipes(sdir, 3);   // 检查过一次（没变）之后基线就推进了：要再多 3 条才再查一次，不是每建一条就查（每次查都是一回取数据的调用）
+    struct c89_st s3c = c89_stats();
+    CHECK(s3c.saves == b3.saves && s3c.same == b3.same + 2, "C89 ③ 检查过之后再建 3 条：应再检查 1 次（共 2 次）而不是每条都查 → 写 +%llu 次、「没变」+%llu 次（期望 0 / 2）", (unsigned long long)(s3c.saves - b3.saves), (unsigned long long)(s3c.same - b3.same));
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ③ close：%d %s", e.rc.code, e.why);
+    struct c89_dir a3 = c89_scan(d1);
+    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（inode / 大小 / 修改时间不变）");
+    // ③ 对照：只把驱动数据变大（S2），其余同上 → 这回要写
+    g_plc_extra = C89_X2;
+    CHECK(c89_open(d1, 3, 0, 0), "C89 ③ 对照 open");
+    struct c89_st b3b = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st w3b = c89_wait_done(&b3b, 1, 5000);
+    CHECK(w3b.saves == b3b.saves + 1 && w3b.ok == b3b.ok + 1 && w3b.same == b3b.same, "C89 ③ 对照（驱动数据变大）：应写 1 次 → 写 +%llu、成功 +%llu、「没变」+%llu", (unsigned long long)(w3b.saves - b3b.saves), (unsigned long long)(w3b.ok - b3b.ok), (unsigned long long)(w3b.same - b3b.same));
+    struct c89_dir a3b = c89_scan(d1);
+    CHECK(a3b.nreg == 1 && a3b.nother == 0 && a3b.size == a1.size + (C89_X2 - C89_X1), "C89 ③ 对照：文件应变成 48 + S2（比原来大 %d 字节）→ %ld → %ld 字节", C89_X2 - C89_X1, a1.size, a3b.size);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ③ 对照 close：%d %s", e.rc.code, e.why);
+    g_plc_extra = C89_X1;
+
+    // ④ 第二次保存：驱动数据变大后，间隔没到不再触发；间隔 0 再触发、文件变大
+    char d4[600], d4b[600]; snprintf(d4, sizeof d4, "%s/c4a", root); snprintf(d4b, sizeof d4b, "%s/c4b", root);
+    CHECK(mkdir(d4, 0700) == 0 && mkdir(d4b, 0700) == 0, "C89 建不出 c4");
+    CHECK(c89_open(d4, 3, 0, 1000000), "C89 ④ 间隔没到 open");
+    struct c89_st b4 = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st w4 = c89_wait_done(&b4, 1, 5000);
+    CHECK(w4.saves == b4.saves + 1 && w4.ok == b4.ok + 1, "C89 ④ 头一次应写成 1 次 → 触发 +%llu、成功 +%llu", (unsigned long long)(w4.saves - b4.saves), (unsigned long long)(w4.ok - b4.ok));
+    g_plc_extra = C89_X2;   // 驱动数据变大了：只剩「间隔没到」一个理由不写
+    c89_more_pipes(sdir, 3);
+    struct c89_st s4 = c89_stats();
+    CHECK(s4.saves == w4.saves && s4.same == w4.same, "C89 ④ 再建 3 条新管线、数据也变大了，但距上次保存的间隔没到 → 不应再触发（多触发 %llu 次、「没变」+%llu）", (unsigned long long)(s4.saves - w4.saves), (unsigned long long)(s4.same - w4.same));
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ④ 间隔没到 close：%d %s", e.rc.code, e.why);
+    g_plc_extra = C89_X1;
+    CHECK(c89_open(d4b, 3, 0, 0), "C89 ④ 间隔 0 open");
+    struct c89_st b4b = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st w4b = c89_wait_done(&b4b, 1, 5000);
+    struct c89_dir a4 = c89_scan(d4b);
+    g_plc_extra = C89_X2;
+    c89_more_pipes(sdir, 3);
+    struct c89_st s4b = c89_stats();
+    CHECK(s4b.saves == w4b.saves + 1, "C89 ④ 间隔 0：再建 3 条新管线应再触发 1 次 → +%llu 次", (unsigned long long)(s4b.saves - w4b.saves));
+    struct c89_st x4b = c89_wait_done(&w4b, 1, 5000);
+    struct c89_dir a4b = c89_scan(d4b);
+    CHECK(x4b.ok == w4b.ok + 1 && a4b.nreg == 1 && a4b.size > a4.size, "C89 ④ 第二次保存应成功且文件变大 → 成功 +%llu、%ld → %ld 字节", (unsigned long long)(x4b.ok - w4b.ok), a4.size, a4b.size);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ④ 间隔 0 close：%d %s", e.rc.code, e.why);
+    g_plc_extra = C89_X1;
+    c89_rm_tree(d4); c89_rm_tree(d4b);
+
+    // ⑤ 写失败只记日志：目录在会话中途被换成普通文件
+    char d5[600]; snprintf(d5, sizeof d5, "%s/c5", root); CHECK(mkdir(d5, 0700) == 0, "C89 建不出 c5");
+    CHECK(c89_open(d5, 3, 0, 0), "C89 ⑤ open");
+    struct c89_st b5 = c89_stats();
+    CHECK(rmdir(d5) == 0 && c89_touch(d5, "x", 1), "C89 ⑤ 换不掉目录");
+    c88_make_pipes(sdir);
+    struct c89_st w5 = c89_wait_done(&b5, 1, 5000);
+    CHECK(w5.saves == b5.saves + 1 && w5.failed == b5.failed + 1 && w5.ok == b5.ok, "C89 ⑤ 后台写应失败 1 次 → 触发 +%llu、失败 +%llu、成功 +%llu", (unsigned long long)(w5.saves - b5.saves), (unsigned long long)(w5.failed - b5.failed), (unsigned long long)(w5.ok - b5.ok));
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ⑤ 写失败后会话照常 close 返回 OK：%d %s", e.rc.code, e.why);
+    unlink(d5);
+
+    // ⑤ 续：失败只是这一次。临时文件路径被一个目录占着 → 局中写失败；放开后 close 要把没写成的补上。
+    char d5b[600], d5s[600]; snprintf(d5b, sizeof d5b, "%s/c5b", root); snprintf(d5s, sizeof d5s, "%s/c5s", root);
+    CHECK(mkdir(d5b, 0700) == 0 && mkdir(d5s, 0700) == 0, "C89 建不出 c5b");
+    CHECK(c89_seed(sdir, d5s), "C89 ⑤ 续 铺旧文件（只为拿到合规的文件名）");
+    struct c89_dir s5 = c89_scan(d5s);
+    char blk5[1000]; snprintf(blk5, sizeof blk5, "%s/%s.tmp.%ld", d5b, s5.name, (long)getpid());
+    CHECK(mkdir(blk5, 0700) == 0, "C89 ⑤ 续 占不了临时文件路径");
+    CHECK(c89_open(d5b, 3, 0, 0), "C89 ⑤ 续 open");
+    struct c89_st b5b = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st w5b = c89_wait_done(&b5b, 1, 5000);
+    CHECK(w5b.saves == b5b.saves + 1 && w5b.failed == b5b.failed + 1 && w5b.ok == b5b.ok, "C89 ⑤ 续 路径被占：局中写应失败 1 次 → 触发 +%llu、失败 +%llu、成功 +%llu", (unsigned long long)(w5b.saves - b5b.saves), (unsigned long long)(w5b.failed - b5b.failed), (unsigned long long)(w5b.ok - b5b.ok));
+    struct c89_dir m5 = c89_scan(d5b);
+    CHECK(m5.nreg == 0, "C89 ⑤ 续 局中写失败后目录里不应有正式文件 → %d 个", m5.nreg);
+    CHECK(rmdir(blk5) == 0, "C89 ⑤ 续 放不开临时文件路径");
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ⑤ 续 close：%d %s", e.rc.code, e.why);
+    struct c89_dir f5 = c89_scan(d5b);
+    CHECK(f5.nreg == 1 && c88_name_ok(f5.name) && f5.nother == 0 && f5.size == (long)mid1 + C89_HDR,
+          "C89 ⑤ 续 局中没写成，close 应补上（数据大小与「上次保存」一致也要再写）→ 文件 %d、其它 %d、%ld 字节（期望 %zu）", f5.nreg, f5.nother, f5.size, mid1 + C89_HDR);
+    c89_rm_tree(d5b); c89_rm_tree(d5s);
+
+    // ⑪ 局中写盘也要补目录（真机头一局：<状态目录>/direct-cache/nvn-vk 谁都没建过）：目录和它的上一层都还不存在，写完（还没 close）目录里就该有 1 个合规文件
+    char d11p[600], d11[700]; snprintf(d11p, sizeof d11p, "%s/c11", root); snprintf(d11, sizeof d11, "%s/nvn-vk", d11p);
+    CHECK(c89_open(d11, 3, 0, 0), "C89 ⑪ open");
+    struct c89_st b11 = c89_stats();
+    c88_make_pipes(sdir);
+    struct c89_st w11 = c89_wait_done(&b11, 1, 5000);
+    CHECK(w11.ok == b11.ok + 1 && w11.failed == b11.failed, "C89 ⑪ 目录还不存在时局中写应成功 1 次（后台线程补目录）→ 成功 +%llu、失败 +%llu", (unsigned long long)(w11.ok - b11.ok), (unsigned long long)(w11.failed - b11.failed));
+    struct c89_dir a11 = c89_scan(d11);
+    CHECK(a11.nreg == 1 && c88_name_ok(a11.name) && a11.nother == 0, "C89 ⑪ 局中写完（还没 close）补出的目录里应有 1 个合规文件 → 文件 %d、其它 %d", a11.nreg, a11.nother);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ⑪ close：%d %s", e.rc.code, e.why);
+    c89_rm_tree(d11); rmdir(d11p);
+
+    // ⑥ 后台写途中收局：临时文件路径被占成管道，后台写卡住；close(200 ms) 到期放弃、不挂住
+    char d6[600]; snprintf(d6, sizeof d6, "%s/c6", root); CHECK(mkdir(d6, 0700) == 0, "C89 建不出 c6");
+    CHECK(c89_seed(sdir, d6), "C89 ⑥ 铺旧文件");
+    struct c89_dir a6 = c89_scan(d6);
+    CHECK(a6.nreg == 1 && a6.nother == 0 && c88_name_ok(a6.name), "C89 ⑥ 旧文件应恰好 1 个合规文件 → %d 个、其它 %d", a6.nreg, a6.nother);
+    char f6[900], pre6[900]; snprintf(f6, sizeof f6, "%s/%s", d6, a6.name);
+    size_t n6a = 0; void *old6 = read_file(f6, &n6a);
+    snprintf(pre6, sizeof pre6, "%s/%s.tmp.%ld", d6, a6.name, (long)getpid());
+    CHECK(mkfifo(pre6, 0600) == 0, "C89 ⑥ 建不出管道");
+    g_plc_extra = C89_X2;   // 这一局驱动数据比旧文件里的大 → 后端才会真去写
+    CHECK(c89_open(d6, 3, 0, 0), "C89 ⑥ open");
+    struct c89_st b6 = c89_stats();
+    CHECK(b6.loaded == (uint64_t)(a6.size - C89_HDR) && b6.rejected == 0, "C89 ⑥ 开局应读到旧文件 %ld 字节、rejected=0 → %llu / %llu", a6.size - C89_HDR, (unsigned long long)b6.loaded, (unsigned long long)b6.rejected);
+    c88_make_pipes(sdir);   // blue + compute 是新的：数据变大，第 3 条建完触发，后台写卡在管道上
+    struct c89_st s6 = c89_stats();
+    CHECK(s6.saves == b6.saves + 1, "C89 ⑥ 新管线让数据变大：应触发 1 次后台写 → +%llu", (unsigned long long)(s6.saves - b6.saves));
+    c89_sleep_ms(100);
+    struct c89_st m6 = c89_stats();
+    CHECK(m6.ok + m6.failed == b6.ok + b6.failed, "C89 ⑥ 管道没人读时后台写应还卡着（没成功也没失败）→ 成功 +%llu、失败 +%llu", (unsigned long long)(m6.ok - b6.ok), (unsigned long long)(m6.failed - b6.failed));
+    g_plc_extra = C89_X3;   // 写还卡着时数据又变大了：再建 3 条新管线也不该再起新的写（同一时刻最多一次、不排队）
+    c89_more_pipes(sdir, 3);
+    struct c89_st t6 = c89_stats();
+    CHECK(t6.saves == s6.saves && t6.same == s6.same, "C89 ⑥ 上一次写还没收尾时不应再起新的写 → 又触发 %llu 次、「没变」+%llu", (unsigned long long)(t6.saves - s6.saves), (unsigned long long)(t6.same - s6.same));
+    g_plc_extra = C89_X2;
+    struct c89_unblock ub; ub.fifo = pre6; atomic_init(&ub.go, 0);
+    pthread_t ubt; int ubt_ok = pthread_create(&ubt, NULL, c89_unblock_main, &ub) == 0;
+    CHECK(ubt_ok, "C89 ⑥ 起不了放管道的线程");
+    double t0 = c89_now_ms();
+    nvn_gpu_rc rc6 = nvn_gpu_close(200000000ull, &e);
+    double ms6 = c89_now_ms() - t0;
+    CHECK(OK(rc6), "C89 ⑥ 后台写卡着时 close(200 ms) 应返回 OK（到期放弃这次写，不报超时）：%d %s", rc6.code, e.why);
+    CHECK(ms6 >= 150.0 && ms6 < 3000.0, "C89 ⑥ close 应等了后台写（算进 200 ms 截止时间）又没挂住 → 用了 %.0f ms（期望 150–3000）", ms6);
+    atomic_store(&ub.go, 1);
+    struct c89_dir x6 = c89_scan(d6);
+    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（inode / 大小 / 修改时间不变）");
+    if (ubt_ok) pthread_join(ubt, NULL);
+    CHECK(c89_wait_gone(pre6, 5000), "C89 ⑥ 放开管道后后台写应自己失败收尾、清掉临时文件");
+    size_t n6b = 0; void *now6 = read_file(f6, &n6b);
+    CHECK(old6 && now6 && n6a == n6b && !memcmp(old6, now6, n6a), "C89 ⑥ 旧文件应逐字节不变");
+    free(old6); free(now6);
+    g_plc_extra = C89_X1;
+    CHECK(c89_open(d6, -1, -1, -1), "C89 ⑥ 下一局 open");
+    struct c89_st r6 = c89_wait_done(&b6, 1, 5000);   // 读数是进程累计：顺带等放弃的那次写自己收尾
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ⑥ 下一局 close：%d %s", e.rc.code, e.why);
+    CHECK(r6.loaded == (uint64_t)(a6.size - C89_HDR) && r6.rejected == 0, "C89 ⑥ 下一局读回旧文件 %ld 字节、rejected=0 → %llu / %llu", a6.size - C89_HDR, (unsigned long long)r6.loaded, (unsigned long long)r6.rejected);
+    CHECK(r6.failed == b6.failed + 1 && r6.ok == b6.ok, "C89 ⑥ 放弃的那次写自己收尾后应记 1 次失败、0 次成功（管道上 fsync 不成）→ 失败 +%llu、成功 +%llu", (unsigned long long)(r6.failed - b6.failed), (unsigned long long)(r6.ok - b6.ok));
+    c89_rm_tree(d6);
+
+    // ⑦ 被杀（不经关局）：子进程局中写完后自己 SIGKILL
+    char d7[600], g7[700]; snprintf(d7, sizeof d7, "%s/c7", root); snprintf(g7, sizeof g7, "%s/go7", root);
+    CHECK(mkdir(d7, 0700) == 0, "C89 建不出 c7");
+    pid_t p7 = c89_spawn_child(sdir, d7, g7, "kill-after-ok");
+    CHECK(p7 > 0, "C89 ⑦ 起不了子进程");
+    if (p7 > 0) {
+        CHECK(c89_touch(g7, NULL, 0), "C89 ⑦ 摆不出开工信号");
+        int st7 = c89_reap(p7);
+        CHECK(st7 != -1 && WIFSIGNALED(st7) && WTERMSIG(st7) == SIGKILL, "C89 ⑦ 子进程应是被 SIGKILL 杀的（没有走 close）→ 状态 %#x", st7);
+        struct c89_dir a7 = c89_scan(d7);
+        CHECK(a7.nreg == 1 && a7.nother == 0 && c88_name_ok(a7.name) && a7.size > C89_HDR, "C89 ⑦ 被杀后目录里应已有恰好 1 个合规文件、没有临时文件 → 文件 %d、其它 %d、%ld 字节", a7.nreg, a7.nother, a7.size);
+        struct c89_st r7 = c89_readback(d7);
+        CHECK(a7.nreg == 1 && r7.loaded == (uint64_t)(a7.size - C89_HDR) && r7.rejected == 0, "C89 ⑦ 下一局应读回被杀那局写的 %ld 字节、rejected=0 → %llu / %llu", a7.size - C89_HDR, (unsigned long long)r7.loaded, (unsigned long long)r7.rejected);
+    }
+    c89_rm_tree(d7); unlink(g7);
+
+    // ⑧ 被杀在写盘途中：后台写卡在管道上时子进程被 SIGKILL
+    char d8[600], g8[700]; snprintf(d8, sizeof d8, "%s/c8", root); snprintf(g8, sizeof g8, "%s/go8", root);
+    CHECK(mkdir(d8, 0700) == 0, "C89 建不出 c8");
+    CHECK(c89_seed(sdir, d8), "C89 ⑧ 铺旧文件");
+    struct c89_dir a8 = c89_scan(d8);
+    char f8[900], pre8[1000]; snprintf(f8, sizeof f8, "%s/%s", d8, a8.name);
+    size_t n8a = 0; void *old8 = read_file(f8, &n8a);
+    pid_t p8 = c89_spawn_child(sdir, d8, g8, "kill-after-start");
+    CHECK(p8 > 0, "C89 ⑧ 起不了子进程");
+    if (p8 > 0) {
+        snprintf(pre8, sizeof pre8, "%s/%s.tmp.%ld", d8, a8.name, (long)p8);
+        CHECK(mkfifo(pre8, 0600) == 0, "C89 ⑧ 建不出管道");
+        CHECK(c89_touch(g8, NULL, 0), "C89 ⑧ 摆不出开工信号");
+        int st8 = c89_reap(p8);
+        CHECK(st8 != -1 && WIFSIGNALED(st8) && WTERMSIG(st8) == SIGKILL, "C89 ⑧ 子进程应是在后台写途中被 SIGKILL 杀的 → 状态 %#x", st8);
+        struct c89_dir x8 = c89_scan(d8);
+        CHECK(c89_same_file(&a8, &x8) && x8.nother == 1, "C89 ⑧ 被杀后旧文件应原样、只多一个残留的临时文件 → 其它 %d 个", x8.nother);
+        size_t n8b = 0; void *now8 = read_file(f8, &n8b);
+        CHECK(old8 && now8 && n8a == n8b && !memcmp(old8, now8, n8a), "C89 ⑧ 旧文件应逐字节不变");
+        free(now8);
+        struct c89_st r8 = c89_readback(d8);
+        CHECK(r8.loaded == (uint64_t)(a8.size - C89_HDR) && r8.rejected == 0, "C89 ⑧ 下一局照常开、读回旧文件 %ld 字节、rejected=0 → %llu / %llu", a8.size - C89_HDR, (unsigned long long)r8.loaded, (unsigned long long)r8.rejected);
+        unlink(pre8);
+    }
+    free(old8);
+    c89_rm_tree(d8); unlink(g8);
+
+    // ⑨ 临时文件残留：垃圾在 <名>.tmp.<pid> 里，下一局不读它
+    char d9[600], d9b[600], d9c[600]; snprintf(d9, sizeof d9, "%s/c9a", root); snprintf(d9b, sizeof d9b, "%s/c9b", root); snprintf(d9c, sizeof d9c, "%s/c9c", root);
+    CHECK(mkdir(d9, 0700) == 0 && mkdir(d9b, 0700) == 0 && mkdir(d9c, 0700) == 0, "C89 建不出 c9");
+    CHECK(c89_seed(sdir, d9b), "C89 ⑨ 铺旧文件");
+    struct c89_dir a9b = c89_scan(d9b);
+    static unsigned char junk[4096]; memset(junk, 0xA5, sizeof junk);
+    char t9[1000], t9b[1000], t9c[1000];
+    snprintf(t9, sizeof t9, "%s/%s.tmp.99999", d9, a9b.name);
+    snprintf(t9b, sizeof t9b, "%s/%s.tmp.99999", d9b, a9b.name);
+    snprintf(t9c, sizeof t9c, "%s/%s", d9c, a9b.name);
+    CHECK(c89_touch(t9, junk, sizeof junk) && c89_touch(t9b, junk, sizeof junk) && c89_touch(t9c, junk, sizeof junk), "C89 ⑨ 摆不出残留文件");
+    CHECK(c89_open(d9, -1, -1, -1), "C89 ⑨ 无正式文件 open");   // 只有残留
+    struct c89_st s9 = c89_stats();
+    CHECK(s9.loaded == 0 && s9.rejected == 0, "C89 ⑨ 只有残留的临时文件：读入应为 0、rejected=0（残留不当坏文件）→ %llu / %llu", (unsigned long long)s9.loaded, (unsigned long long)s9.rejected);
+    c88_make_pipes(sdir);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ⑨ close：%d %s", e.rc.code, e.why);
+    struct c89_dir x9 = c89_scan(d9);
+    CHECK(x9.nreg == 1 && c88_name_ok(x9.name) && x9.nother == 1, "C89 ⑨ 收尾应照常写出正式文件、残留原样 → 正式 %d 个、其它 %d 个", x9.nreg, x9.nother);
+    { size_t nj = 0; void *j = read_file(t9, &nj); CHECK(j && nj == sizeof junk && !memcmp(j, junk, nj), "C89 ⑨ 残留文件内容不应被动"); free(j); }
+    struct c89_st s9b = c89_readback(d9b);   // 有正式文件、旁边有残留
+    CHECK(s9b.loaded == (uint64_t)(a9b.size - C89_HDR) && s9b.rejected == 0, "C89 ⑨ 正式文件旁有残留：应读回正式文件 %ld 字节、rejected=0 → %llu / %llu", a9b.size - C89_HDR, (unsigned long long)s9b.loaded, (unsigned long long)s9b.rejected);
+    struct c89_st s9c = c89_readback(d9c);   // 负对照：同样的垃圾放在正式文件名上
+    CHECK(s9c.loaded == 0 && s9c.rejected == 1, "C89 ⑨ 负对照：垃圾放在正式文件名上应被拒绝 → 读入 %llu、rejected=%llu（期望 0 / 1）", (unsigned long long)s9c.loaded, (unsigned long long)s9c.rejected);
+    c89_rm_tree(d9); c89_rm_tree(d9b); c89_rm_tree(d9c);
+
+    // ⑩ 两个线程同时建管线，局中写盘与建管线并行
+    char d10[600]; snprintf(d10, sizeof d10, "%s/c10", root); CHECK(mkdir(d10, 0700) == 0, "C89 建不出 c10");
+    g_plc_extra = 0; g_plc_per_pipe = 16;   // 驱动数据随管线数变大（每条 +16 字节）→ 每次触发都比上次大，写盘一直在发生
+    g_plc_pipe_base = g_plc_rec.gp + g_plc_rec.cp;
+    CHECK(c89_open(d10, 2, 0, 0), "C89 ⑩ open");
+    struct c89_st b10 = c89_stats();
+    nvn_gpu_shader vsa = NULL, fsa = NULL, vsb = NULL, fsb = NULL; void *ma[4] = {0};
+    int l10 = load_shader_pair(sdir, "tri3.vert", "out1_green.frag", NULL, NULL, &vsa, &fsa, &ma[0], &ma[1]) &&
+              load_shader_pair(sdir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vsb, &fsb, &ma[2], &ma[3]);
+    CHECK(l10, "C89 ⑩ 读着色器");
+    if (l10) {
+        struct c89_thr ta = {vsa, fsa}, tb = {vsb, fsb};   // 两个线程用不同的片元着色器 → 84 条互不相同的新管线
+        pthread_t th[2];
+        int cr = pthread_create(&th[0], NULL, c89_thr_main, &ta) == 0 && pthread_create(&th[1], NULL, c89_thr_main, &tb) == 0;
+        CHECK(cr, "C89 ⑩ 起不了线程");
+        if (cr) { pthread_join(th[0], NULL); pthread_join(th[1], NULL); }
+        struct c89_st e10 = c89_wait_done(&b10, 1, 5000);
+        for (int i = 0; i < 2500; i++) {   // 等在飞的写收尾：成功 + 失败 = 触发
+            struct c89_st z = c89_stats();
+            if (z.ok + z.failed - (b10.ok + b10.failed) >= z.saves - b10.saves) { e10 = z; break; }
+            c89_sleep_ms(2);
+        }
+        CHECK(e10.made - b10.made == 84, "C89 ⑩ 两个线程应经缓存建出 84 条管线 → %llu 条", (unsigned long long)(e10.made - b10.made));
+        CHECK(e10.saves - b10.saves >= 3 && e10.failed == b10.failed && e10.ok - b10.ok == e10.saves - b10.saves,
+              "C89 ⑩ 并行建管线时局中写盘应发生多次且全部成功 → 触发 %llu 次（期望 ≥ 3）、成功 +%llu、失败 +%llu", (unsigned long long)(e10.saves - b10.saves), (unsigned long long)(e10.ok - b10.ok), (unsigned long long)(e10.failed - b10.failed));
+        nvn_gpu_shader_release(vsa); nvn_gpu_shader_release(fsa); nvn_gpu_shader_release(vsb); nvn_gpu_shader_release(fsb);
+        for (int i = 0; i < 4; i++) free(ma[i]);
+    }
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ⑩ close：%d %s", e.rc.code, e.why);
+    g_plc_per_pipe = 0; g_plc_extra = C89_X1;
+    struct c89_dir a10 = c89_scan(d10);
+    CHECK(a10.nreg == 1 && a10.nother == 0 && c88_name_ok(a10.name), "C89 ⑩ 目录里应恰好 1 个合规文件、没有残留 → 文件 %d、其它 %d", a10.nreg, a10.nother);
+    // 收尾那份是建完 84 条之后的数据：= 文件头 + lavapipe 真数据（①里测到的 mid1 去掉填充）+ 84 × 16；中途哪次写成功都不该把它盖回旧的
+    long want10 = C89_HDR + (long)(mid1 - C89_X1) + 84 * 16;
+    CHECK(a10.size == want10, "C89 ⑩ 收尾应把建完 84 条之后的数据落盘 → %ld 字节（期望 %ld）", a10.size, want10);
+    struct c89_st r10 = c89_readback(d10);
+    CHECK(a10.nreg == 1 && r10.loaded == (uint64_t)(a10.size - C89_HDR) && r10.rejected == 0, "C89 ⑩ 下一局应读回、rejected=0 → 读入 %llu、rejected=%llu", (unsigned long long)r10.loaded, (unsigned long long)r10.rejected);
+    printf("C89 局中补写：局中写出 %zu 字节；close 不重写；条数 / 等待 / 开关 / 无目录四个负对照不触发；数据没变不写；第二次保存受间隔约束；写失败只记日志、close 补写；"
+           "目录不存在时局中写补目录；后台写途中 close(200 ms) 用 %.0f ms 到期放弃；SIGKILL（写完后 / 写途中）都不坏下一局；临时文件残留不读；两线程并行建管线写盘全成功\n", mid1, ms6);
+    c89_rm_tree(d1); c89_rm_tree(d10);
+    rmdir(root);
+    g_plc_strip_tail = 0; g_plc_extra = 0; g_plc_per_pipe = 0;
+}
+
 // #697：强制 BC4 compute；端点与索引全由合成输入给出，不用解码器计算期望。
 // 7x5x4 的每个块/切片不同，24 字节行距包含填充；最后一行不要求尾填充。
 static void c697_bc4_done(void *u, const nvn_gpu_done *d) { (void)u; (void)d; }
@@ -5714,7 +6339,15 @@ int main(int argc, char **argv) {
         printf("SKIP? 建 Vulkan 设备失败：%s\n", why);
         return 2;   // 不静默跳过：run.sh 把 2 当红
     }
+    if (argc > 5 && !strcmp(argv[2], "--c89-child")) return c89_child_main(argv);   // C89 里被 SIGKILL 的那一局：由 c89_midrun_save 起
     printf("device: %s (%s)\n", g_dev.properties.deviceName, g_dev.driver_name);
+    if (getenv("S2A_TEST_PLC_ONLY") && argc > 1) {   // 开发时只跑 C89（run.sh 不设这个变量）
+        memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "nvn-backend-vk-test";
+        c89_midrun_save(argv[1]);
+        printf("nvn_gpu Vulkan 后端 C89 单跑：%s（%d 处不符）\n", g_fail ? "红" : "绿", g_fail);
+        s2a_vk_device_destroy(&g_dev, 1);
+        return g_fail ? 1 : 0;
+    }
     if (getenv("S2A_TEST_LOGICOP_ONLY")) {
         if(argc < 2) return 2;
         memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="logic-only";
@@ -6054,8 +6687,9 @@ int main(int argc, char **argv) {
     }
 
     c88_pipe_cache(argv[1]);   // 每个会话自己开 / 关（带不同的 cache_dir）
+    c89_midrun_save(argv[1]);  // 同上；还会起子进程（被 SIGKILL 的那一局）
 
-    printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75/C88 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
+    printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75/C88/C89 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));
     s2a_vk_device_destroy(&g_dev, 1);   // 最后一个会话已在 t20 close 里证明空闲
     { extern uint64_t nvn_vk_dbg_dq_recs(void); uint64_t n = nvn_vk_dbg_dq_recs();
