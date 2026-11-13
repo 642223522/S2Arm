@@ -654,9 +654,12 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
         m = re.search(r"^S2A_PUSH_CODE (device_space_low|ios_install_no_space)\t([^\n]+)", text, re.M)   # tools/push_pack.py：估算空间不够（玩家可确认继续）/ 真写满了
         if m:
             raise Failure(m.group(2), code=m.group(1)) from e
-        m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针就失败 = 锁屏 / 断开（#333）
+        m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针失败、手机确实锁着（#333）
         if m:
             raise Failure(m.group(0), code="device_locked") from e
+        m = re.search(r"iPhone 写不进资源包（[^\n]*", text)   # probe：写不进但手机没锁 / 判不了 = 连接问题（带原文），不冒充锁屏（11-13）
+        if m:
+            raise Failure(m.group(0), code="resource_transfer_failed") from e
         from errors import tool_reason
         raise Failure("资源包推不进 iPhone：" + tool_reason(log), code="resource_transfer_failed") from e
     return got.get("files", 0), got.get("mb", 0) << 20
