@@ -6469,6 +6469,154 @@ static int c697_bc4_3d_run(void) {
     return open_backend();
 }
 
+// #658: isolated native GPU-count truth tests; no NVN command expansion.
+static nvn_gpu_pipe c658_producer(const char *dir) {
+    char path[512]; size_t len=0;
+    snprintf(path,sizeof path,"%s/count_args.comp.spv",dir); void *blob=read_file(path,&len);
+    CHECK(blob != NULL,"C658 producer SPIR-V"); if(!blob)return NULL;
+    nvn_gpu_layout_ent ent={0}; ent.cls=NVN_GPU_RES_SSBO;ent.access=NVN_GPU_ACC_RW;
+    ent.binding=0;ent.count=1;ent.stages=1u<<NVN_GPU_SH_CS;
+    nvn_gpu_layout layout={0};layout.ent=&ent;layout.nent=1;
+    nvn_gpu_shader_src src={0};src.stage=NVN_GPU_SH_CS;src.kind=NVN_GPU_BLOB_SPIRV;
+    src.entry="main";src.blob=blob;src.bytes=len;src.layout=&layout;
+    nvn_gpu_shader sh=NULL;nvn_gpu_pipe pipe=NULL;nvn_gpu_err err={0};
+    nvn_gpu_rc r=nvn_gpu_shader_load(&src,&sh,&err);CHECK(OK(r),"C658 producer load %d %s",r.code,err.why);
+    if(OK(r)){nvn_gpu_stage_desc sd={0};sd.sh=sh;r=nvn_gpu_cpipe_get(&sd,NVN_GPU_PIPE_SYNC,&pipe,&err);CHECK(OK(r),"C658 producer pipe %d %s",r.code,err.why);}
+    if(sh) nvn_gpu_shader_release(sh);
+    free(blob);return pipe;
+}
+// Separate from mode8's g_retired oracle; static storage remains valid on timeout.
+static atomic_int c658_cleanup_retired;
+static int c658_cleanup_submitted; // Only the test thread changes this target.
+static void c658_cleanup_done(void *u) {
+    (void)u;
+    atomic_fetch_add(&c658_cleanup_retired,1);
+}
+static void c658_case(const char *dir,unsigned count,int indexed,int mode) {
+    int saved_enabled=g_dev.draw_indirect_count_enabled;
+    if(mode==7)g_dev.draw_indirect_count_enabled=0;
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="count-only";
+    if(!open_backend()){g_dev.draw_indirect_count_enabled=saved_enabled;return;}
+    nvn_gpu_caps caps;nvn_gpu_caps_get(&caps);
+    CHECK((!!(caps.caps & NVN_GPU_CAP_INDIRECT_COUNT))==(mode!=7),"C658 actual enabled count capability mode=%d",mode);
+    nvn_gpu_pipe gp=color_pipe(dir,0),cp=c658_producer(dir);
+    if(!gp||!cp){nvn_gpu_err err={0};nvn_gpu_close(5000000000ull,&err);g_dev.draw_indirect_count_enabled=saved_enabled;return;}
+    float verts[24][8]; const unsigned corners[6]={0,1,2,2,1,3};
+    for(unsigned region=0;region<4;region++)for(unsigned j=0;j<6;j++){
+        unsigned k=corners[j];float *v=verts[region*6+j];memset(v,0,8*sizeof *v);
+        v[0]=-1.0f+region*0.5f+((k&2)?0.5f:0.0f);v[1]=(k&1)?1.0f:-1.0f;v[3]=v[7]=1;
+        v[4+(region<3?region:0)]=1;
+    }
+    uint32_t initial[48];for(unsigned i=0;i<48;i++)initial[i]=0xA5A5A5A5u;
+    initial[0]=count;initial[4]=count?0:3; // Opposite CPU poison count, overwritten on GPU.
+    for(unsigned i=0;i<5;i++){unsigned b=8+i*8;initial[b]=6;initial[b+1]=1;initial[b+2]=18;initial[b+3]=initial[b+4]=0;}
+    uint32_t indices[24];for(unsigned i=0;i<24;i++)indices[i]=i;
+    nvn_gpu_buf args=make_buf(sizeof initial,NVN_GPU_MEM_SHARED,initial);
+    uint32_t count_initial[8]={0};count_initial[4]=count?0:3;
+    nvn_gpu_buf separate_count=mode==8?make_buf(sizeof count_initial,NVN_GPU_MEM_SHARED,count_initial):NULL;
+    nvn_gpu_buf vb=make_buf(sizeof verts,NVN_GPU_MEM_SHARED,verts);
+    nvn_gpu_buf ib=indexed?make_buf(sizeof indices,NVN_GPU_MEM_SHARED,indices):NULL;
+    nvn_gpu_buf rb=make_buf(64*64*4,NVN_GPU_MEM_SHARED,NULL);
+    nvn_gpu_tex tex=make_tex(64,64,NVN_FORMAT_RGBA8,NVN_GPU_TEX_RENDER);nvn_gpu_view view=make_view(tex);
+    uint64_t signal=1;int retire_base=atomic_load(&g_retired);
+    nvn_gpu_err err={0};
+    nvn_gpu_cmd cmd=begin_cmd();nvn_gpu_binding binding={0};binding.cls=NVN_GPU_RES_SSBO;
+    binding.u.b.buf=args;binding.u.b.len=sizeof initial;
+    nvn_gpu_set_pipe(cmd,cp);nvn_gpu_bind(cmd,NVN_GPU_SH_CS,&binding,1);nvn_gpu_dispatch(cmd,cp,1,1,1,NULL,0);
+    if(separate_count)nvn_gpu_copy_buf(cmd,args,16,separate_count,16,4);
+    nvn_gpu_barrier(cmd,NVN_BARRIER_ORDER_INDIRECT_DATA_BIT|NVN_BARRIER_INVALIDATE_SHADER_BIT);
+    if(mode==8){
+        nvn_gpu_rc prep=nvn_gpu_cmd_commit(cmd,1,on_done,NULL,&err);
+        CHECK(OK(prep),"C658 producer commit %d %s",prep.code,err.why);
+        if(!OK(prep))goto c658_cleanup;
+        // Waiting for a following empty segment proves the producer's retained
+        // references were retired, not merely that its fence was published.
+        nvn_gpu_cmd drain=begin_cmd();prep=nvn_gpu_cmd_commit(drain,2,on_done,NULL,&err);
+        CHECK(OK(prep),"C658 producer drain commit %d %s",prep.code,err.why);
+        if(!OK(prep))goto c658_cleanup;
+        prep=nvn_gpu_fence_wait(2,5000000000ull,&err);
+        CHECK(OK(prep),"C658 producer drain wait %d %s",prep.code,err.why);
+        if(!OK(prep))goto c658_cleanup;
+        cmd=begin_cmd();signal=3;
+    }
+
+    nvn_gpu_pass_desc pass={0};pass.ncolor=1;pass.color[0].view=view;
+    pass.color[0].load=NVN_GPU_LOAD_CLEAR;pass.color[0].store=NVN_GPU_STORE_STORE;pass.color[0].clear.f[3]=1;
+    pass.w=pass.h=64;pass.layers=1;nvn_gpu_pass_begin(cmd,&pass);nvn_gpu_set_pipe(cmd,gp);
+    nvn_gpu_dyn dyn={0};dyn.origin_ll=1;dyn.nvp=1;dyn.vp[0][2]=dyn.vp[0][3]=64;dyn.vp[0][5]=1;
+    dyn.has_sc=1;dyn.sc[2]=dyn.sc[3]=64;nvn_gpu_set_dyn(cmd,&dyn);nvn_gpu_set_vbuf(cmd,0,vb,0);
+    nvn_gpu_draw_args draw={0};draw.prim=4;draw.instances=1;draw.ind=args;draw.ind_off=32;
+    draw.first=draw.count=UINT32_MAX; // CPU direct-draw fields are stale, not GPU indirect authority.
+    draw.cnt=separate_count?separate_count:args;draw.cnt_off=16;draw.max_draws=mode==1?0:3;draw.stride=32;draw.ibuf=ib;draw.itype=2;
+    if(mode==2)draw.cnt_off=18;
+    if(mode==3)draw.ind_off=34;
+    if(mode==4)draw.stride=18;
+    if(mode==5)draw.ind_off=160; // max span exceeds 192-byte buffer despite valid actual count
+    if(mode==6)draw.cnt_off=192;
+    nvn_gpu_draw(cmd,&draw);
+    if(separate_count){nvn_gpu_buf_release(separate_count,on_retire,NULL);separate_count=NULL;
+        CHECK(atomic_load(&g_retired)==retire_base,"C658 distinct count retired before draw submission");
+        if(atomic_load(&g_retired)!=retire_base){nvn_gpu_cmd_abort(cmd);goto c658_cleanup;}
+    }
+    nvn_gpu_pass_end(cmd);nvn_gpu_copy_tex_buf(cmd,tex,0,0,NULL,rb,0,256,16384);
+    nvn_gpu_rc r=nvn_gpu_cmd_commit(cmd,signal,on_done,NULL,&err);
+    int expected_rc=mode==7?NVN_GPU_E_UNSUPPORTED:(mode>=2&&mode<=6?NVN_GPU_E_ARG:NVN_GPU_OK);
+    CHECK(r.code==expected_rc,"C658 count=%u indexed=%d mode=%d commit %d expected=%d %s",count,indexed,mode,r.code,expected_rc,err.why);
+    if(OK(r)){
+        r=nvn_gpu_fence_wait(signal,5000000000ull,&err);CHECK(OK(r),"C658 wait %d %s",r.code,err.why);
+        if(OK(r)){
+            const uint8_t *pixels=buf_cpu(rb);unsigned expected=mode==1?0:(count<3?count:3);
+            for(unsigned region=0;region<4;region++){
+                const uint8_t *p=pixels+(32*64+region*16+8)*4;
+                unsigned red=region<expected && region==0?255:0,green=region<expected && region==1?255:0,blue=region<expected && region==2?255:0;
+                CHECK(p[0]==red&&p[1]==green&&p[2]==blue&&p[3]==255,"C658 count=%u indexed=%d region=%u got %u/%u/%u/%u expected %u/%u/%u/255",count,indexed,region,p[0],p[1],p[2],p[3],red,green,blue);
+            }
+            const uint32_t *audit=(const uint32_t*)buf_cpu(args);
+            CHECK(audit[4]==count,"C658 GPU count audit %u expected %u",audit[4],count);
+            for(unsigned i=0;i<5;i++){unsigned b=8+i*8;
+                CHECK(audit[b]==6&&audit[b+1]==1&&audit[b+2]==6*(i<3?i:3)&&audit[b+3]==0&&audit[b+4]==0,"C658 GPU args audit draw %u",i);
+                CHECK(audit[b+5]==0xA5A5A5A5u&&audit[b+6]==0xA5A5A5A5u&&audit[b+7]==0xA5A5A5A5u,"C658 padded stride guard draw %u",i);
+            }
+        }
+    }
+    if(mode==8)CHECK(wait_until(&g_retired,retire_base+1,2000),"C658 distinct count did not retire after consumption");
+c658_cleanup:
+    nvn_gpu_view_release(view);nvn_gpu_tex_release(tex);
+    nvn_gpu_buf cleanup_bufs[]={separate_count,args,vb,ib,rb};
+    for(unsigned i=0;i<sizeof cleanup_bufs/sizeof cleanup_bufs[0];i++)if(cleanup_bufs[i]){
+        ++c658_cleanup_submitted;
+        nvn_gpu_buf_release(cleanup_bufs[i],c658_cleanup_done,NULL);
+    }
+    CHECK(wait_until(&c658_cleanup_retired,c658_cleanup_submitted,2000),"C658 cleanup buffers did not retire");
+    CHECK(OK(nvn_gpu_close(5000000000ull,&err)),"C658 close %s",err.why);
+    g_dev.draw_indirect_count_enabled=saved_enabled;
+}
+static void c658_suite(const char *dir,int strict) {
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="count-cap";
+    if(!open_backend())return;
+    nvn_gpu_caps caps;nvn_gpu_caps_get(&caps);nvn_gpu_err err={0};
+    CHECK(OK(nvn_gpu_close(5000000000ull,&err)),"C658 capability close");
+    int can_run=(caps.caps & NVN_GPU_CAP_INDIRECT_COUNT) && g_dev.properties.limits.maxDrawIndirectCount>=5;
+    if(strict)CHECK(can_run,"C658 isolated positive matrix requires enabled native count and device max >=5");
+    if(can_run || strict){
+        const unsigned values[]={0,1,3,5};
+        for(int indexed=0;indexed<2;indexed++)for(unsigned i=0;i<4;i++)c658_case(dir,values[i],indexed,0);
+        for(int indexed=0;indexed<2;indexed++)for(unsigned i=0;i<4;i++)c658_case(dir,values[i],indexed,8);
+        for(int indexed=0;indexed<2;indexed++)for(int mode=1;mode<=6;mode++)c658_case(dir,3,indexed,mode);
+    } else printf("C658 positive matrix unavailable on this device; checking unsupported path only\n");
+    for(int indexed=0;indexed<2;indexed++)c658_case(dir,3,indexed,7);
+}
+static int c658_main(int argc,char **argv) {
+    if(argc!=2){fprintf(stderr,"count-only: shader directory required\n");return 2;}
+    char why[256]={0};if(s2a_vk_device_create(&g_dev,why,sizeof why)!=0){fprintf(stderr,"count-only device: %s\n",why);return 2;}
+    printf("count-only device=%s maxDrawIndirectCount=%u\n",g_dev.properties.deviceName,g_dev.properties.limits.maxDrawIndirectCount);
+    if(g_dev.properties.limits.maxDrawIndirectCount<5){fprintf(stderr,"count-only needs device limit >=5\n");s2a_vk_device_destroy(&g_dev,1);return 2;}
+    c658_suite(argv[1],1);
+    {extern uint64_t nvn_vk_dbg_dq_recs(void);uint64_t n=nvn_vk_dbg_dq_recs();
+     CHECK(getenv("S2A_TEST_NVK_DQ")?n>0:n==0,"C658 DQ recording count=%llu",(unsigned long long)n);}
+    s2a_vk_device_destroy(&g_dev,1);printf("count-only failures=%d\n",g_fail);return g_fail?1:0;
+}
+
 // #697 A: no shaders or unrelated tests; copy callback-owned text before publishing completion.
 struct error697_done { atomic_int calls; uint64_t signal; int code; uint32_t status; char why[256]; };
 static void error697_callback(void *u, const nvn_gpu_done *d) {
@@ -6522,6 +6670,7 @@ static int error697_only(void) {
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   // 经 tee 的管道默认整块缓冲：超时被杀时最后一行不是卡点；按行刷新才看得出卡在哪
+    if (getenv("S2A_TEST_COUNT_ONLY")) return c658_main(argc, argv);
     if (getenv("S2A_TEST_ERROR697_ONLY")) return error697_only();
     if (!getenv("S2A_TEST_LOGICOP_ONLY")) t29_format_expand();
     char why[256] = {0};
@@ -6916,6 +7065,7 @@ int main(int argc, char **argv) {
 
     c88_pipe_cache(argv[1]);   // 每个会话自己开 / 关（带不同的 cache_dir）
     c89_midrun_save(argv[1]);  // 同上；还会起子进程（被 SIGKILL 的那一局）
+    c658_suite(argv[1],0);   // Independently opens/closes; absent count capability is a negative control.
     c907_retained_flush(argv[1]);   // 停局保留会话时的管线缓存落盘（#907 合入补）
 
     printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75/C88/C89 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
