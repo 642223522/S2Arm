@@ -511,7 +511,8 @@ static void pad_face_sync(void) {
         if (previous == self->_adapterEnabled) return;
         if (self->_adapterEnabled) [self reloadRecord];
         [self selectSystem];
-        if (self->_adapterEnabled && !self->_hasSystem && self->_bleWanted) [self resumeBLE];
+        // 玩家刚打开适配（设置页或齿轮菜单）：直接开始连接，不用再点一次连接按钮；记得手柄就直连它，否则扫描配对广播
+        if (self->_adapterEnabled && !self->_hasSystem) { if (self->_bleWanted) [self resumeBLE]; else [self startBLE]; }
         [self updateVisibility];
     });
 }
@@ -632,7 +633,7 @@ static void pad_face_sync(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             S2AController *inner = weakSelf;
             if (!inner) return;
-            inner->_hasSystem = hasSystem;
+            [inner systemPresence:hasSystem];
             [inner updateVisibility];
         });
     });
@@ -684,9 +685,19 @@ static void pad_face_sync(void) {
         [self selectSystemLocked:foreground mayClear:NO];
         hasSystem = self->_system != nil;
     });
-    _hasSystem = hasSystem;
+    [self systemPresence:hasSystem];
     if (_foreground && _hasSystem) [self stopBLE:"system controller selected"];
     [self updateVisibility];
+}
+// 系统手柄在不在（主线程）：系统手柄接入时 NS2 链路会停（selectSystem），它走了以后原来连着的 NS2 手柄要自己接回来——
+//   以前只有切前后台才会再连，玩家拔掉 / 关掉系统手柄后 NS2 手柄一直不出输入
+- (void)systemPresence:(BOOL)hasSystem {
+    BOOL resume = s2a_ble_resume_after_system(_hasSystem, hasSystem, _foreground, _adapterEnabled, _bleWanted, _bleStarted);
+    _hasSystem = hasSystem;
+    if (resume) {
+        LOG("NS2 Pro：系统手柄已断开，重新连接记住的 NS2 手柄");
+        [self resumeBLE];
+    }
 }
 // 诊断（#456）：列出 GameController 枚举到的全部设备与 profile。只有带 extendedGamepad 的才会被选成系统手柄并打「接入」，
 //   第三方手柄的 Switch 模式若被枚举成只有 micro / 没有标准 profile，或根本没被枚举，原先日志里一片空白，分不清卡在系统层还是 App 层
