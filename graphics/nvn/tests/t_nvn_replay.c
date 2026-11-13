@@ -26,6 +26,7 @@ void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if 
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 int nvn_plat_flag(const char *name, int dflt) { if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag; return dflt; }
 const char *nvn_plat_dir(int which) { (void)which; return NULL; }
+static int g_safepoints; void nvn_plat_safepoint(void) { g_safepoints++; }   // 平台安全点：数回放循环过了几次
 
 // ---------- 前端替身 ----------
 static int g_q_enter, g_piece;
@@ -299,8 +300,11 @@ static void t_jump_call(void) {
     r = put(&a, OP_JUMP, 8); const uint8_t *t = b.b; memcpy(r, &t, 8);
     p_set_patch_size *dead = put(&a, OP_SET_PATCH_SIZE, sizeof *dead); dead->size = 9;   // JUMP 之后的不该执行
     end(&a);
+    g_safepoints = 0;
     submit1(&a); fake_complete(NVN_GPU_DONE_OK);
     CHECK(rp_S.alpha_ref == 0.5f && rp_S.patch_size == 4 && rp_S.dr[0] == 0.125f && rp_S.dr[1] == 0.75f);
+    // 平台安全点：每条执行到的记录前过一次。a 里 CALL、SET_PATCH_SIZE、JUMP 三条，sub 里 ALPHA_REF、END 两条，b 里 DEPTH_RANGE、END 两条；JUMP 之后那条不执行
+    CHECK(g_safepoints == 7);
 }
 
 static void t_bad_record(void) {
