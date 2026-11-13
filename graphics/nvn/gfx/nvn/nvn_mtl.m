@@ -36,6 +36,7 @@
 #include "nvn_refl.h"
 #include "nvn_fmt_info.h"   // #529 lb_fill：客体格式是不是定点深度
 #include "nvn_red.h"   // sampler reduction / LOD bias where the GPU has none: the variant's function constants and table entries (se_need / se_bind)
+#include "vp_prog_pick.h"   // #674: find the guest program that still holds a shader's code / control (vp_ask)
 #include "../../../metal/gal_samp_caps.h"   // whether this GPU reduces / biases natively (#800; the generic path's same test)
 #include "nvn_cover.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree, one for every game (beside this file, tools/dmsh_chain.py --header)
@@ -8066,6 +8067,14 @@ static void vp_done(NvShader *vs, id<MTLFunction> f, uint32_t mask, const char *
     fprintf(stderr, "[s2a] 顶点补齐变体：程序号 %s 顶点 %.16s 补 user(locn) 掩码 %#x %s%s %.1f ms%s%s\n", s2a_nvn_game_id(), vs->key, mask, how, f ? "完成" : "失败", (bp_now() - t0) / 1e6, f ? "" : "：", f ? "" : why);
     if (!f) MLOG("【红】 vertex shader %s has no padded variant for user(locn) mask %#x: %s; draws pairing it with such a fragment shader stay skipped", vs->key, mask, why);
 }
+// #674 (11-12): the program a draw passes to vp_ask is not always the one the shader to pad was bound from.
+//   bind_stages makes a host stand-in carrying only a serial (no stages); a mesh draw's S.prog is the fragment
+//   stage's program while its mesh shader was bound at stage 4. prog_stage_of then found nothing, vp_build saw
+//   code = 0 and reported "the game no longer holds its control section" — a misread: the stages were never in
+//   that program. vp_done pinned the variant to SE_FAIL and the caller put the pair on the failed list for the
+//   whole run. Fall back to the per-stage binds (vp_prog_pick.h, tested by t_vp_prog_pick.c).
+static int vp_stage_of_at(const void *prog, const char *key, uint8_t md[8], void *ctx) { (void)ctx; return prog_stage_of((const prog_t *)prog, key, md); }
+static const void *vp_bst_at(unsigned st, void *ctx) { (void)ctx; return st < 5 ? (const void *)S.bst[st] : NULL; }
 // A pair needs outputs the vertex shader does not write (miss): ask for the variant (submit thread). 1 = being made or just made (the caller skips this draw, nothing is recorded as
 //   failed), 0 = it cannot be made (the caller records the pair as failed, as before)
 static int vp_ask(const prog_t *p, NvShader *vs, uint32_t miss) {
@@ -8073,9 +8082,11 @@ static int vp_ask(const prog_t *p, NvShader *vs, uint32_t miss) {
     int st = vs->vp_st; uint32_t want = (st == SE_READY ? vs->vp_mask : 0) | miss;
     if (st == SE_BUSY || st == SE_FAIL || (st == SE_READY && (vs->vp_mask & miss) == miss)) { pthread_mutex_unlock(&g_vp_mu); return st != SE_FAIL; }
     vs->vp_st = SE_BUSY; pthread_mutex_unlock(&g_vp_mu);
-    uint8_t md[8] = {0}; int at = p ? prog_stage_of(p, vs->key, md) : -1; uint64_t t0 = bp_now();
-    if (se_sync()) { char why[300] = ""; id<MTLFunction> f = vp_build(vs, md, at < 0 ? 0 : p->sd[at].data, at < 0 ? NULL : p->sd[at].control, want, why, sizeof why); vp_done(vs, f, want, why, t0, "同步现编"); return f != nil; }
-    uint64_t code = 0; const void *ctl = NULL; void *snap = at < 0 ? NULL : dm_shader_snap(p->sd[at].data, p->sd[at].control, &code, &ctl); uint64_t key; memcpy(&key, md, 8);
+    uint8_t md[8] = {0}; int at = -1; uint64_t t0 = bp_now();
+    const prog_t *gp = (const prog_t *)vp_pick_prog(p, vp_bst_at, 5, vs->key, md, vp_stage_of_at, NULL, &at);
+    if (at < 0) { static unsigned n; if (!n++ || !(n & (n - 1))) MLOG("顶点补齐变体：%s 在绘制 program 与 5 个按阶段绑定的 program 里都没有有效控制段（%u 次）", vs->key, n); }
+    if (se_sync()) { char why[300] = ""; id<MTLFunction> f = vp_build(vs, md, at < 0 ? 0 : gp->sd[at].data, at < 0 ? NULL : gp->sd[at].control, want, why, sizeof why); vp_done(vs, f, want, why, t0, "同步现编"); return f != nil; }
+    uint64_t code = 0; const void *ctl = NULL; void *snap = at < 0 ? NULL : dm_shader_snap(gp->sd[at].data, gp->sd[at].control, &code, &ctl); uint64_t key; memcpy(&key, md, 8);
     fprintf(stderr, "[s2a] 顶点补齐变体：程序号 %s 顶点 %.16s 首遇缺 user(locn) 掩码 %#x，后台编，编好前这对的绘制照旧跳过\n", s2a_nvn_game_id(), vs->key, want);
     static dispatch_queue_t q; static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.vp", s2a_qos_queue_attr(DISPATCH_QUEUE_SERIAL, S2A_QOS_SHADER_VARIANT)); });
