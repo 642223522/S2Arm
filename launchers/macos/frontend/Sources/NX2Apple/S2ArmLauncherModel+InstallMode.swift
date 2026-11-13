@@ -8,10 +8,12 @@ import S2ArmAppleAdapter
 
 extension S2ArmLauncherModel {
     // 失败不吞（剃刀 M13）：读失败保留原值、报一次原因；切换失败报原因（界面停在旧值是真实状态，不再像点了没反应）
-    func refreshInstallMode() {
+    /// silent：App 启动时那一次。读不到（游戏库还没建、首次打开）保留缺省值、不弹框——启动就弹错误框不对，单测里模态框还会把测试挂死；
+    ///   打开设置 / 装机页时的读照旧失败如实报
+    func refreshInstallMode(silent: Bool = false) {
         Task {
             do { installMode = try await provider.installMode(); readOK("s2arm.fail.installMode") }
-            catch { reportFailure("s2arm.fail.installMode", error, passive: true) }
+            catch { if !silent { reportFailure("s2arm.fail.installMode", error, passive: true) } }
         }
     }
 

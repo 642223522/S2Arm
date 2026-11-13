@@ -1157,6 +1157,7 @@
       {"id": "export.pill.done", "zh-Hans": "出包完成：{0}", "en": "Built: {0}"},
       {"id": "install.pill.running", "zh-Hans": "正在装到 {1}：{0} · 查看进度", "en": "Installing to {1}: {0} · View progress"},
       {"id": "install.pill.done", "zh-Hans": "已装到 {1}：{0} · 查看结果", "en": "Installed to {1}: {0} · View result"},
+      {"id": "install.pill.exported", "zh-Hans": "已导出：{0} · 查看结果", "en": "Exported: {0} · View result"},
       {"id": "install.pill.needs_player", "zh-Hans": "还差一步：{0} · 查看", "en": "One more step: {0} · View"},
       {"id": "install.pill.failed", "zh-Hans": "装到 {1} 没完成：{0} · 查看原因", "en": "Install to {1} didn't finish: {0} · See why"},
       {"id": "install.relogin", "zh-Hans": "打开 Impactor 重新登录", "en": "Open Impactor to sign in again"},
