@@ -75,7 +75,7 @@ final class GameSession implements AutoCloseable {
             boolean debugEntriesOpen, GameFingerprint.Timing timing)
             throws IOException, BootContract.BadGame, GamePack.BadPack {
         long phase = GameFingerprint.Timing.start(timing);
-        GameStorage storage = GameStorage.acquire(privateRoot);
+        GameStorage storage = GameStorage.acquire(privateRoot, new File(spec.gameRoot).getName());   // 只锁这一款（不堵门）
         GameFingerprint.Timing.end(timing, "storage_lock", phase);
         try {
             File gameRoot = new File(spec.gameRoot).getCanonicalFile();

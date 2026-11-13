@@ -349,7 +349,7 @@ public final class GameInstallTest {
             String privateRoot = root(privateStage), externalRoot = root(externalStage);
             Map<String, String> privateBefore = snapshot(privateStage), externalBefore = snapshot(externalStage);
             Map<String, String> gameBefore = snapshot(game);
-            int[] events = new int[2];
+            int[] events = new int[2]; String[] refusal = {""};
             java.util.List<String> activated = new java.util.ArrayList<>();
             GameInstall.ImportListener listener = new GameInstall.ImportListener() {
                 public void installed(File source, GameInstall.Result result) {
@@ -368,17 +368,15 @@ public final class GameInstallTest {
                             "locked queues: external queue commits after private under its own explicit-target lease");
                     }
                 }
-                public void refused(File source, Exception error) { events[1]++; }
+                public void refused(File source, Exception error) { events[1]++; refusal[0] = String.valueOf(error.getMessage()); }
             };
-            try (GameStorage storage = GameStorage.acquire(internal)) {
-                try {
-                    GameInstall.importDirectory(internal, queues, privateStage.getAbsolutePath(), null, listener);
-                    check(false, "locked queues: same-JVM contention must refuse before target access");
-                } catch (IOException busy) {
-                    check(busy.getMessage().contains("busy"), "locked queues: same-JVM contention reports busy");
-                }
+            // 锁按游戏分（不堵门）：这一款被占着时，导入走到读出程序号后才报忙，经「拒收」回调告诉调用方，源包与版本都不动
+            try (GameStorage storage = GameStorage.acquire(internal, game.getName())) {
+                GameInstall.importDirectory(internal, queues, privateStage.getAbsolutePath(), null, listener);
+                check(events[1] == 1 && refusal[0].contains("busy"), "locked queues: same-game contention is refused as busy");
                 expectBusyImportProcess(internal, external);
-                check(events[0] == 0 && events[1] == 0, "locked queues: busy acquisition invokes no package callbacks");
+                check(events[0] == 0, "locked queues: busy game installs nothing");
+                events[1] = 0;
                 check(privateBefore.equals(snapshot(privateStage)) && externalBefore.equals(snapshot(externalStage)),
                     "locked queues: same and cross-JVM refusal preserve both complete source trees");
                 check(gameBefore.equals(snapshot(game)) && oldRoot.equals(current(game)),
@@ -393,7 +391,7 @@ public final class GameInstallTest {
                 "locked queues: both successful stages consumed and external revision current");
             check(new File(game, "revisions/" + privateRoot).isDirectory()
                 && !new File(game, "revisions/" + oldRoot).exists(), "locked queues: previous retained and older revision pruned");
-            try (GameStorage storage = GameStorage.acquire(internal)) {
+            try (GameStorage storage = GameStorage.acquire(internal, game.getName())) {
                 check(true, "locked queues: successful import releases the lease");
             }
 
@@ -405,7 +403,7 @@ public final class GameInstallTest {
             check(events[0] == 2 && events[1] == 1 && bad.isDirectory()
                 && Arrays.equals(pointer, Files.readAllBytes(new File(game, "current.json").toPath())),
                 "locked queues: package refusal preserves active pointer and source");
-            try (GameStorage storage = GameStorage.acquire(internal)) {
+            try (GameStorage storage = GameStorage.acquire(internal, game.getName())) {
                 check(true, "locked queues: refused input also releases the lease");
             }
         } finally {
@@ -422,7 +420,9 @@ public final class GameInstallTest {
                     new File(internal, "import/private-update").getAbsolutePath(), null,
                     new GameInstall.ImportListener() {
                         public void installed(File source, GameInstall.Result result) { }
-                        public void refused(File source, Exception error) { }
+                        public void refused(File source, Exception error) {
+                            if (String.valueOf(error.getMessage()).contains("busy")) { System.out.println("BUSY"); System.exit(2); }
+                        }
                     });
                 System.out.println("SCANNED");
             } catch (IOException busy) {

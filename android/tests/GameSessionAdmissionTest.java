@@ -68,7 +68,7 @@ public final class GameSessionAdmissionTest {
         try (GameSession ignored = GameSession.load(spec(app, game), app.toFile(), null, true)) {
             throw new AssertionError("admission accepted " + name);
         } catch (IOException | BootContract.BadGame | GamePack.BadPack expected) { checks++; }
-        try (GameStorage ignored = GameStorage.acquire(app.toFile())) { checks++; }
+        try (GameStorage ignored = GameStorage.acquire(app.toFile(), game.getFileName().toString())) { checks++; }
     }
 
     static GameSession.InstalledApk apk(Path app, Path game) throws Exception {
@@ -89,7 +89,7 @@ public final class GameSessionAdmissionTest {
     }
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && args[0].equals("lock-probe")) {
-            try (GameStorage ignored = GameStorage.acquire(new File(args[1]))) { System.out.println("ACQUIRED"); }
+            try (GameStorage ignored = GameStorage.acquire(new File(args[1]), TITLE)) { System.out.println("ACQUIRED"); }
             catch (IOException expected) { System.out.println("BUSY"); System.exit(2); }
             return;
         }
@@ -103,8 +103,11 @@ public final class GameSessionAdmissionTest {
                 check(start != null && start.assetRoot.isEmpty(), "revision is admitted without APK binding");
                 check("9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a".equals(start.moduleSha256.get("main")),
                     "revision executable hash has an independent known value");
-                try (GameStorage ignored = GameStorage.acquire(app.toFile())) { throw new AssertionError("live revision not pinned"); }
+                try (GameStorage ignored = GameStorage.acquire(app.toFile(), TITLE)) { throw new AssertionError("live revision not pinned"); }
                 catch (IOException expected) { checks++; }
+                // 锁按游戏分（不堵门）：这一款在跑时，别的游戏照样能取到自己的锁（导入 / 清扫不被挡）
+                try (GameStorage other = GameStorage.acquire(app.toFile(), "0100000000ABCDEE")) { checks++; }
+                catch (IOException wrong) { throw new AssertionError("another game's lock blocked by a live session", wrong); }
                 Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),
                     "-cp",System.getProperty("java.class.path"),GameSessionAdmissionTest.class.getName(),"lock-probe",app.toString())
                     .redirectErrorStream(true).start();
