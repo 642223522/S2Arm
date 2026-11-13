@@ -40,7 +40,7 @@ extern void s2a_fault_test_guest_stack(void (*)(void),void *), s2a_thread_test_l
 extern void s2a_thread_test_fault(void *);
 extern char s2a_thread_test_guest_start[],s2a_thread_test_guest_end[];
 static int checks;
-void s2a_android_redlog_write(const char *line, size_t n) { (void)line; (void)n; }   // guest_signal.c 的红行落盘出口：本夹具不链 redlog.c（同 fault_test.c）
+__attribute__((weak)) void s2a_android_redlog_write(const char *line, size_t n) { (void)line; (void)n; }   // guest_signal.c 的红行落盘出口：run_thread.py 的构建不链 redlog.c，这里给桩；暂停等待那套构建（build_pause_wait_android.py）链 redlog.c，弱符号让位给真的
 static void check(int yes,const char *name){++checks;if(!yes){fprintf(stderr,"FAIL %s\n",name);exit(1);}}
 uint64_t plat_now_ns(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);return(uint64_t)ts.tv_sec*1000000000ull+ts.tv_nsec;}
 uint64_t now_ns(void){return plat_now_ns();}
