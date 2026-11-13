@@ -812,8 +812,11 @@ static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
     // B2：设备 advertise VK_GOOGLE_display_timing 且 debug.s2a.display_timing=1（默认关）才有
     // 每帧实际上屏时刻可报——能力位如实反映 advertise∧启用，时刻取不到时按契约报 UNKNOWN。
     if (vk->dev->has_display_timing) c->caps |= NVN_GPU_CAP_SHOWN_TIME;
+    if (vk->dev->draw_indirect_count_enabled && vk->dev->draw_indirect_count &&
+        vk->dev->draw_indexed_indirect_count && f.multiDrawIndirect && f.drawIndirectFirstInstance)
+        c->caps |= NVN_GPU_CAP_INDIRECT_COUNT;
     // HOST_IMPORT / GPU_VA / TILE_MEMORY / SAMP_MINMAX / LOD_BIAS / DEPTH_CLIP_CTL / GEOMETRY / TESSELLATION /
-    // XFB / INDIRECT_COUNT / LINKED_PIPE / GPU_DURATION / GPU_TIME_HOST / DYN_* / DESWIZZLE：
+    // XFB / LINKED_PIPE / GPU_DURATION / GPU_TIME_HOST / DYN_* / DESWIZZLE：
     // 本段没有实现或没实测生效，一律不置位（契约：后端不做近似）。
 
     if (d->caps_record && d->caps_record_bytes) {
@@ -3372,7 +3375,25 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!c->in_pass || !c->pipe || !a) { set_sticky(c, NVN_GPU_E_ORDER, "draw 缺通道 / 管线 / 参数"); return; }
     if (c->tsq && c->ntsp < TS_PASS_MAX) c->tsp[c->ntsp].draws++;
-    if (a->cnt) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "带计数缓冲的间接多绘（cnt）：本段未实现"); return; }
+    if (a->cnt) {
+        if (!(g.caps.caps & NVN_GPU_CAP_INDIRECT_COUNT)) {
+            set_sticky(c, NVN_GPU_E_UNSUPPORTED, "draw_indirect_count：设备未启用 KHR count / multiDrawIndirect / firstInstance"); return;
+        }
+        uint32_t size = a->ibuf ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawIndirectCommand);
+        uint32_t stride = a->stride ? a->stride : size;
+        uint64_t span = a->max_draws ? (uint64_t)(a->max_draws - 1) * stride + size : 0;
+        if (!a->ind || (a->cnt_off & 3) || a->cnt_off > a->cnt->bytes || a->cnt->bytes - a->cnt_off < 4 ||
+            (a->ind_off & 3) || (stride & 3) || stride < size ||
+            a->max_draws > g.dev->properties.limits.maxDrawIndirectCount ||
+            a->ind_off >= a->ind->bytes || span > a->ind->bytes - a->ind_off ||
+            (a->ibuf && (a->itype > 2 || a->ioff >= a->ibuf->bytes ||
+                         (a->ioff & ((1u << a->itype) - 1))))) {
+            set_sticky(c, NVN_GPU_E_ARG, "draw_indirect_count：偏移、步长、最大跨度或设备上限非法"); return;
+        }
+        // GPU-produced count/commands are authoritative. The producer must obey Vulkan's device limit.
+        cmd_ref(c, a->cnt, REF_BUF);
+        if (!rc_is(c->sticky, NVN_GPU_OK)) return;
+    }
     if (a->prim != 0x0 && a->prim != 0x1 && a->prim != 0x3 && a->prim != 0x4 && a->prim != 0x5 && a->prim != 0x6) {
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "图元 %u 未实现（线环 / quads 等）", a->prim); return;
     }
@@ -3479,7 +3500,8 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         }
         {
             uint64_t isz = a->itype == 0 ? 1 : a->itype == 1 ? 2 : 4;
-            if (a->itype != 0 || (g.dev->index_type_uint8_enabled && !force_expand)) {
+            // Native count reads firstIndex/indexCount from GPU commands, not stale direct-draw fields.
+            if (!a->cnt && (a->itype != 0 || (g.dev->index_type_uint8_enabled && !force_expand))) {
                 if (ioff > a->ibuf->bytes || (uint64_t)first + a->count > (a->ibuf->bytes - ioff) / isz) {
                     set_sticky(c, NVN_GPU_E_ARG, "索引范围越界（ioff=%llu first=%u count=%u bytes=%llu）",
                                (unsigned long long)ioff, first, a->count, (unsigned long long)a->ibuf->bytes);
@@ -3488,14 +3510,18 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
             }
         }
         cmd_ref(c, a->ibuf, REF_BUF);
+        if (a->cnt && !rc_is(c->sticky, NVN_GPU_OK)) return;
         if (!c->es.ib_ok || c->es.ib != ib || c->es.ioff != ioff || c->es.it != it) {
             vkCmdBindIndexBuffer(c->cb, ib, ioff, it);
             c->es.ib = ib; c->es.ioff = ioff; c->es.it = it; c->es.ib_ok = 1; c->es_count[ES_IB]++;
         }
         if (a->ind) {
             cmd_ref(c, a->ind, REF_BUF);
+            if (a->cnt && !rc_is(c->sticky, NVN_GPU_OK)) return;
             uint32_t stride = a->stride ? a->stride : (uint32_t)sizeof(VkDrawIndexedIndirectCommand);
-            if (draws > 1) {
+            if (a->cnt) {
+                vkCmdDrawIndexedIndirectCount(c->cb, a->ind->buffer, a->ind_off, a->cnt->buffer, a->cnt_off, a->max_draws, stride);
+            } else if (draws > 1) {
                 for (uint32_t i = 0; i < draws; i++)
                     vkCmdDrawIndexedIndirect(c->cb, a->ind->buffer, a->ind_off + (uint64_t)i * stride, 1, stride);
             } else {
@@ -3506,8 +3532,11 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
         }
     } else if (a->ind) {
         cmd_ref(c, a->ind, REF_BUF);
+        if (a->cnt && !rc_is(c->sticky, NVN_GPU_OK)) return;
         uint32_t stride = a->stride ? a->stride : (uint32_t)sizeof(VkDrawIndirectCommand);
-        if (draws > 1) {
+        if (a->cnt) {
+            vkCmdDrawIndirectCount(c->cb, a->ind->buffer, a->ind_off, a->cnt->buffer, a->cnt_off, a->max_draws, stride);
+        } else if (draws > 1) {
             for (uint32_t i = 0; i < draws; i++)
                 vkCmdDrawIndirect(c->cb, a->ind->buffer, a->ind_off + (uint64_t)i * stride, 1, stride);
         } else {
