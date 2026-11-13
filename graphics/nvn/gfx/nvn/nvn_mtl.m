@@ -23,6 +23,7 @@
 #include "../../../metal/mtl_slot.h"   // machine-wide Metal client slot
 #include "nvn_fps.h"
 #include "nvn_link_backoff.h"   // 低频链路档降档退避（link_sync）
+#include "nvn_pso_retry.h"   // 编译服务失败的管线重试节奏（pso_get_vs）
 #include "nvn_obj.h"
 #include "nvn2.h"   // Switch 2: NVN2 control sections (DM_NVN_SHDUMP code length)
 #include "nvn2_cmd.h"   // Switch 2: NVN2 push constants / DLSS records (OP_PUSH_CONST / OP_DLSS)
@@ -8267,8 +8268,8 @@ static void first_skip_note(void) {
 }
 // A pipeline the system compiler service failed to build, not the pipeline itself: the connection to it dropped (Metal retries a few times first) or it timed out. The Witcher 3
 //   (10-26, test device 2, witcher3_1026115427_2): one of 35 runs, at the moment its low address region fell to 40 MB and the linked stand-ins' function bodies failed to load too;
-//   the same pair built in every other run. It used to go on the failed list for the whole run, its draws lost for good
-enum { PSO_RETRY_FRAMES = 30 };
+//   the same pair built in every other run. It used to go on the failed list for the whole run, its draws lost for good. #618 (11-13, M1 Max): the service crashed on the same pair
+//   every time, retried every 30 frames all run long; retries now back off and stop after PSO_RETRY_MAX failures in a row (nvn_pso_retry.h)
 static nvn_hmap g_pso_retry = {.klen = sizeof(pso_key)}; static uint64_t g_pso_transient;
 static int pso_err_transient(NSError *e) {
     NSString *d = e.localizedDescription;
@@ -8310,7 +8311,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvS
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
     if (cached) return cached;
     if (hm_get_id(&g_pso_fail, &k)) { PSO_WHY("on the failed list (its first build was refused; the red line then said why)"); return nil; }
-    { NSNumber *r = hm_get_id(&g_pso_retry, &k); if (r && r.unsignedLongLongValue > atomic_load(&g_cur_frame)) { g_first_skipped = 1; PSO_WHY("waiting to retry after a compiler service failure"); return nil; } }   // waiting to retry (pso_err_transient)
+    { NSNumber *r = hm_get_id(&g_pso_retry, &k); if (r && pso_retry_frame(r.unsignedLongLongValue) > atomic_load(&g_cur_frame)) { g_first_skipped = 1; PSO_WHY("waiting to retry after a compiler service failure"); return nil; } }   // waiting to retry (pso_err_transient)
     if (quar_has(vs, fs)) { hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("quarantined after a GPU error"); return nil; }   // a GPU error quarantined it (quar_fault)
     if (!pso_pair_ok(vs, fs, 1)) {
         if (vp_ask(pr->gp, vs, pso_pair_miss(vs, fs))) { PSO_WHY("the vertex stage %s's padded variant is being made", vs->key); return nil; }   // not failed: the next draw asks again
@@ -8370,11 +8371,17 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvS
                pp_late ? "past the wait limit" : may_skip ? "skippable, waited within the frame budget" : "not skippable", shader_writes(vs) || shader_writes(fs),
                fu_take / 1e6, fu_build / 1e6, fu_busy0, fu_yield_on() ? "on" : "off", tg);
       } }
-    if (!ps && pso_err_transient(e)) {   // the compiler service, not the pipeline: retried after PSO_RETRY_FRAMES frames, its draws skipped meanwhile (never on the failed list for the run)
-        hm_put_id(&g_pso_retry, &k, @(atomic_load(&g_cur_frame) + PSO_RETRY_FRAMES)); g_pso_transient++;
-        { static unsigned n; if (n++ < 8) MLOG("【红】 render pipeline (vertex %s fragment %s) not built, the system compiler service failed (%s): its draws are skipped and it is built again in %d frames (%llu so far)",
-                                               vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String, PSO_RETRY_FRAMES, (unsigned long long)g_pso_transient); }
-        g_first_skipped = 1; return nil; }
+    if (!ps && pso_err_transient(e)) {   // the compiler service, not the pipeline: retried with a back-off (nvn_pso_retry.h), its draws skipped meanwhile; failing PSO_RETRY_MAX times in a row it goes on the failed list
+        NSNumber *r = hm_get_id(&g_pso_retry, &k); uint64_t now = atomic_load(&g_cur_frame);
+        unsigned fails = (r ? pso_retry_fails(r.unsignedLongLongValue) : 0) + 1; uint64_t at = pso_retry_at(now, fails); g_pso_transient++;
+        if (!at) {
+            static unsigned ng; if (ng++ < 32) MLOG("【红】 render pipeline (vertex %s fragment %s): the system compiler service failed on it %u times in a row (%s), so it fails on this pair, not by chance: on the failed list for the run, its draws skipped (%u pairs given up so far)",
+                                                   vs->key, fs ? fs->key : "-", fails, e.localizedDescription.UTF8String, ng);
+            hm_put_id(&g_pso_fail, &k, NSNull.null); g_first_skipped = 1; PSO_WHY("the system compiler service failed on it %u times in a row", fails); return nil; }
+        hm_put_id(&g_pso_retry, &k, @(pso_retry_pack(at, fails)));
+        { static unsigned n; if (n++ < 8) MLOG("【红】 render pipeline (vertex %s fragment %s) not built, the system compiler service failed (%s): its draws are skipped and it is built again in %llu frames (failure %u of this pair, at most %d; %llu so far)",
+                                               vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String, (unsigned long long)(at - now), fails, PSO_RETRY_MAX, (unsigned long long)g_pso_transient); }
+        g_first_skipped = 1; PSO_WHY("the system compiler service failed, built again in %llu frames", (unsigned long long)(at - now)); return nil; }
     if (!ps) { char hint[200]; MLOG("【红】 failed to create render pipeline (vertex %s fragment %s): %s%s", vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String, pso_fout_hint(fs, g_pass.cfmt, hint, sizeof hint));
                hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
     if (!ms_fn) { pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&k, vs, fs, g_pso_lmap != NULL, g_pso_lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
