@@ -823,9 +823,11 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
     pthread_mutex_unlock(&g_mu);
 }
 
+static dispatch_queue_t ph_queue(void);   // first-upload page hashes (see NvPkg ph)
 static void nvn_be_pool_del_body(const void *mem);
 void nvn_be_pool_del(const void *mem) { @autoreleasepool { nvn_be_pool_del_body(mem); } }
 static void nvn_be_pool_del_body(const void *mem) {
+    dispatch_sync(ph_queue(), ^{});   // first-upload hashes still reading guest memory (see NvPkg ph): the game frees the pool's memory once this returns
     g_reg_gen++;
     pthread_mutex_lock(&g_mu);
     // The no-copy buffer goes through deferred release (out of the residency set and unreferenced after submitted commands complete). It used to be removed only from g_keep while the residency set still held a strong reference: after the pool was freed the buffer stayed alive wrapping that guest memory,
@@ -2892,10 +2894,11 @@ int nvn_be_tex_from_gl(tex_t *t, uint32_t gl_name) { @autoreleasepool {
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
+static void ph_free(uint64_t *ph, uint32_t n);
 @interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
 @implementation NvPkg
-- (void)dealloc { res_remove(tex); if (spare) res_remove(spare); free(ph); free(pgpu); }
+- (void)dealloc { res_remove(tex); if (spare) res_remove(spare); ph_free(ph, nph); free(pgpu); }
 @end
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_same, g_pkg_gpu_writes, g_pkg_gpu_kept, g_pkg_partial;
 // pgpu (S2Arm 10-25): per host page, the dirty-page generation when the GPU last wrote the texture's bytes there (a copy or clear into it; nvn_dirty_now at encoding, which is the game's submission).
@@ -2905,6 +2908,28 @@ static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_same, g_pkg_gp
 // host pages are 16 KB on Apple systems and NVN resources only 4 KB aligned, so a page holds the edge of a texture and other data the CPU rewrites every frame. Mario Kart 8 Deluxe re-uploaded
 // whole textures on such pages (a 2048x2048 one of 32 MB among them) about 72,000 times in a run, 2,000 of 2,000 with the same bytes (DM_NVN_DIRTYCHECK), and the phone ran at 4.4 W instead of
 // 2.4 - 3.4. Before a re-upload tex_mtl_ hashes the texture's bytes in the written pages only and keeps the upload when they all match
+// #674: the first upload's hashes are taken on a background queue (ph_queue), not on the submit thread. The first CPU read of a texture's storage at the host's address faults once per
+//   host page: the game filled it through another mapping (an alias of the same pages, or a GPU copy), so this address has no page table entries yet. 0400486024DEC000 loading a scene
+//   uploads 643 textures (332 MB, 21,900 pages) in one frame and their hashes took 124 ms there, 22,000 page faults and 83 ms of it in the kernel; the same pages hashed again took 24 ms.
+//   The faults serialise in the kernel (hashing on several cores at once took longer, 150 ms), so the work is moved off the submit thread, not split.
+//   ph then holds nph + 1 words: the last is the state (PH_PEND / PH_OK / PH_BAD). The background hash runs after the stamp, but possibly after the GPU already read the texture: a page
+//   written in between would put the new bytes in the hash and a later check would keep the old upload. So when it is done it asks the dirty-page tracking whether any page was
+//   written since the stamp, and if so the hashes are PH_BAD (the next check re-uploads the whole texture, as without hashes). Re-uploads still hash on the submit thread: a texture
+//   sharing a page with data the CPU rewrites every frame (the Mario Kart case above) would otherwise often see its background hash spoiled and never get the same-bytes skip.
+//   Everything that reads or frees ph waits for its hash first (ph_usable / ph_free); a pool waits for all of them before it goes (nvn_be_pool_del: the hash reads its memory)
+enum { PH_OK = 0, PH_PEND = 1, PH_BAD = 2 };
+static dispatch_queue_t ph_queue(void) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.ph", s2a_qos_queue_attr(DISPATCH_QUEUE_SERIAL, S2A_QOS_UPLOAD_HASH)); });
+    return q;
+}
+static _Atomic uint64_t *ph_state(uint64_t *ph, uint32_t n) { return (_Atomic uint64_t *)&ph[n]; }
+static int ph_usable(uint64_t *ph, uint32_t n) {   // waits for a background hash still running; 0 = no usable hashes (none taken, or spoiled by a write)
+    if (!ph) return 0;
+    if (atomic_load_explicit(ph_state(ph, n), memory_order_acquire) == PH_PEND) dispatch_sync(ph_queue(), ^{});   // serial queue: everything queued before is done
+    return atomic_load_explicit(ph_state(ph, n), memory_order_acquire) == PH_OK;
+}
+static void ph_free(uint64_t *ph, uint32_t n) { if (ph) { (void)ph_usable(ph, n); free(ph); } }
 static uint64_t g_pfv_upgrades;
 // DM_NVN_DIRTYCHECK=1 (diagnostic, compared against ground truth): fully hash the pool content on every use; changed but not detected by dirty-page tracking = a missed detection
 static int dirtycheck(void) { static int v = -1; if (v < 0) v = getenv("DM_NVN_DIRTYCHECK") != NULL; return v; }
@@ -3401,13 +3426,13 @@ static void gw_mark(void *u, uint64_t lo, uint64_t hi) {   // pages of storage [
 }
 // A copy or clear wrote texel rectangle (x, y, w, h) of layers [layer0, layer0 + nlayers) of level `level` (w / h 0 = the whole level): note the generation on its pages (see NvPkg pgpu)
 static void pkg_gpu_wrote(const tex_t *t, unsigned level, unsigned layer0, unsigned nlayers, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph);
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash);
 int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and sparse pools
 int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n); int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n);
-static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph) {   // reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one; ph / nph: per-page hashes (NvPkg), or NULL
+static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash) {   // reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one; ph / nph: per-page hashes (NvPkg), or NULL
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, ph, nph);
+    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, ph, nph, bg_hash);
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
@@ -3463,7 +3488,7 @@ static id<MTLBuffer> up_tex_src(uint64_t addr, uint64_t len, uint64_t *off) {
     g_up_src_n++; g_up_src_bytes += b - a;
     return buf;
 }
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph) {
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash) {   // bg_hash: take ph on ph_queue (the first upload, see NvPkg ph)
     MTLTextureDescriptor *d = tex_desc(t, 1);
     if (!d) return nil;
     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
@@ -3481,8 +3506,20 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         if (sparse) nvn_sparse_protect(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size); else nvn_dirty_protect(t->mem, tex_rd_size(t));
         *stamp = nvn_dirty_now();
         if (ph && !sparse) {   // after the stamp, before the read: a write in between is after the stamp too, so the next check sees its page (and the hash may hold it, the upload does)
-            uint32_t n = page_count(t); uint64_t *h = realloc(*ph, (size_t)MAX(n, 1u) * sizeof *h);
-            if (h) { for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t m; page_span(t, k, &lo, &m); h[k] = span_hash(host_rd(lo), m); } *ph = h; *nph = n; } else { free(*ph); *ph = NULL; *nph = 0; } } }
+            uint32_t n = page_count(t); uint64_t *h = malloc(((size_t)n + 1) * sizeof *h);   // + 1: the state word (see NvPkg ph); *ph comes in NULL (a new record or a re-upload's own array)
+            if (h && bg_hash) {   // the first upload: hashed on ph_queue (see NvPkg ph)
+                atomic_store_explicit(ph_state(h, n), PH_PEND, memory_order_relaxed);
+                const uint8_t *mem = t->mem; uint64_t size = t->L.size, st = *stamp; const void *span = nvn_dirty_span(mem, size);
+                dispatch_async(ph_queue(), ^{
+                    tex_t pt = {0}; pt.mem = (uint8_t *)mem; pt.L.size = size;   // page_span reads only these two
+                    for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t m; page_span(&pt, k, &lo, &m); h[k] = span_hash(host_rd(lo), m); }
+                    atomic_thread_fence(memory_order_seq_cst);   // the bytes read above, then the generations: a write the hash saw has its page's generation raised before it
+                    atomic_store_explicit(ph_state(h, n), nvn_dirty_since_span(span, mem, size, st) ? PH_BAD : PH_OK, memory_order_release);
+                });
+                *ph = h; *nph = n;
+            } else if (h) { for (uint32_t k = 0; k < n; k++) { const uint8_t *lo; size_t m; page_span(t, k, &lo, &m); h[k] = span_hash(host_rd(lo), m); }
+                atomic_store_explicit(ph_state(h, n), PH_OK, memory_order_relaxed); *ph = h; *nph = n; }
+            else { *ph = NULL; *nph = 0; } } }
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // a cube array's depth counts layer-faces (tex_desc)
     uint32_t upf; int ubpp = 0, unp = fmt_unpack(t->d.format, &upf, &ubpp);   // stored in another format (fmt_unpack: BC on a GPU without BC, or expanded): deswizzle, then convert on the CPU; the staging area is sized for the converted data
@@ -3966,7 +4003,7 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
                                                                                             (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)k); return 0; } }
     free(masked);
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    if (pkg_upload(t, NULL, mt, NULL, NULL) != mt) { free(runs); return 0; }
+    if (pkg_upload(t, NULL, mt, NULL, NULL, 0) != mt) { free(runs); return 0; }
     if (nr) {   // after the fill's copies: pass 1 sizes the zero buffer once (a bigger one replaces it), pass 2 records the copies
         for (int i = 0; i < nr; i++) tex_bytes_gobs(t, runs[2 * i], runs[2 * i + 1], gpw_zero_rect, &z);
         if (!(z.zb = zero_buf(MAX(z.need, (size_t)16)))) MDIE("zero buffer of %zu bytes for stale texels failed", z.need);
@@ -4433,7 +4470,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             int clean = tracked && (now == pk->seen || !nvn_dirty_since_span(pk->span, t->mem, tex_rd_size(t), pk->stamp));
             if (pk->sparse) { uint64_t g = nvn_sparse_gen(); clean = (now == pk->seen && g == pk->vseen) || !nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, pk->vgen, pk->stamp); pk->vseen = g; }
             pk->seen = now;
-            if (!clean && tracked && !pk->sparse && pk->ph) {   // pages written since the upload: the texture's own bytes in them decide (see NvPkg ph)
+            if (!clean && tracked && !pk->sparse && ph_usable(pk->ph, pk->nph)) {   // pages written since the upload: the texture's own bytes in them decide (see NvPkg ph)
                 static uint64_t *bits; static size_t cap;   // submit thread only (up_owner_check)
                 size_t need = (pk->nph + 63) / 64; if (need > cap) { uint64_t *nb = realloc(bits, need * sizeof *bits); if (nb) { bits = nb; cap = need; } }
                 long np = need <= cap ? nvn_dirty_written_pages(pk->span, t->mem, tex_rd_size(t), pk->stamp, bits, cap * 64) : -1;   // 页数同 page_count（tex_rd_size）
@@ -4477,9 +4514,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                 if (n % 2000 == 0) MLOG("[diag] packaged texture re-uploads: %llu, of which bytes unchanged since the last upload %llu (%.1f MB); largest unchanged ser=%llu %ux%u %.1f MB",
                                         (unsigned long long)n, (unsigned long long)same, same_b / 1048576.0, (unsigned long long)big_ser, big_w, big_h, big_b / 1048576.0);
             }
-            uint64_t st, vg = nvn_sparse_gen(), *nh = NULL; uint32_t nn = 0; id<MTLTexture> nt = pkg_upload(t, &st, reuse, &nh, &nn);
-            if (!nt) free(nh);   // the hashes stay those of the content still uploaded
-            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; free(pk->ph); pk->ph = nh; pk->nph = nn; free(pk->pgpu); pk->pgpu = NULL;   // the new texture holds guest memory only
+            uint64_t st, vg = nvn_sparse_gen(), *nh = NULL; uint32_t nn = 0; id<MTLTexture> nt = pkg_upload(t, &st, reuse, &nh, &nn, 0);
+            if (!nt) ph_free(nh, nn);   // the hashes stay those of the content still uploaded
+            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; ph_free(pk->ph, pk->nph); pk->ph = nh; pk->nph = nn; free(pk->pgpu); pk->pgpu = NULL;   // the new texture holds guest memory only
                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired as before
                 if (pk->sparse) sparse_view(pk, t);
                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
@@ -4491,7 +4528,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
         uint64_t *gr = NULL, gb = 0; int gn = 0; id<MTLTexture> gfrom = nil;   // turning packaged from a GPU-only texture: its texels a GPU write left stale in guest memory (carry_gpu)
         if (have && !pk->sparse && [have conformsToProtocol:@protocol(MTLTexture)]) { gfrom = have; gn = gpw_stale(t->mem, t->L.size, &gr, &gb); }
-        pk->tex = pkg_upload(t, &pk->stamp, nil, &pk->ph, &pk->nph);
+        pk->tex = pkg_upload(t, &pk->stamp, nil, &pk->ph, &pk->nph, 1);
         if (!pk->tex) { free(gr); return nil; }
         pk->span = nvn_dirty_span(t->mem, t->L.size);
         pk->seen = nvn_dirty_now(); g_pkg_uploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size);
