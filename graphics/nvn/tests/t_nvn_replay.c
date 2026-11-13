@@ -975,10 +975,22 @@ static void t_decl_view(void) {
     CHECK(rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 1, &g_fake_cmd, NULL) == z);
     CHECK(rp_view_by_id_decl(-1, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 1, &g_fake_cmd, NULL) == z);
     CHECK(g_tex_creates == creates + 1 && g_nup == 6 && g_red_lines == red);
-    // 不能桥接的普通组合明确记账，保持原视图。
+    // 不能桥接的不同维度组合（#936）：记账，绑声明类型的零贴图（同 iOS / Ryujinx），不把原视图交下去。
     nvn_gpu_view original = rp_view_by_id(11, &g_fake_cmd, NULL);
-    CHECK(rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_3D + 1, 0, 0, &g_fake_cmd, NULL) == original);
+    creates = g_tex_creates;
+    nvn_gpu_view z3 = rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_3D + 1, 0, 0, &g_fake_cmd, NULL);
+    CHECK(z3 && z3 != original && z3->of->d.d.target == NVN_TEXTURE_TARGET_3D && z3->of->d.d.format == NVN_FORMAT_RGBA8 &&
+        z3->of->d.d.width == 1 && z3->of->d.d.height == 1 && z3->of->d.d.depth == 1 && g_tex_creates == creates + 1);
     CHECK(nvn_unimpl_count("tex", "decl_type_mismatch") == 1);
+    // #936 那个组合：128×64×64 的 3D 贴图被声明成二维数组读 → 二维数组零贴图；第二次取用复用同一张、不再建
+    tex_t t3 = mk_tex(7014, 0x20000, NVN_FORMAT_RGBA8, 128, 64, 1, 0);
+    t3.d.target = NVN_TEXTURE_TARGET_3D; t3.d.depth = 64; nvn_tex_layout(&t3.d, &t3.L); nvn_be_reg_tex(14, &t3, NULL);
+    nvn_gpu_view orig3 = rp_view_by_id(14, &g_fake_cmd, NULL);
+    creates = g_tex_creates;
+    nvn_gpu_view za = rp_view_by_id_decl(14, NVN_TEXTURE_TARGET_2D_ARRAY + 1, 0, 0, &g_fake_cmd, NULL);
+    CHECK(za && za != orig3 && za->of->d.d.target == NVN_TEXTURE_TARGET_2D_ARRAY && za->of->d.d.depth == 1 && g_tex_creates == creates + 1);
+    CHECK(rp_view_by_id_decl(14, NVN_TEXTURE_TARGET_2D_ARRAY + 1, 0, 0, &g_fake_cmd, NULL) == za && g_tex_creates == creates + 1);
+    CHECK(nvn_unimpl_count("tex", "decl_type_mismatch") == 3);
     // 12 层二维数组当立方体读：后端建图没带 CUBE_COMPATIBLE，必被拒绝的视图不交下去；记账并绑零贴图。
     t = mk_tex(7012, 0x18000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
     t.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L); nvn_be_reg_tex(12, &t, NULL);
@@ -995,8 +1007,9 @@ static void t_decl_view(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     int releases = g_tex_releases, view_releases = g_view_releases;
     rp_res_reset();
-    // 贴图：6 例 + 7010 + 7011 + 零立方体 + 7013 = 10（7012 不建视图也不解析）；视图：未改造 2 + 改造 4 + 7010 + 7011 原样 + 零立方体 + 7013 = 10
-    CHECK(g_tex_releases == releases + 10 && g_view_releases == view_releases + 10);
+    // 贴图：6 例 + 7010 + 7011 + 零立方体 + 零 3D + 7014 + 零二维数组 + 7013 = 13（7012 不建视图也不解析）；
+    // 视图：未改造 2 + 改造 4 + 7010 + 7011 原样 + 零立方体 + 零 3D + 7014 原样 + 零二维数组 + 7013 = 13
+    CHECK(g_tex_releases == releases + 13 && g_view_releases == view_releases + 13);
 }
 
 static void t_buf_mirror(void) {   // 池镜像：首次使用建一份、按页同步；没写过的页不重传；按使用点的先后保证 GPU 顺序
