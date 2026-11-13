@@ -3775,6 +3775,8 @@ typedef struct bcal_e {
     _Atomic uint64_t wser, lgen[16], maxgen;          // 各层最近一次写的代数（0 = 没写过）、其中最大的
     _Atomic int seen;                    // 这段存储上解析过 BC 贴图：再写时 g_ser_gen 前进（③）
     _Atomic uint64_t s_ser, s_gen; const void *_Atomic s_r;   // 最近一次同步：哪张 BC 贴图、同步到的代数、它当时解析成的 Metal 贴图（无锁的「已是最新」判定）
+    void *wtex;                          // 写入者的 Metal 贴图（CFBridgingRetain，g_bcal_mu 下换）：游戏画完就把那张未压缩贴图 Finalize 了，字节只在 GPU 上，按序号 / 共享表都取不到时从这里拷
+                                         //   （11-13 #951：菜单缩略图 320×270 写完即释放，BC 贴图读成全黑）
     struct bcal_e *next_free;
 } bcal_e;
 typedef struct { const void *dst; uint64_t lgen[16]; } bcal_s;   // 一张 BC 贴图已同步到的各层代数：目标 Metal 贴图变了（整张重新上传）就从头来
@@ -3789,6 +3791,7 @@ static int bcal_writer(const tex_t *t) {
     int bw = 1, bh = 1, b = t->mem && !fmt_compressed(t->d.format) ? nvn_fmt_bpb(t->d.format, &bw, &bh) : 0;
     return (b == 8 || b == 16) && bw == 1 && bh == 1 && t->d.target == NVN_TEXTURE_TARGET_2D && t->d.samples <= 1 && t->d.levels <= 16;
 }
+static id<MTLTexture> bcal_src(const tex_t *w);
 static void bcal_note(const tex_t *t, unsigned level) {
     if (g_bcal_off || level >= 16 || !bcal_writer(t)) return;
     uint64_t k = (uint64_t)(uintptr_t)t->mem, sh = bcal_shape(t); unsigned h = bcal_h(k);
@@ -3802,6 +3805,7 @@ static void bcal_note(const tex_t *t, unsigned level) {
         }
         if (e->wser && (e->wpool != t->pool || e->wshape != sh)) { for (int l = 0; l < 16; l++) atomic_store(&e->lgen[l], 0); }   // 另一种形状占了这段存储：之前各层的写不再按它的形状算
         atomic_fetch_add(&e->seq, 1); e->w = *t; e->wpool = t->pool; e->wshape = sh; atomic_store(&e->wser, t->serial); atomic_fetch_add(&e->seq, 1);
+        { id<MTLTexture> m = bcal_src(t); void *old = e->wtex; e->wtex = m ? (void *)CFBridgingRetain(m) : NULL; if (old) CFRelease(old); }   // 换写入者：留住新的那张
         atomic_store_explicit(&g_bcal_wc[h], e, memory_order_release);
         pthread_mutex_unlock(&g_bcal_mu);
     }
@@ -3833,7 +3837,7 @@ static int bcal_has(const tex_t *t) {
 static void bcal_drop_pool(const void *pool) {   // 内存池 Finalize：这段存储上的记账作废（记账进空闲表复用，不释放：无锁读者手里的指针按 key 核对）
     pthread_mutex_lock(&g_bcal_mu);
     for (uint32_t i = 0; i < g_bcal.cap;) { bcal_e *e = g_bcal.vals[i]; uint64_t k; memcpy(&k, g_bcal.keys + (size_t)i * 8, 8);
-        if (e && (const void *)e->wpool == pool) { nvn_hm_del(&g_bcal, &k); e->key = 0; e->next_free = g_bcal_free; g_bcal_free = e; atomic_fetch_sub(&g_bcal_n, 1); } else i++; }
+        if (e && (const void *)e->wpool == pool) { nvn_hm_del(&g_bcal, &k); if (e->wtex) { CFRelease(e->wtex); e->wtex = NULL; } e->key = 0; e->next_free = g_bcal_free; g_bcal_free = e; atomic_fetch_sub(&g_bcal_n, 1); } else i++; }
     for (uint32_t i = 0; i < g_bcal_seen.cap;) { uint64_t k; memcpy(&k, g_bcal_seen.keys + (size_t)i * 8, 8);
         if (g_bcal_seen.vals[i] == pool) nvn_hm_del(&g_bcal_seen, &k); else i++; }
     for (unsigned h = 0; h < BCAL_C; h++) { atomic_store(&g_bcal_wc[h], NULL); atomic_store(&g_bcal_neg[h], 0); atomic_store(&g_bcal_seen_c[h], 0); }
@@ -4305,8 +4309,12 @@ static bcal_e *bcal_find(uint64_t k) {   // 这段存储的记账：正向缓存
     pthread_mutex_unlock(&g_bcal_mu); return e;
 }
 // 按层「未压缩贴图 → 缓冲 → BC 贴图」：todo 里的 n 层，拷过的记进 s（g_bcal_mu 下）
-static void bcal_copy(const tex_t *t, id<MTLTexture> dst, NvPkg *pk, const tex_t *ew, const uint64_t elg[16], const unsigned *todo, unsigned n, bcal_s *s) {
+static void bcal_copy(const tex_t *t, id<MTLTexture> dst, NvPkg *pk, const tex_t *ew, const uint64_t elg[16], const unsigned *todo, unsigned n, bcal_s *s, id<MTLTexture> kept) {
     id<MTLTexture> src = bcal_src(ew);
+    // 写入者的贴图对象已经 Finalize（按序号 / 共享表取不到）：用记账时留住的那张。它已移出驻留集：本次提交里重新常驻，提交做完再移出（引用仍由记账留着）
+    if (!src && kept) { src = kept; res_add(src); defer_obj_release(src);
+        static uint64_t nk; if (!nk++) MLOG("block-compressed texture ser=%llu: the uncompressed texture ser=%llu the GPU wrote its storage through is already finalized; its bytes are taken from the Metal texture kept since that write (first case)",
+                                           (unsigned long long)t->serial, (unsigned long long)ew->serial); }
     // 两种取不到分开报，带写入者的格式与尺寸（#472 DQ7 重制光源贴图错：日志只有一句，分不清是哪种，本机按「写入贴图先释放」复现不出）
     if (!src) { RED_ONCE(175, "block-compressed texture ser=%llu: the uncompressed texture ser=%llu (format %#x %ux%u) the GPU wrote its storage through has no host texture, its bytes are not taken", (unsigned long long)t->serial, (unsigned long long)ew->serial, ew->d.format, ew->d.width, ew->d.height); return; }
     if (src.pixelFormat == dst.pixelFormat) { RED_ONCE(182, "block-compressed texture ser=%llu (format %#x %ux%u): the texture ser=%llu (format %#x %ux%u) the GPU wrote its storage through resolved to the same Metal format %lu, not a byte copy; its bytes are not taken", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, (unsigned long long)ew->serial, ew->d.format, ew->d.width, ew->d.height, (unsigned long)src.pixelFormat); return; }
@@ -4348,8 +4356,9 @@ static void bcal_sync(const tex_t *t, id<MTLTexture> r) {
     if (!(s = nvn_hm_get(&g_bcal_sync, &t->serial))) { if (!(s = calloc(1, sizeof *s))) MDIE("block-compressed alias table allocation failed"); nvn_hm_put(&g_bcal_sync, &t->serial, s); }
     if (s->dst != (__bridge const void *)dst) { memset(s->lgen, 0, sizeof s->lgen); s->dst = (__bridge const void *)dst; }
     for (unsigned l = 0; l < 16; l++) if (elg[l] > s->lgen[l] && bcal_level_ok(&ew, t, l)) todo[n++] = l;
+    id<MTLTexture> kept = n && pe->wtex && atomic_load(&pe->wser) == ew.serial ? (__bridge id<MTLTexture>)pe->wtex : nil;   // 锁下取强引用（换写入者也在锁下释放旧的）
     pthread_mutex_unlock(&g_bcal_mu);
-    if (n) bcal_copy(t, dst, pk, &ew, elg, todo, n, s);   // 拷不成（没有来源贴图 / 暂存缓冲）也记成已看过：不在每次解析时重试
+    if (n) bcal_copy(t, dst, pk, &ew, elg, todo, n, s, kept);   // 拷不成（没有来源贴图 / 暂存缓冲）也记成已看过：不在每次解析时重试
     atomic_store(&pe->s_ser, t->serial); atomic_store(&pe->s_r, (__bridge const void *)r); atomic_store(&pe->s_gen, mg);   // mg 取在拷之前：其间的新写下次再看
 }
 static id<MTLTexture> tex_mtl(const tex_t *ct) { AP_B; g_tex_mtl_n++; id<MTLTexture> r = tex_mtl_(ct); if (r && ct && fmt_compressed(ct->d.format)) bcal_sync(ct, r); AP_E(4); return r; }
