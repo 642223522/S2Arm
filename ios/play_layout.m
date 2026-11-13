@@ -7,8 +7,11 @@
 static _Atomic int g_split_active;
 void S2APlayPublishSplit(BOOL split) { atomic_store(&g_split_active,split ? 1 : 0); }
 int s2a_ios_split_active(void) { return atomic_load(&g_split_active); }
-// 游戏区域（graphics/nvn/host_adapt.m、graphics/metal/gal_ios_layer.m 弱引用）：分屏布局（#301）接上前没有单独的游戏区域，回空矩形 = 调用方用视图自身
+// 游戏区域（graphics/nvn/host_adapt.m、graphics/metal/gal_ios_layer.m 弱引用）：iOS 上由下面的分屏布局给（#301）；
+//   非 iOS 编译（Mac 单测 t_play_layout 也编本文件）没有分屏，回空矩形 = 调用方用视图自身
+#if !TARGET_OS_IPHONE
 CGRect s2a_ios_game_area(void) { return CGRectNull; }
+#endif
 
 NSString *const S2APlaySplitKey=@"splitScreen", *const S2APlayOrientationKey=@"screenOrientation", *const S2APlayLayoutChanged=@"S2APlayLayoutChanged";
 // app scope 沿用共享表 padFace 的存法：NSUserDefaults 的键就是表 id。
