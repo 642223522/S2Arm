@@ -660,8 +660,33 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
     return e;
 }
 
+// 计算程序的快路：照图形那条（g_lasts）的做法，按键直接返回上次得到的 rp_prog*。
+// 为什么值得：本款一帧 20 多个计算派发（GPU 剔除 / 后处理），每次派发都走完整请求——32 + 128 个组合贴图槽逐槽加锁取快照、
+// 建编译请求、算身份、查表，真机上一帧 2.5 毫秒（分时里「派发」共 3.7 毫秒，取资源循环只占 0.0）。
+// 键 = 计算阶段状态里真正影响编译的那些：阶段键、用户常量缓冲与存储缓冲的地址/长度、160 个贴图槽的句柄、池起点与容量，
+// 再加登记代号 rp_tex_reg_gen()（贴图登记/注销/改视图都会推进它，和图形那条快路的前提一致）。
+struct cs_fast_key {
+    uint64_t reg_gen; int32_t tex_base, tex_pool_n, samp_pool_n; uint8_t skey[8]; uint32_t skey_ok;
+    uint64_t ubo[16][2], ssbo[16][2], tex[160];
+};
+enum { CS_FAST_N = 8 };
+static struct { struct cs_fast_key k; const struct rp_prog *pg; int ok; } g_csfast[CS_FAST_N];
+static int g_csfast_next;
+static uint64_t g_csfast_hits, g_csfast_misses;   // 读数：快路命中 / 未命中（开关 nvk_shader_cache_log 时打进窗口行）
+static void cs_fast_key(struct cs_fast_key *k) {
+    memset(k, 0, sizeof *k);
+    k->reg_gen = rp_tex_reg_gen(); k->tex_base = rp_S.tex_base; k->tex_pool_n = rp_S.tex_pool_n; k->samp_pool_n = rp_S.samp_pool_n;
+    memcpy(k->skey, rp_S.skey[5], 8); k->skey_ok = rp_S.skey_ok;
+    for (int i = 0; i < 16; i++) { k->ubo[i][0] = rp_S.ubo[5][i].addr; k->ubo[i][1] = rp_S.ubo[5][i].size; }
+    for (int i = 0; i < 16; i++) { k->ssbo[i][0] = rp_S.ssbo[5][i].addr; k->ssbo[i][1] = rp_S.ssbo[5][i].size; }
+    for (int i = 0; i < 160; i++) k->tex[i] = rp_S.tex[5][i];
+}
 int rp_shader_resolve_compute(const struct rp_prog **out) {
     *out = NULL;
+    {   // 快路：键一样就直接返回上次的程序（不清任何状态：调用方只用 *out）
+        struct cs_fast_key k; cs_fast_key(&k);
+        for (int i = 0; i < CS_FAST_N; i++) if (g_csfast[i].ok && !memcmp(&g_csfast[i].k, &k, sizeof k)) { g_csfast_hits++; *out = g_csfast[i].pg; return 0; }
+    }
     if (!(rp_S.skey_ok >> 5 & 1)) { nvn_unimpl("shader", "compute_stage_key_missing", NULL); return -1; }
     if (!shader_texture_pool_ready()) return -1;
     struct s2a_direct_compile_context pc; memset(&pc, 0, sizeof pc);
@@ -744,6 +769,9 @@ int rp_shader_resolve_compute(const struct rp_prog **out) {
     nvk_compute_request_release(&rq);
     if (e->failed) return -1;
     *out = &e->prog;
+    { struct cs_fast_key k; cs_fast_key(&k);   // 记进快路：下次同样的计算状态直接返回
+      g_csfast[g_csfast_next].k = k; g_csfast[g_csfast_next].pg = &e->prog; g_csfast[g_csfast_next].ok = 1;
+      g_csfast_next = (g_csfast_next + 1) % CS_FAST_N; g_csfast_misses++; }
     return 0;
 }
 
@@ -757,6 +785,8 @@ void rp_shader_reset(void) {
     // 快路的两张表都随会话清空：里面存的是 rp_prog*，跨会话留着就是悬空指针。
     memset(g_lasts, 0, sizeof g_lasts); memset(g_lasts_next, 0, sizeof g_lasts_next);
     memset(g_comb_sig, 0, sizeof g_comb_sig);
+    memset(g_csfast, 0, sizeof g_csfast); g_csfast_next = 0;   // 计算快路同样存 rp_prog*，跨会话必须清
+    g_csfast_hits = g_csfast_misses = 0;
     g_cache_calls = g_cache_hits = g_cache_misses = g_cache_hit_ns = g_cache_miss_ns = 0; g_sig_recomp = 0;
     g_mark_calls = g_mark_hits = g_mark_misses = g_mark_hit_ns = g_mark_miss_ns = g_mark_sig = 0;
     g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0;
