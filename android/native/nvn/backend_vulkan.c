@@ -1169,7 +1169,7 @@ struct plcw_job {
     char dir[sizeof g_plc_dir];
     uint8_t uuid[VK_UUID_SIZE];
     unsigned long long made;   // 触发时本局经缓存建管线的条数（只用于日志）
-    double get_ms;             // 触发线程上取数据花的毫秒（只用于日志）
+    double get_ms;             // 触发线程上花的毫秒：查大小 + 取数据 + 拷字节（只用于日志）
 };
 
 // 后台写盘线程（分离线程）：写一份、收尾、清「在飞」标记（最后一步，收尾那边靠它判断写完没有）。写失败只记日志，收尾时会再试一次。
@@ -1183,7 +1183,7 @@ static void *plcw_main(void *arg) {
     if (w == 0) {
         __atomic_store_n(&g_plcw_failed, 0, __ATOMIC_RELEASE);
         __atomic_fetch_add(&g_plcw_ok, 1, __ATOMIC_RELAXED);
-        plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：局中写出 %zu 字节（本局经缓存建管线 %llu 条；取数据 %.1f ms，后台写盘 %.1f ms）", j->size, j->made, j->get_ms, ms);
+        plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：局中写出 %zu 字节（本局经缓存建管线 %llu 条；触发线程用时 %.1f ms，后台写盘 %.1f ms）", j->size, j->made, j->get_ms, ms);
     } else {
         __atomic_store_n(&g_plcw_failed, 1, __ATOMIC_RELEASE);
         __atomic_fetch_add(&g_plcw_fail, 1, __ATOMIC_RELAXED);
@@ -1213,6 +1213,7 @@ static void plc_save_midrun(void) {
     // 到点了。基线先推进到现在：这次取不到数据 / 数据没变 / 起不了线程，都要等再多 N 条、再隔 E 才重试，别每建一条管线就来一遍。
     __atomic_store_n(&g_plc_made_saved, made, __ATOMIC_RELAXED);
     __atomic_store_n(&g_plc_t_saved, t, __ATOMIC_RELAXED);
+    uint64_t tg0 = now_ns();   // 触发线程在这里花的时间从这儿算起：查大小 + 取数据 + 拷字节（带 fsync 的写盘不在这条线程上）
     size_t size = 0;
     VkResult vr = vkGetPipelineCacheData(g.d, pc, &size, NULL);
     void *buf = NULL;
@@ -1228,7 +1229,6 @@ static void plc_save_midrun(void) {
         if (!buf) {
             plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：内存不够取数据（%zu 字节），这次不落盘", cap);
         } else {
-            uint64_t t0 = now_ns();
             size_t got = cap;
             vr = vkGetPipelineCacheData(g.d, pc, &got, buf);
             if (vr != VK_SUCCESS || got == 0 || got > cap) {
@@ -1239,7 +1239,7 @@ static void plc_save_midrun(void) {
                 size = got;
                 struct plcw_job *j = (struct plcw_job *)calloc(1, sizeof *j);
                 if (j) {
-                    j->data = buf; j->size = size; j->made = (unsigned long long)made; j->get_ms = plc_ms(t0, now_ns());
+                    j->data = buf; j->size = size; j->made = (unsigned long long)made; j->get_ms = plc_ms(tg0, now_ns());
                     memcpy(j->dir, g_plc_dir, sizeof j->dir);
                     memcpy(j->uuid, g_plc_uuid, sizeof j->uuid);
                     pthread_attr_t at;
