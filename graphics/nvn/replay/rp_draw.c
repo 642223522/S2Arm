@@ -222,11 +222,30 @@ static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t 
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) {
     nvn_gpu_binding b[RP_PROG_ENT_MAX]; uint32_t n = 0;
     // 沿用上一笔：只限图形两个阶段；存储缓冲（要同步镜像、登记 GPU 写）和贴图（视图会轮转）每笔照取
-    const int keep = st < RP_PROG_STAGES && g_bind_keep[pi] && g_lb[pi].ok && g_lb[pi].c == c && g_lb[pi].seg == rp_seg_serial() && g_lb[pi].gen == rp_cpu_write_gen && g_lb[pi].reg_gen == rp_tex_reg_gen() && g_lb[pi].pg == pg && g_lb[pi].base_instance == base_instance;
+    int keep = 0;
+    {   // 逐条判「整组沿用」能不能成立，并记下失败原因（读数：真机上这一条几乎从不成立，要先看清是被哪一项否掉的）
+        int why = -1;
+        if (st < RP_PROG_STAGES && g_bind_keep[pi] && g_lb[pi].ok) {
+            if (g_lb[pi].c != c) why = RP_PERF_KEEP_F_CMD;
+            else if (g_lb[pi].seg != rp_seg_serial()) why = RP_PERF_KEEP_F_SEG;
+            else if (g_lb[pi].gen != rp_cpu_write_gen) why = RP_PERF_KEEP_F_GEN;
+            else if (g_lb[pi].reg_gen != rp_tex_reg_gen()) why = RP_PERF_KEEP_F_REG;
+            else if (g_lb[pi].pg != pg) why = RP_PERF_KEEP_F_PG;
+            else if (g_lb[pi].base_instance != base_instance) why = RP_PERF_KEEP_F_BI;
+            else keep = 1;
+        }
+        if (keep) rp_perf_add(RP_PERF_KEEP_OK, 1); else if (why >= 0) rp_perf_add(why, 1);
+    }
     // B1 快路：上一笔交给后端的这一组就是这一笔要的，不重建 b[]（省掉每笔每阶段的驱动段暂存拷贝与整轮贴图视图取用）。
     // 不能沿用的：可写存储缓冲（每笔要登记 GPU 写回）、间接寻址存储缓冲（每笔要读指针重新解析）、取不到的资源（交给完整构造去记账跳过）。
     // 贴图视图由 fast_items_ok 逐项与本笔刚解析的结果比对：视图被轮转重建过就不走快路。
-    if (keep && !g_pipe_set && flag_read("nvk_bind_fast") && fast_items_ok(pg, pi, st, tv, ts)) { rp_perf_add(RP_PERF_BIND_FAST, 1); return 1; }
+    // 换管线不再挡沿用：同一程序 ⇒ 同一套绑定布局（后面换管线的分支只对「布局真的变了」的阶段立脏），
+    // 描述符组在 Vulkan 里也不随管线对象失效，只有布局不兼容才必须重发。真机上一帧 383 次换管线、程序却没变，
+    // 全被这条挡掉了（读数见「分时（绑定）」行）。
+    if (keep && flag_read("nvk_bind_fast")) {
+        if (fast_items_ok(pg, pi, st, tv, ts)) { if (g_pipe_set) rp_perf_add(RP_PERF_KEEP_F_PIPESET, 1); rp_perf_add(RP_PERF_BIND_FAST, 1); return 1; }
+        rp_perf_add(RP_PERF_KEEP_F_ITEMS, 1);
+    }
     if (st < RP_PROG_STAGES) g_lb[pi].ok = 0;
     for (uint32_t i = 0; i < pg->nent[pi]; i++) {
         const nvn_gpu_layout_ent *e = &pg->ent[pi][i];

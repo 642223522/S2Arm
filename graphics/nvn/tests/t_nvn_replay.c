@@ -1363,7 +1363,9 @@ static void t_pass_state_keep(void) {   // 通道边界不再等于状态边界�
     { stream s = {0}; q_env(&s); q_draw(&s); put_set_rt(&s, &c16, NULL); q_draw(&s); end(&s);
       int pg0 = g_pipe_gets; memset(g_bind_calls, 0, sizeof g_bind_calls);
       submit1(&s); fake_complete(NVN_GPU_DONE_OK);
-      CHECK(g_npd == 2 && g_pipe_gets - pg0 == 2 && g_bind_calls[0] == 2); }   // 两笔各取一次管线、各发一次顶点阶段绑定
+      // 两笔各取一次管线（附件格式进管线描述）；绑定布局没变：描述符组在命令缓冲里仍然有效
+      //（Vulkan：描述符绑定不随管线对象、也不随开/收通道失效，只有布局不兼容才必须重发），所以不重发绑定。
+      CHECK(g_npd == 2 && g_pipe_gets - pg0 == 2 && g_bind_calls[0] == 1); }
     g_flag_state_keep = 1; pass_fresh();
 }
 
