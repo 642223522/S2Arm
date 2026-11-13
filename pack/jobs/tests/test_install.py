@@ -369,7 +369,13 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("--host-abi") + 1], str(host_update.HOST_ABI))
             self.assertEqual(cmd[cmd.index("--version") + 1], "9.8.7")   # 三端同号：电脑上 S2Arm 的发版号写进容器
             self.assertEqual(cmd[cmd.index("--display-version") + 1], "v9.8.7-dev+abc1234")   # 界面版本字同一来源
-            self.assertEqual((cmd[cmd.index("--sign") + 1], cmd[cmd.index("--shell") + 1]), ("adhoc", str(shell)))
+            # 组装时不签，写完容器摘要（#845，改 Info.plist）再统一 ad-hoc 签：签完再改会破坏签名（v0.3.6 候选 ⑥ codesign 不过）
+            self.assertEqual((cmd[cmd.index("--sign") + 1], cmd[cmd.index("--shell") + 1]), ("none", str(shell)))
+        signs = [i for i, a in enumerate(runs) if len(a) > 5 and a[5] == "sign"]
+        conts = [i for i, a in enumerate(runs) if len(a) > 5 and a[5] == "container"]
+        self.assertEqual(len(signs), 2)   # 每次组装签一次，排在各自的 container 之后
+        for ci, si in zip(conts, signs):
+            self.assertLess(ci, si); self.assertEqual(runs[si][runs[si].index("--sign") + 1], "adhoc")
         self.assertEqual([c1[i + 1] for i, x in enumerate(c1) if x == "--game"], [str(kits[A].resolve())])
         self.assertEqual([c2[i + 1] for i, x in enumerate(c2) if x == "--game"], [str(kits[A].resolve()), str(kits[B].resolve())])
         self.assertEqual((games1, games2, sid1, sid2), ([A], [A, B], "SID1", "SID1"))

@@ -609,7 +609,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     banner_args = [x for g, b in banners.items() if b.is_file() for x in ("--banner", f"{g}={b}")]
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
-               "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
+               "--icon", icon, "--sign", "none", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
                "--version", release_version(c.engine), "--display-version", display_version(c.engine),
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
@@ -618,6 +618,10 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
             raise Failure("这款和手机上已有的游戏地址空间类型不同，放不进同一个 App。", code="container_incompatible") from e
         raise
     stamp_container(app)   # #845：内容摘要进 Info.plist，装机据此判手机上的 App 是不是同一个（install.same_app）
+    # 签名放在写摘要之后（v0.3.6 候选 ⑥：原先组装时就 ad-hoc 签好、再改 Info.plist，codesign --verify 判「plist or signature have been modified」）
+    #   Mac ad-hoc；Windows 不签（侧载工具重签），同原口径
+    if os.name != "nt":
+        c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "sign", "--app", app, "--sign", "adhoc", "--bundle-id", CONTAINER_BUNDLE], log, c.env())
     write_container_ipa(c, app, ipa, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
     if gid and gid not in games:
