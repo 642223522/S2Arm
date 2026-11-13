@@ -397,7 +397,7 @@ struct UploadDiagnosticsSheet: View {
     let operations: [String]?
     let fallback: String
     let close: () -> Void
-    enum Phase: Equatable { case confirm, uploading, done(String), failed(String) }
+    enum Phase: Equatable { case confirm, uploading, done(S2ArmLauncherModel.DiagUploadReceipt), failed(String) }
     @State private var phase = Phase.confirm
     @State private var copied = false
 
@@ -416,13 +416,21 @@ struct UploadDiagnosticsSheet: View {
                 }
             case .uploading:
                 HStack(spacing: 10) { ProgressView().controlSize(.small); Text(loc.t("s2arm.diagUpload.sending")).font(.manrope(13)) }
-            case .done(let code):
+            case .done(let receipt):
                 Text(loc.t("s2arm.diagUpload.done")).font(.manrope(13)).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
-                    Text(code).font(.system(size: 26, weight: .semibold, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("diag.upload.code")
-                    Button(copied ? loc.t("s2arm.export.copied") : loc.t("s2arm.diagUpload.copy")) { copy(code) }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload.copy")
+                    Text(receipt.code).font(.system(size: 26, weight: .semibold, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("diag.upload.code")
+                    Button(copied ? loc.t("s2arm.export.copied") : loc.t("s2arm.diagUpload.copy")) { copy(receipt.code) }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload.copy")
                 }
-                HStack { Spacer(); Button(loc.t("s2arm.diagUpload.close")) { close() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction) }
+                Text(loc.t("s2arm.diagUpload.repo").replacingOccurrences(of: "{0}", with: receipt.repo)).font(.manrope(12.5)).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack {
+                    Spacer()
+                    Button(loc.t("s2arm.diagUpload.close")) { close() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                    if let url = receipt.issueURL {   // 主按钮：系统浏览器打开预填好诊断码 / 版本 / 平台的新帖页
+                        Button(loc.t("s2arm.diagUpload.github")) { NSWorkspace.shared.open(url) }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction)
+                            .accessibilityIdentifier("diag.upload.github")
+                    }
+                }
             case .failed(let why):
                 Label(why, systemImage: "exclamationmark.triangle").font(.manrope(13)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("diag.upload.failed")
@@ -440,7 +448,7 @@ struct UploadDiagnosticsSheet: View {
             model.diagUploadCommand = nil
             switch (command.action, phase) {
             case ("send", .confirm): send()
-            case ("copy", .done(let code)): copy(code)
+            case ("copy", .done(let receipt)): copy(receipt.code)
             case ("close", _): close()
             default: break
             }

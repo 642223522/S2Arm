@@ -97,12 +97,17 @@ public sealed partial class EnvironmentWindow
                 var fields = new Dictionary<string, object?> { ["extra"] = ReportExtra() };
                 if (gameId is not null) fields["gameId"] = gameId;
                 if (operations is not null) fields["operations"] = operations; else { var f = fallback(); if (!string.IsNullOrWhiteSpace(f)) fields["summary"] = f; }
-                string? code = null, why = null;
+                string? code = null, why = null, issueUrl = null, repo = null;
                 try
                 {
                     var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "diagnosticsUpload", null, CancellationToken.None, fields: fields);
                     if (job.Report.Succeeded && job.Report.Result.ValueKind == JsonValueKind.Object && job.Report.Result.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String)
+                    {
                         code = c.GetString();
+                        // 预填好的新帖页与仓库地址由作业层给（pack/jobs/diag_upload.py issue_url，Mac / iOS 同格式）
+                        if (job.Report.Result.TryGetProperty("issueUrl", out var u) && u.ValueKind == JsonValueKind.String) issueUrl = u.GetString();
+                        if (job.Report.Result.TryGetProperty("repo", out var r) && r.ValueKind == JsonValueKind.String) repo = r.GetString();
+                    }
                     else why = job.Report.Succeeded ? T("diag.upload.noCode") : job.Report.Message;
                 }
                 catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
@@ -124,8 +129,15 @@ public sealed partial class EnvironmentWindow
                     var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
                     line.Children.Add(codeText); line.Children.Add(copy);
                     body.Children.Add(line);
-                    var done = Action("diag.upload.close", "diag.upload.close", true); done.Click += (_, _) => dialog.Close();
-                    body.Children.Add(Row(done));
+                    body.Children.Add(Muted(T("diag.upload.repo").Replace("{0}", repo ?? "github.com/jhaizhou-ops/S2Arm"), 13));
+                    var done = Action("diag.upload.close", "diag.upload.close"); done.Click += (_, _) => dialog.Close();
+                    if (issueUrl is { Length: > 0 } link && Uri.TryCreate(link, UriKind.Absolute, out var target) && target.Scheme == Uri.UriSchemeHttps)
+                    {
+                        var post = Action("diag.upload.github", "diag.upload.github", true);   // 主按钮：系统浏览器打开预填好诊断码 / 版本 / 平台的新帖页
+                        post.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true });
+                        body.Children.Add(Row(done, post));
+                    }
+                    else body.Children.Add(Row(done));
                 }
                 else
                 {

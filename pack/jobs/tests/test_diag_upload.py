@@ -5,6 +5,7 @@
   ③ 照服务端协议：400 / 413 用服务端给玩家的 message；429 说稍后再试；回的不是 D-xxxx 短码 / 连不上 → 都是 diag_upload_failed；
      5xx 重试一次（第二次成功就拿到码）；请求头带 X-S2Arm-Client: mac|windows/<版本>、User-Agent 是 S2Arm 自己的（Python 缺省的被 Cloudflare 拦，403 / 1010）
   ⑥ 诊断包 manifest.json 带 "schema": 1（服务端收件规则，没有判 not_diag）
+  ⑦ 成功结果带预填新帖链接：模板 问题回报.yml、logs = 短码、platform 是模板下拉里逐字存在的选项、标题前缀「[问题] 」
   ④ 包超过 30 MB 上限 → 不传，diag_upload_failed
   ⑤ 没有作业记录的失败（环境检查）：界面交来的 summary 正文脱敏后放进 logs/error-summary.log（家目录换成 ~）"""
 import http.server
@@ -70,7 +71,8 @@ class DiagUploadTests(JobCase):
                 result = diag_upload.upload(self.c)
         finally:
             svc.close()
-        self.assertEqual(result, {"code": "D-7K3Q"})
+        self.assertEqual(result["code"], "D-7K3Q")
+        self.assertTrue(result["issueUrl"].startswith("https://github.com/jhaizhou-ops/S2Arm/issues/new?"))
         self.assertEqual(len(svc.got), 1)
         kind, data = svc.got[0]
         self.assertEqual(kind, "application/zip")
@@ -110,7 +112,7 @@ class DiagUploadTests(JobCase):
                 result = diag_upload.upload(self.c)
         finally:
             svc.close()
-        self.assertEqual((result, len(svc.got)), ({"code": "D-7K3Q"}, 2))
+        self.assertEqual((result["code"], len(svc.got)), ("D-7K3Q", 2))
         svc = FakeService(script=[(503, b"busy"), (502, b"busy")])
         try:
             with mock.patch.dict(os.environ, {"S2A_DIAG_UPLOAD_URL": svc.url}), mock.patch.object(diag_upload.time, "sleep"), self.assertRaises(Failure) as e:
@@ -141,3 +143,15 @@ class DiagUploadTests(JobCase):
         text = zipfile.ZipFile(io.BytesIO(svc.got[0][1])).read("logs/error-summary.log").decode()
         self.assertIn("环境检查没过", text)
         self.assertNotIn(str(Path.home()), text)
+
+    def test_issue_url_matches_template(self):
+        from urllib.parse import urlparse, parse_qs
+        import yaml
+        form = yaml.safe_load((Path(__file__).resolve().parents[3] / ".github/ISSUE_TEMPLATE/问题回报.yml").read_text(encoding="utf-8"))
+        fields = {b.get("id"): b for b in form["body"] if b.get("id")}
+        for client, plat in (("mac/0.3.5", "mac"), ("windows/0.3.5", "windows")):
+            q = parse_qs(urlparse(diag_upload.issue_url("D-7K3Q", client)).query)
+            self.assertEqual(q["template"], ["问题回报.yml"])
+            self.assertEqual((q["logs"], q["version"], q["title"]), (["D-7K3Q"], ["0.3.5"], ["[问题] "]))
+            self.assertIn(q["platform"][0], fields["platform"]["attributes"]["options"], plat)
+            self.assertTrue({"logs", "version", "platform"} <= fields.keys())

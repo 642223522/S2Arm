@@ -1354,6 +1354,8 @@
   "s2arm.diagUpload.button": "Upload to developers",
   "s2arm.diagUpload.title": "Upload to developers",
   "s2arm.diagUpload.what": "Uploads: logs from recent runs and builds, crash records, and version info for this computer and S2Arm. Personal details in file names and paths are replaced first.",
+  "s2arm.diagUpload.github": "Post on GitHub",
+  "s2arm.diagUpload.repo": "Repository: {0}",
   "s2arm.diagUpload.not": "Never uploaded: saves, keys, game files. Kept at most 7 days and deleted once the developers have read it.",
   "s2arm.diagUpload.cancel": "Cancel",
   "s2arm.diagUpload.send": "Upload",

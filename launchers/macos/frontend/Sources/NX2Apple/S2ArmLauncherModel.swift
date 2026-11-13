@@ -857,7 +857,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 上传给开发者（diagnosticsUpload 作业）→ 短码。错误摘要的附加信息同 copyErrorReport（App 版本、目标设备、环境检查未过项）；
     ///   operations 为 nil（没有作业记录的失败，如环境检查）时把界面上的 fallback 正文交给作业放进包里。失败抛作业的原因（界面退回导出）
-    func uploadDiagnostics(gameID: String?, operations: [String]?, fallback: String) async throws -> String {
+    struct DiagUploadReceipt: Equatable { let code: String; let issueURL: URL?; let repo: String }
+    func uploadDiagnostics(gameID: String?, operations: [String]?, fallback: String) async throws -> DiagUploadReceipt {
         let info = Bundle.main.infoDictionary ?? [:]
         var extra: [String: Any] = ["app": info["CFBundleShortVersionString"] as? String ?? "", "build": info["S2ABuildID"] as? String ?? "",
                                     "checks": checks.filter { !$0.ok }.map { ["name": $0.name, "message": $0.message] }]
@@ -867,7 +868,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         if let operations { request["operations"] = operations } else if !fallback.isEmpty { request["summary"] = fallback }
         let outcome = try await provider.client.perform("diagnosticsUpload", extra: request)
         guard let code = outcome.result["code"] as? String, !code.isEmpty else { throw UploadNoCode() }
-        return code
+        // 预填好的新帖页与仓库地址由作业层给（pack/jobs/diag_upload.py issue_url，iOS 同格式）
+        return DiagUploadReceipt(code: code, issueURL: (outcome.result["issueUrl"] as? String).flatMap(URL.init(string:)),
+                                 repo: outcome.result["repo"] as? String ?? "github.com/jhaizhou-ops/S2Arm")
     }
     struct UploadNoCode: LocalizedError { var errorDescription: String? { Localizer().t("s2arm.diagUpload.noCode") } }
 

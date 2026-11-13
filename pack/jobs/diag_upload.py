@@ -25,6 +25,9 @@ import zipfile
 
 from core import Failure
 
+REPO = "github.com/jhaizhou-ops/S2Arm"   # 短码页上同时写出仓库地址：打不开链接的玩家照着手动去
+ISSUE_FORM = "问题回报.yml"   # .github/ISSUE_TEMPLATE/问题回报.yml：字段 id logs / version / platform 以它为准
+PLATFORM_OPTION = {"mac": "Mac（前端里打包或启动）", "windows": "出包的电脑（一键出包命令）"}   # = 模板 platform 下拉的选项原文（预填要逐字相同）
 UPLOAD_URL = "https://diag.s2arm.com/v1/upload"   # *.workers.dev 国内不通，只用这个；S2A_DIAG_UPLOAD_URL 覆盖（内部联调 / 单测）
 LIMIT = 30 * 1024 * 1024   # 服务端收件上限（压缩后 ≤ 30 MB，方案「服务端」节）：超了不白传，直接退回导出
 CODE_RE = re.compile(r"D-[2-9A-HJKMNP-TV-Z]{4}")   # D- + 4 位，去掉 0 1 I L O U（念、抄不混）
@@ -91,6 +94,15 @@ def send(url, path, client="mac/-", timeout=120, retry_wait=2.0):
     return code
 
 
+def issue_url(code, client):
+    """预填好的新帖页（维护方方案「去 GitHub 发帖」，iOS 端同格式）：模板问题回报、logs = 诊断码、version、platform 下拉原文、标题前缀。
+    client = X-S2Arm-Client 的 <平台>/<版本>"""
+    from urllib.parse import urlencode, quote
+    plat, _, version = client.partition("/")
+    query = dict(template=ISSUE_FORM, logs=code, version=version if version and version != "-" else "", platform=PLATFORM_OPTION.get(plat, ""), title="[问题] ")
+    return f"https://{REPO}/issues/new?" + urlencode({k: v for k, v in query.items() if v}, quote_via=quote)
+
+
 def add_summary(c, path):
     """请求带了 gameId / operations：把最近那次失败的错误摘要放进包（同「复制错误摘要」的正文，report.py 已脱敏）。
     没有作业记录的失败（环境检查，界面不带 operations）：界面把它显示的那段正文作 summary 交来，脱敏后放进去。都没有就不放"""
@@ -126,6 +138,8 @@ def upload(c):
         if size > LIMIT:
             raise Failure(f"诊断包有 {size / 2**20:.0f} MB，超过上传上限 {LIMIT // 2**20} MB。{FALLBACK}", code="diag_upload_failed")
         c.begin("上传诊断")
-        return dict(code=send(url, path, client_tag(c)))
+        client = client_tag(c)
+        code = send(url, path, client)
+        return dict(code=code, issueUrl=issue_url(code, client), repo=REPO)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
