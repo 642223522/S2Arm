@@ -11,6 +11,8 @@
     <string name="touch_menu_title">触屏布局</string>
     <string name="touch_menu_edit_positions">编辑按键位置</string>
     <string name="touch_menu_restore_default">恢复默认布局</string>
+    <string name="touch_menu_show_pad">显示虚拟手柄</string>
+    <string name="touch_menu_hide_pad">隐藏虚拟手柄</string>
     <string name="touch_passthrough_on">触屏直通：开（点按关闭）</string>
     <string name="touch_passthrough_off">触屏直通：关（点按开启）</string>
     <string name="touch_edit_save">保存</string>

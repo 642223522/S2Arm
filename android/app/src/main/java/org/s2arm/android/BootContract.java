@@ -384,10 +384,11 @@ final class BootContract {
             ? object(art, "extensions", artifactRel) : null;
         Map<String, Object> graphicsExtension = extensions != null && extensions.containsKey(GRAPHICS_FEATURE)
             ? object(extensions, GRAPHICS_FEATURE, artifactRel + ".extensions") : null;
-        if (graphicsRequired != (graphicsExtension != null))
-            throw new BadGame(graphicsRequired
-                ? "artifact requires " + GRAPHICS_FEATURE + " but has no matching extension"
-                : "artifact has " + GRAPHICS_FEATURE + " extension without requiredFeatures entry");
+        if (graphicsRequired && graphicsExtension == null)
+            throw new BadGame("artifact requires " + GRAPHICS_FEATURE + " but has no matching extension");
+        // 扩展在、只是 requiredFeatures 没登记：扩展本身照常核对、照常用，只记日志（不堵门）
+        if (!graphicsRequired && graphicsExtension != null)
+            System.err.println("S2Arm: " + artifactRel + " has the " + GRAPHICS_FEATURE + " extension without a requiredFeatures entry; using it");
         if (graphicsExtension != null) {
             String where = artifactRel + ".extensions." + GRAPHICS_FEATURE;
             Set<String> expected = new HashSet<>();
