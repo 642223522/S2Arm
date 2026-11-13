@@ -303,11 +303,11 @@
 "diag.prompt.crash" = "The system reported that S2Arm crashed or froze last time";
 "diag.prompt.message" = "%@. This uploads run logs and crash reports — no saves, keys or game files — and gives you a short code.";
 "diag.prompt.no" = "No thanks";
-"diag.prompt.send" = "Send to developers";
+"diag.prompt.send" = "Upload to developers";
 "diag.prompt.title" = "Send us diagnostics from last time?";
-"diag.upload" = "Send to developers";
+"diag.upload" = "Upload to developers";
 "diag.upload.confirm.message" = "This uploads logs from the last few runs, crash reports, and device and version info — no saves, keys or game files. You’ll get a short code; post it in your GitHub issue or the group so we can find these diagnostics.";
-"diag.upload.confirm.title" = "Send to developers?";
+"diag.upload.confirm.title" = "Upload to developers?";
 "diag.upload.copy" = "Copy code";
 "diag.upload.done.message" = "Code: %@\nTap Post on GitHub and the code is filled in for you, or copy the code into your issue or the group. It’s valid for 7 days.\nRepository: %@";
 "diag.upload.done.title" = "Uploaded";
