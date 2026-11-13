@@ -148,6 +148,7 @@ public final class DiagnosticBundleWriterTest {
             + "    \"model\" : \"Synth Phone\",\n"
             + "    \"sdk\" : \"36\"\n"
             + "  },\n"
+            + "  \"exits\" : [],\n"
             + "  \"exported_at\" : \"2026-11-12T01:23:45Z\",\n"
             + "  \"files\" : [\n"
             + "    {\n      \"bytes\" : " + utf8(newest) + ",\n      \"path\" : \"logs/host.log\",\n      \"truncated\" : false\n    },\n"
@@ -235,6 +236,43 @@ public final class DiagnosticBundleWriterTest {
         } catch (IllegalArgumentException e) {
             expect("非法包名词的报错", "bundle word", e.getMessage());
         }
+
+        // ---- 5b. System exit records: reason names (values from android-36 android.jar ApplicationExitInfo.REASON_*),
+        //          strings redacted, description cut after redaction, at most 16, order kept.
+        String[] reasonNames = {"unknown", "exit_self", "signaled", "low_memory", "crash", "crash_native", "anr",
+            "initialization_failure", "permission_change", "excessive_resource_usage", "user_requested", "user_stopped",
+            "dependency_died", "other", "freezer", "package_state_change", "package_updated"};
+        for (int code = 0; code < reasonNames.length; code++) expect("退出原因 " + code, reasonNames[code], DiagnosticExits.reason(code));
+        expect("未知退出原因", "reason_99", DiagnosticExits.reason(99));
+        expect("负的退出原因", "reason_-1", DiagnosticExits.reason(-1));
+        List<Map<String, Object>> exits = new ArrayList<>();
+        exits.add(DiagnosticExits.record(T2, "org.s2arm.android:game", 5, 11, 100, 2048L, 4096L,
+            "crash in /data/user/0/org.s2arm.android/files/x by synth@example.invalid"));
+        String longDescription = "x".repeat(DiagnosticExits.MAX_DESCRIPTION - 5) + " /storage/emulated/0/Download/合成/a.nsp tail";
+        exits.add(DiagnosticExits.record(T1, "org.s2arm.android", 10, 0, 400, 0L, 0L, longDescription));
+        for (int i = 0; i < 20; i++) exits.add(DiagnosticExits.record(T0 - i * 1000L, "org.s2arm.android", 3, 9, 300, 1L, 2L, "lmk " + i));
+        r = DiagnosticBundleWriter.write(saves, root.resolve("exits"), redactor::redact, info(), exits, "diag", NOW, UTC);
+        String em = zip(r.bundle).get("manifest.json");
+        String first = "    {\n"
+            + "      \"description\" : \"crash in <APP>/files/x by [EMAIL]\",\n"
+            + "      \"importance\" : 100,\n"
+            + "      \"process\" : \"org.s2arm.android:game\",\n"
+            + "      \"pss_kb\" : 2048,\n"
+            + "      \"reason\" : \"crash_native\",\n"
+            + "      \"reason_code\" : 5,\n"
+            + "      \"rss_kb\" : 4096,\n"
+            + "      \"status\" : 11,\n"
+            + "      \"time\" : \"2026-11-12T01:02:03Z\"\n"
+            + "    },\n";
+        expect("第一条退出记录（原生崩溃，信号 11），路径与邮箱已脱敏", true, em.contains("  \"exits\" : [\n" + first));
+        // 295 x + " [PRIVATE_PATH]" (the path is hidden first) → cut at 300 characters, then "…"
+        String cutDescription = ("x".repeat(DiagnosticExits.MAX_DESCRIPTION - 5) + " [PRIVATE_PATH]").substring(0, DiagnosticExits.MAX_DESCRIPTION) + "…";
+        expect("长描述先脱敏再截到 300 字", true, em.contains("\"description\" : \"" + cutDescription + "\""));
+        expect("长描述里没有原路径", false, em.contains("Download"));
+        int n = 0;
+        for (int at = em.indexOf("\"reason_code\""); at >= 0; at = em.indexOf("\"reason_code\"", at + 1)) n++;
+        expect("最多 16 条", DiagnosticExits.MAX_RECORDS, n);
+        expect("按给的顺序取前 16 条：最后一条是 lmk 13", true, em.contains("\"lmk 13\"") && !em.contains("\"lmk 14\""));
 
         // ---- 6. Over the cap: head quarter and tail, cut at line breaks (cap 1000: head 250, tail 750 - 64 = 686).
         StringBuilder lines = new StringBuilder();

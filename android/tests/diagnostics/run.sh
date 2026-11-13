@@ -9,6 +9,7 @@ javac -encoding UTF-8 -Xlint:all -Werror -d "$out" \
     "$root/android/app/src/main/java/org/s2arm/android/DiagnosticBundlePolicy.java" \
     "$root/android/app/src/main/java/org/s2arm/android/DiagnosticRedactor.java" \
     "$root/android/app/src/main/java/org/s2arm/android/DiagnosticBundleWriter.java" \
+    "$root/android/app/src/main/java/org/s2arm/android/DiagnosticExits.java" \
     "$root/android/tests/diagnostics/DiagnosticBundlePolicyTest.java" \
     "$root/android/tests/diagnostics/DiagnosticRedactorTest.java" \
     "$root/android/tests/diagnostics/DiagnosticBundleWriterTest.java"
