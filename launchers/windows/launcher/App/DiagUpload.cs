@@ -13,7 +13,7 @@ namespace S2Arm.Launcher;
 /// 「上传给开发者」（11-13 诊断一键上传，取代原来的「复制错误摘要」与「导出诊断包」两个入口，同 Mac UploadDiagnosticsSheet）：
 ///   点了先说清传什么、不传什么，玩家确认才传；作业层（pack/jobs/diag_upload.py）打一份和导出相同的脱敏包、带上这次失败的错误摘要，
 ///   传完只给一个短码、只复制码。上传没成（服务没开通 / 没网 / 被拒收）就说明原因、退回「导出诊断包」。
-///   还没选游戏库（欢迎页的环境检查失败）时跑不了作业：照旧把错误摘要复制好，并说明原因。
+///   还没选游戏库（欢迎页的环境检查失败）也照传：库路径给作业层的缺省「<私有目录>/unconfigured」（同 Mac JobClient），打包不依赖游戏库（11-13 故障报修）。
 public sealed partial class EnvironmentWindow
 {
     private bool diagUploadOpen;
@@ -27,6 +27,15 @@ public sealed partial class EnvironmentWindow
         return button;
     }
 
+    /// 报错页统一的一句「故障报修」指引（11-13，同 Mac ReportHint）：文字只在共享规格 report.hint 一处（SharedText.ReportHint）；凡有「上传给开发者」的报错页都挂它
+    private TextBlock ReportHintText()
+    {
+        var hint = new TextBlock { Text = text.ReportHint(language), FontSize = 12.5, Foreground = Brush.Parse("#8C8A85"), TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0) };
+        AutomationId(hint, "report.hint");
+        return hint;
+    }
+
     private Dictionary<string, object?> ReportExtra() => new()
     {
         ["app"] = AppVersion,
@@ -37,23 +46,6 @@ public sealed partial class EnvironmentWindow
     private async Task UploadDiagnosticsAsync(string? gameId, string[]? operations, Func<string> fallback, Button? origin = null)
     {
         if (diagUploadOpen) return;
-        if (connectedFolder is null || libraryId is null)
-        {
-            var text = (operations is null ? null : await JobReportClient.RunAsync(paths, privateRoot, gameId, operations, JsonSerializer.Serialize(ReportExtra()))) ?? fallback();
-            if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(text);
-            if (origin is not null) origin.Content = T("export.fail.copied");
-            var note = new Window { Title = T("diag.upload.button"), Width = 440, SizeToContent = SizeToContent.Height, CanResize = false,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = Canvas, Foreground = Ink,
-                FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope") };
-            var ok = new Button { Content = T("diag.upload.close"), Padding = new Thickness(16, 9), CornerRadius = new CornerRadius(8),
-                Background = Brush.Parse("#29292D"), Foreground = Ink, HorizontalAlignment = HorizontalAlignment.Right };
-            ok.Click += (_, _) => note.Close();
-            var panel = new StackPanel { Spacing = 14, Margin = new Thickness(28) };
-            panel.Children.Add(Muted(T("diag.upload.noLibrary"), 14)); panel.Children.Add(ok);
-            note.Content = panel;
-            await note.ShowDialog(this);
-            return;
-        }
         diagUploadOpen = true;
         try
         {
@@ -100,7 +92,7 @@ public sealed partial class EnvironmentWindow
                 string? code = null, why = null, issueUrl = null, repo = null;
                 try
                 {
-                    var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "diagnosticsUpload", null, CancellationToken.None, fields: fields);
+                    var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder ?? Path.Combine(privateRoot, "unconfigured"), libraryId, "diagnosticsUpload", null, CancellationToken.None, fields: fields);
                     if (job.Report.Succeeded && job.Report.Result.ValueKind == JsonValueKind.Object && job.Report.Result.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String)
                     {
                         code = c.GetString();

@@ -285,6 +285,14 @@ public sealed partial class EnvironmentWindow : Window
         envCheckBtn.Click += (_, _) => { if (!libraryBusy) importDialog = null; Navigate(page == "settings" ? "library" : "settings"); };
         rightBar.Children.Add(envCheckBtn);
 
+        // 故障报修（11-13 jhz）：任何页面同一位置（顶栏最右，Mac 同位），点开就是全局「上传给开发者」弹窗（不针对某款；
+        //   作业层自动附最近一次失败的错误摘要；没选游戏库也能传）。报错页的指引 ReportHintText 指的就是它
+        var reportBtn = new Button { Content = T("report.button"), Padding = new Thickness(14, 8), Background = Brush.Parse("#3A2A2A"), Foreground = Ink,
+            CornerRadius = new CornerRadius(8) };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(reportBtn, "top.report");
+        reportBtn.Click += async (_, _) => await UploadDiagnosticsAsync(null, null, () => "");
+        rightBar.Children.Add(reportBtn);
+
         Grid.SetColumn(rightBar, 1); header.Children.Add(rightBar);
         body.Children.Add(header);
         AddNoticeBar(body);
