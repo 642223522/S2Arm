@@ -637,7 +637,8 @@
       {"id": "msg_game", "macro": "S2A_INIT_FAIL_MSG_GAME", "zh-Hans": "游戏程序没能开始运行。", "en": "The game program couldn't start running."},
       {"id": "msg_generic", "macro": "S2A_INIT_FAIL_MSG_GENERIC", "zh-Hans": "启动过程中出了问题。", "en": "Something went wrong during startup."},
       {"id": "msg_files", "macro": "S2A_INIT_FAIL_MSG_FILES", "zh-Hans": "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。", "en": "Game files are missing. Import them again: in S2Arm on your computer, choose \"Install on iPhone\" for this game again."},
-      {"id": "msg_device", "macro": "S2A_INIT_FAIL_MSG_DEVICE", "zh-Hans": "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。", "en": "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."}
+      {"id": "msg_device", "macro": "S2A_INIT_FAIL_MSG_DEVICE", "zh-Hans": "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。", "en": "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."},
+      {"id": "msg_shaders", "macro": "S2A_INIT_FAIL_MSG_SHADERS", "zh-Hans": "这款游戏缺着色器库，请重新导入：用电脑装的，在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；自己签名安装的，把「S2Arm 自签导出」文件夹里这款游戏的 .img 放进「文件」App（不是资源包文件夹里的 game.img，那个不带着色器库）。", "en": "This game's shader library is missing. Import it again: if you install from your computer, choose \"Install on iPhone\" for this game again in S2Arm on your computer; if you sign and install it yourself, put this game's .img from the \"S2Arm Self-Sign Export\" folder into the Files app (not the game.img inside the resource pack folder, which has no shader library)."}
     ],
     "codes": [
       {"id": "unknown", "enum": "S2A_INIT_FAIL_E_UNKNOWN", "message": "msg_generic"},
@@ -647,7 +648,7 @@
       {"id": "service_early", "enum": "S2A_INIT_FAIL_E_SERVICE_EARLY", "message": "msg_service"},
       {"id": "dguard_limit", "enum": "S2A_INIT_FAIL_E_DGUARD_LIMIT", "message": "msg_generic"},
       {"id": "game_files_missing", "enum": "S2A_INIT_FAIL_E_GAME_FILES", "message": "msg_files"},
-      {"id": "direct_lib_missing", "enum": "S2A_INIT_FAIL_E_DIRECT_LIB", "message": "msg_files"},
+      {"id": "direct_lib_missing", "enum": "S2A_INIT_FAIL_E_DIRECT_LIB", "message": "msg_shaders"},
       {"id": "device_address_space", "enum": "S2A_INIT_FAIL_E_DEVICE_ADDRESS", "message": "msg_device"}
     ]
   },
