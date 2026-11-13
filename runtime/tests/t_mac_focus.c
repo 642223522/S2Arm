@@ -47,6 +47,6 @@ int main(int argc, char **argv) {
     check(strstr(ti, "int s2a_text_input_mac_is_input_window(NSWindow *w)") != NULL, "textinput_mac.m 导出输入框识别");
     check(strstr(ti, "!in.answered && in.alert.window == w") != NULL, "已答复的输入框不算");
 
-    printf("%s mac_focus：%d / %d\n", failures ? "✗" : "✓", checks - failures, checks);
+    printf("%s t_mac_focus：%d / %d\n", failures ? "✗" : "✓", checks - failures, checks);
     return failures ? 1 : 0;
 }
