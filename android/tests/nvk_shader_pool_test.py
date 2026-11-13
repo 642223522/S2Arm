@@ -70,10 +70,31 @@ def main():
         assert before_lines[1] == after_lines[1], 'legacy S2AI1 bytes changed'
         print(f'legacy request and canonical identity byte-for-byte unchanged versus {base_sha}')
         return 0
+    if len(sys.argv) == 6 and sys.argv[1] == '--emit-real':
+        result = run('emit-real', original, args=sys.argv[1:])
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
 
     if sys.argv[1:] == ['--withdraw']:
         text = original.read_text(encoding='utf-8')
         changes = [
+            ('gs-source-epoch', 'MIX(s2a_source_epoch());', '(void)s2a_source_epoch();', 1, 'poisoned GS source cannot hit fast cache'),
+            ('gs-slot', '(const char *const[]){"vs", "fs", "gs"}[st]',
+             '(const char *const[]){"vs", "fs", "fs"}[st]', 3, 'GS production request reaches compiler'),
+            ('gs-wrong-stage', 'src.stage = (nvn_gpu_stage)st;',
+             'src.stage = st == 2 ? NVN_GPU_SH_FS : (nvn_gpu_stage)st;', 1, 'result loads VS FS and GS'),
+            ('gs-key-omitted', '((stages & 4u) ? 3 : 2)',
+             '((stages & 4u) ? 2 : 2)', 1, 'changed GS key recompiles'),
+            ('gs-texture-omitted', 'if (stages & 4u) MIX(rp_tex_fact_sig(rp_S.tex[2], 32, rp_S.tex_base, rp_S.tex_pool_n));',
+             'if (0) MIX(rp_tex_fact_sig(rp_S.tex[2], 32, rp_S.tex_base, rp_S.tex_pool_n));', 1, 'changed GS texture fact recompiles'),
+            ('gs-separate-fast-omitted', 'if (stages & 4u) MIX(sep_fact_sig(2));',
+             'if (0) MIX(sep_fact_sig(2));', 1, 'GS separate texture fact reaches compiler'),
+            ('gs-separate-generation-omitted', 'const uint64_t sg = rp_tex_sep_gen[st], rg = rp_tex_reg_gen();',
+             'const uint64_t sg = st == 2 ? 0 : rp_tex_sep_gen[st], rg = rp_tex_reg_gen();', 1, 'changed GS separate slot invalidates cached signature and recompiles'),
+            ('gs-separate-stage-wrong', '(const char *const[]){"vs", "fs", "gs"}[st], (uint32_t)(90',
+             '(const char *const[]){"vs", "fs", "fs"}[st], (uint32_t)(90', 1, 'GS separate texture fact reaches compiler'),
+            ('gs-cap-ignored', 'if (!(caps.caps & NVN_GPU_CAP_GEOMETRY))',
+             'if (0 && !(caps.caps & NVN_GPU_CAP_GEOMETRY))', 1, 'disabled GS fails before compiler'),
             ('withdraw-guard', 'if (!shader_texture_pool_ready()) return -1;',
              'if (0 && !shader_texture_pool_ready()) return -1;', 2, 'expected accounting=texture_pool_over_limit'),
             ('wrong-gfx-length', 'in.texture_array_length = (uint32_t)rp_S.tex_pool_n;',
@@ -99,7 +120,7 @@ def main():
              'for (int st = 0; st < nst; st++) for (int slot = 0; slot < 0; slot++) {', 1, 'separate VS registered view fact is sent'),
             ('drop-separate-cs', 'for (int slot = 0; slot < 128; slot++) {\n        uint64_t h = rp_S.tex[5][128 + slot];',
              'for (int slot = 0; slot < 0; slot++) {\n        uint64_t h = rp_S.tex[5][128 + slot];', 1, 'separate CS registered texture fact is sent'),
-            ('drop-separate-fast-identity', 'MIX(rp_tex_fact_sig(&rp_S.tex[0][128], 128, rp_S.tex_base, rp_S.tex_pool_n));',
+            ('drop-separate-fast-identity', 'MIX(sep_fact_sig(0));',
              '(void)rp_S.tex[0][128];', 1, 'separate texture rebind invalidates fast identity'),
         ]
         for name, before, after, count, expected in changes:
@@ -109,7 +130,7 @@ def main():
             result = run(name, path)
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
-        print('PASS: 13 negative controls')
+        print(f'PASS: {len(changes)} negative controls')
         return 0
     if sys.argv[1:]:
         raise ValueError('usage: nvk_shader_pool_test.py [--withdraw]')

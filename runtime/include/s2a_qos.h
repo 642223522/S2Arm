@@ -37,6 +37,8 @@ typedef enum {
     //   以 main 上那个常量为准；这里不再设第二处）
     S2A_QOS_IO_BG,             // 管线归档写盘、映射释放、满屏判据截图、旧构建目录清理：UTILITY（纯 I/O / 诊断，不在帧路径）
     S2A_QOS_HOST_AUX,          // 宿主杂项：震动邮箱、收局 / 存档管理触发、诊断转储：USER_INITIATED（要按时到，不抢渲染）
+    S2A_QOS_INPUT,             // Mac 手柄输入队列（macos/front_mac.m pad_input_queue：GameController 回调 → 快速路径发布 → 唤醒 HID 泵）：
+                               //   USER_INTERACTIVE，输入关键路径（依据 ②：低档会被排到能效核上慢约 4 倍，主线程占满性能核时输入直达靠它）
     S2A_QOS_N
 } s2a_qos_role;
 
@@ -44,7 +46,7 @@ static inline int s2a_qos_perf_cores(void);
 static inline qos_class_t s2a_qos(s2a_qos_role r) {
     switch (r) {
     case S2A_QOS_GAME_MAIN: case S2A_QOS_SUBMIT: case S2A_QOS_ENCODE: case S2A_QOS_UB_COPY: case S2A_QOS_PRESENT:
-    case S2A_QOS_MTL_FEEDBACK: case S2A_QOS_PREEMPT_WATCHDOG:
+    case S2A_QOS_MTL_FEEDBACK: case S2A_QOS_PREEMPT_WATCHDOG: case S2A_QOS_INPUT:
         return QOS_CLASS_USER_INTERACTIVE;
     case S2A_QOS_GAME_OTHER: return s2a_qos_perf_cores() >= 4 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED;
     case S2A_QOS_SHADER_URGENT: case S2A_QOS_SHADER_VARIANT: case S2A_QOS_HOST_AUX:

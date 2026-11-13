@@ -279,6 +279,11 @@ namespace S2A.Services
             // Mac 宿主只导出六轴、没有震动会话：反馈对象照建，只走六轴
             else _motionOnly = ControllerFeedback.MotionExport(out _);
 
+            // R5 键盘区：宿主喂的原始键态（runtime/src/pad.c s2a_kb_read：HID usage 位图 + 修饰键字段，macos/front_mac.m 喂）。
+            //   iOS / 安卓没喂过恒为空 → 键盘区同改前（Activate 时的空状态）。单测经此注入替身
+            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_kb_read", out nint kb))   // 平台例外：runtime/src/pad.c 只进苹果宿主（安卓不编），同手柄读口按符号查、没有即键盘区同改前
+                _kbRead = (delegate* unmanaged<ulong*, uint*, void>)kb;
+
             // iOS 壳的触屏虚拟手柄（ios/vpad.m）：同样按符号查，有就接到 InputHook（Mac 宿主没有这个导出，保持为空）
             if (InputHook == null && NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_vpad_read", out nint vp))
             {
@@ -359,6 +364,8 @@ namespace S2A.Services
         private static ControllerFeedback _feedback;
         private static delegate* unmanaged<ulong> _rumbleSession;
         private static bool _motionOnly;
+        // R5 键盘区原始键态：宿主导出 s2a_kb_read（HID usage 位图 + 修饰键字段），没导出 / 没喂的宿主恒为空
+        internal static delegate* unmanaged<ulong*, uint*, void> _kbRead;
         private static delegate* unmanaged<int, int*, uint> _vpadReadPad;   // 多手柄：按槽位读（macos/front_mac.m 导出）
         private static delegate* unmanaged<int> _vpadPadCount;               // 多手柄：当前占用的槽位数（≥ 1）
         private static delegate* unmanaged<PadSnapshot*, void> _padReadEx;
@@ -451,6 +458,20 @@ namespace S2A.Services
             input.Buttons |= (ControllerKeys)_vpadRead(s);
             if (s[0] != 0 || s[1] != 0) { input.LStick.Dx = s[0]; input.LStick.Dy = s[1]; }
             if (s[2] != 0 || s[3] != 0) { input.RStick.Dx = s[2]; input.RStick.Dy = s[3]; }
+        }
+
+        // R5：键盘区共享内存（原先全库没有真实写入方——IHidServer.ActivateKeyboard 只写一条空状态、上游残留的
+        //   Ryujinx.Input 键盘路径不被驱动，读键盘区的游戏按什么都没反应）。把宿主前端的原始键态（s2a_kb_read）
+        //   每次 HID 提交写一遍，同触屏口径（没有键也写一条空状态，游戏读到的永远是最新的）；
+        //   软键盘开着（TextInput.Open）给全零，同上面手柄清零的口径（玩家在打字，按键不进游戏）
+        private static readonly ulong[] _kbState = new ulong[4];
+        private static void PushKeyboard(Switch device)
+        {
+            ulong* bits = stackalloc ulong[4]; uint mods;
+            _kbRead(bits, &mods);
+            bool text = TextInput.Open;
+            for (int i = 0; i < 4; i++) _kbState[i] = text ? 0 : bits[i];
+            device.Hid.Keyboard.Update(new KeyboardInput { Modifier = text ? 0 : (int)mods, Keys = _kbState });
         }
 
         // 触屏直通 → 触摸屏共享内存。每次 HID 提交都写一遍（没有触点也要写一条空状态，跟桌面版鼠标路径一致），
@@ -792,6 +813,7 @@ namespace S2A.Services
                 if (TextInput.Open)
                     for (int i = 0; i < states.Count; i++) states[i] = new GamepadInput { PlayerId = states[i].PlayerId };
                 device.Hid.Npads.Update(states);
+                if (_kbRead != null) PushKeyboard(device);   // R5 键盘区：宿主喂了才写（没喂的宿主同改前）
                 Cheats.SetKeys(states[0].Buttons);   // 金手指按键条件码看一号手柄（与 Ryujinx TamperMachine 同口径）
                 // A platform hook owns the HID touch ring (Android stable IDs);
                 // Apple uses the shared runtime/autoplay source when no hook is installed.
