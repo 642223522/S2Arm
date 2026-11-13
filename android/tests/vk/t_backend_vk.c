@@ -1239,6 +1239,9 @@ static void t16_fence_failure(void) {
     nvn_gpu_fill_buf(c3, c, 0, 16, 0x33333333u);
     int base = atomic_load(&g_ndone);
     nvn_gpu_vk_test_fail_fence(2);
+    // 先让后台在段 1 上停 200 ms：三段都提交进去之后段 2 才会失败。不压住的话，CPU 被抢时后台可能在段 3 提交之前
+    // 就处理完段 2 的失败，段 3 提交直接回 E_FAILED（时间线已失败终态），这一例就测不到「失败之后已提交的段也判失败」。
+    nvn_gpu_vk_test_delay_segment(1, 200);
     nvn_gpu_err e;
     nvn_gpu_rc r = nvn_gpu_cmd_commit(c1, 1, on_done, NULL, &e);
     CHECK(OK(r), "commit 1：%d %s", r.code, e.why);
@@ -1255,6 +1258,7 @@ static void t16_fence_failure(void) {
     const struct done_rec *d2 = wait_signal(2, base, 5000), *d3 = wait_signal(3, base, 5000);
     CHECK(d2 && d2->status == NVN_GPU_DONE_FAILED, "段 2 回调不是 FAILED");
     CHECK(d3 && d3->status == NVN_GPU_DONE_FAILED, "段 3 回调不是 FAILED");
+    nvn_gpu_vk_test_delay_segment(0, 0);   // 钩子不留给后面的用例
     nvn_gpu_buf_release(a, NULL, NULL);
     nvn_gpu_buf_release(b, NULL, NULL);
     nvn_gpu_buf_release(c, NULL, NULL);
