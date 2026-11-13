@@ -745,6 +745,7 @@ public class MainActivity extends Activity
 
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if (!runtimeLoaded) return;   // 运行库被拒的冷启动没有触屏层也没有库：两种结果都不处理
         if (request == PICK_TOUCH_LAYOUT || request == EXPORT_TOUCH_LAYOUT) {
             byte[] exported = touchExport;
             touchExport = null;
@@ -770,7 +771,7 @@ public class MainActivity extends Activity
             }
             return;
         }
-        if (runtimeLoaded && request == PICK_PACKAGE && result == RESULT_OK && data != null && data.getData() != null)
+        if (request == PICK_PACKAGE && result == RESULT_OK && data != null && data.getData() != null)
             library.importTree(data.getData());
     }
     @Override protected void onNewIntent(android.content.Intent intent) {
