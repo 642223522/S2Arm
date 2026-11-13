@@ -866,11 +866,28 @@ static void screen_fps_note(NSWindow *w) {
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
 - (BOOL)isFlipped { return YES; }
+// 出图层可画尺寸（#575）：缺省跟「视图尺寸 × backingScaleFactor」走。
+//   S2A_OUT_W / S2A_OUT_H（两个都给、各 64–8192 像素）：可画尺寸钉在这个值，层内容在窗口里等比居中、余边留黑，拖窗口 / 全屏 / 系统恢复 frame 都不改渲染尺寸；
+//   S2A_OUT_SCALE（0.5–1.0，同 iOS graphics/nvn/host_adapt.m layout_layer）：可画尺寸按倍数缩，交系统合成器放大。两者都给时固定尺寸优先
+static int g_out_w = -1, g_out_h; static double g_out_k = 1;
+static void out_cfg(void) {
+    if (g_out_w >= 0) return;
+    const char *w = getenv("S2A_OUT_W"), *h = getenv("S2A_OUT_H"), *k = getenv("S2A_OUT_SCALE");
+    long ww = w ? atol(w) : 0, hh = h ? atol(h) : 0; double kk = k ? atof(k) : 1;
+    g_out_w = 0; g_out_h = 0; g_out_k = kk >= 0.5 && kk <= 1.0 ? kk : 1.0;
+    if (ww >= 64 && ww <= 8192 && hh >= 64 && hh <= 8192) { g_out_w = (int)ww; g_out_h = (int)hh; fprintf(stderr, "[s2a] 出图层可画尺寸固定 %dx%d（S2A_OUT_W / S2A_OUT_H），窗口里等比居中、余边留黑\n", g_out_w, g_out_h); }
+    else if (w || h) fprintf(stderr, "[s2a] S2A_OUT_W / S2A_OUT_H 要两个都给、各 64–8192（读到 %s / %s），出图层照旧跟窗口\n", w ? w : "-", h ? h : "-");
+    if (!g_out_w && g_out_k != 1.0) fprintf(stderr, "[s2a] 出图层可画尺寸按 %.2f 倍（S2A_OUT_SCALE），交系统合成器放大\n", g_out_k);
+    else if (k && g_out_k == 1.0 && kk != 1.0) fprintf(stderr, "[s2a] S2A_OUT_SCALE 要 0.5–1.0（读到 %s），按 1\n", k);
+}
 - (void)layout {
     [super layout];
     CAMetalLayer *metal = (CAMetalLayer *)self.layer;
     metal.contentsScale = self.window.backingScaleFactor ?: 1;
     CGSize size = CGSizeMake(self.bounds.size.width * metal.contentsScale, self.bounds.size.height * metal.contentsScale);
+    out_cfg();
+    if (g_out_w) { size = CGSizeMake(g_out_w, g_out_h); metal.contentsGravity = kCAGravityResizeAspect; }
+    else if (g_out_k != 1.0) size = CGSizeMake(floor(size.width * g_out_k), floor(size.height * g_out_k));
     if (size.width >= 1 && size.height >= 1) metal.drawableSize = size;   // 直连模式没有 NxGal 跟窗口尺寸，层的可画尺寸在这里跟上
     nxgal_window_set_size((int32_t)size.width, (int32_t)size.height);
     // 宽屏跟窗口比例（审计 P1-83：原先从不换屏幕宽，拉宽 / 全屏后逻辑分辨率仍 1920×1080、两侧黑；维护者 任何比例都满屏）：同 iOS 口径换屏，
@@ -1223,7 +1240,7 @@ void s2a_front_run(void (*guest_main)(void)) {
         window.title = gameIdentity[@"name"];
         window.contentMinSize = NSMakeSize(640, 360); window.delegate = delegate; window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
         S2AMetalView *view = [[S2AMetalView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
-        view.wantsLayer = YES; CAMetalLayer *layer = [CAMetalLayer layer]; layer.opaque = YES;
+        view.wantsLayer = YES; CAMetalLayer *layer = [CAMetalLayer layer]; layer.opaque = YES; layer.backgroundColor = NSColor.blackColor.CGColor;   // 固定出图尺寸时等比居中的余边（#575）
         view.layer = layer; window.contentView = view; window.acceptsMouseMovedEvents = YES;
         delegate.window = window;
         screen_fps_note(window);
@@ -1258,6 +1275,8 @@ void s2a_front_run(void (*guest_main)(void)) {
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
+        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口
+        { const char *fs = getenv("S2A_FULLSCREEN"); if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（S2A_FULLSCREEN=1）\n"); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
         [app activateIgnoringOtherApps:YES]; focused = YES;
         s2a_pad_set_active(1);
         install_pad_handlers();
