@@ -85,6 +85,7 @@ static uint64_t c2_handle(int stage, unsigned b);   // the handle c2 holds at by
 #include <errno.h>
 #include <execinfo.h>
 #include <os/lock.h>
+#include "../../host/addr_wait.h"   // the uniform copy hand-off (nvn_rec.h ubc_wait)
 // Function parameters in this file are never retained again in the callee (the caller / global tables already hold them, and lifetime is guaranteed by defer_obj_release): saves a retain / release pair per call on the hot path
 #pragma clang attribute push(__attribute__((objc_externally_retained)), apply_to = function)
 
