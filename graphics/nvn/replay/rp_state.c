@@ -5,6 +5,7 @@
 #include <string.h>
 
 struct rp_state rp_S;
+uint64_t rp_tex_sep_gen[6];
 struct rp_target rp_R;
 uint8_t rp_pso_dirty, rp_dss_dirty, rp_args_dirty[6];
 static uint64_t g_push_seq;
@@ -27,7 +28,7 @@ int rp_shader_stage_key(unsigned st, uint8_t key[8]) {
 }
 
 void rp_state_reset(void) {
-    memset(&rp_S, 0, sizeof rp_S); memset(&rp_R, 0, sizeof rp_R);
+    memset(&rp_S, 0, sizeof rp_S); memset(&rp_R, 0, sizeof rp_R); for (int i = 0; i < 6; i++) rp_tex_sep_gen[i]++;
     for (int i = 0; i < 8; i++) rp_S.blend[i] = (blend_st){.target = (unsigned)i, .src_rgb = NVN_BLEND_FUNC_ONE, .dst_rgb = NVN_BLEND_FUNC_ZERO, .src_a = NVN_BLEND_FUNC_ONE, .dst_a = NVN_BLEND_FUNC_ZERO, .eq_rgb = NVN_BLEND_EQUATION_ADD, .eq_a = NVN_BLEND_EQUATION_ADD};
     rp_S.color = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; rp_S.chmask.mask = 0xffffffffu;
     rp_S.ms.enable = 1;
@@ -150,7 +151,8 @@ int rp_state_op(uint32_t op, const void *a, uint32_t size) {
             if (b->n < 0 || b->n > 32) { nvn_unimpl("rec", "bind_tex_count_overwritten", a); return 1; }
             bh_fresh(b);
             if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= RP_NTEX && memcmp(&rp_S.tex[b->stage][b->first], b->h, 8 * (size_t)b->n)) {
-                memcpy(&rp_S.tex[b->stage][b->first], b->h, 8 * (size_t)b->n); rp_args_dirty[b->stage] = 1; }
+                memcpy(&rp_S.tex[b->stage][b->first], b->h, 8 * (size_t)b->n); rp_args_dirty[b->stage] = 1;
+                if (b->first + b->n > 128) rp_tex_sep_gen[b->stage]++; }   // 分离贴图槽（128 起）变了
             return 1; }
         case OP_BIND_SAMP: { const p_bind_handles *b = a; if (b->n < 0 || b->n > 32) return 1; bh_fresh(b);
             if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= 128 && memcmp(&rp_S.samp[b->stage][b->first], b->h, 8 * (size_t)b->n)) {

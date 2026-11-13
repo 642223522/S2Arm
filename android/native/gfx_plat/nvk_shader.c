@@ -393,6 +393,19 @@ static const uint8_t *stage_key(unsigned st) {
     if (!rp_shader_stage_key(st, k[i])) memset(k[i], 0, 8);
     return k[i];
 }
+
+// 分离贴图槽（每阶段 128 格）的编译事实摘要，带缓存。这条路每笔绘制都走：每次都把两个阶段各 128 格扫一遍的话，
+// 一款每帧 1480 笔的游戏「取程序」从 2.6 涨到 3.7 毫秒 / 帧（真机直接计时）。摘要只取决于这 128 格的句柄和它们在
+// 贴图登记表里的内容，所以槽的代号（rp_tex_sep_gen）、登记表的代号（rp_tex_reg_gen）、池的起点和大小都没变时用上次的。
+// 代号先读、再算：算的中途登记表变了，下次代号对不上会重算，不会把旧摘要配到新代号上。只在提交线程上用。
+static uint64_t sep_fact_sig(int st) {
+    static struct { uint64_t sg, rg, sig; int base, pn, ok; } c[2];
+    const uint64_t sg = rp_tex_sep_gen[st], rg = rp_tex_reg_gen();
+    if (c[st].ok && c[st].sg == sg && c[st].rg == rg && c[st].base == (int)rp_S.tex_base && c[st].pn == (int)rp_S.tex_pool_n) return c[st].sig;
+    c[st].sig = rp_tex_fact_sig(&rp_S.tex[st][128], 128, rp_S.tex_base, rp_S.tex_pool_n);
+    c[st].sg = sg; c[st].rg = rg; c[st].base = (int)rp_S.tex_base; c[st].pn = (int)rp_S.tex_pool_n; c[st].ok = 1;
+    return c[st].sig;
+}
 static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, uint32_t stages) {
     uint64_t h = 1469598103934665603ull;
     #define MIX(v) do { h ^= (uint64_t)(v); h *= 1099511628211ull; } while (0)
@@ -407,7 +420,7 @@ static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct
     for (int st = 0; st < 6; st++) { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[st][i].size) m |= 1u << i; MIX(m); }
     MIX(rp_S.tex_pool_n); MIX(rp_S.samp_pool_n); MIX(rp_S.tf_on); MIX(rp_S.tex_base);
     MIX(rp_tex_fact_sig(rp_S.tex[0], 32, rp_S.tex_base, rp_S.tex_pool_n)); MIX(rp_tex_fact_sig(rp_S.tex[1], 32, rp_S.tex_base, rp_S.tex_pool_n));
-    MIX(rp_tex_fact_sig(&rp_S.tex[0][128], 128, rp_S.tex_base, rp_S.tex_pool_n)); MIX(rp_tex_fact_sig(&rp_S.tex[1][128], 128, rp_S.tex_base, rp_S.tex_pool_n));
+    MIX(sep_fact_sig(0)); MIX(sep_fact_sig(1));
     #undef MIX
     return h;
 }

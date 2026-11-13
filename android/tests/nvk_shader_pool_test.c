@@ -58,6 +58,8 @@ int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) {
     memset(t, 0, sizeof *t); memset(v, 0, sizeof *v); t->d.format = NVN_FORMAT_RGBA8; t->d.target = NVN_TEXTURE_TARGET_2D; t->d.depth = 1;
     *h = id == 77; if (*h) { v->set_target = 1; v->target = NVN_TEXTURE_TARGET_RECTANGLE; } return 1;
 }
+uint64_t rp_tex_sep_gen[6];
+uint64_t rp_tex_reg_gen(void) { static uint64_t g; return ++g; }   // 替身：登记表代号每次都变，分离槽摘要在这套用例里不走缓存（缓存的判据在 t_nvn_replay 里测）
 uint64_t rp_tex_fact_sig(const uint64_t *h, int n, int b, int count) {
     uint64_t hash = 1469598103934665603ull;
     for (int i = 0; i < n; i++) {

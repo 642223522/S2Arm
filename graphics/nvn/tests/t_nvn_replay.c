@@ -1694,6 +1694,25 @@ static void t_dispatch(void) {
     g_cresolve_rc = 0; g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
+// 着色器来源快路径用的两个代号（分离贴图槽摘要的缓存靠它们判失效）：
+// 分离槽（128 起）被改写才动 rp_tex_sep_gen[阶段]，组合槽不动；贴图登记 / 注销各动一次 rp_tex_reg_gen。
+uint64_t rp_tex_reg_gen(void); extern uint64_t rp_tex_sep_gen[6];
+static void t_tex_fact_gens(void) {
+    pass_fresh();
+    uint64_t s1 = rp_tex_sep_gen[1], s0 = rp_tex_sep_gen[0];
+    { stream a = {0}; p_bind_handles *b = put(&a, OP_BIND_TEX, sizeof *b); b->stage = 1; b->first = 3; b->n = 1; b->h[0] = 0x1234; end(&a); submit1(&a); fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(rp_tex_sep_gen[1] == s1 && rp_tex_sep_gen[0] == s0);                 // 组合槽：不动
+    { stream a = {0}; p_bind_handles *b = put(&a, OP_BIND_TEX, sizeof *b); b->stage = 1; b->first = 130; b->n = 2; b->h[0] = 0x55; b->h[1] = 0x66; end(&a); submit1(&a); fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(rp_tex_sep_gen[1] == s1 + 1 && rp_tex_sep_gen[0] == s0);             // 分离槽：只动这个阶段
+    { stream a = {0}; p_bind_handles *b = put(&a, OP_BIND_TEX, sizeof *b); b->stage = 1; b->first = 130; b->n = 2; b->h[0] = 0x55; b->h[1] = 0x66; end(&a); submit1(&a); fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(rp_tex_sep_gen[1] == s1 + 1);                                        // 写进去的和原来一样：不动
+    uint64_t r0 = rp_tex_reg_gen();
+    tex_t t = mk_tex(777, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    nvn_be_reg_tex(9, &t, NULL); CHECK(rp_tex_reg_gen() == r0 + 1);
+    nvn_be_unreg_tex_range(9, 1); CHECK(rp_tex_reg_gen() == r0 + 2);
+    nvn_be_tex_release(&t); pass_fresh();
+}
+
 // 帧重叠（开关 nvk_finish_lag）：游戏的 Finish 不等刚交的那一帧，下一帧的回放和它的显卡工作重叠。池镜像每放行一帧换一份：
 // 这一帧第一次同步的页直接写进「显卡已经不读」的那一份，上一帧还在读的那一份一个字节不动；两份各记各的页代号。
 // 池 g_pmem，4096 字节一页。期望值全部手算：页里写的是用例自己放的常数。
@@ -2351,6 +2370,7 @@ int main(int argc, char **argv) {
     t_autoflush();
     t_pass_fresh_zero();
     t_frame_overlap();
+    t_tex_fact_gens();
     t_pass_target_persists();
     t_pass_switch_and_partial();
     t_clear_rect();
