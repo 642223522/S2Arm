@@ -294,6 +294,30 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(launches, [])                          # 没有为解包起 App
         self.assertTrue(r["openToFinish"]); self.assertNotIn("unpackPending", r)
 
+    def test_single_app_push_never_launches_the_app_to_unpack(self):
+        """11-13 维护者：装上 App、把包传到位就算装好，玩家自己在手机上点信任、打开时 App 自己解开。原先不带上下文的单款 App（下游壳）推完带 --apply
+        拉起 App 解包，免费账号第一次装还没信任开发者时拉不起，作业打了红却报完成。期望：旧形态资源包、不带上下文，同样不带 --apply"""
+        gid = "0100535012974000"; out, pack = self._fixture(gid)
+        runs = []
+        def run(args, log=None, env=None, cwd=None, on_line=None):
+            runs.append([str(a) for a in args]); on_line("[12:00:00] 资源包：推 2 个文件 3 MB，分 1 批 + 索引 + 清单（1 秒）")
+        with um.patch.object(self.c, "run", run):
+            self.assertEqual(install.push_pack(self.c, "dev1", "io.s2arm.ds.x.team1", pack), (2, 3 << 20))
+        push = next(a for a in runs if a[2].endswith("tools/push_pack.py"))
+        self.assertIn("run", push); self.assertNotIn("--apply", push)
+
+    def test_readiness_downstream_package_comes_from_its_own_record(self):
+        """下游深度方案出的是独立 App：install-check 的「iPhone 版已做好」看它自己的出包记录（原先看容器件，下游款一律报没做好，实际装得上）"""
+        import downstream
+        gid = "0100535012974000"; self.c.r.update(gameId=gid)
+        scheme = {"id": "x"}
+        with um.patch.object(downstream, "requested", return_value=scheme), \
+             um.patch.object(downstream, "last_record", return_value={"ipa": "/lib/downstream/x/a.ipa"}):
+            r, it = self._ready([self._dev()])
+        self.assertTrue(it["package"]["ok"]); self.assertEqual(r["ipaPath"], "/lib/downstream/x/a.ipa")
+        with um.patch.object(downstream, "requested", return_value=scheme), um.patch.object(downstream, "last_record", return_value=None):
+            self.assertFalse(self._ready([self._dev()])[1]["package"]["ok"])
+
     def test_install_signs_installs_and_pushes(self):
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
         r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
@@ -1901,13 +1925,34 @@ class PhoneGamesTruthTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 install.container_others(self.c, self.ph(), rec, leave=self.D)
             self.assertEqual(e.exception.code, "container_would_drop")
-            self.assertIn("1 款", str(e.exception)); self.assertIn("乙游戏", str(e.exception))
+            self.assertIn("它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：「乙游戏」", str(e.exception))
+            self.assertNotIn("游戏库删除", str(e.exception))
             self.c.r["acceptDropped"] = True
             self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.C])
+
+    def test_recorded_on_phone_but_deleted_from_library_asks_first(self):
+        # 本机记录 A、B 装在手机上；玩家在游戏库里删了 B（库里只剩 A）。原先 B 被静默不带、手机上 B 打不开却没人说。
+        #   期望：没确认 → container_would_drop，说明「已从这台电脑的游戏库删除」并点名 B，不说「别的电脑」；确认后只带 A。
+        #   手机上的游戏目录读不出（phone_games 按「这处没有别的游戏」给空集）时同样问——依据是这台电脑的记录
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲")]))
+        rec = dict(games={self.A: {}, self.B: {}})
+        for on_phone in ({self.A, self.B}, set()):
+            self.c.r.pop("acceptDropped", None)
+            with self.subTest(on_phone=sorted(on_phone)), um.patch.object(install, "phone_games", lambda c, ph, s=on_phone: s), \
+                 um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "乙游戏"):
+                with self.assertRaises(Failure) as e:
+                    install.container_others(self.c, self.ph(), rec, leave=self.D)
+                msg = str(e.exception)
+                self.assertEqual((e.exception.code, e.exception.internal), ("container_would_drop", self.B))
+                self.assertIn("它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：「乙游戏」", msg)
+                self.assertNotIn("别的电脑", msg)
+                self.c.r["acceptDropped"] = True
+                self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A])
 
     def test_app_gone_stops_carrying_this_computers_record(self):
         # 本机记录 A、B。玩家在手机上删了整个 S2Arm（平台确认这个包名没装）→ A、B 也不在手机上，一款都不带。
         # App 还在的两种照旧按本机记录带：还没有 games 目录；只有 A 解开了（B 可能在 App 里、资源包还没解开）
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲"), dict(id=self.B, name="乙")]))   # 两款都在游戏库（库里删掉的另走确认，见上一条）
         rec = dict(games={self.A: {}, self.B: {}})
         gone = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
         with um.patch.object(install, "devpush_client", gone):

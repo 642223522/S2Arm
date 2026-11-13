@@ -6192,6 +6192,10 @@
   "en": "Sign with your Apple ID"
  },
  {
+  "source": "把游戏资源推进 iPhone（只推变了的文件；第一次要几分钟）",
+  "en": "Sending game resources to iPhone (only changed files; the first time takes a few minutes)"
+ },
+ {
   "source": "把资源包推进 iPhone 并解开（只推变了的文件；第一次大游戏要几分钟）",
   "en": "Push the resource pack to the iPhone and unpack it (only changed files; a big game takes a few minutes the first time)"
  },
@@ -7246,5 +7250,25 @@
  {
   "source": "资源包核对没通过：出包最后核对资源包时，有文件前后两次读出的内容对不上。多见于磁盘或内存读写不稳定，或有杀毒、云同步软件在改游戏库里的文件。",
   "en": "Resource pack check failed: When checking the resource pack at the end of packaging, some files read back differently from before. This usually means unstable disk or memory reads, or antivirus or cloud sync software changing files in the game library."
+ },
+ {
+  "source": "这次装完，手机上这几款游戏会打不开（存档和资源包都还在手机上）。",
+  "en": "After this install, these games on the phone won't open (their saves and resources stay on the phone)."
+ },
+ {
+  "source": "它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：{0}",
+  "en": "Installed from another computer; they come back once you \"Install on iPhone\" again from that computer: {0}"
+ },
+ {
+  "source": "它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：{0}",
+  "en": "Deleted from this computer's library; they come back once you add them again, \"Build for iPhone\" and install: {0}"
+ },
+ {
+  "source": "确认继续再点一次。",
+  "en": "Confirm and try again to continue."
+ },
+ {
+  "source": "确认后再点一次：点名的游戏会暂时打不开（存档和资源包留在手机上）。别的电脑装的，到那台电脑上再「装到 iPhone」一次就回来；已从游戏库删除的，重新加回、「打 iPhone 包」再装就回来。不想这样就先别装。",
+  "en": "Confirm and try again: the games named won't open for now (their saves and resources stay on the phone). Ones installed from another computer come back once you \"Install on iPhone\" again from that computer; ones deleted from the library come back once you add them again, \"Build for iPhone\" and install. If you don't want that, don't install yet."
  }
 ]
