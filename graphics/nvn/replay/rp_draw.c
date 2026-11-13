@@ -711,8 +711,10 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     struct timespec tsa; clock_gettime(CLOCK_MONOTONIC, &tsa); uint64_t t_disp0 = (uint64_t)tsa.tv_sec * 1000000000ull + (uint64_t)tsa.tv_nsec;
     if (!dp->ind && (dp->x <= 0 || dp->y <= 0 || dp->z <= 0)) return;   // 0 组：空操作
     const struct rp_prog *pg = NULL;
-    int sr = rp_shader_resolve_compute(&pg);
-    if (sr) { skip(sr > 0 ? "compute_program_not_ready" : "compute_program_unresolved", rec); return; }
+    { struct timespec tsh; clock_gettime(CLOCK_MONOTONIC, &tsh); uint64_t sh0 = (uint64_t)tsh.tv_sec * 1000000000ull + (uint64_t)tsh.tv_nsec;
+      int srx = rp_shader_resolve_compute(&pg);
+      clock_gettime(CLOCK_MONOTONIC, &tsh); rp_perf_add(RP_PERF_DISP_SHADER_NS, (uint64_t)tsh.tv_sec * 1000000000ull + (uint64_t)tsh.tv_nsec - sh0);
+      if (srx) { skip(srx > 0 ? "compute_program_not_ready" : "compute_program_unresolved", rec); return; } }
     static nvn_gpu_view tv[RP_PROG_ENT_MAX]; static nvn_gpu_samp ts[RP_PROG_ENT_MAX];
     const tex_t *images[RP_PROG_ENT_MAX] = {0};
     struct timespec tr0; clock_gettime(CLOCK_MONOTONIC, &tr0); uint64_t r0 = (uint64_t)tr0.tv_sec * 1000000000ull + (uint64_t)tr0.tv_nsec;
@@ -752,7 +754,10 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
       rp_pass_flush(c);
       clock_gettime(CLOCK_MONOTONIC, &tsb); rp_perf_add(RP_PERF_DISP_FLUSH_NS, (uint64_t)tsb.tv_sec * 1000000000ull + (uint64_t)tsb.tv_nsec - f0); }
     g_disp_ind = NULL; g_disp_ind_off = 0;
-    if (dp->ind && ((dp->ind & 3) || !rp_buf_resolve(c, dp->ind, 12, &g_disp_ind, &g_disp_ind_off))) { skip("dispatch_indirect_unresolved", rec); goto done; }
+    { struct timespec tin; clock_gettime(CLOCK_MONOTONIC, &tin); uint64_t in0 = (uint64_t)tin.tv_sec * 1000000000ull + (uint64_t)tin.tv_nsec;
+      int bad = dp->ind && ((dp->ind & 3) || !rp_buf_resolve(c, dp->ind, 12, &g_disp_ind, &g_disp_ind_off));
+      clock_gettime(CLOCK_MONOTONIC, &tin); rp_perf_add(RP_PERF_DISP_IND_NS, (uint64_t)tin.tv_sec * 1000000000ull + (uint64_t)tin.tv_nsec - in0);
+      if (bad) { skip("dispatch_indirect_unresolved", rec); goto done; } }
     uint64_t key = (uint64_t)(uintptr_t)pg; nvn_gpu_pipe cp = nvn_hm_get(&g_cpipes, &key);
     if (!cp) {
         nvn_gpu_stage_desc cs; memset(&cs, 0, sizeof cs); cs.sh = pg->sh[0]; nvn_gpu_err err = {0};

@@ -127,8 +127,8 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                           (double)pf[RP_PERF_EXEC_DRAW_NS] / 1e6 / f, (double)pf[RP_PERF_EXEC_OTHER_NS] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 { char ops[420]; rp_exec_dump_ops(ops, sizeof ops); char lb[1200];
-                  snprintf(lb, sizeof lb, "分时（其余命令里最费时的）：%s；派发 %.1f 次共 %.1f 毫秒（其中取资源 %.1f、收通道 %.1f、取管线与绑定与交后端 %.1f；每次扫 %.1f 项）、换目标 %.1f 次（其中收通道共 %.1f 毫秒）、收通道 %.1f 次",
-                           ops[0] ? ops : "（开关 nvk_exec_tm 关着）", (double)pf[RP_PERF_DISP_N] / f, (double)pf[RP_PERF_DISP_TOT_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_RESOLVE_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_FLUSH_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_BIND_NS] / 1e6 / f,
+                  snprintf(lb, sizeof lb, "分时（其余命令里最费时的）：%s；派发 %.1f 次共 %.1f 毫秒（取程序 %.1f、取资源 %.1f、间接携程 %.1f、收通道 %.1f、取管线与绑定与交后端 %.1f；每次扫 %.1f 项）、换目标 %.1f 次（其中收通道共 %.1f 毫秒）、收通道 %.1f 次",
+                           ops[0] ? ops : "（开关 nvk_exec_tm 关着）", (double)pf[RP_PERF_DISP_N] / f, (double)pf[RP_PERF_DISP_TOT_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_SHADER_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_RESOLVE_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_IND_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_FLUSH_NS] / 1e6 / f, (double)pf[RP_PERF_DISP_BIND_NS] / 1e6 / f,
                            pf[RP_PERF_DISP_N] ? (double)pf[RP_PERF_DISP_ENTS] / (double)pf[RP_PERF_DISP_N] : 0.0, (double)pf[RP_PERF_SETRT_N] / f,
                            (double)pf[RP_PERF_SETRT_END_NS] / 1e6 / f, (double)pf[RP_PERF_PASSEND_N] / f);
                   nvn_plat_log(NVN_PLAT_LOG_INFO, "present", lb); }

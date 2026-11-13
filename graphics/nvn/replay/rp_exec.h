@@ -70,6 +70,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_DISP_TOT_NS, RP_PERF_DISP_FLUSH_NS,    // 派发一次的总耗时、其中 rp_pass_flush（收通道 + 落地挂起清除）占多少
        RP_PERF_DISP_BIND_NS,                          // 派发里取管线 + 发绑定 + 交后端那一段（总耗时减去它和 flush 就是入口取资源循环）
        RP_PERF_DISP_RESOLVE_NS, RP_PERF_DISP_ENTS,    // 派发入口取资源循环的耗时与它扫过的布局项数（判每次 130 微秒花在哪）
+       RP_PERF_DISP_IND_NS, RP_PERF_DISP_SHADER_NS,   // 派发里间接携程缓冲解析 / 取计算程序各占多少
        RP_PERF_SETRT_N, RP_PERF_SETRT_END_NS,         // 换目标次数、其中收通道（rp_pass_end）用了多久
        RP_PERF_PASSEND_N,                             // 收通道次数（含换目标、通道中途的清除、提交收尾）
        RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
