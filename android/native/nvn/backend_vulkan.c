@@ -3685,8 +3685,11 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     int bc_decoded = d->d.format >= 0x41 && d->d.format <= 0x50 &&
                      ((g.dev->bc_decode_mask >> ((uint32_t)d->d.format - 0x41)) & 1u);
     VkFormat sample_fmt = fmt;
+    // BC4 3D 按 z 片解码到私有 2D 图；2D → 3D 拷贝依赖 Vulkan 1.1 的 maintenance1 语义。
     if (bc_decoded && (!nvn_vk_bcdec_route((uint32_t)d->d.format, NULL, &sample_fmt, &fmt, NULL, NULL) ||
-                       itype != VK_IMAGE_TYPE_2D || (d->usage & (NVN_GPU_TEX_RENDER | NVN_GPU_TEX_STORAGE))))
+                       (itype != VK_IMAGE_TYPE_2D && !(itype == VK_IMAGE_TYPE_3D && d->d.format == NVN_FORMAT_RGTC1_UNORM &&
+                                                    g.dev->properties.apiVersion >= VK_API_VERSION_1_1)) ||
+                       (d->usage & (NVN_GPU_TEX_RENDER | NVN_GPU_TEX_STORAGE))))
         return fail(err, NVN_GPU_E_UNSUPPORTED, "BC format 0x%x decode: 不支持此用途或维度", d->d.format);
     if (!d->d.width || !d->d.height) return fail(err, NVN_GPU_E_ARG, "尺寸为 0");
     uint32_t levels = d->d.levels ? (uint32_t)d->d.levels : 1;
@@ -4310,6 +4313,7 @@ static void bc_upload(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t
                       const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     VkOffset3D off; VkExtent3D ext; int bb = 0;
     if (level >= t->levels || layer >= t->layers || copy_region(t, level, r, &off, &ext) ||
+        !ext.width || !ext.height || !ext.depth ||
         !nvn_vk_bcdec_route(t->nvn_format, NULL, NULL, NULL, NULL, &bb)) {
         set_sticky(c, NVN_GPU_E_ARG, "BC 上传子资源或区域非法"); return;
     }
@@ -4324,48 +4328,63 @@ static void bc_upload(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t
         (bh > 1 && row_bytes > (UINT64_MAX - packed_row) / (bh - 1)) || image_bytes < (bh - 1) * row_bytes + packed_row) {
         set_sticky(c, NVN_GPU_E_ARG, "BC 上传源行距或长度非法"); return;
     }
-    size_t bytes = (size_t)(packed_row * bh); uint8_t *packed = malloc(bytes);
-    struct bc_temp *tmp = calloc(1, sizeof *tmp);
-    if (!packed || !tmp) { free(packed); free(tmp); set_sticky(c, NVN_GPU_E_OOM, "BC 上传暂存分配失败"); return; }
-    for (uint64_t y = 0; y < bh; y++) memcpy(packed + y * packed_row, (const uint8_t *)src + y * row_bytes, (size_t)packed_row);
-    VkImageCreateInfo ci = {0}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ci.imageType = VK_IMAGE_TYPE_2D; ci.format = t->format; ci.extent = (VkExtent3D){ext.width, ext.height, 1};
-    ci.mipLevels = ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    VkMemoryRequirements mr; VkMemoryAllocateInfo ai = {0}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    if (vkCreateImage(g.d, &ci, NULL, &tmp->image) != VK_SUCCESS) goto fail;
-    vkGetImageMemoryRequirements(g.d, tmp->image, &mr);
-    ai.allocationSize = mr.size; ai.memoryTypeIndex = s2a_vk_memory_type(g.dev, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, NULL);
-    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(g.d, &ai, NULL, &tmp->memory) != VK_SUCCESS ||
-        vkBindImageMemory(g.d, tmp->image, tmp->memory, 0) != VK_SUCCESS) goto fail;
-    char why[192] = {0}; int result = -1;
-    pthread_mutex_lock(&g_submit_mu);
-    if (g.bc || nvn_vk_bcdec_create(g.dev, &g.bc, why, sizeof why) == 0)
-        result = nvn_vk_bcdec_decode(g.bc, g.dev, tmp->image, t->nvn_format, ext.width, ext.height, 0, 0, packed, bytes, why, sizeof why);
-    if (result == -2) { tmp->next = g.bc_pending; g.bc_pending = tmp; }
-    pthread_mutex_unlock(&g_submit_mu);
-    free(packed); packed = NULL;
-    if (result != 0) {
-        set_sticky(c, NVN_GPU_E_DEVICE, "BC 解码失败：%s", why);
-        if (result == -2) return; // 临时图转交会话，close 取得完成证明后释放
-        goto fail;
+    // image_bytes 是整个体积的可读长度；相邻 z 片相隔 bh 个源块行，不是 image_bytes。
+    if (row_bytes > SIZE_MAX / bh) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 上传源切片行距溢出"); return;
     }
-    tmp->next = c->bc_temps; c->bc_temps = tmp;
-    VkImageMemoryBarrier b = {0}; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = tmp->image;
-    b.subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-    image_barrier(c, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageCopy cp = {0}; cp.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    cp.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1}; cp.dstOffset = off; cp.extent = ext;
-    vkCmdCopyImage(c->cb, tmp->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
-    image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL); cmd_ref(c, t, REF_TEX);
+    uint64_t slice_stride = row_bytes * bh;
+    uint64_t last_slice = (bh - 1) * row_bytes + packed_row;
+    if ((uint64_t)(ext.depth - 1) > (SIZE_MAX - last_slice) / slice_stride ||
+        image_bytes < (uint64_t)(ext.depth - 1) * slice_stride + last_slice) {
+        set_sticky(c, NVN_GPU_E_ARG, "BC 上传源体积长度非法"); return;
+    }
+    size_t bytes = (size_t)(packed_row * bh); uint8_t *packed = malloc(bytes);
+    struct bc_temp *tmp = NULL;
+    if (!packed) { set_sticky(c, NVN_GPU_E_OOM, "BC 上传暂存分配失败"); return; }
+    for (uint32_t z = 0; z < ext.depth; z++) {
+        tmp = calloc(1, sizeof *tmp);
+        if (!tmp) goto fail;
+        for (uint64_t y = 0; y < bh; y++) memcpy(packed + y * packed_row, (const uint8_t *)src + (uint64_t)z * slice_stride + y * row_bytes, (size_t)packed_row);
+        VkImageCreateInfo ci = {0}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ci.imageType = VK_IMAGE_TYPE_2D; ci.format = t->format; ci.extent = (VkExtent3D){ext.width, ext.height, 1};
+        ci.mipLevels = ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        VkMemoryRequirements mr; VkMemoryAllocateInfo ai = {0}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        if (vkCreateImage(g.d, &ci, NULL, &tmp->image) != VK_SUCCESS) goto fail;
+        vkGetImageMemoryRequirements(g.d, tmp->image, &mr);
+        ai.allocationSize = mr.size; ai.memoryTypeIndex = s2a_vk_memory_type(g.dev, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, NULL);
+        if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(g.d, &ai, NULL, &tmp->memory) != VK_SUCCESS ||
+            vkBindImageMemory(g.d, tmp->image, tmp->memory, 0) != VK_SUCCESS) goto fail;
+        char why[192] = {0}; int result = -1;
+        pthread_mutex_lock(&g_submit_mu);
+        if (g.bc || nvn_vk_bcdec_create(g.dev, &g.bc, why, sizeof why) == 0)
+            result = nvn_vk_bcdec_decode(g.bc, g.dev, tmp->image, t->nvn_format, ext.width, ext.height, 0, 0, packed, bytes, why, sizeof why);
+        if (result == -2) { tmp->next = g.bc_pending; g.bc_pending = tmp; }
+        pthread_mutex_unlock(&g_submit_mu);
+        if (result != 0) {
+            set_sticky(c, NVN_GPU_E_DEVICE, "BC 解码失败：%s", why);
+            if (result == -2) { free(packed); return; } // 临时图转交会话，close 取得完成证明后释放
+            goto fail;
+        }
+        tmp->next = c->bc_temps; c->bc_temps = tmp;
+        VkImageMemoryBarrier b = {0}; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = tmp->image;
+        b.subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+        image_barrier(c, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy cp = {0}; cp.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        cp.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1}; cp.dstOffset = off; cp.dstOffset.z += (int32_t)z;
+        cp.extent = (VkExtent3D){ext.width, ext.height, 1};
+        vkCmdCopyImage(c->cb, tmp->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+        image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL); cmd_ref(c, t, REF_TEX);
+    }
+    free(packed);
     return;
 fail:
-    free(packed); if (tmp->image) vkDestroyImage(g.d, tmp->image, NULL);
-    if (tmp->memory) vkFreeMemory(g.d, tmp->memory, NULL);
+    free(packed); if (tmp && tmp->image) vkDestroyImage(g.d, tmp->image, NULL);
+    if (tmp && tmp->memory) vkFreeMemory(g.d, tmp->memory, NULL);
     free(tmp);
     set_sticky(c, NVN_GPU_E_OOM, "BC 临时图或解码初始化失败");
 }

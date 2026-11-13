@@ -205,6 +205,16 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice d, uint32_t n, const VkF
     if (g_bc_early_n > 0 && n == 1) { g_bc_early_n--; g_bc_early_seen++; return VK_TIMEOUT; }   // 提前返回（#697）：不等、立刻报超时
     return real(d, n, f, all, timeout);
 }
+// 只在 BC4 体积上传用例内武装，精确匹配解码输出临时图；其余创建走真实驱动。
+static int g_bc4_fail_temp, g_bc4_temp_seen;
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice d, const VkImageCreateInfo *ci,
+                                            const VkAllocationCallbacks *a, VkImage *image) {
+    PFN_vkCreateImage real = (PFN_vkCreateImage)vkGetDeviceProcAddr(d, "vkCreateImage");
+    if (g_bc4_fail_temp && ci->imageType == VK_IMAGE_TYPE_2D && ci->format == VK_FORMAT_R8_UNORM &&
+        ci->usage == (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+        ++g_bc4_temp_seen == g_bc4_fail_temp) { *image = VK_NULL_HANDLE; return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+    return real(d, ci, a, image);
+}
 // #697: synthetic driver enumeration, keeping real headless images/semaphores and VVL.
 // Virtual indices 8+ map to the driver's real indices; this is NOT a device result.
 static uint32_t g_w697_count, g_w697_real_count, g_w697_base = 8;
@@ -5460,6 +5470,122 @@ static void c88_pipe_cache(const char *sdir) {
     rmdir(dir); unlink(notdir); rmdir(root);
 }
 
+// #697：强制 BC4 compute；端点与索引全由合成输入给出，不用解码器计算期望。
+// 7x5x4 的每个块/切片不同，24 字节行距包含填充；最后一行不要求尾填充。
+static void c697_bc4_done(void *u, const nvn_gpu_done *d) { (void)u; (void)d; }
+static void c697_bc4_block(uint8_t *p, uint8_t value) {
+    memset(p, 0, 8); p[0] = p[1] = value;
+}
+static void c697_bc4_snapshot(nvn_gpu_cmd c, nvn_gpu_tex bc, nvn_gpu_tex plain,
+                             nvn_gpu_buf rb, uint32_t level, uint64_t offset,
+                             uint32_t w, uint32_t h, uint32_t d) {
+    NVNcopyRegion region = {0, 0, 0, (int)w, (int)h, (int)d};
+    nvn_gpu_copy_tex(c, bc, level, 0, &region, plain, level, 0, &region);
+    nvn_gpu_copy_tex_buf(c, plain, level, 0, &region, rb, offset, w, (uint64_t)w * h * d);
+}
+static void c697_bc4_3d(void) {
+    nvn_gpu_tex bc = make_tex_3d_levels(7, 5, 4, 3, NVN_FORMAT_RGTC1_UNORM,
+                                      NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD);
+    nvn_gpu_tex plain = NULL; nvn_gpu_buf rb = NULL;
+    if (!bc) return; // 基线必须红在真实 tex_create，不继续使用空句柄。
+    plain = make_tex_3d_levels(7, 5, 4, 3, NVN_FORMAT_R8, NVN_GPU_TEX_SAMPLED);
+    rb = make_buf(436, NVN_GPU_MEM_SHARED, NULL);
+    if (!plain || !rb) goto done;
+    uint8_t blocks[192], patch[64], mip[24], last[8], mip_patch[8];
+    memset(blocks, 0xee, sizeof blocks); memset(patch, 0xcc, sizeof patch); memset(mip, 0xdd, sizeof mip);
+    for (int z = 0; z < 4; z++) for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++)
+        c697_bc4_block(blocks + z * 48 + y * 24 + x * 8, (uint8_t)(20 + z * 40 + y * 10 + x * 5));
+    for (int z = 0; z < 2; z++) for (int y = 0; y < 2; y++)
+        c697_bc4_block(patch + z * 32 + y * 16, (uint8_t)(211 + z * 10 + y * 3));
+    c697_bc4_block(mip, 171); c697_bc4_block(mip + 16, 181); c697_bc4_block(last, 251); c697_bc4_block(mip_patch, 191);
+    nvn_gpu_cmd c = begin_cmd(); nvn_gpu_err e;
+    nvn_gpu_tex_upload(c, bc, 0, 0, NULL, blocks, 24, 184);
+    c697_bc4_snapshot(c, bc, plain, rb, 0, 0, 7, 5, 4);
+    NVNcopyRegion region = {4, 0, 1, 3, 5, 2};
+    nvn_gpu_tex_upload(c, bc, 0, 0, &region, patch, 16, 56);
+    c697_bc4_snapshot(c, bc, plain, rb, 0, 140, 7, 5, 4);
+    nvn_gpu_tex_upload(c, bc, 1, 0, NULL, mip, 16, sizeof mip);
+    NVNcopyRegion mip_region = {0, 0, 1, 3, 2, 1};
+    nvn_gpu_tex_upload(c, bc, 1, 0, &mip_region, mip_patch, 8, sizeof mip_patch);
+    nvn_gpu_tex_upload(c, bc, 2, 0, NULL, last, 8, sizeof last);
+    c697_bc4_snapshot(c, bc, plain, rb, 1, 420, 3, 2, 2);
+    c697_bc4_snapshot(c, bc, plain, rb, 2, 432, 1, 1, 1);
+    nvn_gpu_rc rc = nvn_gpu_cmd_commit(c, 1, c697_bc4_done, NULL, &e);
+    CHECK(OK(rc), "C697 BC4 3D commit：%d %s", rc.code, e.why);
+    if (!OK(rc)) goto done;
+    rc = nvn_gpu_fence_wait(1, 5000000000ull, &e);
+    CHECK(OK(rc), "C697 BC4 3D wait：%s", e.why); if (!OK(rc)) goto done;
+    // 后片分配失败：前面解码已经真实提交，但目标图拷贝还在待提交段中，abort 不得改旧内容。
+    for (int fail_at = 2; fail_at <= 3; fail_at++) {
+        c = begin_cmd(); g_bc4_temp_seen = 0; g_bc4_fail_temp = fail_at;
+        nvn_gpu_tex_upload(c, bc, 0, 0, NULL, blocks, 24, 184);
+        g_bc4_fail_temp = 0;
+        CHECK(g_bc4_temp_seen == fail_at, "C697 BC4 第%d片 OOM 未命中（%d）", fail_at, g_bc4_temp_seen);
+        nvn_gpu_cmd_abort(c);
+    }
+    c = begin_cmd();
+    nvn_gpu_tex_upload(c, bc, 0, 0, NULL, blocks, 24, 184);
+    nvn_gpu_cmd_abort(c);
+    c = begin_cmd();
+    c697_bc4_snapshot(c, bc, plain, rb, 0, 280, 7, 5, 4);
+    rc = nvn_gpu_cmd_commit(c, 2, c697_bc4_done, NULL, &e);
+    CHECK(OK(rc), "C697 BC4 3D abort 后 commit：%d %s", rc.code, e.why);
+    if (!OK(rc)) goto done;
+    rc = nvn_gpu_fence_wait(2, 5000000000ull, &e);
+    CHECK(OK(rc), "C697 BC4 3D abort 后 wait：%s", e.why); if (!OK(rc)) goto done;
+    const uint8_t *out = buf_cpu(rb);
+    for (int image = 0; image < 3; image++) for (int z = 0; z < 4; z++) for (int y = 0; y < 5; y++) for (int x = 0; x < 7; x++) {
+        uint8_t expected = (uint8_t)(20 + z * 40 + (y / 4) * 10 + (x / 4) * 5);
+        if (image && z >= 1 && z <= 2 && x >= 4) expected = (uint8_t)(211 + (z - 1) * 10 + (y / 4) * 3);
+        uint8_t actual = out[image * 140 + (z * 5 + y) * 7 + x];
+        CHECK(actual == expected, "C697 BC4 3D 快照%d (%d,%d,%d)：%u，期望%u", image, x, y, z, actual, expected);
+    }
+    for (int i = 0; i < 12; i++) CHECK(out[420 + i] == (i < 6 ? 171 : 191), "C697 BC4 mip1 像素%d：%u", i, out[420 + i]);
+    CHECK(out[432] == 251, "C697 BC4 mip2 1x1x1：%u", out[432]);
+    printf("C697 BC4 3D：三份全深度快照420纹素、mip1 12纹素、mip2 1纹素已核对\n");
+done:
+    if (bc) nvn_gpu_tex_release(bc);
+    if (plain) nvn_gpu_tex_release(plain);
+    if (rb) nvn_gpu_buf_release(rb, NULL, NULL);
+}
+// 每个拒绝用例独立会话，不让上一例的 sticky 错误冒充本例命中。
+static void c697_bc4_3d_bad(int which) {
+    nvn_gpu_tex bc = make_tex_3d_levels(7, 5, 4, 3, NVN_FORMAT_RGTC1_UNORM, NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD);
+    if (!bc) return;
+    uint8_t blocks[192] = {0}; nvn_gpu_cmd c = begin_cmd(); nvn_gpu_err e;
+    NVNcopyRegion region = {0, 0, 0, 7, 5, 4};
+    uint32_t level = 0, layer = 0; uint64_t row = 24, bytes = 184;
+    if (which == 0) bytes--;                         // 最后切片最后有效字节不足
+    if (which == 1) region.zoffset = 1;             // z + depth 越过 mip 深度
+    if (which == 2) { level = 1; region = (NVNcopyRegion){0,0,1,3,2,2}; }
+    if (which == 3) layer = 1;                      // 3D 只有数组层 0；z 在区域里
+    if (which == 4) row = 8;                        // 两块的行宽不足
+    if (which == 5) region.width = 3;               // 非块整数宽且不在 mip 右边缘
+    if (which == 6) row = UINT64_MAX;                // 行/片步距溢出先拒绝
+    if (which == 7) { region.zoffset = -1; }         // 负 z 不可转成无符号通过
+    if (which == 8) { region.height = 0; row = 16; } // 非空宽、零高不能成为零块行
+    if (which == 9) region.width = 0;               // 非空高、零宽同样拒绝
+    nvn_gpu_tex_upload(c, bc, level, layer, &region, blocks, row, bytes);
+    nvn_gpu_rc rc = nvn_gpu_cmd_commit(c, 1, c697_bc4_done, NULL, &e);
+    CHECK(rc.code == NVN_GPU_E_ARG, "C697 BC4 3D 非法输入%d 应ARG，实际%d %s", which, rc.code, e.why);
+    nvn_gpu_tex_release(bc);
+}
+static int c697_bc4_3d_run(void) {
+    uint32_t saved = g_dev.bc_decode_mask; nvn_gpu_err e;
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C697 BC4 初始close：%s", e.why);
+    g_dev.bc_decode_mask |= 1u << (NVN_FORMAT_RGTC1_UNORM - 0x41);
+    if (!open_backend()) { g_dev.bc_decode_mask = saved; return 0; }
+    c697_bc4_3d();
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C697 BC4 close：%s", e.why);
+    for (int i = 0; i < 10; i++) {
+        if (!open_backend()) { g_dev.bc_decode_mask = saved; return 0; }
+        c697_bc4_3d_bad(i);
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C697 BC4 非法输入%d close：%s", i, e.why);
+    }
+    g_dev.bc_decode_mask = saved;
+    return open_backend();
+}
+
 int main(int argc, char **argv) {
     t29_format_expand();
     char why[256] = {0};
@@ -5496,6 +5622,13 @@ int main(int argc, char **argv) {
     g_desc.host_device = &g_dev;
     g_desc.app_label = "nvn-backend-vk-test";
     if (!open_backend()) return 1;
+    if (!getenv("S2A_TEST_WSI697_ONLY") && !c697_bc4_3d_run()) return 1;
+    if (getenv("S2A_TEST_BC4_3D_ONLY")) {
+        nvn_gpu_err e = {0};
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C697 BC4 final close：%s", e.why);
+        s2a_vk_device_destroy(&g_dev, 1);
+        return g_fail ? 1 : 0;
+    }
     if (getenv("S2A_TEST_WSI697_ONLY")) {
         c697_swapchain_images();
         c71_present();
