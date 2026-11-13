@@ -737,4 +737,7 @@ class CoverFallbackTests(JobCase):
         self.assertEqual(done["state"], "succeeded", result.stderr)
         covers = {g["id"]: g["cover"] for g in done["result"]["games"]}
         self.assertEqual(covers, {A: str(L / "games" / A / "cover.jpg"), B: str(L / "games" / B / "banner.jpg"), C: ""})
+        # 横图另给一份（#378：Mac 顶部大图用横图，不把图标放大）：有 banner.jpg 就是它的路径，没有是空
+        banners = {g["id"]: g["banner"] for g in done["result"]["games"]}
+        self.assertEqual(banners, {A: str(L / "games" / A / "banner.jpg"), B: str(L / "games" / B / "banner.jpg"), C: ""})
 

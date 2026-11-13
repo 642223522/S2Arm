@@ -1,8 +1,10 @@
-// S2Arm（不是上游文件）：Switch 2 Pro 连接状态。启动并监看启动器旁的 S2ArmNS2Connection 进程（独占蓝牙连接，游戏经本机通道读输入），
+// S2Arm（不是上游文件）：系统手柄与 Switch 2 Pro 连接状态。系统手柄由 GameController 枚举和通知更新，不接管游戏的输入回调；
+//   Switch 手柄启动并监看启动器旁的 S2ArmNS2Connection 进程（独占蓝牙连接，游戏经本机通道读输入），
 //   持久化「开启 S2Arm 时自动连接」「关闭游戏后自动断开」「记住这台设备」三个开关（docs/mac-switch2-pro.md）。
 import AppKit
 import Combine
 import Foundation
+import GameController
 
 @MainActor
 final class NS2LauncherController: ObservableObject {
@@ -15,13 +17,17 @@ final class NS2LauncherController: ObservableObject {
     /// 记住这台设备（#521）：长按 SYNC 连上的手柄写入本机地址，之后按任一键即可重连。缺省关；下次启动连接程序时生效
     @Published private(set) var rememberDevice: Bool
     @Published private(set) var phase: Phase = .off
-    @Published private(set) var detail = ""
+    @Published private var helperDetail = ""
+    @Published private(set) var systemControllerName: String?
     @Published private(set) var deviceName = "Switch 2 Pro"
     /// 连接程序报的对外输出型号（ns2_kind：1 Pro、2 Joy-Con 左、3 右、4 左右一对；0 = 没连 / 旧连接程序没报）
     @Published private(set) var kind = 0
 
     /// 弹窗标题：照连着的型号写；没连 / 还不知道型号时写通用的「Switch 手柄」（不分代：一代 Joy-Con 以后也在这里）（#520）
-    func title(simplifiedChinese zh: Bool) -> String { Self.title(kind: kind, simplifiedChinese: zh) }
+    func title(simplifiedChinese zh: Bool) -> String {
+        if hasSystemController, let systemControllerName { return systemControllerName }
+        return Self.title(kind: kind, simplifiedChinese: zh)
+    }
     /// 状态行里的型号；连接程序报的是 ns2_kind 数字，旧连接程序没这个字段时当 0
     nonisolated static func kind(from object: [String: Any]) -> Int {
         (object["kind"] as? NSNumber)?.intValue ?? 0
@@ -37,21 +43,60 @@ final class NS2LauncherController: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private let systemControllers: () -> [GCController]
+    private let notifications: NotificationCenter
+    private var observers: [NSObjectProtocol] = []
     let socketURL: URL
     private var process: Process?
     private var output: Pipe?
     private var buffer = Data()
     private var intentionalStop = false
 
-    init(socketURL: URL) {
+    init(socketURL: URL, systemControllers: @escaping () -> [GCController] = { GCController.controllers() },
+         notifications: NotificationCenter = .default) {
         self.socketURL = socketURL
+        self.systemControllers = systemControllers
+        self.notifications = notifications
         defaults = UserDefaults(suiteName: "org.s2arm.macos.game") ?? .standard
         autoConnectOnOpen = defaults.object(forKey: "S2AMacNS2AutoConnectOnOpen") as? Bool ?? false
         disconnectAfterGame = defaults.object(forKey: "S2AMacNS2DisconnectAfterGame") as? Bool ?? false
         rememberDevice = defaults.object(forKey: "S2AMacNS2RememberDevice") as? Bool ?? false
+        for name in [Notification.Name.GCControllerDidConnect, .GCControllerDidDisconnect, NSApplication.didBecomeActiveNotification] {
+            observers.append(notifications.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let connected = note.name == .GCControllerDidConnect ? note.object as? GCController : nil
+                let disconnected = note.name == .GCControllerDidDisconnect ? note.object as? GCController : nil
+                Task { @MainActor [weak self] in
+                    self?.refreshSystemControllers(connected: connected, disconnected: disconnected)
+                }
+            })
+        }
+        refreshSystemControllers()
+    }
+
+    deinit {
+        for observer in observers { notifications.removeObserver(observer) }
+    }
+
+    // 游戏在 Switch 专用通道就绪时优先使用它（front_mac.m sample_input）；其余时候使用系统手柄。
+    var hasSystemController: Bool { systemControllerName != nil && phase != .ready && phase != .handedOff }
+
+    var detail: String {
+        if hasSystemController, let systemControllerName {
+            return "\(systemControllerName) 已通过 macOS 连接。开始游戏后会自动接收手柄输入。"
+        }
+        return helperDetail
+    }
+
+    private func refreshSystemControllers(connected: GCController? = nil, disconnected: GCController? = nil) {
+        var controllers = systemControllers().filter { $0 !== disconnected }
+        // 通知里的设备是本次事件的真值；枚举快照尚未更新时也要及时显示连接 / 断开。
+        if let connected { controllers.insert(connected, at: 0) }
+        let controller = controllers.first { $0.extendedGamepad != nil || !$0.physicalInputProfile.buttons.isEmpty }
+        systemControllerName = controller.map { $0.vendorName.flatMap { $0.isEmpty ? nil : $0 } ?? "Game Controller" }
     }
 
     var buttonStatus: String {
+        if hasSystemController { return "已连接" }
         switch phase {
         case .ready: return "已连接"
         case .starting: return "启动中"
@@ -64,6 +109,7 @@ final class NS2LauncherController: ObservableObject {
     }
 
     var buttonColor: NSColor {
+        if hasSystemController { return .systemGreen }
         switch phase {
         case .ready: return .systemGreen
         case .starting, .scanning, .connecting, .initializing: return .systemOrange
@@ -75,9 +121,10 @@ final class NS2LauncherController: ObservableObject {
     var hasConnectionProcess: Bool { process != nil }
 
     func startIfEnabled() {
+        // 系统手柄连着也照玩家的「开启 S2Arm 时自动连接」走：Switch 2 Pro 系统认不到，两只都在时要靠它连
         guard autoConnectOnOpen else {
             phase = .off
-            detail = "手柄未连接。需要时可在上方手动连接。"
+            helperDetail = "手柄未连接。需要时可在上方手动连接。"
             return
         }
         connectManually()
@@ -123,7 +170,7 @@ final class NS2LauncherController: ObservableObject {
     func disconnectManually(then done: (@MainActor () -> Void)? = nil) {
         stopProcess(then: done)
         phase = .off
-        detail = "手柄已断开。开始游戏不受影响。"
+        helperDetail = "手柄已断开。开始游戏不受影响。"
     }
 
     func retry() {
@@ -138,24 +185,24 @@ final class NS2LauncherController: ObservableObject {
     }
 
     func gameDidStart() {
-        guard process != nil else { return }
+        guard process != nil && phase == .ready else { return }
         phase = .handedOff
-        detail = "游戏正在使用 Switch 2 Pro；关闭游戏后连接会保留。"
+        helperDetail = "游戏正在使用 Switch 2 Pro；关闭游戏后连接会保留。"
     }
 
     func gameDidExit() {
         guard process != nil else {
             phase = .off
-            detail = "手柄未连接。需要时可在上方手动连接。"
+            helperDetail = "手柄未连接。需要时可在上方手动连接。"
             return
         }
         if disconnectAfterGame {
             stopProcess()
             phase = .off
-            detail = "游戏已关闭，已按设置断开手柄。"
+            helperDetail = "游戏已关闭，已按设置断开手柄。"
         } else if phase == .handedOff {
             phase = .ready
-            detail = "\(deviceName) 仍保持连接，可以继续使用。"
+            helperDetail = "\(deviceName) 仍保持连接，可以继续使用。"
         }
     }
 
@@ -166,11 +213,11 @@ final class NS2LauncherController: ObservableObject {
     private func startProcess() {
         guard let helper = helperURL else {
             phase = .failed
-            detail = "找不到启动器的手柄连接组件。"
+            helperDetail = "找不到启动器的手柄连接组件。"
             return
         }
         phase = .starting
-        detail = "正在启动蓝牙连接。首次使用时，请在 macOS 提示中允许。"
+        helperDetail = "正在启动蓝牙连接。首次使用时，请在 macOS 提示中允许。"
         deviceName = "Switch 2 Pro"
         kind = 0
         buffer.removeAll(keepingCapacity: true)
@@ -198,7 +245,7 @@ final class NS2LauncherController: ObservableObject {
                 self.output = nil
                 if !self.intentionalStop {
                     self.phase = .failed
-                    self.detail = "连接程序已停止，请手动重新连接。"
+                    self.helperDetail = "连接程序已停止，请手动重新连接。"
                 }
             }
         }
@@ -208,7 +255,7 @@ final class NS2LauncherController: ObservableObject {
             process = nil
             output = nil
             phase = .failed
-            detail = error.localizedDescription
+            helperDetail = error.localizedDescription
         }
     }
 
@@ -259,36 +306,36 @@ final class NS2LauncherController: ObservableObject {
         switch code {
         case 0:
             phase = .starting
-            detail = "正在启动蓝牙连接。"
+            helperDetail = "正在启动蓝牙连接。"
         case 1:
             phase = .scanning
-            detail = "正在搜索手柄。请按一下手柄；未出现时长按顶部 SYNC。"
+            helperDetail = "正在搜索手柄。请按一下手柄；未出现时长按顶部 SYNC。"
         case 2:
             phase = .connecting
-            detail = Self.connectingDetail(rememberDevice: rememberDevice)
+            helperDetail = Self.connectingDetail(rememberDevice: rememberDevice)
         case 3:
             phase = .initializing
-            detail = "已连接，正在读取校准资料。"
+            helperDetail = "已连接，正在读取校准资料。"
         case 4:
             phase = .ready
             if let battery = (object["battery"] as? NSNumber)?.intValue {
-                detail = "\(deviceName) 已连接，电量约 \(battery * 10)%。关闭游戏后仍会保持连接。"
+                helperDetail = "\(deviceName) 已连接，电量约 \(battery * 10)%。关闭游戏后仍会保持连接。"
             } else {
-                detail = "\(deviceName) 已连接。关闭游戏后仍会保持连接。"
+                helperDetail = "\(deviceName) 已连接。关闭游戏后仍会保持连接。"
             }
         case 5, 9:
             phase = .failed
-            detail = "手柄未连接。请唤醒手柄后按 SYNC，再点「重新连接」。"
+            helperDetail = "手柄未连接。请唤醒手柄后按 SYNC，再点「重新连接」。"
         case 6:
             phase = .failed
-            detail = "蓝牙不可用，请检查 macOS 蓝牙权限。"
+            helperDetail = "蓝牙不可用，请检查 macOS 蓝牙权限。"
         case 7:
             phase = .failed
-            detail = (object["message"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "连接失败，请重试。"
+            helperDetail = (object["message"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "连接失败，请重试。"
         case 8:
             if phase != .handedOff {
                 phase = .failed
-                detail = "连接已停止。"
+                helperDetail = "连接已停止。"
             }
         default:
             break
