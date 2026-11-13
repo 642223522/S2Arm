@@ -244,7 +244,6 @@ struct nvn_gpu_vk {
     int worker_started;
     int closing;
     int closed;
-    int poly_key;        // debug.s2a.nvk_poly_key，默认关；会话启动时固定，避免切换规则丢失旧桶
     _Atomic int stop;
     int busy;
     int commit_active;   // 正在 commit 的线程数：close 要等它归零才拆资源
@@ -1044,7 +1043,6 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
 
     memset(&g, 0, sizeof g);
     g.dev = dev;
-    g.poly_key = nvn_plat_flag("nvk_poly_key", 0) != 0;
     g.d = dev->device;
     vk_dq_init(g.d);
     g.phys = dev->physical;
@@ -1985,11 +1983,10 @@ static uint32_t pipe_hash(const nvn_gpu_pipe_desc *d) {
     uint32_t v[4] = {(uint32_t)d->prim, (uint32_t)d->dfmt, (uint32_t)d->sfmt, (uint32_t)d->samples}; PH(v, sizeof v);
     PH(d->cfmt, sizeof d->cfmt); PH(d->blend, sizeof d->blend); PH(&d->color, sizeof d->color); PH(&d->chmask, sizeof d->chmask);
     PH(&d->ds, sizeof d->ds);
-    if (g.poly_key) {
-        // poly_st 的位域只占部分对象位；散列和相等判定都不能依赖填充位。
+    {   // poly_st 的位域只占部分对象位；散列和相等判定都不能依赖填充位。
         uint8_t poly[] = {d->poly.cull, d->poly.front, d->poly.mode, d->poly.offset_en};
         PH(poly, sizeof poly);
-    } else PH(&d->poly, sizeof d->poly);
+    }
 #undef PH
     return (uint32_t)(h ^ h >> 32);
 }
@@ -2010,9 +2007,8 @@ static int same_pipe_desc(const nvn_gpu_pipe_desc *a, const nvn_gpu_pipe_desc *b
            memcmp(a->attr, b->attr, sizeof a->attr) == 0 &&
            memcmp(a->stream, b->stream, sizeof a->stream) == 0 &&
            memcmp(&a->ds, &b->ds, sizeof a->ds) == 0 &&
-           (g.poly_key ? (a->poly.cull == b->poly.cull && a->poly.front == b->poly.front &&
-                          a->poly.mode == b->poly.mode && a->poly.offset_en == b->poly.offset_en) :
-                         memcmp(&a->poly, &b->poly, sizeof a->poly) == 0) &&
+           a->poly.cull == b->poly.cull && a->poly.front == b->poly.front &&
+           a->poly.mode == b->poly.mode && a->poly.offset_en == b->poly.offset_en &&
            a->origin_ll == b->origin_ll && a->depth_clamp == b->depth_clamp;
 }
 

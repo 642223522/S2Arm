@@ -36,9 +36,8 @@ int nvn_plat_window_size(void *native, uint32_t *w, uint32_t *h) { (void)native;
 // S2A_TEST_NVK_DQ=1：整套用例在「两级回放开」下再跑一遍（run.sh 第二遍）
 // S2A_TEST_NVK_DQ=1：整套用例在「两级回放开」下再跑一遍；S2A_TEST_DESC_MEMO=1：在「描述符组备忘开」下再跑一遍
 // （备忘开着时内容相同的组不再分配，按「分配了几组」写的那几条期望在这一遍里不比，像素期望照比）。
-static int g_memo_on, g_poly_key_on = 1;
+static int g_memo_on;
 int nvn_plat_flag(const char *name, int dflt) {
-    if (!strcmp(name, "nvk_poly_key")) return g_poly_key_on;
     if (!strcmp(name, "nvk_dq") && getenv("S2A_TEST_NVK_DQ")) return 1;
     if (!strcmp(name, "nvk_desc_memo") && getenv("S2A_TEST_DESC_MEMO")) { g_memo_on = 1; return 1; }
     return dflt;
@@ -3169,7 +3168,7 @@ static void fill_gpipe_desc(nvn_gpu_pipe_desc *pd, nvn_gpu_shader vs, nvn_gpu_sh
 }
 
 // 真实 Vulkan 管线缓存：同一语义的位域对象即便填充位不同也应命中。
-static void poly_key_padding(const char *dir, int enabled) {
+static void poly_key_padding(const char *dir) {
     nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
     if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) {
         CHECK(0, "poly key shaders"); return;
@@ -3182,7 +3181,7 @@ static void poly_key_padding(const char *dir, int enabled) {
     nvn_gpu_err e = {0}; nvn_gpu_pipe p = NULL, q = NULL;
     CHECK(OK(nvn_gpu_pipe_get(&a, NVN_GPU_PIPE_SYNC, &p, &e)) && p, "poly 首次取管线 %s", e.why);
     CHECK(OK(nvn_gpu_pipe_get(&b, NVN_GPU_PIPE_SYNC, &q, &e)) && q, "poly 再次取管线 %s", e.why);
-    CHECK(enabled ? p == q : p != q, "poly 门%s：四成员相同、填充位不同时命中关系不符", enabled ? "开" : "关");
+    CHECK(p == q, "poly：四成员相同、填充位不同时应命中同一条管线");
     for (int i = 0; i < 4; i++) {
         nvn_gpu_pipe_desc c; memcpy(&c, &a, sizeof c);
         if (i == 0) c.poly.cull = 2;
@@ -5257,15 +5256,7 @@ int main(int argc, char **argv) {
         s2a_vk_device_destroy(&g_dev, 1);
         return g_fail ? 1 : 0;
     }
-    poly_key_padding(argv[1], 1);
-    nvn_gpu_err poly_err = {0};
-    CHECK(OK(nvn_gpu_close(5000000000ull, &poly_err)), "poly 门开 close：%s", poly_err.why);
-    g_poly_key_on = 0;
-    if (!open_backend()) return 1;
-    poly_key_padding(argv[1], 0);
-    CHECK(OK(nvn_gpu_close(5000000000ull, &poly_err)), "poly 门关 close：%s", poly_err.why);
-    g_poly_key_on = 1;
-    if (!open_backend()) return 1;
+    poly_key_padding(argv[1]);
     c697_swapchain_images();
     c690_native_bc_image_copy(NVN_FORMAT_RGB_DXT1_SRGB, 8, 1);
     c690_native_bc_image_copy(NVN_FORMAT_RGBA_DXT5, 16, 2);
