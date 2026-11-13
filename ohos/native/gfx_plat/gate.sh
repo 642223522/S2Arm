@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 门禁路由：ohos/ graphics/nvn/replay/ graphics/nvn/gfx/nvn/nvn_vsync.h graphics/nvn/third_party/vulkan-headers/
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 set -euo pipefail
