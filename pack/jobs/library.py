@@ -2870,7 +2870,8 @@ def diagnostics(c):
                             continue
                         archive.writestr(f"diagrun/{g['id']}_{f.name}", f.read_bytes())
                         used += n
-                manifest = dict(launcher_version=launcher_version(),
+                manifest = dict(schema=1,   # 诊断上传服务收件要它（维护方方案「上传协议」：没有 schema 判 not_diag 拒收）；iOS ios/diag.m 同字段
+                                launcher_version=launcher_version(),
                                 macos_version=platform.mac_ver()[0] or {"error": "macOS 版本不可用"},
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),
                                 mac_model=probe(["/usr/sbin/sysctl", "-n", "hw.model"]),
