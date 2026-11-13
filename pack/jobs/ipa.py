@@ -554,11 +554,12 @@ def container_custom(c):
     return out
 
 
-def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
+def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None):
     """现组容器（一个 App 装多款）：本版 iPhone 壳 + 这款和 others（这台手机上已有的各款）的容器件（pack/ship_ext.py container），出 S2Arm.app + S2Arm.ipa 到 dest
     （缺省游戏库同盘临时目录，由调用方装上后再放到默认位置根）。不再在上一次的底包上加款：底包和各款镜像会不一致，且换壳时要整包重出。
     gid 为 None：只组 others（从手机删一款）。哪款放不进本壳（不是本壳出的、新宿主也不认得）就报 container_stale 点名，不装半套；
     游戏库里已删的款不再带（手机上的存档还在）。root / dest：出包重叠早装用（旁路刚完成的产物根，出到临时目录）。
+    agreed：设备记录 staleAgreed（#479，{壳号: [游戏号]}）——这台手机在本版壳上同意过「这次不带」的；带不进的都在里面就不再问，照不带它们装。换了壳号重新问
     → (ipa, 全部款, 壳号)。Windows 不签（--sign none，交给 plumesign）；Mac 自签，装机时再按玩家团队重签"""
     import host_update
     sid = current_shell_id(c)
@@ -569,7 +570,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
         if roots[gid] is None:
             raise Failure("这款的 iPhone 版不是这一版 S2Arm 出的（或还没出）：先「打 iPhone 包」，再装到 iPhone。", code="container_stale")
     in_library = {g["id"].upper() for g in c.catalog()["games"]}
-    stale, deleted = [], []
+    stale, deleted, missing = [], [], set()
     names = {g["id"].upper(): g.get("name") or g["id"] for g in c.catalog()["games"]}
     for g in others:
         g = g.upper()
@@ -581,11 +582,19 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
         roots[g] = usable_kit(c, g, sid, failed)
         if roots[g] is None:
             stale.append(names.get(g, g))
+            if not (layout.ios_kit(c, g) / "main.npdm").is_file():
+                missing.add(g)
     stale_ids = [g for g in roots if roots[g] is None]
-    if stale and c.r.get("acceptStale") is not True:   # 认得出的风险（v0.3.1 装机原则）：问玩家，确认后这次先不带它们照装，不替他拒
-        raise Failure("S2Arm 更新过，手机上的「" + "」「".join(stale) + "」要按新版重新出包才能放进同一个 App。确认继续的话，这次先不带它们照装这款："
-                      "它们的存档和资源都留在手机上，之后给它们各「打 iPhone 包」再装一次就回来。不想这样就先给它们重新出包。", code="container_stale",
-                      internal=" ".join(stale_ids))
+    agreed = {a.upper() for a in ((agreed or {}).get(sid) or [])}
+    if any(g not in agreed for g in stale_ids) and c.r.get("acceptStale") is not True:   # 认得出的风险（v0.3.1 装机原则）：问玩家，确认后这次先不带它们照装，不替他拒
+        # 两种原因分开说（#479）：这台电脑上根本没有它的 iPhone 版（别的电脑出的 / 删了）、有但是旧版 S2Arm 出的（新版认不得，要重新打 iPhone 包）
+        #   每行一个固定句式（游戏名进 {0} 占位），界面按 Localizable.json 逐行翻
+        lost = "".join("「" + names.get(g, g) + "」" for g in stale_ids if g in missing)
+        old = "".join("「" + names.get(g, g) + "」" for g in stale_ids if g not in missing)
+        lines = ["手机上有几款游戏这次放不进同一个 App。"] + (["这台电脑上没有它们的 iPhone 版：" + lost] if lost else []) \
+            + (["它们是旧版 S2Arm 出的 iPhone 版，新版认不得，要重新「打 iPhone 包」：" + old] if old else []) \
+            + ["确认继续的话，这次先不带它们照装，它们的存档和资源都留在手机上，之后给它们「打 iPhone 包」再装一次就回来。同意一次后，这台手机在这一版 S2Arm 上不再为它们问。"]
+        raise Failure("\n".join(lines), code="container_stale", internal=" ".join(stale_ids))
     if stale:
         for g in stale_ids: roots.pop(g)
         c.diagnostic("「" + "」「".join(stale) + "」这次没放进新版 S2Arm（要按新版重新出包）；手机上的存档和资源都还在，给它们各「打 iPhone 包」再装一次就回来。",
@@ -595,7 +604,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     if not roots:
         raise Failure("手机上的 S2Arm 里没有别的游戏了。", code="job_failed")
     shell = container_shell(c, sid)
-    icon = c.engine / "launchers/macos/Branding/AppIcon-1024.png"   # 宿主永远用 S2Arm 自己的图标，不退回某款游戏的（游戏图标只进 Games/<游戏号>/）
+    icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"   # iPhone 用鲜艳版玻璃 S（11-13 维护者：Mac 不动，只换 iOS）；宿主永远用 S2Arm 自己的图标，不退回某款游戏的（游戏图标只进 Games/<游戏号>/）
     if not icon.is_file():
         raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
     out = Path(dest) if dest else Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
@@ -609,7 +618,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
     banner_args = [x for g, b in banners.items() if b.is_file() for x in ("--banner", f"{g}={b}")]
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
-               "--icon", icon, "--sign", "none" if os.name == "nt" else "adhoc", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
+               "--icon", icon, "--sign", "none", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
                "--version", release_version(c.engine), "--display-version", display_version(c.engine),
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
@@ -617,7 +626,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None):
         if e.code == "tool_exit" and "地址空间类型不一致" in text:
             raise Failure("这款和手机上已有的游戏地址空间类型不同，放不进同一个 App。", code="container_incompatible") from e
         raise
-    stamp_container(app)   # #845：内容摘要进 Info.plist，装机据此判手机上的 App 是不是同一个（install.same_app）
+    finish_container(c, app, log)
     write_container_ipa(c, app, ipa, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
     if gid and gid not in games:
@@ -640,6 +649,20 @@ def ipa_games(ipa):
         return [], ""
 
 
+def finish_container(c, app, log):
+    """组好 / 改过的容器 App 收尾：先写内容摘要（#845，装机据此判手机上的 App 是不是同一个：install.same_app），再签名。
+    签名放在写摘要之后（v0.3.6 候选 ⑥：先签再改 Info.plist，codesign --verify 判「plist or signature have been modified」）；
+    Mac ad-hoc，Windows 不签（侧载工具重签），同原口径。assemble 与 drop_from_ipa 都经这里：摘掉一款后内容变了，摘要必须重算，
+    否则 Info.plist 里还是整套的旧值，之后再装回整套时 same_app 误判相同、跳过重装，摘掉的那款回不到手机上"""
+    stamp_container(app)
+    sign_container(c, app, log)
+
+
+def sign_container(c, app, log):
+    if os.name != "nt":
+        c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "sign", "--app", app, "--sign", "adhoc", "--bundle-id", CONTAINER_BUNDLE], log, c.env())
+
+
 def drop_from_ipa(c, ipa, gid):
     """从装机产物里摘掉一款（其余各款逐字节不变、不换壳：升级后还没重出的款也能删）→ (临时 ipa, 剩下的款, 壳号)"""
     tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
@@ -651,6 +674,7 @@ def drop_from_ipa(c, ipa, gid):
         shutil.rmtree(tmp, ignore_errors=True)
         raise Failure("手机上的 S2Arm 在游戏库里的那份读不了：先给手机上的游戏各「打 iPhone 包」一次，再删。", code="container_stale")
     c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container-drop", "--base", base, "--game", gid, "--out", tmp / "S2Arm.app"], log, c.env())
+    finish_container(c, tmp / "S2Arm.app", log)
     write_container_ipa(c, tmp / "S2Arm.app", tmp / "S2Arm.ipa", log)
     cat = json.loads((tmp / "S2Arm.app/s2a_catalogue.json").read_text(encoding="utf-8"))
     return tmp / "S2Arm.ipa", [g["title_id"] for g in cat["games"]], cat.get("shell_id") or ""

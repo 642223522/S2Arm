@@ -130,6 +130,9 @@ static id<MTLFence> g_fence3;   // Metal 3: orders the encoders of g_q3, across 
 static dispatch_queue_t g_feedback_q;
 static _Atomic uint32_t g_present_qos;
 #define ALLOC_MAX 8
+enum { ALLOC_SHARE = 64 };   // submissions one allocator serves before the next takes another (see g_alloc_frame)
+// The most submissions nvn_be_sub_begin lets stand uncompleted: ALLOC_MAX allocators of ALLOC_SHARE submissions each. It sizes what is held per submission in flight (VIS_RING)
+enum { SUB_FLIGHT_MAX = ALLOC_MAX * ALLOC_SHARE };
 static id<MTL4CommandAllocator> g_alloc4[ALLOC_MAX]; static int g_alloc_n, g_alloc_cur;   // Command allocator pool of the main submission: at start pick one the GPU has finished with, create a new one if there is none (wait only at the cap)
 static id<MTL4CommandAllocator> g_up_alloc4[3];
 static id<MTL4CommandAllocator> g_present_alloc4[3];
@@ -584,6 +587,7 @@ static void udc_selftest(void) {
         MLOG("UDC self-check %s %s %lux%lu first value %08x, values differing from it %lu / %lu", g_dev.name.UTF8String, depth ? "Depth32F_S8" : "RGBA8", (unsigned long)w, (unsigned long)h, px[0], (unsigned long)bad, (unsigned long)(w * h));
     }
 }
+static void bcd_prewarm(void);   // no BC: start building the decompression pipeline (defined with bcd_pso)
 void mtl_init(void) {
     if (g_dev) return;
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
@@ -685,6 +689,7 @@ void mtl_init(void) {
     MLOG("Metal device %s", g_dev.name.UTF8String);
     udc_selftest();
     warm_announce();
+    bcd_prewarm();   // S2Arm #582: no BC, the decompression pipeline is built in the background (see bcd_ready)
 }
 
 
@@ -995,8 +1000,11 @@ typedef struct { void *buf; uint32_t slot; uint64_t fence; } vis_slot;
 typedef struct { int n; uint64_t base; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
 typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
-// One visibility buffer per submission in flight, as many as command allocators: with 4, Age of Calamity (about twelve submissions a frame) waited in nvn_be_sub_begin for the previous frame's GPU work; its first battle went from 18.0 to 16.9 ms a frame on the Mac
-enum { VIS_RING = ALLOC_MAX };
+// One visibility buffer per counting submission in flight. It was one per allocator, taken at every submission's start: with 4, Age of Calamity (about twelve submissions a frame) waited in nvn_be_sub_begin for the previous frame's GPU work; its first battle went from 18.0 to 16.9 ms a frame on the Mac
+// Since a frame's submissions share a command allocator (g_alloc_frame), more submissions are in flight than allocators, so the ring holds one for every submission that can be
+// in flight and a submission takes one only at its first pass that counts samples (vis_take): most count none (a compute piece, a copy, a piece between two waits). It grows on
+// demand, each buffer kept resident and reused once its submission's fence passes (SUB_FLIGHT_MAX x 64 KiB = 32 MiB at most). Ported from nxnative (MIT)
+enum { VIS_RING = SUB_FLIGHT_MAX };
 static vis_buf g_vis_ring[VIS_RING]; static int g_vis_ring_n, g_vis_ring_i = -1;
 static id<MTLBuffer> g_vis; static uint32_t g_vis_n;   // This submission's visibility buffer and number of slots used
 static int vis_in_ring(id<MTLBuffer> b) { for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].buf == b) return 1; return 0; }
@@ -1007,6 +1015,20 @@ static uint64_t g_cnt_report[32], g_cnt_reset[32];       // Report / reset count
 static void vis_clear(void) { for (int i = 0; i < g_nvs; i++) CFRelease(g_vs[i].buf); g_nvs = 0; g_vis_base = 0; g_vis_cur = -1; }
 // Fold the slots whose submission has completed into g_vis_base (encode thread; g_done read without the lock as elsewhere: a stale value only folds less).
 // Called before a report snapshots the table and before a ring visibility buffer is reused (sub begin), so a slot is never read after its buffer was handed to a new submission.
+static void vis_fold(void);
+// A submission's visibility buffer, taken from the ring at its first pass that counts samples. The ring holds one for every submission that can be in flight (VIS_RING), so one is
+// always free; were none, the pass takes a buffer of its own (rp_begin), retired after the submission as an overflow buffer is, rather than wait for the GPU inside it
+static void vis_take(void) {
+    if (g_vis_ring_i >= 0) return;
+    int pick = -1;
+    for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
+    if (pick < 0 && g_vis_ring_n < VIS_RING) pick = g_vis_ring_n++;
+    if (pick < 0) return;
+    vis_fold();   // the picked buffer's submission has completed: its slots still in the table are read now, before this submission overwrites them
+    g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
+    if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
+    g_vis = g_vis_ring[pick].buf; g_vis_n = 0;
+}
 static void vis_fold(void) {
     uint64_t done = g_done; int j = 0;
     for (int i = 0; i < g_nvs; i++) {
@@ -1193,6 +1215,11 @@ enum { GSR_N = 16384 };
 static struct { uint64_t fence, lo, hi; } g_gsr[GSR_N]; static uint64_t g_gsr_n; static int g_gml_on;
 static pthread_mutex_t g_gsr_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc_grown;
+// The submissions of one frame share an allocator: Metal lets an allocator serve command buffers one after another and asks only that all of them are complete before its reset,
+// which is what its fence, the last one's, says. So the pool holds an allocator per frame in flight, not per submission. The queue replays a guest submission in pieces, so a game
+// makes many small ones a frame (Ocarina of Time 28-37): the pool's 8 ran out about once a frame and the submit thread waited for the GPU (real device: 1,600-7,500 waits a run).
+// ALLOC_SHARE bounds an allocator's memory while no frame ends (a loading screen): after that many submissions the next takes another. Ported from nxnative (MIT)
+static uint64_t g_alloc_frame, g_alloc_shared, g_alloc_shares; static int g_alloc_used;   // the current allocator: the frame it was taken in, the submissions it has served since its reset; submissions that shared one so far
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns);
 static void up_flush(void);
 // The upload batch belongs only to the submit thread (the thread that called nvn_be_sub_begin): the batch's encoder cannot be used across threads. Every entry point asserts current thread == submit thread,
@@ -1254,14 +1281,17 @@ void nvn_be_sub_begin(void) {
     // pick an allocator the GPU has finished with; if all are in use create a new one; only at the cap wait for the oldest one. How far ahead it runs is bounded by the wait where the game acquires the swapchain texture, same as the old interface.
     // Metal 3 has no allocators: every submission takes a fresh command buffer (m3_cb)
     if (!g_m3) {
-        int alloc_i = -1; uint64_t done = g_done;
-        for (int i = 0; i < g_alloc_n; i++) if (g_alloc_fence[i] <= done) { alloc_i = i; break; }
+        int alloc_i = -1; uint64_t done = g_done, alloc_frame = atomic_load(&g_cur_frame);
+        int alloc_share = g_alloc_used && g_alloc_frame == alloc_frame && g_alloc_shared < ALLOC_SHARE;
+        if (alloc_share) alloc_i = g_alloc_cur;
+        for (int i = 0; alloc_i < 0 && i < g_alloc_n; i++) if (g_alloc_fence[i] <= done) { alloc_i = i; break; }
         if (alloc_i < 0 && g_alloc_n < ALLOC_MAX) { NSError *ae = nil; MTL4CommandAllocatorDescriptor *ad = [MTL4CommandAllocatorDescriptor new];
             g_alloc4[g_alloc_n] = [g_dev newCommandAllocatorWithDescriptor:ad error:&ae]; if (!g_alloc4[g_alloc_n]) MDIE("failed to create a new MTL4CommandAllocator: %s", ae.localizedDescription.UTF8String);
             alloc_i = g_alloc_n++; g_alloc_grown++; }
         if (alloc_i < 0) { alloc_i = 0; for (int i = 1; i < g_alloc_n; i++) if (g_alloc_fence[i] < g_alloc_fence[alloc_i]) alloc_i = i; g_alloc_waits++; nvn_be_wait(g_alloc_fence[alloc_i], UINT64_MAX); }
         g_alloc_cur = alloc_i;
-        [g_alloc4[alloc_i] reset];
+        if (alloc_share) { g_alloc_shared++; g_alloc_shares++; }
+        else { [g_alloc4[alloc_i] reset]; g_alloc_frame = alloc_frame; g_alloc_shared = 1; g_alloc_used = 1; }
         [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
     }
     ts_sub_begin(); sub_cut_begin();
@@ -1270,14 +1300,7 @@ void nvn_be_sub_begin(void) {
     if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis);
     g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; pend_reset();
     zskip_clear(); g_zskip_count = 0;
-    int pick = -1;
-    for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
-    if (pick < 0 && g_vis_ring_n < VIS_RING) pick = g_vis_ring_n++;
-    if (pick < 0) { uint64_t oldest = UINT64_MAX; for (int i = 0; i < VIS_RING; i++) if (g_vis_ring[i].fence < oldest) { oldest = g_vis_ring[i].fence; pick = i; } if (oldest > g_done) nvn_be_wait(oldest, UINT64_MAX); }
-    vis_fold();   // the picked buffer's submission has completed: its slots still in the table are read now, before the new submission overwrites them
-    g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
-    if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
-    g_vis = g_vis_ring[pick].buf;
+    g_vis_ring_i = -1;   // its visibility buffer is taken by its first pass that counts samples (vis_take)
     void arena_begin(void); arena_begin();
 }
 
@@ -2536,7 +2559,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[187];   // RED_ONCE keys 0..186 (186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: unused since 11-07 (a not-loaded color attachment written: g_noload_wrong, first 8 lines); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[188];   // RED_ONCE keys 0..187 (187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: unused since 11-07 (a not-loaded color attachment written: g_noload_wrong, first 8 lines); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -2901,27 +2924,45 @@ static void bc_note(uint32_t f, const char *where) {   // the first decode of ea
     static _Atomic uint32_t seen; uint32_t bit = f >= 0x41 && f <= 0x50 ? 1u << (f - 0x41) : 0;
     if (bit && !(atomic_fetch_or(&seen, bit) & bit)) MLOG("no BC: first texture in NVN format %#x decoded (%s)", f, where);
 }
-// No BC: BC1–5 are decompressed on the GPU (A16 logs in MacNativeGames: CPU deswizzle + CPU decompression took over 300 ms in one frame). Ported from MacNativeGames (MIT, commit 84eebcd0985c,
+// No BC: BC1–5, BC6H and BC7 are decompressed on the GPU (A16 logs in MacNativeGames: CPU deswizzle + CPU decompression took over 300 ms in one frame). Ported from MacNativeGames (MIT, commit 84eebcd0985c,
 // nvn_mtl.m k_bcd_msl / bcd_fmt / bcd_pso / up_dec): the GPU deswizzle writes the compressed blocks into the staging area; at flush the kernel bcd decodes them into the texture, one thread per block,
-// through a 2D view in the decompressed format (an sRGB texture is written with its raw values through an RGBA8Unorm view). BC6H / BC7 / 3D textures stay on the CPU (nvn_bcdec.c).
-// The kernel decodes in float like the hardware does, so a texel may differ from bcdec by one level (t_bcd_gpu measures it)
+// through a 2D view in the decompressed format (an sRGB texture is written with its raw values through an RGBA8Unorm view). 3D textures stay on the CPU (nvn_bcdec.c).
+// The kernel decodes BC1–5 in float like the hardware does, so a texel may differ from bcdec by one level; BC7 and BC6H are integer and equal bcdec (S2Arm #582; t_bcd_gpu measures all)
 #include "../tex/nvn_bcd_msl.h"   // k_bcd_msl: the kernel bcd (one header shared with graphics/nvn/tests/t_bcd_gpu.m)
-static int bcd_fmt(uint32_t f) {   // NVN format → the kernel's fmt; 0 = not decoded on the GPU (BC6H / BC7 / not BC)
+static int bcd_fmt(uint32_t f) {   // NVN format → the kernel's fmt; 0 = not decoded on the GPU (not BC)
     switch (f) { case 0x41: case 0x42: case 0x45: case 0x46: return 1; case 0x43: case 0x47: return 2; case 0x44: case 0x48: return 3;
-                 case 0x49: return 4; case 0x4a: return 5; case 0x4b: return 6; case 0x4c: return 7; default: return 0; }
+                 case 0x49: return 4; case 0x4a: return 5; case 0x4b: return 6; case 0x4c: return 7; case 0x4d: case 0x4e: return 8; case 0x50: return 9; case 0x4f: return 10; default: return 0; }
 }
 static id<MTLComputePipelineState> bcd_pso(void) {
     static id<MTLComputePipelineState> ps; static int failed;
     if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bcd_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd"] : nil;
         ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
-        if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–5 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–5 are decompressed on the GPU"); }
+        if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–7 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–7 are decompressed on the GPU"); }
     return ps;
 }
+// S2Arm #582: bcd_pso compiles k_bcd_msl from source (newLibraryWithSource, about 230 ms on an M4 each launch, the system shader cache does not keep it); built at first use it sat on the
+//   upload of the first BC texture. On a GPU without BC mtl_init starts the build in the background (bcd_prewarm); a use waits for it (bcd_ready), so ps / failed are only written on that queue
+//   and only read after the wait. With BC (or before mtl_init) nothing is started and bcd_ready is bcd_pso
+static dispatch_group_t g_bcd_pre;   // the background build, NULL = not started
+static void bcd_prewarm(void) { if (!no_bc() || g_bcd_pre) return; g_bcd_pre = dispatch_group_create(); dispatch_group_async(g_bcd_pre, s2a_qos_global(S2A_QOS_SHADER_PREFETCH), ^{ (void)bcd_pso(); }); }
+static id<MTLComputePipelineState> bcd_ready(void) { if (g_bcd_pre) dispatch_group_wait(g_bcd_pre, DISPATCH_TIME_FOREVER); return bcd_pso(); }
 // GPU decompression applies (the texture is made shader-writable with format views; the upload still needs pool-backed storage, otherwise it decodes on the CPU)
-static int bc_gpu_dec(const tex_t *t) { uint32_t upf; int ubpp; return fmt_unpack(t->d.format, &upf, &ubpp) && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_pso(); }
+static int bc_gpu_dec(const tex_t *t) { uint32_t upf; int ubpp; return fmt_unpack(t->d.format, &upf, &ubpp) && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_ready(); }
 typedef struct { __unsafe_unretained id<MTLBuffer> src, params; size_t poff; uint32_t bw, bh; __unsafe_unretained id<MTLTexture> view, base; } up_dec;   // view / base: held by g_up_texs within the batch, the view afterwards by defer_obj_unref until the GPU finishes
 static up_dec *g_up_decs; static int g_nup_decs, g_up_deccap;
 #include "nvn_rscale.inc"   // S2Arm internal resolution (S2A_RES_SCALE): state, eligibility, canvas sizes
+// Multisample count the GPU can make: NVN games ask for 8x (a novel game's render targets on an iPhone 13 Pro Max, #903), which Apple's A15 and earlier iPhone GPUs do not
+//   support (they take 1 / 2 / 4); an unsupported count is a Metal validation assertion that aborts the process. Step down to the largest supported count not above the
+//   request. Render passes, pipelines and resolves already take the count from the Metal texture (g_pass.samples), so they follow; a shader reading sample index >= the
+//   new count reads an undefined sample (logged once)
+static NSUInteger mtl_samples_supported(const tex_t *t) {
+    NSUInteger want = t->d.samples ? t->d.samples : 1, n = want;
+    while (n > 1 && ![g_dev supportsTextureSampleCount:n]) n >>= 1;
+    if (n != want) RED_ONCE(187, "multisample count %lu not supported by this GPU: created with %lu samples (first case ser=%llu %u×%u)", (unsigned long)want, (unsigned long)n,
+                            (unsigned long long)t->serial, t->d.width, t->d.height);
+    return n;
+}
+
 #include "../../texture_extent.inc"
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
@@ -2941,8 +2982,8 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 2: d.textureType = MTLTextureType3D; d.depth = t->d.depth; break;
         case 3: d.textureType = MTLTextureType2DArray; d.arrayLength = t->d.height; d.height = 1; break;
         case 4: d.textureType = MTLTextureType2DArray; d.arrayLength = t->d.depth; break;
-        case 5: d.textureType = MTLTextureType2DMultisample; d.sampleCount = t->d.samples; d.mipmapLevelCount = 1; break;
-        case 6: d.textureType = MTLTextureType2DMultisampleArray; d.sampleCount = t->d.samples; d.arrayLength = t->d.depth; d.mipmapLevelCount = 1; break;
+        case 5: d.textureType = MTLTextureType2DMultisample; d.sampleCount = mtl_samples_supported(t); d.mipmapLevelCount = 1; break;
+        case 6: d.textureType = MTLTextureType2DMultisampleArray; d.sampleCount = mtl_samples_supported(t); d.arrayLength = t->d.depth; d.mipmapLevelCount = 1; break;
         // Cube textures are created as 6-layer 2D arrays and sampled through cube / cube array views made by tex_fit: Metal only allows cube array views of a 2D array base texture (not of a cube base).
         // The Legend of Zelda: Breath of the Wild has 1512 shaders that sample the environment light probes as a cube array while a single cube texture is bound (texture ID 1064 onwards): with mismatched types the reads are undefined, and every lit surface came out black
         case 8: d.textureType = MTLTextureType2DArray; d.arrayLength = 6; break;
@@ -3131,7 +3172,7 @@ static void up_flush(void) {
     if (g_nup_decs) {   // no BC, GPU decompression (up_dec): after the deswizzles that wrote the blocks; the decoded textures take no copy, so this runs before the copies' encoder
         id e = [g_up_cb computeCommandEncoder]; g_up_ce = e;
         if (g_m3) m3_wait(e, 0, 0); else { enc_full_barrier_begin(e); [e setArgumentTable:g_up_ct]; }
-        [e setComputePipelineState:bcd_pso()];
+        [e setComputePipelineState:bcd_ready()];
         for (int i = 0; i < g_nup_decs; i++) { up_dec *x = &g_up_decs[i];
             if (g_m3) { [(id<MTLComputeCommandEncoder>)e setBuffer:x->src offset:0 atIndex:0]; [(id<MTLComputeCommandEncoder>)e setBuffer:x->params offset:x->poff atIndex:1]; [(id<MTLComputeCommandEncoder>)e setTexture:x->view atIndex:0]; }
             else { [g_up_ct setAddress:x->src.gpuAddress atIndex:0]; [g_up_ct setAddress:x->params.gpuAddress + x->poff atIndex:1]; [(id<MTL4ArgumentTable>)g_up_ct setTexture:x->view.gpuResourceID atIndex:0]; }
@@ -3432,7 +3473,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // a cube array's depth counts layer-faces (tex_desc)
     uint32_t upf; int ubpp = 0, unp = fmt_unpack(t->d.format, &upf, &ubpp);   // stored in another format (fmt_unpack: BC on a GPU without BC, or expanded): deswizzle, then convert on the CPU; the staging area is sized for the converted data
-    int gdec = unp && bc_gpu_dec(t);   // no BC, BC1–5: GPU deswizzle + GPU decompression (bcd); the staging area then holds the compressed blocks (ctotal)
+    int gdec = unp && bc_gpu_dec(t);   // no BC, BC1–7: GPU deswizzle + GPU decompression (bcd); the staging area then holds the compressed blocks (ctotal)
     size_t total = 0, ctotal = 0;
     for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -3946,9 +3987,13 @@ static uint32_t tex_fold_pitch(const tex_t *t) { int bw, bh, bpb = nvn_fmt_bpb(t
 //   或行距放不下一行 Metal 像素（上古卷轴5 A19：bytesPerRow 3840 < 5120，Metal 断言 abort）。原先前者退成私有贴图、只在建时从存储填一次，之后 CPU 写的全看不到；
 //   后者直接建视图触发断言。现在这类只读线性贴图（不是线性渲染目标）在 tex_mtl_ 并进 CPU 写过的贴图那条路（打包上传：从客体内存上传、脏页重传，去混排按行距逐行拷）
 // 线性贴图对齐：本机 Metal 的要求，诊断 DM_NVN_LINEAR_ALIGN=<字节> 抬高（Mac 上模拟 iPhone 的 64 字节做对照，只用于 A/B）
-static NSUInteger linear_align(uint32_t pf) {
+static NSUInteger linear_align(uint32_t pf) {   // asked per texture buffer binding and draw (#798): one Metal query per pixel format
     static long ov = -1; if (ov < 0) { const char *e = getenv("DM_NVN_LINEAR_ALIGN"); ov = e ? atol(e) : 0; }
-    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]; return ov > (long)al ? (NSUInteger)ov : al;
+    static _Atomic uint32_t cache[1024];
+    if (pf < 1024) { uint32_t c = atomic_load_explicit(&cache[pf], memory_order_relaxed); if (c) return c; }
+    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]; al = ov > (long)al ? (NSUInteger)ov : al;
+    if (pf < 1024 && al && al < UINT32_MAX) atomic_store_explicit(&cache[pf], (uint32_t)al, memory_order_relaxed);
+    return al;
 }
 static int tex_linear_needs_upload(const tex_t *t) {
     static int off = -1; if (off < 0) { const char *e = getenv("DM_NVN_LINEAR_UPLOAD"); off = e && !strcmp(e, "0"); }   // 诊断：=0 退回旧行为（私有贴图、只填一次），只用于 A/B
@@ -4450,13 +4495,11 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (!t->mem || !nvn_be_addr((uint64_t)t->mem, (uint64_t)t->d.width * bpb, &mb, &mo)) { RED_ONCE(37, "buffer texture storage is not in a memory pool"); return nil; }
         id<MTLBuffer> b = (__bridge id<MTLBuffer>)mb;
         NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
-        // Metal reports a 16-byte alignment for texture buffer views (minimumTextureBufferAlignmentForPixelFormat), but on an Apple GPU a view at any offset that is a multiple of the element
-        // size reads the right elements (measured on an M6: R32Float views at offsets 4, 8 and 12, all 64 elements right). Unreal puts some buffer textures at 8-byte offsets in its pools
-        // (Octopath Traveler 0: offset 0x168), which used to be left as dummies. Below the element size the view stays a dummy
-        if (mo % al) {
-            if (mo % (uint64_t)bpb) { RED_ONCE(38, "buffer texture offset %#llx not aligned to its %d-byte elements", (unsigned long long)mo, bpb); return nil; }
-            static int once; if (!once++) MLOG("buffer texture at pool offset %#llx, below Metal's reported %lu-byte alignment: created there (element-aligned views read correctly on Apple GPUs)", (unsigned long long)mo, (unsigned long)al);
-        }
+        // Below Metal's linear-texture alignment (16 bytes on a Mac, 64 on an iPhone) a view reads from its offset rounded down: an R32Float view at offset 4 / 8 / 12 reads every element
+        //   1 / 2 / 3 places late (#798, measured on an M5 Max in the compute and vertex stages, 64 to 300 000 elements). Unreal puts buffer textures at 8-byte offsets in its pools
+        //   (one game's at 0x168; another's per-frame particle data, so only the frames whose allocation was misaligned drew stretched sprites). The view is still made here:
+        //   it names the bytes, and the binding reads them through an aligned copy made on the GPU before the draw (tba_copy / tbuf_bind_aligned). Below the element size it stays a dummy
+        if (mo % al && mo % (uint64_t)bpb) { RED_ONCE(38, "buffer texture offset %#llx not aligned to its %d-byte elements", (unsigned long long)mo, bpb); return nil; }
         MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:(MTLPixelFormat)pf width:t->d.width resourceOptions:b.resourceOptions
                                                                                          usage:MTLTextureUsageShaderRead | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)];
         size_t row = ((size_t)t->d.width * bpb + al - 1) / al * al;
@@ -5415,6 +5458,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     }
     if (g_vis_on) {
         // Slots used up (one submission exceeds VIS_SLOTS counting passes): continue in a new overflow buffer. A ring buffer must not be retired (it is still used in rotation, and retiring removes it from the residency set); only a previous overflow buffer is
+        if (!g_vis) vis_take();
         if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
         pd.visibilityResultBuffer = g_vis;
     }
@@ -6509,12 +6553,12 @@ static id<MTLBuffer> arena_find(const uint8_t *p, NSUInteger *off, NSUInteger *l
 //   the slot read 0 again, the same flicker). Before a draw / dispatch that reads such a buffer texture as 2D rows, tba_prepare ends the open render pass and has the GPU copy
 //   the bytes into the frame arena (256-byte aligned), after every earlier GPU write in queue order; the view is made on the copy. A copy holds until the next buffer write outside
 //   a render pass or the next submission (g_wr_epoch / g_arena_gen, as the indirect-draw conversions)
-typedef struct { uint64_t ser, off; MTLPixelFormat pf; __unsafe_unretained id<MTLBuffer> src; __strong id<MTLBuffer> buf; size_t boff, len; } tba_ent;
+typedef struct { uint64_t ser, off; MTLPixelFormat pf; __unsafe_unretained id<MTLBuffer> src; __strong id<MTLBuffer> buf; size_t boff, len; __strong id<MTLTexture> v1; uint64_t v1rid; } tba_ent;   // v1: the 1D texture-buffer view on the copy (tbuf_bind_aligned), made once
 enum { TBA_MAX = 32 };
 static tba_ent g_tba[TBA_MAX]; static int g_tba_n; static uint64_t g_tba_epoch, g_tba_sub, g_tba_copies, g_tba_bytes, g_tba_splits;
 static void tba_valid(void) {
     if (g_tba_epoch == g_wr_epoch && g_tba_sub == g_arena_gen) return;
-    for (int i = 0; i < g_tba_n; i++) g_tba[i].buf = nil;
+    for (int i = 0; i < g_tba_n; i++) { g_tba[i].buf = nil; if (g_tba[i].v1) { defer_obj_release(g_tba[i].v1); g_tba[i].v1 = nil; } }
     g_tba_n = 0; g_tba_epoch = g_wr_epoch; g_tba_sub = g_arena_gen;
 }
 static const tba_ent *tba_find(uint64_t ser, id<MTLTexture> t) {
@@ -6560,6 +6604,23 @@ static id<MTLTexture> tbuf_rows_shadow(int tid, id<MTLTexture> t, const tex_t *t
     defer_obj_release(v);   // 视图随本次提交释放（副本本身在帧暂存里）
     *rid = v.gpuResourceID._impl; g_tb2_binds++;
     return v;
+}
+// #798: a buffer texture read as a texture buffer (1D) at a pool offset below the linear-texture alignment: the in-place view reads from the offset rounded down, so it is bound
+//   as a texture buffer over its aligned GPU copy (tba_copy, made before this draw / dispatch by tba_prepare). No copy (the table full) → the in-place view, counted, first case red.
+//   Caller holds g_rmu
+static uint64_t g_tb1_aligned, g_tb1_miss;
+static id<MTLTexture> tbuf_bind_aligned(int tid, id<MTLTexture> t, uint64_t *rid) {
+    if (!t || t.textureType != MTLTextureTypeTextureBuffer || !(t.bufferOffset % linear_align(t.pixelFormat)) || tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) return t;
+    const tex_t *tt = &g_treg[tid].t; tba_ent *ge = (tba_ent *)tba_find(tt->serial, t); int bw, bh, bpb = nvn_fmt_bpb(tt->d.format, &bw, &bh);
+    if (ge && ge->v1) { *rid = ge->v1rid; return ge->v1; }
+    if (ge && bpb) {
+        NSUInteger n = MIN(t.width, ge->len / (NSUInteger)bpb), al = linear_align(t.pixelFormat), row = (n * (NSUInteger)bpb + al - 1) / al * al;
+        MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:t.pixelFormat width:n resourceOptions:ge->buf.resourceOptions usage:MTLTextureUsageShaderRead];
+        id<MTLTexture> v = n ? [ge->buf newTextureWithDescriptor:d offset:ge->boff bytesPerRow:row] : nil;
+        if (v) { ge->v1 = v; ge->v1rid = *rid = v.gpuResourceID._impl; if (!g_tb1_aligned++) MLOG("texture buffer at an unaligned pool offset (%lu, alignment %lu): bound over its aligned GPU copy (texture ID %d, %lu elements; first case)", (unsigned long)t.bufferOffset, (unsigned long)al, tid, (unsigned long)n); return v; }
+    }
+    if (!g_tb1_miss++) MLOG("【红】 texture buffer at an unaligned pool offset (%lu, alignment %lu, texture ID %d) has no aligned copy: bound in place, it reads from the offset rounded down", (unsigned long)t.bufferOffset, (unsigned long)linear_align(t.pixelFormat), tid);
+    return t;
 }
 static id<MTLTexture> tbuf_as_2d(int tid, id<MTLTexture> t, int exact, uint64_t *rid) {
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) return nil;
@@ -10025,6 +10086,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (tv) p20_check(sh, nvn_stage, b, tid, tv);   // audit #1534 P1-20 probe: declared type / class against the texture as registered (before any fitting below)
             if (!t && tid >= 0 && b->kind == NVN_RB_TEX && (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer || (b->f1d && b->dtt == (uint8_t)MTLTextureType2D)))   // buffer textures of an expanded format: expanded copy, as 2D rows for wrapped 1D fetches (see tbuf_expand)
                 t = tbuf_expand(tid, b->dtt != (uint8_t)MTLTextureTypeTextureBuffer ? (b->f1d == 2 ? 2 : 1) : 0, &trid);
+            if (t && b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) t = tbuf_bind_aligned(tid, t, &trid);   // below the linear-texture alignment: its aligned GPU copy (#798)
             // A folded linear texture (tex_linear) holds its texels at other places: only the variant that reads it as folded may see it (se_want sets g_fold_sh); main0 reads 0 there
             if (t && g_fold_any && fold_tex_tid(b, nvn_stage) >= 0 && (nvn_stage < 0 || nvn_stage > 5 || g_fold_sh[nvn_stage] != sh)) t = nil;
             __unsafe_unretained id<MTLTexture> size_view = t;
@@ -10092,6 +10154,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (bl) PD("B %llu st%d tbuf reg%d tid=%d %s ser=%llu fmt=%#x n=%u mem=%p", g_stat_pass, nvn_stage, reg, tid, t ? "real" : "dummy", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        tid < g_ntreg ? g_treg[tid].t.d.format : 0, tid < g_ntreg ? g_treg[tid].t.d.width : 0, tid < g_ntreg ? (void *)g_treg[tid].t.mem : NULL);
             if (!t) t = tbuf_expand(tid, 0, &trid);   // buffer textures of an expanded format: expanded copy (see tbuf_expand)
+            else t = tbuf_bind_aligned(tid, t, &trid);   // below the linear-texture alignment: its aligned GPU copy (#798)
             if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
@@ -10103,6 +10166,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) {
                     if (t && t.textureType != MTLTextureTypeTextureBuffer) t = nil;   // a slot the shader does not pick here may hold another kind of texture
                     if (!t) t = tbuf_expand(tid, 0, &trid);   // buffer textures of an expanded format: expanded copy (see tbuf_expand)
+                    else t = tbuf_bind_aligned(tid, t, &trid);   // below the linear-texture alignment: its aligned GPU copy (#798)
                     if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
                 } else {
                     if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }
@@ -10408,18 +10472,19 @@ static int g_defer_ab = -1, g_defer_ab_on;
 // One buffer texture (texture ID tid, read as 2D rows; exact: the wrapped 1D fetch's exact form) at an offset the linear-texture alignment refuses and with no GPU copy yet: ends
 //   the open render pass and has the GPU copy the bytes the 2D-row view reads into the frame arena now (see tba_ent). Returns 1 when it made a copy. Leaves the copy encoder open
 //   (the caller ends it once, after all of a draw's copies)
-static int tba_copy(int tid, int exact) {
+static int tba_copy(int tid, int exact) {   // exact < 0: read as a texture buffer (1D), the copy is its elements (#798)
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok || g_tba_n >= TBA_MAX) return 0;
     void *tv = NULL; (void)tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
     if (!t || t.textureType != MTLTextureTypeTextureBuffer || !t.buffer || !(t.bufferOffset % linear_align(t.pixelFormat))) return 0;
-    const tex_t *tt = &g_treg[tid].t; uint32_t w, h, row;
-    if (!tbuf_geom(tt, t, exact, &w, &h, &row) || tba_find(tt->serial, t)) return 0;
-    uint64_t avail = t.buffer.length > t.bufferOffset ? t.buffer.length - t.bufferOffset : 0, want = (uint64_t)row * h; size_t len = (size_t)(want < avail ? want : avail);
+    const tex_t *tt = &g_treg[tid].t; uint32_t w, h, row; int bw, bh, bpb = nvn_fmt_bpb(tt->d.format, &bw, &bh);
+    if ((exact < 0 ? !bpb : !tbuf_geom(tt, t, exact, &w, &h, &row)) || tba_find(tt->serial, t)) return 0;
+    uint64_t avail = t.buffer.length > t.bufferOffset ? t.buffer.length - t.bufferOffset : 0, want = exact < 0 ? (uint64_t)t.width * (uint64_t)bpb : (uint64_t)row * h;
+    size_t len = (size_t)(want < avail ? want : avail);
     if (!len) return 0;
     if (g_enc) { g_tba_splits++; PD("M %llu texture buffer aligned copy on the GPU: render pass split here", g_stat_pass); rp_end(); }
     id<MTLBuffer> ab = nil; size_t off = arena_alloc(len, &ab); if (!ab) return 0;
     enc_b_copy_buffer(blit(), t.buffer, t.bufferOffset, ab, off, len);
-    g_tba[g_tba_n++] = (tba_ent){tt->serial, t.bufferOffset, t.pixelFormat, t.buffer, ab, off, len};
+    g_tba[g_tba_n++] = (tba_ent){tt->serial, t.bufferOffset, t.pixelFormat, t.buffer, ab, off, len, nil, 0};
     g_tba_copies++; g_tba_bytes += len;
     if (g_tba_copies == 1 || g_tba_copies == 100 || g_tba_copies % 100000 == 0) MLOG("texture buffer at an unaligned pool offset (%lu, texture ID %d): copied on the GPU into the frame arena before use (%lu bytes; %llu copies so far)",
         (unsigned long)t.bufferOffset, tid, (unsigned long)len, (unsigned long long)g_tba_copies);
@@ -10431,6 +10496,11 @@ static void tba_prepare(NvShader *x0, NvShader *x1, NvShader *x2, NvShader *x3, 
     NvShader *sh[5] = {x0, x1, x2, x3, x4}; int made = 0;
     for (int k = 0; k < 5; k++) { NvShader *x = sh[k]; if (!x) continue; int stage = compute ? 5 : k;
         for (int i = 0; i < x->rf.nb; i++) { const nvn_rbind *b = &x->rf.b[i];
+            if (b->kind == NVN_RB_TBUF || b->kind == NVN_RB_TBUFU || (b->kind == NVN_RB_TEX && (MTLTextureType)b->dtt == MTLTextureTypeTextureBuffer)) {   // read as a texture buffer (#798)
+                made |= tba_copy(b->kind == NVN_RB_TBUFU ? ubo_tex_id(ubo_packed(stage, b)) : (int)(tex_slot_h(S.tex[stage], S.img[stage], b->reg) & 0xfffff), -1); continue; }
+            if (b->kind == NVN_RB_TEXD && (MTLTextureType)b->dtt == MTLTextureTypeTextureBuffer) {   // a dynamic handle array of texture buffers: each element as the binding resolves it
+                for (int k = 0; k < b->n && k < 128; k++) { uint64_t hk = S.tex[stage][k] ? S.tex[stage][k] : S.tex[stage][NVN_SEPTEX_SLOT0 + k]; made |= tba_copy((int)(hk & 0xfffff), -1); }
+                continue; }
             if (b->kind != NVN_RB_TEX || !b->f1d || (MTLTextureType)b->dtt != MTLTextureType2D) continue;
             made |= tba_copy((int)(tex_slot_h(S.tex[stage], S.img[stage], b->reg) & 0xfffff), b->f1d == 2); } }
     if (made && g_blit) { enc_b_end(g_blit); g_blit = nil; }   // the copies end their encoder: the next pass / dispatch begins with its barrier after them
@@ -14303,7 +14373,7 @@ static void copy_t2t_(const p_copy_t2t *c);
 static void dlss_eval(const p_dlss *d, uint32_t size);   // nvn_dlss.inc
 static void copy_t2t(const p_copy_t2t *c) {
     // GPU 写出的贴图拷到别处，目标也是 GPU 内容，不当 16:9 原比例页的来源（核心按 src 判：CPU 供图拷来拷去仍是图片；10-26 八方2 场景图）
-    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
+    if (g_wd > 0 && c->src && c->dst) { pthread_mutex_lock(&g_wd_mu); s2a_widen_gpu_wrote((uint32_t)c->dst->serial, (uint32_t)c->src->serial); wd_s3d_copied(c->dst->serial, c->src->serial); pthread_mutex_unlock(&g_wd_mu); }
     if (rs_on() && c->dst && (c->flags & DM_COPY_RESOLVE) && rs_state(tex_mtl(c->dst)) == RS_SCALED) rs_rescale(tex_mtl(c->dst), 0, "多重采样解析的目标");   // S2Arm internal resolution: a resolve needs equal sizes (multisample storages are never scaled)
     if ((c->flags & DM_COPY_RESOLVE) && c->src && c->dst) wd_widen_resolve_dst(c->src, c->dst);   // S2Arm widen: a widened multisample target resolves into a destination widened the same
     // S2Arm widen: the same copied the same way between two textures of one game size (11-02 Mario & Sonic Tokyo 2020: each frame copies its widened 1920x1080 canvas, drawn in the
@@ -15006,7 +15076,7 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
                 if (g_rc_skip) { PD("c %llu color clear skipped by conditional rendering slot%d", g_stat_pass, c->index); break; }
-                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial);   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
+                if (g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]) { s2a_widen_target_cleared((uint32_t)R.rt.color[c->index]->serial); if (!R.has_sc) { pthread_mutex_lock(&g_wd_mu); wd_s3d_cleared(R.rt.color[c->index]->serial); pthread_mutex_unlock(&g_wd_mu); } }   // S2Arm widen: the target's screen-copy origin is void (WidenRenderer.Clear → Frame.OnTargetCleared)
                 // A scissored clear to 0 outside a pass with all channels (SMBW clears pyramid levels as sub-rectangles of 480×272 and other targets): copy from the zero buffer into the scissor rectangle in the replay stream
                 int p2w = g_wd > 0 && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index] && wd_p2_is_world(R.rt.color[c->index]->serial);   // S2Arm widen: per-path clear counts on the fallback world target (status line, widen_glue.inc)
                 if (!g_enc && c->mask == 0xf && !c->rgba[0] && !c->rgba[1] && !c->rgba[2] && !c->rgba[3] && R.has_sc && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]

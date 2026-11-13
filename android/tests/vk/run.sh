@@ -9,7 +9,11 @@
 # 环境：
 #   S2A_LAVAPIPE_ICD   指定 lavapipe ICD json（默认找 ~/.local / /usr/share/vulkan/icd.d）
 #   S2A_VK_LAYER_DIR   指定 validation 层目录（默认找 ~/.local / /usr/share/vulkan/explicit_layer.d）
-# 没装 lavapipe / validation 时退出码 2（红），不静默跳过（#784）。
+# 没装 lavapipe / validation 时不静默跳过（#784）：macOS 一律、Linux 宿主缺原生工具时进共享离线容器（tests/vulkan/），
+# 容器也没准备好才退出码 2（红）。
+# 默认档先在宿主跑真编译器链（android/tests/gs_compiler_chain_test.py → build/696-real-compiler）再跑后端用例。链要 dotnet
+# （.NET 10 SDK，在 PATH 上）、固定的 NDK 29.0.14206865（设 ANDROID_NDK_HOME，或放在 $ANDROID_HOME/ndk/、~/Android/Sdk/ndk/ 下）、
+# 首次联网还原 NuGet，所以只能在宿主上出（macOS 每次重出，Linux 缺 program.json 才出）；离线容器里跑不了。
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -19,7 +23,23 @@ if [ "$(uname -s)" = Darwin ]; then
     if [ -z "$mode" ]; then python3 "$repo/android/tests/gs_compiler_chain_test.py"; fi
     exec bash "$repo/tests/vulkan/run.sh" android/tests/vk/run.sh "$@"
 fi
+# 以下是 Linux：在宿主上（原生跑；缺原生工具时转容器，见下），或已在 tests/vulkan/run.sh 起的离线容器里（带 S2A_VULKAN_IMAGE_ID）。
+in_container=${S2A_VULKAN_IMAGE_ID:+1}
 if [ -z "$mode" ] && [ ! -f "$repo/build/696-real-compiler/compiled/program.json" ]; then
+    if [ -n "$in_container" ]; then
+        echo "【红】缺 build/696-real-compiler/compiled/program.json：真编译器链要 dotnet、NDK 29、首次联网还原 NuGet，离线容器里跑不了。" >&2
+        echo "     先在宿主上出链：python3 android/tests/gs_compiler_chain_test.py；或直接运行 bash android/tests/vk/run.sh（宿主出链、再进容器）。" >&2
+        exit 2
+    fi
+    if ! command -v dotnet >/dev/null 2>&1; then
+        echo "【红】找不到 dotnet：真编译器链要 .NET 10 SDK（版本见 compat/tree/global.json），请装好并放到 PATH 上。" >&2
+        exit 2
+    fi
+    if ! PYTHONPATH="$repo/android/core-link" python3 -c 'import sys, link_symbols; sys.exit(0 if link_symbols.find_ndk() else 1)'; then
+        echo "【红】找不到 NDK 29.0.14206865：真编译器链要用它的 Vulkan 头文件，不联网下载、不跳过，其他版本的 NDK 不认。" >&2
+        echo "     装好该版本后设 ANDROID_NDK_HOME=<NDK 目录>，或放到 \$ANDROID_HOME/ndk/29.0.14206865、~/Android/Sdk/ndk/29.0.14206865。" >&2
+        exit 2
+    fi
     python3 "$repo/android/tests/gs_compiler_chain_test.py"
 fi
 
@@ -39,6 +59,16 @@ find_layer() {
 
 icd=$(find_icd || true)
 layer=$(find_layer || true)
+# 宿主缺原生 Vulkan 工具（lavapipe / validation / glslc 缺任一）：同 macOS，链已在上面出好，进共享的离线容器跑。
+# 容器没准备好（tests/vulkan/run.sh 退 75）就保持下面原来的红，只多提示一句；容器里跑出的结果（含红）原样退出。
+if [ -z "$in_container" ] && { [ -z "$icd" ] || [ -z "$layer" ] || [ -z "${GLSLC:-$(command -v glslc || true)}" ]; }; then
+    echo "本机缺原生 Vulkan 工具（lavapipe / validation / glslc），改走共享离线容器（同 macOS）" >&2
+    export S2A_VULKAN_CACHE="$repo/build/vulkan-cache"
+    rc=0
+    bash "$repo/tests/vulkan/run.sh" android/tests/vk/run.sh "$@" || rc=$?
+    [ "$rc" = 75 ] || exit "$rc"
+    echo "     容器环境也没准备好（见上）：装好原生工具，或先显式运行 bash tests/vulkan/prepare.sh" >&2
+fi
 if [ -z "$icd" ]; then
     echo "【红】找不到 lavapipe ICD：本用例要求 CPU 参考实现（Mesa lavapipe），不静默跳过。" >&2
     echo "     Arch: 解包 vulkan-swrast 后设 S2A_LAVAPIPE_ICD=<dir>/lvp_icd.json" >&2
@@ -61,7 +91,7 @@ export TMPDIR="$repo/build/vk-tests"
 out=$(mktemp -d "$TMPDIR/s2a-nvn-vk.XXXXXX")
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/shaders"
-for s in count_args.comp logic_float.frag logic_uint.frag logic_float_mrt.frag logic_uint_mrt.frag gs_probe.vert gs_probe.geom gs_probe.frag tri.vert tri.frag tri_combined.frag tri3.vert tri_solid.frag tri_invert.frag solid_green.frag solid_blue.frag out1_green.frag tex_u.frag quad.vert quad.frag inst.vert point.vert quad2.frag arr.frag cube.frag cubearr.frag tex3d.frag comp.comp pushc.frag pushc.comp tbuf.comp itbuf.comp itbuf_unknown.comp itbuf_unknown_read.comp img.comp tsamp.comp arr2.frag; do
+for s in count_args.comp logic_float.frag logic_uint.frag logic_float_mrt.frag logic_uint_mrt.frag gs_probe.vert gs_probe.geom gs_probe.frag tri.vert tri.frag tri_combined.frag tri3.vert tri_solid.frag tri_invert.frag solid_green.frag solid_blue.frag out1_green.frag tex_u.frag quad.vert quad.frag inst.vert point.vert quad2.frag arr.frag cube.frag cubearr.frag tex3d.frag comp.comp pushc.frag pushc.comp tbuf.comp itbuf.comp itbuf_unknown.comp itbuf_unknown_read.comp img.comp tsamp.comp arr2.frag separate.vert separate.frag; do
     "$glslc" --target-env=vulkan1.1 "$repo/android/tests/vk/shaders/$s" -o "$out/shaders/$s.spv"
 done
 
@@ -95,7 +125,7 @@ cflags=(-D_POSIX_C_SOURCE=200809L -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unu
 case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
-    ""|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
+    ""|--separate-core|--separate-neg-sampler|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 
@@ -111,6 +141,24 @@ if [ "$mode" = "--gs-core" ]; then
          "$repo/android/native/direct/sha256.c" "$repo/android/native/direct/json.c" "$repo/android/native/direct/jv.c" "$repo/android/native/direct/compile_request.c"
          "$repo/android/native/direct/offline_library.c" "$repo/android/native/direct/program_cache.c" "$repo/runtime/src/direct_host.c")
     cflags+=(-ffunction-sections -fdata-sections -Wno-unused-function)
+fi
+if [ "$mode" = "--separate-core" ] || [ "$mode" = "--separate-neg-sampler" ]; then
+    src=("$repo/android/tests/vk/t_replay_separate.c" "$repo/graphics/nvn/replay/rp_draw.c" "$repo/graphics/nvn/replay/rp_state.c" "$repo/graphics/nvn/replay/nvn_unimpl.c"
+         "$repo/android/native/nvn/backend_vulkan.c" "$repo/android/native/direct/vk_device.c" "$repo/android/native/direct/gs_path.c" "$repo/android/native/capprobe/capprobe_host.c"
+         "$repo/android/native/nvn/nvn_vk_format.c" "$repo/graphics/nvn/gfx/nvn/nvn_fmt_expand.c" "$repo/android/native/nvn/nvn_vk_bcdec.c"
+         "$repo/android/native/nvn/nvn_vk_driver_cache.c" "$repo/android/native/direct/sha256.c")   # 后端的管线缓存落盘（#856）
+    cflags+=(-ffunction-sections -fdata-sections -Wno-unused-function)
+fi
+if [ "$mode" = "--separate-neg-sampler" ]; then
+    python3 - "$repo/graphics/nvn/replay/rp_draw.c" "$out/rp_draw_mutant.c" <<'PYMUT'
+import pathlib, sys
+s = pathlib.Path(sys.argv[1]).read_text()
+a = 'ts[st][i] = rp_samp_by_id((int)(sh >> 20));'
+b = 'ts[st][i] = rp_samp_by_id((int)(h >> 20)); (void)sh;'
+if s.count(a) != 1: raise SystemExit('sampler negative control anchor changed')
+pathlib.Path(sys.argv[2]).write_text(s.replace(a, b))
+PYMUT
+    src[1]="$out/rp_draw_mutant.c"
 fi
 # 负控只修改临时源副本，不关闭 validation，也不改设备特性。
 case "$mode" in
@@ -133,7 +181,8 @@ esac
 # 管线缓存四个入口的 --wrap 只给默认档：--gs-core 档的测试源（t_replay_gs.c）没有对应的 __wrap 定义，带上会链接失败。
 pc_wrap=(-Wl,--wrap=vkCreatePipelineCache -Wl,--wrap=vkGetPipelineCacheData
          -Wl,--wrap=vkCreateGraphicsPipelines -Wl,--wrap=vkCreateComputePipelines)
-if [ "$mode" = "--gs-core" ]; then pc_wrap=(); fi
+# --gs-core / --separate-* 档的测试源没有这四个 __wrap 定义（只有默认档的 t_backend_vk.c 有），带上会链接失败
+case "$mode" in --gs-core|--separate-core|--separate-neg-sampler) pc_wrap=() ;; esac
 cc "${cflags[@]}" "${inc[@]}" "${src[@]}" -Wl,--wrap=vkAllocateDescriptorSets -Wl,--wrap=vkGetPhysicalDeviceFormatProperties \
     ${pc_wrap[@]+"${pc_wrap[@]}"} -Wl,--gc-sections -lvulkan -lpthread -lm -o "$out/t_backend_vk"
 
@@ -175,6 +224,27 @@ with open(sys.argv[2], 'w') as f:
 PYPROBE
 export S2A_CAPPROBE_RESULT="$out/probe-result.json"
 
+if [ "$mode" = "--separate-neg-sampler" ]; then
+    set +e
+    timeout 60 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/separate-neg-log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -eq 0 ] || ! grep -q 'round 0 pixel 0: 0,255,0,255' "$out/separate-neg-log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-|commit round|wait round' "$out/separate-neg-log"; then
+        echo '【红】分离采样器来源负控未击中像素断言，或 validation 有报错' >&2; exit 1
+    fi
+    echo 'PASS: 改错采样器来源命中像素负控，validation 0 条'; exit 0
+fi
+if [ "$mode" = "--separate-core" ]; then
+    set +e
+    timeout 60 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/separate-log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || ! grep -q llvmpipe "$out/separate-log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/separate-log"; then
+        cp "$out/separate-log" "$repo/build/vk-separate-failure.log"
+        echo "【红】分离来源回放采样 rc=$rc 或 validation 有报错；完整日志 build/vk-separate-failure.log" >&2; exit 1
+    fi
+    echo '【绿】分离来源回放采样：repeat 红、clamp 绿，validation 0 条'; exit 0
+fi
 if [ "$mode" = "--gs-core" ]; then
     rm -rf "$repo/build/696-real-compiler/core-compiler"
     set +e
@@ -225,6 +295,7 @@ if [ "$mode" = "--gs-only" ] || [ "$mode" = "--gs-compiler" ]; then
 fi
 
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --gs-core; fi
+if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --separate-core; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_copy_t2b.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_clear_tex.sh"; fi
 

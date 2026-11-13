@@ -313,7 +313,7 @@ class InstallFailures(JobCase):
             z.writestr("Payload/Test.app/S2Arm", b"bin")
         self.c.r.update(gameId=gid)
         import ipa as packer
-        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None):
+        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None, agreed=()):
             return archive, [gid], "SID1"
         def unpack(args, **kw):
             with zipfile.ZipFile(archive) as z: z.extractall(args[-1])
@@ -654,6 +654,11 @@ class LogCauses(JobCase):
     def test_metal_none_built_is_metal_unavailable(self):
         error, d = self.mac_refresh(["[RED] mac Metal 库一份都没出（编不过 12 支、编成 0、复用 0）：编译器在这台机器上用不了，不发布没有着色器库的包", "【红】fixture 刷新停在 direct 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(error.code, "metal_unavailable", d)
+
+    def test_pack_verify_sha_mismatch_is_package_verify_mismatch(self):
+        # 11-13 玩家 Windows 报错原文：ipa 收尾里资源包核对一批 romfs 文件 SHA 与 index 不符，原先落成未归类 package_failed
+        error, d = self.mac_refresh(["【红】ipa_tail.log：rc=1；🔴 资源包核对 pkg/pack.files：7 个文件不对：['romfs/Env/a.zs（SHA 与 index 不符）']；已让这 7 个文件下次出包重读重算"])
+        self.assertEqual(error.code, "package_verify_mismatch", d)
 
     def test_native_library_missing_is_tool_missing(self):
         error, d = self.mac_refresh(["[RED] 原生库缺件（出包机环境，不是游戏内容）：DllNotFoundException（abc）", "【红】fixture 刷新停在 direct 阶段（rc=1），现行 = fixture@ex-1"])

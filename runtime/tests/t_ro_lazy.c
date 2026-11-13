@@ -26,13 +26,14 @@ int main(int argc, char **argv) {
     uint64_t *obj = (uint64_t *)(base + layout(argv[1], "obj")), *got = (uint64_t *)(base + layout(argv[1], "got"));
     uint64_t plt0 = (uint64_t)base + layout(argv[1], "plt0"), bind = (uint64_t)base + layout(argv[1], "bind");
     uint64_t slot = *(uint64_t *)(base + layout(argv[1], "slot")), target = (uint64_t)base + layout(argv[1], "target");
-    CHECK(obj[0xc8 / 8] == plt0, "① 模块对象 +0xc8 = %#llx，期望基址 + PLT 表头 %#llx", (unsigned long long)obj[0xc8 / 8], (unsigned long long)plt0);
+    uint64_t stub = layout(argv[1], "stub");   // 懒绑定入口字段：新 SDK +0xc8（RestoreFunctions）、老 SDK +0xb0（RestoreFunction，夹具 old 形态）
+    CHECK(obj[stub / 8] == plt0, "① 模块对象 +%#llx = %#llx，期望基址 + PLT 表头 %#llx", (unsigned long long)stub, (unsigned long long)obj[stub / 8], (unsigned long long)plt0);
     CHECK(got[1] == (uint64_t)obj, "② GOT[1] = %#llx，期望模块对象 %p", (unsigned long long)got[1], (void *)obj);
     CHECK(got[2] == bind, "② GOT[2] = %#llx，期望基址 + BindEntry %#llx", (unsigned long long)got[2], (unsigned long long)bind);
     CHECK(slot == target, "③ JUMP_SLOT 槽 = %#llx，期望急绑定到 target %#llx", (unsigned long long)slot, (unsigned long long)target);
     uint64_t *head = (uint64_t *)*(uint64_t *)module_sym(&g_mod[0], "_ZN2nn2ro6detail15g_pAutoLoadListE");
     CHECK(head && head[1] == (uint64_t)obj, "③ 自动装载表头的后继 = %#llx，期望模块对象 %p", head ? (unsigned long long)head[1] : 0ULL, (void *)obj);
     if (bad) { printf("✗ t_ro_lazy：%d 处不符\n", bad); return 1; }
-    printf("✓ t_ro_lazy：模块对象 +0xc8 = PLT 表头、GOT[1] / GOT[2] = 模块对象 / BindEntry、急绑定与自动装载表不变\n");
+    printf("✓ t_ro_lazy：模块对象 +懒绑定入口字段 = PLT 表头、GOT[1] / GOT[2] = 模块对象 / BindEntry、急绑定与自动装载表不变\n");
     return 0;
 }

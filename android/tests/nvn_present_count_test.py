@@ -250,6 +250,10 @@ def compile_present_fixture(directory, name, body):
         '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror', '-pthread',
         str(c_file), '-o', str(exe),
     ]
+    # 抽出来的 mtl_present 里有一串生产代码的弱引用（帧统计、ADPF、直连窗口等，夹具不提供）。Linux 链接器允许弱引用的
+    # 符号未定义（运行时为空）；macOS 链接器要显式允许，否则报 Undefined symbols。同一语义，只在 macOS 补这一项。
+    if sys.platform == 'darwin':
+        command.append('-Wl,-undefined,dynamic_lookup')
     result = subprocess.run(command, capture_output=True, text=True, timeout=90)
     if result.returncode:
         raise RuntimeError(f'{name}: fixture compile failed (not a behavior result)\n{result.stdout}{result.stderr}')
@@ -272,14 +276,32 @@ def run_expected(executable, scenario, expected_failure=None):
 
 
 def export_fixture(direct_text, directory, with_producer):
+    """with_producer：None = 两层计数都没链进来（回 0）；'old' = 只有旧层 mtl_present_count；
+    'new' = 新回放层 rp_present_stats 与旧层都在（取新层：安卓缺省是新层，旧层只做对照诊断）。"""
     weak_decl = 'extern uint64_t mtl_present_count(void) __attribute__((weak));'
-    if direct_text.count(weak_decl) != 1:
-        raise RuntimeError('direct_session weak NVN producer declaration is absent or duplicated')
+    replay_decl = 'extern void rp_present_stats(uint64_t *shown, uint64_t *dropped) __attribute__((weak));'
+    for decl in (weak_decl, replay_decl):
+        if direct_text.count(decl) != 1:
+            raise RuntimeError('direct_session weak present-count declaration is absent or duplicated: ' + decl)
     export = function(direct_text, 'uint64_t s2a_android_nvn_present_count(void)')
-    producer = '''\n#ifdef WITH_PRODUCER\nstatic uint64_t fixture_producer_count;\nuint64_t mtl_present_count(void) { return fixture_producer_count; }\n#endif\n'''
+    producer = r'''
+#if defined(WITH_PRODUCER) || defined(WITH_REPLAY)
+static uint64_t fixture_producer_count;
+uint64_t mtl_present_count(void) { return fixture_producer_count; }
+#endif
+#ifdef WITH_REPLAY
+static uint64_t fixture_replay_shown;
+void rp_present_stats(uint64_t *shown, uint64_t *dropped) { if (shown) *shown = fixture_replay_shown; if (dropped) *dropped = 0; }
+#endif
+'''
     main = r'''
 int main(void) {
-#ifdef WITH_PRODUCER
+#if defined(WITH_REPLAY)
+    fixture_producer_count = 99; fixture_replay_shown = 33;
+    if (s2a_android_nvn_present_count() != 33) return 1;
+    fixture_replay_shown = 44;
+    if (s2a_android_nvn_present_count() != 44) return 1;
+#elif defined(WITH_PRODUCER)
     fixture_producer_count = 11;
     if (s2a_android_nvn_present_count() != 11) return 1;
     fixture_producer_count = 22;
@@ -290,16 +312,20 @@ int main(void) {
     return 0;
 }
 '''
-    source = '#include <stdint.h>\n' + weak_decl + '\n' + export + producer + main
-    name = 'weak-present-export' if with_producer else 'weak-absent-export'
+    source = '#include <stddef.h>\n#include <stdint.h>\n' + replay_decl + '\n' + weak_decl + '\n' + export + producer + main
+    name = {None: 'weak-absent-export', 'old': 'weak-present-export', 'new': 'weak-replay-export'}[with_producer]
     c_file = directory / f'{name}.c'
     exe = directory / name
     c_file.write_text(source, encoding='utf-8')
     command = shlex.split(os.environ.get('CC', 'cc')) + [
         '-std=gnu11', '-Wall', '-Wextra', '-Werror',
     ]
-    if with_producer:
+    if with_producer == 'old':
         command.append('-DWITH_PRODUCER')
+    if with_producer == 'new':
+        command.append('-DWITH_REPLAY')
+    if sys.platform == 'darwin':   # 弱引用的符号未定义：Linux 允许，macOS 要显式允许（同上）
+        command.append('-Wl,-undefined,dynamic_lookup')
     command.extend([str(c_file), '-o', str(exe)])
     result = subprocess.run(command, capture_output=True, text=True, timeout=90)
     if result.returncode:
@@ -347,8 +373,9 @@ with tempfile.TemporaryDirectory(prefix='nvn-present-count-', dir=os.environ.get
     wrong_increment = compile_present_fixture(temp, 'wrong-path-increment', wrong_path)
     run_expected(wrong_increment, 'timeout', 'FAIL acquire timeout does not increment')
 
-    export_fixture(DIRECT_SOURCE, temp, False)
-    export_fixture(DIRECT_SOURCE, temp, True)
+    export_fixture(DIRECT_SOURCE, temp, None)
+    export_fixture(DIRECT_SOURCE, temp, 'old')
+    export_fixture(DIRECT_SOURCE, temp, 'new')
 
 print('PASS: production mtl_present/getter/declaration behavior; 4 present paths; '
       + ('4 concurrent readers / 5000 successful submissions; ' if '_Atomic' in counter_decl else 'baseline non-atomic concurrency NOT RUN; ')

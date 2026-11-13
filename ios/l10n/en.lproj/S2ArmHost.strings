@@ -466,3 +466,11 @@
 /* Duo shared layout settings and split touch editor */
 "vpad.layouts.split.title" = "Split-screen touch layout";
 "vpad.layouts.split.footer" = "Edit the lower controls area. Positions are saved separately from the regular layout; touch mode and stick response are shared.";
+"settings.group.language" = "Language";
+"settings.footer.language" = "The language of S2Arm's menus. “Same as system” follows your iPhone's language (Chinese stays Chinese, other languages show English). Games use this language too unless you pick one in a game's launch settings.";
+"settings.language" = "Language";
+"settings.language.system" = "Same as system";
+"settings.language.zhHans" = "简体中文";
+"settings.language.zhHant" = "繁體中文";
+"settings.language.en" = "English";
+"settings.language.restart" = "Close and reopen S2Arm to use the new language.";

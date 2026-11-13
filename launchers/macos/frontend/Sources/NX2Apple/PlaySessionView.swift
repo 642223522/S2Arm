@@ -130,6 +130,7 @@ struct PlaySessionView: View {
                 Text(loc.backend(session.suggestion)).font(.manrope(14)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("play.next")
             }
+            ReportHint()
             HStack(spacing: 10) {
                 if let game {
                     Button { model.play(game, uiLanguage: uiLanguage) } label: {

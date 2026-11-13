@@ -66,12 +66,14 @@ static UILabel *textLabel(UIFontTextStyle style) {
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     NSInteger g = self.groups[section].integerValue;
     if (g == 6) return S2AL(@"play.group");
+    if (g == 7) return S2AL(@"settings.group.language");
     if (g == 5) return S2APICK(S2A_DPROMPT_SWITCH_GAME_TITLE);
     return @[S2AL(@"cpatch.group.gfx"), S2AL(@"settings.group.controls"), S2AL(@"settings.group.diag"), S2AL(@"settings.group.dev"), S2AL(@"settings.group.saves")][g];
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     switch (self.groups[section].integerValue) {
         case 6: return S2AL(@"play.footer");
+        case 7: return S2AL(@"settings.footer.language");
         case 0: return S2AL(@"settings.footer.graphics");
         case 1: return S2AL(@"settings.footer.controls");
         case 2: return S2AL(@"settings.footer.diag");
@@ -149,7 +151,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
 }
 - (void)updateColumns {
     BOOL compact = self.view.bounds.size.width < 650 || UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
-    NSArray *secondary = _runtime.manageSaves ? @[@1, @4, @2, @3] : @[@1, @2, @3];
+    NSArray *secondary = _runtime.manageSaves ? @[@1, @7, @4, @2, @3] : @[@1, @7, @2, @3];   // 7：界面语言（11-13）
     if (_runtime.switchGame) secondary = [@[@5] arrayByAddingObjectsFromArray:secondary];   // 多款容器：「切换游戏」放第二栏最上（找回游戏库的玩家先看到）
     NSArray *groups = compact ? [@[@6, @0] arrayByAddingObjectsFromArray:secondary] : @[@6, @0];
     if (![_left.groups isEqual:groups]) {
@@ -276,6 +278,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
 }
 - (NSInteger)rowsForGroup:(NSInteger)group {
     if (group == 6) return 2;
+    if (group == 7) return 1;
     if (group == 4 || group == 5) return 1;
     return group == 0 ? 7 + (_patchGroups.count > 0) : [@[@0, @4, @4, @2][group] integerValue];   // 诊断组第 4 行：诊断局
 }
@@ -289,6 +292,18 @@ static UILabel *textLabel(UIFontTextStyle style) {
         return [self dropdown:split?S2AL(@"play.split"):S2AL(@"play.orientation") labels:split?@[S2AL(@"play.auto"),S2AL(@"play.on"),S2AL(@"play.off")]:@[S2AL(@"play.auto"),S2AL(@"play.landscape"),S2AL(@"play.portrait")] selected:selected enabled:^BOOL(NSInteger i){ return YES; } choose:^(NSInteger i){
             [NSUserDefaults.standardUserDefaults setObject:values[i] forKey:key]; [weakSelf refresh];
         } identifier:[@"settings." stringByAppendingString:key]];
+    }
+    if (group == 7) {   // 界面语言（11-13 维护者）：跟随系统 / 简 / 繁 / 英，存 S2AUILanguageKey；重开 App 生效（ios/app.m 起进程时设本 App 的 AppleLanguages）
+        NSArray *values = @[@"system", @"zh-Hans", @"zh-Hant", @"en"];
+        NSString *cur = [NSUserDefaults.standardUserDefaults stringForKey:S2AUILanguageKey]; NSInteger selected = cur ? (NSInteger)[values indexOfObject:cur] : 0; if (selected == NSNotFound) selected = 0;
+        return [self dropdown:S2AL(@"settings.language") labels:@[S2AL(@"settings.language.system"), S2AL(@"settings.language.zhHans"), S2AL(@"settings.language.zhHant"), S2AL(@"settings.language.en")]
+                     selected:selected enabled:^BOOL(NSInteger i) { (void)i; return YES; } choose:^(NSInteger i) {
+            if (i == selected) return;
+            if (i == 0) [NSUserDefaults.standardUserDefaults removeObjectForKey:S2AUILanguageKey]; else [NSUserDefaults.standardUserDefaults setObject:values[i] forKey:S2AUILanguageKey];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:S2AL(@"settings.language") message:S2AL(@"settings.language.restart") preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf.navigationController.topViewController presentViewController:alert animated:YES completion:nil]; [weakSelf refresh];
+        } identifier:@"settings.uiLanguage"];
     }
     if (group == 5) {   // 多款容器切换游戏：点了弹确认（runtime.switchGame），同「导出诊断包」一样是一行动作
         UITableViewCell *cell = [self baseCell:S2APICK(S2A_DPROMPT_SWITCH_GAME_ACTION)];

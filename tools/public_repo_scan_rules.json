@@ -171,6 +171,7 @@
       ],
       "paths": [
         "launchers/macos/Branding/AppIcon-1024.png",
+        "launchers/macos/Branding/AppIcon-iOS.png",
         "launchers/macos/Branding/wordmark-transparent.png"
       ],
       "reason": "自家 S2Arm 应用图标（同目录 AppIcon.svg 为源稿）和透明底字标。"
@@ -535,6 +536,7 @@
       "android/codecs/tests/vectors/*.h264",
       "android/codecs/tests/vectors/*.headers",
       "android/codecs/tests/vectors/*.pps-change",
+      "android/tests/fixtures/input-identity-v1/*.bin",
       "compat/tree/src/Ryujinx.Graphics.Vulkan/Effects/Textures/*.bin",
       "graphics/tools/shbake/tests/refpso/*.gz",
       "launchers/windows/launcher/App/Assets/Fonts/*.ttf",

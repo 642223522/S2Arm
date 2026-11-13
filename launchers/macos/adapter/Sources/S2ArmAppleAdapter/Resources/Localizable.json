@@ -7132,6 +7132,22 @@
   "en": "The library is on a Mac OS Extended (HFS+) drive. Exporting works, but this drive can't clone files, so exports take an extra copy of the resources' space."
  },
  {
+  "source": "手机上有几款游戏这次放不进同一个 App。",
+  "en": "Some games on the phone can't go into the same app this time."
+ },
+ {
+  "source": "这台电脑上没有它们的 iPhone 版：{0}",
+  "en": "This computer has no iPhone build of: {0}"
+ },
+ {
+  "source": "它们是旧版 S2Arm 出的 iPhone 版，新版认不得，要重新「打 iPhone 包」：{0}",
+  "en": "Built for iPhone by an older S2Arm, which this version can't use. Run \"Build for iPhone\" again for: {0}"
+ },
+ {
+  "source": "确认继续的话，这次先不带它们照装，它们的存档和资源都留在手机上，之后给它们「打 iPhone 包」再装一次就回来。同意一次后，这台手机在这一版 S2Arm 上不再为它们问。",
+  "en": "Confirm to install without them this time. Their saves and resources stay on the phone, and they come back once you build them for iPhone and install again. After you agree once, this phone won't ask about them again on this S2Arm version."
+ },
+ {
   "source": "先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。",
   "en": "Run \"Build for iPhone\" once for each game named, then install on iPhone. Or confirm to install without them this time: their saves and resources stay on the phone, and they come back once you rebuild and install them."
  },
@@ -7218,5 +7234,17 @@
  {
   "source": "进程卡在系统内核里还没退出（多为内存不够时等换页）；等它自行结束后再开，关掉其他占内存的程序可减少再次卡住。",
   "en": "The process is stuck in the system kernel and has not exited yet (usually waiting on paging when memory is short). Wait for it to end on its own before starting again; closing other memory-heavy apps makes it less likely to happen again."
+ },
+ {
+  "source": "免费个人开发者团队签不了这个 App 申请的某项权限（例如「扩展虚拟寻址」）；更新 S2Arm 后重新安装（新版对免费团队只申请能签的权限），或在 Xcode 改用付费开发者团队。",
+  "en": "A free personal development team cannot sign a capability this app requests (such as Extended Virtual Addressing). Update S2Arm and install again (the new version requests only what a free team can sign), or switch to a paid development team in Xcode."
+ },
+ {
+  "source": "直接再出一次包：对不上的文件会重新读、重新算，不用重新导入游戏。还是这样就检查一下游戏库所在的磁盘（Windows：磁盘属性 →「工具」→「检查」），并关掉对游戏库文件夹的杀毒实时扫描或云同步，或把游戏库换到另一块盘。",
+  "en": "Package again: the files that didn't match will be read and computed again, and you don't need to import the game again. If it still happens, check the disk the game library is on (Windows: disk Properties → Tools → Check), turn off antivirus real-time scanning or cloud sync for the game library folder, or move the game library to another disk."
+ },
+ {
+  "source": "资源包核对没通过：出包最后核对资源包时，有文件前后两次读出的内容对不上。多见于磁盘或内存读写不稳定，或有杀毒、云同步软件在改游戏库里的文件。",
+  "en": "Resource pack check failed: When checking the resource pack at the end of packaging, some files read back differently from before. This usually means unstable disk or memory reads, or antivirus or cloud sync software changing files in the game library."
  }
 ]

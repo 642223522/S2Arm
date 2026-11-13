@@ -8,11 +8,28 @@
 
 // 按 App 语言选中英（#316）：与游戏进程 / Mac 端共用的 C 宏文案（runtime/include/s2a_direct_prompt.h、s2a_init_fail.h、s2a_selfcheck_page.h、s2a_dguard.h）
 //   只有中文原宏 + 英文 <宏>_EN 两份（规格里的由 launchers/shared/check_experience.py 核逐字一致），宿主显示处用 S2APICK(宏) 取一种。
-//   判据同字符串表的取法：主 bundle 的首选本地化以 zh 开头 = 中文，其余一律英文（开发区域 en）
-static inline BOOL s2a_l10n_zh(void) {
-    static BOOL zh; static dispatch_once_t once;
-    dispatch_once(&once, ^{ zh = [NSBundle.mainBundle.preferredLocalizations.firstObject hasPrefix:@"zh"]; });
-    return zh;
+//   判据：最终生效的界面语言（下面 s2a_l10n_lang）以 zh 开头 = 中文，其余一律英文（开发区域 en）
+// 宿主界面最终生效的语言：zh-Hans / zh-Hant / en（11-13 维护者：首次跟随系统；玩家在 App 设置里选过就记住、以后按选的；选「跟随系统」恢复跟随；
+//   简 → 简、繁 → 繁、其余 → 英，取法在 runtime/include/s2a_ui_lang.h，单测 t_ui_lang）。选的值存在 S2AUILanguageKey（标准偏好）；
+//   ios/app.m 起进程时据此设本 App 的 AppleLanguages，字符串表 / 游戏库 / 系统弹框都按同一种语言出。进程内只取一次（换语言重开 App 生效）
+#include "../runtime/include/s2a_ui_lang.h"   // 按本文件位置找：引用 s2a_l10n.h 的原生单测（vpad_* / cpatch_settings 等）不带 runtime/include
+#define S2AUILanguageKey @"S2AUILanguage"
+static inline NSString *s2a_l10n_system_tag(void) {   // 系统首选语言第一项：玩家选过语言时 AppleLanguages 是本 App 的覆盖值，要读全局域那份
+    NSArray *g = [[NSUserDefaults standardUserDefaults] persistentDomainForName:NSGlobalDomain][@"AppleLanguages"];
+    return [g isKindOfClass:NSArray.class] && g.count ? g.firstObject : NSLocale.preferredLanguages.firstObject;
 }
+static inline NSString *s2a_l10n_lang(void) {
+    static NSString *l; static dispatch_once_t once;
+    dispatch_once(&once, ^{ l = @(s2a_ui_lang_pick([NSUserDefaults.standardUserDefaults stringForKey:S2AUILanguageKey].UTF8String, s2a_l10n_system_tag().UTF8String)); });
+    return l;
+}
+// 起进程时调一次（ios/app.m 构造期、输入工作台 main 开头），在任何本地化查表之前：玩家选过语言就把本 App 的 AppleLanguages 设成它
+//   （字符串表 / 游戏库 / 系统弹框随之），跟随系统就清掉覆盖。返回最终生效的界面语言
+static inline NSString *s2a_l10n_apply_choice(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults; NSString *c = [d stringForKey:S2AUILanguageKey];
+    if ([@[@"zh-Hans", @"zh-Hant", @"en"] containsObject:c]) [d setObject:@[c] forKey:@"AppleLanguages"]; else [d removeObjectForKey:@"AppleLanguages"];
+    return s2a_l10n_lang();
+}
+static inline BOOL s2a_l10n_zh(void) { return [s2a_l10n_lang() hasPrefix:@"zh"]; }   // 简 / 繁界面都算中文（宏文案只有中、英两份）
 #define S2APICK(macro) (s2a_l10n_zh() ? @macro : @macro##_EN)     // NSString *
 #define S2APICKC(macro) (s2a_l10n_zh() ? macro : macro##_EN)      // const char *

@@ -541,6 +541,7 @@ SIGN_ERRORS = (
     # ①仍排在前面，万一一行里两种字样都有，按删 App 无效的那件事报，免得玩家白删。
     (r"App ID limit|\b10 App IDs\b|maximum number of App IDs|(?:error|code)\D{0,20}\b9120\b", "free_appid_limit"),
     (r"maximum number of (?:installed )?apps\b|(?:maximum|limit)[^\n]{0,100}free development profiles", "free_app_limit"),
+    (r"Personal development teams[^\n]{0,160}do not support", "free_team_capability"),   # #897 免费个人团队申请了只有付费团队才有的权限（如扩展虚拟寻址）
     (r"(?:error|code)\D{0,20}\b9401\b|App ID with Identifier[^\n]{0,120}is not available", "app_id_taken"),   # 包名已被占用（Apple 9401）
     # 手机上已有同包名、别的签名装的 App（玩家自签装过 S2Arm）：系统安装服务拒绝覆盖（installation_proxy MismatchedApplicationIdentifierEntitlement）
     (r"MismatchedApplicationIdentifierEntitlement|application-identifier entitlement string[^\n]{0,240}does not match", "app_other_signer"),
@@ -740,8 +741,15 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
     save_dir = f"{docs}/{SAVE_REL}"
     rc, data, err = devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                               "--subdirectory", save_dir, timeout=120)
-    files = [f["relativePath"] for f in ((data.get("result") or {}).get("files") or [])
-             if not (f.get("resources") or {}).get("isDirectory") and not f["relativePath"].rsplit("/", 1)[-1].startswith(".")]
+    # 文件清单的路径字段（#908：玩家 Xcode 16.0 的 devicectl 有条目不带 relativePath，原先 f["relativePath"] 抛 KeyError、整个装机作业崩成
+    #   「本地任务失败」，每次都装不上）：relativePath / path 都认；都没有的条目读不懂 → 走「备份不了存档、确认后照装」，条目字段名记进日志，不再崩
+    entries = [f for f in ((data.get("result") or {}).get("files") or []) if isinstance(f, dict)]
+    unknown = [sorted(f) for f in entries if not (f.get("relativePath") or f.get("path")) and not (f.get("resources") or {}).get("isDirectory")]   # 目录条目读不出路径不碍事
+    files = [p for p in (f.get("relativePath") or f.get("path") for f in entries if not (f.get("resources") or {}).get("isDirectory"))
+             if p and not p.rsplit("/", 1)[-1].startswith(".")]
+    if not rc and unknown:
+        print(f"[s2a] 存档文件清单有 {len(unknown)} 条读不出路径，字段：{unknown[0]}", file=sys.stderr)
+        return backup_failed(c, f"读不懂 iPhone 返回的存档文件清单（{len(unknown)} 条没有路径字段，多半是 Xcode 版本不同）")
     if rc:
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
@@ -1549,7 +1557,7 @@ def container_others(c, ph, rec, leave=None):
     return [g for g in candidates if g not in lost]
 
 
-def put_game(c, gid, ph, steps=True, others=None):
+def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     """把这款放进容器并装到手机：现组容器（这款 + 这台手机上已有的各款，ipa.assemble）→ 覆盖装 → 推资源包：这款照推，
     别的款只推「游戏库里的资源包比手机上记的新」的（重新打过 iPhone 包、还没装到这台的），没变的不推（数据和存档不动）。
     装上后记进 devices/<设备>.json，装机产物放默认位置根 S2Arm.ipa（换了壳的话原来那份留作 S2Arm.previous.ipa）。
@@ -1564,7 +1572,9 @@ def put_game(c, gid, ph, steps=True, others=None):
     # 改写器修过的话：容器里各款按本引擎改写器核一遍，受影响的只换改写产物（不重出资源包、不推 game.img），再组进新壳（rewrite_refresh.py）
     from rewrite_refresh import refresh_ios
     refresh_ios(c, [g for g in ([gid] if gid else []) + list(others) if g])
-    ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []))
+    # 已同意过「这次不带」的款（#479）：按壳号记在设备记录 staleAgreed，同一版壳不再每次问；换了壳号重新问。重新打过 iPhone 包的款组装时带得进，自然不在名单里
+    ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []), agreed=rec.get("staleAgreed") or {})
+    left_out = sorted({g.upper() for g in list(others) + list(skipped) if g} - set(games))   # 这次没带进去的（玩家已同意；游戏库删掉的也在里面，不碍事：它们组装时本来就不带、不问）
     packs = {g: ios_pack(c, g) for g in games}   # 每款都要有资源包，缺一款就不装（不装半套）
     skipped = same_app(c, ph, rec, packer.ipa_digest(ipa))
     if skipped:   # #845：手机上的 S2Arm 就是这次组出的这一个、签名离到期还早 → 不重签不重装，直接推资源（数据和存档本来就不动）
@@ -1590,7 +1600,8 @@ def put_game(c, gid, ph, steps=True, others=None):
         rec = layout.load_device(c, ph.key)
         # signed：这次签名（游戏库页的「还有几天到期 / 续签」读 layout.install_record）：免费账号的描述文件 7 天到期，容器里每款同一次签名
         signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info and not skipped else {}   # 跳过安装 = 没重签：到期时间照旧
-        layout.save_device(c, ph.key, dict(rec, games={g: dict(pack=pushed[g]) for g in games}, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
+        layout.save_device(c, ph.key, dict(rec, games={g: dict(pack=pushed[g]) for g in games}, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(),
+                                           staleAgreed={sid: left_out} if left_out else {}, **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     # 资源传完但电脑没拉起 App 解开（manual_unpack_required，11-09 #336）：不算「已装好」，结果带上还差的一步，两端前端据此显示「还差最后一步」而不是「已装到 iPhone」
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
@@ -1656,6 +1667,31 @@ def phone_updates(c):
     return out
 
 
+def online_devices(c):
+    """现在连着的设备号（Windows 设备服务里 USB 或同网的都算）；Mac / 读不到 → 空集（不影响更新本身，只少一句说明）"""
+    if os.name != "nt":
+        return set()
+    try:
+        return {u for u, _, _ in win_install_mod(c).mux_devices() if u}
+    except OSError:
+        return set()
+
+
+def other_device_current(c, want):
+    """#900：「更新手机上的 S2Arm」要找的那台（壳旧了的设备记录）不在线，而现在连着的另一台已经是本版壳 → 说清是两台、连着的这台不用更新；
+    否则 None（照原来的「不在线」说）。玩家从游戏库推送时连着的那台已顺带换上新壳，更新按钮指的是游戏库里另一台旧设备的记录"""
+    import ipa as packer
+    if not want:
+        return None
+    online = online_devices(c)
+    sid = packer.current_shell_id(c)
+    fresh = [k for k, r in layout.devices(c) if k != want and k in online and isinstance(r, dict) and r.get("shellId") == sid]
+    if not fresh:
+        return None
+    return (f"要更新的是另一台设备（编号末尾 {want[-6:]}），它现在不在线；现在连着的这台（编号末尾 {fresh[0][-6:]}）已经是新版 S2Arm，不用更新。"
+            f"那台以后要用时连上它再点更新；不再用了的话，删掉游戏库文件夹 devices 里名字以 {want[-6:]} 结尾的那个文件，这个更新提醒就不再出现。")
+
+
 def update_phone(c):
     """「更新 iPhone 上的 S2Arm」：用本版壳 + 手机上各款已有的程序模块组新容器 → 签名 → 只装 App；资源包（IMG）、直连库只推变了的（通常一个都不推），
     手机上的游戏库、存档不动。新壳认不得的款（要按新版重新出包）：没带 acceptStale 就停下报 container_stale 列出它们，玩家确认后不带它们装
@@ -1664,7 +1700,13 @@ def update_phone(c):
     if wants_export(c):   # 导出模式的「导出新版 S2Arm」：本版壳带上游戏库里能带的各款出到文件夹，玩家自己覆盖安装
         return dict(export_phone(c), updated=True)
     c.begin("找签名账号与 iPhone", 1, 6)
-    ph = phone_for(c)
+    try:
+        ph = phone_for(c)
+    except Failure as e:
+        hint = e.code == "device_not_connected" and other_device_current(c, c.r.get("device") or "")
+        if hint:
+            raise Failure(hint, code="device_not_connected") from e
+        raise
     rec = layout.load_device(c, ph.key)
     others = container_others(c, ph, rec)
     sid = packer.current_shell_id(c)
@@ -1672,14 +1714,15 @@ def update_phone(c):
     if st is None:
         return dict(updated=False, bundleId=ph.bid, games=others, **ph.info)
     stale = [s["gameId"] for s in st["stale"]]
-    if stale and c.r.get("acceptStale") is not True:
+    agreed = set((rec.get("staleAgreed") or {}).get(sid) or [])   # #479：这一版壳上同意过不带的，不再问
+    if any(g not in agreed for g in stale) and c.r.get("acceptStale") is not True:
         raise Failure("这几款要按新版重新出包，更新后在重新出包之前暂时打不开：" + "、".join(s["name"] for s in st["stale"]) + "。确认更新再点一次。",
                       code="container_stale", internal=" ".join(stale))
     keep = [g for g in others if g not in stale]
     if not keep:   # 每一款都要重出：换壳后容器里一款都没有——宿主 0 款的启动路径没在真机验过（同 remove_from_phone 不装空容器），物理上做不了，照旧停
         raise Failure("手机上的游戏都要按新版重新出包，这次没法只更新 S2Arm（更新后一款都打不开）。可以先给它们各「打 iPhone 包」，再点「装到 iPhone」，"
                       "游戏和 S2Arm 会一起换成新版；存档和资源都留在手机上。「只更新 S2Arm、暂不带游戏」下一版开放。", code="container_stale", internal=" ".join(stale))
-    r = put_game(c, None, ph, others=keep)
+    r = put_game(c, None, ph, others=keep, skipped=stale)
     return dict(r, updated=True, fromShell=st["fromShell"], toShell=sid, skipped=stale)
 
 
