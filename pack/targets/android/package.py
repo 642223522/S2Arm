@@ -384,6 +384,32 @@ def direct_vulkan_candidate(root, tools):
     return True, ''
 
 
+def latest_release(releases):
+    """The newest published release whose resource package is complete, or None.
+
+    The next release's read-only files are hard-linked to it (game_apk.py --resources --reuse-from) instead of
+    being written again: ext4 has no reflink, so every release used to keep a full copy of the RomFS.
+    A release is published only by the final rename (ledger written first), so '.'-named staging directories,
+    symlinks and directories missing the ledger or the package manifest are not candidates. What game_apk.py
+    actually links is decided by hash against the new package's own index, so a stale or foreign candidate
+    only costs the links, never correctness."""
+    newest = None
+    try:
+        candidates = list(releases.iterdir())
+    except OSError:
+        return None
+    for path in candidates:
+        if path.name.startswith('.') or path.is_symlink() or not path.is_dir():
+            continue
+        ledger = path / 'artifact.json'
+        if not ledger.is_file() or not (path / 'resources' / 'manifest.json').is_file():
+            continue
+        stamp = ledger.stat().st_mtime_ns
+        if newest is None or stamp > newest[0]:
+            newest = (stamp, path)
+    return newest[1] if newest else None
+
+
 def package(root, out):
     root, out = Path(root).resolve(), Path(out).resolve()
     releases = out / 'android-releases'
@@ -490,8 +516,10 @@ def package(root, out):
             verify_signature(build_source, apk, env, backend, variant)
             if sha256(apk) != sha256(built):
                 raise ValueError('构建输出在签名验证期间变化。')
-            subprocess.run([py, str(tool / 'game_apk.py'), '--resources', str(original_pack),
-                            str(apk), str(resources)], env=env, check=True)
+            previous = latest_release(releases)   # 持着出包锁：不会有别的出包在这时发布新的
+            subprocess.run([py, str(tool / 'game_apk.py'), '--resources',
+                            *(('--reuse-from', str(previous / 'resources')) if previous else ()),
+                            str(original_pack), str(apk), str(resources)], env=env, check=True)
             if shader_pack:
                 # 把离线包挂进安装资源包：行追加进 index、manifest 绑定的是挂前的内容根
                 #   （attach_shaders.py 自己核 contentRoot，与烘焙时 --content-root 一致）。
