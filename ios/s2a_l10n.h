@@ -12,7 +12,7 @@
 // 宿主界面最终生效的语言：zh-Hans / zh-Hant / en（11-13 维护者：首次跟随系统；玩家在 App 设置里选过就记住、以后按选的；选「跟随系统」恢复跟随；
 //   简 → 简、繁 → 繁、其余 → 英，取法在 runtime/include/s2a_ui_lang.h，单测 t_ui_lang）。选的值存在 S2AUILanguageKey（标准偏好）；
 //   ios/app.m 起进程时据此设本 App 的 AppleLanguages，字符串表 / 游戏库 / 系统弹框都按同一种语言出。进程内只取一次（换语言重开 App 生效）
-#include "s2a_ui_lang.h"
+#include "../runtime/include/s2a_ui_lang.h"   // 按本文件位置找：引用 s2a_l10n.h 的原生单测（vpad_* / cpatch_settings 等）不带 runtime/include
 #define S2AUILanguageKey @"S2AUILanguage"
 static inline NSString *s2a_l10n_system_tag(void) {   // 系统首选语言第一项：玩家选过语言时 AppleLanguages 是本 App 的覆盖值，要读全局域那份
     NSArray *g = [[NSUserDefaults standardUserDefaults] persistentDomainForName:NSGlobalDomain][@"AppleLanguages"];
