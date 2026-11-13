@@ -11,6 +11,8 @@ KEYS = [
     "touch_menu_title",
     "touch_menu_edit_positions",
     "touch_menu_restore_default",
+    "touch_menu_show_pad",
+    "touch_menu_hide_pad",
     "touch_passthrough_on",
     "touch_passthrough_off",
     "touch_edit_save",

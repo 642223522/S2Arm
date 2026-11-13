@@ -1093,9 +1093,11 @@ public class MainActivity extends Activity
         if (touchPad == null || touchPad.editing() || isFinishing()) return;
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
-        if (touchPad.getVisibility() == android.view.View.VISIBLE) {
-            labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
-        }
+        labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
+        // 接了手柄时虚拟手柄自动收起；玩家随时能叫回来或收起（不替玩家决定，本局有效）
+        boolean padShown = touchPad.controlsVisible();
+        labels.add(getString(padShown ? R.string.touch_menu_hide_pad : R.string.touch_menu_show_pad));
+        actions.add(() -> { touchMode = padShown ? "off" : "on"; updateTouchPad(); });
         if (touchLayouts.file().isFile()) {
             labels.add(getString(R.string.touch_menu_restore_default)); actions.add(this::resetTouchLayout);
         }
@@ -1200,7 +1202,9 @@ public class MainActivity extends Activity
         boolean show = "on".equals(touchMode) || ("auto".equals(touchMode) && !gamepadConnected())
             || touchPad.editing();
         touchPad.setControlsVisible(show);
-        touchPad.setVisibility(show || touchPad.gameTouchEnabled() ? android.view.View.VISIBLE : android.view.View.GONE);
+        // 触屏层始终在：按键收起时它只把触摸转给游戏或丢掉、不按键，但四指长按菜单要靠它收手势——
+        // 原先接了手柄就整层 GONE，菜单（编辑位置、显示虚拟手柄、运行模式）就再也叫不出来（不堵门）
+        touchPad.setVisibility(android.view.View.VISIBLE);
     }
     // Window lease (implementation plan §7.3): surfaceCreated offers a new window generation,
     // surfaceChanged and insets publish revisions of it, surfaceDestroyed revokes it. Hand-over
