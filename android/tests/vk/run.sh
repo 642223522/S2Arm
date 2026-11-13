@@ -115,7 +115,8 @@ fi
 if [ "$mode" = "--separate-core" ] || [ "$mode" = "--separate-neg-sampler" ]; then
     src=("$repo/android/tests/vk/t_replay_separate.c" "$repo/graphics/nvn/replay/rp_draw.c" "$repo/graphics/nvn/replay/rp_state.c" "$repo/graphics/nvn/replay/nvn_unimpl.c"
          "$repo/android/native/nvn/backend_vulkan.c" "$repo/android/native/direct/vk_device.c" "$repo/android/native/direct/gs_path.c" "$repo/android/native/capprobe/capprobe_host.c"
-         "$repo/android/native/nvn/nvn_vk_format.c" "$repo/graphics/nvn/gfx/nvn/nvn_fmt_expand.c" "$repo/android/native/nvn/nvn_vk_bcdec.c")
+         "$repo/android/native/nvn/nvn_vk_format.c" "$repo/graphics/nvn/gfx/nvn/nvn_fmt_expand.c" "$repo/android/native/nvn/nvn_vk_bcdec.c"
+         "$repo/android/native/nvn/nvn_vk_driver_cache.c" "$repo/android/native/direct/sha256.c")   # 后端的管线缓存落盘（#856）
     cflags+=(-ffunction-sections -fdata-sections -Wno-unused-function)
 fi
 if [ "$mode" = "--separate-neg-sampler" ]; then
@@ -150,7 +151,8 @@ esac
 # 管线缓存四个入口的 --wrap 只给默认档：--gs-core 档的测试源（t_replay_gs.c）没有对应的 __wrap 定义，带上会链接失败。
 pc_wrap=(-Wl,--wrap=vkCreatePipelineCache -Wl,--wrap=vkGetPipelineCacheData
          -Wl,--wrap=vkCreateGraphicsPipelines -Wl,--wrap=vkCreateComputePipelines)
-if [ "$mode" = "--gs-core" ]; then pc_wrap=(); fi
+# --gs-core / --separate-* 档的测试源没有这四个 __wrap 定义（只有默认档的 t_backend_vk.c 有），带上会链接失败
+case "$mode" in --gs-core|--separate-core|--separate-neg-sampler) pc_wrap=() ;; esac
 cc "${cflags[@]}" "${inc[@]}" "${src[@]}" -Wl,--wrap=vkAllocateDescriptorSets -Wl,--wrap=vkGetPhysicalDeviceFormatProperties \
     ${pc_wrap[@]+"${pc_wrap[@]}"} -Wl,--gc-sections -lvulkan -lpthread -lm -o "$out/t_backend_vk"
 
