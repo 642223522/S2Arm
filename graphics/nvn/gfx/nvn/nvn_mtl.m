@@ -589,6 +589,7 @@ static void udc_selftest(void) {
     }
 }
 static void bcd_prewarm(void);   // no BC: start building the decompression pipeline (defined with bcd_pso)
+static void ixc_prewarm(void); static void tensor_sq_prewarm(void);   // Switch 2: start building the indirect conversion / tensor stand-in kernels (defined with ixc_run / tensor_sq_pass)
 void mtl_init(void) {
     if (g_dev) return;
     const char *vbc = getenv("DM_NVN_VBUF_CACHE"); g_vbuf_cache = !(vbc && !strcmp(vbc, "0"));
@@ -691,6 +692,7 @@ void mtl_init(void) {
     udc_selftest();
     warm_announce();
     bcd_prewarm();   // S2Arm #582: no BC, the decompression pipeline is built in the background (see bcd_ready)
+    ixc_prewarm(); tensor_sq_prewarm();   // S2Arm #674: Switch 2, the two kernels compiled from source are built in the background (see ixc_ready / tensor_sq_ready)
 }
 
 
@@ -12605,12 +12607,24 @@ static const ixc_ent *ixc_find(const p_draw *dw, const p_draw_idx *di) {
 static void ixc_take(const p_draw *dw, const p_draw_idx *di) {
     if (g_ixc_n < IXC_MAX && !ixc_find(dw, di)) g_ixc[g_ixc_n++] = (ixc_ent){dw ? dw->ind : di->ind, dw ? 0 : di->ibuf, dw ? dw->prim : di->prim, dw ? -1 : di->itype, 0, 0, 0};
 }
+// S2Arm #674: k_ixc_msl is compiled from source (newLibraryWithSource). Built at the first such draw (a Switch 2 game's indirect task / mesh draws, in its first 3D scene) it held the
+//   submit thread 24-160 ms whenever the system's compile cache missed (the first launch of a new build, or the entry evicted), under 1 ms when it hit. On Switch 2 mtl_init starts the
+//   build in the background (ixc_prewarm); the first use waits for it (ixc_ready), so g_ixc_ps / g_ixc_err are written on that queue only and read after the wait. Elsewhere (or before
+//   mtl_init) nothing is started and the first use builds as before
+static id<MTLComputePipelineState> g_ixc_ps[2]; static NSError *g_ixc_err;
+static dispatch_group_t g_ixc_pre;   // the background build, NULL = not started
+static void ixc_build(void) {
+    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_ixc_msl) options:nil error:&e];
+    for (int k = 0; k < 2 && lib; k++) { id<MTLFunction> f = [lib newFunctionWithName:k ? @"ixc_expand" : @"ixc_arrays"]; g_ixc_ps[k] = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil; }
+    g_ixc_err = e;
+}
+static void ixc_prewarm(void) { if (!nvn2_on() || g_ixc_pre) return; g_ixc_pre = dispatch_group_create(); dispatch_group_async(g_ixc_pre, s2a_qos_global(S2A_QOS_SHADER_PREFETCH), ^{ @autoreleasepool { ixc_build(); } }); }
+static int ixc_ready(void) { if (g_ixc_pre) dispatch_group_wait(g_ixc_pre, DISPATCH_TIME_FOREVER); else ixc_build(); return g_ixc_ps[0] && g_ixc_ps[1]; }   // once: ixc_run keeps the table
 static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
-    static id<MTLComputePipelineState> ps[2]; static id at; static int failed;
+    static id at; static int failed;
     if (failed) return;
-    if (!at) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_ixc_msl) options:nil error:&e];
-        for (int k = 0; k < 2 && lib; k++) { id<MTLFunction> f = [lib newFunctionWithName:k ? @"ixc_expand" : @"ixc_arrays"]; ps[k] = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil; }
-        at = ps[0] && ps[1] ? rec_table(tab_new(1, 0, 0, &e)) : nil;
+    if (!at) { NSError *e = nil;
+        if (ixc_ready()) at = rec_table(tab_new(1, 0, 0, &e)); else e = g_ixc_err;
         if (!at) { failed = 1; MLOG("【红】 indirect draw conversion: cannot create the compute pipeline %s (indirect draws of quads / fans / 8-bit indices are skipped)", e.localizedDescription.UTF8String); return; } }
     if (g_ixc_epoch != g_wr_epoch || g_ixc_sub != g_arena_gen || g_ixc_n > IXC_MAX - 8) { g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_arena_gen; }
     int n0 = g_ixc_n; ixc_take(dw, di);
@@ -12647,13 +12661,13 @@ static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
             id<MTLBuffer> ob; size_t oo = arena_alloc(IXC_CAP * 4 + sizeof(ejob), &ob);
             ejob *j = (ejob *)((uint8_t *)ob.contents + oo + IXC_CAP * 4);
             *j = (ejob){rec, ib, ob.gpuAddress + oo, ag + 32 * (uint64_t)i, (uint32_t)e->prim, e->itype == 0 ? 1u : e->itype == 1 ? 2u : 4u, (uint32_t)MIN(((__bridge id<MTLBuffer>)mb).length - mo, 0xffffffffull), IXC_CAP};
-            tab_buf(at, ob, oo + IXC_CAP * 4, 0); [ce setComputePipelineState:ps[1]];
+            tab_buf(at, ob, oo + IXC_CAP * 4, 0); [ce setComputePipelineState:g_ixc_ps[1]];
             enc_c_dispatch(ce, MTLSizeMake(IXC_CAP / 64, 1, 1), MTLSizeMake(64, 1, 1));
             e->ixb = ob.gpuAddress + oo; e->ixlen = IXC_CAP * 4; e->args = ag + 32 * (uint64_t)i;
             { static int once; if (!once++) MLOG("indirect indexed draw (primitive %d, %d-byte indices) expanded to 32-bit indices on the GPU, at most %d", e->prim, e->itype == 0 ? 1 : e->itype == 1 ? 2 : 4, IXC_CAP); }
         }
     }
-    if (na) { tab_addr(at, ag + (uint64_t)n * 32, 0); [ce setComputePipelineState:ps[0]]; enc_c_dispatch(ce, MTLSizeMake((NSUInteger)na, 1, 1), MTLSizeMake(1, 1, 1)); }
+    if (na) { tab_addr(at, ag + (uint64_t)n * 32, 0); [ce setComputePipelineState:g_ixc_ps[0]]; enc_c_dispatch(ce, MTLSizeMake((NSUInteger)na, 1, 1), MTLSizeMake(1, 1, 1)); }
     enc_c_end(ce);
     args_dirty_all();
     if (!g_ixc_runs++) MLOG("indirect draw conversion: first time, %d draws (records for quads / fans / 8-bit indices become indexed indirect arguments in a compute pass before the render pass)", n);
