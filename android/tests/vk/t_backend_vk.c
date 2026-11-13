@@ -5673,7 +5673,15 @@ static struct c89_st c89_wait_done(const struct c89_st *base, unsigned want, int
     return s;
 }
 
-struct c89_dir { int nreg, nother; char name[256]; long size; ino_t ino; struct timespec mtim; };
+// 「没被重写」按名字 + 大小 + 修改时间 + 内容判，不比 inode：Mac 上 colima 的 virtiofs 在虚拟机丢页缓存（每 16 秒一次 drop_caches）后，
+// 同一个没动过的文件会换 inode 号（实测 7237 → 7238），按 inode 判会把「原样」误报成「重写」
+struct c89_dir { int nreg, nother; char name[256]; long size; uint64_t sum; struct timespec mtim; };
+static uint64_t c89_file_sum(const char *path) {   // FNV-1a；读不出算 0（与任何真内容的和都不相等的概率可忽略）
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    uint64_t h = 1469598103934665603ull; int c;
+    while ((c = fgetc(f)) != EOF) { h ^= (uint64_t)(unsigned char)c; h *= 1099511628211ull; }
+    fclose(f); return h;
+}
 
 // 数目录：正式文件（普通文件、名字里没有 .tmp.）记名字 / 大小 / inode / 修改时间；其余（临时文件、管道、子目录）都算 nother。
 static struct c89_dir c89_scan(const char *dir) {
@@ -5687,7 +5695,7 @@ static struct c89_dir c89_scan(const char *dir) {
         snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
         if (!strstr(de->d_name, ".tmp.") && stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
             o.nreg++; snprintf(o.name, sizeof o.name, "%s", de->d_name);
-            o.size = (long)st.st_size; o.ino = st.st_ino; o.mtim = st.st_mtim;
+            o.size = (long)st.st_size; o.sum = c89_file_sum(p); o.mtim = st.st_mtim;
         } else o.nother++;
     }
     closedir(d);
@@ -5695,7 +5703,7 @@ static struct c89_dir c89_scan(const char *dir) {
 }
 
 static int c89_same_file(const struct c89_dir *a, const struct c89_dir *b) {
-    return a->nreg == 1 && b->nreg == 1 && a->ino == b->ino && a->size == b->size &&
+    return a->nreg == 1 && b->nreg == 1 && a->sum == b->sum && a->size == b->size &&
            a->mtim.tv_sec == b->mtim.tv_sec && a->mtim.tv_nsec == b->mtim.tv_nsec && !strcmp(a->name, b->name);
 }
 
@@ -5917,7 +5925,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(mid1 > C89_X1 && a1.size == (long)mid1 + C89_HDR, "C89 ① 文件大小应 = 文件头 %d + 局中取出的 %zu 字节（> 填充 %d）→ %ld", C89_HDR, mid1, C89_X1, a1.size);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ① close：%d %s", e.rc.code, e.why);
     struct c89_dir a1b = c89_scan(d1);
-    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → inode / 大小 / 修改时间不变");
+    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → 大小 / 修改时间 / 内容不变");
     struct c89_st r1 = c89_readback(d1);
     CHECK(r1.loaded == mid1 && r1.rejected == 0, "C89 ① 下一局读回 %llu 字节（期望 %zu）、rejected=%llu（期望 0）", (unsigned long long)r1.loaded, mid1, (unsigned long long)r1.rejected);
 
@@ -5981,7 +5989,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(s3c.saves == b3.saves && s3c.same == b3.same + 2, "C89 ③ 检查过之后再建 3 条：应再检查 1 次（共 2 次）而不是每条都查 → 写 +%llu 次、「没变」+%llu 次（期望 0 / 2）", (unsigned long long)(s3c.saves - b3.saves), (unsigned long long)(s3c.same - b3.same));
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ③ close：%d %s", e.rc.code, e.why);
     struct c89_dir a3 = c89_scan(d1);
-    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（inode / 大小 / 修改时间不变）");
+    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（大小 / 修改时间 / 内容不变）");
     // ③ 对照：只把驱动数据变大（S2），其余同上 → 这回要写
     g_plc_extra = C89_X2;
     CHECK(c89_open(d1, 3, 0, 0), "C89 ③ 对照 open");
@@ -6102,7 +6110,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(ms6 >= 150.0 && ms6 < 3000.0, "C89 ⑥ close 应等了后台写（算进 200 ms 截止时间）又没挂住 → 用了 %.0f ms（期望 150–3000）", ms6);
     atomic_store(&ub.go, 1);
     struct c89_dir x6 = c89_scan(d6);
-    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（inode / 大小 / 修改时间不变）");
+    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（大小 / 修改时间 / 内容不变）");
     if (ubt_ok) pthread_join(ubt, NULL);
     CHECK(c89_wait_gone(pre6, 5000), "C89 ⑥ 放开管道后后台写应自己失败收尾、清掉临时文件");
     size_t n6b = 0; void *now6 = read_file(f6, &n6b);
