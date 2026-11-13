@@ -1248,6 +1248,16 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
     return 1;
 }
+// S2Arm #674: the key a Switch 2 stage would have with the code in place at SetShaders, only to start its library loading early. keys_hash leaves NVN2 stages unkeyed there
+//   (the code can still change before the first draw, which keys them), and with no key at SetShaders the prefetch was never asked: every library of a Switch 2 game was loaded on the
+//   submit thread at its first draw. A key computed from code that changes later is not in the package's map, so the prefetch drops it (nvn_be_shader_prefetch: no stage)
+static int keys_hash_early(const NVNshaderData *sd, uint8_t out[8]) {
+    void *mb; uint64_t mo;
+    if (!sd->control || (uint64_t)(uintptr_t)sd->control >= (1ull << 47) || !nvn2_on() || !nvn2_ctl(sd->control)) return 0;
+    uint32_t n2 = nvn2_code_len(sd->control);
+    if (!sd->data || !n2 || n2 >= (1u << 24) || !nvn_be_addr(sd->data, n2, &mb, &mo)) return 0;
+    return nvn2_key(sd->control, (const void *)(uintptr_t)sd->data, out);
+}
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     if (st >= p->nstage) return 0;
     prog_keys_t *k = pk_get(p, 1);
@@ -1276,6 +1286,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
 #endif
     for (int i = 0; i < n; i++) {
         if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
+        else { uint8_t early[8]; if (keys_hash_early(&sd[i], early)) nvn_be_shader_prefetch(early); }   // S2Arm #674: Switch 2 stages, keyed at first use
 #if defined(__ANDROID__)   // Android 直连的阶段 / 源快照 / 按 serial 记 key；Apple 回放不读这些，保持 main 原行为
         // 阶段只在 control 仍有效、code 已映射的本次调用内读定；code 未映射时留给 Bind
         // 用自持 control + 当时的 code 补算，Bind 不碰 guest control。
