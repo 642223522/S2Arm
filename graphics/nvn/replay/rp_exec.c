@@ -60,6 +60,7 @@ uint64_t rp_sub_serial(void) { return g_sub_serial; }
 static uint64_t g_seg_serial;  // 第几个后端段（一次提交中途交过段就不止一个）。段里的暂存内容随段回收，按它判能不能复用
 uint64_t rp_seg_serial(void) { return g_seg_serial; }
 static uint64_t g_fence;       // 最近一次提交的栅栏值
+static uint64_t g_effect_fence, g_finish_prev;   // 见 nvn_be_finish_publish
 enum { SUB_STEP = 64 };       // 一次提交在时间线上占 64 个值：最后一段（带回写）取 g_fence + 64，它前面的前置段 / 中途先交的段依次取 +1、+2…
 static uint32_t g_mid;         // 这次提交已经用掉几个中间值
 static uint64_t g_split_base;  // 上次中途交段时的累计绘制笔数
@@ -268,6 +269,7 @@ uint64_t nvn_be_sub_commit(void) {
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
     uint64_t t0 = now_ns(); if (s) { s->t_commit = t0; s->fence = f; s->occ_base = g_occ_base; }
+    if (s && (s->n || s->noe || s->ngw)) g_effect_fence = f;   // 这次提交做完时有东西要写回游戏内存（事件、计数器报告、遮挡结果、GPU 写的缓冲）
     rc_commit(f);
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, sub_done, s, &err))) red("提交失败：%s", err.why);
     pf_add(RP_PERF_COMMIT_NS, now_ns() - t0); pf_add(RP_PERF_SUBS, 1);
@@ -277,7 +279,26 @@ uint64_t nvn_be_sub_commit(void) {
 }
 
 uint64_t nvn_be_last_fence(void) { return g_fence; }
-int rp_prev_subs_done(void) { return __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE) >= g_fence; }   // 此前交出去的提交是否都做完了（g_fence 在本次提交交出最后一段时才前进）
+uint64_t rp_sub_fence(void) { return g_fence + SUB_STEP; }   // 正在回放的这次提交最后一段的栅栏值（它中途先交的段取的值都比这个小）
+int rp_fence_done(uint64_t f) { return __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE) >= f; }
+// 游戏调 QueueFinish 时要等到哪个栅栏值（前端在提交锁里取值，出了锁再等）。
+// 真机上 Finish 等的是「显卡把已提交的都做完」。游戏能观察到的只有两样：做完时写回它内存的东西，和它之后再提交的活排在后面。
+// 有的游戏每帧呈现前都调一次：回放完一帧之后在这里再等显卡把这一帧做完，显卡这一帧的活和下一帧的回放完全串着。
+// 开关 nvk_finish_lag（缺省 0，照旧等到最后一次提交）：
+//   1 = 只等到「上一次 Finish 时的最后一次提交」和「最近一次有东西要写回的提交」里靠后的那个——回写一样不少，显卡上最多压着一帧的活，
+//       下一帧的回放与这一帧的显卡工作重叠；
+//   2 = 诊断档：连「有东西要写回的提交」也不等。回写照常在提交做完时落地，游戏最多晚一帧看到。只用来量上限，不是产品行为。
+// 配套在 rp_buf.c：每次这样放行一帧，池镜像换到另一份（rp_buf_frame_flip），这一帧直接写的那份显卡已经不读了。
+void rp_buf_frame_flip(void);
+uint64_t nvn_be_finish_publish(void) {
+    uint64_t last = g_fence; int lag = nvn_plat_flag("nvk_finish_lag", 0);
+    if (!lag) { g_finish_prev = last; return last; }
+    uint64_t t = lag == 2 || g_finish_prev > g_effect_fence ? g_finish_prev : g_effect_fence;
+    g_finish_prev = last;
+    if (t < last) rp_buf_frame_flip();   // 有提交没等：它可能还在读当前这份镜像
+    return t;
+}
+void nvn_be_finish_wait(uint64_t fence) { if (fence) nvn_be_wait(fence, 5000000000ull); }
 
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
