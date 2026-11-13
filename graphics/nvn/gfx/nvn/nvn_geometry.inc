@@ -127,6 +127,8 @@ static _Atomic int g_mtk_inflight;   // mesh pipelines queued or building in the
 static NSMutableArray *g_mtk_ready;   // pace on: built, not delivered yet (each @[NSData key, pipeline or NSNull]); under g_pso_mtk_lock
 static uint64_t g_mtk_pub_frame = UINT64_MAX;
 static NSMutableSet *g_mtk_drawn;   // pipelines already drawn once (first-draw log)
+static NSMapTable *g_mtk_names;   // pipeline → "task … mesh … fragment …" for the #770 logs (not the pipeline's label: -label is also a Metal 4 encoder selector, t_nvn_rec_cover); under g_pso_mtk_lock
+static const char *mtk_name(id p) { if (!p || p == NSNull.null) return "(refused)"; os_unfair_lock_lock(&g_pso_mtk_lock); NSString *n = [g_mtk_names objectForKey:p]; os_unfair_lock_unlock(&g_pso_mtk_lock); return n ? n.UTF8String : "?"; }
 static void mtk_publish(void) {   // pace on, submit thread, before a mesh draw looks its pipeline up
     int pace = mtk_pace(); if (!pace || !g_mtk_ready.count) return;
     uint64_t f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed); int fly = atomic_load(&g_mtk_inflight);
@@ -139,7 +141,7 @@ static void mtk_publish(void) {   // pace on, submit thread, before a mesh draw 
     os_unfair_lock_unlock(&g_pso_mtk_lock);
     g_mtk_pub_frame = f;
     for (NSArray *r in done) MLOG("task / mesh pipeline delivered (pace %d) at frame %llu: %s; still building %d, built and held %lu", pace, (unsigned long long)f,
-                                  r[1] == NSNull.null ? "(refused)" : [(id<MTLRenderPipelineState>)r[1] label].UTF8String, fly, (unsigned long)left);
+                                  mtk_name(r[1]), fly, (unsigned long)left);
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts = g_mtk.ts, *ms = g_mtk.ms, *fs = raster->sh[1]; int merged = g_pso_lmap != NULL;
@@ -163,7 +165,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
         if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set];
         if (![g_mtk_drawn containsObject:ps]) { [g_mtk_drawn addObject:ps];
             MLOG("task / mesh pipeline first drawn at frame %llu: %s; still building %d", (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed),
-                 [(id<MTLRenderPipelineState>)ps label].UTF8String, atomic_load(&g_mtk_inflight)); }
+                 mtk_name(ps), atomic_load(&g_mtk_inflight)); }
     }
     if (ps) return ps == NSNull.null || ps == g_pso_mtk_building ? nil : ps;
     MTLRenderPipelineDescriptor *d = pso_desc(k, nil, fs, g_pso_fsfn, merged);   // the fragment function variant and the attachments, as a vertex draw's (no vertex stage)
@@ -174,7 +176,6 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     for (int i = 0; i < 8; i++) m.colorAttachments[i] = d.colorAttachments[i];
     m.depthAttachmentPixelFormat = d.depthAttachmentPixelFormat; m.stencilAttachmentPixelFormat = d.stencilAttachmentPixelFormat;
     NSString *names = [NSString stringWithFormat:@"task %s mesh %s%s fragment %s", ts ? ts->key : "-", ms->key, pf ? " (padded)" : "", fs ? fs->key : "-"]; mtk_key kk = mk;
-    m.label = names;   // #770 logs name a pipeline by it
     atomic_fetch_add(&g_mtk_inflight, 1);
     if (!g_mtk_q) { g_mtk_q = dispatch_queue_create("dm.nvn.mesh", s2a_qos_queue_attr(DISPATCH_QUEUE_SERIAL, S2A_QOS_SHADER_VARIANT)); g_mtk_group = dispatch_group_create(); }
     dispatch_group_async(g_mtk_group, g_mtk_q, ^{ @autoreleasepool {
@@ -185,6 +186,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
                     (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed), left);
         else MLOG("【红】 task / mesh pipeline refused (%s): %s; its draws are skipped", names.UTF8String, e.localizedDescription.UTF8String);
         os_unfair_lock_lock(&g_pso_mtk_lock);
+        if (p) { if (!g_mtk_names) g_mtk_names = [NSMapTable strongToStrongObjectsMapTable]; [g_mtk_names setObject:names forKey:p]; }
         if (mtk_pace()) { if (!g_mtk_ready) g_mtk_ready = [NSMutableArray array]; [g_mtk_ready addObject:@[[NSData dataWithBytes:&kk length:sizeof kk], p ? (id)p : NSNull.null]]; }   // held: mtk_publish delivers
         else hm_put_id(&g_pso_mtk, &kk, p ?: NSNull.null);
         os_unfair_lock_unlock(&g_pso_mtk_lock);
