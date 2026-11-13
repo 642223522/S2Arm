@@ -104,17 +104,20 @@ def issue_url(code, client):
 
 
 def add_summary(c, path):
-    """请求带了 gameId / operations：把最近那次失败的错误摘要放进包（同「复制错误摘要」的正文，report.py 已脱敏）。
+    """请求带了 gameId / operations：把最近那次失败的错误摘要放进包（同「复制错误摘要」的正文，report.py 已脱敏）；
+    顶栏全局「故障报修」什么都不带：附全部作业里最近一次失败的摘要，一次都没失败过就不附。
     没有作业记录的失败（环境检查，界面不带 operations）：界面把它显示的那段正文作 summary 交来，脱敏后放进去。都没有就不放"""
     text = None
-    if c.r.get("operations") is not None or c.r.get("gameId"):
+    given = isinstance(c.r.get("summary"), str) and c.r["summary"].strip()
+    # 顶栏全局「故障报修」（不带 gameId / operations / summary）：最近有失败的作业就附最近一次的摘要，没有就不附（11-13）
+    if c.r.get("operations") is not None or c.r.get("gameId") or not given:
         import report
         try:
             task = report.find_task(c.private, c.r.get("gameId") or None, c.r.get("operations") or None)
             text = report.build(c.private, task, c.r.get("extra") if isinstance(c.r.get("extra"), dict) else None)
         except Failure:
             text = None
-    if text is None and isinstance(c.r.get("summary"), str) and c.r["summary"].strip():
+    if text is None and given:
         text = c.redact(c.r["summary"], limit=None)
     if text is None:
         return False

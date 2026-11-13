@@ -56,7 +56,8 @@ _s2a_dc_list() {   # devicectl 看得到的设备列表（一行一台，原文�
   if [ -n "${S2A_DEVICECTL_LIST:-}" ]; then bash -c "$S2A_DEVICECTL_LIST" 2> /dev/null; return; fi
   local tb; tb=$(command -v timeout || command -v gtimeout)
   ${tb:+$tb 30} xcrun devicectl list devices 2> /dev/null; }
-_s2a_dc_seen() { printf '%s\n' "$1" | grep -F -- "$2" | grep -qE 'available|connected'; }   # <列表> <UDID>
+# 在线 = 这台那一行的状态是 available / available (paired) / connected 整词（11-13：原先子串匹配，「unavailable」里也含 available，把不可用的设备当在线挑中）
+_s2a_dc_seen() { printf '%s\n' "$1" | grep -F -- "$2" | grep -qE '(^|[[:space:]])(available|connected)([[:space:]]|$)'; }   # <列表> <UDID>
 s2a_device_pick() {
   local spec=${1:-any} b=${2:-} sd=${S2A_SCHED_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/sched} n best= bk= k ld u p mx=${S2A_DEVICE_PICK_LOCK:-$HOME/.s2arm/devpick} i L
   [ -n "${S2A_TEST_ROOT:-}" ] && mx=$S2A_TEST_ROOT/devpick
