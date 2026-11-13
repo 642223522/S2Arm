@@ -417,7 +417,7 @@ static void newimg_del_locked(struct nvn_gpu_tex_s *t) {
 // 命令段用完的命令池（带它那一个命令缓冲）和描述符池留下来给后面的段用，不再每段新建、段完成就销毁。
 // 真机取样（一款 3D 游戏，每帧 9 个命令段）：回放线程约 14% 的时间在驱动向内核要显存（kgsl_sharedmem_alloc → ioctl + mmap），
 // 开命令段 nvn_gpu_cmd_begin 一项占 6%；每帧新建 9.2 个命令池、5.0 个描述符池。
-// 段做完后：命令池 vkResetCommandPool、描述符池 vkResetDescriptorPool，各放进一张空闲表；开段 / 要描述符池时先从表里取。
+// 段做完后：命令池、描述符池各放进一张空闲表；开段 / 要描述符池时先从表里取，取出来再重置（vkResetCommandPool / vkResetDescriptorPool）。
 // 重置之后上一段分出去的描述符组句柄全部失效——段内的影子（desc_sets、备忘表）都随段对象一起没了，不会带到下一段。
 // 表有上限（多出来的照旧销毁），会话收尾全部销毁。诊断开关 nvk_seg_reuse=0 关掉（同一局里对照用），缺省开。
 enum { SEGPOOL_CMD_N = 32, SEGPOOL_DESC_N = 64 };
@@ -432,12 +432,15 @@ static int seg_take_cmd(VkCommandPool *pool, VkCommandBuffer *cb) {
     pthread_mutex_lock(&g_seg_mu);
     if (g_seg_ncmd) { g_seg_ncmd--; *pool = g_seg_cmd[g_seg_ncmd].pool; *cb = g_seg_cmd[g_seg_ncmd].cb; g_seg_hit_cmd++; ok = 1; }
     pthread_mutex_unlock(&g_seg_mu);
+    // 重置放在取用的这一刻、由要用它的线程做：放回时（完成线程）就重置的话，两条线程会在驱动里抢同一把锁，
+    // 真机上「交后端」从 0.4 涨到 1.5–2.2 毫秒 / 帧
+    if (ok && vkResetCommandPool(g.d, *pool, 0) != VK_SUCCESS) { vkDestroyCommandPool(g.d, *pool, NULL); *pool = VK_NULL_HANDLE; *cb = VK_NULL_HANDLE; ok = 0; }
     return ok;
 }
 static void seg_give_cmd(VkCommandPool pool, VkCommandBuffer cb) {   // 这一段已经做完（或被放弃），池里没有在用的命令缓冲
     if (!pool) return;
     int kept = 0;
-    if (cb && seg_reuse_on() && vkResetCommandPool(g.d, pool, 0) == VK_SUCCESS) {
+    if (cb && seg_reuse_on()) {
         pthread_mutex_lock(&g_seg_mu);
         if (!g_seg_closed && g_seg_ncmd < SEGPOOL_CMD_N) { g_seg_cmd[g_seg_ncmd].pool = pool; g_seg_cmd[g_seg_ncmd].cb = cb; g_seg_ncmd++; kept = 1; }
         pthread_mutex_unlock(&g_seg_mu);
@@ -449,12 +452,13 @@ static VkDescriptorPool seg_take_desc(void) {
     pthread_mutex_lock(&g_seg_mu);
     if (g_seg_ndesc) { p = g_seg_desc[--g_seg_ndesc]; g_seg_hit_desc++; }
     pthread_mutex_unlock(&g_seg_mu);
+    if (p && vkResetDescriptorPool(g.d, p, 0) != VK_SUCCESS) { vkDestroyDescriptorPool(g.d, p, NULL); p = VK_NULL_HANDLE; }   // 同上：取用时重置
     return p;
 }
 static void seg_give_desc(VkDescriptorPool p) {
     if (!p) return;
     int kept = 0;
-    if (seg_reuse_on() && vkResetDescriptorPool(g.d, p, 0) == VK_SUCCESS) {
+    if (seg_reuse_on()) {
         pthread_mutex_lock(&g_seg_mu);
         if (!g_seg_closed && g_seg_ndesc < SEGPOOL_DESC_N) { g_seg_desc[g_seg_ndesc++] = p; kept = 1; }
         pthread_mutex_unlock(&g_seg_mu);
