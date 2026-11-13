@@ -1982,7 +1982,11 @@ static uint32_t pipe_hash(const nvn_gpu_pipe_desc *d) {
     for (int i = 0; i < 5; i++) { uintptr_t sh = (uintptr_t)d->st[i].sh; PH(&sh, sizeof sh); }
     uint32_t v[4] = {(uint32_t)d->prim, (uint32_t)d->dfmt, (uint32_t)d->sfmt, (uint32_t)d->samples}; PH(v, sizeof v);
     PH(d->cfmt, sizeof d->cfmt); PH(d->blend, sizeof d->blend); PH(&d->color, sizeof d->color); PH(&d->chmask, sizeof d->chmask);
-    PH(&d->ds, sizeof d->ds); PH(&d->poly, sizeof d->poly);
+    PH(&d->ds, sizeof d->ds);
+    {   // poly_st 的位域只占部分对象位；散列和相等判定都不能依赖填充位。
+        uint8_t poly[] = {d->poly.cull, d->poly.front, d->poly.mode, d->poly.offset_en};
+        PH(poly, sizeof poly);
+    }
 #undef PH
     return (uint32_t)(h ^ h >> 32);
 }
@@ -2003,7 +2007,9 @@ static int same_pipe_desc(const nvn_gpu_pipe_desc *a, const nvn_gpu_pipe_desc *b
            memcmp(a->attr, b->attr, sizeof a->attr) == 0 &&
            memcmp(a->stream, b->stream, sizeof a->stream) == 0 &&
            memcmp(&a->ds, &b->ds, sizeof a->ds) == 0 &&
-           memcmp(&a->poly, &b->poly, sizeof a->poly) == 0 && a->origin_ll == b->origin_ll && a->depth_clamp == b->depth_clamp;
+           a->poly.cull == b->poly.cull && a->poly.front == b->poly.front &&
+           a->poly.mode == b->poly.mode && a->poly.offset_en == b->poly.offset_en &&
+           a->origin_ll == b->origin_ll && a->depth_clamp == b->depth_clamp;
 }
 
 static void destroy_pipe_objects(struct nvn_gpu_pipe_s *p) {

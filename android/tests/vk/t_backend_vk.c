@@ -3168,6 +3168,35 @@ static void fill_gpipe_desc(nvn_gpu_pipe_desc *pd, nvn_gpu_shader vs, nvn_gpu_sh
     pd->origin_ll = 1;   // 与 full_dyn 的窗口原点一致（契约 v6：两处必须相同）
 }
 
+// 真实 Vulkan 管线缓存：同一语义的位域对象即便填充位不同也应命中。
+static void poly_key_padding(const char *dir) {
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) {
+        CHECK(0, "poly key shaders"); return;
+    }
+    nvn_gpu_pipe_desc a, b; fill_gpipe_desc(&a, vs, fs, 0); memcpy(&b, &a, sizeof b);
+    memset(&a.poly, 0, sizeof a.poly); memset(&b.poly, 0xff, sizeof b.poly);
+    a.poly.cull = b.poly.cull = 0; a.poly.front = b.poly.front = 1;
+    a.poly.mode = b.poly.mode = NVN_POLYGON_MODE_FILL; a.poly.offset_en = b.poly.offset_en = 0;
+    CHECK(memcmp(&a.poly, &b.poly, sizeof a.poly) != 0, "poly 夹具须保留不同填充位");
+    nvn_gpu_err e = {0}; nvn_gpu_pipe p = NULL, q = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&a, NVN_GPU_PIPE_SYNC, &p, &e)) && p, "poly 首次取管线 %s", e.why);
+    CHECK(OK(nvn_gpu_pipe_get(&b, NVN_GPU_PIPE_SYNC, &q, &e)) && q, "poly 再次取管线 %s", e.why);
+    CHECK(p == q, "poly：四成员相同、填充位不同时应命中同一条管线");
+    for (int i = 0; i < 4; i++) {
+        nvn_gpu_pipe_desc c; memcpy(&c, &a, sizeof c);
+        if (i == 0) c.poly.cull = 2;
+        if (i == 1) c.poly.front = 0;
+        if (i == 2) c.poly.mode = NVN_POLYGON_MODE_LINE;
+        if (i == 3) c.poly.offset_en = 4;
+        if (i == 2 && !g_dev.core_features.fillModeNonSolid) continue;
+        nvn_gpu_pipe changed = NULL;
+        CHECK(OK(nvn_gpu_pipe_get(&c, NVN_GPU_PIPE_SYNC, &changed, &e)) && changed, "poly 字段 %d 管线 %s", i, e.why);
+        CHECK(changed != p, "poly 字段 %d 不同须保留不同管线", i);
+    }
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+}
+
 static void full_dyn(nvn_gpu_dyn *d) {
     memset(d, 0, sizeof *d); d->origin_ll = 1;   /* 原点在左下 = Vulkan 的自然方向 */
     d->nvp = 1; d->vp[0][2] = 64; d->vp[0][3] = 64; d->vp[0][5] = 1;
@@ -5228,6 +5257,7 @@ int main(int argc, char **argv) {
         s2a_vk_device_destroy(&g_dev, 1);
         return g_fail ? 1 : 0;
     }
+    poly_key_padding(argv[1]);
     c697_swapchain_images();
     c690_native_bc_image_copy(NVN_FORMAT_RGB_DXT1_SRGB, 8, 1);
     c690_native_bc_image_copy(NVN_FORMAT_RGBA_DXT5, 16, 2);
