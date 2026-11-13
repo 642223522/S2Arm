@@ -7,14 +7,14 @@ set -euo pipefail
 H=$(cd "$(dirname "$0")/.." && pwd)
 # 维护方：本机名单（tools/machine.local，不进仓库）配了 S2A_ANDROID_VK_REMOTE（如 air）→ 整步经私有 remote.sh 送那台跑，本机不起 colima 容器
 #   （11-13：本机风扇，安卓的 Vulkan 契约用例改在专门的安卓专用 Mac上跑）。远端环境（PATH / NDK / docker 配置目录）由 S2A_ANDROID_VK_ENV 给，
-#   与那台机上其他跑 run.sh 的人用同一把目录锁 S2A_ANDROID_VK_LOCK（mkdir 成功才跑、跑完删）。只在树是提交态时派（remote.sh 只收提交态），
+#   配了 S2A_ANDROID_VK_LOCK 就和那台机上其他跑 run.sh 的人用同一把目录锁（mkdir 成功才跑、跑完删），没配不上锁。只在树是提交态时派（remote.sh 只收提交态），
 #   已在远端里（S2A_REMOTE_NAME）不再派；没配 / 没有私有工具的（贡献者）照旧本机跑
 . "$H/tools/machine.sh" 2> /dev/null || true
 if [ -n "${S2A_ANDROID_VK_REMOTE:-}" ] && [ -z "${S2A_REMOTE_NAME:-}" ] && [ -f "${S2A_PRIVATE_TOOLS:-}/remote.sh" ] && [ -z "$(git -C "$H" status --porcelain 2> /dev/null)" ]; then
   cd "$H"
   # shellcheck disable=SC2086  # S2A_ANDROID_VK_ENV 是「K=V K=V」一串，按空格拆给 env
   exec env S2A_REMOTE_PRIO=2 bash "$S2A_PRIVATE_TOOLS/remote.sh" --host "$S2A_ANDROID_VK_REMOTE" --name gate-android-vk --rev HEAD --timeout 2700 -- \
-    bash -c 'L=$1; shift; for _ in $(seq 360); do mkdir "$L" 2> /dev/null && break; sleep 5; done; [ -d "$L" ] || { echo "等不到安卓 Vulkan 用例锁 ${L}（30 分钟）"; exit 75; }
-      trap "rmdir \"$L\"" EXIT; env "$@" bash tests/android_vk_test.sh' _ "${S2A_ANDROID_VK_LOCK:-$HOME/.s2a_android_vk.lock}" ${S2A_ANDROID_VK_ENV:-}
+    bash -c 'L=$1; shift; if [ -n "$L" ]; then for _ in $(seq 360); do mkdir "$L" 2> /dev/null && break; sleep 5; done; [ -d "$L" ] || { echo "等不到安卓 Vulkan 用例锁 ${L}（30 分钟）"; exit 75; }
+      trap "rmdir \"$L\"" EXIT; fi; env "$@" bash tests/android_vk_test.sh' _ "${S2A_ANDROID_VK_LOCK:-}" ${S2A_ANDROID_VK_ENV:-}
 fi
 exec bash "$H/android/tests/vk/run.sh"
