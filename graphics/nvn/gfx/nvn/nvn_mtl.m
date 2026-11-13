@@ -34,6 +34,7 @@
 #include "nvn_builtin.h"
 #include "nvn_dirty.h"
 #include "nvn_refl.h"
+#include "nvn_fmt_info.h"   // #529 lb_fill：客体格式是不是定点深度
 #include "nvn_red.h"   // sampler reduction / LOD bias where the GPU has none: the variant's function constants and table entries (se_need / se_bind)
 #include "../../../metal/gal_samp_caps.h"   // whether this GPU reduces / biases natively (#800; the generic path's same test)
 #include "nvn_cover.h"
@@ -9774,21 +9775,39 @@ static int se_want(const prog_t *p, NvShader *sh, int nvn_stage) {
     else if (fold) RED_ONCE(140, "shader %s reads a folded linear texture, but its sampler-emulation variant cannot (made before format 4): the texture reads 0", sh->key);
     return fc;
 }
-// S2Arm #800: the s2a_lb table of a pixel / compute shader (argument buffer member, NVN_RB_LB; dmsh_red.py fs_lb): one float per sampler member at its argument id, the LOD bias main0 adds
+// S2Arm #800: the s2a_lb table of a pixel / compute shader (argument buffer member, NVN_RB_LB; S2A.Dsh FsLb): one float per sampler member at its argument id, the LOD bias main0 adds
 //   to each sample through it. Where the GPU ignores a sampler's bias (g_lb_emu: M3; the sampler carries none, samp_by_id) the bound sampler's lod_bias, else 0 (the sampler applies it:
-//   Apple10, M4 Pro). All zero → one shared zero buffer, nothing written per draw. Caller holds g_rmu (encode_args)
+//   Apple10, M4 Pro).
+// #529: the second half, [LB_DC + argument id] (S2A.Dsh LB_DC = 192; FsLb only rewrites shaders whose members end below it), is 1 where the texture this sampler member samples with
+//   (combined handles: SAMPT, a single SAMPU, the same handle's texture part) is a fixed-point depth format to the guest (D16 / D24 / D24S8: nvn_fmt_info depth + UNORM). Its
+//   sample_compare saturates the reference to [0,1] first, the fixed-point comparison NVN gives and Metal's Depth32Float hosting of those formats does not; float depth (D32F) gets 0.
+//   All zero → one shared zero buffer, nothing written per draw. Caller holds g_rmu (encode_args)
+enum { LB_DC = 192 };
+static int dc_samp(const nvn_rbind *b, int st) {   // the guest texture this sampler member samples with is fixed-point depth (#529)
+    int tid = b->kind == NVN_RB_SAMPT ? (b->reg < NTEX ? (int)(tex_slot_h(S.tex[st], S.img[st], b->reg) & 0xfffff) : -1)
+            : b->kind == NVN_RB_SAMPU && !b->n && (!b->sid || b->pair) ? ubo_tex_id(ubo_packed(st, b)) : -1;
+    if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return 0;
+    int f = g_treg[tid].t.d.format;
+    return f > 0 && f <= NVN_FMT_MAX && nvn_fmt_info_table[f].depth && nvn_fmt_info_table[f].kind == NVN_FMT_UNORM;
+}
 static uint64_t lb_fill(NvShader *sh, int nvn_stage) {
     static id<MTLBuffer> zero; static uint64_t zero_gpu; static float q[NVN_REFL_MAXARG];
     if (!zero) { zero = [g_dev newBufferWithLength:sizeof q options:MTLResourceStorageModeShared]; res_add(zero); zero_gpu = zero.gpuAddress; }
-    if (!g_lb_emu) return zero_gpu;
-    int top = -1;
+    int top = -1, span = -1;   // q[0 .. top] written this draw (zeros between the entries that are set); span = LB_DC + the largest sampler member id: every
+    //   sample_compare of the shader reads q[LB_DC + its id] (S2A.Dsh FsLb), so a table that is not the zero buffer runs at least that far (bias-only tables used to end at top)
     for (int i = 0; i < sh->rf.nb; i++) {
         const nvn_rbind *b = &sh->rf.b[i]; if (!se_samp(b) || b->aid >= NVN_REFL_MAXARG) continue;
-        int sid = bind_sid(b, nvn_stage); if (sid <= 0 || sid >= g_nsreg || !g_sreg_ok[sid] || g_sreg[sid].lod_bias == 0) continue;
-        if (top < b->aid) { for (int k = top + 1; k <= b->aid; k++) q[k] = 0; top = b->aid; }
-        q[b->aid] = g_sreg[sid].lod_bias;
+        if (b->aid < LB_DC && LB_DC + b->aid > span) span = LB_DC + b->aid;
+        float bias = 0; int dc = b->aid < LB_DC && dc_samp(b, nvn_stage);
+        if (g_lb_emu) { int sid = bind_sid(b, nvn_stage); if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) bias = g_sreg[sid].lod_bias; }
+        if (bias == 0 && !dc) continue;
+        int need = dc ? LB_DC + b->aid : b->aid;
+        if (top < need) { for (int k = top + 1; k <= need; k++) q[k] = 0; top = need; }
+        if (bias != 0) q[b->aid] = bias;
+        if (dc) q[LB_DC + b->aid] = 1;
     }
     if (top < 0) return zero_gpu;
+    if (top < span) { for (int k = top + 1; k <= span; k++) q[k] = 0; top = span; }
     id<MTLBuffer> ab; size_t o = arena_alloc(sizeof q[0] * (size_t)(top + 1), &ab); memcpy((uint8_t *)ab.contents + o, q, sizeof q[0] * (size_t)(top + 1));
     return ab.gpuAddress + o;
 }
