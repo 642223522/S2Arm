@@ -312,11 +312,12 @@
 "diag.upload.done.message" = "短码：%@\n把它发给我们（贴到 GitHub 帖子或群里），7 天内有效。";
 "diag.upload.done.title" = "已上传";
 "diag.upload.fail.busy" = "刚才上传得太频繁，等一分钟再试；也可以改用导出诊断包，手动发给我们。";
-"diag.upload.fail.network" = "连不上诊断服务器（%@）。可以改用导出诊断包，手动发给我们。";
+"diag.upload.fail.network" = "连不上诊断服务器（%@）。如果刚弹出「允许使用无线数据」，选允许后点「再试一次」；也可以导出诊断包手动发给我们。";
 "diag.upload.fail.rejected" = "诊断包没通过服务器检查（%@）。可以改用导出诊断包，手动发给我们。";
 "diag.upload.fail.server" = "诊断服务器出错（HTTP %d）。可以改用导出诊断包，手动发给我们。";
 "diag.upload.fail.title" = "上传没成功";
 "diag.upload.go" = "上传";
+"diag.upload.retry" = "再试一次";
 "dprompt.expiry.body" = "还剩%@。到期后游戏打不开，存档不会丢：连上手机再点一次「装到 iPhone」，或在 AltStore 里刷新。";
 "dprompt.expiry.hours" = "约 %d 小时";
 "dprompt.expiry.lessThanHour" = "不到 1 小时";

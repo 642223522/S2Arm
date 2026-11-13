@@ -374,27 +374,32 @@ static void post_zip(NSURL *zip, int attempt, void (^done)(NSString *code, NSStr
         dispatch_async(dispatch_get_main_queue(), ^{ done(nil, fail); });
     }] resume];
 }
+// 传一份已打好的包并给结果（主线程调）：成功显示短码 +「复制短码」；失败说原因，给「再试一次」和「导出诊断包」两条路
+//   （国行 iPhone 第一次联网时系统先弹「允许使用无线数据」，弹着时请求一律报断网——玩家点了允许，再试一次就能传）
+static void upload_zip(UIViewController *host, NSURL *zip) {
+    if (g_exporting) return;
+    g_exporting = YES; [NSNotificationCenter.defaultCenter postNotificationName:@"S2ADiagExportChanged" object:nil];
+    post_zip(zip, 0, ^(NSString *code, NSString *fail) {
+        busy_done();
+        UIAlertController *a;
+        if (code) {
+            a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.done.title") message:[NSString stringWithFormat:S2AL(@"diag.upload.done.message"), code] preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.copy") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; UIPasteboard.generalPasteboard.string = code; LOG("诊断包：短码已复制"); }]];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+        } else {
+            a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.fail.title") message:fail preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; upload_zip(host, zip); }]];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.export") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; share_zip(host, zip); }]];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+        }
+        present_over(host, a);
+    });
+}
 static void upload_now(void) {
     UIViewController *host = diag_host();
     if (g_exporting || !host) return;
     LOG("诊断包：开始打包上传");
-    build_async(^(NSURL *zip, NSString *err) {
-        if (!zip) { busy_done(); build_failed(host, err); return; }
-        post_zip(zip, 0, ^(NSString *code, NSString *fail) {
-            busy_done();
-            UIAlertController *a;
-            if (code) {
-                a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.done.title") message:[NSString stringWithFormat:S2AL(@"diag.upload.done.message"), code] preferredStyle:UIAlertControllerStyleAlert];
-                [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.copy") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; UIPasteboard.generalPasteboard.string = code; LOG("诊断包：短码已复制"); }]];
-                [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
-            } else {
-                a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.fail.title") message:fail preferredStyle:UIAlertControllerStyleAlert];
-                [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.export") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; share_zip(host, zip); }]];
-                [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
-            }
-            present_over(host, a);
-        });
-    });
+    build_async(^(NSURL *zip, NSString *err) { busy_done(); if (!zip) build_failed(host, err); else upload_zip(host, zip); });
 }
 // 「上传给开发者」（四指菜单 / 提示页按钮，主线程调）：先说清会传什么、不传什么，玩家点了才传
 void s2a_diag_upload(void) {
