@@ -1,4 +1,4 @@
-﻿// 前端 mtl_* → S2Arm 自己的 Vulkan 后端（nvn_vk_* / mtl_vk_adapter）的整表 shim。
+// 前端 mtl_* → S2Arm 自己的 Vulkan 后端（nvn_vk_* / mtl_vk_adapter）的整表 shim。
 //
 // 设计口径（与 docs/handoff-direct-mode.md 的下一步一致）：
 //   - 核心入口真的接后端：init/finish/drain/pool_*/addr/exec/sub_*/tex_*/present，以及地址与
