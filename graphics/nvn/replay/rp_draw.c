@@ -441,7 +441,16 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             pd.poly.mode = NVN_POLYGON_MODE_FILL; memset(&err, 0, sizeof err);
             r = nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
         }
-        if (!nvn_gpu_ok(r)) { if (nvn_unimpl("gpu", "pipe_get", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; g_pipe = NULL; goto draw_done; }
+        if (!nvn_gpu_ok(r)) {
+            char logic_name[32];
+            const char *name = "pipe_get";
+            if (r.code == NVN_GPU_E_UNSUPPORTED && rp_S.color.logic_op != NVN_LOGIC_OP_COPY) {
+                snprintf(logic_name, sizeof logic_name, "logic_op_%u", (unsigned)rp_S.color.logic_op);
+                name = logic_name;
+            }
+            if (nvn_unimpl("gpu", name, rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+            g_skips++; g_pipe = NULL; goto draw_done;
+        }
         g_pipe = np; g_pipe_cmd = c;
         nvn_gpu_set_pipe(c, g_pipe); g_pipe_set = 1;
         rp_perf_add(RP_PERF_D_PGET, dt_now() - pg0_);   // 后端取管线 + 设管线（含在取管线那一项里）

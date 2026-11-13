@@ -2140,6 +2140,35 @@ static void t_render_cond(void) {
     g_rcond = 0; pass_fresh();
 }
 
+// #863: a rejecting backend attributes only unsupported non-COPY operations by op number.
+static void t_logic_op_accounting(void) {
+    pass_fresh();
+    memset(&g_fprog, 0, sizeof g_fprog);
+    g_fprog.sh[0] = &g_fsh[0]; g_fprog.sh[1] = &g_fsh[1];
+    g_fprog.color_out_mask = 0xffffffffu;
+    g_resolve_rc = 0;
+    tex_t rt = mk_tex(863, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    for (unsigned i = 0; i < 5; i++) {
+        unsigned op = i == 1 ? NVN_LOGIC_OP_COPY : i == 3 ? NVN_LOGIC_OP_SET : NVN_LOGIC_OP_XOR;
+        int rc = i == 2 ? NVN_GPU_E_ARG : i == 4 ? 0 : NVN_GPU_E_UNSUPPORTED;
+        nvn_unimpl_reset();
+        stream s = {0}; put_set_rt(&s, &rt, NULL);
+        p_bind_state *bs = put(&s, OP_BIND_STATE, sizeof *bs); bs->kind = 1;
+        color_st color = {0}; color.logic_op = op; memcpy(bs->bytes, &color, sizeof color);
+        p_draw *d = put(&s, OP_DRAW, sizeof *d); d->prim = 4; d->count = 3;
+        end(&s);
+        int before = g_gdraws, gets = g_pipe_gets;
+        g_pipe_rc = rc; submit1(&s); fake_complete(NVN_GPU_DONE_OK); g_pipe_rc = 0;
+        CHECK(g_pipe_gets > gets && g_last_pdesc.color.logic_op == op);
+        CHECK(g_gdraws == before + (rc == 0));
+        CHECK(nvn_unimpl_count("gpu", "logic_op_6") == (i == 0 ? 1 : 0));
+        CHECK(nvn_unimpl_count("gpu", "pipe_get") == (i == 1 || i == 2 ? 1 : 0));
+        CHECK(nvn_unimpl_count("gpu", "logic_op_3") == 0);
+        CHECK(nvn_unimpl_count("gpu", "logic_op_15") == (i == 3 ? 1 : 0));
+    }
+    pass_fresh();
+}
+
 static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管线 / 动态状态 / 顶点流 / 绑定；没变的管线不重取；取不到的资源跳过并记账
     pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem); g_arena_used = 0;
     g_pipe_gets = g_set_pipes = g_set_dyns = g_gdraws = g_nvb = g_resolves = g_resolve_rc = 0; memset(g_nfb, 0, sizeof g_nfb);
@@ -2514,6 +2543,7 @@ int main(int argc, char **argv) {
     t_compute_sources();
     t_copy_t2t();
     t_draw();
+    t_logic_op_accounting();
     t_gs_dirty_and_topology();
     t_gs_bind(); t_stage_dropped_clears_binds();
     t_decl_sampling();
