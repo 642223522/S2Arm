@@ -145,13 +145,20 @@ class DiagUploadTests(JobCase):
         self.assertNotIn(str(Path.home()), text)
 
     def test_issue_url_matches_template(self):
+        """链接字段 = 模板（.github/ISSUE_TEMPLATE/问题回报.yml）里真有的 id；platform 选项逐字是模板下拉里的一项。只用标准库按行读模板（门禁机不装 yaml）"""
         from urllib.parse import urlparse, parse_qs
-        import yaml
-        form = yaml.safe_load((Path(__file__).resolve().parents[3] / ".github/ISSUE_TEMPLATE/问题回报.yml").read_text(encoding="utf-8"))
-        fields = {b.get("id"): b for b in form["body"] if b.get("id")}
+        lines = (Path(__file__).resolve().parents[3] / ".github/ISSUE_TEMPLATE/问题回报.yml").read_text(encoding="utf-8").splitlines()
+        ids = {l.split("id:", 1)[1].strip() for l in lines if l.strip().startswith("id:")}
+        options, inside = [], False
+        for l in lines:
+            t = l.strip()
+            if t.startswith("id:"): inside = t.split("id:", 1)[1].strip() == "platform"
+            elif inside and t.startswith("- ") and not t.startswith("- type:"): options.append(t[2:].strip())
+            elif inside and t.startswith("validations:"): inside = False
+        self.assertTrue({"logs", "version", "platform"} <= ids, ids)
+        self.assertIn("iPhone", options)
         for client, plat in (("mac/0.3.5", "mac"), ("windows/0.3.5", "windows")):
             q = parse_qs(urlparse(diag_upload.issue_url("D-7K3Q", client)).query)
             self.assertEqual(q["template"], ["问题回报.yml"])
             self.assertEqual((q["logs"], q["version"], q["title"]), (["D-7K3Q"], ["0.3.5"], ["[问题] "]))
-            self.assertIn(q["platform"][0], fields["platform"]["attributes"]["options"], plat)
-            self.assertTrue({"logs", "version", "platform"} <= fields.keys())
+            self.assertIn(q["platform"][0], options, plat)
