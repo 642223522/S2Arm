@@ -1207,13 +1207,15 @@ static void *plcw_main(void *arg) {
 
 // 触发检查已过（条数够了、时间到了）：在这条线程上取一份驱动数据，交给后台线程写。线程：任意建管线的线程（可能还持着清屏管线的锁 g_clr_mu）。
 // 拿不到 g_plc_mu（别的线程正在取数据，或收尾在销毁缓存）/ 上一次写还在飞 → 直接跳过，下次建管线再碰，不排队、不等。
-static void plc_save_midrun(void) {
+// force = 1：不看条数 / 时间阈值（停局保留会话时用，见 nvn_gpu_vk_pipe_cache_flush），其余照旧：数据没变不写、写在飞就跳过。
+static void plc_save_midrun_impl(int force) {
     if (__atomic_load_n(&g_plcw_busy, __ATOMIC_ACQUIRE)) return;
     if (pthread_mutex_trylock(&g_plc_mu) != 0) return;
     VkPipelineCache pc = g_plc;
     uint64_t t = now_ns(), made = __atomic_load_n(&g_plc_made, __ATOMIC_RELAXED), ts = __atomic_load_n(&g_plc_t_saved, __ATOMIC_RELAXED);
-    int due = pc && !g.device_lost && made >= __atomic_load_n(&g_plc_made_saved, __ATOMIC_RELAXED) + g_plc_thr_new &&
-              (ts ? t - ts >= g_plc_every_ns : t - g_plc_t_open >= g_plc_first_ns);
+    int due = pc && g_plc_dir[0] && !g.device_lost &&
+              (force || (made >= __atomic_load_n(&g_plc_made_saved, __ATOMIC_RELAXED) + g_plc_thr_new &&
+                         (ts ? t - ts >= g_plc_every_ns : t - g_plc_t_open >= g_plc_first_ns)));
     int claimed = 0;   // 抢到「在飞」标记 = 这一刻没有别的写，也轮到本线程来写
     if (due) {
         int expect = 0;
@@ -1245,6 +1247,10 @@ static void plc_save_midrun(void) {
                 plc_logf(NVN_PLAT_LOG_WARN, "管线缓存：局中取数据失败（VkResult %d），这次不落盘", (int)vr);
                 free(buf);
                 buf = NULL;
+            } else if (got == g_plc_size_saved && !__atomic_load_n(&g_plcw_failed, __ATOMIC_ACQUIRE)) {
+                // 查询给的大小可以是上界（lavapipe 就比实际取到的大），上面按查询大小比不出「没变」：按实际取到的字节数再比一次
+                __atomic_fetch_add(&g_plcw_same, 1, __ATOMIC_RELAXED);
+                plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：局中检查：本局经缓存建管线 %llu 条，数据 %zu 字节与上次保存一致，不写", (unsigned long long)made, got);
             } else {
                 size = got;
                 struct plcw_job *j = (struct plcw_job *)calloc(1, sizeof *j);
@@ -1276,6 +1282,15 @@ static void plc_save_midrun(void) {
     free(buf);
     if (!started) __atomic_store_n(&g_plcw_busy, 0, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_plc_mu);
+}
+
+static void plc_save_midrun(void) { plc_save_midrun_impl(0); }
+
+// 停局但会话保留到进程退出（#860：前端没停稳就不关后端，也就走不到 plc_close 的收尾写）：把驱动当前缓存取一份交后台线程写盘，
+// 不销毁缓存、不等写完——写盘是临时文件 + 原子替换，进程中途退出旧文件原样。调用方线程只花取数据的时间（真机约 0.5 ms）。线程：任意。
+void nvn_gpu_vk_pipe_cache_flush(void) {
+    if (!g_open) return;
+    plc_save_midrun_impl(1);
 }
 
 // 一条管线刚经缓存建好：记账；够触发局中补写的条数、时间也到了就试一次。线程：任意建管线的线程（图形 / 计算 / 清屏）。
@@ -1328,7 +1343,10 @@ static void plc_close(uint64_t deadline) {
                 size_t want = size;
                 vr = vkGetPipelineCacheData(g.d, pc, &size, buf);
                 uint64_t t1 = now_ns();
-                if (vr == VK_SUCCESS && size > 0 && size <= want) {
+                if (vr == VK_SUCCESS && size > 0 && size <= want && size == g_plc_size_saved && !__atomic_load_n(&g_plcw_failed, __ATOMIC_ACQUIRE)) {
+                    // 查询大小可以是上界（同局中补写）：按实际取到的字节数再判一次「没变」
+                    plc_logf(NVN_PLAT_LOG_INFO, "管线缓存：本局没有新增（取到 %zu 字节，与上次保存 / 读入时一致），不重写；本局经缓存建管线 %llu 条", size, made);
+                } else if (vr == VK_SUCCESS && size > 0 && size <= want) {
                     char why[96] = "";
                     plc_ensure_dir(g_plc_dir);
                     int w = nvk_driver_cache_write(g_plc_dir, g_plc_uuid, buf, size, why, sizeof why);
@@ -5127,9 +5145,10 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
         s->rc = rc(NVN_GPU_E_ARG);
         snprintf(s->why, sizeof s->why, "signal %llu 未严格大于上一次合法提交 %llu（F=%llu）",
                  (unsigned long long)signal, (unsigned long long)last, (unsigned long long)f);
+        nvn_gpu_rc result = fail(err, NVN_GPU_E_ARG, "%s", s->why);
         enqueue_segment(&g, s);
         pthread_mutex_unlock(&g_submit_mu);
-        return fail(err, NVN_GPU_E_ARG, "%s", s->why);
+        return result;   // worker owns s after enqueue; never read its why here
     }
 
     if (c->in_pass) set_sticky(c, NVN_GPU_E_ORDER, "commit 时通道还开着");
@@ -5142,6 +5161,7 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
         s->failed = 1;
         s->rc = code;
         snprintf(s->why, sizeof s->why, "%s", why);
+        fail(err, code.code, "%s", s->why);   // preserve the first cause before worker takes ownership
         publish_signal(signal, 1);
         enqueue_segment(&g, s);
         pthread_mutex_unlock(&g_submit_mu);

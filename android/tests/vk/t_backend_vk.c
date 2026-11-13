@@ -5764,7 +5764,15 @@ static struct c89_st c89_wait_done(const struct c89_st *base, unsigned want, int
     return s;
 }
 
-struct c89_dir { int nreg, nother; char name[256]; long size; ino_t ino; struct timespec mtim; };
+// 「没被重写」按名字 + 大小 + 修改时间 + 内容判，不比 inode：Mac 上 colima 的 virtiofs 在虚拟机丢页缓存（每 16 秒一次 drop_caches）后，
+// 同一个没动过的文件会换 inode 号（实测 7237 → 7238），按 inode 判会把「原样」误报成「重写」
+struct c89_dir { int nreg, nother; char name[256]; long size; uint64_t sum; struct timespec mtim; };
+static uint64_t c89_file_sum(const char *path) {   // FNV-1a；读不出算 0（与任何真内容的和都不相等的概率可忽略）
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    uint64_t h = 1469598103934665603ull; int c;
+    while ((c = fgetc(f)) != EOF) { h ^= (uint64_t)(unsigned char)c; h *= 1099511628211ull; }
+    fclose(f); return h;
+}
 
 // 数目录：正式文件（普通文件、名字里没有 .tmp.）记名字 / 大小 / inode / 修改时间；其余（临时文件、管道、子目录）都算 nother。
 static struct c89_dir c89_scan(const char *dir) {
@@ -5778,7 +5786,7 @@ static struct c89_dir c89_scan(const char *dir) {
         snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
         if (!strstr(de->d_name, ".tmp.") && stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
             o.nreg++; snprintf(o.name, sizeof o.name, "%s", de->d_name);
-            o.size = (long)st.st_size; o.ino = st.st_ino; o.mtim = st.st_mtim;
+            o.size = (long)st.st_size; o.sum = c89_file_sum(p); o.mtim = st.st_mtim;
         } else o.nother++;
     }
     closedir(d);
@@ -5786,7 +5794,7 @@ static struct c89_dir c89_scan(const char *dir) {
 }
 
 static int c89_same_file(const struct c89_dir *a, const struct c89_dir *b) {
-    return a->nreg == 1 && b->nreg == 1 && a->ino == b->ino && a->size == b->size &&
+    return a->nreg == 1 && b->nreg == 1 && a->sum == b->sum && a->size == b->size &&
            a->mtim.tv_sec == b->mtim.tv_sec && a->mtim.tv_nsec == b->mtim.tv_nsec && !strcmp(a->name, b->name);
 }
 
@@ -5938,6 +5946,45 @@ static void *c89_thr_main(void *arg) {
     return NULL;
 }
 
+// C907：停局但会话保留到进程退出（#860 / #907 Stop 不关后端，走不到 close 的收尾写）时，nvn_gpu_vk_pipe_cache_flush 把驱动管线缓存落盘。
+//  ① 阈值调到不会触发局中补写、建 3 条管线：调用前目录为空（负对照：没有这次调用就没有文件）；
+//  ② 调用后后台写完成 1 次、目录里恰好 1 个正式文件、无残留临时文件；会话仍开着（之后还能建管线）；
+//  ③ 再调一次、没有新管线：记「与上次一致没写」，文件原样。
+void nvn_gpu_vk_pipe_cache_flush(void);
+static void c907_retained_flush(const char *sdir) {
+    char tmpl[512];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(tmpl, sizeof tmpl, "%s/s2a-plc907.XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
+    char *dir = mkdtemp(tmpl);
+    CHECK(dir != NULL, "C907 建不出临时目录");
+    if (!dir) return;
+    size_t keep_extra = g_plc_extra, keep_per = g_plc_per_pipe; int keep_strip = g_plc_strip_tail;
+    g_plc_extra = 0; g_plc_per_pipe = 0; g_plc_strip_tail = 0;
+    nvn_gpu_err e;
+    CHECK(c89_open(dir, 1000000, 3600000, 3600000), "C907 open");
+    c88_make_pipes(sdir);
+    struct c89_dir before = c89_scan(dir);
+    CHECK(before.nreg == 0 && before.nother == 0, "C907 ① 调用前目录应为空（局中补写不该触发）→ 正式 %d 个、其他 %d 个", before.nreg, before.nother);
+    struct c89_st b = c89_stats();
+    nvn_gpu_vk_pipe_cache_flush();
+    struct c89_st a = c89_wait_done(&b, 1, 5000);
+    struct c89_dir d1 = c89_scan(dir);
+    CHECK(a.saves == b.saves + 1 && a.ok == b.ok + 1 && a.failed == b.failed, "C907 ② 应交后台写 1 次且成功 → saves +%llu ok +%llu failed +%llu",
+          (unsigned long long)(a.saves - b.saves), (unsigned long long)(a.ok - b.ok), (unsigned long long)(a.failed - b.failed));
+    CHECK(d1.nreg == 1 && d1.nother == 0 && d1.size > 0, "C907 ② 目录里应恰好 1 个正式文件、无临时文件 → 正式 %d 个、其他 %d 个、%ld 字节", d1.nreg, d1.nother, d1.size);
+    c89_sleep_ms(20);   // 后台写线程先记成功、再清「在飞」：留一点时间让它清完，第二次调用不因「在飞」被跳过
+    nvn_gpu_vk_pipe_cache_flush();
+    struct c89_st a2 = c89_stats();
+    struct c89_dir d2 = c89_scan(dir);
+    CHECK(a2.saves == a.saves && a2.same == a.same + 1, "C907 ③ 没有新管线：不该再写、应记一次「一致没写」→ saves +%llu same +%llu",
+          (unsigned long long)(a2.saves - a.saves), (unsigned long long)(a2.same - a.same));
+    CHECK(c89_same_file(&d1, &d2), "C907 ③ 文件应原样不动");
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C907 close：%d %s", e.rc.code, e.why);
+    g_plc_extra = keep_extra; g_plc_per_pipe = keep_per; g_plc_strip_tail = keep_strip;
+    c89_rm_tree(dir);
+    printf("C907 保留路径管线缓存落盘：已核对（%ld 字节）\n", d1.size);
+}
+
 static void c89_midrun_save(const char *sdir) {
     char tmpl[512];
     const char *tmp = getenv("TMPDIR");
@@ -5969,7 +6016,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(mid1 > C89_X1 && a1.size == (long)mid1 + C89_HDR, "C89 ① 文件大小应 = 文件头 %d + 局中取出的 %zu 字节（> 填充 %d）→ %ld", C89_HDR, mid1, C89_X1, a1.size);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ① close：%d %s", e.rc.code, e.why);
     struct c89_dir a1b = c89_scan(d1);
-    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → inode / 大小 / 修改时间不变");
+    CHECK(c89_same_file(&a1, &a1b) && a1b.nother == 0, "C89 ① close 不应重写：数据大小与局中保存时一致 → 大小 / 修改时间 / 内容不变");
     struct c89_st r1 = c89_readback(d1);
     CHECK(r1.loaded == mid1 && r1.rejected == 0, "C89 ① 下一局读回 %llu 字节（期望 %zu）、rejected=%llu（期望 0）", (unsigned long long)r1.loaded, mid1, (unsigned long long)r1.rejected);
 
@@ -6033,7 +6080,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(s3c.saves == b3.saves && s3c.same == b3.same + 2, "C89 ③ 检查过之后再建 3 条：应再检查 1 次（共 2 次）而不是每条都查 → 写 +%llu 次、「没变」+%llu 次（期望 0 / 2）", (unsigned long long)(s3c.saves - b3.saves), (unsigned long long)(s3c.same - b3.same));
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C89 ③ close：%d %s", e.rc.code, e.why);
     struct c89_dir a3 = c89_scan(d1);
-    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（inode / 大小 / 修改时间不变）");
+    CHECK(c89_same_file(&a1, &a3) && a3.nother == 0, "C89 ③ 文件应原样（大小 / 修改时间 / 内容不变）");
     // ③ 对照：只把驱动数据变大（S2），其余同上 → 这回要写
     g_plc_extra = C89_X2;
     CHECK(c89_open(d1, 3, 0, 0), "C89 ③ 对照 open");
@@ -6154,7 +6201,7 @@ static void c89_midrun_save(const char *sdir) {
     CHECK(ms6 >= 150.0 && ms6 < 3000.0, "C89 ⑥ close 应等了后台写（算进 200 ms 截止时间）又没挂住 → 用了 %.0f ms（期望 150–3000）", ms6);
     atomic_store(&ub.go, 1);
     struct c89_dir x6 = c89_scan(d6);
-    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（inode / 大小 / 修改时间不变）");
+    CHECK(c89_same_file(&a6, &x6), "C89 ⑥ 放弃这次写后旧文件应原样（大小 / 修改时间 / 内容不变）");
     if (ubt_ok) pthread_join(ubt, NULL);
     CHECK(c89_wait_gone(pre6, 5000), "C89 ⑥ 放开管道后后台写应自己失败收尾、清掉临时文件");
     size_t n6b = 0; void *now6 = read_file(f6, &n6b);
@@ -6422,8 +6469,60 @@ static int c697_bc4_3d_run(void) {
     return open_backend();
 }
 
+// #697 A: no shaders or unrelated tests; copy callback-owned text before publishing completion.
+struct error697_done { atomic_int calls; uint64_t signal; int code; uint32_t status; char why[256]; };
+static void error697_callback(void *u, const nvn_gpu_done *d) {
+    struct error697_done *o=u;
+    o->signal=d->signal; o->code=d->rc.code; o->status=d->status;
+    snprintf(o->why,sizeof o->why,"%s",d->why?d->why:"");
+    atomic_fetch_add_explicit(&o->calls,1,memory_order_release);
+}
+static void error697_expect(struct error697_done *o, uint64_t signal, nvn_gpu_rc rc,
+                            const nvn_gpu_err *err, int code, const char *why) {
+    CHECK(rc.code==code && err->rc.code==code,"E697 synchronous rc=%d err=%d expected=%d",rc.code,err->rc.code,code);
+    CHECK(strstr(err->why,why)!=NULL,"E697 first reason missing: %s",err->why);
+    if(!wait_until(&o->calls,1,5000)){CHECK(0,"E697 callback timeout");return;}
+    CHECK(atomic_load_explicit(&o->calls,memory_order_acquire)==1,"E697 exactly one callback");
+    CHECK(o->signal==signal && o->code==code && o->status==NVN_GPU_DONE_FAILED,"E697 asynchronous result mismatch");
+    CHECK(!strcmp(o->why,err->why),"E697 synchronous/asynchronous reason mismatch: %s / %s",err->why,o->why);
+}
+static int error697_only(void) {
+    char why[256]={0};
+    if(s2a_vk_device_create(&g_dev,why,sizeof why)!=0){fprintf(stderr,"E697 device: %s\n",why);return 2;}
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="error697-only";
+    for(int mode=0;mode<3;mode++) {
+        if(!open_backend())return 1;
+        uint8_t zeros[16]={0};nvn_gpu_buf b=make_buf(16,NVN_GPU_MEM_SHARED,zeros);
+        nvn_gpu_cmd first=begin_cmd(),second=begin_cmd();
+        nvn_gpu_err e; memset(&e,0,sizeof e);e.rc.code=123;strcpy(e.why,"stale sentinel");
+        struct error697_done d1={0},d2={0};nvn_gpu_rc rc;
+        if(mode==0) {
+            nvn_gpu_fill_buf(first,b,0,6,0xdeadbeef); // first ARG: misaligned size
+            nvn_gpu_fill_buf(first,b,99,4,0xffffffff); // later bounds error must not overwrite it
+        } else nvn_gpu_fill_buf(first,b,0,16,0xdeadbeef);
+        nvn_gpu_fill_buf(second,b,0,16,0xffffffff);
+        if(mode==1)nvn_gpu_vk_test_set_fault(1);
+        uint64_t signal=mode==2?0:1;
+        rc=nvn_gpu_cmd_commit(first,signal,error697_callback,&d1,&e);
+        error697_expect(&d1,signal,rc,&e,mode==1?NVN_GPU_E_DEVICE:NVN_GPU_E_ARG,
+                        mode==0?"bytes=6":mode==1?"测试注入":"signal 0");
+        memset(&e,0,sizeof e);e.rc.code=123;strcpy(e.why,"second stale sentinel");
+        rc=nvn_gpu_cmd_commit(second,2,error697_callback,&d2,&e);
+        error697_expect(&d2,2,rc,&e,NVN_GPU_E_FAILED,"时间线已失败");
+        CHECK(nvn_gpu_fence_done()==0 && nvn_gpu_fence_failed()==1,"E697 timeline changed");
+        CHECK(nvn_gpu_fence_wait(2,0,&e).code==NVN_GPU_E_FAILED,"E697 failed wait");
+        for(int i=0;i<16;i++)CHECK(buf_cpu(b)[i]==0,"E697 failed command wrote buffer");
+        nvn_gpu_cmd blocked=NULL;CHECK(nvn_gpu_cmd_begin(NULL,&blocked,&e).code==NVN_GPU_E_FAILED,"E697 terminal begin");
+        nvn_gpu_buf_release(b,NULL,NULL);
+        CHECK(OK(nvn_gpu_close(5000000000ull,&e)),"E697 close");
+        CHECK(atomic_load(&d1.calls)==1 && atomic_load(&d2.calls)==1,"E697 duplicate callback after close");
+    }
+    s2a_vk_device_destroy(&g_dev,1);printf("E697 isolated failures=%d\n",g_fail);return g_fail?1:0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   // 经 tee 的管道默认整块缓冲：超时被杀时最后一行不是卡点；按行刷新才看得出卡在哪
+    if (getenv("S2A_TEST_ERROR697_ONLY")) return error697_only();
     if (!getenv("S2A_TEST_LOGICOP_ONLY")) t29_format_expand();
     char why[256] = {0};
     if (s2a_vk_device_create(&g_dev, why, sizeof why) != 0) {
@@ -6817,6 +6916,7 @@ int main(int argc, char **argv) {
 
     c88_pipe_cache(argv[1]);   // 每个会话自己开 / 关（带不同的 cache_dir）
     c89_midrun_save(argv[1]);  // 同上；还会起子进程（被 SIGKILL 的那一局）
+    c907_retained_flush(argv[1]);   // 停局保留会话时的管线缓存落盘（#907 合入补）
 
     printf("nvn_gpu Vulkan 后端 C01–C08/C23/C25/C26/C27–C55/C56–C69/C74–C75/C88/C89 + 清屏/复制/深度/纹理三角形用例：%s（%d 处不符，done %d 次，retired %d 次）\n",
            g_fail ? "红" : "绿", g_fail, atomic_load(&g_ndone), atomic_load(&g_retired));

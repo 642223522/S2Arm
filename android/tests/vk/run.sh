@@ -343,6 +343,10 @@ if ! grep -q "llvmpipe" "$out/log"; then
     grep '^device:' "$out/log" >&2 || true
     exit 1
 fi
+if ! grep -q "C907 保留路径管线缓存落盘：已核对" "$out/log"; then
+    echo "【红】没跑到 C907（停局保留会话时的管线缓存落盘）" >&2
+    exit 1
+fi
 bad=$(grep -cE "Validation Error|VUID-" "$out/log" || true)
 if [ "$bad" -ne 0 ]; then
     echo "【红】validation 报错 $bad 条：" >&2
@@ -375,6 +379,17 @@ bad=$(grep -cE "Validation Error|VUID-" "$out/log_memo" || true)
 if [ "$rc" -ne 0 ] || [ "$bad" -ne 0 ]; then
     echo "【红】描述符组备忘开着的那一遍：rc=${rc}，validation 报错 $bad 条" >&2
     grep -E "Validation Error|VUID-" "$out/log_memo" | head -20 >&2
+    exit 1
+fi
+
+# 提交失败的首因（#889）：同步返回与回调给出同一首错原因；独立会话单跑。
+set +e
+S2A_TEST_ERROR697_ONLY=1 timeout 120 "$out/t_backend_vk" "$out/shaders" 2>&1 | tee "$out/log_e697"
+rc=${PIPESTATUS[0]}
+set -e
+bad=$(grep -cE "Validation Error|VUID-" "$out/log_e697" || true)
+if [ "$rc" -ne 0 ] || [ "$bad" -ne 0 ] || ! grep -q "E697 isolated failures=0" "$out/log_e697"; then
+    echo "【红】提交失败首因那一遍（#889）：rc=${rc}，validation 报错 $bad 条" >&2
     exit 1
 fi
 
