@@ -1340,6 +1340,7 @@ public sealed partial class EnvironmentWindow
             installOpenToFinish = job.Report.Succeeded && job.Report.Result.TryGetProperty("openToFinish", out var open) && open.ValueKind == JsonValueKind.True;
             installDiagnostics = JobDiagnostics(job);
             installTrack.Finish(job, GameName);
+            if (job.Report.Succeeded && installTrack.ExportFolder.Length > 0) OpenFolder(installTrack.ExportFolder);   // 导出模式：打开放好的文件夹
         }
         catch (LibraryProtocolException error) { installState = "invalid"; installDiagnostics = error.Message; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or

@@ -25,6 +25,7 @@ void s2a_brightness_hold_log(void);   // 亮度保持（S2A_BRIGHTNESS）：心�
 #include "s2a_pad.h"
 #include "s2a_boot.h"
 #include "s2a_launch_ctx.h"
+#include <sys/mount.h>   // statfs（free_note）
 #include "s2a_docs.h"   // s2a_container_docs：游戏库按款核资源包的进程级 Documents
 #include "settings.h"   // 浮层开关要在建视图 / Metal 设备之前先落环境变量（#153）
 // 游戏库界面（shell 的 S2ArmShellHost，C 边界同 Sources/S2ArmShellBridge/include/s2a_shell.h）：make ios S2A_SHELLUI=1 才链进来，
@@ -338,6 +339,22 @@ uint64_t s2a_ios_free_important(const char *path) {
     [[NSURL fileURLWithPath:@(path)] getResourceValue:&n forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
     return n.longLongValue > 0 ? (uint64_t)n.longLongValue : 0;
 }
+// 手机可用空间记给电脑端（v0.3.4，玩家反馈：「设置」里剩 70 多 GB，一键安装说只剩 2 GB）：电脑端经 AFC / lockdown 读到的空闲不含系统随时能清掉的空间，
+//   只有手机上的 App 读得到「重要用途」口径。每次启动在后台读一次写进 Documents/s2a_free.tsv，一行：重要用途 \t 可选用途 \t statfs 空闲 \t 写入时刻（Unix 秒），字节数；
+//   电脑端推包前读它（tools/push_pack.py free_from_phone）。读不到的项写 0
+static void free_note(void) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        char p[1024], d[1000]; s2a_container_docs(d, sizeof d); snprintf(p, sizeof p, "%s/s2a_free.tsv", d);   // 固定在容器 Documents 下（多款容器也是这一份：可用空间是整机的）
+        NSURL *u = [NSURL fileURLWithPath:NSHomeDirectory()]; NSNumber *imp = nil, *opp = nil;
+        [u getResourceValue:&imp forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
+        [u getResourceValue:&opp forKey:NSURLVolumeAvailableCapacityForOpportunisticUsageKey error:nil];
+        struct statfs sf; unsigned long long av = statfs(NSHomeDirectory().fileSystemRepresentation, &sf) ? 0 : (unsigned long long)sf.f_bavail * sf.f_bsize;
+        char t[1100]; snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); if (!f) return;
+        fprintf(f, "%lld\t%lld\t%llu\t%ld\n", imp.longLongValue > 0 ? imp.longLongValue : 0, opp.longLongValue > 0 ? opp.longLongValue : 0, av, (long)time(NULL)); fclose(f);
+        if (rename(t, p)) unlink(t);
+        LOG("可用空间（记给电脑端 s2a_free.tsv）：重要用途 %lld MB、可选用途 %lld MB、statfs 空闲 %llu MB", imp.longLongValue >> 20, opp.longLongValue >> 20, av >> 20);
+    });
+}
 void s2a_ios_show_message(const char *m) {
     if (atomic_load(&g_gpu_stopped) || atomic_load(&g_gpu_stuck_page)) return;   // GPU 安全停页 / 卡住暂停页在屏上：不盖掉（卡住页冻了游戏，停帧看门照样会到点）
     const char *nl = strchr(m, '\n'); char t[512]; size_t k = nl ? (size_t)(nl - m) : strlen(m); if (k >= sizeof t) k = sizeof t - 1;
@@ -639,6 +656,7 @@ static void audio_category_apply(void) {
 }
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     display_focus_publish(app.applicationState == UIApplicationStateActive);
+    free_note();
     if (!s2a_host_boot_deferred()) [self startMonitoring];
     return YES;
 }

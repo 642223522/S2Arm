@@ -274,6 +274,12 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
           snprintf(b, sizeof b, "描述符细分（每帧毫秒，近 300 帧）：分配 %.2f、构造写入项 %.2f、写入 %.2f、绑定 %.2f；每帧重写 %.0f 组（其中备忘命中 %.0f 组）、写 %.0f 条描述符",
               v4[0] / 300.0 / 1e6, v4[1] / 300.0 / 1e6, v4[2] / 300.0 / 1e6, v4[3] / 300.0 / 1e6, nst / 300.0, __atomic_exchange_n(&g_desc_hit, 0, __ATOMIC_RELAXED) / 300.0, nwt / 300.0);
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
+        { static const char *const nm[8] = {"建图", "要显存并绑定", "默认视图", "帧缓冲", "附件视图", "拆视图", "从帧缓冲表里摘", "拆贴图"}; int o = snprintf(b, sizeof b, "建拆细分（每帧毫秒 / 次，近 300 帧）：");
+          for (int i = 0; i < 8 && o < (int)sizeof b - 40; i++) o += snprintf(b + o, sizeof b - (size_t)o, "%s%s %.2f / %.1f", i ? "、" : "", nm[i], __atomic_exchange_n(&g_life_ns[i], 0, __ATOMIC_RELAXED) / 300.0 / 1e6, __atomic_exchange_n(&g_life_n[i], 0, __ATOMIC_RELAXED) / 300.0);
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+          pthread_mutex_lock(&g_texmem_mu); uint64_t th = g_texmem_hit, tm_ = g_texmem_miss; g_texmem_hit = g_texmem_miss = 0; uint32_t tn = g_texmem_n; uint64_t tb = g_texmem_bytes; pthread_mutex_unlock(&g_texmem_mu);
+          snprintf(b, sizeof b, "贴图显存池（每帧，近 300 帧）：复用 %.1f 次、向驱动要 %.1f 次；池里现有 %u 块 %llu MB", th / 300.0, tm_ / 300.0, tn, (unsigned long long)(tb >> 20));
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
         { uint64_t ns = __atomic_exchange_n(&g_pl_ns, 0, __ATOMIC_RELAXED), n = __atomic_exchange_n(&g_pl_n, 0, __ATOMIC_RELAXED), st = __atomic_exchange_n(&g_pl_steps, 0, __ATOMIC_RELAXED);
           snprintf(b, sizeof b, "取管线查找（每帧，近 300 帧）：%.1f 次、共 %.0f 微秒、每次比 %.1f 条", n / 300.0, ns / 300.0 / 1000.0, n ? (double)st / (double)n : 0.0);
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
