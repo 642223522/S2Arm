@@ -34,6 +34,7 @@
 #include "nvn_builtin.h"
 #include "nvn_dirty.h"
 #include "nvn_refl.h"
+#include "nvn_fmt_info.h"   // #529 lb_fill：客体格式是不是定点深度
 #include "nvn_red.h"   // sampler reduction / LOD bias where the GPU has none: the variant's function constants and table entries (se_need / se_bind)
 #include "../../../metal/gal_samp_caps.h"   // whether this GPU reduces / biases natively (#800; the generic path's same test)
 #include "nvn_cover.h"
@@ -9774,21 +9775,39 @@ static int se_want(const prog_t *p, NvShader *sh, int nvn_stage) {
     else if (fold) RED_ONCE(140, "shader %s reads a folded linear texture, but its sampler-emulation variant cannot (made before format 4): the texture reads 0", sh->key);
     return fc;
 }
-// S2Arm #800: the s2a_lb table of a pixel / compute shader (argument buffer member, NVN_RB_LB; dmsh_red.py fs_lb): one float per sampler member at its argument id, the LOD bias main0 adds
+// S2Arm #800: the s2a_lb table of a pixel / compute shader (argument buffer member, NVN_RB_LB; S2A.Dsh FsLb): one float per sampler member at its argument id, the LOD bias main0 adds
 //   to each sample through it. Where the GPU ignores a sampler's bias (g_lb_emu: M3; the sampler carries none, samp_by_id) the bound sampler's lod_bias, else 0 (the sampler applies it:
-//   Apple10, M4 Pro). All zero → one shared zero buffer, nothing written per draw. Caller holds g_rmu (encode_args)
+//   Apple10, M4 Pro).
+// #529: the second half, [LB_DC + argument id] (S2A.Dsh LB_DC = 192; FsLb only rewrites shaders whose members end below it), is 1 where the texture this sampler member samples with
+//   (combined handles: SAMPT, a single SAMPU, the same handle's texture part) is a fixed-point depth format to the guest (D16 / D24 / D24S8: nvn_fmt_info depth + UNORM). Its
+//   sample_compare saturates the reference to [0,1] first, the fixed-point comparison NVN gives and Metal's Depth32Float hosting of those formats does not; float depth (D32F) gets 0.
+//   All zero → one shared zero buffer, nothing written per draw. Caller holds g_rmu (encode_args)
+enum { LB_DC = 192 };
+static int dc_samp(const nvn_rbind *b, int st) {   // the guest texture this sampler member samples with is fixed-point depth (#529)
+    int tid = b->kind == NVN_RB_SAMPT ? (b->reg < NTEX ? (int)(tex_slot_h(S.tex[st], S.img[st], b->reg) & 0xfffff) : -1)
+            : b->kind == NVN_RB_SAMPU && !b->n && (!b->sid || b->pair) ? ubo_tex_id(ubo_packed(st, b)) : -1;
+    if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return 0;
+    int f = g_treg[tid].t.d.format;
+    return f > 0 && f <= NVN_FMT_MAX && nvn_fmt_info_table[f].depth && nvn_fmt_info_table[f].kind == NVN_FMT_UNORM;
+}
 static uint64_t lb_fill(NvShader *sh, int nvn_stage) {
     static id<MTLBuffer> zero; static uint64_t zero_gpu; static float q[NVN_REFL_MAXARG];
     if (!zero) { zero = [g_dev newBufferWithLength:sizeof q options:MTLResourceStorageModeShared]; res_add(zero); zero_gpu = zero.gpuAddress; }
-    if (!g_lb_emu) return zero_gpu;
-    int top = -1;
+    int top = -1, span = -1;   // q[0 .. top] written this draw (zeros between the entries that are set); span = LB_DC + the largest sampler member id: every
+    //   sample_compare of the shader reads q[LB_DC + its id] (S2A.Dsh FsLb), so a table that is not the zero buffer runs at least that far (bias-only tables used to end at top)
     for (int i = 0; i < sh->rf.nb; i++) {
         const nvn_rbind *b = &sh->rf.b[i]; if (!se_samp(b) || b->aid >= NVN_REFL_MAXARG) continue;
-        int sid = bind_sid(b, nvn_stage); if (sid <= 0 || sid >= g_nsreg || !g_sreg_ok[sid] || g_sreg[sid].lod_bias == 0) continue;
-        if (top < b->aid) { for (int k = top + 1; k <= b->aid; k++) q[k] = 0; top = b->aid; }
-        q[b->aid] = g_sreg[sid].lod_bias;
+        if (b->aid < LB_DC && LB_DC + b->aid > span) span = LB_DC + b->aid;
+        float bias = 0; int dc = b->aid < LB_DC && dc_samp(b, nvn_stage);
+        if (g_lb_emu) { int sid = bind_sid(b, nvn_stage); if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) bias = g_sreg[sid].lod_bias; }
+        if (bias == 0 && !dc) continue;
+        int need = dc ? LB_DC + b->aid : b->aid;
+        if (top < need) { for (int k = top + 1; k <= need; k++) q[k] = 0; top = need; }
+        if (bias != 0) q[b->aid] = bias;
+        if (dc) q[LB_DC + b->aid] = 1;
     }
     if (top < 0) return zero_gpu;
+    if (top < span) { for (int k = top + 1; k <= span; k++) q[k] = 0; top = span; }
     id<MTLBuffer> ab; size_t o = arena_alloc(sizeof q[0] * (size_t)(top + 1), &ab); memcpy((uint8_t *)ab.contents + o, q, sizeof q[0] * (size_t)(top + 1));
     return ab.gpuAddress + o;
 }
@@ -14875,14 +14894,28 @@ static void clear_ds_tri(const p_clear_ds *c) {
 }
 
 static void xq_unwind_push(const uint8_t *p);   // nvn_xqueue.inc
+// 子列表调用不递归（11-12 旷野之息 Mac：OP_CALL 嵌套 24 层以上，每层一个 nvn_be_exec 帧，最里层 draw → encode_args 吃满 1 MB 游戏线程宿主栈，
+//   SIGBUS 落在栈底保护页）：OP_CALL 把返回点压进显式返回栈、跳进子列表；子列表 END / 坏记录弹栈接着跑；停车（跨队列等事件）时先记本层续点，
+//   再按里到外记各层调用方的续点（同原先递归逐层返回的顺序）。深度不吃宿主栈；真成环（命令内存被改写成调回自己）到 CALL_DEPTH_MAX 层报红跳过这次调用。
+//   g_ret / g_ret_n 照旧：前 16 层返回点给前视扫描读，g_ret_n 是总深度
+#define CALL_DEPTH_MAX 256
+static const uint8_t **g_cstk_ret, **g_cstk_list; static int g_cstk_cap;
+static int call_push(const uint8_t *ret, const uint8_t *list) {
+    if (g_ret_n >= g_cstk_cap) { int cap = g_cstk_cap ? g_cstk_cap * 2 : 32; const uint8_t **r = realloc(g_cstk_ret, cap * sizeof *r), **l = r ? realloc(g_cstk_list, cap * sizeof *l) : NULL;
+        if (r) g_cstk_ret = r; if (!r || !l) return 0; g_cstk_list = l; g_cstk_cap = cap; }
+    g_cstk_ret[g_ret_n] = ret; g_cstk_list[g_ret_n] = list; if (g_ret_n < 16) g_ret[g_ret_n] = ret; g_ret_n++; return 1;
+}
 void nvn_be_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; state_reset(); }
+    const int base = g_ret_n;   // 本次调用之下的返回栈归调用方（xq 续跑等外层再进来时不动它们）
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
     int trace = dump_all && passdump();   // Normal mode does not check the frame range per operation; the full command position is only used for the designated diagnostic frames
     const uint8_t *list = p, *prev = NULL; if (!g_ret_n) g_exec_top = p;
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
-        if (rec_bad(h)) { rec_bad_red("replay", p, h, list, prev); g_exec_cur = NULL; return; }   // ends this list as its END would; the caller goes on after its CALL
+        if (rec_bad(h)) { rec_bad_red("replay", p, h, list, prev); g_exec_cur = NULL;   // ends this list as its END would; the caller goes on after its CALL
+            if (g_ret_n > base) { g_ret_n--; p = g_cstk_ret[g_ret_n]; list = g_cstk_list[g_ret_n]; prev = NULL; continue; }
+            return; }
         prev = p;
         g_exec_cur = p;   // Scan start point of the store lookahead: the operation that ends the render pass (inclusive)
         if (p == g_defer_pend) { for (int gi = 0; gi < 4; gi++) if (g_defer_slots[gi].active && g_defer_slots[gi].p_end_op == p) g_defer_slots[gi].in_p = 0; g_defer_pend = NULL; }
@@ -14897,6 +14930,7 @@ void nvn_be_exec(const uint8_t *p) {
         if (g_gr.active && !geo_run_keeps(h.op)) geo_run_flush();   // only state settings and draws stay inside a geometry run (nvn_geometry.inc ①)
         switch (h.op) {
             case OP_END: g_exec_cur = NULL;
+                if (g_ret_n > base) { g_ret_n--; p = g_cstk_ret[g_ret_n]; list = g_cstk_list[g_ret_n]; prev = NULL; continue; }   // 子列表结束：回调用方 CALL 之后
                 if (g_hoist_n && !g_ret_n && !g_nrest) {
                     if (g_fz.active) fz_unskip();
                     if (g_hoist_n) { MLOG("【红】 pure-clear pass hoisting: %d hoisted operations were not reached by the end of the submission; cleared (should not happen)", g_hoist_n); g_hoist_n = 0; }
@@ -14905,13 +14939,15 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_BEGIN: break;
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8);
-                if (g_ret_n < 16) g_ret[g_ret_n] = p + h.size; g_ret_n++;   // Return stack for lookahead: after a sub-list ends, continue looking at the caller
-                nvn_be_exec((const uint8_t *)t); g_ret_n--;
-                if (g_xq_unwind) { xq_unwind_push(p + h.size); g_exec_cur = NULL; return; }   // parked inside the sub-list: the caller goes on after its CALL (nvn_xqueue.inc)
-                break; }
+                if (g_ret_n - base >= CALL_DEPTH_MAX || !call_push(p + h.size, list)) {
+                    static int red; if (!red++) MLOG("【红】 command-list call nested %d deep (limit %d, or the return stack could not grow): skipped this call; the commands may call back into themselves (first case)", g_ret_n - base, CALL_DEPTH_MAX);
+                    break; }
+                p = (const uint8_t *)t; list = p; prev = NULL; continue; }
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
                 if (m & NVN_EV_WAIT) { PD("Y wait_event cmd=%p dst=%p mode=%u value=%u now=%u", p, val, m & ~NVN_EV_WAIT, v, val ? *val : 0);   // nvnCommandBufferWaitEvent（同一记录，见 ev_wait）
-                    if (ev_wait(val, m & ~NVN_EV_WAIT, v, p + h.size)) { PD("Y parked at the wait (cross-queue order)"); xq_unwind_push(p + h.size); g_exec_cur = NULL; return; }
+                    if (ev_wait(val, m & ~NVN_EV_WAIT, v, p + h.size)) { PD("Y parked at the wait (cross-queue order)"); xq_unwind_push(p + h.size); g_exec_cur = NULL;
+                        while (g_ret_n > base) xq_unwind_push(g_cstk_ret[--g_ret_n]);   // 各层调用方续点，里到外（同原先递归逐层返回）
+                        return; }
                     break; }
                 PD("Y signal_event cmd=%p dst=%p mode=%u value=%u", p, val, m, v); mtl_sub_event(val, m, v); break; }
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, (const uint8_t *)a + 8, 8); g_cnt_report[t & 31]++;

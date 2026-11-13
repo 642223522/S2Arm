@@ -873,6 +873,8 @@ public final class S2ArmLauncherModel: ObservableObject {
                                  repo: outcome.result["repo"] as? String ?? "github.com/jhaizhou-ops/S2Arm")
     }
     struct UploadNoCode: LocalizedError { var errorDescription: String? { Localizer().t("s2arm.diagUpload.noCode") } }
+    /// 界面语言写进作业环境：之后每个作业请求都带 uiLanguage（zh-Hans / en），作业层按它出玩家看得到的文件名与说明
+    public func setUILanguage(_ code: String) { provider.client.environment.uiLanguage = code }
 
     /// 装机前清单（装机页开着时每几秒调一次）。换了一款先清掉上一款的清单。
     func checkInstall(_ gameID: String, device: String? = nil) {
