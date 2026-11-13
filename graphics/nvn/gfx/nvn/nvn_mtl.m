@@ -14202,6 +14202,14 @@ static void copy_t2t_(const p_copy_t2t *c) {
             return;
         }
         if (s.sampleCount > 1 && d.sampleCount == 1 && s.pixelFormat == d.pixelFormat && (s.width != d.width || s.height != d.height) && copy_resolve_scaled(c, s, d, sl, sz0, dl, dz0)) return;
+        // Both single-sample but another format (or size): nothing to resolve, it is a whole-level converting copy -- draw it (#751: a game's last pass "downsamples" its 1280x720
+        //   RGBA8 scene into the 1280x720 BGRA8 texture it presents; skipping it left the screen black with sound playing)
+        if (s.sampleCount == 1 && d.sampleCount == 1 && !fmt_int_or_ds(s.pixelFormat) && !fmt_int_or_ds(d.pixelFormat) && !mtl_fmt_block(d.pixelFormat)) {
+            id<MTLTexture> dd = (d.usage & MTLTextureUsageRenderTarget) ? d : tex_upgrade(c->dst, d, MTLTextureUsageRenderTarget, d.pixelFormat);
+            unsigned sw = (unsigned)MAX(s.width >> sl, 1ul), sh = (unsigned)MAX(s.height >> sl, 1ul), dw = (unsigned)MAX(dd.width >> dl, 1ul), dh = (unsigned)MAX(dd.height >> dl, 1ul);
+            NVNcopyRegion sr = {0, 0, 0, (int)sw, (int)sh, 1}, dr = {0, 0, 0, (int)dw, (int)dh, 1};
+            if (copy_t2t_draw(s, dd, sl, sz0, dl, dz0, &sr, &dr, sw != dw || sh != dh, 0)) return;
+        }
         if (s.sampleCount <= 1 || d.sampleCount != 1 || s.pixelFormat != d.pixelFormat || s.width != d.width || s.height != d.height) {
             RED_ONCE(72, "Downsample case not implemented: %lux%lu %lu samples format %lu → %lux%lu %lu samples format %lu", (unsigned long)s.width, (unsigned long)s.height, (unsigned long)s.sampleCount,
                      (unsigned long)s.pixelFormat, (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.sampleCount, (unsigned long)d.pixelFormat);
