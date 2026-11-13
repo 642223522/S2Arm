@@ -705,6 +705,9 @@ def _rename_library_path(c, source, target):
     """同盘搬库的一次改名（外部 PR #363）：Windows 上资源管理器 / 杀软 / 下载工具开着里面的文件时改名报 WinError 5 / 32，扫完会放开——
     按 pack/orch/roots.rename_dir 同一套退避（DIR_RENAME_RETRIES，合计约 1 分钟）重试；等的时候在界面上说在等什么、等了多久，能取消（不静默卡住）。
     仍不行报人话，原游戏库保留在原位置。其它错误（盘满等）立即报"""
+    # 作业主程序（pack/jobs/main.py）只把 pack/jobs 放进 sys.path：pack.orch 从作业的引擎根导入（#812 换库报 No module named 'pack'；同 toolchain.reader）
+    if str(c.engine) not in sys.path:
+        sys.path.insert(0, str(c.engine))
     from pack.orch.roots import DIR_RENAME_RETRIES
     delays = DIR_RENAME_RETRIES if os.name == "nt" else ()
     waited = 0.0
