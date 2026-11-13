@@ -5068,6 +5068,10 @@
   "en": "Reconnect the iPhone by cable, unlock it, and confirm Trust This Computer. Recheck the device and install again."
  },
  {
+  "source": "免费个人开发者团队签不了这个 App 申请的某项权限（例如「扩展虚拟寻址」）；更新 S2Arm 后重新安装（新版对免费团队只申请能签的权限），或在 Xcode 改用付费开发者团队。",
+  "en": "A free personal development team cannot sign a capability this app requests (such as Extended Virtual Addressing). Update S2Arm and install again (the new version requests only what a free team can sign), or switch to a paid development team in Xcode."
+ },
+ {
   "source": "开发描述文件已过期；在 Xcode 重新登录签名账号、重新申请描述文件并签名安装，保留原 App 存档。",
   "en": "The provisioning profile expired. Sign in to the signing account in Xcode, renew the profile, and re-sign and install while keeping existing saves."
  },
