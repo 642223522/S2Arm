@@ -71,6 +71,11 @@ s2a_device_pick() {
   if [ -n "$best" ]; then L=$(s2a_device_field "$best" lock); mkdir -p "${L%.lock}.claim"; : > "${L%.lock}.claim/$$_$(date +%s)"; fi
   rm -rf "$mx"; [ -n "$best" ] || { echo "【红】没有可用的 ${spec} 测试设备（都不在 devicectl 列表里（USB / 局域网都没连上）或调度暂停中）" >&2; return 1; }
   echo "$best"; }
+# 登记过的测试设备按硬件 UDID 在「自有设备」那条路认的位置登一份它的锁与电量目录（11-13：一条线没读到设备表——工作树找不到 machine.local，
+#   名单是占位——就走 S2A_DEVICE_OWN=1 的自有设备路径，对同一台测试设备另起一把锁 ~/.s2arm/devices/<UDID>/device.lock，和按名单取锁的线同时上机）。
+#   名单路径每次选中都写 <自有设备根>/<UDID>/registered.tsv（锁目录 \t 电量目录）；自有设备路径见到它就沿用那把锁，不另起
+_s2a_own_root() { if [ -n "${S2A_TEST_ROOT:-}" ]; then echo "$S2A_TEST_ROOT/own_devices"; else echo "${S2A_OWN_DEV_ROOT:-$HOME/.s2arm/devices}"; fi; }
+_s2a_own_note() { local d; d=$(_s2a_own_root)/$1; mkdir -p "$d" 2> /dev/null && printf '%s\t%s\n' "$2" "$3" > "$d/registered.tsv" 2> /dev/null || :; }
 s2a_device() {
   local want=${1:?s2a_device <1|2|3|any|iphone|duo|UDID|CoreDevice 标识>} line n name udid cd lock bdir cls
   case $want in any|iphone|duo) want=$(s2a_device_pick "$want" "${2:-${BUNDLE:-}}") || return 1;; esac
@@ -82,6 +87,7 @@ s2a_device() {
     fi
     [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/$(basename "$lock"); bdir=$S2A_TEST_ROOT/battery; }   # 单测：锁与电量目录落临时目录，不碰真锁
     mkdir -p "${lock%/*}" 2> /dev/null
+    _s2a_own_note "$udid" "$lock" "$bdir"
     export SW_DEVICE=$cd SW_IOS_UDID=$udid DEVNAME=$name DEVNUM=$n DEVCLASS=$(_s2a_cls "$name" "$cls") SW_DEVLOCK_DIR=$lock SW_DEVLOCK_QUEUE=${lock%.lock}.queue SW_DEVBATTERY_LOCKS=$lock DEVBATTERY_DIR=$bdir
     return 0
   done <<< "$S2A_DEVICES"
@@ -112,8 +118,13 @@ PY
     if [ "$udid" = "$S2A_DAILY_PHONE" ] || [ "$cd" = "$S2A_DAILY_PHONE" ]; then echo "【红】${want}（${udid}）是日常手机，不碰" >&2; return 1; fi
     command -v idevice_id > /dev/null && ! idevice_id -l 2>/dev/null | grep -qx "$udid" && echo "【黄】${name}（${udid}）不在本机 USB 上：局照跑，功耗读数（pw*.plist）要 USB 连接才有" >&2
     command -v idevice_id > /dev/null || echo "【黄】本机缺 libimobiledevice（brew install libimobiledevice）：局照跑，功耗读数（pw*.plist）和电量闸读不到" >&2
-    lock=${S2A_OWN_DEV_ROOT:-$HOME/.s2arm/devices}/$udid/device.lock; bdir=${lock%/*}/battery
-    [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/own_$udid.lock; bdir=$S2A_TEST_ROOT/battery; }
+    local reg; reg=$(_s2a_own_root)/$udid/registered.tsv
+    if [ -s "$reg" ]; then   # 登记过的测试设备：沿用名单那把锁（见 _s2a_own_note）
+      IFS=$'\t' read -r lock bdir < "$reg"; echo "【黄】${name}（${udid}）是登记过的测试设备：沿用它的设备锁 ${lock}，不另起一把" >&2
+    else
+      lock=${S2A_OWN_DEV_ROOT:-$HOME/.s2arm/devices}/$udid/device.lock; bdir=${lock%/*}/battery
+      [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/own_$udid.lock; bdir=$S2A_TEST_ROOT/battery; }
+    fi
     mkdir -p "${lock%/*}" "$bdir"
     S2A_DEVICES="$S2A_DEVICES"$'\n'"own|$name|$udid|$cd|$lock|$bdir"
     export S2A_DEVICES SW_DEVICE=$cd SW_IOS_UDID=$udid DEVNAME=$name SW_DEVLOCK_DIR=$lock SW_DEVLOCK_QUEUE=${lock%.lock}.queue SW_DEVBATTERY_LOCKS=$lock DEVBATTERY_DIR=$bdir
