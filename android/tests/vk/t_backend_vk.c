@@ -5052,6 +5052,21 @@ static void c74b_clear_rect_oob(void) {
     nvn_gpu_view_release(ov); nvn_gpu_tex_release(out);
 }
 
+// C937：release 之后再录制使用 → 粘滞 E_ARG，报错要带句柄类型和录制位置（真机长局里只有这一行能定位，#937）。
+//   同一段里先 use 一次让段持有引用（缓冲 release 后不会被回收，指针仍有效），release，再 use：第二次必须报。独占会话。
+static void c937_use_after_release(void) {
+    nvn_gpu_buf b = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_buf_use(c, b);
+    nvn_gpu_buf_release(b, NULL, NULL);
+    nvn_gpu_buf_use(c, b);
+    nvn_gpu_err e;
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 117, on_done, NULL, &e);
+    CHECK(r.code == NVN_GPU_E_ARG, "C937 release 后再用应 E_ARG，实为 %d %s", r.code, e.why);
+    CHECK(strstr(e.why, "release 之后仍在使用句柄（buf ") && strstr(e.why, "录制于 nvn_gpu_buf_use:"),
+          "C937 报错应带类型与录制位置：%s", e.why);
+}
+
 // C75：深度偏移。开关（NVN 偏移开关的填充位 = 4）进管线，factor / units / clamp 走动态状态。
 //   深度整屏清成 0.5；两笔都画在 z = 0.5、深度 LESS，动态状态里都带 units = −4、factor = 1000：
 //   ① 绿，左半屏，管线没开偏移 → 0.5 < 0.5 不成立，画不上；
@@ -6003,6 +6018,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     c74b_clear_rect_oob();
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C74b close：%d %s", e18.rc.code, e18.why);
+    if (!open_backend()) return 1;
+    c937_use_after_release();
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C937 close：%d %s", e18.rc.code, e18.why);
     if (!open_backend()) return 1;
     c85_redundant_state(argv[1]);   // 独占会话：时间线信号不受前后用例的排列影响
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C85 close：%d %s", e18.rc.code, e18.why);
