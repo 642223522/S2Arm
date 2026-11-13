@@ -240,6 +240,31 @@ class RootsTest(unittest.TestCase):
             stuck = [p for p in [target, *target.rglob('*')] if not p.is_symlink() and not os.stat(p).st_mode & stat.S_IWUSR]
             self.assertEqual(stuck, [])
 
+    def test_ntfs_romfs_hardlink(self):
+        # #291：Windows 同卷非 ReFS（NTFS）播种 RomFS 建硬链接、不逐文件实拷；别的目录（link_ok 不给）照旧实拷成独立的一份。
+        #   期望手写：link_ok → 目标与源同一个文件（同 inode、链接数 2）、不打「实拷」；不给 → 独立文件、字节相同、打「实拷」；
+        #   建链接失败（跨卷 / FAT）→ 退回实拷。在 Mac / Linux 上把平台看成 win32、ReFS 判否来走这条路（硬链接 posix 照样能建）
+        src = self.home / 'romfs-file'
+        src.write_bytes(bytes(range(256)) * 17)
+        def run(dst, **kw):
+            err = io.StringIO()
+            with patch.object(roots.sys, 'platform', 'win32'), patch.object(roots, 'refs_same_volume', return_value=False), \
+                 contextlib.redirect_stderr(err):
+                roots.copy_file(src, dst, **kw)
+            return err.getvalue()
+        out = run(self.home / 'linked', link_ok=True)
+        self.assertTrue(os.path.samefile(src, self.home / 'linked'))
+        self.assertEqual(os.stat(src).st_nlink, 2)
+        self.assertNotIn('实拷', out)
+        out = run(self.home / 'copied')
+        self.assertFalse(os.path.samefile(src, self.home / 'copied'))
+        self.assertEqual(src.read_bytes(), (self.home / 'copied').read_bytes())
+        self.assertIn('实拷', out)
+        with patch.object(roots.os, 'link', side_effect=OSError(errno.EXDEV, 'cross-device')):
+            out = run(self.home / 'fallback', link_ok=True)
+        self.assertFalse(os.path.samefile(src, self.home / 'fallback'))
+        self.assertIn('硬链接不可用', out)
+
     def test_realcopy_warns_and_bytes_match(self):
         src = self.home / 'source'
         dst = self.home / 'dest'

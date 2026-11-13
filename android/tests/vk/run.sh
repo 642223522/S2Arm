@@ -9,7 +9,11 @@
 # 环境：
 #   S2A_LAVAPIPE_ICD   指定 lavapipe ICD json（默认找 ~/.local / /usr/share/vulkan/icd.d）
 #   S2A_VK_LAYER_DIR   指定 validation 层目录（默认找 ~/.local / /usr/share/vulkan/explicit_layer.d）
-# 没装 lavapipe / validation 时退出码 2（红），不静默跳过（#784）。
+# 没装 lavapipe / validation 时不静默跳过（#784）：macOS 一律、Linux 宿主缺原生工具时进共享离线容器（tests/vulkan/），
+# 容器也没准备好才退出码 2（红）。
+# 默认档先在宿主跑真编译器链（android/tests/gs_compiler_chain_test.py → build/696-real-compiler）再跑后端用例。链要 dotnet
+# （.NET 10 SDK，在 PATH 上）、固定的 NDK 29.0.14206865（设 ANDROID_NDK_HOME，或放在 $ANDROID_HOME/ndk/、~/Android/Sdk/ndk/ 下）、
+# 首次联网还原 NuGet，所以只能在宿主上出（macOS 每次重出，Linux 缺 program.json 才出）；离线容器里跑不了。
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -19,7 +23,23 @@ if [ "$(uname -s)" = Darwin ]; then
     if [ -z "$mode" ]; then python3 "$repo/android/tests/gs_compiler_chain_test.py"; fi
     exec bash "$repo/tests/vulkan/run.sh" android/tests/vk/run.sh "$@"
 fi
+# 以下是 Linux：在宿主上（原生跑；缺原生工具时转容器，见下），或已在 tests/vulkan/run.sh 起的离线容器里（带 S2A_VULKAN_IMAGE_ID）。
+in_container=${S2A_VULKAN_IMAGE_ID:+1}
 if [ -z "$mode" ] && [ ! -f "$repo/build/696-real-compiler/compiled/program.json" ]; then
+    if [ -n "$in_container" ]; then
+        echo "【红】缺 build/696-real-compiler/compiled/program.json：真编译器链要 dotnet、NDK 29、首次联网还原 NuGet，离线容器里跑不了。" >&2
+        echo "     先在宿主上出链：python3 android/tests/gs_compiler_chain_test.py；或直接运行 bash android/tests/vk/run.sh（宿主出链、再进容器）。" >&2
+        exit 2
+    fi
+    if ! command -v dotnet >/dev/null 2>&1; then
+        echo "【红】找不到 dotnet：真编译器链要 .NET 10 SDK（版本见 compat/tree/global.json），请装好并放到 PATH 上。" >&2
+        exit 2
+    fi
+    if ! PYTHONPATH="$repo/android/core-link" python3 -c 'import sys, link_symbols; sys.exit(0 if link_symbols.find_ndk() else 1)'; then
+        echo "【红】找不到 NDK 29.0.14206865：真编译器链要用它的 Vulkan 头文件，不联网下载、不跳过，其他版本的 NDK 不认。" >&2
+        echo "     装好该版本后设 ANDROID_NDK_HOME=<NDK 目录>，或放到 \$ANDROID_HOME/ndk/29.0.14206865、~/Android/Sdk/ndk/29.0.14206865。" >&2
+        exit 2
+    fi
     python3 "$repo/android/tests/gs_compiler_chain_test.py"
 fi
 
@@ -39,6 +59,16 @@ find_layer() {
 
 icd=$(find_icd || true)
 layer=$(find_layer || true)
+# 宿主缺原生 Vulkan 工具（lavapipe / validation / glslc 缺任一）：同 macOS，链已在上面出好，进共享的离线容器跑。
+# 容器没准备好（tests/vulkan/run.sh 退 75）就保持下面原来的红，只多提示一句；容器里跑出的结果（含红）原样退出。
+if [ -z "$in_container" ] && { [ -z "$icd" ] || [ -z "$layer" ] || [ -z "${GLSLC:-$(command -v glslc || true)}" ]; }; then
+    echo "本机缺原生 Vulkan 工具（lavapipe / validation / glslc），改走共享离线容器（同 macOS）" >&2
+    export S2A_VULKAN_CACHE="$repo/build/vulkan-cache"
+    rc=0
+    bash "$repo/tests/vulkan/run.sh" android/tests/vk/run.sh "$@" || rc=$?
+    [ "$rc" = 75 ] || exit "$rc"
+    echo "     容器环境也没准备好（见上）：装好原生工具，或先显式运行 bash tests/vulkan/prepare.sh" >&2
+fi
 if [ -z "$icd" ]; then
     echo "【红】找不到 lavapipe ICD：本用例要求 CPU 参考实现（Mesa lavapipe），不静默跳过。" >&2
     echo "     Arch: 解包 vulkan-swrast 后设 S2A_LAVAPIPE_ICD=<dir>/lvp_icd.json" >&2
@@ -61,7 +91,7 @@ export TMPDIR="$repo/build/vk-tests"
 out=$(mktemp -d "$TMPDIR/s2a-nvn-vk.XXXXXX")
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/shaders"
-for s in gs_probe.vert gs_probe.geom gs_probe.frag tri.vert tri.frag tri_combined.frag tri3.vert tri_solid.frag tri_invert.frag solid_green.frag solid_blue.frag out1_green.frag tex_u.frag quad.vert quad.frag inst.vert point.vert quad2.frag arr.frag cube.frag cubearr.frag tex3d.frag comp.comp pushc.frag pushc.comp tbuf.comp itbuf.comp itbuf_unknown.comp itbuf_unknown_read.comp img.comp tsamp.comp arr2.frag; do
+for s in logic_float.frag logic_uint.frag logic_float_mrt.frag logic_uint_mrt.frag gs_probe.vert gs_probe.geom gs_probe.frag tri.vert tri.frag tri_combined.frag tri3.vert tri_solid.frag tri_invert.frag solid_green.frag solid_blue.frag out1_green.frag tex_u.frag quad.vert quad.frag inst.vert point.vert quad2.frag arr.frag cube.frag cubearr.frag tex3d.frag comp.comp pushc.frag pushc.comp tbuf.comp itbuf.comp itbuf_unknown.comp itbuf_unknown_read.comp img.comp tsamp.comp arr2.frag; do
     "$glslc" --target-env=vulkan1.1 "$repo/android/tests/vk/shaders/$s" -o "$out/shaders/$s.spv"
 done
 

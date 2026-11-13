@@ -6,10 +6,13 @@
 int main(int argc, char **argv) {
     if (argc != 3) return 2;
     FILE *f = fopen(argv[1], "rb"); if (!f) return 2;
-    if (fseek(f, 0, SEEK_END)) return 2; long len = ftell(f); rewind(f);
+    if (fseek(f, 0, SEEK_END)) return 2;
+    long len = ftell(f);
+    rewind(f);
     if (len <= 0) return 2;
     unsigned char *bytes = malloc((size_t)len); if (!bytes) return 2;
-    if (fread(bytes, 1, (size_t)len, f) != (size_t)len) return 2; fclose(f);
+    if (fread(bytes, 1, (size_t)len, f) != (size_t)len) return 2;
+    fclose(f);
     struct fd_program p = {0}; char why[192] = {0};
     int rc = nvn_vk_program_parse_graphics(bytes, (size_t)len, &p, why, sizeof why); free(bytes);
     if (rc || !p.stage[0].present || !p.stage[1].present || !p.stage[2].present ||
