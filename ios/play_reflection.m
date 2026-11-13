@@ -43,7 +43,7 @@ CGAffineTransform S2APlayReflectionTransform(S2APlayLayout l, CGRect bounds) {
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 - (void)setGame:(CALayer *)game {
-    if (_game==game) return;
+    if (_game==game && game.superlayer==_copies) return;   // 同一个层但被挪走过（外接屏来回）：照样放回复制层
     [_game removeFromSuperlayer]; _game=game; [_copies addSublayer:game];
 }
 - (void)applicationChanged:(NSNotification *)note { [self update:_layout]; }
