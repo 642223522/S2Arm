@@ -85,11 +85,21 @@ static const char k_tensor_sq_msl[] =
 "kernel void tensor_sq(texture2d<float, access::read> s [[texture(0)]], texture2d<float, access::write> d [[texture(1)]], uint2 p [[thread_position_in_grid]]) {\n"
 "  if (p.x >= d.get_width() || p.y >= d.get_height()) return;\n"
 "  float4 v = s.read(p); d.write(float4(v.rgb * abs(v.rgb), v.a), p); }\n";
+// S2Arm #674: k_tensor_sq_msl is compiled from source as well; built at the first stand-in it held the submit thread 74-118 ms in the first 3D scene when the system's compile
+//   cache missed. On Switch 2 with the stand-in on, mtl_init starts the build in the background (tensor_sq_prewarm); the first pass waits for it (tensor_sq_ready), as ixc_prewarm / ixc_ready
+static id<MTLComputePipelineState> g_tsq_ps; static NSError *g_tsq_err;
+static dispatch_group_t g_tsq_pre;   // the background build, NULL = not started
+static void tensor_sq_build(void) {
+    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_tensor_sq_msl) options:nil error:&e]; id<MTLFunction> f = lib ? [lib newFunctionWithName:@"tensor_sq"] : nil;
+    g_tsq_ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil; g_tsq_err = e;
+}
+static void tensor_sq_prewarm(void) { if (!nvn2_on() || !tensor_standin_enabled() || g_tsq_pre) return; g_tsq_pre = dispatch_group_create(); dispatch_group_async(g_tsq_pre, s2a_qos_global(S2A_QOS_SHADER_PREFETCH), ^{ @autoreleasepool { tensor_sq_build(); } }); }
+static id<MTLComputePipelineState> tensor_sq_ready(void) { if (g_tsq_pre) dispatch_group_wait(g_tsq_pre, DISPATCH_TIME_FOREVER); else tensor_sq_build(); return g_tsq_ps; }   // once: tensor_sq_pass keeps the table
 static int tensor_sq_pass(id<MTLTexture> s, id<MTLTexture> d) {
     static id<MTLComputePipelineState> ps; static id at; static int failed;
     if (failed) return 0;
-    if (!at) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_tensor_sq_msl) options:nil error:&e]; id<MTLFunction> f = lib ? [lib newFunctionWithName:@"tensor_sq"] : nil;
-        ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+    if (!at) { NSError *e = nil;
+        ps = tensor_sq_ready(); if (!ps) e = g_tsq_err;
         at = ps ? rec_table(tab_new(1, 2, 0, &e)) : nil;
         if (!at) { failed = 1; MLOG("【红】 张量核网络顶替：平方计算核建不出（%s），要平方的出口层输出图不写", e.localizedDescription.UTF8String); return 0; } }
     id ce = enc_c_begin(NULL); enc_c_table(ce, at); tab_tex(at, s, 0); tab_tex(at, d, 1); [ce setComputePipelineState:ps];
