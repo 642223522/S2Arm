@@ -487,6 +487,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var importPage: ImportPage?
     @Published private(set) var importSources: [ImportSource] = []
     @Published private(set) var importBatchFailure: String?
+    /// #797：刚添加的款只有更新 / DLC、缺本体（游戏名）：添加窗口不自动关，黄字说缺本体，玩家可以当场把本体拖进来
+    @Published private(set) var importNoBase: [String] = []
     private var importUsesResults = false
 
     var pendingSources: [ImportSource] { importSources.filter { !$0.succeeded } }
@@ -507,6 +509,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard let first = urls.first, !busy else { return }
         importUsesResults = partialResults
         importBatchFailure = nil
+        importNoBase = []
         failAction(nil, game: nil)
         inlineFailure = nil
         start(.importGames, game: nil, name: first.lastPathComponent + (urls.count > 1 ? " +\(urls.count - 1)" : "")) { [weak self] sink in
@@ -516,6 +519,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 let result = try await self.provider.importGames(GameInputs(paths: urls), partialResults: partialResults, events: sink)
                 try Task.checkCancellation()
                 if partialResults { self.mergeImportSources(result.sources, submitted: urls) }
+                self.importNoBase = result.missingBase.map { id in result.games.first { $0.titleId == id }?.name ?? id }
                 self.selectImportedGame(result.games.first, forWelcome: wasEmpty)
                 // 批量出包（v0.2.4）：一次放进多款、或在出包页又放进游戏 → 识别完列成清单（出包页那款排第一）；认不出的也列上、写原因
                 let seed = self.batchSeed; self.batchSeed = nil
@@ -607,6 +611,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         importSources = []
         pendingImport = []
         importBatchFailure = nil
+        importNoBase = []
         keysRejected = false
     }
 
@@ -1364,7 +1369,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             }
         }
         if state == .completed && session.kind == .importGames && importUsesResults &&
-            pendingImport.isEmpty && pendingSources.isEmpty {
+            pendingImport.isEmpty && pendingSources.isEmpty && importNoBase.isEmpty {
             closeImport()
         }
         if Self.repairKinds.contains(session.kind) {
