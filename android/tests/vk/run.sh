@@ -419,7 +419,7 @@ for dq in 0 1; do
     unset S2A_REPLAY_INDIRECT_DQ S2A_TEST_NVK_DQ
     bad=$(grep -cE "Validation Error|VUID-" "$out/log_indirect_$dq" || true)
     if [ "$rc" -ne 0 ] || [ "$bad" -ne 0 ] || ! grep -q "pixel-failures0" "$out/log_indirect_$dq"; then
-        echo "【红】间接绘制隔离用例（#941，两级回放 $dq）：rc=${rc}，validation 报错 $bad 条" >&2
+        echo "【红】间接绘制隔离用例（#941，两级回放 ${dq}）：rc=${rc}，validation 报错 $bad 条" >&2
         exit 1
     fi
 done
