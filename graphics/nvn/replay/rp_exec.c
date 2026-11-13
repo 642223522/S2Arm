@@ -304,6 +304,11 @@ uint64_t nvn_be_sub_commit(void) {
     return f;
 }
 
+// nvk_sync_lag=3：每帧只放行一次同步等待的额度。上屏时补一次，之后第一次 SyncWait 不真等，其余照旧。
+// 用意：让下一帧的 CPU 回放与这一帧的显卡收尾重叠，同时保住帧内的新鲜度（帧内那几次等待仍然真等，
+// 游戏的遮挡计数/条件判定拿到的是本帧已做完的结果），比「一律不等」轻得多。
+static int g_lag_budget;
+void rp_sync_lag_present(void) { static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_sync_lag", 0) == 3; if (on) __atomic_store_n(&g_lag_budget, 1, __ATOMIC_RELEASE); }
 uint64_t nvn_be_last_fence(void) { return g_fence; }
 uint64_t rp_sub_fence(void) { return g_fence + SUB_STEP; }   // 正在回放的这次提交最后一段的栅栏值（它中途先交的段取的值都比这个小）
 int rp_fence_done(uint64_t f) { return __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE) >= f; }
@@ -352,7 +357,12 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
         if (lag > 0) {
             uint64_t done = __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE);
             uint64_t ahead = fence > done ? (fence - done + SUB_STEP - 1) / SUB_STEP : 0;
-            if ((uint64_t)lag >= ahead || lag >= 2) { rp_buf_frame_flip(); pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); return 1; }
+            int allow = (uint64_t)lag >= ahead || lag >= 2;
+            if (lag == 3) {   // 每帧一次：从上屏之后补的额度里扣，扣完就真等
+                if (__atomic_load_n(&g_lag_budget, __ATOMIC_ACQUIRE) > 0 && __atomic_sub_fetch(&g_lag_budget, 1, __ATOMIC_ACQ_REL) >= 0) allow = 1;
+                else allow = 0;
+            }
+            if (allow) { rp_buf_frame_flip(); pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); return 1; }
         } }
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
     pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1);

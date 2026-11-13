@@ -167,6 +167,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                 t_last = now; n_last = g_n_shown + 1; d_last = nd;
             }
         }
+        rp_sync_lag_present();   // 开关 nvk_sync_lag=3：补一次「本帧只放行一次同步等待」的额度
         frame_gap_note();
         if (!g_n_shown++ || g_n_shown % 600 == 0) {   // 首帧一行，之后每 600 帧一行
             uint64_t nd = 0, ns = 0; rp_draw_stats(&nd, &ns);
