@@ -893,7 +893,7 @@ def export_readme(games):
 
 def export_phone(c, gid=None):
     """导出，自己签名安装：本版壳 + 游戏库里能放进本壳、已出成单一 IMG 的各款组一个容器（ipa.assemble，同一键装），
-    出未签名 S2Arm.ipa + 各款 game.img + 说明到游戏库根「S2Arm 自签导出」。不连手机、不签名。
+    出未签名 S2Arm.ipa + 每款一个 <游戏名>.img + 说明到游戏库根「S2Arm 自签导出」。不连手机、不签名。
     gid：这次点的那款（必须带上，放不进就报真实原因）；None = 「导出新版 S2Arm」（只换壳，带上能带的各款）。
     放不进本壳（要按新版重新出包）/ 还不是单一 IMG 形态的别的款不带，结果 skipped 点名"""
     import ipa as packer
@@ -902,7 +902,7 @@ def export_phone(c, gid=None):
     sid = packer.current_shell_id(c)
     if gid:
         if not img_pack(ios_pack(c, gid)):
-            raise Failure("这款的 iPhone 包是旧格式，导出不了单个 game.img：请重新「打 iPhone 包」后再导出。", code="pack_missing")
+            raise Failure("这款的 iPhone 包是旧格式，导出不了这款的 .img 文件：请重新「打 iPhone 包」后再导出。", code="pack_missing")
     names = {g["id"].upper(): g.get("name") or g["id"] for g in c.catalog()["games"]}
     others, skipped = [], []
     for g in sorted(names):
