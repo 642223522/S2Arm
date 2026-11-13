@@ -22,7 +22,9 @@ static int g_fail, g_checks;
 
 // ---------- 平台替身 ----------
 static int g_red_lines; static char g_last_red[200];
-void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
+static int g_arena_truncated_lines;
+static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_arena697_lines[32][256];
+void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 int nvn_plat_flag(const char *name, int dflt) { if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag; return dflt; }
 const char *nvn_plat_dir(int which) { (void)which; return NULL; }
@@ -204,7 +206,14 @@ void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uin
     int i = (int)st; g_bind_calls[i]++; g_nfb[i] = n; memcpy(g_fb[i], b, (n < 16 ? n : 16) * sizeof *b); }
 void nvn_gpu_draw(nvn_gpu_cmd c, const nvn_gpu_draw_args *a) { (void)c; g_gdraws++; g_last_da = *a; }
 void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = NVN_GPU_CAP_BLIT_SCALED; }
+static int g_arena697_fail;
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err) { (void)c; (void)err;
+    if(g_arena697_fail) { memset(out,0,sizeof *out);memset(err,0,sizeof *err);
+        err->rc.code=g_arena697_fail==3?NVN_GPU_OK:NVN_GPU_E_ORDER;
+        if(g_arena697_fail!=2 && g_arena697_fail!=3) {
+            memset(err->why,'X',sizeof err->why);char prefix[48];snprintf(prefix,sizeof prefix,"first-bind-outside-pass-%d ",g_arena697_fail);
+            memcpy(err->why,prefix,strlen(prefix));err->why[sizeof err->why-1]=0; }
+        return err->rc; }
     g_arena_used = (g_arena_used + align - 1) / align * align; out->buf = &g_arena_buf; out->off = g_arena_used; out->cpu = g_arena + g_arena_used; out->va = 0; g_arena_used += bytes; return (nvn_gpu_rc){NVN_GPU_OK}; }
 
 static const uint64_t *g_fake_occ; static uint32_t g_fake_nocc;   // 下一次完成时交给回调的各槽样本数
@@ -2161,6 +2170,34 @@ static void t_logic_op_accounting(void) {
     pass_fresh();
 }
 
+// #697 B: support-copy and direct quad-index arena failures keep counters and bounded first detail.
+static void t_arena697_detail(void) {
+    for(int direct=0;direct<2;direct++) {
+        pass_fresh();memset(&g_fprog,0,sizeof g_fprog);
+        g_fprog.sh[0]=&g_fsh[0];g_fprog.sh[1]=&g_fsh[1];g_fprog.color_out_mask=0xffffffffu;
+        if(!direct){g_fprog.support_bytes=2608;g_fprog.nent[0]=1;
+            g_fprog.ent[0][0].cls=NVN_GPU_RES_UBO;g_fprog.ent[0][0].src_kind=NVN_RB_SUPPORT;}
+        g_resolve_rc=0;nvn_unimpl_reset();int logs=g_arena_detail_lines,draws=g_gdraws,truncated=g_arena_truncated_lines;
+        tex_t rt=mk_tex(697+direct,0,NVN_FORMAT_RGBA8,16,16,1,0);
+        stream s={0};put_set_rt(&s,&rt,NULL);p_draw *d=put(&s,OP_DRAW,sizeof *d);
+        d->prim=direct?7:4;d->count=direct?4:3;end(&s);
+        for(int cause=1;cause<=12;cause++) {
+            g_arena697_fail=cause;
+            submit1(&s);fake_complete(NVN_GPU_DONE_OK);submit1(&s);fake_complete(NVN_GPU_DONE_OK);
+        }
+        g_arena697_fail=0;
+        CHECK(g_gdraws==draws && nvn_unimpl_count("draw","arena_alloc_failed")==24);
+        CHECK(g_arena_detail_lines==logs+8 && g_arena_truncated_lines==truncated+1); // distinct reasons once each; fixed table bounds logging
+        char rc_text[32];snprintf(rc_text,sizeof rc_text,"rc=%d",NVN_GPU_E_ORDER);
+        CHECK(strstr(g_arena697_lines[logs],rc_text) && strstr(g_arena697_lines[logs],"first-bind-outside-pass-1"));
+        CHECK(strstr(g_arena697_lines[logs+1],"missing backend detail"));
+        CHECK(strstr(g_arena697_lines[logs+2],"rc=0 ") && strstr(g_arena697_lines[logs+2],"CPU mapping unavailable"));
+        CHECK(strstr(g_arena_detail,direct?"bytes=24 ":"bytes=2608 "));
+        CHECK(strlen(g_arena_detail)<sizeof g_arena_detail-1);
+    }
+    pass_fresh();
+}
+
 static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管线 / 动态状态 / 顶点流 / 绑定；没变的管线不重取；取不到的资源跳过并记账
     pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem); g_arena_used = 0;
     g_pipe_gets = g_set_pipes = g_set_dyns = g_gdraws = g_nvb = g_resolves = g_resolve_rc = 0; memset(g_nfb, 0, sizeof g_nfb);
@@ -2492,6 +2529,7 @@ int main(int argc, char **argv) {
     t_compute_sources();
     t_copy_t2t();
     t_draw();
+    t_arena697_detail();
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
     t_gs_bind(); t_stage_dropped_clears_binds();

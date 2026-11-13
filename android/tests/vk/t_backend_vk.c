@@ -5670,7 +5670,59 @@ static int c697_bc4_3d_run(void) {
     return open_backend();
 }
 
+// #697 A: no shaders or unrelated tests; copy callback-owned text before publishing completion.
+struct error697_done { atomic_int calls; uint64_t signal; int code; uint32_t status; char why[256]; };
+static void error697_callback(void *u, const nvn_gpu_done *d) {
+    struct error697_done *o=u;
+    o->signal=d->signal; o->code=d->rc.code; o->status=d->status;
+    snprintf(o->why,sizeof o->why,"%s",d->why?d->why:"");
+    atomic_fetch_add_explicit(&o->calls,1,memory_order_release);
+}
+static void error697_expect(struct error697_done *o, uint64_t signal, nvn_gpu_rc rc,
+                            const nvn_gpu_err *err, int code, const char *why) {
+    CHECK(rc.code==code && err->rc.code==code,"E697 synchronous rc=%d err=%d expected=%d",rc.code,err->rc.code,code);
+    CHECK(strstr(err->why,why)!=NULL,"E697 first reason missing: %s",err->why);
+    if(!wait_until(&o->calls,1,5000)){CHECK(0,"E697 callback timeout");return;}
+    CHECK(atomic_load_explicit(&o->calls,memory_order_acquire)==1,"E697 exactly one callback");
+    CHECK(o->signal==signal && o->code==code && o->status==NVN_GPU_DONE_FAILED,"E697 asynchronous result mismatch");
+    CHECK(!strcmp(o->why,err->why),"E697 synchronous/asynchronous reason mismatch: %s / %s",err->why,o->why);
+}
+static int error697_only(void) {
+    char why[256]={0};
+    if(s2a_vk_device_create(&g_dev,why,sizeof why)!=0){fprintf(stderr,"E697 device: %s\n",why);return 2;}
+    memset(&g_desc,0,sizeof g_desc);g_desc.host_device=&g_dev;g_desc.app_label="error697-only";
+    for(int mode=0;mode<3;mode++) {
+        if(!open_backend())return 1;
+        uint8_t zeros[16]={0};nvn_gpu_buf b=make_buf(16,NVN_GPU_MEM_SHARED,zeros);
+        nvn_gpu_cmd first=begin_cmd(),second=begin_cmd();
+        nvn_gpu_err e; memset(&e,0,sizeof e);e.rc.code=123;strcpy(e.why,"stale sentinel");
+        struct error697_done d1={0},d2={0};nvn_gpu_rc rc;
+        if(mode==0) {
+            nvn_gpu_fill_buf(first,b,0,6,0xdeadbeef); // first ARG: misaligned size
+            nvn_gpu_fill_buf(first,b,99,4,0xffffffff); // later bounds error must not overwrite it
+        } else nvn_gpu_fill_buf(first,b,0,16,0xdeadbeef);
+        nvn_gpu_fill_buf(second,b,0,16,0xffffffff);
+        if(mode==1)nvn_gpu_vk_test_set_fault(1);
+        uint64_t signal=mode==2?0:1;
+        rc=nvn_gpu_cmd_commit(first,signal,error697_callback,&d1,&e);
+        error697_expect(&d1,signal,rc,&e,mode==1?NVN_GPU_E_DEVICE:NVN_GPU_E_ARG,
+                        mode==0?"bytes=6":mode==1?"测试注入":"signal 0");
+        memset(&e,0,sizeof e);e.rc.code=123;strcpy(e.why,"second stale sentinel");
+        rc=nvn_gpu_cmd_commit(second,2,error697_callback,&d2,&e);
+        error697_expect(&d2,2,rc,&e,NVN_GPU_E_FAILED,"时间线已失败");
+        CHECK(nvn_gpu_fence_done()==0 && nvn_gpu_fence_failed()==1,"E697 timeline changed");
+        CHECK(nvn_gpu_fence_wait(2,0,&e).code==NVN_GPU_E_FAILED,"E697 failed wait");
+        for(int i=0;i<16;i++)CHECK(buf_cpu(b)[i]==0,"E697 failed command wrote buffer");
+        nvn_gpu_cmd blocked=NULL;CHECK(nvn_gpu_cmd_begin(NULL,&blocked,&e).code==NVN_GPU_E_FAILED,"E697 terminal begin");
+        nvn_gpu_buf_release(b,NULL,NULL);
+        CHECK(OK(nvn_gpu_close(5000000000ull,&e)),"E697 close");
+        CHECK(atomic_load(&d1.calls)==1 && atomic_load(&d2.calls)==1,"E697 duplicate callback after close");
+    }
+    s2a_vk_device_destroy(&g_dev,1);printf("E697 isolated failures=%d\n",g_fail);return g_fail?1:0;
+}
+
 int main(int argc, char **argv) {
+    if (getenv("S2A_TEST_ERROR697_ONLY")) return error697_only();
     if (!getenv("S2A_TEST_LOGICOP_ONLY")) t29_format_expand();
     char why[256] = {0};
     if (s2a_vk_device_create(&g_dev, why, sizeof why) != 0) {
