@@ -248,6 +248,71 @@ static NSEvent *right_mouse_event(CGEventType type) {
     NSEvent *e = [NSEvent eventWithCGEvent:cg]; CFRelease(cg); return e;
 }
 static NSUInteger mouse_buttons_state(void) { return fake_mouse_buttons; }
+// R5：键盘区原始键态（HID usage 位图 + 修饰键字段；服务层 InputPump 照 s2a_kb_read 这份写键盘区共享内存）。
+//   键码表对拍：W=13→0x1A、F5=96→0x3E、Esc=53→0x29、小键盘Enter=76→0x58、Z=6→0x1D；修饰键 shift 56→0xE1、
+//   ctrl 59→0xE0、option 58→0xE2（0xE0–0xE2 落在位图第 4 个 64 位段）+ 字段位（Shift=2、Control=1、LeftAlt=4）；
+//   CapsLock 只走 flagsChanged（位图 0x39 + 字段 bit8）；失焦发全零、按住的键不丢；keyUp 清位；粘键核对删键跟着清；复位全清
+static void test_keyboard_hid(void) {
+    config = default_config(); reset_input(); focused = YES;
+    read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys);
+    uint64_t k[4]; uint32_t m;
+    s2a_kb_read(k, &m);
+    expect(k[0] == 0 && k[1] == 0 && k[2] == 0 && k[3] == 0 && m == 0, "keyboard bitmap starts empty");
+    S2AMetalView *view = [[S2AMetalView alloc] initWithFrame:NSZeroRect];
+    [view keyDown:key_event(NSEventTypeKeyDown, 13, NO)];   // W
+    s2a_kb_read(k, &m);
+    expect(k[0] == (1UL << 0x1A) && !k[1] && !k[2] && !k[3] && m == 0, "W lands on its HID usage bit");
+    [view keyDown:key_event(NSEventTypeKeyDown, 96, NO)];   // F5
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x3E)) && (k[0] & (1UL << 0x1A)), "F5 lands beside W");
+    [view keyDown:key_event(NSEventTypeKeyDown, 76, NO)];   // 小键盘 Enter
+    s2a_kb_read(k, &m);
+    expect((k[1] & (1UL << (0x58 - 64))) && (k[0] & (1UL << 0x3E)), "keypad Enter lands on usage 0x58");
+    [view keyUp:key_event(NSEventTypeKeyUp, 13, NO)];
+    s2a_kb_read(k, &m);
+    expect(!(k[0] & (1UL << 0x1A)) && (k[0] & (1UL << 0x3E)), "keyUp clears only its own bit");
+    [view keyDown:key_event(NSEventTypeKeyDown, 53, NO)];   // Esc（窗口非全屏、没锁鼠标：照常进键盘区）
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x29)) != 0, "Esc lands on usage 0x29");   // 位号 ≥ 32 的单项判空要显式 != 0：int 截断会把高位清零
+    [view flagsChanged:flags_event(56, NSEventModifierFlagShift)];
+    s2a_kb_read(k, &m);
+    expect((k[3] & (1UL << (0xE1 & 63))) && m == (1u << 1), "shift lands on usage 0xE1 and the Shift field bit");
+    // flagsChanged 的 modifierFlags 反映全量状态（与真机一致），合成事件按累积传
+    [view flagsChanged:flags_event(59, NSEventModifierFlagShift | NSEventModifierFlagControl)];
+    [view flagsChanged:flags_event(58, NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption)];
+    s2a_kb_read(k, &m);
+    expect((k[3] & (1UL << (0xE0 & 63))) && (k[3] & (1UL << (0xE2 & 63))) && m == ((1u << 1) | 1u | (1u << 2)),
+           "control and option land with their usages and field bits");
+    [view flagsChanged:flags_event(56, NSEventModifierFlagControl | NSEventModifierFlagOption)];   // 松 shift：其余还在
+    [view flagsChanged:flags_event(59, NSEventModifierFlagOption)];
+    [view flagsChanged:flags_event(58, 0)];
+    s2a_kb_read(k, &m);
+    expect(!(k[3] & (7UL << 32)) && m == 0, "releasing modifiers clears bitmap and field");
+    [view flagsChanged:flags_event(57, NSEventModifierFlagCapsLock)];
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x39)) && m == (1u << 8), "CapsLock lands on usage 0x39 and the CapsLock field bit");
+    [view flagsChanged:flags_event(57, 0)];
+    s2a_kb_read(k, &m);
+    expect(!(k[0] & (1UL << 0x39)) && m == 0, "CapsLock release clears both");
+    focused = NO; sample_input();
+    s2a_kb_read(k, &m);
+    expect(!k[0] && !k[1] && !k[2] && !k[3] && m == 0, "unfocused publishes an all-zero bitmap");
+    focused = YES; sample_input();
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x29)) && (k[1] & (1UL << (0x58 - 64))), "refocus re-publishes held keys, like pads");
+    [view keyDown:key_event(NSEventTypeKeyDown, 6, NO)];   // Z
+    physical_keys[6] = YES;   // 粘键核对的 is_down 桩：Z 还按着，先不清
+    poll_stale();
+    s2a_kb_read(k, &m);
+    expect((k[0] & (1UL << 0x1D)), "Z lands on usage 0x1D while the system still reports it held");
+    physical_keys[6] = NO; poll_stale();   // 系统报松开满防抖次数 → 删键（keyUp 被别的响应者吃掉的兜底），位图跟着清
+    s2a_kb_read(k, &m);
+    expect(!(k[0] & (1UL << 0x1D)), "stale-key reconciliation clears the bitmap without a keyUp");
+    reset_input();
+    s2a_kb_read(k, &m);
+    expect(!k[0] && !k[1] && !k[2] && !k[3] && m == 0, "reset clears the keyboard bitmap");
+    puts("Mac keyboard: HID usage bitmap, modifiers, caps, focus and reconciliation passed");
+}
 static void test_mouse_lost_release(void) {
     config = default_config(); reset_input(); focused = YES;
     read_key_state = key_state; read_mouse_buttons = mouse_buttons_state;
@@ -990,6 +1055,7 @@ int main(int argc, const char **argv) {
         test_focus_suspend();
         test_untrusted_key_state();
         test_modifier_false_release();
+        test_keyboard_hid();
         test_mouse_lost_release();
         test_mouse_touch();
         test_mouse_touch_declared();
