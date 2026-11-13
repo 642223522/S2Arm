@@ -643,7 +643,7 @@ static void audio_category_apply(void) {
     // iOS 27 场景生命周期（27.1 SDK 对链接新 SDK 的 App 强制 UIScene；没有场景代理 UIKit 会在
     // _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption 启动即崩）：窗口 / 根视图 / 虚拟手柄挪到
     // S2ASceneDelegate 的 scene:willConnectToSession 里建（见下）。这里只留 App 级的电量 / 前后台 / 心跳 / 热。
-    // 测试层契约第 4 节：每分钟一行「[电] 电量 <N>%，<充电中|已充满|未充电>」（拔电时电量闸 / 局中停局用）
+    // 测试层契约第 4 节：每分钟一行「[电] 电量 <N>%，<充电中|已充满|未充电>」（只是读数：能耗记录用；11-13 起不再据此挡局）
     audio_category_apply();
     { void s2a_diag_boot(void); s2a_diag_boot(); }   // 导出诊断包（diag.m）：订阅 MetricKit、设置页开关回前台时检查
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
@@ -1209,4 +1209,7 @@ double dm_brightness_now(void) { return g_brightness; }
 int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
 // 界面语言（runtime/include/s2a_ui_text.h，#316）：C 层递上来的提示 / 横幅按它取中文原宏或 _EN；判据同 S2AL 字符串表（ios/s2a_l10n.h）。盖过各 .c 的弱缺省
 int s2a_ui_zh(void) { return s2a_l10n_zh(); }
+// 游戏语言缺省跟宿主界面语言（维护者 11-13）：进程一起来就把界面实际显示的语言（zh-Hans / zh-Hant / en）交给服务层（S2A_UI_LANGUAGE → Host.cs PickLanguage →
+//   SystemLocale.FromUi）。构造期写：此时只有主线程、服务层还没读环境；已给的（开发 / 判定局）不覆盖。玩家在启动设置里单独指定的语言走 S2A_SYSTEM_LANGUAGE，优先于它
+__attribute__((constructor)) static void s2a_ui_language_env(void) { @autoreleasepool { setenv("S2A_UI_LANGUAGE", s2a_l10n_lang().UTF8String, 0); } }
 int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0; }

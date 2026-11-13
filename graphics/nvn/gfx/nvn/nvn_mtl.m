@@ -2901,20 +2901,20 @@ static void bc_note(uint32_t f, const char *where) {   // the first decode of ea
     static _Atomic uint32_t seen; uint32_t bit = f >= 0x41 && f <= 0x50 ? 1u << (f - 0x41) : 0;
     if (bit && !(atomic_fetch_or(&seen, bit) & bit)) MLOG("no BC: first texture in NVN format %#x decoded (%s)", f, where);
 }
-// No BC: BC1–5 are decompressed on the GPU (A16 logs in MacNativeGames: CPU deswizzle + CPU decompression took over 300 ms in one frame). Ported from MacNativeGames (MIT, commit 84eebcd0985c,
+// No BC: BC1–5, BC6H and BC7 are decompressed on the GPU (A16 logs in MacNativeGames: CPU deswizzle + CPU decompression took over 300 ms in one frame). Ported from MacNativeGames (MIT, commit 84eebcd0985c,
 // nvn_mtl.m k_bcd_msl / bcd_fmt / bcd_pso / up_dec): the GPU deswizzle writes the compressed blocks into the staging area; at flush the kernel bcd decodes them into the texture, one thread per block,
-// through a 2D view in the decompressed format (an sRGB texture is written with its raw values through an RGBA8Unorm view). BC6H / BC7 / 3D textures stay on the CPU (nvn_bcdec.c).
-// The kernel decodes in float like the hardware does, so a texel may differ from bcdec by one level (t_bcd_gpu measures it)
+// through a 2D view in the decompressed format (an sRGB texture is written with its raw values through an RGBA8Unorm view). 3D textures stay on the CPU (nvn_bcdec.c).
+// The kernel decodes BC1–5 in float like the hardware does, so a texel may differ from bcdec by one level; BC7 and BC6H are integer and equal bcdec (S2Arm #582; t_bcd_gpu measures all)
 #include "../tex/nvn_bcd_msl.h"   // k_bcd_msl: the kernel bcd (one header shared with graphics/nvn/tests/t_bcd_gpu.m)
-static int bcd_fmt(uint32_t f) {   // NVN format → the kernel's fmt; 0 = not decoded on the GPU (BC6H / BC7 / not BC)
+static int bcd_fmt(uint32_t f) {   // NVN format → the kernel's fmt; 0 = not decoded on the GPU (not BC)
     switch (f) { case 0x41: case 0x42: case 0x45: case 0x46: return 1; case 0x43: case 0x47: return 2; case 0x44: case 0x48: return 3;
-                 case 0x49: return 4; case 0x4a: return 5; case 0x4b: return 6; case 0x4c: return 7; default: return 0; }
+                 case 0x49: return 4; case 0x4a: return 5; case 0x4b: return 6; case 0x4c: return 7; case 0x4d: case 0x4e: return 8; case 0x50: return 9; case 0x4f: return 10; default: return 0; }
 }
 static id<MTLComputePipelineState> bcd_pso(void) {
     static id<MTLComputePipelineState> ps; static int failed;
     if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bcd_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd"] : nil;
         ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
-        if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–5 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–5 are decompressed on the GPU"); }
+        if (!ps) { failed = 1; MLOG("【红】 no BC: the GPU decompression pipeline cannot be built (%s); BC1–7 fall back to the CPU", e.localizedDescription.UTF8String); } else MLOG("no BC: BC1–7 are decompressed on the GPU"); }
     return ps;
 }
 // GPU decompression applies (the texture is made shader-writable with format views; the upload still needs pool-backed storage, otherwise it decodes on the CPU)
@@ -3432,7 +3432,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // a cube array's depth counts layer-faces (tex_desc)
     uint32_t upf; int ubpp = 0, unp = fmt_unpack(t->d.format, &upf, &ubpp);   // stored in another format (fmt_unpack: BC on a GPU without BC, or expanded): deswizzle, then convert on the CPU; the staging area is sized for the converted data
-    int gdec = unp && bc_gpu_dec(t);   // no BC, BC1–5: GPU deswizzle + GPU decompression (bcd); the staging area then holds the compressed blocks (ctotal)
+    int gdec = unp && bc_gpu_dec(t);   // no BC, BC1–7: GPU deswizzle + GPU decompression (bcd); the staging area then holds the compressed blocks (ctotal)
     size_t total = 0, ctotal = 0;
     for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -3946,9 +3946,13 @@ static uint32_t tex_fold_pitch(const tex_t *t) { int bw, bh, bpb = nvn_fmt_bpb(t
 //   或行距放不下一行 Metal 像素（上古卷轴5 A19：bytesPerRow 3840 < 5120，Metal 断言 abort）。原先前者退成私有贴图、只在建时从存储填一次，之后 CPU 写的全看不到；
 //   后者直接建视图触发断言。现在这类只读线性贴图（不是线性渲染目标）在 tex_mtl_ 并进 CPU 写过的贴图那条路（打包上传：从客体内存上传、脏页重传，去混排按行距逐行拷）
 // 线性贴图对齐：本机 Metal 的要求，诊断 DM_NVN_LINEAR_ALIGN=<字节> 抬高（Mac 上模拟 iPhone 的 64 字节做对照，只用于 A/B）
-static NSUInteger linear_align(uint32_t pf) {
+static NSUInteger linear_align(uint32_t pf) {   // asked per texture buffer binding and draw (#798): one Metal query per pixel format
     static long ov = -1; if (ov < 0) { const char *e = getenv("DM_NVN_LINEAR_ALIGN"); ov = e ? atol(e) : 0; }
-    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]; return ov > (long)al ? (NSUInteger)ov : al;
+    static _Atomic uint32_t cache[1024];
+    if (pf < 1024) { uint32_t c = atomic_load_explicit(&cache[pf], memory_order_relaxed); if (c) return c; }
+    NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf]; al = ov > (long)al ? (NSUInteger)ov : al;
+    if (pf < 1024 && al && al < UINT32_MAX) atomic_store_explicit(&cache[pf], (uint32_t)al, memory_order_relaxed);
+    return al;
 }
 static int tex_linear_needs_upload(const tex_t *t) {
     static int off = -1; if (off < 0) { const char *e = getenv("DM_NVN_LINEAR_UPLOAD"); off = e && !strcmp(e, "0"); }   // 诊断：=0 退回旧行为（私有贴图、只填一次），只用于 A/B
@@ -4450,13 +4454,11 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (!t->mem || !nvn_be_addr((uint64_t)t->mem, (uint64_t)t->d.width * bpb, &mb, &mo)) { RED_ONCE(37, "buffer texture storage is not in a memory pool"); return nil; }
         id<MTLBuffer> b = (__bridge id<MTLBuffer>)mb;
         NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
-        // Metal reports a 16-byte alignment for texture buffer views (minimumTextureBufferAlignmentForPixelFormat), but on an Apple GPU a view at any offset that is a multiple of the element
-        // size reads the right elements (measured on an M6: R32Float views at offsets 4, 8 and 12, all 64 elements right). Unreal puts some buffer textures at 8-byte offsets in its pools
-        // (Octopath Traveler 0: offset 0x168), which used to be left as dummies. Below the element size the view stays a dummy
-        if (mo % al) {
-            if (mo % (uint64_t)bpb) { RED_ONCE(38, "buffer texture offset %#llx not aligned to its %d-byte elements", (unsigned long long)mo, bpb); return nil; }
-            static int once; if (!once++) MLOG("buffer texture at pool offset %#llx, below Metal's reported %lu-byte alignment: created there (element-aligned views read correctly on Apple GPUs)", (unsigned long long)mo, (unsigned long)al);
-        }
+        // Below Metal's linear-texture alignment (16 bytes on a Mac, 64 on an iPhone) a view reads from its offset rounded down: an R32Float view at offset 4 / 8 / 12 reads every element
+        //   1 / 2 / 3 places late (#798, measured on an M5 Max in the compute and vertex stages, 64 to 300 000 elements). Unreal puts buffer textures at 8-byte offsets in its pools
+        //   (one game's at 0x168; another's per-frame particle data, so only the frames whose allocation was misaligned drew stretched sprites). The view is still made here:
+        //   it names the bytes, and the binding reads them through an aligned copy made on the GPU before the draw (tba_copy / tbuf_bind_aligned). Below the element size it stays a dummy
+        if (mo % al && mo % (uint64_t)bpb) { RED_ONCE(38, "buffer texture offset %#llx not aligned to its %d-byte elements", (unsigned long long)mo, bpb); return nil; }
         MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:(MTLPixelFormat)pf width:t->d.width resourceOptions:b.resourceOptions
                                                                                          usage:MTLTextureUsageShaderRead | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)];
         size_t row = ((size_t)t->d.width * bpb + al - 1) / al * al;
@@ -6509,12 +6511,12 @@ static id<MTLBuffer> arena_find(const uint8_t *p, NSUInteger *off, NSUInteger *l
 //   the slot read 0 again, the same flicker). Before a draw / dispatch that reads such a buffer texture as 2D rows, tba_prepare ends the open render pass and has the GPU copy
 //   the bytes into the frame arena (256-byte aligned), after every earlier GPU write in queue order; the view is made on the copy. A copy holds until the next buffer write outside
 //   a render pass or the next submission (g_wr_epoch / g_arena_gen, as the indirect-draw conversions)
-typedef struct { uint64_t ser, off; MTLPixelFormat pf; __unsafe_unretained id<MTLBuffer> src; __strong id<MTLBuffer> buf; size_t boff, len; } tba_ent;
+typedef struct { uint64_t ser, off; MTLPixelFormat pf; __unsafe_unretained id<MTLBuffer> src; __strong id<MTLBuffer> buf; size_t boff, len; __strong id<MTLTexture> v1; uint64_t v1rid; } tba_ent;   // v1: the 1D texture-buffer view on the copy (tbuf_bind_aligned), made once
 enum { TBA_MAX = 32 };
 static tba_ent g_tba[TBA_MAX]; static int g_tba_n; static uint64_t g_tba_epoch, g_tba_sub, g_tba_copies, g_tba_bytes, g_tba_splits;
 static void tba_valid(void) {
     if (g_tba_epoch == g_wr_epoch && g_tba_sub == g_arena_gen) return;
-    for (int i = 0; i < g_tba_n; i++) g_tba[i].buf = nil;
+    for (int i = 0; i < g_tba_n; i++) { g_tba[i].buf = nil; if (g_tba[i].v1) { defer_obj_release(g_tba[i].v1); g_tba[i].v1 = nil; } }
     g_tba_n = 0; g_tba_epoch = g_wr_epoch; g_tba_sub = g_arena_gen;
 }
 static const tba_ent *tba_find(uint64_t ser, id<MTLTexture> t) {
@@ -6560,6 +6562,23 @@ static id<MTLTexture> tbuf_rows_shadow(int tid, id<MTLTexture> t, const tex_t *t
     defer_obj_release(v);   // 视图随本次提交释放（副本本身在帧暂存里）
     *rid = v.gpuResourceID._impl; g_tb2_binds++;
     return v;
+}
+// #798: a buffer texture read as a texture buffer (1D) at a pool offset below the linear-texture alignment: the in-place view reads from the offset rounded down, so it is bound
+//   as a texture buffer over its aligned GPU copy (tba_copy, made before this draw / dispatch by tba_prepare). No copy (the table full) → the in-place view, counted, first case red.
+//   Caller holds g_rmu
+static uint64_t g_tb1_aligned, g_tb1_miss;
+static id<MTLTexture> tbuf_bind_aligned(int tid, id<MTLTexture> t, uint64_t *rid) {
+    if (!t || t.textureType != MTLTextureTypeTextureBuffer || !(t.bufferOffset % linear_align(t.pixelFormat)) || tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) return t;
+    const tex_t *tt = &g_treg[tid].t; tba_ent *ge = (tba_ent *)tba_find(tt->serial, t); int bw, bh, bpb = nvn_fmt_bpb(tt->d.format, &bw, &bh);
+    if (ge && ge->v1) { *rid = ge->v1rid; return ge->v1; }
+    if (ge && bpb) {
+        NSUInteger n = MIN(t.width, ge->len / (NSUInteger)bpb), al = linear_align(t.pixelFormat), row = (n * (NSUInteger)bpb + al - 1) / al * al;
+        MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:t.pixelFormat width:n resourceOptions:ge->buf.resourceOptions usage:MTLTextureUsageShaderRead];
+        id<MTLTexture> v = n ? [ge->buf newTextureWithDescriptor:d offset:ge->boff bytesPerRow:row] : nil;
+        if (v) { ge->v1 = v; ge->v1rid = *rid = v.gpuResourceID._impl; if (!g_tb1_aligned++) MLOG("texture buffer at an unaligned pool offset (%lu, alignment %lu): bound over its aligned GPU copy (texture ID %d, %lu elements; first case)", (unsigned long)t.bufferOffset, (unsigned long)al, tid, (unsigned long)n); return v; }
+    }
+    if (!g_tb1_miss++) MLOG("【红】 texture buffer at an unaligned pool offset (%lu, alignment %lu, texture ID %d) has no aligned copy: bound in place, it reads from the offset rounded down", (unsigned long)t.bufferOffset, (unsigned long)linear_align(t.pixelFormat), tid);
+    return t;
 }
 static id<MTLTexture> tbuf_as_2d(int tid, id<MTLTexture> t, int exact, uint64_t *rid) {
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) return nil;
@@ -10025,6 +10044,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (tv) p20_check(sh, nvn_stage, b, tid, tv);   // audit #1534 P1-20 probe: declared type / class against the texture as registered (before any fitting below)
             if (!t && tid >= 0 && b->kind == NVN_RB_TEX && (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer || (b->f1d && b->dtt == (uint8_t)MTLTextureType2D)))   // buffer textures of an expanded format: expanded copy, as 2D rows for wrapped 1D fetches (see tbuf_expand)
                 t = tbuf_expand(tid, b->dtt != (uint8_t)MTLTextureTypeTextureBuffer ? (b->f1d == 2 ? 2 : 1) : 0, &trid);
+            if (t && b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) t = tbuf_bind_aligned(tid, t, &trid);   // below the linear-texture alignment: its aligned GPU copy (#798)
             // A folded linear texture (tex_linear) holds its texels at other places: only the variant that reads it as folded may see it (se_want sets g_fold_sh); main0 reads 0 there
             if (t && g_fold_any && fold_tex_tid(b, nvn_stage) >= 0 && (nvn_stage < 0 || nvn_stage > 5 || g_fold_sh[nvn_stage] != sh)) t = nil;
             __unsafe_unretained id<MTLTexture> size_view = t;
@@ -10092,6 +10112,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (bl) PD("B %llu st%d tbuf reg%d tid=%d %s ser=%llu fmt=%#x n=%u mem=%p", g_stat_pass, nvn_stage, reg, tid, t ? "real" : "dummy", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        tid < g_ntreg ? g_treg[tid].t.d.format : 0, tid < g_ntreg ? g_treg[tid].t.d.width : 0, tid < g_ntreg ? (void *)g_treg[tid].t.mem : NULL);
             if (!t) t = tbuf_expand(tid, 0, &trid);   // buffer textures of an expanded format: expanded copy (see tbuf_expand)
+            else t = tbuf_bind_aligned(tid, t, &trid);   // below the linear-texture alignment: its aligned GPU copy (#798)
             if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
@@ -10103,6 +10124,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) {
                     if (t && t.textureType != MTLTextureTypeTextureBuffer) t = nil;   // a slot the shader does not pick here may hold another kind of texture
                     if (!t) t = tbuf_expand(tid, 0, &trid);   // buffer textures of an expanded format: expanded copy (see tbuf_expand)
+                    else t = tbuf_bind_aligned(tid, t, &trid);   // below the linear-texture alignment: its aligned GPU copy (#798)
                     if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
                 } else {
                     if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }
@@ -10408,18 +10430,19 @@ static int g_defer_ab = -1, g_defer_ab_on;
 // One buffer texture (texture ID tid, read as 2D rows; exact: the wrapped 1D fetch's exact form) at an offset the linear-texture alignment refuses and with no GPU copy yet: ends
 //   the open render pass and has the GPU copy the bytes the 2D-row view reads into the frame arena now (see tba_ent). Returns 1 when it made a copy. Leaves the copy encoder open
 //   (the caller ends it once, after all of a draw's copies)
-static int tba_copy(int tid, int exact) {
+static int tba_copy(int tid, int exact) {   // exact < 0: read as a texture buffer (1D), the copy is its elements (#798)
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok || g_tba_n >= TBA_MAX) return 0;
     void *tv = NULL; (void)tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
     if (!t || t.textureType != MTLTextureTypeTextureBuffer || !t.buffer || !(t.bufferOffset % linear_align(t.pixelFormat))) return 0;
-    const tex_t *tt = &g_treg[tid].t; uint32_t w, h, row;
-    if (!tbuf_geom(tt, t, exact, &w, &h, &row) || tba_find(tt->serial, t)) return 0;
-    uint64_t avail = t.buffer.length > t.bufferOffset ? t.buffer.length - t.bufferOffset : 0, want = (uint64_t)row * h; size_t len = (size_t)(want < avail ? want : avail);
+    const tex_t *tt = &g_treg[tid].t; uint32_t w, h, row; int bw, bh, bpb = nvn_fmt_bpb(tt->d.format, &bw, &bh);
+    if ((exact < 0 ? !bpb : !tbuf_geom(tt, t, exact, &w, &h, &row)) || tba_find(tt->serial, t)) return 0;
+    uint64_t avail = t.buffer.length > t.bufferOffset ? t.buffer.length - t.bufferOffset : 0, want = exact < 0 ? (uint64_t)t.width * (uint64_t)bpb : (uint64_t)row * h;
+    size_t len = (size_t)(want < avail ? want : avail);
     if (!len) return 0;
     if (g_enc) { g_tba_splits++; PD("M %llu texture buffer aligned copy on the GPU: render pass split here", g_stat_pass); rp_end(); }
     id<MTLBuffer> ab = nil; size_t off = arena_alloc(len, &ab); if (!ab) return 0;
     enc_b_copy_buffer(blit(), t.buffer, t.bufferOffset, ab, off, len);
-    g_tba[g_tba_n++] = (tba_ent){tt->serial, t.bufferOffset, t.pixelFormat, t.buffer, ab, off, len};
+    g_tba[g_tba_n++] = (tba_ent){tt->serial, t.bufferOffset, t.pixelFormat, t.buffer, ab, off, len, nil, 0};
     g_tba_copies++; g_tba_bytes += len;
     if (g_tba_copies == 1 || g_tba_copies == 100 || g_tba_copies % 100000 == 0) MLOG("texture buffer at an unaligned pool offset (%lu, texture ID %d): copied on the GPU into the frame arena before use (%lu bytes; %llu copies so far)",
         (unsigned long)t.bufferOffset, tid, (unsigned long)len, (unsigned long long)g_tba_copies);
@@ -10431,6 +10454,11 @@ static void tba_prepare(NvShader *x0, NvShader *x1, NvShader *x2, NvShader *x3, 
     NvShader *sh[5] = {x0, x1, x2, x3, x4}; int made = 0;
     for (int k = 0; k < 5; k++) { NvShader *x = sh[k]; if (!x) continue; int stage = compute ? 5 : k;
         for (int i = 0; i < x->rf.nb; i++) { const nvn_rbind *b = &x->rf.b[i];
+            if (b->kind == NVN_RB_TBUF || b->kind == NVN_RB_TBUFU || (b->kind == NVN_RB_TEX && (MTLTextureType)b->dtt == MTLTextureTypeTextureBuffer)) {   // read as a texture buffer (#798)
+                made |= tba_copy(b->kind == NVN_RB_TBUFU ? ubo_tex_id(ubo_packed(stage, b)) : (int)(tex_slot_h(S.tex[stage], S.img[stage], b->reg) & 0xfffff), -1); continue; }
+            if (b->kind == NVN_RB_TEXD && (MTLTextureType)b->dtt == MTLTextureTypeTextureBuffer) {   // a dynamic handle array of texture buffers: each element as the binding resolves it
+                for (int k = 0; k < b->n && k < 128; k++) { uint64_t hk = S.tex[stage][k] ? S.tex[stage][k] : S.tex[stage][NVN_SEPTEX_SLOT0 + k]; made |= tba_copy((int)(hk & 0xfffff), -1); }
+                continue; }
             if (b->kind != NVN_RB_TEX || !b->f1d || (MTLTextureType)b->dtt != MTLTextureType2D) continue;
             made |= tba_copy((int)(tex_slot_h(S.tex[stage], S.img[stage], b->reg) & 0xfffff), b->f1d == 2); } }
     if (made && g_blit) { enc_b_end(g_blit); g_blit = nil; }   // the copies end their encoder: the next pass / dispatch begins with its barrier after them
