@@ -186,11 +186,12 @@ namespace S2A.Services
         private static bool SlotStylesChanged(Switch device, ControllerType styles)
         {
             if (_slotStyle == null || _pads <= 1 || _type == ControllerType.Handheld) return false;
+            // 不用 SlotPick 的委托：lambda 捕获参数时方法一进来就分配闭包（每 250 ms 一次，空闲底噪单测零分配那项红），这里展开成同一判断
             for (int i = 0; i < _pads; i++)
             {
                 ControllerType physical = (ControllerType)_slotStyle(i);
-                ControllerType want = SlotPick(physical, _slotTypes[i], t => device.Hid.Npads.StyleSupported(t, styles));
-                if (want != _slotTypes[i] && physical is ControllerType.JoyconLeft or ControllerType.JoyconRight) return true;
+                if (physical is not (ControllerType.JoyconLeft or ControllerType.JoyconRight)) continue;
+                if (physical != _slotTypes[i] && device.Hid.Npads.StyleSupported(physical, styles)) return true;
             }
             return false;
         }

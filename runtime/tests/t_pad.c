@@ -331,6 +331,14 @@ int main(void) {
         uint8_t r30[49] = {0x30, 0x00, 0x8e, 0x08 | 0x10, 0x00, 0x00, 0x00, 0x08, 0x80, 0xff, 0x0f, 0x80};   // 右只：A + SR；右摇杆 x 满
         assert(s2a_joycon1_decode(0x2007, r30, sizeof r30, &b, st, &side));
         assert(side == S2A_JC1_SIDE_SR && (b & 1u) && (b & (1u << 7)) && st[2] > 30000);
+        // 摇杆方向（s2a_pad.h 上为正；一代原始值往上变大）：左只 / Pro / 右只把 y 推满 0xfff → 正；负对照 y = 0 → 负
+        uint8_t lup[49] = {0x30, 0x00, 0x8e, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xff, 0x00, 0x08, 0x80};   // 左摇杆 x 居中、y 满
+        assert(s2a_joycon1_decode(0x2006, lup, sizeof lup, &b, st, &side) && st[1] > 30000);
+        assert(s2a_joycon1_decode(0x2009, lup, sizeof lup, &b, st, &side) && st[1] > 30000);
+        uint8_t rup[49] = {0x30, 0x00, 0x8e, 0x00, 0x00, 0x00, 0x00, 0x08, 0x80, 0x00, 0xf8, 0xff};   // 右摇杆 x 居中、y 满
+        assert(s2a_joycon1_decode(0x2007, rup, sizeof rup, &b, st, &side) && st[3] > 30000);
+        uint8_t ldn[49] = {0x30, 0x00, 0x8e, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x08, 0x80};   // 左摇杆 y = 0
+        assert(s2a_joycon1_decode(0x2006, ldn, sizeof ldn, &b, st, &side) && st[1] < -30000);
         uint8_t l3f[12] = {0x3f, 0x30, 0x00};   // 简单报告：SL + SR
         assert(s2a_joycon1_decode(0x2006, l3f, sizeof l3f, &b, st, &side) && side == (S2A_JC1_SIDE_SL | S2A_JC1_SIDE_SR));
         uint8_t pro[49] = {0x30, 0x00, 0x8e, 0x40, 0x00, 0x40};   // Pro：L + R 同按

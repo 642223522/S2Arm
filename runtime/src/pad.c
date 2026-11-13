@@ -351,7 +351,7 @@ int s2a_joycon1_decode(int pid, const uint8_t *report, size_t length, uint32_t *
         if (b[2] & 0x01) out |= JC1_DD; if (b[2] & 0x02) out |= JC1_DU; if (b[2] & 0x04) out |= JC1_DR; if (b[2] & 0x08) out |= JC1_DL;
         if (b[2] & 0x40) out |= JC1_L; if (b[2] & 0x80) out |= JC1_ZL;
         if ((b[0] & 0x40) && (b[2] & 0x40)) *side |= S2A_JC1_SIDE_SHOULDER;
-        sticks[0] = jc1_axis(lx); sticks[1] = -jc1_axis(ly); sticks[2] = jc1_axis(rx); sticks[3] = -jc1_axis(ry);
+        sticks[0] = jc1_axis(lx); sticks[1] = jc1_axis(ly); sticks[2] = jc1_axis(rx); sticks[3] = jc1_axis(ry);   // 原始值往上变大，s2a_pad.h 约定上为正：不取反（同 NS2Transport.m calibrated_axis）
     } else if (pid == 0x2006) {   // 左只横握：十字键当 ABXY（下 A、右 B、上 X、左 Y），SL / SR 当 L / R
         if (b[2] & 0x01) out |= JC1_E; if (b[2] & 0x04) out |= JC1_S; if (b[2] & 0x02) out |= JC1_N; if (b[2] & 0x08) out |= JC1_W;
         if (b[2] & 0x40) { out |= JC1_L; *side |= S2A_JC1_SIDE_SHOULDER; }
@@ -359,7 +359,7 @@ int s2a_joycon1_decode(int pid, const uint8_t *report, size_t length, uint32_t *
         if (b[2] & 0x20) { out |= JC1_L; *side |= S2A_JC1_SIDE_SL; }
         if (b[2] & 0x10) { out |= JC1_R; *side |= S2A_JC1_SIDE_SR; }
         if (b[1] & 0x01) out |= JC1_MINUS; if (b[1] & 0x08) out |= JC1_LS; if (b[1] & 0x20) out |= JC1_PLUS;   // Capture 当 +（单只没有 +）
-        sticks[0] = jc1_axis(lx); sticks[1] = -jc1_axis(ly);
+        sticks[0] = jc1_axis(lx); sticks[1] = jc1_axis(ly);
     } else if (pid == 0x2007) {   // 右只：面键照原样（横握由游戏 HoldType 解释），SL / SR 当 L / R
         if (b[0] & 0x08) out |= JC1_E; if (b[0] & 0x04) out |= JC1_S; if (b[0] & 0x02) out |= JC1_N; if (b[0] & 0x01) out |= JC1_W;
         if (b[0] & 0x40) { out |= JC1_R; *side |= S2A_JC1_SIDE_SHOULDER; }
