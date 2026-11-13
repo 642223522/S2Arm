@@ -1790,7 +1790,6 @@
   "s2arm.players.now": "Playing now",
   "s2arm.players.name": "Name",
   "s2arm.players.error.empty": "Enter a name.",
-  "s2arm.players.error.long": "Use {0} characters or fewer.",
   "s2arm.players.error.taken": "That name is already taken.",
   "s2arm.play.again": "Start again",
   "s2arm.play.crashed": "Quit while running",

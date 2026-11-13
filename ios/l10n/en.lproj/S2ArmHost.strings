@@ -11,7 +11,7 @@
 "cheats.import" = "Import .txt";
 "cheats.import.badItem" = "%@ (%@)";
 "cheats.import.failed" = "Some files weren’t imported";
-"cheats.import.failed.message" = "%@\n\nNot Atmosphere-format cheat text (needs an [entry name] and code lines).";
+"cheats.import.failed.message" = "%@";
 "cheats.status.active" = "Active";
 "cheats.status.addressNotReady" = "Address not ready";
 "cheats.status.badFormat" = "Invalid format";
@@ -121,7 +121,6 @@
 "vpad.layout.err.buttonCount" = "All 14 buttons are required; LS/RS may be added";
 "vpad.layout.err.buttonFields" = "Invalid button fields, ranges or IDs; IDs must be unique";
 "vpad.layout.err.buttonMissing" = "Required buttons are missing";
-"vpad.layout.err.exists" = "A layout with this id already exists. Change the id in the JSON first; the existing layout was not overwritten.";
 "vpad.layout.err.file" = "A layout must be a regular JSON file of 64 KiB or less";
 "vpad.layout.err.fileName" = "The file name must match the layout id";
 "vpad.layout.err.id" = "Invalid layout id";
@@ -130,11 +129,9 @@
 "vpad.layout.err.pickFile" = "Choose a regular JSON file of 64 KiB or less";
 "vpad.layout.err.schema" = "Invalid layout version or top-level fields (schemaVersion 1 required)";
 "vpad.layout.err.sensitivity" = "Sensitivity must be 0.5–2";
-"vpad.layout.err.size" = "Layout files can’t be larger than 64 KiB";
 "vpad.layout.err.stickCount" = "Both left and right floating sticks are required";
 "vpad.layout.err.stickFields" = "Invalid stick fields, area or radius";
 "vpad.layout.err.stickOffscreen" = "Stick position is off screen";
-"vpad.layout.err.stickOverlap" = "Left and right stick areas can’t overlap";
 "vpad.layout.err.stickValues" = "Dead zone must be 0–0.4, outer saturation 0.5–1, response exponent 0.5–3";
 "vpad.layout.err.theme" = "No such color";
 "vpad.layout.error" = "%@: %@";
@@ -452,7 +449,8 @@
 "settings.toggle.metalHud" = "Show Metal performance HUD";
 "settings.toggle.phoneHaptics" = "Phone haptics";
 "settings.toggle.touchHud" = "Touch diagnostics";
-"settings.widen.blocked" = "Full screen has known issues in this game and can’t be turned on yet";
+"settings.widen.blocked" = "Full screen has known issues in this game; you can still turn it on";
+"settings.widen.blocked.message" = "Takes effect the next time you start the game. If the picture stretches or gets cut off, the game falls back to 16:9 by itself, or turn this off again.";
 "textinput.header" = "Enter Text";
 "textinput.min" = "At least %ld characters";
 "textinput.ok" = "OK";
