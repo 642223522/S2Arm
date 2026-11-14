@@ -233,6 +233,19 @@ class LogReason(unittest.TestCase):
 
 
 class Product(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'UNC product behavior is Windows-only')
+    def test_unc_product_source_is_copied_not_junctioned(self):
+        import _winapi
+        with tempfile.TemporaryDirectory() as t:
+            dst = Path(t) / 'product'
+            src = r'\\server\share\games\title\roots'
+            with patch.object(oneclick_win, 'WIN', True), \
+                 patch.object(_winapi, 'CreateJunction') as create, \
+                 patch.object(oneclick_win.shutil, 'copytree') as copytree:
+                oneclick_win.junction(dst, src)
+            create.assert_not_called()
+            copytree.assert_called_once_with(src, dst)
+
     def test_links_not_copies(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t); cur = t / 'ver'; (cur / 'romfs').mkdir(parents=True)
