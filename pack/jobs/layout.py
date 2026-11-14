@@ -449,9 +449,10 @@ def hide(path):
         return
     try:
         import ctypes
-        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        import winproc
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(winproc.win_path(str(path)))   # 游戏库在深目录时裸长路径会 WinError 3 / 123
         if attrs != -1 and attrs != 0xFFFFFFFF:
-            ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs | 0x2)   # FILE_ATTRIBUTE_HIDDEN
+            ctypes.windll.kernel32.SetFileAttributesW(winproc.win_path(str(path)), attrs | 0x2)   # FILE_ATTRIBUTE_HIDDEN
     except (OSError, AttributeError):
         pass
 
