@@ -269,13 +269,13 @@ static void t_unimpl_names(void) {   // 没接的命令按命令名报出并计�
     end(&a);
     submit1(&a); fake_complete(NVN_GPU_DONE_OK);
     CHECK(nvn_unimpl_count("op", "OP_DRAW_TEX") == 1);
-    CHECK(nvn_unimpl_count("op", "OP_MULTI_DRAW") == 2);
+    CHECK(nvn_unimpl_count("op", "OP_MULTI_DRAW") == 0 && nvn_unimpl_count("draw", "multi_draw_invalid") == 2);   // 已接：空记录（max 0）按非法报名
     CHECK(nvn_unimpl_count("op", "OP_DLSS") == 1);
     CHECK(nvn_unimpl_count("op", "OP_ALPHA_REF") == 0);
     CHECK(nvn_unimpl_kinds() == 3);
     CHECK(g_red_lines - red0 == 3);   // 每种只在首次出现打一行
     char buf[256]; nvn_unimpl_dump(buf, sizeof buf);
-    CHECK(!strcmp(buf, "op\tOP_DRAW_TEX\t1\nop\tOP_MULTI_DRAW\t2\nop\tOP_DLSS\t1\n"));
+    CHECK(!strcmp(buf, "op\tOP_DRAW_TEX\t1\ndraw\tmulti_draw_invalid\t2\nop\tOP_DLSS\t1\n"));
     CHECK(rp_S.alpha_ref == 0.25f);
 }
 
@@ -2420,7 +2420,8 @@ static void t_draw_mdi(void) {
     uint64_t base = (uint64_t)(uintptr_t)g_pmem, cnt = base + 5 * PG, ind = base + 4 * PG;
     int d0 = g_gdraws; uint64_t gu0 = nvn_unimpl_count("draw", "indirect_count_group_unavailable");
     g_caps_extra = NVN_GPU_CAP_INDIRECT_COUNT;
-    stream s = {0};
+    tex_t rtt = mk_tex(91, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0);   // 渲染目标不跨提交保留：每段自己设
+    stream s = {0}; put_set_rt(&s, &rtt, NULL);
     for (int i = 0; i < 3; i++) {
         p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
@@ -2430,7 +2431,7 @@ static void t_draw_mdi(void) {
     CHECK(g_last_da.cnt_off == 5 * PG && g_last_da.ind_off == 4 * PG);
     CHECK(nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0);   // 同组后两条认出来、不报名
     // 组断了：序号 0 后直接是 2 → 第 0 条单独一组（max 1），序号 2 报名跳过
-    stream t = {0};
+    stream t = {0}; put_set_rt(&t, &rtt, NULL);
     for (int i = 0; i < 3; i += 2) {
         p_draw_idx *di = put(&t, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
@@ -2438,14 +2439,14 @@ static void t_draw_mdi(void) {
     end(&t); submit1(&t); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 2 && g_last_da.max_draws == 1 && nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0 + 1);
     // 超过 1,024 条的一次调用：一条 OP_MULTI_DRAW
-    stream m = {0}; p_multi_draw *md = put(&m, OP_MULTI_DRAW, sizeof *md);
+    stream m = {0}; put_set_rt(&m, &rtt, NULL); p_multi_draw *md = put(&m, OP_MULTI_DRAW, sizeof *md);
     md->ind = ind; md->cnt = cnt; md->ibuf = base + 3 * PG; md->stride = 20; md->max = 100; md->prim = 4; md->itype = 1;
     end(&m); submit1(&m); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 3 && g_last_da.max_draws == 100 && g_last_da.stride == 20 && g_last_da.cnt != NULL);
     // 设备没开：整组跳过、报名一次，不交给后端（交了后端整段判失败）
     g_caps_extra = 0;
     uint64_t nd0 = nvn_unimpl_count("draw", "indirect_count_no_device_support");
-    stream n = {0};
+    stream n = {0}; put_set_rt(&n, &rtt, NULL);
     for (int i = 0; i < 3; i++) {
         p_draw_idx *di = put(&n, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
