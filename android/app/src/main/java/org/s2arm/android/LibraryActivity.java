@@ -64,7 +64,8 @@ public final class LibraryActivity extends Activity {
             startActivity(GameActivity.launch(this, options, titleId));
         } catch (java.io.IOException | BootContract.BadGame | RuntimeException error) {
             status.setTextColor(0xFFFF5252);
-            status.setText("Game launch refused: " + error.getMessage());
+            android.util.Log.i("S2Arm", "Game launch refused: " + error.getMessage());
+            status.setText(PlayerError.text(this, R.string.player_err_start, error));
         }
     }
 
