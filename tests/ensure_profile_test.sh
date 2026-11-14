@@ -24,6 +24,14 @@ ck "② 别的签名错误 → 退 ${r}（期望 1）、不出平台组件行" '
 printf '#!/bin/bash\necho "error: Cannot create a iOS App Development provisioning profile for \"com.example.t1\". Personal development teams, including \"T\", do not support the Extended Virtual Addressing capability."\necho "error: No profiles for '"'"'com.example.t1'"'"' were found: Xcode couldn'"'"'t find any iOS App Development provisioning profiles matching '"'"'com.example.t1'"'"'."\nexit 65\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
 o=$(run); r=$?
 ck "⑥ 免费团队不支持的权限 → 退 ${r}（期望 1）、红行带第一条原因" '[ $r = 1 ] && grep -q "【红】申请 com.example.t1 的开发描述文件失败（error: Cannot create.*Personal development teams" <<< "$o"'
+# ⑦ 诊断#a32ff2：真机目的地用不了，xcodebuild 先打「Unable to find a destination …」、再逐台列带 error 的设备 → 退 1、单列一行这台为什么用不了（期望手写：开发者模式没开）；
+#   没有带 error 的设备条目 → 不出这行
+printf '#!/bin/bash\necho "xcodebuild: error: Unable to find a destination matching the provided destination specifier:"\necho "		{ platform:iOS, id:U1 }"\necho "	Ineligible destinations for the \\"Prov\\" scheme:"\necho "		{ platform:iOS, arch:arm64, id:U1, name:iPhone, error:Developer Mode disabled To use iPhone for development, enable Developer Mode in Settings. }"\nexit 70\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
+o=$(run); r=$?
+ck "⑦ 目的设备用不了 → 退 ${r}（期望 1）、单列原因「Developer Mode disabled」" '[ $r = 1 ] && grep -q "【红】这台 iPhone 现在用不了（Xcode 原话：Developer Mode disabled To use iPhone for development, enable Developer Mode in Settings.）" <<< "$o"'
+fake 'xcodebuild: error: Unable to find a destination matching the provided destination specifier:'
+o=$(run); r=$?
+ck "⑦b 没有带 error 的设备条目 → 退 ${r}（期望 1）、不出这行" '[ $r = 1 ] && ! grep -q "这台 iPhone 现在用不了" <<< "$o"'
 P=$T/prof; mkdir -p "$P"; pl() { printf '<plist><dict><key>application-identifier</key><string>%s</string><key>ProvisionedDevices</key><array>%s</array></dict></plist>\n' "$1" "$2"; }
 pl TEAM123.com.example.t1 '<string>U1</string>' > "$P/old.mobileprovision"; pl TEAM123.com.example.t1 '<string>U1</string><string>U2</string>' > "$P/new.mobileprovision"
 pl TEAM123.com.example.other '<string>U1</string>' > "$P/other.mobileprovision"
