@@ -37,7 +37,7 @@ static void frame_gap_note(void) {
     if (d > 33333333ull) __atomic_fetch_add(&g_gap_over33, 1, __ATOMIC_RELAXED);
     // 长帧日志（缺省开，扫坑用）：一次超过 80 毫秒就把上一帧的账打出来——回放花了多久、画了多少笔、提交几次。
     // 回放接近这个间隔说明卡在我们这边；回放很小则说明卡在游戏线程 / present / 等窗口（不归回放层管）。
-    static int hl = -1; if (hl < 0) hl = nvn_plat_flag("nvk_hitch_log", 1) != 0;
+    static int hl = -1; if (hl < 0) hl = nvn_plat_flag("nvk_hitch_log", 0) != 0;   // 缺省关：排查顿卡时开
     uint64_t ex = 0, dr = 0, sb = 0; rp_frame_take(&ex, &dr, &sb);   // 每帧都取（不清账时相邻两帧会累加，读数会虚高）
     if (hl && d > 80000000ull) {
         char lb[220];
