@@ -7116,6 +7116,10 @@
   "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
  },
  {
+  "source": "在电脑的 S2Arm 里对这款点「导出」，把游戏库「S2Arm 自签导出」文件夹里这款的 .img（以游戏名命名）放进「放这里导入」；导入文件夹里的 game.img 可以删掉。",
+  "en": "In S2Arm on your computer, click Export for this game, then put this game's .img (named after the game) from the library's \"S2Arm Self-Sign Export\" folder into Import Here. You can delete the game.img in the import folder."
+ },
+ {
   "source": "检查文件是否拷完整，再打开 S2Arm。",
   "en": "Check that the file was copied completely, then open S2Arm again."
  },

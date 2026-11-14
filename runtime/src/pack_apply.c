@@ -116,8 +116,12 @@ typedef struct { char *rel; uint64_t off, len; } img_ent;
 //   phase 1 = 解开推送包（done / total = 包数）；2 = 从 game.img 解小文件（字节）；3 = 核对机上文件（文件数）。主调方设、本文件只调，NULL = 不报
 void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
 #define PHASE(ph, d, t) do { if (s2a_pack_apply_phase) s2a_pack_apply_phase((ph), (d), (t)); } while (0)
+static int img_toc_file(const char *p, img_ent **out, size_t *n);
 static int img_toc(const char *root, img_ent **out, size_t *n) {   // 0 = 读到（*n 条）；1 = 没有 game.img；负数 = IMG 坏 / 格式号不认
-    char p[2200]; snprintf(p, sizeof p, "%s/game.img", root); *out = NULL; *n = 0;
+    char p[2200]; snprintf(p, sizeof p, "%s/game.img", root); return img_toc_file(p, out, n);
+}
+static int img_toc_file(const char *p, img_ent **out, size_t *n) {   // 同上，读任意路径的 IMG（导入时认领前先看它带不带着色器库）
+    *out = NULL; *n = 0;
     int fd = open(p, O_RDONLY); if (fd < 0) return 1;
     uint8_t h[136]; struct stat st; int rc = -10;
     if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h || memcmp(h, "S2AIMG01", 8) || fstat(fd, &st)) goto out;
@@ -630,6 +634,15 @@ static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好�
     for (int i = 0; i < 16; i++) if (!((gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F'))) { snprintf(g_img_err, sizeof g_img_err, "%s 头里的游戏号不对", path); return -10; }
     if (!pid[0]) snprintf(pid, sizeof pid, "img-%llx", (unsigned long long)total);   // 没写资源包号的（老工具）：按长度给一个，至少换了文件能触发重新应用
     char root[1400], p[2400], old[2400], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
+    // 着色器库从哪来：这款机上已有的（电脑推过，index.tsv 里有 shaders/ 行）或这个 IMG 自己的目录表（导出文件夹里的「<游戏名>.img」带着，pack/img.py export）。
+    //   两处都没有 = 把电脑游戏库资源包文件夹里的 game.img 直接拿来了（它按设计不带着色器库）：现编要的答案表 shader_facts.tsv 也在着色器库里，
+    //   导进来必定黑屏（D-9ZF9：同一位玩家导了两次）。物理上玩不了，不认领：文件原样留在导入文件夹，当场说清该用哪个文件
+    int shaders = 0;
+    { char ip0[2400]; snprintf(ip0, sizeof ip0, "%s/index.tsv", root); FILE *in0 = fopen(ip0, "r");
+      if (in0) { char line[4600]; while (!shaders && fgets(line, sizeof line, in0)) shaders = !strncmp(line, "shaders/", 8); fclose(in0); } }
+    if (!shaders) { img_ent *te; size_t tn; if (!img_toc_file(path, &te, &tn)) { for (size_t i = 0; i < tn && !shaders; i++) shaders = !strncmp(te[i].rel, "shaders/", 8); img_free(te, tn); } }
+    if (!shaders) { snprintf(g_img_err, sizeof g_img_err, "%s 不带着色器库（电脑游戏库资源包文件夹里的 game.img）：没有导入，要放「S2Arm 自签导出」文件夹里这款的 .img",
+                             strrchr(path, '/') ? strrchr(path, '/') + 1 : path); return -12; }
     snprintf(p, sizeof p, "%s/game.img", root); if (mkdirs(p)) { snprintf(g_img_err, sizeof g_img_err, "建 %s 失败：%s", root, g_untar_err); return -4; }
     snprintf(old, sizeof old, "%s/manifest.json", root); unlink(old); snprintf(old, sizeof old, "%s/.applied", root); unlink(old);   // 先作废：挪到一半断了不会判成就绪
     if (rename(path, p)) { snprintf(g_img_err, sizeof g_img_err, "把 %s 挪进资源包失败：%s", path, strerror(errno)); return -4; }
@@ -637,12 +650,7 @@ static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好�
     char ip[2400], tp[2500]; snprintf(ip, sizeof ip, "%s/index.tsv", root); snprintf(tp, sizeof tp, "%s.tmp", ip);
     FILE *o = fopen(tp, "w"), *in = fopen(ip, "r"); if (!o) { if (in) fclose(in); snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); return -4; }
     fprintf(o, "game.img\t%llu\t-\n", (unsigned long long)total);
-    int shaders = 0;   // 着色器库从哪来：原有 index.tsv（电脑推过）或 IMG 目录表（导出文件夹里的「<游戏名>.img」带着，pack/img.py export）
-    if (in) { char line[4600]; while (fgets(line, sizeof line, in)) if (!strncmp(line, "shaders/", 8) || !strncmp(line, "romfs_overlay/", 14)) { fputs(line, o); shaders |= !strncmp(line, "shaders/", 8); } fclose(in); }
-    if (!shaders) { img_ent *te; size_t tn; if (!img_toc(root, &te, &tn)) { for (size_t i = 0; i < tn && !shaders; i++) shaders = !strncmp(te[i].rel, "shaders/", 8); img_free(te, tn); } }
-    // 两处都没有：多半是把资源包文件夹里的 game.img 直接放了进来（它按设计不带 shaders/），起局时着色器全靠现编（11-13 起不再收局；诊断 D-9864 / D-F6W7）
-    if (!shaders) LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：照样能玩，着色器首次遇到时现编、前几分钟会卡；要不卡就放「S2Arm 自签导出」文件夹里这款的 .img",
-                      strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+    if (in) { char line[4600]; while (fgets(line, sizeof line, in)) if (!strncmp(line, "shaders/", 8) || !strncmp(line, "romfs_overlay/", 14)) fputs(line, o); fclose(in); }
     if (fclose(o) || rename(tp, ip)) { snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); return -4; }
     char mf[600]; snprintf(mf, sizeof mf, "{\"version\": 3, \"format\": \"img\", \"imgFile\": \"game.img\", \"index_sha256\": \"%s\"}\n", pid);
     snprintf(p, sizeof p, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s.tmp", p);
@@ -660,7 +668,7 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *
         if (!lstat(p, &st)) {
             if (S_ISDIR(st.st_mode) && depth < 2) img_scan_dir(proc_docs, p, depth + 1, placed);
             else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p); if (!r) (*placed)++; else if (r < 0) { int e = errno;
-                snprintf(g_img_code, sizeof g_img_code, "%s", r == -11 ? "ios_install_img_format" : r == -4 && (e == ENOSPC || e == EDQUOT) ? "ios_install_no_space" : "ios_import_img_failed");
+                snprintf(g_img_code, sizeof g_img_code, "%s", r == -12 ? "ios_import_img_no_shaders" : r == -11 ? "ios_install_img_format" : r == -4 && (e == ENOSPC || e == EDQUOT) ? "ios_install_no_space" : "ios_import_img_failed");
                 LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
         }
         free(names[i]);
