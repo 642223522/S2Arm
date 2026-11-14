@@ -286,8 +286,8 @@
 "error.sentence" = "%@。%@";
 "img.importFolder" = "放这里导入";
 "img.scanFailed.title" = "無法匯入遊戲檔案";
-"img.noShaders.title" = "這個遊戲檔案不帶著色器";
-"img.noShaders.body" = "「%@」不帶著色器，前幾分鐘會卡。在電腦的 S2Arm 裡點「匯出，自己簽名安裝」，連著手機點「推到手機」；或者把「S2Arm 自簽匯出」資料夾裡的「<遊戲名>.img」放進來，就不卡了。";
+"img.noShaders.title" = "這個遊戲檔案不完整";
+"img.noShaders.body" = "「%@」不完整。請換成電腦上「S2Arm 自簽匯出」資料夾裡的「<遊戲名>.img」，或者在電腦的 S2Arm 裡連著手機點「推到手機」。";
 "games.repair.done.title" = "遊戲資料夾已修復";
 "games.repair.done.body" = "遊戲資料夾先前屬於系統帳號，S2Arm 無法寫入，安裝一直無法開始。已自動移到 S2Arm 自己的新資料夾（%u 個檔案，與原檔案共用資料，不會多佔空間），可以繼續安裝。S2Arm 無法刪除舊資料夾，下次連接電腦時會清除。";
 "games.repair.failed.title" = "遊戲資料夾無法修復";
