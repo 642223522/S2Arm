@@ -242,7 +242,21 @@ def explain(error, sources=(), library=None):
                 return Failure("任务所需的文件或目录不存在。", code="input_missing", internal=internal)
             return Failure("本地任务失败：S2Arm 自己的文件找不到了，请重试；还不行请导出诊断发给我们。", internal=internal)
         return Failure("本地任务失败，请检查日志和输入。", internal=internal)
-    return Failure("本地任务失败，请检查日志和输入。")
+    # 不是 OSError 的（多是我们自己的代码缺陷，如 #372 / #854 Windows 报修打包 AttributeError）：上屏原句不改（旧前端按它做本地化匹配），
+    #   但异常类型、原文和出在我们哪个文件哪一行进 internal——原先整个丢掉，玩家复制的错误摘要里只剩「本地任务失败」，定不了因
+    return Failure("本地任务失败，请检查日志和输入。", internal=_where(error))
+
+
+def _where(error):
+    """「AttributeError: 'x' object has no attribute 'y'（library.py:2837 in diagnostics）」：取调用栈里最后一帧落在 S2Arm 自己源码里的位置"""
+    import traceback
+    text = f"{type(error).__name__}: {error}"
+    ours = Path(__file__).resolve().parents[2]
+    frames = [f for f in traceback.extract_tb(error.__traceback__) if _under(f.filename, [ours])]
+    if frames:
+        f = frames[-1]
+        text += f"（{Path(f.filename).name}:{f.lineno} in {f.name}）"
+    return text
 
 
 # 实际阶段或命令确定分类，不从错误 prose 猜编译器/输入的根因（日志里有确凿根因字样的先由 LOG_CAUSES 判，见 classify_failure）。

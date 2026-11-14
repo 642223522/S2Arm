@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 import zipfile
 from unittest.mock import Mock, patch
 
@@ -210,6 +211,20 @@ raise SystemExit(main.main())
                          "input_missing")   # 游戏库根整个不在 = 外接盘没插
         self.assertEqual(explain(Failure("No space left on device")).code, "job_failed")
         self.assertEqual(explain(ValueError("Check keys")).code, "job_failed")
+
+    def test_non_os_error_keeps_type_message_and_location(self):
+        # #372 / #854（Windows 0.3.9 报修打包 AttributeError）：不是 OSError 的异常原先连原文一起丢，玩家复制的摘要里只剩「本地任务失败」。
+        #   期望手写：上屏原句不变、码 job_failed；internal 带「AttributeError: <原文>」和抛出处（本测试文件:那一行 in 函数名）
+        def boom():
+            return SimpleNamespace().st_mtime
+        try:
+            boom()
+        except AttributeError as e:
+            got = explain(e)
+        line = boom.__code__.co_firstlineno + 1
+        self.assertEqual((str(got), got.code), ("本地任务失败，请检查日志和输入。", "job_failed"))
+        self.assertIn("AttributeError: 'types.SimpleNamespace' object has no attribute 'st_mtime'", got.internal)
+        self.assertIn(f"（test_error_recovery.py:{line} in boom）", got.internal)
 
     def test_pack_space_failure_then_recovery_preserves_old_runtime(self):
         game = dict(packages=[])
