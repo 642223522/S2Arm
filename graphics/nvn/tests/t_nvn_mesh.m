@@ -123,7 +123,7 @@ int main(void) {
         p_draw d4 = {.prim = DM_PRIM_MESH_TASKS, .first = 2, .count = 3, .instances = 1};
         o = capture(^{ mesh_draw(&d4, &waited); });
         int cols = frame_columns();
-        // 11-13 时之笛开局发白：网格管线没编好时一律跳过，不按 skip_safe 的规则。期望（按规则手写）：这是目标第一次被画（近两帧没画过），这笔不能跳过 →
+        // 11-13 0400486024DEC000 开局发白：网格管线没编好时一律跳过，不按 skip_safe 的规则。期望（按规则手写）：这是目标第一次被画（近两帧没画过），这笔不能跳过 →
         //   在每帧预算（缺省 250 ms）内等后台那条编好、本笔照画，日志写明原因与「ready」；反证：修前同一处先跳过（waited = 1）、不打这一行
         VERIFY(!waited && [o containsString:@"waited for its background pipeline"] && [o containsString:@"(ready)"] && [o containsString:@"a target not drawn in the last two frames"] && red_lines(o, nil) == 0,
                "④ 首笔管线、目标近两帧没画过：不跳过，等后台编好照画、写明原因、不报红（跳过过 %d；stderr：%s）", waited, o.UTF8String);

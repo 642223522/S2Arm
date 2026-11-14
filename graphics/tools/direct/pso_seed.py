@@ -40,7 +40,7 @@ def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（di
             elif c[0] == 'R' and len(c) >= 2 and len(c[1]) == 2 * skey_bytes and all(ch in '0123456789abcdef' for ch in c[1]):
                 vs, fs = r_keys(c[1]); good = ok_key(vs) and (not fs or ok_key(fs))
             elif c[0] == 'M' and len(c) >= 4 and len(c[1]) == 2 * skey_bytes and all(ch in '0123456789abcdef' for ch in c[1]):
-                # 任务 / 网格管线（nvn_geometry.inc mtk_record，11-13 时之笛开局发白根修）：顶点位置是网格键、第 2 列任务键（「-」= 无）、第 3 列补齐掩码；三个键都要是本包库的
+                # 任务 / 网格管线（nvn_geometry.inc mtk_record，11-13 0400486024DEC000 开局发白根修）：顶点位置是网格键、第 2 列任务键（「-」= 无）、第 3 列补齐掩码；三个键都要是本包库的
                 ms, fs = r_keys(c[1]); good = ok_key(ms) and (not fs or ok_key(fs)) and (c[2] == '-' or ok_key(c[2]))
             else: good = False
             if good and l not in seen: seen.add(l); rows.append(l); kept += 1

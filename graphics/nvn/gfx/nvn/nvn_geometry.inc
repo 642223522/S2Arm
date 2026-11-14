@@ -272,7 +272,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     if (ps == NSNull.null) return nil;
     if (ps && ps != g_pso_mtk_building) return ps;
     // Not built yet: skipping this draw is only allowed under the rules every other first use goes by (skip_safe, first_skip_ok): no stage writes storage, every target is started
-    //   fresh this frame and was drawn in the last two. 11-13 Ocarina of Time on Duo: the mesh draws of the forest opening were skipped for 10–20 s while 54 mesh pipelines built one
+    //   fresh this frame and was drawn in the last two. 11-13 0400486024DEC000 on Duo: the mesh draws of the opening scene were skipped for 10–20 s while 54 mesh pipelines built one
     //   after another in the background, and the scene came out washed white until the last of them was ready. A draw that cannot be skipped waits for its background build, within
     //   a per-frame budget (mtk_wait). Building it here instead held the submit thread 19 s in all (one pipeline 3.1 s) and a cross-queue GPU event wait timed out into a GPU hang
     const char *why = mtk_sync_why(ts, ms, fs);
