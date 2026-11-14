@@ -159,10 +159,13 @@ final class LibraryShelf extends FrameLayout {
         cover = cardHeight * 16 / 9 * dp;
         int cw = Math.round(cover), ch = Math.round(cover * 9 / 16);
         for (Game g : games) {
-            ViewGroup.LayoutParams lp = g.card.getLayoutParams();
-            if (lp.width != cw || lp.height != ch) { lp.width = cw; lp.height = ch; g.card.setLayoutParams(lp); }
+            // 横向居中、纵向按 middle 放，靠布局参数定位；平移量只留给 place() 做左右错开
+            LayoutParams lp = (LayoutParams) g.card.getLayoutParams();
+            int top = Math.round(middle * dp - ch / 2f);
+            if (lp.width != cw || lp.height != ch || lp.topMargin != top || lp.gravity != (Gravity.TOP | Gravity.CENTER_HORIZONTAL)) {
+                lp.width = cw; lp.height = ch; lp.topMargin = top; lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL; g.card.setLayoutParams(lp);
+            }
             g.card.setPivotX(cw / 2f); g.card.setPivotY(ch / 2f);
-            g.card.setX((getWidth() - cw) / 2f); g.card.setY(middle * dp - ch / 2f);
             g.card.setOutlineProvider(new ViewOutlineProvider() {
                 @Override public void getOutline(View view, Outline outline) { outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cover * 0.03f); }
             });
@@ -252,7 +255,7 @@ final class LibraryShelf extends FrameLayout {
         int hit = -1; float best = Float.MAX_VALUE;
         for (int i = 0; i < games.size(); i++) {
             View c = games.get(i).card;
-            float cx = c.getX() + c.getTranslationX() + c.getWidth() / 2f, half = c.getWidth() * c.getScaleX() / 2;
+            float cx = c.getX() + c.getWidth() / 2f, half = c.getWidth() * c.getScaleX() / 2;   // getX 已含平移量
             float top = c.getY() + c.getHeight() * (1 - c.getScaleY()) / 2, bottom = top + c.getHeight() * c.getScaleY();
             float d = Math.abs(x - cx);
             if (d <= half && y >= top && y <= bottom && Math.abs(i - offset) < best) { best = Math.abs(i - offset); hit = i; }
