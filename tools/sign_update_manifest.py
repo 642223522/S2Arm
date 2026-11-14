@@ -3,10 +3,10 @@
 
     python3 tools/sign_update_manifest.py --tag v0.1.2 [--notes notes/v0.1.2.md]
 
-下载 Release 里的全部安装包和差分包，算 sha256 和大小写进 update-manifest.json，用离线私钥签名，把清单和签名传回 Release。
+下载 Release 里的全部安装包，算 sha256 和大小写进 update-manifest.json，用离线私钥签名，把清单和签名传回 Release。
 --notes 给发版说明（Markdown）：解析成 notes 一起签进清单（updater.notes_from_markdown：「## 小节」→ sections，「## 亮点」→ highlights），
 启动器打开时弹「有新版」/「这版更新了什么」就读它；不给就只有版本号。
-传差分包（tools/make_update_delta.py）之后要重跑，清单才会带上差分包。私钥在 ~/.s2a/update-signing/ed25519.key（十六进制，不进仓库）。
+这份清单只给启动器打开时查「有没有新版」和读更新说明用；下载、验签、换版 v0.3.10 起交给 Sparkle / NetSparkle（appcast 另签），差分包已退役。私钥在 ~/.s2a/update-signing/ed25519.key（十六进制，不进仓库）。
 """
 import argparse
 import hashlib
