@@ -489,6 +489,22 @@ int main(void) {
         nvn_vk_program_free_compute(&p);
     }
 
+    // 计算阶段的图像：handleIndex 72..86 偶数 = 驱动 c2 图像句柄表第 0..7 槽（同 iOS C2_IMG），槽号 = (handleIndex−72)/2；表外拒绝并报 handleIndex
+    {
+        static const struct { int slot, ok, want; } img[] = {{72, 1, 0}, {86, 1, 7}, {71, 0, 0}, {88, 0, 0}, {74, 1, 1}};
+        for (unsigned k = 0; k < sizeof img / sizeof img[0]; k++) {
+            struct nvn_vk_compute_program p; char why[192] = "", b[160];
+            snprintf(b, sizeof b, "{\"stage\":\"cs\",\"kind\":\"image\",\"set\":3,\"binding\":0,\"slot\":%d,\"count\":1}", img[k].slot);
+            checks++;
+            int rc = parse_case(b, "[]", "[]", &p, why, sizeof why);
+            if (img[k].ok && !(rc == 0 && p.binding_count == 1 && p.bindings[0].kind == 3 && p.bindings[0].tex_slot == img[k].want))
+                failf("compute image slot", "handleIndex %d 期望 接受、图像槽 %d，真结果 rc=%d why=%s", img[k].slot, img[k].want, rc, why);
+            if (!img[k].ok && !(rc != 0 && strstr(why, "image handleIndex")))
+                failf("compute image slot", "handleIndex %d 期望 拒绝，真结果 rc=%d why=%s", img[k].slot, rc, why);
+            nvn_vk_program_free_compute(&p);
+        }
+    }
+
     if (fails) {
         printf("✗ direct_nvn_compute_storage: %d 处不符（共 %d 项检查）\n", fails, checks);
         return 1;
