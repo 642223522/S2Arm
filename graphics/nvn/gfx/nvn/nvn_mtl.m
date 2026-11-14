@@ -5709,6 +5709,7 @@ static void shmap_load_once(void) {
     uint8_t gmem_use;   // 0 未判 / 1 不绑原始内存池表 / 2 绑（gmem_uses：动态占比计数用）
     uint8_t tensor, tensor_log;   // HMMA: 1 = spatial stand-in, 2 = none, 3 = native SIMD-group matrix ABI 1; 0 = not checked
     uint16_t tensor_sq;   // S2Arm 11-05: such a shader's HMUL2 Rd, Ra, |Ra| (nvn2_hsq_count): its output is the signed square of what it reads plus the network's residual, the stand-in squares its input (nvn_tensor.inc)
+    uint16_t tensor_srgb;   // HSETP2 Rd, Ra, 0.04045 (nvn2_srgb_count): its output is the sRGB decode (to linear) of what it reads plus the network's residual, the stand-in decodes its input (nvn_tensor.inc)
     id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff) on demand (fs_atms_fn)
     int load_depth_zero;   // captured with the identity, also used by its layer variant
     uint8_t u_mask;   // S2Arm gap 2 A: the colour outputs fn_u returns as uint, bit n = color(n) (json u_mask; dmsh_build.py fs_uint turns only the integer-bit writers)
@@ -6502,17 +6503,17 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
         if (st >= 0) o->smask |= 1u << st; else o->unres = 1;
         // S2Arm 11-05: a Switch 2 compute shader with tensor-core matrix multiplies (the game's own upscaling network): not dispatched, stood in by nvn_tensor.inc. The guest code is
         //   read here, while the program is in use (as the fallback paths above do), before the shader is loaded: such a shader is built from its reflection alone (t_refl_only)
-        unsigned nh = 0, nsq = 0;
+        unsigned nh = 0, nsq = 0, nsrgb = 0;
         if (st == 5) {
             const void *ctl = p->sd[i].control; uint32_t ncode = 0;
             if (ctl && (uintptr_t)ctl < (1ull << 47) && nvn2_on() && nvn2_ctl(ctl)) { memcpy(&ncode, (const uint8_t *)ctl + 0x44, 4); if (p->sd[i].data && ncode && ncode < (1u << 24)) nh = nvn2_hmma_count((const void *)(uintptr_t)p->sd[i].data, ncode); }
-            if (nh) nsq = nvn2_hsq_count((const void *)(uintptr_t)p->sd[i].data, ncode);   // the network's output domain (nvn_tensor.inc)
+            if (nh) { nsq = nvn2_hsq_count((const void *)(uintptr_t)p->sd[i].data, ncode); nsrgb = nvn2_srgb_count((const void *)(uintptr_t)p->sd[i].data, ncode); }   // the network's output domain (nvn_tensor.inc)
         }
         t_refl_only = nh > 0;
         NvShader *sh = st >= 0 ? shader_get([k stringByAppendingString:@"_b"], st) : nil;
         t_refl_only = 0;
         if (sh) o->sh[st] = sh; else MLOG("【红】 shader %s (%s) failed to load: build the shaders with dm/gfx/tools/dmsh_build.py first", k.UTF8String, stage.UTF8String);
-        if (sh && st == 5 && nh) sh->tensor_sq = (uint16_t)MIN(nsq, 0xffffu);
+        if (sh && st == 5 && nh) { sh->tensor_sq = (uint16_t)MIN(nsq, 0xffffu); sh->tensor_srgb = (uint16_t)MIN(nsrgb, 0xffffu); }
         if (sh && st == 5 && sh->tensor != 1 && sh->tensor != 3) {
             if (nh) MLOG("compute shader %s: %u tensor-core matrix multiplies (HMMA): the game's own upscaling network, stood in (nvn_tensor.inc)", sh->key, nh);
             if (!sh->tensor || nh) sh->tensor = nh ? 1 : 2;   // a full build of the same key (an earlier prewarm) is still never dispatched
