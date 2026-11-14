@@ -43,5 +43,14 @@
     <string name="touch_layout_err_read">the file could not be read. Save it to this device first, or choose it from another location.</string>
     <string name="touch_layout_err_write">the chosen location could not be written. Choose another location.</string>
     <string name="touch_layout_document_unavailable">Document could not be opened</string>
+    <string name="library_game_starting">The game is still starting; it opens in a moment…</string>
+    <string name="library_current_game">the game that is running</string>
+    <string name="library_switch_title">Switch game</string>
+    <string name="library_switch_message">%1$s is running. Close it (it saves as usual) and start %2$s?</string>
+    <string name="library_switch_confirm">Close and start</string>
+    <string name="library_switch_waiting">Closing %1$s…</string>
+    <string name="library_switch_timeout">The running game did not close within 20 seconds. Wait a moment and tap again.</string>
+    <string name="library_launch_failed">Could not start the game: %1$s</string>
+    <string name="library_switch_cancel">Cancel</string>
 </resources>
 
