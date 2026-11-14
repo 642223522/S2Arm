@@ -554,6 +554,10 @@ static void qp_fps_restart_ask(void) {
 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);   // dprompt.m
 // 档位梯子压回原生帧率 / 恢复（runtime/src/qladder_host.c，原因 4）：设置里的 60 帧开关仍显示玩家选的「开」，画面已回到原生帧率——横幅说清楚。
 //   热 / 低电量自动降档（原因 1 / 2）11-13 删了（维护者「不读电量、不设自己挡自己的闸」），这里不再有对应文案
+// 客体内存三档判定落到「物理内存也装不下」（runtime/src/vawin.c low_ram_notice，#964）：照样开局，游戏内提示一次（不拦）
+void s2a_ios_low_ram_notice(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"app.lowRam.title"), S2AL(@"app.lowRam.body"), 3, 10); });
+}
 void s2a_ios_fps_capped(int reason) {
     NSString *body = reason == 4 ? S2AL(@"app.fpsCap.ladder") : S2AL(@"app.fpsCap.restored");
     dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"cpatch.group.fps"), body, 0, 6); });
