@@ -13,5 +13,9 @@ native-test-ro_lazy: $(BUILD)/tests/t_ro_lazy
 	$(BUILD)/tests/t_ro_lazy $(BUILD)/tests/ro_lazy_cb
 	python3 runtime/tests/ro_lazy/prepare.py $(BUILD)/tests/ro_lazy_early early   # RestoreFunctions 开头提前 ret（按符号长度扫全身）
 	$(BUILD)/tests/t_ro_lazy $(BUILD)/tests/ro_lazy_early
+	python3 runtime/tests/ro_lazy/prepare.py $(BUILD)/tests/ro_lazy_oob oob   # 符号记长越出模块映像：拒认、入口字段留 0
+	$(BUILD)/tests/t_ro_lazy $(BUILD)/tests/ro_lazy_oob
+	python3 runtime/tests/ro_lazy/prepare.py $(BUILD)/tests/ro_lazy_ambig ambig   # 两个不同偏移：拒认、入口字段留 0
+	$(BUILD)/tests/t_ro_lazy $(BUILD)/tests/ro_lazy_ambig
 TEST_TARGETS += native-test-ro_lazy
 endif
