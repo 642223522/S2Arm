@@ -52,13 +52,15 @@ void s2a_guest_freeze(int on); void guest_clock_freeze_for(int reason, int on); 
 // 失焦（Cmd-Tab、点到别的窗口、打开键位窗口）：报给服务层转成游戏的焦点消息；游戏要求「失焦就暂停」（SetOutOfFocusSuspendingEnabled）时
 //   冻结客机线程与游戏时钟（时钟按原因 3 冻），回焦点再放开（缺口扫描族 1 / 审计 P2-64：原先 Mac 失焦游戏照跑）
 static BOOL focus_frozen;
+// 玩家可关（#989，启动设置「切到别的窗口时暂停」关 → S2A_FOCUS_PAUSE=0）：Mac 上切出去看攻略 / 第二块屏是常事，关掉后失焦只报焦点消息、不冻结
+static BOOL focus_pause_off(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_FOCUS_PAUSE"); v = e && !strcmp(e, "0"); } return v; }
 // 关窗 / 收尾也发布「没焦点」，但不冻结（may_freeze = NO）：收尾要等客机线程退出
 static void display_focus_publish_ex(BOOL active, BOOL may_freeze) {
     s2a_mac_ns2_focus(active);
     if (active && !atomic_load(&display_focused)) atomic_store(&display_focus_since, now_ns());
     atomic_store(&display_focused, active);
     s2a_host_focus_set(active);
-    if (!active && may_freeze && !focus_frozen && s2a_focus_suspend()) { focus_frozen = YES; guest_clock_freeze_for(3, 1); s2a_guest_freeze(1); fprintf(stderr, "[s2a] Mac 失焦：游戏要求失焦暂停，冻结客机\n"); }
+    if (!active && may_freeze && !focus_frozen && !focus_pause_off() && s2a_focus_suspend()) { focus_frozen = YES; guest_clock_freeze_for(3, 1); s2a_guest_freeze(1); fprintf(stderr, "[s2a] Mac 失焦：游戏要求失焦暂停，冻结客机\n"); }
     else if ((active || !may_freeze) && focus_frozen) { focus_frozen = NO; s2a_guest_freeze(0); guest_clock_freeze_for(3, 0); fprintf(stderr, "[s2a] Mac 回到焦点 / 收尾：放开客机\n"); }
 }
 static void display_focus_publish(BOOL active) { display_focus_publish_ex(active, YES); }
