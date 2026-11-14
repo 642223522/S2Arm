@@ -7123,10 +7123,7 @@
   "source": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",
   "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
  },
- {
-  "source": "在电脑的 S2Arm 里对这款点「导出」，把游戏库「S2Arm 自签导出」文件夹里这款的 .img（以游戏名命名）放进「放这里导入」；导入文件夹里的 game.img 可以删掉。",
-  "en": "In S2Arm on your computer, click Export for this game, then put this game's .img (named after the game) from the library's \"S2Arm Self-Sign Export\" folder into Import Here. You can delete the game.img in the import folder."
- },
+
  {
   "source": "先把导出文件夹里这款的完整 .img（不带「着色器更新包」字样的那个）放进「放这里导入」，导好后再放更新包。",
   "en": "Put this game's full .img from the export folder (the one without \"shader update\" in its name) into Import Here first, then add the update."

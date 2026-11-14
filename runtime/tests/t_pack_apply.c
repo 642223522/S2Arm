@@ -106,7 +106,7 @@ int main(void) {
       FILE *sf = fopen(sp, "r"); char spec[200000] = ""; size_t sk = sf ? fread(spec, 1, sizeof spec - 1, sf) : 0; if (sf) fclose(sf); spec[sk] = 0;
       CHECK(sk > 0, "读共用规格 %s", sp);
       const char *codes[] = {"ios_install_dir_unwritable", "ios_install_no_space", "ios_install_pack_truncated", "ios_install_img_format", "ios_install_img_corrupt",
-          "ios_install_files_missing", "ios_install_manifest_bad", "ios_install_write_failed", "ios_install_unknown", "ios_import_img_failed", "ios_import_img_no_shaders", "ios_import_update_no_base", "ios_import_update_mismatch"};
+          "ios_install_files_missing", "ios_install_manifest_bad", "ios_install_write_failed", "ios_install_unknown", "ios_import_img_failed", "ios_import_update_no_base", "ios_import_update_mismatch"};
       for (size_t i = 0; i < sizeof codes / sizeof *codes; i++) { char q[80]; snprintf(q, sizeof q, "\"code\": \"%s\"", codes[i]); CHECK(strstr(spec, q) != NULL, "规格里应有码 %s", codes[i]); } }
     char c[8192];
     snprintf(c, sizeof c, "cd %s && mkdir -p src/romfs/很长的中文目录名用来超过一百个字节的老式头部限制很长的中文目录名用来超过一百个字节/子 docs/资源包/.incoming && "
@@ -476,9 +476,9 @@ int main(void) {
         snprintf(c, sizeof c, "cmp -s '%s/src/npdm' '%s/资源包/exefs/main.npdm'", D, g3); CHECK(sh(c) == 0, "⑭ 小文件逐字节解出"); }
       CHECK(s2a_img_scan(D3) == 0, "⑭ 再扫一次：没有新的（拷到一半的仍不动）");
       CHECK(!*s2a_img_scan_code(), "⑭ 认领没失败：码为空（实际 %s）", s2a_img_scan_code());
-      // ⑭b 认领时有没有着色器库（诊断 D-9864 / D-F6W7 / D-9ZF9：自签玩家把电脑资源包文件夹里的 game.img 直接放进来，导进来必黑屏——
-      //   现编要的答案表也在着色器库里）。期望手写：只带 exefs / ctl 的 IMG → 不认领、原样留在导入文件夹、给码 ios_import_img_no_shaders；
-      //   目录表带 shaders/ 的（= 导出文件夹里的 <游戏名>.img）照常认领；机上这款已有着色器库（index.tsv 有 shaders/ 行）时不带的也认领
+      // ⑭b 认领时有没有着色器库（诊断 D-9864 / D-F6W7 / D-9ZF9：自签玩家把电脑资源包文件夹里的 game.img 直接放进来）。物理上做得下去（现编），
+      //   一律认领、不拦（不许堵门）；不带着色器库的只记一行【黄】（换完整包的提示由游戏库那边弹）。期望手写：三个都认领；
+      //   只对不带 shaders/、机上也没有这款着色器库的 game.img 记一行【黄】；机上已有着色器库的那款，原有着色器库行保留在 index.tsv
       { char D5[1300], lg[1400]; snprintf(D5, sizeof D5, "%s/img_docs5", T); snprintf(lg, sizeof lg, "%s/scan5.log", T);
         snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' '%s/games/0100ABCD00000007/资源包'"
                  " && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/放这里导入/game.img' --gid 0100abcd00000005 --pack-id img501 > /dev/null"
@@ -489,11 +489,10 @@ int main(void) {
         CHECK(sh(c) == 0, "⑭b 造夹具（不带 shaders/、带 shaders/、不带但机上已有着色器库的 IMG 各一个）");
         int lfd = open(lg, O_WRONLY | O_CREAT | O_TRUNC, 0644), keep = g_s2a_logfd; g_s2a_logfd = lfd;
         int placed = s2a_img_scan(D5); g_s2a_logfd = keep; close(lfd);
-        CHECK(placed == 2, "⑭b 认领 2 个（带 shaders/ 的、机上已有着色器库的；实际 %d）", placed);
-        snprintf(c, sizeof c, "test -e '%s/放这里导入/game.img' && test ! -e '%s/games/0100ABCD00000005' && test ! -e '%s/放这里导入/某游戏.img' && test ! -e '%s/放这里导入/重拷.img'", D5, D5, D5, D5);
-        CHECK(sh(c) == 0, "⑭b 不带着色器库的 game.img 原样留在导入文件夹、没建这款的目录；另两个挪走了");
-        CHECK(!strcmp(s2a_img_scan_code(), "ios_import_img_no_shaders") && strstr(s2a_img_scan_failure(), "自签导出"),
-              "⑭b 给码 ios_import_img_no_shaders、原因点名「自签导出」（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure());
+        CHECK(placed == 3, "⑭b 三个都认领（实际 %d）", placed);
+        CHECK(!*s2a_img_scan_code(), "⑭b 认领没失败：码为空（实际 %s）", s2a_img_scan_code());
+        snprintf(c, sizeof c, "grep '没有着色器库' '%s' | grep -q 'game.img 里' && test \"$(grep -c '没有着色器库' '%s')\" = 1", lg, lg);
+        CHECK(sh(c) == 0, "⑭b 只对不带 shaders/、机上也没有的 game.img 记一行【黄】");
         snprintf(c, sizeof c, "grep -q 'shaders/a.metallib' '%s/games/0100ABCD00000007/资源包/index.tsv'", D5);
         CHECK(sh(c) == 0, "⑭b 机上已有的着色器库行保留在 index.tsv"); }
       // 格式号 9（更新版 S2Arm 做的；2 是着色器更新包，见 ⑭c）：不认、原样留着，给码 ios_install_img_format
