@@ -971,6 +971,7 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
+const char *s2a_img_scan_noshaders(void);   // pack_apply.c：这次认领里不带着色器库的文件名（空串 = 没有）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
@@ -979,6 +980,16 @@ static int img_scan_now(void) {   // 后台线程
 }
 // 认领失败（格式号不认识、挪不动等，pack_apply.c s2a_img_scan_failure）：在游戏库上弹一次原因。同一句只弹一次，回前台重扫不刷屏
 static void img_scan_report(void) {   // 主线程
+    // 认领的文件不带着色器库（资源包文件夹里的 game.img 按设计不带）：玩家该用导出的完整 .img，缺着色器能跑只是兜底——告诉他文件不完整、该换哪一份，不拦（同一个文件名只说一次）
+    { static char told[256]; const char *f = s2a_img_scan_noshaders();
+      if (f && *f && strcmp(f, told) && g_lib_window) {
+          strlcpy(told, f, sizeof told);
+          UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.noShaders.title")
+              message:[NSString stringWithFormat:S2AL(@"img.noShaders.body"), @(f)] preferredStyle:UIAlertControllerStyleAlert];
+          [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+          [lib_top() presentViewController:a animated:YES completion:nil];
+          return;   // 一次只弹一个；认领失败的那句下次回前台再说
+      } }
     static char shown[600]; const char *why = s2a_img_scan_failure();
     if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
     strlcpy(shown, why, sizeof shown);

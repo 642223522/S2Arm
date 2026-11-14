@@ -1325,6 +1325,27 @@ static void c697e_bc_small_mip_block_region(int decoded) {   // decoded=0：原�
     printf("C697e 小 mip 整块区域：已核对\n");
 }
 
+// C697f：缓冲 → 3D BC 现解贴图，调用方按 NVN 的写法把切片号放在 layer 里（#697 Mali：32×32×32、layers 1 的 BC 贴图按 layer 1 进来）。
+//   与直拷同一口径：layer 当 z 切片，应接受、提交成功；修前现解分支按数组层判「层越界」，commit 报 E_ARG。排在 C697e 前（它最后一笔故意失败）。
+static void c697f_bc_3d_slice_from_buf(void) {
+    static const uint8_t blue[32] = {0xff,0,0,0,0,0,0,0, 0xff,0,0,0,0,0,0,0, 0xff,0,0,0,0,0,0,0, 0xff,0,0,0,0,0,0,0};   // 4 个 BC4 块（每块 8 字节）
+    // 现解路线只给 BC4 开 3D（backend_vulkan.c tex_create；报告人那张正是 0x49 BC4）：本用例临时把 BC4 加进现解名单
+    uint32_t saved_mask = g_dev.bc_decode_mask; g_dev.bc_decode_mask |= 1u << (NVN_FORMAT_RGTC1_UNORM - 0x41);
+    nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_3D; td.d.format = NVN_FORMAT_RGTC1_UNORM;
+    td.d.width = td.d.height = 8; td.d.depth = 2; td.d.levels = 1; td.usage = NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_CPU_UPLOAD;
+    nvn_gpu_tex bc = NULL; nvn_gpu_err e = {0}; nvn_gpu_rc rc = nvn_gpu_tex_create(&td, &bc, &e);
+    CHECK(OK(rc) && bc, "C697f 建 3D 图：%d %s", rc.code, e.why); if (!bc) { g_dev.bc_decode_mask = saved_mask; return; }
+    nvn_gpu_buf src = make_buf(sizeof blue, NVN_GPU_MEM_SHARED, blue);
+    if (!src) { nvn_gpu_tex_release(bc); g_dev.bc_decode_mask = saved_mask; return; }
+    NVNcopyRegion whole = {0, 0, 0, 8, 8, 1};
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_copy_buf_tex(c, src, 0, 16, 32, bc, 0, 1, &whole);
+    rc = nvn_gpu_cmd_commit(c, 90, on_done, NULL, &e); CHECK(OK(rc), "C697f 缓冲 → 3D BC 第 1 切片应接受：%d %s", rc.code, e.why);
+    CHECK(OK(nvn_gpu_fence_wait(90, 5000000000ull, &e)), "C697f wait：%s", e.why);
+    nvn_gpu_tex_release(bc); nvn_gpu_buf_release(src, NULL, NULL); g_dev.bc_decode_mask = saved_mask;
+    printf("C697f 3D BC 按切片号上传：已核对\n");
+}
+
 // C194：8×8 立方体的一级 mip 是 4×4，两个面分别为纯蓝、纯绿。
 static void c194_bc_cube_mips(void) {
     static const uint8_t blue[8] = {0x1f,0,0x1f,0,0,0,0,0};
@@ -6949,6 +6970,7 @@ int main(int argc, char **argv) {
       c72_bc1_upload(argv[1], 1);
       c192_bc_order();
       c194_bc_cube_mips();
+      c697f_bc_3d_slice_from_buf();        // 现解路径：3D 贴图 layer 当切片
       c697e_bc_small_mip_block_region(1);   // 现解路径（Mali 走这条）
       nvn_gpu_err e72; CHECK(OK(nvn_gpu_close(5000000000ull, &e72)), "C72 compute close：%d %s", e72.rc.code, e72.why);
       if (!open_backend()) return 1;

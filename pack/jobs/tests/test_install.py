@@ -1645,8 +1645,78 @@ class ExportPhoneTests(unittest.TestCase):
             return fake(args, log, env, cwd, on_line)
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games: None), um.patch.object(install, "phone_for", no_phone):
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games: None), um.patch.object(install, "phone_for", no_phone), \
+             um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
             return (fn or install.install)(self.c)
+
+    def _fake_phone(self, apps, docs=(), have=None):
+        """推到手机的替身：连着一台 U1；手机上装着 apps（每行 包名<TAB>版本<TAB>名字）；Documents 下已有 docs；have = {远端路径: 机上已有的字节}。
+        记下每次 put / put-at（远端路径、偏移），不连真手机"""
+        import push_pack as P
+        per = apps if isinstance(apps, dict) else {"U1": apps}   # 每台连着的手机上装着的 App
+        self.lines = lambda c, exe, *a: (0, list(per), "") if a[-1] == "devices" else (0, list(per.get(a[0], [])), "")
+        calls, test = [], self
+        class Dev:
+            def __init__(self, exe, udid, bid, work, env=None):
+                test.assertEqual(env.get("S2A_DEVPUSH_DOCUMENTS"), "1"); self.udid, self.bid, self.progress = udid, bid, None
+            def ls(self, rel): return [d + "/" for d in docs]
+            def head(self, rel, n):
+                b = (have or {}).get(rel); return (-1, b"") if b is None else (len(b), b[:n])
+            def put(self, src, rel): calls.append((self.bid, rel, 0) if self.udid == "U1" else (self.udid, self.bid, rel, 0))
+            def put_at(self, src, rel, off): calls.append((self.bid, rel, off) if self.udid == "U1" else (self.udid, self.bid, rel, off))
+        return um.patch.object(P, "Devpush", Dev), calls
+
+    def test_export_push_needs_phone_and_app(self):
+        """导出后推到手机（11-13 D-QW2Q）：没连手机 / 手机上没装 S2Arm → 导出照样成功，结果 pushed=False，说清下一步；pushCode 给界面认"""
+        A = self.A
+        self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
+        (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
+        r = self._export(dict(gameId=A))
+        self.assertEqual((r["exported"], r["pushed"], r["pushCode"]), (True, False, "device_not_connected"))
+        self.assertIn("信任", r["pushNote"])
+        patch, calls = self._fake_phone([])
+        with patch:
+            r = self._export(dict(gameId=A))
+        self.assertEqual((r["exported"], r["pushed"], r["pushCode"], calls), (True, False, "device_not_ready", []))
+        self.assertIn("S2Arm.ipa", r["pushNote"])
+
+    def test_export_push_puts_full_imgs_into_import_dir(self):
+        """手机上装着自签的 S2Arm：导出的完整 .img（含着色器库）推进 Documents/放这里导入/<名字>.img；机上已有英文名的导入文件夹就用它；
+        上次推到一半（头一页逐字节相同）从整页处接着推；推这一款只推这一款"""
+        import push_pack as P
+        A, B = self.A, self.B
+        self._library((A, "甲"), (B, "乙")); self._img(A, b"S2AIMG01-a" * 5000); self._img(B, b"S2AIMG01-b")
+        (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
+        patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"])
+        with patch:
+            r = self._export(dict(gameId=A))
+        self.assertEqual((r["pushed"], r["pushBundleId"], r["importDir"], calls), (["甲.img"], "io.x.s2arm", "放这里导入", [("io.x.s2arm", "Documents/放这里导入/甲.img", 0)]))
+        out = self.c.library / install.EXPORT_DIRS["zh"]
+        whole = (out / "甲.img").read_bytes(); self.assertIn(b"shaders/direct/lib.bin", whole)   # 推的是导出那份（带着色器库），不是资源包里的 game.img
+        half = whole[: P.IMG_PAGE * 2 + 100]
+        patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"], docs=["Import Here"], have={"Documents/Import Here/甲.img": half})
+        with patch, um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", self.lines):
+            r = install.push_export(self.c, A)
+        self.assertEqual((r["importDir"], calls), ("Import Here", [("io.x.s2arm", "Documents/Import Here/甲.img", P.IMG_PAGE * 2)]))
+
+    def test_export_push_picks_the_phone_with_s2arm(self):
+        """连着几台、没指定：只推给装着 S2Arm 的那台（不默认第一台，11-13 实测误推进另一台）；几台都装着 → device_required 请玩家选；指定了且连着 → 就推给它"""
+        A = self.A
+        self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
+        (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
+        app = "io.x.s2arm\t0.3.10\tS2Arm"
+        patch, calls = self._fake_phone({"U1": [], "U2": [app]})
+        with patch:
+            r = self._export(dict(gameId=A))
+        self.assertEqual((r["pushDevice"], calls), ("U2", [("U2", "io.x.s2arm", "Documents/放这里导入/甲.img", 0)]))
+        patch, calls = self._fake_phone({"U1": [app], "U2": [app]})
+        with patch:
+            r = self._export(dict(gameId=A))
+        self.assertEqual((r["pushed"], r["pushCode"], calls), (False, "device_required", []))
+        patch, calls = self._fake_phone({"U1": [app], "U2": [app]})
+        with patch:
+            r = self._export(dict(gameId=A, device="U2"))
+        self.assertEqual((r["pushDevice"], len(calls)), ("U2", 1))
 
     def test_export_folder_has_ipa_imgs_and_readme(self):
         """装法 export：点甲 → 甲、乙（单一 IMG）进容器和文件夹；丙旧格式点名跳过；丁没出过 iPhone 版不提；文件夹里只有 ipa、两份 .img（内容同库里）、说明"""
@@ -1658,6 +1728,8 @@ class ExportPhoneTests(unittest.TestCase):
         out = self.c.library / install.EXPORT_DIRS["zh"]
         self.assertEqual((r["exported"], r["outputPath"], r["games"], r["skipped"]), (True, str(out), [A, B], ["丙"]))
         self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", install.EXPORT_READMES["zh"]]))
+        # 给玩家的 .img 路径（装机前清单 imgPath）：导出文件夹里那份完整的；资源包里不带着色器库的 game.img 不给（D-QW2Q）；没导出过的款给空
+        self.assertEqual((install.phone_img_path(self.c, A), install.phone_img_path(self.c, C)), (str(out / "甲.img"), ""))
         # 一款一个文件：原资源包的其余文件段 + 着色器库进了目录表（手机认领后照常解出来）；原 game.img 不动
         img = img_module()
         for f, gid, data in (("甲.img", A, b"S2AIMG01-a"), ("乙.img", B, b"S2AIMG01-b")):

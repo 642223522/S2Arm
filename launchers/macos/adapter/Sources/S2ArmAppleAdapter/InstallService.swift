@@ -98,6 +98,9 @@ public struct InstallResult: Equatable {
     public var exportGames: Int = 0
     public var exportBytes: Int64? = nil
     public var skipped: [String] = []
+    /// 导出后顺手推到手机（11-13）：推进手机上自签 S2Arm「放这里导入」的 .img 文件名（空 = 没推）；没推时 pushNote = 缺什么、怎么做（作业结果原句）
+    public var pushed: [String] = []
+    public var pushNote: String = ""
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -151,7 +154,16 @@ public final class InstallService {
                              openToFinish: r["openToFinish"] as? Bool ?? false,
                              exportFolder: r["exported"] as? Bool == true ? r["outputPath"] as? String ?? "" : "",
                              exportGames: (r["games"] as? [Any])?.count ?? 0, exportBytes: (r["exportBytes"] as? NSNumber)?.int64Value,
-                             skipped: r["skipped"] as? [String] ?? [])
+                             skipped: r["skipped"] as? [String] ?? [], pushed: r["pushed"] as? [String] ?? [], pushNote: r["pushNote"] as? String ?? "")
+    }
+
+    /// 推到手机（exportPush，pack/jobs/install.py push_export_job）：把「S2Arm 自签导出」里的完整 .img 推进手机上自签 S2Arm 的「放这里导入」。
+    ///   gameId 为 nil = 文件夹里全部；→ 推进去的文件名。推不了抛 JobFailure（原因 + 下一步：连线 / 信任 / 先装 S2Arm.ipa）
+    public func exportPush(gameId: String?, device: String? = nil, events: EventSink = .discard) async throws -> [String] {
+        var extra: [String: Any] = [:]
+        if let gameId, !gameId.isEmpty { extra["gameId"] = gameId }
+        if let device, !device.isEmpty { extra["device"] = device }
+        return try await client.perform("exportPush", extra: extra, events: events).result["pushed"] as? [String] ?? []
     }
 
     // ---- 开发者证书（v0.2.4，pack/jobs/devcert.py）----
