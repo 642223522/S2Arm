@@ -218,7 +218,8 @@ void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uin
     if (!g_pass_open) g_bind_outside++;
     int i = (int)st; g_bind_calls[i]++; g_nfb[i] = n; memcpy(g_fb[i], b, (n < 16 ? n : 16) * sizeof *b); }
 void nvn_gpu_draw(nvn_gpu_cmd c, const nvn_gpu_draw_args *a) { (void)c; g_gdraws++; g_last_da = *a; if (!g_pass_open) g_draw_outside++; }
-void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = NVN_GPU_CAP_BLIT_SCALED; }
+static uint32_t g_caps_extra;   // 用例临时打开的能力位（如间接计数多绘）
+void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = NVN_GPU_CAP_BLIT_SCALED | g_caps_extra; }
 static int g_arena697_fail;
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err) { (void)c; (void)err;
     if(g_arena697_fail) { memset(out,0,sizeof *out);memset(err,0,sizeof *err);
@@ -2412,6 +2413,47 @@ static void t_arena697_detail(void) {
     pass_fresh();
 }
 
+// 间接计数多绘：同组记录（同计数地址、序号连续、记录地址等步长）在第 0 条整组交一次，GPU 读计数；后面同组的不再报名。
+//   设备没开 drawIndirectCount 时整组报 indirect_count_no_device_support 跳过；组断了（序号跳号）只画能证实的前半组、断处报名；
+//   OP_MULTI_DRAW（超过 1,024 条整段一条）直接按记录给的条数与步长交。期望值按记录手算：3 条 → max_draws 3、步长 20。紧跟 t_draw，沿用它绑好的状态。
+static void t_draw_mdi(void) {
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem, cnt = base + 5 * PG, ind = base + 4 * PG;
+    int d0 = g_gdraws, gu0 = nvn_unimpl_count("draw", "indirect_count_group_unavailable");
+    g_caps_extra = NVN_GPU_CAP_INDIRECT_COUNT;
+    stream s = {0};
+    for (int i = 0; i < 3; i++) {
+        p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
+        di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
+    }
+    end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 1 && g_last_da.max_draws == 3 && g_last_da.stride == 20 && g_last_da.cnt != NULL && g_last_da.ind != NULL);
+    CHECK(g_last_da.cnt_off == 5 * PG && g_last_da.ind_off == 4 * PG);
+    CHECK(nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0);   // 同组后两条认出来、不报名
+    // 组断了：序号 0 后直接是 2 → 第 0 条单独一组（max 1），序号 2 报名跳过
+    stream t = {0};
+    for (int i = 0; i < 3; i += 2) {
+        p_draw_idx *di = put(&t, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
+        di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
+    }
+    end(&t); submit1(&t); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 2 && g_last_da.max_draws == 1 && nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0 + 1);
+    // 超过 1,024 条的一次调用：一条 OP_MULTI_DRAW
+    stream m = {0}; p_multi_draw *md = put(&m, OP_MULTI_DRAW, sizeof *md);
+    md->ind = ind; md->cnt = cnt; md->ibuf = base + 3 * PG; md->stride = 20; md->max = 100; md->prim = 4; md->itype = 1;
+    end(&m); submit1(&m); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 3 && g_last_da.max_draws == 100 && g_last_da.stride == 20 && g_last_da.cnt != NULL);
+    // 设备没开：整组跳过、报名一次，不交给后端（交了后端整段判失败）
+    g_caps_extra = 0;
+    int nd0 = nvn_unimpl_count("draw", "indirect_count_no_device_support");
+    stream n = {0};
+    for (int i = 0; i < 3; i++) {
+        p_draw_idx *di = put(&n, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
+        di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
+    }
+    end(&n); submit1(&n); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("draw", "indirect_count_no_device_support") == nd0 + 1);
+}
+
 static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管线 / 动态状态 / 顶点流 / 绑定；没变的管线不重取；取不到的资源跳过并记账
     pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem); g_arena_used = 0;
     g_pipe_gets = g_set_pipes = g_set_dyns = g_gdraws = g_nvb = g_resolves = g_resolve_rc = 0; memset(g_nfb, 0, sizeof g_nfb);
@@ -2791,6 +2833,7 @@ int main(int argc, char **argv) {
     t_compute_sources();
     t_copy_t2t();
     t_draw();
+    t_draw_mdi();
     t_arena697_detail();
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
