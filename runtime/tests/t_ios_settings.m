@@ -88,6 +88,15 @@ int main(int argc, char **argv) {
         if (argc == 3 && (!strcmp(argv[2], "--reload-owned") || !strcmp(argv[2], "--reload-explicit")))
             return reload_checks(!strcmp(argv[2], "--reload-explicit"));
         if (argc != 2) return 2;
+        {   // Metal 性能浮层系统键（11-13 维护者实机：iPadOS 27.2 的 Metal 读 MetalForceHudEnabled）：开关开 → 写系统键；关 → 删；本来就对的不动
+            void s2a_ios_apply_overlay_settings(NSUserDefaults *); NSString *suite = [NSString stringWithFormat:@"t_ios_settings.hud.%d", getpid()];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+            [d setBool:YES forKey:@"MetalHUDForceEnabled"]; s2a_ios_apply_overlay_settings(d);
+            check([d boolForKey:@"MetalForceHudEnabled"], @"Metal 浮层：开关开 → 系统键 MetalForceHudEnabled 写上");
+            [d setBool:NO forKey:@"MetalHUDForceEnabled"]; s2a_ios_apply_overlay_settings(d);
+            check([d objectForKey:@"MetalForceHudEnabled"] == nil, @"Metal 浮层：开关关 → 系统键删掉");
+            [d removePersistentDomainForName:suite]; unsetenv("MTL_HUD_ENABLED");
+        }
         {   // 开发设施开关（settings.m s2a_dev_plist_from，os.c s2a_dev_on 按名字取）：有键回 1，"0" 开头为关；没有键 / 非字符串 / 空串回 0（= 没有这个键）
             int s2a_dev_plist_from(NSDictionary *info, int *on); int on = -1;
             check(s2a_dev_plist_from(@{@"S2ADevFacilities": @"0"}, &on) == 1 && on == 0, @"开发设施：玩家包 Info.plist 写 \"0\" → 有键、关");

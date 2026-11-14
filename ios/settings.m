@@ -27,7 +27,18 @@ static void apply_environment(const char *name, NSString *value) {
 // 浮层偏好要在建视图之前落到环境变量：多款容器与单款都是先建视图（app.m prepareGameView → s2a_hud_attach），
 // host_run 里才调 s2a_ios_apply_graphics_settings；晚读会让 s2a_hud_on() 把还没设的 S2A_HUD 缓存成 0（#153）。
 // 启动环境显式给的优先；开关语义仍是「下次启动生效」。
+// Metal 性能浮层的系统键（11-13 维护者实机：iPad mini / iPadOS 27.2 上 Metal 框架初始化时读 MetalForceHudEnabled，只多存这个键 = 冷启动出面板，
+//   删掉就没有；我们的开关键 MetalHUDForceEnabled（Settings.bundle / 设置页）它不认，MTL_HUD_ENABLED 是进程起来后才设、对系统建设备太晚）。
+//   开关打开就往 App 自己的偏好里写系统键、关掉就删（两种拼法都在：我们的键作界面状态照旧），下次冷启动 Metal 读到。只在值不同时写，免得自己触发变更通知再写
+static void metal_hud_mirror(NSUserDefaults *d) {
+    BOOL on = [d boolForKey:@"MetalHUDForceEnabled"];
+    if (on && ![d boolForKey:@"MetalForceHudEnabled"]) { [d setBool:YES forKey:@"MetalForceHudEnabled"]; fprintf(stderr, "[S2A 画面设置] Metal 性能浮层：写系统键 MetalForceHudEnabled（下次冷启动生效）\n"); }
+    else if (!on && [d objectForKey:@"MetalForceHudEnabled"]) { [d removeObjectForKey:@"MetalForceHudEnabled"]; fprintf(stderr, "[S2A 画面设置] Metal 性能浮层：删系统键 MetalForceHudEnabled（下次冷启动生效）\n"); }
+}
 void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
+    metal_hud_mirror(defaults);
+    { static id obs; if (!obs) obs = [NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil
+          usingBlock:^(NSNotification *n) { (void)n; metal_hud_mirror(NSUserDefaults.standardUserDefaults); }]; }   // App 设置页 / 系统「设置」里切开关时跟着改
     if (!getenv("S2A_HUD") && [defaults boolForKey:@"S2ADevHUD"]) {
         apply_environment("S2A_HUD", @"1");
         fprintf(stderr, "[S2A 画面设置] S2A_HUD=1（本 App 设置：开发浮层）\n");
