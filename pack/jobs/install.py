@@ -591,7 +591,7 @@ def classify(text, default="signing_failed"):
 
 
 def ios_pack(c, gid):
-    """这款的资源包（image/ios/pack）；还没出 iPhone 版 / 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）"""
+    """这款的资源包（image/ios/.pack）；还没出 iPhone 版 / 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）"""
     if not (layout.ios_kit(c, gid) / "main.npdm").is_file():
         raise Failure("这款游戏还没出 iPhone 包：先点「打 iPhone 包」。", code="job_failed")
     pack = layout.ios_pack(c, gid)
@@ -814,7 +814,7 @@ def phone_ipa_path(c):
 
 
 def phone_img_path(c, gid):
-    """这款的单一 IMG（image/ios/pack/game.img）。注意：自签玩家只拷它不够——着色器库等派生件不在 game.img 里（一键装机另推），
+    """这款的单一 IMG（image/ios/.pack/game.img）。注意：自签玩家只拷它不够——着色器库等派生件不在 game.img 里（一键装机另推），
     要给玩家一个文件用「导出，自己签名安装」（export_phone → pack/img.py export，11-12 真机验收 direct_lib_missing）；
     还没出成 IMG 形态（旧版出的包 / 多程序合集）→ 空串（界面不给按钮）"""
     img = layout.ios_pack(c, gid) / "game.img" if gid else None

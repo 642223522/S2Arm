@@ -481,10 +481,10 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(r["buildId"], "abc-123")
         image = gdir / "image" / "ios"
         self.assertEqual((r["ipa"], r["outputPath"]), ("", str(image)))   # 不再交付单款 ipa：装机时现组容器
-        self.assertTrue((image / "kit" / "main.npdm").is_file()); self.assertTrue((image / "pack" / "manifest.json").is_file())
+        self.assertTrue((image / "kit" / "main.npdm").is_file()); self.assertTrue((image / ".pack" / "manifest.json").is_file())
         self.assertFalse((gdir / "build" / "ios" / "x.ipa").exists())
-        man = json.loads((image / "pack" / "manifest.json").read_text())   # 交付转成单一 IMG 形态：game.json 记的资源包号 = 新清单的
-        self.assertEqual((man["format"], man["imgFile"], (image / "pack" / "game.img").is_file()), ("img", "game.img", True))
+        man = json.loads((image / ".pack" / "manifest.json").read_text())   # 交付转成单一 IMG 形态：game.json 记的资源包号 = 新清单的
+        self.assertEqual((man["format"], man["imgFile"], (image / ".pack" / "game.img").is_file()), ("img", "game.img", True))
         self.assertEqual(json.loads((gdir / "game.json").read_text())["ios"]["pack"], man["index_sha256"])
         # 存档游戏身份（#298 同批）：--from-extract 时一键出包不自己生成，作业层写好经 S2A_SAVE_IDENTITY 交过去；
         #   内容 = Mac 存档作业认的同一份（saves.identity），并能过出包侧 save_identity.py --check（iPhone 存档管理 / iCloud 同步靠它）
@@ -558,11 +558,11 @@ class JobsTests(unittest.TestCase):
             r = ipa.build(self.c)
             image = layout.image_ios(self.c, "0100000000000000")
             self.assertEqual(r["buildId"], "current-123")
-            man = json.loads((image / "pack" / "manifest.json").read_text())   # 本轮交付的那份（转成 IMG 后清单号按新 index.tsv 算）：exefs/main.npdm 内容是本轮的资源包号
+            man = json.loads((image / ".pack" / "manifest.json").read_text())   # 本轮交付的那份（转成 IMG 后清单号按新 index.tsv 算）：exefs/main.npdm 内容是本轮的资源包号
             self.assertEqual(man["format"], "img")
             self.assertEqual(layout.game_info(self.c, "0100000000000000")["ios"]["pack"], man["index_sha256"])
             import importlib.util; spec = importlib.util.spec_from_file_location("img", ROOT / "pack/img.py"); img = importlib.util.module_from_spec(spec); spec.loader.exec_module(img)
-            g = str(image / "pack" / "game.img"); off, n = img.find(g, "exefs/main.npdm"); fh = open(g, "rb"); fh.seek(off)
+            g = str(image / ".pack" / "game.img"); off, n = img.find(g, "exefs/main.npdm"); fh = open(g, "rb"); fh.seek(off)
             self.assertEqual(fh.read(n), b"current-pack")
             self.assertEqual(cache.read_bytes(), b'synthetic reusable AIR')
             self.assertEqual(direct_lib.read_bytes(), b'synthetic direct')
@@ -1623,7 +1623,7 @@ class JobsTests(unittest.TestCase):
         + 私有目录里按程序号存的缓存 + 别的款的缓存 + 共享 metallib 缓存"""
         low, run = gid.lower(), self.c.work_root / "run" / "s2arm"
         out = layout.ios_work(self.c, gid)
-        keep = [layout.image_ios(self.c, gid) / "pack" / "manifest.json", out / "logs" / "a.log"]
+        keep = [layout.image_ios(self.c, gid) / ".pack" / "manifest.json", out / "logs" / "a.log"]
         gone = [out / "roots" / f"t{low}@现行" / "x", out / "extract" / "romfs" / "f", run / "cache" / "direct" / gid.upper() / "work" / "cas",
                 run / "cache" / "bake" / f"{low}-abc" / "ok", run / "cache" / "aoc" / f"t{low}-k" / "aoc.tsv", run / "cache" / "srcver" / f"t{low}-k" / "r",
                 run / "widen" / f"t{low}_b" / "ui", run / "widen" / "auto" / f"t{low}_b" / "w", self.c.work_root / "cache" / "air" / "ios" / "x.air"]
@@ -1665,7 +1665,7 @@ class JobsTests(unittest.TestCase):
         outside = self.c.library / "outside" / "z"; outside.parent.mkdir(parents=True); outside.write_text("x")
         (work / "pkg/link").symlink_to(outside.parent)   # 指向外部的链接：只删链接，指向的文件在
         with patch.object(library, "_windows_layout", return_value=True):
-            pack = layout.image_ios(self.c, game["id"]) / "pack"; pack.mkdir(parents=True); (pack / "manifest.json").write_text("{}")   # 老玩家：有资源包没容器件
+            pack = layout.image_ios(self.c, game["id"]) / ".pack"; pack.mkdir(parents=True); (pack / "manifest.json").write_text("{}")   # 老玩家：有资源包没容器件
             library.prune_build(self.c, game["id"])
         self.assertEqual([q for q in keep if not q.exists()], [])
         self.assertEqual([q for q in gone if q.exists()], [])
@@ -2374,7 +2374,7 @@ class JobsTests(unittest.TestCase):
         (out / "roots" / "k@现行").symlink_to("k@pkg"); (layout.build_dir(self.c, gid) / "x").mkdir(parents=True)
         (out / "logs").mkdir(); (out / "logs" / "oneclick.log").write_text("出包日志")
         image = layout.image_ios(self.c, gid)   # 上一次成功出包的交付件
-        if ipa: (image / "pack").mkdir(parents=True); (image / "pack" / "manifest.json").write_text('{"index_sha256": "p"}')
+        if ipa: (image / ".pack").mkdir(parents=True); (image / ".pack" / "manifest.json").write_text('{"index_sha256": "p"}')
         if kit: (image / "kit").mkdir(parents=True); (image / "kit" / "main.npdm").write_bytes(b"old")
         image = layout.path(self.c, gid, "image"); (image / "mac").mkdir(parents=True); (image / "mac.partial").mkdir()   # 出了一半的新镜像
         save = layout.path(self.c, gid, "saves") / "s.bin"; save.parent.mkdir(parents=True); save.write_bytes(b"save")
@@ -2388,7 +2388,7 @@ class JobsTests(unittest.TestCase):
         c = self.stop_context(gid)
         library.clean_after_stop(c)
         image = layout.image_ios(self.c, gid)
-        self.assertEqual(sorted(p.name for p in image.iterdir()), ["kit", "pack"])
+        self.assertEqual(sorted(p.name for p in image.iterdir()), [".pack", "kit"])
         self.assertEqual(sorted(p.name for p in layout.build_dir(self.c, gid).iterdir()), ["ios"])   # 只剩出包日志
         self.assertEqual(sorted(p.name for p in out.iterdir()), ["logs"])
         self.assertEqual((image / "kit" / "main.npdm").read_bytes(), b"old")
