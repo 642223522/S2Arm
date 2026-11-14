@@ -1,0 +1,210 @@
+name: pack-game-fullscreen
+
+# Fullscreen test pack: same proven pipeline as pack-game.yml, but the pack
+# is built as an --all-caps TEST pack (S2A_ALL_CAPS=1 reaches pack/ipa.sh,
+# which swaps the in-pack capability list to s2a_caps.all.tsv). For Odyssey
+# that flips widen 0 -> 1: the host's layer-3 generic fullscreen (true
+# widening, no per-game table) turns on. The auto closed loop that normally
+# gates widen needs the maintainers' out-of-repo vision-model keys
+# (tests/autoplay/vision.sh), which do not exist on a runner, so it is
+# disabled outright (S2A_WIDEN_AUTO_RUN=0) instead of burning runner time.
+# The resource pack does not carry the caps list (it ships inside the .ipa),
+# so only the .ipa differs from the pack-game deliverables.
+#
+# - Inputs come from the user's Google Drive. The workflow receives only the
+#   Drive file IDs, from the repository secret DRIVE_IDS (never printed);
+#   the files themselves must be shared as "anyone with the link" for the
+#   duration of the run and un-shared right after.
+# - Signing: the user handles signing themselves, so the pack runs with
+#   S2A_SIGN=none. pack/oneclick/oneclick.sh only accepts --sign adhoc|dev
+#   and forwards the value to pack/ipa.sh, which does accept "none"; a
+#   one-line sed on the throwaway checkout lets "none" through.
+# - Outputs are uploaded as a run artifact together with
+#   pack/app.entitlements (the increased-memory entitlement the user's own
+#   signing must re-apply) and the pack logs.
+# Manual trigger only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pack-game-fullscreen
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    runs-on: xcode-27
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (bash 5, zstd, spirv-cross)
+        run: |
+          brew install bash zstd spirv-cross make meson ninja
+          bash --version | head -1
+          zstd --version
+          which spirv-cross; spirv-cross --version || true
+          which gmake; gmake --version | head -1
+          which meson; meson --version; which ninja; ninja --version
+
+      - name: Python venv with the pack's pinned requirements + gdown
+        run: |
+          python3 -m venv "$RUNNER_TEMP/s2a-venv"
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m pip install \
+            -r launchers/macos/requirements-runtime.txt \
+            -r pack/fonts/requirements.txt gdown
+          "$RUNNER_TEMP/s2a-venv/bin/python" -c "import capstone, lz4, numpy, PIL, fontTools; print('venv imports ok')"
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown --version || true
+
+      - name: Download game + keys from Google Drive (IDs from secret)
+        env:
+          DRIVE_IDS: ${{ secrets.DRIVE_IDS }}
+        run: |
+          set -euo pipefail
+          [ -n "${DRIVE_IDS:-}" ] || { echo "DRIVE_IDS secret is not set"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/game" "$RUNNER_TEMP/keys"
+          BASE=; UPDATE=; KEYS=; TITLEKEYS=
+          while IFS='=' read -r k v; do
+            v=$(printf '%s' "$v" | tr -d ' \t\r')
+            [ -n "$v" ] || continue
+            echo "::add-mask::$v"
+            case "$k" in
+              base) BASE=$v;; update) UPDATE=$v;;
+              keys) KEYS=$v;; titlekeys) TITLEKEYS=$v;;
+            esac
+          done <<< "$DRIVE_IDS"
+          [ -n "$BASE" ] && [ -n "$KEYS" ] || { echo "DRIVE_IDS must contain base= and keys= lines"; exit 1; }
+          dl() { "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown "https://drive.google.com/uc?id=$1" -O "$2"; }
+          dl "$BASE" "$RUNNER_TEMP/game/base.nsp"
+          [ -z "$UPDATE" ] || dl "$UPDATE" "$RUNNER_TEMP/game/update.nsp"
+          dl "$KEYS" "$RUNNER_TEMP/keys/prod.keys"
+          [ -z "$TITLEKEYS" ] || dl "$TITLEKEYS" "$RUNNER_TEMP/keys/title.keys"
+          ls -la "$RUNNER_TEMP/game" "$RUNNER_TEMP/keys"
+          df -h "$RUNNER_TEMP"
+
+      - name: Repo prep steps (same as ci.yml / stage-0 probe, venv python)
+        continue-on-error: true
+        run: |
+          PY="$RUNNER_TEMP/s2a-venv/bin/python"
+          "$PY" runtime/rewriter/prepare_deps.py build/rewriter-deps || echo "prep rewriter deps failed"
+          "$PY" pack/fonts/make_open_fonts.py "$RUNNER_TEMP/openfonts" || echo "prep open fonts failed"
+          bash services/systemdata/make_tzdata.sh --prepare-sources || echo "prep tzdata failed"
+          bash compat/fetch_base.sh || echo "prep compat base failed"
+
+      - name: Allow unsigned pack (one-line patch on the checkout only)
+        run: |
+          sed -i '' 's/case $SIGN in adhoc|dev)/case $SIGN in adhoc|dev|none)/' pack/oneclick/oneclick.sh
+          grep -n 'adhoc|dev|none' pack/oneclick/oneclick.sh
+
+      - name: Apply Mario touch-control skin (fork customization, checkout only)
+        run: python3 .github/patches/mario_skin.py
+
+      - name: Commit pack-time patches in the runner (ipa.sh needs a clean tree)
+        run: |
+          git add -A
+          git -c user.name="s2arm-pack" -c user.email="pack@localhost" commit -m "pack-time patches: unsigned sign + Mario skin (runner-local, not pushed)" || echo "nothing to commit"
+          echo "dirty files in build dirs after commit (must be empty):"
+          git status --porcelain -- runtime ios graphics translator services compat Makefile || true
+
+      - name: Pre-flight translation-chain tool check (diagnostic)
+        continue-on-error: true
+        run: |
+          echo "spirv-cross identity path: $(which spirv-cross)"
+          "$RUNNER_TEMP/s2a-venv/bin/python" translator/dmsh_chain.py --check-tools || echo "check-tools FAILED (see [RED] lines above)"
+          echo "pre-flight done"
+
+      - name: Pack (unsigned, fullscreen test pack)
+        env:
+          S2A_PYTHON: ${{ runner.temp }}/s2a-venv/bin/python
+          # Runner has 7 GiB RAM; mem_admit's dsh class-floor estimate is 7.8 GB
+          # (tools/mem_peak.tsv), so it refuses any unmeasured title with rc=125.
+          # Bypass the admission gate (documented emergency switch in
+          # tools/mem_admit.sh); measured dsh peaks top out at 5.2 GB, so the
+          # real build should fit. If it OOMs, the job just fails.
+          S2A_MEM_ADMIT: '0'
+          # Fullscreen test pack: ipa.sh treats S2A_ALL_CAPS=1 as --all-caps
+          # and ships s2a_caps.all.tsv (widen=1 via the always-present layer-3
+          # generic fullscreen source; fps60 is already 1 for this title).
+          S2A_ALL_CAPS: '1'
+          # Keep the widen auto-table closed loop OFF: it drives the game
+          # with an AI vision player whose API keys live outside the repo
+          # (maintainers' machines only). auto_pkg start/wait and auto_kick
+          # all honor this switch and exit immediately.
+          S2A_WIDEN_AUTO_RUN: '0'
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/out"
+          bash pack/oneclick/oneclick.sh "$RUNNER_TEMP/game" \
+            --keys "$RUNNER_TEMP/keys/prod.keys" \
+            --target ios --sign none \
+            --out "$RUNNER_TEMP/out" \
+            --events "$RUNNER_TEMP/events.jsonl" 2>&1 | tee "$RUNNER_TEMP/pack-console.log"
+          RC=${PIPESTATUS[0]}
+          echo "oneclick exit code: $RC"
+          df -h "$RUNNER_TEMP" || true
+          exit $RC
+
+      - name: Collect deliverables
+        if: always()
+        run: |
+          D="$RUNNER_TEMP/deliver"
+          mkdir -p "$D/logs"
+          cp pack/app.entitlements "$D/" 2>/dev/null || true
+          find "$RUNNER_TEMP/out" -maxdepth 2 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null || true
+          for p in "$RUNNER_TEMP/out"/*资源包; do
+            [ -d "$p" ] && cp -R "$p" "$D/"
+          done
+          cp "$RUNNER_TEMP/events.jsonl" "$D/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/pack-console.log" "$D/logs/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/out/logs" "$D/logs/out" 2>/dev/null || true
+          if [ -d "$RUNNER_TEMP/out/roots/.failed" ]; then
+            mkdir -p "$D/logs/failed"
+            find "$RUNNER_TEMP/out/roots/.failed" -type f -name '*.log' -size -5M -exec cp {} "$D/logs/failed/" \; 2>/dev/null || true
+            find "$RUNNER_TEMP/out/roots/.failed" -type f | head -40 > "$D/logs/failed/FILES.txt" 2>/dev/null || true
+            mkdir -p "$D/logs/libbuild"
+            for d in ~/.s2arm/run/s2arm/cache/*/*.tmp; do [ -d "$d" ] && cp "$d"/*.log "$D/logs/libbuild/" 2> /dev/null || true; done
+          fi
+          for r in "$RUNNER_TEMP/out/roots"/*@*; do
+            [ -d "$r" ] || continue
+            for f in s2a_caps.tsv s2a_caps.all.tsv widen_sites.tsv caps.log; do
+              cp "$r/$f" "$D/logs/" 2>/dev/null || true
+            done
+          done
+          {
+            echo "# pack-game-fullscreen result"
+            echo "- widen verdict (shipped caps must be the .all list, widen=1):"
+            grep -h '^widen' "$D/logs/s2a_caps.all.tsv" 2>/dev/null || echo "s2a_caps.all.tsv not collected"
+            grep -h '宽屏验证标记检查' "$RUNNER_TEMP/out/logs"/*.log "$D/logs/out"/*.log 2>/dev/null | head -2 || echo "widen check line not found in logs"
+            echo "- release caps for comparison:"
+            grep -h '^widen' "$D/logs/s2a_caps.tsv" 2>/dev/null || echo "s2a_caps.tsv not collected"
+            echo "- deliverables:"
+            find "$D" -maxdepth 2 -print | head -50
+            echo "- sizes:"
+            du -sh "$D"/* 2>/dev/null || true
+            echo "- events (result lines):"
+            grep '"ev":"result"' "$RUNNER_TEMP/events.jsonl" 2>/dev/null || echo "no result event (pack did not finish)"
+            echo "- disk:"
+            df -h "$RUNNER_TEMP" || true
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deliverables (unsigned ipa + resource pack + entitlements + logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2arm-odyssey-fullscreen-unsigned
+          path: ${{ runner.temp }}/deliver
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Upload logs only (kept longer, contains no game data)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-logs-fullscreen
+          path: ${{ runner.temp }}/deliver/logs
+          if-no-files-found: warn
+          retention-days: 7
