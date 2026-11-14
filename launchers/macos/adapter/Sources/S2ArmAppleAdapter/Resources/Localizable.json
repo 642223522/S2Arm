@@ -7120,6 +7120,14 @@
   "en": "In S2Arm on your computer, click Export for this game, then put this game's .img (named after the game) from the library's \"S2Arm Self-Sign Export\" folder into Import Here. You can delete the game.img in the import folder."
  },
  {
+  "source": "先把导出文件夹里这款的完整 .img（不带「着色器更新包」字样的那个）放进「放这里导入」，导好后再放更新包。",
+  "en": "Put this game's full .img from the export folder (the one without \"shader update\" in its name) into Import Here first, then add the update."
+ },
+ {
+  "source": "把电脑上这次导出的完整 .img 放进「放这里导入」重新导一遍（游戏版本换过，只换着色器套不上）。",
+  "en": "Put the full .img from this export on your computer into Import Here and import it again (the game version changed, so a shader-only update can't be applied)."
+ },
+ {
   "source": "检查文件是否拷完整，再打开 S2Arm。",
   "en": "Check that the file was copied completely, then open S2Arm again."
  },

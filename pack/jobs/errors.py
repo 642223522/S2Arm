@@ -17,6 +17,8 @@ RECOVERY = {
     "ios_install_manifest_bad": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_write_failed": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_import_img_no_shaders": "在电脑的 S2Arm 里对这款点「导出」，把游戏库「S2Arm 自签导出」文件夹里这款的 .img（以游戏名命名）放进「放这里导入」；导入文件夹里的 game.img 可以删掉。",   # D-9ZF9：资源包里的 game.img 不带着色器库，手机认领时不收（pack_apply.c img_place）
+    "ios_import_update_no_base": "先把导出文件夹里这款的完整 .img（不带「着色器更新包」字样的那个）放进「放这里导入」，导好后再放更新包。",   # 着色器更新包认领时本机没有本体（pack_apply.c img_update）
+    "ios_import_update_mismatch": "把电脑上这次导出的完整 .img 放进「放这里导入」重新导一遍（游戏版本换过，只换着色器套不上）。",   # 更新包的资源包号和本机本体不一致
     "ios_import_img_failed": "检查文件是否拷完整，再打开 S2Arm。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_unknown": "导出诊断包发给我们。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "rewrite_gap": "之前已经装到 iPhone 上的这款可以照常接着玩。点「复制错误摘要」发给我们，修好后更新 S2Arm 再出一次包。",

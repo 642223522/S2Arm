@@ -106,7 +106,7 @@ int main(void) {
       FILE *sf = fopen(sp, "r"); char spec[200000] = ""; size_t sk = sf ? fread(spec, 1, sizeof spec - 1, sf) : 0; if (sf) fclose(sf); spec[sk] = 0;
       CHECK(sk > 0, "读共用规格 %s", sp);
       const char *codes[] = {"ios_install_dir_unwritable", "ios_install_no_space", "ios_install_pack_truncated", "ios_install_img_format", "ios_install_img_corrupt",
-          "ios_install_files_missing", "ios_install_manifest_bad", "ios_install_write_failed", "ios_install_unknown", "ios_import_img_failed", "ios_import_img_no_shaders"};
+          "ios_install_files_missing", "ios_install_manifest_bad", "ios_install_write_failed", "ios_install_unknown", "ios_import_img_failed", "ios_import_img_no_shaders", "ios_import_update_no_base", "ios_import_update_mismatch"};
       for (size_t i = 0; i < sizeof codes / sizeof *codes; i++) { char q[80]; snprintf(q, sizeof q, "\"code\": \"%s\"", codes[i]); CHECK(strstr(spec, q) != NULL, "规格里应有码 %s", codes[i]); } }
     char c[8192];
     snprintf(c, sizeof c, "cd %s && mkdir -p src/romfs/很长的中文目录名用来超过一百个字节的老式头部限制很长的中文目录名用来超过一百个字节/子 docs/资源包/.incoming && "
@@ -496,13 +496,46 @@ int main(void) {
               "⑭b 给码 ios_import_img_no_shaders、原因点名「自签导出」（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure());
         snprintf(c, sizeof c, "grep -q 'shaders/a.metallib' '%s/games/0100ABCD00000007/资源包/index.tsv'", D5);
         CHECK(sh(c) == 0, "⑭b 机上已有的着色器库行保留在 index.tsv"); }
-      // 格式号 2（更新版 S2Arm 做的）：不认、原样留着，给码 ios_install_img_format
+      // 格式号 9（更新版 S2Arm 做的；2 是着色器更新包，见 ⑭c）：不认、原样留着，给码 ios_install_img_format
       char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
-      FILE *o4 = fopen(f4, "wb"); uint8_t h4[8192] = {0}; memcpy(h4, "S2AIMG01", 8); h4[8] = 2; memcpy(h4 + 16, "0100ABCD00000000", 16); uint64_t tot = sizeof h4; memcpy(h4 + 128, &tot, 8);
-      CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 2 的 IMG");
+      FILE *o4 = fopen(f4, "wb"); uint8_t h4[8192] = {0}; memcpy(h4, "S2AIMG01", 8); h4[8] = 9; memcpy(h4 + 16, "0100ABCD00000000", 16); uint64_t tot = sizeof h4; memcpy(h4 + 128, &tot, 8);
+      CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 9 的 IMG");
       CHECK(s2a_img_scan(D4) == 0 && !access(f4, F_OK) && !strcmp(s2a_img_scan_code(), "ios_install_img_format"),
-            "格式号 2：不挪、给码 ios_install_img_format（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure()); }
+            "格式号 9：不挪、给码 ios_install_img_format（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure());
+      // ⑭c 着色器更新包（格式号 2，维护者 11-13）：先导完整包（带 shaders/a.metallib = 'x'）并解开；再导更新包（同游戏号同资源包号，a.metallib = 'y'——
+      //   同长度：旧的若还在本体目录表里，下次解包会按「长度对就跳过 / 照目录表回写」把它弄回 'x'）。期望手写：
+      //   认领 1 个、更新包从导入文件夹删掉、a.metallib = 'y'、本体目录表里不再有 shaders/ 条目、本体头里整长 = 文件长、再次应用后仍是 'y'；
+      //   资源包号不同的更新包 → 不收、给码 ios_import_update_mismatch；本机没这款本体的更新包 → 不收、给码 ios_import_update_no_base
+      { char D6[1300]; snprintf(D6, sizeof D6, "%s/img_docs6", T);
+        snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' && printf 'y' > '%s/src/sh2.bin' && printf 'shaders/a.metallib\t%s/src/sh2.bin\n' > '%s/src/upd.tsv'"
+                 " && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/放这里导入/完整.img' --gid 0100abcd00000008 --pack-id img801 > /dev/null", D6, D, D, D, R, D, D6);
+        CHECK(sh(c) == 0, "⑭c 造完整包");
+        CHECK(s2a_img_scan(D6) == 1, "⑭c 完整包认领");
+        char g6[1500]; snprintf(g6, sizeof g6, "%s/games/0100ABCD00000008", D6);
+        CHECK(s2a_pack_apply(g6) == 0, "⑭c 完整包解开");
+        snprintf(c, sizeof c, "test \"$(cat '%s/资源包/shaders/a.metallib')\" = x", g6); CHECK(sh(c) == 0, "⑭c 完整包解出 a.metallib = x");
+        snprintf(c, sizeof c, "python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/某游戏 着色器更新包.img' --gid 0100abcd00000008 --pack-id img801 > /dev/null"
+                 " && printf '\002' | dd of='%s/放这里导入/某游戏 着色器更新包.img' bs=1 seek=8 conv=notrunc 2>/dev/null", R, D, D6, D6);
+        CHECK(sh(c) == 0, "⑭c 造更新包（格式号 2）");
+        CHECK(s2a_img_scan(D6) == 1, "⑭c 更新包认领（%s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure());
+        snprintf(c, sizeof c, "g='%s/资源包'; test ! -e '%s/放这里导入/某游戏 着色器更新包.img' && test \"$(cat \"$g/shaders/a.metallib\")\" = y"
+                 " && ! python3 '%s/pack/img.py' ls \"$g/game.img\" | grep -q '^shaders/'"
+                 " && python3 -c \"import sys,struct;b=open(sys.argv[1],'rb').read();t=struct.unpack_from('<Q',b,128)[0];sys.exit(0 if t==len(b) else 1)\" \"$g/game.img\""
+                 " && grep -q '^shaders/a.metallib\t1\t-' \"$g/index.tsv\"", g6, D6, R);
+        CHECK(sh(c) == 0, "⑭c 更新包删掉、a.metallib = y、本体目录表没有 shaders/、本体整长 = 文件长、index.tsv 记新派生件");
+        CHECK(s2a_pack_apply(g6) == 0, "⑭c 套更新包后解包成功");
+        snprintf(c, sizeof c, "test \"$(cat '%s/资源包/shaders/a.metallib')\" = y", g6); CHECK(sh(c) == 0, "⑭c 再次应用后 a.metallib 仍是 y（旧的没回写）");
+        snprintf(c, sizeof c, "python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/错版.img' --gid 0100abcd00000008 --pack-id img999 > /dev/null"
+                 " && printf '\002' | dd of='%s/放这里导入/错版.img' bs=1 seek=8 conv=notrunc 2>/dev/null", R, D, D6, D6);
+        CHECK(sh(c) == 0, "⑭c 造资源包号不同的更新包");
+        CHECK(s2a_img_scan(D6) == 0 && !strcmp(s2a_img_scan_code(), "ios_import_update_mismatch"), "⑭c 资源包号不同：不收、给码（实际 %s）", s2a_img_scan_code());
+        snprintf(c, sizeof c, "test -e '%s/放这里导入/错版.img' && rm '%s/放这里导入/错版.img'"
+                 " && python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/没本体.img' --gid 0100abcd00000009 --pack-id img901 > /dev/null"
+                 " && printf '\002' | dd of='%s/放这里导入/没本体.img' bs=1 seek=8 conv=notrunc 2>/dev/null", D6, D6, R, D, D6, D6);
+        CHECK(sh(c) == 0, "⑭c 错版原样留着；造本机没本体的更新包");
+        CHECK(s2a_img_scan(D6) == 0 && !strcmp(s2a_img_scan_code(), "ios_import_update_no_base") && strstr(s2a_img_scan_failure(), "完整"),
+              "⑭c 没本体：不收、给码、原因说先导完整包（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure()); } }
     // iOS 装机剃刀 #27 / #38：闸门与游戏库同一条快判。夹具：.applied = 清单、程序描述在、.incoming 里还留着一个写完的包（推送端盖残批的空包）。
     //   期望 s2a_import_state 判就绪 0（旧闸门先看 .incoming 判待导入 1，库却说能玩）。
     // 剃刀 #29：有 game.img、清单被推送开头置空、index.tsv 里的文件都在 → 期望不判就绪（旧代码清单读不出时当「不用解」→ 就绪 0）

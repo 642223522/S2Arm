@@ -16,7 +16,7 @@ def run(*args):
 class ExperienceStrings(unittest.TestCase):
     def test_both_languages_cover_every_ios_code(self):
         codes = sorted(i["code"] for i in json.loads((ROOT / "launchers/shared/experience.v1.json").read_text(encoding="utf-8"))["errors"]["items"] if i["code"].startswith(("ios_install_", "ios_import_")))
-        self.assertEqual(len(codes), 11)   # 11-13 加 ios_import_img_no_shaders（D-9ZF9）
+        self.assertEqual(len(codes), 13)   # 11-13 加 ios_import_img_no_shaders（D-9ZF9）、着色器更新包两个码
         for lang in ("zh-Hans", "zh-Hant", "en"):
             with self.subTest(lang=lang):
                 p = run("--lang", lang)
