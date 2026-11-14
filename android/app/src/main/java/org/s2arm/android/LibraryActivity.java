@@ -66,9 +66,11 @@ public final class LibraryActivity extends Activity {
         setContentView(root);
         library = new GameLibrary(getApplicationContext(), new GameLibrary.Listener() {
             @Override public void onStatus(String text) { runOnUiThread(() -> {
-                if (isDestroyed()) return;
+                // 库清单（GameLibrary 已记进日志）不上屏，也不碰状态行：导入 / 刷新收尾总会补一行
+                // 「Games: …」，若拿它覆盖再隐藏，刚报的失败原因或「已装好」就一闪而没。
+                if (isDestroyed() || text.startsWith("Games:")) return;
                 status.setText(text);
-                status.setVisibility(text.startsWith("Games:") ? android.view.View.GONE : android.view.View.VISIBLE);
+                status.setVisibility(android.view.View.VISIBLE);
             }); }
             @Override public void onGameAvailable(String titleId, String name, java.io.File art) { runOnUiThread(() -> {
                 if (isDestroyed() || !listed.add(titleId)) return;
@@ -192,6 +194,8 @@ public final class LibraryActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         fpsOverlay.setChecked(getSharedPreferences("display", MODE_PRIVATE).getBoolean("fps", false));
+        // 回到页面先收起上一轮的状态行（启动中、切换等待、诊断已导出、导入结果…），再重新扫描。
+        status.setVisibility(android.view.View.GONE);
         if (library != null) {
             String staging = getIntent().getStringExtra(EXTRA_IMPORT_STAGING);
             getIntent().removeExtra(EXTRA_IMPORT_STAGING); // do not repeat on later resumes

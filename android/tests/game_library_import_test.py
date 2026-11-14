@@ -59,7 +59,7 @@ STUBS = {
  public static Uri buildChildDocumentsUriUsingTree(Uri u,String s){return u;}
  public static Uri buildDocumentUriUsingTree(Uri u,String s){return u;}
  public static class Document { public static final String COLUMN_DOCUMENT_ID="id", COLUMN_DISPLAY_NAME="name", COLUMN_MIME_TYPE="type", MIME_TYPE_DIR="dir"; } }''',
-'android/util/Log.java': '''package android.util; public class Log { public static final int DEBUG=3; public static int d(String a,String b){return 0;} public static boolean isLoggable(String a,int b){return false;} public static final java.util.List<String> messages=new java.util.concurrent.CopyOnWriteArrayList<>(); public static int i(String a,String b){messages.add(b);return 0;} public static int w(String a,String b,Throwable t){return 0;} }''',
+'android/util/Log.java': '''package android.util; public class Log { public static final int DEBUG=3; public static int d(String a,String b){return 0;} public static boolean isLoggable(String a,int b){return false;} public static final java.util.List<String> messages=new java.util.concurrent.CopyOnWriteArrayList<>(); public static final java.util.concurrent.BlockingQueue<String> queue=new java.util.concurrent.LinkedBlockingQueue<>(); public static int i(String a,String b){messages.add(b);queue.add(b);return 0;} public static int w(String a,String b,Throwable t){return 0;} }''',
 'android/util/DisplayMetrics.java': '''package android.util; public class DisplayMetrics { public float density=1; }''',
 'android/content/res/Resources.java': '''package android.content.res; public class Resources { public android.util.DisplayMetrics getDisplayMetrics(){return new android.util.DisplayMetrics();} }''',
 'android/os/Bundle.java': '''package android.os; public class Bundle {}''',
@@ -77,7 +77,7 @@ STUBS = {
 'android/view/View.java': '''package android.view; public class View { public static final int VISIBLE=0, GONE=8; public void setBackgroundColor(int c){} public void setPadding(int a,int b,int c,int d){} private int vis; public void setVisibility(int v){vis=v;} public int getVisibility(){return vis;} public interface OnClickListener {void onClick(View v);} public void setEnabled(boolean enabled){throw new AssertionError("diagnostic export unexpectedly called");} }''',
 'android/widget/TextView.java': '''package android.widget; import android.view.View; import android.content.Context; import java.util.concurrent.*;
  public class TextView extends View { public static final BlockingQueue<String> messages=new LinkedBlockingQueue<>();
- public TextView(Context c){} public void setText(String s){messages.add(s);} public void setText(int i){} public void setTextSize(float f){} public void setTextColor(int c){} }''',
+ public String text; public TextView(Context c){} public void setText(String s){text=s;messages.add(s);} public void setText(int i){} public void setTextSize(float f){} public void setTextColor(int c){} }''',
 'android/widget/Button.java': '''package android.widget; import android.content.Context; import android.view.View;
  public class Button extends TextView { public Button(Context c){super(c);} public void setOnClickListener(View.OnClickListener l){} }''',
 'android/widget/CompoundButton.java': '''package android.widget; import android.content.Context;
@@ -213,11 +213,21 @@ public class ImportProbe {
    android.widget.CheckBox fps=(android.widget.CheckBox)fpsField.get(activity);
    demand(fps.isChecked(),"saved FPS preference did not populate checkbox");
    fps.setChecked(false); demand(!prefs.getBoolean("fps",true),"checkbox change did not publish FPS preference");
-   prefs.edit().putBoolean("fps",true).apply(); activity.onResume();done(android.widget.TextView.messages);
+   prefs.edit().putBoolean("fps",true).apply(); android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
    demand(fps.isChecked(),"activity resume did not reread FPS preference");
    demand(!Files.exists(target),"activity did not import absolute target");demand(retained(pending),"activity consumed unrelated input");
    demand(intent.getStringExtra(LibraryActivity.EXTRA_IMPORT_STAGING)==null,"activity did not consume intent extra");
-   activity.onResume();done(android.widget.TextView.messages);demand(retained(pending),"repeated activity resume consumed input");
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);demand(retained(pending),"repeated activity resume consumed input");
+   // 被拒的导入：拒绝原因留在状态行上，随后的「Games: …」库清单不能把它盖掉藏起；下次回到页面再收起。
+   java.lang.reflect.Field statusField=LibraryActivity.class.getDeclaredField("status");statusField.setAccessible(true);
+   android.widget.TextView status=(android.widget.TextView)statusField.get(activity);
+   Path refusedTarget=activityRoot.resolve("external/import/nest/target");stage(refusedTarget);   // 不是导入目录的直接子项：拒绝
+   activity.setIntent(new android.content.Intent().putExtra(LibraryActivity.EXTRA_IMPORT_STAGING,refusedTarget.toString()));
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
+   demand(status.text!=null&&status.text.startsWith("PLAYER_ERR"),"import refusal replaced on the status line: "+status.text);
+   demand(status.getVisibility()==android.view.View.VISIBLE,"import refusal hidden on the status line");
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
+   demand(status.getVisibility()==android.view.View.GONE,"stale status line not cleared on the next resume");
    } finally {activity.onDestroy();}
    Path failedReceiptRoot=root.resolve("receipt-failure"),receiptTarget=failedReceiptRoot.resolve("external/import/selected");stage(receiptTarget);
    BlockingQueue<String> receiptQueue=new LinkedBlockingQueue<>();
@@ -382,7 +392,7 @@ class GameLibraryImportTest(unittest.TestCase):
     def test_only_explicit_absolute_target_is_consumed(self):
         result = self.run_contract()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 33 checks', result.stdout)
+        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 36 checks', result.stdout)
 
     def test_missing_fingerprint_negative_control(self):
         result = self.run_contract(missing_fingerprint=True)
