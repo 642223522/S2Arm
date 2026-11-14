@@ -205,6 +205,7 @@ AI_NEXT = {
     'xcode_setup_required': ('human', 'Xcode 还没完成首次设置：请玩家打开 Xcode 同意许可（可能要输开机密码），然后 s2armctl env'),
     'xcode_sdk_too_old': ('human', 'Xcode 太旧：请玩家在 App Store 更新 Xcode，然后 s2armctl env'),
     'metal_unavailable': ('human', '缺 Metal 编译组件：请玩家在 S2Arm 环境检查里点「一键下载」，然后 s2armctl env'),
+    'metal_download_unreachable': ('human', '下不了 Metal 编译组件（连不上苹果的组件服务器）：请玩家检查网络 / 换代理后再点「一键下载」；不行就从苹果开发者网站下 Metal Toolchain 的 .dmg，终端 xcodebuild -importComponent MetalToolchain -importPath <dmg>，然后 s2armctl env'),
     'dotnet_sdk_missing': ('human', '缺 .NET SDK：请玩家在 S2Arm 环境检查里点安装，然后 s2armctl env'),
     'target_unsupported': ('human', '这台 iPhone 芯片太老或系统太旧（要 A14 及以上、iOS 18 及以上）：告诉玩家原因，升级系统或换设备'),
     'xcode_account_missing': ('human', 'Xcode 里没登录 Apple ID：请玩家打开 Xcode →「设置」→「账户」点「+」登录（免费的就行，要输 Apple ID 密码，AI 不代做），然后 s2armctl install <游戏号>；玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）'),

@@ -375,7 +375,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     // ---- environment ----
 
     /// 作业层「这台 Mac 缺东西」的错误码（pack/jobs/errors.py RECOVERY）：失败行据此给环境检查页入口（剃刀 M4）
-    static let environmentCodes: Set<String> = ["xcode_unavailable", "xcode_setup_required", "metal_unavailable", "ios_platform_missing",
+    static let environmentCodes: Set<String> = ["xcode_unavailable", "xcode_setup_required", "metal_unavailable", "metal_download_unreachable", "ios_platform_missing",
         "ios_platform_unregistered", "dotnet_unavailable", "dotnet_sdk_missing", "os_unsupported", "architecture_unsupported",
         "engine_incomplete", "engine_toolchain_newer"]
 

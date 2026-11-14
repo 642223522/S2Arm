@@ -74,6 +74,7 @@ RECOVERY = {
     "xcode_unavailable": "去 App Store 安装 Xcode，装好打开一次并完成必要组件安装，回来点「重新检查」。",
     "xcode_setup_required": "打开 Xcode，同意许可并完成首次设置，回来点「重新检查」。",
     "metal_unavailable": "在设置中安装 Metal 编译组件，完成后重新检查环境并重试。",
+    "metal_download_unreachable": "连不上苹果的组件服务器：检查网络，关掉或换个代理后在设置里再点「一键下载」；还不行就从苹果开发者网站下载与你的 Xcode 配套的 Metal Toolchain（.dmg），在「终端」运行 xcodebuild -importComponent MetalToolchain -importPath <下载的 .dmg>，回来点「重新检查」。",
     "package_verify_mismatch": "直接再出一次包：对不上的文件会重新读、重新算，不用重新导入游戏。还是这样就检查一下游戏库所在的磁盘（Windows：磁盘属性 →「工具」→「检查」），"
                                "并关掉对游戏库文件夹的杀毒实时扫描或云同步，或把游戏库换到另一块盘。",
     "ios_platform_missing": "在设置里点「iOS 平台组件」的「一键下载」（苹果官方，约 8 GB），下完自动重新检查后重试；也可以打开 Xcode → 设置 → Components 装上与 Xcode 配套的 iOS 平台。",
@@ -265,6 +266,7 @@ PLAYER_REASON = {
     "rewrite_gap": "暂时出不了包：这款游戏里有程序代码我们的改写器还不支持，我们正在修。",
     "glslc_windows_unavailable": "着色器编译暂不支持：这款游戏的着色器编译目前只能在 Mac 上完成。",
     "metal_unavailable": "缺少 Metal 组件：编着色器要用的 Metal 组件没装上。",
+    "metal_download_unreachable": "下不了 Metal 组件：连不上苹果的组件服务器，Metal 编译组件下载不下来。",
     "package_verify_mismatch": "资源包核对没通过：出包最后核对资源包时，有文件前后两次读出的内容对不上。多见于磁盘或内存读写不稳定，或有杀毒、云同步软件在改游戏库里的文件。",
     "ios_platform_missing": "缺少 iOS 平台组件：Xcode 的 iOS 平台还没装，打不了 iPhone 包。",
     "engine_toolchain_newer": "这版 S2Arm 不认识你的 Xcode：你的 Xcode 比这版 S2Arm 新。",
@@ -321,6 +323,11 @@ LOG_CAUSES = (
     (r"需要的改写空间超过了能放下的上限", "rewrite_gap"),
     # Windows 出包期 GLSLC 工具模式缺失（exitCode 75）
     (r"Windows 还没有 GLSLC 工具模式|要出包期离线编 GLSLC.*Windows", "glslc_windows_unavailable"),
+    # 下载 Metal 编译组件（xcodebuild -downloadComponent MetalToolchain）拿不到苹果的资源目录（诊断#f5eae9：3 台 Mac，Xcode 27A266a / 27B47；
+    #   同版本 Xcode 在能连上苹果的网络里照常下得下来）：玩家这边网络 / 代理到不了苹果的组件服务器。原先上屏只剩最后一行「})」
+    (r"Failed fetching catalog for assetType \(com\.apple\.MobileAsset\.MetalToolchain", "metal_download_unreachable"),
+    # xcodebuild 自己的插件加载不了（CoreSimulator 等系统组件没装上），苹果原文让跑 -runFirstLaunch = Xcode 首次设置没做完（同诊断#f5eae9 一台）
+    (r"xcodebuild failed to load a required plug-in", "xcode_setup_required"),
     (r"unable to find utility \"metal(?:lib)?\"|cannot execute tool '?metal(?:lib)?'?|missing Metal Toolchain"
      r"|【红】环境缺件 metal：", "metal_unavailable"),   # 后者：Windows 出包预检（pack/orch/oneclick_win.py env_items）找不到 Metal Developer Tools
     (r"is not installed\. (?:To use with Xcode, first download and install the platform|Please download and install the platform)", "ios_platform_missing"),   # xcodebuild 原文（11-07 gate-host Xcode 26.6）

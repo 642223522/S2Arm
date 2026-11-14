@@ -4972,6 +4972,14 @@
   "en": "Metal not available. The Metal component needed for shader compilation is not installed."
  },
  {
+  "source": "下不了 Metal 组件：连不上苹果的组件服务器，Metal 编译组件下载不下来。",
+  "en": "Can't download Metal. Apple's component server can't be reached, so the Metal compiler component can't be downloaded."
+ },
+ {
+  "source": "连不上苹果的组件服务器：检查网络，关掉或换个代理后在设置里再点「一键下载」；还不行就从苹果开发者网站下载与你的 Xcode 配套的 Metal Toolchain（.dmg），在「终端」运行 xcodebuild -importComponent MetalToolchain -importPath <下载的 .dmg>，回来点「重新检查」。",
+  "en": "Can't reach Apple's component server: check your network, turn off or switch your proxy, then click Download in Settings again. If it still fails, download the Metal Toolchain (.dmg) matching your Xcode from Apple's developer website, run xcodebuild -importComponent MetalToolchain -importPath <the .dmg> in Terminal, then click Recheck."
+ },
+ {
   "source": "在设置里点「iOS 平台组件」的「一键下载」（苹果官方，约 8 GB），下完自动重新检查后重试；也可以打开 Xcode → 设置 → Components 装上与 Xcode 配套的 iOS 平台。",
   "en": "In Settings, click Download next to “iOS Platform Components” (from Apple, about 8 GB); it rechecks automatically when done, then try again. You can also open Xcode → Settings → Components and install the iOS platform that matches your Xcode."
  },
