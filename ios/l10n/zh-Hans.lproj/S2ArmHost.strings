@@ -286,6 +286,8 @@
 "error.sentence" = "%@。%@";
 "img.importFolder" = "放这里导入";
 "img.scanFailed.title" = "没能导入游戏文件";
+"img.noShaders.title" = "这个游戏文件不带着色器";
+"img.noShaders.body" = "「%@」不带着色器，前几分钟会卡。在电脑的 S2Arm 里点「导出，自己签名安装」，连着手机点「推到手机」；或者把「S2Arm 自签导出」文件夹里的「<游戏名>.img」放进来，就不卡了。";
 "games.repair.done.title" = "游戏文件夹已修好";
 "games.repair.done.body" = "游戏文件夹之前归系统账户，S2Arm 写不进去，安装一直开始不了。已自动迁到 S2Arm 自己的新文件夹（%u 个文件，和原文件共享数据，不多占空间），可以接着安装。旧文件夹 S2Arm 删不掉，下次连电脑时会清掉。";
 "games.repair.failed.title" = "游戏文件夹没能修好";
