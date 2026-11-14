@@ -89,6 +89,7 @@ s2armctl state | errors [游戏号] | logs <任务号|游戏号> [--lines N]
 | `xcode_setup_required` | human | 请玩家打开 Xcode 同意许可、等组件装完（可能要输开机密码），然后 `s2armctl env` |
 | `xcode_sdk_too_old` | human | 请玩家在 App Store 更新 Xcode，然后 `s2armctl env` |
 | `metal_unavailable` 缺 Metal 编译组件 | human | 请玩家在 S2Arm「设置 → 运行与构建环境」点「一键下载」，然后 `s2armctl env` |
+| `metal_download_unreachable` 下不了 Metal 编译组件 | human | 连不上苹果的组件服务器：请玩家检查网络 / 换代理后再点「一键下载」；不行就从苹果开发者网站下 Metal Toolchain 的 .dmg，终端运行 `xcodebuild -importComponent MetalToolchain -importPath <dmg>`，然后 `s2armctl env` |
 | `ios_platform_missing` 缺 Xcode 的 iOS 平台组件 | human | 请玩家在 S2Arm「设置 → 运行与构建环境」的「iOS 平台组件」点「一键下载」（约 8 GB），然后 `s2armctl env`；只在 Mac 上玩不需要 |
 | `dotnet_sdk_missing` | human | 请玩家在同一处点安装，然后 `s2armctl env` |
 | 等系统授权（`next` 说 S2Arm 要读某个文件夹） | human | 请玩家在屏幕上的系统框里点「允许」 |
