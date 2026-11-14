@@ -66,6 +66,8 @@
     <string name="library_switch_timeout">正在运行的游戏 20 秒内没有退出。请稍等片刻再点一次。</string>
     <string name="library_launch_failed">游戏没能启动：%1$s</string>
     <string name="library_switch_cancel">取消</string>
-    <string name="library_title">游戏库</string>
-    <string name="library_more">更多…</string>
+    <string name="library_your_games">你的游戏</string>
+    <string name="library_position">第 %1$d 个，共 %2$d</string>
+    <string name="library_empty">还没有游戏</string>
+    <string name="library_empty_hint">用电脑上的 S2Arm 安装游戏。</string>
 </resources>

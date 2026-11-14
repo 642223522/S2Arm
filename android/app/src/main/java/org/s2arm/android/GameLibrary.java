@@ -38,6 +38,8 @@ final class GameLibrary {
         void onStatus(String text);
         default void onGameReady(GameSession session) { }
         default void onGameAvailable(String titleId, String name) { }
+        /** 游戏库界面用：名字不带版本号；art 是这款的封面（商店横图 banner.jpg 优先，其次游戏图标 icon.jpg），都没有为 null。 */
+        default void onGameAvailable(String titleId, String name, File art) { onGameAvailable(titleId, name); }
     }
 
     private final Context context;
@@ -271,7 +273,8 @@ final class GameLibrary {
                 state = boot.summary() + "; refused: " + mismatch;
             } else {
                 state = boot.summary() + "; launch requires session admission";
-                listener.onGameAvailable(boot.titleId, info.name + " " + info.version);
+                File revision = new File(g, boot.revisionDir), banner = new File(revision, "banner.jpg"), icon = new File(revision, "icon.jpg");
+                listener.onGameAvailable(boot.titleId, info.name, banner.isFile() ? banner : icon.isFile() ? icon : null);
             }
             sb.append(String.format(Locale.ROOT, "\n%s %s [%s]: %d files, %.1f MiB; %s", info.name, info.version, info.titleId,
                 boot.packageFiles, boot.packageBytes / 1048576.0, state));

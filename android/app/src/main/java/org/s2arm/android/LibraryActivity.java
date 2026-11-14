@@ -14,7 +14,8 @@ import java.util.Set;
 public final class LibraryActivity extends Activity {
     private GameLibrary library;
     private TextView status;
-    private LinearLayout rows, games;
+    private LinearLayout more;
+    private LibraryShelf shelf;
     private CheckBox fpsOverlay;
     private final Set<String> listed = new HashSet<>();
     private final java.util.Map<String, String> names = new java.util.HashMap<>();
@@ -25,20 +26,28 @@ public final class LibraryActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        rows = new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL);
-        int pad = Math.round(24 * getResources().getDisplayMetrics().density);
-        rows.setPadding(pad, pad, pad, pad);
-        // 与 iOS 同一个样子：打开就是游戏库，点哪款进哪款。导入 / 帧率显示 / 诊断包不放主页面，收进「更多」（缺省收起）。
-        TextView title = new TextView(this); title.setText(R.string.library_title); title.setTextSize(22); rows.addView(title);
-        LinearLayout more = new LinearLayout(this); more.setOrientation(LinearLayout.VERTICAL); more.setVisibility(android.view.View.GONE);
-        Button moreButton = new Button(this); moreButton.setText(R.string.library_more);
-        moreButton.setOnClickListener(v -> more.setVisibility(more.getVisibility() == android.view.View.GONE ? android.view.View.VISIBLE : android.view.View.GONE));
+        // 与 iOS 同一个样子（shell/Sources/ShellUI/CoverFlowView.swift）：横屏封面流，点正中的卡片开始玩。
+        //   导入 / 帧率显示 / 诊断包不在主页面：右上「游戏设置」「设置」两个圆钮打开右侧面板（iOS 的设置页还没整套搬过来，先放这三项）。
+        float density = getResources().getDisplayMetrics().density;
+        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+        more = new LinearLayout(this); more.setOrientation(LinearLayout.VERTICAL); more.setVisibility(android.view.View.GONE);
+        int pad = Math.round(20 * density);
+        more.setPadding(pad, pad, pad, pad);
+        more.setBackgroundColor(0xF01A1A1C);
+        shelf = new LibraryShelf(this, new LibraryShelf.Listener() {
+            @Override public void play(String titleId) { launch(titleId); }
+            @Override public void openGameSettings() { toggleMore(); }
+            @Override public void openControllers() { toggleMore(); }
+            @Override public void openSettings() { toggleMore(); }
+        });
+        root.addView(shelf, new android.widget.FrameLayout.LayoutParams(-1, -1));
         Button importButton = new Button(this); importButton.setText(R.string.import_game);
         importButton.setOnClickListener(v -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), PICK_PACKAGE));
         more.addView(importButton);
         android.content.SharedPreferences display = getSharedPreferences("display", MODE_PRIVATE);
         fpsOverlay = new CheckBox(this);
         fpsOverlay.setText(R.string.fps_overlay_show);
+        fpsOverlay.setTextColor(0xFFFFFFFF);
         fpsOverlay.setChecked(display.getBoolean("fps", false));
         fpsOverlay.setOnCheckedChangeListener((button, checked) -> {
             if (display.getBoolean("fps", false) != checked)
@@ -49,25 +58,28 @@ public final class LibraryActivity extends Activity {
         Button exportButton = new Button(this); exportButton.setText(R.string.export_diagnostics);
         exportButton.setOnClickListener(v -> exportDiagnostics(exportButton));
         more.addView(exportButton);
+        root.addView(more, new android.widget.FrameLayout.LayoutParams(Math.round(320 * density), -1, android.view.Gravity.END));
         // 状态行只给玩家看得懂的：导入进度、失败原因；库清单（Games: 文件数 / 哈希…）只进日志，不上屏
         status = new TextView(this); status.setVisibility(android.view.View.GONE);
-        rows.addView(status);
-        games = new LinearLayout(this); games.setOrientation(LinearLayout.VERTICAL); rows.addView(games);
-        rows.addView(moreButton); rows.addView(more);
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this); scroll.addView(rows); setContentView(scroll);
+        status.setTextColor(0xFFFFFFFF); status.setPadding(pad, pad / 2, pad, pad / 2); status.setBackgroundColor(0xB3000000);
+        root.addView(status, new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM));
+        setContentView(root);
         library = new GameLibrary(getApplicationContext(), new GameLibrary.Listener() {
             @Override public void onStatus(String text) { runOnUiThread(() -> {
                 if (isDestroyed()) return;
                 status.setText(text);
                 status.setVisibility(text.startsWith("Games:") ? android.view.View.GONE : android.view.View.VISIBLE);
             }); }
-            @Override public void onGameAvailable(String titleId, String name) { runOnUiThread(() -> {
+            @Override public void onGameAvailable(String titleId, String name, java.io.File art) { runOnUiThread(() -> {
                 if (isDestroyed() || !listed.add(titleId)) return;
                 names.put(titleId, name);
-                Button play = new Button(LibraryActivity.this); play.setText(name);
-                play.setOnClickListener(v -> launch(titleId)); games.addView(play);
+                shelf.addGame(titleId, name, art);
             }); }
         });
+    }
+
+    private void toggleMore() {
+        more.setVisibility(more.getVisibility() == android.view.View.GONE ? android.view.View.VISIBLE : android.view.View.GONE);
     }
 
     private void show(String text) { status.setText(text); status.setVisibility(android.view.View.VISIBLE); }
