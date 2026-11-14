@@ -599,6 +599,10 @@ def direct(run, cur, target, jobs, tid=None, name='direct'):
 def junction(dst, src):
     """工作根里联到现行各项 / 直连库。游戏库所在盘建不了联接（exFAT / FAT32，v0.3.1 玩家确认过照用，pack/orch/roots.py links_supported）时整份拷过来：
     多占一份空间（空间预算已按这类盘多算），产物一样"""
+    target = shortroot.to_long(src, shortroot.table_now())
+    if WIN and shortroot.is_unc_path(target):
+        shutil.copytree(src, dst)
+        return
     try:
         if WIN:   # 目标写真实长路径：短根是工作期的入口，产物里的联接要在它之外也有效；CreateJunction 不受 cmd 的长度限制
             import _winapi
