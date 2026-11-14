@@ -46,6 +46,38 @@ public final class LdnSettingsTest {
         env = new Env();
         new LdnSettings("unknown", null).apply(env);
         check(env.writes == 0, "unknown persisted mode falls back to auto");
-        System.out.println("LDN policy: 7 cases passed");
+        check(new LdnSettings("client", " ").addressError() == LdnSettings.AddressError.EMPTY,
+            "empty client address must be reported before saving");
+        String[] invalid = {"256.1.2.3", "1.2.3", "1.2.3.4.5", "1..2.3", "-1.2.3.4",
+            "1.2.3.a", "relay.example", "::1", "1.2.3.4:30456", "01.2.3.4", "１.2.3.4"};
+        for (String address : invalid)
+            check(new LdnSettings("client", address).addressError() == LdnSettings.AddressError.INVALID,
+                "invalid IPv4 accepted: " + address);
+        for (String address : new String[] {"100.64.1.8", "192.168.0.1", "127.0.0.1", "255.255.255.255", "0.0.0.0"})
+            check(new LdnSettings("client", " " + address + " ").addressError() == null,
+                "valid IPv4 rejected: " + address);
+        check(new LdnSettings("host", "bad").addressError() == null
+            && new LdnSettings("auto", "").addressError() == null, "only clients need an address");
+        try {
+            new LdnSettings("client", "100.64.1.8").testConnection((address, port, timeout) -> {
+                check("100.64.1.8".equals(address), "probe target");
+                check(port == 30456 && timeout == 3000, "probe must use relay TCP port with bounded timeout");
+            });
+            boolean failed = false;
+            try {
+                new LdnSettings("client", "100.64.1.8").testConnection((address, port, timeout) -> {
+                    throw new java.io.IOException("refused");
+                });
+            } catch (java.io.IOException expected) { failed = true; }
+            check(failed, "failed probe must not report success");
+            boolean invalidRejected = false;
+            try {
+                new LdnSettings("client", "relay.example").testConnection((address, port, timeout) -> {
+                    throw new AssertionError("invalid address reached connector");
+                });
+            } catch (IllegalArgumentException expected) { invalidRejected = true; }
+            check(invalidRejected, "probe validates before connecting");
+        } catch (java.io.IOException error) { throw new AssertionError(error); }
+        System.out.println("LDN policy: environment, IPv4 validation and offline probe contracts passed");
     }
 }

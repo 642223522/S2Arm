@@ -39,7 +39,12 @@ final class AndroidLdnSettings {
         intent.putExtra(ADDRESS, settings.address);
     }
 
-    /** Once per process, before createGame/create can initialize Host's static LDN policy. */
+    /**
+     * Once per process, before createGame/create initializes Host's static LDN policy.
+     * Supported game stop ends :game via bridge.cpp -> s2a_host_shutdown -> _exit;
+     * LibraryActivity waits for that PID to disappear before launching a replacement.
+     * Activity resume/recreation must not rewrite the environment under an existing Host.
+     */
     static synchronized void apply(Context context, Intent intent) {
         if (applied) return;
         LdnSettings settings = intent != null && intent.hasExtra(MODE)
@@ -84,14 +89,86 @@ final class AndroidLdnSettings {
         content.addView(address);
         android.widget.ScrollView scroll = new android.widget.ScrollView(activity);
         scroll.addView(content);
-        new AlertDialog.Builder(activity).setTitle(R.string.ldn_settings).setView(scroll)
-            .setPositiveButton(R.string.ldn_save, (dialog, which) -> {
-                int selected = modes.getCheckedRadioButtonId() - 1;
-                LdnSettings settings = new LdnSettings(values[selected], address.getText().toString());
+        TextView result = new TextView(activity);
+        content.addView(result);
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(R.string.ldn_settings).setView(scroll)
+            .setPositiveButton(R.string.ldn_save, null)
+            .setNeutralButton(R.string.ldn_test, null)
+            .setNegativeButton(android.R.string.cancel, null).create();
+        dialog.setOnShowListener(ignored -> {
+            // Override the default dismiss-on-click: input errors stay visible in this dialog.
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                LdnSettings settings = readInput(activity, modes, values, address, result);
+                if (settings == null) return;
                 preferences(activity).edit().putString("mode", settings.mode)
                     .putString("address", settings.address).apply();
                 Toast.makeText(activity, R.string.ldn_saved, Toast.LENGTH_LONG).show();
-            })
-            .setNegativeButton(android.R.string.cancel, null).show();
+                dialog.dismiss();
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                LdnSettings settings = readInput(activity, modes, values, address, result);
+                if (settings == null) return;
+                if (!"client".equals(settings.mode)) {
+                    result.setText(R.string.ldn_test_client);
+                    return;
+                }
+                android.widget.Button test = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+                test.setEnabled(false);
+                result.setText(activity.getString(R.string.ldn_testing, settings.address));
+                new Thread(() -> {
+                    String message;
+                    try {
+                        settings.testConnection((target, port, timeout) -> {
+                            try (java.net.Socket socket = new java.net.Socket()) {
+                                socket.connect(new java.net.InetSocketAddress(target, port), timeout);
+                            }
+                        });
+                        message = activity.getString(R.string.ldn_test_ok, settings.address);
+                    } catch (java.io.IOException | SecurityException error) {
+                        Log.i("S2Arm", "LDN TCP connection test failed", error);
+                        message = activity.getString(R.string.ldn_test_failed, settings.address);
+                    }
+                    String completed = message;
+                    activity.runOnUiThread(() -> {
+                        if (activity.isFinishing() || activity.isDestroyed() || !dialog.isShowing()) return;
+                        test.setEnabled(true);
+                        // Do not label an edited address with a previous target's result.
+                        if (modes.getCheckedRadioButtonId() == 3
+                                && settings.address.equals(address.getText().toString().trim()))
+                            result.setText(completed);
+                        else result.setText("");
+                    });
+                }, "s2a-ldn-test").start();
+            });
+            address.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence text, int start, int count, int after) { }
+                public void onTextChanged(CharSequence text, int start, int before, int count) {
+                    address.setError(null);
+                    result.setText("");
+                }
+                public void afterTextChanged(android.text.Editable text) { }
+            });
+            modes.setOnCheckedChangeListener((group, checkedId) -> result.setText(""));
+        });
+        dialog.show();
+    }
+
+    private static LdnSettings readInput(Activity activity, RadioGroup modes, String[] values,
+            EditText address, TextView result) {
+        int selected = modes.getCheckedRadioButtonId() - 1;
+        if (selected < 0 || selected >= values.length) {
+            result.setText(R.string.ldn_select_mode);
+            return null;
+        }
+        LdnSettings settings = new LdnSettings(values[selected], address.getText().toString());
+        LdnSettings.AddressError error = settings.addressError();
+        if (error != null) {
+            address.setError(error == LdnSettings.AddressError.EMPTY
+                ? activity.getString(R.string.ldn_address_empty)
+                : activity.getString(R.string.ldn_address_invalid, settings.address));
+            address.requestFocus();
+            return null;
+        }
+        return settings;
     }
 }

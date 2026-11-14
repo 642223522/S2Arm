@@ -51,6 +51,16 @@ class LdnSettingsTest(unittest.TestCase):
         result = self.run_policy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_ipv4_negative_control(self):
+        result = self.run_policy(('if (value > 255) return AddressError.INVALID;', 'if (value > 999) return AddressError.INVALID;'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid IPv4 accepted: 256.1.2.3', result.stderr)
+
+    def test_tcp_port_negative_control(self):
+        result = self.run_policy(('connector.connect(address, 30456, 3000);', 'connector.connect(address, 30457, 3000);'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('probe must use relay TCP port', result.stderr)
+
     def test_client_relay_negative_control(self):
         result = self.run_policy(('env.set("S2A_LDN_RELAY", "0");', 'env.set("S2A_LDN_RELAY", "1");'))
         self.assertNotEqual(result.returncode, 0)
