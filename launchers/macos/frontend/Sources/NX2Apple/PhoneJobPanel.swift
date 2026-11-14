@@ -167,8 +167,12 @@ struct PhoneJobPanel: View {
                 SuccessSeal()
                 Text(t("phone.headline.export")).font(.manrope(44, .heavy)).tracking(-1.4).accessibilityIdentifier("phone.title")
             }
-            Text(t("phone.done.export").replacingOccurrences(of: "{0}", with: (o.exportFolder as NSString).abbreviatingWithTildeInPath))
-                .font(.manrope(16)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            // 路径可点：点了在访达打开（维护者 11-11：界面上的路径一律可点打开）
+            Button { NSWorkspace.shared.open(URL(fileURLWithPath: o.exportFolder)) } label: {
+                Text(t("phone.done.export").replacingOccurrences(of: "{0}", with: (o.exportFolder as NSString).abbreviatingWithTildeInPath))
+                    .font(.manrope(16)).foregroundStyle(.secondary).underline().fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("phone.export.path")
             HStack(alignment: .top, spacing: 52) {
                 ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
                     VStack(alignment: .leading, spacing: 6) {

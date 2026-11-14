@@ -1649,6 +1649,15 @@ class ExportPhoneTests(unittest.TestCase):
              um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
             return (fn or install.install)(self.c)
 
+    def _push(self, request=None):
+        """完成页点「推到手机」（exportPush）：推送工具换成 _fake_phone 的替身"""
+        self.c.r = dict(self.c.r, **(request or {}))
+        with um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", self.lines):
+            try:
+                return install.push_export_job(self.c)
+            except install.Failure as e:
+                return dict(pushed=False, pushCode=e.code, pushNote=str(e))
+
     def _fake_phone(self, apps, docs=(), have=None):
         """推到手机的替身：连着一台 U1；手机上装着 apps（每行 包名<TAB>版本<TAB>名字）；Documents 下已有 docs；have = {远端路径: 机上已有的字节}。
         记下每次 put / put-at（远端路径、偏移），不连真手机"""
@@ -1667,17 +1676,22 @@ class ExportPhoneTests(unittest.TestCase):
         return um.patch.object(P, "Devpush", Dev), calls
 
     def test_export_push_needs_phone_and_app(self):
-        """导出后推到手机（11-13 D-QW2Q）：没连手机 / 手机上没装 S2Arm → 导出照样成功，结果 pushed=False，说清下一步；pushCode 给界面认"""
+        """导出本身不碰手机（几 GB，推不推由玩家在完成页选，11-13 维护者）；点「推到手机」时没连手机 / 手机上没装 S2Arm → 报缺什么、怎么做"""
         A = self.A
         self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
         (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
-        r = self._export(dict(gameId=A))
-        self.assertEqual((r["exported"], r["pushed"], r["pushCode"]), (True, False, "device_not_connected"))
+        patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"])
+        with patch:
+            r = self._export(dict(gameId=A))
+        self.assertEqual((r["exported"], "pushed" in r, calls), (True, False, []))
+        self.lines = lambda c, exe, *a: (0, [], "")
+        r = self._push(dict(gameId=A))
+        self.assertEqual((r["pushed"], r["pushCode"]), (False, "device_not_connected"))
         self.assertIn("信任", r["pushNote"])
         patch, calls = self._fake_phone([])
         with patch:
-            r = self._export(dict(gameId=A))
-        self.assertEqual((r["exported"], r["pushed"], r["pushCode"], calls), (True, False, "device_not_ready", []))
+            r = self._push()
+        self.assertEqual((r["pushed"], r["pushCode"], calls), (False, "device_not_ready", []))
         self.assertIn("S2Arm.ipa", r["pushNote"])
 
     def test_export_push_puts_full_imgs_into_import_dir(self):
@@ -1687,9 +1701,10 @@ class ExportPhoneTests(unittest.TestCase):
         A, B = self.A, self.B
         self._library((A, "甲"), (B, "乙")); self._img(A, b"S2AIMG01-a" * 5000); self._img(B, b"S2AIMG01-b")
         (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
+        self._export(dict(gameId=A))
         patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"])
         with patch:
-            r = self._export(dict(gameId=A))
+            r = self._push(dict(gameId=A))
         self.assertEqual((r["pushed"], r["pushBundleId"], r["importDir"], calls), (["甲.img"], "io.x.s2arm", "放这里导入", [("io.x.s2arm", "Documents/放这里导入/甲.img", 0)]))
         out = self.c.library / install.EXPORT_DIRS["zh"]
         whole = (out / "甲.img").read_bytes(); self.assertIn(b"shaders/direct/lib.bin", whole)   # 推的是导出那份（带着色器库），不是资源包里的 game.img
@@ -1704,18 +1719,19 @@ class ExportPhoneTests(unittest.TestCase):
         A = self.A
         self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
         (self.c.private / "install.json").write_text(json.dumps({"mode": "export"}))
+        self._export(dict(gameId=A))
         app = "io.x.s2arm\t0.3.10\tS2Arm"
         patch, calls = self._fake_phone({"U1": [], "U2": [app]})
         with patch:
-            r = self._export(dict(gameId=A))
+            r = self._push(dict(gameId=A))
         self.assertEqual((r["pushDevice"], calls), ("U2", [("U2", "io.x.s2arm", "Documents/放这里导入/甲.img", 0)]))
         patch, calls = self._fake_phone({"U1": [app], "U2": [app]})
         with patch:
-            r = self._export(dict(gameId=A))
+            r = self._push()
         self.assertEqual((r["pushed"], r["pushCode"], calls), (False, "device_required", []))
         patch, calls = self._fake_phone({"U1": [app], "U2": [app]})
         with patch:
-            r = self._export(dict(gameId=A, device="U2"))
+            r = self._push(dict(device="U2"))
         self.assertEqual((r["pushDevice"], len(calls)), ("U2", 1))
 
     def test_export_folder_has_ipa_imgs_and_readme(self):
@@ -1727,7 +1743,13 @@ class ExportPhoneTests(unittest.TestCase):
         r = self._export(dict(gameId=A))
         out = self.c.library / install.EXPORT_DIRS["zh"]
         self.assertEqual((r["exported"], r["outputPath"], r["games"], r["skipped"]), (True, str(out), [A, B], ["丙"]))
-        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", install.EXPORT_READMES["zh"]]))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", "甲 着色器更新包.img", "乙 着色器更新包.img", install.EXPORT_READMES["zh"]]))
+        # 着色器更新包（维护者 11-13）：格式号 2、头里游戏号 / 资源包号同本体 game.img、只含派生件（着色器库），没有本体的其余文件段
+        for f, gid in (("甲 着色器更新包.img", A), ("乙 着色器更新包.img", B)):
+            with open(out / f, "rb") as fh: fmt = int.from_bytes(fh.read(12)[8:12], "little")
+            base = img_module().header(str(library_pack(self.c, gid) / "game.img"))
+            self.assertEqual((fmt, img_module().header(str(out / f))["gid"], img_module().header(str(out / f))["pack_id"]), (2, gid, base["pack_id"]))
+            self.assertEqual({p for p, _, _ in img_module().entries(str(out / f))}, {"shaders/direct/lib.bin"})
         # 给玩家的 .img 路径（装机前清单 imgPath）：导出文件夹里那份完整的；资源包里不带着色器库的 game.img 不给（D-QW2Q）；没导出过的款给空
         self.assertEqual((install.phone_img_path(self.c, A), install.phone_img_path(self.c, C)), (str(out / "甲.img"), ""))
         # 一款一个文件：原资源包的其余文件段 + 着色器库进了目录表（手机认领后照常解出来）；原 game.img 不动
@@ -1793,13 +1815,13 @@ class ExportPhoneTests(unittest.TestCase):
         self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
         en, zh = self.c.library / "S2Arm Self-Sign Export", self.c.library / "S2Arm 自签导出"
         r = self._export(dict(gameId=self.A, mode="export", uiLanguage="en"))
-        self.assertEqual(sorted(p.name for p in en.iterdir()), sorted(["S2Arm.ipa", "甲.img", "How to install on iPhone.txt"]))
+        self.assertEqual(sorted(p.name for p in en.iterdir()), sorted(["S2Arm.ipa", "甲.img", "甲 shader update.img", "How to install on iPhone.txt"]))
         self.assertEqual((r["outputPath"], r["readme"]), (str(en), str(en / "How to install on iPhone.txt")))
         text = (en / "How to install on iPhone.txt").read_text(encoding="utf-8-sig")
         for want in ("甲.img (甲)", "Import Here", "Settings → General → VPN & Device Management"): self.assertIn(want, text)
         self.assertNotIn("放这里导入", text); self.assertFalse(zh.exists())
         self._export(dict(gameId=self.A, mode="export", uiLanguage="zh-Hans"))
-        self.assertEqual(sorted(p.name for p in zh.iterdir()), sorted(["S2Arm.ipa", "甲.img", "怎么装到 iPhone.txt"]))
+        self.assertEqual(sorted(p.name for p in zh.iterdir()), sorted(["S2Arm.ipa", "甲.img", "甲 着色器更新包.img", "怎么装到 iPhone.txt"]))
         self.assertFalse(en.exists(), "换回中文：英文名的旧导出删掉")
         self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])
 

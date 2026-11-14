@@ -591,7 +591,7 @@ def classify(text, default="signing_failed"):
 
 
 def ios_pack(c, gid):
-    """这款的资源包（image/ios/pack）；还没出 iPhone 版 / 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）"""
+    """这款的资源包（image/ios/.pack）；还没出 iPhone 版 / 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）"""
     if not (layout.ios_kit(c, gid) / "main.npdm").is_file():
         raise Failure("这款游戏还没出 iPhone 包：先点「打 iPhone 包」。", code="job_failed")
     pack = layout.ios_pack(c, gid)
@@ -815,12 +815,12 @@ def phone_ipa_path(c):
 
 def phone_img_path(c, gid):
     """给玩家拷到手机用的这款 .img：只给「S2Arm 自签导出」文件夹里那份完整的（game.img + 着色器库 / 覆盖层，pack/img.py export）；
-    资源包里的 image/ios/pack/game.img 按设计不带着色器库（一键装机另推），交给自签玩家就是 D-QW2Q 那样整局黑屏，所以不再给它。
+    资源包里的 image/ios/.pack/game.img 按设计不带着色器库（一键装机另推），交给自签玩家就是 D-QW2Q 那样整局黑屏，所以不再给它。
     没导出过这款 → 空串（界面不给按钮；要玩家先「导出，自己签名安装」，连着手机会直接推进去）"""
     folder = export_dir(c)
     if not gid or not folder.is_dir():
         return ""
-    return next((str(p) for p in sorted(folder.glob("*.img")) if p.is_file() and _img_head(p)[0] == gid.upper()), "")
+    return next((str(p) for p in _full_imgs(folder) if _img_head(p)[0] == gid.upper()), "")
 
 
 def phone_shader_cache(c, gid):
@@ -918,6 +918,23 @@ def _export_img(c, pack, dst):
         raise Failure("写导出用的游戏文件失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
 
 
+UPDATE_SUFFIX = {"zh": " 着色器更新包.img", "en": " shader update.img"}
+
+
+def _update_name(img_file, lang):
+    """<游戏名>.img → <游戏名> 着色器更新包.img（英文界面「… shader update.img」）：文件名一眼看得出是更新包，和完整包分开"""
+    return img_file[:-4] + UPDATE_SUFFIX.get(lang, UPDATE_SUFFIX["en"])
+
+
+def _export_update(c, pack, dst):
+    log = c.logs / (c.task + "-export.log")
+    try:
+        c.run([os.sys.executable, "-X", "utf8", "pack/img.py", "update", str(pack), str(dst)], log, c.env(), cwd=c.engine)
+    except Failure as e:
+        from errors import tool_reason
+        raise Failure("写着色器更新包失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
+
+
 IMPORT_DIRS = ("放这里导入", "Import Here")   # 手机上 S2Arm 扫的导入文件夹（runtime/src/pack_apply.c s2a_img_import_dirs，同序）
 
 
@@ -926,6 +943,14 @@ def _img_head(path):
     with open(path, "rb") as f:
         page = f.read(16384)
     return (page[16:32].decode("ascii", "replace").upper(), page) if page[:8] == b"S2AIMG01" else ("", b"")
+
+
+def _full_imgs(folder):
+    """导出文件夹里的完整 .img（格式号 1）：同游戏号的「<游戏名> 着色器更新包.img」（格式号 2，pack/img.py UPDATE_FORMAT）只给手机上已有本体时套用，
+    不当这款的完整文件给出去、也不随「推到手机」推（推过去手机上还没本体就认领不了）"""
+    if not folder.is_dir():
+        return []
+    return [p for p in sorted(folder.glob("*.img")) if p.is_file() and int.from_bytes(_img_head(p)[1][8:12], "little") != 2]
 
 
 def _devpush_exe(c):
@@ -945,18 +970,19 @@ def _devpush_lines(c, exe, *args):
 
 def push_export_job(c):
     """「推到手机」作业（exportPush）：只推、不重新导出"""
-    return dict(push_export(c, c.r.get("gameId") or None), pushed=True)
+    return push_export(c, c.r.get("gameId") or None)   # pushed = 推进去的文件名（界面按它显示）
 
 
 def push_export(c, gid=None, folder=None):
-    """「推到手机」（11-13 维护者：玩家用我们的功能推文件进手机就要推全）：把「S2Arm 自签导出」文件夹里的完整 .img（含着色器库，同 pack/img.py export）
-    经数据线推进手机上自签装好的 S2Arm 的「放这里导入」，玩家不用自己拷、也拷不错（D-QW2Q：玩家拷了资源包里不带着色器的 game.img，整局黑屏）。
+    """「推到手机」（11-13 维护者：自签成功页玩家可以选一键推送到手机，推上去直接能玩；也照旧可以自己从文件夹选文件传）：
+    把「S2Arm 自签导出」文件夹里的完整 .img（含着色器库，同 pack/img.py export）经数据线推进手机上自签装好的 S2Arm 的「放这里导入」。
+    玩家手里只有这一个 .img；不自动推（几 GB，玩家点了才推）。
     只要手机信任了这台电脑：不要 Xcode 账号、不要开发者模式（s2a-devpush devices / find-s2arm；不是开发签名的 App 退到只进 Documents）。
     gid：只推这一款；None = 导出文件夹里的全部。推不了抛 Failure：缺什么、玩家该怎么做"""
     sys.path.insert(0, str(c.engine / "tools"))
     import push_pack as P
     folder = Path(folder) if folder else export_dir(c)
-    imgs = sorted(p for p in folder.glob("*.img") if p.is_file()) if folder.is_dir() else []
+    imgs = _full_imgs(folder)
     heads = {p: _img_head(p) for p in imgs}
     if gid:
         imgs = [p for p in imgs if heads[p][0] == gid.upper()]
@@ -1017,7 +1043,7 @@ def push_export(c, gid=None, folder=None):
             pushed.append(p.name)
         c.begin("推完：在手机上打开 S2Arm", 3, 3)
         return dict(pushed=pushed, pushDevice=udid, pushBundleId=bid, pushApp=pick[2] if len(pick) > 2 else "", importDir=sub,
-                    pushNote="打开手机上的 S2Arm，游戏库会自动导入刚推进去的游戏（大游戏要等一会儿）。")
+                    pushNote="打开手机上的 S2Arm，等游戏库导入完就能玩（大游戏要等一会儿）。")
     except P.Fail as e:
         raise Failure(str(e), code="resource_transfer_failed") from e
     finally:
@@ -1042,6 +1068,10 @@ def _readme_zh(games):
   在 iPhone 的「文件」App 里打开「我的 iPhone → S2Arm → 放这里导入」（英文系统叫 Import Here），把 .img 文件拷进去。
   可以用隔空投送、数据线（Mac 访达 / Windows 爱思助手等的文件共享）或网盘拷到手机，再在「文件」App 里挪进这个文件夹。
   文件名随便改，S2Arm 按文件内容认游戏。手机上已经有、也没重新打过 iPhone 包的游戏，不用再放。
+
+  只更新着色器：每款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB。手机上已经放过这款的完整 .img（游戏本身没换版本）、
+  后来只是着色器变了（升级 S2Arm 后重新导出），只放这个更新包就行，不用重拷几 GB 的完整 .img。
+  手机上还没有这款的，先放完整的 .img（不带「着色器更新包」字样的那个）。
 
 三、开始玩
   回到 S2Arm，游戏会出现在游戏库里，点开就能玩。.img 还在拷的时候 S2Arm 会等它拷完再导入。
@@ -1068,6 +1098,10 @@ This folder contains:
   In the Files app on the iPhone, open On My iPhone → S2Arm → Import Here and copy the .img files into it.
   You can get them onto the phone with AirDrop, a cable (file sharing in the Mac Finder or a Windows tool) or a cloud drive, then move them into this folder in the Files app.
   The file names do not matter: S2Arm recognises each game by its contents. Games already on the phone that you have not rebuilt for iPhone do not need to be added again.
+
+  Shader-only updates: next to each game there is also a "<game name> shader update.img" of only a few hundred MB. If the phone already has this
+  game's full .img (same game version) and only the shaders changed (you updated S2Arm and exported again), add just this update file instead of
+  copying the multi-GB .img again. If the game is not on the phone yet, add the full .img first (the one without "shader update" in its name).
 
 3. Play
   Go back to S2Arm: the games appear in the library, tap one to play. If an .img is still being copied, S2Arm waits for it to finish before importing.
@@ -1148,12 +1182,15 @@ def export_phone(c, gid=None):
         out.mkdir()
         os.replace(ipa, out / "S2Arm.ipa")
         shutil.rmtree(work / "assemble", ignore_errors=True)
-        c.begin("写各款游戏的 .img（含着色器库）", 3, 4)
+        c.begin("写各款游戏的 .img（含着色器库）与着色器更新包", 3, 4)
         used, listed = set(), []
         for g in games:
             f = _img_name(names.get(g, g), g, used)
             _export_img(c, layout.ios_pack(c, g), out / f)
-            listed.append(dict(gameId=g, name=names.get(g, g), file=f))
+            # 着色器更新包（维护者 11-13）：只含派生件，几百 MB；手机上已有这款同一版本体时只放它就能换着色器，不用重拷几 GB 的 .img
+            u = _update_name(f, ui_lang(c))
+            _export_update(c, layout.ios_pack(c, g), out / u)
+            listed.append(dict(gameId=g, name=names.get(g, g), file=f, update=u))
         c.begin("写安装说明", 4, 4)
         lang = ui_lang(c); readme = EXPORT_READMES[lang]
         (out / readme).write_text(export_readme(listed, lang), encoding="utf-8-sig" if os.name == "nt" else "utf-8")
@@ -1916,23 +1953,13 @@ def other_device_current(c, want):
             f"那台以后要用时连上它再点更新；不再用了的话，删掉游戏库文件夹 devices 里名字以 {want[-6:]} 结尾的那个文件，这个更新提醒就不再出现。")
 
 
-def export_and_push(c, gid=None, **extra):
-    """导出后顺手推到手机（11-13）：连着手机、装着自签的 S2Arm 就把这次导出的 .img 推进它的「放这里导入」；推不了不算导出失败，
-    结果带 pushed = False 与 pushNote（缺什么、玩家怎么做：连线 / 信任 / 先装 S2Arm.ipa），界面照它给「推到手机」按钮重试"""
-    r = dict(export_phone(c, gid), **extra)
-    try:
-        return dict(r, **push_export(c, gid, r.get("outputPath")))
-    except Failure as e:
-        return dict(r, pushed=False, pushNote=str(e), pushCode=e.code)
-
-
 def update_phone(c):
     """「更新 iPhone 上的 S2Arm」：用本版壳 + 手机上各款已有的程序模块组新容器 → 签名 → 只装 App；资源包（IMG）、直连库只推变了的（通常一个都不推），
     手机上的游戏库、存档不动。新壳认不得的款（要按新版重新出包）：没带 acceptStale 就停下报 container_stale 列出它们，玩家确认后不带它们装
     （它们的资源包和存档还在手机上，重新出包后再装就回来）。壳已是本版 → 不装，结果 updated = False"""
     import ipa as packer
     if wants_export(c):   # 导出模式的「导出新版 S2Arm」：本版壳带上游戏库里能带的各款出到文件夹，玩家自己覆盖安装
-        return export_and_push(c, updated=True)
+        return dict(export_phone(c), updated=True)
     c.begin("找签名账号与 iPhone", 1, 6)
     try:
         ph = phone_for(c)
@@ -1968,8 +1995,8 @@ def install(c):
     if scheme:
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
-    if wants_export(c):   # 装法选了「导出，自己签名安装」（或完成页这次临时换成导出）：不签名，出到文件夹；连着手机、装着自签的 S2Arm 就顺手推进去
-        return export_and_push(c, gid)
+    if wants_export(c):   # 装法选了「导出，自己签名安装」（或完成页这次临时换成导出）：不连手机、不签名，出到文件夹；推不推到手机由玩家在完成页选（exportPush）
+        return export_phone(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)
     return put_game(c, gid, phone_for(c))
 

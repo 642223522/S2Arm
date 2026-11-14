@@ -24,10 +24,19 @@ static inline NSString *s2a_l10n_lang(void) {
     return l;
 }
 // 起进程时调一次（ios/app.m 构造期、输入工作台 main 开头），在任何本地化查表之前：玩家选过语言就把本 App 的 AppleLanguages 设成它
-//   （字符串表 / 游戏库 / 系统弹框随之），跟随系统就清掉覆盖。返回最终生效的界面语言
+//   （字符串表 / 游戏库 / 系统弹框随之），并记下「是我们写的」；跟随系统时只清我们写的那份（s2a_ui_lang_clear_override，#971）——
+//   玩家在 iOS「设置 → S2Arm → 首选语言」里选的（存的是同一个键）照留，游戏语言缺省读本 App 首选语言列表也就跟它。返回最终生效的界面语言
+#define S2AUILanguageOursKey @"S2AUILanguageWroteAppleLanguages"
 static inline NSString *s2a_l10n_apply_choice(void) {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults; NSString *c = [d stringForKey:S2AUILanguageKey];
-    if ([@[@"zh-Hans", @"zh-Hant", @"en"] containsObject:c]) [d setObject:@[c] forKey:@"AppleLanguages"]; else [d removeObjectForKey:@"AppleLanguages"];
+    if ([@[@"zh-Hans", @"zh-Hant", @"en"] containsObject:c]) { [d setObject:@[c] forKey:@"AppleLanguages"]; [d setBool:YES forKey:S2AUILanguageOursKey]; }
+    else {
+        NSArray *a = [d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier ?: @""][@"AppleLanguages"];   // 只看本 App 域（不含全局列表）
+        const char *v[4] = {0}; int n = 0;
+        for (id x in [a isKindOfClass:NSArray.class] ? a : @[]) { if (n < 4 && [x isKindOfClass:NSString.class]) v[n] = [x UTF8String]; n++; }
+        if (s2a_ui_lang_clear_override(v, n > 4 ? 4 : n, [d boolForKey:S2AUILanguageOursKey])) [d removeObjectForKey:@"AppleLanguages"];
+        [d removeObjectForKey:S2AUILanguageOursKey];
+    }
     return s2a_l10n_lang();
 }
 static inline BOOL s2a_l10n_zh(void) { return [s2a_l10n_lang() hasPrefix:@"zh"]; }   // 简 / 繁界面都算中文（宏文案只有中、英两份）

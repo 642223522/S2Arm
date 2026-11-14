@@ -98,9 +98,6 @@ public struct InstallResult: Equatable {
     public var exportGames: Int = 0
     public var exportBytes: Int64? = nil
     public var skipped: [String] = []
-    /// 导出后顺手推到手机（11-13）：推进手机上自签 S2Arm「放这里导入」的 .img 文件名（空 = 没推）；没推时 pushNote = 缺什么、怎么做（作业结果原句）
-    public var pushed: [String] = []
-    public var pushNote: String = ""
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -154,7 +151,7 @@ public final class InstallService {
                              openToFinish: r["openToFinish"] as? Bool ?? false,
                              exportFolder: r["exported"] as? Bool == true ? r["outputPath"] as? String ?? "" : "",
                              exportGames: (r["games"] as? [Any])?.count ?? 0, exportBytes: (r["exportBytes"] as? NSNumber)?.int64Value,
-                             skipped: r["skipped"] as? [String] ?? [], pushed: r["pushed"] as? [String] ?? [], pushNote: r["pushNote"] as? String ?? "")
+                             skipped: r["skipped"] as? [String] ?? [])
     }
 
     /// 推到手机（exportPush，pack/jobs/install.py push_export_job）：把「S2Arm 自签导出」里的完整 .img 推进手机上自签 S2Arm 的「放这里导入」。
