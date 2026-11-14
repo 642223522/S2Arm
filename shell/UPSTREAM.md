@@ -39,6 +39,10 @@
    | `Sources/ShellUI/LibraryView.swift`、`PortraitLibrary.swift`、`CoverFlowView.swift`、`SideBar.swift`、`Resources/Localizable.xcstrings` | 竖屏 / 空库顶部版本字与右侧按钮并成一行（版本字先让位）；右侧按钮、横屏顶栏、侧边条在「手柄」前加 `PlayerChip`（侧边条按它多算一格高度）；字符串表加 14 条（七种语言）：Player、Switch player、Player 1、Who’s playing?、Add Player 等。新增 `ShellPlayers.swift`（`ShellPlayer` 环境值 + `PlayerChip`）为 S2Arm 自有实现，宿主没设 `shellPlayer` 时不画 | 本地玩家（#623，维护者 11-11）：游戏库顶部显示这次用谁的身份玩、点开切换（宿主层 `S2ArmShellHost/LocalPlayers.swift`、`S2ArmPlayersView.swift`） | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
+### 主页联机设置
+
+- `Sources/ShellUI/ShellSettingsStore.swift`、`ShellSettingsView.swift`、`Resources/Localizable.xcstrings`：新增联机模式、指定 IPv4 与本机中继开关（中英）。App 全局偏好交给 iOS 原生启动层；默认不写联机环境，保留既有自动发现；完整退出重开 App 后生效。
+
 ## catalogue（游戏目录清单 JSON）
 
 字段取上游 `game.manifest.json`（schema 1）的必要子集，同名同义；不认识的键忽略：

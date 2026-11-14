@@ -22,6 +22,45 @@ namespace S2A.Services.Tests
     //   B 进房成功，A 收到同步、人数变 2；A 关网后 B 被断开。虚拟 IP 在 10.114.0.0/16。
     public static unsafe partial class Program
     {
+        [SoloTest("--ldn-manual-client")]
+        private static int LdnManualClient()
+        {
+            Environment.SetEnvironmentVariable("S2A_LDN_SERVER", "127.0.0.1");
+            Environment.SetEnvironmentVariable("S2A_LDN_RELAY", "0");
+            Host.BeginLanDiscoverySession();
+            try
+            {
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+                typeof(Host).GetMethod("StartLdnRelay", flags).Invoke(null, null);
+                Host.OnLdnInitializing();
+                return Host.LdnRelayHosted || Host.LdnLan || Host.LdnAutoTried ? 1 : 0;
+            }
+            finally { Host.StopLanDiscovery(); }
+        }
+
+        [SoloTest("--ldn-manual-listen")]
+        private static int LdnManualListen()
+        {
+            // 独立进程：在 Host 首次访问前设环境。实际检查 socket 绑定，不只检查配置字符串。
+            Environment.SetEnvironmentVariable("S2A_LDN_SERVER", "127.0.0.1");
+            Environment.SetEnvironmentVariable("S2A_LDN_RELAY", "1");
+            Environment.SetEnvironmentVariable("S2A_LDN_LISTEN", "0.0.0.0");
+            Ryujinx.HLE.S2AHooks.LdnPort = FreeTcpPort(IPAddress.Any);
+            Host.BeginLanDiscoverySession();
+            try
+            {
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+                typeof(Host).GetMethod("StartLdnRelay", flags).Invoke(null, null);
+                var relay = (LdnRelay)typeof(Host).GetField("_ldnRelay", flags).GetValue(null);
+                if (relay == null || relay.Endpoint is not IPEndPoint endpoint || !endpoint.Address.Equals(IPAddress.Any)) return 1;
+                using TcpClient client = new();
+                client.Connect(IPAddress.Loopback, Ryujinx.HLE.S2AHooks.LdnPort);
+                Console.WriteLine("指定模式：全部网卡监听、回环连接成功、不启动发现");
+                return Host.LdnLan ? 1 : 0;
+            }
+            finally { Host.StopLanDiscovery(); }
+        }
+
         [SoloTest("--lan-provider-lifecycle")]
         private static int LanProviderLifecycle()
         {

@@ -5,6 +5,14 @@
     <string name="native_unavailable">原生宿主无法启动，详情见 S2Arm 日志。</string>
     <string name="import_game">导入游戏包…</string>
     <string name="import_progress">正在导入游戏：%1$d / %2$d MiB</string>
+    <string name="ldn_settings">联机模式…</string>
+    <string name="ldn_auto">自动（保持现有局域网行为）</string>
+    <string name="ldn_host">手动：本机托管中继</string>
+    <string name="ldn_client">手动：连接中继</string>
+    <string name="ldn_address">中继的可达 IPv4（仅连接方填写）</string>
+    <string name="ldn_save">保存</string>
+    <string name="ldn_saved">已保存；完整退出 App 后重新打开生效。</string>
+    <string name="ldn_help">所有人必须使用同一个中继，中继 App 请保持前台。填写公网、局域网或外部已配置 VPN 中可达的 IPv4；App 不内置 VPN。固定 TCP 30456 端口需可达。手动模式不自动发现或选举中继。修改后请完整退出 App 重开；返回正在运行的游戏仍使用原设置。</string>
     <string name="fps_overlay_show">显示 FPS（成功提交速率）</string>
     <string name="fps_overlay_description">游戏帧成功提交速率，每秒更新；不是屏幕刷新率</string>
 

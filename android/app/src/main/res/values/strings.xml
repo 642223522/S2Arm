@@ -8,6 +8,14 @@
     <string name="capability_status" translatable="false">%1$s\n%2$s</string>
     <string name="import_game">Import game package…</string>
     <string name="import_progress">Importing game: %1$d / %2$d MiB</string>
+    <string name="ldn_settings">Local wireless (LDN)…</string>
+    <string name="ldn_auto">Automatic (existing LAN behavior)</string>
+    <string name="ldn_host">Manual: host relay on this device</string>
+    <string name="ldn_client">Manual: connect to relay</string>
+    <string name="ldn_address">Relay reachable IPv4 (client only)</string>
+    <string name="ldn_save">Save</string>
+    <string name="ldn_saved">Saved. Fully exit the app and reopen to apply.</string>
+    <string name="ldn_help">All players must use the same relay. Keep the relay app in the foreground. Use a reachable public, LAN or externally configured VPN IPv4; no VPN is included. Fixed TCP port 30456 must be reachable. Manual mode does not discover or elect a relay. Fully exit the app and reopen after changes; returning to a running game keeps its previous settings.</string>
     <string name="fps_overlay_show">Show FPS (successful frame submissions)</string>
     <string name="fps_overlay_description">Successful game frame submissions per second; not the screen refresh rate</string>
     <!-- #528 item 15: player diagnostic bundle (library screen) -->

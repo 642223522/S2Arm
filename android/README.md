@@ -34,6 +34,38 @@ Ryujinx game rendering. No game-specific
 addresses, assets, firmware, keys, storage permissions, or network permission
 are included.
 
+## Local wireless (LDN) settings
+
+The release game library settings panel includes **Local wireless (LDN)**.
+Automatic is the default and writes no environment variables, preserving the
+existing LAN behavior. Manual host uses `S2A_LDN_SERVER=127.0.0.1`,
+`S2A_LDN_RELAY=1`, and `S2A_LDN_LISTEN=0.0.0.0`. Manual client uses the entered
+reachable IPv4 as `S2A_LDN_SERVER` and `S2A_LDN_RELAY=0`. Manual mode performs
+no automatic discovery or relay election. The port is fixed at TCP 30456.
+An empty client address uses `0.0.0.0` and logs a warning instead of reverting
+to automatic discovery. Addresses are not probed or blocked by the settings UI.
+
+All players must use the same relay; keep the relay app in the foreground.
+Use reachable public or LAN addresses or an externally configured VPN; the app includes
+no VPN SDK. Ensure TCP 30456 can reach the relay. Fully exit the app and reopen
+after changing settings. Returning through the app icon or resuming a running
+game retains its existing process settings.
+
+Preferences persist per app package. `GameActivity.launch` copies them into a
+cold launch Intent so the separate game process receives the library's current
+snapshot without relying on cross-process SharedPreferences cache refresh.
+The production startup applies it through Android `Os.setenv` before Host
+creation, without `DebugEnvironment` or debug build flags. A nonempty existing
+`S2A_LDN_SERVER` preserves all externally supplied LDN environment settings as a
+unit. Direct cold starts without a snapshot read persisted settings.
+
+`python3 android/tests/ldn_settings_test.py` covers policy mapping, external
+precedence, empty-client behavior, release wiring and a client-relay negative
+control. Java policy tests compile the real policy with `javac`; Android wiring
+checks inspect the source and do not replace APK or device validation. Device
+acceptance still needs a Release APK, a full restart, host/client environment
+receipts, and two peers on a reachable relay.
+
 ## FPS overlay
 
 In the game library, **Show FPS (successful frame submissions)** controls the

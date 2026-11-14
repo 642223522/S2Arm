@@ -97,6 +97,7 @@ public class IconEntryProbe {
 # Real GameActivity + real GameSession compile here; only the Android boundary and
 # the superclass are stubbed (stub dir precedes app sources on -sourcepath).
 EDGE_STUBS = {
+'org/s2arm/android/AndroidLdnSettings.java': '''package org.s2arm.android; final class AndroidLdnSettings { static void copyToLaunch(android.content.Context c, android.content.Intent i) {} }''',
 'android/os/Bundle.java': '''package android.os; public class Bundle {}''',
 'android/content/Context.java': '''package android.content; public class Context {
  public <T> T getSystemService(Class<T> c){return null;} public String getPackageName(){return "fixture";}

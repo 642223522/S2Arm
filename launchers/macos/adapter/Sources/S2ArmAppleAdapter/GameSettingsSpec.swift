@@ -5,7 +5,7 @@ import Foundation
 public struct GameSettingItem: Equatable, Identifiable {
     public struct Option: Equatable { public let value: String; public let label: [String: String] }
     public let id: String
-    /// bool / choice / patches / page
+    /// bool / choice / text / patches / page
     public let type: String
     /// display / controls / other
     public let group: String
