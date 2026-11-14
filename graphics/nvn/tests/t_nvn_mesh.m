@@ -122,7 +122,10 @@ int main(void) {
         p_draw d4 = {.prim = DM_PRIM_MESH_TASKS, .first = 2, .count = 3, .instances = 1};
         o = capture(^{ mesh_draw(&d4, &waited); });
         int cols = frame_columns();
-        VERIFY(waited && red_lines(o, nil) == 0, "④ 首笔管线后台建：本笔先跳过并计数、不报红（跳过过 %d；stderr：%s）", waited, o.UTF8String);
+        // 11-13 时之笛开局发白：网格管线没编好时一律跳过，不按 skip_safe 的规则。期望（按规则手写）：这是目标第一次被画（近两帧没画过），这笔不能跳过 →
+        //   当场在提交线程编好、本笔照画，日志写明原因；反证：修前同一处先跳过（waited = 1）、不打这一行
+        VERIFY(!waited && [o containsString:@"built on the submit thread"] && [o containsString:@"a target not drawn in the last two frames"] && red_lines(o, nil) == 0,
+               "④ 首笔管线、目标近两帧没画过：不跳过，当场编好照画、写明原因、不报红（跳过过 %d；stderr：%s）", waited, o.UTF8String);
         VERIFY(cols == 0x1c && g_mtk_n == n0 + 1, "④ 无任务 first 2 count 3：列 2、3、4 白（列掩码 %#x，期望 0x1c；画出 +%llu）", cols, (unsigned long long)(g_mtk_n - n0));
 
         // ⑤
@@ -152,6 +155,18 @@ int main(void) {
         o = capture(^{ int w; mesh_draw(&d7, &w); });
         cols = frame_columns();
         VERIFY(cols == 0 && g_mtk_ind_n == i0 + 1 && red_lines(o, nil) == 0, "⑦ 间接零工作量：GPU 写 {0, 1} → 一列不画（列掩码 %#x，期望 0）、照记一笔、不报红（stderr：%s）", cols, o.UTF8String);
+
+        // ④b 目标已连续几帧画过（④–⑦）、这帧开头清过：丢一笔最多影响一帧，新管线照旧后台编、本笔先跳过。期望：跳过过、不打「built on the submit thread」、
+        //   等编好再画出列 2、3、4。换一个片元着色器（新键）让管线是第一次遇到
+        { NvShader *fs2 = [NvShader new]; fs2->stage = 1; strlcpy(fs2->key, "eeeeeeeeeeeeeeee_b", sizeof fs2->key); fs2->ventry = @"main0";
+          NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0() { return float4(1, 1, 1, 0.5); }\n" options:nil error:&e]; REQUIRE(l); fs2->fn = [l newFunctionWithName:@"main0"]; REQUIRE(fs2->fn);
+          NvProg *direct2 = [NvProg new]; direct2->sh[1] = fs2; direct2->sh[4] = md;
+          static prog_t gp4b; memset(&gp4b, 0, sizeof gp4b); gp4b.magic = MAGIC('P', 'R', 'O', 'G'); gp4b.serial = nvn_new_serial(); serial_put(gp4b.serial, direct2);
+          frame_begin(); S.prog = &gp4b; __block int w4b = 0;
+          o = capture(^{ mesh_draw(&d4, &w4b); });
+          cols = frame_columns();
+          VERIFY(w4b && ![o containsString:@"built on the submit thread"] && red_lines(o, nil) == 0 && cols == 0x1c,
+                 "④b 目标稳定且这帧清过：新网格管线后台编、本笔先跳过，编好后画出列 2、3、4（跳过过 %d，列掩码 %#x；stderr：%s）", w4b, cols, o.UTF8String); }
 
         // ⑧
         frame_begin(); S.prog = &gp[2]; uint64_t s0 = g_mtk_skip;
