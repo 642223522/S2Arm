@@ -16,6 +16,7 @@ import http.server
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import threading
@@ -51,6 +52,14 @@ class FakeService:
 
 
 class DiagUploadTests(JobCase):
+    def setUp(self):
+        super().setUp()
+        # 临时包落在本单测私有的临时目录：系统公共临时目录里别的进程（同机并发门禁）也在建删 s2a-diag-*，前后名单对比会偶发不等
+        private = tempfile.mkdtemp(prefix="t-diag-upload-")
+        self.addCleanup(lambda: shutil.rmtree(private, ignore_errors=True))
+        patcher = mock.patch.object(tempfile, "tempdir", private)
+        patcher.start(); self.addCleanup(patcher.stop)
+
     def failed_record(self):
         self.c.report_failure(Failure("synthetic failure"))
         self.c.finish("failed", "x")
@@ -215,7 +224,7 @@ class DiagUploadTests(JobCase):
         finally:
             stall.set(); srv.shutdown(); srv.server_close()
         self.assertEqual(e.exception.code, "diag_upload_failed")
-        self.assertIn("上传诊断超过", str(e.exception)); self.assertIn("导出诊断包", str(e.exception))
+        self.assertIn("上传诊断超过", str(e.exception)); self.assertIn("网络太慢", str(e.exception)); self.assertIn("导出诊断包", str(e.exception))
         self.assertLess(took, 4.0)
         self.assertEqual(self.leftovers(), before)
         # 打包这步一直不完：同样按时限收尾，不去连上传服务
@@ -223,4 +232,5 @@ class DiagUploadTests(JobCase):
         with mock.patch.object(diag_upload, "TOTAL_S", 1.0), mock.patch.object(library, "diagnostics", lambda c: (time.sleep(3), real(c))), \
                 mock.patch.object(diag_upload, "send", side_effect=AssertionError("不该上传")), self.assertRaises(Failure) as e:
             t0 = time.monotonic(); diag_upload.upload(self.c)
-        self.assertIn("打包诊断超过", str(e.exception)); self.assertLess(time.monotonic() - t0, 2.5)
+        # 打包是本机整理日志：超时不能说成网络问题（11-14 玩家日志「打包诊断超过 90 秒（网络太慢…）」被读成网络问题）
+        self.assertIn("打包诊断超过", str(e.exception)); self.assertIn("和网络无关", str(e.exception)); self.assertNotIn("网络太慢", str(e.exception)); self.assertLess(time.monotonic() - t0, 2.5)

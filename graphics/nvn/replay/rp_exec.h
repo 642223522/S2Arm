@@ -7,6 +7,7 @@
 
 const char *rp_op_name(uint32_t op);   // 录制命令名（"OP_DRAW" …）；范围外返回 "OP_?"
 int rp_pool_count(void);                // 已登记的内存池个数
+void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups);   // 池查找的线程内备忘（rp_entry.c）：调用线程自己的累计命中数、查找数
 int rp_tex_live_n(void);                // 活贴图对象个数（只是登记数，不等于已建图的个数）
 int rp_depth_zero(void);                // NVN 深度模式：1 = 近平面为 0
 int rp_origin_lower_left(void);         // NVN 窗口原点：1 = 左下
@@ -41,6 +42,7 @@ void rp_pass_set_rt(nvn_gpu_cmd c, const p_set_rt *r);
 void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec);
 void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec);
 void rp_pass_barrier(uint32_t bits);
+uint32_t rp_pass_take_barrier(void);   // 通道外的计算派发前调：取走待发的游戏屏障位（取完清零），由调用方交给后端
 void rp_pass_prepare_draw(nvn_gpu_cmd c);   // 绘制前调：把这一笔要求的像素区域交给下一步开通道（超出当前通道区域就收通道重开）
 int rp_pass_begin(nvn_gpu_cmd c);     // 绘制前调：1 = 通道开着；0 = 开不了（已记账），跳过这笔
 // 被读之前必须落地（rp_pass.c）：ts 里这些贴图要以「采样贴图 / 图像 / 拷贝端点 / 上屏」身份被用到之前先调一次，

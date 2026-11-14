@@ -14,6 +14,8 @@ void s2a_pad_set_active(int active);
 // 进程内重启（runtime/src/host_main.c s2a_host_rebuild）：清掉上一局的按键 / 摇杆快照、换输入纪元；活跃状态不变（后台时不会被打开）
 void s2a_pad_session_reset(void);
 int s2a_pad_has_controller(void);   // 当前生效的是实体手柄（触屏接管时为 0）
+// 当前生效的输入来源（s2a_pad_source）：宿主按它挑六轴来源——玩家拿手柄就用手柄的陀螺仪，戳屏幕就用手机
+int s2a_pad_selected_source(void);
 // 屏幕被碰：连着实体手柄时改由触屏生效（虚拟按键要显示），返回 1 = 发生了切换
 int s2a_pad_prefer_touch(void);
 uint32_t s2a_pad_read(int32_t axes[4], s2a_pad_source *source);
@@ -21,6 +23,8 @@ uint32_t s2a_pad_read(int32_t axes[4], s2a_pad_source *source);
 //   按着时返回当前序号，没按着返回 0。iOS 记下新序号、1.5 秒后再问一次仍是它 = 一直按着没松，开菜单（ios/controller.m）
 uint64_t s2a_pad_plus_press(void);
 void s2a_pad_stick(float x, float y, int32_t axes[2]);
+// 单轴死区线性重缩放：死区内 0、过阈从 0 线性爬到满幅 (|v|−dz)/(1−dz)，符号随 v（iOS 物理手柄的径向版 s2a_pad_stick 本就重缩放，两端同口径；Mac map_pad_inputs 用）
+float s2a_pad_axis_deadzone(float v, float dz);
 // 系统手柄的 ABXY：多数手柄按物理方位上报（buttonA 在南侧，MFi / Xbox 那颗键上印的也是 A），任天堂手柄（Pro、Joy-Con）按键帽字母上报（印 A 的右键 = buttonA）。
 //   所以系统的 buttonA 在每种手柄上都是印着 A（PS 是 ×）的那颗键。
 // iOS 与 Mac 共用这一套（#40、审计 P2-213）：category 取 GCController.productCategory（可为 NULL），is_xbox / is_playstation 由宿主按手柄类型判

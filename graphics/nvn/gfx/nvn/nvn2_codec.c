@@ -129,6 +129,18 @@ static pthread_cond_t g_sp_cv = PTHREAD_COND_INITIALIZER;
 static struct { uint64_t value; int used; } g_ctr[SP_COUNTERS];
 // ev：游戏等的 SystemEventType（0x30 字节）
 static struct { _Alignas(16) uint8_t ev[0x40]; int used, armed; uint64_t hev; cv_sync want; } g_slot[SP_SLOTS];
+static unsigned g_slot_gen;   // 槽表属于哪一局（会话代号）
+// 持 g_sp_mu。槽的 SystemEvent 挂的读端句柄在那一局的句柄表里：进程内重启后句柄表整张关掉、重新编号，旧句柄在新一局里不存在
+//   （11-14 D-VHSE：重启后第一次建同步点事件就复用了上一局缓存的事件，游戏等它 → svc 回 InvalidHandle 0xe401，SDK 中止）。
+//   换局后头一次碰槽表：放掉宿主替旧事件持的那份引用（句柄那份已随句柄表关掉），整张清空，用到时在新一局里重新建、重新挂
+static void sp_slots_for_session_locked(void) {
+    unsigned g = s2a_session_generation ? s2a_session_generation() : 0;
+    if (g == g_slot_gen) return;
+    int n = 0;
+    for (int i = 0; i < SP_SLOTS; i++) { if (g_slot[i].hev) { s2a_event_release(g_slot[i].hev); n++; } memset(&g_slot[i], 0, sizeof g_slot[i]); }
+    if (n) LOG("Switch 2 视频：换局（会话 %u → %u），上一局的 %d 个同步点事件作废，用到时重新建", g_slot_gen, g, n);
+    g_slot_gen = g;
+}
 
 static int sp_reached_locked(const cv_sync *h) {
     if (!h->id_inv && !h->mode && !h->value) return 1;
@@ -179,6 +191,7 @@ static int sp_wait(const cv_sync *h, uint64_t timeout_ns) {
 static uint32_t sp_slot(const void *t) { uint32_t s = *(const uint32_t *)t; if (s >= SP_SLOTS || !g_slot[s].used) die("Switch 2 视频：同步点事件 %p 的槽 %u 不在用", t, s); return s; }
 static Result sp_create(uint32_t *t) {
     pthread_mutex_lock(&g_sp_mu);
+    sp_slots_for_session_locked();
     int s = -1; for (int i = 0; i < SP_SLOTS; i++) if (!g_slot[i].used) { s = i; break; }
     if (s >= 0) { g_slot[s].used = 1; g_slot[s].armed = 0; }
     uint64_t ev = s >= 0 ? g_slot[s].hev : 0;
@@ -851,14 +864,18 @@ static void cv_decode(cvdec *d, const cv_in *in, int gen) {
         }
         if (d->vt) {
             // 去掉时间分隔 OBU（ISOBMFF / Matroska 的 AV1 样本约定不带它）
-            uint8_t *s = malloc(in->n); size_t sn = 0; uint64_t t0 = now_ns();
+            // 同时看包里有没有帧数据（帧头 3、分块组 4、帧 6、冗余帧头 7）：只有时间分隔 / 填充 / 元数据的包本来就没有画面，
+            //   原先照样送 VideoToolbox，回 -12903（数据坏）并报红（诊断 #4ddff2：3 字节的包）。这种包直接跳过、不报红；解析不了的尾巴按有帧数据送去
+            uint8_t *s = malloc(in->n); size_t sn = 0; uint64_t t0 = now_ns(); int frame = 0;
             for (size_t o = 0; o < in->n;) {
-                uint8_t h = in->p[o]; size_t hl = 1 + (h >> 2 & 1); uint64_t sz = in->n - o - hl; int ll = 0;
+                uint8_t h = in->p[o]; size_t hl = 1 + (h >> 2 & 1); uint64_t sz = in->n - o - hl; int ll = 0, ty = h >> 3 & 15;
                 if (h >> 1 & 1) ll = leb128(in->p + o + hl, in->n - o - hl, &sz);
-                size_t e = o + hl + (size_t)ll + (size_t)sz; if (e > in->n || o + hl > in->n) { memcpy(s + sn, in->p + o, in->n - o); sn += in->n - o; break; }
-                if ((h >> 3 & 15) != 2) { memcpy(s + sn, in->p + o, e - o); sn += e - o; }
+                size_t e = o + hl + (size_t)ll + (size_t)sz; if (e > in->n || o + hl > in->n) { memcpy(s + sn, in->p + o, in->n - o); sn += in->n - o; frame = 1; break; }
+                if (ty != 2) { memcpy(s + sn, in->p + o, e - o); sn += e - o; }
+                if (ty == 3 || ty == 4 || ty == 6 || ty == 7) frame = 1;
                 o = e;
             }
+            if (!frame) { free(s); static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("Switch 2 视频：AV1 包里没有帧数据（%zu 字节，只有时间分隔 / 填充之类），跳过（本来就没有画面）", in->n); return; }
             CMBlockBufferRef bb = NULL; CMSampleBufferRef sb = NULL;
             OSStatus st = CMBlockBufferCreateWithMemoryBlock(NULL, s, sn, kCFAllocatorMalloc, NULL, 0, sn, 0, &bb);
             if (!st) { size_t ss = sn; CMSampleTimingInfo ti = { kCMTimeInvalid, CMTimeMake(in->pts_ns / 1000, 1000000), kCMTimeInvalid }; st = CMSampleBufferCreateReady(NULL, bb, d->vtfmt, 1, 1, &ti, 1, &ss, &sb); }

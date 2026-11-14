@@ -18,7 +18,7 @@ namespace S2Arm.Launcher;
 public sealed partial class EnvironmentWindow
 {
     private string installMode = "device";      // installMode 作业读回的 mode：device / export（没读到按一键装）
-    private bool exportAvailable;                // 导出作业合入前恒为 false：导出一项置灰
+    private bool exportAvailable;                // 作业层读回的 exportAvailable：只报给控制口（ControlInstallMode），界面不再据它置灰
     private bool installModeTried, installModeLoading;
     // 更新作业：正在跑 / 计数；结果没看过时顶栏留一个可点掉的提示（"" = 成功，否则失败原因）
     private bool phoneUpdating;
@@ -27,14 +27,16 @@ public sealed partial class EnvironmentWindow
     /// <summary>更新手机上的 S2Arm 这一单的状态（running / succeeded / failed / cancelled）：更新页的结局卡（PhoneJobCard）按它画</summary>
     private string updateState = "", updateMessage = "";
     private (bool AcceptStale, IReadOnlyList<string> Repack, IReadOnlySet<string> Accept) lastUpdate = (false, [], new HashSet<string>());
+    private string? lastUpdateMode;
+    private bool lastUpdateSGrade;
     /// <summary>更新页 drop 态问的是哪个码（ConfirmCodes 的键）：「仍然继续」带上它对应的参数</summary>
     private string updateAskCode = "";
 
     /// <summary>更新页（page = "phoneupdate"）：结局卡 + 失败重试 + 挤掉确认（页内）</summary>
     private Control PhoneUpdateCard() => PhoneJobCard(updateTrack, updateState, updateMessage, updateDiagnostics, null,
-        retry: updateState is "failed" or "invalid" or "interrupted" ? () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept) : null,
+        retry: updateState is "failed" or "invalid" or "interrupted" ? () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade) : null,
         confirmDrop: () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack,
-            new HashSet<string>(lastUpdate.Accept) { ConfirmCodes.GetValueOrDefault(updateAskCode, "acceptDropped") }),
+            new HashSet<string>(lastUpdate.Accept) { ConfirmCodes.GetValueOrDefault(updateAskCode, "acceptDropped") }, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade),
         dropTitle: ConfirmTitle(updateAskCode),
         cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); });
     private string updateDiagnostics = "";
@@ -82,16 +84,21 @@ public sealed partial class EnvironmentWindow
         if (installMode == "device")
         {
             // 签名身份：开发者证书一栏照用出包页原来那套（导入 / 换 / 删、体检明细）；Apple ID 在随包 Impactor 里登录
-            var identity = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 12, Margin = new Thickness(28, 0, 0, 0) };
+            var identity = new StackPanel { Spacing = 4, Margin = new Thickness(28, 0, 0, 0) };
             identity.Children.Add(DevCertRow(T("install.mode.identity"), T("install.mode.identity_impactor"), card: false));
-            var impactor = Action("action.open_impactor", OpenBundledImpactor, File.Exists(BundledImpactor));
-            impactor.VerticalAlignment = VerticalAlignment.Top;
-            AutomationId(impactor, "env.installMode.open_impactor");
-            Grid.SetColumn(impactor, 1); identity.Children.Add(impactor);
+            // 「打开 Impactor」是动作不是选项：做成 Apple ID 那段下面的文字链接（11-14 体验梳理，开发甲定）；用开发者证书签时不需要它，不显示
+            if (!(devCert is { } dc && Flag(dc, "active")))
+            {
+                var impactor = new Button { Content = new TextBlock { Text = T("action.open_impactor"), TextDecorations = TextDecorations.Underline, Foreground = Accent, FontSize = 13 },
+                    Background = Brushes.Transparent, Padding = new Thickness(0, 2), HorizontalAlignment = HorizontalAlignment.Right,
+                    IsEnabled = File.Exists(BundledImpactor) };
+                impactor.Click += (_, _) => OpenBundledImpactor();
+                AutomationId(impactor, "env.installMode.open_impactor");
+                identity.Children.Add(impactor);
+            }
             panel.Children.Add(identity);
         }
-        panel.Children.Add(InstallModeOption("export", T("install.mode.export"),
-            T("install.mode.export_note") + (exportAvailable ? "" : "\n" + T("install.mode.export_soon")), exportAvailable));
+        panel.Children.Add(InstallModeOption("export", T("install.mode.export"), T("install.mode.export_note"), true));   // 导出作业已合入，一直可选（11-14 删掉置灰与「下一版提供」）
         var card = Card(panel);
         AutomationId(card, "env.installMode");
         return card;
@@ -209,11 +216,14 @@ public sealed partial class EnvironmentWindow
     /// </summary>
     /// acceptDropped / ask 同 InstallAsync：会让手机上别的电脑装的游戏暂时不能玩（container_would_drop）时，界面发起的弹同一个确认框、确认后带 acceptDropped 重跑；
     /// 控制口发起的不弹、原样失败，由调用方带 acceptDropped 再发（v0.3.0 只换壳验收：原先这条路没接确认，提示「确认继续再点一次」却永远过不去）
-    private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true)
+    /// mode / sgradeUpgrade：「S 级优化升级」页的两个按钮（SGradeUpgradePage.cs，同 Mac）——mode = device / export 这次按它装（不改设置里的装法），
+    /// sgradeUpgrade = 壳已是本版也重组容器、给游戏程序补上 S 级优化（install.update_phone）
+    private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false)
     {
         if (installBusy || packRunning || connectedFolder is null || libraryId is null) return;
         accept ??= new HashSet<string>();
         lastUpdate = (acceptStale, repack, accept);   // 失败页「重试」/ 挤掉确认的「仍然继续」按同样的参数再来
+        lastUpdateMode = mode; lastUpdateSGrade = sgradeUpgrade;
         var front = BeginJob(JobKind.Phone); phoneUpdating = true; updateOutcome = null; updateDiagnostics = ""; updateDone = updateTotal = null;
         updateState = "running";
         updateTrack.Begin("installUpdate", InstallTargetLabel); updateMessage = "";   // 实际装上的那台作业结束后按结果改（PhoneJobTrack.Finish）
@@ -226,6 +236,8 @@ public sealed partial class EnvironmentWindow
             // 更新哪台：壳旧了的那台（phoneUpdates 的设备记录键），作业层不自己挑
             var extra = new Dictionary<string, object?>();
             if (acceptStale) extra["acceptStale"] = true;
+            if (mode is "device" or "export") extra["mode"] = mode;
+            if (sgradeUpgrade) extra["sgradeUpgrade"] = true;
             foreach (var key in accept) extra[key] = true;
             if (PhoneUpdateTarget is { Device.Length: > 0 } target) extra["device"] = target.Device;
             var job = await PackJobClient.RunAsync(PackRequest("installUpdate", "", extra.Count > 0 ? extra : null),

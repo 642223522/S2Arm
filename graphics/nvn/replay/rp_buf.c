@@ -34,6 +34,7 @@ struct mirror { nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; uint64_t seen
 // 真机表现为走路一顿一顿（池镜像同步 4.2 MB/帧、其中直接写只剩 0.2 MB，见坑记录续 33）。
 struct land_rng { uint64_t off, len; };
 struct shadow { const uint8_t *mem; uint64_t size; struct mirror m[2]; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw; int landing, dead;
+                int failed;   // 第一份镜像建不出来：记住，之后这个池直接按未接返回，不再每笔重建（池释放时随表项删掉，重建池会重试）
                 struct land_rng lr[16]; int nlr; };
 static int g_mirror_cur;   // 现在用第几份；只在提交锁里改（Finish 与提交互斥）
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
@@ -71,14 +72,17 @@ static int mirror_make(struct shadow *s, int i) {
 static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     uint64_t k = (uint64_t)(uintptr_t)mem;
     struct shadow *s = nvn_hm_get(&g_shadow, &k);
-    if (s) return s;
+    if (s) {
+        if (s->failed) { nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
+        return s;
+    }
     size_t ps = nvn_dirty_page_size();
     s = calloc(1, sizeof *s);
     if (!s) { nvn_unimpl("gpu", "pool_mirror_alloc_failed", mem); return NULL; }
     s->mem = mem; s->size = size;
     s->page0 = (uintptr_t)mem & ~(uintptr_t)(ps - 1);
     s->npages = ((uintptr_t)mem + size - s->page0 + ps - 1) / ps;
-    if (!mirror_make(s, 0)) { free(s); nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
+    if (!mirror_make(s, 0)) { s->failed = 1; nvn_hm_put(&g_shadow, &k, s); nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
     nvn_hm_put(&g_shadow, &k, s);
     return s;
 }

@@ -64,7 +64,7 @@ RECOVERY = {
     "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
     "downstream_ineligible": "这个下游方案只支持某一版更新（上面写了是哪一版）：导入那一版更新后再导出；不换更新就在确认页选「仍用原版方案」。",
     "download_failed": "检查这台电脑的网络（能打开 s2arm.com）后再点一次；下了一半的不会被当成好的用。",
-    "diag_upload_failed": "导出诊断包，手动发到 GitHub 帖子或群里；网络恢复后也可以再点一次「上传给开发者」。",   # 上传诊断没成（服务没开通 / 连不上 / 被拒收，diag_upload.py）：界面退回导出
+    "diag_upload_failed": "导出诊断包，手动发到 GitHub 帖子或群里；网络恢复后也可以再点一次「故障报修」。",   # 上传诊断没成（服务没开通 / 连不上 / 被拒收，diag_upload.py）：界面退回导出
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
     "out_of_memory": "关掉其它占内存的程序（浏览器、游戏等）后重试；还不行就在 Windows 设置里调大虚拟内存（页面文件），或换一台内存更大的电脑出包。已做完的步骤下次会复用。",
     "permission_denied": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
@@ -242,7 +242,21 @@ def explain(error, sources=(), library=None):
                 return Failure("任务所需的文件或目录不存在。", code="input_missing", internal=internal)
             return Failure("本地任务失败：S2Arm 自己的文件找不到了，请重试；还不行请导出诊断发给我们。", internal=internal)
         return Failure("本地任务失败，请检查日志和输入。", internal=internal)
-    return Failure("本地任务失败，请检查日志和输入。")
+    # 不是 OSError 的（多是我们自己的代码缺陷，如 #372 / #854 Windows 报修打包 AttributeError）：上屏原句不改（旧前端按它做本地化匹配），
+    #   但异常类型、原文和出在我们哪个文件哪一行进 internal——原先整个丢掉，玩家复制的错误摘要里只剩「本地任务失败」，定不了因
+    return Failure("本地任务失败，请检查日志和输入。", internal=_where(error))
+
+
+def _where(error):
+    """「AttributeError: 'x' object has no attribute 'y'（library.py:2837 in diagnostics）」：取调用栈里最后一帧落在 S2Arm 自己源码里的位置"""
+    import traceback
+    text = f"{type(error).__name__}: {error}"
+    ours = Path(__file__).resolve().parents[2]
+    frames = [f for f in traceback.extract_tb(error.__traceback__) if _under(f.filename, [ours])]
+    if frames:
+        f = frames[-1]
+        text += f"（{Path(f.filename).name}:{f.lineno} in {f.name}）"
+    return text
 
 
 # 实际阶段或命令确定分类，不从错误 prose 猜编译器/输入的根因（日志里有确凿根因字样的先由 LOG_CAUSES 判，见 classify_failure）。

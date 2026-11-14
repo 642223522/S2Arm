@@ -7,6 +7,7 @@ enum ShellSettingsRows {
     static let hud = "shell.hud"
     static let glass = "shell.glass"
     static let silent = "shell.silent"
+    static let mix = "shell.mix"
     static let touchSize = "shell.touchSize"
     static let touchStick = "shell.touchStick"
     static let targetPrefix = "shs.row."
@@ -27,6 +28,13 @@ enum ShellSettingsRows {
         SettingRow(id: silent, label: ShellStrings.text("Play Sound in Silent Mode"),
                    note: ShellStrings.text("When on, game sound keeps playing while the device is in Silent Mode. When off, S2Arm follows Silent Mode like other games."),
                    kind: .toggle(on: "1", off: "0"), value: store.playInSilentMode ? "1" : "0")
+    }
+
+    /// S2Arm: other apps' audio keeps playing alongside the game (the system Settings app's S2Arm page had it; moved here 11-14).
+    static func mixRow(_ store: ShellSettingsStore) -> SettingRow {
+        SettingRow(id: mix, label: ShellStrings.text("Mix with Other Apps"),
+                   note: ShellStrings.text("When on, music or podcasts from other apps keep playing with the game, and the Silent switch only mutes the game."),
+                   kind: .toggle(on: "1", off: "0"), value: store.mixWithOthers ? "1" : "0")
     }
 
     /// The touch controls' size for every game. The preview above the row shows it.
@@ -54,6 +62,7 @@ enum ShellSettingsRows {
         switch id {
         case hud: store.storePerformanceHUD(value == "1")
         case silent: store.storePlayInSilentMode(value == "1")
+        case mix: store.storeMixWithOthers(value == "1")
         case glass: store.storeLiquidGlass(value == "1")
         case touchSize: store.storeTouchSize(value)
         case touchStick: store.storeTouchStick(value)
@@ -131,7 +140,7 @@ struct ShellSettingsView: View {
                             }
                         }
                         SettingsGroup(title: ShellStrings.text("Sound")) {
-                            ForEach([ShellSettingsRows.silentRow(store)]) { row in
+                            ForEach([ShellSettingsRows.silentRow(store), ShellSettingsRows.mixRow(store)]) { row in
                                 SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
                                     ShellSettingsRows.apply(row.id, value: $0, to: store)
                                 }.equatable()

@@ -31,9 +31,10 @@ static pthread_mutex_t g_xq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_
 __attribute__((weak)) void nvn_hle_queue_enter(void *q) { (void)q; }   // hle_nvn.c: per-queue device, raster flip, virtual pool copies before each replayed piece (before sub_begin)
 __attribute__((weak)) void nvn_hle_piece_begun(void) {}   // hle_nvn.c: texture write polling (after sub_begin)
 
+static void xq_state_free(void *p);
 static xq_t *xq_find(void *q) { for (int i = 0; i < g_nxq; i++) if (g_xq[i].q == q) return &g_xq[i]; return NULL; }
 static int xq_busy_q(void *q) { xq_t *e = xq_find(q); return e && e->ncont; }
-static void xq_drop(xq_t *e) { pthread_mutex_lock(&g_xq_mu); free(e->cont); free(e->state); free(e->owed); *e = g_xq[--g_nxq]; pthread_mutex_unlock(&g_xq_mu); }   // g_xq_mu: owed lookups from other threads
+static void xq_drop(xq_t *e) { pthread_mutex_lock(&g_xq_mu); free(e->cont); xq_state_free(e->state); free(e->owed); *e = g_xq[--g_nxq]; pthread_mutex_unlock(&g_xq_mu); }   // g_xq_mu: owed lookups from other threads
 // Does the command stream from p (to its END, through CALLs and JUMPs) signal val from the GPU?
 static int xq_signals(const uint8_t *p, volatile uint32_t *val, int depth) {
     for (int steps = 0; p && steps < 1000000; steps++) {
@@ -67,19 +68,65 @@ static void xq_push(xq_t *e, uint64_t h) {
     if (e->ncont == e->ccap) { e->ccap = e->ccap ? e->ccap * 2 : 16; e->cont = realloc(e->cont, sizeof *e->cont * e->ccap); if (!e->cont) MDIE("no memory for parked command streams"); }
     e->cont[e->ncont++] = h; xq_sig_walk(e, (const uint8_t *)(uintptr_t)h, 0);
 }
-// Replay state carried across a park: what the commands after the wait read from the commands before it
-typedef struct { size_t nrc; uint64_t rc[]; } xq_rc;
+// Replay state carried across a park: what the commands after the wait read from the commands before it. A bound vertex range is also a dependency of the already-submitted piece:
+// NVN lets the guest Finalize its pool while the queue is waiting, but this host has not encoded the commands after the wait yet. Keep only those 16 bound ranges and expose them only
+// while this exact parked state is replayed; the finalized pool does not return to the global pool table. buf has one xq_buf_hold_add per non-empty entry.
+typedef struct { uint64_t lo, hi, base, gpu; void *buf; } xq_vbuf;
+typedef struct {
+    typeof(S) s; typeof(R) r; int rc_skip; size_t nrc;
+    xq_vbuf vb[16];
+    uint64_t rc[];
+} xq_state;
+static _Thread_local const xq_state *g_xq_state_active;   // only the submit thread replaying this piece may see the finalized ranges
+
+static int xq_range_end(uint64_t lo, uint64_t n, uint64_t *hi) { if (!n || lo > UINT64_MAX - n) return 0; *hi = lo + n; return 1; }
+static const xq_vbuf *xq_vbuf_find(const xq_state *x, uint64_t lo, uint64_t hi) {
+    if (!x) return NULL;
+    for (int i = 0; i < 16; i++) if (x->vb[i].buf && lo >= x->vb[i].lo && hi <= x->vb[i].hi) return &x->vb[i];
+    return NULL;
+}
+static void xq_vbuf_save(xq_state *x, int slot) {
+    NVNbufferRange v = S.vbuf[slot]; uint64_t lo = nvn_ga2ca(v.address), hi;
+    if (!v.address || !xq_range_end(lo, v.size, &hi)) return;
+    pthread_mutex_lock(&g_mu);
+    int i = pool_find(lo, 1);
+    if (i >= 0) {
+        pool_res(i);
+        uint64_t end = MIN(hi, (uint64_t)g_pools[i].hi);
+        if (end > lo) {
+            x->vb[slot] = (xq_vbuf){lo, end, g_pools[i].base, g_pools[i].gpu, (__bridge void *)g_pools[i].buf};
+            xq_buf_hold_add(x->vb[slot].buf);
+        }
+    }
+    pthread_mutex_unlock(&g_mu);
+    if (x->vb[slot].buf) return;
+    const xq_vbuf *old = xq_vbuf_find(g_xq_state_active, lo, hi);   // the pool was finalized after the preceding park; transfer its held dependency if this piece parks again
+    if (old) { x->vb[slot] = (xq_vbuf){lo, hi, old->base, old->gpu, old->buf}; xq_buf_hold_add(old->buf); }
+}
 static void *xq_state_save(void) {
-    size_t n = sizeof S + sizeof R + sizeof(int) + sizeof(size_t) + (size_t)g_rc_npend * 8; uint8_t *b = malloc(n); if (!b) MDIE("no memory for a parked queue's state");
-    memcpy(b, &S, sizeof S); memcpy(b + sizeof S, &R, sizeof R); memcpy(b + sizeof S + sizeof R, &g_rc_skip, sizeof(int));
-    size_t k = g_rc_npend; memcpy(b + sizeof S + sizeof R + sizeof(int), &k, sizeof k); if (k) memcpy(b + sizeof S + sizeof R + sizeof(int) + sizeof k, g_rc_pend, k * 8);
-    return b;
+    size_t k = g_rc_npend, n = sizeof(xq_state) + k * sizeof(uint64_t); xq_state *x = calloc(1, n); if (!x) MDIE("no memory for a parked queue's state");
+    memcpy(&x->s, &S, sizeof S); memcpy(&x->r, &R, sizeof R); x->rc_skip = g_rc_skip; x->nrc = k; if (k) memcpy(x->rc, g_rc_pend, k * sizeof(uint64_t));
+    for (int i = 0; i < 16; i++) xq_vbuf_save(x, i);
+    return x;
 }
 static void xq_state_load(const void *p) {
-    const uint8_t *b = p; memcpy(&S, b, sizeof S); memcpy(&R, b + sizeof S, sizeof R); memcpy(&g_rc_skip, b + sizeof S + sizeof R, sizeof(int));
-    size_t k; memcpy(&k, b + sizeof S + sizeof R + sizeof(int), sizeof k);
-    for (size_t i = 0; i < k; i++) { uint64_t a; memcpy(&a, b + sizeof S + sizeof R + sizeof(int) + sizeof k + i * 8, 8); rc_note(a, 1); }
+    const xq_state *x = p; memcpy(&S, &x->s, sizeof S); memcpy(&R, &x->r, sizeof R); g_rc_skip = x->rc_skip;
+    for (size_t i = 0; i < x->nrc; i++) rc_note(x->rc[i], 1);
+    for (int i = 0; i < 16; i++) if (x->vb[i].buf) res_add((__bridge id<MTLBuffer>)x->vb[i].buf);
+    res_commit(); g_xq_state_active = x;
     g_pso_dirty = g_dss_dirty = 1; args_dirty_all();
+}
+static void xq_state_deactivate(void) { g_xq_state_active = NULL; }
+static void xq_state_free(void *p) {
+    xq_state *x = p; if (!x) return;
+    if (g_xq_state_active == x) g_xq_state_active = NULL;
+    for (int i = 0; i < 16; i++) if (x->vb[i].buf) xq_buf_hold_del(x->vb[i].buf);
+    free(x);
+}
+static int xq_addr_want(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_t *gpu, uint64_t *avail) {
+    uint64_t hi; if (!xq_range_end(addr, len, &hi)) return 0;
+    const xq_vbuf *v = xq_vbuf_find(g_xq_state_active, addr, hi); if (!v) return 0;
+    *buf = v->buf; *off = addr - v->base; *gpu = v->gpu + *off; *avail = v->hi - addr; return 1;
 }
 // ev_wait ④: may this unmet wait park the queue being replayed? p = the operation after the wait
 static int xq_may_park_(const uint8_t *p, volatile uint32_t *val, uint32_t mode, uint32_t v);
@@ -105,7 +152,7 @@ static void xq_publish_owed(xq_t *e, uint64_t fence) {
 // One piece: replay streams h[0..n) of queue q as a submission; returns 1 if it parked (the rest is in q's entry)
 static int xq_piece(void *q, const uint64_t *h, int n, const void *state) {
     nvn_hle_queue_enter(q);
-    nvn_be_sub_begin(); nvn_hle_piece_begun(); if (state) xq_state_load(state);
+    nvn_be_sub_begin(); nvn_hle_piece_begun(); xq_state_deactivate(); if (state) xq_state_load(state);
     nvn_be_sub_index(h, n);
     g_xq_cur = q; g_xq_unwind = 0; g_xq_nuc = 0; g_xq_ucover = 0;
     int i = 0;
@@ -113,6 +160,7 @@ static int xq_piece(void *q, const uint64_t *h, int n, const void *state) {
     nvn_be_exec_rest(NULL, 0); g_xq_cur = NULL;
     void *st = g_xq_unwind ? xq_state_save() : NULL;
     uint64_t fence = nvn_be_sub_commit();
+    xq_state_deactivate();
     xq_t *e = xq_find(q);
     if (!g_xq_unwind) { if (e) { xq_publish_owed(e, fence); if (!e->ncont && !e->parked) xq_drop(e); } return 0; }
     g_xq_unwind = 0;
@@ -122,7 +170,7 @@ static int xq_piece(void *q, const uint64_t *h, int n, const void *state) {
     for (int k = 0; k < g_xq_nuc; k++) xq_push(e, (uint64_t)(uintptr_t)g_xq_uc[k]);
     for (int k = i + 1; k < n; k++) xq_push(e, h[k]);
     for (int k = 0; k < nrest; k++) xq_push(e, rest[k]);
-    free(rest); free(e->state); e->state = st;
+    free(rest); xq_state_free(e->state); e->state = st;
     e->parked = 1; e->val = g_xq_pval; e->mode = g_xq_pmode; e->v = g_xq_pv; e->since = g_xq_subs; g_xq_parks++;
     { static int n_; if (!n_++) MLOG("cross-queue event waits: queue %p parked at a wait on %p (mode %u, value %u, now %u) until another queue's signal is replayed (first case)", q, g_xq_pval, g_xq_pmode, g_xq_pv, ev_now(g_xq_pval)); }
     return 1;
@@ -139,7 +187,7 @@ static void xq_run(xq_t *e, int force) {
     if (force) { g_xq_forced++; } else g_xq_resumes++;
     if (nc) { uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); g_xq_pieces++; xq_piece(q, c, nc, st); g_xq_piece_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0; }
     else if ((e = xq_find(q)) && !e->parked) { xq_publish_owed(e, nvn_be_last_fence()); xq_drop(e); }
-    free(c); free(st);
+    free(c); xq_state_free(st);
 }
 static void xq_drain_ready(void) {
     for (int again = 1; again;) { again = 0;

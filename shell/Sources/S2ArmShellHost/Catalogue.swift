@@ -72,10 +72,22 @@ public struct Catalogue: Equatable, Sendable {
             tiles.append(GameTile(id: e.titleID, title: e.name, subtitle: e.displayVersion ?? "",
                                   banner: artwork(e.banner, id: e.titleID + ".banner", base: baseDirectory),
                                   icon: artwork(e.icon, id: e.titleID + ".icon", base: baseDirectory),
-                                  state: state))
+                                  state: state, sgrade: sgradeBuilt(e.titleID, base: baseDirectory, single: file.games.count == 1)))
         }
         var c = Catalogue(tiles: tiles, problems: problems); c.bannerURLs = banners
         return c
+    }
+
+    /// 封面金色 S（v0.4.0）：这款打进了 S 级优化——补丁表（多款容器 Games/<游戏号>/cpatch.tsv；单款 App 根 cpatch.tsv）有表头以外的条目，
+    /// 或带着随包金手指原文 cheat-src.*（多数金手指只改内存、不进补丁表；11-14 与 Mac pack/jobs/library.py sgrade_badge 同口径）
+    static func sgradeBuilt(_ id: String, base: URL, single: Bool) -> Bool {
+        let dirs = [base.appendingPathComponent("Games").appendingPathComponent(id)] + (single ? [base] : [])
+        for dir in dirs {
+            if let text = try? String(contentsOf: dir.appendingPathComponent("cpatch.tsv"), encoding: .utf8),
+               text.split(whereSeparator: \.isNewline).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count > 1 { return true }
+            if let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path), names.contains(where: { $0.hasPrefix("cheat-src.") }) { return true }
+        }
+        return false
     }
 
     static func gameState(_ e: CatalogueEntry) -> GameState {

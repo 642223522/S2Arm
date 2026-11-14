@@ -2,6 +2,7 @@
 // vawin.c + layout.c 持有宿主地址窗口；Apple 可用远端影子，Android 暂沿用窗口内布局。
 // 4 KB 游戏页按 16 KB 分组记账；Android 映射原语使用实际宿主页，Apple 共享内存保留 16 KB 对齐。
 // 随包表：addr_need.tsv（出包组装 pack/ship_ext.py 从产物根拷进 App，runtime/build.mk 按这行自动收清单）
+#include <dlfcn.h>
 #include "s2a_init_fail.h"
 #include "native.h"
 #include "as_type.h"
@@ -463,6 +464,9 @@ uint64_t s2a_mem_init(const char *npdm) {
     if (g_npdm_ounce) { void s2a_guest_tick_hz_set(uint64_t); s2a_guest_tick_hz_set(31250000); LOG("NPDM 是 Switch 2 布局：系统计数器按 31.25 MHz"); }
     LOG("布局：程序号 %016llx 类型 %u SystemResourceSize %#llx｜别名 %#llx+%#llx 堆 %#llx+%#llx 栈 %#llx+%#llx TLS/IO %#llx+%#llx 可随机 %#llx+%#llx",
         (unsigned long long)g_program_id, t, (unsigned long long)sr, (unsigned long long)L.alias_base, (unsigned long long)L.alias_size, (unsigned long long)L.heap_base, (unsigned long long)L.heap_size, (unsigned long long)L.stack_base, (unsigned long long)L.stack_size, (unsigned long long)L.tlsio_base, (unsigned long long)L.tlsio_size, (unsigned long long)L.aslr_base, (unsigned long long)L.aslr_size);
+#if !defined(__ANDROID__)
+    { void (*carve)(uint64_t, uint64_t) = (void (*)(uint64_t, uint64_t))dlsym(RTLD_DEFAULT, "s2a_guest_file_carve"); if (carve) carve(L.alias_base, L.alias_size); }   // 按名字取：只链本文件的单测没有 vawin.c   // 文件后备时物理映射区（GPU 每帧写的内存池）保持匿名（vawin.c，#964 a）
+#endif
     if (!ms) die("NPDM MainThreadStackSize 为 0");
     uint64_t len = ((uint64_t)ms + HPG - 1) & ~(HPG - 1), base = L.stack_base + L.stack_size - len;
     if (mprotect((void *)base, len, PROT_READ | PROT_WRITE)) die("主线程栈 mprotect errno=%d", errno);
@@ -981,8 +985,16 @@ static int in_as(uint64_t a, uint64_t n) {
 // 宿主占到的窗口（布局可伸出窗口，伸出去的只是承诺，layout.c）：游戏要映射到窗口外 = 宿主给不出这段地址，回 OutOfMemory（0xD001，
 //   Switch 上内存不够时的同一结果）并报红（首次与第 2^k 次），不 mprotect 到宿主自己的内存上
 static int win_has(uint64_t a, uint64_t n) { return a >= L.win_base && n <= L.win_size && a - L.win_base <= L.win_size - n; }
+// 最近一次地址越界的请求（崩溃现场归因用：游戏不理会失败照样访问那段，崩出 SIGBUS 时点名是它，crash.c fault_region_note）
+static _Atomic uint64_t g_vs_a, g_vs_n; static _Atomic int g_vs_num;
+int s2a_va_short_last(uint64_t fa, int *num, uint64_t *a, uint64_t *n, uint64_t *count) {
+    uint64_t a0 = atomic_load(&g_vs_a), n0 = atomic_load(&g_vs_n);
+    if (!n0 || fa < a0 || fa - a0 >= n0) return 0;
+    *num = atomic_load(&g_vs_num); *a = a0; *n = n0; *count = atomic_load(&g_va_short); return 1;
+}
 static uint64_t va_short(int num, uint64_t a, uint64_t n, const char *region) {
     uint64_t k = atomic_fetch_add(&g_va_short, 1) + 1;
+    atomic_store(&g_vs_num, num); atomic_store(&g_vs_a, a); atomic_store(&g_vs_n, n);
     if (!(k & (k - 1))) LOG("【红】地址越界：svc %#x 要在%s映射 %#llx +%#llx，宿主只占到 [%#llx, %#llx)（第 %llu 次）；回内存不足（游戏真碰的地址跨度超过本机给的地址）",
         num, region, (unsigned long long)a, (unsigned long long)n, (unsigned long long)L.win_base, (unsigned long long)(L.win_base + L.win_size), (unsigned long long)k);
     return 0xD001;
@@ -1434,6 +1446,23 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         uint64_t page = memory_protection_page();
         if (!page) { regs[0] = 0xD401; return 1; }
         uint64_t lo = widen ? a & ~(page - 1) : (a + page - 1) & ~(page - 1), hi = widen ? (a + n + page - 1) & ~(page - 1) : (a + n) & ~(page - 1);
+        // #815 / #523（0100FA501AF90000，补丁 @rugal7699）：游戏把模块映像（main / subsdk / sdk / NRO）里的一段收紧成只读后，游戏 SDK 自己的 nn::ro 装 NRO 时
+        //   还会往这段（main+0x579508）写 → SIGBUS。模块映像里的收紧只记游戏可见权限（下面 perm_set 照记，QueryMemory 照回只读），
+        //   不改宿主保护；S2A_MOD_RELRO_ENFORCE=1 恢复旧行为。放宽（widen）照旧。
+        {
+            static int enforce = -1;
+            if (enforce < 0) { const char *ev = getenv("S2A_MOD_RELRO_ENFORCE"); enforce = ev && *ev == '1'; }
+            module_t *mm = n ? module_of((const void *)(uintptr_t)a) : NULL;
+            int in_mod = !widen && mm && module_of((const void *)(uintptr_t)(a + n - 1)) == mm;
+            uint64_t mb = mm ? (uint64_t)(uintptr_t)mm->base : 0;
+            static _Atomic int said;   // 只记模块映像内的收紧（游戏可能频繁改别处权限），每局至多 16 行
+            if (in_mod && atomic_fetch_add(&said, 1) < 16)
+                LOG("SetMemoryPermission %s+%#llx 大小 %#llx 权限 %u → 宿主 [%#llx, %#llx)%s",
+                    mm->name, (unsigned long long)(a - mb), (unsigned long long)n, p,
+                    (unsigned long long)(lo - mb), (unsigned long long)(hi > lo ? hi - mb : lo - mb),
+                    !enforce ? "（模块映像内收紧：只记游戏权限，宿主保持可写）" : "（S2A_MOD_RELRO_ENFORCE=1：照旧设宿主只读）");
+            if (in_mod && !enforce) hi = lo;   // 跳过下面的宿主 mprotect / prot_changed
+        }
         // 远端（别名区伸出宿主窗口的那段）只是承诺：页的保护由远端探针 / 翻译层管，这里不改宿主保护
         uint64_t we = L.win_base + L.win_size; if (hi > we && lo < we && s2a_far_has(we, hi - we)) hi = we; else if (lo >= we && s2a_far_has(lo, hi - lo)) hi = lo;
         if (hi > lo) {
@@ -1889,7 +1918,8 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             if (atomic_fetch_add(&said, 1) < 8) LOG("Break 通知（仅通知、不是错误，继续）原因 %#llx 位于 %s+%#llx", (unsigned long long)regs[0], m ? m->name : "?", (unsigned long long)(m ? orig - (uint64_t)m->base : orig));
             regs[0] = 0; return 1;
         }
-        LOG("【红】Break 原因 %#llx 载荷 %#llx+%#llx 位于 %s+%#llx", (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2], m ? m->name : "?", (unsigned long long)(m ? orig - (uint64_t)m->base : orig));
+        { char at[256]; if (!s2a_guest_where(orig, at, sizeof at)) snprintf(at, sizeof at, "?+%#llx", (unsigned long long)orig);   // 带导出名（#806）
+          LOG("【红】Break 原因 %#llx 载荷 %#llx+%#llx 位于 %s", (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2], at); }
         // SDK 的「结果不成功就中止」（原因 0、载荷 4 字节）载荷就是那个失败的 Result：读出来按 2xxx-yyyy 打，一眼看出是哪个服务回了什么
         //   （10-29 普查 Servonauts / Fit Boxing 3 同在 sdk+0x162868 中止，日志只有载荷地址、没有值，定不了是哪个服务）。载荷在游戏栈上，只读窗口内对齐的
         if (regs[2] == 4 && !(regs[1] & 3) && win_has(regs[1], 4)) {

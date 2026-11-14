@@ -49,7 +49,7 @@ harness = (ROOT / "runtime/tests/support/touch_baseline_harness.inc").read_text(
 WEAK = run(sys.executable, str(ROOT / "tools/weak_link_decl.py"), "flags", "touchtest", capture_output=True).stdout.split()   # 按源码「弱链接[touchtest]」登记生成
 environment = dict(os.environ)
 for name, source in (("old", old), ("new", new)):
-    body = between(source, "uint64_t s2a_ap_frames(void);", "@interface S2AVPadView")
+    body = between(source, "uint64_t s2a_ap_frames(void);", "\n@interface ") + "\n"   # 截到第一个 UIKit 类为止：之前只有 C 级读数 / 录制函数，类（锁屏视图、手柄视图）不进对照
     bridge = "static void publish(uint32_t b, const int16_t _ax[4]) {\n"
     bridge += old_publish if name == "old" else new_publish
     bridge += "}\n"
@@ -58,7 +58,7 @@ for name, source in (("old", old), ("new", new)):
     command = ["xcrun", "--sdk", "macosx", "clang", "-O1", "-g", "-fobjc-arc",
                "-Wall", "-Wextra", "-Wno-unused-parameter", "-Iruntime/include", "-Iruntime/src", "-Iios",
                "-framework", "Foundation", *WEAK,
-               "-o", str(OUT / name), str(path), "runtime/src/pad.c", "ios/settings.m", "runtime/src/caps.c", "runtime/src/patch.c", "runtime/src/launchctx.c"]
+               "-o", str(OUT / name), str(path), "runtime/src/pad.c", "ios/settings.m", "ios/cpatch_model.m", "runtime/src/caps.c", "runtime/src/patch.c", "runtime/src/launchctx.c"]
     run(*command, env=environment)
     run(str(OUT / name), str(OUT / f"{name}.tsv"), stdout=(OUT / f"{name}.stdout").open("w"))
 

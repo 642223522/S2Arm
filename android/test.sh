@@ -57,6 +57,12 @@ s2a_gate_step bash "$android_dir/tools/vk_resid_test.sh"
 # 遮挡查询环形页边界（宿主，Vulkan 调桩）：reset 只重置高水位 / 同批多 pass 累计在 pass 边界合法换页 /
 # 段日志压缩 / 长期不 Reset / 会话重建。这是「进世界约 20 s 必崩」那类窗口失效的回归护栏。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_query_edges.sh"
+# 两级回放队列（nvk_dq；宿主，真队列 + 真录制线程 + 记录桩）：多生产者序列 / 环回绕 / 背压 / 跨线程清空 / 两条线程同时清空 / 运行时开关；
+# TSan 零报告；六种变异（没写完就发布、清空不等、不等环里有地方、环尾长度写错、先报已读、抹掉别人的「在等」标记）都必须红在预期阶段。
+# 队列用 pthread 自旋锁（苹果系统没有）：只在 Linux 上跑，macOS 由 Linux 门禁执行。
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step bash "$android_dir/tests/run_dq_queue.sh"
+fi
 # 描述符写入初始化（宿主）：三路描述符必须整结构清零、dstArrayElement=0；「漏字段」反例必须被抓到。
 # 曾经漏填 dstArrayElement，真机第一笔 draw 就把 Adreno 驱动写崩。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_desc_write_test.sh"
@@ -98,6 +104,10 @@ s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_dt_test.sh"
 # WSI actual-present diagnostics: NDK declarations, partial batches and generation isolation.
 s2a_gate_step bash "$android_dir/tests/nvk_shown_timing_test.sh"
+# 设备 / 实例扩展查询：枚举失败（能力未知、报红）与确实不支持分开；VK_INCOMPLETE 重取。
+s2a_gate_step bash "$android_dir/tests/vk_dev_ext_test.sh"
+# 调试开关读数的线程内缓存（宿主，确定性）：命中 / 过期 / 缺省 / 名字比较 / 名字上限，7 个负对照。
+s2a_gate_step bash "$android_dir/tests/nvk_flag_cache_test.sh"
 # 直连逐帧 TSV（宿主，确定性）：列掩码/差分/gpuq 账/开关与目录门。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_tsv_test.sh"
 s2a_gate_step bash "$android_dir/tools/generic_frame_trace_test.sh"
@@ -236,6 +246,9 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/tests/VulkanDirectChoiceTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.VulkanDirectChoiceTest "$android_dir/native/direct_choice.h"
 s2a_gate_step bash "$android_dir/tests/exit_order_test.sh"
+# 存档原子态（#961）：缺服务层出口时轮询答「未知」（负数、红一次），Java 不当原因位提示；各带一个回退负对照。
+s2a_gate_step bash "$android_dir/tests/save_atomic_poll_test.sh" "$out/save-atomic-poll"
+s2a_gate_step "$PY" "$android_dir/tests/save_atomic_probe_test.py" --out "$out/save-atomic-probe"
 # A0 端到端（合成包 → 改写器 → stage_a0 → current.json → 契约校验 → BootContract）：要 lz4 / capstone（用门禁同一个 ${PY}）+ JDK
 PY="$PY" s2a_gate_step bash "$android_dir/tests/stage_a0_test.sh"
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
@@ -322,6 +335,8 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
 # GS 脏位、阶段绑定、管线和原始图元拒绝的独立回退反证。
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/gs_replay_mutation_test.py"
+# 写跟踪取范围（find_span）与池查找的线程内备忘（#974）：键 / 代际 / 写者纪律 / 开关各处的撤改必红（纯宿主 C 编译）。
+s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/dirty_span_memo_mutation_test.py"
 # 原创 Maxwell 经生产请求、真实编译器与生产结果解析；GPU 像素由 Vulkan 门禁另验。
 s2a_gate_step "$PY" "$android_dir/tests/gs_compiler_chain_test.py"
 # BUFFER texture: real producer, Maxwell compiler, SPIR-V parser and replay rejection.
@@ -429,6 +444,9 @@ s2a_gate_step "$PY" "$repo_dir/runtime/tests/support/test_thread_verdict.py"
 ndk_cc=$(. "$android_dir/tools/ndk_toolchain.sh" && s2a_ndk_clang "$(s2a_ndk_resolve)" 29) || { echo '【红】找不到固定 NDK 29（android/tools/ndk_toolchain.sh）' >&2; exit 1; }
 s2a_gate_step "$PY" "$repo_dir/runtime/tests/support/build_pause_wait_android.py" --cc "$ndk_cc" --out "$out/pause-wait-android"
 s2a_gate_step "$PY" "$android_dir/native/runtime/fault/tests/run.py" --objects-only --cc "$ndk_cc" --out "$out/fault-objects"
+# 栈指针未对齐替做读写（runtime/src/emul_sp.c 安卓信号上下文版）：宿主没有 arm64 安卓信号上下文，只用固定 NDK 编译链接；执行在手机上（见用例文件末尾）
+s2a_gate_step "$ndk_cc" -O1 -Wall -Werror -I"$repo_dir/runtime/include" "$android_dir/tests/emul_sp_android_test.c" \
+    "$repo_dir/runtime/src/emul_sp.c" "$repo_dir/runtime/src/emul_ld.c" "$repo_dir/runtime/src/emul_st.c" -o "$out/emul-sp-android-test"
 s2a_gate_step "$PY" "$android_dir/native/runtime/platform/tests/shutdown_wait_test.py"
 s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_shutdown_contract.py"
 # App 纯 Java 层整体编译：抓 import 漏缺 / 签名不匹配这类编译错（#38 GameLibrary 漏 import 让 main 编不过就是这类）。
@@ -530,6 +548,14 @@ fi
 s2a_gate_step "$PY" "$android_dir/core-link/runtime-tests/readonly-copy/texture_read_test.py"
 # 共享 guest 入口的主线程 fault 状态准入顺序（真实 guest_main.c；fault/SDK 端点为合成夹具；11-01 #1309 接线）。
 s2a_gate_step "$PY" "$android_dir/core-link/runtime-tests/run_guest_entry.py" --out "$out/guest-entry"
+# 主 guest 运行态发布（#961）：真实 HostApi / runtime / guest_main / session / direct_prompt 一起编链，带 5 个回退负对照。
+#   GNU ld --wrap 与 host_android.c 的 eventfd 只在 Linux；Android 日志头取固定 NDK 29 的真头。
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step "$PY" "$android_dir/core-link/runtime-tests/run_save_running.py" --out "$out/save-running" \
+        --ndk-include "${ndk_cc%/bin/*}/sysroot/usr/include"
+else
+    s2a_gate_note "未测：run_save_running.py（主 guest 运行态发布）需 Linux（GNU ld --wrap、eventfd）"
+fi
 # Q19/#530：C# 绑定入口 vs Android 单库实际链接定义（fixture + 当前树正例）。
 s2a_gate_step python3 "$android_dir/core-link/link_symbols.py"
 s2a_gate_step "$PY" "$android_dir/core-link/tests/t_link_symbols.py"

@@ -83,6 +83,114 @@ class JobsTests(unittest.TestCase):
         self.redirect.__exit__(None, None, None)
         self.tmp.cleanup()
 
+    def test_context_accepts_readable_windows_volume_when_final_path_query_is_unsupported(self):
+        import core
+        # 用真实路径起步：Mac 临时目录在 /var（指向 /private/var 的符号链接）下，退回分支逐级查到它会按「路上有链接」照样报错
+        mounted = Path(os.path.realpath(self.root)) / "mounted-library"
+        child = mounted / "games" / "one"
+        child.mkdir(parents=True)
+        (mounted / ".s2arm-library.json").write_text(json.dumps({"schema": 1, "id": "test-library"}), encoding="utf-8")
+        (child / "payload.bin").write_bytes(b"DATA")
+        request = dict(self.request, taskId=str(uuid.uuid4()), privateRoot=str(self.root / "private-mounted"), library=str(mounted), libraryId="test-library")
+        resolve = Path.resolve
+
+        def resolve_with_volume_error(path, *args, **kwargs):
+            if path == mounted or mounted in path.parents:
+                error = OSError(22, "filesystem final-path query unsupported")
+                error.winerror = 1005
+                raise error
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(core, "_windows", lambda: True), patch.object(Path, "resolve", resolve_with_volume_error):
+            context = Context(request)
+            context.require_library()
+            contained = core.contained(mounted, child)
+            self.assertEqual(core.default_home(context.private, context.library), Path(os.path.abspath(mounted)))
+            self.assertEqual(layout.require_in_location(context, child), Path(os.path.abspath(child)))
+            build.validate_files(context, mounted, {"games/one/payload.bin": [4, ""]})
+        self.assertEqual(context.library, Path(os.path.abspath(mounted)))
+        self.assertEqual(contained, Path(os.path.abspath(child)))
+        self.assertTrue((context.logs / "jobs" / (context.task + ".json")).is_file())
+
+    def test_context_does_not_hide_other_library_path_resolution_errors(self):
+        import core
+        mounted = self.root / "denied-library"
+        mounted.mkdir()
+        request = dict(self.request, taskId=str(uuid.uuid4()), privateRoot=str(self.root / "private-denied"), library=str(mounted))
+        resolve = Path.resolve
+
+        def resolve_with_access_error(path, *args, **kwargs):
+            if path == mounted:
+                error = OSError(5, "access denied")
+                error.winerror = 5
+                raise error
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(core, "_windows", lambda: True), patch.object(Path, "resolve", resolve_with_access_error):
+            with self.assertRaises(OSError) as caught:
+                Context(request)
+        self.assertEqual(caught.exception.winerror, 5)
+
+    def test_resolve_path_does_not_fall_back_across_reparse_points(self):
+        import core
+        mounted = Path(os.path.realpath(self.root)) / "reparse-library"   # 同上：只让被测的这一级是重解析点
+        mounted.mkdir()
+        resolve = Path.resolve
+        lstat = Path.lstat
+
+        def resolve_with_volume_error(path, *args, **kwargs):
+            if path == mounted:
+                error = OSError(22, "filesystem final-path query unsupported")
+                error.winerror = 1005
+                raise error
+            return resolve(path, *args, **kwargs)
+
+        def lstat_with_reparse(path, *args, **kwargs):
+            if path == mounted:
+                return type("Stat", (), {"st_mode": stat.S_IFDIR, "st_file_attributes": 0x400})()
+            return lstat(path, *args, **kwargs)
+
+        with patch.object(core, "_windows", lambda: True), patch.object(Path, "resolve", resolve_with_volume_error), patch.object(Path, "lstat", lstat_with_reparse):
+            with self.assertRaises(OSError) as caught:
+                core.resolve_path(mounted)
+        self.assertEqual(caught.exception.winerror, 1005)
+
+    def test_resolve_path_does_not_fall_back_off_windows(self):
+        import core
+        error = OSError(22, "filesystem final-path query unsupported")
+        error.winerror = 1005
+        with patch.object(core, "_windows", lambda: False), patch.object(Path, "resolve", side_effect=error):
+            with self.assertRaises(OSError) as caught:
+                core.resolve_path(self.root / "library")
+        self.assertIs(caught.exception, error)
+
+    @unittest.skipUnless(os.name == "nt", "盘符 / UNC 只有 Windows 有（Windows 实机上跑）")
+    def test_library_keeps_mapped_drive_letter(self):
+        # 映射网络驱动器（Z: → \\NAS\share）：Path.resolve 换成内网地址。库根保留玩家选的盘符写法（存、显示、拼路径），
+        #   判越界照样按解析结果比；路上有 junction 时不保留（没法确认它指哪）
+        import core
+        real = Path(os.path.realpath(self.root)) / "nas-library"
+        (real / "games").mkdir(parents=True)
+        unc = Path(r"\\nas\share\nas-library")
+        resolve = Path.resolve
+
+        def as_unc(path, *args, **kwargs):
+            path = Path(os.path.abspath(path))
+            if path == real or real in path.parents:
+                return unc / path.relative_to(real)
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", as_unc):
+            self.assertEqual(core.resolve_library_path(real), real)
+            self.assertEqual(core.resolve_path(real), unc)
+            self.assertEqual(core.contained(real, real / "games"), unc / "games")
+            context = Context(dict(self.request, taskId=str(uuid.uuid4()), privateRoot=str(self.root / "private-nas"), library=str(real)))
+            self.assertEqual(context.library, real)
+            target = real / "elsewhere"
+            target.mkdir()
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(real / "junction"), str(target)], check=True, capture_output=True)
+            self.assertEqual(core.resolve_library_path(real / "junction"), unc / "junction")
+
     def catalogue(self, games):
         atomic(self.c.library / "catalog.json", dict(schema=1, games=games))
 
@@ -298,6 +406,16 @@ class JobsTests(unittest.TestCase):
             with um.patch.object(self.c, "run", fake("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")):
                 with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
                 self.assertIs(str(e.exception), library.KEYS_CANNOT_DECRYPT)
+            # #1008：读取器给了确定原因（哈希校验不过）→ 照原话报，不落三选一猜测。期望手写：原话前加「无法读取游戏内容：」、码 content_unreadable
+            hash_line = "【原因 hash_mismatch】源文件数据哈希校验不过（ResultFsNonRealDataVerificationFailed (2002-4604): Hash error!）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件"
+            def fake2(*msgs):
+                def run(args, log=None, env=None, cwd=None, on_line=None):
+                    for m in msgs: on_line(m)
+                    raise Failure("S2Arm 工具退出，当前阶段未完成。")
+                return run
+            with um.patch.object(self.c, "run", fake2("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.", hash_line)):
+                with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
+                self.assertEqual((str(e.exception), e.exception.code), ("无法读取游戏内容：" + hash_line.split("】", 1)[1], "content_unreadable"))
             with um.patch.object(self.c, "run", fake("Unhandled exception: disk full")):
                 with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
                 self.assertEqual(str(e.exception), "S2Arm 工具退出，当前阶段未完成。")
@@ -799,9 +917,11 @@ class JobsTests(unittest.TestCase):
         du = collections.namedtuple("du", "total used free")
         with um.patch("shutil.disk_usage", return_value=du(0, 0, need)):
             library.check_pack_space(self.c, game)
-        with um.patch("shutil.disk_usage", return_value=du(0, 0, need - 1)):
-            with self.assertRaises(Failure) as e: library.check_pack_space(self.c, game)
-        self.assertIn(f"要 {need / 1e9:.0f} GB", str(e.exception)); self.assertIn(f"只剩 {(need - 1) / 1e9:.0f} GB", str(e.exception))
+        with um.patch("shutil.disk_usage", return_value=du(0, 0, need - 1)), um.patch.object(self.c, "diagnostic") as diag:
+            library.check_pack_space(self.c, game)   # 11-14 不许堵门：差 1 字节也不拦，只提示
+        msg = diag.call_args.args[0]
+        self.assertEqual((diag.call_args.kwargs.get("code"), diag.call_args.kwargs.get("severity")), ("disk_full", "warning"))
+        self.assertIn(f"要 {need / 1e9:.0f} GB", msg); self.assertIn(f"只剩 {(need - 1) / 1e9:.0f} GB", msg)
 
     def test_stage_sources_links_originals_in_place(self):
         # 原件原地只读（11-02）：出包原件目录里是指向原件的软链（按内容哈希命名、整合版同一文件列两次只链一次），不复制、不改原件；
@@ -917,6 +1037,25 @@ class JobsTests(unittest.TestCase):
             self.assertIn("logs/t1-degrade.log", archive.namelist())
             self.assertEqual(json.loads(archive.read("manifest.json"))["degrade_summary"], {"t1": {"rewrite/x18": 30, "direct/lazy": 5}})
 
+    def test_diagnostics_carries_pipeline_records(self):
+        # 本机管线记录（11-13 维护者：诊断收进众包种子）：游戏库里各款 temp/<号>/wire/<号>/pso_user.tsv 原样进 pso/<号>.tsv；没跑过（没这份）的不放；
+        #   空文件、超过 4 MB 的、链接都不放。期望按规则手写
+        import zipfile
+        A, B, C, D = "0100AAAA00000000", "0100BBBB00000000", "0100CCCC00000000", "0100DDDD00000000"
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=g, name=g) for g in (A, B, C, D)]))
+        def rec(g, data):
+            f = self.c.library / "temp" / g / "wire" / g / "pso_user.tsv"; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(data); return f
+        rec(A, b"S\t0123456789abcdef_b\t1\nC\t1111222233334444_b\n")
+        rec(C, b"")
+        rec(D, b"x" * ((4 << 20) + 1))
+        destination = self.root / "diag-pso.zip"; destination.unlink(missing_ok=True); self.c.r["path"] = str(destination)
+        library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as archive:
+            names = sorted(n for n in archive.namelist() if n.startswith("pso/"))
+            self.assertEqual(names, [f"pso/{A}.tsv"])
+            self.assertEqual(archive.read(f"pso/{A}.tsv"), b"S\t0123456789abcdef_b\t1\nC\t1111222233334444_b\n")
+            self.assertIn(f"pso/{A}.tsv", json.loads(archive.read("manifest.json"))["files"])
+
     def test_diagnostics_player_note(self):
         # 故障报修的可选文本框（11-13 维护者）：请求带 note 就原样（去首尾空白）进 manifest.json 的 note，收件服务与 iOS 同字段；不填 / 空白不写
         import zipfile
@@ -928,6 +1067,24 @@ class JobsTests(unittest.TestCase):
             library.diagnostics(self.c)
             with zipfile.ZipFile(destination) as archive:
                 self.assertEqual(json.loads(archive.read("manifest.json")).get("note"), expect)
+
+    def test_diagnostics_names_the_game(self):
+        # 11-14 诊断#e68047：Mac / Windows 诊断包 manifest 没有 game.title_id，报告程序号成了「-」，不同游戏的停帧被并成一单。
+        #   只认导出请求带的游戏号（启动器「故障报修」传玩家选中的那款）；没带就不写——任务记录里最近玩的那款也不拿来猜
+        import zipfile
+        jobs = self.c.jobpath.parent; jobs.mkdir(parents=True, exist_ok=True)
+        (jobs / "mid.json").write_text(json.dumps({"id": "mid", "operation": "play", "state": "completed", "gameId": "0100F2C0115B6000"}), encoding="utf-8")
+        def game_of():
+            destination = self.root / "diag-game.zip"; destination.unlink(missing_ok=True); self.c.r["path"] = str(destination)
+            library.diagnostics(self.c)
+            with zipfile.ZipFile(destination) as archive:
+                return json.loads(archive.read("manifest.json")).get("game")
+        for given, expect in ((None, None), ("", None), ("not-a-title", None), ("0400a3a01ee4c000", {"title_id": "0400A3A01EE4C000"})):
+            self.c.r.pop("gameId", None)
+            if given is not None:
+                self.c.r["gameId"] = given
+            self.assertEqual(game_of(), expect, given)
+        self.c.r.pop("gameId", None)
 
     def test_diagnostics_export_to_volume_whose_new_files_change_inode(self):
         # exFAT / FAT（macOS 驱动）：新文件写入数据、分到存储后 inode 号会变（本机 exFAT 镜像实测：mkstemp 后 18446744073709404714，写完 32987）。
@@ -946,6 +1103,19 @@ class JobsTests(unittest.TestCase):
             library.diagnostics(self.c)
         with zipfile.ZipFile(destination) as archive:
             self.assertIn("manifest.json", archive.namelist())
+
+    def test_direct_check_cli_never_blocks(self):
+        # 不许堵门（11-14，诊断 D-QDK9）：开工前空间预估不够只提示、不拦。期望手写：预估不够 → 退 0、打一行【黄】带原句与「照常开编」；
+        #   够 → 退 0、不打字；复核自己抛异常 → 退 2（direct_lib.sh 记黄照编）
+        import space_rule, contextlib, io
+        for why, rc, want in (("磁盘空间不足：直连库预计还要 15.0 GB", 0, "【黄】磁盘空间不足：直连库预计还要 15.0 GB：这是预估，照常开编"), (None, 0, "")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                got = space_rule.cli(["direct-check", "r", "c", "o"], check=lambda *a, w=why: w)
+            self.assertEqual(got, rc); self.assertTrue(out.getvalue().startswith(want) if want else out.getvalue() == "", out.getvalue())
+        def boom(*a): raise OSError("x")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(space_rule.cli(["direct-check", "r", "c", "o"], check=boom), 2)
 
     def test_direct_check_counts_existing_cache_and_volume(self):
         # 直连阶段开工前复核（pack/jobs/space_rule.py direct_check）与出包预检同一规则：游戏内容（romfs + exefs + aoc）≥ 3e9 → 15e9、小于 → 5e9；
@@ -1049,17 +1219,17 @@ class JobsTests(unittest.TestCase):
                 self.assertIn("未量化", budget["unknown"][0]["note"])
                 self.assertEqual(len(budget["volumes"]), 1)
 
-    def test_space_rejection_emits_budget_and_persists_in_job(self):
-        # 游戏库不够：先发 space 事件（enough=false）再报 disk_full；后续阶段事件不冲掉任务文件里的 space
+    def test_space_shortfall_emits_budget_warns_and_persists_in_job(self):
+        # 游戏库不够：发 space 事件（enough=false）并记一条 disk_full 警告、不拦（11-14 不许堵门）；后续阶段事件不冲掉任务文件里的 space
         import collections
         import unittest.mock as um
         base = dict(self.package("base"), size=1 << 30)
         game = self.game(packages=[base])
         du = collections.namedtuple("du", "total used free")
         with um.patch("shutil.disk_usage", return_value=du(0, 0, 5 << 30)):
-            with self.assertRaises(Failure) as e: library.check_pack_space(self.c, game)
-        self.assertEqual(e.exception.code, "disk_full")
-        self.assertIn("磁盘空间不够", str(e.exception))
+            library.check_pack_space(self.c, game)
+        [d] = [d for d in self.c.job["diagnostics"] if d["code"] == "disk_full"]
+        self.assertEqual(d["severity"], "warning"); self.assertIn("磁盘空间不够", d["summary"])
         event = self.space_events()[-1]
         self.assertFalse(event["space"]["volumes"][0]["enough"])
         self.assertEqual(event["space"]["volumes"][0]["needBytes"], (1 << 30) * 11 // 10 + 5_000_000_000)
@@ -1067,8 +1237,8 @@ class JobsTests(unittest.TestCase):
         job = json.loads(self.c.jobpath.read_text())
         self.assertEqual(job["space"], event["space"]); self.assertEqual(job["message"], "下一阶段")
 
-    def test_mac_prepare_space_rejection_keeps_previous_runtime(self):
-        # Mac 打包：空间不够在建缓存 / 解包之前就拦；上次成功的运行版本与 current 链接原样保留，也不发计划
+    def test_mac_prepare_space_estimate_does_not_stop(self):
+        # 11-14 不许堵门：Mac 打包预估空间不够不再在开头拦，记一条盘满警告、照常往下走（这里让往下第一步抛个记号，证明走到了）
         self.player_keys()   # 加密原件出包开头要 prod.keys（library.require_game，v0.3.1）
         import collections
         import unittest.mock as um
@@ -1079,15 +1249,15 @@ class JobsTests(unittest.TestCase):
         image.mkdir(parents=True); (image / "runtime").write_text("keep")
         self.c.r.update(gameId=game["id"])
         du = collections.namedtuple("du", "total used free")
-        with um.patch("shutil.disk_usage", return_value=du(0, 0, 1)), um.patch.object(self.c, "run") as run, \
-             um.patch.object(build, "digest") as dig:
-            with self.assertRaises(Failure) as e: build.prepare(self.c)
-        self.assertEqual(e.exception.code, "disk_full")
-        run.assert_not_called(); dig.assert_not_called()
-        self.assertFalse((layout.build_dir(self.c, game["id"])).exists())
-        self.assertEqual((image / "runtime").read_text(), "keep")   # 出包没开始，现有镜像不动
+        class Reached(Exception): pass
+        with um.patch("shutil.disk_usage", return_value=du(0, 0, 1)), um.patch.object(self.c, "run"), \
+             um.patch.object(self.c, "fonts_dir", side_effect=Reached):   # 空间预检之后的下一步就是取共享字体
+            with self.assertRaises(Reached): build.prepare(self.c)   # 过了空间预检，走到了下一步
+        warn = [d for d in self.c.job["diagnostics"] if d["code"] == "disk_full"]
+        self.assertEqual([d["severity"] for d in warn], ["warning"]); self.assertIn("这是预估，照常开工", warn[0]["summary"])
+        self.assertEqual((image / "runtime").read_text(), "keep")   # 现有镜像不动
         types = [json.loads(l)["type"] for l in self.c.events.read_text().splitlines()]
-        self.assertIn("space", types); self.assertNotIn("plan", types)
+        self.assertIn("space", types)
 
     def test_library_on_unplugged_disk_says_plug_it_in(self):
         # 游戏库在没插的外接盘上：报「磁盘没连上」并写出盘名；本机磁盘上标识不符仍是原提示
@@ -1241,6 +1411,19 @@ class JobsTests(unittest.TestCase):
         self.assertEqual([j.get("id") for j in output["jobs"]], ["older"])
         self.assertTrue(all("state" in j for j in output["jobs"]))
 
+    def test_catalogue_skips_exfat_sidecars_and_unreadable_job_records(self):
+        # #1010：数据目录在 exFAT 上搬过，每条记录旁多一份 ._<名>.json（AppleDouble，头 00 05 16 07，非 UTF-8）；
+        #   原先 read() 抛 UnicodeDecodeError，整个游戏库刷新失败。附属文件跳过；正常名字但读不出的那一条也只跳过它自己
+        self.catalogue([self.game(packages=[self.package()])])
+        jobs = self.c.jobpath.parent
+        jobs.mkdir(parents=True, exist_ok=True)
+        (jobs / "older.json").write_text(json.dumps({"id": "older", "operation": "build", "state": "failed"}), encoding="utf-8")
+        junk = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x81\xb0\x8d\x90"
+        (jobs / "._older.json").write_bytes(junk)
+        (jobs / "broken.json").write_bytes(junk)
+        output = library.catalog(self.c)
+        self.assertEqual([j.get("id") for j in output["jobs"]], ["older"])
+
     def test_catalogue_returns_only_newest_job_records(self):
         # 11-07：任务目录 1.5 万条记录时 catalog 整份读 + 回传 7 MB；只回最新 JOB_LIST_LIMIT 条（按修改时间）
         self.catalogue([self.game(packages=[self.package()])])
@@ -1282,7 +1465,7 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(env["S2A_RYU_DATA"], str(layout.path(self.c, game["id"], "saves")))
 
     def test_runtime_environment_follows_system_language_and_docks_by_default(self):
-        # 维护者 11-07：不给玩家选游戏语言 / 主机掌机——请求不带 gameLanguage 就不设 S2A_SYSTEM_LANGUAGE（继承来的也不带，c.env 去掉 S2A_*；宿主跟系统首选语言）；
+        # 请求不带 gameLanguage 就不设 S2A_SYSTEM_LANGUAGE（继承来的也不带，c.env 去掉 S2A_*；宿主跟系统首选语言）；玩家在启动设置选的游戏语言走 community launch_env（11-14 维护者确认可选）；
         # 不带 docked 是主机模式，只有明说 false 才掌机
         os.environ["S2A_SYSTEM_LANGUAGE"] = "Japanese"
         try:
@@ -1380,6 +1563,20 @@ class JobsTests(unittest.TestCase):
         for value in ({}, [], {"schema": 1}):
             self.c.r["launchInputConfig"] = value
             self.assertNotIn("S2A_INPUT_CONFIG", build.runtime_env(self.c, self.game(), self.root))
+
+    def test_mac_runtime_env_passes_per_player_mappings(self):
+        # 玩家 2–4 的键位按玩家保存（input-pN.json，键位设置里选玩家）：起局时照玩家 1 同一套校验后交给宿主
+        #   （S2A_INPUT_CONFIG_P2..P4，front_mac.m 槽 i = 玩家 i+1 各照各的映射采样）；没存的那位不给，宿主照玩家 1 的键位
+        def mapping(code):
+            return dict(schema=1, keyboard={"A": {"code": code}}, mouse={"Y": 0}, gamepad={"A": "east"},
+                        axes={}, deadzone=.15, mouseOptions=dict(mode="off", sensitivityX=1, sensitivityY=1))
+        game = self.game()
+        atomic(layout.path(self.c, game["id"], "input-p2.json"), mapping(36))
+        atomic(layout.path(self.c, game["id"], "input-p4.json"), {"schema": 99})   # 存坏的映射：这位照玩家 1 的键位
+        env = build.runtime_env(self.c, game, self.root / "runtime")
+        self.assertEqual(json.loads(Path(env["S2A_INPUT_CONFIG_P2"]).read_text()), mapping(36))
+        self.assertNotIn("S2A_INPUT_CONFIG_P3", env)
+        self.assertNotIn("S2A_INPUT_CONFIG_P4", env)
 
     def test_launch_rejects_another_games_runtime_before_starting_process(self):
         game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
@@ -1709,6 +1906,37 @@ class JobsTests(unittest.TestCase):
         self.assertFalse(gdir.exists())
         self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
 
+    def test_delete_removes_files_without_holding_library_locks(self):
+        # 诊断#dab32d：删一款大游戏在慢盘上删了 53 分钟，整段占着执行锁，期间开别的款 6 次全 library_busy。
+        #   期望（手写）：挪进 .s2a-trash、清单去掉这款在锁内做完；之后每一次真删（_rm）时执行锁和清单锁都拿得到；
+        #   这款的缓存（直连库）和共用编库缓存照旧删掉（删除语义不变），工具缓存根的 .s2a-trash 删完是空的
+        import filelock
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        keep, gone, other = self._build_leftovers(game["id"])
+        free, real = [], library._rm
+        def rm(c, root, p):
+            for name in ("execution", "catalog"):
+                try:
+                    with filelock.held(self.c.library / f".{name}.lock", wait_s=0, holder={}):
+                        free.append(True)
+                except filelock.Busy:
+                    free.append(False)
+            return real(c, root, p)
+        self.c.r["gameId"] = game["id"]
+        with unittest.mock.patch.object(library, "_rm", rm):
+            library.delete(self.c)
+        self.assertTrue(free and all(free), free)
+        self.assertEqual([f for f in keep + gone if f.exists()], [])
+        self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+        self.assertEqual(list((self.c.work_root / library.TRASH).iterdir()), [])
+        self.assertTrue(all(f.exists() for f in other))
+
+    def test_sweep_trash_also_clears_tool_cache_trash(self):
+        # 删除时挪进工具缓存根 .s2a-trash 的缓存当时没删掉（被占用 / 进程被杀）：期望下次启动 sweep_trash 一并清掉
+        left = self.c.work_root / library.TRASH / "0100AAAAAAAAA000-1-bake" / "ok"; left.parent.mkdir(parents=True); left.write_text("x")
+        library.sweep_trash(self.c)
+        self.assertEqual(list((self.c.work_root / library.TRASH).iterdir()), [])
+
     def test_delete_with_undeletable_file_still_removes_game_from_library(self):
         # 11-11 玩家反馈「删除有时生效有时不生效」（真 App 复现：游戏文件夹里一个文件删不掉 → 整个删除失败、目录删一半、游戏还挂在列表里成了「找不到游戏文件」）。
         #   期望（手写）：游戏立刻从清单里去掉、原文件夹不在原处；删不掉的那个文件留在存放位置的 .s2a-trash 里，记一条黄字；
@@ -1728,6 +1956,29 @@ class JobsTests(unittest.TestCase):
         os.chflags(left[0], 0)
         library.sweep_trash(self.c)
         self.assertEqual(list((self.c.library / library.TRASH).iterdir()), [])
+
+    def test_delete_with_saves_on_exfat_skips_appledouble_that_left_with_its_file(self):
+        # 诊断#3d03f4：exFAT 上有存档的款逐项挪进 .s2a-trash，挪走 banner.jpg 时系统连带挪走 ._banner.jpg，列表里还挂着它 →
+        #   原先 rename 报 ENOENT、整单「删不掉 ._banner.jpg」job_failed。期望（手写）：删除完成、清单去掉这款、存档保留、游戏目录里只剩 saves
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        gdir = layout.game_dir(self.c, game["id"])
+        (gdir / "banner.jpg").write_bytes(b"j"); (gdir / "._banner.jpg").write_bytes(b"a")
+        save = gdir / "saves" / "s.dat"; save.parent.mkdir(parents=True); save.write_text("keep")
+        real = os.rename
+        def rename(src, dst):   # 照 exFAT：数据文件挪走，它的 AppleDouble 附属文件跟着走
+            real(src, dst)
+            side = Path(src).with_name("._" + Path(src).name)
+            if side.exists():
+                real(side, Path(dst).with_name("._" + Path(dst).name))
+        self.c.r["gameId"] = game["id"]
+        listdir = Path.iterdir
+        def iterdir(d):   # 让 banner.jpg 先于 ._banner.jpg 挪（真盘上的列目录顺序不保证，这里固定成会出事的那种）
+            return iter(sorted(listdir(d), key=lambda q: q.name.startswith("._")))
+        with unittest.mock.patch.object(library.os, "rename", rename), unittest.mock.patch.object(Path, "iterdir", iterdir):
+            library.delete(self.c)
+        self.assertEqual([g["id"] for g in self.c.catalog()["games"]], [])
+        self.assertEqual(save.read_text(), "keep")
+        self.assertEqual(sorted(i.name for i in gdir.iterdir()), ["saves"])
 
     def test_delete_also_drops_game_from_library_container(self):
         # 期望（#227，游戏库结构 v3）：删 A → 各台手机记录（devices/<设备>.json）里摘掉 A，B 与其余字段原样；没装 A 的那台记录不动；
@@ -1840,17 +2091,19 @@ class JobsTests(unittest.TestCase):
                 core.direct_space_recheck(self.c, {name: dict(done=done, total=99084)}, now=now)
         step(0, 10.5, 45, 100.0)                         # 记起点
         step(3000, 11.5, 44, 111.0)                      # 不到 5%：不判
-        with self.assertRaises(Failure) as stop:
+        with patch.object(self.c, "diagnostic") as diag:   # 11-14 不许堵门：外推不够只提示、不停
             step(20000, 19.5, 36, 122.0)
-        self.assertEqual(stop.exception.code, "disk_full")
-        self.assertIn("还要再占约 39 GB", str(stop.exception)); self.assertIn("只剩 36 GB", str(stop.exception))
-        # 同卷别的作业写盘：卷从 45 GB 掉到 30 GB，但本款只多占 1 GB → 还需 1 ÷ 20000 × 79084 × 1.1 ≈ 4.3 GB < 30 GB，不误判
-        self.c._direct_space_marks = {}
-        step(0, 10.5, 45, 200.0); step(20000, 11.5, 30, 211.0)
-        self.c._direct_space_marks = {}
-        self.c.r["spaceOverride"] = True
+        [call] = diag.call_args_list
+        self.assertEqual((call.args[1], call.kwargs.get("severity")), ("disk_full", "warning"))
+        self.assertIn("还要再占约 39 GB", call.args[0]); self.assertIn("只剩 36 GB", call.args[0])
+        # 同卷别的作业写盘：卷从 45 GB 掉到 30 GB，但本款只多占 1 GB → 还需 1 ÷ 20000 × 79084 × 1.1 ≈ 4.3 GB < 30 GB，不误报
+        self.c._direct_space_marks = {}; self.c._direct_space_warned = False
         with patch.object(self.c, "diagnostic") as diag:
-            step(0, 10.5, 45, 300.0); step(20000, 19.5, 36, 311.0); step(30000, 24, 31, 322.0)   # 点过「仍然继续」：不停，只打一次黄
+            step(0, 10.5, 45, 200.0); step(20000, 11.5, 30, 211.0)
+        diag.assert_not_called()
+        self.c._direct_space_marks = {}; self.c._direct_space_warned = False
+        with patch.object(self.c, "diagnostic") as diag:
+            step(0, 10.5, 45, 300.0); step(20000, 19.5, 36, 311.0); step(30000, 24, 31, 322.0)   # 连着几次都不够：每单只打一次黄
         self.assertEqual([call.kwargs.get("severity") for call in diag.call_args_list], ["warning"])
 
     def test_direct_space_recheck_per_volume(self):
@@ -1868,9 +2121,10 @@ class JobsTests(unittest.TestCase):
                     patch.object(core.shutil, "disk_usage", side_effect=lambda path: DU(0, 0, free[path])):
                 core.direct_space_recheck(self.c, {name: dict(done=done, total=99084)}, now=now)
         step(0, 10.5, 5, 100.0)
-        with self.assertRaises(Failure) as stop:
+        with patch.object(self.c, "diagnostic") as diag:   # 11-14 不许堵门：只提示、不停
             step(20000, 10.5, 14, 111.0)
-        self.assertIn("工具缓存所在的盘只剩 30 GB", str(stop.exception)); self.assertIn("还要再占约 39 GB", str(stop.exception))
+        msg = diag.call_args.args[0]
+        self.assertIn("工具缓存所在的盘只剩 30 GB", msg); self.assertIn("还要再占约 39 GB", msg)
 
     def test_stage_progress_feeds_direct_space_recheck(self):
         import core
@@ -2030,6 +2284,27 @@ class JobsTests(unittest.TestCase):
             self.assertTrue(m["pulledAt"]); self.assertEqual(m["devices"][0]["model"], "iPhone 17 Pro Max"); self.assertEqual(m["devices"][0]["os"], "27.3")
             self.assertNotIn("合成甲", json.dumps(m, ensure_ascii=False)); self.assertNotIn("U1", json.dumps(m))   # 不记设备名、设备号
             self.assertEqual(m["files"], 3); self.assertTrue(any(x.endswith("diag/blob.bin") for x in m["skipped"]))
+
+    def test_diagnostics_collect_recent_mac_crash_reports(self):
+        """诊断#43f7d3：宿主起局 1 秒内 SIGTRAP、没走到写日志，包里没现场。导出时收本机 ~/Library/Logs/DiagnosticReports 里我们进程的 .ips。
+        期望手写：收 s2arm-host / S2ArmApple 近 7 天的两份（脱敏）；8 天前的、别的 App 的不收；超 4 MB 的跳过并写名字；manifest 计数对"""
+        import unittest.mock as um, os, sys, time as t
+        rep = self.root / "DiagnosticReports"; rep.mkdir()
+        (rep / "s2arm-host-2026-11-14-101500.ips").write_text('{"exception": "EXC_BREAKPOINT", "path": "/Users/Synthetic/x", "mail": "synth@example.invalid"}')
+        (rep / "S2ArmApple-2026-11-14-101600.ips").write_text('{"app": "launcher"}')
+        old = rep / "s2arm-host-2026-11-01-090000.ips"; old.write_text("old"); os.utime(old, (t.time() - 8 * 86400, t.time() - 8 * 86400))
+        (rep / "Finder-2026-11-14-101700.ips").write_text("other app")
+        big = rep / "s2arm-host-2026-11-14-101800.ips"; big.write_bytes(b"x" * (library.MAC_CRASH_FILE_LIMIT + 1))
+        destination = self.root / "diagnostics.zip"; self.c.r["path"] = str(destination)
+        with um.patch.object(library, "MAC_CRASH_DIR", rep), um.patch.object(sys, "platform", "darwin"):
+            library.diagnostics(self.c)
+        with zipfile.ZipFile(destination) as archive:
+            crash = sorted(n for n in archive.namelist() if n.startswith("mac_crash/"))
+            self.assertEqual(crash, ["mac_crash/S2ArmApple-2026-11-14-101600.ips", "mac_crash/s2arm-host-2026-11-14-101500.ips"])
+            text = archive.read("mac_crash/s2arm-host-2026-11-14-101500.ips").decode()
+            self.assertIn("EXC_BREAKPOINT", text); self.assertNotIn("synth@example.invalid", text); self.assertNotIn("/Users/Synthetic", text)
+            m = json.loads(archive.read("manifest.json"))["mac_crash_reports"]
+            self.assertEqual((m["found"], m["files"], m["skipped"]), (3, 2, ["s2arm-host-2026-11-14-101800.ips"]))
 
     def test_diagnostic_manifest_and_every_member_are_redacted_without_truncation(self):
         import platform
@@ -2565,6 +2840,32 @@ class JobsTests(unittest.TestCase):
             library.save_input(self.c)
         config["keyboard"] = {}
         config["axes"] = {"LX": {"source":"leftX"}, "LY": {"source":"leftX", "invert":True}}
+        with self.assertRaises(Failure):
+            library.save_input(self.c)
+
+    def test_save_input_keeps_player_one_file_and_writes_per_player_files(self):
+        # 键位按玩家保存（键位设置里选玩家）：玩家 1 / 没给 player 照旧写这款的 input.json；玩家 2–4 写 input-pN.json（起局 build.py 读它交给宿主）；
+        #   序号超出 1–4、没带 gameId 存玩家 2 起的键位都拒收
+        def mapping(code):
+            return dict(schema=1, keyboard={"A": {"code": code}}, mouse={}, gamepad={}, axes={}, deadzone=.15,
+                        mouseOptions=dict(mode="camera", sensitivityX=1, sensitivityY=1, invertX=False, invertY=False, recenter=True))
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
+        self.c.r["config"] = mapping(14)
+        library.save_input(self.c)
+        self.assertTrue(layout.path(self.c, game["id"], "input.json").exists())
+        self.c.r["config"] = mapping(36)
+        for player in (2, 3, 4):
+            self.c.r["player"] = player
+            library.save_input(self.c)
+            self.assertTrue(layout.path(self.c, game["id"], f"input-p{player}.json").exists())
+        self.assertEqual(json.loads(layout.path(self.c, game["id"], "input.json").read_text()), mapping(14))
+        self.assertEqual(json.loads(layout.path(self.c, game["id"], "input-p2.json").read_text()), mapping(36))
+        for bad in (5, 0, "2"):
+            self.c.r["player"] = bad
+            with self.assertRaises(Failure):
+                library.save_input(self.c)
+        self.c.r.pop("gameId")
+        self.c.r["player"] = 2   # 默认键位只有玩家 1 的一份：没带 gameId 只能存玩家 1
         with self.assertRaises(Failure):
             library.save_input(self.c)
 

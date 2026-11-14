@@ -31,7 +31,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     // deliberately does. Do not require the previous PR's explicit table/en file.
     NSString *table=root[@"StringsTable"]?:@"Root";
     check([table isEqual:@"Root"],@"Settings uses its default Root table");
-    NSArray *specs=root[@"PreferenceSpecifiers"]; check(specs.count==33,@"33 real Settings elements");
+    NSArray *specs=root[@"PreferenceSpecifiers"]; check(specs.count==20,@"20 real Settings elements");   // 11-14 体验梳理：系统设置只留 App 打不开时要用的（底座模式、画面、存档、诊断、关于本包）+ 顶部说明
     NSBundle *bundle=[NSBundle bundleWithPath:path], *host=[NSBundle bundleWithPath:hostPath];
     check(bundle!=nil && host!=nil,@"Foundation opens shipped Settings and host localization bundles");
     NSDictionary *zh=plist([path stringByAppendingPathComponent:@"zh-Hans.lproj/Root.strings"]);
@@ -84,7 +84,7 @@ int main(int argc, char **argv) { @autoreleasepool {
                 check(![spec[@"Values"] containsObject:v],@"localized published status absent from fixed Values");
         }
     }
-    check(seen.count==20 && readOnly==4,@"20 preferences and four read-only rows");
+    check(seen.count==11 && readOnly==4,@"11 preferences and four read-only rows");
     printf("Settings Foundation localization: %u checks, %u failures; %u fields, %u real bundle lookups\n",checks,failures,fields,lookups);
     return failures?1:0;
 } }

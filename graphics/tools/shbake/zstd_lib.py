@@ -28,6 +28,9 @@ def lib_candidates():
         d = os.path.dirname(os.path.realpath(exe))
         if os.name == 'nt': out += [os.path.join(d, 'dll', 'libzstd.dll'), os.path.join(d, 'libzstd.dll')]
         else: out += [os.path.normpath(os.path.join(d, '..', 'lib', n)) for n in ('libzstd.1.dylib', 'libzstd.so.1', 'libzstd.so')]
+    # Linux 发行版的系统 zstd（/usr/bin/zstd）把库放在多架构目录（Debian / Ubuntu：/usr/lib/x86_64-linux-gnu/libzstd.so.1），
+    #   不在「命令旁边的 ../lib」：最后按 soname 交给动态链接器在系统路径里找（11-14 Linux 出包机：zstd 资源款直连抽取因此失败、预编库 0 支）
+    if os.name != 'nt': out.append('libzstd.so.1')
     return out
 
 

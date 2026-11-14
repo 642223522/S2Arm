@@ -609,8 +609,16 @@ int main(int argc, char **argv) {
         rig r; rig_up(&r, &AV1, 64, 64);
         uint64_t id;
         CHECK(((f_sub)E(AV1.sub))(&id, r.obj, red_av1_0, sizeof red_av1_0, 0, 0) == 0);
+        // 诊断 #4ddff2：只有时间分隔（0x12 0x00）+ 无长度填充 OBU 头（类型 15 = 0x78）的 3 字节包没有帧数据：跳过、不报「解码失败」，后面的帧照常出。
+        //   解码在后台按序做：日志收到取完第二帧为止
+        static const uint8_t frameless[] = {0x12, 0x00, 0x78};
+        char tmpl[] = "/tmp/t_nvn2_codec_av1_XXXXXX"; int lfd = mkstemp(tmpl), keep = g_s2a_logfd; CHECK(lfd >= 0); g_s2a_logfd = lfd;
+        CHECK(((f_sub)E(AV1.sub))(&id, r.obj, frameless, sizeof frameless, 16666000, 0) == 0);
         CHECK(((f_sub)E(AV1.sub))(&id, r.obj, red_av1_1, sizeof red_av1_1, 33333000, 0) == 0);
         sync_h a, b; take(&r, &AV1, &spev, &a); take(&r, &AV1, &spev, &b);
+        {   g_s2a_logfd = keep; char lg[8192] = {0}; lseek(lfd, 0, SEEK_SET); ssize_t ln = read(lfd, lg, sizeof lg - 1); close(lfd); unlink(tmpl);
+            int skipped = ln > 0 && strstr(lg, "没有帧数据") != NULL, failed = ln > 0 && strstr(lg, "解码失败") != NULL;
+            printf("AV1 无帧数据的 3 字节包：跳过 %d、报解码失败 %d（期望 1 / 0）\n", skipped, failed); CHECK(skipped && !failed); }
         uint8_t p[4];
         for (uint32_t k = 0; k < 2; k++) { px(&r, k, p); printf("AV1 第 %u 帧像素 (%u,%u,%u,%u)\n", k, p[0], p[1], p[2], p[3]); CHECK(p[0] >= 230 && p[1] <= 25 && p[2] <= 25 && p[3] == 255); }
         rig_down(&r, &AV1);
@@ -729,6 +737,21 @@ int main(int argc, char **argv) {
         free(buf);
     }
     ((f_spv)E(SP_DESTROY))(&spev);
+    // ---------- 11-14 进程内重启（D-VHSE）：同步点事件不能沿用上一局挂的读端句柄 ----------
+    //   期望：换局（会话代号 +1）后再建同步点事件，挂到游戏 SystemEventType 上的是新事件的新句柄；上一局那个事件宿主那份引用放掉（refs −1）。
+    //   反证：去掉 sp_create 里的 sp_slots_for_session_locked，换局后拿到的还是上一局的句柄，本项红
+    {
+        uint32_t a = 0; uint8_t ho[0x40];
+        CHECK(((f_spc)E(SP_CREATE))(&a) == 0); ((f_sph)E(SP_HOLDER))(ho, &a);
+        uint32_t h1 = ((fake_sev *)g_sp_sev)->handle; int e1 = (int)h1 - 0x100, r1 = g_ev[e1].refs;
+        ((f_spv)E(SP_DESTROY))(&a);
+        atomic_fetch_add(&g_gen, 1);
+        uint32_t b2 = 0; CHECK(((f_spc)E(SP_CREATE))(&b2) == 0); ((f_sph)E(SP_HOLDER))(ho, &b2);
+        uint32_t h2 = ((fake_sev *)g_sp_sev)->handle;
+        if (h2 == h1 || g_ev[e1].refs != r1 - 1) fprintf(stderr, "换局后同步点事件：句柄 %#x → %#x，上一局事件引用 %d → %d\n", h1, h2, r1, g_ev[e1].refs);
+        CHECK(h2 != h1 && g_ev[e1].refs == r1 - 1);
+        ((f_spv)E(SP_DESTROY))(&b2);
+    }
     printf("✓ t_nvn2_codec：%u 项检查全过\n", checks);
     return 0;
 }

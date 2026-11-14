@@ -33,6 +33,7 @@ class RewriteRefreshTests(unittest.TestCase):
             (self.exefs / m).write_bytes(b"x")
         self.info = {}
         self.events = []
+        self.sg_calls = []
         self.c = types.SimpleNamespace(private=self.tmp, emit=lambda kind, text, **_: self.events.append(text),
                                        catalog=lambda: {"games": [{"id": g} for g in ("0100A", "0100B")]})
 
@@ -42,7 +43,21 @@ class RewriteRefreshTests(unittest.TestCase):
             (k / f"{m}.patched.bin").write_bytes(b"old-" + m.encode()); (k / f"{m}.fixups.tsv").write_bytes(b"old")
         return k
 
-    def run_refresh(self, games, hits, fail=()):
+    def fake_sgrade(self, mods=("main", "sdk", "subsdk0")):
+        """假的「带社区补丁改写」：产物目录里每个模块 sg-<模块>、补丁表与一份金手指原文"""
+        def run(c, game, base, exefs, target, work):
+            if game["id"] in getattr(self, "sg_fail", ()):
+                raise Failure("fixture rewriter crashed on this game")
+            root = Path(work) / "root"; root.mkdir()
+            for m in mods:
+                (root / f"{m}.patched.bin").write_bytes(b"sg-" + m.encode()); (root / f"{m}.fixups.tsv").write_bytes(b"sgfx")
+            (root / "cpatch.tsv").write_text("编号\nwsauto:x:w\n"); (root / "cheat-src.a.txt").write_text("[x]\n")
+            self.sg_calls.append((game["id"], target))
+            return root, list(mods), [root / "cpatch.tsv", root / "cheat-src.a.txt"]
+        return run
+
+    def run_refresh(self, games, hits, fail=(), sgrade=None):
+        """sgrade = None：这些款出包时取消了 S 级优化（只按改写器核，原有用例的口径）；给记号串 = 要补 S 级优化、这次的补丁记号"""
         binary = fake_rewriter(self.tmp, hits)
         real = rr.rewrite_modules   # 真的那份：桩里只在「这款要失败」时拦，其余照真函数跑假改写器
         cur = {}
@@ -58,7 +73,9 @@ class RewriteRefreshTests(unittest.TestCase):
              patch.object(rr.layout, "ios_kit", side_effect=lambda c, g: kits[g]), \
              patch.object(rr.layout, "game_info", side_effect=lambda c, g: self.info.get(g, {})), \
              patch.object(rr.layout, "update_info", side_effect=lambda c, g, **f: self.info.setdefault(g, {}).update(f)), \
-             patch.object(rr, "rewrite_modules", side_effect=rewrite):
+             patch.object(rr, "rewrite_modules", side_effect=rewrite), \
+             patch.object(rr, "sgrade_off", return_value=sgrade is None), \
+             patch.object(rr, "sgrade_key", return_value=sgrade or "-"), patch.object(rr, "sgrade_rewrite", side_effect=self.fake_sgrade()):
             return rr.refresh_ios(self.c, games), kits
 
     def test_affected_module_replaced_others_untouched_and_id_recorded(self):
@@ -69,7 +86,7 @@ class RewriteRefreshTests(unittest.TestCase):
         self.assertEqual((k / "main.patched.bin").read_bytes(), b"new-main", "命中的模块换成新产物")
         self.assertEqual((k / "main.fixups.tsv").read_bytes(), b"fx")
         self.assertEqual((k / "sdk.patched.bin").read_bytes(), b"old-sdk", "没命中的模块一个字节不动")
-        self.assertEqual(self.info["0100A"]["ios"], {"shellId": "s1", "pack": "p1", "rewriterId": "rid-new"}, "记下改写器指纹，原有字段保留")
+        self.assertEqual(self.info["0100A"]["ios"], {"shellId": "s1", "pack": "p1", "rewriterId": "rid-new", "mainBid": ""}, "记下改写器指纹，原有字段保留")
 
     def test_unaffected_game_keeps_kit_but_is_marked_checked(self):
         updated, kits = self.run_refresh(["0100A"], hits=[])
@@ -88,7 +105,17 @@ class RewriteRefreshTests(unittest.TestCase):
         self.assertNotIn("0100A", updated)
         self.assertEqual((kits["0100A"] / "main.patched.bin").read_bytes(), b"old-main", "核不了的款保留原产物")
         self.assertNotIn("rewriterId", self.info.get("0100A", {}).get("ios", {}), "核不了不记指纹：下次再核")
-        self.assertTrue(any("【黄】0100A" in e for e in self.events))
+        self.assertTrue(any("【黄】0100A" in e for e in self.events), "出包时取消过 S 级优化（sgrade=None）：不涉及补丁，照旧黄字")
+        self.assertNotIn("sgradeResult", self.info.get("0100A", {}))
+
+    def test_rewriter_error_on_sgrade_game_is_reported_as_patch_failure(self):
+        # 11-14 维护者：改写器在这款上出错 = 「不匹配，补丁打入失败」——红字点名、记进结果（升级 / 装机结果页列），这款保留原来的程序
+        self.sg_fail = ("0100A",)
+        updated, kits = self.run_refresh(["0100A", "0100B"], hits=["main"], sgrade="rid-new:plan:k1")
+        self.assertNotIn("0100A", updated)
+        self.assertTrue(any(e.startswith("【红】0100A：S 级优化补丁打入失败") for e in self.events))
+        self.assertIn("error", self.info["0100A"]["sgradeResult"]["ios"])
+        self.assertEqual(self.info["0100A"]["sgradeResult"]["ios"]["applied"], [])
 
 
     def test_mac_runtime_updates_files_and_manifest(self):
@@ -100,7 +127,7 @@ class RewriteRefreshTests(unittest.TestCase):
         (rt / "manifest.json").write_text(json.dumps({"schema": 1, "files": files, "gameId": "0100A"}))
         binary = fake_rewriter(self.tmp, ["main"])
         with patch.object(rr, "rewriter_id", return_value="rid-new"), patch.object(rr, "rewriter_bin", return_value=binary), \
-             patch.object(rr, "rewrite_env", return_value=dict(os.environ)):
+             patch.object(rr, "rewrite_env", return_value=dict(os.environ)), patch.object(rr, "sgrade_off", return_value=True):
             self.assertTrue(rr.refresh_mac(self.c, "0100A", rt))
             m = json.loads((rt / "manifest.json").read_text())
             self.assertEqual((rt / "main.patched.bin").read_bytes(), b"new-main")
@@ -110,6 +137,71 @@ class RewriteRefreshTests(unittest.TestCase):
             self.assertEqual(m["rewriterId"], "rid-new")
             with patch.object(rr, "rewrite_modules", side_effect=AssertionError("同一改写器不该再核")):
                 self.assertFalse(rr.refresh_mac(self.c, "0100A", rt))
+
+    # S 级优化补到老游戏（v0.4.0）：补丁记号变了 → 全部模块换成带补丁的产物、补丁表与金手指原文进 kit（旧原文删掉）、记下记号；记号没变不再做
+    def test_sgrade_upgrade_replaces_all_modules_and_tables(self):
+        self.info["0100A"] = {"ios": {"rewriterId": "rid-new", "sgradeKey": "k-old"}}
+        k = self.kit("0100A"); (k / "cheat-src.old.txt").write_text("旧")
+        updated, kits = self.run_refresh(["0100A"], hits=[], sgrade="k-new")
+        self.assertEqual(updated, ["0100A"]); self.assertEqual(self.sg_calls, [("0100A", "ios")])
+        k = kits["0100A"]
+        self.assertEqual([(k / f"{m}.patched.bin").read_bytes() for m in ("main", "sdk", "subsdk0")], [b"sg-main", b"sg-sdk", b"sg-subsdk0"], "全部模块换成带补丁的产物")
+        self.assertEqual((k / "cpatch.tsv").read_text(), "编号\nwsauto:x:w\n")
+        self.assertEqual(sorted(p.name for p in k.glob("cheat-src.*")), ["cheat-src.a.txt"], "旧金手指原文删掉、新的拷进来")
+        self.assertEqual(self.info["0100A"]["ios"]["sgradeKey"], "k-new")
+        with patch.object(rr, "check_and_update", side_effect=AssertionError("记号没变不该再核")):
+            self.assertEqual(self.run_refresh(["0100A"], hits=[], sgrade="k-new")[0], [])
+
+    def test_sgrade_off_game_is_not_patched(self):
+        # 出包页取消过「出包时打入」：只按改写器核，改写器没变就整款跳过，不碰补丁
+        self.info["0100A"] = {"ios": {"rewriterId": "rid-new"}}
+        updated, kits = self.run_refresh(["0100A"], hits=[])
+        self.assertEqual((updated, self.sg_calls), ([], []))
+        self.assertFalse((kits["0100A"] / "cpatch.tsv").exists())
+
+    def test_mac_sgrade_upgrade_updates_manifest(self):
+        import json
+        rt = self.tmp / "mac2"; (rt / "exefs").mkdir(parents=True)
+        for m in ("main", "sdk"):
+            (rt / "exefs" / m).write_bytes(b"x"); (rt / f"{m}.patched.bin").write_bytes(b"old")
+        (rt / "cheat-src.old.txt").write_text("旧")
+        files = {"main.patched.bin": [3, ""], "sdk.patched.bin": [3, ""], "cheat-src.old.txt": [3, ""]}
+        (rt / "manifest.json").write_text(json.dumps({"schema": 1, "files": files, "gameId": "0100A", "rewriterId": "rid-new"}))
+        with patch.object(rr, "rewriter_id", return_value="rid-new"), patch.object(rr, "sgrade_off", return_value=False), \
+             patch.object(rr, "sgrade_key", return_value="k1"), patch.object(rr, "sgrade_rewrite", side_effect=self.fake_sgrade(("main", "sdk"))), \
+             patch.object(rr.layout, "game_info", side_effect=lambda c, g: self.info.get(g, {})), \
+             patch.object(rr.layout, "update_info", side_effect=lambda c, g, **f: self.info.setdefault(g, {}).update(f)):
+            self.assertTrue(rr.refresh_mac(self.c, "0100A", rt))
+            self.assertIn("mac", self.info["0100A"]["sgradeResult"], "补完记下这一端的打入结果")
+            m = json.loads((rt / "manifest.json").read_text())
+            self.assertEqual((rt / "main.patched.bin").read_bytes(), b"sg-main")
+            self.assertEqual(m["files"]["sdk.patched.bin"], [len(b"sg-sdk"), ""])
+            self.assertEqual(m["files"]["cpatch.tsv"], [len("编号\nwsauto:x:w\n".encode()), ""], "补丁表记进清单：起局前按清单核")
+            self.assertNotIn("cheat-src.old.txt", m["files"]); self.assertFalse((rt / "cheat-src.old.txt").exists())
+            self.assertEqual(m["sgradeKey"], "k1")
+            self.assertFalse(rr.refresh_mac(self.c, "0100A", rt), "记号没变不再做")
+
+    # 原件不在：出过 Mac 版的款用 Mac 运行版本自带的 exefs/（老游戏补 S 级优化不必回原件）
+    def test_original_exefs_falls_back_to_mac_runtime(self):
+        import build
+        mac = self.tmp / "img-mac"; (mac / "exefs").mkdir(parents=True)
+        (mac / "exefs/main").write_bytes(b"x"); (mac / "exefs/main.npdm").write_bytes(b"x")
+        import sgrade
+        with patch.object(sgrade, "saved_program", return_value=None), patch.object(build, "extract_valid", return_value=False), \
+             patch.object(rr.layout, "image_mac", return_value=mac):
+            self.assertEqual(rr.original_exefs(self.c, {"id": "0100A"}, self.tmp), mac / "exefs")
+
+    # 补不上的款不悄悄跳过：点名、说怎么补
+    def test_unavailable_games_are_named(self):
+        self.c.catalog = lambda: {"games": [{"id": "0100A", "name": "甲游戏"}, {"id": "0100B", "name": "乙游戏"}]}
+        with patch.object(rr, "rewriter_id", return_value="rid-new"), patch.object(rr, "sgrade_off", return_value=False), \
+             patch.object(rr, "sgrade_key", return_value="k"), patch.object(rr.layout, "game_info", return_value={}), \
+             patch.object(rr.layout, "update_info", side_effect=lambda c, g, **f: self.info.setdefault(g, {}).update(f)), \
+             patch.object(rr.layout, "ios_kit", return_value=self.tmp), \
+             patch.object(rr, "check_and_update", side_effect=lambda c, g, *a: "unavailable" if g == "0100A" else "updated"):
+            self.assertEqual(rr.refresh_ios(self.c, ["0100A", "0100B"]), ["0100B"])
+        self.assertTrue(any("甲游戏" in e and "没补上 S 级优化" in e and "乙游戏" not in e for e in self.events), self.events)
+        self.assertEqual(self.info["0100A"]["ios"]["sgradeMissing"], "k", "缺原件补不上：记下这一版记号，「更新 iPhone」不再因它重装（install.sgrade_pending）")
 
 if __name__ == "__main__":
     unittest.main()

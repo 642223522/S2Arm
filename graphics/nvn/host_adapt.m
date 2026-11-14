@@ -195,7 +195,8 @@ static int out_tall(void) {   // 出的是加高图：直连第三层整套放�
 }
 // 出图宽高比：宽图 / 加高图都按 屏宽 ÷ 屏高（宽屏屏高 1080、窄屏屏宽 1920，一个式子两头都对）。
 //   11-03 维护者 Duo 智慧的再现 v4：窄屏启用高度点后游戏自出加高图（s2a_widen_game 为真）走进宽图分支，旧式 屏宽 ÷ 1080 给 1.778，1280×900 的画面被塞进 16:9 层、上下大黑、界面落进黑区
-static double out_aspect(void) { return pf_out_aspect(out_wide() || out_tall(), s2a_screen_w(), s2a_screen_h()); }
+double s2a_cpatch_present_aspect(void);   // runtime/src/cpatch.c：自适应画幅社区补丁开着时的当前画幅（游戏按它画世界、出 16:9 尺寸的图，层按它铺满）；没开 0
+static double out_aspect(void) { double ca = s2a_cpatch_present_aspect(); if (ca > 0) return ca; return pf_out_aspect(out_wide() || out_tall(), s2a_screen_w(), s2a_screen_h()); }
 static CAMetalLayer *g_layer;
 static double g_out_a;   // 出图宽高比（起局定，游戏内部按它渲染；NVN 直连换屏时跟着换，见 s2a_direct_relayout）
 // 触屏（ios/vpad.m gameRect）按这同一个比例算画面矩形（审计 P1-79：原先触点一律按屏幕宽 : 1080，宽屏没生效 / 窄屏加高时出图是 16:9 / 1920:屏高，手指落点偏）。0 = 还没挂层
@@ -226,13 +227,13 @@ static int g_relayout_due;   // 主线程：后台期间出图层挪回了根视
 void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubviews、外接屏接上 / 断开（ios/extdisplay.m）调（主线程）；没挂出图层（通用模式 / 还没起）不做
     UIView *v = g_layer ? present_view() : nil; if (!v) return;
     // 外接显示器接上 / 断开：出图层跟着换到外接屏窗口的视图 / 回根视图，照旧垫在最底层；比例与可画尺寸由下面同一条重摆路按新视图算
-    // 挪没挪看层在不在这个视图的层子树里：挂层入口（ios/play_reflection.m，Duo 分屏倒影）把出图层放进视图下的复制层，直接父层不是 v.layer；
-    //   原先比直接父层，每次重摆都判成「挪了」，把层从复制层里拽回根视图，倒影一出就没
+    // 挪没挪看层在不在这个视图的层子树里：挂层入口（ios/play_reflection.m，Duo 分屏倒影）把出图层放进视图下的容器层，直接父层不是 v.layer；
+    //   原先比直接父层，每次重摆都判成「挪了」，把层从容器层里拽回根视图
     int ext = s2a_ios_root_view && v != s2a_ios_root_view(), moved = 1;
     for (CALayer *q = g_layer.superlayer; q; q = q.superlayer) if (q == v.layer) { moved = 0; break; }
     if (moved) {
         [CATransaction begin]; [CATransaction setDisableActions:YES];
-        if (s2a_ios_attach_game_layer) s2a_ios_attach_game_layer(v, g_layer);   // 同建层时：经挂层入口（外接屏视图也一样，那边不分屏、不复制）
+        if (s2a_ios_attach_game_layer) s2a_ios_attach_game_layer(v, g_layer);   // 同建层时：经挂层入口（外接屏视图也一样，那边不分屏、没有倒影）
         else { [g_layer removeFromSuperlayer]; [v.layer insertSublayer:g_layer atIndex:0]; }
         [CATransaction commit];
         LOG("直连：出图层挪到%s（App 状态 %ld，视图所在场景状态 %ld）", ext ? "外接屏" : "手机屏",

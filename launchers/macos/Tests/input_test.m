@@ -55,6 +55,13 @@ static NSEvent *key_event(NSEventType type, unsigned short code, BOOL repeat) {
 }
 static BOOL physical_keys[128];
 static void poll_stale(void) { for (int n = 0; n < KEY_UP_POLLS; n++) release_stale_keys(); sample_input(); }   // 采样连续报松开满 KEY_UP_POLLS 次才删键
+// 排空主队列（NS2 输入事件化验证）：主队列块由主线程 runloop 跑，尾部再排一个标记块，标记跑到 = 之前入队的全跑完
+static void drain_main_queue(void) {
+    __block int drained = 0;
+    dispatch_async(dispatch_get_main_queue(), ^{ drained = 1; });
+    for (int i = 0; i < 200 && !drained; i++) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+    expect(drained, "main queue drains on the main runloop");
+}
 static bool key_state(CGEventSourceStateID state, CGKeyCode code) {
     expect(state == kCGEventSourceStateCombinedSessionState, "query current login session");
     return code < 128 && physical_keys[code];
@@ -659,16 +666,16 @@ static void test_profile_only_pad(void) {
     install_pad_handler(c);
     expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue != nil && c.handlerQueue != dispatch_get_main_queue(), "profile handler installed on the dedicated pad queue");
     uint32_t buttons = 99; int32_t sticks[4];
-    sample_profile_state(c, &buttons, sticks);
+    sample_profile_state(c, config, &buttons, sticks);
     expect(buttons == 0, "nothing pressed: no buttons");
     [c.microGamepad.buttonA setValue:1];
-    sample_profile_state(c, &buttons, sticks);
+    sample_profile_state(c, config, &buttons, sticks);
     expect(buttons == 1, "unrecognized pad, automatic layout: profile button A maps to Switch A by its letter");
-    s2a_pad_layout_set(S2A_PAD_LAYOUT_SWITCH); sample_profile_state(c, &buttons, sticks);
+    s2a_pad_layout_set(S2A_PAD_LAYOUT_SWITCH); sample_profile_state(c, config, &buttons, sticks);
     expect(buttons == 2, "Switch layout: profile button A (south) maps to Switch B by position");
     s2a_pad_layout_set(S2A_PAD_LAYOUT_AUTO);
     [c.microGamepad.buttonA setValue:0]; [c.microGamepad.dpad setValueForXAxis:0 yAxis:1];
-    sample_profile_state(c, &buttons, sticks);
+    sample_profile_state(c, config, &buttons, sticks);
     expect(buttons == (1u << 13), "profile dpad up maps to Switch Up");
     puts("Mac profile-only pad: handler and standard-name reading passed");
 }
@@ -686,15 +693,43 @@ static void test_pad_layout(void) {
     uint32_t want_a[3] = {1, 2, 1}, want_y[3] = {8, 4, 8};
     for (int i = 0; i < 3; i++) {
         s2a_pad_layout_set(layouts[i]);
-        [pad.buttonA setValue:1]; sample_pad_state(pad, &buttons, sticks);
+        [pad.buttonA setValue:1]; sample_pad_state(pad, config, &buttons, sticks);
         expect(buttons == want_a[i], "pad layout: button A lands on the expected Switch button");
-        [pad.buttonA setValue:0]; [pad.buttonY setValue:1]; sample_pad_state(pad, &buttons, sticks);
+        [pad.buttonA setValue:0]; [pad.buttonY setValue:1]; sample_pad_state(pad, config, &buttons, sticks);
         expect(buttons == want_y[i], "pad layout: button Y lands on the expected Switch button");
         [pad.buttonY setValue:0];
     }
     s2a_pad_layout_set(S2A_PAD_LAYOUT_AUTO);
     puts("Mac pad layout: automatic / Switch / Xbox take effect on the next read passed");
 }
+
+// 分玩家键位（槽 i = 玩家 i+1，InputSettingsSheet 按玩家保存）：玩家 2–4 没给自己的映射（S2A_INPUT_CONFIG_P2..P4 没给 / 读不懂）
+//   就照玩家 1 的全局那份，行为与原来完全一致；给了就槽位各照各的采样。期望手算（虚拟手柄 buttonA 自动布局按「东」上报，
+//   默认配置目标 A ← 东键 → 按下读 Switch A 第 0 位）：玩家 2 的映射把目标 B 绑到东键（"B": "east"）→
+//   同一只手柄按同一个键，玩家 1 读到 Switch A（1）、玩家 2 读到 Switch B（2）
+static void test_per_player_config(void) {
+    config = default_config();
+    player_config_maps[0] = player_config_maps[1] = player_config_maps[2] = nil;
+    expect(slot_cfg(0) == config && slot_cfg(1) == config && slot_cfg(2) == config && slot_cfg(3) == config && slot_cfg(4) == config,
+        "no per-player maps: every slot uses the global config");
+    NSDictionary *p2 = @{@"gamepad": @{@"B": @"east"}, @"mouse": @{}, @"axes": @{}, @"deadzone": @0.15, @"mouseOptions": @{@"mode": @"camera"}};
+    player_config_maps[0] = p2;   // 玩家 2（槽 1）
+    expect(slot_cfg(0) == config, "slot 0 stays on the player 1 config");
+    expect(slot_cfg(1) == p2 && slot_cfg(2) == config && slot_cfg(3) == config, "slot 1 uses player 2's map, other slots fall back");
+    GCController *c = [GCController controllerWithExtendedGamepad];
+    GCExtendedGamepad *pad = c.extendedGamepad;
+    uint32_t buttons; int32_t sticks[4];
+    [pad.buttonA setValue:1];   // 东键（自动布局：buttonA 按东上报）
+    sample_pad_state(pad, config, &buttons, sticks);
+    expect(buttons == 1, "player 1 map: east button reads Switch A");
+    sample_pad_state(pad, p2, &buttons, sticks);
+    expect(buttons == 2, "player 2 map: east button reads Switch B through her own binding");
+    [pad.buttonA setValue:0];
+    player_config_maps[0] = nil;
+    expect(slot_cfg(1) == config, "cleared player 2 map: back to the global config");
+    puts("Mac per-player configs: slot_cfg routing and per-player sampling passed");
+}
+
 
 // 手柄事件回调（A2）：handlerQueue 挂专用串行队列、不再挂主队列（主线程被菜单动画 / 提示条占住时手柄事件不再排队，见 test_pad_fast_path）；
 //   没占到槽的回调直接跳过（快速路径不碰没排进槽位表的手柄），没有新事件时 120Hz 定时器仍是回退采样，长按不会因为「只发变化」而丢。
@@ -1223,6 +1258,21 @@ int main(int argc, const char **argv) {
     sample_input();
     expect(!s2a_mac_ns2_player_present(1) && s2a_mac_ns2_player_present(0) && s2a_vpad_pad_count() == 1, "player 2 leaves: back to one slot");
     s2a_mac_ns2_set_game_style(1 << 4);
+    // Switch 2 Pro 输入事件化（11-12 延迟管线调研）：通道读线程对变化踢主队列采样（s2a_mac_ns2_input_changed → front_mac.m），
+    //   不再等 120Hz 定时器拉取。这里全程没有定时器在跑：排空主队列后，槽位也应已被采样
+    config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
+    ns2_relay_packet buttonPacket = motionPacket;
+    buttonPacket.state = (ns2_state){.buttons = 1, .lx = -32767};   // 实体 A + 左摇杆满左
+    expect(send(relayClient, &buttonPacket, sizeof buttonPacket, 0) == sizeof buttonPacket, "relay button packet sent");
+    uint32_t padButtons = 0; memset(padSticks, 0, sizeof padSticks);
+    for (int attempt = 0; attempt < 100; attempt++) {
+        drain_main_queue();   // 通道线程已入队的踢在这跑：没有定时器在跑，槽位也应已被采样
+        padButtons = s2a_vpad_read_pad(0, padSticks);
+        if (padButtons == 1 && padSticks[0] == -32767) break;
+        usleep(1000);   // 通道线程还没读到这一包：下一轮再试
+    }
+    expect(padButtons == 1 && padSticks[0] == -32767, "NS2 button/stick change reaches the pad slot via the main-queue kick, without polling");
+    focused = NO;   // 还原：后面的键鼠用例自带 focused / config 初始化
     // 旧版启动器（通道 v1）：游戏端断开、不猜字段，型号回到 NONE
     ns2_relay_packet oldPacket = motionPacket; oldPacket.version = 1;
     expect(send(relayClient, &oldPacket, sizeof oldPacket, 0) == sizeof oldPacket, "relay v1 packet sent");
@@ -1235,6 +1285,8 @@ int main(int argc, const char **argv) {
     close(relayListener);
     unlink(relayPath);
     unsetenv("S2A_NS2_SOCKET");
+    // 通道断开也会踢一次主队列采样（#771）：在这里排空，别让它留到后面的用例里按失焦发布全零
+    for (int i = 0; i < 5; i++) { usleep(5000); drain_main_queue(); }
     @autoreleasepool {
         if (argc == 2 && !strcmp(argv[1], "--input-config-only")) { test_shared_input_config(); return 0; }
         if (argc == 2 && !strcmp(argv[1], "--pad-latency-probe")) { pad_latency_probe(); return 0; }
@@ -1284,6 +1336,7 @@ int main(int argc, const char **argv) {
         test_pad_fast_path();
         test_profile_only_pad();
     test_pad_layout();
+        test_per_player_config();
         test_save_atomic_warning();
         test_lan_warning();
         test_focus_suspend();

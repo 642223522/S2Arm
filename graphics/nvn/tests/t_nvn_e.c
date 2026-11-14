@@ -239,6 +239,24 @@ static void nested_commands(void) {
         submit(hp); check_handles(find_bind(hp), src, 512, 768);
     }
     printf("%s：通过\n", phase); fflush(stdout);
+    phase = "PSO 定长命令内存：六种状态绑定按设备命令下限计（UE4 PSO CommandMemory OOM，11-14 D-HSQE）";
+    {   // 期望手算：每条状态绑定 8 设备字节（hle_nvn.c DEV_STATE），六条 48 ≤ 游戏给的 64 → 不回调、已用 48。改前按宿主记录 40 字节一条，第二条就超 64 → 回调
+        command *pso = new_command();
+        API(nvnCommandBufferSetMemoryCallback)(&pso->object, oom_cb);
+        API(nvnCommandBufferAddCommandMemory)(&pso->object, &pso->storage->object, 0, 64);
+        NVNblendState bs; NVNcolorState cs; NVNchannelMaskState cm; NVNmultisampleState ms; NVNpolygonState ps; NVNdepthStencilState ds;
+        memset(&bs, 0, sizeof bs); memset(&cs, 0, sizeof cs); memset(&cm, 0, sizeof cm); memset(&ms, 0, sizeof ms); memset(&ps, 0, sizeof ps); memset(&ds, 0, sizeof ds);
+        oom_calls = 0;
+        API(nvnCommandBufferBeginRecording)(&pso->object);
+        API(nvnCommandBufferBindBlendState)(&pso->object, &bs); API(nvnCommandBufferBindColorState)(&pso->object, &cs);
+        API(nvnCommandBufferBindChannelMaskState)(&pso->object, &cm); API(nvnCommandBufferBindMultisampleState)(&pso->object, &ms);
+        API(nvnCommandBufferBindPolygonState)(&pso->object, &ps); API(nvnCommandBufferBindDepthStencilState)(&pso->object, &ds);
+        size_t used = API(nvnCommandBufferGetCommandMemoryUsed)(&pso->object);
+        if (oom_calls || used != 48) printf("PSO 状态绑定：回调 %d 次、已用 %zu（期望 0 次、48）\n", oom_calls, used);
+        CHECK(oom_calls == 0 && used == 48);
+        API(nvnCommandBufferEndRecording)(&pso->object);
+    }
+    printf("%s：通过\n", phase); fflush(stdout);
 }
 int main(void) {
     setup(); protected_source(0); protected_source(1); immediate_and_max(); empty_bind(); nested_commands();

@@ -37,9 +37,11 @@ import export_plan
 import install
 import ipa
 import layout
+import patches
 import library
 import winproc
 import saves
+import sgrade
 import sizes
 import target
 import toolchain
@@ -96,7 +98,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
                   "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "devCert": devcert.operation, "export": export_plan.export}
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "devCert": devcert.operation, "export": export_plan.export}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -131,15 +133,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         return 0 if not getattr(c, "journal_broken", False) else 1
     except (Cancelled, KeyboardInterrupt):
         ended.set()
-        # 一局被停是玩家自己关游戏，不是「任务取消」（11-07 新前端验收）
-        # 下载 Xcode 组件的传输由系统资产服务持有：停掉本进程只是不再等，传输可能还在继续（实测 11-08：取消后 Xcode 仍在下载）
-        waiting = c.operation in ("downloadIosPlatform", "downloadMetal")
-        if c.operation in CLEANS_AFTER_STOP:
-            library.clean_after_stop(c)
-        c.finish("cancelled", "游戏已停止。" if c.operation == "launch" else
-                 "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。" if waiting else
-                 "任务已取消；上次成功的运行版本和存档已保留。", partial_import_result(c))
-        return 130
+        return _finish_cancelled(c)
     except Exception as error:
         ended.set()
         if not isinstance(error, Failure) or c.last_log is None:
@@ -148,7 +142,17 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             log.write_text(c.redact(traceback.format_exc()))
             os.chmod(log, 0o600)
             c.last_log = log
-        diagnostic = c.report_failure(error)
+        # 取消（SIGTERM / 启动器没了）会把正在跑的工具一起停掉，工具因此报的错只是取消的后果，照取消收尾。否则 report_failure →
+        #   diagnostic → emit 先查取消标志，在这个异常处理里再抛 Cancelled：作业带着回溯退出、没有终态事件也不是 130，
+        #   前端只能报「工作进程已退出」（11-12 Mac 出包页设备探测：xcrun 被 TERM，退出码 -15）。原错误已在上面的日志里
+        if c.cancelled:
+            return _finish_cancelled(c)
+        kept = len(c.job["diagnostics"])
+        try:
+            diagnostic = c.report_failure(error)
+        except Cancelled:   # 取消恰好落在写错误摘要的当口：摘要没发出去，不带进取消的终态
+            del c.job["diagnostics"][kept:]
+            return _finish_cancelled(c)
         message = diagnostic["summary"]
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
@@ -157,6 +161,18 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     finally:
         ended.set()
         _drop_job_tmp(c)
+
+
+def _finish_cancelled(c):
+    # 一局被停是玩家自己关游戏，不是「任务取消」（11-07 新前端验收）
+    # 下载 Xcode 组件的传输由系统资产服务持有：停掉本进程只是不再等，传输可能还在继续（实测 11-08：取消后 Xcode 仍在下载）
+    waiting = c.operation in ("downloadIosPlatform", "downloadMetal")
+    if c.operation in CLEANS_AFTER_STOP:
+        library.clean_after_stop(c)
+    c.finish("cancelled", "游戏已停止。" if c.operation == "launch" else
+             "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。" if waiting else
+             "任务已取消；上次成功的运行版本和存档已保留。", partial_import_result(c))
+    return 130
 
 
 def _drop_job_tmp(c):

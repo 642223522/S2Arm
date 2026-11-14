@@ -18,6 +18,7 @@
 
 __attribute__((weak)) int s2a_trap_brk(void *ctx);   // traps.c；只编 crash.c 的单测 / 安卓测试壳里没有它
 static void where(uint64_t a, char *b, size_t n) {   // 地址 → 「模块+偏移」或宿主符号
+    if (s2a_guest_where(a, b, n)) return;   // 游戏模块：「模块+偏移（导出名+偏移）」（loader.c，#806：玩家那版 sdk 我们手里没有时也能读回溯）
     module_t *m = module_of((void *)a);
     if (m) {   // 补丁区：近端在映像尾（偏移 ≥ patch_off），FAR 在基址前（偏移为负，按有符号打，原先无符号相减打成 0xffff… 回绕值）
         int64_t off = (int64_t)(a - (uint64_t)m->base);
@@ -175,10 +176,25 @@ static void android_crash_fatal(int sig, siginfo_t *si, const ucontext_t *contex
     if (sig == SIGABRT) android_sigabrt_ctx(context);
     s2a_android_fatal(sig, si, context->uc_mcontext.pc, context->uc_mcontext.sp, (void *)context);
 }
+static _Atomic uint64_t g_sp_unaligned;   // 替游戏模拟的「栈指针未对齐」读写条数（收局汇总报，s2a_sp_unaligned_count；同苹果段）
+uint64_t s2a_sp_unaligned_count(void) { return atomic_load(&g_sp_unaligned); }
 static void on_crash(int sig, siginfo_t *si, void *context) {
     ucontext_t *u = context;
     // 双补丁岛 brk 兜底点（traps.c）：两岛都够不着的必改点，按原语义模拟后 pc += 4
     if (sig == SIGTRAP && s2a_trap_brk && s2a_trap_brk(context)) return;
+    // 栈指针未对齐（ESR 类别 0x26）：Switch 不查、安卓内核查，替游戏做这一条读写（emul_sp.c 安卓段）。范围同苹果：
+    //   游戏代码（含补丁区）+ 系统调用门进出两头（entry.S [sw_gate, sw_gate_end) 用客体 sp 借 32 字节）
+    if (sig == SIGBUS) {
+        unsigned ec;
+        if (s2a_android_fault_ec(context, &ec) && ec == 0x26) {
+            int s2a_emul_sp_unaligned(void *); extern void sw_gate(void); extern char sw_gate_end[];
+            uint64_t pc0 = (uint64_t)u->uc_mcontext.pc;
+            int gate = pc0 >= (uint64_t)(uintptr_t)sw_gate && pc0 < (uint64_t)(uintptr_t)sw_gate_end;
+            if ((gate || module_of((void *)(uintptr_t)pc0)) && s2a_emul_sp_unaligned(context)) {
+                atomic_fetch_add_explicit(&g_sp_unaligned, 1, memory_order_relaxed); return;
+            }
+        }
+    }
     if (sig == SIGBUS || sig == SIGSEGV) {
         int write;
         if (s2a_android_fault_esr(context, &write)) {
@@ -277,9 +293,17 @@ static void crash_raw(int sig, siginfo_t *si, ucontext_t *uc, int other) {
 // 出事那块内存（#523 / #815：游戏装完 NRO 后 SIGBUS 落在主程序 +0x579508，日志只有地址，定不了是只读还是没映射）：
 //   缺页类信号（SIGBUS / SIGSEGV）打一行——读还是写（ESR 的 WnR 位）、地址所在（或之后第一块）映射的起止、当前 / 最大权限、标签、共享方式，块起点换成「模块+偏移」。
 //   只用 Mach 调用和 LOG，不分配
+// 11-14 D-G2JB：游戏的 SetHeapSize 因超出宿主地址窗口回了内存不足，它没理会、照样写堆首，崩出 SIGBUS——日志里只见总线错误。
+//   出事地址落在最近一次地址越界的请求里时点名是它，指向起局「自检」行（窗口多大、有没有「提高内存上限」权限）
+int s2a_va_short_last(uint64_t fa, int *num, uint64_t *a, uint64_t *n, uint64_t *count) __attribute__((weak));
 static void fault_region_note(int sig, siginfo_t *si, ucontext_t *uc) {
     if (sig != SIGBUS && sig != SIGSEGV) return;
     uint64_t fa = (uint64_t)(uintptr_t)si->si_addr, esr = uc->uc_mcontext->__es.__esr; const char *rw = (esr >> 6 & 1) ? "写" : "读";
+    { int num; uint64_t a, n, k;
+      if (s2a_va_short_last && s2a_va_short_last(fa, &num, &a, &n, &k))
+          LOG("【红】崩在游戏没要到的地址上：svc %#x 早先要在 %#llx +%#llx 映射，超出宿主占到的地址窗口、回了内存不足（地址越界共 %llu 次），游戏没理会照样访问 %#llx。%s",
+              num, (unsigned long long)a, (unsigned long long)n, (unsigned long long)k, (unsigned long long)fa,
+              "地址窗口比游戏要的小，看起局「自检」行；手机上缺「提高内存上限」权限时按首启提示重签带权限的包"); }
     vm_address_t r = (vm_address_t)fa; vm_size_t sz = 0; natural_t depth = 0; vm_region_submap_info_data_64_t info; mach_msg_type_number_t cnt;
     for (;;) {
         cnt = VM_REGION_SUBMAP_INFO_COUNT_64;

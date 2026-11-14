@@ -41,27 +41,30 @@ enum { dq_RING = 32 << 20 };
 typedef struct { uint32_t op, size; VkCommandBuffer cb; } dq_rec_hdr;   // size: the whole record, header included
 static uint8_t *g_dq_ring; static uint64_t g_dq_w;   // the producer's write position
 static _Atomic uint64_t g_dq_pub, g_dq_rd;           // published end, the recorder's read position
-static _Atomic int g_dq_sleeping, g_dq_draining;
+static _Atomic int g_dq_sleeping;   // the recorder is (about to be) asleep on g_dq_cv
+static _Atomic int g_dq_draining;   // how many threads wait in vk_dq_drain's slow path (a count, not a flag: threads drain concurrently and the one that leaves first must not erase the others' mark, or the recorder skips the wake-up and they sit out the 1 s timeout)
 static pthread_spinlock_t g_dq_pl;   // the producers' lock, from dq_rec_begin to dq_rec_end
 static pthread_mutex_t g_dq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_dq_cv = PTHREAD_COND_INITIALIZER, g_dq_dcv = PTHREAD_COND_INITIALIZER;
-static int g_dq_on;
-static uint64_t g_dq_recs, g_dq_drains, g_dq_direct;   // records queued, drains, calls made directly (unknown arguments)
+static _Atomic int g_dq_on;   // 开关：dq_poll 在提交处改，各生产者线程读（relaxed：切换点之后的调用走新路径即可）
+#define DQ_ON() atomic_load_explicit(&g_dq_on, memory_order_relaxed)
+static uint64_t g_dq_recs, g_dq_drains, g_dq_direct;   // records queued, drains, calls made directly (unknown arguments); 诊断计数，各线程可能同时读写：一律 relaxed 原子访问
+static _Atomic uint32_t g_dq_cur_op;                   // 录制线程正在做 / 刚开始做的那条的 op（清空等超时的自报红里指出卡在哪一类调用）
 
 static void dq_wake(void) { if (atomic_load(&g_dq_sleeping)) { pthread_mutex_lock(&g_dq_mu); pthread_cond_signal(&g_dq_cv); pthread_mutex_unlock(&g_dq_mu); } }
 static void vk_dq_drain(void) {
     if (!g_dq_ring) return;
     uint64_t w = atomic_load(&g_dq_pub);   // 到此刻已经写完的记录（原文在自旋锁里读写位置；这里读已发布的位置，免得开关关着时每个调用都过一次锁。别的线程正写到一半的那条不算，它那次调用还没返回）
     if (atomic_load_explicit(&g_dq_rd, memory_order_acquire) >= w) return;
-    g_dq_drains++; dq_wake();
+    __atomic_fetch_add(&g_dq_drains, 1, __ATOMIC_RELAXED); dq_wake();
     for (int i = 0; i < 2000 && atomic_load_explicit(&g_dq_rd, memory_order_acquire) < w; i++) sched_yield();   // the recorder is usually a few calls behind
     if (atomic_load_explicit(&g_dq_rd, memory_order_acquire) >= w) return;
-    pthread_mutex_lock(&g_dq_mu); atomic_store(&g_dq_draining, 1);
+    pthread_mutex_lock(&g_dq_mu); atomic_fetch_add(&g_dq_draining, 1);
     while (atomic_load_explicit(&g_dq_rd, memory_order_acquire) < w) { pthread_cond_signal(&g_dq_cv);
         struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += 1;
-        if (pthread_cond_timedwait(&g_dq_dcv, &g_dq_mu, &dl)) { uint64_t rd = atomic_load(&g_dq_rd); const dq_rec_hdr *h = (const dq_rec_hdr *)(g_dq_ring + rd % dq_RING); static int n;
-            if (n++ < 20) VKLOG("[RED] two-stage replay: a drain waits over 1 s: written %llu, published %llu, read %llu; the record there: op %u size %u",
-                (unsigned long long)w, (unsigned long long)atomic_load(&g_dq_pub), (unsigned long long)rd, h->op, h->size); } }
-    atomic_store(&g_dq_draining, 0); pthread_mutex_unlock(&g_dq_mu);
+        if (pthread_cond_timedwait(&g_dq_dcv, &g_dq_mu, &dl)) { uint64_t rd = atomic_load(&g_dq_rd); static _Atomic int n; unsigned cur = atomic_load_explicit(&g_dq_cur_op, memory_order_relaxed);
+            if (atomic_fetch_add_explicit(&n, 1, memory_order_relaxed) < 20) VKLOG("[RED] two-stage replay: a drain waits over 1 s: written %llu, published %llu, read %llu; the recorder is at op %u (%s)",
+                (unsigned long long)w, (unsigned long long)atomic_load(&g_dq_pub), (unsigned long long)rd, cur, cur < OP_N ? g_dq_names[cur] : "?"); } }
+    atomic_fetch_sub(&g_dq_draining, 1); pthread_mutex_unlock(&g_dq_mu);
 }
 static void *dq_rec_begin(uint32_t op, VkCommandBuffer cb, size_t n) {   // room for a record with n bytes after its header
     size_t need = (sizeof(dq_rec_hdr) + n + 15) & ~(size_t)15;   // 16-byte records: the ring's end always has room for a whole header
@@ -77,7 +80,7 @@ static void *dq_rec_begin(uint32_t op, VkCommandBuffer cb, size_t n) {   // room
     return h + 1;
 }
 static void dq_rec_end(void *payload) {
-    dq_rec_hdr *h = (dq_rec_hdr *)payload - 1; g_dq_w += h->size; g_dq_recs++;
+    dq_rec_hdr *h = (dq_rec_hdr *)payload - 1; g_dq_w += h->size; __atomic_store_n(&g_dq_recs, g_dq_recs + 1, __ATOMIC_RELAXED);   // 自旋锁里：写者只有一个，读者（用例 / 读数）用原子读
     atomic_store(&g_dq_pub, g_dq_w);   // (seq_cst, against the recorder's sleep flag: either it sees this record or this sees it asleep)
     pthread_spin_unlock(&g_dq_pl);
     dq_wake();
@@ -196,15 +199,15 @@ static void *dq_recorder_main(void *arg) {
                 atomic_store(&g_dq_sleeping, 0); pthread_mutex_unlock(&g_dq_mu);
             }
         }
-        while (r != pub) { const dq_rec_hdr *h = (const dq_rec_hdr *)(g_dq_ring + r % dq_RING); dq_run(h); r += h->size; atomic_store_explicit(&g_dq_rd, r, memory_order_release); }
+        while (r != pub) { const dq_rec_hdr *h = (const dq_rec_hdr *)(g_dq_ring + r % dq_RING); atomic_store_explicit(&g_dq_cur_op, h->op, memory_order_relaxed); dq_run(h); r += h->size; atomic_store(&g_dq_rd, r); }   // seq_cst (a plain stlr on arm64): the read position is stored, then g_dq_draining is read, against the drainer's "count it, then read the position"
         if (atomic_load(&g_dq_draining)) { pthread_mutex_lock(&g_dq_mu); pthread_cond_broadcast(&g_dq_dcv); pthread_mutex_unlock(&g_dq_mu); }
     }
     return NULL;
 }
 
 // ---- the wrappers (the producer) ----
-#define DQ_DIRECT(f, ...) do { vk_dq_drain(); g_dq_direct++; r_##f(__VA_ARGS__); } while (0)
-#define DQ_BEGIN(op, T, extra) DQ_COUNT(op); uint8_t *base_ = g_dq_on ? dq_rec_begin(op, cb, sizeof(T) + (extra)) : NULL; if (!base_) goto direct; T *a = (T *)base_; uint8_t *at_ = base_ + sizeof(T)
+#define DQ_DIRECT(f, ...) do { vk_dq_drain(); __atomic_fetch_add(&g_dq_direct, 1, __ATOMIC_RELAXED); r_##f(__VA_ARGS__); } while (0)
+#define DQ_BEGIN(op, T, extra) DQ_COUNT(op); uint8_t *base_ = DQ_ON() ? dq_rec_begin(op, cb, sizeof(T) + (extra)) : NULL; if (!base_) goto direct; T *a = (T *)base_; uint8_t *at_ = base_ + sizeof(T)
 static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkDependencyFlags dep, uint32_t nm, const VkMemoryBarrier *m,
                                                          uint32_t nb, const VkBufferMemoryBarrier *b, uint32_t ni, const VkImageMemoryBarrier *im) {
     for (uint32_t i = 0; i < nm; i++) if (m[i].pNext) goto direct;
@@ -264,7 +267,7 @@ static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdBeginRendering(VkCommandBuffer cb,
       dq_put(&at_, ri->pColorAttachments, DQ_ARR(VkRenderingAttachmentInfo, ri->pColorAttachments, ri->colorAttachmentCount)); dq_rec_end(base_); return; }
 direct: DQ_DIRECT(vkCmdBeginRendering, cb, ri);
 }
-#define W_NOARG(f) static DQ_U VKAPI_ATTR void VKAPI_CALL w_##f(VkCommandBuffer cb) { DQ_COUNT(OP_##f); void *a = g_dq_on ? dq_rec_begin(OP_##f, cb, 0) : NULL; if (!a) { DQ_DIRECT(f, cb); return; } dq_rec_end(a); }
+#define W_NOARG(f) static DQ_U VKAPI_ATTR void VKAPI_CALL w_##f(VkCommandBuffer cb) { DQ_COUNT(OP_##f); void *a = DQ_ON() ? dq_rec_begin(OP_##f, cb, 0) : NULL; if (!a) { DQ_DIRECT(f, cb); return; } dq_rec_end(a); }
 W_NOARG(vkCmdEndRenderPass) W_NOARG(vkCmdEndRendering)
 static DQ_U VKAPI_ATTR void VKAPI_CALL w_vkCmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline pl) {
     { DQ_BEGIN(OP_vkCmdBindPipeline, a_bindpipe, 0); *a = (a_bindpipe){bp, pl}; (void)at_; dq_rec_end(base_); return; } direct: DQ_DIRECT(vkCmdBindPipeline, cb, bp, pl); }
@@ -339,9 +342,9 @@ static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkResetCommandBuffer(VkCommandBuffe
 
 // 开关（调试属性 nvk_dq，缺省关）：在提交处读——那里队列刚清空；别的线程这时还有没做完的记录也没关系，它之后的直接调用会先清空队列。
 static void dq_poll(void) {
-    static uint32_t n; if (!g_dq_ring || (n++ & 63)) return;
+    static _Atomic uint32_t n; if (!g_dq_ring || (atomic_fetch_add_explicit(&n, 1, memory_order_relaxed) & 63)) return;
     int on = nvn_plat_flag("nvk_dq", 0) != 0;
-    if (on != g_dq_on) { g_dq_on = on; VKLOG("两级回放%s（debug.s2a.nvk_dq）", on ? "开：vkCmd* 调用交给录制线程" : "关：回放线程自己录"); }
+    if (on != DQ_ON()) { atomic_store_explicit(&g_dq_on, on, memory_order_relaxed); VKLOG("两级回放%s（debug.s2a.nvk_dq）", on ? "开：vkCmd* 调用交给录制线程" : "关：回放线程自己录"); }
 }
 // 设备建好之后、第一处 Vulkan 命令之前调一次。取不到环内存就一直按「关」走。
 static void vk_dq_init(VkDevice dev) {
@@ -359,7 +362,7 @@ static void vk_dq_init(VkDevice dev) {
     pthread_attr_destroy(&at);
     if (rc) { free(ring); VKLOG("【红】两级回放：录制线程起不来，回放线程自己录"); return; }
     g_dq_ring = ring;
-    g_dq_on = nvn_plat_flag("nvk_dq", 0) != 0;   // 起始值；之后由 dq_poll 在提交处跟着开关变
+    atomic_store_explicit(&g_dq_on, nvn_plat_flag("nvk_dq", 0) != 0, memory_order_relaxed);   // 起始值；之后由 dq_poll 在提交处跟着开关变
 }
 
 // 销毁：队列里可能还有引用这个对象的调用没做（录了命令、没提交就放弃的那一段——同步模型下录完再销毁无害，这里得先把队列做完）。
@@ -384,7 +387,7 @@ DQ_DESTROY(vkDestroyShaderModule, VkShaderModule)
 static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkFreeDescriptorSets(VkDevice d, VkDescriptorPool p, uint32_t n, const VkDescriptorSet *s) { vk_dq_drain(); return vkFreeDescriptorSets(d, p, n, s); }
 static DQ_U VKAPI_ATTR VkResult VKAPI_CALL w_vkResetDescriptorPool(VkDevice d, VkDescriptorPool p, VkDescriptorPoolResetFlags f) { vk_dq_drain(); return vkResetDescriptorPool(d, p, f); }
 
-uint64_t nvn_vk_dbg_dq_recs(void) { return g_dq_recs; }   // 用例读：至今交给录制线程的调用数
+uint64_t nvn_vk_dbg_dq_recs(void) { return __atomic_load_n(&g_dq_recs, __ATOMIC_RELAXED); }   // 用例读：至今交给录制线程的调用数
 
 // ---- 从这里往下，后端里这些名字都走包装 ----
 #define vkBeginCommandBuffer w_vkBeginCommandBuffer

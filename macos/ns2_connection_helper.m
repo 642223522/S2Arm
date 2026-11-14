@@ -24,6 +24,7 @@ static int listenFD = -1;
 static int clientFD = -1;
 static const char *socketPath;
 static pthread_mutex_t relayLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t sendLock = PTHREAD_MUTEX_INITIALIZER;   // 串行化对 clientFD 的整包 send：输入变化直发（receive_input）与 8ms 心跳并发，流式 send 交错会把定长包接错位，游戏端按魔数校验、错位即断开
 static ns2_relay_packet snapshot;
 // 玩家 2（两只 Joy-Con 各一位玩家时槽 1 那只，#520 D）：头部同 snapshot、player = 1；只带按键 / 摇杆 / 型号（体感 / 鼠标 / 震动跟玩家 1 走）
 static ns2_relay_packet second;
@@ -144,13 +145,25 @@ static void emit_status(ns2_status status, const char *message, void *context) {
     }
 }
 
+// 输入变化直发（11-12 延迟管线调研）：此前输入要等 8ms 心跳整包推给游戏端，平均多等半个心跳、最坏一整个；
+//   变化即发后心跳只留给状态 / 体感 / 保活。整包空闲重发（部分手柄没输入也按拍整包上报）不发。
+static void send_snapshot(void);
+
 static void receive_input(const ns2_state *state, void *context) {
     (void)context;
     ns2_kind kind = ns2_get_output_kind();   // 拼对 / 拆对不一定伴随状态变化，跟着输入刷新
+    int changed = 0;
     pthread_mutex_lock(&relayLock);
-    if (snapshot.ready) snapshot.state = *state;
-    snapshot.kind = (uint8_t)kind;
+    if (snapshot.ready && memcmp(&snapshot.state, state, sizeof snapshot.state)) {
+        snapshot.state = *state;
+        changed = 1;
+    }
+    if (snapshot.kind != (uint8_t)kind) {
+        snapshot.kind = (uint8_t)kind;
+        changed = 1;
+    }
     pthread_mutex_unlock(&relayLock);
+    if (changed) send_snapshot();
 }
 
 static void receive_player(int player, ns2_kind kind, const ns2_state *state, void *context) {
@@ -395,22 +408,22 @@ static void send_snapshot(void) {
     packet.mouse_kind = mouse.known ? (uint8_t)mouse.kind : 0;
     if (mouse.known) packet.mouse = (ns2_relay_mouse){mouse.x, mouse.y, mouse.surface, mouse.distance};
 
+    pthread_mutex_lock(&sendLock);
     ssize_t sent = send(fd, &packet, sizeof packet, MSG_DONTWAIT);
-    if (sent != (ssize_t)sizeof packet) { drop_client(fd); return; }
-    if (sendSecond) {
-        sent = send(fd, &player2, sizeof player2, MSG_DONTWAIT);
-        if (sent != (ssize_t)sizeof player2) { drop_client(fd); return; }
-    }
+    int ok = sent == (ssize_t)sizeof packet;
+    if (ok && sendSecond) ok = send(fd, &player2, sizeof player2, MSG_DONTWAIT) == (ssize_t)sizeof player2;
     // 别组的玩家（玩家号 2 起）：连着就每拍发，断了补一包 ready = 0
-    for (int p = 2; p < NS2_RELAY_PLAYERS; p++) {
+    for (int p = 2; ok && p < NS2_RELAY_PLAYERS; p++) {
         ns2_relay_packet x;
         pthread_mutex_lock(&relayLock);
         int due = extraDirty[p] || extra[p].ready;
         x = extra[p]; extraDirty[p] = 0;
         pthread_mutex_unlock(&relayLock);
         if (!due || x.magic != NS2_RELAY_MAGIC) continue;
-        if (send(fd, &x, sizeof x, MSG_DONTWAIT) != (ssize_t)sizeof x) { drop_client(fd); return; }
+        ok = send(fd, &x, sizeof x, MSG_DONTWAIT) == (ssize_t)sizeof x;
     }
+    pthread_mutex_unlock(&sendLock);   // 一拍的几包整组串行（#771：输入变化直发与 8ms 心跳并发，交错会把定长包接错位）；放锁后再断开
+    if (!ok) drop_client(fd);
 }
 
 static int create_listener(const char *path) {

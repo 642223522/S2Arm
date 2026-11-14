@@ -107,6 +107,7 @@ namespace S2A.Services
             IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
             if (imgV1 != null)
             {
+                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面两处同
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, imgV1);
                 Native.Mark("服务：RomFS 单一 IMG\0"u8);
             }
@@ -115,6 +116,7 @@ namespace S2A.Services
 
             if (source == RomFsIndex.Source.Image)
             {
+                imageStorage = RomFsMods.ApplyAtLaunch(imageStorage, programIndex);
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, imageStorage);
                 Native.Mark("服务：RomFS 单文件镜像\0"u8);
             }
@@ -137,6 +139,7 @@ namespace S2A.Services
                     image = RomFsFromDirectory(romfs, overlay);
                 }
 
+                image = RomFsMods.ApplyAtLaunch(image, programIndex);
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, image);   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }

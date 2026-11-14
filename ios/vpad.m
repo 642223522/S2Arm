@@ -20,6 +20,8 @@
 // 弱链接[lab]：s2a_direct_out_aspect（graphics/nvn/host_adapt.m：直连出图层当前的出图宽高比，触点矩形与上屏同一口径；输入工作台不链渲染层）
 // 弱链接[lab]：s2a_dprompt_notice（dprompt.m 提供的提示条；输入工作台不编 dprompt.m，取不到就不提示）
 // 弱链接[lab]：s2a_dprompt_ask（dprompt.m 提供的带两个按钮的提示条；输入工作台不编 dprompt.m，取不到就退回 s2a_dprompt_notice 或不提示）
+#import "sgrade_style.h"
+#import "cpatch_settings.h"
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import "controller.h"
@@ -28,8 +30,10 @@
 #import "settings.h"
 #import "vpad_cheats.h"   // 齿轮菜单：金手指面板
 #import "s2a_l10n.h"
+// 弱链接[lab,touchtest]：s2a_ios_ext_connected（extdisplay.m 提供外屏连接查询，输入工作台 / 触屏单测不链接）
 // 弱链接[lab]：s2a_hud_brief_show（ios/hud.m 简版性能浮层；输入工作台不链 hud.m / 原生核，取不到就不显示）
 void s2a_hud_brief_show(UIView *root, BOOL on) __attribute__((weak_import));
+BOOL s2a_ios_ext_connected(void) __attribute__((weak_import));
 #import "app_settings.h"   // 齿轮菜单：存档管理 / 更多设置（s2a_settings_runtime / s2a_settings_present）
 #import "play_layout.h"
 #include "s2a_docs.h"   // iOS 进程级容器 Documents（s2a_container_docs）
@@ -159,6 +163,67 @@ __attribute__((visibility("default"), used)) void s2a_vpad_read_ex(s2a_pad_snaps
     note_read((s2a_pad_source)out->source, out->buttons, out->axes);
 }
 
+// 仅挂当前游戏的手机窗口；不能挂在 vpad 内（接实体手柄后 vpad 会隐藏）。
+#import "vpad_screen_lock.h"
+@interface S2AScreenLockView : UIView
+@property(nonatomic, copy) void (^unlock)(void);
+- (void)showHint;
+@end
+@implementation S2AScreenLockView {
+    UILabel *_hint; NSTimer *_hintTimer;
+    S2AVPadScreenLockState _taps;
+    UITouch *_finger; CGPoint _start; double _down; CGFloat _movement;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+    if (!(self = [super initWithFrame:frame])) return nil;
+    self.backgroundColor = UIColor.blackColor; self.opaque = YES; self.multipleTouchEnabled = YES;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.accessibilityIdentifier = @"vpad.screenLock"; self.isAccessibilityElement = YES;
+    self.accessibilityViewIsModal = YES; self.accessibilityLabel = S2AL(@"vpad.screenLock.title");
+    self.accessibilityHint = S2AL(@"vpad.screenLock.hint");
+    self.accessibilityCustomActions = @[[[UIAccessibilityCustomAction alloc] initWithName:S2AL(@"vpad.screenLock.unlock") target:self selector:@selector(accessibilityUnlock)]];
+    _hint = [UILabel new]; _hint.text = S2AL(@"vpad.screenLock.hint"); _hint.textColor = UIColor.whiteColor;
+    _hint.numberOfLines = 0; _hint.textAlignment = NSTextAlignmentCenter; _hint.userInteractionEnabled = NO;
+    _hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; _hint.adjustsFontForContentSizeCategory = YES;
+    _hint.accessibilityIdentifier = @"vpad.screenLock.hint"; _hint.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_hint]; [NSLayoutConstraint activateConstraints:@[
+        [_hint.centerXAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.centerXAnchor],
+        [_hint.centerYAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.centerYAnchor],
+        [_hint.widthAnchor constraintLessThanOrEqualToAnchor:self.safeAreaLayoutGuide.widthAnchor multiplier:0.85]]];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resetTouches) name:UIApplicationWillResignActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(showHint) name:UIApplicationDidBecomeActiveNotification object:nil];
+    return self;
+}
+- (void)resetTouches { _taps = (S2AVPadScreenLockState){0}; _finger = nil; }
+- (void)showHint {
+    [self resetTouches]; [_hintTimer invalidate]; [_hint.layer removeAllAnimations]; _hint.alpha = 1;
+    __weak S2AScreenLockView *ws = self;
+    _hintTimer = [NSTimer scheduledTimerWithTimeInterval:4 repeats:NO block:^(__unused NSTimer *t) {
+        S2AScreenLockView *v = ws; if (!v) return;
+        [UIView animateWithDuration:0.3 animations:^{ v->_hint.alpha = 0; }];
+    }];
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self);
+}
+- (BOOL)accessibilityUnlock { if (self.unlock) self.unlock(); return YES; }
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (_finger || touches.count != 1 || event.allTouches.count != 1) { [self resetTouches]; return; }
+    _finger = touches.anyObject; _start = [_finger locationInView:self]; _down = _finger.timestamp; _movement = 0;
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (!_finger) return;
+    CGPoint p = [_finger locationInView:self]; _movement = MAX(_movement, hypot(p.x - _start.x, p.y - _start.y));
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (!_finger || ![touches containsObject:_finger]) return;
+    CGPoint p = [_finger locationInView:self]; _movement = MAX(_movement, hypot(p.x - _start.x, p.y - _start.y));
+    BOOL unlock = S2AVPadScreenLockTap(&_taps, _finger.timestamp, _finger.timestamp - _down, _movement, 1);
+    _finger = nil; if (unlock && self.unlock) self.unlock();
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self resetTouches]; }
+- (void)removeFromSuperview { [_hintTimer invalidate]; _hintTimer = nil; [super removeFromSuperview]; }
+- (void)dealloc { [_hintTimer invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
+@end
+
 @interface S2AVPadView : UIView
 - (void)setInputEnabled:(BOOL)enabled;
 - (void)addLayoutAction:(UIAlertController *)menu controller:(UIViewController *)controller;
@@ -203,6 +268,8 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     int32_t _slotX[16], _slotY[16]; uint8_t _slotState[16]; BOOL _slotStart[16];   // 0 空闲 / 1 按住 / 2 等发 End
     NSMapTable<UITouch *, NSNumber *> *_slot;
     UILabel *_hud;                          // 触屏真值那一行（见 g_hud_on）
+    S2AScreenLockView *_screenLock;
+    _Atomic int _screenLocked;   // HID 线程也读，遮罩本身只在主线程操作
     UIButton *_gear; NSTimer *_gearFade;    // 游戏内设置入口：屏幕左上角常驻，闲置时淡到看得见但不抢画面
     BOOL _touchWanted;                      // 游戏启用过触屏（s2a_vpad_touch_wanted）
     int _autoTouch;                         // 自动切（游戏声明触屏配置，manual=0）的本次运行覆盖：1 = 本次按仅触屏跑、不改持久化选择；0 = 没有覆盖
@@ -409,7 +476,11 @@ typedef BOOL (^VPFlag)(void);
                             disabled:^BOOL{ return !rumbleOn(); } run:^{ [d setInteger:i forKey:@"S2ARumbleLevel"]; s2a_rumble_apply_settings(); s2a_rumble_preview(); }]];
     UIAction *tap = [self live:@"vp.haptic.keys" title:S2AL(@"vpad.haptic.keys") note:S2AL(@"vpad.menu.haptic.note") on:^BOOL{ return st.hapticFeedbackEnabled; } disabled:nil run:^{ NSError *e;
         if (![st setHapticFeedbackEnabled:!st.hapticFeedbackEnabled error:&e]) [ws menuError:S2AL(@"vpad.error.hapticNotSaved") error:e]; }];
-    [items addObject:vp_sub(S2AL(@"vpad.menu.rumble"), @"iphone.radiowaves.left.and.right", @[game, vp_inline(levels), tap])];
+    // 手机马达（phone_motion.m S2APhoneHaptics，缺省开）：关掉后只在手柄上震；11-14 从整页设置挪来，震动相关都在这一处
+    VPFlag phoneMotor = ^BOOL{ id o = [d objectForKey:@"S2APhoneHaptics"]; return o ? [o boolValue] : YES; };
+    UIAction *motor = [self live:@"vp.rumble.phone" title:S2AL(@"settings.toggle.phoneHaptics") note:nil on:phoneMotor disabled:^BOOL{ return !rumbleOn(); }
+                             run:^{ [d setBool:!phoneMotor() forKey:@"S2APhoneHaptics"]; }];
+    [items addObject:vp_sub(S2AL(@"vpad.menu.rumble"), @"iphone.radiowaves.left.and.right", @[game, vp_inline(levels), motor, tap])];
     // 手柄与体感（controller.m / phone_motion.m 监听偏好变化，改完即生效）
     VPFlag gyro = ^BOOL{ id o = [d objectForKey:@"S2APhoneGyro"]; return o ? [o boolValue] : YES; };
     [items addObject:vp_sub(S2AL(@"vpad.menu.pad"), @"scope", @[
@@ -427,27 +498,72 @@ typedef BOOL (^VPFlag)(void);
                      [self live:@"vp.pad.face.xbox" title:S2AL(@"vpad.menu.face.xbox") note:S2AL(@"vpad.menu.face.xbox.note")
                             on:^BOOL{ return s2a_pad_layout_parse([d stringForKey:@"padFace"].UTF8String) == S2A_PAD_LAYOUT_XBOX; }
                       disabled:nil run:^{ [d setObject:@"xbox" forKey:@"padFace"]; }]])])];
-    // 画面：宽屏 / 60 帧 / 主机模式 / 补丁要按本款能力判可不可开、改完要重启，逻辑全在整页设置（app_settings.m），这里直接去那一页，不另抄一份
-    UIAction *pic = vp_act(S2AL(@"vpad.menu.picture"), @"rectangle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); pic.subtitle = S2AL(@"vpad.menu.picture.note");
-    [items addObject:pic];
     // 性能浮层（hud.m 简版：右上角「帧率 · 内存」），改完立即显示 / 收起
     [items addObject:[self live:@"vp.hud.brief" title:S2AL(@"vpad.menu.hud") note:S2AL(@"vpad.menu.hud.note") on:^BOOL{ return [d boolForKey:@"S2APerfHUD"]; } disabled:nil
                             run:^{ BOOL on = ![d boolForKey:@"S2APerfHUD"]; [d setBool:on forKey:@"S2APerfHUD"]; if (s2a_hud_brief_show) s2a_hud_brief_show(ws.superview, on); }]];
-    // 金手指（vpad_cheats.m）：导入 txt、逐条开关，执行在服务层 Cheats.cs；面板开着时虚拟手柄不收触控
-    [items addObject:vp_act(S2AL(@"cheats.title"), @"wand.and.stars", NO, ^{ [ws afterMenu:^{
-        UIViewController *c = ws.window.rootViewController; if (!c) return;
-        [ws setSettingsOpen:YES]; s2a_cheats_present(s2a_top_presenter(c), ^{ [ws setSettingsOpen:NO]; }); }]; })];
+    // 只在外接显示器场景存在时提供，避免没有用途的菜单项占位。
+    if (s2a_ios_ext_connected && s2a_ios_ext_connected()) {
+        UIAction *screenLock = [UIAction actionWithTitle:S2AL(@"vpad.screenLock.title") image:[UIImage systemImageNamed:@"lock.fill"] identifier:@"vpad.screenLock.action" handler:^(__unused UIAction *action) {
+            [ws afterMenu:^{ [ws showScreenLock]; }];
+        }];
+        screenLock.subtitle = S2AL(@"vpad.screenLock.note");
+        [items addObject:screenLock];
+    }
+    // S 级优化（11-13 统一入口：同整页设置的「S 级优化」组、游戏库设置、启动器）：金色 S 子菜单，里面「社区补丁…」（这款有才列）与「金手指…」，
+    //   打开的页与整页设置里点进去的是同一页（cpatch_settings.m / vpad_cheats.m）；页开着时虚拟手柄不收触控
+    {
+        NSMutableArray<UIMenuElement *> *sg = [NSMutableArray array];
+        NSArray<S2ACPatchGroup *> *pg = s2a_cpatch_bundled_groups();
+        if (pg.count) [sg addObject:vp_act([S2AL(@"cpatch.title") stringByAppendingString:@"…"], @"square.stack.3d.up.fill", NO, ^{ [ws afterMenu:^{
+            UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
+            UIViewController *page = s2a_cpatch_settings_controller(pg); if (!page) return;
+            UINavigationController *n = [[UINavigationController alloc] initWithRootViewController:page];
+            page.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone primaryAction:
+                [UIAction actionWithTitle:@"" image:nil identifier:nil handler:^(__unused UIAction *x) { [n dismissViewControllerAnimated:YES completion:^{ [ws setSettingsOpen:NO]; }]; }]];
+            [ws setSettingsOpen:YES]; [c presentViewController:n animated:YES completion:nil]; }]; })];
+        [sg addObject:vp_act([S2AL(@"cheats.title") stringByAppendingString:@"…"], @"wand.and.stars", NO, ^{ [ws afterMenu:^{
+            UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
+            [ws setSettingsOpen:YES]; s2a_cheats_present(s2a_top_presenter(c), ^{ [ws setSettingsOpen:NO]; }); }]; })];
+        UIImage *gold = [s2a_sgrade_image() imageByPreparingThumbnailOfSize:CGSizeMake(26, 26)] ?: s2a_sgrade_image();
+        [items addObject:[UIMenu menuWithTitle:S2AL(@"sgrade.title") image:[gold imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal] identifier:nil options:0 children:sg]];
+    }
     S2ASettingsRuntime *rt = s2a_settings_runtime();
     // 切换游戏（只多款容器有）：确认框与收尾在 app.m，与整页设置「切换游戏」同一个回调
     if (rt.switchGame) [items addObject:vp_act(S2APICK(S2A_DPROMPT_SWITCH_GAME_TITLE), @"square.stack", NO, ^{ [ws afterMenu:^{ UIViewController *c = ws.window.rootViewController; if (c && !c.presentedViewController) rt.switchGame(c); }]; })];
     if (rt.manageSaves) [items addObject:vp_act(S2AL(@"vpad.menu.saves"), @"tray.full", NO, ^{ [ws afterMenu:^{ UIViewController *c = ws.window.rootViewController; if (c && !c.presentedViewController) rt.manageSaves(c); }]; })];
-    [items addObject:vp_act(S2AL(@"vpad.menu.more"), @"ellipsis.circle", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; })];
+    // 整页设置（画面 / 宽屏 / 60 帧 / 主机模式 / 补丁 / 操作 / 诊断；按本款能力判可不可开、改完要重启的逻辑全在 app_settings.m）：
+    //   原先「画面…」与「更多设置」两项打开的是同一页，11-13 合成一项
+    UIAction *full = vp_act(S2AL(@"vpad.menu.settings"), @"gearshape", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); full.subtitle = S2AL(@"vpad.menu.settings.note");
+    [items addObject:full];
     // 故障报修（11-13 维护者定：各页面齿轮菜单最下面）：写一句发生了什么（可不填）→ 打包上传、给短码（diag.m s2a_diag_report）
     [items addObject:vp_act(S2AL(@"diag.report.title"), @"exclamationmark.bubble", NO, ^{ [ws afterMenu:^{ void s2a_diag_report(void); s2a_diag_report(); }]; })];
     return items;
 }
+- (void)showScreenLock {
+    UIWindow *window = self.window; if (_screenLock || !window) return;
+    _screenLock = [[S2AScreenLockView alloc] initWithFrame:window.bounds];
+    // 同时保证绘制顺序与命中顺序；不碰外屏窗口、亮度或游戏运行状态。
+    _screenLock.layer.zPosition = 20000;   // 开发 / 简版 HUD 为 10000
+    __weak S2AVPadView *ws = self;
+    _screenLock.unlock = ^{ [ws hideScreenLock]; };
+    atomic_store(&_screenLocked, 1);
+    [self clearTouches]; [window addSubview:_screenLock]; [_screenLock showHint];
+}
+- (void)hideScreenLock {
+    S2AScreenLockView *cover = _screenLock; if (!cover) return;
+    _screenLock = nil; atomic_store(&_screenLocked, 0); [self clearTouches]; [self publish]; [self wake];
+    [cover removeFromSuperview];
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _gear);
+}
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (_screenLock && self.window != _screenLock.window) {
+        [_screenLock removeFromSuperview]; _screenLock = nil;
+        atomic_store(&_screenLocked, 0); [self clearTouches];
+    }
+}
 - (void)openFullSettings { void s2a_diag_open_menu(void); s2a_diag_open_menu(); }   // 同四指长按：整页设置，游戏不退出，开着时触屏输入停住
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_gearFade invalidate]; [_fade invalidate]; [_holdLockTimer invalidate]; }
+- (void)dealloc { [_screenLock removeFromSuperview]; [NSNotificationCenter.defaultCenter removeObserver:self]; [_gearFade invalidate]; [_fade invalidate]; [_holdLockTimer invalidate]; }
 - (void)clearTouches {
     S2A_MAIN_ONLY("-[S2AVPadView clearTouches]");
     [_fade invalidate]; _fade = nil;
@@ -466,7 +582,7 @@ typedef BOOL (^VPFlag)(void);
     // Disconnect clears pad.c's short-press latch as well as held state. Merely
     // publishing zero buttons leaves a press queued for the next HID read.
     s2a_pad_update(S2A_PAD_TOUCH, 0, 0, NULL);
-    if (_inputEnabled && !_settingsOpen && !_editing) s2a_pad_update(S2A_PAD_TOUCH, 1, 0, axes);
+    if (_inputEnabled && !_settingsOpen && !_editing && !atomic_load(&_screenLocked)) s2a_pad_update(S2A_PAD_TOUCH, 1, 0, axes);
 }
 - (CGPoint)fixedCenter:(int)side {
     CGPoint c = [_layoutStore stickCenter:side]; return CGPointMake(CGRectGetMinX(_safeRect) + c.x * _safeRect.size.width, CGRectGetMinY(_safeRect) + c.y * _safeRect.size.height);
@@ -953,7 +1069,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
         view->_holdLockTimer = nil; view->_holdLockDue = 0; [view publish]; }];
 }
 - (void)publish {
-    if (self.hidden || !_inputEnabled || _settingsOpen || _editing) return;
+    if (self.hidden || !_inputEnabled || _settingsOpen || _editing || atomic_load(&_screenLocked)) return;
     uint32_t held = 0; for (NSNumber *n in _held.objectEnumerator) if (n.intValue >= kDpadHeld) held |= dpad_bits(n.intValue - kDpadHeld); else if (n.intValue >= 0) held |= 1u << n.intValue;
     uint32_t lockChanged = S2AVPadHoldLockStep(&_holdLock, held, kHoldLockKeys, CACurrentMediaTime(), _layoutStore.holdLockEnabled && !_touchOnly);
     uint32_t b = _stickPress | held | _holdLock.locked;
@@ -1076,7 +1192,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
 - (int)readTouches:(int32_t *)xy attributes:(uint32_t *)attributes {
     @synchronized(self) {
         // 不碰 UIKit（hidden 之类）——这是 HID 线程。暂停期间不留半截触点，免得恢复后补发一帧 End。
-        if (_settingsOpen || !_touchOnly) { for (int i = 0; i < 16; i++) _slotState[i] = 0; return 0; }
+        if (_settingsOpen || !_touchOnly || atomic_load(&_screenLocked)) { for (int i = 0; i < 16; i++) _slotState[i] = 0; return 0; }
         int n = 0;
         for (int i = 0; i < 16; i++) {
             if (_slotState[i] == 0) continue;
@@ -1135,6 +1251,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     _knob[k].center = CGPointMake(_c[k].x + dx * radius, _c[k].y + dy * radius);
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (atomic_load(&_screenLocked)) return;
     if (_editing) {
         for (UITouch *t in ts) {
             CGPoint p = [t locationInView:self]; int k = [self keyAt:p];
