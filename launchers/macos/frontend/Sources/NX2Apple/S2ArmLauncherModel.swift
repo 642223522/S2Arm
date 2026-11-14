@@ -105,6 +105,9 @@ struct PhoneOutcome: Equatable {
     var exportFolder = ""
     var exportGames = 0
     var exportBytes: Int64? = nil
+    /// 导出后推到手机（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 没推）；没推时作业给的一句「缺什么、怎么做」
+    var pushed: [String] = []
+    var pushNote = ""
 }
 
 /// 排队的一次出包。
@@ -891,6 +894,21 @@ public final class S2ArmLauncherModel: ObservableObject {
         return DiagUploadReceipt(code: code, issueURL: (outcome.result["issueUrl"] as? String).flatMap(URL.init(string:)),
                                  repo: outcome.result["repo"] as? String ?? "github.com/jhaizhou-ops/S2Arm")
     }
+    /// 导出完成页「推到手机」：把「S2Arm 自签导出」里的完整 .img 推进手机上自签装好的 S2Arm（exportPush 作业）；结果写回 phoneOutcome
+    @Published var exportPushing = false
+    func pushExportToPhone(gameID: String?) {
+        guard !exportPushing else { return }
+        exportPushing = true
+        Task {
+            do {
+                let names = try await provider.exportPush(gameId: gameID, device: installDeviceID)
+                phoneOutcome?.pushed = names; phoneOutcome?.pushNote = ""
+            } catch {
+                phoneOutcome?.pushNote = error.localizedDescription
+            }
+            exportPushing = false
+        }
+    }
     struct UploadNoCode: LocalizedError { var errorDescription: String? { Localizer().t("s2arm.diagUpload.noCode") } }
     /// 界面语言写进作业环境：之后每个作业请求都带 uiLanguage（zh-Hans / en），作业层按它出玩家看得到的文件名与说明
     public func setUILanguage(_ code: String) { provider.client.environment.uiLanguage = code }
@@ -964,8 +982,9 @@ public final class S2ArmLauncherModel: ObservableObject {
             do {
                 let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, accept: accept, events: sink)
                 if let r, !r.exportFolder.isEmpty {   // 导出模式：没装手机，打开放好的文件夹
-                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes)
-                    NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder))
+                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes,
+                                                      pushed: r.pushed, pushNote: r.pushNote)
+                    if r.pushed.isEmpty { NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder)) }   // 推进手机了就不用玩家自己拷，不再弹文件夹
                 } else if let r {
                     self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName)
                     self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)

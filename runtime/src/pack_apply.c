@@ -620,6 +620,9 @@ int s2a_pack_migrate(const char *proc_docs, int *failed) {
 //   同卷改名挪到本款资源包根 Library/Application Support/S2Arm/games/<游戏号>/资源包/game.img（s2a_pack_root；文件夹不在就建，玩家不用知道程序号），写 index.tsv（game.img 一行 + 原有的直连库 / 覆盖层行）
 //   与清单 manifest.json（version 3、资源包号取头）、作废 .applied——之后就是「待导入」，游戏库 / 闸门照常解小文件（s2a_pack_apply）
 static char g_img_err[600], g_img_code[48];
+// 这次认领里不带着色器库的那个文件名（最近一个；空 = 没有）：游戏库上提示一句怎么换（ios/app.m img_scan_report；D-QW2Q / D-9ZF9：自签玩家放了资源包文件夹里的 game.img）
+static char g_img_noshaders[256];
+const char *s2a_img_scan_noshaders(void) { return g_img_noshaders; }
 const char *s2a_img_scan_failure(void) { return g_img_err; }
 // 认领失败给码（同 s2a_install_code）：格式号不认识 = ios_install_img_format，挪 / 写时空间满 = ios_install_no_space，其余 ios_import_img_failed
 const char *s2a_img_scan_code(void) { return g_img_code; }
@@ -755,10 +758,10 @@ static int img_place(const char *proc_docs, const char *path) {   // 0 = 挪好�
     int shaders = 0;   // 着色器库从哪来：原有 index.tsv（电脑推过）或 IMG 目录表（导出文件夹里的「<游戏名>.img」带着，pack/img.py export）
     if (in) { char line[4600]; while (fgets(line, sizeof line, in)) if (!strncmp(line, "shaders/", 8) || !strncmp(line, "romfs_overlay/", 14)) { fputs(line, o); shaders |= !strncmp(line, "shaders/", 8); } fclose(in); }
     if (!shaders) { img_ent *te; size_t tn; if (!img_toc(root, &te, &tn)) { for (size_t i = 0; i < tn && !shaders; i++) shaders = !strncmp(te[i].rel, "shaders/", 8); img_free(te, tn); } }
-    // 两处都没有：多半是把资源包文件夹里的 game.img 直接放了进来（它按设计不带 shaders/）。物理上做得下去（着色器现编），照收；
-    //   认领后提示玩家换导出文件夹里的完整 .img 由游戏库那边做（不许堵门，11-13）。这里只记一行
-    if (!shaders) LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：不是导出的完整文件，认领照常；该用「S2Arm 自签导出」文件夹里这款的 .img",
-                      strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+    // 两处都没有：多半是把资源包文件夹里的 game.img 直接放了进来（它按设计不带 shaders/），起局时着色器全靠现编（11-13 起不再收局；诊断 D-9864 / D-F6W7）
+    if (!shaders) { LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：照样能玩，着色器首次遇到时现编、前几分钟会卡；要不卡就放「S2Arm 自签导出」文件夹里这款的 .img",
+                        strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+                    snprintf(g_img_noshaders, sizeof g_img_noshaders, "%s", strrchr(path, '/') ? strrchr(path, '/') + 1 : path); }
     if (fclose(o) || rename(tp, ip)) { snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); return -4; }
     char mf[600]; snprintf(mf, sizeof mf, "{\"version\": 3, \"format\": \"img\", \"imgFile\": \"game.img\", \"index_sha256\": \"%s\"}\n", pid);
     snprintf(p, sizeof p, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s.tmp", p);
@@ -787,7 +790,7 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int *
 const char *const s2a_img_import_dirs[2] = {"放这里导入", "Import Here"};
 int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可能同时调：一把锁串起来，免得两边抢着挪同一个文件
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0;
+    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; g_img_noshaders[0] = 0;
     for (int i = 0; i < 2; i++) { char dir[2200]; snprintf(dir, sizeof dir, "%s/%s", proc_docs, s2a_img_import_dirs[i]); img_scan_dir(proc_docs, dir, 0, &placed); }
     pthread_mutex_unlock(&mu); return placed;
 }
