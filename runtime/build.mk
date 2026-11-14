@@ -182,7 +182,7 @@ ios: ios-ns2pro
 	  CFBundleShortVersionString=0.1 CFBundleVersion=1 MinimumOSVersion=$(IPHONEOS_DEPLOYMENT_TARGET) UILaunchStoryboardName=; do /usr/bin/plutil -insert $${kv%%=*} -string "$${kv#*=}" $(IOS_APP)/Info.plist; done; \
 	  /usr/bin/plutil -insert UIRequiredDeviceCapabilities -xml '<array><string>arm64</string></array>' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleDisplayName -string "$(IOS_DISPLAY)" $(IOS_APP)/Info.plist; \
-	  /usr/bin/plutil -insert S2ACommit -string "$$(git rev-parse HEAD 2> /dev/null || echo unknown)" $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert S2ACommit -string "$(or $(S2A_COMMIT),$$(git rev-parse HEAD 2> /dev/null || echo unknown))" $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleSupportedPlatforms -xml '<array><string>iPhoneOS</string></array>' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIDeviceFamily -xml '<array><integer>1</integer><integer>2</integer></array>' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIFileSharingEnabled -bool YES $(IOS_APP)/Info.plist; \
