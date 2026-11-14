@@ -104,8 +104,8 @@ static id<MTLRenderPipelineState> geo_capture_pso(NvShader *vs) {
 // The mesh stage shares the vertex stage's argument table (it has no vertex fetch: vertex-table slot 29 is vertex stream 13's, VB_SLOT, rebound through the enc_r_vbuf cache by the
 // next vertex draw), a task shader has the object table g_ot; both read the draw's first workgroup at buffer MESH_FIRST_SLOT (interface contract item 3). Indirect: the GPU-written
 // {count, first} become MTLDispatchThreadgroupsIndirectArguments {count, 1, 1} with first at word 4 on the GPU (ixc_run), so neither is read on the CPU.
-// A pipeline is built in the background (g_mtk_q); until it is ready the draw is skipped and counted (g_mtk_wait) when skip_safe's rules allow it, otherwise it is built on the submit
-//   thread and the draw waits (mtk_sync_why); a refused one is reported red once and its draws skipped.
+// A pipeline is built in the background (g_mtk_q, mtk_kick); until it is ready the draw is skipped and counted (g_mtk_wait) when skip_safe's rules allow it, otherwise the draw waits
+//   for the build within a per-frame budget (mtk_sync_why, mtk_wait); a refused one is reported red once and its draws skipped.
 // After the upstream reference (MIT) 1d4b8e82b / #1312 (MIT): mesh_tasks_draw / mtk_pso / mtk_encode, written for this host's two backends, recording and binding state
 enum { MESH_FIRST_SLOT = 29 };
 _Static_assert(VB_SLOT(13) == MESH_FIRST_SLOT, "slot 29 of the vertex table is vertex stream 13's: a mesh draw writes it through enc_r_vbuf so the next vertex draw rebinds the stream (see above)");
@@ -191,7 +191,50 @@ static void mtk_warm_claim(NSData *key, id ps) {   // submit thread (warm_claim)
     if (put) hm_put_id(&g_pso_mtk, &mk, ps); os_unfair_lock_unlock(&g_pso_mtk_lock);
     if (put) { uint64_t n = ++g_mtk_warm_claimed; if (!(n & (n - 1))) MLOG("task / mesh pipelines from the prewarm taken by the draws' table: %llu so far", (unsigned long long)n); }
 }
-static uint64_t g_mtk_sync_n, g_mtk_sync_ns, g_mtk_sync_max;   // mesh pipelines built on the submit thread because their draw could not be skipped; time in all, longest
+// The background build of a mesh pipeline: a concurrent queue, at most mtk_width() at a time (the system compiler service builds them in parallel; one serial queue left a draw that
+//   could not wait behind every other pipeline queued before it)
+static int mtk_width(void) { static int w; if (!w) { const char *e = getenv("DM_NVN_MESH_PAR"); int n = (int)NSProcessInfo.processInfo.activeProcessorCount; w = e && atoi(e) > 0 ? atoi(e) : n > 4 ? n - 2 : 2; MLOG("task / mesh pipelines: built in the background %d at a time (DM_NVN_MESH_PAR)", w); } return w; }
+static dispatch_semaphore_t g_mtk_sem;
+static void mtk_kick(MTLMeshRenderPipelineDescriptor *m, NSString *names, const mtk_key *key) {
+    mtk_key kk = *key;
+    atomic_fetch_add(&g_mtk_inflight, 1);
+    if (!g_mtk_q) { g_mtk_q = dispatch_queue_create("dm.nvn.mesh", s2a_qos_queue_attr(DISPATCH_QUEUE_CONCURRENT, S2A_QOS_SHADER_VARIANT)); g_mtk_group = dispatch_group_create(); g_mtk_sem = dispatch_semaphore_create(mtk_width()); }
+    dispatch_group_async(g_mtk_group, g_mtk_q, ^{ @autoreleasepool {
+        dispatch_semaphore_wait(g_mtk_sem, DISPATCH_TIME_FOREVER);
+        NSError *e = nil; uint64_t t0 = bp_now();
+        id<MTLRenderPipelineState> p = [g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:&e];
+        dispatch_semaphore_signal(g_mtk_sem);
+        int left = atomic_fetch_sub(&g_mtk_inflight, 1) - 1;
+        if (p) MLOG("task / mesh pipeline: %s, %.1f ms in the background (frame %llu, still building %d)", names.UTF8String, (bp_now() - t0) / 1e6,
+                    (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed), left);
+        else MLOG("【红】 task / mesh pipeline refused (%s): %s; its draws are skipped", names.UTF8String, e.localizedDescription.UTF8String);
+        os_unfair_lock_lock(&g_pso_mtk_lock);
+        if (p) { if (!g_mtk_names) g_mtk_names = [NSMapTable strongToStrongObjectsMapTable]; [g_mtk_names setObject:names forKey:p]; }
+        if (mtk_pace()) { if (!g_mtk_ready) g_mtk_ready = [NSMutableArray array]; [g_mtk_ready addObject:@[[NSData dataWithBytes:&kk length:sizeof kk], p ? (id)p : NSNull.null]]; }   // held: mtk_publish delivers
+        else if (hm_get_id(&g_pso_mtk, &kk) == g_pso_mtk_building) hm_put_id(&g_pso_mtk, &kk, p ?: NSNull.null);   // the prewarm may have handed one over meanwhile: keep that one
+        os_unfair_lock_unlock(&g_pso_mtk_lock);
+    } });
+}
+// A draw that cannot be skipped waits on the submit thread for its pipeline's background build, at most mtk_budget_ms() a frame in all (DM_NVN_MESH_WAIT_MS); past the budget the draw is
+//   skipped as before and waits again the next frame. → the pipeline, nil (skipped)
+static uint64_t g_mtk_waits, g_mtk_wait_ns, g_mtk_wait_max, g_mtk_wait_over, g_mtk_wait_frame = UINT64_MAX, g_mtk_wait_frame_ns;
+static int g_mtk_budget = -1;   // ms; -1: not read yet (t_nvn_mesh ④d sets it)
+static int mtk_budget_ms(void) { if (g_mtk_budget < 0) { const char *e = getenv("DM_NVN_MESH_WAIT_MS"); g_mtk_budget = e ? atoi(e) : 250; } return g_mtk_budget; }
+static id mtk_wait(const mtk_key *mk, const char *why) {
+    uint64_t f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed); if (f != g_mtk_wait_frame) { g_mtk_wait_frame = f; g_mtk_wait_frame_ns = 0; }
+    uint64_t budget = (uint64_t)mtk_budget_ms() * 1000000ull, t0 = bp_now(); __unsafe_unretained id p = nil; int done = 0;
+    while (!mtk_pace()) {
+        os_unfair_lock_lock(&g_pso_mtk_lock); p = hm_get_id(&g_pso_mtk, mk); os_unfair_lock_unlock(&g_pso_mtk_lock);
+        if (p != g_pso_mtk_building) { done = 1; break; }
+        if (g_mtk_wait_frame_ns + (bp_now() - t0) >= budget) break;
+        usleep(200);
+    }
+    uint64_t dt = bp_now() - t0; g_mtk_wait_frame_ns += dt; g_mtk_waits++; g_mtk_wait_ns += dt; if (dt > g_mtk_wait_max) g_mtk_wait_max = dt;
+    if (!done) g_mtk_wait_over++;
+    if (!(g_mtk_waits & (g_mtk_waits - 1)) || !done) MLOG("task / mesh draw that cannot be skipped (%s) waited for its background pipeline %.1f ms (%s); %llu waits so far, %.1f ms in all, longest %.1f ms, %llu past the %d ms frame budget (skipped)",
+        why, dt / 1e6, done ? "ready" : "not ready: skipped this frame", (unsigned long long)g_mtk_waits, g_mtk_wait_ns / 1e6, g_mtk_wait_max / 1e6, (unsigned long long)g_mtk_wait_over, mtk_budget_ms());
+    return done && p != NSNull.null ? p : nil;
+}
 // Why a mesh draw whose pipeline is not built yet may not be skipped (nil: it may, its pipeline builds in the background); the same rules as skip_safe / first_skip_ok
 static const char *mtk_sync_why(NvShader *ts, NvShader *ms, NvShader *fs) {
     if (!first_skip_on()) return "first-use skip off (DM_NVN_FIRST_SKIP=0)";
@@ -229,42 +272,20 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     if (ps == NSNull.null) return nil;
     if (ps && ps != g_pso_mtk_building) return ps;
     // Not built yet: skipping this draw is only allowed under the rules every other first use goes by (skip_safe, first_skip_ok): no stage writes storage, every target is started
-    //   fresh this frame and was drawn in the last two. Otherwise the pipeline is built here and the draw waits for it. 11-13 Ocarina of Time on Duo: the mesh draws of the forest
-    //   opening were skipped for 10–20 s while 54 mesh pipelines built one after another in the background, and the scene came out washed white until the last of them was ready
+    //   fresh this frame and was drawn in the last two. 11-13 Ocarina of Time on Duo: the mesh draws of the forest opening were skipped for 10–20 s while 54 mesh pipelines built one
+    //   after another in the background, and the scene came out washed white until the last of them was ready. A draw that cannot be skipped waits for its background build, within
+    //   a per-frame budget (mtk_wait). Building it here instead held the submit thread 19 s in all (one pipeline 3.1 s) and a cross-queue GPU event wait timed out into a GPU hang
     const char *why = mtk_sync_why(ts, ms, fs);
-    if (ps && !why) return nil;   // building in the background, and this draw may wait for it
-    MTLMeshRenderPipelineDescriptor *m = mtk_desc(k, ts, ms, fs, pf, merged, g_pso_fsfn);
-    NSString *names = [NSString stringWithFormat:@"task %s mesh %s%s fragment %s", ts ? ts->key : "-", ms->key, pf ? " (padded)" : "", fs ? fs->key : "-"]; mtk_key kk = mk;
-    if (why) {   // built here, on the submit thread: the draw cannot be skipped
-        NSError *e = nil; uint64_t t0 = bp_now();
-        id<MTLRenderPipelineState> p = [g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:&e];
-        uint64_t dt = bp_now() - t0; g_mtk_sync_n++; g_mtk_sync_ns += dt; if (dt > g_mtk_sync_max) g_mtk_sync_max = dt;
-        if (p) MLOG("task / mesh pipeline built on the submit thread (the draw cannot be skipped: %s): %s, %.1f ms; %llu built here so far, %.1f ms in all, longest %.1f ms",
-                    why, names.UTF8String, dt / 1e6, (unsigned long long)g_mtk_sync_n, g_mtk_sync_ns / 1e6, g_mtk_sync_max / 1e6);
-        else MLOG("【红】 task / mesh pipeline refused (%s): %s; its draws are skipped", names.UTF8String, e.localizedDescription.UTF8String);
-        os_unfair_lock_lock(&g_pso_mtk_lock);
-        if (p) { if (!g_mtk_names) g_mtk_names = [NSMapTable strongToStrongObjectsMapTable]; [g_mtk_names setObject:names forKey:p]; }
-        hm_put_id(&g_pso_mtk, &kk, p ?: NSNull.null);
-        os_unfair_lock_unlock(&g_pso_mtk_lock);
-        if (p) { if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set]; [g_mtk_drawn addObject:p]; mtk_record(&mk, ts, ms, fs, merged); }
-        return p;
+    if (!ps) {
+        MTLMeshRenderPipelineDescriptor *m = mtk_desc(k, ts, ms, fs, pf, merged, g_pso_fsfn);
+        NSString *names = [NSString stringWithFormat:@"task %s mesh %s%s fragment %s", ts ? ts->key : "-", ms->key, pf ? " (padded)" : "", fs ? fs->key : "-"];
+        mtk_kick(m, names, &mk);
     }
-    atomic_fetch_add(&g_mtk_inflight, 1);
-    if (!g_mtk_q) { g_mtk_q = dispatch_queue_create("dm.nvn.mesh", s2a_qos_queue_attr(DISPATCH_QUEUE_SERIAL, S2A_QOS_SHADER_VARIANT)); g_mtk_group = dispatch_group_create(); }
-    dispatch_group_async(g_mtk_group, g_mtk_q, ^{ @autoreleasepool {
-        NSError *e = nil; uint64_t t0 = bp_now();
-        id<MTLRenderPipelineState> p = [g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:&e];
-        int left = atomic_fetch_sub(&g_mtk_inflight, 1) - 1;
-        if (p) MLOG("task / mesh pipeline: %s, %.1f ms in the background (frame %llu, still building %d)", names.UTF8String, (bp_now() - t0) / 1e6,
-                    (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed), left);
-        else MLOG("【红】 task / mesh pipeline refused (%s): %s; its draws are skipped", names.UTF8String, e.localizedDescription.UTF8String);
-        os_unfair_lock_lock(&g_pso_mtk_lock);
-        if (p) { if (!g_mtk_names) g_mtk_names = [NSMapTable strongToStrongObjectsMapTable]; [g_mtk_names setObject:names forKey:p]; }
-        if (mtk_pace()) { if (!g_mtk_ready) g_mtk_ready = [NSMutableArray array]; [g_mtk_ready addObject:@[[NSData dataWithBytes:&kk length:sizeof kk], p ? (id)p : NSNull.null]]; }   // held: mtk_publish delivers
-        else if (hm_get_id(&g_pso_mtk, &kk) == g_pso_mtk_building) hm_put_id(&g_pso_mtk, &kk, p ?: NSNull.null);   // a draw that could not wait may have built it here meanwhile: keep that one
-        os_unfair_lock_unlock(&g_pso_mtk_lock);
-    } });
-    return nil;
+    if (!why) return nil;   // building in the background, and this draw may wait for it
+    __unsafe_unretained id p = mtk_wait(&mk, why);
+    if (p) { if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set];
+        if (![g_mtk_drawn containsObject:p]) { [g_mtk_drawn addObject:p]; mtk_record(&mk, ts, ms, fs, merged); } }
+    return p;
 }
 static void mtk_encode(id en_) {
     id en = en_; NvShader *ts = g_mtk.ts, *ms = g_mtk.ms;

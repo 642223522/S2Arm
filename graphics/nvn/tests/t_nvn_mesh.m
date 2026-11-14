@@ -124,9 +124,9 @@ int main(void) {
         o = capture(^{ mesh_draw(&d4, &waited); });
         int cols = frame_columns();
         // 11-13 时之笛开局发白：网格管线没编好时一律跳过，不按 skip_safe 的规则。期望（按规则手写）：这是目标第一次被画（近两帧没画过），这笔不能跳过 →
-        //   当场在提交线程编好、本笔照画，日志写明原因；反证：修前同一处先跳过（waited = 1）、不打这一行
-        VERIFY(!waited && [o containsString:@"built on the submit thread"] && [o containsString:@"a target not drawn in the last two frames"] && red_lines(o, nil) == 0,
-               "④ 首笔管线、目标近两帧没画过：不跳过，当场编好照画、写明原因、不报红（跳过过 %d；stderr：%s）", waited, o.UTF8String);
+        //   在每帧预算（缺省 250 ms）内等后台那条编好、本笔照画，日志写明原因与「ready」；反证：修前同一处先跳过（waited = 1）、不打这一行
+        VERIFY(!waited && [o containsString:@"waited for its background pipeline"] && [o containsString:@"(ready)"] && [o containsString:@"a target not drawn in the last two frames"] && red_lines(o, nil) == 0,
+               "④ 首笔管线、目标近两帧没画过：不跳过，等后台编好照画、写明原因、不报红（跳过过 %d；stderr：%s）", waited, o.UTF8String);
         VERIFY(cols == 0x1c && g_mtk_n == n0 + 1, "④ 无任务 first 2 count 3：列 2、3、4 白（列掩码 %#x，期望 0x1c；画出 +%llu）", cols, (unsigned long long)(g_mtk_n - n0));
 
         // ⑤
@@ -196,12 +196,29 @@ int main(void) {
           os_unfair_lock_lock(&g_pso_mtk_lock); hm_del_id(&g_pso_mtk, &mk); os_unfair_lock_unlock(&g_pso_mtk_lock);
           uint64_t wc0 = g_mtk_warm_claimed; mtk_warm_claim([NSData dataWithBytes:&mk length:sizeof mk], had);
           VERIFY(g_mtk_warm_claimed == wc0 + 1, "④c 交接：表里没有这条时，预热交来的管线放进表（交接 +%llu）", (unsigned long long)(g_mtk_warm_claimed - wc0));
-          frame_begin(); S.prog = &gp[0]; uint64_t sn0 = g_mtk_sync_n; __block int w4c = 0;
+          frame_begin(); S.prog = &gp[0]; uint64_t sn0 = g_mtk_waits; __block int w4c = 0;
           o = capture(^{ mesh_draw(&d4, &w4c); });
           cols = frame_columns();
-          VERIFY(!w4c && g_mtk_sync_n == sn0 && cols == 0x1c && red_lines(o, nil) == 0,
-                 "④c 预热交来的管线：同一笔不跳过、不当场编、画出列 2、3、4（跳过过 %d，当场编 +%llu，列掩码 %#x；stderr：%s）", w4c, (unsigned long long)(g_mtk_sync_n - sn0), cols, o.UTF8String); }
+          VERIFY(!w4c && g_mtk_waits == sn0 && cols == 0x1c && red_lines(o, nil) == 0,
+                 "④c 预热交来的管线：同一笔不跳过、不用等、画出列 2、3、4（跳过过 %d，等待 +%llu，列掩码 %#x；stderr：%s）", w4c, (unsigned long long)(g_mtk_waits - sn0), cols, o.UTF8String); }
         unlink(pso_user);
+
+        // ④d 每帧等待预算用完：丢不起的那笔照旧跳过、打「past the … frame budget」、不卡提交线程（预算 0 → 一次都不等）。新目标（近两帧没画过）+ 新片元（管线没编过）
+        { tex_t rt2; memset(&rt2, 0, sizeof rt2); rt2.magic = MAGIC('T', 'E', 'X', 0); rt2.serial = nvn_new_serial(); rt2.d = g_rt.d; nvn_tex_layout(&rt2.d, &rt2.L); nvn_be_tex_init(&rt2); REQUIRE(tex_mtl(&rt2));
+          NvShader *fs3 = [NvShader new]; fs3->stage = 1; strlcpy(fs3->key, "dddddddddddddddd_b", sizeof fs3->key); fs3->ventry = @"main0";
+          NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0() { return float4(1, 1, 1, 0.25); }\n" options:nil error:&e]; REQUIRE(l); fs3->fn = [l newFunctionWithName:@"main0"]; REQUIRE(fs3->fn);
+          NvProg *direct3 = [NvProg new]; direct3->sh[1] = fs3; direct3->sh[4] = md;
+          static prog_t gp4d; memset(&gp4d, 0, sizeof gp4d); gp4d.magic = MAGIC('P', 'R', 'O', 'G'); gp4d.serial = nvn_new_serial(); serial_put(gp4d.serial, direct3);
+          nvn_be_set_frame(++g_frame); nvn_be_sub_begin(); state_reset();
+          const struct { op_hdr set; p_set_rt_c rt; const tex_t *color0; uint8_t snap[sizeof(tex_t)]; op_hdr end; } c = {
+              .set = {OP_SET_RT, sizeof(op_hdr) + sizeof(p_set_rt_c) + 8 + sizeof(tex_t)}, .rt = {.n = 1, .cmask = 1}, .color0 = &rt2, .end = {OP_END, sizeof(op_hdr)} };
+          nvn_be_exec((const uint8_t *)&c);
+          int b0 = g_mtk_budget; g_mtk_budget = 0; S.prog = &gp4d; uint64_t ov0 = g_mtk_wait_over, w0 = g_mtk_wait;
+          o = capture(^{ draw(&d4, NULL); });
+          g_mtk_budget = b0; dispatch_group_wait(g_mtk_group, DISPATCH_TIME_FOREVER);
+          rp_flush(); uint64_t fence = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(fence, 10000000000ull));
+          VERIFY(g_mtk_wait_over == ov0 + 1 && g_mtk_wait == w0 + 1 && [o containsString:@"past the 0 ms frame budget"] && [o containsString:@"not ready: skipped this frame"] && red_lines(o, nil) == 0,
+                 "④d 预算 0：丢不起的那笔（新目标）不等、照旧跳过并计数、写明超预算（超预算 +%llu，跳过 +%llu；stderr：%s）", (unsigned long long)(g_mtk_wait_over - ov0), (unsigned long long)(g_mtk_wait - w0), o.UTF8String); }
 
         // ⑧
         frame_begin(); S.prog = &gp[2]; uint64_t s0 = g_mtk_skip;
