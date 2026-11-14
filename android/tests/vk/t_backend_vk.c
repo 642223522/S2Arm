@@ -1296,7 +1296,7 @@ static void c196_bc_close_timeout(void) {
 // C697e：小于一个压缩块的 mip（8×8 BC1 的第 2 级是 2×2）按整块区域 4×4 上传（NVN 的写法），应裁到边照常写入、读回纯蓝；
 //   区域超过边缘所在的整块（8×8）仍非法（commit 报 E_ARG）。#697 Mali 上「BC 上传子资源或区域非法」的一种来源。
 // 两处调用都排在会话最后、紧接 close：signal 取 100 / 101，高于同会话前面各测试用过的值。
-static void c697e_bc_small_mip_block_region(void) {
+static void c697e_bc_small_mip_block_region(int decoded) {   // decoded=0：原生 BC 不能拷到 RGBA8，只核上传接受 / 超界拒
     static const uint8_t blue[8] = {0x1f,0,0x1f,0,0,0,0,0};
     static const uint8_t expect[4] = {0,0,255,255};
     nvn_gpu_tex_desc td = {0}; td.d.target = NVN_TEXTURE_TARGET_2D; td.d.format = NVN_FORMAT_RGBA_DXT1;
@@ -1309,11 +1309,13 @@ static void c697e_bc_small_mip_block_region(void) {
     NVNcopyRegion whole_block = {0, 0, 0, 4, 4, 1};
     nvn_gpu_cmd c = begin_cmd();
     nvn_gpu_tex_upload(c, bc, 2, 0, &whole_block, blue, 8, 8);
-    nvn_gpu_copy_tex(c, bc, 2, 0, NULL, out, 0, 0, NULL);
-    nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 8, 16);
+    if (decoded) {
+        nvn_gpu_copy_tex(c, bc, 2, 0, NULL, out, 0, 0, NULL);
+        nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 8, 16);
+    }
     rc = nvn_gpu_cmd_commit(c, 100, on_done, NULL, &e); CHECK(OK(rc), "C697e 整块区域写 2×2 级应接受：%d %s", rc.code, e.why);
     CHECK(OK(nvn_gpu_fence_wait(100, 5000000000ull, &e)), "C697e wait：%s", e.why);
-    for (int i = 0; i < 4; i++) CHECK(!memcmp(buf_cpu(rb) + i * 4, expect, 4), "C697e 像素 %d 应为纯蓝", i);
+    if (decoded) for (int i = 0; i < 4; i++) CHECK(!memcmp(buf_cpu(rb) + i * 4, expect, 4), "C697e 像素 %d 应为纯蓝", i);
     NVNcopyRegion too_big = {0, 0, 0, 8, 8, 1};
     c = begin_cmd();
     nvn_gpu_tex_upload(c, bc, 2, 0, &too_big, blue, 16, 64);
@@ -6939,7 +6941,7 @@ int main(int argc, char **argv) {
     { nvn_gpu_err e73; CHECK(OK(nvn_gpu_close(5000000000ull, &e73)), "C73 close：%d %s", e73.rc.code, e73.why); }
     if (!open_backend()) return 1;
     c72_bc1_upload(argv[1], (g_dev.bc_decode_mask & (1u << (NVN_FORMAT_RGBA_DXT1 - 0x41))) != 0);
-    c697e_bc_small_mip_block_region();   // 原生 BC 路径（同一个 copy_region）
+    c697e_bc_small_mip_block_region(0);   // 原生 BC 路径（同一个 copy_region）
     { nvn_gpu_err e72; CHECK(OK(nvn_gpu_close(5000000000ull, &e72)), "C72 close：%d %s", e72.rc.code, e72.why); }
     { uint32_t saved_mask = g_dev.bc_decode_mask;
       g_dev.bc_decode_mask |= 1u << (NVN_FORMAT_RGBA_DXT1 - 0x41);
@@ -6947,7 +6949,7 @@ int main(int argc, char **argv) {
       c72_bc1_upload(argv[1], 1);
       c192_bc_order();
       c194_bc_cube_mips();
-      c697e_bc_small_mip_block_region();   // 现解路径（Mali 走这条）
+      c697e_bc_small_mip_block_region(1);   // 现解路径（Mali 走这条）
       nvn_gpu_err e72; CHECK(OK(nvn_gpu_close(5000000000ull, &e72)), "C72 compute close：%d %s", e72.rc.code, e72.why);
       if (!open_backend()) return 1;
       c193_bc_readback_rejected();
