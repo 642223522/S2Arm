@@ -808,6 +808,11 @@ public class MainActivity extends Activity
         if (gameMode && intent != null && intent.hasExtra(GameActivity.TITLE_EXTRA)) {
             String incoming = intent.getStringExtra(GameActivity.TITLE_EXTRA);
             if (!java.util.Objects.equals(incoming, getIntent().getStringExtra(GameActivity.TITLE_EXTRA))) {
+                if (intent.getBooleanExtra(GameActivity.SWITCH_EXTRA, false)) {   // 玩家在库页确认过：正常收局（存档照常），库页等进程退出再起新款
+                    Log.i("S2Arm", "player switched to " + incoming + "; stopping the running game");
+                    stopGame("player switched game", true);
+                    return;
+                }
                 status.setTextColor(0xFFFF5252);
                 status.setText("Game launch refused: previous session still owns this process; exit it first");
                 panel.setVisibility(android.view.View.VISIBLE);

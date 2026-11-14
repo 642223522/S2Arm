@@ -17,6 +17,8 @@ public final class LibraryActivity extends Activity {
     private LinearLayout rows;
     private CheckBox fpsOverlay;
     private final Set<String> listed = new HashSet<>();
+    private final java.util.Map<String, String> names = new java.util.HashMap<>();
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
     private static final int PICK_PACKAGE = 1;
     // A caller opts in to consuming one direct child of files/import/.
     public static final String EXTRA_IMPORT_STAGING = "org.s2arm.android.IMPORT_STAGING";
@@ -48,25 +50,85 @@ public final class LibraryActivity extends Activity {
             @Override public void onStatus(String text) { runOnUiThread(() -> { if (!isDestroyed()) status.setText(text); }); }
             @Override public void onGameAvailable(String titleId, String name) { runOnUiThread(() -> {
                 if (isDestroyed() || !listed.add(titleId)) return;
+                names.put(titleId, name);
                 Button play = new Button(LibraryActivity.this); play.setText("Play " + name + " [" + titleId + "]");
                 play.setOnClickListener(v -> launch(titleId)); rows.addView(play);
             }); }
         });
     }
 
-    private void launch(String titleId) {
-        try {
-            Intent options = new Intent(getIntent());
-            options.removeExtra(GameResume.EXTRA);
-            int pid = GameActivity.runningPid(this);
-            if (pid != 0) options.putExtra(GameResume.EXTRA,
-                GameResume.requireSame(getCacheDir(), pid, titleId, new java.io.File(getFilesDir(), "games")));
-            startActivity(GameActivity.launch(this, options, titleId));
-        } catch (java.io.IOException | BootContract.BadGame | RuntimeException error) {
-            status.setTextColor(0xFFFF5252);
-            android.util.Log.i("S2Arm", "Game launch refused: " + error.getMessage());
-            status.setText(PlayerError.text(this, R.string.player_err_start, error));
+    private void launch(String titleId) { launch(titleId, 0); }
+
+    // 不堵门：点的就是正在跑的那款 → 回到它；那款还在启动、收条没写出 → 等一会儿再回到它；
+    //   正在跑的是别的款 → 问玩家要不要结束它（照常收局保存）再起这一款，而不是报「launch refused」
+    private void launch(String titleId, int waited) {
+        Intent options = new Intent(getIntent());
+        options.removeExtra(GameResume.EXTRA);
+        options.removeExtra(GameActivity.SWITCH_EXTRA);
+        int pid = GameActivity.runningPid(this);
+        if (pid != 0) {
+            try {
+                options.putExtra(GameResume.EXTRA,
+                    GameResume.requireSame(getCacheDir(), pid, titleId, new java.io.File(getFilesDir(), "games")));
+            } catch (java.io.IOException | BootContract.BadGame | RuntimeException notSame) {
+                String active = GameResume.activeTitle(getCacheDir());
+                if ((active == null || active.equals(titleId)) && waited < 20) {   // 还在启动：每 0.5 秒再看一次，最多 10 秒
+                    status.setText(R.string.library_game_starting);
+                    ui.postDelayed(() -> { if (!isDestroyed()) launch(titleId, waited + 1); }, 500);
+                    return;
+                }
+                confirmSwitch(active, titleId);
+                return;
+            }
         }
+        try {
+            startActivity(GameActivity.launch(this, options, titleId));
+        } catch (RuntimeException error) {
+            status.setTextColor(0xFFFF5252);
+            status.setText(getString(R.string.library_launch_failed, String.valueOf(error.getMessage())));
+        }
+    }
+
+    private String label(String titleId) {
+        if (titleId == null) return getString(R.string.library_current_game);
+        String name = names.get(titleId);
+        return name != null ? name : titleId;
+    }
+
+    private void confirmSwitch(String active, String titleId) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.library_switch_title)
+            .setMessage(getString(R.string.library_switch_message, label(active), label(titleId)))
+            .setPositiveButton(R.string.library_switch_confirm, (dialog, which) -> switchTo(active, titleId))
+            .setNegativeButton(R.string.library_switch_cancel, null)
+            .show();
+    }
+
+    // 让正在跑的那局正常收局（MainActivity.onNewIntent 认 SWITCH_EXTRA），等它的进程退出再起新款；20 秒还没退就如实说
+    private void switchTo(String active, String titleId) {
+        Intent stop = new Intent(getIntent());
+        stop.removeExtra(GameResume.EXTRA);
+        stop.putExtra(GameActivity.SWITCH_EXTRA, true);
+        try {
+            startActivity(GameActivity.launch(this, stop, titleId));
+        } catch (RuntimeException error) {
+            status.setTextColor(0xFFFF5252);
+            status.setText(getString(R.string.library_launch_failed, String.valueOf(error.getMessage())));
+            return;
+        }
+        status.setText(getString(R.string.library_switch_waiting, label(active)));
+        waitThenLaunch(titleId, 0);
+    }
+
+    private void waitThenLaunch(String titleId, int tries) {
+        if (isDestroyed()) return;
+        if (GameActivity.runningPid(this) == 0) { launch(titleId); return; }
+        if (tries >= 40) {
+            status.setTextColor(0xFFFF5252);
+            status.setText(R.string.library_switch_timeout);
+            return;
+        }
+        ui.postDelayed(() -> waitThenLaunch(titleId, tries + 1), 500);
     }
 
     private void exportDiagnostics(Button button) {
