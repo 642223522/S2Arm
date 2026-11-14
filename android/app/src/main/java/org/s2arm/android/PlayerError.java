@@ -19,9 +19,10 @@ final class PlayerError {
         if (m.contains("No space left") || m.contains("ENOSPC")) return Reason.NO_SPACE;
         if (m.contains("APK identity") || m.contains("installed APK") || m.contains("the artifact is for")
                 || m.contains("signing certificate")) return Reason.APK_MISMATCH;
-        if (error instanceof FileNotFoundException || error instanceof SecurityException
-                || m.contains("Permission denied") || m.contains("EACCES")) return Reason.NO_ACCESS;
-        if (error instanceof GamePack.BadPack || error instanceof BootContract.BadGame) return Reason.BAD_PACK;
+        // FileNotFoundException 既可能是没权限也可能是文件缺：只按权限字样归「读不到」，缺文件归「包不完整」。
+        if (error instanceof SecurityException || m.contains("Permission denied") || m.contains("EACCES")) return Reason.NO_ACCESS;
+        if (error instanceof GamePack.BadPack || error instanceof BootContract.BadGame
+                || error instanceof FileNotFoundException || m.contains("ENOENT")) return Reason.BAD_PACK;
         return Reason.OTHER;
     }
 
