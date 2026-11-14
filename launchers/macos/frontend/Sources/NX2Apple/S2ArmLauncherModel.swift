@@ -105,7 +105,7 @@ struct PhoneOutcome: Equatable {
     var exportFolder = ""
     var exportGames = 0
     var exportBytes: Int64? = nil
-    /// 导出后推到手机（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 没推）；没推时作业给的一句「缺什么、怎么做」
+    /// 完成页「推到手机」（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 还没推）；推不成时作业给的一句「缺什么、怎么做」
     var pushed: [String] = []
     var pushNote = ""
 }
@@ -978,9 +978,8 @@ public final class S2ArmLauncherModel: ObservableObject {
             do {
                 let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, accept: accept, events: sink)
                 if let r, !r.exportFolder.isEmpty {   // 导出模式：没装手机，打开放好的文件夹
-                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes,
-                                                      pushed: r.pushed, pushNote: r.pushNote)
-                    if r.pushed.isEmpty { NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder)) }   // 推进手机了就不用玩家自己拷，不再弹文件夹
+                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes)
+                    NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder))
                 } else if let r {
                     self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName)
                     self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)

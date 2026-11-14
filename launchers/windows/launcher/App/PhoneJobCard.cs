@@ -33,7 +33,7 @@ internal sealed class PhoneJobTrack
     public string ExportFolder = "";
     public int ExportGames;
     public long? ExportBytes;
-    /// <summary>导出后推到手机（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 没推）；没推时作业给的一句「缺什么、怎么做」</summary>
+    /// <summary>完成页「推到手机」（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 还没推）；推不成时作业给的一句「缺什么、怎么做」</summary>
     public List<string> Pushed = [];
     public string PushNote = "";
     public bool Pushing;
@@ -78,8 +78,6 @@ internal sealed class PhoneJobTrack
             ExportFolder = op.GetString() ?? "";
             ExportGames = r.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array ? gs.GetArrayLength() : 0;
             if (r.TryGetProperty("exportBytes", out var eb) && eb.ValueKind == JsonValueKind.Number) ExportBytes = eb.GetInt64();
-            if (r.TryGetProperty("pushed", out var pu) && pu.ValueKind == JsonValueKind.Array) Pushed = pu.EnumerateArray().Select(x => x.GetString() ?? "").ToList();
-            if (r.TryGetProperty("pushNote", out var pn) && pn.ValueKind == JsonValueKind.String) PushNote = pn.GetString() ?? "";
         }
     }
 }
