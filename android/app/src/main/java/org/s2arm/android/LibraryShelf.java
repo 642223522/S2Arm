@@ -169,11 +169,8 @@ final class LibraryShelf extends FrameLayout {
                 lp.width = cw; lp.height = ch; lp.topMargin = top; lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL; g.card.setLayoutParams(lp);
             }
             g.card.setPivotX(cw / 2f); g.card.setPivotY(ch / 2f);
-            g.card.setOutlineProvider(new ViewOutlineProvider() {
-                @Override public void getOutline(View view, Outline outline) { outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cover * 0.03f); }
-            });
         }
-        title.setTextSize(size);
+        if (title.getTextSize() != size * getResources().getDisplayMetrics().scaledDensity) title.setTextSize(size);   // 只在变了时设：设字号会再触发一次布局
         title.setY(middle * dp + cardHeight * 1.06f * dp / 2 + gap * dp);
         place();
     }
@@ -202,7 +199,8 @@ final class LibraryShelf extends FrameLayout {
         int i = selected();
         empty.setVisibility(games.isEmpty() ? VISIBLE : GONE);
         title.setVisibility(games.isEmpty() ? GONE : VISIBLE);
-        position.setText(games.isEmpty() ? "" : getContext().getString(R.string.library_position, i + 1, games.size()));
+        // 只在变了时设文字：setText 会请求重新布局，而 refresh 本身就在布局里调（11-13 空库时主线程因此一直空转）
+        setIfChanged(position, games.isEmpty() ? "" : getContext().getString(R.string.library_position, i + 1, games.size()));
         if (i == shown) return;
         shown = i;
         if (i < 0) { backdrop.setImageDrawable(null); return; }
@@ -210,6 +208,8 @@ final class LibraryShelf extends FrameLayout {
         title.setText(g.title);
         backdrop.setImageBitmap(g.thumb);   // 48 像素小图放大即模糊（iOS 的 Artwork.thumbnail 同一个办法）
     }
+
+    private static void setIfChanged(TextView t, CharSequence s) { if (!TextUtils.equals(t.getText(), s)) t.setText(s); }
 
     @Override public boolean onInterceptTouchEvent(MotionEvent e) {
         if (e.getActionMasked() == MotionEvent.ACTION_DOWN) { downX = e.getX(); downOffset = offset; dragging = false; }
@@ -281,6 +281,9 @@ final class LibraryShelf extends FrameLayout {
         Context c = getContext();
         FrameLayout card = new FrameLayout(c);
         card.setClipToOutline(true);
+        card.setOutlineProvider(new ViewOutlineProvider() {   // 圆角 = 卡片宽的 3%（同 iOS CoverView radius cover·0.03）；建卡片时设一次
+            @Override public void getOutline(View view, Outline outline) { outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getWidth() * 0.03f); }
+        });
         card.setBackgroundColor(Color.rgb(26, 26, 28));
         ImageView image = new ImageView(c);
         if (art != null && art.getWidth() * 9 > art.getHeight() * 14) {   // 横图（商店封面）：铺满
