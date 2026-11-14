@@ -1172,6 +1172,8 @@
       {"id": "export.done.install", "zh-Hans": "一键装到 iPhone", "en": "Install on iPhone"},
       {"id": "export.done.install_ipad", "zh-Hans": "一键装到 iPad", "en": "Install on iPad"},
       {"id": "export.done.installNote", "zh-Hans": "连上数据线就行，用你在 Xcode 登录的 Apple ID 签名。", "en": "Just plug in your iPhone. It's signed with the Apple ID you use in Xcode."},
+      {"id": "export.done.export", "zh-Hans": "导出，自己签名安装", "en": "Export and sign it yourself"},
+      {"id": "export.done.exportNote", "zh-Hans": "会在游戏库的「S2Arm 自签导出」文件夹里放好 S2Arm.ipa 和这款以游戏名命名的 .img：用自签工具装 S2Arm.ipa，再把 .img 放进手机「文件」里 S2Arm 的「放这里导入」。", "en": "Saves S2Arm.ipa and this game's .img (named after the game) to the \"S2Arm Self-Sign Export\" folder in your library: install S2Arm.ipa with your signing tool, then put the .img into S2Arm's Import Here folder in the Files app on the iPhone."},
       {"id": "export.running.back", "zh-Hans": "回到游戏库，后台继续", "en": "Back to library, keeps running"},
       {"id": "export.pill.running", "zh-Hans": "出包中：{0}", "en": "Building: {0}"},
       {"id": "export.pill.queue", "zh-Hans": "还有 {0} 款排队", "en": "{0} queued"},

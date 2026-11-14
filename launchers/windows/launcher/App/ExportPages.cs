@@ -542,6 +542,8 @@ public sealed partial class EnvironmentWindow
     private LibraryJobResult? exportChildReport;
 
     /// <summary>跑一个出包编排作业：每一步的开始 / 子作业事件 / 结局都由 OnExportEvent 显示；取消 = 取消这个作业（它把正在出的那步停下）</summary>
+    private LibraryGame? exportAfterPack;   // 导出模式下这次出完要接着导出的那款（出包作业收尾后起导出）
+
     private async Task RunExportAsync(Dictionary<string, object?> plan, bool batch)
     {
         var front = packJob!;
@@ -574,6 +576,7 @@ public sealed partial class EnvironmentWindow
                 EndJob(front); if (packJob == front) packJob = null;
                 Render();
                 if (batch) _ = BatchExportEndedAsync(job?.Report, error);
+                else if (exportAfterPack is { } g) { exportAfterPack = null; _ = InstallAsync(g); }
             });
         }
     }
@@ -615,6 +618,8 @@ public sealed partial class EnvironmentWindow
                 {
                     readinessFor = null;
                     if (packGame is not null) finishedPacks[packGame.Id] = (packState, packIpa ?? "", packIpaBytes, packPackBytes, packSeconds ?? 0);
+                    // 装法是「导出，自己签名安装」：出好就接着导出（D-9ZF9，同 Mac exportSink）；导出不连手机、不签名，等这次出包作业收尾后起
+                    if (!batch && installMode == "export" && packGame is not null) exportAfterPack = packGame;
                 }
                 if (batch) _ = ReloadBatchAsync();
                 Render();
@@ -1021,7 +1026,10 @@ public sealed partial class EnvironmentWindow
 
             // 两个大按钮
             var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-            var install = Primary(T(PadKey("export.done.install")), () => { readinessFor = null; Navigate("install"); });
+            // 导出模式：按钮与说明照导出写（不写「一键装到 iPhone」），点了直接导出（D-9ZF9）
+            var install = installMode == "export"
+                ? Primary(T("export.done.export"), () => { if (packGame is { } g) _ = InstallAsync(g); })
+                : Primary(T(PadKey("export.done.install")), () => { readinessFor = null; Navigate("install"); });
             AutomationId(install, "progress.install");
             install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
             // IPA 是装机时组装、整个游戏库共用一份（默认位置根 S2Arm.ipa）：出包这步没有 IPA，只给「打开游戏文件夹」（按索引找这款实际所在的位置）
@@ -1035,7 +1043,7 @@ public sealed partial class EnvironmentWindow
             folder.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(folder);
             result.Children.Add(buttons);
             if (revealProblem.Length > 0) result.Children.Add(Muted(revealProblem, 13));
-            result.Children.Add(Muted(T("export.win.done.installNote"), 12));
+            result.Children.Add(Muted(T(installMode == "export" ? "export.done.exportNote" : "export.win.done.installNote"), 12));
 
             // 详细记录（折叠步骤列表）
             if (estimate is not null)
