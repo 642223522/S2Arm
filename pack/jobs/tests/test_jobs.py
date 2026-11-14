@@ -298,6 +298,16 @@ class JobsTests(unittest.TestCase):
             with um.patch.object(self.c, "run", fake("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")):
                 with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
                 self.assertIs(str(e.exception), library.KEYS_CANNOT_DECRYPT)
+            # #1008：读取器给了确定原因（哈希校验不过）→ 照原话报，不落三选一猜测。期望手写：原话前加「无法读取游戏内容：」、码 content_unreadable
+            hash_line = "【原因 hash_mismatch】源文件数据哈希校验不过（ResultFsNonRealDataVerificationFailed (2002-4604): Hash error!）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件"
+            def fake2(*msgs):
+                def run(args, log=None, env=None, cwd=None, on_line=None):
+                    for m in msgs: on_line(m)
+                    raise Failure("S2Arm 工具退出，当前阶段未完成。")
+                return run
+            with um.patch.object(self.c, "run", fake2("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.", hash_line)):
+                with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
+                self.assertEqual((str(e.exception), e.exception.code), ("无法读取游戏内容：" + hash_line.split("】", 1)[1], "content_unreadable"))
             with um.patch.object(self.c, "run", fake("Unhandled exception: disk full")):
                 with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
                 self.assertEqual(str(e.exception), "S2Arm 工具退出，当前阶段未完成。")
