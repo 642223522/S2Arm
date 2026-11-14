@@ -744,9 +744,11 @@ NVN(nvnTextureBuilderSetGLTextureName, void, NVNtextureBuilder *b, uint32_t name
 NVN(nvnTextureBuilderGetGLTextureName, uint32_t, const NVNtextureBuilder *b) { return ((const tex_builder_t *)b)->gl_name; }
 // ---- 稀疏贴图：本项目不支持 sparse tiling（Builder 的 sparse 布局一律按普通纹理建），查询时把输出结构清零并点名一次，
 //      不返回「看起来像成功」的假布局 ----
+// 同 nvnTextureBuilderGetSparseTileLayout，按贴图建时的描述（tex_t.d）算：4 个 32 位字段（平铺 mip 数、页宽、页高、页深，graphics/nvn/docs/builder_queries.md）。
+//   #962：原先填零报红，一款 Switch 2 游戏按这里的页大小算 MapVirtual 的请求长度，9 个 0 字节请求全被 vm_remap 拒（KERN_INVALID_ARGUMENT），随后在 main 里读空指针
 NVN(nvnTextureGetSparseTileLayout, void, const NVNtexture *t, NVNtextureSparseTileLayout *layout) {
-    (void)t; if (layout) memset(layout, 0, sizeof *layout);
-    static int once; if (!once++) LOG("【红】 nvnTextureGetSparseTileLayout: sparse tiled textures are not supported, the layout is reported empty");
+    uint32_t tile[4]; nvn_tex_sparse_layout(&CTX(t)->d, tile);
+    memcpy(layout, tile, sizeof tile);
 }
 // ---- 调试 ID：NVN 没有 SetDebugID，驱动侧自行给。本层用对象的初始化序号（tex_t.serial，单调、每对象唯一、跨拷贝稳定）当调试 ID ----
 NVN(nvnTextureGetDebugID, uint64_t, const NVNtexture *t) { return CTX(t)->serial; }
@@ -4106,6 +4108,8 @@ int nvn_sparse_shadow(uint64_t a, uint64_t n, uint64_t want) {   // Metal backen
     vp_unlock(); return ok;
 }
 static int vpool_map(struct vpool *v, const map_req *r) {   // caller holds g_vp_mu; → 0 on failure
+    // 0 字节：没有页要挂也没有页要撤，照成功（#962：原先交给 vm_remap，回 KERN_INVALID_ARGUMENT，整次 MapVirtual 判失败，游戏随后读空指针）
+    if (!r->size) return 1;
     uint64_t pg = (uint64_t)getpagesize();
     if (r->voff < 0 || (uint64_t)r->voff + r->size > v->size) { LOG("【红】 virtual pool %p: request at %#llx+%#llx is beyond the pool's %#llx", (const void *)v->pool, (unsigned long long)r->voff, (unsigned long long)r->size, (unsigned long long)v->size); return 0; }
     if (((uint64_t)r->voff | r->size | (uint64_t)r->poff) & 0xFFF) { LOG("【红】 virtual pool %p: request %#llx+%#llx (physical offset %#llx) is not 4 KB aligned", (const void *)v->pool, (unsigned long long)r->voff, (unsigned long long)r->size, (unsigned long long)r->poff); return 0; }
