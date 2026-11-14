@@ -31,7 +31,7 @@ H=$(cd "$(dirname "$0")" && pwd); D=$(mktemp -d); trap 'rm -rf "$D"' EXIT; cp -R
        #   「{ platform:iOS, id:…, error:<为什么用不了> }」，原先只留第一行、原因丢了；这里把第一条带 error 的目的设备原因单列一行
        grep -a -q 'Unable to find a destination matching' "$D/build.log" \
          && R=$(grep -a -o '{ *platform:iOS[^}]*error:[^}]*}' "$D/build.log" | head -1 | sed 's/.*error://; s/ *}$//' | cut -c1-200) && [ -n "$R" ] \
-         && echo "【红】这台 iPhone 现在用不了（Xcode 原话：$R）"
+         && echo "【红】这台 iPhone 现在用不了（Xcode 原话：${R}）"
        # 11-05：Xcode 升级后 iOS 平台组件不跟着装，xcodebuild 报「iOS 26.5 is not installed. Please download and install the platform」——
        #   新包名一律申请不到描述文件（老包名有现成的不受影响），原文埋在长行里看不出修法，这里直说
        grep -a -q 'is not installed\. Please download and install the platform' "$D/build.log" \
