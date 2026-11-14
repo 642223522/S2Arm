@@ -2036,6 +2036,25 @@ def _rmdir_past_os_junk(path, error, tries=5, wait=0.2):
     raise OSError(errno.ENOTEMPTY, f"目录删不空：删的同时有程序往里写（剩 {', '.join(others[:5]) or '系统文件'}）", path) from error
 
 
+SHARING_RETRY_S = (0.1, 0.2, 0.4, 0.8, 1.5, 2.0)   # Windows 文件被别的程序短暂打开（杀毒 / 索引 / 预览刚扫到）时，删同一项的重试间隔（合计约 5 秒）
+
+
+def _retry_shared(func, path, error, sleep=time.sleep):
+    """Windows 共享冲突（WinError 32：另一个程序正在使用此文件）多是杀毒 / 系统索引刚扫到、马上就放：同一项隔一会儿重删，
+    几次还占着就把最后一次的错如实抛出（#cdec0e：解包前清旧解包目录撞上这个，整单 job_failed）。不是 32 的原样抛"""
+    if getattr(error, "winerror", None) != 32:
+        raise error
+    for delay in SHARING_RETRY_S:
+        sleep(delay)
+        try:
+            return func(path)
+        except OSError as again:
+            if getattr(again, "winerror", None) != 32:
+                raise
+            error = again
+    raise error
+
+
 def _rmtree(p):
     """删整棵目录；遇到只读目录（产物根的 RomFS 共享存储 roots/.romfs_store/ 整棵只读，pack/roots.sh）先给它加回写权限再删。
     Windows 上封存不是只读位，是 ACL 里给当前用户的拒写项（pack/orch/roots.py seal → _win_acl），chmod 解不开：
@@ -2048,6 +2067,8 @@ def _rmtree(p):
             return
         if func in (os.rmdir, os.unlink) and errno_ == errno.ENOTEMPTY:
             return _rmdir_past_os_junk(path, error)
+        if getattr(error, "winerror", None) == 32:   # 被别的程序短暂占着：重试同一项，不改权限
+            return _retry_shared(func, path, error)
         parent = os.path.dirname(path)
         if os.name == "nt":
             engine = str(Path(__file__).resolve().parents[2])
