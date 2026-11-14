@@ -344,6 +344,7 @@ void nvn_be_finish_wait(uint64_t fence) {
 
 // WAIT_* 记的是游戏主动等同步对象的次数 / 耗时。入口先看这段活是不是早就做完（rp_fence_done）：是的话不必再下去等，
 // 但仍照旧记一次 WAIT_N / WAIT_NS（耗时只含这次判定），另记一个 WAIT_ALREADY_N——它不为 0 说明我们把已完成的等待也当成了阻塞在等。
+static int g_wrote_since_wait;   // 本轮等待之后有没有「显卡写游戏缓冲」的活（定义在 rp_post_gpu_write_rows 上面）
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
     uint64_t t0 = now_ns();
@@ -353,7 +354,10 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
         //       下一次提交前换一份池镜像（照 nvk_finish_lag 的做法，见 rp_buf_frame_flip），让 CPU 回放与显卡执行重叠。
         //       代价：游戏在这之后读 GPU 回写的内存最多晚一次提交看到。两份镜像决定了这里只能放行一格。
         //   2 = 诊断档：一律不等（量重叠上限；池镜像只有两份，可能读错内容，不用于出货）。
-        static int lag = -1; if (lag < 0) lag = nvn_plat_flag("nvk_sync_lag", 0);
+        // 缺省 1（允许「最多一次提交还在显卡上飞」）：真机上这一档把帧从 70 压到 40–47 毫秒、14 → 20–24 帧
+        // （读数见坑记录续 25）；代价是游戏在这一帧读到的是上一次提交为止的显卡回写，剔除会偏保守、多记约 46% 绘制，
+        // 但不会漏画（保守方向）。画面按同一取景逐帧核对通过。要回到「每笔都真等」：debug.s2a.nvk_sync_lag=0。
+        static int lag = -1; if (lag < 0) lag = nvn_plat_flag("nvk_sync_lag", 1);
         if (lag > 0) {
             uint64_t done = __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE);
             uint64_t ahead = fence > done ? (fence - done + SUB_STEP - 1) / SUB_STEP : 0;
@@ -362,9 +366,13 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
                 if (__atomic_load_n(&g_lag_budget, __ATOMIC_ACQUIRE) > 0 && __atomic_sub_fetch(&g_lag_budget, 1, __ATOMIC_ACQ_REL) >= 0) allow = 1;
                 else allow = 0;
             }
+            if (lag == 4) {   // 数据相关：显卡这一栅栏之前有没有写过游戏缓冲
+                allow = (ahead == 0) || !__atomic_load_n(&g_wrote_since_wait, __ATOMIC_ACQUIRE);
+            }
             if (allow) { rp_buf_frame_flip(); pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); return 1; }
         } }
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
+    __atomic_store_n(&g_wrote_since_wait, 0, __ATOMIC_RELEASE);   // 真等过：显卡写的缓冲已经落地
     pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1);
     // 时间线已失败：再等也不会完成。按「已结束」放行，让游戏线程不死等；失败本身已在 sub_done 报红
     return nvn_gpu_ok(r) || r.code == NVN_GPU_E_FAILED || r.code == NVN_GPU_E_DEVICE;
@@ -379,7 +387,10 @@ static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
 }
 // 一笔读回可有多行与多个层：先全登记，再交给后端；失败撤销本笔全部登记。
 // 仅登记真正写到的行，不把行间 / 片间填充覆盖回游戏内存。
+// 数据相关重叠（nvk_sync_lag=4）：这一栅栏之后是否有「显卡会写游戏缓冲」的活。有 → 真等（游戏接下来要读它）；
+// 没有（只画不写）→ 放行，让 CPU 回放与显卡执行重叠。计算派发写存储缓冲 / 存储图像时走 rp_post_gpu_write* 登记，这里就是信号源。
 int rp_post_gpu_write_rows(uint64_t addr, uint64_t bytes, uint64_t row, uint64_t image, uint32_t rows, uint32_t images) {
+    __atomic_store_n(&g_wrote_since_wait, 1, __ATOMIC_RELEASE);
     struct sub *s = g_sub; uint64_t count = (uint64_t)rows * images;
     if (!s || !bytes || !count || count > (uint64_t)(INT_MAX - s->ngw)) return 0;
     int start = s->ngw, need = start + (int)count;
