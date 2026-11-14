@@ -451,7 +451,7 @@ class WinInstall(unittest.TestCase):
         self.assertEqual(cmd[:-1], ["C:/Impactor/plumesign.exe", "sign", "--package", str(self.assembled),
                                     "--apple-id", "--register-and-install", "--udid", "7", "-o"])
         self.assertIn("signed.ipa", cmd[-1])   # 签名输出文件名含 signed.ipa
-        self.assertEqual(seen["push"][1:3], ("s2arm.t.0100.ABCDE12345", "pack"))   # 包名和资源包目录（这款的 image/ios/pack）
+        self.assertEqual(seen["push"][1:3], ("s2arm.t.0100.ABCDE12345", ".pack"))   # 包名和资源包目录（这款的 image/ios/pack）
         self.assertEqual((res["bundleId"], res["device"]), ("s2arm.t.0100.ABCDE12345", "U1"))
         self.assertEqual([(e[0], e[1], e[2]) for e in self.progress_events if e[2] == "B"], [(4 << 30, 8 << 30, "B")])
 

@@ -215,7 +215,7 @@ class Upgrade3Tests(JobCase):
         ga, gb = layout.find_game(self.c, A), layout.find_game(self.c, B)
         self.assertEqual((ga / "image/ios/kit/main.npdm").read_bytes(), b"META-A")
         self.assertEqual((ga / "build/ios/logs/ipa.log").read_text(), "old ipa log")   # 旧出包日志搬到新的出包工作目录，没随 iPhone/ 删掉
-        self.assertEqual(json.loads((ga / "image/ios/pack/manifest.json").read_text())["index_sha256"], "pa")
+        self.assertEqual(json.loads((ga / "image/ios/.pack/manifest.json").read_text())["index_sha256"], "pa")
         self.assertEqual(json.loads((ga / "game.json").read_text())["ios"], dict(shellId="SIDA", pack="pa"))
         # B 没有容器件：先从现行产物根存一份（只要组装读的文件，不带 RomFS / 日志），再随 iPhone/ 删掉产物根
         kit = gb / "image/ios/kit"
@@ -768,3 +768,16 @@ class CoverFallbackTests(JobCase):
         banners = {g["id"]: g["banner"] for g in done["result"]["games"]}
         self.assertEqual(banners, {A: str(L / "games" / A / "banner.jpg"), B: str(L / "games" / B / "banner.jpg"), C: ""})
 
+
+
+class HiddenPackTests(JobCase):
+    def test_legacy_pack_folder_is_renamed_to_hidden_on_first_use(self):
+        """D-9ZF9：资源包目录改名 .pack（Mac 名字带点即隐藏，Windows 另加隐藏属性），里面那个不能单独导入手机的 game.img 不再摆在玩家眼前。
+        旧库的 image/ios/pack 第一次用到时改名过来，内容原样。期望手写"""
+        gid = "0100000000000000"
+        legacy = layout.image_ios(self.c, gid) / "pack"; legacy.mkdir(parents=True); (legacy / "game.img").write_bytes(b"img")
+        got = layout.ios_pack(self.c, gid)
+        self.assertEqual(got.name, ".pack")
+        self.assertFalse(legacy.exists())
+        self.assertEqual((got / "game.img").read_bytes(), b"img")
+        self.assertEqual(layout.ios_pack(self.c, gid), got)   # 第二次直接是新位置

@@ -323,7 +323,7 @@ def ios_fixture(c, gid, *, shell="SID1", pack="cafe01", compat=None, fixups=True
     game.json 的 ios 记出它的壳号、资源包号（compat 给了再记 hostAbi / dmshChain）→ (kit, pack)"""
     import layout
     image = layout.image_ios(c, gid)
-    kit, pk = image / "kit", image / "pack"
+    kit, pk = image / "kit", image / ".pack"
     kit.mkdir(parents=True, exist_ok=True)
     (kit / "main.npdm").write_bytes(b"META")
     if fixups:

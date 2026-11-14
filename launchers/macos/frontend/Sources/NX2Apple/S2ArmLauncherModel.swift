@@ -753,6 +753,10 @@ public final class S2ArmLauncherModel: ObservableObject {
                                                              packBytes: (o["packBytes"] as? NSNumber)?.int64Value,
                                                              suggestion: failure["suggestion"] as? String ?? "", failureSummary: failure["failureSummary"] as? String,
                                                              notes: o["notes"] as? [String] ?? []))
+                // 装法是「导出，自己签名安装」：iPhone 包出好就接着导出（D-9ZF9，维护者实测：原先出完包停在完成页，导出要再点一次，文件夹里什么都没有）。
+                //   导出不连手机、不签名，没有副作用；排进 installAfterQueue，这次出包会话结束后由 pumpQueue 接着跑
+                if platform == .ios, state == .completed, self.installMode.mode == "export", !self.batchRunning, let gid = self.session?.gameID,
+                   !self.installAfterQueue.contains(gid) { self.installAfterQueue.append(gid) }
                 if self.batchRunning { self.batchStepEnded() }
             default:
                 sink.emit(event)
@@ -1411,7 +1415,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
         if state == .completed && session.kind == .install { installDone = session.gameID }
         if session.kind == .installUpdate { phoneUpdateEnded(completed: state == .completed) }
-        if session.kind == .install { Task { pumpQueue() } }
+        if session.kind == .install || (session.kind == .export && !installAfterQueue.isEmpty) { Task { pumpQueue() } }   // 导出模式出完包排了导出（runExport / exportSink）
         if [.delete, .clearCache].contains(session.kind), let n = libraryNotice, n.kind == .running {   // 删除 / 清缓存的结果写进游戏库页顶部那条提示
             libraryNotice = LibraryNotice(kind: state == .completed ? .done : .failed, key: n.key, name: n.name,
                                           detail: state == .completed ? "" : (session.message.isEmpty ? JobOutcome.interruptedMessage : session.message))
