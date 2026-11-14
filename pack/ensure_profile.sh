@@ -27,6 +27,11 @@ H=$(cd "$(dirname "$0")" && pwd); D=$(mktemp -d); trap 'rm -rf "$D"' EXIT; cp -R
        # #897：Xcode 先打真正的原因（第一条 error:，如「Personal development teams … do not support the … capability」），后面跟泛泛的「No profiles … were found」；原先取最后一条，原因丢了
        echo "【红】申请 ${BID} 的开发描述文件失败（$(grep -a 'error:' "$D/build.log" | head -1 | cut -c1-240 | grep . || grep -a -i 'error' "$D/build.log" | grep -v '^ *$' | tail -1 | cut -c1-200 | grep . || echo "xcodebuild 没打错误行，末行：$(tail -1 "$D/build.log" | cut -c1-160)")；全文 ${KL}）"
        grep -a -o 'error:The device needs to be unlocked[^}]*\|error:[^}]*locked[^}]*' "$D/build.log" | head -1 | cut -c1-200
+       # 诊断#a32ff2（11-14 两台 Mac）：「Unable to find a destination matching the provided destination specifier」后面 xcodebuild 逐台列
+       #   「{ platform:iOS, id:…, error:<为什么用不了> }」，原先只留第一行、原因丢了；这里把第一条带 error 的目的设备原因单列一行
+       R=; grep -a -q 'Unable to find a destination matching' "$D/build.log" \
+         && R=$(grep -a -o '{ *platform:iOS[^}]*error:[^}]*}' "$D/build.log" | head -1 | sed 's/.*error://; s/ *}$//' | cut -c1-200)
+       [ -n "$R" ] && echo "【红】这台 iPhone 现在用不了（Xcode 原话：${R}）"
        # 11-05：Xcode 升级后 iOS 平台组件不跟着装，xcodebuild 报「iOS 26.5 is not installed. Please download and install the platform」——
        #   新包名一律申请不到描述文件（老包名有现成的不受影响），原文埋在长行里看不出修法，这里直说
        grep -a -q 'is not installed\. Please download and install the platform' "$D/build.log" \
