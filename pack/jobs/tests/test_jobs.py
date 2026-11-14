@@ -1241,6 +1241,19 @@ class JobsTests(unittest.TestCase):
         self.assertEqual([j.get("id") for j in output["jobs"]], ["older"])
         self.assertTrue(all("state" in j for j in output["jobs"]))
 
+    def test_catalogue_skips_exfat_sidecars_and_unreadable_job_records(self):
+        # #1010：数据目录在 exFAT 上搬过，每条记录旁多一份 ._<名>.json（AppleDouble，头 00 05 16 07，非 UTF-8）；
+        #   原先 read() 抛 UnicodeDecodeError，整个游戏库刷新失败。附属文件跳过；正常名字但读不出的那一条也只跳过它自己
+        self.catalogue([self.game(packages=[self.package()])])
+        jobs = self.c.jobpath.parent
+        jobs.mkdir(parents=True, exist_ok=True)
+        (jobs / "older.json").write_text(json.dumps({"id": "older", "operation": "build", "state": "failed"}), encoding="utf-8")
+        junk = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x81\xb0\x8d\x90"
+        (jobs / "._older.json").write_bytes(junk)
+        (jobs / "broken.json").write_bytes(junk)
+        output = library.catalog(self.c)
+        self.assertEqual([j.get("id") for j in output["jobs"]], ["older"])
+
     def test_catalogue_returns_only_newest_job_records(self):
         # 11-07：任务目录 1.5 万条记录时 catalog 整份读 + 回传 7 MB；只回最新 JOB_LIST_LIMIT 条（按修改时间）
         self.catalogue([self.game(packages=[self.package()])])
