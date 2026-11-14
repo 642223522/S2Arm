@@ -66,4 +66,6 @@
     <string name="library_switch_timeout">正在运行的游戏 20 秒内没有退出。请稍等片刻再点一次。</string>
     <string name="library_launch_failed">游戏没能启动：%1$s</string>
     <string name="library_switch_cancel">取消</string>
+    <string name="library_title">游戏库</string>
+    <string name="library_more">更多…</string>
 </resources>

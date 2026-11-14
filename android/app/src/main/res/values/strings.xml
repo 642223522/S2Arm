@@ -66,5 +66,7 @@
     <string name="library_switch_timeout">The running game did not close within 20 seconds. Wait a moment and tap again.</string>
     <string name="library_launch_failed">Could not start the game: %1$s</string>
     <string name="library_switch_cancel">Cancel</string>
+    <string name="library_title">Library</string>
+    <string name="library_more">More…</string>
 </resources>
 
