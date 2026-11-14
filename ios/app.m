@@ -1229,8 +1229,8 @@ double dm_brightness_now(void) { return g_brightness; }
 int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
 // 界面语言（runtime/include/s2a_ui_text.h，#316）：C 层递上来的提示 / 横幅按它取中文原宏或 _EN；判据同 S2AL 字符串表（ios/s2a_l10n.h）。盖过各 .c 的弱缺省
 int s2a_ui_zh(void) { return s2a_l10n_zh(); }
-// 游戏语言缺省跟宿主界面语言（维护者 11-13）：进程一起来就把界面实际显示的语言（zh-Hans / zh-Hant / en）交给服务层（S2A_UI_LANGUAGE → Host.cs PickLanguage →
-//   SystemLocale.FromUi）。构造期写：此时只有主线程、服务层还没读环境；已给的（开发 / 判定局）不覆盖。玩家在启动设置里单独指定的语言走 S2A_SYSTEM_LANGUAGE，优先于它
-//   界面语言玩家选过（App 设置「界面语言」，S2AUILanguageKey）：同一处先把本 App 的 AppleLanguages 设成它（字符串表 / 游戏库 / 系统弹框随之），跟随系统就清掉覆盖
-__attribute__((constructor)) static void s2a_ui_language_env(void) { @autoreleasepool { setenv("S2A_UI_LANGUAGE", s2a_l10n_apply_choice().UTF8String, 0); } }
+// 界面语言玩家选过（App 设置「界面语言」，S2AUILanguageKey）：进程一起来先把本 App 的 AppleLanguages 设成它（字符串表 / 游戏库 / 系统弹框随之），跟随系统就清掉覆盖。
+//   游戏语言不经界面语言传（11-13：界面只有简 / 繁 / 英，日 / 韩语设备会被落成英语、导入的 Switch 存档名字乱码）：服务层缺省读本 App 的首选语言列表
+//   （Host.cs PickLanguage → SystemLocale.FromPreferred），选过界面语言时列表第一项就是它，跟随系统时是设备系统语言；玩家逐款选的游戏语言走 S2A_SYSTEM_LANGUAGE（settings.m）
+__attribute__((constructor)) static void s2a_ui_language_env(void) { @autoreleasepool { (void)s2a_l10n_apply_choice(); } }
 int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0; }
