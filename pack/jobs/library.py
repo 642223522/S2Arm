@@ -2863,6 +2863,8 @@ def diagnostics(c):
                 # 只带最近 DIAG_JOBS 个任务（按记录改动时间）+ 还没结束的：任务记录 / 各任务日志原先整目录收，用久了上万个文件，
                 #   超过上传服务 1000 个文件上限（「文件数超过 1000 个」）、打包也慢（11-13 维护者机器 703 个任务 + 12296 个任务日志）
                 picked, job_total, included = set(), 0, 0
+                game_id = c.r.get("gameId") if isinstance(c.r.get("gameId"), str) and re.fullmatch(r"[0-9A-Fa-f]{16}", c.r.get("gameId")) else None
+                game_id, game_from = (game_id.upper(), "导出请求") if game_id else (None, None)
                 if roots["jobs"] is not None:
                     records = []
                     for name in (winproc.listdir(roots["jobs"]) if os.name == "nt" else os.listdir(roots["jobs"])):
@@ -2874,6 +2876,20 @@ def diagnostics(c):
                             records.append((info.st_mtime, name))
                     records.sort(reverse=True)
                     job_total = len(records)
+                    # 这份包是哪款游戏的：Mac / Windows 诊断包管整个游戏库，报告级没有程序号（diagnostic_report 读 manifest game.title_id，
+                    #   以前没写，报告里程序号成了「-」，取件把不同游戏的停帧并成一单，11-14 诊断#e68047）。
+                    #   导出请求带了游戏号就用它；没带就取最近一个带游戏号的任务（按记录改动时间，从新往旧找到即停）
+                    for _, name in records:
+                        if game_id:
+                            break
+                        if name[:-5].lower() == c.task.lower():
+                            continue
+                        try:
+                            got = (read(c.jobpath.parent / name, {}) or {}).get("gameId")
+                        except (OSError, ValueError):   # 读不出的单条记录（#1010）跳过
+                            continue
+                        if isinstance(got, str) and re.fullmatch(r"[0-9A-Fa-f]{16}", got):
+                            game_id, game_from = got.upper(), "最近的任务 " + name[:-5]
                     for rank, (_, name) in enumerate(records):
                         task = name[:-5]
                         if rank < DIAG_JOBS or (read(c.jobpath.parent / name, {}) or {}).get("state") in ("queued", "running"):
@@ -2979,6 +2995,8 @@ def diagnostics(c):
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),
                                 mac_model=probe(["/usr/sbin/sysctl", "-n", "hw.model"]),
                                 xcode_signing=signing_status())
+                if game_id:   # 同 iOS ios/diag.m 的 game.title_id：报告级程序号（上面「这份包是哪款游戏的」）
+                    manifest["game"] = dict(title_id=game_id, source=game_from)
                 # 降级汇总（v0.3.1）：出包成功收尾存进日志目录的 <任务>-degrade.log（build.collect_degrade，上面已随 logs/ 收进包），按 阶段/类别 计处数
                 from build import degrade_rows
                 degrade = {}
