@@ -105,6 +105,9 @@ struct PhoneOutcome: Equatable {
     var exportFolder = ""
     var exportGames = 0
     var exportBytes: Int64? = nil
+    /// 导出后推到手机（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 没推）；没推时作业给的一句「缺什么、怎么做」
+    var pushed: [String] = []
+    var pushNote = ""
 }
 
 /// 排队的一次出包。
@@ -190,7 +193,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var availableUpdate: [String: Any]?
     /// 点「现在更新并重启」时有局 / 任务在跑：先拦下说明（文案号 update.gate.playing / update.gate.busy）
     @Published var updateGate: String?
-    var updateReady: [String: Any]?
+    /// 更新失败时 Sparkle 给的原因（界面在错误码文案之外照原话显示，控制口 /state 的 update.reason）
+    @Published var updateFailure: String?
+    /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
+    lazy var sparkleUpdate = SparkleUpdate(model: self)
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
@@ -868,7 +874,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 上传给开发者（diagnosticsUpload 作业）→ 短码。错误摘要的附加信息同 copyErrorReport（App 版本、目标设备、环境检查未过项）；
     ///   operations 为 nil（没有作业记录的失败，如环境检查）时把界面上的 fallback 正文交给作业放进包里。失败抛作业的原因（界面退回导出）
     struct DiagUploadReceipt: Equatable { let code: String; let issueURL: URL?; let repo: String }
-    func uploadDiagnostics(gameID: String?, operations: [String]?, fallback: String) async throws -> DiagUploadReceipt {
+    func uploadDiagnostics(gameID: String?, operations: [String]?, fallback: String, note: String = "") async throws -> DiagUploadReceipt {
         let info = Bundle.main.infoDictionary ?? [:]
         var extra: [String: Any] = ["app": info["CFBundleShortVersionString"] as? String ?? "", "build": info["S2ABuildID"] as? String ?? "",
                                     "checks": checks.filter { !$0.ok }.map { ["name": $0.name, "message": $0.message] }]
@@ -876,11 +882,28 @@ public final class S2ArmLauncherModel: ObservableObject {
         var request: [String: Any] = ["extra": extra]
         if let gameID { request["gameId"] = gameID }
         if let operations { request["operations"] = operations } else if !fallback.isEmpty { request["summary"] = fallback }
+        let said = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !said.isEmpty { request["note"] = said }   // 玩家一句「发生了什么」→ 作业层写进 manifest.json 的 note（pack/jobs/library.py diagnostics）
         let outcome = try await provider.client.perform("diagnosticsUpload", extra: request)
         guard let code = outcome.result["code"] as? String, !code.isEmpty else { throw UploadNoCode() }
         // 预填好的新帖页与仓库地址由作业层给（pack/jobs/diag_upload.py issue_url，iOS 同格式）
         return DiagUploadReceipt(code: code, issueURL: (outcome.result["issueUrl"] as? String).flatMap(URL.init(string:)),
                                  repo: outcome.result["repo"] as? String ?? "github.com/jhaizhou-ops/S2Arm")
+    }
+    /// 导出完成页「推到手机」：把「S2Arm 自签导出」里的完整 .img 推进手机上自签装好的 S2Arm（exportPush 作业）；结果写回 phoneOutcome
+    @Published var exportPushing = false
+    func pushExportToPhone(gameID: String?) {
+        guard !exportPushing else { return }
+        exportPushing = true
+        Task {
+            do {
+                let names = try await provider.exportPush(gameId: gameID, device: installDeviceID)
+                phoneOutcome?.pushed = names; phoneOutcome?.pushNote = ""
+            } catch {
+                phoneOutcome?.pushNote = error.localizedDescription
+            }
+            exportPushing = false
+        }
     }
     struct UploadNoCode: LocalizedError { var errorDescription: String? { Localizer().t("s2arm.diagUpload.noCode") } }
     /// 界面语言写进作业环境：之后每个作业请求都带 uiLanguage（zh-Hans / en），作业层按它出玩家看得到的文件名与说明
@@ -955,8 +978,9 @@ public final class S2ArmLauncherModel: ObservableObject {
             do {
                 let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, accept: accept, events: sink)
                 if let r, !r.exportFolder.isEmpty {   // 导出模式：没装手机，打开放好的文件夹
-                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes)
-                    NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder))
+                    self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes,
+                                                      pushed: r.pushed, pushNote: r.pushNote)
+                    if r.pushed.isEmpty { NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder)) }   // 推进手机了就不用玩家自己拷，不再弹文件夹
                 } else if let r {
                     self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName)
                     self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)
