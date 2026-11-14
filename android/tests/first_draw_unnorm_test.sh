@@ -67,18 +67,6 @@ content={'stages':[{'stage':'vs','spirv':encode('vert.spv'),'attributeReadMask':
 (p/'program.json').write_text(json.dumps({'schema':'s2a-direct-program-v1','content':content}))
 PY
 }
-# A mismatched shader binding must fail in the production parser, not at compile/link.
-if [[ ${1:-} == --neg-descriptor ]]; then
-  make_program 0 1 2
-  set +e
-  BIND=1 LANE=0 M0=1 M1=2 run > "$E/negative.log" 2>&1
-  rc=$?
-  set -e
-  cat "$E/negative.log"
-  [[ $rc -ne 0 ]] && grep -q 'texture SPIR-V descriptor type unproven' "$E/negative.log" || exit 1
-  echo 'PASS: descriptor mismatch rejected by production parser'
-  exit 0
-fi
 [[ $# == 0 ]] || { echo "unknown argument: $1" >&2; exit 2; }
 # Each row is binding0 binding1 lane, and manually calculated draw1/draw2 masks.
 while read -r b0 b1 lane m0 m1; do

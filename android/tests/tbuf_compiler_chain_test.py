@@ -164,18 +164,19 @@ sys.stderr.write(parsed.stderr)
 if parsed.returncode == 2:
     sys.exit(2)
 failed += parsed.returncode != 0
-for source_index, lie in [(0, 'texture'), (1, 'buffer-texture')]:
+# A source that disagrees with proven SPIR-V does not reject the program: SPIR-V wins.
+for source_index, lie, want_rc, want in [(0, 'texture', 0, 'remain distinguishable'), (1, 'buffer-texture', 1, 'parsed bindings are identical')]:
     data = json.loads(controls[source_index].read_text())
     binding = next(b for b in data['content']['bindings'] if b['stage'] == 'fs' and b['kind'] == 'texture')
     binding['source'] = lie
     path = OUT / ('false-source-' + lie + '.json')
     path.write_text(json.dumps(data, separators=(',', ':')))
     bad = subprocess.run([str(exe), str(path), str(controls[1])], text=True, capture_output=True)
-    if bad.returncode != 2 or 'disagrees with SPIR-V' not in bad.stderr:
-        print('FAIL: contradictory source must be rejected:', bad.stderr, file=sys.stderr)
+    if bad.returncode != want_rc or want not in (bad.stdout + bad.stderr):
+        print('FAIL: contradictory', lie, 'source must follow SPIR-V:', bad.stdout, bad.stderr, file=sys.stderr)
         failed += 1
     else:
-        print('NEGATIVE CONTROL PASS: rejects contradictory', lie, 'source')
+        print('PASS: contradictory', lie, 'source follows SPIR-V')
 
 data = json.loads(controls[0].read_text())
 binding = next(b for b in data['content']['bindings'] if b['stage'] == 'fs' and b['kind'] == 'texture')
@@ -194,11 +195,11 @@ next(s for s in data['content']['stages'] if s['stage'] == 'fs')['spirv'] = 'AwI
 unproven = OUT/'buffer-unproven.json'
 unproven.write_text(json.dumps(data, separators=(',', ':')))
 result = subprocess.run([str(exe), str(unproven), str(controls[1])], text=True, capture_output=True)
-if result.returncode != 2 or 'descriptor type unproven' not in result.stderr:
-    print('FAIL: source-free unproven descriptor must be rejected:', result.stderr, file=sys.stderr)
+if result.returncode != 1 or 'parsed bindings are identical' not in result.stderr:
+    print('FAIL: source-free unproven descriptor must fall back to a plain texture:', result.stdout, result.stderr, file=sys.stderr)
     failed += 1
 else:
-    print('NEGATIVE CONTROL PASS: source-free unproven descriptor rejected')
+    print('PASS: source-free unproven descriptor falls back to a plain texture')
 
 for args in [('--tbuf-layout', str(controls[0])),
              ('--execute-tbuf', str(OUT/'profile.json'), identity['translatorClosure'], str(SRC), str(OUT/'production/program.json'))]:

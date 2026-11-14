@@ -126,12 +126,9 @@ static int texture_classify(struct s2a_jv binding, const struct fd_stage *stage,
     if (has_source && strcmp(kind, "texture") && strcmp(kind, "buffer-texture"))
         return fail(why, why_size, "unknown texture source");
     int actual = stage && stage->present ? texture_buffer_kind(stage->spirv, stage->spirv_bytes, (uint32_t)out->set, (uint32_t)out->binding) : -1;
-    if (actual < 0)
-        return fail(why, why_size, "texture SPIR-V descriptor type unproven");
-    if (has_source && !strcmp(kind, "buffer-texture") && actual != 1)
-        return fail(why, why_size, "buffer-texture source disagrees with SPIR-V");
-    if (has_source && !strcmp(kind, "texture") && actual == 1)
-        return fail(why, why_size, "texture source disagrees with SPIR-V buffer");
+    // 不堵门：SPIR-V 能证就以它为准（它就是要绑的描述符）；证不出（结果列了着色器没声明的描述符、同号多变量等）
+    // 不拒整段程序，按 source 走，没有 source 就照合入前当普通纹理。
+    if (actual < 0) actual = has_source && !strcmp(kind, "buffer-texture");
     out->texel_buffer = actual == 1;
     if (out->texel_buffer && out->count != 1) return fail(why, why_size, "buffer texture arrays are unsupported");
     return 0;
