@@ -4842,6 +4842,15 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     struct nvn_gpu_buf_s *b = bh;
     if (t && t->bc_decoded) {   // 压缩字节进现解贴图：在段里解码（#697），不直拷
         if (!b) { set_sticky(c, NVN_GPU_E_ARG, "缓冲为空"); return; }
+        NVNcopyRegion r3;
+        if (t->target == NVN_TEXTURE_TARGET_3D) {   // 与下面直拷同一口径：3D 贴图的 layer 是切片号（#697 Mali：32×32×32 的 BC 贴图按 layer 1 进来被判「层越界」）
+            if (layer >= t->depth) { set_sticky(c, NVN_GPU_E_ARG, "3D 贴图 slice %u 越界（depth=%u）", layer, t->depth); return; }
+            memset(&r3, 0, sizeof r3);
+            if (r) r3 = *r;
+            if (r3.depth <= 0) r3.depth = 1;
+            r3.zoffset = (int)layer;
+            r = &r3; layer = 0;
+        }
         bc_copy_from_buf(c, t, level, layer, r, b, off, row_bytes, image_bytes);
         return;
     }
