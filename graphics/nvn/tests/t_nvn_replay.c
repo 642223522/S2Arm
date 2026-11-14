@@ -2416,12 +2416,17 @@ static void t_arena697_detail(void) {
 // 间接计数多绘：同组记录（同计数地址、序号连续、记录地址等步长）在第 0 条整组交一次，GPU 读计数；后面同组的不再报名。
 //   设备没开 drawIndirectCount 时整组报 indirect_count_no_device_support 跳过；组断了（序号跳号）只画能证实的前半组、断处报名；
 //   OP_MULTI_DRAW（超过 1,024 条整段一条）直接按记录给的条数与步长交。期望值按记录手算：3 条 → max_draws 3、步长 20。紧跟 t_draw，沿用它绑好的状态。
+static void mdi_prelude(stream *s, tex_t *rt) {   // 每段自己设渲染目标、常量缓冲 2（替身程序要它），不靠前面用例留下的状态
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem; put_set_rt(s, rt, NULL);
+    p_bind_buf *ub = put(s, OP_BIND_UBO, sizeof *ub); ub->stage = 0; ub->index = 2; ub->addr = base + PG + 128; ub->size = 256;
+}
 static void t_draw_mdi(void) {
-    uint64_t base = (uint64_t)(uintptr_t)g_pmem, cnt = base + 5 * PG, ind = base + 4 * PG;
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem, cnt = base + 5 * PG, ind = base + 4 * PG;   // 绘制记录里的地址录制时已换成 CPU 地址（hle_nvn.c GA）
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);   // 间接记录、计数都在这个池里
     int d0 = g_gdraws; uint64_t gu0 = nvn_unimpl_count("draw", "indirect_count_group_unavailable");
     g_caps_extra = NVN_GPU_CAP_INDIRECT_COUNT;
     tex_t rtt = mk_tex(91, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0);   // 渲染目标不跨提交保留：每段自己设
-    stream s = {0}; put_set_rt(&s, &rtt, NULL);
+    stream s = {0}; mdi_prelude(&s, &rtt);
     for (int i = 0; i < 3; i++) {
         p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
@@ -2431,7 +2436,7 @@ static void t_draw_mdi(void) {
     CHECK(g_last_da.cnt_off == 5 * PG && g_last_da.ind_off == 4 * PG);
     CHECK(nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0);   // 同组后两条认出来、不报名
     // 组断了：序号 0 后直接是 2 → 第 0 条单独一组（max 1），序号 2 报名跳过
-    stream t = {0}; put_set_rt(&t, &rtt, NULL);
+    stream t = {0}; mdi_prelude(&t, &rtt);
     for (int i = 0; i < 3; i += 2) {
         p_draw_idx *di = put(&t, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
@@ -2439,14 +2444,14 @@ static void t_draw_mdi(void) {
     end(&t); submit1(&t); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 2 && g_last_da.max_draws == 1 && nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0 + 1);
     // 超过 1,024 条的一次调用：一条 OP_MULTI_DRAW
-    stream m = {0}; put_set_rt(&m, &rtt, NULL); p_multi_draw *md = put(&m, OP_MULTI_DRAW, sizeof *md);
+    stream m = {0}; mdi_prelude(&m, &rtt); p_multi_draw *md = put(&m, OP_MULTI_DRAW, sizeof *md);
     md->ind = ind; md->cnt = cnt; md->ibuf = base + 3 * PG; md->stride = 20; md->max = 100; md->prim = 4; md->itype = 1;
     end(&m); submit1(&m); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 3 && g_last_da.max_draws == 100 && g_last_da.stride == 20 && g_last_da.cnt != NULL);
     // 设备没开：整组跳过、报名一次，不交给后端（交了后端整段判失败）
     g_caps_extra = 0;
     uint64_t nd0 = nvn_unimpl_count("draw", "indirect_count_no_device_support");
-    stream n = {0}; put_set_rt(&n, &rtt, NULL);
+    stream n = {0}; mdi_prelude(&n, &rtt);
     for (int i = 0; i < 3; i++) {
         p_draw_idx *di = put(&n, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
@@ -2619,6 +2624,7 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 16);   // 新拓扑6笔 + 点模式1笔成功；不支持的线模式不绘制
     uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 19 && sk_n == 4);
+    g_resolve_rc = 0; t_draw_mdi();   // 间接计数多绘：放在 t_draw 末尾、池和贴图还没释放时，沿用同一套绑定（它多画的几笔不扰动上面按笔数的断言）
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
@@ -2834,7 +2840,6 @@ int main(int argc, char **argv) {
     t_compute_sources();
     t_copy_t2t();
     t_draw();
-    t_draw_mdi();
     t_arena697_detail();
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
