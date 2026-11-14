@@ -1284,9 +1284,9 @@ def space_budget(c, game):
     else:
         parts = [("library", loc, copy_need, unpack_note), ("cache", cache, direct_need, direct_note)]
     volumes = []
-    # 这款上一次出的 iPhone 资源包（image/ios/pack）：这次出完会被新包换掉。空间不够时算进「能腾出的」，玩家点「仍然继续」后先删掉它（#746：
+    # 这款上一次出的 iPhone 资源包（image/ios/.pack）：这次出完会被新包换掉。空间不够时算进「能腾出的」，玩家点「仍然继续」后先删掉它（#746：
     #   v0.2.x 升级上来的旧包 29 GB 一直占着、预估不抵扣）。只在写 IMG 的那块盘（存放位置）上算
-    old = layout.image_ios(c, game["id"].upper(), create=False) / layout.IOS_PACK if image and "id" in game else None
+    old = layout.ios_pack(c, game["id"].upper()) if image and "id" in game else None
     old_bytes = _part_bytes([old]) if old is not None and old.is_dir() else 0
     for role, path, need, note in parts:
         free = _sh.disk_usage(path).free
@@ -1369,7 +1369,7 @@ def check_pack_space(c, game, *, compiler_policy=None):
         head = f"磁盘空间不够：{where}这次出包预计要 {need / 1e9:.0f} GB{note}，现在只剩 {free / 1e9:.0f} GB。"
         if override:
             if reclaim:   # 失败页说过「仍然继续会先删掉它」：旧包和新包同时在盘上的那段是峰值的一部分，先删才腾得出来
-                _rm(c, layout.root_of(c, game["id"].upper()), layout.image_ios(c, game["id"].upper(), create=False) / layout.IOS_PACK)
+                _rm(c, layout.root_of(c, game["id"].upper()), layout.ios_pack(c, game["id"].upper()))
                 c.diagnostic(head + f"已按你的选择先删掉这款上一次的 iPhone 包，腾出 {_gb(reclaim)}。", code="disk_full", severity="warning")
                 continue
             c.diagnostic(head + "已按你的选择仍然继续。", code="disk_full", severity="warning")

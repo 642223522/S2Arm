@@ -76,7 +76,10 @@ extension LauncherView {
                         // 包已出好：主按钮是装机 / 续签，重新出包退到次要
                         // 装过的款（续签 / 重装）：目标先设成当初装的那台，不换别的；要装到另一台在装机页改选
                         Button { model.targetInstalledDevice(of: game); installFor = game.id } label: {
-                            LauncherHeroActionLabel(title: txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), symbol: "iphone")
+                            // 导出模式：主按钮是「导出，自己签名安装」（维护者 11-13：两路分开，导出路不写「装到 iPhone」）
+                            LauncherHeroActionLabel(title: model.installMode.mode == "export" ? txt("export.done.export")
+                                                    : txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"),
+                                                    symbol: model.installMode.mode == "export" ? "square.and.arrow.up" : "iphone")
                         }
                         .buttonStyle(.plain).keyboardShortcut(.return, modifiers: []).accessibilityIdentifier("hero.install")
                         heroCapsule(loc.t("s2arm.export.action"), symbol: "shippingbox", id: "hero.export", enabled: queueable) { model.exportFor = game.id }

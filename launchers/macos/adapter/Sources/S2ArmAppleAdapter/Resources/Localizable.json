@@ -4576,6 +4576,14 @@
   "en": "Rewrite & prepare"
  },
  {
+  "source": "整理 iPhone 版程序与资源包",
+  "en": "Prepare the iPhone app and resources"
+ },
+ {
+  "source": "编出 iPhone / iPad 版程序、打好资源包；出完接着导出成未签名的 S2Arm.ipa 和这款的 .img，你用自签工具安装。",
+  "en": "Builds the iPhone / iPad app and packs the resources, then exports an unsigned S2Arm.ipa and this game's .img for you to install with your signing tool."
+ },
+ {
   "source": "编 App 与签名",
   "en": "Build app & sign"
  },
@@ -7114,6 +7122,15 @@
  {
   "source": "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。",
   "en": "Reopen S2Arm and tap Retry. If it still fails, export a diagnostics package and send it to us."
+ },
+
+ {
+  "source": "先把导出文件夹里这款的完整 .img（不带「着色器更新包」字样的那个）放进「放这里导入」，导好后再放更新包。",
+  "en": "Put this game's full .img from the export folder (the one without \"shader update\" in its name) into Import Here first, then add the update."
+ },
+ {
+  "source": "把电脑上这次导出的完整 .img 放进「放这里导入」重新导一遍（游戏版本换过，只换着色器套不上）。",
+  "en": "Put the full .img from this export on your computer into Import Here and import it again (the game version changed, so a shader-only update can't be applied)."
  },
  {
   "source": "检查文件是否拷完整，再打开 S2Arm。",
