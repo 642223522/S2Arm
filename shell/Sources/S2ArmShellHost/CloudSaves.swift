@@ -116,6 +116,26 @@ enum CloudSaves {
     }
 }
 
+/// 签名身份对不对得上（#968：第三方签名把描述文件的 application-identifier 换成别的固定 App ID、包名仍是原来的，
+///   系统文件服务认为 App 身份对不上，选文件夹点「打开」时拒绝交出文件夹（Cocoa 257、交回空列表），App 一点回调都收不到）。
+///   打开选择器前比一次：对不上就先说清原因和改法，照样打开（不挡）
+enum SigningIdentity {
+    /// 描述文件（embedded.mobileprovision，CMS 包着的 XML plist）里 application-identifier 去掉团队前缀后的应用部分，与包名不一致时回它；
+    ///   一致、通配符能匹配、读不到描述文件（App Store / 模拟器）都回 nil
+    static func mismatch(provision: Data?, bundleID: String?) -> String? {
+        guard let provision, let bundleID, let lo = provision.range(of: Data("<?xml".utf8)), let hi = provision.range(of: Data("</plist>".utf8), in: lo.lowerBound..<provision.endIndex),
+              let plist = try? PropertyListSerialization.propertyList(from: provision[lo.lowerBound..<hi.upperBound], format: nil) as? [String: Any],
+              let full = (plist["Entitlements"] as? [String: Any])?["application-identifier"] as? String, let dot = full.firstIndex(of: ".") else { return nil }
+        let app = String(full[full.index(after: dot)...])
+        if app == bundleID || app == "*" { return nil }
+        if app.hasSuffix(".*"), bundleID.hasPrefix(String(app.dropLast(1))) { return nil }
+        return app
+    }
+    static var current: String? {
+        mismatch(provision: Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }, bundleID: Bundle.main.bundleIdentifier)
+    }
+}
+
 #if canImport(UIKit)
 import SwiftUI
 import UIKit
@@ -127,9 +147,19 @@ import UniformTypeIdentifiers
     /// 选好的文件夹先由 CloudSaves.remember 收下（选了就能用），再交给 picked（同步页「重新选择」用：接着按它同步）
     var picked: ((URL) -> Void)?
     static func present(from host: UIViewController? = nil, picked: ((URL) -> Void)? = nil) {
-        let picker = makePicker()
-        let me = CloudFolderPicker(); me.picked = picked; current = me; picker.delegate = me
-        (host ?? topController())?.present(picker, animated: true)
+        let show = {
+            let picker = makePicker()
+            let me = CloudFolderPicker(); me.picked = picked; current = me; picker.delegate = me
+            (host ?? topController())?.present(picker, animated: true)
+        }
+        // 签名身份对不上（#968）：先说原因和改法，点「继续选择」照样打开选择器
+        guard let appID = SigningIdentity.current, let bundle = Bundle.main.bundleIdentifier else { show(); return }
+        NSLog("S2Arm 云存档：【黄】签名的 App ID %@ 与包名 %@ 不一致，系统可能不肯交出选的文件夹", appID, bundle)
+        let alert = UIAlertController(title: shellText("Signing doesn’t match the bundle ID"),
+                                      message: shellText("This copy of S2Arm was signed with the App ID “\(appID)”, but its bundle ID is “\(bundle)”. iOS may refuse to hand the folder you pick to S2Arm, so tapping Open may do nothing. If that happens, change the bundle ID to “\(appID)” in your signing tool and sign again."),
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: shellText("Continue to Choose"), style: .default) { _ in show() })
+        (host ?? topController())?.present(alert, animated: true)
     }
     /// 起始目录给 S2Arm 的 Documents：不给时落在「最近项目」，那一页要汇总机上所有开了文件共享的 App，被大容器拖住时一直「正在加载」，
     ///   玩家看着像卡死（11-11 真机复现：几分钟不出内容，App 主线程空闲）。玩家要的云盘文件夹从左栏点进去
