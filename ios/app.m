@@ -980,7 +980,7 @@ static int img_scan_now(void) {   // 后台线程
 }
 // 认领失败（格式号不认识、挪不动等，pack_apply.c s2a_img_scan_failure）：在游戏库上弹一次原因。同一句只弹一次，回前台重扫不刷屏
 static void img_scan_report(void) {   // 主线程
-    // 认领的文件不带着色器库（资源包文件夹里的 game.img 按设计不带）：照样能玩、前几分钟会卡——说清楚怎么换成不卡的那份，不拦（同一个文件名只说一次）
+    // 认领的文件不带着色器库（资源包文件夹里的 game.img 按设计不带）：玩家该用导出的完整 .img，缺着色器能跑只是兜底——告诉他文件不完整、该换哪一份，不拦（同一个文件名只说一次）
     { static char told[256]; const char *f = s2a_img_scan_noshaders();
       if (f && *f && strcmp(f, told) && g_lib_window) {
           strlcpy(told, f, sizeof told);
