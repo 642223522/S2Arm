@@ -286,8 +286,8 @@
 "error.sentence" = "%@. %@";
 "img.importFolder" = "Import Here";
 "img.scanFailed.title" = "Couldn't import the game file";
-"img.noShaders.title" = "This game file has no shaders";
-"img.noShaders.body" = "“%@” doesn’t include shaders, so the game will stutter for the first few minutes. To avoid it: in S2Arm on your computer, choose “Export and sign it yourself” and, with the phone connected, click “Send to iPhone”; or put the “<game name>.img” from the “S2Arm Self-Sign Export” folder into this folder instead.";
+"img.noShaders.title" = "This game file is incomplete";
+"img.noShaders.body" = "“%@” is incomplete. Replace it with the “<game name>.img” from the “S2Arm Self-Sign Export” folder on your computer, or connect your phone and click “Send to iPhone” in S2Arm on your computer.";
 "games.repair.done.title" = "Game folder repaired";
 "games.repair.done.body" = "The game folder belonged to a system account, so S2Arm could not write to it and installing never started. It has been moved to a new folder owned by S2Arm (%u files, sharing the original data, so no extra space). You can continue installing. S2Arm cannot delete the old folder; it is cleared the next time you connect to your computer.";
 "games.repair.failed.title" = "Couldn't repair the game folder";
