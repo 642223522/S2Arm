@@ -26,9 +26,11 @@ static int g_arena_truncated_lines;
 static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_arena697_lines[32][256];
 void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
+static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
 int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag;
+    if (!strcmp(name, "nvk_sync_lag")) return g_flag_sync_lag;
     if (!strcmp(name, "nvk_state_keep")) return g_flag_state_keep;
     if (!strcmp(name, "nvk_rt_cont")) return g_flag_rt_cont;
     if (!strcmp(name, "nvk_clear_park")) return g_flag_clear_park;
@@ -501,7 +503,7 @@ static void t_pools(void) {
     CHECK(nvn_be_addr(b + 0x800, 0x100, &buf, &off) == 0 && rp_pool_count() == n0);
 }
 
-static pool_t g_tp; static uint8_t g_tmem[1 << 20];
+static pool_t g_tp; static uint8_t g_tmem[4 << 20];   // #936 的 128x64x64 RGBA8 三维贴图要 2 MiB，池子得放得下（原来是 1 MiB，读到池外段错误）
 static tex_t mk_tex(uint64_t serial, int64_t off, int fmt, uint32_t w, uint32_t h, uint32_t levels, int flags) {
     tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 'T'); t.serial = serial; t.pool = &g_tp; t.off = off; t.mem = g_tmem + off;
     t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = fmt; t.d.width = w; t.d.height = h; t.d.depth = 1; t.d.levels = levels; t.d.flags = flags;
@@ -898,7 +900,7 @@ static void t_linear_reject(void) {
       CHECK(g_nup == n0 + 1 && g_up[n0].img == 4 * 4 * 1 && g_up[n0].first[0] == 0);   // 新建存储清零一次
       nvn_be_tex_release(&b); }
     res_fresh();
-    { tex_t c = mk_tex(53, (1 << 20) - 0x10, NVN_FORMAT_R8, 64, 64, 1, NVN_TEXTURE_FLAGS_LINEAR);   // 源范围出池
+    { tex_t c = mk_tex(53, (int64_t)sizeof g_tmem - 0x10, NVN_FORMAT_R8, 64, 64, 1, NVN_TEXTURE_FLAGS_LINEAR);   // 源范围出池（池大小跟着 g_tmem 走）
       CHECK(rp_tex_resolve(&c, &g_fake_cmd) != NULL && nvn_unimpl_count("tex", "linear_range_outside_pool") == 1);
       nvn_be_tex_release(&c); }
     res_fresh();

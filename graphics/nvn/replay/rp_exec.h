@@ -14,6 +14,7 @@ uint64_t rp_frame(void);                // 前端给的当前帧号
 // ---------- 内存池镜像（rp_buf.c）----------
 // 取 [addr, addr+len) 在后端的缓冲与偏移；自上次同步后写过的页在 c 这一段的 GPU 顺序里重传。0 = 地址不在任何池里（已记账）。线程：[提交]。
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off);
+int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok);   // 一次抢锁解析多段
 // 写入区间日志（rp_draw 的暂存片复用判定用）：记号 + 「记号之后有没有人写过这一段」
 uint64_t rp_write_mark(void);
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len);
@@ -78,6 +79,10 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_PASSEND_N,                             // 收通道次数（含换目标、通道中途的清除、提交收尾）
        RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
        RP_PERF_UBO_N, RP_PERF_UBO_KB, RP_PERF_UBO_C1_N,   // 常量缓冲暂存的次数 / 千字节 / 其中程序自带常量段（C1）的次数
+       RP_PERF_BUF_FAST_N, RP_PERF_BUF_SLOW_N, RP_PERF_BUF_NOSPAN_N, RP_PERF_BUF_PAGES_N,   // 缓冲解析：快路命中 / 走逐页慢路 / 不受写跟踪 / 慢路里一共查了多少页
+       RP_PERF_RES_FIND_NS, RP_PERF_RES_FAST_NS, RP_PERF_RES_SLOW_NS, RP_PERF_RES_N,   // 缓冲解析三段耗时：找池与取镜像 / 快路逐页核对 / 慢路同步（开关 nvk_res_tm）
+       RP_PERF_RES_LW_NS, RP_PERF_RES_LA_NS,   // 批量解析里：抢锁等待 / 持锁解析（开关 nvk_res_tm）
+       RP_PERF_LAND_KB, RP_PERF_LAND_N, RP_PERF_MIRROR_N,   // 落地（GPU 写回游戏内存）的千字节 / 次数；新建镜像次数
        RP_PERF_KEEP_OK, RP_PERF_KEEP_F_CMD, RP_PERF_KEEP_F_SEG, RP_PERF_KEEP_F_GEN, RP_PERF_KEEP_F_REG,   // 「整组沿用」成立次数与失败原因（命令变 / 段变 / 全局写代号变 / 贴图登记代号变）
        RP_PERF_KEEP_F_PG, RP_PERF_KEEP_F_BI, RP_PERF_KEEP_F_PIPESET, RP_PERF_KEEP_F_ITEMS,               // 继续：程序变 / base_instance 变 / 换过管线 / 逐项校验不过
        RP_PERF_SUB_PRE_NS, RP_PERF_SUB_EXEC_NS, RP_PERF_SUB_POST_NS, RP_PERF_WAIT_ALREADY_N, RP_PERF_GPU_BUSY_NS,   // 提交三段耗时 / 进等待时已完成 / GPU 忙区间
@@ -87,7 +92,8 @@ void rp_perf_add(int i, uint64_t v);
 void rp_exec_dump_ops(char *b, size_t n);   // 逐命令类型耗时前几名（开关 nvk_exec_tm；窗口末尾取一次即清零）
 void rp_sync_lag_present(void);   // 上屏之后调：给「每帧只放行一次同步等待」补一次额度（开关 nvk_sync_lag=3）
 void rp_bind_tm_take(uint64_t *tot, uint64_t *backend, uint64_t *n);   // 绑定重建：总时间 / 其中交后端 / 次数（纳秒，取即清零）
-void rp_bind_tm_take2(uint64_t *drv, uint64_t *buf, uint64_t *rest);  // 其中：驱动段 / 常量缓冲与支持块 / 其它
+void rp_bind_tm_take2(uint64_t *drv, uint64_t *buf, uint64_t *rest);
+void rp_bind_tm_take3(uint64_t *alloc, uint64_t *copy);   // 暂存：申请 / 内容拷贝  // 其中：驱动段 / 常量缓冲与支持块 / 其它
 uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
 uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）
 int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建贴图的宽高有几种（最多数到 64，取完清零）

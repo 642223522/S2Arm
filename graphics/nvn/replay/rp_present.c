@@ -150,9 +150,11 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 { uint64_t bt_tot = 0, bt_be = 0, bt_n = 0; rp_bind_tm_take(&bt_tot, &bt_be, &bt_n);
                   uint64_t bt_drv = 0, bt_buf = 0, bt_rest = 0; rp_bind_tm_take2(&bt_drv, &bt_buf, &bt_rest);
-                  snprintf(b, sizeof b, "分时（绑定重建，每帧）：重建 %.0f 次共 %.2f 毫秒（交后端 %.2f；暂存与构造 %.2f，其中驱动段 %.2f、常量缓冲与支持块 %.2f、其它 %.2f）；常量缓冲暂存 %.0f 次共 %.0f KB（其中程序自带常量段 %.0f 次）、段内切片表命中 %.0f 块",
+                  uint64_t bt_alloc = 0, bt_copy = 0; rp_bind_tm_take3(&bt_alloc, &bt_copy);
+                  snprintf(b, sizeof b, "分时（绑定重建，每帧）：重建 %.0f 次共 %.2f 毫秒（交后端 %.2f；暂存与构造 %.2f，其中驱动段 %.2f、常量缓冲与支持块 %.2f、其它 %.2f；暂存里申请 %.2f、拷贝 %.2f）；常量缓冲暂存 %.0f 次共 %.0f KB（其中程序自带常量段 %.0f 次）、段内切片表命中 %.0f 块",
                            (double)bt_n / f, (double)bt_tot / 1e6 / f, (double)bt_be / 1e6 / f, (double)(bt_tot - bt_be) / 1e6 / f,
                            (double)bt_drv / 1e6 / f, (double)bt_buf / 1e6 / f, (double)bt_rest / 1e6 / f,
+                           (double)bt_alloc / 1e6 / f, (double)bt_copy / 1e6 / f,
                            (double)pf[RP_PERF_UBO_N] / f, (double)pf[RP_PERF_UBO_KB] / f, (double)pf[RP_PERF_UBO_C1_N] / f, (double)pf[RP_PERF_BIND_SLICE_HIT] / f);
                   nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b); }
                 { uint64_t hb[5]; rp_frame_gap_take(hb); uint64_t ht = hb[0] + hb[1] + hb[2] + hb[3] + hb[4]; if (!ht) ht = 1;
@@ -164,7 +166,12 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                     snprintf(b, sizeof b, "分时（帧间隔）：p50 %.1f 毫秒、p99 %.1f 毫秒、最长 %.1f 毫秒、超过 33 毫秒 %.0f 帧（占 %.0f%%）",
                              p50, p99, mx, (double)ov, 100.0 * (double)ov / (double)f);
                     nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b); }
-                snprintf(b, sizeof b, "分时（上传，每帧）：贴图整张上传 %.1f 次共 %.0f KB；池镜像同步 %.0f KB（其中直接写 %.0f KB）", (double)pf[RP_PERF_TEX_UP_N] / f, (double)pf[RP_PERF_TEX_UP_KB] / f, (double)pf[RP_PERF_BUF_SYNC_KB] / f, (double)pf[RP_PERF_BUF_SYNC_DIRECT_KB] / f);
+                snprintf(b, sizeof b, "分时（上传，每帧）：贴图整张上传 %.1f 次共 %.0f KB；池镜像同步 %.0f KB（其中直接写 %.0f KB）；缓冲解析：快路 %.0f 次、逐页慢路 %.0f 次（共查 %.0f 页）、不受写跟踪 %.0f 次", (double)pf[RP_PERF_TEX_UP_N] / f, (double)pf[RP_PERF_TEX_UP_KB] / f, (double)pf[RP_PERF_BUF_SYNC_KB] / f, (double)pf[RP_PERF_BUF_SYNC_DIRECT_KB] / f,
+                         (double)pf[RP_PERF_BUF_FAST_N] / f, (double)pf[RP_PERF_BUF_SLOW_N] / f, (double)pf[RP_PERF_BUF_PAGES_N] / f, (double)pf[RP_PERF_BUF_NOSPAN_N] / f);
+                if (pf[RP_PERF_RES_N])
+                    snprintf(b + strlen(b), sizeof b - strlen(b), "；解析分段：取镜像与快检 %.1f、锁等待 %.1f、慢路尾 %.1f 毫秒（%.0f 段/帧）；落地 %.0f 次共 %.0f KB、新建镜像 %.0f 次",
+                             (double)pf[RP_PERF_RES_FIND_NS] / 1e6 / f, (double)pf[RP_PERF_RES_LW_NS] / 1e6 / f, (double)pf[RP_PERF_RES_LA_NS] / 1e6 / f, (double)pf[RP_PERF_RES_N] / f,
+                             (double)pf[RP_PERF_LAND_N] / f, (double)pf[RP_PERF_LAND_KB] / f, (double)pf[RP_PERF_MIRROR_N] / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 snprintf(b, sizeof b, "分时（回写，每帧）：Finish 没等的提交 %.1f 次；做完要写回的提交 %.1f 次；事件 %.1f、计数器报告 %.1f（类型位图 %#llx）、遮挡事件 %.1f、显卡写缓冲 %.1f；这一窗口新建贴图的宽高 %d 种", (double)pf[RP_PERF_FIN_SKIP] / f, (double)pf[RP_PERF_FX_SUBS] / f, (double)pf[RP_PERF_FX_EVENT] / f, (double)pf[RP_PERF_FX_REPORT] / f, (unsigned long long)rp_fx_report_types(), (double)pf[RP_PERF_FX_OCC] / f, (double)pf[RP_PERF_FX_GW] / f, rp_res_new_sizes_take());
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);

@@ -319,6 +319,7 @@ static uint64_t g_life_ns[8], g_life_n[8];
 #define LIFE_ADD(i) do { if (g_draw_tm) { uint64_t ln_ = now_ns(); __atomic_fetch_add(&g_life_ns[i], ln_ - lt_, __ATOMIC_RELAXED); __atomic_fetch_add(&g_life_n[i], 1, __ATOMIC_RELAXED); lt_ = ln_; } } while (0)
 static uint64_t now_ns(void);
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
+static void draw_tm_init(void) { if (!g_draw_tm) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0; }   // 与 GPU 时间戳同一个开关
 static uint64_t g_pl_ns, g_pl_n, g_pl_steps;   // 取图形管线：命中查找的累计纳秒 / 次数 / 比过的条数
 static struct nvn_gpu_pipe_s *g_pipe_ht[PIPE_HT_N];   // 图形管线的散列桶（见 pipe_hash）；持 g_mu
 // ---- 驱动管线缓存（#822）：后端建的每条管线都带同一个 VkPipelineCache；会话收尾把驱动给的数据写进 open_desc.cache_dir，
@@ -1442,6 +1443,25 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
 
     memset(&g, 0, sizeof g);
     g.dev = dev;
+    {   // 诊断（nvk_mem_types，缺省 0）：打印显存类型表，判「有没有 HOST_CACHED 的可见类型」——
+        // CPU 写映射内存与显卡抢带宽的那条路（见坑记录续 21）要不要改走 cached 暂存，取决于这张表。
+        static int mt_on = -1; if (mt_on < 0) mt_on = nvn_plat_flag("nvk_mem_types", 0) != 0;
+        if (mt_on) {
+            const VkPhysicalDeviceMemoryProperties *mp = &dev->memory;
+            for (uint32_t i = 0; i < mp->memoryTypeCount; i++) {
+                char lb[200];
+                snprintf(lb, sizeof lb, "显存类型 %u：标志 0x%x（DEVICE_LOCAL %d / HOST_VISIBLE %d / HOST_COHERENT %d / HOST_CACHED %d / LAZILY %d）、堆 %u",
+                         i, (unsigned)mp->memoryTypes[i].propertyFlags,
+                         (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0,
+                         (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0,
+                         (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0,
+                         (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0,
+                         (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) != 0,
+                         (unsigned)mp->memoryTypes[i].heapIndex);
+                nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", lb);
+            }
+        }
+    }
     g.d = dev->device;
     vk_dq_init(g.d);
     g.phys = dev->physical;
@@ -1679,7 +1699,19 @@ static int session_accepting(void) {
     return ok;
 }
 
+// prefer_cached：主机可见的缓冲优先挑 HOST_CACHED 的显存类型（本机有 DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT|HOST_CACHED，类型 6）。
+// 暂存缓冲（每帧约 9 MB 常量缓冲 + 顶点镜像落盘）是 CPU 反复小段写的：写在缓存内存上比写在不缓存映射上快数倍，
+// 且该类型带 coherent 位、不需要显式 flush（见坑记录续 21 的带宽争用读数）。
+static nvn_gpu_rc buf_create_impl(uint64_t bytes, int mem, const void *init, int prefer_cached, nvn_gpu_buf *out, nvn_gpu_err *err);
 nvn_gpu_rc nvn_gpu_buf_create(uint64_t bytes, int mem, const void *init, nvn_gpu_buf *out, nvn_gpu_err *err) {
+    // 开关 nvk_mem_cached：所有主机可见缓冲（含池镜像）也走 HOST_CACHED 类型。缺省跟随重叠档（nvk_sync_lag≠0 时开）：
+    // 默认档 A/B 中性（绑定 5.2 / 回放 33.2 / GPU 忙 39.0–39.5），而重叠档里 CPU 直写镜像 550 KB/帧与显卡抢带宽，
+    // 开了之后顶点流 22–25 → 17.9 毫秒、帧 p50 52 → 50（读数见坑记录续 23）。
+    static int all_cached = -1; static unsigned k;
+    if (all_cached < 0 || !(++k & 255)) all_cached = nvn_plat_flag("nvk_mem_cached", nvn_plat_flag("nvk_sync_lag", 0) != 0) != 0;
+    return buf_create_impl(bytes, mem, init, all_cached, out, err);
+}
+static nvn_gpu_rc buf_create_impl(uint64_t bytes, int mem, const void *init, int prefer_cached, nvn_gpu_buf *out, nvn_gpu_err *err) {
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
     if (!g_open) return fail(err, NVN_GPU_E_STOPPED, "后端未打开");
@@ -1712,7 +1744,10 @@ nvn_gpu_rc nvn_gpu_buf_create(uint64_t bytes, int mem, const void *init, nvn_gpu
     vkGetBufferMemoryRequirements(g.d, b->buffer, &req);
     VkMemoryPropertyFlags want = is_shared(mem) ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
                                                 : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    uint32_t type = s2a_vk_memory_type(g.dev, req.memoryTypeBits, want, NULL);
+    uint32_t type = UINT32_MAX;
+    if (prefer_cached && is_shared(mem))
+        type = s2a_vk_memory_type(g.dev, req.memoryTypeBits, want | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, NULL);
+    if (type == UINT32_MAX) type = s2a_vk_memory_type(g.dev, req.memoryTypeBits, want, NULL);
     if (type == UINT32_MAX) {
         vkDestroyBuffer(g.d, b->buffer, NULL);
         free(b);
@@ -1795,7 +1830,8 @@ void nvn_gpu_buf_use(nvn_gpu_cmd ch, nvn_gpu_buf bh) {
 static struct nvn_gpu_buf_s *new_staging(struct nvn_gpu_cmd_s *c, uint64_t cap) {
     nvn_gpu_err e;
     nvn_gpu_buf b = seg_reuse_on() ? seg_take_stg(cap) : NULL;
-    if (!b && !rc_is(nvn_gpu_buf_create(cap, NVN_GPU_MEM_SHARED, NULL, &b, &e), NVN_GPU_OK)) return NULL;
+    static int cached_on = -1; if (cached_on < 0) cached_on = nvn_plat_flag("nvk_stage_cached", 1) != 0;
+    if (!b && !rc_is(buf_create_impl(cap, NVN_GPU_MEM_SHARED, NULL, cached_on, &b, &e), NVN_GPU_OK)) return NULL;
     if (c->nstaging == c->scap) {
         uint32_t n = c->scap ? c->scap * 2 : 4;
         struct vk_staging *p = realloc(c->staging, (size_t)n * sizeof *p);
@@ -3001,7 +3037,10 @@ static int g_pc_use = 1;
 static int pc_on(void) { static int on = -1; static uint32_t n; if (on < 0 || !(++n & 127)) on = nvn_plat_flag("nvk_pass_cache", 1) != 0; return on; }
 struct pc_rp { uint32_t natt, ncol; int has_depth; VkAttachmentDescription att[9]; VkAttachmentReference col[8], dref; VkRenderPass rp; };
 static struct pc_rp *g_pc_rp; static uint32_t g_pc_nrp, g_pc_rpcap;
-enum { PC_FB_N = 2048, PC_FB_PROBE = 24 };
+// 帧缓冲缓存：真机上「开通道内部」的帧缓冲一段读到 7.7–12.8 微秒/通道、未命中 25–34 个/帧
+// （未命中就只能 vkCreateFramebuffer，7–12 微秒一个）。表从 2048 加到 8192、探测 24 加到 32，专门压未命中率；
+// 反查表（pc_fb_note_desc / pc_drop_view_fast）在容量变大后仍然是按视图定点拆，不做全表扫描。
+enum { PC_FB_N = 8192, PC_FB_PROBE = 32 };
 struct pc_fb { VkRenderPass rp; uint32_t natt, w, h, layers; VkImageView v[9]; VkFramebuffer fb; uint32_t gen; int tomb; };
 static struct pc_fb g_pc_fb[PC_FB_N];
 static VkRenderPass pc_pass(const VkRenderPassCreateInfo *ci, const VkAttachmentDescription *att, uint32_t natt, const VkAttachmentReference *col, uint32_t ncol, const VkAttachmentReference *dref) {
@@ -3912,7 +3951,8 @@ static int prepare_bind_layouts(struct nvn_gpu_cmd_s *c, int compute) {
 }
 
 void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
-    const int dtm = g_draw_tm; const uint64_t dt0 = dtm ? now_ns() : 0;   // 诊断：这笔绘制各段用时（nvk_gputime 开着才计）
+    draw_tm_init();   // 诊断：这笔绘制各段用时（nvk_gputime 开着才计）
+    const int dtm = g_draw_tm; const uint64_t dt0 = dtm ? now_ns() : 0;
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
     if (!c->in_pass || !c->pipe || !a) { set_sticky(c, NVN_GPU_E_ORDER, "draw 缺通道 / 管线 / 参数"); return; }
@@ -4090,7 +4130,34 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     } else {
         vkCmdDraw(c->cb, a->count, inst, a->first, a->base_instance);
     }
-    if (dtm) { const uint64_t dt3 = now_ns(); __atomic_fetch_add(&g_draw_ns[0], dt1 - dt0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[1], dt2 - dt1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[2], dt3 - dt2, __ATOMIC_RELAXED); }
+    if (dtm) { const uint64_t dt3 = now_ns(); __atomic_fetch_add(&g_draw_ns[0], dt1 - dt0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[1], dt2 - dt1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[2], dt3 - dt2, __ATOMIC_RELAXED);
+        // 每 5 秒一次：把后端逐笔的三段（描述符 / 状态 / 顶点索引与绘制调用）摊到每笔上打印，
+        // 找到后端这笔 5 微秒里到底是谁（真机读数见坑记录续 27）。
+        static uint64_t w_t0; static uint64_t w_n;
+        w_n++;
+        const uint64_t now = dt3;
+        if (!w_t0) w_t0 = now;
+        if (now - w_t0 >= 5000000000ull) {
+            const uint64_t a0 = __atomic_exchange_n(&g_draw_ns[0], 0, __ATOMIC_RELAXED);
+            const uint64_t a1 = __atomic_exchange_n(&g_draw_ns[1], 0, __ATOMIC_RELAXED);
+            const uint64_t a2 = __atomic_exchange_n(&g_draw_ns[2], 0, __ATOMIC_RELAXED);
+            const uint64_t d0 = __atomic_exchange_n(&g_desc_ns[0], 0, __ATOMIC_RELAXED);
+            const uint64_t d1 = __atomic_exchange_n(&g_desc_ns[1], 0, __ATOMIC_RELAXED);
+            const uint64_t d2 = __atomic_exchange_n(&g_desc_ns[2], 0, __ATOMIC_RELAXED);
+            const uint64_t d3 = __atomic_exchange_n(&g_desc_ns[3], 0, __ATOMIC_RELAXED);
+            const uint64_t dnw = __atomic_exchange_n(&g_desc_nw, 0, __ATOMIC_RELAXED);
+            const uint64_t dsets = __atomic_exchange_n(&g_desc_sets, 0, __ATOMIC_RELAXED);
+            char b2[320];
+            snprintf(b2, sizeof b2, "后端逐笔（微秒/笔，共 %llu 笔）：入口 %.2f（描述符准备 %.2f / 更新 %.2f / 绑定 %.2f / 收尾 %.2f）、状态 %.2f、顶点索引与绘制 %.2f；描述符更新 %.2f 笔/笔（%.1f 套）",
+                     (unsigned long long)w_n,
+                     (double)(a0 + a1 + a2) / 1000.0 / (double)w_n, (double)d0 / 1000.0 / (double)w_n, (double)d1 / 1000.0 / (double)w_n,
+                     (double)d2 / 1000.0 / (double)w_n, (double)d3 / 1000.0 / (double)w_n,
+                     (double)a1 / 1000.0 / (double)w_n, (double)a2 / 1000.0 / (double)w_n,
+                     (double)dnw / (double)w_n, (double)dsets / (double)w_n);
+            nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b2);
+            w_t0 = now; w_n = 0;
+        }
+    }
 }
 
 // 本段未实现的区域：一律粘滞 UNSUPPORTED / 返回 UNSUPPORTED，不空实现。
