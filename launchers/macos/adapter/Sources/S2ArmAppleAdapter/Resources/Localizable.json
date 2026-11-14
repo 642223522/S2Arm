@@ -4576,6 +4576,14 @@
   "en": "Rewrite & prepare"
  },
  {
+  "source": "整理 iPhone 版程序与资源包",
+  "en": "Prepare the iPhone app and resources"
+ },
+ {
+  "source": "编出 iPhone / iPad 版程序、打好资源包；出完接着导出成未签名的 S2Arm.ipa 和这款的 .img，你用自签工具安装。",
+  "en": "Builds the iPhone / iPad app and packs the resources, then exports an unsigned S2Arm.ipa and this game's .img for you to install with your signing tool."
+ },
+ {
   "source": "编 App 与签名",
   "en": "Build app & sign"
  },

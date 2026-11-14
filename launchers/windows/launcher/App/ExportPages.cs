@@ -1152,7 +1152,7 @@ public sealed partial class EnvironmentWindow
         if (game is null || connectedFolder is null || libraryId is null) { body.Children.Add(Label(T("export.no_game"), 18)); return; }
         if (readinessFor != game.Id && !installChecking) { readinessFor = game.Id; readiness = null; installCheckFailed = false; _ = CheckInstallAsync(); }
         body.Children.Add(GameHeader(game));
-        body.Children.Add(Label(T(PadKey("install.title")), 22));
+        body.Children.Add(Label(installMode == "export" ? T("install.mode.export") : T(PadKey("install.title")), 22));   // 导出模式：标题照导出写
         body.Children.Add(Muted(T("install.description"), 14));
         body.Children.Add(Muted(T("install.container_note"), 14));
         body.Children.Add(Muted(T("install.legacy_note"), 14));

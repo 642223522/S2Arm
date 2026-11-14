@@ -207,7 +207,7 @@ public sealed partial class EnvironmentWindow
                 detail.Children.Add(Muted(T("library.location.at").Replace("{0}", where.Folder.Length > 0 ? where.Folder : where.Path), 12));
             Grid.SetColumn(detail, 1); line.Children.Add(detail);
             // Primary button: if iPhone pack is ready → install; otherwise export (storage not connected → disabled, game files missing → relink / remove)
-            var primaryKey = game.IphoneReady ? "library.hero.install" : "library.select";
+            var primaryKey = game.IphoneReady ? (installMode == "export" ? "export.done.export" : "library.hero.install") : "library.select";   // 导出模式：主按钮写导出（两路分开）
             var primaryAction = game.IphoneReady
                 ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; Navigate("install"); })
                 : game.LocationState == "missing" ? () => _ = MissingAsync(game)
