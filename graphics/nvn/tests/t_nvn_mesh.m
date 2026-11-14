@@ -75,6 +75,7 @@ int main(void) {
     @autoreleasepool {
         const char *libdir = getenv("T_MESH_LIB"); REQUIRE(libdir);   // mk 编好的 <键>_b.metallib 所在目录；json 由本测写
         setenv("DM_PRESENT_LINK", "0", 1);
+        char pso_user[] = "/tmp/t_nvn_mesh_pso_user_XXXXXX"; int pfd = mkstemp(pso_user); REQUIRE(pfd >= 0); close(pfd); setenv("DM_PSO_USER", pso_user, 1);   // ④c：本测记下的网格管线行
         mtl_init(); g_msl_dir = @(libdir);
         printf("后端 Metal %d，录制 %s\n", g_m3 ? 3 : 4, rec_on() ? "开" : "关");
         NSString *dir = @(libdir);
@@ -167,6 +168,40 @@ int main(void) {
           cols = frame_columns();
           VERIFY(w4b && ![o containsString:@"built on the submit thread"] && red_lines(o, nil) == 0 && cols == 0x1c,
                  "④b 目标稳定且这帧清过：新网格管线后台编、本笔先跳过，编好后画出列 2、3、4（跳过过 %d，列掩码 %#x；stderr：%s）", w4b, cols, o.UTF8String); }
+
+        // ④c 网格管线进本机记录（pso_user.tsv 的 M 行）→ 下一局预热按这行拼回绘制查表用的键、把管线交给表 → 首笔网格绘制直接画（11-13 开局发白根修②）。
+        //   期望（按格式手写）：④ 当场编、⑤ 带任务、④b 后台编的三条各记一行 M（⑥ ⑦ 与 ④ 同一条），无任务的第 2 列是「-」、⑤ 那行是任务键 1111…，第 3 列补齐掩码 0；用 ④ 那行（片元 ffff…）解析出的键与
+        //   绘制时的键逐字节相同（表里查得到 ④ 的管线）；把表里这条删掉（新开局）后经交接函数放回，同一笔绘制不跳过、不当场编、画出列 2、3、4
+        { NSString *txt = [NSString stringWithContentsOfFile:@(pso_user) encoding:NSUTF8StringEncoding error:nil]; NSMutableArray<NSString *> *mrows = [NSMutableArray array];
+          for (NSString *l in [txt componentsSeparatedByString:@"\n"]) if ([l hasPrefix:@"M\t"]) [mrows addObject:l];
+          NSString *row4 = nil, *row5 = nil;
+          for (NSString *l in mrows) { NSArray *c = [l componentsSeparatedByString:@"\t"]; pso_skey sk; if (c.count != 4 || pso_skey_parse([c[1] UTF8String], &sk) || strcmp(sk.fs, "ffffffffffffffff_b")) continue;
+              if (!strcmp(sk.vs, "3333333333333333_b")) row4 = l; else if (!strcmp(sk.vs, "2222222222222222_b")) row5 = l; }
+          VERIFY(mrows.count == 3 && row4 && [[row4 componentsSeparatedByString:@"\t"][2] isEqual:@"-"] && [[row4 componentsSeparatedByString:@"\t"][3] isEqual:@"0"] &&
+                 row5 && [[row5 componentsSeparatedByString:@"\t"][2] isEqual:@"1111111111111111_b"],
+                 "④c ④ / ⑤ / ④b 的网格管线各记一行 M（实得 %lu 行），无任务记「-」、⑤ 记任务键、补齐掩码 0（④ 那行第 2、3 列：%s）", (unsigned long)mrows.count,
+                 row4 ? [[row4 componentsSeparatedByString:@"\t"] subarrayWithRange:NSMakeRange(2, 2)].description.UTF8String : "无");
+          REQUIRE(row4);
+          if (!g_shmap) g_shmap = [NSMutableDictionary dictionary];   // 本测没有映射表：把夹具的键登记成本款的（warm_stale 才不当别的游戏版本丢掉）
+          for (NSString *k in @[@"1111111111111111", @"2222222222222222", @"3333333333333333", @"ffffffffffffffff", @"eeeeeeeeeeeeeeee"]) g_shmap[k] = @"x";
+          long lines = 0; NSArray<WarmTask *> *tasks = warm_parse(@[@(pso_user)], &lines); WarmTask *t4 = nil;
+          for (WarmTask *t in tasks) if (t->kind == 4 && [t->fkey isEqual:@"ffffffffffffffff_b"] && [t->vkey isEqual:@"3333333333333333_b"]) t4 = t;
+          VERIFY(t4 && [t4->vkey isEqual:@"3333333333333333_b"] && !t4->tkey.length && t4->pad == 0, "④c 预热解析 M 行：网格键 3333…、片元键 ffff…、无任务、掩码 0（实得 %s / %s / %s / %#x）",
+                 t4 ? t4->vkey.UTF8String : "-", t4 ? t4->fkey.UTF8String : "-", t4 ? t4->tkey.UTF8String : "-", t4 ? t4->pad : 0);
+          REQUIRE(t4);
+          pso_skey sk; [t4->rs[0] getBytes:&sk length:sizeof sk]; mtk_key mk; mtk_warm_key(&sk, NULL, md, fs, 0, &mk);
+          os_unfair_lock_lock(&g_pso_mtk_lock); id had = hm_get_id(&g_pso_mtk, &mk); os_unfair_lock_unlock(&g_pso_mtk_lock);
+          VERIFY(had && had != NSNull.null && had != g_pso_mtk_building, "④c 按 M 行拼回的键在网格管线表里查得到 ④ 编好的那条（%p）", (__bridge void *)had);
+          REQUIRE(had);
+          os_unfair_lock_lock(&g_pso_mtk_lock); hm_del_id(&g_pso_mtk, &mk); os_unfair_lock_unlock(&g_pso_mtk_lock);
+          uint64_t wc0 = g_mtk_warm_claimed; mtk_warm_claim([NSData dataWithBytes:&mk length:sizeof mk], had);
+          VERIFY(g_mtk_warm_claimed == wc0 + 1, "④c 交接：表里没有这条时，预热交来的管线放进表（交接 +%llu）", (unsigned long long)(g_mtk_warm_claimed - wc0));
+          frame_begin(); S.prog = &gp[0]; uint64_t sn0 = g_mtk_sync_n; __block int w4c = 0;
+          o = capture(^{ mesh_draw(&d4, &w4c); });
+          cols = frame_columns();
+          VERIFY(!w4c && g_mtk_sync_n == sn0 && cols == 0x1c && red_lines(o, nil) == 0,
+                 "④c 预热交来的管线：同一笔不跳过、不当场编、画出列 2、3、4（跳过过 %d，当场编 +%llu，列掩码 %#x；stderr：%s）", w4c, (unsigned long long)(g_mtk_sync_n - sn0), cols, o.UTF8String); }
+        unlink(pso_user);
 
         // ⑧
         frame_begin(); S.prog = &gp[2]; uint64_t s0 = g_mtk_skip;

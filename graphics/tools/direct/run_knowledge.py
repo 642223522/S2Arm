@@ -91,6 +91,7 @@ def main(out, tid, srcs):
             if c[0] == 'S': good = len(c) >= 3   # = pso_seed.py 的格式规则（库键过滤留给 pso_seed.py）
             elif c[0] == 'C': good = len(c) >= 2
             elif c[0] == 'R': good = len(c) >= 2 and len(c[1]) == 2 * skey and set(c[1]) <= HEX
+            elif c[0] == 'M': good = len(c) >= 4 and len(c[1]) == 2 * skey and set(c[1]) <= HEX   # 任务 / 网格管线（nvn_geometry.inc mtk_record）
             else: good = False
             if good and l not in seen: seen.add(l); rows.append(l)
     write(os.path.join(out, 'pairs.tsv'), '# 跑局配对：P<TAB>顶点键<TAB>片元键（graphics/tools/direct/run_knowledge.py，去重排序）\n'

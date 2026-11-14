@@ -144,6 +144,53 @@ static void mtk_publish(void) {   // pace on, submit thread, before a mesh draw 
     for (NSArray *r in done) MLOG("task / mesh pipeline delivered (pace %d) at frame %llu: %s; still building %d, built and held %lu", pace, (unsigned long long)f,
                                   mtk_name(r[1]), fly, (unsigned long)left);
 }
+// The pipeline descriptor of a task / mesh draw: the fragment function variant and the attachments as a vertex draw's (pso_desc, no vertex stage); pf: the padded mesh variant (#674) or nil.
+//   Shared by the draw (mtk_pso) and the prewarm (mtk_warm), so a pipeline the prewarm built is the one the draw would build
+static MTLMeshRenderPipelineDescriptor *mtk_desc(pso_key *k, NvShader *ts, NvShader *ms, NvShader *fs, id<MTLFunction> pf, int merged, id<MTLFunction> fsfn) {
+    MTLRenderPipelineDescriptor *d = pso_desc(k, nil, fs, fsfn, merged);
+    MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
+    m.meshFunction = pf ?: ms->fn; m.fragmentFunction = d.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
+    if (ts) { m.objectFunction = ts->fn; m.payloadMemoryLength = ts->mesh_relay ? 16 : ((NSUInteger)ts->mesh_payload + 15) & ~(NSUInteger)15; m.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; }   // relayed: object_data carries the task workgroup alone
+    m.rasterSampleCount = d.rasterSampleCount; m.alphaToCoverageEnabled = d.alphaToCoverageEnabled;
+    for (int i = 0; i < 8; i++) m.colorAttachments[i] = d.colorAttachments[i];
+    m.depthAttachmentPixelFormat = d.depthAttachmentPixelFormat; m.stencilAttachmentPixelFormat = d.stencilAttachmentPixelFormat;
+    return m;
+}
+// A task / mesh pipeline goes into pso_user.tsv as an M row: M<TAB>pso_skey hex (the mesh shader in the vertex place)<TAB>task shader key ("-": none)<TAB>padded variant mask (hex), so the next start's
+//   prewarm (warm_parse / mtk_warm) builds it before the scene, and the next package's seed (pso_seed.py) carries it. A merged pass's pipeline (a specialized fragment) is not recorded,
+//   as R rows of one are not (pso_record). Submit thread
+static void mtk_record(const mtk_key *mk, NvShader *ts, NvShader *ms, NvShader *fs, int merged) {
+    if (merged || mk->k.fsfn) return;
+    pso_skey sk; pso_skey_from(&mk->k, ms, fs, 0, NULL, &sk); char hx[sizeof sk * 2 + 1]; pso_skey_hex(&sk, hx);
+    pso_user_record("M\t%s\t%s\t%x\n", hx, ts ? ts->key : "-", mk->pad);
+}
+// The key a draw of these shaders looks its pipeline up with, from an M row (the shader pointers are the shared objects, shader_load)
+static void mtk_warm_key(const pso_skey *sk, NvShader *ts, NvShader *ms, NvShader *fs, uint32_t pad, mtk_key *mk) {
+    memset(mk, 0, sizeof *mk); mk->k = sk->k; mk->k.vs = (__bridge void *)ms; mk->k.fs = (__bridge void *)fs; mk->k.fsfn = NULL; mk->ts = (__bridge void *)ts; mk->pad = pad;
+}
+// The prewarm's build of an M row (a background worker): the shared shader objects (warm_shader → shader_load), the key the draw looks up with, the pipeline; nil when it cannot be built
+static id mtk_warm(const pso_skey *sk, NSString *mkey, NSString *fkey, NSString *tkey, uint32_t pad, NSData **key) {
+    if (!g_mesh_ok) return nil;
+    NvShader *ms = warm_shader(mkey, sk->vs_stage), *fs = fkey.length ? warm_shader(fkey, sk->fs_stage) : nil, *ts = tkey.length ? warm_shader(tkey, 3) : nil;
+    if (!ms || ms->mesh_kind != 2 || (fkey.length && !fs) || (tkey.length && !ts)) return nil;
+    id<MTLFunction> pf = nil;
+    if (pad && !(pf = vp_fn(ms, pad))) return nil;   // the padded variant is made at its first use on this device (vp_ask); not yet: the draw builds it then
+    mtk_key mk; mtk_warm_key(sk, ts, ms, fs, pad, &mk);
+    if (mk.k.fc && fs && !se_warm(fs, mk.k.fc)) return nil;   // a sampler-emulation variant this device has not made yet (as R rows)
+    NSError *e = nil; uint64_t t0 = bp_now();
+    id<MTLRenderPipelineState> p = [g_dev newRenderPipelineStateWithMeshDescriptor:mtk_desc(&mk.k, ts, ms, fs, pf, 0, nil) options:MTLPipelineOptionNone reflection:nil error:&e];
+    if (!p) { MLOG("【红】 prewarm: task / mesh pipeline refused (task %s mesh %s fragment %s): %s", ts ? ts->key : "-", ms->key, fs ? fs->key : "-", e.localizedDescription.UTF8String); return nil; }
+    NSString *names = [NSString stringWithFormat:@"task %s mesh %s%s fragment %s", ts ? ts->key : "-", ms->key, pf ? " (padded)" : "", fs ? fs->key : "-"];
+    os_unfair_lock_lock(&g_pso_mtk_lock); if (!g_mtk_names) g_mtk_names = [NSMapTable strongToStrongObjectsMapTable]; [g_mtk_names setObject:names forKey:p]; os_unfair_lock_unlock(&g_pso_mtk_lock);
+    (void)t0; *key = [NSData dataWithBytes:&mk length:sizeof mk]; return p;
+}
+static uint64_t g_mtk_warm_claimed;
+static void mtk_warm_claim(NSData *key, id ps) {   // submit thread (warm_claim): a pipeline the prewarm built goes where the draw looks, unless the draw already has one
+    mtk_key mk; if (key.length != sizeof mk) return; [key getBytes:&mk length:sizeof mk];
+    os_unfair_lock_lock(&g_pso_mtk_lock); __unsafe_unretained id cur = hm_get_id(&g_pso_mtk, &mk); int put = !cur || cur == g_pso_mtk_building;
+    if (put) hm_put_id(&g_pso_mtk, &mk, ps); os_unfair_lock_unlock(&g_pso_mtk_lock);
+    if (put) { uint64_t n = ++g_mtk_warm_claimed; if (!(n & (n - 1))) MLOG("task / mesh pipelines from the prewarm taken by the draws' table: %llu so far", (unsigned long long)n); }
+}
 static uint64_t g_mtk_sync_n, g_mtk_sync_ns, g_mtk_sync_max;   // mesh pipelines built on the submit thread because their draw could not be skipped; time in all, longest
 // Why a mesh draw whose pipeline is not built yet may not be skipped (nil: it may, its pipeline builds in the background); the same rules as skip_safe / first_skip_ok
 static const char *mtk_sync_why(NvShader *ts, NvShader *ms, NvShader *fs) {
@@ -175,7 +222,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     if (ps == NSNull.null && !mk.pad && want) vp_ask(S.prog, ms, want);   // refused unpadded: ask for the padded variant (once; a variant that cannot be made stays failed)
     if (ps && ps != NSNull.null && ps != g_pso_mtk_building) {   // #770: the first draw of each pipeline, with the frame and how many are still building
         if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set];
-        if (![g_mtk_drawn containsObject:ps]) { [g_mtk_drawn addObject:ps];
+        if (![g_mtk_drawn containsObject:ps]) { [g_mtk_drawn addObject:ps]; mtk_record(&mk, ts, ms, fs, merged);
             MLOG("task / mesh pipeline first drawn at frame %llu: %s; still building %d", (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed),
                  mtk_name(ps), atomic_load(&g_mtk_inflight)); }
     }
@@ -186,13 +233,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     //   opening were skipped for 10–20 s while 54 mesh pipelines built one after another in the background, and the scene came out washed white until the last of them was ready
     const char *why = mtk_sync_why(ts, ms, fs);
     if (ps && !why) return nil;   // building in the background, and this draw may wait for it
-    MTLRenderPipelineDescriptor *d = pso_desc(k, nil, fs, g_pso_fsfn, merged);   // the fragment function variant and the attachments, as a vertex draw's (no vertex stage)
-    MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
-    m.meshFunction = pf ?: ms->fn; m.fragmentFunction = d.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
-    if (ts) { m.objectFunction = ts->fn; m.payloadMemoryLength = ts->mesh_relay ? 16 : ((NSUInteger)ts->mesh_payload + 15) & ~(NSUInteger)15; m.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; }   // relayed: object_data carries the task workgroup alone
-    m.rasterSampleCount = d.rasterSampleCount; m.alphaToCoverageEnabled = d.alphaToCoverageEnabled;
-    for (int i = 0; i < 8; i++) m.colorAttachments[i] = d.colorAttachments[i];
-    m.depthAttachmentPixelFormat = d.depthAttachmentPixelFormat; m.stencilAttachmentPixelFormat = d.stencilAttachmentPixelFormat;
+    MTLMeshRenderPipelineDescriptor *m = mtk_desc(k, ts, ms, fs, pf, merged, g_pso_fsfn);
     NSString *names = [NSString stringWithFormat:@"task %s mesh %s%s fragment %s", ts ? ts->key : "-", ms->key, pf ? " (padded)" : "", fs ? fs->key : "-"]; mtk_key kk = mk;
     if (why) {   // built here, on the submit thread: the draw cannot be skipped
         NSError *e = nil; uint64_t t0 = bp_now();
@@ -205,6 +246,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
         if (p) { if (!g_mtk_names) g_mtk_names = [NSMapTable strongToStrongObjectsMapTable]; [g_mtk_names setObject:names forKey:p]; }
         hm_put_id(&g_pso_mtk, &kk, p ?: NSNull.null);
         os_unfair_lock_unlock(&g_pso_mtk_lock);
+        if (p) { if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set]; [g_mtk_drawn addObject:p]; mtk_record(&mk, ts, ms, fs, merged); }
         return p;
     }
     atomic_fetch_add(&g_mtk_inflight, 1);
