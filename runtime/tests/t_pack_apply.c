@@ -485,7 +485,9 @@ int main(void) {
         int placed = s2a_img_scan(D5); g_s2a_logfd = keep; close(lfd);
         CHECK(placed == 2, "⑭b 两个都认领（实际 %d）", placed);
         snprintf(c, sizeof c, "grep '没有着色器库' '%s' | grep -q 'game.img 里' && test \"$(grep -c '没有着色器库' '%s')\" = 1", lg, lg);
-        CHECK(sh(c) == 0, "⑭b 只对不带 shaders/ 的 game.img 记一行【黄】"); }
+        CHECK(sh(c) == 0, "⑭b 只对不带 shaders/ 的 game.img 记一行【黄】");
+        // 游戏库上给玩家的提示要的文件名（ios/app.m img_scan_report）：这次认领里不带 shaders/ 的那个 = game.img；带的那个不报
+        { const char *s2a_img_scan_noshaders(void); CHECK(!strcmp(s2a_img_scan_noshaders(), "game.img"), "⑭b 不带着色器的文件名给界面 = game.img（实际「%s」）", s2a_img_scan_noshaders()); } }
       // 格式号 2（更新版 S2Arm 做的）：不认、原样留着，给码 ios_install_img_format
       char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认

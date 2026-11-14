@@ -286,6 +286,8 @@
 "error.sentence" = "%@. %@";
 "img.importFolder" = "Import Here";
 "img.scanFailed.title" = "Couldn't import the game file";
+"img.noShaders.title" = "This game file is incomplete";
+"img.noShaders.body" = "“%@” is incomplete. Replace it with the “<game name>.img” from the “S2Arm Self-Sign Export” folder on your computer, or connect your phone and click “Send to iPhone” in S2Arm on your computer.";
 "games.repair.done.title" = "Game folder repaired";
 "games.repair.done.body" = "The game folder belonged to a system account, so S2Arm could not write to it and installing never started. It has been moved to a new folder owned by S2Arm (%u files, sharing the original data, so no extra space). You can continue installing. S2Arm cannot delete the old folder; it is cleared the next time you connect to your computer.";
 "games.repair.failed.title" = "Couldn't repair the game folder";
@@ -318,6 +320,9 @@
 "diag.upload.fail.timeout" = "The upload didn't finish within %d seconds (the network is slow or the connection stalled), so it was stopped. You can try again or export the diagnostics package instead.";
 "diag.upload.fail.title" = "Upload didn’t work";
 "diag.upload.go" = "Upload";
+"diag.report.title" = "Report a Problem";
+"diag.report.message" = "We’ll upload this device’s logs and device info to help find the cause, then give you a short code. You can write a sentence about what happened (optional).";
+"diag.report.placeholder" = "What happened? (optional)";
 "diag.upload.post" = "Post on GitHub";
 "diag.upload.retry" = "Try again";
 "dprompt.expiry.body" = "Time left: %@. After it expires the game won’t open, but your saves are safe: connect the phone and click “Install on iPhone” again, or refresh in AltStore.";
@@ -468,10 +473,14 @@
 "vpad.layouts.split.title" = "Split-screen touch layout";
 "vpad.layouts.split.footer" = "Edit the lower controls area. Positions are saved separately from the regular layout; touch mode and stick response are shared.";
 "settings.group.language" = "Language";
-"settings.footer.language" = "The language of S2Arm's menus. “Same as system” follows your iPhone's language (Chinese stays Chinese, other languages show English). Games use this language too unless you pick one in a game's launch settings.";
-"settings.language" = "Language";
+"settings.footer.language" = "Interface language is the language of S2Arm's menus. “Same as system” follows your iPhone's language (Chinese stays Chinese, other languages show English). Game language follows your iPhone's system language by default (Japanese, Korean and others included), or the interface language if you picked one in the app. If names in a save imported from a Switch look garbled, set the game language to the one that Switch used.";
+"settings.language" = "Interface language";
 "settings.language.system" = "Same as system";
 "settings.language.zhHans" = "简体中文";
 "settings.language.zhHant" = "繁體中文";
 "settings.language.en" = "English";
 "settings.language.restart" = "Close and reopen S2Arm to use the new language.";
+"settings.gameLanguage" = "Game language";
+"settings.gameLanguage.system" = "Same as system";
+"settings.gameLanguage.restart" = "Takes effect the next time you open this game.";
+"settings.gameLanguage.ja" = "日本語";

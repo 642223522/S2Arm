@@ -564,10 +564,12 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
             dst->slot = (int)u;
         }
         if (!dst->is_support && dst->kind != 1 && dst->slot < 0) CS_FAIL("compute binding has no reflected guest slot");
-        if (dst->kind == 3) {
+        // 图像（kind 3）：handleIndex 指驱动 c2 图像句柄表（字节 0x120 起 8 槽 × 8 字节 = 4 字节字下标 72..86 偶数，
+        //   同 iOS nvn_mtl.m C2_IMG / tex_slot_h），NVN 图像槽 = (handleIndex − 72) / 2；回放按 BindImage 的槽取（rp_draw NVN_RB_IMG）
+        if (dst->kind == 3 && (dst->slot < 72 || dst->slot >= 88 || (dst->slot & 1))) {
             char message[160];
             snprintf(message, sizeof message,
-                "compute descriptor unsupported: set=%d binding=%d kind=image handleIndex=%d",
+                "compute image handleIndex outside the c2 image slots: set=%d binding=%d handleIndex=%d",
                 dst->set, dst->binding, dst->slot);
             CS_FAIL(message);
         }
@@ -603,6 +605,7 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
         }
         if (dst->kind == 1 && (dst->slot != -1 || compute_storage(b, &out->storage[i])))
             CS_FAIL("compute storage source mapping is unknown or inconsistent");
+        if (dst->kind == 3) dst->tex_slot = (int16_t)((dst->slot - 72) / 2);   // 图像槽（复用 tex_slot 字段，见上）
         if (dst->kind == 2) {
             if (has_samp) dst->tex_slot = (int16_t)(128 + (dst->slot - 90) / 2);
             else {
