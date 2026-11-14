@@ -20,3 +20,12 @@ static inline const char *s2a_ui_lang_pick(const char *choice, const char *syste
     if (choice && (!strcmp(choice, "zh-Hans") || !strcmp(choice, "zh-Hant") || !strcmp(choice, "en"))) return choice;
     return s2a_ui_lang_of_tag(system);
 }
+// 界面语言选「跟随系统」时，本 App 的 AppleLanguages 清不清（#971）：它同时是 iOS「设置 → S2Arm → 首选语言」（单 App 语言）存值的地方，
+//   原先一律清掉，玩家在系统设置里给 S2Arm 选的法语每次启动都被抹，游戏语言缺省（读本 App 首选语言列表）也就落不到法语。
+//   只清我们自己写进去的：记过「是我们写的」（ours = 1）就清；没记过（旧版写的）只认「恰好一项、是我们三种界面语言之一」——那是旧版 App 设置写的，
+//   玩家在系统设置里选的是别的语言（如 fr）就不动。apple = AppleLanguages 的各项，n 项
+static inline int s2a_ui_lang_clear_override(const char *const *apple, int n, int ours) {
+    if (n <= 0) return 0;
+    if (ours) return 1;
+    return n == 1 && apple[0] && (!strcmp(apple[0], "zh-Hans") || !strcmp(apple[0], "zh-Hant") || !strcmp(apple[0], "en"));
+}
