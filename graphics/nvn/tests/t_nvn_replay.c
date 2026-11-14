@@ -2418,7 +2418,7 @@ static void t_arena697_detail(void) {
 //   OP_MULTI_DRAW（超过 1,024 条整段一条）直接按记录给的条数与步长交。期望值按记录手算：3 条 → max_draws 3、步长 20。紧跟 t_draw，沿用它绑好的状态。
 static void t_draw_mdi(void) {
     uint64_t base = (uint64_t)(uintptr_t)g_pmem, cnt = base + 5 * PG, ind = base + 4 * PG;
-    int d0 = g_gdraws, gu0 = nvn_unimpl_count("draw", "indirect_count_group_unavailable");
+    int d0 = g_gdraws; uint64_t gu0 = nvn_unimpl_count("draw", "indirect_count_group_unavailable");
     g_caps_extra = NVN_GPU_CAP_INDIRECT_COUNT;
     stream s = {0};
     for (int i = 0; i < 3; i++) {
@@ -2444,7 +2444,7 @@ static void t_draw_mdi(void) {
     CHECK(g_gdraws == d0 + 3 && g_last_da.max_draws == 100 && g_last_da.stride == 20 && g_last_da.cnt != NULL);
     // 设备没开：整组跳过、报名一次，不交给后端（交了后端整段判失败）
     g_caps_extra = 0;
-    int nd0 = nvn_unimpl_count("draw", "indirect_count_no_device_support");
+    uint64_t nd0 = nvn_unimpl_count("draw", "indirect_count_no_device_support");
     stream n = {0};
     for (int i = 0; i < 3; i++) {
         p_draw_idx *di = put(&n, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;

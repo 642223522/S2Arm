@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "nvn_obj.h"
 #include "nvn_backend.h"
+#include "nvn2_cmd.h"   // p_multi_draw
 
 const char *rp_op_name(uint32_t op);   // 录制命令名（"OP_DRAW" …）；范围外返回 "OP_?"
 int rp_pool_count(void);                // 已登记的内存池个数
